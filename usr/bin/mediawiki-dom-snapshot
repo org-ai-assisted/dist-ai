@@ -50,6 +50,14 @@
 ##                  postedit intent (edits + saves the page, captures
 ##                  the result, reverts). Empty default = skip every
 ##                  page; export to opt in.
+##   CONCURRENCY    parallel captures per snapshot run (default 4 in
+##                  snapshot.py). Higher values fan more browser
+##                  contexts at the wiki backend; reasonable range is
+##                  4-12 depending on backend headroom.
+##   NORMALISE_JOBS parallel worker count for the normalise step
+##                  (default 8). Per-page directories are scrubbed
+##                  independently so wallclock scales linearly with
+##                  worker count up to CPU saturation.
 
 set -o errexit
 set -o nounset
@@ -100,11 +108,16 @@ cmd_capture() {
 cmd_normalise() {
    mkdir --parents -- "${FIX_DIR}"
    shopt -s nullglob
-   for d in "${RAW_DIR}"/*/; do
-      [ -d "${d}" ] || continue
-      page=$(basename "${d}")
-      python3 "${LIB}/normalize.py" "${d}" "${FIX_DIR}/${page}"
-   done
+   ## Each per-page directory is independent so we normalise them in
+   ## parallel. NORMALISE_JOBS bounds the worker count; default 8 is
+   ## comfortable on a developer laptop and matches snapshot.py's
+   ## CONCURRENCY default ballpark.
+   local -i jobs="${NORMALISE_JOBS:-8}"
+   find "${RAW_DIR}" -mindepth 1 -maxdepth 1 -type d -print0 \
+      | xargs -0 -P "${jobs}" -I {} sh -c '
+            page=$(basename "$1")
+            python3 "$2" "$1" "$3/$page"
+         ' _ {} "${LIB}/normalize.py" "${FIX_DIR}"
 }
 
 cmd_run() {
