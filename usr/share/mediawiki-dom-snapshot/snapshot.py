@@ -353,8 +353,10 @@ COMPUTED_STYLE_PROPS = [
 
 ## Marker line appended by the postedit flow. Deterministic so the
 ## diff against a pre-edit baseline shows a single 1-line delta when
-## the save round-trip works.
-POSTEDIT_MARKER = "<!-- mediawiki-dom-snapshot postedit marker DO NOT REMOVE -->"
+## the save round-trip works. Plain text rather than an HTML comment
+## because MediaWiki's parser strips wikitext-level HTML comments
+## before rendering; a literal sentinel string survives the parse.
+POSTEDIT_MARKER = "mediawiki-dom-snapshot-postedit-marker-DO-NOT-REMOVE"
 
 
 async def _api_edit(context, base_url: str, title: str, append_marker: bool) -> bool:
