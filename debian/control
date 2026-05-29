@@ -1,0 +1,33 @@
+Source: dist-ai
+Section: utils
+Priority: optional
+Maintainer: Patrick Schleizer <adrelanos@whonix.org>
+Build-Depends: debhelper-compat (= 13), genmkfile
+Homepage: https://github.com/org-ai-assisted/dist-ai
+Vcs-Browser: https://github.com/org-ai-assisted/dist-ai
+Vcs-Git: https://github.com/org-ai-assisted/dist-ai.git
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+
+Package: mediawiki-dom-snapshot
+Architecture: all
+Depends: ${misc:Depends},
+ python3,
+ python3-bs4,
+ python3-lxml,
+ python3-playwright
+Recommends: chromium
+Description: Headless DOM snapshotter for MediaWiki regression testing
+ Drives a headless Chromium against a running MediaWiki instance via
+ Playwright, captures the post-JS DOM for a configured set of pages, and
+ normalises the output (scrub CSP nonces, ResourceLoader version hashes,
+ parser-cache timestamps, lazy-loaded ResourceLoader module styles,
+ ...) so the result is diff-stable across runs.
+ .
+ Use case: detect HTML/CSS changes introduced by MediaWiki core /
+ extension upgrades or by site-CSS refactors, by capturing a baseline
+ before the change and diffing a fresh capture after.
+ .
+ Ships with a committed baseline under
+ /usr/share/mediawiki-dom-snapshot/baseline/ and the page list under
+ /etc/mediawiki-dom-snapshot/pages.conf.
