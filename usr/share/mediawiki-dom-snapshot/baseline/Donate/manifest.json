@@ -565,12 +565,5 @@
     "sha256": "3c587f33367b5fe4b0fd9ce2e3f856445da12a5af4df2478ecec4a35238da843",
     "size": 36315,
     "status": 200
-  },
-  "https://www.kicksecure.com/wiki/Donate": {
-    "asset": "7013495aef149a1bd3e8acb3282d42d0f61b86ecfd02c459b02c03b0cb634f48.html",
-    "content_type": "text/html; charset=UTF-8",
-    "sha256": "7013495aef149a1bd3e8acb3282d42d0f61b86ecfd02c459b02c03b0cb634f48",
-    "size": 56745,
-    "status": 200
   }
 }

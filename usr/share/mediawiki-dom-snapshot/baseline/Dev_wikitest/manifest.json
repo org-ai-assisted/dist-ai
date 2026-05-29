@@ -1,11 +1,4 @@
 {
-  "https://www.kicksecure.com/images/photo.jpg": {
-    "asset": "55f7d9e99b8e2d4e0e193b2f0275501e6d9c1ebd29cadbea6a0da48a8587e3e0.html",
-    "content_type": "text/html",
-    "sha256": "55f7d9e99b8e2d4e0e193b2f0275501e6d9c1ebd29cadbea6a0da48a8587e3e0",
-    "size": 146,
-    "status": 404
-  },
   "https://www.kicksecure.com/libs/Cousine_2023-08-03/Cousine-Regular.woff": {
     "asset": "6107280d56524f700f8bc95290ffdd139d7bf38aca465cfac0f4c990a7a6234e.woff",
     "content_type": "font/woff",
@@ -781,13 +774,6 @@
     "content_type": "image/svg+xml",
     "sha256": "6b2ae95e88a82be06108353d7174b1f9c18dd629e3aba1d149afcb39795335a4",
     "size": 159,
-    "status": 200
-  },
-  "https://www.kicksecure.com/wiki/Dev/wikitest": {
-    "asset": "757242c774ea945d0400aa539d763506a0768c2a9a6e53c6cdfec9192c7331b1.html",
-    "content_type": "text/html; charset=UTF-8",
-    "sha256": "757242c774ea945d0400aa539d763506a0768c2a9a6e53c6cdfec9192c7331b1",
-    "size": 242252,
     "status": 200
   },
   "https://www.kicksecure.com/wiki/Special:Redirect/file/Kicksecure-logo-rectangle.svg": {

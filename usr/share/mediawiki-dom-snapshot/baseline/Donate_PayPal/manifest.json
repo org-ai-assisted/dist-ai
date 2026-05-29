@@ -446,12 +446,5 @@
     "sha256": "6b2ae95e88a82be06108353d7174b1f9c18dd629e3aba1d149afcb39795335a4",
     "size": 159,
     "status": 200
-  },
-  "https://www.kicksecure.com/wiki/Donate/PayPal": {
-    "asset": "a4f2061be93fa008ce4a5d99fb7f36b043c28c1d66b914f43fd2373cddeb4fba.html",
-    "content_type": "text/html; charset=UTF-8",
-    "sha256": "a4f2061be93fa008ce4a5d99fb7f36b043c28c1d66b914f43fd2373cddeb4fba",
-    "size": 62950,
-    "status": 200
   }
 }

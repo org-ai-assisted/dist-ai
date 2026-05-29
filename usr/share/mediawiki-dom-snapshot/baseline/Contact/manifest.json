@@ -334,12 +334,5 @@
     "sha256": "6b2ae95e88a82be06108353d7174b1f9c18dd629e3aba1d149afcb39795335a4",
     "size": 159,
     "status": 200
-  },
-  "https://www.kicksecure.com/wiki/Contact": {
-    "asset": "4cf7b81efd00788c090abf5217073b8a9ea8ae8a097c78b6dd62e788285e62c2.html",
-    "content_type": "text/html; charset=UTF-8",
-    "sha256": "4cf7b81efd00788c090abf5217073b8a9ea8ae8a097c78b6dd62e788285e62c2",
-    "size": 67061,
-    "status": 200
   }
 }

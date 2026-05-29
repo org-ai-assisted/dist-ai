@@ -355,12 +355,5 @@
     "sha256": "6b2ae95e88a82be06108353d7174b1f9c18dd629e3aba1d149afcb39795335a4",
     "size": 159,
     "status": 200
-  },
-  "https://www.kicksecure.com/wiki/Qubes": {
-    "asset": "02c983b97789ea24f04c2cc0b430bc6c5311b006b1f01dec98cc4de84d934859.html",
-    "content_type": "text/html; charset=UTF-8",
-    "sha256": "02c983b97789ea24f04c2cc0b430bc6c5311b006b1f01dec98cc4de84d934859",
-    "size": 115939,
-    "status": 200
   }
 }

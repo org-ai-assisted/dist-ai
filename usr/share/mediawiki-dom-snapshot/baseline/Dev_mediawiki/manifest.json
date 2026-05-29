@@ -391,13 +391,6 @@
     "size": 159,
     "status": 200
   },
-  "https://www.kicksecure.com/wiki/Dev/mediawiki": {
-    "asset": "683fff16687847052b27a442456d6acbd7f1c6fcbde86165606f97a3ae4c67ee.html",
-    "content_type": "text/html; charset=UTF-8",
-    "sha256": "683fff16687847052b27a442456d6acbd7f1c6fcbde86165606f97a3ae4c67ee",
-    "size": 829358,
-    "status": 200
-  },
   "https://www.kicksecure.com/wiki/Special:Redirect/file/Kicksecure-logo-rectangle.svg": {
     "asset": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.html",
     "content_type": "text/html; charset=UTF-8",

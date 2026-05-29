@@ -685,13 +685,6 @@
     "size": 159,
     "status": 200
   },
-  "https://www.kicksecure.com/wiki/Template:Payments": {
-    "asset": "f5215c83f4999aa3e6f3b457d178443a5cb826a25398f6cafd7eaa579ca63ddc.html",
-    "content_type": "text/html; charset=UTF-8",
-    "sha256": "f5215c83f4999aa3e6f3b457d178443a5cb826a25398f6cafd7eaa579ca63ddc",
-    "size": 35668,
-    "status": 200
-  },
   "https://www.kicksecure.com/wiki/VirtualBox": {
     "asset": "e82ecc5dff65fef52f94b1c19b9847e786230c1c98bbcc6c61d19006bc2c349f.html",
     "content_type": "text/html; charset=UTF-8",

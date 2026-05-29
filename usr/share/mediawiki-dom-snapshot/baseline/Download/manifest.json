@@ -418,12 +418,5 @@
     "sha256": "6b2ae95e88a82be06108353d7174b1f9c18dd629e3aba1d149afcb39795335a4",
     "size": 159,
     "status": 200
-  },
-  "https://www.kicksecure.com/wiki/Download": {
-    "asset": "9d9fb359ca853c0e9a6f77d2547822afb763893d16d58cc3804e7c4bbaf57265.html",
-    "content_type": "text/html; charset=UTF-8",
-    "sha256": "9d9fb359ca853c0e9a6f77d2547822afb763893d16d58cc3804e7c4bbaf57265",
-    "size": 67393,
-    "status": 200
   }
 }

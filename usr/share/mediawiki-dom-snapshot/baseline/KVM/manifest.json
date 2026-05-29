@@ -657,13 +657,6 @@
     "size": 36315,
     "status": 200
   },
-  "https://www.kicksecure.com/wiki/KVM": {
-    "asset": "3e81bca67763d1bf4d9215496b12f6d4b9133b47b085f6c5b502de0df85b222d.html",
-    "content_type": "text/html; charset=UTF-8",
-    "sha256": "3e81bca67763d1bf4d9215496b12f6d4b9133b47b085f6c5b502de0df85b222d",
-    "size": 96684,
-    "status": 200
-  },
   "https://www.kicksecure.com/wiki/Template:Payments": {
     "asset": "f5215c83f4999aa3e6f3b457d178443a5cb826a25398f6cafd7eaa579ca63ddc.html",
     "content_type": "text/html; charset=UTF-8",
