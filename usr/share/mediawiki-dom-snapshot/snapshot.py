@@ -57,6 +57,16 @@ WIKI_PASSWORD = os.environ.get("WIKI_PASSWORD", "")
 ADMIN_USER = os.environ.get("ADMIN_USER", "")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
+## Comma-separated wiki page titles eligible for the postedit intent.
+## The intent edits the page (appends a hidden marker line), captures
+## the rendered result, then reverts. Pages should be safe to mutate
+## under test (low traffic, no live readers); operators add a private
+## TestpageEditPostEdit-style page to their wiki and list it here.
+## Empty default = postedit intent silently skips every page.
+POSTEDIT_PAGES = {
+    p.strip() for p in os.environ.get("POSTEDIT_PAGES", "").split(",") if p.strip()
+}
+
 VIEWPORTS = {
     "desktop": (1280, 800),
     "mobile": (390, 844),
@@ -455,9 +465,8 @@ HOVER_SELECTORS = [
 async def capture_one(browser, mode_tuple, title: str) -> tuple[str, str, int, int]:
     label, auth, visit, vp_name, scheme, intent, browser_name, locale = mode_tuple
 
-    ## postedit only runs on pages explicitly designated as the
-    ## post-edit test target.
-    if intent == "postedit" and not title.startswith("TestpageEditPostEdit"):
+    ## postedit only runs on pages explicitly listed in POSTEDIT_PAGES.
+    if intent == "postedit" and title not in POSTEDIT_PAGES:
         return (label, title, 0, 0)  ## silently skip; caller treats 0 as no-op
     page_dir = RAW_DIR / safe_name(title) / label
     page_dir.mkdir(parents=True, exist_ok=True)
@@ -800,8 +809,8 @@ async def main() -> int:
 
         async def run_one(mode_tuple, title):
             async with sem:
-                ## postedit only runs for the designated test page
-                if mode_tuple[5] == "postedit" and not title.startswith("TestpageEditPostEdit"):
+                ## postedit only runs for the configured target pages.
+                if mode_tuple[5] == "postedit" and title not in POSTEDIT_PAGES:
                     return True  ## silently skip
                 browser = browser_instances.get(mode_tuple[6])
                 if browser is None:
