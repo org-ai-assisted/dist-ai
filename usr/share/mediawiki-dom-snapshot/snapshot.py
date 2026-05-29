@@ -567,9 +567,21 @@ async def capture_one(browser, mode_tuple, title: str) -> tuple[str, str, int, i
         if intent == "postedit":
             await _api_edit(context, BASE, safe, append_marker=True)
 
+        ## Backend (esp. Special:Search) sometimes returns 5xx under
+        ## load. Retry with exponential backoff before giving up; the
+        ## ResourceLoader cache warms up across attempts so later
+        ## requests typically succeed even if the first one didn't.
         n_visits = 2 if visit == "repeat" else 1
-        for _ in range(n_visits):
-            response = await page.goto(url, wait_until="networkidle", timeout=TIMEOUT_MS)
+        response = None
+        for attempt in range(4):
+            for _ in range(n_visits):
+                response = await page.goto(
+                    url, wait_until="networkidle", timeout=TIMEOUT_MS,
+                )
+            status = response.status if response else 0
+            if status < 500:
+                break
+            await asyncio.sleep(2 ** attempt)
         status = response.status if response else 0
 
         await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
