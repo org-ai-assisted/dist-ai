@@ -260,6 +260,16 @@ async def capture_one(browser, mode: str, title: str) -> tuple[str, int, int]:
                 animation-delay: 0s !important;
                 animation-iteration-count: 1 !important;
             }
+            /* The fly-in notification panel flips display:none ->
+               display:block at t=1s via setTimeout. Captures land
+               on different sides of the flip depending on how
+               quickly networkidle fires. Force-show so the panel
+               is always visible (and stable) at capture time. */
+            #fly-in-notification-panel {
+                display: block !important;
+                opacity: 1 !important;
+                width: 300px !important;
+            }
         """)
         await asyncio.sleep(0.3)
 

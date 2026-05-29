@@ -10,7 +10,7 @@
 RLSTATE={"site.styles":"ready","user.styles":"ready","user":"ready","user.options":"loading","ext.cite.styles":"ready","mediawiki.page.gallery.styles":"ready","skins.vector.styles.legacy":"ready","jquery.makeCollapsible.styles":"ready","mediawiki.ui.button":"ready","ext.CookieWarning.styles":"ready","oojs-ui-core.styles":"ready","oojs-ui.styles.indicators":"ready","mediawiki.widgets.styles":"ready","oojs-ui-core.icons":"ready","ext.flaggedRevs.basic":"ready","mediawiki.codex.messagebox.styles":"ready"};RLPAGEMODULES=["ext.cite.ux-enhancements","mediawiki.page.media","site","mediawiki.page.ready","jquery.makeCollapsible","mediawiki.toc","skins.vector.legacy.js","mediawiki.page.watch.ajax","ext.CookieWarning","mmv.bootstrap","ext.popups","ext.flaggedRevs.advanced"];
   </script>
   <script>
-   (RLQ=window.RLQ||[]).push(function(){mw.loader.impl(function(){return["user.options@12s5i",function($,jQuery,require,module){mw.user.tokens.set({"patrolToken":"SCRUBBED","watchToken":"SCRUBBED","csrfToken":"SCRUBBED"});mw.user.options.set({"rcfilters-limit":"50","rcfilters-rc-collapsed":0,"rcfilters-saved-queries":"{\"queries\":{},\"version\":\"2\"}"});
+   (RLQ=window.RLQ||[]).push(function(){mw.loader.impl(function(){return["user.options@12s5i",function($,jQuery,require,module){mw.user.tokens.set({"patrolToken":"SCRUBBED","watchToken":"SCRUBBED","csrfToken":"SCRUBBED"});
 }];});});
   </script>
   <link href="/w/load.php?lang=en&amp;modules=ext.CookieWarning.styles|ext.cite.styles|ext.flaggedRevs.basic|jquery.makeCollapsible.styles|mediawiki.codex.messagebox.styles|mediawiki.page.gallery.styles|mediawiki.ui.button|mediawiki.widgets.styles|oojs-ui-core.icons%2Cstyles|oojs-ui.styles.indicators|skins.vector.styles.legacy&amp;only=styles&amp;skin=vector" rel="stylesheet"/>
@@ -101,6 +101,16 @@ RLSTATE={"site.styles":"ready","user.styles":"ready","user":"ready","user.option
                 animation-duration: 0s !important;
                 animation-delay: 0s !important;
                 animation-iteration-count: 1 !important;
+            }
+            /* The fly-in notification panel flips display:none ->
+               display:block at t=1s via setTimeout. Captures land
+               on different sides of the flip depending on how
+               quickly networkidle fires. Force-show so the panel
+               is always visible (and stable) at capture time. */
+            #fly-in-notification-panel {
+                display: block !important;
+                opacity: 1 !important;
+                width: 300px !important;
             }
   </style>
  </head>

@@ -25,6 +25,7 @@ Usage:
     normalize.py <input-page-dir>  <output-page-dir>
     normalize.py <input-html-file> <output-html-file>   # legacy v0.1 mode
 """
+import hashlib
 import json
 import re
 import shutil
@@ -58,12 +59,21 @@ VOLATILE_HEADERS = {
     "x-backend-date",
     "last-modified",
     "expires",
+    "etag",        ## MW embeds the ResourceLoader version hash in the ETag;
+                   ## rotates per server build with no content change.
 }
 
 ## Headers whose value contains a URL that may itself have a volatile
 ## query string. e.g. onion-location reflects the request URL with all
 ## its cache-busters.
-URL_VALUED_HEADERS = ("onion-location", "link", "location", "content-location")
+URL_VALUED_HEADERS = (
+    "onion-location",
+    "link",
+    "location",
+    "content-location",
+    "sourcemap",   ## MW serves sourcemap URLs with the same per-build
+                   ## version token as the ResourceLoader startup body.
+)
 
 ## Headers whose values are stable when scrubbed of their per-build
 ## random-token bits.
@@ -145,7 +155,15 @@ LAZY_INJECTED_STYLE_FINGERPRINTS = [
     re.compile(r"\.mw-mmv-"),
     re.compile(r"\.cite-accessibility-label"),
     re.compile(r"\.cite-reference-preview"),
+    re.compile(r"\.mw-portlet-dock-bottom"),
+    re.compile(r"#mw-teleport-target"),
 ]
+
+## ResourceLoader module names are emitted as "name@VERSION" in the
+## bundled JS body where VERSION is a 4-5 char alphanumeric that
+## rotates per server build with no module content change. Same
+## per-build noise as the startup module body.
+MODULE_VERSION_RE = re.compile(r'("[\w.-]+)@[a-z0-9]{4,8}(")')
 
 URL_ATTRS = ("href", "src", "data-src", "action", "data-href", "srcset")
 
@@ -193,6 +211,19 @@ def _scrub_script_text(text: str) -> str:
             text,
         )
     text = re.sub(r'"version"\s*:\s*"[0-9a-f]{6,}"', '"version":"SCRUBBED"', text)
+    ## mw.user.options.set({...}); gets populated by MediaWiki after the
+    ## first user-mode visit and persists; subsequent captures see
+    ## entries the first capture wrote (rcfilters-limit, rcfilters-
+    ## saved-queries, ...) -- and a capture against a freshly-created
+    ## user has the call ABSENT entirely while a later capture has it
+    ## PRESENT. Drop the entire statement (including the trailing
+    ## semicolon) so present-or-absent stops mattering.
+    text = re.sub(
+        r"mw\.user\.options\.set\(\{.+?\}\);?",
+        "",
+        text,
+        flags=re.DOTALL,
+    )
     return text
 
 
@@ -297,12 +328,49 @@ def normalize_manifest(manifest: dict, page_url: str | None = None) -> dict:
             continue
         if page_url and url.startswith(page_url):
             continue
+        ## XHR/api.php responses race the page load -- a tiny
+        ## status-only body that finishes before networkidle shows
+        ## up in one capture and after networkidle in another. Drop
+        ## them; the page's observable state comes through the dom.html
+        ## rather than the raw API blob.
+        if "/w/api.php" in url:
+            continue
         nurl = _normalize_url(url)
         normalised_entry = dict(entry)
         if "headers" in normalised_entry:
             normalised_entry["headers"] = _normalize_headers(normalised_entry["headers"])
         out.setdefault(nurl, normalised_entry)
     return dict(sorted(out.items()))
+
+
+## MediaWiki's ResourceLoader "startup" module embeds a version hash
+## for every module so the client knows whether its cached copy is
+## current. The hashes rotate every server build even when no module
+## content changed, so the startup.js body sha256 differs across
+## captures of the same wiki state. We scrub the hash strings to
+## SCRUBBED in-place; the rest of the file stays diffable.
+##
+## Hash strings appear in mw.loader.register() arguments as quoted
+## short alphanumeric tokens like "1eggf" or "1um0c". The exact set:
+##     mw.loader.register([
+##         ["module.name", "1eggf"],
+##         ...
+##     ]);
+##
+## Catch any `"<2-8 lowercase alphanums>"` immediately following a
+## known module-position marker.
+STARTUP_VERSION_RE = re.compile(r'(?<=,)\s*"[a-z0-9]{2,8}"(?=[,\]])')
+
+
+def _scrub_startup_module_body(body: str) -> str:
+    return STARTUP_VERSION_RE.sub('"SCRUBBED"', body)
+
+
+def _scrub_module_versions(body: str) -> str:
+    """Scrub the "name@VERSION" tokens that appear in RL bundle bodies.
+    Conservative: requires `"name@VERSION"` pattern with quotes so it
+    won't false-positive on email addresses or similar."""
+    return MODULE_VERSION_RE.sub(r"\1@SCRUBBED\2", body)
 
 
 def normalize_page_dir(src: Path, dst: Path) -> None:
@@ -320,9 +388,6 @@ def normalize_page_dir(src: Path, dst: Path) -> None:
             page_url = url
             break
     nm = normalize_manifest(manifest, page_url)
-    (dst / "manifest.json").write_text(
-        json.dumps(nm, indent=2, sort_keys=True), encoding="utf-8"
-    )
 
     ## Screenshot: copy as-is. Pixel-diff is the comparison step.
     screenshot_src = src / "screenshot.png"
@@ -330,15 +395,60 @@ def normalize_page_dir(src: Path, dst: Path) -> None:
         shutil.copy2(screenshot_src, dst / "screenshot.png")
 
     ## Assets are content-hashed so already canonical; rsync-like
-    ## mirror so the dst layout is self-contained.
+    ## mirror so the dst layout is self-contained. Exception: the
+    ## ResourceLoader startup module's body carries per-build version
+    ## hashes that rotate without content change -- scrub them in-place
+    ## and refresh the manifest's sha256 to match.
     src_assets = src / "assets"
     dst_assets = dst / "assets"
     if src_assets.exists():
         dst_assets.mkdir(exist_ok=True)
-        for f in src_assets.iterdir():
-            target = dst_assets / f.name
-            if not target.exists():
-                shutil.copy2(f, target)
+        for url, entry in nm.items():
+            if "asset" not in entry:
+                continue
+            sname = entry["asset"]
+            src_a = src_assets / sname
+            if not src_a.exists():
+                continue
+            ct = entry.get("content_type", "")
+            ## Three categories of asset get in-place rewrites; everything
+            ## else copies through untouched.
+            if "modules=startup" in url and ct.startswith(
+                ("application/javascript", "text/javascript")
+            ):
+                body = src_a.read_text(encoding="utf-8", errors="replace")
+                body = _scrub_startup_module_body(body)
+                body = _scrub_module_versions(body)
+            elif "load.php" in url and ct.startswith(
+                ("application/javascript", "text/javascript")
+            ):
+                ## RL bundles other than startup also carry the
+                ## "name@VERSION" tokens; same per-build noise.
+                body = src_a.read_text(encoding="utf-8", errors="replace")
+                body = _scrub_module_versions(body)
+            elif ct.startswith("text/html"):
+                ## HTML asset bodies (e.g. pages loaded as embeds during
+                ## navigation) carry the same per-request wgRequestId /
+                ## wgBackendResponseTime / mw.user.options.set noise as
+                ## dom.html. Run them through the same normaliser.
+                body = src_a.read_text(encoding="utf-8", errors="replace")
+                body = normalize_html(body)
+            else:
+                target = dst_assets / sname
+                if not target.exists():
+                    shutil.copy2(src_a, target)
+                continue
+            ## Re-hash so the manifest sha256 matches the rewritten body.
+            digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+            new_name = digest + Path(sname).suffix
+            (dst_assets / new_name).write_text(body, encoding="utf-8")
+            entry["asset"] = new_name
+            entry["sha256"] = digest
+            entry["size"] = len(body.encode("utf-8"))
+
+    (dst / "manifest.json").write_text(
+        json.dumps(nm, indent=2, sort_keys=True), encoding="utf-8"
+    )
 
 
 def _legacy_html_mode(src: Path, dst: Path) -> int:
