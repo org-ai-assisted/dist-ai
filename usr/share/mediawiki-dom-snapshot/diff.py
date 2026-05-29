@@ -121,26 +121,60 @@ def diff_assets(base: Path, cand: Path, brief: bool) -> tuple[list[tuple], list[
     return rows, body_diffs
 
 
-def diff_screenshot(base: Path, cand: Path) -> tuple[int, int, str]:
-    """Returns (pixel_diff_count, phash_distance, summary).
-    pixel_diff_count is the number of bytes that differ across the two
-    images (channels included), so the upper bound for a 1280x800 RGB
-    image is 1280*800*3 = ~3 million.
+## Threshold above which a per-pixel max-channel delta counts as a
+## "real" pixel change rather than antialiasing jitter. Empirically,
+## sub-pixel font / border rendering produces deltas of 1-2 out of 255
+## even when the pages render visually identically; a delta of 4+ on a
+## single channel is consistent with a colour or geometry change.
+PIXEL_JITTER_THRESHOLD = 3
+
+
+def diff_screenshot(base: Path, cand: Path) -> tuple[bool, int, int, int, str]:
+    """Returns (is_visual_regression, pixels_diff, max_channel_delta,
+    phash_distance, summary).
+
+    is_visual_regression captures the SIGNAL: it's True when any of
+      - phash distance > 0   (the perceptual hash sees a real change)
+      - any single channel-delta > PIXEL_JITTER_THRESHOLD
+        (a pixel changed more than antialiasing would explain)
+      - image sizes don't match (impossible at the same viewport)
+    Sub-threshold pixel deltas with phash=0 are returned as raw
+    numbers for forensic inspection but do NOT flip the signal.
     """
     b_path = base / "screenshot.png"
     c_path = cand / "screenshot.png"
     if not (b_path.exists() and c_path.exists()):
-        return 0, 0, "(one screenshot missing; skipped)"
+        return False, 0, 0, 0, "(one screenshot missing; skipped)"
     a = Image.open(b_path).convert("RGB")
     b = Image.open(c_path).convert("RGB")
     if a.size != b.size:
-        return -1, -1, f"size differs: {a.size} vs {b.size}"
+        return True, -1, -1, -1, f"size differs: {a.size} vs {b.size}"
     diff = ImageChops.difference(a, b)
-    pixels_diff = sum(1 for v in diff.getdata() if v != (0, 0, 0))
-    pa = imagehash.phash(a)
-    pb = imagehash.phash(b)
-    phash_dist = pa - pb
-    return pixels_diff, phash_dist, f"pixels_diff={pixels_diff} phash_dist={phash_dist}"
+
+    ## numpy for fast aggregates; falls back to PIL if numpy missing.
+    try:
+        import numpy as np
+        arr = np.asarray(diff)
+        pixels_diff = int((arr > 0).any(axis=2).sum())
+        max_delta = int(arr.max())
+    except ImportError:
+        pixels_diff = sum(1 for v in diff.getdata() if v != (0, 0, 0))
+        ## Slow path: scan for max channel delta.
+        max_delta = 0
+        for v in diff.getdata():
+            m = max(v)
+            if m > max_delta:
+                max_delta = m
+
+    phash_dist = imagehash.phash(a) - imagehash.phash(b)
+    is_real = phash_dist > 0 or max_delta > PIXEL_JITTER_THRESHOLD
+    summary = (
+        f"pixels_diff={pixels_diff} max_channel_delta={max_delta} "
+        f"phash_dist={phash_dist}"
+    )
+    if not is_real and pixels_diff > 0:
+        summary += " (subpixel-jitter; phash sees no change)"
+    return is_real, pixels_diff, max_delta, phash_dist, summary
 
 
 def main() -> int:
@@ -180,10 +214,14 @@ def main() -> int:
         c = cand_root / name
         html_lines_diff, html_diff_text = diff_page_html(b, c)
         asset_rows, asset_body_diffs = diff_assets(b, c, brief=args.brief)
-        pixels_diff, phash_dist, ss_summary = diff_screenshot(b, c)
-        any = html_lines_diff > 0 or asset_rows or (pixels_diff > 0)
-        if not any:
+        ss_real, pixels_diff, max_delta, phash_dist, ss_summary = diff_screenshot(b, c)
+        any_real = html_lines_diff > 0 or asset_rows or ss_real
+        if not any_real and pixels_diff == 0:
             summary.append(f"  {name:<40} identical")
+            continue
+        if not any_real:
+            ## sub-perceptual screenshot drift only -- not a regression
+            summary.append(f"  {name:<40} subpixel-only ({ss_summary})")
             continue
         any_diff = True
         bits = []
@@ -191,7 +229,7 @@ def main() -> int:
             bits.append(f"html+{html_lines_diff}")
         if asset_rows:
             bits.append(f"assets={len(asset_rows)}")
-        if pixels_diff > 0:
+        if ss_real:
             bits.append(ss_summary)
         summary.append(f"  {name:<40} {' '.join(bits)}")
         ## Detail section per page.
@@ -209,7 +247,7 @@ def main() -> int:
                 )
         if not args.brief:
             body_diffs_all.extend(asset_body_diffs)
-        if pixels_diff > 0:
+        if ss_real:
             body_diffs_all.append(f"\n--- screenshot: {ss_summary} ---")
 
     print("=== summary ===")
