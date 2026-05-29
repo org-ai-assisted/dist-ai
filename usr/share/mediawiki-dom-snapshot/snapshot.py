@@ -606,9 +606,14 @@ async def capture_one(browser, mode_tuple, title: str) -> tuple[str, str, int, i
             pass
         await page.evaluate("window.scrollTo(0, 0)")
 
-        ## Hydration / late-bind quiescence: poll until either the
-        ## hydration markers are all in their post-JS state or 2s
-        ## elapses. Then yield to the browser's idle queue.
+        ## Hydration / late-bind quiescence: poll until the hydration
+        ## markers are all in their post-JS state. The timeout has to
+        ## be long enough to absorb the worst case (a heavily loaded
+        ## backend serving a 3MB page) -- a too-short timeout silently
+        ## lands a half-hydrated dom and produces a 5000-line diff vs
+        ## the other capture. 30s is a generous upper bound; the wait
+        ## releases the moment hydration completes so well-behaved
+        ## pages cost almost nothing.
         try:
             await page.wait_for_function(
                 """() => {
@@ -618,7 +623,7 @@ async def capture_one(browser, mode_tuple, title: str) -> tuple[str, str, int, i
                     const datalinks = document.querySelectorAll('div[data-link]');
                     return preload.length === 0 && datalinks.length === 0;
                 }""",
-                timeout=2000,
+                timeout=30000,
             )
         except Exception:
             pass
