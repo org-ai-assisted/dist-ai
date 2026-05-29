@@ -44,8 +44,15 @@ async def snapshot_one(browser, title: str) -> tuple[str, int, int]:
     ## the next render and shift its server-side metadata (og:*,
     ## schema.org @type, title suffix, ...). MediaWiki + extensions key
     ## some of these on session.
+    ##
+    ## ignore_https_errors: this tool is a regression-test capture, not
+    ## a TLS verifier; the chain is validated by whatever drives the
+    ## tool (CI, dev sandbox). Sandboxed environments where outbound
+    ## HTTPS is re-signed by a private CA the bundled Chromium NSS
+    ## store doesn't know about would otherwise fail every fetch.
     context = await browser.new_context(
         viewport={"width": W, "height": H},
+        ignore_https_errors=True,
         user_agent=(
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36 "
