@@ -262,6 +262,8 @@ def main() -> int:
         styles_lines, styles_diff = _diff_json_file(b, c, "computed_styles.json")
         console_lines, console_diff = _diff_json_file(b, c, "console.json")
         storage_lines, storage_diff = _diff_json_file(b, c, "storage.json")
+        hover_lines, hover_diff = _diff_json_file(b, c, "hover_styles.json")
+        iframes_lines, iframes_diff = _diff_json_file(b, c, "iframes_shadow.json")
         any_real = (
             html_lines_diff > 0
             or asset_rows
@@ -270,6 +272,8 @@ def main() -> int:
             or styles_lines > 0
             or console_lines > 0
             or storage_lines > 0
+            or hover_lines > 0
+            or iframes_lines > 0
         )
         if not any_real and pixels_diff == 0:
             summary.append(f"  {label:<48} identical")
@@ -292,6 +296,10 @@ def main() -> int:
             bits.append(f"console+{console_lines}")
         if storage_lines > 0:
             bits.append(f"storage+{storage_lines}")
+        if hover_lines > 0:
+            bits.append(f"hover+{hover_lines}")
+        if iframes_lines > 0:
+            bits.append(f"iframes+{iframes_lines}")
         if ss_real:
             bits.append(ss_summary)
         summary.append(f"  {label:<48} {' '.join(bits)}")
@@ -320,6 +328,12 @@ def main() -> int:
             if storage_diff:
                 body_diffs_all.append("\n--- storage diff ---")
                 body_diffs_all.append(storage_diff)
+            if hover_diff:
+                body_diffs_all.append("\n--- hover styles diff ---")
+                body_diffs_all.append(hover_diff)
+            if iframes_diff:
+                body_diffs_all.append("\n--- iframes/shadow diff ---")
+                body_diffs_all.append(iframes_diff)
         if ss_real:
             body_diffs_all.append(f"\n--- screenshot: {ss_summary} ---")
 

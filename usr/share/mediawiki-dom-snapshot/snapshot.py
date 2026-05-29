@@ -54,6 +54,8 @@ CONCURRENCY = int(os.environ.get("CONCURRENCY", "4"))
 
 WIKI_USER = os.environ.get("WIKI_USER", "")
 WIKI_PASSWORD = os.environ.get("WIKI_PASSWORD", "")
+ADMIN_USER = os.environ.get("ADMIN_USER", "")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 
 VIEWPORTS = {
     "desktop": (1280, 800),
@@ -62,51 +64,36 @@ VIEWPORTS = {
 
 ## Build the mode list.
 ##
-## Mode tuple: (label, auth, visit, vp, scheme, intent, browser)
+## Mode tuple: (label, auth, visit, vp, scheme, intent, browser, locale)
 ##
-##   auth     anon | user
+##   auth     anon | user | admin   (admin only if ADMIN_USER set)
 ##   visit    first | repeat
 ##   vp       desktop | mobile
 ##   scheme   light | dark | print   (print emulates print stylesheet)
-##   intent   view | edit | search | postedit
+##   intent   view | edit | search | postedit | hover
 ##              view      -- standard read-only page view (default)
-##              edit      -- action=edit form, user modes only
+##              edit      -- action=edit form, user/admin modes only
 ##              search    -- type a search query, capture results
 ##              postedit  -- edit the page, save, capture rendered
-##                           result, then revert; user modes only;
+##                           result, then revert; user/admin only;
 ##                           only runs against pages whose title
 ##                           starts with "TestpageEditPostEdit"
+##              hover     -- view + hover/focus over each link/button
+##                           in a curated selector list; captures
+##                           per-selector computed-style snapshots
+##                           into hover_styles.json
 ##   browser  chromium | firefox | webkit  (default chromium only)
-def _all_modes() -> list[tuple]:
-    browsers = _parse_browsers()
-    out = []
-    for auth in ("anon", "user"):
-        for visit in ("first", "repeat"):
-            for vp in ("desktop", "mobile"):
-                for scheme in ("light", "dark", "print"):
-                    for intent in ("view", "edit", "search", "postedit"):
-                        ## edit / postedit only make sense for an
-                        ## authenticated user; the wiki disallows
-                        ## anonymous editing in production.
-                        if intent in ("edit", "postedit") and auth != "user":
-                            continue
-                        ## edit / postedit / search are not affected
-                        ## by viewport or scheme in interesting ways
-                        ## beyond what view already captures; only
-                        ## generate them for the canonical
-                        ## desktop-light combo to keep mode count
-                        ## tractable.
-                        if intent in ("edit", "search", "postedit"):
-                            if vp != "desktop" or scheme != "light":
-                                continue
-                        for browser in browsers:
-                            label_parts = [auth, visit, vp, scheme, intent, browser]
-                            label = "-".join(label_parts)
-                            out.append((label, auth, visit, vp, scheme, intent, browser))
-    return out
-
-
+##   locale   en | <BCP47>  (Accept-Language; default "en" only)
+##
+## Cross-dim pruning to keep the mode count tractable:
+##   - edit/postedit require auth != anon
+##   - edit/search/postedit/hover only generated for the canonical
+##     desktop-light viewport+scheme
+##   - locale != en only generated for canonical
+##     anon-first-desktop-light-view-chromium combination
+##   - dark + print only on view intent
 ALL_BROWSERS = ["chromium", "firefox", "webkit"]
+DEFAULT_LOCALE = "en"
 
 
 def _parse_browsers() -> list[str]:
@@ -117,6 +104,64 @@ def _parse_browsers() -> list[str]:
     for b in out:
         if b not in ALL_BROWSERS:
             raise SystemExit(f"snapshot: unknown BROWSERS entry: {b}")
+    return out
+
+
+def _parse_locales() -> list[str]:
+    raw = os.environ.get("LOCALES", DEFAULT_LOCALE).strip()
+    return [loc.strip() for loc in raw.split(",") if loc.strip()]
+
+
+def _parse_auths() -> list[str]:
+    """anon and user always candidates; admin only if creds provided."""
+    out = ["anon"]
+    if WIKI_USER and WIKI_PASSWORD:
+        out.append("user")
+    if ADMIN_USER and ADMIN_PASSWORD:
+        out.append("admin")
+    return out
+
+
+def _all_modes() -> list[tuple]:
+    browsers = _parse_browsers()
+    locales = _parse_locales()
+    auths = _parse_auths()
+    out = []
+    for auth in auths:
+        for visit in ("first", "repeat"):
+            for vp in ("desktop", "mobile"):
+                for scheme in ("light", "dark", "print"):
+                    for intent in ("view", "edit", "search", "postedit", "hover"):
+                        if intent in ("edit", "postedit") and auth == "anon":
+                            continue
+                        if intent in ("edit", "search", "postedit", "hover"):
+                            if vp != "desktop" or scheme != "light":
+                                continue
+                        for browser in browsers:
+                            for locale in locales:
+                                ## Locale != en only matters for the
+                                ## canonical anon-first-desktop-light-
+                                ## view-chromium combination.
+                                if locale != DEFAULT_LOCALE:
+                                    if not (
+                                        auth == "anon"
+                                        and visit == "first"
+                                        and vp == "desktop"
+                                        and scheme == "light"
+                                        and intent == "view"
+                                        and browser == "chromium"
+                                    ):
+                                        continue
+                                label_parts = [
+                                    auth, visit, vp, scheme, intent, browser,
+                                ]
+                                if locale != DEFAULT_LOCALE:
+                                    label_parts.append(f"locale-{locale}")
+                                label = "-".join(label_parts)
+                                out.append((
+                                    label, auth, visit, vp, scheme,
+                                    intent, browser, locale,
+                                ))
     return out
 
 
@@ -140,6 +185,12 @@ def parse_modes() -> list[tuple]:
             file=sys.stderr,
         )
         modes = [m for m in modes if m[1] != "user"]
+    if any(m[1] == "admin" for m in modes) and not (ADMIN_USER and ADMIN_PASSWORD):
+        print(
+            "snapshot: ADMIN_USER/ADMIN_PASSWORD unset; auth=admin modes will be skipped",
+            file=sys.stderr,
+        )
+        modes = [m for m in modes if m[1] != "admin"]
     return modes
 
 
@@ -381,8 +432,28 @@ async def capture_storage(page, context) -> dict:
     }
 
 
+## Curated selectors used for the hover/focus state capture. Each
+## resolves to ONE element; we hover and focus that element and
+## snapshot its computed-style so theme changes / hover overlays
+## become diff-visible. Selectors are picked so they're stable across
+## pages (main nav, sidebar, search box, etc.).
+HOVER_SELECTORS = [
+    "#searchInput",
+    "#searchButton",
+    "#n-mainpage-description a",
+    ".mw-portlet a",
+    "#firstHeading",
+    "#mw-content-text a",
+    ".vector-menu-content-list a",
+    "#footer a",
+    "#fly-in-notification-panel a",
+    ".close-panel",
+    "#back-to-top-button",
+]
+
+
 async def capture_one(browser, mode_tuple, title: str) -> tuple[str, str, int, int]:
-    label, auth, visit, vp_name, scheme, intent, browser_name = mode_tuple
+    label, auth, visit, vp_name, scheme, intent, browser_name, locale = mode_tuple
 
     ## postedit only runs on pages explicitly designated as the
     ## post-edit test target.
@@ -396,19 +467,25 @@ async def capture_one(browser, mode_tuple, title: str) -> tuple[str, str, int, i
     ## "print" isn't a context option -- we emulate_media after page
     ## creation instead.
     ctx_scheme = scheme if scheme in ("light", "dark") else "light"
-    context = await browser.new_context(
+    ctx_kwargs = dict(
         viewport={"width": W, "height": H},
         ignore_https_errors=True,
         color_scheme=ctx_scheme,
+        locale=locale or DEFAULT_LOCALE,
         user_agent=(
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36 "
             "mediawiki-dom-snapshot/0.4"
         ),
     )
+    if locale and locale != DEFAULT_LOCALE:
+        ctx_kwargs["extra_http_headers"] = {"Accept-Language": locale}
+    context = await browser.new_context(**ctx_kwargs)
 
-    if auth == "user":
-        if not await login(context, BASE, WIKI_USER, WIKI_PASSWORD):
+    if auth in ("user", "admin"):
+        user = WIKI_USER if auth == "user" else ADMIN_USER
+        pw = WIKI_PASSWORD if auth == "user" else ADMIN_PASSWORD
+        if not await login(context, BASE, user, pw):
             await context.close()
             raise RuntimeError(f"login failed for mode {label}")
 
@@ -574,6 +651,36 @@ async def capture_one(browser, mode_tuple, title: str) -> tuple[str, str, int, i
             print(f"snapshot: storage capture failed for {label}: {exc}",
                   file=sys.stderr, flush=True)
 
+        ## Iframe + Shadow DOM enumeration. The wiki currently uses
+        ## neither, but a future template / extension might inject
+        ## either. We want any new iframe URL or shadow root host to
+        ## land in the diff as a visible regression rather than going
+        ## unnoticed because nothing is sampling it.
+        try:
+            frame_shadow = await capture_iframes_shadow(page)
+            (page_dir / "iframes_shadow.json").write_text(
+                json.dumps(frame_shadow, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            print(f"snapshot: iframe/shadow capture failed for {label}: {exc}",
+                  file=sys.stderr, flush=True)
+
+        ## Hover/focus state: trigger pointer over + keyboard focus on
+        ## each selector and capture its computed style. Lets the diff
+        ## catch theme regressions on :hover and :focus pseudo-classes
+        ## that the static DOM snapshot can't see.
+        if intent == "hover":
+            try:
+                hover = await capture_hover_styles(page)
+                (page_dir / "hover_styles.json").write_text(
+                    json.dumps(hover, indent=2, sort_keys=True),
+                    encoding="utf-8",
+                )
+            except Exception as exc:
+                print(f"snapshot: hover capture failed for {label}: {exc}",
+                      file=sys.stderr, flush=True)
+
         ## postedit cleanup: revert the marker so the next capture
         ## starts from the same wikitext.
         if intent == "postedit":
@@ -585,6 +692,84 @@ async def capture_one(browser, mode_tuple, title: str) -> tuple[str, str, int, i
         return (label, title, status, len(html))
     finally:
         await context.close()
+
+
+async def capture_iframes_shadow(page) -> dict:
+    """Walk the page for <iframe> elements and elements that have an
+    attached shadowRoot. Records the iframe src URLs (so a new third-
+    party embed lands in the diff) and the host selector + child count
+    of every shadow root (so a new web-component is also caught).
+    """
+    return await page.evaluate("""
+        () => {
+            const iframes = Array.from(document.querySelectorAll('iframe'))
+                .map(f => ({
+                    src: f.getAttribute('src') || '',
+                    sandbox: f.getAttribute('sandbox') || '',
+                    title: f.getAttribute('title') || '',
+                    loading: f.getAttribute('loading') || '',
+                }));
+            const hosts = [];
+            const walk = root => {
+                for (const el of root.querySelectorAll('*')) {
+                    if (el.shadowRoot) {
+                        const sel = el.tagName.toLowerCase()
+                            + (el.id ? '#' + el.id : '')
+                            + (el.classList.length
+                               ? '.' + Array.from(el.classList).join('.')
+                               : '');
+                        hosts.push({
+                            host_selector: sel,
+                            mode: el.shadowRoot.mode || 'unknown',
+                            child_count: el.shadowRoot.children.length,
+                            text_length: (el.shadowRoot.textContent || '').length,
+                        });
+                        walk(el.shadowRoot);
+                    }
+                }
+            };
+            walk(document);
+            return {iframes, shadow_roots: hosts};
+        }
+    """)
+
+
+async def capture_hover_styles(page) -> dict:
+    """For each curated selector, dispatch pointer move + keyboard focus
+    over it, then capture the resulting computed style. Pure
+    additive over the regular computed_styles capture -- this surfaces
+    :hover and :focus pseudo-class theming.
+    """
+    out = {}
+    for sel in HOVER_SELECTORS:
+        try:
+            handle = await page.query_selector(sel)
+            if handle is None:
+                out[sel] = None
+                continue
+            try:
+                await handle.hover(timeout=2000)
+            except Exception:
+                pass
+            try:
+                await handle.focus(timeout=2000)
+            except Exception:
+                pass
+            await asyncio.sleep(0.05)
+            styles = await handle.evaluate(
+                "(el, props) => { const cs = getComputedStyle(el); const o = {}; "
+                "for (const p of props) o[p] = cs.getPropertyValue(p); return o; }",
+                COMPUTED_STYLE_PROPS,
+            )
+            out[sel] = styles
+        except Exception as exc:
+            out[sel] = {"error": str(exc)}
+        ## Move focus off the element so the next selector starts clean.
+        try:
+            await page.evaluate("() => document.activeElement && document.activeElement.blur()")
+        except Exception:
+            pass
+    return out
 
 
 async def main() -> int:

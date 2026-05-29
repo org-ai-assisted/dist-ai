@@ -473,10 +473,12 @@ def _normalize_storage(storage: dict) -> dict:
 ## Order matters: most specific first.
 CONSOLE_TEXT_PATTERNS = (
     ## mwDev.tools.test.pageLoading prints per-event timestamps
-    ## ("at HH:MM:SS.mmm") and per-event durations ("NNN ms > stage").
-    ## Scrub the numbers; keep the stage labels and report structure.
+    ## ("at HH:MM:SS.mmm") and per-event durations padded to align
+    ## right at 5 chars ("    0 ms" / "  471 ms" / " 1234 ms"). The
+    ## leading whitespace varies with the digit count, so consume it
+    ## along with the number for a stable canonical form.
     (re.compile(r"\bat \d{2}:\d{2}:\d{2}\.\d{3}\b"), "at SCRUBBED"),
-    (re.compile(r"\b\d+ ms > "), "N ms > "),
+    (re.compile(r"\s*\d+ ms > "), "  N ms > "),
     ## MW often interpolates wgRequestId / wgUserId / wgPageId style
     ## values into console messages.
     (re.compile(r"\bwg[A-Za-z]+:[^\s,]+"), "wgFOO:SCRUBBED"),
@@ -544,6 +546,14 @@ def normalize_page_dir(src: Path, dst: Path) -> None:
             json.dumps(_normalize_storage(storage), indent=2, sort_keys=True),
             encoding="utf-8",
         )
+
+    ## Hover styles + iframes/shadow: bit-identical copy. Their
+    ## content is already deterministic for the wiki state -- no
+    ## per-request volatility to scrub.
+    for fn in ("hover_styles.json", "iframes_shadow.json"):
+        p = src / fn
+        if p.exists():
+            shutil.copy2(p, dst / fn)
 
     manifest = json.loads((src / "manifest.json").read_text(encoding="utf-8"))
     ## Infer the wiki page URL from the manifest. The first text/html

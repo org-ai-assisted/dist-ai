@@ -20,16 +20,32 @@
 ## Environment overrides:
 ##   BASE_URL       target wiki origin    (default https://www.kicksecure.com)
 ##   PAGES_FILE     page list             (default /etc/mediawiki-dom-snapshot/pages.conf)
-##   VIEWPORT       browser viewport      (default 1280x800)
+##   VIEWPORT       legacy single-viewport hint (mode dim VP supersedes)
 ##   TIMEOUT_MS     per-page timeout      (default 30000)
+##   CONCURRENCY    parallel captures     (default 4)
 ##   RAW_DIR        raw output dir        (default /var/lib/mediawiki-dom-snapshot/raw)
 ##   FIX_DIR        normalised output dir (default /var/lib/mediawiki-dom-snapshot/fixtures)
-##   CAPTURE_MODES  comma-separated subset of anon-first,anon-repeat,
-##                  user-first,user-repeat, or "all"
-##                  (default: anon-first,anon-repeat)
-##   WIKI_USER      username for user-* modes (must be paired with
+##   CAPTURE_MODES  comma-separated mode labels, or "all" (default).
+##                  Mode label syntax:
+##                    <auth>-<visit>-<vp>-<scheme>-<intent>-<browser>[-locale-XX]
+##                    auth     anon | user | admin
+##                    visit    first | repeat
+##                    vp       desktop | mobile
+##                    scheme   light | dark | print
+##                    intent   view | edit | search | postedit | hover
+##                    browser  chromium | firefox | webkit
+##   BROWSERS       comma-separated subset of chromium,firefox,webkit
+##                  or "all"            (default chromium)
+##   LOCALES        comma-separated BCP47 locales (default en).
+##                  Non-default locales only generate captures of the
+##                  canonical anon-first-desktop-light-view-chromium
+##                  combination per locale.
+##   WIKI_USER      username for auth=user modes (must be paired with
 ##                  WIKI_PASSWORD; if unset, user-* modes are skipped)
-##   WIKI_PASSWORD  password for user-* modes
+##   WIKI_PASSWORD  password for auth=user modes
+##   ADMIN_USER     username for auth=admin modes (must be paired with
+##                  ADMIN_PASSWORD; if unset, admin-* modes are skipped)
+##   ADMIN_PASSWORD password for auth=admin modes
 
 set -o errexit
 set -o nounset
