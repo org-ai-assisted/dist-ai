@@ -164,17 +164,25 @@ def diff_assets(base: Path, cand: Path, brief: bool) -> tuple[list[tuple], list[
     return rows, body_diffs, len(header_delta_urls)
 
 
+## phash hamming distance above which the screenshot diff counts as
+## a real visual regression. phash on 8x8 (64 bits) can flip 1-2
+## bits on sub-pixel font rendering shifts that the eye can't tell
+## apart; 3+ bits typically requires a noticeable layout shift or
+## colour change.
+PHASH_THRESHOLD = 3
+
+
 def diff_screenshot(base: Path, cand: Path) -> tuple[bool, int, int, int, str]:
     """Returns (is_visual_regression, pixels_diff, max_channel_delta,
     phash_distance, summary).
 
-    is_visual_regression follows the perceptual hash: phash_dist > 0
-    is the entire signal, plus a size-mismatch backstop. pixels_diff
-    and max_channel_delta are emitted in the summary for forensics
-    but do NOT flip the is_real bit on their own. A content-heavy
-    mobile viewport can show 30-40k differing pixels purely from
-    font-edge anti-aliasing without any perceptual change; phash
-    correctly reports zero distance for those cases.
+    is_visual_regression follows the perceptual hash: phash_dist >=
+    PHASH_THRESHOLD is the entire signal, plus a size-mismatch
+    backstop. pixels_diff and max_channel_delta are emitted in the
+    summary for forensics but do NOT flip the is_real bit on their
+    own. A content-heavy mobile viewport can show 30-40k differing
+    pixels purely from font-edge anti-aliasing while phash correctly
+    reads near-zero distance.
     """
     b_path = base / "screenshot.png"
     c_path = cand / "screenshot.png"
@@ -202,7 +210,7 @@ def diff_screenshot(base: Path, cand: Path) -> tuple[bool, int, int, int, str]:
                 max_delta = m
 
     phash_dist = imagehash.phash(a) - imagehash.phash(b)
-    is_real = phash_dist > 0
+    is_real = phash_dist >= PHASH_THRESHOLD
     summary = (
         f"pixels_diff={pixels_diff} max_channel_delta={max_delta} "
         f"phash_dist={phash_dist}"

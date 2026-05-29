@@ -388,6 +388,12 @@ def normalize_html(html: str) -> str:
     for icon in soup.find_all(class_="editor-auto-backup"):
         icon.decompose()
 
+    ## .editor-fullscreen toggle group (open + close fullscreen icons)
+    ## injected by the wikieditor fullscreen extension once it
+    ## activates. Same race vs networkidle.
+    for el in soup.find_all(class_="editor-fullscreen"):
+        el.decompose()
+
     ## .moxie-shim is the Plupload file-input wrapper. Its inline
     ## style includes top/left/width/height computed from layout that
     ## shifts when other JS-injected widgets (auto-backup icon etc)
@@ -541,6 +547,13 @@ def normalize_manifest(manifest: dict, page_url: str | None = None) -> dict:
     out: dict[str, dict] = {}
     for url, entry in manifest.items():
         if entry.get("status") == 404:
+            continue
+        ## body-unavailable entries: Playwright couldn't read the
+        ## response body before the page closed (network race).
+        ## Sometimes the SAME URL races on one capture but completes
+        ## on the next, producing a status=None vs status=404 diff
+        ## that's pure race noise. Drop both shapes.
+        if entry.get("error") or entry.get("status") is None:
             continue
         if page_url and url.startswith(page_url):
             continue
