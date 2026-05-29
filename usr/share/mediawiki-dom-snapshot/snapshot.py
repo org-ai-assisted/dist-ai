@@ -607,6 +607,15 @@ async def capture_one(browser, mode_tuple, title: str) -> tuple[str, str, int, i
                 display: none !important;
                 opacity: 0 !important;
             }
+            /* Mobile nav drawer: the .header-menu.active toggle is
+               driven by a JS scroll-lock handler whose state can race
+               across captures (one cap finishes with the drawer open,
+               another with it closed). Force the drawer to its
+               default closed state for screenshot determinism; the
+               .active toggle is still observable in dom.html. */
+            .header-menu.active {
+                display: none !important;
+            }
         """)
 
         ## Splide carousels auto-advance via window.requestAnimationFrame
