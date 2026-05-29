@@ -46,6 +46,10 @@
 ##   ADMIN_USER     username for auth=admin modes (must be paired with
 ##                  ADMIN_PASSWORD; if unset, admin-* modes are skipped)
 ##   ADMIN_PASSWORD password for auth=admin modes
+##   POSTEDIT_PAGES comma-separated wiki page titles eligible for the
+##                  postedit intent (edits + saves the page, captures
+##                  the result, reverts). Empty default = skip every
+##                  page; export to opt in.
 
 set -o errexit
 set -o nounset
