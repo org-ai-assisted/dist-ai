@@ -1,0 +1,1665 @@
+<!DOCTYPE html>
+<html class="client-nojs" lang="en" dir="ltr">
+<head>
+<meta charset="UTF-8">
+<title>systemcheck - Security Check Application</title>
+<script>document.documentElement.className="client-js";RLCONF={"wgBreakFrames":false,"wgSeparatorTransformTable":["",""],"wgDigitTransformTable":["",""],"wgDefaultDateFormat":"dmy","wgMonthNames":["","January","February","March","April","May","June","July","August","September","October","November","December"],"wgRequestId":"f3561434f085a68c3106ba9f","wgCanonicalNamespace":"","wgCanonicalSpecialPageName":false,"wgNamespaceNumber":0,"wgPageName":"Systemcheck","wgTitle":"Systemcheck","wgCurRevisionId":1461,"wgRevisionId":1461,"wgArticleId":1460,"wgIsArticle":true,"wgIsRedirect":false,"wgAction":"view","wgUserName":"Testbot","wgUserGroups":["bot","*","user"],"wgCategories":["Pages with broken file links","Documentation","Design"],"wgPageViewLanguage":"en","wgPageContentLanguage":"en","wgPageContentModel":"wikitext","wgRelevantPageName":"Systemcheck","wgRelevantArticleId":1460,"wgUserId":4,"wgUserIsTemp":false,"wgUserEditCount":0,"wgUserRegistration":1780064753000,"wgUserFirstRegistration":1780064753000,"wgIsProbablyEditable":true,"wgRelevantPageIsProbablyEditable":true,"wgRestrictionEdit":[],"wgRestrictionMove":[],"wgMediaViewerOnClick":true,"wgMediaViewerEnabledByDefault":true,"wgCiteReferencePreviewsActive":true,"wgPopupsFlags":0,"wgFlaggedRevsParams":{"tags":{"accuracy":{"levels":3}}},"wgStableRevisionId":0};
+RLSTATE={"site.styles":"ready","user.styles":"ready","user":"ready","user.options":"loading","ext.cite.styles":"ready","skins.vector.styles.legacy":"ready","ext.CookieWarning.styles":"ready","oojs-ui-core.styles":"ready","oojs-ui.styles.indicators":"ready","mediawiki.widgets.styles":"ready","oojs-ui-core.icons":"ready","ext.flaggedRevs.basic":"ready","mediawiki.codex.messagebox.styles":"ready"};RLPAGEMODULES=["ext.cite.ux-enhancements","mediawiki.page.media","site","mediawiki.page.ready","mediawiki.toc","skins.vector.legacy.js","mediawiki.page.watch.ajax","ext.CookieWarning","mmv.bootstrap","ext.popups","ext.flaggedRevs.advanced"];</script>
+<script>(RLQ=window.RLQ||[]).push(function(){mw.loader.impl(function(){return["user.options@12s5i",function($,jQuery,require,module){mw.user.tokens.set({"patrolToken":"e3053b2d7876a63928c29879c63153446a19a38d+\\","watchToken":"aabfd2d62565cbd8dd26fc9e00e780106a19a38d+\\","csrfToken":"cc725c5416099224f5dcdec0649b1ec56a19a38d+\\"});
+}];});});</script>
+<link rel="stylesheet" href="/w/load.php?lang=en&amp;modules=ext.CookieWarning.styles%7Cext.cite.styles%7Cext.flaggedRevs.basic%7Cmediawiki.codex.messagebox.styles%7Cmediawiki.widgets.styles%7Coojs-ui-core.icons%2Cstyles%7Coojs-ui.styles.indicators%7Cskins.vector.styles.legacy&amp;only=styles&amp;skin=vector">
+<script defer src="/w/load.php?lang=en&amp;modules=startup&amp;only=scripts&amp;raw=1&amp;skin=vector"></script>
+<meta name="ResourceLoaderDynamicStyles" content="">
+<link rel="stylesheet" href="/w/load.php?lang=en&amp;modules=site.styles&amp;only=styles&amp;skin=vector">
+<meta name="generator" content="MediaWiki 1.45.3">
+<meta name="robots" content="max-image-preview:standard">
+<meta name="format-detection" content="telephone=no">
+<meta name="description" content="System Integrity Test. Connectivity Test. Update Check. And More.">
+<meta name="twitter:site" content="@Kicksecure">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes, minimum-scale=0.25, maximum-scale=5.0">
+<link rel="alternate" type="application/x-wiki" title="Edit" href="/w/index.php?title=Systemcheck&amp;action=edit">
+<link rel="search" type="application/opensearchdescription+xml" href="/w/rest.php/v1/search" title="Kicksecure (en)">
+<link rel="EditURI" type="application/rsd+xml" href="https://www.kicksecure.com/w/api.php?action=rsd">
+<link rel="canonical" href="https://www.kicksecure.com/wiki/Systemcheck">
+<link rel="license" href="/wiki/Kicksecure:Copyrights">
+<link rel="alternate" type="application/atom+xml" title="Kicksecure Atom feed" href="/w/index.php?title=Special:RecentChanges&amp;feed=atom">
+
+<!-- Begin Extension:HeadScript
+-------------------------------
+* server-type  :  stage
+* Path to scripts : /mw-autogen
+* Wiki page: Systemcheck
+* Url query parameter "debug" : undefined
+* Url query parameter "dontload" : undefined
+* $wgResourceLoaderDebug : "" (empty string)
+-->
+
+<meta name="server-type-stage">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg?hsversion-headscript-replacement-by-server=1" sizes="any">
+
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?hsversion-headscript-replacement-by-server=1">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png?hsversion-headscript-replacement-by-server=1">
+<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png?hsversion-headscript-replacement-by-server=1">
+<link rel="manifest" href="/site.webmanifest?hsversion-headscript-replacement-by-server=1">
+<link rel="mask-icon" href="/safari-pinned-tab.svg?hsversion-headscript-replacement-by-server=1" color="#5bbad5">
+<meta name="theme-color" content="#ffffff">
+
+<meta name="msapplication-TileColor" content="#da532c">
+
+<link rel="preload" href="/libs/Roboto_2023-08-03/Roboto-Regular-webfont.woff" as="font" crossorigin fetchpriority="low">
+<link rel="preload" href="/libs/Font-Awesome_2023-08-03/webfonts/fa-solid-900.woff2" as="font" crossorigin fetchpriority="low">
+
+<link rel="stylesheet" media="print" onload="this.media='all'" href="/libs/Font-Awesome_2023-08-03/css/fontawesome.min.css" fetchpriority="low">
+<link rel="stylesheet" media="print" onload="this.media='all'" href="/libs/Font-Awesome_2023-08-03/css/solid.min.css" fetchpriority="low">
+<link rel="stylesheet" media="print" onload="this.media='all'" href="/libs/Font-Awesome_2023-08-03/css/regular.min.css" fetchpriority="low">
+<link rel="stylesheet" media="print" onload="this.media='all'" href="/libs/Font-Awesome_2023-08-03/css/brands.min.css" fetchpriority="low">
+
+<script id="js-cookie-script" defer fetchpriority="low" src="/libs/jscookie/js.cookie.min.js"></script>
+
+<link rel="stylesheet" fetchpriority="low" media="print" onload="this.media='all'" href="/libs/Prism/prism.css" >
+<script id="highlight-code-script" defer fetchpriority="low" src="/libs/Prism/prism.js" data-manual></script>
+
+<script type="module" defer src="/libs/instant.page/instantpage.min.js"></script>
+
+<link rel="stylesheet" href="/mw-autogen/mw-combined-skincss.min.css?hsversion-headscript-replacement-by-server=1">
+
+  <script type="text/javascript" defer id="core-dependent-libs">
+    (function() {
+      const coreDependentLibs = ["\/libs\/jquery-tinyscrollbar_2024-08-21\/jquery.tinyscrollbar.min.js"];
+      function triggerWhenReady() {
+        let deferred = [];
+        for( const i in coreDependentLibs ) deferred.push( $.getScript( coreDependentLibs[i] ) );
+        $.when.apply($, deferred).done(function() {
+          window.mediaWikiCommonJsAndHeadscriptcoreDependentLibsAreLoaded = true;
+          window.dispatchEvent( new Event("mediaWikiCommonJsAndHeadscriptcoreDependentLibsAreLoaded") );
+        });
+      }
+      if( window.mediaWikiCommonJsIsLoaded ) triggerWhenReady();
+      else window.addEventListener( "mediaWikiCommonJsIsLoaded", triggerWhenReady );
+    })();
+  </script>
+  
+
+<link rel="stylesheet" href="/mw-autogen/mw-combined-wikicss.min.css?hsversion-headscript-replacement-by-server=1">
+<script defer src="/mw-autogen/mw-combined-wikijs.min.js?hsversion-headscript-replacement-by-server=1"></script>
+<!-- ------------------------
+/End Extension:HeadScript -->
+
+<meta property="og:title" content="systemcheck - Security Check Application">
+<meta property="og:site_name" content="Kicksecure">
+<meta property="og:url" content="https://www.kicksecure.com/wiki/Systemcheck">
+<meta property="og:description" content="System Integrity Test. Connectivity Test. Update Check. And More.">
+<meta property="og:image" content="Systemchecknotification.png">
+<meta property="article:modified_time" content="2026-05-29T12:32:14Z">
+<meta property="article:published_time" content="2026-05-29T12:32:14Z">
+<meta property="og:type" content="website">
+<script type="application/ld+json">{"@context":"http:\/\/schema.org","@type":"website","name":"systemcheck - Security Check Application","headline":"systemcheck - Security Check Application","mainEntityOfPage":"systemcheck - Security Check Application","identifier":"https:\/\/www.kicksecure.com\/wiki\/Systemcheck","url":"https:\/\/www.kicksecure.com\/wiki\/Systemcheck","description":"System Integrity Test. Connectivity Test. Update Check. And More.","dateModified":"2026-05-29T12:32:14Z","datePublished":"2026-05-29T12:32:14Z","image":[],"author":{"@type":"Organization","name":"Kicksecure","url":"https:\/\/www.kicksecure.com","logo":[]},"publisher":{"@type":"Organization","name":"Kicksecure","url":"https:\/\/www.kicksecure.com","logo":[]},"potentialAction":{"@type":"SearchAction","target":"https:\/\/www.kicksecure.com\/w\/index.php?title=Special:Search&search={search_term}","query-input":"required name=search_term"}}</script>
+</head>
+<body class="skin-vector-legacy mediawiki ltr sitedir-ltr mw-hide-empty-elt ns-0 ns-subject mw-editable page-Systemcheck rootpage-Systemcheck skin-vector action-view skin--responsive user-logged-in" data-active-sitenotice="38"><div id="mw-page-base" class="noprint"></div>
+<div id="mw-head-base" class="noprint"></div>
+<div id="content" class="mw-body" role="main">
+	<a id="top"></a>
+	<div id="siteNotice"><div id="localNotice" data-nosnippet=""><div class="sitenotice" lang="en" dir="ltr"><p>
+
+
+
+  
+
+
+
+
+
+
+
+
+
+  <div
+    class="sitenotice-banner robots-nocontent"
+    data-banner-id="38"
+  >
+    <!--googleoff: index--><!--noindex-->
+    
+        
+      <a href="/wiki/Donate">      
+      <img decoding="async" loading="lazy" class="icon" src="/w/images/0/0b/Grow-symbol.png" width="53" height="40" alt="grow symbol"><span>Help keep Kicksecure strong, independent, and actively maintained.</span>
+      
+      </a>      
+        
+    <!--/noindex--><!--googleon: index-->
+  </div>
+  
+
+</p></div></div></div>
+	<div class="mw-indicators">
+	<div id="mw-indicator-indicator-fr-review-status" class="mw-indicator"><indicator name="fr-review-status" class="mw-fr-review-status-indicator" id="mw-fr-revision-toggle"><span class="cdx-fr-css-icon-review--status--unchecked"></span><b>Unchecked</b></indicator></div>
+	</div>
+	<h1 id="firstHeading" class="firstHeading mw-first-heading">systemcheck - Security Check Application</h1>
+	<div id="bodyContent" class="vector-body">
+		<div id="siteSub" class="noprint">From Kicksecure</div>
+		<div id="contentSub"><div id="mw-content-subtitle"></div></div>
+		<div id="contentSub2"></div>
+		
+		<div id="jump-to-nav"></div>
+		<a class="mw-jump-link" href="#mw-head">Jump to navigation</a>
+		<a class="mw-jump-link" href="#searchInput">Jump to search</a>
+		<div id="mw-content-text" class="mw-body-content"><div id="mw-fr-revision-details" class="mw-fr-revision-details-dialog" style="display:none;"><div tabindex="0"></div><div class="cdx-dialog cdx-dialog--horizontal-actions"><header class="cdx-dialog__header cdx-dialog__header--default"><div class="cdx-dialog__header__title-group"><h2 class="cdx-dialog__header__title">Page version status</h2><p class="cdx-dialog__header__subtitle">The page has not been checked</p></div><button class="cdx-button cdx-button--action-default cdx-button--weight-quiet&#10;&#9;&#9;&#9;&#9;&#9;&#9;&#9;cdx-button--size-medium cdx-button--icon-only cdx-dialog__header__close-button" aria-label="Close" onclick="document.getElementById(&quot;mw-fr-revision-details&quot;).style.display = &quot;none&quot;;" type="submit"><span class="cdx-icon cdx-icon--medium&#10;&#9;&#9;&#9;&#9;&#9;&#9;&#9;cdx-fr-css-icon--close"></span></button></header><div class="cdx-dialog__body">There are no <a href="/wiki/Help:Page_validation" title="Help:Page validation">reviewed versions</a> of this page, so it may <b>not</b> have been checked for adherence to standards.</div></div><div tabindex="0"></div></div><div class="mw-content-ltr mw-parser-output" lang="en" dir="ltr"><div class="robots-nocontent" data-nosnippet=""><!--googleoff: index--><!--noindex-->
+<div id="custom-header">
+  <div class="style-wrapper">
+
+    
+    
+
+<div class="nav-menu header-menu">
+  <input type="checkbox" class="menu-trigger" />
+
+  <div class="menu-button">
+    <img class="off" src="/w/images/thumb/c/cb/Logo-menu.png/52px-Logo-menu.png" width="26" height="26" alt="Nav menu Off symbol" />
+    <img class="on" src="/w/images/thumb/8/89/X-icon.png/52px-X-icon.png" width="26" height="26" alt="Nav menu On symbol" />
+  </div>
+
+  <a href="/" class="home" title="homepage">
+    <img src="/w/images/4/4a/Kicksecure-logo-rectangle.svg" width="44" height="44" alt="Kicksecure Logo" />
+    <span class="text">Kicksecure</span>
+  </a>
+  
+  <a href="/wiki/Trademark_Policy" class="register-symbol">&#8482;</a>
+
+  <div class="menu-content">
+    <div class="download">
+      <div class="button" data-link="/wiki/Download">Download</div>
+      <div class="menu">
+        <a href="/wiki/ISO"><i class="fa-solid fa-laptop fa-fw"></i><span>On Computer</span></a>
+        <a href="/wiki/USB_Installation"><i class="fa-brands fa-usb fa-fw"></i><span>USB Installation</span></a>
+        <a href="/wiki/Intel_AMD64"><i class="fa-solid fa-microchip fa-fw"></i><span>Intel / AMD64</span></a>
+        <a href="/wiki/ARM64"><i class="fa-solid fa-microchip fa-fw"></i><span>ARM64</span></a>
+        <a href="/wiki/Raspberry_Pi"><i class="fa-brands fa-raspberry-pi fa-fw"></i><span>Raspberry Pi</span></a>
+        <a href="/wiki/PPC64"><i class="fa-solid fa-microchip fa-fw"></i><span>PPC64</span></a>
+        <a href="/wiki/Windows"><i class="fa-brands fa-windows fa-fw"></i><span>Windows (VM)</span></a>
+        <a href="/wiki/MacOS"><i class="fa-brands fa-apple fa-fw"></i><span>Mac</span></a>
+        <a href="/wiki/Linux"><i class="fa-brands fa-linux fa-fw"></i><span>Linux (VM)</span></a>
+        <a href="/wiki/VirtualBox"><i class="fa-solid fa-display fa-fw"></i><span>VirtualBox (VM)</span></a>
+        <a href="/wiki/Qubes"><i class="fa-solid fa-cube fa-fw"></i><span>Qubes (VM)</span></a>
+        <a href="/wiki/KVM"><i class="fa-solid fa-display fa-fw"></i><span>KVM (VM)</span></a>
+        <a href="/wiki/Debian"><i class="fa-brands fa-debian fa-fw"></i><span>Debian morph to Kicksecure</span></a>
+        <a href="/wiki/Download" aria-label="See more download options"><i class="fa-solid fa-download fa-fw"></i><span>More options</span></a>
+        <a href="https://github.com/Kicksecure"><i class="fa-solid fa-code fa-fw"></i><span>Source Code</span></a>
+      </div>
+    </div>
+
+    <div class="about">
+      <div class="button" data-link="/wiki/About">About</div>
+      <div class="menu">
+        <a href="/wiki/About"><i class="fa-solid fa-binoculars"></i><span>Overview</span></a>
+        <a href="/#security"><i class="fa-solid fa-gears"></i><span>Features</span></a>
+        <a href="/wiki/Reasons_for_Freedom_Software"><i class="fa-brands fa-osi"></i><span>Why Open Source?</span></a>
+        <a href="/wiki/What_we_do"><i class="fa-solid fa-flask"></i><span>Project Activities</span></a>
+        <a href="/wiki/Contributors"><i class="fa-solid fa-people-group"></i><span>Contributors</span></a>
+        <a href="/wiki/Security_Roadmap"><i class="fa-solid fa-mountain-sun"></i><span>Mission &amp; Vision</span></a>
+      </div>
+    </div>
+
+    <div class="docs">
+      <div class="button" data-link="/wiki/Documentation">Docs</div>
+      <div class="menu">
+        <a href="/wiki/Documentation"><i class="fa-solid fa-book"></i><span>Documentation</span></a>
+        <a href="/wiki/FAQ"><i class="fa-solid fa-question"></i><span>FAQ</span></a>
+        <a href="/wiki/Troubleshooting"><i class="fa-solid fa-triangle-exclamation"></i><span>Troubleshooting</span></a>
+      </div>
+    </div>
+
+    <div class="community">
+      <div class="button" data-link="https://forums.kicksecure.com">Community</div>
+      <div class="menu">
+        <a href="https://forums.kicksecure.com/"><i class="fa-regular fa-comments"></i><span>Forums</span></a>
+        <a href="/wiki/Forum_Best_Practices"><i class="fa-solid fa-list-check"></i><span>Forum Best Practices</span></a>
+        <a href="/wiki/Contribute"><i class="fa-solid fa-hand-holding-medical"></i><span>Contribute</span></a>
+      </div>
+    </div>
+
+    <div class="support">
+      <div class="button" data-link="/wiki/Support">Support</div>
+      <div class="menu">
+        <a href="/wiki/Self_Support_First_Policy"><i class="fa-solid fa-person"></i><span>Self Support First Policy</span></a>
+        <a href="/wiki/Please_Use_Search_Engines_And_See_Documentation_First"><i class="fa-solid fa-book-open"></i><span>Search Engines, Docs and AI</span></a>
+        <a href="/wiki/Support"><i class="fa-solid fa-circle-exclamation"></i><span>Support (Limited)</span></a>
+        <!---
+        <a href="/wiki/Plus_Support"><i class="fa-solid fa-plus"></i><span>Plus</span></a>
+        <a href="/wiki/Premium_Support"><i class="fa-solid fa-medal"></i><span>Premium</span></a>
+        --->
+        <a href="/wiki/Reporting_Bugs"><i class="fa-solid fa-bug-slash"></i><span>Reporting Bugs</span></a>
+        <a href="/wiki/Contact"><i class="fa-solid fa-lock"></i><span>Contact (Restricted)</span></a>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+    
+    <div class="menu-right">
+      <a class="search" href="/w/index.php?search=">
+        <img src="/w/images/thumb/2/25/Magnifying-glass.png/64px-Magnifying-glass.png" width="26" height="26" alt="search" />
+      </a>
+
+      <div class="super-menu header-menu">
+        <input type="checkbox" class="menu-trigger" />
+      
+        <div class="menu-button">
+          <img class="off" src="/w/images/thumb/2/23/Chevron.png/54px-Chevron.png" width="54" height="54" alt="Editor menu Off symbol" />
+          <img class="on" src="/w/images/thumb/8/89/X-icon.png/52px-X-icon.png" width="52" height="52" alt="Editor menu On symbol" />
+        </div>
+
+        <div class="menu-content">
+          <div class="col1">
+            <span class="headline tools">Tools</span>
+            <a class="upload user-logged-in" href="/wiki/Special:Upload"><i class="fa-solid fa-upload"></i>Upload file</a>
+            <a class="special" href="/wiki/Special:SpecialPages"><i class="fa-solid fa-wand-magic-sparkles"></i>Special pages</a>
+            <a class="recentchanges user-logged-in" href="/wiki/Special:RecentChanges"><i class="fa-solid fa-arrow-right-arrow-left"></i>Recent changes</a>
+            <a class="print" href="javascript:print();"><i class="fa-solid fa-print"></i>Print Version</a>
+
+            <span class="headline pagemeta">Page meta</span>
+            <a class="whatlinkshere user-logged-in" href="/wiki/Special:WhatLinksHere/Systemcheck"><i class="fa-solid fa-share-nodes"></i>What links here</a>
+            <a class="relatedchanges" href="/wiki/Special:RecentChangesLinked/Systemcheck"><i class="fa-solid fa-rotate"></i>Related changes</a>
+            <a class="info" href="/w/index.php?title=Systemcheck&amp;action=info"><i class="fa-solid fa-info"></i>Page information</a>
+          </div>
+
+          <div class="col2">
+            <span class="headline page">Page</span>
+            <a class="view" href="/wiki/Systemcheck"><i class="fa-solid fa-house"></i>Read</a>
+            <a class="edit" href="/w/index.php?title=Systemcheck&amp;action=edit&amp;oldid=1461"><i class="fa-solid fa-pen"></i>Edit</a>
+            <a class="history user-logged-in" href="/w/index.php?title=Systemcheck&amp;action=history"><i class="fa-solid fa-clock-rotate-left"></i>History</a>
+            <a class="move user-logged-in" href="/wiki/Special:MovePage/Systemcheck"><i class="fa-solid fa-share"></i>Move</a>
+            <a class="protect" href="/w/index.php?title=Systemcheck&amp;action=protect"><i class="fa-solid fa-shield-halved"></i>Protection</a>
+            <a class="unwatch user-logged-in" href="/w/index.php?title=Systemcheck&amp;action=unwatch"><i class="fa-regular fa-star"></i>Unwatch</a>
+            <a class="watch user-logged-in" href="/w/index.php?title=Systemcheck&amp;action=watch"><i class="fa-solid fa-star"></i>Watch</a>
+            <a class="delete user-logged-in" href="/w/index.php?title=Systemcheck&amp;action=delete"><i class="fa-solid fa-trash-can"></i>Delete</a>
+            <a class="purge" href="/w/index.php?title=Systemcheck&amp;action=purge"><i class="fa-solid fa-fire-flame-curved"></i>Purge</a>
+          </div>
+
+          <div class="col3">
+            <span class="headline user">User</span>
+            <a class="preferences user-logged-in" href="/wiki/Special:Preferences"><i class="fa-solid fa-asterisk"></i>Preferences</a>
+            <a class="watchlist user-logged-in" href="/wiki/Special:Watchlist"><i class="fa-solid fa-list-ol"></i>Watchlist</a>
+            <a class="contributions user-logged-in" href="/wiki/Special:Contributions"><i class="fa-solid fa-hand"></i>Contributions</a>
+            <a class="logout user-logged-in" href="/w/index.php?title=Special:UserLogout&amp;returnto=Systemcheck"><i class="fa-solid fa-unlock-keyhole"></i>Logout</a>
+            <a class="createaccount user-logged-out" href="/w/index.php?title=Special:CreateAccount&amp;returnto=Systemcheck"><i class="fa-solid fa-user"></i>Create account</a>
+            <a class="login user-logged-out" href="/w/index.php?title=Special:UserLogin&amp;returnto=Systemcheck"><i class="fa-solid fa-right-to-bracket"></i>Login</a>
+          </div>
+        </div>
+      </div>
+
+      <a class="donate" href="/wiki/Donate">
+        <img src="/w/images/thumb/d/d9/Heart.png/54px-Heart.png" width="27" height="24" alt="Donate Symbol" />
+        Donate
+      </a>
+    </div>
+  </div>
+</div>
+
+
+<!--/noindex--><!--googleon: index--></div>
+ <div class="first-heading">
+<span class="wiki-book-index wbi-for-firstheading">
+    <a class="prev internal" href="https://www.kicksecure.com/wiki/Boot_firmware" title="Boot firmware">
+    <i class="fa-solid fa-chevron-left fa-fw"></i>
+    <span class="text">Boot firmware</span>
+  </a>
+  
+  <a class="index internal" href="https://www.kicksecure.com/wiki/Documentation" title="Documentation">
+    <i class="fa-solid fa-list fa-fw"></i>
+    <span class="text">Documentation</span>
+  </a>
+
+    <a class="next internal" href="https://www.kicksecure.com/wiki/Basic_Security_Guide_Introduction" title="Basic Security Guide Introduction">
+    <i class="fa-solid fa-chevron-right fa-fw"></i>
+    <span class="text">Basic Security Guide Introduction</span>
+  </a>
+  
+  <span class="info">
+    <span class="prev">Previous page: Boot firmware</span>    <span class="index">Index page: Documentation</span>
+    <span class="next">Next page: Basic Security Guide Introduction</span>  </span>
+</span>
+systemcheck - Security Check Application</div>
+<div class="pre-intro-p"></div><div class="hidden-thumbnail"></div>
+<p>System Integrity Test. Connectivity Test. Update Check. And More.
+</p>
+<div class="post-intro-p"></div>
+<figure class="mw-default-size" typeof="mw:Error mw:File/Thumb"><a href="/w/index.php?title=Special:Upload&amp;wpDestFile=Systemchecknotification.png" class="new" title="File:Systemchecknotification.png"><span class="mw-file-element mw-broken-media" data-width="180">File:Systemchecknotification.png</span></a><figcaption>systemcheck completion</figcaption></figure>
+<figure class="mw-default-size" typeof="mw:Error mw:File/Thumb"><a href="/w/index.php?title=Special:Upload&amp;wpDestFile=Systemcheckgui.png" class="new" title="File:Systemcheckgui.png"><span class="mw-file-element mw-broken-media" data-width="180">File:Systemcheckgui.png</span></a><figcaption>systemcheck progress meter</figcaption></figure>
+<figure class="mw-default-size" typeof="mw:Error mw:File/Thumb"><a href="/w/index.php?title=Special:Upload&amp;wpDestFile=Systemcheckcli.png" class="new" title="File:Systemcheckcli.png"><span class="mw-file-element mw-broken-media" data-width="180">File:Systemcheckcli.png</span></a><figcaption>systemcheck in Terminal</figcaption></figure>
+<div id="toc" class="toc" role="navigation" aria-labelledby="mw-toc-heading"><input type="checkbox" role="button" id="toctogglecheckbox" class="toctogglecheckbox" style="display:none" /><div class="toctitle" lang="en" dir="ltr"><h2 id="mw-toc-heading">Contents</h2><span class="toctogglespan"><label class="toctogglelabel" for="toctogglecheckbox"></label></span></div>
+<ul>
+<li class="toclevel-1 tocsection-1"><a href="#Introduction"><span class="tocnumber">1</span> <span class="toctext">Introduction</span></a></li>
+<li class="toclevel-1 tocsection-2"><a href="#Running_systemcheck"><span class="tocnumber">2</span> <span class="toctext">Running systemcheck</span></a>
+<ul>
+<li class="toclevel-2 tocsection-3"><a href="#How-to:_Manually_Run_systemcheck"><span class="tocnumber">2.1</span> <span class="toctext">How-to: Manually Run systemcheck</span></a></li>
+<li class="toclevel-2 tocsection-4"><a href="#Sample_systemcheck_Output"><span class="tocnumber">2.2</span> <span class="toctext">Sample systemcheck Output</span></a></li>
+<li class="toclevel-2 tocsection-5"><a href="#Tor_Bootstrap"><span class="tocnumber">2.3</span> <span class="toctext">Tor Bootstrap</span></a></li>
+</ul>
+</li>
+<li class="toclevel-1 tocsection-6"><a href="#System_Checks"><span class="tocnumber">3</span> <span class="toctext">System Checks</span></a></li>
+<li class="toclevel-1 tocsection-7"><a href="#Update_Notifications_by_updatecheck"><span class="tocnumber">4</span> <span class="toctext">Update Notifications by updatecheck</span></a>
+<ul>
+<li class="toclevel-2 tocsection-8"><a href="#updatecheck_for_accounts_other_than_user"><span class="tocnumber">4.1</span> <span class="toctext">updatecheck for accounts other than user</span></a></li>
+</ul>
+</li>
+<li class="toclevel-1 tocsection-9"><a href="#Physical_Security_Check"><span class="tocnumber">5</span> <span class="toctext">Physical Security Check</span></a>
+<ul>
+<li class="toclevel-2 tocsection-10"><a href="#Login_Security_Check_-_Meaning_of_Colors"><span class="tocnumber">5.1</span> <span class="toctext">Login Security Check - Meaning of Colors</span></a></li>
+</ul>
+</li>
+<li class="toclevel-1 tocsection-11"><a href="#Unwanted_Packages_Check"><span class="tocnumber">6</span> <span class="toctext">Unwanted Packages Check</span></a></li>
+<li class="toclevel-1 tocsection-12"><a href="#Version_Numbers"><span class="tocnumber">7</span> <span class="toctext">Version Numbers</span></a>
+<ul>
+<li class="toclevel-2 tocsection-13"><a href="#Build_Version"><span class="tocnumber">7.1</span> <span class="toctext">Build Version</span></a></li>
+<li class="toclevel-2 tocsection-14"><a href="#Check_Version"><span class="tocnumber">7.2</span> <span class="toctext">Check Version</span></a></li>
+<li class="toclevel-2 tocsection-15"><a href="#Technical_Details"><span class="tocnumber">7.3</span> <span class="toctext">Technical Details</span></a></li>
+</ul>
+</li>
+<li class="toclevel-1 tocsection-16"><a href="#Warrant_Canary_Check"><span class="tocnumber">8</span> <span class="toctext">Warrant Canary Check</span></a>
+<ul>
+<li class="toclevel-2 tocsection-17"><a href="#Introduction_2"><span class="tocnumber">8.1</span> <span class="toctext">Introduction</span></a></li>
+<li class="toclevel-2 tocsection-18"><a href="#Features"><span class="tocnumber">8.2</span> <span class="toctext">Features</span></a></li>
+<li class="toclevel-2 tocsection-19"><a href="#Disable_Warrant_Canary_Check"><span class="tocnumber">8.3</span> <span class="toctext">Disable Warrant Canary Check</span></a></li>
+<li class="toclevel-2 tocsection-20"><a href="#autostart_systemcheck"><span class="tocnumber">8.4</span> <span class="toctext">autostart systemcheck</span></a></li>
+</ul>
+</li>
+<li class="toclevel-1 tocsection-21"><a href="#Arg_Max_Check"><span class="tocnumber">9</span> <span class="toctext">Arg Max Check</span></a></li>
+<li class="toclevel-1 tocsection-22"><a href="#Related"><span class="tocnumber">10</span> <span class="toctext">Related</span></a></li>
+<li class="toclevel-1 tocsection-23"><a href="#See_Also"><span class="tocnumber">11</span> <span class="toctext">See Also</span></a></li>
+<li class="toclevel-1 tocsection-24"><a href="#Footnotes"><span class="tocnumber">12</span> <span class="toctext">Footnotes</span></a></li>
+</ul>
+</div>
+
+<div class="mw-heading mw-heading1"><h1 id="Introduction">Introduction</h1><span class="mw-editsection"><span class="mw-editsection-bracket">[</span><a href="/w/index.php?title=Systemcheck&amp;action=edit&amp;section=1" title="Edit section: Introduction"><span>edit</span></a><span class="mw-editsection-bracket">]</span></span></div>
+<ul><li><u>Purpose of systemcheck:</u> <i><span style="background-color:#FBFBFB">systemcheck</span></i> checks numerous, important system variables to assess system status.</li>
+<li><u>Usage methods:</u> It can be run in a <u>c</u>ommand <u>l</u>ine <u>i</u>nterface (CLI) environment (such as in a terminal emulator like <code>qterminal</code>) or via the <u>g</u>raphical <u>u</u>ser <u>i</u>nterface (GUI) option, which features a progress meter and summary notification popup.</li>
+<li><u>Non-intrusive design:</u> systemcheck is designed to be read-only and does not intentionally change the system state.</li>
+<li><u>Optional component:</u> Kicksecure remains functional without running systemcheck, as it is purely for status checking.</li>
+<li><u>Silent operation by default:</u> Many checks produce no output unless warnings or errors occur. For detailed success and skip messages, use the <code>--verbose</code> option.</li>
+<li><u>Community benefit:</u> systemcheck keeps the entire Kicksecure community informed about critical updates or guidance, especially for users who do not frequently launch the browser or visit the Kicksecure website.</li></ul>
+<div class="mw-heading mw-heading1"><h1 id="Running_systemcheck">Running systemcheck</h1><span class="mw-editsection"><span class="mw-editsection-bracket">[</span><a href="/w/index.php?title=Systemcheck&amp;action=edit&amp;section=2" title="Edit section: Running systemcheck"><span>edit</span></a><span class="mw-editsection-bracket">]</span></span></div>
+<p>systemcheck verifies that the Kicksecure system is up-to-date and that everything is in proper working order.
+</p><p>Follow the steps below to manually run systemcheck and check the system status.
+</p>
+<div class="mw-heading mw-heading2"><h2 id="How-to:_Manually_Run_systemcheck">How-to: Manually Run systemcheck</h2><span class="mw-editsection"><span class="mw-editsection-bracket">[</span><a href="/w/index.php?title=Systemcheck&amp;action=edit&amp;section=3" title="Edit section: How-to: Manually Run systemcheck"><span>edit</span></a><span class="mw-editsection-bracket">]</span></span></div>
+<div class="info-box">
+<p><u>If you are using <a href="/wiki/Qubes" title="Qubes">Kicksecure for Qubes</a></u>, complete the following steps. <sup id="cite&#95;ref-1" class="reference"><a href="#cite_note-1"><span class="cite-bracket">&#91;</span>1<span class="cite-bracket">&#93;</span></a></sup>
+</p><p><code>Qubes App Launcher (blue/grey "Q")</code> &#8594; <code>click the VM you want to check</code> &#8594; <code>System Check</code>
+</p><p><u>If you are using a graphical environment</u>, complete the following steps.
+</p><p><i class="padded-content-icon pci-text fa-solid cs-blue iconset-h2">1</i> Start <code>systemcheck</code>.
+</p><p><code>Start Menu</code> &#8594; <code>System</code> &#8594; <code>systemcheck</code>
+</p><p><i class="padded-content-icon pci-text fa-solid cs-blue iconset-h2">2</i> Done.
+</p><p><code>systemcheck</code> has been started from the Start Menu.
+</p><p><u>If you are using a terminal environment</u>, complete the following step.
+</p><p>Standard run.
+</p><p><span class="code-select">systemcheck</span>
+ 
+</p><p>Verbose run (for <a href="/wiki/Advanced_Users" title="Advanced Users">Advanced Users</a> only).
+</p><p><span class="code-select">systemcheck --verbose</span>
+
+</p>
+</div>
+<p>Depending on system specifications, systemcheck can take up to a few minutes to complete. If everything is working as intended, the output should highlight each <span style="color:#008000"> INFO </span> heading in green (not red). A successful systemcheck process will have output similar to below.
+</p>
+<div class="mw-heading mw-heading2"><h2 id="Sample_systemcheck_Output">Sample systemcheck Output</h2><span class="mw-editsection"><span class="mw-editsection-bracket">[</span><a href="/w/index.php?title=Systemcheck&amp;action=edit&amp;section=4" title="Edit section: Sample systemcheck Output"><span>edit</span></a><span class="mw-editsection-bracket">]</span></span></div>
+<pre class="template-prebox">[INFO] [systemcheck] Kicksecure | Kicksecure kicksecure-18 TemplateBased AppVM | Sun 25 Apr 2021 07:56:41 AM UTC
+[INFO] [systemcheck] Connected to Tor.
+[INFO] [systemcheck] Kicksecure APT Repository: Enabled.
+When the Kicksecure team releases BUSTER-PROPOSED-UPDATES updates,
+they will be AUTOMATICALLY installed (when you run apt full-upgrade)
+along with updated packages from the Debian team. Please
+read https://www.kicksecure.com/wiki/Trust to understand the risk.
+If you want to change this, use:
+&lt;code&gt;sudo repository-dist&lt;/code&gt;
+[INFO] [systemcheck] Debian Package Update Check: Checking for software updates via apt... ( Documentation: https://www.kicksecure.com/wiki/Update )
+[INFO] [systemcheck] Debian Package Update Check Result: No updates found via apt.
+[INFO] [systemcheck] Please donate!
+See: https://www.kicksecure.com/wiki/Donate</pre>
+<div class="mw-heading mw-heading2"><h2 id="Tor_Bootstrap">Tor Bootstrap</h2><span class="mw-editsection"><span class="mw-editsection-bracket">[</span><a href="/w/index.php?title=Systemcheck&amp;action=edit&amp;section=5" title="Edit section: Tor Bootstrap"><span>edit</span></a><span class="mw-editsection-bracket">]</span></span></div>
+<p>Tor bootstrap refers to the process of attempting to connect to the Tor network (successfully or unsuccessfully). Familiar output related to this process includes: "Tor connecting xx percent...", "Tor not connected", "Tor connected" and so on. Bootstrapping does not refer to related concepts, such as whether connections are "secure", "not secure", "anonymous" or "not anonymous".
+</p>
+<div class="mw-heading mw-heading1"><h1 id="System_Checks">System Checks</h1><span class="mw-editsection"><span class="mw-editsection-bracket">[</span><a href="/w/index.php?title=Systemcheck&amp;action=edit&amp;section=6" title="Edit section: System Checks"><span>edit</span></a><span class="mw-editsection-bracket">]</span></span></div>
+<p>systemcheck runs a long list of checks, but it intentionally hides most "all good" messages to avoid overwhelming users. Errors and warnings are always displayed, while detailed success messages require <code>--verbose</code>. Any operating system updates, downloads or other network activity are Tor stream-isolated by default.
+</p>
+<table class="wikitable">
+<caption><i>System Checks run by <code>systemcheck</code></i>
+
+</caption>
+<tbody><tr>
+<th><b>Check</b>
+</th>
+<th><b>Description</b>
+</th></tr>
+
+<tr>
+<th>Canary
+</th>
+<td>An automated Kicksecure warrant canary check is available with the <code>--verbose</code> parameter, see: <a href="#Warrant_Canary_Check">Warrant Canary Check</a>.
+</td></tr>
+
+<tr>
+<th>Clock Source
+</th>
+<td>Check if the clock source is KVMClock and warn if that is the case. <sup id="cite&#95;ref-2" class="reference"><a href="#cite_note-2"><span class="cite-bracket">&#91;</span>2<span class="cite-bracket">&#93;</span></a></sup>
+</td></tr>
+
+<tr>
+<th>Entropy Test
+</th>
+<td>An entropy availability check confirms <span style="border:1px dotted #005cb9">/proc/sys/kernel/random/entropy_avail</span> contains no less than 112 bits.
+</td></tr>
+
+<tr>
+<th>Hostname
+</th>
+<td>Check if:
+<ul><li><span style="border:1px dotted #005cb9">hostname --fqdn</span> outputs <span style="border:1px dotted #005cb9">host.localdomain</span>.</li>
+<li><span style="border:1px dotted #005cb9">hostname </span> outputs <span style="border:1px dotted #005cb9">host</span>.</li>
+<li><span style="border:1px dotted #005cb9">hostname --ip-address </span> outputs <span style="border:1px dotted #005cb9">127.0.0.1</span>.</li>
+<li><span style="border:1px dotted #005cb9">hostname --domain </span> outputs <span style="border:1px dotted #005cb9">localdomain</span>.</li></ul>
+<p>(Whonix only.)
+</p>
+</td></tr>
+
+<tr>
+<th>Connectivity Tests
+</th>
+<td>When using <code>--ip-test</code> (previously called, same as <code>--leak-tests</code>):
+<ol><li>Download <a target="_blank" rel="noreferrer noopener" class="external free" href="https://check.torproject.org">https://check.torproject.org</a><sup class="ext-link-to-archive has-sibling" title="Link to archived version on web.archive.org"><a rel="noreferrer noopener" target="_blank" href="https://web.archive.org/web/https://check.torproject.org"><img src="/w/images/7/73/Internet_Archive_logo.png" alt="archive.org icon" width="14" height="16" decoding="async" loading="lazy" /></a></sup><sup class="ext-link-to-archive" title="Link to archived version on archive.today"><a rel="noreferrer noopener" target="_blank" href="https://archive.today/https://check.torproject.org"><img src="/w/images/8/8f/Archive-today-logo-homage.svg" alt="archive.today icon" width="12" height="16" decoding="async" loading="lazy" /></a></sup> with curl through an extra <code>SocksPort</code>.</li>
+<li>Download <a target="_blank" rel="noreferrer noopener" class="external free" href="https://check.torproject.org">https://check.torproject.org</a><sup class="ext-link-to-archive has-sibling" title="Link to archived version on web.archive.org"><a rel="noreferrer noopener" target="_blank" href="https://web.archive.org/web/https://check.torproject.org"><img src="/w/images/7/73/Internet_Archive_logo.png" alt="archive.org icon" width="14" height="16" decoding="async" loading="lazy" /></a></sup><sup class="ext-link-to-archive" title="Link to archived version on archive.today"><a rel="noreferrer noopener" target="_blank" href="https://archive.today/https://check.torproject.org"><img src="/w/images/8/8f/Archive-today-logo-homage.svg" alt="archive.today icon" width="12" height="16" decoding="async" loading="lazy" /></a></sup> with curl through regular connection.</li></ol>
+<p>Checks if <code>check.torproject.org</code> reports the IP to be a Tor IP address.
+</p>
+</td></tr>
+
+<tr>
+<th>Log Inspection
+</th>
+<td>When using the <code>--verbose</code> option, check if <span style="border:1px dotted #005cb9">~/.msgcollector/msgdispatcher-error.log</span> exists and report this if confirmed.
+</td></tr>
+
+<tr>
+<th>Meta-package Check
+</th>
+<td>Check if the relevant meta-packages <sup id="cite&#95;ref-3" class="reference"><a href="#cite_note-3"><span class="cite-bracket">&#91;</span>3<span class="cite-bracket">&#93;</span></a></sup> are installed. Also see: <a href="/wiki/Debian_Packages" title="Debian Packages">Kicksecure Debian Packages</a>.
+</td></tr>
+
+<tr>
+<th>Network Connection
+</th>
+<td><s>Check that setup-dist has properly configured networking.</s>
+</td></tr>
+
+<tr>
+<th>Operating System Updates Check
+</th>
+<td>"apt-get update" is run. A notification is provided whether the system is up-to-date or requires updating.
+</td></tr>
+
+<tr>
+<th>Package Manager
+</th>
+<td>Check if a package manager is currently running and wait until the process is finished. <sup id="cite&#95;ref-4" class="reference"><a href="#cite_note-4"><span class="cite-bracket">&#91;</span>4<span class="cite-bracket">&#93;</span></a></sup> This prevents connection failures during concurrent upgrades.
+</td></tr>
+
+<tr>
+<th>Tor
+</th>
+<td>Check:
+<ul><li>If Tor has been enabled by checking whether <span style="border:1px dotted #005cb9">DisableNetwork 1</span> has been commented out from <span style="border:1px dotted #005cb9">/usr/local/etc/torrc.d/50_user.conf</span>.</li>
+<li>The validity of Tor configuration files.</li>
+<li>Notify about the Tor connection and IP address. <sup id="cite&#95;ref-5" class="reference"><a href="#cite_note-5"><span class="cite-bracket">&#91;</span>5<span class="cite-bracket">&#93;</span></a></sup> <sup id="cite&#95;ref-6" class="reference"><a href="#cite_note-6"><span class="cite-bracket">&#91;</span>6<span class="cite-bracket">&#93;</span></a></sup></li></ul>
+<p>(Whonix only.)
+</p>
+</td></tr>
+
+<tr>
+<th>Services (systemd)
+</th>
+<td>Looks for systemd units that are not healthy and reports details on problems.
+<ul><li>System units: checks for units in state <code>failed</code>, <code>activating</code>, or <code>deactivating</code> using <code>leaprun read-systemctl-logs-failed-units</code> (pretty output: <code>leaprun read-systemctl-logs-failed-units-pretty</code>).</li>
+<li>User units: checks the per-user systemd instance using <code>systemctl --user --no-legend --no-pager --no-block --state=failed,activating,deactivating list-units</code>.</li></ul>
+<p>Shows the full command output and provides manual reproduction steps when an issue is detected. Mostly quiet on success unless using <code>--verbose</code>.
+</p>
+</td></tr>
+
+<tr>
+<th>pkexec Self-Test
+</th>
+<td>Run a PolicyKit self-test (<code>pkexec /usr/libexec/systemcheck/pkexec-test</code>) to verify authorization is implemented as designed. Produces output only on failure.
+</td></tr>
+
+<tr>
+<th>Privilege Escalation Framework
+</th>
+<td>Verify that privilege escalation is implemented as designed (privleap, sudo, pkexec, etc.)
+</td></tr>
+
+<tr>
+<th>Repository Notification
+</th>
+<td>Notifies whether <a href="/wiki/Project-APT-Repository" title="Project-APT-Repository">Derivative APT Repository</a> is enabled or not.
+</td></tr>
+
+<tr>
+<th>Stream Isolation
+</th>
+<td>When using <code>--ip-test</code> (previously called, same as <code>--leak-tests</code>):
+<ol><li>Download <a target="_blank" rel="noreferrer noopener" class="external free" href="https://check.torproject.org">https://check.torproject.org</a><sup class="ext-link-to-archive has-sibling" title="Link to archived version on web.archive.org"><a rel="noreferrer noopener" target="_blank" href="https://web.archive.org/web/https://check.torproject.org"><img src="/w/images/7/73/Internet_Archive_logo.png" alt="archive.org icon" width="14" height="16" decoding="async" loading="lazy" /></a></sup><sup class="ext-link-to-archive" title="Link to archived version on archive.today"><a rel="noreferrer noopener" target="_blank" href="https://archive.today/https://check.torproject.org"><img src="/w/images/8/8f/Archive-today-logo-homage.svg" alt="archive.today icon" width="12" height="16" decoding="async" loading="lazy" /></a></sup> with curl through an extra <code>SocksPort</code>.</li>
+<li>Download <a target="_blank" rel="noreferrer noopener" class="external free" href="https://check.torproject.org">https://check.torproject.org</a><sup class="ext-link-to-archive has-sibling" title="Link to archived version on web.archive.org"><a rel="noreferrer noopener" target="_blank" href="https://web.archive.org/web/https://check.torproject.org"><img src="/w/images/7/73/Internet_Archive_logo.png" alt="archive.org icon" width="14" height="16" decoding="async" loading="lazy" /></a></sup><sup class="ext-link-to-archive" title="Link to archived version on archive.today"><a rel="noreferrer noopener" target="_blank" href="https://archive.today/https://check.torproject.org"><img src="/w/images/8/8f/Archive-today-logo-homage.svg" alt="archive.today icon" width="12" height="16" decoding="async" loading="lazy" /></a></sup> with curl through regular connection.</li></ol>
+<p>A stream isolation test checks that the IP addresses from (1) and (2) differ.
+</p><p>(Whonix only)
+</p>
+</td></tr>
+
+<tr>
+<th>Tor Bootstrap
+</th>
+<td>Shows Tor bootstrap status messages (for example: "Tor connecting xx percent...", "Tor not connected", "Tor connected"). Also see: <a href="#Tor_Bootstrap">Tor Bootstrap</a>.
+</td></tr>
+
+<tr>
+<th>Miscellaneous
+</th>
+<td>
+<ul><li>control port filter proxy running (Whonix only)</li>
+<li>remarkable kernel messages</li>
+<li>timedatectl check</li></ul>
+</td></tr>
+
+<tr>
+<th>Virtualization Platform
+</th>
+<td>Check Kicksecure is being run on one of the supported virtualizer platforms, including <a href="/wiki/VirtualBox" title="VirtualBox">VirtualBox</a>, <a href="/wiki/KVM" title="KVM">KVM</a> or <a href="/wiki/Qubes" title="Qubes">Qubes</a>. (Whonix only.)
+</td></tr>
+
+<tr>
+<th>su access check
+</th>
+<td>Checks if su is locked down so only root can use su. <sup id="cite&#95;ref-7" class="reference"><a href="#cite_note-7"><span class="cite-bracket">&#91;</span>7<span class="cite-bracket">&#93;</span></a></sup>
+</td></tr>
+
+<tr>
+<th>Full Disk Encryption (crypt-check)
+</th>
+<td>Check if the root partition is encrypted (LUKS header detection). Prints an info message on success or failure. Also see: <a class="mw-selflink-fragment" href="#Physical_Security_Check">Physical Security Check</a>. (When running on real hardware only.)
+</td></tr>
+
+<tr>
+<th>GRUB Security
+</th>
+<td>GRUB bootloader password set or not.
+</td></tr>
+
+<tr>
+<th>Unwanted Packages Check
+</th>
+<td>Check for packages listed as unwanted (see configuration directive <code>systemcheck_unwanted_package</code>) and warn if any are installed. Also see: <a class="mw-selflink-fragment" href="#Unwanted_Packages_Check">Unwanted Packages Check</a>.
+</td></tr>
+
+<tr>
+<th>Physical Security Check
+</th>
+<td>See <a class="mw-selflink-fragment" href="#Physical_Security_Check">Physical Security Check</a>.
+</td></tr>
+
+<tr>
+<th>Environment Variables
+</th>
+<td>Verifies expected flag environment variables are present to distinguish the environment.
+<ul><li>On Whonix, checks <code>WHONIX=1</code>.</li>
+<li>On Kicksecure, checks <code>KICKSECURE=1</code>.</li></ul>
+<p>Warns if missing.
+</p>
+</td></tr>
+
+<tr>
+<th>Network Interface Checks
+</th>
+<td>Verifies at least one external network interface is up, using different mechanisms depending on platform.
+<ul><li>Kicksecure: uses a helper script (for example <code>check-network-access</code>) to detect global IP connectivity.</li>
+<li>Whonix: uses <code>leaprun</code> link tests on <code>eth0</code> (and also <code>eth1</code> on gateway).</li></ul>
+<p>In Qubes TemplateVMs, networking is assumed inactive and the result may be reported as unknown.
+</p>
+</td></tr>
+
+<tr>
+<th>Tor <code>SocksPort</code> Reachability
+</th>
+<td>todo: document
+</td></tr>
+
+<tr>
+<th>Spectre and Meltdown Vulnerability Check
+</th>
+<td>Optionally runs <code>spectre-meltdown-checker</code> (when explicitly enabled). Uses a timeout and warns if the checker indicates potential vulnerability.
+</td></tr>
+
+<tr>
+<th>Time and Timezone Checks
+</th>
+<td>Confirms the system timezone and time handling are sane. (Whonix only)
+</td></tr>
+
+<tr>
+<th><span class="manually-placed-anchor mpa-visible" id="Journal&#95;Inspection&#95;and&#95;Diagnostics&#95;Logs">Journal Inspection and Diagnostics Logs</span>
+</th>
+<td>Checks the systemd journal for unusual entries and reports them.
+<ul><li>Critical kernel log messages: uses <code>leaprun log-checker-check_critical_logs</code> and treats matches such as "Bad RAM detected" or "self-detected stall on CPU" as severe and likely to cause follow-up issues.</li>
+<li>Service and diagnostics log messages: uses <code>leaprun log-checker-check_service_logs</code> and reports findings (output is more visible when using <code>--verbose</code>).</li></ul>
+<p>Includes manual investigation hints and may show additional platform-specific advice (for example VirtualBox related notes).
+</p>
+</td></tr>
+
+<tr>
+<th>Debian End-of-Life Status
+</th>
+<td>Checks whether the underlying Debian release is end-of-life and warns if the platform is no longer supported.
+</td></tr>
+
+<tr>
+<th>User and sysmaint Account Separation
+</th>
+<td>Checks whether user maintenance separation (for example <code>user-sysmaint-split</code>) is in effect and whether account separation expectations are met, warning if misconfigured.
+</td></tr>
+
+<tr>
+<th>Login Restrictions
+</th>
+<td>Checks login security posture such as password presence and autologin status for local Linux accounts as part of physical security related checks, warning when insecure settings are detected.
+</td></tr>
+
+<tr>
+<th>Secure Boot Status
+</th>
+<td>Checks Secure Boot status and reports unexpected states depending on platform and expectations.
+</td></tr>
+
+<tr>
+<th>"tirdad" Module Check
+</th>
+<td>Checks for the presence of the <code>tirdad</code> module and warns on unexpected findings.
+</td></tr>
+
+<tr>
+<th>APT Repository Consistency
+</th>
+<td>todo: document
+</td></tr>
+
+<tr>
+<th>IP Forwarding Disabled
+</th>
+<td>Confirmation that IP forwarding is disabled, warning if routing behavior is detected when it should not occur by default. (Whonix-Gateway only.)
+</td></tr>
+
+<tr>
+<th>Output Behavior and Verbose Mode
+</th>
+<td>Many checks are intentionally quiet on success to reduce noise. Warnings and errors are always displayed. Success, skip and informational output becomes much more visible when using <code>--verbose</code>.
+</td></tr>
+
+</tbody></table>
+<div class="mw-heading mw-heading1"><h1 id="Update_Notifications_by_updatecheck">Update Notifications by updatecheck</h1><span class="mw-editsection"><span class="mw-editsection-bracket">[</span><a href="/w/index.php?title=Systemcheck&amp;action=edit&amp;section=7" title="Edit section: Update Notifications by updatecheck"><span>edit</span></a><span class="mw-editsection-bracket">]</span></span></div>
+<p><b>Figure:</b> <i>updatecheck notification (passive popup)</i>
+</p><p><span typeof="mw:Error mw:File"><a href="/w/index.php?title=Special:Upload&amp;wpDestFile=Updatecheck.png" class="new" title="File:Updatecheck.png"><span class="mw-file-element mw-broken-media" data-width="400">File:Updatecheck.png</span></a></span>
+</p><p>Platform specific.
+</p>
+<ul><li><u>Kicksecure:</u> Applicable. See below.</li>
+<li><u>Kicksecure for Qubes:</u> Not applicable, because Qubes has its own updater, which is documented on the <a href="/wiki/Operating_System_Software_and_Updates" title="Operating System Software and Updates">Operating System Software and Updates</a> wiki page.</li></ul>
+<p>Runs approximately every 6 hours.
+</p><p>Features:
+</p>
+<ul><li><u>Passive popup:</u> Shows a notification without requiring immediate interaction.</li>
+<li><u>Deferred update check:</u> Waits for a good time to run the update check.
+<ul><li><u>Boot delay:</u> Waits 2 minutes after boot before checking for updates, to give the user a chance to run APT before the package database gets locked. updatecheck runs APT, which locks the package database as it updates it.</li>
+<li><u>Tor bootstrap wait:</u> Runs <span class="code-select inline-style">leaprun onion-time-pre-script</span>
+  up to 5 times until it succeeds. Waits 2 minutes between each call if it fails. This is to ensure Tor bootstrap has been completed.</li>
+<li><u>Time synchronization wait:</u> Waits up to 6 minutes for sdwdate to complete time synchronization.</li>
+<li><u>APT lock wait:</u> Waits up to 20 minutes for the package database to be unlocked, which means no other APT process (run by the user) is currently locking it.</li></ul></li>
+<li><u>Stale notification cleanup:</u> Stale notifications are cleared. If there was an issue upgrading but not when updatecheck runs again, the stale, no longer applicable notification will be cleared to avoid confusion.</li></ul>
+<p><u>Note:</u> No administrative ("<a href="/wiki/Root" title="Root"><code>root</code></a>") rights required. Do <u>not</u> use <u>sudo</u>!
+</p><p>Check logs.
+</p><p><i class="padded-content-icon pci-style-circle pci-border-thick pci-shadow pci-text fa-solid cs-green iconset-h1">1</i> View the logs.
+</p><p><span class="code-select">journalctl --boot --user -u updatecheck.service</span>
+ 
+</p><p>Check status.
+</p><p><i class="padded-content-icon pci-style-circle pci-border-thick pci-shadow pci-text fa-solid cs-green iconset-h1">2</i> Check the service status.
+</p><p><span class="code-select">systemctl --boot --user status updatecheck.service</span>
+ 
+</p><p>Disable.
+</p><p><i class="padded-content-icon pci-style-circle pci-border-thick pci-shadow pci-text fa-solid cs-green iconset-h1">3</i> Disable the service.
+</p><p><span class="code-select">systemctl --user mask updatecheck.service</span>
+ 
+</p><p>Re-enable.
+</p><p><i class="padded-content-icon pci-style-circle pci-border-thick pci-shadow pci-text fa-solid cs-green iconset-h1">4</i> Re-enable the service.
+</p><p><span class="code-select">systemctl --user unmask updatecheck.service</span>
+ 
+</p><p><i class="padded-content-icon pci-style-circle pci-border-thick pci-shadow pci-text fa-solid cs-green iconset-h1">5</i> Done.
+</p><p>Information for developers: See wiki page <a href="/wiki/Dev/Automatic_Updates" title="Dev/Automatic Updates">Dev/Automatic Updates</a> chapter <a href="/wiki/Dev/Automatic_Updates#updatecheck" title="Dev/Automatic Updates">updatecheck</a>.
+</p>
+<div class="mw-heading mw-heading2"><h2 id="updatecheck_for_accounts_other_than_user">updatecheck for accounts other than user</h2><span class="mw-editsection"><span class="mw-editsection-bracket">[</span><a href="/w/index.php?title=Systemcheck&amp;action=edit&amp;section=8" title="Edit section: updatecheck for accounts other than user"><span>edit</span></a><span class="mw-editsection-bracket">]</span></span></div>
+<p>updatecheck starts automatically when a normal user logs in graphically into a normal desktop. This is triggered by the file <code>/etc/xdg/autostart/updatecheck.desktop</code>. This is only expected to happen if the system is booted in <code>PERSISTENT mode - USER session</code> or <code>LIVE mode - USER session</code>. This means all normal user accounts will automatically have updatecheck working for them.
+</p><p>When <code>user-sysmaint-split</code> is installed, the <code>sysmaint</code> user account will only be able to log into a sysmaint graphical session, and only when the system is booted into a <code>SYSMAINT session</code>. The sysmaint graphical session is not a normal desktop, and it does not automatically run all of the services configured in <code>/etc/xdg/autostart</code>. This means updatecheck will not run in a sysmaint session.
+</p>
+<div class="mw-heading mw-heading1"><h1 id="Physical_Security_Check">Physical Security Check</h1><span class="mw-editsection"><span class="mw-editsection-bracket">[</span><a href="/w/index.php?title=Systemcheck&amp;action=edit&amp;section=9" title="Edit section: Physical Security Check"><span>edit</span></a><span class="mw-editsection-bracket">]</span></span></div>
+<div class="intro-like">
+<p>Several checks related to <a href="/wiki/Protection_Against_Physical_Attacks" title="Protection Against Physical Attacks">Protection Against Physical Attacks</a>.
+</p>
+</div>
+<p><b>Figure:</b> <i>systemcheck - Physical Security Check</i>
+</p><p><span typeof="mw:Error mw:File"><a href="/w/index.php?title=Special:Upload&amp;wpDestFile=Physical-security-check.png" class="new" title="File:Physical-security-check.png"><span class="mw-file-element mw-broken-media" data-width="600">File:Physical-security-check.png</span></a></span>
+</p><p>Checks <u>included</u>:
+</p>
+<ul><li><u><a href="/wiki/Login" title="Login">Login</a> security check:</u>
+<ul><li><u>Password status:</u> Checks if all Linux user accounts have a password set or if it is absent.</li>
+<li><u>Autologin status:</u> Checks if all Linux user accounts have an autologin set or if it is absent.</li></ul></li>
+<li><u>Full disk encryption:</u> Whether <a href="/wiki/Full_Disk_Encryption" title="Full Disk Encryption"><u>F</u>ull <u>D</u>isk <u>E</u>ncryption (FDE)</a> is enabled or disabled.</li>
+<li><u>Bootloader password:</u> Whether the <a href="/wiki/Grub" title="Grub">GRUB</a> boot menu is protected by a <a href="/wiki/Protection_Against_Physical_Attacks#Bootloader_Password" title="Protection Against Physical Attacks">Bootloader Password</a>.</li></ul>
+<p>Checks <u>not</u> included:
+</p>
+<ul><li><u>BIOS password:</u> <a href="/wiki/Protection_Against_Physical_Attacks#BIOS_Password" title="Protection Against Physical Attacks">BIOS Password</a> check. Operating systems do not have permission to detect if a BIOS password is set or absent.</li></ul>
+<div class="mw-heading mw-heading2"><h2 id="Login_Security_Check_-_Meaning_of_Colors">Login Security Check - Meaning of Colors</h2><span class="mw-editsection"><span class="mw-editsection-bracket">[</span><a href="/w/index.php?title=Systemcheck&amp;action=edit&amp;section=10" title="Edit section: Login Security Check - Meaning of Colors"><span>edit</span></a><span class="mw-editsection-bracket">]</span></span></div>
+<div class="intro-like">
+<p><code>systemcheck</code>'s login security check table displays information about the password and autologin status of each standard user account on the system. Each entry in this table is color-coded to indicate whether the current configuration is secure or not.
+</p>
+</div>
+<p>The following table explains the color meanings for the Password column.
+</p>
+<table class="wikitable">
+<caption>Password column
+</caption>
+
+<tbody><tr>
+<th>Color
+</th>
+<th>Password Status
+</th>
+<th>Meaning
+</th></tr>
+
+<tr>
+<td style="background-color: #90FF90">Green
+</td>
+<td><span class="nowrap">Locked (Present),</span><br /><span class="nowrap">Restricted (Present),</span><br /><span class="nowrap">Locked (Absent),</span><br /><span class="nowrap">Restricted (Absent),</span><br /><span class="nowrap">Present</span>
+</td>
+<td>Likely to be secure. If an account cannot be logged into at a login prompt, or requires a password to log in, it is resistant to malicious login attempts. Note that if a weak password is assigned to an account, it may still be insecure.
+</td></tr>
+
+<tr>
+<td style="background-color: #FFFB85">Yellow
+</td>
+<td>Absent, for non-root accounts
+</td>
+<td>May be a security risk. Passwordless accounts can be logged into without authentication, which makes them dangerous if an attacker can access the machine and the account has access to sensitive data. Many users do not have physical attackers in their threat model, or have other protections that mitigate this (such as full disk encryption), so this is not always a problem.
+</td></tr>
+
+<tr>
+<td style="background-color: #FFC2C2">Red
+</td>
+<td>Absent, for the root account
+</td>
+<td>Always a security risk. The root account should never be passwordless, as this may allow unprivileged malicious programs to escalate to root without user interaction.
+</td></tr>
+</tbody></table>
+<p>The following table explains the color meanings for the Autologin column.
+</p>
+<table class="wikitable">
+<caption>Autologin column
+</caption>
+
+<tbody><tr>
+<th>Color
+</th>
+<th>Autologin Status
+</th>
+<th>Meaning
+</th></tr>
+
+<tr>
+<td style="background-color: #90FF90">Green
+</td>
+<td>Disabled
+</td>
+<td>Likely to be secure. If autologin is disabled, an account's password (if any) is required to log into it.
+</td></tr>
+
+<tr>
+<td style="background-color: #FFFB85">Yellow
+</td>
+<td>Enabled, for non-root accounts
+</td>
+<td>May be a security risk. Autologin bypasses the password of the autologin-enabled account. The same concerns for passwordless accounts apply here.
+</td></tr>
+
+<tr>
+<td style="background-color: #FFC2C2">Red
+</td>
+<td>Enabled, for the root account
+</td>
+<td>Always a security risk. The user will likely end up using the root account for general computing tasks if autologin is enabled for root, dramatically increasing the system's attack surface and breaking various applications.
+</td></tr>
+</tbody></table>
+<div class="mw-heading mw-heading1"><h1 id="Unwanted_Packages_Check">Unwanted Packages Check</h1><span class="mw-editsection"><span class="mw-editsection-bracket">[</span><a href="/w/index.php?title=Systemcheck&amp;action=edit&amp;section=11" title="Edit section: Unwanted Packages Check"><span>edit</span></a><span class="mw-editsection-bracket">]</span></span></div>
+<p>Unwanted packages that systemcheck will warn against.
+</p><p>systemcheck default configuration file <span class="github-link-widget">
+  <img src="/w/images/a/af/Github-mark.svg" width="14" height="16" alt="GitHub Logo" />
+
+          
+                
+                                                    
+        
+    
+                <a href="https://github.com/Kicksecure/systemcheck" target="_blank" rel="noopener" title="GitHub repository"><code>systemcheck</code></a>
+      |
+              <a href="https://github.com/Kicksecure/systemcheck/blob/master/etc/systemcheck.d/30_default.conf" target="_blank" rel="noopener" title="GitHub file path"><code>/etc/systemcheck.d/30_default.conf</code></a>
+                  |
+          <a href="https://github.com/Kicksecure/systemcheck/raw/master/etc/systemcheck.d/30_default.conf" target="_blank" rel="noopener" title="GitHub raw file path"><code>raw</code></a>
+              
+          </span> contains several configuration directives <code>systemcheck_unwanted_package</code>.
+</p><p>At the time of writing, these are packages associated with privacy issues or deprecated packages.
+</p>
+<div class="mw-heading mw-heading1"><h1 id="Version_Numbers">Version Numbers</h1><span class="mw-editsection"><span class="mw-editsection-bracket">[</span><a href="/w/index.php?title=Systemcheck&amp;action=edit&amp;section=12" title="Edit section: Version Numbers"><span>edit</span></a><span class="mw-editsection-bracket">]</span></span></div>
+<p><span class="manually-placed-anchor" id="Whonix&#95;Build&#95;Version"></span>
+<span class="manually-placed-anchor" id="Kicksecure&#95;Build&#95;Version"></span>
+</p>
+<div class="mw-heading mw-heading2"><h2 id="Build_Version">Build Version</h2><span class="mw-editsection"><span class="mw-editsection-bracket">[</span><a href="/w/index.php?title=Systemcheck&amp;action=edit&amp;section=13" title="Edit section: Build Version"><span>edit</span></a><span class="mw-editsection-bracket">]</span></span></div>
+<p class="mw-empty-elt">
+
+</p><ul class="icon-bullet-list minimal" style="font-size:17px;">
+ <li>
+  <i class="fa-solid fa-lock cs-blue"></i>
+    <span><u>Build version never changes:</u> The Kicksecure build version - the version number of the Kicksecure build - is immutable, similar to a date of birth. It does not change and is not supposed to.</span>
+ </li>
+ <li>
+  <i class="fa-solid fa-clock cs-blue"></i>
+    <span><u>Version embedded at build time:</u> When the image is created, the current Kicksecure version number is embedded in it. This allows <code>systemcheck</code> to determine which build script version was used.</span>
+ </li>
+ <li>
+  <i class="fa-solid fa-screwdriver-wrench cs-blue"></i>
+    <span><u>Static for diagnostics:</u> The version number remains fixed and is not affected by updates. It is mainly relevant to older build script versions and is useful for diagnostics. Deprecated builds may be announced if upgrading becomes too difficult or costly. In such cases, we intend to use systemcheck or dismissable one time popups to inform users.</span>
+ </li>
+ <li>
+  <i class="fa-solid fa-ban cs-blue"></i>
+    <span><u>Non-upgradable build version numbers:</u> Build version cannot be upgraded. This is by design.</span>
+ </li>
+ <li>
+  <i class="fa-solid fa-user-check cs-blue"></i>
+    <span><u>Generally not important for users:</u> Unless instructed otherwise by documentation or developers, users typically do not need to worry about the build version.</span>
+ </li>
+ <li>
+  <i class="fa-solid fa-arrow-up-right-dots cs-green"></i>
+    <span><u>Updates remain possible:</u> <a href="Operating_System_Software_and_Updates#Standard_Update_Steps">Standard ("everyday") updates</a> can still be installed.</span>
+ </li>
+ <li>
+  <i class="fa-solid fa-rocket cs-green"></i>
+    <span><u>Release upgrades remain possible:</u> Even <a href="Release Upgrade">Release Upgrades</a> are typically possible when announced via Kicksecure News. So <a href="Stay Tuned">Follow Announcements</a>.</span>
+ </li>
+ <li>
+  <i class="fa-solid fa-book cs-blue"></i>
+    <span><u>See also:</u> <a href="Operating_System_Software_and_Updates#Update_vs_Image_Re-Installation">Update vs Image Re-Installation</a>.</span>
+ </li>
+</ul>
+<p class="mw-empty-elt"></p>
+<div class="mw-heading mw-heading2"><h2 id="Check_Version">Check Version</h2><span class="mw-editsection"><span class="mw-editsection-bracket">[</span><a href="/w/index.php?title=Systemcheck&amp;action=edit&amp;section=14" title="Edit section: Check Version"><span>edit</span></a><span class="mw-editsection-bracket">]</span></span></div>
+<p>To check the current Kicksecure version, run the following command:
+</p><p><span class="code-select">systemcheck --verbose --function show_versions</span>
+ 
+</p><p>The output should be similar to the following, depending on the platform.
+</p><p>Non-Qubes:
+</p>
+<pre class="template-prebox">[INFO] [systemcheck] Kicksecure build version: 18.1.4.2
+[INFO] [systemcheck] dist-general-cli: 35.8-1
+[INFO] [systemcheck] derivative_major_release_version /etc/kicksecure_version: 18</pre>
+<p>Qubes:
+</p>
+<pre class="template-prebox">[INFO] [systemcheck] Kicksecure build version: 3:14.1-1
+[INFO] [systemcheck] dist-general-cli: 35.8-1
+[INFO] [systemcheck] derivative_major_release_version /etc/kicksecure_version: 18</pre>
+<div class="mw-heading mw-heading2"><h2 id="Technical_Details">Technical Details</h2><span class="mw-editsection"><span class="mw-editsection-bracket">[</span><a href="/w/index.php?title=Systemcheck&amp;action=edit&amp;section=15" title="Edit section: Technical Details"><span>edit</span></a><span class="mw-editsection-bracket">]</span></span></div>
+<p>For advanced users only.
+</p><p>The <a target="_blank" rel="noreferrer noopener" class="external text" href="https://github.com/Kicksecure/dist-base-files"><code>dist-base-files</code></a><sup class="ext-link-to-archive has-sibling" title="Link to archived version on web.archive.org"><a rel="noreferrer noopener" target="_blank" href="https://web.archive.org/web/https://github.com/Kicksecure/dist-base-files"><img src="/w/images/7/73/Internet_Archive_logo.png" alt="archive.org icon" width="14" height="16" decoding="async" loading="lazy" /></a></sup><sup class="ext-link-to-archive" title="Link to archived version on archive.today"><a rel="noreferrer noopener" target="_blank" href="https://archive.today/https://github.com/Kicksecure/dist-base-files"><img src="/w/images/8/8f/Archive-today-logo-homage.svg" alt="archive.today icon" width="12" height="16" decoding="async" loading="lazy" /></a></sup> package contains the script <span class="github-link-widget">
+  <img src="/w/images/a/af/Github-mark.svg" width="14" height="16" alt="GitHub Logo" />
+
+          
+                
+                                                    
+        
+    
+                <a href="https://github.com/Kicksecure/dist-base-files" target="_blank" rel="noopener" title="GitHub repository"><code>dist-base-files</code></a>
+      |
+              <a href="https://github.com/Kicksecure/dist-base-files/blob/master/debian/dist-base-files.postinst" target="_blank" rel="noopener" title="GitHub file path"><code>/debian/dist-base-files.postinst</code></a>
+                  |
+          <a href="https://github.com/Kicksecure/dist-base-files/raw/master/debian/dist-base-files.postinst" target="_blank" rel="noopener" title="GitHub raw file path"><code>raw</code></a>
+              
+          </span>, which essentially runs:
+</p>
+<pre>echo "$dist_build_version" &gt; "$build_version_file"
+</pre>
+<p>Platform-specific details:
+</p>
+<ul><li>For non-Qubes, this corresponds to the derivative-maker Git tag version used to create the image.</li>
+<li>For Qubes, the following command is executed during the initial installation of <code>dist-base-files</code>.</li></ul>
+<p><span class="code-select">zless /usr/share/doc/dist-base-files/changelog.Debian.gz | dpkg-parsechangelog -l- -SVersion</span>
+ 
+</p>
+<div class="mw-heading mw-heading1"><h1 id="Warrant_Canary_Check">Warrant Canary Check</h1><span class="mw-editsection"><span class="mw-editsection-bracket">[</span><a href="/w/index.php?title=Systemcheck&amp;action=edit&amp;section=16" title="Edit section: Warrant Canary Check"><span>edit</span></a><span class="mw-editsection-bracket">]</span></span></div>
+<div class="mw-heading mw-heading2"><h2 id="Introduction_2">Introduction</h2><span class="mw-editsection"><span class="mw-editsection-bracket">[</span><a href="/w/index.php?title=Systemcheck&amp;action=edit&amp;section=17" title="Edit section: Introduction"><span>edit</span></a><span class="mw-editsection-bracket">]</span></span></div>
+<div class="info-box has-icon">
+<p><span class="info-box-icon"><span typeof="mw:Error mw:File"><a href="/w/index.php?title=Special:Upload&amp;wpDestFile=Ambox_notice.png" class="new" title="File:Ambox notice.png"><span class="mw-file-element mw-broken-media" data-width="40">Info</span></a></span></span>
+Prerequisite knowledge: <a href="/wiki/Trust#canary" title="Trust">Kicksecure warrant canary</a>.
+</p>
+</div>
+<p>There are several reasons an Automated Warrant Canary Check is justified:
+</p>
+<ul><li>The Kicksecure warrant canary has limited utility if it is forgotten over time and not regularly verified.</li>
+<li>It is unlikely the Kicksecure warrant canary is routinely verified by the community.</li>
+<li>If a community member discovers the Kicksecure warrant canary verification has failed, there is no effective way to notify all Kicksecure users.</li></ul>
+<div class="mw-heading mw-heading2"><h2 id="Features">Features</h2><span class="mw-editsection"><span class="mw-editsection-bracket">[</span><a href="/w/index.php?title=Systemcheck&amp;action=edit&amp;section=18" title="Edit section: Features"><span>edit</span></a><span class="mw-editsection-bracket">]</span></span></div>
+<table class="wikitable">
+<caption><i>Automated Warrant Canary Check Features</i>
+
+</caption>
+<tbody><tr>
+<th><b>Feature</b>
+</th>
+<th><b>Description</b>
+</th></tr>
+
+<tr>
+<th>Function
+</th>
+<td>Functions similarly to an update check but determines if the Kicksecure warrant canary is still valid.
+</td></tr>
+
+<tr>
+<th>Security
+</th>
+<td>
+<ul><li>Downloads over Tor from <code>.onion</code> link <a target="_blank" rel="noreferrer noopener" class="external text" href="http://download.w5j6stm77zs6652pgsij4awcjeel3eco7kvipheu6mtr623eyyehj4yd.onion/developer-meta-files/canary/canary.txt.embed.sig"><code>canary.txt.embed.sig</code></a><sup class="ext-link-to-archive" title="This is an .onion link"><a rel="noreferrer noopener" target="_blank" href="http://download.w5j6stm77zs6652pgsij4awcjeel3eco7kvipheu6mtr623eyyehj4yd.onion/developer-meta-files/canary/canary.txt.embed.sig"><img src="/w/images/thumb/a/a8/Iconfinder_tor_386502.png/40px-Iconfinder_tor_386502.png" alt="onion icon" width="16" height="16" decoding="async" loading="lazy" /></a></sup>. <sup id="cite&#95;ref-8" class="reference"><a href="#cite_note-8"><span class="cite-bracket">&#91;</span>8<span class="cite-bracket">&#93;</span></a></sup></li>
+<li>The downloader <span class="github-link-widget">
+  <img src="/w/images/a/af/Github-mark.svg" width="14" height="16" alt="GitHub Logo" />
+
+          
+                
+                                                    
+        
+    
+                <a href="https://github.com/Kicksecure/systemcheck" target="_blank" rel="noopener" title="GitHub repository"><code>systemcheck</code></a>
+      |
+              <a href="https://github.com/Kicksecure/systemcheck/tree/master/usr/libexec/systemcheck/canary-download" target="_blank" rel="noopener" title="GitHub file path"><code>/usr/libexec/systemcheck/canary-download</code></a>
+              
+          </span> is written in the memory-safe Python language (<code>python3-requests</code>) and runs under a dedicated and limited Linux user account <code>canary</code>.</li>
+<li><code>canary.txt.embed.sig</code> is verified using <code>signify-openbsd</code>. <sup id="cite&#95;ref-9" class="reference"><a href="#cite_note-9"><span class="cite-bracket">&#91;</span>9<span class="cite-bracket">&#93;</span></a></sup></li>
+<li>Has an <span class="github-link-widget">
+  <img src="/w/images/a/af/Github-mark.svg" width="14" height="16" alt="GitHub Logo" />
+
+          
+                
+                                                    
+        
+    
+                <a href="https://github.com/Kicksecure/systemcheck" target="_blank" rel="noopener" title="GitHub repository"><code>systemcheck</code></a>
+      |
+              <a href="https://github.com/Kicksecure/systemcheck/tree/master/etc/apparmor.d/usr.libexec.systemcheck.canary" target="_blank" rel="noopener" title="GitHub file path"><code>/etc/apparmor.d/usr.libexec.systemcheck.canary</code></a>
+              
+          </span>.</li>
+<li>Has <span class="github-link-widget">
+  <img src="/w/images/a/af/Github-mark.svg" width="14" height="16" alt="GitHub Logo" />
+
+          
+                
+                                                    
+        
+    
+                <a href="https://github.com/Kicksecure/systemcheck" target="_blank" rel="noopener" title="GitHub repository"><code>systemcheck</code></a>
+      |
+              <a href="https://github.com/Kicksecure/systemcheck/tree/master/usr/lib/systemd/system/canary.service" target="_blank" rel="noopener" title="GitHub file path"><code>/usr/lib/systemd/system/canary.service</code></a>
+              
+          </span>.</li>
+<li>Similar to <a href="/wiki/Sdwdate" title="Sdwdate">sdwdate</a>, it fetches time from onion time sources.</li></ul>
+</td></tr>
+
+<tr>
+<th>Implementation details
+</th>
+<td>
+<ul><li>Minimal <span class="github-link-widget">
+  <img src="/w/images/a/af/Github-mark.svg" width="14" height="16" alt="GitHub Logo" />
+
+          
+                
+                                                    
+        
+    
+                <a href="https://github.com/Kicksecure/systemcheck" target="_blank" rel="noopener" title="GitHub repository"><code>systemcheck</code></a>
+      |
+              <a href="https://github.com/Kicksecure/systemcheck/tree/master/usr/libexec/systemcheck/canary-daemon" target="_blank" rel="noopener" title="GitHub file path"><code>/usr/libexec/systemcheck/canary-daemon</code></a>
+              
+          </span> (with <code>systemd-notify</code>).</li>
+<li>The <span class="github-link-widget">
+  <img src="/w/images/a/af/Github-mark.svg" width="14" height="16" alt="GitHub Logo" />
+
+          
+                
+                                                    
+        
+    
+                <a href="https://github.com/Kicksecure/systemcheck" target="_blank" rel="noopener" title="GitHub repository"><code>systemcheck</code></a>
+      |
+              <a href="https://github.com/Kicksecure/systemcheck/tree/master/usr/libexec/systemcheck/canary" target="_blank" rel="noopener" title="GitHub file path"><code>/usr/libexec/systemcheck/canary</code></a>
+              
+          </span> wrapper includes logic on when to run <code>canary-download.py</code>.
+<ul><li>This only runs on Whonix-Gateway to reduce server load. (Whonix only.)</li></ul></li>
+<li>Comprises a systemcheck module <span class="github-link-widget">
+  <img src="/w/images/a/af/Github-mark.svg" width="14" height="16" alt="GitHub Logo" />
+
+          
+                
+                                                    
+        
+    
+                <a href="https://github.com/Kicksecure/systemcheck" target="_blank" rel="noopener" title="GitHub repository"><code>systemcheck</code></a>
+      |
+              <a href="https://github.com/Kicksecure/systemcheck/tree/master/usr/libexec/systemcheck/check_warrant_canary.bsh" target="_blank" rel="noopener" title="GitHub file path"><code>/usr/libexec/systemcheck/check_warrant_canary.bsh</code></a>
+              
+          </span>.</li></ul>
+</td></tr>
+
+<tr>
+<th>Verbose parameter
+</th>
+<td>During the initial deployment phase of this new feature, systemcheck will only show canary status information when using the <code>--verbose</code> parameter. The reason is that there might be non-security-related potential bugs to address:
+<ul><li>The server file location might change.</li>
+<li>The server file might become unreadable due to Linux file access permissions.</li>
+<li>Onion connectivity issues could emerge.</li>
+<li>Server caching issues could serve a stale warrant copy.</li>
+<li>General warrant canary improvements.</li></ul>
+</td></tr>
+
+<tr>
+<th>Troubleshooting
+</th>
+<td>In case of issues, manually verify the Kicksecure warrant canary. Also see: <a target="_blank" rel="noreferrer noopener" class="external text" href="https://forums.whonix.org/t/whonix-warrant-canary/3208/24">Whonix Warrant Canary Forum Discussion</a><sup class="ext-link-to-archive has-sibling" title="Link to archived version on web.archive.org"><a rel="noreferrer noopener" target="_blank" href="https://web.archive.org/web/https://forums.whonix.org/t/whonix-warrant-canary/3208/24"><img src="/w/images/7/73/Internet_Archive_logo.png" alt="archive.org icon" width="14" height="16" decoding="async" loading="lazy" /></a></sup><sup class="ext-link-to-archive" title="Link to archived version on archive.today"><a rel="noreferrer noopener" target="_blank" href="https://archive.today/https://forums.whonix.org/t/whonix-warrant-canary/3208/24"><img src="/w/images/8/8f/Archive-today-logo-homage.svg" alt="archive.today icon" width="12" height="16" decoding="async" loading="lazy" /></a></sup>
+</td></tr>
+
+</tbody></table>
+<div class="mw-heading mw-heading2"><h2 id="Disable_Warrant_Canary_Check">Disable Warrant Canary Check</h2><span class="mw-editsection"><span class="mw-editsection-bracket">[</span><a href="/w/index.php?title=Systemcheck&amp;action=edit&amp;section=19" title="Edit section: Disable Warrant Canary Check"><span>edit</span></a><span class="mw-editsection-bracket">]</span></span></div>
+<div class="info-box has-icon">
+<p><span class="info-box-icon"><span typeof="mw:Error mw:File"><a href="/w/index.php?title=Special:Upload&amp;wpDestFile=Ambox_warning_pn.svg.png" class="new" title="File:Ambox warning pn.svg.png"><span class="mw-file-element mw-broken-media" data-width="40">File:Ambox warning pn.svg.png</span></a></span></span>
+This disables automated verification of the Kicksecure warrant canary when running systemcheck.
+</p>
+</div>
+<p>This will prevent the daily Kicksecure census.
+</p><p><i class="padded-content-icon pci-style-circle pci-border-thick pci-shadow pci-text fa-solid cs-green iconset-h1">1</i> Open the following file with root rights.
+</p><p>Open file <code>/etc/systemcheck.d/50_user.conf</code> in an editor with administrative ("<a href="/wiki/Root" title="Root"><code>root</code></a>") rights.
+</p>
+<div class="info-box">
+<p><i class="padded-content-icon pci-text fa-solid cs-yellow iconset-h3">1</i> Select your platform.
+</p>
+<div class="tab-content-controller">
+<div class="mininav"></div>
+<div class="tcc-content">
+<div class="tcc-section info-box">
+<div class="tcc-image"><span typeof="mw:Error mw:File"><a href="/w/index.php?title=Special:Upload&amp;wpDestFile=Kicksecure-logo-icon.svg" class="new" title="File:Kicksecure-logo-icon.svg"><span class="mw-file-element mw-broken-media" data-width="25">File:Kicksecure-logo-icon.svg</span></a></span></div>
+<div class="tcc-title">
+<p class="mw-empty-elt">
+</p><div class="mw-heading mw-heading5 widget-headline ">
+<h5 id="kicksecure" role="heading" aria-level="5">Kicksecure</h5>
+</div>
+
+
+<p class="mw-empty-elt"></p>
+</div>
+<div class="tcc-content">
+<p><i class="padded-content-icon pci-text fa-solid cs-yellow iconset-h3">2</i> Notes.
+</p>
+<ul><li><u>Sudoedit guidance:</u> See <a href="/wiki/Software#Open_File_with_Root_Rights" title="Software">Open File with Root Rights</a> for details on why using <code>sudoedit</code> improves security and how to use it.</li>
+<li><u>Editor requirement:</u> Close Featherpad (or the chosen text editor) before running the <code>sudoedit</code> command.</li></ul>
+<p><i class="padded-content-icon pci-text fa-solid cs-yellow iconset-h3">3</i> Open the file with root rights.
+</p><p><span class="code-select">sudoedit /etc/systemcheck.d/50_user.conf</span>
+
+</p>
+</div>
+</div> 
+<div class="tcc-section info-box">
+<div class="tcc-image"><span typeof="mw:Error mw:File"><a href="/w/index.php?title=Special:Upload&amp;wpDestFile=Qubes-logo-blue.png" class="new" title="File:Qubes-logo-blue.png"><span class="mw-file-element mw-broken-media" data-width="25">File:Qubes-logo-blue.png</span></a></span></div>
+<div class="tcc-title">
+<p class="mw-empty-elt">
+</p><div class="mw-heading mw-heading5 widget-headline ">
+<h5 id="kicksecure-qubes" role="heading" aria-level="5">Kicksecure-Qubes</h5>
+</div>
+
+
+<p class="mw-empty-elt"></p>
+</div>
+<div class="tcc-content">
+<p><i class="padded-content-icon pci-text fa-solid cs-yellow iconset-h3">2</i> Notes.
+</p>
+<ul><li><u>Sudoedit guidance:</u> See <a href="/wiki/Software#Open_File_with_Root_Rights" title="Software">Open File with Root Rights</a> for details on why using <code>sudoedit</code> improves security and how to use it.</li>
+<li><u>Editor requirement:</u> Close Featherpad (or the chosen text editor) before running the <code>sudoedit</code> command.</li>
+<li><u>Template requirement:</u> When using <a href="/wiki/Qubes" title="Qubes">Kicksecure-Qubes</a>, this must be done inside the Template.</li></ul>
+<p><i class="padded-content-icon pci-text fa-solid cs-yellow iconset-h3">3</i> Open the file with root rights.
+</p><p><span class="code-select">sudoedit /etc/systemcheck.d/50_user.conf</span>
+ 
+</p><p><i class="padded-content-icon pci-text fa-solid cs-yellow iconset-h3">4</i> Notes.
+</p>
+<ul><li><u>Shut down Template:</u> After applying this change, shut down the Template.</li>
+<li><u>Restart App Qubes:</u> All App Qubes based on the Template need to be restarted if they were already running.</li>
+<li><u>Qubes persistence:</u> See also <a href="/wiki/Qubes#Qubes_Persistence" title="Qubes">Qubes Persistence</a></li>
+<li><u>General procedure:</u> This is a general procedure required for Qubes and is <a href="/wiki/Unspecific" title="Unspecific">unspecific to Kicksecure-Qubes</a>.</li></ul>
+</div>
+</div> 
+<div class="tcc-section info-box">
+<div class="tcc-image"><span typeof="mw:Error mw:File"><a href="/w/index.php?title=Special:Upload&amp;wpDestFile=Any12312.png" class="new" title="File:Any12312.png"><span class="mw-file-element mw-broken-media" data-width="25">File:Any12312.png</span></a></span></div>
+<div class="tcc-title">
+<p class="mw-empty-elt">
+</p><div class="mw-heading mw-heading5 widget-headline ">
+<h5 id="others-and-alternatives" role="heading" aria-level="5">Others and Alternatives</h5>
+</div>
+
+
+<p class="mw-empty-elt"></p>
+</div>
+<div class="tcc-content">
+<p><i class="padded-content-icon pci-text fa-solid cs-yellow iconset-h3">2</i> Notes.
+</p>
+<ul><li><u>Example only:</u> This is just an example. Other tools could achieve the same goal.</li>
+<li><u>Troubleshooting and alternatives:</u> If this example does not work for you, or if you are not using Kicksecure, please refer to <a href="/wiki/Software#Open_File_with_Root_Rights" title="Software">Open File with Root Rights</a>.</li></ul>
+<p><i class="padded-content-icon pci-text fa-solid cs-yellow iconset-h3">3</i> Open the file with root rights.
+</p><p><span class="code-select">sudoedit /etc/systemcheck.d/50_user.conf</span>
+
+</p>
+</div>
+</div>
+</div>
+</div>
+</div> 
+<p><i class="padded-content-icon pci-style-circle pci-border-thick pci-shadow pci-text fa-solid cs-green iconset-h1">2</i> Add the following content.
+</p><p><span class="code-select">canary=false</span>
+ 
+</p><p><i class="padded-content-icon pci-style-circle pci-border-thick pci-shadow pci-text fa-solid cs-green iconset-h1">3</i> Done.
+</p><p>The automated warrant canary check has been disabled.
+</p>
+<div class="mw-heading mw-heading2"><h2 id="autostart_systemcheck">autostart systemcheck</h2><span class="mw-editsection"><span class="mw-editsection-bracket">[</span><a href="/w/index.php?title=Systemcheck&amp;action=edit&amp;section=20" title="Edit section: autostart systemcheck"><span>edit</span></a><span class="mw-editsection-bracket">]</span></span></div>
+<p>Perform these steps to automatically start <code>systemcheck</code>; this step is optional.
+</p><p><i class="padded-content-icon pci-style-circle pci-border-thick pci-shadow pci-text fa-solid cs-green iconset-h1">1</i> Create folder <code>~/.config/autostart</code>.
+</p><p><span class="code-select">mkdir -p ~/.config/autostart</span>
+ 
+</p><p><i class="padded-content-icon pci-style-circle pci-border-thick pci-shadow pci-text fa-solid cs-green iconset-h1">2</i> Create a symlink from <code>/usr/share/applications/systemcheck.desktop</code> to <code>~/.config/autostart/systemcheck.desktop</code>.
+</p><p><span class="code-select">ln -s /usr/share/applications/systemcheck.desktop ~/.config/autostart/systemcheck.desktop</span>
+ 
+</p><p><i class="padded-content-icon pci-style-circle pci-border-thick pci-shadow pci-text fa-solid cs-green iconset-h1">3</i> Done.
+</p><p><code>systemcheck</code> will now automatically start after boot.
+</p>
+<div class="mw-heading mw-heading1"><h1 id="Arg_Max_Check">Arg Max Check</h1><span class="mw-editsection"><span class="mw-editsection-bracket">[</span><a href="/w/index.php?title=Systemcheck&amp;action=edit&amp;section=21" title="Edit section: Arg Max Check"><span>edit</span></a><span class="mw-editsection-bracket">]</span></span></div>
+<p>Only useful in case of systemcheck GUI issues.
+</p><p><span class="code-select">systemcheck --function check_arg_max</span>
+ 
+</p><p>Expected result:
+</p>
+<pre>[INFO] [systemcheck] ERROR: ARG_MAX exceeded!
+
+debug information:
+output_func was called with too many arguments.
+${FUNCNAME[0]}: output_func
+${FUNCNAME[1]}: output_func_cli
+${FUNCNAME[2]}: check_arg_max
+${FUNCNAME[3]}: systemcheck_run_function
+${FUNCNAME[5]}: systemcheck_main
+${FUNCNAME[6]}: main
+$0: /usr/libexec/systemcheck/systemcheck
+</pre>
+<p>The output message will probably be improved in the future. "ERROR: ARG_MAX exceeded!" will be rewritten to "ARG_MAX detected.".
+</p>
+<div class="mw-heading mw-heading1"><h1 id="Related">Related</h1><span class="mw-editsection"><span class="mw-editsection-bracket">[</span><a href="/w/index.php?title=Systemcheck&amp;action=edit&amp;section=22" title="Edit section: Related"><span>edit</span></a><span class="mw-editsection-bracket">]</span></span></div>
+<ul><li><a href="/wiki/System_Audit" title="System Audit">System Audit</a></li></ul>
+<div class="mw-heading mw-heading1"><h1 id="See_Also">See Also</h1><span class="mw-editsection"><span class="mw-editsection-bracket">[</span><a href="/w/index.php?title=Systemcheck&amp;action=edit&amp;section=23" title="Edit section: See Also"><span>edit</span></a><span class="mw-editsection-bracket">]</span></span></div>
+<ul><li><a href="/wiki/Dev/systemcheck" title="Dev/systemcheck">Dev/systemcheck</a></li></ul>
+<div class="mw-heading mw-heading1"><h1 id="Footnotes">Footnotes</h1><span class="mw-editsection"><span class="mw-editsection-bracket">[</span><a href="/w/index.php?title=Systemcheck&amp;action=edit&amp;section=24" title="Edit section: Footnotes"><span>edit</span></a><span class="mw-editsection-bracket">]</span></span></div>
+<div class="mw-references-wrap"><ol class="references">
+<li id="cite&#95;note-1"><span class="mw-cite-backlink"><a href="#cite_ref-1">↑</a></span> <span class="reference-text">
+<code>Qube Manager</code> &#8594; <code>right-click the VM you want to check</code> &#8594; <code>select "<u>R</u>un command in qube"</code>
+<br />
+<br />
+Type each command below, followed by the <code>ENTER</code> key.
+
+<i class="padded-content-icon pci-text fa-solid cs-blue iconset-h2">1</i> Open a terminal.
+
+<span class="code-select">qterminal</span>
+ 
+
+<i class="padded-content-icon pci-text fa-solid cs-blue iconset-h2">2</i> Run <code>systemcheck</code>.
+
+<span class="code-select">systemcheck</span>
+ 
+
+<i class="padded-content-icon pci-text fa-solid cs-blue iconset-h2">3</i> Done.
+
+<code>systemcheck</code> has been started in the selected Qube.</span>
+</li>
+<li id="cite&#95;note-2"><span class="mw-cite-backlink"><a href="#cite_ref-2">↑</a></span> <span class="reference-text">
+This is only expected to affect those following the <a href="/wiki/KVM" title="KVM">KVM</a> instructions.</span>
+</li>
+<li id="cite&#95;note-3"><span class="mw-cite-backlink"><a href="#cite_ref-3">↑</a></span> <span class="reference-text">These capture packages which depend on all other recommended / default-installed packages.</span>
+</li>
+<li id="cite&#95;note-4"><span class="mw-cite-backlink"><a href="#cite_ref-4">↑</a></span> <span class="reference-text">
+Otherwise, the system might become locked or the package manager might be left in a broken state. Advice is provided on what to do in such circumstances.</span>
+</li>
+<li id="cite&#95;note-5"><span class="mw-cite-backlink"><a href="#cite_ref-5">↑</a></span> <span class="reference-text">
+Some users may wonder why it is necessary to check the IP address if the Kicksecure design ensures that the real IP cannot be leaked. Sometimes <code>check.torproject.org</code> reports false positives and fails to detect Tor exit nodes, so it is better to provide information about that possibility. This also reduces support requests and bad press. Users are welcome to investigate a Tor exit node that could not be detected, but it can be stated with high confidence that the IP address will be associated with a known Tor exit node.</span>
+</li>
+<li id="cite&#95;note-6"><span class="mw-cite-backlink"><a href="#cite_ref-6">↑</a></span> <span class="reference-text">
+Another reason to perform this check is because some users set up dangerous and/or unsupported configurations, such as:
+
+<ul><li>Using virtualizers which are entirely unsupported and untested by Kicksecure developers.</li>
+<li>Installing arbitrary packages on Kicksecure (<code>kicksecure-18</code>). This could theoretically create leak vectors, and systemcheck is the last layer of defense against such issues.</li></ul>
+</span></li>
+<li id="cite&#95;note-7"><span class="mw-cite-backlink"><a href="#cite_ref-7">↑</a></span> <span class="reference-text">
+<span class="code-select">systemcheck --function check_su_access --verbose</span>
+ 
+
+<pre>[INFO] [systemcheck] su access check: Locked down - only account root can use su.
+See also: https://www.kicksecure.com/wiki/Dev/Strong_Linux_User_Account_Isolation#su_restrictions
+</pre></span>
+</li>
+<li id="cite&#95;note-8"><span class="mw-cite-backlink"><a href="#cite_ref-8">↑</a></span> <span class="reference-text">For convenience, the clearnet link (unused by systemcheck) can be previewed here: <a target="_blank" rel="noreferrer noopener" class="external free" href="https://download.kicksecure.com/developer-meta-files/canary/canary.txt.embed.sig">https://download.kicksecure.com/developer-meta-files/canary/canary.txt.embed.sig</a><sup class="ext-link-to-archive has-sibling" title="Link to archived version on web.archive.org"><a rel="noreferrer noopener" target="_blank" href="https://web.archive.org/web/https://download.kicksecure.com/developer-meta-files/canary/canary.txt.embed.sig"><img src="/w/images/7/73/Internet_Archive_logo.png" alt="archive.org icon" width="14" height="16" decoding="async" loading="lazy" /></a></sup><sup class="ext-link-to-archive" title="Link to archived version on archive.today"><a rel="noreferrer noopener" target="_blank" href="https://archive.today/https://download.kicksecure.com/developer-meta-files/canary/canary.txt.embed.sig"><img src="/w/images/8/8f/Archive-today-logo-homage.svg" alt="archive.today icon" width="12" height="16" decoding="async" loading="lazy" /></a></sup></span>
+</li>
+<li id="cite&#95;note-9"><span class="mw-cite-backlink"><a href="#cite_ref-9">↑</a></span> <span class="reference-text">
+<span class="code-select">sudo -u canary signify-openbsd -V -e -p /usr/share/repository-dist/derivative-distribution-signify-key.pub -x /var/lib/canary/canary.txt.embed.sig -m /var/lib/canary/canary-unembed.txt</span>
+ </span>
+</li>
+</ol></div>
+<p>
+<span class="wiki-book-index wbi-for-footer">
+    <a class="prev internal" href="https://www.kicksecure.com/wiki/Boot_firmware" title="Boot firmware">
+    <i class="fa-solid fa-chevron-left fa-fw"></i>
+    <span class="text">Boot firmware</span>
+  </a>
+  
+  <a class="index internal" href="https://www.kicksecure.com/wiki/Documentation" title="Documentation">
+    <i class="fa-solid fa-list fa-fw"></i>
+    <span class="text">Documentation</span>
+  </a>
+
+    <a class="next internal" href="https://www.kicksecure.com/wiki/Basic_Security_Guide_Introduction" title="Basic Security Guide Introduction">
+    <i class="fa-solid fa-chevron-right fa-fw"></i>
+    <span class="text">Basic Security Guide Introduction</span>
+  </a>
+  
+  <span class="info">
+    <span class="prev">Previous page: Boot firmware</span>    <span class="index">Index page: Documentation</span>
+    <span class="next">Next page: Basic Security Guide Introduction</span>  </span>
+</span>
+
+</p>
+<div class="robots-nocontent" data-nosnippet=""><!--googleoff: index--><!--noindex--><div id="custom-footer">
+<p class="mw-empty-elt">
+
+
+
+</p><div class="content-wrapper">
+
+  <div class="left">
+  
+    <div class="main-claim">
+      <span class="headline">
+        Kicksecure
+                <a class="icon-link" href="/wiki/Trademark_Policy" title="Trademark Policy">
+          <img src="/w/images/c/c7/Tm.png" decoding="async" loading="lazy" width="20" height="20" alt="Trademark Policy TM symbol" />
+        </a>
+              </span>
+
+      <span class="claim">
+        A secure by default operating system with the latest security research in place.
+        <span class="share-tooltip"></span>
+      </span>
+    </div>
+
+    <div class="dark-mode-switch">
+      <a href="#" class="ext-darkmode-link" title="darkmode-link-tooltip">
+        <i class="fa-solid fa-lightbulb margin-right-5"></i>
+        <span>Dark mode</span>
+      </a>
+    </div>
+    
+  </div>
+
+  <div class="middle">
+
+    <div class="social">
+      <div class="headline">Follow us on social media</div>
+      
+      <div class="icons">
+        <a class="icon-link" href="https://t.me/s/Kicksecure" target="_blank" title="Kicksecure on Telegram">
+          <img src="/w/images/thumb/9/9a/1024px-Telegram_2019_Logo.svg.png/50px-1024px-Telegram_2019_Logo.svg.png" decoding="async" loading="lazy" alt="Telegram" />
+        </a>
+
+        <a class="icon-link" href="https://twitter.com/Kicksecure" target="_blank" title="Kicksecure on Twitter">
+          <img src="/w/images/thumb/6/67/Twitter-logo.png/50px-Twitter-logo.png" decoding="async" loading="lazy" alt="Twitter" />
+        </a>
+
+        <a class="icon-link" href="https://www.youtube.com/@PrettyGoodSecurity" target="_blank" title="Kicksecure on YouTube">
+          <img src="/w/images/thumb/b/b6/Youtube-logo.png/50px-Youtube-logo.png" decoding="async" loading="lazy" alt="YouTube" />
+        </a>
+
+        <a class="icon-link" href="https://inv.nadeko.net/channel/UCAHILHRPwI-6dCBFxSLJjlw" target="_blank" title="Kicksecure on Invidious (open source alternative front-end to YouTube)">
+          <img src="/w/images/thumb/c/cd/Invidious-logo.png/50px-Invidious-logo.png" decoding="async" loading="lazy" alt="Invidious" />
+        </a>
+
+        <a class="icon-link" href="https://www.facebook.com/Kicksecure" target="_blank" title="Kicksecure on Facebook">
+          <img src="/w/images/thumb/9/9d/Facebook-logo.png/50px-Facebook-logo.png" decoding="async" loading="lazy" alt="Facebook" />
+        </a>
+
+        <a class="icon-link" href="https://www.reddit.com/r/Kicksecure" target="_blank" title="Kicksecure on Reddit">
+          <img src="/w/images/thumb/1/14/Reddit-logo.png/50px-Reddit-logo.png" decoding="async" loading="lazy" alt="Reddit" />
+        </a>
+
+        <a class="icon-link" href="https://github.com/Kicksecure" target="_blank" title="Kicksecure on GitHub">
+          <img src="/w/images/thumb/1/13/Github-logo.png/50px-Github-logo.png" decoding="async" loading="lazy" alt="GitHub" />
+        </a>
+
+        <a class="icon-link" href="https://forums.kicksecure.com/c/news.rss" target="_blank" title="Kicksecure as RSS">
+          <img src="/w/images/thumb/0/09/Rss.png/50px-Rss.png" decoding="async" loading="lazy" alt="RSS" />
+        </a>
+
+        <a class="icon-link" href="https://fosstodon.org/@kicksecure" target="_blank" title="Kicksecure on Mastodon">
+          <img src="/w/images/thumb/b/b7/Mastodon-logo.png/50px-Mastodon-logo.png" decoding="async" loading="lazy" alt="Mastodon" />
+        </a>
+        
+        <a class="icon-link" href="https://bsky.app/profile/kicksecure.com" target="_blank" title="Kicksecure on Bluesky">
+          <img src="/w/images/a/ab/Bluesky-logo.svg" decoding="async" loading="lazy" alt="Bluesky" />
+        </a>
+      </div>
+    </div>
+
+    <div class="pup-supported">
+      <div class="headline">Supported by Power Up Privacy</div>
+
+      <div class="content">
+        Kicksecure is proudly supported until 2026 by
+        <a href="https://powerupprivacy.com/" target="_blank">Power Up Privacy</a>,
+        a privacy advocacy group that seeks to supercharge privacy projects with resources so they can complete their mission of making our world a better place.
+        (<a href="/wiki/Transparency">Strictly subject to our sponsorship policy.</a>)
+      </div>
+    </div>
+
+            
+  </div>
+
+  <div class="right">
+    <div class="opensource">
+      <span class="images">
+        <a href="/wiki/Reasons_for_Freedom_Software"><img src="/w/images/thumb/a/a3/Heckert_gnu.big.png/50px-Heckert_gnu.big.png" decoding="async" loading="lazy" alt="GNU logo" width="50" height="60" /></a>
+        <a href="/wiki/Policy_On_Nonfreedom_Software"><img src="/w/images/thumb/0/09/Osi_standard_logo_0.png/50px-Osi_standard_logo_0.png" decoding="async" loading="lazy" alt="Open Source Initiative logo" width="50" height="60" /></a>
+      </span>
+      <span class="text">
+        At
+        Kicksecure we value <b>freedom and trust</b>, supporting Open Source and Freedom Software
+      </span>
+    </div>
+
+    <div class="legal">
+      <span class="disclaimer">
+        By using this website, you acknowledge you have read, understood, and agree to be bound by these agreements:
+        <a href="/wiki/Terms_of_Service" title="Terms of Service">Terms of Service</a>,
+        <a href="/wiki/Privacy_Policy" title="Privacy Policy">Privacy Policy</a>,
+        <a href="/wiki/Cookie_Policy" title="Cookie Policy">Cookie Policy</a>,
+        <a href="/wiki/E-Sign_Consent" title="E-Sign Consent">E-Sign Consent</a>,
+        <a href="/wiki/DMCA" title="DMCA">DMCA</a>,
+        <a href="/wiki/Imprint" title="Imprint">Imprint</a>
+      </span>
+
+      <span class="rights">
+        <a href="/wiki/Copyright" title="Copyright">
+          <img src="/w/images/e/ee/C.png" decoding="async" loading="lazy" width="20" height="20" alt="Copyright" />
+        </a>
+        2012-
+        2026 ENCRYPTED SUPPORT LLC
+      </span>
+    </div>
+  </div>
+</div>
+
+
+<p class="mw-empty-elt"></p>
+</div>
+<div id="fly-in-notification-panel" role="region" aria-label="Notification panel">
+  <div class="inner-wrapper">
+    <i class="close-panel fa-solid fa-times" role="button" tabindex="0" aria-label="Close this notification" aria-pressed="false"></i>
+
+    <a href="/wiki/Donate" aria-label="Notification image link">    <img src="/w/images/thumb/e/e8/Flyin-donate-promo.jpg/300px-Flyin-donate-promo.jpg" decoding="async" loading="lazy" height="215" width="300" alt="Notification image" />
+    </a>    <div class="content">
+      <div class="headline"><a href="/wiki/Donate" aria-label="Notification headline link">Your support makes<br />all the difference!</a></div>
+      <p>We believe security software like Kicksecure needs to remain Open Source and independent. <b>Would you help</b> sustain and grow the project? Learn more about our <a href="/wiki/Donate" target="_blank">14 year success story and maybe DONATE!</a></p>
+    </div>
+  </div>
+</div>
+<!--/noindex--><!--googleon: index--></div> 
+<!-- Saved in parser cache with key www.kicksecure.com:pcache:1460:|#|:idhash:canonicalwww.kicksecure.com and timestamp 20260529143245 and revision id 1461. Rendering was triggered because: unknown
+ -->
+</div>
+<div class="printfooter" data-nosnippet="">Retrieved from "<a dir="ltr" href="https://www.kicksecure.com/w/index.php?title=Systemcheck&amp;oldid=1461">https://www.kicksecure.com/w/index.php?title=Systemcheck&amp;oldid=1461</a>"</div></div>
+		<div id="catlinks" class="catlinks" data-mw="interface"><div id="mw-normal-catlinks" class="mw-normal-catlinks"><a href="/wiki/Special:Categories" title="Special:Categories">Categories</a>: <ul><li><a href="/w/index.php?title=Category:Pages_with_broken_file_links&amp;action=edit&amp;redlink=1" class="new" title="Category:Pages with broken file links (page does not exist)">Pages with broken file links</a></li><li><a href="/wiki/Category:Documentation" title="Category:Documentation">Documentation</a></li><li><a href="/wiki/Category:Design" title="Category:Design">Design</a></li></ul></div></div>
+	</div>
+</div>
+<div id='mw-data-after-content'>
+	<div class="mw-cookiewarning-container"><div class="mw-cookiewarning-text"><span>By using our website, you acknowledge that you have read, understood and agreed to our Privacy Policy, Cookie Policy, Terms of Service, and E-Sign Consent.</span></div><form method="POST"><div class='oo-ui-layout oo-ui-horizontalLayout'><span class='oo-ui-widget oo-ui-widget-enabled oo-ui-buttonElement oo-ui-buttonElement-framed oo-ui-labelElement oo-ui-flaggedElement-progressive oo-ui-buttonWidget'><a role='button' tabindex='0' href='/wiki/Terms_of_Service' rel='nofollow' class='oo-ui-buttonElement-button'><span class='oo-ui-iconElement-icon oo-ui-iconElement-noIcon oo-ui-image-progressive'></span><span class='oo-ui-labelElement-label'>More information</span><span class='oo-ui-indicatorElement-indicator oo-ui-indicatorElement-noIndicator oo-ui-image-progressive'></span></a></span><span class='oo-ui-widget oo-ui-widget-enabled oo-ui-inputWidget oo-ui-buttonElement oo-ui-buttonElement-framed oo-ui-labelElement oo-ui-flaggedElement-primary oo-ui-flaggedElement-progressive oo-ui-buttonInputWidget'><button type='submit' tabindex='0' name='disablecookiewarning' value='OK' class='oo-ui-inputWidget-input oo-ui-buttonElement-button'><span class='oo-ui-iconElement-icon oo-ui-iconElement-noIcon oo-ui-image-invert'></span><span class='oo-ui-labelElement-label'>OK</span><span class='oo-ui-indicatorElement-indicator oo-ui-indicatorElement-noIndicator oo-ui-image-invert'></span></button></span></div></form></div>
+</div>
+
+<div id="mw-navigation">
+	<h2>Navigation menu</h2>
+	<div id="mw-head">
+		
+<nav id="p-personal" class="mw-portlet mw-portlet-personal vector-user-menu-legacy vector-menu" aria-labelledby="p-personal-label"  >
+	<h3
+		id="p-personal-label"
+		
+		class="vector-menu-heading "
+	>
+		<span class="vector-menu-heading-label">Personal tools</span>
+	</h3>
+	<div class="vector-menu-content">
+		
+		<ul class="vector-menu-content-list">
+			
+			<li id="pt-userpage" class="mw-list-item"><a class="new" href="/wiki/User:Testbot" title="Your user page (page does not exist) [.]" accesskey="."><span>Testbot</span></a></li><li id="pt-mytalk" class="mw-list-item"><a href="/wiki/User_talk:Testbot" class="new" title="Your talk page (page does not exist) [n]" accesskey="n"><span>Talk</span></a></li><li id="pt-preferences" class="mw-list-item"><a href="/wiki/Special:Preferences" title="Your preferences"><span>Preferences</span></a></li><li id="pt-watchlist" class="mw-list-item"><a href="/wiki/Special:Watchlist" title="A list of pages you are monitoring for changes [l]" accesskey="l"><span>Watchlist</span></a></li><li id="pt-mycontris" class="mw-list-item"><a href="/wiki/Special:Contributions/Testbot" title="A list of your contributions [y]" accesskey="y"><span>Contributions</span></a></li><li id="pt-logout" class="mw-list-item"><a href="/w/index.php?title=Special:UserLogout&amp;returnto=Systemcheck" data-mw="interface" title="Log out"><span>Log out</span></a></li>
+		</ul>
+		
+	</div>
+</nav>
+
+		<div id="left-navigation">
+			
+<nav id="p-namespaces" class="mw-portlet mw-portlet-namespaces vector-menu-tabs vector-menu-tabs-legacy vector-menu" aria-labelledby="p-namespaces-label"  >
+	<h3
+		id="p-namespaces-label"
+		
+		class="vector-menu-heading "
+	>
+		<span class="vector-menu-heading-label">Namespaces</span>
+	</h3>
+	<div class="vector-menu-content">
+		
+		<ul class="vector-menu-content-list">
+			
+			<li id="ca-nstab-main" class="selected mw-list-item"><a href="/wiki/Systemcheck" title="View the content page [c]" accesskey="c"><span>Page</span></a></li>
+		</ul>
+		
+	</div>
+</nav>
+
+			
+<nav id="p-variants" class="mw-portlet mw-portlet-variants emptyPortlet vector-menu-dropdown vector-menu" aria-labelledby="p-variants-label"  >
+	<input type="checkbox"
+		id="p-variants-checkbox"
+		role="button"
+		aria-haspopup="true"
+		data-event-name="ui.dropdown-p-variants"
+		class="vector-menu-checkbox"
+		aria-labelledby="p-variants-label"
+	>
+	<label
+		id="p-variants-label"
+		
+		class="vector-menu-heading "
+	>
+		<span class="vector-menu-heading-label">English</span>
+	</label>
+	<div class="vector-menu-content">
+		
+		<ul class="vector-menu-content-list">
+			
+			
+		</ul>
+		
+	</div>
+</nav>
+
+		</div>
+		<div id="right-navigation">
+			
+<nav id="p-views" class="mw-portlet mw-portlet-views vector-menu-tabs vector-menu-tabs-legacy vector-menu" aria-labelledby="p-views-label"  >
+	<h3
+		id="p-views-label"
+		
+		class="vector-menu-heading "
+	>
+		<span class="vector-menu-heading-label">Views</span>
+	</h3>
+	<div class="vector-menu-content">
+		
+		<ul class="vector-menu-content-list">
+			
+			<li id="ca-view" class="selected icon mw-list-item"><a href="/wiki/Systemcheck"><span>Read</span></a></li><li id="ca-edit" class="icon mw-list-item"><a href="/w/index.php?title=Systemcheck&amp;action=edit" title="Edit this page [e]" accesskey="e"><span>Edit</span></a></li><li id="ca-history" class="icon mw-list-item"><a href="/w/index.php?title=Systemcheck&amp;action=history" title="Past revisions of this page [h]" accesskey="h"><span>View history</span></a></li><li id="ca-watch" class="mw-watchlink icon mw-list-item"><a href="/w/index.php?title=Systemcheck&amp;action=watch" data-mw="interface" title="Add this page to your watchlist [w]" accesskey="w"><span>Watch</span></a></li>
+		</ul>
+		
+	</div>
+</nav>
+
+			
+<nav id="p-cactions" class="mw-portlet mw-portlet-cactions vector-menu-dropdown vector-menu" aria-labelledby="p-cactions-label"  title="More options" >
+	<input type="checkbox"
+		id="p-cactions-checkbox"
+		role="button"
+		aria-haspopup="true"
+		data-event-name="ui.dropdown-p-cactions"
+		class="vector-menu-checkbox"
+		aria-labelledby="p-cactions-label"
+	>
+	<label
+		id="p-cactions-label"
+		
+		class="vector-menu-heading "
+	>
+		<span class="vector-menu-heading-label">More</span>
+	</label>
+	<div class="vector-menu-content">
+		
+		<ul class="vector-menu-content-list">
+			
+			<li id="ca-move" class="mw-list-item"><a href="/wiki/Special:MovePage/Systemcheck" title="Move this page [m]" accesskey="m"><span>Move</span></a></li>
+		</ul>
+		
+	</div>
+</nav>
+
+			
+<div id="p-search" role="search" class="vector-search-box-vue  vector-search-box-show-thumbnail vector-search-box-auto-expand-width vector-search-box">
+	<h3 >Search</h3>
+	<form action="/w/index.php" id="searchform" class="vector-search-box-form">
+		<div id="simpleSearch"
+			class="vector-search-box-inner"
+			 data-search-loc="header-navigation">
+			<input class="vector-search-box-input"
+				 type="search" name="search" placeholder="Search Kicksecure" aria-label="Search Kicksecure" autocapitalize="sentences" spellcheck="false" title="Search Kicksecure [f]" accesskey="f" id="searchInput"
+			>
+			<input type="hidden" name="title" value="Special:Search">
+			<input id="mw-searchButton"
+				 class="searchButton mw-fallbackSearchButton" type="submit" name="fulltext" title="Search the pages for this text" value="Search">
+			<input id="searchButton"
+				 class="searchButton" type="submit" name="go" title="Go to a page with this exact name if it exists" value="Go">
+		</div>
+	</form>
+</div>
+
+		</div>
+	</div>
+	
+<div id="mw-panel" class="vector-legacy-sidebar">
+	<div id="p-logo" role="banner">
+		<a class="mw-wiki-logo" href="/wiki/Main_Page"
+			title="Visit the main page"></a>
+	</div>
+	
+<nav id="p-Menu" class="mw-portlet mw-portlet-Menu vector-menu-portal portal vector-menu" aria-labelledby="p-Menu-label"  >
+	<h3
+		id="p-Menu-label"
+		
+		class="vector-menu-heading "
+	>
+		<span class="vector-menu-heading-label">Menu</span>
+	</h3>
+	<div class="vector-menu-content">
+		
+		<ul class="vector-menu-content-list">
+			
+			<li id="n-HOME" class="mw-list-item"><a target="_blank" href="https://www.kicksecure.com"><span>HOME</span></a></li><li id="n-DOWNLOAD" class="mw-list-item"><a href="/wiki/Download"><span>DOWNLOAD</span></a></li><li id="n-DOCS" class="mw-list-item"><a href="/wiki/Documentation"><span>DOCS</span></a></li><li id="n-FAQ" class="mw-list-item"><a href="/wiki/FAQ"><span>FAQ</span></a></li><li id="n-HELP" class="mw-list-item"><a href="/wiki/Support"><span>HELP</span></a></li><li id="n-CONTRIBUTE" class="mw-list-item"><a href="/wiki/Contribute"><span>CONTRIBUTE</span></a></li><li id="n-NEWS" class="mw-list-item"><a target="_blank" href="https://forums.kicksecure.com/c/news"><span>NEWS</span></a></li>
+		</ul>
+		
+	</div>
+</nav>
+
+	
+<nav id="p-tb" class="mw-portlet mw-portlet-tb vector-menu-portal portal vector-menu" aria-labelledby="p-tb-label"  >
+	<h3
+		id="p-tb-label"
+		
+		class="vector-menu-heading "
+	>
+		<span class="vector-menu-heading-label">Tools</span>
+	</h3>
+	<div class="vector-menu-content">
+		
+		<ul class="vector-menu-content-list">
+			
+			<li id="t-whatlinkshere" class="mw-list-item"><a href="/wiki/Special:WhatLinksHere/Systemcheck" title="A list of all wiki pages that link here [j]" accesskey="j"><span>What links here</span></a></li><li id="t-recentchangeslinked" class="mw-list-item"><a href="/wiki/Special:RecentChangesLinked/Systemcheck" rel="nofollow" title="Recent changes in pages linked from this page [k]" accesskey="k"><span>Related changes</span></a></li><li id="t-upload" class="mw-list-item"><a href="/wiki/Special:Upload" title="Upload files [u]" accesskey="u"><span>Upload file</span></a></li><li id="t-print" class="mw-list-item"><a href="javascript:print();" rel="alternate" title="Printable version of this page [p]" accesskey="p"><span>Printable version</span></a></li><li id="t-permalink" class="mw-list-item"><a href="/w/index.php?title=Systemcheck&amp;oldid=1461" title="Permanent link to this revision of this page"><span>Permanent link</span></a></li><li id="t-info" class="mw-list-item"><a href="/w/index.php?title=Systemcheck&amp;action=info" title="More information about this page"><span>Page information</span></a></li>
+		</ul>
+		
+	</div>
+</nav>
+
+	
+</div>
+
+</div>
+
+<footer id="footer" class="mw-footer" >
+	<ul id="footer-info">
+	<li id="footer-info-lastmod"> </li>
+	<li id="footer-info-copyright">Content is available under <a href="/wiki/Kicksecure:Copyrights" class="mw-redirect" title="Kicksecure:Copyrights">Copyrights</a> unless otherwise noted.</li>
+</ul>
+
+	<ul id="footer-places">
+	<li id="footer-places-Terms_of_Service"><a href="/wiki/Terms_of_Service">Terms of Service</a></li>
+	<li id="footer-places-Privacy_Policy"><a href="/wiki/Privacy_Policy">Privacy Policy</a></li>
+	<li id="footer-places-Cookie_Policy"><a href="/wiki/Cookie_Policy">Cookie Policy</a></li>
+	<li id="footer-places-E-Sign_Consent"><a href="/wiki/E-Sign_Consent">E-Sign Consent</a></li>
+	<li id="footer-places-DMCA"><a href="/wiki/DMCA">DMCA</a></li>
+	<li id="footer-places-Imprint"><a href="/wiki/Imprint">Imprint</a></li>
+</ul>
+
+	<ul id="footer-icons" class="noprint">
+	<li id="footer-poweredbyico"><a href="https://www.mediawiki.org/" class="cdx-button cdx-button--fake-button cdx-button--size-large cdx-button--fake-button--enabled" target="_blank"><picture><source media="(min-width: 500px)" srcset="/w/resources/assets/poweredby_mediawiki.svg" width="88" height="31"><img src="/w/resources/assets/mediawiki_compact.svg" alt="Powered by MediaWiki" lang="en" width="25" height="25" loading="lazy"></picture></a></li>
+</ul>
+
+</footer>
+
+<div class="mw-portlet mw-portlet-dock-bottom emptyPortlet vector-menu-portal portal" id="p-dock-bottom">
+	<ul>
+		
+	</ul>
+</div>
+<script>(RLQ=window.RLQ||[]).push(function(){mw.config.set({"wgBackendResponseTime":200});});</script>
+</body>
+</html>
