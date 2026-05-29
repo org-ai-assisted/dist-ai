@@ -5,36 +5,37 @@
 ## AI-Assisted
 
 """Drive headless Chromium against a MediaWiki and dump a complete
-regression-test corpus per page-and-mode:
+regression-test corpus per page-and-mode.
+
+A "mode" is a 4-tuple of (auth, visit, viewport, color_scheme):
+    auth          anon | user
+    visit         first | repeat
+    viewport      desktop (1280x800) | mobile (390x844)
+    color_scheme  light | dark
+
+Default is all 16 combinations. CAPTURE_MODES limits the set.
+
+Per (page, mode) capture writes:
 
     RAW_DIR/<page>/<mode>/
-        dom.html          post-JS rendered HTML
-        screenshot.png    1280x800 viewport screenshot (deterministic)
-        manifest.json     URL -> {sha256, size, status, content_type, headers}
-        assets/<sha256>.<ext>
-                          raw asset body, indexed by content hash
-
-Modes captured:
-    anon-first      fresh anonymous context, single visit (cold server
-                    parser cache, cold browser cache).
-    anon-repeat     fresh anonymous context, purge + warmup visit +
-                    steady-state visit. The historical default; captures
-                    the "user has been here before" state.
-    user-first      authenticated context (cookies from WIKI_USER login),
-                    single visit.
-    user-repeat     authenticated context, purge + warmup + steady-state.
+        dom.html              post-JS rendered HTML
+        screenshot.png        viewport screenshot (deterministic)
+        manifest.json         URL -> {sha256, size, status, content_type, headers}
+        assets/<sha256>.<ext> raw asset body, indexed by content hash
+        console.json          [{type, text, location}] -- JS console
+                              messages + pageerror events
+        computed_styles.json  {selector: {prop: value, ...}, ...}
+                              for a curated set of structural elements
 
 Env:
   BASE_URL        target wiki origin                default https://www.kicksecure.com
   RAW_DIR         destination root                  default /var/lib/mediawiki-dom-snapshot/raw
   PAGES_FILE      one title per line                default /etc/mediawiki-dom-snapshot/pages.conf
-  VIEWPORT        "WIDTHxHEIGHT"                    default 1280x800
   TIMEOUT_MS      per-page timeout, milliseconds    default 30000
-  CAPTURE_MODES   comma-separated subset of the     default anon-first,anon-repeat
-                  four modes, or "all"
-  WIKI_USER       username for logged-in modes;     default (unset, skip user-* modes)
-                  must be paired with WIKI_PASSWORD
-  WIKI_PASSWORD   password for logged-in modes
+  CONCURRENCY     parallel captures                 default 4
+  CAPTURE_MODES   comma-separated subset, or "all"  default all
+  WIKI_USER       username for auth=user modes      default (unset, user modes skipped)
+  WIKI_PASSWORD   password for auth=user modes
 """
 import asyncio
 import hashlib
@@ -48,29 +49,49 @@ from playwright.async_api import async_playwright
 BASE = os.environ.get("BASE_URL", "https://www.kicksecure.com").rstrip("/")
 RAW_DIR = Path(os.environ.get("RAW_DIR", "/var/lib/mediawiki-dom-snapshot/raw"))
 PAGES_FILE = Path(os.environ.get("PAGES_FILE", "/etc/mediawiki-dom-snapshot/pages.conf"))
-W, H = (int(x) for x in os.environ.get("VIEWPORT", "1280x800").split("x"))
 TIMEOUT_MS = int(os.environ.get("TIMEOUT_MS", "30000"))
+CONCURRENCY = int(os.environ.get("CONCURRENCY", "4"))
 
 WIKI_USER = os.environ.get("WIKI_USER", "")
 WIKI_PASSWORD = os.environ.get("WIKI_PASSWORD", "")
 
-ALL_MODES = ["anon-first", "anon-repeat", "user-first", "user-repeat"]
+VIEWPORTS = {
+    "desktop": (1280, 800),
+    "mobile": (390, 844),
+}
+
+## Build the full 16-element mode list as (label, auth, visit, vp, scheme) tuples.
+def _all_modes() -> list[tuple]:
+    out = []
+    for auth in ("anon", "user"):
+        for visit in ("first", "repeat"):
+            for vp in ("desktop", "mobile"):
+                for scheme in ("light", "dark"):
+                    label = f"{auth}-{visit}-{vp}-{scheme}"
+                    out.append((label, auth, visit, vp, scheme))
+    return out
 
 
-def parse_modes() -> list[str]:
-    raw = os.environ.get("CAPTURE_MODES", "anon-first,anon-repeat").strip()
+ALL_MODES = _all_modes()
+ALL_MODE_LABELS = [m[0] for m in ALL_MODES]
+
+
+def parse_modes() -> list[tuple]:
+    raw = os.environ.get("CAPTURE_MODES", "all").strip()
     if raw == "all":
-        return list(ALL_MODES)
-    modes = [m.strip() for m in raw.split(",") if m.strip()]
-    for m in modes:
-        if m not in ALL_MODES:
-            raise SystemExit(f"snapshot: unknown CAPTURE_MODES entry: {m}")
-    if any(m.startswith("user-") for m in modes) and not (WIKI_USER and WIKI_PASSWORD):
+        wanted = ALL_MODE_LABELS
+    else:
+        wanted = [m.strip() for m in raw.split(",") if m.strip()]
+        for m in wanted:
+            if m not in ALL_MODE_LABELS:
+                raise SystemExit(f"snapshot: unknown CAPTURE_MODES entry: {m}")
+    modes = [m for m in ALL_MODES if m[0] in wanted]
+    if any(m[1] == "user" for m in modes) and not (WIKI_USER and WIKI_PASSWORD):
         print(
-            "snapshot: WIKI_USER/WIKI_PASSWORD unset; user-* modes will be skipped",
+            "snapshot: WIKI_USER/WIKI_PASSWORD unset; auth=user modes will be skipped",
             file=sys.stderr,
         )
-        modes = [m for m in modes if not m.startswith("user-")]
+        modes = [m for m in modes if m[1] != "user"]
     return modes
 
 
@@ -124,13 +145,7 @@ def ext_for(content_type: str, url: str) -> str:
 
 
 async def login(context, base_url: str, username: str, password: str) -> bool:
-    """Authenticate against MediaWiki's API and inject the resulting
-    session cookies into the browser context. Returns True on success.
-
-    Uses the action=login flow (clientlogin + lgtoken) rather than
-    the Special:UserLogin web form because it's robust against skin
-    changes and doesn't require parsing HTML for the CSRF token.
-    """
+    """MediaWiki action=login flow; injects session cookies into context."""
     api = f"{base_url}/w/api.php"
     sess = await context.request.get(
         api, params={"action": "query", "meta": "tokens", "type": "login", "format": "json"}
@@ -195,28 +210,59 @@ def record_response_factory(page_dir: Path, manifest: dict):
     return on_response
 
 
-async def capture_one(browser, mode: str, title: str) -> tuple[str, int, int]:
-    """Capture dom.html + screenshot + manifest + assets for one (page, mode)."""
-    page_dir = RAW_DIR / safe_name(title) / mode
-    page_dir.mkdir(parents=True, exist_ok=True)
+## Curated structural selectors for computed-style snapshots. CSS
+## regressions invisible to the HTML diff (specificity changes, cascade
+## order changes, !important toggles) surface here.
+COMPUTED_STYLE_SELECTORS = [
+    "body", "html", "main", "#mw-content-text",
+    "h1", "h2", "h3", ".first-heading", "#firstHeading",
+    "#siteNotice", ".sitenotice-banner", "#fly-in-notification-panel",
+    "header", "footer", "#mw-footer",
+    "a", ".mw-body-content a", "code", "pre",
+    ".wikitable", "table.wikitable th", "table.wikitable td",
+    ".info-box", ".intro-like",
+    "#back-to-top-button", ".close-panel",
+    ".kicksecure-hide-all-banners",
+]
 
-    auth = mode.startswith("user-")
-    repeat = mode.endswith("-repeat")
+## CSS properties to record per element. Snapshotting *every* property
+## would be ~250 lines per element; this list covers the ones whose
+## change surfaces a real regression.
+COMPUTED_STYLE_PROPS = [
+    "display", "position", "top", "right", "bottom", "left",
+    "width", "height", "min-width", "min-height", "max-width", "max-height",
+    "margin", "padding", "border",
+    "color", "background-color", "background-image",
+    "font-family", "font-size", "font-weight", "line-height",
+    "text-align", "text-decoration",
+    "opacity", "visibility", "z-index",
+    "transform", "transition",
+    "border-radius", "box-shadow",
+    "overflow", "white-space",
+]
+
+
+async def capture_one(browser, mode_tuple, title: str) -> tuple[str, str, int, int]:
+    label, auth, visit, vp_name, scheme = mode_tuple
+    page_dir = RAW_DIR / safe_name(title) / label
+    page_dir.mkdir(parents=True, exist_ok=True)
+    W, H = VIEWPORTS[vp_name]
 
     context = await browser.new_context(
         viewport={"width": W, "height": H},
         ignore_https_errors=True,
+        color_scheme=scheme,
         user_agent=(
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36 "
-            "mediawiki-dom-snapshot/0.3"
+            "mediawiki-dom-snapshot/0.4"
         ),
     )
 
-    if auth:
+    if auth == "user":
         if not await login(context, BASE, WIKI_USER, WIKI_PASSWORD):
             await context.close()
-            raise RuntimeError(f"login failed for mode {mode}")
+            raise RuntimeError(f"login failed for mode {label}")
 
     page = await context.new_page()
     manifest: dict[str, dict] = {}
@@ -224,13 +270,30 @@ async def capture_one(browser, mode: str, title: str) -> tuple[str, int, int]:
         record_response_factory(page_dir, manifest)(r)
     ))
 
+    console_events: list[dict] = []
+
+    def _on_console(msg):
+        ## msg.location is a dict {url, lineNumber, columnNumber}.
+        try:
+            loc = msg.location
+        except Exception:
+            loc = {}
+        console_events.append({
+            "type": msg.type,
+            "text": msg.text,
+            "url": loc.get("url") if isinstance(loc, dict) else "",
+        })
+
+    def _on_pageerror(exc):
+        console_events.append({"type": "pageerror", "text": str(exc), "url": ""})
+
+    page.on("console", _on_console)
+    page.on("pageerror", _on_pageerror)
+
     safe = title.replace(" ", "_")
     url = f"{BASE}/wiki/{safe}"
     api = f"{BASE}/w/api.php"
     try:
-        ## Server parser cache: purge before EVERY mode so the visit-count
-        ## comparison is apples-to-apples (one purge then one visit, or
-        ## one purge then two visits).
         try:
             await page.request.post(
                 api,
@@ -240,7 +303,7 @@ async def capture_one(browser, mode: str, title: str) -> tuple[str, int, int]:
         except Exception:
             pass
 
-        n_visits = 2 if repeat else 1
+        n_visits = 2 if visit == "repeat" else 1
         for _ in range(n_visits):
             response = await page.goto(url, wait_until="networkidle", timeout=TIMEOUT_MS)
         status = response.status if response else 0
@@ -260,11 +323,9 @@ async def capture_one(browser, mode: str, title: str) -> tuple[str, int, int]:
                 animation-delay: 0s !important;
                 animation-iteration-count: 1 !important;
             }
-            /* The fly-in notification panel flips display:none ->
-               display:block at t=1s via setTimeout. Captures land
-               on different sides of the flip depending on how
-               quickly networkidle fires. Force-show so the panel
-               is always visible (and stable) at capture time. */
+            /* Fly-in panel flips display:none -> display:block at
+               t=1s via setTimeout. Force visible so the panel is
+               always stable at capture time. */
             #fly-in-notification-panel {
                 display: block !important;
                 opacity: 1 !important;
@@ -282,13 +343,40 @@ async def capture_one(browser, mode: str, title: str) -> tuple[str, int, int]:
             animations="disabled",
         )
 
+        ## Computed-style snapshot for the curated selector list.
+        cstyles = await page.evaluate(
+            """([selectors, props]) => {
+                const out = {};
+                for (const sel of selectors) {
+                    let el;
+                    try { el = document.querySelector(sel); } catch (_) { el = null; }
+                    if (!el) { out[sel] = null; continue; }
+                    const cs = getComputedStyle(el);
+                    const o = {};
+                    for (const p of props) {
+                        o[p] = cs.getPropertyValue(p);
+                    }
+                    out[sel] = o;
+                }
+                return out;
+            }""",
+            [COMPUTED_STYLE_SELECTORS, COMPUTED_STYLE_PROPS],
+        )
+        (page_dir / "computed_styles.json").write_text(
+            json.dumps(cstyles, indent=2, sort_keys=True), encoding="utf-8"
+        )
+
+        (page_dir / "console.json").write_text(
+            json.dumps(console_events, indent=2, sort_keys=True), encoding="utf-8"
+        )
+
         manifest_sorted = dict(sorted(manifest.items()))
         (page_dir / "manifest.json").write_text(
             json.dumps(manifest_sorted, indent=2, sort_keys=True),
             encoding="utf-8",
         )
 
-        return (title, status, len(html))
+        return (label, title, status, len(html))
     finally:
         await context.close()
 
@@ -301,24 +389,31 @@ async def main() -> int:
         return 1
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     print(
-        f"mediawiki-dom-snapshot: base={BASE} viewport={W}x{H} "
-        f"pages={len(pages)} modes={','.join(modes)} -> {RAW_DIR}/"
+        f"mediawiki-dom-snapshot: base={BASE} pages={len(pages)} "
+        f"modes={len(modes)} concurrency={CONCURRENCY} -> {RAW_DIR}/"
     )
     failures = 0
     async with async_playwright() as p:
         browser = await p.chromium.launch()
-        for mode in modes:
-            print(f"\n  === mode: {mode} ===", flush=True)
-            for title in pages:
+        sem = asyncio.Semaphore(CONCURRENCY)
+
+        async def run_one(mode_tuple, title):
+            async with sem:
                 try:
-                    t, status, n = await capture_one(browser, mode, title)
+                    label, t, status, n = await capture_one(browser, mode_tuple, title)
                     tag = "OK  " if status == 200 else f"HTTP{status}"
-                    print(f"  {tag}  {mode}  {t}  ({n} bytes html)", flush=True)
-                    if status != 200:
-                        failures += 1
+                    print(f"  {tag}  {label:<35}  {t}  ({n} bytes)", flush=True)
+                    return status == 200
                 except Exception as exc:
-                    print(f"  FAIL  {mode}  {title}: {exc}", file=sys.stderr, flush=True)
-                    failures += 1
+                    print(
+                        f"  FAIL  {mode_tuple[0]:<35}  {title}: {exc}",
+                        file=sys.stderr, flush=True,
+                    )
+                    return False
+
+        tasks = [run_one(m, t) for m in modes for t in pages]
+        results = await asyncio.gather(*tasks)
+        failures = sum(1 for r in results if not r)
         await browser.close()
     return 1 if failures else 0
 

@@ -373,11 +373,54 @@ def _scrub_module_versions(body: str) -> str:
     return MODULE_VERSION_RE.sub(r"\1@SCRUBBED\2", body)
 
 
+def _normalize_console(events: list) -> list:
+    """JS console: drop the per-page-id / per-session noise. Only the
+    {type, text} pair matters for "did the new code introduce a new
+    warning"; locations vary by build URL etc.
+    """
+    out = []
+    seen = set()
+    for ev in events or []:
+        text = ev.get("text", "")
+        ## Many MW console messages embed the page's wgRequestId or a
+        ## ResourceLoader cache-buster; scrub those before equality.
+        text = re.sub(r"\bwg[A-Za-z]+:[^\s,]+", "wgFOO:SCRUBBED", text)
+        text = re.sub(r"\b[0-9a-f]{16,}\b", "HEX-SCRUBBED", text)
+        key = (ev.get("type", ""), text)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"type": key[0], "text": key[1]})
+    out.sort(key=lambda e: (e["type"], e["text"]))
+    return out
+
+
 def normalize_page_dir(src: Path, dst: Path) -> None:
     dst.mkdir(parents=True, exist_ok=True)
 
     html = (src / "dom.html").read_text(encoding="utf-8")
     (dst / "dom.html").write_text(normalize_html(html), encoding="utf-8")
+
+    ## Computed styles: bit-identical copy. The values come straight
+    ## from getComputedStyle so they're already canonical for the
+    ## viewport + scheme.
+    cs_src = src / "computed_styles.json"
+    if cs_src.exists():
+        shutil.copy2(cs_src, dst / "computed_styles.json")
+
+    ## Console events: scrub volatile bits and de-duplicate by
+    ## (type, text) so two captures of the same wiki state emit the
+    ## same canonical sequence.
+    console_src = src / "console.json"
+    if console_src.exists():
+        try:
+            events = json.loads(console_src.read_text(encoding="utf-8"))
+        except Exception:
+            events = []
+        (dst / "console.json").write_text(
+            json.dumps(_normalize_console(events), indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
 
     manifest = json.loads((src / "manifest.json").read_text(encoding="utf-8"))
     ## Infer the wiki page URL from the manifest. The first text/html

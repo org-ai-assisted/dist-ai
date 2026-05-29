@@ -232,13 +232,37 @@ def main() -> int:
         summary.append(f"  {name:<40} NEW")
 
     body_diffs_all: list[str] = []
+    def _diff_json_file(b: Path, c: Path, name: str) -> tuple[int, str]:
+        bp = b / name
+        cp = c / name
+        if not (bp.exists() and cp.exists()):
+            return 0, ""
+        bj = json.loads(bp.read_text(encoding="utf-8"))
+        cj = json.loads(cp.read_text(encoding="utf-8"))
+        if bj == cj:
+            return 0, ""
+        a_text = json.dumps(bj, indent=2, sort_keys=True)
+        b_text = json.dumps(cj, indent=2, sort_keys=True)
+        diff = text_diff(a_text, b_text, str(bp), str(cp), max_lines=60)
+        n = abs(a_text.count("\n") - b_text.count("\n")) + 1
+        return n, diff
+
     def diff_one(label: str, b: Path, c: Path):
         if not ((b / "dom.html").exists() and (c / "dom.html").exists()):
             return
         html_lines_diff, html_diff_text = diff_page_html(b, c)
         asset_rows, asset_body_diffs, header_deltas = diff_assets(b, c, brief=args.brief)
         ss_real, pixels_diff, max_delta, phash_dist, ss_summary = diff_screenshot(b, c)
-        any_real = html_lines_diff > 0 or asset_rows or header_deltas or ss_real
+        styles_lines, styles_diff = _diff_json_file(b, c, "computed_styles.json")
+        console_lines, console_diff = _diff_json_file(b, c, "console.json")
+        any_real = (
+            html_lines_diff > 0
+            or asset_rows
+            or header_deltas
+            or ss_real
+            or styles_lines > 0
+            or console_lines > 0
+        )
         if not any_real and pixels_diff == 0:
             summary.append(f"  {label:<48} identical")
             return
@@ -254,6 +278,10 @@ def main() -> int:
             bits.append(f"assets={len(asset_rows)}")
         if header_deltas:
             bits.append(f"headers={header_deltas}")
+        if styles_lines > 0:
+            bits.append(f"styles+{styles_lines}")
+        if console_lines > 0:
+            bits.append(f"console+{console_lines}")
         if ss_real:
             bits.append(ss_summary)
         summary.append(f"  {label:<48} {' '.join(bits)}")
@@ -273,6 +301,12 @@ def main() -> int:
                 )
         if not args.brief:
             body_diffs_all.extend(asset_body_diffs)
+            if styles_diff:
+                body_diffs_all.append("\n--- computed styles diff ---")
+                body_diffs_all.append(styles_diff)
+            if console_diff:
+                body_diffs_all.append("\n--- console messages diff ---")
+                body_diffs_all.append(console_diff)
         if ss_real:
             body_diffs_all.append(f"\n--- screenshot: {ss_summary} ---")
 
