@@ -84,6 +84,12 @@ HEADER_TOKEN_PATTERNS = [
     ## ETags often contain content hashes that are stable; the
     ## weak-marker and quotes vary across CDN tiers, so trim them.
     ("etag", re.compile(r"\s+"), ""),
+    ## Varnish/CDN s-maxage on parser-cached pages counts down toward
+    ## the page's next refresh; the seconds-remaining drifts between
+    ## captures. The directive's PRESENCE is stable; scrub the number.
+    ## Keep max-age (driven by Cache-Control config, not a countdown).
+    ("cache-control", re.compile(r"s-maxage=\d+"), "s-maxage=SCRUBBED"),
+    ("x-backend-cache-control", re.compile(r"s-maxage=\d+"), "s-maxage=SCRUBBED"),
 ]
 
 
@@ -416,9 +422,16 @@ def normalize_html(html: str) -> str:
     for el in soup.find_all(class_="js-fully-loaded"):
         if el.get("style"):
             del el.attrs["style"]
+    ## .custom-scrollbar-container outer element AND every inner
+    ## span/div with an inline style: the scrollbar widget reads
+    ## getComputedStyle of its content area and writes the resulting
+    ## height back as inline style, so the value flickers ~20px
+    ## across captures depending on when font-metrics settled.
     for el in soup.find_all(class_="custom-scrollbar-container"):
-        for span in el.find_all("span", style=True):
-            del span.attrs["style"]
+        if el.get("style"):
+            del el.attrs["style"]
+        for inner in el.find_all(["span", "div"], style=True):
+            del inner.attrs["style"]
 
     ## #mw-teleport-target moves between two locations in the DOM
     ## depending on which JS module installed it first. Same for the
