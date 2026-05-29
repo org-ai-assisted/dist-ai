@@ -502,9 +502,16 @@ async def capture_one(browser, mode_tuple, title: str) -> tuple[str, str, int, i
     if scheme == "print":
         await page.emulate_media(media="print")
     manifest: dict[str, dict] = {}
-    page.on("response", lambda r: asyncio.create_task(
-        record_response_factory(page_dir, manifest)(r)
-    ))
+    pending_response_tasks: set[asyncio.Task] = set()
+
+    record_response = record_response_factory(page_dir, manifest)
+
+    def on_response_event(r):
+        task = asyncio.create_task(record_response(r))
+        pending_response_tasks.add(task)
+        task.add_done_callback(pending_response_tasks.discard)
+
+    page.on("response", on_response_event)
 
     console_events: list[dict] = []
 
@@ -693,6 +700,15 @@ async def capture_one(browser, mode_tuple, title: str) -> tuple[str, str, int, i
         (page_dir / "console.json").write_text(
             json.dumps(console_events, indent=2, sort_keys=True), encoding="utf-8"
         )
+
+        ## Drain every still-in-flight response-recorder task before
+        ## snapshotting the manifest. Without this an asset whose body
+        ## arrived just before networkidle but whose response handler
+        ## is still in record_response_factory's await response.body()
+        ## won't make it into the manifest -- the page renders the
+        ## image but the manifest reports it as never loaded.
+        if pending_response_tasks:
+            await asyncio.gather(*pending_response_tasks, return_exceptions=True)
 
         manifest_sorted = dict(sorted(manifest.items()))
         (page_dir / "manifest.json").write_text(

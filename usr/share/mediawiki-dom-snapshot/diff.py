@@ -360,9 +360,16 @@ def main() -> int:
         else:
             diff_one(name, b, c)
 
+    n_identical = sum(1 for s in summary if s.endswith(" identical"))
+    n_subpixel = sum(1 for s in summary if "subpixel-only" in s)
+    n_real = len(summary) - n_identical - n_subpixel
     print("=== summary ===")
     for line in summary:
         print(line)
+    print(
+        f"=== {n_identical} identical, {n_subpixel} subpixel-only, "
+        f"{n_real} with-real-diffs (total {len(summary)}) ==="
+    )
     if body_diffs_all:
         print("")
         print("=== details ===")

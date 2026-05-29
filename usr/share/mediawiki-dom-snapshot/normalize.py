@@ -164,11 +164,16 @@ LAZY_INJECTED_STYLE_FINGERPRINTS = [
     re.compile(r"\.mw-widget-titleWidget"),
     re.compile(r"\.mw-widget-titleOptionWidget"),
     ## Edit page widget modules: edit-footer toggler, preview spinner,
-    ## edit-form helpers. Lazy-loaded by action=edit JS when the form
-    ## reaches interactive state. Same race vs networkidle.
+    ## edit-form helpers, wikiEditor toolbar/dialogs. Lazy-loaded by
+    ## action=edit JS when the form reaches interactive state. Same
+    ## race vs networkidle.
     re.compile(r"\.mw-editfooter-"),
     re.compile(r"\.mw-editform"),
     re.compile(r"\.mw-preview-loading-elements"),
+    re.compile(r"\.mw-wikiEditor-"),
+    re.compile(r"\.wikiEditor-ui"),
+    re.compile(r"\.wikiEditor-toolbar"),
+    re.compile(r"\.wikieditor-toolbar"),
 ]
 
 ## ResourceLoader module names are emitted as "name@VERSION" in the
@@ -324,6 +329,13 @@ def normalize_html(html: str) -> str:
             if cls in classes:
                 classes = [c for c in classes if c != cls]
                 sec["class"] = classes
+    ## .splide__track carries aria-busy={"true"|"false"} reflecting
+    ## the in-flight scroll animation. We've already paused the
+    ## animation in snapshot.py, but the attribute occasionally
+    ## flickers depending on the order events fire. Drop it.
+    for tr in soup.find_all(class_="splide__track"):
+        if "aria-busy" in tr.attrs:
+            del tr.attrs["aria-busy"]
     for btn in soup.find_all(class_="splide__pagination__page"):
         classes = btn.get("class") or []
         classes = [c for c in classes if c != "is-active"]
@@ -331,6 +343,23 @@ def normalize_html(html: str) -> str:
         for attr in ("aria-selected", "tabindex"):
             if attr in btn.attrs:
                 del btn.attrs[attr]
+    ## Individual slides carry is-active / is-prev / is-next /
+    ## is-visible based on where the loop pointer currently is.
+    ## All four jitter; strip them. The screen-reader visibility
+    ## attributes (aria-hidden, tabindex on the slide's anchor) flip
+    ## with the same loop state, so strip them too.
+    for slide in soup.find_all(class_="splide__slide"):
+        classes = slide.get("class") or []
+        classes = [
+            c for c in classes
+            if c not in ("is-active", "is-prev", "is-next", "is-visible")
+        ]
+        slide["class"] = classes
+        if "aria-hidden" in slide.attrs:
+            del slide.attrs["aria-hidden"]
+        for desc in slide.find_all(["a", "button"]):
+            if desc.get("tabindex") == "-1":
+                del desc.attrs["tabindex"]
     for clone in soup.find_all(class_="splide__slide--clone"):
         ## "30 of 35" / "31 of 35" labels point at where in the loop
         ## we are; loop position rotates per capture. Strip.
@@ -387,6 +416,14 @@ def normalize_html(html: str) -> str:
             text = el.get_text(strip=True)
             if not text:
                 el.decompose()
+
+    ## div.suggestions placeholder injected by mediawiki.searchSuggest
+    ## once the search box is focused; both inner containers
+    ## (.suggestions-results, .suggestions-special) start empty so
+    ## the whole div renders nothing but its DOM presence races.
+    for sg in soup.find_all(class_="suggestions"):
+        if not sg.get_text(strip=True):
+            sg.decompose()
 
     ## .CodeMirror-hscrollbar visibility flips between visible and
     ## hidden depending on whether the textarea content overflows
@@ -463,9 +500,12 @@ def _normalize_headers(headers: dict) -> dict:
 ## ready state before networkidle fires. Dropping the manifest entry
 ## stops a present-vs-absent capture from looking like a regression.
 RACY_LOAD_PATTERNS = (
-    ## Font Awesome fa-regular is only loaded when the editor-auto-
-    ## backup icon (etc) renders; that icon is itself racy.
-    "/Font-Awesome_2023-08-03/webfonts/fa-regular-",
+    ## Font Awesome webfonts (fa-regular, fa-brands, fa-solid) are
+    ## loaded on demand once an icon glyph renders; the icon trigger
+    ## (auto-backup, brand chip, etc) is itself racy against
+    ## networkidle, so whether the .woff2 makes it into the manifest
+    ## varies between captures of the same wiki state.
+    "/Font-Awesome_2023-08-03/webfonts/",
     ## TitleSuggest/oojs widget bundle: loaded when the user opens
     ## the search-title dropdown.
     "ext.MobileFrontend.styles",
@@ -637,6 +677,20 @@ CONSOLE_TEXT_PATTERNS = (
 )
 
 
+## Whole-event drops applied before equality. Each pattern matches an
+## entire console message; if any pattern matches, the event is
+## dropped instead of normalised. Use for browser-emitted warnings
+## whose PRESENCE is racy.
+CONSOLE_DROP_PATTERNS = (
+    ## "The resource ... was preloaded using link preload but not
+    ## used within a few seconds from the window's load event."
+    ## The browser fires this only if the preloaded asset (a font in
+    ## the wiki's case) wasn't used in time, which races with the
+    ## subresource scheduler.
+    re.compile(r"preloaded using link preload but not used"),
+)
+
+
 def _normalize_console(events: list) -> list:
     """JS console: drop the per-page-id / per-session noise. Only the
     {type, text} pair matters for "did the new code introduce a new
@@ -646,6 +700,8 @@ def _normalize_console(events: list) -> list:
     seen = set()
     for ev in events or []:
         text = ev.get("text", "")
+        if any(p.search(text) for p in CONSOLE_DROP_PATTERNS):
+            continue
         for pat, repl in CONSOLE_TEXT_PATTERNS:
             text = pat.sub(repl, text)
         key = (ev.get("type", ""), text)
