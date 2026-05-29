@@ -1,0 +1,674 @@
+{
+  "https://www.kicksecure.com/libs/Cousine_2023-08-03/Cousine-Regular.woff": {
+    "asset": "6107280d56524f700f8bc95290ffdd139d7bf38aca465cfac0f4c990a7a6234e.woff",
+    "content_type": "font/woff",
+    "sha256": "6107280d56524f700f8bc95290ffdd139d7bf38aca465cfac0f4c990a7a6234e",
+    "size": 170652,
+    "status": 200
+  },
+  "https://www.kicksecure.com/libs/Font-Awesome_2023-08-03/css/brands.min.css": {
+    "asset": "9e2091a3026c87116c2ee1948fbad3bffbf1b1f733c2f89d351d3dc7aab082f9.css",
+    "content_type": "text/css",
+    "sha256": "9e2091a3026c87116c2ee1948fbad3bffbf1b1f733c2f89d351d3dc7aab082f9",
+    "size": 16024,
+    "status": 200
+  },
+  "https://www.kicksecure.com/libs/Font-Awesome_2023-08-03/css/fontawesome.min.css": {
+    "asset": "b164a2d2905748e1d48512f1e985606b4282c9438bbc0ee2958e56f658695d2b.css",
+    "content_type": "text/css",
+    "sha256": "b164a2d2905748e1d48512f1e985606b4282c9438bbc0ee2958e56f658695d2b",
+    "size": 57644,
+    "status": 200
+  },
+  "https://www.kicksecure.com/libs/Font-Awesome_2023-08-03/css/regular.min.css": {
+    "asset": "d452ca86262c736cab4d172137e27176c2e4c7c141c8150c9154312f2aac3dae.css",
+    "content_type": "text/css",
+    "sha256": "d452ca86262c736cab4d172137e27176c2e4c7c141c8150c9154312f2aac3dae",
+    "size": 625,
+    "status": 200
+  },
+  "https://www.kicksecure.com/libs/Font-Awesome_2023-08-03/css/solid.min.css": {
+    "asset": "abb7189386e7601b342822b2a72812cf972daeb3442b796d7a785ea6f860f7e6.css",
+    "content_type": "text/css",
+    "sha256": "abb7189386e7601b342822b2a72812cf972daeb3442b796d7a785ea6f860f7e6",
+    "size": 619,
+    "status": 200
+  },
+  "https://www.kicksecure.com/libs/Font-Awesome_2023-08-03/webfonts/fa-regular-400.woff2": {
+    "asset": "81aaa8342d90df0a3c0b87655e2c31a71941f0dd351fb9fb1ca5d692e744f6d0.woff2",
+    "content_type": "font/woff2",
+    "sha256": "81aaa8342d90df0a3c0b87655e2c31a71941f0dd351fb9fb1ca5d692e744f6d0",
+    "size": 18924,
+    "status": 200
+  },
+  "https://www.kicksecure.com/libs/Font-Awesome_2023-08-03/webfonts/fa-solid-900.woff2": {
+    "asset": "ff58a6b0a01dbce082458f6e5a58719df4e80e0c2b50f744bb5871e21eca6878.woff2",
+    "content_type": "font/woff2",
+    "sha256": "ff58a6b0a01dbce082458f6e5a58719df4e80e0c2b50f744bb5871e21eca6878",
+    "size": 114740,
+    "status": 200
+  },
+  "https://www.kicksecure.com/libs/Prism/prism.css": {
+    "asset": "8dd59750da47e092a8c317d402bf6e316215c77e732e533d9968623935b6addb.css",
+    "content_type": "text/css",
+    "sha256": "8dd59750da47e092a8c317d402bf6e316215c77e732e533d9968623935b6addb",
+    "size": 1894,
+    "status": 200
+  },
+  "https://www.kicksecure.com/libs/Prism/prism.js": {
+    "asset": "7a3a4abfbe83dad98c77664b63ff614f5fb3d7fe95f3a24f256b316aabb9e760.js",
+    "content_type": "application/javascript",
+    "sha256": "7a3a4abfbe83dad98c77664b63ff614f5fb3d7fe95f3a24f256b316aabb9e760",
+    "size": 17433,
+    "status": 200
+  },
+  "https://www.kicksecure.com/libs/Roboto_2023-08-03/Roboto-Regular-webfont.woff": {
+    "asset": "7838acd6a8bd0836972523ffbe20c9745d03b07d89968d9cc9bc57f46e567895.woff",
+    "content_type": "font/woff",
+    "sha256": "7838acd6a8bd0836972523ffbe20c9745d03b07d89968d9cc9bc57f46e567895",
+    "size": 20924,
+    "status": 200
+  },
+  "https://www.kicksecure.com/libs/instant.page/instantpage.min.js": {
+    "asset": "502d5a08672ec9b804401a667665ef1fecda71628b7ebeb4994c501f5bb5224c.js",
+    "content_type": "application/javascript",
+    "sha256": "502d5a08672ec9b804401a667665ef1fecda71628b7ebeb4994c501f5bb5224c",
+    "size": 5686,
+    "status": 200
+  },
+  "https://www.kicksecure.com/libs/jquery-tinyscrollbar_2024-08-21/jquery.tinyscrollbar.min.js?_=SCRUBBED": {
+    "asset": "b95ab519c97c3535c621b9980fb39535567b04f5bbdcfc115d77ac8f6f23349b.js",
+    "content_type": "application/javascript",
+    "sha256": "b95ab519c97c3535c621b9980fb39535567b04f5bbdcfc115d77ac8f6f23349b",
+    "size": 4106,
+    "status": 200
+  },
+  "https://www.kicksecure.com/libs/jscookie/js.cookie.min.js": {
+    "asset": "4caf5bf0ac3059aeca01ea3ce04970eac96442c2d87c6e1eee4d4a939f9eba65.js",
+    "content_type": "application/javascript",
+    "sha256": "4caf5bf0ac3059aeca01ea3ce04970eac96442c2d87c6e1eee4d4a939f9eba65",
+    "size": 1730,
+    "status": 200
+  },
+  "https://www.kicksecure.com/mw-autogen/mw-combined-skincss.min.css?css-extension=1&hsversion_from_server_replacement_unixtime=SCRUBBED": {
+    "asset": "7fb5218ad6c6052ac3dd9f96bbd81d955293371e4a9acf4a31b2fafc5676b825.css",
+    "content_type": "text/css",
+    "sha256": "7fb5218ad6c6052ac3dd9f96bbd81d955293371e4a9acf4a31b2fafc5676b825",
+    "size": 27377,
+    "status": 200
+  },
+  "https://www.kicksecure.com/mw-autogen/mw-combined-wikicss.min.css?hsversion-headscript-replacement-by-server=SCRUBBED&hsversion_from_server_replacement_unixtime=SCRUBBED": {
+    "asset": "01903d37da9ed56b81c2494e9c86dfc16f405f5c894587c2bc875045ea2121bb.css",
+    "content_type": "text/css",
+    "sha256": "01903d37da9ed56b81c2494e9c86dfc16f405f5c894587c2bc875045ea2121bb",
+    "size": 56394,
+    "status": 200
+  },
+  "https://www.kicksecure.com/mw-autogen/mw-combined-wikijs.min.js?hsversion-headscript-replacement-by-server=SCRUBBED&hsversion_from_server_replacement_unixtime=SCRUBBED": {
+    "asset": "149685d662621ae76d9e64adf52777a2c1c14af87fab3fde60408f7b062babbb.js",
+    "content_type": "application/javascript",
+    "sha256": "149685d662621ae76d9e64adf52777a2c1c14af87fab3fde60408f7b062babbb",
+    "size": 103774,
+    "status": 200
+  },
+  "https://www.kicksecure.com/mw-autogen/src-copy/Donation_Panel.min.css?css-extension=1&hsversion_from_server_replacement_unixtime=SCRUBBED": {
+    "asset": "ff65df778b808e0b087b9e10b9a76dc149c279b6ef9e982f97600ee823daf114.css",
+    "content_type": "text/css",
+    "sha256": "ff65df778b808e0b087b9e10b9a76dc149c279b6ef9e982f97600ee823daf114",
+    "size": 4351,
+    "status": 200
+  },
+  "https://www.kicksecure.com/mw-autogen/src-copy/Hide_all_banners.min.css?css-extension=1&hsversion_from_server_replacement_unixtime=SCRUBBED": {
+    "asset": "23ae778e857faacba067587ce067b88f9db8b3eed815ca7c3990203889cef5d7.css",
+    "content_type": "text/css",
+    "sha256": "23ae778e857faacba067587ce067b88f9db8b3eed815ca7c3990203889cef5d7",
+    "size": 80,
+    "status": 200
+  },
+  "https://www.kicksecure.com/mw-autogen/src-copy/Hide_firstHeading.css?css-extension=1&hsversion_from_server_replacement_unixtime=SCRUBBED": {
+    "asset": "b0ed99d936c4333db2dcde37ca94ecc14aeccaf0195d671f90ba0b09ff593304.css",
+    "content_type": "text/css",
+    "sha256": "b0ed99d936c4333db2dcde37ca94ecc14aeccaf0195d671f90ba0b09ff593304",
+    "size": 150,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/0/06/Tronix-trx-logo-red.svg": {
+    "asset": "0c10622d976cf4d3bcf7f6f0ffbe08f52ddadf78ef9ace98bc384631c7fbb28c.svg",
+    "content_type": "image/svg+xml",
+    "sha256": "0c10622d976cf4d3bcf7f6f0ffbe08f52ddadf78ef9ace98bc384631c7fbb28c",
+    "size": 729,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/1/14/Kicksecure_donate_ethereum.png": {
+    "asset": "82f54580dff156786c6f39f60b744e5b43ff36046d058ee0b5772fab36a35608.webp",
+    "content_type": "image/webp",
+    "sha256": "82f54580dff156786c6f39f60b744e5b43ff36046d058ee0b5772fab36a35608",
+    "size": 1410,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/4/4a/Kicksecure-logo-rectangle.svg": {
+    "asset": "1ff020b6d7d73dc90b8971b536ddc7821e0670cd816244d647c95c282aaba173.svg",
+    "content_type": "image/svg+xml",
+    "sha256": "1ff020b6d7d73dc90b8971b536ddc7821e0670cd816244d647c95c282aaba173",
+    "size": 4194,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/5/5e/Coming-soon-icon.svg": {
+    "asset": "64d1521c45b862ee5478c683f9e5f6cc7adef311b1c4cc90e2cf837e95d11824.svg",
+    "content_type": "image/svg+xml",
+    "sha256": "64d1521c45b862ee5478c683f9e5f6cc7adef311b1c4cc90e2cf837e95d11824",
+    "size": 6313,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/6/63/Kicksecure_donate_monero.png": {
+    "asset": "37e097d2528ec4f9b52d7eed4f78ad3fcd26e48595d69c20e69cf087579712c3.webp",
+    "content_type": "image/webp",
+    "sha256": "37e097d2528ec4f9b52d7eed4f78ad3fcd26e48595d69c20e69cf087579712c3",
+    "size": 1784,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/7/73/Internet_Archive_logo.png": {
+    "asset": "cfa3c6556c45abe71dc50e9c2a8b2f5fbfa383b628cb9f19c72863215a537688.webp",
+    "content_type": "image/webp",
+    "sha256": "cfa3c6556c45abe71dc50e9c2a8b2f5fbfa383b628cb9f19c72863215a537688",
+    "size": 580,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/7/76/De-pp-logo-200px.png": {
+    "asset": "b4140dd98f80f8b00103a573d0020ec17ca45a66e817141fe1ccdf3ddb0947ad.webp",
+    "content_type": "image/webp",
+    "sha256": "b4140dd98f80f8b00103a573d0020ec17ca45a66e817141fe1ccdf3ddb0947ad",
+    "size": 1326,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/7/7f/Cornues.png": {
+    "asset": "52b2857622ef9a2f5e89a26748dc930e42287bc75a8bedf56a0653a69e5a29d6.webp",
+    "content_type": "image/webp",
+    "sha256": "52b2857622ef9a2f5e89a26748dc930e42287bc75a8bedf56a0653a69e5a29d6",
+    "size": 38622,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/8/8f/Archive-today-logo-homage.svg": {
+    "asset": "73f3148cb45a4170f99b8806e8ac55d67cc6cda2c7e73aba6f9110f935aa8f98.svg",
+    "content_type": "image/svg+xml",
+    "sha256": "73f3148cb45a4170f99b8806e8ac55d67cc6cda2c7e73aba6f9110f935aa8f98",
+    "size": 4804,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/9/9d/Kicksecure_donate_bitcoin.png": {
+    "asset": "08d2dcea32ebbbcfcd289c6871228e3490299c3cc509236b2bd5d416d744c4ec.webp",
+    "content_type": "image/webp",
+    "sha256": "08d2dcea32ebbbcfcd289c6871228e3490299c3cc509236b2bd5d416d744c4ec",
+    "size": 1514,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/a/ab/Bluesky-logo.svg": {
+    "asset": "483f99cb7f0b37868d8001ec666b045ed6555a618b5f06da3cf0993b2fed6eec.svg",
+    "content_type": "image/svg+xml",
+    "sha256": "483f99cb7f0b37868d8001ec666b045ed6555a618b5f06da3cf0993b2fed6eec",
+    "size": 884,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/a/ac/Rg1024_brick_tile.png": {
+    "asset": "9a96faf61bf6ccafe3e05dae5603be1a5a2d3019a5bf6af14d34586d6d4251da.webp",
+    "content_type": "image/webp",
+    "sha256": "9a96faf61bf6ccafe3e05dae5603be1a5a2d3019a5bf6af14d34586d6d4251da",
+    "size": 4188,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/c/c7/Tm.png": {
+    "asset": "687da6cbdd1b64933397d3d9f1438659fa65373f6adf7ba7758cc11cca0e9468.webp",
+    "content_type": "image/webp",
+    "sha256": "687da6cbdd1b64933397d3d9f1438659fa65373f6adf7ba7758cc11cca0e9468",
+    "size": 1186,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/e/ee/C.png": {
+    "asset": "5fba1b823d82f9487e79e1d5eeefddf9564b3c1944ea5ee515c6586c689045dc.webp",
+    "content_type": "image/webp",
+    "sha256": "5fba1b823d82f9487e79e1d5eeefddf9564b3c1944ea5ee515c6586c689045dc",
+    "size": 1288,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/0/04/IBAN_128.png/69px-IBAN_128.png": {
+    "asset": "d853f6e1118530fe30a6df3eb8c7d70942ee8b0622f5c7022dff09c15c6a55f9.webp",
+    "content_type": "image/webp",
+    "sha256": "d853f6e1118530fe30a6df3eb8c7d70942ee8b0622f5c7022dff09c15c6a55f9",
+    "size": 620,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/0/05/Monero-symbol-1280.png/100px-Monero-symbol-1280.png": {
+    "asset": "db521c1ca8728730134f2fad173fa0ec1e606ace7a67ce0dd04aeeb47642d196.webp",
+    "content_type": "image/webp",
+    "sha256": "db521c1ca8728730134f2fad173fa0ec1e606ace7a67ce0dd04aeeb47642d196",
+    "size": 1748,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/0/05/Monero-symbol-1280.png/52px-Monero-symbol-1280.png": {
+    "asset": "f121c9dc59cec1bcc026b38c9504a0d7fdc6be684468519b8e3904d0578cf3a5.webp",
+    "content_type": "image/webp",
+    "sha256": "f121c9dc59cec1bcc026b38c9504a0d7fdc6be684468519b8e3904d0578cf3a5",
+    "size": 878,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/0/09/Osi_standard_logo_0.png/50px-Osi_standard_logo_0.png": {
+    "asset": "d30bd3d7326c1a5039b3adb487c59560f2056a589a80a7f05452168b4ec670b8.webp",
+    "content_type": "image/webp",
+    "sha256": "d30bd3d7326c1a5039b3adb487c59560f2056a589a80a7f05452168b4ec670b8",
+    "size": 1208,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/0/09/Rss.png/50px-Rss.png": {
+    "asset": "5e0915caa9c407720920d93f294c70f7217cab0bb60b32409dd630c185a7fff6.webp",
+    "content_type": "image/webp",
+    "sha256": "5e0915caa9c407720920d93f294c70f7217cab0bb60b32409dd630c185a7fff6",
+    "size": 1478,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/0/0f/Kvm-new-logo.png/200px-Kvm-new-logo.png": {
+    "asset": "76dc37c38c30cf1851093b0248fdf5bbae18b2fef0142315a89e0b0b68abcd5c.webp",
+    "content_type": "image/webp",
+    "sha256": "76dc37c38c30cf1851093b0248fdf5bbae18b2fef0142315a89e0b0b68abcd5c",
+    "size": 5958,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/1/13/Github-logo.png/50px-Github-logo.png": {
+    "asset": "2d15ed1391f6dddec5e3e7d76e7e11c45daa1355248b9a32e20084ad41512e60.webp",
+    "content_type": "image/webp",
+    "sha256": "2d15ed1391f6dddec5e3e7d76e7e11c45daa1355248b9a32e20084ad41512e60",
+    "size": 996,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/1/14/Reddit-logo.png/50px-Reddit-logo.png": {
+    "asset": "5ceeb9cf35802156ea8a16b9fbcdc692b7dcdc1b33512f360c92a69f1caa66a6.webp",
+    "content_type": "image/webp",
+    "sha256": "5ceeb9cf35802156ea8a16b9fbcdc692b7dcdc1b33512f360c92a69f1caa66a6",
+    "size": 1548,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/1/16/Share-nodes-icon.png/180px-Share-nodes-icon.png": {
+    "asset": "169c82d21f11aa61972c65e3c7b8f44e7f233f0ee37cdd5e006f4cbff59e35c8.webp",
+    "content_type": "image/webp",
+    "sha256": "169c82d21f11aa61972c65e3c7b8f44e7f233f0ee37cdd5e006f4cbff59e35c8",
+    "size": 2280,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/2/23/Chevron.png/54px-Chevron.png": {
+    "asset": "b8c6d346c39b6d9e08363da06ba7e95bce4af4ecc56a27e7402ee76431ddc311.webp",
+    "content_type": "image/webp",
+    "sha256": "b8c6d346c39b6d9e08363da06ba7e95bce4af4ecc56a27e7402ee76431ddc311",
+    "size": 544,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/2/24/Discover-card-dark_128.png/69px-Discover-card-dark_128.png": {
+    "asset": "a0ea703cfccfc8baa0d66bcf2007e425f757f031b7ec033e571072469c169f85.webp",
+    "content_type": "image/webp",
+    "sha256": "a0ea703cfccfc8baa0d66bcf2007e425f757f031b7ec033e571072469c169f85",
+    "size": 790,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/2/25/Magnifying-glass.png/64px-Magnifying-glass.png": {
+    "asset": "7136ebbd8aba3cf447fef7ebce64b35714928fb0a9c1bfc7f7f64894445f80fc.webp",
+    "content_type": "image/webp",
+    "sha256": "7136ebbd8aba3cf447fef7ebce64b35714928fb0a9c1bfc7f7f64894445f80fc",
+    "size": 820,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/2/27/Bank-dark_128.png/54px-Bank-dark_128.png": {
+    "asset": "8bf780ef8133a8ebb163dbca8b2e76080e633205e8ea5439bc6e6949bccae164.webp",
+    "content_type": "image/webp",
+    "sha256": "8bf780ef8133a8ebb163dbca8b2e76080e633205e8ea5439bc6e6949bccae164",
+    "size": 576,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/2/29/BC_Logo_.png/100px-BC_Logo_.png": {
+    "asset": "3051bb3730104109d3436682f0bbcf885278beea515d512f6ec271b63ee07a92.webp",
+    "content_type": "image/webp",
+    "sha256": "3051bb3730104109d3436682f0bbcf885278beea515d512f6ec271b63ee07a92",
+    "size": 1996,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/2/29/BC_Logo_.png/52px-BC_Logo_.png": {
+    "asset": "df88af26a8411bd44b90d186fa9e2f606d5fdab59eaf0a6c4a8575d3c95f9dd9.webp",
+    "content_type": "image/webp",
+    "sha256": "df88af26a8411bd44b90d186fa9e2f606d5fdab59eaf0a6c4a8575d3c95f9dd9",
+    "size": 1334,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/2/2a/GiroPay-card-dark-enlarged_128.png/69px-GiroPay-card-dark-enlarged_128.png": {
+    "asset": "1eb2e3e26af77dc37a84d32fac4de20836917767980efd26d1578934e005f152.webp",
+    "content_type": "image/webp",
+    "sha256": "1eb2e3e26af77dc37a84d32fac4de20836917767980efd26d1578934e005f152",
+    "size": 756,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/2/2c/Ethereumlogo.png/100px-Ethereumlogo.png": {
+    "asset": "6e649e23d2b3e09a97d85ec021f4b6131f53d546157fff97fcd7fb7ccc828e10.webp",
+    "content_type": "image/webp",
+    "sha256": "6e649e23d2b3e09a97d85ec021f4b6131f53d546157fff97fcd7fb7ccc828e10",
+    "size": 2912,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/2/2c/Ethereumlogo.png/52px-Ethereumlogo.png": {
+    "asset": "6ad351a6650d7b10d64def8e5a24897dbeb158e353549041326d524ebb6537d4.webp",
+    "content_type": "image/webp",
+    "sha256": "6ad351a6650d7b10d64def8e5a24897dbeb158e353549041326d524ebb6537d4",
+    "size": 1132,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/3/31/Dollar_128.png/54px-Dollar_128.png": {
+    "asset": "7aa049994aa80adcb21052357e4a78b4f23e059dea5f6cd15bd7d7e8c7de8188.webp",
+    "content_type": "image/webp",
+    "sha256": "7aa049994aa80adcb21052357e4a78b4f23e059dea5f6cd15bd7d7e8c7de8188",
+    "size": 778,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/5/57/Sepa-Last_128.png/69px-Sepa-Last_128.png": {
+    "asset": "b8d7c7628addfe854db29f7b9ab20e23523651b12e9ccfef17d20f5d536c67aa.webp",
+    "content_type": "image/webp",
+    "sha256": "b8d7c7628addfe854db29f7b9ab20e23523651b12e9ccfef17d20f5d536c67aa",
+    "size": 914,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/6/67/Twitter-logo.png/50px-Twitter-logo.png": {
+    "asset": "10b0dd6273a28a6303860d83c8a346e8d43a8c37cf642f616addadb0ca330cad.webp",
+    "content_type": "image/webp",
+    "sha256": "10b0dd6273a28a6303860d83c8a346e8d43a8c37cf642f616addadb0ca330cad",
+    "size": 854,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/6/69/ACH_128.png/69px-ACH_128.png": {
+    "asset": "fa400a593d38ab029bff224e966692c739c6e8b660e4eb0c04852ea127d61fc5.webp",
+    "content_type": "image/webp",
+    "sha256": "fa400a593d38ab029bff224e966692c739c6e8b660e4eb0c04852ea127d61fc5",
+    "size": 482,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/7/71/WireTransfer_128.png/69px-WireTransfer_128.png": {
+    "asset": "198f09d4b38bb04f72613a7c15fbf3c28b8d81c9464521b465aec903794c297b.webp",
+    "content_type": "image/webp",
+    "sha256": "198f09d4b38bb04f72613a7c15fbf3c28b8d81c9464521b465aec903794c297b",
+    "size": 828,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/7/78/Clipart-gui.svg/354px-Clipart-gui.svg.png": {
+    "asset": "9beb5f03a0a8363270b742a1620c454a19dcf6eff8a93bd6e110dc41f7d6d1d5.webp",
+    "content_type": "image/webp",
+    "sha256": "9beb5f03a0a8363270b742a1620c454a19dcf6eff8a93bd6e110dc41f7d6d1d5",
+    "size": 1050,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/7/7b/AmericanExpress-dark_128.png/69px-AmericanExpress-dark_128.png": {
+    "asset": "f1849b36ef35ba73b5d2bfee80efcc886713d50661f300e49f38828bc1f6d04f.webp",
+    "content_type": "image/webp",
+    "sha256": "f1849b36ef35ba73b5d2bfee80efcc886713d50661f300e49f38828bc1f6d04f",
+    "size": 748,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/7/7b/Download-kvm.jpg/300px-Download-kvm.jpg": {
+    "asset": "9a7c55585a10a5c722d14bf54c299bd094a3f6a8b219a36e322c591a107d751a.webp",
+    "content_type": "image/webp",
+    "sha256": "9a7c55585a10a5c722d14bf54c299bd094a3f6a8b219a36e322c591a107d751a",
+    "size": 4320,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/7/7c/AUD_128.png/69px-AUD_128.png": {
+    "asset": "00f97b73ed35504e1ba1abc0e2c1f319e07299f855def5664711eaea2fc67c43.webp",
+    "content_type": "image/webp",
+    "sha256": "00f97b73ed35504e1ba1abc0e2c1f319e07299f855def5664711eaea2fc67c43",
+    "size": 1040,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/8/85/MasterCard-dark_128.png/54px-MasterCard-dark_128.png": {
+    "asset": "fb52c6200ce6138d1bbfc47364db4f5f2203f7f95b1955ab4119a23e48c8900f.webp",
+    "content_type": "image/webp",
+    "sha256": "fb52c6200ce6138d1bbfc47364db4f5f2203f7f95b1955ab4119a23e48c8900f",
+    "size": 630,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/8/89/X-icon.png/52px-X-icon.png": {
+    "asset": "292460a533d857aac8b5fdabfb72cda0f62626a6ed9133d46cc8ed1fb05a5cd8.webp",
+    "content_type": "image/webp",
+    "sha256": "292460a533d857aac8b5fdabfb72cda0f62626a6ed9133d46cc8ed1fb05a5cd8",
+    "size": 438,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/8/8b/Euro_128.png/54px-Euro_128.png": {
+    "asset": "82ed51076e2f25fef77cd2497d0aabdab550877ff274a97e67067bd975eaeb3a.webp",
+    "content_type": "image/webp",
+    "sha256": "82ed51076e2f25fef77cd2497d0aabdab550877ff274a97e67067bd975eaeb3a",
+    "size": 632,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/8/8d/Sepa-card-dark_128.png/69px-Sepa-card-dark_128.png": {
+    "asset": "a40069563581f37ea43bc409962bf818837ce4a78c4d6d147bc67a7d8c7a5c4a.webp",
+    "content_type": "image/webp",
+    "sha256": "a40069563581f37ea43bc409962bf818837ce4a78c4d6d147bc67a7d8c7a5c4a",
+    "size": 804,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/9/96/CHAPS_128.png/69px-CHAPS_128.png": {
+    "asset": "bebe0d8e9f4e6601eea1925156eada45f79c8c5183dc9679e758358ac9088488.webp",
+    "content_type": "image/webp",
+    "sha256": "bebe0d8e9f4e6601eea1925156eada45f79c8c5183dc9679e758358ac9088488",
+    "size": 786,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/9/9a/1024px-Telegram_2019_Logo.svg.png/50px-1024px-Telegram_2019_Logo.svg.png": {
+    "asset": "2ec0cf88d2ad284b1e1fca221026fcea33318f1f5637061b9ebde2f9b6c77b79.webp",
+    "content_type": "image/webp",
+    "sha256": "2ec0cf88d2ad284b1e1fca221026fcea33318f1f5637061b9ebde2f9b6c77b79",
+    "size": 900,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/9/9d/Facebook-logo.png/50px-Facebook-logo.png": {
+    "asset": "a2bf96af37985cdb134582df363a2ac89804d3161f8f21634b8d563bba2ecb32.webp",
+    "content_type": "image/webp",
+    "sha256": "a2bf96af37985cdb134582df363a2ac89804d3161f8f21634b8d563bba2ecb32",
+    "size": 1214,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/9/9d/Greencoinmarketcap.png/52px-Greencoinmarketcap.png": {
+    "asset": "324cb215c18e5ed6d3a16daed35196a25d56f04a95c83769b9a9f0b84cd8a9d4.webp",
+    "content_type": "image/webp",
+    "sha256": "324cb215c18e5ed6d3a16daed35196a25d56f04a95c83769b9a9f0b84cd8a9d4",
+    "size": 1192,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/a/a3/Heckert_gnu.big.png/50px-Heckert_gnu.big.png": {
+    "asset": "975e7fdc0e9c04557dac5ab80111d3aed995ff4d70806b620c0a6a2f1934fcf3.webp",
+    "content_type": "image/webp",
+    "sha256": "975e7fdc0e9c04557dac5ab80111d3aed995ff4d70806b620c0a6a2f1934fcf3",
+    "size": 1344,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/a/a4/UnionPay-card-dark_128.png/69px-UnionPay-card-dark_128.png": {
+    "asset": "3fa2455f5b81d4272aac4b112110a157ca6da1255ee23d0b2445476263d7760e.webp",
+    "content_type": "image/webp",
+    "sha256": "3fa2455f5b81d4272aac4b112110a157ca6da1255ee23d0b2445476263d7760e",
+    "size": 970,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/a/a5/Swift_128.png/69px-Swift_128.png": {
+    "asset": "312c19378005430cdc15a9fa5769472b800b7616b4a4e5ba9ec6ea62497f2831.webp",
+    "content_type": "image/webp",
+    "sha256": "312c19378005430cdc15a9fa5769472b800b7616b4a4e5ba9ec6ea62497f2831",
+    "size": 858,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/a/a8/Iconfinder_tor_386502.png/40px-Iconfinder_tor_386502.png": {
+    "asset": "8b5295207c27e7b19736545ccc1e6a314207f1e8a49ca5bc063ded27eff09dc4.webp",
+    "content_type": "image/webp",
+    "sha256": "8b5295207c27e7b19736545ccc1e6a314207f1e8a49ca5bc063ded27eff09dc4",
+    "size": 642,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/a/a9/Usd-coin-usdc-logo.png/52px-Usd-coin-usdc-logo.png": {
+    "asset": "23cc7d8dd2c344b5ab1a99a81113b39a3c3d90438f0e433499d49ca715872a85.webp",
+    "content_type": "image/webp",
+    "sha256": "23cc7d8dd2c344b5ab1a99a81113b39a3c3d90438f0e433499d49ca715872a85",
+    "size": 1514,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/b/b3/DirectDebit-card-dark_128.png/69px-DirectDebit-card-dark_128.png": {
+    "asset": "8c4e15b342f72d9821c909edba6d29d3949ccc6a6771480c4fa953c2e91b183f.webp",
+    "content_type": "image/webp",
+    "sha256": "8c4e15b342f72d9821c909edba6d29d3949ccc6a6771480c4fa953c2e91b183f",
+    "size": 594,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/b/b6/Edit-icon.png/60px-Edit-icon.png": {
+    "asset": "86f2ab8a4acc2d8b72748b80bfa07cb9f800a0870830e7c6ea78d6e7c0a2a990.webp",
+    "content_type": "image/webp",
+    "sha256": "86f2ab8a4acc2d8b72748b80bfa07cb9f800a0870830e7c6ea78d6e7c0a2a990",
+    "size": 418,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/b/b6/Youtube-logo.png/50px-Youtube-logo.png": {
+    "asset": "33ab9a584bf785027bd406801efdcdaf88b163e4d265446e10abba965f7ba880.webp",
+    "content_type": "image/webp",
+    "sha256": "33ab9a584bf785027bd406801efdcdaf88b163e4d265446e10abba965f7ba880",
+    "size": 958,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/b/b7/Mastodon-logo.png/50px-Mastodon-logo.png": {
+    "asset": "d9af1ae6d9b821c99db9c4ec189eb0b422c53a274a5d74916fa7778eb0bd1265.webp",
+    "content_type": "image/webp",
+    "sha256": "d9af1ae6d9b821c99db9c4ec189eb0b422c53a274a5d74916fa7778eb0bd1265",
+    "size": 1276,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/c/c2/Utilities-terminal.png/50px-Utilities-terminal.png": {
+    "asset": "461cb57ab28881226ad1e3b10906f089e1e01d8e2b9f5c9d7cfd7c9d813f430b.webp",
+    "content_type": "image/webp",
+    "sha256": "461cb57ab28881226ad1e3b10906f089e1e01d8e2b9f5c9d7cfd7c9d813f430b",
+    "size": 714,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/c/c8/Ambox_notice.png/80px-Ambox_notice.png": {
+    "asset": "25b27b593638fb1b480c6974ec3fd4464d798e06efbcae14549d9fa8711b5c23.webp",
+    "content_type": "image/webp",
+    "sha256": "25b27b593638fb1b480c6974ec3fd4464d798e06efbcae14549d9fa8711b5c23",
+    "size": 972,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/c/c8/GBP_128.png/69px-GBP_128.png": {
+    "asset": "7eeb5ec04cb929695ea078b6ecd1fda02a3df49b140c58a6a4a1c4c30d4cac7f.webp",
+    "content_type": "image/webp",
+    "sha256": "7eeb5ec04cb929695ea078b6ecd1fda02a3df49b140c58a6a4a1c4c30d4cac7f",
+    "size": 1306,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/c/c9/BACS_128.png/69px-BACS_128.png": {
+    "asset": "5325f8bf816175c13ee3808ff683afcab42270b479a212dd5c87b25fc7361d67.webp",
+    "content_type": "image/webp",
+    "sha256": "5325f8bf816175c13ee3808ff683afcab42270b479a212dd5c87b25fc7361d67",
+    "size": 730,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/c/cb/Logo-menu.png/52px-Logo-menu.png": {
+    "asset": "f19d0b3ad3c0a50f69bf988355e2d1e3c4e3073c90bce6d8ccba09e849b27f9c.webp",
+    "content_type": "image/webp",
+    "sha256": "f19d0b3ad3c0a50f69bf988355e2d1e3c4e3073c90bce6d8ccba09e849b27f9c",
+    "size": 308,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/c/cd/Invidious-logo.png/50px-Invidious-logo.png": {
+    "asset": "54d788777a31dd859d203e4e8c07cc1da7f185d5190121179a7cd8619aec6d83.webp",
+    "content_type": "image/webp",
+    "sha256": "54d788777a31dd859d203e4e8c07cc1da7f185d5190121179a7cd8619aec6d83",
+    "size": 738,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/d/d3/Visa-card-dark_128.png/54px-Visa-card-dark_128.png": {
+    "asset": "7e5cfe0ae2195347d055c1cc9363dcf8275ba57b3a9fb7bfd336b8bfeb679871.webp",
+    "content_type": "image/webp",
+    "sha256": "7e5cfe0ae2195347d055c1cc9363dcf8275ba57b3a9fb7bfd336b8bfeb679871",
+    "size": 476,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/d/d9/Heart.png/54px-Heart.png": {
+    "asset": "5764c67fb6a68a70371ccbcc665c7324756dfc61e7d2662c5d34d8aa9723b1f2.webp",
+    "content_type": "image/webp",
+    "sha256": "5764c67fb6a68a70371ccbcc665c7324756dfc61e7d2662c5d34d8aa9723b1f2",
+    "size": 1086,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/d/dd/Logo-kvm.png/22px-Logo-kvm.png": {
+    "asset": "ec2f6584cf6c964247ade4eb7fcc74a38de75466580b06d3896444724c192c1e.webp",
+    "content_type": "image/webp",
+    "sha256": "ec2f6584cf6c964247ade4eb7fcc74a38de75466580b06d3896444724c192c1e",
+    "size": 576,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/f/f4/Yellowcoinmarketcap.png/52px-Yellowcoinmarketcap.png": {
+    "asset": "36de8235f3a66b1892d5b491beabf8bdb014ac7f8d8edfdd432b6a31e492f2c4.webp",
+    "content_type": "image/webp",
+    "sha256": "36de8235f3a66b1892d5b491beabf8bdb014ac7f8d8edfdd432b6a31e492f2c4",
+    "size": 1362,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/f/f7/Ambox_warning_pn.svg.png/40px-Ambox_warning_pn.svg.png": {
+    "asset": "156a1de117054b11c151f832ca010d4bee57376d041e28c0b921952e6611e523.webp",
+    "content_type": "image/webp",
+    "sha256": "156a1de117054b11c151f832ca010d4bee57376d041e28c0b921952e6611e523",
+    "size": 918,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/images/thumb/f/fa/FasterPay_128.png/69px-FasterPay_128.png": {
+    "asset": "680e9d8cfe718971a2a307c6e3316adae23f5506917efe85ca2847caa624ca40.webp",
+    "content_type": "image/webp",
+    "sha256": "680e9d8cfe718971a2a307c6e3316adae23f5506917efe85ca2847caa624ca40",
+    "size": 514,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/load.php?lang=en&modules=ext.CookieWarning%2Cpopups|ext.cite.ux-enhancements|ext.flaggedRevs.advanced|jquery%2Coojs%2Csite|jquery.client%2CmakeCollapsible%2Cspinner|jquery.spinner.styles|mediawiki.String%2CTitle%2Capi%2Cbase%2Ccldr%2Ccookie%2Cdiff%2CjqueryMsg%2Clanguage%2Crouter%2Cstorage%2Ctoc%2Cuser%2Cutil|mediawiki.diff.styles|mediawiki.interface.helpers.styles|mediawiki.libs.pluralruleparser|mediawiki.page.media%2Cready|mmv.bootstrap%2Ccodex|skins.vector.legacy.js&skin=vector&version=SCRUBBED": {
+    "asset": "ec37f583aa5d41d77c5955e5b9cadd664bd9dc59044d51717530d60cd7d4e9da.js",
+    "content_type": "text/javascript; charset=utf-8",
+    "sha256": "ec37f583aa5d41d77c5955e5b9cadd664bd9dc59044d51717530d60cd7d4e9da",
+    "size": 429811,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/load.php?lang=en&modules=ext.CookieWarning.styles|ext.cite.styles|ext.flaggedRevs.basic|jquery.makeCollapsible.styles|mediawiki.codex.messagebox.styles|mediawiki.widgets.styles|oojs-ui-core.icons%2Cstyles|oojs-ui.styles.indicators|skins.vector.styles.legacy&only=styles&skin=vector": {
+    "asset": "b8fa8c7001ce3ba5f63e1b2b7ed7fb8db5b56599d8d5de1af57182f9ce0c7163.css",
+    "content_type": "text/css; charset=utf-8",
+    "sha256": "b8fa8c7001ce3ba5f63e1b2b7ed7fb8db5b56599d8d5de1af57182f9ce0c7163",
+    "size": 187422,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/load.php?lang=en&modules=ext.cite.referencePreviews|ext.popups.main|mediawiki.experiments&skin=vector&version=SCRUBBED": {
+    "asset": "3a2a3e5baa696e0b6ccd53612833992d8bdac3e209e65d6b300734cd0f54e209.js",
+    "content_type": "text/javascript; charset=utf-8",
+    "sha256": "3a2a3e5baa696e0b6ccd53612833992d8bdac3e209e65d6b300734cd0f54e209",
+    "size": 118499,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/load.php?lang=en&modules=site.styles&only=styles&skin=vector": {
+    "asset": "2772be8ac5ba0affb7b2c71b5424284434c79c7726cfdd664cbe2027e64657d2.css",
+    "content_type": "text/css; charset=utf-8",
+    "sha256": "2772be8ac5ba0affb7b2c71b5424284434c79c7726cfdd664cbe2027e64657d2",
+    "size": 201,
+    "status": 200
+  },
+  "https://www.kicksecure.com/w/load.php?lang=en&modules=startup&only=scripts&raw=1&skin=vector": {
+    "asset": "3c587f33367b5fe4b0fd9ce2e3f856445da12a5af4df2478ecec4a35238da843.js",
+    "content_type": "text/javascript; charset=utf-8",
+    "sha256": "3c587f33367b5fe4b0fd9ce2e3f856445da12a5af4df2478ecec4a35238da843",
+    "size": 36315,
+    "status": 200
+  },
+  "https://www.kicksecure.com/wiki/KVM": {
+    "asset": "3e81bca67763d1bf4d9215496b12f6d4b9133b47b085f6c5b502de0df85b222d.html",
+    "content_type": "text/html; charset=UTF-8",
+    "sha256": "3e81bca67763d1bf4d9215496b12f6d4b9133b47b085f6c5b502de0df85b222d",
+    "size": 96684,
+    "status": 200
+  },
+  "https://www.kicksecure.com/wiki/Template:Payments": {
+    "asset": "f5215c83f4999aa3e6f3b457d178443a5cb826a25398f6cafd7eaa579ca63ddc.html",
+    "content_type": "text/html; charset=UTF-8",
+    "sha256": "f5215c83f4999aa3e6f3b457d178443a5cb826a25398f6cafd7eaa579ca63ddc",
+    "size": 35668,
+    "status": 200
+  }
+}

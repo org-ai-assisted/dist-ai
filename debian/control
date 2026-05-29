@@ -15,18 +15,21 @@ Depends: ${misc:Depends},
  python3,
  python3-bs4,
  python3-lxml,
+ python3-pil,
+ python3-imagehash,
  python3-playwright
 Recommends: chromium
-Description: Headless DOM snapshotter for MediaWiki regression testing
+Description: Headless DOM + asset + screenshot snapshotter for MediaWiki regression testing
  Drives a headless Chromium against a running MediaWiki instance via
- Playwright, captures the post-JS DOM for a configured set of pages, and
- normalises the output (scrub CSP nonces, ResourceLoader version hashes,
- parser-cache timestamps, lazy-loaded ResourceLoader module styles,
- ...) so the result is diff-stable across runs.
+ Playwright, captures per page the post-JS DOM, a viewport screenshot,
+ and every external asset body indexed by sha256, then offers a
+ three-axis diff (HTML text, asset content, screenshot pixel +
+ perceptual-hash distance) so a refactor can be proven not to have
+ changed anything visually or behaviourally.
  .
- Use case: detect HTML/CSS changes introduced by MediaWiki core /
- extension upgrades or by site-CSS refactors, by capturing a baseline
- before the change and diffing a fresh capture after.
+ Use case: detect HTML/CSS/JS/image changes introduced by MediaWiki
+ core / extension upgrades or by site-CSS refactors. Capture a
+ baseline before the change, run again after, run the diff.
  .
  Ships with a committed baseline under
  /usr/share/mediawiki-dom-snapshot/baseline/ and the page list under

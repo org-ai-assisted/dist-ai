@@ -6,12 +6,18 @@
 ## AI-Assisted
 
 ## CLI wrapper for the mediawiki-dom-snapshot tool. Dispatches to one of
-##   capture   - hit pages, dump raw HTML
-##   normalise - rewrite raw -> stable fixtures
-##   diff      - compare two fixture sets
-##   run       - capture + normalise in one go (default)
+##   capture           Playwright capture: dom.html + screenshot.png +
+##                     manifest.json + assets/<sha256>.<ext>
+##   normalise         rewrite raw -> stable fixtures (URL scrub etc.)
+##   run               capture + normalise (default)
+##   diff <a> <b>      three-axis diff: HTML, asset manifest, screenshot
+##                     pixels + pHash
+##   diff-baseline <t> diff the shipped baseline against fixtures/<t>/
+##   baseline-promote <tag>
+##                     promote fixtures/<tag> to the shipped baseline at
+##                     /usr/share/mediawiki-dom-snapshot/baseline/
 ##
-## Environment overrides (forwarded as-is to the Python helpers):
+## Environment overrides:
 ##   BASE_URL      target wiki origin    (default https://www.kicksecure.com)
 ##   PAGES_FILE    page list             (default /etc/mediawiki-dom-snapshot/pages.conf)
 ##   VIEWPORT      browser viewport      (default 1280x800)
@@ -35,16 +41,26 @@ readonly LIB=/usr/share/mediawiki-dom-snapshot
 [ -v FIX_DIR ]    || FIX_DIR=/var/lib/mediawiki-dom-snapshot/fixtures
 export BASE_URL VIEWPORT TIMEOUT_MS PAGES_FILE RAW_DIR
 
+readonly BASELINE_DIR=/usr/share/mediawiki-dom-snapshot/baseline
+
 usage() {
    cat >&2 <<EOF
-usage: ${0##*/} [capture|normalise|run|diff <a> <b>|baseline-promote <tag>]
+usage: ${0##*/} [capture|normalise|run|diff <a> <b>|diff-baseline <tag>|baseline-promote <tag>] [--brief]
 
-  capture            run Playwright against \$BASE_URL, dump HTML to \$RAW_DIR
-  normalise          rewrite \$RAW_DIR/*.html -> \$FIX_DIR/*.html (stable diff form)
+  capture            run Playwright against \$BASE_URL, dump per-page
+                     directories under \$RAW_DIR with dom.html +
+                     screenshot.png + manifest.json + assets/.
+  normalise          rewrite each \$RAW_DIR/<page>/ -> \$FIX_DIR/<page>/
+                     scrubbing per-request volatility.
   run                capture + normalise (default)
-  diff <a> <b>       diff -ur \$FIX_DIR/<a>/ \$FIX_DIR/<b>/
+  diff <a> <b>       three-axis diff: HTML, asset manifest, screenshot
+                     pixels + pHash. Operates on \$FIX_DIR/<a> and
+                     \$FIX_DIR/<b>. Pass --brief to suppress the per-
+                     asset body diff.
+  diff-baseline <tag>
+                     diff \$BASELINE_DIR against \$FIX_DIR/<tag>.
   baseline-promote <tag>
-                     promote \$FIX_DIR/<tag>/ to /usr/share/mediawiki-dom-snapshot/baseline/
+                     replace \$BASELINE_DIR with \$FIX_DIR/<tag>.
 
 env: BASE_URL PAGES_FILE VIEWPORT TIMEOUT_MS RAW_DIR FIX_DIR
 EOF
@@ -58,8 +74,10 @@ cmd_capture() {
 cmd_normalise() {
    mkdir --parents -- "${FIX_DIR}"
    shopt -s nullglob
-   for f in "${RAW_DIR}"/*.html; do
-      python3 "${LIB}/normalize.py" "${f}" "${FIX_DIR}/$(basename "${f}")"
+   for d in "${RAW_DIR}"/*/; do
+      [ -d "${d}" ] || continue
+      page=$(basename "${d}")
+      python3 "${LIB}/normalize.py" "${d}" "${FIX_DIR}/${page}"
    done
 }
 
@@ -69,18 +87,26 @@ cmd_run() {
 }
 
 cmd_diff() {
-   [ "$#" -eq 2 ] || { usage; exit 2; }
-   exec diff --unified --recursive -- "${FIX_DIR}/$1" "${FIX_DIR}/$2"
+   [ "$#" -ge 2 ] || { usage; exit 2; }
+   local a="$1"; shift
+   local b="$1"; shift
+   exec python3 "${LIB}/diff.py" "${FIX_DIR}/${a}" "${FIX_DIR}/${b}" "$@"
+}
+
+cmd_diff_baseline() {
+   [ "$#" -ge 1 ] || { usage; exit 2; }
+   local tag="$1"; shift
+   exec python3 "${LIB}/diff.py" "${BASELINE_DIR}" "${FIX_DIR}/${tag}" "$@"
 }
 
 cmd_baseline_promote() {
    [ "$#" -eq 1 ] || { usage; exit 2; }
    local src="${FIX_DIR}/$1"
-   local dst=/usr/share/mediawiki-dom-snapshot/baseline
    [ -d "${src}" ] || { printf '%s\n' "${0##*/}: missing ${src}" >&2; exit 1; }
-   mkdir --parents -- "${dst}"
-   cp --recursive --no-target-directory -- "${src}" "${dst}"
-   printf '%s\n' "promoted ${src} -> ${dst}"
+   rm --recursive --force -- "${BASELINE_DIR}"
+   mkdir --parents -- "${BASELINE_DIR}"
+   cp --recursive --no-target-directory -- "${src}" "${BASELINE_DIR}"
+   printf '%s\n' "promoted ${src} -> ${BASELINE_DIR}"
 }
 
 case "${1:-run}" in
@@ -88,6 +114,7 @@ case "${1:-run}" in
    normalise)        shift; cmd_normalise "$@" ;;
    run|"")           shift || true; cmd_run "$@" ;;
    diff)             shift; cmd_diff "$@" ;;
+   diff-baseline)    shift; cmd_diff_baseline "$@" ;;
    baseline-promote) shift; cmd_baseline_promote "$@" ;;
    -h|--help|help)   usage; exit 0 ;;
    *)                printf '%s\n' "${0##*/}: unknown command: $1" >&2; usage; exit 2 ;;

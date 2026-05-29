@@ -1,4 +1,7 @@
 etc/mediawiki-dom-snapshot/pages.conf etc/mediawiki-dom-snapshot/
 usr/bin/mediawiki-dom-snapshot usr/bin/
 usr/share/mediawiki-dom-snapshot/*.py usr/share/mediawiki-dom-snapshot/
-usr/share/mediawiki-dom-snapshot/baseline/* usr/share/mediawiki-dom-snapshot/baseline/
+usr/share/mediawiki-dom-snapshot/baseline/**/*.html usr/share/mediawiki-dom-snapshot/baseline/
+usr/share/mediawiki-dom-snapshot/baseline/**/*.json usr/share/mediawiki-dom-snapshot/baseline/
+usr/share/mediawiki-dom-snapshot/baseline/**/*.png usr/share/mediawiki-dom-snapshot/baseline/
+usr/share/mediawiki-dom-snapshot/baseline/**/assets/* usr/share/mediawiki-dom-snapshot/baseline/

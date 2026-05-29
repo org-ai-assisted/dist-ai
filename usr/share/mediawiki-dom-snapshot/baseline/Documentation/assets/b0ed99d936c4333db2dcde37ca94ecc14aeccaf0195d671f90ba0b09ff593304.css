@@ -1,0 +1,8 @@
+/*
+Hides the h1#firstheading. Is used in Template:Title
+See detailed documentation in Dev/mediawiki
+*/
+
+#firstHeading {
+  display: none !important;
+}

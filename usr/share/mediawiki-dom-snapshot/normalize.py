@@ -4,16 +4,30 @@
 ##
 ## AI-Assisted
 
-"""Rewrite a raw rendered HTML dump into a stable, diff-friendly form.
+"""Rewrite a captured page directory into a stable, diff-friendly form.
 
-Removes per-request volatility (CSP nonces, cache timestamps,
-ResourceLoader version hashes, request IDs, lazy-injected styles, ...)
-and pretty-prints with sorted attributes so byte-level diffs surface
-only meaningful changes.
+Input layout (produced by snapshot.py):
+    <src>/<page>/
+        dom.html
+        screenshot.png
+        manifest.json
+        assets/<sha256>.<ext>
 
-Usage:  normalize.py <input.html> <output.html>
+Output layout (one-to-one mirror; only dom.html and manifest.json
+change content; screenshot.png and assets/* are bit-identical copies):
+    <dst>/<page>/
+        dom.html          per-request volatility scrubbed
+        screenshot.png    copy
+        manifest.json     URLs scrubbed of volatile query params
+        assets/...        copies (sha256-identified, already canonical)
+
+Usage:
+    normalize.py <input-page-dir>  <output-page-dir>
+    normalize.py <input-html-file> <output-html-file>   # legacy v0.1 mode
 """
+import json
 import re
+import shutil
 import sys
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlparse
@@ -24,8 +38,6 @@ from bs4 import BeautifulSoup, Comment
 ## Per-request volatility we always want to strip.
 ## --------------------------------------------------------------------
 
-## Comments that MediaWiki, parser cache, Varnish/nginx, etc. inject with
-## timestamps or per-request values. Match anywhere in the comment text.
 VOLATILE_COMMENT_PATTERNS = [
     re.compile(r"NewPP limit report", re.I),
     re.compile(r"Transclusion expansion time report", re.I),
@@ -47,49 +59,38 @@ VOLATILE_COMMENT_PATTERNS = [
     re.compile(r"Lua memory usage:", re.I),
 ]
 
-## Attributes whose value is replaced with a fixed placeholder.
-VOLATILE_ATTRS = {
-    "nonce",          ## CSP per-response nonce
+VOLATILE_ATTRS = {"nonce"}
+
+## Query-string parameters whose values are pure cache-busters.
+## Scrubbing keeps URL diffs focused on "what changed structurally"
+## (a new module set) rather than "what was the build version".
+VOLATILE_QUERY_PARAMS = {
+    "version",                                  ## MW ResourceLoader
+    "_",                                        ## jQuery cache buster
+    "epoch",
+    "t",
+    "hsversion-headscript-replacement-by-server",
+    "hsversion_from_server_replacement_unixtime",
 }
 
-## Query-string parameters in <link>/<script>/<img> URLs whose values
-## change every build but don't affect identity (cache-busters,
-## ResourceLoader hashes).
-VOLATILE_QUERY_PARAMS = {"version", "_", "epoch", "t"}
-
-## mw.config.set keys with per-request / per-session values.
 VOLATILE_MW_CONFIG_KEYS = [
     "wgRequestId",
     "wgBackendResponseTime",
     "wgCSPNonce",
     "wgCacheEpoch",
-    "wgInternalRedirectTargetUrl",  ## contains tokens occasionally
-    "wgUserEditCount",              ## changes anytime someone edits
+    "wgInternalRedirectTargetUrl",
+    "wgUserEditCount",
     "wgUserRegistration",
 ]
 
-## JSON-LD / OpenGraph fields whose values are the current request time
-## on pages that have no real article timestamp (Special:* etc.).
-VOLATILE_JSON_KEYS = [
-    "dateModified",
-    "datePublished",
-]
+VOLATILE_JSON_KEYS = ["dateModified", "datePublished"]
 
-## <meta property="..."> whose content is the request time on Special pages.
 VOLATILE_META_PROPERTIES = {
     "article:modified_time",
     "article:published_time",
     "og:updated_time",
 }
 
-## Inline <style> blocks injected by lazy ResourceLoader modules (Popups
-## on hover, MediaViewer on click, Cite reference-preview, ...). These
-## are fingerprinted by class-name fragments unique to each module. We
-## drop the tags entirely: their inclusion is timing-dependent (race
-## between snapshot and module first-execution) which breaks
-## reproducibility. To detect upgrades to these modules' CSS, watch the
-## corresponding load.php URL in <link rel="stylesheet"> -- the version=
-## query param tracks content hash.
 LAZY_INJECTED_STYLE_FINGERPRINTS = [
     re.compile(r"\bmwe-popups\b"),
     re.compile(r"\bmwe-popups-"),
@@ -103,7 +104,6 @@ URL_ATTRS = ("href", "src", "data-src", "action", "data-href", "srcset")
 
 
 def _normalize_url(value: str) -> str:
-    """Sort `modules=A|B|C` alphabetically and scrub volatile query params."""
     if not isinstance(value, str) or "?" not in value:
         return value
     try:
@@ -125,7 +125,6 @@ def _normalize_url(value: str) -> str:
 
 
 def _normalize_srcset(value: str) -> str:
-    """srcset is "url descriptor, url descriptor, ..."."""
     if not isinstance(value, str) or "," not in value:
         return _normalize_url(value)
     parts = []
@@ -140,14 +139,12 @@ def _normalize_srcset(value: str) -> str:
 
 
 def _scrub_script_text(text: str) -> str:
-    """Replace volatile values inside mw.config.set / RLQ / JSON-LD blobs."""
     for key in (*VOLATILE_MW_CONFIG_KEYS, *VOLATILE_JSON_KEYS):
         text = re.sub(
             rf'"{re.escape(key)}"\s*:\s*("[^"]*"|-?\d+(?:\.\d+)?|true|false|null)',
             f'"{key}":"SCRUBBED"',
             text,
         )
-    ## ResourceLoader inline startup module embeds a `version` hash per module.
     text = re.sub(r'"version"\s*:\s*"[0-9a-f]{6,}"', '"version":"SCRUBBED"', text)
     return text
 
@@ -155,15 +152,12 @@ def _scrub_script_text(text: str) -> str:
 def normalize_html(html: str) -> str:
     soup = BeautifulSoup(html, "lxml")
 
-    ## Drop volatile comments.
     for c in list(soup.find_all(string=lambda t: isinstance(t, Comment))):
         text = str(c)
         if any(p.search(text) for p in VOLATILE_COMMENT_PATTERNS):
             c.extract()
 
-    ## Walk every tag once: rewrite URL attrs, scrub volatile attrs, sort.
     for tag in soup.find_all(True):
-        ## <meta property="article:modified_time" content="...">: scrub.
         if tag.name == "meta" and tag.get("property") in VOLATILE_META_PROPERTIES:
             tag["content"] = "SCRUBBED"
         attrs = tag.attrs
@@ -177,26 +171,18 @@ def normalize_html(html: str) -> str:
             elif attr_name in URL_ATTRS and isinstance(value, str):
                 attrs[attr_name] = _normalize_url(value)
             elif isinstance(value, list):
-                ## BS treats some attrs as lists (e.g. class). Sort for
-                ## stable diffs.
                 attrs[attr_name] = sorted(value)
         tag.attrs = dict(sorted(attrs.items()))
 
-    ## Rewrite inline scripts to scrub volatile values inside JSON blobs.
     for script in soup.find_all("script"):
         if script.string:
             script.string.replace_with(_scrub_script_text(str(script.string)))
 
-    ## Drop inline <style> blocks that lazy-loaded modules inject after
-    ## interaction (Popups on hover, MediaViewer on click, ...). Their
-    ## presence is timing-dependent across runs.
     for style in soup.find_all("style"):
         text = style.string or ""
         if any(p.search(text) for p in LAZY_INJECTED_STYLE_FINGERPRINTS):
             style.decompose()
 
-    ## Same flake source: Popups' user-portlet "Edit preview settings"
-    ## entry gets injected only when the module has run. Drop it.
     for a in list(soup.find_all("a")):
         if a.string and a.string.strip() == "Edit preview settings":
             ancestor = a.find_parent("li") or a
@@ -205,15 +191,70 @@ def normalize_html(html: str) -> str:
     return soup.prettify(formatter="minimal")
 
 
-def main() -> int:
-    if len(sys.argv) != 3:
-        print("usage: normalize.py <input.html> <output.html>", file=sys.stderr)
-        return 2
-    src = Path(sys.argv[1])
-    dst = Path(sys.argv[2])
+def normalize_manifest(manifest: dict) -> dict:
+    """Strip volatile query params from URLs so the manifest diff
+    focuses on content changes. Sort by normalised URL for stable
+    output.
+    """
+    out: dict[str, dict] = {}
+    for url, entry in manifest.items():
+        nurl = _normalize_url(url)
+        ## If two URLs collapse to the same normalised form (e.g. two
+        ## different version tokens), keep the first one's entry;
+        ## hash will reveal whether the content actually differs.
+        out.setdefault(nurl, entry)
+    return dict(sorted(out.items()))
+
+
+def normalize_page_dir(src: Path, dst: Path) -> None:
+    dst.mkdir(parents=True, exist_ok=True)
+
+    html = (src / "dom.html").read_text(encoding="utf-8")
+    (dst / "dom.html").write_text(normalize_html(html), encoding="utf-8")
+
+    manifest = json.loads((src / "manifest.json").read_text(encoding="utf-8"))
+    nm = normalize_manifest(manifest)
+    (dst / "manifest.json").write_text(
+        json.dumps(nm, indent=2, sort_keys=True), encoding="utf-8"
+    )
+
+    ## Screenshot: copy as-is. Pixel-diff is the comparison step.
+    screenshot_src = src / "screenshot.png"
+    if screenshot_src.exists():
+        shutil.copy2(screenshot_src, dst / "screenshot.png")
+
+    ## Assets are content-hashed so already canonical; rsync-like
+    ## mirror so the dst layout is self-contained.
+    src_assets = src / "assets"
+    dst_assets = dst / "assets"
+    if src_assets.exists():
+        dst_assets.mkdir(exist_ok=True)
+        for f in src_assets.iterdir():
+            target = dst_assets / f.name
+            if not target.exists():
+                shutil.copy2(f, target)
+
+
+def _legacy_html_mode(src: Path, dst: Path) -> int:
+    """Backwards compatible with v0.1: input is a single HTML file."""
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_text(normalize_html(src.read_text(encoding="utf-8")), encoding="utf-8")
     return 0
+
+
+def main() -> int:
+    if len(sys.argv) != 3:
+        print("usage: normalize.py <input> <output>", file=sys.stderr)
+        return 2
+    src = Path(sys.argv[1])
+    dst = Path(sys.argv[2])
+    if src.is_dir():
+        normalize_page_dir(src, dst)
+        return 0
+    if src.is_file() and src.suffix == ".html":
+        return _legacy_html_mode(src, dst)
+    print(f"normalize.py: don't know how to normalise {src}", file=sys.stderr)
+    return 2
 
 
 if __name__ == "__main__":

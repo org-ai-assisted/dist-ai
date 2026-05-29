@@ -1,0 +1,1110 @@
+<!DOCTYPE html>
+<html class="client-nojs" lang="en" dir="ltr">
+<head>
+<meta charset="UTF-8">
+<title>Kicksecure Documentation</title>
+<script>(function(){var className="client-js";var cookie=document.cookie.match(/(?:^|; )wikimwclientpreferences=([^;]+)/);if(cookie){cookie[1].split('%2C').forEach(function(pref){className=className.replace(new RegExp('(^| )'+pref.replace(/-clientpref-\w+$|[^\w-]+/g,'')+'-clientpref-\\w+( |$)'),'$1'+pref+'$2');});}document.documentElement.className=className;}());RLCONF={"wgBreakFrames":false,"wgSeparatorTransformTable":["",""],"wgDigitTransformTable":["",""],"wgDefaultDateFormat":"dmy","wgMonthNames":["","January","February","March","April","May","June","July","August","September","October","November","December"],"wgRequestId":"149e0803cb9e1805d362eedd","wgCanonicalNamespace":"","wgCanonicalSpecialPageName":false,"wgNamespaceNumber":0,"wgPageName":"Documentation","wgTitle":"Documentation","wgCurRevisionId":109151,"wgRevisionId":109151,"wgArticleId":17,"wgIsArticle":true,"wgIsRedirect":false,"wgAction":"view","wgUserName":null,"wgUserGroups":["*"],"wgCategories":["Documentation"],"wgPageViewLanguage":"en","wgPageContentLanguage":"en","wgPageContentModel":"wikitext","wgRelevantPageName":"Documentation","wgRelevantArticleId":17,"wgIsProbablyEditable":true,"wgRelevantPageIsProbablyEditable":true,"wgRestrictionEdit":[],"wgRestrictionMove":[],"wgMediaViewerOnClick":true,"wgMediaViewerEnabledByDefault":true,"wgCiteReferencePreviewsActive":true,"wgPopupsFlags":0,"wgFlaggedRevsParams":{"tags":{"accuracy":{"levels":3}}},"wgStableRevisionId":109151};
+RLSTATE={"site.styles":"ready","user.styles":"ready","user":"ready","user.options":"loading","skins.vector.styles.legacy":"ready","jquery.makeCollapsible.styles":"ready","ext.CookieWarning.styles":"ready","oojs-ui-core.styles":"ready","oojs-ui.styles.indicators":"ready","mediawiki.widgets.styles":"ready","oojs-ui-core.icons":"ready","ext.flaggedRevs.basic":"ready","mediawiki.codex.messagebox.styles":"ready"};RLPAGEMODULES=["mediawiki.page.media","site","mediawiki.page.ready","jquery.makeCollapsible","skins.vector.legacy.js","ext.CookieWarning","mmv.bootstrap","ext.popups","ext.flaggedRevs.advanced"];</script>
+<script>(RLQ=window.RLQ||[]).push(function(){mw.loader.impl(function(){return["user.options@12s5i",function($,jQuery,require,module){mw.user.tokens.set({"patrolToken":"+\\","watchToken":"+\\","csrfToken":"+\\"});
+}];});});</script>
+<link rel="stylesheet" href="/w/load.php?lang=en&amp;modules=ext.CookieWarning.styles%7Cext.flaggedRevs.basic%7Cjquery.makeCollapsible.styles%7Cmediawiki.codex.messagebox.styles%7Cmediawiki.widgets.styles%7Coojs-ui-core.icons%2Cstyles%7Coojs-ui.styles.indicators%7Cskins.vector.styles.legacy&amp;only=styles&amp;skin=vector">
+<script defer src="/w/load.php?lang=en&amp;modules=startup&amp;only=scripts&amp;raw=1&amp;skin=vector"></script>
+<meta name="ResourceLoaderDynamicStyles" content="">
+<link rel="stylesheet" href="/w/load.php?lang=en&amp;modules=site.styles&amp;only=styles&amp;skin=vector">
+<meta name="generator" content="MediaWiki 1.45.3">
+<meta name="robots" content="max-image-preview:standard">
+<meta name="format-detection" content="telephone=no">
+<meta name="description" content="A Crash Course in Computer Security">
+<meta name="twitter:site" content="@Kicksecure">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes, minimum-scale=0.25, maximum-scale=5.0">
+<link rel="alternate" type="application/x-wiki" title="Edit" href="/w/index.php?title=Documentation&amp;action=edit">
+<link rel="search" type="application/opensearchdescription+xml" href="/w/rest.php/v1/search" title="Kicksecure (en)">
+<link rel="EditURI" type="application/rsd+xml" href="https://www.kicksecure.com/w/api.php?action=rsd">
+<link rel="canonical" href="https://www.kicksecure.com/wiki/Documentation">
+<link rel="license" href="/wiki/Kicksecure:Copyrights">
+<link rel="alternate" type="application/atom+xml" title="Kicksecure Atom feed" href="/w/index.php?title=Special:RecentChanges&amp;feed=atom">
+<!-- Begin Extension:CSS --><link rel="stylesheet" href="/mw-autogen/mw-combined-skincss.min.css?css-extension=1&hsversion_from_server_replacement_unixtime=1780039815"><!-- End Extension:CSS -->
+<!-- Begin Extension:CSS --><style>body.ctbc_hide-sitenotice-38_true #siteNotice .sitenotice-banner[data-banner-id="38"]:not(.force-show){display:none!important}#siteNotice .sitenotice-banner:not([data-banner-id="38"]){display:none!important}</style><!-- End Extension:CSS -->
+<!-- Begin Extension:CSS --><link rel="stylesheet" href="/mw-autogen/src-copy/Hide_all_banners.min.css?css-extension=1&hsversion_from_server_replacement_unixtime=1780039815"><!-- End Extension:CSS -->
+<!-- Begin Extension:CSS --><link rel="stylesheet" href="/mw-autogen/src-copy/Hide_firstHeading.css?css-extension=1&hsversion_from_server_replacement_unixtime=1780039815"><!-- End Extension:CSS -->
+
+<!-- Begin Extension:HeadScript
+-------------------------------
+* server-type  :  production
+* Path to scripts : /mw-autogen
+* Wiki page: Documentation
+* Url query parameter "debug" : undefined
+* Url query parameter "dontload" : undefined
+* $wgResourceLoaderDebug : "" (empty string)
+-->
+<link rel="icon" type="image/svg+xml" href="/favicon.svg?hsversion-headscript-replacement-by-server=1&hsversion_from_server_replacement_unixtime=1780039815" sizes="any">
+
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png?hsversion-headscript-replacement-by-server=1&hsversion_from_server_replacement_unixtime=1780039815">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png?hsversion-headscript-replacement-by-server=1&hsversion_from_server_replacement_unixtime=1780039815">
+<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png?hsversion-headscript-replacement-by-server=1&hsversion_from_server_replacement_unixtime=1780039815">
+<link rel="manifest" href="/site.webmanifest?hsversion-headscript-replacement-by-server=1&hsversion_from_server_replacement_unixtime=1780039815">
+<link rel="mask-icon" href="/safari-pinned-tab.svg?hsversion-headscript-replacement-by-server=1&hsversion_from_server_replacement_unixtime=1780039815" color="#5bbad5">
+<meta name="theme-color" content="#ffffff">
+
+<meta name="msapplication-TileColor" content="#da532c">
+
+<link rel="preload" href="/libs/Roboto_2023-08-03/Roboto-Regular-webfont.woff" as="font" crossorigin fetchpriority="low">
+<link rel="preload" href="/libs/Font-Awesome_2023-08-03/webfonts/fa-solid-900.woff2" as="font" crossorigin fetchpriority="low">
+
+<style>
+@font-face { font-family: Roboto; src: url(/libs/Roboto_2023-08-03/Roboto-Regular-webfont.woff); font-display: swap; }
+@font-face { font-family: Roboto; font-weight: 300; src: url(/libs/Roboto_2023-08-03/Roboto-Light-webfont.woff); font-display: swap; }
+@font-face { font-family: Cousine; src: url(/libs/Cousine_2023-08-03/Cousine-Regular.woff); font-display: swap; }
+</style>
+
+<link rel="stylesheet" media="print" onload="this.media='all'" href="/libs/Font-Awesome_2023-08-03/css/fontawesome.min.css" fetchpriority="low">
+<link rel="stylesheet" media="print" onload="this.media='all'" href="/libs/Font-Awesome_2023-08-03/css/solid.min.css" fetchpriority="low">
+<link rel="stylesheet" media="print" onload="this.media='all'" href="/libs/Font-Awesome_2023-08-03/css/regular.min.css" fetchpriority="low">
+<link rel="stylesheet" media="print" onload="this.media='all'" href="/libs/Font-Awesome_2023-08-03/css/brands.min.css" fetchpriority="low">
+
+<script id="js-cookie-script" defer fetchpriority="low" src="/libs/jscookie/js.cookie.min.js"></script>
+
+<link rel="stylesheet" fetchpriority="low" media="print" onload="this.media='all'" href="/libs/Prism/prism.css" >
+<script id="highlight-code-script" defer fetchpriority="low" src="/libs/Prism/prism.js" data-manual></script>
+
+<script type="module" defer src="/libs/instant.page/instantpage.min.js"></script>
+
+  <script type="text/javascript" defer id="core-dependent-libs">
+    (function() {
+      const coreDependentLibs = ["\/libs\/jquery-tinyscrollbar_2024-08-21\/jquery.tinyscrollbar.min.js"];
+      function triggerWhenReady() {
+        let deferred = [];
+        for( const i in coreDependentLibs ) deferred.push( $.getScript( coreDependentLibs[i] ) );
+        $.when.apply($, deferred).done(function() {
+          window.mediaWikiCommonJsAndHeadscriptcoreDependentLibsAreLoaded = true;
+          window.dispatchEvent( new Event("mediaWikiCommonJsAndHeadscriptcoreDependentLibsAreLoaded") );
+        });
+      }
+      if( window.mediaWikiCommonJsIsLoaded ) triggerWhenReady();
+      else window.addEventListener( "mediaWikiCommonJsIsLoaded", triggerWhenReady );
+    })();
+  </script>
+  
+
+<link rel="stylesheet" href="/mw-autogen/mw-combined-wikicss.min.css?hsversion-headscript-replacement-by-server=1&hsversion_from_server_replacement_unixtime=1780039815">
+<script defer src="/mw-autogen/mw-combined-wikijs.min.js?hsversion-headscript-replacement-by-server=1&hsversion_from_server_replacement_unixtime=1780039815"></script>
+<!-- ------------------------
+/End Extension:HeadScript -->
+
+<meta property="og:title" content="Kicksecure Documentation">
+<meta property="og:site_name" content="Kicksecure">
+<meta property="og:url" content="https://www.kicksecure.com/wiki/Documentation">
+<meta property="og:description" content="A Crash Course in Computer Security">
+<meta property="og:image" content="https://www.kicksecure.com/w/images/8/85/Documentation.jpg?version=897eb28258d8f08709c5b453376c1462">
+<meta property="og:image:width" content="640">
+<meta property="og:image:height" content="500">
+<meta property="article:modified_time" content="2026-04-30T13:18:25Z">
+<meta property="article:published_time" content="2026-04-30T13:18:25Z">
+<meta property="og:type" content="website">
+<script type="application/ld+json">{"@context":"http:\/\/schema.org","@type":"website","name":"Kicksecure Documentation","headline":"Kicksecure Documentation","mainEntityOfPage":"Kicksecure Documentation","identifier":"https:\/\/www.kicksecure.com\/wiki\/Documentation","url":"https:\/\/www.kicksecure.com\/wiki\/Documentation","description":"A Crash Course in Computer Security","dateModified":"2026-04-30T13:18:25Z","datePublished":"2026-04-30T13:18:25Z","image":{"@type":"ImageObject","url":"https:\/\/www.kicksecure.com\/w\/images\/8\/85\/Documentation.jpg?version=897eb28258d8f08709c5b453376c1462","width":640,"height":500},"author":{"@type":"Organization","name":"Kicksecure","url":"https:\/\/www.kicksecure.com","logo":[]},"publisher":{"@type":"Organization","name":"Kicksecure","url":"https:\/\/www.kicksecure.com","logo":[]},"potentialAction":{"@type":"SearchAction","target":"https:\/\/www.kicksecure.com\/w\/index.php?title=Special:Search&search={search_term}","query-input":"required name=search_term"}}</script>
+</head>
+<body class="skin-vector-legacy mediawiki ltr sitedir-ltr mw-hide-empty-elt ns-0 ns-subject mw-editable page-Documentation rootpage-Documentation skin-vector action-view skin--responsive user-not-logged-in"><div id="mw-page-base" class="noprint"></div>
+<div id="mw-head-base" class="noprint"></div>
+<div id="content" class="mw-body" role="main">
+	<a id="top"></a>
+	<div id="siteNotice"><div id="localNotice" data-nosnippet=""><div class="sitenotice" lang="en" dir="ltr"><p>
+
+
+
+
+  
+
+
+
+
+
+
+
+
+
+
+  <div
+    class="sitenotice-banner robots-nocontent"
+    data-banner-id="38"
+  >
+    <!--googleoff: index--><!--noindex-->
+    
+        
+      <a href="/wiki/Donate">      
+      <img decoding="async" loading="lazy" class="icon" src="/w/images/0/0b/Grow-symbol.png" width="53" height="40" alt="grow symbol"><span>Help keep Kicksecure strong, independent, and actively maintained.</span>
+      
+      </a>      
+        
+    <!--/noindex--><!--googleon: index-->
+  </div>
+  
+
+</p></div></div></div>
+	<div class="mw-indicators">
+	</div>
+	<h1 id="firstHeading" class="firstHeading mw-first-heading">Kicksecure Documentation</h1>
+	<div id="bodyContent" class="vector-body">
+		<div id="siteSub" class="noprint">From Kicksecure</div>
+		<div id="contentSub"><div id="mw-content-subtitle"></div></div>
+		<div id="contentSub2"></div>
+		
+		<div id="jump-to-nav"></div>
+		<a class="mw-jump-link" href="#mw-head">Jump to navigation</a>
+		<a class="mw-jump-link" href="#searchInput">Jump to search</a>
+		<div id="mw-content-text" class="mw-body-content"><div class="mw-content-ltr mw-parser-output" lang="en" dir="ltr"><div class="robots-nocontent" data-nosnippet="">
+
+<!--googleoff: index-->
+
+
+<!--noindex-->
+
+<div id="custom-header">
+  <div class="style-wrapper">
+
+    
+    
+
+<div class="nav-menu header-menu">
+  <input type="checkbox" class="menu-trigger" />
+
+  <div class="menu-button">
+    <img class="off" src="/w/images/thumb/c/cb/Logo-menu.png/52px-Logo-menu.png" width="26" height="26" alt="Nav menu Off symbol" />
+    <img class="on" src="/w/images/thumb/8/89/X-icon.png/52px-X-icon.png" width="26" height="26" alt="Nav menu On symbol" />
+  </div>
+
+  <a href="/" class="home" title="homepage">
+    <img src="/w/images/4/4a/Kicksecure-logo-rectangle.svg" width="44" height="44" alt="Kicksecure Logo" />
+    <span class="text">Kicksecure</span>
+  </a>
+  
+  <a href="/wiki/Trademark_Policy" class="register-symbol">&trade;</a>
+
+  <div class="menu-content">
+    <div class="download">
+      <div class="button" data-link="/wiki/Download">Download</div>
+      <div class="menu">
+        <a href="/wiki/ISO"><i class="fa-solid fa-laptop fa-fw"></i><span>On Computer</span></a>
+        <a href="/wiki/USB_Installation"><i class="fa-brands fa-usb fa-fw"></i><span>USB Installation</span></a>
+        <a href="/wiki/Intel_AMD64"><i class="fa-solid fa-microchip fa-fw"></i><span>Intel / AMD64</span></a>
+        <a href="/wiki/ARM64"><i class="fa-solid fa-microchip fa-fw"></i><span>ARM64</span></a>
+        <a href="/wiki/Raspberry_Pi"><i class="fa-brands fa-raspberry-pi fa-fw"></i><span>Raspberry Pi</span></a>
+        <a href="/wiki/PPC64"><i class="fa-solid fa-microchip fa-fw"></i><span>PPC64</span></a>
+        <a href="/wiki/Windows"><i class="fa-brands fa-windows fa-fw"></i><span>Windows (VM)</span></a>
+        <a href="/wiki/MacOS"><i class="fa-brands fa-apple fa-fw"></i><span>Mac</span></a>
+        <a href="/wiki/Linux"><i class="fa-brands fa-linux fa-fw"></i><span>Linux (VM)</span></a>
+        <a href="/wiki/VirtualBox"><i class="fa-solid fa-display fa-fw"></i><span>VirtualBox (VM)</span></a>
+        <a href="/wiki/Qubes"><i class="fa-solid fa-cube fa-fw"></i><span>Qubes (VM)</span></a>
+        <a href="/wiki/KVM"><i class="fa-solid fa-display fa-fw"></i><span>KVM (VM)</span></a>
+        <a href="/wiki/Debian"><i class="fa-brands fa-debian fa-fw"></i><span>Debian morph to Kicksecure</span></a>
+        <a href="/wiki/Download" aria-label="See more download options"><i class="fa-solid fa-download fa-fw"></i><span>More options</span></a>
+        <a href="https://github.com/Kicksecure"><i class="fa-solid fa-code fa-fw"></i><span>Source Code</span></a>
+      </div>
+    </div>
+
+    <div class="about">
+      <div class="button" data-link="/wiki/About">About</div>
+      <div class="menu">
+        <a href="/wiki/About"><i class="fa-solid fa-binoculars"></i><span>Overview</span></a>
+        <a href="/#security"><i class="fa-solid fa-gears"></i><span>Features</span></a>
+        <a href="/wiki/Reasons_for_Freedom_Software"><i class="fa-brands fa-osi"></i><span>Why Open Source?</span></a>
+        <a href="/wiki/What_we_do"><i class="fa-solid fa-flask"></i><span>Project Activities</span></a>
+        <a href="/wiki/Contributors"><i class="fa-solid fa-people-group"></i><span>Contributors</span></a>
+        <a href="/wiki/Security_Roadmap"><i class="fa-solid fa-mountain-sun"></i><span>Mission & Vision</span></a>
+      </div>
+    </div>
+
+    <div class="docs">
+      <div class="button" data-link="/wiki/Documentation">Docs</div>
+      <div class="menu">
+        <a href="/wiki/Documentation"><i class="fa-solid fa-book"></i><span>Documentation</span></a>
+        <a href="/wiki/FAQ"><i class="fa-solid fa-question"></i><span>FAQ</span></a>
+        <a href="/wiki/Troubleshooting"><i class="fa-solid fa-triangle-exclamation"></i><span>Troubleshooting</span></a>
+      </div>
+    </div>
+
+    <div class="community">
+      <div class="button" data-link="https://forums.kicksecure.com">Community</div>
+      <div class="menu">
+        <a href="https://forums.kicksecure.com/"><i class="fa-regular fa-comments"></i><span>Forums</span></a>
+        <a href="/wiki/Forum_Best_Practices"><i class="fa-solid fa-list-check"></i><span>Forum Best Practices</span></a>
+        <a href="/wiki/Contribute"><i class="fa-solid fa-hand-holding-medical"></i><span>Contribute</span></a>
+      </div>
+    </div>
+
+    <div class="support">
+      <div class="button" data-link="/wiki/Support">Support</div>
+      <div class="menu">
+        <a href="/wiki/Self_Support_First_Policy"><i class="fa-solid fa-person"></i><span>Self Support First Policy</span></a>
+        <a href="/wiki/Please_Use_Search_Engines_And_See_Documentation_First"><i class="fa-solid fa-book-open"></i><span>Search Engines, Docs and AI</span></a>
+        <a href="/wiki/Support"><i class="fa-solid fa-circle-exclamation"></i><span>Support (Limited)</span></a>
+        <!---
+        <a href="/wiki/Plus_Support"><i class="fa-solid fa-plus"></i><span>Plus</span></a>
+        <a href="/wiki/Premium_Support"><i class="fa-solid fa-medal"></i><span>Premium</span></a>
+        --->
+        <a href="/wiki/Reporting_Bugs"><i class="fa-solid fa-bug-slash"></i><span>Reporting Bugs</span></a>
+        <a href="/wiki/Contact"><i class="fa-solid fa-lock"></i><span>Contact (Restricted)</span></a>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+    
+    <div class="menu-right">
+      <a class="search" href="/w/index.php?search=">
+        <img src="/w/images/thumb/2/25/Magnifying-glass.png/64px-Magnifying-glass.png" width="26" height="26" alt="search" />
+      </a>
+
+      <div class="super-menu header-menu">
+        <input type="checkbox" class="menu-trigger" />
+      
+        <div class="menu-button">
+          <img class="off" src="/w/images/thumb/2/23/Chevron.png/54px-Chevron.png" width="54" height="54" alt="Editor menu Off symbol" />
+          <img class="on" src="/w/images/thumb/8/89/X-icon.png/52px-X-icon.png" width="52" height="52" alt="Editor menu On symbol" />
+        </div>
+
+        <div class="menu-content">
+          <div class="col1">
+            <span class="headline tools">Tools</span>
+            <a class="upload user-logged-in" href="/wiki/Special:Upload"><i class="fa-solid fa-upload"></i>Upload file</a>
+            <a class="special" href="/wiki/Special:SpecialPages"><i class="fa-solid fa-wand-magic-sparkles"></i>Special pages</a>
+            <a class="recentchanges user-logged-in" href="/wiki/Special:RecentChanges"><i class="fa-solid fa-arrow-right-arrow-left"></i>Recent changes</a>
+            <a class="print" href="#" data-action="print"><i class="fa-solid fa-print"></i>Print Version</a>
+
+            <span class="headline pagemeta">Page meta</span>
+            <a class="whatlinkshere user-logged-in" href="/wiki/Special:WhatLinksHere/Documentation"><i class="fa-solid fa-share-nodes"></i>What links here</a>
+            <a class="relatedchanges" href="/wiki/Special:RecentChangesLinked/Documentation"><i class="fa-solid fa-rotate"></i>Related changes</a>
+            <a class="info" href="/w/index.php?title=Documentation&action=info"><i class="fa-solid fa-info"></i>Page information</a>
+          </div>
+
+          <div class="col2">
+            <span class="headline page">Page</span>
+            <a class="view" href="/wiki/Documentation"><i class="fa-solid fa-house"></i>Read</a>
+            <a class="edit" href="/w/index.php?title=Documentation&action=edit&oldid=109151"><i class="fa-solid fa-pen"></i>Edit</a>
+            <a class="history user-logged-in" href="/w/index.php?title=Documentation&action=history"><i class="fa-solid fa-clock-rotate-left"></i>History</a>
+            <a class="move user-logged-in" href="/wiki/Special:MovePage/Documentation"><i class="fa-solid fa-share"></i>Move</a>
+            <a class="protect" href="/w/index.php?title=Documentation&action=protect"><i class="fa-solid fa-shield-halved"></i>Protection</a>
+            <a class="unwatch user-logged-in" href="/w/index.php?title=Documentation&action=unwatch"><i class="fa-regular fa-star"></i>Unwatch</a>
+            <a class="watch user-logged-in" href="/w/index.php?title=Documentation&action=watch"><i class="fa-solid fa-star"></i>Watch</a>
+            <a class="delete user-logged-in" href="/w/index.php?title=Documentation&action=delete"><i class="fa-solid fa-trash-can"></i>Delete</a>
+            <a class="purge" href="/w/index.php?title=Documentation&action=purge"><i class="fa-solid fa-fire-flame-curved"></i>Purge</a>
+          </div>
+
+          <div class="col3">
+            <span class="headline user">User</span>
+            <a class="preferences user-logged-in" href="/wiki/Special:Preferences"><i class="fa-solid fa-asterisk"></i>Preferences</a>
+            <a class="watchlist user-logged-in" href="/wiki/Special:Watchlist"><i class="fa-solid fa-list-ol"></i>Watchlist</a>
+            <a class="contributions user-logged-in" href="/wiki/Special:Contributions"><i class="fa-solid fa-hand"></i>Contributions</a>
+            <a class="logout user-logged-in" href="/w/index.php?title=Special:UserLogout&returnto=Documentation"><i class="fa-solid fa-unlock-keyhole"></i>Logout</a>
+            <a class="createaccount user-logged-out" href="/w/index.php?title=Special:CreateAccount&returnto=Documentation"><i class="fa-solid fa-user"></i>Create account</a>
+            <a class="login user-logged-out" href="/w/index.php?title=Special:UserLogin&returnto=Documentation"><i class="fa-solid fa-right-to-bracket"></i>Login</a>
+          </div>
+        </div>
+      </div>
+
+      <a class="donate" href="/wiki/Donate">
+        <img src="/w/images/thumb/d/d9/Heart.png/54px-Heart.png" width="27" height="24" alt="Donate Symbol" />
+        Donate
+      </a>
+    </div>
+  </div>
+</div>
+
+
+
+
+<!--/noindex-->
+
+
+<!--googleon: index-->
+</div>
+ <div class="first-heading">
+<span class="wiki-book-index wbi-for-firstheading">
+  
+  <a class="index internal" href="https://www.kicksecure.com/wiki/Documentation" title="Documentation">
+    <i class="fa-solid fa-list fa-fw"></i>
+    <span class="text">Documentation</span>
+  </a>
+
+    <a class="next internal" href="https://www.kicksecure.com/wiki/Introduction" title="Introduction">
+    <i class="fa-solid fa-chevron-right fa-fw"></i>
+    <span class="text">Introduction</span>
+  </a>
+  
+  <span class="info">
+        <span class="index">Index page: Documentation</span>
+    <span class="next">Next page: Introduction</span>  </span>
+</span>
+Kicksecure Documentation</div>
+<div class="mininav">
+<ul><li><a href="/wiki/Introduction" title="Introduction">Introduction</a></li>
+<li><a href="/wiki/About" title="About">About</a></li>
+<li><a href="/wiki/Based_on_Debian" title="Based on Debian">Based on Debian</a></li>
+<li><a class="mw-selflink selflink">Documentation</a></li>
+<li><a href="/wiki/FAQ" title="FAQ">FAQ</a></li>
+<li><a href="/wiki/Advanced_Documentation" title="Advanced Documentation">Advanced Documentation</a></li>
+<li><a href="/wiki/Support" title="Support">Support</a></li></ul>
+</div>
+<div class="pre-intro-p"></div><div class="hidden-thumbnail"><figure class="mw-default-size" typeof="mw:File/Thumb"><a href="/wiki/File:Documentation.jpg" class="mw-file-description"><img src="/w/images/thumb/8/85/Documentation.jpg/300px-Documentation.jpg" decoding="async" loading="lazy" width="300" height="234" class="mw-file-element" srcset="/w/images/thumb/8/85/Documentation.jpg/450px-Documentation.jpg 1.5x, /w/images/thumb/8/85/Documentation.jpg/600px-Documentation.jpg 2x" data-file-width="640" data-file-height="500" /></a><figcaption></figcaption></figure></div>
+<p>This documentation is a course on security on the Internet. Kicksecure is a technological means to staying secure online, but staying safe necessitates complete behavioral change; it is a complex problem without an easy solution. The more you know, the safer you can be.
+</p>
+<div class="post-intro-p"></div>
+<p><button class="expand-or-collapse-all-button">
+<span class="expand-text">Expand all</span>
+<span class="collapse-text">Collapse all</span>
+</button>
+</p>
+<div class="toccolours mw-collapsible mw-collapsed" style="max-width:100%;">
+<p>Kicksecure Overview</p>
+<div class="use-3-columns strict-list-columns mw-collapsible-content">
+<ul><li><a href="/wiki/Introduction" title="Introduction">Introduction</a></li>
+<li><a href="/wiki/About" title="About">Design and Goals</a></li>
+<li><a href="/wiki/Based_on_Debian" title="Based on Debian">Based on Debian</a></li>
+<li><a href="/wiki/FAQ" title="FAQ">FAQ</a></li></ul>
+<div></div>
+<ul><li><a href="/wiki/Comparison_with_Others" title="Comparison with Others">Security Operating System Comparison - Kicksecure vs Debian</a></li>
+<li><a href="/wiki/Trust" title="Trust">Placing Trust in Kicksecure</a></li></ul>
+<div></div>
+<ul><li><a href="/wiki/Privacy" title="Privacy">Privacy Goals and Non-Goals</a></li></ul>
+</div>
+</div>
+<div class="toccolours mw-collapsible mw-collapsed" style="max-width:100%;">
+<p>Download Kicksecure</p>
+<div class="use-3-columns strict-list-columns mw-collapsible-content">
+<ul><li><a href="/wiki/System_Requirements" title="System Requirements">System Requirements</a></li>
+<li><a href="/wiki/Download" title="Download">Download</a>
+<ul><li><span typeof="mw:File"><a href="/wiki/ISO" title="ISO"><img src="/w/images/thumb/a/a5/Cd-rom-icon.png/15px-Cd-rom-icon.png" decoding="async" loading="lazy" width="15" height="15" class="mw-file-element" srcset="/w/images/thumb/a/a5/Cd-rom-icon.png/23px-Cd-rom-icon.png 1.5x, /w/images/thumb/a/a5/Cd-rom-icon.png/30px-Cd-rom-icon.png 2x" data-file-width="480" data-file-height="480" /></a></span> <a href="/wiki/ISO" title="ISO">ISO</a></li>
+<li><a href="/wiki/USB_Installation" title="USB Installation">Installation of Kicksecure on a USB</a></li>
+<li><span typeof="mw:File"><a href="/wiki/Debian" title="Debian"><img src="/w/images/thumb/a/af/Tux.png/15px-Tux.png" decoding="async" loading="lazy" width="15" height="18" class="mw-file-element" srcset="/w/images/thumb/a/af/Tux.png/23px-Tux.png 1.5x, /w/images/thumb/a/af/Tux.png/30px-Tux.png 2x" data-file-width="108" data-file-height="128" /></a></span> <a href="/wiki/Debian" title="Debian">Debian</a></li>
+<li><span typeof="mw:File"><a href="/wiki/VirtualBox" title="VirtualBox"><img src="/w/images/thumb/d/d5/Virtualbox_logo.png/15px-Virtualbox_logo.png" decoding="async" loading="lazy" width="15" height="15" class="mw-file-element" srcset="/w/images/thumb/d/d5/Virtualbox_logo.png/23px-Virtualbox_logo.png 1.5x, /w/images/thumb/d/d5/Virtualbox_logo.png/30px-Virtualbox_logo.png 2x" data-file-width="512" data-file-height="512" /></a></span> <a href="/wiki/VirtualBox" title="VirtualBox">VirtualBox</a></li>
+<li><span typeof="mw:File"><a href="/wiki/KVM" title="KVM"><img src="/w/images/thumb/b/b4/Kvmbanner-logo26.png/30px-Kvmbanner-logo26.png" decoding="async" loading="lazy" width="30" height="22" class="mw-file-element" srcset="/w/images/thumb/b/b4/Kvmbanner-logo26.png/45px-Kvmbanner-logo26.png 1.5x, /w/images/thumb/b/b4/Kvmbanner-logo26.png/60px-Kvmbanner-logo26.png 2x" data-file-width="517" data-file-height="381" /></a></span> <a href="/wiki/KVM#Start" title="KVM">KVM</a></li>
+<li><span typeof="mw:File"><a href="/wiki/Qubes" title="Qubes"><img src="/w/images/thumb/9/94/Qubes-logo-blue.png/15px-Qubes-logo-blue.png" decoding="async" loading="lazy" width="15" height="15" class="mw-file-element" srcset="/w/images/thumb/9/94/Qubes-logo-blue.png/23px-Qubes-logo-blue.png 1.5x, /w/images/thumb/9/94/Qubes-logo-blue.png/30px-Qubes-logo-blue.png 2x" data-file-width="256" data-file-height="256" /></a></span> <a href="/wiki/Qubes" title="Qubes">Qubes</a></li></ul></li>
+<li><a href="/wiki/Download_Security" title="Download Security">Download Security</a></li>
+<li><a href="/wiki/Download_Issues" title="Download Issues">Download Issues</a></li></ul>
+<div></div>
+<ul><li><a href="/wiki/Verifying_Software_Signatures" title="Verifying Software Signatures">Verifying Software Signatures</a>
+<ul><li><a href="/wiki/Signing_Key" title="Signing Key">Download the Kicksecure Signing Key</a></li>
+<li><a href="/wiki/Verify_the_images" title="Verify the images">Verify Kicksecure Images</a>
+<ul><li><span typeof="mw:File"><span><img src="/w/images/thumb/a/af/Tux.png/15px-Tux.png" decoding="async" loading="lazy" width="15" height="18" class="mw-file-element" srcset="/w/images/thumb/a/af/Tux.png/23px-Tux.png 1.5x, /w/images/thumb/a/af/Tux.png/30px-Tux.png 2x" data-file-width="108" data-file-height="128" /></span></span> <a href="/wiki/Verify_the_images_using_Linux" title="Verify the images using Linux">Linux using gpg</a></li>
+<li><span typeof="mw:File"><span><img src="/w/images/thumb/e/ee/Windows_logo_-_2012.svg.png/15px-Windows_logo_-_2012.svg.png" decoding="async" loading="lazy" width="15" height="15" class="mw-file-element" srcset="/w/images/thumb/e/ee/Windows_logo_-_2012.svg.png/23px-Windows_logo_-_2012.svg.png 1.5x, /w/images/thumb/e/ee/Windows_logo_-_2012.svg.png/30px-Windows_logo_-_2012.svg.png 2x" data-file-width="200" data-file-height="200" /></span></span> <a href="/wiki/Verify_the_images_using_Windows" title="Verify the images using Windows">Windows using Gpg4win</a></li>
+<li><span typeof="mw:File"><a href="/wiki/File:Rsz_osx.png" class="mw-file-description"><img src="/w/images/thumb/e/e8/Rsz_osx.png/15px-Rsz_osx.png" decoding="async" loading="lazy" width="15" height="15" class="mw-file-element" srcset="/w/images/thumb/e/e8/Rsz_osx.png/23px-Rsz_osx.png 1.5x, /w/images/e/e8/Rsz_osx.png 2x" data-file-width="26" data-file-height="26" /></a></span> <a href="/wiki/Verify_the_images_using_macOS" title="Verify the images using macOS">macOS using GPGTools</a></li></ul></li></ul></li></ul>
+<div></div>
+<ul><li><a href="/wiki/VirtualBox/Guest_Additions" title="VirtualBox/Guest Additions">VirtualBox Guest Additions and Shared Folders</a></li>
+<li><a href="/wiki/VirtualBox/Higher_Screen_Resolution_without_installing_VirtualBox_Guest_Additions" title="VirtualBox/Higher Screen Resolution without installing VirtualBox Guest Additions">Higher Screen Resolution without VirtualBox Guest Additions</a></li>
+<li><a href="/wiki/VirtualBox/Recommended_Version" title="VirtualBox/Recommended Version">Install the Recommended VirtualBox Version</a></li>
+<li><a href="/wiki/VirtualBox/Other_Versions" title="VirtualBox/Other Versions">Install Newer Versions of VirtualBox</a></li>
+<li><a href="/wiki/VirtualBox/Troubleshooting" title="VirtualBox/Troubleshooting">VirtualBox Troubleshooting</a></li>
+<li><a href="/wiki/VirtualBox/Green_Turtle_Issue" title="VirtualBox/Green Turtle Issue">VirtualBox - Green Turtle Issue</a></li></ul>
+</div>
+</div>
+<div class="toccolours mw-collapsible mw-collapsed" style="max-width:100%;">
+<p>First Kicksecure Steps</p>
+<div class="use-3-columns strict-list-columns mw-collapsible-content">
+<ul><li><a href="/wiki/Language" title="Language">Change the System or Firefox Language</a></li>
+<li><a href="/wiki/Common_CLI_Commands" title="Common CLI Commands">Common Kicksecure CLI Commands</a></li>
+<li><a href="/wiki/Default_Passwords" title="Default Passwords">Default Passwords</a></li>
+<li><a href="/wiki/Shared_Folder" title="Shared Folder">Shared Folder</a></li></ul>
+<div></div>
+<ul><li><a href="/wiki/Stay_Tuned" title="Stay Tuned">Follow Kicksecure Developments</a></li>
+<li><a href="/wiki/USBGuard" title="USBGuard">USBGuard</a></li>
+<li><a href="/wiki/Keyboard_Layout" title="Keyboard Layout">Keyboard Layout</a></li>
+<li><a href="/wiki/Mouse" title="Mouse">Mouse Settings</a></li>
+<li><a href="/wiki/Project-APT-Repository" title="Project-APT-Repository">Kicksecure APT Repository</a></li></ul>
+<div></div>
+<ul><li><a href="/wiki/Network_Obstacle" title="Network Obstacle">Network Obstacle</a></li>
+<li><a href="/wiki/Desktop" title="Desktop">Platform-specific Desktop Tips</a></li>
+<li><a href="/wiki/Post_Install_Advice" title="Post Install Advice">Post-installation Security Advice</a></li>
+<li><a href="/wiki/Secure_Boot" title="Secure Boot">Secure Boot</a></li>
+<li><a href="/wiki/Boot_firmware" title="Boot firmware">Boot Firmware</a></li>
+<li><a href="/wiki/Systemcheck" title="Systemcheck">systemcheck</a></li></ul>
+</div>
+</div>
+<div class="toccolours mw-collapsible mw-collapsed" style="max-width:100%;">
+<p>Essential Kicksecure Security Guide</p>
+<div class="use-3-columns strict-list-columns mw-collapsible-content">
+<ul><li><a href="/wiki/Basic_Security_Guide_Introduction" title="Basic Security Guide Introduction">Introduction</a></li>
+<li><a href="/wiki/Unicode" title="Unicode">Invisible Malicious Unicode Risks</a></li>
+<li><a href="/wiki/Unicode-show" title="Unicode-show"><code>unicode-show</code> - Detect and annotate non-ASCII or suspicious Unicode characters in text or files.
+</a></li>
+<li><a href="/wiki/Stdisplay" title="Stdisplay">stdisplay (clean unicode, safe <code>echo</code></a></li>
+<li><a href="/wiki/Shell_scripting" title="Shell scripting">Shell Scripting Risks</a></li>
+<li><a href="/wiki/Essential_Host_Security" title="Essential Host Security">Essential Host Security</a></li>
+<li><a href="/wiki/Host_Firewall" title="Host Firewall">Host Firewall</a></li>
+<li><a href="/wiki/Onionizing_Repositories" title="Onionizing Repositories">Onionizing Repositories</a></li>
+<li><a href="/wiki/User" title="User">User Management</a></li>
+<li><a href="/wiki/Login" title="Login">Login Screen</a></li>
+<li><a href="/wiki/Timezone" title="Timezone">Timezone Settings</a></li>
+<li class="mw-empty-elt"></li></ul>
+<div></div>
+<ul><li><a href="/wiki/Operating_System_Software_and_Updates" title="Operating System Software and Updates">Operating System Software and Updates</a>
+<ul><li><a href="/wiki/Point_Release" title="Point Release">Point Release</a></li>
+<li><a href="/wiki/Release_Upgrade" title="Release Upgrade">Release Upgrade</a></li>
+<li><a href="/wiki/Install_Software" title="Install Software">Install Additional Software Safely</a></li>
+<li><a href="/wiki/Avoid_nonfreedom_software" title="Avoid nonfreedom software">Avoid Non-Freedom Software</a></li>
+<li><a href="/wiki/Root" title="Root">Safely Use Root Commands</a></li>
+<li><a href="/wiki/Sysmaint" title="Sysmaint"><code>sysmaint</code> - System Maintenance User</a></li>
+<li><a href="/wiki/Unrestricted_admin_mode" title="Unrestricted admin mode">unrestricted admin mode</a></li>
+<li><a href="/wiki/Login_spoofing" title="Login spoofing">Defeat Login Spoofing</a></li></ul></li>
+<li><a href="/wiki/Passwords" title="Passwords">Passwords</a>
+<ul><li><span typeof="mw:File"><a href="/wiki/Keepassxc" title="Keepassxc"><img src="/w/images/thumb/c/c1/KeePassXC.svg/20px-KeePassXC.svg.png" decoding="async" loading="lazy" width="20" height="20" class="mw-file-element" srcset="/w/images/thumb/c/c1/KeePassXC.svg/30px-KeePassXC.svg.png 1.5x, /w/images/thumb/c/c1/KeePassXC.svg/40px-KeePassXC.svg.png 2x" data-file-width="512" data-file-height="512" /></a></span> <a href="/wiki/Keepassxc" title="Keepassxc">KeePassXC Password Manager</a></li></ul></li></ul>
+<div></div>
+<ul><li><a href="/wiki/Secure_Downloads" title="Secure Downloads">Secure Command Line / Firefox Downloads</a></li>
+<li><a href="/wiki/System_Configuration_and_Access" title="System Configuration and Access">System Configuration and Access</a></li>
+<li><a href="/wiki/System_Hardening_Checklist" title="System Hardening Checklist">System Hardening Checklist</a>
+<ul><li><a href="/wiki/Kicksecure-Qubes_Security" title="Kicksecure-Qubes Security">Kicksecure for Qubes Security</a></li></ul></li>
+<li><a href="/wiki/Tor_Versioning" title="Tor Versioning">Tor Versioning</a></li>
+<li><a href="/wiki/Virtualization_Platform_Security" title="Virtualization Platform Security">Virtualization Platform Security</a></li>
+<li><a href="/wiki/Warning" title="Warning">Warnings: Kicksecure and Tor Limitations</a></li>
+<li><a href="/wiki/Shell" title="Shell">Shell, Default Interactive Shell, Hidden Text Attacks</a></li>
+<li><a href="/wiki/Deep_scan_ready" title="Deep scan ready">Deep Scan Ready</a></li>
+<li><a href="/wiki/Thumbnails" title="Thumbnails">Thumbnails</a></li>
+<li><a href="/wiki/File_indexing" title="File indexing">File Indexing</a></li></ul>
+</div>
+</div>
+<div class="toccolours mw-collapsible mw-collapsed" style="max-width:100%;">
+<p>Advanced Kicksecure Security Guide</p>
+<div class="use-3-columns strict-list-columns mw-collapsible-content">
+<ul><li><a href="/wiki/Advanced_Security_Guide_Introduction" title="Advanced Security Guide Introduction">Introduction</a></li>
+<li><a href="/wiki/Advanced_Users" title="Advanced Users">Who is an advanced user?</a></li>
+<li><a href="/wiki/Advanced_Host_Security" title="Advanced Host Security">Advanced Host Security</a></li>
+<li><a href="/wiki/User_Namespace" title="User Namespace">Unprivileged User Namespace</a></li>
+<li><a href="/wiki/Networking" title="Networking">Networking</a></li>
+<li><a href="/wiki/DNS" title="DNS">DNS</a></li>
+<li><a href="/wiki/DNS_Security" title="DNS Security">DNS_Security</a></li></ul>
+<div></div>
+<ul><li><span typeof="mw:File"><a href="/wiki/File:Logo-linux-500x500.png" class="mw-file-description"><img src="/w/images/thumb/0/0f/Logo-linux-500x500.png/15px-Logo-linux-500x500.png" decoding="async" loading="lazy" width="15" height="15" class="mw-file-element" srcset="/w/images/thumb/0/0f/Logo-linux-500x500.png/23px-Logo-linux-500x500.png 1.5x, /w/images/thumb/0/0f/Logo-linux-500x500.png/30px-Logo-linux-500x500.png 2x" data-file-width="500" data-file-height="500" /></a></span> <a href="/wiki/Kernel" title="Kernel">Install Newer Kernels</a></li>
+<li><a href="/wiki/Kernel_module" title="Kernel module">Kernel Modules</a></li>
+<li><a href="/wiki/Persistent_Mode" title="Persistent Mode">Persistent Mode</a></li>
+<li><a href="/wiki/ISO_Live_Mode" title="ISO Live Mode">ISO Live Mode</a></li>
+<li><a href="/wiki/Live_Mode" title="Live Mode">Live Mode</a>
+<ul><li><a href="/wiki/Anti-Forensics_Precautions" title="Anti-Forensics Precautions">Anti-forensics Precautions</a></li>
+<li><a href="/wiki/Read-only" title="Read-only">VM Read-only Mode</a></li>
+<li><a href="/wiki/Write_protection" title="Write protection">Write Protection</a></li></ul></li>
+<li><a href="/wiki/Social_Engineering" title="Social Engineering">Social Engineering and (Spear) Phishing</a></li>
+<li><a href="/wiki/Network_Time_Synchronization" title="Network Time Synchronization">Network Time Synchronization</a></li></ul>
+<div></div>
+<ul><li><a href="/wiki/Operating_System_Hardening" title="Operating System Hardening">Operating System Hardening</a></li>
+<li><a href="/wiki/Protection_Against_Physical_Attacks" title="Protection Against Physical Attacks">Protection against Physical Attacks</a></li>
+<li><a href="/wiki/Sandbox-app-launcher" title="Sandbox-app-launcher">Sandboxed Application Launcher</a></li>
+<li><a href="/wiki/Noexec" title="Noexec">Enhanced Security via Mount Options and Compiler Restrictions (Planned)</a></li>
+<li><a href="/wiki/SUID_Disabler_and_Permission_Hardener" title="SUID Disabler and Permission Hardener">SUID Disabler and Permission Hardener</a></li>
+<li><a href="/wiki/System_Audit" title="System Audit">System Audit</a></li>
+<li><a href="/wiki/Systemcheck_Hardening" title="Systemcheck Hardening">systemcheck Hardening</a></li>
+<li><a href="/wiki/MAC_Address" title="MAC Address">MAC Address</a></li></ul>
+</div>
+</div>
+<p><span class="manually-placed-anchor" id="computer-security-education"></span>
+</p>
+<div class="toccolours mw-collapsible mw-collapsed" style="max-width:100%;">
+<p>Computer Security Education</p>
+<div class="use-3-columns strict-list-columns mw-collapsible-content">
+<ul><li><a href="/wiki/Computer_Security_Introduction" title="Computer Security Introduction">Introduction</a></li>
+<li><a href="/wiki/Reasonable_Security" title="Reasonable Security">Reasonable Security</a></li>
+<li><a href="/wiki/Practical_Security" title="Practical Security">Practical Security</a></li>
+<li><a href="/wiki/Enterprise_Security" title="Enterprise Security">Enterprise Security</a></li>
+<li><a href="/wiki/Maximum_Security" title="Maximum Security">Maximum Security</a></li>
+<li><a href="/wiki/Perfect_Security" title="Perfect Security">Perfect Security</a></li>
+<li><a href="/wiki/Mobile_Phone_Security" title="Mobile Phone Security">Mobile Phones Privacy and Security</a></li>
+<li><a href="/wiki/Mental_Model" title="Mental Model">Computer Security Mental Model</a></li>
+<li><a href="/wiki/Core_Dumps" title="Core Dumps">Core Dumps</a></li>
+<li><a href="/wiki/AEM" title="AEM">Evil Maid Attack</a></li></ul>
+<div></div>
+<ul><li><a href="/wiki/Firmware_Security_and_Updates" title="Firmware Security and Updates">Firmware Security and Updates</a></li>
+<li><a href="/wiki/Miscellaneous_Threats_to_User_Freedom" title="Miscellaneous Threats to User Freedom">General Threats to User Freedoms</a></li>
+<li><a href="/wiki/Hardware_Threat_Minimization" title="Hardware Threat Minimization">Hardware Threat Minimization</a></li>
+<li><a href="/wiki/Malware_and_Firmware_Trojans" title="Malware and Firmware Trojans">Malware, Computer Viruses and Antivirus Scanners</a></li>
+<li><a href="/wiki/Backdoor" title="Backdoor">Backdoor - Hidden Mechanism that allows Unauthorized Access</a></li></ul>
+<div></div>
+<ul><li><a href="/wiki/Open_Source_Hardware" title="Open Source Hardware">Open Source Hardware</a></li>
+<li><a href="/wiki/Out-of-band_Management_Technology" title="Out-of-band Management Technology">Out-of-band Management Technology</a></li>
+<li><a href="/wiki/Router_and_Local_Area_Network_Security" title="Router and Local Area Network Security">Router and Local Area Network Security</a></li>
+<li><a href="/wiki/Disable_TCP_and_ICMP_Timestamps" title="Disable TCP and ICMP Timestamps">TCP and ICMP Timestamps</a></li>
+<li><a href="/wiki/Two-factor_authentication_2FA" title="Two-factor authentication 2FA">Two-factor Authentication (2FA)</a></li></ul>
+</div>
+</div>
+<div class="toccolours mw-collapsible mw-collapsed" style="max-width:100%;">
+<p>Kicksecure Bugs and Troubleshooting</p>
+<div class="use-3-columns strict-list-columns mw-collapsible-content">
+<ul><li><a href="/wiki/RAM" title="RAM">Advice for Systems with Low RAM</a></li>
+<li><a href="/wiki/Reporting_Bugs" title="Reporting Bugs">Bug Reports and Software Development</a></li>
+<li><a href="/wiki/Factory_Reset" title="Factory Reset">Factory Reset</a></li></ul>
+<div></div>
+<ul><li><a href="/wiki/Recovery" title="Recovery">Recovery Options</a>
+<ul><li><a href="/wiki/Disaster_Recovery" title="Disaster Recovery">Compromise Recovery</a></li>
+<li><a href="/wiki/SysRq" title="SysRq">System Recovery using SysRq Key</a></li></ul></li>
+<li><a href="/wiki/Broken_Boot" title="Broken Boot">Broken Boot</a></li></ul>
+<div></div>
+<ul><li><a href="/wiki/Test" title="Test">Testers Wanted!</a></li>
+<li><a href="/wiki/Troubleshooting" title="Troubleshooting">Troubleshooting</a></li>
+<li><a href="/wiki/Panic-on-oops" title="Panic-on-oops">panic-on-oops (forced, unexpected reboot)</a></li></ul>
+</div>
+</div>
+<div class="toccolours mw-collapsible mw-collapsed" style="max-width:100%;">
+<p>Email, Chat and Communications</p>
+<div class="use-3-columns mw-collapsible-content">
+<ul><li><span typeof="mw:File"><a href="/wiki/File:Signal.png" class="mw-file-description"><img src="/w/images/thumb/2/21/Signal.png/15px-Signal.png" decoding="async" loading="lazy" width="15" height="15" class="mw-file-element" srcset="/w/images/thumb/2/21/Signal.png/23px-Signal.png 1.5x, /w/images/thumb/2/21/Signal.png/30px-Signal.png 2x" data-file-width="157" data-file-height="159" /></a></span> <a href="/wiki/Signal" title="Signal">Signal Messenger</a></li>
+<li><a href="/wiki/Session" title="Session">Session Messenger</a></li>
+<li><a href="/wiki/Printing_and_Scanning" title="Printing and Scanning">Printing and Scanning</a></li></ul>
+</div>
+</div>
+<div class="toccolours mw-collapsible mw-collapsed" style="max-width:100%;">
+<p>Money, Filesharing and Other Services</p>
+<div class="use-3-columns strict-list-columns mw-collapsible-content">
+<ul><li><a href="/wiki/Cryptocurrency_Security_Threats" title="Cryptocurrency Security Threats">Cryptocurrency Security Threats</a></li>
+<li><a href="/wiki/Hardware_Wallet_Security" title="Hardware Wallet Security">Cryptocurrency Hardware Wallet Security</a></li></ul>
+<div></div>
+<ul><li>Wallets
+<ul><li><a href="/wiki/Bitcoin_Core" title="Bitcoin Core">Bitcoin Core</a></li>
+<li><span typeof="mw:File"><a href="/wiki/File:Electrum-appimage.png" class="mw-file-description"><img src="/w/images/thumb/6/63/Electrum-appimage.png/15px-Electrum-appimage.png" decoding="async" loading="lazy" width="15" height="15" class="mw-file-element" srcset="/w/images/thumb/6/63/Electrum-appimage.png/23px-Electrum-appimage.png 1.5x, /w/images/thumb/6/63/Electrum-appimage.png/30px-Electrum-appimage.png 2x" data-file-width="128" data-file-height="128" /></a></span> <a href="/wiki/Electrum" title="Electrum">Electrum</a></li>
+<li><span typeof="mw:File"><a href="/wiki/File:Ethereumlogo.png" class="mw-file-description"><img src="/w/images/thumb/2/2c/Ethereumlogo.png/25px-Ethereumlogo.png" decoding="async" loading="lazy" width="25" height="25" class="mw-file-element" srcset="/w/images/thumb/2/2c/Ethereumlogo.png/38px-Ethereumlogo.png 1.5x, /w/images/thumb/2/2c/Ethereumlogo.png/50px-Ethereumlogo.png 2x" data-file-width="434" data-file-height="434" /></a></span> <a href="/wiki/Ethereum" title="Ethereum">Ethereum (ETH)</a></li>
+<li><span typeof="mw:File"><a href="/wiki/File:Ledgericon.png" class="mw-file-description"><img src="/w/images/thumb/2/27/Ledgericon.png/45px-Ledgericon.png" decoding="async" loading="lazy" width="45" height="11" class="mw-file-element" srcset="/w/images/thumb/2/27/Ledgericon.png/68px-Ledgericon.png 1.5x, /w/images/thumb/2/27/Ledgericon.png/90px-Ledgericon.png 2x" data-file-width="799" data-file-height="198" /></a></span> <a href="/wiki/Ledger_Hardware_Wallet" title="Ledger Hardware Wallet">Ledger Hardware Wallet</a></li>
+<li><a href="/wiki/Trezor_Hardware_Wallet" title="Trezor Hardware Wallet">Trezor Hardware Wallet</a></li>
+<li><span typeof="mw:File"><a href="/wiki/File:Monero-symbol-1280.png" class="mw-file-description"><img src="/w/images/thumb/0/05/Monero-symbol-1280.png/15px-Monero-symbol-1280.png" decoding="async" loading="lazy" width="15" height="15" class="mw-file-element" srcset="/w/images/thumb/0/05/Monero-symbol-1280.png/23px-Monero-symbol-1280.png 1.5x, /w/images/thumb/0/05/Monero-symbol-1280.png/30px-Monero-symbol-1280.png 2x" data-file-width="1280" data-file-height="1280" /></a></span> <a href="/wiki/Monero" title="Monero">Monero (XMR)</a></li></ul></li></ul>
+<div></div>
+<ul><li><a href="/wiki/File_Sharing" title="File Sharing">Filesharing and Torrenting</a></li>
+<li><span typeof="mw:File"><a href="/wiki/File:Sshlogo.png" class="mw-file-description"><img src="/w/images/thumb/8/8d/Sshlogo.png/15px-Sshlogo.png" decoding="async" loading="lazy" width="15" height="15" class="mw-file-element" srcset="/w/images/thumb/8/8d/Sshlogo.png/23px-Sshlogo.png 1.5x, /w/images/thumb/8/8d/Sshlogo.png/30px-Sshlogo.png 2x" data-file-width="131" data-file-height="129" /></a></span> <a href="/wiki/SSH" title="SSH">Secure Shell (SSH)</a></li></ul>
+</div>
+</div>
+<div class="toccolours mw-collapsible mw-collapsed" style="max-width:100%;">
+<p>Browsing and Internet Connections</p>
+<div class="use-3-columns strict-list-columns mw-collapsible-content">
+<ul><li><a href="/wiki/Browser" title="Browser">Web Browsers</a>
+<ul><li><a href="/wiki/Browser-choice" title="Browser-choice">Browser Choice - Browser Selection Installer Dialog</a></li>
+<li><a href="/wiki/Chrome" title="Chrome">Chrome</a>
+<ul><li><a href="/wiki/Google_Chrome_Repository_Insecurity" title="Google Chrome Repository Insecurity">Google_Chrome_Repository_Insecurity</a></li></ul></li>
+<li><a href="/wiki/Chromium" title="Chromium">Chromium</a></li>
+<li><a href="/wiki/Firefox" title="Firefox">Firefox</a></li>
+<li><a href="/wiki/Mullvad_Browser" title="Mullvad Browser">Mullvad Browser</a></li>
+<li><a href="/wiki/Tor_Browser" title="Tor Browser">Tor Browser</a></li></ul></li></ul>
+<div></div>
+<ul><li><a href="/wiki/Boot_Clock_Randomization" title="Boot Clock Randomization">Boot Clock Randomization</a></li>
+<li><a href="/wiki/Time_Attacks" title="Time Attacks">Time Attacks</a></li>
+<li><a href="/wiki/Sdwdate" title="Sdwdate">sdwdate: Secure Distributed Web Date</a>
+<ul><li><a href="/wiki/Sdwdate-gui" title="Sdwdate-gui">sdwdate-gui: sdwdate Graphical User Interface</a></li></ul></li></ul>
+<div class="force-column-break"></div>
+<ul><li><a href="/wiki/Gemini" title="Gemini">Gemini (protocol) / Geminispace</a></li></ul>
+</div>
+</div>
+<div class="toccolours mw-collapsible mw-collapsed" style="max-width:100%;">
+<p>Encryption and Privacy</p>
+<div class="use-3-columns strict-list-columns mw-collapsible-content">
+<ul><li><a href="/wiki/Encrypted_Images" title="Encrypted Images">Encrypted Images</a></li>
+<li><a href="/wiki/Full_Disk_Encryption" title="Full Disk Encryption"><u>F</u>ull <u>D</u>isk <u>E</u>ncryption (FDE)</a>
+<ul><li><a href="/wiki/Cold_Boot_Attack_Defense" title="Cold Boot Attack Defense">Cold Boot Attack Defense</a></li></ul></li></ul>
+<div></div>
+<ul><li><a href="/wiki/PQCrypto" title="PQCrypto">Post-Quantum Cryptography (PQCrypto)</a></li>
+<li><a href="/wiki/OpenPGP" title="OpenPGP">OpenPGP Overview</a></li>
+<li><a href="/wiki/Software#OpenPGP_.28GnuPG_Frontend.29_OpenPGP" title="Software">Text Encryption</a></li></ul>
+<div></div>
+</div>
+</div>
+<div class="toccolours mw-collapsible mw-collapsed" style="max-width:100%;">
+<p>Kicksecure Software Tools</p>
+<div class="use-3-columns strict-list-columns mw-collapsible-content">
+<ul><li><a href="/wiki/Software#Accessibility" title="Software">Accessibility</a></li>
+<li><a href="/wiki/Software#Audio.2C_Image_and_Video" title="Software">Audio, Image and Video</a>
+<ul><li><span typeof="mw:File"><a href="/wiki/File:2000px-VLC_Icon.svg.png" class="mw-file-description" title="VLC Media Player Icon"><img alt="VLC Media Player Icon" src="/w/images/thumb/c/cd/2000px-VLC_Icon.svg.png/15px-2000px-VLC_Icon.svg.png" decoding="async" loading="lazy" width="15" height="17" class="mw-file-element" srcset="/w/images/thumb/c/cd/2000px-VLC_Icon.svg.png/23px-2000px-VLC_Icon.svg.png 1.5x, /w/images/thumb/c/cd/2000px-VLC_Icon.svg.png/30px-2000px-VLC_Icon.svg.png 2x" data-file-width="2000" data-file-height="2265" /></a></span> <a href="/wiki/Software#Audio.2C_Image_and_Video" title="Software">VLC Media Player</a></li></ul></li></ul>
+<div></div>
+<ul><li><a href="/wiki/Software#Communications" title="Software">Communications</a></li>
+<li><a href="/wiki/Software#Encryption" title="Software">Encryption</a></li>
+<li><a href="/wiki/Software#Entertainment" title="Software">Entertainment</a></li></ul>
+<div></div>
+<ul><li><a href="/wiki/Software#Miscellaneous" title="Software">Miscellaneous</a></li>
+<li><a href="/wiki/Software#Work_on_Sensitive_Documents" title="Software">Work on Sensitive Documents</a></li>
+<li><a href="/wiki/Orca" title="Orca">Orca Screen Reader</a></li>
+<li><a href="/wiki/Chmod-calc" title="Chmod-calc"><code>chmod-calc</code> - Comprehensive File and Directory Inspection Tool</a></li>
+<li><a href="/wiki/Umask" title="Umask"><code>umask</code> file/folder permissions</a></li></ul>
+</div>
+</div>
+<div class="toccolours mw-collapsible mw-collapsed" style="max-width:100%;">
+<p>Kicksecure Only</p>
+<div class="use-3-columns strict-list-columns mw-collapsible-content">
+<ul><li><a href="/wiki/RAM_Adjusted_Desktop_Starter" title="RAM Adjusted Desktop Starter">RAM Adjusted Desktop Starter</a></li></ul>
+</div>
+</div>
+<div class="toccolours mw-collapsible mw-collapsed" style="max-width:100%;">
+<p>Kicksecure-Qubes Only</p>
+<div class="use-3-columns strict-list-columns mw-collapsible-content">
+<ul><li><span typeof="mw:File"><span><img src="/w/images/thumb/5/55/Qubes-logo-icon.png/15px-Qubes-logo-icon.png" decoding="async" loading="lazy" width="15" height="16" class="mw-file-element" srcset="/w/images/thumb/5/55/Qubes-logo-icon.png/23px-Qubes-logo-icon.png 1.5x, /w/images/thumb/5/55/Qubes-logo-icon.png/30px-Qubes-logo-icon.png 2x" data-file-width="200" data-file-height="215" /></span></span> <span typeof="mw:File"><span><img src="/w/images/thumb/9/99/Kicksecure-icon-logo.png/15px-Kicksecure-icon-logo.png" decoding="async" loading="lazy" width="15" height="15" class="mw-file-element" srcset="/w/images/thumb/9/99/Kicksecure-icon-logo.png/23px-Kicksecure-icon-logo.png 1.5x, /w/images/thumb/9/99/Kicksecure-icon-logo.png/30px-Kicksecure-icon-logo.png 2x" data-file-width="300" data-file-height="300" /></span></span> Qubes</li></ul>
+<div></div>
+<ul><li>Kicksecure-Qubes App Qube / Template Operations
+<ul><li><a target="_blank" href="https://www.qubes-os.org/doc/how-to-back-up-restore-and-migrate/" class="external template-extlink"rel="noreferrer noopener"aria-label="External link to: Backup, Restore and Migrate VMs" >Backup, Restore and Migrate VMs</a><sup class="ext-link-to-archive"><a href="http://qubesosfasa4zl44o4tws22di6kepyzfeqv3tg4e3ztknltfxqrymdad.onion/doc/how-to-back-up-restore-and-migrate/" target="_blank" rel="noreferrer noopener nofollow" title="Alternative .onion link" aria-label="Alternative .onion link"><img src="/w/images/thumb/a/a8/Iconfinder_tor_386502.png/40px-Iconfinder_tor_386502.png" width="16" height="16" alt="Onion network Logo" /></a></sup></li>
+<li><a target="_blank" href="https://www.qubes-os.org/doc/how-to-install-software-in-dom0/" class="external template-extlink"rel="noreferrer noopener"aria-label="External link to: Install and Update Software in dom0" >Install and Update Software in dom0</a><sup class="ext-link-to-archive"><a href="http://qubesosfasa4zl44o4tws22di6kepyzfeqv3tg4e3ztknltfxqrymdad.onion/doc/how-to-install-software-in-dom0/" target="_blank" rel="noreferrer noopener nofollow" title="Alternative .onion link" aria-label="Alternative .onion link"><img src="/w/images/thumb/a/a8/Iconfinder_tor_386502.png/40px-Iconfinder_tor_386502.png" width="16" height="16" alt="Onion network Logo" /></a></sup></li></ul></li></ul>
+</div>
+</div>
+<div class="toccolours mw-collapsible mw-collapsed" style="max-width:100%;">
+<p>Kicksecure Development and License</p>
+<div class="use-3-columns strict-list-columns mw-collapsible-content">
+<ul><li><a href="/wiki/Contributors" title="Contributors">Contributors</a></li>
+<li><a href="/wiki/Credits" title="Credits">Credits and other Sources</a></li></ul>
+<div></div>
+<ul><li><a href="/wiki/Changelog" title="Changelog">Kicksecure Changelog</a></li>
+<li><a href="/wiki/History" title="History">History</a></li></ul>
+<div></div>
+<ul><li><a href="/wiki/Copyright#License" title="Copyright">License</a></li>
+<li><a href="/wiki/Reasons_for_Freedom_Software" title="Reasons for Freedom Software">Why Kicksecure is Freedom Software</a></li></ul>
+</div>
+</div>
+<div class="toccolours mw-collapsible mw-collapsed" style="max-width:100%;">
+<p>Support or Contact Kicksecure</p>
+<div class="mw-collapsible-content">
+<div class="use-3-columns strict-list-columns">
+<ul><li><a href="/wiki/Support" title="Support">Support</a>
+<ul><li><a href="/wiki/Self_Support_First_Policy" title="Self Support First Policy">Self Support First Policy for Kicksecure</a></li>
+<li><a href="/wiki/Please_Use_Search_Engines_And_See_Documentation_First" title="Please Use Search Engines And See Documentation First">Utilize Search Engines and Documentation</a>
+<ul><li><a href="/wiki/Search_Engines" title="Search Engines">Search Engines Evaluation and Suggestions</a></li></ul></li>
+<li><a href="/wiki/Forum_Best_Practices" title="Forum Best Practices">Kicksecure Forums Usage Instructions, Best Practices and FAQ</a></li>
+<li><a href="/wiki/Unspecific" title="Unspecific">Unspecific - Potential Solutions Beyond Kicksecure</a></li></ul></li>
+<li><a href="/wiki/Videos" title="Videos">Kicksecure Tutorial Videos</a></li></ul>
+<div class="force-column-break"></div>
+<ul><li><a href="/wiki/Community_Support" title="Community Support">Community Support</a></li>
+<li><a href="/wiki/Teacher" title="Teacher">Find a Teacher</a></li>
+<li><a href="/wiki/Too_Difficult" title="Too Difficult">Support Request that are Too Difficult</a></li>
+<li><a href="/wiki/Declined" title="Declined">Declined Feature Requests</a></li></ul>
+<div class="force-column-break"></div>
+<ul><li><a href="/wiki/Contact" title="Contact">Contact</a></li>
+<li><a href="/wiki/Contribute" title="Contribute">Contribute</a></li>
+<li><a href="/wiki/Donate" title="Donate">Donate</a></li>
+<li><a href="/wiki/Donors" title="Donors">Donors Recognition</a></li>
+<li><a href="/wiki/Official_Online_Profiles" title="Official Online Profiles">Official Kicksecure Online Profiles and Social Media</a></li></ul>
+</div>
+</div>
+</div>
+<div class="toccolours mw-collapsible mw-collapsed" style="max-width:100%;">
+<p>Appendix</p>
+<div class="use-3-columns strict-list-columns mw-collapsible-content">
+<ul><li><a href="/wiki/Wiki_Enhancements" title="Wiki Enhancements">Wiki Enhancements</a></li>
+<li>Backup Kicksecure
+<ul><li><a target="_blank" rel="noreferrer noopener" class="external text" href="https://github.com/Kicksecure/kicksecure-wiki-backup">MediaWiki Markup</a><sup class="ext-link-to-archive has-sibling" title="Link to archived version on web.archive.org"><a rel="noreferrer noopener" target="_blank" href="https://web.archive.org/web/https://github.com/Kicksecure/kicksecure-wiki-backup"><img src="/w/images/7/73/Internet_Archive_logo.png" alt="archive.org icon" width="14" height="16" decoding="async" loading="lazy" /></a></sup><sup class="ext-link-to-archive" title="Link to archived version on archive.today"><a rel="noreferrer noopener" target="_blank" href="https://archive.today/https://github.com/Kicksecure/kicksecure-wiki-backup"><img src="/w/images/8/8f/Archive-today-logo-homage.svg" alt="archive.today icon" width="12" height="16" decoding="async" loading="lazy" /></a></sup></li>
+<li><a target="_blank" rel="noreferrer noopener" class="external text" href="https://gitlab.com/kicksecure/wiki-backup-dump-content-current">MediaWiki XML</a><sup class="ext-link-to-archive has-sibling" title="Link to archived version on web.archive.org"><a rel="noreferrer noopener" target="_blank" href="https://web.archive.org/web/https://gitlab.com/kicksecure/wiki-backup-dump-content-current"><img src="/w/images/7/73/Internet_Archive_logo.png" alt="archive.org icon" width="14" height="16" decoding="async" loading="lazy" /></a></sup><sup class="ext-link-to-archive" title="Link to archived version on archive.today"><a rel="noreferrer noopener" target="_blank" href="https://archive.today/https://gitlab.com/kicksecure/wiki-backup-dump-content-current"><img src="/w/images/8/8f/Archive-today-logo-homage.svg" alt="archive.today icon" width="12" height="16" decoding="async" loading="lazy" /></a></sup></li></ul></li>
+<li><a href="/wiki/VirtualBox/Installer" title="VirtualBox/Installer">VirtualBox Installer for Linux</a></li>
+<li><a href="/wiki/Packages_for_Debian_Hosts" title="Packages for Debian Hosts">Packages for Debian Hosts</a></li></ul>
+<div></div>
+<ul><li>Kicksecure Website Policies
+<ul><li><a href="/wiki/Policy_of_Website_and_Chat" title="Policy of Website and Chat">Policy of Kicksecure Website and Kicksecure Chat</a></li>
+<li><a href="/wiki/Policy_On_Nonfreedom_Software" title="Policy On Nonfreedom Software">Kicksecure Policy On Non-Freedom Software</a></li>
+<li><a href="/wiki/Policy_On_Artificial_Intelligence" title="Policy On Artificial Intelligence">Kicksecure Policy On Artificial Intelligence (AI)</a></li>
+<li><a href="/wiki/Wiki_Editing_Policy" title="Wiki Editing Policy">Wiki Editing Policy</a></li>
+<li><a href="/wiki/Wiki_Comments_Policy" title="Wiki Comments Policy">Wiki Comments Policy</a></li>
+<li><a href="/wiki/Limitations_on_Free_Speech_on_Website_and_Chat" title="Limitations on Free Speech on Website and Chat">Free Speech Limitations on Kicksecure Website and Kicksecure Chat</a></li>
+<li><a href="/wiki/Transparency" title="Transparency">Transparency, Sponsors / Advertisement Policy</a></li>
+<li><a href="/wiki/Imprint" title="Imprint">Imprint</a> | <a href="/wiki/Privacy_Policy" title="Privacy Policy">Privacy Policy</a> | <a href="/wiki/Cookie_Policy" title="Cookie Policy">Cookie Policy</a> | <a href="/wiki/Terms_of_Service" title="Terms of Service">Terms of Service</a> | <a href="/wiki/E-Sign_Consent" title="E-Sign Consent">E-Sign Consent</a> | <a href="/wiki/Terms_of_Service#DMCA_Policy" title="Terms of Service">DMCA</a> | <a href="/wiki/Copyright" title="Copyright">Copyrights</a> | <a href="/wiki/Trademark_Policy" title="Trademark Policy">Trademark Policy</a></li></ul></li></ul>
+<div></div>
+<ul><li>Kicksecure Website Technical
+<ul><li><a href="/wiki/Privacy_Policy_Technical_Details" title="Privacy Policy Technical Details">Kicksecure Website: Privacy Policy Technical Details</a></li>
+<li><a href="/wiki/Forcing_.onion_on_Project" title="Forcing .onion on Project">Force .onion on kicksecure.com</a></li>
+<li><a href="/wiki/Website_Tests" title="Website Tests">Kicksecure Website / Server Tests</a></li>
+<li><a href="/wiki/API" title="API">Kicksecure Website API (application programmable interface)</a></li></ul></li>
+<li>Kicksecure Specific
+<ul><li><a href="/wiki/Art_Gallery" title="Art Gallery">Kicksecure Art Gallery</a></li></ul></li>
+<li>Derivatives based on Kicksecure
+<ul><li><a href="/wiki/Whonix" title="Whonix">Whonix - Anonymous Operating System</a></li></ul></li>
+<li>Further reading
+<ul><li><a href="/wiki/Advanced_Documentation" title="Advanced Documentation">Advanced Documentation</a></li></ul></li>
+<li>Select Security Vulnerabilities
+<ul><li><a href="/wiki/Copy.fail" title="Copy.fail">copy.fail security vulnerability (CVE-2026-31431)</a></li></ul></li></ul>
+</div>
+</div>
+<p>
+<span class="wiki-book-index wbi-for-footer">
+  
+  <a class="index internal" href="https://www.kicksecure.com/wiki/Documentation" title="Documentation">
+    <i class="fa-solid fa-list fa-fw"></i>
+    <span class="text">Documentation</span>
+  </a>
+
+    <a class="next internal" href="https://www.kicksecure.com/wiki/Introduction" title="Introduction">
+    <i class="fa-solid fa-chevron-right fa-fw"></i>
+    <span class="text">Introduction</span>
+  </a>
+  
+  <span class="info">
+        <span class="index">Index page: Documentation</span>
+    <span class="next">Next page: Introduction</span>  </span>
+</span>
+
+</p>
+<div class="robots-nocontent" data-nosnippet="">
+
+<!--googleoff: index-->
+
+
+<!--noindex-->
+<div id="custom-footer">
+<p>
+
+
+
+<div class="content-wrapper">
+
+  <div class="left">
+  
+    <div class="main-claim">
+      <span class="headline">
+        Kicksecure
+                <a class="icon-link" href="/wiki/Trademark_Policy" title="Trademark Policy">
+          <img src="/w/images/c/c7/Tm.png" decoding="async" loading="lazy" width="20" height="20" alt="Trademark Policy TM symbol" />
+        </a>
+              </span>
+
+      <span class="claim">
+        A secure by default operating system with the latest security research in place.
+        <span class="share-tooltip"></span>
+      </span>
+    </div>
+
+    <div class="dark-mode-switch">
+      <a href="#" class="ext-darkmode-link" title="darkmode-link-tooltip">
+        <i class="fa-solid fa-lightbulb margin-right-5"></i>
+        <span>Dark mode</span>
+      </a>
+    </div>
+    
+  </div>
+
+  <div class="middle">
+
+    <div class="social">
+      <div class="headline">Follow us on social media</div>
+      
+      <div class="icons">
+        <a class="icon-link" href="https://t.me/s/Kicksecure" target="_blank" rel="noopener" title="Kicksecure on Telegram">
+          <img src="/w/images/thumb/9/9a/1024px-Telegram_2019_Logo.svg.png/50px-1024px-Telegram_2019_Logo.svg.png" decoding="async" loading="lazy" alt="Telegram" />
+        </a>
+
+        <a class="icon-link" href="https://twitter.com/Kicksecure" target="_blank" rel="noopener" title="Kicksecure on Twitter">
+          <img src="/w/images/thumb/6/67/Twitter-logo.png/50px-Twitter-logo.png" decoding="async" loading="lazy" alt="Twitter" />
+        </a>
+
+        <a class="icon-link" href="https://www.youtube.com/@PrettyGoodSecurity" target="_blank" rel="noopener" title="Kicksecure on YouTube">
+          <img src="/w/images/thumb/b/b6/Youtube-logo.png/50px-Youtube-logo.png" decoding="async" loading="lazy" alt="YouTube" />
+        </a>
+
+        <a class="icon-link" href="https://inv.nadeko.net/channel/UCAHILHRPwI-6dCBFxSLJjlw" target="_blank" rel="noopener" title="Kicksecure on Invidious (open source alternative front-end to YouTube)">
+          <img src="/w/images/thumb/c/cd/Invidious-logo.png/50px-Invidious-logo.png" decoding="async" loading="lazy" alt="Invidious" />
+        </a>
+
+        <a class="icon-link" href="https://www.facebook.com/Kicksecure" target="_blank" rel="noopener" title="Kicksecure on Facebook">
+          <img src="/w/images/thumb/9/9d/Facebook-logo.png/50px-Facebook-logo.png" decoding="async" loading="lazy" alt="Facebook" />
+        </a>
+
+        <a class="icon-link" href="https://www.reddit.com/r/Kicksecure" target="_blank" rel="noopener" title="Kicksecure on Reddit">
+          <img src="/w/images/thumb/1/14/Reddit-logo.png/50px-Reddit-logo.png" decoding="async" loading="lazy" alt="Reddit" />
+        </a>
+
+        <a class="icon-link" href="https://github.com/Kicksecure" target="_blank" rel="noopener" title="Kicksecure on GitHub">
+          <img src="/w/images/thumb/1/13/Github-logo.png/50px-Github-logo.png" decoding="async" loading="lazy" alt="GitHub" />
+        </a>
+
+        <a class="icon-link" href="https://forums.kicksecure.com/c/news.rss" target="_blank" rel="noopener" title="Kicksecure as RSS">
+          <img src="/w/images/thumb/0/09/Rss.png/50px-Rss.png" decoding="async" loading="lazy" alt="RSS" />
+        </a>
+
+        <a class="icon-link" href="https://fosstodon.org/@kicksecure" target="_blank" rel="noopener" title="Kicksecure on Mastodon">
+          <img src="/w/images/thumb/b/b7/Mastodon-logo.png/50px-Mastodon-logo.png" decoding="async" loading="lazy" alt="Mastodon" />
+        </a>
+        
+        <a class="icon-link" href="https://bsky.app/profile/kicksecure.com" target="_blank" rel="noopener" title="Kicksecure on Bluesky">
+          <img src="/w/images/a/ab/Bluesky-logo.svg" decoding="async" loading="lazy" alt="Bluesky" />
+        </a>
+      </div>
+    </div>
+
+    <div class="pup-supported">
+      <div class="headline">Supported by Power Up Privacy</div>
+
+      <div class="content">
+        Kicksecure is proudly supported until 2026 by
+        <a href="https://powerupprivacy.com/" target="_blank" rel="noopener">Power Up Privacy</a>,
+        a privacy advocacy group that seeks to supercharge privacy projects with resources so they can complete their mission of making our world a better place.
+        (<a href="/wiki/Transparency">Strictly subject to our sponsorship policy.</a>)
+      </div>
+    </div>
+
+            
+  </div>
+
+  <div class="right">
+    <div class="opensource">
+      <span class="images">
+        <a href="/wiki/Reasons_for_Freedom_Software"><img src="/w/images/thumb/a/a3/Heckert_gnu.big.png/50px-Heckert_gnu.big.png" decoding="async" loading="lazy" alt="GNU logo" width="50" height="60" /></a>
+        <a href="/wiki/Policy_On_Nonfreedom_Software"><img src="/w/images/thumb/0/09/Osi_standard_logo_0.png/50px-Osi_standard_logo_0.png" decoding="async" loading="lazy" alt="Open Source Initiative logo" width="50" height="60" /></a>
+      </span>
+      <span class="text">
+        At
+        Kicksecure we value <b>freedom and trust</b>, supporting Open Source and Freedom Software
+      </span>
+    </div>
+
+    <div class="legal">
+      <span class="disclaimer">
+        By using this website, you acknowledge you have read, understood, and agree to be bound by these agreements:
+        <a href="/wiki/Terms_of_Service" title="Terms of Service">Terms of Service</a>,
+        <a href="/wiki/Privacy_Policy" title="Privacy Policy">Privacy Policy</a>,
+        <a href="/wiki/Cookie_Policy" title="Cookie Policy">Cookie Policy</a>,
+        <a href="/wiki/E-Sign_Consent" title="E-Sign Consent">E-Sign Consent</a>,
+        <a href="/wiki/DMCA" title="DMCA">DMCA</a>,
+        <a href="/wiki/Imprint" title="Imprint">Imprint</a>
+      </span>
+
+      <span class="rights">
+        <a href="/wiki/Copyright" title="Copyright">
+          <img src="/w/images/e/ee/C.png" decoding="async" loading="lazy" width="20" height="20" alt="Copyright" />
+        </a>
+        2012-
+        2026 ENCRYPTED SUPPORT LLC
+      </span>
+    </div>
+  </div>
+</div>
+
+
+</p>
+</div>
+
+<div id="fly-in-notification-panel" role="region" aria-label="Notification panel">
+  <div class="inner-wrapper">
+    <i class="close-panel fa-solid fa-times" role="button" tabindex="0" aria-label="Close this notification" aria-pressed="false"></i>
+
+    <a href="/wiki/Donate" aria-label="Notification image link">    <img src="/w/images/thumb/e/e8/Flyin-donate-promo.jpg/300px-Flyin-donate-promo.jpg" decoding="async" loading="lazy" height="215" width="300" alt="Notification image" />
+    </a>    <div class="content">
+      <div class="headline"><a href="/wiki/Donate" aria-label="Notification headline link">Your support makes<br>all the difference!</a></div>
+      <p>We believe security software like Kicksecure needs to remain Open Source and independent. <b>Would you help</b> sustain and grow the project? Learn more about our <a href="/wiki/Donate" target="_blank">14 year success story and maybe DONATE!</a></p>
+    </div>
+  </div>
+</div>
+
+
+<!--/noindex-->
+
+
+<!--googleon: index-->
+</div>
+<!-- Saved in parser cache with key www.kicksecure.com:stable-pcache:17:|#|:idhash:canonicalwww.kicksecure.com and timestamp 20260529114311 and revision id 109151. Rendering was triggered because: unknown
+ -->
+</div>
+<div class="printfooter" data-nosnippet="">Retrieved from "<a dir="ltr" href="https://www.kicksecure.com/w/index.php?title=Documentation&amp;oldid=109151">https://www.kicksecure.com/w/index.php?title=Documentation&amp;oldid=109151</a>"</div></div>
+		<div id="catlinks" class="catlinks" data-mw="interface"><div id="mw-normal-catlinks" class="mw-normal-catlinks"><a href="/wiki/Special:Categories" title="Special:Categories">Category</a>: <ul><li><a href="/wiki/Category:Documentation" title="Category:Documentation">Documentation</a></li></ul></div></div>
+	</div>
+</div>
+<div id='mw-data-after-content'>
+	<div class="mw-cookiewarning-container"><div class="mw-cookiewarning-text"><span>By using our website, you acknowledge that you have read, understood and agreed to our Privacy Policy, Cookie Policy, Terms of Service, and E-Sign Consent.</span></div><form method="POST"><div class='oo-ui-layout oo-ui-horizontalLayout'><span class='oo-ui-widget oo-ui-widget-enabled oo-ui-buttonElement oo-ui-buttonElement-framed oo-ui-labelElement oo-ui-flaggedElement-progressive oo-ui-buttonWidget'><a role='button' tabindex='0' href='/wiki/Terms_of_Service' rel='nofollow' class='oo-ui-buttonElement-button'><span class='oo-ui-iconElement-icon oo-ui-iconElement-noIcon oo-ui-image-progressive'></span><span class='oo-ui-labelElement-label'>More information</span><span class='oo-ui-indicatorElement-indicator oo-ui-indicatorElement-noIndicator oo-ui-image-progressive'></span></a></span><span class='oo-ui-widget oo-ui-widget-enabled oo-ui-inputWidget oo-ui-buttonElement oo-ui-buttonElement-framed oo-ui-labelElement oo-ui-flaggedElement-primary oo-ui-flaggedElement-progressive oo-ui-buttonInputWidget'><button type='submit' tabindex='0' name='disablecookiewarning' value='OK' class='oo-ui-inputWidget-input oo-ui-buttonElement-button'><span class='oo-ui-iconElement-icon oo-ui-iconElement-noIcon oo-ui-image-invert'></span><span class='oo-ui-labelElement-label'>OK</span><span class='oo-ui-indicatorElement-indicator oo-ui-indicatorElement-noIndicator oo-ui-image-invert'></span></button></span></div></form></div>
+</div>
+
+<div id="mw-navigation">
+	<h2>Navigation menu</h2>
+	<div id="mw-head">
+		
+<nav id="p-personal" class="mw-portlet mw-portlet-personal vector-user-menu-legacy vector-menu" aria-labelledby="p-personal-label"  >
+	<h3
+		id="p-personal-label"
+		
+		class="vector-menu-heading "
+	>
+		<span class="vector-menu-heading-label">Personal tools</span>
+	</h3>
+	<div class="vector-menu-content">
+		
+		<ul class="vector-menu-content-list">
+			
+			<li id="pt-anonuserpage" class="mw-list-item"><span title="The user page for the IP address you are editing as">Not logged in</span></li><li id="pt-anontalk" class="mw-list-item"><a href="/wiki/Special:MyTalk" title="Discussion about edits from this IP address [n]" accesskey="n"><span>Talk</span></a></li><li id="pt-anoncontribs" class="mw-list-item"><a href="/wiki/Special:MyContributions" title="A list of edits made from this IP address [y]" accesskey="y"><span>Contributions</span></a></li><li id="pt-createaccount" class="mw-list-item"><a href="/w/index.php?title=Special:CreateAccount&amp;returnto=Documentation" title="You are encouraged to create an account and log in; however, it is not mandatory"><span>Create account</span></a></li><li id="pt-login" class="mw-list-item"><a href="/w/index.php?title=Special:UserLogin&amp;returnto=Documentation" title="You are encouraged to log in; however, it is not mandatory [o]" accesskey="o"><span>Log in</span></a></li>
+		</ul>
+		
+	</div>
+</nav>
+
+		<div id="left-navigation">
+			
+<nav id="p-namespaces" class="mw-portlet mw-portlet-namespaces vector-menu-tabs vector-menu-tabs-legacy vector-menu" aria-labelledby="p-namespaces-label"  >
+	<h3
+		id="p-namespaces-label"
+		
+		class="vector-menu-heading "
+	>
+		<span class="vector-menu-heading-label">Namespaces</span>
+	</h3>
+	<div class="vector-menu-content">
+		
+		<ul class="vector-menu-content-list">
+			
+			<li id="ca-nstab-main" class="selected mw-list-item"><a href="/wiki/Documentation" title="View the content page [c]" accesskey="c"><span>Page</span></a></li>
+		</ul>
+		
+	</div>
+</nav>
+
+			
+<nav id="p-variants" class="mw-portlet mw-portlet-variants emptyPortlet vector-menu-dropdown vector-menu" aria-labelledby="p-variants-label"  >
+	<input type="checkbox"
+		id="p-variants-checkbox"
+		role="button"
+		aria-haspopup="true"
+		data-event-name="ui.dropdown-p-variants"
+		class="vector-menu-checkbox"
+		aria-labelledby="p-variants-label"
+	>
+	<label
+		id="p-variants-label"
+		
+		class="vector-menu-heading "
+	>
+		<span class="vector-menu-heading-label">English</span>
+	</label>
+	<div class="vector-menu-content">
+		
+		<ul class="vector-menu-content-list">
+			
+			
+		</ul>
+		
+	</div>
+</nav>
+
+		</div>
+		<div id="right-navigation">
+			
+<nav id="p-views" class="mw-portlet mw-portlet-views vector-menu-tabs vector-menu-tabs-legacy vector-menu" aria-labelledby="p-views-label"  >
+	<h3
+		id="p-views-label"
+		
+		class="vector-menu-heading "
+	>
+		<span class="vector-menu-heading-label">Views</span>
+	</h3>
+	<div class="vector-menu-content">
+		
+		<ul class="vector-menu-content-list">
+			
+			<li id="ca-view" class="selected icon mw-list-item"><a href="/wiki/Documentation"><span>Read</span></a></li><li id="ca-edit" class="icon mw-list-item"><a href="/w/index.php?title=Documentation&amp;action=edit" title="Edit this page [e]" accesskey="e"><span>Edit</span></a></li><li id="ca-history" class="icon mw-list-item"><a href="/w/index.php?title=Documentation&amp;action=history" title="Past revisions of this page [h]" accesskey="h"><span>View history</span></a></li>
+		</ul>
+		
+	</div>
+</nav>
+
+			
+<nav id="p-cactions" class="mw-portlet mw-portlet-cactions emptyPortlet vector-menu-dropdown vector-menu" aria-labelledby="p-cactions-label"  title="More options" >
+	<input type="checkbox"
+		id="p-cactions-checkbox"
+		role="button"
+		aria-haspopup="true"
+		data-event-name="ui.dropdown-p-cactions"
+		class="vector-menu-checkbox"
+		aria-labelledby="p-cactions-label"
+	>
+	<label
+		id="p-cactions-label"
+		
+		class="vector-menu-heading "
+	>
+		<span class="vector-menu-heading-label">More</span>
+	</label>
+	<div class="vector-menu-content">
+		
+		<ul class="vector-menu-content-list">
+			
+			
+		</ul>
+		
+	</div>
+</nav>
+
+			
+<div id="p-search" role="search" class="vector-search-box-vue  vector-search-box-show-thumbnail vector-search-box-auto-expand-width vector-search-box">
+	<h3 >Search</h3>
+	<form action="/w/index.php" id="searchform" class="vector-search-box-form">
+		<div id="simpleSearch"
+			class="vector-search-box-inner"
+			 data-search-loc="header-navigation">
+			<input class="vector-search-box-input"
+				 type="search" name="search" placeholder="Search Kicksecure" aria-label="Search Kicksecure" autocapitalize="sentences" spellcheck="false" title="Search Kicksecure [f]" accesskey="f" id="searchInput"
+			>
+			<input type="hidden" name="title" value="Special:Search">
+			<input id="mw-searchButton"
+				 class="searchButton mw-fallbackSearchButton" type="submit" name="fulltext" title="Search the pages for this text" value="Search">
+			<input id="searchButton"
+				 class="searchButton" type="submit" name="go" title="Go to a page with this exact name if it exists" value="Go">
+		</div>
+	</form>
+</div>
+
+		</div>
+	</div>
+	
+<div id="mw-panel" class="vector-legacy-sidebar">
+	<div id="p-logo" role="banner">
+		<a class="mw-wiki-logo" href="/wiki/Main_Page"
+			title="Visit the main page"></a>
+	</div>
+	
+<nav id="p-Menu" class="mw-portlet mw-portlet-Menu vector-menu-portal portal vector-menu" aria-labelledby="p-Menu-label"  >
+	<h3
+		id="p-Menu-label"
+		
+		class="vector-menu-heading "
+	>
+		<span class="vector-menu-heading-label">Menu</span>
+	</h3>
+	<div class="vector-menu-content">
+		
+		<ul class="vector-menu-content-list">
+			
+			<li id="n-HOME" class="mw-list-item"><a target="_blank" href="https://www.kicksecure.com"><span>HOME</span></a></li><li id="n-DOWNLOAD" class="mw-list-item"><a href="/wiki/Download"><span>DOWNLOAD</span></a></li><li id="n-DOCS" class="mw-list-item"><a href="/wiki/Documentation"><span>DOCS</span></a></li><li id="n-FAQ" class="mw-list-item"><a href="/wiki/FAQ"><span>FAQ</span></a></li><li id="n-HELP" class="mw-list-item"><a href="/wiki/Support"><span>HELP</span></a></li><li id="n-CONTRIBUTE" class="mw-list-item"><a href="/wiki/Contribute"><span>CONTRIBUTE</span></a></li><li id="n-NEWS" class="mw-list-item"><a target="_blank" href="https://forums.kicksecure.com/c/news"><span>NEWS</span></a></li>
+		</ul>
+		
+	</div>
+</nav>
+
+	
+<nav id="p-tb" class="mw-portlet mw-portlet-tb vector-menu-portal portal vector-menu" aria-labelledby="p-tb-label"  >
+	<h3
+		id="p-tb-label"
+		
+		class="vector-menu-heading "
+	>
+		<span class="vector-menu-heading-label">Tools</span>
+	</h3>
+	<div class="vector-menu-content">
+		
+		<ul class="vector-menu-content-list">
+			
+			<li id="t-whatlinkshere" class="mw-list-item"><a href="/wiki/Special:WhatLinksHere/Documentation" title="A list of all wiki pages that link here [j]" accesskey="j"><span>What links here</span></a></li><li id="t-recentchangeslinked" class="mw-list-item"><a href="/wiki/Special:RecentChangesLinked/Documentation" rel="nofollow" title="Recent changes in pages linked from this page [k]" accesskey="k"><span>Related changes</span></a></li><li id="t-print" class="mw-list-item"><a href="javascript:print();" rel="alternate" title="Printable version of this page [p]" accesskey="p"><span>Printable version</span></a></li><li id="t-permalink" class="mw-list-item"><a href="/w/index.php?title=Documentation&amp;oldid=109151" title="Permanent link to this revision of this page"><span>Permanent link</span></a></li><li id="t-info" class="mw-list-item"><a href="/w/index.php?title=Documentation&amp;action=info" title="More information about this page"><span>Page information</span></a></li>
+		</ul>
+		
+	</div>
+</nav>
+
+	
+</div>
+
+</div>
+
+<footer id="footer" class="mw-footer" >
+	<ul id="footer-info">
+	<li id="footer-info-lastmod"> </li>
+	<li id="footer-info-copyright">Content is available under <a href="/wiki/Kicksecure:Copyrights" class="mw-redirect" title="Kicksecure:Copyrights">Copyrights</a> unless otherwise noted.</li>
+</ul>
+
+	<ul id="footer-places">
+	<li id="footer-places-Terms_of_Service"><a href="/wiki/Terms_of_Service">Terms of Service</a></li>
+	<li id="footer-places-Privacy_Policy"><a href="/wiki/Privacy_Policy">Privacy Policy</a></li>
+	<li id="footer-places-Cookie_Policy"><a href="/wiki/Cookie_Policy">Cookie Policy</a></li>
+	<li id="footer-places-E-Sign_Consent"><a href="/wiki/E-Sign_Consent">E-Sign Consent</a></li>
+	<li id="footer-places-DMCA"><a href="/wiki/DMCA">DMCA</a></li>
+	<li id="footer-places-Imprint"><a href="/wiki/Imprint">Imprint</a></li>
+</ul>
+
+	<ul id="footer-icons" class="noprint">
+	<li id="footer-poweredbyico"><a href="https://www.mediawiki.org/" class="cdx-button cdx-button--fake-button cdx-button--size-large cdx-button--fake-button--enabled" target="_blank"><picture><source media="(min-width: 500px)" srcset="/w/resources/assets/poweredby_mediawiki.svg" width="88" height="31"><img src="/w/resources/assets/mediawiki_compact.svg" alt="Powered by MediaWiki" lang="en" width="25" height="25" loading="lazy"></picture></a></li>
+</ul>
+
+</footer>
+
+<div class="mw-portlet mw-portlet-dock-bottom emptyPortlet vector-menu-portal portal" id="p-dock-bottom">
+	<ul>
+		
+	</ul>
+</div>
+<script>(RLQ=window.RLQ||[]).push(function(){mw.config.set({"wgBackendResponseTime":54});});</script>
+</body>
+</html>
