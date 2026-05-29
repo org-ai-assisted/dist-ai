@@ -584,12 +584,51 @@ async def capture_one(browser, mode_tuple, title: str) -> tuple[str, str, int, i
             await asyncio.sleep(2 ** attempt)
         status = response.status if response else 0
 
+        ## Wait for the page to be truly ready, not just network-idle.
+        ## Under concurrent load networkidle can fire while the wiki's
+        ## skin JS is still hydrating data-link divs into anchors,
+        ## still swapping <link media="print"> -> media="all" on the
+        ## stylesheet preload onload handler, etc. Tail-end JS like
+        ## that produces 3000+ tag dom-html diffs between two runs of
+        ## the same wiki state. Wait until: load event has fired,
+        ## every async-loaded stylesheet has its final media attribute,
+        ## every data-link div has been converted (or t=2s has elapsed),
+        ## and a requestIdleCallback frame has run.
+        try:
+            await page.wait_for_load_state("load", timeout=TIMEOUT_MS)
+        except Exception:
+            pass
+
         await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         try:
             await page.wait_for_load_state("networkidle", timeout=5000)
         except Exception:
             pass
         await page.evaluate("window.scrollTo(0, 0)")
+
+        ## Hydration / late-bind quiescence: poll until either the
+        ## hydration markers are all in their post-JS state or 2s
+        ## elapses. Then yield to the browser's idle queue.
+        try:
+            await page.wait_for_function(
+                """() => {
+                    const preload = document.querySelectorAll(
+                        'link[rel=stylesheet][media=print][onload]'
+                    );
+                    const datalinks = document.querySelectorAll('div[data-link]');
+                    return preload.length === 0 && datalinks.length === 0;
+                }""",
+                timeout=2000,
+            )
+        except Exception:
+            pass
+        try:
+            await page.evaluate(
+                "() => new Promise(r => "
+                "(window.requestIdleCallback || setTimeout)(r, 500))"
+            )
+        except Exception:
+            pass
 
         await page.add_style_tag(content="""
             *, *::before, *::after {

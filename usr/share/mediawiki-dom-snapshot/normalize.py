@@ -404,6 +404,22 @@ def normalize_html(html: str) -> str:
         if shim.get("style"):
             del shim.attrs["style"]
 
+    ## .code-select (copy-to-clipboard wrapper) computes its own
+    ## scrollbar viewport height + bottom margin via JS layout reads.
+    ## The values land at margin-bottom: -6.875px in one capture and
+    ## -6.9375px in another, plus height: 20.89px vs 20.95px. Drop
+    ## the inline styles on the wrapper, its viewport span, and
+    ## anything tagged with the post-init js-fully-loaded marker.
+    for el in soup.find_all(class_="code-select"):
+        if el.get("style"):
+            del el.attrs["style"]
+    for el in soup.find_all(class_="js-fully-loaded"):
+        if el.get("style"):
+            del el.attrs["style"]
+    for el in soup.find_all(class_="custom-scrollbar-container"):
+        for span in el.find_all("span", style=True):
+            del span.attrs["style"]
+
     ## #mw-teleport-target moves between two locations in the DOM
     ## depending on which JS module installed it first. Same for the
     ## #ui-id-1 autocomplete placeholder. Drop them when empty.
