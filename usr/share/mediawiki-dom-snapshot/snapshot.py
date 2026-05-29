@@ -173,8 +173,26 @@ async def snapshot_one(browser, title: str) -> tuple[str, int, int]:
         except Exception:
             pass
         await page.evaluate("window.scrollTo(0, 0)")
-        ## Give pending on_response coroutines a tick to finish.
-        await asyncio.sleep(0.2)
+
+        ## Freeze any in-flight CSS transition / JS animation. Without
+        ## this the back-to-top button (and similar fade-in widgets)
+        ## have a non-deterministic opacity value at capture time --
+        ## inline style="opacity: 0.7..." vs "opacity: 0.8..." across
+        ## runs of the same wiki state. Disabling transitions globally
+        ## resolves them to their final computed value immediately;
+        ## animations get pinned to their end frame.
+        await page.add_style_tag(content="""
+            *, *::before, *::after {
+                transition-duration: 0s !important;
+                transition-delay: 0s !important;
+                animation-duration: 0s !important;
+                animation-delay: 0s !important;
+                animation-iteration-count: 1 !important;
+            }
+        """)
+        ## Give the disabled-transitions style a tick to commit and
+        ## any pending on_response coroutines a tick to finish.
+        await asyncio.sleep(0.3)
 
         html = await page.content()
         (page_dir / "dom.html").write_text(html, encoding="utf-8")

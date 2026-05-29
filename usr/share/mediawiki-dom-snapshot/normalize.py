@@ -149,13 +149,44 @@ def _scrub_script_text(text: str) -> str:
     return text
 
 
+## JS-generated random element ids used by TabContentController and
+## similar (data-tcc-contentid, id, href fragment). All look like
+## "id-" followed by 14+ decimal digits; the digits are reseeded
+## every page load.
+RANDOM_ID_RE = re.compile(r"\bid-\d{10,}\b")
+
+
 def normalize_html(html: str) -> str:
+    ## Scrub JS-generated random ids early so the BeautifulSoup parse
+    ## sees the canonical form. Safer to do this on the string than
+    ## inside the tree walk since the ids appear both as attribute
+    ## values AND inside href fragments and inline script bodies.
+    html = RANDOM_ID_RE.sub("id-SCRUBBED", html)
+
     soup = BeautifulSoup(html, "lxml")
 
     for c in list(soup.find_all(string=lambda t: isinstance(t, Comment))):
         text = str(c)
         if any(p.search(text) for p in VOLATILE_COMMENT_PATTERNS):
             c.extract()
+
+    ## #back-to-top-button fades in/out on scroll. Even with our
+    ## animation/transition CSS override at capture time the inline
+    ## style="opacity: ..." value can land at 0.999973 vs 1.000 vs
+    ## 0.96... across runs depending on exactly when the snapshot is
+    ## taken. The button's existence is observable; the in-flight
+    ## opacity isn't. Drop the inline style entirely.
+    btn = soup.find(id="back-to-top-button")
+    if btn and btn.get("style"):
+        del btn.attrs["style"]
+
+    ## #mw-teleport-target is an empty slot the Vector skin creates
+    ## lazily via JS for popover content. It's present or absent
+    ## depending on which RL modules raced to the front of the queue
+    ## at networkidle time. Drop it -- it's structurally empty.
+    tt = soup.find(id="mw-teleport-target")
+    if tt and not tt.contents:
+        tt.decompose()
 
     for tag in soup.find_all(True):
         if tag.name == "meta" and tag.get("property") in VOLATILE_META_PROPERTIES:
@@ -191,17 +222,32 @@ def normalize_html(html: str) -> str:
     return soup.prettify(formatter="minimal")
 
 
-def normalize_manifest(manifest: dict) -> dict:
+def normalize_manifest(manifest: dict, page_url: str | None = None) -> dict:
     """Strip volatile query params from URLs so the manifest diff
     focuses on content changes. Sort by normalised URL for stable
-    output.
+    output. Drops two classes of timing-flake entries:
+
+      * status == 404 -- the page does not depend on what 404'd; the
+        browser tried, failed, and didn't render anything. Whether
+        the 404 response arrived before our networkidle window is
+        pure race, not content.
+
+      * URL == the page URL itself -- captured as a side-effect of
+        Playwright's response listener firing on each navigation;
+        the body is the pre-JS server HTML and varies per request
+        (wgRequestId etc.) while dom.html is what we actually care
+        about.
     """
     out: dict[str, dict] = {}
     for url, entry in manifest.items():
+        if entry.get("status") == 404:
+            continue
+        if page_url and url.startswith(page_url):
+            continue
         nurl = _normalize_url(url)
-        ## If two URLs collapse to the same normalised form (e.g. two
-        ## different version tokens), keep the first one's entry;
-        ## hash will reveal whether the content actually differs.
+        ## If two URLs collapse to the same normalised form, keep the
+        ## first one's entry; hash will reveal whether the content
+        ## actually differs.
         out.setdefault(nurl, entry)
     return dict(sorted(out.items()))
 
@@ -213,7 +259,14 @@ def normalize_page_dir(src: Path, dst: Path) -> None:
     (dst / "dom.html").write_text(normalize_html(html), encoding="utf-8")
 
     manifest = json.loads((src / "manifest.json").read_text(encoding="utf-8"))
-    nm = normalize_manifest(manifest)
+    ## Infer the wiki page URL from the manifest. The first text/html
+    ## 200 entry is by construction the navigation target.
+    page_url = None
+    for url, entry in manifest.items():
+        if entry.get("status") == 200 and entry.get("content_type", "").startswith("text/html"):
+            page_url = url
+            break
+    nm = normalize_manifest(manifest, page_url)
     (dst / "manifest.json").write_text(
         json.dumps(nm, indent=2, sort_keys=True), encoding="utf-8"
     )
