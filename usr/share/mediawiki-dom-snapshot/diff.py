@@ -80,13 +80,18 @@ def diff_page_html(base: Path, cand: Path) -> tuple[int, str]:
     return abs(a.count("\n") - b.count("\n")) + 1, out
 
 
-def diff_assets(base: Path, cand: Path, brief: bool) -> tuple[list[tuple], list[str]]:
-    """Returns (rows, body_diffs).  rows: [(url, status, base_size, cand_size, base_hash[:12], cand_hash[:12])]."""
+def diff_assets(base: Path, cand: Path, brief: bool) -> tuple[list[tuple], list[str], int]:
+    """Compare every per-URL entry: body sha256 and header set.
+    Returns (rows, body_diffs, header_delta_count) where each row is
+    (url, status, base_size, cand_size, base_hash[:12], cand_hash[:12]).
+    Header deltas are reported as separate lines in body_diffs.
+    """
     bm = json.loads((base / "manifest.json").read_text(encoding="utf-8"))
     cm = json.loads((cand / "manifest.json").read_text(encoding="utf-8"))
     all_urls = sorted(set(bm) | set(cm))
     rows: list[tuple] = []
     body_diffs: list[str] = []
+    header_delta_urls: list[str] = []
     base_assets = base / "assets"
     cand_assets = cand / "assets"
     for url in all_urls:
@@ -100,13 +105,20 @@ def diff_assets(base: Path, cand: Path, brief: bool) -> tuple[list[tuple], list[
             continue
         bh = be.get("sha256") or ""
         ch = ce.get("sha256") or ""
-        if bh == ch:
-            continue  ## same content, no row
-        rows.append((url, "CHANGED", str(be.get("size", "?")), str(ce.get("size", "?")), bh[:12], ch[:12]))
+        bh_eq = bh == ch
+        bheaders = be.get("headers") or {}
+        cheaders = ce.get("headers") or {}
+        h_eq = bheaders == cheaders
+        if bh_eq and h_eq:
+            continue
+        if not bh_eq:
+            rows.append((url, "CHANGED", str(be.get("size", "?")),
+                         str(ce.get("size", "?")), bh[:12], ch[:12]))
+        if not h_eq:
+            header_delta_urls.append(url)
         if brief:
             continue
-        ## Show text diff for textual assets.
-        if is_textual(be.get("content_type", "")) and is_textual(ce.get("content_type", "")):
+        if not bh_eq and is_textual(be.get("content_type", "")) and is_textual(ce.get("content_type", "")):
             bpath = base_assets / be.get("asset", "")
             cpath = cand_assets / ce.get("asset", "")
             if bpath.exists() and cpath.exists():
@@ -118,7 +130,18 @@ def diff_assets(base: Path, cand: Path, brief: bool) -> tuple[list[tuple], list[
                     ))
                 except UnicodeDecodeError:
                     pass
-    return rows, body_diffs
+        if not h_eq:
+            keys = sorted(set(bheaders) | set(cheaders))
+            lines = [f"\n=== header diff: {url} ==="]
+            for k in keys:
+                bv = bheaders.get(k, "<absent>")
+                cv = cheaders.get(k, "<absent>")
+                if bv != cv:
+                    lines.append(f"  {k}:")
+                    lines.append(f"    - {bv}")
+                    lines.append(f"    + {cv}")
+            body_diffs.append("\n".join(lines))
+    return rows, body_diffs, len(header_delta_urls)
 
 
 ## Threshold above which a per-pixel max-channel delta counts as a
@@ -209,37 +232,40 @@ def main() -> int:
         summary.append(f"  {name:<40} NEW")
 
     body_diffs_all: list[str] = []
-    for name in common:
-        b = base_root / name
-        c = cand_root / name
+    def diff_one(label: str, b: Path, c: Path):
+        if not ((b / "dom.html").exists() and (c / "dom.html").exists()):
+            return
         html_lines_diff, html_diff_text = diff_page_html(b, c)
-        asset_rows, asset_body_diffs = diff_assets(b, c, brief=args.brief)
+        asset_rows, asset_body_diffs, header_deltas = diff_assets(b, c, brief=args.brief)
         ss_real, pixels_diff, max_delta, phash_dist, ss_summary = diff_screenshot(b, c)
-        any_real = html_lines_diff > 0 or asset_rows or ss_real
+        any_real = html_lines_diff > 0 or asset_rows or header_deltas or ss_real
         if not any_real and pixels_diff == 0:
-            summary.append(f"  {name:<40} identical")
-            continue
+            summary.append(f"  {label:<48} identical")
+            return
         if not any_real:
-            ## sub-perceptual screenshot drift only -- not a regression
-            summary.append(f"  {name:<40} subpixel-only ({ss_summary})")
-            continue
+            summary.append(f"  {label:<48} subpixel-only ({ss_summary})")
+            return
+        nonlocal any_diff
         any_diff = True
         bits = []
         if html_lines_diff > 0:
             bits.append(f"html+{html_lines_diff}")
         if asset_rows:
             bits.append(f"assets={len(asset_rows)}")
+        if header_deltas:
+            bits.append(f"headers={header_deltas}")
         if ss_real:
             bits.append(ss_summary)
-        summary.append(f"  {name:<40} {' '.join(bits)}")
-        ## Detail section per page.
-        body_diffs_all.append(f"\n========== {name} ==========")
+        summary.append(f"  {label:<48} {' '.join(bits)}")
+        body_diffs_all.append(f"\n========== {label} ==========")
         if html_diff_text:
             body_diffs_all.append("\n--- DOM HTML diff ---")
             body_diffs_all.append(html_diff_text)
         if asset_rows:
             body_diffs_all.append("\n--- asset manifest deltas ---")
-            body_diffs_all.append(f"{'url':<80} {'status':<8} {'base_sz':>9} {'cand_sz':>9} {'base_sha':<13} {'cand_sha':<13}")
+            body_diffs_all.append(
+                f"{'url':<80} {'status':<8} {'base_sz':>9} {'cand_sz':>9} {'base_sha':<13} {'cand_sha':<13}"
+            )
             for r in asset_rows:
                 body_diffs_all.append(
                     f"{(r[0] if len(r[0]) < 80 else r[0][:77] + '...'):<80} "
@@ -249,6 +275,23 @@ def main() -> int:
             body_diffs_all.extend(asset_body_diffs)
         if ss_real:
             body_diffs_all.append(f"\n--- screenshot: {ss_summary} ---")
+
+    for name in common:
+        b = base_root / name
+        c = cand_root / name
+        ## v0.3 captures into per-mode subdirs (anon-first, anon-repeat,
+        ## user-first, user-repeat); v0.2 captured directly. Detect.
+        modes_b = sorted(p.name for p in b.iterdir() if p.is_dir() and (p / "dom.html").exists())
+        modes_c = sorted(p.name for p in c.iterdir() if p.is_dir() and (p / "dom.html").exists())
+        if modes_b or modes_c:
+            for mode in sorted(set(modes_b) | set(modes_c)):
+                if mode not in modes_b:
+                    summary.append(f"  {name}/{mode:<40} MISSING in base"); any_diff = True; continue
+                if mode not in modes_c:
+                    summary.append(f"  {name}/{mode:<40} MISSING in cand"); any_diff = True; continue
+                diff_one(f"{name}/{mode}", b / mode, c / mode)
+        else:
+            diff_one(name, b, c)
 
     print("=== summary ===")
     for line in summary:

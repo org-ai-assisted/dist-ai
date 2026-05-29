@@ -18,12 +18,18 @@
 ##                     /usr/share/mediawiki-dom-snapshot/baseline/
 ##
 ## Environment overrides:
-##   BASE_URL      target wiki origin    (default https://www.kicksecure.com)
-##   PAGES_FILE    page list             (default /etc/mediawiki-dom-snapshot/pages.conf)
-##   VIEWPORT      browser viewport      (default 1280x800)
-##   TIMEOUT_MS    per-page timeout      (default 30000)
-##   RAW_DIR       raw output dir        (default /var/lib/mediawiki-dom-snapshot/raw)
-##   FIX_DIR       normalised output dir (default /var/lib/mediawiki-dom-snapshot/fixtures)
+##   BASE_URL       target wiki origin    (default https://www.kicksecure.com)
+##   PAGES_FILE     page list             (default /etc/mediawiki-dom-snapshot/pages.conf)
+##   VIEWPORT       browser viewport      (default 1280x800)
+##   TIMEOUT_MS     per-page timeout      (default 30000)
+##   RAW_DIR        raw output dir        (default /var/lib/mediawiki-dom-snapshot/raw)
+##   FIX_DIR        normalised output dir (default /var/lib/mediawiki-dom-snapshot/fixtures)
+##   CAPTURE_MODES  comma-separated subset of anon-first,anon-repeat,
+##                  user-first,user-repeat, or "all"
+##                  (default: anon-first,anon-repeat)
+##   WIKI_USER      username for user-* modes (must be paired with
+##                  WIKI_PASSWORD; if unset, user-* modes are skipped)
+##   WIKI_PASSWORD  password for user-* modes
 
 set -o errexit
 set -o nounset

@@ -35,6 +35,49 @@ from urllib.parse import parse_qsl, urlencode, urlparse
 from bs4 import BeautifulSoup, Comment
 
 ## --------------------------------------------------------------------
+## HTTP header normalisation. The capture stores full response headers
+## per URL; volatile values (timestamps, request ids, cache hits) are
+## scrubbed so the diff focuses on header VALUES that matter for
+## behaviour (Cache-Control, Content-Security-Policy, X-Frame-Options,
+## ...) rather than per-request flake.
+## --------------------------------------------------------------------
+
+VOLATILE_HEADERS = {
+    "date",
+    "age",
+    "x-served-by",
+    "x-cache",
+    "x-cache-status",
+    "x-cache-hits",
+    "x-request-id",
+    "request-id",
+    "x-trace-id",
+    "x-runtime",
+    "x-response-time",
+    "x-backend-response-time",
+    "x-backend-date",
+    "last-modified",
+    "expires",
+}
+
+## Headers whose value contains a URL that may itself have a volatile
+## query string. e.g. onion-location reflects the request URL with all
+## its cache-busters.
+URL_VALUED_HEADERS = ("onion-location", "link", "location", "content-location")
+
+## Headers whose values are stable when scrubbed of their per-build
+## random-token bits.
+HEADER_TOKEN_PATTERNS = [
+    ## Content-Security-Policy nonces look like nonce-XXXXX; the
+    ## token rotates per response. Other policy directives are stable.
+    ("content-security-policy", re.compile(r"nonce-[A-Za-z0-9+/=]+"), "nonce-SCRUBBED"),
+    ## ETags often contain content hashes that are stable; the
+    ## weak-marker and quotes vary across CDN tiers, so trim them.
+    ("etag", re.compile(r"\s+"), ""),
+]
+
+
+## --------------------------------------------------------------------
 ## Per-request volatility we always want to strip.
 ## --------------------------------------------------------------------
 
@@ -84,6 +127,10 @@ VOLATILE_MW_CONFIG_KEYS = [
 ]
 
 VOLATILE_JSON_KEYS = ["dateModified", "datePublished"]
+
+## mw.user.tokens.set({...}) emits these per-session tokens that
+## rotate every login.
+VOLATILE_USER_TOKEN_KEYS = ["patrolToken", "watchToken", "csrfToken"]
 
 VOLATILE_META_PROPERTIES = {
     "article:modified_time",
@@ -139,7 +186,7 @@ def _normalize_srcset(value: str) -> str:
 
 
 def _scrub_script_text(text: str) -> str:
-    for key in (*VOLATILE_MW_CONFIG_KEYS, *VOLATILE_JSON_KEYS):
+    for key in (*VOLATILE_MW_CONFIG_KEYS, *VOLATILE_JSON_KEYS, *VOLATILE_USER_TOKEN_KEYS):
         text = re.sub(
             rf'"{re.escape(key)}"\s*:\s*("[^"]*"|-?\d+(?:\.\d+)?|true|false|null)',
             f'"{key}":"SCRUBBED"',
@@ -222,21 +269,27 @@ def normalize_html(html: str) -> str:
     return soup.prettify(formatter="minimal")
 
 
+def _normalize_headers(headers: dict) -> dict:
+    out = {}
+    for name, value in (headers or {}).items():
+        n = name.lower()
+        if n in VOLATILE_HEADERS:
+            out[n] = "SCRUBBED"
+            continue
+        v = value
+        for header_name, pattern, replacement in HEADER_TOKEN_PATTERNS:
+            if n == header_name:
+                v = pattern.sub(replacement, v)
+        if n in URL_VALUED_HEADERS:
+            v = _normalize_url(v)
+        out[n] = v
+    return dict(sorted(out.items()))
+
+
 def normalize_manifest(manifest: dict, page_url: str | None = None) -> dict:
-    """Strip volatile query params from URLs so the manifest diff
-    focuses on content changes. Sort by normalised URL for stable
-    output. Drops two classes of timing-flake entries:
-
-      * status == 404 -- the page does not depend on what 404'd; the
-        browser tried, failed, and didn't render anything. Whether
-        the 404 response arrived before our networkidle window is
-        pure race, not content.
-
-      * URL == the page URL itself -- captured as a side-effect of
-        Playwright's response listener firing on each navigation;
-        the body is the pre-JS server HTML and varies per request
-        (wgRequestId etc.) while dom.html is what we actually care
-        about.
+    """Strip volatile query params, drop timing-flake entries, and
+    normalise the headers dict per entry. Sort by URL for stable
+    output.
     """
     out: dict[str, dict] = {}
     for url, entry in manifest.items():
@@ -245,10 +298,10 @@ def normalize_manifest(manifest: dict, page_url: str | None = None) -> dict:
         if page_url and url.startswith(page_url):
             continue
         nurl = _normalize_url(url)
-        ## If two URLs collapse to the same normalised form, keep the
-        ## first one's entry; hash will reveal whether the content
-        ## actually differs.
-        out.setdefault(nurl, entry)
+        normalised_entry = dict(entry)
+        if "headers" in normalised_entry:
+            normalised_entry["headers"] = _normalize_headers(normalised_entry["headers"])
+        out.setdefault(nurl, normalised_entry)
     return dict(sorted(out.items()))
 
 
@@ -302,8 +355,17 @@ def main() -> int:
     src = Path(sys.argv[1])
     dst = Path(sys.argv[2])
     if src.is_dir():
-        normalize_page_dir(src, dst)
-        return 0
+        ## If src contains nested mode subdirs (anon-first/, anon-repeat/,
+        ## user-first/, user-repeat/) iterate them. Otherwise treat src
+        ## itself as a single per-page snapshot dir for backwards compat.
+        nested = [p for p in src.iterdir() if p.is_dir() and (p / "dom.html").exists()]
+        if nested:
+            for mode_dir in nested:
+                normalize_page_dir(mode_dir, dst / mode_dir.name)
+            return 0
+        if (src / "dom.html").exists():
+            normalize_page_dir(src, dst)
+            return 0
     if src.is_file() and src.suffix == ".html":
         return _legacy_html_mode(src, dst)
     print(f"normalize.py: don't know how to normalise {src}", file=sys.stderr)

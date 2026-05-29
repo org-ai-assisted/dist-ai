@@ -5,26 +5,36 @@
 ## AI-Assisted
 
 """Drive headless Chromium against a MediaWiki and dump a complete
-regression-test corpus per page:
+regression-test corpus per page-and-mode:
 
-    RAW_DIR/<page>/
+    RAW_DIR/<page>/<mode>/
         dom.html          post-JS rendered HTML
         screenshot.png    1280x800 viewport screenshot (deterministic)
-        manifest.json     URL -> {sha256, size, content_type, status}
-        assets/<sha256>   raw asset body, indexed by content hash
+        manifest.json     URL -> {sha256, size, status, content_type, headers}
+        assets/<sha256>.<ext>
+                          raw asset body, indexed by content hash
 
-This is enough to verify that *nothing* served to the browser changed
-unexpectedly: the HTML diff catches structure changes, the manifest
-diff catches every URL whose body content changed, the asset files
-let you inspect the actual delta, and the screenshot pixel-diff
-catches anything that renders differently regardless of the cause.
+Modes captured:
+    anon-first      fresh anonymous context, single visit (cold server
+                    parser cache, cold browser cache).
+    anon-repeat     fresh anonymous context, purge + warmup visit +
+                    steady-state visit. The historical default; captures
+                    the "user has been here before" state.
+    user-first      authenticated context (cookies from WIKI_USER login),
+                    single visit.
+    user-repeat     authenticated context, purge + warmup + steady-state.
 
-Env (read by the /usr/bin/mediawiki-dom-snapshot wrapper):
-  BASE_URL    target wiki origin              default https://www.kicksecure.com
-  RAW_DIR     destination root                default /var/lib/mediawiki-dom-snapshot/raw
-  PAGES_FILE  one title per line              default /etc/mediawiki-dom-snapshot/pages.conf
-  VIEWPORT    "WIDTHxHEIGHT"                  default 1280x800
-  TIMEOUT_MS  per-page timeout, milliseconds  default 30000
+Env:
+  BASE_URL        target wiki origin                default https://www.kicksecure.com
+  RAW_DIR         destination root                  default /var/lib/mediawiki-dom-snapshot/raw
+  PAGES_FILE      one title per line                default /etc/mediawiki-dom-snapshot/pages.conf
+  VIEWPORT        "WIDTHxHEIGHT"                    default 1280x800
+  TIMEOUT_MS      per-page timeout, milliseconds    default 30000
+  CAPTURE_MODES   comma-separated subset of the     default anon-first,anon-repeat
+                  four modes, or "all"
+  WIKI_USER       username for logged-in modes;     default (unset, skip user-* modes)
+                  must be paired with WIKI_PASSWORD
+  WIKI_PASSWORD   password for logged-in modes
 """
 import asyncio
 import hashlib
@@ -40,6 +50,28 @@ RAW_DIR = Path(os.environ.get("RAW_DIR", "/var/lib/mediawiki-dom-snapshot/raw"))
 PAGES_FILE = Path(os.environ.get("PAGES_FILE", "/etc/mediawiki-dom-snapshot/pages.conf"))
 W, H = (int(x) for x in os.environ.get("VIEWPORT", "1280x800").split("x"))
 TIMEOUT_MS = int(os.environ.get("TIMEOUT_MS", "30000"))
+
+WIKI_USER = os.environ.get("WIKI_USER", "")
+WIKI_PASSWORD = os.environ.get("WIKI_PASSWORD", "")
+
+ALL_MODES = ["anon-first", "anon-repeat", "user-first", "user-repeat"]
+
+
+def parse_modes() -> list[str]:
+    raw = os.environ.get("CAPTURE_MODES", "anon-first,anon-repeat").strip()
+    if raw == "all":
+        return list(ALL_MODES)
+    modes = [m.strip() for m in raw.split(",") if m.strip()]
+    for m in modes:
+        if m not in ALL_MODES:
+            raise SystemExit(f"snapshot: unknown CAPTURE_MODES entry: {m}")
+    if any(m.startswith("user-") for m in modes) and not (WIKI_USER and WIKI_PASSWORD):
+        print(
+            "snapshot: WIKI_USER/WIKI_PASSWORD unset; user-* modes will be skipped",
+            file=sys.stderr,
+        )
+        modes = [m for m in modes if not m.startswith("user-")]
+    return modes
 
 
 def load_pages() -> list[str]:
@@ -60,11 +92,7 @@ def sha256_hex(data: bytes) -> str:
 
 
 def ext_for(content_type: str, url: str) -> str:
-    """Pick a file extension so each asset is browsable by humans.
-    Falls back to .bin when nothing matches.
-    """
     ct = (content_type or "").split(";", 1)[0].strip().lower()
-    ## Common explicit cases (mimetypes.guess_extension is hit-or-miss).
     EXACT = {
         "text/html": ".html",
         "text/css": ".css",
@@ -89,53 +117,70 @@ def ext_for(content_type: str, url: str) -> str:
     guess = mimetypes.guess_extension(ct) if ct else None
     if guess:
         return guess
-    ## Last resort: URL suffix.
     suffix = Path(url.split("?", 1)[0]).suffix.lower()
     if suffix and len(suffix) <= 6:
         return suffix
     return ".bin"
 
 
-async def snapshot_one(browser, title: str) -> tuple[str, int, int]:
-    """Capture dom.html + screenshot.png + manifest.json + assets/* for one page."""
-    page_dir = RAW_DIR / safe_name(title)
-    assets_dir = page_dir / "assets"
-    page_dir.mkdir(parents=True, exist_ok=True)
-    assets_dir.mkdir(parents=True, exist_ok=True)
+async def login(context, base_url: str, username: str, password: str) -> bool:
+    """Authenticate against MediaWiki's API and inject the resulting
+    session cookies into the browser context. Returns True on success.
 
-    ## Fresh context per page so cookies set by one page don't leak into
-    ## the next render and shift its server-side metadata.
-    context = await browser.new_context(
-        viewport={"width": W, "height": H},
-        ignore_https_errors=True,
-        user_agent=(
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36 "
-            "mediawiki-dom-snapshot/0.2"
-        ),
+    Uses the action=login flow (clientlogin + lgtoken) rather than
+    the Special:UserLogin web form because it's robust against skin
+    changes and doesn't require parsing HTML for the CSRF token.
+    """
+    api = f"{base_url}/w/api.php"
+    sess = await context.request.get(
+        api, params={"action": "query", "meta": "tokens", "type": "login", "format": "json"}
     )
-    page = await context.new_page()
+    try:
+        body = await sess.json()
+        login_token = body["query"]["tokens"]["logintoken"]
+    except Exception as exc:
+        print(f"snapshot: login token fetch failed: {exc}", file=sys.stderr)
+        return False
+    resp = await context.request.post(
+        api,
+        form={
+            "action": "login",
+            "lgname": username,
+            "lgpassword": password,
+            "lgtoken": login_token,
+            "format": "json",
+        },
+    )
+    try:
+        body = await resp.json()
+        result = body.get("login", {}).get("result", "")
+    except Exception as exc:
+        print(f"snapshot: login POST failed to parse: {exc}", file=sys.stderr)
+        return False
+    if result != "Success":
+        print(f"snapshot: login failed: {body}", file=sys.stderr)
+        return False
+    return True
 
-    ## Collect every response that arrives during the load. We index
-    ## entries by URL (which is what the HTML refers to) but the
-    ## de-duplication / equality key is the content sha256.
-    manifest: dict[str, dict] = {}
+
+def record_response_factory(page_dir: Path, manifest: dict):
+    assets_dir = page_dir / "assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
 
     async def on_response(response):
         url = response.url
         if url in manifest:
-            return  ## first-wins; second visit's responses replay from cache
+            return
         try:
             body = await response.body()
         except Exception as exc:
             manifest[url] = {"error": f"body unavailable: {exc}"}
             return
         digest = sha256_hex(body)
-        ct = response.headers.get("content-type", "")
+        headers = {k.lower(): v for k, v in response.headers.items()}
+        ct = headers.get("content-type", "")
         ext = ext_for(ct, url)
         asset_path = assets_dir / f"{digest}{ext}"
-        ## Write asset once; the same content from different URLs
-        ## de-duplicates onto a single file.
         if not asset_path.exists():
             asset_path.write_bytes(body)
         manifest[url] = {
@@ -144,15 +189,48 @@ async def snapshot_one(browser, title: str) -> tuple[str, int, int]:
             "content_type": ct,
             "status": response.status,
             "asset": asset_path.name,
+            "headers": headers,
         }
 
-    page.on("response", lambda response: asyncio.create_task(on_response(response)))
+    return on_response
+
+
+async def capture_one(browser, mode: str, title: str) -> tuple[str, int, int]:
+    """Capture dom.html + screenshot + manifest + assets for one (page, mode)."""
+    page_dir = RAW_DIR / safe_name(title) / mode
+    page_dir.mkdir(parents=True, exist_ok=True)
+
+    auth = mode.startswith("user-")
+    repeat = mode.endswith("-repeat")
+
+    context = await browser.new_context(
+        viewport={"width": W, "height": H},
+        ignore_https_errors=True,
+        user_agent=(
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36 "
+            "mediawiki-dom-snapshot/0.3"
+        ),
+    )
+
+    if auth:
+        if not await login(context, BASE, WIKI_USER, WIKI_PASSWORD):
+            await context.close()
+            raise RuntimeError(f"login failed for mode {mode}")
+
+    page = await context.new_page()
+    manifest: dict[str, dict] = {}
+    page.on("response", lambda r: asyncio.create_task(
+        record_response_factory(page_dir, manifest)(r)
+    ))
 
     safe = title.replace(" ", "_")
     url = f"{BASE}/wiki/{safe}"
     api = f"{BASE}/w/api.php"
     try:
-        ## Force a fresh parse so each run starts from the same state.
+        ## Server parser cache: purge before EVERY mode so the visit-count
+        ## comparison is apples-to-apples (one purge then one visit, or
+        ## one purge then two visits).
         try:
             await page.request.post(
                 api,
@@ -161,12 +239,12 @@ async def snapshot_one(browser, title: str) -> tuple[str, int, int]:
             )
         except Exception:
             pass
-        ## Two visits: first warms server-side caches, second observes
-        ## the stable steady state.
-        for _ in range(2):
+
+        n_visits = 2 if repeat else 1
+        for _ in range(n_visits):
             response = await page.goto(url, wait_until="networkidle", timeout=TIMEOUT_MS)
         status = response.status if response else 0
-        ## Settle scroll-spy widgets.
+
         await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         try:
             await page.wait_for_load_state("networkidle", timeout=5000)
@@ -174,13 +252,6 @@ async def snapshot_one(browser, title: str) -> tuple[str, int, int]:
             pass
         await page.evaluate("window.scrollTo(0, 0)")
 
-        ## Freeze any in-flight CSS transition / JS animation. Without
-        ## this the back-to-top button (and similar fade-in widgets)
-        ## have a non-deterministic opacity value at capture time --
-        ## inline style="opacity: 0.7..." vs "opacity: 0.8..." across
-        ## runs of the same wiki state. Disabling transitions globally
-        ## resolves them to their final computed value immediately;
-        ## animations get pinned to their end frame.
         await page.add_style_tag(content="""
             *, *::before, *::after {
                 transition-duration: 0s !important;
@@ -190,23 +261,17 @@ async def snapshot_one(browser, title: str) -> tuple[str, int, int]:
                 animation-iteration-count: 1 !important;
             }
         """)
-        ## Give the disabled-transitions style a tick to commit and
-        ## any pending on_response coroutines a tick to finish.
         await asyncio.sleep(0.3)
 
         html = await page.content()
         (page_dir / "dom.html").write_text(html, encoding="utf-8")
 
-        ## Full-page screenshot is a stronger reference than viewport-
-        ## only, but its height varies by content. Use viewport for
-        ## comparable pixel diffs across runs at the same wiki state.
         await page.screenshot(
             path=str(page_dir / "screenshot.png"),
             full_page=False,
             animations="disabled",
         )
 
-        ## Write manifest sorted by URL for stable diffs.
         manifest_sorted = dict(sorted(manifest.items()))
         (page_dir / "manifest.json").write_text(
             json.dumps(manifest_sorted, indent=2, sort_keys=True),
@@ -219,6 +284,7 @@ async def snapshot_one(browser, title: str) -> tuple[str, int, int]:
 
 
 async def main() -> int:
+    modes = parse_modes()
     pages = load_pages()
     if not pages:
         print(f"no pages in {PAGES_FILE}", file=sys.stderr)
@@ -226,21 +292,23 @@ async def main() -> int:
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     print(
         f"mediawiki-dom-snapshot: base={BASE} viewport={W}x{H} "
-        f"pages={len(pages)} -> {RAW_DIR}/"
+        f"pages={len(pages)} modes={','.join(modes)} -> {RAW_DIR}/"
     )
     failures = 0
     async with async_playwright() as p:
         browser = await p.chromium.launch()
-        for title in pages:
-            try:
-                t, status, n = await snapshot_one(browser, title)
-                tag = "OK  " if status == 200 else f"HTTP{status}"
-                print(f"  {tag}  {t}  ({n} bytes html)", flush=True)
-                if status != 200:
+        for mode in modes:
+            print(f"\n  === mode: {mode} ===", flush=True)
+            for title in pages:
+                try:
+                    t, status, n = await capture_one(browser, mode, title)
+                    tag = "OK  " if status == 200 else f"HTTP{status}"
+                    print(f"  {tag}  {mode}  {t}  ({n} bytes html)", flush=True)
+                    if status != 200:
+                        failures += 1
+                except Exception as exc:
+                    print(f"  FAIL  {mode}  {title}: {exc}", file=sys.stderr, flush=True)
                     failures += 1
-            except Exception as exc:
-                print(f"  FAIL  {title}: {exc}", file=sys.stderr, flush=True)
-                failures += 1
         await browser.close()
     return 1 if failures else 0
 
