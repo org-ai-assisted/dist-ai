@@ -60,15 +60,63 @@ VIEWPORTS = {
     "mobile": (390, 844),
 }
 
-## Build the full 16-element mode list as (label, auth, visit, vp, scheme) tuples.
+## Build the mode list.
+##
+## Mode tuple: (label, auth, visit, vp, scheme, intent, browser)
+##
+##   auth     anon | user
+##   visit    first | repeat
+##   vp       desktop | mobile
+##   scheme   light | dark | print   (print emulates print stylesheet)
+##   intent   view | edit | search | postedit
+##              view      -- standard read-only page view (default)
+##              edit      -- action=edit form, user modes only
+##              search    -- type a search query, capture results
+##              postedit  -- edit the page, save, capture rendered
+##                           result, then revert; user modes only;
+##                           only runs against pages whose title
+##                           starts with "TestpageEditPostEdit"
+##   browser  chromium | firefox | webkit  (default chromium only)
 def _all_modes() -> list[tuple]:
+    browsers = _parse_browsers()
     out = []
     for auth in ("anon", "user"):
         for visit in ("first", "repeat"):
             for vp in ("desktop", "mobile"):
-                for scheme in ("light", "dark"):
-                    label = f"{auth}-{visit}-{vp}-{scheme}"
-                    out.append((label, auth, visit, vp, scheme))
+                for scheme in ("light", "dark", "print"):
+                    for intent in ("view", "edit", "search", "postedit"):
+                        ## edit / postedit only make sense for an
+                        ## authenticated user; the wiki disallows
+                        ## anonymous editing in production.
+                        if intent in ("edit", "postedit") and auth != "user":
+                            continue
+                        ## edit / postedit / search are not affected
+                        ## by viewport or scheme in interesting ways
+                        ## beyond what view already captures; only
+                        ## generate them for the canonical
+                        ## desktop-light combo to keep mode count
+                        ## tractable.
+                        if intent in ("edit", "search", "postedit"):
+                            if vp != "desktop" or scheme != "light":
+                                continue
+                        for browser in browsers:
+                            label_parts = [auth, visit, vp, scheme, intent, browser]
+                            label = "-".join(label_parts)
+                            out.append((label, auth, visit, vp, scheme, intent, browser))
+    return out
+
+
+ALL_BROWSERS = ["chromium", "firefox", "webkit"]
+
+
+def _parse_browsers() -> list[str]:
+    raw = os.environ.get("BROWSERS", "chromium").strip()
+    if raw == "all":
+        return list(ALL_BROWSERS)
+    out = [b.strip() for b in raw.split(",") if b.strip()]
+    for b in out:
+        if b not in ALL_BROWSERS:
+            raise SystemExit(f"snapshot: unknown BROWSERS entry: {b}")
     return out
 
 
@@ -242,16 +290,116 @@ COMPUTED_STYLE_PROPS = [
 ]
 
 
+## Marker line appended by the postedit flow. Deterministic so the
+## diff against a pre-edit baseline shows a single 1-line delta when
+## the save round-trip works.
+POSTEDIT_MARKER = "<!-- mediawiki-dom-snapshot postedit marker DO NOT REMOVE -->"
+
+
+async def _api_edit(context, base_url: str, title: str, append_marker: bool) -> bool:
+    """Append (or remove) the postedit marker line via the MW write API.
+    Uses csrf token issued by action=query&meta=tokens.
+    """
+    api = f"{base_url}/w/api.php"
+    tokens_resp = await context.request.get(
+        api, params={"action": "query", "meta": "tokens", "format": "json"}
+    )
+    try:
+        csrf = (await tokens_resp.json())["query"]["tokens"]["csrftoken"]
+    except Exception as exc:
+        print(f"snapshot: csrf token fetch failed: {exc}", file=sys.stderr)
+        return False
+    ## Fetch current wikitext.
+    rev_resp = await context.request.get(
+        api,
+        params={
+            "action": "query", "prop": "revisions", "rvprop": "content",
+            "rvslots": "main", "titles": title, "format": "json",
+        },
+    )
+    try:
+        pages = (await rev_resp.json())["query"]["pages"]
+        page_id = next(iter(pages))
+        slots = pages[page_id]["revisions"][0]["slots"]["main"]
+        current = slots.get("*", slots.get("content", ""))
+    except Exception:
+        current = ""  ## page might not exist yet
+    if append_marker:
+        new_text = current.rstrip() + "\n" + POSTEDIT_MARKER + "\n"
+    else:
+        new_text = current.replace("\n" + POSTEDIT_MARKER + "\n", "").rstrip()
+    edit_resp = await context.request.post(
+        api,
+        form={
+            "action": "edit", "title": title, "text": new_text,
+            "token": csrf, "format": "json", "bot": "1",
+            "summary": "mediawiki-dom-snapshot test edit",
+        },
+    )
+    try:
+        result = (await edit_resp.json()).get("edit", {}).get("result", "")
+    except Exception as exc:
+        print(f"snapshot: edit POST failed: {exc}", file=sys.stderr)
+        return False
+    return result == "Success"
+
+
+async def capture_storage(page, context) -> dict:
+    """Snapshot every form of browser-side state the page can write to:
+    localStorage, sessionStorage, document cookies (including HttpOnly
+    via Playwright's context.cookies()), and the list of IndexedDB
+    database names. The Set of databases matters even when their
+    content is opaque.
+    """
+    storage = await page.evaluate("""
+        () => {
+            const ls = {};
+            for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                ls[k] = localStorage.getItem(k);
+            }
+            const ss = {};
+            for (let i = 0; i < sessionStorage.length; i++) {
+                const k = sessionStorage.key(i);
+                ss[k] = sessionStorage.getItem(k);
+            }
+            return {localStorage: ls, sessionStorage: ss};
+        }
+    """)
+    try:
+        idb = await page.evaluate(
+            "() => (indexedDB.databases ? indexedDB.databases().then(dbs => dbs.map(d => d.name)) : [])"
+        )
+    except Exception:
+        idb = []
+    cookies = await context.cookies()
+    return {
+        "localStorage": storage.get("localStorage", {}),
+        "sessionStorage": storage.get("sessionStorage", {}),
+        "cookies": cookies,
+        "indexedDB_databases": idb,
+    }
+
+
 async def capture_one(browser, mode_tuple, title: str) -> tuple[str, str, int, int]:
-    label, auth, visit, vp_name, scheme = mode_tuple
+    label, auth, visit, vp_name, scheme, intent, browser_name = mode_tuple
+
+    ## postedit only runs on pages explicitly designated as the
+    ## post-edit test target.
+    if intent == "postedit" and not title.startswith("TestpageEditPostEdit"):
+        return (label, title, 0, 0)  ## silently skip; caller treats 0 as no-op
     page_dir = RAW_DIR / safe_name(title) / label
     page_dir.mkdir(parents=True, exist_ok=True)
     W, H = VIEWPORTS[vp_name]
 
+    ## Playwright's color_scheme accepts light, dark, no-preference.
+    ## "print" isn't a context option -- we emulate_media after page
+    ## creation instead.
+    ctx_scheme = scheme if scheme in ("light", "dark") else "light"
     context = await browser.new_context(
         viewport={"width": W, "height": H},
         ignore_https_errors=True,
-        color_scheme=scheme,
+        color_scheme=ctx_scheme,
         user_agent=(
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36 "
@@ -265,6 +413,8 @@ async def capture_one(browser, mode_tuple, title: str) -> tuple[str, str, int, i
             raise RuntimeError(f"login failed for mode {label}")
 
     page = await context.new_page()
+    if scheme == "print":
+        await page.emulate_media(media="print")
     manifest: dict[str, dict] = {}
     page.on("response", lambda r: asyncio.create_task(
         record_response_factory(page_dir, manifest)(r)
@@ -291,8 +441,23 @@ async def capture_one(browser, mode_tuple, title: str) -> tuple[str, str, int, i
     page.on("pageerror", _on_pageerror)
 
     safe = title.replace(" ", "_")
-    url = f"{BASE}/wiki/{safe}"
     api = f"{BASE}/w/api.php"
+
+    ## Build the navigation URL for this intent.
+    if intent == "edit":
+        url = f"{BASE}/w/index.php?title={safe}&action=edit"
+    elif intent == "search":
+        ## Special:Search with the page title as query; lets us also
+        ## exercise the search-results rendering path.
+        url = f"{BASE}/wiki/Special:Search?search={safe}"
+    elif intent == "postedit":
+        ## For postedit we do an edit + save cycle first, then render
+        ## the page in view mode and capture that. The cycle uses the
+        ## MW write API, not the form, so it's deterministic.
+        url = f"{BASE}/wiki/{safe}"
+    else:
+        url = f"{BASE}/wiki/{safe}"
+
     try:
         try:
             await page.request.post(
@@ -302,6 +467,10 @@ async def capture_one(browser, mode_tuple, title: str) -> tuple[str, str, int, i
             )
         except Exception:
             pass
+
+        ## postedit flow: edit the page via the MW API, then load it.
+        if intent == "postedit":
+            await _api_edit(context, BASE, safe, append_marker=True)
 
         n_visits = 2 if visit == "repeat" else 1
         for _ in range(n_visits):
@@ -330,6 +499,23 @@ async def capture_one(browser, mode_tuple, title: str) -> tuple[str, str, int, i
                 display: block !important;
                 opacity: 1 !important;
                 width: 300px !important;
+            }
+        """)
+
+        ## Force every loading=lazy image to load eagerly and wait for
+        ## the result. Lazy images that race past networkidle leave
+        ## getComputedStyle() seeing a 0-height placeholder in one
+        ## capture and a fully sized image in the next; both panels
+        ## anchored from a lazy image therefore jitter ~200px in
+        ## height between runs. Promise.all settles once every image
+        ## has fired onload or onerror; broken images won't block.
+        await page.evaluate("""
+            async () => {
+                const imgs = Array.from(document.images);
+                imgs.forEach(i => { if (i.loading === 'lazy') i.loading = 'eager'; });
+                await Promise.all(imgs.map(i => i.complete ? null : new Promise(
+                    r => { i.onload = i.onerror = r; }
+                )));
             }
         """)
         await asyncio.sleep(0.3)
@@ -376,6 +562,26 @@ async def capture_one(browser, mode_tuple, title: str) -> tuple[str, str, int, i
             encoding="utf-8",
         )
 
+        ## Snapshot every form of browser-side state. Captured AFTER
+        ## the page has fully settled.
+        try:
+            storage = await capture_storage(page, context)
+            (page_dir / "storage.json").write_text(
+                json.dumps(storage, indent=2, sort_keys=True, default=str),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            print(f"snapshot: storage capture failed for {label}: {exc}",
+                  file=sys.stderr, flush=True)
+
+        ## postedit cleanup: revert the marker so the next capture
+        ## starts from the same wikitext.
+        if intent == "postedit":
+            try:
+                await _api_edit(context, BASE, safe, append_marker=False)
+            except Exception:
+                pass
+
         return (label, title, status, len(html))
     finally:
         await context.close()
@@ -393,20 +599,38 @@ async def main() -> int:
         f"modes={len(modes)} concurrency={CONCURRENCY} -> {RAW_DIR}/"
     )
     failures = 0
+    ## Launch every requested browser once; capture_one() picks the one
+    ## the mode_tuple names. Default BROWSERS=chromium so this is a
+    ## single-launch in the common case.
+    browser_names = _parse_browsers()
     async with async_playwright() as p:
-        browser = await p.chromium.launch()
+        browser_instances = {}
+        for b in browser_names:
+            try:
+                browser_instances[b] = await getattr(p, b).launch()
+            except Exception as exc:
+                print(f"snapshot: browser '{b}' launch failed: {exc}",
+                      file=sys.stderr)
         sem = asyncio.Semaphore(CONCURRENCY)
 
         async def run_one(mode_tuple, title):
             async with sem:
+                ## postedit only runs for the designated test page
+                if mode_tuple[5] == "postedit" and not title.startswith("TestpageEditPostEdit"):
+                    return True  ## silently skip
+                browser = browser_instances.get(mode_tuple[6])
+                if browser is None:
+                    return True  ## browser failed to launch; skip
                 try:
                     label, t, status, n = await capture_one(browser, mode_tuple, title)
+                    if status == 0:
+                        return True  ## skipped (e.g. postedit on wrong page)
                     tag = "OK  " if status == 200 else f"HTTP{status}"
-                    print(f"  {tag}  {label:<35}  {t}  ({n} bytes)", flush=True)
+                    print(f"  {tag}  {label:<55}  {t}  ({n} bytes)", flush=True)
                     return status == 200
                 except Exception as exc:
                     print(
-                        f"  FAIL  {mode_tuple[0]:<35}  {title}: {exc}",
+                        f"  FAIL  {mode_tuple[0]:<55}  {title}: {exc}",
                         file=sys.stderr, flush=True,
                     )
                     return False
@@ -414,7 +638,8 @@ async def main() -> int:
         tasks = [run_one(m, t) for m in modes for t in pages]
         results = await asyncio.gather(*tasks)
         failures = sum(1 for r in results if not r)
-        await browser.close()
+        for b in browser_instances.values():
+            await b.close()
     return 1 if failures else 0
 
 

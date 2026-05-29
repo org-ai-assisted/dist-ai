@@ -227,11 +227,32 @@ def _scrub_script_text(text: str) -> str:
     return text
 
 
-## JS-generated random element ids used by TabContentController and
-## similar (data-tcc-contentid, id, href fragment). All look like
-## "id-" followed by 14+ decimal digits; the digits are reseeded
-## every page load.
-RANDOM_ID_RE = re.compile(r"\bid-\d{10,}\b")
+## JS-generated random element ids. Multiple flavours; each pattern is
+## a (regex, replacement) pair scrubbed in-place before the soup parse.
+## Doing this on the string layer is safer than per-attribute because
+## the ids also appear inside aria-controls fragments and inline JS.
+##
+##   id-NNNNNNNNNN   TabContentController and similar; 10+ decimal digits
+##   html5_BASE36    Plupload/moxie file-shim container; ~28 base36 chars
+##   menu-NNNNNN     wikieditor menus; epoch-millis used as id
+RANDOM_ID_PATTERNS = (
+    (re.compile(r"\bid-\d{10,}\b"), "id-SCRUBBED"),
+    ## No trailing \b: the moxie shim emits BOTH "html5_<rand>" and
+    ## "html5_<rand>_container", so we want a non-greedy stop at the
+    ## first non-base36 char rather than requiring a word boundary
+    ## (underscore is a word char and would defeat \b).
+    (re.compile(r"html5_[0-9a-z]{20,}"), "html5_SCRUBBED"),
+    (re.compile(r"\bmenu-\d{10,}\b"), "menu-SCRUBBED"),
+)
+
+## Edit-form hidden inputs whose value rotates per edit session. They
+## appear as <input name="..." value="..."> in action=edit pages.
+##   wpStarttime      14-digit timestamp of when the editor was opened
+##   wpEdittime       14-digit timestamp of the latest revision -- stable
+##                    across captures of the same wiki state but rotates
+##                    once any edit happens; safe to scrub
+##   wpEditToken      40 hex + "+\" CSRF token, rotates per session
+VOLATILE_INPUT_NAMES = {"wpStarttime", "wpEdittime", "wpEditToken"}
 
 
 def normalize_html(html: str) -> str:
@@ -239,7 +260,8 @@ def normalize_html(html: str) -> str:
     ## sees the canonical form. Safer to do this on the string than
     ## inside the tree walk since the ids appear both as attribute
     ## values AND inside href fragments and inline script bodies.
-    html = RANDOM_ID_RE.sub("id-SCRUBBED", html)
+    for pat, repl in RANDOM_ID_PATTERNS:
+        html = pat.sub(repl, html)
 
     soup = BeautifulSoup(html, "lxml")
 
@@ -258,6 +280,21 @@ def normalize_html(html: str) -> str:
     if btn and btn.get("style"):
         del btn.attrs["style"]
 
+    ## #fly-in-notification-panel: JS reads its computed width and
+    ## writes it back as inline style="width: 299.187px; overflow:
+    ## hidden;" -- the value jitters subpixel between runs, and the
+    ## *presence* of the style mutation races networkidle so one
+    ## capture has it and another doesn't. The panel CSS is the
+    ## source of truth; drop the JS-applied inline style on both the
+    ## panel and its .inner-wrapper child.
+    panel = soup.find(id="fly-in-notification-panel")
+    if panel:
+        if panel.get("style"):
+            del panel.attrs["style"]
+        wrapper = panel.find(class_="inner-wrapper")
+        if wrapper and wrapper.get("style"):
+            del wrapper.attrs["style"]
+
     ## #mw-teleport-target is an empty slot the Vector skin creates
     ## lazily via JS for popover content. It's present or absent
     ## depending on which RL modules raced to the front of the queue
@@ -269,6 +306,8 @@ def normalize_html(html: str) -> str:
     for tag in soup.find_all(True):
         if tag.name == "meta" and tag.get("property") in VOLATILE_META_PROPERTIES:
             tag["content"] = "SCRUBBED"
+        if tag.name == "input" and tag.get("name") in VOLATILE_INPUT_NAMES:
+            tag["value"] = "SCRUBBED"
         attrs = tag.attrs
         for attr_name in list(attrs.keys()):
             value = attrs[attr_name]
@@ -373,6 +412,79 @@ def _scrub_module_versions(body: str) -> str:
     return MODULE_VERSION_RE.sub(r"\1@SCRUBBED\2", body)
 
 
+## Cookie names whose values rotate per session and aren't safe to
+## diff. Matched case-insensitively as substrings.
+SESSION_COOKIE_PATTERNS = ("session", "token", "csrf", "userid", "username")
+
+## localStorage / sessionStorage key patterns whose values rotate
+## per session. The MediaWikiModuleStore key holds the ResourceLoader
+## module cache (~MB of bundled JS keyed by per-build version hashes);
+## present or absent depending on whether the browser flushed it before
+## the snapshot fired. Drop the value -- the presence/absence of the
+## key still surfaces, the cached content does not.
+SESSION_STORAGE_KEY_PATTERNS = (
+    re.compile(r"^mw-clientsession"),
+    re.compile(r"^mw-rcfilters-saved-queries"),
+    re.compile(r"^MediaWikiModuleStore:"),
+    re.compile(r"^[a-f0-9]{16,}$"),
+)
+
+## localStorage keys to drop entirely (present-or-absent both map to
+## absent). Use this for caches that are populated asynchronously by
+## the browser and don't observably affect rendering.
+DROP_STORAGE_KEY_PATTERNS = (
+    re.compile(r"^MediaWikiModuleStore:"),
+)
+
+
+def _normalize_storage(storage: dict) -> dict:
+    cookies = []
+    for c in (storage.get("cookies") or []):
+        name = c.get("name", "")
+        out = dict(c)
+        ## Always scrub volatile timestamp / expires; cookie identity
+        ## is (name, domain, path) -- value scrubbed when session-like.
+        if any(p in name.lower() for p in SESSION_COOKIE_PATTERNS):
+            out["value"] = "SCRUBBED"
+        for k in ("expires", "expirationDate"):
+            if k in out:
+                out[k] = "SCRUBBED"
+        cookies.append(out)
+    cookies.sort(key=lambda c: (c.get("name", ""), c.get("domain", "")))
+
+    def _scrub_kvs(kvs):
+        out = {}
+        for k, v in (kvs or {}).items():
+            if any(p.match(k) for p in DROP_STORAGE_KEY_PATTERNS):
+                continue
+            sc = any(p.match(k) for p in SESSION_STORAGE_KEY_PATTERNS)
+            out[k] = "SCRUBBED" if sc else v
+        return dict(sorted(out.items()))
+
+    return {
+        "cookies": cookies,
+        "localStorage": _scrub_kvs(storage.get("localStorage")),
+        "sessionStorage": _scrub_kvs(storage.get("sessionStorage")),
+        "indexedDB_databases": sorted(storage.get("indexedDB_databases") or []),
+    }
+
+
+## Per-event scrubs applied to console message text before equality.
+## Order matters: most specific first.
+CONSOLE_TEXT_PATTERNS = (
+    ## mwDev.tools.test.pageLoading prints per-event timestamps
+    ## ("at HH:MM:SS.mmm") and per-event durations ("NNN ms > stage").
+    ## Scrub the numbers; keep the stage labels and report structure.
+    (re.compile(r"\bat \d{2}:\d{2}:\d{2}\.\d{3}\b"), "at SCRUBBED"),
+    (re.compile(r"\b\d+ ms > "), "N ms > "),
+    ## MW often interpolates wgRequestId / wgUserId / wgPageId style
+    ## values into console messages.
+    (re.compile(r"\bwg[A-Za-z]+:[^\s,]+"), "wgFOO:SCRUBBED"),
+    ## Long hex runs (session ids, content hashes).
+    (re.compile(r"\b[0-9a-f]{16,}\b"), "HEX-SCRUBBED"),
+)
+
+
 def _normalize_console(events: list) -> list:
     """JS console: drop the per-page-id / per-session noise. Only the
     {type, text} pair matters for "did the new code introduce a new
@@ -382,10 +494,8 @@ def _normalize_console(events: list) -> list:
     seen = set()
     for ev in events or []:
         text = ev.get("text", "")
-        ## Many MW console messages embed the page's wgRequestId or a
-        ## ResourceLoader cache-buster; scrub those before equality.
-        text = re.sub(r"\bwg[A-Za-z]+:[^\s,]+", "wgFOO:SCRUBBED", text)
-        text = re.sub(r"\b[0-9a-f]{16,}\b", "HEX-SCRUBBED", text)
+        for pat, repl in CONSOLE_TEXT_PATTERNS:
+            text = pat.sub(repl, text)
         key = (ev.get("type", ""), text)
         if key in seen:
             continue
@@ -419,6 +529,19 @@ def normalize_page_dir(src: Path, dst: Path) -> None:
             events = []
         (dst / "console.json").write_text(
             json.dumps(_normalize_console(events), indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
+    ## Storage: scrub session-like cookie values + hash-shaped
+    ## localStorage/sessionStorage values.
+    storage_src = src / "storage.json"
+    if storage_src.exists():
+        try:
+            storage = json.loads(storage_src.read_text(encoding="utf-8"))
+        except Exception:
+            storage = {}
+        (dst / "storage.json").write_text(
+            json.dumps(_normalize_storage(storage), indent=2, sort_keys=True),
             encoding="utf-8",
         )
 

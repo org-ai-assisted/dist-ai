@@ -144,12 +144,12 @@ def diff_assets(base: Path, cand: Path, brief: bool) -> tuple[list[tuple], list[
     return rows, body_diffs, len(header_delta_urls)
 
 
-## Threshold above which a per-pixel max-channel delta counts as a
-## "real" pixel change rather than antialiasing jitter. Empirically,
-## sub-pixel font / border rendering produces deltas of 1-2 out of 255
-## even when the pages render visually identically; a delta of 4+ on a
-## single channel is consistent with a colour or geometry change.
-PIXEL_JITTER_THRESHOLD = 3
+## Fraction of total pixels above which a phash-clean diff is still
+## considered real -- catches local layout shifts that perceptual hash
+## may not weigh enough. 2% of a 1280x800 viewport is ~20k pixels,
+## comfortably above the ~10k pixels typical of font-edge antialiasing
+## jitter on a content-heavy page.
+PIXEL_RATIO_THRESHOLD = 0.02
 
 
 def diff_screenshot(base: Path, cand: Path) -> tuple[bool, int, int, int, str]:
@@ -158,11 +158,15 @@ def diff_screenshot(base: Path, cand: Path) -> tuple[bool, int, int, int, str]:
 
     is_visual_regression captures the SIGNAL: it's True when any of
       - phash distance > 0   (the perceptual hash sees a real change)
-      - any single channel-delta > PIXEL_JITTER_THRESHOLD
-        (a pixel changed more than antialiasing would explain)
+      - pixels_diff / total > PIXEL_RATIO_THRESHOLD
+        (a substantial fraction of the viewport differs even though
+         phash didn't notice -- backstop for small local shifts)
       - image sizes don't match (impossible at the same viewport)
-    Sub-threshold pixel deltas with phash=0 are returned as raw
-    numbers for forensic inspection but do NOT flip the signal.
+
+    max_channel_delta is informational only: anti-aliased font edges
+    can produce single-channel deltas of 100+ with zero perceptual
+    change as a sub-pixel shift swaps a black pixel for a near-white
+    one. Phash + ratio is the right oracle.
     """
     b_path = base / "screenshot.png"
     c_path = cand / "screenshot.png"
@@ -190,7 +194,9 @@ def diff_screenshot(base: Path, cand: Path) -> tuple[bool, int, int, int, str]:
                 max_delta = m
 
     phash_dist = imagehash.phash(a) - imagehash.phash(b)
-    is_real = phash_dist > 0 or max_delta > PIXEL_JITTER_THRESHOLD
+    total_pixels = a.size[0] * a.size[1]
+    ratio = pixels_diff / total_pixels if total_pixels else 0
+    is_real = phash_dist > 0 or ratio > PIXEL_RATIO_THRESHOLD
     summary = (
         f"pixels_diff={pixels_diff} max_channel_delta={max_delta} "
         f"phash_dist={phash_dist}"
@@ -255,6 +261,7 @@ def main() -> int:
         ss_real, pixels_diff, max_delta, phash_dist, ss_summary = diff_screenshot(b, c)
         styles_lines, styles_diff = _diff_json_file(b, c, "computed_styles.json")
         console_lines, console_diff = _diff_json_file(b, c, "console.json")
+        storage_lines, storage_diff = _diff_json_file(b, c, "storage.json")
         any_real = (
             html_lines_diff > 0
             or asset_rows
@@ -262,6 +269,7 @@ def main() -> int:
             or ss_real
             or styles_lines > 0
             or console_lines > 0
+            or storage_lines > 0
         )
         if not any_real and pixels_diff == 0:
             summary.append(f"  {label:<48} identical")
@@ -282,6 +290,8 @@ def main() -> int:
             bits.append(f"styles+{styles_lines}")
         if console_lines > 0:
             bits.append(f"console+{console_lines}")
+        if storage_lines > 0:
+            bits.append(f"storage+{storage_lines}")
         if ss_real:
             bits.append(ss_summary)
         summary.append(f"  {label:<48} {' '.join(bits)}")
@@ -307,6 +317,9 @@ def main() -> int:
             if console_diff:
                 body_diffs_all.append("\n--- console messages diff ---")
                 body_diffs_all.append(console_diff)
+            if storage_diff:
+                body_diffs_all.append("\n--- storage diff ---")
+                body_diffs_all.append(storage_diff)
         if ss_real:
             body_diffs_all.append(f"\n--- screenshot: {ss_summary} ---")
 
