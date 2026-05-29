@@ -157,6 +157,18 @@ LAZY_INJECTED_STYLE_FINGERPRINTS = [
     re.compile(r"\.cite-reference-preview"),
     re.compile(r"\.mw-portlet-dock-bottom"),
     re.compile(r"#mw-teleport-target"),
+    ## Search box autocomplete widget. The styles are injected only
+    ## once the user opens the title-suggest dropdown, which we
+    ## sometimes trigger by typing into Special:Search and sometimes
+    ## don't reach in time.
+    re.compile(r"\.mw-widget-titleWidget"),
+    re.compile(r"\.mw-widget-titleOptionWidget"),
+    ## Edit page widget modules: edit-footer toggler, preview spinner,
+    ## edit-form helpers. Lazy-loaded by action=edit JS when the form
+    ## reaches interactive state. Same race vs networkidle.
+    re.compile(r"\.mw-editfooter-"),
+    re.compile(r"\.mw-editform"),
+    re.compile(r"\.mw-preview-loading-elements"),
 ]
 
 ## ResourceLoader module names are emitted as "name@VERSION" in the
@@ -295,6 +307,96 @@ def normalize_html(html: str) -> str:
         if wrapper and wrapper.get("style"):
             del wrapper.attrs["style"]
 
+    ## Splide carousels (Homepage feature reel etc): the autoplay
+    ## advances the active slide every couple of seconds, so each
+    ## capture sees a different translateX, a different active dot,
+    ## and a different "30 of 35" aria-label. The carousel's identity
+    ## is still observable (number of slides, slide content, library
+    ## init markers); the in-flight scroll position isn't. Drop the
+    ## dynamic state: translateX inline style, transition on the
+    ## list, is-active class + aria-selected on pagination buttons.
+    for sl in soup.find_all(class_="splide__list"):
+        if sl.get("style"):
+            del sl.attrs["style"]
+    for sec in soup.find_all(class_="splide"):
+        for cls in ("is-active", "is-initialized", "is-overflow"):
+            classes = sec.get("class") or []
+            if cls in classes:
+                classes = [c for c in classes if c != cls]
+                sec["class"] = classes
+    for btn in soup.find_all(class_="splide__pagination__page"):
+        classes = btn.get("class") or []
+        classes = [c for c in classes if c != "is-active"]
+        btn["class"] = classes
+        for attr in ("aria-selected", "tabindex"):
+            if attr in btn.attrs:
+                del btn.attrs[attr]
+    for clone in soup.find_all(class_="splide__slide--clone"):
+        ## "30 of 35" / "31 of 35" labels point at where in the loop
+        ## we are; loop position rotates per capture. Strip.
+        if clone.get("aria-label"):
+            del clone.attrs["aria-label"]
+
+    ## .header-menu.nav-menu carries an "active" class added by the
+    ## skin JS once scroll lock kicks in (mobile menu open vs closed
+    ## state races networkidle).
+    for hm in soup.find_all(class_="header-menu"):
+        classes = hm.get("class") or []
+        if "active" in classes:
+            hm["class"] = [c for c in classes if c != "active"]
+
+    ## #t-collapsible-toggle-all is an "Expand all collapsible
+    ## elements" menu item added by an extension when the page has
+    ## collapsibles AND the JS catches them before networkidle. The
+    ## menu item's *presence* is racy; drop it.
+    for tog in soup.find_all(id="t-collapsible-toggle-all"):
+        tog.decompose()
+
+    ## .editor-auto-backup icon: a save-icon glyph added to the edit
+    ## toolbar by the autosave extension once it picks up the form.
+    ## The race against networkidle decides whether the icon (and the
+    ## fa-regular webfont it forces to load) appears.
+    for icon in soup.find_all(class_="editor-auto-backup"):
+        icon.decompose()
+
+    ## .moxie-shim is the Plupload file-input wrapper. Its inline
+    ## style includes top/left/width/height computed from layout that
+    ## shifts when other JS-injected widgets (auto-backup icon etc)
+    ## arrive at different points in time. The shim is a transparent
+    ## interaction target -- the positioning isn't observable. Drop
+    ## the inline style.
+    for shim in soup.find_all(class_=re.compile(r"^moxie-shim")):
+        if shim.get("style"):
+            del shim.attrs["style"]
+
+    ## #mw-teleport-target moves between two locations in the DOM
+    ## depending on which JS module installed it first. Same for the
+    ## #ui-id-1 autocomplete placeholder. Drop them when empty.
+    for el_id in ("mw-teleport-target", "ui-id-1"):
+        el = soup.find(id=el_id)
+        if el and not any(
+            (isinstance(c, str) and c.strip()) or (hasattr(c, "name") and c.name)
+            and c.get_text(strip=True)
+            for c in el.contents
+        ):
+            el.decompose()
+        elif el:
+            ## Even when "non-empty" the contents are an empty overlay
+            ## placeholder; drop the whole element since its position
+            ## in the DOM races.
+            text = el.get_text(strip=True)
+            if not text:
+                el.decompose()
+
+    ## .CodeMirror-hscrollbar visibility flips between visible and
+    ## hidden depending on whether the textarea content overflows
+    ## horizontally at this exact moment; the rule depends on a
+    ## resize observer that races networkidle. Drop the inline
+    ## style entirely.
+    for sb in soup.find_all(class_=re.compile(r"^CodeMirror-")):
+        if sb.get("style"):
+            del sb.attrs["style"]
+
     ## #mw-teleport-target is an empty slot the Vector skin creates
     ## lazily via JS for popover content. It's present or absent
     ## depending on which RL modules raced to the front of the queue
@@ -356,6 +458,41 @@ def _normalize_headers(headers: dict) -> dict:
     return dict(sorted(out.items()))
 
 
+## URL substrings whose load is racy: only fetched when a particular
+## piece of UI (icon, autocomplete dropdown, hover preview) reaches a
+## ready state before networkidle fires. Dropping the manifest entry
+## stops a present-vs-absent capture from looking like a regression.
+RACY_LOAD_PATTERNS = (
+    ## Font Awesome fa-regular is only loaded when the editor-auto-
+    ## backup icon (etc) renders; that icon is itself racy.
+    "/Font-Awesome_2023-08-03/webfonts/fa-regular-",
+    ## TitleSuggest/oojs widget bundle: loaded when the user opens
+    ## the search-title dropdown.
+    "ext.MobileFrontend.styles",
+    "mw-widget-titleWidget",
+)
+
+## MediaWiki ResourceLoader sometimes splits a module into its own
+## request and sometimes bundles it with other modules. The bundled
+## body has a different sha256 from the standalone body so the asset
+## diff sees a NEW/GONE pair even though the same code runs. Drop
+## standalone single-module load.php entries; the modules will still
+## appear under another bundled URL elsewhere in the manifest.
+_LOADPHP_MODULES_RE = re.compile(r"[?&]modules=([^&]+)")
+
+
+def _is_single_module_loadphp(url: str) -> bool:
+    if "load.php" not in url:
+        return False
+    m = _LOADPHP_MODULES_RE.search(url)
+    if not m:
+        return False
+    modules = m.group(1)
+    ## "%7C" is URL-encoded "|" -- single module if neither separator
+    ## appears in the value.
+    return "|" not in modules and "%7C" not in modules
+
+
 def normalize_manifest(manifest: dict, page_url: str | None = None) -> dict:
     """Strip volatile query params, drop timing-flake entries, and
     normalise the headers dict per entry. Sort by URL for stable
@@ -373,6 +510,10 @@ def normalize_manifest(manifest: dict, page_url: str | None = None) -> dict:
         ## them; the page's observable state comes through the dom.html
         ## rather than the raw API blob.
         if "/w/api.php" in url:
+            continue
+        if any(p in url for p in RACY_LOAD_PATTERNS):
+            continue
+        if _is_single_module_loadphp(url):
             continue
         nurl = _normalize_url(url)
         normalised_entry = dict(entry)
@@ -416,6 +557,12 @@ def _scrub_module_versions(body: str) -> str:
 ## diff. Matched case-insensitively as substrings.
 SESSION_COOKIE_PATTERNS = ("session", "token", "csrf", "userid", "username")
 
+## Cookie names whose PRESENCE itself is racy (set by a response that
+## may or may not arrive before storage capture). Drop entirely so a
+## present-vs-absent capture doesn't flip the diff. Matched
+## case-insensitively as substrings.
+DROP_COOKIE_PATTERNS = ("usedc", "geoip", "x-wikimedia-debug")
+
 ## localStorage / sessionStorage key patterns whose values rotate
 ## per session. The MediaWikiModuleStore key holds the ResourceLoader
 ## module cache (~MB of bundled JS keyed by per-build version hashes);
@@ -441,10 +588,13 @@ def _normalize_storage(storage: dict) -> dict:
     cookies = []
     for c in (storage.get("cookies") or []):
         name = c.get("name", "")
+        name_l = name.lower()
+        if any(p in name_l for p in DROP_COOKIE_PATTERNS):
+            continue
         out = dict(c)
         ## Always scrub volatile timestamp / expires; cookie identity
         ## is (name, domain, path) -- value scrubbed when session-like.
-        if any(p in name.lower() for p in SESSION_COOKIE_PATTERNS):
+        if any(p in name_l for p in SESSION_COOKIE_PATTERNS):
             out["value"] = "SCRUBBED"
         for k in ("expires", "expirationDate"):
             if k in out:

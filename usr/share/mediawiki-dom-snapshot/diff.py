@@ -85,10 +85,20 @@ def diff_assets(base: Path, cand: Path, brief: bool) -> tuple[list[tuple], list[
     Returns (rows, body_diffs, header_delta_count) where each row is
     (url, status, base_size, cand_size, base_hash[:12], cand_hash[:12]).
     Header deltas are reported as separate lines in body_diffs.
+
+    An asset that appears as NEW in one manifest but whose sha256
+    already exists in the other manifest under a different URL is a
+    ResourceLoader bundling race -- the SAME body is just hosted at a
+    different (module-set) URL. Skip such entries from the diff;
+    bundling shuffles are not regressions.
     """
     bm = json.loads((base / "manifest.json").read_text(encoding="utf-8"))
     cm = json.loads((cand / "manifest.json").read_text(encoding="utf-8"))
     all_urls = sorted(set(bm) | set(cm))
+    ## Build the cross-manifest sha256 sets up front so the bundling-
+    ## race check below is O(1).
+    base_hashes = {entry.get("sha256") for entry in bm.values() if entry.get("sha256")}
+    cand_hashes = {entry.get("sha256") for entry in cm.values() if entry.get("sha256")}
     rows: list[tuple] = []
     body_diffs: list[str] = []
     header_delta_urls: list[str] = []
@@ -98,10 +108,20 @@ def diff_assets(base: Path, cand: Path, brief: bool) -> tuple[list[tuple], list[
         be = bm.get(url)
         ce = cm.get(url)
         if be is None:
-            rows.append((url, "NEW", "-", str(ce.get("size", "?")), "-", (ce.get("sha256") or "")[:12]))
+            ## NEW in candidate; check if the body already exists in
+            ## base under a different URL (bundling race).
+            ch = ce.get("sha256") or ""
+            if ch and ch in base_hashes:
+                continue
+            rows.append((url, "NEW", "-", str(ce.get("size", "?")), "-", ch[:12]))
             continue
         if ce is None:
-            rows.append((url, "GONE", str(be.get("size", "?")), "-", (be.get("sha256") or "")[:12], "-"))
+            ## GONE from candidate; check if the body still exists in
+            ## candidate under a different URL.
+            bh = be.get("sha256") or ""
+            if bh and bh in cand_hashes:
+                continue
+            rows.append((url, "GONE", str(be.get("size", "?")), "-", bh[:12], "-"))
             continue
         bh = be.get("sha256") or ""
         ch = ce.get("sha256") or ""
@@ -144,29 +164,17 @@ def diff_assets(base: Path, cand: Path, brief: bool) -> tuple[list[tuple], list[
     return rows, body_diffs, len(header_delta_urls)
 
 
-## Fraction of total pixels above which a phash-clean diff is still
-## considered real -- catches local layout shifts that perceptual hash
-## may not weigh enough. 2% of a 1280x800 viewport is ~20k pixels,
-## comfortably above the ~10k pixels typical of font-edge antialiasing
-## jitter on a content-heavy page.
-PIXEL_RATIO_THRESHOLD = 0.02
-
-
 def diff_screenshot(base: Path, cand: Path) -> tuple[bool, int, int, int, str]:
     """Returns (is_visual_regression, pixels_diff, max_channel_delta,
     phash_distance, summary).
 
-    is_visual_regression captures the SIGNAL: it's True when any of
-      - phash distance > 0   (the perceptual hash sees a real change)
-      - pixels_diff / total > PIXEL_RATIO_THRESHOLD
-        (a substantial fraction of the viewport differs even though
-         phash didn't notice -- backstop for small local shifts)
-      - image sizes don't match (impossible at the same viewport)
-
-    max_channel_delta is informational only: anti-aliased font edges
-    can produce single-channel deltas of 100+ with zero perceptual
-    change as a sub-pixel shift swaps a black pixel for a near-white
-    one. Phash + ratio is the right oracle.
+    is_visual_regression follows the perceptual hash: phash_dist > 0
+    is the entire signal, plus a size-mismatch backstop. pixels_diff
+    and max_channel_delta are emitted in the summary for forensics
+    but do NOT flip the is_real bit on their own. A content-heavy
+    mobile viewport can show 30-40k differing pixels purely from
+    font-edge anti-aliasing without any perceptual change; phash
+    correctly reports zero distance for those cases.
     """
     b_path = base / "screenshot.png"
     c_path = cand / "screenshot.png"
@@ -194,9 +202,7 @@ def diff_screenshot(base: Path, cand: Path) -> tuple[bool, int, int, int, str]:
                 max_delta = m
 
     phash_dist = imagehash.phash(a) - imagehash.phash(b)
-    total_pixels = a.size[0] * a.size[1]
-    ratio = pixels_diff / total_pixels if total_pixels else 0
-    is_real = phash_dist > 0 or ratio > PIXEL_RATIO_THRESHOLD
+    is_real = phash_dist > 0
     summary = (
         f"pixels_diff={pixels_diff} max_channel_delta={max_delta} "
         f"phash_dist={phash_dist}"

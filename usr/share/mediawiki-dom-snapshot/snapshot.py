@@ -580,11 +580,54 @@ async def capture_one(browser, mode_tuple, title: str) -> tuple[str, str, int, i
             }
             /* Fly-in panel flips display:none -> display:block at
                t=1s via setTimeout. Force visible so the panel is
-               always stable at capture time. */
+               always stable at capture time. The JS that runs at
+               panel show-time sets style="width: NNNpx" on the
+               .inner-wrapper based on a width calculation that
+               varies across captures (window.innerWidth read at
+               different ticks); force both the panel and the wrapper
+               to a fixed width so the text wraps to the same number
+               of lines in every run. */
             #fly-in-notification-panel {
                 display: block !important;
                 opacity: 1 !important;
                 width: 300px !important;
+            }
+            #fly-in-notification-panel .inner-wrapper {
+                width: 280px !important;
+            }
+            /* #back-to-top-button is scroll-position-driven; its
+               JS handler reads window.scrollY and toggles
+               opacity / display. We scroll to bottom (to trigger
+               lazy loads) then back to top, but the handler is
+               debounced and races networkidle. Force always-hidden
+               at capture time so the computed-style snapshot is
+               stable; the button's DOM presence is still observable
+               in dom.html. */
+            #back-to-top-button {
+                display: none !important;
+                opacity: 0 !important;
+            }
+        """)
+
+        ## Splide carousels auto-advance via window.requestAnimationFrame
+        ## /setInterval; even with our transition-duration:0 override
+        ## the active-slide index keeps rotating. Pause every Splide
+        ## instance and rewind to slide 0 so the rendered list is
+        ## deterministic. The Splide instance is stored on the host
+        ## DOM element as `.splide` once init has finished.
+        await page.evaluate("""
+            () => {
+                document.querySelectorAll('.splide').forEach(el => {
+                    const inst = el.splide;
+                    if (inst) {
+                        try {
+                            if (inst.Components && inst.Components.Autoplay) {
+                                inst.Components.Autoplay.pause();
+                            }
+                            inst.go(0);
+                        } catch (_) {}
+                    }
+                });
             }
         """)
 
