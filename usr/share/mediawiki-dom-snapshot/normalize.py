@@ -564,12 +564,19 @@ def normalize_manifest(manifest: dict, page_url: str | None = None) -> dict:
     for url, entry in manifest.items():
         if entry.get("status") == 404:
             continue
+        ## 5xx entries: backend hiccup that snapshot.py's retry layer
+        ## transparently recovered from. The retried 2xx body lives
+        ## in the rendered DOM; the 5xx response entry is just noise
+        ## that flickers across captures.
+        status = entry.get("status")
+        if isinstance(status, int) and 500 <= status < 600:
+            continue
         ## body-unavailable entries: Playwright couldn't read the
         ## response body before the page closed (network race).
         ## Sometimes the SAME URL races on one capture but completes
         ## on the next, producing a status=None vs status=404 diff
         ## that's pure race noise. Drop both shapes.
-        if entry.get("error") or entry.get("status") is None:
+        if entry.get("error") or status is None:
             continue
         if page_url and url.startswith(page_url):
             continue
@@ -717,6 +724,12 @@ CONSOLE_DROP_PATTERNS = (
     ## the wiki's case) wasn't used in time, which races with the
     ## subresource scheduler.
     re.compile(r"preloaded using link preload but not used"),
+    ## "Failed to load resource: the server responded with a status
+    ## of 5xx ()". Backend hiccups under load that the snapshot.py
+    ## retry layer transparently recovers from -- the console event
+    ## for the failed attempt sticks around even after the retry
+    ## succeeds, producing a present-vs-absent diff between captures.
+    re.compile(r"Failed to load resource.*status of 5\d\d"),
 )
 
 
