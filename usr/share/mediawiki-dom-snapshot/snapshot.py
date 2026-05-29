@@ -464,7 +464,10 @@ HOVER_SELECTORS = [
 ]
 
 
-async def capture_one(browser, mode_tuple, title: str) -> tuple[str, str, int, int]:
+async def capture_one(
+    browser, mode_tuple, title: str,
+    auth_storage_states: dict | None = None,
+) -> tuple[str, str, int, int]:
     label, auth, visit, vp_name, scheme, intent, browser_name, locale = mode_tuple
 
     ## postedit only runs on pages explicitly listed in POSTEDIT_PAGES.
@@ -491,9 +494,28 @@ async def capture_one(browser, mode_tuple, title: str) -> tuple[str, str, int, i
     )
     if locale and locale != DEFAULT_LOCALE:
         ctx_kwargs["extra_http_headers"] = {"Accept-Language": locale}
+    ## Reuse the (auth, browser) login session captured once by main()
+    ## instead of triggering a fresh action=login round trip per mode.
+    ## A 320-mode user-auth corpus run was previously firing 320 logins,
+    ## which trips MediaWiki's PasswordAttemptThrottle and the rest of
+    ## the run gets 'Incorrect username or password' even though the
+    ## creds are right.
+    if auth in ("user", "admin") and auth_storage_states is not None:
+        key = (auth, browser_name)
+        if key in auth_storage_states:
+            ctx_kwargs["storage_state"] = auth_storage_states[key]
     context = await browser.new_context(**ctx_kwargs)
 
-    if auth in ("user", "admin"):
+    ## Fallback: if main() didn't pre-seed the storage state (e.g.
+    ## the pre-login round at startup itself failed), log in inline.
+    needs_inline_login = (
+        auth in ("user", "admin")
+        and (
+            auth_storage_states is None
+            or (auth, browser_name) not in auth_storage_states
+        )
+    )
+    if needs_inline_login:
         user = WIKI_USER if auth == "user" else ADMIN_USER
         pw = WIKI_PASSWORD if auth == "user" else ADMIN_PASSWORD
         if not await login(context, BASE, user, pw):
@@ -931,6 +953,39 @@ async def main() -> int:
             except Exception as exc:
                 print(f"snapshot: browser '{b}' launch failed: {exc}",
                       file=sys.stderr)
+
+        ## Pre-login each (auth, browser) combo ONCE up front and
+        ## save the resulting cookie/storage state. Every capture
+        ## context for the same combo gets the saved state instead of
+        ## doing a fresh action=login: one login per session, not one
+        ## login per capture. This is what keeps the run from
+        ## tripping MediaWiki's PasswordAttemptThrottle on long
+        ## auth=user / auth=admin runs.
+        auth_storage_states: dict = {}
+        auth_combos = {(m[1], m[6]) for m in modes if m[1] in ("user", "admin")}
+        for (auth, br_name) in sorted(auth_combos):
+            browser = browser_instances.get(br_name)
+            if browser is None:
+                continue
+            user = WIKI_USER if auth == "user" else ADMIN_USER
+            pw = WIKI_PASSWORD if auth == "user" else ADMIN_PASSWORD
+            ctx = await browser.new_context(ignore_https_errors=True)
+            ok = await login(ctx, BASE, user, pw)
+            if ok:
+                auth_storage_states[(auth, br_name)] = await ctx.storage_state()
+                print(
+                    f"snapshot: pre-login OK auth={auth} browser={br_name}",
+                    file=sys.stderr, flush=True,
+                )
+            else:
+                print(
+                    f"snapshot: pre-login FAILED auth={auth} browser={br_name} "
+                    "-- captures will fall back to inline login (and may hit "
+                    "PasswordAttemptThrottle)",
+                    file=sys.stderr, flush=True,
+                )
+            await ctx.close()
+
         sem = asyncio.Semaphore(CONCURRENCY)
 
         async def run_one(mode_tuple, title):
@@ -942,7 +997,10 @@ async def main() -> int:
                 if browser is None:
                     return True  ## browser failed to launch; skip
                 try:
-                    label, t, status, n = await capture_one(browser, mode_tuple, title)
+                    label, t, status, n = await capture_one(
+                        browser, mode_tuple, title,
+                        auth_storage_states=auth_storage_states,
+                    )
                     if status == 0:
                         return True  ## skipped (e.g. postedit on wrong page)
                     tag = "OK  " if status == 200 else f"HTTP{status}"
