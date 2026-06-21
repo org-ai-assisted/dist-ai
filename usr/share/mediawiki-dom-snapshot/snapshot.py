@@ -82,7 +82,9 @@ VIEWPORTS = {
 ##   scheme   light | dark | print   (print emulates print stylesheet)
 ##   intent   view | edit | search | postedit | hover
 ##              view      -- standard read-only page view (default)
-##              edit      -- action=edit form, user/admin modes only
+##              edit      -- action=edit form (all auths; the anon edit
+##                           view renders the anon-edit warning +
+##                           FlaggedRevs edit notice + skin chrome)
 ##              search    -- type a search query, capture results
 ##              postedit  -- edit the page, save, capture rendered
 ##                           result, then revert; user/admin only;
@@ -96,7 +98,7 @@ VIEWPORTS = {
 ##   locale   en | <BCP47>  (Accept-Language; default "en" only)
 ##
 ## Cross-dim pruning to keep the mode count tractable:
-##   - edit/postedit require auth != anon
+##   - postedit requires auth != anon (it writes); edit form is anon-ok
 ##   - edit/search/postedit/hover only generated for the canonical
 ##     desktop-light viewport+scheme
 ##   - locale != en only generated for canonical
@@ -142,7 +144,15 @@ def _all_modes() -> list[tuple]:
             for vp in ("desktop", "mobile"):
                 for scheme in ("light", "dark", "print"):
                     for intent in ("view", "edit", "search", "postedit", "hover"):
-                        if intent in ("edit", "postedit") and auth == "anon":
+                        ## The action=edit *form* renders for anonymous
+                        ## visitors too (anon-edit warning, FlaggedRevs
+                        ## edit notice, and the surrounding skin chrome),
+                        ## and that anon edit view is a distinct render
+                        ## path from a logged-in edit -- it is where the
+                        ## edit/Special-page CSS regressions surface. Only
+                        ## postedit needs write access, so gate just that
+                        ## one to non-anon.
+                        if intent == "postedit" and auth == "anon":
                             continue
                         if intent in ("edit", "search", "postedit", "hover"):
                             if vp != "desktop" or scheme != "light":
@@ -332,6 +342,16 @@ COMPUTED_STYLE_SELECTORS = [
     ".info-box", ".intro-like",
     "#back-to-top-button", ".close-panel",
     ".kicksecure-hide-all-banners",
+    ## Skin chrome + archive widgets. These catch the edit / Special-page
+    ## regressions from the Extension:CSS retirement directly on the
+    ## computed-style axis (display flips), not just via the screenshot
+    ## pHash: #custom-header is the content-driven header that gates the
+    ## "hide default chrome" rules, so on header-less pages #mw-navigation
+    ## / .mw-header must stay display!=none; .ext-link-to-archive must be
+    ## display:none inside .cdx-message notice boxes (anon-edit warning,
+    ## FlaggedRevs edit notice) and visible in article prose.
+    "#custom-header", "#mw-navigation", ".mw-header",
+    ".ext-link-to-archive", ".cdx-message .ext-link-to-archive",
 ]
 
 ## CSS properties to record per element. Snapshotting *every* property
