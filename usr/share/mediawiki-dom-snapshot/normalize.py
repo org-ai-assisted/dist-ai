@@ -140,6 +140,17 @@ VOLATILE_MW_CONFIG_KEYS = [
     "wgInternalRedirectTargetUrl",
     "wgUserEditCount",
     "wgUserRegistration",
+    ## Revision ids are database row ids assigned at page-save time. When
+    ## the same logical content is imported/re-saved into two separate
+    ## wiki instances (or batch-reloaded), each side mints its own
+    ## sequential revision ids, so the SAME page text carries a different
+    ## wgRevisionId / wgCurRevisionId / wgStableRevisionId per capture.
+    ## The id is RLCONF metadata, never reader-facing -- any genuine
+    ## content change still surfaces in the rendered DOM body -- so the
+    ## bare id delta is pure batch-load noise. Scrub it.
+    "wgRevisionId",
+    "wgCurRevisionId",
+    "wgStableRevisionId",
 ]
 
 VOLATILE_JSON_KEYS = ["dateModified", "datePublished"]
@@ -189,6 +200,74 @@ LAZY_INJECTED_STYLE_FINGERPRINTS = [
 MODULE_VERSION_RE = re.compile(r'("[\w.-]+)@[a-z0-9]{4,8}(")')
 
 URL_ATTRS = ("href", "src", "data-src", "action", "data-href", "srcset")
+
+## --------------------------------------------------------------------
+## HTML whitespace canonicalisation.
+##
+## The Smarty (Extension:Widgets) backend and the PHP-parser-function
+## backend emit the SAME semantic DOM but with different *incidental*
+## whitespace: the Smarty path leaves behind empty <p></p> (and MW's
+## <p class="mw-empty-elt"></p>) paragraphs, spreads HTML comments
+## across several indented lines, and pads text nodes with extra
+## spaces / newlines. None of that is observable -- the browser
+## collapses runs of whitespace in normal flow and never renders empty
+## paragraphs or comments -- so it is pure formatting churn that
+## otherwise drowns the diff. Canonicalise it.
+##
+## CONSERVATIVE: whitespace is significant inside <pre>/<code>/
+## <textarea>/<script>/<style>, so text nodes anywhere beneath those
+## tags are left byte-for-byte untouched. Only truly empty paragraphs
+## are dropped, and a <p> carrying an id (a possible anchor target) is
+## always kept. Semantic content (any non-whitespace text) is never
+## altered beyond collapsing internal whitespace runs to one space,
+## which is exactly what HTML rendering does.
+## --------------------------------------------------------------------
+WHITESPACE_SENSITIVE_TAGS = {"pre", "code", "textarea", "script", "style"}
+_WS_RUN_RE = re.compile(r"\s+")
+
+
+def _under_whitespace_sensitive(node) -> bool:
+    for parent in node.parents:
+        if getattr(parent, "name", None) in WHITESPACE_SENSITIVE_TAGS:
+            return True
+    return False
+
+
+def _canonicalise_whitespace(soup) -> None:
+    ## Drop empty paragraphs (Smarty leaves <p></p> and MW emits
+    ## <p class="mw-empty-elt"></p>); both render nothing. Keep any <p>
+    ## that has element children, non-whitespace text, or an id anchor.
+    for p in soup.find_all("p"):
+        if p.get("id"):
+            continue
+        if p.find(True) is not None:
+            continue
+        if p.get_text(strip=True):
+            continue
+        p.decompose()
+
+    ## Collapse whitespace runs inside the HTML comments we keep, so a
+    ## multi-line indented comment in one backend matches the same
+    ## comment serialised on a single line in the other. Comments are
+    ## never rendered, so this is safe.
+    for c in list(soup.find_all(string=lambda t: isinstance(t, Comment))):
+        original = str(c)
+        collapsed = _WS_RUN_RE.sub(" ", original).strip()
+        if collapsed != original:
+            c.replace_with(Comment(collapsed))
+
+    ## Collapse whitespace runs in text nodes outside whitespace-
+    ## sensitive elements. A run of spaces/newlines/tabs becomes a
+    ## single space -- identical to how the browser lays the text out.
+    for t in list(soup.find_all(string=True)):
+        if isinstance(t, Comment):
+            continue
+        if _under_whitespace_sensitive(t):
+            continue
+        original = str(t)
+        collapsed = _WS_RUN_RE.sub(" ", original)
+        if collapsed != original:
+            t.replace_with(collapsed)
 
 
 def _normalize_url(value: str) -> str:
@@ -509,6 +588,11 @@ def normalize_html(html: str) -> str:
         if a.string and a.string.strip() == "Edit preview settings":
             ancestor = a.find_parent("li") or a
             ancestor.decompose()
+
+    ## Canonicalise incidental whitespace LAST, after every structural
+    ## scrub above, so empty-<p> drops and text/comment collapsing see
+    ## the final tree (and don't fight the volatile-content removals).
+    _canonicalise_whitespace(soup)
 
     return soup.prettify(formatter="minimal")
 
