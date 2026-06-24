@@ -51,6 +51,9 @@ RAW_DIR = Path(os.environ.get("RAW_DIR", "/var/lib/mediawiki-dom-snapshot/raw"))
 PAGES_FILE = Path(os.environ.get("PAGES_FILE", "/etc/mediawiki-dom-snapshot/pages.conf"))
 TIMEOUT_MS = int(os.environ.get("TIMEOUT_MS", "30000"))
 CONCURRENCY = int(os.environ.get("CONCURRENCY", "4"))
+## Opt-in SOCKS/HTTP proxy for the browser (e.g. SNAPSHOT_PROXY=socks5://127.0.0.1:9050
+## to capture .onion targets through tor). Unset -> direct, default behaviour.
+SNAPSHOT_PROXY = os.environ.get("SNAPSHOT_PROXY") or None
 
 WIKI_USER = os.environ.get("WIKI_USER", "")
 WIKI_PASSWORD = os.environ.get("WIKI_PASSWORD", "")
@@ -969,7 +972,8 @@ async def main() -> int:
         browser_instances = {}
         for b in browser_names:
             try:
-                browser_instances[b] = await getattr(p, b).launch()
+                browser_instances[b] = await getattr(p, b).launch(
+                    proxy={"server": SNAPSHOT_PROXY} if SNAPSHOT_PROXY else None)
             except Exception as exc:
                 print(f"snapshot: browser '{b}' launch failed: {exc}",
                       file=sys.stderr)
