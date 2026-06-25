@@ -83,23 +83,50 @@ Headless `unittest` suite for `sdwdate-gui-server`, driving the real
 sockets under the Qt `offscreen` platform plugin. No X server, system
 tray, or live qrexec connection is required.
 
-Current coverage: the client de-duplication invariant that keeps a
-single Qubes VM (for example a DisposableVM `dispNNNN`) from being
-listed more than once in the tray menu when it reconnects before the
-gateway server reaps the previous connection
-(https://forums.whonix.org/t/sdwd-symbol-malefunction/23330). Both the
-Qubes branch (name authenticated by qrexec, so the stale older
-connection is dropped) and the non-Qubes branch (self-reported name, so
-the newcomer is kicked) are exercised, plus a unit test that the qrexec
-header parse emits `clientNameChanged`.
+Unit coverage:
+
+- the client de-duplication invariant that keeps a single Qubes VM (for
+  example a DisposableVM `dispNNNN`) from being listed more than once in
+  the tray menu when it reconnects before the gateway server reaps the
+  previous connection
+  (https://forums.whonix.org/t/sdwd-symbol-malefunction/23330). Both the
+  Qubes branch (name authenticated by qrexec, so the stale older
+  connection is dropped) and the non-Qubes branch (self-reported name,
+  so the newcomer is kicked) are exercised, plus a unit test that the
+  qrexec header parse emits `clientNameChanged`.
+- tray menu activation: a left-click (`Trigger`) and a right-click
+  (`Context`) each open exactly one menu, double- and middle-click do
+  not, and under Wayland the handler does not self-popup.
+
+### Integration suite
+
+`sdwdate-gui-tests-integration` drives the same tray menu end to end on a
+real display, with real click delivery:
+
+- **X11**: a headless `Xvfb` plus a real XEmbed systray host
+  (`stalonetray`); a genuine `xdotool` left- and right-click on the
+  embedded icon must each open exactly one menu.
+- **Wayland**: a headless `weston` plus the Qt `wayland` platform plugin;
+  the handler must NOT self-popup (`QCursor.pos()` is `(0, 0)` under
+  Wayland, so a popup there would land in the screen corner), leaving the
+  menu to the compositor.
+
+These need extra tooling (`xvfb`, `stalonetray`, `xdotool`, `x11-utils`,
+`weston`, `qtwayland5`, listed in the package's `Suggests`). Any phase
+whose tooling is missing is skipped loudly rather than failed.
 
 ### Usage
 
 ```
-# run the whole suite (depends on the sdwdate-gui package being installed)
+# offscreen unit suite (depends on the sdwdate-gui package being installed)
 sdwdate-gui-tests
+
+# end-to-end integration suite (needs the Suggests tooling)
+sdwdate-gui-tests-integration
 
 # run from a git checkout against an uninstalled sdwdate-gui tree
 PYTHONPATH=/path/to/sdwdate-gui/usr/lib/python3/dist-packages \
   ./usr/bin/sdwdate-gui-tests
+PYTHONPATH=/path/to/sdwdate-gui/usr/lib/python3/dist-packages \
+  ./usr/bin/sdwdate-gui-tests-integration
 ```

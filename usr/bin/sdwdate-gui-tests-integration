@@ -1,0 +1,162 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## Integration tests for the sdwdate-gui tray menu. Unlike the offscreen
+## unit suite (sdwdate-gui-tests), these drive the real tray icon end to
+## end on a real display: a headless X11 server with an XEmbed systray host
+## (left- and right-click open the menu), and a headless Wayland compositor
+## (the menu opt-out under Wayland). They need extra tooling; any phase
+## whose tooling is missing is skipped loudly rather than failing.
+##
+## Works installed (/usr/share/sdwdate-gui-tests/integration) and from a git
+## checkout. For a checkout against an uninstalled sdwdate-gui tree, set
+## PYTHONPATH to its dist-packages directory before running; it is passed
+## through to the harnesses.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/sdwdate-gui-tests/integration' ]; then
+  integration_dir='/usr/share/sdwdate-gui-tests/integration'
+else
+  integration_dir="${script_dir}/../share/sdwdate-gui-tests/integration"
+fi
+
+wayland_socket='wayland-sdwd99'
+ran=0
+failed=0
+bg_pids=()
+
+# shellcheck disable=SC2317  # body runs only via the EXIT trap
+cleanup() {
+  local pid
+  for pid in "${bg_pids[@]:-}"; do
+    if [ -n "${pid}" ]; then
+      kill "${pid}" 2>/dev/null || true
+    fi
+  done
+}
+trap cleanup EXIT
+
+have_all() {
+  ## These are all Debian binaries installed under /usr/bin, so a path
+  ## test is used (per the bash style guide, preferred over a 'has'
+  ## waiver when the install location is fixed).
+  local cmd
+  for cmd in "$@"; do
+    if [ ! -x "/usr/bin/${cmd}" ]; then
+      return 1
+    fi
+  done
+  return 0
+}
+
+qt_has_wayland_plugin() {
+  ## The Qt wayland platform plugin ships in qtwayland5.
+  compgen -G \
+    '/usr/lib/*/qt5/plugins/platforms/libqwayland-*.so' >/dev/null 2>&1
+}
+
+x11_click_once() {
+  ## Args: display-number, X button number, human label. Starts a clean
+  ## Xvfb + systray host, runs one click, tears them down. A fresh host per
+  ## click avoids racing on icon embedding and on the popup pointer grab.
+  local dnum="$1" button="$2" label="$3"
+  local display=":${dnum}" xvfb_pid st_pid rc=0
+
+  Xvfb "${display}" -screen 0 1024x768x24 >/dev/null 2>&1 &
+  xvfb_pid=$!
+  bg_pids+=("${xvfb_pid}")
+  sleep 1.5
+
+  DISPLAY="${display}" stalonetray --geometry 1x1+30+30 --icon-size 48 \
+    --grow-gravity NW --max-geometry 1x1 --background '#202020' \
+    >/dev/null 2>&1 &
+  st_pid=$!
+  bg_pids+=("${st_pid}")
+  sleep 1.5
+
+  printf -- '--- x11 %s-click ---\n' "${label}"
+  if ! DISPLAY="${display}" python3 \
+    "${integration_dir}/x11_click_harness.py" "${button}"; then
+    rc=1
+  fi
+
+  kill "${st_pid}" "${xvfb_pid}" 2>/dev/null || true
+  return "${rc}"
+}
+
+run_x11_phase() {
+  if ! have_all Xvfb stalonetray xdotool xwininfo; then
+    printf 'SKIP x11: needs Xvfb, stalonetray, xdotool, xwininfo\n'
+    printf '  install: sudo apt-get install --no-install-recommends %s\n' \
+      'xvfb stalonetray xdotool x11-utils'
+    return 0
+  fi
+
+  ran=$((ran + 1))
+  if ! x11_click_once 99 1 left; then
+    failed=$((failed + 1))
+  fi
+
+  ran=$((ran + 1))
+  if ! x11_click_once 100 3 right; then
+    failed=$((failed + 1))
+  fi
+}
+
+run_wayland_phase() {
+  if ! have_all weston || ! qt_has_wayland_plugin; then
+    printf 'SKIP wayland: needs weston and the Qt wayland plugin\n'
+    printf '  install: sudo apt-get install --no-install-recommends %s\n' \
+      'weston qtwayland5'
+    return 0
+  fi
+
+  local runtime_dir
+  runtime_dir="/run/user/$(id --user)"
+  export XDG_RUNTIME_DIR="${runtime_dir}"
+
+  weston --backend=headless --socket="${wayland_socket}" --idle-time=0 \
+    >/dev/null 2>&1 &
+  bg_pids+=("$!")
+
+  local _
+  for _ in $(seq 1 30); do
+    if [ -S "${XDG_RUNTIME_DIR}/${wayland_socket}" ]; then
+      break
+    fi
+    sleep 0.3
+  done
+
+  export WAYLAND_DISPLAY="${wayland_socket}"
+  export QT_QPA_PLATFORM='wayland'
+
+  ran=$((ran + 1))
+  printf -- '--- wayland menu opt-out ---\n'
+  if ! python3 "${integration_dir}/wayland_menu_harness.py"; then
+    failed=$((failed + 1))
+  fi
+
+  unset WAYLAND_DISPLAY QT_QPA_PLATFORM
+}
+
+run_x11_phase
+run_wayland_phase
+
+printf '\n=== integration summary: %s run, %s failed ===\n' "${ran}" "${failed}"
+if [ "${ran}" -eq 0 ]; then
+  printf 'NOTE: no integration phase ran; install the tooling above.\n'
+fi
+if [ "${failed}" -ne 0 ]; then
+  exit 1
+fi
+exit 0
