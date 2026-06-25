@@ -97,6 +97,40 @@ Unit coverage:
 - tray menu activation: a left-click (`Trigger`) and a right-click
   (`Context`) each open exactly one menu, double- and middle-click do
   not, and under Wayland the handler does not self-popup.
+- wire-protocol regressions: a fragmented (incomplete) message must not
+  hang the parser, a newline in a status message must not get the client
+  kicked, and `drop_client` is idempotent.
+
+### Fuzzer
+
+`sdwdate-gui-tests-fuzz` is a simulator that drives the real server over
+a real local socket, for both the Qubes and non-Qubes code paths, with:
+
+- a **directed corpus** exercising every branch of the wire protocol and
+  the client state machine (registration, status, Tor state, duplicate
+  names, fragmentation, oversized / zero-length / non-printable / unknown
+  commands, the menu action handlers, ...),
+- **random and mutated** byte streams and framing, and
+- **random client-lifecycle** sequences across several concurrent clients.
+
+After every step it checks for: a hang (a `SIGALRM` watchdog catches an
+infinite loop in the single-threaded event loop), a crash (an unhandled
+exception in any Qt slot, captured via `sys.excepthook`), duplicate
+names, failed registration / de-registration, and stuck menus. A
+well-formed status message (including one with a newline) must not get
+the client kicked.
+
+With `python3-coverage` installed it reports line coverage of
+`sdwdate_gui_server.py` / `sdwdate_gui_shared.py`, listing the exact
+unexercised lines (the remainder being process bootstrap -- the real
+listener, `main`, the signal handler -- which the harness replaces). The
+RNG seed is printed; rerun a finding with `--seed`.
+
+```
+sdwdate-gui-tests-fuzz                       # both modes, default iterations
+sdwdate-gui-tests-fuzz --mode qubes --iterations 2000
+sdwdate-gui-tests-fuzz --seed 12345          # reproduce a specific run
+```
 
 ### Integration suite
 

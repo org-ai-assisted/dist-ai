@@ -1,0 +1,30 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## Runs the sdwdate-gui server simulator / fuzzer. Offscreen, no X server or
+## qrexec needed. Works installed (/usr/share/sdwdate-gui-tests/fuzz) and
+## from a git checkout. For a checkout against an uninstalled sdwdate-gui
+## tree, set PYTHONPATH to its dist-packages directory first; it is passed
+## through. Extra arguments (e.g. --seed, --iterations, --mode) are
+## forwarded to the fuzzer.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+export QT_QPA_PLATFORM="offscreen"
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/sdwdate-gui-tests/fuzz' ]; then
+  fuzz_dir='/usr/share/sdwdate-gui-tests/fuzz'
+else
+  fuzz_dir="${script_dir}/../share/sdwdate-gui-tests/fuzz"
+fi
+
+exec python3 "${fuzz_dir}/sdwdate_gui_fuzzer.py" "$@"

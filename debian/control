@@ -46,18 +46,29 @@ Suggests: xvfb,
  xdotool,
  x11-utils,
  weston,
- qtwayland5
-Description: Regression tests for the sdwdate-gui client-server applet
- Headless unittest suite for sdwdate-gui-server. Drives the real
- SdwdateTrayIcon and SdwdateGuiClient classes with unconnected local
- sockets under the Qt offscreen platform plugin, so the tests need
- neither an X server, a system tray, nor a live qrexec connection.
+ qtwayland5,
+ python3-coverage
+Description: Regression tests and fuzzer for the sdwdate-gui applet
+ Headless test suite for sdwdate-gui-server. Drives the real
+ SdwdateTrayIcon and SdwdateGuiClient classes under the Qt offscreen
+ platform plugin, so most of it needs neither an X server, a system
+ tray, nor a live qrexec connection.
  .
  Unit coverage ('sdwdate-gui-tests' command): the client de-duplication
  invariant that keeps a Qubes VM from being listed more than once in the
  tray menu when it reconnects (Qubes authenticated-qrexec-name and
- non-Qubes self-reported-name branches), and tray menu activation (left-
- and right-click open the menu; the Wayland opt-out).
+ non-Qubes self-reported-name branches), tray menu activation (left- and
+ right-click open the menu; the Wayland opt-out), and wire-protocol
+ regressions (a fragmented message must not hang the parser, a newline in
+ a status message must not get the client kicked).
+ .
+ Fuzzer ('sdwdate-gui-tests-fuzz' command): a simulator that drives the
+ server over a real local socket with a directed corpus plus random and
+ mutated byte streams and random client-lifecycle sequences, for both the
+ Qubes and non-Qubes paths. It checks for hangs, crashes, duplicate
+ names, failed registration / de-registration, and stuck menus, and (with
+ python3-coverage) reports line coverage of the server. The RNG seed is
+ printed so any finding is reproducible.
  .
  Integration coverage ('sdwdate-gui-tests-integration' command): the same
  tray menu driven end to end on a real display -- a headless Xvfb with an
@@ -66,5 +77,5 @@ Description: Regression tests for the sdwdate-gui client-server applet
  tooling in Suggests (xvfb, stalonetray, xdotool, x11-utils, weston,
  qtwayland5); any phase whose tooling is absent is skipped, not failed.
  .
- Both commands require the 'sdwdate-gui' package, as the tests import its
+ All commands require the 'sdwdate-gui' package, as the tests import its
  server module.

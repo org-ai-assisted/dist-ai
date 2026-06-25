@@ -1,4 +1,6 @@
 usr/bin/sdwdate-gui-tests usr/bin/
 usr/bin/sdwdate-gui-tests-integration usr/bin/
+usr/bin/sdwdate-gui-tests-fuzz usr/bin/
 usr/share/sdwdate-gui-tests/*.py usr/share/sdwdate-gui-tests/
 usr/share/sdwdate-gui-tests/integration/*.py usr/share/sdwdate-gui-tests/integration/
+usr/share/sdwdate-gui-tests/fuzz/*.py usr/share/sdwdate-gui-tests/fuzz/
