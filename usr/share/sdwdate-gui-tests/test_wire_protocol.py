@@ -14,7 +14,10 @@ defects found by the simulator / fuzzer (sdwdate_gui_fuzzer.py):
   * status escape decoding must be a single deterministic pass (not a
     hash-order-dependent sequence of global replacements),
   * an attacker-controlled status message must not inject markup into the
-    rich-text status window.
+    rich-text status window,
+  * untrusted strings are bounded to reasonable lengths: the qrexec header
+    name, the message shown in the status window, and the message the
+    client sends (also ASCII-coerced).
 
 These drive the real SdwdateGuiClient / SdwdateTrayIcon under the Qt
 offscreen platform plugin; no X server or qrexec is required.
@@ -250,6 +253,102 @@ class DropClientTests(unittest.TestCase):
             )
         )
         self.assertTrue(client.dropped)
+
+
+class LengthCapTests(unittest.TestCase):
+    """Untrusted strings are bounded to reasonable lengths."""
+
+    def setUp(self) -> None:
+        self._real_listener = server.SdwdateGuiListener
+        server.SdwdateGuiListener = _FakeListener
+        self._real_in_qubes = server.running_in_qubes_os
+        self.tray = server.SdwdateTrayIcon()
+
+    def tearDown(self) -> None:
+        server.SdwdateGuiListener = self._real_listener
+        server.running_in_qubes_os = self._real_in_qubes
+        if self.tray.msg_window is not None:
+            self.tray.msg_window.close()
+        self.tray.deleteLater()
+        _APP.processEvents()
+
+    def test_qubes_header_name_length_capped(self) -> None:
+        """An over-long qrexec header name is rejected; a valid one is kept."""
+        server.running_in_qubes_os = lambda: True
+
+        ok_client = server.SdwdateGuiClient(QLocalSocket())
+        ok_client.qubes_header_parsed = False
+        ok_client._SdwdateGuiClient__sock_buf = (
+            b"sdwdate-gui.Connect " + b"a" * server.MAX_QUBES_NAME_LEN + b"\0"
+        )
+        self.assertTrue(ok_client._SdwdateGuiClient__parse_qubes_data())
+        self.assertEqual(ok_client.client_name, "a" * server.MAX_QUBES_NAME_LEN)
+
+        long_client = server.SdwdateGuiClient(QLocalSocket())
+        kicked: list[bool] = []
+        long_client.clientDisconnected.connect(lambda: kicked.append(True))
+        long_client._SdwdateGuiClient__sock_buf = (
+            b"sdwdate-gui.Connect " + b"a" * (server.MAX_QUBES_NAME_LEN + 1) + b"\0"
+        )
+        long_client._SdwdateGuiClient__parse_qubes_data()
+        self.assertEqual(kicked, [True])
+        self.assertIsNone(long_client.client_name)
+
+    def test_status_message_display_truncated(self) -> None:
+        """A long status message is truncated in the status window."""
+        from PyQt5.QtWidgets import (  # pylint: disable=import-outside-toplevel
+            QLabel,
+        )
+
+        server.running_in_qubes_os = lambda: False
+        client = server.SdwdateGuiClient(QLocalSocket())
+        self.tray.accept_client(client)
+        client.client_name = "vm"
+        client.client_name_set = True
+        client.sdwdate_status = server.SdwdateStatus.SUCCESS
+        client.tor_status = server.TorStatus.ABSENT
+        client.sdwdate_msg = "X" * 5000
+        client.client_socket.state = lambda: QLocalSocket.ConnectedState
+
+        self.tray.show_status_msg(server.MessageType.SDWDATE, client)
+
+        rendered = " ".join(
+            label.text() for label in self.tray.msg_window.findChildren(QLabel)
+        )
+        self.assertEqual(rendered.count("X"), server.MAX_DISPLAY_MSG_LEN)
+
+
+class ClientSendTests(unittest.TestCase):
+    """The client bounds and ASCII-coerces what it sends (Bug, audit)."""
+
+    def test_status_message_capped_and_ascii(self) -> None:
+        """A long / non-ASCII status message is capped and ASCII-coerced."""
+        import asyncio  # pylint: disable=import-outside-toplevel
+
+        try:
+            from sdwdate_gui import (  # pylint: disable=import-outside-toplevel
+                sdwdate_gui_client as client,
+            )
+        except ModuleNotFoundError as exc:  # pragma: no cover
+            raise unittest.SkipTest("sdwdate-gui client not importable") from exc
+
+        sent: dict = {}
+
+        async def fake_rpc(msg_bytes: bytes) -> None:
+            sent["bytes"] = msg_bytes
+
+        real_rpc = client.generic_rpc_call
+        client.generic_rpc_call = fake_rpc
+        try:
+            asyncio.run(client.set_sdwdate_status("success", "A" * 5000 + "\u00e9end"))
+        finally:
+            client.generic_rpc_call = real_rpc
+
+        payload = sent["bytes"]
+        ## Fits the server's 4096-byte frame, never overflows the 2-byte
+        ## length prefix, and carries only ASCII bytes.
+        self.assertLess(len(payload), 4096)
+        self.assertTrue(payload.isascii())
 
 
 if __name__ == "__main__":

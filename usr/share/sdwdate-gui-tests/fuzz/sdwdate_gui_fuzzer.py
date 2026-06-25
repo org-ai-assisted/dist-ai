@@ -789,6 +789,50 @@ def _d_status_markup_escaped(h, mode, repro):
     return findings
 
 
+def _d_status_display_truncated(h, mode, repro):
+    findings = []
+    c = h.new_client()
+    h.register(c, "longvm")
+    ## A message that fits the wire frame but exceeds the display cap.
+    big = "X" * 3000
+    c.set_status("success", big)
+    h.pump()
+    if kicked(c):
+        return findings  # rejected at the wire; truncation not exercised
+    h.tray.regen_menu(force_regen=True)
+    trigger_safe_actions(h, {"Show sdwdate status"})
+    h.pump()
+    window = h.tray.msg_window
+    if window is not None:
+        rendered = " ".join(label.text() for label in window.findChildren(QLabel))
+        shown = rendered.count("X")
+        if shown >= len(big):
+            findings.append(
+                Finding(
+                    mode,
+                    "UNBOUNDED_STRING",
+                    f"status message not truncated for display ({shown} shown)",
+                    repro,
+                )
+            )
+    return findings
+
+
+def _d_qubes_header_name_too_long(h, mode, repro):
+    findings = []
+    c = h.new_client()
+    ## A qrexec header carrying an over-long source-VM name must be rejected.
+    c.write(b"sdwdate-gui.Connect " + b"a" * 40 + b"\0")
+    h.pump()
+    if not kicked(c):
+        findings.append(
+            Finding(
+                mode, "UNBOUNDED_STRING", "over-long qrexec header name accepted", repro
+            )
+        )
+    return findings
+
+
 def _d_tor_before_name(h, mode, repro):
     findings = []
     c = h.new_client()
@@ -947,6 +991,8 @@ DIRECTED = [
     ("nonqubes_name_too_long", ("nonqubes",), _d_nonqubes_name_too_long),
     ("status_roundtrip", BOTH, _d_status_roundtrip),
     ("status_markup_escaped", BOTH, _d_status_markup_escaped),
+    ("status_display_truncated", BOTH, _d_status_display_truncated),
+    ("qubes_header_name_too_long", ("qubes",), _d_qubes_header_name_too_long),
     ("tor_before_name", BOTH, _d_tor_before_name),
     ("invalid_octal", BOTH, _d_invalid_octal),
     ("invalid_status", BOTH, _d_invalid_status),
