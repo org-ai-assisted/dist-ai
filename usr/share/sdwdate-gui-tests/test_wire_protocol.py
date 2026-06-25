@@ -10,7 +10,11 @@ defects found by the simulator / fuzzer (sdwdate_gui_fuzzer.py):
   * an incomplete (fragmented) command must not hang the parser,
   * a newline in a status message must not get the client kicked,
   * drop_client must be idempotent (a kick legitimately drops a client
-    twice) without a spurious "not present" warning.
+    twice) without a spurious "not present" warning,
+  * status escape decoding must be a single deterministic pass (not a
+    hash-order-dependent sequence of global replacements),
+  * an attacker-controlled status message must not inject markup into the
+    rich-text status window.
 
 These drive the real SdwdateGuiClient / SdwdateTrayIcon under the Qt
 offscreen platform plugin; no X server or qrexec is required.
@@ -112,6 +116,77 @@ class NewlineStatusTests(unittest.TestCase):
 
         self.assertEqual(kicked, [])
         self.assertEqual(client.sdwdate_msg, "a\nb")
+
+
+def _encode_status_msg(text: str) -> bytes:
+    """Encode a status message exactly as sdwdate_gui_client does."""
+    out = text.replace("\\", "\\134").replace(" ", "\\040")
+    return out.replace("\n", "\\012").encode("ascii")
+
+
+class StatusDecodeTests(unittest.TestCase):
+    """Status escape decoding must be deterministic and correct (Bug D)."""
+
+    def test_decode_roundtrip(self) -> None:
+        """Escapes decode in a single pass, independent of hash order."""
+        ## "\012\134012" on the wire: a newline escape followed by an
+        ## escaped backslash and the literal "012". A per-escape global
+        ## replace would, for some hash seeds, re-decode the formed "\012".
+        for text in ["line\nbreak", "\n\\012", "x\\134\\012y", "end \\040"]:
+            client = _named_client()
+            payload = b"set_sdwdate_status success " + _encode_status_msg(text)
+            client._SdwdateGuiClient__sock_buf = (
+                len(payload).to_bytes(2, "big") + payload
+            )
+            kicked: list[bool] = []
+            client.clientDisconnected.connect(lambda k=kicked: k.append(True))
+
+            client._SdwdateGuiClient__try_parse_commands()
+
+            self.assertEqual(kicked, [])
+            self.assertEqual(client.sdwdate_msg, text)
+
+
+class StatusMarkupEscapeTests(unittest.TestCase):
+    """A client status message must not inject markup into the GUI (Bug E)."""
+
+    def setUp(self) -> None:
+        self._real_listener = server.SdwdateGuiListener
+        server.SdwdateGuiListener = _FakeListener
+        self._real_in_qubes = server.running_in_qubes_os
+        server.running_in_qubes_os = lambda: False
+        self.tray = server.SdwdateTrayIcon()
+
+    def tearDown(self) -> None:
+        server.SdwdateGuiListener = self._real_listener
+        server.running_in_qubes_os = self._real_in_qubes
+        if self.tray.msg_window is not None:
+            self.tray.msg_window.close()
+        self.tray.deleteLater()
+        _APP.processEvents()
+
+    def test_status_message_is_html_escaped(self) -> None:
+        """Markup in a status message is escaped in the status window."""
+        from PyQt5.QtWidgets import QLabel  # pylint: disable=import-outside-toplevel
+
+        client = server.SdwdateGuiClient(QLocalSocket())
+        self.tray.accept_client(client)
+        client.client_name = "vm"
+        client.client_name_set = True
+        client.sdwdate_status = server.SdwdateStatus.SUCCESS
+        client.tor_status = server.TorStatus.ABSENT
+        client.sdwdate_msg = "<img src=x><b>FAKE</b>"
+        ## show_status_msg refuses a disconnected client; make the socket
+        ## report as connected for this white-box check.
+        client.client_socket.state = lambda: QLocalSocket.ConnectedState
+
+        self.tray.show_status_msg(server.MessageType.SDWDATE, client)
+
+        rendered = " ".join(
+            label.text() for label in self.tray.msg_window.findChildren(QLabel)
+        )
+        self.assertNotIn("<img", rendered)
+        self.assertIn("&lt;img", rendered)
 
 
 class DropClientTests(unittest.TestCase):

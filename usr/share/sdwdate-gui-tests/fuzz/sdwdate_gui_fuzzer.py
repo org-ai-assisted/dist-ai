@@ -63,7 +63,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt5.QtCore import QEventLoop, QObject, pyqtSignal
 from PyQt5.QtNetwork import QLocalServer, QLocalSocket
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QLabel
 
 ## The sdwdate_gui_server module is imported lazily in main(), AFTER
 ## coverage is started, so that its import / class / def lines are counted
@@ -733,6 +733,62 @@ def _d_nonqubes_name_too_long(h, mode, repro):
     return findings
 
 
+def _d_status_roundtrip(h, mode, repro):
+    findings = []
+    c = h.new_client()
+    h.register(c, "rtvm")
+    ## Including sequences whose decode could re-form another escape, which
+    ## an order-dependent decoder would mangle.
+    for text in [
+        "plain message",
+        "a b c",
+        "back\\slash",
+        "line1\nline2",
+        "\n\\012",
+        "x\\134\\012y",
+        "trailing \\040",
+    ]:
+        c.set_status("success", text)
+        h.pump()
+        sc = server_client(h, "rtvm")
+        if sc is not None and not kicked(c) and sc.sdwdate_msg != text:
+            findings.append(
+                Finding(
+                    mode,
+                    "DECODE_MISMATCH",
+                    f"status decode wrong: in={text!r} out={sc.sdwdate_msg!r}",
+                    repro,
+                )
+            )
+    return findings
+
+
+def _d_status_markup_escaped(h, mode, repro):
+    findings = []
+    c = h.new_client()
+    h.register(c, "mkvm")
+    ## A client is a separate, less-trusted VM; its status message must not
+    ## be able to inject markup into the rich-text status window.
+    c.set_status("success", "<marker7>inject</marker7>")
+    h.pump()
+    h.tray.regen_menu(force_regen=True)
+    trigger_safe_actions(h, {"Show sdwdate status"})
+    h.pump()
+    window = h.tray.msg_window
+    if window is not None:
+        rendered = " ".join(label.text() for label in window.findChildren(QLabel))
+        if "<marker7>" in rendered:
+            findings.append(
+                Finding(
+                    mode,
+                    "INJECTION",
+                    "unescaped client markup rendered in the status window",
+                    repro,
+                )
+            )
+    return findings
+
+
 def _d_tor_before_name(h, mode, repro):
     findings = []
     c = h.new_client()
@@ -889,6 +945,8 @@ DIRECTED = [
     ("qubes_nameless_header_then_name", ("qubes",), _d_qubes_nameless_header_then_name),
     ("qubes_nameless_header_bad_name", ("qubes",), _d_qubes_nameless_header_bad_name),
     ("nonqubes_name_too_long", ("nonqubes",), _d_nonqubes_name_too_long),
+    ("status_roundtrip", BOTH, _d_status_roundtrip),
+    ("status_markup_escaped", BOTH, _d_status_markup_escaped),
     ("tor_before_name", BOTH, _d_tor_before_name),
     ("invalid_octal", BOTH, _d_invalid_octal),
     ("invalid_status", BOTH, _d_invalid_status),
