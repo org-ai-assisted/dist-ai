@@ -1,0 +1,33 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## Runs the sdwdate-gui regression test suite. Works both when installed
+## (tests under /usr/share/sdwdate-gui-tests) and when run straight from a
+## git checkout (tests under usr/share/sdwdate-gui-tests relative to this
+## script). Any extra arguments are forwarded to "python3 -m unittest".
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+## The Qt offscreen platform plugin lets the PyQt5 test suite run without an
+## X server or a system tray.
+export QT_QPA_PLATFORM="offscreen"
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/sdwdate-gui-tests' ]; then
+  tests_dir='/usr/share/sdwdate-gui-tests'
+else
+  tests_dir="${script_dir}/../share/sdwdate-gui-tests"
+fi
+
+exec python3 -m unittest discover \
+  --start-directory "${tests_dir}" \
+  --pattern 'test_*.py' \
+  "$@"

@@ -34,3 +34,23 @@ Description: Headless DOM + asset + screenshot snapshotter for MediaWiki regress
  Ships with a committed baseline under
  /usr/share/mediawiki-dom-snapshot/baseline/ and the page list under
  /etc/mediawiki-dom-snapshot/pages.conf.
+
+Package: sdwdate-gui-tests
+Architecture: all
+Depends: ${misc:Depends},
+ python3,
+ python3-pyqt5,
+ sdwdate-gui
+Description: Regression tests for the sdwdate-gui client-server applet
+ Headless unittest suite for sdwdate-gui-server. Drives the real
+ SdwdateTrayIcon and SdwdateGuiClient classes with unconnected local
+ sockets under the Qt offscreen platform plugin, so the tests need
+ neither an X server, a system tray, nor a live qrexec connection.
+ .
+ Current coverage: the client de-duplication invariant that keeps a
+ Qubes VM from being listed more than once in the tray menu when it
+ reconnects, including the Qubes (authenticated qrexec name) and
+ non-Qubes (self-reported name) branches.
+ .
+ Run with the 'sdwdate-gui-tests' command. Requires the 'sdwdate-gui'
+ package to be installed, as the tests import its server module.

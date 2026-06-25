@@ -9,6 +9,7 @@ review: large baseline corpora, fuzz-test inputs, generated fixtures.
 | Component | Status | Location |
 |---|---|---|
 | `mediawiki-dom-snapshot` | shipping | `usr/share/mediawiki-dom-snapshot/` |
+| `sdwdate-gui-tests`      | shipping | `usr/share/sdwdate-gui-tests/` |
 | `discourse-dom-snapshot` | planned  | `usr/share/discourse-dom-snapshot/` |
 | `sdwdate-ci-fuzz`        | planned  | `usr/share/sdwdate-ci-fuzz/` |
 
@@ -28,7 +29,7 @@ can be proven not to have changed anything observably.
 Use case: detect HTML/CSS/JS/image regressions introduced by
 MediaWiki core or extension upgrades, or by site-CSS refactors.
 Capture a baseline before the change, run again after, diff. The
-pHash distance is the strongest single signal — if it stays 0 the
+pHash distance is the strongest single signal -- if it stays 0 the
 rendering is visually identical despite any pixel-level
 anti-aliasing jitter.
 
@@ -74,3 +75,31 @@ Environment overrides:
 | `TIMEOUT_MS`   | `30000` | per-page timeout |
 | `RAW_DIR`      | `/var/lib/mediawiki-dom-snapshot/raw` | raw output |
 | `FIX_DIR`      | `/var/lib/mediawiki-dom-snapshot/fixtures` | normalised |
+
+## sdwdate-gui-tests
+
+Headless `unittest` suite for `sdwdate-gui-server`, driving the real
+`SdwdateTrayIcon` and `SdwdateGuiClient` classes with unconnected local
+sockets under the Qt `offscreen` platform plugin. No X server, system
+tray, or live qrexec connection is required.
+
+Current coverage: the client de-duplication invariant that keeps a
+single Qubes VM (for example a DisposableVM `dispNNNN`) from being
+listed more than once in the tray menu when it reconnects before the
+gateway server reaps the previous connection
+(https://forums.whonix.org/t/sdwd-symbol-malefunction/23330). Both the
+Qubes branch (name authenticated by qrexec, so the stale older
+connection is dropped) and the non-Qubes branch (self-reported name, so
+the newcomer is kicked) are exercised, plus a unit test that the qrexec
+header parse emits `clientNameChanged`.
+
+### Usage
+
+```
+# run the whole suite (depends on the sdwdate-gui package being installed)
+sdwdate-gui-tests
+
+# run from a git checkout against an uninstalled sdwdate-gui tree
+PYTHONPATH=/path/to/sdwdate-gui/usr/lib/python3/dist-packages \
+  ./usr/bin/sdwdate-gui-tests
+```
