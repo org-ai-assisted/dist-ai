@@ -212,6 +212,25 @@ class StatusMarkupEscapeTests(unittest.TestCase):
         self.assertNotIn("\u202e", rendered)
         self.assertNotIn("\u200b", rendered)
 
+    def test_empty_sanitized_name_falls_back(self) -> None:
+        """A name that sanitizes to empty shows 'Unknown', not ''."""
+        from PyQt5.QtWidgets import (  # pylint: disable=import-outside-toplevel
+            QLabel,
+        )
+
+        client = server.SdwdateGuiClient(QLocalSocket())
+        self.tray.accept_client(client)
+        client.client_name = "<b></b>"  # all markup -> sanitizes to empty
+        client.client_name_set = True
+
+        self.tray.show_disconnected_msg(client)
+
+        rendered = " ".join(
+            label.text() for label in self.tray.msg_window.findChildren(QLabel)
+        )
+        self.assertIn("Client 'Unknown'", rendered)
+        self.assertNotIn("Client ''", rendered)
+
 
 class DropClientTests(unittest.TestCase):
     """drop_client must be idempotent without a spurious warning (Bug C)."""
@@ -362,6 +381,17 @@ class ResourceLimitTests(unittest.TestCase):
         named.clientDisconnected.connect(lambda: named_kicked.append(True))
         named._SdwdateGuiClient__handshake_timeout()
         self.assertEqual(named_kicked, [])
+
+    def test_generic_rpc_call_does_not_spin_on_zero_write(self) -> None:
+        """__generic_rpc_call returns instead of spinning if write() <= 0."""
+        client = server.SdwdateGuiClient(QLocalSocket())
+        client.client_socket.state = lambda: QLocalSocket.ConnectedState
+        client.client_socket.write = lambda _data: 0  # never makes progress
+
+        ## A missing guard would spin here; the watchdog turns that into a
+        ## failure instead of a hang.
+        with watchdog(2.0):
+            client._SdwdateGuiClient__generic_rpc_call(b"restart_sdwdate")
 
 
 class ClientSendTests(unittest.TestCase):
