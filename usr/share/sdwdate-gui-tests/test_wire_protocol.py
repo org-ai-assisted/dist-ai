@@ -393,6 +393,15 @@ class ResourceLimitTests(unittest.TestCase):
         with watchdog(2.0):
             client._SdwdateGuiClient__generic_rpc_call(b"restart_sdwdate")
 
+    def test_server_refuses_oversized_rpc(self) -> None:
+        """__generic_rpc_call drops a message above the frame limit."""
+        client = server.SdwdateGuiClient(QLocalSocket())
+        sent: list[bytes] = []
+        client.client_socket.state = lambda: QLocalSocket.ConnectedState
+        client.client_socket.write = lambda data: sent.append(data) or len(data)
+        client._SdwdateGuiClient__generic_rpc_call(b"x" * (server.MAX_FRAME_SIZE + 1))
+        self.assertEqual(sent, [])
+
 
 class ClientSendTests(unittest.TestCase):
     """The client bounds and ASCII-coerces what it sends (Bug, audit)."""
@@ -425,6 +434,64 @@ class ClientSendTests(unittest.TestCase):
         ## length prefix, and carries only ASCII bytes.
         self.assertLess(len(payload), 4096)
         self.assertTrue(payload.isascii())
+
+    def test_oversized_message_is_not_sent(self) -> None:
+        """generic_rpc_call drops a message above the frame limit."""
+        import asyncio  # pylint: disable=import-outside-toplevel
+
+        try:
+            from sdwdate_gui import (  # pylint: disable=import-outside-toplevel
+                sdwdate_gui_client as client,
+            )
+        except ModuleNotFoundError as exc:  # pragma: no cover
+            raise unittest.SkipTest("sdwdate-gui client not importable") from exc
+
+        sent: list[bytes] = []
+
+        class FakeWriter:  # pylint: disable=too-few-public-methods
+            """Minimal stand-in for the asyncio StreamWriter."""
+
+            def write(self, data: bytes) -> None:
+                """Record the bytes that would be sent."""
+                sent.append(data)
+
+            async def drain(self) -> None:
+                """No-op flush."""
+
+        client.GlobalData.sock_write = FakeWriter()
+        asyncio.run(client.generic_rpc_call(b"x" * (client.MAX_FRAME_SIZE + 1)))
+        self.assertEqual(sent, [])
+        asyncio.run(client.generic_rpc_call(b"ok"))
+        self.assertEqual(len(sent), 1)
+
+    def test_launchers_spawn_via_asyncio(self) -> None:
+        """RPC launchers spawn via asyncio (auto-reaped), not Popen."""
+        import asyncio  # pylint: disable=import-outside-toplevel
+
+        try:
+            from sdwdate_gui import (  # pylint: disable=import-outside-toplevel
+                sdwdate_gui_client as client,
+            )
+        except ModuleNotFoundError as exc:  # pragma: no cover
+            raise unittest.SkipTest("sdwdate-gui client not importable") from exc
+
+        calls: list[tuple] = []
+
+        async def fake_exec(*args: str):
+            calls.append(args)
+
+        real = asyncio.create_subprocess_exec
+        asyncio.create_subprocess_exec = fake_exec
+        try:
+            asyncio.run(client.restart_sdwdate())
+            asyncio.run(client.stop_sdwdate())
+        finally:
+            asyncio.create_subprocess_exec = real
+
+        self.assertEqual(
+            calls,
+            [("leaprun", "sdwdate-clock-jump"), ("leaprun", "stop-sdwdate")],
+        )
 
 
 if __name__ == "__main__":
