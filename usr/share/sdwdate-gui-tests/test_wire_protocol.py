@@ -318,6 +318,52 @@ class LengthCapTests(unittest.TestCase):
         self.assertEqual(rendered.count("X"), server.MAX_DISPLAY_MSG_LEN)
 
 
+class ResourceLimitTests(unittest.TestCase):
+    """Connection count and client handshake lifetime are bounded."""
+
+    def setUp(self) -> None:
+        self._real_listener = server.SdwdateGuiListener
+        server.SdwdateGuiListener = _FakeListener
+        ## Force non-Qubes so kick_client() does not take the Qubes
+        ## suppress-reconnect write path (which would spin on the dead
+        ## unconnected test socket whose state() is mocked as connected).
+        self._real_in_qubes = server.running_in_qubes_os
+        server.running_in_qubes_os = lambda: False
+        self.tray = server.SdwdateTrayIcon()
+
+    def tearDown(self) -> None:
+        server.SdwdateGuiListener = self._real_listener
+        server.running_in_qubes_os = self._real_in_qubes
+        self.tray.deleteLater()
+        _APP.processEvents()
+
+    def test_connection_cap_enforced(self) -> None:
+        """accept_client rejects connections beyond MAX_CLIENTS."""
+        for _ in range(server.MAX_CLIENTS + 5):
+            self.tray.accept_client(server.SdwdateGuiClient(QLocalSocket()))
+        self.assertEqual(len(self.tray.client_list), server.MAX_CLIENTS)
+
+    def test_handshake_timeout_kicks_unnamed_only(self) -> None:
+        """The handshake timeout kicks a nameless client, not a named one."""
+        unnamed = server.SdwdateGuiClient(QLocalSocket())
+        self.tray.accept_client(unnamed)
+        unnamed.client_socket.state = lambda: QLocalSocket.ConnectedState
+        kicked: list[bool] = []
+        unnamed.clientDisconnected.connect(lambda: kicked.append(True))
+        unnamed._SdwdateGuiClient__handshake_timeout()
+        self.assertEqual(kicked, [True])
+
+        named = server.SdwdateGuiClient(QLocalSocket())
+        self.tray.accept_client(named)
+        named.client_name = "vm"
+        named.client_name_set = True
+        named.client_socket.state = lambda: QLocalSocket.ConnectedState
+        named_kicked: list[bool] = []
+        named.clientDisconnected.connect(lambda: named_kicked.append(True))
+        named._SdwdateGuiClient__handshake_timeout()
+        self.assertEqual(named_kicked, [])
+
+
 class ClientSendTests(unittest.TestCase):
     """The client bounds and ASCII-coerces what it sends (Bug, audit)."""
 

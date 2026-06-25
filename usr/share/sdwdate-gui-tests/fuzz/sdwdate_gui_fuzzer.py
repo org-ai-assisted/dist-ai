@@ -818,6 +818,26 @@ def _d_status_display_truncated(h, mode, repro):
     return findings
 
 
+def _d_connection_cap(h, mode, repro):
+    findings = []
+    ## Open far more connections than any reasonable limit; a bounded server
+    ## must reject the surplus rather than accept them all.
+    attempts = 100
+    for _ in range(attempts):
+        h.new_client()  # connect without ever sending a name
+    h.pump()
+    if len(h.tray.client_list) >= attempts:
+        findings.append(
+            Finding(
+                mode,
+                "UNBOUNDED_CONNECTIONS",
+                f"all {attempts} connections accepted; no limit enforced",
+                repro,
+            )
+        )
+    return findings
+
+
 def _d_qubes_header_name_too_long(h, mode, repro):
     findings = []
     c = h.new_client()
@@ -992,6 +1012,7 @@ DIRECTED = [
     ("status_roundtrip", BOTH, _d_status_roundtrip),
     ("status_markup_escaped", BOTH, _d_status_markup_escaped),
     ("status_display_truncated", BOTH, _d_status_display_truncated),
+    ("connection_cap", BOTH, _d_connection_cap),
     ("qubes_header_name_too_long", ("qubes",), _d_qubes_header_name_too_long),
     ("tor_before_name", BOTH, _d_tor_before_name),
     ("invalid_octal", BOTH, _d_invalid_octal),
