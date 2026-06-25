@@ -148,7 +148,15 @@ class StatusDecodeTests(unittest.TestCase):
 
 
 class StatusMarkupEscapeTests(unittest.TestCase):
-    """A client status message must not inject markup into the GUI (Bug E)."""
+    """A client status message must not inject markup into the GUI (Bug E).
+
+    The fix routes the message through helper-scripts sanitize_string()
+    (strips markup, ANSI / control characters and all non-ASCII) and then
+    html.escape() (neutralises any residual rich-text metacharacter). Note
+    the wire protocol already restricts a status message to printable
+    ASCII, so the non-ASCII handling here is defense in depth: it covers
+    the display path regardless of how the message was set.
+    """
 
     def setUp(self) -> None:
         self._real_listener = server.SdwdateGuiListener
@@ -165,9 +173,11 @@ class StatusMarkupEscapeTests(unittest.TestCase):
         self.tray.deleteLater()
         _APP.processEvents()
 
-    def test_status_message_is_html_escaped(self) -> None:
-        """Markup in a status message is escaped in the status window."""
-        from PyQt5.QtWidgets import QLabel  # pylint: disable=import-outside-toplevel
+    def test_status_message_is_sanitized(self) -> None:
+        """Markup and unsafe characters are removed from the status window."""
+        from PyQt5.QtWidgets import (  # pylint: disable=import-outside-toplevel
+            QLabel,
+        )
 
         client = server.SdwdateGuiClient(QLocalSocket())
         self.tray.accept_client(client)
@@ -175,7 +185,11 @@ class StatusMarkupEscapeTests(unittest.TestCase):
         client.client_name_set = True
         client.sdwdate_status = server.SdwdateStatus.SUCCESS
         client.tor_status = server.TorStatus.ABSENT
-        client.sdwdate_msg = "<img src=x><b>FAKE</b>"
+        ## Markup, a lone metacharacter, a right-to-left override
+        ## (\u202e) and a zero-width space (\u200b). Set directly: the
+        ## wire would reject non-ASCII, so this exercises the display-layer
+        ## sanitization itself (defense in depth).
+        client.sdwdate_msg = "<img src=x onerror=1>SAFE plain < amp \u202e zw\u200b"
         ## show_status_msg refuses a disconnected client; make the socket
         ## report as connected for this white-box check.
         client.client_socket.state = lambda: QLocalSocket.ConnectedState
@@ -185,8 +199,15 @@ class StatusMarkupEscapeTests(unittest.TestCase):
         rendered = " ".join(
             label.text() for label in self.tray.msg_window.findChildren(QLabel)
         )
+        self.assertIn("SAFE", rendered)
+        ## The markup tag is gone (stripped, not rendered).
         self.assertNotIn("<img", rendered)
-        self.assertIn("&lt;img", rendered)
+        self.assertNotIn("onerror", rendered)
+        ## A residual lone metacharacter is escaped, not left bare.
+        self.assertIn("&lt;", rendered)
+        ## Non-ASCII confusables are removed.
+        self.assertNotIn("\u202e", rendered)
+        self.assertNotIn("\u200b", rendered)
 
 
 class DropClientTests(unittest.TestCase):
