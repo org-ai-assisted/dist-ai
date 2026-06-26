@@ -1,1 +1,0 @@
-#p-logo{margin:11px 0}#p-logo .mw-wiki-logo{background-size:120px;background-position:14px 1px}a.external{padding-right:0 !important;background-image:none !important}#msupload-dropzone{min-height:35px}

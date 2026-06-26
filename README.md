@@ -1,8 +1,10 @@
 # dist-ai
 
 AI-committed regression-testing tooling for the Kicksecure / Whonix
-ecosystem. Designed for content that is too high-volume for human
-review: large baseline corpora, fuzz-test inputs, generated fixtures.
+ecosystem, for content too high-volume for human review. Only the
+tooling is committed here; its large, regenerable artifacts -- baseline
+corpora, fuzz inputs, generated fixtures -- are runtime data kept in the
+operator's private cache (`~/private-cache`), never in the repo or package.
 
 ## Components
 
@@ -56,13 +58,13 @@ For each page in `pages.conf`:
 # capture + normalise against the live wiki
 mediawiki-dom-snapshot
 
-# diff a captured set against the shipped baseline
+# diff a captured set against the baseline
 mediawiki-dom-snapshot diff-baseline <tag>
 
 # diff two captured sets directly
 mediawiki-dom-snapshot diff <a> <b>
 
-# promote a captured set to be the new shipped baseline
+# promote a captured set to be the new baseline
 mediawiki-dom-snapshot baseline-promote <tag>
 ```
 
@@ -74,8 +76,9 @@ Environment overrides:
 | `PAGES_FILE`   | `/etc/mediawiki-dom-snapshot/pages.conf` | one title per line |
 | `VIEWPORT`     | `1280x800` | browser viewport |
 | `TIMEOUT_MS`   | `30000` | per-page timeout |
-| `RAW_DIR`      | `/var/lib/mediawiki-dom-snapshot/raw` | raw output |
-| `FIX_DIR`      | `/var/lib/mediawiki-dom-snapshot/fixtures` | normalised |
+| `RAW_DIR`      | `~/private-cache/mediawiki-dom-snapshot/raw` | raw output |
+| `FIX_DIR`      | `~/private-cache/mediawiki-dom-snapshot/fixtures` | normalised |
+| `BASELINE_DIR` | `~/private-cache/mediawiki-dom-snapshot/baseline` | baseline corpus |
 
 ## sdwdate-gui-tests
 

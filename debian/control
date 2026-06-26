@@ -31,9 +31,9 @@ Description: Headless DOM + asset + screenshot snapshotter for MediaWiki regress
  core / extension upgrades or by site-CSS refactors. Capture a
  baseline before the change, run again after, run the diff.
  .
- Ships with a committed baseline under
- /usr/share/mediawiki-dom-snapshot/baseline/ and the page list under
- /etc/mediawiki-dom-snapshot/pages.conf.
+ Ships the page list under /etc/mediawiki-dom-snapshot/pages.conf. The
+ baseline corpus and capture output are large, regenerable runtime data
+ kept in the operator's private cache, not in the package.
 
 Package: sdwdate-gui-tests
 Architecture: all

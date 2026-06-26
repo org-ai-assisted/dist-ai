@@ -29,7 +29,7 @@ Per (page, mode) capture writes:
 
 Env:
   BASE_URL        target wiki origin                default https://www.kicksecure.com
-  RAW_DIR         destination root                  default /var/lib/mediawiki-dom-snapshot/raw
+  RAW_DIR         destination root                  default ~/private-cache/mediawiki-dom-snapshot/raw
   PAGES_FILE      one title per line                default /etc/mediawiki-dom-snapshot/pages.conf
   TIMEOUT_MS      per-page timeout, milliseconds    default 30000
   CONCURRENCY     parallel captures                 default 4
@@ -47,7 +47,7 @@ from pathlib import Path
 from playwright.async_api import async_playwright
 
 BASE = os.environ.get("BASE_URL", "https://www.kicksecure.com").rstrip("/")
-RAW_DIR = Path(os.environ.get("RAW_DIR", "/var/lib/mediawiki-dom-snapshot/raw"))
+RAW_DIR = Path(os.environ.get("RAW_DIR", os.path.expanduser("~/private-cache/mediawiki-dom-snapshot/raw")))
 PAGES_FILE = Path(os.environ.get("PAGES_FILE", "/etc/mediawiki-dom-snapshot/pages.conf"))
 TIMEOUT_MS = int(os.environ.get("TIMEOUT_MS", "30000"))
 CONCURRENCY = int(os.environ.get("CONCURRENCY", "4"))

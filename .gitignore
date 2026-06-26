@@ -1,4 +1,7 @@
-/var/lib/mediawiki-dom-snapshot/
+# Capture corpora are runtime data in ~/private-cache, never committed. This
+# guards against an accidental BASELINE_DIR override that regenerates the old
+# in-repo location.
+usr/share/mediawiki-dom-snapshot/baseline/
 var/
 __pycache__/
 *.pyc

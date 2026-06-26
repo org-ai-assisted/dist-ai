@@ -12,10 +12,10 @@
 ##   run               capture + normalise (default)
 ##   diff <a> <b>      three-axis diff: HTML, asset manifest, screenshot
 ##                     pixels + pHash
-##   diff-baseline <t> diff the shipped baseline against fixtures/<t>/
+##   diff-baseline <t> diff the baseline against fixtures/<t>/
 ##   baseline-promote <tag>
-##                     promote fixtures/<tag> to the shipped baseline at
-##                     /usr/share/mediawiki-dom-snapshot/baseline/
+##                     promote fixtures/<tag> to the baseline at
+##                     ~/private-cache/mediawiki-dom-snapshot/baseline/
 ##
 ## Environment overrides:
 ##   BASE_URL       target wiki origin    (default https://www.kicksecure.com)
@@ -23,8 +23,9 @@
 ##   VIEWPORT       legacy single-viewport hint (mode dim VP supersedes)
 ##   TIMEOUT_MS     per-page timeout      (default 30000)
 ##   CONCURRENCY    parallel captures     (default 4)
-##   RAW_DIR        raw output dir        (default /var/lib/mediawiki-dom-snapshot/raw)
-##   FIX_DIR        normalised output dir (default /var/lib/mediawiki-dom-snapshot/fixtures)
+##   RAW_DIR        raw output dir        (default ~/private-cache/mediawiki-dom-snapshot/raw)
+##   FIX_DIR        normalised output dir (default ~/private-cache/mediawiki-dom-snapshot/fixtures)
+##   BASELINE_DIR   baseline corpus dir   (default ~/private-cache/mediawiki-dom-snapshot/baseline)
 ##   CAPTURE_MODES  comma-separated mode labels, or "all" (default).
 ##                  Mode label syntax:
 ##                    <auth>-<visit>-<vp>-<scheme>-<intent>-<browser>[-locale-XX]
@@ -71,11 +72,14 @@ readonly LIB=/usr/share/mediawiki-dom-snapshot
 [ -v BASE_URL ]   || BASE_URL=https://www.kicksecure.com
 [ -v VIEWPORT ]   || VIEWPORT=1280x800
 [ -v TIMEOUT_MS ] || TIMEOUT_MS=30000
-[ -v RAW_DIR ]    || RAW_DIR=/var/lib/mediawiki-dom-snapshot/raw
-[ -v FIX_DIR ]    || FIX_DIR=/var/lib/mediawiki-dom-snapshot/fixtures
+## Capture corpora live in the operator's private cache, NEVER in the repo or the
+## package: they are large (the shipped baseline alone was ~64M) and fully
+## regenerable -- data, not source. All overridable via these env vars.
+[ -v RAW_DIR ]      || RAW_DIR="${HOME}/private-cache/mediawiki-dom-snapshot/raw"
+[ -v FIX_DIR ]      || FIX_DIR="${HOME}/private-cache/mediawiki-dom-snapshot/fixtures"
+[ -v BASELINE_DIR ] || BASELINE_DIR="${HOME}/private-cache/mediawiki-dom-snapshot/baseline"
 export BASE_URL VIEWPORT TIMEOUT_MS PAGES_FILE RAW_DIR
-
-readonly BASELINE_DIR=/usr/share/mediawiki-dom-snapshot/baseline
+readonly BASELINE_DIR
 
 usage() {
    cat >&2 <<EOF
