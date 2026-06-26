@@ -27,6 +27,7 @@ Usage:
 """
 import hashlib
 import json
+import os
 import re
 import shutil
 import sys
@@ -356,8 +357,32 @@ RANDOM_ID_PATTERNS = (
 ##   wpEditToken      40 hex + "+\" CSRF token, rotates per session
 VOLATILE_INPUT_NAMES = {"wpStarttime", "wpEdittime", "wpEditToken"}
 
+## Cross-wiki host scrub. A before/after diff served on DIFFERENT hostnames
+## (e.g. old.whonix.org vs www.whonix.org) would otherwise flag every absolute
+## URL, canonical link, og:url and JS wgServer. Set DOM_DIFF_HOST_SCRUB to a
+## comma-separated list of hostnames; each is collapsed to a single placeholder
+## on the raw HTML (and asset/style text) so only real content deltas survive.
+## Empty (the default) is a no-op, so same-host diffs are unaffected.
+HOST_SCRUB = tuple(
+    h.strip() for h in os.environ.get("DOM_DIFF_HOST_SCRUB", "").split(",") if h.strip()
+)
+HOST_SCRUB_PLACEHOLDER = "wiki-host.invalid"
+
+
+def _scrub_hosts(text: str) -> str:
+    for host in HOST_SCRUB:
+        text = text.replace(host, HOST_SCRUB_PLACEHOLDER)
+    return text
+
+
+def _is_text_asset(content_type: str) -> bool:
+    ## Text-shaped asset bodies (CSS, JS, SVG) can embed absolute URLs to the wiki
+    ## host; binary assets (images, fonts) cannot, so they copy through untouched.
+    return content_type.startswith(("text/", "application/javascript")) or "svg" in content_type
+
 
 def normalize_html(html: str) -> str:
+    html = _scrub_hosts(html)
     ## Scrub JS-generated random ids early so the BeautifulSoup parse
     ## sees the canonical form. Safer to do this on the string than
     ## inside the tree walk since the ids appear both as attribute
@@ -688,7 +713,10 @@ def normalize_manifest(manifest: dict, page_url: str | None = None) -> dict:
             continue
         if _is_single_module_loadphp(url):
             continue
-        nurl = _normalize_url(url)
+        ## Host scrub the URL key too (no-op when DOM_DIFF_HOST_SCRUB is unset),
+        ## so a cross-wiki diff matches by path instead of flagging every asset on
+        ## the differing hostname.
+        nurl = _scrub_hosts(_normalize_url(url))
         normalised_entry = dict(entry)
         if "headers" in normalised_entry:
             normalised_entry["headers"] = _normalize_headers(normalised_entry["headers"])
@@ -954,11 +982,21 @@ def normalize_page_dir(src: Path, dst: Path) -> None:
                 ## dom.html. Run them through the same normaliser.
                 body = src_a.read_text(encoding="utf-8", errors="replace")
                 body = normalize_html(body)
+            elif HOST_SCRUB and _is_text_asset(ct):
+                ## Cross-wiki host scrub: CSS/JS/SVG bodies embed absolute URLs to
+                ## the wiki host, which would otherwise differ on every old-vs-www
+                ## diff. Only read+rewrite when scrubbing is actually active.
+                body = src_a.read_text(encoding="utf-8", errors="replace")
             else:
                 target = dst_assets / sname
                 if not target.exists():
                     shutil.copy2(src_a, target)
                 continue
+            ## Cross-wiki host scrub of the body. No-op when DOM_DIFF_HOST_SCRUB is
+            ## unset; idempotent for the text/html branch (already scrubbed via
+            ## normalize_html). This is the "(and asset/style text)" the HOST_SCRUB
+            ## note above promises.
+            body = _scrub_hosts(body)
             ## Re-hash so the manifest sha256 matches the rewritten body.
             digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
             new_name = digest + Path(sname).suffix
