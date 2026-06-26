@@ -193,14 +193,36 @@ PROFILE_CASES = {
         ("DEL_ONION", ADDR + " evil", "BLOCK"),
     ],
     "40_onion_authentication.yml": [
+        # Legitimate forms: x25519 key, optionally ClientName= and/or Flags=,
+        # in the order the profile pattern requires.
         ("onion_client_auth_add", AUTH_ADDR + " " + AUTH_KEY, "ALLOW"),
         ("onion_client_auth_add",
          AUTH_ADDR + " " + AUTH_KEY + " ClientName=alice", "ALLOW"),
         ("onion_client_auth_add",
          AUTH_ADDR + " " + AUTH_KEY + " Flags=Permanent", "ALLOW"),
         ("onion_client_auth_add",
-         AUTH_ADDR + " " + AUTH_KEY + " SETCONF Bridge=1.2.3.4", "BLOCK"),
+         AUTH_ADDR + " " + AUTH_KEY + " ClientName=alice Flags=Permanent",
+         "ALLOW"),
+        # Optional parameters in the WRONG order: ClientName= must precede
+        # Flags=, so the leftover token defeats the full match.
+        ("onion_client_auth_add",
+         AUTH_ADDR + " " + AUTH_KEY + " Flags=Permanent ClientName=alice",
+         "BLOCK"),
+        # The mandatory credential must be an x25519 key, not another
+        # algorithm or arbitrary junk, and it cannot be omitted.
+        ("onion_client_auth_add", AUTH_ADDR + " ed25519:AAAA", "BLOCK"),
         ("onion_client_auth_add", AUTH_ADDR + " evil:blob", "BLOCK"),
+        ("onion_client_auth_add", AUTH_ADDR, "BLOCK"),
+        # Argument injection: an extra control command appended directly, or
+        # appended after an accepted optional parameter, must be filtered.
+        ("onion_client_auth_add",
+         AUTH_ADDR + " " + AUTH_KEY + " SETCONF Bridge=1.2.3.4", "BLOCK"),
+        ("onion_client_auth_add",
+         AUTH_ADDR + " " + AUTH_KEY + " ClientName=alice SETCONF "
+         "DisableNetwork=0", "BLOCK"),
+        ("onion_client_auth_add",
+         AUTH_ADDR + " " + AUTH_KEY + " Flags=Permanent SETCONF "
+         "DisableNetwork=0", "BLOCK"),
     ],
     "40_onionshare.yml": [
         ("GETINFO", "onions/current", "ALLOW"),
