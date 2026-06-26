@@ -393,13 +393,6 @@ class ResourceLimitTests(unittest.TestCase):
             client._SdwdateGuiClient__generic_rpc_call(b"restart_sdwdate")
         self.assertEqual(kicked, [True])
 
-    @unittest.skip(
-        "Known upstream bug (Kicksecure/sdwdate-gui): on Qubes a write "
-        "error recurses kick_client() -> suppress_client_reconnect() -> "
-        "__generic_rpc_call() -> kick_client(). Un-skip once the maintainer "
-        "guards kick_client against re-entrancy or stops kicking from the "
-        "send loop."
-    )
     def test_write_error_no_recursion_on_qubes(self) -> None:
         """On Qubes a write error must not recurse via suppress-reconnect."""
         server.running_in_qubes_os = lambda: True
