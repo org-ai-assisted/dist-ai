@@ -183,8 +183,14 @@ no network, no real Tor.
 A full-stack end-to-end suite spins up a throwaway offline tor plus the
 real onion-grater binary plus a control client over a veth network,
 proving the deanonymization vector reaches Tor on the old profile and is
-blocked (510) on the new one. It needs `tor` and sudo (only the
-privileged setup is sudo'd, and it is cleaned up). Also shipped are a
+blocked (510) on the new one. It also drives the `onion_authentication`
+profile against real Tor: the profile's own documented
+`ONION_CLIENT_AUTH_ADD` is allowed by the filter and accepted by Tor (the
+client-auth credential is actually registered), while malformed / injection
+variants (wrong key-arg order, wrong key algorithm, missing key, a trailing
+extra keyword) are blocked with 510 and never reach Tor. It needs `tor` and
+sudo (only the privileged setup is sudo'd, and it is cleaned up). Also shipped
+are a
 real-application driver (`bitcoind_drive.py`) and adversarial probes
 (`probe_bypass.py`, `probe_rewrite.py`, `verify_dos.py`).
 

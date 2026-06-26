@@ -17,6 +17,11 @@ It proves, through the actual socket/stem/tor path:
      blocked with 510 and never reaches Tor; the legitimate form still works.
   C. onionshare ADD_ONION: the legitimate request is rewritten + proxied (Tor
      returns a ServiceID); a Flags-injection variant is blocked.
+  D. onion_authentication ONION_CLIENT_AUTH_ADD: the profile's own documented
+     command is allowed by the filter AND accepted by real Tor (250, the
+     credential is registered); malformed / injection variants (wrong key-arg
+     order, wrong key algorithm, missing key, a trailing extra keyword) are
+     blocked with 510 and never reach Tor.
 
 Requires sudo (for /etc/onion-grater.d and the veth IP) and tor. Cleans up
 after itself. Run: sudo-capable user, `python3 e2e.py`.
@@ -292,6 +297,17 @@ def tor_resetconf(key):
         ctl.close()
 
 
+def tor_direct(line):
+    # Unfiltered command straight to Tor (cookie auth), to observe Tor's own
+    # state -- e.g. whether a client-auth credential actually got registered.
+    ctl = Control(*TOR_CONTROL, cookie_hex=cookie_hex())
+    try:
+        ctl.authenticate_cookie()
+        return ctl.command(line)
+    finally:
+        ctl.close()
+
+
 def client_command(line):
     ctl = Control(VETH_IP, OG_PORT)
     try:
@@ -382,6 +398,72 @@ def scenario_onionshare():
         out.close()
 
 
+# A real, checksum-valid v3 onion address and two distinct, Tor-accepted x25519
+# client-auth keys. AUTH_ADDR / AUTH_KEY_GOOD are the profile's own documented
+# example (so this proves the shipped example is a genuinely working command);
+# AUTH_KEY_OTHER is used only in the BLOCKED attempts, so that if any of them
+# leaked past the filter the final VIEW would show the wrong key. The service
+# need not exist: ONION_CLIENT_AUTH_ADD only registers a credential, it does not
+# contact the service, so this stays offline (DisableNetwork 1) and hermetic.
+AUTH_ADDR = "m5bmcnsk64naezc26scz2xb3l3n2nd5xobsljljrpvf77tclmykn7wid"
+AUTH_KEY_GOOD = "uBKh6DGrkcFxB1adYuyKQltUDDUT9IZrOsne3nfHbHI="
+AUTH_KEY_OTHER = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
+
+
+def scenario_onion_auth():
+    print("D. onion_authentication profile -- real ONION_CLIENT_AUTH_ADD "
+          "allowed, injections blocked")
+    set_profile("40_onion_authentication.yml")
+    proc, out = start_onion_grater("onionauth")
+    try:
+        # Start from a clean slate in case a prior run left it registered.
+        tor_direct("ONION_CLIENT_AUTH_REMOVE " + AUTH_ADDR)
+
+        # The profile's own example command: allowed by the filter and accepted
+        # by real Tor -- i.e. the shipped profile permits a WORKING auth.
+        legit = client_command(
+            "ONION_CLIENT_AUTH_ADD {0} x25519:{1}".format(
+                AUTH_ADDR, AUTH_KEY_GOOD))
+        check("legit ONION_CLIENT_AUTH_ADD proxied to Tor (250)",
+              reply_code(legit) == "250")
+        view = tor_direct("ONION_CLIENT_AUTH_VIEW " + AUTH_ADDR)
+        check("credential registered in real Tor with the good key",
+              any(("x25519:" + AUTH_KEY_GOOD) in ln for ln in view))
+
+        # Malformed / injection variants: each must be blocked by the filter
+        # (510) and never reach Tor. Each carries AUTH_KEY_OTHER so a leak is
+        # detectable below.
+        blocked = [
+            ("Flags before ClientName (wrong arg order)",
+             "{0} x25519:{1} Flags=Permanent ClientName=alice".format(
+                 AUTH_ADDR, AUTH_KEY_OTHER)),
+            ("wrong key algorithm (ed25519, not x25519)",
+             "{0} ed25519:{1}".format(AUTH_ADDR, AUTH_KEY_OTHER)),
+            ("missing key blob",
+             "{0}".format(AUTH_ADDR)),
+            ("trailing extra keyword (argument injection)",
+             "{0} x25519:{1} ClientName=alice Evil=1".format(
+                 AUTH_ADDR, AUTH_KEY_OTHER)),
+        ]
+        for label, arg in blocked:
+            reply = client_command("ONION_CLIENT_AUTH_ADD " + arg)
+            check("blocked by filter (510): " + label,
+                  reply_code(reply) == "510")
+
+        # None of the blocked variants reached Tor: the registered key is still
+        # the good one, and the attack key is absent.
+        view2 = tor_direct("ONION_CLIENT_AUTH_VIEW " + AUTH_ADDR)
+        check("no blocked variant leaked to Tor "
+              "(good key still registered, attack key absent)",
+              any(("x25519:" + AUTH_KEY_GOOD) in ln for ln in view2)
+              and not any(AUTH_KEY_OTHER in ln for ln in view2))
+
+        tor_direct("ONION_CLIENT_AUTH_REMOVE " + AUTH_ADDR)
+    finally:
+        stop(proc)
+        out.close()
+
+
 def main():
     if os.path.isfile("/run/tor/control.authcookie") or \
        subprocess.run(["pgrep", "-x", "tor"],
@@ -396,6 +478,7 @@ def main():
         scenario_old_bisq()
         scenario_new_bisq()
         scenario_onionshare()
+        scenario_onion_auth()
     finally:
         stop(tor)
         cleanup_profile()
