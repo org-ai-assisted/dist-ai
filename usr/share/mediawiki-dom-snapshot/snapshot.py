@@ -54,6 +54,12 @@ CONCURRENCY = int(os.environ.get("CONCURRENCY", "4"))
 ## Opt-in SOCKS/HTTP proxy for the browser (e.g. SNAPSHOT_PROXY=socks5://127.0.0.1:9050
 ## to capture .onion targets through tor). Unset -> direct, default behaviour.
 SNAPSHOT_PROXY = os.environ.get("SNAPSHOT_PROXY") or None
+## Opt-in chromium host-resolver override (e.g.
+## SNAPSHOT_HOST_RESOLVER="MAP www.kicksecure.com 46.62.186.171") so BASE_URL keeps
+## the real hostname (correct TLS SNI + cert) while the connection is pinned to a
+## chosen IP -- the clean way to capture PRODUCTION over real TLS when /etc/hosts is
+## pinned to a stage container, or to capture stage by IP. Chromium-only.
+SNAPSHOT_HOST_RESOLVER = os.environ.get("SNAPSHOT_HOST_RESOLVER") or None
 
 WIKI_USER = os.environ.get("WIKI_USER", "")
 WIKI_PASSWORD = os.environ.get("WIKI_PASSWORD", "")
@@ -972,8 +978,13 @@ async def main() -> int:
         browser_instances = {}
         for b in browser_names:
             try:
-                browser_instances[b] = await getattr(p, b).launch(
-                    proxy={"server": SNAPSHOT_PROXY} if SNAPSHOT_PROXY else None)
+                launch_kwargs = {
+                    "proxy": {"server": SNAPSHOT_PROXY} if SNAPSHOT_PROXY else None}
+                ## --host-resolver-rules is a chromium-family flag; ignore for others.
+                if SNAPSHOT_HOST_RESOLVER and b == "chromium":
+                    launch_kwargs["args"] = [
+                        f"--host-resolver-rules={SNAPSHOT_HOST_RESOLVER}"]
+                browser_instances[b] = await getattr(p, b).launch(**launch_kwargs)
             except Exception as exc:
                 print(f"snapshot: browser '{b}' launch failed: {exc}",
                       file=sys.stderr)
