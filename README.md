@@ -10,6 +10,7 @@ review: large baseline corpora, fuzz-test inputs, generated fixtures.
 |---|---|---|
 | `mediawiki-dom-snapshot` | shipping | `usr/share/mediawiki-dom-snapshot/` |
 | `sdwdate-gui-tests`      | shipping | `usr/share/sdwdate-gui-tests/` |
+| `onion-grater-tests`     | shipping | `usr/share/onion-grater-tests/` |
 | `discourse-dom-snapshot` | planned  | `usr/share/discourse-dom-snapshot/` |
 | `sdwdate-ci-fuzz`        | planned  | `usr/share/sdwdate-ci-fuzz/` |
 
@@ -163,4 +164,36 @@ PYTHONPATH=/path/to/sdwdate-gui/usr/lib/python3/dist-packages \
   ./usr/bin/sdwdate-gui-tests
 PYTHONPATH=/path/to/sdwdate-gui/usr/lib/python3/dist-packages \
   ./usr/bin/sdwdate-gui-tests-integration
+```
+
+## onion-grater-tests
+
+Regression and reproduction tests for the onion-grater Tor control-port
+filter. The in-process unit suite imports the real onion-grater filtering
+code and replays each application's control-command sequence, asserting
+legitimate commands are allowed and argument-injection variants are
+blocked. It reproduces the fixed Bisq `SETCONF` deanonymization and the
+follow-up `DEL_ONION` / `HSFETCH` / `onion_client_auth_add` /
+`AUTHCHALLENGE` hardening, old-vs-new, through the same matcher. No root,
+no network, no real Tor.
+
+A full-stack end-to-end suite spins up a throwaway offline tor plus the
+real onion-grater binary plus a control client over a veth network,
+proving the deanonymization vector reaches Tor on the old profile and is
+blocked (510) on the new one. It needs `tor` and sudo (only the
+privileged setup is sudo'd, and it is cleaned up). Also shipped are a
+real-application driver (`bitcoind_drive.py`) and adversarial probes
+(`probe_bypass.py`, `probe_rewrite.py`, `verify_dos.py`).
+
+The tests target the installed onion-grater by default; set
+`ONION_GRATER_REPO` to run them against a derivative-maker checkout.
+
+### Usage
+
+```
+# in-process unit / reproduction suite
+onion-grater-tests
+
+# full-stack end-to-end (needs tor + sudo)
+onion-grater-tests-e2e
 ```
