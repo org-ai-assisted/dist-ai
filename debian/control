@@ -79,3 +79,38 @@ Description: Regression tests and fuzzer for the sdwdate-gui applet
  .
  All commands require the 'sdwdate-gui' package, as the tests import its
  server module.
+
+Package: onion-grater-tests
+Architecture: all
+Depends: ${misc:Depends},
+ python3,
+ python3-yaml,
+ python3-stem,
+ python3-psutil,
+ onion-grater
+Suggests: tor,
+ bitcoind
+Description: Regression and reproduction tests for the onion-grater control-port filter
+ In-process unit / reproduction suite ('onion-grater-tests' command): imports
+ the real onion-grater filtering code and replays each application's Tor
+ control command sequence, asserting legitimate commands are allowed and
+ argument-injection variants are blocked. It also reproduces the fixed Bisq
+ SETCONF deanonymization (a control-port argument-injection vulnerability) and
+ the follow-up DEL_ONION / HSFETCH / onion_client_auth_add / AUTHCHALLENGE
+ hardening, old-vs-new, through the same matcher. No root, no network, no real
+ Tor; validated non-vacuous against the pre-fix tree.
+ .
+ Full-stack end-to-end ('onion-grater-tests-e2e' command): a throwaway offline
+ tor plus the real onion-grater binary plus a control client over the veth
+ network, proving the deanonymization vector reaches Tor on the old profile and
+ is blocked (510) on the new one. Needs tor and sudo (only the privileged
+ setup steps are sudo'd, and they are cleaned up).
+ .
+ Also under /usr/share/onion-grater-tests: a real-application driver
+ (bitcoind_drive.py, which drives real bitcoind through the filter) and
+ adversarial security probes (probe_bypass.py, probe_rewrite.py, verify_dos.py)
+ that fuzz the filter for protocol bypasses and the partial-line busy-loop DoS.
+ These need sudo and tor; see the README.
+ .
+ The tests target the installed onion-grater by default; set ONION_GRATER_REPO
+ to run them against a derivative-maker checkout instead.

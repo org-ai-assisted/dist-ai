@@ -1,0 +1,28 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## Runs the onion-grater full-stack end-to-end reproduction: a throwaway offline
+## tor + the real onion-grater binary + a control client over the veth network,
+## proving the deanonymization vector reaches tor on the old profile and is
+## blocked on the new one. Needs tor and sudo (the harness sudo's only the
+## specific privileged steps -- creating /etc/onion-grater.d and the veth IP --
+## and cleans them up). Works installed or from a git checkout.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/onion-grater-tests' ]; then
+   tests_dir='/usr/share/onion-grater-tests'
+else
+   tests_dir="${script_dir}/../share/onion-grater-tests"
+fi
+
+exec python3 -- "${tests_dir}/e2e.py" "$@"

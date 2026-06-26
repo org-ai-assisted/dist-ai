@@ -1,0 +1,4 @@
+usr/bin/onion-grater-tests usr/bin/
+usr/bin/onion-grater-tests-e2e usr/bin/
+usr/share/onion-grater-tests/*.py usr/share/onion-grater-tests/
+usr/share/onion-grater-tests/README.md usr/share/onion-grater-tests/

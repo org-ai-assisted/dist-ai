@@ -1,0 +1,29 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## Runs the onion-grater in-process profile test suite: it imports the real
+## onion-grater filtering code and asserts legitimate commands are allowed and
+## argument-injection variants blocked, and reproduces the fixed deanonymization
+## bugs old-vs-new. No root, no network, no real tor. Works installed (tests
+## under /usr/share/onion-grater-tests) or from a git checkout. The fuller
+## end-to-end / probe scripts in the same directory need sudo + tor; see the
+## README and the onion-grater-tests-e2e command.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/onion-grater-tests' ]; then
+   tests_dir='/usr/share/onion-grater-tests'
+else
+   tests_dir="${script_dir}/../share/onion-grater-tests"
+fi
+
+exec python3 -- "${tests_dir}/onion_grater_profile_test.py" "$@"
