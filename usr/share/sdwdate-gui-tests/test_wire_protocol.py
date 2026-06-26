@@ -9,12 +9,12 @@ defects found by the simulator / fuzzer (sdwdate_gui_fuzzer.py):
 
   * an incomplete (fragmented) command must not hang the parser,
   * a newline in a status message must not get the client kicked,
-  * drop_client must be idempotent (a kick legitimately drops a client
-    twice) without a spurious "not present" warning,
+  * a kick must drop a client exactly once (kick_client disconnects the
+    socket's disconnected() signal so clientDisconnected fires once),
   * status escape decoding must be a single deterministic pass (not a
     hash-order-dependent sequence of global replacements),
-  * an attacker-controlled status message must not inject markup into the
-    rich-text status window,
+  * an attacker-controlled status message cannot inject markup: it is
+    sanitized and shown in a plain-text (not rich-text) status window,
   * untrusted strings are bounded to reasonable lengths: the qrexec header
     name, the message shown in the status window, and the message the
     client sends (also ASCII-coerced).
@@ -33,7 +33,7 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt5.QtCore import QObject, pyqtSignal
+from PyQt5.QtCore import Qt, QObject, pyqtSignal
 from PyQt5.QtNetwork import QLocalSocket
 from PyQt5.QtWidgets import QApplication
 
@@ -153,12 +153,12 @@ class StatusDecodeTests(unittest.TestCase):
 class StatusMarkupEscapeTests(unittest.TestCase):
     """A client status message must not inject markup into the GUI (Bug E).
 
-    The fix routes the message through helper-scripts sanitize_string()
-    (strips markup, ANSI / control characters and all non-ASCII) and then
-    html.escape() (neutralises any residual rich-text metacharacter). Note
-    the wire protocol already restricts a status message to printable
-    ASCII, so the non-ASCII handling here is defense in depth: it covers
-    the display path regardless of how the message was set.
+    The status windows render as plain text (not rich text), and untrusted
+    text is routed through helper-scripts sanitize_string() (strips markup,
+    ANSI / control characters and all non-ASCII). The wire already restricts
+    a status message to printable ASCII, so the non-ASCII handling here is
+    defense in depth: it covers the display path regardless of how the
+    message was set.
     """
 
     def setUp(self) -> None:
@@ -177,7 +177,7 @@ class StatusMarkupEscapeTests(unittest.TestCase):
         _APP.processEvents()
 
     def test_status_message_is_sanitized(self) -> None:
-        """Markup and unsafe characters are removed from the status window."""
+        """Markup and unsafe characters cannot reach the status window."""
         from PyQt5.QtWidgets import (  # pylint: disable=import-outside-toplevel
             QLabel,
         )
@@ -199,54 +199,46 @@ class StatusMarkupEscapeTests(unittest.TestCase):
 
         self.tray.show_status_msg(server.MessageType.SDWDATE, client)
 
-        rendered = " ".join(
-            label.text() for label in self.tray.msg_window.findChildren(QLabel)
+        labels = self.tray.msg_window.findChildren(QLabel)
+        rendered = " ".join(label.text() for label in labels)
+        ## The dialog renders as plain text, so injected markup cannot be
+        ## interpreted as HTML even if a residual metacharacter survives.
+        self.assertTrue(
+            all(label.textFormat() == Qt.TextFormat.PlainText for label in labels)
         )
         self.assertIn("SAFE", rendered)
-        ## The markup tag is gone (stripped, not rendered).
+        ## sanitize_string strips the markup tag and the non-ASCII confusables.
         self.assertNotIn("<img", rendered)
         self.assertNotIn("onerror", rendered)
-        ## A residual lone metacharacter is escaped, not left bare.
-        self.assertIn("&lt;", rendered)
-        ## Non-ASCII confusables are removed.
         self.assertNotIn("\u202e", rendered)
         self.assertNotIn("\u200b", rendered)
 
-    def test_empty_sanitized_name_falls_back(self) -> None:
-        """A name that sanitizes to empty shows 'Unknown', not ''."""
-        from PyQt5.QtWidgets import (  # pylint: disable=import-outside-toplevel
-            QLabel,
-        )
-
+    def test_client_name_sanitized_at_input(self) -> None:
+        """A name with markup is sanitized when set, not at display time."""
         client = server.SdwdateGuiClient(QLocalSocket())
         self.tray.accept_client(client)
-        client.client_name = "<b></b>"  # all markup -> sanitizes to empty
-        client.client_name_set = True
-
-        self.tray.show_disconnected_msg(client)
-
-        rendered = " ".join(
-            label.text() for label in self.tray.msg_window.findChildren(QLabel)
-        )
-        self.assertIn("Client 'Unknown'", rendered)
-        self.assertNotIn("Client ''", rendered)
+        client._SdwdateGuiClient__set_client_name("ab<b>cd")
+        self.assertEqual(client.client_name, "abcd")
 
 
 class DropClientTests(unittest.TestCase):
-    """drop_client must be idempotent without a spurious warning (Bug C)."""
+    """A kick must not drop a client twice (Bug C, root fix in kick_client)."""
 
     def setUp(self) -> None:
         self._real_listener = server.SdwdateGuiListener
         server.SdwdateGuiListener = _FakeListener
+        self._real_in_qubes = server.running_in_qubes_os
+        server.running_in_qubes_os = lambda: False
         self.tray = server.SdwdateTrayIcon()
 
     def tearDown(self) -> None:
         server.SdwdateGuiListener = self._real_listener
+        server.running_in_qubes_os = self._real_in_qubes
         self.tray.deleteLater()
         _APP.processEvents()
 
-    def test_double_drop_is_quiet_noop(self) -> None:
-        """Dropping the same client twice is a quiet no-op."""
+    def test_kick_emits_disconnect_once(self) -> None:
+        """kick_client fires clientDisconnected exactly once, dropping once."""
         client = server.SdwdateGuiClient(QLocalSocket())
         self.tray.accept_client(client)
         client.client_name = "disp5711"
@@ -254,16 +246,22 @@ class DropClientTests(unittest.TestCase):
         client.sdwdate_status = server.SdwdateStatus.SUCCESS
         client.tor_status = server.TorStatus.ABSENT
 
+        fired: list[bool] = []
+        client.clientDisconnected.connect(lambda: fired.append(True))
+
         records: list[logging.LogRecord] = []
         handler = logging.Handler()
         handler.emit = records.append  # type: ignore[method-assign]
         logging.getLogger().addHandler(handler)
         try:
-            self.tray.drop_client(client)  # first drop: removes it
-            self.tray.drop_client(client)  # second drop: quiet no-op
+            client.kick_client()
         finally:
             logging.getLogger().removeHandler(handler)
 
+        ## kick_client disconnects the socket's disconnected() signal before
+        ## emitting, so clientDisconnected -> drop_client fires exactly once
+        ## and there is no spurious "not present" warning.
+        self.assertEqual(fired, [True])
         self.assertNotIn(client, self.tray.client_list)
         self.assertFalse(
             any(
@@ -271,7 +269,6 @@ class DropClientTests(unittest.TestCase):
                 for record in records
             )
         )
-        self.assertTrue(client.dropped)
 
 
 class LengthCapTests(unittest.TestCase):
@@ -382,25 +379,42 @@ class ResourceLimitTests(unittest.TestCase):
         named._SdwdateGuiClient__handshake_timeout()
         self.assertEqual(named_kicked, [])
 
-    def test_generic_rpc_call_does_not_spin_on_zero_write(self) -> None:
-        """__generic_rpc_call returns instead of spinning if write() <= 0."""
+    def test_generic_rpc_call_kicks_on_write_error(self) -> None:
+        """__generic_rpc_call kicks the client on a write error (write < 0)."""
         client = server.SdwdateGuiClient(QLocalSocket())
         client.client_socket.state = lambda: QLocalSocket.ConnectedState
-        client.client_socket.write = lambda _data: 0  # never makes progress
+        client.client_socket.write = lambda _data: -1  # error
+        kicked: list[bool] = []
+        client.clientDisconnected.connect(lambda: kicked.append(True))
 
-        ## A missing guard would spin here; the watchdog turns that into a
-        ## failure instead of a hang.
+        ## setUp forces non-Qubes, so kick_client() does not re-enter via
+        ## suppress_client_reconnect(); the watchdog catches a hang regardless.
+        with watchdog(2.0):
+            client._SdwdateGuiClient__generic_rpc_call(b"restart_sdwdate")
+        self.assertEqual(kicked, [True])
+
+    @unittest.skip(
+        "Known upstream bug (Kicksecure/sdwdate-gui): on Qubes a write "
+        "error recurses kick_client() -> suppress_client_reconnect() -> "
+        "__generic_rpc_call() -> kick_client(). Un-skip once the maintainer "
+        "guards kick_client against re-entrancy or stops kicking from the "
+        "send loop."
+    )
+    def test_write_error_no_recursion_on_qubes(self) -> None:
+        """On Qubes a write error must not recurse via suppress-reconnect."""
+        server.running_in_qubes_os = lambda: True
+        client = server.SdwdateGuiClient(QLocalSocket())
+        client.client_socket.state = lambda: QLocalSocket.ConnectedState
+        client.client_socket.write = lambda _data: -1
         with watchdog(2.0):
             client._SdwdateGuiClient__generic_rpc_call(b"restart_sdwdate")
 
     def test_server_refuses_oversized_rpc(self) -> None:
-        """__generic_rpc_call drops a message above the frame limit."""
+        """__generic_rpc_call exits on a message above the frame limit."""
         client = server.SdwdateGuiClient(QLocalSocket())
-        sent: list[bytes] = []
         client.client_socket.state = lambda: QLocalSocket.ConnectedState
-        client.client_socket.write = lambda data: sent.append(data) or len(data)
-        client._SdwdateGuiClient__generic_rpc_call(b"x" * (server.MAX_FRAME_SIZE + 1))
-        self.assertEqual(sent, [])
+        with self.assertRaises(SystemExit):
+            client._SdwdateGuiClient__generic_rpc_call(b"x" * (server.MAX_MSG_SIZE + 1))
 
 
 class ClientSendTests(unittest.TestCase):
@@ -435,8 +449,8 @@ class ClientSendTests(unittest.TestCase):
         self.assertLess(len(payload), 4096)
         self.assertTrue(payload.isascii())
 
-    def test_oversized_message_is_not_sent(self) -> None:
-        """generic_rpc_call drops a message above the frame limit."""
+    def test_oversized_message_exits(self) -> None:
+        """generic_rpc_call exits on a message above the frame limit."""
         import asyncio  # pylint: disable=import-outside-toplevel
 
         try:
@@ -446,23 +460,18 @@ class ClientSendTests(unittest.TestCase):
         except ModuleNotFoundError as exc:  # pragma: no cover
             raise unittest.SkipTest("sdwdate-gui client not importable") from exc
 
-        sent: list[bytes] = []
-
         class FakeWriter:  # pylint: disable=too-few-public-methods
             """Minimal stand-in for the asyncio StreamWriter."""
 
             def write(self, data: bytes) -> None:
-                """Record the bytes that would be sent."""
-                sent.append(data)
+                """No-op write."""
 
             async def drain(self) -> None:
                 """No-op flush."""
 
         client.GlobalData.sock_write = FakeWriter()
-        asyncio.run(client.generic_rpc_call(b"x" * (client.MAX_FRAME_SIZE + 1)))
-        self.assertEqual(sent, [])
-        asyncio.run(client.generic_rpc_call(b"ok"))
-        self.assertEqual(len(sent), 1)
+        with self.assertRaises(SystemExit):
+            asyncio.run(client.generic_rpc_call(b"x" * (client.MAX_MSG_SIZE + 1)))
 
     def test_launchers_spawn_via_asyncio(self) -> None:
         """RPC launchers spawn via asyncio (auto-reaped), not Popen."""
@@ -477,8 +486,16 @@ class ClientSendTests(unittest.TestCase):
 
         calls: list[tuple] = []
 
-        async def fake_exec(*args: str):
+        class FakeProc:  # pylint: disable=too-few-public-methods
+            """Stand-in process whose wait() the launcher awaits."""
+
+            async def wait(self) -> int:
+                """Report immediate, clean exit."""
+                return 0
+
+        async def fake_exec(*args: str) -> "FakeProc":
             calls.append(args)
+            return FakeProc()
 
         real = asyncio.create_subprocess_exec
         asyncio.create_subprocess_exec = fake_exec

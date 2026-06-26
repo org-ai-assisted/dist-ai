@@ -568,12 +568,12 @@ def _d_unknown_command(h, mode, repro):
     findings = []
     c = h.new_client()
     h.register(c, "disp5711")
+    ## An unknown command is a protocol violation and must be rejected.
     c.write(FuzzClient.frame(b"definitely_not_a_command", b"arg"))
-    c.set_status("success", "still here")
     h.pump()
-    if kicked(c):
+    if not kicked(c):
         findings.append(
-            Finding(mode, "CRASH", "unknown command kicked the client", repro)
+            Finding(mode, "PROTOCOL", "unknown command not rejected", repro)
         )
     return findings
 
