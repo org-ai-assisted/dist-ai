@@ -26,7 +26,7 @@ import os
 import pwd
 import sys
 from types import ModuleType
-from typing import Any
+from typing import Any, NoReturn
 
 
 DEFAULT_REPO: str = "/home/user/derivative-maker/packages/kicksecure/privleap"
@@ -41,7 +41,15 @@ def _dist_packages_dir() -> str | None:
 
     repo: str | None = os.environ.get("PRIVLEAP_REPO")
     if repo:
-        return os.path.join(repo, "usr/lib/python3/dist-packages")
+        candidate: str = os.path.join(repo, "usr/lib/python3/dist-packages")
+        if os.path.isfile(
+            os.path.join(candidate, "privleap", "privleap.py")
+        ):
+            return candidate
+        ## PRIVLEAP_REPO was set but points at no privleap tree. Do not
+        ## silently fall back to the installed package (that would test the
+        ## wrong code); skip with a clear message instead.
+        return None
     if os.path.isfile(
         os.path.join(INSTALLED_PARENT, "privleap", "privleap.py")
     ):
@@ -52,17 +60,33 @@ def _dist_packages_dir() -> str | None:
     return None
 
 
+def _skip_not_found(what: str) -> NoReturn:
+    """
+    Exit 77 (the automake/TAP "skipped" convention) with a message that is
+    accurate whether PRIVLEAP_REPO was unset or set to a path with no privleap.
+    """
+
+    repo: str | None = os.environ.get("PRIVLEAP_REPO")
+    if repo:
+        print(
+            f"SKIP: PRIVLEAP_REPO='{repo}' contains no privleap tree "
+            "(expected usr/lib/python3/dist-packages/privleap/privleap.py)."
+        )
+    else:
+        print(f"SKIP: {what} not found.")
+        print("      set PRIVLEAP_REPO to a derivative-maker checkout root.")
+    raise SystemExit(77)
+
+
 def import_privleap() -> ModuleType:
     """
-    Import and return the privleap.privleap library module, or skip (exit 77,
-    the automake/TAP "skipped" convention) if it cannot be found.
+    Import and return the privleap.privleap library module, or skip (exit 77)
+    if it cannot be found.
     """
 
     parent: str | None = _dist_packages_dir()
     if parent is None:
-        print("SKIP: privleap library not found.")
-        print("      set PRIVLEAP_REPO to a derivative-maker checkout root.")
-        raise SystemExit(77)
+        _skip_not_found("privleap library")
     if parent not in sys.path:
         sys.path.insert(0, parent)
     return importlib.import_module("privleap.privleap")
@@ -71,21 +95,25 @@ def import_privleap() -> ModuleType:
 def import_privleapd() -> ModuleType:
     """
     Import and return the privleap.privleapd daemon module (which pulls in the
-    library too), or skip (exit 77) if it cannot be found / imported.
+    library too), or skip (exit 77) if the privleap package is not present.
+
+    A skip means "privleap is not installed / not on the path" -- NOT "the code
+    under test is broken". So only a genuinely missing privleap package maps to
+    a skip; a syntax error or a broken transitive import inside privleapd.py
+    must surface as a real failure rather than being masked as skipped.
     """
 
     parent: str | None = _dist_packages_dir()
     if parent is None:
-        print("SKIP: privleap daemon not found.")
-        print("      set PRIVLEAP_REPO to a derivative-maker checkout root.")
-        raise SystemExit(77)
+        _skip_not_found("privleap daemon")
     if parent not in sys.path:
         sys.path.insert(0, parent)
     try:
         return importlib.import_module("privleap.privleapd")
-    except Exception as exc:  # pylint: disable=broad-exception-caught
-        print(f"SKIP: could not import privleap.privleapd: {exc!r}")
-        raise SystemExit(77) from exc
+    except ModuleNotFoundError as exc:
+        if exc.name not in ("privleap", "privleap.privleapd"):
+            raise
+        _skip_not_found("privleap daemon")
 
 
 def current_username() -> str:

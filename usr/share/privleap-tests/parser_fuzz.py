@@ -185,8 +185,11 @@ def _fields_well_formed(msg: Any) -> bool:
             pl.PrivleapCommon.validate_id(name, vt.SIGNAL_NAME)
             for name in names
         )
-    ## TERMINATE / RELOAD carry no fields.
-    return True
+    ## TERMINATE and RELOAD are the only accepted types with no fields. Any
+    ## other name reaching here (the caller already gates on legal_types, so it
+    ## should not) is treated as ill-formed, so the harness fails closed if a
+    ## future field-carrying recv type is added without validation above.
+    return msg.name in ("TERMINATE", "RELOAD")
 
 
 # ---------------------------------------------------------------------------
@@ -398,19 +401,25 @@ def phase_strictness(results: Results) -> None:
     """
 
     print("== strictness note: trailing data after a zero-arg count ==")
-    raw: bytes = frame(b"TERMINATE 0 this-tail-is-ignored")
-    outcome: Outcome = drive(raw, control=False)
-    if outcome.kind == "msg" and outcome.msg.name == "TERMINATE":
-        print(
-            "  NOTE: trailing bytes after 'TERMINATE 0' are ignored and the "
-            "frame is accepted as a bare TERMINATE -- lax, not a confusion "
-            "vector (no extra fields, type, or blob can be smuggled in)."
+    ## Probe both a comm zero-arg type (TERMINATE) and a control one (RELOAD),
+    ## since they share the same zero-argument parse path.
+    for type_name, control in (("TERMINATE", False), ("RELOAD", True)):
+        raw: bytes = frame(f"{type_name} 0 this-tail-is-ignored".encode("ascii"))
+        outcome: Outcome = drive(raw, control=control)
+        if outcome.kind == "msg" and outcome.msg.name == type_name:
+            print(
+                f"  NOTE: trailing bytes after '{type_name} 0' are ignored and "
+                f"the frame is accepted as a bare {type_name} -- lax, not a "
+                "confusion vector (no extra fields, type, or blob can be "
+                "smuggled in)."
+            )
+        results.check(
+            f"zero-arg trailing data stays benign ({type_name} or reject)",
+            outcome.kind != "FINDING"
+            and (
+                outcome.kind == "reject" or outcome.msg.name == type_name
+            ),
         )
-    results.check(
-        "zero-arg trailing data stays benign (TERMINATE or clean reject)",
-        outcome.kind != "FINDING"
-        and (outcome.kind == "reject" or outcome.msg.name == "TERMINATE"),
-    )
 
 
 def phase_random(

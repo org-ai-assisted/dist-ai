@@ -333,13 +333,16 @@ def phase_random_equivalence(
     ghosts_g: list[str] = ["no-group-aaa", "no-group-bbb"]
 
     ## Candidate callers: a spread of real accounts plus a nonexistent one.
-    caller_pool: list[str] = []
-    for name in ("root", "user", "daemon", "bin", "nobody", "sys"):
-        if name in users:
-            caller_pool.append(name)
-    caller_pool.append("no-such-caller-zzz")
+    caller_pool: list[str] = [
+        name
+        for name in ("root", "user", "daemon", "bin", "nobody", "sys")
+        if name in users
+    ]
     if not caller_pool:
         caller_pool = users[:5]
+    ## Add a nonexistent caller to exercise the USER_MISSING path. Appended
+    ## after the emptiness fallback so the fallback stays reachable.
+    caller_pool.append("no-such-caller-zzz")
 
     mismatches: int = 0
     p1_violations: int = 0

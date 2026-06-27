@@ -335,12 +335,27 @@ def main() -> int:
     log_path: str = os.path.join(workdir, "privleapd.log")
     results: Results = Results()
 
+    ## When testing a checkout, the privleapd wrapper does
+    ## "from privleap import privleapd"; give the daemon subprocess the same
+    ## module path the in-process client resolved, so both sides exercise the
+    ## checkout rather than the client using the repo and the daemon silently
+    ## falling back to the installed package (or failing to start).
+    daemon_env: dict[str, str] = dict(os.environ)
+    repo: str | None = os.environ.get("PRIVLEAP_REPO")
+    if repo:
+        repo_pp: str = os.path.join(repo, "usr/lib/python3/dist-packages")
+        existing_pp: str = daemon_env.get("PYTHONPATH", "")
+        daemon_env["PYTHONPATH"] = (
+            f"{repo_pp}{os.pathsep}{existing_pp}" if existing_pp else repo_pp
+        )
+
     # pylint: disable=consider-using-with
     log_handle = open(log_path, "wb")
     proc: subprocess.Popen[bytes] = subprocess.Popen(
         [privleapd_path(), "--test"],
         stdout=log_handle,
         stderr=subprocess.STDOUT,
+        env=daemon_env,
     )
     try:
         if not wait_for_socket(sock_path):
