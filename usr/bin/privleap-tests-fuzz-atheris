@@ -1,0 +1,39 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## Runs the Atheris (libFuzzer) coverage-guided fuzz harness for privleap's
+## server-side wire-protocol parser. Unlike privleap-tests-fuzz (a hand-rolled
+## random generator with no extra dependencies), this is coverage-guided and
+## needs Atheris (pip install atheris); without it the harness skips. No root,
+## no network, no live privleapd.
+##
+## Default time budget is 60s; override with PRIVLEAP_FUZZ_SECONDS or by passing
+## libFuzzer flags directly. Any extra arguments are forwarded to the harness,
+## so a corpus directory and flags like -max_total_time=600 or
+## -runs=1000000 work as usual:
+##   privleap-tests-fuzz-atheris -max_total_time=600 ~/private-cache/privleap-corpus
+## Targets the installed privleap by default; set PRIVLEAP_REPO to fuzz a
+## derivative-maker checkout instead. Works installed or from a git checkout.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/privleap-tests' ]; then
+  tests_dir='/usr/share/privleap-tests'
+else
+  tests_dir="${script_dir}/../share/privleap-tests"
+fi
+
+if [ "$#" -eq 0 ]; then
+  set -- "-max_total_time=${PRIVLEAP_FUZZ_SECONDS:-60}"
+fi
+
+exec python3 -- "${tests_dir}/fuzz_privleap.py" "$@"

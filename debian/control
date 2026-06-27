@@ -110,6 +110,14 @@ Description: Security regression tests and fuzzers for the privleap privilege ma
  report of the privleap library. The seed is printed so any finding is
  reproducible.
  .
+ Coverage-guided fuzzer ('privleap-tests-fuzz-atheris' command, no root): an
+ Atheris (libFuzzer) harness that drives the same server-side parser but
+ mutates inputs guided by the coverage it observes inside the privleap library,
+ reaching deep parser branches a blind generator rarely hits. It follows the
+ ecosystem's fuzz_<pkg>.py convention and is ClusterFuzzLite-ready. Atheris is
+ not packaged in Debian; install it with 'pip install atheris'. Without it the
+ harness skips.
+ .
  Live-daemon end-to-end test ('privleap-tests-e2e' command, needs sudo): runs
  the real privleapd and a real comm-socket client inside a private mount
  namespace (fresh tmpfs over /run and /etc/privleap, so the host's privleapd,

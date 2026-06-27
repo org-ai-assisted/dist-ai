@@ -30,7 +30,8 @@ sequencing and config parsing.
 | Command | Root? | What it does |
 |---|---|---|
 | `privleap-tests` | no | In-process suite, fixed seed (CI): parser fuzzer + authorizer property test. |
-| `privleap-tests-fuzz` | no | Randomized parser fuzzer, random seed, coverage report. |
+| `privleap-tests-fuzz` | no | Randomized parser fuzzer (hand-rolled, no deps), random seed, coverage report. |
+| `privleap-tests-fuzz-atheris` | no | Atheris (libFuzzer) **coverage-guided** parser fuzzer. Needs `pip install atheris`. |
 | `privleap-tests-e2e` | sudo | Live `privleapd` over a real socket, in a private mount namespace (no host mutation). |
 | `privleap-tests-e2e-systemd` | sudo | Same phases against the **real `privleapd.service`** via systemd (production-faithful; mutates + restores the live service). |
 
@@ -42,7 +43,17 @@ derivative-maker checkout root (the directory containing
 
 - `pl_testlib.py` -- shared resolver (installed vs `PRIVLEAP_REPO` vs checkout),
   result accumulator, and account helpers.
-- `parser_fuzz.py` -- server-side wire-protocol fuzzer / property test.
+- `parser_fuzz.py` -- server-side wire-protocol fuzzer / property test
+  (hand-rolled random + mutational, no external dependency).
+- `fuzz_privleap.py` -- Atheris (libFuzzer) coverage-guided harness for the same
+  server-side parser, following the ecosystem `fuzz_<pkg>.py` convention
+  (`atheris.instrument_imports()` + `FuzzedDataProvider` + `TestOneInput`). It
+  feeds each input to a real server-side `get_msg()` and lets only genuine
+  findings escape (an uncontrolled exception, or an explicitly-raised type
+  confusion / ill-formed accepted message), so Atheris reports them as crashes;
+  libFuzzer's own `-timeout` catches a parser hang. Atheris is not in Debian
+  (`pip install atheris`); the harness is also ClusterFuzzLite-ready
+  (`compile_python_fuzzer fuzz_privleap.py`).
 - `authorizer_test.py` -- authorization-engine property test / fuzzer.
 - `e2e_lib.py` -- shared live-daemon setup, client, fuzz barrage, and the
   A/B/C/D security phases, used by both e2e backends.
