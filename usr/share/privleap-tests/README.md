@@ -74,7 +74,19 @@ Live daemon (`e2e.py`):
 
 - an unauthorized action's command never runs (asserted by sentinel-file
   absence), an authorized one does, and the daemon survives a malformed-frame
-  barrage with its authorization intact.
+  barrage with its authorization intact; and
+- **PAM / environment injection is impossible**: the harness plants
+  `LD_PRELOAD`, `BASH_ENV`, and marker variables in the calling user's
+  `~/.pam_environment` and in `/etc/environment` (both isolated to the
+  namespace), runs an action as root, and asserts none of them reach the
+  action's environment and the `BASH_ENV` hook is never sourced. This holds
+  because `privleapd`'s PAM stack contains no `pam_env.so`, the client
+  protocol carries no environment, and an action's environment source is
+  always the same user it runs as. (Defense-in-depth note: `shim.py` forwards
+  `privleapd`'s entire launch environment to the action without sanitising
+  systemd's `NOTIFY_SOCKET` / `WATCHDOG_*`; not exploitable -- it is not
+  attacker-controlled and `NotifyAccess=main` rejects the action's PID -- but
+  starting from a minimal env would be cleaner.)
 
 ## Reproducing a finding
 

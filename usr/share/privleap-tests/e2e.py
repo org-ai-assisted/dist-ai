@@ -38,6 +38,7 @@ daemon sees a normal unprivileged caller even though the namespace is root.
 import os
 import pwd
 import random
+import shutil
 import socket
 import subprocess
 import sys
@@ -124,6 +125,10 @@ AuthorizedUsers={user}
 [action:e2e-deny]
 Command=touch {deny_sentinel}
 AuthorizedUsers=root
+
+[action:e2e-rootenv]
+Command=env
+AuthorizedUsers={user}
 """
     conf_path: str = os.path.join(conf_dir, "e2e-test.conf")
     with open(conf_path, "w", encoding="utf-8") as handle:
@@ -141,11 +146,13 @@ def wait_for_socket(sock_path: str, timeout_s: float = 8.0) -> bool:
     return False
 
 
-def run_signal(user: str, action: str) -> list[str]:
+def run_signal(user: str, action: str) -> tuple[list[str], bytes]:
     """Drive a real SIGNAL to completion via the genuine client API; return
-    the ordered list of server message type names received."""
+    the ordered list of server message type names received and the action's
+    concatenated stdout."""
 
     names: list[str] = []
+    stdout: bytearray = bytearray()
     session: Any = pl.PrivleapSession(user, is_control_session=False)
     try:
         session.send_msg(pl.PrivleapCommClientSignalMsg(action))
@@ -155,6 +162,8 @@ def run_signal(user: str, action: str) -> list[str]:
             except (ConnectionAbortedError, OSError, ValueError):
                 break
             names.append(msg.name)
+            if msg.name == "RESULT_STDOUT":
+                stdout += msg.stdout_bytes
             if msg.name in ("RESULT_EXITCODE", "UNAUTHORIZED", "TRIGGER_ERROR"):
                 break
     finally:
@@ -162,7 +171,7 @@ def run_signal(user: str, action: str) -> list[str]:
             session.close_session()
         except Exception:  # pylint: disable=broad-exception-caught
             pass
-    return names
+    return names, bytes(stdout)
 
 
 def fuzz_socket_once(sock_path: str, payload: bytes) -> None:
@@ -230,6 +239,66 @@ def daemon_alive(proc: subprocess.Popen[bytes]) -> bool:
     return proc.poll() is None
 
 
+## Environment variables an attacker would love to smuggle into a root action:
+## a code-exec hook for non-interactive bash, the dynamic-linker preload, and a
+## plain marker. We plant them in every place an unprivileged user could write
+## that a PAM stack *might* read, then prove none of them reach the action.
+INJECT_PAMENV: str = "EVIL_PAMENV"
+INJECT_ETCENV: str = "EVIL_ETCENV"
+
+
+def setup_env_injection(user: str, workdir: str) -> tuple[set[str], str]:
+    """
+    Plant environment-injection attempts in the calling user's
+    ~/.pam_environment and in /etc/environment (both isolated to this mount
+    namespace), and a BASH_ENV hook script. Returns the set of markers that
+    were actually planted and the path of the BASH_ENV sentinel that the hook
+    would touch if bash ever sourced it.
+    """
+
+    planted: set[str] = set()
+    info: pwd.struct_passwd = pwd.getpwnam(user)
+    bashenv_script: str = os.path.join(workdir, "bashenv.sh")
+    bashenv_sentinel: str = os.path.join(workdir, "BASHENV_SOURCED")
+    with open(bashenv_script, "w", encoding="utf-8") as handle:
+        handle.write(f"#!/bin/sh\ntouch {bashenv_sentinel}\n")
+    os.chmod(bashenv_script, 0o755)
+
+    ## ~/.pam_environment, isolated by a tmpfs over the user's home.
+    home: str = info.pw_dir
+    if os.path.isdir(home):
+        try:
+            mount_tmpfs(home)
+            os.chown(home, info.pw_uid, info.pw_gid)
+            os.chmod(home, 0o700)
+            pam_env_path: str = os.path.join(home, ".pam_environment")
+            with open(pam_env_path, "w", encoding="utf-8") as handle:
+                handle.write(f"{INJECT_PAMENV} DEFAULT=injected\n")
+                handle.write(f"BASH_ENV DEFAULT={bashenv_script}\n")
+                handle.write("LD_PRELOAD DEFAULT=/nonexistent/evil.so\n")
+            os.chown(pam_env_path, info.pw_uid, info.pw_gid)
+            os.chmod(pam_env_path, 0o600)
+            planted.add("pam_environment")
+        except OSError:
+            pass
+
+    ## /etc/environment, isolated by bind-mounting a marker file over it (only
+    ## if it already exists, so the host is never altered).
+    if os.path.isfile("/etc/environment"):
+        fake_env: str = os.path.join(workdir, "fake_environment")
+        with open(fake_env, "w", encoding="utf-8") as handle:
+            handle.write(f"{INJECT_ETCENV}=injected\n")
+        try:
+            subprocess.run(
+                ["mount", "--bind", fake_env, "/etc/environment"], check=True
+            )
+            planted.add("etc_environment")
+        except subprocess.CalledProcessError:
+            pass
+
+    return planted, bashenv_sentinel
+
+
 def main() -> int:
     user: str = current_username()
     try:
@@ -260,6 +329,7 @@ def main() -> int:
     os.makedirs("/etc/privleap", exist_ok=True)
     mount_tmpfs("/etc/privleap")
     write_config("/etc/privleap/conf.d", user, workdir)
+    planted, bashenv_sentinel = setup_env_injection(user, workdir)
 
     sock_path: str = f"/run/privleapd/comm/{user}"
     log_path: str = os.path.join(workdir, "privleapd.log")
@@ -281,7 +351,7 @@ def main() -> int:
             return 2
 
         print("== A/B: authorized runs, unauthorized does NOT run ==")
-        allow_msgs: list[str] = run_signal(user, "e2e-allow")
+        allow_msgs, _ = run_signal(user, "e2e-allow")
         results.check(
             "authorized action returns TRIGGER", "TRIGGER" in allow_msgs
         )
@@ -294,7 +364,7 @@ def main() -> int:
             os.path.exists(allow_sentinel),
         )
 
-        deny_msgs: list[str] = run_signal(user, "e2e-deny")
+        deny_msgs, _ = run_signal(user, "e2e-deny")
         results.check(
             "unauthorized action returns UNAUTHORIZED",
             "UNAUTHORIZED" in deny_msgs,
@@ -323,16 +393,53 @@ def main() -> int:
         ## Re-assert A and B after fuzzing: auth state must be intact.
         if os.path.exists(allow_sentinel):
             os.unlink(allow_sentinel)
-        post_allow: list[str] = run_signal(user, "e2e-allow")
+        post_allow, _ = run_signal(user, "e2e-allow")
         results.check(
             "authorized action still works after barrage",
             "RESULT_EXITCODE" in post_allow
             and os.path.exists(allow_sentinel),
         )
-        post_deny: list[str] = run_signal(user, "e2e-deny")
+        post_deny, _ = run_signal(user, "e2e-deny")
         results.check(
             "unauthorized action still denied after barrage",
             "UNAUTHORIZED" in post_deny and not os.path.exists(deny_sentinel),
+        )
+
+        print("== D: PAM / env injection must not reach a root action ==")
+        print(f"   (planted in: {', '.join(sorted(planted)) or 'nothing'})")
+        env_msgs, env_out = run_signal(user, "e2e-rootenv")
+        env_text: str = env_out.decode("utf-8", errors="replace")
+        results.check(
+            "root action ran and returned its environment",
+            "RESULT_EXITCODE" in env_msgs and "USER=root" in env_text,
+        )
+        ## None of the attacker-planted variables may appear in the root
+        ## action's environment, and the BASH_ENV hook must never be sourced.
+        for marker in (INJECT_PAMENV, INJECT_ETCENV, "LD_PRELOAD", "BASH_ENV"):
+            present: bool = any(
+                line.split("=", 1)[0] == marker
+                for line in env_text.splitlines()
+            )
+            results.check(
+                f"injected '{marker}' absent from root action env",
+                not present,
+            )
+        results.check(
+            "attacker BASH_ENV hook was NOT sourced by the action",
+            not os.path.exists(bashenv_sentinel),
+        )
+        env_keys: list[str] = sorted(
+            {
+                line.split("=", 1)[0]
+                for line in env_text.splitlines()
+                if "=" in line
+            }
+        )
+        print(f"   root action received env keys: {', '.join(env_keys)}")
+        print(
+            "   (base env is privleapd's launch env -- here the harness's, in "
+            "production systemd's; the assertions above are specifically that "
+            "no attacker-planted variable appears in it.)"
         )
     finally:
         try:
@@ -341,6 +448,7 @@ def main() -> int:
         except Exception:  # pylint: disable=broad-exception-caught
             proc.kill()
         log_handle.close()
+        shutil.rmtree(workdir, ignore_errors=True)
 
     print()
     return results.report("live-daemon e2e")
