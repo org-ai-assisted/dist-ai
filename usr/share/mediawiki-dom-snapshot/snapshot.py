@@ -586,6 +586,27 @@ async def capture_one(
     page.on("console", _on_console)
     page.on("pageerror", _on_pageerror)
 
+    ## Network-level request failures (DNS, connection refused, aborted,
+    ## blocked) -- distinct from an HTTP error RESPONSE. A 404 is a
+    ## successful response carrying status>=400 (captured via the manifest
+    ## below); a requestfailed is a request that never produced a response.
+    ## Both feed the consolidated errors.json health channel.
+    request_failures: list[dict] = []
+
+    def _on_requestfailed(request):
+        try:
+            failure = request.failure
+        except Exception:
+            failure = None
+        request_failures.append({
+            "url": request.url,
+            "method": request.method,
+            "resource_type": request.resource_type,
+            "failure": failure or "",
+        })
+
+    page.on("requestfailed", _on_requestfailed)
+
     safe = title.replace(" ", "_")
     api = f"{BASE}/w/api.php"
 
@@ -824,6 +845,40 @@ async def capture_one(
             json.dumps(manifest_sorted, indent=2, sort_keys=True),
             encoding="utf-8",
         )
+
+        ## Consolidated health channel: HTTP error responses (status >= 400),
+        ## network request failures, and console error/warning/pageerror
+        ## events. normalize.py DROPS 4xx/5xx from manifest.json as asset-body
+        ## noise, so without this dedicated file a 404 -- e.g. a missing
+        ## favicon -- would never reach the diff. Surfacing 4xx/console errors
+        ## is part of every capture: collected here and warned on below.
+        http_errors = [
+            {"url": u, "status": e["status"]}
+            for u, e in manifest.items()
+            if isinstance(e.get("status"), int) and e["status"] >= 400
+        ]
+        console_errors = [
+            ev for ev in console_events
+            if ev.get("type") in ("error", "warning", "pageerror")
+        ]
+        errors = {
+            "http_errors": sorted(http_errors, key=lambda x: (x["status"], x["url"])),
+            "request_failures": sorted(request_failures, key=lambda x: x["url"]),
+            "console_errors": console_errors,
+        }
+        (page_dir / "errors.json").write_text(
+            json.dumps(errors, indent=2, sort_keys=True), encoding="utf-8"
+        )
+        if http_errors or request_failures:
+            sample = "; ".join(
+                f"{e['status']} {e['url']}" for e in http_errors[:4]
+            ) or "; ".join(f"FAIL {f['url']}" for f in request_failures[:4])
+            print(
+                f"  WARN  {label:<55}  "
+                f"{len(http_errors)} HTTP>=400, {len(request_failures)} req-fail: "
+                f"{sample}",
+                file=sys.stderr, flush=True,
+            )
 
         ## Snapshot every form of browser-side state. Captured AFTER
         ## the page has fully settled.

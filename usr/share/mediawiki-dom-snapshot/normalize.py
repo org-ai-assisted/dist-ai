@@ -880,6 +880,57 @@ def _normalize_console(events: list) -> list:
     return out
 
 
+def _normalize_errors(errors: dict) -> dict:
+    """Normalise the errors.json health channel.
+
+    KEEPS 4xx -- that is the entire point: a missing favicon / broken asset
+    must survive into the diff (manifest.json drops 4xx as asset-body noise).
+    Drops 5xx (backend hiccups the snapshot retry layer recovered from) and
+    racy on-demand loads, and scrubs volatile query params + hosts so the same
+    404 matches across captures. Console errors run through the shared console
+    normaliser, which drops the 5xx 'Failed to load resource' noise but keeps
+    the 404 ones.
+    """
+    def _clean(u):
+        return _scrub_hosts(_normalize_url(u))
+
+    http = []
+    seen = set()
+    for e in errors.get("http_errors") or []:
+        status = e.get("status")
+        if isinstance(status, int) and 500 <= status < 600:
+            continue
+        url = _clean(e.get("url", ""))
+        if any(p in url for p in RACY_LOAD_PATTERNS):
+            continue
+        key = (status, url)
+        if key in seen:
+            continue
+        seen.add(key)
+        http.append({"status": status, "url": url})
+    http.sort(key=lambda x: (x.get("status") or 0, x["url"]))
+
+    fails = []
+    seenf = set()
+    for f in errors.get("request_failures") or []:
+        url = _clean(f.get("url", ""))
+        if any(p in url for p in RACY_LOAD_PATTERNS):
+            continue
+        failure = f.get("failure", "")
+        key = (url, failure)
+        if key in seenf:
+            continue
+        seenf.add(key)
+        fails.append({"url": url, "failure": failure})
+    fails.sort(key=lambda x: x["url"])
+
+    return {
+        "http_errors": http,
+        "request_failures": fails,
+        "console_errors": _normalize_console(errors.get("console_errors") or []),
+    }
+
+
 def normalize_page_dir(src: Path, dst: Path) -> None:
     dst.mkdir(parents=True, exist_ok=True)
 
@@ -917,6 +968,20 @@ def normalize_page_dir(src: Path, dst: Path) -> None:
             storage = {}
         (dst / "storage.json").write_text(
             json.dumps(_normalize_storage(storage), indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
+    ## Errors (HTTP >= 400 / request failures / console errors): the health
+    ## channel. Unlike manifest.json (which drops 4xx as asset-body noise),
+    ## this KEEPS 4xx, so a missing favicon / broken asset surfaces in the diff.
+    errors_src = src / "errors.json"
+    if errors_src.exists():
+        try:
+            errs = json.loads(errors_src.read_text(encoding="utf-8"))
+        except Exception:
+            errs = {}
+        (dst / "errors.json").write_text(
+            json.dumps(_normalize_errors(errs), indent=2, sort_keys=True),
             encoding="utf-8",
         )
 

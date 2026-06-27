@@ -220,6 +220,67 @@ def diff_screenshot(base: Path, cand: Path) -> tuple[bool, int, int, int, str]:
     return is_real, pixels_diff, max_delta, phash_dist, summary
 
 
+def collect_errors(root: Path) -> list[tuple]:
+    """Walk a normalized fixture root and collect every non-empty errors.json.
+    Returns (label, http_errors, request_failures, console_errors) per
+    page/mode. Used to ALWAYS surface 4xx / request failures / console errors
+    present on a side, independent of whether they also exist on the other --
+    a 404 that regressed shows in the per-page diff axis, but a 404 present on
+    both sides would otherwise hide, and a broken asset is worth reporting
+    regardless of the baseline.
+    """
+    out: list[tuple] = []
+    if not root.is_dir():
+        return out
+    for page_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+        mode_dirs = [
+            p for p in page_dir.iterdir()
+            if p.is_dir() and (p / "errors.json").exists()
+        ]
+        targets = mode_dirs or (
+            [page_dir] if (page_dir / "errors.json").exists() else []
+        )
+        for d in targets:
+            try:
+                errs = json.loads((d / "errors.json").read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            http = errs.get("http_errors") or []
+            fails = errs.get("request_failures") or []
+            cons = [
+                e for e in (errs.get("console_errors") or [])
+                if e.get("type") in ("error", "pageerror")
+            ]
+            if http or fails or cons:
+                out.append((str(d.relative_to(root)), http, fails, cons))
+    return out
+
+
+def print_error_report(label: str, root: Path) -> int:
+    """Print every 4xx / request failure / console error present on one side.
+    Returns the number of page/modes that carried at least one such error."""
+    found = collect_errors(root)
+    if not found:
+        return 0
+    print(f"\n=== {label} errors (HTTP>=400 / request failures / console) ===")
+    for name, http, fails, cons in found:
+        parts = []
+        if http:
+            parts.append(f"{len(http)} HTTP>=400")
+        if fails:
+            parts.append(f"{len(fails)} req-fail")
+        if cons:
+            parts.append(f"{len(cons)} console-err")
+        print(f"  {name:<48} {', '.join(parts)}")
+        for e in http[:8]:
+            print(f"      HTTP {e.get('status')}  {e.get('url')}")
+        for f in fails[:8]:
+            print(f"      FAIL  {f.get('url')}  ({f.get('failure')})")
+        for e in cons[:8]:
+            print(f"      {e.get('type')}: {e.get('text')}")
+    return len(found)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("baseline")
@@ -275,6 +336,7 @@ def main() -> int:
         ss_real, pixels_diff, max_delta, phash_dist, ss_summary = diff_screenshot(b, c)
         styles_lines, styles_diff = _diff_json_file(b, c, "computed_styles.json")
         console_lines, console_diff = _diff_json_file(b, c, "console.json")
+        errors_lines, errors_diff = _diff_json_file(b, c, "errors.json")
         storage_lines, storage_diff = _diff_json_file(b, c, "storage.json")
         hover_lines, hover_diff = _diff_json_file(b, c, "hover_styles.json")
         iframes_lines, iframes_diff = _diff_json_file(b, c, "iframes_shadow.json")
@@ -285,6 +347,7 @@ def main() -> int:
             or ss_real
             or styles_lines > 0
             or console_lines > 0
+            or errors_lines > 0
             or storage_lines > 0
             or hover_lines > 0
             or iframes_lines > 0
@@ -308,6 +371,8 @@ def main() -> int:
             bits.append(f"styles+{styles_lines}")
         if console_lines > 0:
             bits.append(f"console+{console_lines}")
+        if errors_lines > 0:
+            bits.append(f"errors+{errors_lines}")
         if storage_lines > 0:
             bits.append(f"storage+{storage_lines}")
         if hover_lines > 0:
@@ -339,6 +404,9 @@ def main() -> int:
             if console_diff:
                 body_diffs_all.append("\n--- console messages diff ---")
                 body_diffs_all.append(console_diff)
+            if errors_diff:
+                body_diffs_all.append("\n--- errors (HTTP>=400 / request-fail / console) diff ---")
+                body_diffs_all.append(errors_diff)
             if storage_diff:
                 body_diffs_all.append("\n--- storage diff ---")
                 body_diffs_all.append(storage_diff)
@@ -383,6 +451,19 @@ def main() -> int:
         print("=== details ===")
         for line in body_diffs_all:
             print(line)
+
+    ## Always surface HTTP>=400 / request failures / console errors present on
+    ## either side -- a broken asset (e.g. a 404 favicon) is worth reporting
+    ## even when the baseline shares it, so it is not masked by an "identical"
+    ## verdict. Regressions (new errors on the candidate) additionally drive
+    ## the exit code via the per-page errors.json axis above.
+    print_error_report("baseline", base_root)
+    cand_err_pages = print_error_report("candidate", cand_root)
+    if cand_err_pages:
+        print(
+            f"\n=== candidate carries errors on {cand_err_pages} page/mode(s) "
+            "-- review above ==="
+        )
 
     return 1 if any_diff else 0
 
