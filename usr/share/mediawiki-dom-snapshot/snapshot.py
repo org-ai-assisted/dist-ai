@@ -646,6 +646,18 @@ async def capture_one(
         n_visits = 2 if visit == "repeat" else 1
         response = None
         for attempt in range(4):
+            ## Each retry re-fetches the whole page; discard the prior
+            ## attempt's buffered responses / console / request-failures so a
+            ## transient 5xx (or the error-page's own subresource 404s) on an
+            ## abandoned attempt cannot leak into the final manifest /
+            ## errors.json. Drain in-flight body-readers first so none writes
+            ## into the manifest AFTER the clear. clear() is in-place so the
+            ## event-handler closures keep appending to the same objects.
+            if pending_response_tasks:
+                await asyncio.gather(*pending_response_tasks, return_exceptions=True)
+            manifest.clear()
+            console_events.clear()
+            request_failures.clear()
             for _ in range(n_visits):
                 response = await page.goto(
                     url, wait_until="networkidle", timeout=TIMEOUT_MS,

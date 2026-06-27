@@ -220,6 +220,37 @@ def diff_screenshot(base: Path, cand: Path) -> tuple[bool, int, int, int, str]:
     return is_real, pixels_diff, max_delta, phash_dist, summary
 
 
+EMPTY_ERRORS = {"http_errors": [], "request_failures": [], "console_errors": []}
+
+
+def _load_errors(d: Path) -> dict:
+    p = d / "errors.json"
+    if not p.exists():
+        return dict(EMPTY_ERRORS)
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return dict(EMPTY_ERRORS)
+
+
+def _diff_errors(b: Path, c: Path) -> tuple[int, str]:
+    """Compare the errors.json health channel. Unlike the generic JSON axis, a
+    MISSING errors.json defaults to the empty-errors structure rather than
+    skipping the comparison -- so a candidate 404 against a baseline captured
+    before this channel existed (no errors.json) still registers as a
+    regression and fails the exit code, while an all-empty candidate vs a
+    missing baseline does NOT false-positive (empty == empty)."""
+    be, ce = _load_errors(b), _load_errors(c)
+    if be == ce:
+        return 0, ""
+    a_text = json.dumps(be, indent=2, sort_keys=True)
+    b_text = json.dumps(ce, indent=2, sort_keys=True)
+    diff = text_diff(
+        a_text, b_text, str(b / "errors.json"), str(c / "errors.json"), max_lines=60
+    )
+    return abs(a_text.count("\n") - b_text.count("\n")) + 1, diff
+
+
 def collect_errors(root: Path) -> list[tuple]:
     """Walk a normalized fixture root and collect every non-empty errors.json.
     Returns (label, http_errors, request_failures, console_errors) per
@@ -247,9 +278,12 @@ def collect_errors(root: Path) -> list[tuple]:
                 continue
             http = errs.get("http_errors") or []
             fails = errs.get("request_failures") or []
+            ## Include warnings: they are captured in the health channel, and
+            ## if a warning exists on BOTH sides the JSON diff is silent, so
+            ## this standalone report is the only place it surfaces.
             cons = [
                 e for e in (errs.get("console_errors") or [])
-                if e.get("type") in ("error", "pageerror")
+                if e.get("type") in ("error", "pageerror", "warning")
             ]
             if http or fails or cons:
                 out.append((str(d.relative_to(root)), http, fails, cons))
@@ -336,7 +370,7 @@ def main() -> int:
         ss_real, pixels_diff, max_delta, phash_dist, ss_summary = diff_screenshot(b, c)
         styles_lines, styles_diff = _diff_json_file(b, c, "computed_styles.json")
         console_lines, console_diff = _diff_json_file(b, c, "console.json")
-        errors_lines, errors_diff = _diff_json_file(b, c, "errors.json")
+        errors_lines, errors_diff = _diff_errors(b, c)
         storage_lines, storage_diff = _diff_json_file(b, c, "storage.json")
         hover_lines, hover_diff = _diff_json_file(b, c, "hover_styles.json")
         iframes_lines, iframes_diff = _diff_json_file(b, c, "iframes_shadow.json")

@@ -922,7 +922,7 @@ def _normalize_errors(errors: dict) -> dict:
             continue
         seenf.add(key)
         fails.append({"url": url, "failure": failure})
-    fails.sort(key=lambda x: x["url"])
+    fails.sort(key=lambda x: (x["url"], x["failure"]))
 
     return {
         "http_errors": http,
