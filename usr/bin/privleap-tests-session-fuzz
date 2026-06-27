@@ -1,0 +1,33 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## Runs the privleap stateful, concurrent SESSION fuzzer. Where the parser
+## fuzzers exercise a single frame, this hammers the live daemon's multi-message
+## session state machine and threading -- random and directed message sequences
+## (out of order, split, interleaved) from many concurrent connections --
+## asserting the daemon never crashes or wedges and that an unauthorized action
+## is never executed regardless of message ordering. Needs sudo: it re-execs
+## inside a private mount namespace (tmpfs over /run and /etc/privleap) and runs
+## a throwaway privleapd, so the host's real privleapd is never touched. Run it
+## from a NORMAL user account (not root). Arguments (--iterations, --threads,
+## --seed) are forwarded. Targets the installed privleapd by default; set
+## PRIVLEAP_REPO to test a checkout. Works installed or from a git checkout.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/privleap-tests' ]; then
+  tests_dir='/usr/share/privleap-tests'
+else
+  tests_dir="${script_dir}/../share/privleap-tests"
+fi
+
+exec python3 -- "${tests_dir}/session_fuzz.py" "$@"

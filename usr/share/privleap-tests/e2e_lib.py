@@ -27,6 +27,7 @@ differs per backend, so the check is injected).
 import os
 import random
 import socket
+import subprocess
 import sys
 import time
 from types import ModuleType
@@ -50,6 +51,62 @@ def import_target() -> ModuleType:
     global pl  # pylint: disable=global-statement
     pl = import_privleap()
     return pl
+
+
+def reexec_under_mount_namespace(inside_env_var: str) -> None:
+    """Re-exec the calling script as root in a private mount namespace via
+    sudo + unshare, unless already inside one. ``inside_env_var`` is the marker
+    each backend uses so it does not loop. Run from a normal user account."""
+
+    if os.geteuid() == 0 and os.environ.get(inside_env_var) == "1":
+        return
+    if not os.environ.get("SUDO_USER") and os.geteuid() == 0:
+        print(
+            "FATAL: run this from a normal user account, not root, so the "
+            "daemon can attribute requests to an unprivileged caller.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    env_args: list[str] = [f"{inside_env_var}=1"]
+    if os.environ.get("PRIVLEAP_REPO"):
+        env_args.append(f"PRIVLEAP_REPO={os.environ['PRIVLEAP_REPO']}")
+    cmd: list[str] = (
+        ["sudo", "unshare", "--mount", "--propagation", "private", "--", "env"]
+        + env_args
+        + [sys.executable, os.path.abspath(sys.argv[0])]
+        + sys.argv[1:]
+    )
+    os.execvp("sudo", cmd)
+
+
+def mount_tmpfs(path: str) -> None:
+    subprocess.run(["mount", "-t", "tmpfs", "tmpfs", path], check=True)
+
+
+def privleapd_path() -> str:
+    """Locate the privleapd binary (PRIVLEAP_REPO override, else installed)."""
+
+    repo: str | None = os.environ.get("PRIVLEAP_REPO")
+    if repo:
+        candidate: str = os.path.join(repo, "usr/bin/privleapd")
+        if os.path.isfile(candidate):
+            return candidate
+    return "/usr/bin/privleapd"
+
+
+def daemon_env() -> dict[str, str]:
+    """Environment for the privleapd subprocess: when testing a checkout, give
+    the daemon the same module path the in-process client resolved."""
+
+    env: dict[str, str] = dict(os.environ)
+    repo: str | None = os.environ.get("PRIVLEAP_REPO")
+    if repo:
+        repo_pp: str = os.path.join(repo, "usr/lib/python3/dist-packages")
+        existing: str = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = (
+            f"{repo_pp}{os.pathsep}{existing}" if existing else repo_pp
+        )
+    return env
 
 
 ## Variables an attacker would love to smuggle into a root action: a code-exec

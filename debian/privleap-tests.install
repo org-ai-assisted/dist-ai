@@ -1,6 +1,7 @@
 usr/bin/privleap-tests usr/bin/
 usr/bin/privleap-tests-fuzz usr/bin/
 usr/bin/privleap-tests-fuzz-atheris usr/bin/
+usr/bin/privleap-tests-session-fuzz usr/bin/
 usr/bin/privleap-tests-e2e usr/bin/
 usr/bin/privleap-tests-e2e-systemd usr/bin/
 usr/share/privleap-tests/*.py usr/share/privleap-tests/

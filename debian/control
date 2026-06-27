@@ -118,6 +118,14 @@ Description: Security regression tests and fuzzers for the privleap privilege ma
  not packaged in Debian; install it with 'pip install atheris'. Without it the
  harness skips.
  .
+ Stateful session fuzzer ('privleap-tests-session-fuzz' command, needs sudo):
+ fuzzes the live daemon's multi-message session state machine and threading,
+ not just single-frame parsing -- random and directed message sequences (out of
+ order, split, interleaved) from many concurrent connections -- asserting the
+ daemon never crashes or wedges and that an unauthorized action is never
+ executed regardless of ordering. Runs a throwaway privleapd inside a private
+ mount namespace, so the host's privleapd is untouched.
+ .
  Live-daemon end-to-end test ('privleap-tests-e2e' command, needs sudo): runs
  the real privleapd and a real comm-socket client inside a private mount
  namespace (fresh tmpfs over /run and /etc/privleap, so the host's privleapd,

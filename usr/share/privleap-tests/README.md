@@ -32,6 +32,7 @@ sequencing and config parsing.
 | `privleap-tests` | no | In-process suite, fixed seed (CI): parser fuzzer + authorizer property test. |
 | `privleap-tests-fuzz` | no | Randomized parser fuzzer (hand-rolled, no deps), random seed, coverage report. |
 | `privleap-tests-fuzz-atheris` | no | Atheris (libFuzzer) **coverage-guided** parser fuzzer. Needs `pip install atheris`. |
+| `privleap-tests-session-fuzz` | sudo | Stateful, concurrent fuzzer of the live daemon's **session state machine** (message sequences, threading), in a private mount namespace. |
 | `privleap-tests-e2e` | sudo | Live `privleapd` over a real socket, in a private mount namespace (no host mutation). |
 | `privleap-tests-e2e-systemd` | sudo | Same phases against the **real `privleapd.service`** via systemd (production-faithful; mutates + restores the live service). |
 
@@ -55,8 +56,16 @@ derivative-maker checkout root (the directory containing
   (`pip install atheris`); the harness is also ClusterFuzzLite-ready
   (`compile_python_fuzzer fuzz_privleap.py`).
 - `authorizer_test.py` -- authorization-engine property test / fuzzer.
-- `e2e_lib.py` -- shared live-daemon setup, client, fuzz barrage, and the
-  A/B/C/D security phases, used by both e2e backends.
+- `e2e_lib.py` -- shared live-daemon setup (namespace re-exec, daemon launch,
+  config), client, fuzz barrage, and the A/B/C/D security phases, used by the
+  e2e backends and the session fuzzer.
+- `session_fuzz.py` -- stateful, concurrent fuzzer of the live daemon's session
+  state machine: random and directed message sequences (TERMINATE-first,
+  signal-then-terminate, double-signal, check-then-signal, partial/interleaved
+  sends) from many worker threads at once, asserting the daemon never crashes
+  or wedges and that an unauthorized action is never executed regardless of
+  ordering. This covers the threading / session-sequencing surface the
+  single-frame parser fuzzers do not.
 - `e2e.py` -- namespace backend: privleapd as a subprocess in a private mount
   namespace (re-execs under `sudo unshare`); no host mutation.
 - `e2e_systemd.py` -- systemd backend: the real `privleapd.service` driven by

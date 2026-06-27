@@ -14,10 +14,7 @@ namespace exits -- nothing to clean up on the host. This is the safe,
 no-host-mutation backend; for a production-faithful run under the real
 privleapd.service use e2e_systemd.py (privleap-tests-e2e-systemd).
 
-The security assertions (A: authorized runs; B: unauthorized never executes;
-C: a malformed-frame barrage neither crashes nor corrupts the daemon; D: PAM /
-environment injection never reaches a root action) live in e2e_lib so both
-backends share them.
+The security assertions (A/B/C/D) live in e2e_lib so both backends share them.
 
 Run it from a NORMAL user account (not root): the harness re-execs itself under
 sudo and attributes requests to the invoking user (SUDO_USER).
@@ -38,57 +35,15 @@ HERE: str = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
-INSIDE_ENV: str = "PRIVLEAP_E2E_INSIDE"
-
-
-def reexec_under_namespace() -> None:
-    """Re-exec self as root in a private mount namespace via sudo + unshare."""
-
-    if os.geteuid() == 0 and os.environ.get(INSIDE_ENV) == "1":
-        return
-    if not os.environ.get("SUDO_USER") and os.geteuid() == 0:
-        print(
-            "FATAL: run privleap-tests-e2e from a normal user account, not "
-            "root, so the daemon can attribute requests to an unprivileged "
-            "caller.",
-            file=sys.stderr,
-        )
-        raise SystemExit(2)
-    env_args: list[str] = [f"{INSIDE_ENV}=1"]
-    if os.environ.get("PRIVLEAP_REPO"):
-        env_args.append(f"PRIVLEAP_REPO={os.environ['PRIVLEAP_REPO']}")
-    cmd: list[str] = (
-        ["sudo", "unshare", "--mount", "--propagation", "private", "--", "env"]
-        + env_args
-        + [sys.executable, os.path.abspath(__file__)]
-        + sys.argv[1:]
-    )
-    os.execvp("sudo", cmd)
-
-
-reexec_under_namespace()
-
 # pylint: disable=wrong-import-position
 import e2e_lib  # noqa: E402
+
+e2e_lib.reexec_under_mount_namespace("PRIVLEAP_E2E_INSIDE")
+
 from e2e_lib import INJECT_ETCENV, INJECT_PAMENV  # noqa: E402
 from pl_testlib import Results, current_username  # noqa: E402
 
 e2e_lib.import_target()
-
-
-def privleapd_path() -> str:
-    """Locate the privleapd binary (PRIVLEAP_REPO override, else installed)."""
-
-    repo: str | None = os.environ.get("PRIVLEAP_REPO")
-    if repo:
-        candidate: str = os.path.join(repo, "usr/bin/privleapd")
-        if os.path.isfile(candidate):
-            return candidate
-    return "/usr/bin/privleapd"
-
-
-def mount_tmpfs(path: str) -> None:
-    subprocess.run(["mount", "-t", "tmpfs", "tmpfs", path], check=True)
 
 
 def setup_env_injection(user: str, workdir: str) -> tuple[set[str], str]:
@@ -108,7 +63,7 @@ def setup_env_injection(user: str, workdir: str) -> tuple[set[str], str]:
     home: str = info.pw_dir
     if os.path.isdir(home):
         try:
-            mount_tmpfs(home)
+            e2e_lib.mount_tmpfs(home)
             os.chown(home, info.pw_uid, info.pw_gid)
             os.chmod(home, 0o700)
             pam_env_path: str = os.path.join(home, ".pam_environment")
@@ -154,16 +109,16 @@ def main() -> int:
 
     print("privleap live-daemon e2e test (namespace backend)")
     print(f"caller (attributed) account: {user} (uid {info.pw_uid})")
-    print(f"privleapd: {privleapd_path()}")
+    print(f"privleapd: {e2e_lib.privleapd_path()}")
     print("(running inside a private mount namespace; host privleapd untouched)")
     print()
 
     workdir: str = tempfile.mkdtemp(prefix="privleap-e2e-")
 
     ## Isolate /run and /etc/privleap with fresh tmpfs in this namespace only.
-    mount_tmpfs("/run")
+    e2e_lib.mount_tmpfs("/run")
     os.makedirs("/etc/privleap", exist_ok=True)
-    mount_tmpfs("/etc/privleap")
+    e2e_lib.mount_tmpfs("/etc/privleap")
     e2e_lib.write_config("/etc/privleap/conf.d", user, workdir)
     planted, bashenv_sentinel = setup_env_injection(user, workdir)
 
@@ -171,22 +126,13 @@ def main() -> int:
     log_path: str = os.path.join(workdir, "privleapd.log")
     results: Results = Results()
 
-    daemon_env: dict[str, str] = dict(os.environ)
-    repo: str | None = os.environ.get("PRIVLEAP_REPO")
-    if repo:
-        repo_pp: str = os.path.join(repo, "usr/lib/python3/dist-packages")
-        existing_pp: str = daemon_env.get("PYTHONPATH", "")
-        daemon_env["PYTHONPATH"] = (
-            f"{repo_pp}{os.pathsep}{existing_pp}" if existing_pp else repo_pp
-        )
-
     # pylint: disable=consider-using-with
     log_handle = open(log_path, "wb")
     proc: subprocess.Popen[bytes] = subprocess.Popen(
-        [privleapd_path(), "--test"],
+        [e2e_lib.privleapd_path(), "--test"],
         stdout=log_handle,
         stderr=subprocess.STDOUT,
-        env=daemon_env,
+        env=e2e_lib.daemon_env(),
     )
     try:
         if not e2e_lib.wait_for_socket(sock_path):
