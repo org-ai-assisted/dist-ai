@@ -1,0 +1,29 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## Runs the randomized privleap parser fuzzer with a random seed and (if
+## python3-coverage is installed) a line-coverage report of the privleap
+## library. No root, no network, no live privleapd. Any extra arguments
+## (e.g. --seed N, --iterations N) are forwarded to the fuzzer, so a finding
+## printed with its seed can be reproduced deterministically. Targets the
+## installed privleap by default; set PRIVLEAP_REPO to a derivative-maker
+## checkout to fuzz that tree instead. Works installed or from a git checkout.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/privleap-tests' ]; then
+  tests_dir='/usr/share/privleap-tests'
+else
+  tests_dir="${script_dir}/../share/privleap-tests"
+fi
+
+exec python3 -- "${tests_dir}/parser_fuzz.py" --iterations 20000 --coverage "$@"

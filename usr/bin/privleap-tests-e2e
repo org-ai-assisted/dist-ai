@@ -1,0 +1,33 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## Runs the privleap live-daemon end-to-end test: the REAL /usr/bin/privleapd
+## plus a REAL comm-socket client, proving an unauthorized action is never
+## executed, an authorized one is, and a malformed-frame barrage neither
+## crashes nor corrupts the daemon's authorization. Needs sudo: the harness
+## re-execs itself inside a private mount namespace with a fresh tmpfs over
+## /run and /etc/privleap, so the host's real privleapd, state, and config are
+## never touched and everything vanishes when the namespace exits. Run it from
+## a NORMAL user account (not root) so requests are attributed to an
+## unprivileged caller. Targets the installed privleapd by default; set
+## PRIVLEAP_REPO to a derivative-maker checkout to test that binary instead.
+## Works installed or from a git checkout.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/privleap-tests' ]; then
+  tests_dir='/usr/share/privleap-tests'
+else
+  tests_dir="${script_dir}/../share/privleap-tests"
+fi
+
+exec python3 -- "${tests_dir}/e2e.py" "$@"

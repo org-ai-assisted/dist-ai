@@ -1,0 +1,5 @@
+usr/bin/privleap-tests usr/bin/
+usr/bin/privleap-tests-fuzz usr/bin/
+usr/bin/privleap-tests-e2e usr/bin/
+usr/share/privleap-tests/*.py usr/share/privleap-tests/
+usr/share/privleap-tests/README.md usr/share/privleap-tests/

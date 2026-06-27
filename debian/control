@@ -80,6 +80,47 @@ Description: Regression tests and fuzzer for the sdwdate-gui applet
  All commands require the 'sdwdate-gui' package, as the tests import its
  server module.
 
+Package: privleap-tests
+Architecture: all
+Depends: ${misc:Depends},
+ python3,
+ privleap,
+ sudo
+Suggests: python3-coverage
+Description: Security regression tests and fuzzers for the privleap privilege manager
+ In-process security suite ('privleap-tests' command, no root): drives the
+ REAL privleap code over exactly the surface an unprivileged local user can
+ reach through their comm socket -- the place a bug could become arbitrary
+ code execution as root.
+ .
+ The wire-protocol parser fuzzer wraps a server-side privleap session around a
+ socketpair and feeds it a directed corpus plus random, structured, and
+ mutational byte streams, asserting that every input is either parsed into a
+ message type legal for that socket (with re-validated fields) or cleanly
+ rejected -- never a crash, a hang (watchdog-guarded), or a type confusion --
+ and that all valid traffic round-trips. The authorization-engine property
+ test builds actions from the real account database and checks authorize_user
+ against an independent reference model over thousands of randomized
+ action/caller pairs, with the explicit invariant that a non-root caller is
+ never authorized without a matching user or group rule, plus oracle-hardening
+ (an unknown action and a forbidden one are indistinguishable).
+ .
+ Randomized fuzzer ('privleap-tests-fuzz' command, no root): the same parser
+ fuzzer with a random seed and, when python3-coverage is present, a coverage
+ report of the privleap library. The seed is printed so any finding is
+ reproducible.
+ .
+ Live-daemon end-to-end test ('privleap-tests-e2e' command, needs sudo): runs
+ the real privleapd and a real comm-socket client inside a private mount
+ namespace (fresh tmpfs over /run and /etc/privleap, so the host's privleapd,
+ state, and config are never touched and cleanup is automatic), proving end to
+ end that an unauthorized action is never executed, an authorized one is, and
+ a malformed-frame barrage neither crashes nor corrupts the daemon's
+ authorization.
+ .
+ The tests target the installed privleap by default; set PRIVLEAP_REPO to run
+ them against a derivative-maker checkout instead.
+
 Package: onion-grater-tests
 Architecture: all
 Depends: ${misc:Depends},

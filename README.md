@@ -13,6 +13,7 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 | `mediawiki-dom-snapshot` | shipping | `usr/share/mediawiki-dom-snapshot/` |
 | `sdwdate-gui-tests`      | shipping | `usr/share/sdwdate-gui-tests/` |
 | `onion-grater-tests`     | shipping | `usr/share/onion-grater-tests/` |
+| `privleap-tests`         | shipping | `usr/share/privleap-tests/` |
 | `discourse-dom-snapshot` | planned  | `usr/share/discourse-dom-snapshot/` |
 | `sdwdate-ci-fuzz`        | planned  | `usr/share/sdwdate-ci-fuzz/` |
 
