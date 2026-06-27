@@ -1,0 +1,33 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## Runs the privleap live-daemon end-to-end test against the REAL
+## privleapd.service through systemd -- the production-faithful variant of
+## privleap-tests-e2e. The daemon comes up exactly as in production (Type=notify
+## handshake, watchdog, Restart=always, the real service environment and unit
+## sandboxing), so actions run with the genuine systemd env. Needs sudo. Because
+## only one privleapd can own /run/privleapd, this MUTATES the live service: it
+## stops privleapd, swaps in a throwaway test config, starts it, tests, then
+## restores the original config and restarts the service (restore is guarded by
+## atexit and signal handlers). Run it from a NORMAL user account (not root).
+## Set PRIVLEAP_REPO to drive a checkout's privleapd under systemd via a
+## transient drop-in. Works installed or from a git checkout.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/privleap-tests' ]; then
+  tests_dir='/usr/share/privleap-tests'
+else
+  tests_dir="${script_dir}/../share/privleap-tests"
+fi
+
+exec python3 -- "${tests_dir}/e2e_systemd.py" "$@"

@@ -31,7 +31,8 @@ sequencing and config parsing.
 |---|---|---|
 | `privleap-tests` | no | In-process suite, fixed seed (CI): parser fuzzer + authorizer property test. |
 | `privleap-tests-fuzz` | no | Randomized parser fuzzer, random seed, coverage report. |
-| `privleap-tests-e2e` | sudo | Live `privleapd` over a real socket, in a private mount namespace. |
+| `privleap-tests-e2e` | sudo | Live `privleapd` over a real socket, in a private mount namespace (no host mutation). |
+| `privleap-tests-e2e-systemd` | sudo | Same phases against the **real `privleapd.service`** via systemd (production-faithful; mutates + restores the live service). |
 
 All commands target the installed privleap by default. Set `PRIVLEAP_REPO` to a
 derivative-maker checkout root (the directory containing
@@ -43,7 +44,14 @@ derivative-maker checkout root (the directory containing
   result accumulator, and account helpers.
 - `parser_fuzz.py` -- server-side wire-protocol fuzzer / property test.
 - `authorizer_test.py` -- authorization-engine property test / fuzzer.
-- `e2e.py` -- live-daemon end-to-end test (re-execs under `sudo unshare`).
+- `e2e_lib.py` -- shared live-daemon setup, client, fuzz barrage, and the
+  A/B/C/D security phases, used by both e2e backends.
+- `e2e.py` -- namespace backend: privleapd as a subprocess in a private mount
+  namespace (re-execs under `sudo unshare`); no host mutation.
+- `e2e_systemd.py` -- systemd backend: the real `privleapd.service` driven by
+  systemd; mutates and restores the live service for a production-faithful run
+  (real `Type=notify` env, watchdog, unit sandboxing). Adds a phase E that
+  observes the genuine systemd service environment reaching the action.
 
 ## Invariants checked
 
@@ -70,11 +78,12 @@ Authorizer (`authorizer_test.py`):
   action/caller pairs; and oracle hardening (unknown vs forbidden action are
   both `None`).
 
-Live daemon (`e2e.py`):
+Live daemon (`e2e.py` / `e2e_systemd.py`, shared phases in `e2e_lib.py`):
 
 - an unauthorized action's command never runs (asserted by sentinel-file
   absence), an authorized one does, and the daemon survives a malformed-frame
-  barrage with its authorization intact; and
+  barrage with its authorization intact (the systemd backend detects a crash
+  even though `Restart=always` would mask it, by watching `NRestarts`); and
 - **PAM / environment injection is impossible**: the harness plants
   `LD_PRELOAD`, `BASH_ENV`, and marker variables in the calling user's
   `~/.pam_environment` and in `/etc/environment` (both isolated to the
@@ -82,11 +91,13 @@ Live daemon (`e2e.py`):
   action's environment and the `BASH_ENV` hook is never sourced. This holds
   because `privleapd`'s PAM stack contains no `pam_env.so`, the client
   protocol carries no environment, and an action's environment source is
-  always the same user it runs as. (Defense-in-depth note: `shim.py` forwards
+  always the same user it runs as. (Defense-in-depth note, confirmed by the
+  systemd backend's phase E: under the real service `shim.py` forwards
   `privleapd`'s entire launch environment to the action without sanitising
-  systemd's `NOTIFY_SOCKET` / `WATCHDOG_*`; not exploitable -- it is not
-  attacker-controlled and `NotifyAccess=main` rejects the action's PID -- but
-  starting from a minimal env would be cleaner.)
+  systemd's `NOTIFY_SOCKET` / `WATCHDOG_*` -- they are visibly present in the
+  action's env. Not exploitable: they are not attacker-controlled and
+  `NotifyAccess=main` rejects the action's PID -- but starting from a minimal
+  env would be cleaner.)
 
 ## Reproducing a finding
 

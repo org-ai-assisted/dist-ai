@@ -120,6 +120,15 @@ Description: Security regression tests and fuzzers for the privleap privilege ma
  user's ~/.pam_environment and /etc/environment (LD_PRELOAD, BASH_ENV, marker
  variables) never reaches a root action.
  .
+ Production-faithful variant ('privleap-tests-e2e-systemd' command, needs
+ sudo): the same security phases against the REAL privleapd.service driven by
+ systemd, so the daemon comes up exactly as in production (Type=notify
+ handshake, watchdog, the genuine service environment and unit sandboxing) and
+ actions run with the real systemd env. It mutates the live service (stop, swap
+ config, start) and restores it on exit via atexit and signal handlers; the
+ environment-injection check uses the real ~/.pam_environment and
+ /etc/environment, backed up and restored.
+ .
  The tests target the installed privleap by default; set PRIVLEAP_REPO to run
  them against a derivative-maker checkout instead.
 
