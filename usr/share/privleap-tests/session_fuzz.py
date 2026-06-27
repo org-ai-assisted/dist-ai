@@ -263,9 +263,18 @@ def main() -> int:
             f"== fuzzing {args.iterations} sessions across {args.threads} "
             "concurrent workers =="
         )
-        per: int = max(1, args.iterations // args.threads)
+        ## Distribute exactly args.iterations sessions across the workers so
+        ## the reported count is honest even when it does not divide evenly.
+        base: int
+        remainder: int
+        base, remainder = divmod(args.iterations, args.threads)
         workers: list[_Worker] = [
-            _Worker(sock_path, per, seed ^ (i * 0x9E3779B1), alive)
+            _Worker(
+                sock_path,
+                base + (1 if i < remainder else 0),
+                seed ^ (i * 0x9E3779B1),
+                alive,
+            )
             for i in range(args.threads)
         ]
         died_during: bool = False
@@ -302,6 +311,13 @@ def main() -> int:
         ## Authorization state must be intact: an authorized action still runs,
         ## an unauthorized one is still denied.
         print("== post-fuzz: authorization state intact ==")
+        ## The barrage itself may have run e2e-allow, so clear the sentinel
+        ## first; otherwise its mere existence would not prove the post-fuzz
+        ## run actually executed the command.
+        try:
+            os.unlink(allow_sentinel)
+        except FileNotFoundError:
+            pass
         post_allow, _ = e2e_lib.run_signal(user, "e2e-allow")
         results.check(
             "authorized action still works after fuzzing",

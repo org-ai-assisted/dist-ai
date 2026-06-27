@@ -58,15 +58,19 @@ def reexec_under_mount_namespace(inside_env_var: str) -> None:
     sudo + unshare, unless already inside one. ``inside_env_var`` is the marker
     each backend uses so it does not loop. Run from a normal user account."""
 
-    if os.geteuid() == 0 and os.environ.get(inside_env_var) == "1":
-        return
-    if not os.environ.get("SUDO_USER") and os.geteuid() == 0:
-        print(
-            "FATAL: run this from a normal user account, not root, so the "
-            "daemon can attribute requests to an unprivileged caller.",
-            file=sys.stderr,
-        )
-        raise SystemExit(2)
+    if os.geteuid() == 0:
+        ## Validate we were entered via sudo from a normal user BEFORE trusting
+        ## the loop marker, so a stale/exported marker cannot let the suite run
+        ## directly as root and skip this guard.
+        if not os.environ.get("SUDO_USER"):
+            print(
+                "FATAL: run this from a normal user account, not root, so the "
+                "daemon can attribute requests to an unprivileged caller.",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        if os.environ.get(inside_env_var) == "1":
+            return
     env_args: list[str] = [f"{inside_env_var}=1"]
     if os.environ.get("PRIVLEAP_REPO"):
         env_args.append(f"PRIVLEAP_REPO={os.environ['PRIVLEAP_REPO']}")
