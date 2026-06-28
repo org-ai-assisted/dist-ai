@@ -1,0 +1,2 @@
+usr/bin/genmkfile-tests usr/bin/
+usr/share/genmkfile-tests/*.sh usr/share/genmkfile-tests/

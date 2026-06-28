@@ -1,0 +1,32 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## Runs the genmkfile dispatch regression suite: it drives the real
+## genmkfile against a throwaway minimal Debian source package and
+## asserts that deb-cleanup and reprepro-{remove,add} are routed through
+## make_get_variables (not the cheap dependencies-only path), guarding
+## the fix for the "make_upstream_tarball_relative_path: unbound
+## variable" abort. No root, no network, no real reprepro. Works
+## installed (tests under /usr/share/genmkfile-tests) or from a git
+## checkout. Set GENMKFILE_BIN to pick the genmkfile under test;
+## otherwise the suite uses genmkfile from PATH, then a derivative-maker
+## checkout under ~/derivative-maker.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/genmkfile-tests' ]; then
+   tests_dir='/usr/share/genmkfile-tests'
+else
+   tests_dir="${script_dir}/../share/genmkfile-tests"
+fi
+
+exec bash -- "${tests_dir}/deb_cleanup_dispatch_test.sh" "$@"

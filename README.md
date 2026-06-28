@@ -14,6 +14,7 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 | `sdwdate-gui-tests`      | shipping | `usr/share/sdwdate-gui-tests/` |
 | `onion-grater-tests`     | shipping | `usr/share/onion-grater-tests/` |
 | `privleap-tests`         | shipping | `usr/share/privleap-tests/` |
+| `genmkfile-tests`        | shipping | `usr/share/genmkfile-tests/` |
 | `discourse-dom-snapshot` | planned  | `usr/share/discourse-dom-snapshot/` |
 | `sdwdate-ci-fuzz`        | planned  | `usr/share/sdwdate-ci-fuzz/` |
 
@@ -206,4 +207,38 @@ onion-grater-tests
 
 # full-stack end-to-end (needs tor + sudo)
 onion-grater-tests-e2e
+```
+
+## genmkfile-tests
+
+Regression tests for the `genmkfile` build-helper's target dispatch.
+`genmkfile`'s main dispatch splits build-machine setup into a cheap
+"dependencies only" path (`make_get_dependencies`) and the full "version
+info" path (`make_get_variables`). Only `deb-build-dep` / `deb-run-dep` /
+`deb-all-dep` may take the cheap path; any target that touches a variable
+set by `make_get_variables` (the upstream/debian tarball paths, the
+`.dsc` / `.changes` names, `make_package_list`) must take the full path.
+
+Two commits once mis-classified `deb-cleanup`, `reprepro-remove` and
+`reprepro-add` into the cheap group, aborting them with e.g.
+`make_upstream_tarball_relative_path: unbound variable` (and the
+equivalent `make_main_changes_file` / `make_package_list` failures for the
+reprepro targets). The suite drives the real `genmkfile` against a
+throwaway minimal Debian source package and asserts each of the three
+targets is routed through `make_get_variables` and never trips an "unbound
+variable" error. No root, no network, no real reprepro (a stub wrapper
+stands in). Validated non-vacuous against the pre-fix tree.
+
+The suite targets `genmkfile` from `PATH` by default; set `GENMKFILE_BIN`
+to test a specific `genmkfile`, or it falls back to a derivative-maker
+checkout under `~/derivative-maker`.
+
+### Usage
+
+```
+# dispatch regression suite
+genmkfile-tests
+
+# test a specific genmkfile binary
+GENMKFILE_BIN=/path/to/genmkfile genmkfile-tests
 ```
