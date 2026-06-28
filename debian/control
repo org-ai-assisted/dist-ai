@@ -86,7 +86,9 @@ Depends: ${misc:Depends},
  python3,
  privleap,
  sudo
-Suggests: python3-coverage
+Suggests: python3-coverage,
+ python3-pytest,
+ python3-hypothesis
 Description: Security regression tests and fuzzers for the privleap privilege manager
  In-process security suite ('privleap-tests' command, no root): drives the
  REAL privleap code over exactly the surface an unprivileged local user can
@@ -103,7 +105,10 @@ Description: Security regression tests and fuzzers for the privleap privilege ma
  against an independent reference model over thousands of randomized
  action/caller pairs, with the explicit invariant that a non-root caller is
  never authorized without a matching user or group rule, plus oracle-hardening
- (an unknown action and a forbidden one are indistinguishable).
+ (an unknown action and a forbidden one are indistinguishable). When
+ python3-pytest and python3-hypothesis are present it also runs Hypothesis
+ property tests of the pure parser helpers (argument-count codec round-trip,
+ validate_id charset/length invariants).
  .
  Randomized fuzzer ('privleap-tests-fuzz' command, no root): the same parser
  fuzzer with a random seed and, when python3-coverage is present, a coverage

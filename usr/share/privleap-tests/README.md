@@ -44,6 +44,10 @@ derivative-maker checkout root (the directory containing
 
 - `pl_testlib.py` -- shared resolver (installed vs `PRIVLEAP_REPO` vs checkout),
   result accumulator, and account helpers.
+- `test_property.py` -- Hypothesis property tests of the pure parser helpers
+  (argument-count codec round-trip; `validate_id` charset/length invariants).
+  Run by the `privleap-tests` launcher via pytest when `python3-pytest` and
+  `python3-hypothesis` are present, skipped cleanly otherwise.
 - `parser_fuzz.py` -- server-side wire-protocol fuzzer / property test
   (hand-rolled random + mutational, no external dependency).
 - `fuzz_privleap.py` -- Atheris (libFuzzer) coverage-guided harness for the same
@@ -123,3 +127,13 @@ Live daemon (`e2e.py` / `e2e_systemd.py`, shared phases in `e2e_lib.py`):
 
 The randomized harnesses print their seed. Re-run with
 `--seed <N> --iterations <M>` to reproduce deterministically.
+
+## Where this lives
+
+All of the privleap fuzz/property/e2e tooling lives here in `dist-ai` (the
+AI-assisted test-tooling package), not in the privleap source package. The
+privleap repo (a derivative-maker submodule) carries only a minimal GitHub CI
+workflow that checks out this package and runs these harnesses against a PR
+(`PRIVLEAP_REPO=<checkout>`). Keep it that way: new harness/property/fuzz code
+goes here; the product packages stay clean.
+

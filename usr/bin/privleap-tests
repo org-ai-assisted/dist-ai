@@ -45,11 +45,34 @@ run_one() {
   return 0
 }
 
+run_pytest() {
+  ## Run a Hypothesis property-test file via pytest. Treats a clean pass or an
+  ## all-skipped run as non-fatal; pytest exit 5 (no tests collected) is also
+  ## a skip. python3-pytest / python3-hypothesis are optional.
+  if ! python3 -c 'import pytest' 2>/dev/null; then
+    echo 'SKIP: python3-pytest not installed.'
+    return 0
+  fi
+  local rc=0
+  python3 -m pytest --import-mode=importlib -q "$@" || rc=$?
+  if [ "${rc}" = '0' ]; then
+    saw_pass=1
+  elif [ "${rc}" = '5' ]; then
+    : ## no tests collected -> treat as skip
+  else
+    overall=1
+  fi
+  return 0
+}
+
 echo '################ parser fuzzer (in-process) ################'
 run_one "${tests_dir}/parser_fuzz.py" --seed 1 --iterations 4000
 echo
 echo '############ authorization-engine property test ###########'
 run_one "${tests_dir}/authorizer_test.py" --seed 1 --iterations 3000
+echo
+echo '############### Hypothesis property tests ##################'
+run_pytest "${tests_dir}/test_property.py"
 
 echo
 if [ "${overall}" != '0' ]; then
