@@ -51,6 +51,14 @@ RAW_DIR = Path(os.environ.get("RAW_DIR", os.path.expanduser("~/private-cache/med
 PAGES_FILE = Path(os.environ.get("PAGES_FILE", "/etc/mediawiki-dom-snapshot/pages.conf"))
 TIMEOUT_MS = int(os.environ.get("TIMEOUT_MS", "30000"))
 CONCURRENCY = int(os.environ.get("CONCURRENCY", "4"))
+## JS_ENABLED=0 captures with JavaScript DISABLED (a no-JS / graceful-degradation
+## corpus: capture one corpus with JS on and one with JS off into separate RAW_DIR
+## /FIX_DIR, then diff). page.evaluate / add_style_tag / wait_for_function are all
+## JS-engine-backed and raise when JS is off, so they are neutralised per page (see
+## the capture function); the capture still yields the served HTML + screenshot --
+## the meaningful no-JS signal -- while JS-only artefacts (storage, computed styles,
+## splide/lazy determinism) are simply absent.
+JS_ENABLED = os.environ.get("JS_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off")
 ## Opt-in SOCKS/HTTP proxy for the browser (e.g. SNAPSHOT_PROXY=socks5://127.0.0.1:9050
 ## to capture .onion targets through tor). Unset -> direct, default behaviour.
 SNAPSHOT_PROXY = os.environ.get("SNAPSHOT_PROXY") or None
@@ -443,6 +451,8 @@ async def capture_storage(page, context) -> dict:
     database names. The Set of databases matters even when their
     content is opaque.
     """
+    if not JS_ENABLED:
+        return {}  ## no-JS: storage APIs aren't exercised; nothing to snapshot
     storage = await page.evaluate("""
         () => {
             const ls = {};
@@ -513,6 +523,7 @@ async def capture_one(
     ctx_kwargs = dict(
         viewport={"width": W, "height": H},
         ignore_https_errors=True,
+        java_script_enabled=JS_ENABLED,
         color_scheme=ctx_scheme,
         locale=locale or DEFAULT_LOCALE,
         user_agent=(
@@ -552,6 +563,17 @@ async def capture_one(
             raise RuntimeError(f"login failed for mode {label}")
 
     page = await context.new_page()
+    ## See JS_ENABLED: with JS off, the JS-engine-backed calls (evaluate,
+    ## add_style_tag, wait_for_function) raise. Neutralise them to no-ops so the
+    ## no-JS capture degrades to served-HTML + screenshot instead of crashing on
+    ## every determinism / evaluate step. (Verified: page.evaluate is reassignable
+    ## on the async Page.)
+    if not JS_ENABLED:
+        async def _nojs_noop(*_a, **_k):
+            return None
+        page.evaluate = _nojs_noop
+        page.add_style_tag = _nojs_noop
+        page.wait_for_function = _nojs_noop
     if scheme == "print":
         await page.emulate_media(media="print")
     manifest: dict[str, dict] = {}
@@ -660,7 +682,12 @@ async def capture_one(
             request_failures.clear()
             for _ in range(n_visits):
                 response = await page.goto(
-                    url, wait_until="networkidle", timeout=TIMEOUT_MS,
+                    ## networkidle can hang with JS off (a media=print stylesheet
+                    ## preload holds the connection); "load" is the reliable no-JS
+                    ## wait. A post-load networkidle settle still runs below.
+                    url,
+                    wait_until="networkidle" if JS_ENABLED else "load",
+                    timeout=TIMEOUT_MS,
                 )
             status = response.status if response else 0
             if status < 500:
@@ -953,6 +980,8 @@ async def capture_iframes_shadow(page) -> dict:
     party embed lands in the diff) and the host selector + child count
     of every shadow root (so a new web-component is also caught).
     """
+    if not JS_ENABLED:
+        return {}  ## no-JS: cannot walk for shadow roots; iframes still in dom.html
     return await page.evaluate("""
         () => {
             const iframes = Array.from(document.querySelectorAll('iframe'))
