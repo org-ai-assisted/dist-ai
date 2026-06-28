@@ -6,3 +6,5 @@ var/
 __pycache__/
 *.pyc
 .coverage
+.hypothesis/
+.pytest_cache/
