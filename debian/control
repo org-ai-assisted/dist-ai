@@ -205,6 +205,7 @@ Depends: ${misc:Depends},
  genmkfile,
  dctrl-tools,
  dpkg-dev,
+ git,
  safe-rm
 Description: Regression tests for the genmkfile build-helper target dispatch
  Drives the real genmkfile against a throwaway minimal Debian source package
@@ -215,6 +216,12 @@ Description: Regression tests for the genmkfile build-helper target dispatch
  aborted those targets with 'make_upstream_tarball_relative_path: unbound
  variable' (and the equivalent make_main_changes_file / make_package_list
  failures for the reprepro targets).
+ .
+ A second check covers the make_use_git_describe_for_version path: a repo
+ that sets that flag but also ships debian/control (live-build) must still
+ get its deb path variables set (deb-cleanup must not abort with an unbound
+ variable) while keeping its git tag version from git describe (commit_<sha>),
+ not the changelog version.
  .
  The 'genmkfile-tests' command needs no root, no network and no real reprepro
  (a stub wrapper stands in). It targets genmkfile from PATH by default; set

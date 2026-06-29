@@ -244,6 +244,19 @@ targets is routed through `make_get_variables` and never trips an "unbound
 variable" error. No root, no network, no real reprepro (a stub wrapper
 stands in). Validated non-vacuous against the pre-fix tree.
 
+A second test (`git_describe_control_test.sh`) covers the
+`make_use_git_describe_for_version` path. That flag is meant for special
+repos with no `debian/control` (Whonix-Installer, qubes-template-*), where
+`make_get_variables` short-circuits before setting the tarball / `.dsc`
+paths. `live-build` sets the same flag but **does** ship `debian/control`
+and is built as a `.deb`, so the short-circuit left
+`make_upstream_tarball_relative_path` unset and `deb-cleanup` aborted. The
+fix gates the short-circuit on the actual absence of `debian/control`; the
+test asserts that a flag+`control` fixture routes `deb-cleanup` through
+`make_get_variables` without an unbound-variable error **and** that
+`git-tag-show` still reports the git-describe tag (`commit_<sha>`), not the
+changelog version. Also non-vacuous against the pre-fix tree.
+
 The suite targets `genmkfile` from `PATH` by default; set `GENMKFILE_BIN`
 to test a specific `genmkfile`, or it falls back to a derivative-maker
 checkout under `~/derivative-maker`.

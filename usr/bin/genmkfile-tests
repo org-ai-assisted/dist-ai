@@ -29,4 +29,33 @@ else
    tests_dir="${script_dir}/../share/genmkfile-tests"
 fi
 
-exec bash -- "${tests_dir}/deb_cleanup_dispatch_test.sh" "$@"
+## Run every *_test.sh in the suite. Exit 77 from a test means SKIP
+## (missing genmkfile / tooling) and does not count as a failure; any
+## other non-zero exit is a failure. Overall exit is non-zero iff at
+## least one test failed.
+shopt -s nullglob
+failures=0
+ran=0
+for test_script in "${tests_dir}"/*_test.sh; do
+  ran=$(( ran + 1 ))
+  printf '\n########## %s ##########\n' "$(basename -- "${test_script}")"
+  rc=0
+  bash -- "${test_script}" "$@" || rc=$?
+  if [ "${rc}" -eq 77 ]; then
+    printf '########## SKIPPED: %s ##########\n' "$(basename -- "${test_script}")"
+  elif [ "${rc}" -ne 0 ]; then
+    printf '########## FAILED (%s): %s ##########\n' "${rc}" "$(basename -- "${test_script}")"
+    failures=$(( failures + 1 ))
+  fi
+done
+
+if [ "${ran}" -eq 0 ]; then
+  printf 'ERROR: no *_test.sh found in %s\n' "${tests_dir}" >&2
+  exit 1
+fi
+if [ "${failures}" -ne 0 ]; then
+  printf '\nFAILED: %s genmkfile test script(s) failed\n' "${failures}" >&2
+  exit 1
+fi
+printf '\nOK: all genmkfile test scripts passed\n'
+exit 0
