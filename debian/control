@@ -220,3 +220,40 @@ Description: Regression tests for the genmkfile build-helper target dispatch
  (a stub wrapper stands in). It targets genmkfile from PATH by default; set
  GENMKFILE_BIN to test a specific genmkfile, or it falls back to a
  derivative-maker checkout under ~/derivative-maker.
+
+Package: open-link-confirmation-tests
+Architecture: all
+Depends: ${misc:Depends},
+ python3,
+ python3-pyqt5,
+ bash (>= 4),
+ sed,
+ grep,
+ helper-scripts,
+ open-link-confirmation
+Description: Security and unit tests for the open-link-confirmation link/file dialog
+ open-link-confirmation is the $BROWSER / x-www-browser handler: it receives a
+ URL or file path from a potentially untrusted source and shows a confirmation
+ dialog before opening it. The argument is displayed by piping it through
+ helper-scripts' sanitize-string and rendering the result as HTML in a PyQt5
+ QTextBrowser. The 'open-link-confirmation-tests' command exercises that whole
+ pipeline. No root, no network, no real browser; Qt runs offscreen.
+ .
+ Sanitization contract: drives the real sanitize-string over a hostile battery
+ (Unicode, RTL override, zero-width, ANSI/SGR, OSC-8 hyperlinks, C0/C1/DEL
+ control bytes, oversized inputs, markup) and asserts the output stays
+ display-safe (ASCII only, length-capped, no control or escape bytes other than
+ newline and tab).
+ .
+ Qt rich-text differential: embeds the sanitized output in the script's exact
+ HTML wrapper and parses it with the real Qt engine, asserting the argument
+ introduces no clickable anchor or image. This encodes a known parser
+ differential (a '<' followed by whitespace then a tag name survives
+ sanitize-string's Python parser but Qt reconstructs the tag) as strict-xfail
+ regression cases that flip to a hard failure once the bypass is fixed.
+ .
+ Static audit asserts every displayed message uses only the sanitized argument,
+ never the raw argument; a bash unit test asserts source_config()'s
+ env-over-config precedence. The tests target the installed
+ open-link-confirmation and sanitize-string by default; set
+ OPEN_LINK_CONFIRMATION_BIN and SANITIZE_STRING_BIN to test a checkout.

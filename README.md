@@ -15,6 +15,7 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 | `onion-grater-tests`     | shipping | `usr/share/onion-grater-tests/` |
 | `privleap-tests`         | shipping | `usr/share/privleap-tests/` |
 | `genmkfile-tests`        | shipping | `usr/share/genmkfile-tests/` |
+| `open-link-confirmation-tests` | shipping | `usr/share/open-link-confirmation-tests/` |
 | `discourse-dom-snapshot` | planned  | `usr/share/discourse-dom-snapshot/` |
 | `sdwdate-ci-fuzz`        | planned  | `usr/share/sdwdate-ci-fuzz/` |
 
@@ -255,4 +256,39 @@ genmkfile-tests
 
 # test a specific genmkfile binary
 GENMKFILE_BIN=/path/to/genmkfile genmkfile-tests
+```
+
+## open-link-confirmation-tests
+
+Security and unit tests for the Kicksecure
+[open-link-confirmation](https://github.com/Kicksecure/open-link-confirmation)
+link/file confirmation dialog (the `$BROWSER` / `x-www-browser` handler). The
+untrusted input is the URL/file argument; it is shown by piping it through
+helper-scripts' `sanitize-string` and rendering the result as HTML in a PyQt5
+`QTextBrowser`.
+
+The `open-link-confirmation-tests` command checks the whole display pipeline,
+no root / no network / no real browser (Qt runs offscreen):
+
+- a sanitization contract over a hostile battery (Unicode, RTL override,
+  zero-width, ANSI/SGR, OSC-8, control bytes, oversized inputs, markup),
+- a Qt rich-text differential that parses the sanitized output with the real Qt
+  engine and asserts no clickable anchor or image is introduced,
+- a static audit that the script only ever displays the sanitized argument, and
+- a bash unit test of `source_config()`'s env-over-config precedence.
+
+The Qt group encodes a known, currently-unfixed markup-injection bypass (a `<`
+followed by whitespace then a tag name survives `sanitize-string` but Qt
+reconstructs the tag) as strict-xfail cases; see
+`usr/share/open-link-confirmation-tests/README.md`.
+
+### Usage
+
+```
+open-link-confirmation-tests
+
+# test a checkout instead of the installed copies
+OPEN_LINK_CONFIRMATION_BIN=/path/to/open-link-confirmation \
+SANITIZE_STRING_BIN=/path/to/sanitize-string \
+./usr/bin/open-link-confirmation-tests
 ```

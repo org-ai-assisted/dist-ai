@@ -1,0 +1,4 @@
+usr/bin/open-link-confirmation-tests usr/bin/
+usr/share/open-link-confirmation-tests/*.py usr/share/open-link-confirmation-tests/
+usr/share/open-link-confirmation-tests/*.sh usr/share/open-link-confirmation-tests/
+usr/share/open-link-confirmation-tests/README.md usr/share/open-link-confirmation-tests/

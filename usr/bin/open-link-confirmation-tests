@@ -1,0 +1,42 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Runs the open-link-confirmation security + unit test suite: drives the real
+## sanitize-string over a hostile battery and asserts the confirmation dialog
+## input stays display-safe (ASCII, length-capped, no control/ANSI), parses the
+## sanitized output with the real Qt rich-text engine to catch markup-injection
+## bypasses, statically audits the script, and unit-tests the env-over-config
+## precedence of source_config(). No root, no network, no real browser; Qt runs
+## offscreen and is skipped if PyQt5 is absent. Works installed (tests under
+## /usr/share/open-link-confirmation-tests) or from a git checkout. Override the
+## components under test with OPEN_LINK_CONFIRMATION_BIN and SANITIZE_STRING_BIN.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/open-link-confirmation-tests' ]; then
+   tests_dir='/usr/share/open-link-confirmation-tests'
+else
+   tests_dir="${script_dir}/../share/open-link-confirmation-tests"
+fi
+
+overall_rc=0
+
+printf '%s\n' "=== open-link-confirmation security tests (python/Qt) ==="
+python3 -- "${tests_dir}/open_link_confirmation_test.py" "$@" || overall_rc=1
+
+printf '%s\n' ""
+printf '%s\n' "=== open-link-confirmation env-override unit test (bash) ==="
+bash -- "${tests_dir}/env_override_test.sh" "$@" || overall_rc=1
+
+exit "${overall_rc}"
