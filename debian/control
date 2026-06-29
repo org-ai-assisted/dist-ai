@@ -63,7 +63,10 @@ Description: Regression tests and fuzzer for the sdwdate-gui applet
  non-Qubes self-reported-name branches), tray menu activation (left- and
  right-click open the menu; the Wayland opt-out), and wire-protocol
  regressions (a fragmented message must not hang the parser, a newline in
- a status message must not get the client kicked).
+ a status message must not get the client kicked), and tray-deferral
+ invariants (the tray icon waits for a system tray host so Qt binds
+ StatusNotifier rather than the XEmbed fallback, while the IPC socket comes
+ up immediately and pre-tray clients are buffered and replayed).
  .
  Fuzzer ('sdwdate-gui-tests-fuzz' command): a simulator that drives the
  server over a real local socket with a directed corpus plus random and

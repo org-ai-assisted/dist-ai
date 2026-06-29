@@ -106,6 +106,11 @@ Unit coverage:
 - wire-protocol regressions: a fragmented (incomplete) message must not
   hang the parser, a newline in a status message must not get the client
   kicked, and `drop_client` is idempotent.
+- tray deferral: the tray icon is not constructed until a system tray host
+  is available (so Qt binds StatusNotifier, not the XEmbed fallback that
+  hides the icon in the sysmaint session), the IPC listener/socket comes up
+  immediately regardless of tray-host availability, and a client that
+  connects before the tray exists is buffered and replayed into it.
 
 ### Fuzzer
 
