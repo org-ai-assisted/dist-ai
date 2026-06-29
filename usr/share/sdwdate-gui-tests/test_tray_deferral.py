@@ -235,17 +235,20 @@ class TrayDeferralTestCase(unittest.TestCase):
         _APP.processEvents()
         listener = _FakeListener.instances[0]
 
-        ## Both complete their handshake while buffered (the bug path): the
-        ## name is set, but clientNameChanged fires into nothing because the
-        ## tray does not exist yet.
+        ## Both connect (and are buffered) first, then complete their
+        ## handshake while buffered -- the bug path. clientNameChanged is
+        ## emitted exactly as the real __set_client_name does, but with the
+        ## tray not yet constructed it reaches only the client's own
+        ## handshake-timer slot, not handle_client_name_change, so the
+        ## duplicate check does not run at buffer time.
         first = server.SdwdateGuiClient(QLocalSocket())
-        first.client_name = "workstation"
-        first.client_name_set = True
-        second = server.SdwdateGuiClient(QLocalSocket())
-        second.client_name = "workstation"
-        second.client_name_set = True
         listener.newClient.emit(first)
+        second = server.SdwdateGuiClient(QLocalSocket())
         listener.newClient.emit(second)
+        for client in (first, second):
+            client.client_name = "workstation"
+            client.client_name_set = True
+            client.clientNameChanged.emit()
         _APP.processEvents()
         self.assertEqual(len(self.spy_instances), 0)
 
