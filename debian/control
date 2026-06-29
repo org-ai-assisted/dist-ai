@@ -292,3 +292,29 @@ Description: Deep test and fuzzer for the helper-scripts sanitize family
  reproduction is shipped as qtextbrowser_repro.py. The suite targets the
  installed sanitize-string by default; set SANITIZE_STRING_BIN to test a
  checkout or a not-yet-installed fix.
+
+Package: stcat-family-tests
+Architecture: all
+Depends: ${misc:Depends},
+ python3,
+ helper-scripts
+Description: Comprehensive test and fuzzer for the stcat family of safe-terminal tools
+ The stcat family (stcat, stcatn, stecho, stprint, stsponge, sttee, from
+ helper-scripts' stdisplay package) makes untrusted text safe to print to a
+ terminal. Each tool routes input through stdisplay() and forces its stdout
+ (and file outputs) to ASCII. This suite proves, across all six tools, that
+ nothing dangerous reaches the terminal. No root, no network.
+ .
+ In no-colour mode the output is pure printable ASCII plus newline/tab -- no
+ Unicode (RLO, zero-width, homoglyphs, C1, line/paragraph separators), no
+ control characters, no escape sequences -- over a hostile corpus and a
+ byte-level fuzzer. In colour mode Unicode is still stripped and only
+ well-formed SGR colour escapes survive; OSC-8 hyperlinks and CSI cursor/clear
+ are neutralised. It also checks each tool still performs its function
+ (cat / numbered-cat-with-trim / echo / print / sponge / tee) on benign input,
+ including file paths, whose written content is verified sanitised.
+ .
+ 'stcat-family-tests' runs the corpus, colour, semantics, and a default fuzz
+ sweep; 'stcat-family-tests-fuzz' runs a heavy sweep. The suite targets the
+ installed tools by default; set STDISPLAY_REPO to a helper-scripts checkout
+ to test that instead.

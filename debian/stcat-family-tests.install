@@ -1,0 +1,4 @@
+usr/bin/stcat-family-tests usr/bin/
+usr/bin/stcat-family-tests-fuzz usr/bin/
+usr/share/stcat-family-tests/*.py usr/share/stcat-family-tests/
+usr/share/stcat-family-tests/README.md usr/share/stcat-family-tests/

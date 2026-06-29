@@ -16,6 +16,8 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 | `privleap-tests`         | shipping | `usr/share/privleap-tests/` |
 | `genmkfile-tests`        | shipping | `usr/share/genmkfile-tests/` |
 | `open-link-confirmation-tests` | shipping | `usr/share/open-link-confirmation-tests/` |
+| `sanitize-string-tests`  | shipping | `usr/share/sanitize-string-tests/` |
+| `stcat-family-tests`     | shipping | `usr/share/stcat-family-tests/` |
 | `discourse-dom-snapshot` | planned  | `usr/share/discourse-dom-snapshot/` |
 | `sdwdate-ci-fuzz`        | planned  | `usr/share/sdwdate-ci-fuzz/` |
 
@@ -304,4 +306,54 @@ open-link-confirmation-tests
 OPEN_LINK_CONFIRMATION_BIN=/path/to/open-link-confirmation \
 SANITIZE_STRING_BIN=/path/to/sanitize-string \
 ./usr/bin/open-link-confirmation-tests
+```
+
+## sanitize-string-tests
+
+Deep test + fuzz for the helper-scripts sanitize family (`stdisplay` ->
+`strip_markup` -> `sanitize-string`) as consumed by msgcollector's PyQt5
+`QTextBrowser` dialogs. `sanitize-string` output must be safe to display both
+on a terminal and as HTML/Qt rich text. The suite proves it, with no bypasses:
+
+- `[T]` terminal safety (ASCII only, no control/ESC except newline/tab, length
+  cap), `[H]` no `<` survives, `[Q]` a cross-parser differential against the
+  real Qt engine (no anchor/image revived), `[F]` content fidelity (benign
+  inputs incl. `&`-query URLs round-trip, not silently dropped), `[L]` the
+  length cap is exact.
+- It encodes a parser-differential markup-injection bypass and the dropped-`&`
+  content bug as strict-xfail cases that flip once the fixed `sanitize-string`
+  is installed. Ships `qtextbrowser_repro.py` (minimal headless repro) and
+  `popup_repro.sh` (live PoC via `sanitize-string` + `generic_gui_message`).
+
+### Usage
+
+```
+sanitize-string-tests
+sanitize-string-tests-fuzz                  # heavy fuzz sweep
+SANITIZE_STRING_BIN=/path/to/sanitize-string sanitize-string-tests
+```
+
+## stcat-family-tests
+
+Comprehensive test + fuzz for the **stcat family** -- the helper-scripts
+`stdisplay`-package CLI tools that make untrusted text safe to print to a
+terminal: `stcat`, `stcatn`, `stecho`, `stprint`, `stsponge`, `sttee`. Each
+routes input through `stdisplay()` and forces ASCII output. The suite proves,
+across all six tools, that nothing dangerous reaches the terminal:
+
+- `[U]` no-colour: output is pure printable ASCII + newline/tab (no Unicode,
+  control, ESC, DEL) over a hostile corpus and a byte-level fuzzer.
+- `[C]` colour: Unicode is still stripped and only well-formed SGR colour
+  escapes survive; OSC-8 and CSI cursor/clear are neutralised.
+- `[S]` semantics: each tool still performs its function (including file
+  paths, whose written content is verified sanitised).
+- `[F]` fuzz: random byte streams (Unicode, control, escapes, malformed UTF-8,
+  NUL) never break the no-colour invariant.
+
+### Usage
+
+```
+stcat-family-tests
+stcat-family-tests-fuzz                     # heavy fuzz sweep
+STDISPLAY_REPO=/path/to/helper-scripts stcat-family-tests
 ```

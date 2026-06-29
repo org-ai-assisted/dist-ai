@@ -1,0 +1,32 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Comprehensive test + fuzz for the stcat family (the stdisplay CLI tools:
+## stcat, stcatn, stecho, stprint, stsponge, sttee). Proves no Unicode /
+## control / escape bypass: output is pure ASCII (+ newline/tab, + SGR colour
+## only when colour is enabled), for a hostile corpus and a byte-level fuzzer,
+## and that each tool still performs its function on benign input. No root, no
+## network. Targets the installed tools by default; set STDISPLAY_REPO to a
+## helper-scripts checkout to test that instead. Extra args (e.g. --iterations
+## N, --seed N) pass through.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/stcat-family-tests' ]; then
+   tests_dir='/usr/share/stcat-family-tests'
+else
+   tests_dir="${script_dir}/../share/stcat-family-tests"
+fi
+
+exec python3 -- "${tests_dir}/stcat_family_test.py" "$@"

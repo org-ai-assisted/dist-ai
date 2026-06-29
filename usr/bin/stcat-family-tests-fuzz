@@ -1,0 +1,31 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Heavy fuzz run of the stcat family: same harness as stcat-family-tests with
+## a large default iteration count per tool. Override with --iterations N /
+## --seed N. See stcat-family-tests for the checks and the STDISPLAY_REPO
+## override.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/stcat-family-tests' ]; then
+   tests_dir='/usr/share/stcat-family-tests'
+else
+   tests_dir="${script_dir}/../share/stcat-family-tests"
+fi
+
+iterations='5000'
+
+exec python3 -- "${tests_dir}/stcat_family_test.py" \
+   --fuzz-only --iterations "${iterations}" "$@"
