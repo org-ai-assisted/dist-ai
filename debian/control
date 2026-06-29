@@ -47,6 +47,9 @@ Suggests: xvfb,
  x11-utils,
  weston,
  qtwayland5,
+ dbus,
+ python3-dbus,
+ python3-gi,
  python3-coverage
 Description: Regression tests and fuzzer for the sdwdate-gui applet
  Headless test suite for sdwdate-gui-server. Drives the real
@@ -72,10 +75,14 @@ Description: Regression tests and fuzzer for the sdwdate-gui applet
  .
  Integration coverage ('sdwdate-gui-tests-integration' command): the same
  tray menu driven end to end on a real display -- a headless Xvfb with an
- XEmbed systray host for genuine left- and right-click delivery, and a
- headless Wayland compositor for the Wayland opt-out. These need the
- tooling in Suggests (xvfb, stalonetray, xdotool, x11-utils, weston,
- qtwayland5); any phase whose tooling is absent is skipped, not failed.
+ XEmbed systray host for genuine left- and right-click delivery, a
+ headless Wayland compositor for the Wayland opt-out, and a late-started
+ StatusNotifierWatcher on a private session bus that guards against the
+ tray-icon startup race (deferred construction so Qt picks the
+ StatusNotifier backend rather than falling back to XEmbed). These need
+ the tooling in Suggests (xvfb, stalonetray, xdotool, x11-utils, weston,
+ qtwayland5, dbus, python3-dbus, python3-gi); any phase whose tooling is
+ absent is skipped, not failed.
  .
  All commands require the 'sdwdate-gui' package, as the tests import its
  server module.

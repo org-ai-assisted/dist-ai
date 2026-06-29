@@ -150,10 +150,19 @@ real display, with real click delivery:
   the handler must NOT self-popup (`QCursor.pos()` is `(0, 0)` under
   Wayland, so a popup there would land in the screen corner), leaving the
   menu to the compositor.
+- **SNI late-host**: a headless `Xvfb` plus a private session bus
+  (`dbus-run-session`) and a minimal `org.kde.StatusNotifierWatcher` stub
+  brought up *after* the applet starts. Reproduces the startup race where
+  the tray host (lxqt-panel, waybar) comes up after sdwdate-gui -- as in
+  the user-sysmaint-split sysmaint session. The applet must defer
+  constructing its `QSystemTrayIcon` until the watcher exists, otherwise Qt
+  binds the legacy XEmbed backend and an SNI-only panel never shows the
+  icon; the test asserts the icon registered via StatusNotifier.
 
 These need extra tooling (`xvfb`, `stalonetray`, `xdotool`, `x11-utils`,
-`weston`, `qtwayland5`, listed in the package's `Suggests`). Any phase
-whose tooling is missing is skipped loudly rather than failed.
+`weston`, `qtwayland5`, `dbus`, `python3-dbus`, `python3-gi`, listed in the
+package's `Suggests`). Any phase whose tooling is missing is skipped loudly
+rather than failed.
 
 ### Usage
 

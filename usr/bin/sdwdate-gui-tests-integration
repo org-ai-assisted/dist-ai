@@ -65,6 +65,15 @@ qt_has_wayland_plugin() {
     '/usr/lib/*/qt5/plugins/platforms/libqwayland-*.so' >/dev/null 2>&1
 }
 
+python_has_sni_deps() {
+  ## The StatusNotifierWatcher stub needs python3-dbus and python3-gi.
+  python3 -c \
+    'import dbus, dbus.service, gi
+from dbus.mainloop.glib import DBusGMainLoop
+from gi.repository import GLib' \
+    >/dev/null 2>&1
+}
+
 x11_click_once() {
   ## Args: display-number, X button number, human label. Starts a clean
   ## Xvfb + systray host, runs one click, tears them down. A fresh host per
@@ -149,8 +158,41 @@ run_wayland_phase() {
   unset WAYLAND_DISPLAY QT_QPA_PLATFORM
 }
 
+run_sni_phase() {
+  ## Regression guard for the tray-icon startup race: a QSystemTrayIcon
+  ## binds XEmbed vs. StatusNotifier at construction, so an applet started
+  ## before the panel's StatusNotifierWatcher silently falls back to XEmbed
+  ## and never shows on an SNI-only panel. The harness brings the watcher
+  ## up late and asserts the icon still registers via StatusNotifier.
+  if ! have_all Xvfb dbus-run-session || ! python_has_sni_deps; then
+    printf 'SKIP sni: needs Xvfb, dbus-run-session, python3-dbus, python3-gi\n'
+    printf '  install: sudo apt-get install --no-install-recommends %s\n' \
+      'xvfb dbus python3-dbus python3-gi'
+    return 0
+  fi
+
+  local display=':101' xvfb_pid wlog
+  wlog="$(mktemp)"
+
+  Xvfb "${display}" -screen 0 1024x768x24 >/dev/null 2>&1 &
+  xvfb_pid=$!
+  bg_pids+=("${xvfb_pid}")
+  sleep 1.5
+
+  ran=$((ran + 1))
+  printf -- '--- sni late-host registration ---\n'
+  if ! DISPLAY="${display}" dbus-run-session -- \
+    python3 "${integration_dir}/sni_late_host_harness.py" "${wlog}"; then
+    failed=$((failed + 1))
+  fi
+
+  kill "${xvfb_pid}" 2>/dev/null || true
+  rm --force -- "${wlog}"
+}
+
 run_x11_phase
 run_wayland_phase
+run_sni_phase
 
 printf '\n=== integration summary: %s run, %s failed ===\n' "${ran}" "${failed}"
 if [ "${ran}" -eq 0 ]; then
