@@ -1,0 +1,34 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Deep test + fuzz for the helper-scripts sanitize family (stdisplay,
+## strip_markup, sanitize-string) as consumed by msgcollector's Qt dialog.
+## Drives the real sanitize-string over an adversarial corpus and a biased
+## fuzzer, asserting terminal-safety invariants, the no-'<' HTML-safety
+## invariant, and a real-Qt cross-parser differential (no revived anchor or
+## image). Proves the markup-injection bypass and that the strip_markup fix
+## closes it. No root, no network; Qt runs offscreen and is skipped if PyQt5 is
+## absent. Targets the installed sanitize-string by default; set
+## SANITIZE_STRING_BIN to test a checkout / not-yet-installed fix. Extra args
+## (e.g. --iterations N, --seed N) pass through to the harness.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/sanitize-string-tests' ]; then
+   tests_dir='/usr/share/sanitize-string-tests'
+else
+   tests_dir="${script_dir}/../share/sanitize-string-tests"
+fi
+
+exec python3 -- "${tests_dir}/sanitize_family_test.py" "$@"

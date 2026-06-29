@@ -132,11 +132,11 @@ CONTRACT_CASES = {
     ## point is to test how sanitize-string handles the decoded characters).
     "accented": "caf\u00e9-na\u00efve",
     "emoji": "click \U0001f4a3 here",
-    "rtl_override": "evil\u202egnp.exe",  # U+202E right-to-left override
+    "rtl_override": "report\u202egnp.exe",  # U+202E right-to-left override
     "zero_width": "who\u200bnix.org",  # U+200B zero-width space
     "cjk": "\u4f60\u597d\u4e16\u754c",
     "ansi_color": "\x1b[31mRED\x1b[0m",
-    "osc8_hyperlink": "\x1b]8;;https://evil.example\x07click\x1b]8;;\x07",
+    "osc8_hyperlink": "\x1b]8;;https://example.com\x07click\x1b]8;;\x07",
     "bell_backspace": "a\x07b\x08\x08c",
     "c0_controls": "a\x01b\x02c\x1fd",
     "c1_controls": "a\x85b\x9bc",
@@ -196,29 +196,32 @@ def run_contract(results):
 ## rendered document.
 INJECTION_CASES = {
     ## Controls: these MUST be neutralized today.
-    "tag_anchor": "<a href='http://evil.example'>x</a>",
-    "tag_img_remote": "<img src='http://evil.example/p.png'>",
+    "tag_anchor": "<a href='http://example.com'>x</a>",
+    "tag_img_remote": "<img src='http://example.com/p.png'>",
     "lone_lt": "a < b > c",
-    "entity_anchor": "&lt;a href='http://evil'&gt;x&lt;/a&gt;",
+    "entity_anchor": "&lt;a href='http://example.com'&gt;x&lt;/a&gt;",
     ## Known parser-differential bypasses (see KNOWN_VULN). A '<' followed by
     ## whitespace then a tag name is inert to Python's html.parser (passes
     ## through verbatim) but Qt's parser skips the whitespace and builds the
     ## tag, so an attacker-controlled link/image lands in the dialog.
-    "ws_space_anchor": "< a href='http://evil.example'>x</a>",
-    "ws_tab_anchor": "<\ta href='http://evil.example'>x",
-    "ws_newline_anchor": "<\na href='http://evil.example'>x",
-    "ws_multi_anchor": "<  \t\n a href='http://evil.example'>x",
-    "ws_upper_anchor": "< A HREF='http://evil.example'>x",
-    "ws_space_img": "< img src='http://evil.example/p.png'>",
-    "ws_space_img_file": "< img src='file:///etc/shadow'>",
-    "ws_img_no_close": "< img src='http://evil.example/p.png'",
+    "ws_space_anchor": "< a href='http://example.com'>x</a>",
+    "ws_tab_anchor": "<\ta href='http://example.com'>x",
+    "ws_newline_anchor": "<\na href='http://example.com'>x",
+    "ws_multi_anchor": "<  \t\n a href='http://example.com'>x",
+    "ws_upper_anchor": "< A HREF='http://example.com'>x",
+    "ws_space_img": "< img src='http://example.com/p.png'>",
+    "ws_space_img_file": "< img src='file:///etc/hostname'>",
+    "ws_img_no_close": "< img src='http://example.com/p.png'",
 }
 
-## Cases known to slip through today. Strict xfail: if one of these is no
-## longer injecting, the suite FAILS asking you to promote it to a hard control
-## (i.e. the underlying parser-differential has been fixed). Tracked finding:
-## sanitize-string output is safe only against Python's html.parser notion of a
-## tag; the dialog renders with Qt's more lenient parser.
+## Cases known to slip through the DEPLOYED sanitize-string. Strict xfail: if
+## one of these is no longer injecting, the suite FAILS asking you to promote it
+## to a hard control. The root fix is already committed in helper-scripts
+## strip_markup (neuter residual '<'); these xfails will flip automatically once
+## the fixed sanitize-string package is installed, at which point they should be
+## promoted out of KNOWN_VULN. Tracked finding: sanitize-string output is safe
+## only against Python's html.parser notion of a tag; the dialog renders with
+## Qt's more lenient parser. See the sanitize-string-tests suite for the proof.
 KNOWN_VULN = {
     "ws_space_anchor",
     "ws_tab_anchor",
