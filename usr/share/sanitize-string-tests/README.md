@@ -46,6 +46,9 @@ controls) and a biased fuzzer:
   missing `HTMLParser.close()` bug that blanked such values, hiding the link
   the confirmation dialog asks the user to approve. Hard when fixed; otherwise
   reported as the deployed content-drop bug.
+- **[L] length cap** - the output never exceeds `max_length` and equals the
+  untruncated sanitization truncated to N (including multi-codepoint entity
+  decoding). Always hard.
 
 When the sanitizer under test is **fixed**, [H] and [Q] are hard requirements
 and a clean run proves the sanitizer is bypass-free across that run. When it is

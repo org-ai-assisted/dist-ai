@@ -36,6 +36,9 @@ Checks (each over a curated adversarial corpus AND a biased fuzzer):
       missing-HTMLParser.close() bug that blanked such values, hiding the link
       the confirmation dialog asks the user to approve. Hard when fixed;
       otherwise reported as the deployed content-drop bug.
+  [L] length cap: the output never exceeds max_length and equals the
+      untruncated sanitization truncated to N (including multi-codepoint
+      entity decoding). Always hard.
 
 The specific issue and its fix are proven directly: the adversarial corpus
 contains the exact bypass vectors; against a fixed sanitize-string they are all
@@ -184,6 +187,9 @@ FUZZ_TOKENS = [
     "a", "A", "img", "IMG", "href", "src", "script", "b", "i",
     "http://x", "file:///x", "data:x", "x", "1",
     "&lt", "&lt;", "&gt", "&#60", "&#62", "&#x3c", "&amp;", "&#x3e",
+    ## entity-encoded control / RLO / unicode: strip_markup decodes these into
+    ## raw chars, so the pipeline's final stdisplay must strip them ([T]).
+    "&#0;", "&#27;", "&#x202e;", "&#13;", "&#7;", "&#128512;", "&NotEqualTilde;",
     "<!--", "-->", "<![CDATA[", "]]>", "<?", "?>",
     "\x1b[31m", "\x07", "\x08", "\x1b]8;;", "\u202e", "\u200b", "\u4f60", "caf",
 ]
@@ -265,6 +271,21 @@ def fidelity_corpus():
         "Tom & Jerry & co",
         "a & b & c & d & e",
         "plain text with no markup at all.",
+    ]
+
+
+## [L] Length-cap inputs: long, varied strings to prove truncation. The cap is
+## applied to the sanitized string, so multi-codepoint entity decoding and
+## markup stripping must not let the output exceed max_length.
+def truncation_corpus():
+    return [
+        "A" * 500,
+        "<b>x</b>" * 100,
+        "&#x202e;" * 100,
+        "\u4f60" * 300,
+        "http://example.com/?" + "a=1&" * 100,
+        "&NotEqualTilde;" * 50,
+        "mixed <a> &amp; \x1b[31m text " * 30,
     ]
 
 
@@ -353,6 +374,24 @@ def main():
                     "F:" + repr(arg[:40]),
                     "benign input not preserved: " + repr(arg) + " -> " + repr(out),
                 )
+
+    ## [L] truncation / length cap: output never exceeds max_length, and the
+    ## capped output is exactly the untruncated output truncated to N. Always
+    ## hard (truncation is not version-dependent).
+    if not args.fuzz_only:
+        print("[L] truncation: len(out) <= max_length and out == nolimit[:N]")
+        for arg in truncation_corpus():
+            full = run_sanitize(arg, "nolimit")
+            for cap in (0, 1, 5, 32, 128, 255):
+                out = run_sanitize(arg, cap)
+                if len(out) <= cap and out == full[:cap]:
+                    results.ok("L:" + str(cap))
+                else:
+                    results.fail(
+                        "L:cap=" + str(cap),
+                        "len=" + str(len(out)) + " (>cap?) or != nolimit[:cap]; "
+                        "input=" + repr(arg[:40]),
+                    )
 
     ## Fuzz.
     import random
