@@ -1,0 +1,5 @@
+usr/bin/sanitize-string-tests usr/bin/
+usr/bin/sanitize-string-tests-fuzz usr/bin/
+usr/share/sanitize-string-tests/*.py usr/share/sanitize-string-tests/
+usr/share/sanitize-string-tests/*.sh usr/share/sanitize-string-tests/
+usr/share/sanitize-string-tests/README.md usr/share/sanitize-string-tests/

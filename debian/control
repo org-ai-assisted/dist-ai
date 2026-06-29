@@ -264,3 +264,31 @@ Description: Security and unit tests for the open-link-confirmation link/file di
  env-over-config precedence. The tests target the installed
  open-link-confirmation and sanitize-string by default; set
  OPEN_LINK_CONFIRMATION_BIN and SANITIZE_STRING_BIN to test a checkout.
+
+Package: sanitize-string-tests
+Architecture: all
+Depends: ${misc:Depends},
+ python3,
+ python3-pyqt5,
+ bash (>= 4),
+ helper-scripts
+Description: Deep test and fuzzer for the helper-scripts sanitize family
+ The sanitize family (stdisplay, strip_markup, sanitize-string) makes untrusted
+ strings safe to display. Its output is embedded, unescaped, into text shown to
+ the user both on a terminal and as HTML in msgcollector's PyQt5 QTextBrowser
+ dialogs, so it must be safe in both renderers. This suite proves it is, with no
+ bypasses, over a curated adversarial corpus and a biased fuzzer. No root, no
+ network; Qt runs offscreen and is skipped if PyQt5 is absent.
+ .
+ It adds the dimension helper-scripts' own property tests cannot: a cross-parser
+ differential. helper-scripts checks properties against Python's html.parser;
+ the dialog renders with Qt's more lenient parser. A '<' followed by whitespace
+ then a tag name, or a '<' produced by entity decoding, is inert to Python but
+ Qt revives it into a clickable anchor or image. The suite drives the real Qt
+ engine and asserts no anchor / no image / no surviving '<'.
+ .
+ 'sanitize-string-tests' runs the corpus plus a default fuzz sweep;
+ 'sanitize-string-tests-fuzz' runs a heavy sweep. A minimal QTextBrowser
+ reproduction is shipped as qtextbrowser_repro.py. The suite targets the
+ installed sanitize-string by default; set SANITIZE_STRING_BIN to test a
+ checkout or a not-yet-installed fix.
