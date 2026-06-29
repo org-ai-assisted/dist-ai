@@ -41,6 +41,11 @@ controls) and a biased fuzzer:
 - **[Q] Qt differential** - sanitized output embedded in the dialog template,
   parsed by a real `QTextDocument`, must yield no anchor and no image.
   Concrete end-to-end proof of [H]. Needs PyQt5; skipped if absent.
+- **[F] content fidelity** - benign, display-safe inputs (notably any URL with
+  a `&` query string) must round-trip, not be silently dropped. Guards the
+  missing `HTMLParser.close()` bug that blanked such values, hiding the link
+  the confirmation dialog asks the user to approve. Hard when fixed; otherwise
+  reported as the deployed content-drop bug.
 
 When the sanitizer under test is **fixed**, [H] and [Q] are hard requirements
 and a clean run proves the sanitizer is bypass-free across that run. When it is

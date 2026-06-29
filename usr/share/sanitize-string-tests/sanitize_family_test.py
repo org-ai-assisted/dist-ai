@@ -31,6 +31,11 @@ Checks (each over a curated adversarial corpus AND a biased fuzzer):
   [Q] Qt differential: sanitized output embedded in the dialog template,
       parsed by a real QTextDocument, must yield no anchor and no image.
       Concrete end-to-end proof of [H]. Needs PyQt5; skipped if absent.
+  [F] content fidelity: benign, display-safe inputs (notably any URL with a
+      '&' query string) must round-trip, not be silently dropped. Guards the
+      missing-HTMLParser.close() bug that blanked such values, hiding the link
+      the confirmation dialog asks the user to approve. Hard when fixed;
+      otherwise reported as the deployed content-drop bug.
 
 The specific issue and its fix are proven directly: the adversarial corpus
 contains the exact bypass vectors; against a fixed sanitize-string they are all
@@ -237,8 +242,30 @@ def make_qt_probe():
 
 def detect_fixed():
     """A sanitizer is 'fixed' if a known whitespace-tag bypass leaves no '<'."""
-    out = run_sanitize("< a href='http://probe'>x")
+    out = run_sanitize("< a href='http://example.com'>x")
     return not has_lt(out)
+
+
+def detect_dropped_query():
+    """A sanitizer 'drops query strings' if a benign URL containing '&' is
+    emptied -- the convert_charrefs / missing-close() content-drop bug."""
+    return run_sanitize("http://example.com/?a=1&b=2") == b""
+
+
+## [F] Benign, display-safe inputs (ASCII, no '<', no control, within the cap)
+## that must round-trip unchanged. The missing-close() bug emptied any of these
+## that contain '&' (every URL with a query string), blanking the confirmation
+## dialog so the user could not see the link being confirmed.
+def fidelity_corpus():
+    return [
+        "http://example.com/?a=1&b=2",
+        "http://example.com/search?q=foo&lang=en&page=2",
+        "http://example.com/?trailing=amp&",
+        "https://example.com/wiki/Foo",
+        "Tom & Jerry & co",
+        "a & b & c & d & e",
+        "plain text with no markup at all.",
+    ]
 
 
 # pylint: disable=too-many-branches,too-many-statements,too-many-locals
@@ -259,6 +286,10 @@ def main():
     print("sanitizer fixed (no '<' revival): " + ("YES" if fixed else
           "NO -- deployed sanitizer is VULNERABLE; fix is in helper-scripts "
           "strip_markup source, rebuild/install to deploy"))
+    dropped = detect_dropped_query()
+    print("drops '&' query strings (missing-close bug): "
+          + ("YES -- deployed sanitizer blanks URLs with parameters" if dropped
+             else "no"))
     qt_probe, qt_note = make_qt_probe()
     print("Qt differential: " + ("enabled" if qt_probe else "skipped (" + qt_note + ")"))
     print()
@@ -303,6 +334,25 @@ def main():
         print("[corpus] adversarial bypass family + controls")
         for name, arg in adversarial_corpus().items():
             check_one("corpus:" + name, arg, hard_html=fixed)
+
+    ## [F] content-fidelity: benign tagless inputs must not be silently dropped.
+    if not args.fuzz_only:
+        print("[fidelity] benign inputs must round-trip (no silent content drop)")
+        for arg in fidelity_corpus():
+            out = run_sanitize(arg)
+            if out == arg.encode("ascii"):
+                results.ok("F:" + repr(arg[:40]))
+            elif dropped and "&" in arg and out == b"":
+                ## Excuse ONLY the exact known-bug signature: the deployed
+                ## query-drop bug empties '&' strings. A no-'&' input, or any
+                ## other non-round-trip (non-empty corruption) on a '&' input,
+                ## is a separate regression and must fail even on the buggy build.
+                results.xfail("F:" + repr(arg[:40]))
+            else:
+                results.fail(
+                    "F:" + repr(arg[:40]),
+                    "benign input not preserved: " + repr(arg) + " -> " + repr(out),
+                )
 
     ## Fuzz.
     import random
@@ -352,10 +402,15 @@ def main():
         print("failures (sample):")
         for sample in results.fail_samples:
             print("  - " + sample)
-    if not fixed and results.xfailed:
+    if (not fixed or dropped) and results.xfailed:
+        issues = []
+        if not fixed:
+            issues.append("the markup-injection bypass")
+        if dropped:
+            issues.append("the dropped-'&'-query content bug (blanked URLs)")
         print(
-            "NOTE: deployed sanitizer is VULNERABLE to the markup-injection "
-            "bypass (" + str(results.xfailed) + " xfail checks). The fix is in "
+            "NOTE: deployed sanitizer is affected by " + " and ".join(issues)
+            + " (" + str(results.xfailed) + " xfail checks). The fix is in "
             "helper-scripts strip_markup source; install it (or point "
             "SANITIZE_STRING_BIN at the fixed copy) to require these checks."
         )
