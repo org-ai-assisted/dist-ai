@@ -17,6 +17,11 @@ Guards the deferred-tray fix and the invariants surfaced by review:
   proxy-helper wait is not starved when the tray host is late or absent.
 - A client that connects before the tray exists is buffered and replayed
   into the tray once it is constructed -- no client is lost.
+- The MAX_CLIENTS cap is enforced while buffering, so a late/absent tray
+  host cannot let early connections accumulate without bound.
+- A client that finishes its handshake while buffered (name set before the
+  tray wires clientNameChanged) is still subject to the duplicate-name
+  policy when it is replayed.
 
 Runs under the Qt 'offscreen' platform plugin: no X server, no tray, no
 real socket. SdwdateGuiListener is stubbed (no PID-file / socket side
@@ -27,6 +32,7 @@ deterministically.
 
 # pylint: disable=wrong-import-position,no-name-in-module,invalid-name
 
+import functools
 import os
 import unittest
 
@@ -82,6 +88,7 @@ class TrayDeferralTestCase(unittest.TestCase):
         self._real_listener = server.SdwdateGuiListener
         self._real_tray = server.SdwdateTrayIcon
         self._real_qsti = server.QSystemTrayIcon
+        self._real_in_qubes = server.running_in_qubes_os
         _FakeListener.instances = []
 
         ## A spy subclass of the real tray icon: real behaviour
@@ -109,7 +116,13 @@ class TrayDeferralTestCase(unittest.TestCase):
         server.SdwdateGuiListener = self._real_listener
         server.SdwdateTrayIcon = self._real_tray
         server.QSystemTrayIcon = self._real_qsti
+        server.running_in_qubes_os = self._real_in_qubes
         _APP.processEvents()
+
+    def set_qubes(self, value: bool) -> None:
+        """Pin running_in_qubes_os so the duplicate-name policy is
+        deterministic regardless of the host the suite runs on."""
+        server.running_in_qubes_os = lambda: value
 
     def test_listener_eager_tray_deferred_without_host(self) -> None:
         """No tray host: listener comes up now, tray is not constructed."""
@@ -170,6 +183,85 @@ class TrayDeferralTestCase(unittest.TestCase):
             tray.client_list,
             "client buffered before the tray must be replayed into it",
         )
+
+    def test_buffering_enforces_max_clients(self) -> None:
+        """
+        With no tray host the replay never runs, so the MAX_CLIENTS cap must
+        be applied while buffering -- otherwise early connections accumulate
+        without bound. Clients beyond the cap are kicked at buffer time.
+        """
+        self.set_qubes(False)
+        _FakeQSTI.available = False
+        self._timer = server.install_tray_when_available(_APP)
+        _APP.processEvents()
+        listener = _FakeListener.instances[0]
+
+        overflow = 5
+        kicked: list[object] = []
+        for _ in range(server.MAX_CLIENTS + overflow):
+            client = server.SdwdateGuiClient(QLocalSocket())
+            client.clientDisconnected.connect(
+                functools.partial(kicked.append, client)
+            )
+            listener.newClient.emit(client)
+        _APP.processEvents()
+
+        ## No host yet, so the cap was enforced at buffer time, not by the
+        ## replay path's accept_client (which never ran).
+        self.assertEqual(len(self.spy_instances), 0)
+        self.assertEqual(
+            len(kicked),
+            overflow,
+            "clients beyond MAX_CLIENTS must be kicked while buffering",
+        )
+
+        ## A host appears: exactly MAX_CLIENTS survive into the tray.
+        _FakeQSTI.available = True
+        self._timer.timeout.emit()
+        _APP.processEvents()
+        tray = self.spy_instances[0]
+        self.assertEqual(len(tray.client_list), server.MAX_CLIENTS)
+
+    def test_duplicate_name_revalidated_on_replay(self) -> None:
+        """
+        A buffered client can finish its handshake (name set) before the
+        tray wires clientNameChanged, so the duplicate-name check would be
+        skipped for it. The replay path must re-apply the policy: two
+        same-named buffered clients must not both survive.
+        """
+        self.set_qubes(False)
+        _FakeQSTI.available = False
+        self._timer = server.install_tray_when_available(_APP)
+        _APP.processEvents()
+        listener = _FakeListener.instances[0]
+
+        ## Both complete their handshake while buffered (the bug path): the
+        ## name is set, but clientNameChanged fires into nothing because the
+        ## tray does not exist yet.
+        first = server.SdwdateGuiClient(QLocalSocket())
+        first.client_name = "workstation"
+        first.client_name_set = True
+        second = server.SdwdateGuiClient(QLocalSocket())
+        second.client_name = "workstation"
+        second.client_name_set = True
+        listener.newClient.emit(first)
+        listener.newClient.emit(second)
+        _APP.processEvents()
+        self.assertEqual(len(self.spy_instances), 0)
+
+        ## Host appears -> replay. The non-Qubes policy kicks the newcomer.
+        _FakeQSTI.available = True
+        self._timer.timeout.emit()
+        _APP.processEvents()
+        tray = self.spy_instances[0]
+
+        self.assertEqual(
+            [client.client_name for client in tray.client_list],
+            ["workstation"],
+            "a duplicate same-name client must be kicked on replay",
+        )
+        self.assertIn(first, tray.client_list)
+        self.assertNotIn(second, tray.client_list)
 
 
 if __name__ == "__main__":
