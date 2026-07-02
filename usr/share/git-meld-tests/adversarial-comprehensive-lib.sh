@@ -16,9 +16,12 @@ GIT_MELD="$(readlink -f -- "${1:?usage: adv-final.sh /path/to/git-meld}")"
 work="$(mktemp -d)"; export HOME="${work}/home"; mkdir -p "${HOME}"
 git config --global user.email t@example.com; git config --global user.name test
 git config --global init.defaultBranch master; git config --global protocol.file.allow always
-mkdir -p "${work}/bin"; meld_log="${work}/meld.log"
-{ printf '%s\n' '#!/bin/bash'; printf 'printf "MELD:%%s\\n" "$*">>"%s"\n' "${meld_log}"; } >"${work}/bin/meld"
-chmod +x "${work}/bin/meld"; export PATH="${work}/bin:${PATH}"
+mkdir -p "${work}/bin"; meld_log="${work}/display.log"
+for gui in meld kdiff3; do
+   { printf "%s\n" "#!/bin/bash"; printf "printf \"DISPLAY:%%s\\n\" \"$*\">>\"%s\"\n" "${meld_log}"; } >"${work}/bin/${gui}"
+   chmod +x "${work}/bin/${gui}"
+done
+export PATH="${work}/bin:${PATH}"
 
 fails=0
 pass() { printf '  PASS  %s\n' "$1"; }
@@ -45,19 +48,19 @@ new_repo; chmod +x a.sh; git add -A; git commit -qm x
 review "mode-only-+x"                 'MODE CHANGE|EXECUTABLE|old mode|new mode'
 
 new_repo; printf '#!/bin/sh\nEVIL\n' >a.sh; git add -A; git commit -qm x
-review "content-change (control)"     'MELD:|@@|EVIL'
+review "content-change (control)"     'DISPLAY:|@@|EVIL'
 
 new_repo; printf 'Subproject commit 0123456789abcdef0123456789abcdef01234567\n' >b.txt; git add -A; git commit -qm x
-review "fake-Subproject content spoof" 'mimics a submodule gitlink|MELD:'
+review "fake-Subproject content spoof" 'mimics a gitlink|DISPLAY:'
 
 new_repo; rm b.txt; ln -s /etc/passwd b.txt; git add -A; git commit -qm x
 review "file->symlink swap"           'SYMLINK|mode 12|symbolic'
 
 new_repo; printf '#!/bin/sh\nif x # \xe2\x80\xae\xe2\x81\xa6then evil\xe2\x81\xa9\n' >b.txt; git add -A; git commit -qm x
-review "trojan-source bidi unicode"   'Trojan-Source|bidirectional|invisible'
+review "trojan-source bidi unicode"   'suspicious Unicode'
 
 new_repo; printf 'x\n' >c.txt; git add -A; git commit -qm x
-review "added file"                   'MELD:|new file|@@'
+review "added file"                   'DISPLAY:|new file|@@'
 
 ## Real submodule gitlink change.
 new_repo

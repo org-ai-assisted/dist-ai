@@ -20,9 +20,12 @@ seed="${3:-1}"
 work="$(mktemp -d)"; export HOME="${work}/home"; mkdir -p "${HOME}"
 git config --global user.email t@example.com; git config --global user.name test
 git config --global init.defaultBranch master
-mkdir -p "${work}/bin"; meld_log="${work}/meld.log"
-{ printf '%s\n' '#!/bin/bash'; printf 'printf "MELD %%s\\n" "$*">>"%s"\n' "${meld_log}"; } >"${work}/bin/meld"
-chmod +x "${work}/bin/meld"; export PATH="${work}/bin:${PATH}"
+mkdir -p "${work}/bin"; meld_log="${work}/display.log"
+for gui in meld kdiff3; do
+   { printf "%s\n" "#!/bin/bash"; printf "printf \"DISPLAY %%s\\n\" \"$*\">>\"%s\"\n" "${meld_log}"; } >"${work}/bin/${gui}"
+   chmod +x "${work}/bin/${gui}"
+done
+export PATH="${work}/bin:${PATH}"
 
 RANDOM="${seed}"
 fails=0
