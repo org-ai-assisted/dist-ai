@@ -56,8 +56,11 @@ review "fake-Subproject content spoof" 'mimics a gitlink|DISPLAY:'
 new_repo; rm b.txt; ln -s /etc/passwd b.txt; git add -A; git commit -qm x
 review "file->symlink swap"           'SYMLINK|mode 12|symbolic'
 
+new_repo; rm b.txt; ln -s "1000 108 127 997 1000printf 'tgt\xe2\x80\xae')" b.txt; git add -A; git commit -qm x
+review "symlink target bidi unicode"   'unicode-show|SYMLINK'
+
 new_repo; printf '#!/bin/sh\nif x # \xe2\x80\xae\xe2\x81\xa6then evil\xe2\x81\xa9\n' >b.txt; git add -A; git commit -qm x
-review "trojan-source bidi unicode"   'suspicious Unicode'
+review "trojan-source bidi unicode"   'unicode-show'
 
 new_repo; printf 'x\n' >c.txt; git add -A; git commit -qm x
 review "added file"                   'DISPLAY:|new file|@@'
