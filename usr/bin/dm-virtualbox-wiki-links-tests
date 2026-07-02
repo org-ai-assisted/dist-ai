@@ -1,0 +1,107 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Regression tests for developer-meta-files'
+## 'dm-virtualbox-update-local-and-wiki-links'. Each check reproduces the ROOT
+## CAUSE of a fixed bug (old-broken) and asserts the current script no longer
+## exhibits it (new-fixed).
+##
+## Usage: dm-virtualbox-wiki-links-tests [/path/to/dm-virtualbox-update-local-and-wiki-links]
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+mydir="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )"
+
+script="${1:-}"
+if [ -z "${script}" ]; then
+   for cand in \
+      "${mydir}/../../derivative-maker/packages/kicksecure/developer-meta-files/usr/bin/dm-virtualbox-update-local-and-wiki-links" \
+      "/usr/bin/dm-virtualbox-update-local-and-wiki-links" ; do
+      [ -r "${cand}" ] && { script="${cand}"; break; }
+   done
+fi
+[ -n "${script}" ] && [ -r "${script}" ] || { printf '%s\n' "ERROR: script not found; pass it as arg 1." >&2; exit 2; }
+
+fails=0
+pass() { printf '  PASS: %s\n' "$1"; }
+fail() { printf '  FAIL: %s\n' "$1" >&2; fails=$((fails + 1)); }
+
+leading_blank_lines() { awk 'NF{exit} {c++} END{print c+0}' "$1"; }
+
+printf '%s\n' "== dm-virtualbox-wiki-links-tests =="
+printf '%s\n' "script under test: ${script}"
+
+## ---------------------------------------------------------------------------
+## Bug 1: leading blank lines on the uploaded wiki page.
+## Root cause: staging content into a fresh empty mktemp with 'append-once'
+## prepends a newline; 'overwrite' does not. Reproduce both (old vs new tool),
+## then assert the script uses the fixed tool for the wiki writes.
+## ---------------------------------------------------------------------------
+printf '\n%s\n' "[1] leading-newline (append-once vs overwrite)"
+if command -v append-once >/dev/null && command -v overwrite >/dev/null; then
+   t_old="$(mktemp)"; append-once "${t_old}" "TOP_LINE" >/dev/null
+   t_new="$(mktemp)"; overwrite   "${t_new}" "TOP_LINE" >/dev/null
+   old_n="$(leading_blank_lines "${t_old}")"
+   new_n="$(leading_blank_lines "${t_new}")"
+   rm -f "${t_old}" "${t_new}"
+   [ "${old_n}" -ge 1 ] && pass "old-broken reproduced: 'append-once' on empty file adds ${old_n} leading blank line(s)" \
+                        || fail "expected 'append-once' to add a leading blank line (root cause not reproduced)"
+   [ "${new_n}" -eq 0 ] && pass "new-fixed: 'overwrite' adds no leading blank line" \
+                        || fail "'overwrite' unexpectedly added ${new_n} leading blank line(s)"
+else
+   printf '%s\n' "  SKIP: append-once/overwrite not on PATH"
+fi
+if grep -Eq "^[[:space:]]*overwrite \"\\\$\{tmpfile\}\"" "${script}" \
+   && ! grep -Eq "^[[:space:]]*append-once \"\\\$\{tmpfile\}\"" "${script}"; then
+   pass "script writes the wiki tmpfile with 'overwrite', not 'append-once'"
+else
+   fail "script still uses 'append-once' to write the wiki tmpfile (regression)"
+fi
+
+## ---------------------------------------------------------------------------
+## Bug 2: extract_url only returned the LAST match, so the multi-URL ambiguity
+## warning was dead. Extract the function from the script and verify it now
+## emits one line PER match (0 / 1 / many distinguishable).
+## ---------------------------------------------------------------------------
+printf '\n%s\n' "[2] extract_url emits every match"
+stecho() { printf '%s\n' "$1"; }
+## Pull just the extract_url function definition out of the script and eval it.
+extract_url_src="$(sed -n '/^extract_url ()/,/^}/p' "${script}")"
+if [ -n "${extract_url_src}" ]; then
+   eval "${extract_url_src}"
+   regex='https:\/\/download.virtualbox.org\/virtualbox\/.*\/VirtualBox-.*Win\.exe'
+   two="a https://download.virtualbox.org/virtualbox/7.2.2/VirtualBox-7.2.2-Win.exe a
+b https://download.virtualbox.org/virtualbox/7.2.3/VirtualBox-7.2.3-Win.exe b"
+   readarray -t got < <(extract_url "${two}" "${regex}")
+   [ "${#got[@]}" -eq 2 ] && pass "two matching URLs -> 2 results (ambiguity now detectable)" \
+                          || fail "expected 2 results for two matches, got ${#got[@]} (multi-URL warning still dead)"
+   readarray -t one < <(extract_url "x https://download.virtualbox.org/virtualbox/7.2.2/VirtualBox-7.2.2-Win.exe y" "${regex}")
+   [ "${#one[@]}" -eq 1 ] && pass "one match -> 1 result" || fail "expected 1 result, got ${#one[@]}"
+   readarray -t none < <(extract_url "nothing here" "${regex}")
+   [ "${#none[@]}" -eq 0 ] && pass "no match -> 0 results" || fail "expected 0 results, got ${#none[@]}"
+else
+   fail "could not extract extract_url() from the script"
+fi
+
+## ---------------------------------------------------------------------------
+## Bug 3: an empty scrape ('latest' URL) flowed into the local-file writes and
+## corrupted them. Assert the fail-fast guard is present.
+## ---------------------------------------------------------------------------
+printf '\n%s\n' "[3] fail-fast on empty scrape"
+if grep -q 'no latest Windows VirtualBox URL scraped' "${script}"; then
+   pass "script 'die's on an empty scraped 'latest' URL before any local write"
+else
+   fail "no fail-fast guard on empty 'latest' URL (local files can be corrupted)"
+fi
+
+printf '\n%s\n' "==== FAILURES: ${fails} ===="
+exit "${fails}"

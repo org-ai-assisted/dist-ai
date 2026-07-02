@@ -1,0 +1,2 @@
+usr/bin/git-meld-tests usr/bin/
+usr/share/git-meld-tests/*.sh usr/share/git-meld-tests/

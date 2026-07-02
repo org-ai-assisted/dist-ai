@@ -1,0 +1,71 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Adversarial test runner for developer-meta-files' 'git-meld' external diff
+## driver. Security property under test: a real submodule-gitlink change must
+## NEVER be rendered as empty output (hidden from the reviewer). Regression
+## guard for the '|| true'-hides-changes / '--no-ext-diff'-misplacement bugs.
+##
+## Usage:
+##   git-meld-tests [/path/to/git-meld]
+##   GIT_MELD_OLD_REF=<gitref> git-meld-tests   # also prove the OLD code hid changes
+##
+## Default git-meld: the in-repo copy if run from a checkout, else the installed
+## /usr/bin/git-meld.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+mydir="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )"
+## Test payload library: installed share dir, or the in-repo path when running
+## from a dist-ai checkout.
+if [ -r "/usr/share/git-meld-tests/adversarial-lib.sh" ]; then
+   lib="/usr/share/git-meld-tests/adversarial-lib.sh"
+else
+   lib="${mydir}/../share/git-meld-tests/adversarial-lib.sh"
+fi
+
+git_meld="${1:-}"
+if [ -z "${git_meld}" ]; then
+   for cand in \
+      "${mydir}/../../derivative-maker/packages/kicksecure/developer-meta-files/usr/bin/git-meld" \
+      "/usr/bin/git-meld" ; do
+      if [ -x "${cand}" ]; then git_meld="${cand}"; break; fi
+   done
+fi
+[ -n "${git_meld}" ] && [ -x "${git_meld}" ] || { printf '%s\n' "ERROR: git-meld not found; pass it as arg 1." >&2; exit 2; }
+
+printf '%s\n' "== git-meld-tests: adversarial hidden-change suite =="
+printf '%s\n' "git-meld under test: ${git_meld}"
+
+## Optional: demonstrate the OLD (pre-fix) code HID changes, if a ref is given
+## and we are inside the developer-meta-files repo.
+if [ -n "${GIT_MELD_OLD_REF:-}" ]; then
+   dmf_repo="$(dirname -- "${git_meld}")/../"
+   old_copy="$(mktemp)"
+   if git -C "${dmf_repo}" show "${GIT_MELD_OLD_REF}:usr/bin/git-meld" > "${old_copy}" 2>/dev/null; then
+      chmod +x "${old_copy}"
+      printf '\n%s\n' "-- OLD code (${GIT_MELD_OLD_REF}): expected to HIDE changes (non-zero failures) --"
+      old_fails=0
+      bash "${lib}" "${old_copy}" || old_fails=$?
+      printf '%s\n' "OLD hidden-change failures: ${old_fails} (a non-zero count here is the bug being reproduced)"
+   fi
+   rm -f "${old_copy}"
+fi
+
+printf '\n%s\n' "-- CURRENT code: expected 0 hidden-change failures --"
+new_fails=0
+bash "${lib}" "${git_meld}" || new_fails=$?
+if [ "${new_fails}" != 0 ]; then
+   printf '%s\n' "FAIL: git-meld hid ${new_fails} real change(s) -- a review tool must never do that." >&2
+   exit 1
+fi
+printf '%s\n' "PASS: no real change was hidden."

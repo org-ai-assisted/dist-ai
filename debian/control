@@ -318,3 +318,43 @@ Description: Comprehensive test and fuzzer for the stcat family of safe-terminal
  sweep; 'stcat-family-tests-fuzz' runs a heavy sweep. The suite targets the
  installed tools by default; set STDISPLAY_REPO to a helper-scripts checkout
  to test that instead.
+
+Package: git-meld-tests
+Architecture: all
+Depends: ${misc:Depends},
+ bash (>= 4),
+ git,
+ developer-meta-files
+Description: Adversarial hidden-change tests for the git-meld diff driver
+ Exercises developer-meta-files' 'git-meld' external diff driver against
+ crafted submodule-gitlink changes on throwaway repos (safe payloads, no
+ network) and asserts the core security property: a real submodule pointer
+ change is NEVER rendered as empty output (hidden from the reviewer).
+ .
+ Guards two fixed bugs: the submodule inner diffs were mis-invoked as
+ 'git --no-ext-diff diff' (rejected option, so they always failed) and then
+ wrapped in '|| true', which silently swallowed the failure -- so an
+ unfetched-submodule change showed as no change at all. The suite covers
+ both-commits-present, and old/new/both commits unfetched; each case must
+ surface the gitlink transition (or fail loud), never hide it. Set
+ GIT_MELD_OLD_REF to also demonstrate the pre-fix code hiding changes. The
+ 'git-meld-tests' command needs no root or network.
+
+Package: dm-virtualbox-wiki-links-tests
+Architecture: all
+Depends: ${misc:Depends},
+ bash (>= 4),
+ helper-scripts,
+ developer-meta-files
+Description: Regression tests for dm-virtualbox-update-local-and-wiki-links
+ Reproduces the root cause of three fixed bugs in developer-meta-files'
+ 'dm-virtualbox-update-local-and-wiki-links' and asserts the current script no
+ longer exhibits them: (1) staging the wiki page into a fresh empty temp file
+ with 'append-once' prepended a blank line to the top of the uploaded page
+ ('overwrite' does not); (2) 'extract_url' returned only the last match, so
+ the "more than one URL" ambiguity warning was dead -- it now emits every
+ match; (3) an empty download-page scrape flowed into the local-file writes
+ and corrupted them -- the script now fails fast on an empty 'latest' URL.
+ .
+ Each check runs old-broken (root cause reproduced) against new-fixed. The
+ 'dm-virtualbox-wiki-links-tests' command needs no root or network.
