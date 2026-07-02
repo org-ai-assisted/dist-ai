@@ -5,6 +5,8 @@
 
 ## AI-Assisted
 
+## style-ok: no-safe-rm (rm -f of a mktemp temp only)
+
 ## Adversarial test runner for developer-meta-files' 'git-meld' external diff
 ## driver. Security property under test: a real submodule-gitlink change must
 ## NEVER be rendered as empty output (hidden from the reviewer). Regression
@@ -25,13 +27,22 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 
 mydir="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )"
-## Test payload library: installed share dir, or the in-repo path when running
+## Test payload directory: installed share dir, or the in-repo path when running
 ## from a dist-ai checkout.
-if [ -r "/usr/share/git-meld-tests/adversarial-lib.sh" ]; then
-   lib="/usr/share/git-meld-tests/adversarial-lib.sh"
+if [ -d "/usr/share/git-meld-tests" ]; then
+   share="/usr/share/git-meld-tests"
 else
-   lib="${mydir}/../share/git-meld-tests/adversarial-lib.sh"
+   share="${mydir}/../share/git-meld-tests"
 fi
+## Adversarial suites to run (NOT the fuzzer -- that has its own runner):
+##  - adversarial-lib.sh: direct-invocation, submodule hidden-change.
+##  - adversarial-comprehensive-lib.sh: real 'git diff' covering mode-only,
+##    symlink, gitlink-content spoof, Trojan-Source Unicode, and files git
+##    skips (binary/.gitattributes) via the re-dispatch pre-flight.
+adversarial_libs=(
+   "${share}/adversarial-lib.sh"
+   "${share}/adversarial-comprehensive-lib.sh"
+)
 
 git_meld="${1:-}"
 if [ -z "${git_meld}" ]; then
@@ -41,10 +52,25 @@ if [ -z "${git_meld}" ]; then
       if [ -x "${cand}" ]; then git_meld="${cand}"; break; fi
    done
 fi
-[ -n "${git_meld}" ] && [ -x "${git_meld}" ] || { printf '%s\n' "ERROR: git-meld not found; pass it as arg 1." >&2; exit 2; }
+if [ -z "${git_meld}" ] || [ ! -x "${git_meld}" ]; then
+   printf '%s\n' "ERROR: git-meld not found; pass it as arg 1." >&2
+   exit 2
+fi
 
-printf '%s\n' "== git-meld-tests: adversarial hidden-change suite =="
+printf '%s\n' "== git-meld-tests: adversarial hidden-change suites =="
 printf '%s\n' "git-meld under test: ${git_meld}"
+
+run_suites () {
+   ## Run every adversarial suite against $1; echo the total failure count.
+   local target="$1" total=0 rc
+   local suite
+   for suite in "${adversarial_libs[@]}"; do
+      rc=0
+      bash "${suite}" "${target}" || rc=$?
+      total=$((total + rc))
+   done
+   printf '%s' "${total}"
+}
 
 ## Optional: demonstrate the OLD (pre-fix) code HID changes, if a ref is given
 ## and we are inside the developer-meta-files repo.
@@ -53,19 +79,17 @@ if [ -n "${GIT_MELD_OLD_REF:-}" ]; then
    old_copy="$(mktemp)"
    if git -C "${dmf_repo}" show "${GIT_MELD_OLD_REF}:usr/bin/git-meld" > "${old_copy}" 2>/dev/null; then
       chmod +x "${old_copy}"
-      printf '\n%s\n' "-- OLD code (${GIT_MELD_OLD_REF}): expected to HIDE changes (non-zero failures) --"
-      old_fails=0
-      bash "${lib}" "${old_copy}" || old_fails=$?
-      printf '%s\n' "OLD hidden-change failures: ${old_fails} (a non-zero count here is the bug being reproduced)"
+      printf '\n%s\n' "-- OLD code (${GIT_MELD_OLD_REF}): expected to HIDE changes (non-zero total) --"
+      old_fails="$(run_suites "${old_copy}")"
+      printf '%s\n' "OLD hidden-change failures: ${old_fails} (non-zero == the bug reproduced)"
    fi
    rm -f "${old_copy}"
 fi
 
 printf '\n%s\n' "-- CURRENT code: expected 0 hidden-change failures --"
-new_fails=0
-bash "${lib}" "${git_meld}" || new_fails=$?
+new_fails="$(run_suites "${git_meld}")"
 if [ "${new_fails}" != 0 ]; then
    printf '%s\n' "FAIL: git-meld hid ${new_fails} real change(s) -- a review tool must never do that." >&2
    exit 1
 fi
-printf '%s\n' "PASS: no real change was hidden."
+printf '%s\n' "PASS: no real change was hidden across all adversarial suites."

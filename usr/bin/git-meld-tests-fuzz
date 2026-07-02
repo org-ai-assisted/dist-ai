@@ -1,0 +1,51 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Fuzz runner for git-meld's hidden-change invariant: over many random commits
+## (random change types + adversarial blob contents), EVERY path git reports as
+## changed must appear in what a reviewer running 'git meld' sees. Deterministic
+## given a seed. Safe payloads only; no root or network.
+##
+## Usage: git-meld-tests-fuzz [/path/to/git-meld] [iterations] [seed]
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+mydir="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )"
+if [ -r "/usr/share/git-meld-tests/fuzz-lib.sh" ]; then
+   lib="/usr/share/git-meld-tests/fuzz-lib.sh"
+else
+   lib="${mydir}/../share/git-meld-tests/fuzz-lib.sh"
+fi
+
+git_meld="${1:-}"
+if [ -z "${git_meld}" ]; then
+   for cand in \
+      "${mydir}/../../derivative-maker/packages/kicksecure/developer-meta-files/usr/bin/git-meld" \
+      "/usr/bin/git-meld" ; do
+      if [ -x "${cand}" ]; then git_meld="${cand}"; break; fi
+   done
+fi
+if [ -z "${git_meld}" ] || [ ! -x "${git_meld}" ]; then
+   printf '%s\n' "ERROR: git-meld not found; pass it as arg 1." >&2
+   exit 2
+fi
+
+iters="${2:-300}"
+seed="${3:-1}"
+
+fails=0
+bash "${lib}" "${git_meld}" "${iters}" "${seed}" || fails=$?
+if [ "${fails}" != 0 ]; then
+   printf '%s\n' "FAIL: fuzzing found ${fails} hidden change(s)." >&2
+   exit 1
+fi
+printf '%s\n' "PASS: no hidden change across ${iters} fuzz iterations (seed ${seed})."

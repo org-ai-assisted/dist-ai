@@ -325,20 +325,25 @@ Depends: ${misc:Depends},
  bash (>= 4),
  git,
  developer-meta-files
-Description: Adversarial hidden-change tests for the git-meld diff driver
- Exercises developer-meta-files' 'git-meld' external diff driver against
- crafted submodule-gitlink changes on throwaway repos (safe payloads, no
- network) and asserts the core security property: a real submodule pointer
- change is NEVER rendered as empty output (hidden from the reviewer).
+Description: Adversarial + fuzz hidden-change tests for the git-meld diff driver
+ Exercises developer-meta-files' 'git-meld' external diff driver against crafted
+ changes on throwaway repos (safe payloads, no network) and asserts its core
+ security property: a real change is NEVER rendered as empty/misleading output
+ (a change the reviewer cannot see is one an attacker can hide).
  .
- Guards two fixed bugs: the submodule inner diffs were mis-invoked as
- 'git --no-ext-diff diff' (rejected option, so they always failed) and then
- wrapped in '|| true', which silently swallowed the failure -- so an
- unfetched-submodule change showed as no change at all. The suite covers
- both-commits-present, and old/new/both commits unfetched; each case must
- surface the gitlink transition (or fail loud), never hide it. Set
- GIT_MELD_OLD_REF to also demonstrate the pre-fix code hiding changes. The
- 'git-meld-tests' command needs no root or network.
+ 'git-meld-tests' runs two adversarial suites: (1) direct-invocation
+ submodule-gitlink cases (commits present, and old/new/both unfetched) that must
+ surface the gitlink transition or fail loud; (2) a real-'git diff' suite
+ covering mode-only changes (+x), symlink swaps, a regular file whose content
+ spoofs a 'Subproject commit' gitlink, Trojan-Source bidi/invisible Unicode, and
+ files git skips entirely (marked binary/-diff by .gitattributes) which must
+ still appear in the 'git meld' re-dispatch pre-flight. Set GIT_MELD_OLD_REF to
+ also demonstrate the pre-hardening code hiding changes.
+ .
+ 'git-meld-tests-fuzz' generates many random commits (random change types +
+ adversarial blob contents: NUL/binary, bidi, gitlink-mimic, BOM, long lines)
+ and asserts every path git reports as changed appears in what a reviewer sees.
+ Deterministic given a seed. Both commands need no root or network.
 
 Package: dm-virtualbox-wiki-links-tests
 Architecture: all
