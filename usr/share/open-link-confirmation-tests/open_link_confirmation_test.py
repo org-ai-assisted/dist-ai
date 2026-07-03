@@ -200,10 +200,11 @@ INJECTION_CASES = {
     "tag_img_remote": "<img src='http://example.com/p.png'>",
     "lone_lt": "a < b > c",
     "entity_anchor": "&lt;a href='http://example.com'&gt;x&lt;/a&gt;",
-    ## Known parser-differential bypasses (see KNOWN_VULN). A '<' followed by
-    ## whitespace then a tag name is inert to Python's html.parser (passes
-    ## through verbatim) but Qt's parser skips the whitespace and builds the
-    ## tag, so an attacker-controlled link/image lands in the dialog.
+    ## Parser-differential cases (formerly KNOWN_VULN, now fixed and asserted as
+    ## hard controls). A '<' followed by whitespace then a tag name is inert to
+    ## Python's html.parser (passes through verbatim) but Qt's parser skips the
+    ## whitespace and builds the tag; the fixed strip_markup neuters the residual
+    ## '<', so none of these inject any more.
     "ws_space_anchor": "< a href='http://example.com'>x</a>",
     "ws_tab_anchor": "<\ta href='http://example.com'>x",
     "ws_newline_anchor": "<\na href='http://example.com'>x",
@@ -214,24 +215,18 @@ INJECTION_CASES = {
     "ws_img_no_close": "< img src='http://example.com/p.png'",
 }
 
-## Cases known to slip through the DEPLOYED sanitize-string. Strict xfail: if
-## one of these is no longer injecting, the suite FAILS asking you to promote it
-## to a hard control. The root fix is already committed in helper-scripts
-## strip_markup (neuter residual '<'); these xfails will flip automatically once
-## the fixed sanitize-string package is installed, at which point they should be
-## promoted out of KNOWN_VULN. Tracked finding: sanitize-string output is safe
-## only against Python's html.parser notion of a tag; the dialog renders with
-## Qt's more lenient parser. See the sanitize-string-tests suite for the proof.
-KNOWN_VULN = {
-    "ws_space_anchor",
-    "ws_tab_anchor",
-    "ws_newline_anchor",
-    "ws_multi_anchor",
-    "ws_upper_anchor",
-    "ws_space_img",
-    "ws_space_img_file",
-    "ws_img_no_close",
-}
+## Bypasses that are still known-unfixed in the DEPLOYED sanitize-string. Strict
+## xfail: a name listed here is expected to inject; if it no longer injects the
+## suite FAILS asking you to promote it to a hard control. The parser-
+## differential '< tag' bypasses (ws_* below) were the tracked finding here --
+## '<' + whitespace + a tag name was inert to Python's html.parser but Qt's
+## parser skipped the whitespace and built the tag. The root fix landed in
+## helper-scripts strip_markup (neuter residual '<'); the fixed sanitize-string
+## now blocks all of them, so they were promoted out of KNOWN_VULN and are
+## asserted as hard controls in the loop below (not injected -> PASS; any
+## reappearance -> a hard FAIL as a NEW injection vector). The registry is now
+## empty. See the sanitize-string-tests suite for the parser-differential proof.
+KNOWN_VULN = set()
 
 ## The wrapper open-link-confirmation builds around the sanitized link/file in
 ## the confirmation dialog (workstation()/final()/qubes_redirect()): the value
