@@ -129,10 +129,12 @@ s1_dest="${workdir}/normal/dest"
 mkdir --parents -- "${s1_dest}"
 make_fixture "${s1_pkg}"
 do_install "${s1_pkg}" "${s1_dest}"
-if [ "${rc}" -eq 0 ] && [ -f "${s1_dest}/usr/bin/normalfile" ]; then
-   pass "normal file installed (exit 0)"
+## Assert both the regular file AND its containing directory installed (the loop
+## fixes modes for files and directories on separate branches).
+if [ "${rc}" -eq 0 ] && [ -f "${s1_dest}/usr/bin/normalfile" ] && [ -d "${s1_dest}/usr/bin" ]; then
+   pass "normal file and directory installed (exit 0)"
 else
-   fail "normal file: exit ${rc}, normalfile present=$( [ -f "${s1_dest}/usr/bin/normalfile" ] && echo yes || echo no )"
+   fail "normal file: exit ${rc}, normalfile present=$( [ -f "${s1_dest}/usr/bin/normalfile" ] && echo yes || echo no ), usr/bin dir=$( [ -d "${s1_dest}/usr/bin" ] && echo yes || echo no )"
    printf '%s\n' "${out}" | tail -10
 fi
 
@@ -147,15 +149,93 @@ mkdir --parents -- "${s2_dest}"
 make_fixture "${s2_pkg}"
 ln --symbolic -- /etc/hostname "${s2_pkg}/usr/bin/abslink"
 do_install "${s2_pkg}" "${s2_dest}"
-if [ "${rc}" -ne 0 ] && printf '%s\n' "${out}" | grep --quiet -- 'safe-links'; then
-   pass "escaping symlink aborts install with a safe-links message (exit ${rc})"
+## Anchor on the guard's own message ('refusing to install'), NOT the bare
+## 'safe-links' substring: 'genmkfile install' itself runs 'rsync --safe-links',
+## so that flag can appear in incidental output. Also assert the symlink was in
+## fact not installed.
+if [ "${rc}" -ne 0 ] \
+   && printf '%s\n' "${out}" | grep --quiet -- 'refusing to install' \
+   && [ ! -e "${s2_dest}/usr/bin/abslink" ]; then
+   pass "escaping symlink fails loud with the guard message; symlink not installed (exit ${rc})"
 else
-   fail "escaping symlink: expected non-zero exit + 'safe-links' message, got exit ${rc}"
+   fail "escaping symlink: expected non-zero exit + 'refusing to install' + symlink absent, got exit ${rc}"
    printf '%s\n' "${out}" | tail -10
 fi
 ## It must NOT abort with the bare, cryptic 'stat' error (the pre-fix symptom).
 if printf '%s\n' "${out}" | grep --quiet -- 'cannot statx'; then
    fail "escaping symlink: aborted with the cryptic 'cannot statx' (pre-fix behavior)"
+fi
+
+## ---- Scenario 2b: escaping symlink over a STALE destination -> fail loud. ----
+## On a reinstall/upgrade the DESTDIR may already hold a stale file at the
+## symlink's path. 'rsync --safe-links' still drops the escaping source symlink,
+## so the stale file remains and the destination "exists". The guard must key on
+## the SOURCE (a symlink whose destination is not itself a symlink), so it still
+## fails loud here rather than silently chmod-ing the stale file.
+printf '\n===== scenario: absolute (escaping) symlink over a stale destination =====\n'
+s2b_pkg="${workdir}/escaping-stale/pkg"
+s2b_dest="${workdir}/escaping-stale/dest"
+mkdir --parents -- "${s2b_dest}/usr/bin"
+make_fixture "${s2b_pkg}"
+ln --symbolic -- /etc/hostname "${s2b_pkg}/usr/bin/abslink"
+## Pre-seed a stale regular file at the destination path.
+printf '%s\n' "stale content from a previous install" > "${s2b_dest}/usr/bin/abslink"
+do_install "${s2b_pkg}" "${s2b_dest}"
+## Guard must fire even though the destination "exists" (the stale file), and the
+## escaping symlink must NOT have replaced it (destination stays a non-symlink).
+if [ "${rc}" -ne 0 ] \
+   && printf '%s\n' "${out}" | grep --quiet -- 'refusing to install' \
+   && [ ! -L "${s2b_dest}/usr/bin/abslink" ]; then
+   pass "escaping symlink over stale dest fails loud; symlink not installed (exit ${rc})"
+else
+   fail "escaping symlink over stale dest: expected non-zero exit + 'refusing to install' + dest still non-symlink, got exit ${rc}"
+   printf '%s\n' "${out}" | tail -10
+fi
+## Must not regress into the cryptic 'stat' abort here either.
+if printf '%s\n' "${out}" | grep --quiet -- 'cannot statx'; then
+   fail "escaping symlink over stale dest: aborted with the cryptic 'cannot statx'"
+fi
+
+## ---- Scenario 2c: escaping symlink over a stale SYMLINK -> fail loud. ----
+## The nastiest stale case: DESTDIR holds a stale SYMLINK (a previous version's
+## in-tree link) at the path where the source is now an escaping symlink. A
+## destination '-L' test alone would treat the stale symlink as "installed" and
+## miss the drop; the guard must compare link TARGETS and still fail loud.
+printf '\n===== scenario: absolute (escaping) symlink over a stale symlink =====\n'
+s2c_pkg="${workdir}/escaping-stale-link/pkg"
+s2c_dest="${workdir}/escaping-stale-link/dest"
+mkdir --parents -- "${s2c_dest}/usr/bin"
+make_fixture "${s2c_pkg}"
+ln --symbolic -- /etc/hostname "${s2c_pkg}/usr/bin/abslink"
+## Pre-seed a stale symlink with a DIFFERENT target at the destination path.
+ln --symbolic -- ./some-old-target "${s2c_dest}/usr/bin/abslink"
+do_install "${s2c_pkg}" "${s2c_dest}"
+if [ "${rc}" -ne 0 ] && printf '%s\n' "${out}" | grep --quiet -- 'refusing to install'; then
+   pass "escaping symlink over stale symlink fails loud (exit ${rc})"
+else
+   fail "escaping symlink over stale symlink: expected non-zero exit + 'refusing to install', got exit ${rc}"
+   printf '%s\n' "${out}" | tail -10
+fi
+
+## ---- Scenario 2d: a SAFE relative in-tree symlink -> installed. ----
+## Positive control: a relative symlink whose target exists inside the tree is
+## kept by 'rsync --safe-links', so the guard must NOT fire and the symlink must
+## be installed.
+printf '\n===== scenario: safe relative in-tree symlink =====\n'
+s2d_pkg="${workdir}/safe-link/pkg"
+s2d_dest="${workdir}/safe-link/dest"
+mkdir --parents -- "${s2d_dest}"
+make_fixture "${s2d_pkg}"
+printf '%s\n' "link target content" > "${s2d_pkg}/usr/bin/realtarget"
+ln --symbolic -- ./realtarget "${s2d_pkg}/usr/bin/safelink"
+do_install "${s2d_pkg}" "${s2d_dest}"
+if [ "${rc}" -eq 0 ] \
+   && [ -L "${s2d_dest}/usr/bin/safelink" ] \
+   && [ -f "${s2d_dest}/usr/bin/realtarget" ]; then
+   pass "safe in-tree symlink installed; guard did not fire (exit 0)"
+else
+   fail "safe in-tree symlink: exit ${rc}, safelink=$( [ -L "${s2d_dest}/usr/bin/safelink" ] && echo yes || echo no )"
+   printf '%s\n' "${out}" | tail -10
 fi
 
 ## ---- Scenario 3: a dangling in-tree symlink -> tolerated. ----
