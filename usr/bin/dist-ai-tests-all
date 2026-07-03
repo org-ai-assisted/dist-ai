@@ -1,0 +1,235 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## Orchestrator: run the dist-ai regression/fuzz/e2e/integration suites,
+## aggregate PASS / FAIL / SKIP / TIMEOUT, and exit non-zero if any FAILed.
+##
+## Usage:
+##   dist-ai-tests-all [--core] [--fuzz] [--e2e] [--integration] [--all]
+##                     [--repo-root DIR] [--progress FILE]
+##                     [--timeout-core N] [--timeout-fuzz N] [--timeout-heavy N]
+##                     [--list]
+##
+## With no category flag, only --core runs. --repo-root points every suite at a
+## derivative-maker checkout (so the in-tree code is tested, not the installed
+## package); without it each suite falls back to its installed / auto path.
+## A suite that cannot find its target exits 77 and is reported SKIP.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+mydir="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )"
+
+repo_root=""
+progress_file=""
+run_core="false"
+run_fuzz="false"
+run_e2e="false"
+run_integration="false"
+list_only="false"
+timeout_core=300
+timeout_fuzz=600
+timeout_heavy=600
+
+## Suite registries. Each name is an entrypoint in the same bin dir as this
+## script. mediawiki-dom-snapshot is a capture tool, not a pass/fail test, so
+## it is deliberately excluded.
+core_suites=(
+   check-ref-commits-for-unicode-tests
+   dm-virtualbox-wiki-links-tests
+   genmkfile-tests
+   git-meld-tests
+   grep-find-unicode-wrapper-tests
+   onion-grater-tests
+   open-link-confirmation-tests
+   privleap-tests
+   sanitize-string-tests
+   sdwdate-gui-tests
+   stcat-family-tests
+   stdisplay-tests
+   unicode-show-tests
+)
+fuzz_suites=(
+   check-ref-commits-for-unicode-tests-fuzz
+   git-meld-tests-fuzz
+   grep-find-unicode-wrapper-tests-fuzz
+   privleap-tests-fuzz
+   privleap-tests-fuzz-atheris
+   privleap-tests-session-fuzz
+   sanitize-string-tests-fuzz
+   sdwdate-gui-tests-fuzz
+   stcat-family-tests-fuzz
+   stdisplay-tests-fuzz
+   unicode-show-tests-fuzz
+)
+e2e_suites=(
+   onion-grater-tests-e2e
+   privleap-tests-e2e
+   privleap-tests-e2e-systemd
+)
+integration_suites=(
+   sdwdate-gui-tests-integration
+)
+
+usage() {
+   sed -n '10,24p' "${BASH_SOURCE[0]}" | sed 's/^## \{0,1\}//'
+}
+
+## Resolve a package checkout path under --repo-root, or empty when unset.
+pkg_dir() {
+   local name="$1"
+   [ -n "${repo_root}" ] || return 0
+   case "${name}" in
+      onion-grater)
+         printf '%s' "${repo_root}/packages/whonix/onion-grater" ;;
+      *)
+         printf '%s' "${repo_root}/packages/kicksecure/${name}" ;;
+   esac
+}
+
+## Given a suite name, populate wire_env (array of VAR=VALUE) and wire_args
+## (array of positional args) so the suite targets the checkout. No-op when
+## --repo-root is unset.
+wire() {
+   local suite="$1"
+   local base="${suite%%-tests*}"
+   wire_env=()
+   wire_args=()
+   [ -n "${repo_root}" ] || return 0
+
+   local hs dmf
+   hs="$( pkg_dir helper-scripts )"
+   dmf="$( pkg_dir developer-meta-files )"
+
+   case "${base}" in
+      check-ref-commits-for-unicode)
+         wire_env=( "CHECK_REF_COMMITS_REPO=${hs}" ) ;;
+      grep-find-unicode-wrapper)
+         wire_env=( "GREP_FIND_UNICODE_WRAPPER_REPO=${hs}" ) ;;
+      unicode-show)
+         wire_env=( "UNICODE_SHOW_REPO=${hs}" ) ;;
+      stcat-family|stdisplay)
+         wire_env=( "STDISPLAY_REPO=${hs}" ) ;;
+      sanitize-string)
+         wire_env=( "SANITIZE_STRING_BIN=${hs}/usr/bin/sanitize-string" ) ;;
+      onion-grater)
+         wire_env=( "ONION_GRATER_REPO=$( pkg_dir onion-grater )" ) ;;
+      privleap)
+         wire_env=( "PRIVLEAP_REPO=$( pkg_dir privleap )" ) ;;
+      genmkfile)
+         wire_env=( "GENMKFILE_BIN=$( pkg_dir genmkfile )/usr/bin/genmkfile" ) ;;
+      open-link-confirmation)
+         wire_env=(
+            "OPEN_LINK_CONFIRMATION_BIN=$( pkg_dir open-link-confirmation )/usr/libexec/open-link-confirmation/open-link-confirmation"
+            "SANITIZE_STRING_BIN=${hs}/usr/bin/sanitize-string"
+         ) ;;
+      sdwdate-gui)
+         wire_env=( "PYTHONPATH=$( pkg_dir sdwdate-gui )/usr/lib/python3/dist-packages" ) ;;
+      git-meld)
+         wire_args=( "${dmf}/usr/bin/git-meld" ) ;;
+      dm-virtualbox-wiki-links)
+         wire_args=( "${dmf}/usr/bin/dm-virtualbox-update-local-and-wiki-links" ) ;;
+      *)
+         printf 'dist-ai-tests-all: no wiring for suite %s\n' "${suite}" >&2
+         return 1 ;;
+   esac
+}
+
+emit() {
+   local line="$1"
+   printf '%s\n' "${line}"
+   if [ -n "${progress_file}" ]; then
+      printf '%s\n' "${line}" >> "${progress_file}"
+   fi
+}
+
+pass_count=0
+fail_count=0
+skip_count=0
+
+run_suite() {
+   local suite="$1" category="$2" tmo="$3"
+   local entry="${mydir}/${suite}"
+   if [ ! -x "${entry}" ]; then
+      emit "$( printf '%-38s %-12s MISSING' "${suite}" "[${category}]" )"
+      skip_count=$(( skip_count + 1 ))
+      return 0
+   fi
+   wire "${suite}"
+   local rc=0
+   timeout "${tmo}" env "${wire_env[@]}" "${entry}" "${wire_args[@]}" \
+      >"/tmp/dist-ai-tests-all.${suite}.log" 2>&1 || rc=$?
+   local verdict
+   case "${rc}" in
+      0)   verdict="PASS" ;    pass_count=$(( pass_count + 1 )) ;;
+      77)  verdict="SKIP" ;    skip_count=$(( skip_count + 1 )) ;;
+      124) verdict="TIMEOUT" ; fail_count=$(( fail_count + 1 )) ;;
+      *)   verdict="FAIL(${rc})" ; fail_count=$(( fail_count + 1 )) ;;
+   esac
+   emit "$( printf '%-38s %-12s %s' "${suite}" "[${category}]" "${verdict}" )"
+}
+
+while [ "$#" -gt 0 ]; do
+   case "$1" in
+      --core)          run_core="true" ;;
+      --fuzz)          run_fuzz="true" ;;
+      --e2e)           run_e2e="true" ;;
+      --integration)   run_integration="true" ;;
+      --all)           run_core="true" ; run_fuzz="true" ; run_e2e="true" ; run_integration="true" ;;
+      --repo-root)     repo_root="$2" ; shift ;;
+      --progress)      progress_file="$2" ; shift ;;
+      --timeout-core)  timeout_core="$2" ; shift ;;
+      --timeout-fuzz)  timeout_fuzz="$2" ; shift ;;
+      --timeout-heavy) timeout_heavy="$2" ; shift ;;
+      --list)          list_only="true" ;;
+      --help|-h)       usage ; exit 0 ;;
+      *)               printf 'dist-ai-tests-all: unknown option: %s\n' "$1" >&2 ; exit 2 ;;
+   esac
+   shift
+done
+
+## Default: core only.
+if [ "${run_core}" = "false" ] && [ "${run_fuzz}" = "false" ] \
+   && [ "${run_e2e}" = "false" ] && [ "${run_integration}" = "false" ]; then
+   run_core="true"
+fi
+
+if [ -n "${repo_root}" ] && [ ! -d "${repo_root}" ]; then
+   printf 'dist-ai-tests-all: --repo-root not a directory: %s\n' "${repo_root}" >&2
+   exit 2
+fi
+
+selected=()
+[ "${run_core}" = "true" ]        && selected+=( "${core_suites[@]/#/core:}" )
+[ "${run_fuzz}" = "true" ]        && selected+=( "${fuzz_suites[@]/#/fuzz:}" )
+[ "${run_e2e}" = "true" ]         && selected+=( "${e2e_suites[@]/#/e2e:}" )
+[ "${run_integration}" = "true" ] && selected+=( "${integration_suites[@]/#/integration:}" )
+
+if [ "${list_only}" = "true" ]; then
+   printf '%s\n' "${selected[@]}"
+   exit 0
+fi
+
+emit "== dist-ai-tests-all: $( date --utc '+%Y-%m-%dT%H:%M:%SZ' ) =="
+[ -n "${repo_root}" ] && emit "== repo-root: ${repo_root} =="
+
+for item in "${selected[@]}"; do
+   category="${item%%:*}"
+   suite="${item#*:}"
+   case "${category}" in
+      core)        run_suite "${suite}" "${category}" "${timeout_core}" ;;
+      fuzz)        run_suite "${suite}" "${category}" "${timeout_fuzz}" ;;
+      e2e|integration) run_suite "${suite}" "${category}" "${timeout_heavy}" ;;
+   esac
+done
+
+emit "== summary: ${pass_count} pass, ${fail_count} fail, ${skip_count} skip/missing =="
+emit "== per-suite output: /tmp/dist-ai-tests-all.<suite>.log =="
+
+[ "${fail_count}" -eq 0 ]

@@ -29,6 +29,28 @@ Each component is independent. Each ships its own Debian binary
 package via `debian/<component>.install`. The repo follows the FHS
 layout used by the rest of the Kicksecure packaging tree.
 
+## dist-ai-tests-all
+
+There is no single "run everything" target beyond this. `dist-ai-tests-all`
+(`usr/bin/dist-ai-tests-all`) runs the suites in one pass, aggregates the
+per-suite result (PASS / FAIL / SKIP / TIMEOUT), and exits non-zero if any
+failed. Category flags select what runs -- `--core` (default), `--fuzz`,
+`--e2e`, `--integration`, or `--all`.
+
+Pass `--repo-root <derivative-maker>` to point every suite at an in-tree
+checkout (it wires each suite's `*_REPO` / `*_BIN` / `PYTHONPATH` / positional
+argument automatically) instead of the installed package; a suite whose target
+is absent exits 77 and is reported SKIP. `mediawiki-dom-snapshot` is a capture
+tool, not a pass/fail test, so it is not included.
+
+```
+# core suites against an in-tree checkout
+dist-ai-tests-all --core --repo-root ~/derivative-maker
+
+# everything (fuzz is long; e2e needs tor + sudo; integration needs a GUI stack)
+dist-ai-tests-all --all --repo-root ~/derivative-maker
+```
+
 ## mediawiki-dom-snapshot
 
 Drives headless Chromium via Playwright against a running MediaWiki,
