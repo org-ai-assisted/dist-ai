@@ -396,6 +396,47 @@ Description: Comprehensive test and fuzzer for grep-find-unicode-wrapper
  targets the installed wrapper by default; set GREP_FIND_UNICODE_WRAPPER_REPO to
  a helper-scripts checkout to test that instead.
 
+Package: check-ref-commits-for-unicode-tests
+Architecture: all
+Depends: ${misc:Depends},
+ python3,
+ git,
+ helper-scripts
+Description: Comprehensive test and fuzzer for check-ref-commits-for-unicode
+ check-ref-commits-for-unicode (from helper-scripts) is a git-ref guard that
+ scans every commit a ref introduces (git log HEAD..<ref>) for suspicious
+ Unicode and fails if any is found. For each new commit it runs git show and
+ pipes the result through unicode-show, so it scans not just the diff but the
+ commit message and the author / committer name and email -- the places a
+ Trojan-Source style attack can hide that a plain content scan misses. This
+ suite builds throwaway git repos and proves the whole contract end to end
+ against the real tool. No root, no network; git is run hermetically.
+ .
+ It asserts detection of a hostile codepoint hidden in each scanned location
+ (file content, commit message, author name, author email, committer name,
+ committer email), that the tool names the offending commit, and that its own
+ output stays pure ASCII while reporting (unicode-show renders findings as
+ [U+XXXX], so nothing raw reaches the terminal). It pins the design choices that
+ matter: --unified=0 (no false positive from empty context lines), --no-ext-diff
+ and --no-textconv (no external driver or filter hiding the bytes), and the
+ identity fields being included in the scan.
+ .
+ It also covers the benign path (a clean ref, including blank lines and a clean
+ merge commit, exits 0 -- so detection is non-vacuous), multi-commit isolation
+ (the dirty commit is flagged by sha while clean ones are logged clean), and the
+ usage / setup errors, each of which exits 1 with its own message (no ref given,
+ a nonexistent ref, a ref with no new commits, and a cwd that is not a git work
+ tree; exit 1 is overloaded, so the tests distinguish detection from error by the
+ message). A fuzz phase builds random commits whose payload is clean or carries a
+ suspicious character in a random location and checks the verdict against an
+ independent oracle, asserting exact agreement and pure-ASCII output.
+ .
+ 'check-ref-commits-for-unicode-tests' runs the corpus, semantics, and a default
+ fuzz sweep; 'check-ref-commits-for-unicode-tests-fuzz' runs a heavy sweep. Each
+ iteration builds a real commit, so it is heavier per iteration than the
+ byte-level sibling suites. The suite targets the installed tool by default; set
+ CHECK_REF_COMMITS_REPO to a helper-scripts checkout to test that instead.
+
 Package: git-meld-tests
 Architecture: all
 Depends: ${misc:Depends},

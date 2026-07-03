@@ -1,0 +1,37 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Comprehensive test + fuzz for check-ref-commits-for-unicode (the helper-scripts
+## git-ref guard that scans every commit a ref introduces -- git log HEAD..<ref>
+## -- for suspicious Unicode, checking each commit's diff AND its message AND the
+## author / committer name and email). Builds throwaway git repos and proves it
+## catches hostile Unicode hidden in each of those locations, exits 0 on a clean
+## ref (including blank lines and a clean merge), flags the right commit among
+## several, fails loud with a distinct message on each usage error (no ref /
+## missing ref / no new commits / not a work tree), and stays terminal-safe. A
+## fuzz phase builds random commits and checks the verdict against an independent
+## oracle. No root, no network; git config is neutralised for hermetic runs.
+## Targets the installed tool by default; set CHECK_REF_COMMITS_REPO to a
+## helper-scripts checkout to test that instead. Extra args (e.g. --iterations N,
+## --seed N) pass through.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/check-ref-commits-for-unicode-tests' ]; then
+   tests_dir='/usr/share/check-ref-commits-for-unicode-tests'
+else
+   tests_dir="${script_dir}/../share/check-ref-commits-for-unicode-tests"
+fi
+
+exec python3 -- "${tests_dir}/check_ref_commits_for_unicode_test.py" "$@"

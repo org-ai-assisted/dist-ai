@@ -20,6 +20,7 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 | `stcat-family-tests`     | shipping | `usr/share/stcat-family-tests/` |
 | `unicode-show-tests`     | shipping | `usr/share/unicode-show-tests/` |
 | `grep-find-unicode-wrapper-tests` | shipping | `usr/share/grep-find-unicode-wrapper-tests/` |
+| `check-ref-commits-for-unicode-tests` | shipping | `usr/share/check-ref-commits-for-unicode-tests/` |
 | `discourse-dom-snapshot` | planned  | `usr/share/discourse-dom-snapshot/` |
 | `sdwdate-ci-fuzz`        | planned  | `usr/share/sdwdate-ci-fuzz/` |
 
@@ -423,4 +424,33 @@ Trojan-Source set, and the C0-control/DEL/NUL grep.
 grep-find-unicode-wrapper-tests
 grep-find-unicode-wrapper-tests-fuzz        # heavy fuzz sweep
 GREP_FIND_UNICODE_WRAPPER_REPO=/path/to/helper-scripts grep-find-unicode-wrapper-tests
+```
+
+## check-ref-commits-for-unicode-tests
+
+Comprehensive test + fuzz for **check-ref-commits-for-unicode** -- the
+helper-scripts git-ref guard that scans every commit a ref introduces
+(`git log HEAD..<ref>`) for suspicious Unicode. For each new commit it pipes
+`git show` (with `--unified=0 --no-ext-diff --no-textconv` and a `--format` that
+includes the identity fields) through `unicode-show`, so it scans the **diff**,
+the commit **message**, and the **author / committer name and email**. The suite
+builds throwaway git repos and drives the real tool:
+
+- `[D]` detection by location: a hostile codepoint in content, message, author
+  name/email, or committer name/email each makes it exit `1` and name the commit.
+- `[S]` self-safety: while reporting a hostile commit, its output stays pure
+  ASCII (findings render as `[U+XXXX]`).
+- `[B]` benign: a clean ref (incl. blank lines and a clean merge) exits `0`.
+- `[M]` multi-commit: the dirty commit is flagged by sha, clean ones logged clean.
+- `[E]` errors: no ref / nonexistent ref / no new commits / not a work tree each
+  exit `1` with their own message (exit `1` is overloaded; distinguished by text).
+- `[F]` fuzz: random clean-or-suspicious commits vs an independent oracle -- exit
+  `1` iff something suspicious was injected, and output stays pure ASCII.
+
+### Usage
+
+```
+check-ref-commits-for-unicode-tests
+check-ref-commits-for-unicode-tests-fuzz    # heavy fuzz sweep
+CHECK_REF_COMMITS_REPO=/path/to/helper-scripts check-ref-commits-for-unicode-tests
 ```

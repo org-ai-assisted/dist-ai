@@ -1,0 +1,4 @@
+usr/bin/check-ref-commits-for-unicode-tests usr/bin/
+usr/bin/check-ref-commits-for-unicode-tests-fuzz usr/bin/
+usr/share/check-ref-commits-for-unicode-tests/*.py usr/share/check-ref-commits-for-unicode-tests/
+usr/share/check-ref-commits-for-unicode-tests/README.md usr/share/check-ref-commits-for-unicode-tests/
