@@ -61,7 +61,13 @@ printf '%s\n' "== git-meld-tests: adversarial hidden-change suites =="
 printf '%s\n' "git-meld under test: ${git_meld}"
 
 run_suites () {
-   ## Run every adversarial suite against $1; echo the total failure count.
+   ## Run every adversarial suite against $1, letting each suite's per-case
+   ## output through to stdout, and store the summed failure count (each suite
+   ## exits with its own count) in the global run_suites_total. The count is
+   ## returned via that global, NOT via stdout, on purpose: the suites print
+   ## their diagnostics to stdout, so a stdout-carried count would be
+   ## concatenated with all of it under command substitution and never compare
+   ## equal to 0 -- which made the runner always report a failure.
    local target="$1" total=0 rc
    local suite
    for suite in "${adversarial_libs[@]}"; do
@@ -69,7 +75,7 @@ run_suites () {
       bash "${suite}" "${target}" || rc=$?
       total=$((total + rc))
    done
-   printf '%s' "${total}"
+   run_suites_total="${total}"
 }
 
 ## Optional: demonstrate the OLD (pre-fix) code HID changes, if a ref is given
@@ -80,14 +86,16 @@ if [ -n "${GIT_MELD_OLD_REF:-}" ]; then
    if git -C "${dmf_repo}" show "${GIT_MELD_OLD_REF}:usr/bin/git-meld" > "${old_copy}" 2>/dev/null; then
       chmod +x "${old_copy}"
       printf '\n%s\n' "-- OLD code (${GIT_MELD_OLD_REF}): expected to HIDE changes (non-zero total) --"
-      old_fails="$(run_suites "${old_copy}")"
+      run_suites "${old_copy}"
+      old_fails="${run_suites_total}"
       printf '%s\n' "OLD hidden-change failures: ${old_fails} (non-zero == the bug reproduced)"
    fi
    rm -f "${old_copy}"
 fi
 
 printf '\n%s\n' "-- CURRENT code: expected 0 hidden-change failures --"
-new_fails="$(run_suites "${git_meld}")"
+run_suites "${git_meld}"
+new_fails="${run_suites_total}"
 if [ "${new_fails}" != 0 ]; then
    printf '%s\n' "FAIL: git-meld hid ${new_fails} real change(s) -- a review tool must never do that." >&2
    exit 1
