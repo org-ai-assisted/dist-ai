@@ -357,6 +357,45 @@ Description: Comprehensive test and fuzzer for the unicode-show suspicious-Unico
  installed unicode-show by default; set UNICODE_SHOW_REPO to a helper-scripts
  checkout to test that instead.
 
+Package: grep-find-unicode-wrapper-tests
+Architecture: all
+Depends: ${misc:Depends},
+ python3,
+ grep,
+ helper-scripts
+Description: Comprehensive test and fuzzer for grep-find-unicode-wrapper
+ grep-find-unicode-wrapper (from helper-scripts) is a bash wrapper around grep
+ that scans files for suspicious content and lists the files that contain any:
+ non-ASCII bytes, the bidi Trojan-Source control set (RHSB-2021-007), and ASCII
+ control bytes (C0 minus tab/newline, plus DEL and NUL). It is grep-like -- exit
+ 0 if a match was found, 1 if not, and it fails loud on a grep error -- and it
+ routes the matching file names through stecho so a filename that itself contains
+ Unicode cannot smuggle anything to the terminal. This suite proves the whole
+ contract end to end against the real wrapper. No root, no network.
+ .
+ It drives a hostile corpus (bidi controls, zero-width, BOM, a Cyrillic
+ homoglyph, a combining mark, C1 controls, CJK, an emoji, an accented letter, and
+ the C0 control bytes including NUL and DEL) and asserts each file is detected and
+ listed, with a dedicated check that a pure-ASCII control byte -- which the
+ non-ASCII greps cannot see -- is still caught by the control-byte grep. It
+ asserts a clean file is not flagged (including that trailing whitespace, unlike
+ in unicode-show, is NOT a match), that given several files only the dirty ones
+ are listed sorted and de-duplicated, that a filename containing suspicious
+ Unicode is sanitized in the output (stdout stays pure ASCII), and that a
+ nonexistent path fails loud rather than silently reporting no match.
+ .
+ It also pins the tool's documented stdin limitation: only the first of the four
+ greps consumes piped bytes, so a control-only stdin input is a false negative.
+ That is encoded as a strict known-limitation assertion which flips to a hard
+ failure if stdin handling is ever fixed, prompting a test update. A fuzz phase
+ writes random byte files and checks the wrapper's match/no-match exit against an
+ independent byte-level oracle, asserting exact agreement and pure-ASCII output.
+ .
+ 'grep-find-unicode-wrapper-tests' runs the corpus, semantics, and a default fuzz
+ sweep; 'grep-find-unicode-wrapper-tests-fuzz' runs a heavy sweep. The suite
+ targets the installed wrapper by default; set GREP_FIND_UNICODE_WRAPPER_REPO to
+ a helper-scripts checkout to test that instead.
+
 Package: git-meld-tests
 Architecture: all
 Depends: ${misc:Depends},

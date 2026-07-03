@@ -19,6 +19,7 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 | `sanitize-string-tests`  | shipping | `usr/share/sanitize-string-tests/` |
 | `stcat-family-tests`     | shipping | `usr/share/stcat-family-tests/` |
 | `unicode-show-tests`     | shipping | `usr/share/unicode-show-tests/` |
+| `grep-find-unicode-wrapper-tests` | shipping | `usr/share/grep-find-unicode-wrapper-tests/` |
 | `discourse-dom-snapshot` | planned  | `usr/share/discourse-dom-snapshot/` |
 | `sdwdate-ci-fuzz`        | planned  | `usr/share/sdwdate-ci-fuzz/` |
 
@@ -391,4 +392,35 @@ to end against the real CLI:
 unicode-show-tests
 unicode-show-tests-fuzz                     # heavy fuzz sweep
 UNICODE_SHOW_REPO=/path/to/helper-scripts unicode-show-tests
+```
+
+## grep-find-unicode-wrapper-tests
+
+Comprehensive test + fuzz for **grep-find-unicode-wrapper** -- the helper-scripts
+bash wrapper around `grep` that scans **files** for suspicious content and lists
+the offending files (grep-like: exit `0` match, `1` no match, fails loud on a
+grep error). Matches are printed via `stecho`, so a Unicode filename cannot
+smuggle anything to the terminal. A file matches iff it holds any byte that is
+not printable ASCII or tab/newline -- the union of non-ASCII, the bidi
+Trojan-Source set, and the C0-control/DEL/NUL grep.
+
+- `[D]`/`[C]` detection: a hostile corpus is flagged, with a dedicated check that
+  a pure-ASCII control byte (which the non-ASCII greps miss) is still caught.
+- `[B]` benign: clean ASCII is not flagged -- including trailing whitespace,
+  which this tool (unlike `unicode-show`) does not treat as suspicious.
+- `[M]` multi-file: only dirty files are listed, sorted `-u`.
+- `[P]` self-safety: a hostile filename is sanitised in the output (pure ASCII).
+- `[E]` errors: a nonexistent path fails loud, not a silent no-match.
+- `[K]` known limitation: the tool's documented broken stdin handling (only the
+  first grep consumes the pipe, so a control-only stdin input is a false
+  negative) is pinned and flips to a failure if stdin is ever fixed.
+- `[F]` fuzz: random byte files are checked against an independent byte-level
+  oracle -- exit code must agree exactly and output must stay pure ASCII.
+
+### Usage
+
+```
+grep-find-unicode-wrapper-tests
+grep-find-unicode-wrapper-tests-fuzz        # heavy fuzz sweep
+GREP_FIND_UNICODE_WRAPPER_REPO=/path/to/helper-scripts grep-find-unicode-wrapper-tests
 ```

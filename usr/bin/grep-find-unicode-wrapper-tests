@@ -1,0 +1,37 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Comprehensive test + fuzz for grep-find-unicode-wrapper (the helper-scripts
+## bash wrapper around grep that scans FILES for suspicious content and lists
+## the offending files). Proves it flags exactly the suspicious byte classes
+## (non-ASCII, the bidi Trojan-Source set, and C0 control / NUL / DEL -- with a
+## dedicated check that a pure-ASCII control byte is caught, which the non-ASCII
+## greps miss), that a clean file is not flagged (trailing whitespace is NOT a
+## match for this tool), that only dirty files are listed sorted -u, that a
+## hostile filename is sanitized in the output, that a nonexistent path fails
+## loud, and it pins the tool's documented stdin false-negative. A fuzz phase
+## checks random byte files against an independent byte-level oracle. No root,
+## no network. Targets the installed tool by default; set
+## GREP_FIND_UNICODE_WRAPPER_REPO to a helper-scripts checkout to test that
+## instead. Extra args (e.g. --iterations N, --seed N) pass through.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/grep-find-unicode-wrapper-tests' ]; then
+   tests_dir='/usr/share/grep-find-unicode-wrapper-tests'
+else
+   tests_dir="${script_dir}/../share/grep-find-unicode-wrapper-tests"
+fi
+
+exec python3 -- "${tests_dir}/grep_find_unicode_wrapper_test.py" "$@"

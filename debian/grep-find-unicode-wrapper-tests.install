@@ -1,0 +1,4 @@
+usr/bin/grep-find-unicode-wrapper-tests usr/bin/
+usr/bin/grep-find-unicode-wrapper-tests-fuzz usr/bin/
+usr/share/grep-find-unicode-wrapper-tests/*.py usr/share/grep-find-unicode-wrapper-tests/
+usr/share/grep-find-unicode-wrapper-tests/README.md usr/share/grep-find-unicode-wrapper-tests/
