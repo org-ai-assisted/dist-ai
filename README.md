@@ -18,6 +18,7 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 | `open-link-confirmation-tests` | shipping | `usr/share/open-link-confirmation-tests/` |
 | `sanitize-string-tests`  | shipping | `usr/share/sanitize-string-tests/` |
 | `stcat-family-tests`     | shipping | `usr/share/stcat-family-tests/` |
+| `stdisplay-tests`        | shipping | `usr/share/stdisplay-tests/` |
 | `unicode-show-tests`     | shipping | `usr/share/unicode-show-tests/` |
 | `grep-find-unicode-wrapper-tests` | shipping | `usr/share/grep-find-unicode-wrapper-tests/` |
 | `check-ref-commits-for-unicode-tests` | shipping | `usr/share/check-ref-commits-for-unicode-tests/` |
@@ -361,6 +362,40 @@ stcat-family-tests-fuzz                     # heavy fuzz sweep
 STDISPLAY_REPO=/path/to/helper-scripts stcat-family-tests
 ```
 
+## stdisplay-tests
+
+Comprehensive test + fuzz for **`stdisplay()`** itself -- the
+`stdisplay`-package function the stcat family routes input through. Where
+`stcat-family-tests` drives the CLIs at two colour settings, this suite tests
+the **function directly across every colour depth** (3/4/8/24-bit), which is the
+bug-prone part (`get_sgr_pattern()`'s graded allow-list). Every output is checked
+against an **independent, palette-agnostic safety oracle**: strip every loose
+`ESC [ ... m` (SGR can only set colour) and nothing dangerous may remain.
+
+- `[P]` pins: the module's own docstring examples as exact-string regressions.
+- `[B]` benign: printable ASCII + newline/tab pass through unchanged at every
+  depth (proves it does not over-redact).
+- `[G]` graded: one sequence per SGR bit-mode (3-bit fg/bg/reset, 4-bit bright,
+  8-bit `;`/`:`, 24-bit) survives verbatim exactly when its depth is enabled and
+  is redacted otherwise.
+- `[R]` redaction: dangerous non-SGR escapes (clear, cursor, the input-injecting
+  device-status report, OSC title / OSC-8, DCS/APC/PM, RIS, charset), C1 / C0
+  controls, DEL, and non-ASCII die at every depth including truecolor.
+- `[X]` exclude: `exclude_sgr` removes only the code it names.
+- `[E]` env: `get_sgr_support()` NO_COLOR / COLORTERM logic and a `TERM` path
+  that fails closed (`< 8`, no escapes) on an unknown or dumb terminal.
+- `[I]` idempotence: `stdisplay(stdisplay(x)) == stdisplay(x)`.
+- `[F]` fuzz: random Unicode, an escape-biased smuggling channel, and random
+  exclude lists never raise, break the oracle, or lose idempotence.
+
+### Usage
+
+```
+stdisplay-tests
+stdisplay-tests-fuzz                        # heavy fuzz sweep
+STDISPLAY_REPO=/path/to/helper-scripts stdisplay-tests
+```
+
 ## unicode-show-tests
 
 Comprehensive test + fuzz for **unicode-show** -- the helper-scripts
@@ -443,7 +478,9 @@ builds throwaway git repos and drives the real tool:
 - `[B]` benign: a clean ref (incl. blank lines and a clean merge) exits `0`.
 - `[M]` multi-commit: the dirty commit is flagged by sha, clean ones logged clean.
 - `[E]` errors: no ref / nonexistent ref / no new commits / not a work tree each
-  exit `1` with their own message (exit `1` is overloaded; distinguished by text).
+  fail loud with their own message and the build's error code (`2` on the
+  improved tool -- distinct from a detection's `1` -- or `1` on a stale build;
+  feature-detected).
 - `[F]` fuzz: random clean-or-suspicious commits vs an independent oracle -- exit
   `1` iff something suspicious was injected, and output stays pure ASCII.
 

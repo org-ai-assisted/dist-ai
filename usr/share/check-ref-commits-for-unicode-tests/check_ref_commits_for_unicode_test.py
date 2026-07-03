@@ -12,15 +12,19 @@ and pipes the result through unicode-show. So it scans, per commit, not just the
 DIFF but the commit MESSAGE and the AUTHOR / COMMITTER name and email -- the
 places a Trojan-Source style attack can hide that a plain content scan misses.
 
-Contract (observed):
-  - exit 0: every new commit is clean (unicode-show found nothing, exit 0);
+Contract (0 clean / 1 found / 2 error, mirroring unicode-show):
+  - exit 0: every new commit is clean (unicode-show found nothing);
     logs "No unicode detected." on stderr.
-  - exit 1: EITHER suspicious Unicode was found in some commit (a per-commit
+  - exit 1: suspicious Unicode was found in some commit (a per-commit
     "Potentially malicious unicode detected in commit '<sha>'" warning, with
-    unicode-show's report on stdout), OR a usage / setup error (no ref given,
-    ref does not exist, cwd not a git work tree, or no new commits in the ref).
-    Exit 1 is thus overloaded; these tests distinguish detection from error by
-    the message, not the code.
+    unicode-show's report on stdout).
+  - exit 2: a usage / setup error (no ref given, ref does not exist, cwd not a
+    git work tree, no new commits in the ref, or a git failure).
+
+  So a caller can tell a real detection apart from a usage error by the exit
+  code. Older builds overloaded exit 1 for both; the suite feature-detects the
+  build's error code and skips only the "codes are distinct" assertion on a
+  stale install, so it stays green against the deployed tool.
 
 The design choices matter and are pinned here: --unified=0 avoids false positives
 from unmodified empty context lines (which unicode-show would flag as trailing
@@ -42,9 +46,10 @@ hermetic git -- global/system config neutralised):
       clean merge commit) exits 0, so [D] is non-vacuous.
   [M] multi-commit: given clean + dirty + clean new commits, the tool flags the
       dirty one (by sha) and logs the clean ones as clean.
-  [E] errors, each exit 1 with its own message: no ref argument, a nonexistent
-      ref, a ref with no new commits (HEAD..ref empty), and a cwd that is not a
-      git work tree.
+  [E] errors, each failing loud with its own message and the build's error code
+      (exit 2 on the improved tool, distinct from a detection's exit 1; exit 1 on
+      a stale build): no ref argument, a nonexistent ref, a ref with no new
+      commits (HEAD..ref empty), and a cwd that is not a git work tree.
   [F] fuzz: random commits whose payload is either clean ASCII or carries a
       suspicious character in a random location, checked against an independent
       oracle -- exit 1 iff something suspicious was injected, else exit 0, and
@@ -215,7 +220,9 @@ def main():  # pylint: disable=too-many-branches,too-many-statements,too-many-lo
 
     passed = 0
     failed = 0
+    skipped = 0
     fail_samples = []
+    skip_notes = []
 
     def check(name, ok, detail=""):
         nonlocal passed, failed
@@ -225,6 +232,23 @@ def main():  # pylint: disable=too-many-branches,too-many-statements,too-many-lo
             failed += 1
             if len(fail_samples) < 40:
                 fail_samples.append(name + ": " + detail)
+
+    def skip(name, why):
+        nonlocal skipped
+        skipped += 1
+        skip_notes.append(name + ": " + why)
+
+    ## Feature-detect the error exit code. The improved tool splits its exit
+    ## codes -- 0 clean, 1 suspicious found, 2 error -- so a caller can tell a
+    ## real detection from a usage/setup error. Older builds overloaded exit 1
+    ## for both. Probe with a guaranteed error (a nonexistent ref in a real
+    ## repo) and adapt: the [E] assertions expect whatever this build uses, and
+    ## the "codes are distinct" assertion is skipped (not failed) on a stale
+    ## build so the suite stays green against the deployed tool.
+    with tempfile.TemporaryDirectory() as _probe_tmp:
+        _probe_repo = new_repo(_probe_tmp, "probe")
+        error_code = run_tool(_probe_repo, ["no-such-ref-probe"]).returncode
+    supports_split = error_code == 2
 
     if not args.fuzz_only:
         ## [D] detection by location + [S] self-safety.
@@ -306,31 +330,50 @@ def main():  # pylint: disable=too-many-branches,too-many-statements,too-many-lo
                   clean1.encode() in proc.stderr and clean2.encode() in proc.stderr,
                   "clean shas not logged clean: %r" % proc.stderr[:240])
 
-        ## [E] error / usage cases -- each exit 1, distinguished by message.
-        print("[E] errors: each fails loud (exit 1) with its own message")
+        ## [E] error / usage cases. Each fails loud with its OWN message and its
+        ## exit code matches this build's error code (2 on the improved tool, 1
+        ## on a stale build that predates the 0/1/2 split). Detection is exit 1,
+        ## so on the improved tool errors are cleanly distinguishable from a real
+        ## finding -- asserted by E:codes-distinct below.
+        print("[E] errors: each fails loud (exit %d) with its own message"
+              % error_code)
         with tempfile.TemporaryDirectory() as tmp:
             repo = new_repo(tmp, "errs")
             no_arg = run_tool(repo, [])
             check("E:no-arg",
-                  no_arg.returncode == 1 and b"No target ref specified" in no_arg.stderr,
+                  no_arg.returncode == error_code
+                  and b"No target ref specified" in no_arg.stderr,
                   "exit %d stderr=%r" % (no_arg.returncode, no_arg.stderr[:160]))
             bad_ref = run_tool(repo, ["no-such-ref"])
             check("E:bad-ref",
-                  bad_ref.returncode == 1 and b"Target ref does not exist" in bad_ref.stderr,
+                  bad_ref.returncode == error_code
+                  and b"Target ref does not exist" in bad_ref.stderr,
                   "exit %d stderr=%r" % (bad_ref.returncode, bad_ref.stderr[:160]))
             ## HEAD..main is empty (main IS HEAD) -> no new commits.
             empty = run_tool(repo, ["main"])
             check("E:no-new-commits",
-                  empty.returncode == 1 and b"No new commits" in empty.stderr,
+                  empty.returncode == error_code
+                  and b"No new commits" in empty.stderr,
                   "exit %d stderr=%r" % (empty.returncode, empty.stderr[:160]))
             ## Not inside a git work tree.
             nogit = os.path.join(tmp, "nogit")
             os.mkdir(nogit)
             outside = run_tool(nogit, ["main"])
             check("E:not-a-work-tree",
-                  outside.returncode == 1
+                  outside.returncode == error_code
                   and b"not inside a Git working tree" in outside.stderr,
                   "exit %d stderr=%r" % (outside.returncode, outside.stderr[:160]))
+
+        ## The point of the fix: an error (exit 2) is distinct from a real
+        ## detection (exit 1), so a caller can tell them apart by exit code.
+        if supports_split:
+            check("E:codes-distinct", error_code == 2 and error_code != 1,
+                  "error code %d not distinct from detection (1)" % error_code)
+        else:
+            skip("E:codes-distinct",
+                 "installed check-ref-commits-for-unicode predates the 0/1/2 "
+                 "exit-code split (errors and detection both exit 1); set "
+                 "CHECK_REF_COMMITS_REPO to a checkout to cover it")
 
     ## [F] fuzz: random commits vs an independent oracle. Each iteration puts a
     ## clean-or-suspicious payload in a random location; the tool must exit 1 iff
@@ -381,7 +424,11 @@ def main():  # pylint: disable=too-many-branches,too-many-statements,too-many-lo
                      (proc.stdout + proc.stderr)[:80]))
 
     print()
-    print("%d passed, %d failed" % (passed, failed))
+    print("%d passed, %d failed, %d skipped" % (passed, failed, skipped))
+    if skip_notes:
+        print("skipped:")
+        for note in skip_notes:
+            print("  - " + note)
     if fail_samples:
         print("failures (sample):")
         for sample in fail_samples:

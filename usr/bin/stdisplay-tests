@@ -1,0 +1,40 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Comprehensive test + fuzz for stdisplay() -- the helper-scripts
+## stdisplay-package function that sanitizes untrusted text to be safe to print
+## to a terminal (the security core the whole stcat family routes input
+## through). Unlike stcat-family-tests, which drives the six CLIs and only
+## exercises stdisplay() at two colour settings, this suite tests the FUNCTION
+## directly across EVERY colour depth (3/4/8/24-bit): it proves each SGR bit-mode
+## survives exactly when its depth is enabled, that every dangerous non-SGR
+## escape / control / C1 / Unicode character is neutralised at every depth
+## (including truecolor), that exclude_sgr removes only what it names, the
+## get_sgr_support() NO_COLOR / COLORTERM / fail-closed-TERM logic, idempotence,
+## and the module's own docstring examples as regression pins. An independent,
+## palette-agnostic safety oracle checks every output. A fuzz phase feeds random
+## Unicode, an escape-biased smuggling channel, and random exclude lists. No
+## root, no network. Targets the installed stdisplay package by default; set
+## STDISPLAY_REPO to a helper-scripts checkout to test that instead. Extra args
+## (e.g. --iterations N, --seed N) pass through.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/stdisplay-tests' ]; then
+   tests_dir='/usr/share/stdisplay-tests'
+else
+   tests_dir="${script_dir}/../share/stdisplay-tests"
+fi
+
+exec python3 -- "${tests_dir}/stdisplay_test.py" "$@"

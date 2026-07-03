@@ -319,6 +319,44 @@ Description: Comprehensive test and fuzzer for the stcat family of safe-terminal
  installed tools by default; set STDISPLAY_REPO to a helper-scripts checkout
  to test that instead.
 
+Package: stdisplay-tests
+Architecture: all
+Depends: ${misc:Depends},
+ python3,
+ helper-scripts
+Description: Comprehensive function-level test and fuzzer for stdisplay()
+ stdisplay() (from helper-scripts' stdisplay package) sanitizes untrusted text
+ to be safe to print to a terminal; it is the security core the whole stcat
+ family routes its input through. Where stcat-family-tests drives the six CLIs
+ and only exercises stdisplay() at two colour settings, this suite tests the
+ function directly across EVERY colour depth (3/4/8/24-bit), which is the
+ bug-prone part: get_sgr_pattern() builds a graded allow-list regex whose
+ behaviour changes at every depth. No root, no network.
+ .
+ It proves each SGR bit-mode (3-bit foreground/background/reset, 4-bit bright,
+ 8-bit indexed with both ';' and ':' separators, 24-bit truecolor) survives
+ verbatim exactly when its depth is enabled and is redacted otherwise; that a
+ corpus of dangerous non-SGR escapes (screen clear, cursor movement, the
+ device-status/attribute REPORT that injects input, OSC title, OSC-8 hyperlink,
+ DCS/APC/PM, RIS reset, charset selection), single-byte C1 controls, C0
+ controls / NUL / DEL, and non-ASCII (bidi Trojan-Source, zero-width, BOM, a
+ homoglyph, line/paragraph separators) is neutralised at every depth including
+ truecolor; that exclude_sgr removes only the code it names; the get_sgr_support()
+ NO_COLOR / COLORTERM / fail-closed-TERM logic; idempotence; and the module's own
+ docstring examples as exact-string regression pins.
+ .
+ Every output is checked against an independent, palette-agnostic terminal-safety
+ oracle: strip every loose "ESC [ ... m" (SGR, which can only set colour) and
+ nothing dangerous may remain -- no leaked escape, no non-printable character. A
+ fuzz phase feeds random Unicode, an escape-biased smuggling channel that keeps
+ trying to slip a dangerous escape past the allow-list, and random exclude lists,
+ asserting the oracle and idempotence hold and the function never raises.
+ .
+ 'stdisplay-tests' runs the pins, benign, graded, redaction, exclude, env,
+ idempotence, and a default fuzz sweep; 'stdisplay-tests-fuzz' runs a heavy
+ sweep. The suite targets the installed stdisplay package by default; set
+ STDISPLAY_REPO to a helper-scripts checkout to test that instead.
+
 Package: unicode-show-tests
 Architecture: all
 Depends: ${misc:Depends},
@@ -424,12 +462,15 @@ Description: Comprehensive test and fuzzer for check-ref-commits-for-unicode
  It also covers the benign path (a clean ref, including blank lines and a clean
  merge commit, exits 0 -- so detection is non-vacuous), multi-commit isolation
  (the dirty commit is flagged by sha while clean ones are logged clean), and the
- usage / setup errors, each of which exits 1 with its own message (no ref given,
- a nonexistent ref, a ref with no new commits, and a cwd that is not a git work
- tree; exit 1 is overloaded, so the tests distinguish detection from error by the
- message). A fuzz phase builds random commits whose payload is clean or carries a
- suspicious character in a random location and checks the verdict against an
- independent oracle, asserting exact agreement and pure-ASCII output.
+ usage / setup errors, each of which fails loud with its own message (no ref
+ given, a nonexistent ref, a ref with no new commits, and a cwd that is not a git
+ work tree). The improved tool uses a split exit code -- 0 clean, 1 suspicious
+ found, 2 error -- so a caller can tell a real detection from a usage error; the
+ suite feature-detects the build's error code and, on a stale build that still
+ overloads exit 1, skips only the codes-are-distinct assertion. A fuzz phase
+ builds random commits whose payload is clean or carries a suspicious character
+ in a random location and checks the verdict against an independent oracle,
+ asserting exact agreement and pure-ASCII output.
  .
  'check-ref-commits-for-unicode-tests' runs the corpus, semantics, and a default
  fuzz sweep; 'check-ref-commits-for-unicode-tests-fuzz' runs a heavy sweep. Each

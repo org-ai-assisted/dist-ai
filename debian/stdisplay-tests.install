@@ -1,0 +1,4 @@
+usr/bin/stdisplay-tests usr/bin/
+usr/bin/stdisplay-tests-fuzz usr/bin/
+usr/share/stdisplay-tests/*.py usr/share/stdisplay-tests/
+usr/share/stdisplay-tests/README.md usr/share/stdisplay-tests/
