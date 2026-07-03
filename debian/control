@@ -319,6 +319,44 @@ Description: Comprehensive test and fuzzer for the stcat family of safe-terminal
  installed tools by default; set STDISPLAY_REPO to a helper-scripts checkout
  to test that instead.
 
+Package: unicode-show-tests
+Architecture: all
+Depends: ${misc:Depends},
+ python3,
+ helper-scripts
+Description: Comprehensive test and fuzzer for the unicode-show suspicious-Unicode scanner
+ unicode-show (from helper-scripts' unicode_show package) is the mirror image of
+ the stcat family: instead of sanitizing untrusted text for a terminal, it
+ DETECTS and reports non-ASCII / suspicious Unicode in text or files, exiting 0
+ when clean, 1 when a suspicious character is found, and 2 on error (invalid
+ UTF-8 or an unreadable file). Decoding is strict, so a non-UTF-8 byte fails
+ closed rather than being silently mangled. This suite proves the whole contract
+ end to end against the real CLI. No root, no network.
+ .
+ It drives a hostile corpus (the bidi Trojan-Source control set, zero-width
+ characters, BOM, a Cyrillic homoglyph, a combining mark, C1 controls,
+ line/paragraph separators, CJK, an emoji, and the C0 control bytes including
+ NUL and DEL) and asserts the tool exits 1 and names the exact codepoint (e.g.
+ U+202E) it found. Crucially it asserts unicode-show's OWN stdout never leaks the
+ raw suspicious bytes it is reporting: over the whole corpus and a byte-level
+ fuzzer, the output stays pure printable ASCII plus newline/tab (the tool relies
+ on ascii() for this; a regression to repr() would let a printable non-ASCII
+ character slip into the terminal, and the suite catches it).
+ .
+ It also covers the benign path (clean ASCII exits 0 with no output, so detection
+ is non-vacuous), the newline / trailing-whitespace / empty-input semantics
+ including the UNICODE_SHOW_ALLOW_MISSING_FINAL_NEWLINE suppression, fail-closed
+ behaviour on invalid UTF-8 (exit 2 with no byte slipped to stdout) and
+ unreadable paths, file-argument scanning, and a hostile filename that must be
+ sanitized in the output. A fuzz phase feeds random byte streams and random valid
+ Unicode and asserts the tool never crashes, hangs, or breaks the ASCII-output
+ invariant.
+ .
+ 'unicode-show-tests' runs the corpus, semantics, fail-closed, and a default
+ fuzz sweep; 'unicode-show-tests-fuzz' runs a heavy sweep. The suite targets the
+ installed unicode-show by default; set UNICODE_SHOW_REPO to a helper-scripts
+ checkout to test that instead.
+
 Package: git-meld-tests
 Architecture: all
 Depends: ${misc:Depends},

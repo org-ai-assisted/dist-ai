@@ -18,6 +18,7 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 | `open-link-confirmation-tests` | shipping | `usr/share/open-link-confirmation-tests/` |
 | `sanitize-string-tests`  | shipping | `usr/share/sanitize-string-tests/` |
 | `stcat-family-tests`     | shipping | `usr/share/stcat-family-tests/` |
+| `unicode-show-tests`     | shipping | `usr/share/unicode-show-tests/` |
 | `discourse-dom-snapshot` | planned  | `usr/share/discourse-dom-snapshot/` |
 | `sdwdate-ci-fuzz`        | planned  | `usr/share/sdwdate-ci-fuzz/` |
 
@@ -356,4 +357,38 @@ across all six tools, that nothing dangerous reaches the terminal:
 stcat-family-tests
 stcat-family-tests-fuzz                     # heavy fuzz sweep
 STDISPLAY_REPO=/path/to/helper-scripts stcat-family-tests
+```
+
+## unicode-show-tests
+
+Comprehensive test + fuzz for **unicode-show** -- the helper-scripts
+`unicode_show`-package scanner that **detects** suspicious Unicode. It is the
+mirror image of the `stcat` family: `stcat` sanitizes untrusted text for a
+terminal, `unicode-show` reports the dangerous characters instead (exit `0`
+clean, `1` suspicious found, `2` error). The suite proves the whole contract end
+to end against the real CLI:
+
+- `[D]` detection: over a hostile corpus (bidi Trojan-Source set, zero-width,
+  BOM, homoglyph, combining, C1, line/paragraph separators, CJK, emoji, C0 /
+  NUL / DEL) the tool exits `1` and names the exact codepoint (e.g. `U+202E`).
+- `[S]` self-safety: unicode-show's own stdout never leaks the raw suspicious
+  bytes it reports -- pure printable ASCII + newline/tab over the corpus and the
+  fuzzer (it relies on `ascii()`; a regression to `repr()` is caught here).
+- `[B]` benign: clean ASCII exits `0` with no output (so `[D]` is non-vacuous).
+- `[N]` newline / whitespace: trailing whitespace flagged; missing final newline
+  flagged by default and suppressed by `UNICODE_SHOW_ALLOW_MISSING_FINAL_NEWLINE=1`;
+  empty input clean.
+- `[E]` fail-closed: invalid UTF-8 (stdin or file) exits `2` without slipping a
+  byte to stdout; a nonexistent path exits `2`.
+- `[P]` paths: hostile file content is detected, and a hostile filename is
+  sanitised in the output.
+- `[F]` fuzz: random byte streams and random valid Unicode never crash, hang, or
+  break the `[S]` invariant.
+
+### Usage
+
+```
+unicode-show-tests
+unicode-show-tests-fuzz                     # heavy fuzz sweep
+UNICODE_SHOW_REPO=/path/to/helper-scripts unicode-show-tests
 ```

@@ -1,0 +1,4 @@
+usr/bin/unicode-show-tests usr/bin/
+usr/bin/unicode-show-tests-fuzz usr/bin/
+usr/share/unicode-show-tests/*.py usr/share/unicode-show-tests/
+usr/share/unicode-show-tests/README.md usr/share/unicode-show-tests/

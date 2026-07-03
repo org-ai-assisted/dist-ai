@@ -1,0 +1,33 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Comprehensive test + fuzz for unicode-show (the helper-scripts unicode_show
+## scanner that DETECTS suspicious Unicode). Proves it flags the hostile corpus
+## (bidi Trojan-Source set, zero-width, BOM, homoglyph, C1, CJK, emoji, C0 /
+## NUL / DEL) and names the exact codepoint, that its OWN stdout never leaks the
+## raw suspicious bytes it reports, that clean ASCII exits 0, that it fails
+## closed (exit 2) on invalid UTF-8 without slipping a byte, and the newline /
+## trailing-whitespace / empty-input semantics. No root, no network. Targets the
+## installed tool by default; set UNICODE_SHOW_REPO to a helper-scripts checkout
+## to test that instead. Extra args (e.g. --iterations N, --seed N) pass through.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/unicode-show-tests' ]; then
+   tests_dir='/usr/share/unicode-show-tests'
+else
+   tests_dir="${script_dir}/../share/unicode-show-tests"
+fi
+
+exec python3 -- "${tests_dir}/unicode_show_test.py" "$@"

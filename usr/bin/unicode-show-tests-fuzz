@@ -1,0 +1,31 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Heavy fuzz run of unicode-show: same harness as unicode-show-tests with a
+## large default iteration count per channel (random bytes and random valid
+## Unicode). Override with --iterations N / --seed N. See unicode-show-tests for
+## the checks and the UNICODE_SHOW_REPO override.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/unicode-show-tests' ]; then
+   tests_dir='/usr/share/unicode-show-tests'
+else
+   tests_dir="${script_dir}/../share/unicode-show-tests"
+fi
+
+iterations='5000'
+
+exec python3 -- "${tests_dir}/unicode_show_test.py" \
+   --fuzz-only --iterations "${iterations}" "$@"
