@@ -181,9 +181,12 @@ else
    fail "difftool: spurious stderr on a benign diff: ${qerr}"
 fi
 
-## Fresh repo left in a conflicted merge on 'f' (both sides changed line 2).
+## Fresh repo left in a conflicted merge on 'f' (both sides changed the middle).
+## $1 dir, $2 feat side content, $3 main side content (both default to text).
 make_conflict_repo() {
    local dir="$1"
+   local feat="${2:-l1\nFEAT\nl3\n}"
+   local main="${3:-l1\nMAIN\nl3\n}"
    mkdir --parents -- "${dir}"
    git -C "${dir}" init --quiet --initial-branch=main
    git -C "${dir}" config user.email t@example.com
@@ -193,17 +196,19 @@ make_conflict_repo() {
    git -C "${dir}" add f
    git -C "${dir}" commit --quiet --message init
    git -C "${dir}" switch --quiet --create feat
-   printf 'l1\nFEAT\nl3\n' > "${dir}/f"
+   printf '%b' "${feat}" > "${dir}/f"
    git -C "${dir}" add f
    git -C "${dir}" commit --quiet --message feat
    git -C "${dir}" switch --quiet main
-   printf 'l1\nMAIN\nl3\n' > "${dir}/f"
+   printf '%b' "${main}" > "${dir}/f"
    git -C "${dir}" add f
    git -C "${dir}" commit --quiet --message main
    git -C "${dir}" merge feat >/dev/null 2>&1 || true
 }
 
 ## Run 'git mergetool --tool=review-<viewer>' in $1. GUI log at "$1/gui.log".
+## stdin from /dev/null: with meld's trustExitCode=false git may prompt "was the
+## merge successful?" on an unmodified file; feed EOF so a test never hangs.
 run_mergetool() {
    local dir="$1" viewer="$2"
    local log="${dir}/gui.log"
@@ -211,7 +216,7 @@ run_mergetool() {
    GUI_LOG="${log}" git -C "${dir}" \
       -c "mergetool.rv.cmd=${mergetool_bin} ${viewer} \"\$BASE\" \"\$LOCAL\" \"\$REMOTE\" \"\$MERGED\"" \
       -c mergetool.rv.trustExitCode=true \
-      mergetool --no-prompt --tool=rv >/dev/null 2>&1 || true
+      mergetool --no-prompt --tool=rv >/dev/null 2>&1 </dev/null || true
 }
 
 ## --- mergetool meld: 3-way (LOCAL MERGED REMOTE) ---
@@ -232,6 +237,26 @@ if grep --quiet '^5 .*--output' "${r}/gui.log"; then
    pass "mergetool review-kdiff3: viewer got BASE LOCAL REMOTE --output MERGED"
 else
    fail "mergetool review-kdiff3: wrong file set (log: $( cat "${r}/gui.log" ))"
+fi
+
+## --- mergetool HARDENING: a binary conflict side is refused, viewer NOT opened ---
+r="${tmproot}/mt-binary"
+make_conflict_repo "${r}" 'a\x00FEAT\n' 'a\x00MAIN\n'
+run_mergetool "${r}" meld
+if [ ! -s "${r}/gui.log" ]; then
+   pass "mergetool: binary conflict side refused (viewer never opened)"
+else
+   fail "mergetool: binary conflict side was opened (log: $( cat "${r}/gui.log" ))"
+fi
+
+## --- mergetool HARDENING: an undecodable conflict side fails closed ---
+r="${tmproot}/mt-badutf8"
+make_conflict_repo "${r}" 'a\xffFEAT\n' 'a\xffMAIN\n'
+run_mergetool "${r}" meld
+if [ ! -s "${r}/gui.log" ]; then
+   pass "mergetool: undecodable conflict side fails closed (viewer never opened)"
+else
+   fail "mergetool: undecodable conflict side was opened (log: $( cat "${r}/gui.log" ))"
 fi
 
 printf '\n==== difftool/mergetool FAILURES: %s ====\n' "${fails}"
