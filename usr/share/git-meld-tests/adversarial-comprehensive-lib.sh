@@ -100,6 +100,24 @@ git -c protocol.file.allow=always submodule add -q "${sm}" mod 2>/dev/null; git 
 ## "Submodule 'mod': ...". Match with or without the quotes.
 review "submodule gitlink change"     "Submodule '?mod'?:"
 
+## A submodule's own file content is untrusted; a dangerous terminal escape in it
+## must be neutralized (stcat) in the inner diff, never passed raw to the terminal.
+new_repo
+sme="${work}/sme"
+git init -q "${sme}"
+( cd "${sme}"; git config user.email t@example.com; git config user.name test; printf '1\n' >g; git add -A; git commit -qm a; printf 'evil\x1b]0;PWNED\x07here\n' >g; git add -A; git commit -qm b )
+git -c protocol.file.allow=always submodule add -q "${sme}" smod 2>/dev/null
+git commit -qm addsmod
+( cd smod; git checkout -q HEAD~1 )
+git add smod
+git commit -qm 'bump smod'
+esc_out="$( git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD 2>&1 || true )"
+if printf '%s' "${esc_out}" | grep -q "$( printf '\x1b')"; then
+   fail "submodule inner diff leaked a raw terminal escape"
+else
+   pass "submodule inner diff neutralizes terminal escapes (stcat)"
+fi
+
 ## Pre-flight: a .gitattributes-binary-suppressed change must still be listed by
 ## the re-dispatch overview even though git skips the per-file driver.
 new_repo

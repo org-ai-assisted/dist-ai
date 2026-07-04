@@ -259,5 +259,40 @@ else
    fail "mergetool: undecodable conflict side was opened (log: $( cat "${r}/gui.log" ))"
 fi
 
+## --- mergetool authoritative exit: the wrapper decides resolution by whether
+## $MERGED changed, so git can trustExitCode=true. A saved merge exits 0, an
+## unsaved/aborted one exits non-zero (leaving the conflict). Call the wrapper
+## directly with a saving vs a non-saving stub viewer. ---
+r="${tmproot}/mt-auth"
+mkdir --parents -- "${r}"
+printf 'BASE\n'   > "${r}/base"
+printf 'LOCAL\n'  > "${r}/local"
+printf 'REMOTE\n' > "${r}/remote"
+## A saving meld writes the resolved result to its middle arg (= MERGED).
+savedir="${r}/save-bin"
+mkdir --parents -- "${savedir}"
+# $2 is the stub's own runtime arg (= MERGED), intentionally NOT expanded here.
+# shellcheck disable=SC2016
+printf '#!/bin/bash\nprintf resolved > "$2"\nexit 0\n' > "${savedir}/meld"
+chmod +x "${savedir}/meld"
+printf 'MERGED-conflict\n' > "${r}/merged"
+save_rc=0
+PATH="${savedir}:${PATH}" "${mergetool_bin}" meld "${r}/base" "${r}/local" "${r}/remote" "${r}/merged" >/dev/null 2>&1 || save_rc=$?
+if [ "${save_rc}" -eq 0 ]; then
+   pass "mergetool: saved merge -> resolved (exit 0)"
+else
+   fail "mergetool: saved merge wrongly reported unresolved (rc=${save_rc})"
+fi
+## The default stub viewer (stubdir, on PATH) logs args and exits 0 WITHOUT
+## touching MERGED -> the wrapper must report unresolved.
+printf 'MERGED-conflict\n' > "${r}/merged"
+unsave_rc=0
+"${mergetool_bin}" meld "${r}/base" "${r}/local" "${r}/remote" "${r}/merged" >/dev/null 2>&1 || unsave_rc=$?
+if [ "${unsave_rc}" -ne 0 ]; then
+   pass "mergetool: unsaved/aborted merge -> unresolved (exit non-zero)"
+else
+   fail "mergetool: unsaved merge wrongly reported resolved (rc=0)"
+fi
+
 printf '\n==== difftool/mergetool FAILURES: %s ====\n' "${fails}"
 [ "${fails}" -eq 0 ]
