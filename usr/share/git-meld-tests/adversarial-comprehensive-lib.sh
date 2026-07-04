@@ -62,6 +62,20 @@ review "symlink target bidi unicode"   'unicode-show|SYMLINK'
 new_repo; printf '#!/bin/sh\nif x # \xe2\x80\xae\xe2\x81\xa6then evil\xe2\x81\xa9\n' >b.txt; git add -A; git commit -qm x
 review "trojan-source bidi unicode"   'unicode-show'
 
+## Undecodable (non-UTF-8, unicode-show rc 2) content must FAIL CLOSED: surfaced,
+## but the viewer is NEVER opened (guards the driver's pre-open fatal gate).
+new_repo
+printf 'x\xff y\n' >b.txt
+git add -A
+git commit -qm x
+: >"${meld_log}"
+fatal_out="$( git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD 2>&1 || true )"
+if printf '%s' "${fatal_out}" | grep -qiE 'undecodable|non-UTF-8' && ! grep -q 'DISPLAY:' "${meld_log}"; then
+   pass "undecodable content fails closed (viewer never opened)"
+else
+   fail "undecodable content NOT fail-closed (meld_log: $(tr '\n' '|' < "${meld_log}"))"
+fi
+
 new_repo; printf 'x\n' >c.txt; git add -A; git commit -qm x
 review "added file"                   'DISPLAY:|new file|@@'
 
