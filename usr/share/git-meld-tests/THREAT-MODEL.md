@@ -9,8 +9,9 @@ This file maps the known ways to hide a change from a diff/review tool to the
 Anderson, USENIX Security 2023; CVE-2021-42574 Bidi, CVE-2021-42694 homoglyph);
 git `gitattributes(5)`; git submodule CR abuse (CVE-2025-48384); plus an
 AI-reviewer brainstorm (Codex + a fresh-context Claude subagent) and a
-fan-out deep-research pass. Two test suites exercise these:
-`git-meld-tests` (adversarial) and `git-meld-tests-fuzz` (randomised).
+fan-out deep-research pass. Test suites exercise these: `git-meld-tests`
+(adversarial hidden-change suites plus a difftool/mergetool contract suite) and
+`git-meld-tests-fuzz` (randomised).
 
 ## Where git DOES invoke the driver (git-meld can self-defend)
 
@@ -37,6 +38,24 @@ loudly when `.gitattributes` itself changes.
 | `.gitattributes` `diff=<driver>` / textconv | Diff routed through an arbitrary lossy transform | Pre-flight uses `--no-ext-diff` (raw) |
 | NUL-byte auto-binary | A NUL in the first ~8000 bytes auto-classifies binary; driver skipped | Pre-flight `--stat`/`--numstat` still lists it; fuzz emits NUL blobs |
 | Git-LFS pointer (`diff=lfs`) | Pointer shown, not content | Pre-flight lists the path |
+
+## difftool / mergetool contracts (git-review-difftool, git-review-mergetool)
+
+The same hardened core (`git-review-scan.sh`) also backs `git difftool` and
+`git mergetool` via `git-review-difftool` (2-way: meld / kdiff3 / diff-review)
+and `git-review-mergetool` (3-way: meld / kdiff3). Before opening the viewer each
+runs the shared content scan and FAILS CLOSED on undecodable / non-UTF-8 content,
+so a review-evasion payload cannot slip through the difftool/mergetool path
+either. (Note: the binary NUL scan requires `grep --text` -- without it GNU
+grep's binary heuristic short-circuits and the blob would be opened as text.)
+
+| Technique | Defense | Test (`difftool-mergetool-lib.sh`) |
+|---|---|---|
+| Undecodable / non-UTF-8 blob | Refuse to open the viewer (exit non-zero) -- fail closed | `undecodable blob fails closed` |
+| NUL-byte binary | Skip the viewer (a binary renders as noise) | `binary blob skipped` |
+| Bidi / Trojan-Source Unicode | Warn (decodable-suspicious is non-fatal) but still open | `bidi/suspicious blob warns` |
+| Wrong file set handed to the tool | Assert the exact pair ($LOCAL/$REMOTE) and 3-way set (BASE/LOCAL/REMOTE/MERGED) | `review-meld/kdiff3`, `mergetool` cases |
+| Spurious noise masking a real finding | A benign diff must emit no stray stderr | `benign diff emits no spurious stderr` |
 
 ## Known residual gaps (documented, not fully closed by the driver)
 

@@ -101,3 +101,17 @@ if [ "${new_fails}" != 0 ]; then
    exit 1
 fi
 printf '%s\n' "PASS: no real change was hidden across all adversarial suites."
+
+## difftool / mergetool contract suite: the git-review-difftool / -mergetool
+## wrappers are siblings of git-meld, so derive their dir from the git-meld path.
+## 77 == the wrappers are not present next to git-meld (e.g. an older install) ->
+## SKIP rather than fail.
+printf '\n%s\n' "-- difftool/mergetool contract suite --"
+dt_rc=0
+bash "${share}/difftool-mergetool-lib.sh" "$( dirname -- "${git_meld}" )" || dt_rc=$?
+if [ "${dt_rc}" = 77 ]; then
+   printf '%s\n' "SKIP: git-review-difftool / git-review-mergetool not found next to git-meld."
+elif [ "${dt_rc}" != 0 ]; then
+   printf '%s\n' "FAIL: difftool/mergetool contract suite failed (rc=${dt_rc})." >&2
+   exit 1
+fi

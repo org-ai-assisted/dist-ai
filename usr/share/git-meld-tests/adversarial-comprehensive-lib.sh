@@ -70,7 +70,9 @@ new_repo
 sm="${work}/sm"; git init -q "${sm}"; ( cd "${sm}"; printf '1\n'>f; git add -A; git commit -qm s1; printf '2\n'>f; git add -A; git commit -qm s2 )
 git -c protocol.file.allow=always submodule add -q "${sm}" mod 2>/dev/null; git commit -qm addmod
 ( cd mod; git checkout -q HEAD~1 ); git add mod; git commit -qm 'bump submodule'
-review "submodule gitlink change"     'Submodule mod:'
+## The driver prints the path %q-quoted inside literal single quotes:
+## "Submodule 'mod': ...". Match with or without the quotes.
+review "submodule gitlink change"     "Submodule '?mod'?:"
 
 ## Pre-flight: a .gitattributes-binary-suppressed change must still be listed by
 ## the re-dispatch overview even though git skips the per-file driver.
