@@ -22,8 +22,10 @@ shopt -s shift_verbose
 mydir="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )"
 if [ -r "/usr/share/git-meld-tests/fuzz-lib.sh" ]; then
    lib="/usr/share/git-meld-tests/fuzz-lib.sh"
+   wlib="/usr/share/git-meld-tests/fuzz-wrappers-lib.sh"
 else
    lib="${mydir}/../share/git-meld-tests/fuzz-lib.sh"
+   wlib="${mydir}/../share/git-meld-tests/fuzz-wrappers-lib.sh"
 fi
 
 git_meld="${1:-}"
@@ -49,3 +51,17 @@ if [ "${fails}" != 0 ]; then
    exit 1
 fi
 printf '%s\n' "PASS: no hidden change across ${iters} fuzz iterations (seed ${seed})."
+
+## Also fuzz the difftool/mergetool wrappers' fail-closed invariant (a fatal /
+## binary blob must never reach the viewer). The wrappers are siblings of
+## git-meld; 77 == not present next to it (older install) -> SKIP.
+printf '\n%s\n' "-- wrapper fail-closed fuzz --"
+wrap_rc=0
+bash "${wlib}" "$( dirname -- "${git_meld}" )" "${iters}" "${seed}" || wrap_rc=$?
+if [ "${wrap_rc}" = 77 ]; then
+   printf '%s\n' "SKIP: git-review-difftool/mergetool not found next to git-meld."
+elif [ "${wrap_rc}" != 0 ]; then
+   printf '%s\n' "FAIL: wrapper fuzz found ${wrap_rc} case(s) where a hostile blob reached the viewer." >&2
+   exit 1
+fi
+printf '%s\n' "PASS: no hostile blob reached the viewer across ${iters} wrapper fuzz iterations."

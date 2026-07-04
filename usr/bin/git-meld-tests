@@ -93,14 +93,30 @@ if [ -n "${GIT_MELD_OLD_REF:-}" ]; then
    rm -f "${old_copy}"
 fi
 
+## Run the adversarial suites against ALL THREE external-diff drivers -- they
+## share git-review-driver.sh (kdiff3 is a GUI sibling of meld, diff-review is the
+## terminal-safe textual one), so each must surface every change identically. The
+## passed path is git-meld; its siblings live in the same dir.
 printf '\n%s\n' "-- CURRENT code: expected 0 hidden-change failures --"
-run_suites "${git_meld}"
-new_fails="${run_suites_total}"
+driver_dir="$( dirname -- "${git_meld}" )"
+new_fails=0
+for drv_name in git-meld git-kdiff3 git-diff-review; do
+   drv="${driver_dir}/${drv_name}"
+   if [ ! -x "${drv}" ]; then
+      printf '%s\n' "SKIP: '${drv}' not found; not testing this driver."
+      continue
+   fi
+   printf '\n%s\n' "-- adversarial suites vs ${drv_name} --"
+   run_suites "${drv}"
+   if [ "${run_suites_total}" != 0 ]; then
+      printf '%s\n' "FAIL: ${drv_name} hid ${run_suites_total} real change(s) -- a review tool must never do that." >&2
+      new_fails=$(( new_fails + run_suites_total ))
+   fi
+done
 if [ "${new_fails}" != 0 ]; then
-   printf '%s\n' "FAIL: git-meld hid ${new_fails} real change(s) -- a review tool must never do that." >&2
    exit 1
 fi
-printf '%s\n' "PASS: no real change was hidden across all adversarial suites."
+printf '%s\n' "PASS: no real change was hidden across all adversarial suites (meld/kdiff3/diff-review)."
 
 ## difftool / mergetool contract suite: the git-review-difftool / -mergetool
 ## wrappers are siblings of git-meld, so derive their dir from the git-meld path.
