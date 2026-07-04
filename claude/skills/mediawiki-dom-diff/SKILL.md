@@ -82,12 +82,10 @@ pages as `missing`, but anon *article/page web read works* -- verify via the
 canonical rendered page, never `Special:Redirect` (it's login-walled). See
 [[repro-wiki-image-verification]].
 
-## Gotchas (learned the hard way, 2026-06-22 widgets-deprecation diff)
+## Gotchas
 
-- A shallow pre/post marker (e.g. `Widget:`-page count) can be wrong -- the wiki was
-  a broken hybrid. Verify the actual RENDER, not a DB count.
-- Cross-wiki PRE-vs-POST was meaningless: PRE had migrated content + an inactive
-  backend (raw markup) plus hostname/DB/revid noise. Same-wiki + faithful backend
-  fixed it.
-- The sample diff is what caught the whitespace-noise problem in 5 minutes and
-  saved a wasted 30-minute full run -- hence "sample first, always".
+- A shallow pre/post marker (e.g. `Widget:`-page count) can be wrong -- a wiki can
+  be a broken hybrid. Verify the actual RENDER, not a DB count.
+- Cross-wiki PRE-vs-POST can be meaningless: PRE may hold migrated content + an
+  inactive backend (raw markup) plus hostname/DB/revid noise. Same-wiki + faithful
+  backend avoids it.
