@@ -32,7 +32,7 @@ fail() { printf '  FAIL  %s\n' "$1" >&2; fails=$((fails+1)); }
 review () {
    local name expect out
    name="$1"; expect="$2"
-   : >"${meld_log}"
+   true >"${meld_log}"
    out="$( git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD 2>&1 || true )$(cat "${meld_log}")"
    if printf '%s' "${out}" | grep -qiE "${expect}"; then pass "${name}"
    else fail "${name} (no '${expect}'); saw: $(printf '%s' "${out}"|tr '\n' '|'|cut -c1-120)"; fi
@@ -68,12 +68,24 @@ new_repo
 printf 'x\xff y\n' >b.txt
 git add -A
 git commit -qm x
-: >"${meld_log}"
+true >"${meld_log}"
 fatal_out="$( git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD 2>&1 || true )"
 if printf '%s' "${fatal_out}" | grep -qiE 'undecodable|non-UTF-8' && ! grep -q 'DISPLAY:' "${meld_log}"; then
    pass "undecodable content fails closed (viewer never opened)"
 else
    fail "undecodable content NOT fail-closed (meld_log: $(tr '\n' '|' < "${meld_log}"))"
+fi
+
+## Even under GIT_REVIEW_UNICODE_NONFATAL, a GUI viewer (git-meld/git-kdiff3) must
+## STILL fail closed on a fatal blob -- only the terminal-safe git-diff-review may
+## defer. GIT_MELD does not set git_review_display_terminal_safe, so the viewer
+## must never open here regardless of NONFATAL.
+true >"${meld_log}"
+GIT_REVIEW_UNICODE_NONFATAL=1 git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD >/dev/null 2>&1 || true
+if ! grep -q 'DISPLAY:' "${meld_log}"; then
+   pass "undecodable + NONFATAL still fails closed for a GUI viewer"
+else
+   fail "undecodable + NONFATAL OPENED the GUI viewer (meld_log: $(tr '\n' '|' < "${meld_log}"))"
 fi
 
 new_repo; printf 'x\n' >c.txt; git add -A; git commit -qm x
@@ -93,7 +105,7 @@ review "submodule gitlink change"     "Submodule '?mod'?:"
 new_repo
 printf 'a.sh binary\n' >.gitattributes; git add -A; git commit -qm attr
 printf '#!/bin/sh\nrm -rf /\n' >a.sh; git add -A; git commit -qm evilbinary
-: >"${meld_log}"
+true >"${meld_log}"
 preflight="$( "${GIT_MELD}" HEAD~1 HEAD 2>&1 || true )"
 if printf '%s' "${preflight}" | grep -qE 'pre-flight' && printf '%s' "${preflight}" | grep -qE 'a\.sh'; then
    pass "driver-skipped (binary) file listed in pre-flight"

@@ -97,7 +97,7 @@ make_change_repo() {
 run_difftool() {
    local dir="$1" viewer="$2"
    local log="${dir}/gui.log"
-   : > "${log}"
+   true > "${log}"
    GUI_LOG="${log}" git -C "${dir}" \
       -c difftool.prompt=false \
       -c "difftool.rv.cmd=${difftool_bin} ${viewer} \"\$LOCAL\" \"\$REMOTE\"" \
@@ -170,7 +170,7 @@ fi
 ## --- REGRESSION: a benign diff produces NO spurious stderr ---
 r="${tmproot}/dt-quiet"
 make_change_repo "${r}" 'a\nb\n' 'a\nB\n'
-: > "${r}/gui.log"
+true > "${r}/gui.log"
 qerr="$( GUI_LOG="${r}/gui.log" git -C "${r}" \
    -c difftool.prompt=false \
    -c "difftool.rv.cmd=${difftool_bin} meld \"\$LOCAL\" \"\$REMOTE\"" \
@@ -212,7 +212,7 @@ make_conflict_repo() {
 run_mergetool() {
    local dir="$1" viewer="$2"
    local log="${dir}/gui.log"
-   : > "${log}"
+   true > "${log}"
    GUI_LOG="${log}" git -C "${dir}" \
       -c "mergetool.rv.cmd=${mergetool_bin} ${viewer} \"\$BASE\" \"\$LOCAL\" \"\$REMOTE\" \"\$MERGED\"" \
       -c mergetool.rv.trustExitCode=true \
