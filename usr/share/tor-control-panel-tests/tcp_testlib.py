@@ -114,6 +114,7 @@ def sandbox(initial_torrc: str = DEFAULT_TORRC):
     ## real installed path; redirect it too, else AnonConnectionWizard.__init__
     ## regenerates the torrc over the seeded one.
     from tor_control_panel import anon_connection_wizard as _acw
+    from tor_control_panel import privilege as _privilege
 
     saved = {
         "gen_torrc_path": torrc_gen.torrc_file_path,
@@ -124,8 +125,8 @@ def sandbox(initial_torrc: str = DEFAULT_TORRC):
         "status_write": tor_status.write_to_temp_then_move,
         "resolv_add": torrc_gen.edit_etc_resolv_conf_add,
         "bridges_default": torrc_gen.bridges_default_path,
-        "sp_call": tor_status.subprocess.call,
-        "sp_check_call": tor_status.subprocess.check_call,
+        "priv_run": _privilege.run,
+        "priv_check_run": _privilege.check_run,
         "acw_common_torrc": _acw.Common.torrc_file_path,
     }
 
@@ -152,8 +153,10 @@ def sandbox(initial_torrc: str = DEFAULT_TORRC):
         torrc_gen.write_to_temp_then_move = _stub_write
         torrc_gen.edit_etc_resolv_conf_add = lambda *a, **k: None
         tor_status.write_to_temp_then_move = _stub_write
-        tor_status.subprocess.call = _stub_ok
-        tor_status.subprocess.check_call = _stub_ok
+        ## The privileged leaprun/pkexec runner is stubbed so set_enabled /
+        ## set_disabled do not shell out during tests.
+        _privilege.run = _stub_ok
+        _privilege.check_run = lambda *a, **k: None
         _acw.Common.torrc_file_path = str(torrc_path)
 
         try:
@@ -168,8 +171,8 @@ def sandbox(initial_torrc: str = DEFAULT_TORRC):
             torrc_gen.write_to_temp_then_move = saved["gen_write"]
             torrc_gen.edit_etc_resolv_conf_add = saved["resolv_add"]
             tor_status.write_to_temp_then_move = saved["status_write"]
-            tor_status.subprocess.call = saved["sp_call"]
-            tor_status.subprocess.check_call = saved["sp_check_call"]
+            _privilege.run = saved["priv_run"]
+            _privilege.check_run = saved["priv_check_run"]
 
 
 @contextlib.contextmanager
