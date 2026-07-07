@@ -47,6 +47,13 @@ class DisableNetworkRewriteTest(unittest.TestCase):
         self.assertIn("# DisableNetwork 1 is bad", text)
         self.assertIn("DisableNetwork 1", _active(text))
 
+    def test_missing_torrc_reports_enabled(self):
+        """A missing torrc (plain Debian/Kicksecure) must report tor_enabled
+        (Tor's own default), not crash."""
+        with T.sandbox() as torrc:
+            torrc.unlink()
+            self.assertEqual(tor_status.tor_status(), "tor_enabled")
+
     def test_all_active_directives_normalized(self):
         """A duplicated torrc must not be left with a conflicting directive."""
         text = self._run(tor_status.set_enabled,

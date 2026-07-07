@@ -162,12 +162,14 @@ class TorControlPanelWidgetTest(unittest.TestCase):
             self.assertFalse(panel.use_custom_bridges)
 
     def test_valid_ip_accepts_ipv6(self):
-        """Proxy/bridge address validation must accept IPv6 (getaddrinfo)."""
-        with T.sandbox(), T.no_modal():
-            panel = self._panel()
-            self.assertTrue(panel.valid_ip("::1"))
-            self.assertTrue(panel.valid_ip("127.0.0.1"))
-            self.assertFalse(panel.valid_ip("definitely not an address"))
+        """Proxy/bridge address validation (shared validators) accepts IPv6."""
+        from tor_control_panel import validators
+        self.assertTrue(validators.valid_ip("::1"))
+        self.assertTrue(validators.valid_ip("127.0.0.1"))
+        self.assertFalse(validators.valid_ip("definitely not an address"))
+        self.assertTrue(validators.valid_port("9050"))
+        self.assertFalse(validators.valid_port("70000"))
+        self.assertFalse(validators.valid_port("notaport"))
 
     def test_tor_log_view_sanitizes_untrusted_content(self):
         """A hostile Tor log line cannot inject markup / escapes into the view."""

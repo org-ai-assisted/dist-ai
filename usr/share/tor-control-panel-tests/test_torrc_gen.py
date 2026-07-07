@@ -220,6 +220,14 @@ class ParseTorrcTest(unittest.TestCase):
             "replace them with default obfs4 bridges (bug A1)",
         )
 
+    def test_parse_torrc_missing_file_returns_defaults(self):
+        """On plain Debian/Kicksecure the torrc may be absent; parse must return
+        defaults, not raise FileNotFoundError."""
+        with T.sandbox() as torrc:
+            torrc.unlink()  # simulate no tor-control-panel torrc yet
+            result = torrc_gen.parse_torrc()
+        self.assertEqual(result, ("None", "None", "", "", "", ""))
+
     def test_parse_torrc_malformed_bridge_line_does_not_crash(self):
         """A bare/short 'Bridge' line must not raise IndexError in parse_torrc."""
         with T.sandbox() as torrc:
