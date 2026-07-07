@@ -6,16 +6,7 @@
 ## Orchestrator: run the dist-ai regression/fuzz/e2e/integration suites,
 ## aggregate PASS / FAIL / SKIP / TIMEOUT, and exit non-zero if any FAILed.
 ##
-## Usage:
-##   dist-ai-tests-all [--core] [--fuzz] [--e2e] [--integration] [--all]
-##                     [--repo-root DIR] [--progress FILE]
-##                     [--timeout-core N] [--timeout-fuzz N] [--timeout-heavy N]
-##                     [--list]
-##
-## With no category flag, only --core runs. --repo-root points every suite at a
-## derivative-maker checkout (so the in-tree code is tested, not the installed
-## package); without it each suite falls back to its installed / auto path.
-## A suite that cannot find its target exits 77 and is reported SKIP.
+## Run 'dist-ai-tests-all --help' for full usage (see usage() below).
 
 set -o errexit
 set -o nounset
@@ -27,6 +18,8 @@ shopt -s shift_verbose
 mydir="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )"
 
 repo_root=""
+component=""
+component_root=""
 progress_file=""
 run_core="false"
 run_fuzz="false"
@@ -78,12 +71,39 @@ integration_suites=(
 )
 
 usage() {
-   sed -n '10,24p' "${BASH_SOURCE[0]}" | sed 's/^## \{0,1\}//'
+   cat <<'EOF'
+Usage:
+  dist-ai-tests-all [--core] [--fuzz] [--e2e] [--integration] [--all]
+                    [--repo-root DIR]
+                    [--component NAME [--component-root DIR]]
+                    [--progress FILE]
+                    [--timeout-core N] [--timeout-fuzz N] [--timeout-heavy N]
+                    [--list]
+
+With no category flag, only --core runs.
+
+--repo-root points every suite at a derivative-maker MONOREPO checkout
+(packages/<team>/<name>); without it each suite falls back to its installed
+/ auto path. A suite that cannot find its target exits 77 and is reported SKIP.
+
+--component NAME restricts the run to the suites owned by ONE component
+(privleap, helper-scripts, onion-grater, genmkfile, open-link-confirmation,
+sdwdate-gui, developer-meta-files). --component-root DIR points those suites at
+a STANDALONE component checkout -- the repo root itself, not a monorepo subpath
+-- which is the per-repo CI entry point. --component-root requires --component.
+EOF
 }
 
 ## Resolve a package checkout path under --repo-root, or empty when unset.
 pkg_dir() {
    local name="$1"
+   ## Standalone-component override: the selected component's checkout root is
+   ## given directly (the repo root itself), bypassing the monorepo
+   ## packages/<team>/<name> join. This is the per-repo CI path.
+   if [ -n "${component_root}" ] && [ "${name}" = "${component}" ]; then
+      printf '%s' "${component_root}"
+      return 0
+   fi
    [ -n "${repo_root}" ] || return 0
    case "${name}" in
       onion-grater)
@@ -101,7 +121,7 @@ wire() {
    local base="${suite%%-tests*}"
    wire_env=()
    wire_args=()
-   [ -n "${repo_root}" ] || return 0
+   [ -n "${repo_root}" ] || [ -n "${component_root}" ] || return 0
 
    local hs dmf
    hs="$( pkg_dir helper-scripts )"
@@ -138,6 +158,25 @@ wire() {
       *)
          printf 'dist-ai-tests-all: no wiring for suite %s\n' "${suite}" >&2
          return 1 ;;
+   esac
+}
+
+## Map a suite entrypoint to the standalone component (repo) that ships the
+## code it tests. Mirrors the base-name grouping in wire(); used by --component
+## to restrict the run to one repo's suites. An unrecognized suite yields the
+## empty string (matches no component).
+suite_component() {
+   local base="${1%%-tests*}"
+   case "${base}" in
+      check-ref-commits-for-unicode|grep-find-unicode-wrapper|unicode-show|stcat-family|stdisplay|sanitize-string)
+         printf '%s' 'helper-scripts' ;;
+      git-meld|dm-virtualbox-wiki-links)
+         printf '%s' 'developer-meta-files' ;;
+      onion-grater)           printf '%s' 'onion-grater' ;;
+      privleap)               printf '%s' 'privleap' ;;
+      genmkfile)              printf '%s' 'genmkfile' ;;
+      open-link-confirmation) printf '%s' 'open-link-confirmation' ;;
+      sdwdate-gui)            printf '%s' 'sdwdate-gui' ;;
    esac
 }
 
@@ -182,7 +221,9 @@ while [ "$#" -gt 0 ]; do
       --e2e)           run_e2e="true" ;;
       --integration)   run_integration="true" ;;
       --all)           run_core="true" ; run_fuzz="true" ; run_e2e="true" ; run_integration="true" ;;
-      --repo-root)     repo_root="$2" ; shift ;;
+      --repo-root)      repo_root="$2" ; shift ;;
+      --component)      component="$2" ; shift ;;
+      --component-root) component_root="$2" ; shift ;;
       --progress)      progress_file="$2" ; shift ;;
       --timeout-core)  timeout_core="$2" ; shift ;;
       --timeout-fuzz)  timeout_fuzz="$2" ; shift ;;
@@ -205,11 +246,43 @@ if [ -n "${repo_root}" ] && [ ! -d "${repo_root}" ]; then
    exit 2
 fi
 
+if [ -n "${component}" ]; then
+   case "${component}" in
+      helper-scripts|developer-meta-files|onion-grater|privleap|genmkfile|open-link-confirmation|sdwdate-gui)
+         : ;;
+      *)
+         printf 'dist-ai-tests-all: unknown --component: %s\n' "${component}" >&2
+         exit 2 ;;
+   esac
+fi
+
+if [ -n "${component_root}" ]; then
+   if [ -z "${component}" ]; then
+      printf 'dist-ai-tests-all: --component-root requires --component\n' >&2
+      exit 2
+   fi
+   if [ ! -d "${component_root}" ]; then
+      printf 'dist-ai-tests-all: --component-root not a directory: %s\n' "${component_root}" >&2
+      exit 2
+   fi
+fi
+
 selected=()
 [ "${run_core}" = "true" ]        && selected+=( "${core_suites[@]/#/core:}" )
 [ "${run_fuzz}" = "true" ]        && selected+=( "${fuzz_suites[@]/#/fuzz:}" )
 [ "${run_e2e}" = "true" ]         && selected+=( "${e2e_suites[@]/#/e2e:}" )
 [ "${run_integration}" = "true" ] && selected+=( "${integration_suites[@]/#/integration:}" )
+
+## --component: keep only the suites owned by that component.
+if [ -n "${component}" ]; then
+   filtered=()
+   for item in "${selected[@]}"; do
+      if [ "$( suite_component "${item#*:}" )" = "${component}" ]; then
+         filtered+=( "${item}" )
+      fi
+   done
+   selected=( "${filtered[@]}" )
+fi
 
 if [ "${list_only}" = "true" ]; then
    printf '%s\n' "${selected[@]}"
