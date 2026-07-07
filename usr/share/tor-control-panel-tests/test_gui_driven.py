@@ -227,21 +227,38 @@ class AnonConnectionWizardWidgetTest(unittest.TestCase):
                     self._wizard()
                     self.assertEqual(Common.init_tor_status, expect)
 
-    def test_cancel_restores_initially_enabled_tor(self):
-        """Cancelling a wizard launched while Tor was enabled must re-enable
-        Tor (previously the enabled branch did nothing)."""
+    class _FakeThread:
+        def terminate(self):
+            pass
+
+    def _spy_set_enabled(self):
         from tor_control_panel import tor_status
+        calls = []
+        saved = tor_status.set_enabled
+        tor_status.set_enabled = lambda: (calls.append("enabled"), ("tor_enabled", 0))[1]
+        self.addCleanup(lambda: setattr(tor_status, "set_enabled", saved))
+        return calls
+
+    def test_cancel_restores_initially_enabled_tor_after_bootstrap(self):
+        """Cancelling after a bootstrap ran, from an initially-enabled state,
+        must re-enable Tor (previously the enabled branch did nothing)."""
         with T.sandbox(initial_torrc="DisableNetwork 0\n"), T.no_modal():
             wizard = self._wizard()
             self.assertEqual(Common.init_tor_status, "tor_enabled")
-            calls = []
-            saved = tor_status.set_enabled
-            tor_status.set_enabled = lambda: (calls.append("enabled"), ("tor_enabled", 0))[1]
-            try:
-                wizard.cancel_button_clicked()
-            finally:
-                tor_status.set_enabled = saved
+            wizard.bootstrap_thread = self._FakeThread()  # a bootstrap ran
+            calls = self._spy_set_enabled()
+            wizard.cancel_button_clicked()
             self.assertEqual(calls, ["enabled"])
+
+    def test_untouched_cancel_does_not_restart_tor(self):
+        """Opening and cancelling without starting a bootstrap must NOT restart
+        Tor (would disrupt an existing connection)."""
+        with T.sandbox(initial_torrc="DisableNetwork 0\n"), T.no_modal():
+            wizard = self._wizard()
+            self.assertFalse(wizard.bootstrap_thread)  # no bootstrap started
+            calls = self._spy_set_enabled()
+            wizard.cancel_button_clicked()
+            self.assertEqual(calls, [])
 
     def test_custom_bridges(self):
         with T.sandbox() as torrc, T.no_modal():
