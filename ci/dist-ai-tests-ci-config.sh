@@ -35,6 +35,7 @@ fi
 
 apt_packages='python3 python3-pytest python3-hypothesis'
 helper_scripts='false'
+skip_args=''
 
 if [ -f "${cfg}" ]; then
    value="$(yq -r '.["dist-ai-tests"]["apt-packages"] // ""' "${cfg}")"
@@ -44,6 +45,18 @@ if [ -f "${cfg}" ]; then
    if [ "$(yq -r '.["dist-ai-tests"]["helper-scripts"] // ""' "${cfg}")" = 'true' ]; then
       helper_scripts='true'
    fi
+   ## Optional list of suite entrypoints to skip (a suite temporarily broken /
+   ## pending a merge). Each becomes a '--skip <name>' argument.
+   while IFS= read -r skip_name; do
+      [ -n "${skip_name}" ] || continue
+      case "${skip_name}" in
+         *[![:alnum:]-]*)
+            printf '%s\n' "dist-ai-tests-ci-config: invalid skip suite name: ${skip_name}" >&2
+            exit 1
+            ;;
+      esac
+      skip_args="${skip_args} --skip ${skip_name}"
+   done < <(yq -r '.["dist-ai-tests"].skip[]? // empty' "${cfg}")
 fi
 
 ## Reject newline injection into $GITHUB_OUTPUT.
@@ -57,6 +70,7 @@ esac
 {
    printf 'apt_packages=%s\n' "${apt_packages}"
    printf 'helper_scripts=%s\n' "${helper_scripts}"
+   printf 'skip_args=%s\n' "${skip_args# }"
    if [ "${helper_scripts}" = 'true' ]; then
       printf 'hs_arg=--helper-scripts-root %s/helper-scripts\n' "${GITHUB_WORKSPACE}"
    else

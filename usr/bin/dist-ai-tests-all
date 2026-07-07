@@ -21,6 +21,7 @@ repo_root=""
 component=""
 component_root=""
 helper_scripts_root=""
+skip_suites=()
 progress_file=""
 run_core="false"
 run_fuzz="false"
@@ -98,6 +99,10 @@ a STANDALONE component checkout -- the repo root itself, not a monorepo subpath
 whose suites drive a helper-scripts tool (open-link-confirmation ->
 sanitize-string), needed in standalone-component mode where no sibling
 helper-scripts checkout exists.
+
+--skip NAME drops the suite entrypoint NAME from the run (repeatable), e.g. a
+suite temporarily broken or pending a merge, so a component's other suites can
+still gate PRs.
 EOF
 }
 
@@ -277,6 +282,7 @@ while [ "$#" -gt 0 ]; do
       --component)      component="$2" ; shift ;;
       --component-root) component_root="$2" ; shift ;;
       --helper-scripts-root) helper_scripts_root="$2" ; shift ;;
+      --skip)           skip_suites+=( "$2" ) ; shift ;;
       --progress)      progress_file="$2" ; shift ;;
       --timeout-core)  timeout_core="$2" ; shift ;;
       --timeout-fuzz)  timeout_fuzz="$2" ; shift ;;
@@ -338,6 +344,24 @@ if [ -n "${component}" ]; then
       if [ "$( suite_component "${item#*:}" )" = "${component}" ]; then
          filtered+=( "${item}" )
       fi
+   done
+   selected=( "${filtered[@]}" )
+fi
+
+## --skip: drop named suite entrypoints (e.g. one temporarily broken / pending a
+## merge) so the rest of a component's suites can still gate PRs.
+if [ "${#skip_suites[@]}" -gt 0 ]; then
+   filtered=()
+   for item in "${selected[@]}"; do
+      suite="${item#*:}"
+      skip_this="false"
+      for skip_name in "${skip_suites[@]}"; do
+         if [ "${suite}" = "${skip_name}" ]; then
+            skip_this="true"
+            break
+         fi
+      done
+      [ "${skip_this}" = "false" ] && filtered+=( "${item}" )
    done
    selected=( "${filtered[@]}" )
 fi
