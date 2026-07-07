@@ -107,19 +107,30 @@ test exists in this suite.
 - Test: `test_torrc_gen.py` asserts gen_torrc emits a proxy line for a full
   7-arg proxy request (feature coverage); ACW arg-building covered by inspection.
 
-## B. Robustness items (lower priority; fix if surgical)
+## B. Robustness / hardening items -- ALL FIXED
 
-- [ROBUST] `tor_control_panel.py` ~470/477/802/816/824 call
-  `self.bootstrap_thread.terminate()` while only line ~460 guards with
-  `hasattr`; same uninitialised-attribute class as A2.
-- [ROBUST] `torrc_gen.py` `gen_torrc` custom-bridge path: `bridges_type.index(bridge)`
-  raises ValueError if the first token of a custom bridge line is not a known
-  transport name.
-- [ROBUST] `tor_bootstrap.py` regex `.group(1)` on an unguarded `re.match`.
-- [ROBUST] `edit_etc_resolv_conf.py` `except BaseException` too broad.
-- [TODO, arraybolt3 post #161] Sanitize untrusted input read from Tor / the
-  systemd journal (helper-scripts `sanitize_string`); prevent `TorBootstrap`
-  QThreads being garbage-collected while running (QObject use-after-free).
+- [FIXED] Custom meek (`meek_lite`) and mixed/vanilla-first custom bridges lost
+  their `ClientTransportPlugin` line; `gen_torrc` now emits the right plugin per
+  transport present (obfs4/snowflake/meek_lite), de-duplicated. Flagged by
+  Codex + CodeRabbit + a fresh-eyes review.
+- [FIXED] Unguarded `bootstrap_thread.terminate()` sites in `tor_control_panel.py`
+  now route through a guarded `stop_bootstrap_thread()` helper (same class as A2).
+- [FIXED] `torrc_gen.gen_torrc` no longer raises when a custom bridge's first
+  token is not a known transport (vanilla IP:port bridge).
+- [FIXED] `tor_bootstrap.py` regex parse guards a non-matching bootstrap-phase
+  line (no `.group()` on `None`).
+- [FIXED] `edit_etc_resolv_conf.py` catches `Exception`, not `BaseException`.
+- [FIXED] QLabel-vs-string comparisons in `refresh_user_configuration`
+  (`self.bridge_type.text()` / `self.proxy_type.text()`).
+- [FIXED, arraybolt3 post #161 TODO] `TorBootstrap` QThreads are kept in a
+  module-level set while running (removed on `finished`), so a still-running
+  thread cannot be garbage-collected (QObject use-after-free).
+- [FIXED, arraybolt3 post #161 TODO] Untrusted input from Tor / the systemd
+  journal / the tor log / torrc is routed through helper-scripts
+  `sanitize_string` before display (strips control chars, escapes, markup), so
+  a hostile log line cannot inject into the QTextBrowser log view.
+- [FIXED] `tor_status.tor_enabled_check` matches the `DisableNetwork` directive
+  on a non-comment line (first token) instead of any substring.
 
 ## C. Notable NON-bugs / already fixed upstream (do NOT re-fix)
 
@@ -137,15 +148,27 @@ test exists in this suite.
   `DisableNetwork 1`; QGridLayout+QSizePolicy misuse; "New Identity" reworked into
   "Request new Tor circuit".
 
-## D. Open issues tracked upstream (not addressed here)
+## D. Genuinely open -- need a running GUI / live Tor, or belong upstream
+
+These cannot be fixed reliably from static analysis (no way to reproduce or
+verify the fix headlessly), or are a separate upstream workstream:
 
 - ACW layout drift: unchecking "I need bridges..." after a Custom-bridges
-  round-trip leaves the checkbox mid-window (post #161 bug 3). Visual; deferred.
+  round-trip leaves the checkbox mid-window (post #161 bug 3). Purely visual; a
+  QGridLayout stretch issue that needs the real GUI to see and confirm a fix --
+  guessing blind risks making the layout worse.
 - "Enable network" without closing TCP hangs / vanishes the window (troubadour,
-  post #164, under investigation upstream; `tor_status.py` being rewritten).
+  post #164). Needs a live Tor daemon to reproduce; troubadour is actively
+  rewriting `tor_status.py` around this.
 - Plain-Debian / non-Whonix support (no `/etc/torrc.d/*.conf`, TBB's bundled Tor
   making TCP's tor commands no-ops) -- troubadour's ongoing goal.
 - "Unknown Bootstrap TAG" shown when connecting via a proxy (post #161, minor).
-- `finish_button_clicked()` always returns True even on cancel
-  (`anon_connection_wizard.py:922`, pre-existing TODO; QWizard semantics -- left
-  as-is to avoid a non-surgical change).
+  The fallback is deliberate and safe (a static, sanitized message); the exact
+  proxy-path tag to add to `tag_phase` is unknown without reproduction.
+
+## E. Non-bug clarified
+
+- `finish_button_clicked()` (`anon_connection_wizard.py`) is only connected to
+  the Finish button's `clicked` signal, whose slot return value Qt ignores, so
+  the `return True` (and its "still returns True on cancel" TODO) is a no-op, not
+  a bug. Left as-is; removing it would only churn the `.connect`.

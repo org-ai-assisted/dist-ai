@@ -135,6 +135,38 @@ class TorControlPanelWidgetTest(unittest.TestCase):
             panel.configure_button.click()
             self.assertIn("Accept", panel.configure_button.text())
 
+    def test_tor_log_view_sanitizes_untrusted_content(self):
+        """A hostile Tor log line cannot inject markup / escapes into the view."""
+        import os
+        import tempfile
+        from PyQt5.QtWidgets import QRadioButton
+
+        with T.sandbox(), T.no_modal():
+            panel = self._panel()
+            tmp = tempfile.mkdtemp(prefix="tcp-log-")
+            self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+            log_path = os.path.join(tmp, "log")
+            with open(log_path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    "Jul 07 12:00:00.000 [notice] "
+                    "<script>alert(1)</script>\x1b[31mEVIL\x07 [warn] bad\n"
+                )
+            panel.tor_log = log_path
+            panel.tor_log_html = os.path.join(tmp, "log.html")
+            for button in panel.files_box.findChildren(QRadioButton):
+                if button.text() == panel.button_name[1]:
+                    button.setChecked(True)
+            panel.refresh_logs()
+
+            rendered = open(panel.tor_log_html, encoding="utf-8").read()
+            self.assertNotIn("<script>", rendered)
+            self.assertNotIn("\x1b", rendered)
+            self.assertNotIn("\x07", rendered)
+            ## The application's own [warn] highlight styling is still applied.
+            self.assertIn("span", rendered)
+            ## The benign text content survives (markup stripped, not the words).
+            self.assertIn("alert(1)", panel.file_browser.toPlainText())
+
 
 class AnonConnectionWizardWidgetTest(unittest.TestCase):
     """Drive AnonConnectionWizard state/widgets and assert write_torrc output."""
