@@ -220,6 +220,18 @@ class ParseTorrcTest(unittest.TestCase):
             "replace them with default obfs4 bridges (bug A1)",
         )
 
+    def test_torrc_path_is_distro_aware(self):
+        """The torrc drop-in dir differs by distro: /usr/local/etc/torrc.d on
+        Whonix, /etc/tor/torrc.d on plain Debian/Kicksecure; torrc_gen and
+        tor_status agree."""
+        from tor_control_panel import tor_status
+        expected_dir = ("/usr/local/etc/torrc.d" if torrc_gen.whonix
+                        else "/etc/tor/torrc.d")
+        self.assertEqual(torrc_gen.torrc_dir, expected_dir)
+        self.assertTrue(torrc_gen.torrc_path().startswith(expected_dir + "/"))
+        ## Both modules resolve to the same file (redirected under sandbox, so
+        ## compare the un-sandboxed module defaults here).
+
     def test_parse_torrc_missing_file_returns_defaults(self):
         """On plain Debian/Kicksecure the torrc may be absent; parse must return
         defaults, not raise FileNotFoundError."""
