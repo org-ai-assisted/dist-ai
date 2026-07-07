@@ -135,6 +135,19 @@ class TorControlPanelWidgetTest(unittest.TestCase):
             panel.configure_button.click()
             self.assertIn("Accept", panel.configure_button.text())
 
+    def test_refresh_user_configuration_resets_bridge_flags(self):
+        """A stale custom/default bridge flag must not survive a refresh.
+
+        With a torrc that has no custom bridges, refresh_user_configuration()
+        must clear a previously-set use_custom_bridges (else set_torrc() could
+        emit conflicting bridge config).
+        """
+        with T.sandbox(), T.no_modal():
+            panel = self._panel()
+            panel.use_custom_bridges = True  # stale state from an earlier screen
+            panel.refresh_user_configuration()
+            self.assertFalse(panel.use_custom_bridges)
+
     def test_tor_log_view_sanitizes_untrusted_content(self):
         """A hostile Tor log line cannot inject markup / escapes into the view."""
         import os

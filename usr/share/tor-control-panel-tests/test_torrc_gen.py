@@ -208,6 +208,13 @@ class ParseTorrcTest(unittest.TestCase):
             "replace them with default obfs4 bridges (bug A1)",
         )
 
+    def test_parse_torrc_malformed_bridge_line_does_not_crash(self):
+        """A bare/short 'Bridge' line must not raise IndexError in parse_torrc."""
+        with T.sandbox() as torrc:
+            torrc.write_text("DisableNetwork 0\nUseBridges 1\nBridge\n", encoding="utf-8")
+            result = torrc_gen.parse_torrc()  # must not raise
+            self.assertIsInstance(result[0], str)
+
     def test_a1_custom_bridges_survive_reconfigure(self):
         """Reproduce the data-loss path: custom bridges, then add a proxy.
 
