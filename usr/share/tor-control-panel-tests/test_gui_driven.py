@@ -127,6 +127,34 @@ class TorControlPanelWidgetTest(unittest.TestCase):
     def test_socks4_proxy_via_widgets(self):
         self.assertIn("Socks4Proxy 127.0.0.1:9050", self._proxy("SOCKS4"))
 
+    def test_run_async_off_gui_thread_with_continuation(self):
+        """run_async runs the blocking work off the GUI thread and delivers the
+        continuation back on the GUI thread (so Enable network cannot freeze it)."""
+        import threading
+        from PyQt5.QtCore import QTimer
+        from PyQt5.QtWidgets import QApplication
+        with T.sandbox(), T.no_modal():
+            panel = self._panel()
+            gui_tid = threading.get_ident()
+            state = {}
+
+            def work():
+                state["worker"] = threading.get_ident()
+                return "ok"
+
+            def done(result):
+                state["done"] = threading.get_ident()
+                state["result"] = result
+                QApplication.instance().quit()
+
+            panel.run_async(work, done)
+            QTimer.singleShot(5000, QApplication.instance().quit)
+            QApplication.instance().exec_()
+
+            self.assertNotEqual(state.get("worker"), gui_tid)
+            self.assertEqual(state.get("done"), gui_tid)
+            self.assertEqual(state.get("result"), "ok")
+
     def test_tabs_and_control_buttons_present(self):
         """Three tabs (Control default) and the control buttons are present."""
         from PyQt5.QtWidgets import QTabWidget
