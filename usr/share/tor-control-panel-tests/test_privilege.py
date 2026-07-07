@@ -34,6 +34,20 @@ class PrivilegePrefixTest(unittest.TestCase):
         self.assertFalse(privilege.leaprun_available())
         self.assertEqual(privilege._prefix(), ["pkexec"])
 
+    def test_command_builds_argv_with_prefix(self):
+        ## command() is used by call sites that need their own Popen (to
+        ## capture stdout/stderr): restart_tor_gui, the log reader, restart/stop.
+        privilege.shutil.which = lambda name: "/usr/bin/leaprun"
+        self.assertEqual(
+            privilege.command("acw-tor-control-restart"),
+            ["leaprun", "acw-tor-control-restart"],
+        )
+        privilege.shutil.which = lambda name: None
+        self.assertEqual(
+            privilege.command("acw-tor-control-restart", "--flag"),
+            ["pkexec", "acw-tor-control-restart", "--flag"],
+        )
+
     def test_run_uses_prefix(self):
         calls = {}
         privilege.shutil.which = lambda name: "/usr/bin/leaprun"
