@@ -34,7 +34,7 @@ else
    tests_dir="${script_dir}/../share/tor-control-panel-tests"
 fi
 
-exec python3 -m unittest discover \
+python3 -m unittest discover \
    --start-directory "${tests_dir}" \
    --pattern 'test_*.py' \
    "$@"
