@@ -127,6 +127,19 @@ class TorControlPanelWidgetTest(unittest.TestCase):
     def test_socks4_proxy_via_widgets(self):
         self.assertIn("Socks4Proxy 127.0.0.1:9050", self._proxy("SOCKS4"))
 
+    def test_tabs_and_control_buttons_present(self):
+        """Three tabs (Control default) and the control buttons are present."""
+        from PyQt5.QtWidgets import QTabWidget
+        with T.sandbox(), T.no_modal():
+            panel = self._panel()
+            tabs = panel.findChildren(QTabWidget)[0]
+            self.assertEqual([tabs.tabText(i) for i in range(tabs.count())],
+                             ["Control", "Utilities", "Logs"])
+            self.assertEqual(tabs.currentIndex(), 0)
+            self.assertIn("Restart Tor", panel.restart_button.text())
+            self.assertIn("Stop Tor", panel.stop_button.text())
+            self.assertIn("Exit", panel.quit_button.text())
+
     def test_configure_button_click_toggles_mode(self):
         """Clicking Configure enters edit mode (button morphs to Accept)."""
         with T.sandbox(), T.no_modal():
@@ -209,13 +222,54 @@ class AnonConnectionWizardWidgetTest(unittest.TestCase):
         self.addCleanup(wizard.deleteLater)
         return wizard
 
-    def test_default_bridge_obfs4(self):
+    def _default_bridge(self, transport):
         with T.sandbox() as torrc, T.no_modal():
             wizard = self._wizard()
             Common.use_default_bridges = True
-            Common.bridge_type = "obfs4"
+            Common.bridge_type = transport
             wizard.write_torrc()
-            self.assertIn("ClientTransportPlugin obfs4 exec /usr/bin/obfs4proxy", torrc.read_text())
+            return torrc.read_text(encoding="utf-8")
+
+    def test_first_page_offers_connect_configure_disable(self):
+        """The wizard's first page offers Connect / Configure / Disable Tor."""
+        with T.sandbox(), T.no_modal():
+            wizard = self._wizard()
+            page = wizard.connection_main_page
+            self.assertTrue(hasattr(page, "connect_option"))
+            self.assertTrue(hasattr(page, "configure_option"))
+            self.assertTrue(hasattr(page, "disable_option"))
+
+    def test_bridge_type_combo_offers_all_types(self):
+        """The bridge-type combo offers obfs4, snowflake, meek and custom."""
+        with T.sandbox(), T.no_modal():
+            wizard = self._wizard()
+            combo = wizard.bridge_wizard_page.bridges_combo
+            items = [combo.itemText(i) for i in range(combo.count())]
+            self.assertEqual(items, ["obfs4", "snowflake", "meek", "Custom bridges"])
+
+    def test_default_bridge_obfs4(self):
+        self.assertIn("ClientTransportPlugin obfs4 exec /usr/bin/obfs4proxy",
+                      self._default_bridge("obfs4"))
+
+    def test_default_bridge_meek(self):
+        self.assertIn("ClientTransportPlugin meek_lite exec /usr/bin/obfs4proxy",
+                      self._default_bridge("meek"))
+
+    def test_default_bridge_snowflake(self):
+        self.assertIn("ClientTransportPlugin snowflake exec /usr/bin/snowflake-client",
+                      self._default_bridge("snowflake"))
+
+    def test_socks4_proxy(self):
+        with T.sandbox() as torrc, T.no_modal():
+            wizard = self._wizard()
+            Common.use_proxy = True
+            Common.proxy_type = "SOCKS4"
+            Common.proxy_username = ""
+            Common.proxy_password = ""
+            wizard.proxy_wizard_page.ip_edit.setText("127.0.0.1")
+            wizard.proxy_wizard_page.port_edit.setText("9050")
+            wizard.write_torrc()
+            self.assertIn("Socks4Proxy 127.0.0.1:9050", torrc.read_text())
 
     def test_init_tor_status_captured_at_launch(self):
         """init_tor_status must reflect the launch state (not stay '') so the
