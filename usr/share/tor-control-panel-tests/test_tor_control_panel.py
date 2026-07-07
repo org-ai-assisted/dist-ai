@@ -30,6 +30,8 @@ import os
 import tempfile
 import unittest
 
+from PyQt5.QtWidgets import QRadioButton
+
 import tcp_testlib as T
 from tor_control_panel import tor_control_panel as tcp
 
@@ -86,6 +88,54 @@ class BridgesComboToggleTest(unittest.TestCase):
             self.assertEqual(
                 disable, 0, "'Disable network' should have been replaced, not kept (bug A3)"
             )
+
+
+class ConfigUiTest(unittest.TestCase):
+    """Guards for the config UI: the update_proxy_settings behaviour (which was
+    renamed from proxy_settings_show because it also *hides* fields) and the
+    tab identifiers, which were swapped to match each tab's content."""
+
+    def _panel(self):
+        panel = tcp.TorControlPanel()
+        self.addCleanup(panel.deleteLater)
+        return panel
+
+    def test_proxy_none_hides_all_proxy_fields(self):
+        with T.sandbox(), T.no_modal():
+            panel = self._panel()
+            panel.update_proxy_settings("None")
+            for widget in (panel.proxy_ip_edit, panel.proxy_port_edit,
+                           panel.proxy_user_edit, panel.proxy_pwd_edit):
+                self.assertTrue(widget.isHidden())
+
+    def test_proxy_socks5_shows_all_proxy_fields(self):
+        with T.sandbox(), T.no_modal():
+            panel = self._panel()
+            panel.update_proxy_settings("SOCKS5")
+            for widget in (panel.proxy_ip_edit, panel.proxy_port_edit,
+                           panel.proxy_user_edit, panel.proxy_pwd_edit):
+                self.assertFalse(widget.isHidden())
+
+    def test_proxy_socks4_disables_auth_fields(self):
+        ## SOCKS4 has no authentication, so the user/password fields are shown
+        ## but disabled.
+        with T.sandbox(), T.no_modal():
+            panel = self._panel()
+            panel.update_proxy_settings("SOCKS4")
+            self.assertFalse(panel.proxy_user_edit.isEnabled())
+            self.assertFalse(panel.proxy_pwd_edit.isEnabled())
+
+    def test_tabs_are_labelled_by_their_content(self):
+        with T.sandbox(), T.no_modal():
+            panel = self._panel()
+            labels = [panel.tabs.tabText(i) for i in range(panel.tabs.count())]
+            self.assertEqual(labels, ["Control", "Utilities", "Logs"])
+            ## The log-source radio buttons must live in the tab labelled 'Logs'
+            ## (i.e. logs_tab), not the utilities tab.
+            radios = panel.logs_tab.findChildren(QRadioButton)
+            self.assertIn(panel.torrc_button, radios)
+            self.assertIn(panel.log_button, radios)
+            self.assertIn(panel.journal_button, radios)
 
 
 if __name__ == "__main__":
