@@ -54,6 +54,27 @@ class DisableNetworkRewriteTest(unittest.TestCase):
             torrc.unlink()
             self.assertEqual(tor_status.tor_status(), "tor_enabled")
 
+    def test_missing_torrc_created_on_enable(self):
+        """set_enabled() must repair a missing torrc (plain Debian, no drop-in
+        yet), not crash -- its docstring guarantees the file ends up existing
+        with DisableNetwork 0."""
+        with T.sandbox() as torrc:
+            torrc.unlink()
+            tor_status.set_enabled()
+            self.assertTrue(torrc.exists())
+            self.assertIn("DisableNetwork 0",
+                          _active(torrc.read_text(encoding="utf-8")))
+
+    def test_missing_torrc_created_on_disable(self):
+        """set_disabled() must likewise create a missing torrc with
+        DisableNetwork 1 rather than raising FileNotFoundError."""
+        with T.sandbox() as torrc:
+            torrc.unlink()
+            tor_status.set_disabled()
+            self.assertTrue(torrc.exists())
+            self.assertIn("DisableNetwork 1",
+                          _active(torrc.read_text(encoding="utf-8")))
+
     def test_all_active_directives_normalized(self):
         """A duplicated torrc must not be left with a conflicting directive."""
         text = self._run(tor_status.set_enabled,
