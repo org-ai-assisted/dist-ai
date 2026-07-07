@@ -19,6 +19,7 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 | `sanitize-string-tests`  | shipping | `usr/share/sanitize-string-tests/` |
 | `stcat-family-tests`     | shipping | `usr/share/stcat-family-tests/` |
 | `stdisplay-tests`        | shipping | `usr/share/stdisplay-tests/` |
+| `tor-control-panel-tests` | shipping | `usr/share/tor-control-panel-tests/` |
 | `unicode-show-tests`     | shipping | `usr/share/unicode-show-tests/` |
 | `grep-find-unicode-wrapper-tests` | shipping | `usr/share/grep-find-unicode-wrapper-tests/` |
 | `check-ref-commits-for-unicode-tests` | shipping | `usr/share/check-ref-commits-for-unicode-tests/` |

@@ -523,6 +523,35 @@ Description: Regression tests for dm-virtualbox-update-local-and-wiki-links
  Each check runs old-broken (root cause reproduced) against new-fixed. The
  'dm-virtualbox-wiki-links-tests' command needs no root or network.
 
+Package: tor-control-panel-tests
+Architecture: all
+Depends: ${misc:Depends},
+ python3,
+ python3-pyqt5,
+ tor-control-panel
+Description: Regression and feature tests for tor-control-panel
+ Headless test suite for tor-control-panel (which now also contains the merged
+ anon-connection-wizard). It drives the real torrc_gen / tor_status logic and
+ the PyQt5 AnonConnectionWizard / TorControlPanel widgets under the Qt offscreen
+ platform plugin, with the torrc paths redirected to a temp directory and the
+ privileged 'leaprun' helpers stubbed, so it needs neither root, privleap, a Tor
+ daemon, nor an X server.
+ .
+ Feature coverage ('tor-control-panel-tests' command): torrc generation and
+ parse round-trip for every Bridges type (None, obfs4, snowflake, meek, custom
+ bridges) and Proxy type (None, SOCKS4, SOCKS5, with and without
+ authentication).
+ .
+ Regression coverage of the bugs from arraybolt3's review and test plan (Whonix
+ forum thread "Tor controller GUI"): custom bridges silently replaced by default
+ obfs4 bridges on reconfigure (a '# Custom bridges are used' marker typo in
+ parse_torrc); the anon-connection-wizard crash on Cancel (an uninitialised
+ bootstrap_thread attribute); and duplicate 'Disable network' / 'Enable network'
+ entries in the bridges selector (a hard-coded combo index). The interactive GUI
+ walkthrough from the same test plan is shipped as skipped tests. The suite
+ targets the installed tor-control-panel by default; set TCP_REPO to a checkout
+ to test that instead.
+
 Package: dist-ai-tests-all
 Architecture: all
 Depends: ${misc:Depends},
@@ -550,4 +579,5 @@ Recommends: check-ref-commits-for-unicode-tests,
  sdwdate-gui-tests,
  stcat-family-tests,
  stdisplay-tests,
+ tor-control-panel-tests,
  unicode-show-tests

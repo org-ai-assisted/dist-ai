@@ -48,6 +48,7 @@ core_suites=(
    sdwdate-gui-tests
    stcat-family-tests
    stdisplay-tests
+   tor-control-panel-tests
    unicode-show-tests
 )
 fuzz_suites=(
@@ -195,6 +196,10 @@ wire() {
          ) ;;
       sdwdate-gui)
          wire_env=( "PYTHONPATH=$( pkg_dir sdwdate-gui )/usr/lib/python3/dist-packages" ) ;;
+      tor-control-panel)
+         ## tcp_testlib resolves the package under test from TCP_REPO (the
+         ## tor-control-panel checkout root) else the installed package.
+         wire_env=( "TCP_REPO=$( pkg_dir tor-control-panel )" ) ;;
       git-meld)
          wire_args=( "${dmf}/usr/bin/git-meld" ) ;;
       dm-virtualbox-wiki-links)
@@ -221,6 +226,7 @@ suite_component() {
       genmkfile)              printf '%s' 'genmkfile' ;;
       open-link-confirmation) printf '%s' 'open-link-confirmation' ;;
       sdwdate-gui)            printf '%s' 'sdwdate-gui' ;;
+      tor-control-panel)      printf '%s' 'tor-control-panel' ;;
    esac
 }
 
@@ -307,7 +313,7 @@ fi
 
 if [ -n "${component}" ]; then
    case "${component}" in
-      helper-scripts|developer-meta-files|onion-grater|privleap|genmkfile|open-link-confirmation|sdwdate-gui)
+      helper-scripts|developer-meta-files|onion-grater|privleap|genmkfile|open-link-confirmation|sdwdate-gui|tor-control-panel)
          : ;;
       *)
          printf 'dist-ai-tests-all: unknown --component: %s\n' "${component}" >&2

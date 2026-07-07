@@ -1,0 +1,40 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Runs the tor-control-panel regression + feature test suite. Works both when
+## installed (tests under /usr/share/tor-control-panel-tests) and when run
+## straight from a git checkout (tests under usr/share/tor-control-panel-tests
+## relative to this script). Any extra arguments are forwarded to
+## "python3 -m unittest".
+##
+## The tor_control_panel package under test is resolved by tcp_testlib:
+##   * TCP_REPO=/path/to/tor-control-panel  -> that checkout, OR
+##   * unset                                -> the installed package.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+## The Qt offscreen platform plugin lets the PyQt5 GUI code run without an X
+## server or display.
+export QT_QPA_PLATFORM="offscreen"
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/tor-control-panel-tests' ]; then
+   tests_dir='/usr/share/tor-control-panel-tests'
+else
+   tests_dir="${script_dir}/../share/tor-control-panel-tests"
+fi
+
+exec python3 -m unittest discover \
+   --start-directory "${tests_dir}" \
+   --pattern 'test_*.py' \
+   "$@"
