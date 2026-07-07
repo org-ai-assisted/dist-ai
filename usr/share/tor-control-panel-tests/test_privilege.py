@@ -39,7 +39,12 @@ class PrivilegePrefixTest(unittest.TestCase):
         privilege.shutil.which = lambda name: "/usr/bin/leaprun"
         saved_call = privilege.subprocess.call
         self.addCleanup(lambda: setattr(privilege.subprocess, "call", saved_call))
-        privilege.subprocess.call = lambda argv: calls.setdefault("argv", argv) or 0
+
+        def fake_call(argv):
+            calls["argv"] = argv
+            return 0
+
+        privilege.subprocess.call = fake_call
         rc = privilege.run("acw-tor-control-restart")
         self.assertEqual(rc, 0)
         self.assertEqual(calls["argv"], ["leaprun", "acw-tor-control-restart"])
