@@ -131,6 +131,19 @@ test exists in this suite.
   a hostile log line cannot inject into the QTextBrowser log view.
 - [FIXED] `tor_status.tor_enabled_check` matches the `DisableNetwork` directive
   on a non-comment line (first token) instead of any substring.
+- [FIXED, arraybolt3 review #115] `Common.init_tor_status` is captured at wizard
+  launch (`tor_status()`), so the cancel/back "restore the initial Tor state"
+  branches are live instead of dead code (it previously stayed `''`).
+- [FIXED, arraybolt3 review] Proxy/bridge address validation uses
+  `socket.getaddrinfo` instead of `gethostbyname`, so IPv6 addresses are
+  accepted (`valid_ip` in anon_connection_wizard.py + tor_control_panel.py).
+- [FIXED] `parse_torrc` guards the bridge-transport index against a malformed
+  `Bridge` line; `refresh_user_configuration` resets both bridge-mode flags each
+  call; `stop_bootstrap_thread` waits after the async `terminate()`; the journal
+  is decoded with `errors='replace'` before sanitizing.
+- [Non-issue, arraybolt3 review] `command_use_custom_bridge` (dead var) and the
+  `info.custom_bridges_help` "broken callers" no longer exist in current source;
+  `no_controller()` returns a proper string. Verified, nothing to fix.
 
 ## C. Notable NON-bugs / already fixed upstream (do NOT re-fix)
 
