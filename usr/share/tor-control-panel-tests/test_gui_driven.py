@@ -218,7 +218,7 @@ class TorControlPanelWidgetTest(unittest.TestCase):
             panel.tor_log = log_path
             panel.tor_log_html = os.path.join(tmp, "log.html")
             for button in panel.files_box.findChildren(QRadioButton):
-                if button.text() == panel.button_name[1]:
+                if button.text() == panel.log_source_names[1]:
                     button.setChecked(True)
             panel.refresh_logs()
 
