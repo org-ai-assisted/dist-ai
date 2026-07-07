@@ -198,8 +198,14 @@ wire() {
          wire_env=( "PYTHONPATH=$( pkg_dir sdwdate-gui )/usr/lib/python3/dist-packages" ) ;;
       tor-control-panel)
          ## tcp_testlib resolves the package under test from TCP_REPO (the
-         ## tor-control-panel checkout root) else the installed package.
-         wire_env=( "TCP_REPO=$( pkg_dir tor-control-panel )" ) ;;
+         ## tor-control-panel checkout root) else the installed package. The
+         ## merged anon-connection-wizard imports guimessages from
+         ## helper-scripts, so put helper-scripts on PYTHONPATH when available.
+         wire_env=( "TCP_REPO=$( pkg_dir tor-control-panel )" )
+         if [ -n "${hs}" ]; then
+            wire_env+=( "PYTHONPATH=${hs}/usr/lib/python3/dist-packages" )
+         fi
+         ;;
       git-meld)
          wire_args=( "${dmf}/usr/bin/git-meld" ) ;;
       dm-virtualbox-wiki-links)
