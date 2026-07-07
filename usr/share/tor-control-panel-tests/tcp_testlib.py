@@ -110,6 +110,11 @@ def sandbox(initial_torrc: str = DEFAULT_TORRC):
 
     Yields the pathlib.Path of the fake torrc file.
     """
+    ## Common.torrc_file_path is a class attribute bound at import time to the
+    ## real installed path; redirect it too, else AnonConnectionWizard.__init__
+    ## regenerates the torrc over the seeded one.
+    from tor_control_panel import anon_connection_wizard as _acw
+
     saved = {
         "gen_torrc_path": torrc_gen.torrc_file_path,
         "gen_user_path": torrc_gen.torrc_user_file_path,
@@ -121,6 +126,7 @@ def sandbox(initial_torrc: str = DEFAULT_TORRC):
         "bridges_default": torrc_gen.bridges_default_path,
         "sp_call": tor_status.subprocess.call,
         "sp_check_call": tor_status.subprocess.check_call,
+        "acw_common_torrc": _acw.Common.torrc_file_path,
     }
 
     with tempfile.TemporaryDirectory(prefix="tcp-test-") as tmp:
@@ -148,10 +154,12 @@ def sandbox(initial_torrc: str = DEFAULT_TORRC):
         tor_status.write_to_temp_then_move = _stub_write
         tor_status.subprocess.call = _stub_ok
         tor_status.subprocess.check_call = _stub_ok
+        _acw.Common.torrc_file_path = str(torrc_path)
 
         try:
             yield torrc_path
         finally:
+            _acw.Common.torrc_file_path = saved["acw_common_torrc"]
             torrc_gen.torrc_file_path = saved["gen_torrc_path"]
             torrc_gen.torrc_user_file_path = saved["gen_user_path"]
             torrc_gen.bridges_default_path = saved["bridges_default"]

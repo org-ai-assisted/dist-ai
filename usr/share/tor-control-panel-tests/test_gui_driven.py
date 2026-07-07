@@ -148,6 +148,14 @@ class TorControlPanelWidgetTest(unittest.TestCase):
             panel.refresh_user_configuration()
             self.assertFalse(panel.use_custom_bridges)
 
+    def test_valid_ip_accepts_ipv6(self):
+        """Proxy/bridge address validation must accept IPv6 (getaddrinfo)."""
+        with T.sandbox(), T.no_modal():
+            panel = self._panel()
+            self.assertTrue(panel.valid_ip("::1"))
+            self.assertTrue(panel.valid_ip("127.0.0.1"))
+            self.assertFalse(panel.valid_ip("definitely not an address"))
+
     def test_tor_log_view_sanitizes_untrusted_content(self):
         """A hostile Tor log line cannot inject markup / escapes into the view."""
         import os
@@ -208,6 +216,16 @@ class AnonConnectionWizardWidgetTest(unittest.TestCase):
             Common.bridge_type = "obfs4"
             wizard.write_torrc()
             self.assertIn("ClientTransportPlugin obfs4 exec /usr/bin/obfs4proxy", torrc.read_text())
+
+    def test_init_tor_status_captured_at_launch(self):
+        """init_tor_status must reflect the launch state (not stay '') so the
+        cancel/back restore logic is live."""
+        for torrc, expect in (("DisableNetwork 0\n", "tor_enabled"),
+                              ("DisableNetwork 1\n", "tor_disabled")):
+            with self.subTest(torrc=torrc):
+                with T.sandbox(initial_torrc=torrc), T.no_modal():
+                    self._wizard()
+                    self.assertEqual(Common.init_tor_status, expect)
 
     def test_custom_bridges(self):
         with T.sandbox() as torrc, T.no_modal():
