@@ -109,6 +109,17 @@ class GenTorrcFeatureTest(unittest.TestCase):
         text = self._gen(["None", "None", "SOCKS5", "127.0.0.1", "9050", "None", "None"])
         self.assertIn("Socks5Proxy 127.0.0.1:9050", text)
 
+    def test_f8_vanilla_custom_bridge_does_not_crash(self):
+        ## A custom bridge whose first token is not a known pluggable transport
+        ## (e.g. a plain IP:port) must not raise ValueError/IndexError; it is
+        ## written as a Bridge line with no ClientTransportPlugin.
+        text = self._gen(
+            ["None", "1.2.3.4:1234 ABCDEF0123456789ABCDEF0123456789ABCDEF01", "None"]
+        )
+        self.assertIn("UseBridges 1", text)
+        self.assertIn("Bridge 1.2.3.4:1234 ABCDEF0123456789ABCDEF0123456789ABCDEF01", text)
+        self.assertNotIn("ClientTransportPlugin", text)
+
 
 class ParseTorrcTest(unittest.TestCase):
     """parse_torrc() recovers the configuration gen_torrc() wrote (round-trip)."""
