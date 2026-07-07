@@ -125,6 +125,16 @@ class ConfigUiTest(unittest.TestCase):
             self.assertFalse(panel.proxy_user_edit.isEnabled())
             self.assertFalse(panel.proxy_pwd_edit.isEnabled())
 
+    def test_torrc_log_view_survives_missing_torrc(self):
+        ## Plain Debian: selecting the 'torrc' log source when no drop-in
+        ## exists yet must not crash with FileNotFoundError.
+        with T.sandbox() as torrc, T.no_modal():
+            panel = self._panel()
+            torrc.unlink()
+            panel.torrc_button.setChecked(True)
+            panel.refresh_logs()  # must not raise
+            self.assertIn("torrc", panel.file_browser.toPlainText().lower())
+
     def test_tabs_are_labelled_by_their_content(self):
         with T.sandbox(), T.no_modal():
             panel = self._panel()

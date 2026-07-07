@@ -203,7 +203,6 @@ class TorControlPanelWidgetTest(unittest.TestCase):
         """A hostile Tor log line cannot inject markup / escapes into the view."""
         import os
         import tempfile
-        from PyQt5.QtWidgets import QRadioButton
 
         with T.sandbox(), T.no_modal():
             panel = self._panel()
@@ -216,13 +215,12 @@ class TorControlPanelWidgetTest(unittest.TestCase):
                     "<script>alert(1)</script>\x1b[31mEVIL\x07 [warn] bad\n"
                 )
             panel.tor_log = log_path
-            panel.tor_log_html = os.path.join(tmp, "log.html")
-            for button in panel.files_box.findChildren(QRadioButton):
-                if button.text() == panel.log_source_names[1]:
-                    button.setChecked(True)
+            ## Select the Tor-log source by its button (refresh_logs now
+            ## dispatches on button identity, not label text).
+            panel.log_button.setChecked(True)
             panel.refresh_logs()
 
-            rendered = open(panel.tor_log_html, encoding="utf-8").read()
+            rendered = panel.file_browser.toHtml()
             self.assertNotIn("<script>", rendered)
             self.assertNotIn("\x1b", rendered)
             self.assertNotIn("\x07", rendered)
