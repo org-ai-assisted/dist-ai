@@ -247,6 +247,25 @@ class ParseTorrcTest(unittest.TestCase):
             result = torrc_gen.parse_torrc()  # must not raise
             self.assertIsInstance(result[0], str)
 
+    def test_commented_proxy_directive_parsed_as_none(self):
+        """A commented-out proxy directive must not be mistaken for one in
+        effect. Previously 'Proxy' substring-matched the comment, so parse
+        returned proxy_type='' instead of 'None'."""
+        with T.sandbox() as torrc:
+            torrc.write_text("# HTTPSProxy 1.2.3.4:8080\nDisableNetwork 0\n",
+                             encoding="utf-8")
+            result = torrc_gen.parse_torrc()
+        self.assertEqual(result[1], "None")
+
+    def test_commented_usebridges_parsed_as_none(self):
+        """A commented-out UseBridges must not flip bridge_type away from
+        'None'."""
+        with T.sandbox() as torrc:
+            torrc.write_text("# UseBridges 1\nDisableNetwork 0\n",
+                             encoding="utf-8")
+            result = torrc_gen.parse_torrc()
+        self.assertEqual(result[0], "None")
+
     def test_a1_custom_bridges_survive_reconfigure(self):
         """Reproduce the data-loss path: custom bridges, then add a proxy.
 
