@@ -361,18 +361,19 @@ def main():
         print("[fidelity] benign inputs must round-trip (no silent content drop)")
         for arg in fidelity_corpus():
             out = run_sanitize(arg)
-            if out == arg.encode("ascii"):
+            ## '&' is deliberately neutralized to '_' (strip_markup's
+            ## metacharacter policy: it gives up preserving "safe"
+            ## metacharacters, so an ampersand -- an HTML entity opener -- is
+            ## replaced, not kept). Benign content must otherwise round-trip;
+            ## blanking the input (empty output) is always a failure -- that is
+            ## the content-drop bug this check guards against.
+            if out == arg.replace("&", "_").encode("ascii"):
                 results.ok("F:" + repr(arg[:40]))
-            elif dropped and "&" in arg and out == b"":
-                ## Excuse ONLY the exact known-bug signature: the deployed
-                ## query-drop bug empties '&' strings. A no-'&' input, or any
-                ## other non-round-trip (non-empty corruption) on a '&' input,
-                ## is a separate regression and must fail even on the buggy build.
-                results.xfail("F:" + repr(arg[:40]))
             else:
                 results.fail(
                     "F:" + repr(arg[:40]),
-                    "benign input not preserved: " + repr(arg) + " -> " + repr(out),
+                    "benign input not preserved (modulo '&'->'_'): "
+                    + repr(arg) + " -> " + repr(out),
                 )
 
     ## [L] truncation / length cap: output never exceeds max_length, and the

@@ -152,17 +152,41 @@ wire() {
       stcat-family|stdisplay)
          wire_env=( "STDISPLAY_REPO=${hs}" ) ;;
       sanitize-string)
-         wire_env=( "SANITIZE_STRING_BIN=${hs}/usr/bin/sanitize-string" ) ;;
+         ## sanitize-string's '#!/usr/bin/python3 -Bsu' excludes the user site,
+         ## so from a checkout (not installed) it needs its dist-packages on
+         ## PYTHONPATH -- else it dies with ModuleNotFoundError and prints
+         ## nothing, which safety checks then pass on trivially (false green).
+         wire_env=(
+            "SANITIZE_STRING_BIN=${hs}/usr/bin/sanitize-string"
+            "PYTHONPATH=${hs}/usr/lib/python3/dist-packages"
+         ) ;;
       onion-grater)
          wire_env=( "ONION_GRATER_REPO=$( pkg_dir onion-grater )" ) ;;
       privleap)
          wire_env=( "PRIVLEAP_REPO=$( pkg_dir privleap )" ) ;;
       genmkfile)
-         wire_env=( "GENMKFILE_BIN=$( pkg_dir genmkfile )/usr/bin/genmkfile" ) ;;
+         ## genmkfile's make-helper sources helper-scripts at runtime (has.sh,
+         ## trace.bsh) and shells out to its tools; give it the full
+         ## helper-scripts runtime (env here; the /usr/libexec/helper-scripts
+         ## system path is provided by the CI setup step) when a helper-scripts
+         ## checkout is available.
+         wire_env=( "GENMKFILE_BIN=$( pkg_dir genmkfile )/usr/bin/genmkfile" )
+         if [ -n "${hs}" ]; then
+            wire_env+=(
+               "HELPER_SCRIPTS_PATH=${hs}"
+               "PATH=${hs}/usr/bin:${PATH}"
+               "PYTHONPATH=${hs}/usr/lib/python3/dist-packages"
+            )
+         fi
+         ;;
       open-link-confirmation)
+         ## PYTHONPATH so the checkout's sanitize-string can import its library
+         ## (see the sanitize-string note); without it sanitize-string emits
+         ## nothing and the display-safety checks pass vacuously.
          wire_env=(
             "OPEN_LINK_CONFIRMATION_BIN=$( pkg_dir open-link-confirmation )/usr/libexec/open-link-confirmation/open-link-confirmation"
             "SANITIZE_STRING_BIN=${hs}/usr/bin/sanitize-string"
+            "PYTHONPATH=${hs}/usr/lib/python3/dist-packages"
          ) ;;
       sdwdate-gui)
          wire_env=( "PYTHONPATH=$( pkg_dir sdwdate-gui )/usr/lib/python3/dist-packages" ) ;;
