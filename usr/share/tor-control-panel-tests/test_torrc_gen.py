@@ -109,6 +109,10 @@ class GenTorrcFeatureTest(unittest.TestCase):
         text = self._gen(["None", "None", "SOCKS5", "127.0.0.1", "9050", "None", "None"])
         self.assertIn("Socks5Proxy 127.0.0.1:9050", text)
 
+    def _plugins(self, custom_bridges):
+        text = self._gen(["None", custom_bridges, "None"])
+        return [ln for ln in text.splitlines() if ln.startswith("ClientTransportPlugin")]
+
     def test_f8_vanilla_custom_bridge_does_not_crash(self):
         ## A custom bridge whose first token is not a known pluggable transport
         ## (e.g. a plain IP:port) must not raise ValueError/IndexError; it is
@@ -116,9 +120,36 @@ class GenTorrcFeatureTest(unittest.TestCase):
         text = self._gen(
             ["None", "1.2.3.4:1234 ABCDEF0123456789ABCDEF0123456789ABCDEF01", "None"]
         )
-        self.assertIn("UseBridges 1", text)
         self.assertIn("Bridge 1.2.3.4:1234 ABCDEF0123456789ABCDEF0123456789ABCDEF01", text)
-        self.assertNotIn("ClientTransportPlugin", text)
+        self.assertEqual(self._plugins("1.2.3.4:1234 ABCDEF0123456789ABCDEF0123456789ABCDEF01"), [])
+
+    def test_f8_custom_meek_lite_gets_its_plugin(self):
+        ## meek bridge lines use the 'meek_lite' transport name; the required
+        ## ClientTransportPlugin meek_lite line must still be emitted.
+        self.assertEqual(
+            self._plugins("meek_lite 192.0.2.20:80 url=https://example.com front=www.example.net"),
+            ["ClientTransportPlugin meek_lite exec /usr/bin/obfs4proxy"],
+        )
+
+    def test_f8_custom_snowflake_gets_its_plugin(self):
+        self.assertEqual(
+            self._plugins("snowflake 192.0.2.4:80 fingerprint=ABCD"),
+            ["ClientTransportPlugin snowflake exec /usr/bin/snowflake-client"],
+        )
+
+    def test_f8_mixed_vanilla_first_still_emits_obfs4_plugin(self):
+        ## A vanilla bridge listed before an obfs4 bridge must not hide the
+        ## obfs4 ClientTransportPlugin.
+        self.assertEqual(
+            self._plugins("1.2.3.4:1234 AAAA\nobfs4 5.6.7.8:5678 BBBB"),
+            ["ClientTransportPlugin obfs4 exec /usr/bin/obfs4proxy"],
+        )
+
+    def test_f8_duplicate_transport_plugin_deduplicated(self):
+        self.assertEqual(
+            self._plugins("obfs4 1.1.1.1:1 AA\nobfs4 2.2.2.2:2 BB"),
+            ["ClientTransportPlugin obfs4 exec /usr/bin/obfs4proxy"],
+        )
 
 
 class ParseTorrcTest(unittest.TestCase):
