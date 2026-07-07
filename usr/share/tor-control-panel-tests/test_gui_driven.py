@@ -227,6 +227,22 @@ class AnonConnectionWizardWidgetTest(unittest.TestCase):
                     self._wizard()
                     self.assertEqual(Common.init_tor_status, expect)
 
+    def test_cancel_restores_initially_enabled_tor(self):
+        """Cancelling a wizard launched while Tor was enabled must re-enable
+        Tor (previously the enabled branch did nothing)."""
+        from tor_control_panel import tor_status
+        with T.sandbox(initial_torrc="DisableNetwork 0\n"), T.no_modal():
+            wizard = self._wizard()
+            self.assertEqual(Common.init_tor_status, "tor_enabled")
+            calls = []
+            saved = tor_status.set_enabled
+            tor_status.set_enabled = lambda: (calls.append("enabled"), ("tor_enabled", 0))[1]
+            try:
+                wizard.cancel_button_clicked()
+            finally:
+                tor_status.set_enabled = saved
+            self.assertEqual(calls, ["enabled"])
+
     def test_custom_bridges(self):
         with T.sandbox() as torrc, T.no_modal():
             wizard = self._wizard()

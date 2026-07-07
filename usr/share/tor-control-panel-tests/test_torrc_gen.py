@@ -192,6 +192,18 @@ class ParseTorrcTest(unittest.TestCase):
         self.assertEqual(result[4], "bob")
         self.assertEqual(result[5], "secret")
 
+    def test_ipv6_proxy_is_bracketed_and_round_trips(self):
+        """An IPv6 proxy address is written as [addr]:port and parsed back."""
+        for ip in ("2001:db8::1", "::1"):
+            with self.subTest(ip=ip):
+                with T.sandbox() as torrc:
+                    torrc_gen.gen_torrc(["None", "None", "SOCKS5", ip, "9050", "", ""])
+                    text = torrc.read_text(encoding="utf-8")
+                    self.assertIn("Socks5Proxy [%s]:9050" % ip, text)
+                    result = torrc_gen.parse_torrc()
+                self.assertEqual(result[2], ip)
+                self.assertEqual(result[3], "9050")
+
     ## --- A1 regression: custom-bridge detection / data loss ------------------
 
     def test_a1_custom_bridges_detected_on_parse(self):
