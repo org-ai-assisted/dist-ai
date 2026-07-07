@@ -20,6 +20,7 @@ mydir="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )"
 repo_root=""
 component=""
 component_root=""
+helper_scripts_root=""
 progress_file=""
 run_core="false"
 run_fuzz="false"
@@ -76,6 +77,7 @@ Usage:
   dist-ai-tests-all [--core] [--fuzz] [--e2e] [--integration] [--all]
                     [--repo-root DIR]
                     [--component NAME [--component-root DIR]]
+                    [--helper-scripts-root DIR]
                     [--progress FILE]
                     [--timeout-core N] [--timeout-fuzz N] [--timeout-heavy N]
                     [--list]
@@ -91,6 +93,11 @@ With no category flag, only --core runs.
 sdwdate-gui, developer-meta-files). --component-root DIR points those suites at
 a STANDALONE component checkout -- the repo root itself, not a monorepo subpath
 -- which is the per-repo CI entry point. --component-root requires --component.
+
+--helper-scripts-root DIR supplies a helper-scripts checkout for components
+whose suites drive a helper-scripts tool (open-link-confirmation ->
+sanitize-string), needed in standalone-component mode where no sibling
+helper-scripts checkout exists.
 EOF
 }
 
@@ -102,6 +109,14 @@ pkg_dir() {
    ## packages/<team>/<name> join. This is the per-repo CI path.
    if [ -n "${component_root}" ] && [ "${name}" = "${component}" ]; then
       printf '%s' "${component_root}"
+      return 0
+   fi
+   ## Auxiliary helper-scripts checkout: some components' suites drive a
+   ## helper-scripts tool (open-link-confirmation -> sanitize-string). In
+   ## standalone-component mode there is no sibling helper-scripts, so accept
+   ## its root explicitly via --helper-scripts-root.
+   if [ -n "${helper_scripts_root}" ] && [ "${name}" = 'helper-scripts' ]; then
+      printf '%s' "${helper_scripts_root}"
       return 0
    fi
    [ -n "${repo_root}" ] || return 0
@@ -237,6 +252,7 @@ while [ "$#" -gt 0 ]; do
       --repo-root)      repo_root="$2" ; shift ;;
       --component)      component="$2" ; shift ;;
       --component-root) component_root="$2" ; shift ;;
+      --helper-scripts-root) helper_scripts_root="$2" ; shift ;;
       --progress)      progress_file="$2" ; shift ;;
       --timeout-core)  timeout_core="$2" ; shift ;;
       --timeout-fuzz)  timeout_fuzz="$2" ; shift ;;
@@ -278,6 +294,11 @@ if [ -n "${component_root}" ]; then
       printf 'dist-ai-tests-all: --component-root not a directory: %s\n' "${component_root}" >&2
       exit 2
    fi
+fi
+
+if [ -n "${helper_scripts_root}" ] && [ ! -d "${helper_scripts_root}" ]; then
+   printf 'dist-ai-tests-all: --helper-scripts-root not a directory: %s\n' "${helper_scripts_root}" >&2
+   exit 2
 fi
 
 selected=()
