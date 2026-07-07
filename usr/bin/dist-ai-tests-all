@@ -204,7 +204,7 @@ run_suite() {
    local rc=0
    timeout "${tmo}" env "${wire_env[@]}" "${entry}" "${wire_args[@]}" \
       >"/tmp/dist-ai-tests-all.${suite}.log" 2>&1 || rc=$?
-   local verdict
+   local verdict log_line
    case "${rc}" in
       0)   verdict="PASS" ;    pass_count=$(( pass_count + 1 )) ;;
       77)  verdict="SKIP" ;    skip_count=$(( skip_count + 1 )) ;;
@@ -212,6 +212,19 @@ run_suite() {
       *)   verdict="FAIL(${rc})" ; fail_count=$(( fail_count + 1 )) ;;
    esac
    emit "$( printf '%-38s %-12s %s' "${suite}" "[${category}]" "${verdict}" )"
+   ## Surface the failing suite's captured output inline: the per-suite log
+   ## lives in /tmp, which CI discards, so a bare FAIL verdict is not
+   ## actionable. Echo it on FAIL / TIMEOUT (not on PASS / SKIP).
+   case "${rc}" in
+      0|77) : ;;
+      *)
+         emit "---- ${suite}: begin captured output (${verdict}) ----"
+         while IFS= read -r log_line; do
+            emit "${log_line}"
+         done < "/tmp/dist-ai-tests-all.${suite}.log"
+         emit "---- ${suite}: end captured output ----"
+         ;;
+   esac
 }
 
 while [ "$#" -gt 0 ]; do
