@@ -6,11 +6,10 @@
 ## AI-Assisted
 
 """
-Tests for the portable privilege runner (tor_control_panel.privilege): use
-leaprun (privleap) when available, else fall back to pkexec -- the non-Whonix
-design adrelanos/ArrayBolt3 described. These capture the learning that the tool
-must work on plain Debian (no privleap), verified against a chroot in this
-session.
+Tests for the portable privilege runner (tor_control_panel.privilege): the
+escalation chain leaprun (privleap) -> pkexec -> passwordless sudo -> error.
+leaprun resolves an action BY NAME; pkexec / sudo need the action mapped to its
+real command. Captures the plain-Debian design (adrelanos / ArrayBolt3).
 """
 
 import unittest
@@ -19,49 +18,72 @@ import tcp_testlib as T  # noqa: F401  (sets up sys.path / offscreen Qt)
 from tor_control_panel import privilege
 
 
-class PrivilegePrefixTest(unittest.TestCase):
+class PrivilegeChainTest(unittest.TestCase):
     def setUp(self):
-        self._saved_which = privilege.shutil.which
-        self.addCleanup(lambda: setattr(privilege.shutil, "which", self._saved_which))
+        self._which = privilege.shutil.which
+        self._sudo = privilege._passwordless_sudo_available
+        self.addCleanup(lambda: setattr(privilege.shutil, "which", self._which))
+        self.addCleanup(
+            lambda: setattr(privilege, "_passwordless_sudo_available", self._sudo))
 
-    def test_prefix_prefers_leaprun_when_available(self):
-        privilege.shutil.which = lambda name: "/usr/bin/leaprun" if name == "leaprun" else None
+    def _have(self, *names):
+        present = set(names)
+        privilege.shutil.which = lambda name: (
+            "/usr/bin/" + name if name in present else None)
+
+    def test_leaprun_used_by_name_when_available(self):
+        self._have("leaprun", "pkexec")
         self.assertTrue(privilege.leaprun_available())
-        self.assertEqual(privilege._prefix(), ["leaprun"])
-
-    def test_prefix_falls_back_to_pkexec_without_leaprun(self):
-        privilege.shutil.which = lambda name: None
-        self.assertFalse(privilege.leaprun_available())
-        self.assertEqual(privilege._prefix(), ["pkexec"])
-
-    def test_command_builds_argv_with_prefix(self):
-        ## command() is used by call sites that need their own Popen (to
-        ## capture stdout/stderr): restart_tor_gui, the log reader, restart/stop.
-        privilege.shutil.which = lambda name: "/usr/bin/leaprun"
+        ## leaprun takes the action NAME (resolved via the privleap config).
         self.assertEqual(
             privilege.command("acw-tor-control-restart"),
-            ["leaprun", "acw-tor-control-restart"],
-        )
-        privilege.shutil.which = lambda name: None
+            ["leaprun", "acw-tor-control-restart"])
+
+    def test_pkexec_maps_action_to_command(self):
+        self._have("pkexec")  # no leaprun
         self.assertEqual(
-            privilege.command("acw-tor-control-restart", "--flag"),
-            ["pkexec", "acw-tor-control-restart", "--flag"],
-        )
+            privilege.command("acw-tor-control-restart"),
+            ["pkexec", "/usr/libexec/anon-connection-wizard/acw-tor-control",
+             "restart"])
+        self.assertEqual(
+            privilege.command("tor-config-sane"),
+            ["pkexec", "/usr/libexec/tor-control-panel/tor-config-sane"])
 
-    def test_run_uses_prefix(self):
-        calls = {}
-        privilege.shutil.which = lambda name: "/usr/bin/leaprun"
-        saved_call = privilege.subprocess.call
-        self.addCleanup(lambda: setattr(privilege.subprocess, "call", saved_call))
+    def test_sudo_fallback_when_no_leaprun_or_pkexec(self):
+        self._have()  # neither leaprun nor pkexec
+        privilege._passwordless_sudo_available = lambda: True
+        self.assertEqual(
+            privilege.command("acw-tor-control-stop"),
+            ["sudo", "--non-interactive",
+             "/usr/libexec/anon-connection-wizard/acw-tor-control", "stop"])
 
-        def fake_call(argv):
-            calls["argv"] = argv
-            return 0
+    def test_error_when_no_method_available(self):
+        self._have()  # nothing
+        privilege._passwordless_sudo_available = lambda: False
+        with self.assertRaises(privilege.NoPrivilegeMethod):
+            privilege.command("acw-tor-control-restart")
 
-        privilege.subprocess.call = fake_call
-        rc = privilege.run("acw-tor-control-restart")
-        self.assertEqual(rc, 0)
-        self.assertEqual(calls["argv"], ["leaprun", "acw-tor-control-restart"])
+    def test_unknown_action_on_pkexec_path_raises(self):
+        self._have("pkexec")
+        with self.assertRaises(KeyError):
+            privilege.command("no-such-action")
+
+    def test_extra_args_are_appended(self):
+        self._have("pkexec")
+        self.assertEqual(
+            privilege.command("acw-write-torrc", "--extra"),
+            ["pkexec", "/usr/libexec/anon-connection-wizard/acw-write-torrc",
+             "--extra"])
+
+    def test_action_map_matches_leaprun_actions(self):
+        ## Every action the GUI dispatches must be in the pkexec/sudo map too,
+        ## or the plain-Debian path would KeyError. (Guards against adding a
+        ## leaprun action without its command mapping.)
+        for action in ("acw-tor-control-restart", "acw-tor-control-reload",
+                       "acw-tor-control-stop", "acw-tor-control-status",
+                       "acw-write-torrc", "tor-config-sane",
+                       "tor-control-panel-read-tor-default-log"):
+            self.assertIn(action, privilege._ACTION_COMMANDS)
 
 
 if __name__ == "__main__":
