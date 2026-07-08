@@ -62,6 +62,7 @@ fuzz_suites=(
    sdwdate-gui-tests-fuzz
    stcat-family-tests-fuzz
    stdisplay-tests-fuzz
+   tor-control-panel-tests-fuzz
    unicode-show-tests-fuzz
 )
 e2e_suites=(

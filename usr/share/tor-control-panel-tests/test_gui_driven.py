@@ -199,6 +199,14 @@ class TorControlPanelWidgetTest(unittest.TestCase):
         self.assertFalse(validators.valid_port("70000"))
         self.assertFalse(validators.valid_port("notaport"))
 
+    def test_valid_ip_rejects_pathological_host_without_crashing(self):
+        """Regression (found by fuzz_torrc): a very long host makes
+        getaddrinfo's IDNA encoder raise UnicodeError (not OSError); valid_ip
+        must return False, not crash the GUI."""
+        from tor_control_panel import validators
+        for value in ("a" * 4000, "", "\x00", "\x1b[31m"):
+            self.assertFalse(validators.valid_ip(value))
+
     def test_tor_log_view_sanitizes_untrusted_content(self):
         """A hostile Tor log line cannot inject markup / escapes into the view."""
         import os

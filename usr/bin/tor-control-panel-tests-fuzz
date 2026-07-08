@@ -1,0 +1,36 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Randomized fuzz run of tor-control-panel's untrusted-input parsers (torrc
+## generation/parsing, custom-bridge extraction, and the shared validators).
+## See fuzz_torrc.py for the properties checked. Override the sweep length with
+## --iterations N and reproduce a failure with --seed N. The tor_control_panel
+## package under test is resolved by tcp_testlib (TCP_REPO=<checkout> else the
+## installed package).
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+## The parsers pull in the PyQt5 GUI modules; the Qt offscreen platform plugin
+## lets them import without an X server or display.
+export QT_QPA_PLATFORM="offscreen"
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/tor-control-panel-tests' ]; then
+   tests_dir='/usr/share/tor-control-panel-tests'
+else
+   tests_dir="${script_dir}/../share/tor-control-panel-tests"
+fi
+
+iterations='30000'
+
+exec python3 -- "${tests_dir}/fuzz_torrc.py" --iterations "${iterations}" "$@"

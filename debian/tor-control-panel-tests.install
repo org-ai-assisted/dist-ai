@@ -1,3 +1,4 @@
 usr/bin/tor-control-panel-tests usr/bin/
+usr/bin/tor-control-panel-tests-fuzz usr/bin/
 usr/share/tor-control-panel-tests/*.py usr/share/tor-control-panel-tests/
 usr/share/tor-control-panel-tests/*.md usr/share/tor-control-panel-tests/
