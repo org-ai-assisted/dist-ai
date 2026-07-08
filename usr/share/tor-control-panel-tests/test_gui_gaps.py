@@ -217,6 +217,31 @@ class NewnymAndOnionCircuitsTest(unittest.TestCase):
             panel.newnym()  # no control socket -> caught; must not restart
             self.assertEqual(restarted, [], "NEWNYM must not restart Tor")
 
+    @unittest.skipUnless(HAVE_STEM, "python3-stem not installed")
+    def test_newnym_connect_failure_does_not_leak_fds(self):
+        ## Regression: stem's from_socket_file leaked the control-socket fd when
+        ## the connect failed (Tor down). newnym pre-flights with its own socket
+        ## and closes it, so repeated NEWNYM clicks while Tor is down must not
+        ## grow the process's open file descriptors.
+        import os
+        with T.sandbox(), T.no_modal():
+            panel = tcp.TorControlPanel()
+            self.addCleanup(panel.deleteLater)
+            panel.restart_tor = lambda *a, **k: None
+
+            def open_fd_count():
+                return len(os.listdir("/proc/self/fd"))
+
+            panel.newnym()  # warm up lazy imports before measuring
+            before = open_fd_count()
+            for _ in range(20):
+                panel.newnym()  # no control socket -> connect fails each time
+            after = open_fd_count()
+            self.assertLessEqual(
+                after, before,
+                "NEWNYM connect-failure path leaked file descriptors "
+                "({0} -> {1})".format(before, after))
+
     def test_onioncircuits_launches_viewer(self):
         from tor_control_panel import tor_control_panel as tcp_mod
         with T.sandbox(), T.no_modal():
