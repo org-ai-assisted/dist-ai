@@ -260,6 +260,29 @@ class ConfigSaneIdempotencyTest(unittest.TestCase):
             self.assertEqual(
                 len(re.findall(r'(?m)^\s*%include\s+\S*torrc\.d', after_many)), 1)
 
+    def test_preexisting_include_not_duplicated(self):
+        ## The %include grep guard must recognise an already-present include --
+        ## including one with leading/extra whitespace or added by hand -- so
+        ## tor-config-sane never appends a second copy.
+        for seeded_line in (
+                "%include {dir}/*.conf\n",              # exact
+                "   %include    {dir}/*.conf\n",        # extra whitespace
+                "%include {dir}/*.conf   # comment\n"):  # trailing content
+            with self.subTest(seeded=seeded_line.strip()):
+                with tempfile.TemporaryDirectory() as root:
+                    os.makedirs(os.path.join(root, "etc/tor"))
+                    dropin = os.path.join(root, "etc/tor/torrc.d")
+                    with open(os.path.join(root, "etc/tor/torrc"), "w",
+                              encoding="utf-8") as handle:
+                        handle.write("SocksPort 9050\n"
+                                     + seeded_line.format(dir=dropin))
+                    self._run(root)
+                    text = self._read(root)
+                    self.assertEqual(
+                        len(re.findall(r'(?m)^\s*%include\s+\S*torrc\.d', text)),
+                        1,
+                        "duplicated an already-present %include: {0!r}".format(text))
+
     def test_migration_then_rerun_is_stable(self):
         ## Start from a torrc with the stale /usr/local include; the first run
         ## migrates it, further runs must not re-add or duplicate anything.
