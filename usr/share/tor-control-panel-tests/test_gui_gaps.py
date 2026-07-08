@@ -255,6 +255,63 @@ class NewnymAndOnionCircuitsTest(unittest.TestCase):
             self.assertEqual(calls, [["onioncircuits"]])
 
 
+class DebianTorGroupPromptTest(unittest.TestCase):
+    """Plain-Debian: offer to add the account to debian-tor for control access;
+    skip on Whonix or when already a member; run only when the user accepts."""
+
+    def _run(self, whonix, is_member, answer):
+        from PyQt5.QtWidgets import QMessageBox
+        saved = {
+            "whonix": tcp.tor_status.whonix,
+            "member": tcp.tor_status.user_in_debian_tor_group,
+            "question": QMessageBox.question,
+            "information": QMessageBox.information,
+            "warning": QMessageBox.warning,
+            "run": tcp.privilege.run,
+            "command": tcp.privilege.command,
+        }
+        runs = []
+        tcp.tor_status.whonix = whonix
+        tcp.tor_status.user_in_debian_tor_group = lambda: is_member
+        tcp.privilege.command = lambda action, *a: ["leaprun", action]
+        tcp.privilege.run = lambda action, *a: runs.append(action) or 0
+        QMessageBox.question = staticmethod(lambda *a, **k: answer)
+        QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
+        QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
+        try:
+            tcp.ensure_debian_tor_group_access(None)
+        finally:
+            tcp.tor_status.whonix = saved["whonix"]
+            tcp.tor_status.user_in_debian_tor_group = saved["member"]
+            QMessageBox.question = saved["question"]
+            QMessageBox.information = saved["information"]
+            QMessageBox.warning = saved["warning"]
+            tcp.privilege.run = saved["run"]
+            tcp.privilege.command = saved["command"]
+        return runs
+
+    def test_whonix_never_prompts(self):
+        from PyQt5.QtWidgets import QMessageBox
+        self.assertEqual(
+            self._run(whonix=True, is_member=False, answer=QMessageBox.Yes), [])
+
+    def test_existing_member_never_prompts(self):
+        from PyQt5.QtWidgets import QMessageBox
+        self.assertEqual(
+            self._run(whonix=False, is_member=True, answer=QMessageBox.Yes), [])
+
+    def test_declined_does_not_run(self):
+        from PyQt5.QtWidgets import QMessageBox
+        self.assertEqual(
+            self._run(whonix=False, is_member=False, answer=QMessageBox.No), [])
+
+    def test_accepted_runs_add_tor_group(self):
+        from PyQt5.QtWidgets import QMessageBox
+        self.assertEqual(
+            self._run(whonix=False, is_member=False, answer=QMessageBox.Yes),
+            ["add-tor-group"])
+
+
 class WizardFirstPageRoutingTest(unittest.TestCase):
     """G6: ConnectionMainPage.nextId routes Connect/Configure/Disable correctly."""
 

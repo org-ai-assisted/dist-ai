@@ -202,6 +202,10 @@ def no_modal():
         "mbox_exec": QMessageBox.exec_,
         "mbox_exec_slot": QMessageBox.exec,
         "dialog_exec": QDialog.exec_,
+        ## Static convenience dialogs also spin a modal loop; stub them too.
+        "mbox_question": QMessageBox.question,
+        "mbox_information": QMessageBox.information,
+        "mbox_warning": QMessageBox.warning,
         ## TorBootstrap inherits start() from QThread (not in its own __dict__);
         ## record that so the finally clause removes our override instead of
         ## re-assigning the inherited C++ slot (which corrupts it).
@@ -211,6 +215,11 @@ def no_modal():
     QMessageBox.exec_ = lambda self, *a, **k: 0
     QMessageBox.exec = lambda self, *a, **k: 0
     QDialog.exec_ = lambda self, *a, **k: 0
+    ## Decline any question dialog (e.g. the debian-tor group prompt) so a test
+    ## never triggers a privileged action; acknowledge info/warning dialogs.
+    QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.No)
+    QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
+    QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
     ## A handler under test (e.g. Accept -> set_torrc -> restart_tor) may start a
     ## real TorBootstrap QThread, whose run() imports stem and talks to a control
     ## socket. Make .start() a no-op so widget tests neither depend on stem nor
@@ -223,6 +232,9 @@ def no_modal():
         QMessageBox.exec_ = saved["mbox_exec"]
         QMessageBox.exec = saved["mbox_exec_slot"]
         QDialog.exec_ = saved["dialog_exec"]
+        QMessageBox.question = saved["mbox_question"]
+        QMessageBox.information = saved["mbox_information"]
+        QMessageBox.warning = saved["mbox_warning"]
         if not saved["bootstrap_start_own"]:
             del tor_bootstrap.TorBootstrap.start
         ## (if it had ever defined its own start(), it still does -- unchanged)

@@ -94,8 +94,13 @@ class PrivilegeChainTest(unittest.TestCase):
                        "acw-tor-control-stop", "acw-tor-control-status",
                        "acw-write-torrc", "tor-config-sane",
                        "tor-control-panel-read-tor-default-log",
-                       "anon-dns-add", "anon-dns-remove"):
+                       "anon-dns-add", "anon-dns-remove", "add-tor-group"):
             self.assertIn(action, privilege._ACTION_COMMANDS)
+
+    def test_add_tor_group_maps_to_fixed_helper(self):
+        ## Fixed, argument-free helper (must match the privleap Command=).
+        self.assertEqual(privilege._ACTION_COMMANDS["add-tor-group"],
+                         ["/usr/libexec/tor-control-panel/tcp-add-tor-group"])
 
     def test_anon_dns_maps_to_installed_helper(self):
         ## Must match the Command= in etc/privleap/conf.d/tor-control-panel.conf
