@@ -50,9 +50,12 @@ class TorControlPanelManualPlan(unittest.TestCase):
         bootstrap states. (Layout/defaults + the Configure/Accept toggle and its
         revert are auto-tested in test_ui_walkthrough.py.)"""
 
-    def test_bridges_obfs4(self):
-        """Bridges type obfs4 -> Accept: bootstraps to connected, mentions a
-        pluggable transport near the beginning."""
+    def test_bridges_obfs4_full_connect(self):
+        """Bridges type obfs4 -> Accept: bootstraps all the way to connected.
+        (That the shipped obfs4 bridges + ClientTransportPlugin actually connect
+        THROUGH the transport and bootstrap past loading directory info is
+        auto-tested against a live tor in test_live_tor.py; only whether a given
+        public bridge is fast enough to reach 100% right now is left to a human.)"""
 
     def test_bridges_snowflake(self):
         """Bridges type Snowflake -> Accept: connects (slowly); Tor log mentions
@@ -74,7 +77,9 @@ class TorControlPanelManualPlan(unittest.TestCase):
     def test_proxy_socks5_then_socks4_then_none(self):
         """Proxy type SOCKS5 with a working proxy -> Accept connects; repeat with
         SOCKS4; then Proxy type None -> Accept connects. (HTTP proxies are
-        unreliable; skip.)"""
+        unreliable; skip.) (Routing a live tor through a real SOCKS5 proxy --
+        the Socks5Proxy directive gen_torrc writes -- and bootstrapping to
+        connected is auto-tested in test_live_tor.py.)"""
 
     def test_custom_bridges_cancel_and_apply(self):
         """Bridges type 'Custom bridges' -> Accept shows the custom-bridge screen;
@@ -133,13 +138,9 @@ class AnonConnectionWizardManualPlan(unittest.TestCase):
         Re-open, Connect -> Next until connected; Finish closes."""
 
 
-@unittest.skip(MANUAL)
-class RestartTorGuiManualPlan(unittest.TestCase):
-    """restart-tor-gui -- interactive."""
-
-    def test_progress_popup(self):
-        """Running /usr/bin/restart-tor-gui shows a progress popup connecting to
-        the Tor network that disappears of its own accord."""
+## restart-tor-gui's progress popup (connect to Tor, then close itself) is now
+## auto-tested end-to-end against a live tor in test_live_tor.py
+## (LiveRestartTorGuiTest), so it is no longer a manual-only scenario.
 
 
 if __name__ == "__main__":

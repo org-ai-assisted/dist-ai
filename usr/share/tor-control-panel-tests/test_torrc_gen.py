@@ -266,6 +266,28 @@ class ParseTorrcTest(unittest.TestCase):
             result = torrc_gen.parse_torrc()
         self.assertEqual(result[0], "None")
 
+    def test_read_custom_bridge_lines_sanitizes(self):
+        """Custom bridge lines are appended into a rich-text QTextEdit, so the
+        shared reader must strip markup/control from the untrusted torrc."""
+        with T.sandbox() as torrc:
+            torrc.write_text(
+                "# Custom bridges are used\n"
+                "Bridge obfs4 1.2.3.4:1234 <script>x</script>ABC\x1b[31m\n",
+                encoding="utf-8")
+            lines = torrc_gen.read_custom_bridge_lines(str(torrc))
+        self.assertTrue(lines)
+        self.assertTrue(all("<script>" not in ln for ln in lines))
+        self.assertTrue(all("\x1b" not in ln for ln in lines))
+        ## The 'Bridge ' prefix is stripped, the real content survives.
+        self.assertTrue(any(ln.startswith("obfs4 1.2.3.4:1234") for ln in lines))
+
+    def test_read_custom_bridge_lines_missing_or_no_marker(self):
+        with T.sandbox() as torrc:
+            torrc.write_text("DisableNetwork 0\n", encoding="utf-8")
+            self.assertEqual(torrc_gen.read_custom_bridge_lines(str(torrc)), [])
+            torrc.unlink()
+            self.assertEqual(torrc_gen.read_custom_bridge_lines(str(torrc)), [])
+
     def test_a1_custom_bridges_survive_reconfigure(self):
         """Reproduce the data-loss path: custom bridges, then add a proxy.
 

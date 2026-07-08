@@ -92,6 +92,30 @@ class TorControlPanelWalkthroughTest(unittest.TestCase):
             panel.refresh_logs()
             self.assertIsInstance(panel.file_browser.toPlainText(), str)
 
+    def test_logs_tab_refresh_picks_up_new_lines(self):
+        ## The manual plan's "after generating new Tor log lines, Refresh
+        ## updates the Tor log view" -- automated with a file standing in for
+        ## the Tor log.
+        import os
+        import shutil
+        import tempfile
+        with T.sandbox(), T.no_modal():
+            panel = self._panel()
+            tmp = tempfile.mkdtemp(prefix="tcp-loglive-")
+            self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+            log_path = os.path.join(tmp, "log")
+            with open(log_path, "w", encoding="utf-8") as handle:
+                handle.write("Jul 08 00:00:00.000 [notice] first log line\n")
+            panel.tor_log = log_path
+            panel.log_button.setChecked(True)
+            panel.refresh_logs()
+            self.assertIn("first log line", panel.file_browser.toPlainText())
+            ## New lines appended -> a Refresh must show them.
+            with open(log_path, "a", encoding="utf-8") as handle:
+                handle.write("Jul 08 00:00:01.000 [notice] second log line\n")
+            panel.refresh_logs()
+            self.assertIn("second log line", panel.file_browser.toPlainText())
+
 
 class AnonConnectionWizardWalkthroughTest(unittest.TestCase):
     """Automatable Anon Connection Wizard steps from the manual plan."""
