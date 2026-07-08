@@ -18,6 +18,12 @@ import tcp_testlib as T
 from tor_control_panel import anon_connection_wizard as acw
 from tor_control_panel import tor_control_panel as tcp
 
+try:
+    import stem  # noqa: F401  (newnym imports it lazily)
+    HAVE_STEM = True
+except ImportError:
+    HAVE_STEM = False
+
 
 class CustomBridgeHandlersTest(unittest.TestCase):
     """G1/G2: the custom-bridge accept/cancel handlers and their validity gate."""
@@ -199,6 +205,7 @@ class NewnymAndOnionCircuitsTest(unittest.TestCase):
     """The Utilities-tab actions: NEWNYM must not restart Tor, and Onion
     Circuits launches the external viewer."""
 
+    @unittest.skipUnless(HAVE_STEM, "python3-stem not installed")
     def test_newnym_does_not_restart_tor(self):
         ## 'Request new Tor circuit' sends NEWNYM only; a restart would tear
         ## down the circuits it just requested (arraybolt3 review).
