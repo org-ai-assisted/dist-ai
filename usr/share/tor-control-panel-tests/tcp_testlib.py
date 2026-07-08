@@ -201,7 +201,10 @@ def no_modal():
         "mbox_exec": QMessageBox.exec_,
         "mbox_exec_slot": QMessageBox.exec,
         "dialog_exec": QDialog.exec_,
-        "bootstrap_start": tor_bootstrap.TorBootstrap.start,
+        ## TorBootstrap inherits start() from QThread (not in its own __dict__);
+        ## record that so the finally clause removes our override instead of
+        ## re-assigning the inherited C++ slot (which corrupts it).
+        "bootstrap_start_own": "start" in tor_bootstrap.TorBootstrap.__dict__,
     }
     acw.AnonConnectionWizard.exec_ = lambda self, *a, **k: 0
     QMessageBox.exec_ = lambda self, *a, **k: 0
@@ -219,4 +222,6 @@ def no_modal():
         QMessageBox.exec_ = saved["mbox_exec"]
         QMessageBox.exec = saved["mbox_exec_slot"]
         QDialog.exec_ = saved["dialog_exec"]
-        tor_bootstrap.TorBootstrap.start = saved["bootstrap_start"]
+        if not saved["bootstrap_start_own"]:
+            del tor_bootstrap.TorBootstrap.start
+        ## (if it had ever defined its own start(), it still does -- unchanged)

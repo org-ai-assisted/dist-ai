@@ -19,12 +19,52 @@ not break:
 
 import os
 import re
+import subprocess
+import sys
 import unittest
 
 import tcp_testlib as T  # noqa: F401  (sets up sys.path / offscreen Qt)
 from tor_control_panel import privilege, tor_status, torrc_gen
 
 PKG_DIR = os.path.dirname(privilege.__file__)
+DIST_PACKAGES = os.path.dirname(PKG_DIR)
+
+
+class PyQtBoundaryTest(unittest.TestCase):
+    """The config-logic layer must be usable by a CLI with no GUI: importing it
+    must not pull in PyQt (adrelanos #48/#53/#106 -- share the config code
+    without the GUI dependency). The PyQt help dialogs live in info_gui.py."""
+
+    CONFIG_MODULES = [
+        "info", "torrc_gen", "tor_status", "validators", "privilege",
+        "edit_etc_resolv_conf", "repair_torrc",
+    ]
+
+    def test_config_logic_imports_without_pyqt(self):
+        ## Run in a fresh interpreter with PyQt5 blocked, so a real GUI-less
+        ## environment is simulated (not one where PyQt is merely already
+        ## loaded). Inject the import paths via sys.path in the child code (not
+        ## PYTHONPATH, which the runner's environment does not reliably pass on).
+        path_setup = "import sys\n" + "".join(
+            "sys.path.insert(0, %r)\n" % p for p in sys.path if p)
+        block = ("for _m in ('PyQt5', 'PyQt5.QtCore', 'PyQt5.QtGui',"
+                 " 'PyQt5.QtWidgets'):\n    sys.modules[_m] = None\n")
+        imports = "import " + ", ".join(
+            "tor_control_panel." + m for m in self.CONFIG_MODULES) + "\n"
+        code = path_setup + block + imports + "print('ok')\n"
+        result = subprocess.run([sys.executable, "-c", code],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                encoding="utf-8")
+        self.assertEqual(
+            result.returncode, 0,
+            "config-logic layer imports PyQt (breaks CLI use):\n"
+            + result.stderr)
+
+    def test_info_gui_is_the_only_gui_helper_module(self):
+        ## info_gui.py is where the PyQt dialogs were moved; it SHOULD need PyQt.
+        self.assertTrue(
+            os.path.exists(os.path.join(PKG_DIR, "info_gui.py")),
+            "info_gui.py (the GUI help dialogs) is missing")
 
 ## A 'leaprun' string literal (single or double quoted).
 _LEAPRUN_LITERAL = re.compile(r"""['"]leaprun['"]""")

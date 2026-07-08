@@ -152,16 +152,16 @@ class HelpButtonsTest(unittest.TestCase):
     """G4: the info/help buttons exist and their handlers run without raising."""
 
     def test_info_buttons_present_and_help_callable(self):
-        from tor_control_panel import info
+        from tor_control_panel import info_gui
         with T.sandbox(), T.no_modal():
             panel = tcp.TorControlPanel()
             self.addCleanup(panel.deleteLater)
             self.assertIsNotNone(panel.bridge_info_button)
             self.assertIsNotNone(panel.proxy_info_button)
-            ## The help dialogs are neutralised by no_modal; just ensure the
-            ## handlers build and show without raising.
-            info.show_help_censorship()
-            info.show_proxy_help()
+            ## The help dialogs (now in info_gui) are neutralised by no_modal;
+            ## just ensure the handlers build and show without raising.
+            info_gui.show_help_censorship()
+            info_gui.show_proxy_help()
 
 
 class CustomBridgesProxyInteractionTest(unittest.TestCase):
