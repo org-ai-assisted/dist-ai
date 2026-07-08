@@ -21,9 +21,18 @@ Everything automatable has been moved OUT of this skipped plan into real,
 running tests:
   * window layout, tabs, the Configure/Accept toggle, the log-source selector,
     and every Anon Connection Wizard page's controls -> test_ui_walkthrough.py;
+  * a real direct bootstrap to 'Connected to the Tor network!', the
+    Enable-network (DisableNetwork toggle) path, and NEWNYM ('Request new Tor
+    circuit') against a throwaway live tor -> test_live_tor.py;
   * torrc generation / parsing, the A1/A3 regressions, proxy field behaviour,
-    the include-chain -> test_torrc_gen.py, test_tor_control_panel.py,
+    the include-chain (incl. every bridge/proxy torrc validated by a real
+    'tor --verify-config') -> test_torrc_gen.py, test_tor_control_panel.py,
     test_anon_connection_wizard.py, test_torrc_applied.py.
+
+What is left here needs Tor to connect over the network THROUGH a specific
+transport/proxy whose reachability is non-deterministic (obfs4/snowflake/meek
+bridges, a live SOCKS/HTTP proxy) or a running desktop (Onion Circuits, the
+restart-tor-gui popup) -- a human ticks these off at release time.
 """
 
 import unittest
@@ -55,12 +64,12 @@ class TorControlPanelManualPlan(unittest.TestCase):
 
     def test_disable_then_enable_network(self):
         """Bridges type 'Disable network' -> Accept: stops Tor, 'The network is
-        disabled.', prevents restart. Then 'Enable network' -> Accept: bootstraps
-        to connected. (Regression A3 -- the selector must not show duplicate or
-        both toggle entries -- is auto-tested in test_tor_control_panel.py.)"""
-
-    def test_bridges_none(self):
-        """Bridges type 'None' -> Accept: bootstraps quickly to connected."""
+        disabled.', prevents restart. (Regression A3 -- the selector must not
+        show duplicate or both toggle entries -- is auto-tested in
+        test_tor_control_panel.py; the Enable-network path -- DisableNetwork
+        toggled back to 0 then bootstrapping to connected -- is auto-tested
+        against a live tor in test_live_tor.py; 'None' -> Accept bootstrapping
+        quickly to connected is the same test_live_tor.py direct bootstrap.)"""
 
     def test_proxy_socks5_then_socks4_then_none(self):
         """Proxy type SOCKS5 with a working proxy -> Accept connects; repeat with
@@ -75,10 +84,12 @@ class TorControlPanelManualPlan(unittest.TestCase):
         test_torrc_gen.py; A4 -- bridge lines not mangled on redisplay -- is
         fixed in source.)"""
 
-    def test_utilities_tab(self):
-        """Utilities tab shows 'Onion Circuits' and 'Request new Tor circuit'
-        with helpful text. 'Onion Circuits' shows current circuits. 'Request new
-        Tor circuit' then the Control tab: Tor restarted."""
+    def test_utilities_tab_onion_circuits(self):
+        """'Onion Circuits' shows the current circuits (needs the desktop app
+        + a bootstrapped Tor). (That the Utilities tab shows both buttons with
+        helpful text is auto-tested in test_ui_walkthrough.py; that a
+        bootstrapped Tor accepts the 'Request new Tor circuit' NEWNYM is
+        auto-tested in test_live_tor.py.)"""
 
     def test_logs_tab_live_refresh(self):
         """After generating new Tor log lines, 'Refresh' updates the Tor log
