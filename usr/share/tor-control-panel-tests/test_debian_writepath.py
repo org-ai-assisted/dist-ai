@@ -74,6 +74,29 @@ class AcwWriteTorrcTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0,
                                 "empty comm file must be rejected")
 
+    def test_symlink_source_rejected(self):
+        ## Security regression: the spool dir is world-writable, so the root
+        ## helper must refuse a symlinked comm file -- otherwise a local user
+        ## could point it at /etc/shadow and have the content copied into the
+        ## world-readable drop-in.
+        with tempfile.TemporaryDirectory() as root:
+            secret = os.path.join(root, "secret")
+            with open(secret, "w", encoding="utf-8") as handle:
+                handle.write("TOP SECRET\n")
+            comm = os.path.join(root, "comm")
+            os.symlink(secret, comm)
+            dropin = os.path.join(root, "torrc.d", "40_tor_control_panel.conf")
+            env = dict(os.environ)
+            env["acw_comm_file_path"] = comm
+            env["torrc_file_path"] = dropin
+            result = subprocess.run(["bash", ACW_WRITE_TORRC], env=env,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, encoding="utf-8")
+            self.assertNotEqual(result.returncode, 0,
+                                "symlinked comm file must be rejected")
+            self.assertFalse(os.path.exists(dropin),
+                             "secret content must not be copied to the drop-in")
+
 
 @unittest.skipUnless(TOR and os.path.exists(TOR_CONFIG_SANE)
                      and os.path.exists(ACW_WRITE_TORRC),
