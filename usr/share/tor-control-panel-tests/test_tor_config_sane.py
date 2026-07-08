@@ -58,13 +58,15 @@ class TorConfigSaneTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             dropin_dir = os.path.join(root, "usr/local/etc/torrc.d")
             self.assertTrue(os.path.isdir(dropin_dir))
-            torrc = open(os.path.join(root, "etc/tor/torrc"),
-                         encoding="utf-8").read()
+            with open(os.path.join(root, "etc/tor/torrc"),
+                      encoding="utf-8") as handle:
+                torrc = handle.read()
             self.assertIn("%include", torrc)
             self.assertIn("/usr/local/etc/torrc.d", torrc)
-            socket_conf = open(
-                os.path.join(dropin_dir, "30_tor_control_panel_socket.conf"),
-                encoding="utf-8").read()
+            with open(os.path.join(dropin_dir,
+                                   "30_tor_control_panel_socket.conf"),
+                      encoding="utf-8") as handle:
+                socket_conf = handle.read()
             self.assertIn("ControlSocket /run/tor/control", socket_conf)
             self.assertIn("CookieAuthentication 1", socket_conf)
 
@@ -72,8 +74,9 @@ class TorConfigSaneTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             self._run(root)
             self._run(root)
-            torrc = open(os.path.join(root, "etc/tor/torrc"),
-                         encoding="utf-8").read()
+            with open(os.path.join(root, "etc/tor/torrc"),
+                      encoding="utf-8") as handle:
+                torrc = handle.read()
             self.assertEqual(torrc.count("%include"), 1,
                              "re-running duplicated the %include line")
 
@@ -101,12 +104,16 @@ class TorConfigSaneTest(unittest.TestCase):
             ## Point the ControlSocket somewhere harmless for the verify.
             socket_conf = os.path.join(
                 root, "usr/local/etc/torrc.d/30_tor_control_panel_socket.conf")
-            text = open(socket_conf, encoding="utf-8").read().replace(
-                "/run/tor/control", os.path.join(root, "ctrl"))
-            open(socket_conf, "w", encoding="utf-8").write(text)
-            open(os.path.join(root,
-                              "usr/local/etc/torrc.d/40_tor_control_panel.conf"),
-                 "w", encoding="utf-8").write("ThisIsNotARealTorOption 1\n")
+            with open(socket_conf, encoding="utf-8") as handle:
+                text = handle.read().replace(
+                    "/run/tor/control", os.path.join(root, "ctrl"))
+            with open(socket_conf, "w", encoding="utf-8") as handle:
+                handle.write(text)
+            with open(os.path.join(
+                    root,
+                    "usr/local/etc/torrc.d/40_tor_control_panel.conf"),
+                    "w", encoding="utf-8") as handle:
+                handle.write("ThisIsNotARealTorOption 1\n")
             result = subprocess.run([TOR, "-f", torrc, "--verify-config"],
                                     stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, encoding="utf-8")

@@ -51,15 +51,26 @@ class PrivilegeChainTest(unittest.TestCase):
 
     def test_sudo_fallback_when_no_leaprun_or_pkexec(self):
         self._have()  # neither leaprun nor pkexec
-        privilege._passwordless_sudo_available = lambda: True
+        privilege._passwordless_sudo_available = lambda mapped: True
         self.assertEqual(
             privilege.command("acw-tor-control-stop"),
             ["sudo", "--non-interactive",
              "/usr/libexec/anon-connection-wizard/acw-tor-control", "stop"])
 
+    def test_sudo_probe_receives_the_mapped_command(self):
+        ## The probe must see the REAL helper argv (not a generic `true`), so a
+        ## NOPASSWD rule scoped to the helper path is detected correctly.
+        self._have()  # neither leaprun nor pkexec
+        seen = []
+        privilege._passwordless_sudo_available = lambda mapped: (
+            seen.append(mapped) or True)
+        privilege.command("tor-config-sane")
+        self.assertEqual(
+            seen, [["/usr/libexec/tor-control-panel/tor-config-sane"]])
+
     def test_error_when_no_method_available(self):
         self._have()  # nothing
-        privilege._passwordless_sudo_available = lambda: False
+        privilege._passwordless_sudo_available = lambda mapped: False
         with self.assertRaises(privilege.NoPrivilegeMethod):
             privilege.command("acw-tor-control-restart")
 
@@ -82,8 +93,18 @@ class PrivilegeChainTest(unittest.TestCase):
         for action in ("acw-tor-control-restart", "acw-tor-control-reload",
                        "acw-tor-control-stop", "acw-tor-control-status",
                        "acw-write-torrc", "tor-config-sane",
-                       "tor-control-panel-read-tor-default-log"):
+                       "tor-control-panel-read-tor-default-log",
+                       "anon-dns-add", "anon-dns-remove"):
             self.assertIn(action, privilege._ACTION_COMMANDS)
+
+    def test_anon_dns_maps_to_installed_helper(self):
+        ## Must match the Command= in etc/privleap/conf.d/tor-control-panel.conf
+        ## (/usr/bin/anon-dns), or the pkexec/sudo fallback would resolve a
+        ## different (non-installed) path than leaprun and silently fail.
+        self.assertEqual(privilege._ACTION_COMMANDS["anon-dns-add"],
+                         ["/usr/bin/anon-dns", "add"])
+        self.assertEqual(privilege._ACTION_COMMANDS["anon-dns-remove"],
+                         ["/usr/bin/anon-dns", "remove"])
 
 
 if __name__ == "__main__":
