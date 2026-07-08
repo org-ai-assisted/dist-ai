@@ -81,6 +81,33 @@ class GenTorrcFeatureTest(unittest.TestCase):
         self.assertIn("ClientTransportPlugin snowflake exec /usr/bin/snowflake-client", text)
         self.assertTrue(any(ln.startswith("Bridge snowflake ") for ln in _config_lines(text)))
 
+    def _resolv_calls_for(self, args):
+        ## Count edit_etc_resolv_conf_add() calls during gen_torrc (the Whonix
+        ## meek/snowflake DNS workaround), overriding the sandbox's no-op stub.
+        calls = []
+        with T.sandbox():
+            saved = torrc_gen.edit_etc_resolv_conf_add
+            torrc_gen.edit_etc_resolv_conf_add = lambda *a, **k: calls.append(True)
+            try:
+                torrc_gen.gen_torrc(args)
+            finally:
+                torrc_gen.edit_etc_resolv_conf_add = saved
+        return len(calls)
+
+    def test_custom_meek_lite_bridge_triggers_resolv_conf(self):
+        ## A custom bridge using meek_lite needs the DNS workaround, like the
+        ## default meek bridge type (CodeRabbit: it was skipped for custom).
+        meek = ("meek_lite 192.0.2.20:80 "
+                "ABCDEF0123456789ABCDEF0123456789ABCDEF01 url=https://example.com")
+        self.assertEqual(self._resolv_calls_for(["None", meek, "None"]), 1)
+
+    def test_custom_snowflake_bridge_triggers_resolv_conf(self):
+        snow = "snowflake 192.0.2.30:80 ABCDEF0123456789ABCDEF0123456789ABCDEF01"
+        self.assertEqual(self._resolv_calls_for(["None", snow, "None"]), 1)
+
+    def test_custom_obfs4_bridge_does_not_trigger_resolv_conf(self):
+        self.assertEqual(self._resolv_calls_for(["None", CUSTOM_BRIDGES, "None"]), 0)
+
     def test_custom_bridges_marker_and_lines(self):
         text = self._gen(["None", CUSTOM_BRIDGES, "None"])
         ## The marker parse_torrc() relies on to recognise custom bridges.

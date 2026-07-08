@@ -87,6 +87,32 @@ class TorConfigSaneTest(unittest.TestCase):
             self.assertFalse(os.path.exists(stale),
                              "stale ControlSocket drop-in must be removed")
 
+    def test_debian_migrates_stale_usr_local_include(self):
+        ## Upgrade path (Codex review): an older tor-control-panel wrote
+        ## '%include /usr/local/etc/torrc.d/*.conf', which Tor's AppArmor profile
+        ## forbids on Debian and keeps Tor from starting. tor-config-sane must
+        ## delete that stale include and add the new /etc/tor drop-in include.
+        with tempfile.TemporaryDirectory() as root:
+            main_torrc = os.path.join(root, "etc/tor/torrc")
+            os.makedirs(os.path.dirname(main_torrc))
+            with open(main_torrc, "w", encoding="utf-8") as handle:
+                handle.write("SocksPort 9050\n"
+                             "%include /usr/local/etc/torrc.d/*.conf\n")
+            env = dict(os.environ)
+            env["torrc_dir"] = os.path.join(root, "etc/tor/torrc.d")
+            env["main_torrc"] = main_torrc
+            env["whonix_marker"] = os.path.join(root, "no-marker")
+            result = subprocess.run(["bash", SCRIPT], env=env,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, encoding="utf-8")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            with open(main_torrc, encoding="utf-8") as handle:
+                torrc = handle.read()
+            self.assertNotIn(
+                "/usr/local/etc/torrc.d", torrc,
+                "stale AppArmor-forbidden include must be removed on upgrade")
+            self.assertIn(os.path.join(root, "etc/tor/torrc.d"), torrc)
+
     def test_idempotent(self):
         with tempfile.TemporaryDirectory() as root:
             self._run(root)
