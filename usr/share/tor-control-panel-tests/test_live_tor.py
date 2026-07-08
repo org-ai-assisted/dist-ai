@@ -21,9 +21,11 @@ no privilege / no system tor involved) and asserts real behaviour:
 These need the tor binary AND working Tor network reachability. setUpModule
 probes once (one shared bootstrap); if tor cannot connect (e.g. a network-less
 CI runner) every test SKIPS immediately rather than each waiting out a timeout.
-The still-manual scenarios (obfs4/snowflake/meek actually connecting, a live
-proxy, Onion Circuits) stay in test_manual_plan.py -- their configs are already
-proven valid by test_torrc_applied.py; only the flaky live connection is manual.
+
+Bridge transports are live-tested too: obfs4 and meek (meek_lite via obfs4proxy,
+using the shipped CDN77 front) assert the transport connects and Tor bootstraps
+THROUGH it; snowflake (a real bridge + snowflake-client) drives to connected.
+Only the desktop-only Onion Circuits viewer stays manual.
 """
 
 import json
@@ -68,12 +70,12 @@ except ImportError:
     HAVE_STEM = False
 
 
-def _bundled_obfs4_bridges():
-    """The real obfs4 Bridge lines the app ships (bridges_default). meek /
-    snowflake ship TEST-NET placeholder IPs and their clients are not
-    installed, so only obfs4 can actually connect."""
+def _bundled_bridges(transport):
+    """The real Bridge lines the app ships for `transport` (bridges_default).
+    obfs4 and meek use working fronts/relays; the shipped snowflake line uses a
+    placeholder IP, so the snowflake test spells out a real bridge instead."""
     with open(T._bridges_default_path(), encoding="utf-8") as handle:
-        bridges = json.load(handle)["bridges"]["obfs4"]
+        bridges = json.load(handle)["bridges"][transport]
     return [line for line in bridges if line.strip()]
 
 ## Populated by setUpModule: whether a real bootstrap succeeded, and the shared
@@ -402,14 +404,13 @@ class LiveObfs4BridgeTest(unittest.TestCase):
     def test_obfs4_bridges_bootstrap_through_the_transport(self):
         ## The 'Bridges type obfs4' scenario, for real: start a tor configured
         ## exactly as gen_torrc would (UseBridges + the obfs4 ClientTransportPlugin
-        ## + the shipped obfs4 bridge lines) and drive the bootstrap. What is
-        ## deterministic (and is the app-specific thing under test) is that the
-        ## obfs4 transport connects to a bridge and Tor bootstraps THROUGH it --
-        ## a pluggable-transport phase followed by real progress (loading network
-        ## info via the bridge). Whether a given public bridge is fast enough to
-        ## reach 100% right now is not, so do not require it. If not even one
-        ## shipped bridge is reachable, skip.
-        bridges = _bundled_obfs4_bridges()
+        ## + the shipped obfs4 bridge lines) and drive the bootstrap. With
+        ## UseBridges and only obfs4 bridges configured Tor has no direct path,
+        ## so reaching the descriptor-loading stage (>= 40%) proves an obfs4 hop
+        ## is up and carrying traffic (not merely a valid config). Whether a
+        ## given public bridge is fast enough to reach 100% right now is not, so
+        ## do not require it; if not even one shipped bridge is reachable, skip.
+        bridges = _bundled_bridges("obfs4")
         self.assertTrue(bridges, "no obfs4 bridges shipped in bridges_default")
         extra = ("UseBridges 1\n"
                  "ClientTransportPlugin obfs4 exec {0}\n".format(OBFS4PROXY)
@@ -419,15 +420,44 @@ class LiveObfs4BridgeTest(unittest.TestCase):
         self.assertTrue(os.path.exists(inst.control_socket), "tor did not start")
         seen = inst.bootstrap(timeout_ms=150000)
         max_progress = max((pct for pct, _ in seen), default=0)
-        used_transport = any("transport" in phase.lower() for _, phase in seen)
-        ## Past ~40% means Tor is loading directory info over the bridge, i.e.
-        ## the obfs4 hop is up and carrying traffic (not merely a valid config).
-        if max_progress < 40 or not used_transport:
+        if max_progress < 40:
             self.skipTest(
-                "no shipped obfs4 bridge reachable now (max {0}%, transport={1}): "
-                "{2}".format(max_progress, used_transport, seen[-3:]))
+                "no shipped obfs4 bridge reachable now (max {0}%): {1}"
+                .format(max_progress, seen[-3:]))
         self.assertGreaterEqual(max_progress, 40)
-        self.assertTrue(used_transport)
+
+
+@unittest.skipUnless(TOR and HAVE_STEM, "tor binary / python3-stem not installed")
+@unittest.skipUnless(os.path.exists(OBFS4PROXY), "obfs4proxy (meek_lite) not installed")
+class LiveMeekBridgeTest(unittest.TestCase):
+    def setUp(self):
+        if not LIVE:
+            self.skipTest(LIVE_REASON)
+
+    def test_meek_bridge_bootstraps_through_the_transport(self):
+        ## 'Bridges type meek -> Accept: connects (slowly)'. meek-azure was
+        ## retired, but the shipped meek bridge uses the current CDN77
+        ## domain-fronting front (meek_lite via obfs4proxy). With UseBridges and
+        ## only the meek bridge configured, Tor has no direct path, so reaching
+        ## the descriptor-loading stage (>= 40%) proves the meek_lite/CDN77 hop
+        ## is up and carrying traffic. (Full 100% over a slow domain-fronted hop
+        ## is not deterministic; meek does not emit a distinct 'transport' phase
+        ## the way obfs4 does, so progress-through-the-bridge is the signal.)
+        bridges = _bundled_bridges("meek")
+        self.assertTrue(bridges, "no meek bridge shipped in bridges_default")
+        extra = ("UseBridges 1\n"
+                 "ClientTransportPlugin meek_lite exec {0}\n".format(OBFS4PROXY)
+                 + "\n".join(bridges) + "\n")
+        inst = _TorInstance(extra_torrc=extra)
+        self.addCleanup(inst.stop)
+        self.assertTrue(os.path.exists(inst.control_socket), "tor did not start")
+        seen = inst.bootstrap(timeout_ms=150000)
+        max_progress = max((pct for pct, _ in seen), default=0)
+        if max_progress < 40:
+            self.skipTest(
+                "meek front not reachable now (max {0}%): {1}"
+                .format(max_progress, seen[-3:]))
+        self.assertGreaterEqual(max_progress, 40)
 
 
 @unittest.skipUnless(TOR and HAVE_STEM, "tor binary / python3-stem not installed")

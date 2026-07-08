@@ -58,11 +58,11 @@ class TorControlPanelManualPlan(unittest.TestCase):
         public bridge is fast enough to reach 100% right now is left to a human.)"""
 
     def test_bridges_meek(self):
-        """Bridges type meek -> Accept. NOTE: the meek-azure backend Microsoft
-        hosted was retired, so meek no longer connects anywhere; the meek_lite
-        torrc is still validated by test_torrc_applied.py, but a live meek
-        connection cannot be tested (or used) until a working meek front exists.
-        (Snowflake and obfs4, by contrast, are live-tested in test_live_tor.py.)"""
+        """Bridges type meek -> Accept: connects (slowly). meek-azure was retired
+        (removed from Tor Browser 2025-02-05), but meek itself still works via
+        the CDN77 domain-fronting front the shipped bridge uses (meek_lite +
+        obfs4proxy); it is live-tested in test_live_tor.py alongside obfs4 and
+        snowflake, and is slow, so a human confirms wall-clock behaviour."""
 
     def test_disable_then_enable_network(self):
         """Bridges type 'Disable network' -> Accept: stops Tor, 'The network is
