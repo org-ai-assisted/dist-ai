@@ -12,14 +12,18 @@ restart-tor-gui.
 Source: arraybolt3's (Aaron Rainbolt) test plan, Whonix forum thread
 "Tor controller GUI (tor-control-panel)" post #161, 2026-07-06.
 
-These steps drive the real GUI against a live Tor daemon on a Whonix-Gateway (or
-Qubes) and cannot be automated headlessly. They are encoded here as SKIPPED
-tests so the plan lives inside the suite (one scenario per test, pass criteria
-in the docstring) rather than as a separate prose file: `dist-ai-tests-all` and
-`python3 -m unittest` list them as skipped, and a human ticks them off during
-release testing. The automatable parts of the plan are covered by the real
-tests in test_torrc_gen.py, test_anon_connection_wizard.py and
-test_tor_control_panel.py.
+Only the scenarios that need Tor to actually CONNECT to the network (obfs4 /
+snowflake / meek bootstrap, the restart cycle, a live proxy, Onion Circuits
+showing real circuits) remain here -- they cannot be automated headlessly and a
+human ticks them off during release testing.
+
+Everything automatable has been moved OUT of this skipped plan into real,
+running tests:
+  * window layout, tabs, the Configure/Accept toggle, the log-source selector,
+    and every Anon Connection Wizard page's controls -> test_ui_walkthrough.py;
+  * torrc generation / parsing, the A1/A3 regressions, proxy field behaviour,
+    the include-chain -> test_torrc_gen.py, test_tor_control_panel.py,
+    test_anon_connection_wizard.py, test_torrc_applied.py.
 """
 
 import unittest
@@ -31,24 +35,11 @@ MANUAL = "manual GUI test -- requires a display and a live Tor daemon"
 class TorControlPanelManualPlan(unittest.TestCase):
     """Tor Control Panel -- interactive walkthrough."""
 
-    def test_layout_and_defaults(self):
-        """Three tabs 'Control'/'Utilities'/'Logs', 'Control' selected by default.
-        With Tor running: status 'Connected to the Tor network!', user config
-        'Bridges type: None' + 'Proxy type: None'; Control shows 'Restart Tor',
-        'Stop Tor', 'Configure'; 'Exit' in the lower-right corner."""
-
     def test_restart_stop_restart_cycle(self):
         """'Restart Tor' walks the bootstrap states to 'Connected to the Tor
         network!'; 'Stop Tor' -> 'Tor is not running'; 'Restart Tor' repeats the
-        bootstrap states."""
-
-    def test_configure_toggles_editability(self):
-        """'Configure' makes Bridges/Proxy type editable, shows Help buttons,
-        morphs 'Configure' into 'Accept'; Help buttons open useful dialogs."""
-
-    def test_configure_back_reverts(self):
-        """Changing Bridges/Proxy type then clicking the back button reverts the
-        changes."""
+        bootstrap states. (Layout/defaults + the Configure/Accept toggle and its
+        revert are auto-tested in test_ui_walkthrough.py.)"""
 
     def test_bridges_obfs4(self):
         """Bridges type obfs4 -> Accept: bootstraps to connected, mentions a
@@ -89,22 +80,15 @@ class TorControlPanelManualPlan(unittest.TestCase):
         with helpful text. 'Onion Circuits' shows current circuits. 'Request new
         Tor circuit' then the Control tab: Tor restarted."""
 
-    def test_logs_tab(self):
-        """Logs tab shows 'torrc'/'Tor log'/'systemd journal' options, 'Refresh',
-        and a log view; each option switches the view; after generating new Tor
-        log lines, 'Refresh' updates the Tor log view."""
-
-    def test_exit(self):
-        """'Exit' closes the application normally."""
+    def test_logs_tab_live_refresh(self):
+        """After generating new Tor log lines, 'Refresh' updates the Tor log
+        view. (The source selector, its three options, and torrc rendering are
+        auto-tested in test_ui_walkthrough.py.)"""
 
 
 @unittest.skip(MANUAL)
 class AnonConnectionWizardManualPlan(unittest.TestCase):
     """Anon Connection Wizard -- interactive walkthrough."""
-
-    def test_first_page_options(self):
-        """First page offers 'Connect'/'Configure'/'Disable Tor' and
-        Next/Back/Cancel buttons."""
 
     def test_connect_summary_and_torrc(self):
         """'Connect' -> Next shows a summary ('Tor will be enabled', 'Bridges:
@@ -118,25 +102,15 @@ class AnonConnectionWizardManualPlan(unittest.TestCase):
         morphs to an 'X'; Finish closes. Re-open, Disable Tor -> Next -> Back
         returns to the first page."""
 
-    def test_configure_bridges_page(self):
-        """'Configure' -> Next shows 'Tor Bridges Configuration' with the
-        'I need bridges to bypass censorship' checkbox and a 'Help ?' button that
-        opens (and dismisses) a help dialog."""
-
-    def test_configure_navigation(self):
-        """Next reaches 'Local Proxy Configuration' then the summary then
-        bootstrap; Back walks the same pages in reverse. (Regression A2 -- Cancel
-        must not crash -- is auto-tested in test_anon_connection_wizard.py.)"""
-
     def test_bridge_types(self):
         """With 'I need bridges...' checked, the bridge-type combo offers obfs4,
         snowflake, meek and custom bridges; obfs4/meek/snowflake each bootstrap
         to connected (meek/snowflake slowly)."""
 
-    def test_custom_bridges(self):
-        """'Custom bridges' reveals the bridge input and 'How to get Bridges?'
-        help; pasted bridges bootstrap to connected mentioning a pluggable
-        transport."""
+    def test_custom_bridges_bootstrap(self):
+        """Pasted custom bridges bootstrap to connected mentioning a pluggable
+        transport. (That 'Custom bridges' reveals the input + 'How to get
+        Bridges?' help is auto-tested in test_ui_walkthrough.py.)"""
 
     def test_proxy_socks5_and_socks4(self):
         """Local Proxy Configuration with 'Use proxy...' checked shows the proxy
