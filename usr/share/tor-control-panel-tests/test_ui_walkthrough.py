@@ -169,6 +169,17 @@ class AnonConnectionWizardWalkthroughTest(unittest.TestCase):
                       page.proxy_type_label):
             self.assertIsNotNone(label)
 
+    def test_summary_show_torrc_toggle(self):
+        ## G5: the 'Show torrc' button toggles the torrc view + its own label.
+        page = self._page(acw.TorrcPage)
+        self.assertFalse(page.show_detail)
+        page.detail()
+        self.assertTrue(page.show_detail)
+        self.assertIn("Hide", page.show_torrc_button.text())
+        page.detail()
+        self.assertFalse(page.show_detail)
+        self.assertIn("Show torrc", page.show_torrc_button.text())
+
     def test_wizard_has_five_pages(self):
         acw.AnonConnectionWizard.exec_ = lambda self, *a, **k: 0
         QMessageBox.exec_ = lambda self, *a, **k: 0

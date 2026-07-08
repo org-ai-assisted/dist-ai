@@ -46,6 +46,14 @@ from tor_control_panel import tor_bootstrap
 TOR = shutil.which("tor")
 OBFS4PROXY = "/usr/bin/obfs4proxy"
 
+try:
+    ## tor_bootstrap imports stem lazily; the live tests drive it, so stem must
+    ## be present or they cannot run (e.g. a CI image with tor but no stem).
+    import stem  # noqa: F401
+    HAVE_STEM = True
+except ImportError:
+    HAVE_STEM = False
+
 
 def _bundled_obfs4_bridges():
     """The real obfs4 Bridge lines the app ships (bridges_default). meek /
@@ -222,6 +230,9 @@ def setUpModule():
     if not TOR:
         LIVE_REASON = "tor binary not installed"
         return
+    if not HAVE_STEM:
+        LIVE_REASON = "python3-stem not installed"
+        return
     inst = _TorInstance()
     if not os.path.exists(inst.control_socket):
         inst.stop()
@@ -242,7 +253,7 @@ def tearDownModule():
         _SHARED.stop()
 
 
-@unittest.skipUnless(TOR, "tor binary not installed")
+@unittest.skipUnless(TOR and HAVE_STEM, "tor binary / python3-stem not installed")
 class LiveBootstrapTest(unittest.TestCase):
     def setUp(self):
         if not LIVE:
@@ -269,7 +280,7 @@ class LiveBootstrapTest(unittest.TestCase):
         controller.signal(stem.Signal.NEWNYM)  # must not raise
 
 
-@unittest.skipUnless(TOR, "tor binary not installed")
+@unittest.skipUnless(TOR and HAVE_STEM, "tor binary / python3-stem not installed")
 class LiveDisableNetworkTest(unittest.TestCase):
     def setUp(self):
         if not LIVE:
@@ -320,7 +331,7 @@ class _BootstrapAtSharedInstance:
         return False
 
 
-@unittest.skipUnless(TOR, "tor binary not installed")
+@unittest.skipUnless(TOR and HAVE_STEM, "tor binary / python3-stem not installed")
 class LiveRestartTorGuiTest(unittest.TestCase):
     def setUp(self):
         if not LIVE:
@@ -344,7 +355,7 @@ class LiveRestartTorGuiTest(unittest.TestCase):
             self.assertIn("bootstrapping done", widget.text.text().lower())
 
 
-@unittest.skipUnless(TOR, "tor binary not installed")
+@unittest.skipUnless(TOR and HAVE_STEM, "tor binary / python3-stem not installed")
 class LiveProxyTest(unittest.TestCase):
     def setUp(self):
         if not LIVE:
@@ -368,7 +379,7 @@ class LiveProxyTest(unittest.TestCase):
         self.assertTrue(_reached_connected(seen))
 
 
-@unittest.skipUnless(TOR, "tor binary not installed")
+@unittest.skipUnless(TOR and HAVE_STEM, "tor binary / python3-stem not installed")
 @unittest.skipUnless(os.path.exists(OBFS4PROXY), "obfs4proxy not installed")
 class LiveObfs4BridgeTest(unittest.TestCase):
     def setUp(self):

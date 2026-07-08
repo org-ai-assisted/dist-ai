@@ -96,11 +96,6 @@ class TorControlPanelManualPlan(unittest.TestCase):
         bootstrapped Tor accepts the 'Request new Tor circuit' NEWNYM is
         auto-tested in test_live_tor.py.)"""
 
-    def test_logs_tab_live_refresh(self):
-        """After generating new Tor log lines, 'Refresh' updates the Tor log
-        view. (The source selector, its three options, and torrc rendering are
-        auto-tested in test_ui_walkthrough.py.)"""
-
 
 @unittest.skip(MANUAL)
 class AnonConnectionWizardManualPlan(unittest.TestCase):
