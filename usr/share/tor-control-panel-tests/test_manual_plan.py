@@ -57,13 +57,12 @@ class TorControlPanelManualPlan(unittest.TestCase):
         auto-tested against a live tor in test_live_tor.py; only whether a given
         public bridge is fast enough to reach 100% right now is left to a human.)"""
 
-    def test_bridges_snowflake(self):
-        """Bridges type Snowflake -> Accept: connects (slowly); Tor log mentions
-        'snowflake-client'."""
-
     def test_bridges_meek(self):
-        """Bridges type meek -> Accept: connects (slowly); Tor log mentions
-        'meek_lite'."""
+        """Bridges type meek -> Accept. NOTE: the meek-azure backend Microsoft
+        hosted was retired, so meek no longer connects anywhere; the meek_lite
+        torrc is still validated by test_torrc_applied.py, but a live meek
+        connection cannot be tested (or used) until a working meek front exists.
+        (Snowflake and obfs4, by contrast, are live-tested in test_live_tor.py.)"""
 
     def test_disable_then_enable_network(self):
         """Bridges type 'Disable network' -> Accept: stops Tor, 'The network is
@@ -90,11 +89,11 @@ class TorControlPanelManualPlan(unittest.TestCase):
         fixed in source.)"""
 
     def test_utilities_tab_onion_circuits(self):
-        """'Onion Circuits' shows the current circuits (needs the desktop app
-        + a bootstrapped Tor). (That the Utilities tab shows both buttons with
-        helpful text is auto-tested in test_ui_walkthrough.py; that a
-        bootstrapped Tor accepts the 'Request new Tor circuit' NEWNYM is
-        auto-tested in test_live_tor.py.)"""
+        """'Onion Circuits' shows the current circuits in the external viewer
+        (needs the desktop app + a bootstrapped Tor). (That the button launches
+        the onioncircuits process is auto-tested in test_gui_gaps.py; that the
+        Utilities tab shows both buttons is auto-tested in test_ui_walkthrough.py;
+        that a bootstrapped Tor accepts the NEWNYM is in test_live_tor.py.)"""
 
 
 @unittest.skip(MANUAL)

@@ -164,6 +164,65 @@ class HelpButtonsTest(unittest.TestCase):
             info.show_proxy_help()
 
 
+class CustomBridgesProxyInteractionTest(unittest.TestCase):
+    """arraybolt3 residual: adding a proxy to an existing custom-bridges config
+    must NOT replace the custom bridges with default obfs4."""
+
+    def test_custom_bridges_survive_adding_a_proxy(self):
+        custom = ("# Custom bridges are used\nUseBridges 1\n"
+                  "ClientTransportPlugin obfs4 exec /usr/bin/obfs4proxy\n"
+                  "Bridge obfs4 1.2.3.4:1234 "
+                  "ABCDEF0123456789ABCDEF0123456789ABCDEF01\nDisableNetwork 0\n")
+        with T.sandbox(initial_torrc=custom) as torrc, T.no_modal():
+            panel = tcp.TorControlPanel()
+            self.addCleanup(panel.deleteLater)
+            panel.tor_running_path = "/run/tor/tor.pid"
+            panel.refresh(False)
+            ## Custom bridges were correctly detected (not misread as obfs4).
+            self.assertEqual(panel.bridge_type.text(), "Custom bridges")
+            panel.configure()  # -> Accept mode
+            panel.proxy_combo.setCurrentIndex(panel.proxy_combo.findText("SOCKS5"))
+            panel.proxy_ip_edit.setText("127.0.0.1")
+            panel.proxy_port_edit.setText("9050")
+            panel.bridges_combo.setCurrentIndex(
+                panel.bridges_combo.findText("Custom bridges"))
+            panel.configure()  # Accept -> custom-bridge screen (repopulates)
+            panel.accept_custom_bridges()  # writes torrc
+            final = torrc.read_text(encoding="utf-8")
+        self.assertIn("Bridge obfs4 1.2.3.4:1234", final)
+        self.assertIn("Socks5Proxy 127.0.0.1:9050", final)
+        ## Exactly the user's one custom bridge -- no default bridges injected.
+        self.assertEqual(final.count("Bridge obfs4 "), 1)
+
+
+class NewnymAndOnionCircuitsTest(unittest.TestCase):
+    """The Utilities-tab actions: NEWNYM must not restart Tor, and Onion
+    Circuits launches the external viewer."""
+
+    def test_newnym_does_not_restart_tor(self):
+        ## 'Request new Tor circuit' sends NEWNYM only; a restart would tear
+        ## down the circuits it just requested (arraybolt3 review).
+        with T.sandbox(), T.no_modal():
+            panel = tcp.TorControlPanel()
+            self.addCleanup(panel.deleteLater)
+            restarted = []
+            panel.restart_tor = lambda *a, **k: restarted.append(True)
+            panel.newnym()  # no control socket -> caught; must not restart
+            self.assertEqual(restarted, [], "NEWNYM must not restart Tor")
+
+    def test_onioncircuits_launches_viewer(self):
+        from tor_control_panel import tor_control_panel as tcp_mod
+        with T.sandbox(), T.no_modal():
+            panel = tcp_mod.TorControlPanel()
+            self.addCleanup(panel.deleteLater)
+            calls = []
+            saved = tcp_mod.Popen
+            tcp_mod.Popen = lambda argv, *a, **k: calls.append(argv)
+            self.addCleanup(lambda: setattr(tcp_mod, "Popen", saved))
+            panel.onioncircuits()
+            self.assertEqual(calls, [["onioncircuits"]])
+
+
 class WizardFirstPageRoutingTest(unittest.TestCase):
     """G6: ConnectionMainPage.nextId routes Connect/Configure/Disable correctly."""
 

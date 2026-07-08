@@ -201,16 +201,12 @@ def no_modal():
         "mbox_exec": QMessageBox.exec_,
         "mbox_exec_slot": QMessageBox.exec,
         "dialog_exec": QDialog.exec_,
-        "tcp_call": tcp.call,
         "bootstrap_start": tor_bootstrap.TorBootstrap.start,
     }
     acw.AnonConnectionWizard.exec_ = lambda self, *a, **k: 0
     QMessageBox.exec_ = lambda self, *a, **k: 0
     QMessageBox.exec = lambda self, *a, **k: 0
     QDialog.exec_ = lambda self, *a, **k: 0
-    ## TorControlPanel.__init__ runs 'leaprun tor-config-sane' via the imported
-    ## subprocess.call; stub it so widget tests need no privleap and stay fast.
-    tcp.call = lambda *a, **k: 0
     ## A handler under test (e.g. Accept -> set_torrc -> restart_tor) may start a
     ## real TorBootstrap QThread, whose run() imports stem and talks to a control
     ## socket. Make .start() a no-op so widget tests neither depend on stem nor
@@ -223,5 +219,4 @@ def no_modal():
         QMessageBox.exec_ = saved["mbox_exec"]
         QMessageBox.exec = saved["mbox_exec_slot"]
         QDialog.exec_ = saved["dialog_exec"]
-        tcp.call = saved["tcp_call"]
         tor_bootstrap.TorBootstrap.start = saved["bootstrap_start"]

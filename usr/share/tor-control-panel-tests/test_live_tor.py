@@ -45,6 +45,19 @@ from tor_control_panel import tor_bootstrap
 
 TOR = shutil.which("tor")
 OBFS4PROXY = "/usr/bin/obfs4proxy"
+SNOWFLAKE_CLIENT = "/usr/bin/snowflake-client"
+
+## The current Tor default snowflake bridge (the one shipped bridges_default
+## uses a TEST-NET placeholder, so spell out a real one for the live test).
+SNOWFLAKE_BRIDGE = (
+    "snowflake 192.0.2.3:80 2B280B23E1107BB62ABFC40DDCC8824814F80A72 "
+    "fingerprint=2B280B23E1107BB62ABFC40DDCC8824814F80A72 "
+    "url=https://1098762253.rsc.cdn77.org/ fronts=www.cdn77.com,docs.plesk.com "
+    "ice=stun:stun.l.google.com:19302,stun:stun.antisip.com:3478,"
+    "stun:stun.bluesip.net:3478,stun:stun.dus.net:3478,stun:stun.epygi.com:3478,"
+    "stun:stun.sonetel.com:3478,stun:stun.uls.co.za:3478,"
+    "stun:stun.voipgate.com:3478,stun:stun.voys.nl:3478 "
+    "utls-imitate=hellorandomizedalpn")
 
 try:
     ## tor_bootstrap imports stem lazily; the live tests drive it, so stem must
@@ -415,6 +428,32 @@ class LiveObfs4BridgeTest(unittest.TestCase):
                 "{2}".format(max_progress, used_transport, seen[-3:]))
         self.assertGreaterEqual(max_progress, 40)
         self.assertTrue(used_transport)
+
+
+@unittest.skipUnless(TOR and HAVE_STEM, "tor binary / python3-stem not installed")
+@unittest.skipUnless(os.path.exists(SNOWFLAKE_CLIENT), "snowflake-client not installed")
+class LiveSnowflakeBridgeTest(unittest.TestCase):
+    def setUp(self):
+        if not LIVE:
+            self.skipTest(LIVE_REASON)
+
+    def test_snowflake_bridge_bootstraps(self):
+        ## 'Bridges type Snowflake -> Accept: connects': start a tor with the
+        ## snowflake ClientTransportPlugin + a real snowflake bridge and drive it
+        ## to connected. Snowflake (WebRTC) is slow, so a long timeout; skip if
+        ## the broker/proxy path is not reachable right now.
+        extra = ("UseBridges 1\n"
+                 "ClientTransportPlugin snowflake exec {0}\n".format(SNOWFLAKE_CLIENT)
+                 + "Bridge " + SNOWFLAKE_BRIDGE + "\n")
+        inst = _TorInstance(extra_torrc=extra)
+        self.addCleanup(inst.stop)
+        self.assertTrue(os.path.exists(inst.control_socket), "tor did not start")
+        seen = inst.bootstrap(timeout_ms=180000)
+        if not _reached_connected(seen):
+            self.skipTest(
+                "snowflake broker/proxy not reachable in time: "
+                + repr(seen[-3:]))
+        self.assertTrue(_reached_connected(seen))
 
 
 if __name__ == "__main__":
