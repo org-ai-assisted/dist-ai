@@ -220,15 +220,23 @@ class ParseTorrcTest(unittest.TestCase):
             "replace them with default obfs4 bridges (bug A1)",
         )
 
-    def test_torrc_dir_is_always_usr_local(self):
-        """The torrc drop-in dir is /usr/local/etc/torrc.d on EVERY distro, so
-        the Python and the privileged bash helper (which hardcodes that path)
-        agree. torrc_gen and tor_status resolve to the same dir."""
+    def test_torrc_dir_is_distro_aware(self):
+        """The drop-in dir is distro-dependent: /usr/local/etc/torrc.d on
+        Whonix, /etc/tor/torrc.d on plain Debian (Debian's AppArmor system_tor
+        profile forbids Tor reading /usr/local, so a drop-in there makes
+        tor@default fail to start). torrc_gen and tor_status must agree, and the
+        choice must track the Whonix marker."""
         from tor_control_panel import tor_status
-        self.assertEqual(torrc_gen.torrc_dir, "/usr/local/etc/torrc.d")
-        self.assertEqual(tor_status.torrc_dir, "/usr/local/etc/torrc.d")
-        self.assertTrue(
-            torrc_gen.torrc_path().startswith("/usr/local/etc/torrc.d/"))
+        expected = ("/usr/local/etc/torrc.d" if tor_status.whonix
+                    else "/etc/tor/torrc.d")
+        self.assertEqual(torrc_gen.torrc_dir, expected)
+        self.assertEqual(tor_status.torrc_dir, expected)
+        self.assertTrue(torrc_gen.torrc_path().startswith(expected + "/"))
+        ## Never /usr/local on non-Whonix -- that is the AppArmor breakage.
+        if not tor_status.whonix:
+            self.assertFalse(
+                torrc_gen.torrc_dir.startswith("/usr/local"),
+                "plain-Debian drop-in under /usr/local is AppArmor-unreadable")
 
     def test_parse_torrc_missing_file_returns_defaults(self):
         """On plain Debian/Kicksecure the torrc may be absent; parse must return

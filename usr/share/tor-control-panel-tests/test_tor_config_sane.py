@@ -52,7 +52,12 @@ class TorConfigSaneTest(unittest.TestCase):
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                               encoding="utf-8")
 
-    def test_debian_adds_include_and_control_socket(self):
+    def test_debian_adds_include_but_not_control_socket(self):
+        ## On plain Debian tor-config-sane adds the %include so Tor reads the
+        ## drop-in, but must NOT write a ControlSocket: Tor's own
+        ## tor-service-defaults-torrc already provides /run/tor/control (with
+        ## RelaxDirModeCheck + cookie auth), and a bare 'ControlSocket' here
+        ## fails Tor's /run/tor permission check and stops it from starting.
         with tempfile.TemporaryDirectory() as root:
             result = self._run(root)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -62,13 +67,25 @@ class TorConfigSaneTest(unittest.TestCase):
                       encoding="utf-8") as handle:
                 torrc = handle.read()
             self.assertIn("%include", torrc)
-            self.assertIn("/usr/local/etc/torrc.d", torrc)
-            with open(os.path.join(dropin_dir,
-                                   "30_tor_control_panel_socket.conf"),
-                      encoding="utf-8") as handle:
-                socket_conf = handle.read()
-            self.assertIn("ControlSocket /run/tor/control", socket_conf)
-            self.assertIn("CookieAuthentication 1", socket_conf)
+            self.assertIn(dropin_dir, torrc)
+            self.assertFalse(
+                os.path.exists(os.path.join(
+                    dropin_dir, "30_tor_control_panel_socket.conf")),
+                "tor-config-sane must not write a ControlSocket on Debian")
+
+    def test_debian_removes_stale_control_socket_dropin(self):
+        ## An older tor-control-panel wrote a bare-ControlSocket drop-in that
+        ## breaks Tor on Debian; tor-config-sane must remove it on upgrade.
+        with tempfile.TemporaryDirectory() as root:
+            dropin_dir = os.path.join(root, "usr/local/etc/torrc.d")
+            os.makedirs(dropin_dir)
+            stale = os.path.join(dropin_dir, "30_tor_control_panel_socket.conf")
+            with open(stale, "w", encoding="utf-8") as handle:
+                handle.write("ControlSocket /run/tor/control\n")
+            result = self._run(root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(os.path.exists(stale),
+                             "stale ControlSocket drop-in must be removed")
 
     def test_idempotent(self):
         with tempfile.TemporaryDirectory() as root:
@@ -101,14 +118,8 @@ class TorConfigSaneTest(unittest.TestCase):
             os.makedirs(os.path.join(root, "data"))
             with open(torrc, "a", encoding="utf-8") as handle:
                 handle.write("DataDirectory {0}/data\nSocksPort 0\n".format(root))
-            ## Point the ControlSocket somewhere harmless for the verify.
-            socket_conf = os.path.join(
-                root, "usr/local/etc/torrc.d/30_tor_control_panel_socket.conf")
-            with open(socket_conf, encoding="utf-8") as handle:
-                text = handle.read().replace(
-                    "/run/tor/control", os.path.join(root, "ctrl"))
-            with open(socket_conf, "w", encoding="utf-8") as handle:
-                handle.write(text)
+            ## tor-config-sane writes no ControlSocket (Debian provides it), so
+            ## nothing to neutralise -- just drop an invalid directive in.
             with open(os.path.join(
                     root,
                     "usr/local/etc/torrc.d/40_tor_control_panel.conf"),

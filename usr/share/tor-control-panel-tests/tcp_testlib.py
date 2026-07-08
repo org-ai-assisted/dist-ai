@@ -10,7 +10,8 @@ Shared harness for the tor-control-panel regression tests.
 
 tor-control-panel (which now also contains the merged anon-connection-wizard)
 is a PyQt5 GUI that, in normal operation, reads and writes torrc drop-in files
-under system paths (/usr/local/etc/torrc.d, /run/anon-connection-wizard) and
+under system paths (the distro-aware torrc.d drop-in dir,
+/run/anon-connection-wizard) and
 shells out to privileged 'leaprun' helpers. None of that is available (or
 desirable) in a test/CI sandbox.
 

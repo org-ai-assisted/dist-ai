@@ -130,15 +130,9 @@ class DebianEndToEndTest(unittest.TestCase):
             self.assertEqual(
                 subprocess.run(["bash", ACW_WRITE_TORRC], env=wenv).returncode, 0)
 
-            ## 3. neutralise the real ControlSocket path, then verify Tor reads
-            ## the whole chain (main torrc -> include -> the GUI's drop-in).
-            socket_conf = os.path.join(
-                dropin_dir, "30_tor_control_panel_socket.conf")
-            with open(socket_conf, encoding="utf-8") as handle:
-                text = handle.read().replace(
-                    "/run/tor/control", os.path.join(root, "ctrl"))
-            with open(socket_conf, "w", encoding="utf-8") as handle:
-                handle.write(text)
+            ## 3. verify Tor reads the whole chain (main torrc -> include -> the
+            ## GUI's drop-in). tor-config-sane writes no ControlSocket (Debian
+            ## provides it), so there is nothing to neutralise.
             os.makedirs(os.path.join(root, "data"))
             with open(main_torrc, "a", encoding="utf-8") as handle:
                 handle.write("DataDirectory {0}/data\nSocksPort 0\n".format(root))
