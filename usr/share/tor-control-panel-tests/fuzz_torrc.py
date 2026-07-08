@@ -20,6 +20,10 @@ Targets:
   * torrc_gen.read_custom_bridge_lines                       -> list[str]
   * torrc_gen.gen_torrc  +  torrc_gen.parse_torrc            -> no crash, and
     parse_torrc always returns the documented dict shape
+  * tor_bootstrap_parse.parse_bootstrap_phase                -> None or
+    (str phase, int percent), on untrusted Tor control output
+  * tor_status.tor_status                                    -> a defined state
+    string, on adversarial torrc content
 
 Run: fuzz_torrc.py [--iterations N] [--seed N]. On a failure it prints the seed
 and the offending input so the case can be replayed deterministically.
@@ -32,7 +36,8 @@ import tempfile
 from pathlib import Path
 
 import tcp_testlib as T  # noqa: F401  (resolves the source + offscreen Qt)
-from tor_control_panel import torrc_gen, validators
+from tor_control_panel import torrc_gen, validators, tor_status
+from tor_control_panel.tor_bootstrap_parse import parse_bootstrap_phase
 
 
 ## ---- input generators -------------------------------------------------------
@@ -110,7 +115,7 @@ def phase_custom_bridges(rnd, iterations):
             ## Sanitized output must not carry raw control characters through to
             ## the rich-text widget.
             for item in lines:
-                if any(ord(char) < 32 and char not in "\t" for char in item):
+                if any(ord(char) < 32 and char not in "\t\n" for char in item):
                     raise AssertionError(
                         "unsanitized control char in {0!r}".format(item))
 
@@ -143,6 +148,49 @@ def phase_gen_parse(rnd, iterations):
             torrc_gen.parse_torrc()
 
 
+def phase_bootstrap(rnd, iterations):
+    ## Tor's 'status/bootstrap-phase' control output is untrusted; the parser
+    ## must return None or (str phase, int percent) and never crash.
+    tag_phase = {"starting": "Starting", "conn_done": "Connected to a relay",
+                 "done": "Connected to the Tor network!"}
+    tags = list(tag_phase) + ["unknown", ""]
+    templates = [
+        'NOTICE BOOTSTRAP PROGRESS={p} TAG={t} SUMMARY="{s}"',
+        'PROGRESS={p} TAG={t} SUMMARY="{s}"',
+        '{s} PROGRESS={p} TAG={t} SUMMARY="{s}"',
+    ]
+    for _ in range(iterations):
+        if rnd.random() < 0.6:
+            line = rnd.choice(templates).format(
+                p=rnd.choice(["0", "10", "100", "999999999999", "",
+                              str(rnd.randint(0, 10 ** 6))]),
+                t=rnd.choice(tags), s=_rand_token(rnd))
+        else:
+            line = _rand_line(rnd)
+        result = parse_bootstrap_phase(line, tag_phase)
+        if result is not None:
+            phase, percent = result
+            if not isinstance(phase, str) or not isinstance(percent, int):
+                raise AssertionError(
+                    "parse_bootstrap_phase returned {0!r} for {1!r}".format(
+                        result, line))
+            if any(ord(c) < 32 and c not in "\t\n" for c in phase):
+                raise AssertionError(
+                    "unsanitized control char in phase {0!r}".format(phase))
+
+
+def phase_tor_status(rnd, iterations):
+    ## tor_status() classifies the torrc's DisableNetwork directive; feed it
+    ## adversarial torrc content and require a defined string result.
+    with T.sandbox() as torrc:
+        for _ in range(iterations):
+            torrc.write_text(_rand_text(rnd), encoding="utf-8")
+            result = tor_status.tor_status()
+            if result not in ("tor_enabled", "tor_disabled"):
+                raise AssertionError(
+                    "tor_status returned {0!r}".format(result))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--iterations", type=int, default=20000)
@@ -151,14 +199,15 @@ def main():
 
     seed = opts.seed if opts.seed is not None else random.randrange(2 ** 32)
     rnd = random.Random(seed)
-    per_phase = max(1, opts.iterations // 3)
-    print("fuzz_torrc: seed={0} iterations={1}".format(seed, opts.iterations))
-
     phases = (
         ("validators", phase_validators),
         ("custom_bridges", phase_custom_bridges),
         ("gen_parse", phase_gen_parse),
+        ("bootstrap", phase_bootstrap),
+        ("tor_status", phase_tor_status),
     )
+    per_phase = max(1, opts.iterations // len(phases))
+    print("fuzz_torrc: seed={0} iterations={1}".format(seed, opts.iterations))
     for name, func in phases:
         try:
             func(rnd, per_phase)
