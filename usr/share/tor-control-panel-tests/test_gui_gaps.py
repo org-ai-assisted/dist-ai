@@ -16,7 +16,6 @@ import unittest
 
 import tcp_testlib as T
 from tor_control_panel import anon_connection_wizard as acw
-from tor_control_panel import privilege
 from tor_control_panel import tor_control_panel as tcp
 
 
@@ -90,14 +89,8 @@ class ProxyValidityGateTest(unittest.TestCase):
 
 
 class StopAndQuitTest(unittest.TestCase):
-    """G7: the Stop Tor and Exit handlers run without touching the system."""
-
-    def setUp(self):
-        ## stop_tor shells out via privilege.command; make it a no-op success
-        ## (sandbox only stubs privilege.run/check_run, not .command).
-        self._saved = privilege.command
-        privilege.command = lambda action, *a: ["true"]
-        self.addCleanup(lambda: setattr(privilege, "command", self._saved))
+    """G7: the Stop Tor and Exit handlers run without touching the system.
+    (sandbox() stubs privilege.command, so stop_tor's Popen is harmless.)"""
 
     def test_stop_tor_reenables_restart(self):
         with T.sandbox(), T.no_modal():

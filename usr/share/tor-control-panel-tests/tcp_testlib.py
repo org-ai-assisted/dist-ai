@@ -127,6 +127,7 @@ def sandbox(initial_torrc: str = DEFAULT_TORRC):
         "bridges_default": torrc_gen.bridges_default_path,
         "priv_run": _privilege.run,
         "priv_check_run": _privilege.check_run,
+        "priv_command": _privilege.command,
         "acw_common_torrc": _acw.Common.torrc_file_path,
     }
 
@@ -154,9 +155,13 @@ def sandbox(initial_torrc: str = DEFAULT_TORRC):
         torrc_gen.edit_etc_resolv_conf_add = lambda *a, **k: None
         tor_status.write_to_temp_then_move = _stub_write
         ## The privileged leaprun/pkexec runner is stubbed so set_enabled /
-        ## set_disabled do not shell out during tests.
+        ## set_disabled do not shell out during tests. command() (used by the
+        ## Popen call sites: restart/stop/log-read) returns a harmless argv so a
+        ## real Popen(['true']) succeeds everywhere, including CI where neither
+        ## leaprun nor pkexec exists.
         _privilege.run = _stub_ok
         _privilege.check_run = lambda *a, **k: None
+        _privilege.command = lambda action, *a: ["true"]
         _acw.Common.torrc_file_path = str(torrc_path)
 
         try:
@@ -173,6 +178,7 @@ def sandbox(initial_torrc: str = DEFAULT_TORRC):
             tor_status.write_to_temp_then_move = saved["status_write"]
             _privilege.run = saved["priv_run"]
             _privilege.check_run = saved["priv_check_run"]
+            _privilege.command = saved["priv_command"]
 
 
 @contextlib.contextmanager

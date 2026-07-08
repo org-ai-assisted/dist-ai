@@ -281,6 +281,19 @@ class ParseTorrcTest(unittest.TestCase):
         ## The 'Bridge ' prefix is stripped, the real content survives.
         self.assertTrue(any(ln.startswith("obfs4 1.2.3.4:1234") for ln in lines))
 
+    def test_read_custom_bridge_lines_ignores_bridge_prefixed_directives(self):
+        """Directives that merely start with 'Bridge' (BridgeRelay,
+        BridgeDistribution, ...) must not be mistaken for custom bridges."""
+        with T.sandbox() as torrc:
+            torrc.write_text(
+                "# Custom bridges are used\n"
+                "BridgeRelay 1\n"
+                "BridgeDistribution none\n"
+                "Bridge obfs4 1.2.3.4:1234 FINGERPRINT\n",
+                encoding="utf-8")
+            lines = torrc_gen.read_custom_bridge_lines(str(torrc))
+        self.assertEqual(lines, ["obfs4 1.2.3.4:1234 FINGERPRINT"])
+
     def test_read_custom_bridge_lines_missing_or_no_marker(self):
         with T.sandbox() as torrc:
             torrc.write_text("DisableNetwork 0\n", encoding="utf-8")
