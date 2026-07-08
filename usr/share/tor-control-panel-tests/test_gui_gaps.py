@@ -113,6 +113,64 @@ class StopAndQuitTest(unittest.TestCase):
             panel.quit()  # calls accept(); must not raise
 
 
+class BootstrapErrorBranchTest(unittest.TestCase):
+    """G8: update_bootstrap reacts to the error phases (hide progress, set the
+    matching info message) rather than only the happy path."""
+
+    def _panel(self):
+        panel = tcp.TorControlPanel()
+        self.addCleanup(panel.deleteLater)
+        return panel
+
+    def test_no_controller_phase(self):
+        from tor_control_panel import info
+        with T.sandbox(), T.no_modal():
+            panel = self._panel()
+            panel.update_bootstrap("no_controller", 0)
+            self.assertEqual(panel.tor_status, "no_controller")
+            self.assertEqual(panel.message, info.no_controller())
+            self.assertTrue(panel.bootstrap_progress.isHidden())
+
+    def test_socket_error_phase(self):
+        from tor_control_panel import info
+        with T.sandbox(), T.no_modal():
+            panel = self._panel()
+            panel.update_bootstrap("socket_error", 50)
+            self.assertEqual(panel.message, info.socket_error())
+            self.assertTrue(panel.bootstrap_progress.isHidden())
+
+    def test_cookie_error_phase(self):
+        from tor_control_panel import info
+        with T.sandbox(), T.no_modal():
+            panel = self._panel()
+            panel.update_bootstrap("cookie_authentication_failed", 0)
+            self.assertEqual(panel.message, info.cookie_error())
+            self.assertTrue(panel.bootstrap_progress.isHidden())
+
+    def test_done_phase_marks_bootstrap_done(self):
+        with T.sandbox(), T.no_modal():
+            panel = self._panel()
+            panel.update_bootstrap("Connected to the Tor network!", 100)
+            self.assertTrue(panel.bootstrap_done)
+            self.assertTrue(panel.restart_button.isEnabled())
+
+
+class HelpButtonsTest(unittest.TestCase):
+    """G4: the info/help buttons exist and their handlers run without raising."""
+
+    def test_info_buttons_present_and_help_callable(self):
+        from tor_control_panel import info
+        with T.sandbox(), T.no_modal():
+            panel = tcp.TorControlPanel()
+            self.addCleanup(panel.deleteLater)
+            self.assertIsNotNone(panel.bridge_info_button)
+            self.assertIsNotNone(panel.proxy_info_button)
+            ## The help dialogs are neutralised by no_modal; just ensure the
+            ## handlers build and show without raising.
+            info.show_help_censorship()
+            info.show_proxy_help()
+
+
 class WizardFirstPageRoutingTest(unittest.TestCase):
     """G6: ConnectionMainPage.nextId routes Connect/Configure/Disable correctly."""
 
