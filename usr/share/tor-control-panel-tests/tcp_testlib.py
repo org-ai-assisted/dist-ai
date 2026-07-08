@@ -193,6 +193,7 @@ def no_modal():
     """
     from PyQt5.QtWidgets import QDialog, QMessageBox
     from tor_control_panel import anon_connection_wizard as acw
+    from tor_control_panel import tor_bootstrap
     from tor_control_panel import tor_control_panel as tcp
 
     saved = {
@@ -201,6 +202,7 @@ def no_modal():
         "mbox_exec_slot": QMessageBox.exec,
         "dialog_exec": QDialog.exec_,
         "tcp_call": tcp.call,
+        "bootstrap_start": tor_bootstrap.TorBootstrap.start,
     }
     acw.AnonConnectionWizard.exec_ = lambda self, *a, **k: 0
     QMessageBox.exec_ = lambda self, *a, **k: 0
@@ -209,6 +211,11 @@ def no_modal():
     ## TorControlPanel.__init__ runs 'leaprun tor-config-sane' via the imported
     ## subprocess.call; stub it so widget tests need no privleap and stay fast.
     tcp.call = lambda *a, **k: 0
+    ## A handler under test (e.g. Accept -> set_torrc -> restart_tor) may start a
+    ## real TorBootstrap QThread, whose run() imports stem and talks to a control
+    ## socket. Make .start() a no-op so widget tests neither depend on stem nor
+    ## spawn a live thread; the live bootstrap is exercised by test_live_tor.
+    tor_bootstrap.TorBootstrap.start = lambda self, *a, **k: None
     try:
         yield
     finally:
@@ -217,3 +224,4 @@ def no_modal():
         QMessageBox.exec = saved["mbox_exec_slot"]
         QDialog.exec_ = saved["dialog_exec"]
         tcp.call = saved["tcp_call"]
+        tor_bootstrap.TorBootstrap.start = saved["bootstrap_start"]
