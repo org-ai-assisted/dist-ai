@@ -1,61 +1,64 @@
 # tor-control-panel tests
 
-Regression + feature tests for **tor-control-panel** (which now also contains
-the merged **anon-connection-wizard**) and its `torrc_gen` / `tor_status`
-logic. Derived from the bug reports and the manual test plan in the Whonix forum
-thread "Tor controller GUI (tor-control-panel)" (see `BUGS.md` for the full
-inventory and `test_manual_plan.py` for arraybolt3's interactive walkthrough).
+Comprehensive headless test suite for **tor-control-panel** (which also contains
+the merged **anon-connection-wizard**): torrc generation/parsing, the GUIs, the
+privilege chain, the plain-Debian write path, and fuzzing of the untrusted-input
+parsers.
 
-## What is tested
+## How it runs
 
-tor-control-panel is a PyQt5 GUI that turns a user's Tor configuration (bridge
-type, custom bridges, proxy, enable/disable network) into torrc drop-in files
-and parses them back. In normal operation it writes system paths under
-`/usr/local/etc/torrc.d` and `/run/anon-connection-wizard` and shells out to
-privileged `leaprun` helpers. The suite exercises the real code through
-`tcp_testlib`, which:
+The suite exercises the real code through `tcp_testlib`, which:
 
 - runs Qt under the `offscreen` platform plugin (no X server);
 - redirects the torrc / comm-file paths to a private temp dir and replaces the
-  privileged `write_to_temp_then_move()` + `leaprun` calls with in-process
-  stubs, so the observable effect (the torrc ends up with the generated content)
-  is reproduced without root, privleap or a Tor daemon;
-- neutralises the blocking `self.exec_()` modal loops so the wizard / panel can
-  be built headless and their handlers invoked directly.
+  privileged `write_to_temp_then_move()` + privilege-runner calls with in-process
+  stubs, so the generated config is observed without root, privleap, or a Tor
+  daemon;
+- neutralises the blocking modal loops so the wizard / panel are built headless
+  and their handlers invoked directly.
 
-## Checks
+The package under test is resolved by `tcp_testlib`: `TCP_REPO` (a
+tor-control-panel checkout) if set, else the installed
+`/usr/lib/python3/dist-packages/tor_control_panel`. Suites that need extra tools
+skip cleanly when absent (`python3-stem`, the `tor` binary, network).
 
-- **[torrc] generation + parse round-trip** (`test_torrc_gen.py`): every Bridges
-  type (None / obfs4 / snowflake / meek / Custom bridges) and Proxy type
-  (None / SOCKS4 / SOCKS5, with and without auth) generates the expected torrc,
-  and `parse_torrc()` recovers it.
-- **[A1] custom-bridge data loss** (`test_torrc_gen.py`): after writing custom
-  bridges, `parse_torrc()` must report `Custom bridges` -- otherwise a later
-  reconfigure silently replaces them with default obfs4 bridges.
-- **[A2] wizard Cancel crash** (`test_anon_connection_wizard.py`): a freshly
-  built AnonConnectionWizard has `bootstrap_thread` initialised and
-  `cancel_button_clicked()` does not raise.
-- **[A3] duplicate network toggle** (`test_tor_control_panel.py`): the
-  Bridges-type selector never shows two `Disable network` (or `Enable network`)
-  entries across refresh transitions.
-- **[manual] GUI walkthrough** (`test_manual_plan.py`): arraybolt3's interactive
-  test plan, encoded as skipped tests (require a display + live Tor).
+## Coverage
 
-`A4`-`A7` (bridge-line strip, cookie dialog, log-view regex, dropped proxy) are
-fixed in source and exercised by the manual plan; see `BUGS.md`.
-
-No root, no network, no Tor daemon (for the non-skipped tests).
+- **torrc gen/parse** (`test_torrc_gen`): every bridge type (None / obfs4 /
+  snowflake / meek / custom) and proxy type (None / SOCKS4 / SOCKS5, with/without
+  auth) generates the expected torrc and round-trips through `parse_torrc`.
+- **Enable/disable + idempotency** (`test_tor_status`, `test_idempotency`):
+  `DisableNetwork` toggled in place; repeating or interleaving config actions
+  never duplicates, bloats, or corrupts the torrc.
+- **GUIs** (`test_gui_driven`, `test_gui_gaps`, `test_ui_walkthrough`,
+  `test_tor_control_panel`, `test_anon_connection_wizard`): headless feature and
+  branch/handler coverage of both front-ends; NEWNYM without restart; sanitized
+  log/torrc/bootstrap display.
+- **Privilege chain** (`test_privilege`): leaprun -> pkexec -> passwordless sudo
+  -> error; action-to-command mapping.
+- **Plain Debian** (`test_distro_agnostic`, `test_tor_config_sane`,
+  `test_debian_writepath`, `test_torrc_applied`): distro-aware drop-in dir
+  (`/etc/tor/torrc.d` vs `/usr/local/etc/torrc.d`); `tor-config-sane` adds the
+  `%include` (and migrates a stale one) but no redundant `ControlSocket`; the
+  full privileged write path proven with `tor --verify-config`.
+- **Bootstrap parser** (`test_tor_bootstrap`): the untrusted `status/bootstrap-
+  phase` parser and thread lifetime.
+- **Live-Tor integration** (`test_live_tor`): drives the app's own
+  `TorBootstrap` against a throwaway `tor` for obfs4 / snowflake / meek bridges
+  (needs the tor binary + network; skips otherwise).
+- **Interactive plan** (`test_manual_plan`): the GUI walkthrough encoded as
+  skipped tests (require a display + live Tor).
 
 ## Running
 
 ```
-tor-control-panel-tests                 # installed package
+tor-control-panel-tests                    # core suite (fast, no root/network)
 tor-control-panel-tests -v
+TCP_REPO=/path/to/tor-control-panel tor-control-panel-tests   # test a checkout
 
-# test a checkout instead of the installed package
-TCP_REPO=/path/to/tor-control-panel tor-control-panel-tests
+tor-control-panel-tests-fuzz               # randomized fuzz of the parsers
+tor-control-panel-tests-fuzz --iterations 50000 --seed 1
 ```
 
-The package under test is resolved by `tcp_testlib`: `TCP_REPO` (a
-tor-control-panel checkout) if set, else the installed
-`/usr/lib/python3/dist-packages/tor_control_panel`.
+Coverage-guided fuzzing (ClusterFuzzLite + Atheris) and the static scanners
+(Bandit, CodeQL, Coverity) live in the `tor-control-panel` repo itself.
