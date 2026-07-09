@@ -113,18 +113,38 @@ while IFS="$( printf '\t' )" read -r branch class assert arg _summary; do
 
    case "${assert}" in
       neutralized)
+         ## Absence of the raw bytes is trivially true if the tool crashed or
+         ## printed nothing, so also require a clean exit AND positive evidence
+         ## the diff was actually rendered (the reviewer's per-file banner).
+         ## Otherwise a broken tool would "pass" every neutralized row.
          pat="$( hex_to_pcre "${arg}" )"
-         if LC_ALL=C grep --quiet --text --perl-regexp "${pat}" "${out_file}"; then
-            fail "${branch}: raw bytes (${arg}) LEAKED to output"
+         if [ "${rc}" != 0 ]; then
+            fail "${branch}: tool exited ${rc}; expected a clean neutralized render"
+         elif ! grep --quiet --text --fixed-strings -- 'per-file diffs' "${out_file}"; then
+            fail "${branch}: no rendered diff; cannot confirm neutralization"
          else
-            pass "${branch}: payload neutralized (${arg} absent)"
+            ## grep: 0 == found (leaked), 1 == absent (good), >=2 == grep error.
+            ## Without capturing rc, a grep error (>=2) would be read as "absent".
+            leak_rc=0
+            LC_ALL=C grep --quiet --text --perl-regexp "${pat}" "${out_file}" || leak_rc=$?
+            if [ "${leak_rc}" = 0 ]; then
+               fail "${branch}: raw bytes (${arg}) LEAKED to output"
+            elif [ "${leak_rc}" -ge 2 ]; then
+               fail "${branch}: grep error (rc ${leak_rc}) checking for leaked bytes"
+            else
+               pass "${branch}: payload neutralized (${arg} absent from a rendered diff)"
+            fi
          fi
          ;;
       failclosed)
-         if [ "${rc}" != 0 ]; then
-            pass "${branch}: failed closed (exit ${rc})"
-         else
+         ## A non-zero exit alone is not enough -- a tool that merely crashed on
+         ## the fixture would "pass". Require the deliberate refusal message too.
+         if [ "${rc}" = 0 ]; then
             fail "${branch}: did NOT fail closed (exit 0)"
+         elif ! grep --quiet --text --ignore-case --fixed-strings -- 'failing closed' "${out_file}"; then
+            fail "${branch}: exited ${rc} without the expected refusal message"
+         else
+            pass "${branch}: failed closed (exit ${rc}, refusal message present)"
          fi
          ;;
       shows)
