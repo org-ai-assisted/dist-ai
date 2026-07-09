@@ -5,8 +5,8 @@
 
 ## AI-Assisted
 
-## Data-driven adversarial suite backed by the git-review-vulnerabilities corpus
-## (github.com/org-ai-assisted/git-review-vulnerabilities). Every branch there
+## Data-driven adversarial suite backed by the git-diffs-lie corpus
+## (github.com/org-ai-assisted/git-diffs-lie). Every branch there
 ## differs from 'master' by exactly one safe surprise; manifest.tsv states the
 ## expected review-tool behavior per branch. This suite regenerates the corpus
 ## from its own generator (no network) and asserts each row against the
@@ -20,7 +20,7 @@
 ##   refname     <hex> -- the BRANCH NAME is the payload; a name scan must flag it
 ##
 ## Usage: corpus-lib.sh [<dir-with-git-diff-review>]
-##   GIT_REVIEW_VULN_DIR=<checkout> overrides corpus discovery.
+##   GIT_DIFFS_LIE_DIR=<checkout> overrides corpus discovery.
 ## Exit 77 == SKIP (git-diff-review or the corpus not available).
 
 set -o errexit
@@ -35,11 +35,11 @@ gdr="${bindir}/git-diff-review"
 
 ## Discover the corpus BEFORE HOME is redirected for isolation.
 real_home="${HOME}"
-corpus_src="${GIT_REVIEW_VULN_DIR:-}"
+corpus_src="${GIT_DIFFS_LIE_DIR:-}"
 if [ -z "${corpus_src}" ]; then
    for cand in \
-      "${real_home}/git-review-vulnerabilities" \
-      "${real_home}/private-sources/git-review-vulnerabilities" ; do
+      "${real_home}/git-diffs-lie" \
+      "${real_home}/private-sources/git-diffs-lie" ; do
       if [ -f "${cand}/tools/build-corpus.sh" ]; then
          corpus_src="${cand}"
          break
@@ -50,7 +50,7 @@ fi
 if [ ! -x "${gdr}" ] || [ -z "${corpus_src}" ] \
    || [ ! -f "${corpus_src}/tools/build-corpus.sh" ]; then
    printf '%s\n' \
-      "corpus-lib: git-diff-review or git-review-vulnerabilities corpus missing; skipping." >&2
+      "corpus-lib: git-diff-review or git-diffs-lie corpus missing; skipping." >&2
    exit 77
 fi
 
@@ -61,7 +61,7 @@ if [ -z "${unicode_show}" ] && [ -n "${HELPER_SCRIPTS_PATH:-}" ] \
    unicode_show="${HELPER_SCRIPTS_PATH}/usr/bin/unicode-show"
 fi
 
-printf '%s\n' "== git-review-vulnerabilities corpus suite =="
+printf '%s\n' "== git-diffs-lie corpus suite =="
 printf '%s\n' "  git-diff-review: ${gdr}"
 printf '%s\n' "  corpus source:   ${corpus_src}"
 
