@@ -143,3 +143,17 @@ elif [ "${it_rc}" != 0 ]; then
    printf '%s\n' "FAIL: interactive consent suite failed (rc=${it_rc})." >&2
    exit 1
 fi
+
+## adversarial corpus suite: run the reviewer against every branch of the
+## git-review-vulnerabilities corpus (one safe surprise per branch) and assert
+## each is surfaced per its manifest row. 77 == corpus not found -> SKIP (set
+## GIT_REVIEW_VULN_DIR to a checkout).
+printf '\n%s\n' "-- adversarial corpus suite (git-review-vulnerabilities) --"
+cp_rc=0
+bash "${share}/corpus-lib.sh" "$( dirname -- "${git_meld}" )" || cp_rc=$?
+if [ "${cp_rc}" = 77 ]; then
+   printf '%s\n' "SKIP: git-review-vulnerabilities corpus not found (set GIT_REVIEW_VULN_DIR)."
+elif [ "${cp_rc}" != 0 ]; then
+   printf '%s\n' "FAIL: adversarial corpus suite failed (rc=${cp_rc})." >&2
+   exit 1
+fi
