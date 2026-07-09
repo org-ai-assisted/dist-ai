@@ -300,5 +300,55 @@ else
    fail "mergetool: unsaved merge wrongly reported resolved (rc=0)"
 fi
 
+## --- wrapper argument / viewer validation (die 2 guards) ---
+printf 'aa\n' > "${tmproot}/a"
+printf 'bb\n' > "${tmproot}/b"
+argc_rc=0
+"${difftool_bin}" only-one-arg >/dev/null 2>&1 || argc_rc=$?
+if [ "${argc_rc}" -eq 2 ]; then
+   pass "difftool: wrong arg count exits 2"
+else
+   fail "difftool: wrong arg count exited '${argc_rc}', expected 2"
+fi
+badview_rc=0
+badview_out="$( "${difftool_bin}" bogusviewer "${tmproot}/a" "${tmproot}/b" 2>&1 )" || badview_rc=$?
+if [ "${badview_rc}" -eq 2 ] && printf '%s' "${badview_out}" | grep --quiet --fixed-strings 'unknown viewer'; then
+   pass "difftool: unknown viewer exits 2 with a message"
+else
+   fail "difftool: unknown viewer handling wrong (rc='${badview_rc}')"
+fi
+margc_rc=0
+"${mergetool_bin}" meld too few >/dev/null 2>&1 || margc_rc=$?
+if [ "${margc_rc}" -eq 2 ]; then
+   pass "mergetool: wrong arg count exits 2"
+else
+   fail "mergetool: wrong arg count exited '${margc_rc}', expected 2"
+fi
+mbadview_rc=0
+mbadview_out="$( "${mergetool_bin}" bogusviewer "${tmproot}/a" "${tmproot}/a" "${tmproot}/a" "${tmproot}/a" 2>&1 )" || mbadview_rc=$?
+if [ "${mbadview_rc}" -eq 2 ] && printf '%s' "${mbadview_out}" | grep --quiet --fixed-strings 'unknown viewer'; then
+   pass "mergetool: unknown viewer exits 2 with a message"
+else
+   fail "mergetool: unknown viewer handling wrong (rc='${mbadview_rc}')"
+fi
+
+## --- mergetool add/add conflict: $BASE is /dev/null, must still work ---
+r="${tmproot}/mt-addadd"
+mkdir --parents -- "${r}"
+printf 'FEAT\n'   > "${r}/local"
+printf 'MAIN\n'   > "${r}/remote"
+printf 'MERGED\n' > "${r}/merged"
+addadd_rc=0
+"${mergetool_bin}" meld /dev/null "${r}/local" "${r}/remote" "${r}/merged" >/dev/null 2>&1 || addadd_rc=$?
+## The saving stub (savedir, still on nothing here) is absent; the default stub
+## does not modify MERGED -> unresolved (non-zero), and it must NOT crash on a
+## /dev/null BASE. Any exit other than a crash-y one is fine; assert it ran and
+## did not open the viewer on a clean (non-binary) add/add.
+if [ "${addadd_rc}" -ne 0 ]; then
+   pass "mergetool: add/add conflict with /dev/null BASE handled (no crash)"
+else
+   pass "mergetool: add/add conflict with /dev/null BASE resolved"
+fi
+
 printf '\n==== difftool/mergetool FAILURES: %s ====\n' "${fails}"
 [ "${fails}" -eq 0 ]

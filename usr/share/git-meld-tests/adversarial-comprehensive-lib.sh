@@ -202,5 +202,124 @@ else
    fail "submodule inner file not surfaced by recursion; saw: $(printf '%s' "${smr_out}"|tr '\n' '|'|cut -c1-160)"
 fi
 
+## --- symlink add / delete / type-change (read_target sides) ---
+new_repo; ln -s /some/target newlink; git add -A; git commit -qm x
+review "symlink add surfaced"          'SYMLINK|/some/target'
+new_repo; ln -s /gone existing; git add -A; git commit -qm addlink; rm existing; git add -A; git commit -qm x
+review "symlink delete surfaced"       'SYMLINK|none'
+new_repo; ln -s /old/target dl; git add -A; git commit -qm addlink; rm dl; printf 'now regular\n' > dl; git add -A; git commit -qm x
+review "symlink->regular type change"  'SYMLINK|regular file'
+
+## --- malicious FILENAMES (git_review_scan_path) ---
+## A bidi-override in the filename is warned (suspicious, rc 1), review proceeds.
+new_repo; bidi_name="$(printf 'safe\xe2\x80\xaednekot.txt')"; printf 'x\n' > "${bidi_name}"; git add -A; git commit -qm x
+review "bidi filename warned"          'suspicious|unicode-show'
+## A tab in the filename triggers the forgery warning.
+new_repo; tab_name="$(printf 'has\ttab.txt')"; printf 'x\n' > "${tab_name}"; git add -A; git commit -qm x
+review "tab-in-filename warned"        'tab or newline'
+## An undecodable (non-UTF-8) filename FAILS CLOSED before any viewer opens.
+new_repo; bad_name="$(printf 'bad\xff.txt')"; printf 'x\n' > "${bad_name}"; git add -A; git commit -qm x
+true >"${meld_log}"
+badname_out="$( git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD 2>&1 || true )"
+if printf '%s' "${badname_out}" | grep -qiE 'suspicious|undecodable' && ! grep -q 'DISPLAY:' "${meld_log}"; then
+   pass "undecodable filename fails closed (viewer never opened)"
+else
+   fail "undecodable filename NOT fail-closed (meld_log: $(tr '\n' '|' < "${meld_log}"))"
+fi
+
+## --- over-long line (>5000 chars) warning ---
+new_repo; head -c 6000 /dev/zero | tr '\0' 'x' > longline.txt; printf '\n' >> longline.txt; git add -A; git commit -qm x
+review "over-long line warned"         'char line|truncate'
+
+## --- binary blob in driver mode: --stat only, viewer NOT opened ---
+new_repo; printf 'a\x00b\n' > bin.dat; git add -A; git commit -qm x
+true >"${meld_log}"
+bin_out="$( git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD 2>&1 || true )"
+if printf '%s' "${bin_out}" | grep -qi 'BINARY' && ! grep -q 'DISPLAY:' "${meld_log}"; then
+   pass "binary blob shown --stat only, viewer never opened (driver mode)"
+else
+   fail "binary blob handling wrong (meld_log: $(tr '\n' '|' < "${meld_log}"))"
+fi
+
+## --- submodule ADD ("no inner diff") ---
+new_repo
+smadd="${work}/smadd"; git init -q "${smadd}"; ( cd "${smadd}"; git config user.email t@example.com; git config user.name test; printf 's\n'>x; git add -A; git commit -qm s )
+git -c protocol.file.allow=always submodule add -q "${smadd}" addmod 2>/dev/null; git commit -qm 'add submodule'
+addmod_out="$( git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD 2>&1 || true )"
+if printf '%s' "${addmod_out}" | grep -qi 'added or removed'; then
+   pass "submodule add surfaced (no inner diff)"
+else
+   fail "submodule add not surfaced; saw: $(printf '%s' "${addmod_out}"|tr '\n' '|'|cut -c1-160)"
+fi
+
+## --- uninitialized submodule fails closed ---
+new_repo
+smde="${work}/smde"; git init -q "${smde}"; ( cd "${smde}"; git config user.email t@example.com; git config user.name test; printf '1\n'>x; git add -A; git commit -qm a; printf '2\n'>x; git add -A; git commit -qm b )
+git -c protocol.file.allow=always submodule add -q "${smde}" demod 2>/dev/null; git commit -qm adddemod
+( cd demod; git checkout -q HEAD~1 ); git add demod; git commit -qm bump
+git submodule deinit -f demod >/dev/null 2>&1
+deinit_out="$( git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD 2>&1 || true )"
+if printf '%s' "${deinit_out}" | grep -qi 'not an initialized'; then
+   pass "uninitialized submodule fails closed"
+else
+   fail "uninitialized submodule not fail-closed; saw: $(printf '%s' "${deinit_out}"|tr '\n' '|'|cut -c1-160)"
+fi
+
+## --- unmerged/conflict path (driver single-arg branch) ---
+## Per the GIT_EXTERNAL_DIFF contract git invokes the driver with ONE arg (the
+## path) for an unmerged path; modern git actually renders --cc itself and does
+## not call it, so exercise the branch the way the contract specifies -- a direct
+## 1-arg invocation over a real conflicted path.
+new_repo
+git switch -q -c feat; printf 'FEAT\n' > b.txt; git add -A; git commit -qm feat
+git switch -q master; printf 'MAIN\n' > b.txt; git add -A; git commit -qm main
+git merge feat >/dev/null 2>&1 || true
+um_rc=0
+unmerged_out="$( GIT_DIFF_PATH_TOTAL=1 "${GIT_MELD}" b.txt 2>&1 )" || um_rc=$?
+git merge --abort >/dev/null 2>&1 || true
+if printf '%s' "${unmerged_out}" | grep -qi 'unmerged'; then
+   pass "unmerged conflict path surfaced (single-arg driver branch)"
+else
+   fail "unmerged path not surfaced (rc='${um_rc}'); saw: $(printf '%s' "${unmerged_out}"|tr '\n' '|'|cut -c1-160)"
+fi
+
+## --- GIT_REVIEW_UNICODE_NONFATAL deferral (git-diff-review run DIRECTLY) ---
+gdr="$( dirname -- "${GIT_MELD}" )/git-diff-review"
+if [ -x "${gdr}" ]; then
+   new_repo; printf 'ok\n' > u.txt; git add -A; git commit -qm base; printf 'x \xff\xfe y\n' > u.txt; git add -A; git commit -qm bad
+   nf_rc=0
+   nf_out="$( GIT_REVIEW_UNICODE_NONFATAL=1 "${gdr}" HEAD~1 HEAD 2>&1 )" || nf_rc=$?
+   if [ "${nf_rc}" -ne 0 ] && printf '%s' "${nf_out}" | grep -q 'GIT_REVIEW_UNICODE_NONFATAL was set'; then
+      pass "git-diff-review NONFATAL defers then fails at the end"
+   else
+      fail "NONFATAL deferral wrong (rc='${nf_rc}'); saw: $(printf '%s' "${nf_out}"|tr '\n' '|'|cut -c1-160)"
+   fi
+fi
+
+## --- recursion-depth guard (git_external_level > 2 -> abort rc 255) ---
+## Simulate git invoking the driver already two levels deep, as a nested-
+## submodule recursion would; the next increment (3) must abort the diff loop.
+new_repo; printf 'old\n' > "${work}/rold"; printf 'new\n' > "${work}/rnew"
+rec_rc=0
+rec_out="$( GIT_DIFF_PATH_TOTAL=1 git_external_level=2 "${GIT_MELD}" \
+   a.sh "${work}/rold" 0000000000000000000000000000000000000000 100644 \
+        "${work}/rnew" 1111111111111111111111111111111111111111 100644 2>&1 )" || rec_rc=$?
+if [ "${rec_rc}" -eq 255 ] && printf '%s' "${rec_out}" | grep -qiE 'recursion depth|diff loop'; then
+   pass "recursion depth guard aborts at level > 2 (rc 255)"
+else
+   fail "recursion guard wrong (rc='${rec_rc}'); saw: $(printf '%s' "${rec_out}"|tr '\n' '|'|cut -c1-160)"
+fi
+
+## --- unexpected-mode warning (driver mode, non-octal mode arg) ---
+new_repo; printf 'old\n' > "${work}/mo"; printf 'new\n' > "${work}/mn"
+mode_out="$( GIT_DIFF_PATH_TOTAL=1 "${GIT_MELD}" \
+   a.sh "${work}/mo" 0000000000000000000000000000000000000000 888888 \
+        "${work}/mn" 1111111111111111111111111111111111111111 888888 2>&1 || true )"
+if printf '%s' "${mode_out}" | grep -qi 'unexpected mode'; then
+   pass "unexpected mode warned (driver mode)"
+else
+   fail "unexpected mode not warned; saw: $(printf '%s' "${mode_out}"|tr '\n' '|'|cut -c1-160)"
+fi
+
 printf '\n==== FAILURES: %s ====\n' "${fails}"
 rm -rf "${work}"; exit "${fails}"

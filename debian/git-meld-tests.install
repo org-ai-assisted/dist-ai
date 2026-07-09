@@ -1,4 +1,5 @@
 usr/bin/git-meld-tests usr/bin/
 usr/bin/git-meld-tests-fuzz usr/bin/
 usr/share/git-meld-tests/*.sh usr/share/git-meld-tests/
+usr/share/git-meld-tests/*.py usr/share/git-meld-tests/
 usr/share/git-meld-tests/*.md usr/share/git-meld-tests/

@@ -131,3 +131,15 @@ elif [ "${dt_rc}" != 0 ]; then
    printf '%s\n' "FAIL: difftool/mergetool contract suite failed (rc=${dt_rc})." >&2
    exit 1
 fi
+
+## interactive-consent suite: git-diff-review's /dev/tty prompt on fatal content
+## (needs a pseudo-tty + python3). 77 == prerequisites missing -> SKIP.
+printf '\n%s\n' "-- interactive consent suite (git-diff-review) --"
+it_rc=0
+bash "${share}/interactive-lib.sh" "$( dirname -- "${git_meld}" )" || it_rc=$?
+if [ "${it_rc}" = 77 ]; then
+   printf '%s\n' "SKIP: git-diff-review / python3 / pty helper not available."
+elif [ "${it_rc}" != 0 ]; then
+   printf '%s\n' "FAIL: interactive consent suite failed (rc=${it_rc})." >&2
+   exit 1
+fi
