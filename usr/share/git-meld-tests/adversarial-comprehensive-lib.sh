@@ -73,6 +73,23 @@ review "file->symlink swap"           'SYMLINK|mode 12|symbolic'
 new_repo; rm b.txt; ln -s "1000 108 127 997 1000printf 'tgt\xe2\x80\xae')" b.txt; git add -A; git commit -qm x
 review "symlink target bidi unicode"   'unicode-show|SYMLINK'
 
+## Regression: a symlink RETARGET (both sides symlinks) must show the actual old
+## and new targets, not empty. In external-diff mode git hands a regular temp
+## file whose CONTENT is the target path; read_target once ran 'readlink' on
+## that (keyed on core.symlinks), which failed and rendered the target empty,
+## hiding the retarget from the reviewer.
+## core.symlinks=true is the case that broke: the old readlink-on-a-temp-file
+## path only fires when git thinks symlinks are supported.
+new_repo; git config core.symlinks true; rm b.txt; ln -s /old-symlink-target b.txt; git add -A; git commit -qm sl1
+rm b.txt; ln -s /new-symlink-target b.txt; git add -A; git commit -qm sl2
+retarget_out="$( git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD 2>&1 || true )"
+if printf '%s' "${retarget_out}" | grep -q '/old-symlink-target' \
+   && printf '%s' "${retarget_out}" | grep -q '/new-symlink-target'; then
+   pass "symlink retarget shows old and new targets (not empty)"
+else
+   fail "symlink retarget targets hidden; saw: $(printf '%s' "${retarget_out}"|tr '\n' '|'|cut -c1-160)"
+fi
+
 new_repo; printf '#!/bin/sh\nif x # \xe2\x80\xae\xe2\x81\xa6then evil\xe2\x81\xa9\n' >b.txt; git add -A; git commit -qm x
 review "trojan-source bidi unicode"   'unicode-show'
 
