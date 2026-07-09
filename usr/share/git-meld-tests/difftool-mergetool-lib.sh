@@ -53,6 +53,12 @@ printf '%s\n' "  difftool:  ${difftool_bin}"
 printf '%s\n' "  mergetool: ${mergetool_bin}"
 
 tmproot="$( mktemp --directory )"
+## Isolate git from the developer's global config (e.g. a global core.hooksPath
+## ASCII-guard hook that would reject this suite's intentional non-UTF-8
+## fixtures). The per-repo user.name/email are set in make_change_repo, so no
+## global identity is needed. Mirrors adversarial-comprehensive-lib.sh.
+export HOME="${tmproot}/home"
+mkdir --parents -- "${HOME}"
 # shellcheck disable=SC2317
 cleanup() { rm --recursive --force -- "${tmproot}"; }
 trap cleanup EXIT
@@ -161,7 +167,7 @@ r="${tmproot}/dt-bidi"
 make_change_repo "${r}" 'clean\n' 'x=1 //\xe2\x80\xae evil\n'
 out_bidi="$( run_difftool "${r}" meld )"
 if grep --quiet '^2 ' "${r}/gui.log" \
-   && printf '%s' "${out_bidi}" | grep --quiet 'WARNING'; then
+   && printf '%s' "${out_bidi}" | grep --quiet -- 'WARN'; then
    pass "difftool: bidi/suspicious blob warns but still opens (non-fatal)"
 else
    fail "difftool: bidi handling wrong (log: $( cat "${r}/gui.log" ), out: ${out_bidi})"

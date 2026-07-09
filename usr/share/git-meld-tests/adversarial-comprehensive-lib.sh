@@ -50,6 +50,20 @@ review "mode-only-+x"                 'MODE CHANGE|EXECUTABLE|old mode|new mode'
 new_repo; printf '#!/bin/sh\nEVIL\n' >a.sh; git add -A; git commit -qm x
 review "content-change (control)"     'DISPLAY:|@@|EVIL'
 
+## Regression: a plain changed file must NOT report a false "stcat failed".
+## git-diff-review once reused the 'diff' rc-1 ("files differ") for the stcat
+## exit-code check, so every changed file mis-reported an stcat failure and
+## dumped a redundant unicode-show report. meld/kdiff3 never touch stcat, so
+## this holds for them trivially.
+new_repo; printf '#!/bin/sh\necho changed\n' >a.sh; git add -A; git commit -qm x
+true >"${meld_log}"
+nofalse_out="$( git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD 2>&1 || true )"
+if printf '%s' "${nofalse_out}" | grep -qi 'stcat failed'; then
+   fail "false 'stcat failed' reported for a plain changed file"
+else
+   pass "no false 'stcat failed' for a plain changed file"
+fi
+
 new_repo; printf 'Subproject commit 0123456789abcdef0123456789abcdef01234567\n' >b.txt; git add -A; git commit -qm x
 review "fake-Subproject content spoof" 'mimics a gitlink|DISPLAY:'
 
@@ -125,7 +139,7 @@ printf 'a.sh binary\n' >.gitattributes; git add -A; git commit -qm attr
 printf '#!/bin/sh\nrm -rf /\n' >a.sh; git add -A; git commit -qm evilbinary
 true >"${meld_log}"
 preflight="$( "${GIT_MELD}" HEAD~1 HEAD 2>&1 || true )"
-if printf '%s' "${preflight}" | grep -qE 'pre-flight' && printf '%s' "${preflight}" | grep -qE 'a\.sh'; then
+if printf '%s' "${preflight}" | grep -qE 'change set|diffstat' && printf '%s' "${preflight}" | grep -qE 'a\.sh'; then
    pass "driver-skipped (binary) file listed in pre-flight"
 else
    fail "binary-suppressed a.sh not surfaced in pre-flight; saw: $(printf '%s' "${preflight}"|tr '\n' '|'|cut -c1-160)"
