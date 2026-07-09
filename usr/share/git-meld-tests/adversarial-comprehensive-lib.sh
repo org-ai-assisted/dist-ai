@@ -162,5 +162,45 @@ else
    fail "binary-suppressed a.sh not surfaced in pre-flight; saw: $(printf '%s' "${preflight}"|tr '\n' '|'|cut -c1-160)"
 fi
 
+## A .gitattributes change in the reviewed range fails the review closed (it can
+## remap diff behavior and hide other files' content), unless the operator opts
+## in with GIT_REVIEW_ALLOW_GITATTRIBUTES=1.
+new_repo
+printf '*.md diff\n' > .gitattributes
+git add -A
+git commit -qm changeattr
+ga_rc=0
+"${GIT_MELD}" HEAD~1 HEAD >/dev/null 2>&1 || ga_rc=$?
+if [ "${ga_rc}" -ne 0 ]; then
+   pass ".gitattributes change fails the review closed"
+else
+   fail ".gitattributes change did NOT fail closed"
+fi
+ga_ovr_rc=0
+GIT_REVIEW_ALLOW_GITATTRIBUTES=1 "${GIT_MELD}" HEAD~1 HEAD >/dev/null 2>&1 || ga_ovr_rc=$?
+if [ "${ga_ovr_rc}" -eq 0 ]; then
+   pass ".gitattributes change tolerated with GIT_REVIEW_ALLOW_GITATTRIBUTES=1"
+else
+   fail ".gitattributes override did not allow the review (rc='${ga_ovr_rc}')"
+fi
+
+## A submodule's own changed files are reviewed recursively by re-running the
+## tool as the submodule's external diff, so a changed submodule file surfaces.
+new_repo
+smr="${work}/smr"
+git init -q "${smr}"
+( cd "${smr}"; git config user.email t@example.com; git config user.name test; printf 'v1\n' >r.txt; git add -A; git commit -qm a; printf 'v2 SUBFILECHANGED\n' >r.txt; git add -A; git commit -qm b )
+git -c protocol.file.allow=always submodule add -q "${smr}" smr 2>/dev/null
+git commit -qm addsmr
+( cd smr; git checkout -q HEAD~1 )
+git add smr
+git commit -qm 'bump smr'
+smr_out="$( git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD 2>&1 )$(cat "${meld_log}")"
+if printf '%s' "${smr_out}" | grep -qE 'SUBFILECHANGED|r\.txt|DISPLAY:'; then
+   pass "submodule changed file reviewed recursively"
+else
+   fail "submodule inner file not surfaced by recursion; saw: $(printf '%s' "${smr_out}"|tr '\n' '|'|cut -c1-160)"
+fi
+
 printf '\n==== FAILURES: %s ====\n' "${fails}"
 rm -rf "${work}"; exit "${fails}"

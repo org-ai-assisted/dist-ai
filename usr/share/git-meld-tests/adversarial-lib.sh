@@ -4,8 +4,8 @@
 ## Question: can a REAL submodule pointer change ever be rendered as EMPTY
 ## output (hidden from the reviewer)? A diff/review tool must never do that.
 ##
-## Runs entirely locally on throwaway repos with SAFE payloads. Stubs 'meld'
-## so nothing tries to open a GUI. Takes the git-meld under test as $1.
+## Runs entirely locally on throwaway repos with SAFE payloads. Stubs the GUI
+## viewers so nothing opens a real window. Takes the git-meld under test as $1.
 
 set -o errexit
 set -o nounset
@@ -19,10 +19,16 @@ git config --global user.name test >/dev/null 2>&1 || true
 git config --global protocol.file.allow always >/dev/null 2>&1 || true
 git config --global init.defaultBranch master >/dev/null 2>&1 || true
 
-## Stub 'meld' -> just record that it was asked to show something.
+## Stub the GUI viewers -> just record that they were asked to show something.
+## BOTH meld and kdiff3 are stubbed: submodule recursion re-runs the review tool
+## as the submodule's external diff, so git-kdiff3 / git-meld invoke their viewer
+## per changed submodule file -- an unstubbed viewer would launch a real GUI and
+## hang the suite.
 mkdir -p "${work}/bin"
-printf '%s\n' '#!/bin/bash' 'printf "MELD-CALLED: %s\n" "$*"' > "${work}/bin/meld"
-chmod +x "${work}/bin/meld"
+for gui in meld kdiff3; do
+  printf '%s\n' '#!/bin/bash' 'printf "VIEWER-CALLED: %s\n" "$*"' > "${work}/bin/${gui}"
+  chmod +x "${work}/bin/${gui}"
+done
 export PATH="${work}/bin:${PATH}"
 
 ## Build a submodule repo 'sub' with two real commits A and B.
