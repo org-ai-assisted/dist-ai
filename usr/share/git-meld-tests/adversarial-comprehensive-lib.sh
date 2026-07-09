@@ -233,6 +233,22 @@ else
    fail ".gitattributes in a >64KB name list FAILED OPEN"
 fi
 
+## --- fail-open regression: a .gitattributes inside a NON-ASCII-named directory
+## must also fail closed. git QUOTES such a path in 'git diff --name-only'
+## (core.quotePath), so a text/anchored match misses it while git still applies
+## the file; the gate reads raw '-z' NUL-separated names instead. ---
+new_repo
+mkdir "$( printf 'm\xc3\xb6r' )"
+printf '*.md diff\n' > "$( printf 'm\xc3\xb6r' )/.gitattributes"
+git add -A; git commit -qm 'attr in non-ascii dir'
+nonascii_rc=0
+"${GIT_MELD}" HEAD~1 HEAD >/dev/null 2>&1 || nonascii_rc=$?
+if [ "${nonascii_rc}" -ne 0 ]; then
+   pass ".gitattributes in a non-ASCII dir fails closed (quotePath)"
+else
+   fail ".gitattributes in a non-ASCII dir FAILED OPEN (quotePath)"
+fi
+
 ## --- submodule bump that changes .gitattributes fails closed (the recursion
 ## re-applies the gate, which the external-diff mode would otherwise bypass) ---
 new_repo
