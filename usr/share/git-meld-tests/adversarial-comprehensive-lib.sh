@@ -210,6 +210,29 @@ review "symlink delete surfaced"       'SYMLINK|none'
 new_repo; ln -s /old/target dl; git add -A; git commit -qm addlink; rm dl; printf 'now regular\n' > dl; git add -A; git commit -qm x
 review "symlink->regular type change"  'SYMLINK|regular file'
 
+## --- fail-open regression: a .gitattributes change buried in a change set whose
+## name list EXCEEDS the 64KB pipe buffer must still fail closed. A
+## 'printf | grep -q' gate exits on the first match ('.gitattributes' sorts near
+## the top), leaving printf blocked with >64KB unwritten -> SIGPIPE -> under
+## pipefail the pipeline is non-zero and the match is masked (fail OPEN). The
+## fixed gate fails closed FAST here, in the re-dispatch preflight, before any
+## per-file diff (long names keep the file count -- and viewer stubs on a
+## regression -- manageable while still crossing the buffer).
+new_repo
+ga_pfx="$( printf 'x%.0s' $(seq 1 110) )"
+i=1; while [ "${i}" -le 700 ]; do printf 'v1\n' > "${ga_pfx}_${i}.txt"; i=$((i+1)); done
+git add -A; git commit -qm manyfiles
+i=1; while [ "${i}" -le 700 ]; do printf 'v2\n' > "${ga_pfx}_${i}.txt"; i=$((i+1)); done
+printf '*.md diff\n' > .gitattributes
+git add -A; git commit -qm 'big change plus attr'
+bigattr_rc=0
+"${GIT_MELD}" HEAD~1 HEAD >/dev/null 2>&1 || bigattr_rc=$?
+if [ "${bigattr_rc}" -ne 0 ]; then
+   pass ".gitattributes buried in a >64KB name list still fails closed"
+else
+   fail ".gitattributes in a >64KB name list FAILED OPEN"
+fi
+
 ## --- submodule bump that changes .gitattributes fails closed (the recursion
 ## re-applies the gate, which the external-diff mode would otherwise bypass) ---
 new_repo
