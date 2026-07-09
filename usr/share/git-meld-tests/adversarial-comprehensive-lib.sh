@@ -210,6 +210,32 @@ review "symlink delete surfaced"       'SYMLINK|none'
 new_repo; ln -s /old/target dl; git add -A; git commit -qm addlink; rm dl; printf 'now regular\n' > dl; git add -A; git commit -qm x
 review "symlink->regular type change"  'SYMLINK|regular file'
 
+## --- submodule bump that changes .gitattributes fails closed (the recursion
+## re-applies the gate, which the external-diff mode would otherwise bypass) ---
+new_repo
+smga="${work}/smga"; git init -q "${smga}"; ( cd "${smga}"; git config user.email t@example.com; git config user.name test; printf 'a\n'>sf; git add -A; git commit -qm a; printf 'b\n'>sf; printf '*.md diff\n'>.gitattributes; git add -A; git commit -qm 'b+attr' )
+git -c protocol.file.allow=always submodule add -q "${smga}" smga 2>/dev/null; git commit -qm addsmga
+( cd smga; git checkout -q HEAD~1 ); git add smga; git commit -qm bumpsmga
+smga_rc=0
+"${GIT_MELD}" HEAD~1 HEAD >/dev/null 2>&1 || smga_rc=$?
+if [ "${smga_rc}" -ne 0 ]; then
+   pass "submodule .gitattributes change fails closed in recursion"
+else
+   fail "submodule .gitattributes change did NOT fail closed"
+fi
+
+## --- a DANGLING real symlink (working-tree side) still shows its target;
+## read_target must test -L before -e/-s (which follow the link) ---
+new_repo; git config core.symlinks true
+printf 'was a file\n' > slk; git add -A; git commit -qm base
+rm slk; ln -s /nonexistent/DANGLING-TGT slk
+dangle_out="$( git -c "diff.external=${GIT_MELD}" diff 2>&1 || true )"
+if printf '%s' "${dangle_out}" | grep -q 'DANGLING-TGT'; then
+   pass "dangling real symlink target shown (not '(none)')"
+else
+   fail "dangling symlink target hidden; saw: $(printf '%s' "${dangle_out}"|tr '\n' '|'|cut -c1-160)"
+fi
+
 ## --- malicious FILENAMES (git_review_scan_path) ---
 ## A bidi-override in the filename is warned (suspicious, rc 1), review proceeds.
 new_repo; bidi_name="$(printf 'safe\xe2\x80\xaednekot.txt')"; printf 'x\n' > "${bidi_name}"; git add -A; git commit -qm x
