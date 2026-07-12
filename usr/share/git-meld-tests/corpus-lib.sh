@@ -6,7 +6,7 @@
 ## AI-Assisted
 
 ## Data-driven adversarial suite backed by the git-diffs-lie corpus
-## (github.com/org-ai-assisted/git-diffs-lie). Every branch there
+## (github.com/output-lies/git-diffs-lie). Every branch there
 ## differs from 'master' by exactly one safe surprise; manifest.tsv states the
 ## expected review-tool behavior per branch. This suite regenerates the corpus
 ## from its own generator (no network) and asserts each row against the
