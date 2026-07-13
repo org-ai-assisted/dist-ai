@@ -15,6 +15,7 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 | `onion-grater-tests`     | shipping | `usr/share/onion-grater-tests/` |
 | `privleap-tests`         | shipping | `usr/share/privleap-tests/` |
 | `genmkfile-tests`        | shipping | `usr/share/genmkfile-tests/` |
+| `dm-help-steps-tests`    | shipping | `usr/share/dm-help-steps-tests/` |
 | `open-link-confirmation-tests` | shipping | `usr/share/open-link-confirmation-tests/` |
 | `sanitize-string-tests`  | shipping | `usr/share/sanitize-string-tests/` |
 | `stcat-family-tests`     | shipping | `usr/share/stcat-family-tests/` |
@@ -252,6 +253,21 @@ onion-grater-tests
 # full-stack end-to-end (needs tor + sudo)
 onion-grater-tests-e2e
 ```
+
+## dm-help-steps-tests
+
+Functional tests for the helper scripts under derivative-maker
+`help-steps/`, currently the `/proc`-based process reaper
+`umount_kill.sh`. Victims covering every detection channel (cwd, open fd,
+mmap-only, exe image, chrooted process, SIGTERM-ignoring) must die;
+bystanders (unrelated processes, a sibling tree whose name is a
+string-prefix collision of the target) must survive; the guards
+(nonexistent path, `/`, skip-list basenames) are asserted. Requires root
+(SKIPs otherwise) -- run inside a throwaway container or a sandbox VM,
+e.g. `sandbox-run --dir <staged-dir> -- sudo bash ./umount_kill_test.sh`
+with a copy of `umount_kill.sh` staged next to the test. Subject
+selection: `UMOUNT_KILL_SH`, then a staged sibling copy, then
+`~/derivative-maker/help-steps/umount_kill.sh`.
 
 ## genmkfile-tests
 

@@ -94,8 +94,9 @@ locate_subject() {
       printf '%s\n' "${checkout}"
       return 0
    fi
-   printf '%s\n' "ERROR: umount_kill.sh not found (set UMOUNT_KILL_SH)." >&2
-   exit 1
+   ## 77 = SKIP by dist-ai suite convention (target not found, not a failure).
+   printf '%s\n' "SKIP: umount_kill.sh not found (set UMOUNT_KILL_SH)." >&2
+   exit 77
 }
 
 ## Copy a dynamically linked binary plus every library 'ldd' resolves for it
@@ -152,17 +153,20 @@ main() {
    local bystander_unrelated_pid bystander_sibling_pid
    local guard_exit_code quiet_attempt quiet_reached
 
+   ## 77 = SKIP by dist-ai suite convention: an unprivileged or
+   ## tooling-incomplete environment is not a test failure. CI runs this
+   ## suite as the container's root.
    if [ ! "${EUID}" = "0" ]; then
-      printf '%s\n' "ERROR: this test must run as root (umount_kill.sh requires it)." >&2
-      exit 1
+      printf '%s\n' "SKIP: this test must run as root (umount_kill.sh requires it)." >&2
+      exit 77
    fi
 
    subject="$(locate_subject)"
    printf '%s\n' "INFO: subject: ${subject}"
 
    command -v python3 >/dev/null || {
-      printf '%s\n' "ERROR: python3 is required (mmap-only victim)." >&2
-      exit 1
+      printf '%s\n' "SKIP: python3 is required (mmap-only victim)." >&2
+      exit 77
    }
 
    scratch_base="$(mktemp --directory)"

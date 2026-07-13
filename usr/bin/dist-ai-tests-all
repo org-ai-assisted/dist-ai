@@ -37,6 +37,7 @@ timeout_heavy=600
 ## it is deliberately excluded.
 core_suites=(
    check-ref-commits-for-unicode-tests
+   dm-help-steps-tests
    dm-virtualbox-wiki-links-tests
    genmkfile-tests
    git-meld-tests
@@ -93,7 +94,7 @@ With no category flag, only --core runs.
 
 --component NAME restricts the run to the suites owned by ONE component
 (privleap, helper-scripts, onion-grater, genmkfile, open-link-confirmation,
-sdwdate-gui, developer-meta-files). --component-root DIR points those suites at
+sdwdate-gui, developer-meta-files, derivative-maker). --component-root DIR points those suites at
 a STANDALONE component checkout -- the repo root itself, not a monorepo subpath
 -- which is the per-repo CI entry point. --component-root requires --component.
 
@@ -128,6 +129,9 @@ pkg_dir() {
    fi
    [ -n "${repo_root}" ] || return 0
    case "${name}" in
+      ## derivative-maker is the monorepo itself, not a packages/ subpath.
+      derivative-maker)
+         printf '%s' "${repo_root}" ;;
       onion-grater)
          printf '%s' "${repo_root}/packages/whonix/onion-grater" ;;
       *)
@@ -211,6 +215,8 @@ wire() {
          wire_args=( "${dmf}/usr/bin/git-meld" ) ;;
       dm-virtualbox-wiki-links)
          wire_args=( "${dmf}/usr/bin/dm-virtualbox-update-local-and-wiki-links" ) ;;
+      dm-help-steps)
+         wire_env=( "UMOUNT_KILL_SH=$( pkg_dir derivative-maker )/help-steps/umount_kill.sh" ) ;;
       *)
          printf 'dist-ai-tests-all: no wiring for suite %s\n' "${suite}" >&2
          return 1 ;;
@@ -228,6 +234,7 @@ suite_component() {
          printf '%s' 'helper-scripts' ;;
       git-meld|dm-virtualbox-wiki-links)
          printf '%s' 'developer-meta-files' ;;
+      dm-help-steps)          printf '%s' 'derivative-maker' ;;
       onion-grater)           printf '%s' 'onion-grater' ;;
       privleap)               printf '%s' 'privleap' ;;
       genmkfile)              printf '%s' 'genmkfile' ;;
@@ -320,7 +327,7 @@ fi
 
 if [ -n "${component}" ]; then
    case "${component}" in
-      helper-scripts|developer-meta-files|onion-grater|privleap|genmkfile|open-link-confirmation|sdwdate-gui|tor-control-panel)
+      helper-scripts|developer-meta-files|derivative-maker|onion-grater|privleap|genmkfile|open-link-confirmation|sdwdate-gui|tor-control-panel)
          : ;;
       *)
          printf 'dist-ai-tests-all: unknown --component: %s\n' "${component}" >&2

@@ -1,0 +1,72 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Runs the derivative-maker help-steps suite: functional tests for the
+## helper scripts under derivative-maker 'help-steps/' (currently
+## umount_kill.sh, the /proc-based process reaper). The reaper test spawns
+## victim and bystander processes in fresh mktemp trees and asserts the
+## reaper kills exactly the tree's users; it requires ROOT and therefore
+## runs inside CI's throwaway container or a sandbox VM -- as an
+## unprivileged user every test SKIPs (exit 77). Works installed (tests
+## under /usr/share/dm-help-steps-tests) or from a git checkout. Set
+## UMOUNT_KILL_SH to pick the script under test; otherwise the suite uses a
+## copy staged next to the test, then a derivative-maker checkout under
+## ~/derivative-maker.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/dm-help-steps-tests' ]; then
+   tests_dir='/usr/share/dm-help-steps-tests'
+else
+   tests_dir="${script_dir}/../share/dm-help-steps-tests"
+fi
+
+## Run every *_test.sh in the suite. Exit 77 from a test means SKIP
+## (missing target / no root / missing tooling) and does not count as a
+## failure; any other non-zero exit is a failure. Overall exit is non-zero
+## iff at least one test failed.
+shopt -s nullglob
+failures=0
+skipped=0
+ran=0
+for test_script in "${tests_dir}"/*_test.sh; do
+  ran=$(( ran + 1 ))
+  printf '\n########## %s ##########\n' "$(basename -- "${test_script}")"
+  rc=0
+  bash -- "${test_script}" "$@" || rc=$?
+  if [ "${rc}" -eq 77 ]; then
+    printf '########## SKIPPED: %s ##########\n' "$(basename -- "${test_script}")"
+    skipped=$(( skipped + 1 ))
+  elif [ "${rc}" -ne 0 ]; then
+    printf '########## FAILED (%s): %s ##########\n' "${rc}" "$(basename -- "${test_script}")"
+    failures=$(( failures + 1 ))
+  fi
+done
+
+if [ "${ran}" -eq 0 ]; then
+  printf 'ERROR: no *_test.sh found in %s\n' "${tests_dir}" >&2
+  exit 1
+fi
+if [ "${failures}" -ne 0 ]; then
+  printf '\nFAILED: %s dm-help-steps test script(s) failed\n' "${failures}" >&2
+  exit 1
+fi
+## Every test skipped (no root / no target): the SUITE skipped. Exit 77 so
+## the runner reports SKIP instead of a false-green PASS on an environment
+## where nothing actually ran.
+if [ "${skipped}" -eq "${ran}" ]; then
+  printf '\nSKIP: all %s dm-help-steps test script(s) skipped\n' "${skipped}"
+  exit 77
+fi
+printf '\nOK: all dm-help-steps test scripts passed\n'

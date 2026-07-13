@@ -198,6 +198,26 @@ Description: Regression and reproduction tests for the onion-grater control-port
  The tests target the installed onion-grater by default; set ONION_GRATER_REPO
  to run them against a derivative-maker checkout instead.
 
+Package: dm-help-steps-tests
+Architecture: all
+Depends: ${misc:Depends},
+ bash (>= 4),
+ python3,
+ procps,
+ safe-rm
+Description: Functional tests for derivative-maker help-steps scripts
+ Tests for the helper scripts under derivative-maker help-steps/, currently
+ the /proc-based process reaper umount_kill.sh. One victim per detection
+ channel (cwd, open fd, mmap-only, exe image, chrooted process) must be
+ terminated, SIGTERM-ignoring victims must fall through to the SIGKILL
+ escalation, and bystanders (unrelated processes, a sibling tree whose name
+ is a string-prefix collision of the target) must survive. Requires root;
+ as an unprivileged user every test SKIPs. Run inside a throwaway container
+ or sandbox VM.
+ .
+ The tests target ~/derivative-maker by default; set UMOUNT_KILL_SH to run
+ them against another checkout.
+
 Package: genmkfile-tests
 Architecture: all
 Depends: ${misc:Depends},
