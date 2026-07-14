@@ -109,7 +109,7 @@ class TestRegressionInvariants(SystemcheckTestBase):
         services = os.path.join(self.dir, "check_services.bsh")
         if os.path.exists(services):
             self.assertIsNone(
-                re.search(r"sanitized by\s+(?:##\s*)?stcatn", read(services)),
+                re.search(r"sanitized\s+by\s+(?:##\s*)?stcatn", read(services)),
                 "check_services.bsh still claims content is 'sanitized by stcatn'",
             )
 

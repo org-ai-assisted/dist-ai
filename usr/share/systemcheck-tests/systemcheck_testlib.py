@@ -79,6 +79,10 @@ def bash_scripts() -> list[str]:
     """
     repo = os.environ.get("SYSTEMCHECK_REPO", "").strip()
     if repo and os.path.isdir(repo):
+        ## Validate the checkout layout (and SKIP if wrong) exactly like the
+        ## installed branch below, so a mis-set SYSTEMCHECK_REPO cannot be
+        ## silently walked as if it were the systemcheck source tree.
+        systemcheck_dir()
         candidates = []
         skip_dirs = {".git", ".github", "debian"}
         for dirpath, dirs, names in os.walk(repo):
@@ -88,10 +92,17 @@ def bash_scripts() -> list[str]:
     else:
         ## Trigger the standard SKIP if the sources are not present at all.
         systemcheck_dir()
-        proc = subprocess.run(
-            ["dpkg", "-L", "systemcheck"],
-            capture_output=True, text=True, check=False,
-        )
+        try:
+            proc = subprocess.run(
+                ["dpkg", "-L", "systemcheck"],
+                capture_output=True, text=True, check=False,
+            )
+        except FileNotFoundError:
+            ## No dpkg (non-Debian host): SKIP rather than crash, matching the
+            ## suite's missing-sources convention.
+            print("dpkg not found; cannot enumerate installed scripts; skipping.",
+                  file=sys.stderr)
+            sys.exit(77)
         if proc.returncode != 0:
             ## Surface the real error instead of silently yielding an empty
             ## list that looks like "package has no files".
