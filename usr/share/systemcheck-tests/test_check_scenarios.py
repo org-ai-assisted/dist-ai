@@ -30,6 +30,16 @@ class ScenarioTestBase(SystemcheckTestBase):
     def check(self, basename: str) -> str:
         return os.path.join(self.dir, basename)
 
+    def assertCleanRun(self, result) -> None:
+        """Fail if the scenario crashed in bash. Without this, a test asserting
+        "no records emitted" would pass vacuously when the function actually
+        errored out early and emitted nothing."""
+        for marker in ("command not found", "unbound variable",
+                       "syntax error", ": line "):
+            self.assertNotIn(
+                marker, result.stderr,
+                f"bash error during scenario: {result.stderr.strip()!r}")
+
 
 class TestEnvironmentVariablesScenarios(ScenarioTestBase):
     FILE = "check_environment_variables.bsh"
@@ -74,6 +84,7 @@ class TestEnvironmentVariablesScenarios(ScenarioTestBase):
         r = run_check_scenario(
             self.check(self.FILE), "check_environment_variables",
             env_setup="vm_lower_case_short=machine\nKICKSECURE=1\nverbose=0")
+        self.assertCleanRun(r)
         self.assertEqual(r.records, [])
         self.assertEqual(r.exit_code, "0")
 
@@ -107,6 +118,7 @@ class TestManScenarios(ScenarioTestBase):
         r = run_check_scenario(self.check(self.FILE), "check_man",
                                env_setup="verbose=0",
                                stubs="man() { return 0; }")
+        self.assertCleanRun(r)
         self.assertEqual(r.records, [])
 
 
@@ -139,6 +151,7 @@ class TestDpkgScenarios(ScenarioTestBase):
             self.check(self.FILE), "check_dpkg",
             env_setup=self.ENV + "\nverbose=0",
             stubs="dpkg() { return 0; }")
+        self.assertCleanRun(r)
         self.assertEqual(r.records, [])
         self.assertEqual(r.exit_code, "0")
 
@@ -184,6 +197,7 @@ class TestHostnameScenarios(ScenarioTestBase):
         r = run_check_scenario(self.check(self.FILE), "check_hostname",
                                env_setup="vm_lower_case_short=machine",
                                stubs=self.GOOD)
+        self.assertCleanRun(r)
         self.assertEqual(r.records, [])
 
 

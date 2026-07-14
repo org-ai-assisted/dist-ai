@@ -92,6 +92,11 @@ def bash_scripts() -> list[str]:
             ["dpkg", "-L", "systemcheck"],
             capture_output=True, text=True, check=False,
         )
+        if proc.returncode != 0:
+            ## Surface the real error instead of silently yielding an empty
+            ## list that looks like "package has no files".
+            print(f"dpkg -L systemcheck failed (rc={proc.returncode}): "
+                  f"{proc.stderr.strip()}", file=sys.stderr)
         candidates = proc.stdout.splitlines()
 
     scripts = []
@@ -166,8 +171,8 @@ __systemcheck_rec() {
     case "$1" in
       --messagex) channel="x"; shift ;;
       --messagecli) channel="cli"; shift ;;
-      --typex|--typecli) sev="${2:--}"; shift 2 ;;
-      --message) msg="$2"; have_msg=1; shift 2 ;;
+      --typex|--typecli) sev="${2:--}"; shift 2 2>/dev/null || shift ;;
+      --message) msg="${2:-}"; have_msg=1; shift 2 2>/dev/null || shift ;;
       *) shift ;;
     esac
   done
@@ -239,7 +244,10 @@ def run_check_scenario(check_file: str, call: str, env_setup: str = "",
         _SCENARIO_PREAMBLE, stubs, env_setup, helper_defs, check_defs,
         call, 'printf "EXITCODE\\t%s\\n" "${EXIT_CODE:-0}"',
     ])
-    proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    ## timeout so a check that blocks on a missing stub (or a bad parse) fails
+    ## the test loudly instead of wedging the whole suite/CI run.
+    proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                          timeout=30)
     records = []
     exit_code = None
     for line in proc.stdout.splitlines():

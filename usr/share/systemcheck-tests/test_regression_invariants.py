@@ -128,8 +128,11 @@ class TestRegressionInvariants(SystemcheckTestBase):
             ## heads like `-h | --help | -\?)` that the old single-alias regex
             ## missed.
             for token in stripped[:-1].split("|"):
-                if re.fullmatch(r"-[a-zA-Z]", token.strip()):
-                    shorts.append(token.strip())
+                ## Normalize an escaped `-\?` case head to `-?` so the `?`
+                ## short option is captured too, not just alphabetic ones.
+                token = token.strip().replace(r"\?", "?")
+                if re.fullmatch(r"-[A-Za-z?]", token):
+                    shorts.append(token)
         dupes = {s for s in shorts if shorts.count(s) > 1}
         self.assertEqual(dupes, set(), f"duplicate short options: {dupes}")
 
