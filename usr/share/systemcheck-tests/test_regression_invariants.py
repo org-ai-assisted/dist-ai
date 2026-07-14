@@ -53,8 +53,8 @@ class TestRegressionInvariants(SystemcheckTestBase):
                     f"{os.path.basename(path)}:{num} unquoted output_opts",
                 )
 
-    def test_ok_status_uses_shared_token(self) -> None:
-        """OK result tokens must use $status_ok, not literal ok./OK./Ok."""
+    def test_no_literal_ok_status_token(self) -> None:
+        """OK result tokens must use $status_ok, not a literal ok./OK./Ok."""
         bad = re.compile(r'(Result: (Success|OK|Ok|ok)\.|, (ok|OK|Ok)\.)')
         for path in self.files:
             for num, line in _message_lines(read(path)):
@@ -69,9 +69,18 @@ class TestRegressionInvariants(SystemcheckTestBase):
         self.assertRegex(read(self.preparation),
                          r"status_ok='<font color=\"green\">OK\.</font>'")
 
-    def test_helpers_defined(self) -> None:
+    def test_shared_helpers_defined(self) -> None:
+        """The shared preparation.bsh helpers the check fragments rely on must
+        all be defined at column 0."""
         text = read(self.preparation)
-        for func in ("leaprun_cmd_describe", "remediation_instructions"):
+        for func in (
+            "output_if_verbose",
+            "html_link",
+            "emit_status_line",
+            "emit_message",
+            "leaprun_cmd_describe",
+            "remediation_instructions",
+        ):
             self.assertRegex(text, rf"(?m)^{func}\(\) \{{", f"{func} missing")
 
     def test_log_checker_sanitizes_before_br_add(self) -> None:
@@ -93,11 +102,16 @@ class TestRegressionInvariants(SystemcheckTestBase):
         self.assertLess(san, bra,
                         "sanitize-string must run before br_add_to_file")
 
-    def test_no_false_stcatn_sanitization_claim(self) -> None:
-        """The misleading 'sanitized by stcatn' comment must be gone."""
+    def test_no_legacy_stcatn_sanitization_comment(self) -> None:
+        """The misleading 'sanitized by ... stcatn' claim must stay gone,
+        regardless of how it is reflowed or re-indented (stcatn strips ANSI,
+        not HTML, so it never sanitized markup)."""
         services = os.path.join(self.dir, "check_services.bsh")
         if os.path.exists(services):
-            self.assertNotIn("sanitized by\n   ## stcatn", read(services))
+            self.assertIsNone(
+                re.search(r"sanitized by\s+(?:##\s*)?stcatn", read(services)),
+                "check_services.bsh still claims content is 'sanitized by stcatn'",
+            )
 
     def test_parse_cmd_no_duplicate_short_option(self) -> None:
         """No short option (-x) may head two different case patterns -- that was
@@ -107,9 +121,15 @@ class TestRegressionInvariants(SystemcheckTestBase):
             self.skipTest("parse_cmd.bsh not present")
         shorts = []
         for line in read(parse).split("\n"):
-            m = re.match(r"\s*(-[a-zA-Z])(\s*\|\s*--[a-z-]+)?\)\s*$", line)
-            if m:
-                shorts.append(m.group(1))
+            stripped = line.strip()
+            if not stripped.endswith(")"):
+                continue
+            ## Collect every short option in a case head, including multi-alias
+            ## heads like `-h | --help | -\?)` that the old single-alias regex
+            ## missed.
+            for token in stripped[:-1].split("|"):
+                if re.fullmatch(r"-[a-zA-Z]", token.strip()):
+                    shorts.append(token.strip())
         dupes = {s for s in shorts if shorts.count(s) > 1}
         self.assertEqual(dupes, set(), f"duplicate short options: {dupes}")
 

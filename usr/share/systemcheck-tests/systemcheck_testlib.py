@@ -56,6 +56,54 @@ def bsh_files() -> list[str]:
     return out
 
 
+def _has_bash_shebang(path: str) -> bool:
+    """True if the file's first line is a bash shebang."""
+    try:
+        with open(path, "rb") as handle:
+            first_line = handle.readline(256)
+    except OSError:
+        return False
+    return first_line.startswith(b"#!") and b"bash" in first_line
+
+
+def bash_scripts() -> list[str]:
+    """Absolute paths of EVERY bash script shipped by systemcheck, not just the
+    *.bsh fragments: the fragments, the log-checker, the main `systemcheck`
+    entrypoint, and every other file carrying a bash shebang (canary,
+    canary-daemon, check-env, check_tor_running, crypt-check, pkexec-test,
+    updatecheck-daemon, user-sysmaint-split-check, ...).
+
+    Source tree (SYSTEMCHECK_REPO set): walk the checkout, skipping VCS and
+    Debian packaging directories. Installed: use the package file list from
+    `dpkg -L systemcheck` so no prefix has to be guessed.
+    """
+    repo = os.environ.get("SYSTEMCHECK_REPO", "").strip()
+    if repo and os.path.isdir(repo):
+        candidates = []
+        skip_dirs = {".git", ".github", "debian"}
+        for dirpath, dirs, names in os.walk(repo):
+            dirs[:] = [d for d in dirs if d not in skip_dirs]
+            for name in names:
+                candidates.append(os.path.join(dirpath, name))
+    else:
+        ## Trigger the standard SKIP if the sources are not present at all.
+        systemcheck_dir()
+        proc = subprocess.run(
+            ["dpkg", "-L", "systemcheck"],
+            capture_output=True, text=True, check=False,
+        )
+        candidates = proc.stdout.splitlines()
+
+    scripts = []
+    for path in sorted(set(candidates)):
+        if not os.path.isfile(path):
+            continue
+        if path.endswith(".bsh") or os.path.basename(path) == "log-checker" \
+                or _has_bash_shebang(path):
+            scripts.append(path)
+    return scripts
+
+
 def read(path: str) -> str:
     with open(path, encoding="utf-8", errors="replace") as handle:
         return handle.read()
