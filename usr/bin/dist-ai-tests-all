@@ -209,9 +209,22 @@ wire() {
          ## script and runs it in isolation; no other runtime needed.
          wire_env=( "MSGCOLLECTOR_REPO=$( pkg_dir msgcollector )" ) ;;
       systemcheck)
-         ## The suite reads the systemcheck .bsh fragments from the checkout and
-         ## runs its pure bash helpers in isolation; no other runtime needed.
-         wire_env=( "SYSTEMCHECK_REPO=$( pkg_dir systemcheck )" ) ;;
+         ## The scenario harness runs the REAL check_*.bsh fragments, several of
+         ## which sanitize untrusted output with the bare `sanitize-string`
+         ## helper-scripts tool (check_dpkg, check_hostname, ...). Put the
+         ## helper-scripts checkout's usr/bin on PATH so that tool resolves, and
+         ## its dist-packages on PYTHONPATH (sanitize-string's '-Bsu' shebang
+         ## excludes the user site, so from a checkout it needs its library
+         ## there -- else it dies with ModuleNotFoundError and emits nothing,
+         ## which the display-safety checks then pass on vacuously).
+         wire_env=( "SYSTEMCHECK_REPO=$( pkg_dir systemcheck )" )
+         if [ -n "${hs}" ]; then
+            wire_env+=(
+               "PATH=${hs}/usr/bin:${PATH}"
+               "PYTHONPATH=${hs}/usr/lib/python3/dist-packages"
+            )
+         fi
+         ;;
       tor-control-panel)
          ## tcp_testlib resolves the package under test from TCP_REPO (the
          ## tor-control-panel checkout root) else the installed package. The
