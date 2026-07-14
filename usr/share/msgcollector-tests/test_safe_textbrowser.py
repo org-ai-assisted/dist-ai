@@ -108,7 +108,9 @@ except ImportError:
     pass
 else:
     @settings(max_examples=200, deadline=None)
-    @given(st.text(alphabet=st.characters(min_codepoint=1), max_size=48))
+    @given(st.text(
+        alphabet=st.characters(min_codepoint=1, exclude_categories=("Cs",)),
+        max_size=48))
     def test_loadresource_refuses_arbitrary_url(url: str) -> None:
         assert _BROWSER.loadResource(
             QtGui.QTextDocument.ImageResource, QtCore.QUrl(url)) is None

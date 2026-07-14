@@ -60,14 +60,15 @@ _FRAGMENTS = [
     '<br/>', '<p>', '</p>', 'Links:', '[1]', '&amp;', '\t', '\x1b[31m',
 ]
 
-## Exclude codepoint 0 (NUL): a real msgcollector message is passed as an argv
-## string, which cannot contain NUL, so generating it would only ValueError in
-## subprocess, not exercise the rewriter.
+## A real msgcollector message is passed as an argv string, so exclude what
+## cannot be: NUL (codepoint 0) and lone surrogates (category Cs, not UTF-8
+## encodable). Generating those would only error in subprocess, not exercise
+## the rewriter.
+_ARGV_TEXT = st.text(
+    alphabet=st.characters(min_codepoint=1, exclude_categories=("Cs",)),
+    max_size=16)
 _MESSAGES = st.lists(
-    st.one_of(
-        st.sampled_from(_FRAGMENTS),
-        st.text(alphabet=st.characters(min_codepoint=1), max_size=16),
-    ),
+    st.one_of(st.sampled_from(_FRAGMENTS), _ARGV_TEXT),
     max_size=10,
 ).map("".join)
 
