@@ -1,0 +1,36 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Runs the systemcheck regression + hardening test suite. Works both when
+## installed (tests under /usr/share/systemcheck-tests) and when run straight
+## from a git checkout (tests under usr/share/systemcheck-tests relative to
+## this script). Any extra arguments are forwarded to "python3 -m unittest".
+##
+## The systemcheck sources under test are resolved by systemcheck_testlib:
+##   * SYSTEMCHECK_REPO=/path/to/systemcheck -> that checkout, OR
+##   * unset                                 -> the installed package
+##                                              (/usr/libexec/systemcheck).
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/systemcheck-tests' ]; then
+   tests_dir='/usr/share/systemcheck-tests'
+else
+   tests_dir="${script_dir}/../share/systemcheck-tests"
+fi
+
+python3 -m unittest discover \
+   --start-directory "${tests_dir}" \
+   --pattern 'test_*.py' \
+   "$@"

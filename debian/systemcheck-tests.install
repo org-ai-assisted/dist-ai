@@ -1,0 +1,2 @@
+usr/bin/systemcheck-tests usr/bin/
+usr/share/systemcheck-tests/*.py usr/share/systemcheck-tests/
