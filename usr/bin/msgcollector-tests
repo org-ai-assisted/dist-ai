@@ -26,7 +26,7 @@ else
 fi
 
 rc=0
-python3 -m pytest --import-mode=importlib -q "${tests_dir}/test_cli_rendering.py" "$@" || rc=$?
+python3 -m pytest --import-mode=importlib -q "${tests_dir}" "$@" || rc=$?
 ## pytest exit 5 = no tests collected (e.g. python3-hypothesis absent -> the
 ## module skips); report the suite as SKIP (77), not a failure.
 if [ "$rc" = "5" ]; then

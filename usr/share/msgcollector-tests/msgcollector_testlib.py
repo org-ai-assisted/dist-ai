@@ -39,9 +39,28 @@ def msgcollector_script() -> str:
     sys.exit(77)
 
 
+def dispatch_script() -> str:
+    """Absolute path of msgdispatcher_dispatch_x (the PyQt5 GUI renderer), a
+    sibling of the msgcollector script under test."""
+    return os.path.join(os.path.dirname(msgcollector_script()),
+                        "msgdispatcher_dispatch_x")
+
+
 def read(path: str) -> str:
     with open(path, encoding="utf-8", errors="replace") as handle:
         return handle.read()
+
+
+def extract_python_class(path: str, name: str) -> str:
+    """Return the source of a top-level python class `name` from `path` (from
+    the `class NAME` line to the next column-0 statement or EOF). Lets a test
+    exercise a class defined inside an executable script that cannot be imported
+    (it would run its GUI main). Raises LookupError if not found."""
+    match = re.search(rf"^class {re.escape(name)}\b.*?(?=^\S|\Z)",
+                      read(path), re.DOTALL | re.MULTILINE)
+    if not match:
+        raise LookupError(f"class {name!r} not found in {path}")
+    return match.group(0)
 
 
 _FUNC_RE_TMPL = r"^%s\(\) \{\n(.*?)^\}"
