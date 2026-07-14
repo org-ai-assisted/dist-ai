@@ -21,6 +21,12 @@ Map of what the suite exercises and where the gaps are. Run everything with:
    in isolation via `run_check_scenario`, stub the commands it calls, and assert
    the SEVERITY it emits (info vs warning vs error) plus `$EXIT_CODE`, driving
    each check down its info / warning / error branches.
+5. **Isolated scenario tests** - `run_check_scenario_isolated` runs the same way
+   but inside a bubblewrap mount namespace, so checks gated on absolute-path
+   files (`[ -f /usr/share/qubes/marker-vm ]`) or that call a binary by absolute
+   path can be steered: overlay a tmpfs to hide a guard file, `touch` one to make
+   it present, or bind a fake executable over the real one. These SkipTest when
+   bubblewrap / unprivileged user namespaces are unavailable.
 
 ## Checks with scenario (branch) coverage
 
@@ -33,28 +39,29 @@ Map of what the suite exercises and where the gaps are. Run everything with:
 | check_meta_packages         | yes | yes | -   | |
 | check_unwanted_packages     | yes | yes | -   | |
 | check_user_sysmaint_split   | yes | -   | -   | Installed / Not installed + USER/SYSMAINT session |
+| check_grub_security         | yes | yes | -   | isolated: Enabled/Disabled + qubes/VM skip |
+| check_full_disk_encryption  | yes | -   | -   | isolated: Enabled/Partial/Disabled via fake crypt-check |
+| check_tirdad_module         | yes | yes | -   | isolated: loaded / missing-fails / qubes-benign |
 
 ## Coverage gaps (ranked)
 
-**G1. Checks gated on absolute-path files cannot be steered in isolation.**
-`run_check_scenario` can stub bare commands and set globals, but not a guard
-like `[ -f /usr/share/qubes/marker-vm ]`, `[ -d /sys/firmware/efi ]`, or
-`[ -f /run/qubes/... ]`. On a Qubes dev host these checks skip; on a bare-metal
-CI host they would run against real state (non-deterministic). Affected:
-check_full_disk_encryption, check_grub_security, check_secure_boot,
-check_tirdad_module, the check_qubes.* family, check_stream_isolation,
-check_anondate, check_control_port_filter, check_network_interfaces,
-check_warrant_canary, check_unrestricted_mode_in_template, and the check_tor.*
-family. FIX: a mount-namespace harness variant (bwrap / `unshare -rm`) that
-binds empty tmpfs over the guard paths so the branch under the guard runs
-deterministically. Caveat: CI must permit user namespaces.
+**G1. Checks gated on absolute-path files (PARTLY CLOSED).** Plain
+`run_check_scenario` can stub bare commands and set globals, but not a guard like
+`[ -f /usr/share/qubes/marker-vm ]`, `[ -d /sys/firmware/efi ]`, or
+`[ -f /run/qubes/... ]`. `run_check_scenario_isolated` now handles these via a
+bubblewrap mount namespace and is applied to check_grub_security,
+check_full_disk_encryption, and check_tirdad_module. STILL TODO (same harness,
+just more scenarios): check_secure_boot (`/sys/firmware/efi` + mokutil + the
+`dkms_mok_variables_set` sourced helper), the check_qubes.* family,
+check_stream_isolation, check_anondate, check_control_port_filter,
+check_network_interfaces, check_warrant_canary, check_unrestricted_mode_in_template,
+and the check_tor.* family.
 
-**G2. Checks that invoke a binary by absolute path are not stubbable.**
-A bash function stub only shadows bare names. Affected: check_full_disk_encryption
-(`/usr/libexec/systemcheck/crypt-check`), check_apparmor
-(`/usr/bin/disallowed-test`). FIX: prepend a fake bin dir to `PATH` AND have the
-check call the tool by bare name (small systemcheck refactor), or drop a fake
-executable at the absolute path inside a mount-namespace harness (see G1).
+**G2. Checks that invoke a binary by absolute path (PARTLY CLOSED).** A bash
+function stub only shadows bare names. `run_check_scenario_isolated(bind_execs=)`
+binds a fake executable over the absolute path; done for
+check_full_disk_encryption's `/usr/libexec/systemcheck/crypt-check`. STILL TODO:
+check_apparmor (`/usr/bin/disallowed-test`).
 
 **G3. Async / multi-stage checks are only smoke-tested.**
 check_operating_system (backgrounds `leaprun apt-get-update`, waits, then
@@ -75,6 +82,15 @@ check_virtualizer, check_entropy.
         stubs="somecmd() { return 1; }")
     self.assertTrue(r.has_severity("error"))
     self.assertEqual(r.exit_code, "1")
+
+For a check gated on an absolute path, use the isolated runner:
+
+    r = run_check_scenario_isolated(
+        os.path.join(self.dir, "check_foo.bsh"), "check_foo",
+        env_setup="systemcheck_virtualizer_detected=none",
+        hide_dirs=["/usr/share/qubes"],                 # make marker-vm absent
+        create_files=["/usr/share/qubes/marker-vm"],    # or make it present
+        bind_execs={"/usr/libexec/systemcheck/foo": "#!/bin/bash\nexit 1"})
 
 `r.records` is a list of `(channel, severity, message)`; helpers: `has_severity`,
 `severities`, `messages`, `joined`.

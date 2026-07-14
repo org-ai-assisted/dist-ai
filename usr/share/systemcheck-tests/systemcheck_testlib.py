@@ -19,8 +19,11 @@ because they source sibling files by absolute path).
 
 import os
 import re
+import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 
 
@@ -234,6 +237,29 @@ def _all_functions(path: str) -> str:
     return "\n".join(extract_bash_function(path, name) for name in dict.fromkeys(names))
 
 
+def _assemble_scenario_script(check_file: str, call: str, env_setup: str,
+                              stubs: str, prefix: str = "") -> str:
+    prep = os.path.join(systemcheck_dir(), "preparation.bsh")
+    helper_defs = "\n".join(extract_bash_function(prep, h) for h in _EMIT_HELPERS)
+    check_defs = _all_functions(check_file)
+    return "\n".join([
+        _SCENARIO_PREAMBLE, prefix, stubs, env_setup, helper_defs, check_defs,
+        call, 'printf "EXITCODE\\t%s\\n" "${EXIT_CODE:-0}"',
+    ])
+
+
+def _parse_scenario_output(proc) -> ScenarioResult:
+    records = []
+    exit_code = None
+    for line in proc.stdout.splitlines():
+        if line.startswith("REC\t"):
+            _tag, channel, sev, msg = line.split("\t", 3)
+            records.append((channel, sev, msg))
+        elif line.startswith("EXITCODE\t"):
+            exit_code = line.split("\t", 1)[1]
+    return ScenarioResult(records, exit_code, proc.stdout, proc.stderr)
+
+
 def run_check_scenario(check_file: str, call: str, env_setup: str = "",
                        stubs: str = "") -> ScenarioResult:
     """Run one check function in isolation and capture what it emits.
@@ -244,30 +270,88 @@ def run_check_scenario(check_file: str, call: str, env_setup: str = "",
     stubs      : bash defining stub commands (leaprun, dpkg, hostname, ...) that
                  the check calls as bare names.
 
-    Absolute-path guards (e.g. `[ -f /usr/share/qubes/marker-vm ]`) cannot be
-    stubbed this way; checks gated on them are exercised at integration level
-    instead (see COVERAGE.md).
+    Absolute-path guards (e.g. `[ -f /usr/share/qubes/marker-vm ]`) and binaries
+    called by absolute path cannot be steered this way; use
+    run_check_scenario_isolated for those.
     """
-    prep = os.path.join(systemcheck_dir(), "preparation.bsh")
-    helper_defs = "\n".join(extract_bash_function(prep, h) for h in _EMIT_HELPERS)
-    check_defs = _all_functions(check_file)
-    script = "\n".join([
-        _SCENARIO_PREAMBLE, stubs, env_setup, helper_defs, check_defs,
-        call, 'printf "EXITCODE\\t%s\\n" "${EXIT_CODE:-0}"',
-    ])
+    script = _assemble_scenario_script(check_file, call, env_setup, stubs)
     ## timeout so a check that blocks on a missing stub (or a bad parse) fails
     ## the test loudly instead of wedging the whole suite/CI run.
     proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
                           timeout=30)
-    records = []
-    exit_code = None
-    for line in proc.stdout.splitlines():
-        if line.startswith("REC\t"):
-            _tag, channel, sev, msg = line.split("\t", 3)
-            records.append((channel, sev, msg))
-        elif line.startswith("EXITCODE\t"):
-            exit_code = line.split("\t", 1)[1]
-    return ScenarioResult(records, exit_code, proc.stdout, proc.stderr)
+    return _parse_scenario_output(proc)
+
+
+_BWRAP_OK = None
+
+
+def bwrap_available() -> bool:
+    """True if bubblewrap can create an unprivileged mount namespace here.
+    Cached; used to SKIP the isolated tests on restricted CI."""
+    global _BWRAP_OK
+    if _BWRAP_OK is None:
+        _BWRAP_OK = False
+        if shutil.which("bwrap"):
+            try:
+                probe = subprocess.run(
+                    ["bwrap", "--bind", "/", "/", "--dev", "/dev",
+                     "--proc", "/proc", "--tmpfs", "/tmp",
+                     "bash", "-c", "true"],
+                    capture_output=True, timeout=15)
+                _BWRAP_OK = probe.returncode == 0
+            except (OSError, subprocess.SubprocessError):
+                _BWRAP_OK = False
+    return _BWRAP_OK
+
+
+def run_check_scenario_isolated(check_file: str, call: str, env_setup: str = "",
+                                stubs: str = "", hide_dirs=(), create_files=(),
+                                bind_execs=None) -> ScenarioResult:
+    """Like run_check_scenario, but inside a bubblewrap mount namespace so
+    absolute-path guards and binaries can be neutralized:
+
+      hide_dirs    : directories overlaid with an empty writable tmpfs, so the
+                     files under them disappear -- e.g. '/usr/share/qubes' makes
+                     the marker-vm guard file absent (the non-Qubes branch).
+      create_files : absolute paths to create AFTER the overlays (e.g. make
+                     '/usr/share/qubes/marker-vm' PRESENT); the parent must be a
+                     hide_dirs tmpfs so it is writable.
+      bind_execs   : {abs_path: script_body} fake executables bound over the
+                     real absolute-path binaries a check calls (e.g.
+                     '/usr/libexec/systemcheck/crypt-check').
+
+    SkipTest when bubblewrap or user namespaces are unavailable.
+    """
+    if not bwrap_available():
+        raise unittest.SkipTest(
+            "bubblewrap unavailable or unprivileged user namespaces disabled")
+    bind_execs = bind_execs or {}
+    touches = "\n".join(
+        f"mkdir -p -- {shlex.quote(os.path.dirname(p))} && touch -- {shlex.quote(p)}"
+        for p in create_files)
+    script = _assemble_scenario_script(check_file, call, env_setup, stubs,
+                                       prefix=touches)
+    cmd = ["bwrap", "--bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
+    for directory in hide_dirs:
+        cmd += ["--tmpfs", directory]
+    tmp_paths = []
+    try:
+        for abs_path, body in bind_execs.items():
+            fd, tmp = tempfile.mkstemp(prefix="fake_exec_")
+            os.write(fd, body.encode())
+            os.close(fd)
+            os.chmod(tmp, 0o755)
+            tmp_paths.append(tmp)
+            cmd += ["--ro-bind", tmp, abs_path]
+        cmd += ["bash", "-c", script]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
+    finally:
+        for tmp in tmp_paths:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    return _parse_scenario_output(proc)
 
 
 class SystemcheckTestBase(unittest.TestCase):
