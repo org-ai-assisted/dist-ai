@@ -141,6 +141,116 @@ def run_bash_function(func_def: str, call: str, env_setup: str = "") -> str:
     return result.stdout.strip()
 
 
+## Helpers from preparation.bsh that the check fragments call. The scenario
+## runner pulls the REAL definitions (so emit_status_line / emit_message output
+## is exercised for real) rather than stubbing them.
+_EMIT_HELPERS = (
+    "output_if_verbose",
+    "html_link",
+    "emit_status_line",
+    "emit_message",
+    "leaprun_cmd_describe",
+    "remediation_instructions",
+    "if_you_know_what_you_are_doing_funct",
+)
+
+## Records every message emission. $output_x / $output_cli are variables holding
+## a command name, so pointing them at this function captures the severity and
+## message a check would have sent to msgcollector, without needing msgcollector.
+_SCENARIO_PREAMBLE = r"""
+set +e
+output_opts=()
+__systemcheck_rec() {
+  local channel="-" sev="-" msg="" have_msg=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --messagex) channel="x"; shift ;;
+      --messagecli) channel="cli"; shift ;;
+      --typex|--typecli) sev="${2:--}"; shift 2 ;;
+      --message) msg="$2"; have_msg=1; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  if [ "$have_msg" = 1 ]; then
+    printf 'REC\t%s\t%s\t%s\n' "$channel" "$sev" "${msg//$'\n'/\\n}"
+  fi
+}
+output_x=__systemcheck_rec
+output_cli=__systemcheck_rec
+output_general=true
+verbose="${verbose:-1}"
+silent="${silent:-0}"
+EXIT_CODE="${EXIT_CODE:-0}"
+status_ok='<font color="green">OK.</font>'
+PROJECT_NAME="${PROJECT_NAME:-Kicksecure}"
+PROJECT_HOMEPAGE="${PROJECT_HOMEPAGE:-https://www.kicksecure.com}"
+who_ami="${who_ami:-user}"
+"""
+
+
+class ScenarioResult:
+    """The captured emissions of one check-function run."""
+
+    def __init__(self, records, exit_code, stdout, stderr):
+        ## records: list of (channel, severity, message) tuples.
+        self.records = records
+        self.exit_code = exit_code
+        self.stdout = stdout
+        self.stderr = stderr
+
+    def severities(self) -> set:
+        return {sev for _c, sev, _m in self.records if sev != "-"}
+
+    def has_severity(self, severity: str) -> bool:
+        return any(sev == severity for _c, sev, _m in self.records)
+
+    def messages(self) -> list:
+        return [msg for _c, _s, msg in self.records]
+
+    def joined(self) -> str:
+        return "\n".join(self.messages())
+
+
+def _all_functions(path: str) -> str:
+    """Concatenated definitions of every top-level function in `path`, so a
+    check can call its sibling helpers (e.g. check_hostname_field)."""
+    names = re.findall(r"(?m)^([A-Za-z_][A-Za-z0-9_]*)\(\) \{", read(path))
+    return "\n".join(extract_bash_function(path, name) for name in dict.fromkeys(names))
+
+
+def run_check_scenario(check_file: str, call: str, env_setup: str = "",
+                       stubs: str = "") -> ScenarioResult:
+    """Run one check function in isolation and capture what it emits.
+
+    check_file : absolute path of the check_*.bsh fragment.
+    call       : the function invocation, e.g. "check_dpkg".
+    env_setup  : bash setting the globals that steer the branch under test.
+    stubs      : bash defining stub commands (leaprun, dpkg, hostname, ...) that
+                 the check calls as bare names.
+
+    Absolute-path guards (e.g. `[ -f /usr/share/qubes/marker-vm ]`) cannot be
+    stubbed this way; checks gated on them are exercised at integration level
+    instead (see COVERAGE.md).
+    """
+    prep = os.path.join(systemcheck_dir(), "preparation.bsh")
+    helper_defs = "\n".join(extract_bash_function(prep, h) for h in _EMIT_HELPERS)
+    check_defs = _all_functions(check_file)
+    script = "\n".join([
+        _SCENARIO_PREAMBLE, stubs, env_setup, helper_defs, check_defs,
+        call, 'printf "EXITCODE\\t%s\\n" "${EXIT_CODE:-0}"',
+    ])
+    proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    records = []
+    exit_code = None
+    for line in proc.stdout.splitlines():
+        if line.startswith("REC\t"):
+            _tag, channel, sev, msg = line.split("\t", 3)
+            records.append((channel, sev, msg))
+        elif line.startswith("EXITCODE\t"):
+            exit_code = line.split("\t", 1)[1]
+    return ScenarioResult(records, exit_code, proc.stdout, proc.stderr)
+
+
 class SystemcheckTestBase(unittest.TestCase):
     """Base class exposing the resolved source directory + file list."""
 
