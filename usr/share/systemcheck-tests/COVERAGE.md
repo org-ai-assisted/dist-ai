@@ -88,9 +88,10 @@ For a check gated on an absolute path, use the isolated runner:
     r = run_check_scenario_isolated(
         os.path.join(self.dir, "check_foo.bsh"), "check_foo",
         env_setup="systemcheck_virtualizer_detected=none",
-        hide_dirs=["/usr/share/qubes"],                 # make marker-vm absent
-        create_files=["/usr/share/qubes/marker-vm"],    # or make it present
-        bind_execs={"/usr/libexec/systemcheck/foo": "#!/bin/bash\nexit 1"})
+        hide_dirs=["/usr/share/qubes"],                       # make marker-vm absent
+        place=[("/usr/share/qubes/marker-vm", "", False),     # or make it present
+               ("/usr/libexec/systemcheck/foo",              # replace a binary
+                "#!/bin/bash\nexit 1\n", True)])
 
 `r.records` is a list of `(channel, severity, message)`; helpers: `has_severity`,
 `severities`, `messages`, `joined`.
