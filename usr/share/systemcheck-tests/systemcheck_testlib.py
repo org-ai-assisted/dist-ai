@@ -24,6 +24,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 
 
@@ -305,28 +306,34 @@ def bwrap_available() -> bool:
 
 
 def run_check_scenario_isolated(check_file: str, call: str, env_setup: str = "",
-                                stubs: str = "", hide_dirs=(), place=()) -> ScenarioResult:
+                                stubs: str = "", hide_dirs=(), place=(),
+                                bind_files=()) -> ScenarioResult:
     """Like run_check_scenario, but inside a bubblewrap mount namespace so
     absolute-path guards and binaries can be neutralized:
 
-      hide_dirs : directories to EMPTY with a tmpfs overlay so their files
-                  disappear -- e.g. '/usr/share/qubes' makes the marker-vm guard
-                  file absent (the non-Qubes branch). A hide_dir that does not
-                  exist on the host is skipped: the guard file is already absent,
-                  so there is nothing to hide (this is what makes the tests run
-                  on a non-Qubes CI host).
-      place     : iterable of (abs_path, content, is_exec) to materialize inside
-                  the sandbox. The parent directory is overlaid with a writable
-                  tmpfs (bubblewrap creates the mount point when the host parent
-                  is writable), then the file is written there. Use it to make a
-                  guard file PRESENT (content="", is_exec=False) or to replace a
-                  binary called by absolute path with a fake whose exit code
-                  drives the branch (e.g. '/usr/libexec/systemcheck/crypt-check').
-                  Works whether or not systemcheck is installed on the host, so
-                  neither a real /usr/share/qubes nor an installed crypt-check is
-                  required.
+      hide_dirs  : directories to EMPTY with a tmpfs overlay so their files
+                   disappear -- e.g. '/usr/share/qubes' makes the marker-vm guard
+                   file absent (the non-Qubes branch). A hide_dir that does not
+                   exist on the host is skipped: the guard file is already absent,
+                   so there is nothing to hide (this is what makes the tests run
+                   on a non-Qubes CI host).
+      place      : iterable of (abs_path, content, is_exec) to materialize inside
+                   the sandbox. The parent directory is overlaid with a writable
+                   tmpfs, then the file is written there. Use ONLY for a
+                   dedicated directory whose other files the check does not need
+                   (e.g. '/usr/share/qubes/marker-vm', a fake
+                   '/usr/libexec/systemcheck/crypt-check'); the tmpfs hides the
+                   rest of that directory. Do NOT use it for a file in a shared
+                   bin directory -- a tmpfs over '/usr/bin' would hide bash.
+      bind_files : iterable of (abs_path, content, is_exec) bound over abs_path a
+                   SINGLE FILE at a time (no parent tmpfs), so the rest of the
+                   directory is untouched -- use it for a binary in a shared
+                   directory such as '/usr/bin/disallowed-test'. Requires abs_path
+                   to exist on the host, or its parent to be writable so
+                   bubblewrap can create the mount point.
 
-    SkipTest when bubblewrap or unprivileged user namespaces are unavailable.
+    SkipTest when bubblewrap / user namespaces are unavailable, or when the
+    sandbox cannot be built on this host.
     """
     if not bwrap_available():
         raise unittest.SkipTest(
@@ -353,8 +360,25 @@ def run_check_scenario_isolated(check_file: str, call: str, env_setup: str = "",
     cmd = ["bwrap", "--bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
     for directory in tmpfs_dirs:
         cmd += ["--tmpfs", directory]
+
+    tmp_paths = []
+    for abs_path, content, is_exec in bind_files:
+        fd, tmp = tempfile.mkstemp(prefix="fake_bind_")
+        os.write(fd, content.encode())
+        os.close(fd)
+        os.chmod(tmp, 0o755 if is_exec else 0o644)
+        tmp_paths.append(tmp)
+        cmd += ["--ro-bind", tmp, abs_path]
+
     cmd += ["bash", "-c", script]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
+    finally:
+        for tmp in tmp_paths:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
     result = _parse_scenario_output(proc)
     ## The scenario script unconditionally prints the EXITCODE marker last (it
     ## runs under `set +e`). A missing marker means bubblewrap never got to run
@@ -376,3 +400,23 @@ class SystemcheckTestBase(unittest.TestCase):
         cls.dir = systemcheck_dir()
         cls.files = bsh_files()
         cls.preparation = os.path.join(cls.dir, "preparation.bsh")
+
+
+class ScenarioTestBase(SystemcheckTestBase):
+    """Base for scenario / path tests. Shared by every test_check_scenarios*.py
+    file so the check-path helpers live in one place."""
+
+    def check(self, basename: str) -> str:
+        """Absolute path of a check_*.bsh fragment by basename."""
+        return os.path.join(self.dir, basename)
+
+    def assertCleanRun(self, result) -> None:
+        """Fail if the scenario crashed in bash. Without this, a test asserting
+        "no records emitted" would pass vacuously when the function actually
+        errored out early (undefined command, unbound var, ...) and emitted
+        nothing."""
+        for marker in ("command not found", "unbound variable",
+                       "syntax error", ": line "):
+            self.assertNotIn(
+                marker, result.stderr,
+                f"bash error during scenario: {result.stderr.strip()!r}")

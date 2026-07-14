@@ -20,29 +20,13 @@ cannot be steered this way in isolation; those are covered at integration level
 and tracked in COVERAGE.md.
 """
 
-import os
 import unittest
 
 from systemcheck_testlib import (
-    SystemcheckTestBase,
+    ScenarioTestBase,
     run_check_scenario,
     run_check_scenario_isolated,
 )
-
-
-class ScenarioTestBase(SystemcheckTestBase):
-    def check(self, basename: str) -> str:
-        return os.path.join(self.dir, basename)
-
-    def assertCleanRun(self, result) -> None:
-        """Fail if the scenario crashed in bash. Without this, a test asserting
-        "no records emitted" would pass vacuously when the function actually
-        errored out early and emitted nothing."""
-        for marker in ("command not found", "unbound variable",
-                       "syntax error", ": line "):
-            self.assertNotIn(
-                marker, result.stderr,
-                f"bash error during scenario: {result.stderr.strip()!r}")
 
 
 class TestEnvironmentVariablesScenarios(ScenarioTestBase):
@@ -380,6 +364,34 @@ class TestTirdadModuleIsolatedScenarios(ScenarioTestBase):
         self.assertTrue(r.has_severity("info"))
         self.assertFalse(r.has_severity("warning"))
         self.assertEqual(r.exit_code, "0")
+
+
+class TestApparmorIsolatedScenarios(ScenarioTestBase):
+    FILE = "check_apparmor.bsh"
+    ## check_apparmor runs /usr/bin/disallowed-test (a binary AppArmor is meant
+    ## to DENY) and looks for "/usr/bin/disallowed-test: Permission denied" in
+    ## the output. A single-file bind places a fake there without hiding the
+    ## rest of /usr/bin (which holds bash).
+    DENIED = ("/usr/bin/disallowed-test",
+              '#!/bin/bash\necho "/usr/bin/disallowed-test: Permission denied"\n',
+              True)
+    RAN = ("/usr/bin/disallowed-test", "#!/bin/bash\necho ran-unrestricted\n", True)
+
+    def test_apparmor_enforcing_is_ok(self) -> None:
+        r = run_check_scenario_isolated(
+            self.check(self.FILE), "check_apparmor", env_setup="verbose=1",
+            bind_files=[self.DENIED])
+        self.assertTrue(r.has_severity("info"))
+        self.assertIn("OK.", r.joined())
+        self.assertEqual(r.exit_code, "0")
+
+    def test_apparmor_not_confining_fails(self) -> None:
+        r = run_check_scenario_isolated(
+            self.check(self.FILE), "check_apparmor", env_setup="verbose=1",
+            stubs="cleanup() { :; }", bind_files=[self.RAN])
+        self.assertTrue(r.has_severity("error"))
+        self.assertEqual(r.exit_code, "1")
+        self.assertIn("Failed", r.joined())
 
 
 if __name__ == "__main__":

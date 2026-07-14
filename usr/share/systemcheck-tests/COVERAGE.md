@@ -42,26 +42,32 @@ Map of what the suite exercises and where the gaps are. Run everything with:
 | check_grub_security         | yes | yes | -   | isolated: Enabled/Disabled + qubes/VM skip |
 | check_full_disk_encryption  | yes | -   | -   | isolated: Enabled/Partial/Disabled via fake crypt-check |
 | check_tirdad_module         | yes | yes | -   | isolated: loaded / missing-fails / qubes-benign |
+| check_apparmor              | yes | -   | yes | isolated: enforcing-OK / not-confining-fails (fake disallowed-test) |
+| check_secure_boot           | yes | -   | -   | isolated: Unavailable/Enabled/Disabled/Unknown + mokutil line |
+| check_tor_config            | yes | -   | yes | isolated (gateway marker): valid / invalid |
+| check_tor_running           | yes | -   | yes | isolated: running / not-running + templatevm skip |
+| check_tor_enabled           | yes | yes | -   | isolated: enabled / disabled + templatevm skip |
+| check_qubes_network_interface | yes | yes | yes | isolated: 6 branches (ok / daemon-fail / invalid-ip / netvm-unset / netvm-ok / templatevm skip) |
+| check_qubes_vm_type         | yes | yes | -   | isolated: gateway/workstation ok + wrong-type + machine no-op |
 
 ## Coverage gaps (ranked)
 
-**G1. Checks gated on absolute-path files (PARTLY CLOSED).** Plain
+**G1. Checks gated on absolute-path files (MOSTLY CLOSED).** Plain
 `run_check_scenario` can stub bare commands and set globals, but not a guard like
 `[ -f /usr/share/qubes/marker-vm ]`, `[ -d /sys/firmware/efi ]`, or
-`[ -f /run/qubes/... ]`. `run_check_scenario_isolated` now handles these via a
+`[ -f /run/qubes/... ]`. `run_check_scenario_isolated` handles these via a
 bubblewrap mount namespace and is applied to check_grub_security,
-check_full_disk_encryption, and check_tirdad_module. STILL TODO (same harness,
-just more scenarios): check_secure_boot (`/sys/firmware/efi` + mokutil + the
-`dkms_mok_variables_set` sourced helper), the check_qubes.* family,
-check_stream_isolation, check_anondate, check_control_port_filter,
-check_network_interfaces, check_warrant_canary, check_unrestricted_mode_in_template,
-and the check_tor.* family.
+check_full_disk_encryption, check_tirdad_module, check_secure_boot, the
+check_tor.* trio, and the check_qubes.* pair. STILL TODO (same harness, just more
+scenarios): check_stream_isolation, check_anondate, check_control_port_filter,
+check_network_interfaces, check_warrant_canary, check_unrestricted_mode_in_template.
 
-**G2. Checks that invoke a binary by absolute path (PARTLY CLOSED).** A bash
-function stub only shadows bare names. `run_check_scenario_isolated(bind_execs=)`
-binds a fake executable over the absolute path; done for
-check_full_disk_encryption's `/usr/libexec/systemcheck/crypt-check`. STILL TODO:
-check_apparmor (`/usr/bin/disallowed-test`).
+**G2. Checks that invoke a binary by absolute path (CLOSED).** A bash function
+stub only shadows bare names. `run_check_scenario_isolated` places a fake at the
+absolute path -- via `place=` (tmpfs the dedicated parent + write, for
+check_full_disk_encryption's `/usr/libexec/systemcheck/crypt-check`) or
+`bind_files=` (single-file overlay that leaves the rest of the directory intact,
+for check_apparmor's `/usr/bin/disallowed-test` in shared `/usr/bin`).
 
 **G3. Async / multi-stage checks are only smoke-tested.**
 check_operating_system (backgrounds `leaprun apt-get-update`, waits, then
@@ -76,22 +82,28 @@ check_virtualizer, check_entropy.
 
 ## Adding a scenario test
 
+Subclass `ScenarioTestBase` (from systemcheck_testlib) -- it gives you
+`self.check("check_foo.bsh")` and `self.assertCleanRun(r)` (call the latter
+before asserting `r.records == []`, so a silent bash crash cannot pass vacuously).
+
     r = run_check_scenario(
-        os.path.join(self.dir, "check_foo.bsh"), "check_foo",
+        self.check("check_foo.bsh"), "check_foo",
         env_setup="vm_lower_case_short=machine\nverbose=1",
         stubs="somecmd() { return 1; }")
     self.assertTrue(r.has_severity("error"))
     self.assertEqual(r.exit_code, "1")
 
-For a check gated on an absolute path, use the isolated runner:
+For a check gated on an absolute path or that calls a binary by absolute path,
+use the isolated runner:
 
     r = run_check_scenario_isolated(
-        os.path.join(self.dir, "check_foo.bsh"), "check_foo",
+        self.check("check_foo.bsh"), "check_foo",
         env_setup="systemcheck_virtualizer_detected=none",
-        hide_dirs=["/usr/share/qubes"],                       # make marker-vm absent
-        place=[("/usr/share/qubes/marker-vm", "", False),     # or make it present
-               ("/usr/libexec/systemcheck/foo",              # replace a binary
-                "#!/bin/bash\nexit 1\n", True)])
+        hide_dirs=["/usr/share/qubes"],                    # make marker-vm absent
+        place=[("/usr/share/qubes/marker-vm", "", False),  # dedicated dir: tmpfs+write
+               ("/usr/libexec/systemcheck/foo", "#!/bin/bash\nexit 1\n", True)],
+        bind_files=[("/usr/bin/some-tool",                 # shared dir: single-file bind
+                     "#!/bin/bash\necho denied\n", True)])
 
 `r.records` is a list of `(channel, severity, message)`; helpers: `has_severity`,
 `severities`, `messages`, `joined`.
