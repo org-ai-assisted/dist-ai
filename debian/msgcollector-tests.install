@@ -1,0 +1,2 @@
+usr/bin/msgcollector-tests-fuzz usr/bin/
+usr/share/msgcollector-tests/*.py usr/share/msgcollector-tests/

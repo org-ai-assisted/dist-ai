@@ -1,0 +1,33 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Randomized fuzz run of msgcollector's CLI-rendering bash. The --messagecli
+## path rewrites an HTML message for the terminal over attacker-influenceable
+## content; cli_links_to_footnotes (the <a href> -> footnote rewriter) must
+## never hang, crash, or leave a URL in the flow text. See fuzz_cli_rendering.py
+## for the properties checked. Override the sweep with --iterations N and replay
+## a failure with --seed N. The msgcollector script under test is resolved by
+## msgcollector_testlib (MSGCOLLECTOR_REPO=<checkout> else the installed script).
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/msgcollector-tests' ]; then
+   tests_dir='/usr/share/msgcollector-tests'
+else
+   tests_dir="${script_dir}/../share/msgcollector-tests"
+fi
+
+iterations='20000'
+
+exec python3 -- "${tests_dir}/fuzz_cli_rendering.py" --iterations "${iterations}" "$@"

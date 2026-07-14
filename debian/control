@@ -590,6 +590,22 @@ Description: Regression and feature tests for tor-control-panel
  targets the installed tor-control-panel by default; set TCP_REPO to a checkout
  to test that instead.
 
+Package: msgcollector-tests
+Architecture: all
+Depends: ${misc:Depends},
+ bash (>= 4),
+ python3
+Description: Fuzz tests for msgcollector CLI message rendering
+ Randomized in-process fuzzer for msgcollector's --messagecli rendering bash,
+ which rewrites an HTML message for the terminal over attacker-influenceable
+ content (systemcheck feeds it journal lines, Tor control output, package
+ names). It targets cli_links_to_footnotes -- the <a href> to footnote rewriter
+ -- and asserts it never hangs, never crashes, consumes every well-formed
+ anchor, and keeps a consistent footnote/URL list on adversarial input
+ (crafted nested anchors, hrefs containing tags, control bytes). It reads the
+ msgcollector script from the installed package or, via MSGCOLLECTOR_REPO, from
+ a git checkout. Needs neither root, privleap, nor an X server.
+
 Package: dist-ai-tests-all
 Architecture: all
 Depends: ${misc:Depends},
@@ -610,6 +626,7 @@ Recommends: check-ref-commits-for-unicode-tests,
  genmkfile-tests,
  git-meld-tests,
  grep-find-unicode-wrapper-tests,
+ msgcollector-tests,
  onion-grater-tests,
  open-link-confirmation-tests,
  privleap-tests,
@@ -617,5 +634,6 @@ Recommends: check-ref-commits-for-unicode-tests,
  sdwdate-gui-tests,
  stcat-family-tests,
  stdisplay-tests,
+ systemcheck-tests,
  tor-control-panel-tests,
  unicode-show-tests
