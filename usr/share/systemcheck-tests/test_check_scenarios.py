@@ -310,7 +310,7 @@ class TestGrubSecurityIsolatedScenarios(ScenarioTestBase):
         r = run_check_scenario_isolated(
             self.check(self.FILE), "check_grub_security",
             env_setup=self.BAREMETAL, stubs="leaprun() { return 0; }",
-            hide_dirs=self.HIDE, create_files=["/usr/share/qubes/marker-vm"])
+            place=[("/usr/share/qubes/marker-vm", "", False)])
         self.assertCleanRun(r)
         self.assertEqual(r.records, [])
 
@@ -329,13 +329,13 @@ class TestFullDiskEncryptionIsolatedScenarios(ScenarioTestBase):
     HIDE = ["/usr/share/qubes"]
 
     def _run(self, crypt_check_rc: int):
-        ## crypt-check is called by absolute path, so bind a fake over it whose
+        ## crypt-check is called by absolute path, so place a fake over it whose
         ## exit code selects the FDE state (0 full, 1 partial, else none).
         return run_check_scenario_isolated(
             self.check(self.FILE), "check_full_disk_encryption",
             env_setup=self.BAREMETAL, hide_dirs=self.HIDE,
-            bind_execs={"/usr/libexec/systemcheck/crypt-check":
-                        f"#!/bin/bash\nexit {crypt_check_rc}"})
+            place=[("/usr/libexec/systemcheck/crypt-check",
+                    f"#!/bin/bash\nexit {crypt_check_rc}\n", True)])
 
     def test_fully_encrypted_enabled(self) -> None:
         self.assertIn(">Enabled<", self._run(0).joined())
@@ -376,7 +376,7 @@ class TestTirdadModuleIsolatedScenarios(ScenarioTestBase):
         r = run_check_scenario_isolated(
             self.check(self.FILE), "check_tirdad_module",
             env_setup=self.ENV, stubs="lsmod() { echo other_module; }",
-            hide_dirs=self.HIDE, create_files=["/usr/share/qubes/marker-vm"])
+            place=[("/usr/share/qubes/marker-vm", "", False)])
         self.assertTrue(r.has_severity("info"))
         self.assertFalse(r.has_severity("warning"))
         self.assertEqual(r.exit_code, "0")

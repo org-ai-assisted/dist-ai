@@ -17,13 +17,13 @@ fragment and run it in isolation (the fragments cannot be sourced wholesale
 because they source sibling files by absolute path).
 """
 
+import base64
 import os
 import re
 import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
 
 
@@ -305,53 +305,67 @@ def bwrap_available() -> bool:
 
 
 def run_check_scenario_isolated(check_file: str, call: str, env_setup: str = "",
-                                stubs: str = "", hide_dirs=(), create_files=(),
-                                bind_execs=None) -> ScenarioResult:
+                                stubs: str = "", hide_dirs=(), place=()) -> ScenarioResult:
     """Like run_check_scenario, but inside a bubblewrap mount namespace so
     absolute-path guards and binaries can be neutralized:
 
-      hide_dirs    : directories overlaid with an empty writable tmpfs, so the
-                     files under them disappear -- e.g. '/usr/share/qubes' makes
-                     the marker-vm guard file absent (the non-Qubes branch).
-      create_files : absolute paths to create AFTER the overlays (e.g. make
-                     '/usr/share/qubes/marker-vm' PRESENT); the parent must be a
-                     hide_dirs tmpfs so it is writable.
-      bind_execs   : {abs_path: script_body} fake executables bound over the
-                     real absolute-path binaries a check calls (e.g.
-                     '/usr/libexec/systemcheck/crypt-check').
+      hide_dirs : directories to EMPTY with a tmpfs overlay so their files
+                  disappear -- e.g. '/usr/share/qubes' makes the marker-vm guard
+                  file absent (the non-Qubes branch). A hide_dir that does not
+                  exist on the host is skipped: the guard file is already absent,
+                  so there is nothing to hide (this is what makes the tests run
+                  on a non-Qubes CI host).
+      place     : iterable of (abs_path, content, is_exec) to materialize inside
+                  the sandbox. The parent directory is overlaid with a writable
+                  tmpfs (bubblewrap creates the mount point when the host parent
+                  is writable), then the file is written there. Use it to make a
+                  guard file PRESENT (content="", is_exec=False) or to replace a
+                  binary called by absolute path with a fake whose exit code
+                  drives the branch (e.g. '/usr/libexec/systemcheck/crypt-check').
+                  Works whether or not systemcheck is installed on the host, so
+                  neither a real /usr/share/qubes nor an installed crypt-check is
+                  required.
 
-    SkipTest when bubblewrap or user namespaces are unavailable.
+    SkipTest when bubblewrap or unprivileged user namespaces are unavailable.
     """
     if not bwrap_available():
         raise unittest.SkipTest(
             "bubblewrap unavailable or unprivileged user namespaces disabled")
-    bind_execs = bind_execs or {}
-    touches = "\n".join(
-        f"mkdir -p -- {shlex.quote(os.path.dirname(p))} && touch -- {shlex.quote(p)}"
-        for p in create_files)
+
+    ## Only overlay hide_dirs that actually exist; a tmpfs over an absent path
+    ## fails, and an absent guard dir already yields the "absent" branch.
+    tmpfs_dirs = [d for d in hide_dirs if os.path.isdir(d)]
+    prefix_lines = []
+    for abs_path, content, is_exec in place:
+        parent = os.path.dirname(abs_path)
+        if parent not in tmpfs_dirs:
+            tmpfs_dirs.append(parent)
+        ## base64 so arbitrary content (shebangs, quotes, newlines) round-trips
+        ## through the shell prefix without quoting hazards.
+        encoded = base64.b64encode(content.encode()).decode()
+        prefix_lines.append(
+            f"printf %s {shlex.quote(encoded)} | base64 -d > {shlex.quote(abs_path)}")
+        if is_exec:
+            prefix_lines.append(f"chmod 0755 -- {shlex.quote(abs_path)}")
+
     script = _assemble_scenario_script(check_file, call, env_setup, stubs,
-                                       prefix=touches)
+                                       prefix="\n".join(prefix_lines))
     cmd = ["bwrap", "--bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
-    for directory in hide_dirs:
+    for directory in tmpfs_dirs:
         cmd += ["--tmpfs", directory]
-    tmp_paths = []
-    try:
-        for abs_path, body in bind_execs.items():
-            fd, tmp = tempfile.mkstemp(prefix="fake_exec_")
-            os.write(fd, body.encode())
-            os.close(fd)
-            os.chmod(tmp, 0o755)
-            tmp_paths.append(tmp)
-            cmd += ["--ro-bind", tmp, abs_path]
-        cmd += ["bash", "-c", script]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
-    finally:
-        for tmp in tmp_paths:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-    return _parse_scenario_output(proc)
+    cmd += ["bash", "-c", script]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
+    result = _parse_scenario_output(proc)
+    ## The scenario script unconditionally prints the EXITCODE marker last (it
+    ## runs under `set +e`). A missing marker means bubblewrap never got to run
+    ## the script -- a per-host sandbox-setup failure (e.g. cannot create a
+    ## mount point under a read-only /usr). SKIP rather than fail with a
+    ## confusing empty-records assertion.
+    if result.exit_code is None:
+        raise unittest.SkipTest(
+            "bubblewrap could not set up the isolated sandbox on this host: "
+            + (proc.stderr.strip() or f"exit {proc.returncode}"))
+    return result
 
 
 class SystemcheckTestBase(unittest.TestCase):
