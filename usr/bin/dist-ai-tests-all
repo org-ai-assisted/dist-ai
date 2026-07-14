@@ -42,6 +42,7 @@ core_suites=(
    genmkfile-tests
    git-meld-tests
    grep-find-unicode-wrapper-tests
+   msgcollector-tests
    onion-grater-tests
    open-link-confirmation-tests
    privleap-tests

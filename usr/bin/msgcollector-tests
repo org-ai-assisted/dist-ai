@@ -1,0 +1,35 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Runs msgcollector's core property tests (hypothesis) for the CLI link
+## rewriter via pytest. Works installed (/usr/share/msgcollector-tests) or from a
+## git checkout. The msgcollector script under test is resolved by
+## msgcollector_testlib (MSGCOLLECTOR_REPO=<checkout> else the installed script).
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/msgcollector-tests' ]; then
+   tests_dir='/usr/share/msgcollector-tests'
+else
+   tests_dir="${script_dir}/../share/msgcollector-tests"
+fi
+
+rc=0
+python3 -m pytest --import-mode=importlib -q "${tests_dir}/test_cli_rendering.py" "$@" || rc=$?
+## pytest exit 5 = no tests collected (e.g. python3-hypothesis absent -> the
+## module skips); report the suite as SKIP (77), not a failure.
+if [ "$rc" = "5" ]; then
+   exit 77
+fi
+exit "$rc"
