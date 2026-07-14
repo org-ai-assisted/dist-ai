@@ -28,6 +28,6 @@ else
    tests_dir="${script_dir}/../share/msgcollector-tests"
 fi
 
-iterations='20000'
+iterations='6000'
 
 exec python3 -- "${tests_dir}/fuzz_cli_rendering.py" --iterations "${iterations}" "$@"

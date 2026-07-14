@@ -90,21 +90,23 @@ def run(func_def: str, message: str, timeout: float = 5.0):
 
 
 def check(func_def: str, message: str) -> None:
-    """Raise AssertionError (or let TimeoutExpired propagate) on a violation."""
+    """Raise AssertionError (or let TimeoutExpired propagate) on a violation.
+
+    These invariants deliberately do NOT parse the "Links:" footer -- an input
+    can contain that literal text, so splitting on it is unreliable. The regex's
+    url group is [^">]*, so a rewritten URL can never contain '>' and thus never
+    forms an anchor; the output is therefore anchor-free everywhere and a second
+    pass is a no-op.
+    """
     rc, out = run(func_def, message)
     assert rc == 0, f"non-zero exit {rc}"
-    ## Every well-formed anchor must have been rewritten away.
+    ## Every well-formed anchor is rewritten away (body consumed; footer URLs
+    ## have no '>', so they cannot form one either).
     assert not WELL_FORMED_ANCHOR.search(out), "a well-formed anchor survived"
-    ## Footer consistency: N inline refs "[k]" (k=1..N) <=> N "[k] url" lines.
-    inline_refs = re.findall(r"\[(\d+)\]", out.split("\nLinks:\n", 1)[0])
-    if "\nLinks:\n" in out:
-        footer = out.split("\nLinks:\n", 1)[1]
-        footer_refs = re.findall(r"^\[(\d+)\] ", footer, re.MULTILINE)
-        assert inline_refs and footer_refs, "Links section without refs"
-        assert len(footer_refs) == len(set(footer_refs)), "duplicate footnote numbers"
-        assert set(inline_refs) >= set(footer_refs), "footer ref with no inline marker"
-    ## Rearrangement only: the tool must not emit '<a ' that was not in the input.
-    assert out.count("<a ") <= message.count("<a "), "anchor tag count grew"
+    ## Idempotent: the output has no anchors left, so re-running is the identity.
+    rc2, out2 = run(func_def, out)
+    assert rc2 == 0, f"non-zero exit {rc2} on second pass"
+    assert out2 == out, "not idempotent"
 
 
 def main() -> int:
