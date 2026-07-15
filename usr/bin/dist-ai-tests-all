@@ -48,6 +48,7 @@ core_suites=(
    open-link-confirmation-tests
    privleap-tests
    sanitize-string-tests
+   secure-terminal-tests
    sdwdate-gui-tests
    stcat-family-tests
    stdisplay-tests
@@ -249,6 +250,11 @@ wire() {
          ## component, so there is nothing under --repo-root to point at; it is
          ## resolved from OUTPUT_LIES_REPO in the ambient environment instead.
          wire_env=() ; wire_args=() ;;
+      secure-terminal)
+         ## secure_terminal lives in its own repo (a --component checkout), not a
+         ## derivative-maker packages/ subpath; point the suite at it via
+         ## SECURE_TERMINAL_REPO resolved from the component root.
+         wire_env=( "SECURE_TERMINAL_REPO=$( pkg_dir secure-terminal )" ) ;;
       *)
          printf 'dist-ai-tests-all: no wiring for suite %s\n' "${suite}" >&2
          return 1 ;;
@@ -273,6 +279,7 @@ suite_component() {
       msgcollector)           printf '%s' 'msgcollector' ;;
       open-link-confirmation) printf '%s' 'open-link-confirmation' ;;
       sdwdate-gui)            printf '%s' 'sdwdate-gui' ;;
+      secure-terminal)        printf '%s' 'secure-terminal' ;;
       systemcheck)            printf '%s' 'systemcheck' ;;
       tor-control-panel)      printf '%s' 'tor-control-panel' ;;
    esac
@@ -361,7 +368,7 @@ fi
 
 if [ -n "${component}" ]; then
    case "${component}" in
-      helper-scripts|developer-meta-files|derivative-maker|msgcollector|onion-grater|privleap|genmkfile|open-link-confirmation|sdwdate-gui|systemcheck|tor-control-panel)
+      helper-scripts|developer-meta-files|derivative-maker|msgcollector|onion-grater|privleap|genmkfile|open-link-confirmation|sdwdate-gui|secure-terminal|systemcheck|tor-control-panel)
          : ;;
       *)
          printf 'dist-ai-tests-all: unknown --component: %s\n' "${component}" >&2

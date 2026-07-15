@@ -627,6 +627,25 @@ Description: Comprehensive test for the output-lies web text analyzer
  It resolves analyzer.js from OUTPUT_LIES_REPO (an output-lies.github.io
  checkout) and SKIPs (exit 77) when the module is absent.
 
+Package: secure-terminal-tests
+Architecture: all
+Depends: ${misc:Depends},
+ python3
+Description: Tests for the secure-terminal sanitization core
+ secure_terminal.sanitize is the pure, Qt-free core behind the secure-terminal
+ emulator (secure-terminal.github.io): it decides what child output is safe to
+ display and classifies anything that is not. Because it has no GUI dependency,
+ this suite drives it directly under python3 with no PyQt6.
+ .
+ It exercises render_output() across the strip / show / reveal display modes
+ (non-ASCII to underscore, legitimate unicode rendered while invisible/bidi/format
+ classes stay neutralized, and <U+XXXX> reveal), escape stripping, the paste
+ sanitizer and its unicode/control classification, the safe-colour SGR parser
+ with its black-on-black contrast guard, and the NO_COLOR / TERM=dumb handling. It
+ also statically asserts the widget layer never routes output into an HTML sink.
+ It resolves the module from SECURE_TERMINAL_REPO (a secure-terminal checkout)
+ and SKIPs (exit 77) when absent. No root, no network.
+
 Package: dist-ai-tests-all
 Architecture: all
 Depends: ${misc:Depends},
@@ -652,6 +671,7 @@ Recommends: check-ref-commits-for-unicode-tests,
  open-link-confirmation-tests,
  privleap-tests,
  sanitize-string-tests,
+ secure-terminal-tests,
  sdwdate-gui-tests,
  stcat-family-tests,
  stdisplay-tests,
