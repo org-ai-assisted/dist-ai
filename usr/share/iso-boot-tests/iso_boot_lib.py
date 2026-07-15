@@ -50,6 +50,16 @@ class SerialBootError(RuntimeError):
 _MARK = "__DM_ISO_BOOT_MARK__"
 
 
+## Each boot-role session accepts ONLY its own dedicated account: the sysmaint
+## session logs in as 'sysmaint', the user session as 'user'. Any other pairing
+## (e.g. 'user' in the sysmaint session) is rejected by the image, so there is no
+## default account for other entries -- the caller must pass username= explicitly.
+_ENTRY_ACCOUNT = {
+    "user": "user",
+    "sysmaint": "sysmaint",
+}
+
+
 def _default_dm_qemu():
     env_dir = os.environ.get("DERIVATIVE_MAKER_DIR", "").strip()
     if env_dir:
@@ -76,8 +86,9 @@ class SerialBootSession:
         iso,
         entry="user",
         dm_qemu=None,
-        username="user",
+        username=None,
         password="changeme",
+        arch=None,
         fast=False,
         memory=None,
         smp=None,
@@ -87,8 +98,19 @@ class SerialBootSession:
         self.iso = iso
         self.entry = entry
         self.dm_qemu = dm_qemu or _default_dm_qemu()
+        ## The account is fixed by the boot-role session unless overridden: sysmaint
+        ## -> 'sysmaint', user -> 'user'. Other entries have no valid account.
+        if username is None:
+            username = _ENTRY_ACCOUNT.get(entry)
+            if username is None:
+                raise SerialBootError(
+                    "no dedicated login account for entry '%s'; pass username= "
+                    "explicitly (valid sessions: %s)"
+                    % (entry, ", ".join(sorted(_ENTRY_ACCOUNT)))
+                )
         self.username = username
         self.password = password
+        self.arch = arch
         self.fast = fast
         self.memory = memory
         self.smp = smp
@@ -116,6 +138,8 @@ class SerialBootSession:
             "--verbose",
             "--entry", self.entry,
         ]
+        if self.arch:
+            cmd += ["--arch", self.arch]
         if self.fast:
             cmd.append("--fast")
         if self.memory is not None:

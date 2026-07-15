@@ -72,8 +72,9 @@ def run_scenario(scenario, args):
             iso=args.iso,
             entry=scenario["entry"],
             dm_qemu=args.dm_qemu,
-            username=args.username,
+            username=None,          ## fixed by the session: sysmaint->sysmaint, user->user
             password=args.password,
+            arch=args.arch,
             fast=args.fast,
             memory=args.memory,
             smp=args.smp,
@@ -81,7 +82,7 @@ def run_scenario(scenario, args):
         ) as sess:
             print("[%s] waiting for login prompt ..." % name, flush=True)
             sess.wait_for_login(timeout=args.boot_timeout)
-            print("[%s] logging in as %s ..." % (name, args.username), flush=True)
+            print("[%s] logging in as %s ..." % (name, sess.username), flush=True)
             sess.login()
             for command, must_pass in scenario["commands"]:
                 print("[%s] run: %s" % (name, command), flush=True)
@@ -110,7 +111,12 @@ def main():
                              "(default: $DERIVATIVE_MAKER_DIR or ~/derivative-maker)")
     parser.add_argument("--leaktest-command", default="systemcheck --leak-tests --verbose",
                         help="the leak-test command to run in each session")
-    parser.add_argument("--username", default="user")
+    parser.add_argument("--arch", default=None,
+                        help="guest architecture (amd64/x86_64, arm64/aarch64); "
+                             "default: the host arch. Passed through to dm-qemu.")
+    ## The login account is fixed by the boot-role session (sysmaint->sysmaint,
+    ## user->user), so there is no --username knob. Only the shared password is
+    ## configurable (default: the live 'changeme').
     parser.add_argument("--password", default="changeme")
     parser.add_argument("--fast", action="store_true",
                         help="append mitigations=off (pure-TCG speed; NOT a fidelity test)")
