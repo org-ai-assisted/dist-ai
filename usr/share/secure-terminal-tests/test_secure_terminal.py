@@ -191,6 +191,26 @@ for name in ('terminal.py', 'main.py', 'dialog.py'):
     for bad in forbidden:
         ok(bad not in src, 'HTML sink %r absent from %s' % (bad, name))
 
+# --- session persistence (pure JSON under a temp state dir) -------------------
+import tempfile                                    # noqa: E402
+os.environ['XDG_STATE_HOME'] = tempfile.mkdtemp(prefix='st-session-')
+from secure_terminal import session as SESS       # noqa: E402
+
+eq(SESS.load(), [], 'no session -> empty list')
+_tabs = [{'name': 'a', 'text': 'l1\nl2\nl3', 'zoom': 100},
+         {'name': 'b', 'text': 'x'}]
+SESS.save(_tabs)
+eq(SESS.load(), _tabs, 'session round-trips')
+SESS.clear()
+eq(SESS.load(), [], 'cleared session -> empty')
+eq(SESS.cap_text('\n'.join(str(i) for i in range(10)), 3), '7\n8\n9',
+   'cap_text keeps the tail')
+ok(len(SESS.cap_text('\n'.join(str(i) for i in range(9999)), 0).split('\n'))
+   <= SESS.UNLIMITED_PERSIST_LINES, 'unlimited scrollback is capped')
+with open(SESS.session_path(), 'w', encoding='utf-8') as _h:
+    _h.write('{ not valid json')
+eq(SESS.load(), [], 'corrupt session -> empty, no crash')
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests: %d passed, %d failed\n' % (PASS, FAIL))
 sys.exit(0 if FAIL == 0 else 1)
