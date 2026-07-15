@@ -54,6 +54,7 @@ core_suites=(
    systemcheck-tests
    tor-control-panel-tests
    unicode-show-tests
+   web-analyzer-tests
 )
 fuzz_suites=(
    check-ref-commits-for-unicode-tests-fuzz
@@ -243,6 +244,11 @@ wire() {
          wire_args=( "${dmf}/usr/bin/dm-virtualbox-update-local-and-wiki-links" ) ;;
       dm-help-steps)
          wire_env=( "UMOUNT_KILL_SH=$( pkg_dir derivative-maker )/help-steps/umount_kill.sh" ) ;;
+      web-analyzer)
+         ## analyzer.js lives in output-lies.github.io, not a derivative-maker
+         ## component, so there is nothing under --repo-root to point at; it is
+         ## resolved from OUTPUT_LIES_REPO in the ambient environment instead.
+         wire_env=() ; wire_args=() ;;
       *)
          printf 'dist-ai-tests-all: no wiring for suite %s\n' "${suite}" >&2
          return 1 ;;

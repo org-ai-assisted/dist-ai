@@ -606,6 +606,27 @@ Description: Fuzz tests for msgcollector CLI message rendering
  msgcollector script from the installed package or, via MSGCOLLECTOR_REPO, from
  a git checkout. Needs neither root, privleap, nor an X server.
 
+Package: web-analyzer-tests
+Architecture: all
+Depends: ${misc:Depends},
+ nodejs
+Description: Comprehensive test for the output-lies web text analyzer
+ analyzer.js is the client-side, DOM-free classifier behind the output-lies
+ Analyze page (output-lies.github.io). It flags every codepoint that is not
+ plain printable ASCII (bidi controls, zero-width and invisible-format
+ characters, deceptive whitespace, homoglyph-prone scripts, C0/C1 control bytes,
+ line/paragraph separators, combining marks, variation selectors, tag characters
+ and private use) and names the class of each. Because the module is pure, this
+ suite drives it directly under node, with no browser.
+ .
+ It asserts the class of every boundary codepoint (each range edge and the
+ codepoint just outside it), so a fenceposted range is caught; the known
+ real-world traps; astral-plane safety (an emoji is one codepoint); the analyze()
+ token splitting, where safe runs coalesce and the item list reconstructs the
+ input exactly; toAscii() stripping; and hex() formatting. No root, no network.
+ It resolves analyzer.js from OUTPUT_LIES_REPO (an output-lies.github.io
+ checkout) and SKIPs (exit 77) when the module is absent.
+
 Package: dist-ai-tests-all
 Architecture: all
 Depends: ${misc:Depends},
@@ -636,4 +657,5 @@ Recommends: check-ref-commits-for-unicode-tests,
  stdisplay-tests,
  systemcheck-tests,
  tor-control-panel-tests,
- unicode-show-tests
+ unicode-show-tests,
+ web-analyzer-tests
