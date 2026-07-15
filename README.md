@@ -1,9 +1,17 @@
 # dist-ai
 
-AI-committed regression-testing tooling for the Kicksecure / Whonix
-ecosystem, for content too high-volume for human review. Only the
-tooling is committed here; its large, regenerable artifacts -- baseline
-corpora, fuzz inputs, generated fixtures -- are runtime data kept in the
+AI test, reproduction, and fuzzing tooling for the Kicksecure and Whonix
+ecosystem, committed with AI assistance. This is the AI's own sandbox
+tooling: it runs only on disposable, untrusted CI, never ships to users,
+and never enters Kicksecure or Whonix.
+
+For how AI-assisted contributions are handled, and why this code is trusted
+less than human-written code, see the org pages:
+[org-ai-assisted.github.io](https://org-ai-assisted.github.io) (organisation:
+[github.com/org-ai-assisted](https://github.com/org-ai-assisted)).
+
+Only the tooling is committed here; its large, regenerable artifacts (baseline
+corpora, fuzz inputs, generated fixtures) are runtime data kept in the
 operator's private cache (`~/private-cache`), never in the repo or package.
 
 ## Components
@@ -531,3 +539,9 @@ check-ref-commits-for-unicode-tests
 check-ref-commits-for-unicode-tests-fuzz    # heavy fuzz sweep
 CHECK_REF_COMMITS_REPO=/path/to/helper-scripts check-ref-commits-for-unicode-tests
 ```
+
+## Related
+
+- Organisation: https://github.com/org-ai-assisted
+- Landing page: https://org-ai-assisted.github.io (source: https://github.com/org-ai-assisted/org-ai-assisted.github.io)
+- Organisation profile: https://github.com/org-ai-assisted/.github
