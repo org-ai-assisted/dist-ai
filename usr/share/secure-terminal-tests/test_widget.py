@@ -110,6 +110,21 @@ d = SecureTerminal(command='/bin/cat')
 d._append('first\nsecond')
 d._append('\rX')
 eq(d.toPlainText(), 'first\nXecond', 'CR line-local')
+# multi-backspace: five readline erases delete five chars (persistent cursor)
+mb = SecureTerminal(command='/bin/cat')
+mb._append('fffff')
+for _ in range(5):
+    mb._append('\x08 \x08')
+eq(mb.toPlainText().rstrip(), '', 'five backspaces erase five chars')
+# a write lands where a program left the cursor mid-line (zsh prompt + fill),
+# not at end-of-document -- the wall-of-spaces-before-input bug
+pc = SecureTerminal(command='/bin/cat')
+pc._append('P% ')            # prompt
+pc._append(' ' * 8)           # trailing fill beyond the cursor
+pc._append('\r')              # carriage return -> column 0
+pc._append('P% ')             # redraw the prompt over the fill
+pc._append('x')               # the echo must land right after the prompt
+ok(pc.toPlainText().startswith('P% x'), 'write lands at the persistent cursor')
 
 # --- colours: SGR run formatting + contrast guard -----------------------------
 col = SecureTerminal(command='/bin/cat')
