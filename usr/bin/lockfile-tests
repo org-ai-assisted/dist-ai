@@ -6,14 +6,14 @@
 ## AI-Assisted
 
 ## Comprehensive test + fuzz for the flock lock helper (helper-scripts
-## lockfile.sh -- atomic FLOCKER re-exec mutex with the optional LOCK_NAME
-## per-key override) and its per-key wrapper (dist-encrypted locked-run).
-## Proves self-lock / per-key skip + concurrency / backward-compat / exit-code
-## propagation / no variable leak / no self-deadlock / usage guards, plus a
-## per-key-isolation fuzz. No root, no network. Subjects default to the
-## installed /usr/libexec/helper-scripts/lockfile.sh and /usr/local/bin/
-## locked-run; set LOCKFILE_SH_REPO / LOCKED_RUN_REPO to test checkouts. Extra
-## args (--iterations N, --seed N, --fuzz-only) pass through.
+## lockfile.sh -- atomic FLOCKER re-exec mutex) in both of its modes: SOURCE
+## mode (self-lock, with the optional LOCK_NAME per-key override) and WRAP mode
+## ('lockfile.sh <key> -- <cmd>'). Proves self-lock / per-key skip + concurrency
+## / exit-code propagation / no variable leak / no self-deadlock / usage guards,
+## plus a per-key-isolation fuzz. No root, no network. The subject defaults to
+## the installed /usr/libexec/helper-scripts/lockfile.sh; set LOCKFILE_SH to a
+## file or LOCKFILE_SH_REPO to a helper-scripts checkout. Extra args
+## (--iterations N, --seed N, --fuzz-only) pass through.
 
 set -o errexit
 set -o nounset

@@ -5,12 +5,12 @@
 
 ## AI-Assisted
 
-## Fuzz lane for lockfile-tests: hammer random per-key locks through locked-run
-## and assert per-key isolation (same key serializes, distinct keys do not)
-## against a key-equality oracle. Each iteration spawns a real holder + two
+## Fuzz lane for lockfile-tests: hammer random per-key locks through lockfile.sh
+## wrap mode and assert per-key isolation (same key serializes, distinct keys do
+## not) against a key-equality oracle. Each iteration spawns a real holder + two
 ## contenders, so iterations are kept modest (a real subprocess + short sleep
-## each). No root, no network. Override with --iterations N / --seed N. Subjects
-## resolve as in lockfile-tests (LOCKFILE_SH_REPO / LOCKED_RUN_REPO).
+## each). No root, no network. Override with --iterations N / --seed N. The
+## subject resolves as in lockfile-tests (LOCKFILE_SH / LOCKFILE_SH_REPO).
 
 set -o errexit
 set -o nounset
