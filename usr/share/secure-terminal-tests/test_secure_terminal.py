@@ -211,6 +211,30 @@ with open(SESS.session_path(), 'w', encoding='utf-8') as _h:
     _h.write('{ not valid json')
 eq(SESS.load(), [], 'corrupt session -> empty, no crash')
 
+# --- settings drop-in: precedence, lexical order, .conf-only ------------------
+from secure_terminal import settings as SET       # noqa: E402
+_sysd = tempfile.mkdtemp(prefix='st-sys-')
+_usrd = tempfile.mkdtemp(prefix='st-usr-')
+SET.config_dirs = lambda: [_sysd, _usrd]           # low -> high precedence
+SET._user_config_dir = lambda: _usrd
+SET._legacy_config_file = lambda: os.path.join(_usrd, '_no_legacy_')
+with open(os.path.join(_sysd, '10-seed.conf'), 'w', encoding='utf-8') as _h:
+    _h.write('theme=dark\nzoom=100\n')
+with open(os.path.join(_usrd, '90-user.conf'), 'w', encoding='utf-8') as _h:
+    _h.write('theme=light\n')
+eq(SET.load().get('theme'), 'light', 'settings: user dir overrides system seed')
+eq(SET.load().get('zoom'), '100', 'settings: un-overridden seed value kept')
+with open(os.path.join(_usrd, '99-z.conf'), 'w', encoding='utf-8') as _h:
+    _h.write('theme=dark\n')
+eq(SET.load().get('theme'), 'dark', 'settings: lexical order, later file wins')
+with open(os.path.join(_usrd, 'ignore.txt'), 'w', encoding='utf-8') as _h:
+    _h.write('theme=light\n')
+eq(SET.load().get('theme'), 'dark', 'settings: only .conf files are parsed')
+SET.save({'colors': 'true'})
+ok(SET.user_config_file().endswith('99-user.conf'),
+   'settings: app writes 99-user.conf')
+eq(SET.load().get('colors'), 'true', 'settings: written value loads back')
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests: %d passed, %d failed\n' % (PASS, FAIL))
 sys.exit(0 if FAIL == 0 else 1)
