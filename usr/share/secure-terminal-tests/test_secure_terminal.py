@@ -159,6 +159,16 @@ eq(S.tui_cell(CAFE[-1], 'reveal'), CAFE[-1], 'tui reveal keeps one-wide glyph')
 eq(S.tui_cell(BIDI, 'reveal'), '_', 'tui reveal neutralizes bidi one-wide')
 eq(S.tui_cell('', 'strip'), ' ', 'tui empty cell -> space')
 
+# --- sanitize_title: program-supplied title / notification -> safe ASCII ------
+eq(S.sanitize_title('My Build'), 'My Build', 'title plain ascii')
+eq(S.sanitize_title('ev' + BIDI + 'il'), 'evil', 'title strips bidi')
+eq(S.sanitize_title('a\tb\nc'), 'a b c', 'title collapses whitespace')
+eq(S.sanitize_title(CAFE), 'caf', 'title drops non-ascii')
+eq(S.sanitize_title('x' * 200)[:5], 'xxxxx', 'title capped')
+ok(len(S.sanitize_title('x' * 200)) <= 80, 'title length limit')
+eq(S.sanitize_title(''), '', 'title empty')
+eq(S.sanitize_title(None), '', 'title none-safe')
+
 # --- constants ----------------------------------------------------------------
 ok(len(S.ANSI_PALETTE) == 16, '16-colour palette')
 ok(S.DISPLAY_MODES == ('strip', 'show', 'reveal'), 'display modes')
