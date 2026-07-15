@@ -146,6 +146,19 @@ eq(sgr('38;5;196'), {'fg': None, 'bg': None, 'bold': False}, '8-bit consumed')
 eq(sgr('38;2;10;20;30'), {'fg': None, 'bg': None, 'bold': False}, '24-bit consumed')
 eq(sgr('38;5;196;1'), {'fg': None, 'bg': None, 'bold': True}, '8-bit then bold')
 
+# --- tui_cell: one-character-wide, grid-preserving cell sanitization ----------
+eq(S.tui_cell('A', 'strip'), 'A', 'tui ascii kept')
+eq(S.tui_cell(CAFE[-1], 'strip'), '_', 'tui strip non-ascii -> _')
+eq(S.tui_cell(CAFE[-1], 'show'), CAFE[-1], 'tui show renders glyph')
+eq(S.tui_cell(chr(0x2500), 'show'), chr(0x2500), 'tui show renders box-drawing')
+eq(S.tui_cell(BIDI, 'show'), '_', 'tui show still neutralizes bidi')
+eq(S.tui_cell(ZWSP, 'show'), '_', 'tui show still neutralizes zero-width')
+eq(S.tui_cell(BEL, 'strip'), '_', 'tui control -> _')
+# reveal must NOT expand a cell (badge would break the grid): collapses to glyph
+eq(S.tui_cell(CAFE[-1], 'reveal'), CAFE[-1], 'tui reveal keeps one-wide glyph')
+eq(S.tui_cell(BIDI, 'reveal'), '_', 'tui reveal neutralizes bidi one-wide')
+eq(S.tui_cell('', 'strip'), ' ', 'tui empty cell -> space')
+
 # --- constants ----------------------------------------------------------------
 ok(len(S.ANSI_PALETTE) == 16, '16-colour palette')
 ok(S.DISPLAY_MODES == ('strip', 'show', 'reveal'), 'display modes')
