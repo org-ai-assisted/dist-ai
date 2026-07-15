@@ -16,6 +16,10 @@
 ## SECURE_TERMINAL_REPO (or a default under the operator's private-sources); if
 ## the module cannot be found it SKIPs (exit 77) rather than failing.
 
+## style-ok: no-has
+## This standalone dist-ai suite is invoked in a minimal CI container without
+## helper-scripts sourced, so it uses `command -v` rather than has() (R-090).
+
 set -o errexit
 set -o nounset
 set -o pipefail
@@ -46,10 +50,30 @@ if [ -z "${repo}" ] || [ ! -d "${repo}/usr/lib/python3/dist-packages/secure_term
    exit 77
 fi
 
-if ! command -v python3 >/dev/null 2>&1; then
+if ! command -v -- python3 >/dev/null 2>&1; then
    printf 'secure-terminal-tests: SKIP (no python3 interpreter found)\n' >&2
    exit 77
 fi
 
 export PYTHONPATH="${repo}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
-exec python3 -Bsu -- "${tests_dir}/test_secure_terminal.py" "$@"
+
+## The pure, Qt-free tests always run; the widget tests (test_widget.py) skip
+## themselves (exit 77) when PyQt6/pyte are absent. The suite fails if any test
+## fails, and SKIPs only when the pure test cannot import the module at all.
+overall=0
+for test_file in "${tests_dir}/test_secure_terminal.py" "${tests_dir}/test_widget.py"; do
+   [ -f "${test_file}" ] || continue
+   if python3 -Bsu -- "${test_file}" "$@"; then
+      continue
+   fi
+   rc="$?"
+   if [ "${rc}" = '77' ]; then
+      ## a SKIP from the pure test means the module is missing -> skip all
+      if [ "${test_file}" = "${tests_dir}/test_secure_terminal.py" ]; then
+         exit 77
+      fi
+      continue
+   fi
+   overall=1
+done
+exit "${overall}"
