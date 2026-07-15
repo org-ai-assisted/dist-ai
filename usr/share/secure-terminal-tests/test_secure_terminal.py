@@ -87,7 +87,7 @@ eq(S.render_output('a\x1b]8;;http://evil\x07b', 'strip'), 'ab', 'strip OSC link'
 # --- sanitize_bytes / sanitize_paste ------------------------------------------
 eq(S.sanitize_bytes(b'a\x08 \x08', 'strip'), 'a\x08 \x08', 'sanitize_bytes keeps bs/space')
 eq(S.sanitize_paste('a\nb\r\tc'), 'a\rb\r\tc', 'paste nl/cr -> cr, tab kept')
-eq(S.sanitize_paste('payp' + chr(0x0430) + 'l'), 'paypl', 'paste strips cyrillic homoglyph')
+eq(S.sanitize_paste('ex' + chr(0x0430) + 'mple.org'), 'exmple.org', 'paste strips cyrillic homoglyph')
 eq(S.sanitize_paste('x' + BIDI + ZWSP + 'y'), 'xy', 'paste strips bidi+zw')
 
 # --- paste_findings -----------------------------------------------------------

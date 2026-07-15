@@ -119,7 +119,7 @@ ok(OL.hex(0x1F600) === 'U+1F600', 'hex 5-digit astral');
 
 // --- analyze() ----------------------------------------------------------------
 (function () {
-  var s = 'payp' + String.fromCodePoint(0x0430) + 'l ' +   // homoglyph
+  var s = 'ex' + String.fromCodePoint(0x0430) + 'mple.org ' + // homoglyph
           'a' + String.fromCodePoint(0x200B) + 'b ' +       // zero-width
           String.fromCodePoint(0x1F600);                     // emoji (astral)
   var r = OL.analyze(s);
@@ -131,7 +131,7 @@ ok(OL.hex(0x1F600) === 'U+1F600', 'hex 5-digit astral');
   ok(rebuilt === s, 'analyze reconstructs input');
   // adjacent safe chars share one token
   var safeTokens = r.items.filter(function (it) { return it.safe !== undefined; });
-  ok(safeTokens.length >= 1 && safeTokens[0].safe === 'payp', 'analyze coalesces safe run');
+  ok(safeTokens.length >= 1 && safeTokens[0].safe === 'ex', 'analyze coalesces safe run');
 })();
 
 ok(OL.analyze('').flagged === 0, 'analyze empty');
@@ -142,7 +142,7 @@ ok(OL.analyze(null).flagged === 0, 'analyze null-safe');
 ok(OL.toAscii('a' + String.fromCodePoint(0x200B) + 'b' + String.fromCodePoint(0x202E) + 'c') === 'abc',
   'toAscii strips flagged');
 ok(OL.toAscii('hello world\tx\n') === 'hello world\tx\n', 'toAscii keeps ascii + tab/newline');
-ok(OL.toAscii('payp' + String.fromCodePoint(0x0430) + 'l') === 'paypl', 'toAscii strips homoglyph');
+ok(OL.toAscii('ex' + String.fromCodePoint(0x0430) + 'mple.org') === 'exmple.org', 'toAscii strips homoglyph');
 ok(OL.toAscii('') === '', 'toAscii empty');
 
 // --- result -------------------------------------------------------------------
