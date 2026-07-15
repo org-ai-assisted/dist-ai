@@ -81,8 +81,9 @@ cls(0xE007F, 'ctrl', 'tag character end');
   .forEach(function (cp) { cls(cp, 'space', 'space-like'); });
 
 // --- combining marks / variation selectors ------------------------------------
-[0x0300, 0x036F, 0x1AB0, 0x1DC0, 0x20D0, 0xFE20, 0xFE2F, 0xFE00, 0xFE0F, 0xE0100, 0xE01EF]
+[0x0300, 0x036F, 0x1AB0, 0x1DC0, 0x20D0, 0xFE20, 0xFE2F, 0xFE00, 0xFE0F, 0xE0100, 0xE01EF, 0x034F]
   .forEach(function (cp) { cls(cp, 'comb', 'combining/variation'); });
+ok(OL.classify(0x034F).visible === false, 'combining grapheme joiner is invisible');
 
 // --- homoglyph-prone scripts --------------------------------------------------
 [0x0400, 0x0430, 0x04FF, 0x0500, 0x052F].forEach(function (cp) { cls(cp, 'homo', 'Cyrillic'); });
