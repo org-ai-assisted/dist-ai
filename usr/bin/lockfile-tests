@@ -1,0 +1,33 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Comprehensive test + fuzz for the flock lock helper (helper-scripts
+## lockfile.sh -- atomic FLOCKER re-exec mutex with the optional LOCK_NAME
+## per-key override) and its per-key wrapper (dist-encrypted locked-run).
+## Proves self-lock / per-key skip + concurrency / backward-compat / exit-code
+## propagation / no variable leak / no self-deadlock / usage guards, plus a
+## per-key-isolation fuzz. No root, no network. Subjects default to the
+## installed /usr/libexec/helper-scripts/lockfile.sh and /usr/local/bin/
+## locked-run; set LOCKFILE_SH_REPO / LOCKED_RUN_REPO to test checkouts. Extra
+## args (--iterations N, --seed N, --fuzz-only) pass through.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/lockfile-tests' ]; then
+   tests_dir='/usr/share/lockfile-tests'
+else
+   tests_dir="${script_dir}/../share/lockfile-tests"
+fi
+
+exec python3 -- "${tests_dir}/lockfile_test.py" "$@"

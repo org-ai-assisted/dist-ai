@@ -1,0 +1,33 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Fuzz lane for lockfile-tests: hammer random per-key locks through locked-run
+## and assert per-key isolation (same key serializes, distinct keys do not)
+## against a key-equality oracle. Each iteration spawns a real holder + two
+## contenders, so iterations are kept modest (a real subprocess + short sleep
+## each). No root, no network. Override with --iterations N / --seed N. Subjects
+## resolve as in lockfile-tests (LOCKFILE_SH_REPO / LOCKED_RUN_REPO).
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/lockfile-tests' ]; then
+   tests_dir='/usr/share/lockfile-tests'
+else
+   tests_dir="${script_dir}/../share/lockfile-tests"
+fi
+
+iterations='200'
+
+exec python3 -- "${tests_dir}/lockfile_test.py" \
+   --fuzz-only --iterations "${iterations}" "$@"

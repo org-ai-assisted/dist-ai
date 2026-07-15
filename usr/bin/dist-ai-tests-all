@@ -42,6 +42,7 @@ core_suites=(
    genmkfile-tests
    git-meld-tests
    grep-find-unicode-wrapper-tests
+   lockfile-tests
    msgcollector-tests
    onion-grater-tests
    open-link-confirmation-tests
@@ -58,6 +59,7 @@ fuzz_suites=(
    check-ref-commits-for-unicode-tests-fuzz
    git-meld-tests-fuzz
    grep-find-unicode-wrapper-tests-fuzz
+   lockfile-tests-fuzz
    msgcollector-tests-fuzz
    privleap-tests-fuzz
    privleap-tests-fuzz-atheris
