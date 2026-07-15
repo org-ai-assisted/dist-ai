@@ -162,6 +162,16 @@ def wrap_mode_tests(lockfile_sh, check):
     check("wrap: key but no command -> non-zero", no_cmd.returncode != 0,
           "rc=%d" % no_cmd.returncode)
 
+    ## collision-resistance: two keys that a naive '/'->'_slash_' substitution
+    ## would alias ('a/b' vs the literal 'a_slash_b') must NOT share a lock, so
+    ## a holder of one lets the other run concurrently.
+    holder = bg([lockfile_sh, "cr/b", "--", "sleep", "2"])
+    time.sleep(0.6)
+    twin = run([lockfile_sh, "cr_slash_b", "--", "echo", "RAN"])
+    check("wrap: aliasing keys do not collide", "RAN" in twin.stdout,
+          "%r rc=%d" % (twin.stdout.strip(), twin.returncode))
+    holder.wait(timeout=15)
+
 
 def fuzz(lockfile_sh, iterations, seed, check):
     """Hammer random keys through wrap mode: a same-key contender must skip
