@@ -217,7 +217,6 @@ _sysd = tempfile.mkdtemp(prefix='st-sys-')
 _usrd = tempfile.mkdtemp(prefix='st-usr-')
 SET.config_dirs = lambda: [_sysd, _usrd]           # low -> high precedence
 SET._user_config_dir = lambda: _usrd
-SET._legacy_config_file = lambda: os.path.join(_usrd, '_no_legacy_')
 with open(os.path.join(_sysd, '10-seed.conf'), 'w', encoding='utf-8') as _h:
     _h.write('theme=dark\nzoom=100\n')
 with open(os.path.join(_usrd, '90-user.conf'), 'w', encoding='utf-8') as _h:
