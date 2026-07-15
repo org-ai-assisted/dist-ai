@@ -646,6 +646,32 @@ Description: Tests for the secure-terminal sanitization core
  It resolves the module from SECURE_TERMINAL_REPO (a secure-terminal checkout)
  and SKIPs (exit 77) when absent. No root, no network.
 
+Package: iso-boot-tests
+Architecture: all
+Depends: ${misc:Depends},
+ python3,
+ python3-pexpect,
+ qemu-system-x86
+Description: Headless serial boot + leak tests for a built derivative-maker ISO
+ Boots a freshly built Kicksecure/Whonix ISO in qemu, headless, over the serial
+ console and drives it: waits for the getty login prompt, logs in, runs
+ systemcheck leak tests in both the sysmaint and the user session, and powers
+ off. It reuses derivative-maker's help-steps/dm-qemu (via '--emit-argv') to
+ build the exact boot command -- including the kernel/initrd extraction and the
+ sysmaint/user cmdline selection -- so it never duplicates that logic; pexpect
+ then spawns qemu and drives the serial line.
+ .
+ Sequence: boot sysmaint -> log in -> 'systemcheck --leak-tests --verbose' ->
+ reboot; boot user -> log in -> 'systemcheck --leak-tests --verbose' ->
+ poweroff. Extra scripted commands and further sessions are data-driven
+ (run_leaktests.py SCENARIOS), so more tests are appended without new plumbing.
+ .
+ This runs on the BUILD HOST, not inside the guest: it needs qemu and the ISO.
+ It SKIPs (exit 77) when no --iso is given. dm-qemu is located via --dm-qemu,
+ $DERIVATIVE_MAKER_DIR, or ~/derivative-maker (not a package dependency). Without
+ KVM the boots are slow (tens of minutes each); --fast appends mitigations=off
+ for pure-TCG hosts, which is a speed hack, not a security-fidelity test.
+
 Package: dist-ai-tests-all
 Architecture: all
 Depends: ${misc:Depends},
@@ -666,6 +692,7 @@ Recommends: check-ref-commits-for-unicode-tests,
  genmkfile-tests,
  git-meld-tests,
  grep-find-unicode-wrapper-tests,
+ iso-boot-tests,
  msgcollector-tests,
  onion-grater-tests,
  open-link-confirmation-tests,

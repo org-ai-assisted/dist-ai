@@ -1,0 +1,2 @@
+usr/bin/iso-boot-tests usr/bin/
+usr/share/iso-boot-tests/*.py usr/share/iso-boot-tests/

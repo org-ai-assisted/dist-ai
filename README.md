@@ -32,6 +32,7 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 | `tor-control-panel-tests` | shipping | `usr/share/tor-control-panel-tests/` |
 | `unicode-show-tests`     | shipping | `usr/share/unicode-show-tests/` |
 | `grep-find-unicode-wrapper-tests` | shipping | `usr/share/grep-find-unicode-wrapper-tests/` |
+| `iso-boot-tests`         | shipping | `usr/share/iso-boot-tests/` |
 | `check-ref-commits-for-unicode-tests` | shipping | `usr/share/check-ref-commits-for-unicode-tests/` |
 | `discourse-dom-snapshot` | planned  | `usr/share/discourse-dom-snapshot/` |
 | `sdwdate-ci-fuzz`        | planned  | `usr/share/sdwdate-ci-fuzz/` |
