@@ -8,9 +8,10 @@
 """
 Offscreen widget/window tests for secure-terminal: the behaviour that lives in
 the Qt layer (terminal.py / main.py / dialog.py) rather than the pure core.
-Needs PyQt6 (offscreen) and, for the TUI-mode tests, python3-pyte. SKIPs (exit
-77) when those are unavailable, so a minimal environment still passes the pure
-suite. Exit 0 on full pass, 1 on any failure.
+Needs PyQt6 (offscreen) and python3-pyte. These are declared dependencies of the
+test (the CI container installs them), so a missing one is a hard FAILURE, not a
+skip -- a security-relevant test must never be silently disabled. Exit 0 on full
+pass, 1 on any failure or missing dependency.
 """
 
 import os
@@ -32,8 +33,11 @@ try:
     from secure_terminal.terminal import SecureTerminal, tui_available
     from secure_terminal import dialog as st_dialog
 except Exception as exc:  # pylint: disable=broad-except
-    sys.stderr.write('secure-terminal-tests(widget): SKIP (%s)\n' % exc)
-    sys.exit(77)
+    # Fail closed: a missing test dependency (PyQt6, pyte, the module) must not
+    # be silently skipped.
+    sys.stderr.write('secure-terminal-tests(widget): FAIL missing dependency: '
+                     '%s\n' % exc)
+    sys.exit(1)
 
 APP = QApplication.instance() or QApplication([])
 PASS = 0
@@ -134,7 +138,8 @@ st_dialog.PasteWarningDialog.confirm = staticmethod(lambda *a, **k: True)
 p.insertFromMimeData(mime2)
 eq(psent, [b'payl\r'], 'unsafe paste allowed sends sanitized')
 
-# --- TUI mode (needs pyte) ----------------------------------------------------
+# --- TUI mode (pyte is a required dependency: fail closed, do not skip) -------
+ok(tui_available(), 'python3-pyte available for TUI mode')
 if tui_available():
     tui = SecureTerminal(command='/bin/cat', tui=True)
     tui.resize(700, 300)
@@ -178,8 +183,9 @@ if tui_available():
     tui._handle_title_and_notify(b'\x1b]2;ignored\x07')  # guard is in _on_readable
     tui.shutdown()
 else:
-    sys.stderr.write('secure-terminal-tests(widget): note - pyte absent, '
-                     'TUI-mode assertions skipped\n')
+    # already recorded as a FAIL above; do not silently pass
+    sys.stderr.write('secure-terminal-tests(widget): FAIL pyte absent, TUI-mode '
+                     'assertions could not run\n')
 
 # --- window: rename, colour, settings round-trip ------------------------------
 from secure_terminal.main import MainWindow          # noqa: E402

@@ -16,10 +16,6 @@
 ## SECURE_TERMINAL_REPO (or a default under the operator's private-sources); if
 ## the module cannot be found it SKIPs (exit 77) rather than failing.
 
-## style-ok: no-has
-## This standalone dist-ai suite is invoked in a minimal CI container without
-## helper-scripts sourced, so it uses `command -v` rather than has() (R-090).
-
 set -o errexit
 set -o nounset
 set -o pipefail
@@ -50,10 +46,10 @@ if [ -z "${repo}" ] || [ ! -d "${repo}/usr/lib/python3/dist-packages/secure_term
    exit 77
 fi
 
-if ! command -v -- python3 >/dev/null 2>&1; then
-   printf 'secure-terminal-tests: SKIP (no python3 interpreter found)\n' >&2
-   exit 77
-fi
+## No interpreter check: a missing python3 is a hard FAIL, not a SKIP -- the
+## tests below invoke python3 directly and fail loudly if it is absent
+## (security by default: a test dependency that is missing must not be silently
+## skipped). The only SKIP is a genuinely absent target checkout (above).
 
 export PYTHONPATH="${repo}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
 
