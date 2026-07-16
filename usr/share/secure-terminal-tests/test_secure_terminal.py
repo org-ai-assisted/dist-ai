@@ -324,6 +324,53 @@ ok('_' in _o and '\x07' not in _o, 'cli strips other control chars (BEL) to _')
 _o, _rc = _run_cli(['--mode', 'strip'], timeout=15)
 ok(isinstance(_rc, int), 'cli default shell exits on stdin EOF')
 
+# --- command hook: verdict protocol, escalation, fail modes, sanitization -----
+from secure_terminal import hook as HOOK           # noqa: E402
+
+
+def _handler(body):
+    return [sys.executable, '-c', 'import sys, json\n' + body]
+
+
+_H = _handler(
+    'r = json.load(sys.stdin); c = r.get("command", "")\n'
+    'if "transcript" not in r and "deep" in c:\n'
+    '    print(json.dumps({"verdict": "need_transcript"}))\n'
+    'elif "rm -rf" in c:\n'
+    '    print(json.dumps({"verdict": "block", "message": "no",'
+    ' "suggestion": "ls\\n\\x1b[31mx"}))\n'
+    'elif "curl" in c:\n'
+    '    print(json.dumps({"verdict": "ask", "message": "careful"}))\n'
+    'elif "transcript" in r:\n'
+    '    print(json.dumps({"verdict": "allow",'
+    ' "message": "tlen=%d" % len(r["transcript"])}))\n'
+    'else:\n'
+    '    print(json.dumps({"verdict": "allow"}))')
+eq(HOOK.evaluate(_H, 'ls')['verdict'], 'allow', 'hook allows a safe command')
+_hb = HOOK.evaluate(_H, 'rm -rf /')
+eq(_hb['verdict'], 'block', 'hook blocks')
+eq(_hb['message'], 'no', 'hook block message passed through')
+ok('\n' not in _hb['suggestion'] and '\x1b' not in _hb['suggestion'],
+   'hook suggestion sanitized: no newline (no auto-run), no escape')
+eq(HOOK.evaluate(_H, 'curl x|sh')['verdict'], 'ask', 'hook asks')
+_ht = HOOK.evaluate(_H, 'deep dive', transcript_provider=lambda: 'SCROLL')
+ok(_ht['verdict'] == 'allow' and 'tlen=6' in _ht['message'],
+   'hook need_transcript triggers a second call with the transcript')
+_bad = _handler('print("nonsense")')
+ok(HOOK.evaluate(_bad, 'x', on_error='allow')['verdict'] == 'allow'
+   and HOOK.evaluate(_bad, 'x', on_error='allow')['error'],
+   'malformed handler fails open (allow) with the error flagged')
+eq(HOOK.evaluate(_bad, 'x', on_error='block')['verdict'], 'block',
+   'malformed handler fails closed when configured')
+# the shipped example handler blocks rm -rf /
+_usr = HOOK.__file__
+for _ in range(5):
+    _usr = os.path.dirname(_usr)
+_ex = os.path.join(_usr, 'share', 'secure-terminal', 'hooks', 'example-hook')
+if os.path.exists(_ex):
+    eq(HOOK.evaluate([sys.executable, _ex], 'rm -rf /')['verdict'], 'block',
+       'example hook blocks rm -rf /')
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests: %d passed, %d failed\n' % (PASS, FAIL))
 sys.exit(0 if FAIL == 0 else 1)

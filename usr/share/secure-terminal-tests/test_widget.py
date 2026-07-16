@@ -196,6 +196,35 @@ rr.apply_mode('show')
 eq(rr.toPlainText().rstrip(), 'cafe' + chr(0x00E9), 'show re-renders existing scrollback')
 rr.apply_mode('strip')
 eq(rr.toPlainText().rstrip(), 'cafe_', 'strip re-renders the scrollback back')
+# command hook: judge the typed line before Enter submits it
+hk = SecureTerminal(command='/bin/cat')
+_handler = [sys.executable, '-c',
+            'import sys, json\n'
+            'c = json.load(sys.stdin)["command"]\n'
+            'print(json.dumps({"verdict": "block", "message": "no",'
+            ' "suggestion": "ls"} if "rm -rf" in c else {"verdict": "allow"}))']
+hk.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow',
+               'transcript': 'none'})
+_hsent = spy_writes(hk)
+_hnotes = []
+hk.hook_notice.connect(_hnotes.append)
+
+
+def _htype(term, text):
+    for _ch in text:
+        key(term, Qt.Key.Key_A, _ch)
+
+
+_htype(hk, 'ls')
+key(hk, Qt.Key.Key_Return)
+ok(b'\r' in _hsent, 'hook allows a safe command (Enter submits)')
+_hsent.clear()
+hk._hook_ask = lambda _c, _r: 'discard'          # decline the block dialog
+_htype(hk, 'rm -rf /')
+key(hk, Qt.Key.Key_Return)
+ok(b'\r' not in _hsent and b'\x15' in _hsent,
+   'hook blocks: not submitted, typed line discarded (Ctrl+U)')
+ok(_hnotes and _hnotes[-1] == 'no', 'hook advisory surfaced')
 
 # --- colours: SGR run formatting + contrast guard -----------------------------
 col = SecureTerminal(command='/bin/cat')
