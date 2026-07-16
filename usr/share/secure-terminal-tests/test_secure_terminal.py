@@ -370,6 +370,35 @@ _ex = os.path.join(_usr, 'share', 'secure-terminal', 'hooks', 'example-hook')
 if os.path.exists(_ex):
     eq(HOOK.evaluate([sys.executable, _ex], 'rm -rf /')['verdict'], 'block',
        'example hook blocks rm -rf /')
+# the AI-judge example handler: fast-path, escalation, AI verdict, fail-open
+import json as _json                               # noqa: E402
+_aij = os.path.join(_usr, "share", "secure-terminal", "hooks", "ai-judge-hook")
+if os.path.exists(_aij):
+    _mockai = tempfile.mktemp(prefix="mock-ai-")
+    with open(_mockai, "w", encoding="utf-8") as _mh:
+        _mh.write("#!/usr/bin/python3\nimport sys\np = sys.stdin.read()\n"
+                  'print("{\\"verdict\\": \\"block\\"}" if "rm " in p '
+                  'else "{\\"verdict\\": \\"allow\\"}")\n')
+    os.chmod(_mockai, 0o755)
+
+    def _run_aij(req, ai=None):
+        env = dict(os.environ, SECURE_TERMINAL_AI=ai or _mockai)
+        proc = subprocess.run([sys.executable, _aij], env=env,
+                              input=_json.dumps(req).encode("utf-8"),
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                              timeout=30)
+        return _json.loads(proc.stdout.decode("utf-8", "replace"))
+
+    eq(_run_aij({"command": "ls -la"})["verdict"], "allow",
+       "ai-judge allows a trivial command without calling the AI")
+    eq(_run_aij({"command": "cp $SRC dest"})["verdict"], "need_transcript",
+       "ai-judge escalates a contextual command")
+    eq(_run_aij({"command": "rm -rf /var", "transcript": "x"})["verdict"], "block",
+       "ai-judge blocks via the AI verdict")
+    eq(_run_aij({"command": "gpg x", "transcript": "y"},
+                ai="/nonexistent-ai-xyz")["verdict"], "allow",
+       "ai-judge fails open when the AI is unavailable")
+    os.remove(_mockai)
 
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests: %d passed, %d failed\n' % (PASS, FAIL))
