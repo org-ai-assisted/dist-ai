@@ -73,9 +73,18 @@ eq(S.render_output('a' + BIDI + 'b', 'reveal'), 'a<U+202E>b', 'reveal bidi')
 eq(S.render_output('a' + BEL + 'b', 'reveal'), 'a<U+0007>b', 'reveal control')
 eq(S.render_output(EMOJI, 'reveal'), '<U+1F600>', 'reveal astral')
 
+# --- render_output: detail (reveal badge + the Unicode name inline) -----------
+eq(S.render_output(CAFE, 'detail'),
+   'caf<U+00E9 LATIN SMALL LETTER E WITH ACUTE>', 'detail names e-acute')
+eq(S.render_output('a' + BIDI + 'b', 'detail'),
+   'a<U+202E RIGHT-TO-LEFT OVERRIDE>b', 'detail names the bidi override')
+eq(S.render_output(EMOJI, 'detail'), '<U+1F600 GRINNING FACE>', 'detail names astral')
+ok(all(0x20 <= ord(c) <= 0x7E for c in S.render_output(CAFE + BIDI + EMOJI, 'detail')),
+   'detail badge is plain ASCII (safe in every display)')
+
 # --- escapes are always stripped; editing controls always pass ----------------
 ESC = '\x1b[31mRED\x1b[0m'
-for mode in ('strip', 'show', 'reveal'):
+for mode in ('strip', 'show', 'reveal', 'detail'):
     eq(S.render_output(ESC, mode), 'RED', 'escape stripped in %s' % mode)
     eq(S.render_output('ab\x08\r\t\nX', mode), 'ab\x08\r\t\nX',
        'editing controls pass in %s' % mode)
@@ -238,7 +247,7 @@ ok(not _capped_on_space.endswith(' '), 'title no trailing space after cap')
 
 # --- constants ----------------------------------------------------------------
 ok(len(S.ANSI_PALETTE) == 16, '16-colour palette')
-ok(S.DISPLAY_MODES == ('strip', 'show', 'reveal'), 'display modes')
+ok(S.DISPLAY_MODES == ('strip', 'show', 'reveal', 'detail'), 'display modes')
 ok(set(S.THEMES) == {'dark', 'light'}, 'themes')
 
 # --- HTML-injection safety: the widget layer must not use an HTML sink --------
