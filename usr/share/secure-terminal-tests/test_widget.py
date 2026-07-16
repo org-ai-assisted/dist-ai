@@ -139,6 +139,29 @@ pc._append('\r')              # carriage return -> column 0
 pc._append('P% ')             # redraw the prompt over the fill
 pc._append('x')               # the echo must land right after the prompt
 ok(pc.toPlainText().startswith('P% x'), 'write lands at the persistent cursor')
+# a plain click must not strand the blinking caret where you cannot type: input
+# always goes to the shell at the output cursor, so mouseReleaseEvent snaps the
+# caret back unless a drag made a selection (which is kept, for copy).
+from PyQt6.QtGui import QMouseEvent, QTextCursor      # noqa: E402
+from PyQt6.QtCore import QPointF                       # noqa: E402
+cs = SecureTerminal(command='/bin/cat')
+cs._append('prompt> ')
+_out = cs._out_cursor.position()
+_stray = QTextCursor(cs.document())
+_stray.setPosition(2)                                  # as if a click landed here
+cs.setTextCursor(_stray)
+_release = QMouseEvent(QEvent.Type.MouseButtonRelease, QPointF(1, 1), QPointF(1, 1),
+                       Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton,
+                       Qt.KeyboardModifier.NoModifier)
+cs.mouseReleaseEvent(_release)
+eq(cs.textCursor().position(), _out, 'plain click snaps the caret back to output')
+# a selection (drag) survives the release, so copy still works
+_sel = QTextCursor(cs.document())
+_sel.setPosition(0)
+_sel.setPosition(4, QTextCursor.MoveMode.KeepAnchor)
+cs.setTextCursor(_sel)
+cs.mouseReleaseEvent(_release)
+ok(cs.textCursor().hasSelection(), 'a drag selection survives the release')
 # scrollback navigation in line mode: PageUp scrolls the buffer up, Shift+Home/
 # End jump to the ends, plain Home is left for line editing (does not scroll)
 sc = SecureTerminal(command='/bin/cat')
