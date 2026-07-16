@@ -313,8 +313,19 @@ else:
                      'assertions could not run\n')
 
 # --- window: rename, colour, settings round-trip ------------------------------
-from secure_terminal.main import MainWindow, _is_font_noise   # noqa: E402
+from secure_terminal.main import (                   # noqa: E402
+    MainWindow, _is_font_noise, _read_version, APP_VERSION,
+)
 from secure_terminal import settings                 # noqa: E402
+
+# version: baked from debian/changelog at build, read at runtime, fail open
+eq(_read_version(['/no/such/version']), 'unknown', 'missing version file -> unknown')
+_vf = tempfile.mktemp(prefix='st-version-')
+with open(_vf, 'w', encoding='utf-8') as _vh:
+    _vh.write('1.2.3-4\n')
+eq(_read_version([_vf]), '1.2.3-4', 'version file is read and stripped')
+os.remove(_vf)
+ok(isinstance(APP_VERSION, str) and APP_VERSION, 'APP_VERSION is a non-empty string')
 
 # font-shaping warning filter: the qt.text.font.db flood is dropped, real
 # messages pass through
