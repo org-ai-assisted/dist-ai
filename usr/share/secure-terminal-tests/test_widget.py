@@ -782,6 +782,42 @@ try:
 finally:
     settings._system_dirs = _o_sys3
 
+# --- cat-over-ssh: sanitization is at the render layer, so the byte SOURCE is
+# irrelevant. A malicious file cat'd on a REMOTE host over ssh reaches the local
+# terminal as the same pty byte stream a local program would emit, and is
+# sanitized the same. We prove it end to end by having a subprocess emit exactly
+# what a remote `cat evil-file` would deliver (the git-diffs-lie / Trojan-Source
+# bytes) and asserting the rendered document is safe.
+import tempfile as _tf2                                  # noqa: E402
+_evil = os.path.join(_tf2.mkdtemp(prefix='st-ssh-'), 'cat_evil.sh')
+with open(_evil, 'w') as _f:
+    # printf writes raw bytes to stdout, exactly as `cat` of a crafted file over
+    # ssh would. The cursor-up + erase-line tries to reach the EARLIER line and
+    # overwrite it -- the classic log-forgery. \033 is ESC.
+    _f.write('#!/bin/sh\n'
+             "printf 'SECRET_REAL_OUTPUT\\n'\n"
+             "printf '\\033[1A\\033[2KHIDDEN_FAKE\\n'\n"   # up+erase the line above
+             "printf '\\033]0;pwned\\007visible-text\\n'\n"  # OSC title injection
+             "printf 'admin \\342\\200\\256nimda\\342\\200\\254 bidi\\n'\n"
+             'sleep 30\n')
+os.chmod(_evil, 0o755)
+ssh = SecureTerminal(command=_evil)          # stands in for: ssh host cat evil
+ssh.resize(700, 300)
+ssh.show()
+pump(500)
+_doc = ssh.toPlainText()
+ok('\x1b' not in _doc, 'ssh/cat: no escape byte survives to the document')
+ok('\x9b' not in _doc and '\x07' not in _doc, 'ssh/cat: no C1 / BEL survives')
+ok(chr(0x202e) not in _doc, 'ssh/cat: the bidi override is neutralized')
+# the cursor-UP is stripped, so the forgery cannot reach the EARLIER line: the
+# real output survives (a program can only rewrite its own current line).
+ok('SECRET_REAL_OUTPUT' in _doc,
+   'ssh/cat: cross-line forgery prevented (cursor-up cannot hide earlier output)')
+ok('visible-text' in _doc, 'ssh/cat: honest visible text is shown')
+# the OSC title payload is stripped whole -- it never reaches the document
+ok('pwned' not in _doc, 'ssh/cat: the OSC-0 title-injection payload is stripped')
+ssh.shutdown()
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(widget): %d passed, %d failed\n'
                  % (PASS, FAIL))
