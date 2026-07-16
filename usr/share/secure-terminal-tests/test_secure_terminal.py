@@ -281,20 +281,48 @@ eq(SET.load().get('colors'), 'true', 'settings: written value loads back')
 
 # --- CLI: the sanitizing pty wrapper shares the sanitize core ------------------
 import subprocess                                   # noqa: E402
-_cli_code = (
-    'import sys\n'
-    'from secure_terminal.cli import main\n'
-    "sys.exit(main(['--mode', 'strip', '--', 'printf',"
-    " 'X\\033[31mRED\\033[0m Y\\342\\200\\256Z']))\n")
-_env = dict(os.environ, PYTHONPATH=os.pathsep.join(sys.path))
-_cli = subprocess.run([sys.executable, '-c', _cli_code], env=_env,
-                      stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                      stderr=subprocess.DEVNULL, timeout=30)
-_cli_out = _cli.stdout.decode('utf-8', 'replace')
-ok('\x1b' not in _cli_out and 'RED' in _cli_out,
-   'cli strips escape sequences, keeps the text')
-ok('_' in _cli_out and chr(0x202E) not in _cli_out,
-   'cli neutralizes bidi to _ in strip mode')
+
+
+def _run_cli(args, timeout=30):
+    """Run secure-terminal-cli with `args` (a list), stdin from /dev/null, and
+    return (stdout_text, exit_code). Invoked via the module so PYTHONPATH from
+    the running suite locates it in a checkout."""
+    code = ('import sys\n'
+            'from secure_terminal.cli import main\n'
+            'sys.exit(main(%r))\n' % (args,))
+    proc = subprocess.run(
+        [sys.executable, '-c', code],
+        env=dict(os.environ, PYTHONPATH=os.pathsep.join(sys.path)),
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, timeout=timeout)
+    return proc.stdout.decode('utf-8', 'replace'), proc.returncode
+
+
+# printf interprets the backslash-octal, so pass LITERAL backslashes (a single
+# Python backslash would be interpreted here and then double-encoded through argv)
+# strip mode: escapes removed, text kept, bidi neutralized to _
+_o, _ = _run_cli(['--mode', 'strip', '--', 'printf',
+                  'X\\033[31mRED\\033[0m Y\\342\\200\\256Z'])
+ok('\x1b' not in _o and 'RED' in _o, 'cli strip: escapes gone, text kept')
+ok('_' in _o and chr(0x202E) not in _o, 'cli strip: bidi -> _')
+# show mode: printable non-ASCII kept, escapes still gone
+_o, _ = _run_cli(['--mode', 'show', '--', 'printf', 'caf\\303\\251 \\033[1mB\\033[0m'])
+ok(chr(0x00E9) in _o and '\x1b' not in _o, 'cli show: unicode kept, escapes gone')
+# reveal mode: non-ASCII as <U+XXXX>
+_o, _ = _run_cli(['--mode', 'reveal', '--', 'printf', 'a\\342\\200\\256b'])
+ok('<U+202E>' in _o, 'cli reveal: bidi as <U+XXXX> badge')
+# the child exit code is forwarded
+_o, _rc = _run_cli(['--', 'sh', '-c', 'exit 42'])
+eq(_rc, 42, 'cli forwards the child exit code')
+# the two safe cursor controls (backspace, carriage return) pass through
+_o, _ = _run_cli(['--', 'printf', 'a\x08b\rc'])
+ok('\x08' in _o and '\r' in _o, 'cli keeps backspace and carriage return')
+# any other control character is neutralized to _
+_o, _ = _run_cli(['--', 'printf', 'x\x07y'])
+ok('_' in _o and '\x07' not in _o, 'cli strips other control chars (BEL) to _')
+# no command -> the login shell, which exits on our stdin EOF (must not hang)
+_o, _rc = _run_cli(['--mode', 'strip'], timeout=15)
+ok(isinstance(_rc, int), 'cli default shell exits on stdin EOF')
 
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests: %d passed, %d failed\n' % (PASS, FAIL))
