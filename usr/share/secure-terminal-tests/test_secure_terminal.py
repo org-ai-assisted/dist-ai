@@ -322,6 +322,31 @@ with open(os.path.join(_usrd, '96-userlock.conf'), 'w', encoding='utf-8') as _h:
     _h.write('theme=light\nlock=theme\n')
 ok('theme' not in SET.load().locked, 'settings: a user config cannot lock a key')
 
+# --- ipc: single-instance socket helpers (Qt-free) ----------------------------
+import struct                                          # noqa: E402
+from secure_terminal import ipc as IPC                # noqa: E402
+# a group name can never escape the socket directory (path traversal)
+ok(os.path.basename(IPC.socket_path('../../etc/evil')).endswith('.sock')
+   and '/' not in os.path.basename(IPC.socket_path('a/b/c')),
+   'ipc: group name is reduced to a safe filename')
+eq(IPC.socket_path(''), IPC.socket_path('default'), 'ipc: empty group -> default')
+# Framer reassembles a length-prefixed frame across chunks
+_fr = IPC.Framer()
+_full = IPC.frame(b'hello')
+ok(_fr.feed(_full[:3]) is None, 'ipc: framer waits for the length prefix')
+eq(_fr.feed(_full[3:]), b'hello', 'ipc: framer returns the completed payload')
+_over = IPC.Framer()
+raised = False
+try:
+    _over.feed(struct.pack('<I', 1 << 30) + b'x')
+except ValueError:
+    raised = True
+ok(raised, 'ipc: an over-long frame is rejected')
+# no server in a fresh group -> no reply (client would start a new instance)
+os.environ['XDG_RUNTIME_DIR'] = tempfile.mkdtemp()
+ok(IPC.send_request('nobody-home', {'op': 'ping'}, timeout=0.2) is None,
+   'ipc: no running instance -> None')
+
 # --- CLI: the sanitizing pty wrapper shares the sanitize core ------------------
 import subprocess                                   # noqa: E402
 

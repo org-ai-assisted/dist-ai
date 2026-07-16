@@ -690,6 +690,43 @@ eq(_lw.tabs.tabText(0), 'mytab', 'launch: tab title applied')
 eq(_lw.current().current_mode(), 'reveal', 'launch: display mode applied')
 _lw.close()
 
+# --- single-instance IPC: a running instance opens a client's tabs ------------
+import threading                                       # noqa: E402
+from secure_terminal.main import _launch_to_request    # noqa: E402
+from secure_terminal import ipc as _ipc                # noqa: E402
+os.environ['XDG_RUNTIME_DIR'] = tempfile.mkdtemp()     # isolated socket dir
+srvwin = MainWindow(launch=_pla([]))
+srvwin.start_instance_server('default')
+pump(150)
+ok(os.path.exists(_ipc.socket_path('default')), 'ipc: server bound its socket')
+eq(oct(os.stat(_ipc.socket_path('default')).st_mode & 0o777), '0o700',
+   'ipc: socket is owner-only (0700)')
+_before = srvwin.tabs.count()
+_res = {}
+
+
+def _client():
+    spec = _pla(['--title', 'fromclient', '--', 'sleep', '30'])
+    _res['reply'] = _ipc.send_request('default', _launch_to_request(spec))
+
+
+_th = threading.Thread(target=_client)
+_th.start()
+for _ in range(300):                                   # pump so the server answers
+    pump(10)
+    if not _th.is_alive():
+        break
+_th.join()
+eq(_res.get('reply', {}).get('ok'), True, 'ipc: client open request accepted')
+eq(srvwin.tabs.count(), _before + 1, 'ipc: the running instance opened the tab')
+ok(any(srvwin.tabs.tabText(i) == 'fromclient' for i in range(srvwin.tabs.count())),
+   'ipc: opened tab carries the client title')
+# a malformed op is refused, not crashed
+eq(srvwin._dispatch_request(b'{"op":"bogus"}').get('ok'), False,
+   'ipc: unknown op refused')
+eq(srvwin._dispatch_request(b'not json').get('ok'), False, 'ipc: bad json refused')
+srvwin.close()
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(widget): %d passed, %d failed\n'
                  % (PASS, FAIL))
