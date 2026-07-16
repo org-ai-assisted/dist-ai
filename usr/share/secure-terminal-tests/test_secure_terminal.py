@@ -482,6 +482,52 @@ if os.path.exists(_aij):
        "ai-judge fails open when the AI is unavailable")
     os.remove(_mockai)
 
+# --- hooklib: tiered, admin-gated hook configuration --------------------------
+import importlib.util as _ilu                       # noqa: E402
+_hlpath = os.path.join(_usr, 'share', 'secure-terminal', 'hooks', 'hooklib.py')
+if os.path.exists(_hlpath):
+    _spec = _ilu.spec_from_file_location('hooklib', _hlpath)
+    _hl = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_hl)
+    _priv = tempfile.mkdtemp()
+    _pd = os.path.join(_priv, 'secure-terminal.d')
+    os.makedirs(_pd)
+    _homebase = tempfile.mkdtemp()
+    _hd = os.path.join(_homebase, 'secure-terminal.d')
+    os.makedirs(_hd)
+    _hl._PRIVILEGED = (_priv,)
+    _saved_xdg = os.environ.get('XDG_CONFIG_HOME')
+    os.environ['XDG_CONFIG_HOME'] = _homebase
+    try:
+        # rules parse: verdict|regex|message, comments and malformed lines skipped
+        with open(os.path.join(_pd, 'example-hook-rules.conf'), 'w') as _f:
+            _f.write('block | ^danger | no |\n# a comment\nbadline\n'
+                     'ask | ^sudo | root |\n')
+        eq(_hl.read_rules('example-hook-rules.conf'),
+           [('block', '^danger', 'no', ''), ('ask', '^sudo', 'root', '')],
+           'hooklib: rules parsed; comments and malformed lines skipped')
+        # the gate: the home tier is IGNORED by default
+        with open(os.path.join(_hd, 'ai-judge-prompt.txt'), 'w') as _f:
+            _f.write('USER PROMPT')
+        ok(not _hl.allow_user_config(), 'hooklib: user hook config off by default')
+        eq(_hl.read_file('ai-judge-prompt.txt'), None,
+           'hooklib: home tier ignored unless an admin allows it')
+        # an admin enables it in a PRIVILEGED tier -> the home file is now honored
+        with open(os.path.join(_pd, 'hooks.conf'), 'w') as _f:
+            _f.write('hook_config_allow_user=true\n')
+        ok(_hl.allow_user_config(), 'hooklib: an admin can allow user hook config')
+        eq(_hl.read_file('ai-judge-prompt.txt'), 'USER PROMPT',
+           'hooklib: home tier honored once allowed')
+        # a home config CANNOT flip the gate (it is read from privileged only)
+        with open(os.path.join(_hd, 'hooks.conf'), 'w') as _f:
+            _f.write('hook_config_allow_user=false\n')
+        ok(_hl.allow_user_config(), 'hooklib: home cannot turn its own gate off')
+    finally:
+        if _saved_xdg is None:
+            os.environ.pop('XDG_CONFIG_HOME', None)
+        else:
+            os.environ['XDG_CONFIG_HOME'] = _saved_xdg
+
 # --- feed_line_edits: the line-mode logical-cell editor -----------------------
 def _line(raw, mode='strip', prev=None, col=0, sgr=None):
     """Feed raw into a fresh (or given) line buffer; return (completed_display,
