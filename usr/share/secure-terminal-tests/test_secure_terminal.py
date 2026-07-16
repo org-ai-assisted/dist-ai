@@ -104,6 +104,18 @@ _fr, _ = S.cells_to_runs([], _flood, 'strip', False, True)
 ok(len(_fr) <= 2100,
    'marking runs are capped so a flood cannot defeat run-coalescing (%d runs)' % len(_fr))
 
+# --- deferred autowrap (VT last-column behaviour) + wrap flags -----------------
+_wc, _wcells, _wcol, _ws, _ww = S.feed_line_edits([], 0, {}, 'abcd\n', 4)
+eq(len(_wc), 1, 'exactly-width output + newline is one line, no spurious blank wrap')
+eq(_ww, [False], 'a newline-terminated line is not flagged a wrap')
+_wc2, _wcells2, _wcol2, _ws2, _ww2 = S.feed_line_edits([], 0, {}, 'abcde', 4)
+eq(len(_wc2), 1, 'the 5th char on a width-4 line wraps to a fresh row')
+eq(_ww2, [True], 'the wrap is flagged so copy can join the rows')
+eq([ch for ch, _ in _wcells2], ['e'], 'the wrapping char starts the new row')
+_wc3, _wcells3, _wcol3, _ws3, _ww3 = S.feed_line_edits([], 0, {}, 'abcd\rX', 4)
+eq(len(_wc3), 0, 'a carriage return after the last column cancels the pending wrap')
+eq(_wcells3[0][0], 'X', 'the CR returns to column 0 and overwrites, no new row')
+
 # --- escapes are always stripped; editing controls always pass ----------------
 ESC = '\x1b[31mRED\x1b[0m'
 for mode in ('strip', 'show', 'reveal', 'detail'):
@@ -572,7 +584,7 @@ def _line(raw, mode='strip', prev=None, col=0, sgr=None):
     """Feed raw into a fresh (or given) line buffer; return (completed_display,
     current_display) rendered under `mode`."""
     cells = prev if prev is not None else []
-    comp, cells, col, _sgr = S.feed_line_edits(cells, col, sgr or {}, raw)
+    comp, cells, col, _sgr, _w = S.feed_line_edits(cells, col, sgr or {}, raw)
     render = lambda cs: ''.join(S.render_output(c, mode) for c, _ in cs)
     return [render(c) for c in comp], render(cells), cells, col
 

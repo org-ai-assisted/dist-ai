@@ -202,7 +202,7 @@ ok('STATUS=FAIL' in _ansi and '\x1b' not in _ansi,
 
 # the forgeries are also bounded to their own line in the widget's line model:
 # the cursor-up escape cannot reach an earlier line (it is stripped, not honored).
-_comp, _cells, _col, _sgr = S.feed_line_edits(
+_comp, _cells, _col, _sgr, _w = S.feed_line_edits(
     [], 0, {}, git_diffs_lie_fixtures()['ansi-escape'].decode('utf-8'))
 ok(_comp == [] and all(c != '\x1b' for c, _ in _cells),
    'ansi-escape: stays on one line, no escape reaches a cell')

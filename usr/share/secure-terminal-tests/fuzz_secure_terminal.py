@@ -143,7 +143,7 @@ def phase_lines(rnd, iterations, seed):
     ## TUI sanitizer and the SGR colour parser.
     for _ in range(iterations):
         text = _rand_text(rnd)
-        comp, cells, col, sgr = S.feed_line_edits([], 0, {}, text)
+        comp, cells, col, sgr, _w = S.feed_line_edits([], 0, {}, text)
         _assert(0 <= col <= len(cells),
                 'feed_line_edits cursor {0} out of [0,{1}] on {2!r}'
                 .format(col, len(cells), text), seed)

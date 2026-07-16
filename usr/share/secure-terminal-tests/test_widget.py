@@ -297,6 +297,15 @@ ok(any('END}' in ln for ln in _awlines),
    'content before a width-filling marker survives (autowrap, not collapse)')
 ok(len(_awlines) >= 2,
    'output filling the reported width hard-wraps instead of collapsing under a bare CR')
+# and a soft-autowrapped line copies JOINED (no spurious newline at the wrap),
+# like a real terminal -- the wrap-continuation block is marked and joined.
+cwp = SecureTerminal(command='/bin/cat')
+cwp._cols = 5
+cwp._feed_line('abcdefgh\n')                          # 8 chars at width 5 -> wraps
+cwp.selectAll()
+_copied = cwp.createMimeDataFromSelection().text()
+ok('abcdefgh' in _copied, 'a soft-wrapped line copies joined (no wrap newline)')
+ok('abcde\nfgh' not in _copied, 'the wrap point is not a newline in the copy')
 # command hook: judge the typed line before Enter submits it. The terminal here
 # runs /bin/cat, which only echoes -- no typed string is ever executed.
 hk = SecureTerminal(command='/bin/cat')

@@ -137,7 +137,7 @@ def prop_feed_line_edits(text, mode):
     # the line-mode logical-cell editor: hostile output must never smuggle an
     # escape byte into a cell, the cursor must stay within the current line, and
     # in strip mode the rendered line must be all-safe. It must not raise.
-    comp, cells, col, sgr = S.feed_line_edits([], 0, {}, text)
+    comp, cells, col, sgr, _w = S.feed_line_edits([], 0, {}, text)
     assert 0 <= col <= len(cells)
     for ch, _key in cells:
         assert ch != '\x1b'                      # no escape survives into a cell
@@ -153,7 +153,7 @@ def prop_feed_line_edits(text, mode):
 def prop_cells_to_runs(text, mode, colors):
     # rendering the logical cells (from feed_line_edits) to display runs must not
     # raise and must stay safe: strip runs are all-safe, the caret offset is sane.
-    comp, cells, col, sgr = S.feed_line_edits([], 0, {}, text)
+    comp, cells, col, sgr, _w = S.feed_line_edits([], 0, {}, text)
     runs, prefix = S.cells_to_runs(comp, cells, mode, colors)
     assert isinstance(runs, list) and isinstance(prefix, int) and prefix >= 0
     for run_text, _key in runs:
