@@ -285,6 +285,18 @@ key(cz, Qt.Key.Key_C, mods=Qt.KeyboardModifier.ControlModifier)
 _z = cz._absorb_caret('\r\nprompt%')                 # a shell (zsh) that echoes nothing
 ok('^C' not in _z, 'nothing removed when the shell does not echo ^C')
 eq(cz.toPlainText().count('^C'), 1, 'local ^C preserved for a non-echoing shell')
+# regression: output that fills the reported width hard-wraps (real autowrap), so
+# a shell's width-padded end-of-line marker (zsh PROMPT_SP / PROMPT_EOL_MARK) and
+# the following prompt do not collapse onto one logical line -- which lost the
+# last line of a file printed without a trailing newline.
+aw = SecureTerminal(command='/bin/cat')
+aw._cols = 40
+aw._feed_line('END}' + '%' * 40 + '\rprompt$ ')      # }, a width-filling marker, CR, prompt
+_awlines = aw.toPlainText().split('\n')
+ok(any('END}' in ln for ln in _awlines),
+   'content before a width-filling marker survives (autowrap, not collapse)')
+ok(len(_awlines) >= 2,
+   'output filling the reported width hard-wraps instead of collapsing under a bare CR')
 # command hook: judge the typed line before Enter submits it. The terminal here
 # runs /bin/cat, which only echoes -- no typed string is ever executed.
 hk = SecureTerminal(command='/bin/cat')
