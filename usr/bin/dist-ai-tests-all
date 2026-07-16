@@ -56,6 +56,7 @@ core_suites=(
    tor-control-panel-tests
    unicode-show-tests
    web-analyzer-tests
+   website-tests
 )
 fuzz_suites=(
    check-ref-commits-for-unicode-tests-fuzz
@@ -251,6 +252,12 @@ wire() {
          ## analyzer.js lives in output-lies.github.io, not a derivative-maker
          ## component, so there is nothing under --repo-root to point at; it is
          ## resolved from OUTPUT_LIES_REPO in the ambient environment instead.
+         wire_env=() ; wire_args=() ;;
+      website)
+         ## the Pages sites live in their own repos, not a derivative-maker
+         ## component; the suite resolves each from OUTPUT_LIES_REPO /
+         ## SECURE_TERMINAL_SITE_REPO / ORG_AI_ASSISTED_REPO in the ambient
+         ## environment (or a private-sources default) instead.
          wire_env=() ; wire_args=() ;;
       secure-terminal)
          ## secure_terminal lives in its own repo (a --component checkout), not a

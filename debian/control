@@ -627,6 +627,26 @@ Description: Comprehensive test for the output-lies web text analyzer
  It resolves analyzer.js from OUTPUT_LIES_REPO (an output-lies.github.io
  checkout) and SKIPs (exit 77) when the module is absent.
 
+Package: website-tests
+Architecture: all
+Depends: ${misc:Depends},
+ python3
+Description: Static consistency checks for the project GitHub Pages sites
+ Guards the bug classes that once shipped on output-lies.github.io,
+ secure-terminal.github.io and org-ai-assisted.github.io: a broken internal link
+ (every href/src must resolve to a real target, with no reliance on a redirect;
+ known sibling project-Pages paths are allow-listed), a footer missing the
+ uniform "family" links to the sibling sites, prose that lowercases "Open Source"
+ or "Free Software", and a review-status banner that claims a green "working"
+ state instead of pending human review.
+ .
+ The checker is pure Python with no DOM and no network: it parses each page with
+ the standard-library HTML parser, resolves internal links against the checkout,
+ scans visible text for the wording rule, and inspects the index footer and
+ status pill. Each site checkout is resolved from OUTPUT_LIES_REPO,
+ SECURE_TERMINAL_SITE_REPO and ORG_AI_ASSISTED_REPO (or a private-sources
+ default); it SKIPs (exit 77) when no site is found. No root, no network.
+
 Package: secure-terminal-tests
 Architecture: all
 Depends: ${misc:Depends},

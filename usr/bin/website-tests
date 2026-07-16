@@ -1,0 +1,57 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Static consistency checks for the project's GitHub Pages sites
+## (output-lies.github.io, secure-terminal.github.io, org-ai-assisted.github.io):
+## every internal link resolves to a real target (no reliance on redirects; known
+## sibling project-Pages paths are allow-listed), the footer carries the uniform
+## "family" links, prose capitalizes "Open Source"/"Free Software", and a
+## review-status banner never claims a green "working" state. Pure Python, no
+## network, no root. Each site checkout is resolved from an env var
+## (OUTPUT_LIES_REPO, SECURE_TERMINAL_SITE_REPO, ORG_AI_ASSISTED_REPO) or a
+## default under the operator's private-sources; if none is found it SKIPs
+## (exit 77) rather than failing.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/website-tests' ]; then
+   tests_dir='/usr/share/website-tests'
+else
+   tests_dir="${script_dir}/../share/website-tests"
+fi
+
+## Resolve each site root from its env var, else a private-sources default.
+[ -v OUTPUT_LIES_REPO ] || OUTPUT_LIES_REPO=''
+[ -v SECURE_TERMINAL_SITE_REPO ] || SECURE_TERMINAL_SITE_REPO=''
+[ -v ORG_AI_ASSISTED_REPO ] || ORG_AI_ASSISTED_REPO=''
+
+declare -a roots=()
+add_root(){
+   local given="$1" default="$2"
+   if [ -n "${given}" ] && [ -f "${given}/index.html" ]; then
+      roots+=( "${given}" )
+   elif [ -f "${default}/index.html" ]; then
+      roots+=( "${default}" )
+   fi
+}
+add_root "${OUTPUT_LIES_REPO}"          "${HOME}/private-sources/output-lies.github.io"
+add_root "${SECURE_TERMINAL_SITE_REPO}" "${HOME}/private-sources/secure-terminal.github.io"
+add_root "${ORG_AI_ASSISTED_REPO}"      "${HOME}/private-sources/org-ai-assisted.github.io"
+
+if [ "${#roots[@]}" -eq 0 ]; then
+   printf 'website-tests: SKIP (no site checkout found; set OUTPUT_LIES_REPO / SECURE_TERMINAL_SITE_REPO / ORG_AI_ASSISTED_REPO)\n' >&2
+   exit 77
+fi
+
+python3 -Bsu -- "${tests_dir}/check_site.py" "${roots[@]}"
