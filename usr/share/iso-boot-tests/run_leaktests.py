@@ -79,7 +79,9 @@ def run_scenario(scenario, args):
             memory=args.memory,
             smp=args.smp,
             logfile=sys.stdout.buffer if args.serial_echo else None,
+            use_qmp=not args.no_qmp,
         ) as sess:
+            print("[%s] QMP: %s" % (name, "connected" if sess.qmp else "unavailable (serial-only)"), flush=True)
             print("[%s] waiting for login prompt ..." % name, flush=True)
             sess.wait_for_login(timeout=args.boot_timeout)
             print("[%s] logging in as %s ..." % (name, sess.username), flush=True)
@@ -92,7 +94,8 @@ def run_scenario(scenario, args):
                     print("[%s] FAIL: '%s' exited %s" % (name, command, rc), flush=True)
                     return False
             print("[%s] %s ..." % (name, scenario["final"]), flush=True)
-            getattr(sess, scenario["final"])()
+            reason = getattr(sess, scenario["final"])()
+            print("[%s] shutdown reason (QMP): %s" % (name, reason or "n/a"), flush=True)
     except SerialBootError as exc:
         print("[%s] FAIL: %s" % (name, exc), flush=True)
         return False
@@ -128,6 +131,8 @@ def main():
                         help="seconds to wait for each command (default 2400)")
     parser.add_argument("--serial-echo", action="store_true",
                         help="mirror the raw serial transcript to stdout (debugging)")
+    parser.add_argument("--no-qmp", action="store_true",
+                        help="disable the QMP control channel (serial-only power control)")
     args = parser.parse_args()
 
     ## SKIP (77) when there is nothing to boot -- the dist-ai "target absent"
