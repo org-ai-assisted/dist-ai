@@ -35,7 +35,6 @@ import re
 import shlex
 import socket
 import subprocess
-import sys
 import tempfile
 import time
 
@@ -119,7 +118,12 @@ class QMPClient:
             self.close()
             return False
         resp = self.execute("qmp_capabilities")
-        return resp is not None and "error" not in resp
+        if resp is None or "error" in resp:
+            ## Close on failure too (not just the greeting paths) so a failed negotiation does
+            ## not leak the socket + makefile fds.
+            self.close()
+            return False
+        return True
 
     @staticmethod
     def _parse_line(line):
@@ -151,38 +155,66 @@ class QMPClient:
         return self._parse_line(line)
 
     def execute(self, command, arguments=None, timeout=30):
-        """Send a command and return its response dict ({'return': ...} or {'error': ...}).
-        Asynchronous events (e.g. SHUTDOWN) that arrive first are recorded and skipped."""
+        """
+        Send a command and return its response dict ({'return': ...} or {'error': ...}), or None
+        on any failure (socket closed/timeout/garbled stream, or no response within `timeout`).
+
+        Robust against a hostile or wedged peer:
+        - bounded by an overall deadline, so an ENDLESS event/keep-alive stream cannot spin the
+          loop forever;
+        - only a real response (a message carrying 'return' or 'error') is returned; asynchronous
+          events are recorded and skipped, and blank keep-alive messages ({}) are skipped too, so
+          a blank line can never be misattributed as this command's reply;
+        - a send/read failure (BrokenPipeError, timeout, OSError) becomes a clean None, never an
+          exception escaping into the caller (which would orphan the qemu process).
+        """
         if self._sock is None:
             return None
         msg = {"execute": command}
         if arguments:
             msg["arguments"] = arguments
-        self._sock.sendall((json.dumps(msg) + "\r\n").encode("utf-8"))
-        self._sock.settimeout(timeout)
-        while True:
-            try:
-                reply = self._read_message()
-            except QMPError:
-                return None
-            if reply is None:
-                return None
-            if "event" in reply:
-                self._record_event(reply)
-                continue
-            return reply
+        deadline = time.monotonic() + timeout
+        try:
+            self._sock.sendall((json.dumps(msg) + "\r\n").encode("utf-8"))
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                ## Bound each read by the remaining deadline (a byte-trickle within a single
+                ## sub-1MiB line is the only residual, capped by _MAX_QMP_LINE).
+                self._sock.settimeout(remaining)
+                try:
+                    reply = self._read_message()
+                except QMPError:
+                    return None
+                if reply is None:
+                    return None
+                if "event" in reply:
+                    self._record_event(reply)
+                    continue
+                if "return" in reply or "error" in reply:
+                    return reply
+                ## Anything else (a blank {} keep-alive or an unexpected message) is not this
+                ## command's response -- keep reading rather than returning it.
+        except (socket.timeout, TimeoutError, OSError):
+            return None
 
     def wait_for_shutdown(self, timeout=300):
         """Block until a SHUTDOWN event (or EOF). Returns the reason string
-        ('guest-reset' for a reboot, 'guest-shutdown' for an ACPI poweroff), or None."""
+        ('guest-reset' for a reboot, 'guest-shutdown' for an ACPI poweroff), or None. Bounded by
+        an overall deadline (each read is capped by the remaining time) so a silent or trickling
+        peer cannot block past `timeout`."""
         if self._sock is None:
             return None
-        self._sock.settimeout(timeout)
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            self._sock.settimeout(remaining)
             try:
                 event = self._read_message()
-            except (socket.timeout, TimeoutError):
+            except (socket.timeout, TimeoutError, OSError):
                 return None
             except QMPError:
                 ## A garbled line mid-stream: stop waiting rather than loop or crash.
@@ -193,7 +225,6 @@ class QMPClient:
                 self._record_event(event)
                 if event.get("event") == "SHUTDOWN":
                     return self.last_shutdown_reason
-        return None
 
     def _record_event(self, event):
         if event.get("event") == "SHUTDOWN":
@@ -207,13 +238,13 @@ class QMPClient:
             try:
                 self._rfile.close()
             except OSError:
-                pass
+                pass  ## already-closed / broken fd: nothing more to do on teardown
             self._rfile = None
         if self._sock is not None:
             try:
                 self._sock.close()
             except OSError:
-                pass
+                pass  ## already-closed / broken fd: nothing more to do on teardown
             self._sock = None
 
 
@@ -339,34 +370,42 @@ class SerialBootSession:
         return argv
 
     def __enter__(self):
-        ## Allocate the QMP socket path BEFORE building the argv, so dm-qemu is told to serve it.
-        if self.use_qmp:
-            self._qmp_dir = tempfile.mkdtemp(prefix="iso-boot-qmp-")
-            self._qmp_sock = os.path.join(self._qmp_dir, "qmp.sock")
-        argv = self._emit_argv()
-        ## timeout here is the DEFAULT inter-expect timeout; each expect() below
-        ## passes its own explicit, generous timeout.
-        self.child = pexpect.spawn(
-            argv[0],
-            args=argv[1:],
-            timeout=60,
-            encoding="utf-8",
-            codec_errors="replace",
-            logfile=None,
-        )
-        if self.logfile is not None:
-            ## Mirror the serial transcript for debugging (bytes stream).
-            self.child.logfile_read = _TextToBinary(self.logfile)
-        ## Connect QMP once qemu has created the socket. Best-effort: if it never appears (old
-        ## dm-qemu without --qmp, or qemu died), degrade to serial-only power control.
-        if self.use_qmp and self._qmp_sock:
-            client = QMPClient(self._qmp_sock)
-            if client.connect(timeout=60):
-                self.qmp = client
-            else:
-                client.close()
-                self.qmp = None
-        return self
+        ## Any failure AFTER we start allocating (QMP temp dir, qemu child, QMP socket) must not
+        ## leak: because __enter__ did not complete, the caller's 'with' body never runs and
+        ## __exit__ is never called. Clean up and re-raise on any exception (e.g. _emit_argv
+        ## raising SerialBootError because dm-qemu is missing, or pexpect.spawn failing).
+        try:
+            ## Allocate the QMP socket path BEFORE building the argv, so dm-qemu serves it.
+            if self.use_qmp:
+                self._qmp_dir = tempfile.mkdtemp(prefix="iso-boot-qmp-")
+                self._qmp_sock = os.path.join(self._qmp_dir, "qmp.sock")
+            argv = self._emit_argv()
+            ## timeout here is the DEFAULT inter-expect timeout; each expect() below
+            ## passes its own explicit, generous timeout.
+            self.child = pexpect.spawn(
+                argv[0],
+                args=argv[1:],
+                timeout=60,
+                encoding="utf-8",
+                codec_errors="replace",
+                logfile=None,
+            )
+            if self.logfile is not None:
+                ## Mirror the serial transcript for debugging (bytes stream).
+                self.child.logfile_read = _TextToBinary(self.logfile)
+            ## Connect QMP once qemu has created the socket. Best-effort: if it never appears (old
+            ## dm-qemu without --qmp, or qemu died), degrade to serial-only power control.
+            if self.use_qmp and self._qmp_sock:
+                client = QMPClient(self._qmp_sock)
+                if client.connect(timeout=60):
+                    self.qmp = client
+                else:
+                    client.close()
+                    self.qmp = None
+            return self
+        except BaseException:
+            self.close()
+            raise
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
@@ -381,13 +420,18 @@ class SerialBootSession:
             try:
                 self.child.close(force=True)
             except Exception:
-                pass
+                pass  ## qemu already exited / pexpect teardown race -- nothing to recover
         self.child = None
         if self._qmp_dir and os.path.isdir(self._qmp_dir):
             subprocess.run(["rm", "-rf", "--", self._qmp_dir], check=False)
             self._qmp_dir = None
-        if self._workdir and self._workdir.startswith("/tmp/") and os.path.isdir(self._workdir):
-            subprocess.run(["rm", "-rf", "--", self._workdir], check=False)
+        ## Resolve symlinks/'..' BEFORE the /tmp guard so a non-normalized path (the workdir comes
+        ## from a loose regex over dm-qemu's stderr) cannot slip past it. dm-qemu is trusted, so
+        ## this is defense-in-depth.
+        if self._workdir:
+            workdir_real = os.path.realpath(self._workdir)
+            if workdir_real.startswith("/tmp/") and os.path.isdir(workdir_real):
+                subprocess.run(["rm", "-rf", "--", workdir_real], check=False)
             self._workdir = None
 
     ## ----- interaction ---------------------------------------------------
@@ -532,7 +576,7 @@ class _TextToBinary:
         try:
             self._stream.flush()
         except Exception:
-            pass
+            pass  ## a debug-mirror stream that can't flush must never break the boot session
 
 
 def _strip_command_echo(output, command):

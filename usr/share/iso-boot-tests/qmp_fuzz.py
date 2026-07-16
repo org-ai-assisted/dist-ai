@@ -27,8 +27,9 @@ import io
 import json
 import os
 import sys
+import time
 
-from hypothesis import HealthCheck, given, settings
+from hypothesis import HealthCheck, given, seed, settings
 from hypothesis import strategies as st
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -90,13 +91,41 @@ def record_event_never_raises(event):
 
 @given(st.lists(_lines, max_size=40))
 def read_stream_never_crashes(lines):
-    stream = "".join(line.replace("\n", " ") + "\n" for line in lines)
-    ## execute(): reads until a non-event reply, EOF, or a malformed line -> dict or None.
+    ## Strip BOTH newline characters: the real reader (socket.makefile) uses universal
+    ## newlines and would split a '\r' into two lines, so each generated element must be a
+    ## single line under both readers.
+    stream = "".join(line.replace("\n", " ").replace("\r", " ") + "\n" for line in lines)
+    ## execute(): reads until a return/error reply, EOF, or a malformed line -> dict or None.
     result = _client_over(stream).execute("query-status", timeout=1)
     assert result is None or isinstance(result, dict)
     ## wait_for_shutdown(): consumes events until SHUTDOWN/EOF/garbage -> reason string or None.
     reason = _client_over(stream).wait_for_shutdown(timeout=1)
     assert reason is None or isinstance(reason, str)
+
+
+class _EndlessEvents:
+    """A file-like whose readline() ALWAYS returns another event line -- an endless stream, to
+    prove execute()/wait_for_shutdown() honor their deadline instead of looping forever."""
+
+    def readline(self, _limit=-1):
+        return '{"event": "NOOP"}\n'
+
+
+def execute_bounded_on_endless_stream():
+    """Not hypothesis: a deterministic check that an infinite event stream cannot hang the
+    client (regression guard for the execute() deadline). Must return None within ~2x timeout."""
+    client = QMPClient("/nonexistent.sock")
+    client._sock = _DummySock()
+    client._rfile = _EndlessEvents()
+    start = time.monotonic()
+    result = client.execute("query-status", timeout=1)
+    elapsed = time.monotonic() - start
+    assert result is None, "execute() should give up (None) on an endless event stream"
+    assert elapsed < 10, "execute() did not honor its deadline on an endless stream (%.1fs)" % elapsed
+    reason = QMPClient("/x")
+    reason._sock = _DummySock()
+    reason._rfile = _EndlessEvents()
+    assert reason.wait_for_shutdown(timeout=1) is None
 
 
 _FUZZERS = (parse_line_never_leaks, record_event_never_raises, read_stream_never_crashes)
@@ -106,20 +135,23 @@ def main():
     parser = argparse.ArgumentParser(description="Fuzz the QMP parser in iso_boot_lib.")
     parser.add_argument("--iterations", type=int, default=500,
                         help="hypothesis examples per fuzzer (default 500)")
-    parser.add_argument("--seed", type=int, default=None, help="derandomize with a fixed seed")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="reproduce a specific run: replay the same hypothesis examples")
     args = parser.parse_args()
 
     profile = settings(
         max_examples=args.iterations,
         deadline=None,
         suppress_health_check=[HealthCheck.too_slow],
-        derandomize=args.seed is not None,
     )
     failed = 0
     for fuzzer in _FUZZERS:
+        ## seed(N) makes hypothesis replay the SAME examples for a given N (real reproduction,
+        ## not just 'derandomized'); omit it and hypothesis explores fresh examples each run.
+        target = seed(args.seed)(fuzzer) if args.seed is not None else fuzzer
         print("fuzzing: %s (%d examples)" % (fuzzer.__name__, args.iterations), flush=True)
         try:
-            profile(fuzzer)()
+            profile(target)()
         except AssertionError as exc:
             print("  FAIL: %s: %s" % (fuzzer.__name__, exc), flush=True)
             failed += 1
@@ -129,6 +161,20 @@ def main():
             failed += 1
         else:
             print("  PASS: %s" % fuzzer.__name__, flush=True)
+
+    ## Deterministic regression guard (not hypothesis): an endless event stream must not hang.
+    print("checking: execute_bounded_on_endless_stream", flush=True)
+    try:
+        execute_bounded_on_endless_stream()
+    except AssertionError as exc:
+        print("  FAIL: execute_bounded_on_endless_stream: %s" % exc, flush=True)
+        failed += 1
+    except Exception as exc:  # noqa: BLE001
+        print("  FAIL (unexpected %s): execute_bounded_on_endless_stream: %s"
+              % (type(exc).__name__, exc), flush=True)
+        failed += 1
+    else:
+        print("  PASS: execute_bounded_on_endless_stream", flush=True)
     return 1 if failed else 0
 
 
