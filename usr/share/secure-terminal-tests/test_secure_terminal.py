@@ -279,6 +279,23 @@ ok(SET.user_config_file().endswith('50_user.conf'),
    'settings: app writes 50_user.conf')
 eq(SET.load().get('colors'), 'true', 'settings: written value loads back')
 
+# --- CLI: the sanitizing pty wrapper shares the sanitize core ------------------
+import subprocess                                   # noqa: E402
+_cli_code = (
+    'import sys\n'
+    'from secure_terminal.cli import main\n'
+    "sys.exit(main(['--mode', 'strip', '--', 'printf',"
+    " 'X\\033[31mRED\\033[0m Y\\342\\200\\256Z']))\n")
+_env = dict(os.environ, PYTHONPATH=os.pathsep.join(sys.path))
+_cli = subprocess.run([sys.executable, '-c', _cli_code], env=_env,
+                      stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                      stderr=subprocess.DEVNULL, timeout=30)
+_cli_out = _cli.stdout.decode('utf-8', 'replace')
+ok('\x1b' not in _cli_out and 'RED' in _cli_out,
+   'cli strips escape sequences, keeps the text')
+ok('_' in _cli_out and chr(0x202E) not in _cli_out,
+   'cli neutralizes bidi to _ in strip mode')
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests: %d passed, %d failed\n' % (PASS, FAIL))
 sys.exit(0 if FAIL == 0 else 1)
