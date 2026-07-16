@@ -190,6 +190,12 @@ eq(_pc.get('bidirectional control'), 1, 'classify: bidi override counted')
 eq(_pc.get('invisible character'), 1, 'classify: zero-width counted')
 eq(_pc.get('non-ASCII character'), 1, 'classify: homoglyph counted')
 eq(_pc.get('control character'), 1, 'classify: control counted')
+# sanitize_paste_unicode: keeps printable non-ASCII, drops the deceptive classes
+eq(S.sanitize_paste_unicode('caf' + chr(0x00E9)), 'caf' + chr(0x00E9),
+   'unicode paste keeps printable non-ASCII')
+ok(chr(0x202E) not in S.sanitize_paste_unicode('a' + chr(0x202E) + 'b'),
+   'unicode paste drops a bidi override')
+eq(S.sanitize_paste_unicode('a\nb'), 'a\rb', 'unicode paste: newline -> CR')
 
 # --- sanitize_title: program-supplied title / notification -> safe ASCII ------
 eq(S.sanitize_title('My Build'), 'My Build', 'title plain ascii')

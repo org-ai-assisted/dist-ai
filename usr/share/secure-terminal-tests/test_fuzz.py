@@ -52,6 +52,15 @@ def prop_sanitize_paste(text):
 
 @RUN
 @given(st.text())
+def prop_sanitize_paste_unicode(text):
+    out = S.sanitize_paste_unicode(text)
+    # keeps printable (incl. non-ASCII) + the two submit controls; never a
+    # control, bidi, zero-width or other invisible that could inject or deceive.
+    assert all(ch in ('\r', '\t') or ch.isprintable() for ch in out)
+
+
+@RUN
+@given(st.text())
 def prop_sanitize_title(text):
     out = S.sanitize_title(text)
     assert len(out) <= 80
@@ -101,6 +110,7 @@ def prop_tui_cell(ch, mode):
 PROPS = [
     ('render_output', prop_render_output),
     ('sanitize_paste', prop_sanitize_paste),
+    ('sanitize_paste_unicode', prop_sanitize_paste_unicode),
     ('sanitize_title', prop_sanitize_title),
     ('paste_findings', prop_paste_findings),
     ('classify_paste', prop_classify_paste),
