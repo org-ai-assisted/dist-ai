@@ -86,9 +86,14 @@ key(t, Qt.Key.Key_D, '', Qt.KeyboardModifier.ControlModifier)   # Ctrl+D EOF
 key(t, Qt.Key.Key_L, '', Qt.KeyboardModifier.ControlModifier)   # Ctrl+L clear
 eq(sent, [b'\x04', b'\x0c'], 'ctrl D/L are bytes')
 sent.clear()
-# Ctrl+C is a signal, not a byte; nothing is written to the pty
+# Ctrl+<letter> sends its control byte, like a real terminal: cooked mode turns
+# 0x03 into SIGINT, a raw-mode app reads the byte itself (readline Ctrl+A/R, an
+# app's own "press Ctrl+C again to exit"). Ctrl+backslash -> 0x1c (SIGQUIT).
 key(t, Qt.Key.Key_C, '', Qt.KeyboardModifier.ControlModifier)
-ok(b'\x03' not in sent, 'Ctrl+C does not write a byte (it signals)')
+key(t, Qt.Key.Key_A, '', Qt.KeyboardModifier.ControlModifier)
+key(t, Qt.Key.Key_R, '', Qt.KeyboardModifier.ControlModifier)
+key(t, Qt.Key.Key_Backslash, '', Qt.KeyboardModifier.ControlModifier)
+eq(sent, [b'\x03', b'\x01', b'\x12', b'\x1c'], 'ctrl+key sends its control byte')
 # printable non-ASCII is a deliberate keystroke -> sent UTF-8 (euro, e-acute)
 sent.clear()
 key(t, Qt.Key.Key_unknown, chr(0x20AC))       # euro sign
