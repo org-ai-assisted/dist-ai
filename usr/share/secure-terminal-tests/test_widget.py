@@ -181,6 +181,18 @@ key(nav, Qt.Key.Key_PageUp,
     mods=Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
 eq((_steps, _moves), ([1], [-1]),
    'Ctrl+PageDown steps tab, Ctrl+Shift+PageUp moves tab')
+# a display-mode toggle re-renders the WHOLE existing buffer, not only new output
+rr = SecureTerminal(command='/bin/cat')
+_rr_raw = 'cafe' + chr(0x00E9) + '\n'
+rr._raw = _rr_raw
+rr._append(_S.render_output(_rr_raw, 'strip'))
+eq(rr.toPlainText().rstrip(), 'cafe_', 'strip shows non-ascii as _')
+rr.apply_mode('reveal')
+eq(rr.toPlainText().rstrip(), 'cafe<U+00E9>', 'reveal re-renders existing scrollback')
+rr.apply_mode('show')
+eq(rr.toPlainText().rstrip(), 'cafe' + chr(0x00E9), 'show re-renders existing scrollback')
+rr.apply_mode('strip')
+eq(rr.toPlainText().rstrip(), 'cafe_', 'strip re-renders the scrollback back')
 
 # --- colours: SGR run formatting + contrast guard -----------------------------
 col = SecureTerminal(command='/bin/cat')
