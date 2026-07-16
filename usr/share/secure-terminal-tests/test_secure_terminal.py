@@ -179,6 +179,15 @@ eq((_ln.rstrip(), _col), ('ab', 2), 'line edits: backspace erase')
 _cl, _ln, _col = S.apply_line_edits('', 0, 'x' * 25, 10)
 eq((len(_cl), [len(_c) for _c in _cl], _ln), (2, [10, 10], 'xxxxx'),
    'line edits: max_line wraps a runaway line')
+# classify_paste: name and count the hidden classes so the paste warning can say
+# exactly what a copied string carries
+eq(S.classify_paste('echo hello'), [], 'clean ASCII has no findings')
+_pc = dict(S.classify_paste('pay' + chr(0x0430) + 'l' + chr(0x202E)
+                            + chr(0x200B) + BEL))
+eq(_pc.get('bidirectional control'), 1, 'classify: bidi override counted')
+eq(_pc.get('invisible character'), 1, 'classify: zero-width counted')
+eq(_pc.get('non-ASCII character'), 1, 'classify: homoglyph counted')
+eq(_pc.get('control character'), 1, 'classify: control counted')
 
 # --- sanitize_title: program-supplied title / notification -> safe ASCII ------
 eq(S.sanitize_title('My Build'), 'My Build', 'title plain ascii')

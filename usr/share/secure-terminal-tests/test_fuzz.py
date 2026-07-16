@@ -68,6 +68,15 @@ def prop_paste_findings(text):
 
 
 @RUN
+@given(st.text())
+def prop_classify_paste(text):
+    result = S.classify_paste(text)
+    assert isinstance(result, list)
+    assert all(isinstance(label, str) and isinstance(count, int) and count > 0
+               for label, count in result)
+
+
+@RUN
 @given(st.text(alphabet='0123456789;:', max_size=48))
 def prop_parse_sgr(param):
     state = {'fg': None, 'bg': None, 'bold': False}
@@ -94,6 +103,7 @@ PROPS = [
     ('sanitize_paste', prop_sanitize_paste),
     ('sanitize_title', prop_sanitize_title),
     ('paste_findings', prop_paste_findings),
+    ('classify_paste', prop_classify_paste),
     ('parse_sgr', prop_parse_sgr),
     ('tui_cell', prop_tui_cell),
 ]
