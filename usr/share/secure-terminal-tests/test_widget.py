@@ -387,6 +387,16 @@ try:
     ok(True, 'About + security-detail dialogs build without error')
 finally:
     _QDialog.exec = _orig_exec
+# global settings apply to every open tab and update the defaults
+win.new_tab()
+win._apply_global({'theme': 'light', 'zoom': 130, 'mode': 'reveal',
+                   'colors': True, 'tui': False, 'allow_title': True,
+                   'scrollback': 1000, 'paste_delay': 5, 'persist': True})
+ok(all((win.tabs.widget(i).current_theme(), win.tabs.widget(i).current_mode(),
+        win.tabs.widget(i).current_scrollback()) == ('light', 'reveal', 1000)
+       for i in range(win.tabs.count())),
+   'global settings applied to every open tab')
+eq(win._default_mode, 'reveal', 'global settings updated the default mode')
 win.set_theme('light')
 win.set_zoom(140)
 win.set_mode('reveal')
