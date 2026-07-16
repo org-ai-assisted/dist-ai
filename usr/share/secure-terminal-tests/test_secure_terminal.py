@@ -82,6 +82,22 @@ eq(S.render_output(EMOJI, 'detail'), '<U+1F600 GRINNING FACE>', 'detail names as
 ok(all(0x20 <= ord(c) <= 0x7E for c in S.render_output(CAFE + BIDI + EMOJI, 'detail')),
    'detail badge is plain ASCII (safe in every display)')
 
+# --- colored markings: risk class of a neutralized/revealed character ---------
+eq(S.marking_class(0x202E), 'bidi', 'RLO is bidi')
+eq(S.marking_class(0x200B), 'invisible', 'ZWSP is invisible')
+eq(S.marking_class(0x07), 'control', 'BEL is control')
+eq(S.marking_class(0x00E9), 'nonascii', 'e-acute is nonascii')
+_mk = [(chr(0x202E), ())]
+_runs, _ = S.cells_to_runs([], _mk, 'reveal', False, True)
+ok(any(k == (S.MARK_KEY, 'bidi') for _t, k in _runs),
+   'a bidi badge is tagged (MARK_KEY, bidi) for colouring when markings on')
+_runs_off, _ = S.cells_to_runs([], _mk, 'reveal', False, False)
+ok(all(not (isinstance(k, tuple) and k and k[0] == S.MARK_KEY) for _t, k in _runs_off),
+   'no marking key emitted when colored markings are off')
+# the run TEXT is identical either way -- colouring never changes what is shown
+eq(''.join(t for t, _ in _runs), ''.join(t for t, _ in _runs_off),
+   'colored markings change only the colour, never the safe text')
+
 # --- escapes are always stripped; editing controls always pass ----------------
 ESC = '\x1b[31mRED\x1b[0m'
 for mode in ('strip', 'show', 'reveal', 'detail'):
