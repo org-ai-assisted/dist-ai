@@ -1,0 +1,28 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Fuzz lane for iso-boot-tests: hammer the QMP parser (iso_boot_lib.QMPClient) with adversarial
+## line-delimited JSON and assert it only ever raises the intended QMPError and never hangs. No
+## root, no network, no real qemu. Works installed (/usr/share/iso-boot-tests) or from a checkout.
+## Extra arguments are forwarded (e.g. --iterations N / --seed N).
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/iso-boot-tests' ]; then
+   tests_dir='/usr/share/iso-boot-tests'
+else
+   tests_dir="${script_dir}/../share/iso-boot-tests"
+fi
+
+exec python3 -Bsu "${tests_dir}/qmp_fuzz.py" "$@"

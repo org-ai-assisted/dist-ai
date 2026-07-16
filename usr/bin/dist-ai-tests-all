@@ -61,6 +61,7 @@ fuzz_suites=(
    check-ref-commits-for-unicode-tests-fuzz
    git-meld-tests-fuzz
    grep-find-unicode-wrapper-tests-fuzz
+   iso-boot-tests-fuzz
    lockfile-tests-fuzz
    msgcollector-tests-fuzz
    privleap-tests-fuzz
