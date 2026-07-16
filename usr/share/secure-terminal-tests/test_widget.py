@@ -170,6 +170,17 @@ _elapsed = _time.time() - _t0
 ok(_elapsed < 30, 'control-laden flood renders in bounded time (%.1fs)' % _elapsed)
 ok(fl.document().blockCount() <= 10000,
    'flood document stays bounded (%d blocks)' % fl.document().blockCount())
+# keyboard tab navigation: the widget emits tab_step / tab_move so the window can
+# switch or reorder tabs (Ctrl+PageUp/Down and the Shift variants)
+nav = SecureTerminal(command='/bin/cat')
+_steps, _moves = [], []
+nav.tab_step.connect(_steps.append)
+nav.tab_move.connect(_moves.append)
+key(nav, Qt.Key.Key_PageDown, mods=Qt.KeyboardModifier.ControlModifier)
+key(nav, Qt.Key.Key_PageUp,
+    mods=Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier)
+eq((_steps, _moves), ([1], [-1]),
+   'Ctrl+PageDown steps tab, Ctrl+Shift+PageUp moves tab')
 
 # --- colours: SGR run formatting + contrast guard -----------------------------
 col = SecureTerminal(command='/bin/cat')
@@ -267,6 +278,22 @@ win.set_tab_color(0, QColor('#d83933'))
 ok(not win.tabs.tabIcon(0).isNull(), 'tab colour set')
 win.set_tab_color(0, None)
 ok(win.tabs.tabIcon(0).isNull(), 'tab colour cleared')
+# window tab actions: previous-tab wraps around, goto jumps by position, select
+# all selects the current buffer, full screen toggles
+win.new_tab()
+win.new_tab()
+_cnt = win.tabs.count()
+win.tabs.setCurrentIndex(0)
+win._on_tab_step(-1)
+eq(win.tabs.currentIndex(), _cnt - 1, 'previous-tab wraps to the last tab')
+win._goto_tab(0)
+eq(win.tabs.currentIndex(), 0, 'goto tab 1 by position')
+win.current()._append('pick me')
+win.select_all()
+ok(bool(win.current().textCursor().selectedText()), 'select all selects the buffer')
+win.toggle_fullscreen(True)
+ok(win.isFullScreen(), 'full screen on')
+win.toggle_fullscreen(False)
 win.set_theme('light')
 win.set_zoom(140)
 win.set_mode('reveal')
