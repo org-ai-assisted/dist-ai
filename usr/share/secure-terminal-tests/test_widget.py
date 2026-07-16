@@ -266,6 +266,17 @@ key(hk, Qt.Key.Key_Return)
 ok(b'\r' not in _hsent and b'\x15' in _hsent,
    'hook blocks: not submitted, typed line discarded (Ctrl+U)')
 ok(_hnotes and _hnotes[-1] == 'no', 'hook advisory surfaced')
+# history recall desyncs the hook's view of the line, so it must FAIL SAFE (ask),
+# not judge a stale/empty buffer and wave a recalled command through.
+_hsent.clear()
+_asked = []
+hk._hook_ask = lambda _c, _r: (_asked.append(_r['message']) or 'discard')
+key(hk, Qt.Key.Key_Up)                 # recall from history -> buffer now stale
+ok(hk._line_dirty, 'a history/edit key marks the line unverifiable for the hook')
+key(hk, Qt.Key.Key_Return)
+ok(_asked and b'\x15' in _hsent and b'\r' not in _hsent,
+   'edited line: hook asks and (on decline) discards, never submits unjudged')
+ok(not hk._line_dirty, 'dirty flag cleared after the decision')
 
 # --- colours: SGR run formatting + contrast guard -----------------------------
 from PyQt6.QtGui import QTextCursor as _QTC              # noqa: E402
