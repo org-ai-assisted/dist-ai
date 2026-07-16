@@ -593,7 +593,7 @@ eq((win._display_level()[1], win._display_level()[0]), ('Reveal', '#1f8a54'),
 win.set_mode('show')
 eq((win._display_level()[1], win._display_level()[0]), ('Show', '#d83933'),
    'show display -> red')
-eq(win._mode_level()[1], 'Line', 'line mode -> green mode lamp')
+eq(win._mode_level()[1], 'CLI', 'CLI mode -> green mode lamp')
 if tui_available():
     win.set_tui(True)
     eq((win._mode_level()[1], win._mode_level()[0]), ('TUI', '#e5a50a'),
