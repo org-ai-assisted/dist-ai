@@ -758,9 +758,29 @@ try:
     eq(rcwin._dispatch_request(
         b'{"op":"ctl-send-text","tab":"title:nope","text":"x"}').get('ok'), False,
         'ctl: an unmatched tab is an error')
+    # dump-tab: read back a tab's current rendered text (for E2E assertions)
+    rcwin.current()._append('alpha\nbeta\ngamma')
+    pump(20)
+    _dr = rcwin._dispatch_request(b'{"op":"ctl-dump-tab","tab":"id:0"}')
+    ok(_dr.get('ok') and _dr['text'].endswith('gamma'), 'ctl: dump-tab reads the tab text')
+    _dr2 = rcwin._dispatch_request(
+        b'{"op":"ctl-dump-tab","tab":"id:0","lines":1}')
+    eq(_dr2.get('text'), 'gamma', 'ctl: dump-tab --lines returns the tail')
     rcwin.close()
 finally:
     settings._system_dirs = _o_sys2
+
+# dump-tab is gated like the other ctl ops
+_o_sys3 = settings._system_dirs
+settings._system_dirs = lambda: [tempfile.mkdtemp()]      # no remote_control
+try:
+    offwin = MainWindow(launch=_pla([]))
+    pump(60)
+    eq(offwin._dispatch_request(b'{"op":"ctl-dump-tab","tab":"id:0"}').get('ok'),
+       False, 'ctl: dump-tab refused when remote control is off')
+    offwin.close()
+finally:
+    settings._system_dirs = _o_sys3
 
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(widget): %d passed, %d failed\n'
