@@ -97,6 +97,12 @@ ok(all(not (isinstance(k, tuple) and k and k[0] == S.MARK_KEY) for _t, k in _run
 # the run TEXT is identical either way -- colouring never changes what is shown
 eq(''.join(t for t, _ in _runs), ''.join(t for t, _ in _runs_off),
    'colored markings change only the colour, never the safe text')
+# a flood of alternating safe/marking chars must NOT explode into one run each
+# (that would be one Qt insert per char and wedge the UI): the runs are capped.
+_flood = [('a' if i % 2 else chr(0x202E), ()) for i in range(20000)]
+_fr, _ = S.cells_to_runs([], _flood, 'strip', False, True)
+ok(len(_fr) <= 2100,
+   'marking runs are capped so a flood cannot defeat run-coalescing (%d runs)' % len(_fr))
 
 # --- escapes are always stripped; editing controls always pass ----------------
 ESC = '\x1b[31mRED\x1b[0m'
