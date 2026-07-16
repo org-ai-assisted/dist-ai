@@ -196,6 +196,14 @@ rr.apply_mode('show')
 eq(rr.toPlainText().rstrip(), 'cafe' + chr(0x00E9), 'show re-renders existing scrollback')
 rr.apply_mode('strip')
 eq(rr.toPlainText().rstrip(), 'cafe_', 'strip re-renders the scrollback back')
+# a mode toggle after a flood re-renders only the recent tail, not the full
+# scrollback: reveal expands each byte to an 8-char <U+XXXX>, so re-rendering 1MB
+# of raw would be ~8MB and freeze the UI. Bounded, the document stays small.
+rf = SecureTerminal(command='/bin/cat')
+rf._raw = (b''.join(bytes([i % 256]) for i in range(1000)) * 1000).decode('latin-1')
+rf.apply_mode('reveal')
+ok(len(rf.toPlainText()) < 1_200_000,
+   'mode toggle re-renders only the bounded tail, not the whole 8MB expansion')
 # command hook: judge the typed line before Enter submits it. The terminal here
 # runs /bin/cat, which only echoes -- no typed string is ever executed.
 hk = SecureTerminal(command='/bin/cat')
