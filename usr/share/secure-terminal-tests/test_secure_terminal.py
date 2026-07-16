@@ -499,13 +499,15 @@ if os.path.exists(_hlpath):
     _saved_xdg = os.environ.get('XDG_CONFIG_HOME')
     os.environ['XDG_CONFIG_HOME'] = _homebase
     try:
-        # rules parse: verdict|regex|message, comments and malformed lines skipped
+        # rules parse: fields split on ' | '; a regex ALTERNATION (curl|wget),
+        # whose pipe has no surrounding spaces, must NOT be split (regression).
         with open(os.path.join(_pd, 'example-hook-rules.conf'), 'w') as _f:
-            _f.write('block | ^danger | no |\n# a comment\nbadline\n'
-                     'ask | ^sudo | root |\n')
+            _f.write('block | \\b(curl|wget)\\b | piped\n'
+                     '# a comment\nbadline\n'
+                     'ask | ^sudo | root\n')
         eq(_hl.read_rules('example-hook-rules.conf'),
-           [('block', '^danger', 'no', ''), ('ask', '^sudo', 'root', '')],
-           'hooklib: rules parsed; comments and malformed lines skipped')
+           [('block', '\\b(curl|wget)\\b', 'piped', ''), ('ask', '^sudo', 'root', '')],
+           'hooklib: rules parsed; regex alternation not split; comments skipped')
         # the gate: the home tier is IGNORED by default
         with open(os.path.join(_hd, 'ai-judge-prompt.txt'), 'w') as _f:
             _f.write('USER PROMPT')
