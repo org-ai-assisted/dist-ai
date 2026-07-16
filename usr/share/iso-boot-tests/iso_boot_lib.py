@@ -473,10 +473,17 @@ class SerialBootSession:
             ## A real password prompt: send the password. (idx == 2 == passwordless: skip it.)
             self.child.sendline(self.password)
 
-        ## A forced first-login password change would show up here instead of a
-        ## shell; detect it explicitly rather than hanging until timeout.
+        ## The default interactive shell is zsh with ZLE + syntax highlighting + bracketed paste,
+        ## which garbles a fast burst of serial input (characters doubled/reordered) so typed
+        ## commands do not run intact. Drop to plain 'sh' (dash has no line editor) for a clean,
+        ## predictable session; 'exec' leaves no nested shell. Slow-send so zsh reads it intact.
+        ## Harmless if the shell is already a POSIX sh.
+        self._send_slow("exec sh")
+
+        ## Confirm an interactive shell via a marker (also catches a rejected login or a forced
+        ## password change). In dash the command echoes cleanly, so the marker matches.
         login_ok = "%s_LOGIN_OK_%s" % (_MARK, self.username)
-        self.child.sendline("printf '%%s\\n' " + shlex.quote(login_ok))
+        self._send_slow("printf '%%s\\n' " + shlex.quote(login_ok))
         idx = self.child.expect(
             [
                 re.escape(login_ok) + r"\r?\n",
@@ -495,6 +502,15 @@ class SerialBootSession:
         if idx == 3:
             raise SerialBootError("logged in but no interactive shell appeared")
 
+    def _send_slow(self, text, per_char=0.04):
+        """Send a shell command one character at a time (then CR), pacing input so a remote
+        interactive line editor (zsh ZLE + syntax highlighting) cannot garble a fast burst of
+        serial input. Slower than sendline but reliable against a fancy login shell."""
+        for char in text:
+            self.child.send(char)
+            time.sleep(per_char)
+        self.child.send("\r")
+
     def run(self, command, timeout=1800, check=False):
         """
         Run one shell command in the logged-in session.
@@ -505,9 +521,10 @@ class SerialBootSession:
         """
         mark = "%s_%d" % (_MARK, int(time.time() * 1000) % 1000000)
         ## Run the command, then emit "<mark>=<rc>" on its own line. Reading up to
-        ## that marker bounds the output regardless of the prompt string.
-        self.child.sendline("%s; %s=$?; printf '%%s=%%s\\n' %s \"$%s\""
-                            % (command, "__rc", shlex.quote(mark), "__rc"))
+        ## that marker bounds the output regardless of the prompt string. Slow-send so the input
+        ## is not garbled if the session is still a ZLE shell.
+        self._send_slow("%s; %s=$?; printf '%%s=%%s\\n' %s \"$%s\""
+                        % (command, "__rc", shlex.quote(mark), "__rc"))
         idx = self.child.expect(
             [re.escape(mark) + r"=(\d+)\r?\n", pexpect.EOF, pexpect.TIMEOUT],
             timeout=timeout,
