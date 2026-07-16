@@ -268,6 +268,23 @@ if sw.current_tui():
     ok('history-line-A' in sw.toPlainText(),
        'scrollback restored after a full-screen program exits')
 sw.apply_tui(False)
+# Ctrl+C is echoed locally as ^C (transparency: make the invisible visible) and
+# de-duped against a shell that also echoes it (bash's readline), so the user
+# always sees exactly one ^C.
+cc = SecureTerminal(command='/bin/cat')
+cc._feed_line('prompt$ ')
+key(cc, Qt.Key.Key_C, mods=Qt.KeyboardModifier.ControlModifier)
+ok(cc.toPlainText().endswith('^C'), 'Ctrl+C is locally echoed as ^C')
+_dedup = cc._absorb_caret('^C\r\nprompt$ ')          # bash's own ^C, right after
+ok(not _dedup.startswith('^C'), 'a shell duplicate ^C in the next output is absorbed')
+cc._feed_line(_S.render_output(_dedup, cc.current_mode()))
+eq(cc.toPlainText().count('^C'), 1, 'exactly one ^C after Ctrl+C + shell echo (no double)')
+cz = SecureTerminal(command='/bin/cat')
+cz._feed_line('prompt%')
+key(cz, Qt.Key.Key_C, mods=Qt.KeyboardModifier.ControlModifier)
+_z = cz._absorb_caret('\r\nprompt%')                 # a shell (zsh) that echoes nothing
+ok('^C' not in _z, 'nothing removed when the shell does not echo ^C')
+eq(cz.toPlainText().count('^C'), 1, 'local ^C preserved for a non-echoing shell')
 # command hook: judge the typed line before Enter submits it. The terminal here
 # runs /bin/cat, which only echoes -- no typed string is ever executed.
 hk = SecureTerminal(command='/bin/cat')
