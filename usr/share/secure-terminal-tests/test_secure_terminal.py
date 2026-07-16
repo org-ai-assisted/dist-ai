@@ -229,6 +229,12 @@ eq(S.sanitize_title('x' * 200)[:5], 'xxxxx', 'title capped')
 ok(len(S.sanitize_title('x' * 200)) <= 80, 'title length limit')
 eq(S.sanitize_title(''), '', 'title empty')
 eq(S.sanitize_title(None), '', 'title none-safe')
+# Regression (found by ClusterFuzzLite/Atheris): collapse-then-cap could leave a
+# trailing space when the cap landed on one, so re-sanitizing shrank the title by
+# a character. sanitize_title must be idempotent.
+_capped_on_space = S.sanitize_title('a ' * 60)
+eq(_capped_on_space, S.sanitize_title(_capped_on_space), 'title idempotent (cap on space)')
+ok(not _capped_on_space.endswith(' '), 'title no trailing space after cap')
 
 # --- constants ----------------------------------------------------------------
 ok(len(S.ANSI_PALETTE) == 16, '16-colour palette')

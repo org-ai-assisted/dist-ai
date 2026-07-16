@@ -203,6 +203,8 @@ def phase_paste(rnd, iterations, seed):
         _assert(len(ti) <= 80 and all(0x20 <= ord(ch) <= 0x7E for ch in ti)
                 and '\n' not in ti,
                 'sanitize_title leaked on {0!r}'.format(text), seed)
+        _assert(S.sanitize_title(ti) == ti,
+                'sanitize_title not idempotent on {0!r}'.format(text), seed)
         flags = S.paste_findings(text)
         _assert(isinstance(flags, tuple) and len(flags) == 2
                 and all(isinstance(f, bool) for f in flags),

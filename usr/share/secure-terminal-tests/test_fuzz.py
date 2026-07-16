@@ -87,6 +87,9 @@ def prop_sanitize_title(text):
     assert len(out) <= 80
     assert all(0x20 <= ord(ch) <= 0x7E for ch in out)
     assert '\n' not in out and '\t' not in out
+    # idempotent: re-sanitizing an already-sanitized title is a no-op (a cap
+    # landing on a space must not shrink it on a second pass).
+    assert S.sanitize_title(out) == out
 
 
 @RUN
