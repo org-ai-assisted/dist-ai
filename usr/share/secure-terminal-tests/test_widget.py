@@ -389,35 +389,39 @@ ok(bool(win.current().textCursor().selectedText()), 'select all selects the buff
 win.toggle_fullscreen(True)
 ok(win.isFullScreen(), 'full screen on')
 win.toggle_fullscreen(False)
-# unicode display is two on/off toggles (Show / Reveal), mutually exclusive,
-# defaulting to strip; each carries an icon
-eq((win.act_show.isChecked(), win.act_reveal.isChecked()), (False, False),
-   'unicode toggles default to strip (both off)')
-win.act_show.setChecked(True)
-eq(win.current().current_mode(), 'show', 'Show toggle selects show mode')
-win.act_reveal.setChecked(True)
-eq((win.act_show.isChecked(), win.current().current_mode()), (False, 'reveal'),
-   'Reveal turns Show off and selects reveal')
-win.act_reveal.setChecked(False)
-eq(win.current().current_mode(), 'strip', 'unchecking Reveal falls back to strip')
-ok(not win.act_show.icon().isNull() and not win.act_colors.icon().isNull(),
-   'toolbar toggles carry icons')
-# security indicator: green safe / yellow TUI / red unicode-shown, highest wins
-eq(win._security_level()[1], 'Safe', 'strip + line mode -> green Safe')
-win.set_mode('show')
-eq(win._security_level()[1], 'Unicode shown', 'show mode -> red')
-win.set_mode('reveal')
-eq(win._security_level()[1], 'Unicode shown', 'reveal mode -> red')
+# unicode display is three mutually-exclusive buttons (Strip/Reveal/Show),
+# default strip, colour-coded by safety
+win.act_strip.trigger()
+ok(win.act_strip.isChecked() and win.current().current_mode() == 'strip',
+   'Strip button selects strip')
+win.act_show.trigger()
+_checked = sum(a.isChecked() for a in (win.act_strip, win.act_reveal, win.act_show))
+eq((win.current().current_mode(), _checked), ('show', 1),
+   'Show button selects show, exclusively (only one checked)')
+win.act_reveal.trigger()
+eq(win.current().current_mode(), 'reveal', 'Reveal button selects reveal')
+ok(not win.act_strip.icon().isNull() and not win.act_show.icon().isNull(),
+   'mode buttons carry icons')
+# security indicator: two lamps. display axis (show=red, strip/reveal=green) and
+# mode axis (TUI=yellow, line=green). reveal is GREEN, not red.
 win.set_mode('strip')
-eq(win._security_level()[1], 'Safe', 'back to strip -> green')
+eq((win._display_level()[1], win._display_level()[0]), ('Strip', '#1f8a54'),
+   'strip display -> green')
+win.set_mode('reveal')
+eq((win._display_level()[1], win._display_level()[0]), ('Reveal', '#1f8a54'),
+   'reveal display -> green (not red)')
+win.set_mode('show')
+eq((win._display_level()[1], win._display_level()[0]), ('Show', '#d83933'),
+   'show display -> red')
+eq(win._mode_level()[1], 'Line', 'line mode -> green mode lamp')
 if tui_available():
     win.set_tui(True)
-    eq(win._security_level()[1], 'Unicode shown',
-       'TUI auto-selects show -> red (unicode outranks TUI)')
-    win.set_mode('strip')
-    eq(win._security_level()[1], 'TUI mode', 'TUI + strip -> yellow')
+    eq((win._mode_level()[1], win._mode_level()[0]), ('TUI', '#e5a50a'),
+       'TUI -> yellow mode lamp (independent of the display lamp)')
     win.set_tui(False)
-ok(not win.sec_button.icon().isNull(), 'security indicator shows a lamp icon')
+win.set_mode('strip')
+ok(not win.sec_display.icon().isNull() and not win.sec_mode.icon().isNull(),
+   'both security lamps show an icon')
 # About dialog builds without error (patch exec so the modal does not block)
 from PyQt6.QtWidgets import QDialog as _QDialog          # noqa: E402
 _orig_exec = _QDialog.exec
