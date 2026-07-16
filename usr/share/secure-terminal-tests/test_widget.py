@@ -626,6 +626,45 @@ eq(cfg.get('theme'), 'light', 'setting persisted theme')
 eq(cfg.get('zoom'), '140', 'setting persisted zoom')
 eq(cfg.get('unicode_mode'), 'reveal', 'setting persisted mode')
 
+# --- admin-locked settings (hardening: a privileged drop-in wins, user ignored)
+_sysd = tempfile.mkdtemp(prefix='st-sys-')
+_usrd = tempfile.mkdtemp(prefix='st-usr-')
+_orig_sys, _orig_usr = settings._system_dirs, settings._user_config_dir
+settings._system_dirs = lambda: [_sysd]
+settings._user_config_dir = lambda: _usrd
+try:
+    with open(os.path.join(_sysd, '30_default.conf'), 'w') as _f:
+        _f.write('tui=false\ncolors=false\nunicode_mode=strip\n'
+                 'lock=tui,colors,unicode_mode\n')
+    with open(os.path.join(_usrd, '50_user.conf'), 'w') as _f:
+        _f.write('colors=true\ntui=true\ntheme=light\nlock=colors\n')
+    lc = settings.load()
+    eq(lc.get('colors'), 'false', 'locked colours keep the admin value')
+    eq(lc.get('tui'), 'false', 'locked tui keeps the admin value')
+    eq(lc.get('theme'), 'light', 'an UNlocked key still lets the user win')
+    eq(sorted(lc.locked), ['colors', 'tui', 'unicode_mode'],
+       'lock is privileged-only: a user config cannot lock/unlock')
+    eq(sorted(lc.violations), ['colors', 'tui'],
+       'ignored user overrides of locked keys are recorded')
+    # the window disables the locked controls and guards the setters
+    lw = MainWindow()
+    ok(not lw.act_colors.isEnabled() and not lw.act_tui.isEnabled()
+       and all(not a.isEnabled() for a in lw._mode_actions.values()),
+       'locked controls are greyed out in the UI')
+    ok(lw._locked_violations, 'the window surfaces the locked-override violation')
+    lw.set_colors(True)
+    ok(not lw._default_colors, 'set_colors is a no-op when colours are locked')
+    lw.set_mode('show')
+    ok(lw._default_mode != 'show', 'set_mode is a no-op when the mode is locked')
+    lw.close()
+    # save() must never write a locked key back to the (dead) user config
+    settings.save({'colors': 'true', 'theme': 'dark'}, locked=lc.locked)
+    _written = open(settings.user_config_file()).read()
+    ok('colors=' not in _written and 'theme=dark' in _written,
+       'save drops locked keys, keeps unlocked ones')
+finally:
+    settings._system_dirs, settings._user_config_dir = _orig_sys, _orig_usr
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(widget): %d passed, %d failed\n'
                  % (PASS, FAIL))

@@ -289,8 +289,8 @@ eq(SESS.load(), [], 'corrupt session -> empty, no crash')
 from secure_terminal import settings as SET       # noqa: E402
 _sysd = tempfile.mkdtemp(prefix='st-sys-')
 _usrd = tempfile.mkdtemp(prefix='st-usr-')
-SET.config_dirs = lambda: [_sysd, _usrd]           # low -> high precedence
-SET._user_config_dir = lambda: _usrd
+SET._system_dirs = lambda: [_sysd]                 # privileged (root) dir
+SET._user_config_dir = lambda: _usrd               # user dir (highest)
 with open(os.path.join(_sysd, '10-seed.conf'), 'w', encoding='utf-8') as _h:
     _h.write('theme=dark\nzoom=100\n')
 with open(os.path.join(_usrd, '90-user.conf'), 'w', encoding='utf-8') as _h:
@@ -307,6 +307,20 @@ SET.save({'colors': 'true'})
 ok(SET.user_config_file().endswith('50_user.conf'),
    'settings: app writes 50_user.conf')
 eq(SET.load().get('colors'), 'true', 'settings: written value loads back')
+
+# admin lock: a privileged `lock=` makes a key non-overridable by the user dir
+with open(os.path.join(_sysd, '20-lock.conf'), 'w', encoding='utf-8') as _h:
+    _h.write('colors=false\nlock=colors\n')
+with open(os.path.join(_usrd, '95-try.conf'), 'w', encoding='utf-8') as _h:
+    _h.write('colors=true\n')
+_lc = SET.load()
+eq(_lc.get('colors'), 'false', 'settings: locked key keeps the admin value')
+eq(list(_lc.violations), ['colors'], 'settings: ignored override recorded')
+ok('colors' in _lc.locked, 'settings: lock reported')
+# a user config cannot lock a key
+with open(os.path.join(_usrd, '96-userlock.conf'), 'w', encoding='utf-8') as _h:
+    _h.write('theme=light\nlock=theme\n')
+ok('theme' not in SET.load().locked, 'settings: a user config cannot lock a key')
 
 # --- CLI: the sanitizing pty wrapper shares the sanitize core ------------------
 import subprocess                                   # noqa: E402
