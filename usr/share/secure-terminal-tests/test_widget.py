@@ -21,6 +21,9 @@ import tempfile
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 os.environ['XDG_CONFIG_HOME'] = tempfile.mkdtemp(prefix='st-widget-cfg-')
+# Isolate session state too, or a real leftover session on the box would be
+# restored and make the window's initial mode/tabs nondeterministic.
+os.environ['XDG_STATE_HOME'] = tempfile.mkdtemp(prefix='st-widget-state-')
 try:
     signal.signal(signal.SIGCHLD, signal.SIG_IGN)
 except (OSError, ValueError, AttributeError):
@@ -306,6 +309,19 @@ ok(bool(win.current().textCursor().selectedText()), 'select all selects the buff
 win.toggle_fullscreen(True)
 ok(win.isFullScreen(), 'full screen on')
 win.toggle_fullscreen(False)
+# unicode display is two on/off toggles (Show / Reveal), mutually exclusive,
+# defaulting to strip; each carries an icon
+eq((win.act_show.isChecked(), win.act_reveal.isChecked()), (False, False),
+   'unicode toggles default to strip (both off)')
+win.act_show.setChecked(True)
+eq(win.current().current_mode(), 'show', 'Show toggle selects show mode')
+win.act_reveal.setChecked(True)
+eq((win.act_show.isChecked(), win.current().current_mode()), (False, 'reveal'),
+   'Reveal turns Show off and selects reveal')
+win.act_reveal.setChecked(False)
+eq(win.current().current_mode(), 'strip', 'unchecking Reveal falls back to strip')
+ok(not win.act_show.icon().isNull() and not win.act_colors.icon().isNull(),
+   'toolbar toggles carry icons')
 win.set_theme('light')
 win.set_zoom(140)
 win.set_mode('reveal')
