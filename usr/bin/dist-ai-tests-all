@@ -69,6 +69,7 @@ fuzz_suites=(
    privleap-tests-session-fuzz
    sanitize-string-tests-fuzz
    sdwdate-gui-tests-fuzz
+   secure-terminal-tests-fuzz
    stcat-family-tests-fuzz
    stdisplay-tests-fuzz
    tor-control-panel-tests-fuzz
