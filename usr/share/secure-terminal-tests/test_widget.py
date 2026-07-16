@@ -377,6 +377,16 @@ if tui_available():
     eq(win._security_level()[1], 'TUI mode', 'TUI + strip -> yellow')
     win.set_tui(False)
 ok(not win.sec_button.icon().isNull(), 'security indicator shows a lamp icon')
+# About dialog builds without error (patch exec so the modal does not block)
+from PyQt6.QtWidgets import QDialog as _QDialog          # noqa: E402
+_orig_exec = _QDialog.exec
+_QDialog.exec = lambda _self: 0
+try:
+    win.show_about()
+    win._show_security_details()
+    ok(True, 'About + security-detail dialogs build without error')
+finally:
+    _QDialog.exec = _orig_exec
 win.set_theme('light')
 win.set_zoom(140)
 win.set_mode('reveal')
