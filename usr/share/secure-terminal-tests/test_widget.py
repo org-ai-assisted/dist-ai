@@ -306,6 +306,18 @@ cwp.selectAll()
 _copied = cwp.createMimeDataFromSelection().text()
 ok('abcdefgh' in _copied, 'a soft-wrapped line copies joined (no wrap newline)')
 ok('abcde\nfgh' not in _copied, 'the wrap point is not a newline in the copy')
+# copying a slice that starts AFTER an astral char must land on the right cell:
+# QTextCursor positions are UTF-16 units (an astral glyph is two), so a Python
+# str-offset slice would mis-cut. Show mode keeps the glyph as one code point.
+cap = SecureTerminal(command='/bin/cat')
+cap.apply_mode('show')
+cap._feed_line('\U0001f600X\n')                      # emoji (2 UTF-16 units) + X
+_capcur = cap.textCursor()
+_capcur.setPosition(2)                                # just past the emoji
+_capcur.setPosition(3, QTextCursor.MoveMode.KeepAnchor)
+cap.setTextCursor(_capcur)
+ok(cap.createMimeDataFromSelection().text() == 'X',
+   'a selection after an astral char copies the right cell (UTF-16 aware)')
 # command hook: judge the typed line before Enter submits it. The terminal here
 # runs /bin/cat, which only echoes -- no typed string is ever executed.
 hk = SecureTerminal(command='/bin/cat')

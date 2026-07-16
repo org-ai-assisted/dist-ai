@@ -115,6 +115,12 @@ eq([ch for ch, _ in _wcells2], ['e'], 'the wrapping char starts the new row')
 _wc3, _wcells3, _wcol3, _ws3, _ww3 = S.feed_line_edits([], 0, {}, 'abcd\rX', 4)
 eq(len(_wc3), 0, 'a carriage return after the last column cancels the pending wrap')
 eq(_wcells3[0][0], 'X', 'the CR returns to column 0 and overwrites, no new row')
+# a cursor/erase CSI op likewise clears the pending wrap: at width 4 the erase
+# after the last column leaves the cursor there, so X overwrites (abcX), not wraps
+_wc4, _wcells4, _wcol4, _ws4, _ww4 = S.feed_line_edits([], 0, {}, 'abcd\x1b[KX', 4)
+eq(len(_wc4), 0, 'an erase op after the last column cancels the pending wrap')
+eq([ch for ch, _ in _wcells4], ['a', 'b', 'c', 'X'],
+   'the erase clears the pending wrap so X overwrites the last cell (abcX)')
 
 # --- escapes are always stripped; editing controls always pass ----------------
 ESC = '\x1b[31mRED\x1b[0m'
