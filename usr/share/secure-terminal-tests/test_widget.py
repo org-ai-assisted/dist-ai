@@ -396,6 +396,21 @@ def _midpt(term, i):
 eq(inb._cp_at(_midpt(inb, 1)), 0x202E, 'a point over "_" reads the RLO codepoint')
 ok(inb._cp_at(_midpt(inb, 0)) is None, 'a point over the adjacent "a" is not the marking')
 ok(inb._cp_at(_midpt(inb, 2)) is None, 'a point over the adjacent "b" is not the marking')
+# an astral glyph (2 UTF-16 units) in show mode is hit-tested as ONE character:
+# the whole code point, never a lone surrogate half (codex P2 fix).
+ina = SecureTerminal(command='/bin/cat')
+ina.apply_mode('show')
+ina._append('x' + chr(0x1F600) + 'y')                    # emoji between two ASCII
+ina.resize(600, 200)
+ina.show()
+pump(30)
+_ea = QTextCursor(ina.document())
+_ea.setPosition(1)                                       # boundary before the emoji
+_eb = QTextCursor(ina.document())
+_eb.setPosition(3)                                       # boundary after its 2 units
+_emid = QPoint((ina.cursorRect(_ea).x() + ina.cursorRect(_eb).x()) // 2,
+               ina.cursorRect(_ea).center().y())
+eq(ina._cp_at(_emid), 0x1F600, 'a whole astral glyph is recovered (not a lone surrogate)')
 # the active popup describes the character and copies its ESCAPE (never the raw
 # glyph -- putting a bidi override / homoglyph on the clipboard is the hazard).
 ins._show_char_popup(0x202E, ins.mapToGlobal(ins.rect().center()))
