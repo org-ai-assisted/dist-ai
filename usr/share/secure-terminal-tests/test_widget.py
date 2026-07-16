@@ -236,6 +236,38 @@ rf._raw = (b''.join(bytes([i % 256]) for i in range(1000)) * 1000).decode('latin
 rf.apply_mode('reveal')
 ok(len(rf.toPlainText()) < 1_200_000,
    'mode toggle re-renders only the bounded tail, not the whole 8MB expansion')
+# regression: switching CLI<->TUI at a shell prompt must NOT blank the scrollback.
+# TUI only takes over the screen while a full-screen program is on the alt screen;
+# with just a shell it stays in line display, so toggling is a visual no-op and
+# the history survives. (Fixed a bug where apply_tui() rendered a blank pyte grid
+# over the scrollback the moment TUI was enabled.)
+sw = SecureTerminal(command='/bin/cat')
+_scroll = 'history-line-A\nhistory-line-B\nhistory-line-C\n'
+sw._raw = _scroll
+sw._append(_S.render_output(_scroll, 'strip'))
+ok('history-line-A' in sw.toPlainText() and 'history-line-C' in sw.toPlainText(),
+   'scrollback present in CLI mode')
+sw.apply_tui(True)
+ok('history-line-A' in sw.toPlainText(),
+   'CLI->TUI at a shell prompt keeps the scrollback (not blanked)')
+sw.apply_tui(False)
+ok('history-line-A' in sw.toPlainText(), 'TUI->CLI keeps the scrollback')
+for _ in range(5):
+    sw.apply_tui(True)
+    sw.apply_tui(False)
+ok('history-line-A' in sw.toPlainText() and 'history-line-C' in sw.toPlainText(),
+   'repeated CLI<->TUI toggling preserves the scrollback (solid)')
+# and when a full-screen program DOES take the grid then exits, the scrolling
+# document is rebuilt from retained output (only runs where pyte is installed).
+sw.apply_tui(True)
+if sw.current_tui():
+    sw._alt_screen = True
+    sw._sync_display()                      # a full-screen program takes the grid
+    sw._alt_screen = False
+    sw._sync_display()                      # it exits -> scrollback rebuilt
+    ok('history-line-A' in sw.toPlainText(),
+       'scrollback restored after a full-screen program exits')
+sw.apply_tui(False)
 # command hook: judge the typed line before Enter submits it. The terminal here
 # runs /bin/cat, which only echoes -- no typed string is ever executed.
 hk = SecureTerminal(command='/bin/cat')
