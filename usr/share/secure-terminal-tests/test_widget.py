@@ -361,6 +361,22 @@ win.act_reveal.setChecked(False)
 eq(win.current().current_mode(), 'strip', 'unchecking Reveal falls back to strip')
 ok(not win.act_show.icon().isNull() and not win.act_colors.icon().isNull(),
    'toolbar toggles carry icons')
+# security indicator: green safe / yellow TUI / red unicode-shown, highest wins
+eq(win._security_level()[1], 'Safe', 'strip + line mode -> green Safe')
+win.set_mode('show')
+eq(win._security_level()[1], 'Unicode shown', 'show mode -> red')
+win.set_mode('reveal')
+eq(win._security_level()[1], 'Unicode shown', 'reveal mode -> red')
+win.set_mode('strip')
+eq(win._security_level()[1], 'Safe', 'back to strip -> green')
+if tui_available():
+    win.set_tui(True)
+    eq(win._security_level()[1], 'Unicode shown',
+       'TUI auto-selects show -> red (unicode outranks TUI)')
+    win.set_mode('strip')
+    eq(win._security_level()[1], 'TUI mode', 'TUI + strip -> yellow')
+    win.set_tui(False)
+ok(not win.sec_button.icon().isNull(), 'security indicator shows a lamp icon')
 win.set_theme('light')
 win.set_zoom(140)
 win.set_mode('reveal')
