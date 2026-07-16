@@ -508,13 +508,17 @@ if tui_available():
                      'sleep 30\n')
         os.chmod(_script, 0o755)
         sw = SecureTerminal(command=_script)
+        _adv = []
+        sw.advise_signal.connect(_adv.append)   # advisories are EMITTED, not injected
         sw.resize(700, 300)
         sw.show()
         pump(300)
         _pid = sw._pid
         ok(sw._alt_screen, 'alt-screen tracked in line mode')
-        ok(sw._tui_hint_shown and '[secure-terminal]' in sw.toPlainText(),
-           'advisory shown once when a full-screen app runs in line mode')
+        ok(sw._tui_hint_shown and any('TUI' in a for a in _adv),
+           'advisory emitted (not injected into the document) for a full-screen app')
+        ok('[secure-terminal]' not in sw.toPlainText(),
+           'the advisory is not injected into the terminal, so it cannot be copied')
         sw.apply_tui(True)
         pump(50)
         eq(sw._pid, _pid, 'mode switch does NOT restart the shell (same pid)')
@@ -595,6 +599,19 @@ ok(not _is_font_noise('default', 'some real warning'), 'real message is not nois
 
 win = MainWindow()
 win.new_tab()
+# an advisory from a terminal surfaces as the window's dismissible banner, OUTSIDE
+# any terminal document (never injected, so it cannot be copied as program output).
+from PyQt6.QtWidgets import QPushButton as _QPushButton     # noqa: E402
+# isHidden(), not isVisible(): the top-level window is never show()n here, so
+# isVisible() is False for any child; isHidden() reflects the widget's own flag.
+ok(win._banner.isHidden(), 'the advisory banner starts hidden')
+win.current().advise_signal.emit('switch to TUI mode to view this program')
+ok(not win._banner.isHidden() and 'TUI' in win._banner_label.text(),
+   'a terminal advisory shows the window banner (not injected into the terminal)')
+ok('switch to TUI' not in win.current().toPlainText(),
+   'the advisory text is not injected into the terminal document')
+win._banner.findChild(_QPushButton).click()                # the close (X) button
+ok(win._banner.isHidden(), 'the banner X button dismisses it')
 QInputDialog.getText = staticmethod(lambda *a, **k: ('build', True))
 win.rename_tab(0)
 eq(win.tabs.tabText(0), 'build', 'tab rename')
