@@ -364,6 +364,38 @@ _shcur = QTextCursor(insh.document())
 _shcur.setPosition(1)
 eq(insh._cp_at(insh.cursorRect(_shcur).center()), 0x0416,
    '_cp_at reads a shown glyph via its own codepoint (show mode, no tag)')
+# markings off + ANSI colours on: the marking keeps the program's own foreground
+# (not dropped to a blank format) and still carries the codepoint (codex P2 fix).
+from PyQt6.QtCore import QPoint                           # noqa: E402
+_sgrk = tuple(sorted({'fg': 1, 'bg': None, 'bold': False}.items()))
+_mfmt = SecureTerminal(command='/bin/cat')._fmt_from_key((_S.MARK_KEY, _sgrk, 0x202E))
+eq(_mfmt.foreground().color().name(), '#cd0000',
+   'markings off + colours on keeps the program ANSI colour on the marking')
+eq(_mfmt.property(_CP_PROP), 0x202E, 'and the marking still carries the codepoint')
+# the hit-test targets ONLY the character under the point, never its neighbour: a
+# point over "_" reads the RLO, a point over the adjacent ASCII reads nothing
+# (codex P2: probing both sides bled the popup into adjacent glyphs).
+inb = SecureTerminal(command='/bin/cat')
+inb.apply_mode('strip')
+inb._append('a' + chr(0x202E) + 'b')                     # -> 'a_b'
+inb.resize(600, 200)
+inb.show()
+pump(30)
+
+
+def _midpt(term, i):
+    _c0 = QTextCursor(term.document())
+    _c0.setPosition(i)
+    _c1 = QTextCursor(term.document())
+    _c1.setPosition(i + 1)
+    _r0 = term.cursorRect(_c0)
+    _r1 = term.cursorRect(_c1)
+    return QPoint((_r0.x() + _r1.x()) // 2, _r0.center().y())
+
+
+eq(inb._cp_at(_midpt(inb, 1)), 0x202E, 'a point over "_" reads the RLO codepoint')
+ok(inb._cp_at(_midpt(inb, 0)) is None, 'a point over the adjacent "a" is not the marking')
+ok(inb._cp_at(_midpt(inb, 2)) is None, 'a point over the adjacent "b" is not the marking')
 # the active popup describes the character and copies its ESCAPE (never the raw
 # glyph -- putting a bidi override / homoglyph on the clipboard is the hazard).
 ins._show_char_popup(0x202E, ins.mapToGlobal(ins.rect().center()))
@@ -680,6 +712,22 @@ ok('switch to TUI' not in win.current().toPlainText(),
    'the advisory text is not injected into the terminal document')
 win._banner.findChild(_QPushButton).click()                # the close (X) button
 ok(win._banner.isHidden(), 'the banner X button dismisses it')
+# an advisory belongs to the tab that raised it, not the whole window: it shows
+# only while that tab is current, never over an unrelated tab (codex P2 fix).
+ok(win.tabs.count() >= 2, 'two tabs available for the per-tab banner check')
+_tabA = win.tabs.widget(0)
+_tabB = win.tabs.widget(1)
+win.tabs.setCurrentWidget(_tabA)
+_tabA.advise_signal.emit('tab A: switch to TUI mode')
+ok(not win._banner.isHidden() and 'tab A' in win._banner_label.text(),
+   'the advisory shows while its own tab (A) is current')
+win.tabs.setCurrentWidget(_tabB)
+ok(win._banner.isHidden(), 'the advisory does not hang over a different tab (B)')
+win.tabs.setCurrentWidget(_tabA)
+ok(not win._banner.isHidden() and 'tab A' in win._banner_label.text(),
+   'switching back to tab A shows its own advisory again')
+win._dismiss_advisory()
+ok(win._banner.isHidden(), 'dismiss clears the current tab advisory')
 QInputDialog.getText = staticmethod(lambda *a, **k: ('build', True))
 win.rename_tab(0)
 eq(win.tabs.tabText(0), 'build', 'tab rename')

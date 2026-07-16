@@ -96,7 +96,14 @@ _runs_off, _ = S.cells_to_runs([], _mk, 'reveal', False, False)
 # colour CLASS slot is None so nothing is coloured.
 _moff = [k for _t, k in _runs_off if isinstance(k, tuple) and k and k[0] == S.MARK_KEY]
 ok(_moff and all(k[1] is None and k[2] == 0x202E for k in _moff),
-   'markings off: codepoint still tagged, but no colour class')
+   'markings off + colours off: codepoint tagged, no colour source')
+# markings off but ANSI colours ON: the marking keeps the PROGRAM's own SGR as its
+# colour source, so disabling risk-class colouring never drops allowed ANSI colour.
+_sgr = tuple(sorted({'fg': 1, 'bg': None, 'bold': False}.items()))
+_runs_sgr, _ = S.cells_to_runs([], [(chr(0x202E), _sgr)], 'strip', True, False)
+_msgr = [k for _t, k in _runs_sgr if isinstance(k, tuple) and k and k[0] == S.MARK_KEY]
+ok(_msgr and _msgr[0] == (S.MARK_KEY, _sgr, 0x202E),
+   'markings off + colours on: the marking carries the program SGR as its colour')
 # the run TEXT is identical either way -- colouring never changes what is shown
 eq(''.join(t for t, _ in _runs), ''.join(t for t, _ in _runs_off),
    'colored markings change only the colour, never the safe text')
