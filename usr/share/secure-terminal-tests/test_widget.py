@@ -232,8 +232,15 @@ else:
                      'assertions could not run\n')
 
 # --- window: rename, colour, settings round-trip ------------------------------
-from secure_terminal.main import MainWindow          # noqa: E402
+from secure_terminal.main import MainWindow, _is_font_noise   # noqa: E402
 from secure_terminal import settings                 # noqa: E402
+
+# font-shaping warning filter: the qt.text.font.db flood is dropped, real
+# messages pass through
+ok(_is_font_noise('qt.text.font.db', 'OpenType support missing for "X", script 9'),
+   'font-db warning is noise')
+ok(_is_font_noise('', 'OpenType support missing for "Y"'), 'OpenType line is noise')
+ok(not _is_font_noise('default', 'some real warning'), 'real message is not noise')
 
 win = MainWindow()
 win.new_tab()
