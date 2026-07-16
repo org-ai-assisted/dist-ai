@@ -89,10 +89,16 @@ sent.clear()
 # Ctrl+C is a signal, not a byte; nothing is written to the pty
 key(t, Qt.Key.Key_C, '', Qt.KeyboardModifier.ControlModifier)
 ok(b'\x03' not in sent, 'Ctrl+C does not write a byte (it signals)')
-# non-ASCII input dropped
+# printable non-ASCII is a deliberate keystroke -> sent UTF-8 (euro, e-acute)
 sent.clear()
+key(t, Qt.Key.Key_unknown, chr(0x20AC))       # euro sign
 key(t, Qt.Key.Key_unknown, chr(0x00E9))       # e-acute
-eq(sent, [], 'non-ascii input dropped')
+eq(sent, [chr(0x20AC).encode('utf-8'), chr(0x00E9).encode('utf-8')],
+   'printable unicode input sent as utf-8')
+# a non-printable keystroke (bidi override) is still dropped
+sent.clear()
+key(t, Qt.Key.Key_unknown, chr(0x202E))       # RLO bidi override
+eq(sent, [], 'non-printable (bidi) input dropped')
 
 # --- _append: backspace erase, CRLF, overwrite, line-local --------------------
 a = SecureTerminal(command='/bin/cat')

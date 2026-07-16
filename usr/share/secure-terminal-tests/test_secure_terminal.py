@@ -158,6 +158,14 @@ eq(S.tui_cell(BEL, 'strip'), '_', 'tui control -> _')
 eq(S.tui_cell(CAFE[-1], 'reveal'), CAFE[-1], 'tui reveal keeps one-wide glyph')
 eq(S.tui_cell(BIDI, 'reveal'), '_', 'tui reveal neutralizes bidi one-wide')
 eq(S.tui_cell('', 'strip'), ' ', 'tui empty cell -> space')
+# a pyte cell may be a multi-codepoint grapheme (base + combining) -> must not
+# crash (this is what "cat /dev/random" in show mode hit)
+_grapheme = 'a' + chr(0x0301)                    # a + combining acute
+eq(S.tui_cell(_grapheme, 'show'), _grapheme, 'tui multi-cp grapheme kept in show')
+eq(S.tui_cell(_grapheme, 'strip'), '_', 'tui multi-cp grapheme -> _ in strip')
+eq(S.tui_cell('a' + BEL, 'show'), '_', 'tui grapheme with a control -> _')
+ok(isinstance(S.tui_cell(chr(0x1F600) + chr(0x1F600), 'show'), str),
+   'tui two-astral cell does not crash')
 
 # --- sanitize_title: program-supplied title / notification -> safe ASCII ------
 eq(S.sanitize_title('My Build'), 'My Build', 'title plain ascii')

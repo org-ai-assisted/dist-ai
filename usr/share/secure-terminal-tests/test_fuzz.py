@@ -78,12 +78,14 @@ def prop_parse_sgr(param):
 
 
 @RUN
-@given(st.text(min_size=0, max_size=1), st.sampled_from(S.DISPLAY_MODES))
+@given(st.text(min_size=0, max_size=4), st.sampled_from(S.DISPLAY_MODES))
 def prop_tui_cell(ch, mode):
+    # a pyte cell may hold a multi-codepoint grapheme, so feed strings of any
+    # length; tui_cell must never raise (this is where cat /dev/random crashed).
     out = S.tui_cell(ch, mode)
-    assert len(out) == 1                      # never widens the fixed grid
-    # a control character must never render as itself in a cell
-    if ch and ord(ch) < 0x20:
+    assert isinstance(out, str)
+    # any control codepoint in the cell -> the whole cell is neutralized to '_'
+    if any(ord(c) < 0x20 for c in ch):
         assert out == '_'
 
 
