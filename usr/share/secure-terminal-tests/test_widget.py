@@ -682,6 +682,17 @@ eq([(t['title'], t['tui']) for t in
 eq(_pla([]).tabs, [], 'cli: bare launch specifies no tabs (normal startup)')
 eq(_pla(['--title', 'a', '--tab', '--title', 'b', '--', 'sleep', '9'])
    .tabs[-1]['command'], ['sleep', '9'], 'cli: -- command attaches to last tab')
+# robustness: adversarial / malformed argv must never crash uncaught (argparse
+# may SystemExit on a bad option, which is correct for a CLI; nothing else raises)
+for _argv in ([], ['--'], ['--', '--tab', '--title'], ['--tab'], ['--tab', '--tab'],
+              ['--title'], ['--mode', 'bogus'], ['--class'], ['-e'],
+              ['--', '-e', '--tab', '--'], ['\x00', '\x1b', '--tab', 'x'],
+              ['--tab'] * 50):
+    try:
+        _r = _pla(_argv)
+        ok(isinstance(_r.tabs, list), 'cli: argv %r -> a valid spec' % (_argv[:3],))
+    except SystemExit:
+        ok(True, 'cli: argv %r rejected cleanly (argparse exit)' % (_argv[:3],))
 # a launch tab opens with its title/mode/command
 _lw = MainWindow(launch=_pla(['--title', 'mytab', '--mode', 'reveal',
                               '--', 'sleep', '30']))
