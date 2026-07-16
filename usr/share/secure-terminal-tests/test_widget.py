@@ -239,6 +239,33 @@ if tui_available():
     rows = tui.toPlainText().split('\n')
     hit = [(i, r.index('PLACED')) for i, r in enumerate(rows) if 'PLACED' in r]
     eq(hit[:1], [(2, 4)], 'tui cursor addressing')
+    # full-screen program layout (what vim/htop/tmux emit): a box drawn with
+    # box-drawing characters, cursor-addressed content, and a bottom status line.
+    # In show mode the box-drawing glyphs survive; the grid places every piece.
+    fs = SecureTerminal(command='/bin/cat', tui=True)
+    fs.resize(700, 300)
+    fs.show()
+    pump(50)
+    fs.apply_mode('show')
+    _last = fs._screen.lines                   # actual grid height in rows
+    _tl, _tr = chr(0x250C), chr(0x2510)        # box corners (vim/tmux borders)
+    _h, _v = chr(0x2500), chr(0x2502)
+    fs._stream.feed(('\x1b[2J\x1b[1;1H' + _tl + _h * 6 + _tr
+                     + '\x1b[2;1H' + _v + ' vim  ' + _v
+                     + ('\x1b[%d;1H' % _last) + '-- INSERT --').encode('utf-8'))
+    fs._render_tui()
+    _fr = fs.toPlainText().split('\n')
+    ok(_fr[0].startswith(_tl + _h * 6 + _tr), 'tui draws the top box border')
+    ok(_v + ' vim  ' + _v in _fr[1], 'tui places boxed content on row 2')
+    ok(_fr[_last - 1].startswith('-- INSERT --'),
+       'tui places the status line on the last row')
+    # the same frame in strip mode: box-drawing glyphs become _, ASCII stays
+    fs.apply_mode('strip')
+    fs._render_tui()
+    _sr = fs.toPlainText().split('\n')
+    ok(_tl not in _sr[0] and '_' in _sr[0], 'strip mode neutralizes box glyphs')
+    ok(_sr[_last - 1].startswith('-- INSERT --'), 'strip keeps the ASCII status line')
+    fs.shutdown()
     # per-cell bidi neutralized in strip mode
     tui.apply_mode('strip')
     tui._stream.feed(b'\x1b[10;1Ha\xe2\x80\xaeb')     # a U+202E b
