@@ -642,8 +642,8 @@ try:
     eq(lc.get('colors'), 'false', 'locked colours keep the admin value')
     eq(lc.get('tui'), 'false', 'locked tui keeps the admin value')
     eq(lc.get('theme'), 'light', 'an UNlocked key still lets the user win')
-    eq(sorted(lc.locked), ['colors', 'tui', 'unicode_mode'],
-       'lock is privileged-only: a user config cannot lock/unlock')
+    eq(sorted(lc.locked), ['colors', 'remote_control', 'tui', 'unicode_mode'],
+       'locked = admin locks + the always-privileged remote_control')
     eq(sorted(lc.violations), ['colors', 'tui'],
        'ignored user overrides of locked keys are recorded')
     # the window disables the locked controls and guards the setters
@@ -725,7 +725,42 @@ ok(any(srvwin.tabs.tabText(i) == 'fromclient' for i in range(srvwin.tabs.count()
 eq(srvwin._dispatch_request(b'{"op":"bogus"}').get('ok'), False,
    'ipc: unknown op refused')
 eq(srvwin._dispatch_request(b'not json').get('ok'), False, 'ipc: bad json refused')
+# remote control is OFF here (no admin conf) -> ctl ops refused
+eq(srvwin._dispatch_request(b'{"op":"ctl-ls"}').get('ok'), False,
+   'ctl: refused when remote_control is off')
 srvwin.close()
+
+# --- remote control (ctl), enabled by a privileged config ---------------------
+_rcsys = tempfile.mkdtemp(prefix='st-rcsys-')
+with open(os.path.join(_rcsys, '90_rc.conf'), 'w') as _f:
+    _f.write('remote_control=true\n')
+_o_sys2 = settings._system_dirs
+settings._system_dirs = lambda: [_rcsys]
+try:
+    rcwin = MainWindow(launch=_pla(['--title', 'main']))
+    pump(120)
+    ok(rcwin._remote_control, 'ctl: privileged remote_control=true enables it')
+    _lsr = rcwin._dispatch_request(b'{"op":"ctl-ls"}')
+    ok(_lsr.get('ok') and _lsr['tabs'][0]['title'] == 'main', 'ctl: ls lists tabs')
+    _t = spy_writes(rcwin.current())
+    _sr = rcwin._dispatch_request(
+        b'{"op":"ctl-send-text","tab":"title:main","text":"ok\\n"}')
+    ok(_sr.get('ok') and _t == [b'ok\r'],
+       'ctl: send-text injects sanitized text (newline -> CR)')
+    # a control character in send-text is dropped by the sanitizer
+    _t2 = spy_writes(rcwin.current())
+    rcwin._dispatch_request(
+        b'{"op":"ctl-send-text","tab":"id:0","text":"a\\u001bb"}')
+    ok(_t2 == [b'ab'], 'ctl: send-text strips an escape (no injection)')
+    rcwin._dispatch_request(
+        b'{"op":"ctl-set-tab-title","tab":"id:0","title":"renamed"}')
+    eq(rcwin.tabs.tabText(0), 'renamed', 'ctl: set-tab-title renames the tab')
+    eq(rcwin._dispatch_request(
+        b'{"op":"ctl-send-text","tab":"title:nope","text":"x"}').get('ok'), False,
+        'ctl: an unmatched tab is an error')
+    rcwin.close()
+finally:
+    settings._system_dirs = _o_sys2
 
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(widget): %d passed, %d failed\n'

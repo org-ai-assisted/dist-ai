@@ -321,6 +321,17 @@ ok('colors' in _lc.locked, 'settings: lock reported')
 with open(os.path.join(_usrd, '96-userlock.conf'), 'w', encoding='utf-8') as _h:
     _h.write('theme=light\nlock=theme\n')
 ok('theme' not in SET.load().locked, 'settings: a user config cannot lock a key')
+# privileged-only keys (remote_control): admin-only, no lock= needed
+ok('remote_control' in SET.load().locked,
+   'settings: remote_control is always privileged (auto-locked)')
+with open(os.path.join(_usrd, '97-rc.conf'), 'w', encoding='utf-8') as _h:
+    _h.write('remote_control=true\n')
+eq(SET.load().get('remote_control'), None,
+   'settings: a user config cannot enable remote_control')
+with open(os.path.join(_sysd, '25-rc.conf'), 'w', encoding='utf-8') as _h:
+    _h.write('remote_control=true\n')
+eq(SET.load().get('remote_control'), 'true',
+   'settings: only a privileged dir can enable remote_control')
 
 # --- ipc: single-instance socket helpers (Qt-free) ----------------------------
 import struct                                          # noqa: E402
