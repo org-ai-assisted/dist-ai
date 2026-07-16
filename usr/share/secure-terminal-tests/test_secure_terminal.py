@@ -89,11 +89,14 @@ eq(S.marking_class(0x07), 'control', 'BEL is control')
 eq(S.marking_class(0x00E9), 'nonascii', 'e-acute is nonascii')
 _mk = [(chr(0x202E), ())]
 _runs, _ = S.cells_to_runs([], _mk, 'reveal', False, True)
-ok(any(k == (S.MARK_KEY, 'bidi') for _t, k in _runs),
-   'a bidi badge is tagged (MARK_KEY, bidi) for colouring when markings on')
+ok(any(k == (S.MARK_KEY, 'bidi', 0x202E) for _t, k in _runs),
+   'a bidi badge is tagged (MARK_KEY, bidi, codepoint) for colour + inspection')
 _runs_off, _ = S.cells_to_runs([], _mk, 'reveal', False, False)
-ok(all(not (isinstance(k, tuple) and k and k[0] == S.MARK_KEY) for _t, k in _runs_off),
-   'no marking key emitted when colored markings are off')
+# markings off: still tagged with the codepoint (so hover/click works), but the
+# colour CLASS slot is None so nothing is coloured.
+_moff = [k for _t, k in _runs_off if isinstance(k, tuple) and k and k[0] == S.MARK_KEY]
+ok(_moff and all(k[1] is None and k[2] == 0x202E for k in _moff),
+   'markings off: codepoint still tagged, but no colour class')
 # the run TEXT is identical either way -- colouring never changes what is shown
 eq(''.join(t for t, _ in _runs), ''.join(t for t, _ in _runs_off),
    'colored markings change only the colour, never the safe text')

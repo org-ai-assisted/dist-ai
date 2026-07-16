@@ -318,6 +318,74 @@ _capcur.setPosition(3, QTextCursor.MoveMode.KeepAnchor)
 cap.setTextCursor(_capcur)
 ok(cap.createMimeDataFromSelection().text() == 'X',
    'a selection after an astral char copies the right cell (UTF-16 aware)')
+# --- inspect popups: a marked character carries its source codepoint, so the
+# hover tooltip and the double-click popup can describe it in EVERY mode ---------
+from secure_terminal.terminal import _CP_PROP            # noqa: E402
+from PyQt6.QtWidgets import QLabel, QPushButton           # noqa: E402
+from PyQt6.QtGui import QGuiApplication                   # noqa: E402
+
+
+def _fmt_cp(term, index):
+    _c = QTextCursor(term.document())
+    _c.setPosition(index)
+    _c.movePosition(QTextCursor.MoveOperation.NextCharacter,
+                    QTextCursor.MoveMode.KeepAnchor)
+    return _c.charFormat().property(_CP_PROP)
+
+
+ins = SecureTerminal(command='/bin/cat')
+ins.apply_mode('strip')
+ins._append('a' + chr(0x202E) + 'b')                     # RLO between two ASCII
+eq(ins.toPlainText(), 'a_b', 'strip shows the RLO override as "_"')
+eq(_fmt_cp(ins, 1), 0x202E, 'even the strip "_" carries the source codepoint (RLO)')
+inr = SecureTerminal(command='/bin/cat')
+inr.apply_mode('reveal')
+inr._append(chr(0x20AC))                                 # euro sign
+eq(_fmt_cp(inr, 0), 0x20AC, 'a reveal badge carries the source codepoint (euro)')
+# _cp_at (the real hover/click hit-test) recovers it from a viewport point. The
+# badge is 8 cells wide and every cell carries the tag, so a mid-badge point is a
+# stable target regardless of exact glyph metrics.
+inr.resize(600, 200)
+inr.show()
+pump(30)
+_mid = QTextCursor(inr.document())
+_mid.setPosition(4)                                      # inside "<U+20AC>"
+_badge_pt = inr.cursorRect(_mid).center()
+eq(inr._cp_at(_badge_pt), 0x20AC, '_cp_at recovers the codepoint under a point (reveal)')
+# and in SHOW mode a readable glyph keeps no tag but IS its own codepoint: _cp_at
+# falls back to the character itself (three copies give a stable mid target).
+insh = SecureTerminal(command='/bin/cat')
+insh.apply_mode('show')
+insh._append(chr(0x0416) * 3)                            # Cyrillic Zhe, printable
+insh.resize(600, 200)
+insh.show()
+pump(30)
+_shcur = QTextCursor(insh.document())
+_shcur.setPosition(1)
+eq(insh._cp_at(insh.cursorRect(_shcur).center()), 0x0416,
+   '_cp_at reads a shown glyph via its own codepoint (show mode, no tag)')
+# the active popup describes the character and copies its ESCAPE (never the raw
+# glyph -- putting a bidi override / homoglyph on the clipboard is the hazard).
+ins._show_char_popup(0x202E, ins.mapToGlobal(ins.rect().center()))
+eq(ins._char_popup.windowTitle(), 'Character U+202E', 'popup is titled by codepoint')
+_lbl = ins._char_popup.findChild(QLabel)
+ok('RIGHT-TO-LEFT OVERRIDE' in _lbl.text() and 'bidirectional' in _lbl.text(),
+   'popup names the character and its risk class')
+_copy = [b for b in ins._char_popup.findChildren(QPushButton)
+         if b.text().startswith('Copy')][0]
+_copy.click()
+eq(QGuiApplication.clipboard().text(), '\\u202e',
+   'copy puts the \\uXXXX escape (not the raw glyph) on the clipboard')
+ins._char_popup.close()
+# a double-click on a marking opens its popup; elsewhere it falls through
+_dc = []
+ins._show_char_popup = lambda cp, pt: _dc.append(cp)
+ins._cp_at = lambda pos: 0x202E
+_dbl = QMouseEvent(QEvent.Type.MouseButtonDblClick, QPointF(5, 5), QPointF(5, 5),
+                   Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                   Qt.KeyboardModifier.NoModifier)
+ins.mouseDoubleClickEvent(_dbl)
+eq(_dc, [0x202E], 'double-click on a marking opens its inspection popup')
 # command hook: judge the typed line before Enter submits it. The terminal here
 # runs /bin/cat, which only echoes -- no typed string is ever executed.
 hk = SecureTerminal(command='/bin/cat')
