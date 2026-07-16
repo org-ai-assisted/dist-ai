@@ -96,7 +96,7 @@ eq(S.paste_findings(CAFE), (True, False), 'findings unicode')
 eq(S.paste_findings('a' + BEL + 'b'), (False, True), 'findings control')
 eq(S.paste_findings('a' + BIDI + NUL), (True, True), 'findings both')
 
-# --- colours: environment gate (NO_COLOR / TERM=dumb) -------------------------
+# --- colours: environment gate (NO_COLOR only, NOT the launch TERM) -----------
 saved_env = {k: os.environ.get(k) for k in ('NO_COLOR', 'TERM', 'COLORTERM')}
 try:
     os.environ.pop('NO_COLOR', None)
@@ -108,7 +108,9 @@ try:
     ok(S.colors_allowed() is True, 'empty NO_COLOR does not force off')
     os.environ.pop('NO_COLOR', None)
     os.environ['TERM'] = 'dumb'
-    ok(S.colors_allowed() is False, 'TERM=dumb forces off')
+    # a dumb LAUNCH TERM must NOT disable colours: the terminal renders to a
+    # screen, not to its parent (regression: launched from a line-mode terminal)
+    ok(S.colors_allowed() is True, 'a dumb launch TERM does not force colours off')
 finally:
     for key, value in saved_env.items():
         if value is None:
