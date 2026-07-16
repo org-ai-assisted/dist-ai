@@ -231,7 +231,20 @@ _tabs = [{'name': 'a', 'text': 'l1\nl2\nl3', 'zoom': 100},
          {'name': 'b', 'text': 'x'}]
 SESS.save(_tabs)
 eq(SESS.load(), _tabs, 'session round-trips')
+# each tab's scrollback is its own log file; the index json holds no bulk text
+import glob as _glob                                # noqa: E402
+_sdir = os.path.join(os.environ['XDG_STATE_HOME'], 'secure-terminal')
+eq(len(_glob.glob(os.path.join(_sdir, 'tab-*.log'))), 2, 'one log file per tab')
+with open(os.path.join(_sdir, 'tab-0.log'), encoding='utf-8') as _h:
+    eq(_h.read(), 'l1\nl2\nl3', 'tab-0 log holds that tab scrollback')
+with open(SESS.session_path(), encoding='utf-8') as _h:
+    ok('l1\nl2\nl3' not in _h.read(), 'index json holds no scrollback text')
+SESS.save(_tabs[:1])
+eq(len(_glob.glob(os.path.join(_sdir, 'tab-*.log'))), 1,
+   'stale per-tab log removed when the tab count shrinks')
 SESS.clear()
+eq(_glob.glob(os.path.join(_sdir, 'tab-*.log')), [],
+   'clear removes every per-tab log')
 eq(SESS.load(), [], 'cleared session -> empty')
 eq(SESS.cap_text('\n'.join(str(i) for i in range(10)), 3), '7\n8\n9',
    'cap_text keeps the tail')
