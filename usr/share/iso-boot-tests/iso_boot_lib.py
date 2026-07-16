@@ -483,7 +483,9 @@ class SerialBootSession:
         ## Confirm an interactive shell via a marker (also catches a rejected login or a forced
         ## password change). In dash the command echoes cleanly, so the marker matches.
         login_ok = "%s_LOGIN_OK_%s" % (_MARK, self.username)
-        self._send_slow("printf '%%s\\n' " + shlex.quote(login_ok))
+        ## NOTE: this is string CONCATENATION, not %-formatting, so the format is a single
+        ## '%s' (a literal '%%s' here would make printf emit '%s' instead of the marker).
+        self._send_slow("printf '%s\\n' " + shlex.quote(login_ok))
         idx = self.child.expect(
             [
                 re.escape(login_ok) + r"\r?\n",
