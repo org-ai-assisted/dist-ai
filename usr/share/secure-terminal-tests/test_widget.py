@@ -408,6 +408,16 @@ ok(all((win.tabs.widget(i).current_theme(), win.tabs.widget(i).current_mode(),
        for i in range(win.tabs.count())),
    'global settings applied to every open tab')
 eq(win._default_mode, 'reveal', 'global settings updated the default mode')
+# slash-command palette: applies settings, leading slash optional, invalid -> False
+ok(win.run_command('/theme light') and win.current().current_theme() == 'light',
+   'command /theme light')
+ok(win.run_command('mode reveal') and win.current().current_mode() == 'reveal',
+   'command mode reveal (no leading slash)')
+ok(win.run_command('/colors on') and win.current().colors_enabled(),
+   'command /colors on')
+ok(win.run_command('/zoom 150') and win.current().current_zoom() == 150,
+   'command /zoom 150')
+ok(not win.run_command('/bogus xyz'), 'unknown command returns False')
 win.set_theme('light')
 win.set_zoom(140)
 win.set_mode('reveal')
