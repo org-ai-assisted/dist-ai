@@ -78,6 +78,7 @@ def run_scenario(scenario, args):
             fast=args.fast,
             memory=args.memory,
             smp=args.smp,
+            extra_append=args.extra_append,
             logfile=sys.stdout.buffer if args.serial_echo else None,
             use_qmp=not args.no_qmp,
         ) as sess:
@@ -123,6 +124,9 @@ def main():
     parser.add_argument("--password", default="changeme")
     parser.add_argument("--fast", action="store_true",
                         help="append mitigations=off (pure-TCG speed; NOT a fidelity test)")
+    parser.add_argument("--extra-append", dest="extra_append", default=None,
+                        help="extra kernel cmdline passed through to dm-qemu (e.g. 'fstab=0' to "
+                             "ignore a seeded /etc/fstab)")
     parser.add_argument("--memory", type=int, default=None, help="guest RAM in MB")
     parser.add_argument("--smp", type=int, default=None, help="guest vCPUs")
     parser.add_argument("--boot-timeout", type=int, default=2400,
