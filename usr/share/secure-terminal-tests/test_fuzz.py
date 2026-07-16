@@ -18,18 +18,39 @@ FAILURE, not a skip. Exit 0 on full pass, 1 on any failure.
 """
 
 import sys
+import os
+import tempfile
+import importlib.util
 
 try:
     from hypothesis import given, settings, strategies as st
     from secure_terminal import sanitize as S
+    from secure_terminal import settings as SET
+    from secure_terminal import session as SESS
 except Exception as exc:  # pylint: disable=broad-except
     sys.stderr.write('secure-terminal-tests(fuzz): FAIL missing dependency: '
                      '%s\n' % exc)
     sys.exit(1)
 
+# hooklib lives in the hooks dir, not on the package path: load it directly.
+_usr = os.path.abspath(S.__file__)
+for _ in range(5):
+    _usr = os.path.dirname(_usr)
+_hlpath = os.path.join(_usr, 'share', 'secure-terminal', 'hooks', 'hooklib.py')
+HL = None
+if os.path.exists(_hlpath):
+    _spec = importlib.util.spec_from_file_location('hooklib', _hlpath)
+    HL = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(HL)
+
 FAIL = 0
 SAFE_OUTPUT = frozenset((0x08, 0x09, 0x0A, 0x0D)) | frozenset(range(0x20, 0x7F))
 RUN = settings(max_examples=400, deadline=None)
+
+# reusable temp locations for the config/session parsers (overwritten per example)
+_CONF_FILE = tempfile.mktemp(suffix='.conf')
+_STATE_DIR = tempfile.mkdtemp(prefix='st-fuzz-state-')
+SESS._state_dir = lambda: _STATE_DIR       # so session.load reads our temp dir
 
 
 @RUN
@@ -185,11 +206,88 @@ def prop_ipc_framer(chunks):
         assert len(result) == length
 
 
+@RUN
+@given(st.text(max_size=64), st.text(max_size=64),
+       st.integers(min_value=0, max_value=64),
+       st.integers(min_value=0, max_value=128))
+def prop_apply_line_edits(line, text, col, max_line):
+    # the legacy bulk line-editor: any (line, cursor, chunk) must not raise, the
+    # cursor stays within the line, and no completed line is lost.
+    completed, cur, newcol = S.apply_line_edits(line, min(col, len(line)),
+                                                text, max_line)
+    assert isinstance(completed, list) and isinstance(cur, str)
+    assert all(isinstance(c, str) for c in completed)
+    assert 0 <= newcol <= len(cur)
+
+
+@RUN
+@given(st.text())
+def prop_settings_parse(text):
+    # a config drop-in with arbitrary contents must parse to a str->str dict and
+    # never raise (a malformed/hostile .conf can never crash startup).
+    with open(_CONF_FILE, 'w', encoding='utf-8') as handle:
+        handle.write(text)
+    out = {}
+    SET._parse_into(_CONF_FILE, out)
+    assert all(isinstance(k, str) and isinstance(v, str)
+               for k, v in out.items())
+
+
+@RUN
+@given(st.binary(max_size=2048))
+def prop_session_load(data):
+    # arbitrary bytes in the session file (corrupt/hostile) must yield a list and
+    # never raise -- a bad session can never brick startup.
+    with open(os.path.join(_STATE_DIR, 'session.json'), 'wb') as handle:
+        handle.write(data)
+    result = SESS.load()
+    assert isinstance(result, list)
+
+
+@RUN
+@given(st.text())
+def prop_read_rules(text):
+    # the hook rules parser: arbitrary text must yield None or a list of
+    # (verdict, pattern, message, suggestion) 4-tuples, never raise.
+    if HL is None:
+        return
+    HL.read_file = lambda name: text
+    rules = HL.read_rules('x')
+    assert rules is None or isinstance(rules, list)
+    for rule in (rules or []):
+        assert len(rule) == 4 and rule[0] in ('allow', 'block', 'ask')
+        assert all(isinstance(field, str) for field in rule)
+
+
+_PRIV_DIR = tempfile.mkdtemp(prefix='st-fuzz-priv-')
+os.makedirs(os.path.join(_PRIV_DIR, 'secure-terminal.d'), exist_ok=True)
+
+
+@RUN
+@given(st.text())
+def prop_privileged_conf(text):
+    # the hooks.conf gate parser: arbitrary contents must yield a str or None and
+    # never raise (a malformed gate file can never crash a hook).
+    if HL is None:
+        return
+    with open(os.path.join(_PRIV_DIR, 'secure-terminal.d', 'hooks.conf'),
+              'w', encoding='utf-8') as handle:
+        handle.write(text)
+    HL._PRIVILEGED = (_PRIV_DIR,)
+    value = HL._privileged_conf_value('hook_config_allow_user')
+    assert value is None or isinstance(value, str)
+
+
 PROPS = [
     ('cells_to_runs', prop_cells_to_runs),
     ('sanitize_bytes', prop_sanitize_bytes),
     ('describe_codepoint', prop_describe_codepoint),
     ('ipc_framer', prop_ipc_framer),
+    ('apply_line_edits', prop_apply_line_edits),
+    ('settings_parse', prop_settings_parse),
+    ('session_load', prop_session_load),
+    ('read_rules', prop_read_rules),
+    ('privileged_conf', prop_privileged_conf),
     ('render_output', prop_render_output),
     ('feed_line_edits', prop_feed_line_edits),
     ('sanitize_paste', prop_sanitize_paste),

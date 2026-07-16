@@ -829,6 +829,49 @@ ok('visible-text' in _doc, 'ssh/cat: honest visible text is shown')
 ok('pwned' not in _doc, 'ssh/cat: the OSC-0 title-injection payload is stripped')
 ssh.shutdown()
 
+# --- fuzz the Qt-side request parsers (owner-only socket, but still defensive) -
+from hypothesis import given as _given, strategies as _hst   # noqa: E402
+from hypothesis import settings as _hset                     # noqa: E402
+from secure_terminal.main import _sanitize_tab_spec          # noqa: E402
+_HRUN = _hset(max_examples=150, deadline=None)
+
+
+@_HRUN
+@_given(_hst.dictionaries(
+    _hst.text(max_size=12),
+    _hst.one_of(_hst.none(), _hst.text(max_size=32), _hst.booleans(),
+                _hst.integers(), _hst.lists(_hst.text(max_size=8), max_size=4))))
+def _fuzz_tab_spec(spec):
+    out = _sanitize_tab_spec(spec)
+    assert set(out) == {'title', 'tui', 'mode', 'command'}
+    assert out['title'] is None or isinstance(out['title'], str)
+    assert out['tui'] is None or isinstance(out['tui'], bool)
+    assert out['mode'] is None or isinstance(out['mode'], str)
+
+
+try:
+    _fuzz_tab_spec()
+    ok(True, 'fuzz: _sanitize_tab_spec validates arbitrary IPC tab specs')
+except Exception as _e:                # pylint: disable=broad-except
+    ok(False, 'fuzz: _sanitize_tab_spec raised: %s' % _e)
+
+_fw = MainWindow(launch=_pla([]))
+
+
+@_HRUN
+@_given(_hst.binary(max_size=256))
+def _fuzz_dispatch(payload):
+    reply = _fw._dispatch_request(payload)
+    assert isinstance(reply, dict) and 'ok' in reply
+
+
+try:
+    _fuzz_dispatch()
+    ok(True, 'fuzz: _dispatch_request handles arbitrary IPC bytes without crashing')
+except Exception as _e:                # pylint: disable=broad-except
+    ok(False, 'fuzz: _dispatch_request raised: %s' % _e)
+_fw.close()
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(widget): %d passed, %d failed\n'
                  % (PASS, FAIL))
