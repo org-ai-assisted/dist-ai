@@ -80,9 +80,23 @@ for mode in ('strip', 'show', 'reveal'):
     eq(S.render_output('ab\x08\r\t\nX', mode), 'ab\x08\r\t\nX',
        'editing controls pass in %s' % mode)
 
+# CSI with a private-parameter prefix (< = > ?) -- a capable-TERM program emits
+# these (modifyOtherKeys "\x1b[>4;2m", cursor hide "\x1b[?25l") -- must strip whole
+eq(S.render_output('a\x1b[>4;2mb', 'strip'), 'ab', 'strip CSI private > param')
+eq(S.render_output('a\x1b[?25lb', 'strip'), 'ab', 'strip CSI private ? param')
+eq(S.render_output('a\x1b[=3hb', 'strip'), 'ab', 'strip CSI private = param')
 # CSI cursor moves, OSC hyperlink and bare escapes all vanish
 eq(S.render_output('a\x1b[2Jb', 'strip'), 'ab', 'strip CSI clear')
 eq(S.render_output('a\x1b]8;;http://evil\x07b', 'strip'), 'ab', 'strip OSC link')
+
+# --- describe_codepoint: the reveal-badge tooltip -----------------------------
+_euro = S.describe_codepoint(0x20AC)
+ok('U+20AC' in _euro and 'EURO SIGN' in _euro and 'Currency Symbol' in _euro
+   and '\\u20ac' in _euro, 'describe_codepoint: euro name+category+escape')
+ok('RIGHT-TO-LEFT OVERRIDE' in S.describe_codepoint(0x202E), 'describe: bidi name')
+ok('\\U0001f600' in S.describe_codepoint(0x1F600), 'describe: astral uses \\U escape')
+ok('not a code point' in S.describe_codepoint(0x110000), 'describe: out-of-range guarded')
+ok('unnamed' in S.describe_codepoint(0x07), 'describe: unnamed control still described')
 
 # --- full-screen (alternate screen) detection ---------------------------------
 ok(S.wants_full_screen('\x1b[?1049h') is True, 'detects alt-screen enter (1049)')
@@ -163,8 +177,10 @@ eq(S.tui_cell(chr(0x2500), 'show'), chr(0x2500), 'tui show renders box-drawing')
 eq(S.tui_cell(BIDI, 'show'), '_', 'tui show still neutralizes bidi')
 eq(S.tui_cell(ZWSP, 'show'), '_', 'tui show still neutralizes zero-width')
 eq(S.tui_cell(BEL, 'strip'), '_', 'tui control -> _')
-# reveal must NOT expand a cell (badge would break the grid): collapses to glyph
-eq(S.tui_cell(CAFE[-1], 'reveal'), CAFE[-1], 'tui reveal keeps one-wide glyph')
+# reveal cannot show a <U+XXXX> badge in a fixed cell, so in TUI it collapses to
+# the safe "_" (like strip) -- never the raw glyph, which would render a homoglyph
+# deceptively under the green "reveal is safe" lamp.
+eq(S.tui_cell(CAFE[-1], 'reveal'), '_', 'tui reveal is safe "_", not the glyph')
 eq(S.tui_cell(BIDI, 'reveal'), '_', 'tui reveal neutralizes bidi one-wide')
 eq(S.tui_cell('', 'strip'), ' ', 'tui empty cell -> space')
 # a pyte cell may be a multi-codepoint grapheme (base + combining) -> must not

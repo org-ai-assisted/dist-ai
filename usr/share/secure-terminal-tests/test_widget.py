@@ -433,6 +433,28 @@ _cwd = os.getcwd()
 _expect = '~' if _cwd == os.path.expanduser('~') else (os.path.basename(_cwd) or '/')
 eq(cw.cwd_basename(), _expect, 'cwd_basename matches the shell working directory')
 
+# hovering a reveal <U+XXXX> badge shows a tooltip explaining the code point.
+from PyQt6.QtWidgets import QToolTip                    # noqa: E402
+from PyQt6.QtGui import QHelpEvent                      # noqa: E402
+tt = SecureTerminal(command='/bin/cat')
+tt.resize(700, 300)
+tt.show()
+tt.apply_mode('reveal')
+tt._append('x')
+tt._append_runs([('<U+20AC>', None)])
+pump(20)
+_i = tt.toPlainText().index('<U+20AC>') + 3
+_c = tt.textCursor()
+_c.setPosition(_i)
+_rect = tt.cursorRect(_c)
+_vp = _rect.center()
+_hv = QHelpEvent(QEvent.Type.ToolTip, _vp, tt.viewport().mapToGlobal(_vp))
+tt.event(_hv)
+pump(20)
+ok(QToolTip.isVisible() and 'EURO SIGN' in QToolTip.text(),
+   'hovering a reveal badge shows the code-point tooltip')
+QToolTip.hideText()
+
 # --- window: rename, colour, settings round-trip ------------------------------
 from secure_terminal.main import (                   # noqa: E402
     MainWindow, _is_font_noise, _read_version, APP_VERSION,
@@ -511,6 +533,23 @@ if tui_available():
     eq((win._mode_level()[1], win._mode_level()[0]), ('TUI', '#e5a50a'),
        'TUI -> yellow mode lamp (independent of the display lamp)')
     win.set_tui(False)
+    # enabling TUI leans this tab to 'show' for readability but must NOT persist
+    # 'show' as the global default, and turning TUI off restores the prior mode.
+    win.set_mode('strip')
+    win.set_tui(True)
+    eq(win.current().current_mode(), 'show', 'TUI leans the tab to show')
+    eq(win._default_mode, 'strip', 'TUI does NOT persist show as the global default')
+    win.set_tui(False)
+    eq(win.current().current_mode(), 'strip', 'turning TUI off restores strip')
+# a plain tab switch must not mutate persisted settings (setChecked on toggled
+# actions is blocked): flip colours off on tab B, switch away and back.
+_before_colors = win._default_colors
+win.new_tab()
+win.set_colors(not _before_colors)
+_toggled = win._default_colors
+win._goto_tab(0)                       # switch away (fires setChecked, blocked)
+win._goto_tab(win.tabs.count() - 1)    # and back
+eq(win._default_colors, _toggled, 'tab switch does not rewrite the colours default')
 win.set_mode('strip')
 ok(not win.sec_display.icon().isNull() and not win.sec_mode.icon().isNull(),
    'both security lamps show an icon')
