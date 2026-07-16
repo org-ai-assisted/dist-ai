@@ -374,10 +374,57 @@ if tui_available():
     tui._stream.feed(b'\x1b]2;ignored\x07')
     tui._handle_title_and_notify(b'\x1b]2;ignored\x07')  # guard is in _on_readable
     tui.shutdown()
+    # mode switch is renderer-only: NO shell restart, the running program and its
+    # frame survive. A program writes a full-screen frame to stdout in line mode;
+    # flipping to TUI must show the frame without the pid changing. (The frame
+    # goes to stdout, not through the line-discipline echo, so the raw escapes
+    # reach the read path.)
+    if tui_available():
+        # a real program that writes a full-screen frame to stdout, then idles so
+        # the child stays alive for the pid check (a temp script avoids the shell
+        # quoting/escaping that a -c string would suffer through shlex).
+        _script = os.path.join(tempfile.mkdtemp(prefix='st-frame-'), 'frame.sh')
+        with open(_script, 'w') as _f:
+            _f.write('#!/bin/sh\n'
+                     'printf "HIST_LINE\\n"\n'
+                     'printf "\\033[?1049h\\033[2J\\033[HFRAME_XYZ\\n"\n'
+                     'sleep 30\n')
+        os.chmod(_script, 0o755)
+        sw = SecureTerminal(command=_script)
+        sw.resize(700, 300)
+        sw.show()
+        pump(300)
+        _pid = sw._pid
+        ok(sw._alt_screen, 'alt-screen tracked in line mode')
+        ok(sw._tui_hint_shown and '[secure-terminal]' in sw.toPlainText(),
+           'advisory shown once when a full-screen app runs in line mode')
+        sw.apply_tui(True)
+        pump(50)
+        eq(sw._pid, _pid, 'mode switch does NOT restart the shell (same pid)')
+        ok('FRAME_XYZ' in sw.toPlainText(), 'running frame survives the switch to TUI')
+        sw.apply_tui(False)
+        pump(30)
+        eq(sw._pid, _pid, 'switching back does not restart either')
+        ok('HIST_LINE' in sw.toPlainText(), 'line scrollback restored on the way back')
+        sw.shutdown()
 else:
     # already recorded as a FAIL above; do not silently pass
     sys.stderr.write('secure-terminal-tests(widget): FAIL pyte absent, TUI-mode '
                      'assertions could not run\n')
+
+# line mode forwards the cursor/history keys to the shell's line editor: Up/Down
+# recall history, Left/Right/Home/End/Delete edit -- the arrow-up regression.
+ak = SecureTerminal(command='/bin/cat')
+asent = spy_writes(ak)
+key(ak, Qt.Key.Key_Up)
+key(ak, Qt.Key.Key_Down)
+key(ak, Qt.Key.Key_Left)
+key(ak, Qt.Key.Key_Right)
+key(ak, Qt.Key.Key_Home)
+key(ak, Qt.Key.Key_End)
+key(ak, Qt.Key.Key_Delete)
+eq(asent, [b'\x1b[A', b'\x1b[B', b'\x1b[D', b'\x1b[C', b'\x1b[H', b'\x1b[F', b'\x1b[3~'],
+   'line mode forwards arrows/Home/End/Delete to the shell')
 
 # --- window: rename, colour, settings round-trip ------------------------------
 from secure_terminal.main import (                   # noqa: E402
@@ -439,14 +486,15 @@ win.act_reveal.trigger()
 eq(win.current().current_mode(), 'reveal', 'Reveal button selects reveal')
 ok(not win.act_strip.icon().isNull() and not win.act_show.icon().isNull(),
    'mode buttons carry icons')
-# security indicator: two lamps. display axis (show=red, strip/reveal=green) and
-# mode axis (TUI=yellow, line=green). reveal is GREEN, not red.
+# security indicator: two lamps. display axis (show=red, reveal=green [safe and
+# lossless], strip=yellow [safe but lossy -- the "_" is easy to miss]) and mode
+# axis (TUI=yellow, line=green).
 win.set_mode('strip')
-eq((win._display_level()[1], win._display_level()[0]), ('Strip', '#1f8a54'),
-   'strip display -> green')
+eq((win._display_level()[1], win._display_level()[0]), ('Strip', '#e5a50a'),
+   'strip display -> yellow (safe but lossy)')
 win.set_mode('reveal')
 eq((win._display_level()[1], win._display_level()[0]), ('Reveal', '#1f8a54'),
-   'reveal display -> green (not red)')
+   'reveal display -> green (safe and lossless, not red)')
 win.set_mode('show')
 eq((win._display_level()[1], win._display_level()[0]), ('Show', '#d83933'),
    'show display -> red')

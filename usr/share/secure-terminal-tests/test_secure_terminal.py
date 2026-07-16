@@ -84,6 +84,13 @@ for mode in ('strip', 'show', 'reveal'):
 eq(S.render_output('a\x1b[2Jb', 'strip'), 'ab', 'strip CSI clear')
 eq(S.render_output('a\x1b]8;;http://evil\x07b', 'strip'), 'ab', 'strip OSC link')
 
+# --- full-screen (alternate screen) detection ---------------------------------
+ok(S.wants_full_screen('\x1b[?1049h') is True, 'detects alt-screen enter (1049)')
+ok(S.wants_full_screen('\x1b[?47h') is True, 'detects alt-screen enter (47)')
+ok(S.wants_full_screen('plain text') is False, 'no false positive on plain text')
+ok(S.leaves_full_screen('\x1b[?1049l') is True, 'detects alt-screen leave (1049)')
+ok(S.leaves_full_screen('\x1b[?1049h') is False, 'enter is not a leave')
+
 # --- sanitize_bytes / sanitize_paste ------------------------------------------
 eq(S.sanitize_bytes(b'a\x08 \x08', 'strip'), 'a\x08 \x08', 'sanitize_bytes keeps bs/space')
 eq(S.sanitize_paste('a\nb\r\tc'), 'a\rb\r\tc', 'paste nl/cr -> cr, tab kept')
