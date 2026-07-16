@@ -651,8 +651,8 @@ Architecture: all
 Depends: ${misc:Depends},
  python3,
  python3-pexpect,
+ python3-hypothesis,
  qemu-system-x86
-Recommends: python3-hypothesis
 Description: Headless serial boot + leak tests for a built derivative-maker ISO
  Boots a freshly built Kicksecure/Whonix ISO in qemu, headless, over the serial
  console and drives it: waits for the getty login prompt, logs in, runs
