@@ -154,6 +154,22 @@ eq(_bar.value(), _bar.minimum(), 'Shift+Home jumps to the top')
 _bar.setValue(50)
 key(sc, Qt.Key.Key_Home)
 eq(_bar.value(), 50, 'plain Home does not scroll (reserved for editing)')
+# flood must not hang: a large control-laden blob (every byte 0x00-0xff, so it
+# carries CR/BS/NL) renders in bounded time and bounded document size. This is
+# the "cat /dev/random freeze" regression -- the old per-char cursor path took
+# minutes; the bulk path is seconds.
+import time as _time                                  # noqa: E402
+from secure_terminal import sanitize as _S            # noqa: E402
+fl = SecureTerminal(command='/bin/cat')
+fl.resize(600, 300)
+_blob = _S.render_output((bytes(range(256)) * 8000).decode('latin-1'), 'strip')
+_t0 = _time.time()
+for _ in range(2):                                    # ~4MB of control-laden output
+    fl._append(_blob)
+_elapsed = _time.time() - _t0
+ok(_elapsed < 30, 'control-laden flood renders in bounded time (%.1fs)' % _elapsed)
+ok(fl.document().blockCount() <= 10000,
+   'flood document stays bounded (%d blocks)' % fl.document().blockCount())
 
 # --- colours: SGR run formatting + contrast guard -----------------------------
 col = SecureTerminal(command='/bin/cat')

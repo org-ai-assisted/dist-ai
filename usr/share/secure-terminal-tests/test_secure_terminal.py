@@ -166,6 +166,19 @@ eq(S.tui_cell(_grapheme, 'strip'), '_', 'tui multi-cp grapheme -> _ in strip')
 eq(S.tui_cell('a' + BEL, 'show'), '_', 'tui grapheme with a control -> _')
 ok(isinstance(S.tui_cell(chr(0x1F600) + chr(0x1F600), 'show'), str),
    'tui two-astral cell does not crash')
+# apply_line_edits: the pure line-editing model behind the fast bulk render path
+eq(S.apply_line_edits('', 0, 'abc'), ([], 'abc', 3), 'line edits: plain append')
+_cl, _ln, _col = S.apply_line_edits('', 0, 'l1\nl2\n')
+eq((_cl, _ln), (['l1', 'l2'], ''), 'line edits: newline splits off completed lines')
+eq(S.apply_line_edits('123456', 6, '\rAB'), ([], 'AB3456', 2),
+   'line edits: bare CR then overwrite')
+_cl, _ln, _col = S.apply_line_edits('abc', 3, '\x08 \x08')
+eq((_ln.rstrip(), _col), ('ab', 2), 'line edits: backspace erase')
+# max_line hard-wraps a runaway newline-free line so a flood cannot build one
+# unbounded block
+_cl, _ln, _col = S.apply_line_edits('', 0, 'x' * 25, 10)
+eq((len(_cl), [len(_c) for _c in _cl], _ln), (2, [10, 10], 'xxxxx'),
+   'line edits: max_line wraps a runaway line')
 
 # --- sanitize_title: program-supplied title / notification -> safe ASCII ------
 eq(S.sanitize_title('My Build'), 'My Build', 'title plain ascii')
