@@ -53,9 +53,10 @@ class Extractor(html.parser.HTMLParser):
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
-        self.links = []          # (kind, value) for href/src
+        self.links = []          # (tag, attr, value) for href/src
         self.ids = set()
         self.text_parts = []
+        self.csp = None          # content of the CSP <meta http-equiv>
         self._skip = 0
 
     def handle_starttag(self, tag, attrs):
@@ -66,9 +67,12 @@ class Extractor(html.parser.HTMLParser):
             self.ids.add(amap['id'])
         if amap.get('name') and tag == 'a':
             self.ids.add(amap['name'])
+        if tag == 'meta' and (amap.get('http-equiv') or '').lower() \
+                == 'content-security-policy':
+            self.csp = amap.get('content') or ''
         for key in ('href', 'src'):
             if key in amap and amap[key] is not None:
-                self.links.append((key, amap[key]))
+                self.links.append((tag, key, amap[key]))
 
     def handle_endtag(self, tag):
         if tag in ('script', 'style') and self._skip:
@@ -86,9 +90,16 @@ def html_files(root):
     for base, _dirs, files in os.walk(root):
         if os.sep + '.git' in base:
             continue
+        present = set(files)
         for name in files:
-            if name.endswith('.html'):
-                yield os.path.join(base, name)
+            if not name.endswith('.html'):
+                continue
+            # Skip image-generation templates (logo.html -> logo.png, og.html ->
+            # og.png, ...): a .html with a same-basename .png sibling is a render
+            # source for an image, not a navigable page.
+            if name[:-5] + '.png' in present:
+                continue
+            yield os.path.join(base, name)
 
 
 def resolve_internal(root, page, target):
@@ -125,7 +136,7 @@ def check_links(root, failures):
         pages[os.path.normpath(page)] = ext
     for page, ext in pages.items():
         rel = os.path.relpath(page, root)
-        for _kind, value in ext.links:
+        for _tag, _attr, value in ext.links:
             resolved = resolve_internal(root, page, value)
             if resolved is None:
                 continue
@@ -190,6 +201,50 @@ def check_banner(root, failures):
                             'human review needed' % pill.group(1).strip())
 
 
+# Elements whose named attribute FETCHES a subresource at load time (unlike an
+# <a href> or a <link rel=canonical>, which are navigation/metadata, not loads).
+RESOURCE_ATTR = {
+    'script': 'src', 'img': 'src', 'iframe': 'src', 'source': 'src',
+    'embed': 'src', 'audio': 'src', 'video': 'src', 'track': 'src',
+    'object': 'data',
+}
+
+
+def check_csp(root, failures):
+    # Every page must carry a strict CSP: default-src 'none' and no external host
+    # allow-listed (the site's baseline is self + unsafe-inline + data: only).
+    for page in html_files(root):
+        rel = os.path.relpath(page, root)
+        ext = Extractor()
+        with open(page, encoding='utf-8') as handle:
+            ext.feed(handle.read())
+        if ext.csp is None:
+            failures.append('%s: no Content-Security-Policy meta' % rel)
+            continue
+        csp = ext.csp.lower()
+        if "default-src 'none'" not in csp:
+            failures.append("%s: CSP default-src is not 'none'" % rel)
+        if 'http:' in csp or 'https:' in csp or '//' in csp:
+            failures.append('%s: CSP allow-lists an external host' % rel)
+
+
+def check_supply_chain(root, failures):
+    # Supply chain: no page may fetch a subresource (script, image, media) from
+    # an external host or protocol-relative URL -- everything ships self-hosted or
+    # inline (data:). External <a> navigation is fine; only loads are flagged.
+    for page in html_files(root):
+        rel = os.path.relpath(page, root)
+        ext = Extractor()
+        with open(page, encoding='utf-8') as handle:
+            ext.feed(handle.read())
+        for tag, attr, value in ext.links:
+            if RESOURCE_ATTR.get(tag) != attr:
+                continue
+            if value.startswith(('http://', 'https://', '//')):
+                failures.append('%s: <%s %s> loads an external resource: %s'
+                                % (rel, tag, attr, value))
+
+
 def main():
     roots = [r for r in sys.argv[1:] if os.path.isdir(r)]
     if not roots:
@@ -203,14 +258,16 @@ def main():
         check_wording(root, failures)
         check_footer(root, failures)
         check_banner(root, failures)
+        check_csp(root, failures)
+        check_supply_chain(root, failures)
         name = os.path.basename(root)
         if failures:
             total += len(failures)
             for item in failures:
                 sys.stderr.write('FAIL %s: %s\n' % (name, item))
         else:
-            sys.stdout.write('ok %s: links + wording + footer + banner clean\n'
-                             % name)
+            sys.stdout.write('ok %s: links + wording + footer + banner + csp + '
+                             'supply-chain clean\n' % name)
     sys.stdout.write('website-tests: %d failure(s)\n' % total)
     return 1 if total else 0
 

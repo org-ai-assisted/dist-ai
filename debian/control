@@ -637,8 +637,10 @@ Description: Static consistency checks for the project GitHub Pages sites
  (every href/src must resolve to a real target, with no reliance on a redirect;
  known sibling project-Pages paths are allow-listed), a footer missing the
  uniform "family" links to the sibling sites, prose that lowercases "Open Source"
- or "Free Software", and a review-status banner that claims a green "working"
- state instead of pending human review.
+ or "Free Software", a review-status banner that claims a green "working" state
+ instead of pending human review, a page missing a strict Content-Security-Policy
+ (default-src 'none', no external host), and any page that fetches a subresource
+ (script, image, media) from an external host instead of self-hosting it.
  .
  The checker is pure Python with no DOM and no network: it parses each page with
  the standard-library HTML parser, resolves internal links against the checkout,
