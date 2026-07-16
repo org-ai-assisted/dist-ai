@@ -131,6 +131,24 @@ pc._append('\r')              # carriage return -> column 0
 pc._append('P% ')             # redraw the prompt over the fill
 pc._append('x')               # the echo must land right after the prompt
 ok(pc.toPlainText().startswith('P% x'), 'write lands at the persistent cursor')
+# scrollback navigation in line mode: PageUp scrolls the buffer up, Shift+Home/
+# End jump to the ends, plain Home is left for line editing (does not scroll)
+sc = SecureTerminal(command='/bin/cat')
+sc.resize(600, 200)
+sc.show()
+for _i in range(200):
+    sc._append('line %d\n' % _i)
+_bar = sc.verticalScrollBar()
+_bottom = _bar.value()
+key(sc, Qt.Key.Key_PageUp)
+ok(_bar.value() < _bottom, 'PageUp scrolls the scrollback up')
+key(sc, Qt.Key.Key_End, mods=Qt.KeyboardModifier.ShiftModifier)
+eq(_bar.value(), _bar.maximum(), 'Shift+End jumps to the bottom')
+key(sc, Qt.Key.Key_Home, mods=Qt.KeyboardModifier.ShiftModifier)
+eq(_bar.value(), _bar.minimum(), 'Shift+Home jumps to the top')
+_bar.setValue(50)
+key(sc, Qt.Key.Key_Home)
+eq(_bar.value(), 50, 'plain Home does not scroll (reserved for editing)')
 
 # --- colours: SGR run formatting + contrast guard -----------------------------
 col = SecureTerminal(command='/bin/cat')
