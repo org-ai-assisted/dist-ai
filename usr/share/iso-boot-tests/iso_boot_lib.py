@@ -451,18 +451,21 @@ class SerialBootSession:
 
     def login(self, timeout=300):
         """
-        Log in as the configured user and confirm an interactive shell.
+        Log in and establish a clean, deterministic, LINE-EDITOR-FREE shell for automation.
 
-        Handles a PASSWORDLESS account (these live sessions log in with no password): a real
-        getty prompt is 'Password:' (capital P) at the END of the stream; the login help text
-        ('Default password: No password required', 'type the password') is lowercase and
-        mid-line, so anchoring to a capital 'Password:' at line end avoids falsely matching it.
-        If no real prompt appears (passwordless), the password step is skipped. Confirmation runs
-        a marker command and waits for its exact echo, so it never depends on guessing the prompt.
+        The live login shell is zsh with ZLE + syntax highlighting + bracketed paste, which
+        garbles a fast burst of serial input (characters doubled/reordered). Per serial-automation
+        best practice (labgrid/openQA and the pexpect community): send the PACED login (the
+        account is passwordless), then immediately 'exec /bin/sh' -- dash has NO line editor, so
+        kernel canonical line discipline takes over and the typing race disappears -- then
+        'stty -echo' and blank the prompt. The pre-exec lines are sent character-by-character so
+        ZLE cannot mangle them; afterwards whole-line sends are reliable and only command OUTPUT
+        (not the echo) reaches the transcript, which makes capture trivial.
         """
-        self.child.sendline(self.username)
-        ## Short timeout: a passwordless login shows no 'Password:' prompt, so fall through
-        ## quickly instead of waiting the full timeout.
+        ## 1. Paced login. A real getty prompt is 'Password:' (capital P) at end of line; the help
+        ##    text ('Default password: No password required') is lowercase/mid-line and does not
+        ##    match the anchored pattern. Passwordless => usually no prompt (idx 2), skip password.
+        self._send_slow(self.username)
         idx = self.child.expect(
             [r"Password:\s*$", r"[Ll]ogin:\s*$", pexpect.TIMEOUT],
             timeout=min(timeout, 60),
@@ -470,25 +473,22 @@ class SerialBootSession:
         if idx == 1:
             raise SerialBootError("login rejected the username '%s'" % self.username)
         if idx == 0:
-            ## A real password prompt: send the password. (idx == 2 == passwordless: skip it.)
-            self.child.sendline(self.password)
+            self._send_slow(self.password)
 
-        ## The default interactive shell is zsh with ZLE + syntax highlighting + bracketed paste,
-        ## which garbles a fast burst of serial input (characters doubled/reordered) so typed
-        ## commands do not run intact. Drop to plain 'sh' (dash has no line editor) for a clean,
-        ## predictable session; 'exec' leaves no nested shell. Slow-send so zsh reads it intact.
-        ## Harmless if the shell is already a POSIX sh.
-        self._send_slow("exec sh")
+        ## 2. Escape zsh into dash (paced: the critical line the fancy editor would garble).
+        self._send_slow("exec /bin/sh")
+        ## 3. Turn OFF echo (so only command OUTPUT is captured) and blank the prompt. Paced too,
+        ##    in case 'exec' has not fully taken effect yet.
+        self._send_slow("stty -echo -onlcr 2>/dev/null; unset HISTFILE 2>/dev/null; PS1=''")
 
-        ## Confirm an interactive shell via a marker (also catches a rejected login or a forced
-        ## password change). In dash the command echoes cleanly, so the marker matches.
-        login_ok = "%s_LOGIN_OK_%s" % (_MARK, self.username)
-        ## NOTE: this is string CONCATENATION, not %-formatting, so the format is a single
-        ## '%s' (a literal '%%s' here would make printf emit '%s' instead of the marker).
-        self._send_slow("printf '%s\\n' " + shlex.quote(login_ok))
+        ## 4. Sync: emit a one-shot READY marker. With echo off it appears ONLY as output, so a
+        ##    clean match proves we have the controlled dash shell (also catches a rejected login
+        ##    or a forced password change). Whole-line send is reliable now.
+        ready = "%s_READY_%s" % (_MARK, self.username)
+        self.child.sendline("printf '\\n%s\\n' " + shlex.quote(ready))
         idx = self.child.expect(
             [
-                re.escape(login_ok) + r"\r?\n",
+                re.escape(ready) + r"\r?\n",
                 r"(?i)Login incorrect",
                 r"(?i)you are required to change your password",
                 pexpect.TIMEOUT,
@@ -502,7 +502,9 @@ class SerialBootSession:
                 "guest demands an immediate password change -- not handled"
             )
         if idx == 3:
-            raise SerialBootError("logged in but no interactive shell appeared")
+            raise SerialBootError(
+                "could not establish a controlled shell after login (exec /bin/sh / stty failed)"
+            )
 
     def _send_slow(self, text, per_char=0.04):
         """Send a shell command one character at a time (then CR), pacing input so a remote
@@ -515,18 +517,18 @@ class SerialBootSession:
 
     def run(self, command, timeout=1800, check=False):
         """
-        Run one shell command in the logged-in session.
+        Run one shell command in the logged-in (controlled dash) session.
 
-        Returns ``(output, returncode)``. ``output`` is everything the command
-        printed (marker and echo stripped). If ``check`` is true, a non-zero
-        return code raises SerialBootError.
+        Returns ``(output, returncode)``. login() disabled echo and blanked the prompt, so the
+        transcript between the command and the marker is exactly the command's output. The command
+        is followed by a unique '<mark>=<rc>' sentinel that bounds the output and carries the exit
+        code, so capture never depends on a prompt string. Whole-line send is reliable here
+        (canonical dash, no line editor). If ``check`` is true, a non-zero rc raises.
         """
         mark = "%s_%d" % (_MARK, int(time.time() * 1000) % 1000000)
-        ## Run the command, then emit "<mark>=<rc>" on its own line. Reading up to
-        ## that marker bounds the output regardless of the prompt string. Slow-send so the input
-        ## is not garbled if the session is still a ZLE shell.
-        self._send_slow("%s; %s=$?; printf '%%s=%%s\\n' %s \"$%s\""
-                        % (command, "__rc", shlex.quote(mark), "__rc"))
+        ## Run the command, then emit "<mark>=<rc>" on its own line. With echo off, the '<mark>='
+        ## in the command line is NOT echoed, so the only match is the printf OUTPUT.
+        self.child.sendline("%s; printf '%s=%%d\\n' \"$?\"" % (command, mark))
         idx = self.child.expect(
             [re.escape(mark) + r"=(\d+)\r?\n", pexpect.EOF, pexpect.TIMEOUT],
             timeout=timeout,
@@ -538,9 +540,9 @@ class SerialBootSession:
                 "command timed out after %ss: %s" % (timeout, command)
             )
         returncode = int(self.child.match.group(1))
-        output = self.child.before
-        ## Strip the echoed command line (first line before output), best effort.
-        output = _strip_command_echo(output, command)
+        ## Echo is off (login() ran 'stty -echo'), so everything before the marker is exactly the
+        ## command's own output -- no echoed command line to strip.
+        output = self.child.before.strip("\r\n")
         if check and returncode != 0:
             raise SerialBootError(
                 "command failed (rc=%s): %s\n%s" % (returncode, command, output)
@@ -602,11 +604,3 @@ class _TextToBinary:
             self._stream.flush()
         except Exception:
             pass  ## a debug-mirror stream that can't flush must never break the boot session
-
-
-def _strip_command_echo(output, command):
-    """Drop the first line if it is the shell echoing the command we sent."""
-    lines = output.splitlines()
-    if lines and command.split(";")[0].strip() and command.split(";")[0].strip() in lines[0]:
-        lines = lines[1:]
-    return "\n".join(lines).strip("\r\n")
