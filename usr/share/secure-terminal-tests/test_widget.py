@@ -266,6 +266,18 @@ if tui_available():
     ok(_tl not in _sr[0] and '_' in _sr[0], 'strip mode neutralizes box glyphs')
     ok(_sr[_last - 1].startswith('-- INSERT --'), 'strip keeps the ASCII status line')
     fs.shutdown()
+    # a pyte parser error on real program output (private SGR that some pyte
+    # builds mishandle -- htop/vim/tmux emit these) must be contained, never
+    # crash the terminal
+    crash = SecureTerminal(command='/bin/cat', tui=True)
+    crash.resize(700, 300)
+    crash.show()
+    pump(50)
+    crash._feed_stream(b'\x1b[1;2;3?m')          # private SGR: pyte may raise
+    crash._feed_stream(b'ok\r\n')
+    crash._render_tui()
+    ok('ok' in crash.toPlainText(), 'pyte parser error contained; terminal survives')
+    crash.shutdown()
     # per-cell bidi neutralized in strip mode
     tui.apply_mode('strip')
     tui._stream.feed(b'\x1b[10;1Ha\xe2\x80\xaeb')     # a U+202E b
