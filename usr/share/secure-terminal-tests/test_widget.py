@@ -665,6 +665,31 @@ try:
 finally:
     settings._system_dirs, settings._user_config_dir = _orig_sys, _orig_usr
 
+# --- launch CLI parsing (--title/--tui/--mode/--class/--tab/-- command) -------
+from secure_terminal.main import _parse_launch_args as _pla       # noqa: E402
+eq(_pla(['--title', 'logs', '--tui', '--mode', 'reveal']).tabs,
+   [{'title': 'logs', 'tui': True, 'mode': 'reveal', 'command': None}],
+   'cli: single-tab options')
+eq(_pla(['--', 'htop', '--no-color']).tabs[0]['command'], ['htop', '--no-color'],
+   'cli: -- gives a real argv (no shell reparse)')
+eq(_pla(['-e', 'ls -la']).tabs[0]['command'], 'ls -la',
+   'cli: -e gives a shell-split string')
+_lc = _pla(['--class', 'MyTerm', '--name', 'inst'])
+eq((_lc.wm_class, _lc.wm_name), ('MyTerm', 'inst'), 'cli: WM class/name parsed')
+eq([(t['title'], t['tui']) for t in
+    _pla(['--tab', '--title', 'A', '--tab', '--title', 'B', '--tui']).tabs],
+   [('A', None), ('B', True)], 'cli: --tab multi-tab, no empty leading tab')
+eq(_pla([]).tabs, [], 'cli: bare launch specifies no tabs (normal startup)')
+eq(_pla(['--title', 'a', '--tab', '--title', 'b', '--', 'sleep', '9'])
+   .tabs[-1]['command'], ['sleep', '9'], 'cli: -- command attaches to last tab')
+# a launch tab opens with its title/mode/command
+_lw = MainWindow(launch=_pla(['--title', 'mytab', '--mode', 'reveal',
+                              '--', 'sleep', '30']))
+pump(150)
+eq(_lw.tabs.tabText(0), 'mytab', 'launch: tab title applied')
+eq(_lw.current().current_mode(), 'reveal', 'launch: display mode applied')
+_lw.close()
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(widget): %d passed, %d failed\n'
                  % (PASS, FAIL))
