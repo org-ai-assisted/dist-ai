@@ -107,8 +107,26 @@ def prop_tui_cell(ch, mode):
         assert out == '_'
 
 
+@RUN
+@given(st.text(), st.sampled_from(S.DISPLAY_MODES))
+def prop_feed_line_edits(text, mode):
+    # the line-mode logical-cell editor: hostile output must never smuggle an
+    # escape byte into a cell, the cursor must stay within the current line, and
+    # in strip mode the rendered line must be all-safe. It must not raise.
+    comp, cells, col, sgr = S.feed_line_edits([], 0, {}, text)
+    assert 0 <= col <= len(cells)
+    for ch, _key in cells:
+        assert ch != '\x1b'                      # no escape survives into a cell
+    if mode == 'strip':
+        rendered = ''.join(S.render_output(c, 'strip') for c, _ in cells)
+        assert all(ord(ch) in SAFE_OUTPUT for ch in rendered)
+    # feeding the SAME chunk again from the resulting state must still not raise
+    S.feed_line_edits(cells, col, sgr, text)
+
+
 PROPS = [
     ('render_output', prop_render_output),
+    ('feed_line_edits', prop_feed_line_edits),
     ('sanitize_paste', prop_sanitize_paste),
     ('sanitize_paste_unicode', prop_sanitize_paste_unicode),
     ('sanitize_title', prop_sanitize_title),

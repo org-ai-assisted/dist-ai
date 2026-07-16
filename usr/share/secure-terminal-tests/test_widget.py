@@ -139,6 +139,15 @@ pc._append('\r')              # carriage return -> column 0
 pc._append('P% ')             # redraw the prompt over the fill
 pc._append('x')               # the echo must land right after the prompt
 ok(pc.toPlainText().startswith('P% x'), 'write lands at the persistent cursor')
+# backspace over a reveal badge deletes the whole character in the WIDGET (#119):
+# the badge is 8 display columns but one logical cell.
+bb = SecureTerminal(command='/bin/cat')
+bb.apply_mode('reveal')
+bb._append('echo ' + chr(0x20AC))
+ok(bb.toPlainText().endswith('<U+20AC>'), 'widget shows the reveal badge')
+bb._append('\b\x1b[K')                 # readline backspace: one cell + erase-EOL
+ok(bb.toPlainText().endswith('echo ') and '<U+' not in bb.toPlainText(),
+   'backspace removes the whole badge in the widget (#119)')
 # a plain click must not strand the blinking caret where you cannot type: input
 # always goes to the shell at the output cursor, so mouseReleaseEvent snaps the
 # caret back unless a drag made a selection (which is kept, for copy).
@@ -259,14 +268,29 @@ ok(b'\r' not in _hsent and b'\x15' in _hsent,
 ok(_hnotes and _hnotes[-1] == 'no', 'hook advisory surfaced')
 
 # --- colours: SGR run formatting + contrast guard -----------------------------
+from PyQt6.QtGui import QTextCursor as _QTC              # noqa: E402
+
+
+def _fmt_of_char(term, ch):
+    doc = term.toPlainText()
+    idx = doc.index(ch)
+    cur = term.textCursor()
+    cur.setPosition(idx)
+    cur.setPosition(idx + 1, _QTC.MoveMode.KeepAnchor)
+    return cur.charFormat()
+
+
 col = SecureTerminal(command='/bin/cat')
 col.apply_colors(True)
 col.apply_theme('dark')
-runs = col._render_runs('\x1b[31mR\x1b[0m')
-red = [f for text, f in runs if text == 'R'][0]
-eq(red.foreground().color().name(), '#cd0000', 'red run fg')
-hid = [f for text, f in col._render_runs('\x1b[30mH\x1b[0m') if text == 'H'][0]
-ok(hid.foreground().color().name() != '#000000', 'black-on-dark guarded')
+col._append('\x1b[31mR\x1b[0m')          # red R via SGR, through the cell model
+eq(_fmt_of_char(col, 'R').foreground().color().name(), '#cd0000', 'red run fg')
+col2 = SecureTerminal(command='/bin/cat')
+col2.apply_colors(True)
+col2.apply_theme('dark')
+col2._append('\x1b[30mH\x1b[0m')         # black-on-dark must be contrast-guarded
+ok(_fmt_of_char(col2, 'H').foreground().color().name() != '#000000',
+   'black-on-dark guarded')
 
 # --- paste gating -------------------------------------------------------------
 p = SecureTerminal(command='/bin/cat')
@@ -440,8 +464,7 @@ tt = SecureTerminal(command='/bin/cat')
 tt.resize(700, 300)
 tt.show()
 tt.apply_mode('reveal')
-tt._append('x')
-tt._append_runs([('<U+20AC>', None)])
+tt._append('x' + chr(0x20AC))                 # euro renders as the <U+20AC> badge
 pump(20)
 _i = tt.toPlainText().index('<U+20AC>') + 3
 _c = tt.textCursor()

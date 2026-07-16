@@ -432,6 +432,44 @@ if os.path.exists(_aij):
        "ai-judge fails open when the AI is unavailable")
     os.remove(_mockai)
 
+# --- feed_line_edits: the line-mode logical-cell editor -----------------------
+def _line(raw, mode='strip', prev=None, col=0, sgr=None):
+    """Feed raw into a fresh (or given) line buffer; return (completed_display,
+    current_display) rendered under `mode`."""
+    cells = prev if prev is not None else []
+    comp, cells, col, _sgr = S.feed_line_edits(cells, col, sgr or {}, raw)
+    render = lambda cs: ''.join(S.render_output(c, mode) for c, _ in cs)
+    return [render(c) for c in comp], render(cells), cells, col
+
+
+# backspace over a reveal badge deletes the WHOLE character (the #119 fix): the
+# shell emits \b (one logical cell) then erase-to-EOL; the 8-column badge goes.
+_, cur, cells, col = _line('echo ' + chr(0x20AC), 'reveal')
+eq(cur, 'echo <U+20AC>', 'reveal badge rendered')
+_, cur, cells, col = _line('\b\x1b[K', 'reveal', prev=cells, col=col)
+eq(cur, 'echo ', 'backspace+erase removes the whole reveal badge (#119)')
+
+# history recall: \r, reprint, erase-to-EOL clears the longer previous line (#4)
+_, _, cells, col = _line('echo aaaaaa')
+_, cur, cells, col = _line('\rls\x1b[K', prev=cells, col=col)
+eq(cur, 'ls', 'CSI K erases the residue of a longer recalled line (#4)')
+
+# line-local CSI ops
+eq(_line('abc\x1b[2DX')[1], 'aXc', 'CSI D (back) then overwrite')
+eq(_line('abc\x1b[2GX')[1], 'aXc', 'CSI G (column) then overwrite')
+eq(_line('ab\x1b[5CX')[1], 'abX', 'CSI C (forward) clamps at end of line')
+eq(_line('abcdef\x1b[3G\x1b[K')[1], 'ab', 'CSI 0K erases from the cursor to EOL')
+eq(_line('abc\x1b[2K')[1], '', 'CSI 2K erases the whole line')
+
+# SECURITY: vertical / absolute cursor escapes are stripped -- a program can
+# never leave the current line or reach the scrollback.
+comp, cur, _, _ = _line('safe\x1b[2A\x1b[Hpwn\x1b[10;5H!')
+eq((comp, cur), ([], 'safepwn!'),
+   'vertical/absolute escapes stripped; everything stays on one line')
+# and no escape byte ever survives into a cell
+_, cur, _, _ = _line('a\x1b[31m\x1b]0;t\x07b\x1bZ', 'strip')
+ok('\x1b' not in cur, 'no ESC byte survives feed_line_edits')
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests: %d passed, %d failed\n' % (PASS, FAIL))
 sys.exit(0 if FAIL == 0 else 1)
