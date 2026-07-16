@@ -426,6 +426,13 @@ key(ak, Qt.Key.Key_Delete)
 eq(asent, [b'\x1b[A', b'\x1b[B', b'\x1b[D', b'\x1b[C', b'\x1b[H', b'\x1b[F', b'\x1b[3~'],
    'line mode forwards arrows/Home/End/Delete to the shell')
 
+# default tab label is the working-directory basename, not a static "shell":
+# "~" for home, else the directory name. The child forks in our cwd.
+cw = SecureTerminal(command='/bin/cat')
+_cwd = os.getcwd()
+_expect = '~' if _cwd == os.path.expanduser('~') else (os.path.basename(_cwd) or '/')
+eq(cw.cwd_basename(), _expect, 'cwd_basename matches the shell working directory')
+
 # --- window: rename, colour, settings round-trip ------------------------------
 from secure_terminal.main import (                   # noqa: E402
     MainWindow, _is_font_noise, _read_version, APP_VERSION,
