@@ -453,19 +453,25 @@ class SerialBootSession:
         """
         Log in as the configured user and confirm an interactive shell.
 
-        Confirmation does not rely on guessing the prompt: it runs a marker
-        command and waits for that exact marker to echo back.
+        Handles a PASSWORDLESS account (these live sessions log in with no password): a real
+        getty prompt is 'Password:' (capital P) at the END of the stream; the login help text
+        ('Default password: No password required', 'type the password') is lowercase and
+        mid-line, so anchoring to a capital 'Password:' at line end avoids falsely matching it.
+        If no real prompt appears (passwordless), the password step is skipped. Confirmation runs
+        a marker command and waits for its exact echo, so it never depends on guessing the prompt.
         """
         self.child.sendline(self.username)
+        ## Short timeout: a passwordless login shows no 'Password:' prompt, so fall through
+        ## quickly instead of waiting the full timeout.
         idx = self.child.expect(
-            [r"[Pp]assword:\s*", r"[Ll]ogin:\s*$", pexpect.TIMEOUT],
-            timeout=timeout,
+            [r"Password:\s*$", r"[Ll]ogin:\s*$", pexpect.TIMEOUT],
+            timeout=min(timeout, 60),
         )
         if idx == 1:
             raise SerialBootError("login rejected the username '%s'" % self.username)
-        if idx == 2:
-            raise SerialBootError("no password prompt after sending the username")
-        self.child.sendline(self.password)
+        if idx == 0:
+            ## A real password prompt: send the password. (idx == 2 == passwordless: skip it.)
+            self.child.sendline(self.password)
 
         ## A forced first-login password change would show up here instead of a
         ## shell; detect it explicitly rather than hanging until timeout.
