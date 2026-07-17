@@ -783,6 +783,25 @@ if tui_available():
     tui.apply_osc('osc_iterm2', True)
     tui._handle_osc(b'\x1b]1337;File=n:' + _b64.b64encode(b'x') + b'\x07')
     ok(True, 'OSC 1337 iTerm2 is declined without crashing')
+    # palette OSC 4/10/11: gated, and a program CANNOT hide text by moving fg==bg
+    from PyQt6.QtGui import QPalette as _QPal                # noqa: E402
+
+    class _Cell:                                            # a default-coloured cell
+        fg = bg = 'default'
+        bold = reverse = underscore = False
+    tui._handle_osc(b'\x1b]11;#123456\x07')                 # osc_colors OFF
+    ok(tui._osc_palette == {}, 'OSC palette change is ignored until osc_colors is on')
+    tui.apply_osc('osc_colors', True)
+    tui._handle_osc(b'\x1b]10;#000000\x07\x1b]11;#000000\x07')   # hide attempt fg==bg
+    _hidfg = tui._pyte_format(_Cell()).foreground().color().name()
+    ok(_hidfg != '#000000',
+       'fg==bg (via OSC 10/11) cannot hide text: the guard forces a readable colour')
+    tui._fmt_cache.clear()
+    tui._handle_osc(b'\x1b]10;#33cc99\x07')                 # a legit fg is applied
+    ok(tui._pyte_format(_Cell()).foreground().color().name() == '#33cc99',
+       'a legitimate OSC 10 foreground colour is applied')
+    tui.apply_osc('osc_colors', False)
+    ok(tui._osc_palette == {}, 'disabling osc_colors reverts to the theme palette')
     tui.shutdown()
     # mode switch is renderer-only: NO shell restart, the running program and its
     # frame survive. A program writes a full-screen frame to stdout in line mode;
