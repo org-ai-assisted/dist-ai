@@ -380,6 +380,18 @@ if tui_available():
     _tt._render_tui()                      # must not crash or blank the document
     ok(_tt.document().blockCount() >= 1 and _tt._grid_rows <= _tt.document().blockCount(),
        'a tiny scrollback cap does not corrupt the grid render')
+    # the alt-screen split loop in _feed_stream always terminates: each iteration
+    # advances past a marker (>= 6 bytes) or to the end -- feed pathological input
+    # (back-to-back and empty-segment markers) and it must not hang or crash.
+    _at = SecureTerminal(command='/bin/cat', tui=True)
+    _at.resize(400, 200)
+    _mk = [b'\x1b[?1049h', b'\x1b[?1049l', b'\x1b[?47h', b'\x1b[?47l']
+    for _combo in (b''.join(_mk), b''.join(_mk * 3), b'x' + b''.join(_mk) + b'y',
+                   b'\x1b[?1049h\x1b[?1049h\x1b[?1049l', b'', b'\x1b[?10', b'49h'):
+        _at._feed_stream(_combo)          # returns (bounded) or the test would hang
+    _at._render_tui()
+    ok(_at.document().blockCount() >= 1,
+       'the alt-screen split feed loop terminates on pathological marker input')
 # Ctrl+C is echoed locally as ^C (transparency: make the invisible visible) and
 # de-duped against a shell that also echoes it (bash's readline), so the user
 # always sees exactly one ^C.
