@@ -744,15 +744,45 @@ if tui_available():
     tui.title_changed.connect(titles.append)
     tui.notified.connect(notes.append)
     tui._stream.feed(b'\x1b]2;My ev\xe2\x80\xaeil Title\x07')
-    tui._handle_title_and_notify(b'\x1b]2;My ev\xe2\x80\xaeil Title\x07')
+    tui._handle_osc(b'\x1b]2;My ev\xe2\x80\xaeil Title\x07')
     ok(titles and chr(0x202E) not in titles[-1], 'tui title sanitized')
-    tui._handle_title_and_notify(b'\x1b]9;done\x07')
+    tui._handle_osc(b'\x1b]9;done\x07')
     ok(notes and notes[-1] == 'done', 'tui notification captured')
     # off: no title emitted
     tui.apply_allow_title(False)
     before = len(titles)
     tui._stream.feed(b'\x1b]2;ignored\x07')
-    tui._handle_title_and_notify(b'\x1b]2;ignored\x07')  # guard is in _on_readable
+    tui._handle_osc(b'\x1b]2;ignored\x07')  # guard is in _on_readable
+    # --- granular OSC handlers: each off by default, honored only when enabled ---
+    import base64 as _b64                                   # noqa: E402
+    from PyQt6.QtGui import QGuiApplication as _QGA2         # noqa: E402
+    _QGA2.clipboard().setText('ORIGINAL')
+    # clipboard OSC 52 OFF by default -> a program cannot write the clipboard
+    tui._handle_osc(b'\x1b]52;c;' + _b64.b64encode(b'HIJACK') + b'\x07')
+    ok(_QGA2.clipboard().text() == 'ORIGINAL',
+       'OSC 52 clipboard write is neutralized until osc_clipboard is enabled')
+    tui.apply_osc('osc_clipboard', True)
+    tui._handle_osc(b'\x1b]52;c;' + _b64.b64encode(b'pasted') + b'\x07')
+    ok(_QGA2.clipboard().text() == 'pasted', 'enabled: OSC 52 writes the clipboard')
+    _QGA2.clipboard().setText('SECRET')
+    tui._handle_osc(b'\x1b]52;c;?\x07')                     # read query
+    ok(_QGA2.clipboard().text() == 'SECRET',
+       'an OSC 52 read query is DECLINED (never answered -- no exfiltration)')
+    tui._handle_osc(b'\x1b]52;c;' + _b64.b64encode(b'a\x1b[31mb\x00c') + b'\x07')
+    ok(_QGA2.clipboard().text() == 'a[31mbc',
+       'a clipboard write is stripped of escape/control bytes')
+    # cwd OSC 7 gated + emits the safe path
+    _cwds = []
+    tui.cwd_changed.connect(_cwds.append)
+    tui._handle_osc(b'\x1b]7;file://h/home/u/p\x07')        # osc_cwd off
+    ok(_cwds == [], 'OSC 7 cwd is ignored until osc_cwd is enabled')
+    tui.apply_osc('osc_cwd', True)
+    tui._handle_osc(b'\x1b]7;file://h/home/u/p\x07')
+    ok(_cwds == ['/home/u/p'], 'enabled: OSC 7 reports the unquoted path')
+    # iTerm2 OSC 1337 is recognized but declined (no crash, no file transfer)
+    tui.apply_osc('osc_iterm2', True)
+    tui._handle_osc(b'\x1b]1337;File=n:' + _b64.b64encode(b'x') + b'\x07')
+    ok(True, 'OSC 1337 iTerm2 is declined without crashing')
     tui.shutdown()
     # mode switch is renderer-only: NO shell restart, the running program and its
     # frame survive. A program writes a full-screen frame to stdout in line mode;
