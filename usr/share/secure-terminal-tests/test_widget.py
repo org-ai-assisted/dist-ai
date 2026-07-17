@@ -392,6 +392,30 @@ if tui_available():
     _at._render_tui()
     ok(_at.document().blockCount() >= 1,
        'the alt-screen split feed loop terminates on pathological marker input')
+    # window resize keeps the pyte grid and the pty winsize in step (SIGWINCH), so
+    # a TUI program repaints at the new width, and resizing while scrolled up does
+    # not crash the incremental renderer.
+    import fcntl as _fcntl, termios as _termios, struct as _struct     # noqa: E402
+    _rt = SecureTerminal(command='/bin/cat', tui=True)
+    _rt.resize(500, 300)
+    _rt.show()
+    pump(60)
+    _small = _rt._screen.columns
+    _rt.resize(1100, 600)
+    pump(60)
+    _grown = _rt._screen.columns
+    _ws = _struct.unpack('HHHH', _fcntl.ioctl(
+        _rt._fd, _termios.TIOCGWINSZ, _struct.pack('HHHH', 0, 0, 0, 0)))
+    ok(_grown > _small and _ws[1] == _grown,
+       'resize grows the pyte grid and updates the pty winsize (cols) together')
+    for _i in range(200):
+        _rt._feed_stream(('rsb-%d\r\n' % _i).encode())
+    _rt._render_tui()
+    _rbar = _rt.verticalScrollBar()
+    _rbar.setValue(_rbar.maximum() // 2)
+    _rt.resize(700, 450)               # resize while scrolled up: must not crash
+    pump(40)
+    ok(_rt.document().blockCount() >= 1, 'resizing while scrolled up does not crash')
 # Ctrl+C is echoed locally as ^C (transparency: make the invisible visible) and
 # de-duped against a shell that also echoes it (bash's readline), so the user
 # always sees exactly one ^C.
