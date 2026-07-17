@@ -1446,6 +1446,30 @@ except Exception as _e:                # pylint: disable=broad-except
     ok(False, 'fuzz: _dispatch_request raised: %s' % _e)
 _fw.close()
 
+# --- configurable window keyboard shortcuts -----------------------------------
+# Every window shortcut is registered (documented) and rebindable, with conflict
+# detection; only non-default overrides are persisted. Terminal control keys are
+# NOT in this registry (they always go to the program).
+ok(len(win._shortcuts) >= 14, 'all window shortcuts are registered for the dialog')
+eq(win.act_new.shortcut().toString(), 'Ctrl+Shift+T', 'a shortcut has its default binding')
+eq(win._set_shortcuts({'new_tab': 'Ctrl+Alt+N'}), [], 'a rebind applies with no conflict')
+eq(win.act_new.shortcut().toString(), 'Ctrl+Alt+N', 'the action takes the new binding')
+eq(win._keybindings.get('new_tab'), 'Ctrl+Alt+N', 'a non-default binding is stored as an override')
+win._set_shortcuts({'new_tab': 'Ctrl+Shift+T'})
+ok('new_tab' not in win._keybindings, 'reverting to the default drops the override')
+_kc = win._set_shortcuts({'copy': 'Ctrl+Shift+J', 'paste': 'Ctrl+Shift+J'})
+ok(bool(_kc), 'two actions on one combination is reported as a conflict')
+eq(win.act_copy.shortcut().toString(), 'Ctrl+Shift+C',
+   'a conflicting rebind applies nothing (copy keeps its binding)')
+# an override loaded from config is honoured at build time via _bind()
+_kb = MainWindow()
+_kb._keybindings = {'close_tab': 'Ctrl+Alt+W'}
+from PyQt6.QtGui import QAction as _QAction        # noqa: E402
+_probe = _QAction('&Close Tab', _kb)
+_kb._bind(_probe, 'close_tab', 'Ctrl+Shift+W')
+eq(_probe.shortcut().toString(), 'Ctrl+Alt+W', '_bind applies a config override over the default')
+_kb.close()
+
 # --- reflection oracle: output must NEVER cause a write to the pty ------------
 # The crown-jewel invariant. A crafted file cat'd to the terminal, or hostile
 # program output, can emit a capability QUERY (DA/DSR/CPR/XTVERSION/DECRQM/
