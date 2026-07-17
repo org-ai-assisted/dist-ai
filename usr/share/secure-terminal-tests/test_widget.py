@@ -1700,11 +1700,15 @@ class _QAppShim:
 
 
 _be = SecureTerminal(command='/bin/cat')
-eq(_be.bell_mode(), 'off', 'bell defaults to off')
+eq(_be.bell_channels(), set(), 'bell defaults to silent (no channels)')
 _be.apply_bell('audible')
-eq(_be.bell_mode(), 'audible', 'apply_bell sets audible')
-_be.apply_bell('bogus')
-eq(_be.bell_mode(), 'off', 'an invalid bell mode falls back to off')
+eq(_be.bell_channels(), {'audible'}, 'apply_bell enables a channel')
+_be.apply_bell('audible,visual,tray')
+eq(_be.bell_channels(), {'audible', 'visual', 'tray'}, 'channels are non-exclusive')
+_be.apply_bell({'visual'})                         # a set spec is accepted too
+eq(_be.bell_channels(), {'visual'}, 'apply_bell accepts a set')
+_be.apply_bell('bogus,off')
+eq(_be.bell_channels(), set(), 'unknown/legacy-off tokens yield no channels')
 
 _orig_qapp = _stmod.QApplication
 _stmod.QApplication = _QAppShim
@@ -1718,11 +1722,25 @@ try:
     eq(fake.beeps, 0, 'an OSC-terminating BEL does not ring')
     _be.apply_bell('off')
     feed_output(_be, b'x\x07y')
-    eq(fake.beeps, 0, 'bell off does not ring')
+    eq(fake.beeps, 0, 'silent bell does not ring')
     _be.apply_bell('visual')
     _be._last_bell = 0.0                           # clear the rate-limit gate
     feed_output(_be, b'attn\x07')
-    eq(fake.alerts, 1, 'visual bell raises a window urgency alert')
+    eq(fake.alerts, 1, 'visual channel raises a window urgency alert')
+    # non-exclusive: audible + visual together fire BOTH on one bell
+    fake.beeps = 0
+    fake.alerts = 0
+    _be.apply_bell('audible,visual')
+    _be._last_bell = 0.0
+    feed_output(_be, b'both\x07')
+    eq((fake.beeps, fake.alerts), (1, 1), 'audible+visual both fire on one bell')
+    # tray channel emits the bell_tray signal (the window shows the popup)
+    _trays = []
+    _be.bell_tray.connect(lambda label: _trays.append(label))
+    _be.apply_bell('tray')
+    _be._last_bell = 0.0
+    feed_output(_be, b'ping\x07')
+    eq(len(_trays), 1, 'tray channel emits a bell_tray notification')
     # a shell OSC title (BEL-terminated) split across two reads must NOT false-ring:
     # the BEL is the OSC terminator, consumed by the carry, not a standalone bell
     fake.beeps = 0
@@ -1734,6 +1752,23 @@ try:
 finally:
     _stmod.QApplication = _orig_qapp
 _be.close()
+
+# bell sound file is accepted only inside an allowed folder (AppArmor-enforceable)
+from secure_terminal.terminal import sound_file_allowed as _sfa, BELL_SOUND_DIRS as _bsd  # noqa: E402
+ok(not _sfa('/etc/passwd'), 'a sound file outside the allowed folders is rejected')
+ok(not _sfa(''), 'an empty sound path is rejected')
+_sound_ok = None
+for _d in _bsd:
+    if os.path.isdir(_d):
+        for _root, _dirs, _files in os.walk(_d):
+            _snd = [f for f in _files if f.endswith(('.wav', '.ogg', '.oga'))]
+            if _snd:
+                _sound_ok = os.path.join(_root, _snd[0])
+                break
+    if _sound_ok:
+        break
+if _sound_ok:
+    ok(_sfa(_sound_ok), 'a sound file inside an allowed folder is accepted (%s)' % _sound_ok)
 
 # switching modes clears a pending CLI discard state, or output after the switch
 # back would be swallowed until a stray terminator (codex F2)
