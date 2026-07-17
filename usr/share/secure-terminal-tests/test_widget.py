@@ -959,36 +959,50 @@ ok(not win._banner.isHidden() and 'tab A' in win._banner_label.text(),
 win._dismiss_advisory()
 ok(win._banner.isHidden(), 'dismiss clears the current tab advisory')
 # OSC-use notice: a program using an OSC escape (stripped in CLI mode) raises the
-# banner ONCE per tab; the window de-duplicates the per-OSC signal.
+# banner at most once per TYPE per tab; the type is named.
 ok(win._osc_notice, 'the OSC-use notice is on by default')
 _octab = win.current()
-win._osc_notified.discard(_octab)
-_octab.osc_used.emit()
-ok(not win._banner.isHidden() and 'OSC' in win._banner_label.text(),
-   'an OSC escape raises the OSC-use notice banner')
+win._osc_notified = {p for p in win._osc_notified if p[0] is not _octab}
+_octab.osc_used.emit('osc_clipboard')
+ok(not win._banner.isHidden() and 'clipboard' in win._banner_label.text().lower(),
+   'an OSC escape raises the notice banner, naming the type')
 win._dismiss_advisory()
-_octab.osc_used.emit()               # a second OSC on the same tab does not re-show
-ok(win._banner.isHidden(), 'the OSC notice fires only once per tab (de-duplicated)')
-# disabled: a fresh tab's OSC shows nothing; re-enabling re-arms it (codex P2:
-# the once-per-tab state must not be consumed while the notice is suppressed).
+_octab.osc_used.emit('osc_clipboard')   # the SAME type again does not re-show
+ok(win._banner.isHidden(), 'the OSC notice fires only once per type per tab')
+_octab.osc_used.emit('osc_hyperlink')   # a DIFFERENT type does show
+ok(not win._banner.isHidden() and 'hyperlink' in win._banner_label.text().lower(),
+   'a different OSC type raises its own notice')
+win._dismiss_advisory()
+# disabled globally: a fresh tab's OSC shows nothing; re-enabling re-arms it.
 win.new_tab()
 _octab2 = win.current()
 win.set_osc_notice(False)
-win._osc_notified.discard(_octab2)
-_octab2.osc_used.emit()
-ok(win._banner.isHidden(), 'the OSC notice is suppressed when the toggle is off')
-ok(_octab2 not in win._osc_notified, 'a suppressed notice does not consume the per-tab state')
+win._osc_notified = {p for p in win._osc_notified if p[0] is not _octab2}
+_octab2.osc_used.emit('osc_clipboard')
+ok(win._banner.isHidden(), 'the OSC notice is suppressed when notices are all off')
+ok((_octab2, 'osc_clipboard') not in win._osc_notified,
+   'a suppressed notice does not consume the per-type state')
 win.set_osc_notice(True)
-_octab2.osc_used.emit()
+_octab2.osc_used.emit('osc_clipboard')
 ok(not win._banner.isHidden(), 're-enabling the toggle re-arms the OSC notice')
-# turning the notice OFF while it is showing dismisses the banner immediately.
+win._dismiss_advisory()
+# per-TYPE mute: muting clipboard notices silences that type but not others.
+win.set_osc_notice_type('osc_clipboard', False)
+win._osc_notified = {p for p in win._osc_notified if p[0] is not _octab2}
+_octab2.osc_used.emit('osc_clipboard')
+ok(win._banner.isHidden(), 'a per-type muted OSC notice does not show')
+_octab2.osc_used.emit('osc_colors')
+ok(not win._banner.isHidden(), 'a non-muted OSC type still notifies')
+win.set_osc_notice_type('osc_clipboard', True)
+win._dismiss_advisory()
+# turning notices OFF while showing dismisses the banner immediately.
+_octab2.osc_used.emit('osc_cwd')
 win.set_osc_notice(False)
-ok(win._banner.isHidden(), 'switching the OSC notice off dismisses a showing banner')
+ok(win._banner.isHidden(), 'switching OSC notices off dismisses a showing banner')
 win.set_osc_notice(True)
-# and enabling "allow title / notifications" (OSC now handled) clears a stale
-# OSC notice, since it is no longer "ignored".
-win._osc_notified.discard(_octab2)
-_octab2.osc_used.emit()
+# enabling "allow title / notifications" clears a stale OSC notice.
+win._osc_notified = {p for p in win._osc_notified if p[0] is not _octab2}
+_octab2.osc_used.emit('osc_title')
 ok(not win._banner.isHidden(), 'an OSC notice is showing again')
 win.set_allow_title(True)
 ok(win._banner.isHidden(), 'enabling program title/notifications clears the OSC notice')
@@ -1020,7 +1034,7 @@ with open(_oscsh, 'w') as _f:
 os.chmod(_oscsh, 0o755)
 oscterm = SecureTerminal(command=_oscsh)
 _oscfired = []
-oscterm.osc_used.connect(lambda: _oscfired.append(1))
+oscterm.osc_used.connect(lambda key: _oscfired.append(key))
 oscterm.resize(400, 200)
 oscterm.show()
 pump(300)
@@ -1034,7 +1048,7 @@ ok('visible' in _osctext, 'the program output around the OSC still shows')
 if tui_available():
     _tuiosc = SecureTerminal(command=_oscsh, tui=True)
     _tuifired = []
-    _tuiosc.osc_used.connect(lambda: _tuifired.append(1))
+    _tuiosc.osc_used.connect(lambda key: _tuifired.append(key))
     _tuiosc.resize(400, 200)
     _tuiosc.show()
     pump(300)
