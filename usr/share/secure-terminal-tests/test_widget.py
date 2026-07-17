@@ -268,6 +268,21 @@ if sw.current_tui():
     ok('history-line-A' in sw.toPlainText(),
        'scrollback restored after a full-screen program exits')
 sw.apply_tui(False)
+# CLI->TUI grid fits the viewport: no useless horizontal scrollbar and no clipped
+# right edge. The grid is sized to the text AREA (viewport minus the doc margins),
+# not the raw viewport, which used to give one column too many and overflow.
+gz = SecureTerminal(command='/bin/cat')
+gz.resize(820, 400)
+gz.show()
+pump(40)
+ok(gz.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff,
+   'the terminal never shows a horizontal scrollbar (line mode wraps, grid fits)')
+_gcols, _grows = gz._tui_grid_size()
+_gcw = gz.fontMetrics().horizontalAdvance('M') or 1
+_gmargin = int(gz.document().documentMargin())
+_gvbar = gz.verticalScrollBar().width() if gz.verticalScrollBar().isVisible() else 0
+ok(_gcols * _gcw <= gz.viewport().width() - 2 * _gmargin + _gvbar,
+   'the TUI grid columns fit the text area, so the grid never overflows sideways')
 # Ctrl+C is echoed locally as ^C (transparency: make the invisible visible) and
 # de-duped against a shell that also echoes it (bash's readline), so the user
 # always sees exactly one ^C.
@@ -778,6 +793,13 @@ _osctext = oscterm.toPlainText()
 ok('secret-title' not in _osctext and 'another' not in _osctext,
    'the OSC title text is never shown in the document')
 ok('visible' in _osctext, 'the program output around the OSC still shows')
+# turning on TUI mode auto-dismisses a "use TUI mode" advisory (no longer valid).
+_tuitab = win.current()
+win._on_advise(_tuitab, 'This program wants a full-screen interface. Turn on TUI.')
+ok(not win._banner.isHidden(), 'the full-screen advisory is showing before the switch')
+win.set_tui(True)
+ok(win._banner.isHidden(), 'switching to TUI auto-dismisses the "use TUI mode" banner')
+win.set_tui(False)
 QInputDialog.getText = staticmethod(lambda *a, **k: ('build', True))
 win.rename_tab(0)
 eq(win.tabs.tabText(0), 'build', 'tab rename')
