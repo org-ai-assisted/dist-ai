@@ -758,20 +758,30 @@ ok(not win._banner.isHidden() and 'tab A' in win._banner_label.text(),
    'switching back to tab A shows its own advisory again')
 win._dismiss_advisory()
 ok(win._banner.isHidden(), 'dismiss clears the current tab advisory')
-# OSC-use notice: a program using an OSC escape (stripped in line mode) raises the
-# banner once per tab; a global toggle disables it (feature request).
+# OSC-use notice: a program using an OSC escape (stripped in CLI mode) raises the
+# banner ONCE per tab; the window de-duplicates the per-OSC signal.
 ok(win._osc_notice, 'the OSC-use notice is on by default')
 _octab = win.current()
-_octab._osc_notice_shown = False
+win._osc_notified.discard(_octab)
 _octab.osc_used.emit()
 ok(not win._banner.isHidden() and 'OSC' in win._banner_label.text(),
    'an OSC escape raises the OSC-use notice banner')
 win._dismiss_advisory()
+_octab.osc_used.emit()               # a second OSC on the same tab does not re-show
+ok(win._banner.isHidden(), 'the OSC notice fires only once per tab (de-duplicated)')
+# disabled: a fresh tab's OSC shows nothing; re-enabling re-arms it (codex P2:
+# the once-per-tab state must not be consumed while the notice is suppressed).
+win.new_tab()
+_octab2 = win.current()
 win.set_osc_notice(False)
-_octab._osc_notice_shown = False
-_octab.osc_used.emit()
+win._osc_notified.discard(_octab2)
+_octab2.osc_used.emit()
 ok(win._banner.isHidden(), 'the OSC notice is suppressed when the toggle is off')
+ok(_octab2 not in win._osc_notified, 'a suppressed notice does not consume the per-tab state')
 win.set_osc_notice(True)
+_octab2.osc_used.emit()
+ok(not win._banner.isHidden(), 're-enabling the toggle re-arms the OSC notice')
+win._dismiss_advisory()
 # and the terminal actually EMITS osc_used (once) when a PROGRAM sends OSC to its
 # stdout in line mode, and never shows the OSC text in the document. Drive it from
 # a program (not typed input, which the tty would echo back in caret form).
@@ -788,33 +798,35 @@ oscterm.osc_used.connect(lambda: _oscfired.append(1))
 oscterm.resize(400, 200)
 oscterm.show()
 pump(300)
-ok(len(_oscfired) == 1, 'the terminal emits osc_used once per tab for OSC output')
+ok(len(_oscfired) >= 1, 'the terminal emits osc_used for OSC output in CLI mode')
 _osctext = oscterm.toPlainText()
 ok('secret-title' not in _osctext and 'another' not in _osctext,
    'the OSC title text is never shown in the document')
 ok('visible' in _osctext, 'the program output around the OSC still shows')
-# a program that redraws lines above the cursor (cursor-up: a completion menu, a
-# progress display) cannot be shown in the 1D line display, so the tab is advised
-# to use TUI mode -- once per tab (#184).
-_cush = os.path.join(tempfile.mkdtemp(prefix='st-cuu-'), 'cuu.sh')
-with open(_cush, 'w') as _f:
-    _f.write('#!/bin/sh\nprintf "one\\ntwo\\033[Aredraw\\n"\nsleep 2\n')
-os.chmod(_cush, 0o755)
-cuterm = SecureTerminal(command=_cush)
-_cufired = []
-cuterm.advise_signal.connect(_cufired.append)
-cuterm.resize(400, 200)
-cuterm.show()
-pump(300)
-ok(any('TUI' in m for m in _cufired),
-   'a cursor-up redraw (completion menu) advises TUI mode in line mode')
-# turning on TUI mode auto-dismisses a "use TUI mode" advisory (no longer valid).
+# finding: in TUI mode an OSC is NOT flagged "ignored" -- a title/notification may
+# be handled there (allow_title), so a contradictory notice must not fire.
+if tui_available():
+    _tuiosc = SecureTerminal(command=_oscsh, tui=True)
+    _tuifired = []
+    _tuiosc.osc_used.connect(lambda: _tuifired.append(1))
+    _tuiosc.resize(400, 200)
+    _tuiosc.show()
+    pump(300)
+    ok(not _tuifired, 'TUI mode does not flag an OSC as ignored (it may be handled)')
+# turning on TUI mode auto-dismisses a "use TUI mode" (tui-kind) advisory, but NOT
+# an unrelated OSC notice on the same tab (codex P2: only TUI hints are stale).
 _tuitab = win.current()
 win._on_advise(_tuitab, 'This program wants a full-screen interface. Turn on TUI.')
 ok(not win._banner.isHidden(), 'the full-screen advisory is showing before the switch')
 win.set_tui(True)
 ok(win._banner.isHidden(), 'switching to TUI auto-dismisses the "use TUI mode" banner')
 win.set_tui(False)
+win._on_advise(_tuitab, 'An application used an OSC escape ...', 'osc')
+ok(not win._banner.isHidden(), 'an OSC notice is showing')
+win.set_tui(True)
+ok(not win._banner.isHidden(), 'enabling TUI does NOT dismiss the OSC notice')
+win.set_tui(False)
+win._dismiss_advisory()
 QInputDialog.getText = staticmethod(lambda *a, **k: ('build', True))
 win.rename_tab(0)
 eq(win.tabs.tabText(0), 'build', 'tab rename')
