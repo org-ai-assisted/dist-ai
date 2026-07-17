@@ -173,6 +173,28 @@ def _feed_split(chunk):
 _leak = _feed_split('\x1b]2;host:~ (cd ~) [pt') + _feed_split('s/11]\x07[u]% ')
 eq(_leak, '[u]% ', 'a split OSC title leaks nothing across the read boundary')
 
+# --- DCS/SOS/PM/APC string sequences: strip the whole BODY, not just the opener -
+# ESC P (DCS), ESC X (SOS), ESC ^ (PM), ESC _ (APC) carry a string body to a
+# BEL/ST terminator. Matching only the 2-byte opener would leak the body as text,
+# so a cat'd DECRQSS/XTGETTCAP/Sixel/kitty-graphics payload would show its guts.
+eq(S.render_output('before\x1bP$qm\x1b\\after', 'strip'), 'beforeafter',
+   'DCS DECRQSS body stripped (no "$qm" leak)')
+eq(S.render_output('a\x1bP+q544e\x1b\\b', 'strip'), 'ab', 'DCS XTGETTCAP body stripped')
+eq(S.render_output('a\x1bPq#0;2;0;0;0#0~~\x1b\\b', 'strip'), 'ab', 'DCS Sixel body stripped')
+eq(S.render_output('a\x1bXstart of string\x1b\\b', 'strip'), 'ab', 'SOS body stripped')
+eq(S.render_output('a\x1b^privmsg\x1b\\b', 'strip'), 'ab', 'PM body stripped')
+eq(S.render_output('a\x1b_Gf=100;payload\x1b\\b', 'strip'), 'ab', 'APC kitty-graphics body stripped')
+eq(S.render_output('x\x1bPbody\x07y', 'strip'), 'xy', 'DCS with a BEL terminator stripped')
+# a DCS/APC split across two reads must carry its tail, not leak it
+eq(S.split_trailing_escape('log\x1bP$q'), ('log', '\x1bP$q'), 'an incomplete DCS tail is carried')
+eq(S.split_trailing_escape('log\x1b_Gf=1'), ('log', '\x1b_Gf=1'), 'an incomplete APC tail is carried')
+eq(S.split_trailing_escape('log\x1bP$qm\x1b\\'), ('log\x1bP$qm\x1b\\', ''),
+   'a COMPLETE DCS (ST-terminated) is not held back')
+# has_bell: a DCS/OSC-terminating BEL is not a bell; a standalone BEL is
+ok(not S.has_bell('\x1bPabc\x07'), 'a DCS-terminating BEL is not a standalone bell')
+ok(not S.has_bell('\x1b]2;t\x07'), 'an OSC-terminating BEL is not a standalone bell')
+ok(S.has_bell('ding\x07'), 'a standalone BEL is a bell')
+
 # --- OSC feature registry: single source of truth for the granular controls ---
 _osc_keys = [f[0] for f in S.OSC_FEATURES]
 ok(len(_osc_keys) == len(set(_osc_keys)), 'OSC feature keys are unique')

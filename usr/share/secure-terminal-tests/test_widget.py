@@ -1434,6 +1434,70 @@ except Exception as _e:                # pylint: disable=broad-except
     ok(False, 'fuzz: _dispatch_request raised: %s' % _e)
 _fw.close()
 
+# --- reflection oracle: output must NEVER cause a write to the pty ------------
+# The crown-jewel invariant. A crafted file cat'd to the terminal, or hostile
+# program output, can emit a capability QUERY (DA/DSR/CPR/XTVERSION/DECRQM/
+# XTGETTCAP/DECRQSS/kitty-?u/OSC color+clipboard read/ENQ). A terminal that
+# ANSWERS reflects the reply into the foreground program's stdin -- a 20-year
+# "output becomes input" injection class. secure-terminal answers NONE of them,
+# in either mode, because nothing on the output path writes to the pty. Feed the
+# whole battery through the real _on_readable and assert the write-spy stays empty.
+_QUERIES = [
+    b'\x1b[c', b'\x1b[0c',                 # DA1 primary device attributes
+    b'\x1b[>c', b'\x1b[>0c',               # DA2 secondary (fingerprint)
+    b'\x1b[=c',                            # DA3 tertiary
+    b'\x1b[5n',                            # DSR status
+    b'\x1b[6n',                            # CPR cursor position report request
+    b'\x1b[>q',                            # XTVERSION
+    b'\x1b[?2026$p',                       # DECRQM (sync-output mode)
+    b'\x1bP+q544e\x1b\\',                  # XTGETTCAP terminfo dump
+    b'\x1bP$qm\x1b\\',                     # DECRQSS request status string
+    b'\x1b[?u',                            # kitty keyboard progressive-enhancement
+    b'\x1b]4;1;?\x07',                     # OSC 4 palette query
+    b'\x1b]10;?\x07', b'\x1b]11;?\x07',    # OSC 10/11 fg/bg query
+    b'\x1b]52;c;?\x07',                    # OSC 52 clipboard READ (exfil vector)
+    b'\x05',                               # ENQ answerback
+]
+
+
+def feed_output(term, raw):
+    """Drive the real _on_readable with `raw` bytes via a pipe, as if the child
+    had printed them, so the full output path (pyte feed + _handle_osc + line
+    render) runs -- not a shortcut that skips the OSC read handlers."""
+    r, w = os.pipe()
+    old = term._fd                         # pylint: disable=protected-access
+    term._fd = r
+    try:
+        os.write(w, raw)
+        os.close(w)
+        w = None
+        term._on_readable()                # pylint: disable=protected-access
+    finally:
+        term._fd = old
+        os.close(r)
+        if w is not None:
+            os.close(w)
+
+
+for _label, _mk in (('CLI', lambda: SecureTerminal(command='/bin/cat')),
+                    ('TUI', lambda: SecureTerminal(command='/bin/cat', tui=True))):
+    _ro = _mk()
+    if _label == 'TUI':
+        for _k in (f[0] for f in _S.OSC_FEATURES):
+            _ro.apply_osc(_k, True)        # even every OSC feature ENABLED must not reply
+    _rosent = spy_writes(_ro)
+    for _q in _QUERIES:
+        feed_output(_ro, _q)
+    ok(_rosent == [],
+       'reflection oracle (%s): no query is answered back to the pty (got %r)'
+       % (_label, _rosent))
+    # Even if pyte itself tried to reply, our screen never wires the channel:
+    if _ro._screen is not None:            # pylint: disable=protected-access
+        _ro._screen.write_process_input('should-go-nowhere')
+        ok(_rosent == [], 'reflection oracle (%s): pyte write_process_input reaches no pty'
+           % _label)
+    _ro.close()
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(widget): %d passed, %d failed\n'
                  % (PASS, FAIL))
