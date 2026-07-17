@@ -1446,6 +1446,58 @@ except Exception as _e:                # pylint: disable=broad-except
     ok(False, 'fuzz: _dispatch_request raised: %s' % _e)
 _fw.close()
 
+# fuzz: the TUI OSC handler must be chunk-boundary invariant -- an OSC fed whole
+# vs split at any point must fire the SAME action (the OSC-split-across-reads bug
+# class). One reused terminal; reset the OSC carry between the two runs.
+_ofz = SecureTerminal(command='/bin/cat', tui=True)
+_ofz.apply_osc('osc_notify', True)
+_ofz.apply_osc('osc_cwd', True)
+
+
+@_HRUN
+@_given(_hst.text(alphabet=_hst.characters(min_codepoint=32, max_codepoint=126),
+                  max_size=48),
+        _hst.integers(min_value=0, max_value=52))
+def _fuzz_osc_split(body, split):
+    seq = b'\x1b]9;' + body.encode('ascii') + b'\x07'
+    _ofz._osc_carry = b''
+    whole = []
+    _cw = _ofz.notified.connect(lambda s: whole.append(s))
+    _ofz._handle_osc(seq)
+    _ofz.notified.disconnect(_cw)
+    _ofz._osc_carry = b''
+    parts = []
+    _cs = _ofz.notified.connect(lambda s: parts.append(s))
+    _ofz._handle_osc(seq[:split])
+    _ofz._handle_osc(seq[split:])
+    _ofz.notified.disconnect(_cs)
+    assert whole == parts
+
+
+@_HRUN
+@_given(_hst.binary(max_size=64))
+def _fuzz_osc7_safe(raw):
+    # any OSC 7 path emitted to the tab tooltip is fully safe (a percent-decoded
+    # bidi/zero-width/control byte can never reach it)
+    body = raw.replace(b'\x07', b'').replace(b'\x1b', b'')
+    _ofz._osc_carry = b''
+    _ofz._reported_cwd = ''
+    got = []
+    _c = _ofz.cwd_changed.connect(lambda p: got.append(p))
+    _ofz._handle_osc(b'\x1b]7;file://h/' + body + b'\x07')
+    _ofz.cwd_changed.disconnect(_c)
+    for _p in got:
+        assert _S.render_output(_p, 'strip') == _p    # already safe: nothing to strip
+
+
+for _name, _prop in (('osc_split', _fuzz_osc_split), ('osc7_safe', _fuzz_osc7_safe)):
+    try:
+        _prop()
+        ok(True, 'fuzz: OSC handler %s invariant holds' % _name)
+    except Exception as _e:            # pylint: disable=broad-except
+        ok(False, 'fuzz: OSC handler %s: %s' % (_name, _e))
+_ofz.close()
+
 # --- configurable window keyboard shortcuts -----------------------------------
 # Every window shortcut is registered (documented) and rebindable, with conflict
 # detection; only non-default overrides are persisted. Terminal control keys are

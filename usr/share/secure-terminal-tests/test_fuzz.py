@@ -168,6 +168,22 @@ def prop_split_trailing_escape(text):
 
 
 @RUN
+@given(st.text(), st.integers(min_value=0, max_value=200))
+def prop_chunk_boundary_invariance(text, split):
+    # The property that catches the OSC/DCS split-across-reads bugs: feeding the
+    # same bytes WHOLE vs SPLIT at an arbitrary boundary must render identical
+    # stripped output. A read boundary must never change what the user sees, leak
+    # a sequence's tail, or drop a standalone character.
+    whole_text, _, _ = S.feed_chunk_carry(text, '', '')
+    whole = S.render_output(whole_text, 'strip')
+    head, tail = text[:split], text[split:]
+    t1, carry, drop = S.feed_chunk_carry(head, '', '')
+    t2, _, _ = S.feed_chunk_carry(tail, carry, drop)
+    split_out = S.render_output(t1, 'strip') + S.render_output(t2, 'strip')
+    assert split_out == whole
+
+
+@RUN
 @given(st.lists(st.text(), max_size=8))
 def prop_feed_chunk_carry(chunks):
     # the stateful CLI feed: arbitrary input split into arbitrary read()-chunks
@@ -330,6 +346,7 @@ PROPS = [
     ('render_output', prop_render_output),
     ('feed_line_edits', prop_feed_line_edits),
     ('split_trailing_escape', prop_split_trailing_escape),
+    ('chunk_boundary_invariance', prop_chunk_boundary_invariance),
     ('feed_chunk_carry', prop_feed_chunk_carry),
     ('sanitize_paste', prop_sanitize_paste),
     ('sanitize_paste_unicode', prop_sanitize_paste_unicode),
