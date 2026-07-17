@@ -132,20 +132,39 @@ def prop_tui_cell(ch, mode):
 
 
 @RUN
-@given(st.text(), st.sampled_from(S.DISPLAY_MODES))
-def prop_feed_line_edits(text, mode):
+@given(st.text(), st.sampled_from(S.DISPLAY_MODES),
+       st.integers(min_value=0, max_value=200))
+def prop_feed_line_edits(text, mode, max_line):
     # the line-mode logical-cell editor: hostile output must never smuggle an
     # escape byte into a cell, the cursor must stay within the current line, and
-    # in strip mode the rendered line must be all-safe. It must not raise.
-    comp, cells, col, sgr, _w = S.feed_line_edits([], 0, {}, text)
+    # in strip mode the rendered line must be all-safe. It must not raise. max_line
+    # exercises the width bound: cursor-forward blank padding and deferred autowrap.
+    comp, cells, col, sgr, _w = S.feed_line_edits([], 0, {}, text, max_line)
     assert 0 <= col <= len(cells)
+    if max_line:
+        assert col <= max_line and len(cells) <= max_line   # never past the width
     for ch, _key in cells:
         assert ch != '\x1b'                      # no escape survives into a cell
     if mode == 'strip':
         rendered = ''.join(S.render_output(c, 'strip') for c, _ in cells)
         assert all(ord(ch) in SAFE_OUTPUT for ch in rendered)
     # feeding the SAME chunk again from the resulting state must still not raise
-    S.feed_line_edits(cells, col, sgr, text)
+    S.feed_line_edits(cells, col, sgr, text, max_line)
+
+
+@RUN
+@given(st.text())
+def prop_split_trailing_escape(text):
+    # holding back an incomplete escape at a read boundary must be loss-free: the
+    # pieces reconstitute the input exactly, the carry is a real escape prefix (or
+    # empty), and it is bounded (a flood is let through, never buffered forever).
+    complete, carry = S.split_trailing_escape(text)
+    assert complete + carry == text
+    assert carry == '' or carry.startswith('\x1b')
+    assert len(carry) <= 4096
+    # a complete SGR at the very end is never held back
+    _c2, carry2 = S.split_trailing_escape(text + '\x1b[0m')
+    assert carry2 == ''
 
 
 @RUN
@@ -293,6 +312,7 @@ PROPS = [
     ('privileged_conf', prop_privileged_conf),
     ('render_output', prop_render_output),
     ('feed_line_edits', prop_feed_line_edits),
+    ('split_trailing_escape', prop_split_trailing_escape),
     ('sanitize_paste', prop_sanitize_paste),
     ('sanitize_paste_unicode', prop_sanitize_paste_unicode),
     ('sanitize_title', prop_sanitize_title),

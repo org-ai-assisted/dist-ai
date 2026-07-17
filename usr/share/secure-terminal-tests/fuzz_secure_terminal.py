@@ -143,10 +143,14 @@ def phase_lines(rnd, iterations, seed):
     ## TUI sanitizer and the SGR colour parser.
     for _ in range(iterations):
         text = _rand_text(rnd)
-        comp, cells, col, sgr, _w = S.feed_line_edits([], 0, {}, text)
+        max_line = rnd.choice((0, 0, rnd.randint(2, 120)))   # exercise the width bound
+        comp, cells, col, sgr, _w = S.feed_line_edits([], 0, {}, text, max_line)
         _assert(0 <= col <= len(cells),
                 'feed_line_edits cursor {0} out of [0,{1}] on {2!r}'
                 .format(col, len(cells), text), seed)
+        _assert(not max_line or (col <= max_line and len(cells) <= max_line),
+                'feed_line_edits exceeded width {0} on {1!r}'.format(max_line, text),
+                seed)
         for ch, _key in cells:
             _assert(ch != '\x1b', 'ESC smuggled into a cell on {0!r}'
                     .format(text), seed)
@@ -162,7 +166,7 @@ def phase_lines(rnd, iterations, seed):
         _assert(disp >= 0, 'cells_display_col negative on {0!r}'.format(text),
                 seed)
         ## feeding the resulting state again must not raise
-        S.feed_line_edits(cells, col, sgr, text)
+        S.feed_line_edits(cells, col, sgr, text, max_line)
         ## legacy bulk editor
         line = _rand_text(rnd, max_tokens=8)
         completed, cur, newcol = S.apply_line_edits(
