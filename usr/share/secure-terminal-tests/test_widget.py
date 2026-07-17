@@ -1461,6 +1461,24 @@ _kc = win._set_shortcuts({'copy': 'Ctrl+Shift+J', 'paste': 'Ctrl+Shift+J'})
 ok(bool(_kc), 'two actions on one combination is reported as a conflict')
 eq(win.act_copy.shortcut().toString(), 'Ctrl+Shift+C',
    'a conflicting rebind applies nothing (copy keeps its binding)')
+# a bare Ctrl+<letter> is reserved for the terminal (Ctrl+U/R reach the program)
+ok(bool(win._set_shortcuts({'new_tab': 'Ctrl+U'})),
+   'binding a window action to a terminal control key is rejected')
+eq(win.act_new.shortcut().toString(), 'Ctrl+Shift+T', 'the reserved rebind applied nothing')
+ok(bool(win._set_shortcuts({'new_tab': 'A'})),
+   'binding to a bare printable key (which would eat typing) is rejected')
+# Ctrl+Shift/Ctrl+Alt combos are fine, and a built-in default that happens to be
+# Ctrl+<letter> (quit = Ctrl+Q) is allowed to stand
+eq(win._set_shortcuts({'quit': 'Ctrl+Q', 'new_tab': 'Ctrl+Alt+T'}), [],
+   'a default Ctrl+Q and a Ctrl+Alt combo are accepted')
+win._set_shortcuts({'new_tab': 'Ctrl+Shift+T'})       # restore default
+# an admin lock on keybindings refuses edits entirely
+_saved_locked = win._locked
+win._locked = set(win._locked) | {'keybindings'}
+ok(bool(win._set_shortcuts({'new_tab': 'Ctrl+Alt+Z'})),
+   'a locked keybindings setting refuses edits')
+eq(win.act_new.shortcut().toString(), 'Ctrl+Shift+T', 'the locked edit applied nothing')
+win._locked = _saved_locked
 # an override loaded from config is honoured at build time via _bind()
 _kb = MainWindow()
 _kb._keybindings = {'close_tab': 'Ctrl+Alt+W'}
