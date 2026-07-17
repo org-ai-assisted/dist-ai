@@ -781,6 +781,18 @@ ok(_octab2 not in win._osc_notified, 'a suppressed notice does not consume the p
 win.set_osc_notice(True)
 _octab2.osc_used.emit()
 ok(not win._banner.isHidden(), 're-enabling the toggle re-arms the OSC notice')
+# turning the notice OFF while it is showing dismisses the banner immediately.
+win.set_osc_notice(False)
+ok(win._banner.isHidden(), 'switching the OSC notice off dismisses a showing banner')
+win.set_osc_notice(True)
+# and enabling "allow title / notifications" (OSC now handled) clears a stale
+# OSC notice, since it is no longer "ignored".
+win._osc_notified.discard(_octab2)
+_octab2.osc_used.emit()
+ok(not win._banner.isHidden(), 'an OSC notice is showing again')
+win.set_allow_title(True)
+ok(win._banner.isHidden(), 'enabling program title/notifications clears the OSC notice')
+win.set_allow_title(False)
 win._dismiss_advisory()
 # and the terminal actually EMITS osc_used (once) when a PROGRAM sends OSC to its
 # stdout in line mode, and never shows the OSC text in the document. Drive it from
