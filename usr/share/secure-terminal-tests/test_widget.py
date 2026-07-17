@@ -1488,6 +1488,73 @@ _kb._bind(_probe, 'close_tab', 'Ctrl+Shift+W')
 eq(_probe.shortcut().toString(), 'Ctrl+Alt+W', '_bind applies a config override over the default')
 _kb.close()
 
+# --- OSC handler robustness (codex follow-up) --------------------------------
+_oh = SecureTerminal(command='/bin/cat', tui=True)
+_oh.apply_osc('osc_hyperlink', True)
+_oh.apply_osc('osc_notify', True)
+_links = []
+_oh.notified.connect(lambda s: _links.append(s))
+# OSC 8 hyperlink with an ST (ESC \) terminator, not just BEL, must be surfaced
+_oh._handle_osc(b'\x1b]8;;https://example.com/a\x1b\\click\x1b]8;;\x1b\\')
+ok(any('example.com' in s for s in _links), 'OSC 8 hyperlink with an ST terminator is surfaced')
+# an OSC split across two reads (a 64KiB clipboard is guaranteed to) is still acted on
+_links.clear()
+_oh._handle_osc(b'\x1b]9;hello ')                 # incomplete -> held as carry
+_oh._handle_osc(b'world\x07')                     # completes it on the next read
+ok(any('hello world' in s for s in _links), 'an OSC split across PTY reads is still acted on')
+_oh.close()
+
+# OSC 7 cwd: a percent-encoded bidi/zero-width char is sanitized before the tooltip
+_o7 = SecureTerminal(command='/bin/cat', tui=True)
+_o7.apply_osc('osc_cwd', True)
+_paths = []
+_o7.cwd_changed.connect(lambda p: _paths.append(p))
+_o7._handle_osc(b'\x1b]7;file://host/home/%E2%80%AE/x\x07')     # %E2%80%AE = U+202E RLO
+_rlo = chr(0x202E)                                # bidi override, kept out of source
+ok(_paths and all(_rlo not in p for p in _paths),
+   'OSC 7 percent-decoded path is sanitized (no bidi override reaches the tooltip)')
+_o7.close()
+
+# restored history is capped so entering TUI cannot synchronously replay a huge scrollback
+_big = SecureTerminal(command='/bin/cat', history='x' * 2_000_000)
+ok(len(_big._raw) <= _big._RAW_MAX, 'restored history is capped to _RAW_MAX')
+_big.close()
+
+# an alternate-screen flood is bounded (per-read snapshot cap), does not hang
+if tui_available():
+    _af = SecureTerminal(command='/bin/cat', tui=True)
+    _af._make_screen()
+    _af._feed_stream(b'\x1b[?1049h\x1b[?1049l' * 1000)         # 2000 transitions
+    ok(True, 'an alternate-screen flood returns (bounded) rather than hanging')
+    _af.close()
+
+# a legacy allow_title lock also locks the granular title/notify controls
+_saved_l = win._locked
+win._locked = set(win._locked) | {'allow_title'}
+win._osc_defaults['osc_notify'] = False
+win.set_osc('osc_notify', True)
+ok(not win._osc_defaults['osc_notify'],
+   'a legacy allow_title lock refuses granular title/notify edits')
+win._locked = _saved_l
+
+# session dump carries the full per-tab OSC map, not just the allow_title boolean
+_stabs = win._session_tabs()
+ok(_stabs and isinstance(_stabs[0].get('osc'), dict) and 'osc_clipboard' in _stabs[0]['osc'],
+   'session persists the full per-tab OSC feature map')
+
+# an explicit granular osc_notify=false survives a restart even with legacy
+# allow_title=true present (the fallback must not clobber an explicit value)
+_cfgdir = os.path.join(os.environ['XDG_CONFIG_HOME'], 'secure-terminal.d')
+os.makedirs(_cfgdir, exist_ok=True)
+_ucfg = os.path.join(_cfgdir, '50_user.conf')
+with open(_ucfg, 'w', encoding='utf-8') as _fh:
+    _fh.write('allow_title=true\nosc_title=true\nosc_notify=false\n')
+_wd = MainWindow()
+ok(_wd._osc_defaults['osc_title'] and not _wd._osc_defaults['osc_notify'],
+   'legacy allow_title does not override an explicit granular osc_notify=false')
+_wd.close()
+os.remove(_ucfg)                                  # restore the empty test config
+
 # --- reflection oracle: output must NEVER cause a write to the pty ------------
 # The crown-jewel invariant. A crafted file cat'd to the terminal, or hostile
 # program output, can emit a capability QUERY (DA/DSR/CPR/XTVERSION/DECRQM/
