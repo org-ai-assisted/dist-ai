@@ -132,6 +132,47 @@ eq(len(_wc4), 0, 'an erase op after the last column cancels the pending wrap')
 eq([ch for ch, _ in _wcells4], ['a', 'b', 'c', 'X'],
    'the erase clears the pending wrap so X overwrites the last cell (abcX)')
 
+# --- cursor-forward pads blanks (a right-prompt jumps to the right edge) -------
+# "\x1b[20C" from column 10 moves to column 30 (forward is RELATIVE), leaving a
+# 20-blank GAP, not collapsing onto the last cell -- that was zsh's RPROMPT
+# ([pts/N]) rendering inline after the prompt.
+_pc, _pcells, _pcol, _ps, _pw = S.feed_line_edits([], 0, {}, '0123456789\x1b[20C[R]', 80)
+_pline = ''.join(ch for ch, _ in _pcells)
+eq(_pline, '0123456789' + ' ' * 20 + '[R]',
+   'cursor-forward pads blanks so a right-prompt lands at its column, not inline')
+eq(_pcol, 33, 'the cursor column tracks the padded position (10 + 20 + 3)')
+# forward is still bounded by the width (no runaway padding)
+_bc, _bcells, _bcol, _bs, _bw = S.feed_line_edits([], 0, {}, 'x\x1b[999C', 20)
+eq(len(_bcells), 19, 'cursor-forward padding is clamped to the width (max_line-1)')
+# absolute column (CSI G) pads the same way
+_gc, _gcells, _gcol, _gs, _gw = S.feed_line_edits([], 0, {}, 'ab\x1b[6GZ', 80)
+eq(''.join(ch for ch, _ in _gcells), 'ab   Z', 'CSI G pads to the absolute column')
+
+# --- split-across-reads escape carry (a long OSC title is the usual victim) ----
+# A whole OSC title is stripped; split across two chunks, the tail must NOT leak.
+eq(S.split_trailing_escape('X\x1b]2;a title\x07'), ('X\x1b]2;a title\x07', ''),
+   'a COMPLETE OSC (BEL-terminated) is not held back')
+eq(S.split_trailing_escape('X\x1b]2;a ti'), ('X', '\x1b]2;a ti'),
+   'an INCOMPLETE OSC tail is split off to carry to the next chunk')
+eq(S.split_trailing_escape('a\x1b[38;5'), ('a', '\x1b[38;5'),
+   'an incomplete CSI (no final byte) is carried')
+eq(S.split_trailing_escape('a\x1b[0m'), ('a\x1b[0m', ''),
+   'a complete CSI (has its final byte) is not carried')
+eq(S.split_trailing_escape('done\x1b'), ('done', '\x1b'), 'a lone trailing ESC is carried')
+eq(S.split_trailing_escape('no escapes here'), ('no escapes here', ''),
+   'plain text carries nothing')
+eq(S.split_trailing_escape('\x1b]2;' + 'x' * 5000)[1], '',
+   'an over-cap unterminated OSC is NOT held (bounded), it is let through')
+# end-to-end: feeding the split halves with the carry reconstitutes and strips it
+_carry = ''
+def _feed_split(chunk):
+    global _carry
+    _t = _carry + chunk
+    _t, _carry = S.split_trailing_escape(_t)
+    return S.render_output(_t, 'strip')
+_leak = _feed_split('\x1b]2;host:~ (cd ~) [pt') + _feed_split('s/11]\x07[u]% ')
+eq(_leak, '[u]% ', 'a split OSC title leaks nothing across the read boundary')
+
 # --- escapes are always stripped; editing controls always pass ----------------
 ESC = '\x1b[31mRED\x1b[0m'
 for mode in ('strip', 'show', 'reveal', 'detail'):
