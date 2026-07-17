@@ -957,6 +957,20 @@ win.set_allow_title(True)
 ok(win._banner.isHidden(), 'enabling program title/notifications clears the OSC notice')
 win.set_allow_title(False)
 win._dismiss_advisory()
+# granular OSC controls: a per-feature menu toggle for every OSC feature, applied
+# to the tab, persisted, and reflected by the OSC security lamp (green/yellow/red).
+ok(set(win._osc_actions) == {f[0] for f in _S.OSC_FEATURES},
+   'every OSC feature has its own menu toggle')
+ok(win._osc_level()[0] == '#1f8a54', 'the OSC lamp is green when all features are off')
+win.set_osc('osc_hyperlink', True)                    # medium risk
+ok(win._osc_level()[0] == '#e5a50a' and win.current().osc_enabled('osc_hyperlink')
+   and win._osc_actions['osc_hyperlink'].isChecked(),
+   'enabling a medium OSC feature dims the lamp to yellow, applies to the tab, checks the menu')
+win.set_osc('osc_clipboard', True)                    # high risk
+ok(win._osc_level()[0] == '#e5484d', 'enabling a high-risk OSC feature turns the lamp red')
+win.set_osc('osc_hyperlink', False)
+win.set_osc('osc_clipboard', False)
+ok(win._osc_level()[0] == '#1f8a54', 'the lamp returns to green when the features are disabled')
 # and the terminal actually EMITS osc_used (once) when a PROGRAM sends OSC to its
 # stdout in line mode, and never shows the OSC text in the document. Drive it from
 # a program (not typed input, which the tty would echo back in caret form).
