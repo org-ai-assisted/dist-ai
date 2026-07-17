@@ -743,6 +743,41 @@ ok(not win._banner.isHidden() and 'tab A' in win._banner_label.text(),
    'switching back to tab A shows its own advisory again')
 win._dismiss_advisory()
 ok(win._banner.isHidden(), 'dismiss clears the current tab advisory')
+# OSC-use notice: a program using an OSC escape (stripped in line mode) raises the
+# banner once per tab; a global toggle disables it (feature request).
+ok(win._osc_notice, 'the OSC-use notice is on by default')
+_octab = win.current()
+_octab._osc_notice_shown = False
+_octab.osc_used.emit()
+ok(not win._banner.isHidden() and 'OSC' in win._banner_label.text(),
+   'an OSC escape raises the OSC-use notice banner')
+win._dismiss_advisory()
+win.set_osc_notice(False)
+_octab._osc_notice_shown = False
+_octab.osc_used.emit()
+ok(win._banner.isHidden(), 'the OSC notice is suppressed when the toggle is off')
+win.set_osc_notice(True)
+# and the terminal actually EMITS osc_used (once) when a PROGRAM sends OSC to its
+# stdout in line mode, and never shows the OSC text in the document. Drive it from
+# a program (not typed input, which the tty would echo back in caret form).
+_oscsh = os.path.join(tempfile.mkdtemp(prefix='st-osc-'), 'osc.sh')
+with open(_oscsh, 'w') as _f:
+    _f.write('#!/bin/sh\n'
+             'printf "\\033]2;secret-title\\007visible\\n"\n'
+             'printf "\\033]0;another\\007more\\n"\n'
+             'sleep 2\n')
+os.chmod(_oscsh, 0o755)
+oscterm = SecureTerminal(command=_oscsh)
+_oscfired = []
+oscterm.osc_used.connect(lambda: _oscfired.append(1))
+oscterm.resize(400, 200)
+oscterm.show()
+pump(300)
+ok(len(_oscfired) == 1, 'the terminal emits osc_used once per tab for OSC output')
+_osctext = oscterm.toPlainText()
+ok('secret-title' not in _osctext and 'another' not in _osctext,
+   'the OSC title text is never shown in the document')
+ok('visible' in _osctext, 'the program output around the OSC still shows')
 QInputDialog.getText = staticmethod(lambda *a, **k: ('build', True))
 win.rename_tab(0)
 eq(win.tabs.tabText(0), 'build', 'tab rename')
