@@ -802,6 +802,14 @@ if tui_available():
        'a legitimate OSC 10 foreground colour is applied')
     tui.apply_osc('osc_colors', False)
     ok(tui._osc_palette == {}, 'disabling osc_colors reverts to the theme palette')
+    # a flood of palette changes is bounded: _osc_color must not render per change
+    # (the timer coalesces), so this returns promptly and applies the last value.
+    tui.apply_osc('osc_colors', True)
+    tui._handle_osc(b''.join(b'\x1b]4;2;#%02x0000\x07' % (_i % 256)
+                             for _i in range(300)))
+    ok(tui._osc_palette.get(2) is not None,
+       'a burst of OSC 4 palette changes is applied without per-change rendering')
+    tui.apply_osc('osc_colors', False)
     # hyperlink OSC 8: gated, and surfaces the REAL target next to the visible text
     # (a link's display text can differ from where it points -- the phishing risk).
     _links = []
