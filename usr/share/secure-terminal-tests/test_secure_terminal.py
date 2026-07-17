@@ -173,6 +173,22 @@ def _feed_split(chunk):
 _leak = _feed_split('\x1b]2;host:~ (cd ~) [pt') + _feed_split('s/11]\x07[u]% ')
 eq(_leak, '[u]% ', 'a split OSC title leaks nothing across the read boundary')
 
+# --- OSC feature registry: single source of truth for the granular controls ---
+_osc_keys = [f[0] for f in S.OSC_FEATURES]
+ok(len(_osc_keys) == len(set(_osc_keys)), 'OSC feature keys are unique')
+ok(all(k.startswith('osc_') for k in _osc_keys), 'OSC feature keys are namespaced osc_')
+ok(all(f[3] is False for f in S.OSC_FEATURES),
+   'every OSC feature is neutralized (off) by default -- secure by construction')
+ok(all(f[4] in ('low', 'medium', 'high') for f in S.OSC_FEATURES),
+   'OSC risk levels are valid (drive the security lamp)')
+ok(all(f[2] and f[5] for f in S.OSC_FEATURES),
+   'every OSC feature has its codes and a layman attack-surface hint')
+eq(set(S.OSC_FEATURE_BY_KEY), set(_osc_keys), 'the by-key lookup matches the registry')
+# clipboard and iTerm2 are the high-risk ones
+ok(S.OSC_FEATURE_BY_KEY['osc_clipboard'][3] == 'high'
+   and S.OSC_FEATURE_BY_KEY['osc_iterm2'][3] == 'high',
+   'clipboard and iTerm2 are flagged high risk')
+
 # --- escapes are always stripped; editing controls always pass ----------------
 ESC = '\x1b[31mRED\x1b[0m'
 for mode in ('strip', 'show', 'reveal', 'detail'):
