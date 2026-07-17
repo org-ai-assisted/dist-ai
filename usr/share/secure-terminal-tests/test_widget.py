@@ -1770,6 +1770,34 @@ for _d in _bsd:
 if _sound_ok:
     ok(_sfa(_sound_ok), 'a sound file inside an allowed folder is accepted (%s)' % _sound_ok)
 
+# a malformed persisted bell spec (corrupt session) never raises -> no channels
+eq(SecureTerminal._parse_bell(123), set(), 'a non-iterable bell spec yields no channels')
+eq(SecureTerminal._parse_bell([None, 'audible', 5]), {'audible'},
+   'a list with non-string elements is filtered, not fatal')
+eq(SecureTerminal._parse_bell({'visual', 'nope'}), {'visual'},
+   'an unknown channel in a set is dropped')
+
+# toggling one channel preserves the current tab's OTHER channels (codex F2)
+_bt = SecureTerminal(command='/bin/cat')
+win.tabs.addTab(_bt, 'bell-preserve')
+win.tabs.setCurrentWidget(_bt)
+_bt.apply_bell({'visual'})
+win._default_bell = set()                         # make the tab differ from default
+win.set_bell_channel('tray', True)
+eq(_bt.bell_channels(), {'visual', 'tray'},
+   'toggling one channel keeps the current tab other channels')
+eq(win._default_bell, {'tray'}, 'the global default tracks the toggled channel')
+win.tabs.removeTab(win.tabs.indexOf(_bt))
+_bt.close()
+
+# a bell_sound admin lock refuses the sound setter
+_saved_l2 = win._locked
+win._locked = set(win._locked) | {'bell_sound'}
+win._default_bell_sound = ''
+win.set_bell_sound('/usr/share/sounds/anything.wav')
+eq(win._default_bell_sound, '', 'a bell_sound lock refuses set_bell_sound')
+win._locked = _saved_l2
+
 # switching modes clears a pending CLI discard state, or output after the switch
 # back would be swallowed until a stray terminator (codex F2)
 if tui_available():
