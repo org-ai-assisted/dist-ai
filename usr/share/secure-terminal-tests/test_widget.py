@@ -1586,9 +1586,35 @@ try:
     _be._last_bell = 0.0                           # clear the rate-limit gate
     feed_output(_be, b'attn\x07')
     eq(fake.alerts, 1, 'visual bell raises a window urgency alert')
+    # a shell OSC title (BEL-terminated) split across two reads must NOT false-ring:
+    # the BEL is the OSC terminator, consumed by the carry, not a standalone bell
+    fake.beeps = 0
+    _be.apply_bell('audible')
+    _be._last_bell = 0.0
+    feed_output(_be, b'\x1b]0;host: ~/dir')        # OSC title, no terminator yet
+    feed_output(_be, b'\x07$ ')                    # its BEL terminator next read
+    eq(fake.beeps, 0, 'a shell OSC title split across reads does not false-ring the bell')
 finally:
     _stmod.QApplication = _orig_qapp
 _be.close()
+
+# switching modes clears a pending CLI discard state, or output after the switch
+# back would be swallowed until a stray terminator (codex F2)
+if tui_available():
+    _bd = SecureTerminal(command='/bin/cat')
+    _bd._esc_drop = 'P'
+    _bd.apply_tui(True)
+    eq(_bd._esc_drop, '', 'switching to TUI clears a pending CLI discard state')
+    _bd.close()
+
+# an over-cap OSC (introducer truncated by the discard) still surfaces an OSC-use
+# notice, so padding an OSC past the cap cannot evade the once-per-type banner (F5)
+_bo = SecureTerminal(command='/bin/cat')
+_osc_seen = []
+_bo.osc_used.connect(lambda k: _osc_seen.append(k))
+feed_output(_bo, b'\x1b]0;' + b'A' * 5000)         # >cap OSC, no terminator -> discard
+ok('osc_other' in _osc_seen, 'an over-cap OSC still surfaces an OSC-use notice')
+_bo.close()
 
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(widget): %d passed, %d failed\n'
