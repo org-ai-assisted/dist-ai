@@ -793,6 +793,21 @@ _osctext = oscterm.toPlainText()
 ok('secret-title' not in _osctext and 'another' not in _osctext,
    'the OSC title text is never shown in the document')
 ok('visible' in _osctext, 'the program output around the OSC still shows')
+# a program that redraws lines above the cursor (cursor-up: a completion menu, a
+# progress display) cannot be shown in the 1D line display, so the tab is advised
+# to use TUI mode -- once per tab (#184).
+_cush = os.path.join(tempfile.mkdtemp(prefix='st-cuu-'), 'cuu.sh')
+with open(_cush, 'w') as _f:
+    _f.write('#!/bin/sh\nprintf "one\\ntwo\\033[Aredraw\\n"\nsleep 2\n')
+os.chmod(_cush, 0o755)
+cuterm = SecureTerminal(command=_cush)
+_cufired = []
+cuterm.advise_signal.connect(_cufired.append)
+cuterm.resize(400, 200)
+cuterm.show()
+pump(300)
+ok(any('TUI' in m for m in _cufired),
+   'a cursor-up redraw (completion menu) advises TUI mode in line mode')
 # turning on TUI mode auto-dismisses a "use TUI mode" advisory (no longer valid).
 _tuitab = win.current()
 win._on_advise(_tuitab, 'This program wants a full-screen interface. Turn on TUI.')
