@@ -339,6 +339,47 @@ if tui_available():
        'a full-screen program frame does not pollute the scrollback on exit')
     ok('primary-content' in _ftext,
        'the pre-program primary screen is restored when a full-screen app exits')
+    # a tab that STARTS in TUI with restored scrollback keeps it, sets grid state,
+    # and rebuilds the line document when switched to CLI (codex P1).
+    _st = SecureTerminal(command='/bin/cat', tui=True, history='restored-scrollback\n')
+    _st.resize(600, 300)
+    _st.show()
+    pump(120)
+    ok(_st._grid_shown and 'restored-scrollback' in _st.toPlainText(),
+       'a tab starting in TUI seeds its restored scrollback into the grid')
+    _st.apply_tui(False)
+    pump(60)
+    ok('restored-scrollback' in _st.toPlainText(),
+       'switching a TUI-started tab to CLI rebuilds the line document (keeps history)')
+    # the shell's prompt that arrives in the SAME read as the alt-screen leave is
+    # fed onto the restored primary, not discarded (codex P1).
+    _pprog = os.path.join(tempfile.mkdtemp(prefix='st-lp-'), 'lp.sh')
+    with open(_pprog, 'w') as _f:
+        _f.write('#!/bin/sh\n'
+                 'sleep 0.2\n'
+                 'printf "\\033[?1049h\\033[2J\\033[HAPP"\n'
+                 'sleep 0.3\n'
+                 'printf "\\033[?1049lPROMPT-AFTER-LEAVE\\$ "\n'
+                 'sleep 3\n')
+    os.chmod(_pprog, 0o755)
+    _pt = SecureTerminal(command=_pprog, tui=True)
+    _pt.resize(600, 300)
+    _pt.show()
+    pump(900)
+    ok('PROMPT-AFTER-LEAVE' in _pt.toPlainText(),
+       'bytes after an alt-screen leave (the next prompt) land on the restored screen')
+    # a scrollback cap smaller than the grid must not wipe the document (codex P2:
+    # _grid_rows tracks ACTUAL blocks, so _delete_grid never goes negative).
+    _tt = SecureTerminal(command='/bin/cat', tui=True)
+    _tt.apply_scrollback(5)                # far smaller than the grid's row count
+    _tt.resize(600, 400)
+    _tt.show()
+    pump(60)
+    for _i in range(30):
+        _tt._feed_stream(('grid-line-%d\r\n' % _i).encode())
+    _tt._render_tui()                      # must not crash or blank the document
+    ok(_tt.document().blockCount() >= 1 and _tt._grid_rows <= _tt.document().blockCount(),
+       'a tiny scrollback cap does not corrupt the grid render')
 # Ctrl+C is echoed locally as ^C (transparency: make the invisible visible) and
 # de-duped against a shell that also echoes it (bash's readline), so the user
 # always sees exactly one ^C.
