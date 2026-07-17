@@ -802,6 +802,16 @@ if tui_available():
        'a legitimate OSC 10 foreground colour is applied')
     tui.apply_osc('osc_colors', False)
     ok(tui._osc_palette == {}, 'disabling osc_colors reverts to the theme palette')
+    # hyperlink OSC 8: gated, and surfaces the REAL target next to the visible text
+    # (a link's display text can differ from where it points -- the phishing risk).
+    _links = []
+    tui.notified.connect(_links.append)
+    tui._handle_osc(b'\x1b]8;;https://evil.example\x07Google\x1b]8;;\x07')
+    ok(_links == [], 'OSC 8 hyperlinks are ignored until osc_hyperlink is enabled')
+    tui.apply_osc('osc_hyperlink', True)
+    tui._handle_osc(b'\x1b]8;;https://evil.example/login\x07Google\x1b]8;;\x07')
+    ok(_links and 'Google' in _links[-1] and 'evil.example/login' in _links[-1],
+       'a hyperlink surfaces the real target next to the display text')
     tui.shutdown()
     # mode switch is renderer-only: NO shell restart, the running program and its
     # frame survive. A program writes a full-screen frame to stdout in line mode;
