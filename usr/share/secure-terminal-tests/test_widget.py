@@ -1132,12 +1132,20 @@ finally:
 # global settings apply to every open tab and update the defaults
 win.new_tab()
 win._apply_global({'theme': 'light', 'zoom': 130, 'mode': 'reveal',
-                   'colors': True, 'tui': False, 'allow_title': True,
+                   'colors': True, 'tui': False,
+                   'osc': {'osc_title': True, 'osc_clipboard': True},
                    'scrollback': 1000, 'paste_delay': 5, 'persist': True})
 ok(all((win.tabs.widget(i).current_theme(), win.tabs.widget(i).current_mode(),
         win.tabs.widget(i).current_scrollback()) == ('light', 'reveal', 1000)
        for i in range(win.tabs.count())),
    'global settings applied to every open tab')
+ok(all(win.tabs.widget(i).osc_enabled('osc_title')
+       and win.tabs.widget(i).osc_enabled('osc_clipboard')
+       for i in range(win.tabs.count())),
+   'global settings apply the granular OSC toggles to every tab')
+win._apply_global({'theme': 'light', 'zoom': 130, 'mode': 'reveal', 'colors': True,
+                   'tui': False, 'osc': {'osc_title': False, 'osc_clipboard': False},
+                   'scrollback': 1000, 'paste_delay': 5, 'persist': True})
 eq(win._default_mode, 'reveal', 'global settings updated the default mode')
 # slash-command palette: applies settings, leading slash optional, invalid -> False
 ok(win.run_command('/theme light') and win.current().current_theme() == 'light',
