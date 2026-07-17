@@ -283,6 +283,62 @@ _gmargin = int(gz.document().documentMargin())
 _gvbar = gz.verticalScrollBar().width() if gz.verticalScrollBar().isVisible() else 0
 ok(_gcols * _gcw <= gz.viewport().width() - 2 * _gmargin + _gvbar,
    'the TUI grid columns fit the text area, so the grid never overflows sideways')
+# --- TUI is a full emulator: primary-screen redraws (completion menus), CLI<->TUI
+# scrollback, and full-screen apps all render (only where pyte is installed) ------
+if tui_available():
+    # a completion-menu style cursor-up redraw OVERWRITES the listing line instead
+    # of piling up (the whole point of #184: the grid honours cursor-up)
+    _mprog = os.path.join(tempfile.mkdtemp(prefix='st-menu-'), 'menu.sh')
+    with open(_mprog, 'w') as _f:
+        _f.write('#!/bin/sh\n'
+                 'printf "prompt> cd \\n"\n'
+                 'printf "dirA  dirB\\n"\n'
+                 'printf "\\033[Aprompt> cd dirA\\033[K\\n"\n'   # cursor up + redraw
+                 'sleep 3\n')
+    os.chmod(_mprog, 0o755)
+    _mt = SecureTerminal(command=_mprog, tui=True)
+    _mt.resize(600, 300)
+    _mt.show()
+    pump(400)
+    _mlines = [ln.rstrip() for ln in _mt.toPlainText().split('\n') if ln.strip()]
+    ok('prompt> cd dirA' in _mlines and 'dirA  dirB' not in _mlines,
+       'a cursor-up redraw (completion menu) overwrites in the grid, not piles up')
+    # CLI->TUI keeps the scrollback (seeded from retained output), and TUI->CLI
+    # keeps the output produced while in TUI
+    _hprog = os.path.join(tempfile.mkdtemp(prefix='st-hist-'), 'h.sh')
+    with open(_hprog, 'w') as _f:
+        _f.write('#!/bin/sh\nfor i in 1 2 3 4 5; do echo "scrollback-$i"; done\nsleep 3\n')
+    os.chmod(_hprog, 0o755)
+    _ht = SecureTerminal(command=_hprog)          # start in CLI
+    _ht.resize(600, 300)
+    _ht.show()
+    pump(400)
+    ok('scrollback-3' in _ht.toPlainText(), 'output present in CLI mode')
+    _ht.apply_tui(True)
+    pump(120)
+    ok('scrollback-3' in _ht.toPlainText(),
+       'CLI->TUI keeps the scrollback (grid seeded from retained output)')
+    # a full-screen program (alternate screen) is restored on exit: its frame does
+    # not pollute the scrollback and the pre-program screen comes back
+    _fprog = os.path.join(tempfile.mkdtemp(prefix='st-fs-'), 'fs.sh')
+    with open(_fprog, 'w') as _f:
+        _f.write('#!/bin/sh\n'
+                 'echo primary-content\n'
+                 'sleep 0.3\n'
+                 'printf "\\033[?1049h\\033[2J\\033[HFULLSCREEN-FRAME"\n'
+                 'sleep 0.4\n'
+                 'printf "\\033[?1049l"\n'
+                 'sleep 3\n')
+    os.chmod(_fprog, 0o755)
+    _ft = SecureTerminal(command=_fprog, tui=True)
+    _ft.resize(600, 300)
+    _ft.show()
+    pump(1100)
+    _ftext = _ft.toPlainText()
+    ok('FULLSCREEN-FRAME' not in _ftext,
+       'a full-screen program frame does not pollute the scrollback on exit')
+    ok('primary-content' in _ftext,
+       'the pre-program primary screen is restored when a full-screen app exits')
 # Ctrl+C is echoed locally as ^C (transparency: make the invisible visible) and
 # de-duped against a shell that also echoes it (bash's readline), so the user
 # always sees exactly one ^C.
