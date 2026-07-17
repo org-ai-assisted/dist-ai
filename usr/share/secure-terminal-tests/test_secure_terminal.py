@@ -184,15 +184,45 @@ eq(S.render_output('a\x1bPq#0;2;0;0;0#0~~\x1b\\b', 'strip'), 'ab', 'DCS Sixel bo
 eq(S.render_output('a\x1bXstart of string\x1b\\b', 'strip'), 'ab', 'SOS body stripped')
 eq(S.render_output('a\x1b^privmsg\x1b\\b', 'strip'), 'ab', 'PM body stripped')
 eq(S.render_output('a\x1b_Gf=100;payload\x1b\\b', 'strip'), 'ab', 'APC kitty-graphics body stripped')
-eq(S.render_output('x\x1bPbody\x07y', 'strip'), 'xy', 'DCS with a BEL terminator stripped')
+eq(S.render_output('x\x1bPbody\x1b\\y', 'strip'), 'xy', 'DCS (ST-terminated) stripped')
+# BEL does NOT terminate a DCS/SOS/PM/APC (only OSC): a BEL is body, so a string
+# sequence continues past it to its ST -- else its continuation leaks as text.
+eq(S.render_output('\x1bPsecret\x07LEAK\x1b\\after', 'strip'), 'after',
+   'a BEL inside a DCS is body, not a terminator (no "LEAK")')
+eq(S.render_output('a\x1b]0;title\x07b', 'strip'), 'ab', 'OSC still terminates on BEL')
+# an unterminated DCS swallows to end-of-input (no ST ever arrives)
+eq(S.render_output('keep\x1bPneverending tail', 'strip'), 'keep',
+   'an unterminated DCS swallows the rest of the chunk')
 # a DCS/APC split across two reads must carry its tail, not leak it
 eq(S.split_trailing_escape('log\x1bP$q'), ('log', '\x1bP$q'), 'an incomplete DCS tail is carried')
 eq(S.split_trailing_escape('log\x1b_Gf=1'), ('log', '\x1b_Gf=1'), 'an incomplete APC tail is carried')
 eq(S.split_trailing_escape('log\x1bP$qm\x1b\\'), ('log\x1bP$qm\x1b\\', ''),
    'a COMPLETE DCS (ST-terminated) is not held back')
 # has_bell: a DCS/OSC-terminating BEL is not a bell; a standalone BEL is
-ok(not S.has_bell('\x1bPabc\x07'), 'a DCS-terminating BEL is not a standalone bell')
+ok(not S.has_bell('\x1bPabc\x07'), 'a DCS-internal BEL is not a standalone bell')
 ok(not S.has_bell('\x1b]2;t\x07'), 'an OSC-terminating BEL is not a standalone bell')
+
+# --- feed_chunk_carry: an over-long, chunk-split string sequence never leaks ---
+# The core "cat anything safely" guarantee must hold for a sequence of ANY length
+# even when it splits across read() chunks -- a large Sixel image is the worst
+# case. Past the carry cap the feed switches to a discard state (O(1) memory).
+def _fcc(chunks):
+    carry, drop, out = '', '', ''
+    for _c in chunks:
+        _t, carry, drop = S.feed_chunk_carry(_c, carry, drop)
+        out += S.render_output(_t, 'strip')
+    return out, carry, drop
+eq(_fcc(['\x1bP' + 'A' * 5000, 'B' * 30 + '\x1b\\AFTER'])[0], 'AFTER',
+   'a >cap DCS split across reads is fully stripped, its continuation not leaked')
+eq(_fcc(['\x1b]2;' + 'x' * 5000, 'y' * 20 + '\x07TAIL'])[0], 'TAIL',
+   'a >cap OSC split across reads is fully stripped (not the old bounded leak)')
+eq(_fcc(['\x1bP' + 'A' * 5000, 'B' * 10 + '\x1b', '\\DONE'])[0], 'DONE',
+   'an ST terminator itself split across the boundary is still recognised')
+_mc = _fcc(['\x1bP' + 'A' * 5000] + ['A' * 4000] * 3 + ['tail\x1b\\OK'])
+eq((_mc[0], _mc[2]), ('OK', ''), 'a discard spanning many chunks resumes after the ST')
+# short split escapes still round-trip through feed_chunk_carry (regression)
+eq(_fcc(['pre\x1b]2;a ti', 'tle\x07post'])[0], 'prepost', 'a short split OSC leaks nothing')
+eq(_fcc(['a\x1b[38;5', ';2mb'])[0], 'ab', 'a short split CSI leaks nothing')
 ok(S.has_bell('ding\x07'), 'a standalone BEL is a bell')
 
 # --- OSC feature registry: single source of truth for the granular controls ---

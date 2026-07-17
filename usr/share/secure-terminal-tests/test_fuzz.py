@@ -168,6 +168,23 @@ def prop_split_trailing_escape(text):
 
 
 @RUN
+@given(st.lists(st.text(), max_size=8))
+def prop_feed_chunk_carry(chunks):
+    # the stateful CLI feed: arbitrary input split into arbitrary read()-chunks
+    # must (a) never let an escape byte survive into the rendered strip output --
+    # the core "strip every escape" guarantee, whatever the length or split -- and
+    # (b) keep its state bounded (carry <= cap, drop a valid introducer or empty).
+    carry, drop = '', ''
+    for chunk in chunks:
+        text, carry, drop = S.feed_chunk_carry(chunk, carry, drop)
+        rendered = S.render_output(text, 'strip')
+        assert '\x1b' not in rendered
+        assert len(carry) <= 4096
+        assert carry == '' or carry.startswith('\x1b') or carry == '\x1b'
+        assert drop == '' or drop in S._STRING_INTRO
+
+
+@RUN
 @given(st.text(), st.sampled_from(S.DISPLAY_MODES), st.booleans())
 def prop_cells_to_runs(text, mode, colors):
     # rendering the logical cells (from feed_line_edits) to display runs must not
@@ -313,6 +330,7 @@ PROPS = [
     ('render_output', prop_render_output),
     ('feed_line_edits', prop_feed_line_edits),
     ('split_trailing_escape', prop_split_trailing_escape),
+    ('feed_chunk_carry', prop_feed_chunk_carry),
     ('sanitize_paste', prop_sanitize_paste),
     ('sanitize_paste_unicode', prop_sanitize_paste_unicode),
     ('sanitize_title', prop_sanitize_title),

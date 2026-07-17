@@ -97,6 +97,18 @@ key(t, Qt.Key.Key_A, '', Qt.KeyboardModifier.ControlModifier)
 key(t, Qt.Key.Key_R, '', Qt.KeyboardModifier.ControlModifier)
 key(t, Qt.Key.Key_Backslash, '', Qt.KeyboardModifier.ControlModifier)
 eq(sent, [b'\x03', b'\x01', b'\x12', b'\x1c'], 'ctrl+key sends its control byte')
+# the rest of the Ctrl+@..Ctrl+_ range: forward the control byte Qt computed
+# (Ctrl+] -> 0x1d, Ctrl+/ -> 0x1f readline-undo, Ctrl+[ -> 0x1b ESC)
+sent.clear()
+key(t, Qt.Key.Key_BracketRight, '\x1d', Qt.KeyboardModifier.ControlModifier)
+key(t, Qt.Key.Key_Slash, '\x1f', Qt.KeyboardModifier.ControlModifier)
+key(t, Qt.Key.Key_BracketLeft, '\x1b', Qt.KeyboardModifier.ControlModifier)
+eq(sent, [b'\x1d', b'\x1f', b'\x1b'], 'ctrl+punctuation forwards its control byte')
+# a whitespace control (Ctrl+Return carries \r) is NOT swallowed by that
+# fallback -- it still submits via the Return path
+sent.clear()
+key(t, Qt.Key.Key_Return, '\r', Qt.KeyboardModifier.ControlModifier)
+eq(sent, [b'\r'], 'ctrl+return still submits the line, not swallowed as a control byte')
 # printable non-ASCII is a deliberate keystroke -> sent UTF-8 (euro, e-acute)
 sent.clear()
 key(t, Qt.Key.Key_unknown, chr(0x20AC))       # euro sign
