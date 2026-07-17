@@ -1510,6 +1510,62 @@ for _label, _mk in (('CLI', lambda: SecureTerminal(command='/bin/cat')),
            % _label)
     _ro.close()
 
+# --- bell (BEL) policy --------------------------------------------------------
+# A standalone BEL in output rings per the tab's policy (off/audible/visual),
+# off by default (BEL from untrusted output is a nuisance surface), and is
+# rate-limited so a BEL flood cannot machine-gun it. An OSC-terminating BEL is
+# not a bell. The BEL itself stays neutralized in the display either way.
+import secure_terminal.terminal as _stmod    # noqa: E402
+
+
+class _FakeApp:
+    def __init__(self):
+        self.beeps = 0
+        self.alerts = 0
+
+    def beep(self):
+        self.beeps += 1
+
+    def alert(self, _win, _msec):
+        self.alerts += 1
+
+
+class _QAppShim:
+    _fake = _FakeApp()
+
+    @staticmethod
+    def instance():
+        return _QAppShim._fake
+
+
+_be = SecureTerminal(command='/bin/cat')
+eq(_be.bell_mode(), 'off', 'bell defaults to off')
+_be.apply_bell('audible')
+eq(_be.bell_mode(), 'audible', 'apply_bell sets audible')
+_be.apply_bell('bogus')
+eq(_be.bell_mode(), 'off', 'an invalid bell mode falls back to off')
+
+_orig_qapp = _stmod.QApplication
+_stmod.QApplication = _QAppShim
+try:
+    fake = _QAppShim._fake
+    _be.apply_bell('audible')
+    feed_output(_be, b'ding\x07more\x07')          # two BELs in one burst
+    eq(fake.beeps, 1, 'a BEL burst rings once (rate-limited)')
+    fake.beeps = 0
+    feed_output(_be, b'\x1b]0;a title\x07')        # OSC terminator, not a bell
+    eq(fake.beeps, 0, 'an OSC-terminating BEL does not ring')
+    _be.apply_bell('off')
+    feed_output(_be, b'x\x07y')
+    eq(fake.beeps, 0, 'bell off does not ring')
+    _be.apply_bell('visual')
+    _be._last_bell = 0.0                           # clear the rate-limit gate
+    feed_output(_be, b'attn\x07')
+    eq(fake.alerts, 1, 'visual bell raises a window urgency alert')
+finally:
+    _stmod.QApplication = _orig_qapp
+_be.close()
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(widget): %d passed, %d failed\n'
                  % (PASS, FAIL))
