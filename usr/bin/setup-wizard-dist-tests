@@ -1,0 +1,39 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Runs the setup-wizard-dist regression suite: drives the real QWizard under
+## the Qt offscreen platform plugin and asserts the Back button is hidden on a
+## single-page wizard (NoBackButtonOnStartPage) yet stays available on a
+## multi-page one, checks DisclaimerPage1.nextId() routing, and audits the
+## shipped module for non-ASCII bytes. No root, no network; Qt runs offscreen
+## and the suite skips if PyQt5 or guimessages is absent. Works installed
+## (tests under /usr/share/setup-wizard-dist-tests) or from a git checkout.
+## Point it at a checkout with SETUP_WIZARD_DIST_REPO (and helper-scripts on
+## PYTHONPATH for guimessages).
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+## The Qt offscreen platform plugin lets the PyQt5 suite run without an X server.
+export QT_QPA_PLATFORM="offscreen"
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/setup-wizard-dist-tests' ]; then
+   tests_dir='/usr/share/setup-wizard-dist-tests'
+else
+   tests_dir="${script_dir}/../share/setup-wizard-dist-tests"
+fi
+
+python3 -m unittest discover \
+   --start-directory "${tests_dir}" \
+   --pattern 'test_*.py' \
+   "$@"

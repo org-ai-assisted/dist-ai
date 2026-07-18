@@ -700,6 +700,31 @@ Description: Tests for the secure-terminal sanitization core
  It resolves the module from SECURE_TERMINAL_REPO (a secure-terminal checkout)
  and SKIPs (exit 77) when absent. No root, no network.
 
+Package: setup-wizard-dist-tests
+Architecture: all
+Depends: ${misc:Depends},
+ python3,
+ python3-pyqt5,
+ python3-yaml,
+ bash (>= 4),
+ helper-scripts,
+ setup-wizard-dist
+Description: Tests for the setup-wizard-dist first-boot setup wizard
+ setup-wizard-dist is a PyQt5 QWizard. The pages shown are decided at runtime:
+ the disclaimer pages are disabled by default, so the wizard usually shows only
+ the finish page - a single page - where a Back button has nowhere to go. This
+ suite drives the real wizard offscreen and asserts a single-page wizard sets
+ the NoBackButtonOnStartPage option so the Back button is hidden, while a
+ multi-page (disclaimer-enabled) wizard keeps the Back button available past the
+ start page. A plain hide() does not survive QWizard rebuilding its button
+ layout on show(), so the option is the correct mechanism.
+ .
+ It also checks DisclaimerPage1.nextId() routing (accept to disclaimer 2, reject
+ to finish page) and audits the shipped module for non-ASCII bytes. It resolves
+ the wizard from SETUP_WIZARD_DIST_REPO (a checkout) else the installed package,
+ and skips when PyQt5 or guimessages is absent. No root, no network; Qt runs
+ offscreen.
+
 Package: iso-boot-tests
 Architecture: all
 Depends: ${misc:Depends},
@@ -755,6 +780,7 @@ Recommends: check-ref-commits-for-unicode-tests,
  sanitize-string-tests,
  secure-terminal-tests,
  sdwdate-gui-tests,
+ setup-wizard-dist-tests,
  stcat-family-tests,
  stdisplay-tests,
  systemcheck-tests,
