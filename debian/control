@@ -756,6 +756,30 @@ Description: Run the terminal-poc-corpus security suite against secure-terminal
  external suites best-effort at their pinned SHAs, and SKIPs (exit 77) when a
  checkout or PyQt6/pyte is absent. Runs confined (sandbox / CI). No root.
 
+Package: terminal-resilience-tests
+Architecture: all
+Depends: ${misc:Depends},
+ python3
+Suggests: xterm,
+ xdotool,
+ xvfb
+Description: Opt-in resilience test: hostile stream corrupts a real emulator, not secure-terminal
+ Demonstrates, on a private X display, that a hostile byte stream (an OSC 0
+ title-set to a known marker, plus a charset shift, a stuck colour and some
+ bytes) silently rewrites a traditional terminal emulator's window title -- while
+ secure-terminal neutralizes the identical stream. This backs the "hostile byte
+ streams" claim on secure-terminal.github.io.
+ .
+ It feeds the stream to xterm and asserts its WM_NAME was hijacked to the marker
+ (read via xdotool), then feeds the same stream through secure-terminal-cli and
+ asserts it is neutralized (no escape byte in the output, the marker stripped so
+ it could never reach a title).
+ .
+ OPT-IN ONLY: it drives a real terminal emulator, so it runs only when
+ TRADITIONAL_EMULATORS=1 and xterm + xdotool + Xvfb are present (in Suggests); it
+ never installs a terminal emulator itself. SKIPs (exit 77) otherwise, and when
+ secure-terminal is absent. No root, no network.
+
 Package: setup-wizard-dist-tests
 Architecture: all
 Depends: ${misc:Depends},

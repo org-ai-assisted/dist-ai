@@ -90,6 +90,7 @@ e2e_suites=(
 integration_suites=(
    sdwdate-gui-tests-integration
    secure-terminal-tests-apparmor
+   terminal-resilience-tests
 )
 
 usage() {
@@ -299,6 +300,10 @@ wire() {
          ## TERMINAL_POC_CORPUS_REPO in the ambient environment (or a
          ## private-sources / sibling default in the entrypoint).
          wire_env=( "SECURE_TERMINAL_REPO=$( pkg_dir secure-terminal )" ) ;;
+      terminal-resilience)
+         ## The opt-in resilience test drives secure-terminal-cli; point it at the
+         ## secure-terminal component checkout.
+         wire_env=( "SECURE_TERMINAL_REPO=$( pkg_dir secure-terminal )" ) ;;
       *)
          printf 'dist-ai-tests-all: no wiring for suite %s\n' "${suite}" >&2
          return 1 ;;
@@ -327,6 +332,7 @@ suite_component() {
       sdwdate-gui)            printf '%s' 'sdwdate-gui' ;;
       setup-wizard-dist)      printf '%s' 'setup-wizard-dist' ;;
       secure-terminal)        printf '%s' 'secure-terminal' ;;
+      terminal-resilience)    printf '%s' 'secure-terminal' ;;
       systemcheck)            printf '%s' 'systemcheck' ;;
       tor-control-panel)      printf '%s' 'tor-control-panel' ;;
    esac

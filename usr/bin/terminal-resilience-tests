@@ -1,0 +1,67 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Opt-in resilience test: demonstrate that a HOSTILE byte stream corrupts a
+## traditional terminal emulator (its window/tab title is silently rewritten to
+## attacker-chosen text) while secure-terminal neutralizes the same stream. This
+## backs the "hostile byte streams" claim on secure-terminal.github.io.
+##
+## OPT-IN ONLY (TRADITIONAL_EMULATORS=1): it drives a real terminal emulator on a
+## private X display, so it needs xterm + xdotool + Xvfb. It does NOT install a
+## terminal emulator itself (supply-chain policy: no vulnerable software pulled in
+## by default). SKIPs (exit 77) when not opted in, when the X tooling is absent,
+## or when secure-terminal cannot be found. No root, no network.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/terminal-resilience-tests' ]; then
+   share_dir='/usr/share/terminal-resilience-tests'
+else
+   share_dir="${script_dir}/../share/terminal-resilience-tests"
+fi
+
+[ -v TRADITIONAL_EMULATORS ] || TRADITIONAL_EMULATORS=''
+if [ "${TRADITIONAL_EMULATORS}" != '1' ]; then
+   printf 'terminal-resilience-tests: SKIP (opt-in only; set TRADITIONAL_EMULATORS=1 to install nothing but drive a real emulator on Xvfb)\n' >&2
+   exit 77
+fi
+
+## Resolve the secure-terminal checkout (for its CLI wrapper).
+repo=''
+[ -v SECURE_TERMINAL_REPO ] || SECURE_TERMINAL_REPO=''
+if [ -n "${SECURE_TERMINAL_REPO}" ]; then
+   repo="${SECURE_TERMINAL_REPO}"
+elif [ -d "${HOME}/private-sources/secure-terminal/usr/bin/secure-terminal-cli" ] \
+   || [ -f "${HOME}/private-sources/secure-terminal/usr/bin/secure-terminal-cli" ]; then
+   repo="${HOME}/private-sources/secure-terminal"
+elif [ -f "${script_dir}/../../../../secure-terminal/usr/bin/secure-terminal-cli" ]; then
+   repo="${script_dir}/../../../../secure-terminal"
+fi
+if [ -z "${repo}" ] || [ ! -f "${repo}/usr/bin/secure-terminal-cli" ]; then
+   printf 'terminal-resilience-tests: SKIP (secure-terminal not found; set SECURE_TERMINAL_REPO)\n' >&2
+   exit 77
+fi
+
+## Required X tooling -- absent -> SKIP, never auto-install.
+for tool in xterm xdotool Xvfb; do
+   if ! command -v "${tool}" >/dev/null 2>&1; then
+      printf 'terminal-resilience-tests: SKIP (%s not installed; opt-in test needs xterm + xdotool + Xvfb)\n' "${tool}" >&2
+      exit 77
+   fi
+done
+
+export SECURE_TERMINAL_REPO="${repo}"
+export PYTHONPATH="${repo}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
+
+exec bash -- "${share_dir}/probe.sh" "${repo}"

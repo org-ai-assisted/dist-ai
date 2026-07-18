@@ -33,6 +33,7 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 | `tor-control-panel-tests` | shipping | `usr/share/tor-control-panel-tests/` |
 | `tb-updater-tests`       | shipping | `usr/share/tb-updater-tests/` |
 | `terminal-poc-corpus-tests` | shipping | `usr/bin/terminal-poc-corpus-tests` |
+| `terminal-resilience-tests` | shipping | `usr/share/terminal-resilience-tests/` |
 | `unicode-show-tests`     | shipping | `usr/share/unicode-show-tests/` |
 | `grep-find-unicode-wrapper-tests` | shipping | `usr/share/grep-find-unicode-wrapper-tests/` |
 | `setup-wizard-dist-tests` | shipping | `usr/share/setup-wizard-dist-tests/` |
