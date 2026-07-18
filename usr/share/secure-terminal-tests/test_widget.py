@@ -1908,6 +1908,70 @@ _cp.grant_clipboard_read(True)             # user allows -> the pending query is
 ok(len(_cps) == 1 and _cps[0].startswith(b'\x1b]52;c;'),
    'granting a pending request answers the query that opened the dialog')
 _cp.close()
+
+# --- OSC 52 read: the four dialog decisions (allow/deny x once/always) ---------
+def _clip_term():
+    c = SecureTerminal(command='/bin/cat', tui=True)
+    c.apply_osc('osc_clipboard_read', True)
+    reqs, sent = [], []
+    c.clipboard_read_requested.connect(lambda: reqs.append(1))
+    c._write = sent.append                 # pylint: disable=protected-access
+    return c, reqs, sent
+
+
+def _clip_ask(c):
+    c._last_clip_read = 0.0                 # clear the rate-limit gate for the test
+    c._handle_osc(b'\x1b]52;c;?\x07')
+
+# allow-once: answers THIS request, but does NOT remember -> the next read re-asks
+_co, _cor, _cos = _clip_term()
+_clip_ask(_co)
+_co.grant_clipboard_read(_co.CLIP_ALLOW_ONCE)
+eq(len(_cos), 1, 'OSC 52 read: allow-once answers the pending request')
+_clip_ask(_co)
+eq(len(_cor), 2, 'OSC 52 read: allow-once does not remember -> the next read re-asks')
+_co.close()
+
+# allow-always: answers and remembers -> the next read replies with no new dialog
+_ca, _car, _cas = _clip_term()
+_clip_ask(_ca)
+_ca.grant_clipboard_read(_ca.CLIP_ALLOW_ALWAYS)
+_clip_ask(_ca)
+eq(len(_car), 1, 'OSC 52 read: allow-always is remembered -> no second dialog')
+eq(len(_cas), 2, 'OSC 52 read: allow-always answers subsequent reads directly')
+_ca.close()
+
+# deny-once: no reply, and the next read re-asks
+_do, _dor, _dos = _clip_term()
+_clip_ask(_do)
+_do.grant_clipboard_read(_do.CLIP_DENY_ONCE)
+eq(_dos, [], 'OSC 52 read: deny-once sends no reply')
+_clip_ask(_do)
+eq(len(_dor), 2, 'OSC 52 read: deny-once does not remember -> the next read re-asks')
+_do.close()
+
+# deny-always: no reply, no re-ask
+_da, _dar, _das = _clip_term()
+_clip_ask(_da)
+_da.grant_clipboard_read(_da.CLIP_DENY_ALWAYS)
+_clip_ask(_da)
+eq(_das, [], 'OSC 52 read: deny-always sends no reply')
+eq(len(_dar), 1, 'OSC 52 read: deny-always is remembered -> no re-ask')
+_da.close()
+
+# global always-allow: an undecided tab auto-answers with NO dialog...
+_ga, _gar, _gas = _clip_term()
+_ga.set_clipboard_read_always(True)
+_clip_ask(_ga)
+eq(len(_gar), 0, 'OSC 52 read: global always-allow answers WITHOUT a dialog')
+ok(len(_gas) == 1 and _gas[0].startswith(b'\x1b]52;c;'),
+   'OSC 52 read: global always-allow replies to an undecided tab')
+# ...but an explicit per-tab Deny still wins over the global default
+_ga.grant_clipboard_read(_ga.CLIP_DENY_ALWAYS)
+_gas.clear()
+_clip_ask(_ga)
+eq(_gas, [], 'OSC 52 read: a per-tab Deny wins over global always-allow')
+_ga.close()
 # CLI-mode notice distinguishes an OSC 52 READ query from a WRITE (shared code 52)
 _cn = SecureTerminal(command='/bin/cat')   # CLI mode
 _nk = []
