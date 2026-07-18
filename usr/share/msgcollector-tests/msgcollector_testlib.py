@@ -76,3 +76,33 @@ def extract_bash_function(path: str, name: str) -> str:
     if not match:
         raise LookupError(f"function {name!r} not found in {path}")
     return f"{name}() {{\n{match.group(1)}}}\n"
+
+
+def extract_python_function(path: str, name: str) -> str:
+    """Return the source of a top-level python function `name` from `path`
+    (from the `def NAME(` line to the next column-0 statement or EOF). Lets a
+    test exercise a pure helper defined inside an executable GUI script that
+    cannot be imported (it would run its GUI main). Raises LookupError if not
+    found."""
+    match = re.search(rf"^def {re.escape(name)}\b.*?(?=^\S|\Z)",
+                      read(path), re.DOTALL | re.MULTILINE)
+    if not match:
+        raise LookupError(f"function {name!r} not found in {path}")
+    return match.group(0)
+
+
+def libexec_dir() -> str:
+    """Directory holding the msgcollector libexec scripts under test."""
+    return os.path.dirname(msgcollector_script())
+
+
+def qt_gui_scripts() -> list:
+    """Paths of every msgcollector libexec script that constructs a
+    QApplication -- i.e. a GUI entry point that must pick a working Qt platform
+    on a Wayland session. Sorted for stable test ids."""
+    result = []
+    for name in sorted(os.listdir(libexec_dir())):
+        path = os.path.join(libexec_dir(), name)
+        if os.path.isfile(path) and "QApplication(sys.argv)" in read(path):
+            result.append(path)
+    return result
