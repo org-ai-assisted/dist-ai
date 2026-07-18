@@ -36,11 +36,21 @@ modules drive the real `setup_wizard_dist.setup_wizard_dist`:
   in the shipped translations YAML (code/translation drift guard), values are
   non-empty strings, and the YAML is ASCII.
 - **`test_source_hygiene.py`** - the shipped module is pure ASCII (R-001).
+- **`test_headless_render.py`** - drives the wizard on a REAL (virtual) X
+  server: spawns `render_probe.py` under `xvfb-run` with the xcb platform
+  plugin (a subprocess, so it does not collide with the offscreen
+  `QApplication`) and asserts the Back button is not mapped on the single-page
+  wizard yet is mapped past the start page on the multi-page one, also saving a
+  screenshot of the rendered wizard. This complements the offscreen checks: it
+  proves the real window backend maps the button box as expected, not just the
+  `QWizard` option state. Skips (never fails) when `xvfb-run` or the xcb plugin
+  is unavailable.
 
-No root, no network, no X server. Qt runs offscreen
-(`QT_QPA_PLATFORM=offscreen`). The suite skips if PyQt5 or guimessages (from
-helper-scripts) is not importable, or when a non-root run cannot create
-`/var/cache/setup-dist`.
+Most of the suite runs offscreen (`QT_QPA_PLATFORM=offscreen`); only
+`test_headless_render.py` needs `xvfb-run` and the xcb runtime libraries, and
+skips without them. No root, no network. The suite skips if PyQt5 or
+guimessages (from helper-scripts) is not importable, or when a non-root run
+cannot create `/var/cache/setup-dist`.
 
 ## Running
 

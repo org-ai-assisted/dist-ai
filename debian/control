@@ -727,6 +727,12 @@ Description: Tests for the setup-wizard-dist first-boot setup wizard
  guard), and that the shipped module is ASCII. It resolves the wizard from
  SETUP_WIZARD_DIST_REPO (a checkout) else the installed package, and skips when
  PyQt5 or guimessages is absent. No root, no network; Qt runs offscreen.
+ .
+ A separate headless render test drives the wizard on a real (virtual) X server
+ via xvfb-run with the xcb platform plugin and asserts the Back button is mapped
+ (or not) as expected, saving a screenshot; it skips when xvfb-run or the xcb
+ plugin is unavailable.
+Recommends: xvfb
 
 Package: iso-boot-tests
 Architecture: all
