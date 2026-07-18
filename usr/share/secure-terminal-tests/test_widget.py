@@ -176,6 +176,30 @@ data = boxt.createMimeDataFromSelection
 boxt.selectAll()
 ok('\u25a1' not in boxt.createMimeDataFromSelection().text(),
    'copy maps the box back to ASCII _')
+# Double-clicking a neutralized character opens the inspect popup; its Copy button
+# must place the \uXXXX ESCAPE on the clipboard, never the raw glyph -- copying a
+# bidi override or homoglyph as-is is the exact hazard this terminal guards against
+# (#300/#301). Prove it for a few high-risk codepoints across the whole popup path.
+from PyQt6.QtWidgets import QPushButton as _QPushButton   # noqa: E402
+from PyQt6.QtCore import QPoint as _QPoint                # noqa: E402
+cpop = SecureTerminal(command='/bin/cat')
+for _cp in (0x202E,        # RIGHT-TO-LEFT OVERRIDE (bidi)
+            0x200B,        # ZERO WIDTH SPACE (invisible)
+            0x0430,        # CYRILLIC SMALL A (homoglyph of ASCII 'a')
+            0x1F4A9):       # a non-BMP codepoint -> \U escape
+    APP.clipboard().clear()
+    cpop = SecureTerminal(command='/bin/cat')
+    cpop._show_char_popup(_cp, _QPoint(10, 10))
+    dlg = cpop._char_popup
+    btn = next(b for b in dlg.findChildren(_QPushButton)
+               if b.text().startswith('Copy'))
+    btn.click()
+    got = APP.clipboard().text()
+    want = ('\\u%04x' % _cp) if _cp <= 0xFFFF else ('\\U%08x' % _cp)
+    eq(got, want, 'popup Copy yields the escape for U+%04X' % _cp)
+    ok(chr(_cp) not in got,
+       'popup Copy never places the raw glyph U+%04X on the clipboard' % _cp)
+    dlg.close()
 # a write lands where a program left the cursor mid-line (zsh prompt + fill),
 # not at end-of-document -- the wall-of-spaces-before-input bug
 pc = SecureTerminal(command='/bin/cat')
