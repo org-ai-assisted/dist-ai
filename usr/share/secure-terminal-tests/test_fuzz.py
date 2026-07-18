@@ -238,7 +238,14 @@ def prop_cells_to_runs(text, mode, colors):
     assert 0 <= disp
     if mode == 'strip':
         for run_text, _key in runs:
-            assert all(ord(ch) in SAFE_OUTPUT or ch == '\n' for ch in run_text)
+            # Strip-mode DISPLAY may show the readable box for a neutralized byte
+            # (the widget maps it back to ASCII '_' on copy/export); everything
+            # else is the safe ASCII alphabet. Mapping the box to '_' must yield
+            # only the safe alphabet -- the export invariant.
+            assert all(ord(ch) in SAFE_OUTPUT or ch == '\n' or ch == S.STRIP_BOX
+                       for ch in run_text)
+            assert all(ord(ch) in SAFE_OUTPUT or ch == '\n'
+                       for ch in run_text.replace(S.STRIP_BOX, '_'))
 
 
 @RUN

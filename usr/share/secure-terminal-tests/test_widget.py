@@ -161,6 +161,21 @@ mb._append('fffff')
 for _ in range(5):
     mb._append('\x08 \x08')
 eq(mb.toPlainText().rstrip(), '', 'five backspaces erase five chars')
+
+# The neutralized-byte placeholder is DISPLAYED as a box (U+25A1) for readability,
+# but every text export (copy / save / toPlainText) maps it back to ASCII '_', so
+# a copied or saved transcript stays pure ASCII. Strip mode only.
+boxt = SecureTerminal(command='/bin/cat')
+boxt._mode = 'strip'
+feed_output(boxt, 'caf\xc3\xa9\xe2\x80\x8b\n'.encode('utf-8'))   # e-acute + zero-width
+ok('\u25a1' in boxt.document().toPlainText(),
+   'strip display shows the box for a neutralized byte')
+ok('\u25a1' not in boxt.toPlainText() and '_' in boxt.toPlainText(),
+   'export (toPlainText) maps the box back to ASCII _')
+data = boxt.createMimeDataFromSelection
+boxt.selectAll()
+ok('\u25a1' not in boxt.createMimeDataFromSelection().text(),
+   'copy maps the box back to ASCII _')
 # a write lands where a program left the cursor mid-line (zsh prompt + fill),
 # not at end-of-document -- the wall-of-spaces-before-input bug
 pc = SecureTerminal(command='/bin/cat')
