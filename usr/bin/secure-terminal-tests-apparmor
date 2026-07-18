@@ -14,6 +14,10 @@
 ## exits 77 (SKIP) anywhere that is not satisfied -- it is meant for the
 ## AppArmor-capable disposable sandbox / CI, NEVER a dev host (enforcing there
 ## could confine the running desktop). It restores the prior state on exit.
+##
+## In the disposable sandbox we WANT it to RUN (not skip): if not root but running
+## inside the sandbox with passwordless sudo, re-run under sudo. Guarded to the
+## sandbox marker so a dev host still SKIPs rather than enforcing on the desktop.
 
 set -o errexit -o nounset -o pipefail
 
@@ -21,6 +25,20 @@ skip() {
    printf 'secure-terminal-tests(apparmor): SKIP -- %s\n' "$1"
    exit 77
 }
+
+if [ "$( id -u )" -ne 0 ]; then
+   in_sandbox=""
+   [ "${DIST_AI_IN_SANDBOX:-}" = "1" ] && in_sandbox="yes"
+   [ "${POC_CORPUS_IN_SANDBOX:-}" = "1" ] && in_sandbox="yes"
+   if [ -n "${in_sandbox}" ] \
+      && command -v apparmor_parser >/dev/null 2>&1 \
+      && command -v aa-exec >/dev/null 2>&1 \
+      && sudo -n true >/dev/null 2>&1; then
+      rc=0
+      sudo -n --preserve-env=SECURE_TERMINAL_REPO bash "$0" "$@" || rc="$?"
+      exit "${rc}"
+   fi
+fi
 
 [ "$( id -u )" -eq 0 ] || skip "needs root (loads a profile system-wide)"
 command -v apparmor_parser >/dev/null 2>&1 \
