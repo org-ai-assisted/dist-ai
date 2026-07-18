@@ -708,7 +708,20 @@ Depends: ${misc:Depends},
  python3-yaml,
  bash (>= 4),
  helper-scripts,
- setup-wizard-dist
+ setup-wizard-dist,
+ xvfb,
+ xauth,
+ libxcb-xinerama0,
+ libxcb-icccm4,
+ libxcb-image0,
+ libxcb-keysyms1,
+ libxcb-randr0,
+ libxcb-render-util0,
+ libxcb-shape0,
+ libxkbcommon-x11-0,
+ libxcb-cursor0,
+ weston,
+ qtwayland5
 Description: Tests for the setup-wizard-dist first-boot setup wizard
  setup-wizard-dist is a PyQt5 QWizard. The pages shown are decided at runtime:
  the disclaimer pages are disabled by default, so the wizard usually shows only
@@ -731,10 +744,8 @@ Description: Tests for the setup-wizard-dist first-boot setup wizard
  A separate headless render test drives the wizard on real, headless windowing
  backends - X11 (xvfb-run + the xcb plugin) and Wayland (a headless weston + the
  qtwayland plugin) - and asserts the Back button is mapped (or not) as expected
- on both, saving a screenshot.
-Recommends: xvfb,
- weston,
- qtwayland5
+ on both, saving a screenshot. These backends are hard dependencies so the test
+ always runs rather than skipping.
 
 Package: iso-boot-tests
 Architecture: all
