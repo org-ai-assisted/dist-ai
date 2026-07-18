@@ -849,10 +849,19 @@ if tui_available():
     tui.apply_osc('osc_cwd', True)
     tui._handle_osc(b'\x1b]7;file://h/home/u/p\x07')
     ok(_cwds == ['/home/u/p'], 'enabled: OSC 7 reports the unquoted path')
-    # iTerm2 OSC 1337 is recognized but declined (no crash, no file transfer)
+    # iTerm2 OSC 1337 is a no-op STUB: recognized (stripped, not leaked) but it
+    # performs no action even when the toggle is ON -- no file transfer, no
+    # variable set, no signal of any kind. Prove it produces zero side effects.
     tui.apply_osc('osc_iterm2', True)
-    tui._handle_osc(b'\x1b]1337;File=n:' + _b64.b64encode(b'x') + b'\x07')
-    ok(True, 'OSC 1337 iTerm2 is declined without crashing')
+    _QGA2.clipboard().setText('UNTOUCHED')
+    _t0, _n0, _c0 = len(titles), len(notes), len(_cwds)
+    for _payload in (b'\x1b]1337;File=name=eA==;size=1:eA==\x07',   # inline file
+                     b'\x1b]1337;SetUserVar=k=dg==\x07',            # shell variable
+                     b'\x1b]1337;RequestUpload=format=tgz\x07'):    # file transfer
+        tui._handle_osc(_payload)
+    ok(len(titles) == _t0 and len(notes) == _n0 and len(_cwds) == _c0
+       and _QGA2.clipboard().text() == 'UNTOUCHED',
+       'OSC 1337 is a no-op stub: no signal, no clipboard, no cwd -- even enabled')
     # palette OSC 4/10/11: gated, and a program CANNOT hide text by moving fg==bg
     from PyQt6.QtGui import QPalette as _QPal                # noqa: E402
 
