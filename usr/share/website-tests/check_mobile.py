@@ -15,8 +15,10 @@ present (CI, the sandbox) it gates the layout.
 
 Sites are served over HTTP (not file://) so absolute asset paths resolve and
 images load -- a broken image renders at its width attribute and would be a false
-overflow. A subsite (git-diffs-lie) is mounted under its parent's docroot at its
-real path so its cross-site assets (/style.css, /logo-wide.png, ...) resolve.
+overflow. A subsite (git-diffs-lie) is served UNDER its parent's docroot at its
+real mount path (/git-diffs-lie/) by a path-mapping HTTP handler, so its
+cross-site assets (/style.css, /logo-wide.png, ...) resolve WITHOUT touching the
+filesystem (no symlinks into the real checkout).
 
 Usage: check_mobile.py <site-root> [<site-root> ...]
 """
@@ -27,6 +29,7 @@ import functools
 import http.server
 import socketserver
 import threading
+import urllib.parse
 
 VIEWPORT = 390
 
@@ -41,11 +44,34 @@ def _skip(msg):
     raise SystemExit(77)
 
 
-def _page_paths(docroot, subroot):
-    """Real URL paths for every navigable page under subroot, relative to docroot
-    (so a subsite's pages get their mounted /git-diffs-lie/... path)."""
-    paths = []
-    for base, _dirs, files in os.walk(subroot):
+class _MountHandler(http.server.SimpleHTTPRequestHandler):
+    """Serve `directory` at /, plus each entry of the server's `mounts`
+    (mount-path -> subsite-root) at its mount path -- so a subsite is served under
+    its parent's docroot with no filesystem changes."""
+
+    def log_message(self, *_args):
+        pass                                     # quiet
+
+    def translate_path(self, path):
+        clean = urllib.parse.unquote(urllib.parse.urlsplit(path).path)
+        for mount, subroot in getattr(self.server, 'mounts', {}).items():
+            if clean == mount.rstrip('/') or clean.startswith(mount):
+                rel = clean[len(mount):].lstrip('/')
+                fs = os.path.normpath(os.path.join(subroot, rel))
+                # keep the resolved path inside the subsite root
+                if os.path.commonpath([fs, subroot]) != subroot:
+                    return os.path.join(subroot, '__forbidden__')
+                if os.path.isdir(fs):
+                    fs = os.path.join(fs, 'index.html')
+                return fs
+        return super().translate_path(path)
+
+
+def _page_urls(root, mount=''):
+    """The URL paths of every navigable page under `root`, prefixed by `mount`
+    (the subsite's mount path, or '' for a top-level site)."""
+    urls = []
+    for base, _dirs, files in os.walk(root):
         if os.sep + '.git' in base:
             continue
         present = set(files)
@@ -54,24 +80,16 @@ def _page_paths(docroot, subroot):
                 continue
             if name[:-5] + '.png' in present:      # image-render template, not a page
                 continue
-            full = os.path.join(base, name)
-            rel = os.path.relpath(full, docroot).replace(os.sep, '/')
-            # a .../index.html is served at its directory path
-            url = '/' + (rel[:-len('index.html')] if rel.endswith('index.html') else rel)
-            paths.append(url)
-    return sorted(set(paths))
-
-
-def _serve(docroot, port):
-    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=docroot)
-    httpd = socketserver.TCPServer(('127.0.0.1', port), handler)
-    httpd.daemon_threads = True
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    return httpd
+            rel = os.path.relpath(os.path.join(base, name), root).replace(os.sep, '/')
+            if rel.endswith('index.html'):
+                rel = rel[:-len('index.html')]
+            url = mount.rstrip('/') + '/' + rel.lstrip('/')
+            urls.append(url if url.startswith('/') else '/' + url)
+    return sorted(set(urls))
 
 
 def main():
-    roots = [os.path.normpath(r) for r in sys.argv[1:] if os.path.isdir(r)]
+    roots = [os.path.abspath(r) for r in sys.argv[1:] if os.path.isdir(r)]
     if not roots:
         _skip('no site root found')
     try:
@@ -80,11 +98,10 @@ def main():
         _skip('python3-playwright not installed')
 
     by_name = {os.path.basename(r): r for r in roots}
-    # Build (docroot, [(url, subroot)]) work items. A top-level site serves itself;
-    # a subsite is mounted under its parent at its mount path (skipped if the
-    # parent is not among the roots -- its assets could not resolve).
-    docroots = {}     # docroot -> list of page URLs
-    subroot_of = {}   # docroot -> the subroot dir the pages belong to (for logging)
+    # Group into docroots: each top-level site serves itself; a subsite is mounted
+    # under its parent's docroot at its mount path (skipped if the parent is not
+    # checked out -- its cross-site assets could not resolve).
+    docroots = {}     # docroot -> {'mounts': {mount: subroot}, 'urls': [..]}
     for root in roots:
         name = os.path.basename(root)
         sub = SUBSITES.get(name)
@@ -95,72 +112,65 @@ def main():
                 sys.stdout.write('  ....  %s skipped (parent %s not checked out)\n'
                                  % (name, parent_name))
                 continue
-            link = os.path.join(parent, mount.strip('/'))
-            if not os.path.exists(link):
-                try:
-                    os.symlink(root, link)
-                except OSError:
-                    sys.stdout.write('  ....  %s skipped (cannot mount under %s)\n'
-                                     % (name, parent_name))
-                    continue
-            docroots.setdefault(parent, [])
-            docroots[parent] += _page_paths(parent, root)
+            entry = docroots.setdefault(parent, {'mounts': {}, 'urls': []})
+            entry['mounts'][mount] = root
+            entry['urls'] += _page_urls(root, mount)
         else:
-            docroots.setdefault(root, [])
-            docroots[root] += _page_paths(root, root)
+            entry = docroots.setdefault(root, {'mounts': {}, 'urls': []})
+            entry['urls'] += _page_urls(root, '')
 
-    port = 8760
     failures = 0
     checked = 0
-    try:
-        with sync_playwright() as pw:
+    with sync_playwright() as pw:
+        try:
+            browser = pw.chromium.launch()
+        except Exception as exc:                # noqa: BLE001 -- engine not installed
+            _skip('chromium engine unavailable: %s' % exc)
+        for docroot, entry in docroots.items():
+            handler = functools.partial(_MountHandler, directory=docroot)
+            httpd = socketserver.TCPServer(('127.0.0.1', 0), handler)
+            httpd.mounts = entry['mounts']
+            port = httpd.server_address[1]
+            httpd.daemon_threads = True
+            threading.Thread(target=httpd.serve_forever, daemon=True).start()
             try:
-                browser = pw.chromium.launch()
-            except Exception as exc:            # noqa: BLE001 -- engine not installed
-                _skip('chromium engine unavailable: %s' % exc)
-            for docroot, urls in docroots.items():
-                httpd = _serve(docroot, port)
-                try:
-                    for url in sorted(set(urls)):
-                        page = browser.new_page(viewport={'width': VIEWPORT, 'height': 844})
-                        try:
-                            page.goto('http://127.0.0.1:%d%s' % (port, url))
-                            page.wait_for_timeout(400)
-                            sw = page.evaluate('document.documentElement.scrollWidth')
-                            iw = page.evaluate('window.innerWidth')
-                            checked += 1
-                            if sw > iw + 1:
-                                off = page.evaluate(
-                                    "(vw)=>{let o=[];document.querySelectorAll('*')"
-                                    ".forEach(e=>{let r=e.getBoundingClientRect();"
-                                    "if(r.right>vw+1)o.push((e.tagName+'.'+(e.getAttribute('class')||''))"
-                                    ".slice(0,40)+'~'+Math.round(r.right))});"
-                                    "return o.sort((a,b)=>parseInt(b.split('~')[1])-parseInt(a.split('~')[1])).slice(0,4)}",
-                                    VIEWPORT)
-                                failures += 1
-                                sys.stderr.write(
-                                    'FAIL %s: horizontal overflow at %dpx '
-                                    '(scrollWidth=%d); widest: %s\n'
-                                    % (url, VIEWPORT, sw, off))
-                        finally:
-                            page.close()
-                finally:
-                    httpd.shutdown()
-                port += 1
-            browser.close()
-    finally:
-        # remove any subsite symlinks we created
-        for name, (parent_name, mount) in SUBSITES.items():
-            parent = by_name.get(parent_name)
-            if parent:
-                link = os.path.join(parent, mount.strip('/'))
-                if os.path.islink(link):
-                    os.unlink(link)
+                for url in sorted(set(entry['urls'])):
+                    page = browser.new_page(viewport={'width': VIEWPORT, 'height': 844})
+                    try:
+                        resp = page.goto('http://127.0.0.1:%d%s' % (port, url))
+                        if resp is not None and resp.status >= 400:
+                            failures += 1
+                            sys.stderr.write('FAIL %s: served %d (not a real page)\n'
+                                             % (url, resp.status))
+                            continue
+                        page.wait_for_timeout(400)
+                        sw = page.evaluate('document.documentElement.scrollWidth')
+                        iw = page.evaluate('window.innerWidth')
+                        checked += 1
+                        if sw > iw + 1:
+                            off = page.evaluate(
+                                "(vw)=>{let o=[];document.querySelectorAll('*')"
+                                ".forEach(e=>{let r=e.getBoundingClientRect();"
+                                "if(r.right>vw+1)o.push((e.tagName+'.'+(e.getAttribute('class')||''))"
+                                ".slice(0,40)+'~'+Math.round(r.right))});"
+                                "return o.sort((a,b)=>parseInt(b.split('~')[1])-parseInt(a.split('~')[1])).slice(0,4)}",
+                                VIEWPORT)
+                            failures += 1
+                            sys.stderr.write(
+                                'FAIL %s: horizontal overflow at %dpx '
+                                '(scrollWidth=%d); widest: %s\n'
+                                % (url, VIEWPORT, sw, off))
+                    finally:
+                        page.close()
+            finally:
+                httpd.shutdown()
+                httpd.server_close()
+        browser.close()
 
     if checked == 0:
         _skip('no pages served (subsite parents absent?)')
     if failures:
-        sys.stdout.write('website-mobile-tests: %d overflow failure(s) across %d pages\n'
+        sys.stdout.write('website-mobile-tests: %d failure(s) across %d pages\n'
                          % (failures, checked))
         return 1
     sys.stdout.write('website-mobile-tests: %d pages, no horizontal overflow at %dpx\n'

@@ -142,18 +142,41 @@ def resolve_internal(root, page, target, mount=None, parent_roots=()):
         # tree, so verify it there rather than skipping it as an external sibling.
         if mount and (target == mount.rstrip('/') or target.startswith(mount)):
             return ('file', _abs_candidates(target[len(mount):], [root]), frag)
-        if any(target.startswith(prefix) for prefix in KNOWN_PROJECT_PATHS):
-            # A sibling project-Pages path; verifiable only if that repo is one of
-            # the parent roots, else external (do not fail an unverifiable link).
+        if mount:
+            # A subsite's OFF-mount absolute link (/terminal/, /paste/, ...) points
+            # at the PARENT site, so verify it ONLY there -- searching the subsite
+            # too could let a coincidental child path mask a broken parent link.
+            # With no parent checked out it is external / unverifiable, not a fail.
             if not parent_roots:
                 return None
-        rel = target.lstrip('/')
-        return ('file', _abs_candidates(rel, [root, *parent_roots]), frag)
+            return ('file', _abs_candidates(target.lstrip('/'), list(parent_roots)), frag)
+        if any(target.startswith(prefix) for prefix in KNOWN_PROJECT_PATHS):
+            return None                          # valid sibling project-Pages path
+        return ('file', _abs_candidates(target.lstrip('/'), [root]), frag)
     base = os.path.normpath(os.path.join(os.path.dirname(page), target))
     candidates = [base]
     if target.endswith('/') or not os.path.splitext(base)[1]:
         candidates += [os.path.join(base, 'index.html'), base + '.html']
     return ('file', candidates, frag)
+
+
+_IDS_CACHE = {}
+
+
+def _ids_of(path):
+    """The element ids of an HTML file (cached), or None if it cannot be read.
+    Used to validate a fragment against a page outside the current root (a
+    subsite's cross-site link into its parent site)."""
+    key = os.path.normpath(path)
+    if key not in _IDS_CACHE:
+        try:
+            ext = Extractor()
+            with open(key, encoding='utf-8') as handle:
+                ext.feed(handle.read())
+            _IDS_CACHE[key] = ext.ids
+        except OSError:
+            _IDS_CACHE[key] = None
+    return _IDS_CACHE[key]
 
 
 def check_links(root, failures, mount=None, parent_roots=()):
@@ -182,9 +205,15 @@ def check_links(root, failures, mount=None, parent_roots=()):
                 failures.append('%s: broken internal link %r -> %s'
                                 % (rel, value, candidates[0]))
                 continue
-            if frag and hit in pages and frag not in pages[hit].ids:
-                failures.append('%s: link %r targets missing #%s'
-                                % (rel, value, frag))
+            if frag:
+                # The target may live in a PARENT site (a subsite's cross-site
+                # link), which is not in this root's `pages`; load its ids on
+                # demand so a missing cross-site anchor is caught, not silently
+                # accepted.
+                target_ids = pages[hit].ids if hit in pages else _ids_of(hit)
+                if target_ids is not None and frag not in target_ids:
+                    failures.append('%s: link %r targets missing #%s'
+                                    % (rel, value, frag))
 
 
 def check_wording(root, failures):
