@@ -55,6 +55,7 @@ core_suites=(
    stdisplay-tests
    systemcheck-tests
    tb-updater-tests
+   terminal-poc-corpus-tests
    tor-control-panel-tests
    unicode-show-tests
    web-analyzer-tests
@@ -283,6 +284,13 @@ wire() {
          ## secure_terminal lives in its own repo (a --component checkout), not a
          ## derivative-maker packages/ subpath; point the suite at it via
          ## SECURE_TERMINAL_REPO resolved from the component root.
+         wire_env=( "SECURE_TERMINAL_REPO=$( pkg_dir secure-terminal )" ) ;;
+      terminal-poc-corpus)
+         ## The corpus harness drives secure-terminal, so it needs BOTH repos.
+         ## Neither is a derivative-maker packages/ subpath: secure-terminal is a
+         ## --component checkout (pkg_dir), and terminal-poc-corpus resolves from
+         ## TERMINAL_POC_CORPUS_REPO in the ambient environment (or a
+         ## private-sources / sibling default in the entrypoint).
          wire_env=( "SECURE_TERMINAL_REPO=$( pkg_dir secure-terminal )" ) ;;
       *)
          printf 'dist-ai-tests-all: no wiring for suite %s\n' "${suite}" >&2

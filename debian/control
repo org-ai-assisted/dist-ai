@@ -700,6 +700,31 @@ Description: Tests for the secure-terminal sanitization core
  It resolves the module from SECURE_TERMINAL_REPO (a secure-terminal checkout)
  and SKIPs (exit 77) when absent. No root, no network.
 
+Package: terminal-poc-corpus-tests
+Architecture: all
+Depends: ${misc:Depends},
+ python3,
+ python3-pyqt6,
+ python3-pyte
+Description: Run the terminal-poc-corpus security suite against secure-terminal
+ terminal-poc-corpus (github.com/secure-terminal/terminal-poc-corpus) is a
+ defensive, machine-readable corpus of publicly-disclosed terminal-emulator
+ attack payloads. This suite runs its two harnesses against a secure-terminal
+ checkout in one place, as part of the dist-ai test run.
+ .
+ The adversarial harness proves, with a per-detector positive control
+ (--self-test) first, that secure-terminal neutralizes every corpus PoC: no
+ reflection to the pseudo-terminal, no display deception, no clipboard exfil.
+ The conformance harness then (a) runs the reference parsers pyte and libvterm
+ through their own tests at a reviewed, pinned commit, and (b) asserts the
+ security invariants (zero pty write-back, pure-ASCII rendered text, no crash)
+ across every escape sequence the reviewed conformance suites exercise -- the
+ whole VT/xterm spec surface, far past the hand-picked PoCs.
+ .
+ It resolves TERMINAL_POC_CORPUS_REPO and SECURE_TERMINAL_REPO, acquires the
+ external suites best-effort at their pinned SHAs, and SKIPs (exit 77) when a
+ checkout or PyQt6/pyte is absent. Runs confined (sandbox / CI). No root.
+
 Package: setup-wizard-dist-tests
 Architecture: all
 Depends: ${misc:Depends},
