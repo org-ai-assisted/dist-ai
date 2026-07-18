@@ -76,6 +76,25 @@ def spy_writes(term):
     return sent
 
 
+def feed_output(term, raw):
+    """Drive the real _on_readable with `raw` bytes via a pipe, as if the child had
+    printed them, so the full output path (pyte feed + _handle_osc + line render)
+    runs -- not a shortcut that skips the OSC read handlers."""
+    r, w = os.pipe()
+    old = term._fd                         # pylint: disable=protected-access
+    term._fd = r
+    try:
+        os.write(w, raw)
+        os.close(w)
+        w = None
+        term._on_readable()                # pylint: disable=protected-access
+    finally:
+        term._fd = old
+        os.close(r)
+        if w is not None:
+            os.close(w)
+
+
 # --- line-mode key forwarding -------------------------------------------------
 t = SecureTerminal(command='/bin/cat')
 sent = spy_writes(t)
@@ -1664,6 +1683,56 @@ win.set_cli_terminfo(True)
 ok(not win._default_cli_terminfo, 'a cli_terminfo admin lock refuses the toggle')
 win._locked = _savedl2
 
+# --- synchronized output (DECSET 2026): hold the paint between begin/end ------
+_sy = SecureTerminal(command='/bin/cat', tui=True)
+_sy._make_screen()
+_sy._render_timer.stop()
+feed_output(_sy, b'\x1b[?2026h')
+ok(_sy._sync_update and not _sy._render_timer.isActive(),
+   'DECSET 2026 begin holds the paint (pyte still fed)')
+feed_output(_sy, b'half a frame')
+ok(_sy._sync_update and not _sy._render_timer.isActive(),
+   'the paint stays held during a synchronized update')
+feed_output(_sy, b'\x1b[?2026l')
+ok(not _sy._sync_update, 'DECSET 2026 end releases the hold')
+feed_output(_sy, b'\x1b[?2026h')
+_sy._end_sync_update()                     # simulate the watchdog firing
+ok(not _sy._sync_update, 'an unclosed synchronized update is bounded (watchdog)')
+_sy.close()
+
+# --- gated OSC 10/11/4 colour query (the one write-back, raw-mode only) --------
+import termios as _termios2                                        # noqa: E402
+
+
+def _osc_query(feature_on, raw, seq):
+    q = SecureTerminal(command='/bin/cat', tui=True)
+    q.apply_osc('osc_color_query', feature_on)
+    _sent = []
+    q._write = _sent.append                # pylint: disable=protected-access
+    _a = _termios2.tcgetattr(q._fd)
+    if raw:
+        _a[3] &= ~_termios2.ICANON
+    else:
+        _a[3] |= _termios2.ICANON
+    _termios2.tcsetattr(q._fd, _termios2.TCSANOW, _a)
+    q._handle_osc(seq)
+    q.close()
+    return _sent
+
+
+_bg = b'\x1b]11;?\x07'
+eq(_osc_query(False, False, _bg), [], 'colour query: feature off -> no reply')
+eq(_osc_query(True, False, _bg), [],
+   'colour query: on but cooked-mode shell prompt -> no reply (RCE vector stays closed)')
+_rq = _osc_query(True, True, _bg)
+ok(len(_rq) == 1 and _rq[0].startswith(b'\x1b]11;rgb:'),
+   'colour query: on + raw mode (full-screen program) -> the bg colour is answered')
+eq(_osc_query(True, True, b'\x1b[c'), [], 'even on+raw, DA1 is still never answered')
+eq(_osc_query(True, True, b'\x1b]52;c;?\x07'), [],
+   'even on+raw, OSC 52 clipboard READ is still never answered (no exfil)')
+ok(_osc_query(True, True, b'\x1b]10;?\x07')[0].startswith(b'\x1b]10;rgb:'),
+   'OSC 10 (fg) colour query answered in raw mode')
+
 # --- reflection oracle: output must NEVER cause a write to the pty ------------
 # The crown-jewel invariant. A crafted file cat'd to the terminal, or hostile
 # program output, can emit a capability QUERY (DA/DSR/CPR/XTVERSION/DECRQM/
@@ -1688,25 +1757,6 @@ _QUERIES = [
     b'\x1b]52;c;?\x07',                    # OSC 52 clipboard READ (exfil vector)
     b'\x05',                               # ENQ answerback
 ]
-
-
-def feed_output(term, raw):
-    """Drive the real _on_readable with `raw` bytes via a pipe, as if the child
-    had printed them, so the full output path (pyte feed + _handle_osc + line
-    render) runs -- not a shortcut that skips the OSC read handlers."""
-    r, w = os.pipe()
-    old = term._fd                         # pylint: disable=protected-access
-    term._fd = r
-    try:
-        os.write(w, raw)
-        os.close(w)
-        w = None
-        term._on_readable()                # pylint: disable=protected-access
-    finally:
-        term._fd = old
-        os.close(r)
-        if w is not None:
-            os.close(w)
 
 
 for _label, _mk in (('CLI', lambda: SecureTerminal(command='/bin/cat')),
