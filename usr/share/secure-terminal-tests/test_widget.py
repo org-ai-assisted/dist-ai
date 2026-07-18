@@ -1763,6 +1763,51 @@ _sy2.close()
 # gate. The absolute "output never writes to the pty" closure is kept instead;
 # every query, colour included, stays unanswered (see the reflection oracle below).
 
+# --- OSC 52 clipboard READ: opt-in, ask-once-per-tab, the ONE write-back -------
+from PyQt6.QtGui import QGuiApplication as _QGA                     # noqa: E402
+_QGA.clipboard().setText('clip-secret')
+
+
+def _clip_read(feature_on, grant):
+    c = SecureTerminal(command='/bin/cat', tui=True)
+    c.apply_osc('osc_clipboard_read', feature_on)
+    _reqs = []
+    c.clipboard_read_requested.connect(lambda: _reqs.append(1))
+    _sent = []
+    c._write = _sent.append                # pylint: disable=protected-access
+    if grant is not None:
+        c.grant_clipboard_read(grant)
+    c._handle_osc(b'\x1b]52;c;?\x07')
+    c.close()
+    return _reqs, _sent
+
+
+_rq, _st = _clip_read(False, None)
+eq(_st, [], 'OSC 52 read: feature off -> no reply')
+eq(len(_rq), 0, 'OSC 52 read: feature off -> no dialog asked')
+_rq, _st = _clip_read(True, None)
+eq(_st, [], 'OSC 52 read: enabled but tab undecided -> NO reply (only asks once)')
+eq(len(_rq), 1, 'OSC 52 read: enabled + undecided -> the ask-once-per-tab dialog is raised')
+_rq, _st = _clip_read(True, False)
+eq(_st, [], 'OSC 52 read: tab denied -> no reply, no re-ask')
+eq(len(_rq), 0, 'OSC 52 read: a denied tab is not re-asked')
+_rq, _st = _clip_read(True, True)
+ok(len(_st) == 1 and _st[0].startswith(b'\x1b]52;c;'),
+   'OSC 52 read: enabled + tab granted -> the clipboard is answered')
+import base64 as _b64                                              # noqa: E402
+eq(_b64.b64decode(_st[0].split(b';', 2)[2].rstrip(b'\x07')), b'clip-secret',
+   'OSC 52 read: the reply carries the clipboard, base64-encoded')
+# rate-limited: a granted tab cannot be flood-exfiltrated
+_cg = SecureTerminal(command='/bin/cat', tui=True)
+_cg.apply_osc('osc_clipboard_read', True)
+_cg.grant_clipboard_read(True)
+_cgs = []
+_cg._write = _cgs.append
+_cg._handle_osc(b'\x1b]52;c;?\x07')
+_cg._handle_osc(b'\x1b]52;c;?\x07')
+eq(len(_cgs), 1, 'OSC 52 read: two reads in a granted tab -> one reply (rate-limited)')
+_cg.close()
+
 # --- reflection oracle: output must NEVER cause a write to the pty ------------
 # The crown-jewel invariant. A crafted file cat'd to the terminal, or hostile
 # program output, can emit a capability QUERY (DA/DSR/CPR/XTVERSION/DECRQM/

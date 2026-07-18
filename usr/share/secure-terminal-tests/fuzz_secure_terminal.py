@@ -32,6 +32,7 @@ import argparse
 import importlib.util
 import os
 import random
+import re
 import struct
 import sys
 import tempfile
@@ -185,10 +186,11 @@ def phase_lines(rnd, iterations, seed):
         state = {'fg': None, 'bg': None, 'bold': False}
         S.parse_sgr(''.join(rnd.choice('0123456789;:') for _ in range(
             rnd.randint(0, 24))), state)
-        _assert(state['fg'] is None or 0 <= state['fg'] <= 15,
-                'parse_sgr fg out of range', seed)
-        _assert(state['bg'] is None or 0 <= state['bg'] <= 15,
-                'parse_sgr bg out of range', seed)
+        for _chan in (state['fg'], state['bg']):
+            _assert(_chan is None
+                    or (isinstance(_chan, int) and 0 <= _chan <= 15)
+                    or (isinstance(_chan, str) and re.fullmatch(r'#[0-9a-f]{6}', _chan)),
+                    'parse_sgr colour not None / 0..15 / #rrggbb', seed)
 
 
 def phase_paste(rnd, iterations, seed):

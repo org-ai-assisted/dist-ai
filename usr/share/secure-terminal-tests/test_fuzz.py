@@ -19,6 +19,7 @@ FAILURE, not a skip. Exit 0 on full pass, 1 on any failure.
 
 import sys
 import os
+import re
 import tempfile
 import importlib.util
 
@@ -114,9 +115,32 @@ def prop_classify_paste(text):
 def prop_parse_sgr(param):
     state = {'fg': None, 'bg': None, 'bold': False}
     S.parse_sgr(param, state)
-    assert state['fg'] is None or 0 <= state['fg'] <= 15
-    assert state['bg'] is None or 0 <= state['bg'] <= 15
+    # fg/bg are None, a 16-colour palette index (0..15), or a '#rrggbb' string
+    # (256-colour / truecolour). NOTHING else, whatever the params.
+    for chan in (state['fg'], state['bg']):
+        assert chan is None \
+            or (isinstance(chan, int) and 0 <= chan <= 15) \
+            or (isinstance(chan, str) and re.fullmatch(r'#[0-9a-f]{6}', chan))
     assert isinstance(state['bold'], bool)
+
+
+@RUN
+@given(st.lists(st.sampled_from(('38', '48', '5', '2', '0', '1', '31', '200',
+                                 '255', ';')), max_size=12).map(';'.join))
+def prop_parse_sgr_extended(param):
+    # deliberately exercise the 256/truecolour (38/48;5|2) branches: whatever the
+    # params, a stored colour is None, a 0..15 palette index, or a valid '#rrggbb'
+    # (never a raw / out-of-range value), and it never raises.
+    state = {'fg': None, 'bg': None, 'bold': False}
+    S.parse_sgr(param, state)
+    for chan in (state['fg'], state['bg']):
+        assert chan is None \
+            or (isinstance(chan, int) and 0 <= chan <= 15) \
+            or (isinstance(chan, str) and re.fullmatch(r'#[0-9a-f]{6}', chan))
+    # an explicit leading reset always clears to the default
+    state2 = {'fg': '#123456', 'bg': 7, 'bold': True}
+    S.parse_sgr('0', state2)
+    assert state2 == {'fg': None, 'bg': None, 'bold': False}
 
 
 @RUN
@@ -354,6 +378,7 @@ PROPS = [
     ('paste_findings', prop_paste_findings),
     ('classify_paste', prop_classify_paste),
     ('parse_sgr', prop_parse_sgr),
+    ('parse_sgr_extended', prop_parse_sgr_extended),
     ('tui_cell', prop_tui_cell),
 ]
 
