@@ -1807,6 +1807,28 @@ _cg._handle_osc(b'\x1b]52;c;?\x07')
 _cg._handle_osc(b'\x1b]52;c;?\x07')
 eq(len(_cgs), 1, 'OSC 52 read: two reads in a granted tab -> one reply (rate-limited)')
 _cg.close()
+# granting a PENDING request answers the query that opened the dialog (codex F1)
+_cp = SecureTerminal(command='/bin/cat', tui=True)
+_cp.apply_osc('osc_clipboard_read', True)
+_cps = []
+_cp._write = _cps.append
+_cp._handle_osc(b'\x1b]52;c;?\x07')        # -> pending, dialog asked, no reply yet
+eq(_cps, [], 'a pending clipboard request sends no reply until the user decides')
+_cp.grant_clipboard_read(True)             # user allows -> the pending query is answered NOW
+ok(len(_cps) == 1 and _cps[0].startswith(b'\x1b]52;c;'),
+   'granting a pending request answers the query that opened the dialog')
+_cp.close()
+# CLI-mode notice distinguishes an OSC 52 READ query from a WRITE (shared code 52)
+_cn = SecureTerminal(command='/bin/cat')   # CLI mode
+_nk = []
+_cn.osc_used.connect(lambda k: _nk.append(k))
+feed_output(_cn, b'\x1b]52;c;?\x07')       # read query
+ok('osc_clipboard_read' in _nk, 'CLI OSC 52 read query is notified as clipboard_read')
+_nk.clear()
+feed_output(_cn, b'\x1b]52;c;aGk=\x07')    # write
+ok('osc_clipboard' in _nk and 'osc_clipboard_read' not in _nk,
+   'CLI OSC 52 write is notified as clipboard (write), not read')
+_cn.close()
 
 # --- reflection oracle: output must NEVER cause a write to the pty ------------
 # The crown-jewel invariant. A crafted file cat'd to the terminal, or hostile
