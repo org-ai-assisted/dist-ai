@@ -40,6 +40,17 @@ KNOWN_PROJECT_PATHS = (
     '/git-diffs-lie/',
 )
 
+# Sub-sites served UNDER another family site's domain (a project-Pages repo): the
+# subsite's directory basename -> (parent site directory basename, mount path
+# under the parent domain). A subsite's root-absolute links resolve against its
+# OWN tree when they fall under the mount, and against the PARENT site's tree
+# otherwise (a link like /terminal/ from git-diffs-lie points at the output-lies
+# site). Both must be checked out to verify the cross-site links; when the parent
+# is absent those links are treated as external (unverifiable), never failed.
+SUBSITES = {
+    'git-diffs-lie': ('output-lies.github.io', '/git-diffs-lie/'),
+}
+
 # Prose wording rule: these must be capitalized as proper labels.
 WORDING = [
     (re.compile(r'\bopen source\b'), 'open source', 'Open Source'),
@@ -102,31 +113,50 @@ def html_files(root):
             yield os.path.join(base, name)
 
 
-def resolve_internal(root, page, target):
+def _abs_candidates(rel, search_roots):
+    """Filesystem candidates for a root-absolute path `rel` across search_roots."""
+    candidates = []
+    for sr in search_roots:
+        base = os.path.normpath(os.path.join(sr, rel))
+        candidates.append(base)
+        if rel == '' or rel.endswith('/') or not os.path.splitext(base)[1]:
+            candidates += [os.path.join(base, 'index.html'), base + '.html']
+    return candidates
+
+
+def resolve_internal(root, page, target, mount=None, parent_roots=()):
     """Map an internal href/src to a filesystem path candidate list, or None if
-    the link is external / a pure fragment / non-navigational."""
+    the link is external / a pure fragment / non-navigational. For a subsite,
+    `mount` is its path under the parent domain and `parent_roots` are the parent
+    site checkouts its off-mount absolute links resolve against."""
     if target.startswith(('http://', 'https://', 'mailto:', 'tel:', 'data:',
                            'javascript:')):
         return None
-    if any(target.startswith(prefix) for prefix in KNOWN_PROJECT_PATHS):
-        return None                          # valid sibling project-Pages path
     frag = ''
     if '#' in target:
         target, frag = target.split('#', 1)
     if target == '':
         return ('#self', frag)               # same-page fragment
     if target.startswith('/'):
-        base = os.path.join(root, target.lstrip('/'))
-    else:
-        base = os.path.join(os.path.dirname(page), target)
-    base = os.path.normpath(base)
+        # A subsite's own mount prefix (/git-diffs-lie/...) maps back onto its own
+        # tree, so verify it there rather than skipping it as an external sibling.
+        if mount and (target == mount.rstrip('/') or target.startswith(mount)):
+            return ('file', _abs_candidates(target[len(mount):], [root]), frag)
+        if any(target.startswith(prefix) for prefix in KNOWN_PROJECT_PATHS):
+            # A sibling project-Pages path; verifiable only if that repo is one of
+            # the parent roots, else external (do not fail an unverifiable link).
+            if not parent_roots:
+                return None
+        rel = target.lstrip('/')
+        return ('file', _abs_candidates(rel, [root, *parent_roots]), frag)
+    base = os.path.normpath(os.path.join(os.path.dirname(page), target))
     candidates = [base]
     if target.endswith('/') or not os.path.splitext(base)[1]:
         candidates += [os.path.join(base, 'index.html'), base + '.html']
     return ('file', candidates, frag)
 
 
-def check_links(root, failures):
+def check_links(root, failures, mount=None, parent_roots=()):
     # Preload ids per page for fragment checks.
     pages = {}
     for page in html_files(root):
@@ -137,7 +167,7 @@ def check_links(root, failures):
     for page, ext in pages.items():
         rel = os.path.relpath(page, root)
         for _tag, _attr, value in ext.links:
-            resolved = resolve_internal(root, page, value)
+            resolved = resolve_internal(root, page, value, mount, parent_roots)
             if resolved is None:
                 continue
             if resolved[0] == '#self':
@@ -246,15 +276,24 @@ def check_supply_chain(root, failures):
 
 
 def main():
-    roots = [r for r in sys.argv[1:] if os.path.isdir(r)]
+    roots = [os.path.normpath(r) for r in sys.argv[1:] if os.path.isdir(r)]
     if not roots:
         sys.stderr.write('website-tests: SKIP (no site root found)\n')
         return 77
+    by_name = {os.path.basename(r): r for r in roots}
     total = 0
     for root in roots:
-        root = os.path.normpath(root)
         failures = []
-        check_links(root, failures)
+        # A subsite (git-diffs-lie) verifies its off-mount absolute links against
+        # its parent site's checkout when that is also present.
+        mount = None
+        parent_roots = ()
+        sub = SUBSITES.get(os.path.basename(root))
+        if sub:
+            parent_name, mount = sub
+            if parent_name in by_name:
+                parent_roots = (by_name[parent_name],)
+        check_links(root, failures, mount, parent_roots)
         check_wording(root, failures)
         check_footer(root, failures)
         check_banner(root, failures)

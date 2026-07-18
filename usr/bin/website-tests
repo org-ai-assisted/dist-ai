@@ -35,6 +35,7 @@ fi
 [ -v OUTPUT_LIES_REPO ] || OUTPUT_LIES_REPO=''
 [ -v SECURE_TERMINAL_SITE_REPO ] || SECURE_TERMINAL_SITE_REPO=''
 [ -v ORG_AI_ASSISTED_REPO ] || ORG_AI_ASSISTED_REPO=''
+[ -v GIT_DIFFS_LIE_REPO ] || GIT_DIFFS_LIE_REPO=''
 
 declare -a roots=()
 add_root(){
@@ -48,9 +49,13 @@ add_root(){
 add_root "${OUTPUT_LIES_REPO}"          "${HOME}/private-sources/output-lies.github.io"
 add_root "${SECURE_TERMINAL_SITE_REPO}" "${HOME}/private-sources/secure-terminal.github.io"
 add_root "${ORG_AI_ASSISTED_REPO}"      "${HOME}/private-sources/org-ai-assisted.github.io"
+## git-diffs-lie is a subsite served at output-lies.github.io/git-diffs-lie/; its
+## off-mount absolute links (/terminal/, /paste/, ...) are verified against the
+## output-lies checkout when that is present (see SUBSITES in check_site.py).
+add_root "${GIT_DIFFS_LIE_REPO}"        "${HOME}/private-sources/git-diffs-lie"
 
 if [ "${#roots[@]}" -eq 0 ]; then
-   printf 'website-tests: SKIP (no site checkout found; set OUTPUT_LIES_REPO / SECURE_TERMINAL_SITE_REPO / ORG_AI_ASSISTED_REPO)\n' >&2
+   printf 'website-tests: SKIP (no site checkout found; set OUTPUT_LIES_REPO / SECURE_TERMINAL_SITE_REPO / ORG_AI_ASSISTED_REPO / GIT_DIFFS_LIE_REPO)\n' >&2
    exit 77
 fi
 
