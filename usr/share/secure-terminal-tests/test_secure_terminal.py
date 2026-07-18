@@ -332,10 +332,22 @@ eq(sgr('1;31;42'), {'fg': 1, 'bg': 2, 'bold': True}, 'sgr combined')
 eq(sgr('31;0'), {'fg': None, 'bg': None, 'bold': False}, 'sgr 0 resets')
 eq(sgr(''), {'fg': None, 'bg': None, 'bold': False}, 'empty sgr = reset')
 eq(sgr('39;49'), {'fg': None, 'bg': None, 'bold': False}, 'default fg/bg')
-# 8-bit / 24-bit params are consumed, colour falls back to default (not honored)
-eq(sgr('38;5;196'), {'fg': None, 'bg': None, 'bold': False}, '8-bit consumed')
-eq(sgr('38;2;10;20;30'), {'fg': None, 'bg': None, 'bold': False}, '24-bit consumed')
-eq(sgr('38;5;196;1'), {'fg': None, 'bg': None, 'bold': True}, '8-bit then bold')
+# 256-colour and 24-bit truecolour are honoured (colour is passive + contrast-
+# guarded): a 256 index 0-15 stays a palette index, 16-255 and truecolour become
+# an explicit #rrggbb; the extra params are consumed, following codes still parse.
+eq(sgr('38;5;196'), {'fg': '#ff0000', 'bg': None, 'bold': False},
+   '256-colour fg (index 196 -> #ff0000)')
+eq(sgr('38;5;3'), {'fg': 3, 'bg': None, 'bold': False},
+   '256-colour index < 16 stays a palette index')
+eq(sgr('48;5;240'), {'fg': None, 'bg': '#585858', 'bold': False},
+   '256-colour bg (greyscale ramp)')
+eq(sgr('38;2;10;20;30'), {'fg': '#0a141e', 'bg': None, 'bold': False},
+   '24-bit truecolour fg')
+eq(sgr('38;5;196;1'), {'fg': '#ff0000', 'bg': None, 'bold': True},
+   '256-colour then bold: both apply, params consumed correctly')
+eq(S.color_256(231), '#ffffff', 'color_256: cube corner is white')
+eq(S.color_256(16), '#000000', 'color_256: cube start is black')
+ok(S.color_256(300) is None, 'color_256: out-of-range -> None')
 
 # --- tui_cell: one-character-wide, grid-preserving cell sanitization ----------
 eq(S.tui_cell('A', 'strip'), 'A', 'tui ascii kept')
