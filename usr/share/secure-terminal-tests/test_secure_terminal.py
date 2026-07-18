@@ -57,7 +57,11 @@ eq(S.render_output(CAFE, 'strip'), 'caf_', 'strip replaces non-ascii with _')
 eq(S.render_output('a' + BIDI + 'b', 'strip'), 'a_b', 'strip bidi')
 eq(S.render_output('a' + ZWSP + 'b', 'strip'), 'a_b', 'strip zero-width')
 eq(S.render_output('a' + NBSP + 'b', 'strip'), 'a_b', 'strip nbsp')
-eq(S.render_output('a' + BEL + NUL + 'b', 'strip'), 'a__b', 'strip control -> _')
+eq(S.render_output('a' + NUL + chr(0x1F) + 'b', 'strip'), 'a__b', 'strip control -> _')
+# a standalone BEL is a bell SIGNAL, not display content -> dropped from the
+# display in every mode, while has_bell still detects it so the bell policy rings.
+eq(S.render_output('a' + BEL + 'b', 'strip'), 'ab', 'strip drops a standalone BEL')
+ok(S.has_bell('a' + BEL + 'b'), 'has_bell still detects a dropped BEL')
 
 # --- render_output: show (render legit unicode, still neutralize deceptive) ----
 eq(S.render_output(CAFE, 'show'), CAFE, 'show renders e-acute')
@@ -65,12 +69,13 @@ eq(S.render_output(CJK + EMOJI, 'show'), CJK + EMOJI, 'show renders cjk+emoji')
 eq(S.render_output('a' + BIDI + 'b', 'show'), 'a_b', 'show still neutralizes bidi')
 eq(S.render_output('a' + ZWSP + 'b', 'show'), 'a_b', 'show still neutralizes zero-width')
 eq(S.render_output('a' + NBSP + 'b', 'show'), 'a_b', 'show still neutralizes nbsp')
-eq(S.render_output('a' + BEL + 'b', 'show'), 'a_b', 'show still neutralizes control')
+eq(S.render_output('a' + NUL + 'b', 'show'), 'a_b', 'show still neutralizes control')
 
 # --- render_output: reveal ----------------------------------------------------
 eq(S.render_output(CAFE, 'reveal'), 'caf<U+00E9>', 'reveal e-acute')
 eq(S.render_output('a' + BIDI + 'b', 'reveal'), 'a<U+202E>b', 'reveal bidi')
-eq(S.render_output('a' + BEL + 'b', 'reveal'), 'a<U+0007>b', 'reveal control')
+eq(S.render_output('a' + NUL + 'b', 'reveal'), 'a<U+0000>b', 'reveal control')
+eq(S.render_output('a' + BEL + 'b', 'reveal'), 'ab', 'reveal drops a standalone BEL')
 eq(S.render_output(EMOJI, 'reveal'), '<U+1F600>', 'reveal astral')
 
 # --- render_output: detail (reveal badge + the Unicode name inline) -----------
@@ -583,8 +588,13 @@ eq(_rc, 42, 'cli forwards the child exit code')
 _o, _ = _run_cli(['--', 'printf', 'a\x08b\rc'])
 ok('\x08' in _o and '\r' in _o, 'cli keeps backspace and carriage return')
 # any other control character is neutralized to _
+_o, _ = _run_cli(['--', 'printf', 'x\x01y'])
+ok('_' in _o and '\x01' not in _o, 'cli strips a control char (SOH) to _')
+# a standalone BEL is a bell signal, not content: dropped, not shown as _ (so x
+# and y stay adjacent) and never leaked as a raw 0x07.
 _o, _ = _run_cli(['--', 'printf', 'x\x07y'])
-ok('_' in _o and '\x07' not in _o, 'cli strips other control chars (BEL) to _')
+ok('\x07' not in _o and 'xy' in _o.replace('\r', ''),
+   'cli drops a standalone BEL (not shown, not leaked)')
 # no command -> the login shell, which exits on our stdin EOF (must not hang)
 _o, _rc = _run_cli(['--mode', 'strip'], timeout=15)
 ok(isinstance(_rc, int), 'cli default shell exits on stdin EOF')
