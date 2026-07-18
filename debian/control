@@ -719,11 +719,14 @@ Description: Tests for the setup-wizard-dist first-boot setup wizard
  start page. A plain hide() does not survive QWizard rebuilding its button
  layout on show(), so the option is the correct mechanism.
  .
- It also checks DisclaimerPage1.nextId() routing (accept to disclaimer 2, reject
- to finish page) and audits the shipped module for non-ASCII bytes. It resolves
- the wizard from SETUP_WIZARD_DIST_REPO (a checkout) else the installed package,
- and skips when PyQt5 or guimessages is absent. No root, no network; Qt runs
- offscreen.
+ It also checks DisclaimerPage1 / DisclaimerPage2 nextId() routing, the
+ get_finish_page_text() assembly across the machine / gateway / workstation and
+ sysmaint / no-sysmaint combinations, the window title per environment, the
+ Finish button relabel, set_next_button_state(), done(), the finish page
+ widgets, that every self._() key is present in the translations YAML (drift
+ guard), and that the shipped module is ASCII. It resolves the wizard from
+ SETUP_WIZARD_DIST_REPO (a checkout) else the installed package, and skips when
+ PyQt5 or guimessages is absent. No root, no network; Qt runs offscreen.
 
 Package: iso-boot-tests
 Architecture: all
