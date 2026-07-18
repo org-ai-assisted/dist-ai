@@ -1517,6 +1517,96 @@ for _name, _prop in (('osc_split', _fuzz_osc_split), ('osc7_safe', _fuzz_osc7_sa
         ok(False, 'fuzz: OSC handler %s: %s' % (_name, _e))
 _ofz.close()
 
+# --- adversarial: OSC split-invariance BEYOND OSC 9 + no split-smuggled write --
+# An OSC of ANY code fed whole vs split at any offset must have the SAME observable
+# effect, crucially the SAME write-backs -- so an attacker cannot smuggle a
+# reflection / injection through a chunk boundary. Extends the OSC-9-only notify
+# test to title/palette/cwd/hyperlink/clipboard/colour-query codes, and asserts on
+# the WRITE spy (the injection-relevant channel), not just a signal.
+_osz = SecureTerminal(command='/bin/cat')
+for _f in ('osc_title', 'osc_notify', 'osc_cwd', 'osc_hyperlink', 'osc_clipboard'):
+    try:
+        _osz.apply_osc(_f, True)
+    except Exception:                  # pylint: disable=broad-except
+        pass                           # feature may not exist; the sweep still runs
+
+
+def _osc_writes(seq_parts):
+    _osz._osc_carry = b''
+    captured = []
+    _orig = _osz._write
+    _osz._write = captured.append      # pylint: disable=protected-access
+    try:
+        for part in seq_parts:
+            _osz._handle_osc(part)
+    finally:
+        _osz._write = _orig
+    return captured
+
+
+@_HRUN
+@_given(_hst.sampled_from((0, 1, 2, 4, 7, 8, 9, 10, 11, 52, 104)),
+        _hst.text(alphabet=_hst.characters(min_codepoint=32, max_codepoint=126),
+                  max_size=40),
+        _hst.integers(min_value=0, max_value=48))
+def _prop_osc_split_writeback(code, body, split):
+    seq = b'\x1b]' + str(code).encode('ascii') + b';' + body.encode('ascii') + b'\x07'
+    whole = _osc_writes([seq])
+    parts = _osc_writes([seq[:split], seq[split:]])
+    assert whole == parts, 'code=%d split=%d: whole=%r split=%r' % (
+        code, split, whole, parts)
+
+
+try:
+    _prop_osc_split_writeback()
+    ok(True, 'adversarial: OSC split-invariance holds across codes (no write smuggled '
+             'through a chunk boundary)')
+except Exception as _e:                # pylint: disable=broad-except
+    ok(False, 'adversarial: OSC split-invariance: %s' % _e)
+_osz.close()
+
+# --- adversarial: the contrast guard holds for the WHOLE attacker colour space --
+# The guard must keep text readable for ANY program-chosen fg/bg -- a palette index,
+# a 256-colour, or a 24-bit truecolour, on either theme -- not just the one
+# black-on-dark case. The attacker picks the colours, so the invariant (final fg is
+# never near-invisible against its effective bg) must survive every pick.
+from secure_terminal.terminal import THEMES as _THEMES, _rgb as _rgb_of  # noqa: E402
+from secure_terminal.sanitize import too_close as _too_close             # noqa: E402
+from PyQt6.QtGui import QColor as _QColor2                                # noqa: E402
+
+_cg = SecureTerminal(command='/bin/cat')
+_cg.apply_colors(True)
+_colorval = _hst.one_of(
+    _hst.none(),
+    _hst.integers(min_value=0, max_value=15),
+    _hst.builds(lambda r, g, b: '#%02x%02x%02x' % (r, g, b),
+                _hst.integers(0, 255), _hst.integers(0, 255), _hst.integers(0, 255)))
+
+
+@_HRUN
+@_given(_colorval, _colorval, _hst.booleans(), _hst.sampled_from(('dark', 'light')))
+def _prop_contrast_guard(fg_i, bg_i, bold, theme):
+    _cg.apply_theme(theme)
+    fmt = _cg._format_for({'fg': fg_i, 'bg': bg_i, 'bold': bold})
+    fg_brush = fmt.foreground()
+    if fg_brush.style() == Qt.BrushStyle.NoBrush:
+        return                         # nothing coloured -> invariant N/A
+    base_bg = _THEMES.get(theme, _THEMES['dark'])[0]
+    bg_brush = fmt.background()
+    bg = (bg_brush.color() if bg_brush.style() != Qt.BrushStyle.NoBrush
+          else _QColor2(base_bg))
+    assert not _too_close(_rgb_of(fg_brush.color()), _rgb_of(bg)), (
+        'fg=%r bg=%r theme=%s -> unreadable' % (fg_i, bg_i, theme))
+
+
+try:
+    _prop_contrast_guard()
+    ok(True, 'adversarial: the contrast guard keeps text readable for ANY program '
+             'colours (palette / 256 / truecolour, both themes)')
+except Exception as _e:                # pylint: disable=broad-except
+    ok(False, 'adversarial: contrast guard failed: %s' % _e)
+_cg.close()
+
 # --- configurable window keyboard shortcuts -----------------------------------
 # Every window shortcut is registered (documented) and rebindable, with conflict
 # detection; only non-default overrides are persisted. Terminal control keys are

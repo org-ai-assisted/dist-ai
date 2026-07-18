@@ -1,0 +1,5 @@
+usr/bin/tb-updater-tests usr/bin/
+usr/bin/tb-updater-tests-e2e usr/bin/
+usr/share/tb-updater-tests/*.py usr/share/tb-updater-tests/
+usr/share/tb-updater-tests/e2e/make-fixture usr/share/tb-updater-tests/e2e/
+usr/share/tb-updater-tests/e2e/run-e2e usr/share/tb-updater-tests/e2e/

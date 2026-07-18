@@ -53,6 +53,7 @@ core_suites=(
    stcat-family-tests
    stdisplay-tests
    systemcheck-tests
+   tb-updater-tests
    tor-control-panel-tests
    unicode-show-tests
    web-analyzer-tests
@@ -80,6 +81,7 @@ e2e_suites=(
    onion-grater-tests-e2e
    privleap-tests-e2e
    privleap-tests-e2e-systemd
+   tb-updater-tests-e2e
 )
 integration_suites=(
    sdwdate-gui-tests-integration
@@ -216,6 +218,12 @@ wire() {
          ## The fuzzer extracts msgcollector's CLI-rendering bash from the one
          ## script and runs it in isolation; no other runtime needed.
          wire_env=( "MSGCOLLECTOR_REPO=$( pkg_dir msgcollector )" ) ;;
+      tb-updater)
+         ## The core suite reads update-torbrowser / desktop-starter-wrapper /
+         ## version-validator source from the checkout; the e2e suite installs
+         ## the package and drives the installed binaries. Both resolve the
+         ## checkout from TB_UPDATER_REPO.
+         wire_env=( "TB_UPDATER_REPO=$( pkg_dir tb-updater )" ) ;;
       systemcheck)
          ## The scenario harness runs the REAL check_*.bsh fragments, several of
          ## which sanitize untrusted output with the bare `sanitize-string`
@@ -287,6 +295,7 @@ suite_component() {
       privleap)               printf '%s' 'privleap' ;;
       genmkfile)              printf '%s' 'genmkfile' ;;
       msgcollector)           printf '%s' 'msgcollector' ;;
+      tb-updater)             printf '%s' 'tb-updater' ;;
       open-link-confirmation) printf '%s' 'open-link-confirmation' ;;
       sdwdate-gui)            printf '%s' 'sdwdate-gui' ;;
       secure-terminal)        printf '%s' 'secure-terminal' ;;
@@ -382,7 +391,7 @@ fi
 
 if [ -n "${component}" ]; then
    case "${component}" in
-      helper-scripts|developer-meta-files|derivative-maker|msgcollector|onion-grater|privleap|genmkfile|open-link-confirmation|sdwdate-gui|secure-terminal|systemcheck|tor-control-panel)
+      helper-scripts|developer-meta-files|derivative-maker|msgcollector|onion-grater|privleap|genmkfile|open-link-confirmation|sdwdate-gui|secure-terminal|systemcheck|tb-updater|tor-control-panel)
          : ;;
       *)
          printf 'dist-ai-tests-all: unknown --component: %s\n' "${component}" >&2

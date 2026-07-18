@@ -606,6 +606,38 @@ Description: Fuzz tests for msgcollector CLI message rendering
  msgcollector script from the installed package or, via MSGCOLLECTOR_REPO, from
  a git checkout. Needs neither root, privleap, nor an X server.
 
+Package: tb-updater-tests
+Architecture: all
+Depends: ${misc:Depends},
+ bash (>= 4),
+ python3
+Suggests: python3-pytest,
+ sqop,
+ sequoia-sqv | sq,
+ faketime,
+ libarchive-tools,
+ jq,
+ safe-rm
+Description: Regression tests for the tb-updater Tor Browser downloader
+ Two suites for update-torbrowser and its GUI. The core suite
+ ('tb-updater-tests', no install, no display) is a structural guard for GUI
+ mode: it asserts the desktop shortcut runs 'update-torbrowser --input gui',
+ that the '--input' option survives, and that the download and install
+ confirmations still drive the msgcollector PyQt5 dialogs (tb_updater_gui and
+ generic_gui_message) with their documented return codes -- the chain whose
+ breakage makes the Tor Browser Downloader shortcut silently do nothing. The
+ dialogs' own Wayland/xcb platform robustness is covered by the msgcollector
+ suite.
+ .
+ The e2e suite ('tb-updater-tests-e2e', needs the package and sqop installed)
+ drives the real update-torbrowser against local file:// signing fixtures in an
+ isolated HOME: fresh install, signature-freshness cache hit, downgrade and
+ freeze warnings, and rejection of tampered caches, tampered tarballs, invalid
+ or too-old or wrong-signer signatures -- plus a '--input gui' scenario that
+ stubs the dialogs and asserts the full download, verify, extract and install
+ path completes (a Qt-platform abort would fail it). It reads the tb-updater
+ checkout from TB_UPDATER_REPO. Needs no network.
+
 Package: web-analyzer-tests
 Architecture: all
 Depends: ${misc:Depends},

@@ -30,6 +30,7 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 | `stdisplay-tests`        | shipping | `usr/share/stdisplay-tests/` |
 | `systemcheck-tests`      | shipping | `usr/share/systemcheck-tests/` |
 | `tor-control-panel-tests` | shipping | `usr/share/tor-control-panel-tests/` |
+| `tb-updater-tests`       | shipping | `usr/share/tb-updater-tests/` |
 | `unicode-show-tests`     | shipping | `usr/share/unicode-show-tests/` |
 | `grep-find-unicode-wrapper-tests` | shipping | `usr/share/grep-find-unicode-wrapper-tests/` |
 | `iso-boot-tests`         | shipping | `usr/share/iso-boot-tests/` |

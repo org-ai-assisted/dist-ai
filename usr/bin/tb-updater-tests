@@ -1,0 +1,37 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Runs tb-updater's core tests (pytest): the GUI-mode wiring contract between
+## update-torbrowser and the msgcollector dialogs, and update-torbrowser's
+## input-routing logic. Pure-source structural checks -- no install, no
+## network, no display. Works installed (/usr/share/tb-updater-tests) or from a
+## git checkout. The tb-updater scripts under test are resolved by
+## tb_updater_testlib (TB_UPDATER_REPO=<checkout> else the installed scripts).
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/tb-updater-tests' ]; then
+   tests_dir='/usr/share/tb-updater-tests'
+else
+   tests_dir="${script_dir}/../share/tb-updater-tests"
+fi
+
+rc=0
+python3 -m pytest --import-mode=importlib -q "${tests_dir}" "$@" || rc=$?
+## pytest exit 5 = no tests collected (e.g. the checkout could not be
+## resolved -> the modules skip); report the suite as SKIP (77), not a failure.
+if [ "$rc" = "5" ]; then
+   exit 77
+fi
+exit "$rc"
