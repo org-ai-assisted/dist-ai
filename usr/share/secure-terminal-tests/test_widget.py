@@ -1142,8 +1142,13 @@ win.rename_tab(0)
 eq(win.tabs.tabText(0), 'build', 'tab rename')
 win.set_tab_color(0, QColor('#d83933'))
 ok(not win.tabs.tabIcon(0).isNull(), 'tab colour set')
+_term0 = win.tabs.widget(0)
+ok(win._tab_colors.get(_term0) == '#d83933', 'tab colour stored')
 win.set_tab_color(0, None)
-ok(win.tabs.tabIcon(0).isNull(), 'tab colour cleared')
+# every tab now carries its number swatch, so the icon is never null; clearing
+# the colour drops the stored colour but keeps the (neutral) numbered icon.
+ok(not win.tabs.tabIcon(0).isNull(), 'tab keeps its number icon after colour cleared')
+ok(win._tab_colors.get(_term0) is None, 'tab colour cleared')
 # window tab actions: previous-tab wraps around, goto jumps by position, select
 # all selects the current buffer, full screen toggles
 win.new_tab()
