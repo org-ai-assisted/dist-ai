@@ -6,27 +6,30 @@
 ## AI-Assisted
 
 """
-Real-X render probe for the headless render test.
+Real-backend render probe for the headless render test.
 
-Run under a real windowing backend (xcb on an Xvfb display), NOT the offscreen
-QPA plugin, so it exercises the actual window mapping and button-layout the user
-sees. Constructs the setup_wizard_dist wizard, shows it, and reports the Back
-button visibility as one JSON line on stdout; optionally saves a screenshot of
-the rendered wizard (grab of the real widget tree) to a PNG.
+Run under a real windowing backend (xcb on an Xvfb display, or wayland on a
+headless weston), NOT the offscreen QPA plugin, so it exercises the actual
+window mapping and button-layout the user sees. Constructs the setup_wizard_dist
+wizard, shows it, and reports the Back button visibility as one JSON line on
+stdout; optionally saves a screenshot of the rendered wizard (grab of the real
+widget tree) to a PNG.
 
     python3 render_probe.py {single|multi} [screenshot.png]
 
-Meant to be spawned as a subprocess by test_headless_render.py under xvfb-run;
-it deliberately forces QT_QPA_PLATFORM=xcb before importing the shared harness
-(which otherwise defaults to offscreen).
+The platform comes from QT_QPA_PLATFORM in the environment (xcb or wayland), set
+by the caller (test_headless_render.py under xvfb-run or a headless weston). It
+defaults to xcb only if the caller left it unset; swd_testlib's offscreen
+default is bypassed because this probe sets it first.
 """
 
 import json
 import os
 import sys
 
-## Force the real X backend before swd_testlib's offscreen setdefault runs.
-os.environ["QT_QPA_PLATFORM"] = "xcb"
+## Honour the caller's real backend (xcb / wayland); default to xcb. This runs
+## before swd_testlib's offscreen setdefault, so offscreen is never chosen here.
+os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
 import swd_testlib as T  # noqa: E402
 

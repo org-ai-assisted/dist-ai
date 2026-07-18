@@ -728,11 +728,13 @@ Description: Tests for the setup-wizard-dist first-boot setup wizard
  SETUP_WIZARD_DIST_REPO (a checkout) else the installed package, and skips when
  PyQt5 or guimessages is absent. No root, no network; Qt runs offscreen.
  .
- A separate headless render test drives the wizard on a real (virtual) X server
- via xvfb-run with the xcb platform plugin and asserts the Back button is mapped
- (or not) as expected, saving a screenshot; it skips when xvfb-run or the xcb
- plugin is unavailable.
-Recommends: xvfb
+ A separate headless render test drives the wizard on real, headless windowing
+ backends - X11 (xvfb-run + the xcb plugin) and Wayland (a headless weston + the
+ qtwayland plugin) - and asserts the Back button is mapped (or not) as expected
+ on both, saving a screenshot.
+Recommends: xvfb,
+ weston,
+ qtwayland5
 
 Package: iso-boot-tests
 Architecture: all

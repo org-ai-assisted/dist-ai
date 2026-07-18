@@ -1,3 +1,4 @@
 usr/bin/setup-wizard-dist-tests usr/bin/
 usr/share/setup-wizard-dist-tests/*.py usr/share/setup-wizard-dist-tests/
+usr/share/setup-wizard-dist-tests/*.sh usr/share/setup-wizard-dist-tests/
 usr/share/setup-wizard-dist-tests/README.md usr/share/setup-wizard-dist-tests/
