@@ -1808,6 +1808,32 @@ for _label, _mk in (('CLI', lambda: SecureTerminal(command='/bin/cat')),
            % _label)
     _ro.close()
 
+# ADVERSARIAL reflection oracle: a hostile file/program does not just emit a
+# query -- it can ALSO emit output that tries to OPEN a reply first (fake the
+# alternate screen with ESC[?1049h, begin a synchronized update), and the shell
+# may be at a readline prompt (pty non-canonical, ICANON off). NONE of these
+# output-induced states, alone or combined, may open ANY write-back. This is the
+# property that would have caught the alt-screen and raw-mode gate defeats before
+# external review: feed every query PREFIXED with each state-faking sequence and
+# assert the write-spy stays empty.
+import termios as _tio_adv                                         # noqa: E402
+_ADV_PREFIXES = [b'', b'\x1b[?1049h', b'\x1b[?1047h', b'\x1b[?47h', b'\x1b[?2026h',
+                 b'\x1b[?1049h\x1b[?2026h']
+_adv = SecureTerminal(command='/bin/cat', tui=True)
+for _k in (f[0] for f in _S.OSC_FEATURES):
+    _adv.apply_osc(_k, True)               # every OSC feature enabled
+_aa = _tio_adv.tcgetattr(_adv._fd)         # + the readline-prompt case (ICANON off)
+_aa[3] &= ~_tio_adv.ICANON
+_tio_adv.tcsetattr(_adv._fd, _tio_adv.TCSANOW, _aa)
+_advsent = spy_writes(_adv)
+for _pfx in _ADV_PREFIXES:
+    for _q in _QUERIES:
+        feed_output(_adv, _pfx + _q)
+ok(_advsent == [],
+   'reflection oracle (adversarial): output that fakes alt-screen / sync while at '
+   'a readline prompt still elicits ZERO write-back (got %r)' % _advsent[:3])
+_adv.close()
+
 # --- bell (BEL) policy --------------------------------------------------------
 # A standalone BEL in output rings per the tab's policy (off/audible/visual),
 # off by default (BEL from untrusted output is a nuisance surface), and is
