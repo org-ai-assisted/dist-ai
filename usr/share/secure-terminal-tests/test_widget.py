@@ -1700,21 +1700,46 @@ _sy._end_sync_update()                     # simulate the watchdog firing
 ok(not _sy._sync_update, 'an unclosed synchronized update is bounded (watchdog)')
 _sy.close()
 
-# --- gated OSC 10/11/4 colour query (the one write-back, raw-mode only) --------
+# a pending 16ms paint is cancelled when a synchronized update begins (no partial)
+_sy2 = SecureTerminal(command='/bin/cat', tui=True)
+_sy2._make_screen()
+_sy2._render_timer.start(16)               # arm a pending paint
+feed_output(_sy2, b'\x1b[?2026h')
+ok(_sy2._sync_update and not _sy2._render_timer.isActive(),
+   'entering a synchronized update cancels a pending partial paint')
+# a ?2026 marker split across two reads is still detected (boundary carry)
+_sy2._end_sync_update()
+feed_output(_sy2, b'\x1b[?202')            # first half of the begin marker
+feed_output(_sy2, b'6h')                   # second half in the next read
+ok(_sy2._sync_update, 'a ?2026h begin split across reads is still detected')
+feed_output(_sy2, b'\x1b[?2026l')
+ok(not _sy2._sync_update, 'and the matching end too')
+# a repeated begin while already held must NOT re-arm the watchdog (no indefinite hold)
+_starts = []
+_sy2._sync_timer.start = lambda *a: _starts.append(1)   # count re-arms
+feed_output(_sy2, b'\x1b[?2026h')          # enter -> arm once
+feed_output(_sy2, b'\x1b[?2026h')          # repeat while held -> must not re-arm
+eq(len(_starts), 1, 'a repeated ?2026h while held does not re-arm the watchdog')
+_sy2.close()
+
+# --- gated OSC 10/11/4 colour query (the one write-back; ALT-SCREEN gated) -----
+# The gate is the alternate screen, NOT raw mode: a bash/zsh readline prompt also
+# runs the pty non-canonical (ICANON off), so raw mode does not prove a full-screen
+# program is consuming the reply. Only when a program owns the alternate screen is
+# a colour reply consumed by it, never injected onto a shell command line.
 import termios as _termios2                                        # noqa: E402
 
 
-def _osc_query(feature_on, raw, seq):
+def _osc_query(feature_on, alt_screen, seq, readline_raw=False):
     q = SecureTerminal(command='/bin/cat', tui=True)
     q.apply_osc('osc_color_query', feature_on)
+    q._alt_screen = alt_screen             # pylint: disable=protected-access
+    if readline_raw:                       # a shell prompt: ICANON off, no alt-screen
+        _a = _termios2.tcgetattr(q._fd)
+        _a[3] &= ~_termios2.ICANON
+        _termios2.tcsetattr(q._fd, _termios2.TCSANOW, _a)
     _sent = []
     q._write = _sent.append                # pylint: disable=protected-access
-    _a = _termios2.tcgetattr(q._fd)
-    if raw:
-        _a[3] &= ~_termios2.ICANON
-    else:
-        _a[3] |= _termios2.ICANON
-    _termios2.tcsetattr(q._fd, _termios2.TCSANOW, _a)
     q._handle_osc(seq)
     q.close()
     return _sent
@@ -1723,15 +1748,18 @@ def _osc_query(feature_on, raw, seq):
 _bg = b'\x1b]11;?\x07'
 eq(_osc_query(False, False, _bg), [], 'colour query: feature off -> no reply')
 eq(_osc_query(True, False, _bg), [],
-   'colour query: on but cooked-mode shell prompt -> no reply (RCE vector stays closed)')
+   'colour query: on but no alternate screen (shell prompt) -> no reply')
+eq(_osc_query(True, False, _bg, readline_raw=True), [],
+   'colour query: on + a readline prompt (ICANON off but NO alt-screen) -> STILL no '
+   'reply -- raw mode alone must not open the reply (the codex P1 pitfall)')
 _rq = _osc_query(True, True, _bg)
 ok(len(_rq) == 1 and _rq[0].startswith(b'\x1b]11;rgb:'),
-   'colour query: on + raw mode (full-screen program) -> the bg colour is answered')
-eq(_osc_query(True, True, b'\x1b[c'), [], 'even on+raw, DA1 is still never answered')
+   'colour query: on + a full-screen program owns the alt screen -> bg colour answered')
+eq(_osc_query(True, True, b'\x1b[c'), [], 'even on+alt-screen, DA1 is still never answered')
 eq(_osc_query(True, True, b'\x1b]52;c;?\x07'), [],
-   'even on+raw, OSC 52 clipboard READ is still never answered (no exfil)')
+   'even on+alt-screen, OSC 52 clipboard READ is still never answered (no exfil)')
 ok(_osc_query(True, True, b'\x1b]10;?\x07')[0].startswith(b'\x1b]10;rgb:'),
-   'OSC 10 (fg) colour query answered in raw mode')
+   'OSC 10 (fg) colour query answered on the alt screen')
 
 # --- reflection oracle: output must NEVER cause a write to the pty ------------
 # The crown-jewel invariant. A crafted file cat'd to the terminal, or hostile
