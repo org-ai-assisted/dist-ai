@@ -1607,6 +1607,63 @@ ok(_wd._osc_defaults['osc_title'] and not _wd._osc_defaults['osc_notify'],
 _wd.close()
 os.remove(_ucfg)                                  # restore the empty test config
 
+# --- opt-in restricted CLI terminfo -------------------------------------------
+import secure_terminal.terminal as _timod                          # noqa: E402
+_tt0 = SecureTerminal(command='/bin/cat')
+eq(_tt0._child_term(), ('xterm-256color', None),
+   'default TERM is xterm-256color (ssh/TUI stay capable)')
+_tt0.close()
+_tdir = _timod.cli_terminfo_dir()
+ok(_tdir and os.path.isfile(os.path.join(_tdir, 's', 'secure-terminal')),
+   'the restricted terminfo entry compiles/resolves')
+_tt1 = SecureTerminal(command='/bin/cat', cli_terminfo=True)
+_term, _d = _tt1._child_term()
+eq(_term, 'secure-terminal', 'cli_terminfo advertises the restricted TERM')
+ok(_d == _tdir, 'cli_terminfo points TERMINFO_DIRS at the compiled entry')
+_tt1.close()
+# the entry cancels every capability-query cap (no probing) + cursor-addressing +
+# alternate screen -- assert at the source of truth (the .ti)
+_ti = _timod._terminfo_source()
+ok(_ti and os.path.isfile(_ti), 'the terminfo source ships')
+_ti_txt = open(_ti, encoding='utf-8').read()
+ok(all(cap in _ti_txt for cap in ('u6@', 'u7@', 'u8@', 'u9@', 'RV@',
+                                  'cup@', 'smcup@', 'rmcup@', 'clear@')),
+   'the entry cancels the query + cursor-addressing + alt-screen caps')
+# end-to-end: a child with the flag actually sees TERM=secure-terminal
+_te = SecureTerminal(command=['sh', '-c', 'printf T=$TERM'], cli_terminfo=True)
+_ebuf = b''
+_estart = _time.monotonic()
+import fcntl as _fcntl2                                             # noqa: E402
+_fcntl2.fcntl(_te._fd, _fcntl2.F_SETFL,
+              _fcntl2.fcntl(_te._fd, _fcntl2.F_GETFL) | os.O_NONBLOCK)
+while _time.monotonic() - _estart < 1.5:
+    import select as _sel2
+    _r, _, _ = _sel2.select([_te._fd], [], [], 0.05)
+    if _te._fd in _r:
+        try:
+            _chunk = os.read(_te._fd, 4096)
+        except OSError:
+            break
+        if not _chunk:
+            break
+        _ebuf += _chunk
+        if b'T=' in _ebuf:
+            break
+_te.close()
+ok(b'T=secure-terminal' in _ebuf, 'the child process actually gets TERM=secure-terminal')
+
+# MainWindow default + toggle + persist + lock
+eq(win._default_cli_terminfo, False, 'restricted terminfo defaults off')
+win.set_cli_terminfo(True)
+ok(win._default_cli_terminfo and win.act_cli_terminfo.isChecked(),
+   'set_cli_terminfo enables it and ticks the menu')
+win.set_cli_terminfo(False)
+_savedl2 = win._locked
+win._locked = set(win._locked) | {'cli_terminfo'}
+win.set_cli_terminfo(True)
+ok(not win._default_cli_terminfo, 'a cli_terminfo admin lock refuses the toggle')
+win._locked = _savedl2
+
 # --- reflection oracle: output must NEVER cause a write to the pty ------------
 # The crown-jewel invariant. A crafted file cat'd to the terminal, or hostile
 # program output, can emit a capability QUERY (DA/DSR/CPR/XTVERSION/DECRQM/
