@@ -1683,6 +1683,38 @@ win.set_cli_terminfo(True)
 ok(not win._default_cli_terminfo, 'a cli_terminfo admin lock refuses the toggle')
 win._locked = _savedl2
 
+# --- truecolour / 256-colour rendering (CLI line mode) ------------------------
+_tc = SecureTerminal(command='/bin/cat')
+eq(_tc._format_for({'fg': '#ff6400', 'bg': None, 'bold': False}).foreground().color().name(),
+   '#ff6400', 'CLI renders a 24-bit truecolour fg')
+ok(_tc._format_for({'fg': 3, 'bg': None, 'bold': False}).foreground().color().isValid(),
+   'CLI still renders a 16-colour palette fg')
+ok(_tc._format_for({'fg': '#123456', 'bg': '#123456', 'bold': False})
+   .foreground().color().name() != '#123456',
+   'the contrast guard forces a readable fg even when a truecolour fg == bg')
+_tc.close()
+# a child sees COLORTERM=truecolor (we render it faithfully, so we advertise it)
+_cte = SecureTerminal(command=['sh', '-c', 'printf C=$COLORTERM'])
+_cbuf = b''
+_cs = _time.monotonic()
+_fcntl2.fcntl(_cte._fd, _fcntl2.F_SETFL,
+              _fcntl2.fcntl(_cte._fd, _fcntl2.F_GETFL) | os.O_NONBLOCK)
+while _time.monotonic() - _cs < 1.5:
+    import select as _sel3
+    _rr, _, _ = _sel3.select([_cte._fd], [], [], 0.05)
+    if _cte._fd in _rr:
+        try:
+            _ck = os.read(_cte._fd, 4096)
+        except OSError:
+            break
+        if not _ck:
+            break
+        _cbuf += _ck
+        if b'C=' in _cbuf:
+            break
+_cte.close()
+ok(b'C=truecolor' in _cbuf, 'the child gets COLORTERM=truecolor')
+
 # --- synchronized output (DECSET 2026): hold the paint between begin/end ------
 _sy = SecureTerminal(command='/bin/cat', tui=True)
 _sy._make_screen()
@@ -1720,46 +1752,16 @@ _sy2._sync_timer.start = lambda *a: _starts.append(1)   # count re-arms
 feed_output(_sy2, b'\x1b[?2026h')          # enter -> arm once
 feed_output(_sy2, b'\x1b[?2026h')          # repeat while held -> must not re-arm
 eq(len(_starts), 1, 'a repeated ?2026h while held does not re-arm the watchdog')
+# but an END-then-BEGIN in one read is a NEW frame -> the watchdog IS restarted
+feed_output(_sy2, b'\x1b[?2026l\x1b[?2026h')
+eq(len(_starts), 2, 'an end-then-begin in one read restarts the watchdog (new frame)')
 _sy2.close()
 
-# --- gated OSC 10/11/4 colour query (the one write-back; ALT-SCREEN gated) -----
-# The gate is the alternate screen, NOT raw mode: a bash/zsh readline prompt also
-# runs the pty non-canonical (ICANON off), so raw mode does not prove a full-screen
-# program is consuming the reply. Only when a program owns the alternate screen is
-# a colour reply consumed by it, never injected onto a shell command line.
-import termios as _termios2                                        # noqa: E402
-
-
-def _osc_query(feature_on, alt_screen, seq, readline_raw=False):
-    q = SecureTerminal(command='/bin/cat', tui=True)
-    q.apply_osc('osc_color_query', feature_on)
-    q._alt_screen = alt_screen             # pylint: disable=protected-access
-    if readline_raw:                       # a shell prompt: ICANON off, no alt-screen
-        _a = _termios2.tcgetattr(q._fd)
-        _a[3] &= ~_termios2.ICANON
-        _termios2.tcsetattr(q._fd, _termios2.TCSANOW, _a)
-    _sent = []
-    q._write = _sent.append                # pylint: disable=protected-access
-    q._handle_osc(seq)
-    q.close()
-    return _sent
-
-
-_bg = b'\x1b]11;?\x07'
-eq(_osc_query(False, False, _bg), [], 'colour query: feature off -> no reply')
-eq(_osc_query(True, False, _bg), [],
-   'colour query: on but no alternate screen (shell prompt) -> no reply')
-eq(_osc_query(True, False, _bg, readline_raw=True), [],
-   'colour query: on + a readline prompt (ICANON off but NO alt-screen) -> STILL no '
-   'reply -- raw mode alone must not open the reply (the codex P1 pitfall)')
-_rq = _osc_query(True, True, _bg)
-ok(len(_rq) == 1 and _rq[0].startswith(b'\x1b]11;rgb:'),
-   'colour query: on + a full-screen program owns the alt screen -> bg colour answered')
-eq(_osc_query(True, True, b'\x1b[c'), [], 'even on+alt-screen, DA1 is still never answered')
-eq(_osc_query(True, True, b'\x1b]52;c;?\x07'), [],
-   'even on+alt-screen, OSC 52 clipboard READ is still never answered (no exfil)')
-ok(_osc_query(True, True, b'\x1b]10;?\x07')[0].startswith(b'\x1b]10;rgb:'),
-   'OSC 10 (fg) colour query answered on the alt screen')
+# NOTE: the gated OSC colour-query write-back was REMOVED. No terminal-side signal
+# (alt-screen, ICANON) reliably distinguishes a legit query consumer from injection
+# at a shell prompt -- a background job or a cat'd file emitting ?1049h defeats the
+# gate. The absolute "output never writes to the pty" closure is kept instead;
+# every query, colour included, stays unanswered (see the reflection oracle below).
 
 # --- reflection oracle: output must NEVER cause a write to the pty ------------
 # The crown-jewel invariant. A crafted file cat'd to the terminal, or hostile
