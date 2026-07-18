@@ -342,6 +342,10 @@ run_suite() {
    esac
 }
 
+## Captured before the parse loop shifts them away, so the sandbox gate can echo
+## the exact invocation back in its "run it this way instead" hint.
+orig_args=( "$@" )
+
 while [ "$#" -gt 0 ]; do
    case "$1" in
       --core)          run_core="true" ;;
@@ -441,6 +445,30 @@ if [ "${list_only}" = "true" ]; then
    printf '%s\n' "${selected[@]}"
    exit 0
 fi
+
+## Extra-safety gate: OUTSIDE GitHub CI, dist-ai tests must run INSIDE the sandbox
+## VM, never directly on a workstation -- a suite may mount, remove files, or need
+## root, and the sandbox contains the blast radius. Enforced HERE in code, not left
+## to operator discipline. Exempt: GitHub CI (ephemeral, isolated runners) and one
+## documented override env var. (--list already exited above, so listing is free.)
+enforce_sandbox_only() {
+   [ "${GITHUB_ACTIONS:-}" = "true" ] && return 0     # GitHub Actions runner
+   [ "${CI:-}" = "true" ] && return 0                 # generic CI (also set by GitHub)
+   [ "${DIST_AI_IN_SANDBOX:-}" = "1" ] && return 0    # already routed into the sandbox
+   if [ "${DIST_AI_ALLOW_HOST_TESTS:-}" = "1" ]; then
+      printf 'dist-ai-tests-all: WARNING: DIST_AI_ALLOW_HOST_TESTS=1 -- running on the host; sandbox safety gate bypassed.\n' >&2
+      return 0
+   fi
+   {
+      printf 'dist-ai-tests-all: refusing to run on the host for safety.\n'
+      printf '  Outside GitHub CI, dist-ai tests must run inside the sandbox VM (a\n'
+      printf '  suite may mount, remove files, or need root). Run them in the sandbox:\n'
+      printf '    sandbox-run --dir . -- env DIST_AI_IN_SANDBOX=1 dist-ai-tests-all %s\n' "${orig_args[*]:-}"
+      printf '  Or, to deliberately run on THIS host, set DIST_AI_ALLOW_HOST_TESTS=1.\n'
+   } >&2
+   exit 3
+}
+enforce_sandbox_only
 
 emit "== dist-ai-tests-all: $( date --utc '+%Y-%m-%dT%H:%M:%SZ' ) =="
 [ -n "${repo_root}" ] && emit "== repo-root: ${repo_root} =="
