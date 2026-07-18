@@ -1261,8 +1261,18 @@ finally:
 # --- launch CLI parsing (--title/--tui/--mode/--class/--tab/-- command) -------
 from secure_terminal.main import _parse_launch_args as _pla       # noqa: E402
 eq(_pla(['--title', 'logs', '--tui', '--mode', 'reveal']).tabs,
-   [{'title': 'logs', 'tui': True, 'mode': 'reveal', 'command': None}],
+   [{'title': 'logs', 'tui': True, 'mode': 'reveal', 'command': None,
+     'colors': None, 'cli_terminfo': None, 'bell': None, 'osc': None}],
    'cli: single-tab options')
+# per-tab settings overrides parse into the tab spec
+_ps = _pla(['--colors', '--bell', 'audible,visual', '--osc', 'osc_clipboard_read',
+            '--osc', 'osc_title', '--cli-terminfo']).tabs[0]
+eq((_ps['colors'], _ps['bell'], _ps['osc'], _ps['cli_terminfo']),
+   (True, 'audible,visual', ['osc_clipboard_read', 'osc_title'], True),
+   'cli: per-tab colours/bell/osc(repeatable)/cli-terminfo parse')
+eq((_pla(['--no-colors', '--no-cli-terminfo']).tabs[0]['colors'],
+    _pla(['--no-colors', '--no-cli-terminfo']).tabs[0]['cli_terminfo']),
+   (False, False), 'cli: --no-colors / --no-cli-terminfo turn a tab setting off')
 eq(_pla(['--', 'htop', '--no-color']).tabs[0]['command'], ['htop', '--no-color'],
    'cli: -- gives a real argv (no shell reparse)')
 eq(_pla(['-e', 'ls -la']).tabs[0]['command'], 'ls -la',
@@ -1293,6 +1303,37 @@ pump(150)
 eq(_lw.tabs.tabText(0), 'mytab', 'launch: tab title applied')
 eq(_lw.current().current_mode(), 'reveal', 'launch: display mode applied')
 _lw.close()
+
+# a launch tab APPLIES its per-tab overrides (osc feature + bell channels)
+_lo = MainWindow(launch=_pla(['--osc', 'osc_clipboard_read', '--bell', 'visual',
+                              '--', 'sleep', '30']))
+pump(150)
+_lot = _lo.current()
+ok(_lot.osc_enabled('osc_clipboard_read'),
+   'launch: --osc enables the named OSC feature for that tab only')
+eq(_lot.bell_channels(), {'visual'}, 'launch: --bell sets the tab bell channels')
+_lo.close()
+
+# an admin lock ALWAYS wins over a CLI per-tab override
+_lk = MainWindow(launch=_pla([]))
+_lk._locked = frozenset({'osc_clipboard_read', 'bell', 'colors'})
+_lk._open_launch_tab({'osc': ['osc_clipboard_read'], 'bell': 'audible',
+                      'colors': True, 'command': ['sleep', '30']})
+pump(80)
+_lkt = _lk.current()
+ok(not _lkt.osc_enabled('osc_clipboard_read'),
+   'launch: an admin lock overrides a CLI --osc override')
+eq(_lkt.bell_channels(), _lk._default_bell,
+   'launch: an admin lock overrides a CLI --bell override')
+_lk.close()
+
+# an unknown / bogus --osc feature is ignored (never crashes, never enables)
+_lb = MainWindow(launch=_pla(['--osc', 'not_a_feature', '--', 'sleep', '30']))
+pump(80)
+ok(not _lb.current().osc_enabled('not_a_feature') if
+   hasattr(_lb.current(), 'osc_enabled') else True,
+   'launch: an unknown --osc feature is ignored')
+_lb.close()
 
 # --- single-instance IPC: a running instance opens a client's tabs ------------
 import threading                                       # noqa: E402
@@ -1436,10 +1477,16 @@ _HRUN = _hset(max_examples=150, deadline=None)
                 _hst.integers(), _hst.lists(_hst.text(max_size=8), max_size=4))))
 def _fuzz_tab_spec(spec):
     out = _sanitize_tab_spec(spec)
-    assert set(out) == {'title', 'tui', 'mode', 'command'}
+    assert set(out) == {'title', 'tui', 'mode', 'command',
+                        'colors', 'cli_terminfo', 'bell', 'osc'}
     assert out['title'] is None or isinstance(out['title'], str)
     assert out['tui'] is None or isinstance(out['tui'], bool)
     assert out['mode'] is None or isinstance(out['mode'], str)
+    assert out['colors'] is None or isinstance(out['colors'], bool)
+    assert out['cli_terminfo'] is None or isinstance(out['cli_terminfo'], bool)
+    assert out['bell'] is None or isinstance(out['bell'], str)
+    assert out['osc'] is None or (isinstance(out['osc'], list)
+                                  and all(isinstance(f, str) for f in out['osc']))
 
 
 try:
