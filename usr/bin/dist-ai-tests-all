@@ -83,6 +83,7 @@ e2e_suites=(
 )
 integration_suites=(
    sdwdate-gui-tests-integration
+   secure-terminal-tests-apparmor
 )
 
 usage() {

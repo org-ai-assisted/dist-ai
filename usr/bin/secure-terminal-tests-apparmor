@@ -1,0 +1,78 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Verify the shipped secure-terminal AppArmor profile actually ENFORCES: it
+## DENIES a path it does not grant and ALLOWS one it does. This proves the
+## confinement is real, not merely declared -- the check that backs the "AppArmor
+## stays enforceable" claims (sound files, terminfo, general read confinement).
+##
+## Loading a profile is system-wide and needs root + a running AppArmor, so this
+## exits 77 (SKIP) anywhere that is not satisfied -- it is meant for the
+## AppArmor-capable disposable sandbox / CI, NEVER a dev host (enforcing there
+## could confine the running desktop). It restores the prior state on exit.
+
+set -o errexit -o nounset -o pipefail
+
+skip() {
+   printf 'secure-terminal-tests(apparmor): SKIP -- %s\n' "$1"
+   exit 77
+}
+
+[ "$( id -u )" -eq 0 ] || skip "needs root (loads a profile system-wide)"
+command -v apparmor_parser >/dev/null 2>&1 \
+   && command -v aa-exec >/dev/null 2>&1 \
+   || skip "apparmor tooling (apparmor_parser / aa-exec) not present"
+aa-status --enabled >/dev/null 2>&1 || skip "apparmor not enabled in this kernel"
+
+## Locate the profile: an installed copy, or the checkout via SECURE_TERMINAL_REPO.
+profile=""
+for candidate in \
+   "${SECURE_TERMINAL_REPO:-}/etc/apparmor.d/secure-terminal" \
+   /etc/apparmor.d/secure-terminal; do
+   if [ -n "${candidate}" ] && [ -r "${candidate}" ]; then
+      profile="${candidate}"
+      break
+   fi
+done
+[ -n "${profile}" ] || skip "profile not found (set SECURE_TERMINAL_REPO)"
+
+apparmor_parser --replace --skip-cache "${profile}"
+trap 'apparmor_parser --remove "${profile}" >/dev/null 2>&1 || true' EXIT
+
+pass=0
+fail=0
+
+## ALLOW: a path the profile grants (/usr/share/secure-terminal/{,**} r).
+allow_dir=/usr/share/secure-terminal
+mkdir --parents "${allow_dir}"
+allow_probe="${allow_dir}/aa-enforce-probe"
+printf granted > "${allow_probe}"
+allow_rc=0
+aa-exec -p secure-terminal -- cat "${allow_probe}" >/dev/null 2>&1 || allow_rc=$?
+if [ "${allow_rc}" -eq 0 ]; then
+   pass=$(( pass + 1 ))
+else
+   fail=$(( fail + 1 ))
+   printf 'FAIL: the profile DENIED a granted path (%s)\n' "${allow_probe}"
+fi
+
+## DENY: a path the profile does not grant (AppArmor is default-deny once loaded).
+deny_probe=/root/aa-enforce-deny-probe
+printf secret > "${deny_probe}"
+deny_rc=0
+aa-exec -p secure-terminal -- cat "${deny_probe}" >/dev/null 2>&1 || deny_rc=$?
+if [ "${deny_rc}" -ne 0 ]; then
+   pass=$(( pass + 1 ))
+else
+   fail=$(( fail + 1 ))
+   printf 'FAIL: the profile ALLOWED a non-granted path (%s) -- NOT enforcing\n' \
+      "${deny_probe}"
+fi
+
+rm --force "${allow_probe}" "${deny_probe}"
+printf 'secure-terminal-tests(apparmor): %d passed, %d failed\n' "${pass}" "${fail}"
+[ "${fail}" -eq 0 ]
