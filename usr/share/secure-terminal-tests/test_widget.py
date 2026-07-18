@@ -2046,6 +2046,100 @@ feed_output(_bo, b'\x1b]0;' + b'A' * 5000)         # >cap OSC, no terminator -> 
 ok('osc_other' in _osc_seen, 'an over-cap OSC still surfaces an OSC-use notice')
 _bo.close()
 
+# --- --test-canary: the EICAR-style positive control -------------------------
+# secure-terminal is secure by construction, so an adversarial corpus test sees
+# our canary NEVER fire -- indistinguishable from a broken harness that fires
+# nothing. `--test-canary` makes us deliberately perform the safe canary action
+# so the harness can prove it can SEE a fired canary before trusting any run. The
+# marker goes to a single PREDEFINED, owner-only path (never a caller-supplied
+# one) so the write can never be aimed elsewhere and AppArmor can confine it.
+# Here we verify the control: token on stdout, marker in the predefined dir,
+# fail-loud when that dir is unusable, benign token.
+import subprocess as _sp                                        # noqa: E402
+from secure_terminal.main import canary_marker_path as _canary_marker_path  # noqa: E402
+
+# Fixed protocol constant; MUST match secure_terminal.main.CANARY_TOKEN. Asserted
+# by value (not imported) so token drift breaks the corpus/terminal contract loud.
+_CANARY_TOKEN = 'SECURE-TERMINAL-TEST-CANARY-POSITIVE-CONTROL-V1'
+
+
+def _run_canary(env_extra=None, timeout=30, argv_tail=('--test-canary',)):
+    code = ('import sys\n'
+            'sys.argv = %r\n'
+            'from secure_terminal.main import main\n'
+            'sys.exit(main())\n' % (['secure-terminal', *argv_tail],))
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join(sys.path))
+    if env_extra:
+        env.update(env_extra)
+    # This suite sets SIGCHLD=SIG_IGN so Qt terminal shells auto-reap; that also
+    # makes the kernel reap THIS child before subprocess can collect its status,
+    # zeroing the exit code. Restore default handling just for the wait so the
+    # fail-loud exit code (the canary's whole point) is observed faithfully.
+    _prev = signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+    try:
+        proc = _sp.run([sys.executable, '-c', code], env=env,
+                       stdin=_sp.DEVNULL, stdout=_sp.PIPE, stderr=_sp.PIPE,
+                       timeout=timeout)
+    finally:
+        signal.signal(signal.SIGCHLD, _prev)
+    return (proc.stdout.decode('utf-8', 'replace'),
+            proc.stderr.decode('utf-8', 'replace'), proc.returncode)
+
+
+def _marker_under(runtime_dir):
+    """The predefined marker path for a given runtime dir, via the real resolver
+    (no path duplicated in the test)."""
+    _saved = os.environ.get('XDG_RUNTIME_DIR')
+    os.environ['XDG_RUNTIME_DIR'] = runtime_dir
+    try:
+        return _canary_marker_path()
+    finally:
+        if _saved is None:
+            os.environ.pop('XDG_RUNTIME_DIR', None)
+        else:
+            os.environ['XDG_RUNTIME_DIR'] = _saved
+
+# Fires: token on stdout AND written to the predefined, owner-only marker.
+_crt = tempfile.mkdtemp(prefix='st-canary-run-')
+_cout, _cerr, _crc = _run_canary({'XDG_RUNTIME_DIR': _crt})
+_marker = _marker_under(_crt)
+_cwrote = ''
+if os.path.exists(_marker):
+    with open(_marker, encoding='ascii') as _cfh:
+        _cwrote = _cfh.read()
+ok(_CANARY_TOKEN in _cout and _crc == 0,
+   '--test-canary: fires the token on stdout and exits 0')
+ok(_CANARY_TOKEN in _cwrote,
+   '--test-canary: writes the token to the predefined marker dir')
+# The marker is confined to the predefined runtime subtree, not an arbitrary path.
+ok(_marker.startswith(os.path.join(_crt, 'secure-terminal', 'canary') + os.sep),
+   '--test-canary: marker lives under the predefined <runtime>/secure-terminal/canary/')
+
+# An unusable predefined dir must FAIL LOUD (exit 1), never silently pretend
+# success -- the whole point is that a harness can detect a machinery fault. Force
+# it by planting a FILE where the "canary" directory must be created.
+_crt2 = tempfile.mkdtemp(prefix='st-canary-blk-')
+os.makedirs(os.path.join(_crt2, 'secure-terminal'), exist_ok=True)
+with open(os.path.join(_crt2, 'secure-terminal', 'canary'), 'w') as _blk:
+    _blk.write('')                       # a file, so makedirs(.../canary/) fails
+_cout, _cerr, _crc = _run_canary({'XDG_RUNTIME_DIR': _crt2})
+ok(_crc == 1,
+   '--test-canary: exits 1 (fails loud) when the predefined marker dir is unusable')
+
+# --test-canary is a GLOBAL option: it must fire even when another global (e.g.
+# --new-instance from a wrapper) precedes it, not only as the first token.
+_crt3 = tempfile.mkdtemp(prefix='st-canary-glob-')
+_cout, _cerr, _crc = _run_canary({'XDG_RUNTIME_DIR': _crt3},
+                                 argv_tail=('--new-instance', '--test-canary'))
+ok(_CANARY_TOKEN in _cout and _crc == 0,
+   '--test-canary: fires when it follows another global option (not first token)')
+
+# The token must be a benign literal -- no ESC, no control chars, no shell
+# metacharacters -- so the positive control can never itself harm a tester.
+ok(all(32 <= ord(_ch) < 127 for _ch in _CANARY_TOKEN)
+   and not (set(_CANARY_TOKEN) & set('\x1b;$`|&<>()')),
+   '--test-canary: token is a benign printable-ASCII literal')
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(widget): %d passed, %d failed\n'
                  % (PASS, FAIL))

@@ -73,6 +73,33 @@ else
       "${deny_probe}"
 fi
 
-rm --force "${allow_probe}" "${deny_probe}"
+## ALLOW (write): the predefined canary subtree that `secure-terminal
+## --test-canary` writes. This proves the profile GRANTS the confined terminal a
+## write to exactly that folder -- so the EICAR-style positive control still fires
+## under enforcement (a confined WRITE, complementing the read allow/deny above).
+## uid 0 here -> /run/user/0; the profile pattern is /run/user/[0-9]*/.
+canary_dir="/run/user/$(id --user)/secure-terminal/canary"
+mkdir --parents "${canary_dir}"
+canary_probe="${canary_dir}/canary"
+## Source from a path the profile ALREADY grants read (/usr/share/secure-terminal
+## r), so a source-read denial cannot masquerade as a destination-write denial --
+## this probe must isolate the canary WRITE grant.
+canary_src="${allow_dir}/aa-canary-src"
+printf token > "${canary_src}"
+canary_rc=0
+## cp is the aa-exec target, so it runs CONFINED as secure-terminal; its write to
+## the destination is subject to the profile.
+aa-exec -p secure-terminal -- cp "${canary_src}" "${canary_probe}" \
+   >/dev/null 2>&1 || canary_rc=$?
+if [ "${canary_rc}" -eq 0 ] && [ -s "${canary_probe}" ]; then
+   pass=$(( pass + 1 ))
+else
+   fail=$(( fail + 1 ))
+   printf 'FAIL: the profile DENIED the predefined canary write (%s)\n' \
+      "${canary_probe}"
+fi
+
+rm --force "${allow_probe}" "${deny_probe}" "${canary_src}" "${canary_probe}"
+rmdir "${canary_dir}" 2>/dev/null || true
 printf 'secure-terminal-tests(apparmor): %d passed, %d failed\n' "${pass}" "${fail}"
 [ "${fail}" -eq 0 ]
