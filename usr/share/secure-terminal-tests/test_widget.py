@@ -1158,6 +1158,51 @@ win.set_tab_color(0, None)
 # the colour drops the stored colour but keeps the (neutral) numbered icon.
 ok(not win.tabs.tabIcon(0).isNull(), 'tab keeps its number icon after colour cleared')
 ok(win._tab_colors.get(_term0) is None, 'tab colour cleared')
+# --- find in scrollback: per-tab + all-tabs, over the neutralized display text ---
+from PyQt6.QtGui import QTextCursor as _QTC                  # noqa: E402
+_ft = win.current()
+_ft.document().setPlainText('')
+feed_output(_ft, b'alpha beta\r\ndelta alpha\r\nzeta ALPHA\r\nno match\r\n')
+win.show_find()
+ok(not win._find_bar.isHidden(), 'Ctrl+Shift+F shows the find bar')
+win._find_bar.all_tabs.setChecked(False)
+win._find_bar.case.setChecked(False)
+win._find_bar.input.setText('alpha')
+win._find_update()
+ok(len(_ft.extraSelections()) == 3,
+   'case-insensitive find highlights every match (alpha x2 + ALPHA)')
+eq(win._find_bar.count.text(), '3 matches', 'the match count is shown')
+win._find_bar.case.setChecked(True)
+win._find_update()
+ok(len(_ft.extraSelections()) == 2, 'case-sensitive find excludes ALPHA')
+# next/prev move the caret to a match and it is a real selection of the query
+win._find_bar.case.setChecked(False)
+win._find_update()
+win._find_step(False)
+ok(_ft.textCursor().selectedText().lower() == 'alpha',
+   'Next selects a match')
+# the find only ever sees display text: a query for an escape byte finds nothing
+win._find_bar.input.setText('\x1b')
+win._find_update()
+eq(win._find_bar.count.text(), 'no matches',
+   'a search for an escape byte finds nothing (only neutralized text is searchable)')
+# all-tabs search: a match in ANOTHER tab is found and activates that tab
+win._find_bar.input.setText('alpha')
+win.new_tab()
+_ft2 = win.current()
+_ft2.document().setPlainText('')
+feed_output(_ft2, b'unique-needle-xyz here\r\n')
+win.tabs.setCurrentIndex(win.tabs.indexOf(_ft))    # start on the first tab
+win._find_bar.all_tabs.setChecked(True)
+win._find_bar.input.setText('unique-needle-xyz')
+win._find_update()
+win._find_step(False)
+eq(win.current(), _ft2, 'all-tabs Next hops to the tab that has the match')
+# closing the find bar clears highlights and restores the caret to the output
+win.hide_find()
+ok(win._find_bar.isHidden(), 'Esc/close hides the find bar')
+ok(len(_ft.extraSelections()) == 0 and len(_ft2.extraSelections()) == 0,
+   'closing find clears all match highlights')
 # window tab actions: previous-tab wraps around, goto jumps by position, select
 # all selects the current buffer, full screen toggles
 win.new_tab()
