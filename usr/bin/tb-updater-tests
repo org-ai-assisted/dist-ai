@@ -27,10 +27,20 @@ else
    tests_dir="${script_dir}/../share/tb-updater-tests"
 fi
 
+## Resolve the target up front. When the tb-updater checkout/install cannot be
+## found, the test modules skip at import with a module-level pytest.skip -- for
+## which pytest exits 0, not 5 -- so the suite would report PASS though nothing
+## ran. Detect the unavailable target here and report SKIP (77) instead.
+if ! python3 -c "import sys; sys.path.insert(0, '${tests_dir}'); \
+import tb_updater_testlib as T; T.update_torbrowser_script(); \
+T.desktop_starter_wrapper()"; then
+   exit 77
+fi
+
 rc=0
 python3 -m pytest --import-mode=importlib -q "${tests_dir}" "$@" || rc=$?
-## pytest exit 5 = no tests collected (e.g. the checkout could not be
-## resolved -> the modules skip); report the suite as SKIP (77), not a failure.
+## pytest exit 5 = no tests collected; report the suite as SKIP (77), not a
+## failure.
 if [ "$rc" = "5" ]; then
    exit 77
 fi

@@ -516,7 +516,19 @@ should_run() {
 }
 
 main() {
-   local scenario ec
+   local scenario ec want found
+   ## Fail loudly on a misspelled or renamed scenario filter rather than
+   ## silently running nothing and reporting success.
+   for want in "${scenario_filter[@]}"; do
+      found=false
+      for scenario in "${all_scenarios[@]}"; do
+         if [ "$scenario" = "$want" ]; then
+            found=true
+            break
+         fi
+      done
+      [ "$found" = true ] || die "unknown scenario filter: '$want'"
+   done
    printf '== self-test: start ==\n'
    for scenario in "${all_scenarios[@]}"; do
       if ! should_run "$scenario"; then
@@ -525,7 +537,16 @@ main() {
       fi
       setup
       ec=0
-      ( set -o errexit; "$scenario" ) || ec="$?"
+      ## Run the scenario in a subshell that keeps errexit ACTIVE, so a failed
+      ## update-torbrowser aborts the scenario instead of falling through to
+      ## assertions that might pass anyway (a false PASS). A subshell that is
+      ## the operand of '||'/'&&'/'if' has errexit disabled even with an inner
+      ## 'set -e', so disable the outer errexit around a STANDALONE subshell and
+      ## capture its status instead.
+      set +o errexit
+      ( set -o errexit; "$scenario" )
+      ec=$?
+      set -o errexit
       if [ "$ec" = 0 ]; then
          printf '  [PASS] %s\n' "$scenario"
          pass_count=$((pass_count + 1))

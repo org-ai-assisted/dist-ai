@@ -44,6 +44,14 @@ if ! command -v sqop >/dev/null; then
    printf '%s\n' 'tb-updater-tests-e2e: sqop not installed (Debian: sqop); skipping.' >&2
    exit 77
 fi
+## update-torbrowser refuses to run as root, so the scenarios drive it as the
+## current user; the gui scenario escalates via sudo only to swap the dialogs.
+## Running the whole suite as root would fail every scenario at the updater's
+## root check -- fail fast with a clear message instead.
+if [ "$(id -u)" = 0 ]; then
+   printf '%s\n' 'tb-updater-tests-e2e: run as a non-root user (update-torbrowser refuses to run as root); the gui scenario needs passwordless sudo.' >&2
+   exit 1
+fi
 
 ## Gate the harness scripts so they cannot be mis-invoked directly on a real
 ## system; each scenario still isolates HOME so nothing outside a temp dir is

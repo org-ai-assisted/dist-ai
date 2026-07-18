@@ -91,15 +91,20 @@ def test_updater_drives_install_confirmation_dialog():
         "return code")
 
 
-def test_gui_dialog_invocations_are_not_stdin_gated():
-    ## Sanity: the dialog calls must be reachable on the gui path, i.e. not
-    ## only inside a TB_INPUT=stdin branch. Both dialog invocations sit in the
-    ## 'else' arm after the stdin check; assert each dialog call is textually
-    ## preceded by a stdin comparison (the branch it is the alternative to).
+def test_gui_dialogs_live_in_the_else_arm_of_the_stdin_check():
+    ## Each dialog call must sit in the 'else' (gui) arm of the
+    ## TB_INPUT="stdin" conditional, not the stdin arm. Find the nearest
+    ## preceding stdin comparison and assert an 'else' appears between it and
+    ## the dialog call -- so moving the dialog into the stdin arm (the exact
+    ## GUI regression this guards) fails, rather than passing just because the
+    ## strings exist somewhere earlier in the file.
     for dialog in (DOWNLOAD_DIALOG, INSTALL_DIALOG):
         call_index = UPDATER_SRC.find(dialog)
         assert call_index != -1
-        preceding = UPDATER_SRC[:call_index]
-        assert 'TB_INPUT' in preceding and 'stdin' in preceding, (
-            f"{dialog} invocation is not guarded by the TB_INPUT/stdin "
-            "branch as expected")
+        stdin_index = UPDATER_SRC.rfind('= "stdin"', 0, call_index)
+        assert stdin_index != -1, (
+            f"{dialog}: no TB_INPUT=stdin check precedes the invocation")
+        between = UPDATER_SRC[stdin_index:call_index]
+        assert re.search(r"^\s*else\b", between, re.MULTILINE), (
+            f"{dialog} is not in the else (gui) arm of the TB_INPUT=stdin "
+            "check")
