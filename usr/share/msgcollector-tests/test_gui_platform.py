@@ -60,6 +60,8 @@ _CASES = [
     ({"DISPLAY": ":0"}, None),                                     # X11 session
     ({"WAYLAND_DISPLAY": ""}, None),                               # empty -> not Wayland
     ({"WAYLAND_DISPLAY": "wayland-0"}, "wayland;xcb"),             # Wayland, unpinned
+    ({"XDG_SESSION_TYPE": "wayland"}, "wayland;xcb"),              # Wayland via XDG, WAYLAND_DISPLAY unset
+    ({"XDG_SESSION_TYPE": "x11"}, None),                           # X11 session
     ({"WAYLAND_DISPLAY": "wayland-0", "QT_QPA_PLATFORM": ""},
      "wayland;xcb"),                                               # empty pin == unpinned
     ({"WAYLAND_DISPLAY": "wayland-0", "QT_QPA_PLATFORM": "xcb"},
