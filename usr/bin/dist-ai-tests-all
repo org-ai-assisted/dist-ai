@@ -47,6 +47,7 @@ core_suites=(
    onion-grater-tests
    open-link-confirmation-tests
    privleap-tests
+   pyte-tests
    sanitize-string-tests
    secure-terminal-tests
    sdwdate-gui-tests
@@ -71,6 +72,7 @@ fuzz_suites=(
    privleap-tests-fuzz
    privleap-tests-fuzz-atheris
    privleap-tests-session-fuzz
+   pyte-tests-fuzz
    sanitize-string-tests-fuzz
    sdwdate-gui-tests-fuzz
    secure-terminal-tests-fuzz
@@ -190,6 +192,11 @@ wire() {
          wire_env=( "ONION_GRATER_REPO=$( pkg_dir onion-grater )" ) ;;
       privleap)
          wire_env=( "PRIVLEAP_REPO=$( pkg_dir privleap )" ) ;;
+      pyte)
+         ## pyte lives in its own repo (a --component checkout of the
+         ## org-ai-assisted/pyte fork), not a derivative-maker packages/ subpath;
+         ## point the suite at it via PYTE_REPO resolved from the component root.
+         wire_env=( "PYTE_REPO=$( pkg_dir pyte )" ) ;;
       genmkfile)
          ## genmkfile's make-helper sources helper-scripts at runtime (has.sh,
          ## trace.bsh) and shells out to its tools; give it the full
@@ -312,6 +319,7 @@ suite_component() {
       dm-help-steps)          printf '%s' 'derivative-maker' ;;
       onion-grater)           printf '%s' 'onion-grater' ;;
       privleap)               printf '%s' 'privleap' ;;
+      pyte)                   printf '%s' 'pyte' ;;
       genmkfile)              printf '%s' 'genmkfile' ;;
       msgcollector)           printf '%s' 'msgcollector' ;;
       tb-updater)             printf '%s' 'tb-updater' ;;
@@ -411,7 +419,7 @@ fi
 
 if [ -n "${component}" ]; then
    case "${component}" in
-      helper-scripts|developer-meta-files|derivative-maker|msgcollector|onion-grater|privleap|genmkfile|open-link-confirmation|sdwdate-gui|setup-wizard-dist|secure-terminal|systemcheck|tb-updater|tor-control-panel)
+      helper-scripts|developer-meta-files|derivative-maker|msgcollector|onion-grater|privleap|pyte|genmkfile|open-link-confirmation|sdwdate-gui|setup-wizard-dist|secure-terminal|systemcheck|tb-updater|tor-control-panel)
          : ;;
       *)
          printf 'dist-ai-tests-all: unknown --component: %s\n' "${component}" >&2

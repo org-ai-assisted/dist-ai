@@ -1,0 +1,93 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Comprehensive public-API + property + regression suite for the `pyte`
+## terminal emulator library (https://github.com/selectel/pyte, fork at
+## org-ai-assisted/pyte). Runs pytest over the full-coverage test modules,
+## including Hypothesis property tests and xfail regressions for the parser
+## crash defects found by the fuzzer (see the pyte-audit repository).
+##
+## Targets an explicit pyte source checkout when PYTE_REPO is set (its root is
+## prepended to PYTHONPATH so `import pyte` resolves the checkout, not any
+## installed copy); otherwise it tests whatever `python3 -c "import pyte"`
+## resolves (e.g. the Debian python3-pyte package). Exits 77 (SKIP) when pyte
+## or pytest is unavailable, per the dist-ai convention. Works installed
+## (/usr/share/pyte-tests) or from a dist-ai git checkout.
+##
+## Usage:
+##   pyte-tests
+##   PYTE_REPO=/path/to/pyte/checkout pyte-tests
+
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/pyte-tests' ]; then
+   tests_dir='/usr/share/pyte-tests'
+else
+   tests_dir="${script_dir}/../share/pyte-tests"
+fi
+
+## Prepend an explicit pyte checkout to PYTHONPATH so `import pyte` binds to it
+## rather than to any system-installed copy.
+if [ -n "${PYTE_REPO:-}" ]; then
+   if [ -d "${PYTE_REPO}/pyte" ]; then
+      export PYTHONPATH="${PYTE_REPO}${PYTHONPATH:+:${PYTHONPATH}}"
+   else
+      printf '%s\n' "pyte-tests: PYTE_REPO='${PYTE_REPO}' has no pyte/ package; ignoring." >&2
+   fi
+fi
+
+if ! python3 -c 'import pyte' 2>/dev/null; then
+   printf '%s\n' 'pyte-tests: OVERALL RESULT: SKIPPED (pyte not importable).'
+   exit 77
+fi
+if ! python3 -c 'import pytest' 2>/dev/null; then
+   printf '%s\n' 'pyte-tests: OVERALL RESULT: SKIPPED (python3-pytest not installed).'
+   exit 77
+fi
+## Capability gate: this suite targets the modern pyte API (0.8.3+). Older
+## builds (e.g. Debian python3-pyte 0.8.0) lack grapheme_clusters and would
+## fail collection on version differences rather than real defects -- skip them.
+## Set PYTE_REPO to a current checkout to exercise the suite.
+if ! python3 -c 'from pyte.screens import grapheme_clusters' 2>/dev/null; then
+   printf '%s\n' 'pyte-tests: OVERALL RESULT: SKIPPED (pyte too old; needs 0.8.3+ API, set PYTE_REPO).'
+   exit 77
+fi
+
+pyte_where="$(python3 -c 'import pyte, os; print(os.path.dirname(pyte.__file__))' 2>/dev/null)"
+pyte_ver="$(python3 -c 'import pyte; print(getattr(pyte, "__version__", "n/a"))' 2>/dev/null)"
+printf '%s\n' "== pyte-tests: full public-API + property + regression suite =="
+printf '%s\n' "pyte under test: ${pyte_where} (version ${pyte_ver})"
+if ! python3 -c 'import hypothesis' 2>/dev/null; then
+   printf '%s\n' 'NOTE: python3-hypothesis not installed; property tests will be skipped.'
+fi
+
+## --import-mode=importlib keeps the test modules out of sys.modules top level,
+## avoiding collection clashes; the pyte-tests share dir holds only test files.
+rc=0
+python3 -m pytest --import-mode=importlib -q \
+   "${tests_dir}/test_full_api.py" \
+   "${tests_dir}/test_full_regressions.py" \
+   "${tests_dir}/test_full_properties.py" || rc=$?
+
+echo
+case "${rc}" in
+   0)
+      printf '%s\n' 'pyte-tests: OVERALL RESULT: PASS'
+      exit 0 ;;
+   5)
+      ## No tests collected -- treat as a skip rather than a hard failure.
+      printf '%s\n' 'pyte-tests: OVERALL RESULT: SKIPPED (no tests collected).'
+      exit 77 ;;
+   *)
+      printf '%s\n' 'pyte-tests: OVERALL RESULT: FAIL'
+      exit 1 ;;
+esac

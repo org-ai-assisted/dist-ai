@@ -163,6 +163,37 @@ Description: Security regression tests and fuzzers for the privleap privilege ma
  The tests target the installed privleap by default; set PRIVLEAP_REPO to run
  them against a derivative-maker checkout instead.
 
+Package: pyte-tests
+Architecture: all
+Depends: ${misc:Depends},
+ python3,
+ python3-wcwidth
+Suggests: python3-pytest,
+ python3-hypothesis
+Description: Full public-API, property, and fuzz tests for the pyte terminal emulator
+ Comprehensive coverage for the 'pyte' VTXXX terminal-emulator library (fork at
+ org-ai-assisted/pyte). The 'pyte-tests' command runs a pytest suite covering
+ every public class, method, and function -- Stream, ByteStream, Screen,
+ HistoryScreen, DiffScreen, DebugScreen, the control/escape/CSI/OSC parser,
+ charsets, modes, cursor movement, resize, select-graphic-rendition (including
+ 256-colour and 24-bit), device reports, and grapheme clustering -- plus
+ Hypothesis property tests of state invariants (display size, cursor bounds,
+ resize, SGR, history paging, parser chunk-invariance) and xfail regressions
+ for the parser crash and data-loss defects catalogued in the pyte-audit
+ repository.
+ .
+ The 'pyte-tests-fuzz' command is an in-process fuzzer for the
+ Stream/ByteStream/Screen parser: it feeds randomised, adversarial
+ escape/control/text sequences and asserts feed() never raises and the screen
+ invariants hold. Deterministic given a seed. Known, already-reported crash
+ signatures are allowlisted in known_crashes.json, so the run fails only on a
+ NEW signature and prints the seed plus the reproducing sequence.
+ .
+ Both commands honour PYTE_REPO to target a specific pyte checkout (its root is
+ prepended to PYTHONPATH); 'pyte-tests' targets the modern pyte API (0.8.3+)
+ and SKIPs an older build such as Debian python3-pyte 0.8.0. No root, no
+ network.
+
 Package: onion-grater-tests
 Architecture: all
 Depends: ${misc:Depends},

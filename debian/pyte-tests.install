@@ -1,0 +1,5 @@
+usr/bin/pyte-tests usr/bin/
+usr/bin/pyte-tests-fuzz usr/bin/
+usr/share/pyte-tests/*.py usr/share/pyte-tests/
+usr/share/pyte-tests/known_crashes.json usr/share/pyte-tests/
+usr/share/pyte-tests/README.md usr/share/pyte-tests/

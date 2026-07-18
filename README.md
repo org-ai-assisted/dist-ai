@@ -22,6 +22,7 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 | `sdwdate-gui-tests`      | shipping | `usr/share/sdwdate-gui-tests/` |
 | `onion-grater-tests`     | shipping | `usr/share/onion-grater-tests/` |
 | `privleap-tests`         | shipping | `usr/share/privleap-tests/` |
+| `pyte-tests`             | shipping | `usr/share/pyte-tests/` |
 | `genmkfile-tests`        | shipping | `usr/share/genmkfile-tests/` |
 | `dm-help-steps-tests`    | shipping | `usr/share/dm-help-steps-tests/` |
 | `open-link-confirmation-tests` | shipping | `usr/share/open-link-confirmation-tests/` |

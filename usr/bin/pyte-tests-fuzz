@@ -1,0 +1,55 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## In-process fuzz runner for `pyte`'s Stream / ByteStream / Screen parser. Feeds
+## randomised, adversarial escape/control/text sequences and asserts feed() does
+## not raise and a set of screen-state invariants holds. Deterministic given a
+## seed. Known, already-reported crash defects are allowlisted in
+## known_crashes.json (see the pyte-audit repository); the run fails only on a
+## NEW crash signature, printing the seed + reproducing sequence.
+##
+## Targets an explicit pyte checkout via PYTE_REPO (prepended to PYTHONPATH),
+## else whatever `import pyte` resolves. Exits 77 (SKIP) when pyte is
+## unavailable. No root, no network.
+##
+## Usage: pyte-tests-fuzz [iterations] [seed]
+
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/pyte-tests' ]; then
+   tests_dir='/usr/share/pyte-tests'
+else
+   tests_dir="${script_dir}/../share/pyte-tests"
+fi
+
+if [ -n "${PYTE_REPO:-}" ] && [ -d "${PYTE_REPO}/pyte" ]; then
+   export PYTHONPATH="${PYTE_REPO}${PYTHONPATH:+:${PYTHONPATH}}"
+fi
+
+if ! python3 -c 'import pyte' 2>/dev/null; then
+   printf '%s\n' 'pyte-tests-fuzz: SKIPPED (pyte not importable).'
+   exit 77
+fi
+
+iters="${1:-30000}"
+seed="${2:-0}"
+
+printf '%s\n' "== pyte-tests-fuzz: ${iters} iterations from seed ${seed} =="
+rc=0
+python3 -- "${tests_dir}/fuzz_pyte.py" --iterations "${iters}" --seed "${seed}" || rc=$?
+
+if [ "${rc}" != 0 ]; then
+   printf '%s\n' "pyte-tests-fuzz: FAIL (new crash signature; rc=${rc})." >&2
+   exit 1
+fi
+printf '%s\n' 'pyte-tests-fuzz: PASS (no new crash signatures).'
+exit 0
