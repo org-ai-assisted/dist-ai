@@ -1198,6 +1198,32 @@ win._find_bar.input.setText('unique-needle-xyz')
 win._find_update()
 win._find_step(False)
 eq(win.current(), _ft2, 'all-tabs Next hops to the tab that has the match')
+# tooltips render as an interactive, zoom-aware InfoTip (selectable + copyable),
+# not the plain QToolTip you cannot enter.
+from PyQt6.QtGui import QHelpEvent as _QHelpEvent            # noqa: E402
+from PyQt6.QtCore import QEvent as _QEvent, QPoint as _QP    # noqa: E402
+_tipbtn = _QPushButton('TUI')
+_tipbtn.setToolTip('Opt-in TUI mode: higher risk, only run programs you trust.')
+_filt = win._tip_filter
+_he = _QHelpEvent(_QEvent.Type.ToolTip, _QP(3, 3), _tipbtn.mapToGlobal(_QP(3, 3)))
+ok(_filt.eventFilter(_tipbtn, _he) is True,
+   'the tooltip event is intercepted (plain QToolTip suppressed)')
+_tip = _filt._tip
+ok(not _tip.isHidden(), 'an InfoTip is shown for a tooltip')
+ok('only run programs you trust' in _tip.text(), 'the InfoTip carries the tooltip text')
+ok(bool(_tip.textInteractionFlags()
+        & Qt.TextInteractionFlag.TextSelectableByMouse),
+   'the InfoTip text is selectable (can be copied)')
+# the InfoTip font scales with the current tab zoom
+win.current().apply_zoom(200)
+_he2 = _QHelpEvent(_QEvent.Type.ToolTip, _QP(3, 3), _tipbtn.mapToGlobal(_QP(3, 3)))
+_filt.eventFilter(_tipbtn, _he2)
+_big = _tip.font().pointSizeF()
+win.current().apply_zoom(100)
+_filt.eventFilter(_tipbtn, _he2)
+_small = _tip.font().pointSizeF()
+ok(_big > _small, 'the InfoTip font grows with zoom')
+_tip.hide()
 # closing the find bar clears highlights and restores the caret to the output
 win.hide_find()
 ok(win._find_bar.isHidden(), 'Esc/close hides the find bar')
