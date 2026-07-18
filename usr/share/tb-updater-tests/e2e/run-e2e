@@ -58,14 +58,13 @@ test_root=""
 out_file=""
 pass_count=0
 fail_count=0
-skip_count=0
 failed_names=""
 
 die() { printf 'self-test: ERROR: %s\n' "$*" >&2; exit 2; }
 
 ## Run a command as root: directly when already root, else via passwordless
 ## sudo. Only the gui scenario needs it (to swap the root-owned msgcollector
-## dialogs for auto-confirm stubs); it checks availability and skips first.
+## dialogs for auto-confirm stubs); it requires availability and fails first.
 as_root() {
    if [ "$(id -u)" = 0 ]; then
       "$@"
@@ -444,12 +443,11 @@ scenario_gui_input_mode_install() {
 
    ## The dialogs are root-owned system files and update-torbrowser refuses to
    ## run as root, so this scenario runs as a normal user but needs a root
-   ## helper to swap the dialogs for auto-confirm stubs. Skip cleanly (77) when
-   ## neither root nor passwordless sudo is available rather than failing.
+   ## helper to swap the dialogs for auto-confirm stubs. This is a required
+   ## security check: the e2e environment must provide root or passwordless
+   ## sudo (the CI job does). Fail loudly rather than skip if it does not.
    if ! { [ "$(id -u)" = 0 ] || sudo -n true 2>/dev/null; }; then
-      printf '%s\n' 'SKIP: need root or passwordless sudo to stub the GUI dialogs' \
-         >"$out_file"
-      return 77
+      die "[gui mode] need root or passwordless sudo to stub the GUI dialogs; the e2e environment must provide it"
    fi
 
    fix="$(fixture_dir_for tb)"
@@ -528,10 +526,7 @@ main() {
       setup
       ec=0
       ( set -o errexit; "$scenario" ) || ec="$?"
-      if [ "$ec" = 77 ]; then
-         printf '  [SKIP] %s (%s)\n' "$scenario" "$(head -n1 -- "$out_file" 2>/dev/null)"
-         skip_count=$((skip_count + 1))
-      elif [ "$ec" = 0 ]; then
+      if [ "$ec" = 0 ]; then
          printf '  [PASS] %s\n' "$scenario"
          pass_count=$((pass_count + 1))
          [ "$verbose" = 'true' ] && sed 's/^/    | /' "$out_file"
@@ -543,8 +538,8 @@ main() {
       fi
       teardown
    done
-   printf '== self-test: %d passed, %d failed, %d skipped ==\n' \
-      "$pass_count" "$fail_count" "$skip_count"
+   printf '== self-test: %d passed, %d failed ==\n' \
+      "$pass_count" "$fail_count"
    [ "$fail_count" -eq 0 ] || { printf 'Failed:%s\n' "$failed_names" >&2; exit 1; }
 }
 
