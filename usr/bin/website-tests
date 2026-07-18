@@ -59,4 +59,21 @@ if [ "${#roots[@]}" -eq 0 ]; then
    exit 77
 fi
 
-python3 -Bsu -- "${tests_dir}/check_site.py" "${roots[@]}"
+overall=0
+python3 -Bsu -- "${tests_dir}/check_site.py" "${roots[@]}" || overall=1
+
+## Mobile-overflow guard: load each page in a headless browser at a phone viewport
+## and assert the body never scrolls sideways. Needs Playwright + chromium; SKIPs
+## (exit 77) cleanly when the browser is absent, so the static checks above still
+## run everywhere.
+if [ -f "${tests_dir}/check_mobile.py" ]; then
+   mobile_rc=0
+   python3 -Bsu -- "${tests_dir}/check_mobile.py" "${roots[@]}" || mobile_rc="$?"
+   if [ "${mobile_rc}" = '77' ]; then
+      printf 'website-mobile-tests: SKIP (no Playwright/chromium)\n' >&2
+   elif [ "${mobile_rc}" != '0' ]; then
+      overall=1
+   fi
+fi
+
+exit "${overall}"
