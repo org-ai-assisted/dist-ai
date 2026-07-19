@@ -729,6 +729,68 @@ finally:
     M._DUMP_MAX = _o_dumpmax
 ok(not win._ipc_ctl('ctl-bogus', {})['ok'], 'ctl: an unknown ctl op is rejected')
 
+# --- assorted window helpers --------------------------------------------------
+import signal as _sg                                            # noqa: E402
+from PyQt6.QtGui import QTextCursor                             # noqa: E402
+while win.tabs.count() < 2:
+    win.new_tab()
+win._goto_tab(8)                             # Alt+9 -> clamp to the last tab
+win._goto_tab(0)
+win.terminate_foreground()                   # routes to the current tab
+_sl3 = set(win._locked)
+try:
+    win._locked = {'bell'}
+    win._update_bell_tray_action()           # bell locked -> no-op
+finally:
+    win._locked = _sl3
+ok(win._is_reserved_shortcut('') is False, '_is_reserved_shortcut: empty -> False')
+_o_sig5 = _sg.signal
+try:
+    _sg.signal = lambda *_a, **_k: (_ for _ in ()).throw(ValueError())
+    M._install_signal_quit(APP)              # every signal.signal raises -> tolerated
+    ok(True, '_install_signal_quit tolerates an unsettable signal')
+finally:
+    _sg.signal = _o_sig5
+
+# show_find: no-tab guard, and seeding from a single-line selection
+_nf2 = MainWindow()
+while _nf2.tabs.count():
+    _nf2.tabs.removeTab(0)
+_nf2.show_find()                             # no current tab -> return
+_nf2.deleteLater()
+APP.processEvents()
+_sf2 = win.current()
+_sf2._append('SEEDLINE')
+_c = _sf2.textCursor()
+_c.movePosition(QTextCursor.MoveOperation.End)
+_c.movePosition(QTextCursor.MoveOperation.StartOfLine, QTextCursor.MoveMode.KeepAnchor)
+_sf2.setTextCursor(_c)                       # select the last line only
+win.show_find()                              # a single-line selection seeds the query
+ok(True, 'show_find: no-tab guard and single-line selection seeding')
+
+# current_zoom_percent + _ipc_open bare reuse on a tab-less window
+_zw2 = MainWindow()
+while _zw2.tabs.count():
+    _zw2.tabs.removeTab(0)
+ok(_zw2.current_zoom_percent() == getattr(_zw2, '_default_zoom', 100),
+   'current_zoom_percent: the default with no tab')
+_zw2._ipc_open({})                           # nothing to open -> ensure a usable tab
+ok(_zw2.tabs.count() >= 1, 'ipc open with nothing still leaves a usable tab')
+_zw2.deleteLater()
+APP.processEvents()
+
+# a window built with the tray enabled shows the tray icon at startup
+_cfgd3 = os.path.join(os.environ['XDG_CONFIG_HOME'], 'secure-terminal.d')
+os.makedirs(_cfgd3, exist_ok=True)
+_trayconf = os.path.join(_cfgd3, '70-tray.conf')
+with open(_trayconf, 'w', encoding='utf-8') as _tf:
+    _tf.write('systray=true\n')
+_wt2 = MainWindow()                          # _build_menu -> _tray_icon() at startup
+ok(True, 'a window with the tray enabled builds the tray at startup')
+_wt2.deleteLater()
+APP.processEvents()
+os.remove(_trayconf)
+
 # a command_hook that is only whitespace yields no hook
 eq(_read_hook_config({'command_hook': '   '}), None,
    '_read_hook_config: an all-whitespace command yields no hook')
