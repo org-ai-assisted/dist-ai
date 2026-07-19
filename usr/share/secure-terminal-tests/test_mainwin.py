@@ -702,6 +702,33 @@ ok(isinstance(_probs, list) and _probs,
 _dup = win._set_shortcuts({_ids[0]: 'Ctrl+J', _ids[1]: 'Ctrl+J'})   # duplicate
 ok(isinstance(_dup, list) and _dup, '_set_shortcuts: a duplicate binding is a problem')
 
+# --- tab-op guards on invalid targets -----------------------------------------
+from PyQt6.QtGui import QColor as _QC        # noqa: E402
+win.rename_tab(-1)                           # index < 0 -> return (no dialog)
+win.set_tab_color(-1, _QC('#ff0000'))        # index < 0 -> return
+win.zoom_reset()                             # -> set_zoom(100)
+_other = MainWindow()
+_other.new_tab()
+win._refresh_tab_label(_other.tabs.widget(0))  # a term not in this window -> return
+_other.deleteLater()
+APP.processEvents()
+ok(True, 'tab-op guards on invalid targets are no-ops')
+
+# --- ctl: dump-tab tail-cap, an unknown ctl op --------------------------------
+if win.tabs.count() == 0:
+    win.new_tab()
+_t0b = win.tabs.widget(0)
+_tid0b = win._tab_ids.get(_t0b)
+_t0b._append('hello world of text')
+_o_dumpmax = M._DUMP_MAX
+try:
+    M._DUMP_MAX = 4                          # force the tail-cap branch
+    _rr = win._ipc_ctl('ctl-dump-tab', {'tab': 'id:%d' % _tid0b})
+    ok(_rr['ok'] and len(_rr['text']) <= 4, 'ctl dump-tab tail-caps to _DUMP_MAX')
+finally:
+    M._DUMP_MAX = _o_dumpmax
+ok(not win._ipc_ctl('ctl-bogus', {})['ok'], 'ctl: an unknown ctl op is rejected')
+
 win.close()
 win.deleteLater()
 APP.processEvents()
