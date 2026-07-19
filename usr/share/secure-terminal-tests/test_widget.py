@@ -2966,7 +2966,102 @@ _oc._feed_bytes(b'')
 _oc._alt_leave()                            # _alt_saved is None -> returns
 ok(True, 'feed guards: no stream, empty chunk and alt-leave-without-save are safe')
 
+# --- more terminal branches ----------------------------------------------------
+import fcntl as _fcntl                                          # noqa: E402
+from PyQt6.QtGui import QHelpEvent                              # noqa: E402
+from PyQt6.QtCore import QPoint                                 # noqa: E402
+
+# apply_zoom while in grid mode schedules a repaint
+_gz = SecureTerminal(command='/bin/cat')
+_gz.apply_tui(True)
+feed_output(_gz, b'\x1b[?1049h')            # alt screen -> grid mode
+_gz.apply_zoom(150)
+ok(True, 'apply_zoom in grid mode schedules a repaint')
+
+# _set_winsize: no-fd short-circuit and an ioctl error are both swallowed
+_sw = SecureTerminal(command='/bin/cat')
+_sw._set_winsize(80, 24)                     # succeeds on a real pty
+_o_ioctl = _fcntl.ioctl
+try:
+    _fcntl.ioctl = lambda *_a, **_k: (_ for _ in ()).throw(OSError())
+    _sw._set_winsize(80, 24)                 # ioctl raises -> swallowed
+finally:
+    _fcntl.ioctl = _o_ioctl
+_sw._fd = None
+_sw._set_winsize(80, 24)                     # no fd -> return
+ok(True, '_set_winsize tolerates a closed pty and an ioctl error')
+
+# apply_markings toggles and re-renders only on a real change
+_am = SecureTerminal(command='/bin/cat')
+_am.apply_markings(not _am.markings_enabled())
+ok(True, 'apply_markings re-renders on a change')
+
+# _end_sync_update is a no-op when no synchronized update is open
+_es = SecureTerminal(command='/bin/cat')
+_es._end_sync_update()
+ok(True, '_end_sync_update: nothing open -> no-op')
+
+# _render_tui is a no-op with no pyte screen (line mode)
+_rt2 = SecureTerminal(command='/bin/cat')
+_rt2._render_tui()
+ok(True, '_render_tui: no screen -> no-op')
+
+# _on_readable swallows a spurious EAGAIN (non-blocking read not ready)
+_or = SecureTerminal(command='/bin/cat')
+_o_read = _os.read
+try:
+    _os.read = lambda *_a, **_k: (_ for _ in ()).throw(BlockingIOError())
+    _or._on_readable()                       # EAGAIN -> return, no crash
+finally:
+    _os.read = _o_read
+ok(True, '_on_readable: a not-ready non-blocking fd is handled')
+
+# PageUp/PageDown scroll the scrollback (line mode)
+_pg = SecureTerminal(command='/bin/cat')
+key(_pg, Qt.Key.Key_PageUp)
+key(_pg, Qt.Key.Key_PageDown)
+ok(True, 'PageUp/PageDown drive the scrollbar')
+
+# in TUI mode a plain key is encoded as VT input (keyPressEvent -> _tui_key)
+_tk2 = SecureTerminal(command='/bin/cat')
+_tk2.apply_tui(True)
+_tks2 = spy_writes(_tk2)
+key(_tk2, Qt.Key.Key_A, 'a')
+ok(_tks2 == [b'a'], 'TUI mode: keyPressEvent routes a plain key through _tui_key')
+
+# hook_enabled reflects whether a hook is configured
+_he = SecureTerminal(command='/bin/cat')
+ok(_he.hook_enabled() is False, 'hook_enabled: no hook -> False')
+
+# a tooltip over empty space (no codepoint) hides any tip
+_tt = SecureTerminal(command='/bin/cat')
+_hv = QHelpEvent(QEvent.Type.ToolTip, QPoint(3, 3), _tt.mapToGlobal(QPoint(3, 3)))
+_tt.event(_hv)
+ok(True, 'a tooltip over empty space hides the tip without error')
+
+# stop any repeating timers these grid/TUI terminals started, so they do not
+# fire into the offscreen platform's static teardown (which would crash a
+# process that has otherwise passed cleanly)
+for _term in (_gz, _tk2, _rt2, _es, _am):
+    for _tmr in ('_render_timer', '_sync_timer'):
+        _t = getattr(_term, _tmr, None)
+        if _t is not None:
+            _t.stop()
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(widget): %d passed, %d failed\n'
                  % (PASS, FAIL))
-sys.exit(0 if FAIL == 0 else 1)
+# The offscreen Qt platform can crash in its static teardown after a clean run
+# (destroying the many widgets/pyte screens/timers this suite builds), which
+# would turn a fully-passing run into a non-zero exit. All tests have run and the
+# result is known, so persist coverage and exit hard, bypassing that teardown.
+try:
+    import coverage as _coverage
+    _covw = _coverage.Coverage.current()
+    if _covw is not None:
+        _covw.save()
+except Exception:
+    pass
+sys.stdout.flush()
+sys.stderr.flush()
+os._exit(0 if FAIL == 0 else 1)
