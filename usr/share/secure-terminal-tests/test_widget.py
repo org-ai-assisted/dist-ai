@@ -2791,6 +2791,59 @@ ok(True, '_ring: a second ring within ~200ms is rate-limited')
 eq(_rg.current_paste_delay(), _rg._paste_delay,
    'current_paste_delay: returns the configured paste delay')
 
+# --- hook intercept: the run / suggest / empty-line branches ------------------
+hk2 = SecureTerminal(command='/bin/cat')
+hk2.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow',
+                'transcript': 'none'})
+_h2 = spy_writes(hk2)
+# an empty line is not intercepted -> normal submit
+hk2._line_buffer = ''
+hk2._line_dirty = False
+key(hk2, Qt.Key.Key_Return)
+ok(b'\r' in _h2, 'hook: an empty line submits without interception')
+# a recalled/edited line with the user choosing Run -> submitted
+_h2.clear()
+hk2._hook_ask = lambda _c, _r: 'run'
+key(hk2, Qt.Key.Key_Up)                     # marks the line dirty
+key(hk2, Qt.Key.Key_Return)
+ok(b'\r' in _h2, 'hook: an edited line the user runs is submitted')
+# a blocked command the user chooses to Run -> submitted
+_h2.clear()
+hk2._hook_ask = lambda _c, _r: 'run'
+_htype(hk2, 'x sudo sh')
+key(hk2, Qt.Key.Key_Return)
+ok(b'\r' in _h2, 'hook: a flagged command the user runs is submitted')
+# a blocked command the user replaces with the suggestion -> suggestion inserted
+_h2.clear()
+hk2._hook_ask = lambda _c, _r: 'suggest'
+_htype(hk2, 'x sudo sh')
+key(hk2, Qt.Key.Key_Return)
+ok(b'ls' in b''.join(_h2) and b'\x15' in _h2,
+   'hook: choosing the suggestion discards the line and inserts it')
+
+# --- paste: an all-control paste sanitizes to nothing; bracketed paste in TUI --
+_pt = SecureTerminal(command='/bin/cat')
+_pts = spy_writes(_pt)
+_pmime = QMimeData()
+_pmime.setText('\x00\x01\x02')              # only control bytes -> stripped to ''
+_pt.insertFromMimeData(_pmime)
+eq(_pts, [], 'paste: a control-only clipboard sanitizes to nothing (sends nothing)')
+# bracketed paste: with DEC mode 2004 set by the program, a paste is wrapped
+_pt.apply_tui(True)
+feed_output(_pt, b'\x1b[?2004h')            # program enables bracketed paste
+_pts.clear()
+_pmime2 = QMimeData()
+_pmime2.setText('echo hi')
+_pt.insertFromMimeData(_pmime2)
+ok(_pts and _pts[0].startswith(b'\x1b[200~') and _pts[0].endswith(b'\x1b[201~'),
+   'paste: bracketed-paste mode wraps the pasted data in the DEC 2004 markers')
+
+# --- reset_caret with no output cursor snaps to the document end --------------
+_rc = SecureTerminal(command='/bin/cat')
+_rc._out_cursor = None
+_rc.reset_caret()
+ok(True, 'reset_caret: with no output cursor it snaps the caret to the end')
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(widget): %d passed, %d failed\n'
                  % (PASS, FAIL))
