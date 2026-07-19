@@ -336,50 +336,59 @@ class LayoutAudit(html.parser.HTMLParser):
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
-        self._open = []        # stack of frames for open, non-void tags
-        self._sections = []    # stack of {'id','ungridded'} section frames
+        self._open = []        # stack of frames for open, non-void tags; each
+                               # <section> frame carries its own ungridded count
         self.offenders = []    # (section_id, ungridded_count)
 
+    def _mark_wide(self):
+        # The innermost open .issue card genuinely needs its width.
+        for frame in reversed(self._open):
+            if frame['is_issue']:
+                frame['has_wide'] = True
+                break
+
     def handle_starttag(self, tag, attrs):
-        amap = dict(attrs)
         if tag in WIDE_TAGS:
-            # Mark the innermost open .issue card as needing its width.
-            for frame in reversed(self._open):
-                if frame['is_issue']:
-                    frame['has_wide'] = True
-                    break
+            self._mark_wide()
         if tag in VOID_TAGS:
             return
-        classes = set((amap.get('class') or '').split())
-        if tag == 'section':
-            self._sections.append({'id': amap.get('id') or '?', 'ungridded': 0})
+        classes = set((dict(attrs).get('class') or '').split())
         self._open.append({
             'tag': tag,
+            'id': dict(attrs).get('id') or '?',
             'is_grid': bool(classes & GRID_CLASSES),
+            'is_section': tag == 'section',
             'is_issue': 'issue' in classes,
             # A card is "gridded" when any enclosing element is a grid container.
             'gridded': any(f['is_grid'] for f in self._open),
             'has_wide': False,
+            'ungridded': 0,     # cards counted against a <section> land here
         })
 
     def handle_startendtag(self, tag, attrs):
-        pass                   # self-closed element: no nesting, nothing to track
+        # A self-closed wide element (XHTML-style <img/>) still exempts its card.
+        if tag in WIDE_TAGS:
+            self._mark_wide()
 
     def handle_endtag(self, tag):
         if tag in VOID_TAGS:
             return
         for i in range(len(self._open) - 1, -1, -1):
-            if self._open[i]['tag'] == tag:
-                frame = self._open[i]
-                if (frame['is_issue'] and not frame['gridded']
-                        and not frame['has_wide'] and self._sections):
-                    self._sections[-1]['ungridded'] += 1
-                del self._open[i:]
-                break
-        if tag == 'section' and self._sections:
-            done = self._sections.pop()
-            if done['ungridded'] >= 2:
-                self.offenders.append((done['id'], done['ungridded']))
+            if self._open[i]['tag'] != tag:
+                continue
+            frame = self._open[i]
+            if frame['is_issue'] and not frame['gridded'] and not frame['has_wide']:
+                # Count against the nearest ENCLOSING <section> (strictly above
+                # this card), so a card that is itself a <section class="issue">
+                # lands on its parent section, not on its own frame.
+                for anc in range(i - 1, -1, -1):
+                    if self._open[anc]['is_section']:
+                        self._open[anc]['ungridded'] += 1
+                        break
+            if frame['is_section'] and frame['ungridded'] >= 2:
+                self.offenders.append((frame['id'], frame['ungridded']))
+            del self._open[i:]
+            break
 
 
 def check_card_layout(root, failures):
