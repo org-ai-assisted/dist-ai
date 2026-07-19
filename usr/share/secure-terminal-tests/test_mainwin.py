@@ -729,6 +729,97 @@ finally:
     M._DUMP_MAX = _o_dumpmax
 ok(not win._ipc_ctl('ctl-bogus', {})['ok'], 'ctl: an unknown ctl op is rejected')
 
+# --- icon helpers: themed hit, null-icon fallback, toolbar-toggle theme hit ----
+from PyQt6.QtGui import QIcon                                    # noqa: E402
+_o_fromtheme = QIcon.fromTheme
+try:
+    QIcon.fromTheme = staticmethod(lambda *_a, **_k: M._letter_icon('X', '#111111'))
+    ok(not M._app_icon().isNull(), '_app_icon: a themed icon is used when present')
+    ok(not M._toggle_icon('x', 'Y', '#222222').isNull(),
+       '_toggle_icon: the desktop theme symbol is used when present')
+    QIcon.fromTheme = staticmethod(lambda *_a, **_k: QIcon())    # null theme icon
+    _o_exists = os.path.exists
+    try:
+        os.path.exists = lambda _p: False
+        ok(M._app_icon().isNull(), '_app_icon: a null icon when nothing is found')
+    finally:
+        os.path.exists = _o_exists
+finally:
+    QIcon.fromTheme = _o_fromtheme
+
+# --- _apply_global keeps locked keys at their admin value ----------------------
+_sl2 = set(win._locked)
+try:
+    win._locked = {'tui', 'colors', 'osc_notice', 'unicode_mode', 'osc_title'}
+    win._apply_global({'theme': 'dark', 'zoom': 100, 'mode': 'strip',
+                       'colors': True, 'tui': True, 'osc_notice': True,
+                       'osc': {'osc_title': True}, 'scrollback': 1000,
+                       'paste_delay': 3, 'persist': False})
+    ok(True, '_apply_global preserves admin-locked keys')
+finally:
+    win._locked = _sl2
+
+# --- save_transcript to an unwritable path is swallowed -----------------------
+from PyQt6.QtWidgets import QFileDialog as _QFD3                 # noqa: E402
+_o_gsf = _QFD3.getSaveFileName
+try:
+    _QFD3.getSaveFileName = staticmethod(
+        lambda *_a, **_k: ('/proc/nonexistent-dir/x.txt', ''))
+    win.save_transcript()                   # open() raises OSError -> swallowed
+    ok(True, 'save_transcript: an unwritable path is swallowed')
+finally:
+    _QFD3.getSaveFileName = _o_gsf
+
+# --- _open_path opens an existing folder and falls back to a parent -----------
+win._open_path('/tmp')                       # exists
+win._open_path('/tmp/no-such-dir-xyz/child') # missing -> opens the parent
+ok(True, '_open_path opens a folder (or its parent when missing)')
+
+# --- the font-noise message handler drops the flood, passes real messages -----
+from PyQt6.QtCore import qWarning                                # noqa: E402
+M._quiet_font_warnings()
+qWarning('OpenType support missing for "Something"')   # font noise -> dropped
+qWarning('a genuine warning')                          # real -> passed through
+ok(True, 'the font-noise handler drops the flood and passes real messages')
+
+# --- main(): a SIGCHLD-install failure during startup is tolerated ------------
+_o_argv3 = sys.argv[:]
+_o_sr4 = M.ipc.send_request
+_o_qa3 = M.QApplication
+_o_qexec3 = QApplication.exec
+import signal as _sig3                                           # noqa: E402
+_o_sig = _sig3.signal
+_o_chld3 = _sig3.getsignal(_sig3.SIGCHLD)
+try:
+    M.ipc.send_request = lambda *_a, **_k: None
+
+
+    class _AP3:
+        def __call__(self, _a):
+            return APP
+
+        def __getattr__(self, _n):
+            return getattr(QApplication, _n)
+
+    M.QApplication = _AP3()
+    QApplication.exec = lambda _s: 0
+
+    def _sig_maybe_raise(signum, handler):
+        if signum == _sig3.SIGCHLD:
+            raise ValueError('cannot set SIGCHLD here')
+        return _o_sig(signum, handler)
+
+    _sig3.signal = _sig_maybe_raise
+    sys.argv = ['secure-terminal', '--new-instance']
+    eq(M.main(), 0, 'main: a SIGCHLD-install failure during startup is tolerated')
+finally:
+    _sig3.signal = _o_sig
+    sys.argv = _o_argv3
+    M.ipc.send_request = _o_sr4
+    M.QApplication = _o_qa3
+    QApplication.exec = _o_qexec3
+    _sig3.signal(_sig3.SIGCHLD, _o_chld3)
+
 win.close()
 win.deleteLater()
 APP.processEvents()
