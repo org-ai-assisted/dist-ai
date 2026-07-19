@@ -5,14 +5,16 @@
 
 ## AI-Assisted
 
-## Coverage gate for secure-terminal. Runs the Qt-free core suite plus the
-## hypothesis property suite under coverage.py and ENFORCES 100% line coverage
-## of the security-critical sanitizer (sanitize.py) - the escape-stripping,
-## paste-sanitising, SGR/line-edit render core that everything else depends on.
-## The overall package coverage (GUI included) is reported for information but
-## not hard-gated here: raising the whole PyQt application to 100% is a ratchet,
-## and gaming it with blanket exclusions would defeat the point. A failure here
-## means a line of the sanitizer became unreachable by the tests - add a test.
+## Coverage gate for secure-terminal. Runs every test suite under coverage.py
+## and ENFORCES 100% line coverage on a ratcheting list of fully-covered modules
+## -- starting with the security-critical sanitizer (sanitize.py) and now the
+## CLI wrapper, command-hook protocol, IPC framing, session persistence and
+## drop-in settings. The GUI modules (dialog, terminal, main) are reported but
+## not yet hard-gated; each is added to the gated list as it reaches full
+## coverage, so coverage can only go up. A failure here means a line of a gated
+## module became unreachable by the tests -- add a test (do not paper over it
+## with a blanket exclusion; genuinely-unreachable defensive lines carry a
+## justified `# pragma: no cover` in the source instead).
 ##
 ## SKIPs (exit 77) when secure_terminal or python3-coverage is unavailable.
 
@@ -59,17 +61,38 @@ cleanup() { rm -r -f -- "${work}" 2>/dev/null || true; }
 trap cleanup EXIT
 export COVERAGE_FILE="${work}/.coverage"
 
-## these two suites together exercise the whole sanitizer, and run headless-free
-## except for the offscreen Qt platform the property suite touches.
+## Run every suite under coverage. --parallel-mode + combine keeps each suite's
+## (and any forked child's) data in its own file, then merges them. test_widget
+## needs the offscreen Qt platform and SKIPs (exit 77) when PyQt6/pyte are
+## absent; the GATED modules below are all covered by the Qt-FREE suites, so the
+## hard gate stays green even on a headless box without Qt.
 export QT_QPA_PLATFORM=offscreen
 python3 -m coverage erase
-for suite in test_secure_terminal test_fuzz; do
-   python3 -m coverage run --append --source="${pkg}" -- "${tests_dir}/${suite}.py"
+for suite in test_secure_terminal test_fuzz test_corpus test_cli test_modules \
+             test_widget; do
+   [ -f "${tests_dir}/${suite}.py" ] || continue
+   rc=0
+   python3 -m coverage run --parallel-mode --source="${pkg}" -- \
+      "${tests_dir}/${suite}.py" || rc="$?"
+   ## exit 77 (SKIP, e.g. Qt absent for test_widget) is not a failure here; the
+   ## gated modules do not depend on that suite. Any other non-zero is fatal.
+   if [ "${rc}" != '0' ] && [ "${rc}" != '77' ]; then
+      printf 'secure-terminal-tests-coverage: suite %s failed (exit %s)\n' \
+         "${suite}" "${rc}" >&2
+      exit "${rc}"
+   fi
 done
+python3 -m coverage combine
 
-printf '\n== sanitizer coverage (gated at 100%%) ==\n'
-## hard gate: the security-critical sanitizer must be fully covered.
-python3 -m coverage report --include='*/sanitize.py' --show-missing --fail-under=100
+## The modules that are FULLY covered and ratchet-gated at 100%. As a GUI module
+## (dialog, terminal, main) reaches full coverage it is added to this list so it
+## can never regress. Each is genuinely 100% -- the few unreachable defensive
+## lines (post-fork/pre-exec, EINTR retries) carry a justified `# pragma: no
+## cover` in the source, not a blanket exclusion.
+gated='*/__init__.py,*/sanitize.py,*/cli.py,*/hook.py,*/ipc.py,*/session.py,*/settings.py'
 
-printf '\n== whole-package coverage (reported, not gated) ==\n'
+printf '\n== gated modules (must be 100%%) ==\n'
+python3 -m coverage report --include="${gated}" --show-missing --fail-under=100
+
+printf '\n== whole-package coverage (reported; GUI modules not yet gated) ==\n'
 python3 -m coverage report || true
