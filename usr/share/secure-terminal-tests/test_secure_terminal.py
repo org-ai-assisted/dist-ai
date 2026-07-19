@@ -347,6 +347,10 @@ eq(sgr('42'), {'fg': None, 'bg': 2, 'bold': False}, 'sgr 42 = green bg')
 eq(sgr('91'), {'fg': 9, 'bg': None, 'bold': False}, 'sgr 91 = bright red fg')
 eq(sgr('1'), {'fg': None, 'bg': None, 'bold': True}, 'sgr 1 = bold')
 eq(sgr('1;22'), {'fg': None, 'bg': None, 'bold': False}, 'sgr 22 = bold off')
+# a non-ASCII "digit" (isdigit() True but int() rejects it) must not crash the
+# parser (found by the SGR fuzz harness); it is treated as a 0/no-op parameter.
+eq(sgr(chr(0x00B2)), {'fg': None, 'bg': None, 'bold': False},
+   'sgr with a non-ASCII digit is a safe no-op, not a crash')
 eq(sgr('1;31;42'), {'fg': 1, 'bg': 2, 'bold': True}, 'sgr combined')
 eq(sgr('31;0'), {'fg': None, 'bg': None, 'bold': False}, 'sgr 0 resets')
 eq(sgr(''), {'fg': None, 'bg': None, 'bold': False}, 'empty sgr = reset')
