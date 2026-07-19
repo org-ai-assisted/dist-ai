@@ -500,6 +500,72 @@ finally:
     _QA.exec = _o_qexec
     _signal.signal(_signal.SIGCHLD, _o_chld)
 
+# --- set_* admin-locked returns + bell channels + run_command palette ---------
+from PyQt6.QtWidgets import QMessageBox                          # noqa: E402
+_o_info = QMessageBox.information
+_o_warn = QMessageBox.warning
+QMessageBox.information = staticmethod(lambda *_a, **_k: None)
+QMessageBox.warning = staticmethod(lambda *_a, **_k: None)
+_sl = set(win._locked)
+try:
+    win._locked = {'osc_notice'}
+    win.set_osc_notice(True)
+    win._locked = {'tui'}
+    win.set_tui(True)
+    win._locked = {'allow_title'}
+    win.set_allow_title(True)
+    win._locked = {'bell'}
+    win.set_bell_channel('audible', True)
+    win._locked = {'osc_title'}
+    win.set_osc('osc_title', True)
+    win._locked = {'allow_title'}
+    win.set_osc('osc_title', True)          # the allow_title -> osc_* lock path
+    win._locked = set()
+    win.set_bell_channel('tray', True)      # add a channel
+    win.set_bell_channel('tray', False)     # remove it
+    ok(True, 'setting appliers respect admin locks; bell channels add/remove')
+    for _c in ('help', 'theme dark', 'mode reveal', 'colors on', 'tui on',
+               'title on', 'zoom 120', 'scrollback 1000', 'paste-delay 3',
+               'pastedelay 4', 'totally-unknown', '/'):
+        win.run_command('/' + _c)
+    eq(win.run_command(''), False, 'run_command: an empty line -> False')
+    ok(True, 'run_command handles every slash-command branch')
+finally:
+    win._locked = _sl
+    QMessageBox.information = _o_info
+    QMessageBox.warning = _o_warn
+
+# icon helpers build an icon (themed, path, or letter fallback)
+ok(M._app_icon() is not None, '_app_icon returns an icon')
+ok(M._letter_icon('A', '#3b82f6') is not None, '_letter_icon renders a fallback icon')
+
+# config init: an out-of-range scrollback normalises; allow_title seeds the OSC
+# defaults; and a locked allow_title enforces both granular title settings
+_cfgd2 = os.path.join(os.environ['XDG_CONFIG_HOME'], 'secure-terminal.d')
+os.makedirs(_cfgd2, exist_ok=True)
+with open(os.path.join(_cfgd2, '80-init.conf'), 'w', encoding='utf-8') as _cf:
+    _cf.write('scrollback=99999\nallow_title=true\ntui=true\n')
+_wc = MainWindow()
+ok(_wc._scrollback == 0, 'config: an out-of-range scrollback normalises to unlimited')
+ok(_wc._default_allow_title and 'osc_title' in _wc._osc_defaults,
+   'config: legacy allow_title seeds the granular OSC title default')
+_wc.deleteLater()
+APP.processEvents()
+
+# a locked allow_title enforces both title settings (via a stubbed Config)
+from secure_terminal import settings as _settings              # noqa: E402
+_o_load = _settings.load
+try:
+    _settings.load = lambda: _settings.Config(
+        {'allow_title': 'true'}, locked=('allow_title',))
+    _wl = MainWindow()
+    ok('osc_title' in _wl._osc_defaults,
+       'config: a locked allow_title enforces the granular title defaults')
+    _wl.deleteLater()
+    APP.processEvents()
+finally:
+    _settings.load = _o_load
+
 win.close()
 win.deleteLater()
 APP.processEvents()
