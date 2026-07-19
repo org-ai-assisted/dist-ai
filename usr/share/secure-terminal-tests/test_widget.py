@@ -2548,6 +2548,166 @@ ok(all(32 <= ord(_ch) < 127 for _ch in _CANARY_TOKEN)
    and not (set(_CANARY_TOKEN) & set('\x1b;$`|&<>()')),
    '--test-canary: token is a benign printable-ASCII literal')
 
+# --- bell sound gating + playback ---------------------------------------------
+import secure_terminal.terminal as _term          # noqa: E402
+import tempfile as _tempfile                       # noqa: E402
+
+ok(not _term.sound_file_allowed(''),
+   'sound_file_allowed: empty path is rejected')
+ok(not _term.sound_file_allowed('/no/such/sound.wav'),
+   'sound_file_allowed: a missing file is rejected')
+_snd_tmp = _tempfile.mkdtemp()
+_outside = os.path.join(_snd_tmp, 'outside.wav')
+with open(_outside, 'wb') as _h:
+    _h.write(b'RIFF')
+ok(not _term.sound_file_allowed(_outside),
+   'sound_file_allowed: a file outside the allowed dirs is rejected')
+# with the allowed-dirs list pointed at our temp dir, a file inside is accepted
+_orig_dirs = _term.BELL_SOUND_DIRS
+_term.BELL_SOUND_DIRS = (_snd_tmp,)
+try:
+    ok(_term.sound_file_allowed(_outside),
+       'sound_file_allowed: a real file inside an allowed dir is accepted')
+    # apply_bell_sound stores it; _play_sound then tries QtMultimedia (absent
+    # here -> the import fails and playback returns False without raising)
+    _bell = SecureTerminal(command='/bin/cat')
+    _bell.apply_bell_sound(_outside)
+    ok(_bell._bell_sound == _outside, 'apply_bell_sound: an allowed path is stored')
+    ok(_bell._play_sound() is False,
+       '_play_sound: returns False when QtMultimedia cannot play (or is absent)')
+    _bell2 = SecureTerminal(command='/bin/cat')
+    ok(_bell2._play_sound() is False, '_play_sound: no configured sound -> False')
+finally:
+    _term.BELL_SOUND_DIRS = _orig_dirs
+
+# --- hook transcript providers ------------------------------------------------
+_htx = SecureTerminal(command='/bin/cat')
+_htx._append('line one\nline two\nline three')
+_htx._hook = {'transcript': 'full'}
+ok('line one' in _htx._hook_transcript() and 'three' in _htx._hook_transcript(),
+   '_hook_transcript full: returns the whole buffer')
+_htx._hook = {'transcript': 'tail:2'}
+_tail = _htx._hook_transcript()
+ok('three' in _tail and 'one' not in _tail,
+   '_hook_transcript tail:N: returns only the last N lines')
+_htx._hook = {'transcript': 'tail:notanumber'}
+eq(_htx._hook_transcript(), '',
+   '_hook_transcript tail: a non-numeric count yields nothing')
+_htx._hook = {'transcript': 'none'}
+eq(_htx._hook_transcript(), '', '_hook_transcript none: returns nothing')
+
+# --- TUI keystroke encoding (_tui_key) ----------------------------------------
+_tk = SecureTerminal(command='/bin/cat')
+_tksent = spy_writes(_tk)
+
+
+def _tuikey(qtkey, text='', mods=Qt.KeyboardModifier.NoModifier):
+    _tk._tui_key(QKeyEvent(QEvent.Type.KeyPress, qtkey, mods, text))
+
+
+_tuikey(Qt.Key.Key_Tab, '\t', Qt.KeyboardModifier.ShiftModifier)   # back-tab
+eq(_tksent, [b'\x1b[Z'], 'TUI: Shift+Tab -> back-tab (CSI Z)')
+_tksent.clear()
+_tuikey(Qt.Key.Key_Up)                                             # mapped arrow
+eq(_tksent, [b'\x1b[A'], 'TUI: an arrow key sends its VT sequence')
+_tksent.clear()
+_tuikey(Qt.Key.Key_C, '', Qt.KeyboardModifier.ControlModifier)     # Ctrl+C
+eq(_tksent, [b'\x03'], 'TUI: Ctrl+letter sends the control byte')
+_tksent.clear()
+_tuikey(Qt.Key.Key_BracketLeft, '\x1b', Qt.KeyboardModifier.ControlModifier)
+eq(_tksent, [b'\x1b'], 'TUI: a control-char keystroke is forwarded as its byte')
+_tksent.clear()
+_tuikey(Qt.Key.Key_A, 'a')                                         # printable
+eq(_tksent, [b'a'], 'TUI: a printable key is sent as UTF-8')
+_tksent.clear()
+_tuikey(Qt.Key.Key_A, 'a', Qt.KeyboardModifier.AltModifier)        # Alt+printable
+eq(_tksent, [b'\x1ba'], 'TUI: Alt+printable is prefixed with ESC (meta)')
+_tksent.clear()
+_tuikey(Qt.Key.Key_unknown, chr(0x202E))                           # bidi override
+eq(_tksent, [], 'TUI: a non-printable keystroke is dropped')
+
+# --- foreground process group / cwd helpers -----------------------------------
+_fg = SecureTerminal(command='/bin/cat')
+_saved_fd = _fg._fd
+_fg._fd = None
+ok(_fg._foreground_pgrp() is None, '_foreground_pgrp: no pty fd -> None')
+ok(_fg.cwd_basename() is None or isinstance(_fg.cwd_basename(), str),
+   'cwd_basename: tolerates a missing foreground')
+_fg._fd = _saved_fd
+# a pipe fd is not a tty -> tcgetpgrp raises -> None
+_pr, _pw = os.pipe()
+_fg._fd = _pr
+ok(_fg._foreground_pgrp() is None,
+   '_foreground_pgrp: a non-tty fd -> None (tcgetpgrp fails)')
+_fg._fd = _saved_fd
+os.close(_pr)
+os.close(_pw)
+# has_foreground_program / terminate_foreground with nothing to act on
+_fg._foreground_pgrp = lambda: None
+ok(not _fg.has_foreground_program(),
+   'has_foreground_program: no foreground group -> False')
+ok(not _fg.terminate_foreground(),
+   'terminate_foreground: nothing running -> no signal sent')
+
+# --- the real _hook_ask prompt (QMessageBox driven headlessly) ----------------
+from PyQt6.QtWidgets import QMessageBox as _QMB          # noqa: E402
+_ha = SecureTerminal(command='/bin/cat')
+# a block with no suggestion needs no prompt -> discard immediately
+eq(_ha._hook_ask('rm -rf /', {'verdict': 'block', 'suggestion': '', 'message': ''}),
+   'discard', '_hook_ask: a block with no suggestion discards without a prompt')
+# drive the dialog by faking which button the user clicked, per role
+_orig_mb_exec = _QMB.exec
+_orig_mb_clicked = _QMB.clickedButton
+_pick = {'role': None}
+
+
+def _fake_mb_exec(self):
+    return 0
+
+
+def _fake_mb_clicked(self):
+    for _b in self.buttons():
+        if _pick['role'] is not None and self.buttonRole(_b) == _pick['role']:
+            return _b
+    return None
+
+
+_QMB.exec = _fake_mb_exec
+_QMB.clickedButton = _fake_mb_clicked
+try:
+    _res = {'verdict': 'ask', 'suggestion': 'ls -la', 'message': 'looks risky'}
+    _pick['role'] = _QMB.ButtonRole.AcceptRole
+    eq(_ha._hook_ask('ls', _res), 'run', '_hook_ask: "Run as typed" -> run')
+    _pick['role'] = _QMB.ButtonRole.ActionRole
+    eq(_ha._hook_ask('ls', _res), 'suggest', '_hook_ask: "Use suggestion" -> suggest')
+    _pick['role'] = _QMB.ButtonRole.RejectRole
+    eq(_ha._hook_ask('ls', _res), 'discard', '_hook_ask: Cancel -> discard')
+finally:
+    _QMB.exec = _orig_mb_exec
+    _QMB.clickedButton = _orig_mb_clicked
+
+# --- Ctrl+wheel zoom ----------------------------------------------------------
+from PyQt6.QtGui import QWheelEvent          # noqa: E402
+from PyQt6.QtCore import QPointF, QPoint      # noqa: E402
+_wz = SecureTerminal(command='/bin/cat')
+_zoom = []
+_wz.zoom_step.connect(_zoom.append)
+
+
+def _wheel(dy, mods):
+    ev = QWheelEvent(QPointF(1, 1), QPointF(1, 1), QPoint(0, 0), QPoint(0, dy),
+                     Qt.MouseButton.NoButton, mods,
+                     Qt.ScrollPhase.NoScrollPhase, False)
+    _wz.wheelEvent(ev)
+
+
+_wheel(120, Qt.KeyboardModifier.ControlModifier)
+_wheel(-120, Qt.KeyboardModifier.ControlModifier)
+eq(_zoom, [1, -1], 'Ctrl+wheel emits a zoom step in the scroll direction')
+_zoom.clear()
+_wheel(120, Qt.KeyboardModifier.NoModifier)     # plain wheel -> normal scroll
+eq(_zoom, [], 'a plain wheel does not zoom')
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(widget): %d passed, %d failed\n'
                  % (PASS, FAIL))
