@@ -661,6 +661,47 @@ finally:
     QApplication.exec = _o_qexec2
     __import__('signal').signal(__import__('signal').SIGCHLD, _o_chld2)
 
+# --- find bar: all-tabs and single-tab search + stepping ----------------------
+while win.tabs.count() < 2:
+    win.new_tab()
+win.show_find()
+win._find_bar.all_tabs.setChecked(True)
+win._find_bar.input.setText('e')
+win._find_update()                          # all-tabs, with a query
+win._find_bar.input.setText('')
+win._find_update()                          # all-tabs, no query
+win._find_bar.input.setText('zzz-no-such-match')
+win._find_update()                          # all-tabs, no matches
+win._find_bar.all_tabs.setChecked(False)
+win._find_bar.input.setText('e')
+win._find_update()                          # single-tab, with a query
+win._find_step(False)
+win._find_step(True)                        # backward, wrap
+win._find_bar.input.setText('')
+win._find_step(False)                       # no query -> return
+ok(True, 'find bar: all-tabs and single-tab search + stepping run')
+
+# --- status-bar notifications, bell label, tray bell, cwd tooltip -------------
+win._on_notify('a notification')
+win._on_hook_notice('a hook advisory')
+win._default_bell_sound = '/usr/share/sounds/example.wav'
+ok('Sound file:' in win._bell_sound_label(), '_bell_sound_label names the file')
+win._default_bell_sound = ''
+_bt = win.current()
+win._on_bell_tray(_bt, 'label')
+win._on_cwd_changed(_bt, '/tmp/some/where')
+ok(True, 'notification, bell-tray and cwd-changed handlers run')
+
+# --- _set_shortcuts: a reserved key, a duplicate, and an unknown ident ---------
+_ids = list(win._shortcuts)[:2]
+_probs = win._set_shortcuts({_ids[0]: 'Ctrl+C',           # reserved terminal key
+                             _ids[1]: 'Ctrl+G',
+                             'no-such-ident': 'Ctrl+H'})   # unknown -> skipped
+ok(isinstance(_probs, list) and _probs,
+   '_set_shortcuts: a reserved key is reported as a problem')
+_dup = win._set_shortcuts({_ids[0]: 'Ctrl+J', _ids[1]: 'Ctrl+J'})   # duplicate
+ok(isinstance(_dup, list) and _dup, '_set_shortcuts: a duplicate binding is a problem')
+
 win.close()
 win.deleteLater()
 APP.processEvents()
