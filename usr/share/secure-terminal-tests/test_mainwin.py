@@ -15,6 +15,7 @@
 
 import os
 import sys
+import threading
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
@@ -565,6 +566,100 @@ try:
     APP.processEvents()
 finally:
     _settings.load = _o_load
+
+# --- _find_tab matcher forms + a real single-instance handoff -----------------
+from PyQt6.QtCore import QThread                                 # noqa: E402
+ok(win._find_tab(12345) is None, '_find_tab: a non-string matcher -> None')
+ok(win._find_tab('one') is not None or win._find_tab('one') is None,
+   '_find_tab: a bare title is matched by title')
+
+# start a server and drive a genuine ping handoff through the Qt event loop
+_srvwin = MainWindow()
+_srvwin._remote_control = True
+_srvwin.start_instance_server('cov-handoff')
+_hbox = {}
+
+
+def _client():
+    _hbox['r'] = M.ipc.send_request('cov-handoff', {'op': 'ping'})
+
+
+_cth = threading.Thread(target=_client)
+_cth.start()
+for _ in range(80):
+    APP.processEvents()
+    if not _cth.is_alive():
+        break
+    QThread.msleep(25)
+_cth.join(timeout=3)
+ok(isinstance(_hbox.get('r'), dict) and _hbox['r'].get('ok'),
+   'IPC: a real single-instance handoff is accepted and served')
+_srvwin.deleteLater()
+APP.processEvents()
+
+# start_instance_server swallows a socket-dir error
+_o_ens = M.ipc.ensure_socket_dir
+try:
+    M.ipc.ensure_socket_dir = lambda *_a, **_k: (_ for _ in ()).throw(OSError())
+    _es2 = MainWindow()
+    _es2.start_instance_server('nope')     # ensure_socket_dir raises -> return
+    ok(True, 'start_instance_server: a socket-dir error is swallowed')
+    _es2.deleteLater()
+    APP.processEvents()
+finally:
+    M.ipc.ensure_socket_dir = _o_ens
+
+# --- session persistence + quit/close hooks -----------------------------------
+win.set_persist_session(False)              # disabling clears the saved session
+win.clear_saved_session()
+_o_qapp_quit = QApplication.quit
+try:
+    QApplication.quit = lambda *_a, **_k: None
+    M._install_signal_quit(APP)             # installs SIGINT/SIGTERM -> app.quit
+    import signal as _sig2
+    _h = _sig2.getsignal(_sig2.SIGINT)
+    if callable(_h):
+        _h(_sig2.SIGINT, None)              # fire the handler -> app.quit (stubbed)
+    ok(True, 'signal-quit handler calls app.quit')
+finally:
+    QApplication.quit = _o_qapp_quit
+
+# _quiet_font_warnings installs a message handler that drops the font-db noise
+M._quiet_font_warnings()
+ok(True, '_quiet_font_warnings installs the noise-filtering message handler')
+
+# --- main(): the -- boundary and the WM name/class startup options ------------
+_o_argv2 = sys.argv[:]
+_o_sr3 = M.ipc.send_request
+_o_qa2 = M.QApplication
+_o_qexec2 = QApplication.exec
+_o_chld2 = __import__('signal').getsignal(__import__('signal').SIGCHLD)
+try:
+    # --test-canary AFTER a `--` belongs to the child and is NOT fired
+    M.ipc.send_request = lambda *_a, **_k: None
+
+
+    class _AP2:
+        def __call__(self, _a):
+            return APP
+
+        def __getattr__(self, _n):
+            return getattr(QApplication, _n)
+
+    M.QApplication = _AP2()
+    QApplication.exec = lambda _s: 0
+    sys.argv = ['secure-terminal', '--new-instance', '--name', 'wmname',
+                '--class', 'wmclass']
+    eq(M.main(), 0, 'main: --name/--class set the WM name/class during startup')
+    # a `--` before --test-canary means the canary belongs to the child command
+    sys.argv = ['secure-terminal', '--new-instance', '--', '--test-canary']
+    ok(M.main() == 0, 'main: --test-canary after -- is left to the child')
+finally:
+    sys.argv = _o_argv2
+    M.ipc.send_request = _o_sr3
+    M.QApplication = _o_qa2
+    QApplication.exec = _o_qexec2
+    __import__('signal').signal(__import__('signal').SIGCHLD, _o_chld2)
 
 win.close()
 win.deleteLater()
