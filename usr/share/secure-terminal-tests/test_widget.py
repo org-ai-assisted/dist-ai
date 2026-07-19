@@ -3042,9 +3042,9 @@ ok(True, 'a tooltip over empty space hides the tip without error')
 # stop any repeating timers these grid/TUI terminals started, so they do not
 # fire into the offscreen platform's static teardown (which would crash a
 # process that has otherwise passed cleanly)
-for _term in (_gz, _tk2, _rt2, _es, _am):
+for _tstop in (_gz, _tk2, _rt2, _es, _am):
     for _tmr in ('_render_timer', '_sync_timer'):
-        _t = getattr(_term, _tmr, None)
+        _t = getattr(_tstop, _tmr, None)
         if _t is not None:
             _t.stop()
 
@@ -3100,6 +3100,83 @@ feed_output(_bg, b'y')                      # one more byte -> over cap -> trimm
 ok(len(_bg._raw) <= _bg._RAW_MAX, 'grid-mode feed caps the retained raw output')
 _bg._render_timer.stop()
 _bg._sync_timer.stop()
+
+# --- OSC 52 clipboard WRITE (_osc_clipboard) ----------------------------------
+import base64 as _b64                                           # noqa: E402
+_ow = SecureTerminal(command='/bin/cat')
+_ow._osc['osc_clipboard'] = True
+_ow._osc_clipboard(b'no-semicolon')                             # malformed -> ignored
+_ow._osc_clipboard(b'c;?')                                      # read/clear query -> declined
+_ow._osc_clipboard(b'c;' + b'A' * 200000)                       # oversized -> declined
+_ow._osc_clipboard(b'c;!!!not-base64!!!')                       # bad base64 -> ignored
+_ow._osc_clipboard(b'c;' + _b64.b64encode(b'hello'))            # valid -> set clipboard
+ok(True, 'OSC 52 write: malformed, query, oversized, bad-base64 and valid all handled')
+
+# _on_readable creates the pyte screen on demand in TUI mode
+_mk = SecureTerminal(command='/bin/cat')
+_mk.apply_tui(True)
+_mk._screen = None
+feed_output(_mk, b'hi')                     # tui_active + no screen -> _make_screen
+ok(_mk._screen is not None, '_on_readable builds the pyte screen on demand in TUI mode')
+_mk._render_timer.stop()
+_mk._sync_timer.stop()
+
+# _place_grid_cursor is a no-op when the program hid the cursor
+_pc = SecureTerminal(command='/bin/cat')
+_pc.apply_tui(True)
+feed_output(_pc, b'x')
+if _pc._screen is not None:
+    _pc._screen.cursor.hidden = True
+    _pc._place_grid_cursor(_pc._screen)     # hidden -> returns without moving
+ok(True, '_place_grid_cursor: a hidden cursor is left alone')
+_pc._render_timer.stop()
+_pc._sync_timer.stop()
+
+# the escape-drop (line mode) path also caps the retained raw output
+_ed = SecureTerminal(command='/bin/cat')
+_ed._raw = 'x' * _ed._RAW_MAX
+feed_output(_ed, b'\x1b]0;title\x07z')      # an OSC the line-mode path drops
+ok(len(_ed._raw) <= _ed._RAW_MAX, 'the escape-drop path caps the retained raw output')
+
+# _terminfo_source returns None when no candidate file exists
+_o_isfile = _os.path.isfile
+try:
+    _os.path.isfile = lambda _p: False
+    ok(_terminfo_source() is None,
+       '_terminfo_source: no candidate on disk -> None')
+finally:
+    _os.path.isfile = _o_isfile
+
+# sound_file_allowed swallows a realpath OS error
+_o_realpath = _os.path.realpath
+try:
+    _os.path.realpath = lambda *_a, **_k: (_ for _ in ()).throw(OSError())
+    ok(not _term.sound_file_allowed('/some/path.wav'),
+       'sound_file_allowed: a realpath error -> rejected, not raised')
+finally:
+    _os.path.realpath = _o_realpath
+
+# _write bails out once its 2s deadline passes (a child that never drains input)
+_wd = SecureTerminal(command='/bin/cat')
+import time as _time                                            # noqa: E402
+_o_write3 = _os.write
+_o_mono = _time.monotonic
+_mono_calls = {'n': 0}
+
+
+def _mono_jump():
+    _mono_calls['n'] += 1
+    return 0.0 if _mono_calls['n'] == 1 else 100.0   # base, then past the deadline
+
+
+try:
+    _os.write = lambda *_a, **_k: (_ for _ in ()).throw(BlockingIOError())
+    _time.monotonic = _mono_jump
+    _wd._write(b'z')                        # always EAGAIN + deadline passed -> bail
+finally:
+    _os.write = _o_write3
+    _time.monotonic = _o_mono
+ok(True, '_write bails out when its write deadline passes')
 
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(widget): %d passed, %d failed\n'
