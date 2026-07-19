@@ -54,6 +54,14 @@ def eq(got, want, msg):
     ok(got == want, '%s (got %r, want %r)' % (msg, got, want))
 
 
+# The app icon is env-dependent: a desktop with an icon theme resolves one, but
+# a bare CI container (no theme, no installed icon) yields a null QIcon, so the
+# "icon present" branches in show_about() and main() would go uncovered there.
+# Force a real icon so those branches run deterministically; the _app_icon tests
+# below use the saved original to exercise the real (themed / null) resolution.
+_REAL_APP_ICON = M._app_icon
+M._app_icon = lambda: M._letter_icon('S', '#336699')
+
 win = MainWindow()
 win.new_tab()
 
@@ -953,14 +961,14 @@ from PyQt6.QtGui import QIcon                                    # noqa: E402
 _o_fromtheme = QIcon.fromTheme
 try:
     QIcon.fromTheme = staticmethod(lambda *_a, **_k: M._letter_icon('X', '#111111'))
-    ok(not M._app_icon().isNull(), '_app_icon: a themed icon is used when present')
+    ok(not _REAL_APP_ICON().isNull(), '_app_icon: a themed icon is used when present')
     ok(not M._toggle_icon('x', 'Y', '#222222').isNull(),
        '_toggle_icon: the desktop theme symbol is used when present')
     QIcon.fromTheme = staticmethod(lambda *_a, **_k: QIcon())    # null theme icon
     _o_exists = os.path.exists
     try:
         os.path.exists = lambda _p: False
-        ok(M._app_icon().isNull(), '_app_icon: a null icon when nothing is found')
+        ok(_REAL_APP_ICON().isNull(), '_app_icon: a null icon when nothing is found')
     finally:
         os.path.exists = _o_exists
 finally:
