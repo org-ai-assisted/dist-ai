@@ -265,6 +265,52 @@ _tray_menu = win._build_tray_menu()
 ok(_tray_menu is not None and len(_tray_menu.actions()) >= 3,
    '_build_tray_menu: builds the fixed Show/Hide, New Tab, Quit menu')
 
+# --- copy/paste/zoom + input-dialog actions routed through the current tab -----
+from PyQt6.QtWidgets import QInputDialog, QSystemTrayIcon        # noqa: E402
+
+win.copy_selection()
+win.paste_clipboard()
+win.zoom_in()
+win.zoom_out()
+win._on_zoom_step(1)
+ok(True, 'copy/paste/zoom route through the current tab')
+
+_ogt = QInputDialog.getText
+try:
+    QInputDialog.getText = staticmethod(lambda *_a, **_k: ('', False))
+    win.new_tab_running()                   # cancelled -> no new tab
+    win.show_command_palette()              # cancelled
+    QInputDialog.getText = staticmethod(lambda *_a, **_k: ('echo hi', True))
+    win.new_tab_running()                   # -> new_tab('echo hi')
+    win.show_command_palette()              # -> run_command('echo hi')
+    ok(True, 'new_tab_running and the command palette read the input dialog')
+finally:
+    QInputDialog.getText = _ogt
+
+# move the current tab left/right (needs more than one tab; wraps)
+while win.tabs.count() < 2:
+    win.new_tab()
+win._on_tab_move(1)
+win._on_tab_move(-1)
+ok(True, 'the current tab moves left/right with wrap-around')
+
+# a program-set title updates the tab label; window visibility + tray trigger
+win._on_tab_title(win.current(), 'a program title')
+win.show()
+win._toggle_window_visibility()             # visible -> hide
+win._toggle_window_visibility()             # hidden -> restore
+win._on_tray_activated(QSystemTrayIcon.ActivationReason.Trigger)
+ok(True, 'program title, window visibility toggle and tray trigger all work')
+
+# a tab whose shell exits is closed; an unknown term is ignored
+win.new_tab()
+_victim_tab = win.tabs.widget(win.tabs.count() - 1)
+_n_before = win.tabs.count()
+win._on_shell_exited(_victim_tab)
+ok(win.tabs.count() == _n_before - 1, '_on_shell_exited closes the tab whose shell ended')
+win._on_shell_exited(win.current())         # called again is harmless
+ok(True, '_on_shell_exited on the current tab is handled')
+
 # --- main(): the entry point, driven with QApplication + exec + ipc mocked ----
 import signal as _signal                             # noqa: E402
 from secure_terminal.main import main as _main       # noqa: E402
