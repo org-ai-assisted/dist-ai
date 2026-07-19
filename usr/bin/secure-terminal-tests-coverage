@@ -6,15 +6,13 @@
 ## AI-Assisted
 
 ## Coverage gate for secure-terminal. Runs every test suite under coverage.py
-## and ENFORCES 100% line coverage on a ratcheting list of fully-covered modules
-## -- starting with the security-critical sanitizer (sanitize.py) and now the
-## CLI wrapper, command-hook protocol, IPC framing, session persistence and
-## drop-in settings. The GUI modules (dialog, terminal, main) are reported but
-## not yet hard-gated; each is added to the gated list as it reaches full
-## coverage, so coverage can only go up. A failure here means a line of a gated
-## module became unreachable by the tests -- add a test (do not paper over it
-## with a blanket exclusion; genuinely-unreachable defensive lines carry a
-## justified `# pragma: no cover` in the source instead).
+## and ENFORCES 100% line coverage on the whole package -- both the Qt-free core
+## (sanitizer, CLI wrapper, command-hook protocol, IPC framing, session
+## persistence, drop-in settings) and the Qt GUI (dialog, terminal, main). A
+## failure here means a line became unreachable by the tests -- add a test (do
+## not paper over it with a blanket exclusion; the few genuinely-unreachable
+## defensive/optional-dependency lines carry a justified `# pragma: no cover` in
+## the source instead).
 ##
 ## SKIPs (exit 77) when secure_terminal or python3-coverage is unavailable.
 
@@ -99,7 +97,7 @@ python3 -m coverage combine
 gated_free='*/__init__.py,*/sanitize.py,*/cli.py,*/hook.py,*/ipc.py,*/session.py,*/settings.py'
 ## Tier 2 -- needs the offscreen Qt widget suite; gated only when it actually ran
 ## (skipped when PyQt6/pyte are absent, so as not to fail a headless box).
-gated_qt='*/dialog.py,*/terminal.py'
+gated_qt='*/dialog.py,*/terminal.py,*/main.py'
 
 printf '\n== gated modules, Qt-free (must be 100%%) ==\n'
 python3 -m coverage report --include="${gated_free}" --show-missing --fail-under=100
@@ -111,5 +109,5 @@ else
    printf '\n== Qt widget modules NOT gated (widget suites skipped; Qt absent) ==\n'
 fi
 
-printf '\n== whole-package coverage (reported; terminal/main not yet gated) ==\n'
+printf '\n== whole-package coverage ==\n'
 python3 -m coverage report || true

@@ -729,6 +729,111 @@ finally:
     M._DUMP_MAX = _o_dumpmax
 ok(not win._ipc_ctl('ctl-bogus', {})['ok'], 'ctl: an unknown ctl op is rejected')
 
+# --- InfoTip: hide when the pointer is away, and a hard-destroyed source -------
+from PyQt6 import sip                                           # noqa: E402
+_tip2 = M.InfoTip(win)
+_probe2 = MainWindow()
+_tip2.show_for(_probe2, 'x', QPoint(5, 5), 100)
+sip.delete(_probe2)                          # force-destroy the C++ source object
+_tip2._check_pointer()                        # mapToGlobal raises RuntimeError -> caught
+_tip2.hide()
+_tip2._source = None
+_tip2._check_pointer()                        # not over tip or source -> hide + stop
+ok(_tip2._source is None, 'InfoTip: a destroyed source is handled and it hides')
+_tip2.deleteLater()
+APP.processEvents()
+
+# --- _set_shortcuts skips an unknown ident in the apply loop ------------------
+ok(isinstance(win._set_shortcuts({'unknown-x': ''}), list),
+   '_set_shortcuts: an unknown ident is skipped')
+
+# --- _find_tab / ctl-ls skip a stale term no longer in the tab bar ------------
+from secure_terminal.terminal import SecureTerminal             # noqa: E402
+_stale = SecureTerminal(command='/bin/cat')
+win._tab_ids[_stale] = 987654
+ok(win._find_tab('id:987654') is None, '_find_tab: a stale tab id is skipped')
+ok(win._ipc_ctl('ctl-ls', {})['ok'], 'ctl-ls: a stale tab entry is skipped')
+win._tab_ids.pop(_stale, None)
+_stale.shutdown()
+
+# --- the shortcuts dialog surfaces a save problem in a warning box -------------
+win._locked = set(win._locked) - {'keybindings'}   # clear a leftover lock
+_o_ss = win._set_shortcuts
+_o_w2 = QMessageBox.warning
+_warned = []
+QMessageBox.warning = staticmethod(lambda *_a, **_k: _warned.append(1))
+win._set_shortcuts = lambda _m: ['a problem']
+
+
+def _exec_save_bad(self):
+    for _b in self.findChildren(QPushButton):
+        if _b.text() == 'Save':
+            _b.click()                       # _do_save -> problems -> warning
+    return int(QDialog.DialogCode.Rejected)
+
+
+_o_ex = QDialog.exec
+QDialog.exec = _exec_save_bad
+try:
+    win.show_shortcuts()
+    ok(_warned, 'show_shortcuts: an invalid save surfaces a warning box')
+finally:
+    QDialog.exec = _o_ex
+    win._set_shortcuts = _o_ss
+    QMessageBox.warning = _o_w2
+
+# --- the bell-sound picker accepts a file inside an allowed dir ----------------
+import secure_terminal.terminal as _term2                       # noqa: E402
+_snddir = tempfile.mkdtemp()
+_sndfile = os.path.join(_snddir, 'bell.wav')
+with open(_sndfile, 'wb') as _sf3:
+    _sf3.write(b'RIFF....WAVE')
+_o_dirs = _term2.BELL_SOUND_DIRS
+_o_gof3 = QFileDialog.getOpenFileName
+_o_bsl = win._bell_sound_locked
+try:
+    _term2.BELL_SOUND_DIRS = (_snddir,)
+    QFileDialog.getOpenFileName = staticmethod(lambda *_a, **_k: (_sndfile, ''))
+    win._bell_sound_locked = lambda: False
+    win._pick_bell_sound()                    # allowed -> set_bell_sound
+    ok(True, '_pick_bell_sound: a file inside an allowed dir is accepted')
+finally:
+    _term2.BELL_SOUND_DIRS = _o_dirs
+    QFileDialog.getOpenFileName = _o_gof3
+    win._bell_sound_locked = _o_bsl
+
+# --- the IPC server read path: a malformed frame is aborted -------------------
+import socket as _socket                                        # noqa: E402
+import struct as _struct                                        # noqa: E402
+_frwin = MainWindow()
+_frwin.start_instance_server('frame-test')
+_fpath = M.ipc.socket_path('frame-test')
+# an over-long length makes the server-side Framer raise -> the connection aborts
+_bad = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+try:
+    _bad.connect(_fpath)
+    _bad.sendall(_struct.pack('<I', (1 << 20) + 5) + b'xxxxx')
+    for _ in range(20):
+        APP.processEvents()
+        QThread.msleep(15)
+finally:
+    _bad.close()
+# a header promising more than it sends leaves the frame incomplete (payload None)
+_part = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+try:
+    _part.connect(_fpath)
+    _part.sendall(_struct.pack('<I', 100) + b'short')
+    for _ in range(20):
+        APP.processEvents()
+        QThread.msleep(15)
+finally:
+    _part.close()
+ok(True, 'IPC server: a malformed frame aborts, a partial frame waits')
+_frwin._on_instance_connection()             # no pending connection -> conn is None
+ok(True, 'IPC server: a spurious newConnection with nothing pending is a no-op')
+_frwin.deleteLater()
+APP.processEvents()
+
 # --- assorted window helpers --------------------------------------------------
 import signal as _sg                                            # noqa: E402
 from PyQt6.QtGui import QTextCursor                             # noqa: E402
