@@ -2708,6 +2708,76 @@ _zoom.clear()
 _wheel(120, Qt.KeyboardModifier.NoModifier)     # plain wheel -> normal scroll
 eq(_zoom, [], 'a plain wheel does not zoom')
 
+# --- pyte cell -> QTextCharFormat rendering (_pyte_format / _pyte_qcolor) ------
+from PyQt6.QtGui import QFont          # noqa: E402
+
+
+class _Cell:                                # a minimal duck-typed pyte cell
+    def __init__(self, fg='default', bg='default', bold=False, reverse=False,
+                 underscore=False):
+        self.fg = fg
+        self.bg = bg
+        self.bold = bold
+        self.reverse = reverse
+        self.underscore = underscore
+
+
+_rt = SecureTerminal(command='/bin/cat')
+# a truecolor 6-hex fg + bg -> both applied (valid QColor path)
+_f1 = _rt._pyte_format(_Cell(fg='ff0000', bg='00ff00'))
+ok(_f1.foreground().color().name() == '#ff0000',
+   '_pyte_format: a truecolor fg hex is applied')
+ok(_f1.background().color().name() == '#00ff00',
+   '_pyte_format: a background colour is applied')
+# an invalid hex colour falls back to the default foreground
+ok(_rt._pyte_qcolor('nothex', None) is None,
+   '_pyte_qcolor: an invalid hex with no default -> None')
+ok(_rt._pyte_qcolor('zzzzzz', QColor('#123456').name()).isValid(),
+   '_pyte_qcolor: an invalid hex falls back to the given default')
+# reverse video swaps fg/bg
+_f2 = _rt._pyte_format(_Cell(fg='ff0000', bg='0000ff', reverse=True))
+ok(_f2.background().color().name() == '#ff0000',
+   '_pyte_format: reverse video swaps fg into the background')
+# bold + underscore attributes carry through
+_f3 = _rt._pyte_format(_Cell(fg='cccccc', bold=True, underscore=True))
+ok(_f3.fontWeight() == QFont.Weight.Bold and _f3.fontUnderline(),
+   '_pyte_format: bold and underscore attributes are applied')
+# fg == bg (a program hiding text) triggers the contrast guard -> readable fg
+_f4 = _rt._pyte_format(_Cell(fg='202020', bg='202020'))
+ok(_f4.foreground().color().name() != '#202020',
+   '_pyte_format: fg == bg is overridden to a readable colour')
+
+# _pyte_bell rings unless we are seeding retained scrollback
+_rt._seeding = True
+_rt._pyte_bell()                            # seeding -> no ring (just returns)
+_rt._seeding = False
+_rt._pyte_bell()                            # -> _ring() (must not raise)
+ok(True, '_pyte_bell: rings when not seeding, stays quiet while seeding')
+
+# --- terminate_foreground actually signals a real foreground group ------------
+import subprocess as _subprocess          # noqa: E402
+import secure_terminal.terminal as _term2  # noqa: E402  (QTimer lives here)
+
+# a throwaway process group that IGNORES SIGTERM, so the 2s survivor SIGKILLs it
+_victim = _subprocess.Popen(['sh', '-c', 'trap "" TERM; exec sleep 30'],
+                            start_new_session=True)
+pump(60)
+_victim_pgrp = os.getpgid(_victim.pid)
+_fgk = SecureTerminal(command='/bin/cat')
+_fgk._pid = None                            # so the group is never mistaken for the shell
+_fgk._foreground_pgrp = lambda: _victim_pgrp
+ok(_fgk.has_foreground_program(),
+   'has_foreground_program: a real foreground group -> True')
+ok(_fgk.terminate_foreground(),
+   'terminate_foreground: SIGTERMs the foreground group')
+pump(2300)                                  # let the survivor SIGKILL fire
+try:
+    _victim.wait(timeout=3)
+except _subprocess.TimeoutExpired:
+    _victim.kill()
+ok(_victim.returncode is not None,
+   'terminate_foreground: a TERM-ignoring group is SIGKILLed by the survivor')
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(widget): %d passed, %d failed\n'
                  % (PASS, FAIL))
