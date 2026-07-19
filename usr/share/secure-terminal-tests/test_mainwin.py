@@ -29,6 +29,13 @@ except Exception as exc:                                       # pragma: no cove
 
 APP = QApplication.instance() or QApplication([])
 
+# Isolate config/state so the window loads clean defaults regardless of what any
+# earlier suite (run in the same coverage batch) may have written to the real
+# drop-in dirs -- keeps this suite deterministic in any run order.
+import tempfile                                                # noqa: E402
+os.environ['XDG_CONFIG_HOME'] = tempfile.mkdtemp()
+os.environ['XDG_STATE_HOME'] = tempfile.mkdtemp()
+
 _failures = 0
 
 
@@ -84,6 +91,62 @@ try:
        'ctl dump-tab -> 0')
 finally:
     M.ipc.send_request = _orig_sr
+
+# --- clipboard-read (OSC 52) request dialog: countdown + a choice -------------
+from PyQt6.QtWidgets import QPushButton                         # noqa: E402
+from PyQt6.QtCore import QEventLoop, QTimer                     # noqa: E402
+
+term = win.tabs.currentWidget()
+win._paste_delay = 2                       # secs=2 so the countdown _tick loops
+_dec_before = getattr(term, '_clip_read', None)
+
+
+def _exec_clip(self):
+    # let the 1s countdown _tick fire a couple of times (covers both branches),
+    # then click "Allow once" to drive _choose.
+    loop = QEventLoop()
+    QTimer.singleShot(2300, loop.quit)
+    loop.exec()
+    for _b in self.findChildren(QPushButton):
+        if _b.text().startswith('Allow once'):
+            _b.click()
+            break
+    return int(QDialog.DialogCode.Accepted)
+
+
+QDialog.exec = _exec_clip
+try:
+    win._on_clipboard_read_requested(term)
+    ok(True, 'clipboard-read dialog: countdown enables Allow, choice is recorded')
+finally:
+    QDialog.exec = _orig_exec
+
+# --- keyboard-shortcuts dialog: build, Reset, Save ----------------------------
+def _exec_shortcuts(self):
+    for _b in self.findChildren(QPushButton):
+        if _b.text() == 'Reset to defaults':
+            _b.click()                     # fires _do_reset
+    for _b in self.findChildren(QPushButton):
+        if _b.text() == 'Save':
+            _b.click()                     # fires _do_save -> accept on success
+    return int(QDialog.DialogCode.Accepted)
+
+
+QDialog.exec = _exec_shortcuts
+try:
+    win.show_shortcuts()
+    ok(True, 'show_shortcuts: builds, resets and saves the bindings')
+finally:
+    QDialog.exec = _orig_exec
+
+# locked keybindings: the fields and buttons are shown read-only
+win._locked = set(win._locked) | {'keybindings'}
+QDialog.exec = lambda _s: int(QDialog.DialogCode.Rejected)
+try:
+    win.show_shortcuts()
+    ok(True, 'show_shortcuts: admin-locked bindings render read-only')
+finally:
+    QDialog.exec = _orig_exec
 
 win.close()
 win.deleteLater()
