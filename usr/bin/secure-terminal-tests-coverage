@@ -70,7 +70,7 @@ export QT_QPA_PLATFORM=offscreen
 python3 -m coverage erase
 qt_ran=0
 for suite in test_secure_terminal test_fuzz test_corpus test_cli test_modules \
-             test_dialog test_widget; do
+             test_dialog test_mainwin test_widget; do
    [ -f "${tests_dir}/${suite}.py" ] || continue
    rc=0
    python3 -m coverage run --parallel-mode --source="${pkg}" -- \

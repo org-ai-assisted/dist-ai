@@ -64,6 +64,7 @@ for test_file in \
    "${tests_dir}/test_cli.py" \
    "${tests_dir}/test_modules.py" \
    "${tests_dir}/test_dialog.py" \
+   "${tests_dir}/test_mainwin.py" \
    "${tests_dir}/test_widget.py"; do
    [ -f "${test_file}" ] || continue
    if python3 -Bsu -- "${test_file}" "$@"; then
