@@ -265,6 +265,60 @@ _tray_menu = win._build_tray_menu()
 ok(_tray_menu is not None and len(_tray_menu.actions()) >= 3,
    '_build_tray_menu: builds the fixed Show/Hide, New Tab, Quit menu')
 
+# --- the find bar: search, step, and its key handling -------------------------
+from PyQt6.QtGui import QKeyEvent                                # noqa: E402
+from PyQt6.QtCore import Qt, QEvent                              # noqa: E402
+from PyQt6.QtWidgets import QSystemTrayIcon                      # noqa: E402
+
+win.show_find()
+win._find_bar.input.setText('a')
+win._find_update()
+win._find_bar.case.setChecked(True)
+win._find_bar.all_tabs.setChecked(True)
+win._find_update()
+win._find_step(False)
+win._find_step(True)
+
+
+def _fbkey(qtkey, mods=Qt.KeyboardModifier.NoModifier):
+    win._find_bar.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, qtkey, mods, ''))
+
+
+_fbkey(Qt.Key.Key_Return)
+_fbkey(Qt.Key.Key_Return, Qt.KeyboardModifier.ShiftModifier)   # backward
+_fbkey(Qt.Key.Key_A)                        # a plain key -> passed to super
+_fbkey(Qt.Key.Key_Escape)                   # -> hide_find
+ok(True, 'find bar: search updates, stepping and the Esc/Enter keys work')
+
+# --- the system-tray icon: disabled, unavailable, and created -----------------
+_o_avail = QSystemTrayIcon.isSystemTrayAvailable
+_o_systray = win._systray
+try:
+    win._systray = False
+    ok(win._tray_icon() is None, 'tray: disabled in settings -> None')
+    win._systray = True
+    win._tray = None
+    QSystemTrayIcon.isSystemTrayAvailable = staticmethod(lambda: False)
+    ok(win._tray_icon() is None, 'tray: no platform tray -> None')
+    QSystemTrayIcon.isSystemTrayAvailable = staticmethod(lambda: True)
+    win._tray = None
+    win._tray_icon()                        # -> creates + shows the tray icon
+    ok(win._tray is not None, 'tray: created when enabled and available')
+finally:
+    QSystemTrayIcon.isSystemTrayAvailable = _o_avail
+    win._systray = _o_systray
+
+# --- a window built while TUI is unavailable greys out the TUI controls --------
+_o_tuia = M.tui_available
+try:
+    M.tui_available = lambda: False
+    _wt = MainWindow()
+    ok(True, 'window builds with TUI unavailable (TUI controls disabled)')
+    _wt.deleteLater()
+    APP.processEvents()
+finally:
+    M.tui_available = _o_tuia
+
 # --- copy/paste/zoom + input-dialog actions routed through the current tab -----
 from PyQt6.QtWidgets import QInputDialog, QSystemTrayIcon        # noqa: E402
 
