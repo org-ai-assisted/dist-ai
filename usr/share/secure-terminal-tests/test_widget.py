@@ -2923,6 +2923,49 @@ _dbl2 = QMouseEvent(QEvent.Type.MouseButtonDblClick, QPointF(1, 1),
 _dc2.mouseDoubleClickEvent(_dbl2)
 ok(True, 'double-click off a marking uses the default handler')
 
+# --- OSC colour + clipboard-read handling -------------------------------------
+_oc = SecureTerminal(command='/bin/cat')
+eq(_oc._parse_osc_color(b'rgb:ab/cd/ef'), '#abcdef', 'OSC colour rgb: form parsed')
+eq(_oc._parse_osc_color(b'#123456'), '#123456', 'OSC colour #hex form parsed')
+eq(_oc._parse_osc_color(b'red'), '#ff0000', 'OSC colour name parsed')
+ok(_oc._parse_osc_color(b'not-a-colour') is None, 'OSC colour: garbage -> None')
+_oc._osc_color(4, b'1;rgb:ff/00/00')        # a valid palette override
+ok(_oc._osc_palette.get(1) == '#ff0000', 'OSC 4 sets a palette index')
+_oc._osc_color(4, b'no-semicolon')          # malformed -> ignored
+_oc._osc_color(4, b'x;rgb:00/00/00')        # non-digit index -> ignored
+_oc._osc_color(10, b'rgb:00/ff/00')         # default fg
+_oc._osc_color(11, b'rgb:00/00/ff')         # default bg
+_oc._osc_color(12, b'rgb:ff/ff/00')         # cursor
+_oc._osc_color(10, b'garbage')              # unparseable -> ignored
+ok('fg' in _oc._osc_palette and 'bg' in _oc._osc_palette,
+   'OSC 10/11/12 override the default fg/bg/cursor colours')
+
+# OSC 52 clipboard-read gating: off, approved, denied, always, and ask-once
+_oc._osc['osc_clipboard_read'] = False
+_oc._osc_clipboard_read()                   # feature off -> nothing
+_oc._osc['osc_clipboard_read'] = True
+_oc._clipboard_read = True
+_oc._osc_clipboard_read()                   # approved -> reply
+_oc._clipboard_read = False
+_oc._osc_clipboard_read()                   # denied -> nothing
+_oc._clipboard_read = None
+_oc._clipboard_read_always = True
+_oc._osc_clipboard_read()                   # global always-allow -> reply
+_oc._clipboard_read = None
+_oc._clipboard_read_always = False
+_creq = []
+_oc.clipboard_read_requested.connect(lambda: _creq.append(1))
+_oc._osc_clipboard_read()                   # ask once -> raise the request
+ok(_creq and _oc._clipboard_read == 'pending',
+   'OSC 52 read: an un-granted tab asks once and never replies')
+
+# feed guards: no pyte stream (line mode), an empty chunk, alt-leave with no save
+_lm = SecureTerminal(command='/bin/cat')    # line mode -> _stream is None
+_lm._feed_stream(b'anything')
+_oc._feed_bytes(b'')
+_oc._alt_leave()                            # _alt_saved is None -> returns
+ok(True, 'feed guards: no stream, empty chunk and alt-leave-without-save are safe')
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(widget): %d passed, %d failed\n'
                  % (PASS, FAIL))
