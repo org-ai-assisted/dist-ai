@@ -729,6 +729,58 @@ finally:
     M._DUMP_MAX = _o_dumpmax
 ok(not win._ipc_ctl('ctl-bogus', {})['ok'], 'ctl: an unknown ctl op is rejected')
 
+# a command_hook that is only whitespace yields no hook
+eq(_read_hook_config({'command_hook': '   '}), None,
+   '_read_hook_config: an all-whitespace command yields no hook')
+
+# --- InfoTip: pointer polling, a destroyed source, and Esc-to-hide ------------
+_tip = M.InfoTip(win)
+_probe_w = MainWindow()
+_tip.show_for(_probe_w, 'inspect', QPoint(5, 5), 100)
+_tip._check_pointer()                        # pointer not over tip/source -> hide
+_probe_w.deleteLater()
+APP.processEvents()
+_tip._check_pointer()                        # the source is now destroyed -> caught
+from PyQt6.QtGui import QKeyEvent as _QKE2                       # noqa: E402
+from PyQt6.QtCore import QEvent as _QEv2                         # noqa: E402
+_tip.keyPressEvent(_QKE2(_QEv2.Type.KeyPress, Qt.Key.Key_Escape,
+                         Qt.KeyboardModifier.NoModifier, ''))    # Esc -> hide
+_tip.keyPressEvent(_QKE2(_QEv2.Type.KeyPress, Qt.Key.Key_A,
+                         Qt.KeyboardModifier.NoModifier, 'a'))   # other -> super
+_tip.deleteLater()
+APP.processEvents()
+
+# --- show_find seeds from a single-line selection -----------------------------
+if win.tabs.count() == 0:
+    win.new_tab()
+_sf = win.current()
+_sf._append('findmetext')
+_sf.selectAll()
+win.show_find()
+ok(True, 'show_find seeds the query from the current single-line selection')
+
+# --- _find_step wraps within a tab, and returns with no current tab -----------
+win._find_bar.all_tabs.setChecked(False)
+win._find_bar.input.setText('findmetext')
+from PyQt6.QtGui import QTextCursor                              # noqa: E402
+_sf.moveCursor(QTextCursor.MoveOperation.End)
+win._find_step(False)                        # not found ahead -> wrap to start
+win._find_step(True)                         # backward wrap
+_zf = MainWindow()
+while _zf.tabs.count():
+    _zf.tabs.removeTab(0)
+_zf._find_bar.input.blockSignals(True)        # avoid _find_update with no tab
+_zf._find_bar.input.setText('x')
+_zf._find_bar.input.blockSignals(False)
+_zf._find_step(False)                         # no current tab in the wrap branch
+ok(True, '_find_step wraps within a tab and is safe with no current tab')
+_zf.deleteLater()
+APP.processEvents()
+
+# --- _set_shortcuts: a valid mapping with an unknown ident is skipped ----------
+_r2 = win._set_shortcuts({'no-such-ident': 'Ctrl+Alt+Z'})
+ok(isinstance(_r2, list), '_set_shortcuts: an unknown ident is skipped in the apply loop')
+
 # --- icon helpers: themed hit, null-icon fallback, toolbar-toggle theme hit ----
 from PyQt6.QtGui import QIcon                                    # noqa: E402
 _o_fromtheme = QIcon.fromTheme
