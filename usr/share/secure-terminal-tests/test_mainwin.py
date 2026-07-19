@@ -35,6 +35,7 @@ APP = QApplication.instance() or QApplication([])
 import tempfile                                                # noqa: E402
 os.environ['XDG_CONFIG_HOME'] = tempfile.mkdtemp()
 os.environ['XDG_STATE_HOME'] = tempfile.mkdtemp()
+os.environ['XDG_RUNTIME_DIR'] = tempfile.mkdtemp()   # single-instance socket dir
 
 _failures = 0
 
@@ -232,6 +233,53 @@ try:
     eq(_test_canary(), 1, '_test_canary: an unwritable marker fails loud (exit 1)')
 finally:
     _MM.canary_marker_path = _orig_marker
+
+# --- main(): the entry point, driven with QApplication + exec + ipc mocked ----
+import signal as _signal                             # noqa: E402
+from secure_terminal.main import main as _main       # noqa: E402
+from PyQt6.QtWidgets import QApplication as _QA       # noqa: E402
+
+_o_argv = sys.argv[:]
+_o_sr = M.ipc.send_request
+_o_qa = M.QApplication
+_o_qexec = _QA.exec
+_o_chld = _signal.getsignal(_signal.SIGCHLD)
+try:
+    # `ctl` subcommand is dispatched before Qt
+    M.ipc.send_request = lambda *_a, **_k: {'ok': True, 'tabs': []}
+    sys.argv = ['secure-terminal', 'ctl', 'ls']
+    eq(_main(), 0, 'main: a `ctl` argv dispatches to the ctl client')
+    # --test-canary fires the headless positive control
+    sys.argv = ['secure-terminal', '--new-instance', '--test-canary']
+    eq(_main(), 0, 'main: --test-canary runs the headless canary before Qt')
+    # a running instance accepts the launch -> exit 0 without starting Qt
+    M.ipc.send_request = lambda *_a, **_k: {'ok': True}
+    sys.argv = ['secure-terminal', '--title', 'x']
+    eq(_main(), 0, 'main: an existing instance accepts the launch -> 0')
+    # a running instance refusing the launch -> exit 1
+    M.ipc.send_request = lambda *_a, **_k: {'ok': False, 'error': 'refused'}
+    eq(_main(), 1, 'main: an existing instance refusing the launch -> 1')
+    # no running instance -> full startup (QApplication + window + event loop),
+    # with the app object and its blocking exec() replaced
+    M.ipc.send_request = lambda *_a, **_k: None
+
+    class _AppProxy:                        # call -> the existing app; else delegate
+        def __call__(self, _argv):
+            return APP
+
+        def __getattr__(self, _name):
+            return getattr(_QA, _name)
+
+    M.QApplication = _AppProxy()
+    _QA.exec = lambda _self: 0
+    sys.argv = ['secure-terminal', '--title', 'fresh']
+    eq(_main(), 0, 'main: with no running instance it starts the app + event loop')
+finally:
+    sys.argv = _o_argv
+    M.ipc.send_request = _o_sr
+    M.QApplication = _o_qa
+    _QA.exec = _o_qexec
+    _signal.signal(_signal.SIGCHLD, _o_chld)
 
 win.close()
 win.deleteLater()
