@@ -2778,6 +2778,19 @@ except _subprocess.TimeoutExpired:
 ok(_victim.returncode is not None,
    'terminate_foreground: a TERM-ignoring group is SIGKILLed by the survivor')
 
+# --- bell ring: channel gating + rate limit -----------------------------------
+_rg = SecureTerminal(command='/bin/cat')
+_rg._bell_channels = set()
+_rg._ring()                                 # no channels enabled -> returns early
+ok(True, '_ring: with no channels enabled it does nothing')
+_rg._bell_channels = {'audible'}
+_rg._last_bell = 0.0
+_rg._ring()                                 # fires
+_rg._ring()                                 # within 200ms -> rate-limited (returns)
+ok(True, '_ring: a second ring within ~200ms is rate-limited')
+eq(_rg.current_paste_delay(), _rg._paste_delay,
+   'current_paste_delay: returns the configured paste delay')
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(widget): %d passed, %d failed\n'
                  % (PASS, FAIL))
