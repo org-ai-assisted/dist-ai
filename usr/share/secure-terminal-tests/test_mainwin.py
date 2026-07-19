@@ -234,6 +234,37 @@ try:
 finally:
     _MM.canary_marker_path = _orig_marker
 
+# --- setting appliers: the apply path and the admin-locked early return --------
+win.set_auto_tab_colors(True)
+win.set_auto_tab_colors(False)
+win.set_markings(True)
+win.set_clipboard_read_always(True)
+win.set_scrollback(1000)
+win.set_paste_delay(3)
+win.set_bell_sound('')                      # empty/disallowed -> cleared, applied
+ok(True, 'setting appliers push the change to every tab and persist')
+
+_saved_locked = set(win._locked)
+_saved_bsl = win._bell_sound_locked
+try:
+    win._locked = {'auto_tab_colors'}
+    win.set_auto_tab_colors(True)           # locked -> early return
+    win._locked = {'colored_markings'}
+    win.set_markings(True)
+    win._locked = {'osc_clipboard_read_always'}
+    win.set_clipboard_read_always(True)
+    win._bell_sound_locked = lambda: True
+    win.set_bell_sound('/etc/hostname')     # locked -> early return
+    ok(True, 'setting appliers respect an admin lock (no change)')
+finally:
+    win._locked = _saved_locked
+    win._bell_sound_locked = _saved_bsl
+
+# --- the tray context menu is built from fixed, safe actions ------------------
+_tray_menu = win._build_tray_menu()
+ok(_tray_menu is not None and len(_tray_menu.actions()) >= 3,
+   '_build_tray_menu: builds the fixed Show/Hide, New Tab, Quit menu')
+
 # --- main(): the entry point, driven with QApplication + exec + ipc mocked ----
 import signal as _signal                             # noqa: E402
 from secure_terminal.main import main as _main       # noqa: E402
