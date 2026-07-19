@@ -304,6 +304,98 @@ def check_supply_chain(root, failures):
                                 % (rel, tag, attr, value))
 
 
+# Class names of the layout containers that place cards in a multi-column grid
+# (secure-terminal .fg/.shotgrid/.fcols, output-lies .cards/.panes/.steps, the
+# generic .grid/.cols). A .issue card inside one of these fills its column; a
+# .issue card stacked directly under a full-width .wrap does not -- its prose is
+# capped for readability and leaves a wide empty gutter. New grid layouts must
+# use one of these class names (or be added here) so the audit can see them.
+GRID_CLASSES = frozenset({
+    'fg', 'cards', 'grid', 'panes', 'steps', 'shotgrid', 'fcols', 'cols',
+})
+# Void elements have no end tag, so they must not be pushed on the nesting stack.
+VOID_TAGS = frozenset({
+    'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link',
+    'meta', 'param', 'source', 'track', 'wbr',
+})
+# A card that contains one of these legitimately needs the full width (a code
+# block, a data table, a screenshot, an embedded figure); its width is not the
+# "prose capped narrower than the box" bug, so such a card is never flagged.
+WIDE_TAGS = frozenset({
+    'pre', 'table', 'img', 'svg', 'iframe', 'video', 'canvas', 'figure',
+})
+
+
+class LayoutAudit(html.parser.HTMLParser):
+    """Flag <section>s that stack 2+ prose-only `.issue` cards full-width instead
+    of in a grid. A column of full-width prose cards leaves each card much wider
+    than the ~74ch text it holds (the "box wider than its text" bug); the fix is
+    to wrap them in a grid container so each card is about as wide as its text. A
+    card holding a wide element (code/table/image/figure) genuinely needs the
+    width and is never counted."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._open = []        # stack of frames for open, non-void tags
+        self._sections = []    # stack of {'id','ungridded'} section frames
+        self.offenders = []    # (section_id, ungridded_count)
+
+    def handle_starttag(self, tag, attrs):
+        amap = dict(attrs)
+        if tag in WIDE_TAGS:
+            # Mark the innermost open .issue card as needing its width.
+            for frame in reversed(self._open):
+                if frame['is_issue']:
+                    frame['has_wide'] = True
+                    break
+        if tag in VOID_TAGS:
+            return
+        classes = set((amap.get('class') or '').split())
+        if tag == 'section':
+            self._sections.append({'id': amap.get('id') or '?', 'ungridded': 0})
+        self._open.append({
+            'tag': tag,
+            'is_grid': bool(classes & GRID_CLASSES),
+            'is_issue': 'issue' in classes,
+            # A card is "gridded" when any enclosing element is a grid container.
+            'gridded': any(f['is_grid'] for f in self._open),
+            'has_wide': False,
+        })
+
+    def handle_startendtag(self, tag, attrs):
+        pass                   # self-closed element: no nesting, nothing to track
+
+    def handle_endtag(self, tag):
+        if tag in VOID_TAGS:
+            return
+        for i in range(len(self._open) - 1, -1, -1):
+            if self._open[i]['tag'] == tag:
+                frame = self._open[i]
+                if (frame['is_issue'] and not frame['gridded']
+                        and not frame['has_wide'] and self._sections):
+                    self._sections[-1]['ungridded'] += 1
+                del self._open[i:]
+                break
+        if tag == 'section' and self._sections:
+            done = self._sections.pop()
+            if done['ungridded'] >= 2:
+                self.offenders.append((done['id'], done['ungridded']))
+
+
+def check_card_layout(root, failures):
+    # Each page's card sections must grid their cards, not stack them full-width.
+    for page in html_files(root):
+        rel = os.path.relpath(page, root)
+        audit = LayoutAudit()
+        with open(page, encoding='utf-8') as handle:
+            audit.feed(handle.read())
+        for section_id, count in audit.offenders:
+            failures.append(
+                '%s: section #%s stacks %d full-width ".issue" cards; wrap them '
+                'in a grid (e.g. <div class="fg">) so each card is about as wide '
+                'as its text' % (rel, section_id, count))
+
+
 def main():
     roots = [os.path.normpath(r) for r in sys.argv[1:] if os.path.isdir(r)]
     if not roots:
@@ -328,6 +420,7 @@ def main():
         check_banner(root, failures)
         check_csp(root, failures)
         check_supply_chain(root, failures)
+        check_card_layout(root, failures)
         name = os.path.basename(root)
         if failures:
             total += len(failures)
@@ -335,7 +428,7 @@ def main():
                 sys.stderr.write('FAIL %s: %s\n' % (name, item))
         else:
             sys.stdout.write('ok %s: links + wording + footer + banner + csp + '
-                             'supply-chain clean\n' % name)
+                             'supply-chain + card-layout clean\n' % name)
     sys.stdout.write('website-tests: %d failure(s)\n' % total)
     return 1 if total else 0
 
