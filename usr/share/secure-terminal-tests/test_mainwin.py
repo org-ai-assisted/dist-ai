@@ -226,10 +226,12 @@ try:
     win.save_transcript()                   # cancelled -> return
     ok(True, 'save_transcript: cancelling the dialog is a no-op')
     _tfd, _tpath = tempfile.mkstemp(suffix='.txt')
-    os.close(_tfd)                          # save_transcript reopens + overwrites
+    os.close(_tfd)
+    os.unlink(_tpath)                       # remove it: save_transcript must (re)create
     QFileDialog.getSaveFileName = staticmethod(lambda *_a, **_k: (_tpath, ''))
     win.save_transcript()
-    ok(os.path.exists(_tpath), 'save_transcript: writes the transcript to disk')
+    ok(os.path.exists(_tpath) and os.path.getsize(_tpath) > 0,
+       'save_transcript: creates the file and writes the transcript to it')
 finally:
     QFileDialog.getSaveFileName = _ogsf
 
