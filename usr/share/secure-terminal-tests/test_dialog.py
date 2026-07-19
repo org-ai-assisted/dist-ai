@@ -20,10 +20,10 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 try:
     from PyQt6.QtWidgets import QApplication, QDialog
     from secure_terminal import dialog as st_dialog
-except Exception as exc:                                       # pragma: no cover
-    sys.stderr.write('secure-terminal-tests: SKIP (PyQt6/dialog unavailable: '
-                     '%s)\n' % exc)
-    raise SystemExit(77)
+except Exception as exc:  # fail closed: a required dependency must not silently skip
+    sys.stderr.write('secure-terminal-tests: FAIL missing dependency: '
+                     '%s\n' % exc)
+    sys.exit(1)
 
 APP = QApplication.instance() or QApplication([])
 

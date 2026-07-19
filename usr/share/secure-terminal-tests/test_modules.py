@@ -12,6 +12,7 @@
 ## imported, so this runs headless with only python3.
 
 import os
+import sys
 import json
 import glob
 import socket
@@ -21,13 +22,10 @@ import threading
 
 try:
     from secure_terminal import ipc, session, settings, hook
-except Exception as exc:                                       # pragma: no cover
-    import sys
-    sys.stderr.write('secure-terminal-tests: SKIP (cannot import support '
-                     'modules: %s)\n' % exc)
-    raise SystemExit(77)
-
-import sys
+except Exception as exc:  # fail closed: a required dependency must not silently skip
+    sys.stderr.write('secure-terminal-tests: FAIL missing dependency: '
+                     '%s\n' % exc)
+    sys.exit(1)
 
 _failures = 0
 

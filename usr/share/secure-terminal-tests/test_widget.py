@@ -2568,13 +2568,44 @@ _term.BELL_SOUND_DIRS = (_snd_tmp,)
 try:
     ok(_term.sound_file_allowed(_outside),
        'sound_file_allowed: a real file inside an allowed dir is accepted')
-    # apply_bell_sound stores it; _play_sound then tries QtMultimedia (absent
-    # here -> the import fails and playback returns False without raising)
-    _bell = SecureTerminal(command='/bin/cat')
-    _bell.apply_bell_sound(_outside)
-    ok(_bell._bell_sound == _outside, 'apply_bell_sound: an allowed path is stored')
-    ok(_bell._play_sound() is False,
-       '_play_sound: returns False when QtMultimedia cannot play (or is absent)')
+    # _play_sound uses QtMultimedia (a hard dependency); mock QSoundEffect so the
+    # real playback path (build the effect, set the source, play, return True) is
+    # exercised without needing an audio device in the test environment.
+    import types as _types
+    _fake_qm = _types.ModuleType('PyQt6.QtMultimedia')
+
+    class _FakeSoundEffect:
+        raise_on = None
+
+        def __init__(self, _parent=None):
+            if _FakeSoundEffect.raise_on == 'init':
+                raise RuntimeError('no audio device')
+
+        def setSource(self, _url):
+            pass
+
+        def play(self):
+            if _FakeSoundEffect.raise_on == 'play':
+                raise RuntimeError('playback failed')
+
+    _fake_qm.QSoundEffect = _FakeSoundEffect
+    _o_qm = sys.modules.get('PyQt6.QtMultimedia')
+    sys.modules['PyQt6.QtMultimedia'] = _fake_qm
+    try:
+        _bell = SecureTerminal(command='/bin/cat')
+        _bell.apply_bell_sound(_outside)
+        ok(_bell._bell_sound == _outside, 'apply_bell_sound: an allowed path is stored')
+        ok(_bell._play_sound() is True,
+           '_play_sound: builds the sound effect and plays it -> True')
+        _bell._sound_effect = None
+        _FakeSoundEffect.raise_on = 'play'
+        ok(_bell._play_sound() is False,
+           '_play_sound: a playback error is contained -> False')
+    finally:
+        if _o_qm is None:
+            sys.modules.pop('PyQt6.QtMultimedia', None)
+        else:
+            sys.modules['PyQt6.QtMultimedia'] = _o_qm
     _bell2 = SecureTerminal(command='/bin/cat')
     ok(_bell2._play_sound() is False, '_play_sound: no configured sound -> False')
 finally:

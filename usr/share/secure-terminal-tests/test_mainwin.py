@@ -11,7 +11,7 @@
 ## is built, exercised and destroyed in isolation. The modal dialogs are shown
 ## with QDialog.exec() stubbed (Accepted/Rejected) so nothing blocks, and the
 ## ctl client is driven with ipc.send_request stubbed to canned replies.
-## SKIPs (exit 77) when PyQt6 is unavailable.
+## Fails closed (exit 1) if a required dependency is missing -- deps are hard.
 
 import os
 import sys
@@ -23,10 +23,10 @@ try:
     from PyQt6.QtWidgets import QApplication, QDialog
     import secure_terminal.main as M
     from secure_terminal.main import MainWindow, _ctl_main
-except Exception as exc:                                       # pragma: no cover
-    sys.stderr.write('secure-terminal-tests: SKIP (PyQt6/main unavailable: '
-                     '%s)\n' % exc)
-    raise SystemExit(77)
+except Exception as exc:  # fail closed: a required dependency must not silently skip
+    sys.stderr.write('secure-terminal-tests: FAIL missing dependency: '
+                     '%s\n' % exc)
+    sys.exit(1)
 
 APP = QApplication.instance() or QApplication([])
 

@@ -30,10 +30,10 @@ import threading
 
 try:
     from secure_terminal import cli
-except Exception as exc:                                       # pragma: no cover
-    sys.stderr.write('secure-terminal-tests: SKIP (cannot import '
-                     'secure_terminal.cli: %s)\n' % exc)
-    sys.exit(77)
+except Exception as exc:  # fail closed: a required dependency must not silently skip
+    sys.stderr.write('secure-terminal-tests: FAIL missing dependency: '
+                     '%s\n' % exc)
+    sys.exit(1)
 
 os.environ['SHELL'] = '/bin/sh'          # deterministic default-shell path
 

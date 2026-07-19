@@ -29,10 +29,10 @@ import sys
 
 try:
     from secure_terminal import sanitize as S
-except Exception as exc:  # pylint: disable=broad-except
-    sys.stderr.write('secure-terminal-tests(corpus): SKIP (cannot import '
-                     'secure_terminal.sanitize: %s)\n' % exc)
-    sys.exit(77)
+except Exception as exc:  # fail closed: a required dependency must not silently skip
+    sys.stderr.write('secure-terminal-tests(corpus): FAIL missing dependency: '
+                     '%s\n' % exc)
+    sys.exit(1)
 
 PASS = 0
 FAIL = 0
