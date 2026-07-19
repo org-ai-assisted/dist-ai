@@ -3048,6 +3048,59 @@ for _term in (_gz, _tk2, _rt2, _es, _am):
         if _t is not None:
             _t.stop()
 
+# --- terminfo source lookup ---------------------------------------------------
+from secure_terminal.terminal import _terminfo_source           # noqa: E402
+ok(_terminfo_source() is None or isinstance(_terminfo_source(), str),
+   '_terminfo_source resolves a path or returns None')
+
+# createMimeDataFromSelection with no selection delegates to the base handler
+_nm = SecureTerminal(command='/bin/cat')
+_nm.moveCursor(QTextCursor.MoveOperation.End)
+ok(_nm.createMimeDataFromSelection() is not None,
+   'copy with no selection delegates to the base handler')
+
+# terminate_foreground: only-the-shell is a no-op; a killpg error returns False
+_tf = SecureTerminal(command='/bin/cat')
+_tf._pid = os.getpid()
+_tf._foreground_pgrp = lambda: os.getpgid(os.getpid())
+ok(not _tf.terminate_foreground(),
+   'terminate_foreground: only the shell in the foreground -> no-op')
+_tf2 = SecureTerminal(command='/bin/cat')
+_tf2._pid = None
+_tf2._foreground_pgrp = lambda: 999999      # invalid pgrp -> killpg raises
+ok(not _tf2.terminate_foreground(),
+   'terminate_foreground: a killpg error is reported as False')
+
+# _write retries after an EAGAIN on the non-blocking fd
+_we = SecureTerminal(command='/bin/cat')
+_wstate = {'n': 0}
+_o_write2 = _os.write
+
+
+def _flaky_write(fd, data):
+    _wstate['n'] += 1
+    if _wstate['n'] == 1:
+        raise BlockingIOError()             # first call: kernel buffer not ready
+    return _o_write2(fd, data)
+
+
+try:
+    _os.write = _flaky_write
+    _we._write(b'hi')
+finally:
+    _os.write = _o_write2
+ok(_wstate['n'] >= 2, '_write retries after an EAGAIN on the non-blocking fd')
+
+# the grid-mode feed path caps the retained raw output
+_bg = SecureTerminal(command='/bin/cat')
+_bg.apply_tui(True)
+feed_output(_bg, b'\x1b[?1049h')            # grid mode
+_bg._raw = 'x' * _bg._RAW_MAX               # already at the cap
+feed_output(_bg, b'y')                      # one more byte -> over cap -> trimmed
+ok(len(_bg._raw) <= _bg._RAW_MAX, 'grid-mode feed caps the retained raw output')
+_bg._render_timer.stop()
+_bg._sync_timer.stop()
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(widget): %d passed, %d failed\n'
                  % (PASS, FAIL))
