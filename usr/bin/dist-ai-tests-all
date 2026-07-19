@@ -50,6 +50,7 @@ core_suites=(
    pyte-tests
    sanitize-string-tests
    secure-terminal-tests
+   secure-terminal-tests-coverage
    sdwdate-gui-tests
    setup-wizard-dist-tests
    stcat-family-tests

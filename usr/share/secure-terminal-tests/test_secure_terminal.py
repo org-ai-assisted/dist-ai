@@ -136,6 +136,19 @@ _wc4, _wcells4, _wcol4, _ws4, _ww4 = S.feed_line_edits([], 0, {}, 'abcd\x1b[KX',
 eq(len(_wc4), 0, 'an erase op after the last column cancels the pending wrap')
 eq([ch for ch, _ in _wcells4], ['a', 'b', 'c', 'X'],
    'the erase clears the pending wrap so X overwrites the last cell (abcX)')
+# CSI 1K erases from the start of the line up to (and including) the cursor: after
+# 'abcde' move the cursor to column 2 (CSI 3G) then erase-to-BOL -> "   de".
+_e1c, _e1cells, _e1col, _e1s, _e1w = S.feed_line_edits([], 0, {}, 'abcde\x1b[3G\x1b[1K', 80)
+eq(''.join(ch for ch, _ in _e1cells), '   de',
+   'CSI 1K (erase to beginning of line) blanks cells from BOL to the cursor')
+# SGR 39 / 49 reset the foreground / background to the terminal default (None)
+_sgr = {'fg': 3, 'bg': 4}
+S.parse_sgr('39', _sgr)
+eq(_sgr['fg'], None, 'SGR 39 resets the foreground to default')
+S.parse_sgr('49', _sgr)
+eq(_sgr['bg'], None, 'SGR 49 resets the background to default')
+S.parse_sgr('101', _sgr)
+eq(_sgr['bg'], 9, 'SGR 100-107 selects a bright background colour (101 -> index 9)')
 
 # --- cursor-forward pads blanks (a right-prompt jumps to the right edge) -------
 # "\x1b[20C" from column 10 moves to column 30 (forward is RELATIVE), leaving a
