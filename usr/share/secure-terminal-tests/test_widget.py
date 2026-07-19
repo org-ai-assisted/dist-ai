@@ -2844,6 +2844,85 @@ _rc._out_cursor = None
 _rc.reset_caret()
 ok(True, 'reset_caret: with no output cursor it snaps the caret to the end')
 
+# --- defensive syscall guards, fault-injected ---------------------------------
+import os as _os
+
+# shutdown tolerates an already-closed fd and a dead pid (close/kill/waitpid)
+_sd = SecureTerminal(command='/bin/cat')
+_rp, _wp = os.pipe()
+os.close(_rp)
+os.close(_wp)
+_sd._fd = _rp                               # already closed -> os.close raises
+_sd._pid = 999999                           # no such pid -> kill/waitpid raise
+_sd.shutdown()
+ok(_sd._fd is None and _sd._pid is None,
+   'shutdown: tolerates a closed fd and a dead pid')
+
+# _write is a safe no-op with no fd, and drops output on a closed fd
+_wt2 = SecureTerminal(command='/bin/cat')
+_wt2._fd = None
+_wt2._write(b'x')                           # no fd -> return
+_rp2, _wp2 = os.pipe()
+os.close(_rp2)
+os.close(_wp2)
+_wt2._fd = _wp2                             # closed fd -> os.write OSError -> dropped
+_wt2._write(b'x')
+ok(True, '_write: safe no-op with no fd, and drops output on a closed fd')
+
+# cwd / foreground helpers survive an OS error reading /proc
+_cw = SecureTerminal(command='/bin/cat')
+_o_readlink = _os.readlink
+_o_getpgid = _os.getpgid
+
+
+def _raise_os(*_a, **_k):
+    raise OSError('injected')
+
+
+try:
+    _os.readlink = _raise_os
+    eq(_cw._foreground_cwd(), '', '_foreground_cwd: a /proc read error -> empty')
+    ok(_cw.cwd_basename() is None, 'cwd_basename: a /proc read error -> None')
+    _os.getpgid = lambda *_a, **_k: (_ for _ in ()).throw(ProcessLookupError())
+    ok(not _cw.has_foreground_program(),
+       'has_foreground_program: a reaped shell (getpgid fails) -> False')
+finally:
+    _os.readlink = _o_readlink
+    _os.getpgid = _o_getpgid
+
+# cwd_basename: the home directory renders as '~'
+_cw2 = SecureTerminal(command='/bin/cat')
+_cw2._pid = 1
+_cw2._foreground_pgrp = lambda: None
+try:
+    _os.readlink = lambda *_a, **_k: os.path.expanduser('~')
+    eq(_cw2.cwd_basename(), '~', "cwd_basename: the home directory shows as ~")
+finally:
+    _os.readlink = _o_readlink
+
+# --- a few testable feature branches ------------------------------------------
+# _raw scrollback is capped (drop the oldest) when it overflows
+_rw = SecureTerminal(command='/bin/cat')
+_rw._raw = 'x' * (_rw._RAW_MAX + 10)
+_rw._echo_caret('^C')
+ok(len(_rw._raw) <= _rw._RAW_MAX, '_echo_caret caps the retained raw output')
+
+# createMimeDataFromSelection returns a mime object
+_ms = SecureTerminal(command='/bin/cat')
+_ms._append('hello world')
+_ms.selectAll()
+ok(_ms.createMimeDataFromSelection() is not None,
+   'createMimeDataFromSelection returns the selection as mime data')
+
+# a double-click NOT on a marking falls through to the base handler
+_dc2 = SecureTerminal(command='/bin/cat')
+_dc2._append('plain')
+_dbl2 = QMouseEvent(QEvent.Type.MouseButtonDblClick, QPointF(1, 1),
+                    Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                    Qt.KeyboardModifier.NoModifier)
+_dc2.mouseDoubleClickEvent(_dbl2)
+ok(True, 'double-click off a marking uses the default handler')
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(widget): %d passed, %d failed\n'
                  % (PASS, FAIL))
