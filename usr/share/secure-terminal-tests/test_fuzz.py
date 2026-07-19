@@ -143,6 +143,153 @@ def prop_parse_sgr_extended(param):
     assert state2 == {'fg': None, 'bg': None, 'bold': False}
 
 
+# --- a grammar of realistic VT escape sequences. Random text almost never
+# --- contains cursor/erase CSI ops, SGR colour codes or alt-screen sequences,
+# --- so generate them explicitly; otherwise the fuzz never reaches the escape
+# --- parsers (feed_line_edits, parse_sgr, color_256, wants_full_screen).
+_SGR_ATOM = st.one_of(
+    st.sampled_from(['0', '1', '22', '7', '39', '49',
+                     '30', '31', '37', '40', '47', '90', '97', '100', '107']),
+    st.integers(min_value=0, max_value=260).map(lambda n: '38;5;%d' % n),
+    st.integers(min_value=0, max_value=260).map(lambda n: '48;5;%d' % n),
+    st.tuples(st.integers(0, 255), st.integers(0, 255), st.integers(0, 255))
+      .map(lambda t: '38;2;%d;%d;%d' % t))
+_SGR_PARAMS = st.lists(_SGR_ATOM, max_size=5).map(';'.join)
+_CSI_OP = st.builds(
+    lambda n, op: '\x1b[' + ('' if n is None else str(n)) + op,
+    st.one_of(st.none(), st.integers(min_value=0, max_value=120)),
+    st.sampled_from('CDGKJ'))                 # cursor forward/back/abs + erase
+_ALT = st.sampled_from(['\x1b[?1049h', '\x1b[?1049l', '\x1b[?1047h', '\x1b[?47h',
+                        '\x1b[?2004h', '\x1b[?2026h', '\x1b[?2026l'])
+_OSC = st.sampled_from(['\x1b]0;title\x07', '\x1b]8;;https://example.invalid\x07',
+                        '\x1b]4;1;rgb:00/00/00\x07', '\x1b]10;#ffffff\x07'])
+_CTRL = st.sampled_from(['\b', '\r', '\n', '\t', '\x07', '\x0c', '\x1b'])
+# explicit erase-in-line / absolute-column sequences (num 1 and 2 are otherwise
+# rare from the integer strategy), and a hostile-character alphabet so the
+# bidi/invisible/control classifiers are actually reached.
+_ERASE = st.sampled_from(['\x1b[0K', '\x1b[1K', '\x1b[2K', '\x1b[K',
+                          '\x1b[3G', '\x1b[5C', '\x1b[2D'])
+VT = st.lists(
+    st.one_of(st.text(max_size=6), _CSI_OP, _ERASE,
+              _SGR_PARAMS.map(lambda p: '\x1b[' + p + 'm'), _ALT, _OSC, _CTRL),
+    max_size=16).map(''.join)
+_HOSTILE = ''.join(chr(c) for c in (
+    0x202A, 0x202E, 0x2066, 0x2069, 0x200E, 0x200F, 0x061C,   # bidi
+    0x200B, 0x200D, 0x2060, 0xFEFF, 0x2028, 0x2029,           # invisible
+    0x00, 0x1B, 0x7F, 0x9F,                                    # control / C1
+    0xE9, 0x4E00, ord('A'), ord(' '), 0x09, 0x0A))            # printable / ws
+HOSTILE = st.text(alphabet=_HOSTILE, max_size=24)
+
+
+@RUN
+@given(VT, st.sampled_from(S.DISPLAY_MODES))
+def prop_render_output_vt(text, mode):
+    # escape-rich output through every display mode: same safety invariant, and
+    # it now reaches the cursor/colour/alt-screen parsers.
+    out = S.render_output(text, mode)
+    assert isinstance(out, str)
+    if mode == 'strip':
+        assert all(ord(ch) in SAFE_OUTPUT for ch in out)
+    assert isinstance(S.wants_full_screen(text), bool)
+    assert isinstance(S.leaves_full_screen(text), bool)
+    assert isinstance(S.has_bell(text), bool)
+
+
+@RUN
+@given(VT, st.integers(min_value=0, max_value=40))
+def prop_feed_line_edits_vt(raw, max_line):
+    # feed escape-rich raw straight into the cell line editor so the cursor CSI
+    # ops (forward/back/absolute + erase-in-line), the SGR fold and the
+    # strip-any-other-escape paths are all reached.
+    comp, cells, col, sgr, wraps = S.feed_line_edits([], 0, {}, raw, max_line)
+    assert isinstance(comp, list) and isinstance(cells, list) and col >= 0
+    # feed again from the resulting non-empty cells/cursor/sgr state
+    S.feed_line_edits(cells, col, sgr, raw, max_line)
+
+
+@RUN
+@given(st.text(max_size=40), VT, st.integers(min_value=0, max_value=64),
+       st.integers(min_value=0, max_value=128))
+def prop_apply_line_edits_vt(line, chunk, col, max_line):
+    # the line editor fed escape-rich input: cursor CSI ops (C/D/G/K), SGR folds
+    # and stripped escapes must not raise or lose a completed line.
+    completed, cur, newcol = S.apply_line_edits(line, min(col, len(line)),
+                                                chunk, max_line)
+    assert isinstance(completed, list) and isinstance(cur, str)
+    assert 0 <= newcol <= len(cur)
+
+
+@RUN
+@given(st.integers(min_value=-16, max_value=300))
+def prop_color_256(idx):
+    # the whole 256-colour map: <0 or >255 -> None, 0..15 a palette index, the
+    # 6x6x6 cube and the greyscale ramp -> a valid '#rrggbb'.
+    out = S.color_256(idx)
+    assert out is None or (isinstance(out, int) and 0 <= out <= 15) \
+        or (isinstance(out, str) and re.fullmatch(r'#[0-9a-f]{6}', out))
+
+
+@RUN
+@given(_SGR_PARAMS)
+def prop_parse_sgr_colours(param):
+    # SGR params from the full grammar (basic + bright + 256 + truecolour), so
+    # every colour branch and every color_256 path is exercised.
+    state = {'fg': None, 'bg': None, 'bold': False}
+    S.parse_sgr(param, state)
+    for chan in (state['fg'], state['bg']):
+        assert chan is None \
+            or (isinstance(chan, int) and 0 <= chan <= 15) \
+            or (isinstance(chan, str) and re.fullmatch(r'#[0-9a-f]{6}', chan))
+
+
+@RUN
+@given(st.integers(min_value=0, max_value=0x110000))
+def prop_marking_class(cp):
+    # every codepoint classifies as exactly one marking kind, never raises.
+    assert S.marking_class(cp) in ('bidi', 'invisible', 'control', 'nonascii')
+
+
+@RUN
+@given(HOSTILE)
+def prop_classify_paste_hostile(text):
+    # bidi / control / invisible / non-ASCII characters must each be counted.
+    result = S.classify_paste(text)
+    assert all(isinstance(label, str) and isinstance(count, int) and count > 0
+               for label, count in result)
+
+
+@RUN
+@given(HOSTILE, st.sampled_from(S.DISPLAY_MODES), st.booleans(), st.booleans())
+def prop_cells_to_runs_hostile(text, mode, colors, markings):
+    # render hostile cells with markings on/off and colours on/off, so the emit
+    # marking/colour/plain branches are all exercised.
+    comp, cells, col, sgr, _w = S.feed_line_edits([], 0, {}, text)
+    runs, prefix = S.cells_to_runs(comp, cells, mode, colors, markings=markings)
+    assert isinstance(runs, list)
+
+
+@RUN
+@given(st.tuples(st.integers(0, 255), st.integers(0, 255), st.integers(0, 255)),
+       st.tuples(st.integers(0, 255), st.integers(0, 255), st.integers(0, 255)))
+def prop_colour_helpers(a, bcol):
+    # the contrast/colour helpers never raise and stay in range.
+    assert isinstance(S.colors_allowed(), bool)
+    assert 0 <= S.luminance(a) <= 255
+    assert isinstance(S.too_close(a, bcol), bool)
+
+
+def prop_feed_chunk_carry_drop():
+    # a string escape longer than the cap switches to the DISCARD state, which
+    # then swallows bytes across chunks until the terminator (even a split one).
+    long_osc = '\x1b]0;' + 'x' * 5000            # unterminated, over-cap OSC
+    t, carry, drop = S.feed_chunk_carry(long_osc, '', '')
+    assert drop and t == ''                       # -> discard state
+    t2, carry2, drop2 = S.feed_chunk_carry('still inside', carry, drop)
+    assert drop2 == drop and t2 == ''             # keeps swallowing
+    t3, _c, drop3 = S.feed_chunk_carry('tail\x07visible', carry2, drop2)
+    assert drop3 == '' and 'visible' in t3        # terminator ends the discard
+
+
 @RUN
 @given(st.text(min_size=0, max_size=4), st.sampled_from(S.DISPLAY_MODES))
 def prop_tui_cell(ch, mode):
@@ -386,6 +533,16 @@ PROPS = [
     ('classify_paste', prop_classify_paste),
     ('parse_sgr', prop_parse_sgr),
     ('parse_sgr_extended', prop_parse_sgr_extended),
+    ('render_output_vt', prop_render_output_vt),
+    ('feed_line_edits_vt', prop_feed_line_edits_vt),
+    ('apply_line_edits_vt', prop_apply_line_edits_vt),
+    ('color_256', prop_color_256),
+    ('parse_sgr_colours', prop_parse_sgr_colours),
+    ('marking_class', prop_marking_class),
+    ('classify_paste_hostile', prop_classify_paste_hostile),
+    ('cells_to_runs_hostile', prop_cells_to_runs_hostile),
+    ('colour_helpers', prop_colour_helpers),
+    ('feed_chunk_carry_drop', prop_feed_chunk_carry_drop),
     ('tui_cell', prop_tui_cell),
 ]
 
