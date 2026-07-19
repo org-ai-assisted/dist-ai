@@ -148,6 +148,91 @@ try:
 finally:
     QDialog.exec = _orig_exec
 
+# --- _read_hook_config: parse the command-hook settings ------------------------
+from secure_terminal.main import _read_hook_config, _test_canary  # noqa: E402
+from PyQt6.QtWidgets import (QFileDialog, QMenu, QMessageBox)      # noqa: E402
+from PyQt6.QtCore import QPoint                                    # noqa: E402
+
+eq(_read_hook_config({'command_hook': ''}), None,
+   '_read_hook_config: no handler configured -> None')
+eq(_read_hook_config({'command_hook': '"unterminated'}), None,
+   '_read_hook_config: an unparseable command line -> None')
+_hc = _read_hook_config({'command_hook': 'myhook --flag',
+                         'command_hook_timeout': 'notanint'})
+ok(_hc and _hc['argv'] == ['myhook', '--flag'] and _hc['timeout'] == 10,
+   '_read_hook_config: parses argv; a bad timeout falls back to 10')
+
+# --- close_tab (on a throwaway window so emptying it is harmless) --------------
+w2 = MainWindow()
+w2.new_tab()
+w2.new_tab()
+_n0 = w2.tabs.count()
+w2.close_tab(999)                           # out-of-range -> no-op
+ok(w2.tabs.count() == _n0, 'close_tab: an out-of-range index is a no-op')
+w2.close_tab(0)
+ok(w2.tabs.count() == _n0 - 1, 'close_tab: removes the tab at the given index')
+while w2.tabs.count() > 0:                   # last close empties + closes window
+    w2.close_tab(0)
+ok(w2.tabs.count() == 0, 'close_tab: closing the last tab empties the window')
+w2.deleteLater()
+
+# --- tab context menu (exec stubbed) ------------------------------------------
+_ome = QMenu.exec
+QMenu.exec = lambda *_a, **_k: None
+try:
+    _pt = win.tabs.tabBar().tabRect(0).center()
+    win._tab_context_menu(_pt)
+    ok(True, 'tab context menu: builds over a tab')
+    win._tab_context_menu(QPoint(9999, 9999))
+    ok(True, 'tab context menu: no tab under the point -> no-op')
+finally:
+    QMenu.exec = _ome
+
+# --- bell-sound picker (file dialog + allow-list gate, stubbed) ---------------
+_owarn = QMessageBox.warning
+_ogof = QFileDialog.getOpenFileName
+QMessageBox.warning = staticmethod(lambda *_a, **_k: None)
+_orig_locked = win._bell_sound_locked
+try:
+    win._bell_sound_locked = lambda: True
+    win._pick_bell_sound()                  # locked -> return
+    ok(True, '_pick_bell_sound: a locked setting is a no-op')
+    win._bell_sound_locked = lambda: False
+    QFileDialog.getOpenFileName = staticmethod(lambda *_a, **_k: ('', ''))
+    win._pick_bell_sound()                  # cancelled -> return
+    ok(True, '_pick_bell_sound: cancelling the dialog is a no-op')
+    QFileDialog.getOpenFileName = staticmethod(
+        lambda *_a, **_k: ('/etc/hostname', ''))   # a real file, not in the allow-list
+    win._pick_bell_sound()                  # disallowed -> warning -> return
+    ok(True, '_pick_bell_sound: a file outside the allowed dirs is refused')
+finally:
+    win._bell_sound_locked = _orig_locked
+    QFileDialog.getOpenFileName = _ogof
+    QMessageBox.warning = _owarn
+
+# --- save_transcript (save dialog stubbed) ------------------------------------
+_ogsf = QFileDialog.getSaveFileName
+try:
+    QFileDialog.getSaveFileName = staticmethod(lambda *_a, **_k: ('', ''))
+    win.save_transcript()                   # cancelled -> return
+    ok(True, 'save_transcript: cancelling the dialog is a no-op')
+    _tpath = tempfile.mktemp(suffix='.txt')
+    QFileDialog.getSaveFileName = staticmethod(lambda *_a, **_k: (_tpath, ''))
+    win.save_transcript()
+    ok(os.path.exists(_tpath), 'save_transcript: writes the transcript to disk')
+finally:
+    QFileDialog.getSaveFileName = _ogsf
+
+# --- _test_canary: writes the marker + echoes; loud failure on a bad path -----
+import secure_terminal.main as _MM              # noqa: E402
+eq(_test_canary(), 0, '_test_canary: writes the marker and returns 0')
+_orig_marker = _MM.canary_marker_path
+try:
+    _MM.canary_marker_path = lambda: '/proc/nonexistent-dir/marker'
+    eq(_test_canary(), 1, '_test_canary: an unwritable marker fails loud (exit 1)')
+finally:
+    _MM.canary_marker_path = _orig_marker
+
 win.close()
 win.deleteLater()
 APP.processEvents()
