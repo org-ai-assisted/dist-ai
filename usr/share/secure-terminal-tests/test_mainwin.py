@@ -311,6 +311,33 @@ ok(win.tabs.count() == _n_before - 1, '_on_shell_exited closes the tab whose she
 win._on_shell_exited(win.current())         # called again is harmless
 ok(True, '_on_shell_exited on the current tab is handled')
 
+# --- the current-tab actions are safe no-ops when there is no current tab -----
+w3 = MainWindow()
+while w3.tabs.count():
+    w3.tabs.removeTab(0)                     # empty it without closing the window
+ok(w3.current() is None, 'a window with no tabs has no current tab')
+w3.copy_selection()
+w3.paste_clipboard()
+w3.zoom_in()
+w3.zoom_out()
+w3._on_zoom_step(-1)
+w3.set_markings(True)                        # current() None -> apply skipped
+w3.set_tui(True)
+w3.save_transcript()                         # current() None -> returns before any dialog
+ok(True, 'current-tab actions are harmless no-ops with no tab open')
+w3.deleteLater()
+APP.processEvents()
+
+# --- a keybindings drop-in drives the custom-shortcut parse at startup ---------
+_cfgd = os.path.join(os.environ['XDG_CONFIG_HOME'], 'secure-terminal.d')
+os.makedirs(_cfgd, exist_ok=True)
+with open(os.path.join(_cfgd, '90-keys.conf'), 'w', encoding='utf-8') as _kf:
+    _kf.write('keybindings=find=Ctrl+F new_tab=Ctrl+Shift+T\n')
+_wk = MainWindow()
+ok(True, 'a keybindings drop-in is parsed when the window starts')
+_wk.deleteLater()
+APP.processEvents()
+
 # --- main(): the entry point, driven with QApplication + exec + ipc mocked ----
 import signal as _signal                             # noqa: E402
 from secure_terminal.main import main as _main       # noqa: E402
