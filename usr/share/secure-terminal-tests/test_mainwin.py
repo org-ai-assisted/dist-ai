@@ -108,7 +108,6 @@ from PyQt6.QtCore import QEventLoop, QTimer                     # noqa: E402
 
 term = win.tabs.currentWidget()
 win._paste_delay = 2                       # secs=2 so the countdown _tick loops
-_dec_before = getattr(term, '_clip_read', None)
 
 
 def _exec_clip(self):
@@ -226,7 +225,8 @@ try:
     QFileDialog.getSaveFileName = staticmethod(lambda *_a, **_k: ('', ''))
     win.save_transcript()                   # cancelled -> return
     ok(True, 'save_transcript: cancelling the dialog is a no-op')
-    _tpath = tempfile.mktemp(suffix='.txt')
+    _tfd, _tpath = tempfile.mkstemp(suffix='.txt')
+    os.close(_tfd)                          # save_transcript reopens + overwrites
     QFileDialog.getSaveFileName = staticmethod(lambda *_a, **_k: (_tpath, ''))
     win.save_transcript()
     ok(os.path.exists(_tpath), 'save_transcript: writes the transcript to disk')
@@ -1063,7 +1063,7 @@ try:
     if _cov is not None:
         _cov.save()
 except Exception:
-    pass
+    pass                    # coverage is optional instrumentation, never fatal
 sys.stdout.flush()
 sys.stderr.flush()
 os._exit(1 if _failures else 0)

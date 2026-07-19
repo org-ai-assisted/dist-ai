@@ -60,7 +60,6 @@ Usage: grep_find_unicode_wrapper_test.py [--iterations N] [--seed N] [--fuzz-onl
 import argparse
 import os
 import subprocess
-import sys
 import tempfile
 
 REPO = os.environ.get("GREP_FIND_UNICODE_WRAPPER_REPO")

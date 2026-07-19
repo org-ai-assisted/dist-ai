@@ -9,11 +9,9 @@ DOM_DIFF_HOST_SCRUB is unset it must be a complete no-op (same-host diffs).
 
 Run directly: python3 tests/test_host_scrub.py
 """
-import json
 import os
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 LIB = str(Path(__file__).resolve().parent.parent)

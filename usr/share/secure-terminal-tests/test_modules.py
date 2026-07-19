@@ -98,7 +98,7 @@ def _serve_once(path, responder):
             finally:
                 conn.close()
         except OSError:
-            pass
+            pass                # the client may have hung up; the thread just ends
         finally:
             srv.close()
 

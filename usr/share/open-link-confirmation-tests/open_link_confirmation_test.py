@@ -276,6 +276,7 @@ def run_qt_differential(results):
     app = QtWidgets.QApplication.instance()
     if app is None:
         app = QtWidgets.QApplication(sys.argv)
+    assert app is not None  # keep the QApplication alive for the widgets built below
 
     ## Baseline: the wrapper with an inert placeholder must itself introduce no
     ## anchors or images, so anything new is attributable to the argument.

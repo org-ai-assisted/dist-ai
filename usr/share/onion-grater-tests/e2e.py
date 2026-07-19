@@ -131,6 +131,7 @@ class Control:
         try:
             self.command("QUIT")
         except OSError:
+            # best-effort; the control connection may be unavailable
             pass
         self.fp.close()
         self.sock.close()
@@ -175,6 +176,7 @@ def start_tor():
                     if os.path.exists(COOKIE):
                         return proc
             except OSError:
+                # best-effort; the control connection may be unavailable
                 pass
             time.sleep(0.2)
         raise RuntimeError("tor control port did not come up")

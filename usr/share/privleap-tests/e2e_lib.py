@@ -208,9 +208,11 @@ def fuzz_socket_once(sock_path: str, payload: bytes) -> None:
         try:
             raw.recv(256)
         except OSError:
+            # socket already torn down; teardown is best-effort
             pass
         raw.close()
     except OSError:
+        # socket already torn down; teardown is best-effort
         pass
 
 

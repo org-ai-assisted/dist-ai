@@ -64,9 +64,9 @@ _REGRESSIONS = [
     '<a href="a"><a href="b">nested</a></a>',
     '<a href="<a href=">weird</a>',
     '</p><a href="a"><a href="b">nested</a></a><a href="<a href=">weird</a>'
-    '<a href="url">a</a><a href="url2">b</a><a href="x">&gt;</a>',
+    + '<a href="url">a</a><a href="url2">b</a><a href="x">&gt;</a>',
     '<a href="a"><a href="b">nested</a></a>&lt;&gt;'
-    '<a href="x"><a href="a"><a href="b">nested</a></a>',
+    + '<a href="x"><a href="a"><a href="b">nested</a></a>',
 ]
 
 

@@ -110,6 +110,7 @@ def check() -> None:
         try:
             os.kill(state["watcher_pid"], 15)
         except OSError:
+            # the watcher already exited
             pass
 
     failures = []

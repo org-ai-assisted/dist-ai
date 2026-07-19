@@ -15,7 +15,9 @@ needs a live Tor control port via stem) is not exercised here.
 import re
 import unittest
 
-import tcp_testlib as T  # noqa: F401  (imports set up offscreen Qt + QApplication)
+import tcp_testlib
+
+tcp_testlib.require_app()  # side-effect harness: sys.path + offscreen QApplication
 from PyQt5.QtCore import QObject
 from tor_control_panel import tor_bootstrap
 

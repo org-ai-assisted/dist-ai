@@ -29,7 +29,7 @@ import os
 import sys
 import types
 import unittest
-from unittest import mock
+import unittest.mock as mock
 
 _TCP_BINARY: str = "/usr/bin/tor-control-panel"
 

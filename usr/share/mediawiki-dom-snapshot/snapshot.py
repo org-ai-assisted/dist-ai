@@ -655,6 +655,7 @@ async def capture_one(
                 timeout=TIMEOUT_MS,
             )
         except Exception:
+            # best-effort browser/API side effect; a failure must not abort the snapshot
             pass
 
         ## postedit flow: edit the page via the MW API, then load it.
@@ -708,12 +709,14 @@ async def capture_one(
         try:
             await page.wait_for_load_state("load", timeout=TIMEOUT_MS)
         except Exception:
+            # best-effort browser/API side effect; a failure must not abort the snapshot
             pass
 
         await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         try:
             await page.wait_for_load_state("networkidle", timeout=5000)
         except Exception:
+            # best-effort browser/API side effect; a failure must not abort the snapshot
             pass
         await page.evaluate("window.scrollTo(0, 0)")
 
@@ -737,6 +740,7 @@ async def capture_one(
                 timeout=30000,
             )
         except Exception:
+            # best-effort browser/API side effect; a failure must not abort the snapshot
             pass
         try:
             await page.evaluate(
@@ -744,6 +748,7 @@ async def capture_one(
                 "(window.requestIdleCallback || setTimeout)(r, 500))"
             )
         except Exception:
+            # best-effort browser/API side effect; a failure must not abort the snapshot
             pass
 
         await page.add_style_tag(content="""
@@ -967,6 +972,7 @@ async def capture_one(
             try:
                 await _api_edit(context, BASE, safe, append_marker=False)
             except Exception:
+                # best-effort browser/API side effect; a failure must not abort the snapshot
                 pass
 
         return (label, title, status, len(html))
@@ -1032,10 +1038,12 @@ async def capture_hover_styles(page) -> dict:
             try:
                 await handle.hover(timeout=2000)
             except Exception:
+                # best-effort browser/API side effect; a failure must not abort the snapshot
                 pass
             try:
                 await handle.focus(timeout=2000)
             except Exception:
+                # best-effort browser/API side effect; a failure must not abort the snapshot
                 pass
             await asyncio.sleep(0.05)
             styles = await handle.evaluate(
@@ -1050,6 +1058,7 @@ async def capture_hover_styles(page) -> dict:
         try:
             await page.evaluate("() => document.activeElement && document.activeElement.blur()")
         except Exception:
+            # best-effort browser/API side effect; a failure must not abort the snapshot
             pass
     return out
 

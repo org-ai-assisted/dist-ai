@@ -40,7 +40,6 @@ import e2e_lib  # noqa: E402
 
 e2e_lib.reexec_under_mount_namespace("PRIVLEAP_E2E_INSIDE")
 
-from e2e_lib import INJECT_ETCENV, INJECT_PAMENV  # noqa: E402
 from pl_testlib import Results, current_username  # noqa: E402
 
 e2e_lib.import_target()
@@ -68,25 +67,27 @@ def setup_env_injection(user: str, workdir: str) -> tuple[set[str], str]:
             os.chmod(home, 0o700)
             pam_env_path: str = os.path.join(home, ".pam_environment")
             with open(pam_env_path, "w", encoding="utf-8") as handle:
-                handle.write(f"{INJECT_PAMENV} DEFAULT=injected\n")
+                handle.write(f"{e2e_lib.INJECT_PAMENV} DEFAULT=injected\n")
                 handle.write(f"BASH_ENV DEFAULT={bashenv_script}\n")
                 handle.write("LD_PRELOAD DEFAULT=/nonexistent/evil.so\n")
             os.chown(pam_env_path, info.pw_uid, info.pw_gid)
             os.chmod(pam_env_path, 0o600)
             planted.add("pam_environment")
         except OSError:
+            # precondition could not be planted in this sandbox; skip it
             pass
 
     if os.path.isfile("/etc/environment"):
         fake_env: str = os.path.join(workdir, "fake_environment")
         with open(fake_env, "w", encoding="utf-8") as handle:
-            handle.write(f"{INJECT_ETCENV}=injected\n")
+            handle.write(f"{e2e_lib.INJECT_ETCENV}=injected\n")
         try:
             subprocess.run(
                 ["mount", "--bind", fake_env, "/etc/environment"], check=True
             )
             planted.add("etc_environment")
         except subprocess.CalledProcessError:
+            # precondition could not be planted in this sandbox; skip it
             pass
 
     return planted, bashenv_sentinel

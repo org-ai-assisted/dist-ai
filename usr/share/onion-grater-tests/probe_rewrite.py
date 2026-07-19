@@ -57,7 +57,8 @@ def og_last_rewrite():
     """Return the most recent 'rewrote command' (old, new) from the og debug log."""
     if not os.path.exists(OG_DEBUG):
         return None
-    txt = open(OG_DEBUG, errors="replace").read()
+    with open(OG_DEBUG, errors="replace") as _dh:
+        txt = _dh.read()
     m = re.findall(r"rewrote command:\n(.+?)\nto:\n(.+?)\n", txt, re.S)
     return m[-1] if m else None
 
@@ -144,6 +145,7 @@ def main():
             try:
                 ctl.command("DEL_ONION " + sid)
             except OSError:
+                # best-effort onion cleanup; it may already be gone
                 pass
         ctl.close()
 

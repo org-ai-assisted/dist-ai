@@ -19,8 +19,8 @@ from tor_control_panel import anon_connection_wizard as acw
 from tor_control_panel import tor_control_panel as tcp
 
 try:
-    import stem  # noqa: F401  (newnym imports it lazily)
-    HAVE_STEM = True
+    import stem
+    HAVE_STEM = stem is not None    # newnym imports it lazily; require it present
 except ImportError:
     HAVE_STEM = False
 

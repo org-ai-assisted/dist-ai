@@ -149,6 +149,7 @@ def diff_assets(base: Path, cand: Path, brief: bool) -> tuple[list[tuple], list[
                         btxt, ctxt, str(bpath), str(cpath), max_lines=120,
                     ))
                 except UnicodeDecodeError:
+                    # a binary asset cannot be text-diffed; skip it
                     pass
         if not h_eq:
             keys = sorted(set(bheaders) | set(cheaders))

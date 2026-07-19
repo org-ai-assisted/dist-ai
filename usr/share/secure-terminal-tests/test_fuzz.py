@@ -49,7 +49,8 @@ SAFE_OUTPUT = frozenset((0x08, 0x09, 0x0A, 0x0D)) | frozenset(range(0x20, 0x7F))
 RUN = settings(max_examples=400, deadline=None)
 
 # reusable temp locations for the config/session parsers (overwritten per example)
-_CONF_FILE = tempfile.mktemp(suffix='.conf')
+_conf_fd, _CONF_FILE = tempfile.mkstemp(suffix='.conf')
+os.close(_conf_fd)                          # created empty; overwritten per example
 _STATE_DIR = tempfile.mkdtemp(prefix='st-fuzz-state-')
 SESS._state_dir = lambda: _STATE_DIR       # so session.load reads our temp dir
 

@@ -378,6 +378,7 @@ def run_check_scenario_isolated(check_file: str, call: str, env_setup: str = "",
             try:
                 os.unlink(tmp)
             except OSError:
+                # the temp file was already removed
                 pass
     result = _parse_scenario_output(proc)
     ## The scenario script unconditionally prints the EXITCODE marker last (it

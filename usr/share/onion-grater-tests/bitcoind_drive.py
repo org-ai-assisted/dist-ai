@@ -97,7 +97,8 @@ def run_bitcoind():
                 break
             dbg = os.path.join(DATADIR, "debug.log")
             if os.path.exists(dbg):
-                txt = open(dbg, errors="replace").read()
+                with open(dbg, errors="replace") as _dh:
+                    txt = _dh.read()
                 if "ADD_ONION successful" in txt or "Got tor service ID" in txt \
                    or "Command filtered" in txt:
                     break
@@ -127,10 +128,17 @@ def main():
         e2e.cleanup_profile()
         e2e.teardown_veth_ip()
 
-    debug = open(OG_DEBUG_LOG).read() if os.path.exists(OG_DEBUG_LOG) else ""
+    if os.path.exists(OG_DEBUG_LOG):
+        with open(OG_DEBUG_LOG) as _dh:
+            debug = _dh.read()
+    else:
+        debug = ""
     btc_dbg_path = os.path.join(DATADIR, "debug.log")
-    btc_dbg = open(btc_dbg_path, errors="replace").read() \
-        if os.path.exists(btc_dbg_path) else ""
+    if os.path.exists(btc_dbg_path):
+        with open(btc_dbg_path, errors="replace") as _bh:
+            btc_dbg = _bh.read()
+    else:
+        btc_dbg = ""
 
     sent = re.findall(r"-> (.+)", debug)
     filtered = re.findall(r"command filtered: (.+)", debug)

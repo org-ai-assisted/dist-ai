@@ -136,7 +136,7 @@ def resolve_internal(root, page, target, mount=None, parent_roots=()):
     if '#' in target:
         target, frag = target.split('#', 1)
     if target == '':
-        return ('#self', frag)               # same-page fragment
+        return ('#self', None, frag)         # same-page fragment (no candidate list)
     if target.startswith('/'):
         # A subsite's own mount prefix (/git-diffs-lie/...) maps back onto its own
         # tree, so verify it there rather than skipping it as an external sibling.
@@ -194,7 +194,7 @@ def check_links(root, failures, mount=None, parent_roots=()):
             if resolved is None:
                 continue
             if resolved[0] == '#self':
-                frag = resolved[1]
+                frag = resolved[2]
                 if frag and frag not in ext.ids:
                     failures.append(
                         '%s: broken in-page anchor #%s' % (rel, frag))

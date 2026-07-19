@@ -55,6 +55,7 @@ SafeTextBrowser = _NS["SafeTextBrowser"]
 
 ## One QApplication for the whole module (offscreen; no display needed).
 _APP = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv[:1])
+assert _APP is not None     # a QApplication must outlive every widget built below
 _BROWSER = SafeTextBrowser()
 
 _RESOURCE_TYPES = [

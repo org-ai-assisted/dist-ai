@@ -103,6 +103,7 @@ def run_watcher(log_path: str) -> None:
     bus = dbus.SessionBus()
     _name = dbus.service.BusName(WATCHER_IFACE, bus)
     _watcher = Watcher(bus)
+    assert _name is not None and _watcher is not None  # hold the D-Bus name + service alive
     log("WATCHER_UP")
     GLib.MainLoop().run()
 
@@ -135,6 +136,7 @@ def watcher_up(log_path: str, timeout: float = 5.0) -> None:
                 if any(l.startswith("WATCHER_UP") for l in log_file):
                     return
         except FileNotFoundError:
+            # the log is not written yet; the caller retries
             pass
         time.sleep(0.05)
 
@@ -145,7 +147,8 @@ def run_arm(arm: str) -> None:
     from PyQt5.QtGui import QIcon, QPixmap
     from PyQt5.QtWidgets import QApplication, QSystemTrayIcon
 
-    log_path = tempfile.mktemp(prefix=f"sni-{arm}-")
+    _lfd, log_path = tempfile.mkstemp(prefix=f"sni-{arm}-")
+    os.close(_lfd)
     app = QApplication(["repro-" + arm])
     if app.platformName() != "xcb":
         print(f"SKIP {arm}: need the xcb platform, got {app.platformName()!r}")

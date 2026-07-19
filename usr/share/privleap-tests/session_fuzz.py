@@ -145,18 +145,22 @@ def _run_session(
                 try:
                     sock.recv(512)
                 except OSError:
+                    # best-effort socket op in the fuzz loop; the peer may be gone
                     pass
         if rng.random() < 0.5:
             try:
                 sock.recv(1024)
             except OSError:
+                # best-effort socket op in the fuzz loop; the peer may be gone
                 pass
     except OSError:
+        # best-effort socket op in the fuzz loop; the peer may be gone
         pass
     finally:
         try:
             sock.shutdown(socket.SHUT_RDWR)
         except OSError:
+            # best-effort socket op in the fuzz loop; the peer may be gone
             pass
         sock.close()
 
@@ -317,6 +321,7 @@ def main() -> int:
         try:
             os.unlink(allow_sentinel)
         except FileNotFoundError:
+            # best-effort socket op in the fuzz loop; the peer may be gone
             pass
         post_allow, _ = e2e_lib.run_signal(user, "e2e-allow")
         results.check(

@@ -21,7 +21,9 @@ import subprocess
 import tempfile
 import unittest
 
-import tcp_testlib as T  # noqa: F401  (sets up sys.path)
+import tcp_testlib
+
+tcp_testlib.require_app()  # side-effect harness: sys.path + offscreen QApplication
 
 TOR = shutil.which("tor")
 

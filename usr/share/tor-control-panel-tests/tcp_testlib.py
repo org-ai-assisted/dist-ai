@@ -70,6 +70,17 @@ from PyQt5.QtWidgets import QApplication  # noqa: E402
 ## second one aborts. Reuse any instance a test runner already made.
 APP: QApplication = QApplication.instance() or QApplication(["tor-control-panel-tests"])
 
+
+def require_app() -> QApplication:
+    """Return the process-wide offscreen QApplication (created at import time).
+
+    Test modules that only need the harness for its side effects (sys.path
+    resolution + a live QApplication) call this so the ``import tcp_testlib`` is
+    an explicit, referenced dependency rather than an import that merely looks
+    unused.
+    """
+    return APP
+
 ## Imported after the source is resolved and the QApplication exists.
 from tor_control_panel import torrc_gen, tor_status  # noqa: E402
 

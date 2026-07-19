@@ -130,7 +130,9 @@ def main(argv: list[str] | None = None) -> int:
         rng = random.Random(seed)
         try:
             _one_round(rng, use_bytes)
-        except BaseException as exc:  # noqa: BLE001 -- fuzz harness
+        except (Exception, SystemExit) as exc:  # fuzz harness: record any target
+            # crash (incl. a target calling sys.exit) but let KeyboardInterrupt
+            # through so the operator can still stop the run
             sig = _signature(exc)
             rng2 = random.Random(seed)
             seq = [rng2.choice(TOKENS) for _ in range(rng2.randint(1, 10))]

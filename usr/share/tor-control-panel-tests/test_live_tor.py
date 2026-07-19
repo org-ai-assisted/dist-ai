@@ -64,8 +64,8 @@ SNOWFLAKE_BRIDGE = (
 try:
     ## tor_bootstrap imports stem lazily; the live tests drive it, so stem must
     ## be present or they cannot run (e.g. a CI image with tor but no stem).
-    import stem  # noqa: F401
-    HAVE_STEM = True
+    import stem
+    HAVE_STEM = stem is not None
 except ImportError:
     HAVE_STEM = False
 
@@ -203,6 +203,7 @@ class _Socks5Forwarder:
             try:
                 conn.close()
             except OSError:
+                # best-effort socket teardown; the peer may be gone
                 pass
 
     @staticmethod
@@ -223,6 +224,7 @@ class _Socks5Forwarder:
                         return
                     key.data.sendall(data)
         except OSError:
+            # best-effort socket teardown; the peer may be gone
             pass
         finally:
             sel.close()
@@ -230,6 +232,7 @@ class _Socks5Forwarder:
                 try:
                     sock.close()
                 except OSError:
+                    # best-effort socket teardown; the peer may be gone
                     pass
 
     def stop(self):
@@ -237,6 +240,7 @@ class _Socks5Forwarder:
         try:
             self._srv.close()
         except OSError:
+            # best-effort socket teardown; the peer may be gone
             pass
 
 

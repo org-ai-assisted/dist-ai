@@ -6,7 +6,6 @@ idempotency properties. Sequences that would hit the four known crash defects
 stays green on upstream master; the fuzz harness (``fuzz_pyte.py``) tracks
 those separately via an allowlist.
 """
-import re
 
 import pytest
 
@@ -14,7 +13,6 @@ hypothesis = pytest.importorskip("hypothesis")
 from hypothesis import given, settings, strategies as st  # noqa: E402
 
 import pyte  # noqa: E402
-from pyte import modes as mo  # noqa: E402
 
 
 # Printable + a few control characters; deliberately excludes ESC/CSI so these

@@ -41,7 +41,6 @@ import signal
 import subprocess
 import sys
 import tempfile
-import time
 from types import FrameType
 
 HERE: str = os.path.dirname(os.path.abspath(__file__))
@@ -85,7 +84,6 @@ reexec_under_sudo()
 
 # pylint: disable=wrong-import-position
 import e2e_lib  # noqa: E402
-from e2e_lib import INJECT_ETCENV, INJECT_PAMENV  # noqa: E402
 from pl_testlib import Results, current_username  # noqa: E402
 
 e2e_lib.import_target()
@@ -182,7 +180,7 @@ def setup_env_injection(
 
         restorer.push("~/.pam_environment", restore_pam)
         with open(pam_env_path, "w", encoding="utf-8") as handle:
-            handle.write(f"{INJECT_PAMENV} DEFAULT=injected\n")
+            handle.write(f"{e2e_lib.INJECT_PAMENV} DEFAULT=injected\n")
             handle.write(f"BASH_ENV DEFAULT={bashenv_script}\n")
             handle.write("LD_PRELOAD DEFAULT=/nonexistent/evil.so\n")
         os.chown(pam_env_path, info.pw_uid, info.pw_gid)
@@ -198,7 +196,7 @@ def setup_env_injection(
 
         restorer.push("/etc/environment", restore_etcenv)
         with open(ETC_ENVIRONMENT, "a", encoding="utf-8") as handle:
-            handle.write(f"\n{INJECT_ETCENV}=injected\n")
+            handle.write(f"\n{e2e_lib.INJECT_ETCENV}=injected\n")
         planted.add("etc_environment")
 
     return planted, bashenv_sentinel
@@ -227,6 +225,7 @@ def install_repo_dropin(repo: str, restorer: Restorer) -> None:
             try:
                 os.rmdir(DROPIN_DIR)
             except OSError:
+                # best-effort cleanup; the resource may already be gone
                 pass
         sh(["systemctl", "daemon-reload"], check=False)
 
@@ -361,7 +360,7 @@ def main() -> int:
     results.check(
         "no attacker-planted variable in the real systemd action env",
         not any(
-            line.split("=", 1)[0] in (INJECT_PAMENV, INJECT_ETCENV,
+            line.split("=", 1)[0] in (e2e_lib.INJECT_PAMENV, e2e_lib.INJECT_ETCENV,
                                       "LD_PRELOAD", "BASH_ENV")
             for line in env_text.splitlines()
         ),

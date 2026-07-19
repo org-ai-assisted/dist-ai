@@ -89,9 +89,10 @@ DISCLAIMER_STEPS = ["disclaimer_1", "disclaimer_2", "finish_page"]
 FINISH_ONLY_STEPS = ["finish_page"]
 
 ## Every translation key the wizard resolves via self._('...').
-SOURCE_KEYS = frozenset(
-    re.findall(r"self\._\('([^']+)'\)", open(swd.__file__).read())
-)
+with open(swd.__file__) as _swd_src:
+    SOURCE_KEYS = frozenset(
+        re.findall(r"self\._\('([^']+)'\)", _swd_src.read())
+    )
 
 
 def make_wizard(testcase, show_disclaimer, steps, environment=None):

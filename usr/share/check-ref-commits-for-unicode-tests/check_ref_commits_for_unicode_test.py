@@ -69,7 +69,6 @@ Usage: check_ref_commits_for_unicode_test.py [--iterations N] [--seed N] [--fuzz
 import argparse
 import os
 import subprocess
-import sys
 import tempfile
 
 REPO = os.environ.get("CHECK_REF_COMMITS_REPO")

@@ -42,7 +42,6 @@ import os
 import socket
 import sys
 
-HERE: str = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_REPO: str = "/home/user/derivative-maker/packages/kicksecure/privleap"
 INSTALLED_PARENT: str = "/usr/lib/python3/dist-packages"
 
@@ -164,10 +163,12 @@ def _drive(raw: bytes, control: bool) -> None:
         try:
             cli.sendall(raw)
         except OSError:
+            # best-effort socket op; the server may have closed
             pass
         try:
             cli.shutdown(socket.SHUT_WR)
         except OSError:
+            # best-effort socket op; the server may have closed
             pass
 
         legal: tuple[str, ...] = CONTROL_RECV if control else COMM_RECV

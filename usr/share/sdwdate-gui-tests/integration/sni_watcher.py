@@ -81,6 +81,7 @@ def main() -> None:
     ## Hold the well-known name for the lifetime of the process.
     _name = dbus.service.BusName(WATCHER_IFACE, bus)
     _watcher = StatusNotifierWatcher(bus)
+    assert _name is not None and _watcher is not None  # hold the D-Bus name + service alive
     log("WATCHER_UP")
     GLib.MainLoop().run()
 

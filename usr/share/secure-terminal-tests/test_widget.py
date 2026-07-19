@@ -27,7 +27,7 @@ os.environ['XDG_STATE_HOME'] = tempfile.mkdtemp(prefix='st-widget-state-')
 try:
     signal.signal(signal.SIGCHLD, signal.SIG_IGN)
 except (OSError, ValueError, AttributeError):
-    pass
+    pass                    # not the main thread / unsupported: reaping is optional
 
 try:
     from PyQt6.QtWidgets import QApplication, QInputDialog
@@ -365,7 +365,7 @@ if tui_available():
                  'printf "dirA  dirB\\n"\n'
                  'printf "\\033[Aprompt> cd dirA\\033[K\\n"\n'   # cursor up + redraw
                  'sleep 3\n')
-    os.chmod(_mprog, 0o755)
+    os.chmod(_mprog, 0o700)
     _mt = SecureTerminal(command=_mprog, tui=True)
     _mt.resize(600, 300)
     _mt.show()
@@ -378,7 +378,7 @@ if tui_available():
     _hprog = os.path.join(tempfile.mkdtemp(prefix='st-hist-'), 'h.sh')
     with open(_hprog, 'w') as _f:
         _f.write('#!/bin/sh\nfor i in 1 2 3 4 5; do echo "scrollback-$i"; done\nsleep 3\n')
-    os.chmod(_hprog, 0o755)
+    os.chmod(_hprog, 0o700)
     _ht = SecureTerminal(command=_hprog)          # start in CLI
     _ht.resize(600, 300)
     _ht.show()
@@ -399,7 +399,7 @@ if tui_available():
                  'sleep 0.4\n'
                  'printf "\\033[?1049l"\n'
                  'sleep 3\n')
-    os.chmod(_fprog, 0o755)
+    os.chmod(_fprog, 0o700)
     _ft = SecureTerminal(command=_fprog, tui=True)
     _ft.resize(600, 300)
     _ft.show()
@@ -431,7 +431,7 @@ if tui_available():
                  'sleep 0.3\n'
                  'printf "\\033[?1049lPROMPT-AFTER-LEAVE\\$ "\n'
                  'sleep 3\n')
-    os.chmod(_pprog, 0o755)
+    os.chmod(_pprog, 0o700)
     _pt = SecureTerminal(command=_pprog, tui=True)
     _pt.resize(600, 300)
     _pt.show()
@@ -656,9 +656,9 @@ eq(_dc, [0x202E], 'double-click on a marking opens its inspection popup')
 hk = SecureTerminal(command='/bin/cat')
 _handler = [sys.executable, '-c',
             'import sys, json\n'
-            'c = json.load(sys.stdin)["command"]\n'
-            'print(json.dumps({"verdict": "block", "message": "no",'
-            ' "suggestion": "ls"} if "sudo sh" in c else {"verdict": "allow"}))']
+            + 'c = json.load(sys.stdin)["command"]\n'
+            + 'print(json.dumps({"verdict": "block", "message": "no",'
+            + ' "suggestion": "ls"} if "sudo sh" in c else {"verdict": "allow"}))']
 hk.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow',
                'transcript': 'none'})
 _hsent = spy_writes(hk)
@@ -822,6 +822,7 @@ if tui_available():
     tui.apply_allow_title(False)
     before = len(titles)
     tui._stream.feed(b'\x1b]2;ignored\x07')
+    ok(len(titles) == before, 'allow_title off: the guarded feed path emits no title')
     tui._handle_osc(b'\x1b]2;ignored\x07')  # guard is in _on_readable
     # --- granular OSC handlers: each off by default, honored only when enabled ---
     import base64 as _b64                                   # noqa: E402
@@ -863,8 +864,6 @@ if tui_available():
        and _QGA2.clipboard().text() == 'UNTOUCHED',
        'OSC 1337 is a no-op stub: no signal, no clipboard, no cwd -- even enabled')
     # palette OSC 4/10/11: gated, and a program CANNOT hide text by moving fg==bg
-    from PyQt6.QtGui import QPalette as _QPal                # noqa: E402
-
     class _Cell:                                            # a default-coloured cell
         fg = bg = 'default'
         bold = reverse = underscore = False
@@ -915,7 +914,7 @@ if tui_available():
                      'printf "HIST_LINE\\n"\n'
                      'printf "\\033[?1049h\\033[2J\\033[HFRAME_XYZ\\n"\n'
                      'sleep 30\n')
-        os.chmod(_script, 0o755)
+        os.chmod(_script, 0o700)
         sw = SecureTerminal(command=_script)
         _adv = []
         sw.advise_signal.connect(_adv.append)   # advisories are EMITTED, not injected
@@ -992,7 +991,8 @@ from secure_terminal import settings                 # noqa: E402
 
 # version: baked from debian/changelog at build, read at runtime, fail open
 eq(_read_version(['/no/such/version']), 'unknown', 'missing version file -> unknown')
-_vf = tempfile.mktemp(prefix='st-version-')
+_vfd, _vf = tempfile.mkstemp(prefix='st-version-')
+os.close(_vfd)
 with open(_vf, 'w', encoding='utf-8') as _vh:
     _vh.write('1.2.3-4\n')
 eq(_read_version([_vf]), '1.2.3-4', 'version file is read and stripped')
@@ -1110,7 +1110,7 @@ with open(_oscsh, 'w') as _f:
              'printf "\\033]2;secret-title\\007visible\\n"\n'
              'printf "\\033]0;another\\007more\\n"\n'
              'sleep 2\n')
-os.chmod(_oscsh, 0o755)
+os.chmod(_oscsh, 0o700)
 oscterm = SecureTerminal(command=_oscsh)
 _oscfired = []
 oscterm.osc_used.connect(lambda key: _oscfired.append(key))
@@ -1376,7 +1376,8 @@ try:
     lw.close()
     # save() must never write a locked key back to the (dead) user config
     settings.save({'colors': 'true', 'theme': 'dark'}, locked=lc.locked)
-    _written = open(settings.user_config_file()).read()
+    with open(settings.user_config_file()) as _wf:
+        _written = _wf.read()
     ok('colors=' not in _written and 'theme=dark' in _written,
        'save drops locked keys, keeps unlocked ones')
 finally:
@@ -1569,7 +1570,7 @@ with open(_evil, 'w') as _f:
              "printf '\\033]0;pwned\\007visible-text\\n'\n"  # OSC title injection
              "printf 'admin \\342\\200\\256nimda\\342\\200\\254 bidi\\n'\n"
              'sleep 30\n')
-os.chmod(_evil, 0o755)
+os.chmod(_evil, 0o700)
 ssh = SecureTerminal(command=_evil)          # stands in for: ssh host cat evil
 ssh.resize(700, 300)
 ssh.show()
@@ -1828,7 +1829,8 @@ _links = []
 _oh.notified.connect(lambda s: _links.append(s))
 # OSC 8 hyperlink with an ST (ESC \) terminator, not just BEL, must be surfaced
 _oh._handle_osc(b'\x1b]8;;https://example.com/a\x1b\\click\x1b]8;;\x1b\\')
-ok(any('example.com' in s for s in _links), 'OSC 8 hyperlink with an ST terminator is surfaced')
+ok(any('https://example.com/a' in s for s in _links),
+   'OSC 8 hyperlink with an ST terminator is surfaced')
 # an OSC split across two reads (a 64KiB clipboard is guaranteed to) is still acted on
 _links.clear()
 _oh._handle_osc(b'\x1b]9;hello ')                 # incomplete -> held as carry
@@ -1905,7 +1907,8 @@ _tt1.close()
 # alternate screen -- assert at the source of truth (the .ti)
 _ti = _timod._terminfo_source()
 ok(_ti and os.path.isfile(_ti), 'the terminfo source ships')
-_ti_txt = open(_ti, encoding='utf-8').read()
+with open(_ti, encoding='utf-8') as _tih:
+    _ti_txt = _tih.read()
 ok(all(cap in _ti_txt for cap in ('u6@', 'u7@', 'u8@', 'u9@', 'RV@',
                                   'cup@', 'smcup@', 'rmcup@', 'clear@')),
    'the entry cancels the query + cursor-addressing + alt-screen caps')
@@ -3289,7 +3292,7 @@ try:
     if _covw is not None:
         _covw.save()
 except Exception:
-    pass
+    pass                    # coverage is optional instrumentation, never fatal
 sys.stdout.flush()
 sys.stderr.flush()
 os._exit(0 if FAIL == 0 else 1)

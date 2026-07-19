@@ -218,6 +218,7 @@ def make_qt_probe():
     app = QtWidgets.QApplication.instance()
     if app is None:
         app = QtWidgets.QApplication(sys.argv)
+    assert app is not None  # keep the QApplication alive for the widgets built below
 
     def probe(sanitized):
         doc = QtGui.QTextDocument()

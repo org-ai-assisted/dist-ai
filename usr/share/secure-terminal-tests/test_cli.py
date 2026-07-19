@@ -57,7 +57,7 @@ def _set_winsize(fd, rows, cols):
     try:
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
     except OSError:
-        pass
+        pass                # a pty may reject the window size; it is advisory
 
 
 def run_in_pty(argv, feed=b'', tty_stdin=True, settle=0.8, feed_delay=0.0,
@@ -92,12 +92,12 @@ def run_in_pty(argv, feed=b'', tty_stdin=True, settle=0.8, feed_delay=0.0,
             try:
                 os.write(writer, feed)
             except OSError:
-                pass
+                pass        # the child may have exited; the feed is best-effort
         if close_stdin and not tty_stdin:
             try:
                 os.close(in_w)                 # EOF on the wrapper's stdin
             except OSError:
-                pass
+                pass        # already closed by a prior path; harmless
         while not stop.is_set():
             try:
                 r, _, _ = select.select([out_master], [], [], 0.1)
@@ -129,17 +129,17 @@ def run_in_pty(argv, feed=b'', tty_stdin=True, settle=0.8, feed_delay=0.0,
             try:
                 os.close(fd)
             except OSError:
-                pass
+                pass        # a saved fd may already be closed; ignore
         try:
             signal.signal(signal.SIGWINCH, prev_winch)
         except (OSError, ValueError, TypeError):
-            pass
+            pass            # restoring the handler off the main thread may fail
         for fd in (out_master, out_slave, in_r, in_w):
             if fd is not None:
                 try:
                     os.close(fd)
                 except OSError:
-                    pass
+                    pass    # a pty/pipe fd may already be closed; ignore
     return b''.join(chunks), rc
 
 

@@ -14,7 +14,9 @@ real command. Captures the plain-Debian design (adrelanos / ArrayBolt3).
 
 import unittest
 
-import tcp_testlib as T  # noqa: F401  (sets up sys.path / offscreen Qt)
+import tcp_testlib
+
+tcp_testlib.require_app()  # side-effect harness: sys.path + offscreen QApplication
 from tor_control_panel import privilege
 
 

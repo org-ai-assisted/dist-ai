@@ -669,12 +669,13 @@ if os.path.exists(_ex):
 import json as _json                               # noqa: E402
 _aij = os.path.join(_usr, "share", "secure-terminal", "hooks", "ai-judge-hook")
 if os.path.exists(_aij):
-    _mockai = tempfile.mktemp(prefix="mock-ai-")
+    _maifd, _mockai = tempfile.mkstemp(prefix="mock-ai-")
+    os.close(_maifd)
     with open(_mockai, "w", encoding="utf-8") as _mh:
         _mh.write("#!/usr/bin/python3\nimport sys\np = sys.stdin.read()\n"
                   'print("{\\"verdict\\": \\"block\\"}" if "sudo sh" in p '
                   'else "{\\"verdict\\": \\"allow\\"}")\n')
-    os.chmod(_mockai, 0o755)
+    os.chmod(_mockai, 0o700)
 
     def _run_aij(req, ai=None):
         env = dict(os.environ, SECURE_TERMINAL_AI=ai or _mockai)

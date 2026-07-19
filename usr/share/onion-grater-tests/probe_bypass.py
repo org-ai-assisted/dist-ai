@@ -16,7 +16,6 @@ offline) -- we only need the response code to tell whether it reached Tor.
 import os
 import socket
 import sys
-import time
 
 import e2e
 
@@ -73,6 +72,7 @@ def drain_reply(fp, sock, timeout=3.0):
             if len(t) >= 4 and t[3] == " " and t[:3].isdigit():
                 break  # final line of this reply
     except (socket.timeout, OSError):
+        # best-effort socket read/teardown; the peer may be gone
         pass
     if not lines:
         return (False, "no-response (rejected/ignored line)")
@@ -106,6 +106,7 @@ def main():
             try:
                 sock.close()
             except OSError:
+                # best-effort socket read/teardown; the peer may be gone
                 pass
             return result
 
