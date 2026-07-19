@@ -160,7 +160,11 @@ def phase_lines(rnd, iterations, seed):
         _assert(isinstance(prefix, int) and prefix >= 0,
                 'cells_to_runs bad prefix on {0!r}'.format(text), seed)
         for run_text, _key in runs:
-            _assert(all(ord(ch) in SAFE or ch == '\n' for ch in run_text),
+            # STRIP_BOX (U+25A1) is cells_to_runs' intentional strip-mode
+            # placeholder for a neutralized cell (the widget maps it back to '_'
+            # on export) -- safe by design, so allow it alongside the ASCII set.
+            _assert(all(ord(ch) in SAFE or ch in ('\n', S.STRIP_BOX)
+                        for ch in run_text),
                     'cells_to_runs strip run not safe on {0!r}'.format(text),
                     seed)
         disp = S.cells_display_col(cells, col, 'strip')
