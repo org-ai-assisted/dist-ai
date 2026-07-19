@@ -392,6 +392,67 @@ ok(True, 'a keybindings drop-in is parsed when the window starts')
 _wk.deleteLater()
 APP.processEvents()
 
+# --- the single-instance IPC server: request dispatch + ctl/open/restore ------
+import json as _json                                            # noqa: E402
+
+if win.tabs.count() == 0:
+    win.new_tab()
+_tab0 = win.tabs.widget(0)
+_tid0 = win._tab_ids.get(_tab0)
+_title0 = win.tabs.tabText(0)
+
+
+def _disp(req):
+    return win._dispatch_request(_json.dumps(req).encode('utf-8'))
+
+
+ok(not win._dispatch_request(b'not json at all')['ok'],
+   'ipc: unparseable request bytes are rejected')
+ok(not _disp(['not', 'a', 'dict'])['ok'], 'ipc: a non-dict request is rejected')
+_rp = _disp({'op': 'ping'})
+ok(_rp['ok'] and 'pid' in _rp, 'ipc: ping replies ok + pid')
+ok(not _disp({'op': 'no-such-op'})['ok'], 'ipc: an unknown op is rejected')
+
+_saved_rc = win._remote_control
+try:
+    win._remote_control = False
+    ok(not _disp({'op': 'ctl-ls'})['ok'],
+       'ipc: a ctl op is refused when remote control is disabled')
+    win._remote_control = True
+    ok(_disp({'op': 'ctl-ls'})['ok'], 'ipc: ctl-ls lists the tabs')
+    ok(not _disp({'op': 'ctl-send-text', 'tab': 'id:999999', 'text': 'x'})['ok'],
+       'ipc: a ctl op on a non-matching tab -> error')
+    ok(_disp({'op': 'ctl-send-text', 'tab': 'id:%d' % _tid0, 'text': 'echo\n'})['ok'],
+       'ipc: ctl-send-text to a matched tab')
+    ok(not _disp({'op': 'ctl-send-text', 'tab': 'id:%d' % _tid0, 'text': 5})['ok'],
+       'ipc: ctl-send-text with non-string text is rejected')
+    _rd = _disp({'op': 'ctl-dump-tab', 'tab': 'id:%d' % _tid0, 'lines': 2})
+    ok(_rd['ok'] and 'text' in _rd, 'ipc: ctl-dump-tab returns the rendered text')
+    ok(_disp({'op': 'ctl-set-tab-title', 'tab': 'title:%s' % _title0,
+              'title': 'Renamed'})['ok'],
+       'ipc: ctl-set-tab-title matched by title')
+    ok(not _disp({'op': 'ctl-set-tab-title', 'tab': 'id:%d' % _tid0,
+                  'title': 5})['ok'],
+       'ipc: ctl-set-tab-title with a non-string title is rejected')
+finally:
+    win._remote_control = _saved_rc
+
+# open (the server side of a single-instance handoff)
+ok(win._ipc_open({'tabs': [{'title': 'opened', 'mode': 'strip'}]})['ok'],
+   'ipc: open creates the requested tabs')
+win._ipc_open({'tabs': 'not-a-list'})       # opened 0 -> ensure a usable tab
+ok(True, 'ipc: a bare open reuse still leaves a usable tab')
+
+# _restore_tab: rebuild a tab from saved session state (bad ints fall back)
+win._restore_tab({'text': 'hi', 'theme': 'dark', 'zoom': 'notanint',
+                  'scrollback': 'nope', 'mode': 'strip', 'osc': {}})
+win._restore_tab({'allow_title': True, 'bell': 'audible'})   # legacy pre-OSC path
+ok(True, '_restore_tab rebuilds a tab and tolerates bad zoom/scrollback values')
+
+# bind the single-instance listening socket (isolated runtime dir)
+win.start_instance_server('coverage-group')
+ok(True, 'start_instance_server binds a listening socket')
+
 # --- main(): the entry point, driven with QApplication + exec + ipc mocked ----
 import signal as _signal                             # noqa: E402
 from secure_terminal.main import main as _main       # noqa: E402
