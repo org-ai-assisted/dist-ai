@@ -3178,6 +3178,73 @@ finally:
     _time.monotonic = _o_mono
 ok(True, '_write bails out when its write deadline passes')
 
+# --- terminfo directory: build-time entry, and tic-compiled on demand ---------
+from secure_terminal.sanitize import MARK_KEY as _MK            # noqa: E402
+_TISRC = 'secure-terminal|test term,\n\tam,\n\tcols#80,\n'
+_o_ts = _term._terminfo_source
+_o_cache = os.environ.get('XDG_CACHE_HOME')
+try:
+    # a compiled entry shipped next to the source is used directly
+    _ti = tempfile.mkdtemp()
+    with open(os.path.join(_ti, 'secure-terminal.ti'), 'w', encoding='utf-8') as _f:
+        _f.write(_TISRC)
+    os.makedirs(os.path.join(_ti, 's'))
+    with open(os.path.join(_ti, 's', 'secure-terminal'), 'w', encoding='utf-8') as _f:
+        _f.write('x')
+    _term._terminfo_source = lambda: os.path.join(_ti, 'secure-terminal.ti')
+    eq(_term.cli_terminfo_dir(), _ti,
+       'cli_terminfo_dir: a build-time compiled entry is used as-is')
+    # otherwise it compiles the source into the user cache with tic
+    _ti2 = tempfile.mkdtemp()
+    _src2 = os.path.join(_ti2, 'secure-terminal.ti')
+    with open(_src2, 'w', encoding='utf-8') as _f:
+        _f.write(_TISRC)
+    os.environ['XDG_CACHE_HOME'] = tempfile.mkdtemp()
+    _term._terminfo_source = lambda: _src2
+    ok(_term.cli_terminfo_dir() is not None,
+       'cli_terminfo_dir: compiles the terminfo via tic on demand')
+    # when the cache directory cannot even be created (its parent is a file), the
+    # compile step raises and it falls back to None
+    _ti3 = tempfile.mkdtemp()
+    _src3 = os.path.join(_ti3, 'secure-terminal.ti')
+    with open(_src3, 'w', encoding='utf-8') as _f:
+        _f.write(_TISRC)
+    _blk = os.path.join(_ti3, 'blocker')
+    with open(_blk, 'w', encoding='utf-8') as _f:
+        _f.write('x')
+    os.environ['XDG_CACHE_HOME'] = os.path.join(_blk, 'sub')   # parent is a file
+    _term._terminfo_source = lambda: _src3
+    ok(_term.cli_terminfo_dir() is None,
+       'cli_terminfo_dir: an un-creatable cache dir falls back to None')
+finally:
+    _term._terminfo_source = _o_ts
+    if _o_cache is None:
+        os.environ.pop('XDG_CACHE_HOME', None)
+    else:
+        os.environ['XDG_CACHE_HOME'] = _o_cache
+
+# _sync_display: re-entering grid mode with a cleared screen rebuilds it
+_sd = SecureTerminal(command='/bin/cat')
+_sd.apply_tui(True)
+_sd._grid_shown = True
+_sd._screen = None
+_sd._sync_display()
+ok(_sd._screen is not None, '_sync_display rebuilds a cleared pyte screen')
+_sd._render_timer.stop()
+_sd._sync_timer.stop()
+
+# _delete_grid with scrollback above the live grid also eats the joining newline
+_dg = SecureTerminal(command='/bin/cat')
+_dg._append('l1\nl2\nl3\nl4\nl5')
+_dg._grid_rows = 2
+_dg._delete_grid()
+ok(True, '_delete_grid removes the live grid and the newline joining it')
+
+# _fmt_from_key: a marking carrying no colour yields a plain format
+_ff = SecureTerminal(command='/bin/cat')
+ok(_ff._fmt_from_key((_MK, (), 0x41)) is not None,
+   '_fmt_from_key: a colourless marking -> a plain format')
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(widget): %d passed, %d failed\n'
                  % (PASS, FAIL))
