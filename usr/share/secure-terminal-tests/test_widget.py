@@ -1302,11 +1302,11 @@ eq(win.current().current_mode(), 'reveal', 'Reveal button selects reveal')
 ok(not win.act_strip.icon().isNull() and not win.act_show.icon().isNull(),
    'mode buttons carry icons')
 # security indicator: two lamps. display axis (show=red, reveal=green [safe and
-# lossless], strip=yellow [safe but lossy -- the "_" is easy to miss]) and mode
-# axis (TUI=yellow, line=green).
+# lossless], strip=green [safe -- the neutralized char is a hard-to-miss coloured
+# box, though lossy]) and mode axis (TUI=yellow, line=green).
 win.set_mode('strip')
-eq((win._display_level()[1], win._display_level()[0]), ('Strip', '#e5a50a'),
-   'strip display -> yellow (safe but lossy)')
+eq((win._display_level()[1], win._display_level()[0]), ('Strip', '#1f8a54'),
+   'strip display -> green (safe; the box placeholder is hard to miss)')
 win.set_mode('reveal')
 eq((win._display_level()[1], win._display_level()[0]), ('Reveal', '#1f8a54'),
    'reveal display -> green (safe and lossless, not red)')
