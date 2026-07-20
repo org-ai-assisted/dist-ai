@@ -185,6 +185,61 @@ while w2.tabs.count() > 0:                   # last close empties + closes windo
 ok(w2.tabs.count() == 0, 'close_tab: closing the last tab empties the window')
 w2.deleteLater()
 
+# --- confirm-close when a tab/window still runs a foreground program -----------
+from PyQt6.QtGui import QCloseEvent                              # noqa: E402
+_Yes, _No = QMessageBox.StandardButton.Yes, QMessageBox.StandardButton.No
+w3 = MainWindow()
+w3.new_tab()
+_t3 = w3.current()
+ok(w3._confirm_close is True, 'confirm-close: on by default')
+w3.set_confirm_close(False)
+ok(w3._confirm_close is False and not w3.act_confirm_close.isChecked(),
+   'confirm-close: the setter toggles the flag and the menu action')
+w3.set_confirm_close(True)
+_oq = QMessageBox.question
+_asked = []
+try:
+    # setting off -> never asks, even with a program running
+    w3._confirm_close = False
+    _t3.has_foreground_program = lambda: True
+    _asked.clear()
+    QMessageBox.question = staticmethod(lambda *_a, **_k: _asked.append(1) or _No)
+    ok(w3._confirm_running_close('t', 'q', [_t3]) and not _asked,
+       'confirm-close off: proceeds without asking, program or not')
+    # on, but nothing running -> no prompt
+    w3._confirm_close = True
+    _t3.has_foreground_program = lambda: False
+    _asked.clear()
+    ok(w3._confirm_running_close('t', 'q', [_t3]) and not _asked,
+       'confirm-close on, nothing running: proceeds without asking')
+    # on + running + declined -> abort; accepted -> proceed
+    _t3.has_foreground_program = lambda: True
+    _asked.clear()
+    QMessageBox.question = staticmethod(lambda *_a, **_k: _asked.append(1) or _No)
+    ok(not w3._confirm_running_close('t', 'q', [_t3]) and _asked,
+       'confirm-close on, running, declined: aborts')
+    QMessageBox.question = staticmethod(lambda *_a, **_k: _Yes)
+    ok(w3._confirm_running_close('t', 'q', [_t3]),
+       'confirm-close on, running, accepted: proceeds')
+    # close_tab honours the decision
+    _n = w3.tabs.count()
+    QMessageBox.question = staticmethod(lambda *_a, **_k: _No)
+    w3.close_tab(w3.tabs.indexOf(_t3))
+    eq(w3.tabs.count(), _n, 'close_tab: a running tab is kept when declined')
+    QMessageBox.question = staticmethod(lambda *_a, **_k: _Yes)
+    w3.close_tab(w3.tabs.indexOf(_t3))
+    eq(w3.tabs.count(), _n - 1, 'close_tab: the running tab closes when confirmed')
+    # closeEvent: a running program + decline ignores the window close
+    w3.new_tab()
+    w3.current().has_foreground_program = lambda: True
+    QMessageBox.question = staticmethod(lambda *_a, **_k: _No)
+    _ev = QCloseEvent()
+    w3.closeEvent(_ev)
+    ok(not _ev.isAccepted(), 'closeEvent: running program + decline ignores the close')
+finally:
+    QMessageBox.question = _oq
+w3.deleteLater()
+
 # --- tab context menu (exec stubbed) ------------------------------------------
 _ome = QMenu.exec
 QMenu.exec = lambda *_a, **_k: None
