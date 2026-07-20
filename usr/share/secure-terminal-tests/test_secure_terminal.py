@@ -254,10 +254,13 @@ ok(all(f[4] in ('low', 'medium', 'high') for f in S.OSC_FEATURES),
 ok(all(f[2] and f[5] for f in S.OSC_FEATURES),
    'every OSC feature has its codes and a layman attack-surface hint')
 eq(set(S.OSC_FEATURE_BY_KEY), set(_osc_keys), 'the by-key lookup matches the registry')
-# clipboard and iTerm2 are the high-risk ones
+# clipboard read and write are the high-risk ones
 ok(S.OSC_FEATURE_BY_KEY['osc_clipboard'][3] == 'high'
-   and S.OSC_FEATURE_BY_KEY['osc_iterm2'][3] == 'high',
-   'clipboard and iTerm2 are flagged high risk')
+   and S.OSC_FEATURE_BY_KEY['osc_clipboard_read'][3] == 'high',
+   'clipboard read and write are flagged high risk')
+# iTerm2 (OSC 1337) is NOT a registered feature -- it can never be enabled
+ok('osc_iterm2' not in S.OSC_FEATURE_BY_KEY,
+   'iTerm2 file-transfer escapes have no toggle (always neutralized)')
 
 # --- escapes are always stripped; editing controls always pass ----------------
 ESC = '\x1b[31mRED\x1b[0m'

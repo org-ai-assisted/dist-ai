@@ -919,10 +919,11 @@ if tui_available():
     tui.apply_osc('osc_cwd', True)
     tui._handle_osc(b'\x1b]7;file://h/home/u/p\x07')
     ok(_cwds == ['/home/u/p'], 'enabled: OSC 7 reports the unquoted path')
-    # iTerm2 OSC 1337 is a no-op STUB: recognized (stripped, not leaked) but it
-    # performs no action even when the toggle is ON -- no file transfer, no
-    # variable set, no signal of any kind. Prove it produces zero side effects.
-    tui.apply_osc('osc_iterm2', True)
+    # iTerm2 OSC 1337 has NO toggle: file transfer from untrusted output is
+    # indefensible, so it can never be enabled and is always neutralized
+    # (recognized, dropped, never leaked). It is not even a registered feature.
+    ok('osc_iterm2' not in {_f[0] for _f in _S.OSC_FEATURES},
+       'iTerm2 (OSC 1337) is not a toggleable OSC feature -- it cannot be enabled')
     _QGA2.clipboard().setText('UNTOUCHED')
     _t0, _n0, _c0 = len(titles), len(notes), len(_cwds)
     for _payload in (b'\x1b]1337;File=name=eA==;size=1:eA==\x07',   # inline file
@@ -931,7 +932,7 @@ if tui_available():
         tui._handle_osc(_payload)
     ok(len(titles) == _t0 and len(notes) == _n0 and len(_cwds) == _c0
        and _QGA2.clipboard().text() == 'UNTOUCHED',
-       'OSC 1337 is a no-op stub: no signal, no clipboard, no cwd -- even enabled')
+       'OSC 1337 is always neutralized: no signal, no clipboard, no cwd, no toggle')
     # palette OSC 4/10/11: gated, and a program CANNOT hide text by moving fg==bg
     class _Cell:                                            # a default-coloured cell
         fg = bg = 'default'
