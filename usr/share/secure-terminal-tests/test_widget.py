@@ -718,6 +718,34 @@ col2._append('\x1b[30mH\x1b[0m')         # black-on-dark must be contrast-guarde
 ok(_fmt_of_char(col2, 'H').foreground().color().name() != '#000000',
    'black-on-dark guarded')
 
+# --- leftover colour must not bleed into the shell's next prompt --------------
+# A program (here a hostile log) sets a background colour and exits WITHOUT
+# resetting it. A normal terminal leaves that colour "stuck", so the shell's next
+# prompt inherits it. secure-terminal resets the leftover at the prompt boundary
+# (the bracketed-paste marker every shell line editor emits before a prompt), so
+# the prompt renders on the default background -- while the program's OWN coloured
+# output is untouched (shown, contrast-guarded, not stripped). This is the FULL
+# _on_readable path (feed_output), where the reset injection lives; earlier tests
+# only fed one-shot streams with no following prompt, so this case was uncovered.
+lo = SecureTerminal(command='/bin/cat')
+lo.apply_colors(True)
+lo.apply_theme('dark')
+feed_output(lo, b'\x1b[31;41mALERT\n\x1b[?2004hPS> ')
+_alert_bg = _fmt_of_char(lo, 'A').background()
+ok(_alert_bg.style() != Qt.BrushStyle.NoBrush,
+   'leftover colour: the program\'s own background colour is preserved (shown)')
+_prompt_bg = _fmt_of_char(lo, 'P').background()
+ok(_prompt_bg.style() == Qt.BrushStyle.NoBrush
+   or _prompt_bg.color().name() != _alert_bg.color().name(),
+   'leftover colour: the prompt after the marker is NOT on the stuck background')
+# without the marker the stream is unchanged (shells that do not use bracketed
+# paste keep the old readable-but-stuck behaviour; no spurious reset injected).
+eq(lo._reset_leftover_sgr('\x1b[41mx'), '\x1b[41mx',
+   'leftover colour: no prompt marker -> stream passes through unchanged')
+eq(lo._reset_leftover_sgr('out\x1b[?2004hPS> '),
+   'out\x1b[0m\x1b[?2004hPS> ',
+   'leftover colour: an SGR reset is injected at the prompt marker')
+
 # --- paste gating -------------------------------------------------------------
 p = SecureTerminal(command='/bin/cat')
 psent = spy_writes(p)
