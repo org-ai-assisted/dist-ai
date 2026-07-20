@@ -746,6 +746,21 @@ eq(lo._reset_leftover_sgr('out\x1b[?2004hPS> '),
    'out\x1b[0m\x1b[?2004hPS> ',
    'leftover colour: an SGR reset is injected at the prompt marker')
 
+# --- a prompt after output with NO trailing newline starts on a fresh line ----
+# `head -c N /dev/urandom` emits no trailing newline, so stock bash glues its
+# next prompt onto the last output byte. At the prompt-start marker, end that
+# mid-line so the prompt gets its own line -- and do nothing when already at
+# column 0 (e.g. output that ended in a newline, or zsh's PROMPT_SP).
+_DFLT = {'fg': None, 'bg': None, 'bold': False}
+_nc, _nk, _, _, _ = _S.feed_line_edits([], 0, dict(_DFLT), 'abc' + _S.PROMPT_START + 'PS> ')
+eq([''.join(c for c, _ in ln) for ln in _nc], ['abc'],
+   'prompt newline: un-terminated output before the marker is ended into its line')
+eq(''.join(c for c, _ in _nk), 'PS> ',
+   'prompt newline: the prompt starts on a fresh line, not glued to the output')
+_zc, _zk, _, _, _ = _S.feed_line_edits([], 0, dict(_DFLT), 'abc\n' + _S.PROMPT_START + 'PS> ')
+eq([''.join(c for c, _ in ln) for ln in _zc], ['abc'],
+   'prompt newline: a trailing newline already ended the line -- no spurious blank')
+
 # --- paste gating -------------------------------------------------------------
 p = SecureTerminal(command='/bin/cat')
 psent = spy_writes(p)
