@@ -761,6 +761,32 @@ _zc, _zk, _, _, _ = _S.feed_line_edits([], 0, dict(_DFLT), 'abc\n' + _S.PROMPT_S
 eq([''.join(c for c, _ in ln) for ln in _zc], ['abc'],
    'prompt newline: a trailing newline already ended the line -- no spurious blank')
 
+# --- security: an app cannot recolour or HIDE a neutralised marking -----------
+# A marking (the strip box, or a Reveal/Detail <U+XXXX> badge -- same key, so the
+# same rules across every display mode). With coloured markings ON (default) it
+# is coloured by its RISK CLASS, never by the SGR an app set around it, so hostile
+# output can neither recolour a box to blend in nor forge one. With markings OFF
+# (app colours on) a box takes the app colour but through the contrast guard, so
+# it still cannot be painted invisible.
+mk = SecureTerminal(command='/bin/cat')
+mk.apply_colors(True)
+mk.apply_theme('dark')
+_bidi = (_S.MARK_KEY, 'bidi', 0x202E)                 # a RIGHT-TO-LEFT OVERRIDE
+eq(mk._fmt_from_key(_bidi).foreground().color().name(), mk.MARKING_COLORS['bidi'],
+   'marking: coloured by risk class (bidi), an app cannot recolour it')
+ok(mk._fmt_from_key(_bidi).background().style() == Qt.BrushStyle.NoBrush,
+   'marking: no app background is applied -- the box shows on the default bg')
+_risk_cols = [mk._fmt_from_key((_S.MARK_KEY, c, 0x41)).foreground().color().name()
+              for c in ('bidi', 'invisible', 'control', 'nonascii')]
+eq(len(set(_risk_cols)), 4, 'marking: the four risk classes get four distinct colours')
+# markings OFF: the box carries the app's own SGR -- an app trying to hide it by
+# painting it its background colour is still forced readable by the contrast guard.
+_hide = tuple(sorted({'fg': 0, 'bg': 0, 'bold': False}.items()))    # black-on-black
+_hf = mk._fmt_from_key((_S.MARK_KEY, _hide, 0x202E))
+ok(_hf.background().style() == Qt.BrushStyle.NoBrush
+   or _hf.foreground().color().name() != _hf.background().color().name(),
+   'marking: an app colour on a box is contrast-guarded -- fg never equals bg')
+
 # --- paste gating -------------------------------------------------------------
 p = SecureTerminal(command='/bin/cat')
 psent = spy_writes(p)
