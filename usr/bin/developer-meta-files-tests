@@ -5,13 +5,17 @@
 
 ## AI-Assisted
 
-## Runs developer-meta-files' style-gate verification: drives the real, shipped
-## agents/pre-push-static.sh against throwaway git repos, asserting the
-## single-grep style checks flag violations and spare compliant files. Needs
-## the developer-meta-files checkout (DMF_REPO, wired by dist-ai-tests-all via
-## --component developer-meta-files --component-root) plus helper-scripts'
-## has.sh, git and safe-rm. Exits 77 (SKIP) if a prerequisite is absent. Works
-## installed (/usr/share/developer-meta-files-tests) or from a checkout.
+## Runs developer-meta-files' functional tests against the checkout:
+##   * test_pre_push_static_style_rules.sh -- drives the real, shipped
+##     agents/pre-push-static.sh and asserts its single-grep style checks flag
+##     violations and spare compliant files;
+##   * test_dm_review_branch.sh -- asserts dm-review-branch aborts on suspicious
+##     unicode in a reviewed branch's commits AND in any ref name.
+## Both resolve the developer-meta-files checkout from DMF_REPO (wired by
+## dist-ai-tests-all via --component developer-meta-files --component-root).
+## Each test SKIPs itself (exit 77) when its own prerequisites are absent, so a
+## missing helper (shellcheck, helper-scripts) skips rather than false-fails.
+## Works installed (/usr/share/developer-meta-files-tests) or from a checkout.
 
 set -o errexit
 set -o nounset
@@ -32,17 +36,46 @@ if [ -z "${DMF_REPO:-}" ]; then
    printf '%s\n' 'developer-meta-files-tests: DMF_REPO unset (run with --component developer-meta-files --component-root DIR); skipping.' >&2
    exit 77
 fi
-if [ ! -x "${DMF_REPO}/agents/pre-push-static.sh" ]; then
-   printf '%s\n' "developer-meta-files-tests: '${DMF_REPO}/agents/pre-push-static.sh' not found; skipping." >&2
-   exit 77
-fi
-if [ ! -r '/usr/libexec/helper-scripts/has.sh' ]; then
-   printf '%s\n' 'developer-meta-files-tests: helper-scripts has.sh not installed; skipping.' >&2
+export DMF_REPO
+
+shopt -s nullglob
+tests=( "${share}"/test_*.sh )
+if [ "${#tests[@]}" -eq 0 ]; then
+   printf '%s\n' "developer-meta-files-tests: no test_*.sh under '${share}'; skipping." >&2
    exit 77
 fi
 
-## Run the test as a child and forward its exit code (no process-replacing
-## exec). DMF_REPO is inherited from this environment.
-rc=0
-"${share}/test_pre_push_static_style_rules.sh" "$@" || rc="$?"
-exit "$rc"
+## Run each test; 0 = pass, 77 = skip (its own prerequisites absent), anything
+## else = fail. Report per test and fail the suite if any test failed.
+failed=0
+ran=0
+skipped=0
+for test_path in "${tests[@]}"; do
+   test_name="$(basename -- "${test_path}")"
+   rc=0
+   "${test_path}" "$@" || rc="$?"
+   case "${rc}" in
+      0)
+         ran=$(( ran + 1 ))
+         printf 'developer-meta-files-tests: PASS %s\n' "${test_name}" ;;
+      77)
+         skipped=$(( skipped + 1 ))
+         printf 'developer-meta-files-tests: SKIP %s\n' "${test_name}" ;;
+      *)
+         failed=$(( failed + 1 ))
+         printf 'developer-meta-files-tests: FAIL %s (exit %s)\n' "${test_name}" "${rc}" >&2 ;;
+   esac
+done
+
+printf 'developer-meta-files-tests: %d passed, %d skipped, %d failed.\n' \
+   "${ran}" "${skipped}" "${failed}"
+
+if [ "${failed}" -gt 0 ]; then
+   exit 1
+fi
+## All tests skipped (no prerequisites anywhere) -> SKIP the suite, not a
+## vacuous pass.
+if [ "${ran}" -eq 0 ]; then
+   exit 77
+fi
+exit 0
