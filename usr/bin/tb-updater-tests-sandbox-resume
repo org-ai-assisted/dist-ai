@@ -1,0 +1,59 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Root-only regression test for Kicksecure/tb-updater#40: the resume-stash
+## design in sandbox-update-torbrowser (the postinst entry point, which drops
+## to the 'tb-updater' account via setpriv). Drives the REAL installed
+## sandbox-update-torbrowser through --resume / no-resume / failure-stash /
+## end-to-end recovery scenarios in /var/lib/tb-updater.
+##
+## Unlike tb-updater-tests-e2e (which refuses root), this suite REQUIRES root
+## and the installed sandbox-update-torbrowser plus the 'tb-updater' system
+## account. Exits 77 (SKIP) if any prerequisite is absent. Works installed
+## (/usr/share/tb-updater-tests) or from a checkout.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/tb-updater-tests/sandbox-resume' ]; then
+   payload_dir='/usr/share/tb-updater-tests/sandbox-resume'
+else
+   payload_dir="${script_dir}/../share/tb-updater-tests/sandbox-resume"
+fi
+
+if [ "$(id -u)" != '0' ]; then
+   printf '%s\n' 'tb-updater-tests-sandbox-resume: must run as root (sandbox-update-torbrowser is the postinst entry point); skipping.' >&2
+   exit 77
+fi
+if [ ! -x '/usr/libexec/tb-updater/sandbox-update-torbrowser' ]; then
+   printf '%s\n' 'tb-updater-tests-sandbox-resume: /usr/libexec/tb-updater/sandbox-update-torbrowser not installed; skipping.' >&2
+   exit 77
+fi
+if [ ! -x '/usr/bin/update-torbrowser' ]; then
+   printf '%s\n' 'tb-updater-tests-sandbox-resume: /usr/bin/update-torbrowser not installed; skipping.' >&2
+   exit 77
+fi
+if ! getent passwd 'tb-updater' >/dev/null; then
+   printf '%s\n' "tb-updater-tests-sandbox-resume: 'tb-updater' system account missing; skipping." >&2
+   exit 77
+fi
+
+## Gate the harness so it cannot be mis-invoked directly on a real system;
+## it mutates /var/lib/tb-updater as root.
+export TB_UPDATER_TESTS_SANDBOX_RESUME=1
+
+## Run the harness as a child and forward its exit code (no process-replacing
+## exec).
+rc=0
+"${payload_dir}/run-sandbox-resume" "$@" || rc="$?"
+exit "$rc"
