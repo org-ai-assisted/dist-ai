@@ -42,6 +42,11 @@ if [ "${rc}" -ne 0 ]; then
 fi
 
 source_required=(
+   ## SOURCE org-level Actions/CI: disabled entirely, org-wide
+   ## (enabled_repositories=none). Canonical CI runs on the org's own
+   ## infra, not GitHub Actions; see
+   ## agents/github-policy-canonical-vs-mirror.md.
+   'actions enabled_repositories=none (CI disabled org-wide)'
    ## SOURCE per-repo body: has_issues stays on, no allow_forking
    ## field at all (the body simply omits it).
    'SOURCE: wiki=off, issues=on, secret-scan on'
@@ -61,6 +66,11 @@ source_required=(
    'Prevent direct Dependabot alert dismissals (delegated dismissal): enable in UI'
 )
 source_forbidden=(
+   ## MIRROR-only Actions scope MUST NOT appear on SOURCE: SOURCE
+   ## disables Actions org-wide, so neither the enabled=all scope nor
+   ## the selected-actions allow-list follow-up is emitted.
+   'actions enabled=all, allowed=selected'
+   'selected-actions = github-owned + verified-creators'
    ## MIRROR-specific tokens MUST NOT appear when running against a
    ## SOURCE org.
    'MIRROR:'
@@ -97,6 +107,10 @@ if [ "${rc}" -ne 0 ]; then
 fi
 
 mirror_required=(
+   ## MIRROR keeps Actions/CI on, restricted to the github-owned +
+   ## verified-creators allow-list - it is where AI-assisted CI runs.
+   'actions enabled=all, allowed=selected'
+   'selected-actions = github-owned + verified-creators'
    'MIRROR: wiki/issues/projects/discussions off, secret-scan on'
    ## MIRROR actively disables Dependabot via DELETE; PVR-OFF is
    ## the same call run on both sides.
@@ -105,6 +119,9 @@ mirror_required=(
    'disable private vulnerability reporting'
 )
 mirror_forbidden=(
+   ## SOURCE-only Actions-disabled scope MUST NOT appear on MIRROR
+   ## (MIRROR keeps CI on).
+   'actions enabled_repositories=none (CI disabled org-wide)'
    'SOURCE:'
    ## SOURCE-only Dependabot enable lines MUST NOT appear on
    ## MIRROR.
