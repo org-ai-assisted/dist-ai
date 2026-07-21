@@ -46,13 +46,13 @@ if [ ! -d "${TESTS_DIR}" ]; then
   exit 1
 fi
 
-## Sanity check: the lib path the tests source must exist (i.e. the
-## package must be installed or the script tree present at the
-## expected location).
-if [ ! -r /usr/libexec/developer-meta-files/github-org-lib.bsh ]; then
+## Sanity check: the lib the tools source must exist. The tools resolve it via
+## DEVELOPER_META_FILES_PATH (unset -> the installed /usr/libexec path), so
+## check the same location rather than assuming an install.
+if [ ! -r "${DEVELOPER_META_FILES_PATH:-}/usr/libexec/developer-meta-files/github-org-lib.bsh" ]; then
   printf '%s\n' \
-    'error: /usr/libexec/developer-meta-files/github-org-lib.bsh not found.' \
-    '       Install developer-meta-files or symlink the source-tree files.' >&2
+    "error: '${DEVELOPER_META_FILES_PATH:-}/usr/libexec/developer-meta-files/github-org-lib.bsh' not found." \
+    '       Set DEVELOPER_META_FILES_PATH to a developer-meta-files checkout, or install the package.' >&2
   exit 1
 fi
 

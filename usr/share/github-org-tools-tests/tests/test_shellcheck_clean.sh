@@ -48,17 +48,13 @@ files=(
    "${REPO_ROOT}/usr/bin/dm-github-fork-sync"
    "${REPO_ROOT}/usr/libexec/developer-meta-files/github-org-lib.bsh"
    "${REPO_ROOT}/usr/libexec/developer-meta-files/github-policy-lib.bsh"
-   "${REPO_ROOT}/ci/test-github-org-tools.sh"
    "${REPO_ROOT}/.github/actions/install-deps/install-genmkfile.sh"
    "${REPO_ROOT}/.github/actions/install-deps/install-helper-scripts.sh"
    "${REPO_ROOT}/ci/live-probe-unauth.sh"
 )
-## Append every test_*.sh under ci/tests so adding a new test
-## automatically subjects it to the same check.
-while IFS= read -r -d '' script_path; do
-   files+=( "${script_path}" )
-done < <(find -- "${REPO_ROOT}/ci/tests" -mindepth 1 -maxdepth 1 \
-         -type f -name 'test_*.sh' -print0 | sort --zero-terminated)
+## The mock-test suite itself (this file, its siblings and the runner) moved to
+## the dist-ai github-org-tools-tests payload and is linted by dist-ai's own
+## shell gate; this test guards the developer-meta-files tools/libs surface.
 
 fail=0
 failed_scripts=()
