@@ -300,6 +300,33 @@ eq(S.sanitize_paste('a\nb\r\tc'), 'a\rb\r\tc', 'paste nl/cr -> cr, tab kept')
 eq(S.sanitize_paste('ex' + chr(0x0430) + 'mple.org'), 'exmple.org', 'paste strips cyrillic homoglyph')
 eq(S.sanitize_paste('x' + BIDI + ZWSP + 'y'), 'xy', 'paste strips bidi+zw')
 
+# --- crafted paste cannot smuggle HIDDEN code / escapes into the shell --------
+# The class of attack: a paste that carries an escape (to be reflected back as
+# input), a bracketed-paste-end sequence (to break the shell's paste guard and
+# inject), a C1 control, or a hidden line -- so that something you did NOT see
+# runs. sanitize_paste (what actually reaches the pty) must leave only visible
+# ASCII plus CR/TAB, so nothing hidden can execute.
+def _visible_only(text):
+    return all(ch in '\r\t' or 0x20 <= ord(ch) <= 0x7E for ch in text)
+for _payload, _why in (
+    ('ls\x1b]0;evil\x07 -la',          'OSC title-set (reflection bait)'),
+    ('safe\x1b[201~unsafe',            'bracketed-paste-end breakout (CSI 201~)'),
+    ('x\x1bP0;1q\x1b\\y',              'DCS sequence'),
+    ('a\x9bBc',                        'C1 CSI (0x9b)'),
+    ('cmd\x00; hidden',                'NUL as a hidden separator'),
+    ('t' + chr(0x0430) + chr(0x200B),  'homoglyph + zero-width'),
+):
+    _s = S.sanitize_paste(_payload)
+    ok(_visible_only(_s), 'crafted paste (%s) -> only visible ASCII reaches the shell' % _why)
+    ok('\x1b' not in _s and '\x9b' not in _s,
+       'crafted paste (%s) -> no ESC / C1 survives to inject' % _why)
+# The honest LIMIT (see the /comparison behaviour section): a plain multi-line or
+# chained paste is VISIBLE, not hidden -- it submits, and no terminal treats that
+# as deception. The guard is against hidden smuggling, not against a command you
+# can read.
+eq(S.sanitize_paste('ls\necho x'), 'ls\recho x',
+   'a plain multi-line paste submits both VISIBLE lines (the limit, not a bug)')
+
 # --- paste_findings -----------------------------------------------------------
 eq(S.paste_findings('plain ascii\n\t'), (False, False), 'findings clean')
 eq(S.paste_findings(CAFE), (True, False), 'findings unicode')
