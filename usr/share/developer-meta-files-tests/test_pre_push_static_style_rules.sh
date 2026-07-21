@@ -36,13 +36,20 @@ if [ -z "${DMF_REPO:-}" ]; then
    exit 1
 fi
 
+## helper-scripts (has.sh) is not always installed in a consumer's dist-ai
+## test environment; SKIP rather than fail when it -- or git / safe-rm -- is
+## absent, so the suite stays green where the gate simply cannot run.
+if [ ! -r '/usr/libexec/helper-scripts/has.sh' ]; then
+   printf '%s\n' 'test_pre_push_static_style_rules: helper-scripts has.sh not installed; skipping.' >&2
+   exit 77
+fi
 # shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
 source /usr/libexec/helper-scripts/has.sh
 
 has git \
-   || { printf '%s\n' 'error: git not found on PATH; install via apt.' >&2; exit 1; }
+   || { printf '%s\n' 'test_pre_push_static_style_rules: git not on PATH; skipping.' >&2; exit 77; }
 has safe-rm \
-   || { printf '%s\n' 'error: safe-rm not found on PATH; install via apt.' >&2; exit 1; }
+   || { printf '%s\n' 'test_pre_push_static_style_rules: safe-rm not on PATH; skipping.' >&2; exit 77; }
 
 REPO_ROOT="${DMF_REPO}"
 GATE="${REPO_ROOT}/agents/pre-push-static.sh"
