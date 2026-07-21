@@ -229,6 +229,28 @@ Description: Regression and reproduction tests for the onion-grater control-port
  The tests target the installed onion-grater by default; set ONION_GRATER_REPO
  to run them against a derivative-maker checkout instead.
 
+Package: developer-meta-files-tests
+Architecture: all
+Depends: ${misc:Depends},
+ bash (>= 4),
+ git,
+ helper-scripts
+Suggests: shellcheck,
+ safe-rm
+Description: Style-gate verification test for developer-meta-files
+ Drives the real, shipped agents/pre-push-static.sh (developer-meta-files' bash
+ style gate) as a subprocess against throwaway git repos, asserting that its
+ single-grep rule checks -- R-070, R-074, R-030/R-031, R-042, R-034, R-011,
+ R-051, R-090, R-102, R-120 and R-010 -- FLAG a violating shell file and SPARE a
+ compliant one. It exercises each check end to end (regex, file selection and
+ reporting), not a private copy of the regex, so a rule that silently stops
+ matching is caught. No root, no network; git runs hermetically.
+ .
+ It reads the developer-meta-files checkout from DMF_REPO (wired by
+ dist-ai-tests-all from --component developer-meta-files) to find the gate
+ script, and sources helper-scripts' has.sh. Exits 77 (SKIP) if the checkout or
+ helper-scripts are unavailable.
+
 Package: dm-help-steps-tests
 Architecture: all
 Depends: ${misc:Depends},

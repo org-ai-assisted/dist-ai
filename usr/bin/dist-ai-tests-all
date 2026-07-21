@@ -37,6 +37,7 @@ timeout_heavy=600
 ## it is deliberately excluded.
 core_suites=(
    check-ref-commits-for-unicode-tests
+   developer-meta-files-tests
    dm-help-steps-tests
    dm-virtualbox-wiki-links-tests
    genmkfile-tests
@@ -174,6 +175,11 @@ wire() {
    dmf="$( pkg_dir developer-meta-files )"
 
    case "${base}" in
+      developer-meta-files)
+         ## The style-gate test drives the real, shipped
+         ## agents/pre-push-static.sh from the developer-meta-files checkout,
+         ## resolved from DMF_REPO.
+         wire_env=( "DMF_REPO=${dmf}" ) ;;
       check-ref-commits-for-unicode)
          wire_env=( "CHECK_REF_COMMITS_REPO=${hs}" ) ;;
       grep-find-unicode-wrapper)
@@ -321,7 +327,7 @@ suite_component() {
    case "${base}" in
       check-ref-commits-for-unicode|grep-find-unicode-wrapper|unicode-show|stcat-family|stdisplay|sanitize-string)
          printf '%s' 'helper-scripts' ;;
-      git-meld|dm-virtualbox-wiki-links)
+      developer-meta-files|git-meld|dm-virtualbox-wiki-links)
          printf '%s' 'developer-meta-files' ;;
       dm-help-steps)          printf '%s' 'derivative-maker' ;;
       onion-grater)           printf '%s' 'onion-grater' ;;
