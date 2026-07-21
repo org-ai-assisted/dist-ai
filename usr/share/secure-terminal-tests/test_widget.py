@@ -1332,14 +1332,20 @@ ok(not win.act_strip.icon().isNull() and not win.act_show.icon().isNull(),
 # lossless], strip=green [safe -- the neutralized char is a hard-to-miss coloured
 # box, though lossy]) and mode axis (TUI=yellow, line=green).
 win.set_mode('strip')
-eq((win._display_level()[1], win._display_level()[0]), ('Strip', '#1f8a54'),
-   'strip display -> green (safe; the box placeholder is hard to miss)')
+eq((win._display_level()[1], win._display_level()[0]), ('Box', '#1f8a54'),
+   'box (strip-key) display -> green (safe; the box placeholder is hard to miss)')
 win.set_mode('reveal')
 eq((win._display_level()[1], win._display_level()[0]), ('Reveal', '#1f8a54'),
    'reveal display -> green (safe and lossless, not red)')
 win.set_mode('show')
 eq((win._display_level()[1], win._display_level()[0]), ('Show', '#d83933'),
    'show display -> red')
+# the default display mode is labelled "Box" (it draws a box; it does not strip the
+# data stream), and its tooltip says it is a DISPLAY setting -- not the bytes a
+# program pipes elsewhere, so "cat file | bash" runs regardless.
+eq(win.act_strip.text(), '&Box', 'the strip-key display mode is user-labelled Box')
+ok('cat file | bash' in win.act_strip.toolTip(),
+   'the Box tooltip clarifies it is display-only, not bytes piped elsewhere')
 eq(win._mode_level()[1], 'CLI', 'CLI mode -> green mode lamp')
 if tui_available():
     win.set_tui(True)
