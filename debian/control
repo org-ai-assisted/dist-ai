@@ -251,6 +251,27 @@ Description: Style-gate verification test for developer-meta-files
  script, and sources helper-scripts' has.sh. Exits 77 (SKIP) if the checkout or
  helper-scripts are unavailable.
 
+Package: github-org-tools-tests
+Architecture: all
+Depends: ${misc:Depends},
+ bash (>= 4),
+ git,
+ jq,
+ python3,
+ python3-yaml
+Suggests: shellcheck,
+ helper-scripts,
+ developer-meta-files
+Description: Mock-API tests for developer-meta-files' github-org tools
+ Drives the dm-github-* / github-org-* tools and the dm-* policy wrappers
+ against canned fixtures (no real GitHub access): arg parsing, validator
+ behaviour, mock-dispatch routing, rate-limit retry math, and the audit /
+ dry-run output shape. Runs checkout-based -- the tools resolve their own
+ libexec via DEVELOPER_META_FILES_PATH and helper-scripts via
+ HELPER_SCRIPTS_PATH (wired by dist-ai-tests-all from --component
+ developer-meta-files). Exits 77 (SKIP) if the checkouts or sanitize-string
+ are unavailable.
+
 Package: dm-help-steps-tests
 Architecture: all
 Depends: ${misc:Depends},

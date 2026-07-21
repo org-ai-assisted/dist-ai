@@ -40,6 +40,7 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 | `iso-boot-tests`         | shipping | `usr/share/iso-boot-tests/` |
 | `check-ref-commits-for-unicode-tests` | shipping | `usr/share/check-ref-commits-for-unicode-tests/` |
 | `developer-meta-files-tests` | shipping | `usr/share/developer-meta-files-tests/` |
+| `github-org-tools-tests` | shipping | `usr/share/github-org-tools-tests/` |
 | `discourse-dom-snapshot` | planned  | `usr/share/discourse-dom-snapshot/` |
 | `sdwdate-ci-fuzz`        | planned  | `usr/share/sdwdate-ci-fuzz/` |
 

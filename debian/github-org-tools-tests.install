@@ -1,0 +1,5 @@
+usr/bin/github-org-tools-tests usr/bin/
+usr/share/github-org-tools-tests/test-github-org-tools.sh usr/share/github-org-tools-tests/
+usr/share/github-org-tools-tests/step-summary-emit.sh usr/share/github-org-tools-tests/
+usr/share/github-org-tools-tests/tests/* usr/share/github-org-tools-tests/tests/
+usr/share/github-org-tools-tests/fixtures/* usr/share/github-org-tools-tests/fixtures/

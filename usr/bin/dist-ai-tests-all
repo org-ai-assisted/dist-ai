@@ -38,6 +38,7 @@ timeout_heavy=600
 core_suites=(
    check-ref-commits-for-unicode-tests
    developer-meta-files-tests
+   github-org-tools-tests
    dm-help-steps-tests
    dm-virtualbox-wiki-links-tests
    genmkfile-tests
@@ -180,6 +181,17 @@ wire() {
          ## agents/pre-push-static.sh from the developer-meta-files checkout,
          ## resolved from DMF_REPO.
          wire_env=( "DMF_REPO=${dmf}" ) ;;
+      github-org-tools)
+         ## The mock-API suite drives the dm-github-* / github-org-* tools from
+         ## the developer-meta-files checkout: they self-locate their own
+         ## libexec via DEVELOPER_META_FILES_PATH and helper-scripts via
+         ## HELPER_SCRIPTS_PATH (the entrypoint derives PATH/PYTHONPATH from
+         ## these).
+         wire_env=( "DEVELOPER_META_FILES_PATH=${dmf}" )
+         if [ -n "${hs}" ]; then
+            wire_env+=( "HELPER_SCRIPTS_PATH=${hs}" )
+         fi
+         ;;
       check-ref-commits-for-unicode)
          wire_env=( "CHECK_REF_COMMITS_REPO=${hs}" ) ;;
       grep-find-unicode-wrapper)
@@ -327,7 +339,7 @@ suite_component() {
    case "${base}" in
       check-ref-commits-for-unicode|grep-find-unicode-wrapper|unicode-show|stcat-family|stdisplay|sanitize-string)
          printf '%s' 'helper-scripts' ;;
-      developer-meta-files|git-meld|dm-virtualbox-wiki-links)
+      developer-meta-files|github-org-tools|git-meld|dm-virtualbox-wiki-links)
          printf '%s' 'developer-meta-files' ;;
       dm-help-steps)          printf '%s' 'derivative-maker' ;;
       onion-grater)           printf '%s' 'onion-grater' ;;
