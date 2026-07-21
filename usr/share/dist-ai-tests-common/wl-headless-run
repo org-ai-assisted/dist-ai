@@ -1,0 +1,127 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Run a command against a private, headless Wayland compositor, and (by
+## default) auto-confirm any msgcollector GUI dialog it spawns. The Wayland
+## analogue of xvfb-run, but input-capable: it drives REAL PyQt5 dialogs to
+## "Yes" without stubbing them.
+##
+##   wl-headless-run [--no-autoconfirm] [--] <command> [args...]
+##
+## The command runs with WAYLAND_DISPLAY + QT_QPA_PLATFORM=wayland exported, so
+## a Qt client connects to the real 'wayland' platform plugin (the exact path
+## that regressed when the dialogs defaulted to xcb under a Wayland session).
+##
+## Compositor = labwc (wlroots), NOT weston: only a wlroots compositor
+## implements zwp_virtual_keyboard_manager_v1, which wtype needs to inject
+## keystrokes into a SEPARATE-process Qt client. weston's headless backend has
+## no input path, so it can render a client but cannot answer its dialog.
+##
+## Auto-confirm: a background loop sends Alt+Y (the '&Yes' mnemonic of a
+## QDialogButtonBox Yes button) every ~0.7s. msgcollector's yes/no dialogs exit
+## on the first Yes; a stray Alt+Y while no dialog is focused is a no-op. Every
+## update-torbrowser GUI dialog is a yes/no confirmation, so this drives the
+## whole flow. Pass --no-autoconfirm to run the compositor without the clicker
+## (e.g. a render-only check).
+##
+## Exit code is the command's. The exact labwc pid, the clicker, and the
+## private runtime dir are torn down on exit.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s nullglob
+
+autoconfirm='true'
+case "${1:-}" in
+   --no-autoconfirm) autoconfirm='false'; shift ;;
+esac
+if [ "${1:-}" = '--' ]; then
+   shift
+fi
+
+if [ "$#" -eq 0 ]; then
+   printf '%s\n' 'wl-headless-run: no command given' >&2
+   exit 2
+fi
+
+if ! command -v labwc >/dev/null 2>&1; then
+   printf '%s\n' 'wl-headless-run: labwc not installed (Debian: labwc); cannot start a headless Wayland compositor.' >&2
+   exit 127
+fi
+if [ "${autoconfirm}" = 'true' ] && ! command -v wtype >/dev/null 2>&1; then
+   printf '%s\n' 'wl-headless-run: wtype not installed (Debian: wtype); cannot auto-confirm dialogs. Install it or pass --no-autoconfirm.' >&2
+   exit 127
+fi
+
+runtime="$(mktemp --directory)"
+chmod 700 -- "${runtime}"
+## A wlroots headless compositor needs no GPU: pixman is the software renderer.
+export XDG_RUNTIME_DIR="${runtime}"
+export WLR_BACKENDS='headless'
+export WLR_RENDERER='pixman'
+
+labwc >"${runtime}/labwc.log" 2>&1 &
+labwc_pid="$!"
+
+loop_pid=''
+cleanup() {
+   ## Reached only via the EXIT trap (SC2317).
+   # shellcheck disable=SC2317
+   if [ -n "${loop_pid}" ]; then
+      kill "${loop_pid}" 2>/dev/null || true
+   fi
+   # shellcheck disable=SC2317
+   kill "${labwc_pid}" 2>/dev/null || true
+   # shellcheck disable=SC2317
+   wait "${labwc_pid}" 2>/dev/null || true
+   # shellcheck disable=SC2317
+   rm --recursive --force -- "${runtime}"
+}
+trap cleanup EXIT
+
+## labwc picks the first free wayland-N socket in XDG_RUNTIME_DIR; discover it
+## rather than assuming a name (the '.lock' companion file is excluded by the
+## -S socket test).
+socket=''
+for _ in $(seq 1 100); do
+   for candidate in "${runtime}"/wayland-[0-9]*; do
+      if [ -S "${candidate}" ]; then
+         socket="$(basename -- "${candidate}")"
+         break
+      fi
+   done
+   if [ -n "${socket}" ]; then
+      break
+   fi
+   sleep 0.1
+done
+
+if [ -z "${socket}" ]; then
+   printf '%s\n' 'wl-headless-run: labwc did not create a Wayland socket.' >&2
+   cat -- "${runtime}/labwc.log" >&2 || true
+   exit 1
+fi
+
+export WAYLAND_DISPLAY="${socket}"
+export QT_QPA_PLATFORM='wayland'
+
+if [ "${autoconfirm}" = 'true' ]; then
+   (
+      while true; do
+         wtype -M alt y -m alt 2>/dev/null || true
+         sleep 0.7
+      done
+   ) &
+   loop_pid="$!"
+fi
+
+rc=0
+"$@" || rc="$?"
+exit "${rc}"

@@ -62,30 +62,23 @@ failed_names=""
 
 die() { printf 'self-test: ERROR: %s\n' "$*" >&2; exit 2; }
 
-## Run a command as root: directly when already root, else via passwordless
-## sudo. Only the gui scenario needs it (to swap the root-owned msgcollector
-## dialogs for auto-confirm stubs); it requires availability and fails first.
-as_root() {
-   if [ "$(id -u)" = 0 ]; then
-      "$@"
-   else
-      sudo -n -- "$@"
-   fi
-}
-
-## EXIT trap for the gui scenario: put the real msgcollector dialogs back after
-## they were swapped for auto-confirm stubs. Reads the paths from the globals
-## the scenario sets; a no-op if the backups are absent (trap fired early).
-gui_dl_dialog=""
-gui_inst_dialog=""
-restore_gui_dialogs() {
-   if [ -n "$gui_dl_dialog" ] && [ -f "${gui_dl_dialog}.e2ebak" ]; then
-      as_root mv -f -- "${gui_dl_dialog}.e2ebak" "${gui_dl_dialog}"
-   fi
-   if [ -n "$gui_inst_dialog" ] && [ -f "${gui_inst_dialog}.e2ebak" ]; then
-      as_root mv -f -- "${gui_inst_dialog}.e2ebak" "${gui_inst_dialog}"
-   fi
-   return 0
+## Locate the shared headless-Wayland runner (wl-headless-run): installed
+## alongside the suite (/usr/share/tb-updater-tests/wl-headless-run) or, from a
+## checkout, in the dist-ai-tests-common dir. Only the gui scenario needs it, so
+## it is resolved lazily.
+wl_headless_run=""
+resolve_wl_headless_run() {
+   local candidate
+   for candidate in \
+      '/usr/share/tb-updater-tests/wl-headless-run' \
+      "$self_dir/../wl-headless-run" \
+      "$self_dir/../../dist-ai-tests-common/wl-headless-run"; do
+      if [ -x "$candidate" ]; then
+         wl_headless_run="$candidate"
+         return 0
+      fi
+   done
+   return 1
 }
 
 assert_eq() {
@@ -157,6 +150,18 @@ run_updater() {
    local bin="/usr/bin/$wrapper"
    [ -x "$bin" ] || die "wrapper $bin not executable; install tb-updater first"
    "$bin" "$@" >"$out_file" 2>&1
+}
+
+## GUI variant: run the wrapper under a private headless Wayland compositor
+## whose background clicker auto-confirms the REAL msgcollector dialogs with
+## Alt+Y (no stubbing). The dialogs inherit WAYLAND_DISPLAY + QT_QPA_PLATFORM=
+## wayland from wl-headless-run, so they exercise the real 'wayland' Qt plugin
+## path -- the exact path whose xcb-default abort was the reported regression.
+run_updater_gui() {
+   local wrapper="$1"; shift
+   local bin="/usr/bin/$wrapper"
+   [ -x "$bin" ] || die "wrapper $bin not executable; install tb-updater first"
+   "$wl_headless_run" -- "$bin" "$@" >"$out_file" 2>&1
 }
 
 cache_folder_for() {
@@ -427,59 +432,45 @@ scenario_second_run_mullvad_cache_hit() {
 scenario_gui_input_mode_install() {
    ## The Tor Browser Downloader desktop shortcut runs
    ## 'update-torbrowser --input gui'. Prove GUI input mode completes the whole
-   ## download -> verify -> extract -> install path. The reported regression
-   ## was that a Qt-platform abort inside a confirmation dialog killed
-   ## update-torbrowser under 'set -o errexit' before any window, so clicking
-   ## the shortcut did nothing. Here the two confirmation dialogs are stubbed
-   ## to auto-confirm so the path runs headlessly; the dialogs' own Wayland/xcb
-   ## platform robustness is covered by the msgcollector suite.
+   ## download -> verify -> extract -> install path driving the REAL msgcollector
+   ## dialogs (tb_updater_gui.py download-confirm + generic_gui_message.py
+   ## install-confirm) -- no stubbing. The reported regression was that a
+   ## Qt-platform abort inside a confirmation dialog killed update-torbrowser
+   ## under 'set -o errexit' before any window, so clicking the shortcut did
+   ## nothing; running the dialogs under the real 'wayland' Qt plugin is the
+   ## regression test for exactly that. wl-headless-run starts a private
+   ## headless wlroots compositor and a background clicker that Alt+Y-confirms
+   ## each yes/no dialog (wtype), so the path runs unattended. No root needed:
+   ## update-torbrowser runs as the user and the dialogs are ordinary readable
+   ## scripts -- nothing on the system is mutated.
    local fix browser_folder ec
-   local dl_dialog='/usr/libexec/msgcollector/tb_updater_gui.py'
-   local inst_dialog='/usr/libexec/msgcollector/generic_gui_message.py'
 
-   if [ ! -f "$dl_dialog" ] || [ ! -f "$inst_dialog" ]; then
+   ## Fail loudly rather than skip: the e2e environment (CI) must provide the
+   ## real dialogs and the headless-Wayland tooling so this actually runs.
+   if [ ! -x /usr/libexec/msgcollector/tb_updater_gui.py ] \
+      || [ ! -x /usr/libexec/msgcollector/generic_gui_message.py ]; then
       die "[gui mode] msgcollector dialogs missing; install msgcollector"
    fi
-
-   ## The dialogs are root-owned system files and update-torbrowser refuses to
-   ## run as root, so this scenario runs as a normal user but needs a root
-   ## helper to swap the dialogs for auto-confirm stubs. This is a required
-   ## security check: the e2e environment must provide root or passwordless
-   ## sudo (the CI job does). Fail loudly rather than skip if it does not.
-   if ! { [ "$(id -u)" = 0 ] || sudo -n true 2>/dev/null; }; then
-      die "[gui mode] need root or passwordless sudo to stub the GUI dialogs; the e2e environment must provide it"
-   fi
+   resolve_wl_headless_run \
+      || die "[gui mode] wl-headless-run not found next to the suite or in dist-ai-tests-common"
+   command -v labwc >/dev/null 2>&1 \
+      || die "[gui mode] labwc not installed; the headless Wayland dialog run needs it"
+   command -v wtype >/dev/null 2>&1 \
+      || die "[gui mode] wtype not installed; auto-confirming the real dialogs needs it"
 
    fix="$(fixture_dir_for tb)"
    browser_folder="$(browser_folder_for .tb tor-browser)"
 
-   ## Stub the confirmation dialogs to auto-confirm, restoring the real ones no
-   ## matter how this scenario's subshell exits (die or normal return).
-   ## restore_gui_dialogs (the EXIT trap) reads these globals.
-   gui_dl_dialog="$dl_dialog"
-   gui_inst_dialog="$inst_dialog"
-   as_root cp -a -- "$dl_dialog" "${dl_dialog}.e2ebak"
-   as_root cp -a -- "$inst_dialog" "${inst_dialog}.e2ebak"
-   trap restore_gui_dialogs EXIT
-   ## tb_updater_gui prints the chosen version (argument 4) on 'Yes'. The '$4'
-   ## is deliberately literal -- it is the stub's body, expanded when the stub
-   ## runs, not here.
-   # shellcheck disable=SC2016
-   printf '%s\n' '#!/bin/bash' 'printf "%s\n" "$4"' | as_root tee -- "$dl_dialog" >/dev/null
-   ## generic_gui_message prints 16384 on 'Yes'.
-   printf '%s\n' '#!/bin/bash' 'printf "%s\n" 16384' | as_root tee -- "$inst_dialog" >/dev/null
-   as_root chmod +x -- "$dl_dialog" "$inst_dialog"
-
-   ## GUI input mode: undo setup()'s non-interactive overrides so the real
-   ## '--input gui' confirmation path runs.
+   ## Undo setup()'s non-interactive overrides so the real '--input gui'
+   ## confirmation path (the real dialogs) runs.
    unset TB_INPUT TB_USE_MSGCOLLECTOR TB_FORCE_INSTALL
 
    ec=0
-   run_updater update-torbrowser --danger-insecure-self-test "$fix" \
+   run_updater_gui update-torbrowser --danger-insecure-self-test "$fix" \
       --input gui --no-tor-con-check </dev/null || ec="$?"
 
    [ "$ec" = 0 ] \
-      || die "[gui mode] 'update-torbrowser --input gui' exited $ec (expected 0); a broken GUI path would die here"
+      || die "[gui mode] 'update-torbrowser --input gui' exited $ec (expected 0); a broken GUI path (e.g. a Qt-platform abort in a real dialog) would die here"
    assert_file_exists "gui mode: browser installed" \
       "$browser_folder/Browser/tbb_version.json"
 }

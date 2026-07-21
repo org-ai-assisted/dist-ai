@@ -10,13 +10,16 @@
 ## wrappers) against local file:// signing fixtures in an isolated HOME, with
 ## no network. Covers fresh install, the signature-freshness cache, downgrade
 ## and freeze warnings, rejection of tampered/invalid/too-old/wrong-signer
-## signatures, and a '--input gui' scenario that stubs the msgcollector dialogs
-## and asserts the whole download -> verify -> extract -> install path
-## completes.
+## signatures, and a '--input gui' scenario that drives the REAL msgcollector
+## dialogs under a headless Wayland compositor (labwc + wtype, via
+## wl-headless-run) -- no stubbing -- and asserts the whole download -> verify
+## -> extract -> install path completes.
 ##
 ## Needs the tb-updater package installed (update-torbrowser sources absolute
-## /usr/libexec paths) plus sqop for fixture signing. Exits 77 (SKIP) if either
-## is absent. Works installed (/usr/share/tb-updater-tests) or from a checkout.
+## /usr/libexec paths) plus sqop for fixture signing; the gui scenario also
+## needs msgcollector, labwc and wtype (it fails loudly, not skips, if those are
+## absent). Exits 77 (SKIP) only if update-torbrowser or sqop is absent. Works
+## installed (/usr/share/tb-updater-tests) or from a checkout.
 
 set -o errexit
 set -o nounset
@@ -45,11 +48,12 @@ if ! command -v sqop >/dev/null; then
    exit 77
 fi
 ## update-torbrowser refuses to run as root, so the scenarios drive it as the
-## current user; the gui scenario escalates via sudo only to swap the dialogs.
-## Running the whole suite as root would fail every scenario at the updater's
-## root check -- fail fast with a clear message instead.
+## current user. The gui scenario needs no root either: it runs the real
+## dialogs under a private headless Wayland compositor. Running the whole suite
+## as root would fail every scenario at the updater's root check -- fail fast
+## with a clear message instead.
 if [ "$(id -u)" = 0 ]; then
-   printf '%s\n' 'tb-updater-tests-e2e: run as a non-root user (update-torbrowser refuses to run as root); the gui scenario needs passwordless sudo.' >&2
+   printf '%s\n' 'tb-updater-tests-e2e: run as a non-root user (update-torbrowser refuses to run as root).' >&2
    exit 1
 fi
 

@@ -46,6 +46,18 @@ def dispatch_script() -> str:
                         "msgdispatcher_dispatch_x.py")
 
 
+def gui_dialog_script(name: str) -> str:
+    """Absolute path of a PyQt5 GUI dialog script (e.g. 'generic_gui_message.py'
+    or 'tb_updater_gui.py'), a sibling of the msgcollector script under test.
+    SKIPs (exit 77) if absent -- an older msgcollector may predate the .py
+    rename, or ship the dialog under a different name."""
+    cand = os.path.join(os.path.dirname(msgcollector_script()), name)
+    if not os.path.isfile(cand):
+        print(f"{name} not found next to msgcollector; skipping.", file=sys.stderr)
+        sys.exit(77)
+    return cand
+
+
 def read(path: str) -> str:
     with open(path, encoding="utf-8", errors="replace") as handle:
         return handle.read()

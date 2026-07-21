@@ -5,3 +5,4 @@ usr/share/tb-updater-tests/*.py usr/share/tb-updater-tests/
 usr/share/tb-updater-tests/e2e/make-fixture usr/share/tb-updater-tests/e2e/
 usr/share/tb-updater-tests/e2e/run-e2e usr/share/tb-updater-tests/e2e/
 usr/share/tb-updater-tests/sandbox-resume/run-sandbox-resume usr/share/tb-updater-tests/sandbox-resume/
+usr/share/dist-ai-tests-common/wl-headless-run usr/share/tb-updater-tests/
