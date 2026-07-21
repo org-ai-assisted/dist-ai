@@ -45,6 +45,10 @@ export DMF_REPO
 if [ -n "${HELPER_SCRIPTS_PATH:-}" ]; then
    export HELPER_SCRIPTS_PATH
    export PATH="${HELPER_SCRIPTS_PATH}/usr/bin:${PATH}"
+   ## unicode-show (driven by check-ref-*-for-unicode) has a '-Bsu' shebang
+   ## that excludes the user site, so from a checkout it needs its library on
+   ## PYTHONPATH -- else it dies with ModuleNotFoundError and the review fails.
+   export PYTHONPATH="${HELPER_SCRIPTS_PATH}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
 fi
 
 shopt -s nullglob
