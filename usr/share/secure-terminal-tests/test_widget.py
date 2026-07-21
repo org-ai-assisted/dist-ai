@@ -3349,6 +3349,27 @@ _ff = SecureTerminal(command='/bin/cat')
 ok(_ff._fmt_from_key((_MK, (), 0x41)) is not None,
    '_fmt_from_key: a colourless marking -> a plain format')
 
+# --- font: secure default + fixed-pitch fallback chain + per-tab set ----------
+from secure_terminal.terminal import DEFAULT_FONT_FAMILY as _DFF   # noqa: E402
+from PyQt6.QtGui import QFont as _QFont                            # noqa: E402
+eq(_DFF, 'Hack', 'default font family is Hack (confusable-disambiguating, no ligatures)')
+_fnt = SecureTerminal(command='/bin/cat')
+eq(_fnt.current_font_family(), 'Hack', 'a new terminal starts on the default font family')
+_fam = _fnt.font().families()
+ok(_fam[:1] == ['Hack'], 'the chosen family is tried first')
+ok('DejaVu Sans Mono' in _fam and 'monospace' in _fam,
+   'an uninstalled family falls back to DejaVu then the generic monospace')
+ok(_fnt.font().styleHint() == _QFont.StyleHint.Monospace and _fnt.font().fixedPitch(),
+   'the terminal font is fixed-pitch monospace (a proportional pick cannot break the grid)')
+_fnt.set_font_family('JetBrains Mono')
+eq(_fnt.current_font_family(), 'JetBrains Mono', 'set_font_family switches the tab font')
+ok(_fnt.font().families()[:1] == ['JetBrains Mono'], 'the new family is applied to the widget')
+_fnt.set_font_family('   ')
+eq(_fnt.current_font_family(), 'Hack', 'an empty/whitespace family falls back to the default')
+_fnt.set_font_family('IBM Plex Mono')
+_fnt.apply_zoom(150)
+eq(_fnt.current_font_family(), 'IBM Plex Mono', 'a zoom change preserves the chosen family')
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(widget): %d passed, %d failed\n'
                  % (PASS, FAIL))
