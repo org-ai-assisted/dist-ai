@@ -42,7 +42,7 @@ if [ "${CI:-}" != "true" ]; then
 fi
 
 # shellcheck source=../../usr/libexec/developer-meta-files/github-org-lib.bsh
-source /usr/libexec/developer-meta-files/github-org-lib.bsh
+source "${DEVELOPER_META_FILES_PATH:-}"/usr/libexec/developer-meta-files/github-org-lib.bsh
 
 fail=0
 

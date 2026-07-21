@@ -47,7 +47,7 @@ has sanitize-string \
       '       Install helper-scripts (see .github/actions/install-deps/).' >&2; exit 1; }
 
 # shellcheck source=../../usr/libexec/developer-meta-files/github-org-lib.bsh
-source /usr/libexec/developer-meta-files/github-org-lib.bsh
+source "${DEVELOPER_META_FILES_PATH:-}"/usr/libexec/developer-meta-files/github-org-lib.bsh
 
 fail=0
 

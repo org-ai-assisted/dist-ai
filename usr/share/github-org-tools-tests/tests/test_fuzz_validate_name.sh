@@ -44,7 +44,7 @@ source /usr/libexec/helper-scripts/has.sh
 has sanitize-string \
    || { printf '%s\n' 'error: sanitize-string not on PATH' >&2; exit 1; }
 # shellcheck source=../../usr/libexec/developer-meta-files/github-org-lib.bsh
-source /usr/libexec/developer-meta-files/github-org-lib.bsh
+source "${DEVELOPER_META_FILES_PATH:-}"/usr/libexec/developer-meta-files/github-org-lib.bsh
 
 ## Reference oracle: returns 0 if name is valid per the rule set,
 ## 1 otherwise. Mirrors the production validator. Any divergence

@@ -34,9 +34,9 @@ export GHORG_MOCK=true
 export GHORG_MOCK_DIR="${FIXTURES_DIR}"
 
 # shellcheck source=../../usr/libexec/developer-meta-files/github-org-lib.bsh
-source /usr/libexec/developer-meta-files/github-org-lib.bsh
+source "${DEVELOPER_META_FILES_PATH:-}"/usr/libexec/developer-meta-files/github-org-lib.bsh
 # shellcheck source=../../usr/libexec/developer-meta-files/github-policy-lib.bsh
-source /usr/libexec/developer-meta-files/github-policy-lib.bsh
+source "${DEVELOPER_META_FILES_PATH:-}"/usr/libexec/developer-meta-files/github-policy-lib.bsh
 
 ## policy_api_call expects these in caller scope (bash dynamic scoping).
 dry_run=0

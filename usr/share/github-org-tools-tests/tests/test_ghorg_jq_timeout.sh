@@ -30,7 +30,7 @@ if [ "${CI:-}" != "true" ]; then
 fi
 
 # shellcheck source=../../usr/libexec/developer-meta-files/github-org-lib.bsh
-source /usr/libexec/developer-meta-files/github-org-lib.bsh
+source "${DEVELOPER_META_FILES_PATH:-}"/usr/libexec/developer-meta-files/github-org-lib.bsh
 
 ## Tighten the timeout for the test so a regression is caught fast.
 GHORG_JQ_TIMEOUT_SOFT=1
