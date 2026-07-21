@@ -92,6 +92,16 @@ eq(S.marking_class(0x202E), 'bidi', 'RLO is bidi')
 eq(S.marking_class(0x200B), 'invisible', 'ZWSP is invisible')
 eq(S.marking_class(0x07), 'control', 'BEL is control')
 eq(S.marking_class(0x00E9), 'nonascii', 'e-acute is nonascii')
+# confusables: a non-ASCII code point that is a LOOK-ALIKE of a printable ASCII
+# character (a homoglyph) is its own risk class, louder than honest foreign text.
+eq(S.marking_class(0x0430), 'confusable', 'Cyrillic small a (look-alike of Latin a) is confusable')
+eq(S.marking_class(0x03BF), 'confusable', 'Greek small omicron (look-alike of o) is confusable')
+eq(S.marking_class(0x4E2D), 'nonascii', 'CJK zhong is foreign, not an ASCII look-alike')
+eq(S.marking_class(0x00E9), 'nonascii', 'e-acute is foreign, not an ASCII look-alike')
+ok(len(S._ascii_confusables()) > 500,
+   'the Unicode confusables set is populated (%d code points)' % len(S._ascii_confusables()))
+ok(all(cp > 0x7F for cp in S._ascii_confusables()),
+   'the confusables set holds only non-ASCII sources (ASCII is never flagged as a look-alike of itself)')
 _mk = [(chr(0x202E), ())]
 _runs, _ = S.cells_to_runs([], _mk, 'reveal', False, True)
 ok(any(k == (S.MARK_KEY, 'bidi', 0x202E) for _t, k in _runs),
@@ -118,6 +128,27 @@ _flood = [('a' if i % 2 else chr(0x202E), ()) for i in range(20000)]
 _fr, _ = S.cells_to_runs([], _flood, 'strip', False, True)
 ok(len(_fr) <= 2100,
    'marking runs are capped so a flood cannot defeat run-coalescing (%d runs)' % len(_fr))
+
+# --- Show mode: render the real glyph but TINT it by risk class ----------------
+# In show mode a non-ASCII glyph is shown as itself (not boxed/escaped), yet it is
+# still tagged with its risk class so colour flags a homoglyph the eye cannot catch.
+_sh_conf, _ = S.cells_to_runs([], [(chr(0x0430), ())], 'show', False, True)
+ok(any(k == (S.MARK_KEY, 'confusable', 0x0430) for _t, k in _sh_conf),
+   'show mode tags a homoglyph glyph with its confusable risk colour')
+eq(''.join(t for t, _ in _sh_conf), chr(0x0430),
+   'show mode still renders the actual glyph (tinted, not replaced by a box)')
+_sh_cjk, _ = S.cells_to_runs([], [(chr(0x4E2D), ())], 'show', False, True)
+ok(any(isinstance(k, tuple) and k[:2] == (S.MARK_KEY, 'nonascii') for _t, k in _sh_cjk),
+   'show mode tags an honest foreign glyph with the milder non-ASCII colour')
+_sh_ascii, _ = S.cells_to_runs([], [('a', ())], 'show', False, True)
+ok(all(not (isinstance(k, tuple) and k and k[0] == S.MARK_KEY) for _t, k in _sh_ascii),
+   'show mode leaves a plain ASCII char untagged (nothing to flag)')
+# markings off: the glyph is still tagged for hover/inspection, but its colour slot
+# is None, so nothing is tinted (turning off risk colours really removes the tint).
+_sh_off, _ = S.cells_to_runs([], [(chr(0x0430), ())], 'show', False, False)
+_soff = [k for _t, k in _sh_off if isinstance(k, tuple) and k and k[0] == S.MARK_KEY]
+ok(_soff and all(k[1] is None and k[2] == 0x0430 for k in _soff),
+   'show mode with markings off tints nothing (codepoint tagged, no colour source)')
 
 # --- deferred autowrap (VT last-column behaviour) + wrap flags -----------------
 _wc, _wcells, _wcol, _ws, _ww = S.feed_line_edits([], 0, {}, 'abcd\n', 4)
@@ -366,6 +397,31 @@ ok(S.too_close(BLACK, DARK_BG) is True, 'black on dark too close (guarded)')
 ok(S.too_close(RED, DARK_BG) is False, 'red on dark is fine')
 ok(S.too_close(GREEN, DARK_BG) is False, 'green on dark is fine')
 ok(S.too_close(WHITE, WHITE) is True, 'white on white too close')
+
+# --- colours: exhaustive luminance + too_close analysis -----------------------
+# The whole contrast guard rests on these two pure functions, so pin their exact
+# behaviour rather than trusting a handful of spot cases.
+eq(S.luminance(BLACK), 0.0, 'luminance of black is 0')
+eq(round(S.luminance(WHITE)), 255, 'luminance of white is 255 (weights sum to 1)')
+# the ITU weights: a pure channel weighs its coefficient x 255.
+eq(round(S.luminance((255, 0, 0))), round(0.299 * 255), 'red channel weight is 0.299')
+eq(round(S.luminance((0, 255, 0))), round(0.587 * 255), 'green channel weight is 0.587')
+eq(round(S.luminance((0, 0, 255))), round(0.114 * 255), 'blue channel weight is 0.114')
+# luminance is monotonic up a grey ramp (brighter grey -> higher luminance).
+_ramp = [S.luminance((g, g, g)) for g in range(0, 256, 17)]
+ok(all(b > a for a, b in zip(_ramp, _ramp[1:])), 'luminance rises monotonically on a grey ramp')
+# too_close is symmetric and reflexive, and keys ONLY on the luminance gap (30).
+ok(all(S.too_close((g, g, g), (g, g, g)) for g in range(0, 256, 15)),
+   'too_close is reflexive: any colour collides with itself (text cannot vanish)')
+ok(S.too_close(RED, GREEN) == S.too_close(GREEN, RED), 'too_close is symmetric')
+# threshold boundary: a gap of exactly 30 is allowed; 29 is not (strict "< 30").
+# grey g has luminance == g, so two greys 30 apart have a gap of exactly 30.
+ok(S.too_close((100, 100, 100), (129, 129, 129)) is True, 'a 29-luminance gap is too close')
+ok(S.too_close((100, 100, 100), (130, 130, 130)) is False, 'a 30-luminance gap is allowed (boundary)')
+# a striking case the eye would miss: pure red on pure green have IDENTICAL-ish
+# luminance gap, so the guard treats a saturated same-lightness pair as unreadable.
+ok(S.too_close((150, 0, 0), (0, 76, 0)) is True,
+   'two hues at matched luminance are flagged (colour alone is not contrast)')
 
 # --- colours: SGR parser ------------------------------------------------------
 def sgr(param):

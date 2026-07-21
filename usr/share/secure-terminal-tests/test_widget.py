@@ -776,9 +776,16 @@ eq(mk._fmt_from_key(_bidi).foreground().color().name(), mk.MARKING_COLORS['bidi'
    'marking: coloured by risk class (bidi), an app cannot recolour it')
 ok(mk._fmt_from_key(_bidi).background().style() == Qt.BrushStyle.NoBrush,
    'marking: no app background is applied -- the box shows on the default bg')
+_risk_classes = ('bidi', 'invisible', 'control', 'nonascii', 'confusable')
 _risk_cols = [mk._fmt_from_key((_S.MARK_KEY, c, 0x41)).foreground().color().name()
-              for c in ('bidi', 'invisible', 'control', 'nonascii')]
-eq(len(set(_risk_cols)), 4, 'marking: the four risk classes get four distinct colours')
+              for c in _risk_classes]
+eq(len(set(_risk_cols)), len(_risk_classes),
+   'marking: the five risk classes get five distinct colours')
+ok(all(c in mk.MARKING_COLORS for c in _risk_classes),
+   'marking: every risk class has a configured colour')
+# a homoglyph (confusable) is flagged in a DIFFERENT colour than honest foreign text
+ok(mk.MARKING_COLORS['confusable'] != mk.MARKING_COLORS['nonascii'],
+   'marking: a look-alike (confusable) is louder than plain non-ASCII, not the same colour')
 # markings OFF: the box carries the app's own SGR -- an app trying to hide it by
 # painting it its background colour is still forced readable by the contrast guard.
 _hide = tuple(sorted({'fg': 0, 'bg': 0, 'bold': False}.items()))    # black-on-black
@@ -809,6 +816,51 @@ st_dialog.PasteWarningDialog.confirm = staticmethod(lambda *a, **k: 'unicode')
 p.insertFromMimeData(mime2)
 eq(psent, [('pay' + chr(0x0430) + 'l\r').encode('utf-8')],
    'unicode paste keeps the printable homoglyph but still drops the bidi override')
+psent.clear()
+
+# --- paste warning: three modes (always / if-unicode default / never) ---------
+eq(p.current_paste_warn(), 'unicode',
+   'a new terminal defaults to warning only when a paste carries unicode/control')
+# instrument the dialog: record every time it is consulted, and always allow as-is
+_pw_calls = []
+def _pw_spy(*a, **k):
+    _pw_calls.append(True)
+    return 'unicode'
+st_dialog.PasteWarningDialog.confirm = staticmethod(_pw_spy)
+_clean = QMimeData()
+_clean.setText('echo ok\n')
+_dirty = QMimeData()
+_dirty.setText('echo ' + chr(0x0430) + '\n')
+
+# default 'unicode': a clean ASCII paste bypasses the dialog; a unicode one prompts.
+_pw_calls.clear(); psent.clear()
+p.insertFromMimeData(_clean)
+eq(_pw_calls, [], 'if-unicode mode: a clean ASCII paste is not questioned')
+eq(psent, [b'echo ok\r'], 'if-unicode mode: the clean paste goes straight through')
+_pw_calls.clear()
+p.insertFromMimeData(_dirty)
+eq(len(_pw_calls), 1, 'if-unicode mode: a unicode paste is questioned')
+
+# 'never': not even a unicode/control paste prompts -- it is silently sanitized to
+# ASCII (the safest strip; opting out of the prompt does not opt out of safety).
+p.apply_paste_warn('never')
+eq(p.current_paste_warn(), 'never', 'apply_paste_warn switches the mode')
+_pw_calls.clear(); psent.clear()
+p.insertFromMimeData(_dirty)
+eq(_pw_calls, [], 'never mode: even a unicode paste is not questioned')
+eq(psent, [b'echo \r'],
+   'never mode: the unicode paste is silently stripped to ASCII, not sent raw')
+
+# 'always': even a clean ASCII paste prompts.
+p.apply_paste_warn('always')
+_pw_calls.clear(); psent.clear()
+p.insertFromMimeData(_clean)
+eq(len(_pw_calls), 1, 'always mode: even a clean ASCII paste is questioned')
+
+# an unknown mode falls back to the safe default rather than trusting it.
+p.apply_paste_warn('bogus')
+eq(p.current_paste_warn(), 'unicode', 'an unknown paste-warn mode falls back to if-unicode')
+p.apply_paste_warn('unicode')
 
 # --- TUI mode (pyte is a required dependency: fail closed, do not skip) -------
 ok(tui_available(), 'python3-pyte available for TUI mode')
@@ -1853,6 +1905,52 @@ try:
              'colours (palette / 256 / truecolour, both themes)')
 except Exception as _e:                # pylint: disable=broad-except
     ok(False, 'adversarial: contrast guard failed: %s' % _e)
+
+# --- exhaustive + deterministic: EVERY ANSI palette combination (line mode) ----
+# The hypothesis sweep above samples the truecolour space; this pass ENUMERATES
+# the realistic attack surface with no randomness -- each of the 16 ANSI palette
+# colours (and the default) as fg against each as bg, bold on and off, on both
+# themes -- and asserts the invariant on every single one: the final foreground is
+# never near-invisible against its effective background. Deterministic, so a
+# regression can never slip through on a lucky seed.
+def _eff_pair(fmt, theme):
+    _fgb = fmt.foreground()
+    if _fgb.style() == Qt.BrushStyle.NoBrush:
+        return None
+    _base_bg = _THEMES.get(theme, _THEMES['dark'])[0]
+    _bgb = fmt.background()
+    _bg = (_bgb.color() if _bgb.style() != Qt.BrushStyle.NoBrush
+           else _QColor2(_base_bg))
+    return _rgb_of(_fgb.color()), _rgb_of(_bg)
+
+_line_checked = 0
+_line_bad = []
+for _theme in ('dark', 'light'):
+    _cg.apply_theme(_theme)
+    for _fg in list(range(16)) + [None]:
+        for _bg in list(range(16)) + [None]:
+            for _bold in (False, True):
+                _pair = _eff_pair(
+                    _cg._format_for({'fg': _fg, 'bg': _bg, 'bold': _bold}), _theme)
+                if _pair is None:
+                    continue
+                _line_checked += 1
+                if _too_close(*_pair):
+                    _line_bad.append((_theme, _fg, _bg, _bold))
+ok(not _line_bad,
+   'contrast(line): every ANSI fg x bg x bold x theme stays readable '
+   '(%d combos checked, unreadable: %r)' % (_line_checked, _line_bad[:3]))
+
+# a program cannot hide text by painting fg == bg for ANY palette index either.
+_hide_bad = []
+for _theme in ('dark', 'light'):
+    _cg.apply_theme(_theme)
+    for _i in range(16):
+        _pair = _eff_pair(_cg._format_for({'fg': _i, 'bg': _i, 'bold': False}), _theme)
+        if _pair and _too_close(*_pair):
+            _hide_bad.append((_theme, _i))
+ok(not _hide_bad,
+   'contrast(line): fg==bg for every palette index is forced readable (bad: %r)' % _hide_bad)
 _cg.close()
 
 # --- configurable window keyboard shortcuts -----------------------------------
@@ -2857,6 +2955,62 @@ _f4 = _rt._pyte_format(_Cell(fg='202020', bg='202020'))
 ok(_f4.foreground().color().name() != '#202020',
    '_pyte_format: fg == bg is overridden to a readable colour')
 
+# --- exhaustive TUI contrast sweep: every pyte colour, both reverse states -----
+# The TUI path (_pyte_format) has an extra lever the line path lacks -- reverse
+# video, which swaps fg/bg -- so sweep it too: every pyte colour name (plus
+# 'default') as fg against each as bg, bold on/off, reverse on/off, both themes.
+# Bold promotes fg to its bright palette variant here, so bright colours are
+# covered as well. Invariant: the drawn fg is never near-invisible on its bg.
+from secure_terminal.terminal import _PYTE_COLOR as _PC, THEMES as _TH2  # noqa: E402
+from secure_terminal.terminal import _rgb as _rgb3                      # noqa: E402
+from secure_terminal.sanitize import too_close as _tc3                  # noqa: E402
+_names = list(_PC.keys()) + ['default']
+
+def _tui_pair(_fmt, _theme):
+    _fgb = _fmt.foreground()
+    if _fgb.style() == Qt.BrushStyle.NoBrush:
+        return None
+    _theme_bg = _TH2.get(_theme, _TH2['dark'])[0]
+    _bgb = _fmt.background()
+    _bg = _bgb.color() if _bgb.style() != Qt.BrushStyle.NoBrush else QColor(_theme_bg)
+    return _rgb3(_fgb.color()), _rgb3(_bg)
+
+_tui_checked = 0
+_tui_bad = []
+for _theme in ('dark', 'light'):
+    _rt.apply_theme(_theme)
+    _rt._fmt_cache.clear()                  # theme change invalidates cached formats
+    for _fg in _names:
+        for _bg in _names:
+            for _bold in (False, True):
+                for _rev in (False, True):
+                    _pair = _tui_pair(_rt._pyte_format(
+                        _Cell(fg=_fg, bg=_bg, bold=_bold, reverse=_rev)), _theme)
+                    if _pair is None:
+                        continue
+                    _tui_checked += 1
+                    if _tc3(*_pair):
+                        _tui_bad.append((_theme, _fg, _bg, _bold, _rev))
+ok(not _tui_bad,
+   'contrast(tui): every pyte fg x bg x bold x reverse x theme stays readable '
+   '(%d combos checked, unreadable: %r)' % (_tui_checked, _tui_bad[:3]))
+_rt.apply_theme('dark')
+_rt._fmt_cache.clear()
+
+# the OSC 10/11 default-move attack: a program moves the DEFAULT fg and bg onto
+# the same colour, then prints text in the default colours -- hoping the guard's
+# fallback (which uses the default fg) collides too. The guard must fall back to a
+# fixed readable colour, not the program-moved default, so the text still shows.
+_rt._osc_palette['fg'] = '#303030'
+_rt._osc_palette['bg'] = '#303030'
+_f_osc = _rt._pyte_format(_Cell(fg='default', bg='default'))
+_op = _tui_pair(_f_osc, 'dark')
+ok(_op is not None and not _tc3(*_op),
+   'contrast(tui): the OSC default-move attack (fg==bg via OSC 10/11) is still forced readable')
+_rt._osc_palette.pop('fg', None)
+_rt._osc_palette.pop('bg', None)
+_rt._fmt_cache.clear()
+
 # _pyte_bell rings unless we are seeding retained scrollback
 _rt._seeding = True
 _rt._pyte_bell()                            # seeding -> no ring (just returns)
@@ -3361,12 +3515,10 @@ from PyQt6.QtGui import QFont as _QFont                            # noqa: E402
 eq(_DFF, 'Hack', 'default font family is Hack (confusable-disambiguating, no ligatures)')
 _fnt = SecureTerminal(command='/bin/cat')
 eq(_fnt.current_font_family(), 'Hack', 'a new terminal starts on the default font family')
-_fam = _fnt.font().families()
-ok(_fam[:1] == ['Hack'], 'the chosen family is tried first')
-ok('DejaVu Sans Mono' in _fam and 'monospace' in _fam,
-   'an uninstalled family falls back to DejaVu then the generic monospace')
+eq(_fnt.font().family(), 'Hack',
+   'the terminal uses the chosen family (Hack is a hard dependency; no fallback list)')
 ok(_fnt.font().styleHint() == _QFont.StyleHint.Monospace and _fnt.font().fixedPitch(),
-   'the terminal font is fixed-pitch monospace (a proportional pick cannot break the grid)')
+   'the terminal font is fixed-pitch monospace (steers Qt substitution; no proportional pick)')
 _fnt.set_font_family('JetBrains Mono')
 eq(_fnt.current_font_family(), 'JetBrains Mono', 'set_font_family switches the tab font')
 ok(_fnt.font().families()[:1] == ['JetBrains Mono'], 'the new family is applied to the widget')
