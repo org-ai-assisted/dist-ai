@@ -48,8 +48,8 @@ UPDATER_SRC = T.read(UPDATER)
 ## The two msgcollector dialogs update-torbrowser drives for GUI confirmation.
 ## These exact paths are what the msgcollector suite's test_gui_platform guards
 ## for the Wayland no-window fix.
-DOWNLOAD_DIALOG = "/usr/libexec/msgcollector/tb_updater_gui"
-INSTALL_DIALOG = "/usr/libexec/msgcollector/generic_gui_message"
+DOWNLOAD_DIALOG = "/usr/libexec/msgcollector/tb_updater_gui.py"
+INSTALL_DIALOG = "/usr/libexec/msgcollector/generic_gui_message.py"
 
 
 def test_desktop_wrapper_launches_gui_mode():

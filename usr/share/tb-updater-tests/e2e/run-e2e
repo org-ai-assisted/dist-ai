@@ -434,8 +434,8 @@ scenario_gui_input_mode_install() {
    ## to auto-confirm so the path runs headlessly; the dialogs' own Wayland/xcb
    ## platform robustness is covered by the msgcollector suite.
    local fix browser_folder ec
-   local dl_dialog='/usr/libexec/msgcollector/tb_updater_gui'
-   local inst_dialog='/usr/libexec/msgcollector/generic_gui_message'
+   local dl_dialog='/usr/libexec/msgcollector/tb_updater_gui.py'
+   local inst_dialog='/usr/libexec/msgcollector/generic_gui_message.py'
 
    if [ ! -f "$dl_dialog" ] || [ ! -f "$inst_dialog" ]; then
       die "[gui mode] msgcollector dialogs missing; install msgcollector"

@@ -43,7 +43,7 @@ def dispatch_script() -> str:
     """Absolute path of msgdispatcher_dispatch_x (the PyQt5 GUI renderer), a
     sibling of the msgcollector script under test."""
     return os.path.join(os.path.dirname(msgcollector_script()),
-                        "msgdispatcher_dispatch_x")
+                        "msgdispatcher_dispatch_x.py")
 
 
 def read(path: str) -> str:

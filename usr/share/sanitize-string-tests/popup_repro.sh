@@ -23,7 +23,7 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 
 sanitize_string_bin="${SANITIZE_STRING_BIN:-/usr/bin/sanitize-string}"
-gui_message='/usr/libexec/msgcollector/generic_gui_message'
+gui_message='/usr/libexec/msgcollector/generic_gui_message.py'
 
 ## '<' + space + tag name: inert to sanitize-string, revived by Qt.
 payload="< a href='http://example.com/injected'>CLICK ME (injected link)</a>"
