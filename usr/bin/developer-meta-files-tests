@@ -38,6 +38,15 @@ if [ -z "${DMF_REPO:-}" ]; then
 fi
 export DMF_REPO
 
+## The dm-review-branch test drives helper-scripts' check-ref-*-for-unicode /
+## unicode-show. When a helper-scripts checkout is wired, put its usr/bin on
+## PATH (and export the var, which those tools use to source their own libs) so
+## the test runs instead of skipping.
+if [ -n "${HELPER_SCRIPTS_PATH:-}" ]; then
+   export HELPER_SCRIPTS_PATH
+   export PATH="${HELPER_SCRIPTS_PATH}/usr/bin:${PATH}"
+fi
+
 shopt -s nullglob
 tests=( "${share}"/test_*.sh )
 if [ "${#tests[@]}" -eq 0 ]; then
