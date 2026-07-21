@@ -405,6 +405,68 @@ def check_card_layout(root, failures):
                 'as its text' % (rel, section_id, count))
 
 
+def _header_nav(markup):
+    """The ordered (label, href) list of the header's <nav> links, or None if the
+    page has no header nav. The home-anchor prefix is normalized so an index page's
+    `#install` and a sub-page's `/#install` compare equal, and the transient
+    class="active" on the current page's own link is ignored -- only the link SET,
+    ORDER and targets matter for consistency."""
+    low = markup.lower()
+    if '<header' not in low:
+        return None
+    header = markup[low.index('<header'):]
+    end = header.lower().find('</header>')
+    if end != -1:
+        header = header[:end]
+    # The header carries one bare <nav>; the footer's is <nav class="fcols">.
+    match = re.search(r'<nav>(.*?)</nav>', header, re.DOTALL)
+    if not match:
+        return None
+    links = []
+    for anchor in re.finditer(r'<a\b([^>]*)>(.*?)</a>', match.group(1), re.DOTALL):
+        label = re.sub(r'<[^>]+>', '', anchor.group(2)).strip()
+        href_match = re.search(r'href="([^"]*)"', anchor.group(1))
+        href = href_match.group(1) if href_match else ''
+        if href.startswith('/#'):          # /#install (sub-page) == #install (index)
+            href = href[1:]
+        links.append((label, href))
+    return tuple(links)
+
+
+def check_nav(root, failures):
+    # Every page's top navigation must carry the SAME links, in the same order,
+    # pointing at the same targets -- only the active-page highlight differs. This
+    # catches a page that drops or reorders a nav item (e.g. a missing "FAQ" or
+    # "Plugins" link) -- a whole bug class the other checks never looked at.
+    navs = {}
+    for page in html_files(root):
+        nav = _header_nav(open(page, encoding='utf-8').read())
+        if nav is not None:
+            navs[os.path.relpath(page, root)] = nav
+    if len(set(navs.values())) <= 1:
+        return
+    counts = {}
+    for nav in navs.values():
+        counts[nav] = counts.get(nav, 0) + 1
+    canonical = max(counts, key=counts.get)      # the most common nav = the baseline
+    canonical_labels = [label for label, _ in canonical]
+    for rel, nav in sorted(navs.items()):
+        if nav == canonical:
+            continue
+        labels = [label for label, _ in nav]
+        missing = [lab for lab in canonical_labels if lab not in labels]
+        extra = [lab for lab in labels if lab not in canonical_labels]
+        detail = []
+        if missing:
+            detail.append('missing ' + ', '.join(missing))
+        if extra:
+            detail.append('extra ' + ', '.join(extra))
+        if not detail:
+            detail.append('links differ in order or target')
+        failures.append('%s: header nav inconsistent with the rest of the site '
+                        '(%s)' % (rel, '; '.join(detail)))
+
+
 def main():
     roots = [os.path.normpath(r) for r in sys.argv[1:] if os.path.isdir(r)]
     if not roots:
@@ -430,6 +492,7 @@ def main():
         check_csp(root, failures)
         check_supply_chain(root, failures)
         check_card_layout(root, failures)
+        check_nav(root, failures)
         name = os.path.basename(root)
         if failures:
             total += len(failures)
@@ -437,7 +500,7 @@ def main():
                 sys.stderr.write('FAIL %s: %s\n' % (name, item))
         else:
             sys.stdout.write('ok %s: links + wording + footer + banner + csp + '
-                             'supply-chain + card-layout clean\n' % name)
+                             'supply-chain + card-layout + nav clean\n' % name)
     sys.stdout.write('website-tests: %d failure(s)\n' % total)
     return 1 if total else 0
 
