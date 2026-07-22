@@ -234,11 +234,12 @@ Architecture: all
 Depends: ${misc:Depends},
  bash (>= 4),
  git,
- helper-scripts
+ helper-scripts,
+ pre-push-static
 Suggests: shellcheck,
  safe-rm
 Description: Style-gate verification test for developer-meta-files
- Drives the real, shipped agents/pre-push-static.sh (developer-meta-files' bash
+ Drives the real, shipped pre-push-static gate (dist-ai's bash
  style gate) as a subprocess against throwaway git repos, asserting that its
  single-grep rule checks -- R-070, R-074, R-030/R-031, R-042, R-034, R-011,
  R-051, R-090, R-102, R-120 and R-010 -- FLAG a violating shell file and SPARE a
@@ -246,10 +247,26 @@ Description: Style-gate verification test for developer-meta-files
  reporting), not a private copy of the regex, so a rule that silently stops
  matching is caught. No root, no network; git runs hermetically.
  .
- It reads the developer-meta-files checkout from DMF_REPO (wired by
- dist-ai-tests-all from --component developer-meta-files) to find the gate
- script, and sources helper-scripts' has.sh. Exits 77 (SKIP) if the checkout or
- helper-scripts are unavailable.
+ It resolves the gate from the installed /usr/bin/pre-push-static or the
+ in-tree copy, and sources helper-scripts' has.sh. Exits 77 (SKIP) if git,
+ safe-rm or helper-scripts are unavailable.
+
+Package: pre-push-static
+Architecture: all
+Depends: ${misc:Depends},
+ bash (>= 4),
+ git,
+ shellcheck,
+ pre-commit-hooks,
+ file
+Description: Pre-push static-checks style gate (bash + CI)
+ The mechanical gate that enforces developer-meta-files' bash-style-guide
+ Tier-1 rules (single-grep style checks) plus bash -n, shellcheck -x and the
+ R-001 ASCII rule, on a commit range, the staged index, or per-commit. Run it
+ as 'pre-push-static origin/master' before a push, symlink it as
+ .git/hooks/pre-push, or let CI mirror it via developer-meta-files'
+ reusable-pre-push-static.yml. Self-contained: it shells out to git, shellcheck
+ and pre-commit-hooks and needs no helper-scripts to run as a bare git hook.
 
 Package: github-org-tools-tests
 Architecture: all

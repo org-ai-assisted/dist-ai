@@ -13,7 +13,7 @@
 ## point and itself drops to the 'tb-updater' account via setpriv.
 ##
 ## Style-guide deviations (matches the existing .github/ci/self-test
-## and developer-meta-files/agents/pre-push-static.sh precedents):
+## and dist-ai's usr/bin/pre-push-static precedents):
 ##   * R-040/R-110 (log/die from log_run_die.sh): self-contained,
 ##     uses bare printf and a local die() so the script runs on a
 ##     developer machine without sourcing helper-scripts.

@@ -28,13 +28,8 @@ set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
 
-## Run via the developer-meta-files-tests entrypoint, which points DMF_REPO at
-## the developer-meta-files checkout (the source of agents/pre-push-static.sh).
-if [ -z "${DMF_REPO:-}" ]; then
-   printf '%s\n' \
-      'error: run via the developer-meta-files-tests entrypoint (DMF_REPO unset).' >&2
-   exit 1
-fi
+## The gate under test (pre-push-static) now ships in dist-ai itself
+## (usr/bin/pre-push-static), so this test no longer needs DMF_REPO.
 
 ## helper-scripts (has.sh) is not always installed in a consumer's dist-ai
 ## test environment; SKIP rather than fail when it -- or git / safe-rm -- is
@@ -51,8 +46,14 @@ has git \
 has safe-rm \
    || { printf '%s\n' 'test_pre_push_static_style_rules: safe-rm not on PATH; skipping.' >&2; exit 77; }
 
-REPO_ROOT="${DMF_REPO}"
-GATE="${REPO_ROOT}/agents/pre-push-static.sh"
+## Resolve the gate: the installed dist-ai CLI, else the in-tree copy
+## relative to this test file (usr/share/<suite>/ -> usr/bin/).
+gate_test_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
+if [ -x '/usr/bin/pre-push-static' ]; then
+   GATE='/usr/bin/pre-push-static'
+else
+   GATE="${gate_test_dir}/../../bin/pre-push-static"
+fi
 
 [ -x "${GATE}" ] \
    || { printf '%s\n' "error: gate not executable at '${GATE}'." >&2; exit 1; }

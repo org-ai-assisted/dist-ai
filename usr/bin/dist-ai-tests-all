@@ -177,9 +177,9 @@ wire() {
 
    case "${base}" in
       developer-meta-files)
-         ## The style-gate test drives the real, shipped
-         ## agents/pre-push-static.sh from the developer-meta-files checkout
-         ## (DMF_REPO); the dm-review-branch test drives check-ref-*-for-unicode
+         ## The style-gate test drives the real, shipped pre-push-static
+         ## gate (now in dist-ai, resolved from the installed CLI or the
+         ## in-tree copy); the dm-review-branch test drives check-ref-*-for-unicode
          ## / unicode-show from helper-scripts (HELPER_SCRIPTS_PATH, put on PATH
          ## by the entrypoint).
          wire_env=( "DMF_REPO=${dmf}" )
