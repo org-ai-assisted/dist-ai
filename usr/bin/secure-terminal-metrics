@@ -1,0 +1,54 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Emit truthful secure-terminal test / coverage / fuzz metrics as JSON, so the
+## secure-terminal.github.io pages cite GENERATED figures (assertion count, line
+## coverage, fuzz-harness count, hypothesis-property count, reflection
+## spec-surface corpus size) rather than hand-maintained ones. Thin wrapper: it
+## resolves the target checkout and hands off to metrics.py.
+##
+##   secure-terminal-metrics [--no-coverage] [--pretty]
+##
+## Resolves the checkout from SECURE_TERMINAL_REPO (or a default under the
+## operator's private-sources); SKIPs (exit 77) if the module is absent.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/secure-terminal-tests' ]; then
+   tests_dir='/usr/share/secure-terminal-tests'
+else
+   tests_dir="${script_dir}/../share/secure-terminal-tests"
+fi
+
+repo=''
+[ -v SECURE_TERMINAL_REPO ] || SECURE_TERMINAL_REPO=''
+if [ -n "${SECURE_TERMINAL_REPO}" ]; then
+   repo="${SECURE_TERMINAL_REPO}"
+elif [ -d "${HOME}/private-sources/secure-terminal/usr/lib/python3/dist-packages/secure_terminal" ]; then
+   repo="${HOME}/private-sources/secure-terminal"
+elif [ -d "${script_dir}/../../../../secure-terminal/usr/lib/python3/dist-packages/secure_terminal" ]; then
+   repo="${script_dir}/../../../../secure-terminal"
+fi
+
+if [ -z "${repo}" ] || [ ! -d "${repo}/usr/lib/python3/dist-packages/secure_terminal" ]; then
+   printf 'secure-terminal-metrics: SKIP (secure_terminal not found; set SECURE_TERMINAL_REPO)\n' >&2
+   exit 77
+fi
+
+export SECURE_TERMINAL_REPO="${repo}"
+export PYTHONPATH="${repo}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
+
+# run the gatherer as a child and let its exit code become ours (errexit
+# propagates a non-zero); not exec, per the no-process-replacement rule
+python3 -Bsu -- "${tests_dir}/metrics.py" "$@"

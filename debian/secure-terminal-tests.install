@@ -1,6 +1,7 @@
 usr/bin/secure-terminal-tests usr/bin/
 usr/bin/secure-terminal-tests-fuzz usr/bin/
 usr/bin/secure-terminal-tests-coverage usr/bin/
+usr/bin/secure-terminal-metrics usr/bin/
 usr/bin/secure-terminal-tests-apparmor usr/bin/
 usr/bin/secure-terminal-shots usr/bin/
 usr/share/secure-terminal-tests/*.py usr/share/secure-terminal-tests/
