@@ -12,8 +12,8 @@
 ## R-051 (a quoted inline trap), R-090 (command -v), R-102 (an extensionless
 ## 'bash script' operand), R-120 (a separator-glued/adjacent rm), and R-010
 ## (distinct strict-mode directives) actually FLAG a violating shell file and
-## SPARE a compliant one. It drives the
-## real, shipped agents/pre-push-static.sh as a subprocess against a throwaway git
+## SPARE a compliant one. It drives the real, shipped pre-push-static gate
+## (dist-ai) as a subprocess against a throwaway git
 ## repo, so it exercises the check end to end (regex + file selection + reporting),
 ## not a private copy of the regex.
 ##

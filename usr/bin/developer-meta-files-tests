@@ -7,8 +7,8 @@
 
 ## Runs developer-meta-files' functional tests against the checkout:
 ##   * test_pre_push_static_style_rules.sh -- drives the real, shipped
-##     agents/pre-push-static.sh and asserts its single-grep style checks flag
-##     violations and spare compliant files;
+##     pre-push-static gate (dist-ai) and asserts its single-grep style checks
+##     flag violations and spare compliant files;
 ##   * test_dm_review_branch.sh -- asserts dm-review-branch aborts on suspicious
 ##     unicode in a reviewed branch's commits AND in any ref name.
 ## Both resolve the developer-meta-files checkout from DMF_REPO (wired by
