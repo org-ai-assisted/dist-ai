@@ -762,6 +762,25 @@ key(hk, Qt.Key.Key_Return)
 ok(_asked and b'\x15' in _hsent and b'\r' not in _hsent,
    'edited line: hook asks and (on decline) discards, never submits unjudged')
 ok(not hk._line_dirty, 'dirty flag cleared after the decision')
+# defense-in-depth: the hook layer single-lines a suggestion upstream, but the
+# widget also strips CR/LF at the write site, so even a suggestion that somehow
+# carried a newline can never auto-submit.
+import secure_terminal.hook as _hookmod              # noqa: E402
+_real_evaluate = _hookmod.evaluate
+_hookmod.evaluate = lambda *a, **k: {
+    'verdict': 'block', 'message': '', 'suggestion': 'evil\ncmd\rtail'}
+try:
+    hk._hook_ask = lambda _c, _r: 'suggest'
+    _hsent.clear()
+    _htype(hk, 'x')
+    key(hk, Qt.Key.Key_Return)
+    _written = b''.join(_hsent)
+    ok(b'\n' not in _written and b'\r' not in _written,
+       'hook suggestion write strips CR/LF: a newline suggestion cannot auto-run')
+    eq(hk._line_buffer, 'evil cmd tail',
+       'the inserted suggestion is single-lined at the write site')
+finally:
+    _hookmod.evaluate = _real_evaluate
 
 # --- colours: SGR run formatting + contrast guard -----------------------------
 from PyQt6.QtGui import QTextCursor as _QTC              # noqa: E402
