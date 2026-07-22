@@ -52,15 +52,15 @@ NBSP = chr(0x00A0)                               # no-break space
 BEL = chr(0x07)
 NUL = chr(0x00)
 
-eq(S.render_output('plain ascii\t\n', 'strip'), 'plain ascii\t\n', 'strip keeps ascii+tab+nl')
-eq(S.render_output(CAFE, 'strip'), 'caf_', 'strip replaces non-ascii with _')
-eq(S.render_output('a' + BIDI + 'b', 'strip'), 'a_b', 'strip bidi')
-eq(S.render_output('a' + ZWSP + 'b', 'strip'), 'a_b', 'strip zero-width')
-eq(S.render_output('a' + NBSP + 'b', 'strip'), 'a_b', 'strip nbsp')
-eq(S.render_output('a' + NUL + chr(0x1F) + 'b', 'strip'), 'a__b', 'strip control -> _')
+eq(S.render_output('plain ascii\t\n', 'box'), 'plain ascii\t\n', 'strip keeps ascii+tab+nl')
+eq(S.render_output(CAFE, 'box'), 'caf_', 'strip replaces non-ascii with _')
+eq(S.render_output('a' + BIDI + 'b', 'box'), 'a_b', 'strip bidi')
+eq(S.render_output('a' + ZWSP + 'b', 'box'), 'a_b', 'strip zero-width')
+eq(S.render_output('a' + NBSP + 'b', 'box'), 'a_b', 'strip nbsp')
+eq(S.render_output('a' + NUL + chr(0x1F) + 'b', 'box'), 'a__b', 'strip control -> _')
 # a standalone BEL is a bell SIGNAL, not display content -> dropped from the
 # display in every mode, while has_bell still detects it so the bell policy rings.
-eq(S.render_output('a' + BEL + 'b', 'strip'), 'ab', 'strip drops a standalone BEL')
+eq(S.render_output('a' + BEL + 'b', 'box'), 'ab', 'strip drops a standalone BEL')
 ok(S.has_bell('a' + BEL + 'b'), 'has_bell still detects a dropped BEL')
 
 # --- render_output: show (render legit unicode, still neutralize deceptive) ----
@@ -115,7 +115,7 @@ ok(_moff and all(k[1] is None and k[2] == 0x202E for k in _moff),
 # markings off but ANSI colours ON: the marking keeps the PROGRAM's own SGR as its
 # colour source, so disabling risk-class colouring never drops allowed ANSI colour.
 _sgr = tuple(sorted({'fg': 1, 'bg': None, 'bold': False}.items()))
-_runs_sgr, _ = S.cells_to_runs([], [(chr(0x202E), _sgr)], 'strip', True, False)
+_runs_sgr, _ = S.cells_to_runs([], [(chr(0x202E), _sgr)], 'box', True, False)
 _msgr = [k for _t, k in _runs_sgr if isinstance(k, tuple) and k and k[0] == S.MARK_KEY]
 ok(_msgr and _msgr[0] == (S.MARK_KEY, _sgr, 0x202E),
    'markings off + colours on: the marking carries the program SGR as its colour')
@@ -125,7 +125,7 @@ eq(''.join(t for t, _ in _runs), ''.join(t for t, _ in _runs_off),
 # a flood of alternating safe/marking chars must NOT explode into one run each
 # (that would be one Qt insert per char and wedge the UI): the runs are capped.
 _flood = [('a' if i % 2 else chr(0x202E), ()) for i in range(20000)]
-_fr, _ = S.cells_to_runs([], _flood, 'strip', False, True)
+_fr, _ = S.cells_to_runs([], _flood, 'box', False, True)
 ok(len(_fr) <= 2100,
    'marking runs are capped so a flood cannot defeat run-coalescing (%d runs)' % len(_fr))
 
@@ -149,6 +149,25 @@ _sh_off, _ = S.cells_to_runs([], [(chr(0x0430), ())], 'show', False, False)
 _soff = [k for _t, k in _sh_off if isinstance(k, tuple) and k and k[0] == S.MARK_KEY]
 ok(_soff and all(k[1] is None and k[2] == 0x0430 for k in _soff),
    'show mode with markings off tints nothing (codepoint tagged, no colour source)')
+
+# --- Show mode is consistent with Box for no-glyph characters ------------------
+# A character with no visible glyph (zero-width, bidi override, control) cannot be
+# "shown", so Show falls back to the SAME box placeholder Box mode uses -- tinted by
+# risk class -- rather than a bare '_'. Only a printable glyph is rendered as itself.
+for _cp, _cls in ((0x200B, 'invisible'), (0x202E, 'bidi'), (0x009F, 'control')):
+    _r, _ = S.cells_to_runs([], [(chr(_cp), ())], 'show', False, True)
+    eq(''.join(t for t, _ in _r), S.BOX,
+       'show draws a no-glyph char (U+%04X) as the box, like Box mode' % _cp)
+    ok(any(k == (S.MARK_KEY, _cls, _cp) for _t, k in _r),
+       'the show-mode box for U+%04X is tinted its risk class (%s)' % (_cp, _cls))
+# the box for a no-glyph char is identical between Box and Show mode (consistency).
+_box_r, _ = S.cells_to_runs([], [(chr(0x202E), ())], 'box', False, True)
+eq(''.join(t for t, _ in _box_r), ''.join(t for t, _ in
+   S.cells_to_runs([], [(chr(0x202E), ())], 'show', False, True)[0]),
+   'a bidi override renders identically in Box and Show mode')
+# a literal ASCII underscore is never turned into a box in either mode.
+_us, _ = S.cells_to_runs([], [('_', ())], 'show', False, True)
+eq(''.join(t for t, _ in _us), '_', 'a real ASCII underscore stays an underscore, not a box')
 
 # --- deferred autowrap (VT last-column behaviour) + wrap flags -----------------
 _wc, _wcells, _wcol, _ws, _ww = S.feed_line_edits([], 0, {}, 'abcd\n', 4)
@@ -218,7 +237,7 @@ def _feed_split(chunk):
     global _carry
     _t = _carry + chunk
     _t, _carry = S.split_trailing_escape(_t)
-    return S.render_output(_t, 'strip')
+    return S.render_output(_t, 'box')
 _leak = _feed_split('\x1b]2;host:~ (cd ~) [pt') + _feed_split('s/11]\x07[u]% ')
 eq(_leak, '[u]% ', 'a split OSC title leaks nothing across the read boundary')
 
@@ -226,21 +245,21 @@ eq(_leak, '[u]% ', 'a split OSC title leaks nothing across the read boundary')
 # ESC P (DCS), ESC X (SOS), ESC ^ (PM), ESC _ (APC) carry a string body to a
 # BEL/ST terminator. Matching only the 2-byte opener would leak the body as text,
 # so a cat'd DECRQSS/XTGETTCAP/Sixel/kitty-graphics payload would show its guts.
-eq(S.render_output('before\x1bP$qm\x1b\\after', 'strip'), 'beforeafter',
+eq(S.render_output('before\x1bP$qm\x1b\\after', 'box'), 'beforeafter',
    'DCS DECRQSS body stripped (no "$qm" leak)')
-eq(S.render_output('a\x1bP+q544e\x1b\\b', 'strip'), 'ab', 'DCS XTGETTCAP body stripped')
-eq(S.render_output('a\x1bPq#0;2;0;0;0#0~~\x1b\\b', 'strip'), 'ab', 'DCS Sixel body stripped')
-eq(S.render_output('a\x1bXstart of string\x1b\\b', 'strip'), 'ab', 'SOS body stripped')
-eq(S.render_output('a\x1b^privmsg\x1b\\b', 'strip'), 'ab', 'PM body stripped')
-eq(S.render_output('a\x1b_Gf=100;payload\x1b\\b', 'strip'), 'ab', 'APC kitty-graphics body stripped')
-eq(S.render_output('x\x1bPbody\x1b\\y', 'strip'), 'xy', 'DCS (ST-terminated) stripped')
+eq(S.render_output('a\x1bP+q544e\x1b\\b', 'box'), 'ab', 'DCS XTGETTCAP body stripped')
+eq(S.render_output('a\x1bPq#0;2;0;0;0#0~~\x1b\\b', 'box'), 'ab', 'DCS Sixel body stripped')
+eq(S.render_output('a\x1bXstart of string\x1b\\b', 'box'), 'ab', 'SOS body stripped')
+eq(S.render_output('a\x1b^privmsg\x1b\\b', 'box'), 'ab', 'PM body stripped')
+eq(S.render_output('a\x1b_Gf=100;payload\x1b\\b', 'box'), 'ab', 'APC kitty-graphics body stripped')
+eq(S.render_output('x\x1bPbody\x1b\\y', 'box'), 'xy', 'DCS (ST-terminated) stripped')
 # BEL does NOT terminate a DCS/SOS/PM/APC (only OSC): a BEL is body, so a string
 # sequence continues past it to its ST -- else its continuation leaks as text.
-eq(S.render_output('\x1bPsecret\x07LEAK\x1b\\after', 'strip'), 'after',
+eq(S.render_output('\x1bPsecret\x07LEAK\x1b\\after', 'box'), 'after',
    'a BEL inside a DCS is body, not a terminator (no "LEAK")')
-eq(S.render_output('a\x1b]0;title\x07b', 'strip'), 'ab', 'OSC still terminates on BEL')
+eq(S.render_output('a\x1b]0;title\x07b', 'box'), 'ab', 'OSC still terminates on BEL')
 # an unterminated DCS swallows to end-of-input (no ST ever arrives)
-eq(S.render_output('keep\x1bPneverending tail', 'strip'), 'keep',
+eq(S.render_output('keep\x1bPneverending tail', 'box'), 'keep',
    'an unterminated DCS swallows the rest of the chunk')
 # a DCS/APC split across two reads must carry its tail, not leak it
 eq(S.split_trailing_escape('log\x1bP$q'), ('log', '\x1bP$q'), 'an incomplete DCS tail is carried')
@@ -259,7 +278,7 @@ def _fcc(chunks):
     carry, drop, out = '', '', ''
     for _c in chunks:
         _t, carry, drop = S.feed_chunk_carry(_c, carry, drop)
-        out += S.render_output(_t, 'strip')
+        out += S.render_output(_t, 'box')
     return out, carry, drop
 eq(_fcc(['\x1bP' + 'A' * 5000, 'B' * 30 + '\x1b\\AFTER'])[0], 'AFTER',
    'a >cap DCS split across reads is fully stripped, its continuation not leaked')
@@ -295,19 +314,19 @@ ok('osc_iterm2' not in S.OSC_FEATURE_BY_KEY,
 
 # --- escapes are always stripped; editing controls always pass ----------------
 ESC = '\x1b[31mRED\x1b[0m'
-for mode in ('strip', 'show', 'reveal', 'detail'):
+for mode in ('box', 'show', 'reveal', 'detail'):
     eq(S.render_output(ESC, mode), 'RED', 'escape stripped in %s' % mode)
     eq(S.render_output('ab\x08\r\t\nX', mode), 'ab\x08\r\t\nX',
        'editing controls pass in %s' % mode)
 
 # CSI with a private-parameter prefix (< = > ?) -- a capable-TERM program emits
 # these (modifyOtherKeys "\x1b[>4;2m", cursor hide "\x1b[?25l") -- must strip whole
-eq(S.render_output('a\x1b[>4;2mb', 'strip'), 'ab', 'strip CSI private > param')
-eq(S.render_output('a\x1b[?25lb', 'strip'), 'ab', 'strip CSI private ? param')
-eq(S.render_output('a\x1b[=3hb', 'strip'), 'ab', 'strip CSI private = param')
+eq(S.render_output('a\x1b[>4;2mb', 'box'), 'ab', 'strip CSI private > param')
+eq(S.render_output('a\x1b[?25lb', 'box'), 'ab', 'strip CSI private ? param')
+eq(S.render_output('a\x1b[=3hb', 'box'), 'ab', 'strip CSI private = param')
 # CSI cursor moves, OSC hyperlink and bare escapes all vanish
-eq(S.render_output('a\x1b[2Jb', 'strip'), 'ab', 'strip CSI clear')
-eq(S.render_output('a\x1b]8;;http://evil\x07b', 'strip'), 'ab', 'strip OSC link')
+eq(S.render_output('a\x1b[2Jb', 'box'), 'ab', 'strip CSI clear')
+eq(S.render_output('a\x1b]8;;http://evil\x07b', 'box'), 'ab', 'strip OSC link')
 
 # --- describe_codepoint: the reveal-badge tooltip -----------------------------
 _euro = S.describe_codepoint(0x20AC)
@@ -326,7 +345,7 @@ ok(S.leaves_full_screen('\x1b[?1049l') is True, 'detects alt-screen leave (1049)
 ok(S.leaves_full_screen('\x1b[?1049h') is False, 'enter is not a leave')
 
 # --- sanitize_bytes / sanitize_paste ------------------------------------------
-eq(S.sanitize_bytes(b'a\x08 \x08', 'strip'), 'a\x08 \x08', 'sanitize_bytes keeps bs/space')
+eq(S.sanitize_bytes(b'a\x08 \x08', 'box'), 'a\x08 \x08', 'sanitize_bytes keeps bs/space')
 eq(S.sanitize_paste('a\nb\r\tc'), 'a\rb\r\tc', 'paste nl/cr -> cr, tab kept')
 eq(S.sanitize_paste('ex' + chr(0x0430) + 'mple.org'), 'exmple.org', 'paste strips cyrillic homoglyph')
 eq(S.sanitize_paste('x' + BIDI + ZWSP + 'y'), 'xy', 'paste strips bidi+zw')
@@ -459,24 +478,24 @@ eq(S.color_256(16), '#000000', 'color_256: cube start is black')
 ok(S.color_256(300) is None, 'color_256: out-of-range -> None')
 
 # --- tui_cell: one-character-wide, grid-preserving cell sanitization ----------
-eq(S.tui_cell('A', 'strip'), 'A', 'tui ascii kept')
-eq(S.tui_cell(CAFE[-1], 'strip'), '_', 'tui strip non-ascii -> _')
+eq(S.tui_cell('A', 'box'), 'A', 'tui ascii kept')
+eq(S.tui_cell(CAFE[-1], 'box'), '_', 'tui strip non-ascii -> _')
 eq(S.tui_cell(CAFE[-1], 'show'), CAFE[-1], 'tui show renders glyph')
 eq(S.tui_cell(chr(0x2500), 'show'), chr(0x2500), 'tui show renders box-drawing')
 eq(S.tui_cell(BIDI, 'show'), '_', 'tui show still neutralizes bidi')
 eq(S.tui_cell(ZWSP, 'show'), '_', 'tui show still neutralizes zero-width')
-eq(S.tui_cell(BEL, 'strip'), '_', 'tui control -> _')
+eq(S.tui_cell(BEL, 'box'), '_', 'tui control -> _')
 # reveal cannot show a <U+XXXX> badge in a fixed cell, so in TUI it collapses to
 # the safe "_" (like strip) -- never the raw glyph, which would render a homoglyph
 # deceptively under the green "reveal is safe" lamp.
 eq(S.tui_cell(CAFE[-1], 'reveal'), '_', 'tui reveal is safe "_", not the glyph')
 eq(S.tui_cell(BIDI, 'reveal'), '_', 'tui reveal neutralizes bidi one-wide')
-eq(S.tui_cell('', 'strip'), ' ', 'tui empty cell -> space')
+eq(S.tui_cell('', 'box'), ' ', 'tui empty cell -> space')
 # a pyte cell may be a multi-codepoint grapheme (base + combining) -> must not
 # crash (this is what "cat /dev/random" in show mode hit)
 _grapheme = 'a' + chr(0x0301)                    # a + combining acute
 eq(S.tui_cell(_grapheme, 'show'), _grapheme, 'tui multi-cp grapheme kept in show')
-eq(S.tui_cell(_grapheme, 'strip'), '_', 'tui multi-cp grapheme -> _ in strip')
+eq(S.tui_cell(_grapheme, 'box'), '_', 'tui multi-cp grapheme -> _ in strip')
 eq(S.tui_cell('a' + BEL, 'show'), '_', 'tui grapheme with a control -> _')
 ok(isinstance(S.tui_cell(chr(0x1F600) + chr(0x1F600), 'show'), str),
    'tui two-astral cell does not crash')
@@ -527,7 +546,7 @@ ok(not _capped_on_space.endswith(' '), 'title no trailing space after cap')
 
 # --- constants ----------------------------------------------------------------
 ok(len(S.ANSI_PALETTE) == 16, '16-colour palette')
-ok(S.DISPLAY_MODES == ('strip', 'show', 'reveal', 'detail'), 'display modes')
+ok(S.DISPLAY_MODES == ('box', 'show', 'reveal', 'detail'), 'display modes')
 ok(set(S.THEMES) == {'dark', 'light'}, 'themes')
 
 # --- HTML-injection safety: the widget layer must not use an HTML sink --------
@@ -675,7 +694,7 @@ def _run_cli(args, timeout=30):
 # printf interprets the backslash-octal, so pass LITERAL backslashes (a single
 # Python backslash would be interpreted here and then double-encoded through argv)
 # strip mode: escapes removed, text kept, bidi neutralized to _
-_o, _ = _run_cli(['--mode', 'strip', '--', 'printf',
+_o, _ = _run_cli(['--mode', 'box', '--', 'printf',
                   'X\\033[31mRED\\033[0m Y\\342\\200\\256Z'])
 ok('\x1b' not in _o and 'RED' in _o, 'cli strip: escapes gone, text kept')
 ok('_' in _o and chr(0x202E) not in _o, 'cli strip: bidi -> _')
@@ -700,7 +719,7 @@ _o, _ = _run_cli(['--', 'printf', 'x\x07y'])
 ok('\x07' not in _o and 'xy' in _o.replace('\r', ''),
    'cli drops a standalone BEL (not shown, not leaked)')
 # no command -> the login shell, which exits on our stdin EOF (must not hang)
-_o, _rc = _run_cli(['--mode', 'strip'], timeout=15)
+_o, _rc = _run_cli(['--mode', 'box'], timeout=15)
 ok(isinstance(_rc, int), 'cli default shell exits on stdin EOF')
 
 # --- command hook: verdict protocol, escalation, fail modes, sanitization -----
@@ -832,7 +851,7 @@ if os.path.exists(_hlpath):
             os.environ['XDG_CONFIG_HOME'] = _saved_xdg
 
 # --- feed_line_edits: the line-mode logical-cell editor -----------------------
-def _line(raw, mode='strip', prev=None, col=0, sgr=None):
+def _line(raw, mode='box', prev=None, col=0, sgr=None):
     """Feed raw into a fresh (or given) line buffer; return (completed_display,
     current_display) rendered under `mode`."""
     cells = prev if prev is not None else []
@@ -866,7 +885,7 @@ comp, cur, _, _ = _line('safe\x1b[2A\x1b[Hpwn\x1b[10;5H!')
 eq((comp, cur), ([], 'safepwn!'),
    'vertical/absolute escapes stripped; everything stays on one line')
 # and no escape byte ever survives into a cell
-_, cur, _, _ = _line('a\x1b[31m\x1b]0;t\x07b\x1bZ', 'strip')
+_, cur, _, _ = _line('a\x1b[31m\x1b]0;t\x07b\x1bZ', 'box')
 ok('\x1b' not in cur, 'no ESC byte survives feed_line_edits')
 
 # --- result -------------------------------------------------------------------

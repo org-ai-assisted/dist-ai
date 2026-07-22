@@ -166,7 +166,7 @@ eq(mb.toPlainText().rstrip(), '', 'five backspaces erase five chars')
 # but every text export (copy / save / toPlainText) maps it back to ASCII '_', so
 # a copied or saved transcript stays pure ASCII. Strip mode only.
 boxt = SecureTerminal(command='/bin/cat')
-boxt._mode = 'strip'
+boxt._mode = 'box'
 feed_output(boxt, 'caf\xc3\xa9\xe2\x80\x8b\n'.encode('utf-8'))   # e-acute + zero-width
 ok('\u25a1' in boxt.document().toPlainText(),
    'strip display shows the box for a neutralized byte')
@@ -176,6 +176,19 @@ data = boxt.createMimeDataFromSelection
 boxt.selectAll()
 ok('\u25a1' not in boxt.createMimeDataFromSelection().text(),
    'copy maps the box back to ASCII _')
+# Show mode is the opt-in to copy real unicode, so it does NOT collapse to ASCII:
+# a printable glyph is copied as itself, while a no-glyph character (shown as a
+# box) copies as that box -- never as the raw invisible/bidi byte, which is the
+# hazard. So the dangerous character still never reaches the clipboard.
+sht = SecureTerminal(command='/bin/cat')
+sht._mode = 'show'
+# real UTF-8 for e-acute (U+00E9) + a zero-width space (U+200B); build the code
+# points then encode, so the bytes are genuine UTF-8, not double-encoded.
+feed_output(sht, 'caf\u00e9\u200b\n'.encode('utf-8'))
+_sh_export = sht.toPlainText()
+ok('\u00e9' in _sh_export, 'show mode copies a real printable glyph as itself (e-acute kept)')
+ok('\u25a1' in _sh_export and '\u200b' not in _sh_export,
+   'show mode copies a no-glyph char as the box, never the raw zero-width byte')
 # Double-clicking a neutralized character opens the inspect popup; its Copy button
 # must place the \uXXXX ESCAPE on the clipboard, never the raw glyph -- copying a
 # bidi override or homoglyph as-is is the exact hazard this terminal guards against
@@ -267,7 +280,7 @@ import time as _time                                  # noqa: E402
 from secure_terminal import sanitize as _S            # noqa: E402
 fl = SecureTerminal(command='/bin/cat')
 fl.resize(600, 300)
-_blob = _S.render_output((bytes(range(256)) * 8000).decode('latin-1'), 'strip')
+_blob = _S.render_output((bytes(range(256)) * 8000).decode('latin-1'), 'box')
 _t0 = _time.time()
 for _ in range(2):                                    # ~4MB of control-laden output
     fl._append(_blob)
@@ -290,13 +303,13 @@ eq((_steps, _moves), ([1], [-1]),
 rr = SecureTerminal(command='/bin/cat')
 _rr_raw = 'cafe' + chr(0x00E9) + '\n'
 rr._raw = _rr_raw
-rr._append(_S.render_output(_rr_raw, 'strip'))
+rr._append(_S.render_output(_rr_raw, 'box'))
 eq(rr.toPlainText().rstrip(), 'cafe_', 'strip shows non-ascii as _')
 rr.apply_mode('reveal')
 eq(rr.toPlainText().rstrip(), 'cafe<U+00E9>', 'reveal re-renders existing scrollback')
 rr.apply_mode('show')
 eq(rr.toPlainText().rstrip(), 'cafe' + chr(0x00E9), 'show re-renders existing scrollback')
-rr.apply_mode('strip')
+rr.apply_mode('box')
 eq(rr.toPlainText().rstrip(), 'cafe_', 'strip re-renders the scrollback back')
 # a mode toggle after a flood re-renders only the recent tail, not the full
 # scrollback: reveal expands each byte to an 8-char <U+XXXX>, so re-rendering 1MB
@@ -314,7 +327,7 @@ ok(len(rf.toPlainText()) < 1_200_000,
 sw = SecureTerminal(command='/bin/cat')
 _scroll = 'history-line-A\nhistory-line-B\nhistory-line-C\n'
 sw._raw = _scroll
-sw._append(_S.render_output(_scroll, 'strip'))
+sw._append(_S.render_output(_scroll, 'box'))
 ok('history-line-A' in sw.toPlainText() and 'history-line-C' in sw.toPlainText(),
    'scrollback present in CLI mode')
 sw.apply_tui(True)
@@ -552,7 +565,7 @@ def _fmt_cp(term, index):
 
 
 ins = SecureTerminal(command='/bin/cat')
-ins.apply_mode('strip')
+ins.apply_mode('box')
 ins._append('a' + chr(0x202E) + 'b')                     # RLO between two ASCII
 eq(ins.toPlainText(), 'a_b', 'strip shows the RLO override as "_"')
 eq(_fmt_cp(ins, 1), 0x202E, 'even the strip "_" carries the source codepoint (RLO)')
@@ -594,7 +607,7 @@ eq(_mfmt.property(_CP_PROP), 0x202E, 'and the marking still carries the codepoin
 # point over "_" reads the RLO, a point over the adjacent ASCII reads nothing
 # (codex P2: probing both sides bled the popup into adjacent glyphs).
 inb = SecureTerminal(command='/bin/cat')
-inb.apply_mode('strip')
+inb.apply_mode('box')
 inb._append('a' + chr(0x202E) + 'b')                     # -> 'a_b'
 inb.resize(600, 200)
 inb.show()
@@ -898,7 +911,7 @@ if tui_available():
     ok(_fr[_last - 1].startswith('-- INSERT --'),
        'tui places the status line on the last row')
     # the same frame in strip mode: box-drawing glyphs become _, ASCII stays
-    fs.apply_mode('strip')
+    fs.apply_mode('box')
     fs._render_tui()
     _sr = fs.toPlainText().split('\n')
     ok(_tl not in _sr[0] and '_' in _sr[0], 'strip mode neutralizes box glyphs')
@@ -917,7 +930,7 @@ if tui_available():
     ok('ok' in crash.toPlainText(), 'pyte parser error contained; terminal survives')
     crash.shutdown()
     # per-cell bidi neutralized in strip mode
-    tui.apply_mode('strip')
+    tui.apply_mode('box')
     tui._stream.feed(b'\x1b[10;1Ha\xe2\x80\xaeb')     # a U+202E b
     tui._render_tui()
     ok(chr(0x202E) not in tui.toPlainText(), 'tui bidi neutralized')
@@ -1369,21 +1382,21 @@ ok(win.isFullScreen(), 'full screen on')
 win.toggle_fullscreen(False)
 # unicode display is three mutually-exclusive buttons (Strip/Reveal/Show),
 # default strip, colour-coded by safety
-win.act_strip.trigger()
-ok(win.act_strip.isChecked() and win.current().current_mode() == 'strip',
+win.act_box.trigger()
+ok(win.act_box.isChecked() and win.current().current_mode() == 'box',
    'Strip button selects strip')
 win.act_show.trigger()
-_checked = sum(a.isChecked() for a in (win.act_strip, win.act_reveal, win.act_show))
+_checked = sum(a.isChecked() for a in (win.act_box, win.act_reveal, win.act_show))
 eq((win.current().current_mode(), _checked), ('show', 1),
    'Show button selects show, exclusively (only one checked)')
 win.act_reveal.trigger()
 eq(win.current().current_mode(), 'reveal', 'Reveal button selects reveal')
-ok(not win.act_strip.icon().isNull() and not win.act_show.icon().isNull(),
+ok(not win.act_box.icon().isNull() and not win.act_show.icon().isNull(),
    'mode buttons carry icons')
 # security indicator: two lamps. display axis (show=red, reveal=green [safe and
 # lossless], strip=green [safe -- the neutralized char is a hard-to-miss coloured
 # box, though lossy]) and mode axis (TUI=yellow, line=green).
-win.set_mode('strip')
+win.set_mode('box')
 eq((win._display_level()[1], win._display_level()[0]), ('Box', '#1f8a54'),
    'box (strip-key) display -> green (safe; the box placeholder is hard to miss)')
 win.set_mode('reveal')
@@ -1395,8 +1408,8 @@ eq((win._display_level()[1], win._display_level()[0]), ('Show', '#d83933'),
 # the default display mode is labelled "Box" (it draws a box; it does not strip the
 # data stream), and its tooltip says it is a DISPLAY setting -- not the bytes a
 # program pipes elsewhere, so "cat file | bash" runs regardless.
-eq(win.act_strip.text(), '&Box', 'the strip-key display mode is user-labelled Box')
-ok('cat file | bash' in win.act_strip.toolTip(),
+eq(win.act_box.text(), '&Box', 'the strip-key display mode is user-labelled Box')
+ok('cat file | bash' in win.act_box.toolTip(),
    'the Box tooltip clarifies it is display-only, not bytes piped elsewhere')
 eq(win._mode_level()[1], 'CLI', 'CLI mode -> green mode lamp')
 if tui_available():
@@ -1406,12 +1419,12 @@ if tui_available():
     win.set_tui(False)
     # enabling TUI leans this tab to 'show' for readability but must NOT persist
     # 'show' as the global default, and turning TUI off restores the prior mode.
-    win.set_mode('strip')
+    win.set_mode('box')
     win.set_tui(True)
     eq(win.current().current_mode(), 'show', 'TUI leans the tab to show')
-    eq(win._default_mode, 'strip', 'TUI does NOT persist show as the global default')
+    eq(win._default_mode, 'box', 'TUI does NOT persist show as the global default')
     win.set_tui(False)
-    eq(win.current().current_mode(), 'strip', 'turning TUI off restores strip')
+    eq(win.current().current_mode(), 'box', 'turning TUI off restores strip')
 # a plain tab switch must not mutate persisted settings (setChecked on toggled
 # actions is blocked): flip colours off on tab B, switch away and back.
 _before_colors = win._default_colors
@@ -1421,7 +1434,7 @@ _toggled = win._default_colors
 win._goto_tab(0)                       # switch away (fires setChecked, blocked)
 win._goto_tab(win.tabs.count() - 1)    # and back
 eq(win._default_colors, _toggled, 'tab switch does not rewrite the colours default')
-win.set_mode('strip')
+win.set_mode('box')
 ok(not win.sec_display.icon().isNull() and not win.sec_mode.icon().isNull(),
    'both security lamps show an icon')
 # About dialog builds without error (patch exec so the modal does not block)
@@ -1806,7 +1819,7 @@ def _fuzz_osc7_safe(raw):
     _ofz._handle_osc(b'\x1b]7;file://h/' + body + b'\x07')
     _ofz.cwd_changed.disconnect(_c)
     for _p in got:
-        assert _S.render_output(_p, 'strip') == _p    # already safe: nothing to strip
+        assert _S.render_output(_p, 'box') == _p    # already safe: nothing to strip
 
 
 for _name, _prop in (('osc_split', _fuzz_osc_split), ('osc7_safe', _fuzz_osc7_safe)):

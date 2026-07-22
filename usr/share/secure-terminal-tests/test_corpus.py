@@ -47,7 +47,7 @@ def ok(cond, msg):
         sys.stderr.write('FAIL: ' + msg + '\n')
 
 
-MODES = ('strip', 'show', 'reveal')
+MODES = ('box', 'show', 'reveal')
 
 # controls the terminal HONORS as line-local editing (a program may use them, but
 # the widget's line model bounds them to the current line -- see the fuzz tests);
@@ -168,7 +168,7 @@ def assert_safe(name, text):
            % (name, mode, bad[:4]))
         # (2) idempotence.
         ok(S.render_output(out, mode) == out, '%s/%s: not idempotent' % (name, mode))
-    strip = S.render_output(text, 'strip')
+    strip = S.render_output(text, 'box')
     ok(all(ord(ch) in SAFE for ch in strip),
        '%s: strip left a non-safe char' % name)
     reveal = S.render_output(text, 'reveal')
@@ -190,13 +190,13 @@ for _name, _rawbytes in git_diffs_lie_fixtures().items():
     _text = _rawbytes.decode('utf-8', 'replace')
     assert_safe('git-diffs-lie:' + _name, _text)
     # also the raw-byte path (latin-1 1:1, as sanitize_bytes uses)
-    ok(all(ord(ch) in SAFE for ch in S.sanitize_bytes(_rawbytes, 'strip')),
+    ok(all(ord(ch) in SAFE for ch in S.sanitize_bytes(_rawbytes, 'box')),
        'git-diffs-lie:%s: sanitize_bytes(strip) is safe' % _name)
 
 # the escape/CR forgeries must not HIDE the real value: the neutralized render
 # still contains the honest text a naive terminal would have painted over.
 _ansi = S.render_output(
-    git_diffs_lie_fixtures()['ansi-escape'].decode('utf-8'), 'strip')
+    git_diffs_lie_fixtures()['ansi-escape'].decode('utf-8'), 'box')
 ok('STATUS=FAIL' in _ansi and '\x1b' not in _ansi,
    'ansi-escape: the erased "FAIL" survives and the escape is gone')
 
@@ -212,10 +212,10 @@ ok(_comp == [] and all(c != '\x1b' for c, _ in _cells),
 # of stdisplay's random-codepoint fuzz.)
 _all = ''.join(chr(c) for c in range(0x00, 0x110000)
                if not 0xD800 <= c <= 0xDFFF)
-_strip_all = S.render_output(_all, 'strip')
+_strip_all = S.render_output(_all, 'box')
 ok(all(ord(ch) in SAFE for ch in _strip_all),
    'all-unicode: strip emits only safe ASCII + honored controls')
-ok(S.render_output(_strip_all, 'strip') == _strip_all,
+ok(S.render_output(_strip_all, 'box') == _strip_all,
    'all-unicode: strip is idempotent')
 _reveal_all = S.render_output(_all, 'reveal')
 ok(all(ord(ch) in SAFE for ch in _reveal_all),

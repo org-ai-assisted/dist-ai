@@ -60,7 +60,7 @@ SESS._state_dir = lambda: _STATE_DIR       # so session.load reads our temp dir
 def prop_render_output(text, mode):
     out = S.render_output(text, mode)
     assert isinstance(out, str)
-    if mode == 'strip':
+    if mode == 'box':
         # strip mode must emit only printable ASCII + tab/newline + the two
         # honored cursor controls; nothing hostile can survive.
         assert all(ord(ch) in SAFE_OUTPUT for ch in out)
@@ -189,7 +189,7 @@ def prop_render_output_vt(text, mode):
     # it now reaches the cursor/colour/alt-screen parsers.
     out = S.render_output(text, mode)
     assert isinstance(out, str)
-    if mode == 'strip':
+    if mode == 'box':
         assert all(ord(ch) in SAFE_OUTPUT for ch in out)
     assert isinstance(S.wants_full_screen(text), bool)
     assert isinstance(S.leaves_full_screen(text), bool)
@@ -317,8 +317,8 @@ def prop_feed_line_edits(text, mode, max_line):
         assert col <= max_line and len(cells) <= max_line   # never past the width
     for ch, _key in cells:
         assert ch != '\x1b'                      # no escape survives into a cell
-    if mode == 'strip':
-        rendered = ''.join(S.render_output(c, 'strip') for c, _ in cells)
+    if mode == 'box':
+        rendered = ''.join(S.render_output(c, 'box') for c, _ in cells)
         assert all(ord(ch) in SAFE_OUTPUT for ch in rendered)
     # feeding the SAME chunk again from the resulting state must still not raise
     S.feed_line_edits(cells, col, sgr, text, max_line)
@@ -347,11 +347,11 @@ def prop_chunk_boundary_invariance(text, split):
     # stripped output. A read boundary must never change what the user sees, leak
     # a sequence's tail, or drop a standalone character.
     whole_text, _, _ = S.feed_chunk_carry(text, '', '')
-    whole = S.render_output(whole_text, 'strip')
+    whole = S.render_output(whole_text, 'box')
     head, tail = text[:split], text[split:]
     t1, carry, drop = S.feed_chunk_carry(head, '', '')
     t2, _, _ = S.feed_chunk_carry(tail, carry, drop)
-    split_out = S.render_output(t1, 'strip') + S.render_output(t2, 'strip')
+    split_out = S.render_output(t1, 'box') + S.render_output(t2, 'box')
     assert split_out == whole
 
 
@@ -365,7 +365,7 @@ def prop_feed_chunk_carry(chunks):
     carry, drop = '', ''
     for chunk in chunks:
         text, carry, drop = S.feed_chunk_carry(chunk, carry, drop)
-        rendered = S.render_output(text, 'strip')
+        rendered = S.render_output(text, 'box')
         assert '\x1b' not in rendered
         assert len(carry) <= 4096
         assert carry == '' or carry.startswith('\x1b') or carry == '\x1b'
@@ -384,7 +384,7 @@ def prop_cells_to_runs(text, mode, colors):
         assert isinstance(run_text, str)
     disp = S.cells_display_col(cells, col, mode)
     assert 0 <= disp
-    if mode == 'strip':
+    if mode == 'box':
         for run_text, _key in runs:
             # Strip-mode DISPLAY may show the readable box for a neutralized byte
             # (the widget maps it back to ASCII '_' on copy/export); everything
@@ -403,7 +403,7 @@ def prop_sanitize_bytes(data, mode):
     # in strip mode, must render to only the safe display alphabet.
     out = S.sanitize_bytes(data, mode)
     assert isinstance(out, str)
-    if mode == 'strip':
+    if mode == 'box':
         assert all(ord(ch) in SAFE_OUTPUT for ch in out)
 
 

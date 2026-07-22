@@ -60,8 +60,18 @@ _dlg = st_dialog.PasteWarningDialog(_dtext, 0)
 ok(_dlg.windowTitle() == 'Paste warning' and _dlg.isModal(),
    'a modal "Paste warning" dialog is built')
 eq(_dlg._result, 'reject', 'the dialog defaults to reject')
-ok(_dlg._unicode_btn.isEnabled(),
-   'with no delay the risky unicode button is enabled immediately')
+ok(_dlg._unicode_btn.isEnabled() and _dlg._stripped_btn.isEnabled(),
+   'with no delay BOTH send buttons are enabled immediately')
+# the Detail pane names the hidden characters inline (Detail, not bare Reveal):
+# find the read-only preview holding the badge text.
+from PyQt6.QtWidgets import QPlainTextEdit          # noqa: E402
+_panes = [w.toPlainText() for w in _dlg.findChildren(QPlainTextEdit)]
+ok(any('RIGHT-TO-LEFT OVERRIDE' in p for p in _panes),
+   'the Detail pane names the bidi override inline (<U+202E NAME>), not just <U+202E>')
+# the previews use a fixed-pitch font (terminal standard: a look-alike cannot hide
+# behind a proportional font).
+ok(all(w.font().fixedPitch() for w in _dlg.findChildren(QPlainTextEdit)),
+   'the preview panes use a fixed-pitch font, like the terminal')
 # a button click records the corresponding result (via _done)
 _dlg._done('stripped')
 eq(_dlg._result, 'stripped', 'a button click records its result')
@@ -72,19 +82,23 @@ _dlg_plain = st_dialog.PasteWarningDialog('plain ascii text', 0)
 ok(_dlg_plain is not None, 'the dialog builds even when classify_paste finds nothing')
 _destroy(_dlg_plain)
 
-# --- the countdown gate: the risky button is disabled until the timer elapses -
+# --- the countdown gate: BOTH send buttons are disabled until the timer elapses -
 _dlgc = st_dialog.PasteWarningDialog(_dtext, 2)
-ok(not _dlgc._unicode_btn.isEnabled(),
-   'a countdown delay starts the unicode button disabled')
-ok('(2)' in _dlgc._unicode_btn.text(),
-   'the unicode button shows the remaining seconds')
+ok(not _dlgc._unicode_btn.isEnabled() and not _dlgc._stripped_btn.isEnabled(),
+   'a countdown delay starts BOTH send buttons disabled (a stray Enter fires neither)')
+ok(_dlgc._reject.isEnabled(),
+   'Reject stays available during the countdown (always an escape)')
+ok('(2)' in _dlgc._unicode_btn.text() and '(2)' in _dlgc._stripped_btn.text(),
+   'both send buttons show the remaining seconds')
 _dlgc._tick()                               # 2 -> 1
 _dlgc._tick()                               # 1 -> 0
 _dlgc._tick()                               # 0 -> re-enable + stop the timer
-ok(_dlgc._unicode_btn.isEnabled(),
-   'the unicode button is enabled once the countdown elapses')
+ok(_dlgc._unicode_btn.isEnabled() and _dlgc._stripped_btn.isEnabled(),
+   'both send buttons are enabled once the countdown elapses')
 eq(_dlgc._unicode_btn.text(), 'Paste with unicode',
-   'the countdown suffix is dropped when the button unlocks')
+   'the unicode countdown suffix is dropped when the button unlocks')
+eq(_dlgc._stripped_btn.text(), 'Paste stripped',
+   'the stripped countdown suffix is dropped when the button unlocks')
 _destroy(_dlgc)
 
 # --- confirm(): exec() Accepted returns the chosen result; Rejected -> reject --

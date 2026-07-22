@@ -123,16 +123,16 @@ def phase_output(rnd, iterations, seed):
             _assert(not any(ord(ch) in DANGEROUS_CPS for ch in out),
                     'render_output({0!r}, {1}) leaked a dangerous cp: {2!r}'
                     .format(text, mode, out), seed)
-            if mode in ('strip', 'reveal'):
+            if mode in ('box', 'reveal'):
                 _assert(all(ord(ch) in SAFE for ch in out),
                         'render_output({0!r}, {1}) left non-SAFE: {2!r}'
                         .format(text, mode, out), seed)
-        strip = S.render_output(text, 'strip')
-        _assert(S.render_output(strip, 'strip') == strip,
+        strip = S.render_output(text, 'box')
+        _assert(S.render_output(strip, 'box') == strip,
                 'render_output strip not idempotent on {0!r}'.format(text), seed)
         raw = text.encode('utf-8', 'surrogatepass') if not any(
             0xD800 <= ord(c) <= 0xDFFF for c in text) else b''
-        sb = S.sanitize_bytes(raw, 'strip')
+        sb = S.sanitize_bytes(raw, 'box')
         _assert(all(ord(ch) in SAFE for ch in sb),
                 'sanitize_bytes left non-SAFE for {0!r}'.format(raw), seed)
 
@@ -155,7 +155,7 @@ def phase_lines(rnd, iterations, seed):
         for ch, _key in cells:
             _assert(ch != '\x1b', 'ESC smuggled into a cell on {0!r}'
                     .format(text), seed)
-        runs, prefix = S.cells_to_runs(comp, cells, 'strip', rnd.choice((True,
+        runs, prefix = S.cells_to_runs(comp, cells, 'box', rnd.choice((True,
                                                                          False)))
         _assert(isinstance(prefix, int) and prefix >= 0,
                 'cells_to_runs bad prefix on {0!r}'.format(text), seed)
@@ -167,7 +167,7 @@ def phase_lines(rnd, iterations, seed):
                         for ch in run_text),
                     'cells_to_runs strip run not safe on {0!r}'.format(text),
                     seed)
-        disp = S.cells_display_col(cells, col, 'strip')
+        disp = S.cells_display_col(cells, col, 'box')
         _assert(disp >= 0, 'cells_display_col negative on {0!r}'.format(text),
                 seed)
         ## feeding the resulting state again must not raise

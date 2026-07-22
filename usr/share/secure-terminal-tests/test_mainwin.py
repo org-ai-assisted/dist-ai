@@ -504,14 +504,14 @@ finally:
     win._remote_control = _saved_rc
 
 # open (the server side of a single-instance handoff)
-ok(win._ipc_open({'tabs': [{'title': 'opened', 'mode': 'strip'}]})['ok'],
+ok(win._ipc_open({'tabs': [{'title': 'opened', 'mode': 'box'}]})['ok'],
    'ipc: open creates the requested tabs')
 win._ipc_open({'tabs': 'not-a-list'})       # opened 0 -> ensure a usable tab
 ok(True, 'ipc: a bare open reuse still leaves a usable tab')
 
 # _restore_tab: rebuild a tab from saved session state (bad ints fall back)
 win._restore_tab({'text': 'hi', 'theme': 'dark', 'zoom': 'notanint',
-                  'scrollback': 'nope', 'mode': 'strip', 'osc': {}})
+                  'scrollback': 'nope', 'mode': 'box', 'osc': {}})
 win._restore_tab({'allow_title': True, 'bell': 'audible'})   # legacy pre-OSC path
 ok(True, '_restore_tab rebuilds a tab and tolerates bad zoom/scrollback values')
 
@@ -1035,7 +1035,7 @@ finally:
 _sl2 = set(win._locked)
 try:
     win._locked = {'tui', 'colors', 'osc_notice', 'unicode_mode', 'osc_title'}
-    win._apply_global({'theme': 'dark', 'zoom': 100, 'mode': 'strip',
+    win._apply_global({'theme': 'dark', 'zoom': 100, 'mode': 'box',
                        'colors': True, 'tui': True, 'osc_notice': True,
                        'osc': {'osc_title': True}, 'scrollback': 1000,
                        'paste_delay': 3, 'persist': False})
