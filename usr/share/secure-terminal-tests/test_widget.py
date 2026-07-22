@@ -368,11 +368,18 @@ rr.apply_mode('show')
 eq(rr.toPlainText().rstrip(), 'cafe' + chr(0x00E9), 'show re-renders existing scrollback')
 rr.apply_mode('box')
 eq(rr.toPlainText().rstrip(), 'cafe_', 'box re-renders the scrollback back')
-# a SAVED transcript stays lossless even in box mode: it names the byte inline
-# (Detail) rather than collapsing it to '_', while a copy still gives '_'
-eq(rr.transcript_text().rstrip(), 'cafe<U+00E9 LATIN SMALL LETTER E WITH ACUTE>',
-   'box mode: a saved transcript is lossless (names the codepoint, not "_")')
-eq(rr.toPlainText().rstrip(), 'cafe_', 'box mode: a copy still maps the box to "_"')
+# a SAVED transcript is lossless: fed through the real render path (so each box
+# carries its source codepoint), Box mode names the byte inline (Detail) with
+# line-edits already RESOLVED (a \r overwrite is applied, not concatenated),
+# while a copy / plain text still collapses the box to '_'.
+_tr = SecureTerminal(command='/bin/cat')
+_tr.apply_mode('box')
+_tr._feed_line('load 10%\rdone caf\xe9\n')     # \r overwrite, then a homoglyph
+eq(_tr.toPlainText().rstrip(), 'done caf_',
+   'box display/copy: the \\r overwrite is resolved and the box maps to "_"')
+eq(_tr.transcript_text().rstrip(), 'done caf<U+00E9 LATIN SMALL LETTER E WITH ACUTE>',
+   'box transcript: line edits resolved AND the codepoint named (lossless), not "_"')
+_tr.shutdown()
 # a mode toggle after a flood re-renders only the recent tail, not the full
 # scrollback: reveal expands each byte to an 8-char <U+XXXX>, so re-rendering 1MB
 # of raw would be ~8MB and freeze the UI. Bounded, the document stays small.
