@@ -8,15 +8,20 @@
 ## Single entry point for ALL of the secure-terminal.github.io screenshots. The
 ## generators live together in usr/share/secure-terminal-shots/ (see its README).
 ##
-## Usage: secure-terminal-shots [review|comparison] [OUTPUT_DIR]
+## Usage: secure-terminal-shots [review|comparison|comparison-wayland] [ARGS...]
 ##
 ##   review      (default) the paste + copy REVIEW-BAR shots -- headless, offscreen
 ##               Qt grab of the real ReviewBar, deterministic. OUTPUT_DIR defaults
 ##               to the site's shots/. This is the safe, no-display path.
 ##   comparison  the terminal-COMPARISON shots -- real Debian terminal emulators
-##               under a nested labwc compositor. NEEDS an X server + labwc; run it
-##               in a sandbox. OUTPUT_DIR is ignored (it writes to its own shots/;
-##               copy them to the site's comparison/shots/). Forwards ST_REPO etc.
+##               under a nested labwc compositor (X11 clients). NEEDS an X server +
+##               labwc; run it in a sandbox. Writes to its own shots/; copy them to
+##               the site's comparison/shots/. Forwards ST_REPO etc.
+##   comparison-wayland  the same comparison, but the terminals run as NATIVE
+##               WAYLAND clients (X11-only ones via labwc's Xwayland) and grim
+##               captures. Runs inside its own net+mount namespace. Extra args pass
+##               through: --all-terminals (default) / --wayland-terminals /
+##               --x11-terminals / --only NAME / --case C / --quick / --settle S.
 ##
 ## Both target a secure-terminal checkout resolved from SECURE_TERMINAL_REPO (or a
 ## default under the operator's private-sources); SKIPs (exit 77) if it is absent.
@@ -52,7 +57,8 @@ if [ -z "${repo}" ] || [ ! -d "${repo}/usr/lib/python3/dist-packages/secure_term
 fi
 
 mode='review'
-if [ "$#" -ge 1 ] && { [ "$1" = 'review' ] || [ "$1" = 'comparison' ]; }; then
+if [ "$#" -ge 1 ] && { [ "$1" = 'review' ] || [ "$1" = 'comparison' ] \
+      || [ "$1" = 'comparison-wayland' ]; }; then
    mode="$1"
    shift
 fi
@@ -63,6 +69,12 @@ if [ "${mode}" = 'comparison' ]; then
    ## Real-terminal comparison capture; it resolves ST_REPO / SECURE_TERMINAL_REPO
    ## itself and writes to its own shots/. Needs a display -- fails loudly if none.
    ST_REPO="${repo}" exec "${shots_dir}/comparison-capture.sh" "$@"
+fi
+
+if [ "${mode}" = 'comparison-wayland' ]; then
+   ## Native-Wayland comparison capture (labwc X11-backend + native Wayland clients
+   ## + grim), run inside its own net+mount namespace. Extra args pass through.
+   ST_REPO="${repo}" exec "${shots_dir}/wayland-capture.sh" "$@"
 fi
 
 ## review mode: headless review-bar shots into the site's shots/.
