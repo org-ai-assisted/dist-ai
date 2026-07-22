@@ -883,6 +883,39 @@ ok(_hf.background().style() == Qt.BrushStyle.NoBrush
    or _hf.foreground().color().name() != _hf.background().color().name(),
    'marking: an app colour on a box is contrast-guarded -- fg never equals bg')
 
+# --- every theme: risk-class marking colours stay readable, and a hide attempt
+# --- is guarded regardless of theme -------------------------------------------
+# The risk colours are fixed (not theme-derived), so they must read on BOTH theme
+# backgrounds -- the MARKING_COLORS comment claims "chosen to read on both the
+# light and dark themes", pinned here. And the box-hiding guard must hold in every
+# theme, not just dark (the contrast-guard sweeps elsewhere already cover both).
+from secure_terminal.terminal import THEMES as _THEMES2, _rgb as _rgb4   # noqa: E402
+from secure_terminal.sanitize import too_close as _tc4                   # noqa: E402
+from PyQt6.QtGui import QColor as _QC4                                    # noqa: E402
+_thmk = SecureTerminal(command='/bin/cat')
+_thmk.apply_colors(True)
+for _theme in ('dark', 'light'):
+    _thmk.apply_theme(_theme)
+    _bg_rgb = _rgb4(_QC4(_THEMES2[_theme][0]))
+    for _cls, _hex in _thmk.MARKING_COLORS.items():
+        ok(not _tc4(_rgb4(_QC4(_hex)), _bg_rgb),
+           'marking colour %s reads on the %s theme background' % (_cls, _theme))
+    # a program painting a box its own bg colour is forced readable in this theme
+    for _c in (0, 7, 15):
+        _hk = tuple(sorted({'fg': _c, 'bg': _c, 'bold': False}.items()))
+        _hfmt = _thmk._fmt_from_key((_S.MARK_KEY, _hk, 0x202E))
+        _fg = _rgb4(_hfmt.foreground().color())
+        _bgb = _hfmt.background()
+        _bg = _rgb4(_bgb.color()) if _bgb.style() != Qt.BrushStyle.NoBrush else _bg_rgb
+        ok(not _tc4(_fg, _bg),
+           'hide attempt (palette %d on itself) is contrast-guarded on the %s theme'
+           % (_c, _theme))
+# apply_theme sets the expected base palette for each theme
+for _theme, _base in (('dark', '#14161b'), ('light', '#ffffff')):
+    _thmk.apply_theme(_theme)
+    eq(_thmk.palette().color(_thmk.palette().ColorRole.Base).name(), _base,
+       'apply_theme sets the %s base background' % _theme)
+
 # --- paste gating (async review: hold, then dispatch a choice) ----------------
 p = SecureTerminal(command='/bin/cat')
 psent = spy_writes(p)
