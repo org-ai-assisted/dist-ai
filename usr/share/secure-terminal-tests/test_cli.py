@@ -166,6 +166,19 @@ _oenv, _ = run_in_pty(['--', 'sh', '-c', 'printf T=$TERM,P=$PAGER,'])
 ok(b'T=dumb,' in _oenv, 'the cli wrapper child sees TERM=dumb')
 ok(b'P=cat,' in _oenv, 'the cli wrapper child sees PAGER=cat by default')
 
+# --- real line tools run under the wrapper: output survives, no escape leaks ---
+# a representative slice of the compatibility programs table; the full-screen,
+# interactive and network tools in it stay manual captures by design
+_prog_o, _prog_rc = run_in_pty(['--', 'sh', '-c',
+    'printf "beta\\nalpha\\n" | sort | sed "s/^/> /" | grep -c "^> "; '
+    'ls -1 /bin/sh; awk "BEGIN{print 6*7}"'])
+ok(b'\x1b' not in _prog_o,
+   'real line tools (sort/sed/grep/ls/awk) leave no escape byte in the output')
+ok(b'2' in _prog_o, 'the sort|sed|grep -c pipeline output passes through (2 lines)')
+ok(b'/bin/sh' in _prog_o, 'ls output passes through')
+ok(b'42' in _prog_o, 'awk arithmetic output passes through')
+eq(_prog_rc, 0, 'a pipeline of real tools exits cleanly under the wrapper')
+
 # --- exit-code propagation ----------------------------------------------------
 eq(run_in_pty(['--', 'sh', '-c', 'exit 7'])[1], 7, 'a non-zero exit is propagated')
 eq(run_in_pty(['--', 'sh', '-c', 'kill -TERM $$'])[1], 128 + signal.SIGTERM,
