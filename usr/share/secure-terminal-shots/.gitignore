@@ -1,0 +1,6 @@
+shots/
+crafted.bin
+random.bin
+# payloads are GENERATED (deterministic) from the *-script.sh sources; not committed
+hostile-log.txt
+homoglyph-log.txt

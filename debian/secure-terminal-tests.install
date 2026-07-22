@@ -5,3 +5,4 @@ usr/bin/secure-terminal-tests-apparmor usr/bin/
 usr/bin/secure-terminal-shots usr/bin/
 usr/share/secure-terminal-tests/*.py usr/share/secure-terminal-tests/
 usr/share/secure-terminal-tests/README.md usr/share/secure-terminal-tests/
+usr/share/secure-terminal-shots/* usr/share/secure-terminal-shots/

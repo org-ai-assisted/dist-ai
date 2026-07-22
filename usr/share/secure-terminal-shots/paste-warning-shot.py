@@ -18,7 +18,10 @@ It imports the app (secure_terminal.review), so run it against an installed
 secure-terminal or point PYTHONPATH at a checkout:
 
     PYTHONPATH=<secure-terminal>/usr/lib/python3/dist-packages \
-        usr/share/secure-terminal-tests/paste-warning-shot.py <output.png>
+        usr/share/secure-terminal-shots/paste-warning-shot.py <output.png> [paste|copy]
+
+Usually driven via the `secure-terminal-shots` wrapper (this dir); it regenerates
+both the paste and copy shots at once.
 
 The payload is written with \\u escapes so this source stays plain ASCII; the
 hidden characters live only in the rendered image.

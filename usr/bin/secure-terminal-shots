@@ -5,19 +5,21 @@
 
 ## AI-Assisted
 
-## Regenerate the secure-terminal review-bar screenshots used on the project's
-## GitHub Pages site (secure-terminal.github.io): the paste review and the copy
-## review, both rendered headless from the REAL ReviewBar widget by
-## paste-warning-shot.py (offscreen Qt + grab), so a page update is one command.
-## Targets a secure-terminal checkout resolved from SECURE_TERMINAL_REPO (or a
+## Single entry point for ALL of the secure-terminal.github.io screenshots. The
+## generators live together in usr/share/secure-terminal-shots/ (see its README).
+##
+## Usage: secure-terminal-shots [review|comparison] [OUTPUT_DIR]
+##
+##   review      (default) the paste + copy REVIEW-BAR shots -- headless, offscreen
+##               Qt grab of the real ReviewBar, deterministic. OUTPUT_DIR defaults
+##               to the site's shots/. This is the safe, no-display path.
+##   comparison  the terminal-COMPARISON shots -- real Debian terminal emulators
+##               under a nested labwc compositor. NEEDS an X server + labwc; run it
+##               in a sandbox. OUTPUT_DIR is ignored (it writes to its own shots/;
+##               copy them to the site's comparison/shots/). Forwards ST_REPO etc.
+##
+## Both target a secure-terminal checkout resolved from SECURE_TERMINAL_REPO (or a
 ## default under the operator's private-sources); SKIPs (exit 77) if it is absent.
-##
-## Usage: secure-terminal-shots [OUTPUT_SHOTS_DIR]
-## OUTPUT_SHOTS_DIR defaults to the site repo's shots/ dir.
-##
-## SIBLING generator (the OTHER shot set on the site): the terminal-COMPARISON
-## shots (real Debian terminals under a nested labwc), NOT this one, come from
-## terminal-poc-corpus 'comparison/capture.sh'. See the site's 'shots/README.md'.
 
 set -o errexit
 set -o nounset
@@ -28,10 +30,10 @@ shopt -s shift_verbose
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-if [ -d '/usr/share/secure-terminal-tests' ]; then
-   tests_dir='/usr/share/secure-terminal-tests'
+if [ -d '/usr/share/secure-terminal-shots' ]; then
+   shots_dir='/usr/share/secure-terminal-shots'
 else
-   tests_dir="${script_dir}/../share/secure-terminal-tests"
+   shots_dir="${script_dir}/../share/secure-terminal-shots"
 fi
 
 repo=''
@@ -49,13 +51,28 @@ if [ -z "${repo}" ] || [ ! -d "${repo}/usr/lib/python3/dist-packages/secure_term
    exit 77
 fi
 
+mode='review'
+if [ "$#" -ge 1 ] && { [ "$1" = 'review' ] || [ "$1" = 'comparison' ]; }; then
+   mode="$1"
+   shift
+fi
+
+export SECURE_TERMINAL_REPO="${repo}"
+
+if [ "${mode}" = 'comparison' ]; then
+   ## Real-terminal comparison capture; it resolves ST_REPO / SECURE_TERMINAL_REPO
+   ## itself and writes to its own shots/. Needs a display -- fails loudly if none.
+   ST_REPO="${repo}" exec "${shots_dir}/comparison-capture.sh" "$@"
+fi
+
+## review mode: headless review-bar shots into the site's shots/.
 out_dir="${1:-${HOME}/private-sources/secure-terminal.github.io/shots}"
 if [ ! -d "${out_dir}" ]; then
    printf 'secure-terminal-shots: output dir does not exist: %s\n' "${out_dir}" >&2
    exit 1
 fi
 
-shot_script="${tests_dir}/paste-warning-shot.py"
+shot_script="${shots_dir}/paste-warning-shot.py"
 if [ ! -f "${shot_script}" ]; then
    printf 'secure-terminal-shots: shot generator missing: %s\n' "${shot_script}" >&2
    exit 1
