@@ -344,6 +344,23 @@ ok(S.wants_full_screen('plain text') is False, 'no false positive on plain text'
 ok(S.leaves_full_screen('\x1b[?1049l') is True, 'detects alt-screen leave (1049)')
 ok(S.leaves_full_screen('\x1b[?1049h') is False, 'enter is not a leave')
 
+# --- in-place repaint detection (zsh/readline menu, progress grid, no alt screen)
+# The tell line mode cannot draw: cursor-up to repaint above, or absolute row;col
+# addressing. This is what an interactive completion menu emits, and it uses no
+# alternate screen, so wants_full_screen misses it (the reported bug).
+ok(S.wants_screen_repaint('list\n\x1b[2A\x1b[7msel\x1b[27m') is True,
+   'detects a completion menu repaint (cursor-up), which alt-screen detection misses')
+ok(S.wants_screen_repaint('\x1b[A') is True, 'detects a bare cursor-up (CUU)')
+ok(S.wants_screen_repaint('\x1b[5;10Hx') is True, 'detects absolute cell addressing (row;col)')
+# no false positives on things line mode renders fine or drops harmlessly:
+ok(S.wants_screen_repaint('busy... 42%\rbusy... 43%') is False,
+   'a single-line \\r progress bar is not flagged (line mode draws it fine)')
+ok(S.wants_screen_repaint('\x1b[H\x1b[2J') is False,
+   'clear/reset (home + erase-display, no cursor-up, no row;col) is not flagged')
+ok(S.wants_screen_repaint('\x1b[3C\x1b[K') is False,
+   'horizontal moves (CUF) and erase-line (EL), which line mode renders, are not flagged')
+ok(S.wants_screen_repaint('plain output text') is False, 'plain text is not flagged')
+
 # --- sanitize_bytes / sanitize_paste ------------------------------------------
 eq(S.sanitize_bytes(b'a\x08 \x08', 'box'), 'a\x08 \x08', 'sanitize_bytes keeps bs/space')
 eq(S.sanitize_paste('a\nb\r\tc'), 'a\rb\r\tc', 'paste nl/cr -> cr, tab kept')

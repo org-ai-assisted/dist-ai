@@ -189,6 +189,25 @@ _sh_export = sht.toPlainText()
 ok('\u00e9' in _sh_export, 'show mode copies a real printable glyph as itself (e-acute kept)')
 ok('\u25a1' in _sh_export and '\u200b' not in _sh_export,
    'show mode copies a no-glyph char as the box, never the raw zero-width byte')
+
+# --- "needs TUI" advisory also fires for in-place repaint (zsh ZLE menu) --------
+# The bug: an interactive completion menu (zsh/readline) repaints with cursor-up
+# and uses no alternate screen, so line mode stripped the redraw into garbage
+# WITHOUT advising TUI mode. The advisory must now fire on that repaint too, not
+# only on a full-screen (alt-screen) program.
+adv = SecureTerminal(command='/bin/cat')
+_advices = []
+adv.advise_signal.connect(_advices.append)
+feed_output(adv, b'plain shell output, no redraw here\n')
+ok(_advices == [], 'plain line-mode output raises no TUI advisory')
+# a completion-menu-style repaint: print a grid, then cursor-up to repaint in place
+feed_output(adv, b'cand1  cand2  cand3\n\x1b[2A\x1b[7mcand1\x1b[27m')
+ok(len(_advices) == 1 and 'TUI' in _advices[0],
+   'an in-place completion-menu repaint (cursor-up, no alt-screen) advises TUI mode')
+# advised at most once per program, so a menu that repaints on every keypress does
+# not spam the notice.
+feed_output(adv, b'\x1b[2A\x1b[7mcand2\x1b[27m')
+ok(len(_advices) == 1, 'the TUI advisory is shown once, not on every repaint')
 # Double-clicking a neutralized character opens the inspect popup; its Copy button
 # must place the \uXXXX ESCAPE on the clipboard, never the raw glyph -- copying a
 # bidi override or homoglyph as-is is the exact hazard this terminal guards against
