@@ -164,11 +164,9 @@ main() {
    subject="$(locate_subject)"
    printf '%s\n' "INFO: subject: ${subject}"
 
-   ## python3 presence check for the mmap-only victim. Use 'type -P' (a bash
-   ## builtin) rather than helper-scripts 'has': this suite also runs where
-   ## helper-scripts is not installed (e.g. the CI container), so sourcing
-   ## /usr/libexec/helper-scripts/has.sh would abort the test under errexit
-   ## instead of SKIPping. 'type -P' is not 'command -v', so R-090 is satisfied.
+   ## python3 presence check (mmap-only victim). 'type -P' (builtin) not
+   ## helper-scripts 'has': the suite runs where helper-scripts is absent (CI).
+   ## 'type -P' is not 'command -v', so R-090 holds.
    if ! type -P python3 >/dev/null; then
       printf '%s\n' "SKIP: python3 is required (mmap-only victim)." >&2
       exit 77
