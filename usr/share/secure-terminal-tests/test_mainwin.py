@@ -1126,6 +1126,115 @@ finally:
     QApplication.exec = _o_qexec3
     _sig3.signal(_sig3.SIGCHLD, _o_chld3)
 
+# --- set_font_family / choose_font: the per-tab font picker -------------------
+from PyQt6.QtGui import QFont as _QFont                          # noqa: E402
+from PyQt6.QtWidgets import QFontDialog as _QFontDialog          # noqa: E402
+if win.tabs.count() == 0:
+    win.new_tab()
+win.set_font_family('DejaVu Sans Mono')         # normal path: apply + persist
+eq(win._default_font_family, 'DejaVu Sans Mono',
+   'set_font_family sets the tab family and the new-tab default')
+win.set_font_family('')                          # empty -> falls back to the default
+ok(win._default_font_family, 'set_font_family: an empty family falls back to the default')
+_sfl = set(win._locked)
+try:
+    win._locked = {'font_family'}
+    _before = win._default_font_family
+    win.set_font_family('Ignored')               # admin-locked -> early return
+    eq(win._default_font_family, _before,
+       'set_font_family: an admin-locked family is not changed')
+finally:
+    win._locked = _sfl
+
+_o_getfont = _QFontDialog.getFont
+try:
+    _QFontDialog.getFont = staticmethod(
+        lambda *_a, **_k: (_QFont('DejaVu Sans Mono'), True))
+    win.choose_font()                            # accepted -> set_font_family
+    ok(True, 'choose_font: an accepted pick applies the family')
+    _QFontDialog.getFont = staticmethod(lambda *_a, **_k: (_QFont('X'), False))
+    win.choose_font()                            # cancelled -> no change
+    ok(True, 'choose_font: a cancelled pick is a no-op')
+finally:
+    _QFontDialog.getFont = _o_getfont
+
+# choose_font with no current tab returns before the dialog
+_nf3 = MainWindow()
+while _nf3.tabs.count():
+    _nf3.tabs.removeTab(0)
+_nf3.choose_font()                               # no tab -> return
+ok(True, 'choose_font: no current tab -> returns before the dialog')
+_nf3.deleteLater()
+APP.processEvents()
+
+# choose_font: a Qt build without the MonospacedFonts option falls back to no
+# options (the defensive AttributeError branch)
+_o_qfd = M.QFontDialog
+try:
+    class _FakeFDO:
+        def __getattr__(self, _n):
+            raise AttributeError(_n)             # .MonospacedFonts -> AttributeError
+
+        def __call__(self, _n):
+            return 0
+
+    class _FakeFontDialog:
+        FontDialogOption = _FakeFDO()
+
+        @staticmethod
+        def getFont(*_a, **_k):
+            return (_QFont('DejaVu Sans Mono'), True)
+
+    M.QFontDialog = _FakeFontDialog
+    win.choose_font()                            # MonospacedFonts missing -> fallback opts
+    ok(True, 'choose_font: a missing MonospacedFonts option falls back to no options')
+finally:
+    M.QFontDialog = _o_qfd
+
+# --- set_paste_warn / set_copy_warn: valid modes applied to every tab ----------
+win.set_paste_warn('always')
+eq(win._paste_warn, 'always', 'set_paste_warn applies the chosen mode')
+win.set_copy_warn('always')
+eq(win._copy_warn, 'always', 'set_copy_warn applies the chosen mode')
+win.set_paste_warn('bogus')                      # invalid -> ignored
+eq(win._paste_warn, 'always', 'set_paste_warn: an invalid mode is ignored')
+win.set_copy_warn('unicode')
+win.set_paste_warn('unicode')
+ok(True, 'set_paste_warn / set_copy_warn push the mode to every tab and persist')
+
+# --- the paste/copy review bar: _show_review / _hide_paste_review --------------
+from secure_terminal.terminal import SecureTerminal as _ST2      # noqa: E402
+if win.tabs.count() == 0:
+    win.new_tab()
+_rvterm = win.current()
+win._show_review(_rvterm, 'risky text', 0, 'paste')   # current tab -> bar shown
+win._hide_paste_review(_rvterm)                        # current tab -> refocus
+ok(True, '_show_review / _hide_paste_review drive the review bar for the active tab')
+# a request from a NON-current tab is ignored (its text stays held)
+_bgterm = _ST2(command='/bin/cat')
+win._show_review(_bgterm, 'held', 0, 'copy')           # not current -> return
+win._hide_paste_review(_bgterm)                        # not current -> no refocus
+ok(True, '_show_review / _hide_paste_review ignore a background tab')
+_bgterm.shutdown()
+
+# --- app.aboutToQuit teardown: shuts every window's tabs, tolerating a raise ---
+# main() connected _shutdown_all_tabs to app.aboutToQuit during the full-startup
+# runs above; fire it with a tab whose shutdown() raises to drive the
+# best-effort guard (the except that must never block quit).
+_teardown_win = MainWindow()
+_teardown_win.new_tab()
+
+
+def _raise_shutdown():
+    raise RuntimeError('shutdown blew up')
+
+
+_teardown_win.tabs.widget(0).shutdown = _raise_shutdown
+APP.aboutToQuit.emit()
+ok(True, 'aboutToQuit teardown shuts down every tab and tolerates a failing shutdown')
+_teardown_win.deleteLater()
+APP.processEvents()
+
 win.close()
 win.deleteLater()
 APP.processEvents()

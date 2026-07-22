@@ -3926,6 +3926,101 @@ _fnt.set_font_family('IBM Plex Mono')
 _fnt.apply_zoom(150)
 eq(_fnt.current_font_family(), 'IBM Plex Mono', 'a zoom change preserves the chosen family')
 
+# --- keyPressEvent: a preview has no child, so keys defer to the base ----------
+_pvk = SecureTerminal(preview=True)
+_pvsent = spy_writes(_pvk)
+key(_pvk, Qt.Key.Key_A, 'a')                 # preview branch: super() handles, nothing sent
+ok(not _pvsent, 'keyPressEvent: a preview terminal sends nothing to a child')
+
+# --- keyPressEvent while a paste review is held: input is suspended ------------
+_rvk = SecureTerminal(command='/bin/cat')
+_rvk.apply_paste_warn('always')
+_rvksent = spy_writes(_rvk)
+_rvmime = QMimeData()
+_rvmime.setText('held paste')
+_rvk.insertFromMimeData(_rvmime)             # -> review held, input suspended
+ok(_rvk.review_pending(), 'a held paste suspends input for review')
+key(_rvk, Qt.Key.Key_X, 'x')                 # a stray key is swallowed, never sent
+ok(not _rvksent and _rvk.review_pending(),
+   'keyPressEvent: a stray key during review is swallowed, not sent')
+key(_rvk, Qt.Key.Key_Return)                 # Enter rejects the held paste (safe default)
+ok(not _rvk.review_pending() and not _rvksent,
+   'keyPressEvent: Enter during review rejects the held paste')
+_rvk.shutdown()
+
+# --- dispatch_pending_copy is a no-op when no copy review is pending -----------
+_dpc = SecureTerminal(command='/bin/cat')
+_dpc.dispatch_pending_copy('stripped')       # nothing pending -> early return
+ok(True, 'dispatch_pending_copy: a no-op when no review is active')
+_dpc.shutdown()
+
+# --- contextMenuEvent builds the reviewed menu and shows it --------------------
+from PyQt6.QtGui import QContextMenuEvent as _QCME               # noqa: E402
+from PyQt6.QtWidgets import QMenu as _QMenu2                     # noqa: E402
+_cme = SecureTerminal(command='/bin/cat')
+_o_menuexec = _QMenu2.exec
+_QMenu2.exec = lambda *_a, **_k: None
+try:
+    _cev = _QCME(_QCME.Reason.Mouse, _QPoint(5, 5), _cme.mapToGlobal(_QPoint(5, 5)))
+    _cme.contextMenuEvent(_cev)
+    ok(True, 'contextMenuEvent shows the reviewed context menu')
+finally:
+    _QMenu2.exec = _o_menuexec
+_cme.shutdown()
+
+# --- _reviewed_context_menu tolerates an already-disconnected copy action ------
+from PyQt6.QtGui import QAction as _QAction2                     # noqa: E402
+_rcm = SecureTerminal(command='/bin/cat')
+_o_std = _rcm.createStandardContextMenu
+
+
+def _fake_std(_pos=None):
+    _fm = _QMenu2(_rcm)
+    _fa = _QAction2('Copy', _fm)
+    _fa.setObjectName('edit-copy')
+    _fm.addAction(_fa)
+    # drain the menu's own triggered connection so the reroute's disconnect()
+    # finds nothing to disconnect -> the defensive TypeError path fires.
+    try:
+        _fa.triggered.disconnect()
+    except TypeError:
+        pass
+    return _fm
+
+
+_rcm.createStandardContextMenu = _fake_std
+try:
+    _m2 = _rcm._reviewed_context_menu(_QPoint(5, 5))
+    ok(any(a.objectName() == 'edit-copy' for a in _m2.actions()),
+       '_reviewed_context_menu tolerates an undisconnectable copy action')
+finally:
+    _rcm.createStandardContextMenu = _o_std
+_rcm.shutdown()
+
+# --- shutdown tolerates an already-disconnected readable notifier --------------
+_sdn = SecureTerminal(command='/bin/cat')
+if _sdn._notifier is not None:
+    _sdn._notifier.activated.disconnect()    # pre-disconnect: shutdown's disconnect raises
+_sdn.shutdown()                              # -> except (TypeError, RuntimeError): pass
+ok(True, 'shutdown tolerates an already-disconnected readable notifier')
+
+# --- _cp_at falls back to an untagged readable glyph's own codepoint -----------
+# In show mode the render tags every non-ASCII cell with its source codepoint;
+# a glyph inserted straight into the document (no tag) exercises the char-itself
+# fallback in _cp_in_box.
+_cpf = SecureTerminal(command='/bin/cat')
+_cpf.apply_mode('show')
+_cpfcur = _cpf.textCursor()
+_cpfcur.insertText(chr(0x00E9) * 3)          # 'e-acute', inserted untagged (no _CP_PROP)
+_cpf.resize(600, 200)
+_cpf.show()
+pump(30)
+_cpfpc = QTextCursor(_cpf.document())
+_cpfpc.setPosition(1)
+eq(_cpf._cp_at(_cpf.cursorRect(_cpfpc).center()), 0x00E9,
+   '_cp_at falls back to an untagged readable glyph own codepoint')
+_cpf.shutdown()
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(widget): %d passed, %d failed\n'
                  % (PASS, FAIL))

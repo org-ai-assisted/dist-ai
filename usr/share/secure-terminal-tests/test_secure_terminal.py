@@ -102,6 +102,24 @@ ok(len(S._ascii_confusables()) > 500,
    'the Unicode confusables set is populated (%d code points)' % len(S._ascii_confusables()))
 ok(all(cp > 0x7F for cp in S._ascii_confusables()),
    'the confusables set holds only non-ASCII sources (ASCII is never flagged as a look-alike of itself)')
+# if the confusables data cannot be loaded the lazy loader must degrade to an
+# empty set (a look-alike then just stays generic 'nonascii'), never crash: force
+# the load to raise and confirm the defensive except yields an empty frozenset.
+_saved_conf = S._ASCII_CONFUSABLES
+try:
+    S._ASCII_CONFUSABLES = None
+
+
+    def _conf_load_boom(*_a, **_k):
+        raise OSError('forced confusables load failure')
+
+    S.open = _conf_load_boom             # shadow the module's open() -> load fails
+    _degraded = S._ascii_confusables()
+    ok(_degraded == frozenset(),
+       'the confusables loader degrades to an empty set when the data cannot be read')
+finally:
+    del S.open
+    S._ASCII_CONFUSABLES = _saved_conf
 _mk = [(chr(0x202E), ())]
 _runs, _ = S.cells_to_runs([], _mk, 'reveal', False, True)
 ok(any(k == (S.MARK_KEY, 'bidi', 0x202E) for _t, k in _runs),
