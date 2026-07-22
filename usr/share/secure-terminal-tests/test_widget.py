@@ -854,6 +854,22 @@ eq(''.join(c for c, _ in _nk), 'PS> ',
 _zc, _zk, _, _, _ = _S.feed_line_edits([], 0, dict(_DFLT), 'abc\n' + _S.PROMPT_START + 'PS> ')
 eq([''.join(c for c, _ in ln) for ln in _zc], ['abc'],
    'prompt newline: a trailing newline already ended the line -- no spurious blank')
+# zsh/zle emits the bracketed-paste marker AFTER printing the prompt (bash sends
+# it before). With no printable text after the marker the prompt is already on
+# the row, so flushing here would push it onto its own line and drop the cursor
+# below it (the reported bug). It must NOT be flushed.
+_zsh_raw = '[user ~]% ' + _S.PROMPT_START
+_zshc, _zshk, _zshcol, _, _ = _S.feed_line_edits([], 0, dict(_DFLT), _zsh_raw)
+eq([''.join(c for c, _ in ln) for ln in _zshc], [],
+   'zsh prompt: a marker AFTER the prompt does not flush the prompt onto its own line')
+eq(''.join(c for c, _ in _zshk), '[user ~]% ',
+   'zsh prompt: the prompt stays on the current row with the cursor after it')
+eq(_zshcol, len('[user ~]% '), 'zsh prompt: the cursor column is at the prompt end')
+# still not flushed when only escapes (no printable text) follow the marker
+_zec, _zek, _, _, _ = _S.feed_line_edits(
+    [], 0, dict(_DFLT), '[user ~]% ' + _S.PROMPT_START + '\x1b[0m')
+eq(''.join(c for c, _ in _zek), '[user ~]% ',
+   'zsh prompt: a trailing SGR after the marker still does not flush')
 
 # --- security: an app cannot recolour or HIDE a neutralised marking -----------
 # A marking (the box glyph, or a Reveal/Detail <U+XXXX> badge -- same key, so the
