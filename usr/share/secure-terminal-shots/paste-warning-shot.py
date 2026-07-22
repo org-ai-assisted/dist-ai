@@ -97,7 +97,10 @@ def main(argv):
     layout.addWidget(bar)
     bar.show_review(_Term(), PAYLOAD, delay, kind)
     bar._detail_btn.setChecked(True)        # expand the preview panes for the shot
-    host.setFixedWidth(940)
+    # width sized so the four preview panes + the button row are roomy and NOT
+    # clipped on the right (a hard 940 truncated them; the word-wrapping summary
+    # let the layout compress below the content's real width).
+    host.setFixedWidth(1180)
     host.adjustSize()
     host.show()
     # let the layout settle and the previews render before grabbing
