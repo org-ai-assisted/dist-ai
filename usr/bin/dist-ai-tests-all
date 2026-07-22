@@ -40,6 +40,7 @@ core_suites=(
    developer-meta-files-tests
    github-org-tools-tests
    dm-help-steps-tests
+   dm-reprepro-tracking-tests
    dm-virtualbox-wiki-links-tests
    genmkfile-tests
    git-meld-tests

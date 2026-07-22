@@ -1,0 +1,69 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Runs the derivative-maker reprepro-config suite: static tests asserting the
+## apt repository config (aptrepo_remote/<derivative>/conf/distributions) keeps
+## the reproducibility retention line ('Tracking: minimal includebuildinfos
+## includechanges keepsources') on every trixie* codename, so a published .deb
+## keeps its .buildinfo, .changes and source for reproducibility verification.
+## Pure static text checks: no root, no side effects. A test exits 77 (SKIP)
+## when the derivative-maker source tree cannot be found. Works installed (tests
+## under /usr/share/dm-reprepro-tracking-tests) or from a git checkout. Set
+## DM_SOURCE_DIR to pick the derivative-maker checkout; otherwise the suite uses
+## ~/derivative-maker.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/dm-reprepro-tracking-tests' ]; then
+   tests_dir='/usr/share/dm-reprepro-tracking-tests'
+else
+   tests_dir="${script_dir}/../share/dm-reprepro-tracking-tests"
+fi
+
+## Run every *_test.sh in the suite. Exit 77 from a test means SKIP (source
+## tree not found) and does not count as a failure; any other non-zero exit is a
+## failure. Overall exit is non-zero iff at least one test failed.
+shopt -s nullglob
+failures=0
+skipped=0
+ran=0
+for test_script in "${tests_dir}"/*_test.sh; do
+  ran=$(( ran + 1 ))
+  printf '\n########## %s ##########\n' "$(basename -- "${test_script}")"
+  rc=0
+  bash -- "${test_script}" "$@" || rc=$?
+  if [ "${rc}" -eq 77 ]; then
+    printf '########## SKIPPED: %s ##########\n' "$(basename -- "${test_script}")"
+    skipped=$(( skipped + 1 ))
+  elif [ "${rc}" -ne 0 ]; then
+    printf '########## FAILED (%s): %s ##########\n' "${rc}" "$(basename -- "${test_script}")"
+    failures=$(( failures + 1 ))
+  fi
+done
+
+if [ "${ran}" -eq 0 ]; then
+  printf 'ERROR: no *_test.sh found in %s\n' "${tests_dir}" >&2
+  exit 1
+fi
+if [ "${failures}" -ne 0 ]; then
+  printf '\nFAILED: %s dm-reprepro-tracking test script(s) failed\n' "${failures}" >&2
+  exit 1
+fi
+## Every test skipped (no source tree): the SUITE skipped. Exit 77 so the runner
+## reports SKIP instead of a false-green PASS where nothing actually ran.
+if [ "${skipped}" -eq "${ran}" ]; then
+  printf '\nSKIP: all %s dm-reprepro-tracking test script(s) skipped\n' "${skipped}"
+  exit 77
+fi
+printf '\nOK: all dm-reprepro-tracking test scripts passed\n'

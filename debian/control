@@ -309,6 +309,23 @@ Description: Functional tests for derivative-maker help-steps scripts
  The tests target ~/derivative-maker by default; set UMOUNT_KILL_SH to run
  them against another checkout.
 
+Package: dm-reprepro-tracking-tests
+Architecture: all
+Depends: ${misc:Depends},
+ bash (>= 4)
+Description: Static tests for derivative-maker reprepro repository config
+ Tests the apt repository configuration under derivative-maker
+ aptrepo_remote/<derivative>/conf/distributions. Asserts that every trixie*
+ codename in both the kicksecure and whonix distributions keeps the
+ reproducibility retention line "Tracking: minimal includebuildinfos
+ includechanges keepsources", so a published .deb retains its .buildinfo,
+ .changes and source for reproducibility verification. A silently dropped
+ Tracking line would break that with no build-time error, so this pins it.
+ .
+ Pure static text checks: no root, no side effects. The tests target
+ ~/derivative-maker by default; set DM_SOURCE_DIR to run them against another
+ checkout.
+
 Package: genmkfile-tests
 Architecture: all
 Depends: ${misc:Depends},
