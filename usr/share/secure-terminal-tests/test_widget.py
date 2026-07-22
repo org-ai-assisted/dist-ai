@@ -1159,6 +1159,26 @@ if tui_available():
     ok('ok2' in crash.toPlainText(),
        'pyte crash-bug family (A/C/D/F) contained; terminal still renders')
     crash.shutdown()
+    # scrolling output rendered frame-by-frame (the live path) must NOT be
+    # double-spaced: _delete_grid must eat the newline joining scrollback to the
+    # grid, or every scrolled row leaves a spurious empty block (a blank line
+    # between each line -- seen with zsh's completion pager listing).
+    ds = SecureTerminal(command='/bin/cat', tui=True)
+    ds.resize(600, 300)
+    ds.show()
+    pump(30)
+    _rows = ds._screen.lines
+    for _k in range(_rows * 3):                 # enough to scroll well past one screen
+        ds._feed_stream(('row%02d\r\n' % _k).encode())
+        ds._render_tui()                        # one render per feed, like the timer
+    _dl = ds.toPlainText().split('\n')
+    _between = [i for i in range(1, len(_dl) - 1)
+                if not _dl[i].strip() and _dl[i - 1].strip() and _dl[i + 1].strip()]
+    eq(len(_between), 0,
+       'TUI scrolling output is not double-spaced (no blank line between rows)')
+    ok('row%02d' % (_rows * 3 - 1) in ds.toPlainText(),
+       'the latest scrolled row is present')
+    ds.shutdown()
     # per-cell bidi neutralized in box mode
     tui.apply_mode('box')
     tui._stream.feed(b'\x1b[10;1Ha\xe2\x80\xaeb')     # a U+202E b
