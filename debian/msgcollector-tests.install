@@ -1,4 +1,3 @@
 usr/bin/msgcollector-tests usr/bin/
 usr/bin/msgcollector-tests-fuzz usr/bin/
 usr/share/msgcollector-tests/*.py usr/share/msgcollector-tests/
-usr/share/dist-ai-tests-common/wl-headless-run usr/share/msgcollector-tests/

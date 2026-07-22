@@ -46,18 +46,6 @@ def dispatch_script() -> str:
                         "msgdispatcher_dispatch_x.py")
 
 
-def gui_dialog_script(name: str) -> str:
-    """Absolute path of a PyQt5 GUI dialog script (e.g. 'generic_gui_message.py'
-    or 'tb_updater_gui.py'), a sibling of the msgcollector script under test.
-    SKIPs (exit 77) if absent -- an older msgcollector may predate the .py
-    rename, or ship the dialog under a different name."""
-    cand = os.path.join(os.path.dirname(msgcollector_script()), name)
-    if not os.path.isfile(cand):
-        print(f"{name} not found next to msgcollector; skipping.", file=sys.stderr)
-        sys.exit(77)
-    return cand
-
-
 def read(path: str) -> str:
     with open(path, encoding="utf-8", errors="replace") as handle:
         return handle.read()
@@ -103,18 +91,3 @@ def extract_python_function(path: str, name: str) -> str:
     return match.group(0)
 
 
-def libexec_dir() -> str:
-    """Directory holding the msgcollector libexec scripts under test."""
-    return os.path.dirname(msgcollector_script())
-
-
-def qt_gui_scripts() -> list:
-    """Paths of every msgcollector libexec script that constructs a
-    QApplication -- i.e. a GUI entry point that must pick a working Qt platform
-    on a Wayland session. Sorted for stable test ids."""
-    result = []
-    for name in sorted(os.listdir(libexec_dir())):
-        path = os.path.join(libexec_dir(), name)
-        if os.path.isfile(path) and "QApplication(sys.argv)" in read(path):
-            result.append(path)
-    return result
