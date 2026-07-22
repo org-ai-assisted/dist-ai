@@ -77,6 +77,17 @@ try:
     ok(True, 'show_locations builds and shows the paths dialog')
     win.show_global_settings()
     ok(True, 'show_global_settings applies the chosen defaults on accept')
+    # the paste-delay combo must SHOW the current value, even when it is not one of
+    # the presets (config allows any 0-60); a blank selection was confusing.
+    from PyQt6.QtWidgets import QComboBox as _QCbD              # noqa: E402
+    win._paste_delay = 7
+    _dialogs.clear()
+    win.show_global_settings()
+    _pd = [c for c in _dialogs[-1].findChildren(_QCbD) if c.findData(7) >= 0]
+    ok(bool(_pd) and _pd[0].currentData() == 7 and _pd[0].currentText() == '7 seconds',
+       'settings: a non-preset paste delay (7s) shows in the combo, not a blank')
+    win._paste_delay = 3
+    _dialogs.clear()
     # every dialog's descriptive text must be selectable so it can be copied
     from PyQt6.QtWidgets import QLabel as _QLabelD           # noqa: E402
     from PyQt6.QtCore import Qt as _QtD                      # noqa: E402
