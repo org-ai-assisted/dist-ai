@@ -1,0 +1,9 @@
+[Configuration]
+MiscMenubarDefault=FALSE
+MiscToolbarDefault=FALSE
+MiscBordersDefault=FALSE
+ColorForeground=#cfd3da
+ColorBackground=#14161b
+ColorCursor=#cfd3da
+ColorPalette=#14161b;#f7768e;#9ece6a;#e0af68;#7dcfff;#bb9af7;#7dcfff;#cfd3da;#414868;#f7768e;#9ece6a;#e0af68;#7dcfff;#bb9af7;#7dcfff;#c0caf5
+FontName=Monospace 11
