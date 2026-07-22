@@ -14,6 +14,10 @@
 ##
 ## Usage: secure-terminal-shots [OUTPUT_SHOTS_DIR]
 ## OUTPUT_SHOTS_DIR defaults to the site repo's shots/ dir.
+##
+## SIBLING generator (the OTHER shot set on the site): the terminal-COMPARISON
+## shots (real Debian terminals under a nested labwc), NOT this one, come from
+## terminal-poc-corpus 'comparison/capture.sh'. See the site's 'shots/README.md'.
 
 set -o errexit
 set -o nounset
