@@ -2404,7 +2404,7 @@ ok(_tc._format_for({'fg': '#123456', 'bg': '#123456', 'bold': False})
    'the contrast guard forces a readable fg even when a truecolour fg == bg')
 _tc.close()
 # a child sees COLORTERM=truecolor (we render it faithfully, so we advertise it)
-_cte = SecureTerminal(command=['sh', '-c', 'printf C=$COLORTERM'])
+_cte = SecureTerminal(command=['sh', '-c', 'printf C=$COLORTERM,CTEND'])
 _cbuf = b''
 _cs = _time.monotonic()
 _fcntl2.fcntl(_cte._fd, _fcntl2.F_SETFL,
@@ -2420,7 +2420,7 @@ while _time.monotonic() - _cs < 1.5:
         if not _ck:
             break
         _cbuf += _ck
-        if b'C=' in _cbuf:
+        if b'CTEND' in _cbuf:              # distinct terminator, not the C= prefix
             break
 _cte.close()
 ok(b'C=truecolor' in _cbuf, 'the child gets COLORTERM=truecolor')
@@ -2472,9 +2472,10 @@ ok(b'\nLINES=' not in _envout,
 ok(b'\nCOLUMNS=' not in _envout, 'child does not inherit a stale COLUMNS')
 for _fv in _fp_vars + ('LINES', 'COLUMNS'):
     os.environ.pop(_fv, None)
-# PAGER defaults to cat when the parent set none
+# PAGER defaults to cat when the parent set none; a distinct terminator (not the
+# P= prefix of the expected value) so a split read cannot break the loop early
 os.environ.pop('PAGER', None)
-_pgr = _child_env_out(['sh', '-c', 'printf P=$PAGER,'], b'P=')
+_pgr = _child_env_out(['sh', '-c', 'printf P=$PAGER,PGREND'], b'PGREND')
 ok(b'P=cat,' in _pgr, 'the child gets PAGER=cat by default')
 
 # --- synchronized output (DECSET 2026): hold the paint between begin/end ------
