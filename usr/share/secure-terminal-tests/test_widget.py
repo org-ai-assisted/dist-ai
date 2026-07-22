@@ -585,6 +585,45 @@ if tui_available():
     _rt.resize(700, 450)               # resize while scrolled up: must not crash
     pump(40)
     ok(_rt.document().blockCount() >= 1, 'resizing while scrolled up does not crash')
+
+    # Bug #64: the primary-screen grid trims trailing blank rows below the cursor,
+    # so the document ends at the last output line (no scrolling into empty space).
+    _pad = SecureTerminal(command='/bin/cat', tui=True)
+    _pad.resize(700, 400)
+    _pad.show()
+    pump(40)
+    _pad.apply_mode('show')
+    _pad._feed_stream(b'\x1b[2J\x1b[1;1Hline1\r\nline2\r\nprompt$ ')
+    _pad._render_tui()
+    ok(_pad.toPlainText().split('\n')[-1].startswith('prompt$'),
+       'TUI document ends at the last output line, no blank grid padding below it')
+    ok(_pad.document().blockCount() <= 4,
+       'TUI grid is trimmed to the cursor row, not the full screen height')
+    _pad.close()
+
+    # Bug #65: TUI auto-scrolls to the newest output when already at the bottom, but
+    # does NOT yank a scrolled-up view back down.
+    _fol = SecureTerminal(command='/bin/cat', tui=True)
+    _fol.resize(700, 300)
+    _fol.show()
+    pump(40)
+    for _i in range(80):
+        _fol._feed_stream(('scrollback-%d\r\n' % _i).encode())
+    _fol._render_tui()
+    _fbar = _fol.verticalScrollBar()
+    ok(_fbar.maximum() > 0, 'TUI scrollbar has range (content exceeds the viewport)')
+    _fbar.setValue(_fbar.maximum())
+    _fol._feed_stream(b'newest-line\r\n')
+    _fol._render_tui()
+    eq(_fbar.value(), _fbar.maximum(),
+       'TUI auto-scrolls to the newest output when already at the bottom')
+    _fbar.setValue(_fbar.maximum() // 2)
+    _held = _fbar.value()
+    _fol._feed_stream(b'more-output\r\n')
+    _fol._render_tui()
+    eq(_fbar.value(), _held,
+       'TUI does not yank a scrolled-up view back to the bottom')
+    _fol.close()
 # Ctrl+C is echoed locally as ^C (transparency: make the invisible visible) and
 # de-duped against a shell that also echoes it (bash's readline), so the user
 # always sees exactly one ^C.
