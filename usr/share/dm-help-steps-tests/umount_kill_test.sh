@@ -164,15 +164,15 @@ main() {
    subject="$(locate_subject)"
    printf '%s\n' "INFO: subject: ${subject}"
 
-   ## helper-scripts 'has' for the python3 presence check (R-090). Sourced here
-   ## (after the root check above) so the non-root exit-77 SKIP still works even
-   ## where helper-scripts is absent.
-   # shellcheck disable=SC1091
-   source /usr/libexec/helper-scripts/has.sh
-   has python3 || {
+   ## python3 presence check for the mmap-only victim. Use 'type -P' (a bash
+   ## builtin) rather than helper-scripts 'has': this suite also runs where
+   ## helper-scripts is not installed (e.g. the CI container), so sourcing
+   ## /usr/libexec/helper-scripts/has.sh would abort the test under errexit
+   ## instead of SKIPping. 'type -P' is not 'command -v', so R-090 is satisfied.
+   if ! type -P python3 >/dev/null; then
       printf '%s\n' "SKIP: python3 is required (mmap-only victim)." >&2
       exit 77
-   }
+   fi
 
    scratch_base="$(mktemp --directory)"
    ## '<target>2' is a deliberate string-prefix collision of the target.
