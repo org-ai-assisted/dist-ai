@@ -11,7 +11,7 @@
 ## victim and bystander processes in fresh mktemp trees and asserts the
 ## reaper kills exactly the tree's users; it requires ROOT and therefore
 ## runs inside CI's throwaway container or a sandbox VM -- as an
-## unprivileged user every test SKIPs (exit 77). Works installed (tests
+## unprivileged user it errors (root is required). Works installed (tests
 ## under /usr/share/dm-help-steps-tests) or from a git checkout. Set
 ## UMOUNT_KILL_SH to pick the script under test; otherwise the suite uses a
 ## copy staged next to the test, then a derivative-maker checkout under

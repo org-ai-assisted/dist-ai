@@ -10,8 +10,8 @@
 ## the reproducibility retention line ('Tracking: minimal includebuildinfos
 ## includechanges keepsources') on every trixie* codename, so a published .deb
 ## keeps its .buildinfo, .changes and source for reproducibility verification.
-## Pure static text checks: no root, no side effects. A test exits 77 (SKIP)
-## when the derivative-maker source tree cannot be found. Works installed (tests
+## Pure static text checks: no root, no side effects. A test errors when the
+## derivative-maker source tree cannot be found. Works installed (tests
 ## under /usr/share/dm-reprepro-tracking-tests) or from a git checkout. Set
 ## DM_SOURCE_DIR to pick the derivative-maker checkout; otherwise the suite uses
 ## ~/derivative-maker.

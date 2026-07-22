@@ -137,8 +137,8 @@ main() {
 
    aptrepo_remote="$(locate_aptrepo_remote)"
    if [ -z "${aptrepo_remote}" ]; then
-      printf '%s\n' "SKIP: aptrepo_remote not found (set DM_SOURCE_DIR)." >&2
-      exit 77
+      printf '%s\n' "ERROR: aptrepo_remote not found (set DM_SOURCE_DIR)." >&2
+      exit 1
    fi
 
    for derivative in "${derivative_list[@]}"; do
