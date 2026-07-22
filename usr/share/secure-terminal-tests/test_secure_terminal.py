@@ -361,6 +361,17 @@ ok(S.wants_screen_repaint('\x1b[3C\x1b[K') is False,
    'horizontal moves (CUF) and erase-line (EL), which line mode renders, are not flagged')
 ok(S.wants_screen_repaint('plain output text') is False, 'plain text is not flagged')
 
+# --- whole-screen clear / reset detection (a no-op in append-only line mode) ---
+ok(S.wants_clear('\x1b[2J') is True, 'detects a whole-screen clear (ED2)')
+ok(S.wants_clear('\x1b[3J') is True, 'detects a scrollback clear (ED3)')
+ok(S.wants_clear('\x1bc') is True, 'detects a full terminal reset (RIS)')
+ok(S.wants_clear('\x1b[H\x1b[2J') is True, 'detects the classic `clear` (home + ED2)')
+# ED0/ED1 (erase from the cursor) are ordinary line-editing, NOT a screen clear:
+ok(S.wants_clear('\x1b[J') is False, 'ED0 (erase to end) is not a screen clear')
+ok(S.wants_clear('\x1b[1J') is False, 'ED1 (erase to start) is not a screen clear')
+ok(S.wants_clear('\x1b[K') is False, 'EL (erase line) is not a screen clear')
+ok(S.wants_clear('plain output text') is False, 'plain text is not a clear')
+
 # --- sanitize_bytes / sanitize_paste ------------------------------------------
 eq(S.sanitize_bytes(b'a\x08 \x08', 'box'), 'a\x08 \x08', 'sanitize_bytes keeps bs/space')
 eq(S.sanitize_paste('a\nb\r\tc'), 'a\rb\r\tc', 'paste nl/cr -> cr, tab kept')

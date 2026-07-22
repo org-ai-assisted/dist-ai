@@ -207,6 +207,27 @@ ok(len(_advices) == 1 and 'TUI' in _advices[0],
 # not spam the notice.
 feed_output(adv, b'\x1b[2A\x1b[7mcand2\x1b[27m')
 ok(len(_advices) == 1, 'the TUI advisory is shown once, not on every repaint')
+
+# --- a whole-screen clear is a no-op in append-only line mode: note it once ----
+clr = SecureTerminal(command='/bin/cat')
+_clr_adv = []
+clr.advise_signal.connect(_clr_adv.append)
+feed_output(clr, b'ordinary output\n')
+ok(_clr_adv == [], 'ordinary output raises no clear notice')
+feed_output(clr, b'\x1b[H\x1b[2J')          # `clear`: home + erase whole screen
+ok(len(_clr_adv) == 1 and 'clear' in _clr_adv[0].lower()
+   and 'append-only' in _clr_adv[0],
+   'a whole-screen clear is explained (append-only), not silently ignored')
+feed_output(clr, b'\x1b[2J')                # a second clear does not re-notify
+ok(len(_clr_adv) == 1, 'the clear notice is shown once per tab, not on every clear')
+# a full-screen program that clears its screen gets the TUI advisory, not the
+# clear notice (its clear is part of drawing, and TUI covers it).
+fs = SecureTerminal(command='/bin/cat')
+_fs_adv = []
+fs.advise_signal.connect(_fs_adv.append)
+feed_output(fs, b'\x1b[?1049h\x1b[2Jfull screen app')
+ok(len(_fs_adv) == 1 and 'TUI' in _fs_adv[0],
+   'a full-screen program that clears raises the TUI advisory, not the clear notice')
 # Double-clicking a neutralized character opens the inspect popup; its Copy button
 # must place the \uXXXX ESCAPE on the clipboard, never the raw glyph -- copying a
 # bidi override or homoglyph as-is is the exact hazard this terminal guards against

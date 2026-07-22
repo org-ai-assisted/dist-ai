@@ -5,7 +5,7 @@
 ## AI-Assisted
 
 ## Tests for secure_terminal.review -- the in-window paste-review bar shown when a
-## paste carries unicode or control characters (it replaced the old modal dialog).
+## paste carries unicode or control characters.
 ## Built and driven offscreen: the summary, the four read-only preview panes that
 ## reuse the terminal renderer, the Detail toggle, the countdown that gates BOTH
 ## send buttons, and that a choice is dispatched to the tab that held the paste.
