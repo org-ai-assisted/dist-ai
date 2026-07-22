@@ -2736,6 +2736,43 @@ ok(len(_QUERIES) == 387,
    'the reflection spec-surface corpus is 387 distinct query sequences (got %d)'
    % len(_QUERIES))
 
+# --- graphics payloads (sixel DCS, kitty APC, iTerm2 1337): stripped, no reply -
+# a cat'd image is a huge DCS/APC/OSC string; CLI shows no image and answers nothing
+_gfx = SecureTerminal(command='/bin/cat')
+_gfxsent = spy_writes(_gfx)
+feed_output(_gfx, b'before\x1bP0;0;0q#0;2;0;0;0#0~~@@vv@@~~$-#1?}}GG}}?-\x1b\\after\n')
+feed_output(_gfx, b'k\x1b_Gf=32,s=1,v=1,c=1,r=1;AAAA\x1b\\g\n')   # kitty graphics
+feed_output(_gfx, b'i\x1b]1337;File=inline=1:AAAA\x07j\n')        # iTerm2 inline image
+_gfxdoc = _gfx.toPlainText()
+ok('\x1b' not in _gfxdoc, 'graphics payloads leave no escape byte in the document')
+ok('before' in _gfxdoc and 'after' in _gfxdoc,
+   'text around a sixel image survives; the image DCS body is dropped')
+ok('#0;2' not in _gfxdoc and 'Gf=32' not in _gfxdoc and 'File=inline' not in _gfxdoc,
+   'no sixel/kitty/iTerm2 image data is rendered as text')
+ok(_gfxsent == [], 'a graphics payload triggers no reply to the pty')
+_gfx.close()
+
+# --- mouse + focus reporting is never forwarded to the pty --------------------
+# even with a program requesting mouse (1000/1006) and focus (1004) reporting, a
+# click or focus change writes no escape to the child: mouse stays a local
+# selection function and focus is not a reportable event (compatibility page).
+from PyQt6.QtGui import QFocusEvent as _QFE            # noqa: E402
+_mf = SecureTerminal(command='/bin/cat', tui=True)
+feed_output(_mf, b'\x1b[?1000h\x1b[?1006h\x1b[?1004h')   # request mouse + focus reports
+_mfsent = spy_writes(_mf)
+_mflb = Qt.MouseButton.LeftButton
+_mfpress = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(9, 9), QPointF(9, 9),
+                       _mflb, _mflb, Qt.KeyboardModifier.NoModifier)
+_mfrel = QMouseEvent(QEvent.Type.MouseButtonRelease, QPointF(9, 9), QPointF(9, 9),
+                     _mflb, Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier)
+_mf.mousePressEvent(_mfpress)
+_mf.mouseReleaseEvent(_mfrel)
+_mf.focusInEvent(_QFE(QEvent.Type.FocusIn))
+_mf.focusOutEvent(_QFE(QEvent.Type.FocusOut))
+ok(_mfsent == [],
+   'mouse/focus events write no report escape to the pty (got %r)' % _mfsent)
+_mf.close()
+
 # ADVERSARIAL reflection oracle: a hostile file/program does not just emit a
 # query -- it can ALSO emit output that tries to OPEN a reply first (fake the
 # alternate screen with ESC[?1049h, begin a synchronized update), and the shell
