@@ -379,6 +379,28 @@ ok(S.wants_screen_repaint('\x1b[3C\x1b[K') is False,
    'horizontal moves (CUF) and erase-line (EL), which line mode renders, are not flagged')
 ok(S.wants_screen_repaint('plain output text') is False, 'plain text is not flagged')
 
+# _printable_follows: bash emits the bracketed-paste marker BEFORE its prompt text
+# (printable follows -> True); zsh emits it AFTER, with only escapes/controls left
+# (nothing printable follows -> False). Deterministic here (the pty-timed prompt
+# test is flaky), so the zsh no-printable-follows branch is always exercised.
+ok(S._printable_follows('\x1b[?2004l\x1b[Kuser@host$ ', 0) is True,
+   '_printable_follows: True when printable prompt text still follows (bash)')
+ok(S._printable_follows('\x1b[?2004h\x1b[K\x07', 0) is False,
+   '_printable_follows: False when only escapes/controls follow (zsh)')
+
+# bidi controls (Trojan-Source): no display mode may emit a RAW bidi char (which
+# would reorder the line); detail and reveal surface the codepoint inline so a
+# hidden override is named, not silently reordered.
+for _bcp in (0x202E, 0x2066, 0x202D, 0x2069, 0x200F):
+    _bsrc = 'a' + chr(_bcp) + 'b'
+    for _bmode in ('box', 'show', 'reveal', 'detail'):
+        ok(chr(_bcp) not in S.render_output(_bsrc, _bmode),
+           'bidi: %s never emits a raw U+%04X to the document' % (_bmode, _bcp))
+    ok(('U+%04X' % _bcp) in S.render_output(_bsrc, 'detail'),
+       'bidi: detail surfaces U+%04X inline' % _bcp)
+    ok(('U+%04X' % _bcp) in S.render_output(_bsrc, 'reveal'),
+       'bidi: reveal surfaces U+%04X inline' % _bcp)
+
 # --- whole-screen clear / reset detection (a no-op in append-only line mode) ---
 ok(S.wants_clear('\x1b[2J') is True, 'detects a whole-screen clear (ED2)')
 ok(S.wants_clear('\x1b[3J') is True, 'detects a scrollback clear (ED3)')

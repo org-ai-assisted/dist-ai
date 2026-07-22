@@ -672,6 +672,13 @@ _cwg = SecureTerminal(command='/bin/cat', cwd=_gone)
 pump(30)
 ok(_cwg._pid is not None, 'a vanished saved cwd still spawns a shell (fallback)')
 _cwg.close()
+# shell_cwd returns '' when the shell pid is gone / unreadable (defensive branch)
+_cwt2 = SecureTerminal(command='/bin/cat')
+_realpid = _cwt2._pid
+_cwt2._pid = 2 ** 30           # a pid that does not exist -> os.readlink raises
+eq(_cwt2.shell_cwd(), '', 'shell_cwd returns empty when the shell pid is unreadable')
+_cwt2._pid = _realpid          # restore so close() reaps the real child
+_cwt2.close()
 # regression: output that fills the reported width hard-wraps (real autowrap), so
 # a shell's width-padded end-of-line marker (zsh PROMPT_SP / PROMPT_EOL_MARK) and
 # the following prompt do not collapse onto one logical line -- which lost the

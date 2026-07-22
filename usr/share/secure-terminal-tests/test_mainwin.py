@@ -1266,6 +1266,30 @@ ok(True, 'aboutToQuit teardown shuts down every tab and tolerates a failing shut
 _teardown_win.deleteLater()
 APP.processEvents()
 
+# global settings persist across restart (#68): _apply_global writes the defaults
+# to the config so a fresh window reads them back.
+import secure_terminal.settings as _ps                         # noqa: E402
+_pcfg_prev = os.environ.get('XDG_CONFIG_HOME')
+os.environ['XDG_CONFIG_HOME'] = tempfile.mkdtemp(prefix='st-persist-')
+try:
+    _pw = MainWindow()
+    _pw._apply_global({'theme': 'light', 'zoom': 175, 'mode': 'reveal', 'colors': True,
+                       'tui': False, 'osc': {}, 'osc_notice': False,
+                       'scrollback': 7000, 'paste_delay': 5, 'persist': True})
+    _pc = _ps.load()
+    eq(_pc.get('theme'), 'light', 'settings persist: theme written to config')
+    eq(_pc.get('zoom'), '175', 'settings persist: zoom written to config')
+    eq(_pc.get('unicode_mode'), 'reveal', 'settings persist: unicode mode written')
+    eq(_pc.get('scrollback'), '7000', 'settings persist: scrollback written')
+    eq(_pc.get('paste_delay'), '5', 'settings persist: paste delay written')
+    _pw.close()
+    _pw.deleteLater()
+finally:
+    if _pcfg_prev is None:
+        os.environ.pop('XDG_CONFIG_HOME', None)
+    else:
+        os.environ['XDG_CONFIG_HOME'] = _pcfg_prev
+
 # deferred session restore (#59): the first tab is restored synchronously so the
 # window opens with content; the rest render after the window is up (a big session
 # no longer blocks the first paint), and closeEvent finishes any pending restore so
@@ -1295,6 +1319,8 @@ try:
             break
     eq(_dw.tabs.count(), 3, 'deferred restore: all tabs restored after the window is up')
     ok(not _dw._deferred_restore, 'deferred restore: the queue drains')
+    _dw._restore_next_deferred()      # a no-op once the queue is empty (early return)
+    eq(_dw.tabs.count(), 3, 'deferred restore: a spurious drain call is a no-op')
     _dw.close()
     _dw.deleteLater()
     # closeEvent must finish a still-pending restore so no tab is dropped from save
