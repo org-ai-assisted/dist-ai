@@ -163,12 +163,12 @@ eq(mb.toPlainText().rstrip(), '', 'five backspaces erase five chars')
 
 # The neutralized-byte placeholder is DISPLAYED as a box (U+25A1) for readability,
 # but every text export (copy / save / toPlainText) maps it back to ASCII '_', so
-# a copied or saved transcript stays pure ASCII. Strip mode only.
+# a copied or saved transcript stays pure ASCII. Box mode only.
 boxt = SecureTerminal(command='/bin/cat')
 boxt._mode = 'box'
 feed_output(boxt, 'caf\xc3\xa9\xe2\x80\x8b\n'.encode('utf-8'))   # e-acute + zero-width
 ok('\u25a1' in boxt.document().toPlainText(),
-   'strip display shows the box for a neutralized byte')
+   'box display shows the box for a neutralized byte')
 ok('\u25a1' not in boxt.toPlainText() and '_' in boxt.toPlainText(),
    'export (toPlainText) maps the box back to ASCII _')
 data = boxt.createMimeDataFromSelection
@@ -361,13 +361,13 @@ rr = SecureTerminal(command='/bin/cat')
 _rr_raw = 'cafe' + chr(0x00E9) + '\n'
 rr._raw = _rr_raw
 rr._append(_S.render_output(_rr_raw, 'box'))
-eq(rr.toPlainText().rstrip(), 'cafe_', 'strip shows non-ascii as _')
+eq(rr.toPlainText().rstrip(), 'cafe_', 'box shows non-ascii as _')
 rr.apply_mode('reveal')
 eq(rr.toPlainText().rstrip(), 'cafe<U+00E9>', 'reveal re-renders existing scrollback')
 rr.apply_mode('show')
 eq(rr.toPlainText().rstrip(), 'cafe' + chr(0x00E9), 'show re-renders existing scrollback')
 rr.apply_mode('box')
-eq(rr.toPlainText().rstrip(), 'cafe_', 'strip re-renders the scrollback back')
+eq(rr.toPlainText().rstrip(), 'cafe_', 'box re-renders the scrollback back')
 # a mode toggle after a flood re-renders only the recent tail, not the full
 # scrollback: reveal expands each byte to an 8-char <U+XXXX>, so re-rendering 1MB
 # of raw would be ~8MB and freeze the UI. Bounded, the document stays small.
@@ -624,8 +624,8 @@ def _fmt_cp(term, index):
 ins = SecureTerminal(command='/bin/cat')
 ins.apply_mode('box')
 ins._append('a' + chr(0x202E) + 'b')                     # RLO between two ASCII
-eq(ins.toPlainText(), 'a_b', 'strip shows the RLO override as "_"')
-eq(_fmt_cp(ins, 1), 0x202E, 'even the strip "_" carries the source codepoint (RLO)')
+eq(ins.toPlainText(), 'a_b', 'box shows the RLO override as "_"')
+eq(_fmt_cp(ins, 1), 0x202E, 'even the box "_" carries the source codepoint (RLO)')
 inr = SecureTerminal(command='/bin/cat')
 inr.apply_mode('reveal')
 inr._append(chr(0x20AC))                                 # euro sign
@@ -851,7 +851,7 @@ eq([''.join(c for c, _ in ln) for ln in _zc], ['abc'],
    'prompt newline: a trailing newline already ended the line -- no spurious blank')
 
 # --- security: an app cannot recolour or HIDE a neutralised marking -----------
-# A marking (the strip box, or a Reveal/Detail <U+XXXX> badge -- same key, so the
+# A marking (the box glyph, or a Reveal/Detail <U+XXXX> badge -- same key, so the
 # same rules across every display mode). With coloured markings ON (default) it
 # is coloured by its RISK CLASS, never by the SGR an app set around it, so hostile
 # output can neither recolour a box to blend in nor forge one. With markings OFF
@@ -1084,12 +1084,12 @@ if tui_available():
     ok(_v + ' vim  ' + _v in _fr[1], 'tui places boxed content on row 2')
     ok(_fr[_last - 1].startswith('-- INSERT --'),
        'tui places the status line on the last row')
-    # the same frame in strip mode: box-drawing glyphs become _, ASCII stays
+    # the same frame in box mode: box-drawing glyphs become _, ASCII stays
     fs.apply_mode('box')
     fs._render_tui()
     _sr = fs.toPlainText().split('\n')
-    ok(_tl not in _sr[0] and '_' in _sr[0], 'strip mode neutralizes box glyphs')
-    ok(_sr[_last - 1].startswith('-- INSERT --'), 'strip keeps the ASCII status line')
+    ok(_tl not in _sr[0] and '_' in _sr[0], 'box mode neutralizes box glyphs')
+    ok(_sr[_last - 1].startswith('-- INSERT --'), 'box keeps the ASCII status line')
     fs.shutdown()
     # a pyte parser error on real program output (private SGR that some pyte
     # builds mishandle -- htop/vim/tmux emit these) must be contained, never
@@ -1103,7 +1103,7 @@ if tui_available():
     crash._render_tui()
     ok('ok' in crash.toPlainText(), 'pyte parser error contained; terminal survives')
     crash.shutdown()
-    # per-cell bidi neutralized in strip mode
+    # per-cell bidi neutralized in box mode
     tui.apply_mode('box')
     tui._stream.feed(b'\x1b[10;1Ha\xe2\x80\xaeb')     # a U+202E b
     tui._render_tui()
@@ -1563,11 +1563,11 @@ ok(bool(win.current().textCursor().selectedText()), 'select all selects the buff
 win.toggle_fullscreen(True)
 ok(win.isFullScreen(), 'full screen on')
 win.toggle_fullscreen(False)
-# unicode display is three mutually-exclusive buttons (Strip/Reveal/Show),
-# default strip, colour-coded by safety
+# unicode display is four mutually-exclusive buttons (Box/Reveal/Detail/Show),
+# default detail, colour-coded by safety
 win.act_box.trigger()
 ok(win.act_box.isChecked() and win.current().current_mode() == 'box',
-   'Strip button selects strip')
+   'Box button selects box')
 win.act_show.trigger()
 _checked = sum(a.isChecked() for a in (win.act_box, win.act_reveal, win.act_show))
 eq((win.current().current_mode(), _checked), ('show', 1),
@@ -1577,21 +1577,21 @@ eq(win.current().current_mode(), 'reveal', 'Reveal button selects reveal')
 ok(not win.act_box.icon().isNull() and not win.act_show.icon().isNull(),
    'mode buttons carry icons')
 # security indicator: two lamps. display axis (show=red, reveal=green [safe and
-# lossless], strip=green [safe -- the neutralized char is a hard-to-miss coloured
+# lossless], box=green [safe -- the neutralized char is a hard-to-miss coloured
 # box, though lossy]) and mode axis (TUI=yellow, line=green).
 win.set_mode('box')
 eq((win._display_level()[1], win._display_level()[0]), ('Box', '#1f8a54'),
-   'box (strip-key) display -> green (safe; the box placeholder is hard to miss)')
+   'box display -> green (safe; the box placeholder is hard to miss)')
 win.set_mode('reveal')
 eq((win._display_level()[1], win._display_level()[0]), ('Reveal', '#1f8a54'),
    'reveal display -> green (safe and lossless, not red)')
 win.set_mode('show')
 eq((win._display_level()[1], win._display_level()[0]), ('Show', '#d83933'),
    'show display -> red')
-# the default display mode is labelled "Box" (it draws a box; it does not strip the
+# the box display mode is labelled "Box" (it draws a box; it does not strip the
 # data stream), and its tooltip says it is a DISPLAY setting -- not the bytes a
 # program pipes elsewhere, so "cat file | bash" runs regardless.
-eq(win.act_box.text(), '&Box', 'the strip-key display mode is user-labelled Box')
+eq(win.act_box.text(), '&Box', 'the box display mode is user-labelled Box')
 ok('cat file | bash' in win.act_box.toolTip(),
    'the Box tooltip clarifies it is display-only, not bytes piped elsewhere')
 eq(win._mode_level()[1], 'CLI', 'CLI mode -> green mode lamp')
@@ -1607,7 +1607,7 @@ if tui_available():
     eq(win.current().current_mode(), 'show', 'TUI leans the tab to show')
     eq(win._default_mode, 'box', 'TUI does NOT persist show as the global default')
     win.set_tui(False)
-    eq(win.current().current_mode(), 'box', 'turning TUI off restores strip')
+    eq(win.current().current_mode(), 'box', 'turning TUI off restores box')
 # a plain tab switch must not mutate persisted settings (setChecked on toggled
 # actions is blocked): flip colours off on tab B, switch away and back.
 _before_colors = win._default_colors
@@ -1675,7 +1675,7 @@ settings._system_dirs = lambda: [_sysd]
 settings._user_config_dir = lambda: _usrd
 try:
     with open(os.path.join(_sysd, '30_default.conf'), 'w') as _f:
-        _f.write('tui=false\ncolors=false\nunicode_mode=strip\n'
+        _f.write('tui=false\ncolors=false\nunicode_mode=box\n'
                  'lock=tui,colors,unicode_mode\n')
     with open(os.path.join(_usrd, '50_user.conf'), 'w') as _f:
         _f.write('colors=true\ntui=true\ntheme=light\nlock=colors\n')

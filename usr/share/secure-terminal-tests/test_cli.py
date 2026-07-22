@@ -156,7 +156,7 @@ eq(_rc, 0, 'a command that exits cleanly returns 0')
 _o2, _ = run_in_pty(['--mode', 'reveal', '--', 'printf', 'x\u200by'])
 ok(b'<U+200B>' in _o2, 'reveal mode shows the <U+XXXX> badge for a zero-width space')
 _o3, _ = run_in_pty(['--mode', 'box', '--', 'printf', 'x\u200by'])
-ok(b'x_y' in _o3, 'strip mode maps the neutralised byte to _')
+ok(b'x_y' in _o3, 'box mode maps the neutralised byte to _')
 
 # --- exit-code propagation ----------------------------------------------------
 eq(run_in_pty(['--', 'sh', '-c', 'exit 7'])[1], 7, 'a non-zero exit is propagated')

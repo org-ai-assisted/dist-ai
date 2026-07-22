@@ -42,7 +42,7 @@ def eq(got, want, msg):
     ok(got == want, '%s -> %r, want %r' % (msg, got, want))
 
 
-# --- render_output: strip (default, safe) -------------------------------------
+# --- render_output: box (safe) -------------------------------------
 CAFE = 'caf' + chr(0x00E9)                       # e-acute
 CJK = chr(0x4E2D)
 EMOJI = chr(0x1F600)
@@ -52,15 +52,15 @@ NBSP = chr(0x00A0)                               # no-break space
 BEL = chr(0x07)
 NUL = chr(0x00)
 
-eq(S.render_output('plain ascii\t\n', 'box'), 'plain ascii\t\n', 'strip keeps ascii+tab+nl')
-eq(S.render_output(CAFE, 'box'), 'caf_', 'strip replaces non-ascii with _')
-eq(S.render_output('a' + BIDI + 'b', 'box'), 'a_b', 'strip bidi')
-eq(S.render_output('a' + ZWSP + 'b', 'box'), 'a_b', 'strip zero-width')
-eq(S.render_output('a' + NBSP + 'b', 'box'), 'a_b', 'strip nbsp')
-eq(S.render_output('a' + NUL + chr(0x1F) + 'b', 'box'), 'a__b', 'strip control -> _')
+eq(S.render_output('plain ascii\t\n', 'box'), 'plain ascii\t\n', 'box keeps ascii+tab+nl')
+eq(S.render_output(CAFE, 'box'), 'caf_', 'box replaces non-ascii with _')
+eq(S.render_output('a' + BIDI + 'b', 'box'), 'a_b', 'box bidi')
+eq(S.render_output('a' + ZWSP + 'b', 'box'), 'a_b', 'box zero-width')
+eq(S.render_output('a' + NBSP + 'b', 'box'), 'a_b', 'box nbsp')
+eq(S.render_output('a' + NUL + chr(0x1F) + 'b', 'box'), 'a__b', 'box control -> _')
 # a standalone BEL is a bell SIGNAL, not display content -> dropped from the
 # display in every mode, while has_bell still detects it so the bell policy rings.
-eq(S.render_output('a' + BEL + 'b', 'box'), 'ab', 'strip drops a standalone BEL')
+eq(S.render_output('a' + BEL + 'b', 'box'), 'ab', 'box drops a standalone BEL')
 ok(S.has_bell('a' + BEL + 'b'), 'has_bell still detects a dropped BEL')
 
 # --- render_output: show (render legit unicode, still neutralize deceptive) ----
@@ -321,12 +321,12 @@ for mode in ('box', 'show', 'reveal', 'detail'):
 
 # CSI with a private-parameter prefix (< = > ?) -- a capable-TERM program emits
 # these (modifyOtherKeys "\x1b[>4;2m", cursor hide "\x1b[?25l") -- must strip whole
-eq(S.render_output('a\x1b[>4;2mb', 'box'), 'ab', 'strip CSI private > param')
-eq(S.render_output('a\x1b[?25lb', 'box'), 'ab', 'strip CSI private ? param')
-eq(S.render_output('a\x1b[=3hb', 'box'), 'ab', 'strip CSI private = param')
+eq(S.render_output('a\x1b[>4;2mb', 'box'), 'ab', 'box CSI private > param')
+eq(S.render_output('a\x1b[?25lb', 'box'), 'ab', 'box CSI private ? param')
+eq(S.render_output('a\x1b[=3hb', 'box'), 'ab', 'box CSI private = param')
 # CSI cursor moves, OSC hyperlink and bare escapes all vanish
-eq(S.render_output('a\x1b[2Jb', 'box'), 'ab', 'strip CSI clear')
-eq(S.render_output('a\x1b]8;;http://evil\x07b', 'box'), 'ab', 'strip OSC link')
+eq(S.render_output('a\x1b[2Jb', 'box'), 'ab', 'box CSI clear')
+eq(S.render_output('a\x1b]8;;http://evil\x07b', 'box'), 'ab', 'box OSC link')
 
 # --- describe_codepoint: the reveal-badge tooltip -----------------------------
 _euro = S.describe_codepoint(0x20AC)
@@ -507,14 +507,14 @@ ok(S.color_256(300) is None, 'color_256: out-of-range -> None')
 
 # --- tui_cell: one-character-wide, grid-preserving cell sanitization ----------
 eq(S.tui_cell('A', 'box'), 'A', 'tui ascii kept')
-eq(S.tui_cell(CAFE[-1], 'box'), '_', 'tui strip non-ascii -> _')
+eq(S.tui_cell(CAFE[-1], 'box'), '_', 'tui box non-ascii -> _')
 eq(S.tui_cell(CAFE[-1], 'show'), CAFE[-1], 'tui show renders glyph')
 eq(S.tui_cell(chr(0x2500), 'show'), chr(0x2500), 'tui show renders box-drawing')
 eq(S.tui_cell(BIDI, 'show'), '_', 'tui show still neutralizes bidi')
 eq(S.tui_cell(ZWSP, 'show'), '_', 'tui show still neutralizes zero-width')
 eq(S.tui_cell(BEL, 'box'), '_', 'tui control -> _')
 # reveal cannot show a <U+XXXX> badge in a fixed cell, so in TUI it collapses to
-# the safe "_" (like strip) -- never the raw glyph, which would render a homoglyph
+# the safe "_" (like box) -- never the raw glyph, which would render a homoglyph
 # deceptively under the green "reveal is safe" lamp.
 eq(S.tui_cell(CAFE[-1], 'reveal'), '_', 'tui reveal is safe "_", not the glyph')
 eq(S.tui_cell(BIDI, 'reveal'), '_', 'tui reveal neutralizes bidi one-wide')
@@ -523,7 +523,7 @@ eq(S.tui_cell('', 'box'), ' ', 'tui empty cell -> space')
 # crash (this is what "cat /dev/random" in show mode hit)
 _grapheme = 'a' + chr(0x0301)                    # a + combining acute
 eq(S.tui_cell(_grapheme, 'show'), _grapheme, 'tui multi-cp grapheme kept in show')
-eq(S.tui_cell(_grapheme, 'box'), '_', 'tui multi-cp grapheme -> _ in strip')
+eq(S.tui_cell(_grapheme, 'box'), '_', 'tui multi-cp grapheme -> _ in box')
 eq(S.tui_cell('a' + BEL, 'show'), '_', 'tui grapheme with a control -> _')
 ok(isinstance(S.tui_cell(chr(0x1F600) + chr(0x1F600), 'show'), str),
    'tui two-astral cell does not crash')
@@ -750,11 +750,11 @@ def _run_cli(args, timeout=30):
 
 # printf interprets the backslash-octal, so pass LITERAL backslashes (a single
 # Python backslash would be interpreted here and then double-encoded through argv)
-# strip mode: escapes removed, text kept, bidi neutralized to _
+# box mode: escapes removed, text kept, bidi neutralized to _
 _o, _ = _run_cli(['--mode', 'box', '--', 'printf',
                   'X\\033[31mRED\\033[0m Y\\342\\200\\256Z'])
-ok('\x1b' not in _o and 'RED' in _o, 'cli strip: escapes gone, text kept')
-ok('_' in _o and chr(0x202E) not in _o, 'cli strip: bidi -> _')
+ok('\x1b' not in _o and 'RED' in _o, 'cli box: escapes gone, text kept')
+ok('_' in _o and chr(0x202E) not in _o, 'cli box: bidi -> _')
 # show mode: printable non-ASCII kept, escapes still gone
 _o, _ = _run_cli(['--mode', 'show', '--', 'printf', 'caf\\303\\251 \\033[1mB\\033[0m'])
 ok(chr(0x00E9) in _o and '\x1b' not in _o, 'cli show: unicode kept, escapes gone')
@@ -767,9 +767,13 @@ eq(_rc, 42, 'cli forwards the child exit code')
 # the two safe cursor controls (backspace, carriage return) pass through
 _o, _ = _run_cli(['--', 'printf', 'a\x08b\rc'])
 ok('\x08' in _o and '\r' in _o, 'cli keeps backspace and carriage return')
-# any other control character is neutralized to _
+# any other control character is neutralized to _ in box mode
+_o, _ = _run_cli(['--mode', 'box', '--', 'printf', 'x\x01y'])
+ok('_' in _o and '\x01' not in _o, 'cli box: a control char (SOH) becomes _')
+# the default mode is detail: the same control char is named, raw byte gone
 _o, _ = _run_cli(['--', 'printf', 'x\x01y'])
-ok('_' in _o and '\x01' not in _o, 'cli strips a control char (SOH) to _')
+ok('<U+0001' in _o and '\x01' not in _o,
+   'cli default mode is detail (SOH shown as a <U+0001> badge, raw byte gone)')
 # a standalone BEL is a bell signal, not content: dropped, not shown as _ (so x
 # and y stay adjacent) and never leaked as a raw 0x07.
 _o, _ = _run_cli(['--', 'printf', 'x\x07y'])

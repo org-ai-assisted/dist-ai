@@ -15,7 +15,7 @@ paper's techniques, and every fixture from the git-diffs-lie adversarial corpus.
 The invariant, across EVERY display mode:
   - no truly dangerous code point survives (escape/CSI/OSC, non-honored control,
     DEL, C1, bidi override, zero-width, BOM, line/paragraph separator);
-  - strip and reveal emit only safe ASCII + the honored editing controls (a
+  - box and reveal emit only safe ASCII + the honored editing controls (a
     homoglyph is neutralized to "_" or a <U+XXXX> badge);
   - show may keep a printable non-ASCII glyph (its documented risk) but STILL
     neutralizes every invisible/deceptive class;
@@ -53,7 +53,7 @@ MODES = ('box', 'show', 'reveal')
 # the widget's line model bounds them to the current line -- see the fuzz tests);
 # everything else in the control range must be neutralized.
 _HONORED = {0x08, 0x09, 0x0A, 0x0D}
-# The safe display alphabet for strip / reveal: printable ASCII + the honored
+# The safe display alphabet for box / reveal: printable ASCII + the honored
 # editing controls. (A reveal <U+XXXX> badge is itself ASCII.)
 SAFE = frozenset(_HONORED | set(range(0x20, 0x7F)))
 
@@ -170,7 +170,7 @@ def assert_safe(name, text):
         ok(S.render_output(out, mode) == out, '%s/%s: not idempotent' % (name, mode))
     strip = S.render_output(text, 'box')
     ok(all(ord(ch) in SAFE for ch in strip),
-       '%s: strip left a non-safe char' % name)
+       '%s: box left a non-safe char' % name)
     reveal = S.render_output(text, 'reveal')
     ok(all(ord(ch) in SAFE for ch in reveal),
        '%s: reveal left a non-safe char' % name)
@@ -191,7 +191,7 @@ for _name, _rawbytes in git_diffs_lie_fixtures().items():
     assert_safe('git-diffs-lie:' + _name, _text)
     # also the raw-byte path (latin-1 1:1, as sanitize_bytes uses)
     ok(all(ord(ch) in SAFE for ch in S.sanitize_bytes(_rawbytes, 'box')),
-       'git-diffs-lie:%s: sanitize_bytes(strip) is safe' % _name)
+       'git-diffs-lie:%s: sanitize_bytes(box) is safe' % _name)
 
 # the escape/CR forgeries must not HIDE the real value: the neutralized render
 # still contains the honest text a naive terminal would have painted over.
@@ -214,9 +214,9 @@ _all = ''.join(chr(c) for c in range(0x00, 0x110000)
                if not 0xD800 <= c <= 0xDFFF)
 _strip_all = S.render_output(_all, 'box')
 ok(all(ord(ch) in SAFE for ch in _strip_all),
-   'all-unicode: strip emits only safe ASCII + honored controls')
+   'all-unicode: box emits only safe ASCII + honored controls')
 ok(S.render_output(_strip_all, 'box') == _strip_all,
-   'all-unicode: strip is idempotent')
+   'all-unicode: box is idempotent')
 _reveal_all = S.render_output(_all, 'reveal')
 ok(all(ord(ch) in SAFE for ch in _reveal_all),
    'all-unicode: reveal emits only safe ASCII (badges are ASCII)')

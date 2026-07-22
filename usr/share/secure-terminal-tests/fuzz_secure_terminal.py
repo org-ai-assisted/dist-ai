@@ -114,8 +114,8 @@ def _assert(condition, message, seed):
 
 def phase_output(rnd, iterations, seed):
     ## The output renderer and the raw-byte decoder: a dangerous code point must
-    ## NEVER survive in any mode; strip/reveal render only the safe alphabet; and
-    ## strip is idempotent.
+    ## NEVER survive in any mode; box/reveal render only the safe alphabet; and
+    ## box is idempotent.
     for _ in range(iterations):
         text = _rand_text(rnd)
         for mode in S.DISPLAY_MODES:
@@ -129,7 +129,7 @@ def phase_output(rnd, iterations, seed):
                         .format(text, mode, out), seed)
         strip = S.render_output(text, 'box')
         _assert(S.render_output(strip, 'box') == strip,
-                'render_output strip not idempotent on {0!r}'.format(text), seed)
+                'render_output box not idempotent on {0!r}'.format(text), seed)
         raw = text.encode('utf-8', 'surrogatepass') if not any(
             0xD800 <= ord(c) <= 0xDFFF for c in text) else b''
         sb = S.sanitize_bytes(raw, 'box')
@@ -139,7 +139,7 @@ def phase_output(rnd, iterations, seed):
 
 def phase_lines(rnd, iterations, seed):
     ## The line-mode logical-cell editor and its renderers: no ESC ever reaches a
-    ## cell, the cursor stays within the current line, strip runs are all-safe,
+    ## cell, the cursor stays within the current line, box runs are all-safe,
     ## and the legacy bulk editor keeps its cursor in bounds. Also the per-cell
     ## TUI sanitizer and the SGR colour parser.
     for _ in range(iterations):
@@ -160,12 +160,12 @@ def phase_lines(rnd, iterations, seed):
         _assert(isinstance(prefix, int) and prefix >= 0,
                 'cells_to_runs bad prefix on {0!r}'.format(text), seed)
         for run_text, _key in runs:
-            # STRIP_BOX (U+25A1) is cells_to_runs' intentional strip-mode
+            # BOX (U+25A1) is cells_to_runs' intentional box-mode
             # placeholder for a neutralized cell (the widget maps it back to '_'
             # on export) -- safe by design, so allow it alongside the ASCII set.
-            _assert(all(ord(ch) in SAFE or ch in ('\n', S.STRIP_BOX)
+            _assert(all(ord(ch) in SAFE or ch in ('\n', S.BOX)
                         for ch in run_text),
-                    'cells_to_runs strip run not safe on {0!r}'.format(text),
+                    'cells_to_runs box run not safe on {0!r}'.format(text),
                     seed)
         disp = S.cells_display_col(cells, col, 'box')
         _assert(disp >= 0, 'cells_display_col negative on {0!r}'.format(text),

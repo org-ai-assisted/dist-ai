@@ -8,10 +8,10 @@ layer.
 is not, with no GUI dependency, the way output-lies keeps its analyzer DOM-free.
 This suite drives it directly under `python3` with no PyQt6:
 
-- `render_output()` across the three display modes -- `strip` (non-ASCII becomes
+- `render_output()` across the four display modes -- `box` (non-ASCII becomes
   `_`), `show` (legitimate unicode renders, but the invisible/bidi/format classes
-  are still neutralized via `str.isprintable()`), and `reveal` (`<U+XXXX>`
-  badges) -- and that escape sequences are always stripped while the interactive
+  are still neutralized via `str.isprintable()`), `reveal` (`<U+XXXX>` badges) and
+  `detail` (`<U+XXXX NAME>`, the default) -- and that escape sequences are always stripped while the interactive
   backspace/carriage-return/tab/newline controls always pass through.
 - `sanitize_paste()` (homoglyph, bidi and zero-width stripped; newline to
   carriage return; tab kept) and `paste_findings()` classification.

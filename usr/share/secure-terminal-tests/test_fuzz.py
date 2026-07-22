@@ -11,7 +11,7 @@ Property-based fuzz tests for secure-terminal's pure parsers of untrusted input
 hostile bytes: the output renderer, the paste sanitizer/classifier, the title
 sanitizer, the safe-colour SGR parser and the per-cell TUI sanitizer. For every
 input they must not raise and must uphold their safety invariant (no unsafe
-character escapes strip mode, a title is plain ASCII, a cell is one wide, ...).
+character escapes box mode, a title is plain ASCII, a cell is one wide, ...).
 
 hypothesis is a declared dependency (installed in CI); a missing one is a hard
 FAILURE, not a skip. Exit 0 on full pass, 1 on any failure.
@@ -61,7 +61,7 @@ def prop_render_output(text, mode):
     out = S.render_output(text, mode)
     assert isinstance(out, str)
     if mode == 'box':
-        # strip mode must emit only printable ASCII + tab/newline + the two
+        # box mode must emit only printable ASCII + tab/newline + the two
         # honored cursor controls; nothing hostile can survive.
         assert all(ord(ch) in SAFE_OUTPUT for ch in out)
 
@@ -247,7 +247,8 @@ def prop_parse_sgr_colours(param):
 @given(st.integers(min_value=0, max_value=0x110000))
 def prop_marking_class(cp):
     # every codepoint classifies as exactly one marking kind, never raises.
-    assert S.marking_class(cp) in ('bidi', 'invisible', 'control', 'nonascii')
+    assert S.marking_class(cp) in ('bidi', 'invisible', 'control',
+                                   'confusable', 'nonascii')
 
 
 @RUN
@@ -309,7 +310,7 @@ def prop_tui_cell(ch, mode):
 def prop_feed_line_edits(text, mode, max_line):
     # the line-mode logical-cell editor: hostile output must never smuggle an
     # escape byte into a cell, the cursor must stay within the current line, and
-    # in strip mode the rendered line must be all-safe. It must not raise. max_line
+    # in box mode the rendered line must be all-safe. It must not raise. max_line
     # exercises the width bound: cursor-forward blank padding and deferred autowrap.
     comp, cells, col, sgr, _w = S.feed_line_edits([], 0, {}, text, max_line)
     assert 0 <= col <= len(cells)
@@ -376,7 +377,7 @@ def prop_feed_chunk_carry(chunks):
 @given(st.text(), st.sampled_from(S.DISPLAY_MODES), st.booleans())
 def prop_cells_to_runs(text, mode, colors):
     # rendering the logical cells (from feed_line_edits) to display runs must not
-    # raise and must stay safe: strip runs are all-safe, the caret offset is sane.
+    # raise and must stay safe: box runs are all-safe, the caret offset is sane.
     comp, cells, col, sgr, _w = S.feed_line_edits([], 0, {}, text)
     runs, prefix = S.cells_to_runs(comp, cells, mode, colors)
     assert isinstance(runs, list) and isinstance(prefix, int) and prefix >= 0
@@ -386,21 +387,21 @@ def prop_cells_to_runs(text, mode, colors):
     assert 0 <= disp
     if mode == 'box':
         for run_text, _key in runs:
-            # Strip-mode DISPLAY may show the readable box for a neutralized byte
+            # Box-mode DISPLAY may show the readable box for a neutralized byte
             # (the widget maps it back to ASCII '_' on copy/export); everything
             # else is the safe ASCII alphabet. Mapping the box to '_' must yield
             # only the safe alphabet -- the export invariant.
-            assert all(ord(ch) in SAFE_OUTPUT or ch == '\n' or ch == S.STRIP_BOX
+            assert all(ord(ch) in SAFE_OUTPUT or ch == '\n' or ch == S.BOX
                        for ch in run_text)
             assert all(ord(ch) in SAFE_OUTPUT or ch == '\n'
-                       for ch in run_text.replace(S.STRIP_BOX, '_'))
+                       for ch in run_text.replace(S.BOX, '_'))
 
 
 @RUN
 @given(st.binary(), st.sampled_from(S.DISPLAY_MODES))
 def prop_sanitize_bytes(data, mode):
     # arbitrary raw bytes (a program's output decoded 1:1) must never raise and,
-    # in strip mode, must render to only the safe display alphabet.
+    # in box mode, must render to only the safe display alphabet.
     out = S.sanitize_bytes(data, mode)
     assert isinstance(out, str)
     if mode == 'box':
