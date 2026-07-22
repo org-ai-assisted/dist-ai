@@ -1266,6 +1266,54 @@ ok(True, 'aboutToQuit teardown shuts down every tab and tolerates a failing shut
 _teardown_win.deleteLater()
 APP.processEvents()
 
+# deferred session restore (#59): the first tab is restored synchronously so the
+# window opens with content; the rest render after the window is up (a big session
+# no longer blocks the first paint), and closeEvent finishes any pending restore so
+# no tab is dropped from the save.
+import secure_terminal.session as _ds                         # noqa: E402
+from PyQt6.QtCore import QEventLoop as _QEL59                  # noqa: E402
+from PyQt6.QtGui import QCloseEvent as _QCE59                  # noqa: E402
+_st_prev = os.environ.get('XDG_STATE_HOME')
+_cfg_prev = os.environ.get('XDG_CONFIG_HOME')
+os.environ['XDG_STATE_HOME'] = tempfile.mkdtemp(prefix='st-defer-')
+# a fresh, empty config so persist_session defaults to True (a prior test may have
+# written persist_session=false), otherwise the restore path is skipped entirely.
+os.environ['XDG_CONFIG_HOME'] = tempfile.mkdtemp(prefix='st-defer-cfg-')
+try:
+    _ds.save([{'name': 'd0', 'text': 'zero\n', 'osc': {}},
+              {'name': 'd1', 'text': 'one\n', 'osc': {}},
+              {'name': 'd2', 'text': 'two\n', 'osc': {}}])
+    _dw = MainWindow()
+    eq(_dw.tabs.count(), 1,
+       'deferred restore: only the first tab is restored synchronously')
+    eq(len(_dw._deferred_restore), 2, 'deferred restore: the remaining tabs are queued')
+    for _ in range(40):
+        _l = _QEL59()
+        QTimer.singleShot(20, _l.quit)
+        _l.exec()
+        if _dw.tabs.count() >= 3:
+            break
+    eq(_dw.tabs.count(), 3, 'deferred restore: all tabs restored after the window is up')
+    ok(not _dw._deferred_restore, 'deferred restore: the queue drains')
+    _dw.close()
+    _dw.deleteLater()
+    # closeEvent must finish a still-pending restore so no tab is dropped from save
+    _ds.save([{'name': 'e0', 'text': 'a\n', 'osc': {}},
+              {'name': 'e1', 'text': 'b\n', 'osc': {}},
+              {'name': 'e2', 'text': 'c\n', 'osc': {}}])
+    _cw = MainWindow()
+    eq(len(_cw._deferred_restore), 2, 'deferred restore: two tabs pending before close')
+    _cw.closeEvent(_QCE59())
+    ok(not _cw._deferred_restore and _cw.tabs.count() == 3,
+       'closeEvent finishes the deferred restore before saving (no tab dropped)')
+    _cw.deleteLater()
+finally:
+    for _var, _prev in (('XDG_STATE_HOME', _st_prev), ('XDG_CONFIG_HOME', _cfg_prev)):
+        if _prev is None:
+            os.environ.pop(_var, None)
+        else:
+            os.environ[_var] = _prev
+
 win.close()
 win.deleteLater()
 APP.processEvents()
