@@ -569,6 +569,21 @@ ok(chr(0x85) not in S.sanitize_clipboard_unicode('a' + chr(0x85) + 'b'),
 eq(S.sanitize_clipboard('ex' + chr(0x0430) + 'mple\nok'), 'exmple\nok',
    'clipboard (ASCII) drops the cyrillic homoglyph, keeps the newline')
 eq(S.sanitize_clipboard('a\x1b[31mb'), 'a[31mb', 'clipboard (ASCII) drops the ESC control')
+# default-ignorable characters that str.isprintable() KEEPS (variation selectors,
+# combining grapheme joiner, Hangul fillers) are invisible on their own -> the
+# unicode-keeping sanitizers still drop them, so they cannot ride out.
+ok(chr(0xFE0F) not in S.sanitize_clipboard_unicode('a' + chr(0xFE0F) + 'b'),
+   'clipboard-unicode drops a variation selector (invisible, but isprintable)')
+ok(chr(0x034F) not in S.sanitize_paste_unicode('a' + chr(0x034F) + 'b'),
+   'unicode paste drops the combining grapheme joiner')
+ok(chr(0x3164) not in S.sanitize_clipboard_unicode('a' + chr(0x3164) + 'b'),
+   'clipboard-unicode drops a Hangul filler')
+# but ORDINARY combining marks (a real accent) are NOT default-ignorable -> kept,
+# so legitimate decomposed text (cafe + combining acute) survives.
+eq(S.sanitize_clipboard_unicode('cafe' + chr(0x0301)), 'cafe' + chr(0x0301),
+   'a real combining accent is kept (decomposed text is not mangled)')
+ok(S.is_default_ignorable(chr(0xFE0F)) and not S.is_default_ignorable(chr(0x0301)),
+   'is_default_ignorable: a variation selector yes, a combining accent no')
 
 # --- sanitize_title: program-supplied title / notification -> safe ASCII ------
 eq(S.sanitize_title('My Build'), 'My Build', 'title plain ascii')

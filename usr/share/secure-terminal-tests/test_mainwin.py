@@ -321,10 +321,21 @@ try:
     win.set_clipboard_read_always(True)
     win._bell_sound_locked = lambda: True
     win.set_bell_sound('/etc/hostname')     # locked -> early return
+    win._locked = {'copy_warn'}
+    win.set_copy_warn('always')             # locked -> early return
     ok(True, 'setting appliers respect an admin lock (no change)')
+    # a locked paste_warn / copy_warn is greyed out in the menu, not silently
+    # clickable-but-ignored.
+    win._locked = {'copy_warn', 'paste_warn'}
+    win._apply_locks()
+    ok(all(not a.isEnabled() for a in win._copy_warn_actions.values())
+       and all(not a.isEnabled() for a in win._paste_warn_actions.values()),
+       'a locked paste_warn / copy_warn greys out its menu actions')
 finally:
     win._locked = _saved_locked
     win._bell_sound_locked = _saved_bsl
+    for _a in list(win._copy_warn_actions.values()) + list(win._paste_warn_actions.values()):
+        _a.setEnabled(True)             # undo the lock disable for later tests
 
 # --- the tray context menu is built from fixed, safe actions ------------------
 _tray_menu = win._build_tray_menu()

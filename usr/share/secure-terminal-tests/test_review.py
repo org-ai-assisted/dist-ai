@@ -148,6 +148,21 @@ _bar._choose('stripped')
 eq(_term_c.dispatched, [('copy', 'stripped')],
    'copy review dispatches to the tab\'s copy path, not the paste path')
 
+# --- a clean (always-mode) review does not claim hidden characters ------------
+# In "always" mode a plain-ASCII paste/copy is reviewed too; classify_paste finds
+# nothing, so the summary must NOT assert hidden characters that are not there.
+_term_clean = _FakeTerm()
+_bar.show_review(_term_clean, 'plain ascii command\n', 0, 'paste')
+ok('hide' not in _bar._summary.text().lower()
+   and 'hidden' not in _bar._summary.text().lower(),
+   'a clean paste review does not claim hidden characters')
+ok('shell' in _bar._summary.text().lower(), 'the clean-paste summary points at the shell')
+_bar.show_review(_term_clean, 'plain ascii\n', 0, 'copy')
+ok('hidden' not in _bar._summary.text().lower()
+   and 'clipboard' in _bar._summary.text().lower(),
+   'a clean copy review does not claim hidden characters, and names the clipboard')
+_bar._choose('reject')
+
 # --- hide_review tears down cleanly -------------------------------------------
 _bar.hide_review()
 ok(not _bar.isVisibleTo(_win) or True, 'hide_review hides the bar and stops the timer')

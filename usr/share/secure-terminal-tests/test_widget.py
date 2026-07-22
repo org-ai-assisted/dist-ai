@@ -1003,6 +1003,19 @@ _ascii.dispatch_pending_copy('reject')
 cp.apply_copy_warn('bogus')
 eq(cp.current_copy_warn(), 'unicode', 'an unknown copy-warn mode falls back to if-unicode')
 
+# the STANDARD right-click Copy fires Qt's non-virtual C++ copy(), which would
+# bypass the reviewed copy() override; the terminal reroutes it so a context-menu
+# copy is reviewed too (not just Ctrl+Shift+C).
+cp.apply_copy_warn('unicode')
+from PyQt6.QtCore import QPoint as _QPoint2                # noqa: E402
+_menu = cp._reviewed_context_menu(_QPoint2(5, 5))
+_copy_act = [a for a in _menu.actions() if a.objectName() == 'edit-copy'][0]
+_creq.clear(); _QGA3.clipboard().setText('OLD'); cp.selectAll()
+_copy_act.trigger()
+ok(cp.review_pending() and len(_creq) == 1 and _QGA3.clipboard().text() == 'OLD',
+   'the context-menu Copy is routed through the copy review, not straight to the clipboard')
+cp.dispatch_pending_copy('reject')
+
 # --- TUI mode (pyte is a required dependency: fail closed, do not skip) -------
 ok(tui_available(), 'python3-pyte available for TUI mode')
 if tui_available():

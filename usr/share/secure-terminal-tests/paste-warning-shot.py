@@ -75,10 +75,14 @@ def _dark_palette(app):
 
 
 def main(argv):
-    if len(argv) != 2:
-        sys.stderr.write('usage: %s <output.png>\n' % argv[0])
+    if not 2 <= len(argv) <= 3 or (len(argv) == 3 and argv[2] not in ('paste', 'copy')):
+        sys.stderr.write('usage: %s <output.png> [paste|copy]\n' % argv[0])
         return 2
     out = argv[1]
+    kind = argv[2] if len(argv) == 3 else 'paste'
+    # a copy is not executed, so it has no countdown (the paste anti-fat-finger
+    # gate does not apply); a paste shows the gate counting down.
+    delay = COUNTDOWN_SECONDS if kind == 'paste' else 0
 
     app = QApplication([argv[0], '-platform', os.environ['QT_QPA_PLATFORM']])
     _dark_palette(app)
@@ -88,7 +92,7 @@ def main(argv):
     layout.setContentsMargins(0, 0, 0, 0)
     bar = ReviewBar(host)
     layout.addWidget(bar)
-    bar.show_review(_Term(), PAYLOAD, COUNTDOWN_SECONDS)
+    bar.show_review(_Term(), PAYLOAD, delay, kind)
     bar._detail_btn.setChecked(True)        # expand the preview panes for the shot
     host.setFixedWidth(940)
     host.adjustSize()
