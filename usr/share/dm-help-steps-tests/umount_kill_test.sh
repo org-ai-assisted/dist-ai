@@ -164,13 +164,8 @@ main() {
    subject="$(locate_subject)"
    printf '%s\n' "INFO: subject: ${subject}"
 
-   ## python3 presence check (mmap-only victim). 'type -P' (builtin) not
-   ## helper-scripts 'has': the suite runs where helper-scripts is absent (CI).
-   ## 'type -P' is not 'command -v', so R-090 holds.
-   if ! type -P python3 >/dev/null; then
-      printf '%s\n' "SKIP: python3 is required (mmap-only victim)." >&2
-      exit 77
-   fi
+   ## python3 (mmap-only victim) is assumed present; a genuine absence must fail
+   ## loud (bug), not skip.
 
    scratch_base="$(mktemp --directory)"
    ## '<target>2' is a deliberate string-prefix collision of the target.
