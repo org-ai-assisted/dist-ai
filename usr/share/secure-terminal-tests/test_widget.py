@@ -270,6 +270,23 @@ for _cp in (0x202E,        # RIGHT-TO-LEFT OVERRIDE (bidi)
     ok(chr(_cp) not in got,
        'popup Copy never places the raw glyph U+%04X on the clipboard' % _cp)
     dlg.close()
+# the popup is usable: EVERY label (incl. the explanatory note, not just the
+# name) is selectable so its text can be marked and copied, and the Copy button
+# confirms visibly so it never looks like a no-op.
+from PyQt6.QtCore import Qt as _QtIP                      # noqa: E402
+from PyQt6.QtWidgets import QLabel as _QLabelIP           # noqa: E402
+_ipop = SecureTerminal(command='/bin/cat')
+_ipop._show_char_popup(0x0430, _QPoint(10, 10))
+_idlg = _ipop._char_popup
+_isel = _QtIP.TextInteractionFlag.TextSelectableByMouse
+ok(all(_lb.textInteractionFlags() & _isel for _lb in _idlg.findChildren(_QLabelIP)),
+   'every popup label (incl. the note) is selectable, so its text can be copied')
+_icopy = next(b for b in _idlg.findChildren(_QPushButton)
+              if b.text().startswith('Copy'))
+_icopy.click()
+ok(_icopy.text().startswith('Copied'),
+   'the popup Copy button confirms the copy (text becomes "Copied ...")')
+_idlg.close()
 # a write lands where a program left the cursor mid-line (zsh prompt + fill),
 # not at end-of-document -- the wall-of-spaces-before-input bug
 pc = SecureTerminal(command='/bin/cat')
