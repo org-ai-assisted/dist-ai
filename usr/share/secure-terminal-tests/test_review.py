@@ -163,6 +163,27 @@ ok('hidden' not in _bar._summary.text().lower()
    'a clean copy review does not claim hidden characters, and names the clipboard')
 _bar._choose('reject')
 
+# --- send-button colours clear the contrast guard on BOTH themes --------------
+# The two send buttons are coloured from the app's canonical SAFE_FG/RISK_FG, not
+# a one-off tint tuned for one theme. Pin that (a) the widgets use those constants
+# and (b) each colour stays readable against both the light and the dark theme
+# background -- a regression guard for the old fg-only #0a5c37/#b1170f, which fell
+# under the >=30 luminance gap on a dark desktop palette.
+from secure_terminal.review import SAFE_FG as _SAFE_FG, RISK_FG as _RISK_FG  # noqa: E402
+from secure_terminal.terminal import THEMES as _THEMES, _rgb as _rgb         # noqa: E402
+from secure_terminal.sanitize import too_close as _too_close                 # noqa: E402
+from PyQt6.QtGui import QColor as _QColor                                     # noqa: E402
+
+ok(_SAFE_FG in _bar._stripped.styleSheet(),
+   'the stripped send button uses the canonical SAFE_FG colour')
+ok(_RISK_FG in _bar._unicode.styleSheet(),
+   'the with-unicode send button uses the canonical RISK_FG colour')
+for _theme in ('dark', 'light'):
+    _bg = _rgb(_QColor(_THEMES[_theme][0]))
+    for _name, _hex in (('SAFE_FG', _SAFE_FG), ('RISK_FG', _RISK_FG)):
+        ok(not _too_close(_rgb(_QColor(_hex)), _bg),
+           '%s send-button colour reads on the %s theme background' % (_name, _theme))
+
 # --- hide_review tears down cleanly -------------------------------------------
 _bar.hide_review()
 ok(not _bar.isVisibleTo(_win) or True, 'hide_review hides the bar and stops the timer')

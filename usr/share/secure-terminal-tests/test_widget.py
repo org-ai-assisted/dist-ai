@@ -1102,6 +1102,17 @@ if tui_available():
     crash._feed_stream(b'ok\r\n')
     crash._render_tui()
     ok('ok' in crash.toPlainText(), 'pyte parser error contained; terminal survives')
+    # the rest of the pyte 0.8.0 crash-bug family (extra CSI params, a private CSI
+    # final, an unhandled erase 'how', VPA under DECOM, a non-ASCII digit in a
+    # param) must be swallowed by the same feed guard -- feed each, then confirm
+    # later output still renders.
+    for _seq in (b'\x1b[1;2A', b'\x1b[?0A', b'\x1b[3K', b'\x1b[4J',
+                 b'\x1b[?6h\x1b[5d', b'\x1b[\xc2\xb3A'):
+        crash._feed_stream(_seq)
+    crash._feed_stream(b'ok2\r\n')
+    crash._render_tui()
+    ok('ok2' in crash.toPlainText(),
+       'pyte crash-bug family (A/C/D/F) contained; terminal still renders')
     crash.shutdown()
     # per-cell bidi neutralized in box mode
     tui.apply_mode('box')
