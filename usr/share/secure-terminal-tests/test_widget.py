@@ -2664,22 +2664,47 @@ _cn.close()
 # "output becomes input" injection class. secure-terminal answers NONE of them,
 # in either mode, because nothing on the output path writes to the pty. Feed the
 # whole battery through the real _on_readable and assert the write-spy stays empty.
-_QUERIES = [
-    b'\x1b[c', b'\x1b[0c',                 # DA1 primary device attributes
-    b'\x1b[>c', b'\x1b[>0c',               # DA2 secondary (fingerprint)
-    b'\x1b[=c',                            # DA3 tertiary
-    b'\x1b[5n',                            # DSR status
-    b'\x1b[6n',                            # CPR cursor position report request
-    b'\x1b[>q',                            # XTVERSION
-    b'\x1b[?2026$p',                       # DECRQM (sync-output mode)
-    b'\x1bP+q544e\x1b\\',                  # XTGETTCAP terminfo dump
-    b'\x1bP$qm\x1b\\',                     # DECRQSS request status string
-    b'\x1b[?u',                            # kitty keyboard progressive-enhancement
-    b'\x1b]4;1;?\x07',                     # OSC 4 palette query
-    b'\x1b]10;?\x07', b'\x1b]11;?\x07',    # OSC 10/11 fg/bg query
-    b'\x1b]52;c;?\x07',                    # OSC 52 clipboard READ (exfil vector)
-    b'\x05',                               # ENQ answerback
-]
+def _spec_surface_corpus():
+    """The reflection/query spec surface expanded to its real breadth: every
+    DISTINCT sequence a terminal could be asked to REPLY to (each a documented
+    query, not padding). Covers DA1/DA2/DA3 + DECID, DSR (ANSI + DEC-private),
+    DECRQM for the documented ANSI and DEC-private modes, OSC dynamic-colour
+    queries for all 256 palette indices + the special colour slots, OSC 52
+    clipboard READ per selection, XTGETTCAP for the standard terminfo cap set,
+    DECRQSS status-string requests, XTWINOPS report requests, XTVERSION, the kitty
+    keyboard query and ENQ. secure-terminal answers NONE of them in either mode."""
+    seq = []
+    seq += [b'\x1b[c', b'\x1b[0c', b'\x1b[>c', b'\x1b[>0c', b'\x1b[=c',
+            b'\x1b[=0c', b'\x1bZ']              # DA1/DA2/DA3 + DECID
+    for _n in (5, 6, 15, 25, 26, 53, 55, 56, 62, 63, 75, 85):
+        seq.append(b'\x1b[%dn' % _n)           # DSR (ANSI)
+        seq.append(b'\x1b[?%dn' % _n)          # DSR (DEC-private)
+    for _m in (2, 4, 12, 20):
+        seq.append(b'\x1b[%d$p' % _m)          # DECRQM (ANSI modes)
+    for _m in (1, 3, 5, 6, 7, 8, 9, 12, 25, 45, 47, 66, 67, 69, 1000, 1001,
+               1002, 1003, 1004, 1005, 1006, 1007, 1015, 1016, 1034, 1047,
+               1048, 1049, 2004, 2026, 2027, 2031, 9001):
+        seq.append(b'\x1b[?%d$p' % _m)         # DECRQM (DEC-private modes)
+    for _n in range(256):
+        seq.append(b'\x1b]4;%d;?\x07' % _n)    # OSC 4 palette query, every index
+    for _n in range(10, 20):
+        seq.append(b'\x1b]%d;?\x07' % _n)      # OSC 10-19 special colour slots
+    for _sel in (b'c', b'p', b's', b'0', b'7'):
+        seq.append(b'\x1b]52;' + _sel + b';?\x07')   # OSC 52 clipboard READ
+    for _cap in ('Co', 'RGB', 'TN', 'name', 'bce', 'colors', 'cr', 'kbs', 'kDC',
+                 'kEND', 'kHOM', 'kLFT', 'kNXT', 'kPRV', 'kRIT', 'khome', 'kend',
+                 'smcup', 'rmcup', 'smkx', 'rmkx', 'Se', 'Ss', 'Cr', 'Cs', 'u6',
+                 'u7', 'u8', 'u9'):
+        seq.append(b'\x1bP+q' + _cap.encode().hex().encode() + b'\x1b\\')  # XTGETTCAP
+    for _s in (b'm', b'r', b's', b'"q', b'"p', b' q', b't', b'$}', b'$~'):
+        seq.append(b'\x1bP$q' + _s + b'\x1b\\')      # DECRQSS status-string request
+    for _t in (11, 13, 14, 18, 19, 20, 21):
+        seq.append(b'\x1b[%dt' % _t)           # XTWINOPS size/position/title reports
+    seq += [b'\x1b[>q', b'\x1b[?u', b'\x05']    # XTVERSION, kitty query, ENQ
+    return list(dict.fromkeys(seq))            # distinct, order-preserving
+
+
+_QUERIES = _spec_surface_corpus()
 
 
 for _label, _mk in (('CLI', lambda: SecureTerminal(command='/bin/cat')),
@@ -2692,14 +2717,24 @@ for _label, _mk in (('CLI', lambda: SecureTerminal(command='/bin/cat')),
     for _q in _QUERIES:
         feed_output(_ro, _q)
     ok(_rosent == [],
-       'reflection oracle (%s): no query is answered back to the pty (got %r)'
-       % (_label, _rosent))
+       'reflection oracle (%s): none of the %d spec-surface queries is answered '
+       'back to the pty (got %r)' % (_label, len(_QUERIES), _rosent))
+    if _label == 'CLI':
+        ok(_ro._screen is None,           # pylint: disable=protected-access
+           'reflection oracle (CLI): the pyte screen is never instantiated '
+           '(no VT state to attack)')
     # Even if pyte itself tried to reply, our screen never wires the channel:
     if _ro._screen is not None:            # pylint: disable=protected-access
         _ro._screen.write_process_input('should-go-nowhere')
         ok(_rosent == [], 'reflection oracle (%s): pyte write_process_input reaches no pty'
            % _label)
     _ro.close()
+
+# lock the corpus size so the "N spec-surface sequences" figure on the site and the
+# test cannot silently drift apart (compatibility + ai-review pages cite this count)
+ok(len(_QUERIES) == 387,
+   'the reflection spec-surface corpus is 387 distinct query sequences (got %d)'
+   % len(_QUERIES))
 
 # ADVERSARIAL reflection oracle: a hostile file/program does not just emit a
 # query -- it can ALSO emit output that tries to OPEN a reply first (fake the
