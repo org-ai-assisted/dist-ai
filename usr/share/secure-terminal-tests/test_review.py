@@ -4,12 +4,13 @@
 
 ## AI-Assisted
 
-## Tests for secure_terminal.review -- the in-window paste-review bar shown when a
-## paste carries unicode or control characters.
-## Built and driven offscreen: the summary, the four read-only preview panes that
-## reuse the terminal renderer, the Detail toggle, the countdown that gates BOTH
-## send buttons, and that a choice is dispatched to the tab that held the paste.
-## SKIPs (exit 77) when PyQt6 is unavailable.
+## Tests for secure_terminal.review -- the in-window review bar shown when text
+## crossing the terminal boundary (a paste IN, or a copy OUT) carries unicode or
+## control characters. Built and driven offscreen: the summary, the four read-only
+## preview panes that reuse the terminal renderer, the Detail toggle, the countdown
+## that gates BOTH send buttons, that a choice is dispatched to the tab that held
+## the text, and that the copy direction relabels the buttons + dispatches to the
+## copy path. SKIPs (exit 77) when PyQt6 is unavailable.
 
 import os
 import sys
@@ -20,7 +21,7 @@ try:
     from PyQt6.QtWidgets import QApplication, QWidget, QPlainTextEdit
     from PyQt6.QtGui import QKeyEvent
     from PyQt6.QtCore import Qt
-    from secure_terminal.review import PasteReviewBar
+    from secure_terminal.review import ReviewBar
 except Exception as exc:  # fail closed: a required dependency must not silently skip
     sys.stderr.write('secure-terminal-tests: FAIL missing dependency: %s\n' % exc)
     sys.exit(1)
@@ -54,11 +55,14 @@ class _FakeTerm:
         return 'Hack'
 
     def dispatch_pending_paste(self, action):
-        self.dispatched.append(action)
+        self.dispatched.append(('paste', action))
+
+    def dispatch_pending_copy(self, action):
+        self.dispatched.append(('copy', action))
 
 
 _win = QWidget()
-_bar = PasteReviewBar(_win)
+_bar = ReviewBar(_win)
 _term = _FakeTerm()
 # a paste hiding a bidi override + a Cyrillic homoglyph
 _raw = 'pay' + chr(0x0430) + 'l' + chr(0x202E) + '\n'
@@ -91,11 +95,11 @@ ok(_bar._stripped.isEnabled() and _bar._unicode.isEnabled() and _bar._reject.isE
 
 # --- a choice dispatches to the tab that held the paste, exactly once ----------
 _bar._choose('stripped')
-eq(_term.dispatched, ['stripped'], 'a button choice is dispatched to the holding tab')
+eq(_term.dispatched, [('paste', 'stripped')], 'a button choice is dispatched to the holding tab')
 # single-shot: a second choose (a double-click, or Esc right after) is a no-op, so
 # the same held paste is never dispatched twice
 _bar._choose('unicode')
-eq(_term.dispatched, ['stripped'],
+eq(_term.dispatched, [('paste', 'stripped')],
    'a second choice after dispatch is a no-op (single-shot: dispatched exactly once)')
 
 # --- each new review opens with Detail collapsed ------------------------------
@@ -130,7 +134,19 @@ _bar.show_review(_term3, _raw, 0)
 _esc = QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Escape,
                  Qt.KeyboardModifier.NoModifier)
 _bar.keyPressEvent(_esc)
-eq(_term3.dispatched, ['reject'], 'Esc rejects the held paste')
+eq(_term3.dispatched, [('paste', 'reject')], 'Esc rejects the held paste')
+
+# --- copy direction: relabelled buttons + dispatch to the copy path -----------
+_term_c = _FakeTerm()
+_bar.show_review(_term_c, _raw, 0, 'copy')
+eq(_bar._reject.text(), "Don't copy", 'copy review: Reject becomes "Don\'t copy"')
+ok(_bar._stripped.text() == 'Copy stripped' and _bar._unicode.text() == 'Copy with unicode',
+   'copy review: the action buttons are relabelled for copy')
+ok('copy' in _bar._summary.text().lower() and 'clipboard' in _bar._summary.text().lower(),
+   'copy review: the summary is phrased for the clipboard direction')
+_bar._choose('stripped')
+eq(_term_c.dispatched, [('copy', 'stripped')],
+   'copy review dispatches to the tab\'s copy path, not the paste path')
 
 # --- hide_review tears down cleanly -------------------------------------------
 _bar.hide_review()

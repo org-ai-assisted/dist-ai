@@ -6,7 +6,7 @@
 
 """Render the in-window paste-review bar to a PNG, headless and deterministic.
 
-The bar is the real one the app shows -- secure_terminal.review.PasteReviewBar --
+The bar is the real one the app shows -- secure_terminal.review.ReviewBar --
 fed a representative hostile paste (a curl | bash line whose domain and shell name
 hide Cyrillic homoglyphs, plus a zero-width and a bidi override), with its Detail
 panes expanded, so the summary, the four read-only preview panes (which reuse the
@@ -34,7 +34,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout   # noqa: E402
 from PyQt6.QtGui import QPalette, QColor                         # noqa: E402
 
-from secure_terminal.review import PasteReviewBar               # noqa: E402
+from secure_terminal.review import ReviewBar               # noqa: E402
 
 # A paste that looks like an ordinary install one-liner but hides look-alikes and
 # invisibles: the 'a' in "example" and in "bash" are Cyrillic (U+0430), there is a
@@ -86,7 +86,7 @@ def main(argv):
     host = QWidget()
     layout = QVBoxLayout(host)
     layout.setContentsMargins(0, 0, 0, 0)
-    bar = PasteReviewBar(host)
+    bar = ReviewBar(host)
     layout.addWidget(bar)
     bar.show_review(_Term(), PAYLOAD, COUNTDOWN_SECONDS)
     bar._detail_btn.setChecked(True)        # expand the preview panes for the shot

@@ -962,6 +962,47 @@ p.apply_paste_warn('bogus')
 eq(p.current_paste_warn(), 'unicode', 'an unknown paste-warn mode falls back to if-unicode')
 p.apply_paste_warn('unicode')
 
+# --- copy review (text going OUT to the clipboard; shared bar, own setting) ----
+from PyQt6.QtGui import QGuiApplication as _QGA3          # noqa: E402
+cp = SecureTerminal(command='/bin/cat')
+cp._mode = 'show'                                        # Show keeps real glyphs
+eq(cp.current_copy_warn(), 'unicode', 'a new terminal defaults copy_warn to if-unicode')
+_creq = []
+cp.copy_review_requested.connect(lambda raw, delay: _creq.append((raw, delay)))
+# put a homoglyph line into the doc and select it
+feed_output(cp, ('git ' + chr(0x0430) + 'dd\n').encode('utf-8'))
+cp.selectAll()
+_QGA3.clipboard().setText('OLD')
+cp.copy()
+ok(cp.review_pending() and len(_creq) == 1 and _QGA3.clipboard().text() == 'OLD',
+   'a copy carrying unicode is HELD for review -- nothing reaches the clipboard yet')
+# copy stripped -> ASCII only on the clipboard
+cp.dispatch_pending_copy('stripped')
+eq(_QGA3.clipboard().text(), 'git dd\n', 'copy stripped puts ASCII only (homoglyph dropped)')
+# copy with unicode -> keeps the printable homoglyph
+cp.selectAll(); cp.copy(); cp.dispatch_pending_copy('unicode')
+eq(_QGA3.clipboard().text(), 'git ' + chr(0x0430) + 'dd\n',
+   'copy with unicode keeps the printable homoglyph')
+# reject -> the clipboard is left untouched
+_QGA3.clipboard().setText('KEEP'); cp.selectAll(); cp.copy()
+cp.dispatch_pending_copy('reject')
+eq(_QGA3.clipboard().text(), 'KEEP', 'a rejected copy leaves the clipboard unchanged')
+# 'never' copies as displayed without a prompt; 'always' reviews even plain ASCII
+cp.apply_copy_warn('never')
+_creq.clear(); _QGA3.clipboard().setText('X'); cp.selectAll(); cp.copy()
+ok(not _creq and _QGA3.clipboard().text().startswith('git '),
+   'never mode: a copy goes straight to the clipboard, no review')
+_ascii = SecureTerminal(command='/bin/cat'); _ascii.apply_copy_warn('always')
+_areq = []
+_ascii.copy_review_requested.connect(lambda raw, delay: _areq.append((raw, delay)))
+feed_output(_ascii, b'plain ascii\n'); _ascii.selectAll(); _ascii.copy()
+ok(len(_areq) == 1, 'always mode: even a plain-ASCII copy is reviewed')
+# a copy review carries NO countdown (copy is not executed): delay is 0
+eq(_areq[0][1], 0, 'copy review requests delay 0 (no anti-fat-finger gate needed)')
+_ascii.dispatch_pending_copy('reject')
+cp.apply_copy_warn('bogus')
+eq(cp.current_copy_warn(), 'unicode', 'an unknown copy-warn mode falls back to if-unicode')
+
 # --- TUI mode (pyte is a required dependency: fail closed, do not skip) -------
 ok(tui_available(), 'python3-pyte available for TUI mode')
 if tui_available():

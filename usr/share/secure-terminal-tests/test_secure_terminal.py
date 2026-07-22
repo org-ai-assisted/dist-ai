@@ -556,6 +556,20 @@ ok(chr(0x202E) not in S.sanitize_paste_unicode('a' + chr(0x202E) + 'b'),
    'unicode paste drops a bidi override')
 eq(S.sanitize_paste_unicode('a\nb'), 'a\rb', 'unicode paste: newline -> CR')
 
+# --- sanitize_clipboard(_unicode): text safe to place on the system clipboard --
+# Like the paste sanitizers but newlines are PRESERVED (clipboard text is
+# multi-line content, not a shell submission).
+eq(S.sanitize_clipboard_unicode('caf' + chr(0x00E9) + '\nx\ty'),
+   'caf' + chr(0x00E9) + '\nx\ty', 'clipboard-unicode keeps printable non-ASCII + nl/tab')
+ok(chr(0x202E) not in S.sanitize_clipboard_unicode('a' + chr(0x202E) + chr(0x200B) + 'b')
+   and chr(0x200B) not in S.sanitize_clipboard_unicode('a' + chr(0x200B) + 'b'),
+   'clipboard-unicode drops bidi/zero-width (the deceptive classes)')
+ok(chr(0x85) not in S.sanitize_clipboard_unicode('a' + chr(0x85) + 'b'),
+   'clipboard-unicode drops a C1 control')
+eq(S.sanitize_clipboard('ex' + chr(0x0430) + 'mple\nok'), 'exmple\nok',
+   'clipboard (ASCII) drops the cyrillic homoglyph, keeps the newline')
+eq(S.sanitize_clipboard('a\x1b[31mb'), 'a[31mb', 'clipboard (ASCII) drops the ESC control')
+
 # --- sanitize_title: program-supplied title / notification -> safe ASCII ------
 eq(S.sanitize_title('My Build'), 'My Build', 'title plain ascii')
 eq(S.sanitize_title('ev' + BIDI + 'il'), 'evil', 'title strips bidi')
