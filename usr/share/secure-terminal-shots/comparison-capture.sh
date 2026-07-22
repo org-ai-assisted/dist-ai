@@ -12,11 +12,11 @@
 ## reproduce it), and screenshots the DECORATED window (title bar included):
 ##   Case A (random) : head -c 1200 /dev/random   -- genuine random data, sized so
 ##                     the returned prompt stays visible below the garble.
-##   Case B (crafted): cat crafted.log            -- an OSC-0 title hijack plus a
+##   Case B (crafted): cat hostile.log            -- an OSC-0 title hijack plus a
 ##                     stuck colour and a DEC line-drawing charset shift, none reset
-##                     (generated deterministically by hostile-script.sh, so the
+##                     (generated deterministically by make-hostile-log.sh, so the
 ##                     shots use the exact bytes that script emits).
-##   Case C (homoglyph): cat homoglyph.txt          -- an install one-liner whose
+##   Case C (homoglyph): cat homoglyph.log          -- an install one-liner whose
 ##                     domain carries a Cyrillic look-alike (U+0430 for Latin a), so
 ##                     a traditional terminal shows a clean "example.com". secure-
 ##                     terminal is shot in TWO modes: box (look-alike -> a coloured
@@ -79,8 +79,8 @@ mkdir --parents -- "${HOME}" "${XDG_CONFIG_HOME}/labwc"
 ## Generate the two payloads from their deterministic ASCII source scripts (so
 ## this subsystem is self-contained and its source stays ASCII -- the non-ASCII
 ## homoglyph byte exists only in the generated file).
-"${here}/hostile-script.sh"   > "${HOME}/crafted.log"
-"${here}/homoglyph-script.sh" > "${HOME}/homoglyph.txt"
+"${here}/make-hostile-log.sh"   > "${HOME}/hostile.log"
+"${here}/make-homoglyph-log.sh" > "${HOME}/homoglyph.log"
 cat > "${HOME}/.strc" <<'RC'
 PS1='user@host:~$ '
 RC
@@ -113,19 +113,19 @@ cat > "${XDG_CONFIG_HOME}/labwc/rc.xml" <<XML
 </labwc_config>
 XML
 
-## launch each emulator FROM ${HOME} so a plain "cat crafted.log" finds it.
+## launch each emulator FROM ${HOME} so a plain "cat hostile.log" finds it.
 cd "${HOME}"
 
 cmd_for() {  ## $1=case
    case "$1" in
       crafted)
-         printf 'cat crafted.log'
+         printf 'cat hostile.log'
          ;;
       random)
          printf 'head -c %s %s' "${RANDOM_BYTES}" "${RANDOM_SOURCE}"
          ;;
       homoglyph)
-         printf 'cat homoglyph.txt'
+         printf 'cat homoglyph.log'
          ;;
    esac
 }

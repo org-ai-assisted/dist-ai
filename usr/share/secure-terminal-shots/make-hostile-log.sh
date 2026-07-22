@@ -20,9 +20,11 @@
 ## \033 = ESC, \007 = BEL. Deterministic: same bytes every run, so anyone can
 ## reproduce the comparison exactly.
 ##
-## This script is the human-readable SOURCE for the committed hostile-log.txt
-## (the actual demo/capture artifact). After editing it, regenerate the file:
-##   ./hostile-script.sh > hostile-log.txt
+## This is the ASCII SOURCE that CREATES the hostile log. The demo and the capture
+## then `cat hostile.log` -- they DISPLAY the data; they never run a script. (A
+## terminal cannot protect you from running hostile code, only from DISPLAYING
+## hostile data, which is the whole point.) Regenerate the log with:
+##   ./make-hostile-log.sh > hostile.log
 
 set -o errexit
 set -o nounset

@@ -1,6 +1,7 @@
 shots/
-crafted.bin
-random.bin
-# payloads are GENERATED (deterministic) from the *-script.sh sources; not committed
-hostile-log.txt
-homoglyph-log.txt
+shots-wayland/
+# generated hostile-DATA log files (deterministic, from make-*-log.sh); the demo
+# `cat`s these -- it never runs a script. Not committed (they carry raw escape /
+# non-ASCII bytes; the ASCII creators are the committed source).
+hostile.log
+homoglyph.log

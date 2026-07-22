@@ -11,11 +11,12 @@
 ## terminal shows a clean "example.com" while secure-terminal flags the byte. The
 ## command is INSIDE an echo "..." so it is inert -- it only prints, runs nothing.
 ##
-## This script is the human-readable, ASCII SOURCE for the homoglyph payload (the
-## look-alike byte is an \x escape here, so this file stays plain ASCII and the
-## non-ASCII byte exists only in the generated output). Deterministic: same bytes
-## every run. Regenerate the demo file with:
-##   ./homoglyph-script.sh > homoglyph-log.txt
+## This is the ASCII SOURCE that CREATES the homoglyph log (the look-alike byte is
+## an \x escape here, so this file stays plain ASCII; the non-ASCII byte exists
+## only in the generated output). The demo/capture `cat homoglyph.log` -- it only
+## DISPLAYS the data, never runs it. Deterministic: same bytes every run.
+## Regenerate the log with:
+##   ./make-homoglyph-log.sh > homoglyph.log
 
 set -o errexit
 set -o nounset
