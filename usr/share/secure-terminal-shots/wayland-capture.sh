@@ -105,6 +105,13 @@ done
 
 ## native-Wayland set (drops xterm/urxvt/st -- no Wayland support) + secure-terminal
 wayland_terminals=(konsole qterminal xfce4-terminal mate-terminal alacritty kitty secure-terminal)
+## X11-only set, run via labwc's nested Xwayland. NOTE: xterm and urxvt do NOT map
+## reliably here -- labwc's wlroots XWM fails to read their window properties in this
+## double-nested headless setup (Xvfb -> labwc-X11-backend -> Xwayland), so grim
+## captures an empty frame (the run flags it: "window did not render"). st is minimal
+## and maps fine, so it is the reliable X11 representative. An X11-only terminal's
+## hostile-DATA rendering is display-server-independent, so for production xterm/urxvt
+## comparison shots use the pure-X11 path (comparison-capture.sh), not this tool.
 x11_terminals=(xterm urxvt st)
 
 mkdir --parents -- "${out_dir}"
