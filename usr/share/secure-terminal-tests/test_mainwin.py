@@ -67,7 +67,9 @@ win.new_tab()
 
 # --- window dialogs: built and shown with exec() stubbed ----------------------
 _orig_exec = QDialog.exec
-QDialog.exec = lambda _self: int(QDialog.DialogCode.Accepted)
+_dialogs = []
+QDialog.exec = lambda _self: (_dialogs.append(_self),
+                              int(QDialog.DialogCode.Accepted))[1]
 try:
     win.show_about()
     ok(True, 'show_about builds and shows')
@@ -75,6 +77,15 @@ try:
     ok(True, 'show_locations builds and shows the paths dialog')
     win.show_global_settings()
     ok(True, 'show_global_settings applies the chosen defaults on accept')
+    # every dialog's descriptive text must be selectable so it can be copied
+    from PyQt6.QtWidgets import QLabel as _QLabelD           # noqa: E402
+    from PyQt6.QtCore import Qt as _QtD                      # noqa: E402
+    _seld = _QtD.TextInteractionFlag.TextSelectableByMouse
+    for _dlg in _dialogs:
+        _dlabels = _dlg.findChildren(_QLabelD)
+        ok(bool(_dlabels) and all(l.textInteractionFlags() & _seld
+                                  for l in _dlabels),
+           'dialog "%s" labels are all selectable/copyable' % _dlg.windowTitle())
     QDialog.exec = lambda _self: int(QDialog.DialogCode.Rejected)
     win.show_global_settings()
     ok(True, 'show_global_settings: cancel returns without applying')
