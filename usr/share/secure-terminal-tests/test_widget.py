@@ -34,7 +34,6 @@ try:
     from PyQt6.QtGui import QKeyEvent, QColor
     from PyQt6.QtCore import QEvent, Qt, QTimer, QEventLoop, QMimeData
     from secure_terminal.terminal import SecureTerminal, tui_available
-    from secure_terminal import dialog as st_dialog
 except Exception as exc:  # pylint: disable=broad-except
     # Fail closed: a missing test dependency (PyQt6, pyte, the module) must not
     # be silently skipped.
@@ -826,68 +825,79 @@ ok(_hf.background().style() == Qt.BrushStyle.NoBrush
    or _hf.foreground().color().name() != _hf.background().color().name(),
    'marking: an app colour on a box is contrast-guarded -- fg never equals bg')
 
-# --- paste gating -------------------------------------------------------------
+# --- paste gating (async review: hold, then dispatch a choice) ----------------
 p = SecureTerminal(command='/bin/cat')
 psent = spy_writes(p)
+# a risky paste is HELD and a review requested; nothing is sent until a choice is
+# dispatched (no blocking modal). Track the requests via the signal.
+_reviews = []
+p.paste_review_requested.connect(lambda raw, delay: _reviews.append((raw, delay)))
 mime = QMimeData()
 mime.setText('echo hi\n')
 p.insertFromMimeData(mime)
 eq(psent, [b'echo hi\r'], 'clean paste sent directly')
+eq(_reviews, [], 'a clean paste raises no review')
 psent.clear()
-# a paste with a homoglyph (Cyrillic a) plus a bidi override: three choices
+# a paste with a homoglyph (Cyrillic a) plus a bidi override: held for review
 mime2 = QMimeData()
 mime2.setText('pay' + chr(0x0430) + 'l' + chr(0x202E) + '\n')
-st_dialog.PasteWarningDialog.confirm = staticmethod(lambda *a, **k: 'reject')
 p.insertFromMimeData(mime2)
+eq(psent, [], 'a risky paste is held -- nothing reaches the shell until a choice')
+ok(p.review_pending() and len(_reviews) == 1, 'a risky paste raises exactly one review')
+# reject -> nothing sent, pending cleared
+p.dispatch_pending_paste('reject')
 eq(psent, [], 'rejected paste sends nothing')
-st_dialog.PasteWarningDialog.confirm = staticmethod(lambda *a, **k: 'stripped')
+ok(not p.review_pending(), 'reject clears the held paste')
+# stripped -> ASCII only
 p.insertFromMimeData(mime2)
+p.dispatch_pending_paste('stripped')
 eq(psent, [b'payl\r'], 'stripped paste sends ASCII only (homoglyph + bidi dropped)')
 psent.clear()
-st_dialog.PasteWarningDialog.confirm = staticmethod(lambda *a, **k: 'unicode')
+# unicode -> keeps the printable homoglyph, still drops the bidi override
 p.insertFromMimeData(mime2)
+p.dispatch_pending_paste('unicode')
 eq(psent, [('pay' + chr(0x0430) + 'l\r').encode('utf-8')],
    'unicode paste keeps the printable homoglyph but still drops the bidi override')
 psent.clear()
+# dispatch with nothing pending is a no-op -- a stale paste can never be re-sent
+p.dispatch_pending_paste('unicode')
+eq(psent, [], 'dispatch with no held paste sends nothing')
 
 # --- paste warning: three modes (always / if-unicode default / never) ---------
 eq(p.current_paste_warn(), 'unicode',
    'a new terminal defaults to warning only when a paste carries unicode/control')
-# instrument the dialog: record every time it is consulted, and always allow as-is
-_pw_calls = []
-def _pw_spy(*a, **k):
-    _pw_calls.append(True)
-    return 'unicode'
-st_dialog.PasteWarningDialog.confirm = staticmethod(_pw_spy)
 _clean = QMimeData()
 _clean.setText('echo ok\n')
 _dirty = QMimeData()
 _dirty.setText('echo ' + chr(0x0430) + '\n')
 
-# default 'unicode': a clean ASCII paste bypasses the dialog; a unicode one prompts.
-_pw_calls.clear(); psent.clear()
+# default 'unicode': a clean ASCII paste bypasses review; a unicode one holds.
+_reviews.clear(); psent.clear()
 p.insertFromMimeData(_clean)
-eq(_pw_calls, [], 'if-unicode mode: a clean ASCII paste is not questioned')
+eq(_reviews, [], 'if-unicode mode: a clean ASCII paste is not questioned')
 eq(psent, [b'echo ok\r'], 'if-unicode mode: the clean paste goes straight through')
-_pw_calls.clear()
+_reviews.clear()
 p.insertFromMimeData(_dirty)
-eq(len(_pw_calls), 1, 'if-unicode mode: a unicode paste is questioned')
+eq(len(_reviews), 1, 'if-unicode mode: a unicode paste is questioned (held)')
+p.dispatch_pending_paste('reject')
 
-# 'never': not even a unicode/control paste prompts -- it is silently sanitized to
+# 'never': not even a unicode/control paste holds -- it is silently sanitized to
 # ASCII (the safest strip; opting out of the prompt does not opt out of safety).
 p.apply_paste_warn('never')
 eq(p.current_paste_warn(), 'never', 'apply_paste_warn switches the mode')
-_pw_calls.clear(); psent.clear()
+_reviews.clear(); psent.clear()
 p.insertFromMimeData(_dirty)
-eq(_pw_calls, [], 'never mode: even a unicode paste is not questioned')
+eq(_reviews, [], 'never mode: even a unicode paste is not questioned')
 eq(psent, [b'echo \r'],
    'never mode: the unicode paste is silently stripped to ASCII, not sent raw')
 
-# 'always': even a clean ASCII paste prompts.
+# 'always': even a clean ASCII paste holds for review.
 p.apply_paste_warn('always')
-_pw_calls.clear(); psent.clear()
+_reviews.clear(); psent.clear()
 p.insertFromMimeData(_clean)
-eq(len(_pw_calls), 1, 'always mode: even a clean ASCII paste is questioned')
+eq(len(_reviews), 1, 'always mode: even a clean ASCII paste is questioned (held)')
+eq(psent, [], 'always mode: nothing sent until a choice')
+p.dispatch_pending_paste('reject')
 
 # an unknown mode falls back to the safe default rather than trusting it.
 p.apply_paste_warn('bogus')
@@ -3119,6 +3129,7 @@ ok(b'ls' in b''.join(_h2) and b'\x15' in _h2,
 
 # --- paste: an all-control paste sanitizes to nothing; bracketed paste in TUI --
 _pt = SecureTerminal(command='/bin/cat')
+_pt.apply_paste_warn('never')               # test the sanitize+bracket path directly
 _pts = spy_writes(_pt)
 _pmime = QMimeData()
 _pmime.setText('\x00\x01\x02')              # only control bytes -> stripped to ''

