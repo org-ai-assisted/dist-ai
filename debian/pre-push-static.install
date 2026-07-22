@@ -1,1 +1,2 @@
 usr/bin/pre-push-static usr/bin/
+usr/bin/comments-audit usr/bin/

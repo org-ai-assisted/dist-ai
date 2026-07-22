@@ -1215,6 +1215,33 @@ warn_worktree_skew() {
    done
 }
 
+## R-151 comment auditor -- ADVISORY ONLY, never fails the gate. Surfaces
+## comment-paraphrases-code candidates in the changed files for human review
+## (the heuristic produces false positives, so it cannot be a pass/fail check).
+## comments-audit ships beside this gate (dist-ai usr/bin) or installed on PATH.
+check_comments_audit() {
+   local auditor cand out
+   auditor=""
+   for cand in \
+      "$( dirname -- "$( readlink --canonicalize -- "$0" )" )/comments-audit" \
+      '/usr/bin/comments-audit'; do
+      if [ -x "${cand}" ]; then
+         auditor="${cand}"
+         break
+      fi
+   done
+   if [ -z "${auditor}" ]; then
+      note "comments-audit not found; skipping the R-151 comment advisory"
+      return 0
+   fi
+   out="$( "${auditor}" --files "$@" 2>/dev/null || true )"
+   if [ -n "${out}" ] && ! printf '%s\n' "${out}" | grep --quiet -- '0 candidate findings'; then
+      note "R-151 comment-audit candidates (ADVISORY -- review, not a gate failure):"
+      printf '%s\n' "${out}" >&2
+   fi
+   return 0
+}
+
 run_file_checks() {
    ## Run all file-content checks given the current global
    ## base_ref. Caller controls base_ref (single union pass in
@@ -1278,6 +1305,7 @@ run_file_checks() {
       fi
       check_ascii_files "${file_list[@]}"
       check_precommit_hooks "${file_list[@]}"
+      check_comments_audit "${file_list[@]}"
    fi
 }
 
