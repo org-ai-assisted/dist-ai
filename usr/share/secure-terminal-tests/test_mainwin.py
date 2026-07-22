@@ -548,6 +548,26 @@ win._restore_tab({'text': 'hi', 'theme': 'dark', 'zoom': 'notanint',
 win._restore_tab({'allow_title': True, 'bell': 'audible'})   # legacy pre-OSC path
 ok(True, '_restore_tab rebuilds a tab and tolerates bad zoom/scrollback values')
 
+# a restored tab spawns its shell in the SAVED cwd (bug: pwd was not restored)
+_rcwd = tempfile.mkdtemp(prefix='st-restore-cwd-')
+win._restore_tab({'text': '', 'cwd': _rcwd, 'osc': {}})
+_rterm = win.current()
+_rok = False
+for _ in range(60):
+    try:
+        if os.path.realpath(os.readlink('/proc/%d/cwd' % _rterm._pid)) \
+                == os.path.realpath(_rcwd):
+            _rok = True
+            break
+    except OSError:
+        pass
+    pump(10)
+ok(_rok, '_restore_tab spawns the restored tab in its saved cwd')
+# a vanished saved cwd still restores (falls back, no crash)
+win._restore_tab({'text': '', 'cwd': '/no/such/dir/for/restore', 'osc': {}})
+ok(win.current()._pid is not None,
+   '_restore_tab with a vanished saved cwd still spawns a shell')
+
 # bind the single-instance listening socket (isolated runtime dir)
 win.start_instance_server('coverage-group')
 ok(True, 'start_instance_server binds a listening socket')

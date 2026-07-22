@@ -641,6 +641,37 @@ key(cz, Qt.Key.Key_C, mods=Qt.KeyboardModifier.ControlModifier)
 _z = cz._absorb_caret('\r\nprompt%')                 # a shell (zsh) that echoes nothing
 ok('^C' not in _z, 'nothing removed when the shell does not echo ^C')
 eq(cz.toPlainText().count('^C'), 1, 'local ^C preserved for a non-echoing shell')
+
+# a restored session tab spawns its shell in the SAVED working directory (cwd),
+# so restore returns you to where you were (bug: pwd was not restored).
+import tempfile as _tfcwd                                  # noqa: E402
+
+
+def _wait_cwd(pid, target, tries=60):
+    _rt = os.path.realpath(target)
+    for _ in range(tries):
+        try:
+            if os.path.realpath(os.readlink('/proc/%d/cwd' % pid)) == _rt:
+                return True
+        except OSError:
+            pass
+        pump(10)                       # let the forked child chdir + exec
+    return False
+
+
+_cwd_dir = _tfcwd.mkdtemp(prefix='st-cwd-')
+_cwt = SecureTerminal(command='/bin/cat', cwd=_cwd_dir)
+ok(_wait_cwd(_cwt._pid, _cwd_dir), 'a spawned shell starts in the requested cwd')
+eq(os.path.realpath(_cwt.shell_cwd()), os.path.realpath(_cwd_dir),
+   'shell_cwd reports the shell working directory')
+_cwt.close()
+# a vanished cwd must not break the spawn -- it falls back to the inherited dir
+_gone = _tfcwd.mkdtemp(prefix='st-gone-')
+os.rmdir(_gone)
+_cwg = SecureTerminal(command='/bin/cat', cwd=_gone)
+pump(30)
+ok(_cwg._pid is not None, 'a vanished saved cwd still spawns a shell (fallback)')
+_cwg.close()
 # regression: output that fills the reported width hard-wraps (real autowrap), so
 # a shell's width-padded end-of-line marker (zsh PROMPT_SP / PROMPT_EOL_MARK) and
 # the following prompt do not collapse onto one logical line -- which lost the

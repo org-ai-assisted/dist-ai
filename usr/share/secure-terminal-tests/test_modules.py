@@ -195,6 +195,14 @@ eq([t.get('name') for t in _loaded], ['one', 'two'],
 eq(_loaded[0].get('text'), 'hello\nworld',
    'session: a tab scrollback is restored from its own log file')
 
+# a tab's working directory round-trips through the index (so restore can cd back)
+session.save([{'name': 'w', 'cwd': '/known/work/dir', 'text': ''}])
+eq(session.load()[0].get('cwd'), '/known/work/dir',
+   'session: a tab cwd is saved and restored in the index')
+session.save([{'name': 'one', 'text': 'hello\nworld'},
+              {'name': 'two', 'text': 'second'}])   # restore the two-tab fixture
+_loaded = session.load()
+
 # shrinking the session drops the stale log of the removed tab
 session.save([{'name': 'only', 'text': 'x'}])
 ok(not os.path.exists(os.path.join(session._state_dir(), 'tab-1.log')),
