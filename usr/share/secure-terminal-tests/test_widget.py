@@ -228,6 +228,24 @@ fs.advise_signal.connect(_fs_adv.append)
 feed_output(fs, b'\x1b[?1049h\x1b[2Jfull screen app')
 ok(len(_fs_adv) == 1 and 'TUI' in _fs_adv[0],
    'a full-screen program that clears raises the TUI advisory, not the clear notice')
+# and a LATER clear from that still-active full-screen program (alt screen already
+# entered in an earlier chunk, so `entered` is False now) must also stay quiet.
+feed_output(fs, b'\x1b[2Jredraw')
+ok(len(_fs_adv) == 1,
+   'a clear while a full-screen program is already on the alt screen raises no clear notice')
+
+# --- render-only preview: re-render safe, and no formatting leak between shows -
+pv = SecureTerminal(preview=True)
+pv.render_preview('hello\u00e9', mode='detail', markings=True)
+ok(pv.toPlainText(), 'a preview renders content')
+eq(pv._raw, 'hello\u00e9', 'render_preview retains the text as _raw (not blanked)')
+pv.apply_mode('box')                        # re-renders from _raw; _raw='' would blank it
+ok(pv.toPlainText(), 'a mode change re-renders the preview from _raw instead of blanking it')
+# a preview whose text left an unclosed SGR must not bleed into the next preview
+pv.render_preview('a\x1b[31mb', mode='show', markings=False)
+pv.render_preview('plain', mode='show', markings=False)
+eq(pv._sgr, {'fg': None, 'bg': None, 'bold': False},
+   'render_preview resets SGR, so a prior preview\'s formatting does not leak')
 # Double-clicking a neutralized character opens the inspect popup; its Copy button
 # must place the \uXXXX ESCAPE on the clipboard, never the raw glyph -- copying a
 # bidi override or homoglyph as-is is the exact hazard this terminal guards against

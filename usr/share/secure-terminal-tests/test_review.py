@@ -89,9 +89,24 @@ ok(not _bar._panes_host.isVisibleTo(_bar), 'toggling Detail off hides the panes 
 ok(_bar._stripped.isEnabled() and _bar._unicode.isEnabled() and _bar._reject.isEnabled(),
    'with no delay all three buttons are enabled')
 
-# --- a choice dispatches to the tab that held the paste -----------------------
+# --- a choice dispatches to the tab that held the paste, exactly once ----------
 _bar._choose('stripped')
 eq(_term.dispatched, ['stripped'], 'a button choice is dispatched to the holding tab')
+# single-shot: a second choose (a double-click, or Esc right after) is a no-op, so
+# the same held paste is never dispatched twice
+_bar._choose('unicode')
+eq(_term.dispatched, ['stripped'],
+   'a second choice after dispatch is a no-op (single-shot: dispatched exactly once)')
+
+# --- each new review opens with Detail collapsed ------------------------------
+_term_d = _FakeTerm()
+_bar.show_review(_term_d, _raw, 0)
+_bar._detail_btn.setChecked(True)           # user expands Detail on this review
+ok(_bar._panes_host.isVisibleTo(_bar), 'Detail is expanded on this review')
+_bar._choose('reject')
+_bar.show_review(_term_d, _raw, 0)          # a later review must reopen collapsed
+ok(not _bar._detail_btn.isChecked() and not _bar._panes_host.isVisibleTo(_bar),
+   'a new review opens collapsed, not exposing the next paste without a toggle')
 
 # --- the countdown gates BOTH send buttons until it elapses -------------------
 _term2 = _FakeTerm()
