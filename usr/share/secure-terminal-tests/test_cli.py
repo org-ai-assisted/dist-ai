@@ -158,6 +158,14 @@ ok(b'<U+200B>' in _o2, 'reveal mode shows the <U+XXXX> badge for a zero-width sp
 _o3, _ = run_in_pty(['--mode', 'box', '--', 'printf', 'x\u200by'])
 ok(b'x_y' in _o3, 'box mode maps the neutralised byte to _')
 
+# --- child environment: dumb terminal + no-op pager ---------------------------
+# the CLI wrapper interprets no escapes, so it advertises a dumb terminal and
+# defaults PAGER to a no-op cat (compatibility page: TERM=dumb, PAGER=cat)
+os.environ.pop('PAGER', None)
+_oenv, _ = run_in_pty(['--', 'sh', '-c', 'printf T=$TERM,P=$PAGER,'])
+ok(b'T=dumb,' in _oenv, 'the cli wrapper child sees TERM=dumb')
+ok(b'P=cat,' in _oenv, 'the cli wrapper child sees PAGER=cat by default')
+
 # --- exit-code propagation ----------------------------------------------------
 eq(run_in_pty(['--', 'sh', '-c', 'exit 7'])[1], 7, 'a non-zero exit is propagated')
 eq(run_in_pty(['--', 'sh', '-c', 'kill -TERM $$'])[1], 128 + signal.SIGTERM,

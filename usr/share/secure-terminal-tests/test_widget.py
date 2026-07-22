@@ -2425,6 +2425,58 @@ while _time.monotonic() - _cs < 1.5:
 _cte.close()
 ok(b'C=truecolor' in _cbuf, 'the child gets COLORTERM=truecolor')
 
+
+# --- child environment scrub (fingerprint vars, LINES/COLUMNS, PAGER default) --
+def _child_env_out(cmd, needle, secs=1.5):
+    """Spawn a CLI child running `cmd`, read its raw output until `needle` (bytes)
+    or `secs` elapse, return the bytes -- asserts what the child actually inherits."""
+    import select as _selce
+    _t = SecureTerminal(command=cmd)
+    _fcntl2.fcntl(_t._fd, _fcntl2.F_SETFL,
+                  _fcntl2.fcntl(_t._fd, _fcntl2.F_GETFL) | os.O_NONBLOCK)
+    _b = b''
+    _s = _time.monotonic()
+    while _time.monotonic() - _s < secs:
+        _rr, _, _ = _selce.select([_t._fd], [], [], 0.05)
+        if _t._fd in _rr:
+            try:
+                _c = os.read(_t._fd, 4096)
+            except OSError:
+                break
+            if not _c:
+                break
+            _b += _c
+            if needle in _b:
+                break
+    _t.close()
+    return _b
+
+
+# preload every fingerprint var terminal.py drops + a stale LINES/COLUMNS, so any
+# leak is visible in the child's `env`
+_fp_vars = ('TERM_PROGRAM', 'TERM_PROGRAM_VERSION', 'VTE_VERSION',
+            'KONSOLE_VERSION', 'KONSOLE_DBUS_SERVICE', 'KONSOLE_DBUS_SESSION',
+            'WT_SESSION', 'WT_PROFILE_ID', 'ITERM_SESSION_ID', 'ITERM_PROFILE',
+            'KITTY_WINDOW_ID', 'KITTY_PID', 'ALACRITTY_WINDOW_ID')
+for _fv in _fp_vars:
+    os.environ[_fv] = 'leak-' + _fv
+os.environ['LINES'] = '99'
+os.environ['COLUMNS'] = '222'
+# leading newline so a first-line var is matched by the "\nNAME=" test too
+_envout = b'\n' + _child_env_out(['sh', '-c', 'env; printf ENVEND'], b'ENVEND')
+for _fv in _fp_vars:
+    ok(('\n' + _fv + '=').encode() not in _envout,
+       'child does not inherit fingerprint var ' + _fv)
+ok(b'\nLINES=' not in _envout,
+   'child does not inherit a stale LINES (real size comes from TIOCSWINSZ)')
+ok(b'\nCOLUMNS=' not in _envout, 'child does not inherit a stale COLUMNS')
+for _fv in _fp_vars + ('LINES', 'COLUMNS'):
+    os.environ.pop(_fv, None)
+# PAGER defaults to cat when the parent set none
+os.environ.pop('PAGER', None)
+_pgr = _child_env_out(['sh', '-c', 'printf P=$PAGER,'], b'P=')
+ok(b'P=cat,' in _pgr, 'the child gets PAGER=cat by default')
+
 # --- synchronized output (DECSET 2026): hold the paint between begin/end ------
 _sy = SecureTerminal(command='/bin/cat', tui=True)
 _sy._make_screen()
