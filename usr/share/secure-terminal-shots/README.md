@@ -36,7 +36,7 @@ on an LXQt desktop. It writes to its own `shots/`; copy those to the site's
 
 ### The two payloads (inputs to the comparison)
 
-- **Case A - random.** `head -c 1200 /dev/urandom`: genuine random data, no
+- **Case A - random.** `head -c 1200 /dev/random`: genuine random data, no
   crafted escapes.
 - **Case B - a crafted hostile log.** `hostile-log.txt` carries, mid-stream, the
   escapes real hostile output can carry: `OSC 0` (silently rewrites the window

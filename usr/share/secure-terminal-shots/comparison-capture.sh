@@ -10,7 +10,7 @@
 ## TYPES a command into it (so the shot shows the prompt, the command, its output
 ## and the state of the prompt AFTER it -- what a user actually sees, and how to
 ## reproduce it), and screenshots the DECORATED window (title bar included):
-##   Case A (random) : head -c 1200 /dev/urandom  -- genuine random data, sized so
+##   Case A (random) : head -c 1200 /dev/random   -- genuine random data, sized so
 ##                     the returned prompt stays visible below the garble.
 ##   Case B (crafted): cat crafted.log            -- an OSC-0 title hijack plus a
 ##                     stuck colour and a DEC line-drawing charset shift, none reset
@@ -42,8 +42,8 @@
 ## theme, x11-xserver-utils (setxkbmap), xdotool, xprop, ImageMagick. Installs
 ## NOTHING itself (supply-chain hygiene).
 ##
-## Usage:
-##   ST_REPO=/path/to/secure-terminal/checkout ./capture.sh
+## Usage (normally via the wrapper: 'secure-terminal-shots comparison'):
+##   ST_REPO=/path/to/secure-terminal/checkout ./comparison-capture.sh
 ## Deterministic Case B; Case A is random by nature (that is the point).
 ##
 ## NOTE: on a hardened Kicksecure/Whonix system the permission-hardener strips the
@@ -63,6 +63,10 @@ mkdir --parents -- "${out}"
 host_display="${DISPLAY:-:0}"
 THEME='Clearlooks'
 RANDOM_BYTES=1200
+## Case A reads /dev/random (not /dev/urandom): on a modern kernel the two are
+## equivalent once the pool is seeded, and Kicksecure prefers /dev/random. See
+## https://www.kicksecure.com/wiki/Dev/Entropy#/dev/random_vs._/dev/urandom
+RANDOM_SOURCE='/dev/random'
 ## Clearlooks title bar + border height (fallback if _NET_FRAME_EXTENTS is unread).
 FRAME_TOP=26
 
@@ -118,7 +122,7 @@ cmd_for() {  ## $1=case
          printf 'cat crafted.log'
          ;;
       random)
-         printf 'head -c %s /dev/urandom' "${RANDOM_BYTES}"
+         printf 'head -c %s %s' "${RANDOM_BYTES}" "${RANDOM_SOURCE}"
          ;;
       homoglyph)
          printf 'cat homoglyph.txt'
