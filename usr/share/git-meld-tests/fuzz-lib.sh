@@ -35,12 +35,26 @@ fails=0
 rand_blob () {
    local kind=$((RANDOM % 6))
    case "${kind}" in
-      0) printf 'line %s\ncode %s\n' "${RANDOM}" "${RANDOM}" ;;
-      1) printf 'a\x00b NUL embedded %s\n' "${RANDOM}" ;;                 ## auto-binary
-      2) printf 'x # \xe2\x80\xae\xe2\x81\xa6hidden\xe2\x81\xa9 %s\n' "${RANDOM}" ;; ## bidi
-      3) printf 'Subproject commit %040d\n' "${RANDOM}" ;;               ## gitlink mimic
-      4) head -c $(( (RANDOM % 4000) + 1 )) /dev/zero | tr '\0' 'A'; printf '\n' ;; ## long
-      5) printf '\xef\xbb\xbfbom %s\n' "${RANDOM}" ;;                    ## BOM/zero-width
+      0)
+         printf 'line %s\ncode %s\n' "${RANDOM}" "${RANDOM}"
+         ;;
+      1)
+         printf 'a\x00b NUL embedded %s\n' "${RANDOM}"                   ## auto-binary
+         ;;
+      2)
+         printf 'x # \xe2\x80\xae\xe2\x81\xa6hidden\xe2\x81\xa9 %s\n' "${RANDOM}" ## bidi
+         ;;
+      3)
+         printf 'Subproject commit %040d\n' "${RANDOM}"                  ## gitlink mimic
+         ;;
+      4)
+         ## long
+         head -c $(( (RANDOM % 4000) + 1 )) /dev/zero | tr '\0' 'A'
+         printf '%s\n' ''
+         ;;
+      5)
+         printf '\xef\xbb\xbfbom %s\n' "${RANDOM}"                       ## BOM/zero-width
+         ;;
    esac
 }
 

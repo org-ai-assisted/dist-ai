@@ -49,7 +49,10 @@ if [ -z "${git_meld}" ]; then
    for cand in \
       "${mydir}/../../derivative-maker/packages/kicksecure/developer-meta-files/usr/bin/git-meld" \
       "/usr/bin/git-meld" ; do
-      if [ -x "${cand}" ]; then git_meld="${cand}"; break; fi
+      if [ -x "${cand}" ]; then
+         git_meld="${cand}"
+         break
+      fi
    done
 fi
 if [ -z "${git_meld}" ] || [ ! -x "${git_meld}" ]; then
@@ -124,7 +127,7 @@ printf '%s\n' "PASS: no real change was hidden across all adversarial suites (me
 ## SKIP rather than fail.
 printf '\n%s\n' "-- difftool/mergetool contract suite --"
 dt_rc=0
-bash "${share}/difftool-mergetool-lib.sh" "$( dirname -- "${git_meld}" )" || dt_rc=$?
+"${share}/difftool-mergetool-lib.sh" "$( dirname -- "${git_meld}" )" || dt_rc=$?
 if [ "${dt_rc}" = 77 ]; then
    printf '%s\n' "SKIP: git-review-difftool / git-review-mergetool not found next to git-meld."
 elif [ "${dt_rc}" != 0 ]; then
@@ -136,7 +139,7 @@ fi
 ## (needs a pseudo-tty + python3). 77 == prerequisites missing -> SKIP.
 printf '\n%s\n' "-- interactive consent suite (git-diff-review) --"
 it_rc=0
-bash "${share}/interactive-lib.sh" "$( dirname -- "${git_meld}" )" || it_rc=$?
+"${share}/interactive-lib.sh" "$( dirname -- "${git_meld}" )" || it_rc=$?
 if [ "${it_rc}" = 77 ]; then
    printf '%s\n' "SKIP: git-diff-review / python3 / pty helper not available."
 elif [ "${it_rc}" != 0 ]; then
@@ -150,7 +153,7 @@ fi
 ## GIT_DIFFS_LIE_DIR to a checkout).
 printf '\n%s\n' "-- adversarial corpus suite (git-diffs-lie) --"
 cp_rc=0
-bash "${share}/corpus-lib.sh" "$( dirname -- "${git_meld}" )" || cp_rc=$?
+"${share}/corpus-lib.sh" "$( dirname -- "${git_meld}" )" || cp_rc=$?
 if [ "${cp_rc}" = 77 ]; then
    printf '%s\n' "SKIP: git-diffs-lie corpus not found (set GIT_DIFFS_LIE_DIR)."
 elif [ "${cp_rc}" != 0 ]; then

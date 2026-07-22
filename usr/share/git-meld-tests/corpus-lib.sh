@@ -30,6 +30,9 @@ set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
 
+# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
+source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/has.sh
+
 bindir="${1:-/usr/bin}"
 gdr="${bindir}/git-diff-review"
 
@@ -55,8 +58,10 @@ if [ ! -x "${gdr}" ] || [ -z "${corpus_src}" ] \
 fi
 
 ## Optional name scanner for the refname cases.
-unicode_show="$( command -v unicode-show || true )"
-if [ -z "${unicode_show}" ] && [ -n "${HELPER_SCRIPTS_PATH:-}" ] \
+unicode_show=""
+if has unicode-show; then
+   unicode_show="unicode-show"
+elif [ -n "${HELPER_SCRIPTS_PATH:-}" ] \
    && [ -x "${HELPER_SCRIPTS_PATH}/usr/bin/unicode-show" ]; then
    unicode_show="${HELPER_SCRIPTS_PATH}/usr/bin/unicode-show"
 fi
@@ -69,13 +74,13 @@ work="$( mktemp --directory )"
 export HOME="${work}/home"
 mkdir --parents -- "${HOME}"
 # shellcheck disable=SC2317
-cleanup() { rm --recursive --force -- "${work}"; }
+cleanup() { safe-rm --recursive --force -- "${work}"; }
 trap cleanup EXIT
 
 ## Regenerate a fresh corpus from the shipped generator (self-isolating: it
 ## pins GIT_CONFIG_GLOBAL=/dev/null and a neutral identity).
 corpus="${work}/corpus"
-bash "${corpus_src}/tools/build-corpus.sh" "${corpus}" >/dev/null
+"${corpus_src}/tools/build-corpus.sh" "${corpus}" >/dev/null
 cd -- "${corpus}"
 
 fails=0

@@ -22,9 +22,11 @@
 ##   pyte-tests
 ##   PYTE_REPO=/path/to/pyte/checkout pyte-tests
 
+set -o errexit
 set -o nounset
 set -o pipefail
 set -o errtrace
+shopt -s inherit_errexit
 shopt -s shift_verbose
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
@@ -79,16 +81,19 @@ python3 -m pytest --import-mode=importlib -q \
    "${tests_dir}/test_full_regressions.py" \
    "${tests_dir}/test_full_properties.py" || rc=$?
 
-echo
+printf '%s\n' ''
 case "${rc}" in
    0)
       printf '%s\n' 'pyte-tests: OVERALL RESULT: PASS'
-      exit 0 ;;
+      exit 0
+      ;;
    5)
       ## No tests collected -- treat as a skip rather than a hard failure.
       printf '%s\n' 'pyte-tests: OVERALL RESULT: SKIPPED (no tests collected).'
-      exit 77 ;;
+      exit 77
+      ;;
    *)
       printf '%s\n' 'pyte-tests: OVERALL RESULT: FAIL'
-      exit 1 ;;
+      exit 1
+      ;;
 esac

@@ -29,4 +29,6 @@ else
    tests_dir="${script_dir}/../share/stcat-family-tests"
 fi
 
-exec python3 -- "${tests_dir}/stcat_family_test.py" "$@"
+rc=0
+python3 -- "${tests_dir}/stcat_family_test.py" "$@" || rc=$?
+exit "$rc"

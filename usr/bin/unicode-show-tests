@@ -30,4 +30,6 @@ else
    tests_dir="${script_dir}/../share/unicode-show-tests"
 fi
 
-exec python3 -- "${tests_dir}/unicode_show_test.py" "$@"
+rc=0
+python3 -- "${tests_dir}/unicode_show_test.py" "$@" || rc=$?
+exit "$rc"

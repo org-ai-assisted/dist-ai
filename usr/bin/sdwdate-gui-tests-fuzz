@@ -27,4 +27,6 @@ else
   fuzz_dir="${script_dir}/../share/sdwdate-gui-tests/fuzz"
 fi
 
-exec python3 "${fuzz_dir}/sdwdate_gui_fuzzer.py" "$@"
+rc=0
+python3 "${fuzz_dir}/sdwdate_gui_fuzzer.py" "$@" || rc=$?
+exit "$rc"

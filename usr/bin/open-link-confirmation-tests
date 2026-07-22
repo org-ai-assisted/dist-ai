@@ -35,7 +35,6 @@ overall_rc=0
 printf '%s\n' "=== open-link-confirmation security tests (python/Qt) ==="
 python3 -- "${tests_dir}/open_link_confirmation_test.py" "$@" || overall_rc=1
 
-printf '%s\n' ""
 printf '%s\n' "=== open-link-confirmation env-override unit test (bash) ==="
 bash -- "${tests_dir}/env_override_test.sh" "$@" || overall_rc=1
 

@@ -27,7 +27,9 @@ else
   tests_dir="${script_dir}/../share/sdwdate-gui-tests"
 fi
 
-exec python3 -m unittest discover \
+rc=0
+python3 -m unittest discover \
   --start-directory "${tests_dir}" \
   --pattern 'test_*.py' \
-  "$@"
+  "$@" || rc=$?
+exit "$rc"

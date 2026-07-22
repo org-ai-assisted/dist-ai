@@ -60,7 +60,7 @@ tmproot="$( mktemp --directory )"
 export HOME="${tmproot}/home"
 mkdir --parents -- "${HOME}"
 # shellcheck disable=SC2317
-cleanup() { rm --recursive --force -- "${tmproot}"; }
+cleanup() { safe-rm --recursive --force -- "${tmproot}"; }
 trap cleanup EXIT
 
 ## Stub GUIs: never open a window; record '<argc> <args...>' to $GUI_LOG so a

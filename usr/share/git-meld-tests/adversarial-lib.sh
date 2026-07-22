@@ -10,6 +10,9 @@
 set -o errexit
 set -o nounset
 set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
 
 GIT_MELD="$(readlink -f -- "${1:?usage: run-adversarial.sh /path/to/git-meld}")"
 work="$(mktemp -d)"
@@ -51,11 +54,9 @@ run_case () {
   local name old_commit new_commit oldf newf out rc
   name="$1"; old_commit="$2"; new_commit="$3"
   oldf="$(blob "${old_commit}" old)"; newf="$(blob "${new_commit}" new)"
-  set +e
+  rc=0
   out="$( cd "${work}" && GIT_DIFF_PATH_TOTAL=1 "${GIT_MELD}" \
-            "sub" "${oldf}" "${old_commit}" 160000 "${newf}" "${new_commit}" 160000 2>&1 )"
-  rc=$?
-  set -e
+            "sub" "${oldf}" "${old_commit}" 160000 "${newf}" "${new_commit}" 160000 2>&1 )" || rc=$?
   ## Does the output reveal that a change happened (either commit id shown, or a
   ## loud warning), or is it hidden (nothing that names old/new, no warning)?
   local visible="no"
@@ -80,5 +81,5 @@ run_case "OLD-commit-unfetched"  "${ABSENT}" "${B}"  || fails=$((fails+1))
 run_case "BOTH-commits-unfetched" "${ABSENT}" "0000000000000000000000000000000000000000" || fails=$((fails+1))
 
 printf '\n==== TOTAL HIDDEN-CHANGE FAILURES: %s ====\n' "${fails}"
-rm -rf "${work}"
+safe-rm --recursive --force -- "${work}"
 exit "${fails}"

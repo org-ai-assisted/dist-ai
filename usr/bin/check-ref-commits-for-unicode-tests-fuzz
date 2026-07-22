@@ -32,5 +32,7 @@ fi
 
 iterations='1000'
 
-exec python3 -- "${tests_dir}/check_ref_commits_for_unicode_test.py" \
-   --fuzz-only --iterations "${iterations}" "$@"
+rc=0
+python3 -- "${tests_dir}/check_ref_commits_for_unicode_test.py" \
+   --fuzz-only --iterations "${iterations}" "$@" || rc=$?
+exit "$rc"

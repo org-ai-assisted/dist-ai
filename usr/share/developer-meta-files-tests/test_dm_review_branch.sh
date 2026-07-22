@@ -24,6 +24,9 @@ set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
 
+# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
+source /usr/libexec/helper-scripts/has.sh
+
 if [ -z "${DMF_REPO:-}" ]; then
    printf '%s\n' 'test_dm_review_branch: DMF_REPO unset (run via the developer-meta-files-tests entrypoint); skipping.' >&2
    exit 77
@@ -33,7 +36,7 @@ fi
 ## unicode / unicode-show (helper-scripts). If they are not on PATH, the tool
 ## cannot run -- skip rather than false-fail.
 for tool in check-ref-commits-for-unicode check-ref-names-for-unicode unicode-show git; do
-   if ! command -v "${tool}" >/dev/null; then
+   if ! has "${tool}"; then
       printf '%s\n' "test_dm_review_branch: '${tool}' not on PATH; skipping." >&2
       exit 77
    fi
@@ -54,7 +57,7 @@ pass() {
 
 work="$(mktemp --directory)"
 cleanup() {
-   safe-rm --recursive --force -- "${work}" 2>/dev/null || rm -rf -- "${work}"
+   safe-rm --recursive --force -- "${work}"
 }
 trap cleanup EXIT
 

@@ -33,4 +33,6 @@ fi
 
 iterations='30000'
 
-exec python3 -- "${tests_dir}/fuzz_torrc.py" --iterations "${iterations}" "$@"
+rc=0
+python3 -- "${tests_dir}/fuzz_torrc.py" --iterations "${iterations}" "$@" || rc=$?
+exit "$rc"

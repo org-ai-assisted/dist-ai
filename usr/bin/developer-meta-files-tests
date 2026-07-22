@@ -70,13 +70,16 @@ for test_path in "${tests[@]}"; do
    case "${rc}" in
       0)
          ran=$(( ran + 1 ))
-         printf 'developer-meta-files-tests: PASS %s\n' "${test_name}" ;;
+         printf 'developer-meta-files-tests: PASS %s\n' "${test_name}"
+         ;;
       77)
          skipped=$(( skipped + 1 ))
-         printf 'developer-meta-files-tests: SKIP %s\n' "${test_name}" ;;
+         printf 'developer-meta-files-tests: SKIP %s\n' "${test_name}"
+         ;;
       *)
          failed=$(( failed + 1 ))
-         printf 'developer-meta-files-tests: FAIL %s (exit %s)\n' "${test_name}" "${rc}" >&2 ;;
+         printf 'developer-meta-files-tests: FAIL %s (exit %s)\n' "${test_name}" "${rc}" >&2
+         ;;
    esac
 done
 

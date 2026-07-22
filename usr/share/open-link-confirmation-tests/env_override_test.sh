@@ -47,7 +47,9 @@ fi
 
 work_dir="$(mktemp --directory)"
 cleanup() {
-   rm --recursive --force -- "${work_dir}"
+   ## Reached only via the EXIT trap; shellcheck cannot see that path (SC2317).
+   # shellcheck disable=SC2317
+   safe-rm --recursive --force -- "${work_dir}"
 }
 trap cleanup EXIT
 

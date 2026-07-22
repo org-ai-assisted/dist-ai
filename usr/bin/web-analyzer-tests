@@ -25,6 +25,10 @@ set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
 
+# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
+# shellcheck disable=SC1091
+source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/has.sh
+
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
 if [ -d '/usr/share/web-analyzer-tests' ]; then
@@ -35,7 +39,7 @@ fi
 
 node_bin=''
 for candidate in node nodejs; do
-   if command -v -- "${candidate}" >/dev/null 2>&1; then
+   if has "${candidate}"; then
       node_bin="${candidate}"
       break
    fi
@@ -46,4 +50,4 @@ if [ -z "${node_bin}" ]; then
    exit 77
 fi
 
-exec "${node_bin}" -- "${tests_dir}/web_analyzer_test.js" "$@"
+"${node_bin}" -- "${tests_dir}/web_analyzer_test.js" "$@"

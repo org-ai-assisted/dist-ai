@@ -14,9 +14,11 @@
 ## PRIVLEAP_REPO to a derivative-maker checkout to test that tree instead.
 ## Works installed (/usr/share/privleap-tests) or from a git checkout.
 
+set -o errexit
 set -o nounset
 set -o pipefail
 set -o errtrace
+shopt -s inherit_errexit
 shopt -s shift_verbose
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
@@ -50,7 +52,7 @@ run_pytest() {
   ## all-skipped run as non-fatal; pytest exit 5 (no tests collected) is also
   ## a skip. python3-pytest / python3-hypothesis are optional.
   if ! python3 -c 'import pytest' 2>/dev/null; then
-    echo 'SKIP: python3-pytest not installed.'
+    printf '%s\n' 'SKIP: python3-pytest not installed.'
     return 0
   fi
   local rc=0
@@ -65,23 +67,23 @@ run_pytest() {
   return 0
 }
 
-echo '################ parser fuzzer (in-process) ################'
+printf '%s\n' '################ parser fuzzer (in-process) ################'
 run_one "${tests_dir}/parser_fuzz.py" --seed 1 --iterations 4000
-echo
-echo '############ authorization-engine property test ###########'
+printf '%s\n' ''
+printf '%s\n' '############ authorization-engine property test ###########'
 run_one "${tests_dir}/authorizer_test.py" --seed 1 --iterations 3000
-echo
-echo '############### Hypothesis property tests ##################'
+printf '%s\n' ''
+printf '%s\n' '############### Hypothesis property tests ##################'
 run_pytest "${tests_dir}/test_property.py"
 
-echo
+printf '%s\n' ''
 if [ "${overall}" != '0' ]; then
-  echo 'privleap-tests: OVERALL RESULT: FAIL'
+  printf '%s\n' 'privleap-tests: OVERALL RESULT: FAIL'
   exit 1
 fi
 if [ "${saw_pass}" = '0' ]; then
-  echo 'privleap-tests: OVERALL RESULT: SKIPPED (privleap not found)'
+  printf '%s\n' 'privleap-tests: OVERALL RESULT: SKIPPED (privleap not found)'
   exit 77
 fi
-echo 'privleap-tests: OVERALL RESULT: PASS'
+printf '%s\n' 'privleap-tests: OVERALL RESULT: PASS'
 exit 0

@@ -37,4 +37,6 @@ else
    tests_dir="${script_dir}/../share/stdisplay-tests"
 fi
 
-exec python3 -- "${tests_dir}/stdisplay_test.py" "$@"
+rc=0
+python3 -- "${tests_dir}/stdisplay_test.py" "$@" || rc=$?
+exit "$rc"

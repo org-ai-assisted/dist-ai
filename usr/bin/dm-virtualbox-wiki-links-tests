@@ -19,6 +19,10 @@ set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
 
+# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
+# shellcheck disable=SC1091
+source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/has.sh
+
 mydir="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )"
 
 script="${1:-}"
@@ -26,7 +30,10 @@ if [ -z "${script}" ]; then
    for cand in \
       "${mydir}/../../derivative-maker/packages/kicksecure/developer-meta-files/usr/bin/dm-virtualbox-update-local-and-wiki-links" \
       "/usr/bin/dm-virtualbox-update-local-and-wiki-links" ; do
-      [ -r "${cand}" ] && { script="${cand}"; break; }
+      if [ -r "${cand}" ]; then
+         script="${cand}"
+         break
+      fi
    done
 fi
 [ -n "${script}" ] && [ -r "${script}" ] || { printf '%s\n' "ERROR: script not found; pass it as arg 1." >&2; exit 2; }
@@ -47,12 +54,12 @@ printf '%s\n' "script under test: ${script}"
 ## then assert the script uses the fixed tool for the wiki writes.
 ## ---------------------------------------------------------------------------
 printf '\n%s\n' "[1] leading-newline (append-once vs overwrite)"
-if command -v append-once >/dev/null && command -v overwrite >/dev/null; then
+if has append-once && has overwrite; then
    t_old="$(mktemp)"; append-once "${t_old}" "TOP_LINE" >/dev/null
    t_new="$(mktemp)"; overwrite   "${t_new}" "TOP_LINE" >/dev/null
    old_n="$(leading_blank_lines "${t_old}")"
    new_n="$(leading_blank_lines "${t_new}")"
-   rm -f "${t_old}" "${t_new}"
+   safe-rm -f "${t_old}" "${t_new}"
    [ "${old_n}" -ge 1 ] && pass "old-broken reproduced: 'append-once' on empty file adds ${old_n} leading blank line(s)" \
                         || fail "expected 'append-once' to add a leading blank line (root cause not reproduced)"
    [ "${new_n}" -eq 0 ] && pass "new-fixed: 'overwrite' adds no leading blank line" \
@@ -73,6 +80,9 @@ fi
 ## emits one line PER match (0 / 1 / many distinguishable).
 ## ---------------------------------------------------------------------------
 printf '\n%s\n' "[2] extract_url emits every match"
+## stecho is a stub that the eval'd extract_url (pulled from the script under
+## test below) calls; shellcheck cannot see that indirect use.
+# shellcheck disable=SC2317
 stecho() { printf '%s\n' "$1"; }
 ## Pull just the extract_url function definition out of the script and eval it.
 extract_url_src="$(sed -n '/^extract_url ()/,/^}/p' "${script}")"

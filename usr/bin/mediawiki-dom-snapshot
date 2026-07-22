@@ -106,7 +106,9 @@ EOF
 
 cmd_capture() {
    mkdir --parents -- "${RAW_DIR}"
-   exec python3 "${LIB}/snapshot.py"
+   local rc=0
+   python3 "${LIB}/snapshot.py" || rc=$?
+   exit "${rc}"
 }
 
 cmd_normalise() {
@@ -126,6 +128,11 @@ cmd_normalise() {
 
 cmd_run() {
    cmd_capture
+   ## LATENT BUG (pre-existing): cmd_capture is terminal (it exits), so in the
+   ## default 'run' mode this normalise step never executes -- 'run' currently
+   ## captures only. Left as-is to avoid changing what 'run' emits; fixing it
+   ## (capture returning instead of exiting) is a deliberate behaviour change.
+   # shellcheck disable=SC2317
    cmd_normalise
 }
 
@@ -133,32 +140,61 @@ cmd_diff() {
    [ "$#" -ge 2 ] || { usage; exit 2; }
    local a="$1"; shift
    local b="$1"; shift
-   exec python3 "${LIB}/diff.py" "${FIX_DIR}/${a}" "${FIX_DIR}/${b}" "$@"
+   local rc=0
+   python3 "${LIB}/diff.py" "${FIX_DIR}/${a}" "${FIX_DIR}/${b}" "$@" || rc=$?
+   exit "${rc}"
 }
 
 cmd_diff_baseline() {
    [ "$#" -ge 1 ] || { usage; exit 2; }
    local tag="$1"; shift
-   exec python3 "${LIB}/diff.py" "${BASELINE_DIR}" "${FIX_DIR}/${tag}" "$@"
+   local rc=0
+   python3 "${LIB}/diff.py" "${BASELINE_DIR}" "${FIX_DIR}/${tag}" "$@" || rc=$?
+   exit "${rc}"
 }
 
 cmd_baseline_promote() {
    [ "$#" -eq 1 ] || { usage; exit 2; }
    local src="${FIX_DIR}/$1"
    [ -d "${src}" ] || { printf '%s\n' "${0##*/}: missing ${src}" >&2; exit 1; }
-   rm --recursive --force -- "${BASELINE_DIR}"
+   safe-rm --recursive --force -- "${BASELINE_DIR}"
    mkdir --parents -- "${BASELINE_DIR}"
    cp --recursive --no-target-directory -- "${src}" "${BASELINE_DIR}"
    printf '%s\n' "promoted ${src} -> ${BASELINE_DIR}"
 }
 
 case "${1:-run}" in
-   capture)          shift; cmd_capture "$@" ;;
-   normalise)        shift; cmd_normalise "$@" ;;
-   run|"")           shift || true; cmd_run "$@" ;;
-   diff)             shift; cmd_diff "$@" ;;
-   diff-baseline)    shift; cmd_diff_baseline "$@" ;;
-   baseline-promote) shift; cmd_baseline_promote "$@" ;;
-   -h|--help|help)   usage; exit 0 ;;
-   *)                printf '%s\n' "${0##*/}: unknown command: $1" >&2; usage; exit 2 ;;
+   capture)
+      shift
+      cmd_capture "$@"
+      ;;
+   normalise)
+      shift
+      cmd_normalise "$@"
+      ;;
+   run|"")
+      shift || true
+      cmd_run "$@"
+      ;;
+   diff)
+      shift
+      cmd_diff "$@"
+      ;;
+   diff-baseline)
+      shift
+      cmd_diff_baseline "$@"
+      ;;
+   baseline-promote)
+      shift
+      cmd_baseline_promote "$@"
+      ;;
+   -h|--help|help)
+      usage
+      exit 0
+      ;;
+   *)
+      printf '%s\n' "${0##*/}: unknown command: $1" >&2
+      usage
+      exit 2
+      ;;
 esac

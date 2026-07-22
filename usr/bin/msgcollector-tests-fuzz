@@ -30,4 +30,6 @@ fi
 
 iterations='6000'
 
-exec python3 -- "${tests_dir}/fuzz_cli_rendering.py" --iterations "${iterations}" "$@"
+rc=0
+python3 -- "${tests_dir}/fuzz_cli_rendering.py" --iterations "${iterations}" "$@" || rc=$?
+exit "$rc"

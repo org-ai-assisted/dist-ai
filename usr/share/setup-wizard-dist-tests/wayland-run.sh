@@ -17,8 +17,13 @@ set -o nounset
 set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
+shopt -s shift_verbose
 
-if ! command -v weston >/dev/null 2>&1; then
+## helper-scripts 'has' for the command-presence check (R-090).
+# shellcheck disable=SC1091
+source /usr/libexec/helper-scripts/has.sh
+
+if ! has weston; then
    printf 'wayland-run.sh: weston is not installed\n' >&2
    exit 127
 fi
@@ -42,7 +47,7 @@ cleanup() {
    # shellcheck disable=SC2317
    wait "${weston_pid}" 2>/dev/null || true
    # shellcheck disable=SC2317
-   rm --recursive --force -- "${runtime_dir}"
+   safe-rm --recursive --force -- "${runtime_dir}"
 }
 trap cleanup EXIT
 

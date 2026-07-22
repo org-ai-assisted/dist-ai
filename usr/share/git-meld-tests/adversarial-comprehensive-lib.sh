@@ -293,7 +293,7 @@ else
 fi
 
 ## --- over-long line (>5000 chars) warning ---
-new_repo; head -c 6000 /dev/zero | tr '\0' 'x' > longline.txt; printf '\n' >> longline.txt; git add -A; git commit -qm x
+new_repo; head -c 6000 /dev/zero | tr '\0' 'x' > longline.txt; printf '%s\n' '' >> longline.txt; git add -A; git commit -qm x
 review "over-long line warned"         'char line|truncate'
 
 ## --- binary blob in driver mode: --stat only, viewer NOT opened ---

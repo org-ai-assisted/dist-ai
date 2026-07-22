@@ -1044,6 +1044,15 @@ if tui_available():
     tui._handle_osc(b'\x1b]52;c;' + _b64.b64encode(b'a\x1b[31mb\x00c') + b'\x07')
     ok(_QGA2.clipboard().text() == 'a[31mbc',
        'a clipboard write is stripped of escape/control bytes')
+    # the write filter is isprintable()-based like the paste path: a bidi override,
+    # a zero-width character and a C1 control are dropped, so a program cannot
+    # smuggle a look-alike or hidden character onto the SYSTEM clipboard (which a
+    # later paste into any application would otherwise carry).
+    _hostile = ('git' + chr(0x202E) + ' config' + chr(0x200B)
+                + chr(0x85)).encode('utf-8')
+    tui._handle_osc(b'\x1b]52;c;' + _b64.b64encode(_hostile) + b'\x07')
+    ok(_QGA2.clipboard().text() == 'git config',
+       'OSC 52 write drops bidi/zero-width/C1, like the paste sanitizer')
     # cwd OSC 7 gated + emits the safe path
     _cwds = []
     tui.cwd_changed.connect(_cwds.append)

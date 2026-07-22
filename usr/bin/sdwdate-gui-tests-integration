@@ -178,7 +178,7 @@ sni_run_arm() {
   if ! kill -0 "${xvfb_pid}" 2>/dev/null; then
     printf 'sni %s: Xvfb failed to start on %s (infrastructure)\n' \
       "${label}" "${display}"
-    rm --force -- "${wlog}"
+    safe-rm --force -- "${wlog}"
     return 1
   fi
 
@@ -189,7 +189,7 @@ sni_run_arm() {
   fi
 
   kill "${xvfb_pid}" 2>/dev/null || true
-  rm --force -- "${wlog}"
+  safe-rm --force -- "${wlog}"
   return "${rc}"
 }
 

@@ -38,7 +38,7 @@
 ## MUST run as root (umount_kill.sh refuses otherwise) and it exercises a
 ## process KILLER -- run it in a sandbox VM, not on the operator's machine:
 ##
-##   sandbox-run --dir <staged-dir> -- sudo bash ./umount_kill_test.sh
+##   sandbox-run --dir <staged-dir> -- sudo ./umount_kill_test.sh
 ##
 ## Subject selection (first that exists):
 ##   $UMOUNT_KILL_SH  ->  ./umount_kill.sh next to this test (staged copy)
@@ -164,7 +164,12 @@ main() {
    subject="$(locate_subject)"
    printf '%s\n' "INFO: subject: ${subject}"
 
-   command -v python3 >/dev/null || {
+   ## helper-scripts 'has' for the python3 presence check (R-090). Sourced here
+   ## (after the root check above) so the non-root exit-77 SKIP still works even
+   ## where helper-scripts is absent.
+   # shellcheck disable=SC1091
+   source /usr/libexec/helper-scripts/has.sh
+   has python3 || {
       printf '%s\n' "SKIP: python3 is required (mmap-only victim)." >&2
       exit 77
    }
@@ -179,7 +184,7 @@ main() {
 
    ## ---- victims (must die) ----
 
-   ( cd -- "${target_tree}/sub" && exec sleep 300 ) &
+   ( cd -- "${target_tree}/sub" && sleep 300 ) &
    victim_cwd_pid="$!"
 
    sleep 300 > "${target_tree}/sub/held.log" &
@@ -194,15 +199,19 @@ os.chdir('/')
 time.sleep(300)" "${target_tree}/sub/mapme.bin" &
    victim_mmap_pid="$!"
 
-   ## 'exe' channel: run a binary copied INTO the tree, cwd outside.
+   ## 'exe' channel: run a binary copied INTO the tree, cwd outside. The tracked
+   ## pid is the subshell (cwd '/', exe /bin/bash -- both outside the tree, so the
+   ## reaper does not match it directly); the reaper matches its child sleep-copy
+   ## by exe-inside-tree and kills it, after which the subshell exits too. The
+   ## require_dead assertion below still holds.
    mkdir --parents -- "${target_tree}/bin"
-   cp -- "$(command -v sleep)" "${target_tree}/bin/sleep-copy"
-   ( cd / && exec "${target_tree}/bin/sleep-copy" 300 ) &
+   cp -- "$(type -P sleep)" "${target_tree}/bin/sleep-copy"
+   ( cd / && "${target_tree}/bin/sleep-copy" 300 ) &
    victim_exe_pid="$!"
 
    ## 'root' channel: the production case, a process chrooted into the tree.
-   stage_chroot_binary "${target_tree}" "$(command -v sleep)"
-   chroot -- "${target_tree}" "$(command -v sleep)" 300 &
+   stage_chroot_binary "${target_tree}" "$(type -P sleep)"
+   chroot -- "${target_tree}" "$(type -P sleep)" 300 &
    victim_chroot_pid="$!"
 
    ## SIGTERM-ignoring victim: must survive the grace period and die only
@@ -212,7 +221,7 @@ time.sleep(300)" "${target_tree}/sub/mapme.bin" &
 
    ## ---- bystanders (must survive) ----
 
-   ( cd / && exec sleep 300 ) &
+   ( cd / && sleep 300 ) &
    bystander_unrelated_pid="$!"
 
    python3 -c "
@@ -320,7 +329,7 @@ time.sleep(300)" "${sibling_tree}/sub/mapme.bin" &
 
    ## ---- summary ----
 
-   safe-rm --recursive --force -- "${scratch_base}" 2>/dev/null || rm --recursive --force -- "${scratch_base}"
+   safe-rm --recursive --force -- "${scratch_base}"
 
    if [ "${test_failures}" = "0" ]; then
       printf '%s\n' "OK: all umount_kill.sh assertions passed."

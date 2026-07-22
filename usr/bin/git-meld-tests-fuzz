@@ -33,7 +33,10 @@ if [ -z "${git_meld}" ]; then
    for cand in \
       "${mydir}/../../derivative-maker/packages/kicksecure/developer-meta-files/usr/bin/git-meld" \
       "/usr/bin/git-meld" ; do
-      if [ -x "${cand}" ]; then git_meld="${cand}"; break; fi
+      if [ -x "${cand}" ]; then
+         git_meld="${cand}"
+         break
+      fi
    done
 fi
 if [ -z "${git_meld}" ] || [ ! -x "${git_meld}" ]; then

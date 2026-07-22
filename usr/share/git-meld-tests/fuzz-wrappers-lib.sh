@@ -48,13 +48,29 @@ fails=0
 rand_blob () {
    local kind=$(( RANDOM % 7 ))
    case "${kind}" in
-      0) printf 'line %s\ncode %s\n' "${RANDOM}" "${RANDOM}" ;;
-      1) printf 'a\x00b NUL %s\n' "${RANDOM}" ;;                                  ## binary
-      2) printf 'x # \xe2\x80\xae\xe2\x81\xa6hidden\xe2\x81\xa9 %s\n' "${RANDOM}" ;; ## bidi (non-fatal)
-      3) printf 'plain ascii %s\n' "${RANDOM}" ;;
-      4) head -c $(( (RANDOM % 3000) + 1 )) /dev/zero | tr '\0' 'A'; printf '\n' ;; ## long line
-      5) printf '\xef\xbb\xbfbom %s\n' "${RANDOM}" ;;
-      6) printf 'bad \xff\xfe undecodable %s\n' "${RANDOM}" ;;                     ## fatal (rc>=2)
+      0)
+         printf 'line %s\ncode %s\n' "${RANDOM}" "${RANDOM}"
+         ;;
+      1)
+         printf 'a\x00b NUL %s\n' "${RANDOM}"                                     ## binary
+         ;;
+      2)
+         printf 'x # \xe2\x80\xae\xe2\x81\xa6hidden\xe2\x81\xa9 %s\n' "${RANDOM}"  ## bidi (non-fatal)
+         ;;
+      3)
+         printf 'plain ascii %s\n' "${RANDOM}"
+         ;;
+      4)
+         ## long line
+         head -c $(( (RANDOM % 3000) + 1 )) /dev/zero | tr '\0' 'A'
+         printf '%s\n' ''
+         ;;
+      5)
+         printf '\xef\xbb\xbfbom %s\n' "${RANDOM}"
+         ;;
+      6)
+         printf 'bad \xff\xfe undecodable %s\n' "${RANDOM}"                        ## fatal (rc>=2)
+         ;;
    esac
 }
 

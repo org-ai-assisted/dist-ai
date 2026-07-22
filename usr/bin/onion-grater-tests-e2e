@@ -25,4 +25,6 @@ else
    tests_dir="${script_dir}/../share/onion-grater-tests"
 fi
 
-exec python3 -- "${tests_dir}/e2e.py" "$@"
+rc=0
+python3 -- "${tests_dir}/e2e.py" "$@" || rc=$?
+exit "$rc"

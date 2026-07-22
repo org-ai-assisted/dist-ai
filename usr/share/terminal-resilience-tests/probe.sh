@@ -42,9 +42,13 @@ export XDG_RUNTIME_DIR="${runtime_dir}"
 xvfb_pid=''
 xterm_pid=''
 cleanup() {
+   ## Reached only via the EXIT trap; shellcheck cannot see that path (SC2317).
+   # shellcheck disable=SC2317
    [ -z "${xterm_pid}" ] || kill "${xterm_pid}" 2>/dev/null || true
+   # shellcheck disable=SC2317
    [ -z "${xvfb_pid}" ] || kill "${xvfb_pid}" 2>/dev/null || true
-   rm -rf -- "${runtime_dir}" 2>/dev/null || true
+   # shellcheck disable=SC2317
+   safe-rm --recursive --force -- "${runtime_dir}" 2>/dev/null || true
 }
 trap cleanup EXIT
 

@@ -27,5 +27,7 @@ fi
 
 iterations='50000'
 
-exec python3 -- "${tests_dir}/sanitize_family_test.py" \
-   --fuzz-only --iterations "${iterations}" "$@"
+rc=0
+python3 -- "${tests_dir}/sanitize_family_test.py" \
+   --fuzz-only --iterations "${iterations}" "$@" || rc=$?
+exit "$rc"

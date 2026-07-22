@@ -36,4 +36,6 @@ if [ "$#" -eq 0 ]; then
   set -- "-max_total_time=${PRIVLEAP_FUZZ_SECONDS:-60}"
 fi
 
-exec python3 -- "${tests_dir}/fuzz_privleap.py" "$@"
+rc=0
+python3 -- "${tests_dir}/fuzz_privleap.py" "$@" || rc=$?
+exit "$rc"

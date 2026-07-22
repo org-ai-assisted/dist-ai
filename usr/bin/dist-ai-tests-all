@@ -153,11 +153,14 @@ pkg_dir() {
    case "${name}" in
       ## derivative-maker is the monorepo itself, not a packages/ subpath.
       derivative-maker)
-         printf '%s' "${repo_root}" ;;
+         printf '%s' "${repo_root}"
+         ;;
       onion-grater)
-         printf '%s' "${repo_root}/packages/whonix/onion-grater" ;;
+         printf '%s' "${repo_root}/packages/whonix/onion-grater"
+         ;;
       *)
-         printf '%s' "${repo_root}/packages/kicksecure/${name}" ;;
+         printf '%s' "${repo_root}/packages/kicksecure/${name}"
+         ;;
    esac
 }
 
@@ -199,13 +202,17 @@ wire() {
          fi
          ;;
       check-ref-commits-for-unicode)
-         wire_env=( "CHECK_REF_COMMITS_REPO=${hs}" ) ;;
+         wire_env=( "CHECK_REF_COMMITS_REPO=${hs}" )
+         ;;
       grep-find-unicode-wrapper)
-         wire_env=( "GREP_FIND_UNICODE_WRAPPER_REPO=${hs}" ) ;;
+         wire_env=( "GREP_FIND_UNICODE_WRAPPER_REPO=${hs}" )
+         ;;
       unicode-show)
-         wire_env=( "UNICODE_SHOW_REPO=${hs}" ) ;;
+         wire_env=( "UNICODE_SHOW_REPO=${hs}" )
+         ;;
       stcat-family|stdisplay)
-         wire_env=( "STDISPLAY_REPO=${hs}" ) ;;
+         wire_env=( "STDISPLAY_REPO=${hs}" )
+         ;;
       sanitize-string)
          ## sanitize-string's '#!/usr/bin/python3 -Bsu' excludes the user site,
          ## so from a checkout (not installed) it needs its dist-packages on
@@ -214,16 +221,20 @@ wire() {
          wire_env=(
             "SANITIZE_STRING_BIN=${hs}/usr/bin/sanitize-string"
             "PYTHONPATH=${hs}/usr/lib/python3/dist-packages"
-         ) ;;
+         )
+         ;;
       onion-grater)
-         wire_env=( "ONION_GRATER_REPO=$( pkg_dir onion-grater )" ) ;;
+         wire_env=( "ONION_GRATER_REPO=$( pkg_dir onion-grater )" )
+         ;;
       privleap)
-         wire_env=( "PRIVLEAP_REPO=$( pkg_dir privleap )" ) ;;
+         wire_env=( "PRIVLEAP_REPO=$( pkg_dir privleap )" )
+         ;;
       pyte)
          ## pyte lives in its own repo (a --component checkout of the
          ## org-ai-assisted/pyte fork), not a derivative-maker packages/ subpath;
          ## point the suite at it via PYTE_REPO resolved from the component root.
-         wire_env=( "PYTE_REPO=$( pkg_dir pyte )" ) ;;
+         wire_env=( "PYTE_REPO=$( pkg_dir pyte )" )
+         ;;
       genmkfile)
          ## genmkfile's make-helper sources helper-scripts at runtime (has.sh,
          ## trace.bsh) and shells out to its tools; give it the full
@@ -247,9 +258,11 @@ wire() {
             "OPEN_LINK_CONFIRMATION_BIN=$( pkg_dir open-link-confirmation )/usr/libexec/open-link-confirmation/open-link-confirmation"
             "SANITIZE_STRING_BIN=${hs}/usr/bin/sanitize-string"
             "PYTHONPATH=${hs}/usr/lib/python3/dist-packages"
-         ) ;;
+         )
+         ;;
       sdwdate-gui)
-         wire_env=( "PYTHONPATH=$( pkg_dir sdwdate-gui )/usr/lib/python3/dist-packages" ) ;;
+         wire_env=( "PYTHONPATH=$( pkg_dir sdwdate-gui )/usr/lib/python3/dist-packages" )
+         ;;
       setup-wizard-dist)
          ## The wizard imports guimessages from helper-scripts; the test adds
          ## the wizard checkout to sys.path from SETUP_WIZARD_DIST_REPO and needs
@@ -263,13 +276,15 @@ wire() {
       msgcollector)
          ## The fuzzer extracts msgcollector's CLI-rendering bash from the one
          ## script and runs it in isolation; no other runtime needed.
-         wire_env=( "MSGCOLLECTOR_REPO=$( pkg_dir msgcollector )" ) ;;
+         wire_env=( "MSGCOLLECTOR_REPO=$( pkg_dir msgcollector )" )
+         ;;
       tb-updater)
          ## The core suite reads update-torbrowser / desktop-starter-wrapper /
          ## version-validator source from the checkout; the e2e suite installs
          ## the package and drives the installed binaries. Both resolve the
          ## checkout from TB_UPDATER_REPO.
-         wire_env=( "TB_UPDATER_REPO=$( pkg_dir tb-updater )" ) ;;
+         wire_env=( "TB_UPDATER_REPO=$( pkg_dir tb-updater )" )
+         ;;
       systemcheck)
          ## The scenario harness runs the REAL check_*.bsh fragments, several of
          ## which sanitize untrusted output with the bare `sanitize-string`
@@ -298,41 +313,52 @@ wire() {
          fi
          ;;
       git-meld)
-         wire_args=( "${dmf}/usr/bin/git-meld" ) ;;
+         wire_args=( "${dmf}/usr/bin/git-meld" )
+         ;;
       dm-virtualbox-wiki-links)
-         wire_args=( "${dmf}/usr/bin/dm-virtualbox-update-local-and-wiki-links" ) ;;
+         wire_args=( "${dmf}/usr/bin/dm-virtualbox-update-local-and-wiki-links" )
+         ;;
       dm-help-steps)
-         wire_env=( "UMOUNT_KILL_SH=$( pkg_dir derivative-maker )/help-steps/umount_kill.sh" ) ;;
+         wire_env=( "UMOUNT_KILL_SH=$( pkg_dir derivative-maker )/help-steps/umount_kill.sh" )
+         ;;
       web-analyzer)
          ## analyzer.js lives in output-lies.github.io, not a derivative-maker
          ## component, so there is nothing under --repo-root to point at; it is
          ## resolved from OUTPUT_LIES_REPO in the ambient environment instead.
-         wire_env=() ; wire_args=() ;;
+         wire_env=()
+         wire_args=()
+         ;;
       website)
          ## the Pages sites live in their own repos, not a derivative-maker
          ## component; the suite resolves each from OUTPUT_LIES_REPO /
          ## SECURE_TERMINAL_SITE_REPO / ORG_AI_ASSISTED_REPO in the ambient
          ## environment (or a private-sources default) instead.
-         wire_env=() ; wire_args=() ;;
+         wire_env=()
+         wire_args=()
+         ;;
       secure-terminal)
          ## secure_terminal lives in its own repo (a --component checkout), not a
          ## derivative-maker packages/ subpath; point the suite at it via
          ## SECURE_TERMINAL_REPO resolved from the component root.
-         wire_env=( "SECURE_TERMINAL_REPO=$( pkg_dir secure-terminal )" ) ;;
+         wire_env=( "SECURE_TERMINAL_REPO=$( pkg_dir secure-terminal )" )
+         ;;
       terminal-poc-corpus)
          ## The corpus harness drives secure-terminal, so it needs BOTH repos.
          ## Neither is a derivative-maker packages/ subpath: secure-terminal is a
          ## --component checkout (pkg_dir), and terminal-poc-corpus resolves from
          ## TERMINAL_POC_CORPUS_REPO in the ambient environment (or a
          ## private-sources / sibling default in the entrypoint).
-         wire_env=( "SECURE_TERMINAL_REPO=$( pkg_dir secure-terminal )" ) ;;
+         wire_env=( "SECURE_TERMINAL_REPO=$( pkg_dir secure-terminal )" )
+         ;;
       terminal-resilience)
          ## The opt-in resilience test drives secure-terminal-cli; point it at the
          ## secure-terminal component checkout.
-         wire_env=( "SECURE_TERMINAL_REPO=$( pkg_dir secure-terminal )" ) ;;
+         wire_env=( "SECURE_TERMINAL_REPO=$( pkg_dir secure-terminal )" )
+         ;;
       *)
          printf 'dist-ai-tests-all: no wiring for suite %s\n' "${suite}" >&2
-         return 1 ;;
+         return 1
+         ;;
    esac
 }
 
@@ -344,23 +370,53 @@ suite_component() {
    local base="${1%%-tests*}"
    case "${base}" in
       check-ref-commits-for-unicode|grep-find-unicode-wrapper|unicode-show|stcat-family|stdisplay|sanitize-string)
-         printf '%s' 'helper-scripts' ;;
+         printf '%s' 'helper-scripts'
+         ;;
       developer-meta-files|github-org-tools|git-meld|dm-virtualbox-wiki-links)
-         printf '%s' 'developer-meta-files' ;;
-      dm-help-steps)          printf '%s' 'derivative-maker' ;;
-      onion-grater)           printf '%s' 'onion-grater' ;;
-      privleap)               printf '%s' 'privleap' ;;
-      pyte)                   printf '%s' 'pyte' ;;
-      genmkfile)              printf '%s' 'genmkfile' ;;
-      msgcollector)           printf '%s' 'msgcollector' ;;
-      tb-updater)             printf '%s' 'tb-updater' ;;
-      open-link-confirmation) printf '%s' 'open-link-confirmation' ;;
-      sdwdate-gui)            printf '%s' 'sdwdate-gui' ;;
-      setup-wizard-dist)      printf '%s' 'setup-wizard-dist' ;;
-      secure-terminal)        printf '%s' 'secure-terminal' ;;
-      terminal-resilience)    printf '%s' 'secure-terminal' ;;
-      systemcheck)            printf '%s' 'systemcheck' ;;
-      tor-control-panel)      printf '%s' 'tor-control-panel' ;;
+         printf '%s' 'developer-meta-files'
+         ;;
+      dm-help-steps)
+         printf '%s' 'derivative-maker'
+         ;;
+      onion-grater)
+         printf '%s' 'onion-grater'
+         ;;
+      privleap)
+         printf '%s' 'privleap'
+         ;;
+      pyte)
+         printf '%s' 'pyte'
+         ;;
+      genmkfile)
+         printf '%s' 'genmkfile'
+         ;;
+      msgcollector)
+         printf '%s' 'msgcollector'
+         ;;
+      tb-updater)
+         printf '%s' 'tb-updater'
+         ;;
+      open-link-confirmation)
+         printf '%s' 'open-link-confirmation'
+         ;;
+      sdwdate-gui)
+         printf '%s' 'sdwdate-gui'
+         ;;
+      setup-wizard-dist)
+         printf '%s' 'setup-wizard-dist'
+         ;;
+      secure-terminal)
+         printf '%s' 'secure-terminal'
+         ;;
+      terminal-resilience)
+         printf '%s' 'secure-terminal'
+         ;;
+      systemcheck)
+         printf '%s' 'systemcheck'
+         ;;
+      tor-control-panel)
+         printf '%s' 'tor-control-panel'
+         ;;
    esac
 }
 
@@ -390,17 +446,30 @@ run_suite() {
       >"/tmp/dist-ai-tests-all.${suite}.log" 2>&1 || rc=$?
    local verdict log_line
    case "${rc}" in
-      0)   verdict="PASS" ;    pass_count=$(( pass_count + 1 )) ;;
-      77)  verdict="SKIP" ;    skip_count=$(( skip_count + 1 )) ;;
-      124) verdict="TIMEOUT" ; fail_count=$(( fail_count + 1 )) ;;
-      *)   verdict="FAIL(${rc})" ; fail_count=$(( fail_count + 1 )) ;;
+      0)
+         verdict="PASS"
+         pass_count=$(( pass_count + 1 ))
+         ;;
+      77)
+         verdict="SKIP"
+         skip_count=$(( skip_count + 1 ))
+         ;;
+      124)
+         verdict="TIMEOUT"
+         fail_count=$(( fail_count + 1 ))
+         ;;
+      *)
+         verdict="FAIL(${rc})"
+         fail_count=$(( fail_count + 1 ))
+         ;;
    esac
    emit "$( printf '%-38s %-12s %s' "${suite}" "[${category}]" "${verdict}" )"
    ## Surface the failing suite's captured output inline: the per-suite log
    ## lives in /tmp, which CI discards, so a bare FAIL verdict is not
    ## actionable. Echo it on FAIL / TIMEOUT (not on PASS / SKIP).
    case "${rc}" in
-      0|77) : ;;
+      0|77)
+         ;;
       *)
          emit "---- ${suite}: begin captured output (${verdict}) ----"
          while IFS= read -r log_line; do
@@ -417,23 +486,71 @@ orig_args=( "$@" )
 
 while [ "$#" -gt 0 ]; do
    case "$1" in
-      --core)          run_core="true" ;;
-      --fuzz)          run_fuzz="true" ;;
-      --e2e)           run_e2e="true" ;;
-      --integration)   run_integration="true" ;;
-      --all)           run_core="true" ; run_fuzz="true" ; run_e2e="true" ; run_integration="true" ;;
-      --repo-root)      repo_root="$2" ; shift ;;
-      --component)      component="$2" ; shift ;;
-      --component-root) component_root="$2" ; shift ;;
-      --helper-scripts-root) helper_scripts_root="$2" ; shift ;;
-      --skip)           skip_suites+=( "$2" ) ; shift ;;
-      --progress)      progress_file="$2" ; shift ;;
-      --timeout-core)  timeout_core="$2" ; shift ;;
-      --timeout-fuzz)  timeout_fuzz="$2" ; shift ;;
-      --timeout-heavy) timeout_heavy="$2" ; shift ;;
-      --list)          list_only="true" ;;
-      --help|-h)       usage ; exit 0 ;;
-      *)               printf 'dist-ai-tests-all: unknown option: %s\n' "$1" >&2 ; exit 2 ;;
+      --core)
+         run_core="true"
+         ;;
+      --fuzz)
+         run_fuzz="true"
+         ;;
+      --e2e)
+         run_e2e="true"
+         ;;
+      --integration)
+         run_integration="true"
+         ;;
+      --all)
+         run_core="true"
+         run_fuzz="true"
+         run_e2e="true"
+         run_integration="true"
+         ;;
+      --repo-root)
+         repo_root="$2"
+         shift
+         ;;
+      --component)
+         component="$2"
+         shift
+         ;;
+      --component-root)
+         component_root="$2"
+         shift
+         ;;
+      --helper-scripts-root)
+         helper_scripts_root="$2"
+         shift
+         ;;
+      --skip)
+         skip_suites+=( "$2" )
+         shift
+         ;;
+      --progress)
+         progress_file="$2"
+         shift
+         ;;
+      --timeout-core)
+         timeout_core="$2"
+         shift
+         ;;
+      --timeout-fuzz)
+         timeout_fuzz="$2"
+         shift
+         ;;
+      --timeout-heavy)
+         timeout_heavy="$2"
+         shift
+         ;;
+      --list)
+         list_only="true"
+         ;;
+      --help|-h)
+         usage
+         exit 0
+         ;;
+      *)
+         printf 'dist-ai-tests-all: unknown option: %s\n' "$1" >&2
+         exit 2
+         ;;
    esac
    shift
 done
@@ -452,10 +569,11 @@ fi
 if [ -n "${component}" ]; then
    case "${component}" in
       helper-scripts|developer-meta-files|derivative-maker|msgcollector|onion-grater|privleap|pyte|genmkfile|open-link-confirmation|sdwdate-gui|setup-wizard-dist|secure-terminal|systemcheck|tb-updater|tor-control-panel)
-         : ;;
+         ;;
       *)
          printf 'dist-ai-tests-all: unknown --component: %s\n' "${component}" >&2
-         exit 2 ;;
+         exit 2
+         ;;
    esac
 fi
 
@@ -546,9 +664,15 @@ for item in "${selected[@]}"; do
    category="${item%%:*}"
    suite="${item#*:}"
    case "${category}" in
-      core)        run_suite "${suite}" "${category}" "${timeout_core}" ;;
-      fuzz)        run_suite "${suite}" "${category}" "${timeout_fuzz}" ;;
-      e2e|integration) run_suite "${suite}" "${category}" "${timeout_heavy}" ;;
+      core)
+         run_suite "${suite}" "${category}" "${timeout_core}"
+         ;;
+      fuzz)
+         run_suite "${suite}" "${category}" "${timeout_fuzz}"
+         ;;
+      e2e|integration)
+         run_suite "${suite}" "${category}" "${timeout_heavy}"
+         ;;
    esac
 done
 

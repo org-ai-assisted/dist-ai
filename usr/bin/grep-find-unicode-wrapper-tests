@@ -34,4 +34,6 @@ else
    tests_dir="${script_dir}/../share/grep-find-unicode-wrapper-tests"
 fi
 
-exec python3 -- "${tests_dir}/grep_find_unicode_wrapper_test.py" "$@"
+rc=0
+python3 -- "${tests_dir}/grep_find_unicode_wrapper_test.py" "$@" || rc=$?
+exit "$rc"

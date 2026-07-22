@@ -31,4 +31,6 @@ else
    tests_dir="${script_dir}/../share/sanitize-string-tests"
 fi
 
-exec python3 -- "${tests_dir}/sanitize_family_test.py" "$@"
+rc=0
+python3 -- "${tests_dir}/sanitize_family_test.py" "$@" || rc=$?
+exit "$rc"

@@ -40,9 +40,13 @@ shopt -s shift_verbose
 ## genmkfile package -- neither the fork nor Kicksecure upstream -- as of
 ## 2026-07. Running it against the current package fails
 ## (install_safe_links check(s) failed). Skip (exit 77 -> SKIP) until the
-## feature lands; re-enable by removing this block.
-printf '%s\n' "SKIP: genmkfile 'rsync --safe-links' install handling not yet in the package (ahead-of-package); test disabled" >&2
-exit 77
+## feature lands; re-enable by setting test_enabled='true'. The variable gate
+## also keeps the body below reachable for shellcheck (no SC2317 cascade).
+test_enabled='false'
+if [ "${test_enabled}" != 'true' ]; then
+   printf '%s\n' "SKIP: genmkfile 'rsync --safe-links' install handling not yet in the package (ahead-of-package); test disabled" >&2
+   exit 77
+fi
 
 locate_genmkfile() {
    if [ -n "${GENMKFILE_BIN:-}" ]; then
@@ -64,9 +68,13 @@ locate_genmkfile() {
    return 1
 }
 
+## helper-scripts 'has' for the rsync presence check (R-090).
+# shellcheck disable=SC1091
+source /usr/libexec/helper-scripts/has.sh
+
 ## 'genmkfile install' shells out to rsync; without it the suite cannot
 ## exercise the code path, so SKIP rather than fail.
-if ! command -v rsync >/dev/null 2>&1; then
+if ! has rsync; then
    printf '%s\n' "SKIP: rsync not available" >&2
    exit 77
 fi
@@ -144,7 +152,7 @@ do_install "${s1_pkg}" "${s1_dest}"
 if [ "${rc}" -eq 0 ] && [ -f "${s1_dest}/usr/bin/normalfile" ] && [ -d "${s1_dest}/usr/bin" ]; then
    pass "normal file and directory installed (exit 0)"
 else
-   fail "normal file: exit ${rc}, normalfile present=$( [ -f "${s1_dest}/usr/bin/normalfile" ] && echo yes || echo no ), usr/bin dir=$( [ -d "${s1_dest}/usr/bin" ] && echo yes || echo no )"
+   fail "normal file: exit ${rc}, normalfile present=$( [ -f "${s1_dest}/usr/bin/normalfile" ] && printf '%s' yes || printf '%s' no ), usr/bin dir=$( [ -d "${s1_dest}/usr/bin" ] && printf '%s' yes || printf '%s' no )"
    printf '%s\n' "${out}" | tail -10
 fi
 
@@ -244,7 +252,7 @@ if [ "${rc}" -eq 0 ] \
    && [ -f "${s2d_dest}/usr/bin/realtarget" ]; then
    pass "safe in-tree symlink installed; guard did not fire (exit 0)"
 else
-   fail "safe in-tree symlink: exit ${rc}, safelink=$( [ -L "${s2d_dest}/usr/bin/safelink" ] && echo yes || echo no )"
+   fail "safe in-tree symlink: exit ${rc}, safelink=$( [ -L "${s2d_dest}/usr/bin/safelink" ] && printf '%s' yes || printf '%s' no )"
    printf '%s\n' "${out}" | tail -10
 fi
 
@@ -264,7 +272,7 @@ if [ "${rc}" -eq 0 ] \
    && [ -L "${s3_dest}/usr/bin/danglink" ]; then
    pass "dangling in-tree symlink tolerated; normal file still installed (exit 0)"
 else
-   fail "dangling symlink: exit ${rc}, normalfile=$( [ -f "${s3_dest}/usr/bin/normalfile" ] && echo yes || echo no ), danglink=$( [ -L "${s3_dest}/usr/bin/danglink" ] && echo yes || echo no )"
+   fail "dangling symlink: exit ${rc}, normalfile=$( [ -f "${s3_dest}/usr/bin/normalfile" ] && printf '%s' yes || printf '%s' no ), danglink=$( [ -L "${s3_dest}/usr/bin/danglink" ] && printf '%s' yes || printf '%s' no )"
    printf '%s\n' "${out}" | tail -10
 fi
 

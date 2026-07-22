@@ -26,4 +26,6 @@ else
   tests_dir="${script_dir}/../share/privleap-tests"
 fi
 
-exec python3 -- "${tests_dir}/parser_fuzz.py" --iterations 20000 --coverage "$@"
+rc=0
+python3 -- "${tests_dir}/parser_fuzz.py" --iterations 20000 --coverage "$@" || rc=$?
+exit "$rc"

@@ -30,4 +30,6 @@ else
   tests_dir="${script_dir}/../share/privleap-tests"
 fi
 
-exec python3 -- "${tests_dir}/session_fuzz.py" "$@"
+rc=0
+python3 -- "${tests_dir}/session_fuzz.py" "$@" || rc=$?
+exit "$rc"

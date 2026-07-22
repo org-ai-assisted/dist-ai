@@ -31,6 +31,11 @@ shopt -s shift_verbose
 LC_ALL=C
 export LC_ALL
 
+## helper-scripts 'has' for the command-presence checks (R-090). The suite
+## already requires the helper-scripts package (safe-rm below is from it).
+# shellcheck disable=SC1091
+source /usr/libexec/helper-scripts/has.sh
+
 if ! [ "${TB_UPDATER_TESTS_E2E:-}" = "1" ]; then
   printf '%s\n' "$0: These tests must be run via the tb-updater-tests-e2e entrypoint." >&2
   exit 1
@@ -43,14 +48,23 @@ verbose='false'
 scenario_filter=()
 while [ $# -gt 0 ]; do
    case "$1" in
-      -v|--verbose) verbose='true'; shift ;;
+      -v|--verbose)
+         verbose='true'
+         shift
+         ;;
       --)
          shift
          scenario_filter+=( "$@" )
          break
          ;;
-      -*) printf 'self-test: unknown flag %q\n' "$1" >&2; exit 2 ;;
-      *) scenario_filter+=( "$1" ); shift ;;
+      -*)
+         printf 'self-test: unknown flag %q\n' "$1" >&2
+         exit 2
+         ;;
+      *)
+         scenario_filter+=( "$1" )
+         shift
+         ;;
    esac
 done
 
@@ -61,6 +75,15 @@ fail_count=0
 failed_names=""
 
 die() { printf 'self-test: ERROR: %s\n' "$*" >&2; exit 2; }
+
+## EXIT-trap handler for the per-scenario subshell (below): forward the
+## scenario's real exit status into a file so the outer shell can read it, then
+## exit 0 so the standalone subshell never trips the still-active outer errexit.
+## A named function (not an inline-command trap) per R-051.
+forward_scenario_ec() {
+   printf '%s' "$?" > "${test_root}/.scenario_ec"
+   exit 0
+}
 
 ## Locate the shared headless-Wayland runner (wl-headless-run): installed
 ## alongside the suite (/usr/share/tb-updater-tests/wl-headless-run) or, from a
@@ -453,9 +476,9 @@ scenario_gui_input_mode_install() {
    fi
    resolve_wl_headless_run \
       || die "[gui mode] wl-headless-run not found next to the suite or in dist-ai-tests-common"
-   command -v labwc >/dev/null 2>&1 \
+   has labwc \
       || die "[gui mode] labwc not installed; the headless Wayland dialog run needs it"
-   command -v wtype >/dev/null 2>&1 \
+   has wtype \
       || die "[gui mode] wtype not installed; auto-confirming the real dialogs needs it"
 
    fix="$(fixture_dir_for tb)"
@@ -528,16 +551,19 @@ main() {
       fi
       setup
       ec=0
-      ## Run the scenario in a subshell that keeps errexit ACTIVE, so a failed
-      ## update-torbrowser aborts the scenario instead of falling through to
-      ## assertions that might pass anyway (a false PASS). A subshell that is
-      ## the operand of '||'/'&&'/'if' has errexit disabled even with an inner
-      ## 'set -e', so disable the outer errexit around a STANDALONE subshell and
-      ## capture its status instead.
-      set +o errexit
-      ( set -o errexit; "$scenario" )
-      ec=$?
-      set -o errexit
+      ## Run the scenario in a STANDALONE subshell that keeps errexit ACTIVE, so
+      ## a failed update-torbrowser aborts the scenario instead of falling
+      ## through to assertions that might pass anyway (a false PASS). A subshell
+      ## that is the operand of '||'/'&&'/'if' has errexit disabled even with an
+      ## inner 'set -e' (R-011 forbids toggling the outer errexit to work around
+      ## this). Instead, the subshell's EXIT trap forwards the real status
+      ## through a file and the subshell itself exits 0, so the outer errexit
+      ## never fires and no toggle is needed. $test_root exists here (setup()
+      ## just created it) and teardown() removes it, so the file leaks nothing.
+      ( set -o errexit
+        trap forward_scenario_ec EXIT
+        "$scenario" )
+      ec="$(cat -- "${test_root}/.scenario_ec")"
       if [ "$ec" = 0 ]; then
          printf '  [PASS] %s\n' "$scenario"
          pass_count=$((pass_count + 1))

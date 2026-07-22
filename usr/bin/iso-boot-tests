@@ -32,4 +32,6 @@ else
    tests_dir="${script_dir}/../share/iso-boot-tests"
 fi
 
-exec python3 -Bsu "${tests_dir}/run_leaktests.py" "$@"
+rc=0
+python3 -Bsu "${tests_dir}/run_leaktests.py" "$@" || rc=$?
+exit "$rc"

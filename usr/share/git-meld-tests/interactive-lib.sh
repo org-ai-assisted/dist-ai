@@ -23,12 +23,15 @@ set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
 
+# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
+source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/has.sh
+
 mydir="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )"
 bindir="${1:-/usr/bin}"
 gdr="${bindir}/git-diff-review"
 pyhelper="${mydir}/git-meld-tests-pty.py"
 
-if [ ! -x "${gdr}" ] || ! command -v python3 >/dev/null 2>&1 || [ ! -f "${pyhelper}" ]; then
+if [ ! -x "${gdr}" ] || ! has python3 || [ ! -f "${pyhelper}" ]; then
    printf '%s\n' "interactive-lib: git-diff-review / python3 / pty helper missing; skipping." >&2
    exit 77
 fi
@@ -43,7 +46,7 @@ git config --global user.email t@example.com
 git config --global user.name test
 git config --global init.defaultBranch master
 # shellcheck disable=SC2317
-cleanup() { rm --recursive --force -- "${work}"; }
+cleanup() { safe-rm --recursive --force -- "${work}"; }
 trap cleanup EXIT
 
 fails=0

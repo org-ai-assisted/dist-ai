@@ -25,4 +25,6 @@ else
    tests_dir="${script_dir}/../share/iso-boot-tests"
 fi
 
-exec python3 -Bsu "${tests_dir}/qmp_fuzz.py" "$@"
+rc=0
+python3 -Bsu "${tests_dir}/qmp_fuzz.py" "$@" || rc=$?
+exit "$rc"

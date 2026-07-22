@@ -36,11 +36,19 @@ set -o nounset
 set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
+shopt -s shift_verbose
 shopt -s nullglob
+
+## helper-scripts 'has' for the command-presence checks (R-090).
+# shellcheck disable=SC1091
+source /usr/libexec/helper-scripts/has.sh
 
 autoconfirm='true'
 case "${1:-}" in
-   --no-autoconfirm) autoconfirm='false'; shift ;;
+   --no-autoconfirm)
+      autoconfirm='false'
+      shift
+      ;;
 esac
 if [ "${1:-}" = '--' ]; then
    shift
@@ -51,11 +59,11 @@ if [ "$#" -eq 0 ]; then
    exit 2
 fi
 
-if ! command -v labwc >/dev/null 2>&1; then
+if ! has labwc; then
    printf '%s\n' 'wl-headless-run: labwc not installed (Debian: labwc); cannot start a headless Wayland compositor.' >&2
    exit 127
 fi
-if [ "${autoconfirm}" = 'true' ] && ! command -v wtype >/dev/null 2>&1; then
+if [ "${autoconfirm}" = 'true' ] && ! has wtype; then
    printf '%s\n' 'wl-headless-run: wtype not installed (Debian: wtype); cannot auto-confirm dialogs. Install it or pass --no-autoconfirm.' >&2
    exit 127
 fi
@@ -82,7 +90,7 @@ cleanup() {
    # shellcheck disable=SC2317
    wait "${labwc_pid}" 2>/dev/null || true
    # shellcheck disable=SC2317
-   rm --recursive --force -- "${runtime}"
+   safe-rm --recursive --force -- "${runtime}"
 }
 trap cleanup EXIT
 

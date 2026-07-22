@@ -55,7 +55,7 @@ export PYTHONPATH="${repo}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONP
 pkg="${repo}/usr/lib/python3/dist-packages/secure_terminal"
 
 work="$(mktemp --directory)"
-cleanup() { rm -r -f -- "${work}" 2>/dev/null || true; }
+cleanup() { safe-rm --recursive --force -- "${work}" 2>/dev/null || true; }
 trap cleanup EXIT
 export COVERAGE_FILE="${work}/.coverage"
 

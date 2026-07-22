@@ -31,7 +31,10 @@ if [ "${CI:-}" != "true" ] && [ "${ALLOW_LOCAL:-}" != "true" ]; then
    exit 1
 fi
 
-if ! command -v python3 >/dev/null 2>&1; then
+# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
+source /usr/libexec/helper-scripts/has.sh
+
+if ! has python3; then
    printf '%s\n' "${BASH_SOURCE[0]}: python3 not on PATH" >&2
    exit 2
 fi
@@ -42,4 +45,6 @@ script_dir="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )"
 ## 'git rev-parse' would resolve the wrong repo).
 repo_root="${DEVELOPER_META_FILES_PATH:?run via the github-org-tools-tests entrypoint}"
 
-exec python3 -- "${script_dir}/test_workflow_yaml.py" "${repo_root}"
+## Run as a child (not process-replacement exec): a plain final call forwards
+## the script's exit status under errexit, and keeps this wrapper in the ps tree.
+python3 -- "${script_dir}/test_workflow_yaml.py" "${repo_root}"
