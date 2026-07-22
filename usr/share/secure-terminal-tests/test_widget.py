@@ -368,6 +368,11 @@ rr.apply_mode('show')
 eq(rr.toPlainText().rstrip(), 'cafe' + chr(0x00E9), 'show re-renders existing scrollback')
 rr.apply_mode('box')
 eq(rr.toPlainText().rstrip(), 'cafe_', 'box re-renders the scrollback back')
+# a SAVED transcript stays lossless even in box mode: it names the byte inline
+# (Detail) rather than collapsing it to '_', while a copy still gives '_'
+eq(rr.transcript_text().rstrip(), 'cafe<U+00E9 LATIN SMALL LETTER E WITH ACUTE>',
+   'box mode: a saved transcript is lossless (names the codepoint, not "_")')
+eq(rr.toPlainText().rstrip(), 'cafe_', 'box mode: a copy still maps the box to "_"')
 # a mode toggle after a flood re-renders only the recent tail, not the full
 # scrollback: reveal expands each byte to an 8-char <U+XXXX>, so re-rendering 1MB
 # of raw would be ~8MB and freeze the UI. Bounded, the document stays small.
