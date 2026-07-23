@@ -233,9 +233,10 @@ ok('\u25a1' in _sh_export and '\u200b' not in _sh_export,
 
 # --- Zalgo flood: a base char plus thousands of stacked combining marks is one
 # grapheme cluster that makes the text engine (Qt in CLI mode, pyte's NFC merge in
-# TUI mode) reshape it in O(n^2) -- seconds of GUI freeze per line. cap_combining_runs
-# (CLI) and _SafeHistoryScreen.draw (TUI) bound the marks per base to the Unicode
-# stream-safe maximum, so a flood renders instantly and a real accent still lands.
+# TUI mode) reshape it in O(n^2) -- seconds of GUI freeze per line. The CLI cell
+# model (feed_line_edits) and _SafeHistoryScreen.draw (TUI) each bound the marks
+# per base cell to the Unicode stream-safe maximum -- escape-, read-boundary- and
+# cursor-move-proof -- so a flood renders instantly and a real accent still lands.
 import time as _tz                                       # noqa: E402
 _ac = '\u0301'                                           # combining acute
 # structural: the cap holds in every CLI render mode (100 marks -> at most 32 kept)
@@ -275,6 +276,13 @@ for _ in range(6):
     feed_output(_zsr, (_ac * 20).encode('utf-8'))     # 6 reads x 20 marks = 120
 ok(_zsr.toPlainText().count(_ac) <= 32,
    'zalgo CLI: a flood split across PTY reads is still bounded to the cap')
+# stripped-SGR CLI bypass: an SGR reset between mark-blocks leaves no cell, so the
+# marks stay adjacent to one base -- capping on the raw stream would be fooled, but
+# the cell-level cap is not
+_zsgr = SecureTerminal(command='/bin/cat'); _zsgr.apply_mode('show')
+feed_output(_zsgr, ('a' + (_ac * 20 + '\x1b[0m') * 6).encode('utf-8'))
+ok(_zsgr.toPlainText().count(_ac) <= 32,
+   'zalgo CLI: a stripped SGR between mark-blocks cannot reset the cap')
 # cursor-move TUI: steer many capped chunks back onto ONE cell via CSI G; the
 # per-cell cap must stop it growing unbounded (the stream-run counter could not)
 _zcm = SecureTerminal(command='/bin/cat', tui=True)
