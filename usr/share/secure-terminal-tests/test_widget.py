@@ -2501,12 +2501,16 @@ ok(_tgsent == [], 'a refused switch writes nothing to the shell')
 _tg.has_foreground_program = lambda: False            # at a prompt now
 ok(_tg.apply_tui(True) is True and _tg._tui is True,
    'apply_tui switches to TUI at a shell prompt')
-ok(b'export TERM=xterm-256color\n' in _tgsent,
-   'CLI->TUI re-exports the full terminfo to the running shell')
+# CR (\r), not \n: zsh's zle binds accept-line to CR, so \n would leave the
+# re-export unsubmitted at the prompt (regression: TUI->CLI "not auto sent").
+ok(b'export TERM=xterm-256color\r' in _tgsent,
+   'CLI->TUI re-exports the full terminfo to the running shell, CR-terminated')
+ok(not any(b'export TERM=xterm-256color\n' in s for s in _tgsent),
+   'the re-export is NOT \\n-terminated (would not submit under zle)')
 _tgsent.clear()
 _tg.apply_tui(False)
-ok(b'export TERM=secure-terminal\n' in _tgsent,
-   'TUI->CLI re-exports the restricted terminfo to the running shell')
+ok(b'export TERM=secure-terminal\r' in _tgsent,
+   'TUI->CLI re-exports the restricted terminfo to the running shell, CR-terminated')
 _tg.close()
 
 # --- truecolour / 256-colour rendering (CLI line mode) ------------------------
