@@ -60,13 +60,12 @@ here="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 out="${here}/shots"
 mkdir --parents -- "${out}"
 
+## the shared hostile-DATA contract (payload command + log generation).
+# shellcheck source=./lib-capture.sh
+source "${here}/lib-capture.sh"
+
 host_display="${DISPLAY:-:0}"
 THEME='Clearlooks'
-RANDOM_BYTES=1200
-## Case A reads /dev/random (not /dev/urandom): on a modern kernel the two are
-## equivalent once the pool is seeded, and Kicksecure prefers /dev/random. See
-## https://www.kicksecure.com/wiki/Dev/Entropy#/dev/random_vs._/dev/urandom
-RANDOM_SOURCE='/dev/random'
 ## Clearlooks title bar + border height (fallback if _NET_FRAME_EXTENTS is unread).
 FRAME_TOP=26
 
@@ -79,8 +78,7 @@ mkdir --parents -- "${HOME}" "${XDG_CONFIG_HOME}/labwc"
 ## Generate the two payloads from their deterministic ASCII source scripts (so
 ## this subsystem is self-contained and its source stays ASCII -- the non-ASCII
 ## homoglyph byte exists only in the generated file).
-"${here}/make-hostile-log.sh"   > "${HOME}/hostile.log"
-"${here}/make-homoglyph-log.sh" > "${HOME}/homoglyph.log"
+shots_generate_logs "${here}" "${HOME}"
 cat > "${HOME}/.strc" <<'RC'
 PS1='user@host:~$ '
 RC
@@ -115,20 +113,6 @@ XML
 
 ## launch each emulator FROM ${HOME} so a plain "cat hostile.log" finds it.
 cd "${HOME}"
-
-cmd_for() {  ## $1=case
-   case "$1" in
-      crafted)
-         printf 'cat hostile.log'
-         ;;
-      random)
-         printf 'head -c %s %s' "${RANDOM_BYTES}" "${RANDOM_SOURCE}"
-         ;;
-      homoglyph)
-         printf 'cat homoglyph.log'
-         ;;
-   esac
-}
 
 wm_pid=''
 labwc_wid=''
@@ -307,7 +291,7 @@ shoot() {  ## $1=emulator  $2=case
       sleep 0.7
    fi
    sleep 2
-   inject "${wid}" "$(cmd_for "${case}")"
+   inject "${wid}" "$(shots_payload_cmd "${case}")"
    sleep 3
    ww="$(DISPLAY="${xwl_display}" xdotool getwindowgeometry --shell "${wid}" 2>/dev/null | sed -n 's/^WIDTH=//p' || true)"
    if [ -n "${ww}" ] && [ "${ww}" -lt 300 ]; then
@@ -370,7 +354,7 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       stwid="$(find_window || true)"
       if [ -n "${stwid}" ]; then
          sleep 2
-         inject "${stwid}" "$(cmd_for "${st_case}")"
+         inject "${stwid}" "$(shots_payload_cmd "${st_case}")"
          sleep 3
          capture_window "${out}/secure-terminal.${st_suffix}.png" "${stwid}"
       else

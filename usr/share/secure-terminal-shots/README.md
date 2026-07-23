@@ -47,6 +47,16 @@ on an LXQt desktop. It writes to its own `shots/`; copy those to the site's
 - **Case C - homoglyph.** `homoglyph-log.txt`: an install one-liner whose domain
   hides a Cyrillic look-alike (U+0430 for Latin a).
 
+These three cases (the payload command + the log generation) are defined ONCE in
+`lib-capture.sh`, sourced by both comparison generators - the X11
+`comparison-capture.sh` and the native-Wayland `wayland-capture.sh` - so the
+cases cannot drift between them. The two generators otherwise stay self-contained
+(each carries its own compositor/grab pipeline): the sandbox they run in has no
+package of ours installed, so the whole `secure-terminal-shots/` tree must travel
+in as one self-contained unit. This is why they do NOT reuse dist-ai-config's
+generic `headless-capture` (a separate single-terminal debug tool); sharing that
+plumbing cross-repo would not save a copy under the copy-into-sandbox model.
+
 ### What you should see
 
 Every traditional emulator interprets the escapes (corrupted screen, stuck colour

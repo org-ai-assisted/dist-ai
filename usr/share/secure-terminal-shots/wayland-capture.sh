@@ -117,24 +117,13 @@ x11_terminals=(xterm urxvt st)
 mkdir --parents -- "${out_dir}"
 here="$(cd -- "$(dirname -- "$0")" && pwd)"
 
+## the shared hostile-DATA contract (payload command + log generation).
+# shellcheck source=./lib-capture.sh
+source "${here}/lib-capture.sh"
+
 ## ---- generate the hostile DATA logs once (deterministic); the demo CATs them ---
 work="$(mktemp -d)"
-"${here}/make-hostile-log.sh"   > "${work}/hostile.log"
-"${here}/make-homoglyph-log.sh" > "${work}/homoglyph.log"
-
-payload_cmd() {                          ## the command each terminal DISPLAYS
-   case "$1" in
-      crafted)
-         printf 'cat hostile.log'
-         ;;
-      homoglyph)
-         printf 'cat homoglyph.log'
-         ;;
-      random)
-         printf 'head -c 1200 /dev/random'   ## Kicksecure entropy guidance
-         ;;
-   esac
-}
+shots_generate_logs "${here}" "${work}"
 
 ## ---- labwc on the X11 backend (also gives us an Xwayland for the X11 set) -----
 xvfb_pid=''
@@ -281,7 +270,7 @@ esac
 rc=0
 for name in "${term_list[@]}"; do
    for c in "${cases[@]}"; do
-      launch_terminal "${name}" "$(payload_cmd "${c}")"
+      launch_terminal "${name}" "$(shots_payload_cmd "${c}")"
       sleep "${settle}"
       capture_one "${out_dir}/${name}.${c}.png" && rc=0 || rc=$?
       case "${rc}" in
