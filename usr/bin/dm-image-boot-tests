@@ -49,7 +49,7 @@ fi
 image_given='false'
 for arg in "$@"; do
    case "${arg}" in
-      --disk|--iso)
+      --disk|--iso|--disk=*|--iso=*)
          image_given='true'
          break
          ;;

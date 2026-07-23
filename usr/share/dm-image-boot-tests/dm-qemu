@@ -634,7 +634,10 @@ if [ "${emit_argv}" = 'true' ]; then
    ## list and spawn (e.g. Python pexpect). One-token-per-line is unambiguous even though the
    ## '-append' value contains spaces: each array element is exactly one line, and no element
    ## contains a newline. The caller adds its own serial wiring ('-serial mon:stdio' etc.).
-   if [ "${direct_kernel}" = 'true' ]; then
+   ## Report the per-boot workdir for ANY path that created one (direct-kernel
+   ## extraction OR the EFI OVMF_VARS copy), so the caller can remove it after
+   ## qemu exits; --emit-argv deliberately leaves it untrapped here.
+   if [ -n "${work_dir:-}" ]; then
       printf 'dm-qemu: emit-argv workdir (caller owns cleanup): %s\n' "${work_dir}" >&2
    fi
    printf '%s\n' "${qemu_bin}"

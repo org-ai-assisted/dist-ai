@@ -142,7 +142,16 @@ def build_qemu_argv(args):
     argv = [line for line in result.stdout.splitlines() if line != ""]
     if not argv:
         die_setup("dm-qemu --emit-argv produced no qemu argv")
-    return argv
+
+    ## dm-qemu leaves any per-boot workdir (kernel/initrd extraction or the EFI
+    ## OVMF_VARS copy) for us to remove once qemu has exited; it reports the path
+    ## on stderr. Capture it so we clean up instead of leaking under /tmp.
+    workdir = None
+    marker = "dm-qemu: emit-argv workdir (caller owns cleanup): "
+    for line in (result.stderr or "").splitlines():
+        if line.startswith(marker):
+            workdir = line[len(marker):].strip()
+    return argv, workdir
 
 
 def run_checks(child, args, log):
@@ -163,10 +172,16 @@ def run_checks(child, args, log):
 
     accum = [""]
 
+    ## Single overall deadline so --timeout bounds the WHOLE conversation, not
+    ## each phase independently (a short --timeout must not still run ~10 min
+    ## through the 60-iteration probe plus a full per-phase wait each).
+    overall_deadline = time.time() + args.timeout
+
     def wait_for(needle, timeout, regex=False):
-        """Read until 'needle' appears in the accumulated output, or timeout.
-        Returns the re.Match (regex) / True (substring) / None on timeout|EOF."""
-        deadline = time.time() + timeout
+        """Read until 'needle' appears in the accumulated output, or the phase
+        timeout or the overall deadline, whichever is first. Returns the re.Match
+        (regex) / True (substring) / None on timeout|EOF."""
+        deadline = min(time.time() + timeout, overall_deadline)
         pattern = re.compile(needle) if regex else None
         while time.time() < deadline:
             try:
@@ -190,6 +205,8 @@ def run_checks(child, args, log):
     needle = "DM<>%s<>" % token
     shell_live = False
     for _ in range(60):
+        if time.time() >= overall_deadline:
+            break
         child.sendline("printf 'DM<>%%s<>\\n' %s" % token)
         if wait_for(needle, 10):
             shell_live = True
@@ -255,7 +272,7 @@ def main():
     except ImportError:
         die_setup("python3-pexpect is required (apt-get install python3-pexpect)")
 
-    qemu_argv = build_qemu_argv(args)
+    qemu_argv, qemu_workdir = build_qemu_argv(args)
 
     log_file = None
     if args.serial_log:
@@ -287,6 +304,12 @@ def main():
     finally:
         if child.isalive():
             child.terminate(force=True)
+        ## Remove the per-boot workdir dm-qemu left for us (EFI OVMF_VARS copy or
+        ## kernel/initrd extraction), now that qemu has exited -- else repeated
+        ## boots leak directories under /tmp.
+        if qemu_workdir:
+            import shutil
+            shutil.rmtree(qemu_workdir, ignore_errors=True)
 
     sys.exit(verdict)
 

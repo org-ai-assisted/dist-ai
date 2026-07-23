@@ -1,13 +1,17 @@
 # Pending AI reviews
 
-## dm-image-boot-tests suite move (commit 2a7dd43)
-- Scope: `ai-review HEAD~1` timed out (481s ceiling, both codex + coderabbit
-  killed with zero output) -- the large verbatim moved files (dm-qemu ~37KB +
-  arch wrappers) bloat/stall the reviewers. NO-RESULT, not a clean pass.
-- Genuinely new logic to review: `usr/bin/dm-image-boot-tests` (the runner) and
-  the `dist-ai-tests-all` registration (integration_suites / suite_component /
-  wire). The bundled dm-qemu/dm-image-test are byte-identical relocations.
-- Already validated: shellcheck clean; SKIP-77 on no-image; correct dm-qemu
-  wiring (propagates setup error); runs clean through the aggregate runner.
-- Re-run on backoff, ideally scoped to just the runner (a throwaway commit with
-  only usr/bin/dm-image-boot-tests), or `--detach` with a longer ceiling.
+## dm-image-boot-tests suite (codex: DONE + addressed; coderabbit: pending)
+- codex (detached retry) returned 6 findings, all reconciled + fixed in the
+  follow-up commit:
+  - P1 aggregate-always-SKIPs -> removed from integration_suites (standalone-only,
+    like iso-boot-tests); runs via the dedicated boot-test lane, not the aggregate.
+  - qemu-utils added to Depends (dm-qemu needs qemu-img); arm64 qemu + UEFI as
+    Recommends.
+  - runner accepts --disk=/--iso= equals-form.
+  - dm-image-test: single overall deadline across all phases (was per-phase; a
+    short --timeout could still run ~10 min via the 60x probe).
+  - dm-qemu reports the per-boot workdir for ALL --emit-argv paths (EFI OVMF_VARS
+    too, not just direct-kernel); dm-image-test rmtree's it after qemu exits.
+- coderabbit timed out with zero output on BOTH runs (large moved-files diff /
+  sandbox load) -- NOT reviewed. Re-run coderabbit alone on a backoff:
+  `ai-review HEAD~1 --with coderabbit` once the diff is just the fix commit.

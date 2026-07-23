@@ -936,7 +936,12 @@ Architecture: all
 Depends: ${misc:Depends},
  python3,
  python3-pexpect,
- qemu-system-x86
+ qemu-system-x86,
+ qemu-utils
+## arm64 boot-testing (the --arch arm64 wrappers) needs the aarch64 emulator and
+## UEFI firmware; Recommends, not Depends, so an x86-only install stays lean.
+Recommends: qemu-system-arm,
+ qemu-efi-aarch64
 Description: Headless serial boot + functional checks for a built VM disk image
  Boots a freshly built derivative-maker VM image (qcow2/raw/vdi/vmdk) or ISO in
  qemu, headless, and drives it over a login-free ROOT serial shell (dm-qemu
