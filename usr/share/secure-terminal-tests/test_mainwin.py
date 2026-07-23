@@ -1393,22 +1393,29 @@ try:
     _dw.close()
     _dw.deleteLater()
 
-    # #88: the previously-focused tab is brought into focus ONCE after the quiet
-    # restore -- not tab 0, and without flashing through the others.
+    # #88/#92: the previously-focused tab is the one SHOWN immediately (never tab 0
+    # first), and the others fill in AROUND it at their saved positions -- the active
+    # widget stays visible throughout, so nothing flashes. Restore tab 2 as active.
     _ds.save([{'name': 'a0', 'text': 'a\n', 'osc': {}},
               {'name': 'a1', 'text': 'b\n', 'osc': {}},
               {'name': 'a2', 'text': 'c\n', 'osc': {}}], active=2)
     _aw = MainWindow()
-    _asw = []
-    _aw.tabs.currentChanged.connect(lambda i: _asw.append(i))
+    _active_w = _aw.current()                     # shown FIRST, before any deferred
+    eq(_aw._user_titles.get(_active_w, ''), 'a2',
+       '#92: the saved active tab is shown first, not tab 0')
+    _shown = set()
+    _aw.tabs.currentChanged.connect(lambda _i: _shown.add(_aw.current()))
     for _ in range(40):
         _l = _QEL59()
         QTimer.singleShot(20, _l.quit)
         _l.exec()
-        if _aw.tabs.count() >= 3 and _aw._restore_active is None:
+        if _aw.tabs.count() >= 3 and not _aw._deferred_restore:
             break
-    eq(_aw.tabs.currentIndex(), 2, '#88: the last focused tab (2) is brought into focus')
-    ok(len(_asw) <= 1, '#88: at most one intentional focus switch, no flashing')
+    eq([_aw._user_titles.get(_aw.tabs.widget(_i), '') for _i in range(3)],
+       ['a0', 'a1', 'a2'], '#92: the restored tabs keep their saved order')
+    eq(_aw.current(), _active_w, '#92: the active tab is still current after restore')
+    ok(_shown <= {_active_w},
+       '#92: only the active tab is ever shown -- no first-tab flash')
     _aw.close()
     _aw.deleteLater()
     # a saved active index that no longer fits the restored tabs is ignored (the
