@@ -38,6 +38,7 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 | `grep-find-unicode-wrapper-tests` | shipping | `usr/share/grep-find-unicode-wrapper-tests/` |
 | `setup-wizard-dist-tests` | shipping | `usr/share/setup-wizard-dist-tests/` |
 | `iso-boot-tests`         | shipping | `usr/share/iso-boot-tests/` |
+| `dm-image-boot-tests`    | shipping | `usr/share/dm-image-boot-tests/` |
 | `check-ref-commits-for-unicode-tests` | shipping | `usr/share/check-ref-commits-for-unicode-tests/` |
 | `developer-meta-files-tests` | shipping | `usr/share/developer-meta-files-tests/` |
 | `github-org-tools-tests` | shipping | `usr/share/github-org-tools-tests/` |

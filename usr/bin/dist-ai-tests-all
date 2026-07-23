@@ -92,6 +92,7 @@ e2e_suites=(
    tb-updater-tests-e2e
 )
 integration_suites=(
+   dm-image-boot-tests
    sdwdate-gui-tests-integration
    secure-terminal-tests-apparmor
    tb-updater-tests-sandbox-resume
@@ -356,6 +357,12 @@ wire() {
          ## secure-terminal component checkout.
          wire_env=( "SECURE_TERMINAL_REPO=$( pkg_dir secure-terminal )" )
          ;;
+      dm-image-boot)
+         ## Self-contained: bundles its own dm-qemu + dm-image-test under
+         ## usr/share/dm-image-boot-tests and takes the image to boot from the
+         ## caller's --disk/--iso arg, not from a checkout. No wiring needed; it
+         ## SKIPs (77) on its own when no image is given.
+         ;;
       *)
          printf 'dist-ai-tests-all: no wiring for suite %s\n' "${suite}" >&2
          return 1
@@ -376,7 +383,7 @@ suite_component() {
       developer-meta-files|github-org-tools|git-meld|dm-virtualbox-wiki-links)
          printf '%s' 'developer-meta-files'
          ;;
-      dm-help-steps)
+      dm-help-steps|dm-image-boot)
          printf '%s' 'derivative-maker'
          ;;
       onion-grater)

@@ -931,6 +931,32 @@ Description: Headless serial boot + leak tests for a built derivative-maker ISO
  KVM the boots are slow (tens of minutes each); --fast appends mitigations=off
  for pure-TCG hosts, which is a speed hack, not a security-fidelity test.
 
+Package: dm-image-boot-tests
+Architecture: all
+Depends: ${misc:Depends},
+ python3,
+ python3-pexpect,
+ qemu-system-x86
+Description: Headless serial boot + functional checks for a built VM disk image
+ Boots a freshly built derivative-maker VM image (qcow2/raw/vdi/vmdk) or ISO in
+ qemu, headless, and drives it over a login-free ROOT serial shell (dm-qemu
+ --test-console: systemd debug-shell with the login getty masked), runs the
+ functional checks (default 'systemcheck --cli --leak-tests') and powers off,
+ reporting one pass/fail exit code. The disk-image successor to iso-boot-tests:
+ it sidesteps the interactive user zsh (whose line editor corrupts programmatic
+ serial input) by driving root bash directly.
+ .
+ Self-contained: it bundles its own dm-qemu (qemu/firmware/SecureBoot + SMBIOS
+ kernel-cmdline injection) and dm-image-test (the boot + checks driver) under
+ /usr/share/dm-image-boot-tests, so it needs no derivative-maker checkout -- only
+ a built image and qemu on the BUILD HOST. SKIPs (exit 77) when no --disk/--iso
+ is given or qemu is absent.
+ .
+ Session note: --session sysmaint applies only to GUI (lxqt) flavors; CLI images
+ ship no user-sysmaint-split by design, so run only --session user against them.
+ Without KVM the boots are slow (pure-TCG); --fast appends mitigations=off, a
+ speed hack, not a security-fidelity test.
+
 Package: dist-ai-tests-all
 Architecture: all
 Depends: ${misc:Depends},
@@ -947,6 +973,7 @@ Description: Aggregate runner for the dist-ai test suites
  when the target is absent. The individual test packages are Recommends, not
  Depends, so this runner can be installed alongside any subset of them.
 Recommends: check-ref-commits-for-unicode-tests,
+ dm-image-boot-tests,
  dm-virtualbox-wiki-links-tests,
  genmkfile-tests,
  git-meld-tests,

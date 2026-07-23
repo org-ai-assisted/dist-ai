@@ -1,0 +1,75 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Boot a built derivative-maker VM disk image (or ISO) headless and run
+## functional checks over a login-free ROOT serial shell (dm-qemu --test-console:
+## systemd debug-shell + masked login getty), then report one pass/fail code.
+## This is the disk-image successor to iso-boot-tests: dm-image-test drives the
+## boot + checks, dm-qemu (bundled here) owns qemu/firmware/SecureBoot + the
+## SMBIOS kernel-cmdline injection. Self-contained -- needs no derivative-maker
+## checkout, only a built image + qemu on the BUILD HOST.
+##
+## All arguments are forwarded to dm-image-test, notably:
+##   --disk PATH          the VM image to boot (qcow2/raw/vdi/vmdk)
+##   --iso PATH           a live ISO instead
+##   --firmware bios|efi|efi-secureboot
+##   --session user|sysmaint   (sysmaint exists only on GUI/lxqt flavors -- do
+##                              NOT run --session sysmaint against a CLI image;
+##                              CLI images ship no user-sysmaint-split by design)
+##   --run CMD            extra check (default: systemcheck --cli --leak-tests)
+##
+## Exit codes (dist-ai-tests-all contract):
+##   0   PASS (or checks passed)
+##   77  SKIP (no image given, or qemu missing -- cannot boot-test here)
+##   else FAIL (dm-image-test FAIL/setup error, propagated)
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+SKIP=77
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/dm-image-boot-tests' ]; then
+   tests_dir='/usr/share/dm-image-boot-tests'
+else
+   tests_dir="${script_dir}/../share/dm-image-boot-tests"
+fi
+
+## SKIP when no image is supplied: this suite only runs on a build host that has
+## a freshly built image to hand, never in the generic trixie-slim CI container.
+image_given='false'
+for arg in "$@"; do
+   case "${arg}" in
+      --disk|--iso)
+         image_given='true'
+         break
+         ;;
+   esac
+done
+if [ "${image_given}" != 'true' ]; then
+   printf '%s\n' "dm-image-boot-tests: no --disk/--iso given; nothing to boot-test. SKIP." >&2
+   exit "${SKIP}"
+fi
+
+## SKIP when no qemu: a boot test is impossible, not a failure.
+if ! type -P qemu-system-x86_64 >/dev/null 2>&1 \
+   && ! type -P qemu-system-aarch64 >/dev/null 2>&1; then
+   printf '%s\n' "dm-image-boot-tests: no qemu-system-* on PATH; cannot boot-test here. SKIP." >&2
+   exit "${SKIP}"
+fi
+
+## Drive dm-image-test, pointing it at the bundled dm-qemu (both live in tests_dir).
+## dm-image-test returns 0 (PASS) / 5 (FAIL) / 2 (setup); all non-zero propagate
+## as FAIL, which is what the aggregate runner wants.
+rc=0
+python3 -Bsu "${tests_dir}/dm-image-test" --dm-qemu "${tests_dir}/dm-qemu" "$@" || rc=$?
+exit "${rc}"
