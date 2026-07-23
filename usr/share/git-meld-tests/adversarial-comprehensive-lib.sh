@@ -386,21 +386,21 @@ else
    fail "unexpected mode not warned; saw: $(printf '%s' "${mode_out}"|tr '\n' '|'|cut -c1-160)"
 fi
 
-## --- GUI viewer exiting NON-ZERO must not abort the review ---
+## --- kdiff3 exiting NON-ZERO must not abort the review ---
 ## kdiff3 returns exit 1 whenever its two inputs differ (diff(1) convention) and
-## every reviewed file differs, so an un-swallowed viewer exit made git report
-## "external diff died" and abort the WHOLE batch review on the first changed
-## file. display_regular_file must swallow it ('|| true'). GUI drivers only; the
-## textual git-diff-review has no viewer to swallow. Runs against whichever GUI
-## wrapper is under test (the runner loops meld + kdiff3 through here).
+## every reviewed file differs, so an un-swallowed exit made git report "external
+## diff died" and abort the WHOLE batch review on the first changed file.
+## git-kdiff3's display_regular_file must swallow it ('|| true'). Only kdiff3 is
+## asserted: meld returns 0 on close, so git-meld deliberately does NOT swallow
+## (an actual meld error should surface, not be hidden); git-diff-review is
+## textual with no viewer to swallow. The runner loops this suite over both.
 case "$( basename -- "${GIT_MELD}" )" in
-   git-meld)   nz_gui='meld'   ;;
    git-kdiff3) nz_gui='kdiff3' ;;
    *)          nz_gui=''       ;;
 esac
 if [ -n "${nz_gui}" ]; then
    new_repo; printf '#!/bin/sh\necho changed\n' >a.sh; git add -A; git commit -qm x
-   ## Stub the driven viewer to FAIL, mimicking kdiff3's differ-exit / a viewer error.
+   ## Stub kdiff3 to FAIL, mimicking its exit-1-on-differ.
    cat >"${work}/bin/${nz_gui}" <<EOF
 #!/bin/bash
 printf 'DISPLAY:%s\n' "\$*" >>"${meld_log}"
