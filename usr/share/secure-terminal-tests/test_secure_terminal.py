@@ -245,6 +245,13 @@ eq(S.split_trailing_escape('a\x1b[38;5'), ('a', '\x1b[38;5'),
 eq(S.split_trailing_escape('a\x1b[0m'), ('a\x1b[0m', ''),
    'a complete CSI (has its final byte) is not carried')
 eq(S.split_trailing_escape('done\x1b'), ('done', '\x1b'), 'a lone trailing ESC is carried')
+# an ESC NOT at the end (a control byte follows it) is not a trailing carry: the
+# regex anchors with \Z, not $, so a trailing newline after a stray ESC is kept,
+# never dropped (a real data-loss bug when $ matched before the final newline).
+eq(S.split_trailing_escape('\x1b\n'), ('\x1b\n', ''),
+   'ESC followed by a newline carries nothing and never drops the newline')
+eq(S.split_trailing_escape('x\x1b\ny'), ('x\x1b\ny', ''),
+   'an ESC mid-text (newline after) is not treated as a trailing escape')
 eq(S.split_trailing_escape('no escapes here'), ('no escapes here', ''),
    'plain text carries nothing')
 eq(S.split_trailing_escape('\x1b]2;' + 'x' * 5000)[1], '',
