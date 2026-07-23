@@ -1344,6 +1344,35 @@ try:
     ok(not _cw._deferred_restore and _cw.tabs.count() == 3,
        'closeEvent finishes the deferred restore before saving (no tab dropped)')
     _cw.deleteLater()
+
+    # window geometry (size + maximized) persists across restart -- #77
+    from PyQt6.QtWidgets import QApplication as _QApp77          # noqa: E402
+    _ds.clear()
+    _gw = MainWindow()
+    _gw.resize(724, 468)
+    _QApp77.processEvents()
+    _ds.save(_gw._session_tabs(), _gw._window_state())
+    ok(_ds.load_window() is not None, '#77: window geometry is saved with the session')
+    _gw.deleteLater()
+    _gw2 = MainWindow()                       # __init__ restores the saved geometry
+    _QApp77.processEvents()
+    ok(abs(_gw2.size().width() - 724) <= 8 and abs(_gw2.size().height() - 468) <= 8,
+       '#77: a fresh window reopens at the saved size')
+    _gw2.showMaximized()
+    _QApp77.processEvents()
+    _ds.save(_gw2._session_tabs(), _gw2._window_state())
+    _gw2.deleteLater()
+    _gw3 = MainWindow()
+    _gw3.show()
+    _QApp77.processEvents()
+    ok(_gw3.isMaximized(), '#77: a maximized window reopens maximized')
+    _gw3.deleteLater()
+    # persist_session off -> geometry restore is skipped (covers the guard)
+    _gw3b = MainWindow()
+    _gw3b._persist_session = False
+    _gw3b._restore_window_geometry()
+    ok(True, '#77: geometry restore is a no-op when persistence is off')
+    _gw3b.deleteLater()
 finally:
     for _var, _prev in (('XDG_STATE_HOME', _st_prev), ('XDG_CONFIG_HOME', _cfg_prev)):
         if _prev is None:

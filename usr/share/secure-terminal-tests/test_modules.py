@@ -231,6 +231,22 @@ eq(session.load(), [], 'session: a corrupt index loads as an empty session')
 session._write_atomic(session.session_path(), json.dumps({'tabs': 'nope'}))
 eq(session.load(), [], "session: a non-list 'tabs' value loads as empty")
 
+# window geometry blob round-trips; anything not a non-empty string -> None (#77)
+session.save([{'name': 'a', 'text': ''}], 'QkxPQg==')
+eq(session.load_window(), 'QkxPQg==', 'session: the window geometry blob round-trips')
+session.save([{'name': 'a', 'text': ''}])                 # no window arg
+eq(session.load_window(), None, 'session: no saved window -> None')
+session.save([{'name': 'a', 'text': ''}], '')             # empty string ignored
+eq(session.load_window(), None, 'session: an empty window blob is not saved')
+session.save([{'name': 'a', 'text': ''}], 123)            # non-str ignored
+eq(session.load_window(), None, 'session: a non-string window value is not saved')
+session._write_atomic(session.session_path(), 'not json')
+eq(session.load_window(), None, 'session: load_window on corrupt json -> None')
+session._write_atomic(session.session_path(), json.dumps(['a', 'list']))
+eq(session.load_window(), None, 'session: load_window on a non-dict payload -> None')
+session._write_atomic(session.session_path(), json.dumps({'tabs': [], 'window': 9}))
+eq(session.load_window(), None, 'session: a non-string saved window loads as None')
+
 # clear removes the index and logs; a second clear on nothing is a no-op
 session.clear()
 ok(not os.path.exists(session.session_path()),
