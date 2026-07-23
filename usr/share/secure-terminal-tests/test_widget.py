@@ -182,6 +182,18 @@ zr._append('export TERM=secure-terminal\x1b[27D'
            '\x1b[37mi\x1b[37mn\x1b[37ma\x1b[37ml\x1b[39m')
 eq(zr.toPlainText().rstrip(), 'export TERM=secure-terminal',
    'burst re-export echo resolves cleanly, not "eexport ..."')
+# BEL is cursor-neutral (rings the bell, writes no cell, moves no column) -- like
+# every real terminal. Treating it as a cell shifted the cursor one column off on
+# any line-editor redraw that beeps (a completion menu emits BEL), so a following
+# backspace+reprint duplicated a character: the garbled tab-completion (#87).
+zbel = SecureTerminal(command='/bin/cat')
+zbel._append('abc\x07def')
+eq(zbel.toPlainText().rstrip(), 'abcdef',
+   'a BEL is consumed: no cell and no cursor movement')
+zbel2 = SecureTerminal(command='/bin/cat')
+zbel2._append('ls a\x07\x08a')          # typed text, completion beep, redraw
+eq(zbel2.toPlainText().rstrip(), 'ls a',
+   'a BEL before a backspace+reprint does not duplicate a char (#87)')
 
 # The neutralized-byte placeholder is DISPLAYED as a box (U+25A1) for readability,
 # but every text export (copy / save / toPlainText) maps it back to ASCII '_', so
