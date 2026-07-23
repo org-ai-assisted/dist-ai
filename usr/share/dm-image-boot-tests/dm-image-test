@@ -73,7 +73,7 @@ def parse_args():
     parser.add_argument(
         "--run", action="append", metavar="CMD", default=None,
         help="command to run after login (repeatable). "
-        "Default: 'systemcheck --cli --verbose --leak-tests'.",
+        "Default: 'systemcheck --cli --leak-tests --verbose'.",
     )
     parser.add_argument(
         "--expect-rc", type=int, default=0,
@@ -229,7 +229,7 @@ def run_checks(child, args, log):
     ##    non-interactive 'su -', never touching the user's interactive shell.
     commands = args.run
     if commands is None:
-        commands = ["systemcheck --cli --verbose --leak-tests"]
+        commands = ["systemcheck --cli --leak-tests --verbose"]
     sentinel = "DMRC%d" % os.getpid()
     rc_re = r"%s:(-?\d+):%s" % (sentinel, sentinel)
     overall = PASS
@@ -255,10 +255,13 @@ def run_checks(child, args, log):
                 % (rc, args.expect_rc, command))
             overall = FAIL
 
-    ## 4) Power off (best-effort; the verdict is already decided).
+    ## 4) Power off (best-effort; the verdict is already decided). Bound the wait
+    ##    by the overall deadline so --timeout covers shutdown too; main's finally
+    ##    force-terminates qemu regardless.
     child.sendline("poweroff")
+    shutdown_wait = max(1, min(120, overall_deadline - time.time()))
     try:
-        child.expect(pexpect.EOF, timeout=120)
+        child.expect(pexpect.EOF, timeout=shutdown_wait)
     except (pexpect.TIMEOUT, pexpect.EOF):
         pass
     return overall
@@ -274,39 +277,40 @@ def main():
 
     qemu_argv, qemu_workdir = build_qemu_argv(args)
 
-    log_file = None
-    if args.serial_log:
-        try:
-            log_file = open(args.serial_log, "wb")
-        except OSError as exc:
-            die_setup("cannot open --serial-log %s: %s" % (args.serial_log, exc))
-
     def log(message):
         print(message, file=sys.stderr)
 
-    print("dm-image-test: spawning: %s"
-          % " ".join(shlex.quote(token) for token in qemu_argv), file=sys.stderr)
-    child = pexpect.spawn(
-        qemu_argv[0], qemu_argv[1:], timeout=args.timeout, encoding="utf-8"
-    )
-    ## Pace input: the guest's zsh line editor (ZLE) mangles rapidly-sent lines
-    ## (auto-suggest + cursor redraws corrupt e.g. "$?", and a queued 'exec' never
-    ## submits). A small pre-send delay lets each line be read and executed before
-    ## the next, so 'exec bash' actually takes and metacharacters survive.
-    child.delaybeforesend = 0.4
-    if log_file is not None:
-        ## pexpect writes str; wrap the binary log file.
-        import io
-        child.logfile_read = io.TextIOWrapper(log_file, write_through=True)
-
+    ## Wrap ALL post-build setup so the caller-owned workdir dm-qemu left for us
+    ## (EFI OVMF_VARS copy or kernel/initrd extraction) is removed even if the
+    ## serial-log open or pexpect.spawn raises -- else it leaks under /tmp.
+    child = None
     try:
+        log_file = None
+        if args.serial_log:
+            try:
+                log_file = open(args.serial_log, "wb")
+            except OSError as exc:
+                die_setup("cannot open --serial-log %s: %s" % (args.serial_log, exc))
+
+        print("dm-image-test: spawning: %s"
+              % " ".join(shlex.quote(token) for token in qemu_argv), file=sys.stderr)
+        child = pexpect.spawn(
+            qemu_argv[0], qemu_argv[1:], timeout=args.timeout, encoding="utf-8"
+        )
+        ## Pace input: the guest's zsh line editor (ZLE) mangles rapidly-sent lines
+        ## (auto-suggest + cursor redraws corrupt e.g. "$?", and a queued 'exec'
+        ## never submits). A small pre-send delay lets each line be read and run
+        ## before the next, so 'exec bash' actually takes and metacharacters survive.
+        child.delaybeforesend = 0.4
+        if log_file is not None:
+            ## pexpect writes str; wrap the binary log file.
+            import io
+            child.logfile_read = io.TextIOWrapper(log_file, write_through=True)
+
         verdict = run_checks(child, args, log)
     finally:
-        if child.isalive():
+        if child is not None and child.isalive():
             child.terminate(force=True)
-        ## Remove the per-boot workdir dm-qemu left for us (EFI OVMF_VARS copy or
-        ## kernel/initrd extraction), now that qemu has exited -- else repeated
-        ## boots leak directories under /tmp.
         if qemu_workdir:
             import shutil
             shutil.rmtree(qemu_workdir, ignore_errors=True)
