@@ -23,10 +23,16 @@
 ## required args are given, or a required tool/dep (diffoscope, the build host) is
 ## absent -- i.e. "a reproducibility test cannot run here", not a failure.
 ##
-## NOTE (follow-up): the sha256 comparator reports FAIL while images are not yet
-## bit-reproducible, where the CI lane's allowlist-aware compare reports PASS. A
-## future --allowlist that folds the expected-to-differ set into the canonical
-## comparator would reconcile the two; until then a real run here is honestly RED.
+## NOTE: the sha256 comparator reports FAIL while images are not yet
+## bit-reproducible, where the CI lane's allowlist-aware (diffoscope-descend)
+## compare reports PASS. An allowlist CANNOT be bolted onto this sha256 comparator:
+## diffoscope --exclude on a packaged artifact (iso/ova/qcow2.xz) binary-falls-back
+## on the outer container so member exclusions never reach "identical", and an
+## --exclude glob matching a root operand skips the whole compare (false PASS).
+## Allowlist tolerance therefore belongs in the diffoscope-descend comparator
+## (help-steps/reproducible-compare, currently on the iso-build-fixes branch) --
+## reconciling the two is a branch merge, not a flag here. Until then a real run
+## here is honestly RED.
 
 set -o errexit
 set -o nounset

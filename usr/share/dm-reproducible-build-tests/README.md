@@ -21,19 +21,15 @@ here", not a failure. Like the other build-host suites it is deliberately NOT
 registered in any `dist-ai-tests-all` array; it runs standalone / from the
 dedicated reproducibility lane.
 
-## Follow-up: comparator unification (open)
+## Why no allowlist flag here (open: branch reconciliation)
 
-Two comparators diverge in the tree:
+The sha256 verdict is rigorous but reports RED while images are not yet
+bit-reproducible, where the CI lane's allowlist-aware compare reports PASS. An
+allowlist CANNOT be added to the sha256 comparator: `diffoscope --exclude` on a
+packaged artifact (iso / ova / qcow2.xz) binary-falls-back on the outer container,
+so excluding an inner member never yields "identical"; and an `--exclude` glob
+that matches a root operand makes diffoscope skip the whole comparison (a false
+PASS). Allowlist tolerance belongs in the diffoscope-descend comparator
+(`help-steps/reproducible-compare`, currently on the `iso-build-fixes` branch);
+unifying it with the sha256 path is a branch merge, not a flag on this runner.
 
-- `dm-reproducible-compare-artifacts` (developer-meta-files) -- sha256 verdict +
-  diffoscope-to-explain, best input hygiene. This runner uses it.
-- `ci/reproducible-compare-artifacts` -> `help-steps/reproducible-compare` --
-  diffoscope-verdict + an expected-to-differ **allowlist**; the pair the current
-  `local-reproducible.yml` CI lane invokes.
-
-The sha256 verdict is the rigorous, cheap, format-independent truth, but reports
-FAIL while images are not yet bit-reproducible, where the allowlist compare
-reports PASS. The clean end state is ONE canonical comparator (sha256) that gains
-an optional `--allowlist` folding in the expected-to-differ set, then this runner
-gains an `--allowlist` passthrough. Until that lands, a real run here is honestly
-RED (matching `local-reproducible.yml`'s "expected red" status).
