@@ -268,6 +268,21 @@ ok(_tz.monotonic() - _t0 < 5.0, 'zalgo CLI: a 4000-mark flood renders well under
 _ztui = SecureTerminal(command='/bin/cat', tui=True)
 _t0 = _tz.monotonic(); feed_output(_ztui, _zc)
 ok(_tz.monotonic() - _t0 < 5.0, 'zalgo TUI: a 4000-mark flood renders well under the DoS threshold')
+# split-read CLI: a child dripping sub-cap chunks (each read reset to 0) must not
+# rebuild the cluster; the trailing run carries across _on_readable calls
+_zsr = SecureTerminal(command='/bin/cat'); _zsr.apply_mode('show')
+for _ in range(6):
+    feed_output(_zsr, (_ac * 20).encode('utf-8'))     # 6 reads x 20 marks = 120
+ok(_zsr.toPlainText().count(_ac) <= 32,
+   'zalgo CLI: a flood split across PTY reads is still bounded to the cap')
+# cursor-move TUI: steer many capped chunks back onto ONE cell via CSI G; the
+# per-cell cap must stop it growing unbounded (the stream-run counter could not)
+_zcm = SecureTerminal(command='/bin/cat', tui=True)
+feed_output(_zcm, b'a')                                # base into cell 0
+for _ in range(6):
+    feed_output(_zcm, (_ac * 20 + '\x1b[2G').encode('utf-8'))   # marks onto cell 0, cursor back
+ok(len(_zcm._screen.buffer[0][0].data) <= 34,
+   'zalgo TUI: cursor moves cannot pile combining marks onto one cell past the cap')
 
 # --- "needs TUI" advisory also fires for in-place repaint (zsh ZLE menu) --------
 # The bug: an interactive completion menu (zsh/readline) repaints with cursor-up

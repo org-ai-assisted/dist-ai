@@ -656,24 +656,33 @@ ok(S.is_default_ignorable(chr(0xFE0F)) and not S.is_default_ignorable(chr(0x0301
 # for real decomposed text; only the excess (past the Unicode stream-safe cap of
 # 30) is dropped.
 _acute = chr(0x0301)                                   # combining acute
-eq(S.cap_combining_runs('ls -la /etc'), 'ls -la /etc',
-   'cap: pure ASCII returned unchanged (fast path)')
-eq(S.cap_combining_runs('caf' + chr(0x00E9) + ' na' + chr(0x00EF) + 've'),
+eq(S.cap_combining_runs('ls -la /etc'), ('ls -la /etc', 0),
+   'cap: pure ASCII returned unchanged, run cleared (fast path)')
+eq(S.cap_combining_runs('caf' + chr(0x00E9) + ' na' + chr(0x00EF) + 've')[0],
    'caf' + chr(0x00E9) + ' na' + chr(0x00EF) + 've',
    'cap: precomposed Latin-1 (below U+0300) untouched')
-eq(S.cap_combining_runs('a' + _acute), 'a' + _acute,
+eq(S.cap_combining_runs('a' + _acute)[0], 'a' + _acute,
    'cap: a single real combining accent is kept')
-eq(S.cap_combining_runs('x' + _acute * 30), 'x' + _acute * 30,
+eq(S.cap_combining_runs('x' + _acute * 30)[0], 'x' + _acute * 30,
    'cap: exactly 30 marks (stream-safe conformant) kept in full')
-_flood = S.cap_combining_runs('x' + _acute * 100)
+_flood, _fr = S.cap_combining_runs('x' + _acute * 100)
 eq(_flood.count(_acute), 32, 'cap: a 100-mark flood is bounded to 32 marks')
-eq(S.cap_combining_runs('e' + _acute + 'o' + _acute), 'e' + _acute + 'o' + _acute,
+eq(S.cap_combining_runs('e' + _acute + 'o' + _acute)[0], 'e' + _acute + 'o' + _acute,
    'cap: a base char resets the run (two short clusters both kept)')
-eq(S.cap_combining_runs(chr(0x4F60) + chr(0x597D)), chr(0x4F60) + chr(0x597D),
+eq(S.cap_combining_runs(chr(0x4F60) + chr(0x597D))[0], chr(0x4F60) + chr(0x597D),
    'cap: non-combining non-ASCII (CJK, >= U+0300) resets the run and is kept')
-_after = S.cap_combining_runs('x' + _acute * 100 + 'y' + _acute)
+_after = S.cap_combining_runs('x' + _acute * 100 + 'y' + _acute)[0]
 ok(_after.endswith('y' + _acute) and _after.count(_acute) == 33,
    'cap: the run resets after the flood so a later real accent still lands')
+# streaming: a run split across chunks is bounded IN TOTAL (the trailing count
+# carries, so a per-read reset cannot be exploited to rebuild the cluster)
+_s1, _sr1 = S.cap_combining_runs('x' + _acute * 20)
+_s2, _sr2 = S.cap_combining_runs(_acute * 20, _sr1)
+eq(_s1.count(_acute) + _s2.count(_acute), 32,
+   'cap: a combining run split across two chunks is bounded to 32 in total')
+_s3, _sr3 = S.cap_combining_runs('base' + _acute, _sr2)
+ok(_s3.startswith('base') and _sr3 == 1,
+   'cap: a non-combining char in a later chunk clears the carried run')
 
 # --- sanitize_title: program-supplied title / notification -> safe ASCII ------
 eq(S.sanitize_title('My Build'), 'My Build', 'title plain ascii')
