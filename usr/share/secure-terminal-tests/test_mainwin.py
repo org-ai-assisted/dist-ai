@@ -1373,6 +1373,31 @@ try:
     _gw3b._restore_window_geometry()
     ok(True, '#77: geometry restore is a no-op when persistence is off')
     _gw3b.deleteLater()
+
+    # #78: a restored tab renders its scrollback ONCE in the saved mode -- no
+    # re-render churn (which flickered the mode detail->show->box and jumped the
+    # scrollbar). Spy on _rerender across the restore.
+    from secure_terminal.terminal import SecureTerminal as _ST78    # noqa: E402
+    _rr_orig = _ST78._rerender
+    _rr = {'n': 0}
+    def _rr_spy(self):                                              # noqa: E306
+        _rr['n'] += 1
+        return _rr_orig(self)
+    _ST78._rerender = _rr_spy
+    try:
+        _mw78 = MainWindow()
+        _rr['n'] = 0
+        _mw78._restore_tab({'text': 'cafe box\n', 'mode': 'box', 'colors': True,
+                            'markings': False, 'osc': {}})
+        _t78 = _mw78.current()
+        eq(_t78.current_mode(), 'box', '#78: restored tab keeps its saved mode')
+        ok(_t78.colors_enabled() and not _t78.markings_enabled(),
+           '#78: restored tab keeps its saved colours/markings')
+        eq(_rr['n'], 0,
+           '#78: restore does not re-render (scrollback drawn once in final mode)')
+        _mw78.deleteLater()
+    finally:
+        _ST78._rerender = _rr_orig
 finally:
     for _var, _prev in (('XDG_STATE_HOME', _st_prev), ('XDG_CONFIG_HOME', _cfg_prev)):
         if _prev is None:
