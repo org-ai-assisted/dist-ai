@@ -218,6 +218,18 @@ while w2.tabs.count() > 0:                   # last close empties + closes windo
 ok(w2.tabs.count() == 0, 'close_tab: closing the last tab empties the window')
 w2.deleteLater()
 
+# F2: closing a tab that holds a paste/copy review hides the bar first, so its
+# buttons cannot dispatch onto the destroyed terminal (RuntimeError).
+_fw = MainWindow()
+_fw.new_tab()
+_ft = _fw.current()
+_fw._review_bar.show_review(_ft, 'risky text', 0, 'paste')
+ok(_fw._review_bar.reviewed_term() is _ft, 'F2: the review bar tracks the reviewed tab')
+_fw.close_tab(_fw.tabs.indexOf(_ft))
+ok(_fw._review_bar.reviewed_term() is None,
+   'F2: closing the reviewed tab hides its review bar (no dangling terminal)')
+_fw.deleteLater()
+
 # --- confirm-close when a tab/window still runs a foreground program -----------
 from PyQt6.QtGui import QCloseEvent                              # noqa: E402
 _Yes, _No = QMessageBox.StandardButton.Yes, QMessageBox.StandardButton.No
@@ -913,6 +925,21 @@ try:
     ok(_rr['ok'] and len(_rr['text']) <= 4, 'ctl dump-tab tail-caps to _DUMP_MAX')
 finally:
     M._DUMP_MAX = _o_dumpmax
+# F4: dump-tab bounds the ENCODED frame, not the character count -- non-ASCII expands
+# ~6x under json.dumps(ensure_ascii), so a char cap alone could overflow the IPC frame
+# and the client would drop it. Force a tiny frame cap + non-ASCII content past it.
+import secure_terminal.ipc as _ipc4              # noqa: E402
+import json as _json4                            # noqa: E402
+_o_maxreq = _ipc4._MAX_REQUEST
+try:
+    _ipc4._MAX_REQUEST = 200
+    _t0b._append('\u2603' * 200)             # snowmen: ~6 encoded bytes each
+    _r4 = win._ipc_ctl('ctl-dump-tab', {'tab': 'id:%d' % _tid0b})
+    ok(_r4['ok'], 'F4: dump-tab succeeds even when the raw text overflows the frame')
+    ok(len(_json4.dumps(_r4).encode('utf-8')) <= _ipc4._MAX_REQUEST,
+       'F4: the dump-tab reply is bounded by the ENCODED frame, not the char count')
+finally:
+    _ipc4._MAX_REQUEST = _o_maxreq
 ok(not win._ipc_ctl('ctl-bogus', {})['ok'], 'ctl: an unknown ctl op is rejected')
 
 # --- InfoTip: hide when the pointer is away, and a hard-destroyed source -------

