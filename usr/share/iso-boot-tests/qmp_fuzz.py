@@ -6,7 +6,7 @@
 ## AI-Assisted
 
 """
-Fuzz the QMP handling code in iso_boot_lib.QMPClient.
+Fuzz the QMP handling code in qmp_client.QMPClient.
 
 QMP is line-delimited JSON read off a socket. A hostile or wedged qemu (or anything else bound
 to the socket) could send non-JSON, JSON that is not an object, a non-dict 'data', a huge line
@@ -33,7 +33,7 @@ from hypothesis import HealthCheck, given, seed, settings
 from hypothesis import strategies as st
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from iso_boot_lib import QMPClient, QMPError  # noqa: E402
+from qmp_client import QMPClient, QMPError  # noqa: E402
 
 
 ## JSON values of any shape (objects, arrays, scalars, nested) rendered to a line, mixed with
@@ -132,7 +132,7 @@ _FUZZERS = (parse_line_never_leaks, record_event_never_raises, read_stream_never
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Fuzz the QMP parser in iso_boot_lib.")
+    parser = argparse.ArgumentParser(description="Fuzz the QMP parser in qmp_client.")
     parser.add_argument("--iterations", type=int, default=500,
                         help="hypothesis examples per fuzzer (default 500)")
     parser.add_argument("--seed", type=int, default=None,

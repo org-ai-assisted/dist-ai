@@ -5,7 +5,7 @@
 
 ## AI-Assisted
 
-## Fuzz lane for iso-boot-tests: hammer the QMP parser (iso_boot_lib.QMPClient) with adversarial
+## Fuzz lane for iso-boot-tests: hammer the QMP parser (qmp_client.QMPClient) with adversarial
 ## line-delimited JSON and assert it only ever raises the intended QMPError and never hangs. No
 ## root, no network, no real qemu. Works installed (/usr/share/iso-boot-tests) or from a checkout.
 ## Extra arguments are forwarded (e.g. --iterations N / --seed N).
