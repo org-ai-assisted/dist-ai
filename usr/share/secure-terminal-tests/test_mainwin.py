@@ -929,6 +929,22 @@ ok(_tip2._source is None, 'InfoTip: a destroyed source is handled and it hides')
 _tip2.deleteLater()
 APP.processEvents()
 
+# --- #95: a settings (i) marker is a CLICK target that pops the copyable InfoTip
+from PyQt6.QtCore import Qt as _Qt95, QEvent as _QEvent95, QPointF as _QPointF95  # noqa: E402
+from PyQt6.QtGui import QMouseEvent as _QMouseEvent95            # noqa: E402
+_il = M._InfoLabel('Theme <span>(i)</span>', 'the theme risk explanation', win)
+ok(_il.cursor().shape() == _Qt95.CursorShape.PointingHandCursor,
+   '#95: an info (i) marker uses a clickable pointing-hand cursor')
+_il.mousePressEvent(_QMouseEvent95(
+    _QEvent95.Type.MouseButtonPress, _QPointF95(1.0, 1.0),
+    _Qt95.MouseButton.LeftButton, _Qt95.MouseButton.LeftButton,
+    _Qt95.KeyboardModifier.NoModifier))
+_iltip = win._tip_filter._tip
+ok(_iltip.isVisible() and 'theme risk explanation' in _iltip.text(),
+   '#95: clicking an (i) marker shows the copyable InfoTip with the row help')
+_iltip.hide()
+_iltip._poll.stop()
+
 # --- _set_shortcuts skips an unknown ident in the apply loop ------------------
 ok(isinstance(win._set_shortcuts({'unknown-x': ''}), list),
    '_set_shortcuts: an unknown ident is skipped')
@@ -1381,28 +1397,38 @@ try:
     _ds.save([{'name': 'd0', 'text': 'zero\n', 'osc': {}},
               {'name': 'd1', 'text': 'one\n', 'osc': {}},
               {'name': 'd2', 'text': 'two\n', 'osc': {}}])
+    from PyQt6.QtWidgets import QWidget as _QWidget99            # noqa: E402
     _dw = MainWindow()
-    eq(_dw.tabs.count(), 1,
-       'deferred restore: only the first tab is restored synchronously')
-    eq(len(_dw._deferred_restore), 2, 'deferred restore: the remaining tabs are queued')
-    # #80: background tabs must not steal focus -- a deferred restore that switched
-    # to each tab flashed the view through all of them and left the last focused.
+    # #99: the WHOLE tab bar is drawn up front (all three entries at once), but only
+    # the active tab has real content synchronously; the rest are placeholders that
+    # swap in their real shell lazily -- so the bar never grows one tab at a time.
+    eq(_dw.tabs.count(), 3,
+       '#99: the whole tab bar is drawn up front (all entries present at once)')
+    eq(len(_dw._real_terms()), 1,
+       '#99: only the active tab has real content synchronously')
+    eq(len(_dw._deferred_restore), 2,
+       '#99: the remaining tabs are placeholders queued for a lazy swap')
+    # #80: background tabs must not steal focus or switch the view -- a deferred
+    # restore that switched to each tab flashed the view through all of them.
     _switches80 = []
     _dw.tabs.currentChanged.connect(lambda i: _switches80.append(i))
     for _ in range(40):
         _l = _QEL59()
         QTimer.singleShot(20, _l.quit)
         _l.exec()
-        if _dw.tabs.count() >= 3:
+        if not _dw._deferred_restore:
             break
     eq(_dw.tabs.count(), 3, 'deferred restore: all tabs restored after the window is up')
+    eq(len(_dw._real_terms()), 3, '#99: every placeholder is swapped for a real tab')
     eq(_dw.tabs.currentIndex(), 0,
        '#80: the view stays on the first tab through the background restore')
     eq(_switches80, [],
-       '#80: restoring background tabs raises no tab-switch (no flashing)')
+       '#80: swapping in background tabs raises no tab-switch (no flashing)')
     ok(not _dw._deferred_restore, 'deferred restore: the queue drains')
     _dw._restore_next_deferred()      # a no-op once the queue is empty (early return)
     eq(_dw.tabs.count(), 3, 'deferred restore: a spurious drain call is a no-op')
+    _dw._swap_placeholder(_QWidget99())   # #99: swap of an unknown placeholder -> no-op
+    eq(_dw.tabs.count(), 3, '#99: swapping an unknown placeholder is a safe no-op')
     _dw.close()
     _dw.deleteLater()
 
