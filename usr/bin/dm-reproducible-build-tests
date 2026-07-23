@@ -65,12 +65,25 @@ while [ "$#" -gt 0 ]; do
    esac
 done
 
-## Resolve the derivative-maker checkout that ships the canonical tools.
+## Reject a partial compare invocation (exactly one of --dir-a/--dir-b): it would
+## fall through to build-twice and silently start two expensive builds, ignoring
+## the one dir that WAS given. The two modes are distinct.
+if { [ -n "${dir_a}" ] && [ -z "${dir_b}" ]; } || { [ -z "${dir_a}" ] && [ -n "${dir_b}" ]; }; then
+   printf '%s\n' "dm-reproducible-build-tests: --dir-a and --dir-b must be given together (compare mode)" >&2
+   exit 2
+fi
+
+## Resolve the derivative-maker checkout that ships the canonical tools. Fall back
+## to ~/derivative-maker only when HOME is set; an unset HOME is a SKIP (cannot
+## locate a checkout), never a set -u crash.
 if [ -z "${repo_root}" ]; then
    if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
       repo_root="${DERIVATIVE_MAKER_DIR}"
-   else
+   elif [ -n "${HOME:-}" ]; then
       repo_root="${HOME}/derivative-maker"
+   else
+      printf '%s\n' "dm-reproducible-build-tests: no --repo-root / \$DERIVATIVE_MAKER_DIR and \$HOME unset; cannot locate a checkout. SKIP." >&2
+      exit "${SKIP}"
    fi
 fi
 compare_bin="${repo_root}/packages/kicksecure/developer-meta-files/usr/bin/dm-reproducible-compare-artifacts"
@@ -92,10 +105,18 @@ if [ -n "${dir_a}" ] && [ -n "${dir_b}" ]; then
       printf '%s\n' "dm-reproducible-build-tests: diffoscope not installed (needed to explain a mismatch). SKIP." >&2
       exit "${SKIP}"
    fi
-   [ -n "${output}" ] || output="$(mktemp)"
+   ## When the caller gives no --output, create the report in a temp file and
+   ## REPORT its path (never silently orphan it -- on a mismatch its diffoscope
+   ## explanation is the actionable output).
+   report_created='false'
+   if [ -z "${output}" ]; then
+      output="$(mktemp)"
+      report_created='true'
+   fi
    printf '%s\n' "dm-reproducible-build-tests: comparing ${target} builds ${dir_a} vs ${dir_b}"
    rc=0
    "${compare_bin}" --target "${target}" --dir-a "${dir_a}" --dir-b "${dir_b}" --output "${output}" || rc=$?
+   [ "${report_created}" = 'true' ] && printf '%s\n' "dm-reproducible-build-tests: report written to ${output}"
    exit "${rc}"
 fi
 
