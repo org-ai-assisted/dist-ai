@@ -67,14 +67,31 @@ class Qmp:
         self._read_json()                      # greeting
         self.command("qmp_capabilities")
 
+    ## A QMP message (command/event) is small. Bound the buffered read so a peer
+    ## that never sends a newline cannot grow it unbounded, and treat malformed or
+    ## non-object JSON as a clean protocol failure (ConnectionError, which the
+    ## caller already catches) rather than an unexpected traceback -- the same
+    ## hardening the fuzzed qmp_client.QMPClient enforces.
+    _MAX_QMP_LINE = 1 << 20
+
     def _read_json(self):
         while b"\n" not in self.buf:
+            if len(self.buf) > self._MAX_QMP_LINE:
+                raise ConnectionError(
+                    "QMP line exceeded %d bytes without a newline" % self._MAX_QMP_LINE)
             chunk = self.sock.recv(4096)
             if not chunk:
                 raise ConnectionError("QMP socket closed")
             self.buf += chunk
         line, self.buf = self.buf.split(b"\n", 1)
-        return json.loads(line.decode("utf-8", "replace"))
+        try:
+            message = json.loads(line.decode("utf-8", "replace"))
+        except ValueError as exc:
+            raise ConnectionError("malformed QMP JSON (%d bytes): %s" % (len(line), exc))
+        if not isinstance(message, dict):
+            raise ConnectionError(
+                "QMP message is not a JSON object: %s" % type(message).__name__)
+        return message
 
     def command(self, execute, arguments=None):
         message = {"execute": execute}
