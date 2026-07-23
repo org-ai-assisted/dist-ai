@@ -2627,6 +2627,22 @@ _fgt._command = '/bin/cat'                               # a command tab again
 ok(_fgt.terminate_foreground(), '#93: terminate acts on a command-tab program')
 _fgt.close()
 
+# #93 (ai-review F5): getpgid races the child's death -- if the child exits between
+# the enable-poll and the click, terminate_foreground must treat it as gone (no-op),
+# not raise ProcessLookupError out of the slot (as has_foreground_program does).
+_ogpg93 = _os93.getpgid
+_os93.getpgid = lambda _p: (_ for _ in ()).throw(ProcessLookupError())
+try:
+    _fgd = SecureTerminal(command='/bin/cat')
+    _fgd._command = None
+    _fgd._pid = 999999
+    _fgd._foreground_pgrp = lambda: 424242          # non-None, not our own group
+    ok(not _fgd.terminate_foreground(),
+       '#93: terminate is a no-op when getpgid races the child death (no exception)')
+    _fgd.close()
+finally:
+    _os93.getpgid = _ogpg93
+
 # --- truecolour / 256-colour rendering (CLI line mode) ------------------------
 _tc = SecureTerminal(command='/bin/cat')
 eq(_tc._format_for({'fg': '#ff6400', 'bg': None, 'bold': False}).foreground().color().name(),
@@ -3769,6 +3785,11 @@ ok(True, '_write: safe no-op with no fd, and drops output on a closed fd')
 _cw = SecureTerminal(command='/bin/cat')
 _o_readlink = _os.readlink
 _o_getpgid = _os.getpgid
+# Force a deterministic, truthy foreground pgrp so the readlink/getpgid fault-
+# injections below are ALWAYS reached: a freshly-spawned cat's tcgetpgrp can briefly
+# be unset (the setsid race), which would skip these defensive except branches. The
+# cat's real _pid is left intact (non-None) so has_foreground_program reaches getpgid.
+_cw._foreground_pgrp = lambda: os.getpid()
 
 
 def _raise_os(*_a, **_k):

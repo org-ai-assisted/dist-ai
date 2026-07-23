@@ -1491,6 +1491,21 @@ try:
        '#99: an unnamed placeholder shows its saved cwd basename')
     eq(_iw.tabs.tabText(3), 'shell',
        '#99: an unnamed placeholder with no saved cwd shows shell')
+    ok(_iw.tabs.isTabEnabled(0) and not _iw.tabs.isTabEnabled(1)
+       and not _iw.tabs.isTabEnabled(2) and not _iw.tabs.isTabEnabled(3),
+       '#99 (F1): the active tab is enabled, placeholders are disabled (unselectable)')
+    # a bulk "apply to all tabs" must skip placeholders, not call a setter on a QWidget
+    _iw._apply_global({'theme': 'dark', 'zoom': 100, 'mode': 'box', 'colors': True,
+                       'tui': False, 'osc_notice': True, 'osc': {},
+                       'scrollback': 1000, 'paste_delay': 0, 'persist': True})
+    ok(_iw.current().current_theme() == 'dark',
+       '#99 (F1): apply-to-all updates real tabs and skips placeholders (no crash)')
+    # an all-tabs find hop must skip placeholders too (query absent from the real tab
+    # forces the hop loop over the placeholder tabs)
+    _iw._find_bar.input.setText('zqxjnomatch')
+    _iw._find_bar.all_tabs.setChecked(True)
+    _iw._find_step(False)
+    ok(True, '#99 (F1): an all-tabs find skips placeholders without crashing')
     _iw.tabs.setCurrentIndex(2)                  # select a placeholder
     _iw._update_terminate_enabled()              # the 400ms poll path on a placeholder
     ok(not _iw.act_terminate.isEnabled(),
@@ -1502,6 +1517,19 @@ try:
        '#99: closing a placeholder drops it cleanly (no confirm, no shutdown)')
     _iw.close()
     _iw.deleteLater()
+
+    # #99 (F7): closing the LAST tab when it is a placeholder must close the window --
+    # the placeholder branch has to run the count==0 -> self.close() step too.
+    _ds.save([{'name': 'l0', 'text': 'a\n', 'osc': {}},
+              {'name': 'l1', 'text': 'b\n', 'osc': {}}], active=0)
+    _lw = MainWindow()
+    eq(_lw.tabs.count(), 2, '#99 (F7): a real active tab plus one placeholder')
+    _lw.close_tab(0)                             # close the real active tab
+    eq(_lw.tabs.count(), 1, '#99 (F7): one placeholder remains')
+    _lw.close_tab(0)                             # close the last remaining placeholder
+    ok(_lw.tabs.count() == 0,
+       '#99 (F7): closing the last placeholder empties the window')
+    _lw.deleteLater()
 
     # window geometry (size + maximized) persists across restart -- #77
     from PyQt6.QtWidgets import QApplication as _QApp77          # noqa: E402
