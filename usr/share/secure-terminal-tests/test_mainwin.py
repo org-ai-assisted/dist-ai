@@ -568,6 +568,17 @@ win._restore_tab({'text': '', 'cwd': '/no/such/dir/for/restore', 'osc': {}})
 ok(win.current()._pid is not None,
    '_restore_tab with a vanished saved cwd still spawns a shell')
 
+# set_tui refuses + reverts the toggle when a program is running (the shell's
+# terminfo cannot be re-exported under a running program) -- #63.
+_stt = win.current()
+_stt_fg = _stt.has_foreground_program
+_stt.has_foreground_program = lambda: True
+_stt_before = win.act_tui.isChecked()
+win.set_tui(not _stt_before)
+ok(win.act_tui.isChecked() == _stt.current_tui(),
+   'set_tui reverts the toggle to the actual mode when a program is running')
+_stt.has_foreground_program = _stt_fg
+
 # bind the single-instance listening socket (isolated runtime dir)
 win.start_instance_server('coverage-group')
 ok(True, 'start_instance_server binds a listening socket')

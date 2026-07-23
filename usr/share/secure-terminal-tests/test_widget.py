@@ -2414,18 +2414,23 @@ os.remove(_ucfg)                                  # restore the empty test confi
 
 # --- opt-in restricted CLI terminfo -------------------------------------------
 import secure_terminal.terminal as _timod                          # noqa: E402
-_tt0 = SecureTerminal(command='/bin/cat')
-eq(_tt0._child_term(), ('xterm-256color', None),
-   'default TERM is xterm-256color (ssh/TUI stay capable)')
-_tt0.close()
 _tdir = _timod.cli_terminfo_dir()
 ok(_tdir and os.path.isfile(os.path.join(_tdir, 's', 'secure-terminal')),
    'the restricted terminfo entry compiles/resolves')
-_tt1 = SecureTerminal(command='/bin/cat', cli_terminfo=True)
-_term, _d = _tt1._child_term()
-eq(_term, 'secure-terminal', 'cli_terminfo advertises the restricted TERM')
-ok(_d == _tdir, 'cli_terminfo points TERMINFO_DIRS at the compiled entry')
-_tt1.close()
+# TERM is per-MODE: CLI advertises the restricted secure-terminal entry (so a
+# program lists completions plainly and never draws an in-place menu line mode
+# cannot show); TUI advertises xterm-256color (full caps for full-screen apps +
+# ssh). The dir is returned in BOTH modes so TERMINFO_DIRS resolves either entry
+# across a live switch (apply_tui re-exports TERM without restarting the shell).
+_ttc = SecureTerminal(command='/bin/cat')                  # CLI mode (default)
+eq(_ttc._child_term(), ('secure-terminal', _tdir),
+   'CLI mode advertises the restricted TERM (no completion-menu redraws)')
+_ttc.close()
+_ttt = SecureTerminal(command='/bin/cat', tui=True)        # TUI mode
+_term, _d = _ttt._child_term()
+eq(_term, 'xterm-256color', 'TUI mode advertises xterm-256color (full caps)')
+ok(_d == _tdir, 'TERMINFO_DIRS resolves the restricted entry in both modes')
+_ttt.close()
 # the entry cancels every capability-query cap (no probing) + cursor-addressing +
 # alternate screen -- assert at the source of truth (the .ti)
 _ti = _timod._terminfo_source()
@@ -2435,8 +2440,8 @@ with open(_ti, encoding='utf-8') as _tih:
 ok(all(cap in _ti_txt for cap in ('u6@', 'u7@', 'u8@', 'u9@', 'RV@',
                                   'cup@', 'smcup@', 'rmcup@', 'clear@')),
    'the entry cancels the query + cursor-addressing + alt-screen caps')
-# end-to-end: a child with the flag actually sees TERM=secure-terminal
-_te = SecureTerminal(command=['sh', '-c', 'printf T=$TERM'], cli_terminfo=True)
+# end-to-end: a CLI-mode child actually sees TERM=secure-terminal
+_te = SecureTerminal(command=['sh', '-c', 'printf T=$TERM'])
 _ebuf = b''
 _estart = _time.monotonic()
 import fcntl as _fcntl2                                             # noqa: E402
@@ -2457,6 +2462,30 @@ while _time.monotonic() - _estart < 1.5:
             break
 _te.close()
 ok(b'T=secure-terminal' in _ebuf, 'the child process actually gets TERM=secure-terminal')
+
+# CLI<->TUI toggle re-exports TERM for the new mode into the RUNNING shell (no
+# restart, state preserved), and is REFUSED with an advisory while a program owns
+# the terminal -- its terminfo cannot be changed under it (#63).
+_tg = SecureTerminal(command='/bin/cat')
+_tgadv = []
+_tg.advise_signal.connect(_tgadv.append)
+_tgsent = spy_writes(_tg)
+_tg.has_foreground_program = lambda: True             # a program is running
+ok(_tg.apply_tui(True) is False and _tg._tui is False,
+   'apply_tui is refused while a program is running')
+ok(any('shell prompt' in a for a in _tgadv),
+   'the refusal advises switching at a shell prompt')
+ok(_tgsent == [], 'a refused switch writes nothing to the shell')
+_tg.has_foreground_program = lambda: False            # at a prompt now
+ok(_tg.apply_tui(True) is True and _tg._tui is True,
+   'apply_tui switches to TUI at a shell prompt')
+ok(b'export TERM=xterm-256color\n' in _tgsent,
+   'CLI->TUI re-exports the full terminfo to the running shell')
+_tgsent.clear()
+_tg.apply_tui(False)
+ok(b'export TERM=secure-terminal\n' in _tgsent,
+   'TUI->CLI re-exports the restricted terminfo to the running shell')
+_tg.close()
 
 # MainWindow default + toggle + persist + lock
 eq(win._default_cli_terminfo, False, 'restricted terminfo defaults off')
