@@ -458,6 +458,28 @@ win._on_tab_move(1)
 win._on_tab_move(-1)
 ok(True, 'the current tab moves left/right with wrap-around')
 
+# pwd-as-tab-title (#90): with no explicit name and no program title, the tab
+# label is the working-directory basename (kept live by the fg poll), not a static
+# "shell". A set name or program title still wins; an unreadable cwd -> "shell".
+_pw = win.current()
+_pw_cwd = _pw.cwd_basename
+_pw.cwd_basename = lambda: 'myproj'
+win._user_titles.pop(_pw, None)
+win._prog_titles.pop(_pw, None)
+win._refresh_tab_label(_pw)
+eq(win.tabs.tabText(win.tabs.indexOf(_pw)), 'myproj',
+   '#90: no explicit title -> the tab shows the pwd basename')
+win._user_titles[_pw] = 'Named'
+win._refresh_tab_label(_pw)
+eq(win.tabs.tabText(win.tabs.indexOf(_pw)), 'Named',
+   '#90: an explicit tab name overrides the pwd basename')
+win._user_titles.pop(_pw, None)
+_pw.cwd_basename = lambda: None
+win._refresh_tab_label(_pw)
+eq(win.tabs.tabText(win.tabs.indexOf(_pw)), 'shell',
+   '#90: an unreadable cwd falls back to "shell"')
+_pw.cwd_basename = _pw_cwd
+
 # a program-set title updates the tab label; window visibility + tray trigger
 win._on_tab_title(win.current(), 'a program title')
 win.show()
