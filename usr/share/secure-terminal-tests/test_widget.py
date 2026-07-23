@@ -161,6 +161,28 @@ for _ in range(5):
     mb._append('\x08 \x08')
 eq(mb.toPlainText().rstrip(), '', 'five backspaces erase five chars')
 
+# Real interactive-zsh redraw streams captured under TERM=secure-terminal with
+# zsh-autosuggestions + syntax-highlighting. These MUST resolve to the plain text,
+# never the append-garble ("llslsls" / "eexport ...") -- the redraws use backspace,
+# per-keystroke SGR, AND CSI cursor moves (\x1b[<n>D / \x1b[<n>C), all of which the
+# line renderer must honor as overwrites.
+zl = SecureTerminal(command='/bin/cat')     # typing "ls" (per-keystroke echo)
+zl._append('l\x08l\x1b[90ms\x1b[39m\x08\x08ls\x08\x08\x1b[36ml\x1b[36ms\x1b[39m')
+eq(zl.toPlainText().rstrip(), 'ls',
+   'zsh per-keystroke redraw of "ls" resolves to "ls", not the append-garble')
+zc = SecureTerminal(command='/bin/cat')     # CSI cursor-back overwrite
+zc._append('abc\x1b[2DXY')
+eq(zc.toPlainText().rstrip(), 'aXY',
+   'CSI cursor-back (\\x1b[2D) overwrites in place, not appends')
+zr = SecureTerminal(command='/bin/cat')     # burst re-export echo (CSI-back redraw)
+zr._append('export TERM=secure-terminal\x1b[27D'
+           '\x1b[33me\x1b[33mx\x1b[33mp\x1b[33mo\x1b[33mr\x1b[33mt\x1b[39m\x1b[1C'
+           '\x1b[37mT\x1b[37mE\x1b[37mR\x1b[37mM\x1b[37m=\x1b[37ms\x1b[37me\x1b[37mc'
+           '\x1b[37mu\x1b[37mr\x1b[37me\x1b[37m-\x1b[37mt\x1b[37me\x1b[37mr\x1b[37mm'
+           '\x1b[37mi\x1b[37mn\x1b[37ma\x1b[37ml\x1b[39m')
+eq(zr.toPlainText().rstrip(), 'export TERM=secure-terminal',
+   'burst re-export echo resolves cleanly, not "eexport ..."')
+
 # The neutralized-byte placeholder is DISPLAYED as a box (U+25A1) for readability,
 # but every text export (copy / save / toPlainText) maps it back to ASCII '_', so
 # a copied or saved transcript stays pure ASCII. Box mode only.
