@@ -94,6 +94,14 @@ def feed_output(term, raw):
             os.close(w)
 
 
+# A `-- PROGRAM` launch tab now correctly counts as a running program, so closing
+# its window pops the confirm-on-close dialog -- which would block the user-less
+# harness. Auto-answer "Yes" (quit anyway) so window closes never hang here;
+# test_mainwin owns the explicit confirm-close behaviour tests.
+from PyQt6.QtWidgets import QMessageBox as _QMB_close        # noqa: E402
+_QMB_close.question = staticmethod(lambda *_a, **_k: _QMB_close.StandardButton.Yes)
+
+
 # --- line-mode key forwarding -------------------------------------------------
 t = SecureTerminal(command='/bin/cat')
 sent = spy_writes(t)
@@ -241,6 +249,23 @@ ok(len(_advices) == 1 and 'TUI' in _advices[0],
 # not spam the notice.
 feed_output(adv, b'\x1b[2A\x1b[7mcand2\x1b[27m')
 ok(len(_advices) == 1, 'the TUI advisory is shown once, not on every repaint')
+# a curses app under the RESTRICTED terminfo cannot cursor-address, so it clears
+# lines with a BURST of EL instead of moving the cursor (nano) -- still advise (#94).
+elb = SecureTerminal(command='/bin/cat')
+_elb = []
+elb.advise_signal.connect(_elb.append)
+elb.has_foreground_program = lambda: True
+feed_output(elb, b'\x1b[K' * 5 + b'GNU nano 8.4')
+ok(len(_elb) == 1 and 'TUI' in _elb[0],
+   '#94: an EL-burst redraw (nano under the restricted entry) advises TUI mode')
+# without a foreground program (just the shell) an EL burst does NOT advise
+elb2 = SecureTerminal(command='/bin/cat')
+_elb2 = []
+elb2.advise_signal.connect(_elb2.append)
+elb2.has_foreground_program = lambda: False
+feed_output(elb2, b'\x1b[K' * 5 + b'text')
+ok(_elb2 == [], '#94: an EL burst with no foreground program does not advise')
+elb.close(); elb2.close()
 
 # --- a whole-screen clear is a no-op in append-only line mode: note it once ----
 clr = SecureTerminal(command='/bin/cat')
@@ -2572,6 +2597,36 @@ finally:
     _timod.tui_available = _o_avail
 _tgu.close()
 
+# #93: has_foreground_program / terminate distinguish a LOGIN shell's bare prompt
+# (its child IS the shell -> nothing to terminate) from a `-- PROGRAM` tab (its
+# child IS the program -- nano, htop -- to terminate). Force "the child is in the
+# foreground" (fg pgrp == _pid) and flip _command to read it both ways, so one
+# lightweight tab exercises all four branches deterministically.
+import os as _os93                                       # noqa: E402
+_fgt = SecureTerminal(command='/bin/cat')                # command tab: _command set
+# pty.fork() runs the child's setsid() asynchronously; until it completes the
+# child briefly shares OUR process group, which terminate's self-kill guard
+# (correctly) refuses to signal. A real user never terminates in that microsecond
+# window -- wait for the child to settle into its own session before probing.
+for _ in range(200):
+    try:
+        if _os93.getpgid(_fgt._pid) != _os93.getpgrp():
+            break
+    except OSError:
+        break
+    pump(10)
+_fgt._foreground_pgrp = lambda: _os93.getpgid(_fgt._pid)
+ok(_fgt.has_foreground_program(),
+   '#93: a `-- PROGRAM` tab whose program is in the foreground is terminable')
+_fgt._command = None                                     # read as a login shell at its prompt
+ok(not _fgt.has_foreground_program(),
+   '#93: a login shell at its bare prompt is not terminable')
+ok(not _fgt.terminate_foreground(),
+   '#93: terminate is a no-op at a login-shell bare prompt')
+_fgt._command = '/bin/cat'                               # a command tab again
+ok(_fgt.terminate_foreground(), '#93: terminate acts on a command-tab program')
+_fgt.close()
+
 # --- truecolour / 256-colour rendering (CLI line mode) ------------------------
 _tc = SecureTerminal(command='/bin/cat')
 eq(_tc._format_for({'fg': '#ff6400', 'bg': None, 'bold': False}).foreground().color().name(),
@@ -3900,17 +3955,36 @@ _nm.moveCursor(QTextCursor.MoveOperation.End)
 ok(_nm.createMimeDataFromSelection() is not None,
    'copy with no selection delegates to the base handler')
 
-# terminate_foreground: only-the-shell is a no-op; a killpg error returns False
+# terminate_foreground: refuses our own group; only-the-shell is a no-op; killpg error -> False
+# refuses to signal secure-terminal's OWN process group (defensive self-kill guard).
+_tfo = SecureTerminal(command='/bin/cat')
+_tfo._pid = os.getpid()
+_tfo._foreground_pgrp = lambda: os.getpgrp()
+ok(not _tfo.terminate_foreground(),
+   'terminate_foreground: refuses to signal our own process group')
+_tfo.close()
+# only the shell in the foreground (login shell, fg pgrp == the shell's own pgrp,
+# in a session of its own so it is NOT our group) -> a no-op that signals nothing.
+_tfs = _subprocess.Popen(['sleep', '30'], start_new_session=True)
+pump(60)
 _tf = SecureTerminal(command='/bin/cat')
-_tf._pid = os.getpid()
-_tf._foreground_pgrp = lambda: os.getpgid(os.getpid())
+_tf._command = None                         # login-shell semantics for this branch
+_tf._pid = _tfs.pid
+_tf._foreground_pgrp = lambda: os.getpgid(_tfs.pid)
 ok(not _tf.terminate_foreground(),
    'terminate_foreground: only the shell in the foreground -> no-op')
+ok(_tfs.poll() is None,
+   'terminate_foreground: the shell no-op signals nothing')
+_tf.close()
+_tfs.terminate()
+_tfs.wait()
+# a killpg error (invalid pgrp) is reported as False.
 _tf2 = SecureTerminal(command='/bin/cat')
 _tf2._pid = None
 _tf2._foreground_pgrp = lambda: 999999      # invalid pgrp -> killpg raises
 ok(not _tf2.terminate_foreground(),
    'terminate_foreground: a killpg error is reported as False')
+_tf2.close()
 
 # _write retries after an EAGAIN on the non-blocking fd
 _we = SecureTerminal(command='/bin/cat')

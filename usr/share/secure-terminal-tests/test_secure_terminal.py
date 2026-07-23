@@ -385,6 +385,13 @@ ok(S.wants_screen_repaint('\x1b[H\x1b[2J') is False,
 ok(S.wants_screen_repaint('\x1b[3C\x1b[K') is False,
    'horizontal moves (CUF) and erase-line (EL), which line mode renders, are not flagged')
 ok(S.wants_screen_repaint('plain output text') is False, 'plain text is not flagged')
+# wants_line_clears: a curses app under the restricted terminfo cannot cursor-address,
+# so it clears the screen with a BURST of EL -- the tell wants_screen_repaint misses
+# (nano). A shell's one/two-EL prompt stays below the threshold (#94).
+ok(S.wants_line_clears('\x1b[K' * 4) is True, 'a burst of EL is flagged (curses redraw)')
+ok(S.wants_line_clears('\x1b[2K\x1b[1K\x1b[K\x1b[K') is True, 'EL variants count toward the burst')
+ok(S.wants_line_clears('prompt$ \x1b[K') is False, 'a single EL (a prompt) is not flagged')
+ok(S.wants_line_clears('plain output') is False, 'no EL -> not flagged')
 
 # _printable_follows: bash emits the bracketed-paste marker BEFORE its prompt text
 # (printable follows -> True); zsh emits it AFTER, with only escapes/controls left

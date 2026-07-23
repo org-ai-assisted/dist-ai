@@ -221,6 +221,13 @@ w2.deleteLater()
 # --- confirm-close when a tab/window still runs a foreground program -----------
 from PyQt6.QtGui import QCloseEvent                              # noqa: E402
 _Yes, _No = QMessageBox.StandardButton.Yes, QMessageBox.StandardButton.No
+# Default every confirm-on-close dialog to "Yes" (quit) so incidental window
+# closes in this user-less harness never block on the modal. A `-- PROGRAM` tab
+# now counts as a running program, so closing any window that holds one pops the
+# confirm dialog; a window closed OUTSIDE an explicit confirm-close test below
+# would otherwise hang. The explicit tests set their own mock and restore to THIS
+# default (captured as _oq), not the real modal, so the guarantee survives them.
+QMessageBox.question = staticmethod(lambda *_a, **_k: _Yes)
 w3 = MainWindow()
 w3.new_tab()
 _t3 = w3.current()
@@ -1136,8 +1143,14 @@ try:
     ok(not M._toggle_icon('x', 'Y', '#222222').isNull(),
        '_toggle_icon: the desktop theme symbol is used when present')
     QIcon.fromTheme = staticmethod(lambda *_a, **_k: QIcon())    # null theme icon
+    # the theme lacks the symbol -> _toggle_icon draws the letter-chip fallback
+    ok(not M._toggle_icon('x', 'Y', '#222222').isNull(),
+       '_toggle_icon: draws the letter-chip fallback when the theme lacks the symbol')
     _o_exists = os.path.exists
     try:
+        os.path.exists = lambda _p: True            # a shipped icon path is present
+        ok(_REAL_APP_ICON() is not None,
+           '_app_icon: loads the shipped SVG by path when no theme icon exists')
         os.path.exists = lambda _p: False
         ok(_REAL_APP_ICON().isNull(), '_app_icon: a null icon when nothing is found')
     finally:
