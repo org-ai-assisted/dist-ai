@@ -1864,17 +1864,16 @@ finally:
 from secure_terminal.main import _parse_launch_args as _pla       # noqa: E402
 eq(_pla(['--title', 'logs', '--tui', '--mode', 'reveal']).tabs,
    [{'title': 'logs', 'tui': True, 'mode': 'reveal', 'command': None,
-     'colors': None, 'cli_terminfo': None, 'bell': None, 'osc': None}],
+     'colors': None, 'bell': None, 'osc': None}],
    'cli: single-tab options')
 # per-tab settings overrides parse into the tab spec
 _ps = _pla(['--colors', '--bell', 'audible,visual', '--osc', 'osc_clipboard_read',
-            '--osc', 'osc_title', '--cli-terminfo']).tabs[0]
-eq((_ps['colors'], _ps['bell'], _ps['osc'], _ps['cli_terminfo']),
-   (True, 'audible,visual', ['osc_clipboard_read', 'osc_title'], True),
-   'cli: per-tab colours/bell/osc(repeatable)/cli-terminfo parse')
-eq((_pla(['--no-colors', '--no-cli-terminfo']).tabs[0]['colors'],
-    _pla(['--no-colors', '--no-cli-terminfo']).tabs[0]['cli_terminfo']),
-   (False, False), 'cli: --no-colors / --no-cli-terminfo turn a tab setting off')
+            '--osc', 'osc_title']).tabs[0]
+eq((_ps['colors'], _ps['bell'], _ps['osc']),
+   (True, 'audible,visual', ['osc_clipboard_read', 'osc_title']),
+   'cli: per-tab colours/bell/osc(repeatable) parse')
+eq(_pla(['--no-colors']).tabs[0]['colors'],
+   False, 'cli: --no-colors turns a tab setting off')
 eq(_pla(['--', 'htop', '--no-color']).tabs[0]['command'], ['htop', '--no-color'],
    'cli: -- gives a real argv (no shell reparse)')
 eq(_pla(['-e', 'ls -la']).tabs[0]['command'], 'ls -la',
@@ -2080,12 +2079,11 @@ _HRUN = _hset(max_examples=150, deadline=None)
 def _fuzz_tab_spec(spec):
     out = _sanitize_tab_spec(spec)
     assert set(out) == {'title', 'tui', 'mode', 'command',
-                        'colors', 'cli_terminfo', 'bell', 'osc'}
+                        'colors', 'bell', 'osc'}
     assert out['title'] is None or isinstance(out['title'], str)
     assert out['tui'] is None or isinstance(out['tui'], bool)
     assert out['mode'] is None or isinstance(out['mode'], str)
     assert out['colors'] is None or isinstance(out['colors'], bool)
-    assert out['cli_terminfo'] is None or isinstance(out['cli_terminfo'], bool)
     assert out['bell'] is None or isinstance(out['bell'], str)
     assert out['osc'] is None or (isinstance(out['osc'], list)
                                   and all(isinstance(f, str) for f in out['osc']))
@@ -2486,18 +2484,6 @@ _tg.apply_tui(False)
 ok(b'export TERM=secure-terminal\n' in _tgsent,
    'TUI->CLI re-exports the restricted terminfo to the running shell')
 _tg.close()
-
-# MainWindow default + toggle + persist + lock
-eq(win._default_cli_terminfo, False, 'restricted terminfo defaults off')
-win.set_cli_terminfo(True)
-ok(win._default_cli_terminfo and win.act_cli_terminfo.isChecked(),
-   'set_cli_terminfo enables it and ticks the menu')
-win.set_cli_terminfo(False)
-_savedl2 = win._locked
-win._locked = set(win._locked) | {'cli_terminfo'}
-win.set_cli_terminfo(True)
-ok(not win._default_cli_terminfo, 'a cli_terminfo admin lock refuses the toggle')
-win._locked = _savedl2
 
 # --- truecolour / 256-colour rendering (CLI line mode) ------------------------
 _tc = SecureTerminal(command='/bin/cat')
