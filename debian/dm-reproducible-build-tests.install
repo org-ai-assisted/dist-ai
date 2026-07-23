@@ -1,0 +1,2 @@
+usr/bin/dm-reproducible-build-tests usr/bin/
+usr/share/dm-reproducible-build-tests/* usr/share/dm-reproducible-build-tests/

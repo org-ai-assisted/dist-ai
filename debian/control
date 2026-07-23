@@ -908,28 +908,22 @@ Package: iso-boot-tests
 Architecture: all
 Depends: ${misc:Depends},
  python3,
- python3-pexpect,
- python3-hypothesis,
- qemu-system-x86
-Description: Headless serial boot + leak tests for a built derivative-maker ISO
- Boots a freshly built Kicksecure/Whonix ISO in qemu, headless, over the serial
- console and drives it: waits for the getty login prompt, logs in, runs
- systemcheck leak tests in both the sysmaint and the user session, and powers
- off. It reuses derivative-maker's help-steps/dm-qemu (via '--emit-argv') to
- build the exact boot command -- including the kernel/initrd extraction and the
- sysmaint/user cmdline selection -- so it never duplicates that logic; pexpect
- then spawns qemu and drives the serial line.
+ python3-hypothesis
+Description: QMP-parser fuzz fixture for the boot harness
+ A property-based fuzz lane (iso-boot-tests-fuzz) that hammers the hand-rolled
+ QMP (QEMU Machine Protocol) parser in qmp_client.QMPClient with adversarial
+ line-delimited JSON and asserts it only ever raises the intended QMPError and
+ never hangs, crashes, or leaks memory. No root, no network, no real qemu.
  .
- Sequence: boot sysmaint -> log in -> 'systemcheck --leak-tests --verbose' ->
- reboot; boot user -> log in -> 'systemcheck --leak-tests --verbose' ->
- poweroff. Extra scripted commands and further sessions are data-driven
- (run_leaktests.py SCENARIOS), so more tests are appended without new plumbing.
+ The QMP client is the VM-level control channel the boot harness uses for a
+ graceful ACPI shutdown and to tell a guest REBOOT from a POWEROFF via the
+ SHUTDOWN event reason. Its line parser is pure and side-effect free so it can be
+ fuzzed directly; this lane found real hardening cases (malformed JSON, non-object
+ messages, deeply nested payloads, unbounded lines).
  .
- This runs on the BUILD HOST, not inside the guest: it needs qemu and the ISO.
- It SKIPs (exit 77) when no --iso is given. dm-qemu is located via --dm-qemu,
- $DERIVATIVE_MAKER_DIR, or ~/derivative-maker (not a package dependency). Without
- KVM the boots are slow (tens of minutes each); --fast appends mitigations=off
- for pure-TCG hosts, which is a speed hack, not a security-fidelity test.
+ The actual image boot + functional-check driver now lives in dm-image-boot-tests
+ (disk images and ISOs, over a login-free root serial shell); this package retains
+ only the QMP fuzz fixture.
 
 Package: dm-image-boot-tests
 Architecture: all
@@ -962,6 +956,24 @@ Description: Headless serial boot + functional checks for a built VM disk image
  Without KVM the boots are slow (pure-TCG); --fast appends mitigations=off, a
  speed hack, not a security-fidelity test.
 
+Package: dm-reproducible-build-tests
+Architecture: all
+Depends: ${misc:Depends},
+ diffoscope
+Description: Reproducible-build comparison in the dist-ai test contract
+ Compares two independent builds of a derivative-maker target for bit-for-bit
+ reproducibility, reporting one PASS / SKIP / FAIL code. It delegates to the
+ canonical derivative-maker tools (dm-reproducible-compare-artifacts for a
+ compare-only run of two output dirs; ci/reproducible-build-twice to build the
+ target twice and compare), resolved from a checkout via --repo-root /
+ $DERIVATIVE_MAKER_DIR / ~/derivative-maker -- it does not duplicate the
+ comparison logic.
+ .
+ SKIPs (exit 77) when no derivative-maker checkout is found, neither mode's
+ required args are given, or a required tool (diffoscope) or the build host is
+ absent. Standalone build-host tool -- like dm-image-boot-tests it is not wired
+ into the dist-ai-tests-all arrays.
+
 Package: dist-ai-tests-all
 Architecture: all
 Depends: ${misc:Depends},
@@ -979,6 +991,7 @@ Description: Aggregate runner for the dist-ai test suites
  Depends, so this runner can be installed alongside any subset of them.
 Recommends: check-ref-commits-for-unicode-tests,
  dm-image-boot-tests,
+ dm-reproducible-build-tests,
  dm-virtualbox-wiki-links-tests,
  genmkfile-tests,
  git-meld-tests,

@@ -1,0 +1,112 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Reproducibility test entry point in the dist-ai contract (0 PASS / 77 SKIP /
+## else FAIL). Two modes, both delegating to the canonical derivative-maker tools
+## (resolved from a checkout -- NOT duplicated here; they stay shipped dev tools):
+##
+##   compare-only:  --dir-a DIR --dir-b DIR --target <iso|virtualbox|qcow2>
+##       compare two ALREADY-built output dirs via developer-meta-files
+##       dm-reproducible-compare-artifacts (whole-file sha256 verdict + diffoscope
+##       to explain a mismatch).
+##
+##   build-twice:   --target <...> --arch <amd64|arm64> [--flavor F] [--freshness frozen]
+##       build the target TWICE and compare, via ci/reproducible-build-twice.
+##       Needs a full build host (docker + disk); SKIPs where that is absent.
+##
+## The derivative-maker checkout is found via --repo-root, else $DERIVATIVE_MAKER_DIR,
+## else ~/derivative-maker. SKIPs (77) when: no checkout is found, neither mode's
+## required args are given, or a required tool/dep (diffoscope, the build host) is
+## absent -- i.e. "a reproducibility test cannot run here", not a failure.
+##
+## NOTE (follow-up): the sha256 comparator reports FAIL while images are not yet
+## bit-reproducible, where the CI lane's allowlist-aware compare reports PASS. A
+## future --allowlist that folds the expected-to-differ set into the canonical
+## comparator would reconcile the two; until then a real run here is honestly RED.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+SKIP=77
+
+dir_a=''
+dir_b=''
+target=''
+arch=''
+flavor=''
+freshness=''
+repo_root=''
+output=''
+while [ "$#" -gt 0 ]; do
+   case "$1" in
+      --dir-a)     dir_a="$2"; shift 2 ;;
+      --dir-b)     dir_b="$2"; shift 2 ;;
+      --target)    target="$2"; shift 2 ;;
+      --arch)      arch="$2"; shift 2 ;;
+      --flavor)    flavor="$2"; shift 2 ;;
+      --freshness) freshness="$2"; shift 2 ;;
+      --repo-root) repo_root="$2"; shift 2 ;;
+      --output)    output="$2"; shift 2 ;;
+      *) printf '%s\n' "${BASH_SOURCE[0]}: unexpected argument: $1" >&2; exit 2 ;;
+   esac
+done
+
+## Resolve the derivative-maker checkout that ships the canonical tools.
+if [ -z "${repo_root}" ]; then
+   if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
+      repo_root="${DERIVATIVE_MAKER_DIR}"
+   else
+      repo_root="${HOME}/derivative-maker"
+   fi
+fi
+compare_bin="${repo_root}/packages/kicksecure/developer-meta-files/usr/bin/dm-reproducible-compare-artifacts"
+build_twice_bin="${repo_root}/ci/reproducible-build-twice"
+
+if [ ! -d "${repo_root}" ] || { [ ! -x "${compare_bin}" ] && [ ! -x "${build_twice_bin}" ]; }; then
+   printf '%s\n' "dm-reproducible-build-tests: no derivative-maker checkout at '${repo_root}' (--repo-root / \$DERIVATIVE_MAKER_DIR). SKIP." >&2
+   exit "${SKIP}"
+fi
+
+## compare-only mode: both dirs given.
+if [ -n "${dir_a}" ] && [ -n "${dir_b}" ]; then
+   [ -n "${target}" ] || { printf '%s\n' "dm-reproducible-build-tests: --target is required with --dir-a/--dir-b" >&2; exit 2; }
+   if [ ! -x "${compare_bin}" ]; then
+      printf '%s\n' "dm-reproducible-build-tests: comparator not found (${compare_bin}). SKIP." >&2
+      exit "${SKIP}"
+   fi
+   if ! type -P diffoscope >/dev/null 2>&1; then
+      printf '%s\n' "dm-reproducible-build-tests: diffoscope not installed (needed to explain a mismatch). SKIP." >&2
+      exit "${SKIP}"
+   fi
+   [ -n "${output}" ] || output="$(mktemp)"
+   printf '%s\n' "dm-reproducible-build-tests: comparing ${target} builds ${dir_a} vs ${dir_b}"
+   rc=0
+   "${compare_bin}" --target "${target}" --dir-a "${dir_a}" --dir-b "${dir_b}" --output "${output}" || rc=$?
+   exit "${rc}"
+fi
+
+## build-twice mode: target + arch given.
+if [ -n "${target}" ] && [ -n "${arch}" ]; then
+   if [ ! -x "${build_twice_bin}" ]; then
+      printf '%s\n' "dm-reproducible-build-tests: ci/reproducible-build-twice not found (${build_twice_bin}). SKIP." >&2
+      exit "${SKIP}"
+   fi
+   build_args=( --target "${target}" --arch "${arch}" )
+   [ -n "${flavor}" ]    && build_args+=( --flavor "${flavor}" )
+   [ -n "${freshness}" ] && build_args+=( --freshness "${freshness}" )
+   printf '%s\n' "dm-reproducible-build-tests: build-twice ${target} (${arch}) then compare"
+   rc=0
+   ( cd -- "${repo_root}" && ./ci/reproducible-build-twice "${build_args[@]}" ) || rc=$?
+   exit "${rc}"
+fi
+
+printf '%s\n' "dm-reproducible-build-tests: no work -- give --dir-a/--dir-b (compare) or --target/--arch (build-twice). SKIP." >&2
+exit "${SKIP}"
