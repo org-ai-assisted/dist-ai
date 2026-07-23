@@ -86,6 +86,17 @@ try:
     _pd = [c for c in _dialogs[-1].findChildren(_QCbD) if c.findData(7) >= 0]
     ok(bool(_pd) and _pd[0].currentData() == 7 and _pd[0].currentText() == '7 seconds',
        'settings: a non-preset paste delay (7s) shows in the combo, not a blank')
+    # #79: every settings input has a tooltip; every tipped label shows the "(i)"
+    # indicator so it is visible a (copyable) tooltip is available.
+    from PyQt6.QtWidgets import (QCheckBox as _QCbx79, QSpinBox as _QSpn79,  # noqa: E402
+                                 QLabel as _QLbl79)
+    _sd79 = _dialogs[-1]
+    _fields79 = _sd79.findChildren((_QCbD, _QCbx79, _QSpn79))
+    ok(len(_fields79) >= 10 and all(f.toolTip() for f in _fields79),
+       '#79: every settings input field has a tooltip')
+    _lbls79 = [l for l in _sd79.findChildren(_QLbl79) if l.toolTip()]
+    ok(len(_lbls79) >= 9 and all('(i)' in l.text() for l in _lbls79),
+       '#79: every tipped settings label shows the (i) indicator')
     win._paste_delay = 3
     _dialogs.clear()
     # every dialog's descriptive text must be selectable so it can be copied
