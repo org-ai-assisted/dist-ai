@@ -1,0 +1,140 @@
+#!/usr/bin/python3 -Bsu
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+## AI-Assisted
+
+"""Reproducible terminal-fingerprint comparison. Sends the standard terminal
+identification/query escapes to each terminal and records what it ANSWERS (a
+terminal that answers leaks that datum to any program, incl. a remote host over
+ssh). Real emulators are probed under a nested Xvfb with probe.py; secure-terminal
+is probed headlessly with probe-secure-terminal.py (it strips every query, so it
+answers nothing). Prints a comparison table and writes the aggregate JSON.
+
+    secure-terminal-fingerprint [--out JSON] [--st-repo DIR]
+
+Needs: Xvfb + the emulators (xterm/stterm/rxvt-unicode). Installs nothing."""
+
+import os
+import sys
+import json
+import shutil
+import tempfile
+import subprocess
+import argparse
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SHARE = os.path.join(os.path.dirname(HERE), 'share', 'secure-terminal-fingerprint')
+if not os.path.isdir(SHARE):                      # source checkout layout
+    SHARE = os.path.join(HERE, '..', 'usr', 'share', 'secure-terminal-fingerprint')
+PROBE = os.path.join(SHARE, 'probe.py')
+PROBE_ST = os.path.join(SHARE, 'probe-secure-terminal.py')
+
+# real emulators to probe under Xvfb: (label, argv-template using {probe} {out})
+EMULATORS = [
+    ('xterm', ['xterm', '-e']),
+    ('st', ['st', '-e']),
+    ('urxvt', ['urxvt', '-e']),
+]
+
+
+def _load_queries():
+    sys.path.insert(0, SHARE)
+    import probe as probe_mod
+    return probe_mod.QUERIES
+
+
+def probe_emulator(label, launch, workdir):
+    """Run probe.py inside `label` under its own Xvfb; return the report or None."""
+    binary = launch[0]
+    if shutil.which(binary) is None or shutil.which('xvfb-run') is None:
+        return None
+    out = os.path.join(workdir, label + '.json')
+    argv = ['xvfb-run', '-a'] + launch + [
+        'python3', PROBE, '--out', out, '--label', label]
+    try:
+        subprocess.run(argv, timeout=60, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    try:
+        with open(out, encoding='utf-8') as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return None
+
+
+def probe_secure_terminal(st_repo, tui, workdir):
+    out = os.path.join(workdir, 'st-%s.json' % ('tui' if tui else 'cli'))
+    argv = ['python3', PROBE_ST, '--out', out, '--st-repo', st_repo]
+    if tui:
+        argv.append('--tui')
+    try:
+        subprocess.run(argv, timeout=120, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, check=False)
+        with open(out, encoding='utf-8') as handle:
+            return json.load(handle)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def render_table(queries, reports):
+    labels = [r['label'] for r in reports]
+    width = max((len(label) for _k, label, _s, _l in queries), default=20)
+    header = 'query'.ljust(width) + '  ' + '  '.join('%-22s' % lb for lb in labels)
+    lines = [header, '-' * len(header)]
+    for key, label, _seq, _leak in queries:
+        cells = []
+        for r in reports:
+            ans = r['answers'].get(key, '')
+            cells.append('%-22s' % (('answered: ' + _summarise(ans)) if ans else '-- silent'))
+        lines.append(label.ljust(width) + '  ' + '  '.join(cells))
+    totals = []
+    for r in reports:
+        n = sum(1 for v in r['answers'].values() if v)
+        totals.append('%-22s' % ('%d/%d answered' % (n, len(queries))))
+    lines.append('-' * len(header))
+    lines.append('TOTAL'.ljust(width) + '  ' + '  '.join(totals))
+    return '\n'.join(lines)
+
+
+def _summarise(ans):
+    printable = ''.join(c if 32 <= ord(c) < 127 else '.' for c in ans)
+    return printable[:22]
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--out', help='write the aggregate JSON here')
+    parser.add_argument('--st-repo',
+                        default=os.path.expanduser('~/private-sources/secure-terminal'))
+    ns = parser.parse_args()
+    queries = _load_queries()
+    reports = []
+    work = tempfile.mkdtemp(prefix='fp-')
+    for label, launch in EMULATORS:
+        rep = probe_emulator(label, launch, work)
+        if rep is not None:
+            reports.append(rep)
+            sys.stderr.write('probed %s\n' % label)
+        else:
+            sys.stderr.write('skip %s (not installed / probe failed)\n' % label)
+    for tui in (False, True):
+        rep = probe_secure_terminal(ns.st_repo, tui, work)
+        if rep is not None:
+            reports.append(rep)
+    if not reports:
+        sys.stderr.write('no terminals could be probed\n')
+        return 1
+    print(render_table(queries, reports))
+    aggregate = {'queries': [{'key': k, 'label': lb, 'leaks': leak}
+                             for k, lb, _s, leak in queries],
+                 'reports': reports}
+    if ns.out:
+        with open(ns.out, 'w', encoding='utf-8') as handle:
+            json.dump(aggregate, handle, indent=2)
+        sys.stderr.write('aggregate written to %s\n' % ns.out)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
