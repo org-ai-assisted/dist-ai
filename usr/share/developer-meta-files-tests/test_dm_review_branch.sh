@@ -35,7 +35,7 @@ fi
 ## dm-review-branch drives check-ref-commits-for-unicode / check-ref-names-for-
 ## unicode / unicode-show (helper-scripts). If they are not on PATH, the tool
 ## cannot run -- skip rather than false-fail.
-for tool in check-ref-commits-for-unicode check-ref-names-for-unicode unicode-show git; do
+for tool in check-ref-commits-for-unicode check-ref-names-for-unicode unicode-show git setsid; do
    if ! has "${tool}"; then
       printf '%s\n' "test_dm_review_branch: '${tool}' not on PATH; skipping." >&2
       exit 77
@@ -90,8 +90,10 @@ git -C "${repo}" -c commit.gpgsign=false commit --no-verify --quiet --all --mess
 git -C "${repo}" checkout --quiet master
 
 run_review() {
-   ## Run dm-review-branch inside the repo, capture its exit code.
-   ( cd -- "${repo}" && dm-review-branch "$1" ) >/dev/null 2>&1
+   ## Run dm-review-branch inside the repo, capture its exit code. setsid drops
+   ## the controlling terminal so the continue-prompt on a unicode-scan failure
+   ## fails closed (non-zero) rather than blocking on /dev/tty.
+   ( cd -- "${repo}" && setsid dm-review-branch "$1" ) </dev/null >/dev/null 2>&1
 }
 
 ## 1) A clean branch with a clean new commit: the review completes (exit 0).
@@ -130,6 +132,52 @@ if [ "${rc}" != 0 ]; then
    pass 'unicode in a commit message aborts the review (non-zero)'
 else
    fail 'a commit message with U+202E must abort the review, but it exited 0'
+fi
+
+## 4) Interactive continue-prompt: when a unicode scan fails AND there is a
+## terminal, dm-review-branch asks "Continue the review anyway?" -- yes proceeds
+## (exit 0), no aborts (non-zero). Drive it over a pty. python3 is assumed
+## present; if it is absent these cases fail loud rather than silently skip.
+run_review_tty() {
+   ## $1 = ref to review, $2 = answer ('y'|'n'). Exit code = the tool's.
+   REPO="${repo}" REF="$1" ANSWER="$2" python3 -- - <<'PYEOF'
+import os, sys, pty, select
+repo = os.environ["REPO"]; ref = os.environ["REF"]
+ans = os.environ["ANSWER"].encode() + b"\n"
+pid, fd = pty.fork()
+if pid == 0:
+    os.chdir(repo)
+    os.execvp("dm-review-branch", ["dm-review-branch", ref])
+buf = b""; sent = False
+while True:
+    if not select.select([fd], [], [], 15)[0]:
+        break
+    try:
+        data = os.read(fd, 4096)
+    except OSError:
+        break
+    if not data:
+        break
+    buf += data
+    if not sent and b"Continue the review anyway" in buf:
+        os.write(fd, ans); sent = True
+_, status = os.waitpid(pid, 0)
+sys.exit(os.waitstatus_to_exitcode(status))
+PYEOF
+}
+rc=0
+run_review_tty dirty y || rc="$?"
+if [ "${rc}" = 0 ]; then
+   pass 'interactive: answering yes continues the review (exit 0)'
+else
+   fail "interactive yes should continue (exit 0), got ${rc}"
+fi
+rc=0
+run_review_tty dirty n || rc="$?"
+if [ "${rc}" != 0 ]; then
+   pass 'interactive: answering no aborts the review (non-zero)'
+else
+   fail 'interactive no should abort the review, but it exited 0'
 fi
 
 if [ "${fail_count}" -gt 0 ]; then
