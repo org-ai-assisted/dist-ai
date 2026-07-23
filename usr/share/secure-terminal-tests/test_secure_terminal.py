@@ -680,6 +680,22 @@ for _ in range(5):
     _cmp, _cells, _col, _sg, _wr = S.feed_line_edits(_cells, _col, _sg, _acute * 20)
 eq(_mark_cells(_cells), 32,
    'feed_line_edits: a flood split across chunks stays bounded (cells persist)')
+# overwrite-join: two sub-cap runs separated by a base, then a cursor move (CSI G)
+# overwrites the separator with a mark. Scanning only the LEFT would let each such
+# overwrite pass while fusing the runs; the two-sided scan refuses it.
+def _max_mark_run(cells):
+    _m = _r = 0
+    for _c, _ in cells:
+        if _c == _acute:
+            _r += 1
+            _m = max(_m, _r)
+        else:
+            _r = 0
+    return _m
+_raw = 'a' + _acute * 20 + 'b' + _acute * 20 + '\x1b[22G' + _acute
+_cmp, _cells, _col, _sg, _wr = S.feed_line_edits([], 0, {}, _raw)
+ok(_max_mark_run(_cells) <= 32,
+   'feed_line_edits: overwriting a separator cannot fuse two runs past the cap')
 
 # --- sanitize_title: program-supplied title / notification -> safe ASCII ------
 eq(S.sanitize_title('My Build'), 'My Build', 'title plain ascii')
