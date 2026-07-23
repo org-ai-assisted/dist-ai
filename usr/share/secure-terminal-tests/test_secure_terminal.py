@@ -696,6 +696,13 @@ _raw = 'a' + _acute * 20 + 'b' + _acute * 20 + '\x1b[22G' + _acute
 _cmp, _cells, _col, _sg, _wr = S.feed_line_edits([], 0, {}, _raw)
 ok(_max_mark_run(_cells) <= 32,
    'feed_line_edits: overwriting a separator cannot fuse two runs past the cap')
+# a grapheme-extending mark whose canonical combining class is 0 (U+093E, category
+# Mc) must be capped too -- detection is by mark CATEGORY, not combining class, so
+# ccc cannot be used to slip a flood past the cap
+_maa = chr(0x093E)                                     # Devanagari vowel sign AA (Mc, ccc 0)
+_cmp, _cells, _col, _sg, _wr = S.feed_line_edits([], 0, {}, 'a' + _maa * 100)
+eq(sum(1 for _c, _ in _cells if _c == _maa), 32,
+   'feed_line_edits: a class-0 mark (ccc 0, category Mc) flood is still bounded to 32')
 
 # --- sanitize_title: program-supplied title / notification -> safe ASCII ------
 eq(S.sanitize_title('My Build'), 'My Build', 'title plain ascii')
