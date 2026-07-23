@@ -311,6 +311,44 @@ if tui_available():
     ok(True, 'F6: the TUI feed reunites a split alt-screen marker without crashing')
     _ast.close()
 
+# --- full-screen program drive (E2E): start a REAL full-screen program in TUI mode,
+# confirm it renders a frame in the pyte grid, send its quit key, confirm a clean exit.
+# Answers "can we drive vim/htop/tmux at all?" -- yes, headlessly, no screenshot needed
+# (toPlainText reads the grid). A program not installed here is skipped; ssh needs a
+# remote target so it stays a manual capture.
+if tui_available():
+    import shutil as _e2e_which                          # noqa: E402
+
+    def _drive_fullscreen(cmd, ready, quit_bytes, name, expect_exit=True):
+        if not _e2e_which.which(cmd[0]):
+            return                                        # not installed here -> skip
+        _ft = SecureTerminal(command=cmd, tui=True)
+        _frame = ''
+        for _ in range(200):
+            pump(50)
+            _frame = _ft.toPlainText()
+            if ready in _frame:
+                break
+        ok(ready in _frame,
+           'E2E: %s renders a frame in TUI mode (saw %r)' % (name, ready))
+        _ex = []
+        _ft.shell_exited.connect(lambda: _ex.append(1))
+        if _ft._fd is not None:
+            os.write(_ft._fd, quit_bytes)                 # send the program's quit key
+        if expect_exit:
+            for _ in range(120):
+                pump(50)
+                if _ex:
+                    break
+            ok(bool(_ex), 'E2E: %s exits cleanly on its quit key' % name)
+        _ft.close()
+
+    _drive_fullscreen(['vim', '-u', 'NONE', '-N'], '~', b'\x1b:q!\r', 'vim')
+    _drive_fullscreen(['htop'], 'CPU', b'q', 'htop')
+    _drive_fullscreen(['nano', '/tmp/st-nano-e2e.txt'], 'GNU nano', b'\x18n', 'nano')
+    _drive_fullscreen(['tmux', '-f', '/dev/null', 'new-session'], 'bash',
+                      b'\x02:kill-server\r', 'tmux', expect_exit=False)
+
 # --- render-only preview: re-render safe, and no formatting leak between shows -
 pv = SecureTerminal(preview=True)
 pv.render_preview('hello\u00e9', mode='detail', markings=True)
