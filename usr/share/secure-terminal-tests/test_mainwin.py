@@ -1333,6 +1333,10 @@ try:
     eq(_dw.tabs.count(), 1,
        'deferred restore: only the first tab is restored synchronously')
     eq(len(_dw._deferred_restore), 2, 'deferred restore: the remaining tabs are queued')
+    # #80: background tabs must not steal focus -- a deferred restore that switched
+    # to each tab flashed the view through all of them and left the last focused.
+    _switches80 = []
+    _dw.tabs.currentChanged.connect(lambda i: _switches80.append(i))
     for _ in range(40):
         _l = _QEL59()
         QTimer.singleShot(20, _l.quit)
@@ -1340,6 +1344,10 @@ try:
         if _dw.tabs.count() >= 3:
             break
     eq(_dw.tabs.count(), 3, 'deferred restore: all tabs restored after the window is up')
+    eq(_dw.tabs.currentIndex(), 0,
+       '#80: the view stays on the first tab through the background restore')
+    eq(_switches80, [],
+       '#80: restoring background tabs raises no tab-switch (no flashing)')
     ok(not _dw._deferred_restore, 'deferred restore: the queue drains')
     _dw._restore_next_deferred()      # a no-op once the queue is empty (early return)
     eq(_dw.tabs.count(), 3, 'deferred restore: a spurious drain call is a no-op')
