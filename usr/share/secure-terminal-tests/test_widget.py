@@ -817,6 +817,18 @@ key(cz, Qt.Key.Key_C, mods=Qt.KeyboardModifier.ControlModifier)
 _z = cz._absorb_caret('\r\nprompt%')                 # a shell (zsh) that echoes nothing
 ok('^C' not in _z, 'nothing removed when the shell does not echo ^C')
 eq(cz.toPlainText().count('^C'), 1, 'local ^C preserved for a non-echoing shell')
+# real child output that merely CONTAINS ^C after a leading PRINTABLE char must not
+# be corrupted -- only a caret leading the chunk (optionally after CR/LF) is a shell
+# echo; a program printing "a^C-note" right after the interrupt keeps its bytes
+cd2 = SecureTerminal(command='/bin/cat')
+key(cd2, Qt.Key.Key_C, mods=Qt.KeyboardModifier.ControlModifier)
+eq(cd2._absorb_caret('a^C-note'), 'a^C-note',
+   'a ^C after a printable char is real output, not absorbed')
+# but a genuine shell echo after only a leading CR/LF is still absorbed
+cd3 = SecureTerminal(command='/bin/cat')
+key(cd3, Qt.Key.Key_C, mods=Qt.KeyboardModifier.ControlModifier)
+ok('^C' not in cd3._absorb_caret('\r\n^Cnext'),
+   'a shell ^C after a leading CR/LF is still absorbed')
 
 # a restored session tab spawns its shell in the SAVED working directory (cwd),
 # so restore returns you to where you were (bug: pwd was not restored).
