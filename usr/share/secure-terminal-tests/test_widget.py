@@ -789,6 +789,19 @@ _capcur.setPosition(3, QTextCursor.MoveMode.KeepAnchor)
 cap.setTextCursor(_capcur)
 ok(cap.createMimeDataFromSelection().text() == 'X',
    'a selection after an astral char copies the right cell (UTF-16 aware)')
+# gap1 (ai-review): the PRIMARY-selection / drag path strips to ASCII even in Show
+# mode -- a homoglyph must not reach a middle-click paste / drop target unreviewed
+# (the copy review only covers Ctrl+C).
+_prim = SecureTerminal(command='/bin/cat')
+_prim.apply_mode('show')
+_prim._feed_line('pa' + chr(0x0430) + 'l\n')          # Cyrillic 'a' homoglyph kept in Show
+_pcur = _prim.textCursor()
+_pcur.setPosition(0)
+_pcur.setPosition(4, QTextCursor.MoveMode.KeepAnchor)
+_prim.setTextCursor(_pcur)
+ok(all(ord(c) < 128 for c in _prim.createMimeDataFromSelection().text()),
+   'gap1: the PRIMARY-selection/drag path strips non-ASCII (no unreviewed homoglyph)')
+_prim.close()
 # --- inspect popups: a marked character carries its source codepoint, so the
 # hover tooltip and the double-click popup can describe it in EVERY mode ---------
 from secure_terminal.terminal import _CP_PROP            # noqa: E402
