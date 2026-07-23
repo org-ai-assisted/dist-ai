@@ -386,5 +386,38 @@ else
    fail "unexpected mode not warned; saw: $(printf '%s' "${mode_out}"|tr '\n' '|'|cut -c1-160)"
 fi
 
+## --- GUI viewer exiting NON-ZERO must not abort the review ---
+## kdiff3 returns exit 1 whenever its two inputs differ (diff(1) convention) and
+## every reviewed file differs, so an un-swallowed viewer exit made git report
+## "external diff died" and abort the WHOLE batch review on the first changed
+## file. display_regular_file must swallow it ('|| true'). GUI drivers only; the
+## textual git-diff-review has no viewer to swallow. Runs against whichever GUI
+## wrapper is under test (the runner loops meld + kdiff3 through here).
+case "$( basename -- "${GIT_MELD}" )" in
+   git-meld)   nz_gui='meld'   ;;
+   git-kdiff3) nz_gui='kdiff3' ;;
+   *)          nz_gui=''       ;;
+esac
+if [ -n "${nz_gui}" ]; then
+   new_repo; printf '#!/bin/sh\necho changed\n' >a.sh; git add -A; git commit -qm x
+   ## Stub the driven viewer to FAIL, mimicking kdiff3's differ-exit / a viewer error.
+   cat >"${work}/bin/${nz_gui}" <<EOF
+#!/bin/bash
+printf 'DISPLAY:%s\n' "\$*" >>"${meld_log}"
+exit 1
+EOF
+   chmod +x "${work}/bin/${nz_gui}"
+   true >"${meld_log}"
+   nz_rc=0
+   nz_out="$( git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD 2>&1 )" || nz_rc=$?
+   if [ "${nz_rc}" -eq 0 ] \
+      && grep -q 'DISPLAY:' "${meld_log}" \
+      && ! printf '%s' "${nz_out}" | grep -qiE 'external diff died|fatal'; then
+      pass "viewer exit!=0 does not abort review (${nz_gui})"
+   else
+      fail "viewer exit!=0 aborted review (${nz_gui}, rc='${nz_rc}'); saw: $(printf '%s' "${nz_out}"|tr '\n' '|'|cut -c1-160)"
+   fi
+fi
+
 printf '\n==== FAILURES: %s ====\n' "${fails}"
 rm -rf "${work}"; exit "${fails}"
