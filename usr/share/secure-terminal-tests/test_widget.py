@@ -2333,6 +2333,30 @@ ok(bool(win._set_shortcuts({'new_tab': 'Ctrl+Alt+Z'})),
    'a locked keybindings setting refuses edits')
 eq(win.act_new.shortcut().toString(), 'Ctrl+Shift+T', 'the locked edit applied nothing')
 win._locked = _saved_locked
+
+# --- New Tab: CLI vs TUI mode chosen at creation (#69) ------------------------
+from secure_terminal.terminal import tui_available as _ntt_avail   # noqa: E402
+_saved_dtui = win._default_tui
+win._default_tui = False
+win.new_tab(tui=False)
+ok(win.current()._tui is False, 'new_tab(tui=False) opens a CLI-mode tab')
+ok(win.act_new_cli.isEnabled(), 'the New Tab (CLI) action is always available')
+if _ntt_avail():
+    win.new_tab(tui=True)
+    ok(win.current()._tui is True, 'new_tab(tui=True) opens a TUI-mode tab')
+    ok(win.act_new_tui.isEnabled(), 'New Tab (TUI) is enabled when pyte is present')
+else:
+    win.new_tab(tui=True)
+    ok(win.current()._tui is False,
+       'new_tab(tui=True) falls back to CLI when pyte is missing')
+    ok(not win.act_new_tui.isEnabled(),
+       'New Tab (TUI) is disabled when pyte is missing')
+# the default variant follows the window default, not a forced mode
+win._default_tui = False
+win.new_tab()
+ok(win.current()._tui is False, 'plain new_tab() uses the window default (CLI)')
+win._default_tui = _saved_dtui
+
 # an override loaded from config is honoured at build time via _bind()
 _kb = MainWindow()
 _kb._keybindings = {'close_tab': 'Ctrl+Alt+W'}
