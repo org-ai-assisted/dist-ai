@@ -1476,6 +1476,33 @@ try:
        'closeEvent finishes the deferred restore before saving (no tab dropped)')
     _cw.deleteLater()
 
+    # #99 (ai-review): a placeholder is labelled like its real tab (saved name, else
+    # the saved cwd basename, else "shell") and is safe to select and to close before
+    # its shell swaps in -- neither must call a SecureTerminal method on the QWidget.
+    _ds.save([{'name': 'i0', 'text': 'x\n', 'osc': {}},          # active, restored real
+              {'name': 'named', 'text': 'y\n', 'osc': {}},       # placeholder: user name
+              {'name': '', 'cwd': '/usr/share', 'text': 'z\n', 'osc': {}},  # cwd basename
+              {'name': '', 'text': 'w\n', 'osc': {}}], active=0)          # -> 'shell'
+    _iw = MainWindow()
+    eq(_iw.tabs.count(), 4, '#99: the full bar is drawn up front')
+    eq(len(_iw._deferred_restore), 3, '#99: three placeholders pending')
+    eq(_iw.tabs.tabText(1), 'named', '#99: a placeholder shows the saved name')
+    eq(_iw.tabs.tabText(2), 'share',
+       '#99: an unnamed placeholder shows its saved cwd basename')
+    eq(_iw.tabs.tabText(3), 'shell',
+       '#99: an unnamed placeholder with no saved cwd shows shell')
+    _iw.tabs.setCurrentIndex(2)                  # select a placeholder
+    _iw._update_terminate_enabled()              # the 400ms poll path on a placeholder
+    ok(not _iw.act_terminate.isEnabled(),
+       '#99: selecting a placeholder disables Terminate and does not crash')
+    _ph_close = _iw.tabs.widget(3)
+    _iw.close_tab(3)                             # close a placeholder
+    ok(_ph_close not in _iw._deferred_restore and _ph_close not in _iw._pending_restore
+       and _iw.tabs.count() == 3,
+       '#99: closing a placeholder drops it cleanly (no confirm, no shutdown)')
+    _iw.close()
+    _iw.deleteLater()
+
     # window geometry (size + maximized) persists across restart -- #77
     from PyQt6.QtWidgets import QApplication as _QApp77          # noqa: E402
     _ds.clear()
