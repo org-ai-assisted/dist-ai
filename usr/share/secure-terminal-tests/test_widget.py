@@ -2509,8 +2509,9 @@ ok(b'T=secure-terminal' in _ebuf, 'the child process actually gets TERM=secure-t
 
 # CLI<->TUI toggle re-exports TERM for the new mode into the RUNNING shell (no
 # restart, state preserved), and is REFUSED with an advisory while a program owns
-# the terminal -- its terminfo cannot be changed under it (#63).
-_tg = SecureTerminal(command='/bin/cat')
+# the terminal -- its terminfo cannot be changed under it (#63). command=None: the
+# re-export only fires for the DEFAULT login shell, so this needs a shell tab.
+_tg = SecureTerminal(command=None)
 _tgadv = []
 _tg.advise_signal.connect(_tgadv.append)
 _tgsent = spy_writes(_tg)
@@ -2534,6 +2535,30 @@ _tg.apply_tui(False)
 ok(b'export TERM=secure-terminal\r' in _tgsent,
    'TUI->CLI re-exports the restricted terminfo to the running shell, CR-terminated')
 _tg.close()
+
+# A tab launched with `-- PROGRAM` runs that program as _pid, which
+# has_foreground_program cannot tell from a bare shell, so the re-export is SKIPPED
+# there -- else `export TERM=...` would be typed into the program (ai-review P1).
+_tgc = SecureTerminal(command='/bin/cat')
+_tgcsent = spy_writes(_tgc)
+_tgc.has_foreground_program = lambda: False            # looks like "a prompt"
+ok(_tgc.apply_tui(True) is True and _tgc._tui is True,
+   'apply_tui still switches mode for a command tab')
+ok(not any(b'export TERM=' in s for s in _tgcsent),
+   'a command tab (command != None) never re-exports TERM into the program')
+_tgc.close()
+
+# apply_tui reports failure when TUI is requested but pyte is unavailable, so a
+# caller cannot persist/checkmark a mode that was never applied (ai-review).
+_tgu = SecureTerminal(command='/bin/cat')
+_o_avail = _timod.tui_available
+try:
+    _timod.tui_available = lambda: False
+    ok(_tgu.apply_tui(True) is False and _tgu._tui is False,
+       'apply_tui returns False (not applied) when pyte is unavailable')
+finally:
+    _timod.tui_available = _o_avail
+_tgu.close()
 
 # --- truecolour / 256-colour rendering (CLI line mode) ------------------------
 _tc = SecureTerminal(command='/bin/cat')

@@ -590,6 +590,23 @@ ok(win.act_tui.isChecked() == _stt.current_tui(),
    'set_tui reverts the toggle to the actual mode when a program is running')
 _stt.has_foreground_program = _stt_fg
 
+# P2 (ai-review): a refused switch must NOT clobber the global default. The revert
+# setChecked would re-enter set_tui(actual) and persist it as _default_tui; blocked
+# signals stop that. Set the default DIFFERENT from the tab's mode to catch it.
+_stt._tui = False                              # this tab is CLI
+_saved_def = win._default_tui
+win._default_tui = True                        # global default differs from the tab
+win.act_tui.blockSignals(True)
+win.act_tui.setChecked(True)                   # as if the user toggled TUI on
+win.act_tui.blockSignals(False)
+_stt.has_foreground_program = lambda: True      # a program blocks the switch
+win.set_tui(True)                              # refused -> revert must not re-enter
+eq(win._default_tui, True,
+   'set_tui: a refused switch does not clobber the global TUI default (P2)')
+ok(not win.act_tui.isChecked(), 'the refused toggle reverted to the tab mode (CLI)')
+_stt.has_foreground_program = _stt_fg
+win._default_tui = _saved_def
+
 # bind the single-instance listening socket (isolated runtime dir)
 win.start_instance_server('coverage-group')
 ok(True, 'start_instance_server binds a listening socket')
