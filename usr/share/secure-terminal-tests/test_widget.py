@@ -291,6 +291,18 @@ for _ in range(6):
     feed_output(_zcm, (_ac * 20 + '\x1b[2G').encode('utf-8'))   # marks onto cell 0, cursor back
 ok(len(_zcm._screen.buffer[0][0].data) <= 34,
    'zalgo TUI: cursor moves cannot pile combining marks onto one cell past the cap')
+# combining mark at the very screen origin (cursor 0,0): no preceding cell to test,
+# so the target lookup takes the no-base branch and pyte simply drops it
+_zt0 = SecureTerminal(command='/bin/cat', tui=True)
+feed_output(_zt0, _ac.encode('utf-8'))
+ok(isinstance(_zt0.toPlainText(), str),
+   'zalgo TUI: a combining mark at the screen origin (cursor 0,0) is handled, no crash')
+# combining mark at column 0 of a lower row (cursor x=0, y>0): it targets the
+# previous row's last cell -- exercises that lookup branch
+_ztr = SecureTerminal(command='/bin/cat', tui=True)
+feed_output(_ztr, ('abc\r\n' + _ac).encode('utf-8'))
+ok(isinstance(_ztr.toPlainText(), str),
+   'zalgo TUI: a combining mark at column 0 of a lower row is handled, no crash')
 
 # --- "needs TUI" advisory also fires for in-place repaint (zsh ZLE menu) --------
 # The bug: an interactive completion menu (zsh/readline) repaints with cursor-up
