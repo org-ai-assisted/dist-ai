@@ -23,10 +23,10 @@
 ## required args are given, or a required tool/dep (diffoscope, the build host) is
 ## absent -- i.e. "a reproducibility test cannot run here", not a failure.
 ##
-## NOTE (follow-up): the sha256 comparator reports FAIL while images are not yet
-## bit-reproducible, where the CI lane's allowlist-aware compare reports PASS. A
-## future --allowlist that folds the expected-to-differ set into the canonical
-## comparator would reconcile the two; until then a real run here is honestly RED.
+## --allowlist FILE (optional, compare-only): expected-to-differ diffoscope
+## --exclude globs, passed through to the comparator; a sha256 mismatch confined to
+## those paths is downgraded to PASS (reproducible modulo the allowlist). Omit for
+## the strict sha256 verdict (honestly RED until images are bit-reproducible).
 
 set -o errexit
 set -o nounset
@@ -45,6 +45,7 @@ flavor=''
 freshness=''
 repo_root=''
 output=''
+allowlist=''
 while [ "$#" -gt 0 ]; do
    case "$1" in
       --dir-a)     dir_a="$2"; shift 2 ;;
@@ -55,6 +56,7 @@ while [ "$#" -gt 0 ]; do
       --freshness) freshness="$2"; shift 2 ;;
       --repo-root) repo_root="$2"; shift 2 ;;
       --output)    output="$2"; shift 2 ;;
+      --allowlist) allowlist="$2"; shift 2 ;;
       *) printf '%s\n' "${BASH_SOURCE[0]}: unexpected argument: $1" >&2; exit 2 ;;
    esac
 done
@@ -87,9 +89,13 @@ if [ -n "${dir_a}" ] && [ -n "${dir_b}" ]; then
       exit "${SKIP}"
    fi
    [ -n "${output}" ] || output="$(mktemp)"
+   compare_args=( --target "${target}" --dir-a "${dir_a}" --dir-b "${dir_b}" --output "${output}" )
+   ## Optional expected-to-differ allowlist: a sha256 mismatch confined to these
+   ## paths is downgraded to PASS by the comparator (reproducible modulo allowlist).
+   [ -z "${allowlist}" ] || compare_args+=( --allowlist "${allowlist}" )
    printf '%s\n' "dm-reproducible-build-tests: comparing ${target} builds ${dir_a} vs ${dir_b}"
    rc=0
-   "${compare_bin}" --target "${target}" --dir-a "${dir_a}" --dir-b "${dir_b}" --output "${output}" || rc=$?
+   "${compare_bin}" "${compare_args[@]}" || rc=$?
    exit "${rc}"
 fi
 
