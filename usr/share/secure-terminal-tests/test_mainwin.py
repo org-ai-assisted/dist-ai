@@ -1370,6 +1370,33 @@ try:
     eq(_dw.tabs.count(), 3, 'deferred restore: a spurious drain call is a no-op')
     _dw.close()
     _dw.deleteLater()
+
+    # #88: the previously-focused tab is brought into focus ONCE after the quiet
+    # restore -- not tab 0, and without flashing through the others.
+    _ds.save([{'name': 'a0', 'text': 'a\n', 'osc': {}},
+              {'name': 'a1', 'text': 'b\n', 'osc': {}},
+              {'name': 'a2', 'text': 'c\n', 'osc': {}}], active=2)
+    _aw = MainWindow()
+    _asw = []
+    _aw.tabs.currentChanged.connect(lambda i: _asw.append(i))
+    for _ in range(40):
+        _l = _QEL59()
+        QTimer.singleShot(20, _l.quit)
+        _l.exec()
+        if _aw.tabs.count() >= 3 and _aw._restore_active is None:
+            break
+    eq(_aw.tabs.currentIndex(), 2, '#88: the last focused tab (2) is brought into focus')
+    ok(len(_asw) <= 1, '#88: at most one intentional focus switch, no flashing')
+    _aw.close()
+    _aw.deleteLater()
+    # a saved active index that no longer fits the restored tabs is ignored (the
+    # default first tab stays current). Craft it directly: save() drops an
+    # out-of-range index, so write an inconsistent session to hit the guard.
+    _ds._write_atomic(_ds.session_path(),
+                      '{"tabs": [{"name": "b0", "osc": {}}], "active": 5}')
+    _bw = MainWindow()
+    eq(_bw.tabs.currentIndex(), 0, '#88: an active index past the restored tabs falls back to tab 0')
+    _bw.deleteLater()
     # closeEvent must finish a still-pending restore so no tab is dropped from save
     _ds.save([{'name': 'e0', 'text': 'a\n', 'osc': {}},
               {'name': 'e1', 'text': 'b\n', 'osc': {}},

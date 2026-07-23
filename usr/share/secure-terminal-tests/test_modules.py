@@ -247,6 +247,20 @@ eq(session.load_window(), None, 'session: load_window on a non-dict payload -> N
 session._write_atomic(session.session_path(), json.dumps({'tabs': [], 'window': 9}))
 eq(session.load_window(), None, 'session: a non-string saved window loads as None')
 
+# active-tab index round-trips; out-of-range / non-int / corrupt -> None (#88)
+session.save([{'name': 'a', 'text': ''}, {'name': 'b', 'text': ''}], active=1)
+eq(session.load_active(), 1, 'session: the active-tab index round-trips')
+session.save([{'name': 'a', 'text': ''}], active=5)         # out of range -> dropped
+eq(session.load_active(), None, 'session: an out-of-range active index is not saved')
+session.save([{'name': 'a', 'text': ''}])                   # no active arg
+eq(session.load_active(), None, 'session: no saved active -> None')
+session._write_atomic(session.session_path(), 'not json')
+eq(session.load_active(), None, 'session: load_active on corrupt json -> None')
+session._write_atomic(session.session_path(), json.dumps(['x']))
+eq(session.load_active(), None, 'session: load_active on a non-dict payload -> None')
+session._write_atomic(session.session_path(), json.dumps({'tabs': [], 'active': -1}))
+eq(session.load_active(), None, 'session: a negative saved active loads as None')
+
 # clear removes the index and logs; a second clear on nothing is a no-op
 session.clear()
 ok(not os.path.exists(session.session_path()),
