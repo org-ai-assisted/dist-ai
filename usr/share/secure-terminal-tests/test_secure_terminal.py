@@ -696,6 +696,12 @@ _raw = 'a' + _acute * 20 + 'b' + _acute * 20 + '\x1b[22G' + _acute
 _cmp, _cells, _col, _sg, _wr = S.feed_line_edits([], 0, {}, _raw)
 ok(_max_mark_run(_cells) <= 32,
    'feed_line_edits: overwriting a separator cannot fuse two runs past the cap')
+# writing a mark to the LEFT of an already-full (32-mark) run must also be refused
+# -- exercises the right-hand scan reaching the cap
+_raw2 = 'a' + _acute * 40 + '\x1b[1G' + _acute          # 40 -> capped 32, then write at col 0
+_cmp, _cells2, _c2, _s2, _w2 = S.feed_line_edits([], 0, {}, _raw2)
+ok(_max_mark_run(_cells2) <= 32 and _cells2[0][0] == 'a',
+   'feed_line_edits: writing left of a full mark-run is refused (right-side cap)')
 # a grapheme-extending mark whose canonical combining class is 0 (U+093E, category
 # Mc) must be capped too -- detection is by mark CATEGORY, not combining class, so
 # ccc cannot be used to slip a flood past the cap
