@@ -1624,6 +1624,13 @@ if tui_available():
     tui._handle_osc(b'\x1b]52;c;' + _b64.b64encode(_hostile) + b'\x07')
     ok(_QGA2.clipboard().text() == 'git config',
        'OSC 52 write drops bidi/zero-width/C1, like the paste sanitizer')
+    # ASCII-only for the untrusted program-driven write (unlike the user's own,
+    # reviewed copy): a homoglyph must not ride onto the system clipboard to
+    # deceive a later paste into another application.
+    _homo = ('p' + chr(0x0430) + 'ypal.com').encode('utf-8')   # Cyrillic a look-alike
+    tui._handle_osc(b'\x1b]52;c;' + _b64.b64encode(_homo) + b'\x07')
+    ok(_QGA2.clipboard().text() == 'pypal.com',
+       'OSC 52 write is ASCII-only: a homoglyph is dropped (no clipboard deception)')
     # cwd OSC 7 gated + emits the safe path
     _cwds = []
     tui.cwd_changed.connect(_cwds.append)
