@@ -111,6 +111,31 @@ try:
     QDialog.exec = lambda _self: int(QDialog.DialogCode.Rejected)
     win.show_global_settings()
     ok(True, 'show_global_settings: cancel returns without applying')
+    # #125: the settings dialog Ctrl+wheel live-zooms the chrome (UI) scale.
+    from secure_terminal.main import _ZoomDialog as _ZD           # noqa: E402
+    from PyQt6.QtGui import QWheelEvent as _QWE                   # noqa: E402
+    from PyQt6.QtCore import QPointF as _QPF, QPoint as _QP       # noqa: E402
+    _us0 = win._ui_scale
+    QDialog.exec = lambda _self: (_dialogs.append(_self),
+                                  int(QDialog.DialogCode.Accepted))[1]
+    _dialogs.clear()
+    win.show_global_settings()
+    _zdlg = [d for d in _dialogs if isinstance(d, _ZD)][-1]
+    _zdlg.on_zoom(1)                          # covers _live_zoom (step + live re-scale)
+    ok(win._ui_scale >= _us0,
+       'Ctrl+wheel up on the settings dialog raises the menu scale live')
+    _zoomed = []
+    _zdlg.on_zoom = lambda direction: _zoomed.append(direction)
+
+    def _wheel(mod, dy):
+        return _QWE(_QPF(1, 1), _QPF(1, 1), _QP(0, 0), _QP(0, dy),
+                    _QtD.MouseButton.NoButton, mod,
+                    _QtD.ScrollPhase.NoScrollPhase, False)
+    _zdlg.wheelEvent(_wheel(_QtD.KeyboardModifier.ControlModifier, 120))
+    _zdlg.wheelEvent(_wheel(_QtD.KeyboardModifier.NoModifier, 120))
+    eq(_zoomed, [1],
+       'Ctrl+wheel steps the zoom; a plain wheel scrolls without zooming')
+    win._ui_scale = _us0
 finally:
     QDialog.exec = _orig_exec
 
