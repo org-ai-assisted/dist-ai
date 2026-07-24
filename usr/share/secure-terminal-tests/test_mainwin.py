@@ -1324,6 +1324,24 @@ try:
 finally:
     _setmod_fs.load = _o_load_fs
 
+# the global-settings dialog now carries the paste/copy REVIEW level; _apply_global
+# stores it and applies it to every open tab.
+_pw_save, _cw_save = win._paste_warn, win._copy_warn
+try:
+    win._apply_global({'theme': 'dark', 'zoom': 100,
+                       'font_family': win._default_font_family,
+                       'font_size': win._default_font_size, 'mode': 'box',
+                       'colors': True, 'tui': False, 'osc': {}, 'osc_notice': True,
+                       'scrollback': 0, 'paste_delay': 3,
+                       'paste_warn': 'always', 'copy_warn': 'never', 'persist': False})
+    eq((win._paste_warn, win._copy_warn), ('always', 'never'),
+       '_apply_global stores the paste/copy review levels')
+    ok(all(t.current_paste_warn() == 'always' and t.current_copy_warn() == 'never'
+           for t in win._real_terms()),
+       '_apply_global applies the paste/copy review levels to every open tab')
+finally:
+    win._paste_warn, win._copy_warn = _pw_save, _cw_save
+
 _o_getfont = _QFontDialog.getFont
 try:
     _QFontDialog.getFont = staticmethod(
