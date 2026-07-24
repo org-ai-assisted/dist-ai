@@ -250,9 +250,15 @@ def run_checks(child, args, log):
         ##    non-deterministic and cannot gate CI. Tor's CONFIG is still validated
         ##    by check_tor_config / check_tor_enabled; only the live network
         ##    connection (which belongs in a dedicated network test) is skipped.
+        ##  - check_journal: the harness itself boots with systemd.debug_shell on the
+        ##    serial line (that IS the automation channel), which systemcheck's
+        ##    check_journal flags as a running debug shell -- it even prints this
+        ##    exact skip as the way to acknowledge a deliberate debug shell. The
+        ##    critical-journal check (real kernel/systemd faults) is separate and
+        ##    still runs.
         prep = (
             "mkdir -p /etc/systemcheck.d && printf '%s\\n' "
-            "'systemcheck_skip_functions+=\" check_operating_system check_tor_bootstrap \"' "
+            "'systemcheck_skip_functions+=\" check_operating_system check_tor_bootstrap check_journal \"' "
             "> /etc/systemcheck.d/50_boot-test.conf; true")
         child.sendline("%s; printf '%s\\n'" % (prep, tor_ready))
         wait_for(tor_ready, args.timeout)
