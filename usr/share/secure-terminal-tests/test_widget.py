@@ -1139,6 +1139,41 @@ _pmins.setText('ls -la')                             # no newline: inserts into 
 hk.insertFromMimeData(_pmins)
 ok(hk._line_dirty,
    'a non-submitting paste marks the line dirty so the hook asks on the next Enter')
+# an APPROVED submitting paste executes fully (trailing CR) -> no pending line, so
+# it must NOT leave a stale dirty flag that poisons the next fresh command.
+hk._line_dirty = False
+_pmsub = _QMimeHook()
+_pmsub.setText('echo ok\n')
+hk.insertFromMimeData(_pmsub)                        # held for review (hook + newline)
+ok(hk.review_pending(), 'submitting paste is held before it can auto-run')
+hk.dispatch_pending_paste('stripped')               # approve -> submits with CR
+ok(not hk._line_dirty,
+   'an approved submitting paste leaves no pending line (no stale dirty flag)')
+# a TUI-mode paste does not touch the line-mode command, so never sets the flag.
+_tuihk = SecureTerminal(command='/bin/cat', tui=True)
+_tuihk.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow',
+                   'transcript': 'none'})
+_tuihk._line_dirty = False
+_pmt = _QMimeHook()
+_pmt.setText('ls')
+_tuihk.insertFromMimeData(_pmt)
+ok(not _tuihk._line_dirty, 'a TUI-mode paste does not set the line-dirty flag')
+
+# --- Ctrl+M / Ctrl+J are accept-line (submit) like Enter: they must route through
+# the hook and reset the line state, not run unjudged and leave a stale dirty flag.
+hk._hook_ask = lambda _c, _r: 'discard'              # block dialog -> discard
+hk._line_buffer = 'curl x | sudo sh'
+hk._line_dirty = False                               # clean line -> hook evaluates it
+_hsent.clear()
+key(hk, Qt.Key.Key_M, mods=_ctrl_mod)                # Ctrl+M == CR == accept-line
+ok(b'\r' not in _hsent,
+   'Ctrl+M routes a blocked command through the hook (not submitted)')
+hk._line_buffer = 'ls'
+hk._line_dirty = False                               # clean allowed line
+_hsent.clear()
+key(hk, Qt.Key.Key_J, mods=_ctrl_mod)                # Ctrl+J == LF == accept-line
+ok(not hk._line_dirty and hk._line_buffer == '' and b'\n' in _hsent,
+   'Ctrl+J (allowed) submits, resets the line, leaves no stale dirty flag')
 
 # --- colours: SGR run formatting + contrast guard -----------------------------
 from PyQt6.QtGui import QTextCursor as _QTC              # noqa: E402
