@@ -41,6 +41,8 @@ from secure_terminal import sanitize as S
 from secure_terminal import settings as SET
 from secure_terminal import session as SESS
 from secure_terminal import ipc
+from secure_terminal import hook as HOOK
+from secure_terminal import cli as CLI
 
 
 ## ---- independent terminal-safety oracle (mirrors test_corpus.py) ------------
@@ -300,6 +302,66 @@ def phase_hooks(rnd, iterations, seed):
                     'privileged_conf_value bad type', seed)
 
 
+def phase_hook_protocol(rnd, iterations, seed):
+    ## The command-hook SUBPROCESS protocol (hook.py, distinct from the rules parser
+    ## above): a handler's advisory message and its suggestion (which may be SENT to
+    ## the shell) must be sanitized whatever the handler returns, and evaluate() must
+    ## never raise -- it must always yield a valid verdict, however garbage the reply.
+    ## _invoke is mocked so no subprocess is spawned.
+    orig_invoke = HOOK._invoke
+    try:
+        for _ in range(iterations):
+            raw = _rand_text(rnd)
+            msg = HOOK._sanitize_message(raw)
+            _assert(len(msg) <= 2000
+                    and all(ord(c) in SAFE for c in msg),
+                    'hook _sanitize_message leaked/over-long on {0!r}'.format(raw), seed)
+            sug = HOOK._sanitize_suggestion(raw)
+            _assert(len(sug) <= 1000 and '\n' not in sug and '\r' not in sug
+                    and all(0x20 <= ord(c) <= 0x7E for c in sug),
+                    'hook _sanitize_suggestion leaked on {0!r}'.format(raw), seed)
+            reply = rnd.choice([
+                None, [], 'x', 42, {},
+                {'verdict': rnd.choice(['allow', 'block', 'ask', 'need_transcript',
+                                        'bogus', '', 123]),
+                 'message': _rand_text(rnd), 'suggestion': _rand_text(rnd)},
+                {'message': _rand_text(rnd)},
+                {'verdict': 'need_transcript'}])
+            HOOK._invoke = lambda *a, _r=reply, **k: _r
+            dec = HOOK.evaluate(['/nonexistent'], _rand_text(rnd),
+                                on_error=rnd.choice(['allow', 'block']),
+                                transcript_provider=lambda: _rand_text(rnd))
+            _assert(isinstance(dec, dict)
+                    and dec.get('verdict') in ('allow', 'block', 'ask')
+                    and isinstance(dec.get('message'), str)
+                    and isinstance(dec.get('suggestion'), str)
+                    and '\n' not in dec['suggestion'] and '\r' not in dec['suggestion'],
+                    'hook evaluate returned an invalid decision for reply {0!r}'
+                    .format(reply), seed)
+    finally:
+        HOOK._invoke = orig_invoke
+
+
+def phase_cli(rnd, iterations, seed):
+    ## The secure-terminal-cli entry (cli.main): random argv must never crash the
+    ## parser beyond argparse's own SystemExit. _run is mocked, so nothing is
+    ## actually spawned; this exercises the arg grammar + the REMAINDER '--' handling.
+    orig_run = CLI._run
+    CLI._run = lambda cmd_argv, mode: 0
+    try:
+        _atoms = ['--mode', '--bogus', 'detail', 'box', 'show', 'reveal', '-x', '--',
+                  'ls', '-la', '']
+        for _ in range(iterations):
+            argv = [rnd.choice(_atoms) if rnd.random() < 0.7 else _rand_text(rnd, 3)
+                    for _ in range(rnd.randint(0, 6))]
+            try:
+                CLI.main(argv)
+            except SystemExit:
+                pass                        # argparse rejects bad args / --help -- expected
+    finally:
+        CLI._run = orig_run
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--iterations', type=int, default=40000)
@@ -315,6 +377,8 @@ def main():
         ('config', phase_config),
         ('ipc', phase_ipc),
         ('hooks', phase_hooks),
+        ('hook_protocol', phase_hook_protocol),
+        ('cli', phase_cli),
     )
     per_phase = max(1, opts.iterations // len(phases))
     print('fuzz_secure_terminal: seed={0} iterations={1}'.format(

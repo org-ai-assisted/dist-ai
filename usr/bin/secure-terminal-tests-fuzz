@@ -9,7 +9,9 @@
 ## output renderer and raw-byte decoder, the line-mode logical-cell editor and
 ## its renderers, the per-cell TUI sanitizer, the SGR colour parser, the paste
 ## sanitizers/classifiers, the title sanitizer, the config drop-in parser, the
-## session loader, the IPC frame reassembler, and the hook rules/gate parsers.
+## session loader, the IPC frame reassembler, the hook rules/gate parsers, the hook
+## SUBPROCESS protocol (message/suggestion sanitizers + the verdict evaluator, with
+## the handler mocked), and the secure-terminal-cli argument parser.
 ## An ESCAPE-BIASED generator keeps trying to smuggle a dangerous code point
 ## past the sanitizer; every iteration is checked against an independent
 ## terminal-safety oracle and per-function invariants. Override with
