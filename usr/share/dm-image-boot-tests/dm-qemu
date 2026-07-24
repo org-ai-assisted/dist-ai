@@ -421,7 +421,12 @@ if [ -n "${screendump}" ]; then
    qemu_opts=(-machine "${machine}" "${accel_opts[@]}" -m "${memory}" -smp "${smp}" -display none -vga std -no-reboot)
    [ -n "${qmp}" ] || qmp="${screendump}/qmp.sock"
 else
-   qemu_opts=(-machine "${machine}" "${accel_opts[@]}" -m "${memory}" -smp "${smp}" -nographic -no-reboot -vga none)
+   ## A virtio-gpu (not '-vga none') even on the serial-only path: a GUI image
+   ## (e.g. the LXQt ISO) needs a DRM/KMS device or its Wayland compositor (labwc)
+   ## fails to start ("Found 0 GPUs / Failed to open any DRM device"), which
+   ## systemcheck's journal check then flags. '-nographic' keeps the serial console;
+   ## the GPU is headless (no display) and harmless for CLI images.
+   qemu_opts=(-machine "${machine}" "${accel_opts[@]}" -m "${memory}" -smp "${smp}" -nographic -no-reboot -vga virtio)
 fi
 
 ## Give the guest a user-mode (NAT) NIC so the boot faithfully reproduces a real
