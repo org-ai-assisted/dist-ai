@@ -4466,6 +4466,15 @@ eq(_fnt.current_font_family(), 'Hack', 'an empty/whitespace family falls back to
 _fnt.set_font_family('IBM Plex Mono')
 _fnt.apply_zoom(150)
 eq(_fnt.current_font_family(), 'IBM Plex Mono', 'a zoom change preserves the chosen family')
+# base font size: settable, clamped to a readable range, and scaled by the zoom.
+_fnt.apply_zoom(100)
+_fnt.set_font_size(16)
+eq(_fnt.current_font_size(), 16, 'set_font_size sets the base point size')
+eq(_fnt.font().pointSize(), 16, 'the base size reaches the widget font at 100% zoom')
+_fnt.set_font_size(100000)
+eq(_fnt.current_font_size(), 72, 'an oversized font size is clamped to the max')
+_fnt.set_font_size(0)
+eq(_fnt.current_font_size(), 6, 'a tiny font size is clamped to the min')
 
 # --- keyPressEvent: a preview has no child, so keys defer to the base ----------
 _pvk = SecureTerminal(preview=True)

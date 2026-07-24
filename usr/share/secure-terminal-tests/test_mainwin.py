@@ -1204,12 +1204,16 @@ finally:
 # --- _apply_global keeps locked keys at their admin value ----------------------
 _sl2 = set(win._locked)
 try:
-    win._locked = {'tui', 'colors', 'osc_notice', 'unicode_mode', 'osc_title'}
+    win._locked = {'tui', 'colors', 'osc_notice', 'unicode_mode', 'osc_title',
+                   'font_family'}
+    win._default_font_family = 'Hack'
     win._apply_global({'theme': 'dark', 'zoom': 100, 'mode': 'box',
+                       'font_family': 'Attacker Font', 'font_size': 20,
                        'colors': True, 'tui': True, 'osc_notice': True,
                        'osc': {'osc_title': True}, 'scrollback': 1000,
                        'paste_delay': 3, 'persist': False})
-    ok(True, '_apply_global preserves admin-locked keys')
+    ok(win._default_font_family == 'Hack',
+       '_apply_global preserves admin-locked keys (incl. a locked font_family)')
 finally:
     win._locked = _sl2
 
@@ -1293,6 +1297,32 @@ try:
        'set_font_family: an admin-locked family is not changed')
 finally:
     win._locked = _sfl
+
+# font_size from config: a valid value is honoured; a bad one falls back to the base
+import secure_terminal.settings as _setmod_fs                     # noqa: E402
+from secure_terminal.settings import Config as _Cfg_fs            # noqa: E402
+from secure_terminal.terminal import BASE_POINT_SIZE as _BPS_fs   # noqa: E402
+_o_load_fs = _setmod_fs.load
+_base_cfg_fs = _o_load_fs()
+
+
+def _cfg_with(**over):
+    return _Cfg_fs({**dict(_base_cfg_fs), **over}, _base_cfg_fs.locked,
+                   _base_cfg_fs.violations)
+
+
+try:
+    _setmod_fs.load = lambda: _cfg_with(font_size='16',
+                                        font_family='DejaVu Sans Mono')
+    _wfs = MainWindow()
+    eq(_wfs._default_font_size, 16, 'font_size read from config (valid int)')
+    eq(_wfs._default_font_family, 'DejaVu Sans Mono', 'font_family read from config')
+    _setmod_fs.load = lambda: _cfg_with(font_size='not-a-number')
+    _wfs2 = MainWindow()
+    eq(_wfs2._default_font_size, _BPS_fs,
+       'an invalid font_size falls back to the base point size')
+finally:
+    _setmod_fs.load = _o_load_fs
 
 _o_getfont = _QFontDialog.getFont
 try:
