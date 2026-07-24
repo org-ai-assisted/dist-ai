@@ -310,7 +310,7 @@ fi
 ## with help-steps/variables) instead of re-encoding it here. The fragment is side-effect
 ## free (no dependency on help-steps/pre), so sourcing it drags in no build context.
 dm_qemu_dir="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")"
-# shellcheck source=arch-to-qemu-machine.bsh
+# shellcheck source=./arch-to-qemu-machine.bsh
 source "${dm_qemu_dir}/arch-to-qemu-machine.bsh"
 
 ## Default the guest arch to the HOST's Debian architecture via 'dpkg --print-architecture' --
@@ -418,15 +418,19 @@ esac
 ## default one under the screendump dir when the caller did not pass --qmp.
 if [ -n "${screendump}" ]; then
    mkdir --parents -- "${screendump}"
-   qemu_opts=(-machine "${machine}" "${accel_opts[@]}" -m "${memory}" -smp "${smp}" -nodefaults -display none -vga std -no-reboot)
+   qemu_opts=(-machine "${machine}" "${accel_opts[@]}" -m "${memory}" -smp "${smp}" -display none -vga std -no-reboot)
    [ -n "${qmp}" ] || qmp="${screendump}/qmp.sock"
 else
    ## '-nodefaults' drops qemu's default empty IDE CD-ROM (q35 'ide2-cd0'): the ISO
    ## boots from USB (below), so the phantom optical drive only makes udisks log a
    ## benign sr0 IDENTIFY-PACKET-DEVICE probe error. No GPU is added on purpose --
    ## the image (rads) skips the desktop when there is no DRM device, so a GUI ISO
-   ## boots headless without labwc failing. '-nographic' keeps the serial console.
-   qemu_opts=(-machine "${machine}" "${accel_opts[@]}" -m "${memory}" -smp "${smp}" -nodefaults -nographic -no-reboot -vga none)
+   ## boots headless without labwc failing. '-nographic' would add an implicit serial
+   ## AND an implicit VGA, but '-nodefaults' cancels its serial (guest sees no ttyS0,
+   ## so the serial root shell never appears), so drive the console explicitly:
+   ## '-display none' (no GUI) + '-serial mon:stdio' (serial+monitor muxed on stdio,
+   ## exactly what the harness reads) + '-vga none' (headless).
+   qemu_opts=(-machine "${machine}" "${accel_opts[@]}" -m "${memory}" -smp "${smp}" -nodefaults -no-reboot -vga none -display none -serial mon:stdio)
 fi
 
 ## Give the guest a user-mode (NAT) NIC so the boot faithfully reproduces a real
