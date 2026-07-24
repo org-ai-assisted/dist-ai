@@ -1213,6 +1213,21 @@ ok(hk.review_pending(),
 hk.dispatch_pending_paste('reject')
 hk.apply_paste_warn('unicode')
 
+# a second paste arriving while a review is already open is ignored, not allowed to
+# clobber the pending one (input is otherwise suspended during a review).
+_rev = SecureTerminal(command='/bin/cat')
+_rev.apply_paste_warn('always')
+_pmrev1 = _QMimeHook()
+_pmrev1.setText('first-paste')
+_rev.insertFromMimeData(_pmrev1)
+ok(_rev.review_pending(), 'first paste opens a review')
+_pmrev2 = _QMimeHook()
+_pmrev2.setText('second-paste')
+_rev.insertFromMimeData(_pmrev2)                     # arrives during the open review
+ok(_rev.review_pending() and _rev._pending_paste == 'first-paste',
+   'a second paste during an open review is ignored (pending paste unchanged)')
+_rev.dispatch_pending_paste('reject')
+
 # --- colours: SGR run formatting + contrast guard -----------------------------
 from PyQt6.QtGui import QTextCursor as _QTC              # noqa: E402
 
