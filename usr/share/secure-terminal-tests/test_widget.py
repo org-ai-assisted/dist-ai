@@ -1101,6 +1101,45 @@ try:
 finally:
     _hookmod.evaluate = _real_evaluate
 
+# --- command-hook desync fail-safe (widened): Tab completion and readline control
+# edits rewrite the shell's line without updating _line_buffer, so the hook must
+# mark the line unverifiable (ask on Enter) rather than judge a stale buffer.
+_ctrl_mod = Qt.KeyboardModifier.ControlModifier
+hk._line_buffer = 'dd of=/dev/sd'
+hk._line_dirty = False
+key(hk, Qt.Key.Key_Tab, '\t')
+ok(hk._line_dirty, 'Tab completion marks the line unverifiable for the hook')
+hk._line_dirty = False
+key(hk, Qt.Key.Key_A, mods=_ctrl_mod)                # Ctrl+A: move-to-start (readline)
+ok(hk._line_dirty, 'a readline control edit (Ctrl+A) marks the line unverifiable')
+hk._line_dirty = False
+key(hk, Qt.Key.Key_BracketRight, '\x1d', mods=_ctrl_mod)   # generic control edit
+ok(hk._line_dirty, 'a generic control edit marks the line unverifiable')
+hk._line_dirty = False
+hk._line_buffer = 'x'
+key(hk, Qt.Key.Key_U, mods=_ctrl_mod)                # Ctrl+U: full-line discard
+ok(not hk._line_dirty and hk._line_buffer == '',
+   'Ctrl+U discards the line and stays clean (nothing stale to ask about)')
+
+# --- paste + hook: a paste that would AUTO-SUBMIT (carries any newline, even a
+# single trailing one) is HELD for review; a non-submitting paste marks the line
+# dirty so the next Enter asks. Without this a pasted command silently ran.
+from PyQt6.QtCore import QMimeData as _QMimeHook          # noqa: E402
+hk.apply_paste_warn('unicode')
+hk._line_dirty = False
+_pmnl = _QMimeHook()
+_pmnl.setText('rm -rf /tmp/x\n')                     # single-line + trailing newline
+hk.insertFromMimeData(_pmnl)
+ok(hk.review_pending(),
+   'an auto-submitting paste is held for review when a command hook is active')
+hk.dispatch_pending_paste('reject')
+hk._line_dirty = False
+_pmins = _QMimeHook()
+_pmins.setText('ls -la')                             # no newline: inserts into the line
+hk.insertFromMimeData(_pmins)
+ok(hk._line_dirty,
+   'a non-submitting paste marks the line dirty so the hook asks on the next Enter')
+
 # --- colours: SGR run formatting + contrast guard -----------------------------
 from PyQt6.QtGui import QTextCursor as _QTC              # noqa: E402
 
