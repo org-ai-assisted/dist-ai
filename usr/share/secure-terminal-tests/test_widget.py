@@ -316,6 +316,22 @@ feed_output(_ztr, ('abc\r\n' + _ac).encode('utf-8'))
 ok(isinstance(_ztr.toPlainText(), str),
    'zalgo TUI: a combining mark at column 0 of a lower row is handled, no crash')
 
+# --- _export_ascii maps the box placeholder to '_' in every mode but Show -----
+# A TUI grid renders a neutralized cell as the box placeholder (a <U+XXXX> badge
+# cannot fit one cell) in Box/Reveal/Detail, so text LEAVING the widget (copy,
+# IPC, session) must map the box back to ASCII '_' in ALL three -- else a copy in
+# Reveal/Detail would carry U+25A1 out and raise a spurious unicode review. Show
+# keeps the box (it may be a real U+25A1, and Show is the opt-in to copy unicode).
+_BOXCH = chr(0x25A1)
+_xw = SecureTerminal(command='/bin/cat')
+for _xm in ('box', 'reveal', 'detail'):
+    _xw._mode = _xm
+    ok(_xw._export_ascii('caf' + _BOXCH + 'x') == 'caf_x',
+       '_export_ascii maps the box to ASCII _ in %s mode' % _xm)
+_xw._mode = 'show'
+ok(_xw._export_ascii('caf' + _BOXCH) == 'caf' + _BOXCH,
+   '_export_ascii keeps the box in show mode (opt-in to copy unicode)')
+
 # --- "needs TUI" advisory also fires for in-place repaint (zsh ZLE menu) --------
 # The bug: an interactive completion menu (zsh/readline) repaints with cursor-up
 # and uses no alternate screen, so line mode stripped the redraw into garbage
