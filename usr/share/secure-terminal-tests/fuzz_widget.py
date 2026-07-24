@@ -220,12 +220,37 @@ def phase_keys(rnd, iterations, seed):
         term.apply_mode(rnd.choice(list(S.DISPLAY_MODES)))
 
 
+def phase_review(rnd, iterations, seed):
+    ## The review bar (review.py) reviews untrusted text in BOTH directions. Fuzz
+    ## show_review directly with random text and kind: classify_paste, the strip/keep
+    ## previews and render_preview must never crash, and the STRIP preview (what the
+    ## user gets on the safe default) must carry no raw control byte.
+    from secure_terminal.review import ReviewBar
+    from PyQt6.QtWidgets import QWidget
+    win = QWidget()
+    term = SecureTerminal(command='/bin/cat')
+    bar = ReviewBar(win)
+    for _ in range(iterations):
+        raw = ''.join(_rand_token(rnd) for _ in range(rnd.randint(0, 15)))
+        bar.show_review(term, raw, rnd.randint(0, 3),
+                        rnd.choice(('paste', 'copy', 'bogus')))
+        _assert(bar.reviewed_term() is term,
+                'review bar did not take the term for {0!r}'.format(raw), seed)
+        strip_pane = bar._views[2].toPlainText()          # the safe-default preview
+        for ch in strip_pane:
+            _assert(ch in ('\n', '\t') or ord(ch) >= 0x20,
+                    'review strip-preview leaked a control byte on {0!r}'.format(raw),
+                    seed)
+        bar.hide_review()
+
+
 PHASES = (
     ('feed', phase_feed),
     ('tui', phase_tui),
     ('switch', phase_switch),
     ('paste', phase_paste),
     ('keys', phase_keys),
+    ('review', phase_review),
 )
 
 

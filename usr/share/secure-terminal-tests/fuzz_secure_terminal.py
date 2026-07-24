@@ -30,6 +30,7 @@ the seed and the offending input so the case replays deterministically.
 
 import argparse
 import importlib.util
+import json
 import os
 import random
 import re
@@ -342,6 +343,45 @@ def phase_hook_protocol(rnd, iterations, seed):
         HOOK._invoke = orig_invoke
 
 
+def phase_hook_subprocess(rnd, iterations, seed):
+    ## The REAL hook round-trip -- a subprocess + json.loads of the child's stdout,
+    ## beyond phase_hook_protocol's mocked reply. A hook child echoes a
+    ## fuzzer-controlled reply file, run through evaluate() with the real _invoke, so
+    ## arbitrary (incl. invalid) child output must still yield a valid decision and
+    ## never raise. A subprocess per iteration is slow, so probe a small curated set.
+    hook_fd, hook_py = tempfile.mkstemp(suffix='.py')
+    os.write(hook_fd, b"import sys\n"
+                      b"sys.stdin.buffer.read()\n"
+                      b"sys.stdout.buffer.write(open(sys.argv[1], 'rb').read())\n")
+    os.close(hook_fd)
+    reply_fd, reply_file = tempfile.mkstemp()
+    os.close(reply_fd)
+    argv = [sys.executable, hook_py, reply_file]
+    try:
+        for _ in range(min(iterations, 60)):
+            reply = rnd.choice([
+                b'', b'not json', b'{', b'[]', b'42', b'null', b'true',
+                json.dumps({'verdict': rnd.choice(['allow', 'block', 'ask',
+                                                   'need_transcript', 'x']),
+                            'message': _rand_text(rnd),
+                            'suggestion': _rand_text(rnd)}).encode('utf-8'),
+                _rand_bytes(rnd, 128)])
+            with open(reply_file, 'wb') as handle:
+                handle.write(reply)
+            dec = HOOK.evaluate(argv, _rand_text(rnd), timeout=5,
+                                on_error=rnd.choice(['allow', 'block']),
+                                transcript_provider=lambda: _rand_text(rnd))
+            _assert(isinstance(dec, dict)
+                    and dec.get('verdict') in ('allow', 'block', 'ask')
+                    and isinstance(dec.get('suggestion'), str)
+                    and '\n' not in dec['suggestion'] and '\r' not in dec['suggestion'],
+                    'hook real round-trip: invalid decision for reply {0!r}'
+                    .format(reply), seed)
+    finally:
+        os.unlink(hook_py)
+        os.unlink(reply_file)
+
+
 def phase_cli(rnd, iterations, seed):
     ## The secure-terminal-cli entry (cli.main): random argv must never crash the
     ## parser beyond argparse's own SystemExit. _run is mocked, so nothing is
@@ -378,6 +418,7 @@ def main():
         ('ipc', phase_ipc),
         ('hooks', phase_hooks),
         ('hook_protocol', phase_hook_protocol),
+        ('hook_subprocess', phase_hook_subprocess),
         ('cli', phase_cli),
     )
     per_phase = max(1, opts.iterations // len(phases))
