@@ -1312,11 +1312,12 @@ def _cfg_with(**over):
 
 
 try:
-    _setmod_fs.load = lambda: _cfg_with(font_size='16',
+    _setmod_fs.load = lambda: _cfg_with(font_size='16', ui_scale='150',
                                         font_family='DejaVu Sans Mono')
     _wfs = MainWindow()
     eq(_wfs._default_font_size, 16, 'font_size read from config (valid int)')
     eq(_wfs._default_font_family, 'DejaVu Sans Mono', 'font_family read from config')
+    eq(_wfs._ui_scale, 150, 'ui_scale (menu size) read from config (valid int)')
     _setmod_fs.load = lambda: _cfg_with(font_size='not-a-number')
     _wfs2 = MainWindow()
     eq(_wfs2._default_font_size, _BPS_fs,
@@ -1341,6 +1342,33 @@ try:
        '_apply_global applies the paste/copy review levels to every open tab')
 finally:
     win._paste_warn, win._copy_warn = _pw_save, _cw_save
+
+# UI (menu) scale: _select_labels enlarges a dialog's font for readability; the base
+# point size is captured once so a re-scaled fresh dialog never compounds, and a
+# scale of 100 is a no-op.
+from secure_terminal.main import _select_labels as _sel_scale     # noqa: E402
+from PyQt6.QtWidgets import QDialog as _QDlgScale                  # noqa: E402
+_probe_dlg = _QDlgScale()
+_probe_before = _probe_dlg.font().pointSizeF()
+_sel_scale(_probe_dlg, 150)
+ok(_probe_dlg.font().pointSizeF() > _probe_before or _probe_before <= 0,
+   '_select_labels(scale=150) enlarges the dialog font (menu zoom)')
+_probe_dlg2 = _QDlgScale()
+_pb2 = _probe_dlg2.font().pointSizeF()
+_sel_scale(_probe_dlg2, 100)
+eq(_probe_dlg2.font().pointSizeF(), _pb2,
+   '_select_labels(scale=100) leaves the dialog font unchanged')
+_us_save = win._ui_scale
+try:
+    win._apply_global({'theme': 'dark', 'zoom': 100,
+                       'font_family': win._default_font_family,
+                       'font_size': win._default_font_size, 'ui_scale': 175,
+                       'mode': 'box', 'colors': True, 'tui': False, 'osc': {},
+                       'osc_notice': True, 'scrollback': 0, 'paste_delay': 3,
+                       'persist': False})
+    eq(win._ui_scale, 175, '_apply_global stores the menu (UI) scale')
+finally:
+    win._ui_scale = _us_save
 
 _o_getfont = _QFontDialog.getFont
 try:
