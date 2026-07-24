@@ -572,25 +572,28 @@ eq(S.color_256(16), '#000000', 'color_256: cube start is black')
 ok(S.color_256(300) is None, 'color_256: out-of-range -> None')
 
 # --- tui_cell: one-character-wide, grid-preserving cell sanitization ----------
+# A neutralized cell renders as the BOX placeholder (U+25A1), the SAME single-
+# column mark CLI box/show mode draws, so box/reveal/detail look identical in both
+# modes instead of a bare '_'. Copy still maps the box back to '_' on export.
 eq(S.tui_cell('A', 'box'), 'A', 'tui ascii kept')
-eq(S.tui_cell(CAFE[-1], 'box'), '_', 'tui box non-ascii -> _')
+eq(S.tui_cell(CAFE[-1], 'box'), S.BOX, 'tui box non-ascii -> box placeholder')
 eq(S.tui_cell(CAFE[-1], 'show'), CAFE[-1], 'tui show renders glyph')
 eq(S.tui_cell(chr(0x2500), 'show'), chr(0x2500), 'tui show renders box-drawing')
-eq(S.tui_cell(BIDI, 'show'), '_', 'tui show still neutralizes bidi')
-eq(S.tui_cell(ZWSP, 'show'), '_', 'tui show still neutralizes zero-width')
-eq(S.tui_cell(BEL, 'box'), '_', 'tui control -> _')
+eq(S.tui_cell(BIDI, 'show'), S.BOX, 'tui show still neutralizes bidi -> box')
+eq(S.tui_cell(ZWSP, 'show'), S.BOX, 'tui show still neutralizes zero-width -> box')
+eq(S.tui_cell(BEL, 'box'), S.BOX, 'tui control -> box placeholder')
 # reveal cannot show a <U+XXXX> badge in a fixed cell, so in TUI it collapses to
-# the safe "_" (like box) -- never the raw glyph, which would render a homoglyph
-# deceptively under the green "reveal is safe" lamp.
-eq(S.tui_cell(CAFE[-1], 'reveal'), '_', 'tui reveal is safe "_", not the glyph')
-eq(S.tui_cell(BIDI, 'reveal'), '_', 'tui reveal neutralizes bidi one-wide')
+# the box placeholder (like box mode) -- never the raw glyph, which would render a
+# homoglyph deceptively under the green "reveal is safe" lamp.
+eq(S.tui_cell(CAFE[-1], 'reveal'), S.BOX, 'tui reveal is box placeholder, not the glyph')
+eq(S.tui_cell(BIDI, 'reveal'), S.BOX, 'tui reveal neutralizes bidi one-wide')
 eq(S.tui_cell('', 'box'), ' ', 'tui empty cell -> space')
 # a pyte cell may be a multi-codepoint grapheme (base + combining) -> must not
 # crash (this is what "cat /dev/random" in show mode hit)
 _grapheme = 'a' + chr(0x0301)                    # a + combining acute
 eq(S.tui_cell(_grapheme, 'show'), _grapheme, 'tui multi-cp grapheme kept in show')
-eq(S.tui_cell(_grapheme, 'box'), '_', 'tui multi-cp grapheme -> _ in box')
-eq(S.tui_cell('a' + BEL, 'show'), '_', 'tui grapheme with a control -> _')
+eq(S.tui_cell(_grapheme, 'box'), S.BOX, 'tui multi-cp grapheme -> box in box mode')
+eq(S.tui_cell('a' + BEL, 'show'), S.BOX, 'tui grapheme with a control -> box')
 ok(isinstance(S.tui_cell(chr(0x1F600) + chr(0x1F600), 'show'), str),
    'tui two-astral cell does not crash')
 # apply_line_edits: the pure line-editing model behind the fast bulk render path

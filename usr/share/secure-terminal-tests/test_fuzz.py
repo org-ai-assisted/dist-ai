@@ -299,9 +299,10 @@ def prop_tui_cell(ch, mode):
     # length; tui_cell must never raise (this is where cat /dev/random crashed).
     out = S.tui_cell(ch, mode)
     assert isinstance(out, str)
-    # any control codepoint in the cell -> the whole cell is neutralized to '_'
+    # any control codepoint in the cell -> the whole cell is neutralized to the
+    # single-column BOX placeholder (matches CLI box/show rendering)
     if any(ord(c) < 0x20 for c in ch):
-        assert out == '_'
+        assert out == S.BOX
 
 
 @RUN

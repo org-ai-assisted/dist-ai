@@ -182,12 +182,13 @@ def phase_lines(rnd, iterations, seed):
         _assert(0 <= newcol <= len(cur),
                 'apply_line_edits cursor out of bounds on {0!r}'.format(text),
                 seed)
-        ## per-cell TUI sanitizer: any control in the cell -> neutralized to '_'
+        ## per-cell TUI sanitizer: any control in the cell -> neutralized to the
+        ## single-column BOX placeholder (matches CLI box/show rendering)
         cell = ''.join(rnd.choice(_DANGER + _TEXT) for _ in range(rnd.randint(0,
                                                                               4)))
         tc = S.tui_cell(cell, rnd.choice(S.DISPLAY_MODES))
         if any(ord(c) < 0x20 for c in cell):
-            _assert(tc == '_', 'tui_cell did not neutralize control {0!r}'
+            _assert(tc == S.BOX, 'tui_cell did not neutralize control {0!r}'
                     .format(cell), seed)
         ## SGR parser: fg/bg stay in the 16-colour range, bold stays bool
         state = {'fg': None, 'bg': None, 'bold': False}

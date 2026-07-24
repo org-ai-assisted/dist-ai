@@ -997,6 +997,48 @@ ok(_iltip.isVisible() and 'theme risk explanation' in _iltip.text(),
 _iltip.hide()
 _iltip._poll.stop()
 
+# --- #132: a second click on the SAME (i) marker toggles the tip closed --------
+def _click95(label):
+    label.mousePressEvent(_QMouseEvent95(
+        _QEvent95.Type.MouseButtonPress, _QPointF95(1.0, 1.0),
+        _Qt95.MouseButton.LeftButton, _Qt95.MouseButton.LeftButton,
+        _Qt95.KeyboardModifier.NoModifier))
+_click95(_il)
+ok(_iltip.isVisible(), '#132: first click re-opens the InfoTip')
+_click95(_il)
+ok(not _iltip.isVisible(),
+   '#132: a second click on the same marker hides it (toggle)')
+_iltip._poll.stop()
+
+# --- #130: the View > Paste delay check-mark follows the current delay ---------
+win.set_paste_delay(5)                            # a preset -> that entry checks
+ok(win._paste_delay_actions[5].isChecked()
+   and not win._paste_delay_actions[0].isChecked(),
+   '#130: setting a preset paste delay checks that menu entry')
+win.set_paste_delay(7)                            # not a preset -> none checked
+ok(not any(a.isChecked() for a in win._paste_delay_actions.values()),
+   '#130: a custom paste delay leaves every menu entry unchecked')
+win.set_paste_delay(3)                            # restore the default preset
+
+# --- #128: menu hints are left to Qt's native tooltip (stacks above the popup);
+# a non-menu widget still gets the copyable tool-window InfoTip -----------------
+from PyQt6.QtWidgets import QMenu as _QMenu128                  # noqa: E402
+from PyQt6.QtGui import QHelpEvent as _QHelpEvent128            # noqa: E402
+_menu128 = _QMenu128(win)
+_menu128.addAction('X').setToolTip('menu hint')
+_he128 = _QHelpEvent128(_QEvent95.Type.ToolTip, QPoint(1, 1), QPoint(1, 1))
+win._tip_filter._tip.hide()
+win._tip_filter.eventFilter(_menu128, _he128)     # QMenu -> left to Qt
+ok(not win._tip_filter._tip.isVisible(),
+   '#128: a menu ToolTip is left to Qt, not shown as the tool-window InfoTip')
+_wtip128 = M.QLabel('x', win)
+_wtip128.setToolTip('row help 128')
+ok(win._tip_filter.eventFilter(_wtip128, _he128)
+   and win._tip_filter._tip.isVisible(),
+   '#128: a non-menu widget still shows the copyable InfoTip')
+win._tip_filter._tip.hide()
+win._tip_filter._tip._poll.stop()
+
 # --- _set_shortcuts skips an unknown ident in the apply loop ------------------
 ok(isinstance(win._set_shortcuts({'unknown-x': ''}), list),
    '_set_shortcuts: an unknown ident is skipped')
