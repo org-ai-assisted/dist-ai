@@ -80,6 +80,7 @@ fuzz_suites=(
    sanitize-string-tests-fuzz
    sdwdate-gui-tests-fuzz
    secure-terminal-tests-fuzz
+   secure-terminal-tests-fuzz-gui
    stcat-family-tests-fuzz
    stdisplay-tests-fuzz
    tor-control-panel-tests-fuzz

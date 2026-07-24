@@ -1,5 +1,6 @@
 usr/bin/secure-terminal-tests usr/bin/
 usr/bin/secure-terminal-tests-fuzz usr/bin/
+usr/bin/secure-terminal-tests-fuzz-gui usr/bin/
 usr/bin/secure-terminal-tests-coverage usr/bin/
 usr/bin/secure-terminal-metrics usr/bin/
 usr/bin/secure-terminal-tests-apparmor usr/bin/

@@ -109,5 +109,25 @@ else
    printf '\n== Qt widget modules NOT gated (widget suites skipped; Qt absent) ==\n'
 fi
 
+## The GUI fuzzer (fuzz_widget.py), driven deterministically by test_fuzz_widget,
+## is itself enforced at 100% SELF-coverage -- the live-widget fuzz harness must
+## carry no dead code (its --source is the harness, in its own coverage file, not
+## the package). Gated only when the offscreen Qt widget is available.
+if [ "${qt_ran}" = '1' ] && [ -f "${tests_dir}/test_fuzz_widget.py" ]; then
+   printf '\n== GUI fuzzer harness (must be 100%%) ==\n'
+   fuzz_cov="${work}/.cov-fuzz-gui"
+   fuzz_rc=0
+   ( cd "${tests_dir}" \
+      && COVERAGE_FILE="${fuzz_cov}" python3 -m coverage run \
+            --source=fuzz_widget -- test_fuzz_widget.py ) || fuzz_rc="$?"
+   if [ "${fuzz_rc}" != '0' ] && [ "${fuzz_rc}" != '77' ]; then
+      printf 'secure-terminal-tests-coverage: GUI fuzzer failed (exit %s)\n' \
+         "${fuzz_rc}" >&2
+      exit "${fuzz_rc}"
+   fi
+   COVERAGE_FILE="${fuzz_cov}" python3 -m coverage report \
+      --include='*fuzz_widget.py' --show-missing --fail-under=100
+fi
+
 printf '\n== whole-package coverage ==\n'
 python3 -m coverage report || true
