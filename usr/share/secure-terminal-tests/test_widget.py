@@ -613,6 +613,19 @@ eq(_tr.toPlainText().rstrip(), 'done caf_',
 eq(_tr.transcript_text().rstrip(), 'done caf<U+00E9 LATIN SMALL LETTER E WITH ACUTE>',
    'box transcript: line edits resolved AND the codepoint named (lossless), not "_"')
 _tr.shutdown()
+# a REAL U+25A1 the program printed is kept as its glyph in Show mode -- it is not
+# a neutralization placeholder, so a saved transcript must not rewrite it to a
+# <U+25A1 ...> badge or '_' (the _export_ascii Show invariant). A neutralized
+# no-glyph char shown as a box still names its own (different) codepoint.
+_trs = SecureTerminal(command='/bin/cat')
+_trs.apply_mode('show')
+_trs._feed_line('a' + chr(0x25A1) + chr(0x202E) + 'b\n')   # real box + bidi override
+_ts = _trs.transcript_text()
+ok(chr(0x25A1) in _ts and 'U+25A1' not in _ts,
+   'show transcript: a real U+25A1 glyph is kept, not rewritten as a placeholder')
+ok('U+202E' in _ts,
+   'show transcript: a neutralized bidi shown as a box still names its codepoint')
+_trs.shutdown()
 # a mode toggle after a flood re-renders only the recent tail, not the full
 # scrollback: reveal expands each byte to an 8-char <U+XXXX>, so re-rendering 1MB
 # of raw would be ~8MB and freeze the UI. Bounded, the document stays small.
