@@ -346,12 +346,23 @@ def main():
 
         verdict = run_checks(child, args, log)
     finally:
-        if child is not None and child.isalive():
-            child.terminate(force=True)
+        if child is not None:
+            ## Deterministically kill AND reap qemu so nothing lingers for the
+            ## container init to SIGKILL on teardown. A live image can shut down
+            ## by 'Exiting container' (its systemd mis-detects a container) rather
+            ## than ACPI-powering-off qemu, so qemu keeps running after the checks;
+            ## the container init's cleanup of that leftover then surfaces as a
+            ## spurious non-zero step exit even though the checks passed.
+            ## close(force=True) SIGKILLs, closes the pty and waits/reaps.
+            try:
+                child.close(force=True)
+            except Exception:
+                pass
         if qemu_workdir:
             import shutil
             shutil.rmtree(qemu_workdir, ignore_errors=True)
 
+    log("dm-image-test: exiting (verdict rc=%s)" % verdict)
     sys.exit(verdict)
 
 
