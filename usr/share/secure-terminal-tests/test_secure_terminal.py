@@ -710,6 +710,24 @@ _cmp, _cells, _col, _sg, _wr = S.feed_line_edits([], 0, {}, 'a' + _maa * 100)
 eq(sum(1 for _c, _ in _cells if _c == _maa), 32,
    'feed_line_edits: a class-0 mark (ccc 0, category Mc) flood is still bounded to 32')
 
+# --- numeric-parameter crash guard: Python 3.11+ raises ValueError converting an
+# int string longer than 4300 digits. A terminal parameter is a few digits, so a
+# huge digit run in untrusted output must be rejected before int(), never crash the
+# parser (which runs in a Qt notifier slot).
+eq(S._safe_int('42'), 42, '_safe_int: a short ASCII digit run parses')
+eq(S._safe_int('9' * 5000), 0, '_safe_int: an over-long run is rejected (no ValueError)')
+eq(S._safe_int('9' * 5000, None), None, '_safe_int: a rejected run returns the default')
+eq(S._safe_int(chr(0xFF11)), 0, '_safe_int: a non-ASCII digit (int() rejects) is rejected')
+# a CSI cursor op with a 5000-digit parameter must not crash feed_line_edits
+_cmp, _cells, _col, _sg, _wr = S.feed_line_edits([], 0, {}, 'a\x1b[' + '9' * 5000 + 'Cb')
+ok(any(_c == 'a' for _c, _ in _cells),
+   'feed_line_edits: a 5000-digit CSI parameter does not crash (the huge run is consumed)')
+# an SGR with a 5000-digit parameter must not crash parse_sgr
+_sgr_state = {'fg': None, 'bg': None, 'bold': False}
+S.parse_sgr('9' * 5000, _sgr_state)
+ok(_sgr_state == {'fg': None, 'bg': None, 'bold': False},
+   'parse_sgr: a 5000-digit parameter is a no-op, not a crash')
+
 # --- sanitize_title: program-supplied title / notification -> safe ASCII ------
 eq(S.sanitize_title('My Build'), 'My Build', 'title plain ascii')
 eq(S.sanitize_title('ev' + BIDI + 'il'), 'evil', 'title strips bidi')

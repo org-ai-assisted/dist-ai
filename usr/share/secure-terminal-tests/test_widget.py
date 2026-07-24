@@ -283,6 +283,18 @@ _zsgr = SecureTerminal(command='/bin/cat'); _zsgr.apply_mode('show')
 feed_output(_zsgr, ('a' + (_ac * 20 + '\x1b[0m') * 6).encode('utf-8'))
 ok(_zsgr.toPlainText().count(_ac) <= 32,
    'zalgo CLI: a stripped SGR between mark-blocks cannot reset the cap')
+# a program printing an OSC with a 5000-digit code must NOT crash the app: int()
+# raises on a 4300+-digit string (Python 3.11+), and the CLI OSC-notice scan runs
+# in a Qt notifier slot -- no feature opt-in is needed to reach it.
+_zosc = SecureTerminal(command='/bin/cat'); _zosc.apply_mode('show')
+feed_output(_zosc, b'\x1b]' + b'1' * 5000 + b'\n')
+ok(isinstance(_zosc.toPlainText(), str),
+   'a 5000-digit OSC code does not crash the CLI render (int 4300-digit limit)')
+# and a 5000-digit CSI cursor parameter through the live line-mode path
+_zcsi = SecureTerminal(command='/bin/cat'); _zcsi.apply_mode('show')
+feed_output(_zcsi, b'a\x1b[' + b'9' * 5000 + b'Cb\n')
+ok(isinstance(_zcsi.toPlainText(), str),
+   'a 5000-digit CSI parameter does not crash the CLI render')
 # cursor-move TUI: steer many capped chunks back onto ONE cell via CSI G; the
 # per-cell cap must stop it growing unbounded (the stream-run counter could not)
 _zcm = SecureTerminal(command='/bin/cat', tui=True)
@@ -1189,6 +1201,18 @@ key(hk, Qt.Key.Key_J, mods=_ctrl_mod)                # Ctrl+J == LF == accept-li
 ok(not hk._line_dirty and hk._line_buffer == '' and b'\n' in _hsent,
    'Ctrl+J (allowed) submits, resets the line, leaves no stale dirty flag')
 
+# paste_warn='never' must NOT bypass the command-hook gate: an auto-submitting
+# paste is still held for review when a hook is active, whatever the warn setting.
+hk.apply_paste_warn('never')
+hk._line_dirty = False
+_pmnever = _QMimeHook()
+_pmnever.setText('rm -rf ~\n')
+hk.insertFromMimeData(_pmnever)
+ok(hk.review_pending(),
+   "paste_warn='never' still holds an auto-submitting paste when a hook is active")
+hk.dispatch_pending_paste('reject')
+hk.apply_paste_warn('unicode')
+
 # --- colours: SGR run formatting + contrast guard -----------------------------
 from PyQt6.QtGui import QTextCursor as _QTC              # noqa: E402
 
@@ -1631,6 +1655,15 @@ if tui_available():
     tui._handle_osc(b'\x1b]52;c;' + _b64.b64encode(_homo) + b'\x07')
     ok(_QGA2.clipboard().text() == 'pypal.com',
        'OSC 52 write is ASCII-only: a homoglyph is dropped (no clipboard deception)')
+    # a huge OSC numeric parameter must not crash the app -- int() raises on a
+    # 4300+-digit string (Python 3.11+), and these parsers run in a Qt notifier
+    # slot, so an unhandled exception would abort the whole application.
+    for _f in ('osc_title', 'osc_palette'):
+        tui.apply_osc(_f, True)
+    tui._handle_osc(b'\x1b]' + b'9' * 5000 + b';x\x07')          # huge OSC code
+    tui._handle_osc(b'\x1b]4;' + b'1' * 5000 + b';rgb:ff/00/00\x07')  # huge palette index
+    ok(isinstance(tui.toPlainText(), str),
+       'a 5000-digit OSC code / palette index does not crash the TUI OSC handlers')
     # cwd OSC 7 gated + emits the safe path
     _cwds = []
     tui.cwd_changed.connect(_cwds.append)
