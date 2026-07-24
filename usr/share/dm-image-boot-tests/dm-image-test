@@ -237,7 +237,18 @@ def run_checks(child, args, log):
         commands = ["systemcheck --cli --leak-tests --verbose"]
     if any("leak-tests" in c for c in commands):
         tor_ready = "DMTOR%d" % os.getpid()
+        ## A freshly built (snapshot-pinned) image always has apt updates pending,
+        ## so systemcheck's check_operating_system reports "packages can be updated"
+        ## and exits non-zero on an otherwise-healthy image; that is image freshness,
+        ## not a boot-integrity failure. Skip just that check for the test via a
+        ## systemcheck.d drop-in (its own sanctioned systemcheck_skip_functions knob,
+        ## written into the running guest only -- the image is untouched). Then wait
+        ## (bounded, best-effort) for Tor 'Bootstrapped 100%' and an sdwdate sync so
+        ## the Tor Connection / time-sync checks do not race the async bootstrap.
         prep = (
+            "mkdir -p /etc/systemcheck.d && printf '%s\\n' "
+            "'systemcheck_skip_functions+=\" check_operating_system \"' "
+            "> /etc/systemcheck.d/50_boot-test.conf; "
             "if command -v tor >/dev/null 2>&1 && [ -d /var/log/tor ]; then "
             "timeout 240 sh -c 'until grep -q \"Bootstrapped 100\" "
             "/var/log/tor/notice.log 2>/dev/null; do sleep 5; done'; "
