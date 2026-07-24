@@ -1445,15 +1445,18 @@ p.insertFromMimeData(_dirty)
 eq(len(_reviews), 1, 'if-unicode mode: a unicode paste is questioned (held)')
 p.dispatch_pending_paste('reject')
 
-# 'never': not even a unicode/control paste holds -- it is silently sanitized to
-# ASCII (the safest strip; opting out of the prompt does not opt out of safety).
+# 'never': not even a unicode/control paste holds. Opting out of review preserves
+# FUNCTION -- printable unicode is KEPT, not stripped to ASCII (still neutralizing
+# control/bidi/invisible injection) -- and the unreviewed crossing is surfaced via
+# the risk lamp rather than by silently mangling the content.
 p.apply_paste_warn('never')
 eq(p.current_paste_warn(), 'never', 'apply_paste_warn switches the mode')
 _reviews.clear(); psent.clear()
 p.insertFromMimeData(_dirty)
 eq(_reviews, [], 'never mode: even a unicode paste is not questioned')
-eq(psent, [b'echo \r'],
-   'never mode: the unicode paste is silently stripped to ASCII, not sent raw')
+eq(psent, [b'echo \xd0\xb0\r'],
+   'never mode: the unicode paste is KEPT (not stripped) -- disabling review does '
+   'not mangle deliberately pasted unicode')
 
 # 'always': even a clean ASCII paste holds for review.
 p.apply_paste_warn('always')
@@ -4071,6 +4074,36 @@ ok(_pts and _pts[0].count(b'\x1b[201~') == 1 and _pts[0].endswith(b'\x1b[201~')
    and b'\x1b[200~' not in _pts[0][6:],
    'paste: an embedded bracketed-paste END marker cannot break out (ESC stripped)')
 _pt.apply_paste_warn(_o_pw_bp)
+
+# --- review 'never' keeps content (does not strip) + emits the unreviewed-risk
+# signal, so disabling review preserves function but the risk stays VISIBLE.
+_nv = SecureTerminal(command='/bin/cat')
+_nv.apply_paste_warn('never')
+_nvsent = spy_writes(_nv)
+_nvrisk = []
+_nv.unreviewed_risk.connect(lambda: _nvrisk.append(1))
+_nvm = QMimeData()
+_nvm.setText('caf\u00e9')                            # printable non-ASCII (e-acute)
+_nv.insertFromMimeData(_nvm)
+ok(b'caf\xc3\xa9' in b''.join(_nvsent),
+   "paste 'never' keeps printable unicode (not stripped to ASCII)")
+ok(_nvrisk, "paste 'never' of risky text emits the unreviewed-risk signal")
+_nvrisk.clear()
+_nvsent.clear()
+_nvm2 = QMimeData()
+_nvm2.setText('ls -la')                              # clean ASCII: not risky
+_nv.insertFromMimeData(_nvm2)
+ok(not _nvrisk, "paste 'never' of clean ASCII does not emit the risk signal")
+# copy 'never' of a risky (unicode) selection keeps it + emits the risk signal
+_cv = SecureTerminal(command='/bin/cat')
+_cv.apply_mode('show')
+_cv.apply_copy_warn('never')
+feed_output(_cv, 'caf\u00e9\n'.encode('utf-8'))
+_cv.selectAll()
+_cvrisk = []
+_cv.unreviewed_risk.connect(lambda: _cvrisk.append(1))
+_cv.copy()
+ok(_cvrisk, "copy 'never' of risky text emits the unreviewed-risk signal")
 
 # --- reset_caret with no output cursor snaps to the document end --------------
 _rc = SecureTerminal(command='/bin/cat')

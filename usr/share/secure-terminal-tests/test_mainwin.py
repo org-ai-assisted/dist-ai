@@ -1426,6 +1426,35 @@ win.set_copy_warn('unicode')
 win.set_paste_warn('unicode')
 ok(True, 'set_paste_warn / set_copy_warn push the mode to every tab and persist')
 
+# --- review risk lamp (#116): reflects the config and goes red on unreviewed risk
+from PyQt6.QtWidgets import QDialog as _QDlgSec                    # noqa: E402
+_pw0, _cw0, _ur0 = win._paste_warn, win._copy_warn, win._unreviewed_risk
+try:
+    win.set_paste_warn('unicode')
+    win.set_copy_warn('unicode')
+    win._unreviewed_risk = False
+    eq(win._review_level()[0], '#1f8a54',
+       'review lamp is green when both directions are reviewed')
+    win.set_paste_warn('never')
+    eq(win._review_level()[0], '#e5a50a',
+       "review lamp is yellow when a direction's review is off")
+    win._on_unreviewed_risk()
+    ok(win._unreviewed_risk and win._review_level()[0] == '#e5484d',
+       'unreviewed risk lights the review lamp red')
+    win._on_unreviewed_risk()                    # already red -> stays red, no error
+    _osec = _QDlgSec.exec
+    _QDlgSec.exec = lambda _self: int(_QDlgSec.DialogCode.Accepted)
+    try:
+        win._show_security_details()             # acknowledging clears the red
+    finally:
+        _QDlgSec.exec = _osec
+    ok(not win._unreviewed_risk,
+       'opening the security details acknowledges and clears the red review lamp')
+finally:
+    win.set_paste_warn(_pw0)
+    win.set_copy_warn(_cw0)
+    win._unreviewed_risk = _ur0
+
 # --- the paste/copy review bar: _show_review / _hide_paste_review --------------
 from secure_terminal.terminal import SecureTerminal as _ST2      # noqa: E402
 if win.tabs.count() == 0:
