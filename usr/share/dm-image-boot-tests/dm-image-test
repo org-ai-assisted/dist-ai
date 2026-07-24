@@ -223,13 +223,34 @@ def run_checks(child, args, log):
                    % boot_done)
     wait_for(boot_done, args.timeout)
 
+    ## 2b) Tor-readiness barrier for leak-tests. systemcheck's Tor Connection check
+    ##     runs a 'tor-circuit-established-check' with a 10s timeout and gives up
+    ##     after a few errors; run right after boot it races Tor's async bootstrap,
+    ##     each attempt hits the 10s timeout (exit 124) and the leg fails on a
+    ##     healthy image. Mirror sdwdate's own CI pattern: wait (bounded) for Tor
+    ##     'Bootstrapped 100%' and an sdwdate clock sync before the checks. Guarded
+    ##     on Tor being present and best-effort (the bounded waits fall through), so
+    ##     a non-Tor image or a Tor-blocked runner still reaches systemcheck, which
+    ##     then reports the real state rather than a bootstrap race.
+    commands = args.run
+    if commands is None:
+        commands = ["systemcheck --cli --leak-tests --verbose"]
+    if any("leak-tests" in c for c in commands):
+        tor_ready = "DMTOR%d" % os.getpid()
+        prep = (
+            "if command -v tor >/dev/null 2>&1 && [ -d /var/log/tor ]; then "
+            "timeout 240 sh -c 'until grep -q \"Bootstrapped 100\" "
+            "/var/log/tor/notice.log 2>/dev/null; do sleep 5; done'; "
+            "timeout 120 sh -c 'until [ -e /run/sdwdate/success ] || "
+            "[ -e /run/sdwdate/first_success ]; do sleep 5; done'; "
+            "fi; true")
+        child.sendline("%s; printf '%s\\n'" % (prep, tor_ready))
+        wait_for(tor_ready, args.timeout)
+
     ## 3) Run each check; read its exit code from a unique sentinel (the echoed
     ##    command carries a literal '%s', so only the real output matches). Root by
     ##    default; --login-user (!= root) runs the command as that user via a
     ##    non-interactive 'su -', never touching the user's interactive shell.
-    commands = args.run
-    if commands is None:
-        commands = ["systemcheck --cli --leak-tests --verbose"]
     sentinel = "DMRC%d" % os.getpid()
     rc_re = r"%s:(-?\d+):%s" % (sentinel, sentinel)
     overall = PASS
