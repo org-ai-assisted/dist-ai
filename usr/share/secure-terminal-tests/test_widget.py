@@ -1139,18 +1139,30 @@ _pmins.setText('ls -la')                             # no newline: inserts into 
 hk.insertFromMimeData(_pmins)
 ok(hk._line_dirty,
    'a non-submitting paste marks the line dirty so the hook asks on the next Enter')
-# an APPROVED submitting paste executes the line fully (trailing CR), so the hook
-# state must RESET -- a typed prefix must not linger and make the hook judge
-# "prefix + next command" on the following prompt.
+# on a CLEAN line, an approved submitting paste executes the line fully (trailing
+# CR), so the hook state must RESET -- a typed prefix must not linger and make the
+# hook judge "prefix + next command" on the following prompt.
 hk._line_buffer = 'echo '                            # already typed at the prompt
-hk._line_dirty = True
+hk._line_dirty = False                               # clean (plainly typed)
 _pmsub = _QMimeHook()
 _pmsub.setText('ok\n')
 hk.insertFromMimeData(_pmsub)                        # held for review (hook + newline)
 ok(hk.review_pending(), 'submitting paste is held before it can auto-run')
 hk.dispatch_pending_paste('stripped')               # approve -> submits with CR
 ok(not hk._line_dirty and hk._line_buffer == '',
-   'an approved submitting paste resets the line state (no stale typed prefix)')
+   'an approved submitting paste on a clean line resets the line state')
+# but on an ALREADY-unverifiable line (e.g. after Ctrl+V quoted-insert, which could
+# make the pasted CR literal rather than accept-line), a submitting paste must NOT
+# assume submission -- keep failing safe (ask), do not clear the flag.
+hk._line_buffer = 'partial'
+hk._line_dirty = True
+_pmq = _QMimeHook()
+_pmq.setText('tail\n')
+hk.insertFromMimeData(_pmq)
+if hk.review_pending():
+    hk.dispatch_pending_paste('stripped')
+ok(hk._line_dirty,
+   'a submitting paste on an unverifiable line keeps the fail-safe (quoted-CR safe)')
 # a TUI-mode paste does not touch the line-mode command, so never sets the flag.
 _tuihk = SecureTerminal(command='/bin/cat', tui=True)
 _tuihk.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow',
