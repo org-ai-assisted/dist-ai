@@ -251,12 +251,19 @@ def run_checks(child, args, log):
     if args.run is not None:
         commands = [(command, False) for command in args.run]
     else:
+        ## --skip matches the name passed to systemcheck_run_function. The tor
+        ## connectivity tests (incl. the SocksPort "Connectivity Test") run under
+        ## check_tor_connectivity, so THAT is the effective skip token, not
+        ## check_tor_socks_or_trans_port (which matches no run-function). A minimal
+        ## kicksecure-debug ships no tor and no meta package, so those checks and
+        ## check_meta_packages do not apply here.
         systemcheck_cmd = (
             "systemcheck --cli --leak-tests --verbose"
             " --skip check_operating_system"
             " --skip check_tor_bootstrap"
-            " --skip check_tor_socks_or_trans_port"
+            " --skip check_tor_connectivity"
             " --skip check_stream_isolation"
+            " --skip check_meta_packages"
         )
         ## Under Secure Boot an unsigned out-of-tree module (tirdad) cannot load,
         ## so systemd-modules-load.service fails -- expected there, not an image
