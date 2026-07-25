@@ -250,7 +250,11 @@ def run_checks(child, args, log):
         ## defect. Ignore only that one unit, and only for the secureboot legs.
         if args.firmware == "efi-secureboot":
             systemcheck_cmd += " --ignore-failed-unit systemd-modules-load.service"
-        commands = [systemcheck_cmd]
+        ## Diagnostic (always passes): list any failed system units so a
+        ## 'degraded' system-ready failure names the culprit in the serial log.
+        diag_cmd = ("systemctl --no-pager --plain --no-legend --failed"
+                    " || true; true")
+        commands = [diag_cmd, systemcheck_cmd]
 
     ## 3) Run each check; read its exit code from a unique sentinel (the echoed
     ##    command carries a literal '%s', so only the real output matches). Root by
