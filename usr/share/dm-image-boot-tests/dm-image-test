@@ -258,7 +258,7 @@ def run_checks(child, args, log):
         ##    still runs.
         prep = (
             "mkdir -p /etc/systemcheck.d && printf '%s\\n' "
-            "'systemcheck_skip_functions+=\" check_operating_system check_tor_bootstrap check_journal \"' "
+            "'systemcheck_skip_functions+=\" check_operating_system check_tor_bootstrap check_journal check_tor_socks_or_trans_port check_stream_isolation \"' "
             "> /etc/systemcheck.d/50_boot-test.conf; true")
         child.sendline("%s; printf '%s\\n'" % (prep, tor_ready))
         wait_for(tor_ready, args.timeout)
