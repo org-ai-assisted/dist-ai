@@ -2734,22 +2734,14 @@ eq(win.act_new.shortcut().toString(), 'Ctrl+Shift+T', 'the locked edit applied n
 win._locked = _saved_locked
 
 # --- New Tab: CLI vs TUI mode chosen at creation (#69) ------------------------
-from secure_terminal.terminal import tui_available as _ntt_avail   # noqa: E402
 _saved_dtui = win._default_tui
 win._default_tui = False
 win.new_tab(tui=False)
 ok(win.current()._tui is False, 'new_tab(tui=False) opens a CLI-mode tab')
 ok(win.act_new_cli.isEnabled(), 'the New Tab (CLI) action is always available')
-if _ntt_avail():
-    win.new_tab(tui=True)
-    ok(win.current()._tui is True, 'new_tab(tui=True) opens a TUI-mode tab')
-    ok(win.act_new_tui.isEnabled(), 'New Tab (TUI) is enabled when pyte is present')
-else:
-    win.new_tab(tui=True)
-    ok(win.current()._tui is False,
-       'new_tab(tui=True) falls back to CLI when pyte is missing')
-    ok(not win.act_new_tui.isEnabled(),
-       'New Tab (TUI) is disabled when pyte is missing')
+win.new_tab(tui=True)
+ok(win.current()._tui is True, 'new_tab(tui=True) opens a TUI-mode tab')
+ok(win.act_new_tui.isEnabled(), 'New Tab (TUI) is always available')
 # the default variant follows the window default, not a forced mode
 win._default_tui = False
 win.new_tab()
@@ -2925,17 +2917,6 @@ ok(not any(b'export TERM=' in s for s in _tgcsent),
    'a command tab (command != None) never re-exports TERM into the program')
 _tgc.close()
 
-# apply_tui reports failure when TUI is requested but pyte is unavailable, so a
-# caller cannot persist/checkmark a mode that was never applied (ai-review).
-_tgu = SecureTerminal(command='/bin/cat')
-_o_avail = _timod.tui_available
-try:
-    _timod.tui_available = lambda: False
-    ok(_tgu.apply_tui(True) is False and _tgu._tui is False,
-       'apply_tui returns False (not applied) when pyte is unavailable')
-finally:
-    _timod.tui_available = _o_avail
-_tgu.close()
 
 # #93: has_foreground_program / terminate distinguish a LOGIN shell's bare prompt
 # (its child IS the shell -> nothing to terminate) from a `-- PROGRAM` tab (its

@@ -462,17 +462,6 @@ finally:
     QSystemTrayIcon.isSystemTrayAvailable = _o_avail
     win._systray = _o_systray
 
-# --- a window built while TUI is unavailable greys out the TUI controls --------
-_o_tuia = M.tui_available
-try:
-    M.tui_available = lambda: False
-    _wt = MainWindow()
-    ok(True, 'window builds with TUI unavailable (TUI controls disabled)')
-    _wt.deleteLater()
-    APP.processEvents()
-finally:
-    M.tui_available = _o_tuia
-
 # --- copy/paste/zoom + input-dialog actions routed through the current tab -----
 from PyQt6.QtWidgets import QInputDialog, QSystemTrayIcon        # noqa: E402
 
