@@ -94,7 +94,7 @@ python3 -m coverage combine
 ## justified `# pragma: no cover` in the source, not a blanket exclusion.
 ##
 ## Tier 1 -- covered by the Qt-FREE suites, so gated on every box (Qt or not).
-gated_free='*/__init__.py,*/sanitize.py,*/cli.py,*/hook.py,*/ipc.py,*/session.py,*/settings.py'
+gated_free='*/__init__.py,*/sanitize.py,*/cli.py,*/hook.py,*/ipc.py,*/session.py,*/settings.py,*/preflight.py'
 ## Tier 2 -- needs the offscreen Qt widget suite; gated only when it actually ran
 ## (skipped when PyQt6/pyte are absent, so as not to fail a headless box).
 gated_qt='*/dialog.py,*/terminal.py,*/main.py'
