@@ -77,6 +77,14 @@ Usage: dm-qemu --iso PATH [options]
                       signed shim). Boots the real firmware -> shim -> GRUB -> kernel chain.
                       Needs the 'ovmf' package. x86 (amd64) only; arm64 already uses UEFI.
   --serial-log PATH   capture the serial console here (default: <image>.serial-boot.log)
+  --serial-logfile PATH  emit-argv/pexpect callers: wire the serial through an explicit
+                      stdio chardev whose 'logfile=' writes a COMPLETE copy of every serial
+                      byte to PATH (a blocking regular-file write that never drops), instead
+                      of the plain '-serial mon:stdio'. Lets a caller that reads the serial
+                      through a slow pty keep a lossless capture: qemu logs each byte to the
+                      file BEFORE the lossy pty write, so a verbose guest burst is never
+                      truncated in the log even when the reader falls behind. No monitor is
+                      muxed in (the caller kills qemu directly).
   --timeout SECS      hard qemu time limit (default 1800)
   --direct-kernel     INTERNAL DEBUG (ISO only): extract kernel/initrd from the ISO, strip
                       'quiet'/'loglevel=0'/'splash' and DIRECT-boot the kernel, bypassing
@@ -155,6 +163,7 @@ screendump=''
 smbios_append=''
 test_console=''
 firmware='bios'
+serial_logfile=''
 
 while [ "$#" -gt 0 ]; do
    case "$1" in
@@ -206,6 +215,11 @@ while [ "$#" -gt 0 ]; do
       --serial-log)
          [ "$#" -ge 2 ] || { printf 'dm-qemu: --serial-log needs a value\n' >&2; exit 2; }
          serial_log="${2}"
+         shift 2
+         ;;
+      --serial-logfile)
+         [ "$#" -ge 2 ] || { printf 'dm-qemu: --serial-logfile needs a value\n' >&2; exit 2; }
+         serial_logfile="${2}"
          shift 2
          ;;
       --timeout)
@@ -430,7 +444,23 @@ else
    ## so the serial root shell never appears), so drive the console explicitly:
    ## '-display none' (no GUI) + '-serial mon:stdio' (serial+monitor muxed on stdio,
    ## exactly what the harness reads) + '-vga none' (headless).
-   qemu_opts=(-machine "${machine}" "${accel_opts[@]}" -m "${memory}" -smp "${smp}" -nodefaults -no-reboot -vga none -display none -serial mon:stdio)
+   qemu_opts=(-machine "${machine}" "${accel_opts[@]}" -m "${memory}" -smp "${smp}" -nodefaults -no-reboot -vga none -display none)
+   if [ -n "${serial_logfile}" ]; then
+      ## Lossless serial capture for a caller that reads the console through a slow pty
+      ## (dm-image-test spawns qemu under pexpect and drains it in Python). When that
+      ## reader falls behind, the pty backend fills and qemu DROPS the serial bytes it
+      ## cannot hand off, so a verbose guest burst (systemcheck's ~40 checks) loses most
+      ## of its output from the reader's view -- only the tail survives. An explicit stdio
+      ## chardev with 'logfile=' additionally copies EVERY transmitted byte to a regular
+      ## FILE (a blocking write that never drops) BEFORE the lossy pty write, so the file
+      ## is a COMPLETE capture regardless of reader speed. The pty stream still drives the
+      ## conversation (the trailing exit-code sentinel is emitted after the burst, when the
+      ## pty is calm, so it is not dropped). 'signal=off' keeps qemu from grabbing stdio
+      ## signals (as 'mon:stdio' does); no monitor is muxed in -- the caller kills qemu.
+      qemu_opts+=(-chardev "stdio,id=dmserial,signal=off,logappend=off,logfile=${serial_logfile//,/,,}" -serial chardev:dmserial)
+   else
+      qemu_opts+=(-serial mon:stdio)
+   fi
 fi
 
 ## Give the guest a user-mode (NAT) NIC so the boot faithfully reproduces a real

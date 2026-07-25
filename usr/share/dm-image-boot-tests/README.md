@@ -47,6 +47,18 @@ image is never modified:
   `${dm_smbios_extra}`, runs `serial --unit=0 ...; terminal_output serial console;
   set timeout=0`. `timeout=0` is essential: a headless tester cannot dismiss the
   GRUB menu, so any countdown hangs the boot. Normal boot keeps `gfxterm`.
+- **The serial log is written by qemu, NOT by the pexpect reader.** `dm-image-test`
+  reads the console through a pexpect pty only to DRIVE the conversation. A verbose
+  guest burst (`systemcheck`'s ~40 checks) emits faster than the Python reader
+  drains the pty; qemu then DROPS the bytes it cannot hand to the full pty, so the
+  reader sees only the tail (early checks, e.g. the `check_services` failed-unit
+  list, are lost). Fix: `dm-image-test` passes `dm-qemu --serial-logfile <log>`,
+  which wires an explicit `-chardev stdio,...,logfile=<log> -serial chardev:...`
+  instead of `-serial mon:stdio`. qemu copies every serial byte to that regular
+  file with a blocking write BEFORE the lossy pty write, so the log is COMPLETE
+  regardless of reader speed. The pty stream still carries the trailing exit-code
+  sentinel (emitted after the burst, when the pty is calm), so driving stays
+  reliable. Do not also write the log from Python -- two writers would race.
 
 ## systemcheck in the boot test: skip environment/timing checks
 

@@ -111,6 +111,15 @@ def build_qemu_argv(args):
     ## interactive user zsh (whose line editor corrupts programmatic input).
     cmd += ["--test-console"]
 
+    ## Lossless serial capture: we read the console through a pexpect pty, and a slow
+    ## reader lets qemu drop the serial bytes it cannot hand to a full pty (a verbose
+    ## systemcheck burst loses most of its output that way). Have qemu ALSO copy every
+    ## serial byte to the log file directly (a blocking regular-file write that never
+    ## drops), so the log is complete regardless of reader speed. We therefore do NOT
+    ## open/write the log from Python; qemu owns it.
+    if args.serial_log:
+        cmd += ["--serial-logfile", args.serial_log]
+
     ## Merge the session cmdline with any caller-supplied --smbios-append.
     append_parts = []
     session_cmdline = SESSION_CMDLINE[args.session]
@@ -252,9 +261,10 @@ def run_checks(child, args, log):
             systemcheck_cmd += " --ignore-failed-unit systemd-modules-load.service"
         ## Diagnostic (always passes): list any failed system units so a
         ## 'degraded' system-ready failure names the culprit in the serial log.
-        ## Runs AFTER systemcheck: systemcheck floods the serial faster than the
-        ## reader drains it, so only the tail survives -- keep this short output in
-        ## that tail. dm-image-test runs every command even after one fails.
+        ## Runs AFTER systemcheck so the failed-unit list reads at the end of the
+        ## log next to the verdict. dm-image-test runs every command even after one
+        ## fails. (The full systemcheck output is captured either way now: qemu's
+        ## chardev logfile writes a complete, never-truncated serial log.)
         diag_cmd = ("echo FAILED-UNITS-BEGIN;"
                     " systemctl --no-pager --plain --no-legend --failed || true;"
                     " echo FAILED-UNITS-END; true")
@@ -316,13 +326,6 @@ def main():
     ## serial-log open or pexpect.spawn raises -- else it leaks under /tmp.
     child = None
     try:
-        log_file = None
-        if args.serial_log:
-            try:
-                log_file = open(args.serial_log, "wb")
-            except OSError as exc:
-                die_setup("cannot open --serial-log %s: %s" % (args.serial_log, exc))
-
         print("dm-image-test: spawning: %s"
               % " ".join(shlex.quote(token) for token in qemu_argv), file=sys.stderr)
         child = pexpect.spawn(
@@ -333,10 +336,12 @@ def main():
         ## never submits). A small pre-send delay lets each line be read and run
         ## before the next, so 'exec bash' actually takes and metacharacters survive.
         child.delaybeforesend = 0.4
-        if log_file is not None:
-            ## pexpect writes str; wrap the binary log file.
-            import io
-            child.logfile_read = io.TextIOWrapper(log_file, write_through=True)
+        ## The serial log is written by qemu itself (the chardev 'logfile=' wired via
+        ## dm-qemu --serial-logfile): a blocking regular-file copy of every serial byte
+        ## that never drops, so a verbose burst is captured in full even though this
+        ## pexpect reader (used only to drive the conversation) may fall behind and lose
+        ## bytes to a full pty. Do NOT also log the pexpect stream to the same file --
+        ## qemu owns it, and a second writer would race/interleave with qemu's copy.
 
         verdict = run_checks(child, args, log)
     finally:
