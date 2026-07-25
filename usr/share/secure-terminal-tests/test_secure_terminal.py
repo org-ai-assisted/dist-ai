@@ -601,26 +601,27 @@ ok(isinstance(S.tui_cell(chr(0x1F600) + chr(0x1F600), 'show'), str),
 from secure_terminal import preflight as PRE      # noqa: E402
 import io as _pio                                 # noqa: E402
 import contextlib as _pcl                         # noqa: E402
-PRE.require('sys', 'os')                          # all present -> no-op, no raise
+PRE.require(('sys', 'python3'), ('os', 'python3'))   # all present -> no-op
 ok(True, 'preflight.require is a no-op when every dependency is present')
 
 
-def _pre_run(*mods):
+def _pre_run(*deps):
     err = _pio.StringIO()
     rc = 0
     try:
         with _pcl.redirect_stderr(err):
-            PRE.require(*mods)
+            PRE.require(*deps)
     except SystemExit as exc:
         rc = exc.code
     return rc, err.getvalue()
 
 
-_prc, _pmsg = _pre_run('secure_terminal_missing_dep_xyz')
+_prc, _pmsg = _pre_run(('secure_terminal_missing_dep_xyz', 'python3-nonesuch'))
 ok(_prc == 1 and 'secure_terminal_missing_dep_xyz' in _pmsg
-   and 'missing dependency' in _pmsg,
-   'preflight.require exits 1 and names the missing dependency on stderr')
-_prc2, _pmsg2 = _pre_run('secure_terminal_absent_pkg_xyz.submod')   # parent absent
+   and 'missing dependency' in _pmsg
+   and 'sudo apt install python3-nonesuch' in _pmsg,
+   'preflight.require exits 1, naming the module + a Debian install hint on stderr')
+_prc2, _pmsg2 = _pre_run(('secure_terminal_absent_pkg_xyz.submod', 'python3-x'))
 ok(_prc2 == 1 and 'secure_terminal_absent_pkg_xyz.submod' in _pmsg2,
    'preflight.require handles a dotted name whose parent is absent')
 
