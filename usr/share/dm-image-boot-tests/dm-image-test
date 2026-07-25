@@ -292,15 +292,12 @@ def run_checks(child, args, log):
                 % (rc, args.expect_rc, command))
             overall = FAIL
 
-    ## 4) Power off (best-effort; the verdict is already decided). Bound the wait
-    ##    by the overall deadline so --timeout covers shutdown too; main's finally
-    ##    force-terminates qemu regardless.
-    child.sendline("poweroff")
-    shutdown_wait = max(1, min(120, overall_deadline - time.time()))
-    try:
-        child.expect(pexpect.EOF, timeout=shutdown_wait)
-    except (pexpect.TIMEOUT, pexpect.EOF):
-        pass
+    ## 4) The verdict is decided; main's finally SIGKILLs qemu. Do NOT send a
+    ##    graceful 'poweroff' first: the live image runs a slow RAM-wipe on
+    ##    shutdown (dracut wipe-ram.sh), and SIGKILLing a qemu that is mid-wipe
+    ##    leaves it terminating for the container init to force-reap on teardown,
+    ##    which surfaces as a spurious non-zero STEP exit even though every check
+    ##    passed. The image is booted with -snapshot, so a hard kill loses nothing.
     return overall
 
 
