@@ -245,8 +245,12 @@ def run_checks(child, args, log):
     ## check_journal is NOT skipped: systemcheck's log-checker word-anchors 'BUG',
     ## so the debug-shell.service "FOR DEBUGGING ONLY" line does not match it and the
     ## debug shell (the automation channel) does not flag check_journal.
-    commands = args.run
-    if commands is None:
+    ## Each entry is (command, force_root): systemcheck runs as the session user
+    ## (--login-user), the diagnostic always runs as root so its journalctl can read
+    ## system-unit logs (a non-root session may be denied them).
+    if args.run is not None:
+        commands = [(command, False) for command in args.run]
+    else:
         systemcheck_cmd = (
             "systemcheck --cli --leak-tests --verbose"
             " --skip check_operating_system"
@@ -259,16 +263,25 @@ def run_checks(child, args, log):
         ## defect. Ignore only that one unit, and only for the secureboot legs.
         if args.firmware == "efi-secureboot":
             systemcheck_cmd += " --ignore-failed-unit systemd-modules-load.service"
-        ## Diagnostic (always passes): list any failed system units so a
-        ## 'degraded' system-ready failure names the culprit in the serial log.
-        ## Runs AFTER systemcheck so the failed-unit list reads at the end of the
-        ## log next to the verdict. dm-image-test runs every command even after one
-        ## fails. (The full systemcheck output is captured either way now: qemu's
-        ## chardev logfile writes a complete, never-truncated serial log.)
-        diag_cmd = ("echo FAILED-UNITS-BEGIN;"
-                    " systemctl --no-pager --plain --no-legend --failed || true;"
-                    " echo FAILED-UNITS-END; true")
-        commands = [systemcheck_cmd, diag_cmd]
+        ## Diagnostic (always passes): name every failed system unit AND dump each
+        ## one's status + boot journal, so a 'degraded' system-ready failure shows
+        ## the culprit AND why it failed, in the serial log. Runs AFTER systemcheck
+        ## so it reads at the end of the log next to the verdict; dm-image-test runs
+        ## every command even after one fails. (Full output is captured regardless:
+        ## qemu's chardev logfile writes a complete, never-truncated serial log.)
+        diag_cmd = (
+            "echo FAILED-UNITS-BEGIN;"
+            " systemctl --no-pager --plain --no-legend --failed || true;"
+            " echo FAILED-UNITS-END;"
+            " systemctl list-units --state=failed --plain --no-legend --no-pager"
+            " | while read -r unit _; do"
+            " [ -n \"$unit\" ] || continue;"
+            " echo \"UNIT-DIAG-BEGIN $unit\";"
+            " systemctl status --no-pager --full \"$unit\" 2>&1 | tail -n 20 || true;"
+            " journalctl -b --no-pager -u \"$unit\" 2>&1 | tail -n 30 || true;"
+            " echo \"UNIT-DIAG-END $unit\";"
+            " done; true")
+        commands = [(systemcheck_cmd, False), (diag_cmd, True)]
 
     ## 3) Run each check; read its exit code from a unique sentinel (the echoed
     ##    command carries a literal '%s', so only the real output matches). Root by
@@ -277,8 +290,8 @@ def run_checks(child, args, log):
     sentinel = "DMRC%d" % os.getpid()
     rc_re = r"%s:(-?\d+):%s" % (sentinel, sentinel)
     overall = PASS
-    for command in commands:
-        if args.login_user and args.login_user != "root":
+    for command, force_root in commands:
+        if not force_root and args.login_user and args.login_user != "root":
             payload = "su - %s -c %s" % (shlex.quote(args.login_user),
                                          shlex.quote(command))
         else:
