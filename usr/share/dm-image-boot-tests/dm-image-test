@@ -326,6 +326,16 @@ def main():
     ## serial-log open or pexpect.spawn raises -- else it leaks under /tmp.
     child = None
     try:
+        ## The serial log is written by qemu (its chardev 'logfile='), not from Python.
+        ## Truncate/create it up front anyway so the artifact always exists (even if qemu
+        ## never starts) and an unwritable path fails early with a clear message instead
+        ## of a cryptic qemu error. qemu reopens it with logappend=off (truncates again).
+        if args.serial_log:
+            try:
+                open(args.serial_log, "wb").close()
+            except OSError as exc:
+                die_setup("cannot open --serial-log %s: %s" % (args.serial_log, exc))
+
         print("dm-image-test: spawning: %s"
               % " ".join(shlex.quote(token) for token in qemu_argv), file=sys.stderr)
         child = pexpect.spawn(
