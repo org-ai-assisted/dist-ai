@@ -233,10 +233,9 @@ def run_checks(child, args, log):
     ##    live Tor connectivity races Tor's async bootstrap over the CI network and
     ##    is non-deterministic; Tor's CONFIG is still validated (check_tor_config,
     ##    check_tor_enabled). Live connectivity belongs in a dedicated network test.
-    ## check_journal is NOT skipped: the debug-shell.service message that used to
-    ## trip it was a false 'BUG' substring match on "DEBUGGING", fixed at the root
-    ## in systemcheck's log-checker; the debug shell (the automation channel) no
-    ## longer flags anything.
+    ## check_journal is NOT skipped: systemcheck's log-checker word-anchors 'BUG',
+    ## so the debug-shell.service "FOR DEBUGGING ONLY" line does not match it and the
+    ## debug shell (the automation channel) does not flag check_journal.
     commands = args.run
     if commands is None:
         systemcheck_cmd = (
