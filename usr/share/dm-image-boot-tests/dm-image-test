@@ -252,9 +252,13 @@ def run_checks(child, args, log):
             systemcheck_cmd += " --ignore-failed-unit systemd-modules-load.service"
         ## Diagnostic (always passes): list any failed system units so a
         ## 'degraded' system-ready failure names the culprit in the serial log.
-        diag_cmd = ("systemctl --no-pager --plain --no-legend --failed"
-                    " || true; true")
-        commands = [diag_cmd, systemcheck_cmd]
+        ## Runs AFTER systemcheck: systemcheck floods the serial faster than the
+        ## reader drains it, so only the tail survives -- keep this short output in
+        ## that tail. dm-image-test runs every command even after one fails.
+        diag_cmd = ("echo FAILED-UNITS-BEGIN;"
+                    " systemctl --no-pager --plain --no-legend --failed || true;"
+                    " echo FAILED-UNITS-END; true")
+        commands = [systemcheck_cmd, diag_cmd]
 
     ## 3) Run each check; read its exit code from a unique sentinel (the echoed
     ##    command carries a literal '%s', so only the real output matches). Root by
