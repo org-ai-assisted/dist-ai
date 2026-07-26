@@ -2,8 +2,10 @@
 
 Boots a built derivative-maker image in qemu, drives a login-free root serial
 shell, runs `systemcheck --leak-tests`, and reports one pass/fail exit code.
-Invoked from derivative-maker `ci/boot-test`; the harness itself lives here
-(test-only tooling), not in derivative-maker.
+The CI front-end `dm-boot-test` (installs the qemu/OVMF runtime, discovers the
+boot media by image kind, forwards to `dm-image-boot-tests`) and the whole
+harness live here (test-only tooling), not in derivative-maker; derivative-maker
+CI calls `dist-ai/usr/bin/dm-boot-test`.
 
 - `dm-image-test` -- orchestrator: gets qemu argv from `dm-qemu --emit-argv`,
   spawns it under pexpect, drives the conversation over serial.

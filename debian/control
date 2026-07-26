@@ -931,7 +931,9 @@ Depends: ${misc:Depends},
  python3,
  python3-pexpect,
  qemu-system-x86,
- qemu-utils
+ qemu-utils,
+ ovmf,
+ xorriso
 ## arm64 boot-testing (the --arch arm64 wrappers) needs the aarch64 emulator and
 ## UEFI firmware; Recommends, not Depends, so an x86-only install stays lean.
 Recommends: qemu-system-arm,
