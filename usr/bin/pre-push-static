@@ -244,6 +244,12 @@ is_shell_file() {
    esac
    first=""
    read -r first < "${path}" || true
+   ## 'read' strips the trailing '\n' but NOT a '\r'; a CRLF-terminated
+   ## shebang would leave 'first' ending in '\r', which the end-anchored
+   ## globs below never match -- silently dropping the file from the shell
+   ## tier (bash -n, shellcheck, every R-check). Strip one trailing CR so a
+   ## CRLF shebang is still detected.
+   first="${first%$'\r'}"
    ## Match ONLY a bash/sh/dash interpreter, anchored so the shell NAME is
    ## the command (preceded by '/' as in '#!/bin/bash', or by a space as in
    ## '#!/usr/bin/env bash'), optionally followed by args. The old '*sh'

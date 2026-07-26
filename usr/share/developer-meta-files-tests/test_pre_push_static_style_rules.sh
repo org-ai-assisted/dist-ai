@@ -265,8 +265,34 @@ expect_rule "trailing-whitespace" "true"       "absent"
 expect_rule "trailing-whitespace" "true${sp}${cr}" "present"
 expect_rule "trailing-whitespace" "true${cr}"      "absent"
 
+## is_shell_file must detect a CRLF-terminated shebang. Regression for a '\r'
+## left on the first line by 'read', which defeated the end-anchored
+## interpreter globs and silently dropped the file from the ENTIRE shell tier
+## (bash -n, shellcheck, every R-check). Use an EXTENSIONLESS file so
+## detection relies on the shebang, not the name; give it a CRLF shebang and
+## an R-120 'rm -rf' violation. With the fix the shell tier runs and flags
+## R-120; without it R-120 never fires.
+crlf_repo="$(mktemp --directory --tmpdir="${tmp_root}" crlf.XXXXXX)"
+git -C "${crlf_repo}" init --quiet
+git -C "${crlf_repo}" config user.email 'ci-test@example.com'
+git -C "${crlf_repo}" config user.name 'ci-test'
+git -C "${crlf_repo}" commit --quiet --no-verify --allow-empty --message base
+crlf_base="$(git -C "${crlf_repo}" rev-parse HEAD)"
+## CRLF shebang line; the violation line is plain LF so only the shebang
+## exercises the CRLF path. 'deploy' has no extension on purpose.
+printf '#!/bin/bash\r\ntrue%s%s -rf x\n' "${sc}" "${del}" > "${crlf_repo}/deploy"
+git -C "${crlf_repo}" add deploy
+git -C "${crlf_repo}" commit --quiet --no-verify --message crlf
+crlf_out="$( cd -- "${crlf_repo}" && "${GATE}" "${crlf_base}" 2>&1 || true )"
+if printf '%s\n' "${crlf_out}" | grep --quiet --fixed-strings -- "R-120"; then
+   printf 'PASS: is_shell_file detects a CRLF shebang (shell tier ran, R-120 flagged)\n'
+else
+   printf 'FAIL: CRLF-shebang file was NOT shell-checked (R-120 missing)\n' >&2
+   failures=$((failures + 1))
+fi
+
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "test_pre_push_static_style_rules: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-030/R-031, R-042, R-034, R-011, R-051, R-090, R-102, R-120, R-010 and trailing-whitespace enforced as expected."
+printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-030/R-031, R-042, R-034, R-011, R-051, R-090, R-102, R-120, R-010, trailing-whitespace and CRLF-shebang detection enforced as expected."
