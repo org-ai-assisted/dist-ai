@@ -583,12 +583,20 @@ check_R010_strict_block() {
       ## subject to the check below. This condition also leaves this script
       ## itself enforced: it keeps all six distinct column-0 directives, so
       ## it never enters the skip despite naming the tokens.
-      ## '^[^#]*' requires the guard call in CODE, not a comment: without it
-      ## a mere '## TODO: add was_executed guard' would exempt a script that
-      ## has no strict-mode block at all -- an unauditable bypass.
+      ## '^[^#]*' requires the guard in CODE, not a comment: without it a
+      ## mere '## TODO: add was_executed guard' would exempt a script with no
+      ## strict-mode block at all -- an unauditable bypass. The guard must be
+      ## a real CALL, so the token sits in command position: preceded by
+      ## line-start or a command separator ([[:space:];&|!(]) and followed by
+      ## whitespace / a separator / end-of-line ([[:space:];&|)]|$). This
+      ## rejects an ordinary assignment ('was_executed=1', token followed by
+      ## '=') and a string/param-expansion mention ('"was_sourced"',
+      ## '${was_sourced}', token preceded by a quote or brace), either of
+      ## which would otherwise exempt a strict-mode-less script.
       if [ "${present}" -eq 0 ] \
          && grep --quiet --extended-regexp \
-            '^[^#]*\b(was_executed|was_sourced)\b' -- "${script}"; then
+            '^[^#]*(^|[[:space:];&|!(])(was_executed|was_sourced)([[:space:];&|)]|$)' \
+            -- "${script}"; then
          note "R-010 skipped: source-able guarded script '${script}'"
          continue
       fi

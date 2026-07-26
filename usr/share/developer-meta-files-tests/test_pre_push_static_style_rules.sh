@@ -245,6 +245,20 @@ sixdistinct=$'set -o errexit\nset -o nounset\nset -o pipefail\nset -o errtrace\n
 expect_rule "R-010" "${sixsame}"                                 "present"
 expect_rule "R-010" "${sixdistinct}"                             "absent"
 
+## R-010 source-able exemption (present==0 AND a was_executed/was_sourced
+## GUARD CALL) must fire ONLY for a real command-position call, not for an
+## assignment or a string/param mention -- else a strict-mode-less script
+## self-exempts. The tag is the FULL fail label so it distinguishes a real
+## FAIL from the 'R-010 skipped' note (both contain 'R-010'). Present =>
+## R-010 enforced (not exempted); absent => exemption applied.
+guard_fail='R-010 strict-mode block'
+## Assignment 'was_executed=1' is an ordinary flag var, NOT a guard: enforce.
+expect_rule "${guard_fail}" "was_executed=1"                     "present"
+## A string mention of the token is NOT a guard call: enforce.
+expect_rule "${guard_fail}" "printf ${sq}%s${nl}${sq} ${dq}was_sourced${dq}" "present"
+## A real command-position guard call still exempts.
+expect_rule "${guard_fail}" "was_sourced && main"               "absent"
+
 ## R-080: a 'shellcheck source=' path must be relative, anchored with ./ or
 ## ../ (start with '.'). An absolute path OR a bare name (no ./) is FLAGGED.
 expect_rule "R-080" "# shellcheck source=get_colors.sh"          "present"
