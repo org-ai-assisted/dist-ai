@@ -262,6 +262,7 @@ def run_checks(child, args, log):
             " --skip check_operating_system"
             " --skip check_tor_bootstrap"
             " --skip check_tor_connectivity"
+            " --skip check_tor_socks_port_reachability"
             " --skip check_stream_isolation"
             " --skip check_meta_packages"
         )
