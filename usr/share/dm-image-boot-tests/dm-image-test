@@ -265,16 +265,17 @@ def run_checks(child, args, log):
             " --skip check_tor_socks_port_reachability"
             " --skip check_stream_isolation"
             " --skip check_meta_packages"
-            ## PENDING (check PR status): check_privilege_escalation_tools runs
-            ## 'privleapd --check-config', which systemcheck fails on ANY output.
-            ## On a no-tor image privleapd prints benign warnings for tor actions
-            ## whose 'debian-tor' TargetUser is absent (exit 0, valid config), so
-            ## the check reports a misconfiguration and systemcheck returns 1 --
-            ## failing every boot leg. The real fix keeps --check-config silent on
-            ## a valid config: https://github.com/org-ai-assisted/privleap/pull/5
-            ## Skip the whole check until #5 lands and reaches the built privleap;
-            ## then drop this skip (it also re-enables the leaprun check-privleap /
-            ## check-privleap-environment-variables / check-sudo sub-checks).
+            ## check_privilege_escalation_tools runs 'privleapd --check-config',
+            ## which systemcheck fails on ANY output. On a no-tor image privleapd
+            ## prints benign warnings for tor actions whose 'debian-tor' TargetUser
+            ## is absent (exit 0, valid config), so the check reports a
+            ## misconfiguration and systemcheck returns 1 -- failing every boot leg.
+            ## Making privleapd --check-config silent on a valid config was proposed
+            ## (org-ai-assisted privleap PR #5) and REJECTED: the accepted approach
+            ## is to ignore the expected output on the consumer side instead. So
+            ## skip the whole check here (this also drops the leaprun check-privleap
+            ## / check-privleap-environment-variables / check-sudo sub-checks; a
+            ## no-tor boot test accepts that tradeoff).
             " --skip check_privilege_escalation_tools"
         )
         ## Whitelist the expected privleapd journal warnings on a no-tor image:
@@ -283,16 +284,11 @@ def run_checks(child, args, log):
         ## check_journal (log-checker greps the journal for 'warn'). "' of action '"
         ## matches only privleap's "'TargetUser'/'TargetGroup' of action '...'"
         ## target-missing messages.
-        ##
-        ## PENDING (check PR status): this covers check_journal only. The separate
-        ## 'privleapd --check-config' systemcheck check ALSO fails on those warnings
-        ## (upstream --check-config is not silent), so a no-tor image is not fully
-        ## clean until privleap keeps --check-config silent on a valid config. That
-        ## fix is under human review at:
-        ##   https://github.com/org-ai-assisted/privleap/pull/5
-        ## Once #5 lands and reaches the built privleap, re-evaluate this workaround
-        ## (the --check-config check should then pass, and this journal-ignore may
-        ## become unnecessary if privleap drops to a non-warning log level).
+        ## This covers check_journal; the separate 'privleapd --check-config'
+        ## systemcheck check is handled by the check_privilege_escalation_tools
+        ## skip above. The privleap-side fix (silent --check-config) was proposed
+        ## and rejected (PR #5), so ignoring the expected privleap output on the
+        ## consumer side -- here and in the skip above -- is the accepted approach.
         systemcheck_cmd += " --journal-ignore-fixed \"' of action '\""
         ## Under Secure Boot an unsigned out-of-tree module (tirdad) cannot load,
         ## so systemd-modules-load.service fails -- expected there, not an image
