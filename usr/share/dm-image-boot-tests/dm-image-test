@@ -288,6 +288,16 @@ def run_checks(child, args, log):
         ## defect. Ignore only that one unit, and only for the secureboot legs.
         if args.firmware == "efi-secureboot":
             systemcheck_cmd += " --ignore-failed-unit systemd-modules-load.service"
+            ## --ignore-failed-unit filters the failed-units list and the
+            ## system-ready 'degraded' check, but NOT check_journal, which greps
+            ## the journal for 'fail'/'error'. The same unsigned-tirdad failure
+            ## emits journal lines ("Failed to start systemd-modules-load.service",
+            ## systemd-modules-load "Failed to insert module 'tirdad'", modprobe
+            ## "Key was rejected by service") that trip check_journal under
+            ## --verbose. Whitelist just those two literal substrings, and only on
+            ## the secureboot legs, mirroring the --ignore-failed-unit gating.
+            systemcheck_cmd += " --journal-ignore-fixed systemd-modules-load"
+            systemcheck_cmd += " --journal-ignore-fixed \"Key was rejected by service\""
         ## Diagnostic (always passes): name every failed system unit AND dump each
         ## one's status + boot journal, so a 'degraded' system-ready failure shows
         ## the culprit AND why it failed, in the serial log. Runs AFTER systemcheck
