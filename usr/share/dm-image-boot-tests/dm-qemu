@@ -437,14 +437,23 @@ if [ -n "${screendump}" ]; then
 else
    ## '-nodefaults' drops qemu's default empty IDE CD-ROM (q35 'ide2-cd0'): the ISO
    ## boots from USB (below), so the phantom optical drive only makes udisks log a
-   ## benign sr0 IDENTIFY-PACKET-DEVICE probe error. No GPU is added on purpose --
-   ## the image (rads) skips the desktop when there is no DRM device, so a GUI ISO
-   ## boots headless without labwc failing. '-nographic' would add an implicit serial
-   ## AND an implicit VGA, but '-nodefaults' cancels its serial (guest sees no ttyS0,
-   ## so the serial root shell never appears), so drive the console explicitly:
-   ## '-display none' (no GUI) + '-serial mon:stdio' (serial+monitor muxed on stdio,
-   ## exactly what the harness reads) + '-vga none' (headless).
-   qemu_opts=(-machine "${machine}" "${accel_opts[@]}" -m "${memory}" -smp "${smp}" -nodefaults -no-reboot -vga none -display none)
+   ## benign sr0 IDENTIFY-PACKET-DEVICE probe error. '-nographic' would add an implicit
+   ## serial AND an implicit VGA, but '-nodefaults' cancels its serial (guest sees no
+   ## ttyS0, so the serial root shell never appears), so drive the console explicitly:
+   ## '-display none' (no host GUI window) + '-serial mon:stdio' (serial+monitor muxed
+   ## on stdio, exactly what the harness reads).
+   ##
+   ## A real emulated GPU IS added ('-vga none' drops the legacy VGA, virtio-gpu-pci is
+   ## the paravirtual GPU): real images are used with a GPU, so the guest should probe
+   ## and initialize a DRM device for faithful testing. Measured cost is negligible --
+   ## a kicksecure-debug qcow2 booted to login in ~119s with no GPU vs ~119s with
+   ## virtio-gpu under pure TCG (3-round average), i.e. within run-to-run noise; std VGA
+   ## was marginally slower, so virtio-gpu is the pick. The console stays serial (ttyS0),
+   ## unaffected by the framebuffer, so the harness reads the same output.
+   ## CAVEAT: with a DRM device present, a GUI image's rads WILL start the desktop
+   ## (labwc). The current boot-test matrix is CLI-only (kicksecure-debug), so this is
+   ## safe; if a GUI image is ever added and must boot headless, gate the GPU off for it.
+   qemu_opts=(-machine "${machine}" "${accel_opts[@]}" -m "${memory}" -smp "${smp}" -nodefaults -no-reboot -vga none -device virtio-gpu-pci -display none)
    if [ -n "${serial_logfile}" ]; then
       ## Lossless serial capture for a caller that reads the console through a slow pty
       ## (dm-image-test spawns qemu under pexpect and drains it in Python). When that
