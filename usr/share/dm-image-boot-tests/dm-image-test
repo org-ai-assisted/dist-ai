@@ -265,6 +265,17 @@ def run_checks(child, args, log):
             " --skip check_tor_socks_port_reachability"
             " --skip check_stream_isolation"
             " --skip check_meta_packages"
+            ## PENDING (check PR status): check_privilege_escalation_tools runs
+            ## 'privleapd --check-config', which systemcheck fails on ANY output.
+            ## On a no-tor image privleapd prints benign warnings for tor actions
+            ## whose 'debian-tor' TargetUser is absent (exit 0, valid config), so
+            ## the check reports a misconfiguration and systemcheck returns 1 --
+            ## failing every boot leg. The real fix keeps --check-config silent on
+            ## a valid config: https://github.com/org-ai-assisted/privleap/pull/5
+            ## Skip the whole check until #5 lands and reaches the built privleap;
+            ## then drop this skip (it also re-enables the leaprun check-privleap /
+            ## check-privleap-environment-variables / check-sudo sub-checks).
+            " --skip check_privilege_escalation_tools"
         )
         ## Whitelist the expected privleapd journal warnings on a no-tor image:
         ## upstream privleap (Kicksecure 5af499b) logs a WARNING when it ignores a
