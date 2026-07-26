@@ -266,6 +266,23 @@ def run_checks(child, args, log):
             " --skip check_stream_isolation"
             " --skip check_meta_packages"
         )
+        ## Whitelist the expected privleapd journal warnings on a no-tor image:
+        ## upstream privleap (Kicksecure 5af499b) logs a WARNING when it ignores a
+        ## tor action whose 'debian-tor' TargetUser is absent, which otherwise trips
+        ## check_journal (log-checker greps the journal for 'warn'). "' of action '"
+        ## matches only privleap's "'TargetUser'/'TargetGroup' of action '...'"
+        ## target-missing messages.
+        ##
+        ## PENDING (check PR status): this covers check_journal only. The separate
+        ## 'privleapd --check-config' systemcheck check ALSO fails on those warnings
+        ## (upstream --check-config is not silent), so a no-tor image is not fully
+        ## clean until privleap keeps --check-config silent on a valid config. That
+        ## fix is under human review at:
+        ##   https://github.com/org-ai-assisted/privleap/pull/5
+        ## Once #5 lands and reaches the built privleap, re-evaluate this workaround
+        ## (the --check-config check should then pass, and this journal-ignore may
+        ## become unnecessary if privleap drops to a non-warning log level).
+        systemcheck_cmd += " --journal-ignore-fixed \"' of action '\""
         ## Under Secure Boot an unsigned out-of-tree module (tirdad) cannot load,
         ## so systemd-modules-load.service fails -- expected there, not an image
         ## defect. Ignore only that one unit, and only for the secureboot legs.
