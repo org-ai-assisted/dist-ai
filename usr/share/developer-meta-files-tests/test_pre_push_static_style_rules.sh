@@ -77,11 +77,16 @@ gate_output() {
    git -C "${repo}" init --quiet
    git -C "${repo}" config user.email 'ci-test@example.com'
    git -C "${repo}" config user.name 'ci-test'
-   git -C "${repo}" commit --quiet --allow-empty --message base
+   ## '--no-verify' on the throwaway fixture commits: the gate under test reads
+   ## commit/worktree content directly, never via git hooks, so any local hook
+   ## (e.g. a developer's whitespace/unicode pre-commit guard) must not get a
+   ## veto over a fixture that deliberately carries a violation -- otherwise the
+   ## trailing-whitespace fixture cannot even be committed on such a machine.
+   git -C "${repo}" commit --quiet --no-verify --allow-empty --message base
    base="$(git -C "${repo}" rev-parse HEAD)"
    printf '#!/bin/bash\n%s\n' "${body}" > "${repo}/sample.sh"
    git -C "${repo}" add sample.sh
-   git -C "${repo}" commit --quiet --message sample
+   git -C "${repo}" commit --quiet --no-verify --message sample
    (
       cd -- "${repo}" || exit 1
       "${GATE}" "${base}"
@@ -137,6 +142,11 @@ nl='\n'
 ## the gate would flag in THIS tracked file.
 sp=' '
 del='rm'
+## A real tab, assembled at run time so no literal trailing tab lives in this
+## tracked file (which the gate's own trailing-whitespace check would flag).
+tab="$(printf '\t')"
+## A real carriage return, for the CRLF trailing-whitespace cases.
+cr="$(printf '\r')"
 
 ## R-074: a ';'-chained break / continue / return must be FLAGGED; the same
 ## keyword on its own line must be SPARED.
@@ -242,8 +252,21 @@ expect_rule "R-080" "# shellcheck source=/usr/lib/foo.sh"        "present"
 expect_rule "R-080" "# shellcheck source=./get_colors.sh"        "absent"
 expect_rule "R-080" "# shellcheck source=../../foo.sh"           "absent"
 
+## trailing-whitespace: a space OR tab immediately before end-of-line must be
+## FLAGGED (the always-on native floor, independent of pre-commit-hooks); a
+## clean line must be SPARED. Separators assembled from ${sp}/${tab} so no
+## literal trailing whitespace lives in this tracked file.
+expect_rule "trailing-whitespace" "true${sp}"  "present"
+expect_rule "trailing-whitespace" "true${tab}" "present"
+expect_rule "trailing-whitespace" "true"       "absent"
+## CRLF: a blank BEFORE the carriage return is still trailing whitespace and
+## must be FLAGGED (the CR sits between the blank and end-of-line); a clean
+## CRLF line (bare CR, no preceding blank) must be SPARED.
+expect_rule "trailing-whitespace" "true${sp}${cr}" "present"
+expect_rule "trailing-whitespace" "true${cr}"      "absent"
+
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "test_pre_push_static_style_rules: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-030/R-031, R-042, R-034, R-011, R-051, R-090, R-102, R-120 and R-010 enforced as expected."
+printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-030/R-031, R-042, R-034, R-011, R-051, R-090, R-102, R-120, R-010 and trailing-whitespace enforced as expected."

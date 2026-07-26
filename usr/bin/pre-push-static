@@ -13,7 +13,11 @@
 ##   1. bash -n on every changed shell script
 ##   2. shellcheck --external-sources on the same set (R-020,
 ##      R-022, R-073, R-080 et al. via shellcheck's own codes)
-##   3. LC_ALL=C grep -PlI '[^\x00-\x7F]' on changed files (R-001)
+##   3. LC_ALL=C grep -PlI '[^\x00-\x7F]' on changed files (R-001),
+##      plus a trailing-whitespace floor (space/tab before EOL) on
+##      text files -- the always-on native counterpart to item 18's
+##      trailing-whitespace-fixer, which is skipped when pre-commit-hooks
+##      is absent
 ##   4. LC_ALL=C grep -P  '[^\x00-\x7F]' on the commit-range
 ##      message (R-001)
 ##   5. R-010 strict-mode block present in top 120 lines
@@ -301,6 +305,48 @@ check_ascii_files() {
    while IFS= read -r line; do
       fail "R-001 ASCII" "'${line}' contains non-ASCII bytes"
    done <<< "${hits}"
+}
+
+## Always-on floor for trailing whitespace (a space or tab immediately
+## before end-of-line). The pre-commit 'trailing-whitespace-fixer'
+## (check_precommit_hooks) is the richer superset that also autofixes, but
+## it is SKIPPED whenever the pre-commit-hooks binaries are absent; this
+## native grep runs unconditionally so a developer machine without them
+## still enforces it. Scoped to text files (is_text_file), symlinks skipped.
+check_trailing_whitespace() {
+   local f hits rc
+   local -a fs
+
+   fs=()
+   for f in "${@}"; do
+      if [ ! -f "${f}" ] || [ -L "${f}" ]; then
+         continue
+      fi
+      if is_text_file "${f}"; then
+         fs+=("${f}")
+      fi
+   done
+   if [ "${#fs[@]}" -eq 0 ]; then
+      return 0
+   fi
+   ## '[[:blank:]]' is space or tab -- matches trailing-whitespace-fixer's
+   ## default strip set. '\r?' also catches a blank BEFORE a CRLF line ending
+   ## (grep strips only the '\n', leaving the '\r' between the blank and
+   ## end-of-line); a bare '\r' (a clean CRLF line) is not flagged. PCRE
+   ## ('--perl-regexp') so the '\r' escape is portable. '--binary-files=
+   ## without-match' is belt-and-braces past the is_text_file filter so a
+   ## mislabeled blob is skipped, not reported byte-by-byte.
+   rc=0
+   hits="$(grep --with-filename --line-number --binary-files=without-match \
+      --perl-regexp '[[:blank:]]+\r?$' -- "${fs[@]}")" || rc=$?
+   ## grep exit: 0 match, 1 no match, >1 a real error (unreadable / vanished
+   ## file). An always-on floor must not silently pass on an error, so fail
+   ## loudly rather than swallow a >1 status as 'clean'.
+   if [ "${rc}" -gt 1 ]; then
+      fail "trailing-whitespace" "grep failed (exit ${rc}) scanning changed files; cannot verify"
+      return 0
+   fi
+   emit_hits "trailing-whitespace" "${hits}"
 }
 
 check_ascii_commit_msg() {
@@ -1304,6 +1350,7 @@ run_file_checks() {
             "${file_list[@]}"
       fi
       check_ascii_files "${file_list[@]}"
+      check_trailing_whitespace "${file_list[@]}"
       check_precommit_hooks "${file_list[@]}"
       check_comments_audit "${file_list[@]}"
    fi
