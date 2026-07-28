@@ -44,6 +44,16 @@ else
    tests_dir="${script_dir}/../share/dm-image-boot-tests"
 fi
 
+## Image-free regression tests first, so they run on every invocation including
+## the SKIP paths below -- a test that only runs on a build host with a fresh
+## image to hand is a test that effectively never runs. A failure here is a real
+## FAIL, not a SKIP.
+if type -P pytest >/dev/null 2>&1; then
+   pytest -q "${tests_dir}/test_dm_image_test.py"
+else
+   printf '%s\n' "dm-image-boot-tests: pytest not installed; skipping the image-free regression tests." >&2
+fi
+
 ## SKIP when no image is supplied: this suite only runs on a build host that has
 ## a freshly built image to hand, never in the generic trixie-slim CI container.
 image_given='false'

@@ -196,6 +196,9 @@ def run_checks(child, args, log):
             try:
                 accum[0] += child.read_nonblocking(size=4096, timeout=1)
             except pexpect.TIMEOUT:
+                ## Expected on every quiet second: this is a poll loop, and the
+                ## 1s read timeout is how it yields. The real deadline is the
+                ## while condition above, so keep reading.
                 pass
             except pexpect.EOF:
                 return None
@@ -387,14 +390,26 @@ def main():
         ## of a cryptic qemu error. qemu reopens it with logappend=off (truncates again).
         if args.serial_log:
             try:
-                open(args.serial_log, "wb").close()
+                with open(args.serial_log, "wb"):
+                    pass
             except OSError as exc:
                 die_setup("cannot open --serial-log %s: %s" % (args.serial_log, exc))
 
         print("dm-image-test: spawning: %s"
               % " ".join(shlex.quote(token) for token in qemu_argv), file=sys.stderr)
+        ## codec_errors="replace", not pexpect's strict default: read_nonblocking
+        ## chops the serial stream at a fixed byte count, so a multi-byte
+        ## character straddling a 4096-byte boundary is routine -- and a guest
+        ## can emit outright non-UTF-8 bytes (framing noise, a binary splash).
+        ## Strict decoding raises UnicodeDecodeError inside wait_for(), which
+        ## catches only TIMEOUT/EOF, so the run would die with a traceback
+        ## instead of one of the documented FAIL/SETUP exit codes.
         child = pexpect.spawn(
-            qemu_argv[0], qemu_argv[1:], timeout=args.timeout, encoding="utf-8"
+            qemu_argv[0],
+            qemu_argv[1:],
+            timeout=args.timeout,
+            encoding="utf-8",
+            codec_errors="replace",
         )
         ## Pace input: the guest's zsh line editor (ZLE) mangles rapidly-sent lines
         ## (auto-suggest + cursor redraws corrupt e.g. "$?", and a queued 'exec'
@@ -421,6 +436,10 @@ def main():
             try:
                 child.close(force=True)
             except Exception:
+                ## Best-effort teardown of an already-dying child. The verdict is
+                ## decided by then, so a failure to reap must not replace it with
+                ## a traceback -- that is exactly the spurious non-zero exit the
+                ## comment above describes.
                 pass
         if qemu_workdir:
             import shutil
