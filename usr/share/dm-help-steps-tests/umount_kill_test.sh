@@ -27,6 +27,12 @@
 ##       collision of the target ('<target>2'), holding cwd + fd + mmap
 ##       there (regression test for the maps prefix-collision finding)
 ##
+##   unmounts what is UNDER the tree, preserves the tree's OWN root mount:
+##     - a tmpfs mounted at a subdirectory is unmounted
+##     - a tmpfs mounted AT the tree root itself survives (regression test for
+##       unchroot-raw's 'umount_kill.sh $CHROOT_FOLDER': the ext4 root that
+##       mount-raw placed must stay mounted across install-packages chroot cycles)
+##
 ##   guards:
 ##     - nonexistent target path: exit 0, no scan
 ##     - '/': refused, exit 1
@@ -53,6 +59,7 @@ shopt -s shift_verbose
 
 test_failures=0
 test_pid_list=()
+test_mount_list=()
 
 pass() {
    printf '%s\n' "PASS: $*"
@@ -68,10 +75,15 @@ fail() {
 ## not). SIGKILL is fine here: these are the test's own throwaway 'sleep'
 ## style processes.
 cleanup_test_processes() {
-   local cleanup_pid
+   local cleanup_pid cleanup_mount
 
    for cleanup_pid in "${test_pid_list[@]}"; do
       kill -s KILL -- "${cleanup_pid}" 2>/dev/null || true
+   done
+   ## Deepest first so a parent mount is not busy with a still-mounted child.
+   for cleanup_mount in $(printf '%s\n' "${test_mount_list[@]}" | LC_ALL=C sort --reverse); do
+      [ -n "${cleanup_mount}" ] || continue
+      umount --lazy --force -- "${cleanup_mount}" 2>/dev/null || true
    done
 }
 
@@ -143,6 +155,47 @@ require_dead() {
    else
       pass "killed as required: ${description}"
    fi
+}
+
+## Regression test for the unmount block: umount_kill.sh must unmount mounts
+## STRICTLY UNDER the tree but NEVER the tree's own root mount. unchroot-raw calls
+## it on '$CHROOT_FOLDER' (the ext4 root that mount-raw placed) between
+## install-packages chroot cycles purely to reap lingering processes; unmounting
+## that root drops the next chroot into an empty directory ("chroot: failed to run
+## command 'mkdir': No such file or directory"). A prior version matched 'base'
+## itself and did exactly that. Self-contained tmpfs mounts (no loop device); still
+## sandbox-only (it mounts + runs a killer as root).
+test_mount_preservation() {
+   local subject mount_tree
+   subject="$1"
+
+   mount_tree="$(mktemp --directory)"
+   ## One mount AT the tree root, one UNDER it (created inside the base tmpfs so it
+   ## is a genuine child mount).
+   mount --types tmpfs tmpfs-umk-base "${mount_tree}"
+   test_mount_list+=( "${mount_tree}" )
+   mkdir --parents -- "${mount_tree}/sub"
+   mount --types tmpfs tmpfs-umk-sub "${mount_tree}/sub"
+   test_mount_list+=( "${mount_tree}/sub" )
+
+   bash "${subject}" "${mount_tree}" >/dev/null 2>&1 || true
+
+   if mountpoint --quiet -- "${mount_tree}/sub"; then
+      fail "submount under tree was NOT unmounted"
+   else
+      pass "submount under tree was unmounted"
+   fi
+
+   if mountpoint --quiet -- "${mount_tree}"; then
+      pass "tree's own root mount preserved (not unmounted)"
+   else
+      fail "tree's own root mount was WRONGLY unmounted (regression)"
+   fi
+
+   ## Best-effort local teardown; the EXIT trap sweeps test_mount_list regardless.
+   umount --lazy --force -- "${mount_tree}/sub" 2>/dev/null || true
+   umount --lazy --force -- "${mount_tree}" 2>/dev/null || true
+   safe-rm --recursive --force -- "${mount_tree}" 2>/dev/null || true
 }
 
 main() {
@@ -290,6 +343,10 @@ time.sleep(300)" "${sibling_tree}/sub/mapme.bin" &
       printf '%s\n' "DEBUG: last follow-up run output follows:"
       printf '%s\n' "${run_output}"
    fi
+
+   ## ---- mount handling: submounts swept, base's OWN mount preserved ----
+
+   test_mount_preservation "${subject}"
 
    ## ---- guards ----
 
