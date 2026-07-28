@@ -1214,7 +1214,24 @@ check_precommit_hooks() {
    ## '--enforce-all' so check-added-large-files inspects the files we pass
    ## instead of intersecting with 'git diff --staged' (empty at push time,
    ## which left it dead in default/union/per-commit mode).
-   run_precommit_hook check-added-large-files --enforce-all -- "${@}"
+   ##
+   ## Restrict it to files this changeset ADDS, which is what the hook is named for.
+   ## With '--enforce-all' over every changed file, a large file that has been tracked for
+   ## years fails the gate on every commit that so much as appends to it -- observed on
+   ## derivative-maker's 3.6 MB 'changelog.upstream', which blocked an otherwise-clean
+   ## merge and cannot be "fixed" without rewriting project history. A file already present
+   ## in the base ref was reviewed when it was added; only a NEW one is the hook's business.
+   local -a added_files
+   added_files=()
+   for f in "${@}"; do
+      if [ -n "${base_ref:-}" ] && git cat-file -e "${base_ref}:${f}" 2> /dev/null ; then
+         continue
+      fi
+      added_files+=("${f}")
+   done
+   if [ "${#added_files[@]}" -gt 0 ]; then
+      run_precommit_hook check-added-large-files --enforce-all -- "${added_files[@]}"
+   fi
    run_precommit_hook check-case-conflict     -- "${@}"
    run_precommit_hook destroyed-symlinks      -- "${@}"
    run_precommit_hook forbid-new-submodules   -- "${@}"
