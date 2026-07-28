@@ -59,7 +59,6 @@ shopt -s shift_verbose
 
 test_failures=0
 test_pid_list=()
-test_mount_list=()
 
 pass() {
    printf '%s\n' "PASS: $*"
@@ -75,15 +74,10 @@ fail() {
 ## not). SIGKILL is fine here: these are the test's own throwaway 'sleep'
 ## style processes.
 cleanup_test_processes() {
-   local cleanup_pid cleanup_mount
+   local cleanup_pid
 
    for cleanup_pid in "${test_pid_list[@]}"; do
       kill -s KILL -- "${cleanup_pid}" 2>/dev/null || true
-   done
-   ## Deepest first so a parent mount is not busy with a still-mounted child.
-   for cleanup_mount in $(printf '%s\n' "${test_mount_list[@]}" | LC_ALL=C sort --reverse); do
-      [ -n "${cleanup_mount}" ] || continue
-      umount --lazy --force -- "${cleanup_mount}" 2>/dev/null || true
    done
 }
 
@@ -163,39 +157,79 @@ require_dead() {
 ## install-packages chroot cycles purely to reap lingering processes; unmounting
 ## that root drops the next chroot into an empty directory ("chroot: failed to run
 ## command 'mkdir': No such file or directory"). A prior version matched 'base'
-## itself and did exactly that. Self-contained tmpfs mounts (no loop device); still
-## sandbox-only (it mounts + runs a killer as root).
+## itself and did exactly that.
+##
+## Mounting needs CAP_SYS_ADMIN, which an unprivileged CI container's root lacks
+## (a plain 'mount' there fails "permission denied"). A user+mount namespace grants
+## tmpfs-mount capability without real privilege, so the whole check -- mount, run
+## the reaper, assert -- runs inside 'unshare --user --map-root-user --mount' and
+## behaves identically in the privileged sandbox and an unprivileged container. The
+## namespace's private mounts vanish with it, so there is nothing to clean up on the
+## host. Only a kernel with user namespaces disabled cannot run it; that is reported
+## (not failed), and the privileged sandbox still exercises the assertion.
 test_mount_preservation() {
-   local subject mount_tree
+   local subject subject_copy inner_script mount_output unshare_rc
+
    subject="$1"
 
-   mount_tree="$(mktemp --directory)"
-   ## One mount AT the tree root, one UNDER it (created inside the base tmpfs so it
-   ## is a genuine child mount).
-   mount --types tmpfs tmpfs-umk-base "${mount_tree}"
-   test_mount_list+=( "${mount_tree}" )
-   mkdir --parents -- "${mount_tree}/sub"
-   mount --types tmpfs tmpfs-umk-sub "${mount_tree}/sub"
-   test_mount_list+=( "${mount_tree}/sub" )
-
-   bash "${subject}" "${mount_tree}" >/dev/null 2>&1 || true
-
-   if mountpoint --quiet -- "${mount_tree}/sub"; then
-      fail "submount under tree was NOT unmounted"
-   else
-      pass "submount under tree was unmounted"
+   if ! unshare --user --map-root-user true 2>/dev/null; then
+      printf '%s\n' "NOTE: user namespaces unavailable; mount-preservation check not run here." >&2
+      return 0
    fi
 
-   if mountpoint --quiet -- "${mount_tree}"; then
+   ## Inside '--map-root-user' the subject's real path may be untraversable (the
+   ## checkout lives under a directory whose owner is unmapped in the namespace, so
+   ## bash reads it EPERM). Copy it to a world-readable temp, which IS reachable in
+   ## the namespace, and run that copy.
+   subject_copy="$(mktemp)"
+   cp -- "${subject}" "${subject_copy}"
+   chmod 0755 -- "${subject_copy}"
+
+   inner_script="$(mktemp)"
+   cat > "${inner_script}" <<'INNER'
+set -o errexit
+set -o nounset
+set -o pipefail
+subject_path="$1"
+mount_tree="$(mktemp --directory)"
+## A tmpfs AT the tree root, plus a genuine child mount created inside it.
+mount --types tmpfs tmpfs-umk-base "${mount_tree}"
+mkdir --parents -- "${mount_tree}/sub"
+mount --types tmpfs tmpfs-umk-sub "${mount_tree}/sub"
+bash "${subject_path}" "${mount_tree}" >/dev/null 2>&1 || true
+## Read the state the way the tool under test does. 'mountpoint' misreports a
+## '--lazy'-detached mount as still mounted; findmnt (which reads mountinfo, as
+## umount_kill.sh does) reflects the lazy detach immediately. Exact whole-line
+## match so 'base' does not accidentally match 'base/sub'.
+mounts_now="$(findmnt --raw --noheadings --output TARGET)"
+if printf '%s\n' "${mounts_now}" | grep --quiet --line-regexp --fixed-strings -- "${mount_tree}/sub"; then
+   printf '%s\n' "RESULT sub NOT_UNMOUNTED"
+else
+   printf '%s\n' "RESULT sub UNMOUNTED"
+fi
+if printf '%s\n' "${mounts_now}" | grep --quiet --line-regexp --fixed-strings -- "${mount_tree}"; then
+   printf '%s\n' "RESULT base PRESERVED"
+else
+   printf '%s\n' "RESULT base UNMOUNTED"
+fi
+INNER
+
+   unshare_rc=0
+   mount_output="$(unshare --user --map-root-user --mount --propagation private \
+      bash "${inner_script}" "${subject_copy}" 2>&1)" || unshare_rc="$?"
+   rm --force -- "${inner_script}" "${subject_copy}"
+
+   if printf '%s\n' "${mount_output}" | grep --quiet --fixed-strings -- "RESULT sub UNMOUNTED"; then
+      pass "submount under tree was unmounted"
+   else
+      fail "submount under tree was NOT unmounted (unshare rc ${unshare_rc}): ${mount_output}"
+   fi
+
+   if printf '%s\n' "${mount_output}" | grep --quiet --fixed-strings -- "RESULT base PRESERVED"; then
       pass "tree's own root mount preserved (not unmounted)"
    else
-      fail "tree's own root mount was WRONGLY unmounted (regression)"
+      fail "tree's own root mount was WRONGLY unmounted (regression) (unshare rc ${unshare_rc}): ${mount_output}"
    fi
-
-   ## Best-effort local teardown; the EXIT trap sweeps test_mount_list regardless.
-   umount --lazy --force -- "${mount_tree}/sub" 2>/dev/null || true
-   umount --lazy --force -- "${mount_tree}" 2>/dev/null || true
-   safe-rm --recursive --force -- "${mount_tree}" 2>/dev/null || true
 }
 
 main() {
