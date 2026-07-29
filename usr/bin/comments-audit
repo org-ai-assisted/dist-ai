@@ -27,6 +27,14 @@ Heuristic categories the script emits:
                     install, return, exit, print, echo, loop,
                     iterate, check, define, create).
 
+  HISTORY           comment narrates what the code USED TO do
+                    rather than why it is the way it is
+                    ('formerly X', 'this replaces Y', 'was
+                    broken', 'moved from Z'). Unlike the R151
+                    categories this needs no adjacent code line:
+                    history is just as often written into a file
+                    header as above a statement.
+
 Usage:  python3 comments-audit.py <repo_root>
 Exits:  always 0 - this is an audit, not a gate.
 """
@@ -54,6 +62,34 @@ RESTATE_VERBS = {
     "match", "parse", "decode", "encode", "fetch", "download",
     "upload",
 }
+
+## Narrative-history phrasing. Deliberately conservative: each needs an explicit
+## past-tense or supersession marker, because a comment may legitimately describe a
+## current state with words like "old" or "replace". Ambiguous-on-their-own words
+## ("instead", "now", "changed") are matched only in a compound that fixes the sense.
+HISTORY_PATTERNS = [
+    re.compile(r"\bformerly\b", re.I),
+    re.compile(r"\bhistorically\b", re.I),
+    ## Not 'previously-cached' / 'previously-focused': a hyphenated compound
+    ## describes present state, it does not narrate a past version of the code.
+    re.compile(r"\bpreviously(?!-)\b", re.I),
+    ## 'used to' means "formerly did" only outside the passive-purpose sense
+    ## ("is used to X", "cannot be used to X") and only mid-sentence: a comment
+    ## opening with "Used to ..." is describing what a thing is FOR.
+    ## The leading \w+\s+ requires a subject: a comment OPENING with "Used to ..."
+    ## is stating what a thing is for, not what it once did.
+    re.compile(r"\w+\s+(?<!\bis )(?<!\bare )(?<!\bwas )(?<!\bwere )(?<!\bbe )"
+               r"(?<!\bbeen )(?<!\bbeing )used to\b", re.I),
+    re.compile(r"\bthe (old|previous|earlier|former) "
+               r"(implementation|version|spelling|approach|behaviou?r|code|logic|way|name|design)\b", re.I),
+    re.compile(r"\bthis (replaces|replaced|supersedes)\b", re.I),
+    re.compile(r"\breplaced by\b", re.I),
+    re.compile(r"\bwas (broken|wrong|buggy|missing|removed|added|renamed|moved|fixed|reverted)\b", re.I),
+    re.compile(r"\bchanged (because|from .{0,40}? to)\b", re.I),
+    re.compile(r"\b(moved|renamed|copied) from\b", re.I),
+    re.compile(r"\bbefore this (change|commit|fix|patch|rewrite)\b", re.I),
+    re.compile(r"\bin an earlier (version|implementation|revision)\b", re.I),
+]
 
 MARKER_PATTERNS = [
     re.compile(r"^end of\b", re.I),
@@ -105,6 +141,14 @@ def is_restate(comment_text, code_line):
     ## Restate: comment shares at least one non-verb token with the code.
     overlap = (c_set & code_idents_lower) - RESTATE_VERBS
     return bool(overlap)
+
+
+def is_history(comment_text):
+    """True when the comment narrates a past state of the code."""
+    for p in HISTORY_PATTERNS:
+        if p.search(comment_text):
+            return True
+    return False
 
 
 def is_marker(comment_text):
@@ -166,6 +210,12 @@ def audit_file(path, findings):
         if HEADER_OK.match(text):
             continue
         if text.startswith("---"):
+            continue
+
+        ## Checked before the code-pair lookup below: a history comment is just as
+        ## often in a header block, where there is no adjacent statement to compare.
+        if is_history(text):
+            findings.append((path, i + 1, "HISTORY", text, ""))
             continue
 
         ## Next non-blank line - the code below the comment.
