@@ -214,8 +214,91 @@ for _name, _raw in dangerous_corpus().items():
 for _name, _raw in trojan_source_corpus().items():
     assert_safe('trojan:' + _name, _raw)
 
-# --- git-diffs-lie fixtures: decode like the pty does (UTF-8, replace) --------
-for _name, _rawbytes in git_diffs_lie_fixtures().items():
+# --- git-diffs-lie: prefer the REAL corpus on disk, fall back to the copy ------
+# Reading the checkout is strictly better than checking a copy for staleness: a
+# fixture added upstream is picked up and asserted automatically instead of being
+# reported as drift for someone to hand-sync. Resolution matches the established
+# pattern (git-meld-tests/corpus-lib.sh): $GIT_DIFFS_LIE_DIR, then
+# ~/private-sources/git-diffs-lie, then a sibling checkout.
+#
+# The vendored copy above is the FLOOR, not the source of truth: the reusable CI
+# workflow checks out only the code under test plus dist-ai, so without a floor the
+# assertions would silently cover nothing there (exit 77 counts as green in
+# dist-ai-tests-all -- the false-green shape this suite exists to prevent). The
+# local-adversarial-corpus workflow supplies a real checkout, so the disk path is
+# genuinely exercised in CI rather than only on a developer box.
+import os                                            # noqa: E402
+import subprocess                                    # noqa: E402
+
+
+def git_diffs_lie_dir():
+    """The git-diffs-lie checkout, or None."""
+    candidates = [os.environ.get('GIT_DIFFS_LIE_DIR') or '']
+    home = os.environ.get('HOME') or os.path.expanduser('~')
+    candidates.append(os.path.join(home, 'private-sources', 'git-diffs-lie'))
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates.append(os.path.join(here, '..', '..', '..', '..', 'git-diffs-lie'))
+    for path in candidates:
+        if path and os.path.isdir(os.path.join(path, '.git')):
+            return os.path.abspath(path)
+    return None
+
+
+def git_diffs_lie_upstream(repo):
+    """{name: payload bytes} for every content/* branch in the checkout."""
+    listing = subprocess.run(('git', '-C', repo, 'branch', '-a',
+                              '--format=%(refname:short)'),
+                             capture_output=True, check=False)
+    refs = {}
+    for ref in listing.stdout.decode('utf-8', 'replace').split():
+        short = ref.split('origin/', 1)[1] if ref.startswith('origin/') else ref
+        if not short.startswith('content/'):
+            continue
+        name = short.split('/', 1)[1]
+        if name not in refs or ref.startswith('origin/'):
+            refs[name] = ref              # prefer the remote-tracking ref
+    found = {}
+    for name, ref in refs.items():
+        stat = subprocess.run(('git', '-C', repo, 'show', '--stat', '--format=', ref),
+                              capture_output=True, check=False)
+        lines = [ln for ln in stat.stdout.decode('utf-8', 'replace').splitlines()
+                 if '|' in ln]
+        if not lines:
+            continue
+        blob = subprocess.run(('git', '-C', repo, 'show',
+                               '%s:%s' % (ref, lines[0].split('|')[0].strip())),
+                              capture_output=True, check=False)
+        if blob.returncode == 0:
+            found[name] = blob.stdout
+    return found
+
+
+_gdl_repo = git_diffs_lie_dir()
+_gdl = dict(git_diffs_lie_fixtures())
+if _gdl_repo:
+    _upstream = git_diffs_lie_upstream(_gdl_repo)
+    ok(len(_upstream) > 0,
+       'git-diffs-lie: content/* payload branches readable in %s (a shallow or '
+       'single-branch clone cannot serve the corpus)' % _gdl_repo)
+    # Every vendored fixture must still match the branch it claims to copy, so the
+    # floor cannot quietly diverge from the corpus it stands in for.
+    for _name, _bytes in sorted(_gdl.items()):
+        if _name in _upstream:
+            ok(_upstream[_name] == _bytes,
+               'git-diffs-lie:%s: in-tree copy matches upstream (%d vs %d bytes)'
+               % (_name, len(_bytes), len(_upstream[_name])))
+        else:
+            ok(False, 'git-diffs-lie:%s: copied but no upstream content/* branch'
+               % _name)
+    _gdl.update(_upstream)                # upstream wins, and adds any new fixture
+    print('secure-terminal-tests(corpus): git-diffs-lie read from %s (%d fixtures)'
+          % (_gdl_repo, len(_upstream)))
+else:
+    print('secure-terminal-tests(corpus): no git-diffs-lie checkout; using the %d '
+          'in-tree fixtures (set GIT_DIFFS_LIE_DIR for the full corpus)'
+          % len(_gdl))
+
+for _name, _rawbytes in sorted(_gdl.items()):
     _text = _rawbytes.decode('utf-8', 'replace')
     assert_safe('git-diffs-lie:' + _name, _text)
     # also the raw-byte path (latin-1 1:1, as sanitize_bytes uses)
