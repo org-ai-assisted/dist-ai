@@ -50,36 +50,89 @@ fi
 
 ## Per-lane test lists. Paths are relative to the checkout root.
 ##
-## Deliberately EXCLUDED from every lane, with the reason, so an omission reads
-## as a decision rather than an oversight:
-##   tests/redactor-selftest-value.py      test-support helper, not a test
-##   tests/cpu-governance-test.sh          needs root, writes /sys/fs/cgroup and
-##                                         saturates every core
-##   tests/run-*.sh                        Qubes sandbox wrappers; they require
-##                                         sandbox-run and re-enter the inner
-##                                         tests this runner already invokes
-##   tests/resilience/netns-*.sh           root 'unshare --net' plus real claude
-##                                         credentials and network
-##   tests/resilience/run-claude-inner.sh  invoked by the netns probe only
-##   tests/resilience/self-supervision-gate.sh
-##                                         drives a real claude and costs plan
-##                                         quota; manual only
+## These are DATA, not comments, because check_registration below compares the
+## checkout against them: a test file that is in neither a lane nor the
+## exclusion list is reported as unregistered. A hand-maintained list drifts
+## silently otherwise -- the suite keeps passing while covering less than it
+## claims, which is indistinguishable from covering everything.
+core_tests=(
+   'tests/claude-goal-state-test.py'
+   'tests/redactor-date-shape-test.py'
+   'tests/safe-pkill-guard-test.py'
+   'tests/ci-status-checkruns-test.py'
+   'tests/git-hooks-unicode-test.sh'
+   'tests/ci-status-test.sh'
+   'tests/claude-session-on-mobile-test.sh'
+   'tests/string-parsing-stress-test.sh'
+   'claude/hooks/tests/test-cowbuilder-guard.py'
+)
+fuzz_tests=( 'tests/string-parsing-fuzz.sh' )
+resilience_tests=(
+   'tests/resilience/wake-detach-cgroup-test.sh'
+   'tests/resilience/run-resilience-tests.sh'
+   'tests/resilience/durable-bg-run-chaos.sh'
+)
+
+## Deliberately NOT a lane member, with the reason, so an omission reads as a
+## decision rather than an oversight. Support files that a test invokes are
+## listed here too: they are not tests and must not be run as one.
+excluded_tests=(
+   'tests/ci-status-fixtures.py'                    # fixture generator
+   'tests/redactor-selftest-value.py'               # test-support helper
+   'tests/cpu-governance-test.sh'                   # root; writes /sys/fs/cgroup
+   'tests/run-cpu-governance-test.sh'               # sandbox wrapper; re-enters
+   'tests/run-string-parsing-fuzz.sh'               # sandbox wrapper; re-enters
+   'tests/run-string-parsing-stress-test.sh'        # sandbox wrapper; re-enters
+   'tests/resilience/chaos-tick-worker.sh'          # workload for the chaos test
+   'tests/resilience/resilience-workload.sh'        # workload, not a test
+   'tests/resilience/resilience-stall-supervisor.sh' # support supervisor
+   'tests/resilience/mock-404-server.py'            # support server
+   'tests/resilience/netns-api-down-probe.sh'       # root unshare; real creds
+   'tests/resilience/netns-run.sh'                  # root unshare; real creds
+   'tests/resilience/run-claude-inner.sh'           # netns probe invokes it
+   'tests/resilience/self-supervision-gate.sh'      # drives real claude; quota
+)
+
+## Fail when the checkout holds a test-shaped file that no lane runs and no
+## exclusion accounts for. Cheap, so it runs on every lane rather than waiting
+## for a full sweep.
+check_registration() {
+   local candidate rel known entry unregistered=()
+   while IFS= read -r candidate; do
+      rel="${candidate#"${repo}/"}"
+      known='false'
+      for entry in "${core_tests[@]}" "${fuzz_tests[@]}" \
+         "${resilience_tests[@]}" "${excluded_tests[@]}"
+      do
+         if [ "${entry}" = "${rel}" ]; then
+            known='true'
+            break
+         fi
+      done
+      if [ "${known}" = 'false' ]; then
+         unregistered+=( "${rel}" )
+      fi
+   done < <( find "${repo}/tests" "${repo}/claude/hooks/tests" \
+      -type f \( -name '*.sh' -o -name '*.py' \) 2>/dev/null | sort )
+
+   if [ "${#unregistered[@]}" -gt 0 ]; then
+      printf '\n########## UNREGISTERED TEST FILE(S) ##########\n' >&2
+      printf '%s\n' "${unregistered[@]}" >&2
+      printf '%s\n' \
+         'Add each to a lane list, or to excluded_tests WITH a reason.' \
+         'A file in neither is never run and never reported.' >&2
+      return 1
+   fi
+   return 0
+}
+
 tests=()
 case "${lane}" in
    'core')
-      tests=(
-         'tests/claude-goal-state-test.py'
-         'tests/redactor-date-shape-test.py'
-         'tests/safe-pkill-guard-test.py'
-         'tests/ci-status-checkruns-test.py'
-         'tests/git-hooks-unicode-test.sh'
-         'tests/ci-status-test.sh'
-         'tests/string-parsing-stress-test.sh'
-         'claude/hooks/tests/test-cowbuilder-guard.py'
-      )
+      tests=( "${core_tests[@]}" )
       ;;
    'fuzz')
-      tests=( 'tests/string-parsing-fuzz.sh' )
+      tests=( "${fuzz_tests[@]}" )
       ## The fuzzer defaults to 500 iterations per phase across four phases,
       ## which overruns the runner's 600s fuzz budget on a loaded CI box and
       ## would be reported TIMEOUT rather than a fuzz result. Bound it unless
@@ -95,17 +148,16 @@ case "${lane}" in
          printf 'dist-ai-config-tests: no systemd --user manager; skipping the resilience lane.\n' >&2
          exit 77
       fi
-      tests=(
-         'tests/resilience/wake-detach-cgroup-test.sh'
-         'tests/resilience/run-resilience-tests.sh'
-         'tests/resilience/durable-bg-run-chaos.sh'
-      )
+      tests=( "${resilience_tests[@]}" )
       ;;
    *)
       printf 'run-tests.sh: unknown lane %s (want: core | fuzz | resilience)\n' "${lane}" >&2
       exit 64
       ;;
 esac
+
+registration_status=0
+check_registration || registration_status=1
 
 passes=0
 failures=0
@@ -146,6 +198,12 @@ printf '\n===== summary (%s lane): %s pass, %s fail, %s skip =====\n' \
    "${lane}" "${passes}" "${failures}" "${skips}"
 
 if [ "${failures}" -ne 0 ]; then
+   exit 1
+fi
+## An unregistered test file fails the lane even when everything that DID run
+## passed: the point is that something was never run at all.
+if [ "${registration_status}" -ne 0 ]; then
+   printf '===== unregistered test file(s): see above =====\n' >&2
    exit 1
 fi
 ## Nothing actually ran: report SKIP so the runner does not record a vacuous
