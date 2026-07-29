@@ -13,7 +13,7 @@
 ## image). Proves the markup-injection bypass and that the strip_markup fix
 ## closes it. No root, no network; Qt runs offscreen and is skipped if PyQt5 is
 ## absent. Targets the installed sanitize-string by default; set
-## SANITIZE_STRING_BIN to test a checkout / not-yet-installed fix. Extra args
+## SANITIZE_STRING_BIN / SANITIZE_ECHO_BIN to test a checkout / not-yet-installed fix. Extra args
 ## (e.g. --iterations N, --seed N) pass through to the harness.
 
 set -o errexit

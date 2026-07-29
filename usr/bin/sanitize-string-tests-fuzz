@@ -8,7 +8,7 @@
 ## Heavy fuzz run of the sanitize family: same harness as sanitize-string-tests
 ## but with a large default iteration count for a longer adversarial sweep.
 ## Override with --iterations N / --seed N. See sanitize-string-tests for the
-## checks performed and the SANITIZE_STRING_BIN override.
+## checks performed and the SANITIZE_STRING_BIN / SANITIZE_ECHO_BIN overrides.
 
 set -o errexit
 set -o nounset

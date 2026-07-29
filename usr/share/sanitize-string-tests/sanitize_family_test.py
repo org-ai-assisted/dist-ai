@@ -45,9 +45,18 @@ contains the exact bypass vectors; against a fixed sanitize-string they are all
 neutralized, against an unfixed one they are shown injecting (proving the issue
 is real). Detection is automatic.
 
-Path override: SANITIZE_STRING_BIN (else installed /usr/bin/sanitize-string,
-else a derivative-maker checkout). To prove a not-yet-installed source fix,
-point SANITIZE_STRING_BIN at a wrapper that runs the checkout copy.
+Also covers sanitize-echo, which shares the sanitizer but adds echo's shape
+(trailing newline, argv joined by space, --max-length cap). Every corpus and
+fuzz input is run through it as well, held to the same terminal- and
+HTML-safety invariants AND to byte-equality with sanitize-string once the
+trailing newline is stripped. Equivalence is the strongest available check:
+it ties the newer tool to the one this suite already proves.
+
+Path overrides: SANITIZE_STRING_BIN and SANITIZE_ECHO_BIN (else the installed
+/usr/bin copies, else a derivative-maker checkout). To prove a not-yet-installed
+source fix, point them at wrappers that run the checkout copies. The default
+targets the INSTALLED tool, so testing a checkout without these is a silent
+no-op against the packaged version.
 
 Usage: sanitize_family_test.py [--iterations N] [--seed N] [--fuzz-only]
 """
@@ -57,27 +66,55 @@ import os
 import subprocess
 import sys
 
-DM = "/home/user/derivative-maker/packages/kicksecure"
+DM = '/home/user/derivative-maker/packages/kicksecure'
 DIALOG_TRIM = 128
 
 
 def resolve_sanitize_string():
-    env = os.environ.get("SANITIZE_STRING_BIN")
+    env = os.environ.get('SANITIZE_STRING_BIN')
     if env:
         return env
-    if os.path.exists("/usr/bin/sanitize-string"):
-        return "/usr/bin/sanitize-string"
-    return os.path.join(DM, "helper-scripts/usr/bin/sanitize-string")
+    if os.path.exists('/usr/bin/sanitize-string'):
+        return '/usr/bin/sanitize-string'
+    return os.path.join(DM, 'helper-scripts/usr/bin/sanitize-string')
 
 
 SANITIZE_STRING = resolve_sanitize_string()
+
+
+def resolve_sanitize_echo():
+    """Same resolution order as sanitize-string, via SANITIZE_ECHO_BIN."""
+    env = os.environ.get('SANITIZE_ECHO_BIN')
+    if env:
+        return env
+    if os.path.exists('/usr/bin/sanitize-echo'):
+        return '/usr/bin/sanitize-echo'
+    return os.path.join(DM, 'helper-scripts/usr/bin/sanitize-echo')
+
+
+SANITIZE_ECHO = resolve_sanitize_echo()
+
+
+def run_sanitize_echo(arg, max_length=DIALOG_TRIM):
+    """Invoke sanitize-echo as a consumer does. It appends a newline that
+    sanitize-string does not, so strip exactly one for comparison; every other
+    invariant is expected to hold identically."""
+    proc = subprocess.run(
+        [SANITIZE_ECHO, '--max-length', str(max_length), '--', arg],
+        capture_output=True,
+        check=False,
+    )
+    out = proc.stdout
+    if out.endswith(b'\n'):
+        out = out[:-1]
+    return out
 
 
 def run_sanitize(arg, max_length=DIALOG_TRIM):
     """Invoke sanitize-string exactly as a consumer does: argv argument plus an
     explicit max length. Returns stdout bytes."""
     proc = subprocess.run(
-        [SANITIZE_STRING, "--", str(max_length), arg],
+        [SANITIZE_STRING, '--', str(max_length), arg],
         capture_output=True,
         check=False,
     )
@@ -87,10 +124,10 @@ def run_sanitize(arg, max_length=DIALOG_TRIM):
 ## The wrapper open-link-confirmation / other consumers build around the value:
 ## it always lands inside an HTML rich-text message.
 HTML_PREFIX = (
-    "<p>The following <b>link</b> will be opened in <u>Tor Browser</u>.</p>"
-    "<p><code><blockquote>"
+    '<p>The following <b>link</b> will be opened in <u>Tor Browser</u>.</p>'
+    '<p><code><blockquote>'
 )
-HTML_SUFFIX = "</blockquote></code></p>"
+HTML_SUFFIX = '</blockquote></code></p>'
 
 
 class Results:
@@ -109,14 +146,14 @@ class Results:
     def fail(self, name, detail):
         self.failed += 1
         if len(self.fail_samples) < 25:
-            self.fail_samples.append(name + ": " + detail)
+            self.fail_samples.append(name + ': ' + detail)
 
     def xfail(self, name):
         self.xfailed += 1
 
     def skip(self, name, detail):
         self.skipped += 1
-        print("  SKIP  " + name + "  (" + detail + ")")
+        print('  SKIP  ' + name + '  (' + detail + ')')
 
 
 ## ---------------------------------------------------------------------------
@@ -127,15 +164,15 @@ def terminal_violations(out_bytes, max_length):
     """[T] Return terminal-safety violations."""
     violations = []
     if any(b >= 0x80 for b in out_bytes):
-        violations.append("non-ASCII byte")
+        violations.append('non-ASCII byte')
     if len(out_bytes) > max_length:
-        violations.append("length " + str(len(out_bytes)) + " > " + str(max_length))
+        violations.append('length ' + str(len(out_bytes)) + ' > ' + str(max_length))
     if any(b < 0x20 and b not in (0x09, 0x0A) for b in out_bytes):
-        violations.append("control byte")
+        violations.append('control byte')
     if 0x1B in out_bytes:
-        violations.append("ESC byte")
+        violations.append('ESC byte')
     if 0x7F in out_bytes:
-        violations.append("DEL byte")
+        violations.append('DEL byte')
     return violations
 
 
@@ -150,28 +187,28 @@ def has_lt(out_bytes):
 def adversarial_corpus():
     cases = {
         ## benign / controls (must always be safe)
-        "benign_url": "https://www.whonix.org/wiki/Foo",
-        "plain_anchor": "<a href='http://example.com'>x</a>",
-        "plain_img": "<img src='http://example.com/p.png'>",
-        "lone_gt": "a > b",
+        'benign_url': 'https://www.whonix.org/wiki/Foo',
+        'plain_anchor': "<a href='http://example.com'>x</a>",
+        'plain_img': "<img src='http://example.com/p.png'>",
+        'lone_gt': 'a > b',
         ## whitespace-tag bypass family
-        "ws_space_a": "< a href='http://example.com'>x</a>",
-        "ws_tab_a": "<\ta href='http://example.com'>x",
-        "ws_newline_a": "<\na href='http://example.com'>x",
-        "ws_multi_a": "<  \t\n a href='http://example.com'>x",
-        "ws_upper_a": "< A HREF='http://example.com'>x",
-        "ws_img_remote": "< img src='http://example.com/p.png'>",
-        "ws_img_file": "< img src='file:///etc/hostname'>",
-        "ws_img_data": "< img src='data:image/png;base64,iVBORw0KGgo='>",
-        "ws_img_no_close": "< img src='http://example.com/p.png'",
+        'ws_space_a': "< a href='http://example.com'>x</a>",
+        'ws_tab_a': "<\ta href='http://example.com'>x",
+        'ws_newline_a': "<\na href='http://example.com'>x",
+        'ws_multi_a': "<  \t\n a href='http://example.com'>x",
+        'ws_upper_a': "< A HREF='http://example.com'>x",
+        'ws_img_remote': "< img src='http://example.com/p.png'>",
+        'ws_img_file': "< img src='file:///etc/hostname'>",
+        'ws_img_data': "< img src='data:image/png;base64,iVBORw0KGgo='>",
+        'ws_img_no_close': "< img src='http://example.com/p.png'",
         ## entity-decode revival (html.parser decodes &lt -> '<')
-        "ent_lt_space_img": "&lt img src='http://example.com/p.png'>",
-        "ent_num_space_img": "&#60 img src='http://example.com/p.png'>",
-        "ent_hex_space_img": "&#x3c img src='http://example.com/p.png'>",
-        "ent_lt_semi_a": "&lt; a href='http://example.com'>x",
+        'ent_lt_space_img': "&lt img src='http://example.com/p.png'>",
+        'ent_num_space_img': "&#60 img src='http://example.com/p.png'>",
+        'ent_hex_space_img': "&#x3c img src='http://example.com/p.png'>",
+        'ent_lt_semi_a': "&lt; a href='http://example.com'>x",
         ## nested / multi-strip evasion
-        "nested_lt": "<< a href='http://example.com'>x",
-        "double_tag": "<<a a href='http://example.com'>x",
+        'nested_lt': "<< a href='http://example.com'>x",
+        'double_tag': "<<a a href='http://example.com'>x",
     }
     return cases
 
@@ -183,15 +220,15 @@ def adversarial_corpus():
 ## excluded: an execve argument (and a bash variable) cannot contain it, so the
 ## consumer argv path can never carry it.
 FUZZ_TOKENS = [
-    "<", ">", "&", "/", "!", "?", ";", "=", "'", '"', " ", "\t", "\n",
-    "a", "A", "img", "IMG", "href", "src", "script", "b", "i",
-    "http://x", "file:///x", "data:x", "x", "1",
-    "&lt", "&lt;", "&gt", "&#60", "&#62", "&#x3c", "&amp;", "&#x3e",
+    '<', '>', '&', '/', '!', '?', ';', '=', "'", '"', ' ', '\t', '\n',
+    'a', 'A', 'img', 'IMG', 'href', 'src', 'script', 'b', 'i',
+    'http://x', 'file:///x', 'data:x', 'x', '1',
+    '&lt', '&lt;', '&gt', '&#60', '&#62', '&#x3c', '&amp;', '&#x3e',
     ## entity-encoded control / RLO / unicode: strip_markup decodes these into
     ## raw chars, so the pipeline's final stdisplay must strip them ([T]).
-    "&#0;", "&#27;", "&#x202e;", "&#13;", "&#7;", "&#128512;", "&NotEqualTilde;",
-    "<!--", "-->", "<![CDATA[", "]]>", "<?", "?>",
-    "\x1b[31m", "\x07", "\x08", "\x1b]8;;", "\u202e", "\u200b", "\u4f60", "caf",
+    '&#0;', '&#27;', '&#x202e;', '&#13;', '&#7;', '&#128512;', '&NotEqualTilde;',
+    '<!--', '-->', '<![CDATA[', ']]>', '<?', '?>',
+    '\x1b[31m', '\x07', '\x08', '\x1b]8;;', '\u202e', '\u200b', '\u4f60', 'caf',
 ]
 
 
@@ -200,7 +237,7 @@ def fuzz_input(rng, max_tokens=24):
     count = rng.randint(1, max_tokens)
     for _ in range(count):
         parts.append(rng.choice(FUZZ_TOKENS))
-    return "".join(parts)
+    return ''.join(parts)
 
 
 ## ---------------------------------------------------------------------------
@@ -209,11 +246,11 @@ def fuzz_input(rng, max_tokens=24):
 def make_qt_probe():
     """Return (probe_fn, note). probe_fn(sanitized_text) -> (anchors, images)
     using a real Qt QTextDocument, or None if PyQt5 is unavailable."""
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
     try:
         from PyQt5 import QtGui, QtWidgets
     except Exception as exc:  # pylint: disable=broad-except
-        return None, "PyQt5 unavailable: " + str(exc)
+        return None, 'PyQt5 unavailable: ' + str(exc)
 
     app = QtWidgets.QApplication.instance()
     if app is None:
@@ -241,10 +278,10 @@ def make_qt_probe():
         return anchors, images
 
     ## Baseline: the wrapper alone must introduce nothing.
-    base_a, base_i = probe("PLACEHOLDER")
+    base_a, base_i = probe('PLACEHOLDER')
     if base_a or base_i:
-        return None, "wrapper baseline not clean: " + str(base_a) + str(base_i)
-    return probe, "ok"
+        return None, 'wrapper baseline not clean: ' + str(base_a) + str(base_i)
+    return probe, 'ok'
 
 
 def detect_fixed():
@@ -256,7 +293,7 @@ def detect_fixed():
 def detect_dropped_query():
     """A sanitizer 'drops query strings' if a benign URL containing '&' is
     emptied -- the convert_charrefs / missing-close() content-drop bug."""
-    return run_sanitize("http://example.com/?a=1&b=2") == b""
+    return run_sanitize('http://example.com/?a=1&b=2') == b''
 
 
 ## [F] Benign, display-safe inputs (ASCII, no '<', no control, within the cap)
@@ -265,13 +302,13 @@ def detect_dropped_query():
 ## dialog so the user could not see the link being confirmed.
 def fidelity_corpus():
     return [
-        "http://example.com/?a=1&b=2",
-        "http://example.com/search?q=foo&lang=en&page=2",
-        "http://example.com/?trailing=amp&",
-        "https://example.com/wiki/Foo",
-        "Tom & Jerry & co",
-        "a & b & c & d & e",
-        "plain text with no markup at all.",
+        'http://example.com/?a=1&b=2',
+        'http://example.com/search?q=foo&lang=en&page=2',
+        'http://example.com/?trailing=amp&',
+        'https://example.com/wiki/Foo',
+        'Tom & Jerry & co',
+        'a & b & c & d & e',
+        'plain text with no markup at all.',
     ]
 
 
@@ -280,86 +317,115 @@ def fidelity_corpus():
 ## markup stripping must not let the output exceed max_length.
 def truncation_corpus():
     return [
-        "A" * 500,
-        "<b>x</b>" * 100,
-        "&#x202e;" * 100,
-        "\u4f60" * 300,
-        "http://example.com/?" + "a=1&" * 100,
-        "&NotEqualTilde;" * 50,
-        "mixed <a> &amp; \x1b[31m text " * 30,
+        'A' * 500,
+        '<b>x</b>' * 100,
+        '&#x202e;' * 100,
+        '\u4f60' * 300,
+        'http://example.com/?' + 'a=1&' * 100,
+        '&NotEqualTilde;' * 50,
+        'mixed <a> &amp; \x1b[31m text ' * 30,
     ]
 
 
 # pylint: disable=too-many-branches,too-many-statements,too-many-locals
 def main():
-    parser = argparse.ArgumentParser(description="sanitize family deep test + fuzz")
-    parser.add_argument("--iterations", type=int, default=3000)
-    parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--fuzz-only", action="store_true")
+    parser = argparse.ArgumentParser(description='sanitize family deep test + fuzz')
+    parser.add_argument('--iterations', type=int, default=3000)
+    parser.add_argument('--seed', type=int, default=1)
+    parser.add_argument('--fuzz-only', action='store_true')
     args = parser.parse_args()
 
-    print("sanitize family deep test + fuzz")
-    print("sanitize-string: " + SANITIZE_STRING)
+    print('sanitize family deep test + fuzz')
+    print('sanitize-string: ' + SANITIZE_STRING)
+    print('sanitize-echo:   ' + SANITIZE_ECHO)
     if not os.path.exists(SANITIZE_STRING):
-        print("ERROR: sanitize-string not found; set SANITIZE_STRING_BIN")
+        print('ERROR: sanitize-string not found; set SANITIZE_STRING_BIN')
         return 2
 
     fixed = detect_fixed()
-    print("sanitizer fixed (no '<' revival): " + ("YES" if fixed else
-          "NO -- deployed sanitizer is VULNERABLE; fix is in helper-scripts "
-          "strip_markup source, rebuild/install to deploy"))
+    print("sanitizer fixed (no '<' revival): " + ('YES' if fixed else
+          'NO -- deployed sanitizer is VULNERABLE; fix is in helper-scripts '
+          'strip_markup source, rebuild/install to deploy'))
     dropped = detect_dropped_query()
     print("drops '&' query strings (missing-close bug): "
-          + ("YES -- deployed sanitizer blanks URLs with parameters" if dropped
-             else "no"))
+          + ('YES -- deployed sanitizer blanks URLs with parameters' if dropped
+             else 'no'))
     qt_probe, qt_note = make_qt_probe()
-    print("Qt differential: " + ("enabled" if qt_probe else "skipped (" + qt_note + ")"))
+    print('Qt differential: ' + ('enabled' if qt_probe else 'skipped (' + qt_note + ')'))
     print()
 
     results = Results()
 
+    echo_available = os.path.exists(SANITIZE_ECHO)
+
+    def check_echo(name, arg):
+        """[E] sanitize-echo must satisfy the same terminal- and HTML-safety
+        invariants as sanitize-string, and agree with it byte for byte once its
+        trailing newline is removed. Equivalence is the strongest assertion
+        available: it ties the newer tool to the one this suite already proves.
+        """
+        if not echo_available:
+            results.skip('E:' + name, 'sanitize-echo not found')
+            return
+        echo_out = run_sanitize_echo(arg)
+        violations = terminal_violations(echo_out, DIALOG_TRIM)
+        if has_lt(echo_out):
+            violations.append("'<' survived")
+        if violations:
+            results.fail('E:' + name,
+                         '; '.join(violations) + ' input=' + repr(arg[:60]))
+            return
+        string_out = run_sanitize(arg)
+        if echo_out != string_out:
+            results.fail('E:' + name,
+                         'disagrees with sanitize-string: echo='
+                         + repr(echo_out[:60]) + ' string=' + repr(string_out[:60]))
+            return
+        results.ok('E:' + name)
+
     def check_one(name, arg, hard_html):
         """Run all groups on a single input. hard_html gates [H]/[Q] when the
         sanitizer is unfixed."""
+        check_echo(name, arg)
         out = run_sanitize(arg)
         ## [T] terminal safety: always hard.
         tv = terminal_violations(out, DIALOG_TRIM)
         if tv:
-            results.fail("T:" + name, "; ".join(tv) + " input=" + repr(arg[:60]))
+            results.fail('T:' + name, '; '.join(tv) + ' input=' + repr(arg[:60]))
         else:
-            results.ok("T:" + name)
+            results.ok('T:' + name)
         ## [H] HTML safety: no '<'.
         lt = has_lt(out)
         if not lt:
-            results.ok("H:" + name)
+            results.ok('H:' + name)
         elif fixed:
-            results.fail("H:" + name, "'<' survived: " + repr(out[:60]))
+            results.fail('H:' + name, "'<' survived: " + repr(out[:60]))
         else:
-            results.xfail("H:" + name)
+            results.xfail('H:' + name)
         ## [Q] Qt differential.
         if qt_probe is not None:
-            sanitized = out.decode("ascii", "replace")
+            sanitized = out.decode('ascii', 'replace')
             anchors, images = qt_probe(sanitized)
             if not anchors and not images:
-                results.ok("Q:" + name)
+                results.ok('Q:' + name)
             elif fixed:
                 results.fail(
-                    "Q:" + name,
-                    "Qt revived anchors=" + str(anchors) + " images=" + str(images)
-                    + " from " + repr(sanitized[:60]),
+                    'Q:' + name,
+                    'Qt revived anchors=' + str(anchors) + ' images=' + str(images)
+                    + ' from ' + repr(sanitized[:60]),
                 )
             else:
-                results.xfail("Q:" + name)
+                results.xfail('Q:' + name)
 
     ## Adversarial corpus (proves the specific issue + fix).
     if not args.fuzz_only:
-        print("[corpus] adversarial bypass family + controls")
+        print('[corpus] adversarial bypass family + controls')
         for name, arg in adversarial_corpus().items():
-            check_one("corpus:" + name, arg, hard_html=fixed)
+            check_one('corpus:' + name, arg, hard_html=fixed)
 
     ## [F] content-fidelity: benign tagless inputs must not be silently dropped.
     if not args.fuzz_only:
-        print("[fidelity] benign inputs must round-trip (no silent content drop)")
+        print('[fidelity] benign inputs must round-trip (no silent content drop)')
         for arg in fidelity_corpus():
             out = run_sanitize(arg)
             ## '&' is deliberately neutralized to '_' (strip_markup's
@@ -368,46 +434,49 @@ def main():
             ## replaced, not kept). Benign content must otherwise round-trip;
             ## blanking the input (empty output) is always a failure -- that is
             ## the content-drop bug this check guards against.
-            if out == arg.replace("&", "_").encode("ascii"):
-                results.ok("F:" + repr(arg[:40]))
+            if out == arg.replace('&', '_').encode('ascii'):
+                results.ok('F:' + repr(arg[:40]))
             else:
                 results.fail(
-                    "F:" + repr(arg[:40]),
+                    'F:' + repr(arg[:40]),
                     "benign input not preserved (modulo '&'->'_'): "
-                    + repr(arg) + " -> " + repr(out),
+                    + repr(arg) + ' -> ' + repr(out),
                 )
 
     ## [L] truncation / length cap: output never exceeds max_length, and the
     ## capped output is exactly the untruncated output truncated to N. Always
     ## hard (truncation is not version-dependent).
     if not args.fuzz_only:
-        print("[L] truncation: len(out) <= max_length and out == nolimit[:N]")
+        print('[L] truncation: len(out) <= max_length and out == nolimit[:N]')
         for arg in truncation_corpus():
-            full = run_sanitize(arg, "nolimit")
+            full = run_sanitize(arg, 'nolimit')
             for cap in (0, 1, 5, 32, 128, 255):
                 out = run_sanitize(arg, cap)
                 if len(out) <= cap and out == full[:cap]:
-                    results.ok("L:" + str(cap))
+                    results.ok('L:' + str(cap))
                 else:
                     results.fail(
-                        "L:cap=" + str(cap),
-                        "len=" + str(len(out)) + " (>cap?) or != nolimit[:cap]; "
-                        "input=" + repr(arg[:40]),
+                        'L:cap=' + str(cap),
+                        'len=' + str(len(out)) + ' (>cap?) or != nolimit[:cap]; '
+                        'input=' + repr(arg[:40]),
                     )
 
     ## Fuzz.
     import random
     rng = random.Random(args.seed)
-    print("[fuzz] " + str(args.iterations) + " iterations (seed " + str(args.seed) + ")")
+    print('[fuzz] ' + str(args.iterations) + ' iterations (seed ' + str(args.seed) + ')')
     qt_budget = 800  # bound Qt parses for runtime; [H] still runs on every input
     for i in range(args.iterations):
         arg = fuzz_input(rng)
+        ## [E] every fuzz input goes through sanitize-echo as well, holding it
+        ## to the same invariants and to byte-equality with sanitize-string.
+        check_echo('fuzz#' + str(i), arg)
         out = run_sanitize(arg)
         tv = terminal_violations(out, DIALOG_TRIM)
         if tv:
-            results.fail("T:fuzz#" + str(i), "; ".join(tv) + " input=" + repr(arg[:80]))
+            results.fail('T:fuzz#' + str(i), '; '.join(tv) + ' input=' + repr(arg[:80]))
         else:
-            results.ok("T:fuzz#" + str(i))
+            results.ok('T:fuzz#' + str(i))
         ## NB: idempotency of the sanitizer itself is covered by helper-scripts'
         ## property tests. We deliberately do NOT re-sanitize the CLI output
         ## here: the CLI truncates to max_length AFTER sanitizing, so a cut
@@ -415,55 +484,55 @@ def main():
         ## artifact, not a sanitizer defect, and irrelevant to display safety
         ## (truncation only ever shows less, never injects).
         if not has_lt(out):
-            results.ok("H:fuzz#" + str(i))
+            results.ok('H:fuzz#' + str(i))
         elif fixed:
-            results.fail("H:fuzz#" + str(i),
-                         "'<' survived: in=" + repr(arg[:80]) + " out=" + repr(out[:80]))
+            results.fail('H:fuzz#' + str(i),
+                         "'<' survived: in=" + repr(arg[:80]) + ' out=' + repr(out[:80]))
         else:
-            results.xfail("H:fuzz#" + str(i))
+            results.xfail('H:fuzz#' + str(i))
         if qt_probe is not None and i < qt_budget:
-            anchors, images = qt_probe(out.decode("ascii", "replace"))
+            anchors, images = qt_probe(out.decode('ascii', 'replace'))
             if not anchors and not images:
-                results.ok("Q:fuzz#" + str(i))
+                results.ok('Q:fuzz#' + str(i))
             elif fixed:
-                results.fail("Q:fuzz#" + str(i),
-                             "Qt revived from in=" + repr(arg[:80])
-                             + " a=" + str(anchors) + " i=" + str(images))
+                results.fail('Q:fuzz#' + str(i),
+                             'Qt revived from in=' + repr(arg[:80])
+                             + ' a=' + str(anchors) + ' i=' + str(images))
             else:
-                results.xfail("Q:fuzz#" + str(i))
+                results.xfail('Q:fuzz#' + str(i))
 
     print()
     print(
-        str(results.passed) + " passed, "
-        + str(results.failed) + " failed, "
-        + str(results.xfailed) + " xfailed, "
-        + str(results.skipped) + " skipped"
+        str(results.passed) + ' passed, '
+        + str(results.failed) + ' failed, '
+        + str(results.xfailed) + ' xfailed, '
+        + str(results.skipped) + ' skipped'
     )
     if results.fail_samples:
-        print("failures (sample):")
+        print('failures (sample):')
         for sample in results.fail_samples:
-            print("  - " + sample)
+            print('  - ' + sample)
     if (not fixed or dropped) and results.xfailed:
         issues = []
         if not fixed:
-            issues.append("the markup-injection bypass")
+            issues.append('the markup-injection bypass')
         if dropped:
             issues.append("the dropped-'&'-query content bug (blanked URLs)")
         print(
-            "NOTE: deployed sanitizer is affected by " + " and ".join(issues)
-            + " (" + str(results.xfailed) + " xfail checks). The fix is in "
-            "helper-scripts strip_markup source; install it (or point "
-            "SANITIZE_STRING_BIN at the fixed copy) to require these checks."
+            'NOTE: deployed sanitizer is affected by ' + ' and '.join(issues)
+            + ' (' + str(results.xfailed) + ' xfail checks). The fix is in '
+            'helper-scripts strip_markup source; install it (or point '
+            'SANITIZE_STRING_BIN at the fixed copy) to require these checks.'
         )
     if results.failed:
-        print("RESULT: FAIL")
+        print('RESULT: FAIL')
         return 1
     if fixed:
-        print("RESULT: PASS (sanitizer proven bypass-free across this run)")
+        print('RESULT: PASS (sanitizer proven bypass-free across this run)')
     else:
-        print("RESULT: PASS (terminal-safety proven; HTML-safety pending fix deploy)")
+        print('RESULT: PASS (terminal-safety proven; HTML-safety pending fix deploy)')
     return 0
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     raise SystemExit(main())
