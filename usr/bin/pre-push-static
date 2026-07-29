@@ -882,6 +882,93 @@ check_R170_tmp_hardcode() {
    done
 }
 
+check_R190_inline_interpreter() {
+   local script line delimiter rest char body start_line line_number in_body
+
+   ## R-190: a substantial interpreter program does not belong in a shell
+   ## heredoc. Same defect as R-100 for workflow YAML: the body is invisible to
+   ## the tools that would check it. ruff and pyrefly only see real '*.py'
+   ## files, coverage.py cannot measure a heredoc at all, and no unit test can
+   ## reach a function that has no importable home. Extract it to a program
+   ## with a shebang and call it.
+   ##
+   ## Threshold matches R-100's "more than ~5 lines". A short one-liner is
+   ## glue, not a program.
+   for script in "${@}"; do
+      ## Script-wide waiver: '## style-ok: allow-inline-interpreter'. Anchored
+      ## so a typo'd superset does not silently disable the rule.
+      if grep --quiet --extended-regexp \
+         '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*allow-inline-interpreter([[:space:]]|$)' \
+         -- "${script}" 2>/dev/null
+      then
+         note "R-190 skipped: 'style-ok: allow-inline-interpreter' waiver in '${script}'"
+         continue
+      fi
+
+      in_body="false"
+      delimiter=""
+      body=0
+      start_line=0
+      line_number=0
+      while IFS= read -r line || [ -n "${line}" ]; do
+         line_number=$(( line_number + 1 ))
+         if [ "${in_body}" = "true" ]; then
+            ## The terminator is the delimiter alone on its line; leading
+            ## whitespace is allowed because '<<-' strips indentation.
+            if [ "${line#"${line%%[![:space:]]*}"}" = "${delimiter}" ]; then
+               if [ "${body}" -gt 5 ]; then
+                  fail "R-190 inline interpreter program (${body} lines) belongs in its own file" \
+                     "'${script}:${start_line}'"
+               fi
+               in_body="false"
+               delimiter=""
+               body=0
+               continue
+            fi
+            body=$(( body + 1 ))
+            continue
+         fi
+         ## Only lines with a heredoc operator can start one; checking that
+         ## first keeps this to one grep per candidate rather than per line.
+         case "${line}" in
+            *'<<'*)
+               true
+               ;;
+            *)
+               continue
+               ;;
+         esac
+         if ! printf '%s\n' "${line}" | grep --quiet --extended-regexp \
+            '(python3?|perl|ruby|node|php)([[:space:]]+[^|;&<]*)?<<-?['"'"'"]?[A-Za-z_][A-Za-z0-9_]*'
+         then
+            continue
+         fi
+         rest="${line##*<<}"
+         rest="${rest#-}"
+         rest="${rest#\'}"
+         rest="${rest#\"}"
+         delimiter=""
+         while [ -n "${rest}" ]; do
+            char="${rest:0:1}"
+            case "${char}" in
+               [A-Za-z0-9_])
+                  delimiter="${delimiter}${char}"
+                  rest="${rest:1}"
+                  ;;
+               *)
+                  break
+                  ;;
+            esac
+         done
+         if [ -n "${delimiter}" ]; then
+            in_body="true"
+            body=0
+            start_line="${line_number}"
+         fi
+      done < "${script}"
+   done
+}
+
 check_R180_python_shebang() {
    local script hits first
 
@@ -1506,6 +1593,7 @@ run_file_checks() {
       check_R130_null_command "${shell_files[@]}"
       check_R034_echo "${shell_files[@]}"
       check_R103_exec "${shell_files[@]}"
+      check_R190_inline_interpreter "${shell_files[@]}"
    else
       note "no changed shell files"
    fi

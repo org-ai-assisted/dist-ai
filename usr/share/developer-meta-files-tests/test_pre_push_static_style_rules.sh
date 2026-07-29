@@ -55,6 +55,16 @@ source /usr/libexec/helper-scripts/has.sh
 assert_prerequisite 'git not on PATH' has git
 assert_prerequisite 'safe-rm not on PATH' has safe-rm
 
+## pre-push-static self-skips its ENTIRE pre-commit-hooks tier when check-yaml
+## is off PATH, so without these the tier assertions below fail as if the gate
+## were broken. Name the absent dependency instead (apt-get install
+## pre-commit-hooks).
+assert_prerequisite \
+   'check-yaml not on PATH (apt-get install pre-commit-hooks)' has check-yaml
+assert_prerequisite \
+   'double-quote-string-fixer not on PATH (apt-get install pre-commit-hooks)' \
+   has double-quote-string-fixer
+
 ## Resolve the gate RELATIVE to this test file (usr/share/<suite>/ -> usr/bin/).
 ## That path is correct in both layouts -- installed it resolves to
 ## /usr/bin/pre-push-static, from a checkout to the checkout's own copy -- so it
@@ -460,6 +470,93 @@ if printf '%s\n' "${py_out}" | grep --quiet --fixed-strings -- '__init__.py'; th
    failures=$((failures + 1))
 else
    printf 'PASS: R-180 exempts an empty __init__.py\n'
+fi
+
+## R-190: a substantial interpreter program does not belong in a shell
+## heredoc. Same defect as R-100 for workflow YAML -- ruff and pyrefly only see
+## real '*.py' files, coverage.py cannot measure a heredoc, and no unit test can
+## import a function that has no file. Short glue is fine; the threshold matches
+## R-100's "more than ~5 lines".
+inline_repo="$(mktemp --directory --tmpdir="${tmp_root}" inline.XXXXXX)"
+git -C "${inline_repo}" init --quiet
+git -C "${inline_repo}" config user.email 'ci-test@example.com'
+git -C "${inline_repo}" config user.name 'ci-test'
+git -C "${inline_repo}" commit --quiet --no-verify --allow-empty --message base
+inline_base="$(git -C "${inline_repo}" rev-parse HEAD)"
+
+printf '%s\n' \
+   '#!/bin/bash' \
+   'python3 - "$1" <<'"'"'PY'"'"'' \
+   'a = 1' \
+   'b = 2' \
+   'c = 3' \
+   'd = 4' \
+   'e = 5' \
+   'print(a, b, c, d, e)' \
+   'PY' > "${inline_repo}/longinline.sh"
+printf '%s\n' \
+   '#!/bin/bash' \
+   'python3 - <<'"'"'PY'"'"'' \
+   'print("hi")' \
+   'PY' > "${inline_repo}/shortglue.sh"
+## A heredoc that feeds a NON-interpreter must never be flagged, however long.
+printf '%s\n' \
+   '#!/bin/bash' \
+   'cat > /dev/null <<'"'"'EOF'"'"'' \
+   'one' \
+   'two' \
+   'three' \
+   'four' \
+   'five' \
+   'six' \
+   'seven' \
+   'EOF' > "${inline_repo}/plaindoc.sh"
+printf '%s\n' \
+   '#!/bin/bash' \
+   '## style-ok: allow-inline-interpreter' \
+   'python3 - <<'"'"'PY'"'"'' \
+   'a = 1' \
+   'b = 2' \
+   'c = 3' \
+   'd = 4' \
+   'e = 5' \
+   'f = 6' \
+   'print(a, b, c, d, e, f)' \
+   'PY' > "${inline_repo}/waived.sh"
+chmod 0755 -- "${inline_repo}"/*.sh
+git -C "${inline_repo}" add --all
+git -C "${inline_repo}" commit --quiet --no-verify --message inline
+inline_out="$( cd -- "${inline_repo}" && "${GATE}" "${inline_base}" 2>&1 || true )"
+## Scope every assertion to R-190 FAILURES. The fixtures deliberately lack a
+## strict preamble and a copyright header, so other rules name them too.
+## Match the FAILURE text, not the bare rule id: the gate also emits an
+## 'R-190 skipped: ... waiver in <file>' note, which names the very file the
+## waiver spared and would read as a violation.
+inline_hits="$( printf '%s\n' "${inline_out}" \
+   | grep --fixed-strings -- 'R-190 inline interpreter program' || true )"
+if printf '%s\n' "${inline_hits}" | grep --quiet --fixed-strings -- 'longinline.sh'; then
+   printf 'PASS: R-190 flags a long inline interpreter program\n'
+else
+   printf 'FAIL: R-190 did not flag a long inline interpreter program\n' >&2
+   failures=$((failures + 1))
+fi
+if printf '%s\n' "${inline_hits}" | grep --quiet --fixed-strings -- 'shortglue.sh'; then
+   printf 'FAIL: R-190 flagged short glue\n' >&2
+   failures=$((failures + 1))
+else
+   printf 'PASS: R-190 spares a short inline one-liner\n'
+fi
+if printf '%s\n' "${inline_hits}" | grep --quiet --fixed-strings -- 'plaindoc.sh'; then
+   printf 'FAIL: R-190 flagged a non-interpreter heredoc\n' >&2
+   failures=$((failures + 1))
+else
+   printf 'PASS: R-190 ignores a heredoc feeding a non-interpreter\n'
+fi
+if printf '%s\n' "${inline_hits}" | grep --quiet --fixed-strings -- 'waived.sh'; then
+   printf 'FAIL: R-190 ignored its style-ok waiver\n' >&2
+   failures=$((failures + 1))
+else
+   printf 'PASS: R-190 honours the allow-inline-interpreter waiver\n'
 fi
 
 ## R-001 gains a per-file waiver. A suite testing a SANITIZER has to contain
