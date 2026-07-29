@@ -44,6 +44,7 @@ if [ "$(id -u)" != '0' ]; then
   exit 1
 fi
 
+[ -v TMP ] || TMP=/tmp
 sandbox_bin='/usr/libexec/tb-updater/sandbox-update-torbrowser'
 updater_bin='/usr/bin/update-torbrowser'
 work_dir='/var/lib/tb-updater/work'
@@ -53,7 +54,7 @@ tarball_name='tor-browser-linux-x86_64-test.tar.xz'
 signature_name="${tarball_name}.asc"
 cache_subpath='.cache/tb/files'
 cache_dir="${work_dir}/${cache_subpath}"
-result_file='/tmp/test-sandbox-resume-result'
+result_file="${TMP}/test-sandbox-resume-result"
 updater_backup="$(mktemp --tmpdir test-sandbox-resume.update-torbrowser.XXXXXX)"
 backup_made='false'
 

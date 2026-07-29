@@ -15,6 +15,9 @@
 ##      stripped (never emitted, so it could never reach a title).
 ## Exit 0 if both hold, 1 on any failure. Cleans up the emulator and Xvfb.
 
+## style-ok: no-tmp-hardcode -- /tmp/.X11-unix is the X11 socket directory fixed by
+## the protocol; libX11 looks there and nowhere else, so it cannot follow TMPDIR.
+
 set -o errexit
 set -o nounset
 set -o pipefail

@@ -49,6 +49,9 @@
 ## NOTE: on a hardened Kicksecure/Whonix system the permission-hardener strips the
 ## exec bit from urxvt; restore it first: sudo chmod a+x /usr/bin/urxvt
 
+## style-ok: no-tmp-hardcode -- /tmp/.X11-unix is the X11 socket directory fixed by
+## the protocol; libX11 looks there and nowhere else, so it cannot follow TMPDIR.
+
 set -o errexit
 set -o nounset
 set -o pipefail

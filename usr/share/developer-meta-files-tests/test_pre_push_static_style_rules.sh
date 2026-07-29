@@ -266,6 +266,20 @@ expect_rule "R-170" "d=${dq}debian${tmpp}/usr${dq}"              "absent"
 expect_rule "R-170" "d=${dq}/var${tmpp}/persist${dq}"            "absent"
 expect_rule "R-170" "d=${dq}${tmpp}fs/thing${dq}"                "absent"
 expect_rule "R-170" "d=${dq}\${TMP}/mine${dq}"                   "absent"
+## A '/tmp' rooted in an expansion or in HOME is a subdirectory named tmp,
+## not the absolute system path, so it must be SPARED.
+expect_rule "R-170" "d=${dq}\${build_dir}/tmp/x${dq}"            "absent"
+expect_rule "R-170" "d=${dq}\$(pwd)/tmp${dq}"                    "absent"
+expect_rule "R-170" "d=~/tmp"                                    "absent"
+## The initialisation is spared QUOTED as well as bare -- both quote styles,
+## and the bwrap form.
+expect_rule "R-170" "TMP=${dq}${tmpp}${dq}"                      "absent"
+expect_rule "R-170" "export TMPDIR=${sq}${tmpp}${sq}"            "absent"
+expect_rule "R-170" "readonly TEMP=${dq}${tmpp}${dq}"            "absent"
+expect_rule "R-170" "bw+=(--setenv TMPDIR ${dq}${tmpp}${dq})"    "absent"
+## ... but a temp-dir var assigned a SUBPATH of /tmp is still a hardcode:
+## only the bare '<VAR>=/tmp' initialisation is spared.
+expect_rule "R-170" "TMPDIR=${tmpp}/wrong"                       "present"
 ## A script-wide waiver disables the rule for the whole file.
 expect_rule "R-170" "## style-ok: no-tmp-hardcode${nlreal}w=${dq}${tmpp}/x${dq}" "absent"
 

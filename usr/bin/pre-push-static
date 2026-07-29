@@ -835,9 +835,12 @@ check_R170_tmp_hardcode() {
       ## '/tmp' as an absolute path: NOT preceded by a path/word character (so
       ## 'debian/tmp', './tmp' and '/var/tmp' are not matched) and NOT followed
       ## by one (so '/tmpfs' and '/tmp.bak' are not). A following '/' is a real
-      ## path. '-' is deliberately NOT in the leading class: it is the character
-      ## before '/tmp' in the '${TMPDIR:-/tmp}' inline-fallback idiom, which is
-      ## the single most common form this rule exists to retire.
+      ## path. '}', ')' and '~' are in the leading class too: a '/tmp' right
+      ## after one of them is rooted in an expansion or in HOME
+      ## ('${build_dir}/tmp', '$(pwd)/tmp', '~/tmp'), so it is a subdirectory
+      ## named tmp, never the absolute system path. '-' is deliberately NOT in
+      ## the class: it is the character before '/tmp' in the '${TMPDIR:-/tmp}'
+      ## inline-fallback idiom, which is the form this rule mainly retires.
       ## The leading '^[^#]*' excludes '#'-comment lines, as R-070/R-074 do --
       ## prose about /tmp is not a hardcode.
       ##
@@ -848,13 +851,15 @@ check_R170_tmp_hardcode() {
       ## ':' leads the allowed-prefix class because grep --line-number has
       ## already prefixed '<n>:' by the time the invert sees the line, so a
       ## start-of-line 'TMP=/tmp' is no longer at '^'.
+      ## The init may be QUOTED ('TMP="/tmp"', "export TMPDIR='/tmp'"), so an
+      ## optional quote is allowed on each side of the literal.
       ## Whole-line, so a line carrying BOTH an init and a real hardcode is
       ## spared -- a narrow accepted residual, as in R-120.
       hits="$(grep --line-number --extended-regexp \
-         '^[^#]*(^|[^A-Za-z0-9._/])/tmp($|[^A-Za-z0-9._-])' \
+         '^[^#]*(^|[^A-Za-z0-9._/}~)])/tmp($|[^A-Za-z0-9._-])' \
          -- "${script}" 2>/dev/null \
          | grep --invert-match --extended-regexp \
-           '(^|[[:space:];&|(:])(export|readonly|local|declare)?[[:space:]]*(TMP|TMPDIR|TEMP|TEMPDIR)=/tmp([[:space:];&|)]|$)|--setenv[[:space:]]+(TMP|TMPDIR|TEMP|TEMPDIR)[[:space:]]+/tmp([[:space:];&|)]|$)' \
+           "(^|[[:space:];&|(:])(export|readonly|local|declare)?[[:space:]]*(TMP|TMPDIR|TEMP|TEMPDIR)=['\"]?/tmp['\"]?([[:space:];&|)]|\$)|--setenv[[:space:]]+(TMP|TMPDIR|TEMP|TEMPDIR)[[:space:]]+['\"]?/tmp['\"]?([[:space:];&|)]|\$)" \
          || true)"
       if [ -z "${hits}" ]; then
          continue

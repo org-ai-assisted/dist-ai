@@ -23,6 +23,7 @@ if [ "${CI:-}" != "true" ]; then
    exit 1
 fi
 
+[ -v TMP ] || TMP=/tmp
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )"
 FIXTURES_DIR="$(cd -- "${SCRIPT_DIR}/../fixtures" && pwd)"
 
@@ -41,7 +42,7 @@ export GHORG_MOCK_DIR="${FIXTURES_DIR}"
 ## fails. Acceptable for this test - the assertion below is on
 ## the equality check itself, not the post-error behavior.
 out="$(github-org-clone --include-private --dry-run assisted-by-ai \
-  /tmp/clone-private-user-out 2>&1 || true)"
+  "${TMP}/clone-private-user-out" 2>&1 || true)"
 
 if grep --quiet -- 'cannot list private repos' <<< "${out}"; then
   printf '%s\n' \

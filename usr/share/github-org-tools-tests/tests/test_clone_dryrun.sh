@@ -23,6 +23,7 @@ if [ "${CI:-}" != "true" ]; then
    exit 1
 fi
 
+[ -v TMP ] || TMP=/tmp
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )"
 FIXTURES_DIR="$(cd -- "${SCRIPT_DIR}/../fixtures" && pwd)"
 
@@ -31,7 +32,7 @@ export GHORG_MOCK_DIR="${FIXTURES_DIR}"
 
 ## Capture stderr too: github-org-clone routes user-facing output
 ## through log notice / log warn now, all of which go to stderr.
-out="$(github-org-clone --dry-run org-ai-assisted /tmp/clone-dryrun-out 2>&1)"
+out="$(github-org-clone --dry-run org-ai-assisted "${TMP}/clone-dryrun-out" 2>&1)"
 
 ## Expected: three repos selected (derivative-maker, helper-scripts,
 ## some-fork). The other two (archived/private) are still filtered
@@ -60,7 +61,7 @@ fi
 
 ## --exclude-forks should drop some-fork from the list.
 out_no_forks="$(github-org-clone --dry-run --exclude-forks \
-  org-ai-assisted /tmp/clone-dryrun-out 2>&1)"
+  org-ai-assisted "${TMP}/clone-dryrun-out" 2>&1)"
 if grep --quiet -- 'DRY-RUN: clone .*some-fork\.git' <<< "${out_no_forks}"; then
   printf '%s\n' 'FAIL: --exclude-forks did not drop some-fork' >&2
   fail=1

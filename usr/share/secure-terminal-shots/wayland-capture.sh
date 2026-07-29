@@ -23,6 +23,9 @@
 ##   --quick               == --only kitty --case crafted
 ## Other: --keep-running  --settle S  --out DIR  --st-repo DIR
 
+## style-ok: no-tmp-hardcode -- /tmp/.X11-unix is the X11 socket directory fixed by
+## the protocol; libX11 looks there and nowhere else, so it cannot follow TMPDIR.
+
 set -o errexit
 set -o nounset
 set -o pipefail

@@ -17,6 +17,7 @@ shopt -s shift_verbose
 
 mydir="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )"
 
+[ -v TMP ] || TMP=/tmp
 repo_root=""
 component=""
 component_root=""
@@ -445,7 +446,7 @@ run_suite() {
    wire "${suite}"
    local rc=0
    timeout "${tmo}" env "${wire_env[@]}" "${entry}" "${wire_args[@]}" \
-      >"/tmp/dist-ai-tests-all.${suite}.log" 2>&1 || rc=$?
+      >"${TMP}/dist-ai-tests-all.${suite}.log" 2>&1 || rc=$?
    local verdict log_line
    case "${rc}" in
       0)
@@ -476,7 +477,7 @@ run_suite() {
          emit "---- ${suite}: begin captured output (${verdict}) ----"
          while IFS= read -r log_line; do
             emit "${log_line}"
-         done < "/tmp/dist-ai-tests-all.${suite}.log"
+         done < "${TMP}/dist-ai-tests-all.${suite}.log"
          emit "---- ${suite}: end captured output ----"
          ;;
    esac
@@ -679,6 +680,6 @@ for item in "${selected[@]}"; do
 done
 
 emit "== summary: ${pass_count} pass, ${fail_count} fail, ${skip_count} skip/missing =="
-emit "== per-suite output: /tmp/dist-ai-tests-all.<suite>.log =="
+emit "== per-suite output: ${TMP}/dist-ai-tests-all.<suite>.log =="
 
 [ "${fail_count}" -eq 0 ]
