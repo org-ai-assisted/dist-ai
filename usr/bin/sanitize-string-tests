@@ -33,4 +33,19 @@ fi
 
 rc=0
 python3 -- "${tests_dir}/sanitize_family_test.py" "$@" || rc=$?
+
+## sanitize_echo_test.py is a unittest module, not a standalone script, and it
+## subclasses TestStripMarkupBase from helper-scripts' own in-tree test package.
+## Both that base class and the sanitize_echo module under test resolve from the
+## helper-scripts dist-packages root already on PYTHONPATH (wire() sets it);
+## tests_dir is prepended so the module itself is importable by name.
+## Run unconditionally rather than short-circuiting on the first failure, so one
+## broken family does not hide the other.
+echo_rc=0
+PYTHONPATH="${tests_dir}${PYTHONPATH:+:${PYTHONPATH}}" \
+   python3 -m unittest --verbose sanitize_echo_test || echo_rc=$?
+if [ "${echo_rc}" -ne 0 ]; then
+   rc="${echo_rc}"
+fi
+
 exit "${rc}"
