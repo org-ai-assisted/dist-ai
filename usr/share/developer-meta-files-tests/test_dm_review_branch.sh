@@ -149,16 +149,30 @@ fi
 run_review_tty() {
    ## $1 = ref to review, $2 = answer ('y'|'n'). Exit code = the tool's.
    REPO="${repo}" REF="$1" ANSWER="$2" python3 -- - <<'PYEOF'
-import os, sys, pty, select
+import os, sys, pty, select, signal, time
 repo = os.environ["REPO"]; ref = os.environ["REF"]
 ans = os.environ["ANSWER"].encode() + b"\n"
 pid, fd = pty.fork()
 if pid == 0:
-    os.chdir(repo)
-    os.execvp("dm-review-branch", ["dm-review-branch", ref])
+    try:
+        os.chdir(repo)
+        ## dm-review-branch runs 'git log'. On a pty git starts its pager,
+        ## which stops at "Press RETURN to continue" and waits for input that
+        ## never comes -- the tool then never reaches its own prompt. Pin the
+        ## pager off so the test drives the tool, not less(1).
+        os.environ["GIT_PAGER"] = "cat"
+        os.environ["PAGER"] = "cat"
+        os.environ["GIT_TERMINAL_PROMPT"] = "0"
+        os.execvp("dm-review-branch", ["dm-review-branch", ref])
+    finally:
+        ## execvp only returns on failure; never fall back into the parent's
+        ## code path, and never leave a forked child alive on error.
+        os._exit(127)
 buf = b""; sent = False
+timed_out = False
 while True:
     if not select.select([fd], [], [], 15)[0]:
+        timed_out = True
         break
     try:
         data = os.read(fd, 4096)
@@ -169,7 +183,28 @@ while True:
     buf += data
     if not sent and b"Continue the review anyway" in buf:
         os.write(fd, ans); sent = True
-_, status = os.waitpid(pid, 0)
+
+## Reap without blocking forever. A child still sitting at its prompt (the
+## expected text never arrived, so the answer was never sent) would otherwise
+## make waitpid() hang for good -- the test must fail loud, not wedge.
+deadline = time.monotonic() + 10
+while True:
+    waited, status = os.waitpid(pid, os.WNOHANG)
+    if waited:
+        break
+    if time.monotonic() > deadline:
+        os.kill(pid, signal.SIGKILL)
+        _, status = os.waitpid(pid, 0)
+        timed_out = True
+        break
+    time.sleep(0.05)
+
+if timed_out:
+    sys.stderr.write(
+        "run_review_tty: no 'Continue the review anyway' prompt within the "
+        "timeout; child killed. Output was:\n"
+        + buf.decode(errors="replace") + "\n")
+    sys.exit(124)
 sys.exit(os.waitstatus_to_exitcode(status))
 PYEOF
 }

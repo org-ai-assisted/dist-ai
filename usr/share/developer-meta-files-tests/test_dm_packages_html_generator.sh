@@ -79,14 +79,25 @@ source /usr/libexec/helper-scripts/has.sh
 
 assert_prerequisite 'safe-rm not found' has safe-rm
 
-## Locate the generator: prefer the installed binary, else the
-## developer-meta-files checkout inside a derivative-maker source tree.
+## Locate the generator: the installed binary, else the checkout the
+## entrypoint points at, else a developer-meta-files checkout inside a
+## derivative-maker source tree.
 locate_generator() {
    local candidate source_dir
 
    if has dm-packages-html-generator; then
       printf '%s\n' 'dm-packages-html-generator'
       return 0
+   fi
+
+   ## CI checks the component out standalone, so DMF_REPO is the checkout
+   ## root itself and no derivative-maker tree exists around it.
+   if [ -n "${DMF_REPO:-}" ]; then
+      candidate="${DMF_REPO}/usr/bin/dm-packages-html-generator"
+      if [ -x "${candidate}" ]; then
+         printf '%s\n' "${candidate}"
+         return 0
+      fi
    fi
 
    source_dir="${DM_SOURCE_DIR:-${HOME}/derivative-maker}"
