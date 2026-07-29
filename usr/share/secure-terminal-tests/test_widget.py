@@ -458,6 +458,33 @@ if tui_available():
     _drive_fullscreen(['tmux', '-f', '/dev/null', 'new-session', '/bin/bash'],
                       'bash', b'\x02:kill-server\r', 'tmux', expect_exit=False)
 
+# --- line editing can be turned off, making the widget append-only ------------
+# The setting exists because honouring erase-in-line means a program CAN overwrite
+# what it just printed on the current line. With it off the widget must keep both
+# strings, and toggling live must re-render the retained output under the new rule.
+_le = SecureTerminal(command='/bin/cat')
+_le.apply_mode('box')
+ok(_le.line_edits_enabled(), 'line editing is on by default')
+feed_output(_le, b'STATUS=FAIL\x1b[2KSTATUS=PASS\n')
+ok('STATUS=FAIL' not in _le.toPlainText(),
+   'line editing on: the erase redraws the line, so FAIL is gone')
+_le.apply_line_edits(False)
+ok(not _le.line_edits_enabled(), 'apply_line_edits(False) takes effect')
+ok('STATUS=FAIL' in _le.toPlainText() and 'STATUS=PASS' in _le.toPlainText(),
+   'turning line editing off re-renders the retained output, so FAIL is back')
+_le.close()
+
+_le2 = SecureTerminal(command='/bin/cat', line_edits=False)
+_le2.apply_mode('box')
+ok(not _le2.line_edits_enabled(), 'the ctor kwarg is honored (session restore path)')
+feed_output(_le2, b'STATUS=FAIL\x1b[2KSTATUS=PASS\n')
+_le2_doc = _le2.toPlainText()
+ok('STATUS=FAIL' in _le2_doc and 'STATUS=PASS' in _le2_doc,
+   'line editing off: output is append-only, both strings survive')
+ok('\x1b' not in _le2_doc and '[2K' not in _le2_doc,
+   'line editing off: the escape is consumed, not shown as [2K residue')
+_le2.close()
+
 # --- render-only preview: re-render safe, and no formatting leak between shows -
 pv = SecureTerminal(preview=True)
 pv.render_preview('hello\u00e9', mode='detail', markings=True)
@@ -2193,7 +2220,7 @@ finally:
 # global settings apply to every open tab and update the defaults
 win.new_tab()
 win._apply_global({'theme': 'light', 'zoom': 130, 'mode': 'reveal',
-                   'colors': True, 'tui': False,
+                   'colors': True, 'line_edits': True, 'tui': False,
                    'osc': {'osc_title': True, 'osc_clipboard': True},
                    'scrollback': 1000, 'paste_delay': 5, 'persist': True})
 ok(all((win.tabs.widget(i).current_theme(), win.tabs.widget(i).current_mode(),
@@ -2204,7 +2231,7 @@ ok(all(win.tabs.widget(i).osc_enabled('osc_title')
        and win.tabs.widget(i).osc_enabled('osc_clipboard')
        for i in range(win.tabs.count())),
    'global settings apply the granular OSC toggles to every tab')
-win._apply_global({'theme': 'light', 'zoom': 130, 'mode': 'reveal', 'colors': True,
+win._apply_global({'theme': 'light', 'zoom': 130, 'mode': 'reveal', 'colors': True, 'line_edits': True,
                    'tui': False, 'osc': {'osc_title': False, 'osc_clipboard': False},
                    'scrollback': 1000, 'paste_delay': 5, 'persist': True})
 eq(win._default_mode, 'reveal', 'global settings updated the default mode')

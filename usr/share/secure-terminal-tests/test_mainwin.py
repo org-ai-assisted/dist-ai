@@ -387,6 +387,16 @@ win.set_paste_delay(3)
 win.set_bell_sound('')                      # empty/disallowed -> cleared, applied
 ok(True, 'setting appliers push the change to every tab and persist')
 
+# line editing: the live per-tab setter pushes into the current tab, flips the menu
+# action and updates the default used for new tabs.
+win.set_line_edits(False)
+eq(win.current().line_edits_enabled(), False,
+   'set_line_edits(False) reaches the current tab')
+ok(not win.act_line_edits.isChecked(), 'set_line_edits syncs the menu action')
+eq(win._default_line_edits, False, 'set_line_edits updates the new-tab default')
+win.set_line_edits(True)
+eq(win.current().line_edits_enabled(), True, 'set_line_edits(True) restores it')
+
 _saved_locked = set(win._locked)
 _saved_bsl = win._bell_sound_locked
 try:
@@ -400,6 +410,10 @@ try:
     win.set_bell_sound('/etc/hostname')     # locked -> early return
     win._locked = {'copy_warn'}
     win.set_copy_warn('always')             # locked -> early return
+    win._locked = {'line_edits'}
+    win.set_line_edits(False)               # locked -> early return
+    eq(win._default_line_edits, True,
+       'a locked line_edits cannot be turned off by the user')
     ok(True, 'setting appliers respect an admin lock (no change)')
     # a locked paste_warn / copy_warn is greyed out in the menu, not silently
     # clickable-but-ignored.
@@ -1265,7 +1279,7 @@ try:
     win._default_font_family = 'Hack'
     win._apply_global({'theme': 'dark', 'zoom': 100, 'mode': 'box',
                        'font_family': 'Attacker Font', 'font_size': 20,
-                       'colors': True, 'tui': True, 'osc_notice': True,
+                       'colors': True, 'line_edits': True, 'tui': True, 'osc_notice': True,
                        'osc': {'osc_title': True}, 'scrollback': 1000,
                        'paste_delay': 3, 'persist': False})
     ok(win._default_font_family == 'Hack',
@@ -1388,7 +1402,8 @@ try:
     win._apply_global({'theme': 'dark', 'zoom': 100,
                        'font_family': win._default_font_family,
                        'font_size': win._default_font_size, 'mode': 'box',
-                       'colors': True, 'tui': False, 'osc': {}, 'osc_notice': True,
+                       'colors': True, 'line_edits': True, 'tui': False,
+                       'osc': {}, 'osc_notice': True,
                        'scrollback': 0, 'paste_delay': 3,
                        'paste_warn': 'always', 'copy_warn': 'never', 'persist': False})
     eq((win._paste_warn, win._copy_warn), ('always', 'never'),
@@ -1419,7 +1434,7 @@ try:
     win._apply_global({'theme': 'dark', 'zoom': 100,
                        'font_family': win._default_font_family,
                        'font_size': win._default_font_size, 'ui_scale': 175,
-                       'mode': 'box', 'colors': True, 'tui': False, 'osc': {},
+                       'mode': 'box', 'colors': True, 'line_edits': True, 'tui': False, 'osc': {},
                        'osc_notice': True, 'scrollback': 0, 'paste_delay': 3,
                        'persist': False})
     eq(win._ui_scale, 175, '_apply_global stores the menu (UI) scale')
@@ -1551,7 +1566,7 @@ _pcfg_prev = os.environ.get('XDG_CONFIG_HOME')
 os.environ['XDG_CONFIG_HOME'] = tempfile.mkdtemp(prefix='st-persist-')
 try:
     _pw = MainWindow()
-    _pw._apply_global({'theme': 'light', 'zoom': 175, 'mode': 'reveal', 'colors': True,
+    _pw._apply_global({'theme': 'light', 'zoom': 175, 'mode': 'reveal', 'colors': True, 'line_edits': True,
                        'tui': False, 'osc': {}, 'osc_notice': False,
                        'scrollback': 7000, 'paste_delay': 5, 'persist': True})
     _pc = _ps.load()
@@ -1683,7 +1698,7 @@ try:
        and not _iw.tabs.isTabEnabled(2) and not _iw.tabs.isTabEnabled(3),
        '#99 (F1): the active tab is enabled, placeholders are disabled (unselectable)')
     # a bulk "apply to all tabs" must skip placeholders, not call a setter on a QWidget
-    _iw._apply_global({'theme': 'dark', 'zoom': 100, 'mode': 'box', 'colors': True,
+    _iw._apply_global({'theme': 'dark', 'zoom': 100, 'mode': 'box', 'colors': True, 'line_edits': True,
                        'tui': False, 'osc_notice': True, 'osc': {},
                        'scrollback': 1000, 'paste_delay': 0, 'persist': True})
     ok(_iw.current().current_theme() == 'dark',
@@ -1761,7 +1776,7 @@ try:
     try:
         _mw78 = MainWindow()
         _rr['n'] = 0
-        _mw78._restore_tab({'text': 'cafe box\n', 'mode': 'box', 'colors': True,
+        _mw78._restore_tab({'text': 'cafe box\n', 'mode': 'box', 'colors': True, 'line_edits': True,
                             'markings': False, 'osc': {}})
         _t78 = _mw78.current()
         eq(_t78.current_mode(), 'box', '#78: restored tab keeps its saved mode')

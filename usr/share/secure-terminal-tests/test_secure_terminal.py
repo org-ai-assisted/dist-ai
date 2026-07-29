@@ -1108,6 +1108,35 @@ if os.path.exists(_aij):
        "ai-judge fails open when the AI is unavailable")
     os.remove(_mockai)
 
+# --- line_edits=False makes escape-driven editing append-only -----------------
+# The four line-local CSI ops exist so a shell's line editor can redraw the line
+# you are typing. Turned off, they must be CONSUMED but inert: no cursor move, no
+# erase, and no leftover partial sequence on screen -- so a program can no longer
+# overwrite what it already printed on the current line.
+_le_raw = 'STATUS=FAIL\x1b[2KSTATUS=PASS'
+_le_on = S.feed_line_edits([], 0, {}, _le_raw, 0, True)[1]
+_le_off = S.feed_line_edits([], 0, {}, _le_raw, 0, False)[1]
+eq(''.join(c for c, _ in _le_on), 'STATUS=PASS',
+   'line_edits on: erase-in-line redraws the current line (the shell needs this)')
+eq(''.join(c for c, _ in _le_off), 'STATUS=FAILSTATUS=PASS',
+   'line_edits off: the erased text survives -- append-only against escapes')
+ok(all(ch != '\x1b' for ch, _ in _le_off),
+   'line_edits off: the escape is consumed, not left on screen as [2K')
+# the other three ops are equally inert, and leave no residue
+for _op, _seq in (('cursor-forward', '\x1b[4C'), ('cursor-back', '\x1b[2D'),
+                  ('cursor-column', '\x1b[1G')):
+    _cells = S.feed_line_edits([], 0, {}, 'abc' + _seq + 'z', 0, False)[1]
+    _text = ''.join(c for c, _ in _cells)
+    eq(_text, 'abcz', 'line_edits off: %s is inert and leaves no residue' % _op)
+# \r and \b are raw control bytes, NOT escapes: still honored either way, which
+# is why this is append-only against escapes rather than against every byte.
+_cr_off = S.feed_line_edits([], 0, {}, 'FAIL\rPASS', 0, False)[1]
+eq(''.join(c for c, _ in _cr_off), 'PASS',
+   'line_edits off: carriage return still overwrites (a raw byte, not an escape)')
+# the default is on, so an omitted argument keeps today's behaviour
+eq(S.feed_line_edits([], 0, {}, _le_raw)[1], _le_on,
+   'line_edits defaults to on (omitting it changes nothing)')
+
 # --- hooklib: tiered, admin-gated hook configuration --------------------------
 import importlib.util as _ilu                       # noqa: E402
 _hlpath = os.path.join(_usr, 'share', 'secure-terminal', 'hooks', 'hooklib.py')
