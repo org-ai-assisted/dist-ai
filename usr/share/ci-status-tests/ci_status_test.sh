@@ -134,6 +134,9 @@ write(
     {"total_count": 150, "check_runs": [run(i) for i in range(100, 150)]},
 )
 write("shrink.r2.p1", {"total_count": 2, "check_runs": [run(1), run(2)]})
+## Claims far more checks than it ever delivers: every page is full, so the
+## loop only ends at the page cap.
+write("runaway.any", {"total_count": 999999, "check_runs": [run(i) for i in range(100)]})
 write(
     "pendingonly.p1",
     {
@@ -176,6 +179,8 @@ fi
 
 fixture="${here}/../fx/${CI_FIXTURE}.r${round}.p${page}"
 [ -r "${fixture}" ] || fixture="${here}/../fx/${CI_FIXTURE}.p${page}"
+## '.any' answers EVERY page, for scenarios that must never run out.
+[ -r "${fixture}" ] || fixture="${here}/../fx/${CI_FIXTURE}.any"
 if [ -r "${fixture}" ]; then
    cat -- "${fixture}"
 else
@@ -208,6 +213,24 @@ expect_exit() {
    output="$(CI_FIXTURE="${fixture}" PATH="${test_dir}/bin:${PATH}" \
       "${gate}" --repo owner/name --ref deadbeef "$@" 2>&1)" || rc=$?
    printf '%s\n' "${output}" > "${test_dir}/out.${fixture}"
+   if [ "${rc}" -eq "${expected}" ]; then
+      report pass "${label}" "exit ${rc}"
+   else
+      report fail "${label}" "exit ${rc}, wanted ${expected}"
+      printf '%s\n' "${output}" | sed 's/^/        /'
+   fi
+}
+
+## Like expect_exit, but passes the arguments VERBATIM -- for the paths that
+## must run without --repo/--ref so the tool derives them itself.
+expect_exit_raw() {
+   local label="$1" expected="$2" fixture="$3" out_name="$4"
+   shift 4
+   local rc=0 output=""
+   printf '%s' 0 > "${test_dir}/fx/.round"
+   output="$(CI_FIXTURE="${fixture}" PATH="${test_dir}/bin:${PATH}" \
+      "${gate}" "$@" 2>&1)" || rc=$?
+   printf '%s\n' "${output}" > "${test_dir}/out.${out_name}"
    if [ "${rc}" -eq "${expected}" ]; then
       report pass "${label}" "exit ${rc}"
    else
@@ -273,6 +296,60 @@ if [ "${elapsed}" -le 6 ]; then
    report pass "--timeout is honoured before the poll interval" "${elapsed}s"
 else
    report fail "--timeout is honoured before the poll interval" "${elapsed}s"
+fi
+
+## --- argument handling ------------------------------------------------
+
+expect_exit_raw "--help exits 0"                0 green help   --help
+if grep --quiet --fixed-strings 'ci-status --' "${test_dir}/out.help"; then
+   report pass "--help prints usage" "usage shown"
+else
+   report fail "--help prints usage" "no usage text"
+fi
+expect_exit_raw "unknown argument is a usage error"    64 green badarg  --bogus
+expect_exit_raw "non-integer --timeout is rejected"    64 green badtime --timeout abc
+
+## --- repo and ref derivation ------------------------------------------
+
+## The tool is meant to be run bare inside a checkout; an argument you must
+## remember to pass is one that eventually is not passed. That derivation is
+## the default path, so it needs coverage more than the explicit one does.
+repo_dir="${test_dir}/checkout"
+mkdir --parents -- "${repo_dir}"
+git -C "${repo_dir}" init --quiet --initial-branch=master
+git -C "${repo_dir}" remote add org-ai-assisted https://github.com/derived/name.git
+printf 'x\n' > "${repo_dir}/file"
+git -C "${repo_dir}" add -- file
+git -C "${repo_dir}" -c user.name=test -c user.email=test@example.com \
+   commit --quiet --message 'test commit'
+head_sha="$(git -C "${repo_dir}" rev-parse HEAD)"
+
+pushd -- "${repo_dir}" >/dev/null
+expect_exit_raw "repo and ref derived from the checkout" 0 green derive --no-wait
+popd >/dev/null
+
+if grep --quiet --fixed-strings 'derived/name' "${test_dir}/out.derive"; then
+   report pass "repo derived from the git remote" "derived/name"
+else
+   report fail "repo derived from the git remote" "not derived"
+fi
+if grep --quiet --fixed-strings "${head_sha:0:12}" "${test_dir}/out.derive"; then
+   report pass "ref defaults to HEAD" "${head_sha:0:12}"
+else
+   report fail "ref defaults to HEAD" "HEAD not used"
+fi
+
+## --- the runaway-pagination guard -------------------------------------
+
+## total_count far beyond what the pages deliver must not loop forever, and
+## must REFUSE rather than judge a partial list -- a partial list is exactly
+## the false green the pagination fix exists to prevent.
+expect_exit_raw "absurd total_count refuses a verdict" 1 runaway runaway \
+   --repo owner/name --ref deadbeef --no-wait
+if grep --quiet --fixed-strings 'refusing to judge a partial list' "${test_dir}/out.runaway"; then
+   report pass "runaway pagination refuses, not guesses" "explicit refusal"
+else
+   report fail "runaway pagination refuses, not guesses" "no refusal message"
 fi
 
 printf '\n%s passed, %s failed\n' "${pass_count}" "${fail_count}"
