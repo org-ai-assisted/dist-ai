@@ -254,6 +254,16 @@ else
       "$(grep --extended-regexp 'check\(s\)' "${test_dir}/out.shrink" | tail -1)"
 fi
 
+## An argument the tool ACCEPTS must not abort it later. '08' passes the
+## all-digits check, then arithmetic expansion reads it as octal.
+zero_padded_output="$(CI_FIXTURE=pendingonly PATH="${test_dir}/bin:${PATH}" \
+   "${gate}" --repo owner/name --ref deadbeef --timeout 08 2>&1 || true)"
+if printf '%s' "${zero_padded_output}" | grep --quiet --fixed-strings 'value too great for base'; then
+   report fail "zero-padded --timeout is read as decimal" "aborted on octal"
+else
+   report pass "zero-padded --timeout is read as decimal" "no octal abort"
+fi
+
 ## A short timeout must not block for a whole poll interval first.
 start_seconds="${SECONDS}"
 CI_FIXTURE=pendingonly PATH="${test_dir}/bin:${PATH}" \
