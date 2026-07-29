@@ -136,6 +136,20 @@ _esc = QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key.Key_Escape,
 _bar.keyPressEvent(_esc)
 eq(_term3.dispatched, [('paste', 'reject')], 'Esc rejects the held paste')
 
+# --- any OTHER key falls through and chooses nothing --------------------------
+# The countdown exists so a stray keystroke cannot fire a paste; Esc is the only
+# key the bar itself acts on. Every other key must reach the base handler without
+# dispatching, or Enter/Space would send the very paste the review is holding.
+_term_key = _FakeTerm()
+_bar.show_review(_term_key, _raw, 0)
+for _key in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space,
+             Qt.Key.Key_Y, Qt.Key.Key_Tab):
+    _bar.keyPressEvent(QKeyEvent(QKeyEvent.Type.KeyPress, _key,
+                                 Qt.KeyboardModifier.NoModifier))
+eq(_term_key.dispatched, [],
+   'a non-Esc key dispatches nothing (no stray-keystroke paste)')
+_bar._choose('reject')
+
 # --- copy direction: relabelled buttons + dispatch to the copy path -----------
 _term_c = _FakeTerm()
 _bar.show_review(_term_c, _raw, 0, 'copy')

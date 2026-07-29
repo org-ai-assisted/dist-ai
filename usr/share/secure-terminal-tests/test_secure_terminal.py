@@ -788,15 +788,85 @@ ok(set(S.THEMES) == {'dark', 'light'}, 'themes')
 pkg_dir = os.path.dirname(os.path.abspath(S.__file__))
 forbidden = ['setHtml', 'insertHtml', 'appendHtml', 'setMarkdown',
              'QTextBrowser', 'mightBeRichText', '.toHtml(']
-for name in ('terminal.py', 'main.py', 'dialog.py'):
+# A missing file is a FAIL, not a skip: a renamed module must not drop out of
+# this scan unnoticed (dialog.py -> review.py did exactly that).
+for name in ('terminal.py', 'main.py', 'review.py'):
     path = os.path.join(pkg_dir, name)
+    src = None
     try:
         with open(path, encoding='utf-8') as handle:
             src = handle.read()
-    except OSError:
+    except OSError as exc:
+        ok(False, 'HTML-sink scan cannot read %s: %s' % (name, exc))
+    if src is None:
         continue
     for bad in forbidden:
         ok(bad not in src, 'HTML sink %r absent from %s' % (bad, name))
+
+# --- fuzz harnesses must import names that still exist -----------------------
+# The atheris harnesses live outside the package and are compiled only by the
+# ClusterFuzzLite job, so a rename in the package breaks them where nothing
+# routine looks (STRIP_BOX -> BOX did exactly that, and every nightly fuzz build
+# failed for over a week). Resolve their imports statically, on every run.
+import ast                                          # noqa: E402
+
+repo_root = pkg_dir
+for _level in range(5):                             # .../usr/lib/python3/dist-packages/secure_terminal
+    repo_root = os.path.dirname(repo_root)
+fuzz_dir = os.path.join(repo_root, 'fuzz')
+
+
+def module_level_names(source_path):
+    """Names a module binds at top level (defs, classes, assignments, imports)."""
+    with open(source_path, encoding='utf-8') as src_handle:
+        tree = ast.parse(src_handle.read())
+    names = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    names.add(target.id)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names.add(node.target.id)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                names.add(alias.asname or alias.name.split('.')[0])
+    return names
+
+
+ok(os.path.isdir(fuzz_dir), 'fuzz harness dir present (%s)' % fuzz_dir)
+if os.path.isdir(fuzz_dir):
+    exported = {}
+    for name in sorted(os.listdir(pkg_dir)):
+        if name.endswith('.py'):
+            exported[name[:-3]] = module_level_names(os.path.join(pkg_dir, name))
+
+    harnesses = sorted(n for n in os.listdir(fuzz_dir) if n.endswith('.py'))
+    ok(len(harnesses) > 0, 'at least one fuzz harness present')
+    for name in harnesses:
+        with open(os.path.join(fuzz_dir, name), encoding='utf-8') as handle:
+            tree = ast.parse(handle.read())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            if not (node.module or '').startswith('secure_terminal'):
+                continue
+            parts = node.module.split('.')
+            if len(parts) < 2:
+                # `from secure_terminal import settings as SET` -- submodules.
+                for alias in node.names:
+                    ok(alias.name in exported,
+                       'fuzz/%s: secure_terminal.%s exists' % (name, alias.name))
+                continue
+            submodule = parts[1]
+            ok(submodule in exported,
+               'fuzz/%s: module secure_terminal.%s exists' % (name, submodule))
+            for alias in node.names:
+                ok(alias.name in exported.get(submodule, set()),
+                   'fuzz/%s: name %s.%s exists' % (name, submodule, alias.name))
 
 # --- session persistence (pure JSON under a temp state dir) -------------------
 import tempfile                                    # noqa: E402

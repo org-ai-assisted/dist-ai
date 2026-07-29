@@ -415,14 +415,18 @@ if tui_available():
 # --- full-screen program drive (E2E): start a REAL full-screen program in TUI mode,
 # confirm it renders a frame in the pyte grid, send its quit key, confirm a clean exit.
 # Answers "can we drive vim/htop/tmux at all?" -- yes, headlessly, no screenshot needed
-# (toPlainText reads the grid). A program not installed here is skipped; ssh needs a
-# remote target so it stays a manual capture.
+# (toPlainText reads the grid). ssh needs a remote target so it stays a manual capture.
+# These programs are declared test dependencies (.github/dm-consumer.yml apt-packages),
+# so a missing one FAILS rather than silently skipping: a security-relevant E2E must
+# never quietly disable itself, and a silent skip here reads as a pass.
 if tui_available():
     import shutil as _e2e_which                          # noqa: E402
 
     def _drive_fullscreen(cmd, ready, quit_bytes, name, expect_exit=True):
         if not _e2e_which.which(cmd[0]):
-            return                                        # not installed here -> skip
+            ok(False, 'E2E: %s is installed (test dependency %r missing)'
+               % (name, cmd[0]))
+            return
         _ft = SecureTerminal(command=cmd, tui=True)
         _frame = ''
         for _ in range(200):
@@ -447,8 +451,12 @@ if tui_available():
     _drive_fullscreen(['vim', '-u', 'NONE', '-N'], '~', b'\x1b:q!\r', 'vim')
     _drive_fullscreen(['htop'], 'CPU', b'q', 'htop')
     _drive_fullscreen(['nano', '/tmp/st-nano-e2e.txt'], 'GNU nano', b'\x18n', 'nano')
-    _drive_fullscreen(['tmux', '-f', '/dev/null', 'new-session'], 'bash',
-                      b'\x02:kill-server\r', 'tmux', expect_exit=False)
+    # Name the session's command explicitly. `new-session` with no command runs
+    # the user's LOGIN SHELL, so tmux names the window after it and the readiness
+    # token becomes environment-dependent -- 'bash' in the CI container, 'zsh' on
+    # a box whose default shell differs, where this asserted on the wrong string.
+    _drive_fullscreen(['tmux', '-f', '/dev/null', 'new-session', '/bin/bash'],
+                      'bash', b'\x02:kill-server\r', 'tmux', expect_exit=False)
 
 # --- render-only preview: re-render safe, and no formatting leak between shows -
 pv = SecureTerminal(preview=True)
