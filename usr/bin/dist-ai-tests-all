@@ -344,6 +344,15 @@ wire() {
          ## derivative-maker packages/ subpath; point the suite at it via
          ## SECURE_TERMINAL_REPO resolved from the component root.
          wire_env=( "SECURE_TERMINAL_REPO=$( pkg_dir secure-terminal )" )
+         ## The live-widget fuzzer's cost per iteration climbs as the widget's
+         ## retained output grows toward its re-render cap, so its 6000-iteration
+         ## default runs for tens of minutes -- past timeout_fuzz, i.e. a
+         ## guaranteed TIMEOUT verdict rather than a fuzz run. Bound it to a
+         ## count that fits the budget (measured ~130s). A deep run stays
+         ## available by hand: secure-terminal-tests-fuzz-gui --iterations N.
+         if [ "${suite}" = 'secure-terminal-tests-fuzz-gui' ]; then
+            wire_args=( '--iterations' '1200' )
+         fi
          ;;
       terminal-poc-corpus)
          ## The corpus harness drives secure-terminal, so it needs BOTH repos.
