@@ -8,11 +8,14 @@
 ## Single entry point for ALL of the secure-terminal.github.io screenshots. The
 ## generators live together in usr/share/secure-terminal-shots/ (see its README).
 ##
-## Usage: secure-terminal-shots [review|modes|comparison|comparison-wayland] [ARGS...]
+## Usage: secure-terminal-shots [review|hero|modes|comparison|comparison-wayland] [ARGS...]
 ##
 ##   review      (default) the paste + copy REVIEW-BAR shots -- headless, offscreen
 ##               Qt grab of the real ReviewBar, deterministic. OUTPUT_DIR defaults
 ##               to the site's shots/. This is the safe, no-display path.
+##   hero        a short realistic session in the default mode -- the site's hero
+##               image. Headless offscreen-Qt; it is the terminal's DISPLAY, not a
+##               window capture (no title bar / tabs / toolbar).
 ##   modes       the four unicode DISPLAY MODES (box/show/reveal/detail) of one
 ##               hostile payload, as a single labelled grid -- same headless
 ##               offscreen-Qt path as review. OUTPUT_DIR defaults to the site's
@@ -61,7 +64,7 @@ if [ -z "${repo}" ] || [ ! -d "${repo}/usr/lib/python3/dist-packages/secure_term
 fi
 
 mode='review'
-if [ "$#" -ge 1 ] && { [ "$1" = 'review' ] || [ "$1" = 'modes' ] \
+if [ "$#" -ge 1 ] && { [ "$1" = 'review' ] || [ "$1" = 'modes' ] || [ "$1" = 'hero' ] \
       || [ "$1" = 'comparison' ] || [ "$1" = 'comparison-wayland' ]; }; then
    mode="$1"
    shift
@@ -81,16 +84,21 @@ if [ "${mode}" = 'comparison-wayland' ]; then
    ST_REPO="${repo}" exec "${shots_dir}/wayland-capture.sh" "$@"
 fi
 
-if [ "${mode}" = 'modes' ]; then
-   ## Headless display-mode grid into the site's shots/. Same offscreen-Qt path as
-   ## review: the real renderer, no display, byte-for-byte regenerable.
+if [ "${mode}" = 'hero' ] || [ "${mode}" = 'modes' ]; then
+   if [ "${mode}" = 'hero' ]; then
+      gen='hero-shot.py'; outfile='hero.png'
+   else
+      gen='display-modes-shot.py'; outfile='display-modes.png'
+   fi
+   ## Headless shot into the site's shots/. Same offscreen-Qt path as review: the
+   ## real renderer, no display, byte-for-byte regenerable.
    out_dir="${1:-${HOME}/private-sources/secure-terminal.github.io/shots}"
    if [ ! -d "${out_dir}" ]; then
       printf 'secure-terminal-shots: output dir does not exist: %s\n' "${out_dir}" >&2
       exit 1
    fi
    export PYTHONPATH="${repo}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
-   python3 -- "${shots_dir}/display-modes-shot.py" "${out_dir}/display-modes.png"
+   python3 -- "${shots_dir}/${gen}" "${out_dir}/${outfile}"
    exit 0
 fi
 
