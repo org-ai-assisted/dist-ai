@@ -426,41 +426,44 @@ else
    printf 'PASS: uncommitted deletion does not crash the large-files hook\n'
 fi
 
-## check-shebang-scripts-are-executable must SKIP importable python modules.
-## A file under a package directory is reached by 'import', never exec'd, so its
-## shebang documents the interpreter rather than promising the file runs;
-## helper-scripts carries one on 23 such non-executable modules. Demanding +x
-## there is meaningless, and "fixing" it by stripping the shebang breaks a
-## deliberate convention. An entry point outside such a directory must STILL be
-## flagged -- that is where a missing +x actually bites.
-shebang_repo="$(mktemp --directory --tmpdir="${tmp_root}" shebang.XXXXXX)"
-git -C "${shebang_repo}" init --quiet
-git -C "${shebang_repo}" config user.email 'ci-test@example.com'
-git -C "${shebang_repo}" config user.name 'ci-test'
-git -C "${shebang_repo}" commit --quiet --no-verify --allow-empty --message base
-shebang_base="$(git -C "${shebang_repo}" rev-parse HEAD)"
-mkdir --parents -- "${shebang_repo}/usr/lib/python3/dist-packages/pkg" "${shebang_repo}/usr/bin"
-printf '#!/usr/bin/python3 -Bsu\nx = 1\n' > "${shebang_repo}/usr/lib/python3/dist-packages/pkg/mod.py"
-printf '#!/usr/bin/python3 -Bsu\ny = 2\n' > "${shebang_repo}/usr/bin/entrypoint"
-chmod 0644 -- "${shebang_repo}/usr/lib/python3/dist-packages/pkg/mod.py" "${shebang_repo}/usr/bin/entrypoint"
-git -C "${shebang_repo}" add --all
-git -C "${shebang_repo}" commit --quiet --no-verify --message shebangs
-shebang_out="$( cd -- "${shebang_repo}" && "${GATE}" "${shebang_base}" 2>&1 || true )"
-if printf '%s\n' "${shebang_out}" | grep --quiet --fixed-strings -- 'dist-packages/pkg/mod.py: has a shebang'; then
-   printf 'FAIL: importable module was flagged by check-shebang-scripts-are-executable\n' >&2
-   failures=$((failures + 1))
+## R-180: a python file must carry a shebang (and, via the pre-commit hooks,
+## be executable). A file with NEITHER a shebang nor '+x' slips past both
+## check-shebang-scripts-are-executable and check-executables-have-shebangs,
+## which is the gap R-180 closes. An EMPTY '__init__.py' is exempt.
+py_repo="$(mktemp --directory --tmpdir="${tmp_root}" py.XXXXXX)"
+git -C "${py_repo}" init --quiet
+git -C "${py_repo}" config user.email 'ci-test@example.com'
+git -C "${py_repo}" config user.name 'ci-test'
+git -C "${py_repo}" commit --quiet --no-verify --allow-empty --message base
+py_base="$(git -C "${py_repo}" rev-parse HEAD)"
+printf 'x = 1\n' > "${py_repo}/noshebang.py"
+printf '#!/usr/bin/python3 -Bsu\ny = 2\n' > "${py_repo}/withshebang.py"
+: > "${py_repo}/__init__.py"
+chmod 0755 -- "${py_repo}/withshebang.py"
+git -C "${py_repo}" add --all
+git -C "${py_repo}" commit --quiet --no-verify --message py
+py_out="$( cd -- "${py_repo}" && "${GATE}" "${py_base}" 2>&1 || true )"
+if printf '%s\n' "${py_out}" | grep --quiet --fixed-strings -- 'R-180'; then
+   printf 'PASS: R-180 flags a python file with no shebang\n'
 else
-   printf 'PASS: importable python module exempt from the shebang-executable hook\n'
+   printf 'FAIL: R-180 did not flag a shebang-less python file\n' >&2
+   failures=$((failures + 1))
 fi
-if printf '%s\n' "${shebang_out}" | grep --quiet --fixed-strings -- 'usr/bin/entrypoint: has a shebang'; then
-   printf 'PASS: a non-executable entry point is still flagged\n'
-else
-   printf 'FAIL: entry point NOT flagged -- the exemption is too broad\n' >&2
+if printf '%s\n' "${py_out}" | grep --quiet --fixed-strings -- 'withshebang.py'; then
+   printf 'FAIL: R-180 flagged a compliant python file\n' >&2
    failures=$((failures + 1))
+else
+   printf 'PASS: R-180 spares a shebang+executable python file\n'
+fi
+if printf '%s\n' "${py_out}" | grep --quiet --fixed-strings -- '__init__.py'; then
+   printf 'FAIL: R-180 flagged an EMPTY package marker\n' >&2
+   failures=$((failures + 1))
+else
+   printf 'PASS: R-180 exempts an empty __init__.py\n'
 fi
 
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "test_pre_push_static_style_rules: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-030/R-031, R-042, R-034, R-011, R-051, R-090, R-102, R-120, R-170, R-010, trailing-whitespace, CRLF-shebang and double-quote-fixer-vs-black enforced as expected."
+printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-030/R-031, R-042, R-034, R-011, R-051, R-090, R-102, R-120, R-170, R-180, R-010, trailing-whitespace, CRLF-shebang and double-quote-fixer-vs-black enforced as expected."
