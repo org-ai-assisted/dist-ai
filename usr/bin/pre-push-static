@@ -1294,6 +1294,15 @@ check_precommit_hooks() {
    local -a added_files
    added_files=()
    for f in "${@}"; do
+      ## A path ADDED and then DELETED within the same range is still a changed
+      ## file, and is absent from the base ref, so it lands here -- but there is
+      ## nothing on disk to stat and the hook dies with FileNotFoundError,
+      ## failing the gate on a changeset that is perfectly fine. Observed after
+      ## reverting a merge whose only effect had been to add a file. The typed
+      ## lists below already guard this; the added-file list must too.
+      if [ ! -e "${f}" ]; then
+         continue
+      fi
       if [ -n "${base_ref:-}" ] && git cat-file -e "${base_ref}:${f}" 2> /dev/null ; then
          continue
       fi

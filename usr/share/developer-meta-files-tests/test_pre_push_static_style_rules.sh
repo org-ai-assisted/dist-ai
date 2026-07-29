@@ -398,6 +398,34 @@ else
    failures=$((failures + 1))
 fi
 
+## check-added-large-files must not choke on a path that exists at HEAD but is
+## absent from the WORKING TREE (an uncommitted deletion, e.g. gating a staged
+## 'git revert --no-commit'). Such a path is a changed file and is absent from
+## the base ref, so it reaches the added-file list -- but there is nothing on
+## disk to stat, and the hook died with FileNotFoundError, failing a changeset
+## that is otherwise fine. A committed deletion does NOT reproduce it: the file
+## then leaves the base..HEAD diff entirely.
+addel_repo="$(mktemp --directory --tmpdir="${tmp_root}" addel.XXXXXX)"
+git -C "${addel_repo}" init --quiet
+git -C "${addel_repo}" config user.email 'ci-test@example.com'
+git -C "${addel_repo}" config user.name 'ci-test'
+printf '%s\n' 'seed' > "${addel_repo}/seed.txt"
+git -C "${addel_repo}" add seed.txt
+git -C "${addel_repo}" commit --quiet --no-verify --message base
+addel_base="$(git -C "${addel_repo}" rev-parse HEAD)"
+printf '%s\n' 'transient' > "${addel_repo}/transient.txt"
+git -C "${addel_repo}" add transient.txt
+git -C "${addel_repo}" commit --quiet --no-verify --message add
+## delete it WITHOUT committing: present at HEAD, gone from the working tree
+safe-rm --force -- "${addel_repo}/transient.txt"
+addel_out="$( cd -- "${addel_repo}" && "${GATE}" "${addel_base}" 2>&1 || true )"
+if printf '%s\n' "${addel_out}" | grep --quiet --fixed-strings -- 'FileNotFoundError'; then
+   printf 'FAIL: uncommitted deletion crashed check-added-large-files\n' >&2
+   failures=$((failures + 1))
+else
+   printf 'PASS: uncommitted deletion does not crash the large-files hook\n'
+fi
+
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "test_pre_push_static_style_rules: ${failures} assertion(s) FAILED." >&2
    exit 1
