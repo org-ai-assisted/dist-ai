@@ -1331,7 +1331,18 @@ check_precommit_hooks() {
    run_precommit_hook check-ast              -- "${python_files[@]}"
    run_precommit_hook check-builtin-literals -- "${python_files[@]}"
    run_precommit_hook debug-statement-hook   -- "${python_files[@]}"
-   run_precommit_fixer double-quote-string-fixer "${python_files[@]}"
+   ## double-quote-string-fixer normalises Python strings to SINGLE quotes;
+   ## black normalises them to DOUBLE quotes. The two are mutually exclusive,
+   ## so running the fixer on a black-formatted repo makes the gate demand a
+   ## change that repo's own CI then rejects -- unfixable from either side.
+   ## Where the repo declares black, black wins and the fixer is skipped.
+   ## main() cd's to the repo top level, so this is the repo's own pyproject.
+   if [ -f 'pyproject.toml' ] \
+      && grep --quiet --extended-regexp '^\[tool\.black\]' -- 'pyproject.toml'; then
+      note "double-quote-string-fixer skipped: '[tool.black]' in pyproject.toml (black owns string quoting here)"
+   else
+      run_precommit_fixer double-quote-string-fixer "${python_files[@]}"
+   fi
    run_precommit_fixer pretty-format-json        "${json_files[@]}"
    run_precommit_fixer requirements-txt-fixer    "${req_files[@]}"
 }

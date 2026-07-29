@@ -359,8 +359,47 @@ else
    failures=$((failures + 1))
 fi
 
+## double-quote-string-fixer vs black: the two normalise Python string quotes
+## in OPPOSITE directions, so running the fixer on a black-formatted repo makes
+## the gate demand a change that repo's own CI rejects. Assert the fixer is
+## SKIPPED when pyproject.toml declares '[tool.black]', and still RUNS when it
+## does not -- a guard that never fires is the same bug in reverse.
+dq_probe() {
+   local declare_black repo base out
+   declare_black="$1"
+   repo="$(mktemp --directory --tmpdir="${tmp_root}" dq.XXXXXX)"
+   git -C "${repo}" init --quiet
+   git -C "${repo}" config user.email 'ci-test@example.com'
+   git -C "${repo}" config user.name 'ci-test'
+   git -C "${repo}" commit --quiet --no-verify --allow-empty --message base
+   base="$(git -C "${repo}" rev-parse HEAD)"
+   ## A double-quoted string is exactly what the fixer rewrites.
+   printf 'x = "fix me"\n' > "${repo}/probe.py"
+   if [ "${declare_black}" = 'true' ]; then
+      printf '[tool.black]\nline-length = 79\n' > "${repo}/pyproject.toml"
+   fi
+   git -C "${repo}" add --all
+   git -C "${repo}" commit --quiet --no-verify --message probe
+   out="$( cd -- "${repo}" && "${GATE}" "${base}" 2>&1 || true )"
+   printf '%s' "${out}"
+}
+
+if printf '%s' "$(dq_probe true)" | grep --quiet --fixed-strings -- 'double-quote-string-fixer skipped'; then
+   printf 'PASS: double-quote-string-fixer skipped on a black repo\n'
+else
+   printf 'FAIL: double-quote-string-fixer NOT skipped on a black repo\n' >&2
+   failures=$((failures + 1))
+fi
+
+if printf '%s' "$(dq_probe false)" | grep --quiet --fixed-strings -- 'FAIL double-quote-string-fixer'; then
+   printf 'PASS: double-quote-string-fixer still runs without black\n'
+else
+   printf 'FAIL: double-quote-string-fixer did not run on a non-black repo\n' >&2
+   failures=$((failures + 1))
+fi
+
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "test_pre_push_static_style_rules: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-030/R-031, R-042, R-034, R-011, R-051, R-090, R-102, R-120, R-170, R-010, trailing-whitespace and CRLF-shebang detection enforced as expected."
+printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-030/R-031, R-042, R-034, R-011, R-051, R-090, R-102, R-120, R-170, R-010, trailing-whitespace, CRLF-shebang and double-quote-fixer-vs-black enforced as expected."
