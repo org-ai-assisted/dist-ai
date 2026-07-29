@@ -8,7 +8,7 @@
 ## Coverage gate for secure-terminal. Runs every test suite under coverage.py
 ## and ENFORCES 100% line coverage on the whole package -- both the Qt-free core
 ## (sanitizer, CLI wrapper, command-hook protocol, IPC framing, session
-## persistence, drop-in settings) and the Qt GUI (dialog, terminal, main). A
+## persistence, drop-in settings) and the Qt GUI (review, terminal, main). A
 ## failure here means a line became unreachable by the tests -- add a test (do
 ## not paper over it with a blanket exclusion; the few genuinely-unreachable
 ## defensive/optional-dependency lines carry a justified `# pragma: no cover` in
@@ -59,14 +59,71 @@ cleanup() { safe-rm --recursive --force -- "${work}" 2>/dev/null || true; }
 trap cleanup EXIT
 export COVERAGE_FILE="${work}/.coverage"
 
+## Ratchet-gated modules, in two tiers. As a module reaches full coverage it is
+## added here so coverage can only go up. Each is genuinely 100% -- the few
+## unreachable defensive lines (post-fork/pre-exec, EINTR retries) carry a
+## justified `# pragma: no cover` in the source, not a blanket exclusion.
+##
+## Tier 1 -- covered by the Qt-FREE suites.
+gated_free='*/__init__.py,*/sanitize.py,*/cli.py,*/hook.py,*/ipc.py,*/session.py,*/settings.py,*/preflight.py'
+## Tier 2 -- covered by the offscreen Qt widget suites, which fail closed
+## (exit 1) on a missing PyQt6/pyte rather than skipping, so both tiers are
+## always gated.
+gated_qt='*/review.py,*/terminal.py,*/main.py'
+
+## Both tiers are validated BEFORE the suites run: these checks need only the
+## source tree, and a stale gate should cost a second, not a full test run.
+##
+## `coverage report --include` silently ignores a pattern that matches nothing,
+## so a renamed module drops out of the gate with no error and no coverage loss
+## on the report. Assert every gated pattern still names a real source file.
+assert_gated_globs_resolve() {
+   local tier="$1"
+   local globs="$2"
+   local patterns=()
+   local pattern
+   local module_name
+   IFS=',' read -r -a patterns <<< "${globs}"
+   for pattern in "${patterns[@]}"; do
+      module_name="${pattern##*/}"
+      if [ ! -f "${pkg}/${module_name}" ]; then
+         printf 'secure-terminal-tests-coverage: gated %s pattern %s names no file in %s -- module renamed or removed; update the gate\n' \
+            "${tier}" "${pattern}" "${pkg}" >&2
+         exit 1
+      fi
+   done
+}
+
+## Every module in the package must appear in a tier, so a NEW module cannot
+## slip in ungated -- the gate must be a deliberate decision, not an omission.
+assert_every_module_gated() {
+   local all_gated=",${gated_free},${gated_qt},"
+   local source_file
+   local module_name
+   for source_file in "${pkg}"/*.py; do
+      module_name="${source_file##*/}"
+      case "${all_gated}" in
+         *",*/${module_name},"*) ;;
+         *)
+            printf 'secure-terminal-tests-coverage: module %s is in NO coverage tier -- add it to gated_free or gated_qt\n' \
+               "${module_name}" >&2
+            exit 1
+            ;;
+      esac
+   done
+}
+
+assert_gated_globs_resolve 'Qt-free' "${gated_free}"
+assert_gated_globs_resolve 'Qt widget' "${gated_qt}"
+assert_every_module_gated
+
 ## Run every suite under coverage. --parallel-mode + combine keeps each suite's
-## (and any forked child's) data in its own file, then merges them. test_widget
-## needs the offscreen Qt platform and SKIPs (exit 77) when PyQt6/pyte are
-## absent; the GATED modules below are all covered by the Qt-FREE suites, so the
-## hard gate stays green even on a headless box without Qt.
+## (and any forked child's) data in its own file, then merges them. The Qt
+## suites run on the offscreen platform and fail closed (exit 1) when PyQt6 or
+## pyte is missing -- a security-relevant suite must never silently disable
+## itself -- so both tiers below are always gated.
 export QT_QPA_PLATFORM=offscreen
 python3 -m coverage erase
-qt_ran=0
 for suite in test_secure_terminal test_fuzz test_corpus test_cli test_modules \
              test_review test_mainwin test_widget; do
    [ -f "${tests_dir}/${suite}.py" ] || continue
@@ -81,39 +138,21 @@ for suite in test_secure_terminal test_fuzz test_corpus test_cli test_modules \
          "${suite}" "${rc}" >&2
       exit "${rc}"
    fi
-   ## the Qt tier is gated only when its suite actually ran (Qt present).
-   if [ "${suite}" = 'test_review' ] && [ "${rc}" = '0' ]; then
-      qt_ran=1
-   fi
 done
 python3 -m coverage combine
 
-## Ratchet-gated modules, in two tiers. As a module reaches full coverage it is
-## added here so coverage can only go up. Each is genuinely 100% -- the few
-## unreachable defensive lines (post-fork/pre-exec, EINTR retries) carry a
-## justified `# pragma: no cover` in the source, not a blanket exclusion.
-##
-## Tier 1 -- covered by the Qt-FREE suites, so gated on every box (Qt or not).
-gated_free='*/__init__.py,*/sanitize.py,*/cli.py,*/hook.py,*/ipc.py,*/session.py,*/settings.py,*/preflight.py'
-## Tier 2 -- needs the offscreen Qt widget suite; gated only when it actually ran
-## (skipped when PyQt6/pyte are absent, so as not to fail a headless box).
-gated_qt='*/dialog.py,*/terminal.py,*/main.py'
 
 printf '\n== gated modules, Qt-free (must be 100%%) ==\n'
 python3 -m coverage report --include="${gated_free}" --show-missing --fail-under=100
 
-if [ "${qt_ran}" = '1' ]; then
-   printf '\n== gated modules, Qt widget (must be 100%%) ==\n'
-   python3 -m coverage report --include="${gated_qt}" --show-missing --fail-under=100
-else
-   printf '\n== Qt widget modules NOT gated (widget suites skipped; Qt absent) ==\n'
-fi
+printf '\n== gated modules, Qt widget (must be 100%%) ==\n'
+python3 -m coverage report --include="${gated_qt}" --show-missing --fail-under=100
 
 ## The GUI fuzzer (fuzz_widget.py), driven deterministically by test_fuzz_widget,
 ## is itself enforced at 100% SELF-coverage -- the live-widget fuzz harness must
 ## carry no dead code (its --source is the harness, in its own coverage file, not
-## the package). Gated only when the offscreen Qt widget is available.
-if [ "${qt_ran}" = '1' ] && [ -f "${tests_dir}/test_fuzz_widget.py" ]; then
+## the package).
+if [ -f "${tests_dir}/test_fuzz_widget.py" ]; then
    printf '\n== GUI fuzzer harness (must be 100%%) ==\n'
    fuzz_cov="${work}/.cov-fuzz-gui"
    fuzz_rc=0
