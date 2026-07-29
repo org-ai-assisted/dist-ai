@@ -27,4 +27,4 @@ fi
 
 rc=0
 python3 -Bsu "${tests_dir}/qmp_fuzz.py" "$@" || rc=$?
-exit "$rc"
+exit "${rc}"

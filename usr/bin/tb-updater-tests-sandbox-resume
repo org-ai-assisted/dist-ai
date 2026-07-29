@@ -56,4 +56,4 @@ export TB_UPDATER_TESTS_SANDBOX_RESUME=1
 ## exec).
 rc=0
 "${payload_dir}/run-sandbox-resume" "$@" || rc="$?"
-exit "$rc"
+exit "${rc}"

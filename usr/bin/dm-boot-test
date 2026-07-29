@@ -81,9 +81,9 @@ while [ "$#" -gt 0 ]; do
    esac
 done
 
-[ -n "$image" ]    || { printf '%s\n' "${BASH_SOURCE[0]}: --image is required" >&2 ; exit 2 ; }
-[ -n "$arch" ]     || { printf '%s\n' "${BASH_SOURCE[0]}: --arch is required" >&2 ; exit 2 ; }
-[ -f "$image" ]    || { printf '%s\n' "${BASH_SOURCE[0]}: no such image: $image" >&2 ; exit 2 ; }
+[ -n "${image}" ]    || { printf '%s\n' "${BASH_SOURCE[0]}: --image is required" >&2 ; exit 2 ; }
+[ -n "${arch}" ]     || { printf '%s\n' "${BASH_SOURCE[0]}: --arch is required" >&2 ; exit 2 ; }
+[ -f "${image}" ]    || { printf '%s\n' "${BASH_SOURCE[0]}: no such image: ${image}" >&2 ; exit 2 ; }
 
 ## Runtime dependencies. SeaBIOS ships with qemu-system-x86; ovmf provides both the
 ## plain and the Secure-Boot OVMF firmware; qemu-efi-aarch64 provides arm64 edk2;
@@ -125,47 +125,47 @@ boot_test_cleanup() {
 }
 trap boot_test_cleanup EXIT
 
-case "$image" in
+case "${image}" in
    *.iso)
-      test_args=(--iso "$image")
+      test_args=(--iso "${image}")
       ;;
    *.ova)
       extract_dir="$(mktemp --directory)"
-      tar --extract --file "$image" --directory "$extract_dir"
+      tar --extract --file "${image}" --directory "${extract_dir}"
       ## First .vmdk via parameter expansion, not 'head -1': head would SIGPIPE
       ## find/sort (exit 141 under pipefail) once their output exceeds the buffer.
-      ova_vmdk_list="$(find "$extract_dir" -type f -name '*.vmdk' | LC_ALL=C sort)"
+      ova_vmdk_list="$(find "${extract_dir}" -type f -name '*.vmdk' | LC_ALL=C sort)"
       ova_vmdk="${ova_vmdk_list%%$'\n'*}"
-      [ -n "$ova_vmdk" ] || { printf '%s\n' "${BASH_SOURCE[0]}: no .vmdk inside ${image}" >&2; exit 2; }
-      test_args=(--disk "$ova_vmdk")
+      [ -n "${ova_vmdk}" ] || { printf '%s\n' "${BASH_SOURCE[0]}: no .vmdk inside ${image}" >&2; exit 2; }
+      test_args=(--disk "${ova_vmdk}")
       ;;
    *.xz)
       extract_dir="$(mktemp --directory)"
-      tar --extract --xz --file "$image" --directory "$extract_dir"
-      disk_list="$(find "$extract_dir" -type f \( -name '*.qcow2' -o -name '*.raw' \) | LC_ALL=C sort)"
+      tar --extract --xz --file "${image}" --directory "${extract_dir}"
+      disk_list="$(find "${extract_dir}" -type f \( -name '*.qcow2' -o -name '*.raw' \) | LC_ALL=C sort)"
       disk_img="${disk_list%%$'\n'*}"
-      [ -n "$disk_img" ] || { printf '%s\n' "${BASH_SOURCE[0]}: no .qcow2/.raw inside ${image}" >&2; exit 2; }
-      test_args=(--disk "$disk_img")
+      [ -n "${disk_img}" ] || { printf '%s\n' "${BASH_SOURCE[0]}: no .qcow2/.raw inside ${image}" >&2; exit 2; }
+      test_args=(--disk "${disk_img}")
       ;;
    *)
-      test_args=(--disk "$image")
+      test_args=(--disk "${image}")
       ;;
 esac
 ## Run the checks as the account that owns the selected session unless the caller
 ## pinned one: user session -> 'user', sysmaint session -> 'sysmaint'.
-[ -n "$login_user" ] || login_user="$session"
+[ -n "${login_user}" ] || login_user="${session}"
 test_args+=(
-   --arch "$arch"
-   --session "$session"
-   --login-user "$login_user"
+   --arch "${arch}"
+   --session "${session}"
+   --login-user "${login_user}"
 )
-[ -n "$firmware" ]   && test_args+=(--firmware "$firmware")
-[ -n "$login_pass" ] && test_args+=(--login-pass "$login_pass")
-[ -n "$serial_log" ] && test_args+=(--serial-log "$serial_log")
+[ -n "${firmware}" ]   && test_args+=(--firmware "${firmware}")
+[ -n "${login_pass}" ] && test_args+=(--login-pass "${login_pass}")
+[ -n "${serial_log}" ] && test_args+=(--serial-log "${serial_log}")
 
 printf '%s\n' "${BASH_SOURCE[0]}: boot-testing ${image} (arch=${arch} firmware=${firmware:-default} session=${session})"
 ## Run dm-image-boot-tests and forward its exit code; avoid 'exec' so any future
 ## cleanup after this line still runs.
 boot_tests_rc=0
-"$boot_tests_bin" "${test_args[@]}" || boot_tests_rc="$?"
-exit "$boot_tests_rc"
+"${boot_tests_bin}" "${test_args[@]}" || boot_tests_rc="$?"
+exit "${boot_tests_rc}"

@@ -99,37 +99,37 @@ while [ $# -gt 0 ]; do
          die "unknown flag '$1'"
          ;;
       *)
-         [ -z "$out_dir" ] || die "unexpected positional '$1'"
+         [ -z "${out_dir}" ] || die "unexpected positional '$1'"
          out_dir="$1"
          shift
          ;;
    esac
 done
 
-[ -n "$out_dir" ] || die "missing <output_dir> argument"
+[ -n "${out_dir}" ] || die "missing <output_dir> argument"
 
 command -v sqop >/dev/null || die "sqop not installed (Debian: sqop)"
 command -v tar >/dev/null || die "tar not installed"
 command -v xz >/dev/null || die "xz not installed"
-if [ -n "$signed_at" ]; then
+if [ -n "${signed_at}" ]; then
    command -v faketime >/dev/null || die "faketime not installed (Debian: faketime) but --signed-at was supplied"
 fi
 
-mkdir --parents -- "$out_dir"
-out_dir="$(cd -- "$out_dir" && pwd)"
+mkdir --parents -- "${out_dir}"
+out_dir="$(cd -- "${out_dir}" && pwd)"
 
-printf 'make-fixture: out_dir=%s\n' "$out_dir"
+printf 'make-fixture: out_dir=%s\n' "${out_dir}"
 printf 'make-fixture: version=%s download_name=%s browser_name=%s arch=%s\n' \
-   "$version" "$download_name" "$browser_name" "$arch"
+   "${version}" "${download_name}" "${browser_name}" "${arch}"
 printf 'make-fixture: signed_at=%s wrong_signer=%s\n' \
-   "${signed_at:-<now>}" "$wrong_signer"
+   "${signed_at:-<now>}" "${wrong_signer}"
 
-secret_key="$out_dir/test-key.sec"
-public_key="$out_dir/test-key.asc"
-versions_json="$out_dir/recommended-versions.json"
-tarball_dir="$out_dir/$version"
+secret_key="${out_dir}/test-key.sec"
+public_key="${out_dir}/test-key.asc"
+versions_json="${out_dir}/recommended-versions.json"
+tarball_dir="${out_dir}/${version}"
 tarball_name="${download_name}-${arch}-${version}.tar.xz"
-tarball_path="$tarball_dir/$tarball_name"
+tarball_path="${tarball_dir}/${tarball_name}"
 signature_path="${tarball_path}.asc"
 
 ## If --signed-at pins the signature into the past, also generate the
@@ -137,79 +137,79 @@ signature_path="${tarball_path}.asc"
 ## faked signing time. Without this, sqop refuses the sign with "Key
 ## not signing-capable".
 key_gen_prefix=()
-if [ -n "$signed_at" ]; then
-   key_gen_prefix=( faketime "$signed_at" )
+if [ -n "${signed_at}" ]; then
+   key_gen_prefix=( faketime "${signed_at}" )
 fi
 
 ## Primary signing key. Always written so the trusted-cert file
 ## (public_key -> test-key.asc) exists for update-torbrowser.
 "${key_gen_prefix[@]}" \
-   sqop generate-key "<tb-updater-self-test-primary@invalid>" > "$secret_key"
-sqop extract-cert < "$secret_key" > "$public_key"
+   sqop generate-key "<tb-updater-self-test-primary@invalid>" > "${secret_key}"
+sqop extract-cert < "${secret_key}" > "${public_key}"
 
-if [ "$wrong_signer" = "true" ]; then
+if [ "${wrong_signer}" = "true" ]; then
    ## Generate a second, unrelated key and sign with that. The trusted
    ## cert on disk ($public_key) still comes from the primary, so the
    ## downloader's verification looks up the signer's fingerprint
    ## against a cert that never issued the signature and fails.
-   signing_key="$out_dir/wrong-signer.sec"
+   signing_key="${out_dir}/wrong-signer.sec"
    "${key_gen_prefix[@]}" \
-      sqop generate-key "<tb-updater-self-test-attacker@invalid>" > "$signing_key"
+      sqop generate-key "<tb-updater-self-test-attacker@invalid>" > "${signing_key}"
 else
-   signing_key="$secret_key"
+   signing_key="${secret_key}"
 fi
 
 ## Build the payload tarball with enough structure for tb_extract +
 ## tb_install + the post-install version check.
 stage_dir="$(mktemp -d)"
 cleanup_stage_dir() {
-   safe-rm --recursive --force -- "$stage_dir"
+   safe-rm --recursive --force -- "${stage_dir}"
 }
 trap cleanup_stage_dir EXIT
 
-root_inside="$stage_dir/${browser_name}_self-test"
-mkdir --parents -- "$root_inside/Browser/Downloads"
-cat > "$root_inside/Browser/tbb_version.json" <<JSON
+root_inside="${stage_dir}/${browser_name}_self-test"
+mkdir --parents -- "${root_inside}/Browser/Downloads"
+cat > "${root_inside}/Browser/tbb_version.json" <<JSON
 {
-   "version": "$version"
+   "version": "${version}"
 }
 JSON
-cat > "$root_inside/Browser/version.json" <<JSON
+cat > "${root_inside}/Browser/version.json" <<JSON
 {
-   "version": "$version"
+   "version": "${version}"
 }
 JSON
 ## Provide a fake entry point so scripts that poke at the tree do not
 ## error out when it is missing.
-cat > "$root_inside/start-tor-browser.desktop" <<DESKTOP
+cat > "${root_inside}/start-tor-browser.desktop" <<DESKTOP
 [Desktop Entry]
-Name=$browser_name self-test
+Name=${browser_name} self-test
 Exec=/bin/true
 Type=Application
 DESKTOP
 
-mkdir --parents -- "$tarball_dir"
-tar -C "$stage_dir" -cJf "$tarball_path" "$(basename "$root_inside")"
+mkdir --parents -- "${tarball_dir}"
+tar -C "${stage_dir}" -cJf "${tarball_path}" "$(basename "${root_inside}")"
 
-if [ -n "$signed_at" ]; then
+if [ -n "${signed_at}" ]; then
    ## faketime's first positional is the timestamp; no end-of-options
    ## marker is accepted between --switches and the timestamp.
-   faketime "$signed_at" \
-      sqop sign --as=binary "$signing_key" < "$tarball_path" > "$signature_path"
+   faketime "${signed_at}" \
+      sqop sign --as=binary "${signing_key}" < "${tarball_path}" > "${signature_path}"
 else
-   sqop sign --as=binary "$signing_key" < "$tarball_path" > "$signature_path"
+   sqop sign --as=binary "${signing_key}" < "${tarball_path}" > "${signature_path}"
 fi
 
-cat > "$versions_json" <<JSON
+cat > "${versions_json}" <<JSON
 {
-   "version": "$version",
-   "binary": "file://$tarball_path",
-   "sig": "file://$signature_path"
+   "version": "${version}",
+   "binary": "file://${tarball_path}",
+   "sig": "file://${signature_path}"
 }
 JSON
 
 printf 'make-fixture: done\n'
-printf '  public key : %s\n' "$public_key"
-printf '  versions   : %s\n' "$versions_json"
-printf '  tarball    : %s\n' "$tarball_path"
-printf '  signature  : %s\n' "$signature_path"
+printf '  public key : %s\n' "${public_key}"
+printf '  versions   : %s\n' "${versions_json}"
+printf '  tarball    : %s\n' "${tarball_path}"
+printf '  signature  : %s\n' "${signature_path}"

@@ -292,9 +292,24 @@ check_shellcheck() {
       note "shellcheck not on PATH; skipping (apt-get install shellcheck)"
       return 0
    fi
+   ## Optional checks, kept IDENTICAL to the set ai-review's static reviewer enables, so a
+   ## file cannot be gate-green and still carry findings the reviewer reports. They diverged
+   ## before: the gate ran the default set only, and R-020 (require-variable-braces) debt
+   ## accumulated invisibly -- measured at 1786 findings across 44 of 60 derivative-maker
+   ## scripts while the gate reported zero.
+   ##
+   ## 'add-default-case' (SC2249) is deliberately NOT in the set, and is excluded from the
+   ## reviewer's list too so the two stay aligned. It has no autofix, and on this codebase it
+   ## fires on match-or-ignore filters where no default action is wanted -- a loop that
+   ## umounts only paths under the build tree, a dispatcher that returns early for skipped
+   ## functions -- so satisfying it means appending a do-nothing '*) ;;' that states nothing.
+   ## Its own advice, "even if it just exits with error", would be actively wrong there.
+   local shellcheck_optional_checks
+   shellcheck_optional_checks='avoid-nullary-conditions,check-unassigned-uppercase,deprecate-which,quote-safe-variables,require-variable-braces'
+
    for script in "${@}"; do
       rc=0
-      shellcheck --external-sources -- "${script}" || rc=$?
+      shellcheck --external-sources --enable="${shellcheck_optional_checks}" -- "${script}" || rc=$?
       if [ "${rc}" -ne 0 ]; then
          fail "shellcheck" "'${script}'"
       fi

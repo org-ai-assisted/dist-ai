@@ -39,4 +39,4 @@ fi
 
 rc=0
 python3 -- "${tests_dir}/stdisplay_test.py" "$@" || rc=$?
-exit "$rc"
+exit "${rc}"

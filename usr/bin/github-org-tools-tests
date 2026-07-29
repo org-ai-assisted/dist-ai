@@ -58,4 +58,4 @@ export PYTHONPATH="${HELPER_SCRIPTS_PATH}/usr/lib/python3/dist-packages${PYTHONP
 ## exec).
 rc=0
 "${share}/test-github-org-tools.sh" "$@" || rc="$?"
-exit "$rc"
+exit "${rc}"

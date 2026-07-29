@@ -172,7 +172,7 @@ launch() {  ## $1=emulator
    local e="$1"
    local base=(env --unset=WAYLAND_DISPLAY "DISPLAY=${xwl_display}")
    local sh=(bash --rcfile "${HOME}/.strc" -i)
-   case "$e" in
+   case "${e}" in
       xterm)
          "${base[@]}" xterm -geometry 84x24 -fa 'Monospace' -fs 11 -e "${sh[@]}"
          ;;
@@ -276,7 +276,7 @@ find_window() {
 
 shoot() {  ## $1=emulator  $2=case
    local e="$1" case="$2" wid='' ww
-   launch "$e" >/dev/null 2>&1 &
+   launch "${e}" >/dev/null 2>&1 &
    local epid="$!"
    wid="$(find_window || true)"
    if [ -z "${wid}" ]; then
@@ -285,7 +285,7 @@ shoot() {  ## $1=emulator  $2=case
       return 1
    fi
    ## qterminal opens maximized and ignores a plain resize; unmaximize it first.
-   if [ "$e" = qterminal ]; then
+   if [ "${e}" = qterminal ]; then
       DISPLAY="${xwl_display}" wmctrl -i -r "${wid}" -b remove,maximized_vert,maximized_horz 2>/dev/null || true
       DISPLAY="${xwl_display}" xdotool windowsize "${wid}" 720 440 2>/dev/null || true
       sleep 0.7
@@ -316,18 +316,18 @@ fi
 ## deliberately authorize skipping (it is then logged, never silent).
 TERMINALS="${TERMINALS:-xterm urxvt st konsole xfce4-terminal mate-terminal qterminal alacritty kitty}"
 for e in ${TERMINALS}; do
-   if ! type -P "$e" >/dev/null 2>&1; then
+   if ! type -P "${e}" >/dev/null 2>&1; then
       if [ -n "${ALLOW_SKIP:-}" ]; then
-         printf 'SKIP %s (not installed; ALLOW_SKIP authorized)\n' "$e" >&2
+         printf 'SKIP %s (not installed; ALLOW_SKIP authorized)\n' "${e}" >&2
          continue
       fi
-      printf 'ERROR: terminal %s is not installed. Install it, or set ALLOW_SKIP=1 to authorize skipping.\n' "$e" >&2
+      printf 'ERROR: terminal %s is not installed. Install it, or set ALLOW_SKIP=1 to authorize skipping.\n' "${e}" >&2
       exit 1
    fi
-   shoot "$e" crafted   || true
-   shoot "$e" random    || true
-   shoot "$e" homoglyph || true
-   printf 'captured %s\n' "$e"
+   shoot "${e}" crafted   || true
+   shoot "${e}" random    || true
+   shoot "${e}" homoglyph || true
+   printf 'captured %s\n' "${e}"
 done
 
 st_bin="${ST_REPO:-}/usr/bin/secure-terminal"

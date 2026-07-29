@@ -29,4 +29,4 @@ fi
 
 rc=0
 python3 "${fuzz_dir}/sdwdate_gui_fuzzer.py" "$@" || rc=$?
-exit "$rc"
+exit "${rc}"

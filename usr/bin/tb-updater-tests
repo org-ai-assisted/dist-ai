@@ -41,7 +41,7 @@ rc=0
 python3 -m pytest --import-mode=importlib -q "${tests_dir}" "$@" || rc=$?
 ## pytest exit 5 = no tests collected; report the suite as SKIP (77), not a
 ## failure.
-if [ "$rc" = "5" ]; then
+if [ "${rc}" = "5" ]; then
    exit 77
 fi
-exit "$rc"
+exit "${rc}"

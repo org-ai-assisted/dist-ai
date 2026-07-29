@@ -35,4 +35,4 @@ iterations='30000'
 
 rc=0
 python3 -- "${tests_dir}/fuzz_torrc.py" --iterations "${iterations}" "$@" || rc=$?
-exit "$rc"
+exit "${rc}"

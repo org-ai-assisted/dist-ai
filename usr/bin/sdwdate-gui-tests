@@ -32,4 +32,4 @@ python3 -m unittest discover \
   --start-directory "${tests_dir}" \
   --pattern 'test_*.py' \
   "$@" || rc=$?
-exit "$rc"
+exit "${rc}"
