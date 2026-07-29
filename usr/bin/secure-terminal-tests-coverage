@@ -53,6 +53,9 @@ fi
 
 export PYTHONPATH="${repo}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
 pkg="${repo}/usr/lib/python3/dist-packages/secure_terminal"
+## hooklib ships OUTSIDE the package (a hook must stay copyable and imports no
+## secure_terminal), so it needs its own --source root or it is never measured.
+hooks="${repo}/usr/share/secure-terminal/hooks"
 
 work="$(mktemp --directory)"
 cleanup() { safe-rm --recursive --force -- "${work}" 2>/dev/null || true; }
@@ -70,8 +73,11 @@ gated_free='*/__init__.py,*/sanitize.py,*/cli.py,*/hook.py,*/ipc.py,*/session.py
 ## (exit 1) on a missing PyQt6/pyte rather than skipping, so both tiers are
 ## always gated.
 gated_qt='*/review.py,*/terminal.py,*/main.py'
+## Tier 3 -- the out-of-package hook library. It decides whether a USER may
+## weaken the command-hook judge, so it is gated like the package itself.
+gated_hooks='*/hooklib.py'
 
-## Both tiers are validated BEFORE the suites run: these checks need only the
+## Every tier is validated BEFORE the suites run: these checks need only the
 ## source tree, and a stale gate should cost a second, not a full test run.
 ##
 ## `coverage report --include` silently ignores a pattern that matches nothing,
@@ -80,15 +86,16 @@ gated_qt='*/review.py,*/terminal.py,*/main.py'
 assert_gated_globs_resolve() {
    local tier="$1"
    local globs="$2"
+   local base_dir="$3"
    local patterns=()
    local pattern
    local module_name
    IFS=',' read -r -a patterns <<< "${globs}"
    for pattern in "${patterns[@]}"; do
       module_name="${pattern##*/}"
-      if [ ! -f "${pkg}/${module_name}" ]; then
+      if [ ! -f "${base_dir}/${module_name}" ]; then
          printf 'secure-terminal-tests-coverage: gated %s pattern %s names no file in %s -- module renamed or removed; update the gate\n' \
-            "${tier}" "${pattern}" "${pkg}" >&2
+            "${tier}" "${pattern}" "${base_dir}" >&2
          exit 1
       fi
    done
@@ -113,8 +120,9 @@ assert_every_module_gated() {
    done
 }
 
-assert_gated_globs_resolve 'Qt-free' "${gated_free}"
-assert_gated_globs_resolve 'Qt widget' "${gated_qt}"
+assert_gated_globs_resolve 'Qt-free' "${gated_free}" "${pkg}"
+assert_gated_globs_resolve 'Qt widget' "${gated_qt}" "${pkg}"
+assert_gated_globs_resolve 'hook library' "${gated_hooks}" "${hooks}"
 assert_every_module_gated
 
 ## Run every suite under coverage. --parallel-mode + combine keeps each suite's
@@ -124,11 +132,11 @@ assert_every_module_gated
 ## itself -- so both tiers below are always gated.
 export QT_QPA_PLATFORM=offscreen
 python3 -m coverage erase
-for suite in test_secure_terminal test_fuzz test_corpus test_cli test_modules \
-             test_review test_mainwin test_widget; do
+for suite in test_secure_terminal test_fuzz test_fuzz_harnesses test_corpus \
+             test_cli test_modules test_review test_mainwin test_widget; do
    [ -f "${tests_dir}/${suite}.py" ] || continue
    rc=0
-   python3 -m coverage run --parallel-mode --source="${pkg}" -- \
+   python3 -m coverage run --parallel-mode --source="${pkg},${hooks}" -- \
       "${tests_dir}/${suite}.py" || rc="$?"
    ## exit 77 (SKIP, e.g. Qt absent for a widget suite) is not a failure here;
    ## the Qt-free gated tier does not depend on those suites. Any other non-zero
@@ -147,6 +155,9 @@ python3 -m coverage report --include="${gated_free}" --show-missing --fail-under
 
 printf '\n== gated modules, Qt widget (must be 100%%) ==\n'
 python3 -m coverage report --include="${gated_qt}" --show-missing --fail-under=100
+
+printf '\n== gated hook library (must be 100%%) ==\n'
+python3 -m coverage report --include="${gated_hooks}" --show-missing --fail-under=100
 
 ## The GUI fuzzer (fuzz_widget.py), driven deterministically by test_fuzz_widget,
 ## is itself enforced at 100% SELF-coverage -- the live-widget fuzz harness must

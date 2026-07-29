@@ -53,19 +53,26 @@ fi
 
 export PYTHONPATH="${repo}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
 
-## The pure, Qt-free tests always run; the widget tests (test_widget.py) skip
-## themselves (exit 77) when PyQt6/pyte are absent. The suite fails if any test
-## fails, and SKIPs only when the pure test cannot import the module at all.
+## The pure, Qt-free tests always run; the Qt suites fail closed (exit 1) on a
+## missing PyQt6/pyte rather than skipping. The suite fails if any test fails,
+## and SKIPs only when the pure test cannot import the module at all.
+##
+## test_fuzz_harnesses drives the atheris harnesses in secure-terminal/fuzz/ with
+## a stubbed atheris, so a harness that no longer builds or that trips its own
+## invariant is caught HERE rather than in a nightly nothing blocks on.
+## test_fuzz_widget drives the live-widget GUI fuzzer deterministically.
 overall=0
 for test_file in \
    "${tests_dir}/test_secure_terminal.py" \
    "${tests_dir}/test_fuzz.py" \
+   "${tests_dir}/test_fuzz_harnesses.py" \
    "${tests_dir}/test_corpus.py" \
    "${tests_dir}/test_cli.py" \
    "${tests_dir}/test_modules.py" \
    "${tests_dir}/test_review.py" \
    "${tests_dir}/test_mainwin.py" \
-   "${tests_dir}/test_widget.py"; do
+   "${tests_dir}/test_widget.py" \
+   "${tests_dir}/test_fuzz_widget.py"; do
    [ -f "${test_file}" ] || continue
    if python3 -Bsu -- "${test_file}" "$@"; then
       continue

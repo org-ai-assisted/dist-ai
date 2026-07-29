@@ -1111,6 +1111,9 @@ if os.path.exists(_aij):
 # --- hooklib: tiered, admin-gated hook configuration --------------------------
 import importlib.util as _ilu                       # noqa: E402
 _hlpath = os.path.join(_usr, 'share', 'secure-terminal', 'hooks', 'hooklib.py')
+# hooklib gates whether a USER may weaken the command-hook judge, so its absence
+# is a FAIL, not a skip: silently not testing a privilege boundary reads as a pass.
+ok(os.path.exists(_hlpath), 'hooklib present at %s' % _hlpath)
 if os.path.exists(_hlpath):
     _spec = _ilu.spec_from_file_location('hooklib', _hlpath)
     _hl = _ilu.module_from_spec(_spec)
@@ -1150,6 +1153,76 @@ if os.path.exists(_hlpath):
         with open(os.path.join(_hd, 'hooks.conf'), 'w') as _f:
             _f.write('hook_config_allow_user=false\n')
         ok(_hl.allow_user_config(), 'hooklib: home cannot turn its own gate off')
+
+        # --- rules parsing, every branch --------------------------------------
+        eq(_hl.read_rules('no-such-rules.conf'), None,
+           'hooklib: absent rules file -> None, so the caller keeps its default')
+        with open(os.path.join(_pd, 'shapes.conf'), 'w') as _f:
+            _f.write('\n'                       # blank line -> skipped
+                     '   \n'                    # whitespace-only -> skipped
+                     '# comment | block | x\n'  # comment -> skipped, even if piped
+                     'block\n'                  # one field -> skipped
+                     'nope | ^x | m\n'          # bad verdict -> skipped
+                     'allow | ^ls\n'            # 2 fields -> empty msg+suggestion
+                     'block | ^rm | destructive\n'          # 3 fields
+                     'ask | ^dd | risky | use cp\n'         # 4 fields
+                     'allow | ^a | m | s | extra\n')        # 5 -> extra ignored
+        eq(_hl.read_rules('shapes.conf'),
+           [('allow', '^ls', '', ''),
+            ('block', '^rm', 'destructive', ''),
+            ('ask', '^dd', 'risky', 'use cp'),
+            ('allow', '^a', 'm', 's')],
+           'hooklib: rules honor 2/3/4 fields and drop blank/comment/short/bad-verdict')
+
+        # --- privileged conf parsing, every branch ----------------------------
+        # highest privileged tier wins; comments and non-KEY=value lines ignored.
+        _priv2 = tempfile.mkdtemp()
+        _pd2 = os.path.join(_priv2, 'secure-terminal.d')
+        os.makedirs(_pd2)
+        with open(os.path.join(_pd2, 'hooks.conf'), 'w') as _f:
+            _f.write('# comment=true\n'
+                     'no-equals-here\n'
+                     'other_key=value\n'
+                     'hook_config_allow_user=false\n')
+        _hl._PRIVILEGED = (_priv, _priv2)       # _priv2 is the higher tier
+        ok(not _hl.allow_user_config(),
+           'hooklib: the highest privileged tier wins the gate')
+        _hl._PRIVILEGED = (_priv2, _priv)       # reverse the order
+        ok(_hl.allow_user_config(),
+           'hooklib: tier precedence follows the configured order, last wins')
+        eq(_hl._privileged_conf_value('absent_key'), None,
+           'hooklib: an unset key reads as None')
+
+        # a file the highest tier does not have falls back to the lower tier
+        with open(os.path.join(_pd, 'ai-judge-prompt.txt'), 'w') as _f:
+            _f.write('ADMIN PROMPT')
+        _hl._PRIVILEGED = (_priv, _priv2)
+        eq(_hl.read_file('ai-judge-prompt.txt'), 'ADMIN PROMPT',
+           'hooklib: a tier without the file does not blank a lower tier that has it')
+        eq(_hl.read_file('nothing-anywhere.txt'), None,
+           'hooklib: a file absent from every tier reads as None')
+
+        # --- the home tier with XDG_CONFIG_HOME UNSET -------------------------
+        # _tiers() falls back to ~/.config; point HOME at a temp dir so the real
+        # user config is neither read nor written.
+        _fakehome = tempfile.mkdtemp()
+        os.makedirs(os.path.join(_fakehome, '.config', 'secure-terminal.d'))
+        with open(os.path.join(_fakehome, '.config', 'secure-terminal.d',
+                               'ai-judge-prompt.txt'), 'w') as _f:
+            _f.write('HOME FALLBACK')
+        _saved_home = os.environ.get('HOME')
+        os.environ.pop('XDG_CONFIG_HOME', None)
+        os.environ['HOME'] = _fakehome
+        try:
+            _hl._PRIVILEGED = (_priv,)          # this tier has allow_user=true
+            eq(_hl.read_file('ai-judge-prompt.txt'), 'HOME FALLBACK',
+               'hooklib: without XDG_CONFIG_HOME the home tier falls back to ~/.config')
+        finally:
+            if _saved_home is None:
+                os.environ.pop('HOME', None)
+            else:
+                os.environ['HOME'] = _saved_home
+            os.environ['XDG_CONFIG_HOME'] = _homebase
     finally:
         if _saved_xdg is None:
             os.environ.pop('XDG_CONFIG_HOME', None)
