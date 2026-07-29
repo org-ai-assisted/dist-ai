@@ -27,24 +27,32 @@ shopt -s shift_verbose
 # shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
 source /usr/libexec/helper-scripts/has.sh
 
-if [ -z "${DMF_REPO:-}" ]; then
-   printf '%s\n' 'test_dm_review_branch: DMF_REPO unset (run via the developer-meta-files-tests entrypoint); skipping.' >&2
-   exit 77
-fi
+## Fail closed. A missing prerequisite is an environment defect: skipping on
+## it reports green while the test never ran, which is worse than no test.
+assert_prerequisite() {
+   local description
+
+   description="$1"
+   shift
+
+   if ! "$@"; then
+      printf '%s\n' "FATAL: test_dm_review_branch: ${description}" >&2
+      exit 1
+   fi
+}
+
+assert_prerequisite \
+   'DMF_REPO unset (run via the developer-meta-files-tests entrypoint)' \
+   test -n "${DMF_REPO:-}"
 
 ## dm-review-branch drives check-ref-commits-for-unicode / check-ref-names-for-
-## unicode / unicode-show (helper-scripts). If they are not on PATH, the tool
-## cannot run -- skip rather than false-fail.
+## unicode / unicode-show (helper-scripts).
 for tool in check-ref-commits-for-unicode check-ref-names-for-unicode unicode-show git setsid; do
-   if ! has "${tool}"; then
-      printf '%s\n' "test_dm_review_branch: '${tool}' not on PATH; skipping." >&2
-      exit 77
-   fi
+   assert_prerequisite "'${tool}' not on PATH" has "${tool}"
 done
-if [ ! -x "${DMF_REPO}/usr/bin/dm-review-branch" ]; then
-   printf '%s\n' "test_dm_review_branch: '${DMF_REPO}/usr/bin/dm-review-branch' not found; skipping." >&2
-   exit 77
-fi
+assert_prerequisite \
+   "'${DMF_REPO}/usr/bin/dm-review-branch' not found" \
+   test -x "${DMF_REPO}/usr/bin/dm-review-branch"
 
 fail_count=0
 fail() {

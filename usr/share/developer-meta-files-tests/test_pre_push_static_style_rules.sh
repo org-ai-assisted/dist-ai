@@ -31,20 +31,29 @@ shopt -s shift_verbose
 ## The gate under test (pre-push-static) now ships in dist-ai itself
 ## (usr/bin/pre-push-static), so this test no longer needs DMF_REPO.
 
-## helper-scripts (has.sh) is not always installed in a consumer's dist-ai
-## test environment; SKIP rather than fail when it -- or git / safe-rm -- is
-## absent, so the suite stays green where the gate simply cannot run.
-if [ ! -r '/usr/libexec/helper-scripts/has.sh' ]; then
-   printf '%s\n' 'test_pre_push_static_style_rules: helper-scripts has.sh not installed; skipping.' >&2
-   exit 77
-fi
+## Fail closed. A missing prerequisite is an environment defect: staying
+## green where the gate cannot run reports success for a test that never
+## ran, which is worse than no test at all.
+assert_prerequisite() {
+   local description
+
+   description="$1"
+   shift
+
+   if ! "$@"; then
+      printf '%s\n' "FATAL: test_pre_push_static_style_rules: ${description}" >&2
+      exit 1
+   fi
+}
+
+assert_prerequisite \
+   'helper-scripts has.sh is not installed (/usr/libexec/helper-scripts/has.sh)' \
+   test -r '/usr/libexec/helper-scripts/has.sh'
 # shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
 source /usr/libexec/helper-scripts/has.sh
 
-has git \
-   || { printf '%s\n' 'test_pre_push_static_style_rules: git not on PATH; skipping.' >&2; exit 77; }
-has safe-rm \
-   || { printf '%s\n' 'test_pre_push_static_style_rules: safe-rm not on PATH; skipping.' >&2; exit 77; }
+assert_prerequisite 'git not on PATH' has git
+assert_prerequisite 'safe-rm not on PATH' has safe-rm
 
 ## Resolve the gate RELATIVE to this test file (usr/share/<suite>/ -> usr/bin/).
 ## That path is correct in both layouts -- installed it resolves to

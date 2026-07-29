@@ -259,7 +259,12 @@ Depends: ${misc:Depends},
  shellcheck,
  pre-commit-hooks,
  file
-Description: Pre-push static-checks style gate (bash + CI)
+Description: Shared CI helper binaries (style gate, comment audit, summaries)
+ Holds the small executables CI workflows and the pre-push hook invoke
+ directly: pre-push-static, comments-audit, step-summary-emit and
+ claude-usage-record. Kept in one package deliberately -- they share
+ callers and splitting them would multiply the checkout/install steps a
+ workflow needs.
  The mechanical gate that enforces developer-meta-files' bash-style-guide
  Tier-1 rules (single-grep style checks) plus bash -n, shellcheck -x and the
  R-001 ASCII rule, on a commit range, the staged index, or per-commit. Run it

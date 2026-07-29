@@ -5,7 +5,7 @@
 
 ## AI-Assisted
 
-## Test: step-summary-emit.sh markdown shape + flag parsing.
+## Test: step-summary-emit markdown shape + flag parsing.
 
 set -o errexit
 set -o nounset
@@ -21,7 +21,21 @@ if [ "${CI:-}" != "true" ]; then
 fi
 
 SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )"
-HELPER="$(cd -- "${SCRIPT_DIR}/.." && pwd)/step-summary-emit.sh"
+
+## R-090: probe via helper-scripts' has(), not 'command -v'. helper-scripts is
+## not guaranteed in a consumer CI image, so fall back to the checkout path
+## rather than failing when has.sh is absent.
+HELPER=''
+if [ -r '/usr/libexec/helper-scripts/has.sh' ]; then
+   # shellcheck source=../../../../../helper-scripts/usr/libexec/helper-scripts/has.sh
+   source /usr/libexec/helper-scripts/has.sh
+   if has step-summary-emit; then
+      HELPER="$(type -P step-summary-emit)"
+   fi
+fi
+if [ -z "${HELPER}" ]; then
+   HELPER="$(cd -- "${SCRIPT_DIR}/../../../bin" && pwd)/step-summary-emit"
+fi
 
 [ -x "${HELPER}" ] || { printf '%s\n' "FAIL: helper not executable: '${HELPER}'" >&2; exit 1; }
 

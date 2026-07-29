@@ -12,7 +12,7 @@
 ## runs from workflow steps that haven't installed helper-scripts.
 ##
 ## Usage:
-##   ci/step-summary-emit.sh \
+##   step-summary-emit \
 ##      --tool          'tool-name (run context)' \
 ##      [--column-header 'outcome'] \
 ##      [--row 'passed=27'] \
@@ -44,7 +44,7 @@ Append a markdown panel to ${GITHUB_STEP_SUMMARY}. Defaults to
 /dev/null when unset so callers can invoke unconditionally.
 
 Usage:
-   ci/step-summary-emit.sh \
+   step-summary-emit \
       --tool          'tool-name (run context)' \
       [--column-header 'outcome'] \
       [--row 'passed=27'] \

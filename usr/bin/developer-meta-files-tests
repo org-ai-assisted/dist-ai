@@ -13,8 +13,9 @@
 ##     unicode in a reviewed branch's commits AND in any ref name.
 ## Both resolve the developer-meta-files checkout from DMF_REPO (wired by
 ## dist-ai-tests-all via --component developer-meta-files --component-root).
-## Each test SKIPs itself (exit 77) when its own prerequisites are absent, so a
-## missing helper (shellcheck, helper-scripts) skips rather than false-fails.
+## Every test FAILS CLOSED on a missing prerequisite. A skipped test reports
+## green while never having run, which is worse than no test at all, so an
+## absent helper (shellcheck, helper-scripts) is an environment defect.
 ## Works installed (/usr/share/developer-meta-files-tests) or from a checkout.
 
 set -o errexit
@@ -33,8 +34,8 @@ else
 fi
 
 if [ -z "${DMF_REPO:-}" ]; then
-   printf '%s\n' 'developer-meta-files-tests: DMF_REPO unset (run with --component developer-meta-files --component-root DIR); skipping.' >&2
-   exit 77
+   printf '%s\n' 'FATAL: developer-meta-files-tests: DMF_REPO unset (run with --component developer-meta-files --component-root DIR).' >&2
+   exit 1
 fi
 export DMF_REPO
 
@@ -54,15 +55,14 @@ fi
 shopt -s nullglob
 tests=( "${share}"/test_*.sh )
 if [ "${#tests[@]}" -eq 0 ]; then
-   printf '%s\n' "developer-meta-files-tests: no test_*.sh under '${share}'; skipping." >&2
-   exit 77
+   printf '%s\n' "FATAL: developer-meta-files-tests: no test_*.sh under '${share}'." >&2
+   exit 1
 fi
 
-## Run each test; 0 = pass, 77 = skip (its own prerequisites absent), anything
-## else = fail. Report per test and fail the suite if any test failed.
+## Run each test; 0 = pass, anything else = fail. No skip code: a test that
+## cannot run its prerequisites now says so with a FATAL and a non-zero exit.
 failed=0
 ran=0
-skipped=0
 for test_path in "${tests[@]}"; do
    test_name="$(basename -- "${test_path}")"
    rc=0
@@ -72,10 +72,6 @@ for test_path in "${tests[@]}"; do
          ran=$(( ran + 1 ))
          printf 'developer-meta-files-tests: PASS %s\n' "${test_name}"
          ;;
-      77)
-         skipped=$(( skipped + 1 ))
-         printf 'developer-meta-files-tests: SKIP %s\n' "${test_name}"
-         ;;
       *)
          failed=$(( failed + 1 ))
          printf 'developer-meta-files-tests: FAIL %s (exit %s)\n' "${test_name}" "${rc}" >&2
@@ -83,15 +79,9 @@ for test_path in "${tests[@]}"; do
    esac
 done
 
-printf 'developer-meta-files-tests: %d passed, %d skipped, %d failed.\n' \
-   "${ran}" "${skipped}" "${failed}"
+printf 'developer-meta-files-tests: %d passed, %d failed.\n' "${ran}" "${failed}"
 
 if [ "${failed}" -gt 0 ]; then
    exit 1
-fi
-## All tests skipped (no prerequisites anywhere) -> SKIP the suite, not a
-## vacuous pass.
-if [ "${ran}" -eq 0 ]; then
-   exit 77
 fi
 exit 0

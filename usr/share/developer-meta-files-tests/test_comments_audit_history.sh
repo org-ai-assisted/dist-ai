@@ -22,19 +22,27 @@ set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
 
-SKIP=77
+## Fail closed. A missing prerequisite is an environment defect: skipping on
+## it reports green while the test never ran, which is worse than no test.
+assert_prerequisite() {
+   local description
 
-## helper-scripts (has.sh) is not always installed in a consumer's dist-ai
-## environment; skip rather than fail when the repo's own tool-probe is absent.
-if [ ! -r '/usr/libexec/helper-scripts/has.sh' ]; then
-   printf '%s\n' 'test_comments_audit_history: helper-scripts has.sh not installed; skipping.' >&2
-   exit "${SKIP}"
-fi
+   description="$1"
+   shift
+
+   if ! "$@"; then
+      printf '%s\n' "FATAL: test_comments_audit_history: ${description}" >&2
+      exit 1
+   fi
+}
+
+assert_prerequisite \
+   'helper-scripts has.sh is not installed (/usr/libexec/helper-scripts/has.sh)' \
+   test -r '/usr/libexec/helper-scripts/has.sh'
 # shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
 source /usr/libexec/helper-scripts/has.sh
 
-has safe-rm \
-   || { printf '%s\n' 'test_comments_audit_history: safe-rm not found; skipping.' >&2; exit "${SKIP}"; }
+assert_prerequisite 'safe-rm not found' has safe-rm
 
 ## Prefer the installed binary; fall back to the checkout this test ships in.
 audit_bin=''
@@ -47,10 +55,9 @@ else
       audit_bin="${candidate}"
    fi
 fi
-if [ -z "${audit_bin}" ]; then
-   printf '%s\n' 'test_comments_audit_history: comments-audit not found; skipping.' >&2
-   exit "${SKIP}"
-fi
+assert_prerequisite \
+   'comments-audit not found, neither installed nor in the shipping checkout' \
+   test -n "${audit_bin}"
 
 work_dir="$(mktemp --directory)"
 cleanup() {
