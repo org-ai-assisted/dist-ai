@@ -462,6 +462,36 @@ else
    printf 'PASS: R-180 exempts an empty __init__.py\n'
 fi
 
+## R-001 gains a per-file waiver. A suite testing a SANITIZER has to contain
+## the non-ASCII bytes it asserts are stripped, so the fixture is not a slip.
+## The waiver must be opt-in per file, and absent it the rule must still fire.
+ascii_repo="$(mktemp --directory --tmpdir="${tmp_root}" ascii.XXXXXX)"
+git -C "${ascii_repo}" init --quiet
+git -C "${ascii_repo}" config user.email 'ci-test@example.com'
+git -C "${ascii_repo}" config user.name 'ci-test'
+git -C "${ascii_repo}" commit --quiet --no-verify --allow-empty --message base
+ascii_base="$(git -C "${ascii_repo}" rev-parse HEAD)"
+## a non-ASCII byte (U+00D6) assembled so THIS file stays pure ASCII
+non_ascii="$(printf '\303\226')"
+printf '#!/usr/bin/python3 -Bsu\nx = "%s"\n' "${non_ascii}" > "${ascii_repo}/plain.py"
+printf '#!/usr/bin/python3 -Bsu\n## style-ok: allow-non-ascii -- fixture\ny = "%s"\n' "${non_ascii}" > "${ascii_repo}/waived.py"
+chmod 0755 -- "${ascii_repo}/plain.py" "${ascii_repo}/waived.py"
+git -C "${ascii_repo}" add --all
+git -C "${ascii_repo}" commit --quiet --no-verify --message ascii
+ascii_out="$( cd -- "${ascii_repo}" && "${GATE}" "${ascii_base}" 2>&1 || true )"
+if printf '%s\n' "${ascii_out}" | grep --quiet --fixed-strings -- "'plain.py' contains non-ASCII"; then
+   printf 'PASS: R-001 still flags non-ASCII without the waiver\n'
+else
+   printf 'FAIL: R-001 did not flag non-ASCII -- the waiver is too broad\n' >&2
+   failures=$((failures + 1))
+fi
+if printf '%s\n' "${ascii_out}" | grep --quiet --fixed-strings -- "'waived.py' contains non-ASCII"; then
+   printf 'FAIL: R-001 waiver did not take effect\n' >&2
+   failures=$((failures + 1))
+else
+   printf 'PASS: R-001 waiver exempts the marked file\n'
+fi
+
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "test_pre_push_static_style_rules: ${failures} assertion(s) FAILED." >&2
    exit 1

@@ -324,6 +324,18 @@ check_ascii_files() {
       return 0
    fi
    while IFS= read -r line; do
+      ## Per-file waiver: '## style-ok: allow-non-ascii' anywhere in the file.
+      ## A test for a sanitizer has to CONTAIN the bytes it asserts are
+      ## stripped -- stdisplay's suite pins ("O-umlaut ...", "_ or _") -- so the
+      ## non-ASCII is the fixture, not a slip. Anchored regex and a per-file
+      ## opt-in, mirroring the R-120 waiver, so the ASCII rule stays default-on
+      ## everywhere else and each exception is visible in the file itself.
+      if grep --quiet --extended-regexp \
+         '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*allow-non-ascii([[:space:]]|$)' \
+         -- "${line}"; then
+         note "R-001 skipped: 'style-ok: allow-non-ascii' waiver in '${line}'"
+         continue
+      fi
       fail "R-001 ASCII" "'${line}' contains non-ASCII bytes"
    done <<< "${hits}"
 }
