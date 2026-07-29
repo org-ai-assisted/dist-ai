@@ -46,13 +46,16 @@ has git \
 has safe-rm \
    || { printf '%s\n' 'test_pre_push_static_style_rules: safe-rm not on PATH; skipping.' >&2; exit 77; }
 
-## Resolve the gate: the installed dist-ai CLI, else the in-tree copy
-## relative to this test file (usr/share/<suite>/ -> usr/bin/).
+## Resolve the gate RELATIVE to this test file (usr/share/<suite>/ -> usr/bin/).
+## That path is correct in both layouts -- installed it resolves to
+## /usr/bin/pre-push-static, from a checkout to the checkout's own copy -- so it
+## must be tried FIRST. Preferring the installed CLI instead silently tests the
+## PACKAGED gate while a developer edits the in-tree one: every new rule then
+## reads as "does not fire" and every 'absent' assertion passes vacuously.
 gate_test_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
-if [ -x '/usr/bin/pre-push-static' ]; then
+GATE="${gate_test_dir}/../../bin/pre-push-static"
+if [ ! -x "${GATE}" ]; then
    GATE='/usr/bin/pre-push-static'
-else
-   GATE="${gate_test_dir}/../../bin/pre-push-static"
 fi
 
 [ -x "${GATE}" ] \
@@ -147,6 +150,11 @@ del='rm'
 tab="$(printf '\t')"
 ## A real carriage return, for the CRLF trailing-whitespace cases.
 cr="$(printf '\r')"
+## The hardcoded temp path R-170 forbids, assembled so the literal never
+## appears in THIS tracked file (which the gate would, correctly, flag).
+tmpp="/$(printf '%s' 'tmp')"
+## A real newline, for the multi-line waiver fixture below.
+nlreal=$'\n'
 
 ## R-074: a ';'-chained break / continue / return must be FLAGGED; the same
 ## keyword on its own line must be SPARED.
@@ -238,6 +246,29 @@ expect_rule "R-102" "run${sp}wrapper.sh${sp}/etc/config"         "absent"
 expect_rule "R-120" "true${sc}${del} -rf x"                      "present"
 expect_rule "R-120" "safe-${del} -- a${sc}${sp}${del} -rf b"     "present"
 
+## R-170: a hardcoded temp path must be FLAGGED, including the inline
+## '${TMPDIR:-/tmp}' fallback idiom the rule exists to retire.
+expect_rule "R-170" "work=${dq}${tmpp}/covwork${dq}"             "present"
+expect_rule "R-170" "d=\$(mktemp -- ${dq}${tmpp}/x.XXXXXX${dq})" "present"
+expect_rule "R-170" "d=${dq}\${TMPDIR:-${tmpp}}/x${dq}"          "present"
+expect_rule "R-170" "cp -- foo ${tmpp}"                          "present"
+## ... and the temp-dir variable INITIALISATIONS must be SPARED: they are the
+## one place the literal belongs. Both the canonical guarded form and the
+## bare/exported/bwrap spellings.
+expect_rule "R-170" "[ -v TMP ] || TMP=${tmpp}"                  "absent"
+expect_rule "R-170" "TMPDIR=${tmpp}"                             "absent"
+expect_rule "R-170" "export TEMP=${tmpp}"                        "absent"
+expect_rule "R-170" "readonly TEMPDIR=${tmpp}"                   "absent"
+expect_rule "R-170" "bw+=(--setenv TMPDIR ${tmpp})"              "absent"
+## Neither a different path that merely ENDS in '/tmp', nor a longer name
+## that merely STARTS with '/tmp', is the hardcode.
+expect_rule "R-170" "d=${dq}debian${tmpp}/usr${dq}"              "absent"
+expect_rule "R-170" "d=${dq}/var${tmpp}/persist${dq}"            "absent"
+expect_rule "R-170" "d=${dq}${tmpp}fs/thing${dq}"                "absent"
+expect_rule "R-170" "d=${dq}\${TMP}/mine${dq}"                   "absent"
+## A script-wide waiver disables the rule for the whole file.
+expect_rule "R-170" "## style-ok: no-tmp-hardcode${nlreal}w=${dq}${tmpp}/x${dq}" "absent"
+
 ## R-010: six COPIES of one directive must NOT satisfy the block (DISTINCT
 ## directives are counted); the six distinct directives pass.
 sixsame=$'set -o errexit\nset -o errexit\nset -o errexit\nset -o errexit\nset -o errexit\nset -o errexit'
@@ -309,4 +340,4 @@ if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "test_pre_push_static_style_rules: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-030/R-031, R-042, R-034, R-011, R-051, R-090, R-102, R-120, R-010, trailing-whitespace and CRLF-shebang detection enforced as expected."
+printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-030/R-031, R-042, R-034, R-011, R-051, R-090, R-102, R-120, R-170, R-010, trailing-whitespace and CRLF-shebang detection enforced as expected."

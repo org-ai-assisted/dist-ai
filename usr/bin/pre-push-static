@@ -815,6 +815,56 @@ check_R081_source_devnull() {
    emit_hits "R-081 source=/dev/null" "${hits}"
 }
 
+check_R170_tmp_hardcode() {
+   local script hits line
+
+   for script in "${@}"; do
+      ## This script carries '/tmp' in its own regex and message text.
+      is_self_referential "${script}" && continue
+      ## Script-wide waiver: '## style-ok: no-tmp-hardcode' anywhere in the
+      ## file disables R-170 for that file. For the cases where /tmp is not a
+      ## redirectable temp path at all: the X11 socket dir (/tmp/.X11-unix is
+      ## fixed by the protocol), namespace construction (bwrap --tmpfs /tmp,
+      ## whose private tmpfs has no per-user subdir), and administering the
+      ## /tmp mount itself. Anchored regex, mirroring the R-120 waiver.
+      if grep --quiet --extended-regexp \
+         '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*no-tmp-hardcode([[:space:]]|$)' \
+         -- "${script}"; then
+         continue
+      fi
+      ## '/tmp' as an absolute path: NOT preceded by a path/word character (so
+      ## 'debian/tmp', './tmp' and '/var/tmp' are not matched) and NOT followed
+      ## by one (so '/tmpfs' and '/tmp.bak' are not). A following '/' is a real
+      ## path. '-' is deliberately NOT in the leading class: it is the character
+      ## before '/tmp' in the '${TMPDIR:-/tmp}' inline-fallback idiom, which is
+      ## the single most common form this rule exists to retire.
+      ## The leading '^[^#]*' excludes '#'-comment lines, as R-070/R-074 do --
+      ## prose about /tmp is not a hardcode.
+      ##
+      ## The invert spares the temp-dir variable INITIALISATIONS, the one place
+      ## the literal has to appear: 'TMP=/tmp' and friends (optionally export/
+      ## readonly/local/declare-prefixed, which covers the canonical
+      ## '[ -v TMP ] || TMP=/tmp'), plus the bwrap '--setenv TMPDIR /tmp' form.
+      ## ':' leads the allowed-prefix class because grep --line-number has
+      ## already prefixed '<n>:' by the time the invert sees the line, so a
+      ## start-of-line 'TMP=/tmp' is no longer at '^'.
+      ## Whole-line, so a line carrying BOTH an init and a real hardcode is
+      ## spared -- a narrow accepted residual, as in R-120.
+      hits="$(grep --line-number --extended-regexp \
+         '^[^#]*(^|[^A-Za-z0-9._/])/tmp($|[^A-Za-z0-9._-])' \
+         -- "${script}" 2>/dev/null \
+         | grep --invert-match --extended-regexp \
+           '(^|[[:space:];&|(:])(export|readonly|local|declare)?[[:space:]]*(TMP|TMPDIR|TEMP|TEMPDIR)=/tmp([[:space:];&|)]|$)|--setenv[[:space:]]+(TMP|TMPDIR|TEMP|TEMPDIR)[[:space:]]+/tmp([[:space:];&|)]|$)' \
+         || true)"
+      if [ -z "${hits}" ]; then
+         continue
+      fi
+      while IFS= read -r line; do
+         fail "R-170 hardcoded /tmp (use \${TMP})" "'${script}:${line}'"
+      done <<< "${hits}"
+   done
+}
+
 check_R090_command_v() {
    local script hits line
 
@@ -1372,6 +1422,7 @@ run_file_checks() {
       check_R080_shellcheck_source_path "${shell_files[@]}"
       check_R081_source_devnull "${shell_files[@]}"
       check_R090_command_v "${shell_files[@]}"
+      check_R170_tmp_hardcode "${shell_files[@]}"
       check_R120_rm "${shell_files[@]}"
       check_R130_null_command "${shell_files[@]}"
       check_R034_echo "${shell_files[@]}"
