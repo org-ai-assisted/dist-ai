@@ -6,6 +6,9 @@
 ## AI-Assisted
 
 ## style-ok: no-safe-rm (rm -f of a mktemp temp only)
+## style-ok: no-has -- 'has' ships in helper-scripts, and the preflight below
+##           exists precisely to report a MISSING helper-scripts runtime;
+##           sourcing that runtime to run the check would be circular.
 
 ## Adversarial test runner for developer-meta-files' 'git-meld' external diff
 ## driver. Security property under test: a real submodule-gitlink change must
@@ -81,6 +84,21 @@ if [ -z "${git_meld}" ] || [ ! -x "${git_meld}" ]; then
    ## dm-consumer.yml instead of investigated.
    printf '%s\n' "SKIP: git-meld not found; pass it as arg 1, or check out helper-scripts." >&2
    exit 77
+fi
+
+## Runtime dependencies the drivers probe with 'has' under errexit. A missing
+## one kills the external-diff driver with NO diagnostic (empty output, rc 1),
+## which every adversarial case then reports as a hidden change -- 150+ opaque
+## failures for one absent package. Name it here instead. The GUI viewers
+## (meld, kdiff3) are deliberately absent from this list: the suites stub them.
+missing_deps=()
+for dep in git diff stcat unicode-show mktemp safe-rm; do
+   command -v -- "${dep}" >/dev/null 2>&1 || missing_deps+=( "${dep}" )
+done
+if [ "${#missing_deps[@]}" -gt 0 ]; then
+   printf '%s\n' "FAIL: git-meld-tests: the review drivers need these commands, none found in PATH: ${missing_deps[*]}" >&2
+   printf '%s\n' "Hint: they are hard dependencies of helper-scripts (debian/control); in CI add them to .github/dm-consumer.yml dist-ai-tests.apt-packages." >&2
+   exit 1
 fi
 
 printf '%s\n' "== git-meld-tests: adversarial hidden-change suites =="
