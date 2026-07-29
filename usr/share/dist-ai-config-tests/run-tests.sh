@@ -71,7 +71,9 @@ case "${lane}" in
          'tests/claude-goal-state-test.py'
          'tests/redactor-date-shape-test.py'
          'tests/safe-pkill-guard-test.py'
+         'tests/ci-status-checkruns-test.py'
          'tests/git-hooks-unicode-test.sh'
+         'tests/ci-status-test.sh'
          'tests/string-parsing-stress-test.sh'
          'claude/hooks/tests/test-cowbuilder-guard.py'
       )
