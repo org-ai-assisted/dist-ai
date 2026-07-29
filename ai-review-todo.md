@@ -12,8 +12,11 @@ findings are folded in.
   `usr/share/github-org-tools-tests/`, `usr/share/tb-updater-tests/`.
 - Why it matters: R-170 is a single grep enforced repo-wide over WHOLE changed
   files, so a regex false positive blocks unrelated pushes.
-- Why it did not run: `curl` timed out after 600s contacting
-  `api.z.ai/api/paas/v4/chat/completions` (twice, both repos).
+- Why it did not run: the timeout was glm-review sending the payload with
+  GLM-4.7's default reasoning on -- fixed in dist-ai-config a10f7b7, which
+  cut a request from 7m16s to ~5s. It now fails fast on
+  `HTTP 429 -- Rate limit reached for requests` instead; free-tier request
+  limit, window outlasts several minutes.
 - Covered meanwhile by codex, coderabbit, agy and static; codex's two
   false-positive findings were fixed in b7d3d48.
 - Re-run: `ai-review --only glm b7d3d48~1`
