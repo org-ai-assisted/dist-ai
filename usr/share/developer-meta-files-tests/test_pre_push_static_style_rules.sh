@@ -426,6 +426,39 @@ else
    printf 'PASS: uncommitted deletion does not crash the large-files hook\n'
 fi
 
+## check-shebang-scripts-are-executable must SKIP importable python modules.
+## A file under a package directory is reached by 'import', never exec'd, so its
+## shebang documents the interpreter rather than promising the file runs;
+## helper-scripts carries one on 23 such non-executable modules. Demanding +x
+## there is meaningless, and "fixing" it by stripping the shebang breaks a
+## deliberate convention. An entry point outside such a directory must STILL be
+## flagged -- that is where a missing +x actually bites.
+shebang_repo="$(mktemp --directory --tmpdir="${tmp_root}" shebang.XXXXXX)"
+git -C "${shebang_repo}" init --quiet
+git -C "${shebang_repo}" config user.email 'ci-test@example.com'
+git -C "${shebang_repo}" config user.name 'ci-test'
+git -C "${shebang_repo}" commit --quiet --no-verify --allow-empty --message base
+shebang_base="$(git -C "${shebang_repo}" rev-parse HEAD)"
+mkdir --parents -- "${shebang_repo}/usr/lib/python3/dist-packages/pkg" "${shebang_repo}/usr/bin"
+printf '#!/usr/bin/python3 -Bsu\nx = 1\n' > "${shebang_repo}/usr/lib/python3/dist-packages/pkg/mod.py"
+printf '#!/usr/bin/python3 -Bsu\ny = 2\n' > "${shebang_repo}/usr/bin/entrypoint"
+chmod 0644 -- "${shebang_repo}/usr/lib/python3/dist-packages/pkg/mod.py" "${shebang_repo}/usr/bin/entrypoint"
+git -C "${shebang_repo}" add --all
+git -C "${shebang_repo}" commit --quiet --no-verify --message shebangs
+shebang_out="$( cd -- "${shebang_repo}" && "${GATE}" "${shebang_base}" 2>&1 || true )"
+if printf '%s\n' "${shebang_out}" | grep --quiet --fixed-strings -- 'dist-packages/pkg/mod.py: has a shebang'; then
+   printf 'FAIL: importable module was flagged by check-shebang-scripts-are-executable\n' >&2
+   failures=$((failures + 1))
+else
+   printf 'PASS: importable python module exempt from the shebang-executable hook\n'
+fi
+if printf '%s\n' "${shebang_out}" | grep --quiet --fixed-strings -- 'usr/bin/entrypoint: has a shebang'; then
+   printf 'PASS: a non-executable entry point is still flagged\n'
+else
+   printf 'FAIL: entry point NOT flagged -- the exemption is too broad\n' >&2
+   failures=$((failures + 1))
+fi
+
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "test_pre_push_static_style_rules: ${failures} assertion(s) FAILED." >&2
    exit 1

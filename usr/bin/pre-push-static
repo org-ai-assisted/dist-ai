@@ -1229,7 +1229,7 @@ check_precommit_hooks() {
    local f
    local -a text_files exec_text_files symlink_files \
             yaml_files json_files toml_files xml_files \
-            python_files req_files
+            python_files req_files shebang_check_files
 
    text_files=()
    exec_text_files=()
@@ -1324,7 +1324,26 @@ check_precommit_hooks() {
    run_precommit_fixer end-of-file-fixer         "${text_files[@]}"
    run_precommit_fixer trailing-whitespace-fixer "${text_files[@]}"
    run_precommit_hook mixed-line-ending --fix=no -- "${text_files[@]}"
-   run_precommit_hook check-shebang-scripts-are-executable -- "${text_files[@]}"
+   ## An importable module is NOT a script. Files under a python package
+   ## directory are reached by 'import', never exec'd, so their shebang
+   ## documents the interpreter (here '-Bsu') rather than promising the file
+   ## can be run -- helper-scripts carries one on 23 such modules, all
+   ## non-executable. Handing them to this hook demands a '+x' that would be
+   ## meaningless, and "fixing" it by stripping the shebang instead breaks a
+   ## deliberate, repo-wide convention. Entry points in bin/ are unaffected
+   ## and stay checked, which is where a missing '+x' actually bites.
+   shebang_check_files=()
+   for f in "${text_files[@]}"; do
+      case "${f}" in
+         */dist-packages/*|*/site-packages/*)
+            continue
+            ;;
+      esac
+      shebang_check_files+=("${f}")
+   done
+   if [ "${#shebang_check_files[@]}" -gt 0 ]; then
+      run_precommit_hook check-shebang-scripts-are-executable -- "${shebang_check_files[@]}"
+   fi
 
    ## text AND executable:
    run_precommit_hook check-executables-have-shebangs -- "${exec_text_files[@]}"
