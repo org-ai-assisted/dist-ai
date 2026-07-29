@@ -120,6 +120,20 @@ write(
     "green.p1",
     {"total_count": 2, "check_runs": [run(1), run(2, conclusion="skipped")]},
 )
+## Round 1 spans two pages and is still pending; round 2 is a single short
+## page. The tool must answer from round 2 ALONE -- if the previous round's
+## page files survive in the working directory they are counted again, so a
+## finished-and-green ref reports 152 checks and a stale pending one.
+write(
+    "shrink.r1.p1",
+    {"total_count": 150, "check_runs": [run(i) for i in range(99)]
+     + [run(500, status="in_progress", conclusion=None)]},
+)
+write(
+    "shrink.r1.p2",
+    {"total_count": 150, "check_runs": [run(i) for i in range(100, 150)]},
+)
+write("shrink.r2.p1", {"total_count": 2, "check_runs": [run(1), run(2)]})
 write(
     "pendingonly.p1",
     {
@@ -150,7 +164,18 @@ case "${path}" in
       page="${page%%&*}"
       ;;
 esac
-fixture="${here}/../fx/${CI_FIXTURE}.p${page}"
+## Some scenarios must answer differently on the second poll. A request for
+## page 1 starts a new round; a fixture may provide per-round files.
+round_file="${here}/../fx/.round"
+[ -r "${round_file}" ] || printf '%s' 0 > "${round_file}"
+round="$(cat -- "${round_file}")"
+if [ "${page}" = "1" ]; then
+   round=$(( round + 1 ))
+   printf '%s' "${round}" > "${round_file}"
+fi
+
+fixture="${here}/../fx/${CI_FIXTURE}.r${round}.p${page}"
+[ -r "${fixture}" ] || fixture="${here}/../fx/${CI_FIXTURE}.p${page}"
 if [ -r "${fixture}" ]; then
    cat -- "${fixture}"
 else
@@ -178,6 +203,8 @@ expect_exit() {
    local label="$1" expected="$2" fixture="$3"
    shift 3
    local rc=0 output=""
+   ## Each scenario starts at round 1; the counter is shared state otherwise.
+   printf '%s' 0 > "${test_dir}/fx/.round"
    output="$(CI_FIXTURE="${fixture}" PATH="${test_dir}/bin:${PATH}" \
       "${gate}" --repo owner/name --ref deadbeef "$@" 2>&1)" || rc=$?
    printf '%s\n' "${output}" > "${test_dir}/out.${fixture}"
@@ -215,6 +242,16 @@ if [ -e "${test_dir}/PWNED" ] || [ -e "PWNED" ]; then
    report fail "check-run name cannot execute commands" "payload EXECUTED"
 else
    report pass "check-run name cannot execute commands" "payload inert"
+fi
+
+## Polling must not accumulate the previous round's pages. Two polls: the
+## first is a pending 150-check spread, the second a green 2-check answer.
+expect_exit "stale pages are cleared between polls"     0 shrink  --timeout 2
+if grep --quiet --extended-regexp 'all 2 check' "${test_dir}/out.shrink"; then
+   report pass "poll answers from the latest round only" "2 checks"
+else
+   report fail "poll answers from the latest round only" \
+      "$(grep --extended-regexp 'check\(s\)' "${test_dir}/out.shrink" | tail -1)"
 fi
 
 ## A short timeout must not block for a whole poll interval first.
