@@ -38,8 +38,6 @@ set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
 
-SKIP=77
-
 test_failures=0
 work_dir=''
 
@@ -52,23 +50,34 @@ fail() {
    test_failures=$((test_failures + 1))
 }
 
+## Fail closed. A missing prerequisite is an environment defect: skipping on
+## it turns a test that never ran into a green result, which is worse than no
+## test at all.
+assert_prerequisite() {
+   local description
+
+   description="$1"
+   shift
+
+   if ! "$@"; then
+      printf '%s\n' "FATAL: ${description}" >&2
+      exit 1
+   fi
+}
+
 cleanup() {
    if [ -n "${work_dir}" ] && [ -d "${work_dir}" ]; then
       safe-rm --recursive --force -- "${work_dir}"
    fi
 }
 
-if [ ! -r '/usr/libexec/helper-scripts/has.sh' ]; then
-   printf '%s\n' 'test_dm_packages_html_generator: helper-scripts has.sh not installed; skipping.' >&2
-   exit "${SKIP}"
-fi
+assert_prerequisite \
+   'helper-scripts has.sh is not installed (/usr/libexec/helper-scripts/has.sh)' \
+   test -r '/usr/libexec/helper-scripts/has.sh'
 # shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
 source /usr/libexec/helper-scripts/has.sh
 
-if ! has safe-rm; then
-   printf '%s\n' 'test_dm_packages_html_generator: safe-rm not found; skipping.' >&2
-   exit "${SKIP}"
-fi
+assert_prerequisite 'safe-rm not found' has safe-rm
 
 ## Locate the generator: prefer the installed binary, else the
 ## developer-meta-files checkout inside a derivative-maker source tree.
@@ -91,13 +100,12 @@ locate_generator() {
 }
 
 generator="$(locate_generator)"
-if [ -z "${generator}" ]; then
-   printf '%s\n' 'test_dm_packages_html_generator: generator not found; skipping.' >&2
-   exit "${SKIP}"
-fi
+assert_prerequisite \
+   'dm-packages-html-generator not found, neither installed nor under DM_SOURCE_DIR' \
+   test -n "${generator}"
 
 ## The generator is present, so its declared runtime dependencies must be too.
-## A missing dependency here is a packaging defect, not a reason to skip.
+## A missing dependency here is a packaging defect.
 if ! python3 -c 'import debian.deb822, jinja2' >/dev/null 2>&1; then
    printf '%s\n' \
       'test_dm_packages_html_generator: python3-debian / python3-jinja2 missing, but the generator is installed; that is a broken dependency declaration.' >&2
@@ -215,6 +223,11 @@ printf '%s\n' \
 'Version: 1.0' \
 'Architecture: all' \
 'Description: current directory attempt' \
+'' \
+'Package: index.html' \
+'Version: 1.0' \
+'Architecture: all' \
+'Description: reserved name colliding with the suite index file' \
    | gzip --stdout > "${traversal_binary}/Packages.gz"
 
 traversal_rc=0
@@ -247,6 +260,22 @@ if [ "${traversal_rc}" -eq 0 ]; then
    fail 'run that skipped input still exited 0'
 else
    pass 'run that skipped input exits non-zero'
+fi
+
+## A package named 'index.html' is legal per the Debian name grammar (dots
+## are allowed) but collides with the suite index FILE, so it must be
+## rejected by name rather than crashing mid-render.
+if printf '%s' "${traversal_output}" | grep --quiet --fixed-strings -- "'index.html'"; then
+   pass 'reserved output name is rejected by validation'
+else
+   fail 'reserved output name index.html was not rejected'
+fi
+
+## An incomplete site must not be published; the previous site stays.
+if [ -e "${traversal_out}" ]; then
+   fail 'incomplete site was published despite warnings'
+else
+   pass 'incomplete site is not published'
 fi
 
 ## Rendering fidelity: the page must not contradict the control file.
