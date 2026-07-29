@@ -111,9 +111,17 @@ locate_generator() {
 }
 
 generator="$(locate_generator)"
-assert_prerequisite \
-   'dm-packages-html-generator not found, neither installed nor under DM_SOURCE_DIR' \
-   test -n "${generator}"
+if [ -z "${generator}" ]; then
+   ## 77 SKIP, not FAIL, for an ABSENT SUBJECT only. dm-packages-html-generator
+   ## is on no mainline branch yet, so its absence means "not shipped", not
+   ## "broken", and a suite whose subject does not exist must not gate other
+   ## people's PRs -- the runner contract is 0 PASS / 77 SKIP / else FAIL.
+   ## Every other prerequisite below stays fail-closed on purpose: once the
+   ## generator IS present, a missing dependency is a real packaging defect.
+   printf '%s\n' \
+      'SKIP: test_dm_packages_html_generator: dm-packages-html-generator not found, neither installed nor under DM_SOURCE_DIR.' >&2
+   exit 77
+fi
 
 ## The generator is present, so its declared runtime dependencies must be too.
 ## A missing dependency here is a packaging defect.

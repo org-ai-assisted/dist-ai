@@ -59,10 +59,15 @@ if [ "${#tests[@]}" -eq 0 ]; then
    exit 1
 fi
 
-## Run each test; 0 = pass, anything else = fail. No skip code: a test that
-## cannot run its prerequisites now says so with a FATAL and a non-zero exit.
+## 0 = pass, 77 = SKIP, anything else = fail -- the same contract
+## dist-ai-tests-all applies to suites, applied here to the tests inside one.
+## 77 is reserved for an ABSENT SUBJECT: a test whose target does not exist
+## cannot judge it, and failing instead gates unrelated PRs on a tool that was
+## never shipped. A missing prerequisite of a subject that IS present stays a
+## FATAL, so a broken dependency declaration still fails loudly.
 failed=0
 ran=0
+skipped=0
 for test_path in "${tests[@]}"; do
    test_name="$(basename -- "${test_path}")"
    rc=0
@@ -72,6 +77,10 @@ for test_path in "${tests[@]}"; do
          ran=$(( ran + 1 ))
          printf 'developer-meta-files-tests: PASS %s\n' "${test_name}"
          ;;
+      77)
+         skipped=$(( skipped + 1 ))
+         printf 'developer-meta-files-tests: SKIP %s\n' "${test_name}"
+         ;;
       *)
          failed=$(( failed + 1 ))
          printf 'developer-meta-files-tests: FAIL %s (exit %s)\n' "${test_name}" "${rc}" >&2
@@ -79,9 +88,14 @@ for test_path in "${tests[@]}"; do
    esac
 done
 
-printf 'developer-meta-files-tests: %d passed, %d failed.\n' "${ran}" "${failed}"
+printf 'developer-meta-files-tests: %d passed, %d failed, %d skipped.\n' \
+   "${ran}" "${failed}" "${skipped}"
 
 if [ "${failed}" -gt 0 ]; then
    exit 1
+fi
+## Nothing actually ran: report SKIP rather than a pass over zero assertions.
+if [ "${ran}" -eq 0 ]; then
+   exit 77
 fi
 exit 0
