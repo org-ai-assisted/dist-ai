@@ -26,6 +26,26 @@ set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
 
+## The suites must run non-interactively. git-diff-review sets
+## git_review_display_fatal_content, so on undecodable content it asks the
+## operator for consent by reading /dev/tty; a suite that inherited the
+## operator's controlling terminal blocks there forever. Without a controlling
+## terminal the prompt returns "nobody to ask" (rc 2) and each driver takes its
+## documented non-interactive path. The interactive answers are covered
+## separately, through a real pty, by interactive-lib.sh.
+if [ -z "${GIT_MELD_TESTS_NO_CTTY:-}" ]; then
+   export GIT_MELD_TESTS_NO_CTTY=1
+   self="$( readlink --canonicalize -- "${BASH_SOURCE[0]}" )"
+   if { true < /dev/tty; } 2>/dev/null; then
+      ## '--wait' is required: setsid forks when the caller is a process group
+      ## leader, and without it the fork's exit code would be lost. Run it as a
+      ## child and forward the code rather than exec-ing (R-103).
+      rc=0
+      setsid --wait -- "${self}" "$@" || rc=$?
+      exit "${rc}"
+   fi
+fi
+
 mydir="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )"
 ## Test payload directory: installed share dir, or the in-repo path when running
 ## from a dist-ai checkout.
@@ -47,7 +67,7 @@ adversarial_libs=(
 git_meld="${1:-}"
 if [ -z "${git_meld}" ]; then
    for cand in \
-      "${mydir}/../../derivative-maker/packages/kicksecure/developer-meta-files/usr/bin/git-meld" \
+      "${mydir}/../../derivative-maker/packages/kicksecure/helper-scripts/usr/bin/git-meld" \
       "/usr/bin/git-meld" ; do
       if [ -x "${cand}" ]; then
          git_meld="${cand}"
@@ -56,8 +76,11 @@ if [ -z "${git_meld}" ]; then
    done
 fi
 if [ -z "${git_meld}" ] || [ ! -x "${git_meld}" ]; then
-   printf '%s\n' "ERROR: git-meld not found; pass it as arg 1." >&2
-   exit 2
+   ## 77 is the runner's SKIP code. Exiting 2 made an absent subject look like a
+   ## suite failure, which is what got this suite skipped in a consumer's
+   ## dm-consumer.yml instead of investigated.
+   printf '%s\n' "SKIP: git-meld not found; pass it as arg 1, or check out helper-scripts." >&2
+   exit 77
 fi
 
 printf '%s\n' "== git-meld-tests: adversarial hidden-change suites =="

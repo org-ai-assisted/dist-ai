@@ -31,7 +31,7 @@ fi
 git_meld="${1:-}"
 if [ -z "${git_meld}" ]; then
    for cand in \
-      "${mydir}/../../derivative-maker/packages/kicksecure/developer-meta-files/usr/bin/git-meld" \
+      "${mydir}/../../derivative-maker/packages/kicksecure/helper-scripts/usr/bin/git-meld" \
       "/usr/bin/git-meld" ; do
       if [ -x "${cand}" ]; then
          git_meld="${cand}"
@@ -40,8 +40,9 @@ if [ -z "${git_meld}" ]; then
    done
 fi
 if [ -z "${git_meld}" ] || [ ! -x "${git_meld}" ]; then
-   printf '%s\n' "ERROR: git-meld not found; pass it as arg 1." >&2
-   exit 2
+   ## 77 is the runner's SKIP code; an absent subject is not a suite failure.
+   printf '%s\n' "SKIP: git-meld not found; pass it as arg 1, or check out helper-scripts." >&2
+   exit 77
 fi
 
 iters="${2:-300}"

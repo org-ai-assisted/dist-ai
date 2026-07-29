@@ -64,8 +64,25 @@ printf 'x \xff\xfe y\n' > bad.txt
 git add -A
 git commit -qm bad
 
+## The review tools must never spawn a pager. On a terminal git pages the
+## diffstat of 'git diff --stat' unless '--no-pager' is given, and the pager then
+## waits for a keypress no automated consumer can send. GIT_PAGER points at a
+## stub that records the call and otherwise behaves like 'cat', so a regression
+## is a named FAIL here instead of a hang.
+pager_log="${work}/pager.log"
+pager_stub="${work}/pager-stub"
+{
+   printf '%s\n' '#!/bin/bash'
+   printf 'printf "PAGER-CALLED\\n" >> %q\n' "${pager_log}"
+   printf '%s\n' 'exec cat'
+} > "${pager_stub}"
+chmod +x -- "${pager_stub}"
+export GIT_PAGER="${pager_stub}"
+true > "${pager_log}"
+
 pty_code() {
-   ## $1 = answer fed to the prompt; echoes git-diff-review's exit code.
+   ## $1 = answer fed to the prompt; echoes git-diff-review's exit code, or
+   ## 'timeout' when the tool never exited (see git-meld-tests-pty.py).
    local out
    out="$( cd -- "${repo}" && python3 "${pyhelper}" "$1" "${gdr}" HEAD~1 HEAD 2>/dev/null )"
    printf '%s' "${out}" | sed -n 's/^PTY_EXITCODE=//p'
@@ -74,12 +91,22 @@ pty_code() {
 y_code="$( pty_code y )"
 if [ "${y_code}" = 0 ]; then
    pass "interactive: 'y' continues past fatal content (exit 0)"
+elif [ "${y_code}" = timeout ]; then
+   fail "interactive: 'y' never returned; the tool is stuck on a prompt or a pager"
 else
    fail "interactive: 'y' did not continue (exit '${y_code}')"
 fi
 
+if [ -s "${pager_log}" ]; then
+   fail "a pager was spawned under a tty (missing '--no-pager'); an unattended review would hang"
+else
+   pass "no pager spawned under a tty"
+fi
+
 n_code="$( pty_code n )"
-if [ -n "${n_code}" ] && [ "${n_code}" != 0 ]; then
+if [ "${n_code}" = timeout ]; then
+   fail "interactive: 'n' never returned; the tool is stuck on a prompt or a pager"
+elif [ -n "${n_code}" ] && [ "${n_code}" != 0 ]; then
    pass "interactive: 'n' fails closed (exit '${n_code}')"
 else
    fail "interactive: 'n' did not fail closed (exit '${n_code}')"

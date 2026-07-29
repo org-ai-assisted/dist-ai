@@ -341,7 +341,16 @@ wire() {
          fi
          ;;
       git-meld)
-         wire_args=( "${dmf}/usr/bin/git-meld" )
+         ## git-meld moved from developer-meta-files to helper-scripts; the
+         ## suite drives the tool plus the helper-scripts libs it sources.
+         wire_args=( "${hs}/usr/bin/git-meld" )
+         if [ -n "${hs}" ]; then
+            wire_env=(
+               "HELPER_SCRIPTS_PATH=${hs}"
+               "PATH=${hs}/usr/bin:${PATH}"
+               "PYTHONPATH=${hs}/usr/lib/python3/dist-packages"
+            )
+         fi
          ;;
       dm-virtualbox-wiki-links)
          wire_args=( "${dmf}/usr/bin/dm-virtualbox-update-local-and-wiki-links" )
@@ -438,10 +447,10 @@ wire() {
 suite_component() {
    local base="${1%%-tests*}"
    case "${base}" in
-      check-ref-commits-for-unicode|grep-find-unicode-wrapper|unicode-show|stcat-family|stdisplay|sanitize-string|lockfile)
+      check-ref-commits-for-unicode|grep-find-unicode-wrapper|unicode-show|stcat-family|stdisplay|sanitize-string|lockfile|git-meld)
          printf '%s' 'helper-scripts'
          ;;
-      developer-meta-files|github-org-tools|git-meld|dm-virtualbox-wiki-links)
+      developer-meta-files|github-org-tools|dm-virtualbox-wiki-links)
          printf '%s' 'developer-meta-files'
          ;;
       dm-help-steps|dm-reprepro-tracking|dm-reproducible-build)
