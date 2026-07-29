@@ -13,8 +13,8 @@
 ##   POLICY_RULESET_RULES_MIRROR / _BOT     ->  2 rules, NO
 ##                                              required_signatures
 ##
-## Rationale lives once in agents/github-policy-canonical-vs-
-## mirror.md ("Summary of intentional canonical-vs-mirror splits").
+## Rationale lives once in agents/github-policy-org-kinds.md
+## ("Summary of intentional per-kind splits").
 
 set -o errexit
 set -o nounset

@@ -5,7 +5,7 @@
 
 ## AI-Assisted
 
-## agents/github-policy-canonical-vs-mirror.md
+## agents/github-policy-org-kinds.md
 ##
 ## The org-level ruleset upsert in apply_org_policy is PAID PLAN
 ## ONLY (commented out); not exercised here.
@@ -45,7 +45,7 @@ source_required=(
    ## SOURCE org-level Actions/CI: disabled entirely, org-wide
    ## (enabled_repositories=none). Canonical CI runs on the org's own
    ## infra, not GitHub Actions; see
-   ## agents/github-policy-canonical-vs-mirror.md.
+   ## agents/github-policy-org-kinds.md.
    'actions enabled_repositories=none (CI disabled org-wide)'
    ## SOURCE per-repo body: has_issues stays on, no allow_forking
    ## field at all (the body simply omits it).
@@ -57,7 +57,7 @@ source_required=(
    ## channel per .github/SECURITY.md).
    'disable private vulnerability reporting'
    ## SOURCE-only UI-flip skip lines (no REST setter as of 2026-05);
-   ## see agents/github-policy-canonical-vs-mirror.md "SOURCE-side
+   ## see agents/github-policy-org-kinds.md "SOURCE-side
    ## UI-only operator flips".
    'Dependabot grouped security updates: enable in UI'
    'Code scanning: recommend security-extended query suite'
