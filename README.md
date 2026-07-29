@@ -43,6 +43,15 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 | `check-ref-commits-for-unicode-tests` | shipping | `usr/share/check-ref-commits-for-unicode-tests/` |
 | `developer-meta-files-tests` | shipping | `usr/share/developer-meta-files-tests/` |
 | `github-org-tools-tests` | shipping | `usr/share/github-org-tools-tests/` |
+| `dm-reprepro-tracking-tests` | shipping | `usr/share/dm-reprepro-tracking-tests/` |
+| `dm-virtualbox-wiki-links-tests` | shipping | `usr/share/dm-virtualbox-wiki-links-tests/` |
+| `git-meld-tests`         | shipping | `usr/share/git-meld-tests/` |
+| `lockfile-tests`         | shipping | `usr/share/lockfile-tests/` |
+| `msgcollector-tests`     | shipping | `usr/share/msgcollector-tests/` |
+| `secure-terminal-tests`  | shipping | `usr/share/secure-terminal-tests/` |
+| `web-analyzer-tests`     | shipping | `usr/share/web-analyzer-tests/` |
+| `website-tests`          | shipping | `usr/share/website-tests/` |
+| `dist-ai-config-tests`   | shipping | `usr/share/dist-ai-config-tests/` |
 | `discourse-dom-snapshot` | planned  | `usr/share/discourse-dom-snapshot/` |
 | `sdwdate-ci-fuzz`        | planned  | `usr/share/sdwdate-ci-fuzz/` |
 

@@ -909,6 +909,80 @@ Description: Tests for the setup-wizard-dist first-boot setup wizard
  on both, saving a screenshot. These backends are hard dependencies so the test
  always runs rather than skipping.
 
+Package: dist-ai-registry-tests
+Architecture: all
+Depends: ${misc:Depends},
+ bash (>= 4)
+Description: Consistency lint over dist-ai's own test-suite registry
+ Asserts that every suite registered in dist-ai-tests-all has an executable
+ entrypoint, is shipped by some debian/*.install, has a wire() case, and has a
+ suite_component() mapping -- and that no test entrypoint is left registered
+ nowhere.
+ .
+ Every one of those inconsistencies fails SILENTLY as a green run, which is the
+ worst failure mode a test runner can have: a suite whose entrypoint lost its
+ executable bit is reported MISSING and counted as a SKIP; an unpackaged suite
+ is MISSING the same way once installed while still passing from a checkout; a
+ suite with no wire() case hits the default arm's 'return 1' and aborts the
+ entire run under errexit; a suite with no suite_component() mapping drops out
+ of every per-repo CI run while looking registered.
+ .
+ A source-tree lint: set DIST_AI_REPO or run it from a checkout. Exits 77
+ (SKIP) without one. No root, no network.
+
+Package: dist-ai-config-tests
+Architecture: all
+Depends: ${misc:Depends},
+ bash (>= 4),
+ git,
+ python3,
+ safe-rm
+Suggests: helper-scripts
+Description: Test surface for the dist-ai-config agent configuration repo
+ Drives the tests that ship in a dist-ai-config checkout, split into three
+ lanes because their runtime requirements differ sharply.
+ .
+ The core lane is container-safe: the tmux goal-chip parser, the
+ secret-redactor date-shape gate, the safe-pkill and cowbuilder PreToolUse
+ hooks, the git-hooks unicode/PII gates, and a fixed injection corpus for the
+ sandbox-run / qube-ctl / container-guard / sandbox-view argument parsers. No
+ root, no network, no Qubes -- the Qubes transport is stubbed and the tools are
+ sourced from the checkout as shell libraries.
+ .
+ The fuzz lane (dist-ai-config-tests-fuzz) runs randomized property/oracle
+ fuzzing over the same four parsers against a quoting oracle, time-boxed to fit
+ the runner's fuzz budget. The resilience lane
+ (dist-ai-config-tests-resilience) is integration-only: it injects failures
+ (SIGKILL, OOM, API-down, SIGSTOP stall, supervisor kill) into the durable
+ background-work stack and needs a live 'systemd --user' manager plus a
+ journal, so it exits 77 (SKIP) in a container.
+ .
+ Targets a checkout via DIST_AI_CONFIG_PATH; exits 77 (SKIP) when it is
+ unavailable.
+
+Package: lockfile-tests
+Architecture: all
+Depends: ${misc:Depends},
+ bash (>= 4),
+ python3
+Suggests: helper-scripts
+Description: Concurrency tests for the flock-based lock helper
+ Comprehensive test + fuzz for the helper-scripts flock mutex (lockfile.sh, an
+ atomic FLOCKER re-exec lock) in both of its modes: SOURCE mode (self-lock, with
+ the optional LOCK_NAME per-key override) and WRAP mode
+ ('lockfile.sh <key> -- <cmd>').
+ .
+ Proves self-lock and per-key skip behaviour, concurrency, exit-code
+ propagation, absence of variable leaks into the caller's shell, absence of
+ self-deadlock, and the usage guards. The fuzz lane (lockfile-tests-fuzz)
+ hammers random per-key locks through wrap mode and asserts per-key isolation
+ (the same key serializes, distinct keys do not) against a key-equality oracle.
+ .
+ No root, no network. The subject defaults to the installed
+ /usr/libexec/helper-scripts/lockfile.sh; set LOCKFILE_SH to a file or
+ LOCKFILE_SH_REPO to a helper-scripts checkout. Exits 77 (SKIP) when the subject
+ cannot be found.
+
 Package: iso-boot-tests
 Architecture: all
 Depends: ${misc:Depends},

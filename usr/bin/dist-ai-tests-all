@@ -39,6 +39,9 @@ timeout_heavy=600
 core_suites=(
    check-ref-commits-for-unicode-tests
    developer-meta-files-tests
+   dist-ai-config-tests
+   dist-ai-config-tests-coverage
+   dist-ai-registry-tests
    github-org-tools-tests
    dm-help-steps-tests
    dm-reprepro-tracking-tests
@@ -69,6 +72,7 @@ core_suites=(
 )
 fuzz_suites=(
    check-ref-commits-for-unicode-tests-fuzz
+   dist-ai-config-tests-fuzz
    git-meld-tests-fuzz
    grep-find-unicode-wrapper-tests-fuzz
    iso-boot-tests-fuzz
@@ -94,6 +98,9 @@ e2e_suites=(
    tb-updater-tests-e2e
 )
 integration_suites=(
+   dist-ai-config-tests-resilience
+   dm-image-boot-tests
+   dm-reproducible-build-tests
    sdwdate-gui-tests-integration
    secure-terminal-tests-apparmor
    tb-updater-tests-sandbox-resume
@@ -161,6 +168,12 @@ pkg_dir() {
       onion-grater)
          printf '%s' "${repo_root}/packages/whonix/onion-grater"
          ;;
+      ## Standalone repos with no packages/ subpath at all. Yielding empty (not
+      ## a fabricated monorepo path) makes their suites exit 77 SKIP in
+      ## --repo-root mode instead of failing to find a directory that was never
+      ## going to exist; --component-root above is their real entry point.
+      dist-ai|dist-ai-config)
+         ;;
       *)
          printf '%s' "${repo_root}/packages/kicksecure/${name}"
          ;;
@@ -225,6 +238,18 @@ wire() {
             "SANITIZE_STRING_BIN=${hs}/usr/bin/sanitize-string"
             "PYTHONPATH=${hs}/usr/lib/python3/dist-packages"
          )
+         ;;
+      lockfile)
+         ## lockfile.sh ships in helper-scripts; the suite takes either a file
+         ## (LOCKFILE_SH) or a checkout it resolves the file from.
+         wire_env=( "LOCKFILE_SH_REPO=${hs}" )
+         ;;
+      iso-boot)
+         ## The QMP parser under test (qmp_client) is dist-ai's own payload under
+         ## usr/share/iso-boot-tests, not a component checkout, so there is
+         ## nothing to point at.
+         wire_env=()
+         wire_args=()
          ;;
       onion-grater)
          wire_env=( "ONION_GRATER_REPO=$( pkg_dir onion-grater )" )
@@ -324,6 +349,38 @@ wire() {
       dm-help-steps)
          wire_env=( "UMOUNT_KILL_SH=$( pkg_dir derivative-maker )/help-steps/umount_kill.sh" )
          ;;
+      dm-reprepro-tracking)
+         wire_env=( "DM_SOURCE_DIR=$( pkg_dir derivative-maker )" )
+         ;;
+      dm-reproducible-build)
+         wire_env=( "DERIVATIVE_MAKER_DIR=$( pkg_dir derivative-maker )" )
+         ;;
+      dm-image-boot)
+         ## Self-contained: it bundles dm-qemu + dm-image-test under
+         ## usr/share/dm-image-boot-tests and takes the image to boot as an
+         ## argument, so there is no checkout to point at. With no --disk/--iso
+         ## it exits 77, which is the expected verdict in container CI.
+         wire_env=()
+         wire_args=()
+         ;;
+      dist-ai-registry)
+         ## Lints this repo's own suite registry, so its subject is the dist-ai
+         ## checkout itself.
+         wire_env=( "DIST_AI_REPO=$( pkg_dir dist-ai )" )
+         ;;
+      dist-ai-config)
+         ## The tests live in the dist-ai-config checkout, not here; the suite
+         ## drives them from DIST_AI_CONFIG_PATH. Several exercise tools that
+         ## source helper-scripts, so hand it that runtime when available.
+         wire_env=( "DIST_AI_CONFIG_PATH=$( pkg_dir dist-ai-config )" )
+         if [ -n "${hs}" ]; then
+            wire_env+=(
+               "HELPER_SCRIPTS_PATH=${hs}"
+               "PATH=${hs}/usr/bin:${PATH}"
+               "PYTHONPATH=${hs}/usr/lib/python3/dist-packages"
+            )
+         fi
+         ;;
       web-analyzer)
          ## analyzer.js lives in output-lies.github.io, not a derivative-maker
          ## component, so there is nothing under --repo-root to point at; it is
@@ -381,14 +438,20 @@ wire() {
 suite_component() {
    local base="${1%%-tests*}"
    case "${base}" in
-      check-ref-commits-for-unicode|grep-find-unicode-wrapper|unicode-show|stcat-family|stdisplay|sanitize-string)
+      check-ref-commits-for-unicode|grep-find-unicode-wrapper|unicode-show|stcat-family|stdisplay|sanitize-string|lockfile)
          printf '%s' 'helper-scripts'
          ;;
       developer-meta-files|github-org-tools|git-meld|dm-virtualbox-wiki-links)
          printf '%s' 'developer-meta-files'
          ;;
-      dm-help-steps)
+      dm-help-steps|dm-reprepro-tracking|dm-reproducible-build)
          printf '%s' 'derivative-maker'
+         ;;
+      dist-ai-config)
+         printf '%s' 'dist-ai-config'
+         ;;
+      dist-ai-registry)
+         printf '%s' 'dist-ai'
          ;;
       onion-grater)
          printf '%s' 'onion-grater'
@@ -420,7 +483,7 @@ suite_component() {
       secure-terminal)
          printf '%s' 'secure-terminal'
          ;;
-      terminal-resilience)
+      terminal-resilience|terminal-poc-corpus)
          printf '%s' 'secure-terminal'
          ;;
       systemcheck)
@@ -578,15 +641,37 @@ if [ -n "${repo_root}" ] && [ ! -d "${repo_root}" ]; then
    exit 2
 fi
 
+## Validate --component against what suite_component() actually maps, rather
+## than a hand-kept second list. A duplicated allowlist silently rejects a
+## correctly registered component the moment the two drift, which is exactly
+## what happened to dist-ai-config.
 if [ -n "${component}" ]; then
-   case "${component}" in
-      helper-scripts|developer-meta-files|derivative-maker|msgcollector|onion-grater|privleap|pyte|genmkfile|open-link-confirmation|sdwdate-gui|setup-wizard-dist|secure-terminal|systemcheck|tb-updater|tor-control-panel)
-         ;;
-      *)
-         printf 'dist-ai-tests-all: unknown --component: %s\n' "${component}" >&2
-         exit 2
-         ;;
-   esac
+   component_known='false'
+   for known_suite in "${core_suites[@]}" "${fuzz_suites[@]}" \
+      "${e2e_suites[@]}" "${integration_suites[@]}"; do
+      if [ "$( suite_component "${known_suite}" )" = "${component}" ]; then
+         component_known='true'
+         break
+      fi
+   done
+   if [ "${component_known}" = 'false' ]; then
+      known_list=''
+      for known_suite in "${core_suites[@]}" "${fuzz_suites[@]}" \
+         "${e2e_suites[@]}" "${integration_suites[@]}"; do
+         known_component="$( suite_component "${known_suite}" )"
+         [ -n "${known_component}" ] || continue
+         case " ${known_list}" in
+            *" ${known_component} "*)
+               ;;
+            *)
+               known_list="${known_list}${known_component} "
+               ;;
+         esac
+      done
+      printf 'dist-ai-tests-all: unknown --component: %s\n' "${component}" >&2
+      printf 'dist-ai-tests-all: known components: %s\n' "${known_list}" >&2
+      exit 2
+   fi
 fi
 
 if [ -n "${component_root}" ]; then

@@ -1,0 +1,33 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Shell-coverage lane for dist-ai-config: re-runs the core lane under kcov and
+## gates the argument parsers the injection corpus targets against a measured
+## per-tool floor. The counterpart to secure-terminal-tests-coverage, which
+## gates the python side.
+##
+## Targets a dist-ai-config checkout via DIST_AI_CONFIG_PATH. Exits 77 (SKIP)
+## when the checkout, kcov or jq is unavailable. No root, no network.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d '/usr/share/dist-ai-config-tests' ]; then
+   share='/usr/share/dist-ai-config-tests'
+else
+   share="${script_dir}/../share/dist-ai-config-tests"
+fi
+
+rc=0
+bash -- "${share}/coverage.sh" "$@" || rc=$?
+exit "${rc}"
