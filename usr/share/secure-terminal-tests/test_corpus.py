@@ -133,26 +133,55 @@ def trojan_source_corpus():
         'trojan-homoglyph': 'def is_admin(): return sfe_m\u043ede()',
         # invisible zero-width joiner splitting an identifier.
         'trojan-invisible': 'is\u200dadmin = True',
+        # "early return": an RLI (U+2067) reorders a comment so a live `return`
+        # renders as part of it, cutting the function short. Taken from the
+        # paper's own C sample (trojan-source/C/early-return.c).
+        'trojan-early-return':
+            '    /* Say hello; newline\u2067 /*/ return 0 ;',
     }
 
 
 # ---------------------------------------------------------------------------
-# Corpus 3: the git-diffs-lie fixtures, vendored verbatim (bytes) from the
-# adversarial-diff corpus branches (github.com/output-lies/git-diffs-lie).
+# Corpus 3: the git-diffs-lie fixtures, vendored VERBATIM (bytes) from the
+# content/* payload branches of github.com/output-lies/git-diffs-lie.
+#
+# Scope is deliberately the content/* class only. Upstream also carries path/*,
+# type/* and refname branches (bidi filenames, gitattributes hiding a diff, mode
+# and symlink flips, gitlink mimics). Those are git-METADATA attacks on a diff
+# viewer, not byte-stream attacks on a terminal, so they are out of scope here --
+# git-meld-tests drives the full corpus from the real checkout.
+#
+# The bytes below are the exact file contents on each branch, so they can be
+# checked against upstream. check_corpus_drift.py does exactly that wherever the
+# git-diffs-lie checkout is available, and fails on a mismatch or a new content/*
+# branch -- an inline copy that silently diverges is worse than no copy.
 # ---------------------------------------------------------------------------
 def git_diffs_lie_fixtures():
     return {
-        'ansi-escape': b'STATUS=FAIL\x1b[1A\x1b[2KSTATUS=PASS',
-        'lone-cr': b'DELETE_EVERYTHING=yes\rDELETE_EVERYTHING=no',
+        # ansi-escape (data/config.env, 31 bytes)
+        'ansi-escape': b'STATUS=FAIL\x1b[1A\x1b[2KSTATUS=PASS\n',
+        # bidi-trojan-source (src/hello.c, 121 bytes)
         'bidi-trojan-source':
-            b'    /* return \xe2\x80\xaenimda\xe2\x80\xac */ '
-            b'return admin ? "user" : "admin";',
-        'zero-width': b'ADMIN\xe2\x80\x8bTOKEN=granted',
-        'homoglyph-identifier': b'    return v\xd0\xb0lidate("role");',
-        'nul-byte': b'value=secret\x00 rm --recursive --force -- /',
-        'invalid-utf8': b'checksum=\xff\xfe not valid utf-8',
-        'overlong-line': b'payload=' + b'A' * 5000,
-        'unicode-whitespace': b'RETRY_LIMIT\xc2\xa0=\xc2\xa00',
+            b'#include <stdio.h>\n\nconst char *access_l'
+            b'evel(int admin) {\n   /* return \xe2\x80\xaenimda\xe2'
+            b'\x80\xac */ return admin ? "user" : "admin";\n}'
+            b'\n',
+        # homoglyph-identifier (src/hello.c, 68 bytes)
+        'homoglyph-identifier':
+            b'#include <stdio.h>\n\nint main(void) {\n   '
+            b'return v\xd0\xb0lidate("role");\n}\n',
+        # invalid-utf8 (data/config.env, 28 bytes)
+        'invalid-utf8': b'checksum=\xff\xfe not valid utf-8\n',
+        # lone-cr (data/config.env, 43 bytes)
+        'lone-cr': b'DELETE_EVERYTHING=yes\rDELETE_EVERYTHING=no\n',
+        # nul-byte (data/config.env, 13 bytes)
+        'nul-byte': b'before\x00after\n',
+        # overlong-line (data/config.env, 6009 bytes)
+        'overlong-line': b'payload=' + b'A' * 6000 + b'\n',
+        # unicode-whitespace (data/config.env, 18 bytes)
+        'unicode-whitespace': b'RETRY_LIMIT\xc2\xa0=\xc2\xa00\n',
+        # zero-width (data/config.env, 22 bytes)
+        'zero-width': b'ADMIN\xe2\x80\x8bTOKEN=granted\n',
     }
 
 
@@ -193,19 +222,33 @@ for _name, _rawbytes in git_diffs_lie_fixtures().items():
     ok(all(ord(ch) in SAFE for ch in S.sanitize_bytes(_rawbytes, 'box')),
        'git-diffs-lie:%s: sanitize_bytes(box) is safe' % _name)
 
-# the escape/CR forgeries must not HIDE the real value: the neutralized render
-# still contains the honest text a naive terminal would have painted over.
+# On the RE-RENDER path (render_output, used for a mode change / transcript) the
+# escape is neutralized rather than honored, so the value a naive terminal would
+# have painted over is still there.
 _ansi = S.render_output(
     git_diffs_lie_fixtures()['ansi-escape'].decode('utf-8'), 'box')
 ok('STATUS=FAIL' in _ansi and '\x1b' not in _ansi,
-   'ansi-escape: the erased "FAIL" survives and the escape is gone')
+   'ansi-escape: render_output keeps the erased "FAIL" and drops the escape')
 
-# the forgeries are also bounded to their own line in the widget's line model:
-# the cursor-up escape cannot reach an earlier line (it is stripped, not honored).
+# The LIVE path (feed_line_edits) is a line editor, so WITHIN the current line a
+# later write overwrites an earlier one -- exactly as `\r` does, which has to keep
+# working for progress bars. So the honest guarantee is NOT "FAIL always survives"
+# here; it is containment:
+#   - no ESC ever reaches a cell, and
+#   - the cursor cannot escape the current line, so an EARLIER line is untouchable.
+# Asserting the stronger claim on this path would be a false assurance: the widget
+# really does display STATUS=PASS for a single-line payload.
+_prev, _cells0, _col0, _sgr0, _w0 = S.feed_line_edits(
+    [], 0, {}, 'line1: REAL\n')
 _comp, _cells, _col, _sgr, _w = S.feed_line_edits(
-    [], 0, {}, git_diffs_lie_fixtures()['ansi-escape'].decode('utf-8'))
-ok(_comp == [] and all(c != '\x1b' for c, _ in _cells),
-   'ansi-escape: stays on one line, no escape reaches a cell')
+    _cells0, _col0, _sgr0,
+    git_diffs_lie_fixtures()['ansi-escape'].decode('utf-8'))
+ok(all(c != '\x1b' for c, _ in _cells)
+   and all(c != '\x1b' for _line in _comp for c, _ in _line),
+   'ansi-escape: no escape reaches a cell on the live path')
+_earlier = ''.join(c for c, _ in _prev[0]) if _prev else ''
+ok(_earlier == 'line1: REAL',
+   'ansi-escape: cursor-up cannot erase an EARLIER line (stays bounded)')
 
 # --- Corpus 4: EVERY Unicode code point, sanitized in one pass ----------------
 # (surrogates are not scalar values; skip them. This is the exhaustive analogue
