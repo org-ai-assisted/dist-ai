@@ -40,6 +40,7 @@ if [ ! -r "${runner}" ]; then
 fi
 
 failures=0
+review_rc=0
 
 ## The defect shape: a bare '-z "${DMF_REPO:-}"' test whose body exits 77.
 ## Read the guard body rather than the whole file, so an unrelated 'exit 77'
@@ -64,11 +65,20 @@ review_test="${test_dir}/test_dm_review_branch.sh"
 if [ ! -r "${review_test}" ]; then
    printf 'FAIL: test_dm_review_branch.sh not found next to this test\n' >&2
    failures=$((failures + 1))
-elif grep --quiet --extended-regexp '^[[:space:]]*exit 77[[:space:]]*$' -- "${review_test}"; then
-   printf 'PASS: test_dm_review_branch self-skips on an absent subject\n'
 else
-   printf 'FAIL: test_dm_review_branch does not self-skip when DMF_REPO is unset\n' >&2
-   failures=$((failures + 1))
+   ## Executed, not grepped: an 'exit 77' ANYWHERE in the file would satisfy a
+   ## static match without proving the DMF_REPO-unset path returns it. Running
+   ## this ONE test does not recurse -- only invoking the entrypoint would, and
+   ## with DMF_REPO unset it returns at the top before doing any work.
+   review_rc=0
+   env --unset=DMF_REPO -- "${review_test}" >/dev/null 2>&1 || review_rc="$?"
+   if [ "${review_rc}" -eq 77 ]; then
+      printf 'PASS: test_dm_review_branch self-skips (77) on an absent subject\n'
+   else
+      printf 'FAIL: test_dm_review_branch exited %s, expected 77, with DMF_REPO unset\n' \
+         "${review_rc}" >&2
+      failures=$((failures + 1))
+   fi
 fi
 
 if [ "${failures}" -gt 0 ]; then
