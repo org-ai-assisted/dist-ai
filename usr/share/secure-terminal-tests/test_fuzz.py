@@ -181,6 +181,46 @@ _HOSTILE = ''.join(chr(c) for c in (
     0xE9, 0x4E00, ord('A'), ord(' '), 0x09, 0x0A))            # printable / ws
 HOSTILE = st.text(alphabet=_HOSTILE, max_size=24)
 
+# Seed the fuzz from the real adversarial corpora, the way stdisplay-tests already
+# does (stdisplay_test.py: `+ list(dangerous_corpus().values())`). This suite's
+# docstring claimed to mirror stdisplay's corpora but the wiring was never there, so
+# every corpus payload was a one-shot fixture run through render_output once and
+# never mutated, combined or fed to another entry point.
+#
+# Imported lazily and defensively: test_corpus is a sibling FILE, not a package, and
+# a fuzz suite must not fail to start because a sibling moved. An empty list would
+# silently weaken the strategy, so assert it is populated instead.
+def _corpus_seeds():
+    import importlib.util
+    import os
+    here = os.path.dirname(os.path.abspath(__file__))
+    spec = importlib.util.spec_from_file_location(
+        'st_corpus_seeds', os.path.join(here, 'test_corpus.py'))
+    module = importlib.util.module_from_spec(spec)
+    # test_corpus runs its assertions at import time; only the fixture FUNCTIONS are
+    # wanted, so exec just enough by reading the source and pulling the three defs.
+    with open(spec.origin, encoding='utf-8') as handle:
+        source = handle.read()
+    namespace = {}
+    for fn in ('dangerous_corpus', 'trojan_source_corpus', 'git_diffs_lie_fixtures'):
+        start = source.index('def %s():' % fn)
+        end = source.index('\n# ---', start)
+        exec(compile(source[start:end], spec.origin, 'exec'), namespace)  # noqa: S102
+    seeds = list(namespace['dangerous_corpus']().values())
+    seeds += list(namespace['trojan_source_corpus']().values())
+    seeds += [b.decode('utf-8', 'replace')
+              for b in namespace['git_diffs_lie_fixtures']().values()]
+    return seeds
+
+
+CORPUS_SEEDS = _corpus_seeds()
+assert CORPUS_SEEDS, 'corpus seeds are empty -- the fuzz strategy would be weakened'
+# A corpus payload, optionally spliced with fuzzer-generated text, so the fuzz
+# explores AROUND each real attack rather than only replaying it.
+CORPUS = st.builds(
+    lambda seed, pre, post: pre + seed + post,
+    st.sampled_from(CORPUS_SEEDS), st.text(max_size=8), st.text(max_size=8))
+
 
 @RUN
 @given(VT, st.sampled_from(S.DISPLAY_MODES))
@@ -514,6 +554,59 @@ def prop_privileged_conf(text):
     assert value is None or isinstance(value, str)
 
 
+@RUN
+@given(CORPUS, st.sampled_from(S.DISPLAY_MODES))
+def prop_corpus_render(text, mode):
+    """A real corpus payload, spliced with fuzzer text, through every display mode.
+
+    The corpora used to be one-shot fixtures: each ran through render_output once,
+    never mutated and never combined. Splicing explores AROUND each attack -- a bidi
+    override next to an escape, a homoglyph inside a CSI param -- which is where a
+    parser actually breaks.
+    """
+    out = S.render_output(text, mode)
+    assert isinstance(out, str)
+    if mode in ('box', 'reveal'):
+        assert all(ord(ch) in SAFE_OUTPUT for ch in out), repr(out[:60])
+    # no invisible default-ignorable may survive in ANY mode: str.isprintable() is
+    # true for them, which is how show leaked U+FE0F / U+3164 / U+115F.
+    assert not any(S.is_default_ignorable(ch) for ch in out), repr(out[:60])
+    assert S.render_output(out, mode) == out          # idempotent
+
+
+@RUN
+@given(CORPUS)
+def prop_corpus_live_path(text):
+    """The same payloads through the LIVE display path, which render_output is not.
+
+    Live output goes feed_line_edits -> cells_to_runs and has a cursor model, so a
+    payload that is safe under render_output can still misbehave here.
+    """
+    completed, cells, col, sgr, wraps = S.feed_line_edits([], 0, {}, text)
+    assert all(ch != '\x1b' for ch, _ in cells)
+    assert 0 <= col <= len(cells)
+    runs, prefix = S.cells_to_runs(completed, cells, 'box', False)
+    assert isinstance(prefix, int) and prefix >= 0
+    for run_text, _key in runs:
+        assert '\x1b' not in run_text
+
+
+@RUN
+@given(CORPUS)
+def prop_corpus_boundaries(text):
+    """The same payloads across the paste / clipboard / title boundaries."""
+    for fn in (S.sanitize_paste, S.sanitize_paste_unicode,
+               S.sanitize_clipboard, S.sanitize_clipboard_unicode):
+        out = fn(text)
+        assert isinstance(out, str)
+        assert '\x1b' not in out
+    title = S.sanitize_title(text)
+    assert len(title) <= 80 and '\x1b' not in title
+    has_unicode, has_control = S.paste_findings(text)
+    assert isinstance(has_unicode, bool) and isinstance(has_control, bool)
+    assert isinstance(S.classify_paste(text), list)
+
+
 PROPS = [
     ('cells_to_runs', prop_cells_to_runs),
     ('sanitize_bytes', prop_sanitize_bytes),
@@ -523,6 +616,9 @@ PROPS = [
     ('settings_parse', prop_settings_parse),
     ('session_load', prop_session_load),
     ('read_rules', prop_read_rules),
+    ('corpus_render', prop_corpus_render),
+    ('corpus_live_path', prop_corpus_live_path),
+    ('corpus_boundaries', prop_corpus_boundaries),
     ('privileged_conf', prop_privileged_conf),
     ('render_output', prop_render_output),
     ('feed_line_edits', prop_feed_line_edits),

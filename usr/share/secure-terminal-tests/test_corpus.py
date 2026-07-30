@@ -69,7 +69,14 @@ DANGEROUS_CPS = frozenset(
     + [0x200B, 0x200C, 0x200D, 0x200E, 0x200F, 0x2060, 0xFEFF]  # zero-width / BOM
     + list(range(0x202A, 0x202F))                            # bidi embed/override
     + list(range(0x2066, 0x206A))                            # bidi isolates
-    + [0x2028, 0x2029])                                      # line / paragraph sep
+    + [0x2028, 0x2029]                                       # line / paragraph sep
+    # Holes found by comparing this blocklist against test_fuzz's _HOSTILE set and
+    # the Unicode format classes. The product already neutralizes all of these in
+    # every mode (verified), so they were TEST holes, not live defects -- but a
+    # regression on them would have failed nothing here.
+    + [0x061C]                                               # ARABIC LETTER MARK
+    + list(range(0x2061, 0x2065))                            # invisible math ops
+    + [0x180E])                                              # MONGOLIAN VOWEL SEP
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +130,10 @@ def dangerous_corpus():
         'hangul-filler': 'ad\u3164min',
         'choseong-filler': 'ad\u115fmin',
         'combining-grapheme-joiner': 'ad\u034fmin',
+        'arabic-letter-mark': 'a\u061cb',
+        'invisible-times': 'a\u2062b',
+        'invisible-separator': 'a\u2063b',
+        'mongolian-vowel-sep': 'a\u180eb',
     }
 
 
