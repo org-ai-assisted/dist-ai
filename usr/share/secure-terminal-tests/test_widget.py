@@ -606,11 +606,44 @@ from secure_terminal import sanitize as _S            # noqa: E402
 fl = SecureTerminal(command='/bin/cat')
 fl.resize(600, 300)
 _blob = _S.render_output((bytes(range(256)) * 8000).decode('latin-1'), 'box')
-_t0 = _time.time()
-for _ in range(2):                                    # ~4MB of control-laden output
-    fl._append(_blob)
-_elapsed = _time.time() - _t0
-ok(_elapsed < 30, 'control-laden flood renders in bounded time (%.1fs)' % _elapsed)
+
+
+def _append_seconds(widget, text, times=1):
+    _t0 = _time.time()
+    for _ in range(times):
+        widget._append(text)
+    return _time.time() - _t0
+
+
+# SELF-CALIBRATED, because a wall clock is not the invariant. `elapsed < 30` measured
+# 48.9s on a loaded box and ~5s idle on identical code: it raced the machine, and a
+# security test that cries wolf gets muted.
+#
+# Comparing against plain text does NOT work either (measured: plain 18.2s vs
+# control-laden 15.1s). Plain text is SLOWER, because 25k newlines dominate via
+# maximumBlockCount pruning rather than per-character work -- so that ratio could
+# never exceed its threshold and the assertion would be incapable of failing.
+#
+# So calibrate on the SAME content at 1/8 the volume and require the full flood to
+# stay near-linear against it. Load scales both measurements. The regression this
+# guards (the old per-char cursor path, minutes vs seconds) is superlinear, so it
+# would blow the multiplier out by orders of magnitude, while a merely slow machine
+# moves both numbers together and still passes.
+_small = _blob[:len(_blob) // 8]
+_fl_cal = SecureTerminal(command='/bin/cat')
+_fl_cal.resize(600, 300)
+_t_small = _append_seconds(_fl_cal, _small)
+_fl_cal.close()
+_elapsed = _append_seconds(fl, _blob, times=2)        # ~4MB of control-laden output
+# The flood pushes 16x the calibration volume (8x the text, twice). max() floors a
+# machine fast enough to report ~0, which would make the budget zero.
+_budget = max(_t_small, 0.05) * 16 * 3               # 3x headroom for pruning + noise
+ok(_elapsed < _budget,
+   'control-laden flood stays near-linear (%.1fs vs %.1fs budget from a %.2fs '
+   'eighth-sample)' % (_elapsed, _budget, _t_small))
+# An absolute ceiling too, loose on purpose: it only has to catch a true HANG, which
+# no ratio can -- a hang never returns a second measurement to compare.
+ok(_elapsed < 120, 'control-laden flood does not hang (%.1fs)' % _elapsed)
 ok(fl.document().blockCount() <= 10000,
    'flood document stays bounded (%d blocks)' % fl.document().blockCount())
 # keyboard tab navigation: the widget emits tab_step / tab_move so the window can
