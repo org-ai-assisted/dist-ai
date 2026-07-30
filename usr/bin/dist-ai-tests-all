@@ -541,7 +541,7 @@ skip_is_fatal() {
    local suite="$1"
    local allowed
    [ "${strict_skips}" = 'true' ] || return 1
-   for allowed in ${allow_skip_suites[@]+"${allow_skip_suites[@]}"}; do
+   for allowed in "${allow_skip_suites[@]}"; do
       [ "${allowed}" = "${suite}" ] && return 1
    done
    return 0
@@ -624,6 +624,17 @@ run_suite() {
 ## the exact invocation back in its "run it this way instead" hint.
 orig_args=( "$@" )
 
+## Every value-taking option needs an arity check. Reading $2 bare dies with
+## '$2: unbound variable' under nounset -- an internal bash error a caller cannot
+## tell from a suite failure, where the rest of this script reports a usage error
+## as exit 2.
+require_value() {
+   if [ "$#" -lt 2 ]; then
+      printf 'dist-ai-tests-all: %s requires a value\n' "$1" >&2
+      exit 2
+   fi
+}
+
 while [ "$#" -gt 0 ]; do
    case "$1" in
       --core)
@@ -645,42 +656,52 @@ while [ "$#" -gt 0 ]; do
          run_integration="true"
          ;;
       --repo-root)
+         require_value "$@"
          repo_root="$2"
          shift
          ;;
       --component)
+         require_value "$@"
          component="$2"
          shift
          ;;
       --component-root)
+         require_value "$@"
          component_root="$2"
          shift
          ;;
       --helper-scripts-root)
+         require_value "$@"
          helper_scripts_root="$2"
          shift
          ;;
       --skip)
+         require_value "$@"
          skip_suites+=( "$2" )
          shift
          ;;
       --allow-skip)
+         require_value "$@"
          allow_skip_suites+=( "$2" )
          shift
          ;;
       --progress)
+         require_value "$@"
          progress_file="$2"
          shift
          ;;
       --timeout-core)
+         require_value "$@"
          timeout_core="$2"
          shift
          ;;
       --timeout-fuzz)
+         require_value "$@"
          timeout_fuzz="$2"
          shift
          ;;
       --timeout-heavy)
+         require_value "$@"
          timeout_heavy="$2"
          shift
          ;;

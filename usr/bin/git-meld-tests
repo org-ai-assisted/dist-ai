@@ -114,12 +114,42 @@ run_suites () {
    ## their diagnostics to stdout, so a stdout-carried count would be
    ## concatenated with all of it under command substitution and never compare
    ## equal to 0 -- which made the runner always report a failure.
-   local target="$1" total=0 rc
+   local target="$1" total=0 rc out count line
    local suite
    for suite in "${adversarial_libs[@]}"; do
       rc=0
-      bash "${suite}" "${target}" || rc=$?
-      total=$((total + rc))
+      out="$( bash "${suite}" "${target}" 2>&1 )" || rc=$?
+      printf '%s\n' "${out}"
+      ## The count comes from the PRINTED summary, not the exit status. A process
+      ## status is taken mod 256, so a suite reporting exactly 256 hidden changes
+      ## exited 0 and read as a clean pass -- and counts in that range are
+      ## reachable (one absent package produced 150+). The status is still used,
+      ## but only to catch a CRASH, which no count line can express.
+      count=''
+      while IFS= read -r line; do
+         case "${line}" in
+            '==== TOTAL HIDDEN-CHANGE FAILURES: '*' ====')
+               count="${line#*: }"
+               count="${count% ====}"
+               ;;
+            '==== FAILURES: '*' ====')
+               count="${line#*: }"
+               count="${count% ====}"
+               ;;
+         esac
+      done <<< "${out}"
+      if [ -z "${count}" ]; then
+         printf '%s\n' "FAIL: $( basename -- "${suite}" ): printed no '==== ... FAILURES: N ====' summary (rc=${rc}) -- it crashed rather than reporting a count." >&2
+         total=$(( total + 1 ))
+         continue
+      fi
+      ## A crash AFTER the summary, or a status that disagrees with a small
+      ## count, still deserves to be loud.
+      if [ "${rc}" -ge 126 ]; then
+         printf '%s\n' "FAIL: $( basename -- "${suite}" ): died with rc=${rc} (signal or missing interpreter), not a failure count." >&2
+         total=$(( total + 1 ))
+      fi
+      total=$(( total + count ))
    done
    run_suites_total="${total}"
 }
@@ -146,12 +176,14 @@ fi
 printf '\n%s\n' "-- CURRENT code: expected 0 hidden-change failures --"
 driver_dir="$( dirname -- "${git_meld}" )"
 new_fails=0
+drivers_ran=0
 for drv_name in git-meld git-kdiff3 git-diff-review; do
    drv="${driver_dir}/${drv_name}"
    if [ ! -x "${drv}" ]; then
       printf '%s\n' "SKIP: '${drv}' not found; not testing this driver."
       continue
    fi
+   drivers_ran=$(( drivers_ran + 1 ))
    printf '\n%s\n' "-- adversarial suites vs ${drv_name} --"
    run_suites "${drv}"
    if [ "${run_suites_total}" != 0 ]; then
@@ -162,7 +194,14 @@ done
 if [ "${new_fails}" != 0 ]; then
    exit 1
 fi
-printf '%s\n' "PASS: no real change was hidden across all adversarial suites (meld/kdiff3/diff-review)."
+## Zero drivers exercised is not a pass. Every driver SKIPping left new_fails at
+## 0 and printed the "across all adversarial suites" claim having run nothing --
+## reachable by pointing arg 1 at a git-meld copy whose siblings are absent.
+if [ "${drivers_ran}" -eq 0 ]; then
+   printf '%s\n' "FAIL: git-meld-tests: none of git-meld / git-kdiff3 / git-diff-review was executable in '${driver_dir}' -- zero drivers exercised, which is not a pass." >&2
+   exit 1
+fi
+printf '%s\n' "PASS: no real change was hidden across ${drivers_ran} of 3 adversarial drivers (meld/kdiff3/diff-review)."
 
 ## difftool / mergetool contract suite: the git-review-difftool / -mergetool
 ## wrappers are siblings of git-meld, so derive their dir from the git-meld path.
