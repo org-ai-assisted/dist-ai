@@ -229,6 +229,17 @@ _hc = _read_hook_config({'command_hook': 'myhook --flag',
 ok(_hc and _hc['argv'] == ['myhook', '--flag'] and _hc['timeout'] == 10,
    '_read_hook_config: parses argv; a bad timeout falls back to 10')
 
+# A modal must never be reachable in this user-less harness: QMessageBox.question
+# BLOCKS in the event loop with nobody to answer, and the suite hangs forever
+# (observed: 1h25m in poll, single-threaded, right here). close_tab asks it via
+# _confirm_running_close whenever a tab reports a foreground program, which a
+# freshly spawned shell can do transiently -- so the auto-answer has to be armed
+# BEFORE the first close, not 26 lines later where it used to be.
+from PyQt6.QtWidgets import QMessageBox as _QMB_early           # noqa: E402
+
+_QMB_early.question = staticmethod(
+    lambda *_a, **_k: _QMB_early.StandardButton.Yes)
+
 # --- close_tab (on a throwaway window so emptying it is harmless) --------------
 w2 = MainWindow()
 w2.new_tab()

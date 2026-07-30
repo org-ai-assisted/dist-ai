@@ -454,6 +454,31 @@ if tui_available():
        'a zero-width character at column 0 marks the previous row last cell')
     _zw2.close()
 
+# --- a tab closed right after opening is not "a program is still running" -----
+# has_foreground_program() returns True whenever the tty's foreground pgrp differs
+# from the child's -- and between pty.fork() and the child's execvp the tty is
+# still owned by OUR process group, so a plain login-shell tab transiently looked
+# like a running program. Closing such a tab then asked "A program is still
+# running in this tab": a spurious prompt for a user, and an unanswerable modal
+# that hung the test harness for over an hour.
+import secure_terminal.terminal as _T_fg                        # noqa: E402
+
+_fg = SecureTerminal(command=None)          # a login-shell tab, no -- PROGRAM
+_o_fgpgrp = _T_fg.SecureTerminal._foreground_pgrp
+try:
+    # Simulate the startup window: the tty is still ours.
+    _T_fg.SecureTerminal._foreground_pgrp = lambda _self: os.getpgrp()
+    ok(_fg.has_foreground_program() is False,
+       'a shell tab whose tty is still owned by us is not a foreground program')
+    # A genuinely different pgrp is still reported, so the guard is not a blanket
+    # "always False" -- that would disable the Terminate action entirely.
+    _T_fg.SecureTerminal._foreground_pgrp = lambda _self: os.getpgrp() + 100000
+    ok(_fg.has_foreground_program() is True,
+       'a third-party foreground pgrp is still reported as a running program')
+finally:
+    _T_fg.SecureTerminal._foreground_pgrp = _o_fgpgrp
+_fg.close()
+
 # --- cli_terminfo_dir freshness: no-source, and an unreadable mtime -----------
 # _fresh() decides whether a compiled terminfo directory may be used. Two arms
 # are only reachable with a prepared cache: "no shipped source, so nothing to be
