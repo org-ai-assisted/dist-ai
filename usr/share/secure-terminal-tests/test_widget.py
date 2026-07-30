@@ -735,8 +735,8 @@ if sw.current_tui():
        'scrollback restored after a full-screen program exits')
 sw.apply_tui(False)
 # CLI->TUI grid fits the viewport: no useless horizontal scrollbar and no clipped
-# right edge. The grid is sized to the text AREA (viewport minus the doc margins),
-# not the raw viewport, which used to give one column too many and overflow.
+# right edge. The grid must be sized to the text AREA (viewport minus the doc
+# margins): the raw viewport is one column too wide and overflows.
 gz = SecureTerminal(command='/bin/cat')
 gz.resize(820, 400)
 gz.show()
@@ -2331,7 +2331,7 @@ finally:
 from secure_terminal.main import _parse_launch_args as _pla       # noqa: E402
 eq(_pla(['--title', 'logs', '--tui', '--mode', 'reveal']).tabs,
    [{'title': 'logs', 'tui': True, 'mode': 'reveal', 'command': None,
-     'colors': None, 'bell': None, 'osc': None}],
+     'colors': None, 'line_edits': None, 'bell': None, 'osc': None}],
    'cli: single-tab options')
 # per-tab settings overrides parse into the tab spec
 _ps = _pla(['--colors', '--bell', 'audible,visual', '--osc', 'osc_clipboard_read',
@@ -2341,6 +2341,15 @@ eq((_ps['colors'], _ps['bell'], _ps['osc']),
    'cli: per-tab colours/bell/osc(repeatable) parse')
 eq(_pla(['--no-colors']).tabs[0]['colors'],
    False, 'cli: --no-colors turns a tab setting off')
+# the line-editing opt-out is reachable from the command line too, and a tab that
+# only carries it is NOT an empty spec (it must open a tab, not fall through to
+# the normal restore-or-default startup)
+eq(_pla(['--no-line-edits']).tabs[0]['line_edits'],
+   False, 'cli: --no-line-edits opts a tab out of line editing')
+eq(_pla(['--line-edits']).tabs[0]['line_edits'],
+   True, 'cli: --line-edits opts a tab back in')
+eq(len(_pla(['--no-line-edits']).tabs), 1,
+   'cli: a --no-line-edits-only spec still counts as a requested tab')
 eq(_pla(['--', 'htop', '--no-color']).tabs[0]['command'], ['htop', '--no-color'],
    'cli: -- gives a real argv (no shell reparse)')
 eq(_pla(['-e', 'ls -la']).tabs[0]['command'], 'ls -la',
@@ -2546,11 +2555,12 @@ _HRUN = _hset(max_examples=150, deadline=None)
 def _fuzz_tab_spec(spec):
     out = _sanitize_tab_spec(spec)
     assert set(out) == {'title', 'tui', 'mode', 'command',
-                        'colors', 'bell', 'osc'}
+                        'colors', 'line_edits', 'bell', 'osc'}
     assert out['title'] is None or isinstance(out['title'], str)
     assert out['tui'] is None or isinstance(out['tui'], bool)
     assert out['mode'] is None or isinstance(out['mode'], str)
     assert out['colors'] is None or isinstance(out['colors'], bool)
+    assert out['line_edits'] is None or isinstance(out['line_edits'], bool)
     assert out['bell'] is None or isinstance(out['bell'], str)
     assert out['osc'] is None or (isinstance(out['osc'], list)
                                   and all(isinstance(f, str) for f in out['osc']))
@@ -2944,6 +2954,170 @@ with open(_ti, encoding='utf-8') as _tih:
 ok(all(cap in _ti_txt for cap in ('u6@', 'u7@', 'u8@', 'u9@', 'RV@',
                                   'cup@', 'smcup@', 'rmcup@', 'clear@')),
    'the entry cancels the query + cursor-addressing + alt-screen caps')
+
+# --- CLASH: the ADVERTISED capability set vs what the renderer actually does ---
+# The two entries are a PROMISE to the shell, made over the terminfo protocol, and
+# the renderer is what keeps it. The cancel-list greps above are a hand-written
+# list, so a capability INHERITED from xterm-16color and never thought about is
+# invisible to them. Enumerate the compiled entries instead and hold every
+# surviving capability to the renderer's real behaviour, in BOTH line_edits
+# states. This is what catches the promise the two features break together.
+import subprocess as _sp                                            # noqa: E402
+from secure_terminal.sanitize import feed_line_edits as _fle        # noqa: E402
+from secure_terminal.sanitize import cells_to_runs as _c2r          # noqa: E402
+# ncurses itself does the parameter expansion (via tput), so the bytes checked
+# are the bytes a real program emits. Deliberately NOT the curses module: an
+# in-process setupterm/tparm segfaults this Qt suite.
+
+
+def _entry_caps(entry):
+    """name -> expanded escape string, for every STRING capability the compiled
+    `entry` advertises."""
+    env = dict(os.environ, TERMINFO=_tdir, TERM=entry)
+    out = _sp.run(['infocmp', '-1', '-x', entry], env=env, check=True,
+                  capture_output=True, text=True, timeout=15).stdout
+    caps = {}
+    for line in out.splitlines():
+        line = line.strip().rstrip(',')
+        if line.startswith('#') or '=' not in line:
+            continue
+        name, _, value = line.partition('=')
+        nparams = 0
+        for n in ('1', '2', '3', '4', '5', '6', '7', '8', '9'):
+            if '%p' + n in value:
+                nparams = max(nparams, int(n))
+        args = [name] + ['1'] * nparams
+        got = _sp.run(['tput', '-T', entry] + args, env=env, check=False,
+                      capture_output=True, timeout=15)
+        if got.returncode == 0 and got.stdout:
+            caps[name] = got.stdout.decode('latin-1')
+    return caps
+
+
+def _renders_to(text, line_edits):
+    """What the CLI cell model puts on screen for `text`."""
+    comp, cells, _col, _sgr, wraps = _fle([], 0, {}, text, 0, line_edits)
+    runs, _p = _c2r(comp, cells, 'detail', False, wraps=wraps)
+    return ''.join(t for t, _k in runs)
+
+
+_CAPS_EDIT = _entry_caps('secure-terminal')
+_CAPS_NOEDIT = _entry_caps('secure-terminal-noedit')
+ok(len(_CAPS_EDIT) > 20 and len(_CAPS_NOEDIT) > 20,
+   'the compiled entries enumerate their capabilities')
+
+# 1. No surviving capability may expand to an OSC or DCS introducer. Every OSC
+# feature is neutralized by default and DCS is always stripped, so advertising
+# one promises a side effect that is dropped on the floor (Cs/Cr were OSC 12/112
+# cursor colour; xr was the DCS xterm version query).
+for _entry, _caps in (('secure-terminal', _CAPS_EDIT),
+                      ('secure-terminal-noedit', _CAPS_NOEDIT)):
+    _osc = sorted(n for n, v in _caps.items() if '\x1b]' in v or '\x1bP' in v)
+    eq(_osc, [], '%s advertises no OSC/DCS capability' % _entry)
+
+# 2. Every advertised capability that emits an ESCAPE must be CONSUMED whole --
+# it may move the cursor or set a colour, but it must put no glyph on screen. A
+# capability the stripper does not match leaks its body as unmarked text, which
+# is how the charset designators (smacs=ESC ( 0, and ESC ( B from every sgr0)
+# used to print "(0" / "(B".
+# k* capabilities are the INPUT side (bytes the terminal sends when a key is
+# pressed), never program output, so they are not the renderer's to consume.
+for _entry, _caps, _le in (('secure-terminal', _CAPS_EDIT, True),
+                           ('secure-terminal-noedit', _CAPS_NOEDIT, False)):
+    _leaky = sorted(n for n, v in _caps.items()
+                    if not n.startswith('k') and '\x1b' in v
+                    and _renders_to(v, _le) != '')
+    eq(_leaky, [], '%s: every escape-emitting capability renders no glyph' % _entry)
+
+# 3. The two-way lock between the cursor/erase family and the renderer. An
+# advertised op MUST be honoured (or the shell's redraw silently does nothing);
+# a cancelled op MUST NOT be (or line_edits=false is append-only in name only).
+# Both directions matter: this is the clash the -noedit entry exists to prevent.
+# cap -> (its escape, a probe whose render CHANGES when the op is honoured).
+# The forward moves are probed after a backward one: with no line width, cursor
+# forward clamps to end-of-line, so at the margin it is a no-op either way and
+# the probe would prove nothing.
+_CURSOR_FAMILY = {
+    'cuf': ('\x1b[2C', 'abcdef\x1b[4D\x1b[2CX'),
+    'cuf1': ('\x1b[C', 'abcdef\x1b[4D\x1b[CX'),
+    'cub': ('\x1b[2D', 'abc\x1b[2DX'),
+    'hpa': ('\x1b[2G', 'abc\x1b[2GX'),
+    'el': ('\x1b[K', 'abcdef\x1b[3G\x1b[K'),
+    'el1': ('\x1b[1K', 'abc\x1b[1K'),
+}
+for _entry, _caps, _le in (('secure-terminal', _CAPS_EDIT, True),
+                           ('secure-terminal-noedit', _CAPS_NOEDIT, False)):
+    for _cap, (_esc, _probe) in _CURSOR_FAMILY.items():
+        _acted = _renders_to(_probe, _le) != _renders_to(
+            _probe.replace(_esc, ''), _le)
+        eq(_acted, _cap in _caps,
+           '%s: %s is honoured by the renderer exactly when advertised'
+           % (_entry, _cap))
+
+# cub1 is \b -- a raw control byte, honoured in BOTH settings, so it must stay
+# advertised in both. (Cancelling it would over-restrict; keeping it while the
+# renderer ignored it would be the same clash in reverse.)
+for _entry, _caps, _le in (('secure-terminal', _CAPS_EDIT, True),
+                           ('secure-terminal-noedit', _CAPS_NOEDIT, False)):
+    ok('cub1' in _caps, '%s advertises cub1 (backspace)' % _entry)
+    eq(_renders_to('abc\bX', _le), 'abX',
+       '%s honours backspace whatever line_edits says' % _entry)
+
+# 4. The -noedit entry may only ever be a SUBSET: it exists to cancel caps, so a
+# capability it advertises that the full entry does not is drift, not intent.
+eq(sorted(set(_CAPS_NOEDIT) - set(_CAPS_EDIT)), [],
+   'the append-only entry advertises nothing the full entry does not')
+
+# 5. CLASH between the shipped source and the COMPILED artifact: cli_terminfo_dir
+# caches the compilation, so a cache that outlives a changed .ti keeps advertising
+# the old capability set to every shell -- the renderer moves on, the promise does
+# not. (Found the hard way: a cache predating the -noedit entry made this very
+# audit read a capability set that no longer existed in the source.)
+# Isolated cache: the probe writes a BOGUS compiled entry, which must never be
+# left where a later test (or a real shell) could read it as terminfo.
+import tempfile as _tf                                              # noqa: E402
+import shutil as _shutil                                            # noqa: E402
+_prev_cache = os.environ.get('XDG_CACHE_HOME')
+_tmpcache = _tf.mkdtemp(prefix='st-terminfo-')
+os.environ['XDG_CACHE_HOME'] = _tmpcache
+_stale = os.path.join(_tmpcache, 'secure-terminal', 'terminfo')
+os.makedirs(os.path.join(_stale, 's'), exist_ok=True)
+_stale_file = os.path.join(_stale, 's', 'secure-terminal')
+# BOTH entries are written, so the cache is complete and only its AGE can reject
+# it -- otherwise this would re-test the both-entries rule and never reach the
+# mtime comparison at all.
+_stale_files = [_stale_file, os.path.join(_stale, 's', 'secure-terminal-noedit')]
+
+
+def _write_stale(offset):
+    for _p in _stale_files:
+        with open(_p, 'wb') as _fh:
+            _fh.write(b'stale')
+        os.utime(_p, (os.path.getmtime(_ti) + offset,
+                      os.path.getmtime(_ti) + offset))
+
+
+_write_stale(-60)
+_got_dir = _timod.cli_terminfo_dir()
+ok(_got_dir is not None, 'a stale cache still yields a terminfo dir')
+with open(os.path.join(_got_dir, 's', 'secure-terminal'), 'rb') as _sfh:
+    _compiled = _sfh.read()
+ok(_compiled != b'stale',
+   'a compiled entry older than the .ti source is RECOMPILED, not served stale')
+# the recompilation is a real, complete one: BOTH entries resolve from it
+eq(_sp.run(['tput', '-T', 'secure-terminal-noedit', 'cub1'],
+           env=dict(os.environ, TERMINFO=_got_dir), check=False,
+           capture_output=True, timeout=15).returncode, 0,
+   'the refreshed compilation carries the append-only entry too')
+# ...and a cache NEWER than the source is served as-is (no needless recompile)
+_write_stale(+60)
+eq(_timod.cli_terminfo_dir(), _stale,
+   'a compiled entry newer than the source is served from cache')
+if _prev_cache is None:
+    del os.environ['XDG_CACHE_HOME']
+else:
+    os.environ['XDG_CACHE_HOME'] = _prev_cache
+_shutil.rmtree(_tmpcache, ignore_errors=True)
 # end-to-end: a CLI-mode child actually sees TERM=secure-terminal
 _te = SecureTerminal(command=['sh', '-c', 'printf T=$TERM'])
 _ebuf = b''
@@ -2966,6 +3140,52 @@ while _time.monotonic() - _estart < 1.5:
             break
 _te.close()
 ok(b'T=secure-terminal' in _ebuf, 'the child process actually gets TERM=secure-terminal')
+
+
+def _child_term_env(term):
+    """Read back what the child's TERM actually was. The ctor FORKS, so this is the
+    only assertion that catches a line_edits value applied too late -- _child_term()
+    is evaluated lazily and would report the post-fork value either way."""
+    buf = b''
+    _fcntl2.fcntl(term._fd, _fcntl2.F_SETFL,
+                  _fcntl2.fcntl(term._fd, _fcntl2.F_GETFL) | os.O_NONBLOCK)
+    import select as _sel3                                          # noqa: E402
+    start = _time.monotonic()
+    while _time.monotonic() - start < 1.5:
+        _r, _, _ = _sel3.select([term._fd], [], [], 0.05)
+        if term._fd not in _r:
+            continue
+        try:
+            chunk = os.read(term._fd, 4096)
+        except OSError:
+            break
+        if not chunk:
+            break
+        buf += chunk
+        if b'T=' in buf:
+            break
+    return buf
+
+
+# The window's line_edits default must reach the CTOR, which is what forks: applied
+# afterwards via apply_line_edits it leaves the already-forked shell advertising
+# el/cuf/hpa, so the opt-out changed only the display and completion still garbled.
+_saved_dle = win._default_line_edits
+_probe_cmd = ['sh', '-c', 'printf T=$TERM']
+win._default_line_edits = False
+win.new_tab(command=_probe_cmd)
+ok(b'T=secure-terminal-noedit' in _child_term_env(win.current()),
+   'new_tab forks the child with the append-only terminfo entry')
+win._default_line_edits = True
+win.new_tab(command=_probe_cmd)
+_dfl_term = _child_term_env(win.current())
+ok(b'T=secure-terminal' in _dfl_term and b'-noedit' not in _dfl_term,
+   'line editing on (the default) forks with the normal CLI entry')
+win._default_line_edits = _saved_dle
+# a --no-line-edits launch spec must reach the ctor for the same reason
+win._open_launch_tab({'command': _probe_cmd, 'line_edits': False})
+ok(b'T=secure-terminal-noedit' in _child_term_env(win.current()),
+   'a --no-line-edits launch spec forks the child with the append-only entry')
 
 # CLI<->TUI toggle re-exports TERM for the new mode into the RUNNING shell (no
 # restart, state preserved), and is REFUSED with an advisory while a program owns
@@ -3007,6 +3227,41 @@ ok(_tgc.apply_tui(True) is True and _tgc._tui is True,
 ok(not any(b'export TERM=' in s for s in _tgcsent),
    'a command tab (command != None) never re-exports TERM into the program')
 _tgc.close()
+
+# Toggling line editing live must re-export TERM too, not only re-render: the
+# renderer stops honouring el/cuf/hpa, so a shell still told they work keeps
+# emitting redraws that vanish (a mangled completion). Same reachability guard as
+# the CLI/TUI switch.
+_lex = SecureTerminal(command=None)
+_lexadv = []
+_lex.advise_signal.connect(_lexadv.append)
+_lexsent = spy_writes(_lex)
+_lex.has_foreground_program = lambda: False           # at a shell prompt
+_lex.apply_line_edits(False)
+ok(b'export TERM=secure-terminal-noedit\r' in _lexsent,
+   'line editing off re-exports the append-only terminfo entry, CR-terminated')
+_lexsent.clear()
+_lex.apply_line_edits(True)
+ok(b'export TERM=secure-terminal\r' in _lexsent,
+   'line editing back on re-exports the normal CLI terminfo entry')
+_lexsent.clear()
+_lex.has_foreground_program = lambda: True            # a program owns the terminal
+_lex.apply_line_edits(False)
+ok(_lex.line_edits_enabled() is False,
+   'the display change still applies while a program is running')
+ok(_lexsent == [], 'no export is typed into a running program')
+ok(any('shell prompt' in a for a in _lexadv),
+   'the unreachable re-export is advised, not silent')
+_lex.close()
+
+# TUI advertises xterm-256color either way, so a line-edits toggle there must not
+# write a pointless export into the shell.
+_lext = SecureTerminal(command=None, tui=True)
+_lextsent = spy_writes(_lext)
+_lext.has_foreground_program = lambda: False
+_lext.apply_line_edits(False)
+ok(_lextsent == [], 'a line-edits toggle in TUI mode re-exports nothing')
+_lext.close()
 
 
 # #93: has_foreground_program / terminate distinguish a LOGIN shell's bare prompt
@@ -3182,10 +3437,10 @@ feed_output(_sy2, b'\x1b[?2026l\x1b[?2026h')
 eq(len(_starts), 2, 'an end-then-begin in one read restarts the watchdog (new frame)')
 _sy2.close()
 
-# NOTE: the gated OSC colour-query write-back was REMOVED. No terminal-side signal
+# There is no gated OSC colour-query write-back: no terminal-side signal
 # (alt-screen, ICANON) reliably distinguishes a legit query consumer from injection
-# at a shell prompt -- a background job or a cat'd file emitting ?1049h defeats the
-# gate. The absolute "output never writes to the pty" closure is kept instead;
+# at a shell prompt -- a background job or a cat'd file emitting ?1049h defeats any
+# such gate. The absolute "output never writes to the pty" closure holds instead;
 # every query, colour included, stays unanswered (see the reflection oracle below).
 
 # --- OSC 52 clipboard READ: opt-in, ask-once-per-tab, the ONE write-back -------
@@ -4269,7 +4524,7 @@ _cw2._pid = 1
 _cw2._foreground_pgrp = lambda: None
 try:
     _os.readlink = lambda *_a, **_k: os.path.expanduser('~')
-    eq(_cw2.cwd_basename(), '~', "cwd_basename: the home directory shows as ~")
+    eq(_cw2.cwd_basename(), '~', 'cwd_basename: the home directory shows as ~')
 finally:
     _os.readlink = _o_readlink
 
@@ -4572,7 +4827,13 @@ ok(True, '_write bails out when its write deadline passes')
 
 # --- terminfo directory: build-time entry, and tic-compiled on demand ---------
 from secure_terminal.sanitize import MARK_KEY as _MK            # noqa: E402
-_TISRC = 'secure-terminal|test term,\n\tam,\n\tcols#80,\n'
+# BOTH entries: cli_terminfo_dir only accepts a compilation that carries the
+# -noedit entry too, because _child_term hands that TERM to the child on the
+# strength of this probe -- a dir with just the base entry gave the shell a TERM
+# with no compiled entry at all.
+_TISRC = ('secure-terminal|test term,\n\tam,\n\tcols#80,\n\n'
+          'secure-terminal-noedit|test term append-only,\n'
+          '\tuse=secure-terminal,\n')
 _o_ts = _term._terminfo_source
 _o_cache = os.environ.get('XDG_CACHE_HOME')
 try:
@@ -4581,11 +4842,21 @@ try:
     with open(os.path.join(_ti, 'secure-terminal.ti'), 'w', encoding='utf-8') as _f:
         _f.write(_TISRC)
     os.makedirs(os.path.join(_ti, 's'))
-    with open(os.path.join(_ti, 's', 'secure-terminal'), 'w', encoding='utf-8') as _f:
-        _f.write('x')
+    for _name in ('secure-terminal', 'secure-terminal-noedit'):
+        with open(os.path.join(_ti, 's', _name), 'w', encoding='utf-8') as _f:
+            _f.write('x')
     _term._terminfo_source = lambda: os.path.join(_ti, 'secure-terminal.ti')
     eq(_term.cli_terminfo_dir(), _ti,
        'cli_terminfo_dir: a build-time compiled entry is used as-is')
+    # ...but a compilation carrying ONLY the base entry is NOT usable: line_edits
+    # off would hand the child a TERM that does not resolve.
+    os.remove(os.path.join(_ti, 's', 'secure-terminal-noedit'))
+    os.environ['XDG_CACHE_HOME'] = tempfile.mkdtemp()
+    ok(_term.cli_terminfo_dir() != _ti,
+       'cli_terminfo_dir: a half compilation (no -noedit entry) is rejected')
+    with open(os.path.join(_ti, 's', 'secure-terminal-noedit'), 'w',
+              encoding='utf-8') as _f:
+        _f.write('x')
     # otherwise it compiles the source into the user cache with tic
     _ti2 = tempfile.mkdtemp()
     _src2 = os.path.join(_ti2, 'secure-terminal.ti')
