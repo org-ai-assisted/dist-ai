@@ -21,3 +21,20 @@ findings are folded in.
   false-positive findings were fixed in b7d3d48.
 - Re-run: `ai-review --only glm --timeout 900 b7d3d48~1` (auto-detaches;
   the default ceiling is too short for this diff), or scope it tighter.
+
+## dist-ai 145eee3~1..HEAD -- BLOCKED by a dirty tree
+
+- Scope: the R-190 inline-interpreter gate rule and its four tests
+  (`usr/bin/pre-push-static`,
+  `usr/share/developer-meta-files-tests/test_pre_push_static_style_rules.sh`),
+  the dist-ai-config-tests lane registration, and the unregistered-test guard
+  (`usr/share/dist-ai-config-tests/run-tests.sh`).
+- Why it matters: R-190 fails pushes across every repo using the gate, and the
+  guard changes what a green lane means. Both are enforcement code, where a
+  false positive blocks unrelated work.
+- Why it did not run: `ai-review` reviews COMMITTED work only and refuses a
+  dirty tree. A parallel session has uncommitted work here (seen
+  `ci/dist-ai-tests-ci-config.sh`, then `usr/bin/dist-ai-tests-all`), which is
+  not mine to commit.
+- Re-run once `git status --porcelain` is empty:
+  `ai-review --timeout 900 145eee3~1`

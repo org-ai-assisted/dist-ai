@@ -62,6 +62,8 @@ core_tests=(
    'tests/ci-status-checkruns-test.py'
    'tests/git-hooks-unicode-test.sh'
    'tests/ci-status-test.sh'
+   'tests/kcov-shell-coverage-test.sh'
+   'tests/anti-stall-supervisor-wake-arity-test.sh'
    'tests/claude-session-on-mobile-test.sh'
    'tests/string-parsing-stress-test.sh'
    'claude/hooks/tests/test-cowbuilder-guard.py'
