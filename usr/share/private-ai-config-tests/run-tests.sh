@@ -5,7 +5,7 @@
 
 ## AI-Assisted
 
-## Runs the dist-ai-config test surface from a DIST_AI_CONFIG_PATH checkout.
+## Runs the private-ai-config test surface from a PRIVATE_AI_CONFIG_PATH checkout.
 ## Split into lanes because the repo's tests have sharply different runtime
 ## requirements: the core lane is container-safe, the fuzz lane is randomized
 ## and time-boxed, and the resilience lane needs a live 'systemd --user'
@@ -42,9 +42,9 @@ while [ "$#" -gt 0 ]; do
    esac
 done
 
-repo="${DIST_AI_CONFIG_PATH:-}"
+repo="${PRIVATE_AI_CONFIG_PATH:-}"
 if [ -z "${repo}" ] || [ ! -d "${repo}/tests" ]; then
-   printf 'dist-ai-config-tests: DIST_AI_CONFIG_PATH unset or has no tests/ dir; skipping.\n' >&2
+   printf 'private-ai-config-tests: PRIVATE_AI_CONFIG_PATH unset or has no tests/ dir; skipping.\n' >&2
    exit 77
 fi
 
@@ -147,7 +147,7 @@ case "${lane}" in
       ## Every test in this lane drives transient 'systemd --user' units and
       ## reads the user journal.
       if ! systemctl --user show-environment >/dev/null 2>&1; then
-         printf 'dist-ai-config-tests: no systemd --user manager; skipping the resilience lane.\n' >&2
+         printf 'private-ai-config-tests: no systemd --user manager; skipping the resilience lane.\n' >&2
          exit 77
       fi
       tests=( "${resilience_tests[@]}" )

@@ -5,12 +5,12 @@
 
 ## AI-Assisted
 
-## Shell-coverage lane for dist-ai-config: re-runs the core lane under kcov and
+## Shell-coverage lane for private-ai-config: re-runs the core lane under kcov and
 ## gates the argument parsers the injection corpus targets against a measured
 ## per-tool floor. The counterpart to secure-terminal-tests-coverage, which
 ## gates the python side.
 ##
-## Targets a dist-ai-config checkout via DIST_AI_CONFIG_PATH. Exits 77 (SKIP)
+## Targets a private-ai-config checkout via PRIVATE_AI_CONFIG_PATH. Exits 77 (SKIP)
 ## when the checkout, kcov or jq is unavailable. No root, no network.
 
 set -o errexit
@@ -22,10 +22,10 @@ shopt -s shift_verbose
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-if [ -d "${script_dir}/../share/dist-ai-config-tests" ]; then
-   share="${script_dir}/../share/dist-ai-config-tests"
+if [ -d "${script_dir}/../share/private-ai-config-tests" ]; then
+   share="${script_dir}/../share/private-ai-config-tests"
 else
-   share='/usr/share/dist-ai-config-tests'
+   share='/usr/share/private-ai-config-tests'
 fi
 
 rc=0

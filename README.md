@@ -51,7 +51,7 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 | `secure-terminal-tests`  | shipping | `usr/share/secure-terminal-tests/` |
 | `web-analyzer-tests`     | shipping | `usr/share/web-analyzer-tests/` |
 | `website-tests`          | shipping | `usr/share/website-tests/` |
-| `dist-ai-config-tests`   | shipping | `usr/share/dist-ai-config-tests/` |
+| `private-ai-config-tests`   | shipping | `usr/share/private-ai-config-tests/` |
 | `discourse-dom-snapshot` | planned  | `usr/share/discourse-dom-snapshot/` |
 | `sdwdate-ci-fuzz`        | planned  | `usr/share/sdwdate-ci-fuzz/` |
 

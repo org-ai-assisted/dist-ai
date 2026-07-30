@@ -47,13 +47,13 @@ gated=(
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-repo="${DIST_AI_CONFIG_PATH:-}"
+repo="${PRIVATE_AI_CONFIG_PATH:-}"
 if [ -z "${repo}" ] || [ ! -d "${repo}/tests" ]; then
-   printf 'dist-ai-config-tests-coverage: DIST_AI_CONFIG_PATH unset or has no tests/ dir; skipping.\n' >&2
+   printf 'private-ai-config-tests-coverage: PRIVATE_AI_CONFIG_PATH unset or has no tests/ dir; skipping.\n' >&2
    exit 77
 fi
 
-## Sourced after the checkout guard above, so a missing DIST_AI_CONFIG_PATH
+## Sourced after the checkout guard above, so a missing PRIVATE_AI_CONFIG_PATH
 ## still SKIPs rather than dying here.
 # shellcheck source=./has.sh
 source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/has.sh
@@ -68,13 +68,13 @@ for dep in kcov jq; do
    has "${dep}" || missing_deps+=( "${dep}" )
 done
 if [ "${#missing_deps[@]}" -gt 0 ]; then
-   printf 'FAIL: dist-ai-config-tests-coverage: missing dependency: %s\n' "${missing_deps[*]}" >&2
+   printf 'FAIL: private-ai-config-tests-coverage: missing dependency: %s\n' "${missing_deps[*]}" >&2
    printf 'Hint: add it to .github/dm-consumer.yml dist-ai-tests.apt-packages.\n' >&2
    exit 1
 fi
 
 [ -v TMP ] || TMP=/tmp
-outdir="$(mktemp --directory -- "${TMP}/dist-ai-config-coverage.XXXXXX")"
+outdir="$(mktemp --directory -- "${TMP}/private-ai-config-coverage.XXXXXX")"
 
 # shellcheck disable=SC2317  # invoked indirectly via 'trap ... EXIT'
 cleanup() {
@@ -96,17 +96,17 @@ kcov --include-path="${repo}/usr/bin,${repo}/usr/libexec" \
 ## A failing core lane is a test failure, not a coverage failure; report it as
 ## such rather than reading coverage off a run that did not complete.
 if [ "${rc}" -eq 77 ]; then
-   printf 'dist-ai-config-tests-coverage: core lane skipped; nothing to measure.\n' >&2
+   printf 'private-ai-config-tests-coverage: core lane skipped; nothing to measure.\n' >&2
    exit 77
 fi
 if [ "${rc}" -ne 0 ]; then
-   printf 'dist-ai-config-tests-coverage: core lane FAILED (%s); coverage not evaluated.\n' "${rc}" >&2
+   printf 'private-ai-config-tests-coverage: core lane FAILED (%s); coverage not evaluated.\n' "${rc}" >&2
    exit "${rc}"
 fi
 
 report="$(find "${outdir}" -name 'coverage.json' -print -quit)"
 if [ -z "${report}" ] || [ ! -f "${report}" ]; then
-   printf 'dist-ai-config-tests-coverage: kcov produced no coverage.json -- the tracer did not attach.\n' >&2
+   printf 'private-ai-config-tests-coverage: kcov produced no coverage.json -- the tracer did not attach.\n' >&2
    exit 1
 fi
 

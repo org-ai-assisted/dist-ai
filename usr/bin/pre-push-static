@@ -82,7 +82,7 @@
 ## commit-message and changelog-trailer checks can run pre-commit;
 ## without it those two are skipped (push/CI still enforce them).
 ## '--staged' and '--per-commit' are mutually exclusive. Used by the
-## Claude commit-gate hook (dist-ai-config claude/hooks/dmf-gate.py).
+## Claude commit-gate hook (private-ai-config claude/hooks/dmf-gate.py).
 ##
 ##   pre-push-static --staged [--all] [--message-file MSG]
 ##

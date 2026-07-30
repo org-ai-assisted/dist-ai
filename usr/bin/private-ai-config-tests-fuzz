@@ -5,12 +5,12 @@
 
 ## AI-Assisted
 
-## Fuzz lane of the dist-ai-config test surface: randomized property/oracle
+## Fuzz lane of the private-ai-config test surface: randomized property/oracle
 ## fuzzing of the sandbox-run / qube-ctl / container-guard / sandbox-view
 ## argument parsers, checking that adversarial quoting round-trips and never
 ## escapes into the executing shell. No root, no network, no Qubes.
 ##
-## Targets a dist-ai-config checkout via DIST_AI_CONFIG_PATH. Exits 77 (SKIP)
+## Targets a private-ai-config checkout via PRIVATE_AI_CONFIG_PATH. Exits 77 (SKIP)
 ## when the checkout is unavailable. Reproduce a reported case with
 ## --seed N; --iters N sets the per-phase budget.
 
@@ -23,10 +23,10 @@ shopt -s shift_verbose
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-if [ -d "${script_dir}/../share/dist-ai-config-tests" ]; then
-   share="${script_dir}/../share/dist-ai-config-tests"
+if [ -d "${script_dir}/../share/private-ai-config-tests" ]; then
+   share="${script_dir}/../share/private-ai-config-tests"
 else
-   share='/usr/share/dist-ai-config-tests'
+   share='/usr/share/private-ai-config-tests'
 fi
 
 rc=0

@@ -13,7 +13,7 @@
 ## (native Wayland, grim). Sourced, never executed -- defines functions only.
 ##
 ## Deliberately kept HERE, in dist-ai, next to its two consumers rather than
-## reusing dist-ai-config's headless-capture backends: the sandbox that runs these
+## reusing private-ai-config's headless-capture backends: the sandbox that runs these
 ## tools has NEITHER repo installed (code reaches it only by the whole tree being
 ## copied in), so the comparison subsystem must travel self-contained. The two
 ## capture pipelines above are genuinely different (host-X + import + frame-extents

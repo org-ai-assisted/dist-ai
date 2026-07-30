@@ -100,7 +100,7 @@ These three cases (the payload command + the log generation) are defined ONCE in
 cases cannot drift between them. The two generators otherwise stay self-contained
 (each carries its own compositor/grab pipeline): the sandbox they run in has no
 package of ours installed, so the whole `secure-terminal-shots/` tree must travel
-in as one self-contained unit. This is why they do NOT reuse dist-ai-config's
+in as one self-contained unit. This is why they do NOT reuse private-ai-config's
 generic `headless-capture` (a separate single-terminal debug tool); sharing that
 plumbing cross-repo would not save a copy under the copy-into-sandbox model.
 

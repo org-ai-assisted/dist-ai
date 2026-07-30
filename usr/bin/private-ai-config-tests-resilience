@@ -5,14 +5,14 @@
 
 ## AI-Assisted
 
-## Resilience lane of the dist-ai-config test surface: failure injection against
+## Resilience lane of the private-ai-config test surface: failure injection against
 ## the durable background-work stack -- SIGKILL, OOM, API-down, stall detection
 ## via SIGSTOP, supervisor kill, and the wake-handler cgroup-detach property
 ## that keeps a wake from dying with the supervisor that raised it.
 ##
 ## Integration-only: every test drives transient 'systemd --user' units and
 ## reads the user journal, so it exits 77 (SKIP) in a container with no user
-## manager. Targets a dist-ai-config checkout via DIST_AI_CONFIG_PATH.
+## manager. Targets a private-ai-config checkout via PRIVATE_AI_CONFIG_PATH.
 
 set -o errexit
 set -o nounset
@@ -23,10 +23,10 @@ shopt -s shift_verbose
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-if [ -d "${script_dir}/../share/dist-ai-config-tests" ]; then
-   share="${script_dir}/../share/dist-ai-config-tests"
+if [ -d "${script_dir}/../share/private-ai-config-tests" ]; then
+   share="${script_dir}/../share/private-ai-config-tests"
 else
-   share='/usr/share/dist-ai-config-tests'
+   share='/usr/share/private-ai-config-tests'
 fi
 
 rc=0

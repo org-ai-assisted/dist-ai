@@ -40,8 +40,8 @@ timeout_heavy=600
 core_suites=(
    check-ref-commits-for-unicode-tests
    developer-meta-files-tests
-   dist-ai-config-tests
-   dist-ai-config-tests-coverage
+   private-ai-config-tests
+   private-ai-config-tests-coverage
    dist-ai-registry-tests
    github-org-tools-tests
    dm-help-steps-tests
@@ -73,7 +73,7 @@ core_suites=(
 )
 fuzz_suites=(
    check-ref-commits-for-unicode-tests-fuzz
-   dist-ai-config-tests-fuzz
+   private-ai-config-tests-fuzz
    git-meld-tests-fuzz
    grep-find-unicode-wrapper-tests-fuzz
    iso-boot-tests-fuzz
@@ -99,7 +99,7 @@ e2e_suites=(
    tb-updater-tests-e2e
 )
 integration_suites=(
-   dist-ai-config-tests-resilience
+   private-ai-config-tests-resilience
    dm-image-boot-tests
    dm-reproducible-build-tests
    sdwdate-gui-tests-integration
@@ -179,7 +179,7 @@ pkg_dir() {
       ## a fabricated monorepo path) makes their suites exit 77 SKIP in
       ## --repo-root mode instead of failing to find a directory that was never
       ## going to exist; --component-root above is their real entry point.
-      dist-ai|dist-ai-config)
+      dist-ai|private-ai-config)
          ;;
       *)
          printf '%s' "${repo_root}/packages/kicksecure/${name}"
@@ -384,11 +384,11 @@ wire() {
          ## checkout itself.
          wire_env=( "DIST_AI_REPO=$( pkg_dir dist-ai )" )
          ;;
-      dist-ai-config)
-         ## The tests live in the dist-ai-config checkout, not here; the suite
-         ## drives them from DIST_AI_CONFIG_PATH. Several exercise tools that
+      private-ai-config)
+         ## The tests live in the private-ai-config checkout, not here; the suite
+         ## drives them from PRIVATE_AI_CONFIG_PATH. Several exercise tools that
          ## source helper-scripts, so hand it that runtime when available.
-         wire_env=( "DIST_AI_CONFIG_PATH=$( pkg_dir dist-ai-config )" )
+         wire_env=( "PRIVATE_AI_CONFIG_PATH=$( pkg_dir private-ai-config )" )
          if [ -n "${hs}" ]; then
             wire_env+=(
                "HELPER_SCRIPTS_PATH=${hs}"
@@ -463,8 +463,8 @@ suite_component() {
       dm-help-steps|dm-reprepro-tracking|dm-reproducible-build)
          printf '%s' 'derivative-maker'
          ;;
-      dist-ai-config)
-         printf '%s' 'dist-ai-config'
+      private-ai-config)
+         printf '%s' 'private-ai-config'
          ;;
       dist-ai-registry)
          printf '%s' 'dist-ai'
@@ -734,7 +734,7 @@ fi
 ## Validate --component against what suite_component() actually maps, rather
 ## than a hand-kept second list. A duplicated allowlist silently rejects a
 ## correctly registered component the moment the two drift, which is exactly
-## what happened to dist-ai-config.
+## what happened to private-ai-config.
 if [ -n "${component}" ]; then
    component_known='false'
    for known_suite in "${core_suites[@]}" "${fuzz_suites[@]}" \

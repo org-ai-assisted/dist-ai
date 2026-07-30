@@ -13,10 +13,10 @@ findings are folded in.
 - Why it matters: R-170 is a single grep enforced repo-wide over WHOLE changed
   files, so a regex false positive blocks unrelated pushes.
 - Why it did not run: two causes. The 600s zero-byte timeouts were GLM-4.7's
-  default reasoning pass eating the response budget (fixed in dist-ai-config
+  default reasoning pass eating the response budget (fixed in private-ai-config
   a10f7b7 -- 4x faster, more findings). What remains is throughput: even with
   thinking disabled, glm-4.7-flash does not finish THIS diff inside
-  ai-review's 480s ceiling. The smaller dist-ai-config scope completes in 10.5s.
+  ai-review's 480s ceiling. The smaller private-ai-config scope completes in 10.5s.
 - Covered meanwhile by codex, coderabbit, agy and static; codex's two
   false-positive findings were fixed in b7d3d48.
 - Re-run: `ai-review --only glm --timeout 900 b7d3d48~1` (auto-detaches;
