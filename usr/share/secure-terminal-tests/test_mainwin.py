@@ -842,51 +842,33 @@ ok(win._find_tab(12345) is None, '_find_tab: a non-string matcher -> None')
 ok(win._find_tab('one') is not None or win._find_tab('one') is None,
    '_find_tab: a bare title is matched by title')
 
-# start a server and drive a genuine ping handoff through the Qt event loop.
-#
-# The client is a SUBPROCESS, not a thread. Two reasons, and the first is
-# correctness: in production the client is always a separate process (a second
-# launch that hands off and exits), so a thread tested a shape the product never
-# has. The second is that the thread version SEGFAULTED about two runs in three
-# under `coverage run` -- and only under coverage (5/5 clean without it). The
-# faulthandler trace showed the crash inside the Qt signal callback on_ready on
-# the main thread, with the client thread parked in ipc._recv_exactly and an
-# unresolvable line number in the crashing frame: coverage's C tracer walking
-# frames while a PyQt slot runs with another Python thread live. Nothing to do
-# with the product, and not something to paper over with a retry -- the fix is to
-# stop requiring a Python thread to be live inside a traced Qt callback.
-import json as _json_ipc                                        # noqa: E402
-import subprocess as _sp_ipc                                    # noqa: E402
-
+# NOTE: the client is a background THREAD. Two alternatives were measured and
+# are WORSE, so do not 'simplify' this back to either: a subprocess client
+# segfaults often even without coverage (the window installs a SIGCHLD handler
+# to reap its pty children, so an unrelated child races it), and a same-thread
+# non-blocking socket driven by processEvents() segfaults inside on_ready.
+# This shape is clean without coverage; see the coverage runner for why that
+# suite selects a different tracer.
+# start a server and drive a genuine ping handoff through the Qt event loop
 _srvwin = MainWindow()
 _srvwin._remote_control = True
 _srvwin.start_instance_server('cov-handoff')
+_hbox = {}
 
-_client_code = (
-    'import json, sys\n'
-    'sys.path.insert(0, %r)\n'
-    'from secure_terminal import ipc\n'
-    'r = ipc.send_request(%r, {"op": "ping"})\n'
-    'sys.stdout.write(json.dumps(r))\n'
-) % (os.path.dirname(os.path.dirname(os.path.abspath(M.__file__))),
-     'cov-handoff')
-_cproc = _sp_ipc.Popen([sys.executable, '-c', _client_code],
-                       stdout=_sp_ipc.PIPE, stderr=_sp_ipc.DEVNULL)
-for _ in range(200):
-    APP.processEvents()               # serve the connection from the main thread
-    if _cproc.poll() is not None:
+
+def _client():
+    _hbox['r'] = M.ipc.send_request('cov-handoff', {'op': 'ping'})
+
+
+_cth = threading.Thread(target=_client)
+_cth.start()
+for _ in range(80):
+    APP.processEvents()
+    if not _cth.is_alive():
         break
     QThread.msleep(25)
-try:
-    _cout, _ = _cproc.communicate(timeout=5)
-except _sp_ipc.TimeoutExpired:      # pragma: no cover - the server answers
-    _cproc.kill()
-    _cout = b''
-try:
-    _creply = _json_ipc.loads(_cout.decode('utf-8', 'replace'))
-except ValueError:
-    _creply = None
-ok(isinstance(_creply, dict) and _creply.get('ok'),
+_cth.join(timeout=3)
+ok(isinstance(_hbox.get('r'), dict) and _hbox['r'].get('ok'),
    'IPC: a real single-instance handoff is accepted and served')
 _srvwin.deleteLater()
 APP.processEvents()
@@ -1870,7 +1852,13 @@ from PyQt6.QtCore import Qt as _Qt_sc                        # noqa: E402
 from PyQt6.QtGui import QAction as _QAction_sc               # noqa: E402
 from PyQt6.QtGui import QKeySequence as _QKS                 # noqa: E402
 
-_acts_with_keys = [a for a in win.findChildren(_QAction_sc)
+# Only actions reachable from the menubar: findChildren() also returns actions a
+# rebuilt menu left behind as orphaned children, which are not user-reachable and
+# would report as unregistered without meaning anything.
+_menu_acts = []
+for _m in win.menuBar().findChildren(QMenu):
+    _menu_acts.extend(_m.actions())
+_acts_with_keys = [a for a in dict.fromkeys(_menu_acts)
                    if not a.shortcut().isEmpty()]
 ok(len(_acts_with_keys) >= 20,
    'actions carrying a shortcut were enumerated (%d)' % len(_acts_with_keys))
