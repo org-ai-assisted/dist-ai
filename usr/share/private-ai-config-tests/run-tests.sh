@@ -66,7 +66,10 @@ core_tests=(
    'tests/anti-stall-supervisor-wake-arity-test.sh'
    'tests/claude-session-on-mobile-test.sh'
    'tests/string-parsing-stress-test.sh'
+   'tests/sandbox-transfer-perms-test.sh'
    'claude/hooks/tests/test-cowbuilder-guard.py'
+   'claude/hooks/tests/test-git-command-parse.py'
+   'claude/hooks/tests/test-git-policy-guard.py'
 )
 fuzz_tests=( 'tests/string-parsing-fuzz.sh' )
 resilience_tests=(
