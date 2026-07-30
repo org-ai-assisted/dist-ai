@@ -148,7 +148,17 @@ def main():
         return 1
 
     seeds = _load_seeds(seeds_path)
-    ok(len(seeds) >= 20, 'seed corpus has a useful number of seeds (%d)' % len(seeds))
+    # Floor raised with the corpus seeding: at 20 this would not have noticed losing
+    # 94 of the 114 seeds. A floor that trails the real count is not a floor.
+    ok(len(seeds) >= 100,
+       'seed corpus has a useful number of seeds (%d)' % len(seeds))
+    # The adversarial corpora specifically must be in there -- they are the whole
+    # point of seeding, and a generic count cannot tell 114 generic seeds from 114
+    # that happen to exclude every real attack.
+    corpus_seeds = [name for name, _blob in seeds if name.startswith('corpus-')]
+    ok(len(corpus_seeds) >= 80,
+       'seed corpus carries the adversarial corpora (%d corpus- seeds)'
+       % len(corpus_seeds))
 
     harnesses = sorted(n for n in os.listdir(fuzz_dir)
                        if n.startswith('fuzz_') and n.endswith('.py'))
