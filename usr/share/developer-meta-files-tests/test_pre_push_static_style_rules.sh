@@ -523,6 +523,46 @@ printf '%s\n' \
    'f = 6' \
    'print(a, b, c, d, e, f)' \
    'PY' > "${inline_repo}/waived.sh"
+## A DOCUMENTATION heredoc whose body demonstrates an inline program is not
+## itself one. Flagging it blocks a valid push, which is worse than a miss.
+printf '%s\n' \
+   '#!/bin/bash' \
+   'cat > /dev/null <<'"'"'DOC'"'"'' \
+   'python3 - <<'"'"'PY'"'"'' \
+   'a = 1' \
+   'b = 2' \
+   'c = 3' \
+   'd = 4' \
+   'e = 5' \
+   'f = 6' \
+   'PY' \
+   'DOC' > "${inline_repo}/docexample.sh"
+## A commented opener must not open a phantom body: on the way through it would
+## swallow a REAL inline program later in the same file.
+printf '%s\n' \
+   '#!/bin/bash' \
+   '## e.g. python3 - <<'"'"'PY'"'"'' \
+   '## a = 1' \
+   'true' \
+   'python3 - <<'"'"'REAL'"'"'' \
+   'x = 1' \
+   'y = 2' \
+   'z = 3' \
+   'w = 4' \
+   'v = 5' \
+   'u = 6' \
+   'REAL' > "${inline_repo}/masked.sh"
+## Bash allows whitespace after the operator, so this is a real violation.
+printf '%s\n' \
+   '#!/bin/bash' \
+   'python3 - << '"'"'PY'"'"'' \
+   'a = 1' \
+   'b = 2' \
+   'c = 3' \
+   'd = 4' \
+   'e = 5' \
+   'f = 6' \
+   'PY' > "${inline_repo}/spaced.sh"
 chmod 0755 -- "${inline_repo}"/*.sh
 git -C "${inline_repo}" add --all
 git -C "${inline_repo}" commit --quiet --no-verify --message inline
@@ -551,6 +591,24 @@ if printf '%s\n' "${inline_hits}" | grep --quiet --fixed-strings -- 'plaindoc.sh
    failures=$((failures + 1))
 else
    printf 'PASS: R-190 ignores a heredoc feeding a non-interpreter\n'
+fi
+if printf '%s\n' "${inline_hits}" | grep --quiet --fixed-strings -- 'docexample.sh'; then
+   printf 'FAIL: R-190 flagged an interpreter example inside a doc heredoc\n' >&2
+   failures=$((failures + 1))
+else
+   printf 'PASS: R-190 ignores an interpreter example inside a doc heredoc\n'
+fi
+if printf '%s\n' "${inline_hits}" | grep --quiet --fixed-strings -- 'masked.sh'; then
+   printf 'PASS: R-190 still sees a violation after a commented opener\n'
+else
+   printf 'FAIL: a commented opener masked a real inline program\n' >&2
+   failures=$((failures + 1))
+fi
+if printf '%s\n' "${inline_hits}" | grep --quiet --fixed-strings -- 'spaced.sh'; then
+   printf 'PASS: R-190 catches whitespace after the heredoc operator\n'
+else
+   printf 'FAIL: R-190 missed "<< DELIM" with whitespace\n' >&2
+   failures=$((failures + 1))
 fi
 if printf '%s\n' "${inline_hits}" | grep --quiet --fixed-strings -- 'waived.sh'; then
    printf 'FAIL: R-190 ignored its style-ok waiver\n' >&2

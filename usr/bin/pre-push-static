@@ -884,6 +884,7 @@ check_R170_tmp_hardcode() {
 
 check_R190_inline_interpreter() {
    local script line delimiter rest char body start_line line_number in_body
+   local is_interpreter body_is_interpreter
 
    ## R-190: a substantial interpreter program does not belong in a shell
    ## heredoc. Same defect as R-100 for workflow YAML: the body is invisible to
@@ -906,6 +907,7 @@ check_R190_inline_interpreter() {
       fi
 
       in_body="false"
+      body_is_interpreter='false'
       delimiter=""
       body=0
       start_line=0
@@ -916,7 +918,7 @@ check_R190_inline_interpreter() {
             ## The terminator is the delimiter alone on its line; leading
             ## whitespace is allowed because '<<-' strips indentation.
             if [ "${line#"${line%%[![:space:]]*}"}" = "${delimiter}" ]; then
-               if [ "${body}" -gt 5 ]; then
+               if [ "${body}" -gt 5 ] && [ "${body_is_interpreter}" = 'true' ]; then
                   fail "R-190 inline interpreter program (${body} lines) belongs in its own file" \
                      "'${script}:${start_line}'"
                fi
@@ -938,13 +940,28 @@ check_R190_inline_interpreter() {
                continue
                ;;
          esac
-         if ! printf '%s\n' "${line}" | grep --quiet --extended-regexp \
-            '(python3?|perl|ruby|node|php)([[:space:]]+[^|;&<]*)?<<-?['"'"'"]?[A-Za-z_][A-Za-z0-9_]*'
+         ## A COMMENTED example is documentation, not a program. Without this a
+         ## '## e.g. python3 - <<PY' line starts a phantom body.
+         case "${line#"${line%%[![:space:]]*}"}" in
+            '#'*)
+               continue
+               ;;
+         esac
+         ## Track EVERY heredoc, not just interpreter ones, and only flag the
+         ## interpreter ones. A documentation block ('cat <<DOC') whose body
+         ## demonstrates an inline program must be consumed as body text;
+         ## treating the inner example as an opener fails a valid push.
+         is_interpreter='false'
+         if printf '%s\n' "${line}" | grep --quiet --extended-regexp \
+            '(python3?|perl|ruby|node|php)([[:space:]]+[^|;&<]*)?<<-?[[:space:]]*['"'"'"]?[A-Za-z_][A-Za-z0-9_]*'
          then
-            continue
+            is_interpreter='true'
          fi
          rest="${line##*<<}"
          rest="${rest#-}"
+         ## Bash allows whitespace between the operator and the delimiter, so
+         ## 'python3 - << "PY"' is valid and must not slip past.
+         rest="${rest#"${rest%%[![:space:]]*}"}"
          rest="${rest#\'}"
          rest="${rest#\"}"
          delimiter=""
@@ -962,6 +979,7 @@ check_R190_inline_interpreter() {
          done
          if [ -n "${delimiter}" ]; then
             in_body="true"
+            body_is_interpreter="${is_interpreter}"
             body=0
             start_line="${line_number}"
          fi
