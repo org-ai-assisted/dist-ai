@@ -21,6 +21,7 @@ real handling instead of asserting it:
             the invisible/bidi/control classes still collapse to a placeholder.
   - Reveal  each hidden character is named inline as <U+XXXX>.
   - Detail  the same, plus the Unicode NAME, so the reader needs no lookup.
+            This is the DEFAULT mode (unicode_mode=detail).
 
 No display is needed: Qt's offscreen platform plus grab(). Composition uses
 QPainter, so this adds no dependency beyond the PyQt6 the app already needs.
@@ -63,10 +64,10 @@ PAYLOAD = (
 )
 
 MODES = (
-    ('box', 'Box -- default: every neutralized byte is one inert placeholder'),
+    ('box', 'Box -- every neutralized byte is one inert placeholder'),
     ('show', 'Show -- printable non-ASCII kept as itself; invisibles still marked'),
     ('reveal', 'Reveal -- each hidden character named inline as <U+XXXX>'),
-    ('detail', 'Detail -- the same, plus the Unicode NAME'),
+    ('detail', 'Detail (the default) -- the same, plus the Unicode NAME'),
 )
 
 PANEL_W = 760

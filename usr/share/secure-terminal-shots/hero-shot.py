@@ -74,7 +74,9 @@ def main(argv=None):
     view.setVerticalScrollBarPolicy(ScrollBarPolicy.ScrollBarAlwaysOff)
     view.setHorizontalScrollBarPolicy(ScrollBarPolicy.ScrollBarAlwaysOff)
     view.setFixedHeight(MIN_H)
-    view.render_preview(PAYLOAD, mode='box', markings=True)
+    # The DEFAULT mode is detail (unicode_mode=detail), not box -- a hero captioned
+    # "the default display" has to actually be it.
+    view.render_preview(PAYLOAD, mode='detail', markings=True)
     QApplication.processEvents()
 
     # Size from wrapped rows using the widget's own metrics; see the note in
