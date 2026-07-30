@@ -437,17 +437,92 @@ if tui_available():
     ok('\u200d' not in _zwdoc, 'the raw zero-width character never reaches the grid')
     _zw.close()
 
-    # _merge_invisible with the cursor at column 0 of a later row: the target is
-    # the last column of the PREVIOUS row, the wrapped-line case.
+    # _merge_invisible with the cursor at column 0 of a LATER row: the target is
+    # the last column of the PREVIOUS row. That cell must actually have been
+    # written -- pyte's row .get() returns None for a column never touched, which
+    # takes the no-target path instead -- so fill the row to its last column
+    # before the newline.
     _zw2 = SecureTerminal(command='/bin/cat', tui=True)
-    _cols = _zw2._screen.columns if _zw2._screen is not None else 80
-    feed_output(_zw2, ('x' * _cols).encode('utf-8'))
+    _cols2 = _zw2._screen.columns if _zw2._screen is not None else 80
+    feed_output(_zw2, ('x' * _cols2).encode('utf-8'))
+    pump(120)
+    feed_output(_zw2, b'\r\n')
     pump(120)
     feed_output(_zw2, '\u200d'.encode('utf-8'))
     pump(120)
     ok(_S_zw.BOX in _zw2.document().toPlainText(),
-       'a zero-width character at column 0 of a wrapped row marks the previous row')
+       'a zero-width character at column 0 marks the previous row last cell')
     _zw2.close()
+
+# --- cli_terminfo_dir freshness: no-source, and an unreadable mtime -----------
+# _fresh() decides whether a compiled terminfo directory may be used. Two arms
+# are only reachable with a prepared cache: "no shipped source, so nothing to be
+# stale against", and "the mtimes cannot be read at all".
+import secure_terminal.terminal as _T_cov                       # noqa: E402
+
+_ti_root = tempfile.mkdtemp(prefix='st-ti-cov-')
+_ti_s = os.path.join(_ti_root, 'secure-terminal', 'terminfo', 's')
+os.makedirs(_ti_s, exist_ok=True)
+for _name in ('secure-terminal', 'secure-terminal-noedit'):
+    with open(os.path.join(_ti_s, _name), 'wb') as _fh:
+        _fh.write(b'x')
+_ti_src_orig = _T_cov._terminfo_source
+_ti_xdg_prev = os.environ.get('XDG_CACHE_HOME')
+_ti_mtime_orig = _T_cov.os.path.getmtime
+try:
+    os.environ['XDG_CACHE_HOME'] = _ti_root
+    _T_cov._terminfo_source = lambda: ''        # nothing shipped to compare against
+    eq(_T_cov.cli_terminfo_dir(),
+       os.path.join(_ti_root, 'secure-terminal', 'terminfo'),
+       'cli_terminfo_dir accepts a complete cache when no source ships')
+
+    # ...and an unreadable mtime is "not fresh", not a crash.
+    _T_cov._terminfo_source = lambda: os.path.join(_ti_root, 'src.ti')
+    with open(os.path.join(_ti_root, 'src.ti'), 'wb') as _fh:
+        _fh.write(b'x')
+
+    def _mtime_boom(_path):
+        raise OSError('mtime unavailable')
+
+    _T_cov.os.path.getmtime = _mtime_boom
+    ok(_T_cov.cli_terminfo_dir() != os.path.join(_ti_root, 'secure-terminal',
+                                                 'terminfo'),
+       'an unreadable mtime makes a compiled terminfo dir not fresh')
+finally:
+    _T_cov.os.path.getmtime = _ti_mtime_orig
+    _T_cov._terminfo_source = _ti_src_orig
+    if _ti_xdg_prev is None:
+        os.environ.pop('XDG_CACHE_HOME', None)
+    else:
+        os.environ['XDG_CACHE_HOME'] = _ti_xdg_prev
+
+# --- _flush_reexport retires a tab that can no longer be re-exported into ------
+_fx = SecureTerminal(command='/bin/cat')          # a -- COMMAND tab, never re-exported
+_fx._reexport_pending = True
+_fx._flush_reexport()
+ok(not _fx._reexport_pending,
+   'a deferred re-export is dropped once the tab is no longer re-exportable')
+_fx.close()
+
+# --- _child_raw_mode: no fd, and an unreadable line discipline -----------------
+_rm = SecureTerminal(command='/bin/cat')
+_rm_fd = _rm._fd
+try:
+    _rm._fd = None
+    ok(_rm._child_raw_mode() is False, '_child_raw_mode with no fd is False')
+    _rm._fd = _rm_fd
+    _o_tcget = _T_cov.termios.tcgetattr
+    try:
+        def _boom(*_a, **_k):
+            raise _T_cov.termios.error('no line discipline')
+        _T_cov.termios.tcgetattr = _boom
+        ok(_rm._child_raw_mode() is False,
+           '_child_raw_mode is False when the line discipline cannot be read')
+    finally:
+        _T_cov.termios.tcgetattr = _o_tcget
+finally:
+    _rm._fd = _rm_fd
+_rm.close()
 
 _MARKER = b'\x1b[?1049h'
 _bad = []
