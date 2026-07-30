@@ -1,4 +1,0 @@
-usr/bin/lockfile-tests usr/bin/
-usr/bin/lockfile-tests-fuzz usr/bin/
-usr/share/lockfile-tests/*.py usr/share/lockfile-tests/
-usr/share/lockfile-tests/README.md usr/share/lockfile-tests/

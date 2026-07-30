@@ -1,4 +1,0 @@
-usr/bin/pre-push-static usr/bin/
-usr/bin/comments-audit usr/bin/
-usr/bin/step-summary-emit usr/bin/
-usr/bin/claude-usage-record usr/bin/

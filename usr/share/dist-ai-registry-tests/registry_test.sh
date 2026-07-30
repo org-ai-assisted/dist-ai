@@ -162,6 +162,23 @@ if [ "${#registered_suites[@]}" -eq 0 ]; then
    exit 1
 fi
 
+## True when some debian/*.install source pattern covers a repo-relative path.
+## The patterns are GLOBS ('usr/*', 'usr/share/foo/*.sh'), so an exact string
+## compare would miss every one of them.
+installed_covers() {
+   local candidate="$1"
+   local install_src
+   for install_src in "${installed_sources[@]}"; do
+      # shellcheck disable=SC2254
+      case "${candidate}" in
+         ${install_src})
+            return 0
+            ;;
+      esac
+   done
+   return 1
+}
+
 has_label() {
    local needle="$1"
    shift
@@ -174,7 +191,6 @@ has_label() {
    return 1
 }
 
-## Every entrypoint referenced by some debian/*.install, as one searchable blob.
 ## Source patterns from every debian/*.install, one per element -- the FIRST
 ## field of each line (the second is the destination directory).
 ##
@@ -207,7 +223,7 @@ for suite in "${registered_suites[@]}"; do
       fail "${suite}: usr/bin/${suite} is not executable -- the runner would report it MISSING and count a silent SKIP"
    fi
 
-   if ! has_label "usr/bin/${suite}" "${installed_sources[@]}"; then
+   if ! installed_covers "usr/bin/${suite}"; then
       fail "${suite}: no debian/*.install ships usr/bin/${suite} -- it would be MISSING on an installed system"
    fi
 
@@ -240,18 +256,7 @@ fi
 
 for rel in ${payload_files[@]+"${payload_files[@]}"}; do
    checks=$(( checks + 1 ))
-   shipped='false'
-   for install_src in "${installed_sources[@]}"; do
-      ## .install sources are GLOBS, so the pattern is deliberately unquoted.
-      # shellcheck disable=SC2254
-      case "${rel}" in
-         ${install_src})
-            shipped='true'
-            break
-            ;;
-      esac
-   done
-   if [ "${shipped}" = 'false' ]; then
+   if ! installed_covers "${rel}"; then
       fail "${rel}: in a test payload dir but matched by no debian/*.install pattern -- absent on an installed system, so the suite would silently cover less"
    fi
 done

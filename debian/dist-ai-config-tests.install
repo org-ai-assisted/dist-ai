@@ -1,5 +1,0 @@
-usr/bin/dist-ai-config-tests usr/bin/
-usr/bin/dist-ai-config-tests-fuzz usr/bin/
-usr/bin/dist-ai-config-tests-coverage usr/bin/
-usr/bin/dist-ai-config-tests-resilience usr/bin/
-usr/share/dist-ai-config-tests/*.sh usr/share/dist-ai-config-tests/
