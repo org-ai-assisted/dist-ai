@@ -1,0 +1,128 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Guards the SMBIOS-reader GRUB block against drift between its two copies.
+##
+## derivative-maker boots two ways and each has its OWN copy of the reader:
+##   disk: packages/kicksecure/vm-config-dist/etc/grub.d/01_smbios-reader
+##         (grub-mkconfig emits it into the image's grub.cfg)
+##   iso:  live-build-data/grub-config/config.cfg
+##         (live-build ships the template verbatim; grub-mkconfig output never
+##          reaches the ISO bootloader, only its 'linux' line is scraped)
+##
+## They cannot be merged, so they are asserted equal instead. Drift here is not
+## cosmetic: without the serial/timeout block a headless boot-tester injecting a
+## cmdline via SMBIOS gets a GRUB menu on a dead video console, a 0-byte serial
+## log and a timeout.
+##
+## Checkout: DERIVATIVE_MAKER_DIR, else ~/derivative-maker. Either file can be
+## pointed elsewhere with DM_SMBIOS_DISK_FILE / DM_SMBIOS_ISO_FILE (the disk copy
+## lives in a submodule, so a bare worktree does not carry it). A missing checkout
+## or file is a FAILURE, not a skip.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+[ -v DERIVATIVE_MAKER_DIR ] || DERIVATIVE_MAKER_DIR="${HOME}/derivative-maker"
+
+[ -v DM_SMBIOS_DISK_FILE ] || DM_SMBIOS_DISK_FILE="${DERIVATIVE_MAKER_DIR}/packages/kicksecure/vm-config-dist/etc/grub.d/01_smbios-reader"
+[ -v DM_SMBIOS_ISO_FILE ]  || DM_SMBIOS_ISO_FILE="${DERIVATIVE_MAKER_DIR}/live-build-data/grub-config/config.cfg"
+
+disk_file="${DM_SMBIOS_DISK_FILE}"
+iso_file="${DM_SMBIOS_ISO_FILE}"
+
+failures=0
+checks=0
+
+check_pass() {
+   checks=$(( checks + 1 ))
+   printf 'PASS  %s\n' "$1"
+}
+
+check_fail() {
+   checks=$(( checks + 1 ))
+   failures=$(( failures + 1 ))
+   printf 'FAIL  %s\n' "$1"
+   [ "$#" -lt 2 ] || printf '%s\n' "$2"
+}
+
+## The GRUB directives only, so a comment reworded on one side is not drift:
+## from 'insmod regexp' to the closing 'fi', minus comments, blanks and indent.
+extract_block() {
+   sed -n '/^[[:space:]]*insmod regexp/,/^[[:space:]]*fi[[:space:]]*$/p' -- "$1" \
+      | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+      | grep -vE '^#' \
+      | grep -vE '^$'
+}
+
+for f in "${disk_file}" "${iso_file}"; do
+   if [ ! -r "${f}" ]; then
+      printf 'FAIL  missing SMBIOS reader: %s\n' "${f}" >&2
+      printf '%s\n' "set DERIVATIVE_MAKER_DIR if the checkout lives elsewhere" >&2
+      exit 1
+   fi
+done
+
+disk_block="$(extract_block "${disk_file}")"
+iso_block="$(extract_block "${iso_file}")"
+
+if [ -z "${disk_block}" ]; then
+   check_fail "disk reader block not found in ${disk_file}"
+elif [ -z "${iso_block}" ]; then
+   check_fail "iso reader block not found in ${iso_file}"
+elif [ "${disk_block}" = "${iso_block}" ]; then
+   check_pass "disk and iso SMBIOS reader blocks are identical"
+else
+   check_fail "disk and iso SMBIOS reader blocks have DRIFTED" \
+      "$(diff <(printf '%s\n' "${disk_block}") <(printf '%s\n' "${iso_block}") || true)"
+fi
+
+## Each directive earns its place, so assert them by name rather than trusting
+## that two identical copies are both correct.
+##   insmod serial          -- do not rely on command.lst autoloading it
+##   set dm_smbios_oem=     -- smbios/regexp leave the vars untouched on no-match
+##   set dm_smbios_extra=      and GRUB vars survive load_env
+##   serial --unit=0        -- put GRUB's own output on the line the tester reads
+##   terminal_output serial -- ...
+##   set timeout=0          -- the tester cannot press a key to leave the menu
+for required in \
+   'insmod serial' \
+   'set dm_smbios_oem=' \
+   'set dm_smbios_extra=' \
+   'serial --unit=0' \
+   'terminal_output serial' \
+   'set timeout=0'
+do
+   for pair in "disk:${disk_file}" "iso:${iso_file}"; do
+      name="${pair%%:*}"
+      path="${pair#*:}"
+      if grep -qF -- "${required}" "${path}"; then
+         check_pass "${name}: has '${required}'"
+      else
+         check_fail "${name}: MISSING '${required}' in ${path}"
+      fi
+   done
+done
+
+## The gate is conditional on injection; an unconditional serial switch would
+## change every normal boot.
+for pair in "disk:${disk_file}" "iso:${iso_file}"; do
+   name="${pair%%:*}"
+   path="${pair#*:}"
+   if grep -qE '^[[:space:]]*if \[ -n "\$\{dm_smbios_extra\}" \]; then' -- "${path}"; then
+      check_pass "${name}: serial block is gated on dm_smbios_extra"
+   else
+      check_fail "${name}: serial block is NOT gated on dm_smbios_extra in ${path}"
+   fi
+done
+
+printf '\n%s checks, %s failed\n' "${checks}" "${failures}"
+[ "${failures}" -eq 0 ]

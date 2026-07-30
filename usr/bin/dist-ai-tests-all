@@ -65,6 +65,7 @@ core_suites=(
    private-ai-config-tests-coverage
    dist-ai-registry-tests
    github-org-tools-tests
+   dm-grub-smbios-tests
    dm-help-steps-tests
    dm-reprepro-tracking-tests
    dm-virtualbox-wiki-links-tests
