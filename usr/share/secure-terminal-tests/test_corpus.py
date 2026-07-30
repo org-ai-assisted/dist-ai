@@ -485,6 +485,17 @@ ok(all(ch in '\x08\t\n\r' or ch.isprintable() for ch in _show_all),
 # This is the assertion that covers the whole class rather than one fixture.
 ok(not any(S.is_default_ignorable(ch) for ch in _show_all),
    'all-unicode: show neutralizes every invisible default-ignorable code point')
+# Cf (FORMAT) is the whole class of invisible controls -- bidi overrides, the
+# zero-widths, the Arabic letter mark, the invisible math operators. DANGEROUS_CPS
+# enumerates the ones anyone thought of, which is why it had holes (U+061C,
+# U+2061-2064). Assert the CLASS instead of a list, in every mode, so a newly
+# assigned format character is covered the day Python's unicodedata knows it.
+import unicodedata as _ud                             # noqa: E402
+for _mode in MODES:
+    _out = S.render_output(_all, _mode)
+    _fmt = sorted({ord(ch) for ch in _out if _ud.category(ch) == 'Cf'})
+    ok(not _fmt, 'all-unicode/%s: an invisible FORMAT (Cf) char survived: %s'
+       % (_mode, ['U+%04X' % c for c in _fmt[:6]]))
 
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(corpus): %d passed, %d failed\n'
