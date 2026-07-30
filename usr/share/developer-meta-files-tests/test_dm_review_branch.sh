@@ -41,9 +41,14 @@ assert_prerequisite() {
    fi
 }
 
-assert_prerequisite \
-   'DMF_REPO unset (run via the developer-meta-files-tests entrypoint)' \
-   test -n "${DMF_REPO:-}"
+## ABSENT SUBJECT, not a broken environment: dm-review-branch lives in the
+## developer-meta-files checkout, so with no DMF_REPO there is nothing to judge.
+## 77 is the runner's skip contract. Every prerequisite BELOW stays fail-closed,
+## because those are defects in an environment whose subject IS present.
+if [ -z "${DMF_REPO:-}" ]; then
+   printf '%s\n' 'SKIP: test_dm_review_branch: DMF_REPO unset (no developer-meta-files checkout wired).' >&2
+   exit 77
+fi
 
 ## The pty driver ships next to this script, so resolve it relative to this
 ## file (not PATH, not an install prefix): the suite runs from a checkout.

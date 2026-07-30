@@ -33,15 +33,16 @@ else
    share='/usr/share/developer-meta-files-tests'
 fi
 
-if [ -z "${DMF_REPO:-}" ]; then
-   ## 77 SKIP, not FAIL: wire() leaves DMF_REPO unset whenever neither
-   ## --repo-root nor --component-root is given, so exiting 1 here made every
-   ## bare 'dist-ai-tests-all --core' run red on an unresolved target -- exactly
-   ## what the runner contract reserves 77 for.
-   printf '%s\n' 'SKIP: developer-meta-files-tests: DMF_REPO unset (run with --component developer-meta-files --component-root DIR).' >&2
-   exit 77
+## DMF_REPO is NOT required here. Only test_dm_review_branch.sh has its subject
+## in the developer-meta-files checkout; the rest drive tools dist-ai ships
+## itself. Skipping the whole suite on an unset DMF_REPO reported green while
+## running nothing -- including the pre-push-static tests that guard dist-ai's
+## own gate. Each test decides for itself and self-skips (77) on an absent
+## subject; 'ran == 0' below still reports SKIP rather than a pass over zero
+## assertions.
+if [ -n "${DMF_REPO:-}" ]; then
+   export DMF_REPO
 fi
-export DMF_REPO
 
 ## The dm-review-branch test drives helper-scripts' check-ref-*-for-unicode /
 ## unicode-show. When a helper-scripts checkout is wired, put its usr/bin on
