@@ -1414,23 +1414,101 @@ for _p in _SPLIT_PAYLOADS:
 eq(_SPLIT_BAD, [],
    'a hostile sequence split at any byte renders like the unsplit one, carry drained')
 
-# Three-way split of the sequence that has both an introducer and a terminator:
-# the middle chunk contains NEITHER, so nothing but the carry can hold the state.
-_raw = 'A\x1b]0;pwned\x07B'
+# Three-way split: the MIDDLE chunk holds neither introducer nor terminator, so
+# nothing but the carry can hold the state across two boundaries at once. Run it
+# over the whole hostile payload set (an OSC alone left the DCS/APC/SOS/PM
+# terminator states, the ST-terminated forms, and the sequences with no
+# terminator at all untested) at every pair of cut points, against the unsplit
+# render as the oracle. Payloads carrying a marker word also assert it never
+# reaches the display, so a "renders the same" pass cannot hide both sides
+# leaking identically.
 _BAD3 = []
-for _i in range(1, len(_raw) - 1):
-    for _j in range(_i + 1, len(_raw)):
-        _carry, _drop, _cells, _col, _sgr = '', '', [], 0, {}
-        _acc = []
-        for _chunk in (_raw[:_i], _raw[_i:_j], _raw[_j:]):
-            _text, _carry, _drop = S.feed_chunk_carry(_chunk, _carry, _drop)
-            _c, _cells, _col, _sgr, _w = S.feed_line_edits(
-                _cells, _col, _sgr, _text)
-            _acc.extend(_c)
-        _runs, _ = S.cells_to_runs(_acc, _cells, 'detail', False)
-        if ''.join(t for t, _k in _runs) != 'AB' or _carry:
-            _BAD3.append((_i, _j))
-eq(_BAD3, [], 'an OSC split three ways (no chunk holds intro+terminator) still strips')
+_LEAK3 = []
+for _p in ('\x1b]0;pwned\x07', '\x1b]0;pwned\x1b\\', '\x1b]52;c;cGF5\x07',
+           '\x1bP+q544e\x1b\\', '\x1b_Gf=100;pwned\x1b\\', '\x1b^pwned\x1b\\',
+           '\x1bX pwned \x1b\\', '\x1b]8;;http://evil\x1b\\link\x1b]8;;\x1b\\',
+           '\x1b[31;1m', '\x1b[?1049h', '\x1b[2J', '\x1b(0', '\x1b#8', '\x1bNx',
+           '\x1b[>4;2m', '\x1b[6n'):
+    _raw = 'A' + _p + 'B'
+    _want = _cells_render(_raw)
+    for _i in range(1, len(_raw) - 1):
+        for _j in range(_i + 1, len(_raw)):
+            _carry, _drop, _cells, _col, _sgr = '', '', [], 0, {}
+            _acc = []
+            for _chunk in (_raw[:_i], _raw[_i:_j], _raw[_j:]):
+                _text, _carry, _drop = S.feed_chunk_carry(_chunk, _carry, _drop)
+                _c, _cells, _col, _sgr, _w = S.feed_line_edits(
+                    _cells, _col, _sgr, _text)
+                _acc.extend(_c)
+            _runs, _ = S.cells_to_runs(_acc, _cells, 'detail', False)
+            _got = ''.join(t for t, _k in _runs)
+            if _got != _want or _carry:
+                _BAD3.append((_p, _i, _j, _got, _want, _carry))
+            if 'pwned' in _got or '\x1b' in _got:
+                _LEAK3.append((_p, _i, _j, _got))
+eq(_BAD3[:4], [],
+   'every hostile sequence split three ways renders like the unsplit one, carry drained')
+eq(_LEAK3[:4], [],
+   'a three-way split never spills an escape or an OSC payload onto the display')
+# The concrete leak the sweep above generalizes, named so a failure is legible:
+# SS2/SS3 is ESC N/O plus the ONE byte it shifts. ANSI_RE consumes all three, so
+# a chunk ending on the introducer must be CARRIED -- otherwise the introducer is
+# stripped alone and the shifted byte renders as literal text on the next chunk.
+for _ss in ('N', 'O'):
+    _t1, _c1, _d1 = S.feed_chunk_carry('A\x1b' + _ss, '', '')
+    eq(_c1, '\x1b' + _ss,
+       'a chunk ending on the SS2/SS3 introducer (ESC %s) is carried' % _ss)
+    _t2, _c2, _d2 = S.feed_chunk_carry('xB', _c1, _d1)
+    eq(_cells_render(_t1) + _cells_render(_t2), 'AB',
+       'the byte SS2/SS3 (ESC %s) shifts does not leak across a read boundary' % _ss)
+    eq(_c2, '', 'the SS2/SS3 carry is drained once its shifted byte arrives')
+
+# --- BYPASS: the retained-buffer CAP must not cut a sequence in half -----------
+# The widget bounds the retained raw output (_raw) and the mode-switch re-render
+# tail by keeping the LAST N characters. A plain slice can land INSIDE a sequence;
+# the surviving remainder has no introducer, so the line renderer prints it as
+# literal text ("31mHELLO" out of a halved SGR) and pyte mis-parses it when the
+# grid is seeded from _raw -- i.e. the cap that exists to bound a flood becomes an
+# escape leak of its own, reachable by simply flooding past the cap.
+_CUT_BAD = []
+for _p in _SPLIT_PAYLOADS + ('\x1b[31m', '\x1b[0m'):
+    _buf = 'HEAD' + _p + 'TAILTEXT'
+    _whole = _cells_render(_buf)
+    for _keep in range(1, len(_buf) + 2):
+        _tail = S.tail_from_escape_boundary(_buf, _keep)
+        _shown = _cells_render(_tail)
+        if len(_tail) > _keep:
+            _CUT_BAD.append(('over the cap', _p, _keep, _tail))
+        elif not _buf.endswith(_tail):
+            _CUT_BAD.append(('not a tail of the buffer', _p, _keep, _tail))
+        elif '\x1b' in _shown or 'pwned' in _shown or 'evil' in _shown:
+            _CUT_BAD.append(('leaked', _p, _keep, _shown))
+        elif not _whole.endswith(_shown):
+            # cutting may DROP earlier output; it may never invent any. A cut
+            # through a sequence invents exactly the sequence's own bytes.
+            _CUT_BAD.append(('invented output', _p, _keep, _shown))
+eq(_CUT_BAD[:4], [],
+   'capping the retained buffer cuts at an escape boundary, never mid-sequence')
+eq(S.tail_from_escape_boundary('abc', 0), '', 'a zero cap keeps nothing')
+eq(S.tail_from_escape_boundary('abc', 99), 'abc', 'a cap above the length is a no-op')
+eq(S.tail_from_escape_boundary('\x1b]0;pwned\x07', 6), '',
+   'a cut inside an unterminated-to-the-left OSC drops the whole remainder')
+
+# --- REGRESSION: the caret offset is counted in DOCUMENT units, not code points -
+# cells_display_col / cells_to_runs' prefix are ADDED to a Qt block position, and
+# a Qt document counts UTF-16 units: a non-BMP character is ONE Python character
+# but TWO document positions. Counting code points put the caret one place too far
+# left for every astral character before it (Show mode passes emoji through).
+eq(S.display_len('abc'), 3, 'ASCII counts one unit per character')
+eq(S.display_len('e\u0301'), 2, 'a combining mark is its own document position')
+eq(S.display_len('\U0001f600'), 2, 'an astral character is TWO document positions')
+_ASTRAL_CELLS = [('\U0001f600', ()), ('X', ())]
+eq(S.cells_display_col(_ASTRAL_CELLS, 2, 'show'), 3,
+   'the caret offset past an astral glyph counts both of its document units')
+eq(S.cells_display_col(_ASTRAL_CELLS, 2, 'box'), 2,
+   'a neutralized astral character is one box, so one document unit')
+eq(S.cells_display_col([('e', ()), ('\u0301', ())], 2, 'show'), 2,
+   'a combining mark still advances the caret by its own document position')
 
 # --- BYPASS: encoding tricks that reconstitute after the boundary --------------
 # The live stream uses an incremental UTF-8 decoder, so a multi-byte character
@@ -1477,28 +1555,38 @@ for _cut in (1, 2):
     eq(_out, 'A<U+202E RIGHT-TO-LEFT OVERRIDE>B',
        'the reconstituted override is MARKED, not silently dropped (cut %d)' % _cut)
 
-# Overlong encodings: the classic filter bypass (a shorter form is rejected, the
-# padded one is not). Python's decoder rejects them, so each byte becomes U+FFFD
-# -- assert the TARGET never appears, in any mode, so a future decoder swap that
-# accepts overlongs is caught here rather than in the field.
-_OVERLONG = (
-    (b'\xc0\xae', '.'), (b'\xe0\x80\xae', '.'), (b'\xf0\x80\x80\xae', '.'),
-    (b'\xc0\xaf', '/'), (b'\xc1\x9b', '\x1b'), (b'\xc0\x80', '\x00'),
-    (b'\xe0\x82\xae', chr(0x00AE)),
-)
-for _blob, _target in _OVERLONG:
+# Overlong / CESU-8 SMUGGLING, asserted where the product actually decides it.
+# Asserting "the overlong bytes never decode to '.'" over the byte stream only
+# re-tests CPython's UTF-8 decoder: no product change can make it true or false,
+# because CPython rejects an overlong form in C and ships no lenient variant to
+# swap in. The product's own decision is what happens to a surrogate or an astral
+# code point ONCE IT IS IN A str -- which is where a CESU-8 pair, a JSON \\uD83D
+# escape or a surrogatepass decode would deliver it -- so pin THAT, in every mode
+# and on every text that leaves the widget. Mutating render_output's Show branch
+# to trust cp >= 0x80 without str.isprintable() turns each of these red.
+_SMUGGLED = ('\ud83d', '\udc00', '\ud83d\ude00', 'ad\ud800min')
+for _sm in _SMUGGLED:
     for _mode in S.DISPLAY_MODES:
-        _out = _stream_render([b'A', _blob, b'B'], _mode)
-        ok(_target not in _out,
-           'overlong %r never decodes to %r (mode %s)' % (_blob, _target, _mode))
-
-# CESU-8 / surrogate-pair smuggling: an astral character encoded as two
-# UTF-8-encoded surrogates. It must not reassemble into the astral code point,
-# and no lone surrogate may reach the display.
-_CESU = b'\xed\xa0\xbd\xed\xb8\x80'              # U+1F600 as a surrogate pair
-_out = _stream_render([b'A', _CESU, b'B'])
-ok('\U0001f600' not in _out, 'CESU-8 surrogates do not reassemble into an astral char')
-ok(not any(0xD800 <= ord(c) <= 0xDFFF for c in _out), 'no lone surrogate is displayed')
+        _out = S.render_output(_sm, _mode)
+        ok(not any(0xD800 <= ord(c) <= 0xDFFF for c in _out),
+           'render_output never displays a surrogate (%r, mode %s)' % (_sm, _mode))
+        ok('\U0001f600' not in _out,
+           'a surrogate PAIR is never reassembled into its astral character '
+           '(%r, mode %s)' % (_sm, _mode))
+for _sm in ('\ud83d', '\udc00', '\ud800'):
+    for _mode in S.DISPLAY_MODES:
+        eq(S.tui_cell(_sm, _mode), S.BOX,
+           'a TUI grid cell holding a surrogate is the box placeholder '
+           '(%r, mode %s)' % (_sm, _mode))
+eq(S.render_output('ad\ud800min', 'show'), 'ad_min',
+   'a surrogate cannot hide inside a word in Show mode (no fake "admin")')
+for _fn in ('sanitize_title', 'sanitize_clipboard', 'sanitize_clipboard_unicode',
+            'sanitize_paste', 'sanitize_paste_unicode'):
+    _got = getattr(S, _fn)('a\ud83d\ude00b')
+    ok(not any(0xD800 <= ord(c) <= 0xDFFF for c in _got),
+       '%s strips a surrogate on the way out of the widget' % _fn)
+    ok('\U0001f600' not in _got,
+       '%s does not reassemble a surrogate pair on the way out' % _fn)
 
 # A truncated multi-byte tail at end of stream must not hold a partial character
 # back forever, nor emit the raw bytes.
@@ -1523,14 +1611,29 @@ ok(chr(0x202E) not in _out and '\x1b' not in _out,
 # U+25A1 is excluded because it IS the placeholder: a neutralized cell and a
 # genuine box character produce the same output, so "kept" is unobservable there
 # by construction (the widget maps the box back to '_' on export for that reason).
+#
+# The per-mode policy of the CLI renderer ITSELF rides this same sweep rather
+# than a second, narrower loop of hand-picked code points: the modes differ in
+# HOW they mark -- box, glyph, badge -- never in WHAT they let through unmarked,
+# so a code point safe in one mode and dangerous in another is a bypass reachable
+# from the View menu.
 _STREAM_CONTROLS = frozenset((0x07, 0x08, 0x09, 0x0A, 0x0D, ord(S.BOX)))
 _SWEEP = ([c for c in range(0x00, 0x3000) if c not in _STREAM_CONTROLS]
           + list(range(0xFE00, 0xFE10)) + list(range(0xFFA0, 0xFFA2))
-          + [0xE0100, 0xE01EF, 0x1D173, 0x1F600, 0x4E2D, 0x10FFFF])
+          + [0xFEFF, 0xE0100, 0xE01EF, 0x1D173, 0x1F600, 0x4E2D, 0x10FFFF])
 _DIVERGE = []
 _NOT_ONE_UNIT = []
+_MODE_BAD = []
 for _cp in _SWEEP:
     _ch = chr(_cp)
+    _passed = [m for m in S.DISPLAY_MODES if S.render_output(_ch, m) == _ch]
+    if not 0x20 <= _cp <= 0x7E:
+        # 'show' is the ONE mode allowed to pass a printable non-ASCII glyph;
+        # nothing may pass in box/reveal/detail, and nothing invisible anywhere.
+        if any(m != 'show' for m in _passed):
+            _MODE_BAD.append((_cp, _passed))
+        elif _passed and (not _ch.isprintable() or S.is_default_ignorable(_ch)):
+            _MODE_BAD.append((_cp, _passed))
     for _mode in S.DISPLAY_MODES:
         _t = S.tui_cell(_ch, _mode)
         _keeps_tui = (_t == _ch)
@@ -1538,12 +1641,14 @@ for _cp in _SWEEP:
             _NOT_ONE_UNIT.append((_cp, _mode, _t))
         if _mode in ('box', 'show'):
             # same policy, two implementations: they must agree exactly
-            if _keeps_tui != (S.render_output(_ch, _mode) == _ch):
+            if _keeps_tui != (_mode in _passed):
                 _DIVERGE.append((_cp, _mode))
         elif _keeps_tui and not 0x20 <= _cp <= 0x7E:
             # reveal/detail cannot fit a multi-column badge in a grid cell, so a
             # TUI cell there may keep printable ASCII and nothing else
             _DIVERGE.append((_cp, _mode))
+eq(_MODE_BAD[:8], [],
+   'only show passes a glyph, and no mode passes an invisible unmarked')
 eq(_DIVERGE[:8], [],
    'tui_cell and render_output neutralize the same code points in box/show')
 eq(_NOT_ONE_UNIT[:8], [],
@@ -1594,10 +1699,9 @@ eq(_CHUNK_BAD, [],
    'chunked CLI rendering with the carry equals whole-text rendering at every cut')
 ok('root@host' not in ''.join(_parts),
    'a split OSC never spills a fake prompt onto the outer terminal')
-# the wrapper actually WIRES the carry up -- importing it is not using it
-_cli_src = inspect.getsource(_cli)
-ok('feed_chunk_carry(' in _cli_src,
-   'the CLI wrapper calls feed_chunk_carry, not render_output alone')
+# (that the CLI wrapper's own read loop wires the carry up is proved
+# BEHAVIOURALLY in test_cli.py, by splitting a sequence across two real pty reads
+# -- a source grep for the call could not tell a wired call from a dead one.)
 
 # --- CLASH: the paste review and the display marking must agree on the class ---
 # Two guards name the risk of the same character: classify_paste writes the
@@ -1692,26 +1796,6 @@ for _cut in range(1, 5):
     ok(all(c not in '\x1b[2K' or c == 'x' for c, _k in _cells),
        'a CSI split across a line_edits flip leaks no byte (cut %d)' % _cut)
     eq(_carry, '', 'the carry is drained after the split CSI completes (cut %d)' % _cut)
-
-# --- CLASH: display modes must neutralize the same SET of code points ---------
-# The modes differ in HOW they mark (box, glyph, badge), never in WHAT they let
-# through unmarked. A code point that is safe in one mode and dangerous in
-# another is a bypass reachable from the View menu.
-_MODE_BAD = []
-for _cp in list(range(0x00, 0x900)) + [0x200B, 0x200E, 0x202E, 0x2066, 0xFEFF,
-                                       0xFE0F, 0x3164, 0x115F, 0x034F, 0x2028]:
-    if _cp in _STREAM_CONTROLS or 0x20 <= _cp <= 0x7E:
-        continue
-    _ch = chr(_cp)
-    _passed = [m for m in S.DISPLAY_MODES if S.render_output(_ch, m) == _ch]
-    # 'show' is the ONE mode allowed to pass a printable non-ASCII glyph; nothing
-    # may pass in box/reveal/detail, and nothing invisible may pass anywhere.
-    if any(m != 'show' for m in _passed):
-        _MODE_BAD.append((_cp, _passed))
-    elif _passed and (not _ch.isprintable() or S.is_default_ignorable(_ch)):
-        _MODE_BAD.append((_cp, _passed))
-eq(_MODE_BAD[:8], [],
-   'only show passes a glyph, and no mode passes an invisible unmarked')
 
 # --- BYPASS: the grapheme-cluster flood cap -----------------------------------
 # The cap exists because the text engine reshapes ONE cluster in O(n^2), so a base

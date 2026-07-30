@@ -152,6 +152,26 @@ ok(b'RED' in _out and b'title' not in _out,
 ok(b'\xc2\xa0' not in _out, 'a non-ASCII byte is neutralised (not passed through)')
 eq(_rc, 0, 'a command that exits cleanly returns 0')
 
+# --- a sequence SPLIT across two real pty reads is still stripped whole -------
+# render_output is stateless per chunk, so a sequence cut by a read boundary loses
+# its introducer and the REMAINDER prints as text -- straight onto the OUTER
+# terminal, `\r` and all, which is a prompt-spoofing primitive that needs no
+# escape to survive. Only the read loop's carry makes it whole, so drive it here
+# rather than grepping cli.py for the call: the child sleeps between writes so the
+# wrapper genuinely takes two os.read()s.
+_split_o, _split_rc = run_in_pty(['--', 'sh', '-c',
+    'printf "\\033[3"; sleep 0.4; '
+    'printf "1mSAFE\\033]0;t"; sleep 0.4; '
+    'printf "\\rroot@host# \\007END\\n"'], settle=2.0)
+ok(b'SAFEEND' in _split_o,
+   'the visible text of a split-up stream survives the carry intact')
+ok(b'31m' not in _split_o,
+   'a CSI split across two reads leaks no parameter bytes (no "31m")')
+ok(b'root@host' not in _split_o,
+   'an OSC split across two reads never spills a fake prompt onto the terminal')
+ok(b'\x1b' not in _split_o, 'no escape byte reaches the outer terminal either way')
+eq(_split_rc, 0, 'the split-sequence child exits cleanly')
+
 # --- display modes ------------------------------------------------------------
 _o2, _ = run_in_pty(['--mode', 'reveal', '--', 'printf', 'x\u200by'])
 ok(b'<U+200B>' in _o2, 'reveal mode shows the <U+XXXX> badge for a zero-width space')

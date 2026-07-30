@@ -1633,7 +1633,6 @@ ok(cp.review_pending() and len(_creq) == 1 and _QGA3.clipboard().text() == 'OLD'
 # copy stripped -> ASCII only on the clipboard
 cp.dispatch_pending_copy('stripped')
 eq(_QGA3.clipboard().text(), 'git dd\n', 'copy stripped puts ASCII only (homoglyph dropped)')
-# copy with unicode -> keeps the printable homoglyph
 cp.selectAll(); cp.copy(); cp.dispatch_pending_copy('unicode')
 eq(_QGA3.clipboard().text(), 'git ' + chr(0x0430) + 'dd\n',
    'copy with unicode keeps the printable homoglyph')
@@ -2140,14 +2139,18 @@ ok(not win.tabs.tabIcon(0).isNull(), 'tab colour set')
 _term0 = win.tabs.widget(0)
 ok(win._tab_colors.get(_term0) == '#d83933', 'tab colour stored')
 win.set_tab_color(0, None)
-# every tab now carries its number swatch, so the icon is never null; clearing
-# the colour drops the stored colour but keeps the (neutral) numbered icon.
+# the numbered swatch is unconditional, so a null icon can never be the signal;
+# _tab_colors is the only state that answers the question.
 ok(not win.tabs.tabIcon(0).isNull(), 'tab keeps its number icon after colour cleared')
 ok(win._tab_colors.get(_term0) is None, 'tab colour cleared')
 # --- find in scrollback: per-tab + all-tabs, over the neutralized display text ---
 from PyQt6.QtGui import QTextCursor as _QTC                  # noqa: E402
 _ft = win.current()
 _ft.document().setPlainText('')
+# Reset the LINE state with the document: the shell's prompt is still in the cell
+# buffer, so the fed text would continue that row and autowrap mid-word once the
+# prompt is long enough -- making the match count depend on the cwd's length.
+_ft._line_cells, _ft._line_col, _ft._out_cursor = [], 0, None
 feed_output(_ft, b'alpha beta\r\ndelta alpha\r\nzeta ALPHA\r\nno match\r\n')
 win.show_find()
 ok(not win._find_bar.isHidden(), 'Ctrl+Shift+F shows the find bar')
@@ -2210,7 +2213,6 @@ _filt.eventFilter(_tipbtn, _he2)
 _small = _tip.font().pointSizeF()
 ok(_big > _small, 'the InfoTip font grows with zoom')
 _tip.hide()
-# closing the find bar clears highlights and restores the caret to the output
 win.hide_find()
 ok(win._find_bar.isHidden(), 'Esc/close hides the find bar')
 ok(len(_ft.extraSelections()) == 0 and len(_ft2.extraSelections()) == 0,
@@ -2421,7 +2423,6 @@ for _argv in ([], ['--'], ['--', '--tab', '--title'], ['--tab'], ['--tab', '--ta
         ok(isinstance(_r.tabs, list), 'cli: argv %r -> a valid spec' % (_argv[:3],))
     except SystemExit:
         ok(True, 'cli: argv %r rejected cleanly (argparse exit)' % (_argv[:3],))
-# a launch tab opens with its title/mode/command
 _lw = MainWindow(launch=_pla(['--title', 'mytab', '--mode', 'reveal',
                               '--', 'sleep', '30']))
 pump(150)
@@ -2584,7 +2585,6 @@ ok(chr(0x202e) not in _doc, 'ssh/cat: the bidi override is neutralized')
 ok('SECRET_REAL_OUTPUT' in _doc,
    'ssh/cat: cross-line forgery prevented (cursor-up cannot hide earlier output)')
 ok('visible-text' in _doc, 'ssh/cat: honest visible text is shown')
-# the OSC title payload is stripped whole -- it never reaches the document
 ok('pwned' not in _doc, 'ssh/cat: the OSC-0 title-injection payload is stripped')
 ssh.shutdown()
 
@@ -2846,8 +2846,8 @@ ok(bool(win._set_shortcuts({'new_tab': 'Ctrl+U'})),
 eq(win.act_new.shortcut().toString(), 'Ctrl+Shift+T', 'the reserved rebind applied nothing')
 ok(bool(win._set_shortcuts({'new_tab': 'A'})),
    'binding to a bare printable key (which would eat typing) is rejected')
-# Ctrl+Shift/Ctrl+Alt combos are fine, and a built-in default that happens to be
-# Ctrl+<letter> (quit = Ctrl+Q) is allowed to stand
+# a built-in default that happens to be Ctrl+<letter> is grandfathered in, so
+# only a USER-set bare Ctrl+<letter> is rejected.
 eq(win._set_shortcuts({'quit': 'Ctrl+Q', 'new_tab': 'Ctrl+Alt+T'}), [],
    'a default Ctrl+Q and a Ctrl+Alt combo are accepted')
 win._set_shortcuts({'new_tab': 'Ctrl+Shift+T'})       # restore default
@@ -4361,11 +4361,9 @@ ok(_rt._pyte_qcolor('nothex', None) is None,
    '_pyte_qcolor: an invalid hex with no default -> None')
 ok(_rt._pyte_qcolor('zzzzzz', QColor('#123456').name()).isValid(),
    '_pyte_qcolor: an invalid hex falls back to the given default')
-# reverse video swaps fg/bg
 _f2 = _rt._pyte_format(_Cell(fg='ff0000', bg='0000ff', reverse=True))
 ok(_f2.background().color().name() == '#ff0000',
    '_pyte_format: reverse video swaps fg into the background')
-# bold + underscore attributes carry through
 _f3 = _rt._pyte_format(_Cell(fg='cccccc', bold=True, underscore=True))
 ok(_f3.fontWeight() == QFont.Weight.Bold and _f3.fontUnderline(),
    '_pyte_format: bold and underscore attributes are applied')
@@ -5135,6 +5133,118 @@ _cpfpc.setPosition(1)
 eq(_cpf._cp_at(_cpf.cursorRect(_cpfpc).center()), 0x00E9,
    '_cp_at falls back to an untagged readable glyph own codepoint')
 _cpf.shutdown()
+
+# --- REGRESSION: an OSC title must never LATCH past the gate or a mode switch --
+# pyte keeps the last title it ever parsed in screen.title, so reading that field
+# adopts a title the tab was not showing titles for: one set while osc_title was
+# off is picked up by the next unrelated OSC once the user enables it, and
+# re-seeding the grid on a CLI->TUI switch replays every historical title out of
+# the retained scrollback. The title must come from the bytes arriving NOW.
+if tui_available():
+    _lt = SecureTerminal(command='/bin/cat', tui=True)
+    _lt_titles = []
+    _lt.title_changed.connect(_lt_titles.append)
+    feed_output(_lt, b'\x1b]2;EVIL\x07')            # osc_title off by default
+    eq(_lt_titles, [], 'a title arriving while osc_title is off emits nothing')
+    _lt.apply_osc('osc_title', True)
+    feed_output(_lt, b'ordinary output\r\n')
+    eq(_lt_titles, [],
+       'opening the title gate does not adopt the title latched while it was shut')
+    feed_output(_lt, b'\x1b]7;file:///tmp\x07')     # an unrelated OSC
+    eq(_lt_titles, [],
+       'an unrelated OSC does not flush the title latched while the gate was shut')
+    feed_output(_lt, b'\x1b]2;GOOD\x07')
+    eq(_lt_titles, ['GOOD'], 'a title arriving while the gate is OPEN is adopted')
+    _lt.shutdown()
+
+    # ...and the same title replayed out of the CLI scrollback when the grid is
+    # seeded on a mode switch is not adopted either.
+    _ls = SecureTerminal(command='/bin/cat')          # starts in CLI mode
+    _ls.apply_osc('osc_title', True)
+    _ls_titles = []
+    _ls.title_changed.connect(_ls_titles.append)
+    feed_output(_ls, b'\x1b]2;STALE\x07hello\r\n')
+    eq(_ls_titles, [], 'CLI mode adopts no program title at all')
+    ok(_ls.apply_tui(True), 'the tab switches to TUI mode')
+    feed_output(_ls, b'more output\r\n')
+    eq(_ls_titles, [],
+       'seeding the TUI grid does not adopt a title replayed from the scrollback')
+    _ls.shutdown()
+
+# --- REGRESSION: capping the retained raw output must not cut mid-escape -------
+# _raw is bounded by keeping its tail; a plain slice can land inside a sequence
+# and the introducer-less remainder then renders as literal text on the next mode
+# re-render (and mis-parses when the grid is seeded).
+_cr = SecureTerminal(command='/bin/cat')
+_cr._RAW_MAX = 11              # so the cap lands INSIDE the SGR below
+_cr._RERENDER_TAIL = 11
+feed_output(_cr, b'A' * 30 + b'\x1b[31mHELLO\r\n')
+_cr.apply_mode('show')                       # re-renders from the capped tail
+_cr_text = _cr.toPlainText()
+ok('31m' not in _cr_text and '[31' not in _cr_text,
+   'a capped raw buffer re-renders with no half-escape leaking as literal text')
+ok('HELLO' in _cr_text, 'the surviving tail of the capped buffer still renders')
+_cr.shutdown()
+
+# --- REGRESSION: the caret offset is in DOCUMENT units, not code points --------
+# A Qt document position counts UTF-16 units, so an astral glyph (Show mode passes
+# emoji through) is ONE Python character but TWO positions; counting code points
+# left the caret one place short for every astral character before it.
+_ac2 = SecureTerminal(command='/bin/cat')
+_ac2.apply_mode('show')
+feed_output(_ac2, 'A\U0001f600B'.encode('utf-8'))
+eq(_ac2.textCursor().position(), _ac2.document().characterCount() - 1,
+   'the caret lands at the true end of the line after an astral glyph')
+_ac2.shutdown()
+
+# --- REGRESSION: full-screen detection survives line_edits=false ---------------
+# With line editing off the child runs under `secure-terminal-noedit`, which
+# cancels el/el1 on top of the base entry's cup/cuu/smcup -- so a curses program
+# emits no alternate screen, no cursor motion and no EL burst, and EVERY
+# escape-based detector is structurally dead. The terminfo-independent fallback is
+# the pty's own line discipline: raw mode plus a foreground program means that
+# program is drawing its own screen.
+_rawdir = tempfile.mkdtemp(prefix='st-noedit-')
+_rawsh = os.path.join(_rawdir, 'raw.sh')
+with open(_rawsh, 'w') as _rf:
+    _rf.write('#!/bin/sh\nstty raw -echo\nprintf DRAWING\nsleep 20\n')
+os.chmod(_rawsh, 0o700)
+_plainsh = os.path.join(_rawdir, 'plain.sh')
+with open(_plainsh, 'w') as _pf:
+    _pf.write('#!/bin/sh\nprintf "PLAIN\\n"\nsleep 20\n')
+os.chmod(_plainsh, 0o700)
+
+_rw = SecureTerminal(command=_rawsh, line_edits=False)
+_rw_adv = []
+_rw.advise_signal.connect(_rw_adv.append)
+_rw.resize(700, 300)
+_rw.show()
+pump(900)
+ok(_rw._child_raw_mode(), 'the pty line discipline reports the child raw mode')
+ok(_rw._tui_hint_shown and any('TUI' in a for a in _rw_adv),
+   'line_edits off: a keyboard-owning program still raises the TUI advisory')
+_rw.shutdown()
+
+_rw2 = SecureTerminal(command=_plainsh, line_edits=False)
+_rw2_adv = []
+_rw2.advise_signal.connect(_rw2_adv.append)
+_rw2.resize(700, 300)
+_rw2.show()
+pump(900)
+ok(not _rw2._child_raw_mode(), 'ordinary line output leaves the pty cooked')
+ok(not _rw2._tui_hint_shown,
+   'ordinary line output under line_edits off raises no advisory')
+_rw2.shutdown()
+
+_rw3 = SecureTerminal(command=_rawsh)             # line editing ON
+_rw3_adv = []
+_rw3.advise_signal.connect(_rw3_adv.append)
+_rw3.resize(700, 300)
+_rw3.show()
+pump(900)
+ok(not _rw3._tui_hint_shown,
+   'the raw-mode fallback is confined to the line_edits-off setting')
+_rw3.shutdown()
 
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(widget): %d passed, %d failed\n'
