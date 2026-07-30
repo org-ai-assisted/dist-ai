@@ -124,5 +124,28 @@ for pair in "disk:${disk_file}" "iso:${iso_file}"; do
    fi
 done
 
+## The placeholder must trail everything grub-mkconfig emits, or an injected
+## parameter loses to the image's own: GRUB emits "${GRUB_CMDLINE_LINUX}
+## ${GRUB_CMDLINE_LINUX_DEFAULT}", and the kernel takes the LAST occurrence. From
+## GRUB_CMDLINE_LINUX the injection is followed by 'loglevel=0 quiet', which
+## silently defeated an injected loglevel.
+cmdline_file="${DERIVATIVE_MAKER_DIR}/packages/kicksecure/vm-config-dist/etc/default/grub.d/99_smbios-cmdline.cfg"
+[ -v DM_SMBIOS_CMDLINE_FILE ] && cmdline_file="${DM_SMBIOS_CMDLINE_FILE}"
+if [ ! -r "${cmdline_file}" ]; then
+   check_fail "missing ${cmdline_file}"
+elif grep -qE '^GRUB_CMDLINE_LINUX_DEFAULT=.*dm_smbios_extra' -- "${cmdline_file}"; then
+   check_pass "placeholder appended to GRUB_CMDLINE_LINUX_DEFAULT (lands last)"
+else
+   check_fail "placeholder NOT on GRUB_CMDLINE_LINUX_DEFAULT in ${cmdline_file}" \
+      "$(grep -nE 'dm_smbios_extra' -- "${cmdline_file}" | tail -2 || true)"
+fi
+
+## Same nounset defence its neighbour 30_serial_console.cfg documents.
+if grep -qE '^: "\$\{GRUB_CMDLINE_LINUX_DEFAULT:=' -- "${cmdline_file}"; then
+   check_pass "cmdline fragment guards GRUB_CMDLINE_LINUX_DEFAULT for nounset"
+else
+   check_fail "cmdline fragment lacks the nounset guard in ${cmdline_file}"
+fi
+
 printf '\n%s checks, %s failed\n' "${checks}" "${failures}"
 [ "${failures}" -eq 0 ]
