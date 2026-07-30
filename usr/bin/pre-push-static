@@ -317,9 +317,22 @@ check_shellcheck() {
 }
 
 check_ascii_files() {
-   local hits line
+   local hits line f
+   local -a fs
 
-   hits="$(LC_ALL=C grep --files-with-matches --binary-files=without-match --perl-regexp '[^\x00-\x7F]' -- "${@}" || true)"
+   ## Same regular-file floor as check_trailing_whitespace: a submodule
+   ## gitlink is a DIRECTORY in the work tree and grep errors on it.
+   fs=()
+   for f in "${@}"; do
+      if [ ! -f "${f}" ] || [ -L "${f}" ]; then
+         continue
+      fi
+      fs+=("${f}")
+   done
+   if [ "${#fs[@]}" -eq 0 ]; then
+      return 0
+   fi
+   hits="$(LC_ALL=C grep --files-with-matches --binary-files=without-match --perl-regexp '[^\x00-\x7F]' -- "${fs[@]}" || true)"
    if [ -z "${hits}" ]; then
       return 0
    fi
@@ -1404,6 +1417,12 @@ check_precommit_hooks() {
          symlink_files+=("${f}")
          continue
       fi
+      ## A submodule gitlink is a DIRECTORY here: no content to scan, and every
+      ## content hook below errors on it. forbid-new-submodules takes the RAW
+      ## list, so dropping it here does not blind that check.
+      if [ ! -f "${f}" ]; then
+         continue
+      fi
       if is_text_file "${f}"; then
          text_files+=("${f}")
          if [ -x "${f}" ] && [ -f "${f}" ]; then
@@ -1468,7 +1487,17 @@ check_precommit_hooks() {
    fi
    run_precommit_hook check-case-conflict     -- "${@}"
    run_precommit_hook destroyed-symlinks      -- "${@}"
+   ## forbid-new-submodules diffs '--staged' unless PRE_COMMIT_FROM_REF /
+   ## PRE_COMMIT_TO_REF are set. In push mode nothing is staged, so without
+   ## these it diffs an empty range and passes unconditionally -- a check that
+   ## looks alive and inspects nothing. Exported around the call only, so the
+   ## range does not leak into the other hooks.
+   if [ -n "${base_ref:-}" ] && [ "${staged_mode}" -eq 0 ]; then
+      export PRE_COMMIT_FROM_REF="${base_ref}"
+      export PRE_COMMIT_TO_REF='HEAD'
+   fi
    run_precommit_hook forbid-new-submodules   -- "${@}"
+   unset PRE_COMMIT_FROM_REF PRE_COMMIT_TO_REF
 
    ## text-only:
    run_precommit_hook check-merge-conflict    -- "${text_files[@]}"

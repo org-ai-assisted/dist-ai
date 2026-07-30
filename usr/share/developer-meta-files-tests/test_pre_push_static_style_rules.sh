@@ -651,6 +651,40 @@ else
    printf 'PASS: shebang check honours the sourced-fragment waiver\n'
 fi
 
+## A submodule gitlink is a DIRECTORY in the work tree. The waiver scan must not
+## grep it: grep exits "Is a directory" and the noise lands in the gate output.
+gitlink_repo="$(mktemp --directory --tmpdir="${tmp_root}" gitlink.XXXXXX)"
+gitlink_inner="$(mktemp --directory --tmpdir="${tmp_root}" inner.XXXXXX)"
+git -C "${gitlink_inner}" init --quiet
+git -C "${gitlink_inner}" config user.email 'ci-test@example.com'
+git -C "${gitlink_inner}" config user.name 'ci-test'
+git -C "${gitlink_inner}" commit --quiet --no-verify --allow-empty --message inner
+git -C "${gitlink_repo}" init --quiet
+git -C "${gitlink_repo}" config user.email 'ci-test@example.com'
+git -C "${gitlink_repo}" config user.name 'ci-test'
+git -C "${gitlink_repo}" commit --quiet --no-verify --allow-empty --message base
+gitlink_base="$(git -C "${gitlink_repo}" rev-parse HEAD)"
+git -C "${gitlink_repo}" -c protocol.file.allow=always \
+   submodule add --quiet -- "${gitlink_inner}" sub >/dev/null 2>&1
+git -C "${gitlink_repo}" add --all
+git -C "${gitlink_repo}" commit --quiet --no-verify --message gitlink
+gitlink_out="$( cd -- "${gitlink_repo}" && "${GATE}" "${gitlink_base}" 2>&1 || true )"
+if printf '%s\n' "${gitlink_out}" | grep --quiet --fixed-strings -- 'Is a directory'; then
+   printf 'FAIL: gate grepped a submodule gitlink as if it were a file\n' >&2
+   failures=$((failures + 1))
+else
+   printf 'PASS: gate does not grep a submodule gitlink\n'
+fi
+## forbid-new-submodules diffs '--staged' unless the range env vars are set, so
+## in push mode it inspected an empty diff and passed unconditionally.
+if printf '%s\n' "${gitlink_out}" \
+   | grep --quiet --fixed-strings -- 'new submodule introduced'; then
+   printf 'PASS: forbid-new-submodules sees the push-mode diff range\n'
+else
+   printf 'FAIL: forbid-new-submodules missed a newly added submodule\n' >&2
+   failures=$((failures + 1))
+fi
+
 ## R-001 gains a per-file waiver. A suite testing a SANITIZER has to contain
 ## the non-ASCII bytes it asserts are stripped, so the fixture is not a slip.
 ## The waiver must be opt-in per file, and absent it the rule must still fire.
