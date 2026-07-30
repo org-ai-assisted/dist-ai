@@ -19,6 +19,10 @@
 ##   helper_scripts  'true' if a helper-scripts checkout is also needed
 ##   hs_arg          the matching '--helper-scripts-root <dir>' argument for
 ##                   dist-ai-tests-all, or empty
+##   terminal_poc_corpus  'true' if a terminal-poc-corpus checkout is also needed
+##                   (the adversarial PoC corpus lives in its own repo, so a suite
+##                   that drives it cannot resolve one in CI otherwise, and would
+##                   exit 77 -> reported SKIP -> counted green)
 
 set -o errexit
 set -o nounset
@@ -35,6 +39,7 @@ fi
 
 apt_packages='python3 python3-pytest python3-hypothesis'
 helper_scripts='false'
+terminal_poc_corpus='false'
 skip_args=''
 
 if [ -f "${cfg}" ]; then
@@ -44,6 +49,12 @@ if [ -f "${cfg}" ]; then
    fi
    if [ "$(yq -r '.["dist-ai-tests"]["helper-scripts"] // ""' "${cfg}")" = 'true' ]; then
       helper_scripts='true'
+   fi
+   ## Opt-in rather than unconditional: cloning the corpus for every consumer
+   ## costs a checkout none of them need, and only a component with a suite that
+   ## drives it can use one.
+   if [ "$(yq -r '.["dist-ai-tests"]["terminal-poc-corpus"] // ""' "${cfg}")" = 'true' ]; then
+      terminal_poc_corpus='true'
    fi
    ## Optional list of suite entrypoints to skip (a suite temporarily broken /
    ## pending a merge). Each becomes a '--skip <name>' argument.
@@ -70,6 +81,7 @@ esac
 {
    printf 'apt_packages=%s\n' "${apt_packages}"
    printf 'helper_scripts=%s\n' "${helper_scripts}"
+   printf 'terminal_poc_corpus=%s\n' "${terminal_poc_corpus}"
    printf 'skip_args=%s\n' "${skip_args# }"
    if [ "${helper_scripts}" = 'true' ]; then
       printf 'hs_arg=--helper-scripts-root %s/helper-scripts\n' "${GITHUB_WORKSPACE}"
