@@ -61,6 +61,7 @@ core_tests=(
    'tests/safe-pkill-guard-test.py'
    'tests/ci-status-checkruns-test.py'
    'tests/git-hooks-unicode-test.sh'
+   'tests/git-hooks-branch-policy-test.py'
    'tests/ci-status-test.sh'
    'tests/kcov-shell-coverage-test.sh'
    'tests/anti-stall-supervisor-wake-arity-test.sh'
