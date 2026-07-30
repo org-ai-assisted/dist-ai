@@ -1713,6 +1713,63 @@ for _cp in list(range(0x00, 0x900)) + [0x200B, 0x200E, 0x202E, 0x2066, 0xFEFF,
 eq(_MODE_BAD[:8], [],
    'only show passes a glyph, and no mode passes an invisible unmarked')
 
+# --- BYPASS: the grapheme-cluster flood cap -----------------------------------
+# The cap exists because the text engine reshapes ONE cluster in O(n^2), so a base
+# plus thousands of extenders freezes the render. Keying it on the general
+# category missed 158 code points that extend a cluster anyway -- U+200C/U+200D,
+# the halfwidth katakana sound marks, Thai SARA AM, the emoji modifiers -- each
+# good for a 5001-code-point cluster.
+#
+# The oracle is UAX #29 via regex \X, applied to the RENDERED output: it answers
+# "how long is the longest cluster a user's text engine must reshape", which is
+# the actual invariant, rather than re-asking the product's own predicate.
+import regex as _regex_cl                                # noqa: E402
+
+_CAP = S._COMBINING_RUN_MAX
+
+
+def _longest_cluster(text):
+    return max((len(c) for c in _regex_cl.findall(r'\X', text)), default=0)
+
+
+def _render_cells(raw, mode='show'):
+    _comp, _cells, _col, _sgr, _wraps = S.feed_line_edits([], 0, {}, raw)
+    _runs, _ = S.cells_to_runs(_comp, _cells, mode, True, wraps=_wraps)
+    return ''.join(t for t, _k in _runs)
+
+
+# One representative per failure mode: a classic combining mark (category M, the
+# only case the old predicate caught), a spacing mark, an enclosing mark, and four
+# extenders that are NOT category M.
+_CLUSTER_CPS = (0x0301, 0x0903, 0x20E3, 0x1F3FB, 0xFF9E, 0x0E33, 0x200D)
+_CLUSTER_BAD = []
+for _cp in _CLUSTER_CPS:
+    _out = _render_cells('a' + chr(_cp) * 5000)
+    if _longest_cluster(_out) > _CAP + 1:
+        _CLUSTER_BAD.append(('U+%04X' % _cp, _longest_cluster(_out)))
+eq(_CLUSTER_BAD, [],
+   'no extender builds a cluster past the cap in the rendered cell model')
+
+# The cap must not fire on conformant text: UAX #15 stream-safe format allows up
+# to 30 marks per base, so a 20-mark cluster must survive intact. A cap that ate
+# real decomposed text would pass the assertion above while being wrong.
+_ok_run = 'a' + chr(0x0301) * 20
+eq(_render_cells(_ok_run).count(chr(0x0301)), 20,
+   'a conformant 20-mark cluster is not truncated by the cap')
+
+# The predicate must agree with \X over the WHOLE range, not just the samples --
+# this is what would have caught the original hole on the day it was written.
+_MISSED = [cp for cp in range(0x300, 0x110000)
+           if (len(_regex_cl.findall(r'\X', 'a' + chr(cp))) == 1)
+           != bool(S._is_mark(chr(cp)))]
+eq(_MISSED[:8], [],
+   'the cluster-extension predicate agrees with UAX #29 at every code point')
+# ...and the callers' ord(ch) < 0x0300 fast-reject is only sound if nothing below
+# that extends a cluster. Asserted, not assumed.
+_LOW = [cp for cp in range(0x20, 0x300)
+        if len(_regex_cl.findall(r'\X', 'a' + chr(cp))) == 1]
+eq(_LOW, [], 'no code point below U+0300 extends a cluster (fast-reject is sound)')
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests: %d passed, %d failed\n' % (PASS, FAIL))
 sys.exit(0 if FAIL == 0 else 1)
