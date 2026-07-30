@@ -16,6 +16,7 @@
 ## Emits to $GITHUB_OUTPUT:
 ##   apt_packages    packages to apt-install for the suites (default: the base
 ##                   testing stack)
+##   allow_skip_args '--allow-skip <name>' arguments for suites authorized to skip
 ##   helper_scripts  'true' if a helper-scripts checkout is also needed
 ##   hs_arg          the matching '--helper-scripts-root <dir>' argument for
 ##                   dist-ai-tests-all, or empty
@@ -41,6 +42,7 @@ apt_packages='python3 python3-pytest python3-hypothesis'
 helper_scripts='false'
 terminal_poc_corpus='false'
 skip_args=''
+allow_skip_args=''
 
 if [ -f "${cfg}" ]; then
    value="$(yq -r '.["dist-ai-tests"]["apt-packages"] // ""' "${cfg}")"
@@ -68,6 +70,21 @@ if [ -f "${cfg}" ]; then
       esac
       skip_args="${skip_args} --skip ${skip_name}"
    done < <(yq -r '.["dist-ai-tests"].skip[]? // empty' "${cfg}")
+   ## Optional list of suites AUTHORIZED to exit 77 without failing the run. An
+   ## unauthorized skip is a failure (dist-ai-tests-all skip_is_fatal): a suite that
+   ## could not resolve its target must not report the same green exit 0 as one that
+   ## ran. Authorize only where a human decided the suite may legitimately be absent
+   ## for this repo -- never to turn a red run green.
+   while IFS= read -r allow_name; do
+      [ -n "${allow_name}" ] || continue
+      case "${allow_name}" in
+         *[![:alnum:]-]*)
+            printf '%s\n' "dist-ai-tests-ci-config: invalid allow-skip suite name: ${allow_name}" >&2
+            exit 1
+            ;;
+      esac
+      allow_skip_args="${allow_skip_args} --allow-skip ${allow_name}"
+   done < <(yq -r '.["dist-ai-tests"]["allow-skip"][]? // empty' "${cfg}")
 fi
 
 ## Reject newline injection into $GITHUB_OUTPUT.
@@ -83,6 +100,7 @@ esac
    printf 'helper_scripts=%s\n' "${helper_scripts}"
    printf 'terminal_poc_corpus=%s\n' "${terminal_poc_corpus}"
    printf 'skip_args=%s\n' "${skip_args# }"
+   printf 'allow_skip_args=%s\n' "${allow_skip_args# }"
    if [ "${helper_scripts}" = 'true' ]; then
       printf 'hs_arg=--helper-scripts-root %s/helper-scripts\n' "${GITHUB_WORKSPACE}"
    else

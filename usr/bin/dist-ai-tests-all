@@ -23,6 +23,7 @@ component=""
 component_root=""
 helper_scripts_root=""
 skip_suites=()
+allow_skip_suites=()
 progress_file=""
 run_core="false"
 run_fuzz="false"
@@ -138,6 +139,12 @@ helper-scripts checkout exists.
 --skip NAME drops the suite entrypoint NAME from the run (repeatable), e.g. a
 suite temporarily broken or pending a merge, so a component's other suites can
 still gate PRs.
+
+--allow-skip NAME authorizes suite NAME to exit 77 (SKIP) without failing the run
+(repeatable). Under a --component filter an UNAUTHORIZED skip is a FAILURE, because
+a suite that could not resolve its target must not report the same green exit 0 as
+one that ran and passed. Authorize a suite only when a human has decided it may
+legitimately be absent here -- never to turn a red run green.
 EOF
 }
 
@@ -516,12 +523,42 @@ pass_count=0
 fail_count=0
 skip_count=0
 
+## STANDING POLICY: a skipped test must NOT produce a green exit 0 unless the skip
+## was specifically authorized. A suite that exits 77 because its target could not
+## be resolved looks identical, in a summary line, to a suite that ran and passed --
+## which is how terminal-poc-corpus-tests reported SKIP in CI for weeks while the
+## gate read as wired. So an UNAUTHORIZED skip fails the run.
+##
+## Authorized means named in --allow-skip (which the CI wrapper fills from the
+## caller's .github/dm-consumer.yml), i.e. a human decided this suite may be absent
+## here. Do not authorize a suite to make a red run green; fix the wiring.
+##
+## Strictness applies when a --component filter is in force -- the per-repo CI entry
+## point, where every suite selected is supposed to have its target provided. A bare
+## developer run selects the whole registry, most of which has no checkout on any one
+## machine, so it stays lenient (and says so in the summary).
+skip_is_fatal() {
+   local suite="$1"
+   local allowed
+   [ "${strict_skips}" = 'true' ] || return 1
+   for allowed in ${allow_skip_suites[@]+"${allow_skip_suites[@]}"}; do
+      [ "${allowed}" = "${suite}" ] && return 1
+   done
+   return 0
+}
+
 run_suite() {
    local suite="$1" category="$2" tmo="$3"
    local entry="${mydir}/${suite}"
    if [ ! -x "${entry}" ]; then
+      ## MISSING is never tolerated: the entrypoint is shipped by THIS repo, so its
+      ## absence is a packaging bug, not an environment fact. See skip_is_fatal.
       emit "$( printf '%-38s %-12s MISSING' "${suite}" "[${category}]" )"
-      skip_count=$(( skip_count + 1 ))
+      if [ "${strict_skips}" = 'true' ]; then
+         fail_count=$(( fail_count + 1 ))
+      else
+         skip_count=$(( skip_count + 1 ))
+      fi
       return 0
    fi
    wire "${suite}"
@@ -535,8 +572,13 @@ run_suite() {
          pass_count=$(( pass_count + 1 ))
          ;;
       77)
-         verdict="SKIP"
-         skip_count=$(( skip_count + 1 ))
+         if skip_is_fatal "${suite}"; then
+            verdict="SKIP-UNAUTHORIZED"
+            fail_count=$(( fail_count + 1 ))
+         else
+            verdict="SKIP"
+            skip_count=$(( skip_count + 1 ))
+         fi
          ;;
       124)
          verdict="TIMEOUT"
@@ -606,6 +648,10 @@ while [ "$#" -gt 0 ]; do
          ;;
       --skip)
          skip_suites+=( "$2" )
+         shift
+         ;;
+      --allow-skip)
+         allow_skip_suites+=( "$2" )
          shift
          ;;
       --progress)
@@ -681,6 +727,13 @@ if [ -n "${component}" ]; then
       printf 'dist-ai-tests-all: known components: %s\n' "${known_list}" >&2
       exit 2
    fi
+fi
+
+## See skip_is_fatal: strict only under a --component filter, where every selected
+## suite is supposed to have its target provided.
+strict_skips='false'
+if [ -n "${component}" ]; then
+   strict_skips='true'
 fi
 
 if [ -n "${component_root}" ]; then
@@ -782,7 +835,11 @@ for item in "${selected[@]}"; do
    esac
 done
 
-emit "== summary: ${pass_count} pass, ${fail_count} fail, ${skip_count} skip/missing =="
+if [ "${strict_skips}" = 'true' ]; then
+   emit "== summary: ${pass_count} pass, ${fail_count} fail, ${skip_count} authorized skip =="
+else
+   emit "== summary: ${pass_count} pass, ${fail_count} fail, ${skip_count} skip/missing (skips not fatal: no --component filter) =="
+fi
 emit "== per-suite output: ${TMP}/dist-ai-tests-all.<suite>.log =="
 
 [ "${fail_count}" -eq 0 ]
