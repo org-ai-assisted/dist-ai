@@ -1,0 +1,132 @@
+#!/bin/bash
+
+## Local boot-test loop: take an ALREADY BUILT image and run the firmware x session
+## matrix in the sandbox, so a boot-side change costs minutes instead of a ~50 min
+## CI round trip.
+##
+##   dm-boot-local --image PATH [--legs "bios/user efi/user ..."]
+##   dm-boot-local --from-ci [--run ID] [--type qcow2|iso]   fetch a CI image first
+##
+## A change that lands INSIDE the image (a package, an /etc/grub.d snippet) still
+## needs a rebuild -- this loop is for iterating the BOOT side, or for re-testing an
+## image whose contents you have edited in place.
+
+## Needs the temp-claude sandbox provisioned (it runs dm-boot-test there, which
+## installs qemu/OVMF); a broken apt state in the sandbox surfaces as rc=100.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+REPO='org-ai-assisted/derivative-maker'
+DIST_AI="${HOME}/private-sources/dist-ai"
+image=''
+run_id=''
+from_ci='false'
+image_type='qcow2'
+legs='bios/user bios/sysmaint efi/user efi/sysmaint efi-secureboot/user efi-secureboot/sysmaint'
+
+usage() {
+   sed -n '3,13p' -- "${BASH_SOURCE[0]}" | sed 's/^## \{0,1\}//'
+}
+
+while [ "$#" -gt 0 ]; do
+   case "$1" in
+      --image)      image="$2"; shift 2 ;;
+      --run)        run_id="$2"; shift 2 ;;
+      --legs)       legs="$2"; shift 2 ;;
+      --from-ci)    from_ci='true'; shift ;;
+      --type)       image_type="$2"; shift 2 ;;
+      --help|-h)    usage; exit 0 ;;
+      *)            printf '%s\n' "unknown option: $1" >&2; usage >&2; exit 64 ;;
+   esac
+done
+
+## Newest run that actually produced image artifacts. A re-run DELETES the previous
+## attempt's artifacts, so the newest run is not always the one that still has them.
+fetch_from_ci() {
+   local runs art_id
+   if [ -z "${run_id}" ]; then
+      runs="$(git-api GET "/repos/${REPO}/actions/runs?per_page=30" 2>/dev/null)"
+      run_id="$(printf '%s' "${runs}" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+for r in d['workflow_runs']:
+    if r['name'] in ('Boot Test','Build') and r['conclusion']=='success':
+        print(r['id']); break")"
+   fi
+   [ -n "${run_id}" ] || { printf '%s\n' "no successful Build/Boot Test run found" >&2; exit 1; }
+
+   ## Select by the CI's artifact NAME ('boot-image-qcow2' / 'boot-image-iso'),
+   ## not by a substring or by size. Every per-leg serial log is named
+   ## 'serial-log-qcow2-bios-user' and so on, so a 'qcow2' substring match picks
+   ## a 0-byte LOG, and a largest-wins tiebreak silently prefers the ISO when
+   ## the qcow2 was asked for.
+   art_id="$(git-api GET "/repos/${REPO}/actions/runs/${run_id}/artifacts?per_page=60" 2>/dev/null \
+      | IMAGE_TYPE="${image_type}" python3 -c "
+import json,os,sys
+want='boot-image-'+os.environ['IMAGE_TYPE']
+d=json.load(sys.stdin)
+live=[a for a in d.get('artifacts',[]) if not a['expired']]
+hit=[a for a in live if a['name']==want]
+if hit:
+    print(hit[0]['id'])
+else:
+    sys.stderr.write('no unexpired %r artifact; available: %s\\n'
+                     % (want, ', '.join(sorted(a['name'] for a in live)) or '(none)'))
+    print('')")"
+   [ -n "${art_id}" ] || { printf '%s\n' "run ${run_id} has no unexpired '${image_type}' image artifact (a re-run wipes them)" >&2; exit 1; }
+
+   printf '%s\n' "fetching artifact ${art_id} from run ${run_id} ..." >&2
+   git-api GET "/repos/${REPO}/actions/artifacts/${art_id}/zip" -L -o "${TMPDIR:-/tmp}/dm-image.zip"
+   safe-rm -rf -- "${TMPDIR:-/tmp}/dm-image"
+   mkdir --parents -- "${TMPDIR:-/tmp}/dm-image"
+   unzip -q -d "${TMPDIR:-/tmp}/dm-image" -- "${TMPDIR:-/tmp}/dm-image.zip"
+   image="$(find "${TMPDIR:-/tmp}/dm-image" -type f \( -name '*.qcow2*' -o -name '*.iso' \) -print -quit)"
+   [ -n "${image}" ] || { printf '%s\n' "artifact contained no image" >&2; exit 1; }
+}
+
+[ "${from_ci}" = 'true' ] && fetch_from_ci
+[ -n "${image}" ] || { printf '%s\n' "--image or --from-ci required" >&2; usage >&2; exit 64; }
+[ -r "${image}" ] || { printf '%s\n' "image not readable: ${image}" >&2; exit 1; }
+
+printf '%s\n' "image: ${image}" >&2
+
+## One staging dir holds dist-ai (the harness) plus the image, so a single
+## 'sandbox-run --dir' carries everything the boot needs.
+stage="$(mktemp --directory)"
+trap 'safe-rm -rf -- "${stage}"' EXIT
+cp -a -- "${DIST_AI}" "${stage}/dist-ai"
+cp -- "${image}" "${stage}/"
+image_base="$(basename -- "${image}")"
+
+pass=0
+fail=0
+results=''
+for leg in ${legs}; do
+   firmware="${leg%%/*}"
+   session="${leg##*/}"
+   printf '\n===== %s / %s =====\n' "${firmware}" "${session}" >&2
+   rc=0
+   ## Separate argv entries, NOT one quoted string: sandbox-run execs what it is
+   ## given, so a single string is looked up as one executable PATH and dies 127.
+   sandbox-run --dir "${stage}" -- \
+      dist-ai/usr/bin/dm-boot-test \
+      --image "${image_base}" \
+      --arch amd64 \
+      --firmware "${firmware}" \
+      --session "${session}" \
+      --serial-log "boot-${firmware}-${session}.serial.log" \
+      || rc=$?
+   if [ "${rc}" -eq 0 ]; then
+      pass=$(( pass + 1 )); results="${results}  OK   ${firmware}/${session}"$'\n'
+   else
+      fail=$(( fail + 1 )); results="${results}  FAIL ${firmware}/${session} (rc=${rc})"$'\n'
+   fi
+done
+
+printf '\n===== matrix =====\n%s\n%s passed, %s failed\n' "${results}" "${pass}" "${fail}"
+[ "${fail}" -eq 0 ]
