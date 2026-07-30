@@ -166,4 +166,12 @@ while IFS="$( printf '\t' )" read -r branch class assert arg _summary; do
 done < manifest.tsv
 
 printf '%s\n' "  corpus suite failures: ${fails}"
-exit "${fails}"
+## Boolean, NOT the count. An exit status is taken mod 256, and 77 is the
+## runner's SKIP code -- so a corpus with exactly 77 failing rows (trivially
+## reached when a driver is broken and every row fails) was reported as
+## "corpus not found, SKIP", and 256 failing rows as a clean pass. The count is
+## already on stdout above for a human; the status only says pass or fail.
+if [ "${fails}" -ne 0 ]; then
+   exit 1
+fi
+exit 0

@@ -49,7 +49,11 @@ if [ -z "${GIT_MELD_TESTS_NO_CTTY:-}" ]; then
    fi
 fi
 
-mydir="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )"
+## readlink --canonicalize, matching every other entrypoint: invoked through a
+## symlink (~/bin/git-meld-tests -> a checkout) an uncanonicalized mydir points
+## at the symlink's dir, ../share misses, and the INSTALLED payload runs --
+## exactly the silent substitution source-first resolution exists to prevent.
+mydir="$( dirname -- "$( readlink --canonicalize -- "${BASH_SOURCE[0]}" )" )"
 ## Test payload directory: the in-repo path when running from a dist-ai
 ## checkout, else the installed share dir. Source wins so that editing a payload
 ## in a checkout and running that checkout's entrypoint actually runs the edit,
@@ -125,28 +129,41 @@ run_suites () {
       ## exited 0 and read as a clean pass -- and counts in that range are
       ## reachable (one absent package produced 150+). The status is still used,
       ## but only to catch a CRASH, which no count line can express.
+      ## Anchor to the LAST NON-EMPTY line. Scanning the whole capture let fixture
+      ## text the driver echoes forge a '==== FAILURES: 0 ====' line: if the suite
+      ## then died before printing its real summary, the forged match became the
+      ## count and the crash detector below never fired.
       count=''
+      last_line=''
       while IFS= read -r line; do
-         case "${line}" in
-            '==== TOTAL HIDDEN-CHANGE FAILURES: '*' ====')
-               count="${line#*: }"
-               count="${count% ====}"
-               ;;
-            '==== FAILURES: '*' ====')
-               count="${line#*: }"
-               count="${count% ====}"
-               ;;
-         esac
+         if [ -n "${line}" ]; then
+            last_line="${line}"
+         fi
       done <<< "${out}"
+      case "${last_line}" in
+         '==== TOTAL HIDDEN-CHANGE FAILURES: '*' ===='|'==== FAILURES: '*' ====')
+            count="${last_line#*: }"
+            count="${count% ====}"
+            ;;
+      esac
+      ## Never let an unvalidated string reach $(( )): a non-numeric token
+      ## evaluates to 0 (a silently dropped count), and 'a[$(cmd)]' would execute
+      ## cmd inside this runner during arithmetic evaluation.
+      case "${count}" in
+         ''|*[!0-9]*)
+            count=''
+            ;;
+      esac
       if [ -z "${count}" ]; then
          printf '%s\n' "FAIL: $( basename -- "${suite}" ): printed no '==== ... FAILURES: N ====' summary (rc=${rc}) -- it crashed rather than reporting a count." >&2
          total=$(( total + 1 ))
          continue
       fi
-      ## A crash AFTER the summary, or a status that disagrees with a small
-      ## count, still deserves to be loud.
-      if [ "${rc}" -ge 126 ]; then
-         printf '%s\n' "FAIL: $( basename -- "${suite}" ): died with rc=${rc} (signal or missing interpreter), not a failure count." >&2
+      ## The status must AGREE with the printed count. Previously only rc >= 126
+      ## was checked, so a suite that printed '0 failures' and then died rc 1-125
+      ## (e.g. its cleanup safe-rm failing under errexit) was read as a clean 0.
+      if [ "${rc}" -ne $(( count % 256 )) ]; then
+         printf '%s\n' "FAIL: $( basename -- "${suite}" ): exit status ${rc} disagrees with its printed count ${count} -- it died after printing the summary." >&2
          total=$(( total + 1 ))
       fi
       total=$(( total + count ))
@@ -179,6 +196,12 @@ new_fails=0
 drivers_ran=0
 for drv_name in git-meld git-kdiff3 git-diff-review; do
    drv="${driver_dir}/${drv_name}"
+   ## Honour the EXACT path given as arg 1. Only the directory was used before, so
+   ## 'git-meld-tests ~/w/candidate' silently tested ~/w/git-meld instead and still
+   ## printed "3 of 3 drivers" -- the candidate never ran.
+   if [ "${drv_name}" = 'git-meld' ]; then
+      drv="${git_meld}"
+   fi
    if [ ! -x "${drv}" ]; then
       printf '%s\n' "SKIP: '${drv}' not found; not testing this driver."
       continue
