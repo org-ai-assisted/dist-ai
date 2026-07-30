@@ -293,6 +293,17 @@ def run_checks(child, args, log):
         ## and rejected (PR #5), so ignoring the expected privleap output on the
         ## consumer side -- here and in the skip above -- is the accepted approach.
         systemcheck_cmd += " --journal-ignore-fixed \"' of action '\""
+        ## No shared folder is attached to the qemu invocation, so vm-config-dist's
+        ## mount-shared cannot mount /mnt/shared and mount logs "wrong fs type, bad
+        ## option, bad superblock". The script already tolerates the failure
+        ## ('|| true'); only the stderr reaches the journal, where check_journal
+        ## reports it and fails every qcow2 leg (the ISO legs do not attempt it).
+        ## Ignored HERE rather than silenced in vm-config-dist: suppressing it in
+        ## the shipped script would also hide a real mount failure on a VM that
+        ## does have a shared folder configured (org-ai-assisted vm-config-dist
+        ## PR #5, closed for that reason). The string names the mount point, so a
+        ## different failing mount is still reported.
+        systemcheck_cmd += " --journal-ignore-fixed \"mount: /mnt/shared: wrong fs type\""
         ## Under Secure Boot an unsigned out-of-tree module (tirdad) cannot load,
         ## so systemd-modules-load.service fails -- expected there, not an image
         ## defect. Ignore only that one unit, and only for the secureboot legs.
