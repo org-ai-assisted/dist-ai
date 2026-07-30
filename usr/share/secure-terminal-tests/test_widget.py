@@ -2879,10 +2879,33 @@ _term, _d = _ttt._child_term()
 eq(_term, 'xterm-256color', 'TUI mode advertises xterm-256color (full caps)')
 ok(_d == _tdir, 'TERMINFO_DIRS resolves the restricted entry in both modes')
 _ttt.close()
+# line_edits=false STRIPS the four line-local ops, so the shell must not be told
+# they work: CLI then advertises the -noedit entry, which cancels el/el1/cuf/cuf1/
+# cub/hpa. Advertising them would have the shell emit redraws we drop on the floor.
+_tne = SecureTerminal(command='/bin/cat', line_edits=False)
+eq(_tne._child_term(), ('secure-terminal-noedit', _tdir),
+   'CLI mode with line editing off advertises the append-only TERM entry')
+_tne.close()
+# TUI is unaffected: the confined screen model interprets escapes either way.
+_tnt = SecureTerminal(command='/bin/cat', tui=True, line_edits=False)
+eq(_tnt._child_term()[0], 'xterm-256color',
+   'TUI mode is unaffected by line_edits')
+_tnt.close()
 # the entry cancels every capability-query cap (no probing) + cursor-addressing +
 # alternate screen -- assert at the source of truth (the .ti)
 _ti = _timod._terminfo_source()
 ok(_ti and os.path.isfile(_ti), 'the terminfo source ships')
+with open(_ti, encoding='utf-8') as _tih2:
+    _ti_src = _tih2.read()
+ok('secure-terminal-noedit|' in _ti_src,
+   'the terminfo source declares the append-only entry')
+for _cap in ('el@', 'el1@', 'cuf@', 'cuf1@', 'cub@', 'hpa@'):
+    ok(_cap in _ti_src.split('secure-terminal-noedit|', 1)[-1],
+       'the append-only entry cancels %s' % _cap)
+# cub1 is \b, a raw control byte honored in BOTH settings -- cancelling it would
+# over-restrict, so it must NOT appear in the cancelled set.
+ok('cub1@' not in _ti_src,
+   'cub1 (backspace) is never cancelled -- it is honored either way')
 with open(_ti, encoding='utf-8') as _tih:
     _ti_txt = _tih.read()
 ok(all(cap in _ti_txt for cap in ('u6@', 'u7@', 'u8@', 'u9@', 'RV@',
