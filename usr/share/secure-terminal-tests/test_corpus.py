@@ -47,7 +47,10 @@ def ok(cond, msg):
         sys.stderr.write('FAIL: ' + msg + '\n')
 
 
-MODES = ('box', 'show', 'reveal')
+# Every display mode, INCLUDING detail -- which is the shipped default
+# (unicode_mode=detail, and render_output's own default). Omitting it meant no
+# corpus payload was ever asserted against the mode users actually run.
+MODES = S.DISPLAY_MODES
 
 # controls the terminal HONORS as line-local editing (a program may use them, but
 # the widget's line model bounds them to the current line -- see the fuzz tests);
@@ -113,6 +116,13 @@ def dangerous_corpus():
         'line-sep': 'a\u2028b',
         'para-sep': 'a\u2029b',
         'c1-as-unicode': 'a\u009bb',
+        # Default-ignorable INVISIBLES that str.isprintable() reports as printable,
+        # so a predicate based on it alone lets them through show unmarked. These
+        # are real spoofing primitives (U+3164 is the classic invisible "letter").
+        'vs16-variation-selector': 'ad\ufe0fmin',
+        'hangul-filler': 'ad\u3164min',
+        'choseong-filler': 'ad\u115fmin',
+        'combining-grapheme-joiner': 'ad\u034fmin',
     }
 
 
@@ -152,9 +162,11 @@ def trojan_source_corpus():
 # git-meld-tests drives the full corpus from the real checkout.
 #
 # The bytes below are the exact file contents on each branch, so they can be
-# checked against upstream. check_corpus_drift.py does exactly that wherever the
-# git-diffs-lie checkout is available, and fails on a mismatch or a new content/*
-# branch -- an inline copy that silently diverges is worse than no copy.
+# checked against upstream. This suite does exactly that wherever a git-diffs-lie
+# checkout resolves (see git_diffs_lie_dir below): upstream wins, every in-tree copy
+# is asserted to match the branch it stands in for, and a NEW content/* branch is
+# picked up automatically -- an inline copy that silently diverges is worse than no
+# copy.
 # ---------------------------------------------------------------------------
 def git_diffs_lie_fixtures():
     return {
@@ -206,13 +218,113 @@ def assert_safe(name, text):
     show = S.render_output(text, 'show')
     ok(all(ch in '\x08\t\n\r' or ch.isprintable() for ch in show),
        '%s: show left a non-printable char' % name)
+    # str.isprintable() is TRUE for the default-ignorable set (variation selectors,
+    # the Hangul fillers), which render as NOTHING. Checking only isprintable() let
+    # an invisible character through show unmarked -- the one thing every mode is
+    # supposed to prevent -- and the exhaustive Unicode sweep passed it too.
+    ok(not any(S.is_default_ignorable(ch) for ch in show),
+       '%s: show left an invisible default-ignorable char' % name)
+
+
+def assert_all_paths(name, text):
+    """Throw the payload at every sanitizer ENTRY POINT, not just render_output.
+
+    Measured before this existed, by stubbing each function and counting which corpus
+    assertions noticed: render_output 299 of 504, sanitize_bytes 7, feed_line_edits 2,
+    and sanitize_paste / sanitize_clipboard / sanitize_title / paste_findings /
+    classify_paste / tui_cell ZERO. The corpora were a render_output test wearing a
+    corpus's name, so a regression on the paste, clipboard, title or LIVE display path
+    would not have failed a single assertion here.
+    """
+    # the raw-BYTE path, in every mode (was box only)
+    raw_bytes = text.encode('utf-8', 'surrogatepass')
+    for mode in MODES:
+        out = S.sanitize_bytes(raw_bytes, mode)
+        ok(not any(ord(ch) in DANGEROUS_CPS for ch in out),
+           '%s/%s: sanitize_bytes let a dangerous code point through' % (name, mode))
+
+    # the LIVE display path: feed_line_edits + cells_to_runs, which is what the
+    # widget actually runs. render_output has no cursor model, so it cannot see this.
+    _c, cells, col, sgr, wraps = S.feed_line_edits([], 0, {}, text)
+    ok(all(ch != '\x1b' for ch, _ in cells),
+       '%s: an ESC reached a cell on the live path' % name)
+    ok(0 <= col <= len(cells), '%s: live cursor left the cell range' % name)
+    runs, _prefix = S.cells_to_runs([], cells, 'box', False)
+    joined = ''.join(run_text for run_text, _key in runs)
+    ok(not any(ord(ch) in DANGEROUS_CPS for ch in joined),
+       '%s: a dangerous code point survived into a rendered run' % name)
+
+    # the PASTE path (text coming IN) -- both directions of the send choice
+    for fn_name, fn in (('sanitize_paste', S.sanitize_paste),
+                        ('sanitize_paste_unicode', S.sanitize_paste_unicode)):
+        out = fn(text)
+        ok(not any(ord(ch) in DANGEROUS_CPS for ch in out),
+           '%s: %s let a dangerous code point through' % (name, fn_name))
+        ok(not any(S.is_default_ignorable(ch) for ch in out),
+           '%s: %s left an invisible default-ignorable char' % (name, fn_name))
+
+    # the CLIPBOARD path (text going OUT)
+    for fn_name, fn in (('sanitize_clipboard', S.sanitize_clipboard),
+                        ('sanitize_clipboard_unicode', S.sanitize_clipboard_unicode)):
+        out = fn(text)
+        ok(not any(ord(ch) in DANGEROUS_CPS for ch in out),
+           '%s: %s let a dangerous code point through' % (name, fn_name))
+
+    # the TITLE path (a program setting the window title)
+    title = S.sanitize_title(text)
+    ok(not any(ord(ch) in DANGEROUS_CPS for ch in title),
+       '%s: sanitize_title let a dangerous code point through' % name)
+    ok(len(title) <= 80, '%s: sanitize_title exceeded its limit' % name)
+
+    # the CLASSIFIERS must not crash, and must NAME what is hidden rather than
+    # shrugging -- a hostile payload reported as clean is a silent failure.
+    # paste_findings -> (has_unicode, has_control); classify_paste -> [(label, count)]
+    has_unicode, has_control = S.paste_findings(text)
+    classes = S.classify_paste(text)
+    ok(isinstance(classes, list), '%s: classify_paste returned %r, want a list'
+       % (name, type(classes).__name__))
+    # A payload carrying a dangerous code point must be REPORTED, not shrugged at:
+    # a hostile paste described as clean is a silent failure of the review bar.
+    if any(ord(ch) in DANGEROUS_CPS for ch in text):
+        ok(has_unicode or has_control or bool(classes),
+           '%s: the classifiers reported nothing for a payload carrying a '
+           'dangerous code point' % name)
+
+    # the TUI cell path (pyte grid), per character
+    for ch in text:
+        cell = S.tui_cell(ch, 'box')
+        ok(cell is not None, '%s: tui_cell returned None for %r' % (name, ch))
+
+
+def assert_actually_hostile(name, text):
+    """POSITIVE CONTROL. assert_safe() only checks the OUTPUT is clean, which plain
+    ASCII satisfies trivially -- so without this, replacing every fixture with the
+    word "harmless" still passed 504/504 (measured). Assert the INPUT really carries
+    something the sanitizer must act on, so a gutted or silently-emptied fixture
+    fails instead of quietly proving nothing."""
+    hostile = any(ord(ch) in DANGEROUS_CPS or ord(ch) > 0x7F for ch in text)
+    ok(hostile, '%s: fixture carries no dangerous or non-ASCII char (gutted?)' % name)
+    # and sanitization must visibly CHANGE it in the strictest mode
+    ok(S.render_output(text, 'box') != text,
+       '%s: box mode left the payload byte-identical (nothing was neutralized)' % name)
 
 
 # --- run the three text corpora -----------------------------------------------
-for _name, _raw in dangerous_corpus().items():
+# Count floors: losing fixtures silently shrinks the assertion total, which no
+# summary line flags. Gutting dangerous_corpus to one entry dropped 504 -> 162
+# assertions and still reported 0 failed (measured).
+_dang = dangerous_corpus()
+_troj = trojan_source_corpus()
+ok(len(_dang) >= 30, 'dangerous corpus is populated (%d fixtures)' % len(_dang))
+ok(len(_troj) >= 5, 'trojan-source corpus is populated (%d fixtures)' % len(_troj))
+for _name, _raw in _dang.items():
+    assert_actually_hostile('dangerous:' + _name, _raw)
     assert_safe('dangerous:' + _name, _raw)
-for _name, _raw in trojan_source_corpus().items():
+    assert_all_paths('dangerous:' + _name, _raw)
+for _name, _raw in _troj.items():
+    assert_actually_hostile('trojan:' + _name, _raw)
     assert_safe('trojan:' + _name, _raw)
+    assert_all_paths('trojan:' + _name, _raw)
 
 # --- git-diffs-lie: prefer the REAL corpus on disk, fall back to the copy ------
 # Reading the checkout is strictly better than checking a copy for staleness: a
@@ -301,6 +413,7 @@ else:
 for _name, _rawbytes in sorted(_gdl.items()):
     _text = _rawbytes.decode('utf-8', 'replace')
     assert_safe('git-diffs-lie:' + _name, _text)
+    assert_all_paths('git-diffs-lie:' + _name, _text)
     # also the raw-byte path (latin-1 1:1, as sanitize_bytes uses)
     ok(all(ord(ch) in SAFE for ch in S.sanitize_bytes(_rawbytes, 'box')),
        'git-diffs-lie:%s: sanitize_bytes(box) is safe' % _name)
@@ -329,9 +442,13 @@ _comp, _cells, _col, _sgr, _w = S.feed_line_edits(
 ok(all(c != '\x1b' for c, _ in _cells)
    and all(c != '\x1b' for _line in _comp for c, _ in _line),
    'ansi-escape: no escape reaches a cell on the live path')
-_earlier = ''.join(c for c, _ in _prev[0]) if _prev else ''
-ok(_earlier == 'line1: REAL',
-   'ansi-escape: cursor-up cannot erase an EARLIER line (stays bounded)')
+# NOT asserted here, deliberately: an earlier-line containment claim is a property
+# of the widget DOCUMENT, and feed_line_edits copies its input (cells = list(cells))
+# and is handed an empty current line after a newline -- so the previous line is not
+# even an input to the call. An assertion on it here could not fail for any input,
+# which is worse than no assertion. The real test drives the live widget:
+# test_widget.py, "the cursor-UP is stripped, so the forgery cannot reach the EARLIER
+# line".
 
 # --- Corpus 4: EVERY Unicode code point, sanitized in one pass ----------------
 # (surrogates are not scalar values; skip them. This is the exhaustive analogue
@@ -351,6 +468,12 @@ ok(not any(ord(ch) in DANGEROUS_CPS for ch in _show_all),
    'all-unicode: show neutralizes every dangerous code point')
 ok(all(ch in '\x08\t\n\r' or ch.isprintable() for ch in _show_all),
    'all-unicode: show emits only printable + honored controls')
+# isprintable() is TRUE for the default-ignorable set (variation selectors, Hangul
+# fillers, the combining grapheme joiner), which render as NOTHING -- so the sweep
+# above passed an INVISIBLE character through show, unmarked, for every one of them.
+# This is the assertion that covers the whole class rather than one fixture.
+ok(not any(S.is_default_ignorable(ch) for ch in _show_all),
+   'all-unicode: show neutralizes every invisible default-ignorable code point')
 
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(corpus): %d passed, %d failed\n'

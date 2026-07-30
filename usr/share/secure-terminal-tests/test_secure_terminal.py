@@ -21,9 +21,13 @@ import sys
 try:
     from secure_terminal import sanitize as S
 except Exception as exc:  # pylint: disable=broad-except
-    sys.stderr.write('secure-terminal-tests: SKIP (cannot import '
-                     'secure_terminal.sanitize: %s)\n' % exc)
-    sys.exit(77)
+    # Fail CLOSED, like test_corpus / test_fuzz / test_widget / test_fuzz_harnesses.
+    # This was exit 77, which dist-ai-tests-all reports as SKIP and counted green --
+    # so a broken secure_terminal.sanitize import made the LARGEST sanitization suite
+    # in the tree report success while asserting nothing.
+    sys.stderr.write('secure-terminal-tests: FAIL cannot import '
+                     'secure_terminal.sanitize: %s\n' % exc)
+    sys.exit(1)
 
 PASS = 0
 FAIL = 0
