@@ -842,26 +842,51 @@ ok(win._find_tab(12345) is None, '_find_tab: a non-string matcher -> None')
 ok(win._find_tab('one') is not None or win._find_tab('one') is None,
    '_find_tab: a bare title is matched by title')
 
-# start a server and drive a genuine ping handoff through the Qt event loop
+# start a server and drive a genuine ping handoff through the Qt event loop.
+#
+# The client is a SUBPROCESS, not a thread. Two reasons, and the first is
+# correctness: in production the client is always a separate process (a second
+# launch that hands off and exits), so a thread tested a shape the product never
+# has. The second is that the thread version SEGFAULTED about two runs in three
+# under `coverage run` -- and only under coverage (5/5 clean without it). The
+# faulthandler trace showed the crash inside the Qt signal callback on_ready on
+# the main thread, with the client thread parked in ipc._recv_exactly and an
+# unresolvable line number in the crashing frame: coverage's C tracer walking
+# frames while a PyQt slot runs with another Python thread live. Nothing to do
+# with the product, and not something to paper over with a retry -- the fix is to
+# stop requiring a Python thread to be live inside a traced Qt callback.
+import json as _json_ipc                                        # noqa: E402
+import subprocess as _sp_ipc                                    # noqa: E402
+
 _srvwin = MainWindow()
 _srvwin._remote_control = True
 _srvwin.start_instance_server('cov-handoff')
-_hbox = {}
 
-
-def _client():
-    _hbox['r'] = M.ipc.send_request('cov-handoff', {'op': 'ping'})
-
-
-_cth = threading.Thread(target=_client)
-_cth.start()
-for _ in range(80):
-    APP.processEvents()
-    if not _cth.is_alive():
+_client_code = (
+    'import json, sys\n'
+    'sys.path.insert(0, %r)\n'
+    'from secure_terminal import ipc\n'
+    'r = ipc.send_request(%r, {"op": "ping"})\n'
+    'sys.stdout.write(json.dumps(r))\n'
+) % (os.path.dirname(os.path.dirname(os.path.abspath(M.__file__))),
+     'cov-handoff')
+_cproc = _sp_ipc.Popen([sys.executable, '-c', _client_code],
+                       stdout=_sp_ipc.PIPE, stderr=_sp_ipc.DEVNULL)
+for _ in range(200):
+    APP.processEvents()               # serve the connection from the main thread
+    if _cproc.poll() is not None:
         break
     QThread.msleep(25)
-_cth.join(timeout=3)
-ok(isinstance(_hbox.get('r'), dict) and _hbox['r'].get('ok'),
+try:
+    _cout, _ = _cproc.communicate(timeout=5)
+except _sp_ipc.TimeoutExpired:      # pragma: no cover - the server answers
+    _cproc.kill()
+    _cout = b''
+try:
+    _creply = _json_ipc.loads(_cout.decode('utf-8', 'replace'))
+except ValueError:
+    _creply = None
+ok(isinstance(_creply, dict) and _creply.get('ok'),
    'IPC: a real single-instance handoff is accepted and served')
 _srvwin.deleteLater()
 APP.processEvents()
@@ -1836,6 +1861,149 @@ finally:
             os.environ.pop(_var, None)
         else:
             os.environ[_var] = _prev
+
+# --- CLASH: shortcuts -- registry completeness, collisions, forwarded keys -----
+# Ground truth is the LIVE QAction set, not win._shortcuts: taking the registry as
+# truth is exactly what hid Alt+1..9, which were bound with a bare setShortcut and
+# so were absent from the Shortcuts dialog AND from the duplicate check.
+from PyQt6.QtCore import Qt as _Qt_sc                        # noqa: E402
+from PyQt6.QtGui import QAction as _QAction_sc               # noqa: E402
+from PyQt6.QtGui import QKeySequence as _QKS                 # noqa: E402
+
+_acts_with_keys = [a for a in win.findChildren(_QAction_sc)
+                   if not a.shortcut().isEmpty()]
+ok(len(_acts_with_keys) >= 20,
+   'actions carrying a shortcut were enumerated (%d)' % len(_acts_with_keys))
+
+# Every shortcut-carrying action must be in the registry, or it is unlistable and
+# uncheckable. Compared by QAction identity, so a label change cannot mask it.
+_registered = {entry[0] for entry in win._shortcuts.values()}
+_unregistered = sorted(a.text().replace('&', '') for a in _acts_with_keys
+                       if a not in _registered)
+eq(_unregistered, [],
+   'every action with a shortcut is registered (listable and collision-checked)')
+
+# No two registered actions may hold the same key.
+_by_seq = {}
+for _ident, _entry in win._shortcuts.items():
+    _norm = _entry[0].shortcut().toString()
+    if _norm:
+        _by_seq.setdefault(_norm, []).append(_ident)
+eq(sorted(k for k, v in _by_seq.items() if len(v) > 1), [],
+   'no key combination is assigned to two actions')
+
+# No default may shadow a BARE key the terminal forwards to the running program:
+# QAction processing fires first, so the key never reaches the program. This is
+# what put fullscreen on F11 and shortcuts_help on F1 while _build_tui_keys mapped
+# F11 -> ESC[23~ and F1 -> ESC OP, so vim and htop never received either.
+# Scoped to the forwarding tables deliberately: a bare Ctrl+<letter> default
+# (quit = Ctrl+Q) is a SEPARATE, deliberate decision -- _set_shortcuts documents
+# that a built-in default is allowed to stand and only a user REBIND is refused.
+from secure_terminal.main import _forwarded_keys as _fwd_keys      # noqa: E402
+
+_shadowing = []
+for _i, _e in win._shortcuts.items():
+    if not _e[1]:
+        continue
+    _qks = _QKS(_e[1])
+    if _qks.isEmpty():
+        continue
+    _combo = _qks[0]
+    if (_combo.keyboardModifiers() == _Qt_sc.KeyboardModifier.NoModifier
+            and _combo.key() in _fwd_keys()):
+        _shadowing.append('%s=%s' % (_i, _e[1]))
+eq(sorted(_shadowing), [],
+   'no shortcut default shadows a bare key the terminal forwards')
+
+# ...and the reserved set must really come from the forwarding tables, not a
+# hand-written list: every bare forwarded key must be reported reserved.
+from secure_terminal.terminal import _build_tui_keys as _btk    # noqa: E402
+
+_not_reserved = []
+for _qtkey in _btk():
+    if _qtkey in (_Qt_sc.Key.Key_Return, _Qt_sc.Key.Key_Enter,
+                  _Qt_sc.Key.Key_Tab, _Qt_sc.Key.Key_Escape,
+                  _Qt_sc.Key.Key_Backspace):
+        continue          # Qt does not express these as a bare window shortcut
+    if not win._is_reserved_shortcut(_QKS(_qtkey)):
+        _not_reserved.append(int(_qtkey))
+eq(_not_reserved, [],
+   'every bare key the terminal forwards is treated as reserved')
+
+# The collision check must consider the LIVE registry, not only the submitted
+# mapping: a one-key change that lands on another action's key is a collision.
+_sc_prev = dict(win._keybindings)
+try:
+    _copy_seq = win._shortcuts['copy'][0].shortcut().toString()
+    _problems = win._set_shortcuts({'find': _copy_seq})
+    ok(bool(_problems),
+       'assigning one action the key another already holds is reported')
+finally:
+    win._keybindings = _sc_prev
+
+# --- CLASH: lock= must hold on EVERY dialog-settable key ----------------------
+# An administrator `lock=<key>` is a security control, and it was enforced per
+# key by hand: _apply_global had a six-entry lock list while assigning fourteen
+# attributes, so a locked paste_warn/copy_warn (and others) was overridable from
+# the global Settings dialog even though the View-menu setter correctly refused.
+# Drive the table instead of a hand-written list, so a new key cannot escape.
+_gk = MainWindow._GLOBAL_KEYS
+ok(len(_gk) >= 14, 'the dialog-settable key table was found (%d keys)' % len(_gk))
+
+# Every key in the table must actually be persisted -- otherwise it is not a
+# setting and the lock question is meaningless.
+import ast as _ast_lk                                      # noqa: E402
+import inspect as _in_lk                                   # noqa: E402
+
+_persist_src = _in_lk.getsource(MainWindow._persist)
+_persist_keys = set()
+for _n in _ast_lk.walk(_ast_lk.parse(_persist_src.lstrip())):
+    if isinstance(_n, _ast_lk.Dict):
+        for _k in _n.keys:
+            if isinstance(_k, _ast_lk.Constant) and isinstance(_k.value, str):
+                _persist_keys.add(_k.value)
+ok(len(_persist_keys) >= 20,
+   'the _persist() key set was extracted (%d keys)' % len(_persist_keys))
+eq(sorted({_k for _k, _f, _a in _gk} - _persist_keys), [],
+   'every dialog-settable key is actually persisted')
+
+# The load-bearing assertion: lock a key, hand _apply_global a DIFFERENT value,
+# and require the attribute not to move. Derived from the table, so this covers
+# a newly added key automatically.
+_lk_prev = win._locked
+_lk_bad = []
+try:
+    for _key, _field, _attr in _gk:
+        _before = getattr(win, _attr)
+        # A value guaranteed to differ from the current one, per type.
+        if isinstance(_before, bool):
+            _other = not _before
+        elif isinstance(_before, int):
+            _other = int(_before) + 7
+        elif _key == 'unicode_mode':
+            _other = 'reveal' if _before != 'reveal' else 'box'
+        elif _key in ('paste_warn', 'copy_warn'):
+            _other = 'always' if _before != 'always' else 'never'
+        elif _key == 'theme':
+            _other = 'light' if _before != 'light' else 'dark'
+        else:
+            _other = str(_before) + 'X'
+        win._locked = {_key}
+        _opts = {'theme': win._default_theme, 'zoom': win._default_zoom,
+                 'mode': win._default_mode, 'colors': win._default_colors,
+                 'line_edits': win._default_line_edits, 'tui': win._default_tui,
+                 'scrollback': win._scrollback, 'paste_delay': win._paste_delay,
+                 'persist': win._persist_session, 'systray': win._systray,
+                 'auto_tab_colors': win._auto_tab_colors}
+        _opts[_field] = _other
+        win._apply_global(dict(_opts))
+        _after = getattr(win, _attr)
+        if _after != _before:
+            _lk_bad.append((_key, _before, _other, _after))
+finally:
+    win._locked = _lk_prev
+eq(_lk_bad, [],
+   'a locked key is not overridable through the global settings dialog')
 
 # --- CLASH: menu accelerators ------------------------------------------------
 # The '&' in an action's text is a MNEMONIC marker, so two items in one menu
