@@ -617,6 +617,40 @@ else
    printf 'PASS: R-190 honours the allow-inline-interpreter waiver\n'
 fi
 
+## check-shebang-scripts-are-executable gains a per-file waiver. A SOURCED fragment
+## carries a shebang for shellcheck dialect detection yet must stay non-executable:
+## run standalone it fails on helpers only its sourcing context defines. Without the
+## waiver the only way to green is chmod +x, which is a lie.
+shebang_repo="$(mktemp --directory --tmpdir="${tmp_root}" shebang.XXXXXX)"
+git -C "${shebang_repo}" init --quiet
+git -C "${shebang_repo}" config user.email 'ci-test@example.com'
+git -C "${shebang_repo}" config user.name 'ci-test'
+git -C "${shebang_repo}" commit --quiet --no-verify --allow-empty --message base
+shebang_base="$(git -C "${shebang_repo}" rev-parse HEAD)"
+printf '#!/bin/bash\nbar=1\n' > "${shebang_repo}/plain.conf"
+printf '#!/bin/bash\n## style-ok: sourced-fragment -- fixture\nfoo=1\n' \
+   > "${shebang_repo}/waived.conf"
+chmod 0644 -- "${shebang_repo}/plain.conf" "${shebang_repo}/waived.conf"
+git -C "${shebang_repo}" add --all
+git -C "${shebang_repo}" commit --quiet --no-verify --message shebang
+shebang_out="$( cd -- "${shebang_repo}" && "${GATE}" "${shebang_base}" 2>&1 || true )"
+## Anchor on the hook's own verdict line, not the filename: the gate's SKIP note
+## names the waived file too, so a bare filename match would confirm itself.
+if printf '%s\n' "${shebang_out}" \
+   | grep --quiet --fixed-strings -- 'plain.conf: has a shebang but is not marked executable'; then
+   printf 'PASS: shebang check still fires without the waiver\n'
+else
+   printf 'FAIL: shebang check missed an unwaived non-executable shebang file\n' >&2
+   failures=$((failures + 1))
+fi
+if printf '%s\n' "${shebang_out}" \
+   | grep --quiet --fixed-strings -- 'waived.conf: has a shebang but is not marked executable'; then
+   printf 'FAIL: shebang check ignored its sourced-fragment waiver\n' >&2
+   failures=$((failures + 1))
+else
+   printf 'PASS: shebang check honours the sourced-fragment waiver\n'
+fi
+
 ## R-001 gains a per-file waiver. A suite testing a SANITIZER has to contain
 ## the non-ASCII bytes it asserts are stripped, so the fixture is not a slip.
 ## The waiver must be opt-in per file, and absent it the rule must still fire.

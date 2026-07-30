@@ -1479,7 +1479,23 @@ check_precommit_hooks() {
    run_precommit_fixer end-of-file-fixer         "${text_files[@]}"
    run_precommit_fixer trailing-whitespace-fixer "${text_files[@]}"
    run_precommit_hook mixed-line-ending --fix=no -- "${text_files[@]}"
-   run_precommit_hook check-shebang-scripts-are-executable -- "${text_files[@]}"
+   ## A SOURCED fragment legitimately carries a shebang (shellcheck dialect
+   ## detection, editor highlighting) and legitimately is not executable: running it
+   ## standalone fails on helpers its sourcing context defines. Per-file waiver
+   ## '## style-ok: sourced-fragment', anchored like the others.
+   shebang_check_files=()
+   for shebang_candidate in "${text_files[@]}"; do
+      if grep --quiet --extended-regexp \
+         '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*sourced-fragment([[:space:]]|$)' \
+         -- "${shebang_candidate}"; then
+         note "check-shebang-scripts-are-executable skipped: 'style-ok: sourced-fragment' waiver in '${shebang_candidate}'"
+         continue
+      fi
+      shebang_check_files+=("${shebang_candidate}")
+   done
+   if [ "${#shebang_check_files[@]}" -gt 0 ]; then
+      run_precommit_hook check-shebang-scripts-are-executable -- "${shebang_check_files[@]}"
+   fi
 
    ## text AND executable:
    run_precommit_hook check-executables-have-shebangs -- "${exec_text_files[@]}"
