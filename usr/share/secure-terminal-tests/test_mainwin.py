@@ -757,6 +757,49 @@ try:
         win.run_command('/' + _c)
     eq(win.run_command(''), False, 'run_command: an empty line -> False')
     ok(True, 'run_command handles every slash-command branch')
+
+    # CLASH: the palette's help text vs what the palette actually dispatches.
+    # Driving every branch (above) proves only that nothing raises -- it cannot
+    # notice a command the help omits, which is how `/mode detail` went
+    # undocumented while being the DEFAULT mode everywhere else.
+    import ast as _ast
+    import inspect as _inspect
+    import re as _re
+
+    from secure_terminal import sanitize as _san
+
+    _help_cmds = set(_re.findall(r'/([a-z][a-z-]*)', MainWindow._COMMAND_HELP))
+    # The dispatched names: every string literal compared against `cmd` in
+    # run_command, derived from the source so a new branch cannot hide.
+    _src = _inspect.getsource(MainWindow.run_command)
+    _tree = _ast.parse(_src.lstrip())
+    _dispatched = set()
+    for _node in _ast.walk(_tree):
+        if not isinstance(_node, _ast.Compare):
+            continue
+        if not (isinstance(_node.left, _ast.Name) and _node.left.id == 'cmd'):
+            continue
+        for _cmp in _node.comparators:
+            if isinstance(_cmp, _ast.Constant) and isinstance(_cmp.value, str):
+                _dispatched.add(_cmp.value)
+            elif isinstance(_cmp, (_ast.Tuple, _ast.List, _ast.Set)):
+                for _elt in _cmp.elts:
+                    if isinstance(_elt, _ast.Constant) and isinstance(_elt.value, str):
+                        _dispatched.add(_elt.value)
+    ok(len(_dispatched) >= 8,
+       'the run_command dispatch list was extracted (%d names)' % len(_dispatched))
+    # An undocumented alias is the finding; `help` is documented and dispatched.
+    eq(sorted(_dispatched - _help_cmds), [],
+       'every dispatched slash command appears in the palette help')
+    eq(sorted(_help_cmds - _dispatched), [],
+       'every command in the palette help is actually dispatched')
+
+    # ...and the /mode alternatives must be the real mode list, not a subset.
+    _mode_line = [ln for ln in MainWindow._COMMAND_HELP.split('\n')
+                  if ln.strip().startswith('/mode')]
+    eq(len(_mode_line), 1, 'the palette help documents /mode exactly once')
+    eq(sorted(_mode_line[0].split(None, 1)[1].split('|')), sorted(_san.DISPLAY_MODES),
+       'the /mode alternatives in the help equal sanitize.DISPLAY_MODES')
 finally:
     win._locked = _sl
     QMessageBox.information = _o_info
@@ -1793,6 +1836,45 @@ finally:
             os.environ.pop(_var, None)
         else:
             os.environ[_var] = _prev
+
+# --- CLASH: menu accelerators ------------------------------------------------
+# The '&' in an action's text is a MNEMONIC marker, so two items in one menu
+# marking the same letter make one of them unreachable by keyboard, and a literal
+# ampersand must be written '&&' or Qt eats it (the item then reads "Folders
+# Files..."). Both are silent: the menu still opens and every action still works.
+# Derive from the live menubar rather than a list of expected labels.
+import re as _re_mn                                       # noqa: E402
+
+_mn_dupes = []
+_mn_literal = []
+for _menu in win.menuBar().findChildren(QMenu):
+    _seen_keys = {}
+    for _act in _menu.actions():
+        _text = _act.text()
+        if not _text:
+            continue                                      # separator
+        # A bare '&' that is neither '&&' nor a mnemonic marker on an alphanumeric
+        # is a swallowed literal ampersand.
+        for _m in _re_mn.finditer(r'&+', _text):
+            _run = _m.group(0)
+            if len(_run) % 2 == 0:
+                continue                                  # '&&' pairs are literals
+            _after = _text[_m.end():_m.end() + 1]
+            if not _after.isalnum():
+                _mn_literal.append((_menu.title(), _text))
+        for _letter in _re_mn.findall(r'(?<!&)&(\w)', _text):
+            _key = _letter.lower()
+            if _key in _seen_keys:
+                _mn_dupes.append((_menu.title(), _key,
+                                  _seen_keys[_key], _text))
+            else:
+                _seen_keys[_key] = _text
+ok(len(list(win.menuBar().findChildren(QMenu))) >= 4,
+   'the menubar was enumerated (%d menus)'
+   % len(list(win.menuBar().findChildren(QMenu))))
+eq(_mn_literal, [],
+   'no menu item swallows a literal ampersand (write it as "&&")')
+eq(_mn_dupes, [], 'no two items in one menu claim the same mnemonic letter')
 
 win.close()
 win.deleteLater()
