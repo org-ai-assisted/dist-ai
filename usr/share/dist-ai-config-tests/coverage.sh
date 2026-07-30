@@ -58,13 +58,19 @@ fi
 # shellcheck source=./has.sh
 source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/has.sh
 
-if ! has kcov; then
-   printf 'dist-ai-config-tests-coverage: kcov not installed; skipping.\n' >&2
-   exit 77
-fi
-if ! has jq; then
-   printf 'dist-ai-config-tests-coverage: jq not installed; skipping.\n' >&2
-   exit 77
+## A missing DEPENDENCY is a hard FAIL, not a SKIP. Only an absent SUBJECT (the
+## checkout guarded above) earns 77. kcov and jq are this lane's tooling: if they
+## are gone the lane measured nothing, and reporting that as SKIP would let a
+## coverage gate silently stop gating -- the exact failure mode this suite set
+## exists to close.
+missing_deps=()
+for dep in kcov jq; do
+   has "${dep}" || missing_deps+=( "${dep}" )
+done
+if [ "${#missing_deps[@]}" -gt 0 ]; then
+   printf 'FAIL: dist-ai-config-tests-coverage: missing dependency: %s\n' "${missing_deps[*]}" >&2
+   printf 'Hint: add it to .github/dm-consumer.yml dist-ai-tests.apt-packages.\n' >&2
+   exit 1
 fi
 
 [ -v TMP ] || TMP=/tmp

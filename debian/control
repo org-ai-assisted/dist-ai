@@ -11,23 +11,16 @@ Rules-Requires-Root: no
 
 Package: dist-ai
 Architecture: all
-## Only what EVERY suite needs to start. The per-suite extras are Suggests, not
-## Depends, because each suite exits 77 (SKIP) when its subject or its tooling is
-## absent -- so a lean install degrades to "that suite skipped", never to a
-## broken run. Pulling qemu, both Qt bindings, playwright, weston and chromium
-## onto every machine that wants one shell test would be the wrong trade.
+## Every suite's tooling, all required. A missing dependency is a hard FAIL at
+## run time, never a SKIP -- a coverage or regression gate that quietly stops
+## gating because a package is absent is the failure mode this whole suite set
+## exists to close. So the package must GUARANTEE the tooling is there rather
+## than degrade around it. Only an absent SUBJECT (the component checkout under
+## test) earns 77 SKIP.
 Depends: ${misc:Depends},
  bash (>= 4),
  python3,
- git,
- grep,
- sed,
- diffutils,
- helper-scripts,
- safe-rm
-## Ordered roughly by how often a suite needs them. Install the ones matching the
-## suites you actually run; 'dist-ai-tests-all --list' names them.
-Suggests: python3-pytest,
+ python3-pytest,
  python3-hypothesis,
  python3-coverage,
  python3-yaml,
@@ -63,12 +56,9 @@ Suggests: python3-pytest,
  xterm,
  stalonetray,
  dbus,
- chromium,
  nodejs,
  qemu-system-x86,
- qemu-system-arm,
  qemu-utils,
- qemu-efi-aarch64,
  ovmf,
  xorriso,
  diffoscope,
@@ -76,24 +66,37 @@ Suggests: python3-pytest,
  libarchive-tools,
  dctrl-tools,
  dpkg-dev,
+ git,
+ grep,
+ sed,
+ diffutils,
  jq,
  file,
+ kcov,
  sudo,
  procps,
  shellcheck,
  pre-commit-hooks,
  genmkfile,
+ helper-scripts,
+ safe-rm
+## arm64 boot testing, and the services only the e2e suites drive. Recommends,
+## not Depends, so an x86-only or offline install stays possible; the suites that
+## need them are opt-in (--e2e / --integration) and fail loudly when run without.
+Recommends: qemu-system-arm,
+ qemu-efi-aarch64,
+ chromium,
+ tor,
+ bitcoind,
+ sequoia-sqv | sq,
+ sqop,
  developer-meta-files,
  onion-grater,
  open-link-confirmation,
  privleap,
  sdwdate-gui,
  setup-wizard-dist,
- tor-control-panel,
- tor,
- bitcoind,
- sequoia-sqv | sq,
- sqop
+ tor-control-panel
 Description: Comprehensive regression, fuzz and integration suites for Kicksecure tooling
  The AI-maintained test surface for the derivative-maker ecosystem: regression,
  fuzz, end-to-end and integration suites for helper-scripts, developer-meta-files,
