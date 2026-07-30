@@ -33,9 +33,6 @@ set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
 
-# shellcheck source=./has.sh
-source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/has.sh
-
 ## Gated tools: 'basename:minimum-percent'. Measured floors, set below the
 ## observed value only by the rounding margin.
 ## Measured 2026-07-29 in the sandbox against the core lane:
@@ -55,6 +52,11 @@ if [ -z "${repo}" ] || [ ! -d "${repo}/tests" ]; then
    printf 'dist-ai-config-tests-coverage: DIST_AI_CONFIG_PATH unset or has no tests/ dir; skipping.\n' >&2
    exit 77
 fi
+
+## Sourced after the checkout guard above, so a missing DIST_AI_CONFIG_PATH
+## still SKIPs rather than dying here.
+# shellcheck source=./has.sh
+source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/has.sh
 
 if ! has kcov; then
    printf 'dist-ai-config-tests-coverage: kcov not installed; skipping.\n' >&2

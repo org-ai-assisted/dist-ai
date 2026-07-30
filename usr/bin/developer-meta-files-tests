@@ -34,8 +34,12 @@ else
 fi
 
 if [ -z "${DMF_REPO:-}" ]; then
-   printf '%s\n' 'FATAL: developer-meta-files-tests: DMF_REPO unset (run with --component developer-meta-files --component-root DIR).' >&2
-   exit 1
+   ## 77 SKIP, not FAIL: wire() leaves DMF_REPO unset whenever neither
+   ## --repo-root nor --component-root is given, so exiting 1 here made every
+   ## bare 'dist-ai-tests-all --core' run red on an unresolved target -- exactly
+   ## what the runner contract reserves 77 for.
+   printf '%s\n' 'SKIP: developer-meta-files-tests: DMF_REPO unset (run with --component developer-meta-files --component-root DIR).' >&2
+   exit 77
 fi
 export DMF_REPO
 

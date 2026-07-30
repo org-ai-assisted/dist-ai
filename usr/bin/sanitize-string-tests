@@ -41,10 +41,38 @@ python3 -- "${tests_dir}/sanitize_family_test.py" "$@" || rc=$?
 ## tests_dir is prepended so the module itself is importable by name.
 ## Run unconditionally rather than short-circuiting on the first failure, so one
 ## broken family does not hide the other.
+## 'python3 -m unittest <module>' exits 0 when it collects ZERO tests. The
+## TestCase base class is imported from helper-scripts, so a change in ANOTHER
+## repo could empty this module and the suite would still report success.
+## Require the run to say how many tests it ran.
 echo_rc=0
-PYTHONPATH="${tests_dir}${PYTHONPATH:+:${PYTHONPATH}}" \
-   python3 -m unittest --verbose sanitize_echo_test || echo_rc=$?
-if [ "${echo_rc}" -ne 0 ]; then
+echo_out=''
+echo_out="$( PYTHONPATH="${tests_dir}${PYTHONPATH:+:${PYTHONPATH}}" \
+   python3 -m unittest --verbose sanitize_echo_test 2>&1 )" || echo_rc=$?
+printf '%s\n' "${echo_out}"
+if [ "${echo_rc}" -eq 0 ]; then
+   case "${echo_out}" in
+      *'Ran 0 tests'*|*'Ran 0 test'*)
+         printf '%s\n' 'FAIL: sanitize_echo_test collected ZERO tests -- the TestCase base class it imports from helper-scripts is gone or is no longer a TestCase.' >&2
+         echo_rc=1
+         ;;
+      *'Ran '*)
+         ;;
+      *)
+         printf '%s\n' 'FAIL: sanitize_echo_test produced no "Ran N tests" line; unittest did not run.' >&2
+         echo_rc=1
+         ;;
+   esac
+fi
+
+## The two lanes get SEPARATE verdicts. Folding them into one status let the
+## family test's 77 (absent subject) mask a lane in which 15 tests really ran and
+## passed, reporting the whole suite as SKIP -- which a --component run then
+## treats as an unauthorized skip, i.e. a failure.
+if [ "${rc}" -eq 77 ] && [ "${echo_rc}" -eq 0 ]; then
+   ## One lane skipped, the other genuinely passed: that is a pass, not a skip.
+   rc=0
+elif [ "${echo_rc}" -ne 0 ]; then
    rc="${echo_rc}"
 fi
 

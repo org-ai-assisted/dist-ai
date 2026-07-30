@@ -1,2 +1,3 @@
 usr/bin/systemcheck-tests usr/bin/
 usr/share/systemcheck-tests/*.py usr/share/systemcheck-tests/
+usr/share/systemcheck-tests/COVERAGE.md usr/share/systemcheck-tests/

@@ -71,14 +71,6 @@ cleanup() {
    fi
 }
 
-assert_prerequisite \
-   'helper-scripts has.sh is not installed (/usr/libexec/helper-scripts/has.sh)' \
-   test -r '/usr/libexec/helper-scripts/has.sh'
-# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
-source /usr/libexec/helper-scripts/has.sh
-
-assert_prerequisite 'safe-rm not found' has safe-rm
-
 ## Locate the generator: the installed binary, else the checkout the
 ## entrypoint points at, else a developer-meta-files checkout inside a
 ## derivative-maker source tree.
@@ -122,6 +114,15 @@ if [ -z "${generator}" ]; then
       'SKIP: test_dm_packages_html_generator: dm-packages-html-generator not found, neither installed nor under DM_SOURCE_DIR.' >&2
    exit 77
 fi
+
+## Checked AFTER the subject, deliberately. These prerequisites used to run
+## first, so on a host with neither helper-scripts nor the generator the script
+## exited 1 before it could ever reach the SKIP above -- which defeated the point
+## of that SKIP and gated unrelated PRs on a tool that was never shipped.
+# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
+source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/has.sh
+
+assert_prerequisite 'safe-rm not found' has safe-rm
 
 ## The generator is present, so its declared runtime dependencies must be too.
 ## A missing dependency here is a packaging defect.

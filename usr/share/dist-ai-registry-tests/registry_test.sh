@@ -175,7 +175,23 @@ has_label() {
 }
 
 ## Every entrypoint referenced by some debian/*.install, as one searchable blob.
-installed_blob="$(cat -- "${repo}"/debian/*.install)"
+## Source patterns from every debian/*.install, one per element -- the FIRST
+## field of each line (the second is the destination directory).
+##
+## Parsed into a list rather than substring-matched against one concatenated
+## blob: command substitution strips trailing newlines, so a blob match needed
+## the entry to be followed by a space or a newline, and the last line of the
+## last file has neither. A one-column line (valid dh_install syntax) at the end
+## of a file therefore read as "not shipped" -- a false failure.
+installed_sources=()
+while read -r install_src _install_dest; do
+   case "${install_src}" in
+      ''|'#'*)
+         continue
+         ;;
+   esac
+   installed_sources+=( "${install_src}" )
+done < <( cat -- "${repo}"/debian/*.install )
 
 ## ---- check each registered suite ------------------------------------------
 for suite in "${registered_suites[@]}"; do
@@ -191,13 +207,9 @@ for suite in "${registered_suites[@]}"; do
       fail "${suite}: usr/bin/${suite} is not executable -- the runner would report it MISSING and count a silent SKIP"
    fi
 
-   case "${installed_blob}" in
-      *"usr/bin/${suite} "*|*"usr/bin/${suite}"$'\n'*)
-         ;;
-      *)
-         fail "${suite}: no debian/*.install ships usr/bin/${suite} -- it would be MISSING on an installed system"
-         ;;
-   esac
+   if ! has_label "usr/bin/${suite}" "${installed_sources[@]}"; then
+      fail "${suite}: no debian/*.install ships usr/bin/${suite} -- it would be MISSING on an installed system"
+   fi
 
    if ! has_label "${base}" "${wire_labels[@]}"; then
       fail "${suite}: no wire() case for base '${base}' -- wire()'s default returns 1 and aborts the entire run under errexit"
@@ -206,6 +218,41 @@ for suite in "${registered_suites[@]}"; do
    if ! has_label "${base}" "${component_labels[@]}" \
       && ! has_label "${base}" "${allowed_no_component[@]}"; then
       fail "${suite}: no suite_component() mapping for base '${base}' -- it silently drops out of every --component run, i.e. out of per-repo CI"
+   fi
+done
+
+## ---- check that every payload FILE is shipped -----------------------------
+## The entrypoint check says nothing about usr/share/. An .install that
+## ENUMERATES payload files one per line instead of globbing silently drops a
+## newly added one: the suite still runs, collects fewer test files than the
+## checkout holds, and exits 0 -- green while covering less than it claims,
+## which is the same class this lint exists to close.
+## GIT-TRACKED files only. A working tree carries build artefacts a package
+## never ships (.pytest_cache, .hypothesis, .coverage), and flagging those would
+## be pure noise; what gets packaged is what is committed.
+if ! git -C "${repo}" rev-parse --git-dir >/dev/null 2>&1; then
+   printf 'NOTE: %s is not a git checkout; skipping the payload-shipping check.\n' "${repo}"
+   payload_files=()
+else
+   mapfile -d '' -t payload_files < <(
+      git -C "${repo}" ls-files -z -- 'usr/share/*-tests*' )
+fi
+
+for rel in ${payload_files[@]+"${payload_files[@]}"}; do
+   checks=$(( checks + 1 ))
+   shipped='false'
+   for install_src in "${installed_sources[@]}"; do
+      ## .install sources are GLOBS, so the pattern is deliberately unquoted.
+      # shellcheck disable=SC2254
+      case "${rel}" in
+         ${install_src})
+            shipped='true'
+            break
+            ;;
+      esac
+   done
+   if [ "${shipped}" = 'false' ]; then
+      fail "${rel}: in a test payload dir but matched by no debian/*.install pattern -- absent on an installed system, so the suite would silently cover less"
    fi
 done
 

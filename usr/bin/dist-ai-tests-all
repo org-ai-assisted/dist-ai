@@ -856,4 +856,16 @@ else
 fi
 emit "== per-suite output: ${TMP}/dist-ai-tests-all.<suite>.log =="
 
+## Selecting NOTHING is not a pass. --component validates against the union of
+## all four registries, so a component that owns suites in one category but none
+## in the selected one (e.g. '--component pyte --e2e') emptied the dispatch loop
+## and still exited 0 with '0 pass, 0 fail' -- a CI matrix running each category
+## per component reported green for the categories it never covered. Same
+## STANDING POLICY as an unauthorized skip: a run that asserted nothing must not
+## look like a run that passed.
+if [ "${#selected[@]}" -eq 0 ]; then
+   emit "== no suite matched this selection -- nothing ran, which is not a pass =="
+   exit 2
+fi
+
 [ "${fail_count}" -eq 0 ]
