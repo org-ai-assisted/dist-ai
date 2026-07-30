@@ -593,8 +593,22 @@ run_suite() {
    ## Surface the failing suite's captured output inline: the per-suite log
    ## lives in /tmp, which CI discards, so a bare FAIL verdict is not
    ## actionable. Echo it on FAIL / TIMEOUT (not on PASS / SKIP).
+   ##
+   ## A SKIP-UNAUTHORIZED counts as a failure, so it needs its log too: the
+   ## reason -- which checkout or dependency was absent -- is only in that file,
+   ## and without it the operator sees a bare verdict and cannot act. An
+   ## ordinary SKIP stays quiet.
    case "${rc}" in
-      0|77)
+      0)
+         ;;
+      77)
+         if skip_is_fatal "${suite}"; then
+            emit "---- ${suite}: begin captured output (${verdict}) ----"
+            while IFS= read -r log_line; do
+               emit "${log_line}"
+            done < "${TMP}/dist-ai-tests-all.${suite}.log"
+            emit "---- ${suite}: end captured output ----"
+         fi
          ;;
       *)
          emit "---- ${suite}: begin captured output (${verdict}) ----"
