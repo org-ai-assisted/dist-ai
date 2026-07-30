@@ -37,6 +37,7 @@ import re
 import struct
 import sys
 import tempfile
+import unicodedata
 
 from secure_terminal import sanitize as S
 from secure_terminal import settings as SET
@@ -50,14 +51,28 @@ from secure_terminal import cli as CLI
 
 _HONORED = {0x08, 0x09, 0x0A, 0x0D}
 SAFE = frozenset(_HONORED | set(range(0x20, 0x7F)))
+# DERIVED from the Unicode general categories, never enumerated -- see the same
+# derivation in test_corpus.py. An enumerated ORACLE fails silently: a member
+# nobody listed weakens every assertion below instead of failing one, so this copy
+# went on missing U+061C, U+2061..2064 and U+180E for as long as it was a list.
+#   Cc control (C0, DEL, C1); Cf format (bidi controls, zero-widths, invisible
+#   math operators, BOM, soft hyphen); Zl/Zp line and paragraph separators.
+# Plus the default-ignorables, the one class no category exposes: printable to
+# str.isprintable(), yet they render as nothing.
+_DANGEROUS_CATEGORIES = frozenset(('Cc', 'Cf', 'Zl', 'Zp'))
 DANGEROUS_CPS = frozenset(
-    [c for c in range(0x00, 0x20) if c not in _HONORED]      # C0 controls incl ESC
-    + [0x7F]                                                  # DEL
-    + list(range(0x80, 0xA0))                                # C1 controls
-    + [0x200B, 0x200C, 0x200D, 0x200E, 0x200F, 0x2060, 0xFEFF]  # zero-width / BOM
-    + list(range(0x202A, 0x202F))                            # bidi embed/override
-    + list(range(0x2066, 0x206A))                            # bidi isolates
-    + [0x2028, 0x2029])                                      # line / paragraph sep
+    cp for cp in range(0x110000)
+    if cp not in _HONORED
+    and (unicodedata.category(chr(cp)) in _DANGEROUS_CATEGORIES
+         or S.is_default_ignorable(chr(cp))))
+# Canary: the default-ignorable arm borrows a PRODUCT predicate, so a gutted
+# is_default_ignorable would shrink this oracle without failing anything. Naming
+# the members makes that a hard failure at import, before a single fuzz iteration.
+for _cp in (0x00, 0x1B, 0x7F, 0x9B, 0x061C, 0x180E, 0x200B, 0x200D, 0x200E,
+            0x202E, 0x2066, 0x2028, 0x2029, 0xFEFF, 0x2061, 0x2062, 0x2063,
+            0x2064, 0xFE0F, 0x3164, 0x115F, 0x034F):
+    assert _cp in DANGEROUS_CPS, 'DANGEROUS_CPS lost U+%04X' % _cp
+assert not (DANGEROUS_CPS & SAFE), 'SAFE and DANGEROUS_CPS must be disjoint'
 
 
 ## hooklib lives in the hooks dir, not on the package path: load it directly, the

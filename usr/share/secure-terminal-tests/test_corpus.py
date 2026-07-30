@@ -26,6 +26,7 @@ Pure ASCII source: every codepoint is a number or a \\x/\\u escape. Qt-free.
 """
 
 import sys
+import unicodedata
 
 try:
     from secure_terminal import sanitize as S
@@ -62,21 +63,39 @@ SAFE = frozenset(_HONORED | set(range(0x20, 0x7F)))
 
 # Code points that must NEVER survive sanitization, in ANY mode: they are
 # invisible, deceptive, or an active terminal/injection primitive.
+#
+# DERIVED from the Unicode general categories, never enumerated. A hand-written
+# blocklist is the wrong shape for an ORACLE: a missing member silently WEAKENS
+# every assertion that consumes it rather than failing one, so the hole cannot
+# announce itself. That is exactly how U+061C, U+2061..2064 and U+180E went
+# missing here, and how they then stayed missing in the two sibling copies long
+# after being fixed in this one.
+#   Cc  control (C0, DEL, C1)
+#   Cf  format: every bidi control, the zero-widths, the invisible math
+#       operators, the BOM/word joiner, the soft hyphen, the Mongolian separator
+#   Zl/Zp  line and paragraph separators
+# Plus the default-ignorables, the one class no general category exposes: they
+# report as printable yet render as nothing.
+_DANGEROUS_CATEGORIES = frozenset(('Cc', 'Cf', 'Zl', 'Zp'))
 DANGEROUS_CPS = frozenset(
-    [c for c in range(0x00, 0x20) if c not in _HONORED]      # C0 controls incl ESC
-    + [0x7F]                                                  # DEL
-    + list(range(0x80, 0xA0))                                # C1 controls
-    + [0x200B, 0x200C, 0x200D, 0x200E, 0x200F, 0x2060, 0xFEFF]  # zero-width / BOM
-    + list(range(0x202A, 0x202F))                            # bidi embed/override
-    + list(range(0x2066, 0x206A))                            # bidi isolates
-    + [0x2028, 0x2029]                                       # line / paragraph sep
-    # Holes found by comparing this blocklist against test_fuzz's _HOSTILE set and
-    # the Unicode format classes. The product already neutralizes all of these in
-    # every mode (verified), so they were TEST holes, not live defects -- but a
-    # regression on them would have failed nothing here.
-    + [0x061C]                                               # ARABIC LETTER MARK
-    + list(range(0x2061, 0x2065))                            # invisible math ops
-    + [0x180E])                                              # MONGOLIAN VOWEL SEP
+    cp for cp in range(0x110000)
+    if cp not in _HONORED
+    and (unicodedata.category(chr(cp)) in _DANGEROUS_CATEGORIES
+         or S.is_default_ignorable(chr(cp))))
+
+# Canary for the derivation itself. The default-ignorable arm above borrows a
+# PRODUCT predicate, so a gutted is_default_ignorable (or a narrowed category
+# set) would shrink this oracle silently. Naming the members makes that a
+# failure. Includes the three historical holes, so they cannot reopen.
+for _cp in (0x00, 0x1B, 0x7F, 0x9B,                     # C0 / ESC / DEL / C1
+            0x061C, 0x180E, 0x200B, 0x200D, 0x200E,     # bidi + zero-width
+            0x202E, 0x2066, 0x2028, 0x2029, 0xFEFF,
+            0x2061, 0x2062, 0x2063, 0x2064,             # invisible math ops
+            0xFE0F, 0x3164, 0x115F, 0x034F):            # default-ignorables
+    ok(_cp in DANGEROUS_CPS,
+       'DANGEROUS_CPS is derived wide enough to include U+%04X' % _cp)
+ok(not (DANGEROUS_CPS & SAFE),
+   'the safe display alphabet and the dangerous set are disjoint')
 
 
 # ---------------------------------------------------------------------------
@@ -486,14 +505,13 @@ ok(all(ch in '\x08\t\n\r' or ch.isprintable() for ch in _show_all),
 ok(not any(S.is_default_ignorable(ch) for ch in _show_all),
    'all-unicode: show neutralizes every invisible default-ignorable code point')
 # Cf (FORMAT) is the whole class of invisible controls -- bidi overrides, the
-# zero-widths, the Arabic letter mark, the invisible math operators. DANGEROUS_CPS
-# enumerates the ones anyone thought of, which is why it had holes (U+061C,
-# U+2061-2064). Assert the CLASS instead of a list, in every mode, so a newly
-# assigned format character is covered the day Python's unicodedata knows it.
-import unicodedata as _ud                             # noqa: E402
+# zero-widths, the Arabic letter mark, the invisible math operators. Asserted as a
+# CLASS, independently of DANGEROUS_CPS, so a newly assigned format character is
+# covered the day Python's unicodedata knows it and neither check can be the
+# other's only witness.
 for _mode in MODES:
     _out = S.render_output(_all, _mode)
-    _fmt = sorted({ord(ch) for ch in _out if _ud.category(ch) == 'Cf'})
+    _fmt = sorted({ord(ch) for ch in _out if unicodedata.category(ch) == 'Cf'})
     ok(not _fmt, 'all-unicode/%s: an invisible FORMAT (Cf) char survived: %s'
        % (_mode, ['U+%04X' % c for c in _fmt[:6]]))
 
