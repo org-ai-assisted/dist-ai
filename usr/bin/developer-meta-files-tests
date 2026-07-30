@@ -27,10 +27,10 @@ shopt -s shift_verbose
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-if [ -d '/usr/share/developer-meta-files-tests' ]; then
-   share='/usr/share/developer-meta-files-tests'
-else
+if [ -d "${script_dir}/../share/developer-meta-files-tests" ]; then
    share="${script_dir}/../share/developer-meta-files-tests"
+else
+   share='/usr/share/developer-meta-files-tests'
 fi
 
 if [ -z "${DMF_REPO:-}" ]; then

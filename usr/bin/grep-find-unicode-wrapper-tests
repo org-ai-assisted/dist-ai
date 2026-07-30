@@ -28,10 +28,10 @@ shopt -s shift_verbose
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-if [ -d '/usr/share/grep-find-unicode-wrapper-tests' ]; then
-   tests_dir='/usr/share/grep-find-unicode-wrapper-tests'
-else
+if [ -d "${script_dir}/../share/grep-find-unicode-wrapper-tests" ]; then
    tests_dir="${script_dir}/../share/grep-find-unicode-wrapper-tests"
+else
+   tests_dir='/usr/share/grep-find-unicode-wrapper-tests'
 fi
 
 rc=0

@@ -21,10 +21,10 @@ export QT_QPA_PLATFORM="offscreen"
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-if [ -d '/usr/share/sdwdate-gui-tests/fuzz' ]; then
-  fuzz_dir='/usr/share/sdwdate-gui-tests/fuzz'
-else
+if [ -d "${script_dir}/../share/sdwdate-gui-tests/fuzz" ]; then
   fuzz_dir="${script_dir}/../share/sdwdate-gui-tests/fuzz"
+else
+  fuzz_dir='/usr/share/sdwdate-gui-tests/fuzz'
 fi
 
 rc=0

@@ -27,10 +27,10 @@ export QT_QPA_PLATFORM="offscreen"
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-if [ -d '/usr/share/setup-wizard-dist-tests' ]; then
-   tests_dir='/usr/share/setup-wizard-dist-tests'
-else
+if [ -d "${script_dir}/../share/setup-wizard-dist-tests" ]; then
    tests_dir="${script_dir}/../share/setup-wizard-dist-tests"
+else
+   tests_dir='/usr/share/setup-wizard-dist-tests'
 fi
 
 python3 -m unittest discover \

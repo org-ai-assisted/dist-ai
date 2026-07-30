@@ -42,10 +42,10 @@ shopt -s shift_verbose
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-if [ -d '/usr/share/secure-terminal-shots' ]; then
-   shots_dir='/usr/share/secure-terminal-shots'
-else
+if [ -d "${script_dir}/../share/secure-terminal-shots" ]; then
    shots_dir="${script_dir}/../share/secure-terminal-shots"
+else
+   shots_dir='/usr/share/secure-terminal-shots'
 fi
 
 repo=''

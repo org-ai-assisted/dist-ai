@@ -29,10 +29,10 @@ source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/has.sh
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-if [ -d '/usr/share/terminal-resilience-tests' ]; then
-   share_dir='/usr/share/terminal-resilience-tests'
-else
+if [ -d "${script_dir}/../share/terminal-resilience-tests" ]; then
    share_dir="${script_dir}/../share/terminal-resilience-tests"
+else
+   share_dir='/usr/share/terminal-resilience-tests'
 fi
 
 [ -v TRADITIONAL_EMULATORS ] || TRADITIONAL_EMULATORS=''

@@ -23,10 +23,10 @@ shopt -s shift_verbose
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-if [ -d '/usr/share/genmkfile-tests' ]; then
-   tests_dir='/usr/share/genmkfile-tests'
-else
+if [ -d "${script_dir}/../share/genmkfile-tests" ]; then
    tests_dir="${script_dir}/../share/genmkfile-tests"
+else
+   tests_dir='/usr/share/genmkfile-tests'
 fi
 
 ## Run every *_test.sh in the suite. Exit 77 from a test means SKIP

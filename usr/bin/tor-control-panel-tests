@@ -28,10 +28,10 @@ export QT_QPA_PLATFORM="offscreen"
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-if [ -d '/usr/share/tor-control-panel-tests' ]; then
-   tests_dir='/usr/share/tor-control-panel-tests'
-else
+if [ -d "${script_dir}/../share/tor-control-panel-tests" ]; then
    tests_dir="${script_dir}/../share/tor-control-panel-tests"
+else
+   tests_dir='/usr/share/tor-control-panel-tests'
 fi
 
 python3 -m unittest discover \

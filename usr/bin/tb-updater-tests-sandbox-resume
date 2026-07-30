@@ -25,10 +25,10 @@ shopt -s shift_verbose
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-if [ -d '/usr/share/tb-updater-tests/sandbox-resume' ]; then
-   payload_dir='/usr/share/tb-updater-tests/sandbox-resume'
-else
+if [ -d "${script_dir}/../share/tb-updater-tests/sandbox-resume" ]; then
    payload_dir="${script_dir}/../share/tb-updater-tests/sandbox-resume"
+else
+   payload_dir='/usr/share/tb-updater-tests/sandbox-resume'
 fi
 
 if [ "$(id -u)" != '0' ]; then

@@ -24,10 +24,10 @@ shopt -s shift_verbose
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-if [ -d '/usr/share/check-ref-commits-for-unicode-tests' ]; then
-   tests_dir='/usr/share/check-ref-commits-for-unicode-tests'
-else
+if [ -d "${script_dir}/../share/check-ref-commits-for-unicode-tests" ]; then
    tests_dir="${script_dir}/../share/check-ref-commits-for-unicode-tests"
+else
+   tests_dir='/usr/share/check-ref-commits-for-unicode-tests'
 fi
 
 iterations='1000'

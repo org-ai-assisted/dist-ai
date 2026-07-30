@@ -24,10 +24,10 @@ shopt -s shift_verbose
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-if [ -d '/usr/share/sdwdate-gui-tests/integration' ]; then
-  integration_dir='/usr/share/sdwdate-gui-tests/integration'
-else
+if [ -d "${script_dir}/../share/sdwdate-gui-tests/integration" ]; then
   integration_dir="${script_dir}/../share/sdwdate-gui-tests/integration"
+else
+  integration_dir='/usr/share/sdwdate-gui-tests/integration'
 fi
 
 wayland_socket='wayland-sdwd99'

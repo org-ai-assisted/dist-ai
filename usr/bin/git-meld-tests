@@ -50,12 +50,14 @@ if [ -z "${GIT_MELD_TESTS_NO_CTTY:-}" ]; then
 fi
 
 mydir="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )"
-## Test payload directory: installed share dir, or the in-repo path when running
-## from a dist-ai checkout.
-if [ -d "/usr/share/git-meld-tests" ]; then
-   share="/usr/share/git-meld-tests"
-else
+## Test payload directory: the in-repo path when running from a dist-ai
+## checkout, else the installed share dir. Source wins so that editing a payload
+## in a checkout and running that checkout's entrypoint actually runs the edit,
+## instead of silently executing the installed copy.
+if [ -d "${mydir}/../share/git-meld-tests" ]; then
    share="${mydir}/../share/git-meld-tests"
+else
+   share="/usr/share/git-meld-tests"
 fi
 ## Adversarial suites to run (NOT the fuzzer -- that has its own runner):
 ##  - adversarial-lib.sh: direct-invocation, submodule hidden-change.

@@ -26,10 +26,10 @@ shopt -s shift_verbose
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-if [ -d '/usr/share/github-org-tools-tests' ]; then
-   share='/usr/share/github-org-tools-tests'
-else
+if [ -d "${script_dir}/../share/github-org-tools-tests" ]; then
    share="${script_dir}/../share/github-org-tools-tests"
+else
+   share='/usr/share/github-org-tools-tests'
 fi
 
 if [ -z "${DEVELOPER_META_FILES_PATH:-}" ]; then

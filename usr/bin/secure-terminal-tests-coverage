@@ -25,10 +25,10 @@ shopt -s shift_verbose
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-if [ -d '/usr/share/secure-terminal-tests' ]; then
-   tests_dir='/usr/share/secure-terminal-tests'
-else
+if [ -d "${script_dir}/../share/secure-terminal-tests" ]; then
    tests_dir="${script_dir}/../share/secure-terminal-tests"
+else
+   tests_dir='/usr/share/secure-terminal-tests'
 fi
 
 repo=''
@@ -110,7 +110,8 @@ assert_every_module_gated() {
    for source_file in "${pkg}"/*.py; do
       module_name="${source_file##*/}"
       case "${all_gated}" in
-         *",*/${module_name},"*) ;;
+         *",*/${module_name},"*)
+            ;;
          *)
             printf 'secure-terminal-tests-coverage: module %s is in NO coverage tier -- add it to gated_free or gated_qt\n' \
                "${module_name}" >&2

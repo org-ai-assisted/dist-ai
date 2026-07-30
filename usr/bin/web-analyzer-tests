@@ -31,10 +31,10 @@ source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/has.sh
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-if [ -d '/usr/share/web-analyzer-tests' ]; then
-   tests_dir='/usr/share/web-analyzer-tests'
-else
+if [ -d "${script_dir}/../share/web-analyzer-tests" ]; then
    tests_dir="${script_dir}/../share/web-analyzer-tests"
+else
+   tests_dir='/usr/share/web-analyzer-tests'
 fi
 
 node_bin=''

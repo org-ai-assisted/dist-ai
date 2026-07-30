@@ -21,10 +21,10 @@ shopt -s shift_verbose
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-if [ -d '/usr/share/lockfile-tests' ]; then
-   tests_dir='/usr/share/lockfile-tests'
-else
+if [ -d "${script_dir}/../share/lockfile-tests" ]; then
    tests_dir="${script_dir}/../share/lockfile-tests"
+else
+   tests_dir='/usr/share/lockfile-tests'
 fi
 
 iterations='200'

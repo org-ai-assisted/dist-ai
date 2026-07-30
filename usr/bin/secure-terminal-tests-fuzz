@@ -28,10 +28,10 @@ shopt -s shift_verbose
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-if [ -d '/usr/share/secure-terminal-tests' ]; then
-   tests_dir='/usr/share/secure-terminal-tests'
-else
+if [ -d "${script_dir}/../share/secure-terminal-tests" ]; then
    tests_dir="${script_dir}/../share/secure-terminal-tests"
+else
+   tests_dir='/usr/share/secure-terminal-tests'
 fi
 
 repo=''

@@ -25,10 +25,10 @@ shopt -s shift_verbose
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-if [ -d '/usr/share/dm-reprepro-tracking-tests' ]; then
-   tests_dir='/usr/share/dm-reprepro-tracking-tests'
-else
+if [ -d "${script_dir}/../share/dm-reprepro-tracking-tests" ]; then
    tests_dir="${script_dir}/../share/dm-reprepro-tracking-tests"
+else
+   tests_dir='/usr/share/dm-reprepro-tracking-tests'
 fi
 
 ## Run every *_test.sh in the suite. Exit 77 from a test means SKIP (source

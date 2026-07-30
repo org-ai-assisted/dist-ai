@@ -20,10 +20,10 @@ shopt -s shift_verbose
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-if [ -d '/usr/share/privleap-tests' ]; then
-  tests_dir='/usr/share/privleap-tests'
-else
+if [ -d "${script_dir}/../share/privleap-tests" ]; then
   tests_dir="${script_dir}/../share/privleap-tests"
+else
+  tests_dir='/usr/share/privleap-tests'
 fi
 
 rc=0

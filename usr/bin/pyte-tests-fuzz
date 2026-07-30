@@ -27,10 +27,10 @@ shopt -s shift_verbose
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-if [ -d '/usr/share/pyte-tests' ]; then
-   tests_dir='/usr/share/pyte-tests'
-else
+if [ -d "${script_dir}/../share/pyte-tests" ]; then
    tests_dir="${script_dir}/../share/pyte-tests"
+else
+   tests_dir='/usr/share/pyte-tests'
 fi
 
 if [ -n "${PYTE_REPO:-}" ] && [ -d "${PYTE_REPO}/pyte" ]; then

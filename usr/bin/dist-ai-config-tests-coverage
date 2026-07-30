@@ -22,10 +22,10 @@ shopt -s shift_verbose
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-if [ -d '/usr/share/dist-ai-config-tests' ]; then
-   share='/usr/share/dist-ai-config-tests'
-else
+if [ -d "${script_dir}/../share/dist-ai-config-tests" ]; then
    share="${script_dir}/../share/dist-ai-config-tests"
+else
+   share='/usr/share/dist-ai-config-tests'
 fi
 
 rc=0

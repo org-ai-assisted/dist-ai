@@ -38,10 +38,10 @@ SKIP=77
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-if [ -d '/usr/share/dm-image-boot-tests' ]; then
-   tests_dir='/usr/share/dm-image-boot-tests'
-else
+if [ -d "${script_dir}/../share/dm-image-boot-tests" ]; then
    tests_dir="${script_dir}/../share/dm-image-boot-tests"
+else
+   tests_dir='/usr/share/dm-image-boot-tests'
 fi
 
 ## Image-free regression tests first, so they run on every invocation including

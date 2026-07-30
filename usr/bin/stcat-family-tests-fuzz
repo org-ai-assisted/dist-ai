@@ -19,10 +19,10 @@ shopt -s shift_verbose
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-if [ -d '/usr/share/stcat-family-tests' ]; then
-   tests_dir='/usr/share/stcat-family-tests'
-else
+if [ -d "${script_dir}/../share/stcat-family-tests" ]; then
    tests_dir="${script_dir}/../share/stcat-family-tests"
+else
+   tests_dir='/usr/share/stcat-family-tests'
 fi
 
 iterations='5000'

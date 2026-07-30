@@ -33,10 +33,10 @@ shopt -s shift_verbose
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-if [ -d '/usr/share/tb-updater-tests/e2e' ]; then
-   e2e_dir='/usr/share/tb-updater-tests/e2e'
-else
+if [ -d "${script_dir}/../share/tb-updater-tests/e2e" ]; then
    e2e_dir="${script_dir}/../share/tb-updater-tests/e2e"
+else
+   e2e_dir='/usr/share/tb-updater-tests/e2e'
 fi
 
 if [ ! -x /usr/bin/update-torbrowser ]; then
