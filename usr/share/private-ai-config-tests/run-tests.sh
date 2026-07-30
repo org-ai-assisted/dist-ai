@@ -114,8 +114,14 @@ check_registration() {
       if [ "${known}" = 'false' ]; then
          unregistered+=( "${rel}" )
       fi
-   done < <( find "${repo}/tests" "${repo}/claude/hooks/tests" \
-      -type f \( -name '*.sh' -o -name '*.py' \) 2>/dev/null | sort )
+   ## Scan roots are DISCOVERED, not hardcoded. Two fixed paths meant a tests/
+   ## directory added anywhere else in the repo was silently ungoverned -- the
+   ## guard would keep passing while covering less than it claims, which is the
+   ## failure class it exists to catch.
+   done < <( find "${repo}" -path "${repo}/.git" -prune -o \
+      -type d -name tests -print0 2>/dev/null \
+      | xargs --null --no-run-if-empty find \
+        -type f \( -name '*.sh' -o -name '*.py' \) 2>/dev/null | sort )
 
    if [ "${#unregistered[@]}" -gt 0 ]; then
       printf '\n########## UNREGISTERED TEST FILE(S) ##########\n' >&2
