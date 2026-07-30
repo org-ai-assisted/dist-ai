@@ -1993,6 +1993,70 @@ finally:
 eq(_lk_bad, [],
    'a locked key is not overridable through the global settings dialog')
 
+# --- every lock guard actually returns early ----------------------------------
+# The guards added with the _GLOBAL_KEYS work refuse a locked change in the
+# SETTER, which _apply_global never reaches -- so drive each setter directly with
+# its key locked and require the value not to move.
+_lk2_prev = win._locked
+_setter_bad = []
+try:
+    for _key, _call, _read in (
+            ('zoom', lambda: win.set_zoom(win._default_zoom + 13),
+             lambda: win._default_zoom),
+            ('theme', lambda: win.set_theme(
+                'light' if win._default_theme != 'light' else 'dark'),
+             lambda: win._default_theme),
+            ('scrollback', lambda: win.set_scrollback(win._scrollback + 500),
+             lambda: win._scrollback),
+            ('paste_delay', lambda: win.set_paste_delay(win._paste_delay + 3),
+             lambda: win._paste_delay),
+            ('persist_session', lambda: win.set_persist_session(
+                not win._persist_session),
+             lambda: win._persist_session),
+            ('confirm_close', lambda: win.set_confirm_close(
+                not win._confirm_close),
+             lambda: win._confirm_close)):
+        win._locked = {_key}
+        _before = _read()
+        _call()
+        if _read() != _before:
+            _setter_bad.append(_key)
+    # osc_notice_off is a set, so compare a copy
+    win._locked = {'osc_notice_off'}
+    _before_off = set(win._osc_notice_off)
+    win.set_osc_notice_type('osc_title', False)
+    if set(win._osc_notice_off) != _before_off:
+        _setter_bad.append('osc_notice_off')
+finally:
+    win._locked = _lk2_prev
+eq(_setter_bad, [], 'every lock-guarded setter refuses a locked change')
+
+# _apply_locks must disable the zoom SPIN BOX, which is not a QAction and so is
+# gated separately from the action list.
+_lk3_prev = win._locked
+try:
+    win._locked = {'zoom'}
+    win._apply_locks()
+    ok(not win.zoom_box.isEnabled(),
+       'a locked zoom disables the zoom spin box')
+finally:
+    win._locked = _lk3_prev
+    win.zoom_box.setEnabled(True)
+
+# Ctrl+PageUp / Ctrl+PageDown are consumed by the widget for tab switching, so a
+# window shortcut there would never fire and must be reported reserved.
+# Built from the Qt.Key ENUM, not a hand-typed name: Qt spells these "PgUp" /
+# "PgDown", and QKeySequence('Ctrl+PageUp') silently parses to Key_unknown -- a
+# test written that way passes or fails for the wrong reason.
+_pgup = _QKS(_Qt_sc.KeyboardModifier.ControlModifier | _Qt_sc.Key.Key_PageUp)
+_pgdn = _QKS(_Qt_sc.KeyboardModifier.ControlModifier | _Qt_sc.Key.Key_PageDown)
+_pgup_shift = _QKS(_Qt_sc.KeyboardModifier.ControlModifier
+                   | _Qt_sc.KeyboardModifier.ShiftModifier
+                   | _Qt_sc.Key.Key_PageUp)
+ok(win._is_reserved_shortcut(_pgup) and win._is_reserved_shortcut(_pgdn)
+   and win._is_reserved_shortcut(_pgup_shift),
+   'the tab-switch keys are reserved for the widget')
+
 # --- CLASH: menu accelerators ------------------------------------------------
 # The '&' in an action's text is a MNEMONIC marker, so two items in one menu
 # marking the same letter make one of them unreachable by keyboard, and a literal

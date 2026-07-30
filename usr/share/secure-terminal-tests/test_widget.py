@@ -421,6 +421,34 @@ def _split_feed(payload, cuts):
     return term
 
 
+# --- TUI marking of a zero-width character with no preceding cell -------------
+# _mark_own_cell: at the very start of the screen there is no cell to merge into,
+# so the character occupies its own cell instead of being dropped. A leading
+# invisible is exactly the spoofing position that must stay marked.
+from secure_terminal import sanitize as _S_zw           # noqa: E402
+
+if tui_available():
+    _zw = SecureTerminal(command='/bin/cat', tui=True)
+    feed_output(_zw, '\u200dab'.encode('utf-8'))
+    pump(200)
+    _zwdoc = _zw.document().toPlainText()
+    ok(_S_zw.BOX in _zwdoc,
+       'a LEADING zero-width character is marked in the TUI grid, not dropped')
+    ok('\u200d' not in _zwdoc, 'the raw zero-width character never reaches the grid')
+    _zw.close()
+
+    # _merge_invisible with the cursor at column 0 of a later row: the target is
+    # the last column of the PREVIOUS row, the wrapped-line case.
+    _zw2 = SecureTerminal(command='/bin/cat', tui=True)
+    _cols = _zw2._screen.columns if _zw2._screen is not None else 80
+    feed_output(_zw2, ('x' * _cols).encode('utf-8'))
+    pump(120)
+    feed_output(_zw2, '\u200d'.encode('utf-8'))
+    pump(120)
+    ok(_S_zw.BOX in _zw2.document().toPlainText(),
+       'a zero-width character at column 0 of a wrapped row marks the previous row')
+    _zw2.close()
+
 _MARKER = b'\x1b[?1049h'
 _bad = []
 for _k in range(1, len(_MARKER)):                       # every 2-way split

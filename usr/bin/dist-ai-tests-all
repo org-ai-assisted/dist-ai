@@ -26,7 +26,14 @@ mydir="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )"
 log_dir="$( mktemp --directory -- "${TMP}/dist-ai-tests-all.XXXXXX" )"
 cleanup_log_dir() {
    if [ -n "${log_dir:-}" ] && [ -d "${log_dir}" ]; then
-      safe-rm --recursive --force -- "${log_dir}"
+      ## safe-rm ships with private-ai-config and is absent on a CI runner, where
+      ## this call runs as the EXIT trap: its 127 became the JOB's exit status, so
+      ## a green suite was reported as a hard failure with the real result
+      ## scrolled above it. Tolerate the failure rather than falling back to rm
+      ## (never rm) -- the target is our own mktemp log dir, so leaving it behind
+      ## on a machine without safe-rm costs nothing and cleaning it up is not
+      ## worth reporting a passing run as failed.
+      safe-rm --recursive --force -- "${log_dir}" || true
    fi
    return 0
 }
