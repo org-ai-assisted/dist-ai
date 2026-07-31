@@ -39,9 +39,22 @@ FIXTURES_DIR="$(cd -- "${SCRIPT_DIR}/../fixtures" && pwd)"
 export GHORG_MOCK=true
 export GHORG_MOCK_DIR="${FIXTURES_DIR}"
 
-out="$(ORGS_OVERRIDE='org-ai-assisted' dm-github-org-policy --audit 2>&1)"
+## '|| rc=$?': --audit now EXITS NON-ZERO on drift or on an endpoint it
+## could not read, so a bare command substitution would abort the whole
+## test under errexit with no output at all. The fixtures model the state
+## --apply produces, so a clean audit is rc 0; test_dm_audit_drift.sh
+## covers the failing direction.
+rc=0
+out="$(ORGS_OVERRIDE='org-ai-assisted' dm-github-org-policy --audit 2>&1)" || rc=$?
 
 fail=0
+
+if [ "${rc}" -ne 0 ]; then
+   printf '%s\n' "FAIL: --audit exited non-zero (rc='${rc}') against fixtures that match policy" >&2
+   printf '%s\n' '--- captured output ---' >&2
+   printf '%s\n' "${out}" >&2
+   fail=1
+fi
 ## NOTE: order in this array must match the chronological output order
 ## of audit_org_state() in usr/bin/dm-github-org-policy. The walker
 ## below enforces it.
@@ -49,7 +62,12 @@ required=(
    '=== audit: org-ai-assisted ==='
    'fork-PR approval policy: first_time_contributors'
    'workflow GITHUB_TOKEN permissions: default=write'
-   'actions allowed_actions: enabled_repos=all, allowed_actions=all'
+   'actions allowed_actions: enabled_repos=all, allowed_actions=selected'
+   ## The two desired-vs-actual comparisons. These are what make --audit
+   ## a check rather than a printer: an empty patterns_allowed used to
+   ## render as the innocuous-looking summary 'patterns=0'.
+   'actions scope: matches policy'
+   'selected-actions allow-list: matches policy'
    '2FA required for org members: false'
    'code-security defaults for new repos:'
    'members lacking 2FA'

@@ -40,6 +40,24 @@ FIXTURES_DIR="$(cd -- "${SCRIPT_DIR}/../fixtures" && pwd)"
 export GHORG_MOCK=true
 export GHORG_MOCK_DIR="${FIXTURES_DIR}"
 
+## Capture the REQUEST BODIES so the payload assertions below can check
+## what we actually send. Asserting only the 'ok:' log labels is how an
+## empty patterns_allowed -- which broke every cross-org reusable call --
+## shipped past a fully green suite: the label said 'github-owned +
+## verified-creators', which was a true description of a payload that was
+## nonetheless wrong.
+bodies=''
+
+# shellcheck disable=SC2317  # invoked via the EXIT trap, not inline
+cleanup() {
+   ## '|| true': a failing cleanup must not replace the test's verdict.
+   [ -z "${bodies}" ] || safe-rm --recursive --force -- "${bodies}" || true
+}
+trap cleanup EXIT
+
+bodies="$(mktemp --directory)"
+export GHORG_MOCK_BODY_DIR="${bodies}"
+
 rc=0
 out="$(ORGS_OVERRIDE='org-ai-assisted' dm-github-org-policy --apply 2>&1)" || rc=$?
 
@@ -65,7 +83,7 @@ required=(
    'ok: org-ai-assisted: fork-PR approval=all_external_contributors'
    'ok: org-ai-assisted: workflow GITHUB_TOKEN read-only, no PR approval'
    'ok: org-ai-assisted: actions enabled=all, allowed=selected'
-   'ok: org-ai-assisted: selected-actions = github-owned + verified-creators'
+   'ok: org-ai-assisted: selected-actions = github-owned + verified-creators + developer-meta-files reusables'
    'ok: org-ai-assisted: members policy (default-perm=read, no member create, no deploy keys)'
 
    ## PAID PLAN ONLY: code-security configuration + org rulesets
@@ -138,5 +156,63 @@ for needle in "${forbidden[@]}"; do
       fail=1
    fi
 done
+
+## ---------------------------------------------------------------------
+## Payload assertions. The log label describes the intent; these check
+## the bytes. Every policy whose value can be silently wrong while the
+## label stays right belongs here.
+## ---------------------------------------------------------------------
+
+## Assert a jq expression over a captured request body.
+## Args: $1 = description, $2 = mock key, $3 = jq filter (must print 'true').
+body_expect() {
+   local desc key jq_filter path result captured body_text
+
+   desc="$1"
+   key="$2"
+   jq_filter="$3"
+   path="${bodies}/${key}"
+
+   if [ ! -f "${path}" ]; then
+      captured="$(find "${bodies}" -maxdepth 1 -type f -printf '%f ')"
+      printf '%s\n' "FAIL: ${desc}: no request body captured for '${key}'" >&2
+      printf '%s\n' "       captured keys: ${captured}" >&2
+      fail=1
+      return 0
+   fi
+   result="$(jq --raw-output -- "${jq_filter}" < "${path}" 2>/dev/null)" || result='<jq error>'
+   if [ "${result}" != 'true' ]; then
+      body_text="$(cat -- "${path}")"
+      printf '%s\n' "FAIL: ${desc}: filter returned '${result}', expected 'true'" >&2
+      printf '%s\n' "       body: ${body_text}" >&2
+      fail=1
+      return 0
+   fi
+}
+
+## The selected-actions allowlist governs REUSABLE WORKFLOWS as well as
+## actions. 'selected' with an empty patterns_allowed breaks every
+## consumer outside the org hosting the reusables. developer-meta-files
+## hosts all of ours, so its patterns must be present.
+body_expect 'selected-actions keeps github-owned + verified' \
+   'PUT_orgs_org-ai-assisted_actions_permissions_selected-actions' \
+   '.github_owned_allowed == true and .verified_allowed == true'
+## The PATH is what makes a pattern match a reusable WORKFLOW: GitHub's
+## syntax is OWNER/REPOSITORY/PATH/FILENAME@REF, so a bare
+## 'owner/repo@*' admits actions only and leaves every cross-org
+## reusable call failing with startup_failure. Assert the path form
+## explicitly -- the repo-only form is the shape of the original bug.
+body_expect 'selected-actions allows the developer-meta-files reusable WORKFLOWS' \
+   'PUT_orgs_org-ai-assisted_actions_permissions_selected-actions' \
+   '(.patterns_allowed | index("org-ai-assisted/developer-meta-files/.github/workflows/*@*")) != null'
+body_expect 'selected-actions allows the developer-meta-files composite ACTIONS' \
+   'PUT_orgs_org-ai-assisted_actions_permissions_selected-actions' \
+   '(.patterns_allowed | index("org-ai-assisted/developer-meta-files/.github/actions/*@*")) != null'
+body_expect 'no pattern relies on the repo-only form, which matches actions only' \
+   'PUT_orgs_org-ai-assisted_actions_permissions_selected-actions' \
+   '(.patterns_allowed | map(select(test("^[^/]+/[^/]+@"))) | length) == 0'
+body_expect 'actions scope stays selected, not opened to all' \
+   'PUT_orgs_org-ai-assisted_actions_permissions' \
+   '.allowed_actions == "selected" and .enabled_repositories == "all"'
 
 exit "${fail}"

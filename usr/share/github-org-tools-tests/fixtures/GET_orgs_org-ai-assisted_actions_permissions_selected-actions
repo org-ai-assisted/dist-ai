@@ -1,2 +1,2 @@
-{"github_owned_allowed":false,"verified_allowed":false,"patterns_allowed":[]}
+{"github_owned_allowed":true,"verified_allowed":true,"patterns_allowed":["org-ai-assisted/developer-meta-files/.github/workflows/*@*","org-ai-assisted/developer-meta-files/.github/actions/*@*"]}
 HTTP_STATUS:200
