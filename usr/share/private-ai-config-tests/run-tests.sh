@@ -69,6 +69,7 @@ core_tests=(
    'tests/string-parsing-stress-test.sh'
    'tests/sandbox-transfer-perms-test.sh'
    'tests/sandbox-confine-profile-test.sh'
+   'tests/sandbox-run-confine-wiring-test.sh'
    'claude/hooks/tests/test-cowbuilder-guard.py'
    'claude/hooks/tests/test-git-command-parse.py'
    'claude/hooks/tests/test-git-policy-config.py'
@@ -91,6 +92,7 @@ excluded_tests=(
    'tests/run-cpu-governance-test.sh'               # sandbox wrapper; re-enters
    'tests/run-string-parsing-fuzz.sh'               # sandbox wrapper; re-enters
    'tests/run-string-parsing-stress-test.sh'        # sandbox wrapper; re-enters
+   'tests/run-confine-enforcement-test.sh'          # sandbox integration; real bwrap in temp-claude
    'tests/resilience/chaos-tick-worker.sh'          # workload for the chaos test
    'tests/resilience/resilience-workload.sh'        # workload, not a test
    'tests/resilience/resilience-stall-supervisor.sh' # support supervisor
