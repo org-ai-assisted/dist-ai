@@ -81,9 +81,10 @@ We don't run it because:
 
 If `actionlint` ever ships in Debian, we add it back via apt.
 
-Note: `ai-review --with static` DOES run actionlint (and zizmor) from the
-sandbox, where the trust footprint is contained. The rule above governs what
-runs inside CI itself.
+Note: `ai-review` DOES run actionlint (and zizmor) from the sandbox -- the
+`static` analyzer set is auto-selected on every run, and both fire whenever the
+diff touches a workflow or `action.yml`. The trust footprint is contained there.
+The rule above governs what runs inside CI itself.
 
 ## Pin provenance format
 
