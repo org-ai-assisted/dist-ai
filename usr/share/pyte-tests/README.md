@@ -15,12 +15,29 @@ dist-ai suite.
     cursor, resize, SGR, device reports, grapheme clustering).
   - `test_full_properties.py` -- Hypothesis property tests (state invariants,
     resize, SGR, cursor clamping, history paging, parser chunk-invariance).
-  - `test_full_regressions.py` -- `xfail(strict=True)` regressions for the
-    parser crash and data-loss defects (see the `pyte-audit` repository).
+  - `test_full_regressions.py` -- regressions for the parser crash and
+    data-loss defects (see the `pyte-audit` repository), each expected to pass
+    or to still reproduce per the tree's own declaration (below).
 - `pyte-tests-fuzz [iterations] [seed]` -- in-process fuzzer for
   Stream/ByteStream/Screen; fails only on a crash signature NOT already listed
   in `known_crashes.json` (the known/reported defects), printing the seed and
   reproducing sequence for any new finding.
+
+## Which defects a tree is expected to have
+
+The suites run against pyte trees that fix different subsets of the audited
+defects, so each tree declares its own state in a `pyte-audit-fixes.txt`
+manifest at its root -- one `pyte-audit` finding id per line. A tree with no
+manifest (stock upstream, a distribution package) declares nothing.
+
+- Declared fixed: the regression test must pass, and the fuzzer no longer
+  allowlists that defect's crash signatures -- a regression is red.
+- Not declared: the regression test is `xfail(strict=True)` and the signatures
+  stay allowlisted -- fixing the defect without declaring it is an XPASS, also
+  red.
+
+The expectation is never derived from the observed behaviour: a test that
+decided by running the crash could never disagree with the code under test.
 
 ## Targeting a checkout
 

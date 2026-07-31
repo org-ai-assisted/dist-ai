@@ -1,18 +1,20 @@
 {
-    "_comment": "Allowlist of KNOWN pyte crash signatures already documented in ../BUGS/. fuzz_pyte.py treats these as expected and fails only on NEW signatures. Remove an entry once the corresponding defect is fixed upstream so the fuzzer starts gating it. Signatures are 'ExcType|file:function|normalized-message'.",
-    "bugs": {
-        "BUG-A": "extra CSI parameters -> handler TypeError (too many positional args)",
-        "BUG-B": "private '?' CSI -> handler TypeError (unexpected 'private' kwarg)",
-        "BUG-C": "erase_in_line / erase_in_display unhandled 'how' -> UnboundLocalError",
-        "BUG-D": "VPA / DSR under DECOM without margins -> AssertionError"
-    },
-    "signatures": [
-        "TypeError|streams.py:_parser_fsm|Screen.F() got an unexpected keyword argument 'X'",
-        "TypeError|streams.py:_parser_fsm|Screen.F() takes N positional arguments but N were given",
-        "TypeError|streams.py:_parser_fsm|Screen.F() takes from N to N positional arguments but N were",
-        "UnboundLocalError|screens.py:erase_in_display|cannot access local variable 'X' where it is not associated ",
-        "UnboundLocalError|screens.py:erase_in_line|cannot access local variable 'X' where it is not associated ",
-        "AssertionError|screens.py:cursor_to_line|",
-        "AssertionError|screens.py:report_device_status|"
+  "_comment": "Crash signatures of the audited pyte defects, keyed by org-ai-assisted/pyte-audit finding id. fuzz_pyte.py tolerates a signature only while the tree under test does NOT declare that id fixed in its pyte-audit-fixes.txt manifest, so a fixed defect that comes back is reported as a new finding instead of staying allowlisted forever. Signature format: 'ExcType|file:function|normalized-message'.",
+  "signatures": {
+    "A": [
+      "TypeError|streams.py:_parser_fsm|Screen.F() takes N positional arguments but N were given",
+      "TypeError|streams.py:_parser_fsm|Screen.F() takes from N to N positional arguments but N were"
+    ],
+    "B": [
+      "TypeError|streams.py:_parser_fsm|Screen.F() got an unexpected keyword argument 'X'"
+    ],
+    "C": [
+      "UnboundLocalError|screens.py:erase_in_display|cannot access local variable 'X' where it is not associated ",
+      "UnboundLocalError|screens.py:erase_in_line|cannot access local variable 'X' where it is not associated "
+    ],
+    "D": [
+      "AssertionError|screens.py:cursor_to_line|",
+      "AssertionError|screens.py:report_device_status|"
     ]
+  }
 }
