@@ -27,7 +27,7 @@ passed=0
 failed=0
 work_dir=''
 
-subject="${VERIFY_EVIDENCE_BIN:-${SDWDATE_REPO:-}/ci/onion-tester-verify-evidence.sh}"
+subject="${VERIFY_EVIDENCE_BIN:-${DIST_AI_CI_DIR:-}/onion-tester-verify-evidence.sh}"
 
 ## Invoked indirectly, via the EXIT trap in main().
 # shellcheck disable=SC2317
@@ -164,7 +164,7 @@ main() {
 
    if [ ! -f "${subject}" ]; then
       printf '%s\n' \
-         "SKIP: onion-tester-verify-evidence.sh not found at '${subject}' -- set SDWDATE_REPO or VERIFY_EVIDENCE_BIN" >&2
+         "SKIP: onion-tester-verify-evidence.sh not found at '${subject}' -- run from a dist-ai checkout, or set VERIFY_EVIDENCE_BIN" >&2
       exit 77
    fi
 

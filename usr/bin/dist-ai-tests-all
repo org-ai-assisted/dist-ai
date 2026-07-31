@@ -341,9 +341,12 @@ wire() {
          wire_env=( "PYTHONPATH=$( pkg_dir sdwdate-gui )/usr/lib/python3/dist-packages" )
          ;;
       sdwdate-onion-tester)
-         ## Drives sdwdate's ci/ wrappers against mocks: no Tor, no network, no
-         ## helper-scripts, no python deps -- only the checkout itself.
-         wire_env=( "SDWDATE_REPO=$( pkg_dir sdwdate )" )
+         ## The onion-tester CI wrappers live in dist-ai's own ci/ and are invoked
+         ## by sdwdate's workflow from its dist-ai checkout, so the subject is
+         ## resolved from THIS repo, not from the component. mydir is usr/bin.
+         ## Still mapped to the sdwdate component so it gates sdwdate's PRs, which
+         ## is where a broken wrapper actually breaks something.
+         wire_env=( "DIST_AI_CI_DIR=${mydir}/../../ci" )
          ;;
       sdwdate)
          ## The suite imports sdwdate.sdwdate for real from SDWDATE_REPO. That

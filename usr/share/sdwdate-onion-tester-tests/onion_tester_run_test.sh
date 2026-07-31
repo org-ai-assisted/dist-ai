@@ -16,9 +16,11 @@ set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
 
-## The subject lives in the sdwdate checkout, not beside this payload. Resolved
-## from SDWDATE_REPO (wired by dist-ai-tests-all) or overridden directly.
-runner="${ONION_TESTER_RUN_BIN:-${SDWDATE_REPO:-}/ci/onion-tester-run.sh}"
+## The subject is dist-ai's own ci/onion-tester-run.sh. DIST_AI_CI_DIR is wired
+## by dist-ai-tests-all from the runner's own location; ci/ is not shipped in the
+## Debian package, so from an installed dist-ai this resolves to nothing and the
+## suite skips rather than silently testing something else.
+runner="${ONION_TESTER_RUN_BIN:-${DIST_AI_CI_DIR:-}/onion-tester-run.sh}"
 work_dir=""
 passed=0
 failed=0
@@ -331,7 +333,7 @@ case_warmup_disabled() {
 main() {
    if [ ! -x "${runner}" ]; then
       printf '%s\n' \
-         "SKIP: onion-tester-run.sh not found at '${runner}' -- set SDWDATE_REPO or ONION_TESTER_RUN_BIN" >&2
+         "SKIP: onion-tester-run.sh not found at '${runner}' -- run from a dist-ai checkout, or set ONION_TESTER_RUN_BIN" >&2
       exit 77
    fi
    local total

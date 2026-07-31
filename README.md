@@ -63,6 +63,28 @@ binary package, whose `debian/dist-ai.install` takes `usr/*` wholesale, so a
 new suite needs no packaging change. The repo follows the FHS layout used by
 the rest of the Kicksecure packaging tree.
 
+## ci/ scripts
+
+`ci/` holds shell logic invoked by CI, never inline in workflow yaml. Two kinds
+live here:
+
+- **Reusable-invoked** (`dist-ai-tests-ci-config.sh`,
+  `dist-ai-tests-ci-hs-runtime.sh`) -- called by
+  developer-meta-files' `reusable-dist-ai-tests.yml`.
+- **Component-invoked** (`onion-tester-*`) -- called by a component repo's own
+  `local-*` workflow, which checks this repo out (`path: .github/dist-ai`) and
+  runs them by path. The scripts stay CWD-relative, so they operate on the
+  component checkout while living here.
+
+Two consequences worth knowing before adding to the second kind:
+
+- `debian/dist-ai.install` ships `etc/*` and `usr/*` only, so `ci/` is NOT
+  packaged. Anything here is reachable from a CHECKOUT only.
+- A component's `paths:` filter cannot see files in this repo, so a change here
+  does not trigger that component's workflow. The regression suite for these
+  scripts (`sdwdate-onion-tester-tests`) is mapped to the component so it still
+  gates that component's PRs.
+
 ## dist-ai-tests-all
 
 There is no single "run everything" target beyond this. `dist-ai-tests-all`
