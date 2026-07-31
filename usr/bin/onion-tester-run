@@ -83,6 +83,28 @@ min_attempt_seconds="${ONION_TESTER_MIN_ATTEMPT:-180}"
 ## clamped below so it can never eat the budget a measured attempt needs.
 warmup_max_seconds="${ONION_TESTER_WARMUP_MAX:-600}"
 
+## SINGLE SOURCE OF TRUTH for what every exit code this wrapper can return means.
+## 0/1 come from the probe (sys.exit(0 if offline==0 else 1)); 3 and 124 are set
+## below. Emitted verbatim as final_rc_legend so the CI step summary decodes the
+## bare integer WITHOUT a second, drift-prone copy of this contract in the YAML.
+declare -rA rc_meaning=(
+   [0]="all up"
+   [1]="URL offline"
+   [3]="NEWNYM failed"
+   [124]="out of budget"
+)
+
+## Build "(0 all up, 1 URL offline, 3 NEWNYM failed, 124 out of budget)" from the
+## map above, codes in numeric order.
+rc_legend() {
+   local code out='(' sep=''
+   while read -r code; do
+      out+="${sep}${code} ${rc_meaning[${code}]}"
+      sep=', '
+   done < <(printf '%s\n' "${!rc_meaning[@]}" | sort --numeric-sort)
+   printf '%s)\n' "${out}"
+}
+
 main() {
    local start now elapsed remaining attempt rc final_attempt=0 tmp warmup_budget
    local -a probe_args=()
@@ -190,6 +212,7 @@ main() {
       {
          printf 'attempts=%s\n' "${final_attempt}"
          printf 'final_rc=%s\n' "${rc}"
+         printf 'final_rc_legend=%s\n' "$(rc_legend)"
       } >> "${GITHUB_OUTPUT}"
    fi
 
