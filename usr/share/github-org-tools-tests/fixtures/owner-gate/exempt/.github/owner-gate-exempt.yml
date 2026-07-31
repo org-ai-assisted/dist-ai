@@ -1,0 +1,2 @@
+owner-gate-exempt:
+  .github/workflows/local-thing.yml:work: "documented reason for the carve-out"

@@ -8,7 +8,7 @@
 """Project-specific GitHub workflow YAML validator.
 
 Walks .github/workflows/*.yml under the given repo root and applies
-six rules:
+these rules:
 
   W-001 TIMEOUT              Every job that runs work has
                              timeout-minutes set.
@@ -41,6 +41,15 @@ six rules:
                              '@master'-to-dmf-reusable wrappers) are
                              exempt - dmf's single Dependabot config
                              propagates SHA bumps to them.
+
+  W-008 OWNER-GATE           Every job that runs steps carries
+                             the CI-enabled gate, so a workflow of
+                             ours cannot run in an org that never
+                             opted in. Wrapper jobs, 'if: false'
+                             kill-switches and consumer-*.yml are
+                             exempt; per-repo carve-outs live in
+                             .github/owner-gate-exempt.yml and must
+                             state a reason.
 
 Usage: python3 test_workflow_yaml.py <repo_root>
 
@@ -89,6 +98,12 @@ DEPRECATED_MARKERS = {
     'actions/cache@v3': 'v3 deprecated; use @v4 SHA-pinned',
 }
 
+## W-008: the org-wide CI switch. One organization variable on
+## org-ai-assisted gates every workflow we own; unset (upstream, a
+## contributor fork) means the job skips with no runner allocated and the
+## run still reports green.
+OWNER_GATE_LITERAL = "vars.CI_ENABLED_ORG_AI_ASSISTED == 'true'"
+
 SHA40 = re.compile(r'^[0-9a-f]{40}$')
 
 RULE_LEGEND = [
@@ -99,6 +114,7 @@ RULE_LEGEND = [
     ('W-005 PERMISSIONS-CHECKOUT', 'job-level permissions drop contents: read while using actions/checkout'),
     ('W-006 DEPRECATED',           'deprecated GitHub Actions syntax / action version'),
     ('W-007 DEPENDABOT-MISSING',   'direct third-party SHAs but no .github/dependabot.yml'),
+    ('W-008 OWNER-GATE',           'job runs steps without the CI-enabled gate'),
     ('W-YAML',                     'YAML parse error'),
 ]
 
@@ -296,6 +312,89 @@ def check_dependabot(repo_root, targets, findings):
         )
 
 
+def load_owner_gate_exempt(repo_root):
+    """Per-repo W-008 carve-outs from .github/owner-gate-exempt.yml.
+
+    Mapping of '<workflow path>:<job id>' -> reason. The reason is
+    mandatory: a carve-out nobody had to justify is how a gate quietly
+    stops covering things.
+    """
+    path = os.path.join(repo_root, '.github', 'owner-gate-exempt.yml')
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path) as f:
+            data = yaml.safe_load(f)
+    except yaml.YAMLError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    entries = data.get('owner-gate-exempt') or {}
+    return entries if isinstance(entries, dict) else {}
+
+
+def check_owner_gate(repo_root, targets, findings):
+    """W-008: every job that runs work must be gated on the CI-enabled
+    variable, so a workflow of ours cannot run in an org that never
+    opted in (upstream quota, fork noise, our AI reviewers posting into
+    someone else's repo).
+
+    The check is on the LITERAL, deliberately. The gate is one string
+    repeated across ~50 files; a typo or a renamed variable would
+    silently disable it everywhere while every run still reported
+    green. Machine-checking the exact string is what makes repeating
+    it safe.
+
+    Not flagged:
+      * jobs with no 'steps:' -- pure 'uses:' wrappers, governed by the
+        reusable they call, which carries its own gate;
+      * 'if: false' kill-switches, which allocate no runner either way;
+      * consumer-*.yml, propagated byte-identical from
+        developer-meta-files and likewise wrapper-only;
+      * anything named in .github/owner-gate-exempt.yml WITH a reason.
+    """
+    exempt = load_owner_gate_exempt(repo_root)
+
+    for path in targets:
+        rel = os.path.relpath(path, repo_root)
+        if os.path.basename(path).startswith('consumer-'):
+            continue
+        try:
+            with open(path) as f:
+                parsed = yaml.safe_load(f)
+        except (yaml.YAMLError, OSError):
+            continue
+        if not isinstance(parsed, dict) or is_composite_action(parsed):
+            continue
+        jobs = parsed.get('jobs') or {}
+        if not isinstance(jobs, dict):
+            continue
+        for job_id, job in jobs.items():
+            if not isinstance(job, dict) or 'steps' not in job:
+                continue
+            cond = job.get('if')
+            ## 'if: false' parses to the boolean, not a string.
+            if cond is False:
+                continue
+            if OWNER_GATE_LITERAL in str(cond):
+                continue
+            key = f'{rel}:{job_id}'
+            if key in exempt:
+                if str(exempt[key]).strip():
+                    continue
+                findings.append(
+                    f'{rel}:W-008:job {job_id!r} is exempt in '
+                    f'.github/owner-gate-exempt.yml but gives no reason; '
+                    f'state why this job may run outside the allow-list'
+                )
+                continue
+            findings.append(
+                f'{rel}:W-008:job {job_id!r} runs steps without the CI-enabled gate; '
+                f"add \"if: {OWNER_GATE_LITERAL}\" (AND it in front of any existing "
+                f'condition), or add {key!r} to .github/owner-gate-exempt.yml with a reason'
+            )
+
+
 def main(repo_root):
     targets = collect_target_files(repo_root)
     if not targets:
@@ -306,6 +405,7 @@ def main(repo_root):
     for p in targets:
         check_workflow(p, repo_root, findings)
     check_dependabot(repo_root, targets, findings)
+    check_owner_gate(repo_root, targets, findings)
     n_files = len(targets)
 
     if not findings:

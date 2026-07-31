@@ -1,0 +1,11 @@
+name: fixture
+on:
+  push:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  call:
+    uses: org-ai-assisted/developer-meta-files/.github/workflows/reusable-thing.yml@master
