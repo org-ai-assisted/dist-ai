@@ -263,8 +263,14 @@ wire() {
          ## so from a checkout (not installed) it needs its dist-packages on
          ## PYTHONPATH -- else it dies with ModuleNotFoundError and prints
          ## nothing, which safety checks then pass on trivially (false green).
+         ## SANITIZE_ECHO_BIN needs wiring for the same reason its sibling does:
+         ## unwired, the suite resolves sanitize-echo through its hardcoded
+         ## developer-box fallback path, which never exists in CI, and every [E]
+         ## sanitize-echo case degrades to a SKIP that the run still reports as
+         ## a clean PASS.
          wire_env=(
             "SANITIZE_STRING_BIN=${hs}/usr/bin/sanitize-string"
+            "SANITIZE_ECHO_BIN=${hs}/usr/bin/sanitize-echo"
             "PYTHONPATH=${hs}/usr/lib/python3/dist-packages"
          )
          ;;
@@ -399,6 +405,11 @@ wire() {
       dm-reproducible-build)
          wire_env=( "DERIVATIVE_MAKER_DIR=$( pkg_dir derivative-maker )" )
          ;;
+      dm-grub-smbios)
+         ## Compares the two copies of the SMBIOS-reader GRUB block, both inside
+         ## the derivative-maker checkout (one of them in a submodule).
+         wire_env=( "DERIVATIVE_MAKER_DIR=$( pkg_dir derivative-maker )" )
+         ;;
       dm-image-boot)
          ## Self-contained: it bundles dm-qemu + dm-image-test under
          ## usr/share/dm-image-boot-tests and takes the image to boot as an
@@ -488,7 +499,7 @@ suite_component() {
       developer-meta-files|github-org-tools|dm-virtualbox-wiki-links)
          printf '%s' 'developer-meta-files'
          ;;
-      dm-help-steps|dm-reprepro-tracking|dm-reproducible-build)
+      dm-help-steps|dm-reprepro-tracking|dm-reproducible-build|dm-grub-smbios)
          printf '%s' 'derivative-maker'
          ;;
       private-ai-config)

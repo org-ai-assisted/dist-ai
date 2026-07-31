@@ -14,8 +14,8 @@
 ## Usage: dist-ai-tests-ci-config.sh <path-to-dm-consumer.yml>
 ##
 ## Emits to $GITHUB_OUTPUT:
-##   apt_packages    packages to apt-install for the suites (default: the base
-##                   testing stack)
+##   apt_packages    packages to apt-install for the suites: dist-ai's own
+##                   baseline, plus whatever the caller repo adds
 ##   allow_skip_args '--allow-skip <name>' arguments for suites authorized to skip
 ##   helper_scripts  'true' if a helper-scripts checkout is also needed
 ##   hs_arg          the matching '--helper-scripts-root <dir>' argument for
@@ -38,7 +38,16 @@ if [ -z "${cfg}" ]; then
    exit 2
 fi
 
-apt_packages='python3 python3-pytest python3-hypothesis'
+## Packages dist-ai's OWN runner and suites need, whatever the component is.
+## The caller repo's apt-packages list ADDS to this baseline, it cannot subtract
+## from it: a consumer that forgot one got a suite failing on a dependency it
+## never declared (git-meld-tests probes 'safe-rm' to drive the review tools, and
+## dist-ai-tests-all's own EXIT-trap cleanup calls it), reported as a code
+## failure in the component under test. A requirement every consumer repo has to
+## remember to mirror is a requirement that eventually goes unmet, so dist-ai
+## declares its own here, in the one place that cannot be forgotten per repo.
+apt_packages_base='python3 python3-pytest python3-hypothesis safe-rm'
+apt_packages="${apt_packages_base}"
 helper_scripts='false'
 terminal_poc_corpus='false'
 skip_args=''
@@ -47,7 +56,19 @@ allow_skip_args=''
 if [ -f "${cfg}" ]; then
    value="$(yq -r '.["dist-ai-tests"]["apt-packages"] // ""' "${cfg}")"
    if [ -n "${value}" ] && [ "${value}" != 'null' ]; then
-      apt_packages="${value}"
+      ## Union, de-duplicated: consumer lists normally restate the baseline
+      ## names, and a doubled package list is pure noise in the CI log.
+      apt_packages=''
+      # shellcheck disable=SC2086
+      ## Both are intentional word lists, so the split is the point.
+      for package in ${apt_packages_base} ${value}; do
+         case " ${apt_packages} " in
+            *" ${package} "*)
+               continue
+               ;;
+         esac
+         apt_packages="${apt_packages}${apt_packages:+ }${package}"
+      done
    fi
    if [ "$(yq -r '.["dist-ai-tests"]["helper-scripts"] // ""' "${cfg}")" = 'true' ]; then
       helper_scripts='true'

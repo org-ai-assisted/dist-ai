@@ -5,13 +5,14 @@
 
 ## AI-Assisted
 
-## Consistency lint over dist-ai's own suite registry: asserts every registered
-## suite has an executable entrypoint, a debian/*.install entry, a wire() case
-## and a suite_component() mapping, and that no *-tests entrypoint is left
-## registered nowhere. Each of those failures otherwise shows up as a SILENT
-## green -- a skipped or never-selected suite, not a red run.
+## dist-ai's self-tests: a consistency lint over its own suite registry (every
+## registered suite has an executable entrypoint, a debian/*.install entry, a
+## wire() case and a suite_component() mapping, and no *-tests entrypoint is
+## left registered nowhere), plus regression tests over its own CI plumbing.
+## Each failure they cover otherwise shows up as a SILENT green -- a skipped or
+## never-selected suite, not a red run.
 ##
-## Source-tree lint: set DIST_AI_REPO, or run it from a checkout. Exits 77
+## Source-tree tests: set DIST_AI_REPO, or run them from a checkout. Exit 77
 ## (SKIP) without one. No root, no network.
 
 set -o errexit
@@ -29,6 +30,34 @@ else
    share='/usr/share/dist-ai-registry-tests'
 fi
 
+## Every *_test.sh payload runs, and all of them run: a payload that fails must
+## not hide the ones after it, and a payload added to the directory must not
+## need a second edit here to be executed (an unrun test is a silent green).
 rc=0
-bash -- "${share}/registry_test.sh" "$@" || rc=$?
+ran=0
+skipped=0
+shopt -s nullglob
+for payload in "${share}"/*_test.sh; do
+   ran=$(( ran + 1 ))
+   payload_rc=0
+   bash -- "${payload}" "$@" || payload_rc=$?
+   if [ "${payload_rc}" -eq 77 ]; then
+      skipped=$(( skipped + 1 ))
+      continue
+   fi
+   if [ "${payload_rc}" -ne 0 ]; then
+      rc="${payload_rc}"
+   fi
+done
+
+if [ "${ran}" -eq 0 ]; then
+   printf '%s\n' "FAIL: dist-ai-registry-tests: no *_test.sh payload found in '${share}'; the suite ran nothing." >&2
+   exit 1
+fi
+
+## All payloads skipped means no source tree, i.e. the suite itself is a SKIP.
+if [ "${rc}" -eq 0 ] && [ "${skipped}" -eq "${ran}" ]; then
+   rc=77
+fi
+
 exit "${rc}"

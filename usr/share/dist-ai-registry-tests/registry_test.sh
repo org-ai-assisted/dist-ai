@@ -261,6 +261,33 @@ for rel in ${payload_files[@]+"${payload_files[@]}"}; do
    fi
 done
 
+## ---- check every *_BIN override a payload reads is wired ------------------
+## A payload that resolves its subject from an env var falls back, when the var
+## is unset, to a hardcoded developer-box path under /home/user. That path never
+## exists in CI, so the affected cases degrade to SKIPs and the run still reports
+## PASS -- exactly the silent green this lint exists for. It cost the
+## sanitize-string suite 3019 silently skipped sanitize-echo fuzz cases, because
+## wire() set SANITIZE_STRING_BIN but not SANITIZE_ECHO_BIN.
+bin_vars=()
+mapfile -t bin_vars < <(
+   grep --recursive --no-filename --only-matching --extended-regexp \
+      --include='*.py' --include='*.sh' \
+      "os\.environ\.get\(['\"][A-Z0-9_]+_BIN['\"]" -- "${repo}/usr/share" \
+   | grep --only-matching --extended-regexp '[A-Z0-9_]+_BIN' \
+   | sort --unique )
+
+checks=$(( checks + 1 ))
+if [ "${#bin_vars[@]}" -eq 0 ]; then
+   fail 'parsed zero *_BIN overrides out of the suite payloads -- the pattern changed and this check is now blind'
+fi
+
+for bin_var in ${bin_vars[@]+"${bin_vars[@]}"}; do
+   checks=$(( checks + 1 ))
+   if ! grep --quiet --fixed-strings -- "${bin_var}=" "${runner}"; then
+      fail "${bin_var}: read by a suite payload but wired by no wire() case -- the payload falls back to its hardcoded developer-box path, which never exists in CI, and silently skips every case that needs it"
+   fi
+done
+
 ## ---- check for entrypoints that are registered nowhere --------------------
 shopt -s nullglob
 for entry in "${repo}"/usr/bin/*-tests "${repo}"/usr/bin/*-tests-*; do
