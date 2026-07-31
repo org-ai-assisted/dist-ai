@@ -44,6 +44,27 @@ is_mounted_at() {
    return 1
 }
 
+## How many mount points remain strictly under '$1'. Used where the identity
+## of the leftovers does not matter, only that there are none -- and where two
+## mounts can share one path (an over-mount), which 'is_mounted_at' cannot
+## distinguish.
+count_mounts_under() {
+   local tree mountinfo_fields decoded_path mount_count
+
+   tree="$1"
+   mount_count=0
+   mountinfo_fields=()
+   while read -r -a mountinfo_fields; do
+      printf -v decoded_path '%b' "${mountinfo_fields[4]}"
+      case "${decoded_path}" in
+         "${tree}"/*)
+            mount_count=$((mount_count + 1))
+            ;;
+      esac
+   done < /proc/self/mountinfo
+   printf '%s\n' "${mount_count}"
+}
+
 report() {
    local marker_name checked_path
 
@@ -190,5 +211,38 @@ if [ "${order_seen}" = "cb" ]; then
 else
    printf '%s\n' "RESULT order WRONG:${order_seen}"
 fi
+
+## ---- phase 6: shadowed over-mount ----
+
+## A child mounted BEFORE something is mounted over its parent keeps the
+## now-hidden LOWER parent as its parent mount, so detaching the topmost
+## parent does not detach the child. Sorting cannot fix this -- only
+## re-reading the mount table until it stops changing does.
+shadow_base="${scratch_base}/shadowbase"
+mkdir --parents -- "${shadow_base}/a"
+mount --types tmpfs tmpfs-ut-lower "${shadow_base}/a"
+mkdir --parents -- "${shadow_base}/a/child"
+mount --types tmpfs tmpfs-ut-child "${shadow_base}/a/child"
+## Hides the lower mount, and with it the child's parent.
+mount --types tmpfs tmpfs-ut-upper "${shadow_base}/a"
+
+bash "${subject_path}" "${shadow_base}" >/dev/null 2>&1 || true
+printf '%s\n' "RESULT shadow REMAINING=$(count_mounts_under "${shadow_base}")"
+
+## ---- phase 7: backslash and newline in a mount point name ----
+
+## mountinfo escapes ' ', '\t', '\n' and '\' as '\040', '\011', '\012',
+## '\134'. A decoder that mishandles the backslash case corrupts the path and
+## the unmount silently misses.
+hostile_base="${scratch_base}/hostilebase"
+hostile_backslash="${hostile_base}/has\\back"
+hostile_newline="${hostile_base}/has
+newline"
+mkdir --parents -- "${hostile_backslash}" "${hostile_newline}"
+mount --types tmpfs tmpfs-ut-bs "${hostile_backslash}"
+mount --types tmpfs tmpfs-ut-nl "${hostile_newline}"
+
+bash "${subject_path}" "${hostile_base}" >/dev/null 2>&1 || true
+printf '%s\n' "RESULT hostile REMAINING=$(count_mounts_under "${hostile_base}")"
 
 printf '%s\n' "RESULT inner DONE"

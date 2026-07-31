@@ -111,6 +111,10 @@ main() {
       "fails closed when unmounts do not detach"
    require_result "${run_output}" "RESULT order DEEPEST_FIRST" \
       "umount calls ordered deepest-first"
+   require_result "${run_output}" "RESULT shadow REMAINING=0" \
+      "shadowed over-mount cleared (re-read until stable)"
+   require_result "${run_output}" "RESULT hostile REMAINING=0" \
+      "backslash and newline in mount point names handled"
 
    if [ ! "${run_rc}" = "0" ]; then
       printf '%s\n' "NOTE: mount-namespace run exited ${run_rc}." >&2
