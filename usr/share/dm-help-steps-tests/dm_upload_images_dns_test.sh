@@ -36,24 +36,40 @@ test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./help_steps_test_lib.bsh
 source "${test_dir}/help_steps_test_lib.bsh"
 
+## Resolve the subject into the global 'subject_path'. Returns through a
+## global, not "$(locate_subject)": an 'exit 77' inside a command
+## substitution ends only the SUBSHELL, so the SKIP would never reach the
+## runner.
+subject_path=""
 locate_subject() {
-   local checkout
+   local candidate
 
+   ## An EXPLICIT override that is unreadable is an error, never a silent
+   ## fall-through to another candidate -- that would test a different file
+   ## than the caller named.
    if [ -n "${DM_UPLOAD_IMAGES:-}" ]; then
-      printf '%s\n' "${DM_UPLOAD_IMAGES}"
+      if [ ! -r "${DM_UPLOAD_IMAGES}" ]; then
+         printf '%s\n' "ERROR: DM_UPLOAD_IMAGES='${DM_UPLOAD_IMAGES}' is not readable." >&2
+         exit 1
+      fi
+      subject_path="${DM_UPLOAD_IMAGES}"
       return 0
    fi
-   if [ -r "${test_dir}/dm-upload-images" ]; then
-      printf '%s\n' "${test_dir}/dm-upload-images"
-      return 0
-   fi
-   checkout="${HOME}/derivative-maker/packages/kicksecure/developer-meta-files/usr/bin/dm-upload-images"
-   if [ -r "${checkout}" ]; then
-      printf '%s\n' "${checkout}"
-      return 0
-   fi
-   printf '%s\n' "ERROR: dm-upload-images not found (set DM_UPLOAD_IMAGES)." >&2
-   return 1
+
+   for candidate in \
+      "${test_dir}/dm-upload-images" \
+      "${HOME}/derivative-maker/packages/kicksecure/developer-meta-files/usr/bin/dm-upload-images"; do
+      if [ -n "${candidate}" ] && [ -r "${candidate}" ]; then
+         subject_path="${candidate}"
+         return 0
+      fi
+   done
+   ## Absent target -> SKIP (77), the convention every dist-ai suite follows:
+   ## the dist-ai-tests lane checks the component out WITHOUT submodules, so
+   ## packages/kicksecure/developer-meta-files is simply not there. Hard-failing
+   ## would report a missing checkout as a broken tool.
+   printf '%s\n' "SKIP: dm-upload-images not readable (developer-meta-files not checked out; set DM_UPLOAD_IMAGES to override)." >&2
+   exit 77
 }
 
 require_host() {
@@ -73,14 +89,15 @@ require_host() {
 main() {
    local subject scratch_base extracted
 
-   subject="$(locate_subject)"
+   locate_subject
+   subject="${subject_path}"
    printf '%s\n' "INFO: subject: ${subject}"
 
    scratch_base="$(mktemp --directory)"
    extracted="${scratch_base}/dns_probe_host_from_target.bsh"
    sed -n '/^dns_probe_host_from_target() {$/,/^}$/p' -- "${subject}" > "${extracted}"
    if [ ! -s "${extracted}" ]; then
-      printf '%s\n' "ERROR: could not extract dns_probe_host_from_target from '${subject}'." >&2
+      printf '%s\n' "ERROR: could not extract dns_probe_host_from_target from '${subject}' -- the function is expected in developer-meta-files usr/bin/dm-upload-images; a pin predating it will not have it." >&2
       safe-rm --recursive --force -- "${scratch_base}"
       return 1
    fi
