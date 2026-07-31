@@ -46,8 +46,10 @@ locate_subject() {
 
    if [ -n "${DM_ASSERT_SUBMODULE:-}" ]; then
       if [ ! -r "${DM_ASSERT_SUBMODULE}" ]; then
-         printf '%s\n' "ERROR: DM_ASSERT_SUBMODULE='${DM_ASSERT_SUBMODULE}' is not readable." >&2
-         exit 1
+         ## SKIP, not error -- dist-ai-tests-all CONSTRUCTS this path
+         ## unconditionally, so unreadable means the target is not checked out.
+         printf '%s\n' "SKIP: DM_ASSERT_SUBMODULE='${DM_ASSERT_SUBMODULE}' is not readable (derivative-maker not checked out?)." >&2
+         exit 77
       fi
       subject_path="${DM_ASSERT_SUBMODULE}"
       return 0

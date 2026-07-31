@@ -60,8 +60,8 @@ fi
 ## below enforces it.
 required=(
    '=== audit: org-ai-assisted ==='
-   'fork-PR approval policy: first_time_contributors'
-   'workflow GITHUB_TOKEN permissions: default=write'
+   'fork-PR approval policy: matches policy'
+   'workflow GITHUB_TOKEN permissions: matches policy'
    'actions allowed_actions: enabled_repos=all, allowed_actions=selected'
    ## The two desired-vs-actual comparisons. These are what make --audit
    ## a check rather than a printer: an empty patterns_allowed used to

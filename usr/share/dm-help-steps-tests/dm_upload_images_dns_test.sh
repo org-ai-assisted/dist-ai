@@ -49,8 +49,14 @@ locate_subject() {
    ## than the caller named.
    if [ -n "${DM_UPLOAD_IMAGES:-}" ]; then
       if [ ! -r "${DM_UPLOAD_IMAGES}" ]; then
-         printf '%s\n' "ERROR: DM_UPLOAD_IMAGES='${DM_UPLOAD_IMAGES}' is not readable." >&2
-         exit 1
+         ## SKIP, not error: dist-ai-tests-all CONSTRUCTS this path
+         ## unconditionally, so an unreadable value means the target is not
+         ## checked out (the dist-ai-tests lane takes no submodules), which is
+         ## exactly what 77 is for. A genuine typo still surfaces -- the runner
+         ## reports SKIPPED, and an unauthorized skip is a failure under
+         ## --component.
+         printf '%s\n' "SKIP: DM_UPLOAD_IMAGES='${DM_UPLOAD_IMAGES}' is not readable (developer-meta-files not checked out?)." >&2
+         exit 77
       fi
       subject_path="${DM_UPLOAD_IMAGES}"
       return 0

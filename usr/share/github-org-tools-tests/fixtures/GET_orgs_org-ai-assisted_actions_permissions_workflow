@@ -1,2 +1,2 @@
-{"default_workflow_permissions":"write","can_approve_pull_request_reviews":true}
+{"default_workflow_permissions":"read","can_approve_pull_request_reviews":false}
 HTTP_STATUS:200
