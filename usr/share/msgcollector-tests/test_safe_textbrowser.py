@@ -50,7 +50,7 @@ except (LookupError, SystemExit):
 
 ## Define the REAL class against the real Qt base, without importing the script.
 _NS = {"QtWidgets": QtWidgets}
-exec(_CLASS_SRC, _NS)  # noqa: S102  (trusted first-party source)
+exec(_CLASS_SRC, _NS)  # noqa: S102  (trusted first-party source)  # nosec B102 -- exec of trusted first-party class source extracted from the dispatch script
 SafeTextBrowser = _NS["SafeTextBrowser"]
 
 ## One QApplication for the whole module (offscreen; no display needed).

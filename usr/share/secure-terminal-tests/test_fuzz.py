@@ -206,7 +206,7 @@ def _corpus_seeds():
     for fn in ('dangerous_corpus', 'trojan_source_corpus', 'git_diffs_lie_fixtures'):
         start = source.index('def %s():' % fn)
         end = source.index('\n# ---', start)
-        exec(compile(source[start:end], spec.origin, 'exec'), namespace)  # noqa: S102
+        exec(compile(source[start:end], spec.origin, 'exec'), namespace)  # noqa: S102  # nosec B102 -- exec of this repo's own fixture defs read from test_corpus.py
     seeds = list(namespace['dangerous_corpus']().values())
     seeds += list(namespace['trojan_source_corpus']().values())
     seeds += [b.decode('utf-8', 'replace')

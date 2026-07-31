@@ -33,7 +33,7 @@ import time
 
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 WORK = os.environ.get("DMSERIAL_WORK") or os.path.join(
-    os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "dmserial")
+    os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "dmserial")  # nosec B108 -- /tmp is only the fallback when XDG_RUNTIME_DIR is unset
 SOCK = os.path.join(WORK, "dmserial.sock")
 PIDFILE = os.path.join(WORK, "dmserial.pid")
 BOOTLOG = os.path.join(WORK, "boot.log")

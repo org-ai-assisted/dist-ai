@@ -296,7 +296,7 @@ def bwrap_available() -> bool:
             try:
                 probe = subprocess.run(
                     ["bwrap", "--bind", "/", "/", "--dev", "/dev",
-                     "--proc", "/proc", "--tmpfs", "/tmp",
+                     "--proc", "/proc", "--tmpfs", "/tmp",  # nosec B108 -- bwrap --tmpfs mount target inside the namespace, not a host temp path
                      "bash", "-c", "true"],
                     capture_output=True, timeout=15)
                 _BWRAP_OK = probe.returncode == 0

@@ -150,7 +150,7 @@ def write_config(conf_dir: str, user: str, workdir: str) -> None:
     """Write the test config into conf_dir as a root-owned 0644 file."""
 
     os.makedirs(conf_dir, exist_ok=True)
-    os.chmod(conf_dir, 0o755)
+    os.chmod(conf_dir, 0o755)  # nosec B103 -- conf dir must be world-traversable: privleap reads this config as a different user
     conf_path: str = os.path.join(conf_dir, "e2e-test.conf")
     with open(conf_path, "w", encoding="utf-8") as handle:
         handle.write(config_text(user, workdir))

@@ -57,7 +57,7 @@ def setup_env_injection(user: str, workdir: str) -> tuple[set[str], str]:
     bashenv_sentinel: str = os.path.join(workdir, "BASHENV_SOURCED")
     with open(bashenv_script, "w", encoding="utf-8") as handle:
         handle.write(f"#!/bin/sh\ntouch {bashenv_sentinel}\n")
-    os.chmod(bashenv_script, 0o755)
+    os.chmod(bashenv_script, 0o755)  # nosec B103 -- BASH_ENV hook must be executable by the unprivileged target user privleap runs as
 
     home: str = info.pw_dir
     if os.path.isdir(home):

@@ -142,7 +142,7 @@ def spec_surface_corpus_size(tests_dir):
         if isinstance(node, ast.FunctionDef) and node.name == '_spec_surface_corpus':
             namespace = {}
             module = ast.Module(body=[node], type_ignores=[])
-            exec(compile(module, path, 'exec'), namespace)   # noqa: S102
+            exec(compile(module, path, 'exec'), namespace)   # noqa: S102  # nosec B102 -- exec of this repo's own fixture function extracted via AST
             return len(namespace['_spec_surface_corpus']())
     return None
 

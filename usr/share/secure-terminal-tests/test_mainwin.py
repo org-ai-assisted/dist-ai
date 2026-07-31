@@ -980,7 +980,7 @@ ok('Sound file:' in win._bell_sound_label(), '_bell_sound_label names the file')
 win._default_bell_sound = ''
 _bt = win.current()
 win._on_bell_tray(_bt, 'label')
-win._on_cwd_changed(_bt, '/tmp/some/where')
+win._on_cwd_changed(_bt, '/tmp/some/where')  # nosec B108 -- literal path string arg to a handler under test; nothing is created
 ok(True, 'notification, bell-tray and cwd-changed handlers run')
 
 # --- _set_shortcuts: a reserved key, a duplicate, and an unknown ident ---------
@@ -1364,8 +1364,8 @@ finally:
     _QFD3.getSaveFileName = _o_gsf
 
 # --- _open_path opens an existing folder and falls back to a parent -----------
-win._open_path('/tmp')                       # exists
-win._open_path('/tmp/no-such-dir-xyz/child') # missing -> opens the parent
+win._open_path('/tmp')                       # exists  # nosec B108 -- /tmp is a known-existing dir to exercise _open_path
+win._open_path('/tmp/no-such-dir-xyz/child') # missing -> opens the parent  # nosec B108 -- missing path under /tmp exercises the parent-fallback branch
 ok(True, '_open_path opens a folder (or its parent when missing)')
 
 # --- the font-noise message handler drops the flood, passes real messages -----

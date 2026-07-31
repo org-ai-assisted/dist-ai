@@ -626,7 +626,7 @@ if tui_available():
 
     _drive_fullscreen(['vim', '-u', 'NONE', '-N'], '~', b'\x1b:q!\r', 'vim')
     _drive_fullscreen(['htop'], 'CPU', b'q', 'htop')
-    _drive_fullscreen(['nano', '/tmp/st-nano-e2e.txt'], 'GNU nano', b'\x18n', 'nano')
+    _drive_fullscreen(['nano', '/tmp/st-nano-e2e.txt'], 'GNU nano', b'\x18n', 'nano')  # nosec B108 -- scratch file arg for the nano E2E drive
     # Name the session's command explicitly. `new-session` with no command runs
     # the user's LOGIN SHELL, so tmux names the window after it and the readiness
     # token becomes environment-dependent -- 'bash' in the CI container, 'zsh' on
