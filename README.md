@@ -20,6 +20,8 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 |---|---|---|
 | `mediawiki-dom-snapshot` | shipping | `usr/share/mediawiki-dom-snapshot/` |
 | `sdwdate-gui-tests`      | shipping | `usr/share/sdwdate-gui-tests/` |
+| `sdwdate-tests`          | shipping | `usr/share/sdwdate-tests/` |
+| `onion-time-pre-script-tests` | shipping | `usr/share/onion-time-pre-script-tests/` |
 | `onion-grater-tests`     | shipping | `usr/share/onion-grater-tests/` |
 | `privleap-tests`         | shipping | `usr/share/privleap-tests/` |
 | `pyte-tests`             | shipping | `usr/share/pyte-tests/` |
@@ -55,9 +57,10 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 | `discourse-dom-snapshot` | planned  | `usr/share/discourse-dom-snapshot/` |
 | `sdwdate-ci-fuzz`        | planned  | `usr/share/sdwdate-ci-fuzz/` |
 
-Each component is independent. Each ships its own Debian binary
-package via `debian/<component>.install`. The repo follows the FHS
-layout used by the rest of the Kicksecure packaging tree.
+Each component is independent. All of them ship in the single `dist-ai` Debian
+binary package, whose `debian/dist-ai.install` takes `usr/*` wholesale, so a
+new suite needs no packaging change. The repo follows the FHS layout used by
+the rest of the Kicksecure packaging tree.
 
 ## dist-ai-tests-all
 

@@ -75,6 +75,7 @@ core_suites=(
    lockfile-tests
    msgcollector-tests
    onion-grater-tests
+   onion-time-pre-script-tests
    open-link-confirmation-tests
    privleap-tests
    pyte-tests
@@ -82,6 +83,7 @@ core_suites=(
    secure-terminal-tests
    secure-terminal-tests-coverage
    sdwdate-gui-tests
+   sdwdate-tests
    setup-wizard-dist-tests
    stcat-family-tests
    stdisplay-tests
@@ -149,7 +151,7 @@ With no category flag, only --core runs.
 
 --component NAME restricts the run to the suites owned by ONE component
 (privleap, helper-scripts, onion-grater, genmkfile, open-link-confirmation,
-sdwdate-gui, developer-meta-files, derivative-maker). --component-root DIR points those suites at
+sdwdate-gui, sdwdate, developer-meta-files, derivative-maker). --component-root DIR points those suites at
 a STANDALONE component checkout -- the repo root itself, not a monorepo subpath
 -- which is the per-repo CI entry point. --component-root requires --component.
 
@@ -279,6 +281,17 @@ wire() {
          ## (LOCKFILE_SH) or a checkout it resolves the file from.
          wire_env=( "LOCKFILE_SH_REPO=${hs}" )
          ;;
+      onion-time-pre-script)
+         ## onion-time-pre-script ships in helper-scripts; the suite extracts
+         ## and runs individual bash functions from it, so it needs the file,
+         ## not the runtime. Wire the file directly: unwired, the payload falls
+         ## back to the installed path, which does not exist in CI, and every
+         ## case degrades to a SKIP the run would still report as a clean pass.
+         wire_env=(
+            "ONION_TIME_PRE_SCRIPT_BIN=${hs}/usr/libexec/helper-scripts/onion-time-pre-script"
+            "ONION_TIME_PRE_SCRIPT_REPO=${hs}"
+         )
+         ;;
       iso-boot)
          ## The QMP parser under test (qmp_client) is dist-ai's own payload under
          ## usr/share/iso-boot-tests, not a component checkout, so there is
@@ -325,6 +338,16 @@ wire() {
          ;;
       sdwdate-gui)
          wire_env=( "PYTHONPATH=$( pkg_dir sdwdate-gui )/usr/lib/python3/dist-packages" )
+         ;;
+      sdwdate)
+         ## The suite imports sdwdate.sdwdate for real from SDWDATE_REPO. That
+         ## import pulls guimessages and sanitize_string from helper-scripts,
+         ## so without helper-scripts on PYTHONPATH it cannot load the subject
+         ## at all and the suite skips (never a false green).
+         wire_env=( "SDWDATE_REPO=$( pkg_dir sdwdate )" )
+         if [ -n "${hs}" ]; then
+            wire_env+=( "PYTHONPATH=${hs}/usr/lib/python3/dist-packages" )
+         fi
          ;;
       setup-wizard-dist)
          ## The wizard imports guimessages from helper-scripts; the test adds
@@ -493,7 +516,7 @@ wire() {
 suite_component() {
    local base="${1%%-tests*}"
    case "${base}" in
-      check-ref-commits-for-unicode|grep-find-unicode-wrapper|unicode-show|stcat-family|stdisplay|sanitize-string|lockfile|git-meld)
+      check-ref-commits-for-unicode|grep-find-unicode-wrapper|unicode-show|stcat-family|stdisplay|sanitize-string|lockfile|git-meld|onion-time-pre-script)
          printf '%s' 'helper-scripts'
          ;;
       developer-meta-files|github-org-tools|dm-virtualbox-wiki-links)
@@ -531,6 +554,9 @@ suite_component() {
          ;;
       sdwdate-gui)
          printf '%s' 'sdwdate-gui'
+         ;;
+      sdwdate)
+         printf '%s' 'sdwdate'
          ;;
       setup-wizard-dist)
          printf '%s' 'setup-wizard-dist'

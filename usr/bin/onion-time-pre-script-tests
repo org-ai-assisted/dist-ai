@@ -1,0 +1,39 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Regression suite for helper-scripts' onion-time-pre-script, the preparation
+## gate sdwdate runs before it will fetch time. Covers the stability of the
+## script's output (sdwdate backs off only while the output repeats) and the
+## exit-code contract sdwdate reads. No Tor, no privleap, no root, no network.
+##
+## The subject is resolved by onion_time_pre_script_testlib:
+##   * ONION_TIME_PRE_SCRIPT_BIN=/path/to/onion-time-pre-script -> that file, OR
+##   * ONION_TIME_PRE_SCRIPT_REPO=/path/to/helper-scripts       -> that checkout, OR
+##   * unset -> the installed package
+##              (/usr/libexec/helper-scripts/onion-time-pre-script).
+##
+## Any extra arguments are forwarded to "python3 -m unittest".
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/onion-time-pre-script-tests" ]; then
+   tests_dir="${script_dir}/../share/onion-time-pre-script-tests"
+else
+   tests_dir='/usr/share/onion-time-pre-script-tests'
+fi
+
+python3 -m unittest discover \
+   --start-directory "${tests_dir}" \
+   --pattern 'test_*.py' \
+   "$@"

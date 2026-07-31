@@ -94,6 +94,7 @@ Recommends: qemu-system-arm,
  onion-grater,
  open-link-confirmation,
  privleap,
+ sdwdate,
  sdwdate-gui,
  setup-wizard-dist,
  tor-control-panel
