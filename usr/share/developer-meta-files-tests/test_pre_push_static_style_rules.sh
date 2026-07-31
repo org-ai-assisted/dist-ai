@@ -242,6 +242,15 @@ expect_rule "R-051" "trap ${dq}${dq} EXIT"                       "absent"
 ## A trap in a '#' comment is documentation, not a live trap, so it is SPARED
 ## (the leading '^[^#]*' skips it), mirroring R-070's comment handling.
 expect_rule "R-051" "#trap ${dq}${del} -f x${dq} EXIT"           "absent"
+## The parameterized named-function form is SPARED in all three spellings of
+## the handler: bare, '$name', and the R-020-mandated '${name}'. Missing the
+## braced one made R-051 and R-020 contradict each other.
+expect_rule "R-051" "trap ${dq}handler \${signal}${dq} ERR"      "absent"
+expect_rule "R-051" "trap ${dq}\$handler \${signal}${dq} ERR"    "absent"
+expect_rule "R-051" "trap ${dq}\${handler} \${signal}${dq} ERR"  "absent"
+## Still FLAGGED with a braced-variable leading token: a LITERAL argument
+## means real command logic, not a dispatch to a named handler.
+expect_rule "R-051" "trap ${dq}\${cmd} -f x${dq} EXIT"           "present"
 
 ## R-090: 'command -v' in code is FLAGGED; in a comment it is SPARED.
 expect_rule "R-090" "if ! command${sp}-v foo"                    "present"
