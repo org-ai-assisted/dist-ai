@@ -83,7 +83,7 @@ ok(all(v.isReadOnly() for v in _bar._views),
    'the preview panes are read-only (no typing into a preview)')
 
 # --- Detail toggle reveals / hides the preview grid ---------------------------
-ok(not _bar._panes_host.isVisible() or True, 'previews start collapsed')
+ok(not _bar._panes_host.isVisibleTo(_bar), 'previews start collapsed')
 _bar._detail_btn.setChecked(True)
 ok(_bar._panes_host.isVisibleTo(_bar), 'the Detail toggle reveals the preview panes')
 _bar._detail_btn.setChecked(False)
@@ -200,7 +200,7 @@ for _theme in ('dark', 'light'):
 
 # --- hide_review tears down cleanly -------------------------------------------
 _bar.hide_review()
-ok(not _bar.isVisibleTo(_win) or True, 'hide_review hides the bar and stops the timer')
+ok(not _bar.isVisibleTo(_win), 'hide_review hides the bar')
 ok(not _bar._countdown.isActive(), 'the countdown timer is stopped on hide')
 
 APP.processEvents()

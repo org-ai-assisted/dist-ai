@@ -12,7 +12,6 @@ Constructed with a QObject parent under the offscreen Qt platform; run() (which
 needs a live Tor control port via stem) is not exercised here.
 """
 
-import re
 import unittest
 
 import tcp_testlib
@@ -65,13 +64,6 @@ class TagPhaseTest(unittest.TestCase):
         typo that would silently never fire."""
         known = set(TOR_BOOTSTRAP_TAGS) | set(TOR_LEGACY_BOOTSTRAP_TAGS)
         self.assertEqual(set(self.thread.tag_phase) - known, set())
-
-    def test_summary_fallback_regex(self):
-        """The fallback for an unknown tag extracts Tor's SUMMARY text."""
-        status = 'NOTICE BOOTSTRAP PROGRESS=25 TAG=brand_new_tag SUMMARY="Doing a thing"'
-        match = re.search(r'SUMMARY="([^"]*)"', status)
-        self.assertIsNotNone(match)
-        self.assertEqual(match.group(1), "Doing a thing")
 
 
 class ThreadLifetimeTest(unittest.TestCase):

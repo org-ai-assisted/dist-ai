@@ -852,8 +852,10 @@ finally:
 # --- _find_tab matcher forms + a real single-instance handoff -----------------
 from PyQt6.QtCore import QThread                                 # noqa: E402
 ok(win._find_tab(12345) is None, '_find_tab: a non-string matcher -> None')
-ok(win._find_tab('one') is not None or win._find_tab('one') is None,
-   '_find_tab: a bare title is matched by title')
+ok(win._find_tab(win.tabs.tabText(0)) is not None,
+   '_find_tab: an existing bare title is matched by title')
+ok(win._find_tab('no-such-tab-title') is None,
+   '_find_tab: an absent title matches nothing')
 
 # NOTE: the client is a background THREAD. Two alternatives were measured and
 # are WORSE, so do not 'simplify' this back to either: a subprocess client
