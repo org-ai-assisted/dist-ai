@@ -83,6 +83,7 @@ core_suites=(
    secure-terminal-tests
    secure-terminal-tests-coverage
    sdwdate-gui-tests
+   sdwdate-onion-tester-tests
    sdwdate-tests
    setup-wizard-dist-tests
    stcat-family-tests
@@ -339,6 +340,11 @@ wire() {
       sdwdate-gui)
          wire_env=( "PYTHONPATH=$( pkg_dir sdwdate-gui )/usr/lib/python3/dist-packages" )
          ;;
+      sdwdate-onion-tester)
+         ## Drives sdwdate's ci/ wrappers against mocks: no Tor, no network, no
+         ## helper-scripts, no python deps -- only the checkout itself.
+         wire_env=( "SDWDATE_REPO=$( pkg_dir sdwdate )" )
+         ;;
       sdwdate)
          ## The suite imports sdwdate.sdwdate for real from SDWDATE_REPO. That
          ## import pulls guimessages and sanitize_string from helper-scripts,
@@ -555,7 +561,7 @@ suite_component() {
       sdwdate-gui)
          printf '%s' 'sdwdate-gui'
          ;;
-      sdwdate)
+      sdwdate|sdwdate-onion-tester)
          printf '%s' 'sdwdate'
          ;;
       setup-wizard-dist)

@@ -1,0 +1,73 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Offline regression suite for sdwdate's onion-tester CI wrappers (ci/*.sh in
+## the sdwdate checkout): the retry/backoff policy of onion-tester-run.sh, and
+## the scratch-file handling of onion-tester-verify-evidence.sh. Everything is
+## mocked -- no Tor, no network, no wayback, no privleap, no root -- so it runs
+## in the dist-ai container in seconds.
+##
+## Deliberately NOT covering the live Tor probe, onion-tester-configure-tor.sh
+## or onion-tester-wait-bootstrap.sh: those need sudo, systemd and a real tor on
+## the runner, which this container does not have. They stay in sdwdate's own
+## workflow.
+##
+## The subject is resolved by each payload:
+##   * SDWDATE_REPO=/path/to/sdwdate -> that checkout's ci/ scripts, OR
+##   * ONION_TESTER_RUN_BIN / VERIFY_EVIDENCE_BIN -> a specific file.
+## An absent subject exits 77 (SKIP), never FAIL.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/sdwdate-onion-tester-tests" ]; then
+   tests_dir="${script_dir}/../share/sdwdate-onion-tester-tests"
+else
+   tests_dir='/usr/share/sdwdate-onion-tester-tests'
+fi
+
+## Run every *_test.sh. Exit 77 from a payload means SKIP (subject absent) and is
+## not a failure; any other non-zero is a failure.
+shopt -s nullglob
+failures=0
+skipped=0
+ran=0
+for test_script in "${tests_dir}"/*_test.sh; do
+   ran=$(( ran + 1 ))
+   printf '\n########## %s ##########\n' "$(basename -- "${test_script}")"
+   rc=0
+   bash -- "${test_script}" "$@" || rc=$?
+   if [ "${rc}" -eq 77 ]; then
+      printf '########## SKIPPED: %s ##########\n' "$(basename -- "${test_script}")"
+      skipped=$(( skipped + 1 ))
+   elif [ "${rc}" -ne 0 ]; then
+      printf '########## FAILED (%s): %s ##########\n' "${rc}" "$(basename -- "${test_script}")"
+      failures=$(( failures + 1 ))
+   fi
+done
+
+if [ "${ran}" -eq 0 ]; then
+   printf 'ERROR: no *_test.sh found in %s\n' "${tests_dir}" >&2
+   exit 1
+fi
+if [ "${failures}" -ne 0 ]; then
+   printf '\nFAILED: %s sdwdate onion-tester test script(s) failed\n' "${failures}" >&2
+   exit 1
+fi
+## Every payload skipped means the SUITE skipped. Exit 77 so the runner reports
+## SKIP rather than a false-green PASS on an environment where nothing ran.
+if [ "${skipped}" -eq "${ran}" ]; then
+   printf '\nSKIP: all %s sdwdate onion-tester test script(s) skipped\n' "${skipped}"
+   exit 77
+fi
+printf '\nOK: all sdwdate onion-tester test scripts passed\n'

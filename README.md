@@ -21,6 +21,7 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 | `mediawiki-dom-snapshot` | shipping | `usr/share/mediawiki-dom-snapshot/` |
 | `sdwdate-gui-tests`      | shipping | `usr/share/sdwdate-gui-tests/` |
 | `sdwdate-tests`          | shipping | `usr/share/sdwdate-tests/` |
+| `sdwdate-onion-tester-tests` | shipping | `usr/share/sdwdate-onion-tester-tests/` |
 | `onion-time-pre-script-tests` | shipping | `usr/share/onion-time-pre-script-tests/` |
 | `onion-grater-tests`     | shipping | `usr/share/onion-grater-tests/` |
 | `privleap-tests`         | shipping | `usr/share/privleap-tests/` |
