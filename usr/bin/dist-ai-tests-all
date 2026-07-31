@@ -385,7 +385,10 @@ wire() {
          wire_args=( "${dmf}/usr/bin/dm-virtualbox-update-local-and-wiki-links" )
          ;;
       dm-help-steps)
-         wire_env=( "UMOUNT_KILL_SH=$( pkg_dir derivative-maker )/help-steps/umount_kill.sh" )
+         wire_env=(
+            "UMOUNT_KILL_SH=$( pkg_dir derivative-maker )/help-steps/umount_kill.sh"
+            "UNMOUNT_TREE=$( pkg_dir derivative-maker )/help-steps/unmount-tree"
+         )
          ;;
       dm-reprepro-tracking)
          wire_env=( "DM_SOURCE_DIR=$( pkg_dir derivative-maker )" )

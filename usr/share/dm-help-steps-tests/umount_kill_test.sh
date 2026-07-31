@@ -57,17 +57,12 @@ set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
 
-test_failures=0
+test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=./help_steps_test_lib.bsh
+source "${test_dir}/help_steps_test_lib.bsh"
+
 test_pid_list=()
-
-pass() {
-   printf '%s\n' "PASS: $*"
-}
-
-fail() {
-   printf '%s\n' "FAIL: $*" >&2
-   test_failures=$((test_failures + 1))
-}
 
 ## Kill every process this test started (victims that were supposed to die
 ## are already gone; bystanders and leftovers from a failed assertion are
@@ -82,27 +77,6 @@ cleanup_test_processes() {
 }
 
 trap cleanup_test_processes EXIT
-
-locate_subject() {
-   local test_dir checkout
-
-   if [ -n "${UMOUNT_KILL_SH:-}" ]; then
-      printf '%s\n' "${UMOUNT_KILL_SH}"
-      return 0
-   fi
-   test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-   if [ -r "${test_dir}/umount_kill.sh" ]; then
-      printf '%s\n' "${test_dir}/umount_kill.sh"
-      return 0
-   fi
-   checkout="${HOME}/derivative-maker/help-steps/umount_kill.sh"
-   if [ -r "${checkout}" ]; then
-      printf '%s\n' "${checkout}"
-      return 0
-   fi
-   printf '%s\n' "ERROR: umount_kill.sh not found (set UMOUNT_KILL_SH)." >&2
-   exit 1
-}
 
 ## Copy a dynamically linked binary plus every library 'ldd' resolves for it
 ## into the tree, preserving absolute paths, so 'chroot <tree> <binary>'
@@ -152,84 +126,28 @@ require_dead() {
 }
 
 ## Regression test for the unmount block: umount_kill.sh must unmount mounts
-## STRICTLY UNDER the tree but NEVER the tree's own root mount. unchroot-raw calls
-## it on '$CHROOT_FOLDER' (the ext4 root that mount-raw placed) between
-## install-packages chroot cycles purely to reap lingering processes; unmounting
-## that root drops the next chroot into an empty directory ("chroot: failed to run
-## command 'mkdir': No such file or directory"). A prior version matched 'base'
-## itself and did exactly that.
-##
-## Mounting needs CAP_SYS_ADMIN, which an unprivileged CI container's root lacks
-## (a plain 'mount' there fails "permission denied"). A user+mount namespace grants
-## tmpfs-mount capability without real privilege, so the whole check -- mount, run
-## the reaper, assert -- runs inside 'unshare --user --map-root-user --mount' and
-## behaves identically in the privileged sandbox and an unprivileged container. The
-## namespace's private mounts vanish with it, so there is nothing to clean up on the
-## host. Only a kernel with user namespaces disabled cannot run it; that is reported
-## (not failed), and the privileged sandbox still exercises the assertion.
+## STRICTLY UNDER the tree but NEVER the tree's own root mount.
 test_mount_preservation() {
-   local subject subject_copy inner_script mount_output unshare_rc
+   local subject mount_output
 
    subject="$1"
 
-   if ! unshare --user --map-root-user true 2>/dev/null; then
-      printf '%s\n' "NOTE: user namespaces unavailable; mount-preservation check not run here." >&2
+   ## These two assertions are the only coverage of the unmount block; losing
+   ## them silently would leave the suite green over untested code.
+   if ! mount_namespace_available; then
+      fail "no mount capability available; the mount-preservation assertions cannot run"
       return 0
    fi
 
-   ## Inside '--map-root-user' the subject's real path may be untraversable (the
-   ## checkout lives under a directory whose owner is unmapped in the namespace, so
-   ## bash reads it EPERM). Copy it to a world-readable temp, which IS reachable in
-   ## the namespace, and run that copy.
-   subject_copy="$(mktemp)"
-   cp -- "${subject}" "${subject_copy}"
-   chmod 0755 -- "${subject_copy}"
+   mount_output="$(run_in_mount_namespace \
+      "${test_dir}/umount_kill_test_inner.sh" "${subject}")" || true
 
-   inner_script="$(mktemp)"
-   cat > "${inner_script}" <<'INNER'
-set -o errexit
-set -o nounset
-set -o pipefail
-subject_path="$1"
-mount_tree="$(mktemp --directory)"
-## A tmpfs AT the tree root, plus a genuine child mount created inside it.
-mount --types tmpfs tmpfs-umk-base "${mount_tree}"
-mkdir --parents -- "${mount_tree}/sub"
-mount --types tmpfs tmpfs-umk-sub "${mount_tree}/sub"
-bash "${subject_path}" "${mount_tree}" >/dev/null 2>&1 || true
-## Read the state the way the tool under test does. 'mountpoint' misreports a
-## '--lazy'-detached mount as still mounted; findmnt (which reads mountinfo, as
-## umount_kill.sh does) reflects the lazy detach immediately. Exact whole-line
-## match so 'base' does not accidentally match 'base/sub'.
-mounts_now="$(findmnt --raw --noheadings --output TARGET)"
-if printf '%s\n' "${mounts_now}" | grep --quiet --line-regexp --fixed-strings -- "${mount_tree}/sub"; then
-   printf '%s\n' "RESULT sub NOT_UNMOUNTED"
-else
-   printf '%s\n' "RESULT sub UNMOUNTED"
-fi
-if printf '%s\n' "${mounts_now}" | grep --quiet --line-regexp --fixed-strings -- "${mount_tree}"; then
-   printf '%s\n' "RESULT base PRESERVED"
-else
-   printf '%s\n' "RESULT base UNMOUNTED"
-fi
-INNER
-
-   unshare_rc=0
-   mount_output="$(unshare --user --map-root-user --mount --propagation private \
-      bash "${inner_script}" "${subject_copy}" 2>&1)" || unshare_rc="$?"
-   rm --force -- "${inner_script}" "${subject_copy}"
-
-   if printf '%s\n' "${mount_output}" | grep --quiet --fixed-strings -- "RESULT sub UNMOUNTED"; then
-      pass "submount under tree was unmounted"
-   else
-      fail "submount under tree was NOT unmounted (unshare rc ${unshare_rc}): ${mount_output}"
-   fi
-
-   if printf '%s\n' "${mount_output}" | grep --quiet --fixed-strings -- "RESULT base PRESERVED"; then
-      pass "tree's own root mount preserved (not unmounted)"
-   else
-      fail "tree's own root mount was WRONGLY unmounted (regression) (unshare rc ${unshare_rc}): ${mount_output}"
-   fi
+   require_result "${mount_output}" "RESULT inner DONE" \
+      "mount-namespace fixture ran to completion"
+   require_result "${mount_output}" "RESULT sub UNMOUNTED" \
+      "submount under tree was unmounted"
+   require_result "${mount_output}" "RESULT base PRESERVED" \
+      "tree's own root mount preserved (not unmounted)"
 }
 
 main() {
@@ -246,7 +164,7 @@ main() {
       exit 1
    fi
 
-   subject="$(locate_subject)"
+   subject="$(locate_help_step umount_kill.sh "${UMOUNT_KILL_SH:-}" "${test_dir}")"
    printf '%s\n' "INFO: subject: ${subject}"
 
    ## python3 (mmap-only victim) is assumed present; a genuine absence must fail
