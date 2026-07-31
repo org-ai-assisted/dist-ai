@@ -1,0 +1,161 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Publish a GitHub Pages site: run the consistency suite, then push.
+##
+## The sites used to deploy from a workflow that ran website-tests first
+## and published only on green. That workflow cannot survive the CI gate
+## -- an <owner>.github.io site publishes only from a repo in that
+## owner's org, so a copy gated to org-ai-assisted could never deploy --
+## so Pages moved to a legacy branch build (publish whatever is on the
+## branch) and the test gate moved HERE.
+##
+## That trade is only safe if this script is actually the way the site
+## gets pushed. Hence the pre-push hook in each site repo, which runs the
+## same check: a plain `git push` must not be able to publish an untested
+## site.
+##
+## website-tests exits 77 (SKIP) when it resolves no site checkout at
+## all. That is treated as FAILURE here, deliberately: a skip means
+## nothing was verified, and publishing on the strength of a suite that
+## never ran is exactly the false green this gate exists to prevent.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+me="${0##*/}"
+
+die() {
+   local code
+   code="$1"
+   shift
+   printf '%s: ERROR: %s\n' "${me}" "$*" >&2
+   exit "${code}"
+}
+
+usage() {
+   printf '%s\n' "${me} -- test a Pages site, then publish it.
+
+  ${me} [--repo DIR] [--remote NAME] [--check-only]
+
+  --repo DIR      site checkout (default: current directory)
+  --remote NAME   git remote to push to (default: origin)
+  --check-only    run the suite, do not push
+  -h, --help      show this help
+
+Exit 0 = tested and pushed (or tested, with --check-only).
+Non-zero = nothing was published."
+}
+
+repo_dir=''
+remote='origin'
+check_only='false'
+
+while [ "$#" -gt 0 ]; do
+   case "$1" in
+      '--repo')
+         [ "$#" -ge 2 ] || die 64 '--repo requires a value'
+         repo_dir="$2"
+         shift 2
+         ;;
+      '--repo='*)
+         repo_dir="${1#*=}"
+         shift
+         ;;
+      '--remote')
+         [ "$#" -ge 2 ] || die 64 '--remote requires a value'
+         remote="$2"
+         shift 2
+         ;;
+      '--remote='*)
+         remote="${1#*=}"
+         shift
+         ;;
+      '--check-only')
+         check_only='true'
+         shift
+         ;;
+      '-h'|'--help')
+         usage
+         exit 0
+         ;;
+      *)
+         die 64 "unknown argument '$1' (see --help)"
+         ;;
+   esac
+done
+
+[ -n "${repo_dir}" ] || repo_dir="$PWD"
+repo_dir="$(readlink --canonicalize -- "${repo_dir}")" \
+   || die 66 "cannot resolve --repo path"
+[ -d "${repo_dir}" ] || die 66 "not a directory: '${repo_dir}'"
+
+git -C "${repo_dir}" rev-parse --is-inside-work-tree > /dev/null 2>&1 \
+   || die 66 "not a git repository: '${repo_dir}'"
+
+## Resolve website-tests from the same tree as this script when running
+## from a checkout, else the installed path.
+self_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+website_tests="${self_dir}/website-tests"
+if [ ! -x "${website_tests}" ]; then
+   website_tests='/usr/bin/website-tests'
+fi
+[ -x "${website_tests}" ] \
+   || die 69 "website-tests not found (looked in '${self_dir}' and /usr/bin)"
+
+## Point the suite at THIS checkout. The variable name is per-site;
+## an unrecognized directory is refused rather than silently testing
+## whatever else happens to be under ~/private-sources.
+site_name="$(basename -- "${repo_dir}")"
+case "${site_name}" in
+   'output-lies.github.io')
+      site_var='OUTPUT_LIES_REPO'
+      ;;
+   'secure-terminal.github.io')
+      site_var='SECURE_TERMINAL_SITE_REPO'
+      ;;
+   'org-ai-assisted.github.io')
+      site_var='ORG_AI_ASSISTED_REPO'
+      ;;
+   'git-diffs-lie')
+      site_var='GIT_DIFFS_LIE_REPO'
+      ;;
+   *)
+      die 64 "'${site_name}' is not a known Pages site checkout (expected one of: output-lies.github.io, secure-terminal.github.io, org-ai-assisted.github.io, git-diffs-lie)"
+      ;;
+esac
+
+printf '%s: testing %s\n' "${me}" "${repo_dir}" >&2
+
+test_rc=0
+env "${site_var}=${repo_dir}" "${website_tests}" || test_rc="$?"
+
+if [ "${test_rc}" -eq 77 ]; then
+   die 1 "website-tests SKIPPED (exit 77): it resolved no site checkout, so nothing was verified. Refusing to publish."
+fi
+if [ "${test_rc}" -ne 0 ]; then
+   die 1 "website-tests failed (exit ${test_rc}). Refusing to publish."
+fi
+
+printf '%s: suite green\n' "${me}" >&2
+
+if [ "${check_only}" = 'true' ]; then
+   printf '%s: --check-only, not pushing\n' "${me}" >&2
+   exit 0
+fi
+
+branch="$(git -C "${repo_dir}" rev-parse --abbrev-ref HEAD)"
+[ "${branch}" != 'HEAD' ] \
+   || die 1 'detached HEAD: check out the publishing branch first'
+
+printf '%s: pushing %s -> %s/%s\n' "${me}" "${branch}" "${remote}" "${branch}" >&2
+git -C "${repo_dir}" push -- "${remote}" "${branch}"
+printf '%s: published\n' "${me}" >&2
