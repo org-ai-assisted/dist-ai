@@ -390,6 +390,7 @@ wire() {
             "UNMOUNT_TREE=$( pkg_dir derivative-maker )/help-steps/unmount-tree"
             "DM_HELP_STEPS_PRE=$( pkg_dir derivative-maker )/help-steps/pre"
             "DM_UPLOAD_IMAGES=$( pkg_dir derivative-maker )/packages/kicksecure/developer-meta-files/usr/bin/dm-upload-images"
+            "DM_ASSERT_SUBMODULE=$( pkg_dir derivative-maker )/ci/assert-submodule-not-stale"
          )
          ;;
       dm-reprepro-tracking)
