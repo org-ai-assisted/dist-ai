@@ -47,11 +47,14 @@ allowed_unregistered=(
 ##   website          the Pages sites live in their own repos
 ##   iso-boot         the QMP parser is dist-ai's own payload
 ##   dm-image-boot    self-contained; takes a built image as an argument
+##   dm-gitlink-upstream-check  self-contained; offline --self-test of dist-ai's
+##                    own tool, no component checkout under test
 allowed_no_component=(
    'web-analyzer'
    'website'
    'iso-boot'
    'dm-image-boot'
+   'dm-gitlink-upstream-check'
 )
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"

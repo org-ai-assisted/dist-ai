@@ -65,6 +65,7 @@ core_suites=(
    private-ai-config-tests-coverage
    dist-ai-registry-tests
    github-org-tools-tests
+   dm-gitlink-upstream-check-tests
    dm-grub-smbios-tests
    dm-help-steps-tests
    dm-reprepro-tracking-tests
@@ -450,6 +451,14 @@ wire() {
          ## usr/share/dm-image-boot-tests and takes the image to boot as an
          ## argument, so there is no checkout to point at. With no --disk/--iso
          ## it exits 77, which is the expected verdict in container CI.
+         wire_env=()
+         wire_args=()
+         ;;
+      dm-gitlink-upstream-check)
+         ## Self-contained: the suite runs the checker's offline '--self-test'
+         ## (stubbed resolver), so there is no checkout to point at and no
+         ## network. The real check runs against a derivative-maker tree in that
+         ## repo's own push-to-master CI, not here.
          wire_env=()
          wire_args=()
          ;;

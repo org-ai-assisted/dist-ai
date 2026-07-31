@@ -1,0 +1,326 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Fail if any derivative-maker parent submodule gitlink points to a commit NOT
+## reachable on the submodule's canonical upstream (Kicksecure / Whonix) master.
+##
+##   dm-gitlink-upstream-check [--repo-root DIR] [--self-test]
+##
+## Why this lives as a CI check, not a git hook: a fork-only gitlink bump
+## reaches derivative-maker master through a GitHub PR MERGE -- a server-side
+## merge that runs NO local git hook, so the branch / no-gitlink-on-master
+## guards (private-ai-config claude/hooks/git_policy.py, enforced at pre-commit
+## and PreToolUse) never see it. A push-to-master CI check is the only
+## enforcement point in that path. It also does not check upstream-resolvability,
+## which those hooks never did at all.
+##
+## Resolvable == the pinned SHA is an ancestor of, or equal to, the upstream
+## master tip (GitHub compare status 'behind' / 'identical'). An ahead /
+## diverged / absent SHA is fork-only and fails. A newer-than-master upstream
+## commit (rare; races a just-merged pin) shows 'ahead' and is reported, not
+## silently passed.
+##
+## derivative-maker's CI checks out dist-ai beside its workspace and calls this
+## as dist-ai/usr/bin/dm-gitlink-upstream-check --repo-root . (mirrors dm-boot-
+## test). '--self-test' is the offline regression test for the evaluator.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+## The sweep still reports EVERY unresolvable/erroring submodule in one run, not
+## just the first: each resolver catches its own failure and returns 0 with an
+## 'error' verdict, so errexit never fires mid-loop. The only intentional
+## non-zero (a not-resolvable verdict, EOF on a read) is captured explicitly.
+
+## Upstream branch every Kicksecure / Whonix submodule uses as its default.
+readonly UPSTREAM_BASE='master'
+
+## The derivative-maker checkout whose gitlinks are checked. Overridden by
+## --repo-root; defaults to the current directory.
+repo_root='.'
+
+## Indirection point so the offline self-test can substitute a stub resolver for
+## the network one without touching the evaluator.
+STATUS_FN='upstream_status'
+
+
+usage() {
+  printf '%s\n' \
+    'Usage: dm-gitlink-upstream-check [--repo-root DIR] [--self-test]' \
+    '' \
+    '  --repo-root DIR  derivative-maker checkout to inspect (default: .)' \
+    '  --self-test      run the offline evaluator regression test and exit' \
+    '' \
+    'Exit: 0 all gitlinks reachable on upstream master; 1 at least one is not;' \
+    '2 usage / setup error.'
+}
+
+
+github_get() {
+  ## Fetch a GitHub REST path, printing the raw JSON body (even on 4xx, so the
+  ## caller can classify a 404 as a definitive 'not in this repo'). Prefers the
+  ## private-ai-config 'git-api' wrapper when present (local runs, token off
+  ## argv); falls back to curl with a bearer token in CI.
+  local path="$1"
+  if command -v git-api >/dev/null 2>&1; then
+    git-api GET "${path}"
+    return
+  fi
+  local token="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+  local -a auth=()
+  if [ -n "${token}" ]; then
+    auth=(--header "Authorization: Bearer ${token}")
+  fi
+  curl --silent --show-error \
+       --header 'Accept: application/vnd.github+json' \
+       --header 'X-GitHub-Api-Version: 2022-11-28' \
+       "${auth[@]}" \
+       "https://api.github.com${path}"
+}
+
+
+classify_compare() {
+  ## Map a compare-endpoint JSON body to one token on stdout:
+  ##   resolvable      status behind / identical (ancestor-or-equal of master)
+  ##   not-resolvable  status ahead / diverged, OR the head SHA is not in the
+  ##                   upstream repo at all ('message': 'Not Found')
+  ##   error           anything else (rate limit, transient 5xx, bad JSON) --
+  ##                   never fails the check, only warns, to avoid a flaky red
+  python3 -c '
+import json
+import sys
+
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print("error")
+    sys.exit(0)
+
+status = data.get("status")
+if status in ("behind", "identical"):
+    print("resolvable")
+elif status in ("ahead", "diverged"):
+    print("not-resolvable")
+elif data.get("message") == "Not Found":
+    print("not-resolvable")
+else:
+    print("error")
+'
+}
+
+
+upstream_status() {
+  ## echo resolvable|not-resolvable|error for owner/repo@sha vs upstream master.
+  local owner="$1" repo="$2" sha="$3"
+  local json
+  if ! json="$(github_get "/repos/${owner}/${repo}/compare/${UPSTREAM_BASE}...${sha}")"; then
+    printf 'error\n'
+    return 0
+  fi
+  printf '%s' "${json}" | classify_compare
+}
+
+
+enumerate_gitlinks() {
+  ## Emit "path<TAB>owner<TAB>repo<TAB>sha" for every submodule pinned in the
+  ## repo_root checkout's HEAD, deriving the canonical upstream owner/repo from
+  ## the .gitmodules URL.
+  local modules="${repo_root}/.gitmodules"
+  local key name path url tail owner_repo owner repo
+  local mode otype sha rest
+  while read -r key path; do
+    name="${key#submodule.}"
+    name="${name%.path}"
+    url="$(git config --file "${modules}" --get "submodule.${name}.url")" || continue
+    ## Strip scheme+host (https://github.com/, git@github.com:, ssh://...), then
+    ## the trailing '.git', leaving 'Owner/repo'. Pure bash, no sed/awk.
+    tail="${url##*github.com}"
+    tail="${tail#[:/]}"
+    owner_repo="${tail%.git}"
+    owner="${owner_repo%%/*}"
+    repo="${owner_repo##*/}"
+    if [ -z "${owner}" ] || [ -z "${repo}" ]; then
+      continue
+    fi
+    ## Pinned SHA for this path in HEAD. Empty (or non-gitlink) -> skip: a
+    ## .gitmodules entry with no committed gitlink is not a pin to check. Guard
+    ## the read against EOF so errexit does not abort on an absent path.
+    mode=''
+    read -r mode otype sha rest \
+      < <(git -C "${repo_root}" ls-tree HEAD -- "${path}") || true
+    if [ "${mode}" != '160000' ] || [ -z "${sha}" ]; then
+      continue
+    fi
+    printf '%s\t%s\t%s\t%s\n' "${path}" "${owner}" "${repo}" "${sha}"
+  done < <(git config --file "${modules}" --get-regexp '^submodule\..*\.path$')
+}
+
+
+evaluate() {
+  ## Read "path<TAB>owner<TAB>repo<TAB>sha" lines on stdin, classify each via
+  ## ${STATUS_FN}, print a report, and return 1 iff any pin is not-resolvable.
+  ## Errors (network / rate limit) are reported but do NOT fail the check.
+  local path owner repo sha verdict
+  local -a bad=() errored=()
+  local count=0
+  while IFS=$'\t' read -r path owner repo sha; do
+    if [ -z "${path}" ]; then
+      continue
+    fi
+    count=$(( count + 1 ))
+    verdict="$("${STATUS_FN}" "${owner}" "${repo}" "${sha}")"
+    case "${verdict}" in
+      resolvable)
+        :
+        ;;
+      not-resolvable)
+        bad+=("${path} @ ${sha} -- upstream ${owner}/${repo}")
+        ;;
+      *)
+        errored+=("${path} @ ${sha} -- upstream ${owner}/${repo} (${verdict})")
+        ;;
+    esac
+  done
+
+  local entry
+  if (( ${#errored[@]} > 0 )); then
+    printf '::warning::%s\n' 'could not verify some gitlinks (network / rate limit); not failing on these' >&2
+    for entry in "${errored[@]}"; do
+      printf '  [warn] %s\n' "${entry}" >&2
+    done
+  fi
+
+  if (( ${#bad[@]} > 0 )); then
+    printf '::error::%s\n' 'submodule gitlink(s) NOT reachable on upstream master (fork-only pin on master):' >&2
+    for entry in "${bad[@]}"; do
+      printf '  [FAIL] %s\n' "${entry}" >&2
+    done
+    printf '%s\n' \
+      'A gitlink on master must point to a commit that exists on the submodule' \
+      "upstream's master. Bump the pin to an upstream-merged commit, or land the" \
+      'submodule work upstream first. See the git / derivative-maker skills.' >&2
+    return 1
+  fi
+
+  printf 'PASSED: %d gitlink(s) reachable on upstream master.\n' "${count}"
+  return 0
+}
+
+
+self_test() {
+  ## Offline regression test for evaluate(): stub the resolver by SHA prefix
+  ## (bad* -> not-resolvable, err* -> error, else resolvable) and assert the
+  ## exit code AND the reported list in both directions. FAILS on a tree without
+  ## this tool, which is the point of the regression.
+  STATUS_FN='_self_test_status'
+  _self_test_status() {
+    case "$3" in
+      bad*)
+        printf 'not-resolvable\n'
+        ;;
+      err*)
+        printf 'error\n'
+        ;;
+      *)
+        printf 'resolvable\n'
+        ;;
+    esac
+  }
+
+  local rc fails=0 out
+
+  ## Case A: all resolvable -> exit 0.
+  rc=0
+  printf 'sub-a\tKicksecure\ta\tgood1\nsub-b\tKicksecure\tb\tgood2\n' \
+    | evaluate >/dev/null 2>&1 || rc=$?
+  if (( rc != 0 )); then
+    printf 'self-test FAIL: all-resolvable set returned %d, expected 0\n' "${rc}" >&2
+    fails=$(( fails + 1 ))
+  fi
+
+  ## Case B: one fork-only pin -> exit 1, and it is named.
+  rc=0
+  out="$(printf 'sub-a\tKicksecure\ta\tgood1\nsub-b\tWhonix\tb\tbad9\n' \
+    | evaluate 2>&1)" || rc=$?
+  if (( rc != 1 )); then
+    printf 'self-test FAIL: fork-only set returned %d, expected 1\n' "${rc}" >&2
+    fails=$(( fails + 1 ))
+  fi
+  case "${out}" in
+    *'sub-b @ bad9'*)
+      :
+      ;;
+    *)
+      printf 'self-test FAIL: fork-only pin not reported in output\n' >&2
+      fails=$(( fails + 1 ))
+      ;;
+  esac
+
+  ## Case C: an errored pin only (no fork-only) -> exit 0 (errors do not fail).
+  rc=0
+  printf 'sub-a\tKicksecure\ta\tgood1\nsub-c\tKicksecure\tc\terr7\n' \
+    | evaluate >/dev/null 2>&1 || rc=$?
+  if (( rc != 0 )); then
+    printf 'self-test FAIL: error-only set returned %d, expected 0\n' "${rc}" >&2
+    fails=$(( fails + 1 ))
+  fi
+
+  if (( fails > 0 )); then
+    printf 'self-test: %d assertion(s) FAILED\n' "${fails}" >&2
+    return 1
+  fi
+  printf 'self-test: PASSED (3 cases)\n'
+  return 0
+}
+
+
+main() {
+  local self_test_mode='false'
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --repo-root)
+        if [ "$#" -lt 2 ]; then
+          printf '::error::--repo-root needs an argument\n' >&2
+          return 2
+        fi
+        repo_root="$2"
+        shift 2
+        ;;
+      --self-test)
+        self_test_mode='true'
+        shift
+        ;;
+      --help|-h)
+        usage
+        return 0
+        ;;
+      *)
+        printf '::error::unknown argument: %s\n' "$1" >&2
+        usage >&2
+        return 2
+        ;;
+    esac
+  done
+
+  if [ "${self_test_mode}" = 'true' ]; then
+    self_test
+    return
+  fi
+
+  if [ ! -f "${repo_root}/.gitmodules" ]; then
+    printf '::error::no .gitmodules under --repo-root %s (not a derivative-maker checkout?)\n' \
+      "${repo_root}" >&2
+    return 2
+  fi
+
+  enumerate_gitlinks | evaluate
+}
+
+main "$@"
