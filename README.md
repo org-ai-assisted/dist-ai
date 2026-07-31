@@ -71,19 +71,17 @@ live here:
 - **Reusable-invoked** (`dist-ai-tests-ci-config.sh`,
   `dist-ai-tests-ci-hs-runtime.sh`) -- called by
   developer-meta-files' `reusable-dist-ai-tests.yml`.
-- **Component-invoked** (`onion-tester-*`) -- called by a component repo's own
-  `local-*` workflow, which checks this repo out (`path: .github/dist-ai`) and
-  runs them by path. The scripts stay CWD-relative, so they operate on the
-  component checkout while living here.
+Component-invoked CI tools live in `usr/bin/` with the rest of the executables,
+not here -- `debian/dist-ai.install` ships `usr/*`, so they are packaged, whereas
+`ci/` is not. `usr/bin/onion-tester-*` are called by sdwdate's own `local-*`
+workflow, which checks this repo out (`path: .github/dist-ai`) and runs them by
+path; they stay CWD-relative, so they operate on the component checkout while
+living here.
 
-Two consequences worth knowing before adding to the second kind:
-
-- `debian/dist-ai.install` ships `etc/*` and `usr/*` only, so `ci/` is NOT
-  packaged. Anything here is reachable from a CHECKOUT only.
-- A component's `paths:` filter cannot see files in this repo, so a change here
-  does not trigger that component's workflow. The regression suite for these
-  scripts (`sdwdate-onion-tester-tests`) is mapped to the component so it still
-  gates that component's PRs.
+One consequence worth knowing: a component's `paths:` filter cannot see files in
+this repo, so a change here does not trigger that component's workflow. The
+regression suite for those tools (`sdwdate-onion-tester-tests`) is mapped to the
+component so it still gates that component's PRs.
 
 ## dist-ai-tests-all
 

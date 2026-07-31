@@ -16,11 +16,11 @@ set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
 
-## The subject is dist-ai's own ci/onion-tester-run.sh. DIST_AI_CI_DIR is wired
-## by dist-ai-tests-all from the runner's own location; ci/ is not shipped in the
-## Debian package, so from an installed dist-ai this resolves to nothing and the
-## suite skips rather than silently testing something else.
-runner="${ONION_TESTER_RUN_BIN:-${DIST_AI_CI_DIR:-}/onion-tester-run.sh}"
+## The subject is dist-ai's own usr/bin/onion-tester-run. Default resolves as a
+## sibling of this suite's entrypoint: usr/share/<suite>/../../bin, which is
+## usr/bin from a checkout and /usr/bin when installed. Overridable for tests.
+payload_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+runner="${ONION_TESTER_RUN_BIN:-${payload_dir}/../../bin/onion-tester-run}"
 work_dir=""
 passed=0
 failed=0
@@ -333,7 +333,7 @@ case_warmup_disabled() {
 main() {
    if [ ! -x "${runner}" ]; then
       printf '%s\n' \
-         "SKIP: onion-tester-run.sh not found at '${runner}' -- run from a dist-ai checkout, or set ONION_TESTER_RUN_BIN" >&2
+         "SKIP: onion-tester-run not found at '${runner}' -- set ONION_TESTER_RUN_BIN" >&2
       exit 77
    fi
    local total
