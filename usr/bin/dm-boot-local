@@ -14,6 +14,8 @@
 ## Needs the temp-claude sandbox provisioned (it runs dm-boot-test there, which
 ## installs qemu/OVMF); a broken apt state in the sandbox surfaces as rc=100.
 
+[ -v TMP ] || TMP=/tmp
+
 set -o errexit
 set -o nounset
 set -o pipefail
@@ -35,13 +37,35 @@ usage() {
 
 while [ "$#" -gt 0 ]; do
    case "$1" in
-      --image)      image="$2"; shift 2 ;;
-      --run)        run_id="$2"; shift 2 ;;
-      --legs)       legs="$2"; shift 2 ;;
-      --from-ci)    from_ci='true'; shift ;;
-      --type)       image_type="$2"; shift 2 ;;
-      --help|-h)    usage; exit 0 ;;
-      *)            printf '%s\n' "unknown option: $1" >&2; usage >&2; exit 64 ;;
+      --image)
+         image="$2"
+         shift 2
+         ;;
+      --run)
+         run_id="$2"
+         shift 2
+         ;;
+      --legs)
+         legs="$2"
+         shift 2
+         ;;
+      --from-ci)
+         from_ci='true'
+         shift
+         ;;
+      --type)
+         image_type="$2"
+         shift 2
+         ;;
+      --help|-h)
+         usage
+         exit 0
+         ;;
+      *)
+         printf '%s\n' "unknown option: $1" >&2
+         usage >&2
+         exit 64
+         ;;
    esac
 done
 
@@ -81,11 +105,11 @@ else:
    [ -n "${art_id}" ] || { printf '%s\n' "run ${run_id} has no unexpired '${image_type}' image artifact (a re-run wipes them)" >&2; exit 1; }
 
    printf '%s\n' "fetching artifact ${art_id} from run ${run_id} ..." >&2
-   git-api GET "/repos/${REPO}/actions/artifacts/${art_id}/zip" -L -o "${TMPDIR:-/tmp}/dm-image.zip"
-   safe-rm -rf -- "${TMPDIR:-/tmp}/dm-image"
-   mkdir --parents -- "${TMPDIR:-/tmp}/dm-image"
-   unzip -q -d "${TMPDIR:-/tmp}/dm-image" -- "${TMPDIR:-/tmp}/dm-image.zip"
-   image="$(find "${TMPDIR:-/tmp}/dm-image" -type f \( -name '*.qcow2*' -o -name '*.iso' \) -print -quit)"
+   git-api GET "/repos/${REPO}/actions/artifacts/${art_id}/zip" -L -o "${TMP}/dm-image.zip"
+   safe-rm -rf -- "${TMP}/dm-image"
+   mkdir --parents -- "${TMP}/dm-image"
+   unzip -q -d "${TMP}/dm-image" -- "${TMP}/dm-image.zip"
+   image="$(find "${TMP}/dm-image" -type f \( -name '*.qcow2*' -o -name '*.iso' \) -print -quit)"
    [ -n "${image}" ] || { printf '%s\n' "artifact contained no image" >&2; exit 1; }
 }
 
@@ -98,7 +122,10 @@ printf '%s\n' "image: ${image}" >&2
 ## One staging dir holds dist-ai (the harness) plus the image, so a single
 ## 'sandbox-run --dir' carries everything the boot needs.
 stage="$(mktemp --directory)"
-trap 'safe-rm -rf -- "${stage}"' EXIT
+cleanup() {
+   safe-rm -rf -- "${stage}"
+}
+trap cleanup EXIT
 cp -a -- "${DIST_AI}" "${stage}/dist-ai"
 cp -- "${image}" "${stage}/"
 image_base="$(basename -- "${image}")"
