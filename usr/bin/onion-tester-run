@@ -94,15 +94,23 @@ declare -rA rc_meaning=(
    [124]="out of budget"
 )
 
-## Build "(0 all up, 1 URL offline, 3 NEWNYM failed, 124 out of budget)" from the
-## map above, codes in numeric order.
+## Decode ${1} (the exit code being reported) for the CI step summary. The map
+## covers codes the wrapper deliberately sets (3, 124) or propagates from the
+## probe (0, 1). ANY other status is a run failure the wrapper still publishes
+## verbatim -- `timeout` could not exec the probe (126/127), reaped it
+## (128+signal), or the probe died abnormally -- so it gets an explicit
+## "unexpected" gloss rather than a bare number the reader cannot decode.
 rc_legend() {
-   local code out='(' sep=''
+   local rc="${1}" code known='' sep=''
    while read -r code; do
-      out+="${sep}${code} ${rc_meaning[${code}]}"
+      known+="${sep}${code} ${rc_meaning[${code}]}"
       sep=', '
    done < <(printf '%s\n' "${!rc_meaning[@]}" | sort --numeric-sort)
-   printf '%s)\n' "${out}"
+   if [ -v "rc_meaning[${rc}]" ]; then
+      printf '(%s)\n' "${known}"
+   else
+      printf 'unexpected - the probe could not be run, was killed, or exited abnormally (known: %s)\n' "${known}"
+   fi
 }
 
 main() {
@@ -212,7 +220,7 @@ main() {
       {
          printf 'attempts=%s\n' "${final_attempt}"
          printf 'final_rc=%s\n' "${rc}"
-         printf 'final_rc_legend=%s\n' "$(rc_legend)"
+         printf 'final_rc_legend=%s\n' "$(rc_legend "${rc}")"
       } >> "${GITHUB_OUTPUT}"
    fi
 
