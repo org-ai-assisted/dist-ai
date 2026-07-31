@@ -68,6 +68,7 @@ core_tests=(
    'tests/claude-session-on-mobile-test.sh'
    'tests/string-parsing-stress-test.sh'
    'tests/sandbox-transfer-perms-test.sh'
+   'tests/sandbox-confine-profile-test.sh'
    'claude/hooks/tests/test-cowbuilder-guard.py'
    'claude/hooks/tests/test-git-command-parse.py'
    'claude/hooks/tests/test-git-policy-config.py'
