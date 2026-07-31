@@ -164,6 +164,9 @@ nl='\n'
 ## the gate would flag in THIS tracked file.
 sp=' '
 del='rm'
+## A literal ':' as a value, so the R-130 assertion bodies do not embed a
+## token the gate would flag in THIS tracked file.
+colon=':'
 ## A real tab, assembled at run time so no literal trailing tab lives in this
 ## tracked file (which the gate's own trailing-whitespace check would flag).
 tab="$(printf '\t')"
@@ -251,6 +254,18 @@ expect_rule "R-051" "trap ${dq}\${handler} \${signal}${dq} ERR"  "absent"
 ## Still FLAGGED with a braced-variable leading token: a LITERAL argument
 ## means real command logic, not a dispatch to a named handler.
 expect_rule "R-051" "trap ${dq}\${cmd} -f x${dq} EXIT"           "present"
+
+## R-130: ':' used as a COMMAND is FLAGGED -- bare, and the truncate idiom
+## ('`: > f`', '`if ! : > f`'). The parameter-default idiom and every colon
+## that is not in command position are SPARED.
+expect_rule "R-130" "${colon}"                                    "present"
+expect_rule "R-130" "${colon} > ${dq}\${report}${dq}"            "present"
+expect_rule "R-130" "if ! ${colon} > ${dq}\${report}${dq}; then" "present"
+expect_rule "R-130" "${colon} ${dq}\${var:=default}${dq}"        "absent"
+expect_rule "R-130" "value=${dq}\${var:-fallback}${dq}"          "absent"
+expect_rule "R-130" "PATH=${dq}/a::/b${dq}"                      "absent"
+expect_rule "R-130" "url=${dq}https://example.com${dq}"          "absent"
+expect_rule "R-130" "## ${colon} > file in a comment"            "absent"
 
 ## R-090: 'command -v' in code is FLAGGED; in a comment it is SPARED.
 expect_rule "R-090" "if ! command${sp}-v foo"                    "present"
@@ -457,7 +472,7 @@ git -C "${py_repo}" commit --quiet --no-verify --allow-empty --message base
 py_base="$(git -C "${py_repo}" rev-parse HEAD)"
 printf 'x = 1\n' > "${py_repo}/noshebang.py"
 printf '#!/usr/bin/python3 -Bsu\ny = 2\n' > "${py_repo}/withshebang.py"
-: > "${py_repo}/__init__.py"
+true > "${py_repo}/__init__.py"
 chmod 0755 -- "${py_repo}/withshebang.py"
 git -C "${py_repo}" add --all
 git -C "${py_repo}" commit --quiet --no-verify --message py

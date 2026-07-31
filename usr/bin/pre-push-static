@@ -1155,12 +1155,23 @@ check_R120_rm() {
 check_R130_null_command() {
    local hits
 
-   ## Bare `:` on its own line. Deliberately narrow: does NOT
-   ## catch `: "${var:=default}"` (legit parameter-default idiom
-   ## used in usr/libexec/.../github-org-lib.bsh) nor `: > file`
-   ## (truncate) -- those have trailing content past the colon.
-   hits="$(grep --with-filename --line-number --extended-regexp '^[[:space:]]*:[[:space:]]*$' -- "${@}" 2>/dev/null || true)"
-   emit_hits "R-130 bare ':' no-op" "${hits}"
+   ## Two forms of ':' used as a COMMAND:
+   ##   1. bare ':' on its own line
+   ##   2. ':' as the truncate idiom ('`: > file`', '`if ! : > file`') --
+   ##      opaque under xtrace, and 'printf '%s' "" | tee -- file' both
+   ##      truncates and reports an unwritable path.
+   ## Still SPARES `: "${var:=default}"` (the parameter-default idiom, used in
+   ## usr/libexec/.../github-org-lib.bsh): that has a word after the colon,
+   ## not a redirection. The colon must sit in COMMAND position -- line start
+   ## or after one of ';&|!{' or whitespace -- so '${var:-x}', 'a::b' in a
+   ## PATH, a 'case' pattern and 'https://' are all unmatched. Comment lines
+   ## are excluded, as in the other rules.
+   local bare_hits redirect_hits
+
+   bare_hits="$(grep --with-filename --line-number --extended-regexp '^[[:space:]]*:[[:space:]]*$' -- "${@}" 2>/dev/null || true)"
+   redirect_hits="$(grep --with-filename --line-number --extended-regexp '^([^#]*[[:space:];&|!{]|[[:space:]]*):[[:space:]]*[<>]' -- "${@}" 2>/dev/null || true)"
+   hits="$(printf '%s\n%s' "${bare_hits}" "${redirect_hits}" | grep --invert-match --extended-regexp '^$' || true)"
+   emit_hits "R-130 ':' used as a command" "${hits}"
 }
 
 check_R034_echo() {

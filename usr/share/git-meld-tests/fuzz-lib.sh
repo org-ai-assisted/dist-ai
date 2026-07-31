@@ -84,7 +84,7 @@ while [ "${i}" -lt "${iters}" ]; do
    mapfile -t changed < <(git diff --no-ext-diff --name-only HEAD~1 HEAD)
    [ "${#changed[@]}" -eq 0 ] && continue
 
-   : > "${meld_log}"
+   true > "${meld_log}"
    seen="$( "${GIT_MELD}" HEAD~1 HEAD 2>&1 || true )$(cat "${meld_log}")"
 
    for path in "${changed[@]}"; do

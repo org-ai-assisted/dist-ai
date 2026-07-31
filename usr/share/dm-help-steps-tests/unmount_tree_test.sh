@@ -115,6 +115,10 @@ main() {
       "shadowed over-mount cleared (re-read until stable)"
    require_result "${run_output}" "RESULT hostile REMAINING=0" \
       "backslash and newline in mount point names handled"
+   require_result "${run_output}" "RESULT peer OUTSIDE_SURVIVED" \
+      "shared-mount peer outside the tree not disturbed"
+   require_result "${run_output}" "RESULT sharedtree REMAINING=0" \
+      "shared mount under the tree still swept"
 
    if [ ! "${run_rc}" = "0" ]; then
       printf '%s\n' "NOTE: mount-namespace run exited ${run_rc}." >&2

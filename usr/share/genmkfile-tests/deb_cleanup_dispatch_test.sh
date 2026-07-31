@@ -134,7 +134,7 @@ run_target() {
    ## sweeps *.changes out of DISTDIR, so a setup-time fixture would be
    ## gone by the time this target runs.
    if [ "${target}" = "reprepro-add" ]; then
-      : > "${dist_dir}/gmf-test-pkg_1.0-1_${arch}.changes"
+      true > "${dist_dir}/gmf-test-pkg_1.0-1_${arch}.changes"
    fi
    ## make_*_tolower=false: genmkfile otherwise lowercases the WHOLE
    ## tarball path (DISTDIR included), then realpath's it for existence.

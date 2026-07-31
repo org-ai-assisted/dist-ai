@@ -175,7 +175,7 @@ order_dir="${scratch_base}/order-bin"
 order_tree="${scratch_base}/ordertree"
 order_log="${scratch_base}/umount-order.log"
 mkdir --parents -- "${order_dir}" "${order_tree}"
-: > "${order_log}"
+true > "${order_log}"
 
 ## Logs the target (the last argument) and then performs the real unmount.
 printf '%s\n' \
@@ -244,5 +244,33 @@ mount --types tmpfs tmpfs-ut-nl "${hostile_newline}"
 
 bash "${subject_path}" "${hostile_base}" >/dev/null 2>&1 || true
 printf '%s\n' "RESULT hostile REMAINING=$(count_mounts_under "${hostile_base}")"
+
+## ---- phase 8: shared-mount propagation does not reach outside the tree ----
+
+## umount(2) NOTES warn that unmounting one peer of a SHARED mount can unmount
+## its peers, and the sweep falls back to '--lazy'. That would make the
+## strictly-below guarantee hold for what is targeted but not for what the
+## kernel then does to peers elsewhere. Pin that it does not happen, so the
+## sweep never needs a 'mount --make-rprivate' that would itself mutate the
+## caller's mount tree.
+shared_base="${scratch_base}/sharedbase"
+shared_src="${shared_base}/src"
+shared_tree="${shared_base}/tree"
+shared_outside="${shared_base}/outside"
+mkdir --parents -- "${shared_src}" "${shared_tree}/inside" "${shared_outside}"
+mount --types tmpfs tmpfs-ut-shared "${shared_src}"
+## Shared, then bound both under the tree and outside it: one peer group.
+mount --make-shared "${shared_src}"
+mount --bind "${shared_src}" "${shared_tree}/inside"
+mount --bind "${shared_src}" "${shared_outside}"
+
+bash "${subject_path}" "${shared_tree}" >/dev/null 2>&1 || true
+
+if is_mounted_at "${shared_outside}"; then
+   printf '%s\n' "RESULT peer OUTSIDE_SURVIVED"
+else
+   printf '%s\n' "RESULT peer OUTSIDE_UNMOUNTED"
+fi
+printf '%s\n' "RESULT sharedtree REMAINING=$(count_mounts_under "${shared_tree}")"
 
 printf '%s\n' "RESULT inner DONE"
