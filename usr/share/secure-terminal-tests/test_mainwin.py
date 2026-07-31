@@ -233,8 +233,8 @@ ok(_hc and _hc['argv'] == ['myhook', '--flag'] and _hc['timeout'] == 10,
 # BLOCKS in the event loop with nobody to answer, and the suite hangs forever
 # (observed: 1h25m in poll, single-threaded, right here). close_tab asks it via
 # _confirm_running_close whenever a tab reports a foreground program, which a
-# freshly spawned shell can do transiently -- so the auto-answer has to be armed
-# BEFORE the first close, not 26 lines later where it used to be.
+# freshly spawned shell can do transiently -- so the auto-answer must be armed
+# before the first close_tab call in this module runs.
 from PyQt6.QtWidgets import QMessageBox as _QMB_early           # noqa: E402
 
 _QMB_early.question = staticmethod(
@@ -651,6 +651,8 @@ for _ in range(60):
             _rok = True
             break
     except OSError:
+        ## /proc/<pid>/cwd is not readable until the forked child has chdir'd
+        ## and exec'd; poll on, the loop's own tries budget is the timeout.
         pass
     pump(10)
 ok(_rok, '_restore_tab spawns the restored tab in its saved cwd')

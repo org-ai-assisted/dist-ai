@@ -73,12 +73,20 @@ def do_boot(image, smbios_extra):
         try:
             os.unlink(path)
         except OSError:
+            ## Stale state from a previous run is optional, not required: a
+            ## missing (or already-removed) socket/log is the normal first-boot
+            ## case, so nothing here is an error worth reporting.
             pass
-    logf = open(BOOTLOG, "wb")
-    proc = subprocess.Popen(argv, stdout=logf, stderr=subprocess.STDOUT,
-                            stdin=subprocess.DEVNULL, start_new_session=True)
-    open(PIDFILE, "w").write(str(proc.pid))
-    open(IMAGEFILE, "w").write(image)
+    ## Popen duplicates the descriptor into the child before it returns, so the
+    ## parent's handle can be closed right here: the boot log stays open for the
+    ## qemu child's whole lifetime through ITS copy of the fd.
+    with open(BOOTLOG, "wb") as logf:
+        proc = subprocess.Popen(argv, stdout=logf, stderr=subprocess.STDOUT,
+                                stdin=subprocess.DEVNULL, start_new_session=True)
+    with open(PIDFILE, "w") as pidf:
+        pidf.write(str(proc.pid))
+    with open(IMAGEFILE, "w") as imagef:
+        imagef.write(image)
     print("booted qemu pid %d; serial socket %s (image %s)"
           % (proc.pid, SOCK, image))
 
@@ -113,6 +121,8 @@ def drain(sock, seconds):
             if data:
                 buf.append(data)
         except socket.timeout:
+            ## A quiet console is the normal case while draining for N seconds:
+            ## keep polling until the deadline instead of ending the read early.
             pass
         except OSError:
             break
@@ -143,7 +153,8 @@ def do_poke(command):
 
 def do_kill():
     try:
-        pid = int(open(PIDFILE).read())
+        with open(PIDFILE) as pidf:
+            pid = int(pidf.read())
         os.kill(pid, 9)
         print("killed", pid)
     except (OSError, ValueError) as exc:

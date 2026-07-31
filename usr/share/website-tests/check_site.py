@@ -440,7 +440,8 @@ def check_nav(root, failures):
     # "Plugins" link) -- a whole bug class the other checks never looked at.
     navs = {}
     for page in html_files(root):
-        nav = _header_nav(open(page, encoding='utf-8').read())
+        with open(page, encoding='utf-8') as handle:
+            nav = _header_nav(handle.read())
         if nav is not None:
             navs[os.path.relpath(page, root)] = nav
     if len(set(navs.values())) <= 1:

@@ -109,6 +109,9 @@ class Qmp:
             if self.sock is not None:
                 self.sock.close()
         except OSError:
+            ## Teardown only: qemu may already be gone, which closes the QMP
+            ## socket from its end. The watcher's verdict is already decided, so
+            ## a failure to close cleanly must not change the exit code.
             pass
 
 
@@ -216,6 +219,9 @@ def main():
         try:
             qmp.command("system_powerdown")
         except (OSError, ConnectionError, ValueError):
+            ## Best-effort courtesy shutdown after the verdict is already fixed:
+            ## a guest that ignores ACPI, or a qemu that already exited, must not
+            ## turn a decided "up"/"timeout" result into a harness error.
             pass
     finally:
         qmp.close()

@@ -18,7 +18,7 @@ import sys
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 try:
-    from PyQt6.QtWidgets import QApplication, QWidget, QPlainTextEdit
+    from PyQt6.QtWidgets import QApplication, QWidget
     from PyQt6.QtGui import QKeyEvent
     from PyQt6.QtCore import Qt
     from secure_terminal.review import ReviewBar

@@ -48,11 +48,16 @@ fi
 ## the SKIP paths below -- a test that only runs on a build host with a fresh
 ## image to hand is a test that effectively never runs. A failure here is a real
 ## FAIL, not a SKIP.
-if type -P pytest >/dev/null 2>&1; then
-   pytest -q "${tests_dir}/test_dm_image_test.py"
-else
-   printf '%s\n' "dm-image-boot-tests: pytest not installed; skipping the image-free regression tests." >&2
+##
+## python3-pytest is a hard dependency of this package, so an absent pytest is a
+## broken install, not a reason to run nothing and still report green. Run it
+## through `python3 -m` (the dist-ai convention) so a missing /usr/bin/pytest
+## entry point cannot silence the module that IS installed.
+if ! python3 -c 'import pytest' 2>/dev/null; then
+   printf '%s\n' "dm-image-boot-tests: python3-pytest is missing; the image-free regression tests cannot run. FAIL." >&2
+   exit 1
 fi
+python3 -m pytest -q "${tests_dir}/test_dm_image_test.py"
 
 ## SKIP when no image is supplied: this suite only runs on a build host that has
 ## a freshly built image to hand, never in the generic trixie-slim CI container.

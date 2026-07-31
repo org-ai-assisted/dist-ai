@@ -1139,6 +1139,8 @@ def _wait_cwd(pid, target, tries=60):
             if os.path.realpath(os.readlink('/proc/%d/cwd' % pid)) == _rt:
                 return True
         except OSError:
+            ## /proc/<pid>/cwd is not readable until the forked child has
+            ## chdir'd and exec'd; poll on, `tries` is the timeout.
             pass
         pump(10)                       # let the forked child chdir + exec
     return False
@@ -5225,6 +5227,8 @@ def _fake_std(_pos=None):
     try:
         _fa.triggered.disconnect()
     except TypeError:
+        ## Nothing was connected, which is exactly the state this fixture wants:
+        ## the reroute's own disconnect() then hits its defensive TypeError path.
         pass
     return _fm
 

@@ -196,9 +196,10 @@ def _corpus_seeds():
     here = os.path.dirname(os.path.abspath(__file__))
     spec = importlib.util.spec_from_file_location(
         'st_corpus_seeds', os.path.join(here, 'test_corpus.py'))
-    module = importlib.util.module_from_spec(spec)
-    # test_corpus runs its assertions at import time; only the fixture FUNCTIONS are
-    # wanted, so exec just enough by reading the source and pulling the three defs.
+    # The spec is used only for spec.origin (the resolved path): test_corpus runs
+    # its assertions at import time and only the fixture FUNCTIONS are wanted, so
+    # the module is never instantiated -- the source is read and the three defs
+    # exec'd on their own.
     with open(spec.origin, encoding='utf-8') as handle:
         source = handle.read()
     namespace = {}

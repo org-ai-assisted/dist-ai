@@ -134,7 +134,8 @@ def spec_surface_corpus_size(tests_dir):
     asserts this exact length), so the figure is the real, test-enforced count."""
     path = os.path.join(tests_dir, 'test_widget.py')
     try:
-        src = open(path, encoding='ascii').read()
+        with open(path, encoding='ascii') as handle:
+            src = handle.read()
     except OSError:
         return None
     for node in ast.parse(src).body:

@@ -93,6 +93,10 @@ def reap_group():
         try:
             os.kill(pid, signal.SIGKILL)
         except OSError:
+            ## Last-resort reap: the group kill above already failed, and the
+            ## direct kill failing too means the child is gone (or unreachable).
+            ## Either way the waitpid loop below is the thing that decides, so
+            ## there is nothing left for this handler to do.
             pass
 
 

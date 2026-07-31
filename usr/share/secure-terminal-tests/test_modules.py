@@ -201,7 +201,6 @@ eq(session.load()[0].get('cwd'), '/known/work/dir',
    'session: a tab cwd is saved and restored in the index')
 session.save([{'name': 'one', 'text': 'hello\nworld'},
               {'name': 'two', 'text': 'second'}])   # restore the two-tab fixture
-_loaded = session.load()
 
 # shrinking the session drops the stale log of the removed tab
 session.save([{'name': 'only', 'text': 'x'}])

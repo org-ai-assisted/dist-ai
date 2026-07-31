@@ -159,10 +159,12 @@ eq(_rc, 0, 'a command that exits cleanly returns 0')
 # escape to survive. Only the read loop's carry makes it whole, so drive it here
 # rather than grepping cli.py for the call: the child sleeps between writes so the
 # wrapper genuinely takes two os.read()s.
+## One shell script, split over three source lines for width; the explicit +
+## keeps it one argument and marks the joining as deliberate, not a lost comma.
 _split_o, _split_rc = run_in_pty(['--', 'sh', '-c',
     'printf "\\033[3"; sleep 0.4; '
-    'printf "1mSAFE\\033]0;t"; sleep 0.4; '
-    'printf "\\rroot@host# \\007END\\n"'], settle=2.0)
+    + 'printf "1mSAFE\\033]0;t"; sleep 0.4; '
+    + 'printf "\\rroot@host# \\007END\\n"'], settle=2.0)
 ok(b'SAFEEND' in _split_o,
    'the visible text of a split-up stream survives the carry intact')
 ok(b'31m' not in _split_o,
@@ -192,9 +194,11 @@ ok(b'P=cat,' in _oenv, 'the cli wrapper child sees PAGER=cat by default')
 # && chains the steps so any failure short-circuits and propagates its exit code
 # (a ; chain would return only awk's status and mask an earlier failure); each
 # result is labelled so an assertion cannot be satisfied by a stray digit elsewhere
+## One shell pipeline, split over two source lines for width; the explicit +
+## keeps it one argument and marks the joining as deliberate, not a lost comma.
 _prog_o, _prog_rc = run_in_pty(['--', 'sh', '-c',
     'printf "beta\\nalpha\\n" | sort | sed "s/^/> /" | grep -c "^> " '
-    '| sed "s/^/count=/" && ls -1 /bin/sh && printf "awk=" && awk "BEGIN{print 6*7}"'])
+    + '| sed "s/^/count=/" && ls -1 /bin/sh && printf "awk=" && awk "BEGIN{print 6*7}"'])
 ok(b'\x1b' not in _prog_o,
    'real line tools (sort/sed/grep/ls/awk) leave no escape byte in the output')
 ok(b'count=2' in _prog_o,

@@ -815,7 +815,7 @@ for name in ('terminal.py', 'main.py', 'review.py'):
 import ast                                          # noqa: E402
 
 repo_root = pkg_dir
-for _level in range(5):                             # .../usr/lib/python3/dist-packages/secure_terminal
+for _ in range(5):                                  # .../usr/lib/python3/dist-packages/secure_terminal
     repo_root = os.path.dirname(repo_root)
 fuzz_dir = os.path.join(repo_root, 'fuzz')
 
