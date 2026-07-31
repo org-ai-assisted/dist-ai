@@ -35,11 +35,12 @@ shopt -s shift_verbose
 
 ## Gated tools: 'basename:minimum-percent'. Measured floors, set below the
 ## observed value only by the rounding margin.
-## Measured 2026-07-29 in the sandbox against the core lane:
-##   container-guard 78.26 / qube-ctl 23.03 / sandbox-view 20.19 / sandbox-run 17.78
+## Measured 2026-07-31 in the sandbox against the core lane (deterministic
+## across repeat runs):
+##   container-guard 78.26 / sandbox-run 43.68 / qube-ctl 22.78 / sandbox-view 20.19
 ## Floors sit just under those so normal churn does not flap the gate.
 gated=(
-   'sandbox-run:15'
+   'sandbox-run:40'
    'qube-ctl:20'
    'container-guard:75'
    'sandbox-view:18'
