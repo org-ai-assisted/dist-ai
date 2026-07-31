@@ -22,18 +22,49 @@ from PyQt5.QtCore import QObject
 from tor_control_panel import tor_bootstrap
 
 
+## Every bootstrap tag Tor can emit, transcribed from its own boot_to_str_tab:
+## https://gitlab.torproject.org/tpo/core/tor/-/blob/main/src/feature/control/control_bootstrap.c
+## The panel must map all of them, else the user sees an "Unknown Bootstrap TAG"
+## placeholder instead of progress. "undef" is excluded: it is Tor's internal
+## pre-bootstrap sentinel, never reported as a phase.
+TOR_BOOTSTRAP_TAGS = (
+    "starting",
+    "conn_pt", "conn_done_pt", "conn_proxy", "conn_done_proxy",
+    "conn", "conn_done", "handshake", "handshake_done",
+    "onehop_create", "requesting_status", "loading_status", "loading_keys",
+    "requesting_descriptors", "loading_descriptors", "enough_dirinfo",
+    "ap_conn_pt", "ap_conn_done_pt", "ap_conn_proxy", "ap_conn_done_proxy",
+    "ap_conn", "ap_conn_done", "ap_handshake", "ap_handshake_done",
+    "circuit_create", "done",
+)
+
+## Tags Tor emitted before 0.4.0.x. Still mapped so an old Tor keeps working.
+TOR_LEGACY_BOOTSTRAP_TAGS = (
+    "conn_dir", "handshake_dir", "conn_or", "handshake_or",
+)
+
+
 class TagPhaseTest(unittest.TestCase):
     def setUp(self):
         self._parent = QObject()
         self.thread = tor_bootstrap.TorBootstrap(self._parent)
 
-    def test_proxy_and_pt_tags_are_mapped(self):
-        """Modern proxy / pluggable-transport bootstrap tags must be recognised
-        so they no longer trigger the 'Unknown Bootstrap TAG' fallback."""
-        for tag in ("conn_proxy", "conn_done_proxy", "ap_conn_proxy",
-                    "ap_conn_done_proxy", "conn_pt", "ap_conn_pt", "handshake_done"):
+    def test_every_tor_bootstrap_tag_is_mapped(self):
+        """The full Tor bootstrap tag table must be covered, so no real phase
+        falls through to the 'Unknown Bootstrap TAG' message."""
+        for tag in TOR_BOOTSTRAP_TAGS + TOR_LEGACY_BOOTSTRAP_TAGS:
             with self.subTest(tag=tag):
                 self.assertIn(tag, self.thread.tag_phase)
+                self.assertTrue(
+                    self.thread.tag_phase[tag].strip(),
+                    f"{tag} maps to an empty phase description",
+                )
+
+    def test_no_unknown_tags_are_mapped(self):
+        """Guard against the reverse drift: a mapped tag Tor never emits is a
+        typo that would silently never fire."""
+        known = set(TOR_BOOTSTRAP_TAGS) | set(TOR_LEGACY_BOOTSTRAP_TAGS)
+        self.assertEqual(set(self.thread.tag_phase) - known, set())
 
     def test_summary_fallback_regex(self):
         """The fallback for an unknown tag extracts Tor's SUMMARY text."""
