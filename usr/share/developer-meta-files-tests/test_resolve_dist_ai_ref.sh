@@ -59,8 +59,30 @@ trap cleanup EXIT
 
 work="$(mktemp --directory)"
 
+## A LOCAL repository standing in for dist-ai, carrying one companion
+## branch named 'ai'.
+##
+## Hermetic on purpose. An earlier version probed github.com for a branch
+## that really existed -- and merging the PR which carried that branch
+## auto-deleted it, so the test silently started measuring the fallback
+## path and failed. An assertion whose subject can be deleted by
+## unrelated work is not an assertion. This also takes the network out of
+## every case.
+companion_remote="${work}/fake-dist-ai"
+git -c init.defaultBranch=master init --quiet --bare -- "${companion_remote}"
+seed="${work}/seed"
+git -c init.defaultBranch=master init --quiet -- "${seed}"
+printf '%s\n' 'seed' > "${seed}/file"
+git -C "${seed}" -c core.hooksPath=/dev/null add --all
+git -C "${seed}" \
+   -c core.hooksPath=/dev/null \
+   -c user.name='test' -c user.email='test@example.com' \
+   commit --quiet --message 'seed'
+git -C "${seed}" -c core.hooksPath=/dev/null branch ai
+git -C "${seed}" push --quiet -- "${companion_remote}" master ai
+
 ## Run the resolver and echo the ref it chose.
-## Args: repo, sha, branch, dist-ai-repo.
+## Args: repo, sha, branch, dist-ai-repo, [remote-url].
 resolve() {
    local out
    out="${work}/github_output"
@@ -68,6 +90,7 @@ resolve() {
    printf '%s' '' > "${out}"
    GITHUB_OUTPUT="${out}" \
    THIS_REPO="$1" THIS_SHA="$2" BRANCH_NAME="$3" DIST_AI_REPO="$4" \
+   DIST_AI_REMOTE_URL="${5:-}" \
       "${resolver}" 2>/dev/null || true
    sed -n 's/^ref=//p' "${out}"
 }
@@ -92,22 +115,21 @@ check() {
 check 'dist-ai resolves to its own commit' 'deadbeefcafe' \
    'org-ai-assisted/dist-ai' 'deadbeefcafe' 'ai' 'org-ai-assisted/dist-ai'
 
-## The companion hit. developer-meta-files is used as the probe target
-## because it reliably carries a branch named 'ai'; using a branch that
-## does NOT exist here would make this case indistinguishable from the
-## fallback below, which is the whole point of asserting it.
+## The companion hit, against the local stand-in above. A branch that
+## does NOT exist would make this indistinguishable from the fallback,
+## which is the whole point of asserting it.
 check 'an existing companion branch wins' 'ai' \
-   'org-ai-assisted/some-consumer' 'sha1' 'ai' 'org-ai-assisted/developer-meta-files'
+   'org-ai-assisted/some-consumer' 'sha1' 'ai' 'org-ai-assisted/dist-ai' "${companion_remote}"
 
 ## Every fallback path. All must reach 'master' rather than fail.
 check 'no companion branch falls back' 'master' \
-   'org-ai-assisted/some-consumer' 'sha1' 'no-such-branch-9f3a2b' 'org-ai-assisted/dist-ai'
+   'org-ai-assisted/some-consumer' 'sha1' 'no-such-branch-9f3a2b' 'org-ai-assisted/dist-ai' "${companion_remote}"
 check 'an empty branch name falls back' 'master' \
    'org-ai-assisted/some-consumer' 'sha1' '' 'org-ai-assisted/dist-ai'
 check 'the branch literally named master falls back' 'master' \
    'org-ai-assisted/some-consumer' 'sha1' 'master' 'org-ai-assisted/dist-ai'
-check 'an unreachable repo falls back, does not fail' 'master' \
-   'org-ai-assisted/some-consumer' 'sha1' 'ai' 'org-ai-assisted/no-such-repo-9f3a2b'
+check 'an unreachable remote falls back, does not fail' 'master' \
+   'org-ai-assisted/some-consumer' 'sha1' 'ai' 'org-ai-assisted/dist-ai' "${work}/no-such-repo-9f3a2b"
 
 printf '\n%s pass, %s fail, 0 skip\n' "${pass_count}" "${fail_count}"
 [ "${fail_count}" -eq 0 ]
