@@ -97,8 +97,19 @@ required=(
    ## (alphabetical: derivative-maker < helper-scripts < some-fork),
    ## then the summary line.
    '    yes: org-ai-assisted/derivative-maker'
+   ## Both Dependabot REST switches are COMPARED per repo on MIRROR,
+   ## against the same POLICY_REPO_DEPENDABOT_FIXES_EXPECT_ON literal
+   ## --apply enforces. Interleaved with the presence lines, one pair
+   ## per repo, so they also pin where in the walk they are emitted.
+   ## test_dm_audit_drift.sh covers the failing direction for both.
+   '  dependabot security updates org-ai-assisted/derivative-maker: matches policy'
+   '  dependabot alerts org-ai-assisted/derivative-maker: matches policy (enabled)'
    '    no:  org-ai-assisted/helper-scripts'
+   '  dependabot security updates org-ai-assisted/helper-scripts: matches policy'
+   '  dependabot alerts org-ai-assisted/helper-scripts: matches policy (enabled)'
    '    no:  org-ai-assisted/some-fork'
+   '  dependabot security updates org-ai-assisted/some-fork: matches policy'
+   '  dependabot alerts org-ai-assisted/some-fork: matches policy (enabled)'
    '    summary: have=1, missing=2'
 )
 

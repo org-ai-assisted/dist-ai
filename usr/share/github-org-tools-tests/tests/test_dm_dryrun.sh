@@ -64,26 +64,28 @@ required=(
    'skip: org-ai-assisted: PAT policy toggles must be set via UI'
    'skip: org-ai-assisted: GitHub App / OAuth App policies must be set via UI'
 
-   ## MIRROR (org-ai-assisted) actively disables Dependabot/PVR
-   ## via DELETE on the same three endpoints. Per-repo branch +
-   ## tag rulesets apply on both SOURCE and MIRROR.
-   'DRY-RUN: org-ai-assisted/derivative-maker: disable Dependabot security updates (mirror)'
-   'DRY-RUN: org-ai-assisted/derivative-maker: disable Dependabot alerts (mirror)'
+   ## MIRROR (org-ai-assisted) is the one kind that ENABLES Dependabot;
+   ## PVR stays actively disabled via DELETE. Per-repo branch + tag
+   ## rulesets apply on both SOURCE and MIRROR.
+   'DRY-RUN: org-ai-assisted/derivative-maker: enable Dependabot alerts'
+   'DRY-RUN: org-ai-assisted/derivative-maker: enable Dependabot security updates'
    'DRY-RUN: org-ai-assisted/derivative-maker: disable private vulnerability reporting'
    'DRY-RUN: org-ai-assisted/derivative-maker: upsert ruleset dm-github-org-policy default-branch protection'
    'DRY-RUN: org-ai-assisted/derivative-maker: upsert ruleset dm-github-org-policy tag protection'
 )
 
-## MIRROR must NOT see SOURCE-only enable DRY-RUN lines. PVR enable
-## also must never appear; see agents/github-policy-org-kinds.md for the policy.
+## MIRROR must NOT see the non-mirror Dependabot disable DRY-RUN lines
+## or the delete-the-config skip line. PVR enable must never appear;
+## see agents/github-policy-org-kinds.md for the policy.
 mirror_dep_pvr_forbidden=(
-   'DRY-RUN: org-ai-assisted/derivative-maker: enable Dependabot alerts'
-   'DRY-RUN: org-ai-assisted/derivative-maker: enable Dependabot security updates'
+   'DRY-RUN: org-ai-assisted/derivative-maker: disable Dependabot alerts'
+   'DRY-RUN: org-ai-assisted/derivative-maker: disable Dependabot security updates'
    'DRY-RUN: org-ai-assisted/derivative-maker: enable private vulnerability reporting'
+   'Dependabot version updates: delete .github/dependabot.yml'
 )
 for needle in "${mirror_dep_pvr_forbidden[@]}"; do
    if grep --quiet --fixed-strings -- "${needle}" <<< "${out}"; then
-      printf '%s\n' "FAIL: SOURCE-only line leaked to MIRROR: ${needle}" >&2
+      printf '%s\n' "FAIL: non-mirror line leaked to MIRROR: ${needle}" >&2
       fail=1
    fi
 done

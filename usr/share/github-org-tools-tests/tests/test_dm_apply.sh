@@ -101,16 +101,14 @@ required=(
    'ok: org-ai-assisted/helper-scripts: MIRROR: wiki/issues/projects/discussions off, secret-scan on'
    'ok: org-ai-assisted/some-fork: MIRROR: wiki/issues/projects/discussions off, secret-scan on'
 
-   ## Dependabot/PVR are actively disabled on MIRROR (org-ai-
-   ## assisted) so every --apply reconciles state. Order:
-   ## security-fixes BEFORE alerts. The fixture returns 422 on
-   ## DELETE /automated-security-fixes to exercise the
-   ## EXTRA_OK_STATUS=422 path; the policy treats 422 as success
-   ## (idempotent steady state) so the line still emits 'ok:'.
-   ## Asserted on one repo (the disable trio is symmetric across
+   ## Dependabot is ENABLED on MIRROR (org-ai-assisted) - the one org
+   ## where GitHub Actions runs, so the one place a bump PR can carry a
+   ## verdict. Order: alerts BEFORE security fixes, which the PUT
+   ## requires. PVR stays actively disabled here, so every --apply
+   ## reconciles it. Asserted on one repo (the trio is symmetric across
    ## all three).
-   'ok: org-ai-assisted/derivative-maker: disable Dependabot security updates (mirror)'
-   'ok: org-ai-assisted/derivative-maker: disable Dependabot alerts (mirror)'
+   'ok: org-ai-assisted/derivative-maker: enable Dependabot alerts'
+   'ok: org-ai-assisted/derivative-maker: enable Dependabot security updates'
    'ok: org-ai-assisted/derivative-maker: disable private vulnerability reporting'
 
    ## Free-plan-compatible per-repo branch + tag rulesets. Applied
@@ -121,18 +119,19 @@ required=(
    "org-ai-assisted/derivative-maker: create ruleset 'dm-github-org-policy tag protection'"
 )
 
-## MIRROR must NOT see SOURCE-only enable ok lines (those would
-## indicate apply_repo_policy fell through the kind=='source'
-## branch incorrectly). PVR enable also must never appear; see
-## agents/github-policy-org-kinds.md for the policy.
+## MIRROR must NOT see the Dependabot active-disable lines (those would
+## indicate apply_repo_policy fell through the non-mirror branch
+## incorrectly), nor the delete-the-config skip line. PVR enable must
+## never appear anywhere; see agents/github-policy-org-kinds.md.
 mirror_dep_pvr_forbidden=(
-   'ok: org-ai-assisted/derivative-maker: enable Dependabot alerts'
-   'ok: org-ai-assisted/derivative-maker: enable Dependabot security updates'
+   'ok: org-ai-assisted/derivative-maker: disable Dependabot alerts'
+   'ok: org-ai-assisted/derivative-maker: disable Dependabot security updates'
    'ok: org-ai-assisted/derivative-maker: enable private vulnerability reporting'
+   'Dependabot version updates: delete .github/dependabot.yml'
 )
 for needle in "${mirror_dep_pvr_forbidden[@]}"; do
    if grep --quiet --fixed-strings -- "${needle}" <<< "${out}"; then
-      printf '%s\n' "FAIL: SOURCE-only line leaked to MIRROR: ${needle}" >&2
+      printf '%s\n' "FAIL: non-mirror line leaked to MIRROR: ${needle}" >&2
       fail=1
    fi
 done

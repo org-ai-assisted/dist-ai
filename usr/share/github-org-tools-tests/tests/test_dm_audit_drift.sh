@@ -79,18 +79,20 @@ load_case() {
 }
 
 ## Assert that --audit fails and says why.
-## Args: $1 = case dir, $2 = description, $3 = expected substring.
+## Args: $1 = org to audit, $2 = case dir, $3 = description,
+##       $4 = expected substring.
 expect_drift() {
-   local case_name desc needle rc out
+   local org case_name desc needle rc out
 
-   case_name="$1"
-   desc="$2"
-   needle="$3"
+   org="$1"
+   case_name="$2"
+   desc="$3"
+   needle="$4"
 
    load_case "${case_name}" || return 0
 
    rc=0
-   out="$(ORGS_OVERRIDE='org-ai-assisted' dm-github-org-policy --audit 2>&1)" || rc=$?
+   out="$(ORGS_OVERRIDE="${org}" dm-github-org-policy --audit 2>&1)" || rc=$?
 
    if [ "${rc}" -eq 0 ]; then
       printf '%s\n' "FAIL: ${desc}: --audit exited 0 despite drift" >&2
@@ -110,44 +112,86 @@ expect_drift() {
 }
 
 ## The exact shape of the incident: selected + an empty allowlist.
-expect_drift 'empty-patterns' \
+expect_drift 'org-ai-assisted' 'empty-patterns' \
    'empty patterns_allowed is drift' 'patterns_allowed:'
 
 ## An endpoint we could not read is NOT a pass. A run that failed to
 ## verify the state must never report clean.
-expect_drift 'unreadable-endpoint' \
+expect_drift 'org-ai-assisted' 'unreadable-endpoint' \
    'unreadable endpoint is not a pass' 'NOT VERIFIED'
 
 ## allowed_actions flipped away from the policy value.
-expect_drift 'allowed-actions-all' \
+expect_drift 'org-ai-assisted' 'allowed-actions-all' \
    'allowed_actions drift is caught' 'allowed_actions:'
 
 ## An HTTP 200 whose body is not the expected shape: the comparison
 ## cannot run, and a comparison that could not run must not be reported
 ## as one that passed.
-expect_drift 'unparseable-body' \
+expect_drift 'org-ai-assisted' 'unparseable-body' \
    'an unparseable 200 body is not a pass' 'NOT VERIFIED'
 
 ## Every setting backed by a POLICY_* literal is compared, not just the
 ## Actions pair. These two were previously PRINTED only, so a loosened
 ## fork-PR policy or a writable GITHUB_TOKEN audited green.
-expect_drift 'fork-pr-approval-loose' \
+expect_drift 'org-ai-assisted' 'fork-pr-approval-loose' \
    'a loosened fork-PR approval policy is drift' 'approval_policy:'
-expect_drift 'workflow-perms-write' \
+expect_drift 'org-ai-assisted' 'workflow-perms-write' \
    'a writable workflow GITHUB_TOKEN is drift' 'default_workflow_permissions:'
 
+## Dependabot on the MIRROR org (2026-07-31 decision: it runs there and
+## nowhere else). All three cases below audited GREEN before the mirror
+## side was compared at all, which is the regression they exist for.
+
+## Security updates switched off on the mirror is drift, compared against
+## the same POLICY_REPO_DEPENDABOT_FIXES_EXPECT_ON literal --apply PUTs.
+expect_drift 'org-ai-assisted' 'dependabot-fixes-off' \
+   'Dependabot security updates off on MIRROR is drift' 'enabled:'
+
+## GET /vulnerability-alerts answers 204 (on) or 404, and 404 means
+## either "off" or "invisible to this token". Neither is a pass for a
+## must-be-ON claim, so it must report NOT VERIFIED and fail.
+expect_drift 'org-ai-assisted' 'dependabot-alerts-invisible' \
+   'unreadable Dependabot alerts state on MIRROR is not a pass' 'NOT VERIFIED'
+
+## The .github/dependabot.yml probe answering neither 200 nor 404 is an
+## UNKNOWN on EVERY kind, mirror included: printing the 'no:' inventory
+## line for a probe that never answered is a false green wherever it
+## happens.
+expect_drift 'org-ai-assisted' 'dependabot-yml-unreadable' \
+   'an unreadable dependabot.yml probe is not a pass' 'NOT VERIFIED'
+
+## The mirror-off half of the same decision, audited on a SOURCE org.
+## Both directions have to be compared or the policy is only half
+## checked: MIRROR must read ON, SOURCE must read OFF.
+
+## .github/dependabot.yml IS the version-updates switch and it has no
+## REST setter, so its presence on a SOURCE repo is the only observable
+## evidence that version updates still run there.
+expect_drift 'Whonix' 'source-dependabot-yml-present' \
+   'dependabot.yml present on SOURCE is drift' 'DRIFT from policy'
+
+## Security updates left enabled on SOURCE, compared against the same
+## POLICY_REPO_DEPENDABOT_FIXES_EXPECT_OFF literal --apply DELETEs
+## toward.
+expect_drift 'Whonix' 'source-dependabot-fixes-on' \
+   'Dependabot security updates on SOURCE is drift' 'enabled:'
+
 ## Control: the unmodified fixtures match policy, so --audit must pass.
-## Without this, a tool that ALWAYS failed would satisfy every case above.
+## Without this, a tool that ALWAYS failed would satisfy every case
+## above. Run on BOTH kinds, since the Dependabot expectation inverts
+## between them and a control on one side alone cannot see that.
 cp -a -- "${FIXTURES_DIR}/." "${work}/"
-rc=0
-out="$(ORGS_OVERRIDE='org-ai-assisted' dm-github-org-policy --audit 2>&1)" || rc=$?
-if [ "${rc}" -ne 0 ]; then
-   printf '%s\n' "FAIL: control: --audit exited '${rc}' on fixtures that match policy" >&2
-   printf '%s\n' '--- captured output ---' >&2
-   printf '%s\n' "${out}" >&2
-   fail=1
-else
-   printf '%s\n' 'PASS: control: clean fixtures still audit green'
-fi
+for control_org in 'org-ai-assisted' 'Whonix'; do
+   rc=0
+   out="$(ORGS_OVERRIDE="${control_org}" dm-github-org-policy --audit 2>&1)" || rc=$?
+   if [ "${rc}" -ne 0 ]; then
+      printf '%s\n' "FAIL: control ${control_org}: --audit exited '${rc}' on fixtures that match policy" >&2
+      printf '%s\n' '--- captured output ---' >&2
+      printf '%s\n' "${out}" >&2
+      fail=1
+   else
+      printf '%s\n' "PASS: control ${control_org}: clean fixtures still audit green"
+   fi
+done
 
 exit "${fail}"
