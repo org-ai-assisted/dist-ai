@@ -11,9 +11,9 @@
 ## THE TRAP IT GUARDS: parallelism is only safe when genmkfile supports
 ## 'make_cow_suffix', which gives each worker its own 'cow.cow_<arch>.<slot>'
 ## snapshot. Without it N workers share ONE 'cow.cow_<arch>' and corrupt each
-## other's chroot. That precondition used to be documented prose the caller had
-## to know, with nothing checking it -- so enabling the speed-up against an
-## older genmkfile silently produced a broken build.
+## other's chroot. A precondition carried only in prose, with nothing checking
+## it, means enabling the speed-up against an older genmkfile silently produces
+## a broken build.
 ##
 ## The contract now: the request is safe to pass unconditionally. 2100 verifies
 ## the preconditions itself and falls back to serial, SAYING SO, when one is not

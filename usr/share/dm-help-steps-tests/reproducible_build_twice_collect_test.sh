@@ -66,8 +66,8 @@ fi
 
 comparator_src="${repo_root}/packages/kicksecure/developer-meta-files/usr/bin/dm-reproducible-compare-artifacts"
 if [ ! -r "${comparator_src}" ]; then
-   ## The developer-meta-files submodule is not checked out; the script delegates
-   ## its verdict there, so the run cannot complete. Not a defect.
+   ## The script delegates its verdict to that submodule, so without it the run
+   ## cannot complete -- absent subject, not a defect.
    printf '%s\n' "SKIP: developer-meta-files submodule not checked out (no dm-reproducible-compare-artifacts)." >&2
    exit 77
 fi
