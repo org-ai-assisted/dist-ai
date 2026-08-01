@@ -140,6 +140,16 @@ fi
 bad_repo="${workdir}/bad"
 git -c core.hooksPath=/dev/null -c core.symlinks=false \
    clone --quiet -- "${origin_repo}" "${bad_repo}"
+## 'clone -c' applies the setting to the CLONE ITSELF but does not persist it, so
+## record it in the new repo's config -- which is the state a real such checkout
+## has, since core.symlinks=false comes from a host-wide gitconfig that is still
+## in effect afterwards. Without this the fixture is only half the condition: the
+## worktree is damaged but git no longer believes symlinks are unsupported, so
+## 'git status' reports ' T' and the canary below fires. On a host whose own
+## gitconfig sets core.symlinks=false (Kicksecure, via security-misc-shared) the
+## global masks the gap and the fixture appears correct; on a plain CI runner it
+## does not.
+git -C "${bad_repo}" config --local core.symlinks false
 
 if [ -L "${bad_repo}/link_to_file" ]; then
    fail "core.symlinks=false clone still produced a real symlink; this git cannot reproduce the bug"
