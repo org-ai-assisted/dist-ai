@@ -96,25 +96,20 @@ run_guard() {
    ## has.sh comes from the same checkout: the function under test uses 'has'
    ## (R-090) rather than 'command -v', so the harness must provide the real one
    ## -- stubbing it would test the stub's idea of "present", not the shipped one.
-   env GUARD_PATH="${path_override}" GUARD_HAS="${has_sh}" bash -c '
-      set -o nounset
-      body="$1"
-      error() {
-         printf "%s\n" "$*" >&2
-         exit 1
-      }
-      # shellcheck disable=SC1090
-      source "${GUARD_HAS}"
-      PATH="${GUARD_PATH}"
-      eval "${body}"
-      check-required-tools
-   ' _ "${body}" 2>&1
+   env GUARD_PATH="${path_override}" GUARD_HAS="${has_sh}" \
+      bash -- "${test_dir}/required_tools_guard_inner.sh" "${body}" 2>&1
 }
 
 ## --- every tool present -> must pass --------------------------------------
+## Probe with the SAME 'has' the guard uses, from the same checkout: a host where
+## 'has' and 'command -v' disagree would otherwise make this branch either skip
+## when it could run, or run when the guard cannot pass.
+# shellcheck disable=SC1090
+source "${has_sh}"
+
 missing_here=""
 for tool in modprobe losetup mountpoint qemu-img qemu-nbd kpartx parted; do
-   command -v "${tool}" >/dev/null || missing_here="${missing_here} ${tool}"
+   has "${tool}" || missing_here="${missing_here} ${tool}"
 done
 
 if [ -n "${missing_here}" ]; then

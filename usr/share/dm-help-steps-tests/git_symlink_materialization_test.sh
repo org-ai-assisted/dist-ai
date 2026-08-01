@@ -123,19 +123,8 @@ run_check() {
    local target_repo
    target_repo="$1"
 
-   bash -c '
-      set -o errexit
-      set -o nounset
-      set -o pipefail
-      shopt -s inherit_errexit
-      error() {
-         printf "%s\n" "$*" >&2
-         exit 1
-      }
-      source_code_folder_dist="$1"
-      source /dev/stdin
-      check-git-symlinks
-   ' _ "${target_repo}" < <(sed -n '/^check-git-symlinks()/,/^}/p' -- "${sanity_tests}")
+   bash -- "${test_dir}/git_symlink_check_inner.sh" "${target_repo}" \
+      < <(sed -n '/^check-git-symlinks()/,/^}/p' -- "${sanity_tests}")
 }
 
 ## Good checkout: symlink is a symlink -> must pass.

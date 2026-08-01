@@ -89,40 +89,24 @@ cp -- "${comparator_src}" "${fake_tree}/packages/kicksecure/developer-meta-files
 chmod 0755 -- "${fake_tree}/ci/reproducible-build-twice" \
    "${fake_tree}/packages/kicksecure/developer-meta-files/usr/bin/dm-reproducible-compare-artifacts"
 
-## Stub the build. It writes to the STRIPPED path, which is what
-## help-steps/variables derives -- reproducing the mismatch the fix addresses.
-cat > "${fake_tree}/help-steps/dm-build-official" <<'STUB'
-#!/bin/bash
-set -o errexit
-set -o nounset
-raw="$(git describe --always --abbrev=1000000000 --exclude '*_*_*')"
-stripped="${raw//-developers-only/}"
-stripped="${stripped//-testers-only/}"
-stripped="${stripped//-stable/}"
-out="${binary_build_folder_dist}/${stripped}"
-mkdir --parents -- "${out}"
-## Deterministic content, so the two collected artifacts compare identical.
-printf '%s\n' 'stub-image-payload' \
-   > "${out}/Kicksecure-CLI-${stripped}.Intel_AMD64.qcow2.libvirt.xz"
-STUB
+## The stubs are real files beside this test, so each one is readable on its own
+## and shellcheck sees it. install_build_stub swaps in the variant a given case
+## needs; the three are documented in their own headers.
+stubs_dir="${test_dir}/reproducible_build_twice_stubs"
 
-## Stub signing. sign-and-tag creates the ephemeral tag sign-tag-head would, so a
-## re-run faces the same 'git describe' hazard as a real second run.
-cat > "${fake_tree}/help-steps/signing-key-create" <<'STUB'
-#!/bin/bash
-exit 0
-STUB
-cat > "${fake_tree}/help-steps/sign-and-tag" <<'STUB'
-#!/bin/bash
-set -o errexit
-set -o nounset
-head_sha="$(git rev-parse HEAD)"
-key='1B69AFB06DECDCC5404CFD34238AF23072D1DB5E01C1C3A5D6F2207ED3E0C4C6'
-nearest="$(git describe --abbrev=0 --exclude '*_*_*' 2>/dev/null || printf '%s' tag)"
-git tag --annotate --message ephemeral -- "${nearest}_${head_sha}_${key}" 2>/dev/null || true
-STUB
-chmod 0755 -- "${fake_tree}/help-steps/dm-build-official" \
-   "${fake_tree}/help-steps/signing-key-create" "${fake_tree}/help-steps/sign-and-tag"
+install_build_stub() {
+   local variant="$1"
+
+   cp -- "${stubs_dir}/dm-build-official-${variant}" \
+      "${fake_tree}/help-steps/dm-build-official"
+   chmod 0755 -- "${fake_tree}/help-steps/dm-build-official"
+}
+
+install_build_stub deterministic
+cp -- "${stubs_dir}/signing-key-create" "${stubs_dir}/sign-and-tag" \
+   "${fake_tree}/help-steps/"
+chmod 0755 -- "${fake_tree}/help-steps/signing-key-create" \
+   "${fake_tree}/help-steps/sign-and-tag"
 
 ## A repo shaped like derivative-maker: a channel-suffixed release tag, commits on
 ## top. -c core.hooksPath=/dev/null: not testing the operator's hooks.
@@ -214,25 +198,13 @@ fi
 ## artifact-not-found, 3 a build failed. Conflating 1 with 2 or 3 is how a
 ## not-found once read as "images differ".
 
-## Rewrite the stub build for a specific failure, run, restore.
-stub_build="${fake_tree}/help-steps/dm-build-official"
-stub_build_original="$(cat -- "${stub_build}")"
-restore_stub() {
-   printf '%s' "${stub_build_original}" > "${stub_build}"
-   chmod 0755 -- "${stub_build}"
-}
-
 reset_binary_dir() {
    safe-rm --recursive --force -- "${binary_dir}"
    mkdir --parents -- "${binary_dir}"
 }
 
 ## A build that fails must surface as 3, not as a comparison verdict.
-cat > "${stub_build}" <<'STUB'
-#!/bin/bash
-exit 9
-STUB
-chmod 0755 -- "${stub_build}"
+install_build_stub fails
 reset_binary_dir
 rc=0
 out="$(run_script 2>&1)" || rc="$?"
@@ -241,14 +213,10 @@ if [ "${rc}" -eq 3 ]; then
 else
    fail "failing build: exit ${rc}, expected 3 -- a build failure must not read as a reproducibility verdict"
 fi
-restore_stub
+install_build_stub deterministic
 
 ## A build that succeeds but emits no artifact is also 3, and must SAY the glob.
-cat > "${stub_build}" <<'STUB'
-#!/bin/bash
-exit 0
-STUB
-chmod 0755 -- "${stub_build}"
+install_build_stub empty
 reset_binary_dir
 rc=0
 out="$(run_script 2>&1)" || rc="$?"
@@ -265,22 +233,10 @@ case "${out}" in
       fail "build produced nothing: does not name what was missing -- ${out}"
       ;;
 esac
-restore_stub
+install_build_stub deterministic
 
 ## Two DIFFERING artifacts must propagate the comparator's exit 1 unchanged.
-cat > "${stub_build}" <<'STUB'
-#!/bin/bash
-set -o errexit
-set -o nounset
-raw="$(git describe --always --abbrev=1000000000 --exclude '*_*_*')"
-stripped="${raw//-developers-only/}"
-out="${binary_build_folder_dist}/${stripped}"
-mkdir --parents -- "${out}"
-## Differs per invocation, so build a and build b disagree.
-printf '%s\n' "payload-${RANDOM}-${$}" \
-   > "${out}/Kicksecure-CLI-${stripped}.Intel_AMD64.qcow2.libvirt.xz"
-STUB
-chmod 0755 -- "${stub_build}"
+install_build_stub differing
 reset_binary_dir
 rc=0
 out="$(run_script 2>&1)" || rc="$?"
@@ -289,7 +245,7 @@ if [ "${rc}" -eq 1 ]; then
 else
    fail "differing builds: exit ${rc}, expected 1 -- the verdict must reach the caller"
 fi
-restore_stub
+install_build_stub deterministic
 
 ## Usage errors are 2, distinct from every build/compare outcome.
 assert_usage_error() {

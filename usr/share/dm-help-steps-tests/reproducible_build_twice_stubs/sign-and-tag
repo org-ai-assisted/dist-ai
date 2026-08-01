@@ -1,0 +1,21 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Stub signing that creates the ephemeral '<tag>_<commit>_<key>' tag sign-tag-head
+## would, so a re-run faces the same 'git describe' hazard as a real second run.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+head_sha="$(git rev-parse HEAD)"
+key='1B69AFB06DECDCC5404CFD34238AF23072D1DB5E01C1C3A5D6F2207ED3E0C4C6'
+nearest="$(git describe --abbrev=0 --exclude '*_*_*' 2>/dev/null || printf '%s' tag)"
+git tag --annotate --message ephemeral -- "${nearest}_${head_sha}_${key}" 2>/dev/null || true

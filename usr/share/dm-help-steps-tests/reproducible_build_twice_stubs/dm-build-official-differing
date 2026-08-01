@@ -1,0 +1,23 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Stub build emitting a DIFFERENT artifact per invocation, so build a and build b
+## disagree and the comparator's 'differ' verdict must reach the caller.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+raw="$(git describe --always --abbrev=1000000000 --exclude '*_*_*')"
+stripped="${raw//-developers-only/}"
+out="${binary_build_folder_dist}/${stripped}"
+mkdir --parents -- "${out}"
+printf '%s\n' "payload-${RANDOM}-${$}" \
+   > "${out}/Kicksecure-CLI-${stripped}.Intel_AMD64.qcow2.libvirt.xz"

@@ -83,32 +83,15 @@ if [ -z "${guard}" ]; then
    exit 1
 fi
 
-## Drive the extracted guard with 'modprobe' guaranteed to fail (a 'sudo' stub
-## that reports command-not-found, exactly as the kmod-less container does).
-##
-## The DEVICE PATH is parameterised rather than the '[' builtin stubbed: '[' and
-## 'test' are separate builtins, so overriding the 'test' function does not
-## intercept '[ -b ... ]' at all -- an earlier version of this test did that and
-## both cases silently ran against the real /dev/nbd0, so one assertion passed
-## vacuously and the other could not be satisfied. Substituting the path leaves
-## the branch structure under test untouched.
+## Select the branch by substituting the DEVICE PATH into the extracted body.
+## Stubbing '[' is not an option: '[' and 'test' are separate builtins, so a
+## 'test' function does not intercept '[ -b ... ]' and BOTH cases would run
+## against the real /dev/nbd0 -- one assertion vacuous, the other unsatisfiable.
+## The stub environment the body runs under: nbd_probe_guard_inner.sh.
 run_guard() {
    local body="$1" device="$2"
 
-   bash -c '
-      set -o nounset
-      body="$1"
-      ## Referenced by the mkdir the guard falls through to.
-      mount_a=/nonexistent/a
-      mount_b=/nonexistent/b
-      sudo() {
-         printf "%s\n" "sudo: modprobe: command not found" >&2
-         return 1
-      }
-      eval "${body}
-      }"
-      filesystem_mounts_setup /a /b
-   ' _ "${body//\/dev\/nbd0/${device}}" 2>&1
+   bash -- "${test_dir}/nbd_probe_guard_inner.sh" "${body//\/dev\/nbd0/${device}}" 2>&1
 }
 
 if [ ! -b /dev/nbd0 ]; then

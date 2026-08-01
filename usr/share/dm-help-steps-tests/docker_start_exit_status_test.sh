@@ -71,23 +71,13 @@ if [ ! -c /dev/full ]; then
 fi
 
 ## --- semantics, on a real write failure ------------------------------------
-## The fixed idiom, run standalone so the assertion is about behaviour rather
-## than about reading the shipped file.
+## Each idiom is its own script beside this one, run standalone so the assertions
+## are about behaviour rather than about reading the shipped file.
 run_fixed() {
    local log_target="$1"
    shift
 
-   env LOG_TARGET="${log_target}" bash -c '
-      set -o errexit
-      set -o pipefail
-      declare -a pipe_status
-      if "$@" 2>&1 | tee -a -- "${LOG_TARGET}" ; then
-         pipe_status=( "${PIPESTATUS[@]}" )
-      else
-         pipe_status=( "${PIPESTATUS[@]}" )
-      fi
-      exit "${pipe_status[0]}"
-   ' _ "$@"
+   env LOG_TARGET="${log_target}" bash -- "${test_dir}/docker_start_fixed_inner.sh" "$@"
 }
 
 ## The pre-fix idiom, for the canary.
@@ -95,11 +85,7 @@ run_prefix() {
    local log_target="$1"
    shift
 
-   env LOG_TARGET="${log_target}" bash -c '
-      set -o errexit
-      set -o pipefail
-      "$@" 2>&1 | tee -a -- "${LOG_TARGET}"
-   ' _ "$@"
+   env LOG_TARGET="${log_target}" bash -- "${test_dir}/docker_start_prefix_inner.sh" "$@"
 }
 
 scratch_log="$(mktemp)"
