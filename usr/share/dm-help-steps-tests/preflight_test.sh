@@ -165,6 +165,59 @@ else
    cat -- "${workdir}/out.txt" >&2
 fi
 
+## --- an UNFETCHABLE pin fails; an unverifiable one only reports -------------
+## The property CI actually needs: a pin it can fetch. A submodule commit that
+## exists only locally leaves 'git submodule update --init' failing in the job,
+## long after the runner was allocated.
+##
+## And the counterpart that keeps the check usable: a scratch clone whose
+## submodule remotes are LOCAL PATHS cannot answer the question at all, so it is
+## reported UNVERIFIED rather than failed. A check that cries wolf on every
+## scratch clone is one everyone learns to ignore -- which is how the real
+## failures get missed.
+unfetch="${workdir}/unfetch"
+build_fixture "${unfetch}"
+## Commit in the submodule WITHOUT pushing, then pin the parent at it: the exact
+## shape of "committed locally, never pushed".
+printf 'local only\n' >> "${unfetch}/sub/file.txt"
+git_quiet -C "${unfetch}/sub" commit --quiet --all --no-verify --message local-only
+local_only_sha="$(git_quiet -C "${unfetch}/sub" rev-parse HEAD)"
+git_quiet -C "${unfetch}" update-index --cacheinfo "160000,${local_only_sha},sub"
+git_quiet -C "${unfetch}" commit --quiet --no-verify --message pin-unpushed
+## Give the submodule a network-shaped remote so the check will actually judge
+## it; the URL is never contacted, only its SHAPE decides verifiability.
+git_quiet -C "${unfetch}/sub" remote add net https://example.com/sub.git
+rc="$(run_preflight "${unfetch}")"
+if [ "${rc}" -ne 0 ]; then
+   pass "a pin on no remote branch fails the preflight"
+else
+   fail "an unfetchable pin was ACCEPTED; CI would fail on 'git submodule update --init'"
+   cat -- "${workdir}/out.txt" >&2
+fi
+if grep --quiet --fixed-strings -- 'UNFETCHABLE' "${workdir}/out.txt"; then
+   pass "the failure names the unfetchable pin"
+else
+   fail "the failure does not name the unfetchable pin"
+   cat -- "${workdir}/out.txt" >&2
+fi
+
+## CANARY: without a network remote the same tree must NOT fail -- it must say
+## it could not tell.
+git_quiet -C "${unfetch}/sub" remote remove net
+rc="$(run_preflight "${unfetch}")"
+if [ "${rc}" -eq 0 ]; then
+   pass "canary: with no network remote the pin is not judged"
+else
+   fail "canary broken: a clone that cannot answer the question was failed anyway"
+   cat -- "${workdir}/out.txt" >&2
+fi
+if grep --quiet --fixed-strings -- 'UNVERIFIED' "${workdir}/out.txt"; then
+   pass "canary: and it says fetchability was NOT established"
+else
+   fail "canary broken: silently passed without saying the check did not run"
+   cat -- "${workdir}/out.txt" >&2
+fi
+
 ## --- a non-checkout is a usage error, not a pass ----------------------------
 rc=0
 "${subject}" --dir "${workdir}" --quick >/dev/null 2>&1 || rc="$?"

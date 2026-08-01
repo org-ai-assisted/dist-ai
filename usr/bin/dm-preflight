@@ -139,6 +139,61 @@ else
    printf '%s\n' "${lagging_gitlinks}" | sed 's/^/          /' >&2
 fi
 
+## --- 3. can CI actually FETCH every pin? --------------------------------------
+## The one gitlink property that breaks a build outright: a pin CI cannot get.
+## A submodule commit that exists only in a local clone -- committed but never
+## pushed, or pushed to a different remote -- leaves 'git submodule update
+## --init' failing in the job, long after the runner was allocated.
+##
+## "Contained in a remote branch" is the test, not "the remote has this ref":
+## servers usually refuse to serve an arbitrary SHA, so reachability from some
+## published branch is what makes it fetchable.
+##
+## This is NOT dm-gitlink-upstream-check, which asks a stricter question (is the
+## pin reachable on the CANONICAL upstream master) appropriate to push-to-master.
+## On a feature branch a fork-only pin is legitimate; unfetchable never is.
+stage "submodules: every pin is fetchable by CI"
+## A submodule whose only remote is a LOCAL PATH (a scratch clone of another
+## checkout) cannot answer this question: its remote-tracking branches are
+## whatever that path had, not what CI would fetch. Report those as UNVERIFIED
+## rather than failing them -- a check that cries wolf on every scratch clone is
+## a check everyone learns to ignore.
+pin_report="$( git -C "${source_dir}" submodule --quiet foreach --recursive \
+   'pinned="$(git -C "${toplevel}" ls-tree HEAD -- "${sm_path}" | { read -r _ _ sha _ ; printf "%s" "${sha}" ; })"
+    [ -n "${pinned}" ] || exit 0
+    network_remote=false
+    for remote_name in $(git remote); do
+       case "$(git remote get-url "${remote_name}" 2>/dev/null)" in
+          *://*|*@*:*)
+             network_remote=true
+             ;;
+       esac
+    done
+    if [ "${network_remote}" = "false" ]; then
+       printf "UNVERIFIED %s (no network remote in this clone)\n" "${displaypath}"
+       exit 0
+    fi
+    if ! git cat-file -e "${pinned}^{commit}" 2>/dev/null; then
+       printf "MISSING %s (pinned %.12s: not present locally)\n" "${displaypath}" "${pinned}"
+       exit 0
+    fi
+    if [ -z "$(git branch --remotes --contains "${pinned}" 2>/dev/null)" ]; then
+       printf "UNFETCHABLE %s (pinned %.12s: on no remote branch)\n" "${displaypath}" "${pinned}"
+    fi' 2>/dev/null || true )"
+bad_pins="$( printf '%s\n' "${pin_report}" | grep -E '^(MISSING|UNFETCHABLE) ' || true )"
+unverified_pins="$( printf '%s\n' "${pin_report}" | grep -E '^UNVERIFIED ' || true )"
+if [ -n "${unverified_pins}" ]; then
+   printf '%s\n' "   NOTE: fetchability NOT established for these (no network remote to ask):" >&2
+   printf '%s\n' "${unverified_pins}" | sed 's/^/          /' >&2
+fi
+if [ -z "${bad_pins}" ]; then
+   ok "every pin that could be checked is reachable from a remote branch"
+else
+   bad "CI cannot fetch these pins; 'git submodule update --init' will fail in the job:"
+   printf '%s\n' "${bad_pins}" | sed 's/^/          /' >&2
+   printf '%s\n' "          Push the submodule branch that contains each commit." >&2
+fi
+
 ## --- 3. pin freshness ---------------------------------------------------------
 ## Reported, not enforced, for the same reason ci/assert-submodule-not-stale
 ## reports for --all: most dm pins deliberately trail.
