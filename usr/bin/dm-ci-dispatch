@@ -142,8 +142,21 @@ if [ "${run_preflight}" = "true" ]; then
          "  if you have already vetted it." >&2
       exit 1
    fi
-   printf '%s\n' "${0##*/}: preflight on '${source_dir}' (${ref})..." >&2
-   if ! dm-preflight --dir "${source_dir}"; then
+   ## '--quick': the GIT-STATE checks, not the test suites.
+   ##
+   ## What this gate exists to prevent is spending an hour of runner time on a
+   ## tree that CANNOT build -- uncommitted submodule work the commit will not
+   ## carry, a pin CI cannot fetch. Whether the code PASSES its tests is what CI
+   ## is for; refusing to dispatch on a test failure would mean you can never
+   ## dispatch the run that would show you the failure.
+   ##
+   ## It is also the difference between a usable gate and an unusable one: some
+   ## suites require root (umount_kill drives a real mount namespace), so a
+   ## developer at a terminal would be blocked every time for a reason that says
+   ## nothing about the tree. Run 'dm-preflight' without --quick, as root, when
+   ## you want the suites too.
+   printf '%s\n' "${0##*/}: preflight (git state) on '${source_dir}' (${ref})..." >&2
+   if ! dm-preflight --dir "${source_dir}" --quick; then
       printf '%s\n' "${0##*/}: preflight FAILED; not dispatching. Fix the tree, or --no-preflight if you have already vetted it." >&2
       exit 1
    fi
