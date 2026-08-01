@@ -186,6 +186,43 @@ else
 fi
 safe-rm --recursive --force -- "${fake_tree}"
 
+## --- the in-tree branch is FINAL, deliberately not a fallback chain ---------
+## An in-tree copy must operate on the tree it is part of. If it fell back to
+## $source_code_folder_dist or ~/derivative-maker, dm-prepare-release could sign
+## artifacts from a tree other than the code doing the signing. This is pinned
+## because it reads like a bug -- a reviewer flagged it as one -- and turning it
+## into a fallback chain would be a silent correctness regression.
+fake_caller="$(mktemp --directory)"
+other_tree="$(mktemp --directory)"
+mkdir --parents -- "${fake_caller}/usr/bin" "${other_tree}/help-steps"
+printf '%s\n' '## stub' > "${other_tree}/help-steps/pre"
+
+rc=0
+out="$(env source_code_folder_dist="${other_tree}" bash -c '
+   source "$1"
+   derivative_maker_source_tree_resolve "$2" || exit 1
+   printf "%s\n" "${derivative_maker_source_code_dir}"
+' _ "${lib}" "${fake_caller}/usr/bin" 2>&1)" || rc="$?"
+
+if [ "${rc}" -ne 0 ]; then
+   pass "in-tree caller does NOT fall back to source_code_folder_dist"
+else
+   fail "in-tree caller fell back to '${out}'; it must use the tree it belongs to or fail"
+fi
+## And the diagnostic must not send the operator after a variable that branch ignores.
+case "${out}" in
+   *"Set 'source_code_folder_dist'"*)
+      fail "in-tree failure tells the operator to set source_code_folder_dist, which this branch does not consult -- ${out}"
+      ;;
+   *"in-tree copy"*)
+      pass "in-tree failure explains that this copy uses its own tree only"
+      ;;
+   *)
+      fail "in-tree failure gives no branch-specific explanation -- ${out}"
+      ;;
+esac
+safe-rm --recursive --force -- "${fake_caller}" "${other_tree}"
+
 ## --- behavioural: an unresolvable tree exits non-zero, and says so ----------
 ## Run the real script with HOME pointed at an empty dir, no source_code_folder_dist,
 ## and a cwd that is not a checkout: every branch must miss.
