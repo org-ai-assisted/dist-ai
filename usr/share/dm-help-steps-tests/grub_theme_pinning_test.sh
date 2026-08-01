@@ -181,6 +181,50 @@ case "${values}" in
       ;;
 esac
 
+## --- the postinst must not clobber the shipped aliases ----------------------
+## kicksecure-base-files.postinst enumerates every file in the dist-base-files
+## 'dist-common' theme directory and, for each, removes the same-named file under
+## themes/kicksecure and symlinks it to '../dist-common/<name>'. If dist-common
+## ever gains 'background.png' or 'theme.txt', it would delete the 16:9 aliases
+## this package ships and silently repoint them -- undoing the pinning at install
+## time, with nothing in this repo changing.
+##
+## The collision is enforced here rather than left as a note, so the day
+## dist-base-files adds one of those names it fails a test instead of shipping.
+dist_common=""
+for candidate in "${DIST_COMMON_DIR:-}" \
+   "${DERIVATIVE_MAKER_DIR:-}/packages/kicksecure/dist-base-files/boot/grub/themes/dist-common" \
+   "${HOME}/derivative-maker/packages/kicksecure/dist-base-files/boot/grub/themes/dist-common"; do
+   [ -n "${candidate}" ] || continue
+   if [ -d "${candidate}" ]; then
+      dist_common="${candidate}"
+      break
+   fi
+done
+
+if [ -z "${dist_common}" ]; then
+   printf '%s\n' 'NOTE: dist-base-files dist-common not checked out; collision check skipped.' >&2
+else
+   collision=""
+   for alias_name in background.png theme.txt; do
+      if [ -e "${dist_common}/${alias_name}" ]; then
+         collision="${collision} ${alias_name}"
+      fi
+   done
+   if [ -z "${collision}" ]; then
+      pass "dist-common ships no name that would clobber the shipped aliases"
+   else
+      fail "dist-common now ships:${collision} -- the postinst would replace the pinned 16:9 alias(es) with links to dist-common"
+   fi
+   ## CANARY: the directory must be non-empty, or the check above passes
+   ## vacuously against a missing/empty checkout.
+   if [ -n "$(ls -A -- "${dist_common}" 2>/dev/null)" ]; then
+      pass "canary: dist-common is populated, so the collision check is meaningful"
+   else
+      fail "canary: dist-common is empty; the collision check proves nothing"
+   fi
+fi
+
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1
