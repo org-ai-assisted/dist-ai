@@ -1,0 +1,192 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Trigger a derivative-maker CI workflow deliberately, after proving the tree is
+## worth spending runners on.
+##
+## WHY DISPATCH RATHER THAN A PUSH TRIGGER: minutes are free on these public
+## repos, so cost is not the argument. Concurrency is: the free plan allows 20
+## jobs org-wide, and ONE push to 'ai' fans out 17 (Build 3 + Boot Test 14) plus
+## the PR lanes on the same commit. Measured on this repo: 54% of push runs are
+## cancelled as superseded, and the expensive lanes are green ~15% of the time --
+## so most of that fan-out re-runs a known-red lane and starves everything else
+## in the org.
+##
+## The gate is the other half. A push trigger fires on whatever was committed; a
+## dispatch can REFUSE. dm-preflight runs first, and its first real run found a
+## parent commit whose submodule work was never committed -- CI would have built
+## a tree without the change under test.
+##
+## Usage:
+##   dm-ci-dispatch --workflow <file.yml> [--ref <git-ref>] [--dir <checkout>]
+##                  [--input key=value]... [--no-preflight] [--dry-run]
+##
+## --dry-run       print what WOULD be dispatched and stop. This command starts
+##                 real jobs on a shared runner pool, so there has to be a way to
+##                 exercise the gate without doing that -- the author of this
+##                 script fired a live build while testing it, which is exactly
+##                 the mistake the flag prevents.
+##
+## --ref           defaults to the checkout's current branch.
+## --no-preflight  skip the gate. Prints why that is a bad idea and proceeds; it
+##                 exists for re-running a lane against a tree you have already
+##                 vetted, not for skipping the check.
+##
+## Exit: 0 dispatched | 1 preflight failed / dispatch rejected | 2 usage.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+repo="org-ai-assisted/derivative-maker"
+workflow=""
+ref=""
+source_dir=""
+run_preflight=true
+dry_run=false
+declare -a input_list=()
+
+while [ "$#" -gt 0 ]; do
+   case "$1" in
+      --workflow)
+         [ "$#" -ge 2 ] || { printf '%s\n' "${0##*/}: --workflow requires a value." >&2 ; exit 2 ; }
+         workflow="$2"
+         shift 2
+         ;;
+      --ref)
+         [ "$#" -ge 2 ] || { printf '%s\n' "${0##*/}: --ref requires a value." >&2 ; exit 2 ; }
+         ref="$2"
+         shift 2
+         ;;
+      --dir)
+         [ "$#" -ge 2 ] || { printf '%s\n' "${0##*/}: --dir requires a value." >&2 ; exit 2 ; }
+         source_dir="$2"
+         shift 2
+         ;;
+      --repo)
+         [ "$#" -ge 2 ] || { printf '%s\n' "${0##*/}: --repo requires a value." >&2 ; exit 2 ; }
+         repo="$2"
+         shift 2
+         ;;
+      --input)
+         [ "$#" -ge 2 ] || { printf '%s\n' "${0##*/}: --input requires key=value." >&2 ; exit 2 ; }
+         case "$2" in
+            *=*)
+               input_list+=( "$2" )
+               ;;
+            *)
+               printf '%s\n' "${0##*/}: --input wants key=value, got '$2'." >&2
+               exit 2
+               ;;
+         esac
+         shift 2
+         ;;
+      --no-preflight)
+         run_preflight=false
+         shift
+         ;;
+      --dry-run)
+         dry_run=true
+         shift
+         ;;
+      -h|--help)
+         grep '^##' -- "${BASH_SOURCE[0]}" | sed 's/^## \{0,1\}//'
+         exit 0
+         ;;
+      *)
+         printf '%s\n' "${0##*/}: unknown argument: '$1'" >&2
+         exit 2
+         ;;
+   esac
+done
+
+if [ -z "${workflow}" ]; then
+   printf '%s\n' "${0##*/}: --workflow is required (e.g. local-build.yml)." >&2
+   exit 2
+fi
+
+[ -n "${source_dir}" ] || source_dir="${PWD}"
+if [ ! -d "${source_dir}/.git" ] && [ ! -f "${source_dir}/.git" ]; then
+   printf '%s\n' "${0##*/}: '${source_dir}' is not a git checkout." >&2
+   exit 2
+fi
+
+if [ -z "${ref}" ]; then
+   ref="$( git -C "${source_dir}" rev-parse --abbrev-ref HEAD )"
+   if [ "${ref}" = "HEAD" ]; then
+      printf '%s\n' "${0##*/}: detached HEAD; pass --ref explicitly." >&2
+      exit 2
+   fi
+fi
+
+if [ "${run_preflight}" = "true" ]; then
+   if ! type -P dm-preflight >/dev/null; then
+      printf '%s\n' "${0##*/}: dm-preflight is not on PATH. Its absence is a gap to fix, not a reason to dispatch unchecked." >&2
+      exit 1
+   fi
+   printf '%s\n' "${0##*/}: preflight on '${source_dir}'..." >&2
+   if ! dm-preflight --dir "${source_dir}"; then
+      printf '%s\n' "${0##*/}: preflight FAILED; not dispatching. Fix the tree, or --no-preflight if you have already vetted it." >&2
+      exit 1
+   fi
+else
+   printf '%s\n' "${0##*/}: WARNING: --no-preflight. A dispatch is cheap; a build on a tree missing its own submodule commits is not." >&2
+fi
+
+## The local ref must be PUSHED, or CI runs a commit that only exists here.
+local_sha="$( git -C "${source_dir}" rev-parse "${ref}" )"
+remote_sha="$( git -C "${source_dir}" ls-remote "$( git -C "${source_dir}" remote | grep --line-regexp --max-count=1 -- 'org-ai-assisted' || printf 'origin' )" "refs/heads/${ref}" 2>/dev/null | cut -f1 )"
+if [ -z "${remote_sha}" ]; then
+   printf '%s\n' "${0##*/}: '${ref}' does not exist on the remote; push it first." >&2
+   exit 1
+fi
+if [ "${local_sha}" != "${remote_sha}" ]; then
+   printf '%s\n' "${0##*/}: local '${ref}' is ${local_sha:0:12}, remote is ${remote_sha:0:12} -- CI would run the REMOTE one. Push first." >&2
+   exit 1
+fi
+
+payload_file="$( mktemp )"
+cleanup() {
+   safe-rm --force -- "${payload_file}"
+}
+trap cleanup EXIT
+
+## Built with python3 rather than string concatenation: an input value with a
+## quote or a backslash would otherwise produce malformed JSON that the API
+## rejects with a message about the request, not about the value.
+python3 - "${ref}" "${payload_file}" "${input_list[@]}" <<'PYEOF'
+import json
+import sys
+
+ref = sys.argv[1]
+out = sys.argv[2]
+inputs = {}
+for item in sys.argv[3:]:
+    key, _, value = item.partition('=')
+    inputs[key] = value
+payload = {'ref': ref}
+if inputs:
+    payload['inputs'] = inputs
+with open(out, 'w', encoding='utf-8') as handle:
+    json.dump(payload, handle)
+PYEOF
+
+if [ "${dry_run}" = "true" ]; then
+   printf '%s\n' "${0##*/}: --dry-run: would dispatch ${workflow} on ${repo}@${ref} (${local_sha:0:12})" >&2
+   printf '%s\n' "${0##*/}: --dry-run: payload: $(cat -- "${payload_file}")" >&2
+   exit 0
+fi
+
+printf '%s\n' "${0##*/}: dispatching ${workflow} on ${repo}@${ref} (${local_sha:0:12})..." >&2
+if ! git-api POST "/repos/${repo}/actions/workflows/${workflow}/dispatches" --data "@${payload_file}"; then
+   printf '%s\n' "${0##*/}: dispatch REJECTED. Note that workflow_dispatch only fires for a workflow file present on the DEFAULT branch." >&2
+   exit 1
+fi
+printf '%s\n' "${0##*/}: dispatched. Watch it with: git-api GET /repos/${repo}/actions/workflows/${workflow}/runs?per_page=1" >&2
