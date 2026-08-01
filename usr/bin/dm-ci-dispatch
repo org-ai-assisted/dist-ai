@@ -158,25 +158,18 @@ cleanup() {
 }
 trap cleanup EXIT
 
-## Built with python3 rather than string concatenation: an input value with a
-## quote or a backslash would otherwise produce malformed JSON that the API
+## Built by a real program rather than string concatenation: an input value with
+## a quote or a backslash would otherwise produce malformed JSON that the API
 ## rejects with a message about the request, not about the value.
-python3 - "${ref}" "${payload_file}" "${input_list[@]}" <<'PYEOF'
-import json
-import sys
-
-ref = sys.argv[1]
-out = sys.argv[2]
-inputs = {}
-for item in sys.argv[3:]:
-    key, _, value = item.partition('=')
-    inputs[key] = value
-payload = {'ref': ref}
-if inputs:
-    payload['inputs'] = inputs
-with open(out, 'w', encoding='utf-8') as handle:
-    json.dump(payload, handle)
-PYEOF
+payload_builder="$( dirname -- "$( dirname -- "$( readlink -f -- "${BASH_SOURCE[0]}" )" )" )/libexec/dist-ai/dm-ci-dispatch-payload.py"
+if [ ! -r "${payload_builder}" ]; then
+   payload_builder="/usr/libexec/dist-ai/dm-ci-dispatch-payload.py"
+fi
+if [ ! -r "${payload_builder}" ]; then
+   printf '%s\n' "${0##*/}: payload builder not found; refusing to hand-roll JSON." >&2
+   exit 1
+fi
+python3 -- "${payload_builder}" "${ref}" "${payload_file}" "${input_list[@]}"
 
 if [ "${dry_run}" = "true" ]; then
    printf '%s\n' "${0##*/}: --dry-run: would dispatch ${workflow} on ${repo}@${ref} (${local_sha:0:12})" >&2
