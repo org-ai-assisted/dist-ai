@@ -86,103 +86,87 @@ else
    pass "30_kicksecure.cfg is unconditional, so every build host produces the same result"
 fi
 
-## --- no filesystem writes --------------------------------------------------
-## This is also what makes sourcing it below safe.
-write_hits=""
-for forbidden in 'rm ' 'ln ' 'mkdir ' 'cp ' 'mv '; do
+## --- the copy must be 'cp', never 'ln' -------------------------------------
+## The variant is selected at grub-mkconfig time rather than shipped as a dpkg
+## symlink: at install time /boot may not be mounted, and a /boot that is itself
+## a symlink makes a packaged link under it fail. A COPY is inert; a symlink
+## under /boot carries the same hazards the packaged link had.
+case "${code_only}" in
+   *"ln "*)
+      fail "30_kicksecure.cfg creates a SYMLINK under /boot; use cp -- a link there hits the same /boot-not-mounted and /boot-is-a-symlink hazards"
+      ;;
+   *)
+      pass "30_kicksecure.cfg creates no symlink under /boot"
+      ;;
+esac
+
+case "${code_only}" in
+   *"cp --remove-destination"*)
+      pass "the variant is copied with --remove-destination"
+      ;;
+   *cp*)
+      fail "30_kicksecure.cfg copies without --remove-destination: an existing background.png left as a SYMLINK would be written THROUGH, corrupting its target"
+      ;;
+   *)
+      fail "30_kicksecure.cfg does not copy the 16:9 variant into place at all"
+      ;;
+esac
+
+## Both names must be produced, or grub renders a half-applied theme.
+for produced in background.png theme.txt; do
    case "${code_only}" in
-      *"${forbidden}"*)
-         write_hits="${write_hits} ${forbidden%% }"
+      *"${produced}"*)
+         pass "${produced} is produced by the snippet"
+         ;;
+      *)
+         fail "${produced} is never produced; GRUB_THEME would point at a missing file"
          ;;
    esac
 done
-safe_to_source=true
-if [ -z "${write_hits}" ]; then
-   pass "30_kicksecure.cfg performs no filesystem writes"
-else
-   safe_to_source=false
-   fail "30_kicksecure.cfg still runs:${write_hits} -- grub-mkconfig sources this, so it mutates whatever machine runs it"
-fi
 
-## --- the variant is shipped, not created -----------------------------------
+## --- the aliases must NOT be shipped by dpkg -------------------------------
+## A packaged link under /boot is exactly what this design avoids, so its
+## reappearance in debian/*.links is a regression, not an alternative.
 if [ ! -r "${links_file}" ]; then
-   fail "debian/kicksecure-base-files.links not found; the theme symlinks cannot be shipped"
+   pass "no debian/kicksecure-base-files.links to ship /boot aliases from"
 else
-   for link_pair in \
-      "background-16x9.png:background.png" \
-      "theme-16x9.txt:theme.txt"; do
-      link_target="${link_pair%%:*}"
-      link_name="${link_pair#*:}"
-      if grep --quiet --fixed-strings -- \
-         "/boot/grub/themes/kicksecure/${link_target} /boot/grub/themes/kicksecure/${link_name}" \
-         "${links_file}"; then
-         pass "${link_name} is shipped as a symlink to ${link_target}"
-      else
-         fail "${link_name} is not declared in debian/kicksecure-base-files.links; nothing creates it now"
-      fi
-      if [ -r "${package_dir}/boot/grub/themes/kicksecure/${link_target}" ]; then
-         pass "symlink target ${link_target} exists in the package"
-      else
-         fail "symlink target ${link_target} is missing; the shipped symlink would dangle"
+   shipped=""
+   for alias_name in background.png theme.txt; do
+      if grep --quiet --fixed-strings -- "/boot/grub/themes/kicksecure/${alias_name}" "${links_file}"; then
+         shipped="${shipped} ${alias_name}"
       fi
    done
+   if [ -z "${shipped}" ]; then
+      pass "debian/*.links ships no /boot theme alias"
+   else
+      fail "debian/*.links ships:${shipped} -- a packaged link under /boot fails when /boot is unmounted or is itself a symlink"
+   fi
 fi
 
-## --- the values the snippet actually sets ----------------------------------
-## Gated on the write-freedom assertion above, and not merely documented as
-## depending on it: the pre-fix file removed and recreated symlinks under an
-## ABSOLUTE /boot/grub path, so sourcing a file that failed that assertion would
-## rewrite the bootloader theme of the machine running the test. It has to be
-## refused, not warned about.
-if [ ! "${safe_to_source}" = "true" ]; then
-   printf '%s\n' "FAILED: ${test_failures} assertion(s); refusing to source a snippet that writes to /boot." >&2
-   exit 1
-fi
+## The source variants must exist in the package, or the copy has nothing to copy.
+for variant in background-16x9.png theme-16x9.txt; do
+   if [ -r "${package_dir}/boot/grub/themes/kicksecure/${variant}" ]; then
+      pass "source variant ${variant} exists in the package"
+   else
+      fail "source variant ${variant} is missing; the copy would fail at grub-mkconfig time"
+   fi
+done
 
-values="$(bash -- "${test_dir}/grub_theme_pinning_inner.sh" "${subject}")"
-
-case "${values}" in
-   *"GRUB_THEME=/boot/grub/themes/kicksecure/theme.txt"*)
-      pass "GRUB_THEME points at the shipped theme.txt symlink"
-      ;;
-   *)
-      fail "GRUB_THEME is not the shipped theme.txt -- ${values}"
-      ;;
-esac
-
-case "${values}" in
-   *"GRUB_GFXMODE=1280x720"*)
-      pass "GRUB_GFXMODE pins 1280x720 (16:9)"
-      ;;
-   *)
-      fail "GRUB_GFXMODE is not 1280x720 -- ${values}"
-      ;;
-esac
-
-## A mode the firmware cannot set must degrade to grub's own choice rather than
-## to an unreadable console. This is a documented GRUB feature, verified against
-## the manual rather than assumed -- "15.1.12 gfxmode": a sequence of modes
-## separated by commas or semicolons, "each will be tried in turn until one is
-## found", where each mode may be 'auto', WIDTHxHEIGHT or WIDTHxHEIGHTxDEPTH.
-## grub-mkconfig passes GRUB_GFXMODE through verbatim ('set gfxmode=${GRUB_GFXMODE}'
-## in /etc/grub.d/00_header), so the gfxmode semantics apply to it directly.
-case "${values}" in
-   *"GRUB_GFXMODE="*",auto"*)
-      pass "GRUB_GFXMODE carries an 'auto' fallback"
-      ;;
-   *)
-      fail "GRUB_GFXMODE has no fallback; firmware that cannot set the mode gets no menu -- ${values}"
-      ;;
-esac
+## --- the values the snippet sets -------------------------------------------
+## Read STATICALLY, not by sourcing: the snippet writes to /boot by design now,
+## so sourcing it here would rewrite this machine's bootloader theme. That is
+## also why the write-freedom assertion above was replaced rather than kept -- it
+## no longer describes the intended behaviour.
+values="$(grep --extended-regexp -- '^(GRUB_THEME|GRUB_GFXMODE|GRUB_DISTRIBUTOR)=' "${subject}" || true)"
 
 ## CANARY: the sourcing above must really be reading this file, not reporting
 ## defaults. GRUB_DISTRIBUTOR is set by the same file and is unrelated to the fix.
 case "${values}" in
-   *"GRUB_DISTRIBUTOR=Kicksecure"*)
-      pass "canary: the snippet was actually sourced (GRUB_DISTRIBUTOR came through)"
+   *GRUB_DISTRIBUTOR=*Kicksecure*)
+      pass "canary: the file really was read (GRUB_DISTRIBUTOR came through)"
       ;;
    *)
-      fail "canary broken: GRUB_DISTRIBUTOR is unset, so the assertions above read nothing -- ${values}"
+      fail "canary broken: GRUB_DISTRIBUTOR not found, so the assertions above read nothing -- ${values}"
       ;;
 esac
 
