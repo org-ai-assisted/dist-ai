@@ -184,6 +184,12 @@ cr="$(printf '\r')"
 tmpp="/$(printf '%s' 'tmp')"
 ## A real newline, for the multi-line waiver fixture below.
 nlreal=$'\n'
+## R-026 fragments: the array-all subscript '[@]' and the '+' alternate
+## operator, assembled so the flagged sequence '${name[@]+' never appears
+## literally in THIS tracked file (which the gate greps too, and would
+## correctly trip over).
+atall='[@]'
+altop='+'
 
 ## R-074: a ';'-chained break / continue / return must be FLAGGED; the same
 ## keyword on its own line must be SPARED.
@@ -281,6 +287,20 @@ expect_rule "R-070" '   0) out="${set:0:${#set}}" ;;'                    "presen
 expect_rule "R-070" '   1) out="${plain}" ;;'                            "present"
 expect_rule "R-070" "   argc=\${#args[@]}${sp}${sp}## a note about ;;"    "absent"
 expect_rule "R-074" "if [ \"\${#a[@]}\" -eq 0 ]${sc} continue"           "present"
+
+## R-026: the obsolete pre-4.4 empty-array guard '${arr[@]+"${arr[@]}"}' (a
+## nounset workaround unneeded since bash 4.4) must be FLAGGED. The legitimate
+## length '${#arr[@]}', a plain '${arr[@]}', and the conditional-substitution
+## forms '${arr[@]:-fallback}' / '${arr[@]:+word}' must all be SPARED -- none
+## is the '+alternate-directly-on-[@]' guard. Bodies are assembled from
+## ${atall}/${altop} so the flagged literal never lives in this tracked file.
+guard="\${arr${atall}${altop}\"\${arr${atall}}\"}"
+expect_rule "R-026" "x=${guard}"                       "present"
+expect_rule "R-026" "for x in ${guard}${sc} do"        "present"
+expect_rule "R-026" "n=\${#arr${atall}}"               "absent"
+expect_rule "R-026" "p=\"\${arr${atall}}\""            "absent"
+expect_rule "R-026" "f=\${arr${atall}:-fallback}"      "absent"
+expect_rule "R-026" "c=\${arr${atall}:${altop}word}"   "absent"
 
 ## R-090: 'command -v' in code is FLAGGED; in a comment it is SPARED.
 expect_rule "R-090" "if ! command${sp}-v foo"                    "present"
@@ -772,4 +792,4 @@ if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "test_pre_push_static_style_rules: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-030/R-031, R-042, R-034, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-010, trailing-whitespace, CRLF-shebang and double-quote-fixer-vs-black enforced as expected."
+printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-026, R-030/R-031, R-042, R-034, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-010, trailing-whitespace, CRLF-shebang and double-quote-fixer-vs-black enforced as expected."

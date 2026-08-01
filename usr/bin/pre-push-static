@@ -28,22 +28,26 @@
 ##   8. R-051 no inline trap command strings (use named function)
 ##   9. R-070 no ';;' trailing other statements on the same line
 ##      R-074 no ';'-chained break/continue/return (own line)
-##  10. R-080 'shellcheck source=...' is a relative source-tree
+##  10. R-026 no obsolete empty-array guard '${arr[@]+"${arr[@]}"}'
+##      (pre-bash-4.4 nounset workaround; drop the +alternate on
+##      '[@]'). Does NOT flag '${#arr[@]}', a plain '${arr[@]}',
+##      or the ':-'/':+' conditional-substitution forms.
+##  11. R-080 'shellcheck source=...' is a relative source-tree
 ##      path (no absolute /usr/..., /home/..., /dev/null)
-##  11. R-081 no 'shellcheck source=/dev/null'
-##  12. R-090 'has' not 'command -v' (allowlist for documented
+##  12. R-081 no 'shellcheck source=/dev/null'
+##  13. R-090 'has' not 'command -v' (allowlist for documented
 ##      bootstrap exceptions per R-093)
-##  13. R-102 no 'bash' / 'sh' prepend on script invocations
+##  14. R-102 no 'bash' / 'sh' prepend on script invocations
 ##      (applies to shell + yml files)
-##  14. R-120 'safe-rm' not 'rm' (with conservative carve-outs
+##  15. R-120 'safe-rm' not 'rm' (with conservative carve-outs
 ##      for comments and known safe constructs)
-##  15. R-130 No ':' as bare no-op placeholder on its own line
+##  16. R-130 No ':' as bare no-op placeholder on its own line
 ##      (does NOT flag the ': "${var:=default}"' parameter-default
 ##      idiom widely used in the codebase)
-##  16. R-034 no 'echo' command (use printf); '## style-ok: allow-echo'
-##  17. R-103 no process-replacement 'exec <cmd>' (fd-redirect exec
+##  17. R-034 no 'echo' command (use printf); '## style-ok: allow-echo'
+##  18. R-103 no process-replacement 'exec <cmd>' (fd-redirect exec
 ##      exempt); '## style-ok: allow-exec'
-##  18. pre-commit-hooks (direct binary execution, no framework)
+##  19. pre-commit-hooks (direct binary execution, no framework)
 ##      against the right file-type subsets: check-yaml,
 ##      check-json, check-toml, check-xml, check-ast,
 ##      check-added-large-files, check-merge-conflict,
@@ -53,7 +57,7 @@
 ##      aren't on PATH (developer machines that haven't installed
 ##      them still get the bash-style-guide gate; CI runs in
 ##      debian:trixie-slim with them apt-installed).
-##  19. debian/changelog is genmkfile-owned and must not be
+##  20. debian/changelog is genmkfile-owned and must not be
 ##      hand-edited. A commit touching debian/changelog passes only
 ##      if it is a genmkfile auto-bump ('bumped changelog version'
 ##      subject, changelog-family-only diff) or carries a mandatory
@@ -862,6 +866,31 @@ check_R074_flow_chaining() {
    hits="$(grep_code_lines \
       '[^[:space:]][[:space:]]*;[[:space:]]*(break|continue|return)([[:space:];&|]|$)' "${fs[@]}")"
    emit_hits "R-074 ';'-chained break/continue/return" "${hits}"
+}
+
+check_R026_empty_array_guard() {
+   local hits
+   local -a fs
+
+   ## R-026: the obsolete empty-array guard '${arr[@]+"${arr[@]}"}'. It existed
+   ## only to work around bash BEFORE 4.4, where expanding an empty array under
+   ## 'set -o nounset' raised 'arr: unbound variable'. Bash 4.4+ needs no guard
+   ## (arrays are '=()'-initialized per R-025), so the '+alternate' operator
+   ## applied directly to '[@]' is dead weight -- drop it and expand
+   ## '"${arr[@]}"' plainly.
+   ##
+   ## Flag only '${name[@]+' -- a '${', an identifier, then '[@]' followed
+   ## IMMEDIATELY by '+'. The legitimate neighbours are all spared by that
+   ## anchoring: '${#arr[@]}' (length; '[@]' is followed by '}'), a plain
+   ## '${arr[@]}' (same), '${arr[@]:-fallback}' and '${arr[@]:+word}' (a ':'
+   ## sits between '[@]' and the operator), and a bare '[@]+' in a string or
+   ## regex (no leading '${name'). grep_code_lines strips comments first so an
+   ## illustrative guard in prose is not flagged; filter_self drops this
+   ## script, whose own regex/message text carries the needle.
+   mapfile -d '' -t fs < <(filter_self "${@}")
+   if [ "${#fs[@]}" -eq 0 ]; then return 0; fi
+   hits="$(grep_code_lines '\$\{[A-Za-z_][A-Za-z0-9_]*\[@\]\+' "${fs[@]}")"
+   emit_hits "R-026 obsolete empty-array guard (bash 4.4+; drop the +alternate on [@])" "${hits}"
 }
 
 check_R081_source_devnull() {
@@ -1707,6 +1736,7 @@ run_file_checks() {
       check_R051_trap_inline "${shell_files[@]}"
       check_R070_double_semi "${shell_files[@]}"
       check_R074_flow_chaining "${shell_files[@]}"
+      check_R026_empty_array_guard "${shell_files[@]}"
       check_R080_shellcheck_source_path "${shell_files[@]}"
       check_R081_source_devnull "${shell_files[@]}"
       check_R090_command_v "${shell_files[@]}"
