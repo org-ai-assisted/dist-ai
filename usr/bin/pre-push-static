@@ -1046,6 +1046,17 @@ check_R090_command_v() {
             continue
             ;;
       esac
+      ## POSIX '/bin/sh' scripts are exempt: both of R-090's remedies are
+      ## bash-only. 'type -P' is undefined in POSIX sh (shellcheck SC3045
+      ## flags it), and 'has' means sourcing helper-scripts, which a
+      ## root-owned boot script must not do. 'command -v' IS the portable
+      ## idiom there, so flagging it would demand code that another gate
+      ## check rejects.
+      case "$(head -n 1 -- "${script}" 2>/dev/null || true)" in
+         '#!/bin/sh'|'#!/usr/bin/sh'|'#!/usr/bin/env sh'|'#!/bin/sh '*|'#!/usr/bin/env sh '*)
+            continue
+            ;;
+      esac
       ## Script-wide waiver: '## style-ok: no-has' anywhere in the
       ## file disables R-090 for that file. Same shape as the
       ## 'style-ok: no-safe-rm' waiver below for R-120; used by
@@ -1225,9 +1236,12 @@ check_R103_exec() {
    ## 'kubectl exec', 'nsenter ... exec' -- is a bareword-preceded subcommand, NOT
    ## process replacement, so it must NOT match. fd-redirection exec ('exec 9>lock',
    ## 'exec {fd}>&-', 'exec >file') is exempt via the trailing class (a digit / '{'
-   ## / '<' / '>' / '&' immediately follows 'exec'). Per-script
-   ## '## style-ok: allow-exec' waiver for surfaces that must genuinely hand off the
-   ## process. filter_self drops this script.
+   ## / '<' / '>' / '&' immediately follows 'exec'). A '[' immediately after 'exec'
+   ## is likewise exempt: that is usage/help TEXT describing an 'exec' SUBCOMMAND and
+   ## its options ('exec [--workdir DIR] -- CMD'), which a line-based grep otherwise
+   ## cannot tell from code. No real script replaces itself with the '[' builtin.
+   ## Per-script '## style-ok: allow-exec' waiver for surfaces that must genuinely
+   ## hand off the process. filter_self drops this script.
    mapfile -d '' -t fs < <(filter_self "${@}")
    if [ "${#fs[@]}" -eq 0 ]; then return 0; fi
    for script in "${fs[@]}"; do
@@ -1237,9 +1251,9 @@ check_R103_exec() {
          continue
       fi
       hits="$(grep --line-number --extended-regexp \
-         --regexp='^[[:space:]]*exec[[:space:]]+[^[:space:]0-9{<>&]' \
-         --regexp='^[[:space:]]*[^#]*[;&|(){}][[:space:]]*exec[[:space:]]+[^[:space:]0-9{<>&]' \
-         --regexp='^[[:space:]]*[^#]*[[:space:]](then|do|else|in)[[:space:]]+exec[[:space:]]+[^[:space:]0-9{<>&]' \
+         --regexp='^[[:space:]]*exec[[:space:]]+[^[:space:]0-9{<>&[]' \
+         --regexp='^[[:space:]]*[^#]*[;&|(){}][[:space:]]*exec[[:space:]]+[^[:space:]0-9{<>&[]' \
+         --regexp='^[[:space:]]*[^#]*[[:space:]](then|do|else|in)[[:space:]]+exec[[:space:]]+[^[:space:]0-9{<>&[]' \
          -- "${script}" 2>/dev/null || true)"
       if [ -z "${hits}" ]; then
          continue

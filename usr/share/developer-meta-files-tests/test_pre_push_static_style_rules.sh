@@ -9,7 +9,8 @@
 ## R-070 (';;' trailing a statement), R-074 (';'-chained break/continue/return),
 ## R-030/R-031 (a newline printf missing its explicit "" data argument), R-042
 ## (a blank-line separator), R-034 (echo run as a command), R-011 (set +e),
-## R-051 (a quoted inline trap), R-090 (command -v), R-102 (an extensionless
+## R-051 (a quoted inline trap), R-090 (command -v), R-103 (a
+## process-replacement exec), R-102 (an extensionless
 ## 'bash script' operand), R-120 (a separator-glued/adjacent rm), and R-010
 ## (distinct strict-mode directives) actually FLAG a violating shell file and
 ## SPARE a compliant one. It drives the real, shipped pre-push-static gate
@@ -92,9 +93,14 @@ failures=0
 ## on top of an empty base, run the gate against that base, and echo its combined
 ## output. The body is untrusted text placed only in a /tmp repo, never committed
 ## to developer-meta-files, so it cannot self-trip this repo's own gate.
+## gate_output <body> [<shebang>] -- run the gate over a one-file fixture.
+## The shebang is a parameter because some rules are dialect-dependent: R-090's
+## remedies are bash-only, so a POSIX '/bin/sh' fixture must be able to prove the
+## rule does NOT fire there.
 gate_output() {
-   local body repo base
+   local body repo base shebang
    body="$1"
+   shebang="${2:-#!/bin/bash}"
    repo="$(mktemp --directory --tmpdir="${tmp_root}" repo.XXXXXX)"
    git -C "${repo}" init --quiet
    git -C "${repo}" config user.email 'ci-test@example.com'
@@ -106,7 +112,7 @@ gate_output() {
    ## trailing-whitespace fixture cannot even be committed on such a machine.
    git -C "${repo}" commit --quiet --no-verify --allow-empty --message base
    base="$(git -C "${repo}" rev-parse HEAD)"
-   printf '#!/bin/bash\n%s\n' "${body}" > "${repo}/sample.sh"
+   printf '%s\n%s\n' "${shebang}" "${body}" > "${repo}/sample.sh"
    git -C "${repo}" add sample.sh
    git -C "${repo}" commit --quiet --no-verify --message sample
    (
@@ -118,11 +124,12 @@ gate_output() {
 ## expect_rule <rule-tag> <sample-body> <present|absent>
 ## Assert the gate output does / does not carry <rule-tag> for the sample body.
 expect_rule() {
-   local tag body want out got
+   local tag body want out got shebang
    tag="$1"
    body="$2"
    want="$3"
-   out="$(gate_output "${body}")"
+   shebang="${4:-#!/bin/bash}"
+   out="$(gate_output "${body}" "${shebang}")"
    ## Liveness guard: require the gate's TERMINAL verdict line, not just any
    ## 'pre-push-static:' note. Early notes ('no changed shell files',
    ## 'shellcheck not on PATH; skipping') would otherwise satisfy a weaker
@@ -140,7 +147,7 @@ expect_rule() {
       got="absent"
    fi
    if [ "${got}" = "${want}" ]; then
-      printf 'PASS: %s %-7s for body %s\n' "${tag}" "${want}" "'${body}'"
+      printf 'PASS: %s %-7s for body %s (%s)\n' "${tag}" "${want}" "'${body}'" "${shebang}"
    else
       printf 'FAIL: %s expected %s but was %s for body %s\n' \
          "${tag}" "${want}" "${got}" "'${body}'" >&2
@@ -270,6 +277,20 @@ expect_rule "R-130" "## ${colon} > file in a comment"            "absent"
 ## R-090: 'command -v' in code is FLAGGED; in a comment it is SPARED.
 expect_rule "R-090" "if ! command${sp}-v foo"                    "present"
 expect_rule "R-090" "## uses command${sp}-v not has"             "absent"
+## ... and it does NOT fire in a POSIX '/bin/sh' script, where 'type -P' is
+## undefined (SC3045) and sourcing has.sh is not an option: 'command -v' is the
+## only portable spelling, so flagging it would demand code shellcheck rejects.
+expect_rule "R-090" "if ! command${sp}-v foo"                    "absent"  '#!/bin/sh'
+
+## R-103: a COMMAND-POSITION 'exec <command>' is FLAGGED. An 'exec' that is an
+## argument to another command, an fd-redirection exec, and a usage-TEXT line
+## describing an 'exec' SUBCOMMAND with bracketed options are all SPARED -- the
+## last one is why the trailing class excludes '['.
+expect_rule "R-103" "exec${sp}some-command --flag"               "present"
+expect_rule "R-103" "exec${sp}${dq}\${impl}${dq} ${dq}\$@${dq}" "present"
+expect_rule "R-103" "  exec  [--workdir DIR] [--raw] -- CMD"     "absent"
+expect_rule "R-103" "exec${sp}9>${dq}\${lock}${dq}"              "absent"
+expect_rule "R-103" "docker${sp}exec${sp}-it name sh"            "absent"
 
 ## R-102: an extensionless but slashed path operand is FLAGGED; a flag or a
 ## variable operand is SPARED. (Body assembled below via ${sp} so this
@@ -743,4 +764,4 @@ if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "test_pre_push_static_style_rules: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-030/R-031, R-042, R-034, R-011, R-051, R-090, R-102, R-120, R-170, R-180, R-010, trailing-whitespace, CRLF-shebang and double-quote-fixer-vs-black enforced as expected."
+printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-030/R-031, R-042, R-034, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-010, trailing-whitespace, CRLF-shebang and double-quote-fixer-vs-black enforced as expected."
