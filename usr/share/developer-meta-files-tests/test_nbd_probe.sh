@@ -83,26 +83,23 @@ if [ -z "${guard}" ]; then
    exit 1
 fi
 
-## Select the branch by substituting the DEVICE PATH into the extracted body.
-## Stubbing '[' is not an option: '[' and 'test' are separate builtins, so a
-## 'test' function does not intercept '[ -b ... ]' and BOTH cases would run
-## against the real /dev/nbd0 -- one assertion vacuous, the other unsatisfiable.
-## The stub environment the body runs under: nbd_probe_guard_inner.sh.
+## The branch is selected by the stubs in nbd_probe_guard_inner.sh: the modprobe
+## attempt's status and whether any usable nbd device exists. Both are inputs the
+## guard must react to independently, which is exactly what the bugs below were.
 run_guard() {
-   local body="$1" device="$2"
+   local modprobe_rc="$1" claim_rc="$2"
 
-   bash -- "${test_dir}/nbd_probe_guard_inner.sh" "${body//\/dev\/nbd0/${device}}" 2>&1
+   env GUARD_MODPROBE_RC="${modprobe_rc}" GUARD_CLAIM_RC="${claim_rc}" \
+      bash -- "${test_dir}/nbd_probe_guard_inner.sh" "${guard}" 2>&1
 }
 
-if [ ! -b /dev/nbd0 ]; then
-   printf '%s\n' "SKIP: /dev/nbd0 is not a block device here; cannot exercise the device-present branch." >&2
-   exit 77
-fi
-
-## Device present -> must NOT abandon at the modprobe, and must say why it went on.
-out="$(run_guard "${guard}" /dev/nbd0 || true)"
+## --- modprobe unavailable, device present -> continue, and say why ----------
+## The container ships no kmod, so 'modprobe' is command-not-found there while
+## the module is already loaded on the host and the nodes arrive through
+## '--volume /dev:/dev'. Failing on the modprobe abandoned the whole descent.
+out="$(run_guard 1 0 || true)"
 case "${out}" in
-   *"using the already-present"*)
+   *"already-present"*)
       pass "modprobe unavailable + device present: continues, and says so"
       ;;
    *)
@@ -110,38 +107,66 @@ case "${out}" in
       ;;
 esac
 
-## Device absent -> must fail, naming BOTH reasons so the operator is not left
-## guessing which applies.
-out="$(run_guard "${guard}" /dev/nbd-absent-for-test || true)"
+## --- modprobe unavailable, no device -> fail, naming BOTH reasons -----------
+out="$(run_guard 1 1 || true)"
 case "${out}" in
-   *"nbd unavailable"*"is not a block device"*)
-      pass "modprobe unavailable + device absent: fails with a named reason"
+   *"nbd unavailable"*"'modprobe nbd' failed"*"no usable /dev/nbd*"*)
+      pass "modprobe unavailable + no device: fails, naming both reasons"
       ;;
    *)
-      fail "modprobe unavailable + device absent: no named failure; got: ${out}"
+      fail "modprobe unavailable + no device: no named failure; got: ${out}"
       ;;
 esac
 
-## CANARY: the pre-fix one-liner must abandon even with the device present, or
-## the checks above are not distinguishing the two forms at all.
-prefix_guard='filesystem_mounts_setup() {
-   sudo --non-interactive modprobe nbd max_part=16 || return 1
-   mkdir --parents'
-out="$(run_guard "${prefix_guard}" /dev/nbd0 || true)"
-case "${out}" in
-   *"using the already-present"*)
-      fail "canary broken: the pre-fix form also continued; the fixture proves nothing"
-      ;;
-   *)
-      pass "canary: pre-fix form abandons even though the device is present"
-      ;;
-esac
-
-## Contract: the shipped file must not still hard-fail on the modprobe alone.
-if grep --quiet --fixed-strings -- 'modprobe nbd max_part=16 || return 1' "${subject}"; then
-   fail "shipped file still aborts on 'modprobe ... || return 1'"
+## --- modprobe SUCCEEDS, no device -> must still fail ------------------------
+## The device probe used to be nested inside the modprobe-failure branch, so a
+## modprobe that succeeded without producing a node (nbds_max=0, or every node
+## busy) skipped the check entirely and the route failed later, unpredictably,
+## with no diagnostic. Loading the module is a means; the device is the
+## requirement.
+rc=0
+out="$(run_guard 0 1)" || rc="$?"
+if [ "${rc}" -ne 0 ]; then
+   pass "modprobe succeeded + no device: still fails (${rc})"
 else
-   pass "shipped file no longer aborts on the modprobe alone"
+   fail "modprobe succeeded + no device: accepted; the probe is only reached when modprobe fails"
+fi
+case "${out}" in
+   *"nbd unavailable"*"succeeded"*)
+      pass "modprobe succeeded + no device: message says the modprobe was not the problem"
+      ;;
+   *)
+      fail "modprobe succeeded + no device: message does not distinguish this from a modprobe failure; got: ${out}"
+      ;;
+esac
+
+## --- CANARY: the normal path must NOT be rejected ---------------------------
+## Without this, every assertion above is satisfied by a guard that always fails,
+## which would disable the descent this route exists to provide.
+rc=0
+out="$(run_guard 0 0)" || rc="$?"
+case "${out}" in
+   *"nbd unavailable"*)
+      fail "canary broken: modprobe succeeded and a device is present, yet the guard reported nbd unavailable -- ${out}"
+      ;;
+   *)
+      pass "canary: modprobe succeeded + device present is not rejected"
+      ;;
+esac
+case "${out}" in
+   *"already-present"*)
+      fail "canary broken: reports the modprobe-unavailable fallback although the modprobe succeeded"
+      ;;
+   *)
+      pass "canary: the fallback notice is not printed when modprobe worked"
+      ;;
+esac
+
+## --- the shipped file, not just the slice -----------------------------------
+if grep --quiet --fixed-strings -- 'if [ ! -b /dev/nbd0 ]' "${subject}"; then
+   fail "shipped file still hardcodes /dev/nbd0; a host whose nbd0 is busy but nbd1 free reads as unusable"
+else
+   pass "shipped file no longer hardcodes /dev/nbd0"
 fi
 
 if [ "${test_failures}" -ne 0 ]; then

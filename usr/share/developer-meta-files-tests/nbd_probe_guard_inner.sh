@@ -5,14 +5,18 @@
 
 ## AI-Assisted
 
-## Drive the extracted 'filesystem_mounts_setup' guard (argv 1) with 'modprobe'
-## guaranteed to fail: a 'sudo' stub that reports command-not-found, exactly as the
-## kmod-less container does.
+## Drive the extracted 'filesystem_mounts_setup' guard (argv 1) against a stubbed
+## environment, so the branch under test is chosen by the caller and not by
+## whatever nbd state this machine happens to be in.
 ##
-## The caller substitutes the DEVICE PATH into the body rather than stubbing the
-## '[' builtin: '[' and 'test' are separate builtins, so overriding a 'test'
-## function does not intercept '[ -b ... ]' at all. Substituting the path leaves
-## the branch structure under test untouched.
+## $GUARD_MODPROBE_RC -- exit status of the stubbed 'sudo' (the modprobe attempt).
+## $GUARD_CLAIM_RC    -- exit status of the stubbed 'nbd_device_claim'.
+##
+## nbd_device_claim is stubbed rather than the device path substituted: the guard
+## now asks it whether ANY usable device exists, which is the whole point (a host
+## whose nbd0 is busy but nbd1 free is usable). Stubbing '[' is not an option
+## either -- '[' and 'test' are separate builtins, so a 'test' function does not
+## intercept '[ -b ... ]'.
 
 set -o errexit
 set -o nounset
@@ -30,8 +34,17 @@ mount_a=/nonexistent/a
 mount_b=/nonexistent/b
 
 sudo() {
-   printf '%s\n' "sudo: modprobe: command not found" >&2
-   return 1
+   if [ "${GUARD_MODPROBE_RC}" -ne 0 ]; then
+      printf '%s\n' "sudo: modprobe: command not found" >&2
+   fi
+   return "${GUARD_MODPROBE_RC}"
+}
+
+nbd_device_claim() {
+   if [ "${GUARD_CLAIM_RC}" -eq 0 ]; then
+      printf '%s\n' /dev/nbd7
+   fi
+   return "${GUARD_CLAIM_RC}"
 }
 
 ## The trailing brace closes the function the extraction slice cut short: the
