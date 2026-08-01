@@ -141,10 +141,47 @@ else
 fi
 
 ## The local ref must be PUSHED, or CI runs a commit that only exists here.
+##
+## Resolved against the DISPATCH TARGET itself, not against a local remote picked
+## by name. A remote called 'org-ai-assisted' is not proof it points at ${repo}
+## -- with --repo pointing elsewhere, or a fork wired under that name, the
+## comparison would pass against a different repository's commit and the dispatch
+## would then run something else entirely.
+##
+## Branch AND tag are both tried, and a fully-qualified ref is passed through:
+## --ref is documented as a git ref, and querying only refs/heads made a tag look
+## like "not pushed".
 local_sha="$( git -C "${source_dir}" rev-parse "${ref}" )"
-remote_sha="$( git -C "${source_dir}" ls-remote "$( git -C "${source_dir}" remote | grep --line-regexp --max-count=1 -- 'org-ai-assisted' || printf 'origin' )" "refs/heads/${ref}" 2>/dev/null | cut -f1 )"
+
+resolve_remote_sha() {
+   local candidate response
+
+   for candidate in "${remote_ref_candidates[@]}"; do
+      response="$( git-api GET "/repos/${repo}/git/ref/${candidate}" 2>/dev/null )" || continue
+      ## The object sha, or nothing when the API returned a "Not Found" body.
+      printf '%s' "${response}" \
+         | python3 -c 'import json,sys
+try:
+    payload = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+obj = payload.get("object") if isinstance(payload, dict) else None
+if isinstance(obj, dict) and obj.get("sha"):
+    print(obj["sha"])'
+   done
+}
+
+case "${ref}" in
+   refs/*)
+      remote_ref_candidates=( "${ref#refs/}" )
+      ;;
+   *)
+      remote_ref_candidates=( "heads/${ref}" "tags/${ref}" )
+      ;;
+esac
+remote_sha="$( resolve_remote_sha | head -1 )"
 if [ -z "${remote_sha}" ]; then
-   printf '%s\n' "${0##*/}: '${ref}' does not exist on the remote; push it first." >&2
+   printf '%s\n' "${0##*/}: '${ref}' does not exist in ${repo} (tried: ${remote_ref_candidates[*]}); push it first." >&2
    exit 1
 fi
 if [ "${local_sha}" != "${remote_sha}" ]; then
