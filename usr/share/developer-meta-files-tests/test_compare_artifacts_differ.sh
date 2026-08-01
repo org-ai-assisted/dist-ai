@@ -16,8 +16,9 @@
 ## code a developer depends on the first time a build stops being reproducible:
 ## the diagnosis arrives when nothing has been exercising it.
 ##
-## Verified real-world: the nbd route was broken by a missing 'modprobe' and
-## nobody noticed until an actual mismatch was investigated.
+## The nbd route is the concrete case: a missing 'modprobe' disables it silently,
+## and only an actual mismatch would reveal that -- which is the one moment the
+## route needs to work.
 ##
 ## Uses artifacts small enough that the whole run is seconds:
 ##   - iso target: two tiny files, exercising the direct route in isolation
