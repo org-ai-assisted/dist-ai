@@ -64,7 +64,7 @@ locate_subject() {
 
    for candidate in \
       "${test_dir}/dm-upload-images" \
-      "${HOME}/derivative-maker/packages/kicksecure/developer-meta-files/usr/bin/dm-upload-images"; do
+      "${dm_checkout}/packages/kicksecure/developer-meta-files/usr/bin/dm-upload-images"; do
       if [ -n "${candidate}" ] && [ -r "${candidate}" ]; then
          subject_path="${candidate}"
          return 0

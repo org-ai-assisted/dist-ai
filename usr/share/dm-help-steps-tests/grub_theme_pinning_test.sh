@@ -37,7 +37,7 @@ test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 source "${test_dir}/help_steps_test_lib.bsh"
 
 dm_root=""
-for candidate in "${DERIVATIVE_MAKER_DIR:-}" "${HOME}/derivative-maker"; do
+for candidate in "${DERIVATIVE_MAKER_DIR:-}" "${dm_checkout}"; do
    [ -n "${candidate}" ] || continue
    if [ -d "${candidate}/packages" ]; then
       dm_root="${candidate}"
@@ -52,9 +52,13 @@ if [ -z "${dm_root}" ] && [ -z "${single_pkg}" ]; then
    exit 77
 fi
 
+## Packages actually inspected. A run where every submodule is uninitialized
+## proves nothing, so it must SKIP rather than report success.
+packages_checked=0
+
 ## Each package selects its own theme variant with the same snippet shape, so the
-## checks are run per package rather than copied per file. A package whose
-## snippet is absent is reported, never skipped silently.
+## checks are run per package rather than copied per file. A package that IS
+## checked out but has lost its snippet is reported, never skipped silently.
 check_package() {
    local pkg_dir="$1" snippet="$2" label="$3"
    local subject links_file code_only values write_hits forbidden candidate_links
@@ -70,6 +74,17 @@ check_package() {
          break
       fi
    done
+
+   ## An uninitialized submodule is not a defect in the package: the directory is
+   ## absent or empty because nobody ran 'git submodule update --init', and
+   ## reporting that as a missing snippet sends the reader after a file that was
+   ## never meant to be there. A CHECKED-OUT package missing its snippet still
+   ## fails below.
+   if [ ! -d "${pkg_dir}" ] || [ -z "$(ls -A -- "${pkg_dir}" 2>/dev/null)" ]; then
+      printf '%s\n' "NOTE: ${label}: not checked out under '${pkg_dir}'; skipping this package." >&2
+      return 0
+   fi
+   packages_checked=$(( packages_checked + 1 ))
 
    if [ ! -r "${subject}" ]; then
       fail "${label}: ${snippet} not found under ${pkg_dir}"
@@ -218,7 +233,7 @@ fi
 dist_common=""
 for candidate in "${DIST_COMMON_DIR:-}" \
    "${dm_root}/packages/kicksecure/dist-base-files/boot/grub/themes/dist-common" \
-   "${HOME}/derivative-maker/packages/kicksecure/dist-base-files/boot/grub/themes/dist-common"; do
+   "${dm_checkout}/packages/kicksecure/dist-base-files/boot/grub/themes/dist-common"; do
    [ -n "${candidate}" ] || continue
    if [ -d "${candidate}" ]; then
       dist_common="${candidate}"
@@ -253,4 +268,11 @@ if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1
 fi
-printf '%s\n' "OK: grub theme pinning."
+## Zero packages inspected is a SKIP, never an OK: nothing was verified, and
+## "OK: grub theme pinning" over an empty run is the silent-green failure mode
+## this suite exists to avoid.
+if [ "${packages_checked}" -eq 0 ]; then
+   printf '%s\n' "SKIP: no grub-theme package is checked out; nothing was verified." >&2
+   exit 77
+fi
+printf '%s\n' "OK: grub theme pinning (${packages_checked} package(s))."

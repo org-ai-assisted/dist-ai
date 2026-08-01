@@ -38,7 +38,7 @@ source "${test_dir}/help_steps_test_lib.bsh"
 parse_cmd=""
 for candidate in "${DM_PARSE_CMD:-}" \
    "${DERIVATIVE_MAKER_DIR:-}/help-steps/parse-cmd" \
-   "${HOME}/derivative-maker/help-steps/parse-cmd"; do
+   "${dm_checkout}/help-steps/parse-cmd"; do
    case "${candidate}" in
       ''|'/help-steps/parse-cmd')
          continue

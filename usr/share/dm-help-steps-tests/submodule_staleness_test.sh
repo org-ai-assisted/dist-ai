@@ -64,7 +64,7 @@ locate_subject() {
    fi
    for candidate in \
       "${test_dir}/assert-submodule-not-stale" \
-      "${HOME}/derivative-maker/ci/assert-submodule-not-stale"; do
+      "${dm_checkout}/ci/assert-submodule-not-stale"; do
       if [ -r "${candidate}" ]; then
          subject_path="${candidate}"
          return 0
@@ -125,7 +125,7 @@ build_fixture_multi() {
    git_quiet -C "${super}" add README
    git_quiet -C "${super}" commit --quiet --no-verify --message base
 
-   : > "${super}/.gitmodules"
+   true > "${super}/.gitmodules"
    for submodule_spec in "$@"; do
       submodule_name="${submodule_spec%%:*}"
       submodule_pin="${submodule_spec#*:}"
@@ -299,7 +299,7 @@ main() {
    safe-rm --recursive --force -- "${super}"
 
    super="$(build_fixture_multi "${scratch}" "fresh:${new_sha}")"
-   : > "${super}/.gitmodules"
+   true > "${super}/.gitmodules"
    rc="$(run_subject_all "${super}")"
    require_rc "${rc}" "2" "--all with an empty .gitmodules refuses to report coverage"
    safe-rm --recursive --force -- "${super}"

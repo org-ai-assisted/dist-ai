@@ -44,7 +44,7 @@ locate_subject() {
 
    for candidate in "${DM_SANITY_TESTS:-}" \
       "${DERIVATIVE_MAKER_DIR:-}/build-steps.d/1100_sanity-tests" \
-      "${HOME}/derivative-maker/build-steps.d/1100_sanity-tests"; do
+      "${dm_checkout}/build-steps.d/1100_sanity-tests"; do
       case "${candidate}" in
          ''|'/build-steps.d/1100_sanity-tests')
             continue

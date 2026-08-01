@@ -51,7 +51,7 @@ repo_root=""
 locate_repo_root() {
    local candidate
 
-   for candidate in "${DERIVATIVE_MAKER_DIR:-}" "${HOME}/derivative-maker"; do
+   for candidate in "${DERIVATIVE_MAKER_DIR:-}" "${dm_checkout}"; do
       [ -n "${candidate}" ] || continue
       if [ -r "${candidate}/ci/reproducible-build-twice" ] \
          && [ -r "${candidate}/help-steps/variables" ]; then

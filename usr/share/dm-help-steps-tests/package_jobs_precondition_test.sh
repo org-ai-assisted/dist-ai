@@ -38,7 +38,7 @@ repo_root=""
 locate_repo_root() {
    local candidate
 
-   for candidate in "${DERIVATIVE_MAKER_DIR:-}" "${HOME}/derivative-maker"; do
+   for candidate in "${DERIVATIVE_MAKER_DIR:-}" "${dm_checkout}"; do
       [ -n "${candidate}" ] || continue
       if [ -r "${candidate}/build-steps.d/2100_create-debian-packages" ] \
          && [ -r "${candidate}/help-steps/parse-cmd" ]; then

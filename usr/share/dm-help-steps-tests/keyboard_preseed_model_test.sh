@@ -41,7 +41,7 @@ locate_subject() {
    for candidate in "${LEGACY_DIST_PREINST:-}" \
       "${LEGACY_DIST_DIR:-}/debian/legacy-dist.preinst" \
       "${DERIVATIVE_MAKER_DIR:-}/packages/kicksecure/legacy-dist/debian/legacy-dist.preinst" \
-      "${HOME}/derivative-maker/packages/kicksecure/legacy-dist/debian/legacy-dist.preinst"; do
+      "${dm_checkout}/packages/kicksecure/legacy-dist/debian/legacy-dist.preinst"; do
       [ -n "${candidate}" ] || continue
       if [ -r "${candidate}" ]; then
          preinst="${candidate}"

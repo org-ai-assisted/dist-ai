@@ -31,6 +31,16 @@ set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
 
+## The derivative-maker checkout under test. An explicitly named tree is the ONLY
+## answer: falling back to '~/derivative-maker' reports on a DIFFERENT tree than
+## the caller asked about, and a stale checkout there then reads as a defect in
+## the code under test rather than as a stale checkout.
+if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
+   dm_checkout="${DERIVATIVE_MAKER_DIR}"
+else
+   dm_checkout="${HOME}/derivative-maker"
+fi
+
 pass() {
    printf '%s\n' "PASS: $*"
 }
@@ -43,7 +53,7 @@ fail() {
 subject=""
 for candidate in "${DM_BUILDINFO:-}" \
    "${DEVELOPER_META_FILES_DIR:-}/usr/bin/dm-reproducible-buildinfo" \
-   "${HOME}/derivative-maker/packages/kicksecure/developer-meta-files/usr/bin/dm-reproducible-buildinfo" \
+   "${dm_checkout}/packages/kicksecure/developer-meta-files/usr/bin/dm-reproducible-buildinfo" \
    "/usr/bin/dm-reproducible-buildinfo"; do
    [ -n "${candidate}" ] || continue
    if [ -r "${candidate}" ]; then

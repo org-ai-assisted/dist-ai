@@ -38,6 +38,16 @@ set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
 
+## The derivative-maker checkout under test. An explicitly named tree is the ONLY
+## answer: falling back to '~/derivative-maker' reports on a DIFFERENT tree than
+## the caller asked about, and a stale checkout there then reads as a defect in
+## the code under test rather than as a stale checkout.
+if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
+   dm_checkout="${DERIVATIVE_MAKER_DIR}"
+else
+   dm_checkout="${HOME}/derivative-maker"
+fi
+
 test_failures=0
 work_dir=''
 
@@ -92,7 +102,7 @@ locate_generator() {
       fi
    fi
 
-   source_dir="${DM_SOURCE_DIR:-${HOME}/derivative-maker}"
+   source_dir="${DM_SOURCE_DIR:-${dm_checkout}}"
    candidate="${source_dir}/packages/kicksecure/developer-meta-files/usr/bin/dm-packages-html-generator"
    if [ -x "${candidate}" ]; then
       printf '%s\n' "${candidate}"

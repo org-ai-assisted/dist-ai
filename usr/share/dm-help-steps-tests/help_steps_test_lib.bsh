@@ -16,6 +16,16 @@
 
 test_failures=0
 
+## The derivative-maker checkout under test. An explicitly named tree is the ONLY
+## answer: falling back to '~/derivative-maker' reports on a DIFFERENT tree than
+## the caller asked about, and a stale checkout there then reads as a defect in
+## the code under test rather than as a stale checkout.
+if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
+   dm_checkout="${DERIVATIVE_MAKER_DIR}"
+else
+   dm_checkout="${HOME}/derivative-maker"
+fi
+
 pass() {
    printf '%s\n' "PASS: $*"
 }
@@ -44,7 +54,7 @@ locate_help_step() {
       printf '%s\n' "${test_dir}/${script_name}"
       return 0
    fi
-   checkout="${HOME}/derivative-maker/help-steps/${script_name}"
+   checkout="${dm_checkout}/help-steps/${script_name}"
    if [ -r "${checkout}" ]; then
       printf '%s\n' "${checkout}"
       return 0

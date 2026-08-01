@@ -41,7 +41,7 @@ source "${test_dir}/help_steps_test_lib.bsh"
 subject=""
 for candidate in "${DM_BUILD_OFFICIAL_ONE:-}" \
    "${DERIVATIVE_MAKER_DIR:-}/help-steps/dm-build-official-one" \
-   "${HOME}/derivative-maker/help-steps/dm-build-official-one"; do
+   "${dm_checkout}/help-steps/dm-build-official-one"; do
    case "${candidate}" in
       ''|'/help-steps/dm-build-official-one')
          continue

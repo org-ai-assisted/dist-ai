@@ -46,7 +46,7 @@ locate_subject() {
 
    for candidate in "${DM_DOCKER_START:-}" \
       "${DERIVATIVE_MAKER_DIR:-}/docker/derivative-maker-docker-start" \
-      "${HOME}/derivative-maker/docker/derivative-maker-docker-start"; do
+      "${dm_checkout}/docker/derivative-maker-docker-start"; do
       case "${candidate}" in
          ''|'/docker/derivative-maker-docker-start')
             continue
