@@ -1,0 +1,177 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Run every cheap check that can invalidate a derivative-maker build, in
+## ascending cost, and stop at the first that fails.
+##
+## WHY THIS IS A TOOL AND NOT A CHECKLIST: each of these has already been skipped
+## once and cost a build cycle. A rule someone has to remember does not run; a
+## command does. The one that hurt most: a parent commit pushed with the
+## developer-meta-files changes still sitting UNCOMMITTED in the submodule, so CI
+## built a tree that did not contain the fix under test and three unrelated tests
+## failed against the stale pinned copy.
+##
+## Usage:
+##   dm-preflight [--dir <derivative-maker checkout>] [--quick]
+##
+## --quick  skip the test suites (the slowest stage); the git-state checks alone.
+##
+## Exit: 0 everything passed | 1 a check failed | 2 usage / not a dm checkout.
+##
+## Ordering is the point. A submodule whose work is uncommitted invalidates
+## everything downstream, so it is checked before the static gate, which is
+## checked before the suites.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+source_dir=""
+quick=false
+
+while [ "$#" -gt 0 ]; do
+   case "$1" in
+      --dir)
+         [ "$#" -ge 2 ] || { printf '%s\n' "${0##*/}: --dir requires a value." >&2 ; exit 2 ; }
+         source_dir="$2"
+         shift 2
+         ;;
+      --quick)
+         quick=true
+         shift
+         ;;
+      -h|--help)
+         grep '^##' -- "${BASH_SOURCE[0]}" | sed 's/^## \{0,1\}//'
+         exit 0
+         ;;
+      *)
+         printf '%s\n' "${0##*/}: unknown argument: '$1'" >&2
+         exit 2
+         ;;
+   esac
+done
+
+[ -n "${source_dir}" ] || source_dir="${PWD}"
+if [ ! -d "${source_dir}/build-steps.d" ] || [ ! -d "${source_dir}/help-steps" ]; then
+   printf '%s\n' "${0##*/}: '${source_dir}' is not a derivative-maker checkout (no build-steps.d + help-steps)." >&2
+   exit 2
+fi
+source_dir="$( cd -- "${source_dir}" && pwd )"
+
+failures=0
+stage() {
+   printf '\n== %s ==\n' "$*"
+}
+ok() {
+   printf '   ok: %s\n' "$*"
+}
+bad() {
+   printf '   FAIL: %s\n' "$*" >&2
+   failures=$(( failures + 1 ))
+}
+
+## --- 1. submodules with uncommitted work --------------------------------------
+## The parent records a POINTER. Work left uncommitted inside a submodule is
+## invisible to the parent's commit and therefore to CI, which then builds a tree
+## that does not contain it.
+stage "submodules: uncommitted work"
+dirty_submodules="$( git -C "${source_dir}" submodule --quiet foreach --recursive \
+   'if [ -n "$(git status --porcelain)" ]; then printf "%s\n" "${displaypath}"; fi' 2>/dev/null || true )"
+if [ -z "${dirty_submodules}" ]; then
+   ok "no submodule carries uncommitted changes"
+else
+   bad "these submodules have UNCOMMITTED changes; a parent commit will not carry them:"
+   printf '%s\n' "${dirty_submodules}" | sed 's/^/          /' >&2
+fi
+
+## --- 2. gitlink vs the submodule's own HEAD -----------------------------------
+## A submodule committed and pushed, but the parent's pointer never bumped, means
+## CI checks out the OLD commit. REPORTED, not failed: a submodule sitting ahead
+## of its pin is the NORMAL state while work is in progress on its branch, and
+## ci/checkout-fork-submodule-branches puts it there deliberately. Only the
+## author knows whether the change under test lives in one of these. Crying wolf
+## on every one of thirty submodules would train everyone to ignore the check
+## that matters, which is the uncommitted one above.
+stage "submodules: ahead of the pin (report only)"
+lagging_gitlinks="$( git -C "${source_dir}" submodule --quiet foreach --recursive \
+   'pinned="$(git -C "${toplevel}" ls-tree HEAD -- "${displaypath}" | { read -r _ _ sha _ ; printf "%s" "${sha}" ; })"
+    head_sha="$(git rev-parse HEAD)"
+    if [ -n "${pinned}" ] && [ "${pinned}" != "${head_sha}" ]; then
+       printf "%s (pinned %.12s, HEAD %.12s)\n" "${displaypath}" "${pinned}" "${head_sha}"
+    fi' 2>/dev/null || true )"
+if [ -z "${lagging_gitlinks}" ]; then
+   ok "every gitlink matches its submodule's HEAD"
+else
+   printf '%s\n' "   NOTE: these submodules are AHEAD of the pin. If your change is in one," \
+      "         the parent will not carry it until the gitlink is bumped:" >&2
+   printf '%s\n' "${lagging_gitlinks}" | sed 's/^/          /' >&2
+fi
+
+## --- 3. pin freshness ---------------------------------------------------------
+## Reported, not enforced, for the same reason ci/assert-submodule-not-stale
+## reports for --all: most dm pins deliberately trail.
+stage "submodules: pin freshness (report only)"
+if [ -x "${source_dir}/ci/assert-submodule-not-stale" ]; then
+   if ( cd -- "${source_dir}" && ./ci/assert-submodule-not-stale --all --report-only ) 2>&1 \
+      | grep -E 'submodule\(s\):|TRAILS' | sed 's/^/   /' ; then
+      true
+   fi
+   ok "freshness reported above"
+else
+   printf '%s\n' "   NOTE: ci/assert-submodule-not-stale not present; freshness not checked." >&2
+fi
+
+## --- 4. the static gate -------------------------------------------------------
+stage "static gate"
+if ! type -P pre-push-static >/dev/null; then
+   bad "pre-push-static is not on PATH; the gate cannot run and its absence is not a pass"
+else
+   gate_base="$( git -C "${source_dir}" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true )"
+   if [ -z "${gate_base}" ]; then
+      printf '%s\n' "   NOTE: no upstream tracking branch; gating the staged changeset instead." >&2
+      if ( cd -- "${source_dir}" && pre-push-static --staged >/dev/null 2>&1 ); then
+         ok "static gate green (staged)"
+      else
+         bad "static gate FAILED (staged) -- run 'pre-push-static --staged' for detail"
+      fi
+   elif ( cd -- "${source_dir}" && pre-push-static "${gate_base}" >/dev/null 2>&1 ); then
+      ok "static gate green against ${gate_base}"
+   else
+      bad "static gate FAILED against ${gate_base} -- run 'pre-push-static ${gate_base}' for detail"
+   fi
+fi
+
+## --- 5. the suites ------------------------------------------------------------
+if [ "${quick}" = "true" ]; then
+   printf '\n== suites: skipped (--quick) ==\n'
+else
+   stage "dist-ai suites over this checkout"
+   suite_ran=false
+   for suite in dm-help-steps-tests dm-grub-smbios-tests; do
+      if ! type -P "${suite}" >/dev/null; then
+         continue
+      fi
+      suite_ran=true
+      if DERIVATIVE_MAKER_DIR="${source_dir}" "${suite}" >/dev/null 2>&1; then
+         ok "${suite}"
+      else
+         bad "${suite} FAILED -- run 'DERIVATIVE_MAKER_DIR=${source_dir} ${suite}' for detail"
+      fi
+   done
+   if [ "${suite_ran}" = "false" ]; then
+      bad "no dist-ai suite is on PATH; missing tooling is a gap to fix, not a pass"
+   fi
+fi
+
+if [ "${failures}" -ne 0 ]; then
+   printf '%s\n' "${0##*/}: ${failures} check(s) failed. Do NOT spend a build on this tree." >&2
+   exit 1
+fi
+printf '%s\n' "${0##*/}: all checks passed."
