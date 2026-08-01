@@ -152,6 +152,32 @@ else
    fi
 fi
 
+## A released image artifact is hundreds of megabytes, so a scratch directory
+## that cannot hold one is a setup error -- catch it HERE, not as an ENOSPC
+## halfway through a download that then reads as "the run has no provenance
+## record". The default scratch is disk-backed, but --keep takes the caller's
+## word, and pointing it at a small tmpfs is exactly how this went wrong: it
+## filled a shared 2 GiB tmpfs and broke unrelated commands on the box.
+scratch_free_kib="$( df --output=avail --block-size=1K -- "${work_dir}" 2>/dev/null | tail -n 1 | tr -d ' ' )"
+case "${scratch_free_kib}" in
+   ''|*[!0-9]*)
+      printf '%s\n' "${0##*/}: NOTE: could not read free space for '${work_dir}'; proceeding." >&2
+      ;;
+   *)
+      ## Two artifacts plus their unpacked copies; 4 GiB is the floor that has
+      ## actually been needed, not a guess.
+      if [ "${scratch_free_kib}" -lt 4194304 ]; then
+         printf '%s\n' \
+            "${0##*/}: scratch directory '${work_dir}' has only $(( scratch_free_kib / 1024 )) MiB free." \
+            "  A CI image artifact is ~500 MB and is unpacked alongside its download, so this will" \
+            "  fail partway through and report a misleading cause." \
+            "  Point --keep at a disk-backed directory (the default scratch is \${HOME}/.cache/dm-repro-verify)," \
+            "  not at a tmpfs-backed temporary directory, which is small and shared here." >&2
+         exit 2
+      fi
+      ;;
+esac
+
 ## Resolve the run to compare against.
 if [ -z "${run_id}" ]; then
    printf '%s\n' "${0##*/}: resolving the most recent successful '${workflow}' run on ${repo}..." >&2
