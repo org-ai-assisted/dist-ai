@@ -63,11 +63,17 @@ extract_block() {
       | grep -vE '^$'
 }
 
+## 77, not 1: dist-ai-tests-all's contract is "a suite that cannot find its
+## target exits 77 and is reported SKIP", and an UNAUTHORIZED 77 still fails the
+## run -- so this loses no strictness, it just stops reporting "the readers have
+## drifted" when the truth is "the reader was never checked out". The disk half
+## lives in the vm-config-dist SUBMODULE, and the dist-ai-tests CI job checks out
+## the component repo alone, so this is the normal state there.
 for f in "${disk_file}" "${iso_file}"; do
    if [ ! -r "${f}" ]; then
-      printf 'FAIL  missing SMBIOS reader: %s\n' "${f}" >&2
-      printf '%s\n' "set DERIVATIVE_MAKER_DIR if the checkout lives elsewhere" >&2
-      exit 1
+      printf '%s\n' "SKIP: missing SMBIOS reader: ${f}" >&2
+      printf '%s\n' "set DERIVATIVE_MAKER_DIR if the checkout lives elsewhere, or check out the vm-config-dist submodule" >&2
+      exit 77
    fi
 done
 
