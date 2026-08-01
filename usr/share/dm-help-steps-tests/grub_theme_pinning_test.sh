@@ -160,7 +160,12 @@ case "${values}" in
 esac
 
 ## A mode the firmware cannot set must degrade to grub's own choice rather than
-## to an unreadable console.
+## to an unreadable console. This is a documented GRUB feature, verified against
+## the manual rather than assumed -- "15.1.12 gfxmode": a sequence of modes
+## separated by commas or semicolons, "each will be tried in turn until one is
+## found", where each mode may be 'auto', WIDTHxHEIGHT or WIDTHxHEIGHTxDEPTH.
+## grub-mkconfig passes GRUB_GFXMODE through verbatim ('set gfxmode=${GRUB_GFXMODE}'
+## in /etc/grub.d/00_header), so the gfxmode semantics apply to it directly.
 case "${values}" in
    *"GRUB_GFXMODE="*",auto"*)
       pass "GRUB_GFXMODE carries an 'auto' fallback"
