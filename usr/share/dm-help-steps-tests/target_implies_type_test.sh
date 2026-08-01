@@ -125,6 +125,26 @@ case "${helper}" in
       ;;
 esac
 
+## --- '--type' must be matched as a whole ARGUMENT ---------------------------
+## The helper greps the argument list for '--type' to decide whether the caller
+## already chose one. As a plain substring match, any value merely CONTAINING the
+## text (e.g. '--conffile /tmp/build--type.conf') suppressed the inference, and
+## the build then failed the later "You must add either '--type vm'" check for a
+## reason nothing in the command line suggested.
+helper_matches="$(sed -n '/^implicit_dist_type_vm()/,/^}/p' -- "${parse_cmd}" | grep -- 'grep --fixed-strings' || true)"
+if [ -z "${helper_matches}" ]; then
+   fail "implicit_dist_type_vm no longer greps the argument list; this assertion is stale"
+else
+   case "${helper_matches}" in
+      *--line-regexp*)
+         pass "'--type' is matched as a whole argument (--line-regexp)"
+         ;;
+      *)
+         fail "'--type' is matched as a SUBSTRING; an unrelated argument containing it suppresses the inference"
+         ;;
+   esac
+fi
+
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1
