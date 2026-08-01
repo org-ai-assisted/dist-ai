@@ -53,32 +53,40 @@ if [ -z "${subject}" ]; then
    exit 77
 fi
 
-## The resolution block only: from whichever MYDIR-vs-/usr/bin branch opens it to
-## the first 'source' that follows. Deliberately matches both the braced and
-## unbraced spellings -- a slice that only matched the fixed form would fail to
-## extract on the buggy one, and this test would then "fail" without any of its
-## assertions having run.
-block="$(sed -n '/MYDIR.*=.*"\/usr\/bin"/,/^source /p' -- "${subject}")"
+## The resolution now lives in ONE shared library, so that is what carries the
+## order; each tool is checked for USING it rather than for repeating it.
+lib=""
+for candidate in "$(dirname -- "$(dirname -- "${subject}")")/libexec/developer-meta-files/source-tree-lib.bsh" \
+   "${DEVELOPER_META_FILES_DIR:-}/usr/libexec/developer-meta-files/source-tree-lib.bsh"; do
+   if [ -r "${candidate}" ]; then
+      lib="${candidate}"
+      break
+   fi
+done
+if [ -z "${lib}" ]; then
+   fail "source-tree-lib.bsh not found; the shared resolver is what every tool depends on"
+   printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
+   exit 1
+fi
+pass "shared resolver source-tree-lib.bsh exists"
+
+block="$(sed -n '/^derivative_maker_source_tree_resolve()/,/^}/p' -- "${lib}")"
 if [ -z "${block}" ]; then
-   printf '%s\n' "FAILED: could not extract the tree-resolution block." >&2
+   printf '%s\n' "FAILED: could not extract derivative_maker_source_tree_resolve." >&2
    exit 1
 fi
 
 ## --- the hardcoded path must no longer be the only answer ------------------
 case "${block}" in
    *'source_code_folder_dist'*)
-      pass "resolution consults source_code_folder_dist, the build's own variable"
+      pass "resolver consults source_code_folder_dist, the build's own variable"
       ;;
    *)
-      fail "resolution ignores source_code_folder_dist, so a tree outside \$HOME cannot be found"
+      fail "resolver ignores source_code_folder_dist, so a tree outside \$HOME cannot be found"
       ;;
 esac
 
 ## Order matters: the build's own variable must win over the convention.
-## '|| true' on both: a grep that matches nothing exits 1, and under errexit the
-## command substitution would abort this script mid-run -- reporting one failure
-## and silently skipping every assertion after it, which is exactly what a canary
-## run against the buggy file does.
 authoritative_at="$(printf '%s\n' "${block}" | grep --line-number --max-count=1 -- 'source_code_folder_dist' | cut -d: -f1 || true)"
 fallback_at="$(printf '%s\n' "${block}" | grep --line-number --max-count=1 --extended-regexp -- '\$\{?HOME\}?/derivative-maker' | cut -d: -f1 || true)"
 if [ -n "${authoritative_at}" ] && [ -n "${fallback_at}" ]; then
@@ -92,11 +100,6 @@ else
 fi
 
 ## --- CANARY: the conventional fallback must still exist --------------------
-## Without it, the assertions above are satisfied by deleting the fallback, which
-## would break every operator who does keep the checkout at ~/derivative-maker.
-## Braced or unbraced: the point is that the convention survives, not how it is
-## spelled. Matching only one form would report it "removed" from a file that
-## still has it, which is a lie in the canary direction.
 if printf '%s\n' "${block}" | grep --quiet --extended-regexp -- '\$\{?HOME\}?/derivative-maker'; then
    pass "canary: the ~/derivative-maker convention is still honoured as a fallback"
 else
@@ -113,13 +116,37 @@ case "${block}" in
       ;;
 esac
 case "${block}" in
-   *'source_code_folder_dist'*"Set '"*)
+   *"Set 'source_code_folder_dist'"*)
       pass "the error says what to set"
       ;;
    *)
       fail "the error does not say how to fix it"
       ;;
 esac
+
+## --- every build-path tool must USE the resolver, not repeat the assumption -
+## These two are what dm-build-official-one's Phase 4 invokes as the INSTALLED
+## copies, so they are the ones a build actually depends on.
+tool_dir="$(dirname -- "${subject}")"
+for tool_name in dm-prepare-release dm-upload-images; do
+   tool="${tool_dir}/${tool_name}"
+   if [ ! -r "${tool}" ]; then
+      fail "${tool_name} not found beside ${subject}"
+      continue
+   fi
+   if grep --quiet --fixed-strings -- 'derivative_maker_source_tree_resolve' "${tool}"; then
+      pass "${tool_name} uses the shared resolver"
+   else
+      fail "${tool_name} does not use the shared resolver"
+   fi
+   ## A leftover hardcoded source line is the actual defect, so look for that
+   ## rather than for the string appearing anywhere (comments explain it).
+   if grep --quiet --extended-regexp -- '^[[:space:]]*source[[:space:]]+"?\$\{?HOME\}?/derivative-maker' "${tool}"; then
+      fail "${tool_name} still sources from a hardcoded \$HOME/derivative-maker"
+   else
+      pass "${tool_name} sources nothing from a hardcoded \$HOME/derivative-maker"
+   fi
+done
 
 ## --- behavioural: an unresolvable tree exits non-zero, and says so ----------
 ## Run the real script with HOME pointed at an empty dir, no source_code_folder_dist,
