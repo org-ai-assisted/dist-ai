@@ -433,6 +433,18 @@ wire() {
             "DM_HELP_STEPS_PRE=$( pkg_dir derivative-maker )/help-steps/pre"
             "DM_UPLOAD_IMAGES=$( pkg_dir derivative-maker )/packages/kicksecure/developer-meta-files/usr/bin/dm-upload-images"
             "DM_ASSERT_SUBMODULE=$( pkg_dir derivative-maker )/ci/assert-submodule-not-stale"
+            ## In the main repo, so these RUN in component CI rather than
+            ## skipping: without them the payloads fall back to
+            ## '${HOME}/derivative-maker', which no CI runner has, and exit 77
+            ## inside a suite that still reports PASS.
+            "DM_SANITY_TESTS=$( pkg_dir derivative-maker )/build-steps.d/1100_sanity-tests"
+            "DM_BUILD_OFFICIAL_ONE=$( pkg_dir derivative-maker )/help-steps/dm-build-official-one"
+            ## Submodules: absent in the dist-ai-tests job (it checks out the
+            ## component repo alone), so these payloads SKIP there and run from a
+            ## full checkout. Wired anyway so the skip is a checkout fact rather
+            ## than a missing variable.
+            "KICKSECURE_BASE_FILES_DIR=$( pkg_dir kicksecure-base-files )"
+            "LEGACY_DIST_PREINST=$( pkg_dir legacy-dist )/debian/legacy-dist.preinst"
          )
          ;;
       dm-reprepro-tracking)
