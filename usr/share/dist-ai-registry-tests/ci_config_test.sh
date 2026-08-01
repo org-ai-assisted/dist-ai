@@ -162,6 +162,57 @@ if [ -n "${duplicates}" ]; then
    fail "the resolved apt package list repeats: '${duplicates}' in '${resolved}'"
 fi
 
+## ---- the 'submodules' opt-in reaches the workflow -------------------------
+## The flag is what makes a suite whose subject lives in a submodule actually
+## RUN. If the resolver stopped emitting it, the workflow's
+## "steps.cfg.outputs.submodules == 'true'" condition would silently read empty,
+## the submodules would not be checked out, and the suite would exit 77 -- an
+## unauthorized skip reported as a failed run, with nothing pointing here.
+resolve_key() {
+   local config key out_file line
+
+   config="$1"
+   key="$2"
+   ## The resolver APPENDS to $GITHUB_OUTPUT, and both calls below resolve the
+   ## same key, so this file must be TRUNCATED rather than merely created --
+   ## otherwise the second call reads the first call's value and the canary
+   ## passes on stale output. 'printf' rather than ':' (R-130).
+   out_file="${work_dir}/out.${key}.$$"
+   printf '' > "${out_file}"
+   GITHUB_OUTPUT="${out_file}" GITHUB_WORKSPACE="${work_dir}" \
+      "${resolver}" "${config}" >/dev/null 2>&1 || return 1
+   while IFS= read -r line; do
+      case "${line}" in
+         "${key}="*)
+            printf '%s\n' "${line#*=}"
+            return 0
+            ;;
+      esac
+   done < "${out_file}"
+   return 0
+}
+
+submodules_cfg="${work_dir}/submodules.yml"
+printf '%s\n' 'dist-ai-tests:' '  submodules: true' > "${submodules_cfg}"
+checks=$(( checks + 1 ))
+if [ "$(resolve_key "${submodules_cfg}" submodules)" = 'true' ]; then
+   printf '%s\n' "ok: 'submodules: true' is emitted as submodules=true"
+else
+   fail "'submodules: true' did not reach the workflow as submodules=true"
+fi
+
+## CANARY: default OFF. Checking out submodules for every consumer that never
+## asked would be a cost with no coverage, so the absence of the key must not
+## read as 'true'.
+default_cfg="${work_dir}/default.yml"
+printf '%s\n' 'dist-ai-tests:' '  apt-packages: "python3"' > "${default_cfg}"
+checks=$(( checks + 1 ))
+if [ "$(resolve_key "${default_cfg}" submodules)" = 'false' ]; then
+   printf '%s\n' 'ok: canary: absent key resolves to submodules=false'
+else
+   fail "canary: an absent 'submodules' key did not resolve to false"
+fi
+
 printf '%s\n' "===== summary: ${checks} checks, ${failures} failure(s) ====="
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' 'FAILED: the CI apt package resolution is wrong' >&2

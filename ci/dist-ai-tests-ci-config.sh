@@ -21,6 +21,7 @@
 ##   hs_arg          the matching '--helper-scripts-root <dir>' argument for
 ##                   dist-ai-tests-all, or empty
 ##   terminal_poc_corpus  'true' if a terminal-poc-corpus checkout is also needed
+##   submodules      'true' if the component's submodules must be checked out
 ##                   (the adversarial PoC corpus lives in its own repo, so a suite
 ##                   that drives it cannot resolve one in CI otherwise, and would
 ##                   exit 77 -> reported SKIP -> counted green)
@@ -50,6 +51,7 @@ apt_packages_base='python3 python3-pytest python3-hypothesis safe-rm'
 apt_packages="${apt_packages_base}"
 helper_scripts='false'
 terminal_poc_corpus='false'
+submodules='false'
 skip_args=''
 allow_skip_args=''
 
@@ -78,6 +80,18 @@ if [ -f "${cfg}" ]; then
    ## drives it can use one.
    if [ "$(yq -r '.["dist-ai-tests"]["terminal-poc-corpus"] // ""' "${cfg}")" = 'true' ]; then
       terminal_poc_corpus='true'
+   fi
+   ## Opt-in submodule checkout for the component. Some suites assert on files
+   ## that live in a SUBMODULE (derivative-maker's dm-grub-smbios-tests compares
+   ## the disk-side SMBIOS reader in vm-config-dist against the ISO-side copy in
+   ## the main tree). Without them the suite cannot resolve its subject and exits
+   ## 77, which -- correctly -- fails the run as an unauthorized skip. Checking
+   ## them out is what makes the test actually RUN; it is not free, so it stays
+   ## per-repo rather than unconditional.
+   ## 'true' (direct submodules), not 'recursive': the suites need the component's
+   ## own submodules, and recursive multiplies the checkout for no added coverage.
+   if [ "$(yq -r '.["dist-ai-tests"].submodules // ""' "${cfg}")" = 'true' ]; then
+      submodules='true'
    fi
    ## Optional list of suite entrypoints to skip (a suite temporarily broken /
    ## pending a merge). Each becomes a '--skip <name>' argument.
@@ -120,6 +134,7 @@ esac
    printf 'apt_packages=%s\n' "${apt_packages}"
    printf 'helper_scripts=%s\n' "${helper_scripts}"
    printf 'terminal_poc_corpus=%s\n' "${terminal_poc_corpus}"
+   printf 'submodules=%s\n' "${submodules}"
    printf 'skip_args=%s\n' "${skip_args# }"
    printf 'allow_skip_args=%s\n' "${allow_skip_args# }"
    if [ "${helper_scripts}" = 'true' ]; then
