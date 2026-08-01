@@ -5,5 +5,4 @@ when nothing is left. Do not add a completed review here.
 
 ## since 9e67381974ab
 - reviewers: glm
-- head when last run: f5a6f48b04aa
 - re-run: ai-review 9e67381974ab --only glm
