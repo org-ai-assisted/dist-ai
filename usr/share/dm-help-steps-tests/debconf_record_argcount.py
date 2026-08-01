@@ -45,13 +45,21 @@ def inspect_feed(words):
             return str(len(arguments))
         return None
     if command == 'echo':
-        options = [word for word in words[1:] if word.startswith('-')]
-        values = words[1:]
-        if any('e' in option[1:] for option in options):
-            return 'echo-e'
+        ## echo parses options only BEFORE the first non-option word; everything
+        ## after is literal text to print. Scanning every '-'-prefixed word would
+        ## flag 'echo pkg question type -example' as escape-enabled, which prints
+        ## '-example' verbatim and splits nothing.
+        for word in words[1:]:
+            if not word.startswith('-') or word == '-':
+                break
+            if set(word[1:]) <= set('neE') and 'e' in word[1:]:
+                return 'echo-e'
+            if not set(word[1:]) <= set('neE'):
+                ## Not an option after all; echo prints it and stops parsing.
+                break
         ## Without '-e' a backslash-n stays literal, so it cannot split the
         ## record. A REAL newline inside the quoted value still can.
-        if any('\n' in value for value in values):
+        if any('\n' in value for value in words[1:]):
             return 'embedded-newline'
         return None
     return 'unrecognised-producer:' + command
@@ -67,21 +75,27 @@ def main():
         for number, line in enumerate(handle, 1):
             if 'debconf-set-selections' not in line:
                 continue
-            producer = line.split('|')[0].strip()
-            if not producer:
+            if line.lstrip().startswith('#'):
                 continue
-            ## A feed is a pipe INTO debconf-set-selections. A line that merely
-            ## mentions it (a comment, a redirect) has no producer to check.
-            if producer.startswith('#') or '|' not in line:
-                continue
-            total += 1
+            ## Split on the pipe as a TOKEN, not as a character: a quoted '|'
+            ## inside a record value ("a | b") is data, and splitting the raw
+            ## string on it truncates the producer so shlex then chokes on the
+            ## unbalanced quote -- reported as unparseable, which is a false
+            ## alarm rather than the defect this looks for.
             try:
-                words = shlex.split(producer)
+                tokens = shlex.split(line, posix=True, comments=False)
             except ValueError:
                 ## Unbalanced quoting: report it rather than skipping, so a
                 ## malformed line cannot pass as compliant.
                 bad.append('%d:unparseable' % number)
+                total += 1
                 continue
+            if '|' not in tokens:
+                continue
+            words = tokens[:tokens.index('|')]
+            if not words:
+                continue
+            total += 1
             reason = inspect_feed(words)
             if reason is not None:
                 bad.append('%d:%s' % (number, reason))

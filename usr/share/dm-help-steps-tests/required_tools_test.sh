@@ -88,6 +88,11 @@ fi
 
 ## Read the list the SHIPPED function assigns, so an edit to the real line is
 ## what this test sees.
+##
+## Parsed, not 'eval'ed. The subject is a build script this suite also runs
+## against branches and forks, and 'eval' on a line lifted out of it would
+## execute whatever else that line carries -- a test harness is not the place to
+## hand an arbitrary source tree a shell.
 required_packages_list=""
 package_list_line="$(sed -n '/^check_required_packages_installed()/,/^}/p' -- "${sanity_tests}" \
    | grep --max-count=1 -- '^ *required_packages_list=')"
@@ -95,7 +100,22 @@ if [ -z "${package_list_line}" ]; then
    printf '%s\n' "FAILED: no required_packages_list assignment in check_required_packages_installed." >&2
    exit 1
 fi
-eval "${package_list_line}"
+## Everything after the first '=', with one layer of surrounding quotes removed.
+required_packages_list="${package_list_line#*=}"
+case "${required_packages_list}" in
+   '"'*'"')
+      required_packages_list="${required_packages_list#\"}"
+      required_packages_list="${required_packages_list%\"}"
+      ;;
+   "'"*"'")
+      required_packages_list="${required_packages_list#\'}"
+      required_packages_list="${required_packages_list%\'}"
+      ;;
+esac
+if [ -z "${required_packages_list}" ]; then
+   printf '%s\n' "FAILED: required_packages_list parsed as empty from '${package_list_line}'." >&2
+   exit 1
+fi
 
 deps_conf="$(dirname -- "$(dirname -- "${sanity_tests}")")/buildconfig.d/30_dependencies.conf"
 if [ ! -r "${deps_conf}" ]; then

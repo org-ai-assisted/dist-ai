@@ -175,7 +175,7 @@ require_rc() {
 }
 
 main() {
-   local scratch upstream old_sha new_sha super rc run_out
+   local scratch upstream old_sha new_sha super rc run_out shim_dir
 
    locate_subject
    printf '%s\n' "INFO: subject: ${subject_path}"
@@ -302,6 +302,76 @@ main() {
    true > "${super}/.gitmodules"
    rc="$(run_subject_all "${super}")"
    require_rc "${rc}" "2" "--all with an empty .gitmodules refuses to report coverage"
+   safe-rm --recursive --force -- "${super}"
+
+   ## ---- no resolvable default branch: unverifiable, not "current" ---------
+   ## 'actions/checkout' does not create refs/remotes/origin/HEAD, so the
+   ## fallbacks are the CI path. A repo with none of them must refuse a verdict
+   ## rather than compare against a branch that does not exist.
+   super="$(build_fixture "${scratch}" "${new_sha}")"
+   git_quiet -C "${super}/sub" branch --move master trunk
+   git_quiet -C "${super}/sub" update-ref --no-deref -d refs/remotes/origin/HEAD 2>/dev/null || true
+   git_quiet -C "${super}/sub" update-ref -d refs/remotes/origin/master 2>/dev/null || true
+   git_quiet -C "${super}/sub" update-ref -d refs/remotes/origin/main 2>/dev/null || true
+   rc="$(run_subject "${super}")"
+   require_rc "${rc}" "2" "no origin/HEAD, origin/master or origin/main refuses a verdict"
+   safe-rm --recursive --force -- "${super}"
+
+   ## ---- a 'current' verdict states whether the remote was consulted -------
+   ## A remote-tracking ref that never moved makes an outdated pin read as
+   ## current. The fixture's origin is a local path that is reachable, so the
+   ## fetch succeeds and the qualifier must be ABSENT -- the negative half of the
+   ## pair, so a qualifier printed unconditionally would fail here.
+   super="$(build_fixture "${scratch}" "${new_sha}")"
+   rc="$(run_subject "${super}")"
+   require_rc "${rc}" "0" "pin equal to a reachable upstream is accepted"
+   if grep --fixed-strings -- "remote NOT refreshed" "${run_out}" >/dev/null 2>&1; then
+      fail "a reachable remote was reported as not refreshed"
+   else
+      pass "a reachable remote produces an unqualified verdict"
+   fi
+   ## Now make the remote unreachable and require the qualifier: a 'current'
+   ## verdict must never read as if the remote had been consulted when it was not.
+   git_quiet -C "${super}/sub" remote set-url origin "${scratch}/does-not-exist"
+   rc="$(run_subject "${super}")"
+   require_rc "${rc}" "0" "an unreachable remote still yields a verdict"
+   if grep --fixed-strings -- "remote NOT refreshed" "${run_out}" >/dev/null 2>&1; then
+      pass "an unreachable remote qualifies the verdict"
+   else
+      fail "an unreachable remote was reported as if the remote had been consulted"
+      cat -- "${run_out}" >&2
+   fi
+   safe-rm --recursive --force -- "${super}"
+
+   ## ---- a git ERROR is not "diverged or ahead" ----------------------------
+   ## 'merge-base --is-ancestor' exits 0 for ancestor, 1 for NOT ancestor and >1
+   ## for an error. Grouping every non-zero as "deliberate, not lag" turns a git
+   ## failure into an accepted pin. Forced with a 'git' shim on PATH that
+   ## forwards everything except that one subcommand.
+   shim_dir="${scratch}/shim"
+   mkdir --parents -- "${shim_dir}"
+   {
+      printf '%s\n' '#!/bin/bash'
+      printf '%s\n' '## Forward to the real git, except make one subcommand fail with an ERROR status.'
+      printf '%s\n' 'for git_arg in "$@"; do'
+      printf '%s\n' '   if [ "${git_arg}" = "--is-ancestor" ]; then'
+      printf '%s\n' '      exit 2'
+      printf '%s\n' '   fi'
+      printf '%s\n' 'done'
+      printf '%s\n' 'exec /usr/bin/git "$@"'
+   } > "${shim_dir}/git"
+   chmod 0755 -- "${shim_dir}/git"
+
+   super="$(build_fixture "${scratch}" "${old_sha}")"
+   rc=0
+   ( cd -- "${super}" && PATH="${shim_dir}:${PATH}" bash "${subject_path}" sub ) >"${run_out}" 2>&1 || rc="$?"
+   require_rc "${rc}" "2" "a merge-base ERROR refuses a verdict rather than accepting the pin"
+   if grep --fixed-strings -- "cannot verify freshness" "${run_out}" >/dev/null 2>&1; then
+      pass "the merge-base error says the pin could not be verified"
+   else
+      fail "the merge-base error did not report an unverifiable pin"
+      cat -- "${run_out}" >&2
+   fi
    safe-rm --recursive --force -- "${super}"
 
    ## ---- usage errors stay usage errors ------------------------------------
