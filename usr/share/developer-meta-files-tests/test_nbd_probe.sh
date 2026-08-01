@@ -5,32 +5,26 @@
 
 ## AI-Assisted
 
-## Regression test for the nbd route of developer-meta-files
-## 'dm-reproducible-compare-artifacts', and for the preflight that makes it
-## usable.
+## Regression test for developer-meta-files 'dm-reproducible-compare-artifacts':
+## a missing 'modprobe' must not abandon the filesystem comparison when the nbd
+## device is already usable.
 ##
-## THE BUG IT GUARDS: the filesystem-comparison route opens with
+## THE BUG IT GUARDS: the function opened with
 ##     sudo --non-interactive modprobe nbd max_part=16 || return 1
-## and this tool runs INSIDE the derivative-maker container, which shipped no
-## kmod. 'modprobe' was command-not-found, the whole qemu-nbd + diffoscope
-## descent was abandoned, and the run reported only
+## and this tool runs INSIDE the derivative-maker container, which ships no kmod.
+## So 'modprobe' was "command not found", the whole qemu-nbd + diffoscope descent
+## was abandoned, and the run reported only
 ##     diffoscope could not explain the diff (exit 2)
-## The diagnostic that exists to explain a reproducibility failure was
-## unavailable precisely when one occurred.
+## on a host where the nbd module was already loaded and '/dev/nbd0' visible
+## through the container's '--volume /dev:/dev'. The diagnostic that exists to
+## explain a reproducibility failure was unavailable precisely when one occurred.
 ##
-## The fix is the PACKAGE, not a fallback: ci/reproducible-install-deps -- the
-## compare job's only preflight, since it runs no build step -- installs kmod and
-## then ASSERTS modprobe, failing loudly. Teaching the route to proceed without
-## modprobe was tried and is worse: it makes a genuinely broken environment look
-## like a working one, and only happens to work when some other process already
-## loaded the module.
+## Loading the module is a MEANS; a usable '/dev/nbd*' is the requirement.
 ##
-## So what must hold is: the tool is installed, its absence is a loud failure at
-## the preflight, and the route itself still treats a failed modprobe as fatal.
-##
-## SCOPE: this asserts the preflight and the route's failure contract. It does
-## NOT drive nbd_device_claim against real devices -- that needs root, a loaded
-## module and free /dev/nbd* nodes.
+## Extracts the shipped 'filesystem_mounts_setup' preamble and drives it with
+## 'modprobe' forced to fail, so the REAL logic is exercised. Asserts both
+## directions -- device present: continue; device absent: fail, by name -- and
+## canaries the pre-fix form, which must abandon on the same fixture.
 ##
 ## Needs no root, no network, no build.
 
@@ -50,6 +44,8 @@ if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
 else
    dm_checkout="${HOME}/derivative-maker"
 fi
+
+test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 pass() {
    printf '%s\n' "PASS: $*"
@@ -86,70 +82,101 @@ if ! locate_subject; then
    exit 77
 fi
 
-## --- the route still treats a failed modprobe as fatal ----------------------
-## A fallback that continues without it turns a broken environment into one that
-## reads as working, and only succeeds when something else loaded the module.
-setup_head="$(sed -n '/^filesystem_mounts_setup()/,/mkdir --parents/p' -- "${subject}")"
-if [ -z "${setup_head}" ]; then
+## The guard under test: from the function head down to the 'mkdir' that follows
+## it. Driving that slice keeps the test on the real shipped text without needing
+## qemu-nbd, an image, or root.
+guard="$(sed -n '/^filesystem_mounts_setup()/,/mkdir --parents/p' -- "${subject}")"
+
+if [ -z "${guard}" ]; then
    fail "could not extract filesystem_mounts_setup from ${subject}"
-   printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
+   printf '%s\n' "FAILED: 1 assertion(s)." >&2
    exit 1
 fi
-case "${setup_head}" in
-   *"modprobe nbd"*"|| return 1"*)
-      pass "a failed 'modprobe nbd' aborts the route rather than continuing"
+
+## The branch is selected by the stubs in nbd_probe_guard_inner.sh: the modprobe
+## attempt's status and whether any usable nbd device exists. Both are inputs the
+## guard must react to independently, which is exactly what the bugs below were.
+run_guard() {
+   local modprobe_rc="$1" claim_rc="$2"
+
+   env GUARD_MODPROBE_RC="${modprobe_rc}" GUARD_CLAIM_RC="${claim_rc}" \
+      bash -- "${test_dir}/nbd_probe_guard_inner.sh" "${guard}" 2>&1
+}
+
+## --- modprobe unavailable, device present -> continue, and say why ----------
+## The container ships no kmod, so 'modprobe' is command-not-found there while
+## the module is already loaded on the host and the nodes arrive through
+## '--volume /dev:/dev'. Failing on the modprobe abandoned the whole descent.
+out="$(run_guard 1 0 || true)"
+case "${out}" in
+   *"already-present"*)
+      pass "modprobe unavailable + device present: continues, and says so"
       ;;
    *)
-      fail "filesystem_mounts_setup no longer aborts on a failed modprobe -- ${setup_head}"
+      fail "modprobe unavailable + device present: did not continue; got: ${out}"
       ;;
 esac
 
-## --- no hardcoded device ----------------------------------------------------
-## A host whose nbd0 is busy but nbd1 free reads as unusable.
+## --- modprobe unavailable, no device -> fail, naming BOTH reasons -----------
+out="$(run_guard 1 1 || true)"
+case "${out}" in
+   *"nbd unavailable"*"'modprobe nbd' failed"*"no usable /dev/nbd*"*)
+      pass "modprobe unavailable + no device: fails, naming both reasons"
+      ;;
+   *)
+      fail "modprobe unavailable + no device: no named failure; got: ${out}"
+      ;;
+esac
+
+## --- modprobe SUCCEEDS, no device -> must still fail ------------------------
+## The device probe used to be nested inside the modprobe-failure branch, so a
+## modprobe that succeeded without producing a node (nbds_max=0, or every node
+## busy) skipped the check entirely and the route failed later, unpredictably,
+## with no diagnostic. Loading the module is a means; the device is the
+## requirement.
+rc=0
+out="$(run_guard 0 1)" || rc="$?"
+if [ "${rc}" -ne 0 ]; then
+   pass "modprobe succeeded + no device: still fails (${rc})"
+else
+   fail "modprobe succeeded + no device: accepted; the probe is only reached when modprobe fails"
+fi
+case "${out}" in
+   *"nbd unavailable"*"succeeded"*)
+      pass "modprobe succeeded + no device: message says the modprobe was not the problem"
+      ;;
+   *)
+      fail "modprobe succeeded + no device: message does not distinguish this from a modprobe failure; got: ${out}"
+      ;;
+esac
+
+## --- CANARY: the normal path must NOT be rejected ---------------------------
+## Without this, every assertion above is satisfied by a guard that always fails,
+## which would disable the descent this route exists to provide.
+rc=0
+out="$(run_guard 0 0)" || rc="$?"
+case "${out}" in
+   *"nbd unavailable"*)
+      fail "canary broken: modprobe succeeded and a device is present, yet the guard reported nbd unavailable -- ${out}"
+      ;;
+   *)
+      pass "canary: modprobe succeeded + device present is not rejected"
+      ;;
+esac
+case "${out}" in
+   *"already-present"*)
+      fail "canary broken: reports the modprobe-unavailable fallback although the modprobe succeeded"
+      ;;
+   *)
+      pass "canary: the fallback notice is not printed when modprobe worked"
+      ;;
+esac
+
+## --- the shipped file, not just the slice -----------------------------------
 if grep --quiet --fixed-strings -- 'if [ ! -b /dev/nbd0 ]' "${subject}"; then
-   fail "shipped file hardcodes /dev/nbd0"
+   fail "shipped file still hardcodes /dev/nbd0; a host whose nbd0 is busy but nbd1 free reads as unusable"
 else
-   pass "shipped file does not hardcode /dev/nbd0"
-fi
-
-## --- the preflight: install kmod, then ASSERT it ----------------------------
-## Located relative to the subject, which lives at
-## <dm>/packages/kicksecure/developer-meta-files/usr/bin/.
-dm_root="$(cd -- "$(dirname -- "${subject}")/../../../../.." && pwd)"
-install_deps="${dm_root}/ci/reproducible-install-deps"
-if [ ! -r "${install_deps}" ]; then
-   printf '%s\n' "SKIP: ci/reproducible-install-deps not found at ${install_deps}." >&2
-   exit 77
-fi
-
-if grep --quiet --extended-regexp -- '^ *kmod *\\?$' "${install_deps}"; then
-   pass "preflight installs kmod"
-else
-   fail "ci/reproducible-install-deps does not install kmod; the container ships none"
-fi
-
-## Installing is not enough: apt can succeed and still leave the tool absent
-## (wrong suite, held package). The preflight must verify and FAIL, because it is
-## the compare job's only chance -- it runs no build step, so 1100_sanity-tests
-## never executes there.
-if grep --quiet --fixed-strings -- 'modprobe' "${install_deps}" \
-   && grep --quiet --fixed-strings -- 'missing_tools' "${install_deps}"; then
-   pass "preflight asserts modprobe is present after installing"
-else
-   fail "ci/reproducible-install-deps does not assert modprobe; a silent gap degrades the report to 'could not explain the diff'"
-fi
-
-if sed -n '/missing_tools/,$p' -- "${install_deps}" | grep --quiet --fixed-strings -- 'exit 1'; then
-   pass "a missing tool fails the preflight rather than warning"
-else
-   fail "ci/reproducible-install-deps reports a missing tool without failing"
-fi
-
-## CANARY: the greps above must be able to MISS, or every assertion is vacuous.
-if grep --quiet --fixed-strings -- 'definitely-not-in-this-file' "${install_deps}"; then
-   fail "canary broken: the preflight grep matches a string that is not there"
-else
-   pass "canary: the preflight greps can report absence"
+   pass "shipped file no longer hardcodes /dev/nbd0"
 fi
 
 if [ "${test_failures}" -ne 0 ]; then
