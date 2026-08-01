@@ -82,6 +82,21 @@ build_fixture() {
    git_quiet -C "${super}" commit --quiet --no-verify --message pin
 }
 
+## dm-preflight treats a missing 'pre-push-static' as a FAILURE, deliberately --
+## an unverified tree is not a verified one. That makes these cases depend on the
+## gate being reachable, and in CI it is present in the dist-ai checkout but not
+## on PATH. Put the sibling bin/ in front rather than weakening the tool or
+## skipping the test: the binary is right there.
+gate_bin_dir="$( cd -- "${test_dir}/../../bin" 2>/dev/null && pwd || true )"
+if [ -n "${gate_bin_dir}" ] && [ -x "${gate_bin_dir}/pre-push-static" ]; then
+   PATH="${gate_bin_dir}:${PATH}"
+   export PATH
+fi
+if ! type -P pre-push-static >/dev/null; then
+   printf '%s\n' "SKIP: pre-push-static not reachable; dm-preflight cannot complete a run." >&2
+   exit 77
+fi
+
 ## --quick: the suites are not what these cases are about, and running them here
 ## would make the result depend on an unrelated checkout.
 run_preflight() {
