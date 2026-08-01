@@ -118,7 +118,16 @@ case "${out}" in
 esac
 
 ## --- modprobe unavailable, no device -> fail, naming BOTH reasons -----------
-out="$(run_guard 1 1 || true)"
+## Capture the STATUS as well: a guard that prints the right words and returns 0
+## would satisfy a message-only assertion while letting the route proceed with no
+## device, which is the failure this case exists to catch.
+rc=0
+out="$(run_guard 1 1)" || rc="$?"
+if [ "${rc}" -ne 0 ]; then
+   pass "modprobe unavailable + no device: fails (${rc})"
+else
+   fail "modprobe unavailable + no device: ACCEPTED; the route would proceed with no nbd device"
+fi
 case "${out}" in
    *"nbd unavailable"*"'modprobe nbd' failed"*"no usable /dev/nbd*"*)
       pass "modprobe unavailable + no device: fails, naming both reasons"
@@ -129,11 +138,10 @@ case "${out}" in
 esac
 
 ## --- modprobe SUCCEEDS, no device -> must still fail ------------------------
-## The device probe used to be nested inside the modprobe-failure branch, so a
-## modprobe that succeeded without producing a node (nbds_max=0, or every node
-## busy) skipped the check entirely and the route failed later, unpredictably,
-## with no diagnostic. Loading the module is a means; the device is the
-## requirement.
+## The device probe must be UNCONDITIONAL, not reached only when the modprobe
+## fails: a modprobe can succeed without producing a node (nbds_max=0, or every
+## node busy), and the route then fails later, unpredictably, with no diagnostic.
+## Loading the module is a means; a usable device is the requirement.
 rc=0
 out="$(run_guard 0 1)" || rc="$?"
 if [ "${rc}" -ne 0 ]; then

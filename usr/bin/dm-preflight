@@ -65,6 +65,21 @@ if [ ! -d "${source_dir}/build-steps.d" ] || [ ! -d "${source_dir}/help-steps" ]
 fi
 source_dir="$( cd -- "${source_dir}" && pwd )"
 
+## Directory markers alone are not a checkout: every check below drives 'git -C',
+## which would then fail one confusing message at a time instead of once, here.
+## The toplevel must also BE this directory -- a subdirectory of some other repo
+## carrying those two names would otherwise pass and be checked against the wrong
+## worktree.
+worktree_top="$( git -C "${source_dir}" rev-parse --show-toplevel 2>/dev/null || true )"
+if [ -z "${worktree_top}" ]; then
+   printf '%s\n' "${0##*/}: '${source_dir}' is not inside a git worktree; every check below needs one." >&2
+   exit 2
+fi
+if [ ! "$( readlink -f -- "${worktree_top}" )" = "$( readlink -f -- "${source_dir}" )" ]; then
+   printf '%s\n' "${0##*/}: '${source_dir}' is not the worktree ROOT (that is '${worktree_top}'); the checks would read the wrong repository." >&2
+   exit 2
+fi
+
 failures=0
 stage() {
    printf '\n== %s ==\n' "$*"
@@ -82,10 +97,20 @@ bad() {
 ## invisible to the parent's commit and therefore to CI, which then builds a tree
 ## that does not contain it.
 stage "submodules: uncommitted work"
+## 'git submodule foreach' visits only INITIALIZED submodules, so one that was
+## never checked out is invisible to the loop below -- it would report "no
+## submodule carries uncommitted changes" for a tree where a whole submodule is
+## absent. Name those separately rather than letting them pass silently.
+uninitialized_submodules="$( git -C "${source_dir}" submodule status --recursive 2>/dev/null \
+   | sed -n -e 's/^-[0-9a-f]* //p' | cut -d' ' -f1 || true )"
+if [ -n "${uninitialized_submodules}" ]; then
+   printf '%s\n' "   NOTE: not checked out, so NOT inspected below (run 'git submodule update --init --recursive' for full coverage):" >&2
+   printf '%s\n' "${uninitialized_submodules}" | sed 's/^/          /' >&2
+fi
 dirty_submodules="$( git -C "${source_dir}" submodule --quiet foreach --recursive \
-   'if [ -n "$(git status --porcelain)" ]; then printf "%s\n" "${displaypath}"; fi' 2>/dev/null || true )"
+   'if [ -n "$(git status --porcelain)" ]; then printf "%s\n" "${sm_path}"; fi' 2>/dev/null || true )"
 if [ -z "${dirty_submodules}" ]; then
-   ok "no submodule carries uncommitted changes"
+   ok "no initialized submodule carries uncommitted changes"
 else
    bad "these submodules have UNCOMMITTED changes; a parent commit will not carry them:"
    printf '%s\n' "${dirty_submodules}" | sed 's/^/          /' >&2
@@ -101,7 +126,7 @@ fi
 ## that matters, which is the uncommitted one above.
 stage "submodules: ahead of the pin (report only)"
 lagging_gitlinks="$( git -C "${source_dir}" submodule --quiet foreach --recursive \
-   'pinned="$(git -C "${toplevel}" ls-tree HEAD -- "${displaypath}" | { read -r _ _ sha _ ; printf "%s" "${sha}" ; })"
+   'pinned="$(git -C "${toplevel}" ls-tree HEAD -- "${sm_path}" | { read -r _ _ sha _ ; printf "%s" "${sha}" ; })"
     head_sha="$(git rev-parse HEAD)"
     if [ -n "${pinned}" ] && [ "${pinned}" != "${head_sha}" ]; then
        printf "%s (pinned %.12s, HEAD %.12s)\n" "${displaypath}" "${pinned}" "${head_sha}"
@@ -119,11 +144,20 @@ fi
 ## reports for --all: most dm pins deliberately trail.
 stage "submodules: pin freshness (report only)"
 if [ -x "${source_dir}/ci/assert-submodule-not-stale" ]; then
-   if ( cd -- "${source_dir}" && ./ci/assert-submodule-not-stale --all --report-only ) 2>&1 \
-      | grep -E 'submodule\(s\):|TRAILS' | sed 's/^/   /' ; then
-      true
+   ## Capture the TOOL's status, not the grep's. Piping straight into grep made
+   ## the exit status the filter's, so a freshness tool that died still produced
+   ## "freshness reported above" -- a check that cannot fail.
+   ## '--report-only' means a TRAILING pin exits 0; anything non-zero from it is
+   ## the tool itself failing, which is not something to report as a reading.
+   freshness_output=""
+   freshness_rc=0
+   freshness_output="$( cd -- "${source_dir}" && ./ci/assert-submodule-not-stale --all --report-only 2>&1 )" || freshness_rc="$?"
+   printf '%s\n' "${freshness_output}" | grep -E 'submodule\(s\):|TRAILS' | sed 's/^/   /' || true
+   if [ "${freshness_rc}" -eq 0 ]; then
+      ok "freshness reported above"
+   else
+      bad "ci/assert-submodule-not-stale --all exited ${freshness_rc}; freshness was NOT established"
    fi
-   ok "freshness reported above"
 else
    printf '%s\n' "   NOTE: ci/assert-submodule-not-stale not present; freshness not checked." >&2
 fi

@@ -313,6 +313,11 @@ main() {
    git_quiet -C "${super}/sub" update-ref --no-deref -d refs/remotes/origin/HEAD 2>/dev/null || true
    git_quiet -C "${super}/sub" update-ref -d refs/remotes/origin/master 2>/dev/null || true
    git_quiet -C "${super}/sub" update-ref -d refs/remotes/origin/main 2>/dev/null || true
+   ## Point origin at nothing BEFORE the run: the subject fetches before
+   ## comparing, and a reachable origin would recreate the very refs this case
+   ## deletes -- so the fixture would depend on refresh order and could pass for
+   ## the wrong reason, or flake.
+   git_quiet -C "${super}/sub" remote set-url origin "${scratch}/no-such-remote"
    rc="$(run_subject "${super}")"
    require_rc "${rc}" "2" "no origin/HEAD, origin/master or origin/main refuses a verdict"
    safe-rm --recursive --force -- "${super}"
@@ -325,6 +330,14 @@ main() {
    super="$(build_fixture "${scratch}" "${new_sha}")"
    rc="$(run_subject "${super}")"
    require_rc "${rc}" "0" "pin equal to a reachable upstream is accepted"
+   ## Exit 0 alone does not say WHICH verdict was reached; assert the wording too,
+   ## or a tool that fell through silently would satisfy this.
+   if grep --fixed-strings -- "pin is current" "${run_out}" >/dev/null 2>&1; then
+      pass "the reachable-remote run reports 'pin is current'"
+   else
+      fail "the reachable-remote run did not report a current pin"
+      cat -- "${run_out}" >&2
+   fi
    if grep --fixed-strings -- "remote NOT refreshed" "${run_out}" >/dev/null 2>&1; then
       fail "a reachable remote was reported as not refreshed"
    else
@@ -335,6 +348,12 @@ main() {
    git_quiet -C "${super}/sub" remote set-url origin "${scratch}/does-not-exist"
    rc="$(run_subject "${super}")"
    require_rc "${rc}" "0" "an unreachable remote still yields a verdict"
+   if grep --fixed-strings -- "pin is current" "${run_out}" >/dev/null 2>&1; then
+      pass "the unreachable-remote run still reports 'pin is current'"
+   else
+      fail "the unreachable-remote run reported no verdict at all"
+      cat -- "${run_out}" >&2
+   fi
    if grep --fixed-strings -- "remote NOT refreshed" "${run_out}" >/dev/null 2>&1; then
       pass "an unreachable remote qualifies the verdict"
    else

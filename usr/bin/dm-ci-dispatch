@@ -131,7 +131,18 @@ if [ "${run_preflight}" = "true" ]; then
       printf '%s\n' "${0##*/}: dm-preflight is not on PATH. Its absence is a gap to fix, not a reason to dispatch unchecked." >&2
       exit 1
    fi
-   printf '%s\n' "${0##*/}: preflight on '${source_dir}'..." >&2
+   ## The preflight inspects source_dir's WORKING TREE. If --ref names something
+   ## other than what is checked out there, a clean preflight says nothing about
+   ## the tree being dispatched -- one tree validated, another built.
+   checked_out="$( git -C "${source_dir}" rev-parse --abbrev-ref HEAD 2>/dev/null || true )"
+   if [ ! "${checked_out}" = "${ref}" ]; then
+      printf '%s\n' "${0##*/}: --ref is '${ref}' but '${source_dir}' has '${checked_out}' checked out." \
+         "  The preflight can only inspect the working tree in front of it, so a pass here would" \
+         "  say nothing about the tree CI would build. Check out '${ref}', or pass --no-preflight" \
+         "  if you have already vetted it." >&2
+      exit 1
+   fi
+   printf '%s\n' "${0##*/}: preflight on '${source_dir}' (${ref})..." >&2
    if ! dm-preflight --dir "${source_dir}"; then
       printf '%s\n' "${0##*/}: preflight FAILED; not dispatching. Fix the tree, or --no-preflight if you have already vetted it." >&2
       exit 1
