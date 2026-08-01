@@ -209,6 +209,107 @@ else
    fail "run 2: ${version_dir_count} version directories exist; the re-run derived a different version"
 fi
 
+## --- failure paths: only bad outcomes reach these, so no green run does ------
+## The exit contract is load-bearing: 0 reproducible, 1 differ, 2 usage /
+## artifact-not-found, 3 a build failed. Conflating 1 with 2 or 3 is how a
+## not-found once read as "images differ".
+
+## Rewrite the stub build for a specific failure, run, restore.
+stub_build="${fake_tree}/help-steps/dm-build-official"
+stub_build_original="$(cat -- "${stub_build}")"
+restore_stub() {
+   printf '%s' "${stub_build_original}" > "${stub_build}"
+   chmod 0755 -- "${stub_build}"
+}
+
+reset_binary_dir() {
+   safe-rm --recursive --force -- "${binary_dir}"
+   mkdir --parents -- "${binary_dir}"
+}
+
+## A build that fails must surface as 3, not as a comparison verdict.
+cat > "${stub_build}" <<'STUB'
+#!/bin/bash
+exit 9
+STUB
+chmod 0755 -- "${stub_build}"
+reset_binary_dir
+rc=0
+out="$(run_script 2>&1)" || rc="$?"
+if [ "${rc}" -eq 3 ]; then
+   pass "failing build: exit 3"
+else
+   fail "failing build: exit ${rc}, expected 3 -- a build failure must not read as a reproducibility verdict"
+fi
+restore_stub
+
+## A build that succeeds but emits no artifact is also 3, and must SAY the glob.
+cat > "${stub_build}" <<'STUB'
+#!/bin/bash
+exit 0
+STUB
+chmod 0755 -- "${stub_build}"
+reset_binary_dir
+rc=0
+out="$(run_script 2>&1)" || rc="$?"
+if [ "${rc}" -eq 3 ]; then
+   pass "build produced nothing: exit 3"
+else
+   fail "build produced nothing: exit ${rc}, expected 3"
+fi
+case "${out}" in
+   *"produced no"*)
+      pass "build produced nothing: names the missing glob"
+      ;;
+   *)
+      fail "build produced nothing: does not name what was missing -- ${out}"
+      ;;
+esac
+restore_stub
+
+## Two DIFFERING artifacts must propagate the comparator's exit 1 unchanged.
+cat > "${stub_build}" <<'STUB'
+#!/bin/bash
+set -o errexit
+set -o nounset
+raw="$(git describe --always --abbrev=1000000000 --exclude '*_*_*')"
+stripped="${raw//-developers-only/}"
+out="${binary_build_folder_dist}/${stripped}"
+mkdir --parents -- "${out}"
+## Differs per invocation, so build a and build b disagree.
+printf '%s\n' "payload-${RANDOM}-${$}" \
+   > "${out}/Kicksecure-CLI-${stripped}.Intel_AMD64.qcow2.libvirt.xz"
+STUB
+chmod 0755 -- "${stub_build}"
+reset_binary_dir
+rc=0
+out="$(run_script 2>&1)" || rc="$?"
+if [ "${rc}" -eq 1 ]; then
+   pass "differing builds: comparator's exit 1 propagates"
+else
+   fail "differing builds: exit ${rc}, expected 1 -- the verdict must reach the caller"
+fi
+restore_stub
+
+## Usage errors are 2, distinct from every build/compare outcome.
+assert_usage_error() {
+   local description="$1"
+   shift
+   local usage_rc=0
+
+   env binary_build_folder_dist="${binary_dir}" \
+      "${fake_tree}/ci/reproducible-build-twice" "$@" >/dev/null 2>&1 || usage_rc="$?"
+   if [ "${usage_rc}" -eq 2 ]; then
+      pass "${description}: exit 2"
+   else
+      fail "${description}: exit ${usage_rc}, expected 2"
+   fi
+}
+
+assert_usage_error "missing --arch" --target qcow2
+assert_usage_error "unknown target" --target nonsense --arch amd64
+assert_usage_error "unexpected argument" --target qcow2 --arch amd64 --nonsense
+
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1
