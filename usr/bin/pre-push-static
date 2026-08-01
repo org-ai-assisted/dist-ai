@@ -560,6 +560,36 @@ check_changelog_no_manual_staged() {
 
 ## --- Tier 1 style-guide checks (single-grep, near-zero false-positive) ---
 
+## Match <regex> against each line of <file...> with shell COMMENTS REMOVED, and
+## report the ORIGINAL line as 'file:lineno:text' (emit_hits' shape).
+##
+## A '#' begins a comment only at the start of a word -- line start, or after
+## whitespace. The older '^[^#]*' anchor instead treated ANY '#' as the start of a
+## comment, so a '${#var}' length expansion or a '$#' made the rest of the line
+## unmatchable and a real violation went unreported. Concretely,
+## '0) out+="${set:0:${#set}}" ;;' was NOT flagged while the identical
+## '1) out+="${plain}" ;;' was.
+##
+## Residual (accepted, same class as R-034/R-120): a '#' preceded by whitespace
+## but INSIDE a quoted string is treated as a comment, so a violation after it is
+## missed. That is a false NEGATIVE, and far rarer than the '${#var}' one it
+## replaces.
+grep_code_lines() {
+   local regex file lineno rest
+   local -a source_lines
+
+   regex="${1}"
+   shift
+   for file in "${@}"; do
+      [ -r "${file}" ] || continue
+      mapfile -t source_lines < "${file}"
+      while IFS=: read -r lineno rest; do
+         printf '%s:%s:%s\n' "${file}" "${lineno}" "${source_lines[$(( lineno - 1 ))]}"
+      done < <(sed -e 's/\(^\|[[:space:]]\)#.*$//' -- "${file}" 2>/dev/null \
+         | grep --line-number --extended-regexp -- "${regex}" 2>/dev/null || true)
+   done
+}
+
 emit_hits() {
    local rule_tag hits line
 
@@ -797,11 +827,10 @@ check_R070_double_semi() {
    ## R-070: ';;' must be on its own line (optional indent + ';;' only).
    ## Flag any ';;' at end-of-line with other non-whitespace before it --
    ## spaced ('bar ;;') OR jammed ('bar;;'). A compact one-line case arm is
-   ## thus always caught; the arm must be written multi-line. The leading
-   ## '^[^#]*' with a non-'#' char before the ';;' excludes a ';;' that sits in
-   ## a '#' comment (e.g. an illustrative '#   ;;' in documentation), mirroring
-   ## how R-074 skips comment lines -- those are prose, not a real case arm.
-   hits="$(grep --with-filename --line-number --extended-regexp '^[^#]*[^[:space:]#][[:space:]]*;;[[:space:]]*$' -- "${@}" 2>/dev/null || true)"
+   ## thus always caught; the arm must be written multi-line. Comments are
+   ## stripped first, so an illustrative '#   ;;' in documentation is prose and
+   ## does not match, while a '${#var}' earlier on a real arm no longer hides it.
+   hits="$(grep_code_lines '[^[:space:]][[:space:]]*;;[[:space:]]*$' "${@}")"
    emit_hits "R-070 ';;' on own line" "${hits}"
 }
 
@@ -830,8 +859,8 @@ check_R074_flow_chaining() {
    ## single-grep Tier-1 rule needs.
    mapfile -d '' -t fs < <(filter_self "${@}")
    if [ "${#fs[@]}" -eq 0 ]; then return 0; fi
-   hits="$(grep --with-filename --line-number --extended-regexp \
-      '^[^#]*[^#[:space:]][[:space:]]*;[[:space:]]*(break|continue|return)([[:space:];&|]|$)' -- "${fs[@]}" 2>/dev/null || true)"
+   hits="$(grep_code_lines \
+      '[^[:space:]][[:space:]]*;[[:space:]]*(break|continue|return)([[:space:];&|]|$)' "${fs[@]}")"
    emit_hits "R-074 ';'-chained break/continue/return" "${hits}"
 }
 

@@ -69,13 +69,36 @@ while [ "${i}" -lt "${iters}" ]; do
 
    ## random mutation
    case $((RANDOM % 7)) in
-      0) rand_blob > f1 ;;                                    ## content change
-      1) chmod +x f2 ;;                                       ## mode-only
-      2) rm f3; ln -s "/etc/passwd" f3 ;;                     ## file->symlink
-      3) rand_blob > "f_new_${RANDOM}" ;;                     ## add file
-      4) rm f1 ;;                                             ## delete file
-      5) git mv f2 "f2_renamed" 2>/dev/null || rand_blob > f2 ;; ## rename
-      6) printf 'x.data binary\n' > .gitattributes; rand_blob > f2 ;;   ## attrs+change
+      0)
+         ## content change
+         rand_blob > f1
+         ;;
+      1)
+         ## mode-only
+         chmod +x f2
+         ;;
+      2)
+         ## file->symlink
+         rm f3
+         ln -s "/etc/passwd" f3
+         ;;
+      3)
+         ## add file
+         rand_blob > "f_new_${RANDOM}"
+         ;;
+      4)
+         ## delete file
+         rm f1
+         ;;
+      5)
+         ## rename
+         git mv f2 "f2_renamed" 2>/dev/null || rand_blob > f2
+         ;;
+      6)
+         ## attrs+change
+         printf 'x.data binary\n' > .gitattributes
+         rand_blob > f2
+         ;;
    esac
    git add -A >/dev/null 2>&1
    git commit -qm mut >/dev/null 2>&1 || continue

@@ -274,6 +274,14 @@ expect_rule "R-130" "PATH=${dq}/a::/b${dq}"                      "absent"
 expect_rule "R-130" "url=${dq}https://example.com${dq}"          "absent"
 expect_rule "R-130" "## ${colon} > file in a comment"            "absent"
 
+## R-070/R-074 blind spot: a '#' begins a shell comment only at the START OF A
+## WORD. A '${#var}' length expansion earlier on the line is CODE, and must not
+## make the violation after it invisible. A real '#' comment still spares.
+expect_rule "R-070" '   0) out="${set:0:${#set}}" ;;'                    "present"
+expect_rule "R-070" '   1) out="${plain}" ;;'                            "present"
+expect_rule "R-070" "   argc=\${#args[@]}${sp}${sp}## a note about ;;"    "absent"
+expect_rule "R-074" "if [ \"\${#a[@]}\" -eq 0 ]${sc} continue"           "present"
+
 ## R-090: 'command -v' in code is FLAGGED; in a comment it is SPARED.
 expect_rule "R-090" "if ! command${sp}-v foo"                    "present"
 expect_rule "R-090" "## uses command${sp}-v not has"             "absent"
