@@ -89,6 +89,19 @@ HISTORY_PATTERNS = [
     re.compile(r"\b(moved|renamed|copied) from\b", re.I),
     re.compile(r"\bbefore this (change|commit|fix|patch|rewrite)\b", re.I),
     re.compile(r"\bin an earlier (version|implementation|revision)\b", re.I),
+    ## Past-tense NARRATION of what the code did, which the markers above miss
+    ## when the comment never names a version. "Failing on X therefore abandoned
+    ## the descent" is history even though it says neither "previously" nor "was".
+    ## Each needs a narrative connective plus a past-tense verb, so a present-tense
+    ## explanation of current behaviour ("failing on X abandons the descent")
+    ## does not match.
+    re.compile(r"\btherefore (abandoned|reported|returned|failed|skipped|created|"
+               r"produced|left|made|meant|broke)\b", re.I),
+    re.compile(r"\bwhich (made|caused|left|meant|broke) (the|it|that|every|a)\b", re.I),
+    ## Deliberately NOT matched: bare "never ran" / "did not fire". Those appear far
+    ## more often in HYPOTHETICALS explaining current rationale ("the branch would
+    ## then see /usr/bin and never fire", "a tier that never ran") than in history,
+    ## and flagging them makes this advisory noisy enough to be ignored.
 ]
 
 MARKER_PATTERNS = [

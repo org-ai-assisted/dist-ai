@@ -94,6 +94,11 @@ check flag 'previously we scraped the month page'
 check flag 'the old implementation walked the months'
 check flag 'changed from tabs to spaces'
 check flag 'the nested cases used to retry regardless of the seed'
+## Past-tense NARRATION with no version word at all -- neither 'previously' nor
+## 'was'. This is the shape a phrase-list alone misses.
+check flag 'Failing on the modprobe therefore abandoned the whole descent'
+check flag 'the loop skipped the file, which made the check pass vacuously'
+check flag 'a stale pin therefore reported green with a red job in it'
 
 ## Present state or purpose, wearing similar words.
 check spare 'ccc cannot be used to slip a flood past the cap'
@@ -106,6 +111,11 @@ check spare 'Replace the placeholder at runtime.'
 check spare 'The value is changed to uppercase before hashing.'
 check spare 'Use the previous element of the array as the anchor.'
 check spare 'no longer than 255 bytes'
+## HYPOTHETICALS explaining current rationale. These read like history but state
+## what WOULD happen, and flagging them makes the advisory noisy enough to ignore.
+check spare 'the branch would then see /usr/bin and never fire'
+check spare 'a tier that never ran would be judged as if it had'
+check spare 'writing through the symlink would corrupt whatever it points at'
 
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' 'test_comments_audit_history: FAILED' >&2
