@@ -176,6 +176,37 @@ else
    fail "canary broken: source-only build rejected (${rc}) -- 1600 does not even run -- ${out}"
 fi
 
+## --- an EMPTY libvirt_source_kvm_file is its own failure --------------------
+## 'dirname -- ""' is '.', which exists, so a naive listing dumps the entire
+## source root into the error message instead of naming the XML files.
+rc=0
+out="$(run_guard true false "" source)" || rc="$?"
+if [ "${rc}" -ne 0 ]; then
+   pass "empty libvirt_source_kvm_file: rejected"
+else
+   fail "empty libvirt_source_kvm_file: accepted"
+fi
+case "${out}" in
+   *"libvirt_source_kvm_file is empty"*)
+      pass "empty value: named as its own failure"
+      ;;
+   *)
+      fail "empty value: not identified as an empty variable -- ${out}"
+      ;;
+esac
+## The tell for the bug is the LISTING branch running at all: with an empty value
+## it computed '.' as the XML directory and listed the source root under this
+## header. Matching the header, not words like 'help-steps' -- the correct
+## message cites help-steps/variables on purpose.
+case "${out}" in
+   *"Flavors that do have one"*)
+      fail "empty value: took the listing branch, so it dumped a directory that is not an XML dir -- ${out}"
+      ;;
+   *)
+      pass "empty value: did not take the listing branch"
+      ;;
+esac
+
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1
