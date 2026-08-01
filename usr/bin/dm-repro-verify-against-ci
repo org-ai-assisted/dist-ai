@@ -136,7 +136,18 @@ if [ -n "${keep_dir}" ]; then
    mkdir --parents -- "${keep_dir}"
    work_dir="${keep_dir}"
 else
-   work_dir="$( mktemp --directory )"
+   ## NOT the default TMPDIR: it is a 2 GB tmpfs here, and a released image
+   ## artifact is hundreds of megabytes -- downloading one filled it and took
+   ## every other tool on the box down with it (ENOSPC on unrelated writes).
+   ## Prefer a disk-backed scratch under $HOME; fall back to TMPDIR only when
+   ## that cannot be created, and say so.
+   disk_scratch="${HOME}/.cache/dm-repro-verify"
+   if mkdir --parents -- "${disk_scratch}" 2>/dev/null; then
+      work_dir="$( mktemp --directory --tmpdir="${disk_scratch}" run.XXXXXX )"
+   else
+      printf '%s\n' "${0##*/}: NOTE: could not create '${disk_scratch}'; falling back to TMPDIR, which may be a small tmpfs." >&2
+      work_dir="$( mktemp --directory )"
+   fi
 fi
 
 ## Resolve the run to compare against.
@@ -194,6 +205,14 @@ while IFS=$'\t' read -r artifact_id artifact_name; do
       continue
    fi
    unzip -q -o -d "${ci_dir}" -- "${work_dir}/${artifact_name}.zip" || true
+   ## STOP at the first artifact that carries a provenance record. A
+   ## reproducibility run publishes the same image twice ('repro-image-a' and
+   ## '-b', proven byte-identical by its own compare job), so downloading both
+   ## doubles half a gigabyte of transfer to compare against the same thing.
+   if find "${ci_dir}" -type f -name '*.dm-buildinfo' -print -quit | grep --quiet .; then
+      printf '%s\n' "${0##*/}: got a provenance record from '${artifact_name}'; not fetching the rest." >&2
+      break
+   fi
 done <<< "${artifact_list}"
 
 ci_buildinfo="$( find "${ci_dir}" -type f -name '*.dm-buildinfo' -print -quit )"
