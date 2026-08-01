@@ -148,6 +148,44 @@ for tool_name in dm-prepare-release dm-upload-images; do
    fi
 done
 
+## --- the resolver must be sourced BEFORE the tool's own 'cd' ---------------
+## Its cwd branch is captured at source time, so a tool that cd's first offers it
+## /usr/bin instead of the tree and the branch can never fire. dm-upload-images
+## did exactly that, and the whole release phase failed on it.
+for tool_name in dm-prepare-release dm-upload-images; do
+   tool="${tool_dir}/${tool_name}"
+   [ -r "${tool}" ] || continue
+   source_at="$(grep --line-number --max-count=1 -- 'source-tree-lib.bsh' "${tool}" | cut -d: -f1 || true)"
+   cd_at="$(grep --line-number --max-count=1 --extended-regexp -- '^[[:space:]]*cd -- ' "${tool}" | cut -d: -f1 || true)"
+   if [ -z "${source_at}" ]; then
+      fail "${tool_name} never sources source-tree-lib.bsh"
+   elif [ -z "${cd_at}" ]; then
+      pass "${tool_name} never cd's, so the resolver's cwd branch is unaffected"
+   elif [ "${source_at}" -lt "${cd_at}" ]; then
+      pass "${tool_name} sources the resolver before its own cd"
+   else
+      fail "${tool_name} cd's (line ${cd_at}) before sourcing the resolver (line ${source_at}); the cwd branch would see that directory, not the tree"
+   fi
+done
+
+## --- behavioural: the cwd branch actually resolves a tree ------------------
+## The regression was silent: every branch missed and the tool reported an
+## unresolvable tree even though cwd WAS a checkout.
+fake_tree="$(mktemp --directory)"
+mkdir --parents -- "${fake_tree}/help-steps"
+printf '%s\n' '## stub' > "${fake_tree}/help-steps/pre"
+resolved="$(cd -- "${fake_tree}" && env --unset=source_code_folder_dist bash -c '
+   source "$1"
+   derivative_maker_source_tree_resolve /usr/bin || exit 1
+   printf "%s\n" "${derivative_maker_source_code_dir}"
+' _ "${lib}" 2>&1 || true)"
+if [ "${resolved}" = "${fake_tree}" ]; then
+   pass "cwd branch resolves a checkout in the invocation directory"
+else
+   fail "cwd branch did not resolve the invocation directory: got '${resolved}', wanted '${fake_tree}'"
+fi
+safe-rm --recursive --force -- "${fake_tree}"
+
 ## --- behavioural: an unresolvable tree exits non-zero, and says so ----------
 ## Run the real script with HOME pointed at an empty dir, no source_code_folder_dist,
 ## and a cwd that is not a checkout: every branch must miss.
