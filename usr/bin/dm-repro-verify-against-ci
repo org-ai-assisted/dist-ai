@@ -1,0 +1,256 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Verify a LOCALLY built image against the one CI built: same inputs, same
+## bytes?
+##
+## THE GAP THIS CLOSES: the reproducibility lane proves CI-vs-CI (two runners,
+## one spec) and ci/reproducible-build-twice proves local-vs-local. Neither
+## proves local-vs-CI, and that is the one a developer actually wants -- "did my
+## machine produce what the project publishes?"
+##
+## It was not answerable before the '.dm-buildinfo' recorded the PRE-SIGN source
+## state. A derivative-maker commit does not pin its submodules when CI checks
+## them out to a moving branch TIP, so two builds of the same Source-Commit can
+## carry different submodule SHAs. Without those recorded, a byte difference had
+## no explanation and "not reproducible" could not be told apart from "you built
+## something else".
+##
+## So this compares INPUTS FIRST and treats the two outcomes as different things:
+##
+##   inputs differ  -> a byte difference is EXPECTED. Says which field, exits 3.
+##                     This is NOT a reproducibility failure.
+##   inputs match   -> now the bytes mean something. Identical is exit 0; a
+##                     difference is exit 1, and THAT is the real finding.
+##
+## Usage:
+##   dm-repro-verify-against-ci --local <file-or-dir> [--run-id <id>]
+##                              [--repo <owner/repo>] [--target <qcow2|iso|...>]
+##                              [--keep <dir>]
+##
+## --local    the built artifact, or a directory holding it plus its
+##            '<artifact>.dm-buildinfo'.
+## --run-id   the CI run to compare against; default is the most recent
+##            SUCCESSFUL run of the build workflow on the current branch.
+## --keep     keep the downloaded CI artifact in this directory instead of a
+##            temp dir that is removed on exit.
+##
+## Exit: 0 reproducible | 1 same inputs, DIFFERENT bytes | 2 usage/setup |
+##       3 inputs differ, so nothing is proven about reproducibility.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+repo="org-ai-assisted/derivative-maker"
+workflow="local-build.yml"
+local_path=""
+run_id=""
+target=""
+keep_dir=""
+
+while [ "$#" -gt 0 ]; do
+   case "$1" in
+      --local)
+         [ "$#" -ge 2 ] || { printf '%s\n' "${0##*/}: --local requires a value." >&2 ; exit 2 ; }
+         local_path="$2"
+         shift 2
+         ;;
+      --run-id)
+         [ "$#" -ge 2 ] || { printf '%s\n' "${0##*/}: --run-id requires a value." >&2 ; exit 2 ; }
+         run_id="$2"
+         shift 2
+         ;;
+      --repo)
+         [ "$#" -ge 2 ] || { printf '%s\n' "${0##*/}: --repo requires a value." >&2 ; exit 2 ; }
+         repo="$2"
+         shift 2
+         ;;
+      --target)
+         [ "$#" -ge 2 ] || { printf '%s\n' "${0##*/}: --target requires a value." >&2 ; exit 2 ; }
+         target="$2"
+         shift 2
+         ;;
+      --keep)
+         [ "$#" -ge 2 ] || { printf '%s\n' "${0##*/}: --keep requires a value." >&2 ; exit 2 ; }
+         keep_dir="$2"
+         shift 2
+         ;;
+      -h|--help)
+         grep '^##' -- "${BASH_SOURCE[0]}" | sed 's/^## \{0,1\}//'
+         exit 0
+         ;;
+      *)
+         printf '%s\n' "${0##*/}: unknown argument: '$1'" >&2
+         exit 2
+         ;;
+   esac
+done
+
+if [ -z "${local_path}" ]; then
+   printf '%s\n' "${0##*/}: --local is required." >&2
+   exit 2
+fi
+if [ ! -e "${local_path}" ]; then
+   printf '%s\n' "${0##*/}: '${local_path}' does not exist." >&2
+   exit 2
+fi
+
+for required_tool in git-api unzip; do
+   if ! type -P "${required_tool}" >/dev/null; then
+      printf '%s\n' "${0##*/}: '${required_tool}' is not on PATH; its absence is a gap to fix, not a reason to report a verdict." >&2
+      exit 2
+   fi
+done
+
+## Resolve the local buildinfo. A directory is the normal case: the release
+## artifact and its record sit side by side.
+if [ -d "${local_path}" ]; then
+   local_buildinfo="$( find "${local_path}" -maxdepth 2 -type f -name '*.dm-buildinfo' -print -quit )"
+else
+   local_buildinfo="${local_path}.dm-buildinfo"
+fi
+if [ -z "${local_buildinfo}" ] || [ ! -r "${local_buildinfo}" ]; then
+   printf '%s\n' "${0##*/}: no '.dm-buildinfo' beside '${local_path}'." \
+      "  Without the record there is nothing to compare the INPUTS against, and a byte" \
+      "  comparison alone cannot tell 'not reproducible' from 'you built something else'." >&2
+   exit 2
+fi
+
+work_dir=""
+# shellcheck disable=SC2317  # invoked indirectly via 'trap ... EXIT'
+cleanup() {
+   if [ -n "${work_dir}" ] && [ -z "${keep_dir}" ]; then
+      safe-rm --recursive --force -- "${work_dir}"
+   fi
+}
+trap cleanup EXIT
+if [ -n "${keep_dir}" ]; then
+   mkdir --parents -- "${keep_dir}"
+   work_dir="${keep_dir}"
+else
+   work_dir="$( mktemp --directory )"
+fi
+
+## Resolve the run to compare against.
+if [ -z "${run_id}" ]; then
+   printf '%s\n' "${0##*/}: resolving the most recent successful '${workflow}' run on ${repo}..." >&2
+   run_id="$( git-api GET "/repos/${repo}/actions/workflows/${workflow}/runs?status=success&per_page=1" 2>/dev/null \
+      | python3 -c 'import json,sys
+try:
+    payload = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+runs = payload.get("workflow_runs") or []
+if runs:
+    print(runs[0]["id"])' )"
+fi
+if [ -z "${run_id}" ]; then
+   printf '%s\n' "${0##*/}: no successful '${workflow}' run found on ${repo}; pass --run-id." >&2
+   exit 2
+fi
+printf '%s\n' "${0##*/}: comparing against run ${run_id}." >&2
+
+## Download every artifact of that run whose name looks like a built image, and
+## take the one carrying a buildinfo.
+artifact_list="$( git-api GET "/repos/${repo}/actions/runs/${run_id}/artifacts?per_page=100" 2>/dev/null \
+   | python3 -c 'import json,sys
+try:
+    payload = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(0)
+for item in payload.get("artifacts") or []:
+    if item.get("expired"):
+        continue
+    print("%s\t%s" % (item["id"], item["name"]))' )"
+if [ -z "${artifact_list}" ]; then
+   printf '%s\n' "${0##*/}: run ${run_id} has no unexpired artifacts (GitHub expires them; the default retention is short)." >&2
+   exit 2
+fi
+
+ci_dir="${work_dir}/ci"
+mkdir --parents -- "${ci_dir}"
+ci_buildinfo=""
+while IFS=$'\t' read -r artifact_id artifact_name; do
+   [ -n "${artifact_id}" ] || continue
+   case "${artifact_name}" in
+      *image*|*repro*)
+         ;;
+      *)
+         continue
+         ;;
+   esac
+   printf '%s\n' "${0##*/}: downloading artifact '${artifact_name}'..." >&2
+   if ! git-api GET "/repos/${repo}/actions/artifacts/${artifact_id}/zip" --location \
+      -o "${work_dir}/${artifact_name}.zip" 2>/dev/null; then
+      printf '%s\n' "${0##*/}: could not download '${artifact_name}'; skipping." >&2
+      continue
+   fi
+   unzip -q -o -d "${ci_dir}" -- "${work_dir}/${artifact_name}.zip" || true
+done <<< "${artifact_list}"
+
+ci_buildinfo="$( find "${ci_dir}" -type f -name '*.dm-buildinfo' -print -quit )"
+if [ -z "${ci_buildinfo}" ]; then
+   printf '%s\n' "${0##*/}: the CI artifacts carry no '.dm-buildinfo'." \
+      "  A run that predates the provenance record cannot be compared this way." >&2
+   exit 2
+fi
+
+## --- the inputs, FIRST -------------------------------------------------------
+comparator="$( dirname -- "$( dirname -- "$( readlink -f -- "${BASH_SOURCE[0]}" )" )" )/libexec/dist-ai/dm-buildinfo-compare.py"
+[ -r "${comparator}" ] || comparator="/usr/libexec/dist-ai/dm-buildinfo-compare.py"
+if [ ! -r "${comparator}" ]; then
+   printf '%s\n' "${0##*/}: dm-buildinfo-compare.py not found; cannot compare inputs." >&2
+   exit 2
+fi
+
+printf '%s\n' "${0##*/}: comparing the recorded INPUTS..." >&2
+input_rc=0
+python3 -- "${comparator}" "${local_buildinfo}" "${ci_buildinfo}" || input_rc="$?"
+case "${input_rc}" in
+   0)
+      printf '%s\n' "${0##*/}: inputs match; a byte difference would now be a real reproducibility finding." >&2
+      ;;
+   3)
+      printf '%s\n' "" \
+         "${0##*/}: the two builds had DIFFERENT INPUTS (fields above)." \
+         "  A byte difference is EXPECTED and proves nothing about reproducibility." \
+         "  Rebuild locally from the inputs CI used, then compare again." >&2
+      exit 3
+      ;;
+   *)
+      printf '%s\n' "${0##*/}: could not compare the inputs (exit ${input_rc}); refusing to report a verdict." >&2
+      exit 2
+      ;;
+esac
+
+## --- only now, the bytes -----------------------------------------------------
+local_artifact="${local_buildinfo%.dm-buildinfo}"
+ci_artifact="${ci_buildinfo%.dm-buildinfo}"
+if [ ! -r "${local_artifact}" ] || [ ! -r "${ci_artifact}" ]; then
+   printf '%s\n' "${0##*/}: an artifact named by a buildinfo is missing (local='${local_artifact}', ci='${ci_artifact}')." >&2
+   exit 2
+fi
+
+local_sum="$( sha256sum -- "${local_artifact}" | cut -d' ' -f1 )"
+ci_sum="$( sha256sum -- "${ci_artifact}" | cut -d' ' -f1 )"
+printf '%s\n' "  local: ${local_sum}  $( basename -- "${local_artifact}" )" \
+   "  ci   : ${ci_sum}  $( basename -- "${ci_artifact}" )" >&2
+if [ "${local_sum}" = "${ci_sum}" ]; then
+   printf '%s\n' "${0##*/}: REPRODUCIBLE -- same inputs, byte-identical output." >&2
+   exit 0
+fi
+
+printf '%s\n' "" \
+   "${0##*/}: NOT REPRODUCIBLE -- same recorded inputs, DIFFERENT bytes." \
+   "  This is the real finding: something in the build is nondeterministic, or an" \
+   "  input that matters is not being recorded. Explain it with:" \
+   "    dm-reproducible-compare-artifacts --target ${target:-<target>} --dir-a <local-dir> --dir-b ${ci_dir}" >&2
+exit 1
