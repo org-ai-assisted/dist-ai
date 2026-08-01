@@ -22,6 +22,14 @@
 ##   - an unreachable pin                    -> exit 2 (fail closed, no verdict)
 ##   - a missing submodule directory         -> exit 2
 ##
+## And the '--all' form, which enumerates .gitmodules instead of taking a named
+## path. Naming the submodules to check answers only for the ones someone
+## remembered to add, while the step title reads like full coverage:
+##   - a set containing a trailing pin       -> exit 1, EVERY submodule reported
+##   - '--report-only'                       -> exit 0, findings still printed
+##   - a submodule that cannot be checked    -> exit 2, counted as NOT verified
+##   - no / empty .gitmodules                -> exit 2 (an empty sweep is not a pass)
+##
 ## Builds throwaway git repos; needs no root, no network.
 ##
 ## Subject selection (first that exists):
@@ -102,11 +110,53 @@ build_fixture() {
    printf '%s\n' "${super}"
 }
 
+## Build a superproject with a '.gitmodules' recording N submodules, so the
+## '--all' form has something to enumerate. Arguments are '<name>:<pin_sha>'
+## pairs; each is cloned from $scratch/upstream and pinned at its own sha.
+build_fixture_multi() {
+   local scratch upstream super submodule_spec submodule_name submodule_pin
+   scratch="$1"
+   shift
+
+   upstream="${scratch}/upstream"
+   super="${scratch}/super"
+   git_quiet init --quiet -- "${super}"
+   printf 'x\n' > "${super}/README"
+   git_quiet -C "${super}" add README
+   git_quiet -C "${super}" commit --quiet --no-verify --message base
+
+   : > "${super}/.gitmodules"
+   for submodule_spec in "$@"; do
+      submodule_name="${submodule_spec%%:*}"
+      submodule_pin="${submodule_spec#*:}"
+      git_quiet clone --quiet -- "${upstream}" "${super}/${submodule_name}" 2>/dev/null
+      ## Written by hand rather than via 'git submodule add', which insists on a
+      ## remote and network.
+      printf '%s\n' \
+         "[submodule \"${submodule_name}\"]" \
+         "	path = ${submodule_name}" \
+         "	url = ${upstream}" >> "${super}/.gitmodules"
+      git_quiet -C "${super}" update-index --add --cacheinfo "160000,${submodule_pin},${submodule_name}"
+   done
+   git_quiet -C "${super}" add .gitmodules
+   git_quiet -C "${super}" commit --quiet --no-verify --message pin
+   printf '%s\n' "${super}"
+}
+
 run_subject() {
    local super rc
    super="$1"
    rc=0
    ( cd -- "${super}" && bash "${subject_path}" sub ) >"${run_out}" 2>&1 || rc="$?"
+   printf '%s' "${rc}"
+}
+
+run_subject_all() {
+   local super rc
+   super="$1"
+   shift
+   rc=0
+   ( cd -- "${super}" && bash "${subject_path}" --all "$@" ) >"${run_out}" 2>&1 || rc="$?"
    printf '%s' "${rc}"
 }
 
@@ -182,6 +232,84 @@ main() {
    safe-rm --recursive --force -- "${super}/sub"
    rc="$(run_subject "${super}")"
    require_rc "${rc}" "2" "missing submodule directory refuses a verdict"
+
+   safe-rm --recursive --force -- "${super}"
+
+   ## ---- '--all': every pin in .gitmodules, none of them named here ---------
+   ## THE BUG THIS HALF GUARDS: naming the submodules to check means answering
+   ## only for the ones someone remembered to add, while the step title reads
+   ## like full coverage. Two submodules, one behind and one current, must BOTH
+   ## appear -- a run that checks the first and stops looks identical to a pass
+   ## from the exit code alone.
+   super="$(build_fixture_multi "${scratch}" "lagging:${old_sha}" "fresh:${new_sha}")"
+   rc="$(run_subject_all "${super}")"
+   require_rc "${rc}" "1" "--all rejects a set containing a trailing pin"
+   if grep --fixed-strings -- "'lagging' pin TRAILS" "${run_out}" >/dev/null 2>&1; then
+      pass "--all names the trailing submodule"
+   else
+      fail "--all did not name the trailing submodule"
+      cat -- "${run_out}" >&2
+   fi
+   if grep --fixed-strings -- "'fresh' pin is current" "${run_out}" >/dev/null 2>&1; then
+      pass "--all also reached the second submodule"
+   else
+      fail "--all stopped at the first submodule, so it does not cover the set"
+      cat -- "${run_out}" >&2
+   fi
+   ## The counts must state coverage, not just failures: "1 trailing" alone
+   ## reads as full coverage even when others were never verified.
+   if grep --fixed-strings -- "2 submodule(s): 1 current or ahead, 1 trailing, 0 NOT verified" "${run_out}" >/dev/null 2>&1; then
+      pass "--all summarises current / trailing / unverified counts"
+   else
+      fail "--all did not report all three counts"
+      cat -- "${run_out}" >&2
+   fi
+
+   ## '--report-only' must still CHECK and still REPORT; only the exit changes.
+   rc="$(run_subject_all "${super}" --report-only)"
+   require_rc "${rc}" "0" "--all --report-only does not fail the build"
+   if grep --fixed-strings -- "'lagging' pin TRAILS" "${run_out}" >/dev/null 2>&1; then
+      pass "--report-only still reports the lag"
+   else
+      fail "--report-only suppressed the finding, so it reports nothing"
+      cat -- "${run_out}" >&2
+   fi
+   safe-rm --recursive --force -- "${super}"
+
+   ## ---- '--all': an unverifiable pin is NOT a pass ------------------------
+   super="$(build_fixture_multi "${scratch}" "gone:${new_sha}" "fresh:${new_sha}")"
+   safe-rm --recursive --force -- "${super}/gone"
+   rc="$(run_subject_all "${super}")"
+   require_rc "${rc}" "2" "--all refuses a verdict when a submodule cannot be checked"
+   if grep --fixed-strings -- "1 NOT verified" "${run_out}" >/dev/null 2>&1; then
+      pass "--all counts the unverified submodule as unverified"
+   else
+      fail "--all folded an unverifiable submodule into another count"
+      cat -- "${run_out}" >&2
+   fi
+   safe-rm --recursive --force -- "${super}"
+
+   ## ---- '--all' with nothing to enumerate must not report success --------
+   ## An empty sweep that exits 0 is the silent-green failure mode: the step is
+   ## green and covered nothing.
+   super="$(build_fixture_multi "${scratch}" "fresh:${new_sha}")"
+   safe-rm --force -- "${super}/.gitmodules"
+   rc="$(run_subject_all "${super}")"
+   require_rc "${rc}" "2" "--all with no .gitmodules refuses to report coverage"
+   safe-rm --recursive --force -- "${super}"
+
+   super="$(build_fixture_multi "${scratch}" "fresh:${new_sha}")"
+   : > "${super}/.gitmodules"
+   rc="$(run_subject_all "${super}")"
+   require_rc "${rc}" "2" "--all with an empty .gitmodules refuses to report coverage"
+   safe-rm --recursive --force -- "${super}"
+
+   ## ---- usage errors stay usage errors ------------------------------------
+   super="$(build_fixture_multi "${scratch}" "fresh:${new_sha}")"
+   rc="$(run_subject_all "${super}" --bogus)"
+   require_rc "${rc}" "2" "--all with an unknown flag is a usage error"
+   rc="$(run_subject_all "${super}" extra)"
+   require_rc "${rc}" "2" "--all with a stray argument is a usage error"
 
    safe-rm --recursive --force -- "${scratch}"
 

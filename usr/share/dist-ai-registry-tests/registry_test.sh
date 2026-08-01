@@ -257,7 +257,7 @@ else
       git -C "${repo}" ls-files -z -- 'usr/share/*-tests*' )
 fi
 
-for rel in ${payload_files[@]+"${payload_files[@]}"}; do
+for rel in "${payload_files[@]}"; do
    checks=$(( checks + 1 ))
    if ! installed_covers "${rel}"; then
       fail "${rel}: in a test payload dir but matched by no debian/*.install pattern -- absent on an installed system, so the suite would silently cover less"
@@ -284,7 +284,7 @@ if [ "${#bin_vars[@]}" -eq 0 ]; then
    fail 'parsed zero *_BIN overrides out of the suite payloads -- the pattern changed and this check is now blind'
 fi
 
-for bin_var in ${bin_vars[@]+"${bin_vars[@]}"}; do
+for bin_var in "${bin_vars[@]}"; do
    checks=$(( checks + 1 ))
    if ! grep --quiet --fixed-strings -- "${bin_var}=" "${runner}"; then
       fail "${bin_var}: read by a suite payload but wired by no wire() case -- the payload falls back to its hardcoded developer-box path, which never exists in CI, and silently skips every case that needs it"

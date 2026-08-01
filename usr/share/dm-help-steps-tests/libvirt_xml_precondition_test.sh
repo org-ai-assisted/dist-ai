@@ -5,18 +5,23 @@
 
 ## AI-Assisted
 
-## Regression test for derivative-maker 'build-steps.d/1100_sanity-tests'
-## check-libvirt-xml.
+## Regression test for derivative-maker
+## 'build-steps.d/1600_export-libvirt-xml'.
 ##
-## THE BUG IT GUARDS: the libvirt XML that 1600_export-libvirt-xml copies for every
-## raw or qcow2 target is named after SHORT_VMNAME, which is derived from the
-## FLAVOR. A flavor with no such XML was accepted, and the build then ran for ~15
-## minutes -- through the whole cowbuilder package phase -- before dying on a bare
+## THE BUG IT GUARDS: the libvirt XML this step copies for every raw or qcow2
+## target is named after SHORT_VMNAME, which is derived from the FLAVOR. A source
+## build sets SHORT_VMNAME to the literal 'source', for which no XML has ever
+## existed, so '--flavor source' plus an image target ran for ~15 minutes --
+## through the whole cowbuilder package phase -- and then died on a bare
 ## "cp: cannot stat '.../source.xml'", naming neither the flavor nor the
-## combination that produced it. '--flavor source --target raw' is the concrete
-## case; it reached the CI dry-run lane.
+## combination that produced it. It reached the CI dry-run lane.
 ##
-## Drives the SHIPPED function, so a regression in the real gate or the real
+## Two separate properties, both asserted below:
+##   1. a source build SKIPS this step outright (there is no VM to export)
+##   2. any other missing XML fails with a message that names the flavor, the
+##      file, and the flavors that do have one
+##
+## Drives the SHIPPED functions, so a regression in the real gate or the real
 ## message fails here.
 ##
 ## Needs no root, no network, no build.
@@ -33,7 +38,7 @@ test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./help_steps_test_lib.bsh
 source "${test_dir}/help_steps_test_lib.bsh"
 
-sanity_tests=""
+build_steps_dir=""
 locate_subject() {
    local candidate
 
@@ -46,7 +51,7 @@ locate_subject() {
             ;;
       esac
       if [ -r "${candidate}" ]; then
-         sanity_tests="${candidate}"
+         build_steps_dir="$(dirname -- "${candidate}")"
          return 0
       fi
    done
@@ -54,40 +59,24 @@ locate_subject() {
 }
 
 if ! locate_subject; then
-   printf '%s\n' "SKIP: 1100_sanity-tests not found (set DM_SANITY_TESTS)." >&2
+   printf '%s\n' "SKIP: build-steps.d not found (set DM_SANITY_TESTS)." >&2
    exit 77
 fi
 
-if grep --quiet -- '^check-libvirt-xml()' "${sanity_tests}"; then
-   pass "1100_sanity-tests defines check-libvirt-xml"
-else
-   fail "1100_sanity-tests does not define check-libvirt-xml"
-fi
-
-## A guard that is never called guards nothing.
-if sed -n '/^main()/,/^}/p' -- "${sanity_tests}" | grep --quiet -- 'check-libvirt-xml'; then
-   pass "check-libvirt-xml is called from main"
-else
-   fail "check-libvirt-xml is defined but never called from main"
-fi
-
-## The guard and the step it protects must read the SAME variable, or the guard
-## silently checks a different file than the one 1600 copies.
-export_step="$(dirname -- "${sanity_tests}")/1600_export-libvirt-xml"
-if [ -r "${export_step}" ]; then
-   if grep --quiet --fixed-strings -- 'libvirt_source_kvm_file' "${export_step}"; then
-      pass "1600_export-libvirt-xml copies the same libvirt_source_kvm_file the guard checks"
-   else
-      fail "1600_export-libvirt-xml no longer reads libvirt_source_kvm_file; the guard now protects nothing"
-   fi
-else
-   fail "1600_export-libvirt-xml not found beside ${sanity_tests}"
-fi
-
-guard="$(sed -n '/^check-libvirt-xml()/,/^}/p' -- "${sanity_tests}")"
-if [ -z "${guard}" ]; then
-   printf '%s\n' "FAILED: could not extract check-libvirt-xml." >&2
+sanity_tests="${build_steps_dir}/1100_sanity-tests"
+export_step="${build_steps_dir}/1600_export-libvirt-xml"
+if [ ! -r "${export_step}" ]; then
+   printf '%s\n' "FAILED: ${export_step} not found." >&2
    exit 1
+fi
+
+## The precondition belongs to the step that does the copy, in ONE place. A
+## second copy in 1100_sanity-tests has to duplicate 1600's target gating to stay
+## correct, and drifts the moment either side changes.
+if sed -n '/^main()/,/^}/p' -- "${sanity_tests}" | grep --quiet -- 'libvirt'; then
+   fail "1100_sanity-tests calls a libvirt check again; 1600_export-libvirt-xml owns this precondition"
+else
+   pass "1100_sanity-tests does not duplicate the libvirt precondition"
 fi
 
 workdir=""
@@ -104,24 +93,65 @@ for present in Kicksecure Whonix-Gateway Whonix-Workstation; do
    printf '%s\n' '<domain/>' > "${xml_dir}/${present}.xml"
 done
 
-run_guard() {
-   local raw="$1" qcow2="$2" xml_file="$3" flavor="$4"
+run_step() {
+   local source_run="$1" raw="$2" qcow2="$3" xml_file="$4" flavor="$5"
 
-   env dist_build_raw="${raw}" dist_build_qcow2="${qcow2}" \
+   env dist_build_source_run="${source_run}" \
+      dist_build_raw="${raw}" dist_build_qcow2="${qcow2}" \
       libvirt_source_kvm_file="${xml_file}" dist_build_flavor="${flavor}" \
-      bash -- "${test_dir}/libvirt_xml_guard_inner.sh" "${guard}" 2>&1
+      binary_build_folder_dist="${workdir}/binary" \
+      libvirt_target_kvm_file="${workdir}/binary/out.xml" \
+      bash -- "${test_dir}/libvirt_xml_guard_inner.sh" "${export_step}" 2>&1
 }
 
-## --- raw target, flavor has no XML -> must fail, and say what and why -------
+## --- the source build must SKIP, not look for a 'source.xml' ---------------
+## '--flavor source' still sets dist_build_qcow2 for an image target, so the
+## target gate alone does not stop it.
 rc=0
-out="$(run_guard true false "${xml_dir}/source.xml" source)" || rc="$?"
-if [ "${rc}" -ne 0 ]; then
-   pass "raw target with no libvirt XML: rejected (${rc})"
+out="$(run_step true false true "${xml_dir}/source.xml" source)" || rc="$?"
+if [ "${rc}" -eq 0 ]; then
+   pass "source build with a qcow2 target: skipped, not failed"
 else
-   fail "raw target with no libvirt XML: accepted -- the build would die ~15 minutes later in 1600"
+   fail "source build with a qcow2 target: exited ${rc} -- ${out}"
 fi
 case "${out}" in
-   *"source.xml"*)
+   *STUB-CP*)
+      fail "source build reached the copy; it must skip -- ${out}"
+      ;;
+   *)
+      pass "source build did not reach the copy"
+      ;;
+esac
+
+## Same for a raw target, since 1600 exports for either.
+rc=0
+out="$(run_step true true false "${xml_dir}/source.xml" source)" || rc="$?"
+if [ "${rc}" -eq 0 ]; then
+   pass "source build with a raw target: skipped"
+else
+   fail "source build with a raw target: exited ${rc} -- ${out}"
+fi
+## Exit 0 alone does not distinguish "skipped" from "copied the wrong file
+## successfully", which is exactly what the pre-fix code did.
+case "${out}" in
+   *STUB-CP*)
+      fail "source build with a raw target reached the copy -- ${out}"
+      ;;
+   *)
+      pass "source build with a raw target did not reach the copy"
+      ;;
+esac
+
+## --- a non-source flavor with no XML must fail, and say what and why -------
+rc=0
+out="$(run_step false true false "${xml_dir}/kicksecure-nonexistent.xml" kicksecure-nonexistent)" || rc="$?"
+if [ "${rc}" -ne 0 ]; then
+   pass "raw target with no libvirt XML: rejected"
+else
+   fail "raw target with no libvirt XML: accepted -- the build would die on a bare 'cp: cannot stat'"
+fi
+case "${out}" in
+   *"kicksecure-nonexistent.xml"*)
       pass "rejection names the file it looked for"
       ;;
    *)
@@ -129,7 +159,7 @@ case "${out}" in
       ;;
 esac
 case "${out}" in
-   *"flavor"*"source"*)
+   *"flavor"*"kicksecure-nonexistent"*)
       pass "rejection names the flavor"
       ;;
    *)
@@ -137,7 +167,7 @@ case "${out}" in
       ;;
 esac
 case "${out}" in
-   *Kicksecure*)
+   *Kicksecure.xml*)
       pass "rejection lists the flavors that do have an XML"
       ;;
    *)
@@ -145,42 +175,48 @@ case "${out}" in
       ;;
 esac
 
-## --- qcow2 reaches 1600 too, so it must be gated the same way ---------------
+## --- qcow2 reaches the copy too, so it must be gated the same way ----------
 rc=0
-run_guard false true "${xml_dir}/source.xml" source >/dev/null 2>&1 || rc="$?"
+run_step false false true "${xml_dir}/kicksecure-nonexistent.xml" kicksecure-nonexistent >/dev/null 2>&1 || rc="$?"
 if [ "${rc}" -ne 0 ]; then
    pass "qcow2 target with no libvirt XML: rejected"
 else
-   fail "qcow2 target with no libvirt XML: accepted -- 1600 runs for qcow2 as well as raw"
+   fail "qcow2 target with no libvirt XML: accepted -- 1600 exports for qcow2 as well as raw"
 fi
 
-## --- CANARY: a valid combination must PASS ---------------------------------
-## Without this the assertions above are satisfied by a guard that rejects
-## everything, which would break every real build.
+## --- CANARY: a valid combination must reach the copy ------------------------
+## Without this the assertions above are satisfied by a step that rejects
+## everything, which would break every real image build.
 rc=0
-out="$(run_guard true false "${xml_dir}/Kicksecure.xml" kicksecure-cli)" || rc="$?"
+out="$(run_step false true false "${xml_dir}/Kicksecure.xml" kicksecure-cli)" || rc="$?"
 if [ "${rc}" -eq 0 ]; then
    pass "canary: raw target whose flavor HAS an XML is accepted"
 else
    fail "canary broken: a valid raw build was rejected (${rc}) -- ${out}"
 fi
+case "${out}" in
+   *STUB-CP*Kicksecure.xml*)
+      pass "canary: the valid build actually reached the copy"
+      ;;
+   *)
+      fail "canary broken: a valid raw build never reached the copy -- ${out}"
+      ;;
+esac
 
-## --- CANARY: no image target -> not this guard's business -------------------
-## 1600 skips entirely when neither raw nor qcow2 is set, so a missing XML is
-## irrelevant there and must not fail a source-only build.
+## --- CANARY: no image target -> the step does not run at all ---------------
 rc=0
-out="$(run_guard false false "${xml_dir}/source.xml" source)" || rc="$?"
+out="$(run_step false false false "${xml_dir}/source.xml" kicksecure-cli)" || rc="$?"
 if [ "${rc}" -eq 0 ]; then
-   pass "canary: source-only build is not gated on a libvirt XML"
+   pass "canary: build with no image target is not gated on a libvirt XML"
 else
-   fail "canary broken: source-only build rejected (${rc}) -- 1600 does not even run -- ${out}"
+   fail "canary broken: build with no image target rejected (${rc}) -- ${out}"
 fi
 
 ## --- an EMPTY libvirt_source_kvm_file is its own failure --------------------
 ## 'dirname -- ""' is '.', which exists, so a naive listing dumps the entire
 ## source root into the error message instead of naming the XML files.
 rc=0
-out="$(run_guard true false "" source)" || rc="$?"
+out="$(run_step false true false "" kicksecure-cli)" || rc="$?"
 if [ "${rc}" -ne 0 ]; then
    pass "empty libvirt_source_kvm_file: rejected"
 else
@@ -195,9 +231,8 @@ case "${out}" in
       ;;
 esac
 ## The tell for the bug is the LISTING branch running at all: with an empty value
-## it computed '.' as the XML directory and listed the source root under this
-## header. Matching the header, not words like 'help-steps' -- the correct
-## message cites help-steps/variables on purpose.
+## it computes '.' as the XML directory and lists the caller's cwd under this
+## header.
 case "${out}" in
    *"Flavors that do have one"*)
       fail "empty value: took the listing branch, so it dumped a directory that is not an XML dir -- ${out}"
