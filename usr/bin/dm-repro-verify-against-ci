@@ -55,6 +55,8 @@ local_path=""
 run_id=""
 target=""
 keep_dir=""
+artifact_seen="false"
+artifact_downloaded="false"
 
 while [ "$#" -gt 0 ]; do
    case "$1" in
@@ -199,11 +201,13 @@ while IFS=$'\t' read -r artifact_id artifact_name; do
          ;;
    esac
    printf '%s\n' "${0##*/}: downloading artifact '${artifact_name}'..." >&2
+   artifact_seen='true'
    if ! git-api GET "/repos/${repo}/actions/artifacts/${artifact_id}/zip" --location \
       -o "${work_dir}/${artifact_name}.zip" 2>/dev/null; then
       printf '%s\n' "${0##*/}: could not download '${artifact_name}'; skipping." >&2
       continue
    fi
+   artifact_downloaded='true'
    unzip -q -o -d "${ci_dir}" -- "${work_dir}/${artifact_name}.zip" || true
    ## STOP at the first artifact that carries a provenance record. A
    ## reproducibility run publishes the same image twice ('repro-image-a' and
@@ -216,6 +220,20 @@ while IFS=$'\t' read -r artifact_id artifact_name; do
 done <<< "${artifact_list}"
 
 ci_buildinfo="$( find "${ci_dir}" -type f -name '*.dm-buildinfo' -print -quit )"
+## Name the ACTUAL cause. All three of these end with no buildinfo, and blaming
+## the run's age for a failed download sends the reader to the wrong place --
+## it is the one message they will act on.
+if [ -z "${ci_buildinfo}" ] && [ "${artifact_seen}" = 'false' ]; then
+   printf '%s\n' "${0##*/}: run ${run_id} published no image artifact to compare against." \
+      "  Check that the run's build jobs succeeded and that its artifacts have not expired." >&2
+   exit 2
+fi
+if [ -z "${ci_buildinfo}" ] && [ "${artifact_downloaded}" = 'false' ]; then
+   printf '%s\n' "${0##*/}: every artifact download FAILED, so nothing could be compared." \
+      "  This is a transfer or disk problem, NOT a property of the run: check network," \
+      "  the GitHub token, and free space (a large artifact will not fit a small tmpfs)." >&2
+   exit 2
+fi
 if [ -z "${ci_buildinfo}" ]; then
    printf '%s\n' "${0##*/}: the CI artifacts carry no '.dm-buildinfo'." \
       "  A run that predates the provenance record cannot be compared this way." >&2
