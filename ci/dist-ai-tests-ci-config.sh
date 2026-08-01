@@ -25,6 +25,15 @@
 ##                   (the adversarial PoC corpus lives in its own repo, so a suite
 ##                   that drives it cannot resolve one in CI otherwise, and would
 ##                   exit 77 -> reported SKIP -> counted green)
+##
+## It also PERFORMS that checkout when the component asks for it and the
+## consuming workflow did not. The reusable workflow gained its own init step,
+## but consumers pin the reusable at '@master' by org policy (same-org refs are
+## branch-pinned, not SHA-pinned), so a component cannot benefit from it until
+## that lands on master. dist-ai is checked out FRESH at job runtime, so doing it
+## here takes effect immediately, for every consumer, with no branch name written
+## down anywhere. Idempotent: a workflow that already initialized them makes this
+## a no-op.
 
 set -o errexit
 set -o nounset
@@ -129,6 +138,35 @@ case "${apt_packages}" in
       exit 1
       ;;
 esac
+
+## Do the checkout the flag asks for, rather than only reporting that it is
+## wanted. A suite whose subject lives in a submodule exits 77 without it, which
+## dist-ai-tests-all counts as an unauthorized skip -- correctly a failure, and
+## one no consumer can fix from its own repo.
+if [ "${submodules}" = 'true' ]; then
+   component_dir="$( cd -- "$( dirname -- "${cfg}" )/.." && pwd )"
+   if [ -e "${component_dir}/.gitmodules" ]; then
+      ## A component may pin submodule commits that exist only in this org's
+      ## forks while .gitmodules still points upstream, so a plain init cannot
+      ## find them. Run the component's own mapping helper when it ships one,
+      ## exactly as its build lane does.
+      if [ -x "${component_dir}/ci/configure-fork-mirror" ]; then
+         ( cd -- "${component_dir}" \
+           && ./ci/configure-fork-mirror "${GITHUB_REPOSITORY_OWNER:-org-ai-assisted}" "${GITHUB_REPOSITORY_OWNER:-org-ai-assisted}" ) \
+            || printf '%s\n' 'dist-ai-tests-ci-config: fork-mirror mapping failed; submodule init may not resolve' >&2
+      fi
+      ## NOT --recursive: the suites assert on the component's OWN submodules,
+      ## and recursing multiplies the checkout for no coverage.
+      if ( cd -- "${component_dir}" && git submodule update --init --quiet ); then
+         printf '%s\n' "dist-ai-tests-ci-config: initialized ${component_dir} submodules" >&2
+      else
+         ## Not fatal here: the suite that needs one will exit 77 and be counted
+         ## as an unauthorized skip, which is the correct loud failure. Silently
+         ## swallowing this would turn that into a green run.
+         printf '%s\n' 'dist-ai-tests-ci-config: submodule init FAILED; suites needing one will report an unauthorized skip' >&2
+      fi
+   fi
+fi
 
 {
    printf 'apt_packages=%s\n' "${apt_packages}"
