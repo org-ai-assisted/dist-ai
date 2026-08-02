@@ -179,8 +179,38 @@ pin_report="$( git -C "${source_dir}" submodule --quiet foreach --recursive \
     fi
     if [ -z "$(git branch --remotes --contains "${pinned}" 2>/dev/null)" ]; then
        printf "UNFETCHABLE %s (pinned %.12s: on no remote branch)\n" "${displaypath}" "${pinned}"
+       exit 0
+    fi
+    ## "Reachable from SOME remote in this clone" is not the question a fresh
+    ## checkout asks. `git clone --recurse-submodules` uses the URL in
+    ## .gitmodules, not whatever extra remotes a working tree happens to carry.
+    ## A pin living only on a fork therefore passes the check above and still
+    ## breaks a clean recursive checkout -- exactly how a fork-only
+    ## grml-debootstrap pin shipped unnoticed. Ask the CONFIGURED url.
+    gitmodules_url="$(git -C "${toplevel}" config -f .gitmodules --get "submodule.${name}.url" 2>/dev/null || true)"
+    if [ -z "${gitmodules_url}" ]; then
+       printf "NO-URL %s (no url in .gitmodules)\n" "${displaypath}"
+       exit 0
+    fi
+    if ! git ls-remote "${gitmodules_url}" 2>/dev/null | grep -qF "${pinned}"; then
+       printf "FORK-ONLY %s (pinned %.12s not advertised by %s)\n" "${displaypath}" "${pinned}" "${gitmodules_url}"
     fi' 2>/dev/null || true )"
 bad_pins="$( printf '%s\n' "${pin_report}" | grep -E '^(MISSING|UNFETCHABLE) ' || true )"
+## FORK-ONLY is reported LOUDLY but does not fail: on the 'ai' branch CI runs
+## ci/configure-fork-mirror before submodule init, so a fork-only pin is
+## legitimate THERE. It remains a fact the reader must see, because a plain
+## `git clone --recurse-submodules` of the same commit will fail on it.
+forkonly_pins="$( printf '%s\n' "${pin_report}" | grep -E '^FORK-ONLY ' || true )"
+nourl_pins="$( printf '%s\n' "${pin_report}" | grep -E '^NO-URL ' || true )"
+if [ -n "${forkonly_pins}" ]; then
+   printf '%s\n' "   FORK-ONLY pins: reachable from a fork, NOT from the .gitmodules url." >&2
+   printf '%s\n' "   CI rewrites urls first so its checkout works; a plain clone --recurse-submodules will NOT:" >&2
+   printf '%s\n' "${forkonly_pins}" | sed 's/^/          /' >&2
+fi
+if [ -n "${nourl_pins}" ]; then
+   printf '%s\n' "   NO url in .gitmodules for these -- fetchability cannot be established at all:" >&2
+   printf '%s\n' "${nourl_pins}" | sed 's/^/          /' >&2
+fi
 unverified_pins="$( printf '%s\n' "${pin_report}" | grep -E '^UNVERIFIED ' || true )"
 if [ -n "${unverified_pins}" ]; then
    printf '%s\n' "   NOTE: fetchability NOT established for these (no network remote to ask):" >&2
