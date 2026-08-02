@@ -290,7 +290,19 @@ pin_report="$( git -C "${source_dir}" submodule --quiet foreach --recursive \
        exit 0
     fi
     ## 2. Ask the server for the OBJECT. Reachable-but-not-a-tip is exactly what
-    ##    fetch-by-sha answers.
+    ##    fetch-by-sha answers -- but note WHAT it answers, and what it does not.
+    ##
+    ##    IT PROVES FETCHABILITY, NOT PUBLICATION. GitHub forks share an object
+    ##    store, so an UPSTREAM url happily serves a commit that exists only in a
+    ##    fork of it. Measured: the kicksecure-base-files pin fetches fine from
+    ##    Kicksecure/kicksecure-base-files while being on none of the branches of
+    ##    that repo (it lives on org-ai-assisted). So a success here means CI can
+    ##    get it, which is the actual question of this stage, and must NOT be
+    ##    reported as upstream having it.
+    ##
+    ##    It also means the fork network is load-bearing for such a pin: a mirror,
+    ##    a non-GitHub host, or a deleted fork breaks the clean checkout that
+    ##    succeeds today.
     ##
     ##    Probe from a scratch bare repo, never from the submodule itself: a
     ##    --depth=1 fetch into a full clone writes a .git/shallow graft
@@ -320,7 +332,7 @@ bad_pins="$( printf '%s\n' "${pin_report}" | grep -E '^(MISSING|UNFETCHABLE) ' |
 forkonly_pins="$( printf '%s\n' "${pin_report}" | grep -E '^FORK-ONLY ' || true )"
 nourl_pins="$( printf '%s\n' "${pin_report}" | grep -E '^NO-URL ' || true )"
 if [ -n "${forkonly_pins}" ]; then
-   printf '%s\n' "   FORK-ONLY pins: reachable from a fork, NOT from the .gitmodules url." >&2
+   printf '%s\n' "   FORK-ONLY pins: the .gitmodules url will not serve these at all." >&2
    printf '%s\n' "   CI rewrites urls first so its checkout works; a plain clone --recurse-submodules will NOT:" >&2
    printf '%s\n' "${forkonly_pins}" | sed 's/^/          /' >&2
 fi
