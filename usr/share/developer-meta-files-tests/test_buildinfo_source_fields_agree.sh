@@ -202,6 +202,34 @@ else
    fail 'a missing image was accepted WITHOUT --dry-run -- the check is gone, not opt-in'
 fi
 
+## An image built with --reproducible-dist-build-version is NOT what an official
+## build of the same commit produces, so the record must say so -- otherwise it is
+## indistinguishable from a release artifact and a comparison against one would
+## read the difference as a reproducibility failure.
+printf 'Source-Commit: %s\nSubmodule-State:\n abc123 packages/example (v1)\n' \
+   'abc123def456' > "${workdir}/dm-source-state"
+printf '' > "${workdir}/norm.raw"
+env dist_build_version='18.2.2.0' binary_build_folder_dist="${workdir}" \
+   dist_build_version_reproducible='true' \
+   bash -- "${subject}" --dry-run --image "${workdir}/norm.raw" --target qcow2 \
+   --output "${workdir}/normalized.bi" >/dev/null 2>&1
+if grep --quiet '^Version-Normalized: true' -- "${workdir}/normalized.bi"; then
+   pass 'a normalized build is marked Version-Normalized in the record'
+else
+   fail 'a normalized build is NOT marked -- indistinguishable from a release artifact'
+fi
+
+## ...and an ordinary build must be byte-unchanged, or every existing comparison
+## breaks on a field that was not there before.
+env dist_build_version='18.2.2.0' binary_build_folder_dist="${workdir}" \
+   bash -- "${subject}" --dry-run --image "${workdir}/norm.raw" --target qcow2 \
+   --output "${workdir}/plain.bi" >/dev/null 2>&1
+if grep --quiet 'Version-Normalized' -- "${workdir}/plain.bi"; then
+   fail 'an ordinary build gained a Version-Normalized field it should not have'
+else
+   pass 'an ordinary build record is unchanged'
+fi
+
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "test_buildinfo_source_fields_agree: ${test_failures} failure(s)" >&2
    exit 1
