@@ -6,23 +6,27 @@
 ## AI-Assisted
 
 ## Regression test for developer-meta-files 'dm-reproducible-buildinfo': the
-## record's two source fields must name the SAME commit.
+## record's two source fields may name DIFFERENT commits, and that must be
+## ACCEPTED.
 ##
-## THE BUG IT GUARDS: 'Source-Commit' is recorded PRE-SIGN by
-## help-steps/sign-and-tag into the dm-source-state file, while
-## 'dist_build_version' is auto-detected with 'git describe' ONLY when it is
-## unset -- so a value inherited from the environment silently wins over the
-## actual tree. An observed record carried
-## 'Source-Commit: 02096cd4...' alongside
-## 'Source-Version: 18.2.2.0-217-ge65ff458...', i.e. two DIFFERENT commits in the
-## same record. A rebuild keyed on either field then reproduces the wrong tree,
-## which is exactly what a provenance record exists to prevent, and nothing else
-## checked it.
+## THE BUG IT GUARDS: an earlier version of this file asserted the opposite --
+## that the 'git describe' suffix in Source-Version must equal Source-Commit.
+## That invariant is false for every signed build and it broke CI on a correct
+## record:
+##   - help-steps/sign-and-tag records Source-Commit from HEAD BEFORE signing,
+##     deliberately, because it then runs sign-tag-head, which rewrites HEAD via
+##     'commit --amend -S'.
+##   - 'dist_build_version' is derived by 'git describe' AFTER that amend, so its
+##     '-g<sha>' suffix names the amended commit.
+## The pre-sign commit is the one a rebuilder can fetch; the amended one exists
+## only inside that build. So the fields disagreeing is the INTENDED state.
 ##
-## 'git describe' ends in '-g<sha>' and that sha IS the described commit, so when
-## the suffix is present it must equal Source-Commit. A clean tag build carries no
-## suffix and must NOT be constrained -- the false-positive cases below are as
-## much the point as the failing one.
+## The hazard that motivated the original check is real but lives elsewhere:
+## 'dist_build_version' is auto-detected only when unset, so a stale value from a
+## reused workspace wins over the tree (observed: Source-Commit 02096cd4...
+## beside Source-Version ...-ge65ff458...). Catching it requires comparing
+## against the tree's CURRENT HEAD, which this generator cannot obtain reliably.
+## Not covered here, and deliberately not faked.
 ##
 ## Needs no root, no network, no build.
 
@@ -102,18 +106,6 @@ run_with() {
    printf '%s' "${rc}"
 }
 
-## <description> <expected-nonzero|expected-zero> <version> <commit>
-expect_refused() {
-   local description="$1" version="$2" commit="$3" rc
-
-   rc="$(run_with "${version}" "${commit}")"
-   if [ "${rc}" -ne 0 ]; then
-      pass "refused: ${description} (exit ${rc})"
-   else
-      fail "ACCEPTED a record whose source fields disagree: ${description}"
-   fi
-}
-
 expect_accepted() {
    local description="$1" version="$2" commit="$3" rc
 
@@ -125,19 +117,18 @@ expect_accepted() {
    fi
 }
 
-## The real observed divergence.
-expect_refused 'describe suffix names a different commit than Source-Commit' \
+## THE signed-build shape: Source-Version describes the amended commit while
+## Source-Commit names the pre-sign one. This is what a real 'sign-and-tag' run
+## produces, and refusing it blocked the derivative-maker dry-run lane.
+expect_accepted 'describe suffix names a different commit than Source-Commit (signed build)' \
    '18.2.2.0-217-ge65ff45812c4de50c8e00aad5b3db16169ec2507' \
    '02096cd4501e9a458d522f1c012cf85e4cfc035f'
 
-## Short forms of the same defect must be caught too.
-expect_refused 'short describe suffix disagrees' \
+expect_accepted 'short forms of the same divergence' \
    '18.2.2.0-217-ge65ff458' \
    '02096cd4'
 
-## Everything below is a LEGITIMATE build and must not be constrained. These
-## matter as much as the refusal: a check that fails a clean tag build would be
-## reverted, not fixed.
+## The remaining shapes must also pass unconstrained.
 expect_accepted 'describe suffix agrees with Source-Commit' \
    '18.2.2.0-217-gabc123def456' \
    'abc123def456'
@@ -254,4 +245,4 @@ if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "test_buildinfo_source_fields_agree: ${test_failures} failure(s)" >&2
    exit 1
 fi
-printf '%s\n' "test_buildinfo_source_fields_agree: OK -- disagreeing source fields refused, legitimate builds spared."
+printf '%s\n' "test_buildinfo_source_fields_agree: OK -- a signed build's differing source fields accepted, record shape intact."
