@@ -221,6 +221,66 @@ pin_report="$( git -C "${source_dir}" submodule --quiet foreach --recursive \
        env --unset=GIT_DIR --unset=GIT_WORK_TREE \
           git -C "${DM_PREFLIGHT_PROBE_REPO}" fetch --quiet --depth=1 -- "$1" "$2" >/dev/null 2>&1
     }
+    ## LOCAL FAST PATH, before any network call. A remote-tracking ref was
+    ## fetched FROM a specific url, so if the pin is contained in a tracking
+    ## branch of a remote whose url IS the .gitmodules url, that url served the
+    ## commit -- which is the question. This is the common case, and answering it
+    ## locally is what keeps this check usable: one ls-remote plus a possible
+    ## fetch per submodule, across ~80 submodules, took dm-preflight from seconds
+    ## to over five minutes and made dm-ci-dispatch time out.
+    ##
+    ## Only PRESENCE is concluded here. An absence still falls through to the
+    ## network, so a stale tracking ref cannot turn into a false negative.
+    ## Compare NORMALISED urls. The same repository is spelled several ways here
+    ## -- .gitmodules says https://github.com/Owner/Repo.git while the remotes are
+    ## git@github.com:Owner/Repo.git or ssh://git@github.com/Owner/Repo.git (a
+    ## global url.insteadOf rewrites https to ssh). A literal string compare
+    ## matched none of them, so the fast path never fired and every submodule
+    ## still went to the network.
+    normalize_git_url() {
+       normalized="$1"
+       normalized="${normalized%.git}"
+       normalized="${normalized%/}"
+       case "${normalized}" in
+          *://*)
+             normalized="${normalized#*://}"
+             ;;
+       esac
+       ## Strip a leading user@ prefix, but only when it precedes the first
+       ## slash, so a path legitimately containing an at-sign is left alone.
+       case "${normalized%%/*}" in
+          *@*)
+             normalized="${normalized#*@}"
+             ;;
+       esac
+       ## scp form host:path becomes host/path.
+       case "${normalized}" in
+          *:*)
+             normalized="${normalized%%:*}/${normalized#*:}"
+             ;;
+       esac
+       printf "%s" "${normalized}"
+    }
+    gitmodules_url_normalized="$(normalize_git_url "${gitmodules_url}")"
+    matching_remotes=""
+    for remote_name in $(git remote); do
+       remote_url="$(git remote get-url "${remote_name}" 2>/dev/null || true)"
+       [ -n "${remote_url}" ] || continue
+       if [ "$(normalize_git_url "${remote_url}")" = "${gitmodules_url_normalized}" ]; then
+          matching_remotes="${matching_remotes} ${remote_name}"
+       fi
+    done
+    pin_found_locally=false
+    for remote_name in ${matching_remotes}; do
+       if [ -n "$(git branch --remotes --contains "${pinned}" --list "${remote_name}/*" 2>/dev/null)" ]; then
+          pin_found_locally=true
+          break
+       fi
+    done
+    if [ "${pin_found_locally}" = "true" ]; then
+       exit 0
+    fi
+
     remote_refs="$(git ls-remote -- "${gitmodules_url}" 2>/dev/null || true)"
     if [ -z "${remote_refs}" ]; then
        printf "UNVERIFIED %s (pinned %.12s: %s not contactable)\n" "${displaypath}" "${pinned}" "${gitmodules_url}"
