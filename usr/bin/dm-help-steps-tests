@@ -10,8 +10,9 @@
 ## umount_kill.sh, the /proc-based process reaper). The reaper test spawns
 ## victim and bystander processes in fresh mktemp trees and asserts the
 ## reaper kills exactly the tree's users; it requires ROOT and therefore
-## runs inside CI's throwaway container or a sandbox VM -- as an
-## unprivileged user it errors (root is required). Works installed (tests
+## runs inside CI's throwaway container or a sandbox VM. Invoked unprivileged,
+## this runner re-execs itself under passwordless sudo where that is available,
+## and warns rather than pretending otherwise where it is not. Works installed (tests
 ## under /usr/share/dm-help-steps-tests) or from a git checkout. Set
 ## UMOUNT_KILL_SH to pick the script under test; otherwise the suite uses a
 ## copy staged next to the test, then a derivative-maker checkout under
@@ -26,16 +27,60 @@ shopt -s shift_verbose
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
+## umount_kill_test.sh needs root and treats a non-root run as a HARD ERROR, not
+## a skip -- correctly, since a test that cannot run has verified nothing. But
+## the runner never elevated, so any unprivileged invocation reported
+## "FAILED (1): umount_kill_test.sh" for a test that passes 16/16 as root. A
+## false red is as misleading as a false green, and it trained the failure to be
+## ignored.
+##
+## CI already runs this suite as the container's root, so root-for-all is the
+## established mode; this just makes a local sandbox run match it instead of
+## requiring the caller to remember. Elevate when we can, and say plainly why we
+## could not when we cannot -- never silently continue into a guaranteed failure.
+if [ ! "${EUID}" = "0" ] && [ ! "${DM_HELP_STEPS_TESTS_NO_ELEVATE:-}" = "true" ]; then
+   if sudo --non-interactive true >/dev/null 2>&1; then
+      printf '%s\n' "${0##*/}: re-running as root (umount_kill.sh requires it)." >&2
+      ## --preserve-env: the suite is configured entirely through environment
+      ## (UMOUNT_KILL_SH, DERIVATIVE_MAKER_DIR, ...), so dropping it would point
+      ## the tests at different subjects than the caller chose.
+      sudo --non-interactive --preserve-env -- "$0" "$@"
+      exit "$?"
+   fi
+   printf '%s\n' "${0##*/}: WARNING: not root and passwordless sudo is unavailable;" \
+      "  umount_kill_test.sh will report a hard error rather than run." \
+      "  Run this suite as root (CI does), or in the sandbox VM." >&2
+fi
+
 if [ -d "${script_dir}/../share/dm-help-steps-tests" ]; then
    tests_dir="${script_dir}/../share/dm-help-steps-tests"
 else
    tests_dir='/usr/share/dm-help-steps-tests'
 fi
 
-## Run every *_test.sh in the suite. Exit 77 from a test means SKIP
-## (missing target / no root / missing tooling) and does not count as a
-## failure; any other non-zero exit is a failure. Overall exit is non-zero
-## iff at least one test failed.
+## Run every *_test.sh in the suite. Exit 77 from a test means SKIP (missing
+## target / missing tooling) and does not count as a failure; any other non-zero
+## exit is a failure. Overall exit is non-zero iff at least one test failed.
+##
+## "no root" is NOT among the skip reasons: the suite elevates above, and a test
+## that still cannot get root reports a hard error. Required privilege is a thing
+## to obtain, not to skip around.
+## Name the SUBJECT tree and its commit before running anything.
+##
+## Without this, a suite run says nothing about WHICH derivative-maker it
+## inspected. A sandbox carrying a stale clone produced 15 confident assertion
+## failures against fixes that had already landed, and the output gave no hint
+## that the subject was months behind -- the failures read as real defects. The
+## same silence would hide the opposite: a PASS earned by an old tree.
+subject_tree="${DERIVATIVE_MAKER_DIR:-${HOME}/derivative-maker}"
+if [ -d "${subject_tree}" ]; then
+   subject_head="$( git -C "${subject_tree}" rev-parse --short HEAD 2>/dev/null || printf 'unknown' )"
+   subject_branch="$( git -C "${subject_tree}" rev-parse --abbrev-ref HEAD 2>/dev/null || printf 'unknown' )"
+   printf 'subject: %s @ %s (%s)\n' "${subject_tree}" "${subject_head}" "${subject_branch}"
+else
+   printf 'subject: %s (NOT PRESENT -- tests will fall back or fail)\n' "${subject_tree}" >&2
+fi
+
 shopt -s nullglob
 failures=0
 skipped=0
