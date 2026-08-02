@@ -158,6 +158,18 @@ stage "submodules: every pin is fetchable by CI"
 ## whatever that path had, not what CI would fetch. Report those as UNVERIFIED
 ## rather than failing them -- a check that cries wolf on every scratch clone is
 ## a check everyone learns to ignore.
+## Scratch repo the pin probes fetch INTO, so no probe ever writes to a repo
+## belonging to the user. Empty and bare: it starts with none of the objects
+## under test, so a successful fetch is always the server's answer.
+DM_PREFLIGHT_PROBE_REPO="$( mktemp --directory )"
+export DM_PREFLIGHT_PROBE_REPO
+# shellcheck disable=SC2317  # reached only via the EXIT trap
+cleanup_probe_repo() {
+   safe-rm --recursive --force -- "${DM_PREFLIGHT_PROBE_REPO}"
+}
+trap cleanup_probe_repo EXIT
+git init --quiet --bare -- "${DM_PREFLIGHT_PROBE_REPO}"
+
 pin_report="$( git -C "${source_dir}" submodule --quiet foreach --recursive \
    'pinned="$(git -C "${toplevel}" ls-tree HEAD -- "${sm_path}" | { read -r _ _ sha _ ; printf "%s" "${sha}" ; })"
     [ -n "${pinned}" ] || exit 0
@@ -185,16 +197,61 @@ pin_report="$( git -C "${source_dir}" submodule --quiet foreach --recursive \
     ## checkout asks. `git clone --recurse-submodules` uses the URL in
     ## .gitmodules, not whatever extra remotes a working tree happens to carry.
     ## A pin living only on a fork therefore passes the check above and still
-    ## breaks a clean recursive checkout -- exactly how a fork-only
-    ## grml-debootstrap pin shipped unnoticed. Ask the CONFIGURED url.
+    ## breaks a clean recursive checkout. Ask the CONFIGURED url.
     gitmodules_url="$(git -C "${toplevel}" config -f .gitmodules --get "submodule.${name}.url" 2>/dev/null || true)"
     if [ -z "${gitmodules_url}" ]; then
        printf "NO-URL %s (no url in .gitmodules)\n" "${displaypath}"
        exit 0
     fi
-    if ! git ls-remote "${gitmodules_url}" 2>/dev/null | grep -qF "${pinned}"; then
-       printf "FORK-ONLY %s (pinned %.12s not advertised by %s)\n" "${displaypath}" "${pinned}" "${gitmodules_url}"
-    fi' 2>/dev/null || true )"
+    ## The question is REACHABILITY, and it must be answered without false
+    ## positives -- a check that fires on healthy pins gets ignored, and the one
+    ## real fork-only pin then hides inside the noise. Three escalating steps,
+    ## cheapest first, each conclusive on its own:
+    ##
+    ## 1. Is it a ref TIP? `ls-remote` advertises only tips, so a match PROVES
+    ##    reachability. A miss proves nothing: any pin older than the branch head
+    ##    -- most of them, the moment upstream commits again -- is not a tip.
+    ##    Treating that miss as the answer is what made the old check wrong.
+    ## `git submodule foreach` EXPORTS GIT_DIR (as the relative ".git"), and an
+    ## exported GIT_DIR overrides -C. Without clearing it, every "scratch repo"
+    ## fetch below silently resolves against the submodule instead -- which both
+    ## defeats the isolation and makes the fetch fail for the wrong reason,
+    ## turning a real verdict into a bogus UNVERIFIED.
+    probe_fetch() {
+       env --unset=GIT_DIR --unset=GIT_WORK_TREE \
+          git -C "${DM_PREFLIGHT_PROBE_REPO}" fetch --quiet --depth=1 -- "$1" "$2" >/dev/null 2>&1
+    }
+    remote_refs="$(git ls-remote -- "${gitmodules_url}" 2>/dev/null || true)"
+    if [ -z "${remote_refs}" ]; then
+       printf "UNVERIFIED %s (pinned %.12s: %s not contactable)\n" "${displaypath}" "${pinned}" "${gitmodules_url}"
+       exit 0
+    fi
+    if printf "%s\n" "${remote_refs}" | grep -qF -- "${pinned}"; then
+       exit 0
+    fi
+    ## 2. Ask the server for the OBJECT. Reachable-but-not-a-tip is exactly what
+    ##    fetch-by-sha answers.
+    ##
+    ##    Probe from a scratch bare repo, never from the submodule itself: a
+    ##    --depth=1 fetch into a full clone writes a .git/shallow graft
+    ##    (corrupting a repo this tool only INSPECTS), and an object already
+    ##    present locally can satisfy the fetch without the server confirming
+    ##    anything -- a false PASS in precisely the fork-only case.
+    if probe_fetch "${gitmodules_url}" "${pinned}"; then
+       exit 0
+    fi
+    ## 3. A failed fetch-by-sha is still ambiguous: the object may be absent, or
+    ##    the server may simply refuse sha requests (uploadpack.allowReachableSHA1InWant
+    ##    is OFF by default; GitHub enables it, a plain git host may not). Settle
+    ##    it with a CONTROL fetch of a sha the server just advertised. If even
+    ##    that is refused, the capability is missing and this pin is UNVERIFIED --
+    ##    reporting it as fork-only would flag every pin on every such host.
+    control_sha="$(printf "%s\n" "${remote_refs}" | { read -r sha _ ; printf "%s" "${sha}" ; })"
+    if ! probe_fetch "${gitmodules_url}" "${control_sha}"; then
+       printf "UNVERIFIED %s (pinned %.12s: %s refuses fetch-by-sha)\n" "${displaypath}" "${pinned}" "${gitmodules_url}"
+       exit 0
+    fi
+    printf "FORK-ONLY %s (pinned %.12s not reachable from %s)\n" "${displaypath}" "${pinned}" "${gitmodules_url}"' 2>/dev/null || true )"
 bad_pins="$( printf '%s\n' "${pin_report}" | grep -E '^(MISSING|UNFETCHABLE) ' || true )"
 ## FORK-ONLY is reported LOUDLY but does not fail: on the 'ai' branch CI runs
 ## ci/configure-fork-mirror before submodule init, so a fork-only pin is
