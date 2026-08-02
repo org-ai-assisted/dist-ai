@@ -88,10 +88,50 @@ done
 ## Runtime dependencies. SeaBIOS ships with qemu-system-x86; ovmf provides both the
 ## plain and the Secure-Boot OVMF firmware; qemu-efi-aarch64 provides arm64 edk2;
 ## python3-pexpect drives the login conversation.
-sudo --non-interactive -- apt-get update
-sudo --non-interactive -- apt-get install --yes --no-install-recommends \
-   qemu-system-x86 qemu-system-arm qemu-utils ovmf qemu-efi-aarch64 \
-   python3-pexpect xorriso
+##
+## Check BEFORE touching apt. 'apt-get update' against a repository this host
+## cannot verify fails the whole run even when every package is already present:
+## in a sandbox with a signature problem this aborted at exit 100 with a
+## zero-byte serial log, which reads as a boot failure and is nothing of the
+## kind. Nothing here is version-sensitive, so "already installed" is a complete
+## answer and the network round-trip is pure risk.
+# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/package_installed_check.sh
+source /usr/libexec/helper-scripts/package_installed_check.sh
+
+## Only what THIS --arch needs. The list used to be unconditional, so an amd64
+## boot test demanded qemu-system-arm and qemu-efi-aarch64 -- emulator and
+## firmware for an architecture it never touches. On a host without them that
+## forced an apt round-trip (and, where apt cannot verify a repository, an
+## outright failure) to install packages the run would not use.
+boot_test_packages=( qemu-utils python3-pexpect xorriso )
+case "${arch}" in
+   amd64)
+      ## SeaBIOS ships with qemu-system-x86; ovmf provides both the plain and the
+      ## Secure-Boot OVMF firmware.
+      boot_test_packages+=( qemu-system-x86 ovmf )
+      ;;
+   arm64)
+      ## arm64 already boots edk2 UEFI; qemu-efi-aarch64 provides it.
+      boot_test_packages+=( qemu-system-arm qemu-efi-aarch64 )
+      ;;
+   *)
+      printf '%s\n' "${BASH_SOURCE[0]}: unsupported --arch '${arch}'" >&2
+      exit 2
+      ;;
+esac
+boot_test_missing=()
+for boot_test_package in "${boot_test_packages[@]}"; do
+   pkg_installed "${boot_test_package}" || boot_test_missing+=( "${boot_test_package}" )
+done
+
+if [ "${#boot_test_missing[@]}" -eq 0 ]; then
+   printf '%s\n' "${BASH_SOURCE[0]}: all runtime dependencies already installed; skipping apt." >&2
+else
+   printf '%s\n' "${BASH_SOURCE[0]}: installing missing dependencies: ${boot_test_missing[*]}" >&2
+   sudo --non-interactive -- apt-get update
+   sudo --non-interactive -- apt-get install --yes --no-install-recommends \
+      -- "${boot_test_missing[@]}"
+fi
 
 script_dir="$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")"
 ## dm-image-boot-tests is a sibling in the same bin dir (shipped together); fall
