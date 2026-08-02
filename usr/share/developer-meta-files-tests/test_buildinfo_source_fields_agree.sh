@@ -219,6 +219,26 @@ else
    fail 'a normalized build is NOT marked -- indistinguishable from a release artifact'
 fi
 
+## BOTH versions must be recorded. Keeping only the normalized one discards what
+## the version would have been, so a normalized image cannot be tied back to the
+## release artifact it corresponds to without the repo in hand.
+printf '' > "${workdir}/norm2.raw"
+env dist_build_version='18.2.2.0' binary_build_folder_dist="${workdir}" \
+   dist_build_version_reproducible='true' \
+   dist_build_version_unnormalized='18.2.2.0-219-gdeadbeefcafe' \
+   bash -- "${subject}" --dry-run --image "${workdir}/norm2.raw" --target qcow2 \
+   --output "${workdir}/normalized2.bi" >/dev/null 2>&1
+if grep --quiet '^Source-Version-Unnormalized: 18.2.2.0-219-gdeadbeefcafe' -- "${workdir}/normalized2.bi"; then
+   pass 'the record keeps the UNNORMALIZED version alongside the normalized one'
+else
+   fail 'the unnormalized version is lost -- a normalized image cannot be traced back to its release artifact'
+fi
+if grep --quiet '^Source-Version: 18.2.2.0$' -- "${workdir}/normalized2.bi"; then
+   pass 'Source-Version still holds what the image actually carries'
+else
+   fail 'Source-Version does not hold the normalized value the image embeds'
+fi
+
 ## ...and an ordinary build must be byte-unchanged, or every existing comparison
 ## breaks on a field that was not there before.
 env dist_build_version='18.2.2.0' binary_build_folder_dist="${workdir}" \
