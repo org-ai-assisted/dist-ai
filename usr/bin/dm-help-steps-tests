@@ -76,7 +76,10 @@ subject_tree="${DERIVATIVE_MAKER_DIR:-${HOME}/derivative-maker}"
 if [ -d "${subject_tree}" ]; then
    subject_head="$( git -C "${subject_tree}" rev-parse --short HEAD 2>/dev/null || printf 'unknown' )"
    subject_branch="$( git -C "${subject_tree}" rev-parse --abbrev-ref HEAD 2>/dev/null || printf 'unknown' )"
-   printf 'subject: %s @ %s (%s)\n' "${subject_tree}" "${subject_head}" "${subject_branch}"
+   ## stderr, not stdout: the tests report on stderr, and stdout is block-buffered
+   ## when piped -- so a banner on stdout surfaced BELOW 74 lines of failures,
+   ## exactly where nobody reads it. It only does its job if it arrives first.
+   printf 'subject: %s @ %s (%s)\n' "${subject_tree}" "${subject_head}" "${subject_branch}" >&2
 else
    printf 'subject: %s (NOT PRESENT -- tests will fall back or fail)\n' "${subject_tree}" >&2
 fi
