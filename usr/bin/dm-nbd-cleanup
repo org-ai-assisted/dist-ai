@@ -19,10 +19,13 @@
 ## perfectly good CI image. The tell is the same device appearing twice in
 ## `mount`, one of them at a path nobody remembers creating.
 ##
-## Idempotent and safe to run before any image inspection. Refuses nothing,
-## reports everything.
+## REPORTS BY DEFAULT; --release is required to act. Releasing every active nbd
+## device unconditionally would break a concurrent job that is legitimately using
+## one, and this tool cannot tell a leaked device from a busy one -- both look
+## like "attached with a mount". So the destructive step is opt-in, and the
+## default output is the evidence you need to decide.
 ##
-## Usage: dm-nbd-cleanup [--dry-run]
+## Usage: dm-nbd-cleanup [--release]
 
 set -o errexit
 set -o nounset
@@ -31,11 +34,17 @@ set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
 
-dry_run=false
+## Inverted on purpose: see the header. Acting is the opt-in.
+dry_run=true
 
 while [ "$#" -gt 0 ]; do
    case "$1" in
+      --release)
+         dry_run=false
+         shift
+         ;;
       --dry-run)
+         ## Accepted so an explicit dry-run reads naturally; it is the default.
          dry_run=true
          shift
          ;;
@@ -99,4 +108,4 @@ done
 
 printf '%s: %s mount(s), %s device(s)%s\n' \
    "${0##*/}" "${released_mounts}" "${released_devices}" \
-   "$( [ "${dry_run}" = "true" ] && printf ' (dry run)' || true )"
+   "$( [ "${dry_run}" = "true" ] && printf ' -- REPORT ONLY, pass --release to act' || true )"

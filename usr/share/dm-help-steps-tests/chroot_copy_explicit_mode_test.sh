@@ -51,8 +51,14 @@ fail() {
 ## Any 'cp' whose destination is inside the chroot inherits a umask-dependent
 ## mode. The named cp_reproducible / cp_reproducible_exec arrays (help-steps/
 ## variables) state the intent instead.
-offenders="$( grep -nE 'cp (--|-[a-zA-Z]+ )?.*\$\{CHROOT_FOLDER\}' \
-   -- "${dm_checkout}"/build-steps.d/* 2>/dev/null || true )"
+## BOTH parameter forms: a step writing "$CHROOT_FOLDER/etc/x" creates the same
+## umask-dependent mode, and matching only the braced form would report success.
+chroot_folder_ref='(\$\{CHROOT_FOLDER\}|\$CHROOT_FOLDER)'
+## Commented-out lines are not build steps. Without this the broadened pattern
+## flags a disabled 'cp' in 3400_copy-vms-into-raw and the rule cries wolf.
+offenders="$( grep -nE "cp (--|-[a-zA-Z]+ )?.*${chroot_folder_ref}" \
+   -- "${dm_checkout}"/build-steps.d/* 2>/dev/null \
+   | grep -vE '^[^:]+:[0-9]+: *#' || true )"
 
 if [ -z "${offenders}" ]; then
    pass 'no plain cp into the chroot; every placed file states its mode'
@@ -71,7 +77,7 @@ cleanup() {
 }
 trap cleanup EXIT
 printf '%s\n' '   ${SUDO_TO_ROOT} cp -- "${src}/x" "${CHROOT_FOLDER}/etc/x"' > "${canary_file}"
-if grep -qE 'cp (--|-[a-zA-Z]+ )?.*\$\{CHROOT_FOLDER\}' -- "${canary_file}"; then
+if grep -qE "cp (--|-[a-zA-Z]+ )?.*${chroot_folder_ref}" -- "${canary_file}"; then
    pass 'canary: the pattern does match a plain chroot cp, so a clean result means something'
 else
    fail 'canary broken: the pattern matches nothing, so this test proves nothing'
@@ -79,10 +85,18 @@ fi
 
 ## ...and it must NOT flag the fixed form, or the rule would be unusable.
 printf '%s\n' '   ${SUDO_TO_ROOT} "${cp_reproducible[@]}" "${src}/x" "${CHROOT_FOLDER}/etc/x"' > "${canary_file}"
-if grep -qE 'cp (--|-[a-zA-Z]+ )?.*\$\{CHROOT_FOLDER\}' -- "${canary_file}"; then
+if grep -qE "cp (--|-[a-zA-Z]+ )?.*${chroot_folder_ref}" -- "${canary_file}"; then
    fail 'the pattern flags the CORRECT cp_reproducible form; it would fire forever'
 else
    pass 'the fixed cp_reproducible form is not flagged'
+fi
+
+## UNBRACED canary: the form coderabbit flagged as bypassing the braced pattern.
+printf '%s\n' '   ${SUDO_TO_ROOT} cp -- "${src}/x" "$CHROOT_FOLDER/etc/x"' > "${canary_file}"
+if grep -qE "cp (--|-[a-zA-Z]+ )?.*${chroot_folder_ref}" -- "${canary_file}"; then
+   pass 'canary: the unbraced $CHROOT_FOLDER form is matched too'
+else
+   fail 'the unbraced $CHROOT_FOLDER form is NOT matched; a build step using it would bypass this test'
 fi
 
 ## The build must also pin a umask, or every file it creates outside these five
