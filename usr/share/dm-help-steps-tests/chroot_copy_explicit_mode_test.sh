@@ -49,8 +49,8 @@ fail() {
 }
 
 ## Any 'cp' whose destination is inside the chroot inherits a umask-dependent
-## mode. 'install --mode=' (or an explicit chmod on the next line) states the
-## intent instead.
+## mode. The named cp_reproducible / cp_reproducible_exec arrays (help-steps/
+## variables) state the intent instead.
 offenders="$( grep -nE 'cp (--|-[a-zA-Z]+ )?.*\$\{CHROOT_FOLDER\}' \
    -- "${dm_checkout}"/build-steps.d/* 2>/dev/null || true )"
 
@@ -78,11 +78,19 @@ else
 fi
 
 ## ...and it must NOT flag the fixed form, or the rule would be unusable.
-printf '%s\n' '   ${SUDO_TO_ROOT} install --mode=0644 -- "${src}/x" "${CHROOT_FOLDER}/etc/x"' > "${canary_file}"
+printf '%s\n' '   ${SUDO_TO_ROOT} "${cp_reproducible[@]}" "${src}/x" "${CHROOT_FOLDER}/etc/x"' > "${canary_file}"
 if grep -qE 'cp (--|-[a-zA-Z]+ )?.*\$\{CHROOT_FOLDER\}' -- "${canary_file}"; then
-   fail 'the pattern flags the CORRECT install --mode form; it would fire forever'
+   fail 'the pattern flags the CORRECT cp_reproducible form; it would fire forever'
 else
-   pass 'the fixed install --mode form is not flagged'
+   pass 'the fixed cp_reproducible form is not flagged'
+fi
+
+## The build must also pin a umask, or every file it creates outside these five
+## sites still inherits the builder's. That is the same defect, one layer up.
+if grep -qE '^umask 0022' -- "${dm_checkout}/help-steps/variables"; then
+   pass 'help-steps/variables pins a deterministic umask'
+else
+   fail 'help-steps/variables does not pin a umask; file modes still depend on the builder'
 fi
 
 printf '\n===== chroot copy explicit mode: %s pass, %s fail =====\n' "${pass_count}" "${fail_count}"
