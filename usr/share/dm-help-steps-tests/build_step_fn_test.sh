@@ -129,23 +129,16 @@ else
    fail "doubly-defined gave status=${status} output=${output}"
 fi
 
-## --- 4. truncation at a flush-left '}' must fail loudly ---------------------
-## The heredoc body carries a '}' at column zero, so the sed range ends inside
-## the heredoc. The truncated text is not parseable bash, which is exactly what
-## the bash -n check is for.
+## --- 4. a flush-left '}' inside a heredoc must not end the extraction -------
+## A column-anchored range stopped there and yielded half a function. The end is
+## found by parsing instead, so the heredoc's brace is just text and the real
+## closing brace is the one that completes the definition.
 status=0
 output="$( "${tool}" --file "${fixture}" --fn writes-brace-heredoc --run 2>&1 )" || status="$?"
-if [ "${status}" -ne 0 ] && [[ "${output}" == *"truncated"* ]]; then
-   pass 'truncation at a flush-left brace is detected and reported'
+if [ "${status}" -eq 0 ] && [[ "${output}" == *"AFTER-THE-HEREDOC"* ]]; then
+   pass 'a heredoc carrying a flush-left brace does not truncate the extraction'
 else
-   fail "truncated extraction gave status=${status} output=${output}"
-fi
-
-## It must specifically NOT have run the half-function as if it were whole.
-if [[ "${output}" != *"AFTER-THE-HEREDOC"* ]]; then
-   pass 'the truncated body is not executed'
-else
-   fail 'the truncated body ran anyway'
+   fail "heredoc function gave status=${status} output=${output}"
 fi
 
 ## --- 5. an absent function reports, and lists what IS there -----------------
@@ -176,7 +169,35 @@ else
    fail "expected exit 7 from the extracted function, got ${status}"
 fi
 
-## --- 7. CANARY: the fixture must really contain what the cases assume -------
+## --- 7. extraction must not overrun the function and execute top-level code -
+## With an INDENTED closing brace, a first-flush-left-brace range swallowed the
+## code after it, which eval then ran at DEFINITION time -- breaking the one
+## promise this tool makes. A brace group suffices, so the text stays parseable
+## and a bash -n check alone never noticed.
+## A MARKER FILE, not a string in the output: the diagnostic quotes the
+## offending line verbatim, so grepping the output for it cannot tell "this code
+## ran" from "this code was reported". Only a side effect can.
+cat > "${work_dir}/overrun_fixture" <<'OVERRUN'
+#!/bin/bash
+overrun-target() {
+   printf '%s\n' "BENIGN"
+   }
+printf '%s\n' "escaped" > @@MARKER@@
+{ true
+}
+OVERRUN
+escape_marker="${work_dir}/escaped.marker"
+sed --in-place -- "s|@@MARKER@@|${escape_marker}|" "${work_dir}/overrun_fixture"
+status=0
+output="$( "${tool}" --file "${work_dir}/overrun_fixture" --fn overrun-target --run 2>&1 )" || status="$?"
+if [ ! -e "${escape_marker}" ] && [ "${status}" -eq 0 ] \
+   && [[ "${output}" == *"BENIGN"* ]]; then
+   pass 'extraction stops at the true closing brace; top-level code never runs'
+else
+   fail "overrun gave status=${status} output=${output} marker-exists=$( [ -e "${escape_marker}" ] && printf yes || printf no )"
+fi
+
+## --- 8. CANARY: the fixture must really contain what the cases assume -------
 ## Without this, a fixture that silently stopped carrying the hazards would let
 ## every case above pass by testing nothing.
 if grep -qE '^check-stale-nbd\(\) \{$' -- "${fixture}" \
@@ -186,7 +207,7 @@ else
    fail 'canary broken: the fixture no longer carries the tested shapes'
 fi
 
-## --- 8. CANARY: the tool must be capable of failing at all ------------------
+## --- 9. CANARY: the tool must be capable of failing at all ------------------
 status=0
 "${tool}" --file /nonexistent/step --fn whatever >/dev/null 2>&1 || status="$?"
 if [ "${status}" -ne 0 ]; then

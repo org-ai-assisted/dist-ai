@@ -112,7 +112,7 @@ fi
 
 ## Defined twice, the sed range below restarts and concatenates BOTH bodies,
 ## and eval would then keep whichever came last -- a silent wrong answer.
-definition_count="$( grep -cE "^${fn_name}\(\) \{\$" -- "${step_file}" || true )"
+definition_count="$( grep -cE "^${fn_name}\(\) \{" -- "${step_file}" || true )"
 if [ "${definition_count}" -gt 1 ]; then
    printf '%s\n' \
       "dm-build-step-fn: '${fn_name}' is defined ${definition_count} times in ${step_file};" \
@@ -120,11 +120,33 @@ if [ "${definition_count}" -gt 1 ]; then
    exit 1
 fi
 
-## Extract from '<name>() {' at column zero to the matching '}' at column zero.
-## Build steps define functions flush-left and close with '}' flush-left, so a
-## column-anchored range is exact without a brace counter.
-fn_text="$( sed -n "/^${fn_name}() {\$/,/^}\$/p" -- "${step_file}" )"
-if [ -z "${fn_text}" ]; then
+## Find the function's TRUE end with bash's own parser, rather than assuming it
+## is the first flush-left '}'.
+##
+## WHY NOT THE COLUMN-ANCHORED RANGE: it is wrong in both directions. A heredoc
+## body carrying a '}' at column zero ends the range EARLY, yielding half a
+## function. An indented closing brace makes the range run LATE, swallowing the
+## top-level code that follows -- and eval executes that at definition time,
+## which is exactly the "do not run the rest of the step" promise this tool
+## exists to keep. Both were reachable in real files.
+##
+## A function definition is syntactically complete only at its closing brace, so
+## the first prefix that bash can parse ends exactly there. Only lines that
+## could BE a closing brace are tried, so this costs a handful of parses, not one
+## per line.
+mapfile -t step_lines < "${step_file}"
+
+start_index=-1
+for line_index in "${!step_lines[@]}"; do
+   ## Prefix, not equality: a fully-inline one-liner ('f() { cmd; }') is a
+   ## definition too, and --list reports it, so extraction must find it as well.
+   if [[ "${step_lines[line_index]}" == "${fn_name}() {"* ]]; then
+      start_index="${line_index}"
+      break
+   fi
+done
+
+if [ "${start_index}" -lt 0 ]; then
    printf '%s\n' "dm-build-step-fn: function '${fn_name}' not found in ${step_file}" >&2
    printf '%s\n' "  available:" >&2
    grep -oE '^[a-zA-Z_][a-zA-Z0-9_-]*\(\) \{' -- "${step_file}" \
@@ -132,16 +154,32 @@ if [ -z "${fn_text}" ]; then
    exit 1
 fi
 
-## A flush-left '}' INSIDE the function -- a heredoc body carrying one, say --
-## ends the range early, and the truncated text can still be something eval
-## accepts. That would test a function the step does not have. Parsing the
-## extracted text is what makes the range trustworthy rather than merely
-## usually-right.
-if ! printf '%s\n' "${fn_text}" | bash -n 2>/dev/null; then
+fn_text=""
+for (( line_index = start_index; line_index < ${#step_lines[@]}; line_index++ )); do
+   ## A definition ends at a closing brace, so only a line ENDING in one can be
+   ## the end -- '}' on its own line, or the '; }' of a one-liner.
+   if [[ ! "${step_lines[line_index]}" =~ \}[[:space:]]*$ ]]; then
+      continue
+   fi
+   candidate="$( printf '%s\n' "${step_lines[@]:start_index:line_index - start_index + 1}" )"
+   if printf '%s\n' "${candidate}" | bash -n 2>/dev/null; then
+      fn_text="${candidate}"
+      break
+   fi
+done
+
+if [ -z "${fn_text}" ]; then
    printf '%s\n' \
-      "dm-build-step-fn: extracted text for '${fn_name}' is not parseable bash." \
-      "  A flush-left '}' inside the function (heredoc body?) truncated it." \
-      "  Indent that brace in ${step_file}, or extract a smaller function." >&2
+      "dm-build-step-fn: found '${fn_name}' in ${step_file} but no closing brace" \
+      "  completes it as parseable bash. The step itself may not parse." >&2
+   exit 1
+fi
+
+## Defining it must not require running anything: a definition that only takes
+## effect as a side effect of other code is not a function this tool can isolate.
+if ! ( eval "${fn_text}"; declare -F "${fn_name}" >/dev/null ) 2>/dev/null; then
+   printf '%s\n' \
+      "dm-build-step-fn: extracted text does not define '${fn_name}'." >&2
    exit 1
 fi
 
