@@ -579,7 +579,7 @@ check_changelog_no_manual_staged() {
 ## missed. That is a false NEGATIVE, and far rarer than the '${#var}' one it
 ## replaces.
 grep_code_lines() {
-   local regex file lineno rest
+   local regex file lineno rest source_line
    local -a source_lines
 
    regex="${1}"
@@ -588,7 +588,11 @@ grep_code_lines() {
       [ -r "${file}" ] || continue
       mapfile -t source_lines < "${file}"
       while IFS=: read -r lineno rest; do
-         printf '%s:%s:%s\n' "${file}" "${lineno}" "${source_lines[$(( lineno - 1 ))]}"
+         ## Pre-compose: R-030 keeps the format fixed and the data in the
+         ## argument, so a value containing a percent sign cannot be read as a
+         ## conversion.
+         source_line="${source_lines[$(( lineno - 1 ))]}"
+         printf '%s\n' "${file}:${lineno}:${source_line}"
       done < <(sed -e 's/\(^\|[[:space:]]\)#.*$//' -- "${file}" 2>/dev/null \
          | grep --line-number --extended-regexp -- "${regex}" 2>/dev/null || true)
    done
@@ -787,34 +791,29 @@ check_R031_bare_newline() {
 }
 
 check_R030_format_string() {
-   local hits script script_hits
+   local hits script line_number line remainder format_literal format_inner
    local -a fs
 
    mapfile -d '' -t fs < <(filter_self "${@}")
    if [ "${#fs[@]}" -eq 0 ]; then return 0; fi
    ## R-030: the format string is FIXED -- all data goes in the data argument.
-   ## Flags a printf whose format carries anything beyond %s / %s\n: embedded
-   ## literal text, a width or padding specifier (%-14s), %d, or an extra \n.
    ##
-   ## WHY beyond tidiness: a format string carrying data INTERPRETS whatever
-   ## lands in it. A value containing a percent sign consumes the next argument
-   ## or prints garbage, and the damage shows up in the OUTPUT -- exactly where a
-   ## wrong answer is most likely to be believed.
+   ## WHY beyond tidiness: a format string carrying data INTERPRETS it. A value
+   ## containing a percent sign consumes the next argument or prints garbage, and
+   ## a DOUBLE-quoted format interpolates the variable straight into the format,
+   ## which is the injection R-030 exists to prevent.
    ##
-   ## Allowed: '%s', '%s\n', '%q'/'%q\n' where shell-escaping is genuinely
-   ## required (R-030 names that exception), and '%b'/'%b\n', which is the only
-   ## way to decode the octal escapes /proc/mounts uses -- it still keeps the
-   ## format FIXED with the data in the argument, which is what R-030 is about.
+   ## Scans each printf OCCURRENCE, not each line, and both quote styles. A
+   ## line-oriented invert-match got this wrong twice: it missed
+   ## 'printf "text $var\n"' entirely (single-quote-only pattern), and on
+   ## 'printf "bad %s" "$a" ; printf "%s\n" "$b"' the compliant second call made
+   ## the whole line pass. Both verified as live misses before this rewrite.
    ##
-   ## COMMENTS are skipped. A comment explaining the rule, or quoting a format
-   ## string while describing it, is prose -- flagging it makes the rule fire on
-   ## its own documentation.
-   ##
-   ## PER FILE, with the waiver anchored to a comment at line start. A
-   ## batch-wide waiver grep is not a shortcut but a hole: this file DOCUMENTS
-   ## the waiver string, so an unanchored batch check matched here and silently
-   ## disabled the rule for every file in the run -- measured, 216 files scanned
-   ## and 0 reported.
+   ## Allowed: %s, %q (shell-escaping, named by R-030) and %b (decoding octal
+   ## escapes, e.g. /proc/mounts), each with or without a trailing newline, plus
+   ## '%s\0' for NUL-delimited output that 'mapfile -d ""' consumes -- there is
+   ## no %s\n spelling of that.
+   ## Waiver: '## style-ok: printf-format', anchored, per file.
    hits=""
    for script in "${fs[@]}"; do
       if grep --quiet --extended-regexp \
@@ -822,16 +821,29 @@ check_R030_format_string() {
          -- "${script}" 2>/dev/null; then
          continue
       fi
-      script_hits="$(grep --with-filename --line-number --extended-regexp \
-         "(^|[^-[:alnum:]])printf[[:space:]]+'[^']*'" \
-         -- "${script}" 2>/dev/null \
-         | grep --extended-regexp --invert-match \
-           "printf[[:space:]]+'(%s|%s\\\\n|%q|%q\\\\n|%b|%b\\\\n)'" \
-         | grep --extended-regexp --invert-match \
-           '^[^:]+:[0-9]+:[[:space:]]*#' || true)"
-      if [ -n "${script_hits}" ]; then
-         hits="${hits}${script_hits}"$'\n'
-      fi
+      line_number=0
+      while IFS= read -r line; do
+         line_number=$(( line_number + 1 ))
+         ## Comments are prose; a comment describing this rule must not trip it.
+         case "${line}" in
+            '#'*|[[:space:]]*'#'*)
+               continue
+               ;;
+         esac
+         remainder="${line}"
+         while [[ "${remainder}" =~ (^|[^-[:alnum:]_])printf[[:space:]]+(\'[^\']*\'|\"[^\"]*\") ]]; do
+            format_literal="${BASH_REMATCH[2]}"
+            format_inner="${format_literal:1:${#format_literal}-2}"
+            case "${format_inner}" in
+               '%s'|'%s\n'|'%s\0'|'%q'|'%q\n'|'%b'|'%b\n')
+                  ;;
+               *)
+                  hits="${hits}${script}:${line_number}:${line}"$'\n'
+                  ;;
+            esac
+            remainder="${remainder#*"${BASH_REMATCH[0]}"}"
+         done
+      done < "${script}"
    done
    hits="${hits%$'\n'}"
    emit_hits "R-030 printf format string must be fixed ('%s' / '%s\\n')" "${hits}"
@@ -1273,7 +1285,7 @@ check_R120_rm() {
 }
 
 check_R130_null_command() {
-   local hits
+   local hits combined_hits
 
    ## Two forms of ':' used as a COMMAND:
    ##   1. bare ':' on its own line
@@ -1290,7 +1302,8 @@ check_R130_null_command() {
 
    bare_hits="$(grep --with-filename --line-number --extended-regexp '^[[:space:]]*:[[:space:]]*$' -- "${@}" 2>/dev/null || true)"
    redirect_hits="$(grep --with-filename --line-number --extended-regexp '^([^#]*[[:space:];&|!{]|[[:space:]]*):[[:space:]]*[<>]' -- "${@}" 2>/dev/null || true)"
-   hits="$(printf '%s\n%s' "${bare_hits}" "${redirect_hits}" | grep --invert-match --extended-regexp '^$' || true)"
+   combined_hits="${bare_hits}"$'\n'"${redirect_hits}"
+   hits="$(printf '%s\n' "${combined_hits}" | grep --invert-match --extended-regexp '^$' || true)"
    emit_hits "R-130 ':' used as a command" "${hits}"
 }
 
