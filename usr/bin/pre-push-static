@@ -790,6 +790,41 @@ check_R031_bare_newline() {
    emit_hits "R-030/R-031 newline printf needs explicit \"\" arg" "${hits}"
 }
 
+r030_printf_is_command() {
+   ## True when a 'printf' appears at quote depth zero, i.e. as a command rather
+   ## than inside a quoted string that merely mentions it.
+   local text="$1" index char quote=""
+
+   for (( index=0; index<${#text}; index++ )); do
+      char="${text:index:1}"
+      ## Inside DOUBLE quotes a backslash escapes the next character, so '\"'
+      ## does not close the string. Without this the tracker thought the string
+      ## ended early and reported a quoted mention as a command -- exactly the
+      ## false positive it exists to prevent.
+      if [ "${quote}" = '"' ] && [ "${char}" = "\\" ]; then
+         index=$(( index + 1 ))
+         continue
+      fi
+      if [ -n "${quote}" ]; then
+         if [ "${char}" = "${quote}" ]; then
+            quote=""
+         fi
+         continue
+      fi
+      case "${char}" in
+         "'"|'"')
+            quote="${char}"
+            continue
+            ;;
+      esac
+      if [ "${text:index:6}" = "printf" ]; then
+         return 0
+      fi
+   done
+   return 1
+}
+
+
 check_R030_format_string() {
    local hits script line_number line remainder format_literal format_inner
    local -a fs
@@ -830,12 +865,20 @@ check_R030_format_string() {
                continue
                ;;
          esac
+         ## Skip a printf that appears INSIDE a quoted string -- a log line
+         ## QUOTING the command rather than running it. 1200_prepare-build-machine
+         ## does exactly that and was a false positive. A plain quote-strip will
+         ## not do: the format string's own quotes are part of the command, so
+         ## the scan tracks quote state and keeps only a printf at depth zero.
+         if ! r030_printf_is_command "${line}"; then
+            continue
+         fi
          remainder="${line}"
          while [[ "${remainder}" =~ (^|[^-[:alnum:]_])printf[[:space:]]+(\'[^\']*\'|\"[^\"]*\") ]]; do
             format_literal="${BASH_REMATCH[2]}"
             format_inner="${format_literal:1:${#format_literal}-2}"
             case "${format_inner}" in
-               '%s'|'%s\n'|'%s\0'|'%q'|'%q\n'|'%b'|'%b\n')
+               '%s'|'%s\n'|'%s\0'|'%q'|'%q\n'|'%b'|'%b\n'|'0x%x'|'%x')
                   ;;
                *)
                   hits="${hits}${script}:${line_number}:${line}"$'\n'
