@@ -1804,6 +1804,37 @@ check_comments_audit() {
    return 0
 }
 
+warn_untracked_shell_files() {
+   ## A brand-new script is invisible to 'git diff', so it contributes no
+   ## changed file and every check silently skips it -- while the gate still
+   ## prints "all static checks passed". Read as "my new tool passed", that is
+   ## a false green: the gate never opened the file.
+   ##
+   ## Advisory, not a failure: an untracked file is genuinely not part of what
+   ## is being pushed, and scratch files are normal. Naming them is what stops
+   ## the misread.
+   local line
+   local -a untracked_shell
+
+   untracked_shell=()
+   while IFS= read -r -d '' line; do
+      if [ -z "${line}" ]; then
+         continue
+      fi
+      if is_shell_file "${line}"; then
+         untracked_shell+=("${line}")
+      fi
+   done < <(git -c core.quotePath=false ls-files --others --exclude-standard -z)
+
+   if [ "${#untracked_shell[@]}" -eq 0 ]; then
+      return 0
+   fi
+   note "${#untracked_shell[@]} untracked shell file(s) NOT checked (git add them to gate their content):"
+   for line in "${untracked_shell[@]}"; do
+      note "  ${line}"
+   done
+}
+
 run_file_checks() {
    ## Run all file-content checks given the current global
    ## base_ref. Caller controls base_ref (single union pass in
@@ -1943,6 +1974,10 @@ main() {
    else
       run_file_checks
    fi
+
+   ## Once, after the checks and in every mode: the point is to qualify the
+   ## verdict that is about to be printed, not to annotate each commit.
+   warn_untracked_shell_files
 
    if [ "${fail_count}" -gt 0 ]; then
       note "${fail_count} check(s) failed"

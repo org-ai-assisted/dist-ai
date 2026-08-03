@@ -112,7 +112,7 @@ gate_output() {
    ## trailing-whitespace fixture cannot even be committed on such a machine.
    git -C "${repo}" commit --quiet --no-verify --allow-empty --message base
    base="$(git -C "${repo}" rev-parse HEAD)"
-   printf '%s\n%s\n' "${shebang}" "${body}" > "${repo}/sample.sh"
+   printf '%s\n' "${shebang}" "${body}" > "${repo}/sample.sh"
    git -C "${repo}" add sample.sh
    git -C "${repo}" commit --quiet --no-verify --message sample
    (
@@ -137,7 +137,8 @@ expect_rule() {
    ## an 'absent' assertion could pass spuriously on a real regression.
    if ! printf '%s\n' "${out}" \
       | grep --quiet --extended-regexp 'all static checks passed|[0-9]+ check\(s\) failed'; then
-      printf 'FAIL: gate produced no final verdict for body %s\n' "'${body}'" >&2
+      printf '%s\n' \
+         "FAIL: gate produced no final verdict for body '${body}'" >&2
       failures=$((failures + 1))
       return 0
    fi
@@ -147,10 +148,11 @@ expect_rule() {
       got="absent"
    fi
    if [ "${got}" = "${want}" ]; then
-      printf 'PASS: %s %-7s for body %s (%s)\n' "${tag}" "${want}" "'${body}'" "${shebang}"
+      printf '%s\n' \
+         "PASS: ${tag} ${want} for body '${body}' (${shebang})"
    else
-      printf 'FAIL: %s expected %s but was %s for body %s\n' \
-         "${tag}" "${want}" "${got}" "'${body}'" >&2
+      printf '%s\n' \
+         "FAIL: ${tag} expected ${want} but was ${got} for body '${body}'" >&2
       failures=$((failures + 1))
    fi
 }
@@ -431,14 +433,14 @@ git -C "${crlf_repo}" commit --quiet --no-verify --allow-empty --message base
 crlf_base="$(git -C "${crlf_repo}" rev-parse HEAD)"
 ## CRLF shebang line; the violation line is plain LF so only the shebang
 ## exercises the CRLF path. 'deploy' has no extension on purpose.
-printf '#!/bin/bash\r\ntrue%s%s -rf x\n' "${sc}" "${del}" > "${crlf_repo}/deploy"
+printf '%s\n' "#!/bin/bash${cr}" "true${sc}${del} -rf x" > "${crlf_repo}/deploy"
 git -C "${crlf_repo}" add deploy
 git -C "${crlf_repo}" commit --quiet --no-verify --message crlf
 crlf_out="$( cd -- "${crlf_repo}" && "${GATE}" "${crlf_base}" 2>&1 || true )"
 if printf '%s\n' "${crlf_out}" | grep --quiet --fixed-strings -- "R-120"; then
-   printf 'PASS: is_shell_file detects a CRLF shebang (shell tier ran, R-120 flagged)\n'
+   printf '%s\n' 'PASS: is_shell_file detects a CRLF shebang (shell tier ran, R-120 flagged)'
 else
-   printf 'FAIL: CRLF-shebang file was NOT shell-checked (R-120 missing)\n' >&2
+   printf '%s\n' 'FAIL: CRLF-shebang file was NOT shell-checked (R-120 missing)' >&2
    failures=$((failures + 1))
 fi
 
@@ -457,9 +459,10 @@ dq_probe() {
    git -C "${repo}" commit --quiet --no-verify --allow-empty --message base
    base="$(git -C "${repo}" rev-parse HEAD)"
    ## A double-quoted string is exactly what the fixer rewrites.
-   printf 'x = "fix me"\n' > "${repo}/probe.py"
+   printf '%s\n' 'x = "fix me"' > "${repo}/probe.py"
    if [ "${declare_black}" = 'true' ]; then
-      printf '[tool.black]\nline-length = 79\n' > "${repo}/pyproject.toml"
+      printf '%s\n' '[tool.black]' 'line-length = 79' \
+         > "${repo}/pyproject.toml"
    fi
    git -C "${repo}" add --all
    git -C "${repo}" commit --quiet --no-verify --message probe
@@ -468,16 +471,16 @@ dq_probe() {
 }
 
 if printf '%s' "$(dq_probe true)" | grep --quiet --fixed-strings -- 'double-quote-string-fixer skipped'; then
-   printf 'PASS: double-quote-string-fixer skipped on a black repo\n'
+   printf '%s\n' 'PASS: double-quote-string-fixer skipped on a black repo'
 else
-   printf 'FAIL: double-quote-string-fixer NOT skipped on a black repo\n' >&2
+   printf '%s\n' 'FAIL: double-quote-string-fixer NOT skipped on a black repo' >&2
    failures=$((failures + 1))
 fi
 
 if printf '%s' "$(dq_probe false)" | grep --quiet --fixed-strings -- 'FAIL double-quote-string-fixer'; then
-   printf 'PASS: double-quote-string-fixer still runs without black\n'
+   printf '%s\n' 'PASS: double-quote-string-fixer still runs without black'
 else
-   printf 'FAIL: double-quote-string-fixer did not run on a non-black repo\n' >&2
+   printf '%s\n' 'FAIL: double-quote-string-fixer did not run on a non-black repo' >&2
    failures=$((failures + 1))
 fi
 
@@ -503,10 +506,10 @@ git -C "${addel_repo}" commit --quiet --no-verify --message add
 safe-rm --force -- "${addel_repo}/transient.txt"
 addel_out="$( cd -- "${addel_repo}" && "${GATE}" "${addel_base}" 2>&1 || true )"
 if printf '%s\n' "${addel_out}" | grep --quiet --fixed-strings -- 'FileNotFoundError'; then
-   printf 'FAIL: uncommitted deletion crashed check-added-large-files\n' >&2
+   printf '%s\n' 'FAIL: uncommitted deletion crashed check-added-large-files' >&2
    failures=$((failures + 1))
 else
-   printf 'PASS: uncommitted deletion does not crash the large-files hook\n'
+   printf '%s\n' 'PASS: uncommitted deletion does not crash the large-files hook'
 fi
 
 ## R-180: a python file must carry a shebang (and, via the pre-commit hooks,
@@ -519,30 +522,30 @@ git -C "${py_repo}" config user.email 'ci-test@example.com'
 git -C "${py_repo}" config user.name 'ci-test'
 git -C "${py_repo}" commit --quiet --no-verify --allow-empty --message base
 py_base="$(git -C "${py_repo}" rev-parse HEAD)"
-printf 'x = 1\n' > "${py_repo}/noshebang.py"
-printf '#!/usr/bin/python3 -Bsu\ny = 2\n' > "${py_repo}/withshebang.py"
+printf '%s\n' 'x = 1' > "${py_repo}/noshebang.py"
+printf '%s\n' '#!/usr/bin/python3 -Bsu' 'y = 2' > "${py_repo}/withshebang.py"
 true > "${py_repo}/__init__.py"
 chmod 0755 -- "${py_repo}/withshebang.py"
 git -C "${py_repo}" add --all
 git -C "${py_repo}" commit --quiet --no-verify --message py
 py_out="$( cd -- "${py_repo}" && "${GATE}" "${py_base}" 2>&1 || true )"
 if printf '%s\n' "${py_out}" | grep --quiet --fixed-strings -- 'R-180'; then
-   printf 'PASS: R-180 flags a python file with no shebang\n'
+   printf '%s\n' 'PASS: R-180 flags a python file with no shebang'
 else
-   printf 'FAIL: R-180 did not flag a shebang-less python file\n' >&2
+   printf '%s\n' 'FAIL: R-180 did not flag a shebang-less python file' >&2
    failures=$((failures + 1))
 fi
 if printf '%s\n' "${py_out}" | grep --quiet --fixed-strings -- 'withshebang.py'; then
-   printf 'FAIL: R-180 flagged a compliant python file\n' >&2
+   printf '%s\n' 'FAIL: R-180 flagged a compliant python file' >&2
    failures=$((failures + 1))
 else
-   printf 'PASS: R-180 spares a shebang+executable python file\n'
+   printf '%s\n' 'PASS: R-180 spares a shebang+executable python file'
 fi
 if printf '%s\n' "${py_out}" | grep --quiet --fixed-strings -- '__init__.py'; then
-   printf 'FAIL: R-180 flagged an EMPTY package marker\n' >&2
+   printf '%s\n' 'FAIL: R-180 flagged an EMPTY package marker' >&2
    failures=$((failures + 1))
 else
-   printf 'PASS: R-180 exempts an empty __init__.py\n'
+   printf '%s\n' 'PASS: R-180 exempts an empty __init__.py'
 fi
 
 ## R-190: a substantial interpreter program does not belong in a shell
@@ -648,46 +651,46 @@ inline_out="$( cd -- "${inline_repo}" && "${GATE}" "${inline_base}" 2>&1 || true
 inline_hits="$( printf '%s\n' "${inline_out}" \
    | grep --fixed-strings -- 'R-190 inline interpreter program' || true )"
 if printf '%s\n' "${inline_hits}" | grep --quiet --fixed-strings -- 'longinline.sh'; then
-   printf 'PASS: R-190 flags a long inline interpreter program\n'
+   printf '%s\n' 'PASS: R-190 flags a long inline interpreter program'
 else
-   printf 'FAIL: R-190 did not flag a long inline interpreter program\n' >&2
+   printf '%s\n' 'FAIL: R-190 did not flag a long inline interpreter program' >&2
    failures=$((failures + 1))
 fi
 if printf '%s\n' "${inline_hits}" | grep --quiet --fixed-strings -- 'shortglue.sh'; then
-   printf 'FAIL: R-190 flagged short glue\n' >&2
+   printf '%s\n' 'FAIL: R-190 flagged short glue' >&2
    failures=$((failures + 1))
 else
-   printf 'PASS: R-190 spares a short inline one-liner\n'
+   printf '%s\n' 'PASS: R-190 spares a short inline one-liner'
 fi
 if printf '%s\n' "${inline_hits}" | grep --quiet --fixed-strings -- 'plaindoc.sh'; then
-   printf 'FAIL: R-190 flagged a non-interpreter heredoc\n' >&2
+   printf '%s\n' 'FAIL: R-190 flagged a non-interpreter heredoc' >&2
    failures=$((failures + 1))
 else
-   printf 'PASS: R-190 ignores a heredoc feeding a non-interpreter\n'
+   printf '%s\n' 'PASS: R-190 ignores a heredoc feeding a non-interpreter'
 fi
 if printf '%s\n' "${inline_hits}" | grep --quiet --fixed-strings -- 'docexample.sh'; then
-   printf 'FAIL: R-190 flagged an interpreter example inside a doc heredoc\n' >&2
+   printf '%s\n' 'FAIL: R-190 flagged an interpreter example inside a doc heredoc' >&2
    failures=$((failures + 1))
 else
-   printf 'PASS: R-190 ignores an interpreter example inside a doc heredoc\n'
+   printf '%s\n' 'PASS: R-190 ignores an interpreter example inside a doc heredoc'
 fi
 if printf '%s\n' "${inline_hits}" | grep --quiet --fixed-strings -- 'masked.sh'; then
-   printf 'PASS: R-190 still sees a violation after a commented opener\n'
+   printf '%s\n' 'PASS: R-190 still sees a violation after a commented opener'
 else
-   printf 'FAIL: a commented opener masked a real inline program\n' >&2
+   printf '%s\n' 'FAIL: a commented opener masked a real inline program' >&2
    failures=$((failures + 1))
 fi
 if printf '%s\n' "${inline_hits}" | grep --quiet --fixed-strings -- 'spaced.sh'; then
-   printf 'PASS: R-190 catches whitespace after the heredoc operator\n'
+   printf '%s\n' 'PASS: R-190 catches whitespace after the heredoc operator'
 else
-   printf 'FAIL: R-190 missed "<< DELIM" with whitespace\n' >&2
+   printf '%s\n' 'FAIL: R-190 missed "<< DELIM" with whitespace' >&2
    failures=$((failures + 1))
 fi
 if printf '%s\n' "${inline_hits}" | grep --quiet --fixed-strings -- 'waived.sh'; then
-   printf 'FAIL: R-190 ignored its style-ok waiver\n' >&2
+   printf '%s\n' 'FAIL: R-190 ignored its style-ok waiver' >&2
    failures=$((failures + 1))
 else
-   printf 'PASS: R-190 honours the allow-inline-interpreter waiver\n'
+   printf '%s\n' 'PASS: R-190 honours the allow-inline-interpreter waiver'
 fi
 
 ## check-shebang-scripts-are-executable gains a per-file waiver. A SOURCED fragment
@@ -700,8 +703,11 @@ git -C "${shebang_repo}" config user.email 'ci-test@example.com'
 git -C "${shebang_repo}" config user.name 'ci-test'
 git -C "${shebang_repo}" commit --quiet --no-verify --allow-empty --message base
 shebang_base="$(git -C "${shebang_repo}" rev-parse HEAD)"
-printf '#!/bin/bash\nbar=1\n' > "${shebang_repo}/plain.conf"
-printf '#!/bin/bash\n## style-ok: sourced-fragment -- fixture\nfoo=1\n' \
+printf '%s\n' '#!/bin/bash' 'bar=1' > "${shebang_repo}/plain.conf"
+printf '%s\n' \
+   '#!/bin/bash' \
+   '## style-ok: sourced-fragment -- fixture' \
+   'foo=1' \
    > "${shebang_repo}/waived.conf"
 chmod 0644 -- "${shebang_repo}/plain.conf" "${shebang_repo}/waived.conf"
 git -C "${shebang_repo}" add --all
@@ -711,17 +717,17 @@ shebang_out="$( cd -- "${shebang_repo}" && "${GATE}" "${shebang_base}" 2>&1 || t
 ## names the waived file too, so a bare filename match would confirm itself.
 if printf '%s\n' "${shebang_out}" \
    | grep --quiet --fixed-strings -- 'plain.conf: has a shebang but is not marked executable'; then
-   printf 'PASS: shebang check still fires without the waiver\n'
+   printf '%s\n' 'PASS: shebang check still fires without the waiver'
 else
-   printf 'FAIL: shebang check missed an unwaived non-executable shebang file\n' >&2
+   printf '%s\n' 'FAIL: shebang check missed an unwaived non-executable shebang file' >&2
    failures=$((failures + 1))
 fi
 if printf '%s\n' "${shebang_out}" \
    | grep --quiet --fixed-strings -- 'waived.conf: has a shebang but is not marked executable'; then
-   printf 'FAIL: shebang check ignored its sourced-fragment waiver\n' >&2
+   printf '%s\n' 'FAIL: shebang check ignored its sourced-fragment waiver' >&2
    failures=$((failures + 1))
 else
-   printf 'PASS: shebang check honours the sourced-fragment waiver\n'
+   printf '%s\n' 'PASS: shebang check honours the sourced-fragment waiver'
 fi
 
 ## A submodule gitlink is a DIRECTORY in the work tree. The waiver scan must not
@@ -743,18 +749,18 @@ git -C "${gitlink_repo}" add --all
 git -C "${gitlink_repo}" commit --quiet --no-verify --message gitlink
 gitlink_out="$( cd -- "${gitlink_repo}" && "${GATE}" "${gitlink_base}" 2>&1 || true )"
 if printf '%s\n' "${gitlink_out}" | grep --quiet --fixed-strings -- 'Is a directory'; then
-   printf 'FAIL: gate grepped a submodule gitlink as if it were a file\n' >&2
+   printf '%s\n' 'FAIL: gate grepped a submodule gitlink as if it were a file' >&2
    failures=$((failures + 1))
 else
-   printf 'PASS: gate does not grep a submodule gitlink\n'
+   printf '%s\n' 'PASS: gate does not grep a submodule gitlink'
 fi
 ## forbid-new-submodules diffs '--staged' unless the range env vars are set, so
 ## in push mode it inspected an empty diff and passed unconditionally.
 if printf '%s\n' "${gitlink_out}" \
    | grep --quiet --fixed-strings -- 'new submodule introduced'; then
-   printf 'PASS: forbid-new-submodules sees the push-mode diff range\n'
+   printf '%s\n' 'PASS: forbid-new-submodules sees the push-mode diff range'
 else
-   printf 'FAIL: forbid-new-submodules missed a newly added submodule\n' >&2
+   printf '%s\n' 'FAIL: forbid-new-submodules missed a newly added submodule' >&2
    failures=$((failures + 1))
 fi
 
@@ -769,27 +775,64 @@ git -C "${ascii_repo}" commit --quiet --no-verify --allow-empty --message base
 ascii_base="$(git -C "${ascii_repo}" rev-parse HEAD)"
 ## a non-ASCII byte (U+00D6) assembled so THIS file stays pure ASCII
 non_ascii="$(printf '\303\226')"
-printf '#!/usr/bin/python3 -Bsu\nx = "%s"\n' "${non_ascii}" > "${ascii_repo}/plain.py"
-printf '#!/usr/bin/python3 -Bsu\n## style-ok: allow-non-ascii -- fixture\ny = "%s"\n' "${non_ascii}" > "${ascii_repo}/waived.py"
+printf '%s\n' \
+   '#!/usr/bin/python3 -Bsu' \
+   "x = ${dq}${non_ascii}${dq}" \
+   > "${ascii_repo}/plain.py"
+printf '%s\n' \
+   '#!/usr/bin/python3 -Bsu' \
+   '## style-ok: allow-non-ascii -- fixture' \
+   "y = ${dq}${non_ascii}${dq}" \
+   > "${ascii_repo}/waived.py"
 chmod 0755 -- "${ascii_repo}/plain.py" "${ascii_repo}/waived.py"
 git -C "${ascii_repo}" add --all
 git -C "${ascii_repo}" commit --quiet --no-verify --message ascii
 ascii_out="$( cd -- "${ascii_repo}" && "${GATE}" "${ascii_base}" 2>&1 || true )"
 if printf '%s\n' "${ascii_out}" | grep --quiet --fixed-strings -- "'plain.py' contains non-ASCII"; then
-   printf 'PASS: R-001 still flags non-ASCII without the waiver\n'
+   printf '%s\n' 'PASS: R-001 still flags non-ASCII without the waiver'
 else
-   printf 'FAIL: R-001 did not flag non-ASCII -- the waiver is too broad\n' >&2
+   printf '%s\n' 'FAIL: R-001 did not flag non-ASCII -- the waiver is too broad' >&2
    failures=$((failures + 1))
 fi
 if printf '%s\n' "${ascii_out}" | grep --quiet --fixed-strings -- "'waived.py' contains non-ASCII"; then
-   printf 'FAIL: R-001 waiver did not take effect\n' >&2
+   printf '%s\n' 'FAIL: R-001 waiver did not take effect' >&2
    failures=$((failures + 1))
 else
-   printf 'PASS: R-001 waiver exempts the marked file\n'
+   printf '%s\n' 'PASS: R-001 waiver exempts the marked file'
+fi
+
+## An UNTRACKED shell file must be named in the output. 'git diff' cannot see
+## one, so it contributes no changed file and every check skips it -- while the
+## gate still prints "all static checks passed". Read as "my new script passed",
+## that is a false green: the gate never opened the file.
+untracked_repo="$(mktemp --directory --tmpdir="${tmp_root}" untracked.XXXXXX)"
+git -C "${untracked_repo}" init --quiet
+git -C "${untracked_repo}" config user.email 'ci-test@example.com'
+git -C "${untracked_repo}" config user.name 'ci-test'
+git -C "${untracked_repo}" commit --quiet --no-verify --allow-empty --message base
+untracked_base="$(git -C "${untracked_repo}" rev-parse HEAD)"
+## Never added: that is the whole point of the case.
+printf '%s\n' '#!/bin/bash' 'true' > "${untracked_repo}/brand-new-tool"
+untracked_out="$( cd -- "${untracked_repo}" && "${GATE}" "${untracked_base}" 2>&1 || true )"
+if printf '%s\n' "${untracked_out}" | grep --quiet --fixed-strings 'brand-new-tool'; then
+   printf '%s\n' 'PASS: an untracked shell file is named as NOT checked'
+else
+   printf '%s\n' \
+      "FAIL: an untracked shell file was silently unchecked; output: ${untracked_out}" >&2
+   failures=$((failures + 1))
+fi
+
+## A tracked, committed file must NOT be reported as untracked, or the notice
+## would fire on every run and stop meaning anything.
+if printf '%s\n' "${untracked_out}" | grep --quiet --fixed-strings 'sample.sh'; then
+   printf '%s\n' 'FAIL: a tracked file was reported as untracked' >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' 'PASS: the untracked notice does not fire for tracked files'
 fi
 
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "test_pre_push_static_style_rules: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-026, R-030/R-031, R-042, R-034, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-010, trailing-whitespace, CRLF-shebang and double-quote-fixer-vs-black enforced as expected."
+printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-026, R-030/R-031, R-042, R-034, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-010, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting and double-quote-fixer-vs-black enforced as expected."
