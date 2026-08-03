@@ -23,6 +23,34 @@ set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
 
+usage() {
+   printf '%s\n' \
+      'usage: dm-ci-job-watch <progress-file> <head-sha> [<job-name-substring>]' \
+      '' \
+      'Wait for the derivative-maker build lane on <head-sha> and report its' \
+      'verdict. Appends state CHANGES only to <progress-file>, which is what a' \
+      'stall supervisor watches -- a line per poll would be a fabricated' \
+      'liveness signal.' \
+      '' \
+      '  <job-name-substring>  which check-runs to watch (default: uild, i.e.' \
+      '                        the build jobs; pass "compare" for the compare job)'
+}
+
+## Argument checking BEFORE the assignments: with 'nounset' a bare '$1' aborts
+## with "line N: $1: unbound variable", which is what '--help' used to print.
+## A tool whose help text is a crash teaches you not to trust its other output.
+case "${1:-}" in
+   -h|--help)
+      usage
+      exit 0
+      ;;
+esac
+
+if [ "$#" -lt 2 ]; then
+   usage >&2
+   exit 2
+fi
+
 progress="$1"
 head_sha="$2"
 ## Which check-run(s) to watch, as a name substring. Parameterised rather than

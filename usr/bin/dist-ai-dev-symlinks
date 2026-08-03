@@ -1,0 +1,88 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Put this checkout's tools on PATH, by symlinking usr/bin/* into ~/.local/bin.
+##
+## THE PROBLEM THIS SOLVES: these tools call each other by NAME, and refuse to
+## proceed when a dependency is missing -- dm-ci-dispatch will not dispatch
+## without dm-preflight, by design. With only a couple of tools hand-linked, that
+## correct refusal reads as a broken tool, and the tempting response is to invoke
+## things by absolute path, which routes around the very checks that exist to
+## stop an unchecked dispatch.
+##
+## Linking to the CHECKOUT, not installing a copy: an edit must be live for the
+## next call, which is the whole point during development. The packaged /usr
+## copies still win for a normal install; this only matters on a dev machine.
+##
+## Re-runnable. It refuses to clobber anything it does not already own, so it can
+## never shadow a system command by accident.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+repo_bin="$( cd -- "$( dirname -- "$( readlink --canonicalize -- "${BASH_SOURCE[0]}" )" )" && pwd )"
+target_dir="${HOME}/.local/bin"
+
+dry_run=0
+if [ "${1:-}" = "--dry-run" ]; then
+   dry_run=1
+fi
+
+mkdir --parents -- "${target_dir}"
+
+linked=0
+already=0
+skipped=0
+
+for source_path in "${repo_bin}"/*; do
+   if [ ! -f "${source_path}" ]; then
+      continue
+   fi
+   tool_name="${source_path##*/}"
+   link_path="${target_dir}/${tool_name}"
+
+   if [ -L "${link_path}" ]; then
+      ## Ours already (or another checkout's): repoint it, since a stale link to
+      ## a moved checkout is worse than no link -- it runs old code silently.
+      current_target="$( readlink --canonicalize -- "${link_path}" || true )"
+      if [ "${current_target}" = "${source_path}" ]; then
+         already=$(( already + 1 ))
+         continue
+      fi
+   elif [ -e "${link_path}" ]; then
+      ## A REAL file we did not create. Never clobber it.
+      printf '%s\n' "skip: '${link_path}' exists and is not a symlink" >&2
+      skipped=$(( skipped + 1 ))
+      continue
+   fi
+
+   ## A name already resolvable elsewhere on PATH would be shadowed by this link.
+   ## Report it rather than quietly taking precedence over a system command.
+   existing="$( type -P "${tool_name}" 2>/dev/null || true )"
+   if [ -n "${existing}" ] && [ "${existing}" != "${link_path}" ]; then
+      printf '%s\n' "skip: '${tool_name}' already on PATH at '${existing}'" >&2
+      skipped=$(( skipped + 1 ))
+      continue
+   fi
+
+   if [ "${dry_run}" -eq 1 ]; then
+      printf '%s\n' "would link: ${link_path} -> ${source_path}"
+   else
+      ln --symbolic --force --no-target-directory -- "${source_path}" "${link_path}"
+   fi
+   linked=$(( linked + 1 ))
+done
+
+printf '%s\n' "dist-ai-dev-symlinks: ${linked} linked, ${already} already current, ${skipped} skipped"
+if [ "${dry_run}" -eq 0 ] && [ "${linked}" -gt 0 ]; then
+   printf '%s\n' "  target: ${target_dir} (must be on PATH)"
+fi
+exit 0
