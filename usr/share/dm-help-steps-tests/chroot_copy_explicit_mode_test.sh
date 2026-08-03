@@ -41,11 +41,11 @@ pass_count=0
 fail_count=0
 pass() {
    pass_count=$(( pass_count + 1 ))
-   printf 'PASS: %s\n' "$*"
+   printf '%s\n' "PASS: $*"
 }
 fail() {
    fail_count=$(( fail_count + 1 ))
-   printf 'FAIL: %s\n' "$*" >&2
+   printf '%s\n' "FAIL: $*" >&2
 }
 
 ## Any 'cp' whose destination is inside the chroot inherits a umask-dependent
@@ -107,7 +107,8 @@ else
    fail 'help-steps/variables does not pin a umask; file modes still depend on the builder'
 fi
 
-printf '\n===== chroot copy explicit mode: %s pass, %s fail =====\n' "${pass_count}" "${fail_count}"
+summary_line="===== chroot copy explicit mode: ${pass_count} pass, ${fail_count} fail ====="
+printf '%s\n' "${summary_line}"
 if [ "${fail_count}" -gt 0 ]; then
    exit 1
 fi

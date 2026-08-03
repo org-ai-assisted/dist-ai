@@ -70,17 +70,17 @@ released_mounts=0
 while IFS= read -r mount_point; do
    [ -n "${mount_point}" ] || continue
    if [ "${dry_run}" = "true" ]; then
-      printf '  would umount %s\n' "${mount_point}"
+      printf '%s\n' "  would umount ${mount_point}"
       released_mounts=$(( released_mounts + 1 ))
       continue
    fi
    ## --lazy: a container that died mid-read can leave a process holding the
    ## mount, and EBUSY here would leave exactly the state being cleaned up.
    if sudo --non-interactive umount --lazy -- "${mount_point}" 2>/dev/null; then
-      printf '  umounted %s\n' "${mount_point}"
+      printf '%s\n' "  umounted ${mount_point}"
       released_mounts=$(( released_mounts + 1 ))
    else
-      printf '  FAILED to umount %s\n' "${mount_point}" >&2
+      printf '%s\n' "  FAILED to umount ${mount_point}" >&2
    fi
 done < <( mount | sed -n 's|^\(/dev/nbd[0-9p]*\) on \([^ ]*\) .*|\2|p' )
 
@@ -94,18 +94,21 @@ for nbd_device in /dev/nbd[0-9] /dev/nbd[0-9][0-9]; do
       continue
    fi
    if [ "${dry_run}" = "true" ]; then
-      printf '  would disconnect %s\n' "${nbd_device}"
+      printf '%s\n' "  would disconnect ${nbd_device}"
       released_devices=$(( released_devices + 1 ))
       continue
    fi
    if sudo --non-interactive qemu-nbd --disconnect "${nbd_device}" >/dev/null 2>&1; then
-      printf '  disconnected %s\n' "${nbd_device}"
+      printf '%s\n' "  disconnected ${nbd_device}"
       released_devices=$(( released_devices + 1 ))
    else
-      printf '  FAILED to disconnect %s\n' "${nbd_device}" >&2
+      printf '%s\n' "  FAILED to disconnect ${nbd_device}" >&2
    fi
 done
 
-printf '%s: %s mount(s), %s device(s)%s\n' \
-   "${0##*/}" "${released_mounts}" "${released_devices}" \
-   "$( [ "${dry_run}" = "true" ] && printf ' -- REPORT ONLY, pass --release to act' || true )"
+## R-033: pre-compute rather than inlining a substitution in the data string.
+summary_suffix=""
+if [ "${dry_run}" = "true" ]; then
+   summary_suffix=" -- REPORT ONLY, pass --release to act"
+fi
+printf '%s\n' "${0##*/}: ${released_mounts} mount(s), ${released_devices} device(s)${summary_suffix}"

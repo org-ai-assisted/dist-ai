@@ -48,11 +48,11 @@ pass_count=0
 fail_count=0
 pass() {
    pass_count=$(( pass_count + 1 ))
-   printf 'PASS: %s\n' "$*"
+   printf '%s\n' "PASS: $*"
 }
 fail() {
    fail_count=$(( fail_count + 1 ))
-   printf 'FAIL: %s\n' "$*" >&2
+   printf '%s\n' "FAIL: $*" >&2
 }
 
 ## Exercise the SHIPPED block, not a restatement of it. A private copy of the
@@ -61,7 +61,8 @@ fail() {
 block="$( sed -n '/dist_build_version_described="\${dist_build_version##\*-g}"/,/^   fi$/p' -- "${subject}" )"
 if [ -z "${block}" ]; then
    fail 'could not extract the mismatch diagnostic from help-steps/variables'
-   printf '\n===== inherited dist_build_version: %s pass, %s fail =====\n' "${pass_count}" "${fail_count}"
+   summary_line="===== inherited dist_build_version: ${pass_count} pass, ${fail_count} fail ====="
+   printf '%s\n' "${summary_line}"
    exit 1
 fi
 pass 'extracted the shipped mismatch diagnostic'
@@ -113,7 +114,7 @@ trap cleanup EXIT
 
 git -c core.hooksPath=/dev/null -c user.name=test -c user.email=test@example.com \
    init --quiet -- "${workdir}"
-printf 'x\n' > "${workdir}/f"
+printf '%s\n' "x" > "${workdir}/f"
 git -C "${workdir}" -c core.hooksPath=/dev/null add f
 git -C "${workdir}" -c core.hooksPath=/dev/null -c user.name=test \
    -c user.email=test@example.com commit --quiet --message one
@@ -147,7 +148,8 @@ else
    pass "a tag containing '-g' with a non-hex tail is not misread as a commit"
 fi
 
-printf '\n===== inherited dist_build_version: %s pass, %s fail =====\n' "${pass_count}" "${fail_count}"
+summary_line="===== inherited dist_build_version: ${pass_count} pass, ${fail_count} fail ====="
+printf '%s\n' "${summary_line}"
 if [ "${fail_count}" -gt 0 ]; then
    exit 1
 fi

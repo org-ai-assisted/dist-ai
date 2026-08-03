@@ -62,11 +62,11 @@ pass_count=0
 fail_count=0
 pass() {
    pass_count=$(( pass_count + 1 ))
-   printf 'PASS: %s\n' "$*"
+   printf '%s\n' "PASS: $*"
 }
 fail() {
    fail_count=$(( fail_count + 1 ))
-   printf 'FAIL: %s\n' "$*" >&2
+   printf '%s\n' "FAIL: $*" >&2
 }
 
 workdir="$( mktemp --directory )"
@@ -96,19 +96,19 @@ make_upstream() {
    ## Each fixture repo must produce DISTINCT commit shas. Identical content and
    ## messages across two repos yield identical shas, which silently made the
    ## "unreachable" fixture reachable after all -- the case then proved nothing.
-   printf 'identity %s\n' "${repo##*/}" > "${repo}/identity"
+   printf '%s\n' "identity ${repo##*/}" > "${repo}/identity"
    git_quiet -C "${repo}" add identity
    git_quiet -C "${repo}" commit --quiet --message "identity ${repo##*/}"
-   printf 'one\n' > "${repo}/file"
+   printf '%s\n' "one" > "${repo}/file"
    git_quiet -C "${repo}" add file
    git_quiet -C "${repo}" commit --quiet --message one
    ## The commit under test, then ANOTHER on top, so the pin is an ANCESTOR and
    ## not a tip. That gap is the whole bug.
-   printf 'two\n' > "${repo}/file"
+   printf '%s\n' "two" > "${repo}/file"
    git_quiet -C "${repo}" add file
    git_quiet -C "${repo}" commit --quiet --message two
    git_quiet -C "${repo}" rev-parse HEAD > "${repo}/.ancestor-sha"
-   printf 'three\n' > "${repo}/file"
+   printf '%s\n' "three" > "${repo}/file"
    git_quiet -C "${repo}" add file
    git_quiet -C "${repo}" commit --quiet --message three
    git_quiet -C "${repo}" config uploadpack.allowReachableSHA1InWant "${allow_sha}"
@@ -131,9 +131,9 @@ build_super() {
    ## that refusal exits before the pin probe ever runs -- which silently made
    ## every case here vacuous until the marker dirs were present.
    mkdir --parents -- "${super}/build-steps.d" "${super}/help-steps"
-   printf 'placeholder\n' > "${super}/build-steps.d/.keep"
-   printf 'placeholder\n' > "${super}/help-steps/.keep"
-   printf 'top\n' > "${super}/top"
+   printf '%s\n' "placeholder" > "${super}/build-steps.d/.keep"
+   printf '%s\n' "placeholder" > "${super}/help-steps/.keep"
+   printf '%s\n' "top" > "${super}/top"
    git_quiet -C "${super}" add top build-steps.d help-steps
    git_quiet -C "${super}" commit --quiet --message top
    git_quiet -C "${super}" -c protocol.file.allow=always \
@@ -231,7 +231,8 @@ else
    pass 'the inspected submodule was not made shallow by the probe'
 fi
 
-printf '\n===== dm-preflight pin reachability: %s pass, %s fail =====\n' "${pass_count}" "${fail_count}"
+summary_line="===== dm-preflight pin reachability: ${pass_count} pass, ${fail_count} fail ====="
+printf '%s\n' "${summary_line}"
 if [ "${fail_count}" -gt 0 ]; then
    exit 1
 fi

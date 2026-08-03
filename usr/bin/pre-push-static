@@ -786,6 +786,49 @@ check_R031_bare_newline() {
    emit_hits "R-030/R-031 newline printf needs explicit \"\" arg" "${hits}"
 }
 
+check_R030_format_string() {
+   local hits script script_hits
+   local -a fs
+
+   mapfile -d '' -t fs < <(filter_self "${@}")
+   if [ "${#fs[@]}" -eq 0 ]; then return 0; fi
+   ## R-030: the format string is FIXED -- all data goes in the data argument.
+   ## Flags a printf whose format carries anything beyond %s / %s\n: embedded
+   ## literal text, a width or padding specifier (%-14s), %d, or an extra \n.
+   ##
+   ## WHY beyond tidiness: a format string carrying data INTERPRETS whatever
+   ## lands in it. A value containing a percent sign consumes the next argument
+   ## or prints garbage, and the damage shows up in the OUTPUT -- exactly where a
+   ## wrong answer is most likely to be believed.
+   ##
+   ## Allowed: '%s', '%s\n', and '%q'/'%q\n' where shell-escaping is genuinely
+   ## required (R-030 names that exception).
+   ##
+   ## PER FILE, with the waiver anchored to a comment at line start. A
+   ## batch-wide waiver grep is not a shortcut but a hole: this file DOCUMENTS
+   ## the waiver string, so an unanchored batch check matched here and silently
+   ## disabled the rule for every file in the run -- measured, 216 files scanned
+   ## and 0 reported.
+   hits=""
+   for script in "${fs[@]}"; do
+      if grep --quiet --extended-regexp \
+         '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*printf-format([[:space:]]|$)' \
+         -- "${script}" 2>/dev/null; then
+         continue
+      fi
+      script_hits="$(grep --with-filename --line-number --extended-regexp \
+         "(^|[^-[:alnum:]])printf[[:space:]]+'[^']*'" \
+         -- "${script}" 2>/dev/null \
+         | grep --extended-regexp --invert-match \
+           "printf[[:space:]]+'(%s|%s\\\\n|%q|%q\\\\n)'" || true)"
+      if [ -n "${script_hits}" ]; then
+         hits="${hits}${script_hits}"$'\n'
+      fi
+   done
+   hits="${hits%$'\n'}"
+   emit_hits "R-030 printf format string must be fixed ('%s' / '%s\\n')" "${hits}"
+}
+
 check_R051_trap_inline() {
    local hits allow_regexp
    local -a fs
@@ -1733,6 +1776,7 @@ run_file_checks() {
       check_R011_errexit_toggle "${shell_files[@]}"
       check_R042_blank_logline "${shell_files[@]}"
       check_R031_bare_newline "${shell_files[@]}"
+      check_R030_format_string "${shell_files[@]}"
       check_R051_trap_inline "${shell_files[@]}"
       check_R070_double_semi "${shell_files[@]}"
       check_R074_flow_chaining "${shell_files[@]}"
