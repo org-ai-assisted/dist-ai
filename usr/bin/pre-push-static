@@ -801,8 +801,14 @@ check_R030_format_string() {
    ## or prints garbage, and the damage shows up in the OUTPUT -- exactly where a
    ## wrong answer is most likely to be believed.
    ##
-   ## Allowed: '%s', '%s\n', and '%q'/'%q\n' where shell-escaping is genuinely
-   ## required (R-030 names that exception).
+   ## Allowed: '%s', '%s\n', '%q'/'%q\n' where shell-escaping is genuinely
+   ## required (R-030 names that exception), and '%b'/'%b\n', which is the only
+   ## way to decode the octal escapes /proc/mounts uses -- it still keeps the
+   ## format FIXED with the data in the argument, which is what R-030 is about.
+   ##
+   ## COMMENTS are skipped. A comment explaining the rule, or quoting a format
+   ## string while describing it, is prose -- flagging it makes the rule fire on
+   ## its own documentation.
    ##
    ## PER FILE, with the waiver anchored to a comment at line start. A
    ## batch-wide waiver grep is not a shortcut but a hole: this file DOCUMENTS
@@ -820,7 +826,9 @@ check_R030_format_string() {
          "(^|[^-[:alnum:]])printf[[:space:]]+'[^']*'" \
          -- "${script}" 2>/dev/null \
          | grep --extended-regexp --invert-match \
-           "printf[[:space:]]+'(%s|%s\\\\n|%q|%q\\\\n)'" || true)"
+           "printf[[:space:]]+'(%s|%s\\\\n|%q|%q\\\\n|%b|%b\\\\n)'" \
+         | grep --extended-regexp --invert-match \
+           '^[^:]+:[0-9]+:[[:space:]]*#' || true)"
       if [ -n "${script_hits}" ]; then
          hits="${hits}${script_hits}"$'\n'
       fi
