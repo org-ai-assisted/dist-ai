@@ -1,0 +1,160 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Run ONE function from a derivative-maker build step in isolation, so a
+## one-line change to a build step is testable in SECONDS instead of a ~50min
+## build.
+##
+## WHY EXTRACT RATHER THAN SOURCE THE WHOLE FILE: a build step sources 'pre',
+## 'variables' and helper-scripts at load time and ends in 'main "$@"', so
+## sourcing it drags in the entire build machinery and would try to run. This
+## pulls out just the named function's text with sed and defines THAT, against
+## whatever stubs and fixture the caller sets up. Verified to work three times
+## before this was generalised (normalize-symlinks, check-umask-in-sync,
+## check-stale-nbd).
+##
+## It is a THIN tool on purpose: it prints the extracted function so the caller
+## can source it, or --run one directly. The caller owns the fixture and stubs,
+## because those are specific to the function under test -- a generic harness
+## that guessed them would prove the wrong thing.
+##
+## Usage:
+##   dm-build-step-fn --file <step> --fn <name>            print the function body
+##   dm-build-step-fn --file <step> --fn <name> --run [args...]
+##                                                        define it and call it
+##   dm-build-step-fn --file <step> --list                list its functions
+##
+## --run defines the function in THIS shell and calls it with the remaining
+## args. Set up stubs and PATH via the environment before calling, e.g.
+##   error() { printf '%s\n' "ERR: $1"; }; export -f error
+##   dm-build-step-fn --file .../1100_sanity-tests --fn check-stale-nbd --run
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+step_file=""
+fn_name=""
+mode="print"
+
+usage() {
+   printf '%s\n' \
+      'usage: dm-build-step-fn --file <step> --fn <name> [--run [args...]]' \
+      '       dm-build-step-fn --file <step> --list' >&2
+}
+
+while [ "$#" -gt 0 ]; do
+   case "$1" in
+      --file)
+         [ "$#" -ge 2 ] || { usage; exit 2; }
+         step_file="$2"
+         shift 2
+         ;;
+      --fn)
+         [ "$#" -ge 2 ] || { usage; exit 2; }
+         fn_name="$2"
+         shift 2
+         ;;
+      --list)
+         mode="list"
+         shift
+         ;;
+      --run)
+         mode="run"
+         shift
+         break
+         ;;
+      -h|--help)
+         grep '^##' -- "${BASH_SOURCE[0]}" | sed 's/^## \{0,1\}//'
+         exit 0
+         ;;
+      *)
+         printf '%s\n' "dm-build-step-fn: unknown argument: '$1'" >&2
+         usage
+         exit 2
+         ;;
+   esac
+done
+
+if [ -z "${step_file}" ] || [ ! -r "${step_file}" ]; then
+   printf '%s\n' "dm-build-step-fn: --file must name a readable build step" >&2
+   exit 2
+fi
+
+if [ "${mode}" = "list" ]; then
+   ## Top-level function definitions only: '<name>() {' at column zero.
+   grep -oE '^[a-zA-Z_][a-zA-Z0-9_-]*\(\) \{' -- "${step_file}" \
+      | sed 's/() {$//'
+   exit 0
+fi
+
+if [ -z "${fn_name}" ]; then
+   printf '%s\n' "dm-build-step-fn: --fn is required unless --list" >&2
+   exit 2
+fi
+
+## The name is interpolated into a sed address, so a regex metacharacter in it
+## would silently match a DIFFERENT function ('check.stale' matching
+## 'check-stale'). Shell function names in these steps are word characters and
+## hyphens; anything else is rejected rather than escaped, so there is no
+## quoting subtlety to get wrong later.
+if [[ ! "${fn_name}" =~ ^[a-zA-Z_][a-zA-Z0-9_-]*$ ]]; then
+   printf '%s\n' "dm-build-step-fn: invalid function name: '${fn_name}'" >&2
+   exit 2
+fi
+
+## Defined twice, the sed range below restarts and concatenates BOTH bodies,
+## and eval would then keep whichever came last -- a silent wrong answer.
+definition_count="$( grep -cE "^${fn_name}\(\) \{\$" -- "${step_file}" || true )"
+if [ "${definition_count}" -gt 1 ]; then
+   printf '%s\n' \
+      "dm-build-step-fn: '${fn_name}' is defined ${definition_count} times in ${step_file};" \
+      "  extraction would be ambiguous. Disambiguate the step, not this tool." >&2
+   exit 1
+fi
+
+## Extract from '<name>() {' at column zero to the matching '}' at column zero.
+## Build steps define functions flush-left and close with '}' flush-left, so a
+## column-anchored range is exact without a brace counter.
+fn_text="$( sed -n "/^${fn_name}() {\$/,/^}\$/p" -- "${step_file}" )"
+if [ -z "${fn_text}" ]; then
+   printf '%s\n' "dm-build-step-fn: function '${fn_name}' not found in ${step_file}" >&2
+   printf '%s\n' "  available:" >&2
+   grep -oE '^[a-zA-Z_][a-zA-Z0-9_-]*\(\) \{' -- "${step_file}" \
+      | sed 's/() {$/  /; s/^/    /' >&2
+   exit 1
+fi
+
+## A flush-left '}' INSIDE the function -- a heredoc body carrying one, say --
+## ends the range early, and the truncated text can still be something eval
+## accepts. That would test a function the step does not have. Parsing the
+## extracted text is what makes the range trustworthy rather than merely
+## usually-right.
+if ! printf '%s\n' "${fn_text}" | bash -n 2>/dev/null; then
+   printf '%s\n' \
+      "dm-build-step-fn: extracted text for '${fn_name}' is not parseable bash." \
+      "  A flush-left '}' inside the function (heredoc body?) truncated it." \
+      "  Indent that brace in ${step_file}, or extract a smaller function." >&2
+   exit 1
+fi
+
+if [ "${mode}" = "print" ]; then
+   printf '%s\n' "${fn_text}"
+   exit 0
+fi
+
+## --run: define the extracted function here and call it with the remaining
+## args. The caller's stubs/fixtures are already in this environment.
+eval "${fn_text}"
+if ! declare -F "${fn_name}" >/dev/null; then
+   printf '%s\n' "dm-build-step-fn: extracted text did not define '${fn_name}'" >&2
+   exit 1
+fi
+"${fn_name}" "$@"
