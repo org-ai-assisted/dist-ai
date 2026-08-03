@@ -125,7 +125,38 @@ else
    fail "slash owner altered: [$( cat "${f}" )]"
 fi
 
-## --- 6. CANARY: the tool can fail (bad args) --------------------------------
+## --- 6. the file's mode is preserved (atomic replace must not reset it) ------
+## debconf's config.dat is 0600; a rename from a default-mode temp would drop it.
+f="${work_dir}/mode.dat"
+stanza 'shim-signed:amd64' > "${f}"
+chmod 0640 "${f}"
+"${tool}" "${f}" >/dev/null
+mode="$( stat -c '%a' "${f}" )"
+if [ "${mode}" = "640" ]; then
+   pass 'the file mode is preserved across normalization'
+else
+   fail "mode changed to ${mode} (expected 640)"
+fi
+
+## --- 7. a filename ending in '|' is read as a PATH, not run as a command ----
+## Perl's diamond over an @ARGV filename uses 2-argument open, so a name ending
+## in '|' would run everything before it as a shell command. A filename cannot
+## contain '/', so the probe command writes a marker in the CURRENT directory:
+## run the tool from a scratch dir and assert the marker never appears.
+meta_dir="${work_dir}/meta"
+mkdir -p "${meta_dir}"
+## Name = "touch PWNED |": under the old @ARGV code perl would run 'touch PWNED'.
+evil_name='touch PWNED |'
+( cd "${meta_dir}" && stanza 'shim-signed:amd64' > "${evil_name}" )
+( cd "${meta_dir}" && "${tool}" "${evil_name}" >/dev/null )
+if [ ! -e "${meta_dir}/PWNED" ] \
+   && grep -q '^Owners: shim-signed$' "${meta_dir}/${evil_name}"; then
+   pass 'a filename ending in a pipe is read as a path, not executed'
+else
+   fail 'a metacharacter filename was mishandled (possible command execution)'
+fi
+
+## --- 8. CANARY: the tool can fail (bad args) --------------------------------
 status=0
 "${tool}" >/dev/null 2>&1 || status="$?"
 if [ "${status}" -ne 0 ]; then
@@ -134,7 +165,7 @@ else
    fail 'canary broken: the tool exits 0 with no arguments'
 fi
 
-## --- 7. CANARY: the fixture really carries the dual spelling ----------------
+## --- 9. CANARY: the fixture really carries the dual spelling ----------------
 if stanza 'shim-signed, shim-signed:amd64' | grep -q 'shim-signed:amd64'; then
    pass 'canary: the fixture carries the arch-qualified spelling under test'
 else
