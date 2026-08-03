@@ -1,0 +1,236 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Build ONE image locally in the sandbox qube, mirroring .github/workflows/local-build.yml exactly,
+## so the result can be compared against CI's image of the SAME commit.
+##
+## Faithfulness is the whole point, so every knob is taken from the workflow:
+##   dist_build_version   exported from the same 'git describe --exclude' BEFORE
+##                        sign-and-tag, because sign-and-tag amends HEAD and a
+##                        version derived after the amend would differ between
+##                        the two sides for a non-defect reason.
+##   flavor/arch/target   kicksecure-debug / amd64 / qcow2
+##   --freshness frozen   pins the Debian snapshot; without it two builds diverge
+##                        on package versions alone.
+##
+## PROGRESS SIGNAL: this appends ONLY when the build log actually grows. A line
+## per tick would be fabricated liveness -- the stall supervisor watches this
+## file, and a dead build that keeps it growing looks healthy forever. That bug
+## once hid a build that died in three minutes for eight hours.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+progress="$1"
+## The commit under test. Passed explicitly because sign-and-tag AMENDS the
+## parent HEAD, so after any attempt the tree no longer sits on it -- a second
+## run would silently build a different commit. Observed: attempt two built
+## 98c75a32 while claiming to test 96fee033c.
+target_sha="${2:?usage: local-repro-build.sh <progress-file> <commit-sha>}"
+
+## Parameterised so the SAME script can build a freshly cloned tree. A fresh
+## clone is the discriminator for the mtime differences: rsync preserves this
+## host's mtimes, while CI's checkout writes new ones, so a file copied with its
+## mtime intact is indistinguishable from a build that fails to normalise it.
+remote_tree="${3:-/home/user/derivative-maker}"
+remote_log="${4:-/home/user/local-repro-build.log}"
+
+note() {
+   local stamp
+   stamp="$(date --utc +%H:%M:%SZ)"
+   printf '%s\n' "${stamp} $*" >> "${progress}"
+}
+
+## Restore the exact commit, then the pinned submodules. Both are required
+## every run: the amend moves the parent, and a previous build can leave
+## submodules checked out elsewhere.
+note "restoring the sandbox tree to ${target_sha}"
+sandbox exec --raw - <<REMOTE >> "${progress}" 2>&1
+cd -- "${remote_tree}"
+## FETCH before reset. Without this the reset fails on an object the clone has
+## never seen, and the build proceeds on whatever HEAD happened to be -- which
+## for a tree that already ran sign-and-tag is an AMENDED commit, i.e. silently
+## the wrong thing. Caught only because this script prints HEAD afterwards.
+git fetch --quiet origin >/dev/null 2>&1 || true
+git reset --hard "${target_sha}" >/dev/null
+git submodule update --init --recursive >/dev/null 2>&1 || true
+## Remove UNTRACKED and ignored files too. 'reset --hard' leaves them, and this
+## sandbox has accumulated __pycache__, .pytest_cache and .mypy_cache from test
+## runs. CI checks out fresh and never has them; here dm-check-unicode flagged
+## them ("Missing newlines at the end of file") and failed
+## 1200_prepare-build-machine. -x is deliberate: ignored build residue is
+## exactly what differs from a fresh clone.
+git clean -xfd >/dev/null 2>&1 || true
+git submodule --quiet foreach --recursive "git clean -xfd >/dev/null 2>&1 || true" 2>/dev/null || true
+REMOTE
+
+## Remotes must be https, as CI has them. This host rewrites github https to ssh
+## globally (url.insteadOf), so a synced tree carries literal ssh remotes -- and
+## the build container has no ssh binary, so derivative-update dies with
+## "cannot run ssh: No such file or directory" 18 seconds in.
+note "normalising ssh remotes to https (the container has no ssh)"
+sandbox exec --raw - <<'REMOTE' >> "${progress}" 2>&1
+cd /home/user/derivative-maker
+normalise_remotes() {
+   for remote_name in $(git remote); do
+      url="$(git remote get-url "${remote_name}" 2>/dev/null || true)"
+      case "${url}" in
+         git@github.com:*)
+            git remote set-url "${remote_name}" "https://github.com/${url#git@github.com:}"
+            ;;
+         ssh://git@github.com/*)
+            git remote set-url "${remote_name}" "https://github.com/${url#ssh://git@github.com/}"
+            ;;
+      esac
+   done
+}
+normalise_remotes
+## Iterate submodules HERE rather than running the function inside
+## 'git submodule foreach': foreach executes with sh (dash), where an exported
+## bash function does not exist -- it fails "command not found" and a '|| true'
+## hides it, leaving every submodule with ssh remotes the container cannot use.
+while IFS= read -r submodule_path; do
+   [ -n "${submodule_path}" ] || continue
+   ( cd -- "${submodule_path}" && normalise_remotes ) || true
+done < <( git submodule --quiet foreach --recursive 'printf "%s\n" "${PWD}"' 2>/dev/null || true )
+origin_now="$(git remote get-url origin 2>/dev/null || true)"
+[ -n "${origin_now}" ] || origin_now="none"
+printf '%s\n' "origin now: ${origin_now}"
+REMOTE
+
+## A reset that did not land on the target must STOP, not build something else.
+actual_head="$( sandbox exec --raw -- git -C "${remote_tree}" rev-parse HEAD 2>/dev/null | tr -d '[:space:]' )"
+if [ ! "${actual_head}" = "${target_sha}" ]; then
+   note "=== FAILED: tree is at ${actual_head}, not the requested ${target_sha}"
+   exit 1
+fi
+
+note "confirming the sandbox tree is the commit under test and is CLEAN"
+sandbox exec - <<REMOTE >> "${progress}" 2>&1
+cd -- "${remote_tree}"
+head_now="\$(git rev-parse HEAD)"
+printf '%s\n' "HEAD:     \${head_now}"
+dirty_now="\$(git status --porcelain | wc -l)"
+printf '%s\n' "dirty:    \${dirty_now}"
+describe_now="\$(git describe --always --abbrev=1000000000 --exclude '*_*_*')"
+printf '%s\n' "describe: \${describe_now}"
+REMOTE
+
+## Materialise REAL symlinks before building.
+##
+## Both this host and the sandbox carry 'core.symlinks = false' from
+## /etc/gitconfig (security-misc-shared) -- a deliberate security setting that
+## stays. Under it git checks a symlink out as a small REGULAR FILE holding the
+## target path, and reports the tree clean because it knows it did that.
+##
+## The build container has no such gitconfig, so git in there sees mode 120000 in
+## the index against a regular file on disk and reports a typechange; the build
+## aborts in git_sanity_test. Worse for the comparison: CI's runner checks out
+## real symlinks, so a build from the file form would embed DIFFERENT CONTENT and
+## could never match CI byte for byte.
+##
+## Fixing it in the sandbox only keeps the host setting intact. It must live here
+## rather than in a runbook: an rsync from the host re-creates the file form every
+## time, so any manual step would be forgotten exactly once.
+note "materialising real symlinks in the sandbox (host keeps core.symlinks=false)"
+sandbox exec --raw - <<REMOTE >> "${progress}" 2>&1
+cd -- "${remote_tree}"
+git -c core.symlinks=true reset --hard >/dev/null
+git submodule --quiet foreach --recursive "git -c core.symlinks=true reset --hard >/dev/null" 2>/dev/null || true
+symlink_now="\$(ls -la live-build-data/d-i-branding/logo_installer.png | sed 's/.*-> //')"
+printf '%s\n' "symlink check: \${symlink_now}"
+REMOTE
+
+note "launching the build DETACHED (mirrors local-build.yml)"
+sandbox exec - <<REMOTE
+set -o errexit
+set -o nounset
+cd -- "${remote_tree}"
+truncate --size=0 -- "${remote_log}"
+## CI=true is REQUIRED, not cosmetic: without it derivative-maker-docker-run
+## adds '--interactive', which needs a real host TTY. A detached launch has
+## none, so docker refuses with "the input device is not a TTY" and the build
+## never starts -- while the log still grows, which is exactly the shape that
+## looks like progress. CI sets this itself; a local mirror must too.
+setsid nohup env CI=true ./docker/derivative-maker-docker-run -- \
+   bash -c "export dist_build_version=\\"\\\$(git describe --always --abbrev=1000000000 --exclude '*_*_*')\\" && \
+   ./help-steps/signing-key-create && ./help-steps/sign-and-tag && \
+   env dist_build_target_arch='amd64' flavors_list='kicksecure-debug' \
+   dist_build_multi_target_list='qcow2' \
+   ./help-steps/dm-build-official --freshness frozen --package-jobs 2" \
+   > "${remote_log}" 2>&1 < /dev/null &
+disown
+printf '%s\n' "launched"
+REMOTE
+
+## Poll the BUILD's own output. Liveness comes from bytes the build produced,
+## never from a process being alive: a surviving parent shell once stood in for
+## a download that had already died.
+idle_ticks=0
+last_size=""
+while true; do
+   sleep 60
+   size="$(sandbox exec -- stat --format=%s -- "${remote_log}" 2>/dev/null || printf '0')"
+   size="${size//[!0-9]/}"
+   ## 'wc -l' always exits 0. 'grep -c' exits 1 on a zero count, which once made
+   ## a '|| printf 0' fallback fire TOO and return "0\n0", so the equality test
+   ## never matched and the loop never ended.
+   running="$(sandbox exec - <<'PROBE'
+sudo --non-interactive docker ps --quiet 2>/dev/null | wc -l
+PROBE
+)"
+   running="${running//[!0-9]/}"
+
+   if [ "${size:-0}" != "${last_size}" ]; then
+      note "log=${size:-0}B containers=${running:-0}"
+      last_size="${size:-0}"
+      idle_ticks=0
+      continue
+   fi
+
+   if [ "${running:-0}" -eq 0 ]; then
+      idle_ticks=$(( idle_ticks + 1 ))
+      if [ "${idle_ticks}" -ge 2 ]; then
+         note "log stopped growing at ${size:-0}B and no container remains"
+         break
+      fi
+   fi
+done
+
+## A verdict needs a POSITIVE signal. "no error string in the log" is an ABSENCE,
+## which a build killed mid-step (OOM, dead transport, truncated log) also
+## satisfies -- that reads as success for a build that produced nothing.
+if sandbox exec -- bash -c "grep --quiet -- 'ERROR detected in script' ${remote_log}" 2>/dev/null; then
+   note "=== FAILED: the build reported an error"
+   sandbox exec -- bash -c "grep -n 'ERROR detected in script' -A 4 ${remote_log} | tail -20" >> "${progress}" 2>&1 || true
+   exit 1
+fi
+
+image_count="$(sandbox exec - <<'COUNT'
+find /home/user/binary_mnt -maxdepth 3 -type f -name '*.qcow2.libvirt.xz' -newermt '-3 hours' 2>/dev/null | wc -l
+COUNT
+)"
+image_count="${image_count//[!0-9]/}"
+if [ "${image_count:-0}" -lt 1 ]; then
+   note "=== FAILED: no error marker, but NO artifact was produced"
+   sandbox exec -- bash -c "tail -n 15 ${remote_log}" >> "${progress}" 2>&1 || true
+   exit 1
+fi
+
+note "=== DONE: build finished, ${image_count} fresh image(s)"
+## The listing is INFORMATIONAL. As the last statement its exit status became the
+## script's, so a successful build whose listing hiccuped reported as a failed
+## job -- the verdict said DONE while the supervisor said failed. A report step
+## must never be able to overturn a verdict already reached.
+sandbox exec - <<'LIST' >> "${progress}" 2>&1 || true
+find /home/user/binary_mnt -maxdepth 3 -type f -name '*.qcow2.libvirt.xz' -newermt '-3 hours' -print
+LIST
+exit 0
