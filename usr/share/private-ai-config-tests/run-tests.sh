@@ -150,14 +150,14 @@ check_registration() {
    ## guard would keep passing while covering less than it claims, which is the
    ## failure class it exists to catch.
    ##
-   ## '-I{}' matters: GNU find takes PATHS BEFORE the expression, so appending the
+   ## '--replace={}' matters: GNU find takes PATHS BEFORE the expression, so appending the
    ## discovered roots after '-type f' made every invocation die with "paths must
    ## precede expression". Sent to /dev/null, that left an EMPTY scan -- the guard
    ## reported "everything registered" while reading nothing, for every file in
    ## the repo. Errors are no longer discarded, for the same reason.
    done < <( find "${repo}" -path "${repo}/.git" -prune -o \
       -type d -name tests -print0 \
-      | xargs --null --no-run-if-empty -I{} find {} \
+      | xargs --null --no-run-if-empty --replace={} find {} \
         -type f \( -name '*.sh' -o -name '*.py' \) | sort )
 
    ## A checkout with a tests/ dir always holds test files, so an empty scan is

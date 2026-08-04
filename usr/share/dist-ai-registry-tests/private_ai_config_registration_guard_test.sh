@@ -79,6 +79,7 @@ fail() {
 ## either way -- what is asserted is what the GUARD said, not the lane result.
 run_lane() {
    local fake
+
    fake="$1"
    PRIVATE_AI_CONFIG_PATH="${fake}" bash -- "${runner}" --lane core 2>&1 || true
 }
