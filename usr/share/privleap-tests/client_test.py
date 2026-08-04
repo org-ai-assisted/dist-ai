@@ -225,6 +225,9 @@ def run_client(
 
     reset()
     saved_argv: list[str] = sys.argv
+    ## Distinct from any real exit code: a client that returns instead of
+    ## exiting would otherwise be indistinguishable from one that failed
+    ## properly, and every 'this must fail' check below would accept it.
     out_text, out_raw = _capture_stream()
     err_text, err_raw = _capture_stream()
     exit_code: int = -1
@@ -234,7 +237,14 @@ def run_client(
             try:
                 module.main()
             except SystemExit as exc:
-                exit_code = int(exc.code or 0)
+                ## sys.exit('message') is a failure exit whose code is the
+                ## string; int() would raise and lose the whole case.
+                if exc.code is None:
+                    exit_code = 0
+                elif isinstance(exc.code, int):
+                    exit_code = exc.code
+                else:
+                    exit_code = 1
         out_text.flush()
         err_text.flush()
         stdout: str = out_raw.getvalue().decode('utf-8', errors='replace')
@@ -520,8 +530,18 @@ def test_leaprun_argument_handling(
                 leaprun, argv, _reset_leaprun(leaprun, user)
             )
             label: str = f"leaprun {' '.join(argv[1:]) or '(no arguments)'}"
+            results.check(f"{label}: fails", run.exit_code > 0)
+            ## Without this the check proves nothing: no daemon is listening
+            ## in the sandbox, so ANY command line fails. What is under test
+            ## is that leaprun rejects the arguments itself, before it ever
+            ## reaches for a socket.
+            rejected_locally: bool = (
+                'leaprun [-c|--check]' in run.stdout
+                or 'is invalid' in run.stderr
+            )
             results.check(
-                f"{label}: fails", run.exit_code != 0
+                f"{label}: is rejected by leaprun, not by the missing daemon",
+                rejected_locally,
             )
 
 
@@ -605,7 +625,7 @@ def test_leaprun_refusals(
                     leaprun, ['leaprun', 'act'], _reset_leaprun(leaprun, user)
                 )
                 results.check(
-                    f"{label}: exit code is non-zero", run.exit_code != 0
+                    f"{label}: exit code is non-zero", run.exit_code > 0
                 )
                 results.check(
                     f"{label}: is reported to stderr",
@@ -649,7 +669,7 @@ def test_leaprun_access_check(
                 'act-no' in run.stderr and 'unauthorized' in run.stderr,
             )
             results.check(
-                'a partly refused check fails overall', run.exit_code != 0
+                'a partly refused check fails overall', run.exit_code > 0
             )
             results.check(
                 'the request was an ACCESS_CHECK',
@@ -687,7 +707,7 @@ def test_leaprun_server_failures(
         run: ClientRun = run_client(
             leaprun, ['leaprun', 'act'], _reset_leaprun(leaprun, user)
         )
-        results.check('a missing daemon fails cleanly', run.exit_code != 0)
+        results.check('a missing daemon fails cleanly', run.exit_code > 0)
 
         server: ScriptedServer
         with ScriptedServer(
@@ -699,7 +719,7 @@ def test_leaprun_server_failures(
             run = run_client(
                 leaprun, ['leaprun', 'act'], _reset_leaprun(leaprun, user)
             )
-            results.check('a silent daemon fails cleanly', run.exit_code != 0)
+            results.check('a silent daemon fails cleanly', run.exit_code > 0)
 
             ## An ACCESS_CHECK answer to a SIGNAL request: wrong, but legal on
             ## the wire, so the client must reject it rather than crash.
@@ -710,7 +730,7 @@ def test_leaprun_server_failures(
                 leaprun, ['leaprun', 'act'], _reset_leaprun(leaprun, user)
             )
             results.check(
-                'a mismatched reply fails cleanly', run.exit_code != 0
+                'a mismatched reply fails cleanly', run.exit_code > 0
             )
             results.check(
                 'a mismatched reply produced no traceback',
@@ -819,7 +839,7 @@ def test_leaprun_rejects_protocol_violations(
                     leaprun, argv, _reset_leaprun(leaprun, user)
                 )
                 results.check(
-                    f"{label}: exit code is non-zero", run.exit_code != 0
+                    f"{label}: exit code is non-zero", run.exit_code > 0
                 )
                 results.check(
                     f"{label}: produced no traceback",
@@ -939,7 +959,7 @@ def test_leapctl_send_failure(
                 )
                 results.check(
                     f"leapctl {action}: exit code is non-zero",
-                    run.exit_code != 0,
+                    run.exit_code > 0,
                 )
                 results.check(
                     f"leapctl {action}: produced no traceback",
@@ -954,7 +974,7 @@ def run_test(
 
     try:
         test(results, *args)
-    except Exception as exc:  # pylint: disable=broad-exception-caught
+    except BaseException as exc:  # pylint: disable=broad-exception-caught
         results.check(
             f"{test.__name__} raised {type(exc).__name__}: {exc}", False
         )

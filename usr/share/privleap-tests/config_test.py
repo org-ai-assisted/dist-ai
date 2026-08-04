@@ -672,7 +672,7 @@ def run_test(
 
     try:
         test(results, *args)
-    except Exception as exc:  # pylint: disable=broad-exception-caught
+    except BaseException as exc:  # pylint: disable=broad-exception-caught
         results.check(
             f"{test.__name__} raised {type(exc).__name__}: {exc}", False
         )

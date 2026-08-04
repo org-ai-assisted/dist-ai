@@ -27,6 +27,7 @@ sudo and attributes requests to the invoking user (SUDO_USER).
 import os
 import pwd
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -38,7 +39,7 @@ if HERE not in sys.path:
 # pylint: disable=wrong-import-position
 import e2e_lib  # noqa: E402
 
-e2e_lib.reexec_under_mount_namespace("PRIVLEAP_E2E_INSIDE")
+e2e_lib.reexec_under_mount_namespace('PRIVLEAP_E2E_INSIDE')
 
 from pl_testlib import Results, current_username  # noqa: E402
 
@@ -53,9 +54,9 @@ def setup_env_injection(user: str, workdir: str) -> tuple[set[str], str]:
 
     planted: set[str] = set()
     info: pwd.struct_passwd = pwd.getpwnam(user)
-    bashenv_script: str = os.path.join(workdir, "bashenv.sh")
-    bashenv_sentinel: str = os.path.join(workdir, "BASHENV_SOURCED")
-    with open(bashenv_script, "w", encoding="utf-8") as handle:
+    bashenv_script: str = os.path.join(workdir, 'bashenv.sh')
+    bashenv_sentinel: str = os.path.join(workdir, 'BASHENV_SOURCED')
+    with open(bashenv_script, 'w', encoding='utf-8') as handle:
         handle.write(f"#!/bin/sh\ntouch {bashenv_sentinel}\n")
     os.chmod(bashenv_script, 0o755)  # nosec B103 -- BASH_ENV hook must be executable by the unprivileged target user privleap runs as
 
@@ -65,27 +66,27 @@ def setup_env_injection(user: str, workdir: str) -> tuple[set[str], str]:
             e2e_lib.mount_tmpfs(home)
             os.chown(home, info.pw_uid, info.pw_gid)
             os.chmod(home, 0o700)
-            pam_env_path: str = os.path.join(home, ".pam_environment")
-            with open(pam_env_path, "w", encoding="utf-8") as handle:
+            pam_env_path: str = os.path.join(home, '.pam_environment')
+            with open(pam_env_path, 'w', encoding='utf-8') as handle:
                 handle.write(f"{e2e_lib.INJECT_PAMENV} DEFAULT=injected\n")
                 handle.write(f"BASH_ENV DEFAULT={bashenv_script}\n")
-                handle.write("LD_PRELOAD DEFAULT=/nonexistent/evil.so\n")
+                handle.write('LD_PRELOAD DEFAULT=/nonexistent/evil.so\n')
             os.chown(pam_env_path, info.pw_uid, info.pw_gid)
             os.chmod(pam_env_path, 0o600)
-            planted.add("pam_environment")
+            planted.add('pam_environment')
         except OSError:
             # precondition could not be planted in this sandbox; skip it
             pass
 
-    if os.path.isfile("/etc/environment"):
-        fake_env: str = os.path.join(workdir, "fake_environment")
-        with open(fake_env, "w", encoding="utf-8") as handle:
+    if os.path.isfile('/etc/environment'):
+        fake_env: str = os.path.join(workdir, 'fake_environment')
+        with open(fake_env, 'w', encoding='utf-8') as handle:
             handle.write(f"{e2e_lib.INJECT_ETCENV}=injected\n")
         try:
             subprocess.run(
-                ["mount", "--bind", fake_env, "/etc/environment"], check=True
+                ['mount', '--bind', fake_env, '/etc/environment'], check=True
             )
-            planted.add("etc_environment")
+            planted.add('etc_environment')
         except subprocess.CalledProcessError:
             # precondition could not be planted in this sandbox; skip it
             pass
@@ -102,44 +103,44 @@ def main() -> int:
         return 2
     if info.pw_uid == 0:
         print(
-            "FATAL: refusing to attribute requests to root; run as a normal "
-            "user via sudo.",
+            'FATAL: refusing to attribute requests to root; run as a normal '
+            'user via sudo.',
             file=sys.stderr,
         )
         return 2
 
-    print("privleap live-daemon e2e test (namespace backend)")
+    print('privleap live-daemon e2e test (namespace backend)')
     print(f"caller (attributed) account: {user} (uid {info.pw_uid})")
     print(f"privleapd: {e2e_lib.privleapd_path()}")
-    print("(running inside a private mount namespace; host privleapd untouched)")
+    print('(running inside a private mount namespace; host privleapd untouched)')
     print()
 
-    workdir: str = tempfile.mkdtemp(prefix="privleap-e2e-")
+    workdir: str = tempfile.mkdtemp(prefix='privleap-e2e-')
 
     ## Isolate /run and /etc/privleap with fresh tmpfs in this namespace only.
-    e2e_lib.mount_tmpfs("/run")
-    os.makedirs("/etc/privleap", exist_ok=True)
-    e2e_lib.mount_tmpfs("/etc/privleap")
-    e2e_lib.write_config("/etc/privleap/conf.d", user, workdir)
+    e2e_lib.mount_tmpfs('/run')
+    os.makedirs('/etc/privleap', exist_ok=True)
+    e2e_lib.mount_tmpfs('/etc/privleap')
+    e2e_lib.write_config('/etc/privleap/conf.d', user, workdir)
     planted, bashenv_sentinel = setup_env_injection(user, workdir)
 
     sock_path: str = f"/run/privleapd/comm/{user}"
-    log_path: str = os.path.join(workdir, "privleapd.log")
+    log_path: str = os.path.join(workdir, 'privleapd.log')
     results: Results = Results()
 
     # pylint: disable=consider-using-with
-    log_handle = open(log_path, "wb")
+    log_handle = open(log_path, 'wb')
     proc: subprocess.Popen[bytes] = subprocess.Popen(
-        [e2e_lib.privleapd_path(), "--test"],
+        [e2e_lib.privleapd_path(), '--test'],
         stdout=log_handle,
         stderr=subprocess.STDOUT,
         env=e2e_lib.daemon_env(),
     )
     try:
         if not e2e_lib.wait_for_socket(sock_path):
-            print("FATAL: privleapd did not create the comm socket in time.")
-            print("---- privleapd log ----")
-            with open(log_path, "r", encoding="utf-8", errors="replace") as lh:
+            print('FATAL: privleapd did not create the comm socket in time.')
+            print('---- privleapd log ----')
+            with open(log_path, 'r', encoding='utf-8', errors='replace') as lh:
                 print(lh.read())
             return 2
 
@@ -155,21 +156,27 @@ def main() -> int:
         print(
             "   (base env is privleapd's launch env -- here the harness's, in "
             "production systemd's; the assertions above are specifically that "
-            "no attacker-planted variable appears in it. For a run under the "
-            "real systemd service env, use privleap-tests-e2e-systemd.)"
+            'no attacker-planted variable appears in it. For a run under the '
+            'real systemd service env, use privleap-tests-e2e-systemd.)'
         )
     finally:
         try:
-            proc.terminate()
-            proc.wait(timeout=5)
+            ## Under coverage, interrupt rather than terminate: coverage saves
+            ## its data from an atexit handler, and the default SIGTERM
+            ## disposition kills the interpreter before atexit runs, so the
+            ## daemon's measurements would be silently lost.
+            proc.send_signal(
+                signal.SIGINT if e2e_lib.coverage_enabled() else signal.SIGTERM
+            )
+            proc.wait(timeout=10)
         except Exception:  # pylint: disable=broad-exception-caught
             proc.kill()
         log_handle.close()
         shutil.rmtree(workdir, ignore_errors=True)
 
     print()
-    return results.report("live-daemon e2e (namespace)")
+    return results.report('live-daemon e2e (namespace)')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     raise SystemExit(main())

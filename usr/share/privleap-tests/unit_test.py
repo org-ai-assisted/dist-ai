@@ -330,11 +330,16 @@ def test_reused_descriptor_is_registered(
             )
             pld.socket_list_add(second_socket)
             second_fd: int = second_socket.backend_socket.fileno()
-            results.check(
+            if not results.check(
                 'the new socket reused the closed descriptor number '
                 '(precondition)',
                 second_fd == first_fd,
-            )
+            ):
+                ## Without reuse the check below exercises nothing: it would
+                ## pass on the very code this test exists to catch.
+                close_socket_info(pld.PrivleapdGlobal.socket_list.pop(0))
+                second_socket.close()
+                return
 
             fd_map: dict[int, Any] = pld.refresh_epoll_registrations(
                 epoll_obj, registered
@@ -390,7 +395,16 @@ class InProcessDaemon:
         self.sandbox.activate()
         pld.PrivleapdGlobal.socket_list = []
         pld.PrivleapdGlobal.allowed_user_list = [self.user]
-        pld.PrivleapdGlobal.action_list = []
+        ## An action the probe below is allowed to ask about. Probing an
+        ## unknown action instead would make the daemon hold every single
+        ## reply for its constant-time authentication failure delay, turning
+        ## a socket-bookkeeping test into a three-second-per-probe timing
+        ## test that reports a slow machine as the regression.
+        pld.PrivleapdGlobal.action_list = [
+            self.pl.PrivleapAction(
+                'unit-probe', 'true', [self.user], [], None, None
+            )
+        ]
         pld.open_control_socket()
         pld.prep_sock_notify_pipe()
         threading.Thread(target=pld.control_handler_loop, daemon=True).start()
@@ -428,10 +442,10 @@ class InProcessDaemon:
 
     def comm_socket_answers(self, timeout_s: float = 10.0) -> bool:
         """
-        Ask the account's comm socket a question the daemon can answer without
-        any configured action, and report whether an answer came back. An
-        unregistered socket accepts the connection at the kernel level but no
-        thread ever picks it up, so the reply simply never arrives.
+        Ask the account's comm socket a question and report whether an answer
+        came back. An unregistered socket accepts the connection at the kernel
+        level but no thread ever picks it up, so the reply simply never
+        arrives, which is exactly the shape of the defect being probed for.
         """
 
         def ask() -> bool:
@@ -715,6 +729,14 @@ def test_watchdog_ping_cadence(results: Results, pld: ModuleType) -> None:
     try:
         pld.PrivleapdGlobal.sdnotify_object.socket = left
         os.environ['WATCHDOG_USEC'] = '10000000'
+        ## Poisoned first: left at their real defaults these would already sit
+        ## inside the bounds asserted below, so a setup_sd_notify that did
+        ## nothing at all would pass every check here.
+        pld.PrivleapdGlobal.watchdog_ping_interval = -1.0
+        pld.PrivleapdGlobal.watchdog_heartbeat_timeout = -1.0
+        ## Poisoned HIGH, not low: the daemon only ever lowers this one, so a
+        ## low sentinel would survive untouched and read as a pass.
+        pld.PrivleapdGlobal.main_loop_poll_timeout = 999.0
         pld.setup_sd_notify()
 
         deadline_s: float = 10.0
@@ -763,11 +785,15 @@ def test_watchdog_disabled_without_systemd(
                 os.environ.pop('WATCHDOG_USEC', None)
             else:
                 os.environ['WATCHDOG_USEC'] = value
+            ## Poisoned to a value that is neither the expected result nor a
+            ## plausible default, so "left untouched" cannot masquerade as
+            ## "correctly decided not to run".
+            pld.PrivleapdGlobal.watchdog_ping_interval = -1.0
             pld.setup_sd_notify()
             results.expect_eq(
-                f"a {label} WATCHDOG_USEC starts no ping thread",
+                f"a {label} WATCHDOG_USEC leaves the ping interval unset",
                 pld.PrivleapdGlobal.watchdog_ping_interval,
-                0.0,
+                -1.0,
             )
     finally:
         left.close()
@@ -1127,17 +1153,23 @@ def test_action_output_pump_is_not_a_busy_loop(
     os.set_blocking(action.stderr.fileno(), False)
     action.stdin.close()
     try:
-        before: Any = os.times()
-        finished, _r, exception = call_with_deadline(
-            lambda: pld.send_action_results(
-                session, 'unit-action', action, sock_info
-            ),
-            budget_s=30.0,
-        )
-        after: Any = os.times()
-        cpu_s: float = (after.user - before.user) + (
-            after.system - before.system
-        )
+        ## Per-thread, not per-process: os.times() would count every other
+        ## thread in the interpreter, so this measurement would quietly start
+        ## reporting someone else's work if the suite ever grew a background
+        ## thread or was reordered.
+        pump_cpu: list[float] = []
+
+        def run_pump() -> None:
+            started: float = time.thread_time()
+            try:
+                pld.send_action_results(
+                    session, 'unit-action', action, sock_info
+                )
+            finally:
+                pump_cpu.append(time.thread_time() - started)
+
+        finished, _r, exception = call_with_deadline(run_pump, budget_s=30.0)
+        cpu_s: float = pump_cpu[0] if pump_cpu else float('inf')
         results.check('the output pump finished', finished)
         results.check('the output pump did not raise', exception is None)
         results.check(
@@ -1280,7 +1312,7 @@ def run_test(
 
     try:
         test(results, *args)
-    except Exception as exc:  # pylint: disable=broad-exception-caught
+    except BaseException as exc:  # pylint: disable=broad-exception-caught
         results.check(f"{test.__name__} raised {type(exc).__name__}: {exc}", False)
 
 
@@ -1317,10 +1349,13 @@ def main() -> int:
     run_test(results, test_action_output_pump_is_not_a_busy_loop, pld)
     run_test(results, test_auth_failure_reply_is_constant_time, pld)
     run_test(results, test_access_check_reply_is_constant_time, pld)
+    ## Before the in-process daemon: its main loop refreshes the very
+    ## heartbeat this test has to hold stale, so running it afterwards would
+    ## be racing the thing under test.
+    run_test(results, test_watchdog_stops_pinging_when_wedged, pld)
     run_test(results, test_live_daemon_answers_after_socket_recreate, pl, pld)
     run_test(results, test_control_thread_survives_a_failed_request, pl, pld)
     run_test(results, test_live_daemon_keeps_heartbeat_while_serving, pl, pld)
-    run_test(results, test_watchdog_stops_pinging_when_wedged, pld)
 
     print('')
     return results.report('daemon liveness test')

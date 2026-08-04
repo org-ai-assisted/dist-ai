@@ -199,5 +199,11 @@ class Results:
         if self.failed:
             print(f"RESULT: FAIL ({self.failed} failed)")
             return 1
+        if total == 0:
+            ## A suite that recorded nothing has proved nothing. Reporting
+            ## PASS for it is how a suite that silently stopped running keeps
+            ## looking green.
+            print('RESULT: FAIL (no checks ran)')
+            return 1
         print('RESULT: PASS')
         return 0

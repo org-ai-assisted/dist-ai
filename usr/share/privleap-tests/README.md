@@ -45,9 +45,35 @@ stack); the e2e backends exercise it.
 | `privleap-tests-e2e` | sudo | Live `privleapd` over a real socket, in a private mount namespace (no host mutation). |
 | `privleap-tests-e2e-systemd` | sudo | Same phases against the **real `privleapd.service`** via systemd (production-faithful; mutates + restores the live service). |
 
+| `privleap-tests-coverage` | sudo | Runs both lanes under coverage and reports how much of privleap the suites actually reach. |
+
 All commands target the installed privleap by default. Set `PRIVLEAP_REPO` to a
 derivative-maker checkout root (the directory containing
 `usr/lib/python3/dist-packages/privleap/`) to test that tree instead.
+
+## Coverage
+
+`privleap-tests-coverage` reports the combined figure. As of the last
+measured run the in-process lane reaches **86%** of privleap
+(`privleap.py` 90%, `privleapd.py` 79%, `leapctl.py` 95%, `leaprun.py` 91%).
+
+What that number does NOT cover, and why:
+
+- `shim.py` and `run_action` exist only in a real daemon process running as
+  root through PAM. The e2e lanes DO exercise them; wiring their coverage into
+  the figure is in place (`coverage-bootstrap/sitecustomize.py`,
+  `COVERAGE_PROCESS_START` forwarded across the `sudo unshare` re-exec, and an
+  interrupt rather than a terminate at teardown so coverage's atexit handler
+  runs) and each piece is verified working on its own, but the e2e lane is not
+  yet contributing data to a combined run. Until it does, treat `shim.py` 0%
+  as "not measured", not as "not tested".
+- `main()`'s full startup path opens the real state directory and requires
+  root.
+- `if __name__ == '__main__'` guards cannot be reached by an import-based
+  suite at all.
+
+So 100% is not a reachable target for this lane, and a reported 100% would
+mean the measurement was wrong rather than the coverage complete.
 
 ## Files
 

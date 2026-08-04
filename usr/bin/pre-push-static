@@ -1169,6 +1169,61 @@ check_R190_inline_interpreter() {
    done
 }
 
+repo_declares_black() {
+   local out_var declaration_file guidance_file
+   out_var="${1}"
+
+   ## Two ways a repo can say "black owns formatting here". main() cd's to the
+   ## repo top level, so these are the repo's own files.
+   ##
+   ## 1. '[tool.black]' in pyproject.toml -- black's own config location, and
+   ##    the first choice where a repo can carry one.
+   ## 2. A 'Formatter: Black' line in the repo's agent guidance. A Debian
+   ##    SOURCE package cannot simply add a pyproject.toml: debhelper selects
+   ##    a buildsystem partly from which build files are present, so dropping
+   ##    one in to satisfy a style gate risks changing how the package builds.
+   ##    Those repos declare their formatter in AGENTS.md / agents/*.md
+   ##    instead, which is where this ecosystem's conventions already live.
+   if [ -f 'pyproject.toml' ] \
+      && grep --quiet --extended-regexp '^\[tool\.black\]' -- 'pyproject.toml'; then
+      printf -v "${out_var}" '%s' 'pyproject.toml'
+      return 0
+   fi
+
+   for guidance_file in AGENTS.md CLAUDE.md agents/*.md; do
+      if [ ! -f "${guidance_file}" ]; then
+         continue
+      fi
+      ## Tolerates markdown emphasis and list markers around the words, so
+      ## '- **Formatter:** Black.' and 'Formatter: black' both count. Anchored
+      ## at line start so prose merely mentioning black does not.
+      if grep --quiet --extended-regexp --ignore-case \
+         '^[^A-Za-z]*formatter[^A-Za-z]*black([^A-Za-z]|$)' \
+         -- "${guidance_file}"; then
+         printf -v "${out_var}" '%s' "${guidance_file}"
+         return 0
+      fi
+   done
+
+   return 1
+}
+
+is_installed_python_module() {
+   local candidate
+   candidate="${1}"
+
+   ## A Python file inside an installed package directory is imported, never
+   ## run: the package's entry points live in usr/bin and import it. Marking
+   ## such a file executable is wrong (lintian objects, and Debian ships these
+   ## 0644), so the shebang-and-executable rules do not apply to it.
+   case "${candidate}" in
+      */dist-packages/*.py|*/site-packages/*.py)
+         return 0
+         ;;
+   esac
+   return 1
+}
+
 check_R180_python_shebang() {
    local script hits first
 
@@ -1183,6 +1238,9 @@ check_R180_python_shebang() {
    ## not code, and has nothing to interpret.
    for script in "${@}"; do
       if [ ! -s "${script}" ]; then
+         continue
+      fi
+      if is_installed_python_module "${script}"; then
          continue
       fi
       first=""
@@ -1715,6 +1773,13 @@ check_precommit_hooks() {
          note "check-shebang-scripts-are-executable skipped: 'style-ok: sourced-fragment' waiver in '${shebang_candidate}'"
          continue
       fi
+      ## An imported module keeps its shebang for editors and for a direct
+      ## 'python3 path/to/module.py' run, and stays non-executable because
+      ## that is how Debian ships a package's modules. See R-180.
+      if is_installed_python_module "${shebang_candidate}"; then
+         note "check-shebang-scripts-are-executable skipped: '${shebang_candidate}' is an imported package module"
+         continue
+      fi
       shebang_check_files+=("${shebang_candidate}")
    done
    if [ "${#shebang_check_files[@]}" -gt 0 ]; then
@@ -1740,10 +1805,9 @@ check_precommit_hooks() {
    ## so running the fixer on a black-formatted repo makes the gate demand a
    ## change that repo's own CI then rejects -- unfixable from either side.
    ## Where the repo declares black, black wins and the fixer is skipped.
-   ## main() cd's to the repo top level, so this is the repo's own pyproject.
-   if [ -f 'pyproject.toml' ] \
-      && grep --quiet --extended-regexp '^\[tool\.black\]' -- 'pyproject.toml'; then
-      note "double-quote-string-fixer skipped: '[tool.black]' in pyproject.toml (black owns string quoting here)"
+   black_declared_by=''
+   if repo_declares_black black_declared_by; then
+      note "double-quote-string-fixer skipped: black declared in '${black_declared_by}' (black owns string quoting here)"
    else
       run_precommit_fixer double-quote-string-fixer "${python_files[@]}"
    fi

@@ -22,6 +22,7 @@ directory and the ownership calls only root may make are stubbed.
 
 import argparse
 import inspect
+import io
 import os
 import sys
 import tempfile
@@ -422,6 +423,40 @@ def test_group_membership_is_re_read_every_time(
             True,
         )
 
+        ## The property the docstring names: membership is read fresh every
+        ## time. Changing the allowed-group LIST does not test that -- an
+        ## implementation that cached the group database at import would pass
+        ## every check above while leaving a removed account authorized until
+        ## the daemon restarted. So vary what the database itself reports.
+        pld.PrivleapdGlobal.allowed_user_list = []
+        pld.PrivleapdGlobal.allowed_group_list = ['privleap-unit-group']
+        saved_getgrnam: Any = pld.grp.getgrnam
+        try:
+            membership: list[str] = [user]
+
+            def changing_getgrnam(name: str) -> Any:
+                if name != 'privleap-unit-group':
+                    return saved_getgrnam(name)
+                return pld.grp.struct_group(
+                    ('privleap-unit-group', 'x', 987654, list(membership))
+                )
+
+            pld.grp.getgrnam = changing_getgrnam
+            results.expect_eq(
+                'membership in an allowed group grants access',
+                pld.is_user_allowed(user),
+                True,
+            )
+            membership = []
+            results.expect_eq(
+                'access is withdrawn as soon as membership is, with no '
+                'restart',
+                pld.is_user_allowed(user),
+                False,
+            )
+        finally:
+            pld.grp.getgrnam = saved_getgrnam
+
 
 # ---------------------------------------------------------------------------
 # Control session dispatch
@@ -630,12 +665,20 @@ def test_terminate_assertion(
         results.expect_eq(
             'a TERMINATE produces no reply', session.reply_names(), []
         )
+        ## Consumption is what separates reading the message from ignoring it:
+        ## a function body of 'return' would satisfy the no-reply check alone.
+        results.expect_eq(
+            'the TERMINATE was actually read', session.incoming, []
+        )
 
         session = RecordingSession(user)
         session.incoming = [pl.PrivleapCommClientSignalMsg('act')]
         pld.assert_action_terminate(session, 'act')
         results.expect_eq(
             'a wrong message produces no reply', session.reply_names(), []
+        )
+        results.expect_eq(
+            'the wrong message was actually read', session.incoming, []
         )
 
         session = RecordingSession(user)
@@ -832,21 +875,25 @@ def test_command_line_handling(
     saved_umask: Any = pld.PrivleapdGlobal.check_config_mode
     with ConfigDirForCheck(pl) as conf_path:
         try:
-            cases: list[tuple[str, list[str], int]] = [
-                ('--help', ['privleapd', '--help'], 0),
-                ('-h', ['privleapd', '-h'], 0),
-                ('-?', ['privleapd', '-?'], 0),
+            cases: list[tuple[str, list[str], int, str]] = [
+                ('--help', ['privleapd', '--help'], 0, 'privleapd ['),
+                ('-h', ['privleapd', '-h'], 0, 'privleapd ['),
+                ('-?', ['privleapd', '-?'], 0, 'privleapd ['),
                 (
                     'an unrecognised argument',
                     ['privleapd', '--nonsense'],
                     1,
+                    'Unrecognized argument',
                 ),
             ]
-            for label, argv, want in cases:
+            for label, argv, want, want_text in cases:
                 pld.PrivleapdGlobal.check_config_mode = False
                 sys.argv = argv
-                results.expect_eq(
-                    f"{label} exits {want}", _main_exit_code(pld), want
+                exit_code, output = _main_output(pld)
+                results.expect_eq(f"{label} exits {want}", exit_code, want)
+                results.check(
+                    f"{label} says why (not just the wrong exit code)",
+                    want_text in output,
                 )
 
             saved_dirs: Any = pld.PrivleapdGlobal.config_dir_list
@@ -918,6 +965,33 @@ class ConfigDirForCheck:
             self.tmpdir = None
 
 
+def _main_output(pld: ModuleType) -> tuple[int, str]:
+    """
+    Run privleapd's main() with sys.argv already set, returning its exit code
+    and everything it printed.
+
+    The output matters as much as the code here: this suite runs
+    unprivileged, so main() exits 1 from ensure_running_as_root() too. An
+    argument check that had been deleted entirely would still produce exit 1
+    and look correct.
+    """
+
+    saved_stdout: Any = sys.stdout
+    saved_stderr: Any = sys.stderr
+    captured: io.StringIO = io.StringIO()
+    try:
+        sys.stdout = captured
+        sys.stderr = captured
+        try:
+            pld.main()
+        except SystemExit as exc:
+            return int(exc.code or 0), captured.getvalue()
+        return -1, captured.getvalue()
+    finally:
+        sys.stdout = saved_stdout
+        sys.stderr = saved_stderr
+
+
 def _main_exit_code(pld: ModuleType) -> int:
     """
     Run privleapd's main() with sys.argv already set, returning the exit code
@@ -975,7 +1049,7 @@ def run_test(
 
     try:
         test(results, *args)
-    except Exception as exc:  # pylint: disable=broad-exception-caught
+    except BaseException as exc:  # pylint: disable=broad-exception-caught
         results.check(
             f"{test.__name__} raised {type(exc).__name__}: {exc}", False
         )

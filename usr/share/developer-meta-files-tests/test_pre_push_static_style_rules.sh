@@ -449,6 +449,13 @@ fi
 ## the gate demand a change that repo's own CI rejects. Assert the fixer is
 ## SKIPPED when pyproject.toml declares '[tool.black]', and still RUNS when it
 ## does not -- a guard that never fires is the same bug in reverse.
+## 'declare_black' selects HOW the probe repo declares black:
+##   pyproject -- '[tool.black]' in pyproject.toml
+##   agents    -- a 'Formatter: Black' line in agents/guidelines.md, which is
+##                how a Debian SOURCE package declares it: adding a
+##                pyproject.toml there can change which buildsystem debhelper
+##                selects, so those repos cannot use black's own config file
+##   false     -- no declaration at all
 dq_probe() {
    local declare_black repo base out
    declare_black="$1"
@@ -460,9 +467,21 @@ dq_probe() {
    base="$(git -C "${repo}" rev-parse HEAD)"
    ## A double-quoted string is exactly what the fixer rewrites.
    printf '%s\n' 'x = "fix me"' > "${repo}/probe.py"
-   if [ "${declare_black}" = 'true' ]; then
+   if [ "${declare_black}" = 'pyproject' ] || [ "${declare_black}" = 'true' ]; then
       printf '%s\n' '[tool.black]' 'line-length = 79' \
          > "${repo}/pyproject.toml"
+   fi
+   if [ "${declare_black}" = 'agents' ]; then
+      mkdir --parents -- "${repo}/agents"
+      printf '%s\n' '# Guidelines' '' \
+         '- **Formatter:** Black. Do not reformat code in ways Black disagrees with.' \
+         > "${repo}/agents/guidelines.md"
+   fi
+   if [ "${declare_black}" = 'mentions-black' ]; then
+      mkdir --parents -- "${repo}/agents"
+      printf '%s\n' '# Guidelines' '' \
+         'We deliberately do not use Black in this repository.' \
+         > "${repo}/agents/guidelines.md"
    fi
    git -C "${repo}" add --all
    git -C "${repo}" commit --quiet --no-verify --message probe
@@ -481,6 +500,65 @@ if printf '%s' "$(dq_probe false)" | grep --quiet --fixed-strings -- 'FAIL doubl
    printf '%s\n' 'PASS: double-quote-string-fixer still runs without black'
 else
    printf '%s\n' 'FAIL: double-quote-string-fixer did not run on a non-black repo' >&2
+   failures=$((failures + 1))
+fi
+
+## A repo that cannot carry a pyproject.toml declares black in its agent
+## guidance instead. Without this the gate demands a rewrite that the repo's
+## own formatter immediately reverts, which no one can satisfy from either
+## side.
+if printf '%s' "$(dq_probe agents)" | grep --quiet --fixed-strings -- 'double-quote-string-fixer skipped'; then
+   printf '%s\n' 'PASS: double-quote-string-fixer skipped on an agents-declared black repo'
+else
+   printf '%s\n' 'FAIL: double-quote-string-fixer NOT skipped when agent guidance declares black' >&2
+   failures=$((failures + 1))
+fi
+
+## Prose that merely mentions black is not a declaration. A detector that
+## matched it would silently switch the fixer off for repos that want it.
+if printf '%s' "$(dq_probe mentions-black)" | grep --quiet --fixed-strings -- 'FAIL double-quote-string-fixer'; then
+   printf '%s\n' 'PASS: merely mentioning black does not count as declaring it'
+else
+   printf '%s\n' 'FAIL: prose mentioning black was treated as a black declaration' >&2
+   failures=$((failures + 1))
+fi
+
+## A Python file inside an installed package directory is imported, never run.
+## Debian ships those 0644, so the shebang-plus-executable rules must not fire
+## on them -- and must still fire on an ordinary script.
+module_probe() {
+   local rel repo base out
+   rel="$1"
+   repo="$(mktemp --directory --tmpdir="${tmp_root}" mod.XXXXXX)"
+   git -C "${repo}" init --quiet
+   git -C "${repo}" config user.email 'ci-test@example.com'
+   git -C "${repo}" config user.name 'ci-test'
+   git -C "${repo}" commit --quiet --no-verify --allow-empty --message base
+   base="$(git -C "${repo}" rev-parse HEAD)"
+   mkdir --parents -- "${repo}/$(dirname -- "${rel}")"
+   ## A shebang with no +x: what an imported module in a Debian package looks
+   ## like, and what an ordinary script must not look like.
+   printf '%s\n' '#!/usr/bin/python3 -su' 'x = 1' > "${repo}/${rel}"
+   chmod 0644 -- "${repo}/${rel}"
+   git -C "${repo}" add --all
+   git -C "${repo}" commit --quiet --no-verify --message probe
+   out="$( cd -- "${repo}" && "${GATE}" "${base}" 2>&1 || true )"
+   printf '%s' "${out}"
+}
+
+if printf '%s' "$(module_probe 'usr/lib/python3/dist-packages/probe/mod.py')" \
+   | grep --quiet --fixed-strings -- 'is an imported package module'; then
+   printf '%s\n' 'PASS: an imported package module is exempt from the shebang/+x rules'
+else
+   printf '%s\n' 'FAIL: an imported package module was held to the shebang/+x rules' >&2
+   failures=$((failures + 1))
+fi
+
+if printf '%s' "$(module_probe 'usr/bin/probe-tool.py')" \
+   | grep --quiet --fixed-strings -- 'check-shebang-scripts-are-executable'; then
+   printf '%s\n' 'PASS: an ordinary script with a shebang still needs +x'
+else
+   printf '%s\n' 'FAIL: the shebang/+x rule stopped firing for ordinary scripts' >&2
    failures=$((failures + 1))
 fi
 
@@ -835,4 +913,4 @@ if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "test_pre_push_static_style_rules: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-026, R-030/R-031, R-042, R-034, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-010, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting and double-quote-fixer-vs-black enforced as expected."
+printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-026, R-030/R-031, R-042, R-034, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-010, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting double-quote-fixer-vs-black and imported-package-module exemption enforced as expected."

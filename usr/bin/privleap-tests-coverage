@@ -1,0 +1,115 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## Reports how much of privleap the test suites actually reach, across BOTH
+## lanes: the in-process suites (no root) and the live-daemon e2e run (root, in
+## a private mount namespace). Reporting only the in-process lane would
+## understate the result badly -- run_action, the PAM shim, and the daemon's
+## whole startup path exist only in a real daemon process -- so the daemon and
+## the shim are measured too, via COVERAGE_PROCESS_START and the
+## coverage-bootstrap sitecustomize.
+##
+## Needs sudo (for the e2e lane) and python3-coverage. Run from a NORMAL user
+## account. Set PRIVLEAP_REPO to measure a checkout instead of the installed
+## package.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/privleap-tests" ]; then
+   tests_dir="$(readlink --canonicalize -- "${script_dir}/../share/privleap-tests")"
+else
+   tests_dir='/usr/share/privleap-tests'
+fi
+
+if ! python3 -c 'import coverage' 2>/dev/null; then
+   printf '%s\n' 'SKIP: python3-coverage not installed.' >&2
+   exit 77
+fi
+
+if [ -v PRIVLEAP_REPO ]; then
+   measure_dir="${PRIVLEAP_REPO}/usr/lib/python3/dist-packages/privleap"
+   shim_dir="${PRIVLEAP_REPO}/usr/libexec/privleap"
+else
+   measure_dir='/usr/lib/python3/dist-packages/privleap'
+   shim_dir='/usr/libexec/privleap'
+fi
+
+work_dir="$(mktemp --directory)"
+data_file="${work_dir}/coverage"
+rc_file="${work_dir}/coveragerc"
+
+cleanup() {
+   # shellcheck disable=SC2317  # reached via the EXIT trap below
+   safe-rm --recursive --force -- "${work_dir}"
+}
+trap cleanup EXIT
+
+## 'parallel' so each measured process writes its own data file: the daemon,
+## the shim and the harness all run at once and would otherwise overwrite one
+## another's results.
+cat > "${rc_file}" <<EOF
+[run]
+branch = True
+parallel = True
+data_file = ${data_file}
+source =
+   ${measure_dir}
+   ${shim_dir}
+
+[report]
+omit =
+   */privleap/tests/*
+EOF
+
+overall=0
+
+run_in_process() {
+   local suite
+   for suite in "${@}"; do
+      printf '%s\n' "---- ${suite} ----"
+      local rc=0
+      COVERAGE_RCFILE="${rc_file}" python3 -m coverage run \
+         -- "${tests_dir}/${suite}.py" >/dev/null 2>&1 || rc=$?
+      if [ "${rc}" != '0' ] && [ "${rc}" != '77' ]; then
+         printf '%s\n' "  ${suite}: exit ${rc}" >&2
+         overall=1
+      fi
+   done
+}
+
+printf '%s\n' '######## in-process lane ########'
+run_in_process parser_fuzz authorizer_test unit_test daemon_test config_test \
+   client_test
+
+printf '%s\n' ''
+printf '%s\n' '######## live-daemon lane (needs sudo) ########'
+e2e_rc=0
+COVERAGE_RCFILE="${rc_file}" COVERAGE_PROCESS_START="${rc_file}" \
+   python3 -- "${tests_dir}/e2e.py" >/dev/null 2>&1 || e2e_rc=$?
+if [ "${e2e_rc}" = '0' ]; then
+   printf '%s\n' 'e2e: PASS'
+else
+   printf '%s\n' "e2e: exit ${e2e_rc} -- its coverage is NOT in the figure below" >&2
+   overall=1
+fi
+
+printf '%s\n' ''
+printf '%s\n' '######## combined coverage ########'
+COVERAGE_RCFILE="${rc_file}" python3 -m coverage combine >/dev/null 2>&1 || true
+COVERAGE_RCFILE="${rc_file}" python3 -m coverage report --show-missing
+
+if [ "${overall}" != '0' ]; then
+   printf '%s\n' 'privleap-tests-coverage: a suite FAILED; the figure above is' \
+      'from an incomplete run and understates nothing but proves less.' >&2
+   exit 1
+fi
+exit 0

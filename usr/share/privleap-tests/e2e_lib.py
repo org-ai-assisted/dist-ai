@@ -62,40 +62,53 @@ def reexec_under_mount_namespace(inside_env_var: str) -> None:
         ## Validate we were entered via sudo from a normal user BEFORE trusting
         ## the loop marker, so a stale/exported marker cannot let the suite run
         ## directly as root and skip this guard.
-        if not os.environ.get("SUDO_USER"):
+        if not os.environ.get('SUDO_USER'):
             print(
-                "FATAL: run this from a normal user account, not root, so the "
-                "daemon can attribute requests to an unprivileged caller.",
+                'FATAL: run this from a normal user account, not root, so the '
+                'daemon can attribute requests to an unprivileged caller.',
                 file=sys.stderr,
             )
             raise SystemExit(2)
-        if os.environ.get(inside_env_var) == "1":
+        if os.environ.get(inside_env_var) == '1':
             return
     env_args: list[str] = [f"{inside_env_var}=1"]
-    if os.environ.get("PRIVLEAP_REPO"):
+    if os.environ.get('PRIVLEAP_REPO'):
         env_args.append(f"PRIVLEAP_REPO={os.environ['PRIVLEAP_REPO']}")
+    ## sudo resets the environment, so anything the run needs on the far side
+    ## has to be handed across explicitly. Without this the coverage of
+    ## everything past this point -- the daemon, the shim, the actions -- is
+    ## silently dropped and reads as untested code.
+    for coverage_var in ('COVERAGE_PROCESS_START', 'COVERAGE_RCFILE'):
+        if os.environ.get(coverage_var):
+            env_args.append(f"{coverage_var}={os.environ[coverage_var]}")
     cmd: list[str] = (
-        ["sudo", "unshare", "--mount", "--propagation", "private", "--", "env"]
+        ['sudo', 'unshare', '--mount', '--propagation', 'private', '--', 'env']
         + env_args
         + [sys.executable, os.path.abspath(sys.argv[0])]
         + sys.argv[1:]
     )
-    os.execvp("sudo", cmd)
+    os.execvp('sudo', cmd)
 
 
 def mount_tmpfs(path: str) -> None:
-    subprocess.run(["mount", "-t", "tmpfs", "tmpfs", path], check=True)
+    subprocess.run(['mount', '-t', 'tmpfs', 'tmpfs', path], check=True)
 
 
 def privleapd_path() -> str:
     """Locate the privleapd binary (PRIVLEAP_REPO override, else installed)."""
 
-    repo: str | None = os.environ.get("PRIVLEAP_REPO")
+    repo: str | None = os.environ.get('PRIVLEAP_REPO')
     if repo:
-        candidate: str = os.path.join(repo, "usr/bin/privleapd")
+        candidate: str = os.path.join(repo, 'usr/bin/privleapd')
         if os.path.isfile(candidate):
             return candidate
-    return "/usr/bin/privleapd"
+    return '/usr/bin/privleapd'
+
+
+def coverage_enabled() -> bool:
+    """True when the caller asked for the daemon's own coverage to be measured."""
+
+    return bool(os.environ.get('COVERAGE_PROCESS_START'))
 
 
 def daemon_env() -> dict[str, str]:
@@ -103,20 +116,28 @@ def daemon_env() -> dict[str, str]:
     the daemon the same module path the in-process client resolved."""
 
     env: dict[str, str] = dict(os.environ)
-    repo: str | None = os.environ.get("PRIVLEAP_REPO")
+    path_parts: list[str] = []
+    repo: str | None = os.environ.get('PRIVLEAP_REPO')
     if repo:
-        repo_pp: str = os.path.join(repo, "usr/lib/python3/dist-packages")
-        existing: str = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = (
-            f"{repo_pp}{os.pathsep}{existing}" if existing else repo_pp
-        )
+        path_parts.append(os.path.join(repo, 'usr/lib/python3/dist-packages'))
+    if coverage_enabled():
+        ## Python imports sitecustomize at interpreter start, which is how the
+        ## daemon -- and the shim it runs actions through -- join the
+        ## measurement. Without it the daemon's own code reads as untested no
+        ## matter how thoroughly these suites drive it.
+        path_parts.append(os.path.join(HERE, 'coverage-bootstrap'))
+    existing: str = env.get('PYTHONPATH', '')
+    if existing:
+        path_parts.append(existing)
+    if path_parts:
+        env['PYTHONPATH'] = os.pathsep.join(path_parts)
     return env
 
 
 ## Variables an attacker would love to smuggle into a root action: a code-exec
 ## hook for non-interactive bash, the dynamic-linker preload, and plain markers.
-INJECT_PAMENV: str = "EVIL_PAMENV"
-INJECT_ETCENV: str = "EVIL_ETCENV"
+INJECT_PAMENV: str = 'EVIL_PAMENV'
+INJECT_ETCENV: str = 'EVIL_ETCENV'
 
 
 def config_text(user: str, workdir: str) -> str:
@@ -124,8 +145,8 @@ def config_text(user: str, workdir: str) -> str:
     e2e-rootenv, only root may run e2e-deny; each command leaves a distinct
     trace."""
 
-    allow_sentinel: str = os.path.join(workdir, "ALLOWED_RAN")
-    deny_sentinel: str = os.path.join(workdir, "DENIED_RAN")
+    allow_sentinel: str = os.path.join(workdir, 'ALLOWED_RAN')
+    deny_sentinel: str = os.path.join(workdir, 'DENIED_RAN')
     return f"""[persistent-users]
 User={user}
 
@@ -151,8 +172,8 @@ def write_config(conf_dir: str, user: str, workdir: str) -> None:
 
     os.makedirs(conf_dir, exist_ok=True)
     os.chmod(conf_dir, 0o755)  # nosec B103 -- conf dir must be world-traversable: privleap reads this config as a different user
-    conf_path: str = os.path.join(conf_dir, "e2e-test.conf")
-    with open(conf_path, "w", encoding="utf-8") as handle:
+    conf_path: str = os.path.join(conf_dir, 'e2e-test.conf')
+    with open(conf_path, 'w', encoding='utf-8') as handle:
         handle.write(config_text(user, workdir))
     os.chown(conf_path, 0, 0)
     os.chmod(conf_path, 0o644)
@@ -183,9 +204,9 @@ def run_signal(user: str, action: str) -> tuple[list[str], bytes]:
             except (ConnectionAbortedError, OSError, ValueError):
                 break
             names.append(msg.name)
-            if msg.name == "RESULT_STDOUT":
+            if msg.name == 'RESULT_STDOUT':
                 stdout += msg.stdout_bytes
-            if msg.name in ("RESULT_EXITCODE", "UNAUTHORIZED", "TRIGGER_ERROR"):
+            if msg.name in ('RESULT_EXITCODE', 'UNAUTHORIZED', 'TRIGGER_ERROR'):
                 break
     finally:
         try:
@@ -220,38 +241,38 @@ def fuzz_corpus(rng: random.Random, count: int) -> list[bytes]:
     """A batch of malformed frames for the live barrage."""
 
     def frame(body: bytes) -> bytes:
-        return len(body).to_bytes(4, "big") + body
+        return len(body).to_bytes(4, 'big') + body
 
     fixed: list[bytes] = [
-        b"",
-        b"\x00\x00\x00",
-        frame(b"SIGNAL"),
-        frame(b"SIGNAL 1 "),
-        frame(b"SIGNAL 1  x"),
-        frame(b"BOGUS 0"),
-        frame(b"SIGNAL 1 ac\x1bt"),
-        frame(b"ACCESS_CHECK 0 "),
-        frame(b"CREATE 1 root"),
-        (5000).to_bytes(4, "big") + b"SIGNAL 1 act",
-        (1 << 30).to_bytes(4, "big") + b"x",
+        b'',
+        b'\x00\x00\x00',
+        frame(b'SIGNAL'),
+        frame(b'SIGNAL 1 '),
+        frame(b'SIGNAL 1  x'),
+        frame(b'BOGUS 0'),
+        frame(b'SIGNAL 1 ac\x1bt'),
+        frame(b'ACCESS_CHECK 0 '),
+        frame(b'CREATE 1 root'),
+        (5000).to_bytes(4, 'big') + b'SIGNAL 1 act',
+        (1 << 30).to_bytes(4, 'big') + b'x',
     ]
     out: list[bytes] = list(fixed)
-    tokens: list[bytes] = [b"SIGNAL", b"ACCESS_CHECK", b"TERMINATE", b"BOGUS"]
+    tokens: list[bytes] = [b'SIGNAL', b'ACCESS_CHECK', b'TERMINATE', b'BOGUS']
     while len(out) < count:
         choice: int = rng.randint(0, 2)
         if choice == 0:
             body_len: int = rng.randint(0, 60)
             out.append(
-                rng.randint(0, 1 << 24).to_bytes(4, "big")
+                rng.randint(0, 1 << 24).to_bytes(4, 'big')
                 + bytes(rng.getrandbits(8) for _ in range(body_len))
             )
         elif choice == 1:
             tok: bytes = rng.choice(tokens)
-            argc: bytes = bytes([rng.choice(b"0123456789AZ!= \x1b")])
+            argc: bytes = bytes([rng.choice(b'0123456789AZ!= \x1b')])
             args: bytes = bytes(
-                rng.choice(b"-abcAZ09._ ") for _ in range(rng.randint(0, 12))
+                rng.choice(b'-abcAZ09._ ') for _ in range(rng.randint(0, 12))
             )
-            out.append(frame(tok + b" " + argc + b" " + args))
+            out.append(frame(tok + b' ' + argc + b' ' + args))
         else:
             out.append(frame(bytes(rng.getrandbits(8) for _ in range(
                 rng.randint(0, 40)))))
@@ -276,80 +297,80 @@ def run_security_phases(
     backend-specific (subprocess liveness, or systemd active + no restart).
     """
 
-    allow_sentinel: str = os.path.join(workdir, "ALLOWED_RAN")
-    deny_sentinel: str = os.path.join(workdir, "DENIED_RAN")
+    allow_sentinel: str = os.path.join(workdir, 'ALLOWED_RAN')
+    deny_sentinel: str = os.path.join(workdir, 'DENIED_RAN')
 
-    print("== A/B: authorized runs, unauthorized does NOT run ==")
-    allow_msgs, _ = run_signal(user, "e2e-allow")
-    results.check("authorized action returns TRIGGER", "TRIGGER" in allow_msgs)
+    print('== A/B: authorized runs, unauthorized does NOT run ==')
+    allow_msgs, _ = run_signal(user, 'e2e-allow')
+    results.check('authorized action returns TRIGGER', 'TRIGGER' in allow_msgs)
     results.check(
-        "authorized action reports exit code", "RESULT_EXITCODE" in allow_msgs
+        'authorized action reports exit code', 'RESULT_EXITCODE' in allow_msgs
     )
     results.check(
         "authorized action's command actually ran",
         os.path.exists(allow_sentinel),
     )
 
-    deny_msgs, _ = run_signal(user, "e2e-deny")
+    deny_msgs, _ = run_signal(user, 'e2e-deny')
     results.check(
-        "unauthorized action returns UNAUTHORIZED", "UNAUTHORIZED" in deny_msgs
+        'unauthorized action returns UNAUTHORIZED', 'UNAUTHORIZED' in deny_msgs
     )
     results.check(
-        "unauthorized action returns no TRIGGER", "TRIGGER" not in deny_msgs
+        'unauthorized action returns no TRIGGER', 'TRIGGER' not in deny_msgs
     )
     results.check(
         "unauthorized action's command did NOT run (anti-ACE)",
         not os.path.exists(deny_sentinel),
     )
 
-    print("== C: malformed-frame barrage must not crash/corrupt daemon ==")
+    print('== C: malformed-frame barrage must not crash/corrupt daemon ==')
     rng: random.Random = random.Random(1)
     for payload in fuzz_corpus(rng, fuzz_count):
         fuzz_socket_once(sock_path, payload)
         if not alive_check():
             break
-    results.check("daemon still alive after fuzz barrage", alive_check())
+    results.check('daemon still alive after fuzz barrage', alive_check())
     results.check(
-        "comm socket still present after barrage", os.path.exists(sock_path)
+        'comm socket still present after barrage', os.path.exists(sock_path)
     )
 
     if os.path.exists(allow_sentinel):
         os.unlink(allow_sentinel)
-    post_allow, _ = run_signal(user, "e2e-allow")
+    post_allow, _ = run_signal(user, 'e2e-allow')
     results.check(
-        "authorized action still works after barrage",
-        "RESULT_EXITCODE" in post_allow and os.path.exists(allow_sentinel),
+        'authorized action still works after barrage',
+        'RESULT_EXITCODE' in post_allow and os.path.exists(allow_sentinel),
     )
-    post_deny, _ = run_signal(user, "e2e-deny")
+    post_deny, _ = run_signal(user, 'e2e-deny')
     results.check(
-        "unauthorized action still denied after barrage",
-        "UNAUTHORIZED" in post_deny and not os.path.exists(deny_sentinel),
+        'unauthorized action still denied after barrage',
+        'UNAUTHORIZED' in post_deny and not os.path.exists(deny_sentinel),
     )
 
-    print("== D: PAM / env injection must not reach a root action ==")
+    print('== D: PAM / env injection must not reach a root action ==')
     print(f"   (planted in: {', '.join(sorted(planted)) or 'nothing'})")
-    env_msgs, env_out = run_signal(user, "e2e-rootenv")
-    env_text: str = env_out.decode("utf-8", errors="replace")
+    env_msgs, env_out = run_signal(user, 'e2e-rootenv')
+    env_text: str = env_out.decode('utf-8', errors='replace')
     results.check(
-        "root action ran and returned its environment",
-        "RESULT_EXITCODE" in env_msgs and "USER=root" in env_text,
+        'root action ran and returned its environment',
+        'RESULT_EXITCODE' in env_msgs and 'USER=root' in env_text,
     )
-    for marker in (INJECT_PAMENV, INJECT_ETCENV, "LD_PRELOAD", "BASH_ENV"):
+    for marker in (INJECT_PAMENV, INJECT_ETCENV, 'LD_PRELOAD', 'BASH_ENV'):
         present: bool = any(
-            line.split("=", 1)[0] == marker for line in env_text.splitlines()
+            line.split('=', 1)[0] == marker for line in env_text.splitlines()
         )
         results.check(
             f"injected '{marker}' absent from root action env", not present
         )
     results.check(
-        "attacker BASH_ENV hook was NOT sourced by the action",
+        'attacker BASH_ENV hook was NOT sourced by the action',
         not os.path.exists(bashenv_sentinel),
     )
     env_keys: list[str] = sorted(
         {
-            line.split("=", 1)[0]
+            line.split('=', 1)[0]
             for line in env_text.splitlines()
-            if "=" in line
+            if '=' in line
         }
     )
     print(f"   root action received env keys: {', '.join(env_keys)}")
