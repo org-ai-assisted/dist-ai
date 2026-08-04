@@ -967,6 +967,137 @@ def test_leapctl_send_failure(
                 )
 
 
+def test_leaprun_truncated_action_output(
+    results: Results, pl: ModuleType, leaprun: ModuleType
+) -> None:
+    """
+    An action whose output stops arriving must not be reported as having
+    finished. leaprun has no exit code at that point, so treating the
+    truncation as success would hand the caller a silent partial result.
+    """
+
+    print('== leaprun reports an action whose output was cut off ==')
+    user: str = current_username()
+    with ClientSandbox(pl):
+        server: ScriptedServer
+        with ScriptedServer(
+            pl,
+            str(pl.Path(pl.PrivleapCommon.comm_dir, user)),
+            is_control=False,
+        ) as server:
+            ## TRIGGER and some output, then hang up with no exit code.
+            server.reply_for = lambda _msg: [
+                pl.PrivleapCommServerTriggerMsg(),
+                pl.PrivleapCommServerResultStdoutMsg(b'partial\n'),
+            ]
+            run: ClientRun = run_client(
+                leaprun, ['leaprun', 'act'], _reset_leaprun(leaprun, user)
+            )
+            results.check(
+                'a truncated action run fails', run.exit_code > 0
+            )
+            results.check(
+                'the truncation is named, not reported as success',
+                'before sending all output' in run.stderr,
+            )
+            results.check(
+                'the output received so far is still shown',
+                'partial' in run.stdout,
+            )
+
+
+def test_leaprun_option_parsing(
+    results: Results, pl: ModuleType, leaprun: ModuleType
+) -> None:
+    """
+    An action name that looks like an option must still reach the daemon as a
+    name. Without an end-of-options marker, an action called '--check' would
+    silently become a mode switch.
+    """
+
+    print('== leaprun separates options from action names ==')
+    user: str = current_username()
+    with ClientSandbox(pl):
+        server: ScriptedServer
+        with ScriptedServer(
+            pl,
+            str(pl.Path(pl.PrivleapCommon.comm_dir, user)),
+            is_control=False,
+        ) as server:
+            server.reply_for = lambda _msg: [
+                pl.PrivleapCommServerTriggerMsg(),
+                pl.PrivleapCommServerResultExitcodeMsg(0),
+            ]
+            run: ClientRun = run_client(
+                leaprun,
+                ['leaprun', '--', 'act'],
+                _reset_leaprun(leaprun, user),
+            )
+            results.expect_eq(
+                'an action name after -- runs', run.exit_code, 0
+            )
+            results.check(
+                'it was sent as a SIGNAL, not treated as an option',
+                len(server.received) == 1
+                and server.received[0].name == 'SIGNAL',
+            )
+
+            server.received.clear()
+            run = run_client(
+                leaprun,
+                ['leaprun', '--test', 'act'],
+                _reset_leaprun(leaprun, user),
+            )
+            results.expect_eq(
+                'the --test flag is accepted', run.exit_code, 0
+            )
+            results.check(
+                'the --test flag is not sent as an action name',
+                len(server.received) == 1
+                and server.received[0].signal_name == 'act',
+            )
+
+
+def test_leaprun_terminate_send_failure(
+    results: Results, pl: ModuleType, leaprun: ModuleType
+) -> None:
+    """
+    If the daemon is already gone when the user interrupts, leaprun cannot
+    ask it to stop the action. That must be reported: exiting as though the
+    terminate was delivered would claim a root action had been stopped when
+    nothing was told to stop it.
+    """
+
+    print('== a terminate that cannot be delivered is reported ==')
+    user: str = current_username()
+    with ClientSandbox(pl):
+        server: ScriptedServer
+        with ScriptedServer(
+            pl,
+            str(pl.Path(pl.PrivleapCommon.comm_dir, user)),
+            is_control=False,
+        ) as server:
+            ## Accept, then hang up at once, so the terminate has nowhere to go.
+            server.read_request = False
+            server.reply_for = lambda _msg: []
+            reset: Callable[[], None] = _reset_leaprun(leaprun, user)
+
+            def reset_and_arm() -> None:
+                reset()
+                leaprun.LeaprunGlobal.terminate_session = True
+
+            run: ClientRun = run_client(
+                leaprun, ['leaprun', 'act'], reset_and_arm
+            )
+            results.check(
+                'an undeliverable terminate fails', run.exit_code > 0
+            )
+            results.check(
+                'an undeliverable terminate produced no traceback',
+                'Traceback' not in run.stderr,
+            )
+
+
 def run_test(
     results: Results, test: Callable[..., None], *args: Any
 ) -> None:
@@ -1008,6 +1139,9 @@ def main() -> int:
     run_test(results, test_leaprun_rejects_protocol_violations, pl, leaprun)
     run_test(results, test_leaprun_terminates_on_interrupt, pl, leaprun)
     run_test(results, test_leaprun_signal_handler, pl, leaprun)
+    run_test(results, test_leaprun_truncated_action_output, pl, leaprun)
+    run_test(results, test_leaprun_option_parsing, pl, leaprun)
+    run_test(results, test_leaprun_terminate_send_failure, pl, leaprun)
     run_test(results, test_leapctl_send_failure, pl, leapctl)
 
     print('')
