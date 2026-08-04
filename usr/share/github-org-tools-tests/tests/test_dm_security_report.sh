@@ -15,6 +15,12 @@
 ##
 ## Both modes must emit the markdown header rows (table title +
 ## divider).
+##
+## Plus a PAGINATION case against the 'paged-test-org' fixture pair
+## (100 alerts on page 1, 2 more on page 2). Regression guard: the
+## tool once issued one unpaginated request and reported the first
+## 100 of 329 open org alerts as the complete result - a silent
+## truncation that reads exactly like "that is all there is".
 
 set -o errexit
 set -o nounset
@@ -90,6 +96,37 @@ for needle in "${all_required[@]}"; do
       fail=1
    fi
 done
+
+## --- pagination: page 2 must be walked, page 1 must not repeat ---
+rc=0
+out_paged="$(ORGS_OVERRIDE='paged-test-org' dm-github-org-security-report --report 2>/dev/null)" || rc=$?
+
+if [ "${rc}" -ne 0 ]; then
+   printf '%s\n' "FAIL[paged]: exited rc='${rc}'" >&2
+   fail=1
+fi
+
+## Fails on the pre-fix tool: without a page walk the page-2 fixture
+## is never requested, so this marker is absent.
+if ! grep --quiet --fixed-strings -- 'py/page-two-marker' <<< "${out_paged}"; then
+   printf '%s\n' \
+      'FAIL[paged]: no page-2 alert in report; alerts past the first 100 were silently dropped' >&2
+   fail=1
+fi
+
+page_two_count="$(grep --count --fixed-strings -- 'py/page-two-marker' <<< "${out_paged}" || true)"
+if [ "${page_two_count}" != '2' ]; then
+   printf '%s\n' "FAIL[paged]: page-2 alert rows='${page_two_count}'; expected 2" >&2
+   fail=1
+fi
+
+## Guards the other direction: a page walk that re-reads page 1 for
+## every page would duplicate these 100 rows up to GHORG_MAX_PAGES.
+page_one_count="$(grep --count --fixed-strings -- 'py/page-one-marker' <<< "${out_paged}" || true)"
+if [ "${page_one_count}" != '100' ]; then
+   printf '%s\n' "FAIL[paged]: page-1 alert rows='${page_one_count}'; expected exactly 100" >&2
+   fail=1
+fi
 
 ## --- mode-flag-required check ---
 rc=0

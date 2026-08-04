@@ -1,0 +1,45 @@
+[
+  {
+    "repository": {
+      "full_name": "paged-test-org/repo-page-two"
+    },
+    "tool": {
+      "name": "CodeQL"
+    },
+    "rule": {
+      "id": "py/page-two-marker",
+      "severity": "warning"
+    },
+    "most_recent_instance": {
+      "location": {
+        "path": "usr/lib/page_two_a.py",
+        "start_line": 7
+      },
+      "message": {
+        "text": "page two alert a"
+      }
+    }
+  },
+  {
+    "repository": {
+      "full_name": "paged-test-org/repo-page-two"
+    },
+    "tool": {
+      "name": "CodeQL"
+    },
+    "rule": {
+      "id": "py/page-two-marker",
+      "severity": "warning"
+    },
+    "most_recent_instance": {
+      "location": {
+        "path": "usr/lib/page_two_b.py",
+        "start_line": 8
+      },
+      "message": {
+        "text": "page two alert b"
+      }
+    }
+  }
+]
+HTTP_STATUS:200

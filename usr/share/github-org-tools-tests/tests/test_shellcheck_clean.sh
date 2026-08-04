@@ -35,23 +35,39 @@ has shellcheck \
 ## live under dist-ai, not inside the developer-meta-files tree).
 REPO_ROOT="${DEVELOPER_META_FILES_PATH:?run via the github-org-tools-tests entrypoint}"
 
-## Files this test owns. Keep the list explicit rather than globbing
-## the whole repo - the github-org-* tools and the dm-* wrappers are
-## the surface this PR introduced; other parts of developer-meta-files
-## have their own pre-existing shellcheck status that is out of scope.
+## Scope: the github-org-* / dm-github-* tool surface, its libs, and
+## the install/probe helpers. Other parts of developer-meta-files have
+## their own pre-existing shellcheck status and stay out of scope.
+##
+## The tool surface is GLOBBED, not listed. A hand-maintained list
+## silently omits every tool added after it was written - which is how
+## dm-github-org-security-report, dm-github-org-metadata-sync and
+## dm-github-token-test went unlinted while the suite reported green.
+## A glob keyed on the naming convention cannot develop that hole.
+shopt -s nullglob
 files=(
-   "${REPO_ROOT}/usr/bin/github-org-clone"
-   "${REPO_ROOT}/usr/bin/github-org-fork"
-   "${REPO_ROOT}/usr/bin/github-org-push"
-   "${REPO_ROOT}/usr/bin/dm-github-org-policy"
-   "${REPO_ROOT}/usr/bin/dm-github-personal-policy"
-   "${REPO_ROOT}/usr/bin/dm-github-fork-sync"
+   "${REPO_ROOT}"/usr/bin/github-org-*
+   "${REPO_ROOT}"/usr/bin/dm-github-*
    "${REPO_ROOT}/usr/libexec/developer-meta-files/github-org-lib.bsh"
    "${REPO_ROOT}/usr/libexec/developer-meta-files/github-policy-lib.bsh"
+   "${REPO_ROOT}/usr/libexec/developer-meta-files/github-policy-data.bsh"
+   ## Sourced by dm-github-org-metadata-sync, so part of this surface.
+   "${REPO_ROOT}/usr/libexec/developer-meta-files/repo-metadata.bsh"
    "${REPO_ROOT}/.github/actions/install-deps/install-genmkfile.sh"
    "${REPO_ROOT}/.github/actions/install-deps/install-helper-scripts.sh"
    "${REPO_ROOT}/ci/live-probe-unauth.sh"
 )
+shopt -u nullglob
+
+## nullglob turns a mistyped or moved path into SILENCE, so assert the
+## globs actually matched. Without this the test passes by checking
+## nothing - the exact failure mode it exists to prevent.
+if [ "${#files[@]}" -lt 12 ]; then
+   printf '%s\n' \
+      "FAIL: only '${#files[@]}' files matched; the tool globs resolved to (almost) nothing." \
+      "      REPO_ROOT='${REPO_ROOT}'" >&2
+   exit 1
+fi
 ## The mock-test suite itself (this file, its siblings and the runner) moved to
 ## the dist-ai github-org-tools-tests payload and is linted by dist-ai's own
 ## shell gate; this test guards the developer-meta-files tools/libs surface.
@@ -78,7 +94,7 @@ done
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' '' "FAIL: shellcheck reported issues in:" >&2
    for failed in "${failed_scripts[@]}"; do
-      printf '  - %s\n' "${failed}" >&2
+      printf '%s\n' "  - ${failed}" >&2
    done
 fi
 
