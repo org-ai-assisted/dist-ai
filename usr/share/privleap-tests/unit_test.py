@@ -233,16 +233,59 @@ def test_listener_accept_is_bounded(results: Results, pl: ModuleType) -> None:
     with StateDirSandbox(pl):
         listener: Any = pl.PrivleapSocket(pl.PrivleapSocketType.CONTROL)
         try:
-            finished, _result, exception = call_with_deadline(
-                listener.get_session
+            ## Ordered so that no earlier check leaves a thread parked in
+            ## accept() on this listener: a parked accept would take the late
+            ## client below and the last check would hang on a correct daemon.
+
+            ## The bound must stay OPT-IN. A caller that has just started a
+            ## client and is now waiting to serve it -- which is how the
+            ## upstream test suite drives its fake servers -- needs the accept
+            ## to wait. Making the bound the default broke dozens of those
+            ## tests while every other suite here stayed green.
+            def connect_later() -> None:
+                time.sleep(0.5)
+                late: socket.socket = socket.socket(socket.AF_UNIX)
+                late.connect(str(pl.PrivleapCommon.control_path))
+                _KEEPALIVE.append(late)
+
+            threading.Thread(target=connect_later, daemon=True).start()
+            finished, session, exception = call_with_deadline(
+                listener.get_session, budget_s=10.0
             )
             results.check(
-                'accept() on an idle listener returns instead of blocking',
+                'an ordinary accept serves a client that arrives later',
+                finished and session is not None and exception is None,
+            )
+            results.expect_eq(
+                'the listening socket is left blocking',
+                listener.backend_socket.gettimeout(),
+                None,
+            )
+
+            finished, _result, exception = call_with_deadline(
+                lambda: listener.get_session(bounded=True)
+            )
+            results.check(
+                'a bounded accept on an idle listener returns instead of '
+                'blocking',
                 finished,
             )
             results.check(
-                'accept() on an idle listener raises TimeoutError',
+                'a bounded accept on an idle listener raises TimeoutError',
                 isinstance(exception, TimeoutError),
+            )
+            results.expect_eq(
+                'a bounded accept restores the socket it borrowed',
+                listener.backend_socket.gettimeout(),
+                None,
+            )
+
+            ## Last: this one leaves a thread parked in accept() for good.
+            finished, _result, _exception = call_with_deadline(
+                listener.get_session, budget_s=2.0
+            )
+            results.check(
+                'an ordinary accept waits rather than giving up', not finished
             )
         finally:
             listener.close()

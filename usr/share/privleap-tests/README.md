@@ -67,6 +67,18 @@ What that number does NOT cover, and why:
   runs) and each piece is verified working on its own, but the e2e lane is not
   yet contributing data to a combined run. Until it does, treat `shim.py` 0%
   as "not measured", not as "not tested".
+
+  Ruled out so far, each with a direct probe rather than by reasoning: the
+  daemon environment built by `daemon_env()` inside the mount namespace is
+  correct (bootstrap on `PYTHONPATH`, `COVERAGE_PROCESS_START` set); the
+  `-s` in privleapd's shebang does not block the import (coverage lives in
+  `dist-packages`, not the user site); `sitecustomize` loads under both a
+  direct `python3 script` invocation and a shebang execution; and
+  `coverage.process_startup()` writes data both on a clean exit and on the
+  SIGINT used at teardown. What remains unverified is whether
+  `reexec_under_mount_namespace()` forwards the coverage variables in a real
+  run -- every successful probe set them on the command line itself, which
+  bypasses exactly that step.
 - `main()`'s full startup path opens the real state directory and requires
   root.
 - `if __name__ == '__main__'` guards cannot be reached by an import-based
