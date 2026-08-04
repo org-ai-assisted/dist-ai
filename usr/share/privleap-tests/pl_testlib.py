@@ -29,8 +29,8 @@ from types import ModuleType
 from typing import Any, NoReturn
 
 
-DEFAULT_REPO: str = "/home/user/derivative-maker/packages/kicksecure/privleap"
-INSTALLED_PARENT: str = "/usr/lib/python3/dist-packages"
+DEFAULT_REPO: str = '/home/user/derivative-maker/packages/kicksecure/privleap'
+INSTALLED_PARENT: str = '/usr/lib/python3/dist-packages'
 
 
 def _dist_packages_dir() -> str | None:
@@ -39,11 +39,11 @@ def _dist_packages_dir() -> str | None:
     resolves the target privleap, or None if no target can be found.
     """
 
-    repo: str | None = os.environ.get("PRIVLEAP_REPO")
+    repo: str | None = os.environ.get('PRIVLEAP_REPO')
     if repo:
-        candidate: str = os.path.join(repo, "usr/lib/python3/dist-packages")
+        candidate: str = os.path.join(repo, 'usr/lib/python3/dist-packages')
         if os.path.isfile(
-            os.path.join(candidate, "privleap", "privleap.py")
+            os.path.join(candidate, 'privleap', 'privleap.py')
         ):
             return candidate
         ## PRIVLEAP_REPO was set but points at no privleap tree. Do not
@@ -51,11 +51,11 @@ def _dist_packages_dir() -> str | None:
         ## wrong code); skip with a clear message instead.
         return None
     if os.path.isfile(
-        os.path.join(INSTALLED_PARENT, "privleap", "privleap.py")
+        os.path.join(INSTALLED_PARENT, 'privleap', 'privleap.py')
     ):
         return INSTALLED_PARENT
-    candidate: str = os.path.join(DEFAULT_REPO, "usr/lib/python3/dist-packages")
-    if os.path.isfile(os.path.join(candidate, "privleap", "privleap.py")):
+    candidate: str = os.path.join(DEFAULT_REPO, 'usr/lib/python3/dist-packages')
+    if os.path.isfile(os.path.join(candidate, 'privleap', 'privleap.py')):
         return candidate
     return None
 
@@ -66,15 +66,15 @@ def _skip_not_found(what: str) -> NoReturn:
     accurate whether PRIVLEAP_REPO was unset or set to a path with no privleap.
     """
 
-    repo: str | None = os.environ.get("PRIVLEAP_REPO")
+    repo: str | None = os.environ.get('PRIVLEAP_REPO')
     if repo:
         print(
             f"SKIP: PRIVLEAP_REPO='{repo}' contains no privleap tree "
-            "(expected usr/lib/python3/dist-packages/privleap/privleap.py)."
+            '(expected usr/lib/python3/dist-packages/privleap/privleap.py).'
         )
     else:
         print(f"SKIP: {what} not found.")
-        print("      set PRIVLEAP_REPO to a derivative-maker checkout root.")
+        print('      set PRIVLEAP_REPO to a derivative-maker checkout root.')
     raise SystemExit(77)
 
 
@@ -86,10 +86,10 @@ def import_privleap() -> ModuleType:
 
     parent: str | None = _dist_packages_dir()
     if parent is None:
-        _skip_not_found("privleap library")
+        _skip_not_found('privleap library')
     if parent not in sys.path:
         sys.path.insert(0, parent)
-    return importlib.import_module("privleap.privleap")
+    return importlib.import_module('privleap.privleap')
 
 
 def import_privleapd() -> ModuleType:
@@ -105,15 +105,38 @@ def import_privleapd() -> ModuleType:
 
     parent: str | None = _dist_packages_dir()
     if parent is None:
-        _skip_not_found("privleap daemon")
+        _skip_not_found('privleap daemon')
     if parent not in sys.path:
         sys.path.insert(0, parent)
     try:
-        return importlib.import_module("privleap.privleapd")
+        return importlib.import_module('privleap.privleapd')
     except ModuleNotFoundError as exc:
-        if exc.name not in ("privleap", "privleap.privleapd"):
+        if exc.name not in ('privleap', 'privleap.privleapd'):
             raise
-        _skip_not_found("privleap daemon")
+        _skip_not_found('privleap daemon')
+
+
+def import_privleap_module(module_name: str) -> ModuleType:
+    """
+    Import and return any module of the target privleap package by its bare
+    name (for example "leapctl" or "leaprun"), or skip (exit 77) if the
+    privleap package is not present.
+
+    As with import_privleapd(), only a genuinely missing privleap package maps
+    to a skip. A broken module must surface as a real failure.
+    """
+
+    parent: str | None = _dist_packages_dir()
+    if parent is None:
+        _skip_not_found(f"privleap {module_name}")
+    if parent not in sys.path:
+        sys.path.insert(0, parent)
+    try:
+        return importlib.import_module(f"privleap.{module_name}")
+    except ModuleNotFoundError as exc:
+        if exc.name not in ('privleap', f"privleap.{module_name}"):
+            raise
+        _skip_not_found(f"privleap {module_name}")
 
 
 def current_username() -> str:
@@ -123,7 +146,7 @@ def current_username() -> str:
     coming from a normal account rather than root.
     """
 
-    sudo_user: str | None = os.environ.get("SUDO_USER")
+    sudo_user: str | None = os.environ.get('SUDO_USER')
     if sudo_user:
         try:
             pwd.getpwnam(sudo_user)
@@ -176,5 +199,5 @@ class Results:
         if self.failed:
             print(f"RESULT: FAIL ({self.failed} failed)")
             return 1
-        print("RESULT: PASS")
+        print('RESULT: PASS')
         return 0

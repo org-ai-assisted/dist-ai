@@ -13,7 +13,7 @@ the filesystem are root-owned and trusted. The goal of these tests is to
 that socket is the path by which attacker-controlled input could crash the
 daemon or run a command it should not.
 
-Accordingly the harnesses target exactly the two surfaces an unprivileged
+Accordingly the fuzzers target exactly the two surfaces an unprivileged
 caller can reach:
 
 - the **server-side wire-protocol parser**
@@ -21,15 +21,24 @@ caller can reach:
 - the **authorization engine**
   (`authorize_user` / `auth_signal_request` / `is_user_allowed`).
 
-Config-file parsing, the client tools, and `shim.py`/PAM are out of scope here
-(config input is root-only); the upstream autopkgtest covers protocol
-sequencing and config parsing.
+Availability is in scope too. privleapd is how an unprivileged account reaches
+a root action, so a daemon that stops answering is a denial of service against
+every caller, and a daemon that keeps its systemd watchdog happy while it has
+stopped answering is worse: nothing external reports it. The liveness suite
+(`unit_test.py`) covers that class directly.
+
+Config parsing and the client tools are covered by `config_test.py` and
+`client_test.py`. Config input is root-only and so is not an attack surface,
+but it is where an administrator's intent becomes the daemon's authorization
+rules, and a parser that drops or mis-merges a rule grants access nobody asked
+to grant. `shim.py`/PAM stays out of scope here (it needs root and a real PAM
+stack); the e2e backends exercise it.
 
 ## Commands
 
 | Command | Root? | What it does |
 |---|---|---|
-| `privleap-tests` | no | In-process suite, fixed seed (CI): parser fuzzer + authorizer property test. |
+| `privleap-tests` | no | In-process suite, fixed seed (CI): parser fuzzer, authorizer property test, daemon liveness regressions, config parser tests, client tool tests. |
 | `privleap-tests-fuzz` | no | Randomized parser fuzzer (hand-rolled, no deps), random seed, coverage report. |
 | `privleap-tests-fuzz-atheris` | no | Atheris (libFuzzer) **coverage-guided** parser fuzzer. Needs `pip install atheris`. |
 | `privleap-tests-session-fuzz` | sudo | Stateful, concurrent fuzzer of the live daemon's **session state machine** (message sequences, threading), in a private mount namespace. |
@@ -60,6 +69,28 @@ derivative-maker checkout root (the directory containing
   (`pip install atheris`); the harness is also ClusterFuzzLite-ready
   (`compile_python_fuzzer fuzz_privleap.py`).
 - `authorizer_test.py` -- authorization-engine property test / fuzzer.
+- `unit_test.py` -- daemon liveness regressions, in process and without root:
+  the systemd watchdog path, the epoll registration bookkeeping, the socket
+  list synchronisation between the main and control threads, the action output
+  pump, and the constant-time authentication failure delay. Includes an
+  in-process daemon that runs privleapd's real main and control loops against
+  a sandboxed state directory, so registration defects that only appear in how
+  those threads interleave can be reproduced. Every check here is written to
+  fail against the code as it was before the corresponding fix.
+- `config_test.py` -- configuration parser and config loading: every
+  documented rejection, exact parsing of a valid file, unknown accounts being
+  skipped rather than granted, duplicate collapsing, the root-ownership
+  permission check, and the daemon's merge / refuse behaviour across files.
+- `daemon_test.py` -- privleapd's control-message handling and startup
+  lifecycle: which accounts get a comm socket and which are refused, destroy
+  and prune outcomes, group membership being re-read on every check, control
+  session dispatch, the reload result, the second-daemon and state-directory
+  startup checks, and the command line. Run by the `privleap-tests` launcher.
+- `client_test.py` -- the `leapctl` and `leaprun` client tools driven in
+  process against a scripted stand-in daemon: every server reply the protocol
+  allows mapped to its exit code and output, and a missing, silent or
+  protocol-confused daemon producing a clean non-zero exit rather than a hang
+  or a traceback.
 - `e2e_lib.py` -- shared live-daemon setup (namespace re-exec, daemon launch,
   config), client, fuzz barrage, and the A/B/C/D security phases, used by the
   e2e backends and the session fuzzer.
@@ -136,4 +167,3 @@ privleap repo (a derivative-maker submodule) carries only a minimal GitHub CI
 workflow that checks out this package and runs these harnesses against a PR
 (`PRIVLEAP_REPO=<checkout>`). Keep it that way: new harness/property/fuzz code
 goes here; the product packages stay clean.
-

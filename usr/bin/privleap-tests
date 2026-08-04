@@ -73,6 +73,18 @@ printf '%s\n' ''
 printf '%s\n' '############ authorization-engine property test ###########'
 run_one "${tests_dir}/authorizer_test.py" --seed 1 --iterations 3000
 printf '%s\n' ''
+printf '%s\n' '############# daemon liveness regressions #################'
+run_one "${tests_dir}/unit_test.py"
+printf '%s\n' ''
+printf '%s\n' '########## daemon control and lifecycle tests ##############'
+run_one "${tests_dir}/daemon_test.py"
+printf '%s\n' ''
+printf '%s\n' '################ config parser tests ######################'
+run_one "${tests_dir}/config_test.py"
+printf '%s\n' ''
+printf '%s\n' '################# client tool tests #######################'
+run_one "${tests_dir}/client_test.py"
+printf '%s\n' ''
 printf '%s\n' '############### Hypothesis property tests ##################'
 run_pytest "${tests_dir}/test_property.py"
 
