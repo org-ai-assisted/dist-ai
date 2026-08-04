@@ -44,7 +44,7 @@ done
 
 repo="${PRIVATE_AI_CONFIG_PATH:-}"
 if [ -z "${repo}" ] || [ ! -d "${repo}/tests" ]; then
-   printf 'private-ai-config-tests: PRIVATE_AI_CONFIG_PATH unset or has no tests/ dir; skipping.\n' >&2
+   printf '%s\n' 'private-ai-config-tests: PRIVATE_AI_CONFIG_PATH unset or has no tests/ dir; skipping.' >&2
    exit 77
 fi
 
@@ -69,17 +69,39 @@ core_tests=(
    'tests/string-parsing-stress-test.sh'
    'tests/sandbox-transfer-perms-test.sh'
    'tests/sandbox-confine-profile-test.sh'
-   'tests/sandbox-run-confine-wiring-test.sh'
+   'tests/sandbox-confine-wiring-test.sh'
+   'tests/ai-review-default-set-test.sh'
+   'tests/ai-review-guidance-test.sh'
+   'tests/ai-review-pending-todo-test.sh'
+   'tests/anti-stall-supervisor-max-runtime-test.sh'
+   'tests/bandit-discover-python-test.sh'
+   'tests/bandit-high-gate-test.sh'
+   'tests/codex-reauth-output-fidelity-test.sh'
+   'tests/durable-bg-run-stderr-test.sh'
+   'tests/git-hooks-push-branch-test.py'
+   'tests/git-hooks-style-gate-test.py'
+   'tests/hook-guards-test.sh'
+   'tests/progress-watch-test.sh'
+   'tests/qube-ctl-pull-destination-test.sh'
+   'tests/safe-systemctl-guard-test.py'
+   'tests/shell-function-order-test.py'
+   'tests/static-review-checkbashisms-target-test.sh'
    'claude/hooks/tests/test-cowbuilder-guard.py'
    'claude/hooks/tests/test-git-command-parse.py'
    'claude/hooks/tests/test-git-policy-config.py'
    'claude/hooks/tests/test-git-policy-guard.py'
+   'claude/hooks/tests/test-playwright-host-guard.py'
 )
 fuzz_tests=( 'tests/string-parsing-fuzz.sh' )
 resilience_tests=(
    'tests/resilience/wake-detach-cgroup-test.sh'
    'tests/resilience/run-resilience-tests.sh'
    'tests/resilience/durable-bg-run-chaos.sh'
+   'tests/resilience/supervisor-failure-latch-test.sh'
+   'tests/anti-stall-supervisor-phantom-success-test.sh'
+   'tests/anti-stall-supervisor-stopped-not-success-test.sh'
+   'tests/durable-bg-run-no-unwatched-worker-test.sh'
+   'tests/safe-systemctl-phantom-success-test.sh'
 )
 
 ## Deliberately NOT a lane member, with the reason, so an omission reads as a
@@ -107,8 +129,9 @@ excluded_tests=(
 ## exclusion accounts for. Cheap, so it runs on every lane rather than waiting
 ## for a full sweep.
 check_registration() {
-   local candidate rel known entry unregistered=()
+   local candidate rel known entry unregistered=() scanned=0
    while IFS= read -r candidate; do
+      scanned=$(( scanned + 1 ))
       rel="${candidate#"${repo}/"}"
       known='false'
       for entry in "${core_tests[@]}" "${fuzz_tests[@]}" \
@@ -126,10 +149,28 @@ check_registration() {
    ## directory added anywhere else in the repo was silently ungoverned -- the
    ## guard would keep passing while covering less than it claims, which is the
    ## failure class it exists to catch.
+   ##
+   ## '-I{}' matters: GNU find takes PATHS BEFORE the expression, so appending the
+   ## discovered roots after '-type f' made every invocation die with "paths must
+   ## precede expression". Sent to /dev/null, that left an EMPTY scan -- the guard
+   ## reported "everything registered" while reading nothing, for every file in
+   ## the repo. Errors are no longer discarded, for the same reason.
    done < <( find "${repo}" -path "${repo}/.git" -prune -o \
-      -type d -name tests -print0 2>/dev/null \
-      | xargs --null --no-run-if-empty find \
-        -type f \( -name '*.sh' -o -name '*.py' \) 2>/dev/null | sort )
+      -type d -name tests -print0 \
+      | xargs --null --no-run-if-empty -I{} find {} \
+        -type f \( -name '*.sh' -o -name '*.py' \) | sort )
+
+   ## A checkout with a tests/ dir always holds test files, so an empty scan is
+   ## the guard failing to look -- the state it silently sat in for as long as
+   ## its find was malformed. Reported as a failure rather than a clean pass.
+   if [ "${scanned}" -eq 0 ]; then
+      printf '\n########## REGISTRATION SCAN FOUND NO TEST FILES ##########\n' >&2
+      printf '%s\n' \
+         "Scanned '${repo}' and matched nothing, which cannot be true of a" \
+         'checkout that has a tests/ directory. The guard is broken, not the' \
+         'checkout: treat this as UNVERIFIED, never as "all tests registered".' >&2
+      return 1
+   fi
 
    if [ "${#unregistered[@]}" -gt 0 ]; then
       printf '\n########## UNREGISTERED TEST FILE(S) ##########\n' >&2
@@ -161,13 +202,13 @@ case "${lane}" in
       ## Every test in this lane drives transient 'systemd --user' units and
       ## reads the user journal.
       if ! systemctl --user show-environment >/dev/null 2>&1; then
-         printf 'private-ai-config-tests: no systemd --user manager; skipping the resilience lane.\n' >&2
+         printf '%s\n' 'private-ai-config-tests: no systemd --user manager; skipping the resilience lane.' >&2
          exit 77
       fi
       tests=( "${resilience_tests[@]}" )
       ;;
    *)
-      printf 'run-tests.sh: unknown lane %s (want: core | fuzz | resilience)\n' "${lane}" >&2
+      printf '%s\n' "run-tests.sh: unknown lane ${lane} (want: core | fuzz | resilience)" >&2
       exit 64
       ;;
 esac
@@ -210,8 +251,8 @@ for rel in "${tests[@]}"; do
    fi
 done
 
-printf '\n===== summary (%s lane): %s pass, %s fail, %s skip =====\n' \
-   "${lane}" "${passes}" "${failures}" "${skips}"
+printf '%s\n' '' \
+   "===== summary (${lane} lane): ${passes} pass, ${failures} fail, ${skips} skip ====="
 
 if [ "${failures}" -ne 0 ]; then
    exit 1
@@ -219,7 +260,7 @@ fi
 ## An unregistered test file fails the lane even when everything that DID run
 ## passed: the point is that something was never run at all.
 if [ "${registration_status}" -ne 0 ]; then
-   printf '===== unregistered test file(s): see above =====\n' >&2
+   printf '%s\n' '===== unregistered test file(s): see above =====' >&2
    exit 1
 fi
 ## Nothing actually ran: report SKIP so the runner does not record a vacuous
