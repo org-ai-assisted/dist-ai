@@ -90,8 +90,13 @@ emit() {
    image="${workdir}/image-${emit_seq}.raw"
    touch -- "${image}"
 
+   ## Unset source_code_folder_dist so these state-file assertions are decided by
+   ## the file alone: with a source tree present the script now reads HEAD when a
+   ## file is missing (its own test below), which would otherwise flip the
+   ## missing/empty cases here if the ambient environment happened to export it.
    rc=0
-   env dm_source_state_file="${state_file}" \
+   env --unset=source_code_folder_dist \
+      dm_source_state_file="${state_file}" \
       binary_build_folder_dist="${workdir}/binary" \
       bash -- "${subject}" --target raw --image "${image}" >/dev/null 2>&1 || rc="$?"
    if [ "${rc}" -ne 0 ]; then
@@ -203,7 +208,7 @@ assert_single_trailing_blank "missing state file" "${missing_out}"
 ## --- neither variable set: must NOT fall back to /dm-source-state ----------
 unset_image="${workdir}/image-unset.raw"
 touch -- "${unset_image}"
-env --unset=dm_source_state_file --unset=binary_build_folder_dist \
+env --unset=dm_source_state_file --unset=binary_build_folder_dist --unset=source_code_folder_dist \
    bash -- "${subject}" --target raw --image "${unset_image}" >/dev/null 2>&1
 unset_out="$(cat -- "${unset_image}.dm-buildinfo")"
 if [ -z "${unset_out}" ]; then
@@ -224,6 +229,64 @@ case "${unset_out}" in
       ;;
    *)
       fail "with both variables unset: not reported unrecorded -- ${unset_out}"
+      ;;
+esac
+
+## --- no state file, but a real source tree: read HEAD directly --------------
+## sign-and-tag writes dm-source-state ONLY when it amends
+## (dist_build_sign_and_tag=true). With signing off there is no file, yet HEAD is
+## the REAL, fetchable commit -- so the record must carry it, not 'unrecorded'.
+## FAILS on the pre-fix code, which ignored source_code_folder_dist here. git is
+## a hard dependency of the whole toolchain (assumed present, not skip-guarded).
+head_repo="${workdir}/src"
+mkdir -- "${head_repo}"
+git -c core.hooksPath=/dev/null -C "${head_repo}" init --quiet
+git -c core.hooksPath=/dev/null -C "${head_repo}" \
+   -c user.name=t -c user.email=t@example.com \
+   commit --quiet --allow-empty --message 'seed'
+head_sha="$(git -C "${head_repo}" rev-parse HEAD)"
+
+head_image="${workdir}/image-head.raw"
+touch -- "${head_image}"
+env source_code_folder_dist="${head_repo}" \
+   dm_source_state_file="${workdir}/no-such-state" \
+   binary_build_folder_dist="${workdir}/binary" \
+   bash -- "${subject}" --target raw --image "${head_image}" >/dev/null 2>&1
+head_out="$(cat -- "${head_image}.dm-buildinfo")"
+case "${head_out}" in
+   *"Source-Commit: ${head_sha}"*)
+      pass "no state file + source tree: HEAD recorded as the source commit"
+      ;;
+   *)
+      fail "no state file + source tree: HEAD not recorded -- ${head_out}"
+      ;;
+esac
+case "${head_out}" in
+   *unrecorded*)
+      fail "no state file + source tree: reported unrecorded despite a readable HEAD"
+      ;;
+   *)
+      pass "no state file + source tree: not reported unrecorded"
+      ;;
+esac
+assert_single_trailing_blank "no state file + source tree" "${head_out}"
+
+## Canary: the SAME missing-file case WITHOUT a source tree must still be
+## 'unrecorded', proving the HEAD path is gated on source_code_folder_dist and
+## is not a blanket change that would mask a genuinely unrecorded build.
+nohead_image="${workdir}/image-nohead.raw"
+touch -- "${nohead_image}"
+env --unset=source_code_folder_dist \
+   dm_source_state_file="${workdir}/no-such-state" \
+   binary_build_folder_dist="${workdir}/binary" \
+   bash -- "${subject}" --target raw --image "${nohead_image}" >/dev/null 2>&1
+nohead_out="$(cat -- "${nohead_image}.dm-buildinfo")"
+case "${nohead_out}" in
+   *'Source-Commit: unrecorded'*)
+      pass "canary: no state file AND no source tree still reports unrecorded"
+      ;;
+   *)
+      fail "canary: no state file AND no source tree should be unrecorded -- ${nohead_out}"
       ;;
 esac
 
