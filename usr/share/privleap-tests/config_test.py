@@ -479,6 +479,41 @@ def test_secure_permission_check(results: Results, pl: ModuleType) -> None:
         with open(path, 'w', encoding='utf-8') as handle:
             handle.write('')
 
+        ## Ownership and mode have to be separated. Run unprivileged, every
+        ## file here is owned by the caller, so ownership alone already
+        ## forces False -- and an implementation that stopped looking at the
+        ## mode bit at all would still pass every assertion below. Report
+        ## root ownership and vary only the mode, so the mode check is the
+        ## thing actually under test.
+        real_stat: Any = os.stat
+
+        def stat_as_root(target: Any, *args: Any, **kwargs: Any) -> Any:
+            result: Any = real_stat(target, *args, **kwargs)
+            return os.stat_result(
+                (result.st_mode, result.st_ino, result.st_dev, result.st_nlink,
+                 0, 0, result.st_size, int(result.st_atime),
+                 int(result.st_mtime), int(result.st_ctime))
+            )
+
+        saved_stat: Any = pl.os.stat
+        pl.os.stat = stat_as_root
+        try:
+            for mode, want, label in (
+                (0o644, True, 'root-owned and not world-writable'),
+                (0o666, False, 'root-owned but world-writable'),
+                (0o622, False, 'root-owned but world-writable, no read'),
+                (0o664, True, 'root-owned and group-writable'),
+            ):
+                os.chmod(path, mode)  # nosec B103 -- the mode under test
+                results.expect_eq(
+                    f"a file that is {label} is "
+                    f"{'accepted' if want else 'rejected'}",
+                    pl.PrivleapCommon.check_secure_file_permissions(path),
+                    want,
+                )
+        finally:
+            pl.os.stat = saved_stat
+
         os.chmod(path, 0o666)  # nosec B103 -- the unsafe mode under test
         results.expect_eq(
             'a world-writable file is rejected',
@@ -555,7 +590,10 @@ def test_daemon_config_loading(
             conf.write('notes.txt', 'this is not a config file\n')
             ## A .conf name the validator rejects: must be skipped with a
             ## warning, not accepted and not fatal.
-            conf.write('bad%name.conf', f"[allowed-users]\nUser={user}\n")
+            ## A DIFFERENT principal to the one 10-first.conf allows: with
+            ## the same one, a validator that stopped rejecting this filename
+            ## would merge it and the allow list would look unchanged.
+            conf.write('bad%name.conf', '[allowed-users]\nUser=root\n')
 
             results.check(
                 'a valid set of config files loads', pld.parse_config_files()
@@ -569,7 +607,8 @@ def test_daemon_config_loading(
                 ['act-first', 'act-second'],
             )
             results.expect_eq(
-                'users from every file are merged',
+                'users from every file are merged, and the file with the '
+                'rejected name contributed nothing',
                 pld.PrivleapdGlobal.allowed_user_list,
                 [user],
             )
@@ -645,15 +684,26 @@ def test_insecure_config_dir_is_ignored(
         ) as handle:
             handle.write('[allowed-users]\nUser=root\n')
         saved_dirs: Any = pld.PrivleapdGlobal.config_dir_list
+        saved_allowed: Any = pld.PrivleapdGlobal.allowed_user_list
         try:
             pld.PrivleapdGlobal.config_dir_list = [pl.Path(conf_path)]
+            pld.PrivleapdGlobal.allowed_user_list = []
             results.expect_eq(
                 'a world-writable config directory yields no configuration',
                 pld.parse_config_files(),
                 False,
             )
+            ## The refusal alone proves nothing: an empty directory is refused
+            ## too, and the planted file declares no actions. What matters is
+            ## that the planted grant never reached the allow list.
+            results.expect_eq(
+                'the planted account was not granted access',
+                pld.PrivleapdGlobal.allowed_user_list,
+                [],
+            )
         finally:
             pld.PrivleapdGlobal.config_dir_list = saved_dirs
+            pld.PrivleapdGlobal.allowed_user_list = saved_allowed
         results.expect_eq(
             'the directory permission check agrees it is unsafe',
             pl.PrivleapCommon.check_secure_file_permissions(conf_path),

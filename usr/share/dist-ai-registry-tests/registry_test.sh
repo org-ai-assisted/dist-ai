@@ -35,8 +35,12 @@ shopt -s shift_verbose
 ## Entrypoints that are deliberately NOT suites. Keep this list short and
 ## justified: every addition is a suite that stops being checked.
 ##   dist-ai-tests-all  the runner itself
+##   privleap-tests-coverage  a measurement wrapper, not a suite: it RUNS the
+##     registered privleap suites and reports how much of privleap they reach,
+##     so registering it would run them a second time and assert nothing new
 allowed_unregistered=(
    'dist-ai-tests-all'
+   'privleap-tests-coverage'
 )
 
 ## Suite BASE names with no owning component repo, so no suite_component()
@@ -70,7 +74,7 @@ if [ -z "${repo}" ]; then
 fi
 
 if [ -z "${repo}" ] || [ ! -f "${repo}/usr/bin/dist-ai-tests-all" ] || [ ! -d "${repo}/debian" ]; then
-   printf 'dist-ai-registry-tests: no dist-ai source tree (set DIST_AI_REPO); skipping.\n' >&2
+   printf '%s\n' 'dist-ai-registry-tests: no dist-ai source tree (set DIST_AI_REPO); skipping.' >&2
    exit 77
 fi
 
@@ -80,7 +84,7 @@ failures=0
 checks=0
 
 fail() {
-   printf 'FAIL: %s\n' "$1" >&2
+   printf '%s\n' "FAIL: $1" >&2
    failures=$(( failures + 1 ))
 }
 
@@ -161,7 +165,7 @@ done < "${runner}"
 
 if [ "${#registered_suites[@]}" -eq 0 ]; then
    fail 'parsed zero registered suites -- the registry format changed and this lint is now blind'
-   printf '\nFAILED: %s registry check(s) failed\n' "${failures}" >&2
+   printf '%s\n' '' "FAILED: ${failures} registry check(s) failed" >&2
    exit 1
 fi
 
@@ -250,7 +254,7 @@ done
 ## never ships (.pytest_cache, .hypothesis, .coverage), and flagging those would
 ## be pure noise; what gets packaged is what is committed.
 if ! git -C "${repo}" rev-parse --git-dir >/dev/null 2>&1; then
-   printf 'NOTE: %s is not a git checkout; skipping the payload-shipping check.\n' "${repo}"
+   printf '%s\n' "NOTE: ${repo} is not a git checkout; skipping the payload-shipping check."
    payload_files=()
 else
    mapfile -d '' -t payload_files < <(
@@ -304,10 +308,10 @@ for entry in "${repo}"/usr/bin/*-tests "${repo}"/usr/bin/*-tests-*; do
    fi
 done
 
-printf '\n===== summary: %s checks, %s failure(s) =====\n' "${checks}" "${failures}"
+printf '%s\n' '' "===== summary: ${checks} checks, ${failures} failure(s) ====="
 if [ "${failures}" -ne 0 ]; then
-   printf 'FAILED: the suite registry is inconsistent\n' >&2
+   printf '%s\n' 'FAILED: the suite registry is inconsistent' >&2
    exit 1
 fi
-printf 'OK: every registered suite has an executable entrypoint, a debian/*.install entry, a wire() case and a suite_component() mapping\n'
+printf '%s\n' 'OK: every registered suite has an executable entrypoint, a debian/*.install entry, a wire() case and a suite_component() mapping'
 exit 0
