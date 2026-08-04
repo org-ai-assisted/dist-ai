@@ -26,7 +26,7 @@ lane='core'
 while [ "$#" -gt 0 ]; do
    case "$1" in
       '--lane')
-         [ "$#" -ge 2 ] || { printf 'run-tests.sh: --lane requires a value\n' >&2; exit 64; }
+         [ "$#" -ge 2 ] || { printf '%s\n' 'run-tests.sh: --lane requires a value' >&2; exit 64; }
          lane="$2"
          shift 2
          ;;
@@ -103,6 +103,7 @@ resilience_tests=(
    'tests/anti-stall-supervisor-phantom-success-test.sh'
    'tests/anti-stall-supervisor-stopped-not-success-test.sh'
    'tests/durable-bg-run-no-unwatched-worker-test.sh'
+   'tests/durable-bg-run-retry-after-failure-test.sh'
    'tests/safe-systemctl-phantom-success-test.sh'
 )
 
@@ -166,7 +167,7 @@ check_registration() {
    ## the guard failing to look -- the state it silently sat in for as long as
    ## its find was malformed. Reported as a failure rather than a clean pass.
    if [ "${scanned}" -eq 0 ]; then
-      printf '\n########## REGISTRATION SCAN FOUND NO TEST FILES ##########\n' >&2
+      printf '%s\n' '' '########## REGISTRATION SCAN FOUND NO TEST FILES ##########' >&2
       printf '%s\n' \
          "Scanned '${repo}' and matched nothing, which cannot be true of a" \
          'checkout that has a tests/ directory. The guard is broken, not the' \
@@ -175,7 +176,7 @@ check_registration() {
    fi
 
    if [ "${#unregistered[@]}" -gt 0 ]; then
-      printf '\n########## UNREGISTERED TEST FILE(S) ##########\n' >&2
+      printf '%s\n' '' '########## UNREGISTERED TEST FILE(S) ##########' >&2
       printf '%s\n' "${unregistered[@]}" >&2
       printf '%s\n' \
          'Add each to a lane list, or to excluded_tests WITH a reason.' \
@@ -245,11 +246,11 @@ for rel in "${tests[@]}"; do
    if [ ! -f "${path}" ]; then
       ## A renamed or deleted test must be loud: silently dropping it is how a
       ## suite keeps reporting green while covering less than it claims.
-      printf '\n########## MISSING: %s ##########\n' "${rel}" >&2
+      printf '%s\n' '' "########## MISSING: ${rel} ##########" >&2
       failures=$(( failures + 1 ))
       continue
    fi
-   printf '\n########## %s ##########\n' "${rel}"
+   printf '%s\n' '' "########## ${rel} ##########"
    rc=0
    case "${path}" in
       *.py)
@@ -271,10 +272,10 @@ for rel in "${tests[@]}"; do
          fi
       done
       if [ "${authorized}" = 'true' ]; then
-         printf '########## SKIPPED: %s ##########\n' "${rel}"
+         printf '%s\n' "########## SKIPPED: ${rel} ##########"
          skips=$(( skips + 1 ))
       else
-         printf '########## UNAUTHORIZED SKIP: %s ##########\n' "${rel}" >&2
+         printf '%s\n' "########## UNAUTHORIZED SKIP: ${rel} ##########" >&2
          printf '%s\n' \
             'A prerequisite was missing, so this test never ran. Install it (in CI:' \
             'the component .github/dm-consumer.yml dist-ai-tests.apt-packages list),' \
@@ -282,10 +283,10 @@ for rel in "${tests[@]}"; do
          failures=$(( failures + 1 ))
       fi
    elif [ "${rc}" -ne 0 ]; then
-      printf '########## FAILED (%s): %s ##########\n' "${rc}" "${rel}" >&2
+      printf '%s\n' "########## FAILED (${rc}): ${rel} ##########" >&2
       failures=$(( failures + 1 ))
    else
-      printf '########## PASSED: %s ##########\n' "${rel}"
+      printf '%s\n' "########## PASSED: ${rel} ##########"
       passes=$(( passes + 1 ))
    fi
 done
