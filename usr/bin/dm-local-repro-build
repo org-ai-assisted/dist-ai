@@ -185,6 +185,7 @@ truncate --size=0 -- "${remote_log}"
 ## looks like progress. CI sets this itself; a local mirror must too.
 setsid nohup env CI=true ./docker/derivative-maker-docker-run -- \
    bash -c "export dist_build_version=\\"\\\$(git describe --always --abbrev=1000000000 --exclude '*_*_*')\\" && \
+   export dist_build_sign_and_tag=true && \
    ./help-steps/signing-key-create && ./help-steps/sign-and-tag && \
    env dist_build_target_arch='amd64' flavors_list='kicksecure-debug' \
    dist_build_multi_target_list='${multi_target_list}' \
