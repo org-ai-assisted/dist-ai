@@ -356,34 +356,45 @@ def test_accept_failure_does_not_spin(
 
     print('== an accept that ran out of descriptors does not spin ==')
     saved_backoff: float = pld.PrivleapdGlobal.accept_backoff_seconds
+    saved_until: float = pld.PrivleapdGlobal.accept_backoff_until
     try:
         pld.PrivleapdGlobal.accept_backoff_seconds = 0.3
 
+        ## The pause is SCHEDULED here, not taken here. This runs with
+        ## socket_list_lock held, so sleeping would block the control thread
+        ## for the whole backoff and stall leapctl create and destroy along
+        ## with it -- turning a descriptor shortage into a control outage.
+        pld.PrivleapdGlobal.accept_backoff_until = 0.0
         started: float = time.monotonic()
         pld.report_accept_failure(
             OSError(errno.EMFILE, 'Too many open files'), 'unit probe'
         )
         exhausted_elapsed: float = time.monotonic() - started
         results.check(
-            f"running out of descriptors pauses the loop "
+            f"running out of descriptors does not wait under the lock "
             f"({exhausted_elapsed:.2f}s)",
-            exhausted_elapsed >= 0.25,
+            exhausted_elapsed < 0.1,
+        )
+        results.check(
+            'running out of descriptors schedules a pause',
+            pld.PrivleapdGlobal.accept_backoff_until - time.monotonic()
+            >= 0.25,
         )
 
         ## An ordinary failure -- a client that hung up -- is not a resource
         ## problem and must not slow the daemon down for every other caller.
-        started = time.monotonic()
+        pld.PrivleapdGlobal.accept_backoff_until = 0.0
         pld.report_accept_failure(
             ConnectionAbortedError('client went away'), 'unit probe'
         )
-        ordinary_elapsed: float = time.monotonic() - started
-        results.check(
-            f"an ordinary accept failure is not paused for "
-            f"({ordinary_elapsed:.2f}s)",
-            ordinary_elapsed < 0.25,
+        results.expect_eq(
+            'an ordinary accept failure schedules no pause',
+            pld.PrivleapdGlobal.accept_backoff_until,
+            0.0,
         )
     finally:
         pld.PrivleapdGlobal.accept_backoff_seconds = saved_backoff
+        pld.PrivleapdGlobal.accept_backoff_until = saved_until
 
 
 def test_reused_descriptor_is_registered(
