@@ -13,7 +13,9 @@
 ##                        sign-and-tag, because sign-and-tag amends HEAD and a
 ##                        version derived after the amend would differ between
 ##                        the two sides for a non-defect reason.
-##   flavor/arch/target   kicksecure-debug / amd64 / qcow2
+##   flavor/arch          kicksecure-debug / amd64
+##   target               qcow2 (default) or iso, via DM_REPRO_TARGET; matches
+##                        local-build.yml's qcow2 vs iso lanes exactly
 ##   --freshness frozen   pins the Debian snapshot; without it two builds diverge
 ##                        on package versions alone.
 ##
@@ -42,6 +44,27 @@ target_sha="${2:?usage: local-repro-build.sh <progress-file> <commit-sha>}"
 ## mtime intact is indistinguishable from a build that fails to normalise it.
 remote_tree="${3:-/home/user/derivative-maker}"
 remote_log="${4:-/home/user/local-repro-build.log}"
+
+## Target image to build and later compare against CI. qcow2 (default) mirrors
+## local-build.yml's qcow2 lane (multi-target list 'qcow2', VM image built);
+## iso mirrors its iso lane (EMPTY multi-target list -> ISO only, no VM images).
+## Passed by env so existing positional callers are unchanged. The artifact glob
+## is what the DONE check and the listing match.
+target="${DM_REPRO_TARGET:-qcow2}"
+case "${target}" in
+   qcow2)
+      multi_target_list='qcow2'
+      artifact_glob='*.qcow2.libvirt.xz'
+      ;;
+   iso)
+      multi_target_list=''
+      artifact_glob='*.iso'
+      ;;
+   *)
+      printf '%s\n' "dm-local-repro-build: unsupported DM_REPRO_TARGET '${target}' (qcow2|iso)" >&2
+      exit 2
+      ;;
+esac
 
 note() {
    local stamp
@@ -164,7 +187,7 @@ setsid nohup env CI=true ./docker/derivative-maker-docker-run -- \
    bash -c "export dist_build_version=\\"\\\$(git describe --always --abbrev=1000000000 --exclude '*_*_*')\\" && \
    ./help-steps/signing-key-create && ./help-steps/sign-and-tag && \
    env dist_build_target_arch='amd64' flavors_list='kicksecure-debug' \
-   dist_build_multi_target_list='qcow2' \
+   dist_build_multi_target_list='${multi_target_list}' \
    ./help-steps/dm-build-official --freshness frozen --package-jobs 2" \
    > "${remote_log}" 2>&1 < /dev/null &
 disown
@@ -214,8 +237,8 @@ if sandbox exec -- bash -c "grep --quiet -- 'ERROR detected in script' ${remote_
    exit 1
 fi
 
-image_count="$(sandbox exec - <<'COUNT'
-find /home/user/binary_mnt -maxdepth 3 -type f -name '*.qcow2.libvirt.xz' -newermt '-3 hours' 2>/dev/null | wc -l
+image_count="$(sandbox exec - <<COUNT
+find /home/user/binary_mnt -maxdepth 3 -type f -name '${artifact_glob}' -newermt '-3 hours' 2>/dev/null | wc -l
 COUNT
 )"
 image_count="${image_count//[!0-9]/}"
@@ -230,7 +253,7 @@ note "=== DONE: build finished, ${image_count} fresh image(s)"
 ## script's, so a successful build whose listing hiccuped reported as a failed
 ## job -- the verdict said DONE while the supervisor said failed. A report step
 ## must never be able to overturn a verdict already reached.
-sandbox exec - <<'LIST' >> "${progress}" 2>&1 || true
-find /home/user/binary_mnt -maxdepth 3 -type f -name '*.qcow2.libvirt.xz' -newermt '-3 hours' -print
+sandbox exec - <<LIST >> "${progress}" 2>&1 || true
+find /home/user/binary_mnt -maxdepth 3 -type f -name '${artifact_glob}' -newermt '-3 hours' -print
 LIST
 exit 0
