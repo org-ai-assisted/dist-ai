@@ -184,10 +184,28 @@ check_registration() {
    return 0
 }
 
+## Core-lane tests AUTHORIZED to exit 77 without failing the lane. Empty on
+## purpose: every subject the core lane needs is in the checkout, and every TOOL
+## it needs is declared in the component's .github/dm-consumer.yml, so a 77 here
+## means a prerequisite went missing -- the test did not run, and reporting that
+## as a green skip is how a gate keeps looking wired while never executing.
+## Observed: the bandit high-severity gate and the git-hooks style gate both sat
+## at 77 in CI for want of a declared package, and the lane called it a pass.
+## Add a name WITH its reason only where a human decided the prerequisite may
+## legitimately be absent -- never to turn a red lane green.
+core_allow_skip=()
+
 tests=()
+## Only the core lane is gated this way: it is the CI lane, and its prerequisites
+## are all declared. The fuzz and resilience lanes carry environment-dependent
+## tests (a live 'systemd --user' manager, a journal) whose 77 is a real
+## environment answer, and the resilience lane already refuses as a whole when
+## its manager is absent.
+skip_is_fatal='false'
 case "${lane}" in
    'core')
       tests=( "${core_tests[@]}" )
+      skip_is_fatal='true'
       ;;
    'fuzz')
       tests=( "${fuzz_tests[@]}" )
@@ -241,8 +259,27 @@ for rel in "${tests[@]}"; do
          ;;
    esac
    if [ "${rc}" -eq 77 ]; then
-      printf '########## SKIPPED: %s ##########\n' "${rel}"
-      skips=$(( skips + 1 ))
+      authorized='false'
+      if [ "${skip_is_fatal}" != 'true' ]; then
+         authorized='true'
+      fi
+      for entry in "${core_allow_skip[@]}"; do
+         if [ "${entry}" = "${rel}" ]; then
+            authorized='true'
+            break
+         fi
+      done
+      if [ "${authorized}" = 'true' ]; then
+         printf '########## SKIPPED: %s ##########\n' "${rel}"
+         skips=$(( skips + 1 ))
+      else
+         printf '########## UNAUTHORIZED SKIP: %s ##########\n' "${rel}" >&2
+         printf '%s\n' \
+            'A prerequisite was missing, so this test never ran. Install it (in CI:' \
+            'the component .github/dm-consumer.yml dist-ai-tests.apt-packages list),' \
+            'or authorize the skip in core_allow_skip WITH a reason.' >&2
+         failures=$(( failures + 1 ))
+      fi
    elif [ "${rc}" -ne 0 ]; then
       printf '########## FAILED (%s): %s ##########\n' "${rc}" "${rel}" >&2
       failures=$(( failures + 1 ))

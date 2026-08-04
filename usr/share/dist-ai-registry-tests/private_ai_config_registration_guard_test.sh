@@ -143,6 +143,55 @@ case "${out}" in
       ;;
 esac
 
+## ---- a registered core test that exits 77 is an UNAUTHORIZED SKIP ---------
+## 77 means the test did not run. Counting it as a green skip is the same
+## silent-coverage-loss the registration guard above exists to catch, one level
+## down: in CI the bandit high-severity gate and the git-hooks style gate both
+## exited 77 for want of a declared apt package, and the lane reported a pass.
+fake_skip="${work_dir}/skip-repo"
+mkdir --parents -- "${fake_skip}/tests"
+printf '%s\n' '#!/usr/bin/env python3' 'raise SystemExit(77)' \
+   > "${fake_skip}/tests/claude-goal-state-test.py"
+
+checks=$(( checks + 1 ))
+out="$(run_lane "${fake_skip}")"
+case "${out}" in
+   *'UNAUTHORIZED SKIP: tests/claude-goal-state-test.py'*)
+      ;;
+   *)
+      fail "a registered core test that exited 77 was not reported as an unauthorized skip: ${out}"
+      ;;
+esac
+
+## ...and it lands in the FAIL bucket, not the skip bucket. Naming it while
+## still counting it green would leave the lane exiting 0.
+checks=$(( checks + 1 ))
+case "${out}" in
+   *'0 skip ====='*)
+      ;;
+   *)
+      fail "an unauthorized skip was still counted as a skip in the summary: ${out}"
+      ;;
+esac
+
+## ---- CANARY: a registered core test that exits 0 is still a PASS ----------
+## Without this, "treat every 77 as a failure" is indistinguishable from
+## "treat every result as a failure", which would satisfy both checks above.
+fake_pass="${work_dir}/pass-repo"
+mkdir --parents -- "${fake_pass}/tests"
+printf '%s\n' '#!/usr/bin/env python3' 'raise SystemExit(0)' \
+   > "${fake_pass}/tests/claude-goal-state-test.py"
+
+checks=$(( checks + 1 ))
+out="$(run_lane "${fake_pass}")"
+case "${out}" in
+   *'PASSED: tests/claude-goal-state-test.py'*)
+      ;;
+   *)
+      fail "canary: a registered core test that exited 0 was not counted as a pass: ${out}"
+      ;;
+esac
+
 printf '%s\n' "private-ai-config-registration-guard-test: ${checks} checks, ${failures} failed"
 if [ "${failures}" -ne 0 ]; then
    exit 1
