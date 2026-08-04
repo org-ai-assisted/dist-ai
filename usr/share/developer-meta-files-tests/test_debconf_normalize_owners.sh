@@ -5,6 +5,9 @@
 
 ## AI-Assisted
 
+## style-ok: no-tmp-hardcode -- the '/tmp/' in the ucf fixture below is the path
+## ucf itself records in config.dat, not a temp file this test creates.
+
 ## dm-debconf-normalize-owners must make config.dat 'Owners:' byte-identical
 ## regardless of which package-name spelling(s) registered each question.
 ##
@@ -170,6 +173,38 @@ if stanza 'shim-signed, shim-signed:amd64' | grep -q 'shim-signed:amd64'; then
    pass 'canary: the fixture carries the arch-qualified spelling under test'
 else
    fail 'canary broken: the fixture lost the arch spelling'
+fi
+
+## --- 10. transient mktemp path in a substitution variable is normalized ------
+## ucf records the temp copy it diffed a conffile against, e.g.
+## 'NEW = /tmp/grub.JI3HRI56IT'. The random suffix differs every build (it was
+## the last ISO local-vs-CI difference), so two builds must CONVERGE, while a
+## real (non-mktemp) value like FILE = /etc/default/grub is left intact. FAILS on
+## the pre-fix tool, which normalized only Owners.
+ucf_stanza() {
+   ## $1 = the random mktemp suffix
+   printf '%s\n' \
+      "Name: ucf/changeprompt" \
+      "Template: ucf/changeprompt" \
+      "Value: keep_current" \
+      "Owners: ucf" \
+      "Variables:" \
+      " BASENAME = grub" \
+      " FILE = /etc/default/grub" \
+      " NEW = /tmp/grub.$1"
+}
+ucf_stanza 'JI3HRI56IT' > "${work_dir}/ua.dat"
+ucf_stanza 'GvtL9uK0zG' > "${work_dir}/ub.dat"
+"${tool}" "${work_dir}/ua.dat" >/dev/null
+"${tool}" "${work_dir}/ub.dat" >/dev/null
+out_a="$( cat "${work_dir}/ua.dat" )"
+out_b="$( cat "${work_dir}/ub.dat" )"
+if [ "${out_a}" = "${out_b}" ] \
+   && printf '%s\n' "${out_a}" | grep -q '^ NEW = /tmp/grub[.]XXXXXX$' \
+   && printf '%s\n' "${out_a}" | grep -q '^ FILE = /etc/default/grub$'; then
+   pass 'two random ucf mktemp paths converge; a real variable value is untouched'
+else
+   fail "tmp-path normalization failed to converge: a=[${out_a}] b=[${out_b}]"
 fi
 
 printf '%s\n' "===== dm-debconf-normalize-owners: ${pass_count} pass, ${fail_count} fail ====="
