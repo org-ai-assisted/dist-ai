@@ -182,7 +182,9 @@ fi
 ## real (non-mktemp) value like FILE = /etc/default/grub is left intact. FAILS on
 ## the pre-fix tool, which normalized only Owners.
 ucf_stanza() {
-   ## $1 = the random mktemp suffix
+   ## $1 = the random mktemp suffix. KEEP is a decoy: a /tmp value under a
+   ## NON-NEW key with a >=6-char suffix, which must survive (the match is
+   ## anchored to the NEW key, not to any /tmp path).
    printf '%s\n' \
       "Name: ucf/changeprompt" \
       "Template: ucf/changeprompt" \
@@ -191,6 +193,7 @@ ucf_stanza() {
       "Variables:" \
       " BASENAME = grub" \
       " FILE = /etc/default/grub" \
+      " KEEP = /tmp/cache.release" \
       " NEW = /tmp/grub.$1"
 }
 ucf_stanza 'JI3HRI56IT' > "${work_dir}/ua.dat"
@@ -201,10 +204,11 @@ out_a="$( cat "${work_dir}/ua.dat" )"
 out_b="$( cat "${work_dir}/ub.dat" )"
 if [ "${out_a}" = "${out_b}" ] \
    && printf '%s\n' "${out_a}" | grep -q '^ NEW = /tmp/grub[.]XXXXXX$' \
-   && printf '%s\n' "${out_a}" | grep -q '^ FILE = /etc/default/grub$'; then
-   pass 'two random ucf mktemp paths converge; a real variable value is untouched'
+   && printf '%s\n' "${out_a}" | grep -q '^ FILE = /etc/default/grub$' \
+   && printf '%s\n' "${out_a}" | grep -q '^ KEEP = /tmp/cache[.]release$'; then
+   pass 'ucf NEW mktemp path converges; a non-NEW /tmp value and a real value are untouched'
 else
-   fail "tmp-path normalization failed to converge: a=[${out_a}] b=[${out_b}]"
+   fail "tmp-path normalization: converge/precision failed: a=[${out_a}] b=[${out_b}]"
 fi
 
 printf '%s\n' "===== dm-debconf-normalize-owners: ${pass_count} pass, ${fail_count} fail ====="
