@@ -877,8 +877,16 @@ check_R030_format_string() {
       while IFS= read -r line; do
          line_number=$(( line_number + 1 ))
          ## Comments are prose; a comment describing this rule must not trip it.
-         case "${line}" in
-            '#'*|[[:space:]]*'#'*)
+         ## Strip the indent, then test for a LEADING '#'. The glob
+         ## '[[:space:]]*#*' reads as "one whitespace char, then anything,
+         ## then '#', then anything", so it exempted any indented line
+         ## containing a '#' ANYWHERE -- a printf whose format holds a '#'
+         ## banner was silently waived while the identical line without one
+         ## was flagged. A gate that quietly exempts real violations is worse
+         ## than no gate, because the green is trusted.
+         trimmed="${line#"${line%%[![:space:]]*}"}"
+         case "${trimmed}" in
+            '#'*)
                continue
                ;;
          esac

@@ -271,6 +271,24 @@ expect_rule "${r030fmt}" "printf ${sq}%d${sq} ${dq}\${a}${dq} && printf ${sq}%d$
 expect_rule "${r030fmt}" "printf ${sq}%s${nl}${sq} ${dq}\${1}${dq}"                 "absent"
 expect_rule "${r030fmt}" "printf ${sq}%s${nl}${sq} ${dq}\${1}${dq} ${discard}"      "absent"
 
+## A '#' INSIDE the format does not make the line a comment. The comment skip
+## globbed '[[:space:]]*#*' -- one whitespace char, then anything, then a '#'
+## -- so an INDENTED line carrying a '#' ANYWHERE was waived. The indent is
+## load-bearing in these fixtures: without it the old glob could not match
+## either, and the case would pass against the very code it must catch.
+hash='#'
+indent='   '
+banner="${hash}${hash}${hash}"
+expect_rule "${r030fmt}" "${indent}printf ${sq}${nl}${banner} %s ${banner}${nl}${sq} ${dq}\${x}${dq}" "present"
+## Same violation, indented, '#' only in a trailing comment -- also waived by
+## the old glob.
+expect_rule "${r030fmt}" "${indent}printf ${sq}%d${sq} ${dq}\${1}${dq} ${hash} count" "present"
+## A real comment -- '#' is the first non-blank character -- is still prose and
+## must stay SPARED, indented too. This is what stops the fix from turning
+## every rule-describing comment into a finding.
+expect_rule "${r030fmt}" "${indent}${hash} printf ${sq}%d${sq} ${dq}\${1}${dq}"    "absent"
+expect_rule "${r030fmt}" "${hash} printf ${sq}%d${sq} ${dq}\${1}${dq}"             "absent"
+
 ## The compliant 'printf %s\n' "" IS a blank-line separator, so R-042 (not
 ## R-031) is the rule that owns it -- proves the two checks divide the work
 ## cleanly rather than both firing or both missing.
