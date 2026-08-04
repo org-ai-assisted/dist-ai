@@ -463,6 +463,59 @@ def test_group_membership_is_re_read_every_time(
 # ---------------------------------------------------------------------------
 
 
+def test_dangling_primary_group_does_not_lock_out(
+    results: Results, pl: ModuleType, pld: ModuleType
+) -> None:
+    """
+    An account whose primary group has no group entry must still be able to
+    run the actions it is authorized for.
+
+    getgrouplist() returns the primary GID whether or not a group exists for
+    it, so resolving every GID eagerly raised KeyError and locked that account
+    out of every group-authorized action -- a stale group entry, or an LDAP
+    primary group that fails to resolve, is enough. It fails closed, so it
+    grants nothing, but it denies service to a legitimate account.
+    """
+
+    print('== a dangling primary group does not lock an account out ==')
+    user: str = current_username()
+    with DaemonSandbox(pl, pld):
+        saved_getgrouplist: Any = pld.os.getgrouplist
+        saved_getgrgid: Any = pld.grp.getgrgid
+        try:
+            ## One resolvable group, one GID with no entry at all.
+            real_gid: int = pld.pwd.getpwnam(user).pw_gid
+            pld.os.getgrouplist = lambda _n, _g: [real_gid, 987654]
+
+            def getgrgid_missing(gid: int) -> Any:
+                if gid == 987654:
+                    raise KeyError(f"getgrgid(): gid not found: {gid}")
+                return saved_getgrgid(gid)
+
+            pld.grp.getgrgid = getgrgid_missing
+            real_group: str = saved_getgrgid(real_gid).gr_name
+            action: Any = pl.PrivleapAction(
+                'unit-group-action', 'true', [], [real_group], None, None
+            )
+            results.expect_eq(
+                'the account is still authorized through its resolvable group',
+                pld.authorize_user(action, user),
+                pld.PrivleapdAuthStatus.AUTHORIZED,
+            )
+
+            ## And an account with ONLY the unresolvable group is refused
+            ## rather than crashing.
+            pld.os.getgrouplist = lambda _n, _g: [987654]
+            results.expect_eq(
+                'an account with only an unresolvable group is refused',
+                pld.authorize_user(action, user),
+                pld.PrivleapdAuthStatus.UNAUTHORIZED,
+            )
+        finally:
+            pld.os.getgrouplist = saved_getgrouplist
+            pld.grp.getgrgid = saved_getgrgid
+
+
 def test_control_session_dispatch(
     results: Results, pl: ModuleType, pld: ModuleType
 ) -> None:
@@ -1075,6 +1128,7 @@ def main() -> int:
     run_test(results, test_destroy_survives_a_missing_socket_file, pl, pld)
     run_test(results, test_pruning_removes_no_longer_allowed_accounts, pl, pld)
     run_test(results, test_group_membership_is_re_read_every_time, pl, pld)
+    run_test(results, test_dangling_primary_group_does_not_lock_out, pl, pld)
     run_test(results, test_control_session_dispatch, pl, pld)
     run_test(results, test_reload_reports_success_and_failure, pl, pld)
     run_test(results, test_send_failures_are_survivable, pl, pld)
