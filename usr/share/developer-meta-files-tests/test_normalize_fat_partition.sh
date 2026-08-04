@@ -163,6 +163,35 @@ else
    fail 'ran without SOURCE_DATE_EPOCH (silent non-reproducible)'
 fi
 
+## --- 8. an empty / too-short file is refused cleanly (not a crash) -----------
+## Guards against the '$(( 16# ))' arithmetic crash on unreadable boot-sector bytes.
+truncate --size=0 -- "${work_dir}/empty.img"
+status=0
+out="$( "${tool}" "${work_dir}/empty.img" 2>&1 )" || status="$?"
+if [ "${status}" -ne 0 ] && [[ "${out}" != *"syntax error"* ]] \
+   && [[ "${out}" != *"operand expected"* ]]; then
+   pass 'an empty file is refused cleanly, not a bash arithmetic crash'
+else
+   fail "empty file gave status=${status} out=${out}"
+fi
+
+## --- 9. a non-FAT32 (FAT16) image is REFUSED, not corrupted ------------------
+## Hardcoded FAT32 offsets would mangle a FAT16 ESP; the tool must refuse it.
+## mkfs.fat -C SIZE_KB makes a 16 MiB filesystem, which mkfs.fat lays out as FAT16.
+mkfs.fat -C "${work_dir}/fat16.img" 16384 >/dev/null 2>&1
+cp "${work_dir}/fat16.img" "${work_dir}/fat16.before"
+status=0
+"${tool}" "${work_dir}/fat16.img" >/dev/null 2>&1 || status="$?"
+fat16_state="MODIFIED"
+if cmp --quiet "${work_dir}/fat16.before" "${work_dir}/fat16.img"; then
+   fat16_state="unchanged"
+fi
+if [ "${status}" -ne 0 ] && [ "${fat16_state}" = "unchanged" ]; then
+   pass 'a FAT16 image is refused and left byte-for-byte unchanged'
+else
+   fail "FAT16 handling: status=${status}, image ${fat16_state}"
+fi
+
 printf '%s\n' "===== dm-normalize-fat-partition: ${pass_count} pass, ${fail_count} fail ====="
 if [ "${fail_count}" -gt 0 ]; then
    exit 1
