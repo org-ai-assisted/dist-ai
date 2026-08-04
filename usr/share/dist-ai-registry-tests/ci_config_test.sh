@@ -48,6 +48,21 @@ fi
 
 resolver="${repo}/ci/dist-ai-tests-ci-config.sh"
 
+## A missing DEPENDENCY is a hard FAIL naming itself, not a skip and not four
+## assertion failures. Without yq the resolver emits nothing, so every check
+## below compares against an empty string and reports the CONSUMER config as
+## broken -- a true statement about the wrong subject, which is the most
+## expensive kind of wrong answer a test can give.
+## 'type -P', not the house 'has': this test does not source helper-scripts,
+## and R-090's other remedy would make the dependency check depend on the very
+## runtime it is checking for.
+if ! type -P yq >/dev/null; then
+   printf '%s\n' \
+      'FAIL: ci-config-test: yq not on PATH (apt yq); the resolver cannot run' \
+      'and every check below would misreport its empty output as a bad config.' >&2
+   exit 1
+fi
+
 work_dir="$(mktemp --directory -- "${TMP}/ci-config-test.XXXXXX")"
 
 ## Reached only via the EXIT trap; shellcheck cannot see that path (SC2317).
@@ -178,7 +193,7 @@ resolve_key() {
    ## otherwise the second call reads the first call's value and the canary
    ## passes on stale output. 'printf' rather than ':' (R-130).
    out_file="${work_dir}/out.${key}.$$"
-   printf '' > "${out_file}"
+   printf '%s' '' > "${out_file}"
    GITHUB_OUTPUT="${out_file}" GITHUB_WORKSPACE="${work_dir}" \
       "${resolver}" "${config}" >/dev/null 2>&1 || return 1
    while IFS= read -r line; do
