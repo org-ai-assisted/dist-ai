@@ -73,6 +73,7 @@ core_tests=(
    'tests/ai-review-default-set-test.sh'
    'tests/ai-review-guidance-test.sh'
    'tests/ai-review-pending-todo-test.sh'
+   'tests/ai-review-shared-tree-test.sh'
    'tests/anti-stall-supervisor-max-runtime-test.sh'
    'tests/bandit-discover-python-test.sh'
    'tests/bandit-high-gate-test.sh'
