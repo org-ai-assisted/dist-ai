@@ -477,6 +477,12 @@ dq_probe() {
          '- **Formatter:** Black. Do not reformat code in ways Black disagrees with.' \
          > "${repo}/agents/guidelines.md"
    fi
+   if [ "${declare_black}" = 'toml-string' ]; then
+      ## '[tool.black]' at the start of a line, but inside a string: not a
+      ## declaration, and a grep-based detector would be fooled by it.
+      printf '%s\n' '[project]' 'description = """' '[tool.black]' '"""' \
+         > "${repo}/pyproject.toml"
+   fi
    if [ "${declare_black}" = 'mentions-black' ]; then
       mkdir --parents -- "${repo}/agents"
       printf '%s\n' '# Guidelines' '' \
@@ -523,6 +529,16 @@ else
    failures=$((failures + 1))
 fi
 
+## A table-looking line inside a TOML string is not a declaration. A detector
+## that accepted it would switch the fixer off for a repo that never adopted
+## black.
+if printf '%s' "$(dq_probe toml-string)" | grep --quiet --fixed-strings -- 'FAIL double-quote-string-fixer'; then
+   printf '%s\n' 'PASS: a TOML string containing the table name is not a declaration'
+else
+   printf '%s\n' 'FAIL: a TOML string containing the black table name was read as a declaration' >&2
+   failures=$((failures + 1))
+fi
+
 ## A Python file inside an installed package directory is imported, never run.
 ## Debian ships those 0644, so the shebang-plus-executable rules must not fire
 ## on them -- and must still fire on an ordinary script.
@@ -559,6 +575,17 @@ if printf '%s' "$(module_probe 'usr/bin/probe-tool.py')" \
    printf '%s\n' 'PASS: an ordinary script with a shebang still needs +x'
 else
    printf '%s\n' 'FAIL: the shebang/+x rule stopped firing for ordinary scripts' >&2
+   failures=$((failures + 1))
+fi
+
+## A directory merely NAMED dist-packages is not a Python library path. An
+## unanchored exemption would let any script opt out of the rule by sitting in
+## one.
+if printf '%s' "$(module_probe 'usr/bin/dist-packages/probe-tool.py')" \
+   | grep --quiet --fixed-strings -- 'check-shebang-scripts-are-executable'; then
+   printf '%s\n' 'PASS: a directory merely named dist-packages is not exempt'
+else
+   printf '%s\n' 'FAIL: a script escaped the shebang/+x rule via a dist-packages directory name' >&2
    failures=$((failures + 1))
 fi
 

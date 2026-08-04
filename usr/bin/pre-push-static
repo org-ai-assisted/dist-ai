@@ -1184,8 +1184,16 @@ repo_declares_black() {
    ##    one in to satisfy a style gate risks changing how the package builds.
    ##    Those repos declare their formatter in AGENTS.md / agents/*.md
    ##    instead, which is where this ecosystem's conventions already live.
+   ## Parsed, not grepped: '[tool.black]' can appear at the start of a line
+   ## inside a multi-line string and mean nothing at all, and a false positive
+   ## here silently switches a style check off.
    if [ -f 'pyproject.toml' ] \
-      && grep --quiet --extended-regexp '^\[tool\.black\]' -- 'pyproject.toml'; then
+      && python3 -c '
+import sys, tomllib
+with open("pyproject.toml", "rb") as handle:
+    config = tomllib.load(handle)
+sys.exit(0 if isinstance(config.get("tool", {}).get("black"), dict) else 1)
+' 2>/dev/null; then
       printf -v "${out_var}" '%s' 'pyproject.toml'
       return 0
    fi
@@ -1216,8 +1224,11 @@ is_installed_python_module() {
    ## run: the package's entry points live in usr/bin and import it. Marking
    ## such a file executable is wrong (lintian objects, and Debian ships these
    ## 0644), so the shebang-and-executable rules do not apply to it.
+   ## Anchored to a real Python library path. A bare '*/dist-packages/*.py'
+   ## would exempt any script that merely happens to sit in a directory of
+   ## that name, such as 'usr/bin/dist-packages/tool.py'.
    case "${candidate}" in
-      */dist-packages/*.py|*/site-packages/*.py)
+      */lib/python3*/dist-packages/*.py|*/lib/python3*/site-packages/*.py)
          return 0
          ;;
    esac

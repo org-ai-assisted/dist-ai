@@ -291,6 +291,58 @@ def test_stale_ready_event_does_not_hang_daemon(
             comm_socket.close()
 
 
+# pylint: disable=too-many-locals
+# Rationale:
+#   too-many-locals: reproducing descriptor reuse needs both sockets, both
+#     descriptor numbers, the epoll set, the registration map, the dispatch
+#     map and a client, all at once.
+def test_accept_failure_does_not_spin(
+    results: Results, pld: ModuleType
+) -> None:
+    """
+    An accept that fails for lack of resources must not turn the main loop
+    into a spin.
+
+    A connection that could not be accepted stays in the kernel's backlog, so
+    the listening socket stays readable and the same event comes straight
+    back. Without a pause the loop runs flat out: busy enough that its
+    heartbeat keeps advancing and the watchdog keeps telling systemd the
+    daemon is healthy, while it answers nobody. Any client can cause this by
+    holding connections open until the descriptor limit is reached.
+    """
+
+    print('== an accept that ran out of descriptors does not spin ==')
+    saved_backoff: float = pld.PrivleapdGlobal.accept_backoff_seconds
+    try:
+        pld.PrivleapdGlobal.accept_backoff_seconds = 0.3
+
+        started: float = time.monotonic()
+        pld.report_accept_failure(
+            OSError(errno.EMFILE, 'Too many open files'), 'unit probe'
+        )
+        exhausted_elapsed: float = time.monotonic() - started
+        results.check(
+            f"running out of descriptors pauses the loop "
+            f"({exhausted_elapsed:.2f}s)",
+            exhausted_elapsed >= 0.25,
+        )
+
+        ## An ordinary failure -- a client that hung up -- is not a resource
+        ## problem and must not slow the daemon down for every other caller.
+        started = time.monotonic()
+        pld.report_accept_failure(
+            ConnectionAbortedError('client went away'), 'unit probe'
+        )
+        ordinary_elapsed: float = time.monotonic() - started
+        results.check(
+            f"an ordinary accept failure is not paused for "
+            f"({ordinary_elapsed:.2f}s)",
+            ordinary_elapsed < 0.25,
+        )
+    finally:
+        pld.PrivleapdGlobal.accept_backoff_seconds = saved_backoff
+
+
 def test_reused_descriptor_is_registered(
     results: Results, pl: ModuleType, pld: ModuleType
 ) -> None:
@@ -341,8 +393,13 @@ def test_reused_descriptor_is_registered(
                 second_socket.close()
                 return
 
-            fd_map: dict[int, Any] = pld.refresh_epoll_registrations(
+            fd_map: dict[int, Any]
+            retry_needed: bool
+            fd_map, retry_needed = pld.refresh_epoll_registrations(
                 epoll_obj, registered
+            )
+            results.expect_eq(
+                'no registration was left to retry', retry_needed, False
             )
             results.check(
                 'the recreated socket is in the dispatch map',
@@ -681,7 +738,8 @@ def test_destroyed_socket_is_unregistered(
             )
             pld.socket_list_add(comm_socket)
             comm_fd: int = comm_socket.backend_socket.fileno()
-            fd_map: dict[int, Any] = pld.refresh_epoll_registrations(
+            fd_map: dict[int, Any]
+            fd_map, _retry = pld.refresh_epoll_registrations(
                 epoll_obj, registered
             )
             results.check(
@@ -690,7 +748,9 @@ def test_destroyed_socket_is_unregistered(
             )
             close_socket_info(pld.PrivleapdGlobal.socket_list.pop(0))
             comm_socket.close()
-            fd_map = pld.refresh_epoll_registrations(epoll_obj, registered)
+            fd_map, _retry = pld.refresh_epoll_registrations(
+                epoll_obj, registered
+            )
             results.expect_eq(
                 'the destroyed socket is gone from the dispatch map',
                 fd_map.get(comm_fd),
@@ -846,6 +906,61 @@ def test_watchdog_ping_never_blocks(results: Results, pld: ModuleType) -> None:
     finally:
         left.close()
         right.close()
+        _restore_watchdog_state(pld, saved)
+
+
+def test_startup_notification_is_not_dropped(
+    results: Results, pld: ModuleType
+) -> None:
+    """
+    A notification systemd is waiting on must not be dropped.
+
+    Making the notification socket non-blocking is what stops a busy systemd
+    from parking the watchdog thread, but it applies to every send. READY=1 is
+    not optional: the unit is Type=notify, so systemd waits for exactly that
+    message and fails the start outright if it never arrives. A ping may be
+    dropped; a readiness notification may not.
+    """
+
+    print('== a notification systemd waits for is not dropped ==')
+    saved: dict[str, Any] = _save_watchdog_state(pld)
+    saved_retry: float = pld.PrivleapdGlobal.sd_notify_retry_seconds
+    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+    try:
+        right.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 2048)
+        left.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 2048)
+        pld.PrivleapdGlobal.sdnotify_object.socket = left
+        pld.setup_sd_notify()
+        mode_under_test: float | None = left.gettimeout()
+        if not results.check(
+            'the notification socket could be filled (precondition)',
+            fill_datagram_socket(left),
+        ):
+            return
+        left.settimeout(mode_under_test)
+
+        ## Drain from the far end shortly after the send starts, standing in
+        ## for a systemd that was briefly behind and then caught up.
+        def drain_soon() -> None:
+            time.sleep(0.2)
+            _drain_datagrams(right)
+
+        right.setblocking(False)
+        threading.Thread(target=drain_soon, daemon=True).start()
+        pld.PrivleapdGlobal.sd_notify_retry_seconds = 5.0
+        finished, _r, exception = call_with_deadline(
+            lambda: pld.sd_notify('READY=1', must_arrive=True)
+        )
+        results.check('sending READY=1 returns', finished)
+        results.check('sending READY=1 does not raise', exception is None)
+        results.check(
+            'READY=1 reached systemd rather than being dropped',
+            _drain_datagrams(right) > 0,
+        )
+    finally:
+        left.close()
+        right.close()
+        pld.PrivleapdGlobal.sd_notify_retry_seconds = saved_retry
         _restore_watchdog_state(pld, saved)
 
 
@@ -1337,11 +1452,13 @@ def main() -> int:
     ## state belongs to those threads.
     run_test(results, test_listener_accept_is_bounded, pl)
     run_test(results, test_stale_ready_event_does_not_hang_daemon, pl, pld)
+    run_test(results, test_accept_failure_does_not_spin, pld)
     run_test(results, test_reused_descriptor_is_registered, pl, pld)
     run_test(results, test_destroyed_socket_is_unregistered, pl, pld)
     run_test(results, test_watchdog_ping_cadence, pld)
     run_test(results, test_watchdog_disabled_without_systemd, pld)
     run_test(results, test_watchdog_ping_never_blocks, pld)
+    run_test(results, test_startup_notification_is_not_dropped, pld)
     run_test(results, test_watchdog_without_notify_socket, pld)
     run_test(results, test_notify_pipe_write_never_blocks, pld)
     run_test(results, test_termination_notice_reaches_every_thread, pld)
