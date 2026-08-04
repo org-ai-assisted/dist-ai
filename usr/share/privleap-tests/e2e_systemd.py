@@ -47,37 +47,37 @@ HERE: str = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
-INSIDE_ENV: str = "PRIVLEAP_E2E_SYSTEMD"
-CONF_DIR: str = "/etc/privleap/conf.d"
-CONF_BAK: str = "/etc/privleap/conf.d.e2e-bak"
-DROPIN_DIR: str = "/etc/systemd/system/privleapd.service.d"
-DROPIN_FILE: str = os.path.join(DROPIN_DIR, "e2e-repo.conf")
-ETC_ENVIRONMENT: str = "/etc/environment"
+INSIDE_ENV: str = 'PRIVLEAP_E2E_SYSTEMD'
+CONF_DIR: str = '/etc/privleap/conf.d'
+CONF_BAK: str = '/etc/privleap/conf.d.e2e-bak'
+DROPIN_DIR: str = '/etc/systemd/system/privleapd.service.d'
+DROPIN_FILE: str = os.path.join(DROPIN_DIR, 'e2e-repo.conf')
+ETC_ENVIRONMENT: str = '/etc/environment'
 
 
 def reexec_under_sudo() -> None:
     """Re-exec self under sudo (real root, no namespace) if not already root."""
 
-    if os.geteuid() == 0 and os.environ.get(INSIDE_ENV) == "1":
+    if os.geteuid() == 0 and os.environ.get(INSIDE_ENV) == '1':
         return
-    if os.geteuid() == 0 and not os.environ.get("SUDO_USER"):
+    if os.geteuid() == 0 and not os.environ.get('SUDO_USER'):
         print(
-            "FATAL: run privleap-tests-e2e-systemd from a normal user account "
-            "(via sudo), not as root directly, so the daemon can attribute "
-            "requests to an unprivileged caller.",
+            'FATAL: run privleap-tests-e2e-systemd from a normal user account '
+            '(via sudo), not as root directly, so the daemon can attribute '
+            'requests to an unprivileged caller.',
             file=sys.stderr,
         )
         raise SystemExit(2)
     env_args: list[str] = [f"{INSIDE_ENV}=1"]
-    if os.environ.get("PRIVLEAP_REPO"):
+    if os.environ.get('PRIVLEAP_REPO'):
         env_args.append(f"PRIVLEAP_REPO={os.environ['PRIVLEAP_REPO']}")
     cmd: list[str] = (
-        ["sudo", "env"]
+        ['sudo', 'env']
         + env_args
         + [sys.executable, os.path.abspath(__file__)]
         + sys.argv[1:]
     )
-    os.execvp("sudo", cmd)
+    os.execvp('sudo', cmd)
 
 
 reexec_under_sudo()
@@ -98,13 +98,13 @@ def sh(args: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
 
 
 def svc_is_active() -> bool:
-    return sh(["systemctl", "is-active", "privleapd"], check=False).stdout \
-        .strip() == "active"
+    return sh(['systemctl', 'is-active', 'privleapd'], check=False).stdout \
+        .strip() == 'active'
 
 
 def svc_nrestarts() -> int:
     out: str = sh(
-        ["systemctl", "show", "privleapd", "-p", "NRestarts", "--value"],
+        ['systemctl', 'show', 'privleapd', '-p', 'NRestarts', '--value'],
         check=False,
     ).stdout.strip()
     try:
@@ -115,7 +115,7 @@ def svc_nrestarts() -> int:
 
 def svc_prop(name: str) -> str:
     return sh(
-        ["systemctl", "show", "privleapd", "-p", name, "--value"], check=False
+        ['systemctl', 'show', 'privleapd', '-p', name, '--value'], check=False
     ).stdout.strip()
 
 
@@ -158,15 +158,15 @@ def setup_env_injection(
 
     planted: set[str] = set()
     info: pwd.struct_passwd = pwd.getpwnam(user)
-    bashenv_script: str = os.path.join(workdir, "bashenv.sh")
-    bashenv_sentinel: str = os.path.join(workdir, "BASHENV_SOURCED")
-    with open(bashenv_script, "w", encoding="utf-8") as handle:
+    bashenv_script: str = os.path.join(workdir, 'bashenv.sh')
+    bashenv_sentinel: str = os.path.join(workdir, 'BASHENV_SOURCED')
+    with open(bashenv_script, 'w', encoding='utf-8') as handle:
         handle.write(f"#!/bin/sh\ntouch {bashenv_sentinel}\n")
     os.chmod(bashenv_script, 0o755)  # nosec B103 -- BASH_ENV hook must be executable by the unprivileged target user privleap runs as
 
-    pam_env_path: str = os.path.join(info.pw_dir, ".pam_environment")
+    pam_env_path: str = os.path.join(info.pw_dir, '.pam_environment')
     if os.path.isdir(info.pw_dir):
-        backup: str = os.path.join(workdir, "pam_environment.bak")
+        backup: str = os.path.join(workdir, 'pam_environment.bak')
         had_file: bool = os.path.exists(pam_env_path)
         if had_file:
             shutil.copy2(pam_env_path, backup)
@@ -178,44 +178,62 @@ def setup_env_injection(
                 if os.path.exists(pam_env_path):
                     os.unlink(pam_env_path)
 
-        restorer.push("~/.pam_environment", restore_pam)
-        with open(pam_env_path, "w", encoding="utf-8") as handle:
+        restorer.push('~/.pam_environment', restore_pam)
+        with open(pam_env_path, 'w', encoding='utf-8') as handle:
             handle.write(f"{e2e_lib.INJECT_PAMENV} DEFAULT=injected\n")
             handle.write(f"BASH_ENV DEFAULT={bashenv_script}\n")
-            handle.write("LD_PRELOAD DEFAULT=/nonexistent/evil.so\n")
+            handle.write('LD_PRELOAD DEFAULT=/nonexistent/evil.so\n')
         os.chown(pam_env_path, info.pw_uid, info.pw_gid)
         os.chmod(pam_env_path, 0o600)
-        planted.add("pam_environment")
+        planted.add('pam_environment')
 
     if os.path.isfile(ETC_ENVIRONMENT):
-        env_backup: str = os.path.join(workdir, "etc_environment.bak")
+        env_backup: str = os.path.join(workdir, 'etc_environment.bak')
         shutil.copy2(ETC_ENVIRONMENT, env_backup)
 
         def restore_etcenv() -> None:
             shutil.move(env_backup, ETC_ENVIRONMENT)
 
-        restorer.push("/etc/environment", restore_etcenv)
-        with open(ETC_ENVIRONMENT, "a", encoding="utf-8") as handle:
+        restorer.push('/etc/environment', restore_etcenv)
+        with open(ETC_ENVIRONMENT, 'a', encoding='utf-8') as handle:
             handle.write(f"\n{e2e_lib.INJECT_ETCENV}=injected\n")
-        planted.add("etc_environment")
+        planted.add('etc_environment')
 
     return planted, bashenv_sentinel
+
+
+INSTALLED_SHIM: str = '/usr/libexec/privleap/shim.py'
 
 
 def install_repo_dropin(repo: str, restorer: Restorer) -> None:
     """Make systemd run the checkout's privleapd with the matching PYTHONPATH,
     via a transient drop-in that is removed on restore."""
 
-    repo_bin: str = os.path.join(repo, "usr/bin/privleapd")
-    repo_pp: str = os.path.join(repo, "usr/lib/python3/dist-packages")
+    repo_bin: str = os.path.join(repo, 'usr/bin/privleapd')
+    repo_pp: str = os.path.join(repo, 'usr/lib/python3/dist-packages')
+    repo_shim: str = os.path.join(repo, 'usr/libexec/privleap/shim.py')
+    ## privleapd runs the shim from a hardcoded absolute path, so overriding
+    ## ExecStart alone still leaves the INSTALLED shim executing every action.
+    ## BindPaths gives the unit its own mount namespace with the checkout's
+    ## shim in that place, confined to this service and undone with the
+    ## drop-in.
+    if not os.path.isfile(repo_shim):
+        print(
+            f"FATAL: PRIVLEAP_REPO='{repo}' has no usr/libexec/privleap/"
+            'shim.py. Refusing to run the installed shim in its place: that '
+            'would test different code and report it as a pass.',
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
     dropin_preexisted: bool = os.path.isdir(DROPIN_DIR)
     os.makedirs(DROPIN_DIR, exist_ok=True)
-    with open(DROPIN_FILE, "w", encoding="utf-8") as handle:
+    with open(DROPIN_FILE, 'w', encoding='utf-8') as handle:
         handle.write(
-            "[Service]\n"
-            "ExecStart=\n"
+            '[Service]\n'
+            'ExecStart=\n'
             f"ExecStart={repo_bin}\n"
             f"Environment=PYTHONPATH={repo_pp}\n"
+            f"BindPaths={repo_shim}:{INSTALLED_SHIM}\n"
         )
 
     def restore_dropin() -> None:
@@ -227,10 +245,10 @@ def install_repo_dropin(repo: str, restorer: Restorer) -> None:
             except OSError:
                 # best-effort cleanup; the resource may already be gone
                 pass
-        sh(["systemctl", "daemon-reload"], check=False)
+        sh(['systemctl', 'daemon-reload'], check=False)
 
-    restorer.push("repo drop-in", restore_dropin)
-    sh(["systemctl", "daemon-reload"])
+    restorer.push('repo drop-in', restore_dropin)
+    sh(['systemctl', 'daemon-reload'])
 
 
 def main() -> int:
@@ -241,44 +259,44 @@ def main() -> int:
         print(f"FATAL: caller account '{user}' does not exist.", file=sys.stderr)
         return 2
     if info.pw_uid == 0:
-        print("FATAL: refusing to attribute requests to root.", file=sys.stderr)
+        print('FATAL: refusing to attribute requests to root.', file=sys.stderr)
         return 2
 
     ## The service must exist.
-    if sh(["systemctl", "cat", "privleapd"], check=False).returncode != 0:
-        print("SKIP: privleapd.service not found on this system.")
+    if sh(['systemctl', 'cat', 'privleapd'], check=False).returncode != 0:
+        print('SKIP: privleapd.service not found on this system.')
         return 77
 
-    repo: str | None = os.environ.get("PRIVLEAP_REPO")
-    print("privleap live-daemon e2e test (systemd backend)")
+    repo: str | None = os.environ.get('PRIVLEAP_REPO')
+    print('privleap live-daemon e2e test (systemd backend)')
     print(f"caller (attributed) account: {user} (uid {info.pw_uid})")
     print(f"service: privleapd.service (Type={svc_prop('Type')}, "
           f"NotifyAccess={svc_prop('NotifyAccess')}, "
           f"WatchdogUSec={svc_prop('WatchdogUSec')})")
     if repo:
         print(f"PRIVLEAP_REPO={repo} (installed via transient drop-in)")
-    print("WARNING: this stops/reconfigures/restarts the real privleapd.service;"
-          " it is restored on exit.")
+    print('WARNING: this stops/reconfigures/restarts the real privleapd.service;'
+          ' it is restored on exit.')
     print()
 
-    workdir: str = tempfile.mkdtemp(prefix="privleap-e2e-sysd-")
+    workdir: str = tempfile.mkdtemp(prefix='privleap-e2e-sysd-')
     results: Results = Results()
     restorer: Restorer = Restorer()
-    restorer.push("rmtree workdir", lambda: shutil.rmtree(
+    restorer.push('rmtree workdir', lambda: shutil.rmtree(
         workdir, ignore_errors=True))
 
     was_active: bool = svc_is_active()
 
     ## Bring the service down before swapping its config.
-    sh(["systemctl", "stop", "privleapd"], check=False)
+    sh(['systemctl', 'stop', 'privleapd'], check=False)
 
     def restart_original() -> None:
         if was_active:
-            sh(["systemctl", "start", "privleapd"], check=False)
+            sh(['systemctl', 'start', 'privleapd'], check=False)
         else:
-            sh(["systemctl", "stop", "privleapd"], check=False)
+            sh(['systemctl', 'stop', 'privleapd'], check=False)
 
-    restorer.push("restart original service", restart_original)
+    restorer.push('restart original service', restart_original)
 
     ## Displace the real config and install the test config.
     if os.path.exists(CONF_BAK):
@@ -292,7 +310,7 @@ def main() -> int:
             if os.path.isdir(CONF_BAK):
                 shutil.move(CONF_BAK, CONF_DIR)
 
-        restorer.push("restore /etc/privleap/conf.d", restore_config)
+        restorer.push('restore /etc/privleap/conf.d', restore_config)
     e2e_lib.write_config(CONF_DIR, user, workdir)
 
     planted, bashenv_sentinel = setup_env_injection(user, workdir, restorer)
@@ -303,22 +321,22 @@ def main() -> int:
     ## Start the real service (Type=notify: this returns only after privleapd
     ## sends READY=1, so a clean start also proves the notify handshake).
     start: subprocess.CompletedProcess[str] = sh(
-        ["systemctl", "start", "privleapd"], check=False
+        ['systemctl', 'start', 'privleapd'], check=False
     )
-    results.check("real privleapd.service started (notify handshake ok)",
+    results.check('real privleapd.service started (notify handshake ok)',
                   start.returncode == 0 and svc_is_active())
     if start.returncode != 0:
-        print("FATAL: could not start privleapd.service:")
-        print(sh(["systemctl", "status", "privleapd", "--no-pager"],
+        print('FATAL: could not start privleapd.service:')
+        print(sh(['systemctl', 'status', 'privleapd', '--no-pager'],
                  check=False).stdout)
-        print(sh(["journalctl", "-u", "privleapd", "-n", "30", "--no-pager"],
+        print(sh(['journalctl', '-u', 'privleapd', '-n', '30', '--no-pager'],
                  check=False).stdout)
-        return results.report("live-daemon e2e (systemd)")
+        return results.report('live-daemon e2e (systemd)')
 
     sock_path: str = f"/run/privleapd/comm/{user}"
     if not e2e_lib.wait_for_socket(sock_path):
-        print("FATAL: privleapd did not create the comm socket in time.")
-        return results.report("live-daemon e2e (systemd)")
+        print('FATAL: privleapd did not create the comm socket in time.')
+        return results.report('live-daemon e2e (systemd)')
 
     baseline_restarts: int = svc_nrestarts()
 
@@ -339,41 +357,41 @@ def main() -> int:
 
     ## E: systemd-environment observations -- the realism payoff. Under the real
     ## service the action inherits the manager's notify/watchdog variables.
-    print("== E: real systemd service environment reaches the action ==")
+    print('== E: real systemd service environment reaches the action ==')
     has_notify: bool = any(
-        line.split("=", 1)[0] == "NOTIFY_SOCKET"
+        line.split('=', 1)[0] == 'NOTIFY_SOCKET'
         for line in env_text.splitlines()
     )
     results.check(
-        "action ran under the real systemd service env (PATH present)",
-        any(line.startswith("PATH=") for line in env_text.splitlines()),
+        'action ran under the real systemd service env (PATH present)',
+        any(line.startswith('PATH=') for line in env_text.splitlines()),
     )
     if has_notify:
         print(
             "   NOTE: the action inherited systemd's NOTIFY_SOCKET (and "
-            "WATCHDOG_* if set). Not exploitable -- NotifyAccess=main makes "
+            'WATCHDOG_* if set). Not exploitable -- NotifyAccess=main makes '
             "systemd reject notifications from the action's PID -- but "
-            "shim.py could scrub these for defence in depth."
+            'shim.py could scrub these for defence in depth.'
         )
     else:
-        print("   NOTE: NOTIFY_SOCKET did not reach the action.")
+        print('   NOTE: NOTIFY_SOCKET did not reach the action.')
     results.check(
-        "no attacker-planted variable in the real systemd action env",
+        'no attacker-planted variable in the real systemd action env',
         not any(
-            line.split("=", 1)[0] in (e2e_lib.INJECT_PAMENV, e2e_lib.INJECT_ETCENV,
-                                      "LD_PRELOAD", "BASH_ENV")
+            line.split('=', 1)[0] in (e2e_lib.INJECT_PAMENV, e2e_lib.INJECT_ETCENV,
+                                      'LD_PRELOAD', 'BASH_ENV')
             for line in env_text.splitlines()
         ),
     )
 
     print()
-    code: int = results.report("live-daemon e2e (systemd)")
+    code: int = results.report('live-daemon e2e (systemd)')
     ## Restore happens via the Restorer (atexit); report afterwards.
     restorer.run()
-    print("restored: original privleapd.service config and state.")
+    print('restored: original privleapd.service config and state.')
     print(f"service now: {sh(['systemctl', 'is-active', 'privleapd'], check=False).stdout.strip()}")
     return code
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     raise SystemExit(main())

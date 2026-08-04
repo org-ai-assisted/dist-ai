@@ -98,7 +98,7 @@ run_in_process() {
 
 printf '%s\n' '######## in-process lane ########'
 run_in_process parser_fuzz authorizer_test unit_test daemon_test config_test \
-   client_test
+   client_test shim_test
 
 printf '%s\n' ''
 printf '%s\n' '######## live-daemon lane (needs sudo) ########'

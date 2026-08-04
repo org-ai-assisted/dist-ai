@@ -85,6 +85,9 @@ printf '%s\n' ''
 printf '%s\n' '################# client tool tests #######################'
 run_one "${tests_dir}/client_test.py"
 printf '%s\n' ''
+printf '%s\n' '################### PAM shim tests ########################'
+run_one "${tests_dir}/shim_test.py"
+printf '%s\n' ''
 printf '%s\n' '############### Hypothesis property tests ##################'
 run_pytest "${tests_dir}/test_property.py"
 
