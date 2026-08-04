@@ -62,12 +62,16 @@ case "${target}" in
       multi_target_list=''
       artifact_glob='*.iso'
       ;;
+   virtualbox)
+      multi_target_list='virtualbox'
+      artifact_glob='*.ova'
+      ;;
    "")
-      printf '%s\n' "dm-local-repro-build: DM_REPRO_TARGET must be set to 'qcow2' or 'iso' (no default -- both are equally primary)" >&2
+      printf '%s\n' "dm-local-repro-build: DM_REPRO_TARGET must be set to 'qcow2', 'iso' or 'virtualbox' (no default -- all are equally primary)" >&2
       exit 2
       ;;
    *)
-      printf '%s\n' "dm-local-repro-build: unsupported DM_REPRO_TARGET '${target}' (qcow2|iso)" >&2
+      printf '%s\n' "dm-local-repro-build: unsupported DM_REPRO_TARGET '${target}' (qcow2|iso|virtualbox)" >&2
       exit 2
       ;;
 esac
