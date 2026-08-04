@@ -81,6 +81,16 @@ esac
 ## buildinfo's Submodule-State lines.
 submodule_overrides="${DM_REPRO_SUBMODULE_OVERRIDES:-}"
 
+## The value is interpolated into the restore script that runs in the sandbox,
+## so constrain it to what a 'path=sha' list can legitimately contain before it
+## gets there.
+case "${submodule_overrides}" in
+   *[!A-Za-z0-9/=_.\ -]*)
+      printf '%s\n' 'dm-local-repro-build: DM_REPRO_SUBMODULE_OVERRIDES may contain only [A-Za-z0-9/=_.-] and spaces' >&2
+      exit 2
+      ;;
+esac
+
 note() {
    local stamp
    stamp="$(date --utc +%H:%M:%SZ)"
@@ -100,6 +110,41 @@ cd -- "${remote_tree}"
 git fetch --quiet origin >/dev/null 2>&1 || true
 git reset --hard "${target_sha}" >/dev/null
 git submodule update --init --recursive >/dev/null 2>&1 || true
+## Apply the submodule overrides AFTER the gitlink checkout above, which would
+## otherwise undo them. Every entry must apply EXACTLY or the run aborts:
+## continuing on the gitlink after being told to build a specific sha yields an
+## image that differs for a reason nobody asked about, and the comparison then
+## reports it as a reproducibility defect. A silently unapplied override is the
+## worst outcome available here, so none of these use '|| true'.
+repro_overrides='${submodule_overrides}'
+for override in \${repro_overrides}; do
+   sub_path="\${override%%=*}"
+   sub_sha="\${override#*=}"
+   if [ "\${sub_path}" = "\${override}" ] || [ -z "\${sub_path}" ] || [ -z "\${sub_sha}" ]; then
+      printf '%s\n' "FATAL: malformed override '\${override}' (want 'path=sha')" >&2
+      exit 2
+   fi
+   if [ ! -d "\${sub_path}" ]; then
+      printf '%s\n' "FATAL: override path '\${sub_path}' is not a directory in this tree" >&2
+      exit 2
+   fi
+   (
+      cd -- "\${sub_path}" || exit 1
+      ## The sha is a fork-branch tip the clone may never have seen, so fetch
+      ## before asking for it. Existence is then checked explicitly, because
+      ## 'reset --hard' on an unknown object leaves the checkout untouched.
+      git fetch --quiet origin "\${sub_sha}" >/dev/null 2>&1 \
+         || git fetch --quiet --all >/dev/null 2>&1 || true
+      git cat-file -e "\${sub_sha}^{commit}" >/dev/null 2>&1 || exit 3
+      git reset --hard "\${sub_sha}" >/dev/null 2>&1 || exit 4
+   )
+   override_rc=\$?
+   if [ "\${override_rc}" != '0' ]; then
+      printf '%s\n' "FATAL: could not apply override \${sub_path}=\${sub_sha} (rc=\${override_rc}); refusing to build different source than asked for" >&2
+      exit 2
+   fi
+   printf '%s\n' "override applied: \${sub_path} -> \$( cd -- "\${sub_path}" && git rev-parse HEAD )"
+done
 ## Remove UNTRACKED and ignored files too. 'reset --hard' leaves them, and this
 ## sandbox has accumulated __pycache__, .pytest_cache and .mypy_cache from test
 ## runs. CI checks out fresh and never has them; here dm-check-unicode flagged
