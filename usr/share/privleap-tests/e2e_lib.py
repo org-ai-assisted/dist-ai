@@ -28,6 +28,7 @@ import os
 import random
 import socket
 import subprocess
+import tempfile
 import sys
 import time
 from types import ModuleType
@@ -90,19 +91,76 @@ def reexec_under_mount_namespace(inside_env_var: str) -> None:
     os.execvp('sudo', cmd)
 
 
+def mount_tmpfs_preserving(path: str, keep: list[str]) -> None:
+    """
+    Mount a tmpfs over path, keeping the directories in keep visible.
+
+    The env-injection preconditions need a throwaway home, but a checkout
+    under test commonly lives inside that home, and a tmpfs over it would
+    hide the very tree the run is supposed to exercise. Each kept directory
+    is bind-mounted aside first, because once the tmpfs is in place its
+    original contents can no longer be reached to bind FROM.
+    """
+
+    stash: str = tempfile.mkdtemp(prefix='privleap-keep-', dir='/var/tmp')
+    saved: list[tuple[str, str]] = []
+    for index, kept in enumerate(keep):
+        if not os.path.isdir(kept):
+            continue
+        if os.path.commonpath([kept, path]) != path:
+            continue
+        aside: str = os.path.join(stash, str(index))
+        os.mkdir(aside)
+        subprocess.run(['mount', '--bind', kept, aside], check=True)
+        saved.append((aside, kept))
+
+    mount_tmpfs(path)
+
+    for aside, kept in saved:
+        os.makedirs(kept, exist_ok=True)
+        subprocess.run(['mount', '--bind', aside, kept], check=True)
+
+
 def mount_tmpfs(path: str) -> None:
     subprocess.run(['mount', '-t', 'tmpfs', 'tmpfs', path], check=True)
 
 
+## Resolved once, on the first call. The harness later mounts a tmpfs over the
+## calling account's home, and a checkout under that home becomes invisible for
+## the rest of the run -- so a later existence check would silently decide the
+## checkout is absent. Callers must therefore resolve this BEFORE those mounts,
+## which main() does when it prints the banner.
+_privleapd_path: str | None = None
+
+
 def privleapd_path() -> str:
-    """Locate the privleapd binary (PRIVLEAP_REPO override, else installed)."""
+    """
+    Locate the privleapd binary (PRIVLEAP_REPO override, else installed).
+
+    Refuses to fall back to the installed package when PRIVLEAP_REPO was set:
+    falling back would run a DIFFERENT privleap than the one under test and
+    report the result as a pass, which is worse than not running at all.
+    """
+
+    global _privleapd_path  # pylint: disable=global-statement
+    if _privleapd_path is not None:
+        return _privleapd_path
 
     repo: str | None = os.environ.get('PRIVLEAP_REPO')
     if repo:
         candidate: str = os.path.join(repo, 'usr/bin/privleapd')
-        if os.path.isfile(candidate):
-            return candidate
-    return '/usr/bin/privleapd'
+        if not os.path.isfile(candidate):
+            print(
+                f"FATAL: PRIVLEAP_REPO='{repo}' has no usr/bin/privleapd. "
+                'Refusing to fall back to the installed package: that would '
+                'test different code and report it as a pass.',
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        _privleapd_path = candidate
+    else:
+        _privleapd_path = '/usr/bin/privleapd'
+    return _privleapd_path
 
 
 def coverage_enabled() -> bool:

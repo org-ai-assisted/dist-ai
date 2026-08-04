@@ -63,7 +63,11 @@ def setup_env_injection(user: str, workdir: str) -> tuple[set[str], str]:
     home: str = info.pw_dir
     if os.path.isdir(home):
         try:
-            e2e_lib.mount_tmpfs(home)
+            ## The tree under test usually lives inside this home; hiding
+            ## it would make the run exercise the installed package instead.
+            e2e_lib.mount_tmpfs_preserving(
+                home, [os.environ.get('PRIVLEAP_REPO', ''), HERE]
+            )
             os.chown(home, info.pw_uid, info.pw_gid)
             os.chmod(home, 0o700)
             pam_env_path: str = os.path.join(home, '.pam_environment')
