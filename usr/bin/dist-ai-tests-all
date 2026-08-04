@@ -89,6 +89,7 @@ core_suites=(
    setup-wizard-dist-tests
    stcat-family-tests
    stdisplay-tests
+   strip-markup-tests
    systemcheck-tests
    tb-updater-tests
    terminal-poc-corpus-tests
@@ -261,6 +262,9 @@ wire() {
          ;;
       stcat-family|stdisplay)
          wire_env=( "STDISPLAY_REPO=${hs}" )
+         ;;
+      strip-markup)
+         wire_env=( "STRIP_MARKUP_REPO=${hs}" )
          ;;
       sanitize-string)
          ## sanitize-string's '#!/usr/bin/python3 -Bsu' excludes the user site,
@@ -557,7 +561,7 @@ wire() {
 suite_component() {
    local base="${1%%-tests*}"
    case "${base}" in
-      check-ref-commits-for-unicode|grep-find-unicode-wrapper|unicode-show|stcat-family|stdisplay|sanitize-string|lockfile|git-meld|onion-time-pre-script)
+      check-ref-commits-for-unicode|grep-find-unicode-wrapper|unicode-show|stcat-family|stdisplay|strip-markup|sanitize-string|lockfile|git-meld|onion-time-pre-script)
          printf '%s' 'helper-scripts'
          ;;
       developer-meta-files|github-org-tools|dm-virtualbox-wiki-links)
