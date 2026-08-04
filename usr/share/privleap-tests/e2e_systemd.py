@@ -179,12 +179,23 @@ def setup_env_injection(
                     os.unlink(pam_env_path)
 
         restorer.push('~/.pam_environment', restore_pam)
-        with open(pam_env_path, 'w', encoding='utf-8') as handle:
+        ## pam_env_path is in the target user's own home, so this root write must
+        ## not follow a symlink the user could have planted there: O_NOFOLLOW
+        ## refuses a symlinked final component (fail closed), and fchown/fchmod
+        ## act on the opened fd rather than re-resolving the path -- otherwise a
+        ## symlink to a root-owned file would be truncated and then chowned to
+        ## the unprivileged user.
+        pam_flags: int = (
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+        )
+        pam_fd: int = os.open(pam_env_path, pam_flags, 0o600)
+        with os.fdopen(pam_fd, 'w', encoding='utf-8') as handle:
             handle.write(f"{e2e_lib.INJECT_PAMENV} DEFAULT=injected\n")
             handle.write(f"BASH_ENV DEFAULT={bashenv_script}\n")
             handle.write('LD_PRELOAD DEFAULT=/nonexistent/evil.so\n')
-        os.chown(pam_env_path, info.pw_uid, info.pw_gid)
-        os.chmod(pam_env_path, 0o600)
+            handle.flush()
+            os.fchown(pam_fd, info.pw_uid, info.pw_gid)
+            os.fchmod(pam_fd, 0o600)
         planted.add('pam_environment')
 
     if os.path.isfile(ETC_ENVIRONMENT):

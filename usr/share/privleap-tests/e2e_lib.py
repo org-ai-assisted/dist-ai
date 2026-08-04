@@ -24,8 +24,10 @@ that reports whether the daemon is still healthy (the meaning of "healthy"
 differs per backend, so the check is injected).
 """
 
+import atexit
 import os
 import random
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -104,6 +106,18 @@ def mount_tmpfs_preserving(path: str, keep: list[str]) -> None:
 
     stash: str = tempfile.mkdtemp(prefix='privleap-keep-', dir='/var/tmp')
     saved: list[tuple[str, str]] = []
+
+    def _cleanup_stash() -> None:
+        ## The bind mounts are namespace-local and reaped when the mount
+        ## namespace exits, but the stash directory itself lives on the shared
+        ## host /var/tmp, so remove it. Lazy umount first (the binds may still
+        ## be active); everything is best-effort since the namespace teardown
+        ## also handles the mounts.
+        for aside_path, _ in saved:
+            subprocess.run(['umount', '-l', aside_path], check=False)
+        shutil.rmtree(stash, ignore_errors=True)
+
+    atexit.register(_cleanup_stash)
     ## Resolved before comparing: commonpath() raises outright on a mix of
     ## absolute and relative paths, and PRIVLEAP_REPO is commonly given
     ## relative.
