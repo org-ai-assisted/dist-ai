@@ -271,6 +271,31 @@ case "${head_out}" in
 esac
 assert_single_trailing_blank "no state file + source tree" "${head_out}"
 
+## Walk-up guard: source_code_folder_dist pointing at a NON-git subdir nested
+## inside an unrelated git repo must NOT borrow that repo's HEAD. 'git -C DIR'
+## walks up to the enclosing .git, so without the work-tree-root check the record
+## would falsely carry ${head_sha}. FAILS on code lacking the '-ef' toplevel gate.
+nested_dir="${head_repo}/subdir/not-a-repo"
+mkdir -p -- "${nested_dir}"
+nested_image="${workdir}/image-nested.raw"
+touch -- "${nested_image}"
+env source_code_folder_dist="${nested_dir}" \
+   dm_source_state_file="${workdir}/no-such-state" \
+   binary_build_folder_dist="${workdir}/binary" \
+   bash -- "${subject}" --target raw --image "${nested_image}" >/dev/null 2>&1
+nested_out="$(cat -- "${nested_image}.dm-buildinfo")"
+case "${nested_out}" in
+   *"Source-Commit: ${head_sha}"*)
+      fail "walk-up: borrowed the enclosing repo's HEAD for a non-git build dir -- ${nested_out}"
+      ;;
+   *'Source-Commit: unrecorded'*)
+      pass "walk-up guard: non-git dir nested in a repo falls through to unrecorded"
+      ;;
+   *)
+      fail "walk-up: unexpected record -- ${nested_out}"
+      ;;
+esac
+
 ## Canary: the SAME missing-file case WITHOUT a source tree must still be
 ## 'unrecorded', proving the HEAD path is gated on source_code_folder_dist and
 ## is not a blanket change that would mask a genuinely unrecorded build.
