@@ -694,6 +694,48 @@ else
    printf '%s\n' 'PASS: uncommitted deletion does not crash the large-files hook'
 fi
 
+## check-added-large-files, staged mode, no upstream: a large file already
+## tracked at HEAD that a staged change merely TOUCHES must not be flagged as
+## newly added. In staged mode the base is HEAD (the index is diffed against
+## it), so the "already tracked" exclusion must resolve against HEAD -- not the
+## push-mode default '@{u}', which is unresolvable on a branch with no upstream
+## and made the exclusion silently fail, so a pre-existing large file failed the
+## gate on every changeset that so much as appended to it. A genuinely NEW large
+## staged file must still be flagged (the fix must not disable the check).
+bigstaged_repo="$(mktemp --directory --tmpdir="${tmp_root}" bigstaged.XXXXXX)"
+git -C "${bigstaged_repo}" init --quiet
+git -C "${bigstaged_repo}" config user.email 'ci-test@example.com'
+git -C "${bigstaged_repo}" config user.name 'ci-test'
+## >500 KB: the check-added-large-files default maxkb threshold.
+head --bytes=600000 /dev/zero | tr '\0' 'x' > "${bigstaged_repo}/big.txt"
+git -C "${bigstaged_repo}" add big.txt
+git -C "${bigstaged_repo}" commit --quiet --no-verify --message base
+## touch it and stage the change: present at HEAD, modified in the index.
+printf '%s\n' 'appended' >> "${bigstaged_repo}/big.txt"
+git -C "${bigstaged_repo}" add big.txt
+bigstaged_out="$( cd -- "${bigstaged_repo}" && "${GATE}" --staged 2>&1 || true )"
+if printf '%s\n' "${bigstaged_out}" | grep --quiet --fixed-strings -- 'FAIL check-added-large-files'; then
+   printf '%s\n' 'FAIL: a pre-existing large file was flagged as newly added in staged mode (no upstream)' >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' 'PASS: a pre-existing large file is exempt from check-added-large-files in staged mode'
+fi
+
+bignew_repo="$(mktemp --directory --tmpdir="${tmp_root}" bignew.XXXXXX)"
+git -C "${bignew_repo}" init --quiet
+git -C "${bignew_repo}" config user.email 'ci-test@example.com'
+git -C "${bignew_repo}" config user.name 'ci-test'
+git -C "${bignew_repo}" commit --quiet --no-verify --allow-empty --message base
+head --bytes=600000 /dev/zero | tr '\0' 'y' > "${bignew_repo}/bignew.txt"
+git -C "${bignew_repo}" add bignew.txt
+bignew_out="$( cd -- "${bignew_repo}" && "${GATE}" --staged 2>&1 || true )"
+if printf '%s\n' "${bignew_out}" | grep --quiet --fixed-strings -- 'FAIL check-added-large-files'; then
+   printf '%s\n' 'PASS: a genuinely new large staged file is still flagged'
+else
+   printf '%s\n' 'FAIL: the staged-mode base fix disabled check-added-large-files for new large files' >&2
+   failures=$((failures + 1))
+fi
+
 ## R-180: a python file must carry a shebang (and, via the pre-commit hooks,
 ## be executable). A file with NEITHER a shebang nor '+x' slips past both
 ## check-shebang-scripts-are-executable and check-executables-have-shebangs,

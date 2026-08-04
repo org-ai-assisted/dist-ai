@@ -182,7 +182,15 @@ fi
 ## resolvable base ref, so we detect that case by checking against
 ## `git remote` and fall back to `@{u}` (the upstream tracking
 ## branch, which is the right base for "what am I about to push").
-if [ "$#" -ge 1 ] && [ -n "${1}" ]; then
+if [ "${staged_mode}" -eq 1 ]; then
+   ## Staged mode diffs the index against HEAD, so HEAD is the base a staged
+   ## change is measured from. The push-mode default '@{u}' is wrong here and
+   ## breaks on a branch with no upstream (unresolvable): the "already tracked"
+   ## large-file exclusion runs 'git cat-file -e "${base_ref}:FILE"', which then
+   ## fails for every path, so a pre-existing large file the change merely
+   ## touches is misread as newly added and fails check-added-large-files.
+   base_ref='HEAD'
+elif [ "$#" -ge 1 ] && [ -n "${1}" ]; then
    if git remote 2>/dev/null | grep --quiet --line-regexp --fixed-strings -- "${1}"; then
       base_ref='@{u}'
    else
