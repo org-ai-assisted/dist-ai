@@ -169,6 +169,48 @@ def coverage_enabled() -> bool:
     return bool(os.environ.get('COVERAGE_PROCESS_START'))
 
 
+INSTALLED_SHIM: str = '/usr/libexec/privleap/shim.py'
+
+
+def bind_repo_shim() -> bool:
+    """
+    Make the checkout's shim the one privleapd actually runs.
+
+    privleapd executes the shim from a hardcoded absolute path. That is the
+    correct choice for a privilege-escalation daemon -- resolving it relative
+    to wherever the daemon was loaded from would be a way in -- but it means a
+    checkout-based run silently exercises the INSTALLED shim instead of the
+    one under test. Bind-mounting inside this run's namespace fixes that
+    without weakening the daemon.
+
+    Returns True when a bind was made.
+    """
+
+    repo: str | None = os.environ.get('PRIVLEAP_REPO')
+    if not repo:
+        return False
+    candidate: str = os.path.join(repo, 'usr/libexec/privleap/shim.py')
+    if not os.path.isfile(candidate):
+        print(
+            f"FATAL: PRIVLEAP_REPO='{repo}' has no usr/libexec/privleap/"
+            'shim.py. Refusing to run the installed shim in its place: that '
+            'would test different code and report it as a pass.',
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    if not os.path.isfile(INSTALLED_SHIM):
+        print(
+            f"FATAL: no {INSTALLED_SHIM} to bind over; privleapd would not "
+            'find a shim at all.',
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    subprocess.run(
+        ['mount', '--bind', candidate, INSTALLED_SHIM], check=True
+    )
+    return True
+
+
 def daemon_env() -> dict[str, str]:
     """Environment for the privleapd subprocess: when testing a checkout, give
     the daemon the same module path the in-process client resolved."""

@@ -54,43 +54,39 @@ derivative-maker checkout root (the directory containing
 ## Coverage
 
 `privleap-tests-coverage` reports the combined figure. As of the last
-measured run the in-process lane reaches **86%** of privleap
-(`privleap.py` 90%, `privleapd.py` 79%, `leapctl.py` 95%, `leaprun.py` 91%).
+measured run both lanes together reach **88%** of privleap
+(`privleap.py` 91%, `privleapd.py` 86%, `leapctl.py` 96%, `leaprun.py` 91%,
+`shim.py` 70%). The daemon and shim figures come from the live-daemon lane and
+cannot be produced any other way.
 
 What that number does NOT cover, and why:
 
-- `shim.py` and `run_action` exist only in a real daemon process running as
-  root through PAM. The e2e lanes DO exercise them; wiring their coverage into
-  the figure is in place (`coverage-bootstrap/sitecustomize.py`,
-  `COVERAGE_PROCESS_START` forwarded across the `sudo unshare` re-exec, and an
-  interrupt rather than a terminate at teardown so coverage's atexit handler
-  runs) and each piece is verified working on its own, but the e2e lane is not
-  yet contributing data to a combined run. Until it does, treat `shim.py` 0%
-  as "not measured", not as "not tested".
-
-  Ruled out so far, each with a direct probe rather than by reasoning: the
-  daemon environment built by `daemon_env()` inside the mount namespace is
-  correct (bootstrap on `PYTHONPATH`, `COVERAGE_PROCESS_START` set); the
-  `-s` in privleapd's shebang does not block the import (coverage lives in
-  `dist-packages`, not the user site); `sitecustomize` loads under both a
-  direct `python3 script` invocation and a shebang execution; and
-  `coverage.process_startup()` writes data both on a clean exit and on the
-  SIGINT used at teardown; and `reexec_under_mount_namespace()` does forward
-  the coverage variables (the built argv was captured and contains both).
-
-  The open lead is that `setup_env_injection()` mounts a tmpfs over the
-  calling account's HOME, and it succeeds -- the run reports
-  `pam_environment` among the planted locations. Anything under that home is
-  therefore invisible for the rest of the run, and in a checkout-based setup
-  BOTH the bootstrap directory and `PRIVLEAP_REPO` commonly live there. That
-  would explain the missing data exactly. It is NOT yet confirmed, because
-  the daemon binary also lives under that home and still executes, which the
-  same reasoning says should be impossible. Resolve that contradiction before
-  acting on the lead.
 - `main()`'s full startup path opens the real state directory and requires
   root.
 - `if __name__ == '__main__'` guards cannot be reached by an import-based
   suite at all.
+
+Getting the live-daemon lane to contribute took four fixes, each hidden behind
+the last, and each worth knowing about before touching this again:
+
+1. `setup_env_injection()` mounts a tmpfs over the calling account's home. A
+   checkout normally lives there, so the bootstrap, the daemon binary and the
+   tests directory all vanished mid-run. `mount_tmpfs_preserving()` binds them
+   aside and back.
+2. `privleapd_path()` checked for the checkout AFTER that mount, found
+   nothing, and silently ran the INSTALLED daemon while reporting a pass for
+   the checkout. It now resolves once, before any mount, and refuses to fall
+   back.
+3. privleapd sets `umask(0o077)` at startup, on purpose, so the coverage data
+   its processes write is `0600 root:root` and an unprivileged `coverage
+   combine` cannot read it. The runner takes ownership first. That failure was
+   invisible because the runner discarded combine's output -- do not
+   reintroduce that.
+4. privleapd runs the shim from a hardcoded absolute path, which is right for
+   a privilege-escalation daemon but means a checkout's shim is never the one
+   executed. The harness bind-mounts the checkout's copy over it, and a
+   `[paths]` alias maps the executed path back so the data is attributed
+   rather than dropped.
 
 So 100% is not a reachable target for this lane, and a reported 100% would
 mean the measurement was wrong rather than the coverage complete.

@@ -126,6 +126,12 @@ def main() -> int:
     os.makedirs('/etc/privleap', exist_ok=True)
     e2e_lib.mount_tmpfs('/etc/privleap')
     e2e_lib.write_config('/etc/privleap/conf.d', user, workdir)
+    ## privleapd runs the shim from a hardcoded absolute path, which is right
+    ## for a privilege-escalation daemon but means a checkout's shim is never
+    ## the one executed. Bind the checkout's copy over the installed path, so
+    ## this lane tests the shim it was asked to test rather than whatever is
+    ## installed. The namespace keeps that confined to this run.
+    e2e_lib.bind_repo_shim()
     planted, bashenv_sentinel = setup_env_injection(user, workdir)
 
     sock_path: str = f"/run/privleapd/comm/{user}"

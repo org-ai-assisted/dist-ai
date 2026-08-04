@@ -64,6 +64,16 @@ data_file = ${data_file}
 source =
    ${measure_dir}
    ${shim_dir}
+   /usr/libexec/privleap
+
+## The shim executes from the path privleapd hardcodes, which the harness
+## bind-mounts the checkout's copy over. Coverage records it under that
+## executed path, so without this alias the data would be attributed to a
+## file outside 'source' and silently dropped -- reading as an untested shim.
+[paths]
+shim =
+   ${shim_dir}
+   /usr/libexec/privleap
 
 [report]
 omit =
@@ -104,7 +114,36 @@ fi
 
 printf '%s\n' ''
 printf '%s\n' '######## combined coverage ########'
-COVERAGE_RCFILE="${rc_file}" python3 -m coverage combine >/dev/null 2>&1 || true
+## privleapd sets a restrictive umask (0o077) at startup, deliberately, so
+## every file its processes write -- including the coverage data the daemon
+## and the shim produce -- is 0600 root:root. This account cannot read those,
+## and combine dies on the first one. Take ownership before combining.
+shopt -s nullglob
+root_data=( "${work_dir}"/coverage.* )
+shopt -u nullglob
+if [ "${#root_data[@]}" -gt 0 ]; then
+   if ! sudo --non-interactive chown -- \
+      "$(id --user):$(id --group)" "${root_data[@]}"; then
+      printf '%s\n' \
+         'privleap-tests-coverage: could not take ownership of the live-daemon' \
+         'coverage data; the figure below covers the in-process lane only.' >&2
+      overall=1
+   fi
+fi
+
+## NOT silenced. A combine that fails leaves the report showing only the
+## in-process data, which reads as "the live-daemon lane covered nothing"
+## rather than as the tooling error it is. That mistake cost a long
+## investigation once already.
+combine_rc=0
+COVERAGE_RCFILE="${rc_file}" python3 -m coverage combine || combine_rc=$?
+if [ "${combine_rc}" != '0' ]; then
+   printf '%s\n' \
+      "privleap-tests-coverage: coverage combine FAILED (exit ${combine_rc});" \
+      'the figure below is missing at least one lane and must not be read' \
+      'as coverage.' >&2
+   overall=1
+fi
 COVERAGE_RCFILE="${rc_file}" python3 -m coverage report --show-missing
 
 if [ "${overall}" != '0' ]; then
