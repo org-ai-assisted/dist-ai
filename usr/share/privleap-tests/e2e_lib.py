@@ -104,9 +104,14 @@ def mount_tmpfs_preserving(path: str, keep: list[str]) -> None:
 
     stash: str = tempfile.mkdtemp(prefix='privleap-keep-', dir='/var/tmp')
     saved: list[tuple[str, str]] = []
+    ## Resolved before comparing: commonpath() raises outright on a mix of
+    ## absolute and relative paths, and PRIVLEAP_REPO is commonly given
+    ## relative.
+    path = os.path.realpath(path)
     for index, kept in enumerate(keep):
         if not os.path.isdir(kept):
             continue
+        kept = os.path.realpath(kept)
         if os.path.commonpath([kept, path]) != path:
             continue
         aside: str = os.path.join(stash, str(index))

@@ -57,11 +57,15 @@ def shim_path() -> str:
     if repo:
         candidate: str = os.path.join(repo, 'usr/libexec/privleap/shim.py')
         if not os.path.isfile(candidate):
+            ## Not a skip: the launcher lets an earlier suite's pass carry a
+            ## 77, so a named-but-missing shim would report green having
+            ## tested nothing.
             print(
-                f"SKIP: PRIVLEAP_REPO='{repo}' has no "
-                'usr/libexec/privleap/shim.py.'
+                f"FAIL: PRIVLEAP_REPO='{repo}' has no "
+                'usr/libexec/privleap/shim.py. Refusing to skip: a named '
+                'target that cannot be found is a failure, not an absence.'
             )
-            raise SystemExit(77)
+            raise SystemExit(1)
         return candidate
     installed: str = '/usr/libexec/privleap/shim.py'
     if not os.path.isfile(installed):

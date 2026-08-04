@@ -122,7 +122,10 @@ shopt -s nullglob
 root_data=( "${work_dir}"/coverage.* )
 shopt -u nullglob
 if [ "${#root_data[@]}" -gt 0 ]; then
-   if ! sudo --non-interactive chown -- \
+   ## --no-dereference: these paths are glob-matched from a directory that
+   ## root-run actions write into, and chown would otherwise follow a symlink
+   ## planted there and take ownership of its target instead.
+   if ! sudo --non-interactive chown --no-dereference -- \
       "$(id --user):$(id --group)" "${root_data[@]}"; then
       printf '%s\n' \
          'privleap-tests-coverage: could not take ownership of the live-daemon' \

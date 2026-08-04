@@ -62,19 +62,27 @@ def _dist_packages_dir() -> str | None:
 
 def _skip_not_found(what: str) -> NoReturn:
     """
-    Exit 77 (the automake/TAP "skipped" convention) with a message that is
-    accurate whether PRIVLEAP_REPO was unset or set to a path with no privleap.
+    End the run because the target privleap could not be found.
+
+    A skip (77) ONLY when nothing was asked for: privleap is simply not
+    installed and no checkout was named. When PRIVLEAP_REPO WAS set and does
+    not contain a privleap tree, that is a broken target, and it exits 1 --
+    the launcher treats 77 as a skip and lets an earlier suite's pass carry
+    the run, so skipping there would report a green run that never tested
+    anything.
     """
 
     repo: str | None = os.environ.get('PRIVLEAP_REPO')
     if repo:
         print(
-            f"SKIP: PRIVLEAP_REPO='{repo}' contains no privleap tree "
-            '(expected usr/lib/python3/dist-packages/privleap/privleap.py).'
+            f"FAIL: PRIVLEAP_REPO='{repo}' contains no privleap tree "
+            '(expected usr/lib/python3/dist-packages/privleap/privleap.py). '
+            'Refusing to skip: a named target that cannot be found is a '
+            'failure, not an absence.'
         )
-    else:
-        print(f"SKIP: {what} not found.")
-        print('      set PRIVLEAP_REPO to a derivative-maker checkout root.')
+        raise SystemExit(1)
+    print(f"SKIP: {what} not found.")
+    print('      set PRIVLEAP_REPO to a derivative-maker checkout root.')
     raise SystemExit(77)
 
 
