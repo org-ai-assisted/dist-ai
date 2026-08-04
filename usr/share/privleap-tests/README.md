@@ -196,6 +196,20 @@ Live daemon (`e2e.py` / `e2e_systemd.py`, shared phases in `e2e_lib.py`):
   `NotifyAccess=main` rejects the action's PID -- but starting from a minimal
   env would be cleaner.)
 
+## A named target that cannot be found is a failure
+
+Exit 77 (skip) means one thing only: nothing was asked for, and privleap is
+not installed. When `PRIVLEAP_REPO` IS set but holds no privleap tree, no
+shim, or no daemon, the suites exit non-zero instead.
+
+The reason is that the launcher treats 77 as a skip and lets an earlier
+suite's pass carry the whole run, so a skip there reported
+`OVERALL RESULT: PASS` for a run that had tested nothing. The same rule
+applies to the harness generally: `privleapd_path()`, `bind_repo_shim()` and
+the shim resolver all refuse rather than quietly falling back to the
+installed package, because testing different code and calling it a pass is
+worse than not running.
+
 ## Reproducing a finding
 
 The randomized harnesses print their seed. Re-run with
