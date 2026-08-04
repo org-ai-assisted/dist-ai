@@ -482,9 +482,27 @@ def test_dangling_primary_group_does_not_lock_out(
     with DaemonSandbox(pl, pld):
         saved_getgrouplist: Any = pld.os.getgrouplist
         saved_getgrgid: Any = pld.grp.getgrgid
+        saved_getpwnam: Any = pld.pwd.getpwnam
         try:
             ## One resolvable group, one GID with no entry at all.
             real_gid: int = pld.pwd.getpwnam(user).pw_gid
+
+            ## The caller must look non-root. authorize_user() grants root
+            ## everything before it ever reaches the group logic, so run as
+            ## root -- which is how CI runs this suite -- the checks below
+            ## would pass on the root shortcut and test nothing.
+            real_entry: Any = saved_getpwnam(user)
+            pld.pwd.getpwnam = lambda name: pld.pwd.struct_passwd(
+                (
+                    real_entry.pw_name,
+                    real_entry.pw_passwd,
+                    12345,
+                    real_gid,
+                    real_entry.pw_gecos,
+                    real_entry.pw_dir,
+                    real_entry.pw_shell,
+                )
+            )
             pld.os.getgrouplist = lambda _n, _g: [real_gid, 987654]
 
             def getgrgid_missing(gid: int) -> Any:
@@ -496,6 +514,11 @@ def test_dangling_primary_group_does_not_lock_out(
             real_group: str = saved_getgrgid(real_gid).gr_name
             action: Any = pl.PrivleapAction(
                 'unit-group-action', 'true', [], [real_group], None, None
+            )
+            results.expect_eq(
+                'the caller does not look like root (precondition)',
+                pld.pwd.getpwnam(user).pw_uid,
+                12345,
             )
             results.expect_eq(
                 'the account is still authorized through its resolvable group',
@@ -514,6 +537,7 @@ def test_dangling_primary_group_does_not_lock_out(
         finally:
             pld.os.getgrouplist = saved_getgrouplist
             pld.grp.getgrgid = saved_getgrgid
+            pld.pwd.getpwnam = saved_getpwnam
 
 
 def test_control_session_dispatch(
