@@ -88,6 +88,7 @@ core_tests=(
    'tests/safe-systemctl-guard-test.py'
    'tests/shell-function-order-test.py'
    'tests/static-review-checkbashisms-target-test.sh'
+   'tests/session-inject-hosted-not-ready-defers-test.sh'
    'claude/hooks/tests/test-cowbuilder-guard.py'
    'claude/hooks/tests/test-git-command-parse.py'
    'claude/hooks/tests/test-git-policy-config.py'
