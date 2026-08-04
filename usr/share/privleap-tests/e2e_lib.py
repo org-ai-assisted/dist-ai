@@ -121,6 +121,11 @@ def daemon_env() -> dict[str, str]:
     if repo:
         path_parts.append(os.path.join(repo, 'usr/lib/python3/dist-packages'))
     if coverage_enabled():
+        ## The daemon and the shim run as root. Without this they byte-compile
+        ## the bootstrap below into a root-owned __pycache__ inside the test
+        ## tree, which then defeats any later rsync of that tree by a normal
+        ## account -- including the one ai-review uses to stage a review.
+        env['PYTHONDONTWRITEBYTECODE'] = '1'
         ## Python imports sitecustomize at interpreter start, which is how the
         ## daemon -- and the shim it runs actions through -- join the
         ## measurement. Without it the daemon's own code reads as untested no

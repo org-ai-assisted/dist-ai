@@ -9,8 +9,12 @@ when nothing is left. Do not add a completed review here.
 
 ## since e7d8633d131a
 - reviewers: codex
-- head when last run: cfc66018a7f3
 - re-run: ai-review e7d8633d131a --only codex
+
+## since 33bde02b52c8
+- reviewers: codex
+- head when last run: c6f2e1377ac8
+- re-run: ai-review 33bde02b52c8 --only codex
 
 ## since 17f2dc4662e0
 - reviewers: coderabbit
