@@ -27,9 +27,12 @@ fi
 
 rc=0
 python3 -m pytest --import-mode=importlib -q "${tests_dir}" "$@" || rc=$?
-## pytest exit 5 = no tests collected (e.g. python3-hypothesis absent -> the
-## module skips); report the suite as SKIP (77), not a failure.
+## pytest exit 5 = no tests collected. That is a broken environment, not an
+## absence: python3-hypothesis is in this consumer's CI apt list, so the only
+## way to collect nothing is a suite that is not being run at all. Reporting
+## 77 turned that into a green lane testing nothing.
 if [ "${rc}" = "5" ]; then
-   exit 77
+   printf '%s\n' 'FAIL: pytest collected no tests; the suite is not being run.' >&2
+   exit 1
 fi
 exit "${rc}"

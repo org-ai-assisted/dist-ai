@@ -829,7 +829,7 @@ r030_printf_is_command() {
 
 check_R030_format_string() {
    local hits script line_number line remainder format_literal format_inner
-   local printf_command printf_redirects
+   local printf_command printf_redirects printf_scan
    local -a fs
 
    mapfile -d '' -t fs < <(filter_self "${@}")
@@ -912,7 +912,28 @@ check_R030_format_string() {
             if [ "${format_literal:0:1}" = "'" ]; then
                printf_command="${remainder%%[;|]*}"
                printf_command="${printf_command%%&&*}"
-               printf_redirects="${printf_command//[[:space:]]/}"
+               ## The discard must belong to the printf COMMAND. Text that
+               ## cannot carry one for the printf itself is removed first:
+               ## a redirect inside an argument's command substitution
+               ## silences the SUBSTITUTED command while printf still writes
+               ## to stdout, and one inside quotes is literal text. Without
+               ## this, 'printf %d "$(probe >/dev/null 2>&1)"' was exempted
+               ## even though it prints. Each pass strictly shortens the
+               ## string, so the loops terminate.
+               printf_scan="${printf_command}"
+               while [[ "${printf_scan}" =~ \'[^\']*\' ]]; do
+                  printf_scan="${printf_scan//"${BASH_REMATCH[0]}"/}"
+               done
+               while [[ "${printf_scan}" =~ \"[^\"]*\" ]]; do
+                  printf_scan="${printf_scan//"${BASH_REMATCH[0]}"/}"
+               done
+               while [[ "${printf_scan}" =~ \$\([^()]*\) ]]; do
+                  printf_scan="${printf_scan//"${BASH_REMATCH[0]}"/}"
+               done
+               while [[ "${printf_scan}" =~ \`[^\`]*\` ]]; do
+                  printf_scan="${printf_scan//"${BASH_REMATCH[0]}"/}"
+               done
+               printf_redirects="${printf_scan//[[:space:]]/}"
                case "${printf_redirects}" in
                   *'>/dev/null2>&1'*|*'&>/dev/null'*|*'>/dev/null2>/dev/null'*)
                      continue
@@ -1038,7 +1059,11 @@ check_R062_dashdash_denylist() {
       ## position (a run of complete 'token whitespace' groups may precede it;
       ## '--' must be followed by whitespace or EOL, so '--flag' and a glued
       ## 'foo--' are not it, and a first-position '-- x' still matches).
-      regex="(^|[[:space:];&|(){}])${entry}[[:space:]]([^[:space:]]*[[:space:]])*--([[:space:]]|$)"
+      ## The intermediate tokens exclude ';', '|' and '&' so the scan cannot
+      ## cross a command boundary: without that, any legitimate '--' later on
+      ## the line ('git check-ref-format x; grep -- foo') was blamed on the
+      ## denylisted tool that merely came first.
+      regex="(^|[[:space:];&|(){}])${entry}[[:space:]]([^[:space:];|&]*[[:space:]])*--([[:space:]]|$)"
       hits="$(grep_code_lines "${regex}" "${@}")"
       emit_hits "R-062 '--' passed to a tool that rejects it" "${hits}"
    done

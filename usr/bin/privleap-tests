@@ -48,11 +48,15 @@ run_one() {
 }
 
 run_pytest() {
-  ## Run a Hypothesis property-test file via pytest. Treats a clean pass or an
-  ## all-skipped run as non-fatal; pytest exit 5 (no tests collected) is also
-  ## a skip. python3-pytest / python3-hypothesis are optional.
+  ## Run a Hypothesis property-test file via pytest. python3-pytest and
+  ## python3-hypothesis are REQUIRED, not optional: both are in the CI apt
+  ## list, so absence is a broken environment. Treating it as a skip let the
+  ## whole suite report PASS with the property layer having run nothing --
+  ## and pytest exits 0 for an all-skipped run, so the exit code alone does
+  ## not distinguish "13 properties held" from "13 properties never ran".
   if ! python3 -c 'import pytest' 2>/dev/null; then
-    printf '%s\n' 'SKIP: python3-pytest not installed.'
+    printf '%s\n' 'FAIL: python3-pytest is required by this suite and is not installed.'
+    overall=1
     return 0
   fi
   local rc=0
@@ -60,7 +64,8 @@ run_pytest() {
   if [ "${rc}" = '0' ]; then
     saw_pass=1
   elif [ "${rc}" = '5' ]; then
-    : ## no tests collected -> treat as skip
+    printf '%s\n' 'FAIL: pytest collected no tests; the property file is not being run.'
+    overall=1
   else
     overall=1
   fi

@@ -17,6 +17,5 @@ when nothing is left. Do not add a completed review here.
 
 ## since c8e5ce17cfba
 - reviewers: coderabbit codeql-python
-- head when last run: 8436f0dfde91
 - re-run: ai-review c8e5ce17cfba --only coderabbit
 - re-run: ai-review c8e5ce17cfba --only codeql --lang python

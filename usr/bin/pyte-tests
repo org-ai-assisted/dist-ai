@@ -68,8 +68,12 @@ pyte_where="$(python3 -c 'import pyte, os; print(os.path.dirname(pyte.__file__))
 pyte_ver="$(python3 -c 'import pyte; print(getattr(pyte, "__version__", "n/a"))' 2>/dev/null)"
 printf '%s\n' "== pyte-tests: full public-API + property + regression suite =="
 printf '%s\n' "pyte under test: ${pyte_where} (version ${pyte_ver})"
+## Required, not optional. Absent, the property file's tests skip, pytest
+## still exits 0, and the suite reports a pass having run no properties at
+## all. A missing dependency is a broken environment, not a lighter run.
 if ! python3 -c 'import hypothesis' 2>/dev/null; then
-   printf '%s\n' 'NOTE: python3-hypothesis not installed; property tests will be skipped.'
+   printf '%s\n' 'FAIL: python3-hypothesis is required by this suite and is not installed.' >&2
+   exit 1
 fi
 
 ## --import-mode=importlib keeps the test modules out of sys.modules top level,

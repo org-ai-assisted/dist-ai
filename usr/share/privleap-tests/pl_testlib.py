@@ -88,8 +88,11 @@ def _skip_not_found(what: str) -> NoReturn:
 
 def import_privleap() -> ModuleType:
     """
-    Import and return the privleap.privleap library module, or skip (exit 77)
-    if it cannot be found.
+    Import and return the privleap.privleap library module.
+
+    Not found splits two ways, per _skip_not_found(): exit 1 when PRIVLEAP_REPO
+    named a target that has no privleap tree (a broken target is a failure, not
+    an absence), and skip with exit 77 only when nothing was asked for.
     """
 
     parent: str | None = _dist_packages_dir()
@@ -103,7 +106,9 @@ def import_privleap() -> ModuleType:
 def import_privleapd() -> ModuleType:
     """
     Import and return the privleap.privleapd daemon module (which pulls in the
-    library too), or skip (exit 77) if the privleap package is not present.
+    library too), or end the run if the privleap package is not present --
+    exit 1 for a broken PRIVLEAP_REPO, skip with 77 only when none was set
+    (see _skip_not_found()).
 
     A skip means "privleap is not installed / not on the path" -- NOT "the code
     under test is broken". So only a genuinely missing privleap package maps to
@@ -127,8 +132,9 @@ def import_privleapd() -> ModuleType:
 def import_privleap_module(module_name: str) -> ModuleType:
     """
     Import and return any module of the target privleap package by its bare
-    name (for example "leapctl" or "leaprun"), or skip (exit 77) if the
-    privleap package is not present.
+    name (for example "leapctl" or "leaprun"), or end the run if the privleap
+    package is not present -- exit 1 for a broken PRIVLEAP_REPO, skip with 77
+    only when none was set (see _skip_not_found()).
 
     As with import_privleapd(), only a genuinely missing privleap package maps
     to a skip. A broken module must surface as a real failure.

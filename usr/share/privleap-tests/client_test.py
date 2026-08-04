@@ -1028,19 +1028,36 @@ def test_leaprun_option_parsing(
                 pl.PrivleapCommServerTriggerMsg(),
                 pl.PrivleapCommServerResultExitcodeMsg(0),
             ]
-            run: ClientRun = run_client(
-                leaprun,
-                ['leaprun', '--', 'act'],
-                _reset_leaprun(leaprun, user),
-            )
-            results.expect_eq(
-                'an action name after -- runs', run.exit_code, 0
-            )
-            results.check(
-                'it was sent as a SIGNAL, not treated as an option',
-                len(server.received) == 1
-                and server.received[0].name == 'SIGNAL',
-            )
+            ## The name must be one leaprun ALSO defines as an option, or the
+            ## test cannot tell a working '--' from one that is dropped: a
+            ## plain name like 'act' arrives as a SIGNAL either way. '--check'
+            ## and '--test' are leaprun's two real flags, so each doubles as a
+            ## discriminating action name.
+            for option_name in ('--check', '--test'):
+                server.received.clear()
+                run: ClientRun = run_client(
+                    leaprun,
+                    ['leaprun', '--', option_name],
+                    _reset_leaprun(leaprun, user),
+                )
+                results.expect_eq(
+                    f"an action named {option_name} after -- runs",
+                    run.exit_code,
+                    0,
+                )
+                results.check(
+                    f"{option_name} was sent as a SIGNAL, not read as an "
+                    'option',
+                    len(server.received) == 1
+                    and server.received[0].name == 'SIGNAL',
+                )
+                results.expect_eq(
+                    f"{option_name} reached the daemon as the action name",
+                    server.received[0].signal_name
+                    if server.received
+                    else None,
+                    option_name,
+                )
 
             server.received.clear()
             run = run_client(
@@ -1062,10 +1079,16 @@ def test_leaprun_terminate_send_failure(
     results: Results, pl: ModuleType, leaprun: ModuleType
 ) -> None:
     """
-    If the daemon is already gone when the user interrupts, leaprun cannot
-    ask it to stop the action. That must be reported: exiting as though the
-    terminate was delivered would claim a root action had been stopped when
-    nothing was told to stop it.
+    If the daemon is gone when the user interrupts, leaprun cannot ask it to
+    stop the action. That must be reported: exiting as though the terminate
+    was delivered would claim a root action had been stopped when nothing was
+    told to stop it.
+
+    The failure is injected at the TERMINATE write specifically, and the write
+    is asserted to have happened. Arming the interrupt before the run instead
+    proved nothing: the send then SUCCEEDED into the socket buffer and leaprun
+    exited 130, the delivered-terminate path, while an assertion of merely
+    'exit code > 0' still passed.
     """
 
     print('== a terminate that cannot be delivered is reported ==')
@@ -1077,20 +1100,49 @@ def test_leaprun_terminate_send_failure(
             str(pl.Path(pl.PrivleapCommon.comm_dir, user)),
             is_control=False,
         ) as server:
-            ## Accept, then hang up at once, so the terminate has nowhere to go.
-            server.read_request = False
-            server.reply_for = lambda _msg: []
-            reset: Callable[[], None] = _reset_leaprun(leaprun, user)
+            ## Start the action for real, so the interrupt happens with a
+            ## session that is live rather than one that never opened.
+            server.reply_for = lambda _msg: [
+                pl.PrivleapCommServerTriggerMsg()
+            ]
+            attempted: list[bool] = [False]
+            real_send: Callable[..., Any] = pl.PrivleapSession.send_msg
 
-            def reset_and_arm() -> None:
-                reset()
-                leaprun.LeaprunGlobal.terminate_session = True
+            def send_msg(self: Any, msg: Any) -> Any:
+                """Fail only the TERMINATE write; let everything else through."""
 
-            run: ClientRun = run_client(
-                leaprun, ['leaprun', 'act'], reset_and_arm
+                if isinstance(msg, pl.PrivleapCommClientTerminateMsg):
+                    attempted[0] = True
+                    raise OSError('injected: peer is gone')
+                result: Any = real_send(self, msg)
+                if isinstance(msg, pl.PrivleapCommClientSignalMsg):
+                    ## The action is running now -- interrupt it. Arming here
+                    ## rather than on the server thread keeps the ordering
+                    ## deterministic.
+                    leaprun.LeaprunGlobal.terminate_session = True
+                return result
+
+            pl.PrivleapSession.send_msg = send_msg
+            try:
+                run: ClientRun = run_client(
+                    leaprun, ['leaprun', 'act'], _reset_leaprun(leaprun, user)
+                )
+            finally:
+                pl.PrivleapSession.send_msg = real_send
+
+            results.check(
+                'leaprun actually attempted the TERMINATE write',
+                attempted[0],
+            )
+            results.expect_eq(
+                'an undeliverable terminate exits 1, not the 130 of a '
+                'delivered one',
+                run.exit_code,
+                1,
             )
             results.check(
-                'an undeliverable terminate fails', run.exit_code > 0
+                'the failure names the terminate send',
+                'Could not send terminate message' in run.stderr,
             )
             results.check(
                 'an undeliverable terminate produced no traceback',

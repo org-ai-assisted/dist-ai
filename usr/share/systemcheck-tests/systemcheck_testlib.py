@@ -30,9 +30,9 @@ import unittest
 
 def systemcheck_dir() -> str:
     """Return the directory holding the systemcheck .bsh fragments."""
-    repo = os.environ.get("SYSTEMCHECK_REPO", "").strip()
+    repo = os.environ.get('SYSTEMCHECK_REPO', '').strip()
     if repo:
-        cand = os.path.join(repo, "usr", "libexec", "systemcheck")
+        cand = os.path.join(repo, 'usr', 'libexec', 'systemcheck')
         if os.path.isdir(cand):
             return cand
         ## SKIP (exit 77) rather than FAIL when the checkout does not have the
@@ -42,10 +42,10 @@ def systemcheck_dir() -> str:
             file=sys.stderr,
         )
         sys.exit(77)
-    installed = "/usr/libexec/systemcheck"
+    installed = '/usr/libexec/systemcheck'
     if os.path.isdir(installed):
         return installed
-    print("systemcheck sources not found (set SYSTEMCHECK_REPO); skipping.",
+    print('systemcheck sources not found (set SYSTEMCHECK_REPO); skipping.',
           file=sys.stderr)
     sys.exit(77)
 
@@ -55,7 +55,7 @@ def bsh_files() -> list[str]:
     directory = systemcheck_dir()
     out = []
     for name in sorted(os.listdir(directory)):
-        if name.endswith(".bsh") or name == "log-checker":
+        if name.endswith('.bsh') or name == 'log-checker':
             out.append(os.path.join(directory, name))
     return out
 
@@ -63,11 +63,11 @@ def bsh_files() -> list[str]:
 def _has_bash_shebang(path: str) -> bool:
     """True if the file's first line is a bash shebang."""
     try:
-        with open(path, "rb") as handle:
+        with open(path, 'rb') as handle:
             first_line = handle.readline(256)
     except OSError:
         return False
-    return first_line.startswith(b"#!") and b"bash" in first_line
+    return first_line.startswith(b'#!') and b'bash' in first_line
 
 
 def bash_scripts() -> list[str]:
@@ -81,14 +81,14 @@ def bash_scripts() -> list[str]:
     Debian packaging directories. Installed: use the package file list from
     `dpkg -L systemcheck` so no prefix has to be guessed.
     """
-    repo = os.environ.get("SYSTEMCHECK_REPO", "").strip()
+    repo = os.environ.get('SYSTEMCHECK_REPO', '').strip()
     if repo and os.path.isdir(repo):
         ## Validate the checkout layout (and SKIP if wrong) exactly like the
         ## installed branch below, so a mis-set SYSTEMCHECK_REPO cannot be
         ## silently walked as if it were the systemcheck source tree.
         systemcheck_dir()
         candidates = []
-        skip_dirs = {".git", ".github", "debian"}
+        skip_dirs = {'.git', '.github', 'debian'}
         for dirpath, dirs, names in os.walk(repo):
             dirs[:] = [d for d in dirs if d not in skip_dirs]
             for name in names:
@@ -98,13 +98,13 @@ def bash_scripts() -> list[str]:
         systemcheck_dir()
         try:
             proc = subprocess.run(
-                ["dpkg", "-L", "systemcheck"],
+                ['dpkg', '-L', 'systemcheck'],
                 capture_output=True, text=True, check=False,
             )
         except FileNotFoundError:
             ## No dpkg (non-Debian host): SKIP rather than crash, matching the
             ## suite's missing-sources convention.
-            print("dpkg not found; cannot enumerate installed scripts; skipping.",
+            print('dpkg not found; cannot enumerate installed scripts; skipping.',
                   file=sys.stderr)
             sys.exit(77)
         if proc.returncode != 0:
@@ -118,18 +118,18 @@ def bash_scripts() -> list[str]:
     for path in sorted(set(candidates)):
         if not os.path.isfile(path):
             continue
-        if path.endswith(".bsh") or os.path.basename(path) == "log-checker" \
+        if path.endswith('.bsh') or os.path.basename(path) == 'log-checker' \
                 or _has_bash_shebang(path):
             scripts.append(path)
     return scripts
 
 
 def read(path: str) -> str:
-    with open(path, encoding="utf-8", errors="replace") as handle:
+    with open(path, encoding='utf-8', errors='replace') as handle:
         return handle.read()
 
 
-_FUNC_RE_TMPL = r"^%s\(\) \{\n(.*?)^\}"
+_FUNC_RE_TMPL = r'^%s\(\) \{\n(.*?)^\}'
 
 
 def extract_bash_function(path: str, name: str) -> str:
@@ -145,7 +145,7 @@ def extract_bash_function(path: str, name: str) -> str:
     return f"{name}() {{\n{match.group(1)}}}\n"
 
 
-def run_bash_function(func_def: str, call: str, env_setup: str = "") -> str:
+def run_bash_function(func_def: str, call: str, env_setup: str = '') -> str:
     """
     Source `func_def`, run `env_setup`, then `call`; return stdout (stripped).
     Runs under a strict-ish bash but WITHOUT nounset (the fragments rely on
@@ -153,7 +153,7 @@ def run_bash_function(func_def: str, call: str, env_setup: str = "") -> str:
     """
     script = f"set -o errexit\nset -o pipefail\n{env_setup}\n{func_def}\n{call}\n"
     result = subprocess.run(
-        ["bash", "-c", script],
+        ['bash', '-c', script],
         capture_output=True,
         text=True,
         check=True,
@@ -165,13 +165,13 @@ def run_bash_function(func_def: str, call: str, env_setup: str = "") -> str:
 ## runner pulls the REAL definitions (so emit_status_line / emit_message output
 ## is exercised for real) rather than stubbing them.
 _EMIT_HELPERS = (
-    "output_if_verbose",
-    "html_link",
-    "emit_status_line",
-    "emit_message",
-    "leaprun_cmd_describe",
-    "remediation_instructions",
-    "if_you_know_what_you_are_doing_funct",
+    'output_if_verbose',
+    'html_link',
+    'emit_status_line',
+    'emit_message',
+    'leaprun_cmd_describe',
+    'remediation_instructions',
+    'if_you_know_what_you_are_doing_funct',
 )
 
 ## Records every message emission. $output_x / $output_cli are variables holding
@@ -219,7 +219,7 @@ class ScenarioResult:
         self.stderr = stderr
 
     def severities(self) -> set:
-        return {sev for _c, sev, _m in self.records if sev != "-"}
+        return {sev for _c, sev, _m in self.records if sev != '-'}
 
     def has_severity(self, severity: str) -> bool:
         return any(sev == severity for _c, sev, _m in self.records)
@@ -228,22 +228,22 @@ class ScenarioResult:
         return [msg for _c, _s, msg in self.records]
 
     def joined(self) -> str:
-        return "\n".join(self.messages())
+        return '\n'.join(self.messages())
 
 
 def _all_functions(path: str) -> str:
     """Concatenated definitions of every top-level function in `path`, so a
     check can call its sibling helpers (e.g. check_hostname_field)."""
-    names = re.findall(r"(?m)^([A-Za-z_][A-Za-z0-9_]*)\(\) \{", read(path))
-    return "\n".join(extract_bash_function(path, name) for name in dict.fromkeys(names))
+    names = re.findall(r'(?m)^([A-Za-z_][A-Za-z0-9_]*)\(\) \{', read(path))
+    return '\n'.join(extract_bash_function(path, name) for name in dict.fromkeys(names))
 
 
 def _assemble_scenario_script(check_file: str, call: str, env_setup: str,
-                              stubs: str, prefix: str = "") -> str:
-    prep = os.path.join(systemcheck_dir(), "preparation.bsh")
-    helper_defs = "\n".join(extract_bash_function(prep, h) for h in _EMIT_HELPERS)
+                              stubs: str, prefix: str = '') -> str:
+    prep = os.path.join(systemcheck_dir(), 'preparation.bsh')
+    helper_defs = '\n'.join(extract_bash_function(prep, h) for h in _EMIT_HELPERS)
     check_defs = _all_functions(check_file)
-    return "\n".join([
+    return '\n'.join([
         _SCENARIO_PREAMBLE, prefix, stubs, env_setup, helper_defs, check_defs,
         call, 'printf "EXITCODE\\t%s\\n" "${EXIT_CODE:-0}"',
     ])
@@ -253,16 +253,16 @@ def _parse_scenario_output(proc) -> ScenarioResult:
     records = []
     exit_code = None
     for line in proc.stdout.splitlines():
-        if line.startswith("REC\t"):
-            _tag, channel, sev, msg = line.split("\t", 3)
+        if line.startswith('REC\t'):
+            _tag, channel, sev, msg = line.split('\t', 3)
             records.append((channel, sev, msg))
-        elif line.startswith("EXITCODE\t"):
-            exit_code = line.split("\t", 1)[1]
+        elif line.startswith('EXITCODE\t'):
+            exit_code = line.split('\t', 1)[1]
     return ScenarioResult(records, exit_code, proc.stdout, proc.stderr)
 
 
-def run_check_scenario(check_file: str, call: str, env_setup: str = "",
-                       stubs: str = "") -> ScenarioResult:
+def run_check_scenario(check_file: str, call: str, env_setup: str = '',
+                       stubs: str = '') -> ScenarioResult:
     """Run one check function in isolation and capture what it emits.
 
     check_file : absolute path of the check_*.bsh fragment.
@@ -278,7 +278,7 @@ def run_check_scenario(check_file: str, call: str, env_setup: str = "",
     script = _assemble_scenario_script(check_file, call, env_setup, stubs)
     ## timeout so a check that blocks on a missing stub (or a bad parse) fails
     ## the test loudly instead of wedging the whole suite/CI run.
-    proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+    proc = subprocess.run(['bash', '-c', script], capture_output=True, text=True,
                           timeout=30)
     return _parse_scenario_output(proc)
 
@@ -292,12 +292,12 @@ def bwrap_available() -> bool:
     global _BWRAP_OK
     if _BWRAP_OK is None:
         _BWRAP_OK = False
-        if shutil.which("bwrap"):
+        if shutil.which('bwrap'):
             try:
                 probe = subprocess.run(
-                    ["bwrap", "--bind", "/", "/", "--dev", "/dev",
-                     "--proc", "/proc", "--tmpfs", "/tmp",  # nosec B108 -- bwrap --tmpfs mount target inside the namespace, not a host temp path
-                     "bash", "-c", "true"],
+                    ['bwrap', '--bind', '/', '/', '--dev', '/dev',
+                     '--proc', '/proc', '--tmpfs', '/tmp',  # nosec B108 -- bwrap --tmpfs mount target inside the namespace, not a host temp path
+                     'bash', '-c', 'true'],
                     capture_output=True, timeout=15)
                 _BWRAP_OK = probe.returncode == 0
             except (OSError, subprocess.SubprocessError):
@@ -305,8 +305,8 @@ def bwrap_available() -> bool:
     return _BWRAP_OK
 
 
-def run_check_scenario_isolated(check_file: str, call: str, env_setup: str = "",
-                                stubs: str = "", hide_dirs=(), place=(),
+def run_check_scenario_isolated(check_file: str, call: str, env_setup: str = '',
+                                stubs: str = '', hide_dirs=(), place=(),
                                 bind_files=()) -> ScenarioResult:
     """Like run_check_scenario, but inside a bubblewrap mount namespace so
     absolute-path guards and binaries can be neutralized:
@@ -337,7 +337,7 @@ def run_check_scenario_isolated(check_file: str, call: str, env_setup: str = "",
     """
     if not bwrap_available():
         raise unittest.SkipTest(
-            "bubblewrap unavailable or unprivileged user namespaces disabled")
+            'bubblewrap unavailable or unprivileged user namespaces disabled')
 
     ## Only overlay hide_dirs that actually exist; a tmpfs over an absent path
     ## fails, and an absent guard dir already yields the "absent" branch.
@@ -356,21 +356,23 @@ def run_check_scenario_isolated(check_file: str, call: str, env_setup: str = "",
             prefix_lines.append(f"chmod 0755 -- {shlex.quote(abs_path)}")
 
     script = _assemble_scenario_script(check_file, call, env_setup, stubs,
-                                       prefix="\n".join(prefix_lines))
-    cmd = ["bwrap", "--bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
+                                       prefix='\n'.join(prefix_lines))
+    cmd = ['bwrap', '--bind', '/', '/', '--dev', '/dev', '--proc', '/proc']
     for directory in tmpfs_dirs:
-        cmd += ["--tmpfs", directory]
+        cmd += ['--tmpfs', directory]
 
     tmp_paths = []
     for abs_path, content, is_exec in bind_files:
-        fd, tmp = tempfile.mkstemp(prefix="fake_bind_")
+        fd, tmp = tempfile.mkstemp(prefix='fake_bind_')
         os.write(fd, content.encode())
         os.close(fd)
-        os.chmod(tmp, 0o755 if is_exec else 0o644)
+        ## These stand in for real system files read-only-bound into the
+        ## sandbox, so they must carry the modes the code under test expects.
+        os.chmod(tmp, 0o755 if is_exec else 0o644)  # nosec B103
         tmp_paths.append(tmp)
-        cmd += ["--ro-bind", tmp, abs_path]
+        cmd += ['--ro-bind', tmp, abs_path]
 
-    cmd += ["bash", "-c", script]
+    cmd += ['bash', '-c', script]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
     finally:
@@ -388,7 +390,7 @@ def run_check_scenario_isolated(check_file: str, call: str, env_setup: str = "",
     ## confusing empty-records assertion.
     if result.exit_code is None:
         raise unittest.SkipTest(
-            "bubblewrap could not set up the isolated sandbox on this host: "
+            'bubblewrap could not set up the isolated sandbox on this host: '
             + (proc.stderr.strip() or f"exit {proc.returncode}"))
     return result
 
@@ -400,7 +402,7 @@ class SystemcheckTestBase(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.dir = systemcheck_dir()
         cls.files = bsh_files()
-        cls.preparation = os.path.join(cls.dir, "preparation.bsh")
+        cls.preparation = os.path.join(cls.dir, 'preparation.bsh')
 
 
 class ScenarioTestBase(SystemcheckTestBase):
@@ -416,8 +418,8 @@ class ScenarioTestBase(SystemcheckTestBase):
         "no records emitted" would pass vacuously when the function actually
         errored out early (undefined command, unbound var, ...) and emitted
         nothing."""
-        for marker in ("command not found", "unbound variable",
-                       "syntax error", ": line "):
+        for marker in ('command not found', 'unbound variable',
+                       'syntax error', ': line '):
             self.assertNotIn(
                 marker, result.stderr,
                 f"bash error during scenario: {result.stderr.strip()!r}")

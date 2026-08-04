@@ -281,12 +281,17 @@ def write_config(conf_dir: str, user: str, workdir: str) -> None:
     """Write the test config into conf_dir as a root-owned 0644 file."""
 
     os.makedirs(conf_dir, exist_ok=True)
-    os.chmod(conf_dir, 0o755)  # nosec B103 -- conf dir must be world-traversable: privleap reads this config as a different user
+    ## World-traversable on purpose: privleapd reads this config as a
+    ## different user than the one that wrote it.
+    os.chmod(conf_dir, 0o755)  # nosec B103
     conf_path: str = os.path.join(conf_dir, 'e2e-test.conf')
     with open(conf_path, 'w', encoding='utf-8') as handle:
         handle.write(config_text(user, workdir))
     os.chown(conf_path, 0, 0)
-    os.chmod(conf_path, 0o644)
+    ## 0644 root:root is exactly what privleapd's own
+    ## check_secure_file_permissions() requires; a stricter mode would not
+    ## match production.
+    os.chmod(conf_path, 0o644)  # nosec B103
 
 
 def wait_for_socket(sock_path: str, timeout_s: float = 10.0) -> bool:
@@ -400,8 +405,11 @@ def run_security_phases(
     results: Any,
     alive_check: Callable[[], bool],
     fuzz_count: int = 250,
-) -> None:
+) -> str:
     """Run the A/B/C/D security phases against an already-running daemon.
+
+    Returns the environment the root action actually received, which
+    e2e_systemd uses for its real-systemd environment assertions.
 
     ``alive_check`` returns True while the daemon is healthy; its meaning is
     backend-specific (subprocess liveness, or systemd active + no restart).

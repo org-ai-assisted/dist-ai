@@ -225,6 +225,16 @@ expect_rule "R-062" "git check-ref-format refs/heads/x"       "absent"
 expect_rule "R-062" "git rev-parse ${dd} HEAD"                "absent"
 expect_rule "R-062" "git check-ref-format ${dd}branch x"      "absent"
 expect_rule "R-062" "mygit check-ref-format ${dd} x"          "absent"
+## The scan must not cross a command boundary. Here the '--' belongs to grep,
+## which accepts one; only a ';'-separated denylisted tool precedes it. Letting
+## the intermediate tokens span ';', '|' or '&' turns every legitimate '--'
+## later on the line into a false positive.
+expect_rule "R-062" "git check-ref-format branch; grep ${dd} \"foo\" bar" "absent"
+expect_rule "R-062" "git check-ref-format branch | grep ${dd} foo"        "absent"
+expect_rule "R-062" "git check-ref-format branch && grep ${dd} foo"       "absent"
+## ...while a '--' in a LATER argument position of the denylisted tool itself,
+## with no separator between, is still the real violation.
+expect_rule "R-062" "git check-ref-format \"\${ref}\" ${dd} x"            "present"
 
 ## R-070: ';;' trailing a statement must be FLAGGED; ';;' on its own line spared.
 expect_rule "R-070" "esac${dsemi}"           "present"
@@ -267,6 +277,12 @@ expect_rule "${r030fmt}" "printf ${dq}%d \${x}${dq} ${dq}\${1}${dq} ${discard}" 
 expect_rule "${r030fmt}" "printf ${sq}%d${sq} ${dq}\${a}${dq} ${sc} printf ${sq}%d${sq} ${dq}\${b}${dq} ${discard}" "present"
 ## '&&' is a command separator too, so the tail after it must not leak backwards.
 expect_rule "${r030fmt}" "printf ${sq}%d${sq} ${dq}\${a}${dq} && printf ${sq}%d${sq} ${dq}\${b}${dq} ${discard}" "present"
+## The discard must belong to the printf COMMAND, not merely appear somewhere
+## in its text. A redirect inside an argument's command substitution silences
+## the SUBSTITUTED command; the printf itself still writes to stdout, so the
+## carve-out's premise ("nothing is emitted") does not hold and the line stays
+## FLAGGED.
+expect_rule "${r030fmt}" "printf ${sq}%d${sq} ${dq}\$(probe ${discard})${dq}"       "present"
 ## An allowed format stays spared with and without the discard.
 expect_rule "${r030fmt}" "printf ${sq}%s${nl}${sq} ${dq}\${1}${dq}"                 "absent"
 expect_rule "${r030fmt}" "printf ${sq}%s${nl}${sq} ${dq}\${1}${dq} ${discard}"      "absent"
