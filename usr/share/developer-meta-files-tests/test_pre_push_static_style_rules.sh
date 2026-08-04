@@ -192,6 +192,10 @@ nlreal=$'\n'
 ## correctly trip over).
 atall='[@]'
 altop='+'
+## R-062 end-of-options separator, assembled so the literal 'git
+## check-ref-format --' (which the gate correctly flags) never appears in
+## THIS tracked file.
+dd='--'
 
 ## R-074: a ';'-chained break / continue / return must be FLAGGED; the same
 ## keyword on its own line must be SPARED.
@@ -211,6 +215,17 @@ expect_rule "R-074" "printf y ${sc} return"  "present"
 ## ('return_value', 'continue_calls') must be SPARED, not flagged.
 expect_rule "R-074" "x=1${sc}${sp}return_value=1" "absent"
 
+## R-062 negative half: a '--' passed to a tool that rejects it (denylist:
+## 'git check-ref-format') must be FLAGGED. A denylisted tool WITHOUT '--',
+## a '--' with a tool that accepts it ('git rev-parse'), a non-standalone
+## '--flag', and a command-token that is only a suffix ('mygit') must be SPARED.
+expect_rule "R-062" "git check-ref-format ${dd} refs/heads/x" "present"
+expect_rule "R-062" "out=\$(git check-ref-format ${dd} \"\${ref}\")" "present"
+expect_rule "R-062" "git check-ref-format refs/heads/x"       "absent"
+expect_rule "R-062" "git rev-parse ${dd} HEAD"                "absent"
+expect_rule "R-062" "git check-ref-format ${dd}branch x"      "absent"
+expect_rule "R-062" "mygit check-ref-format ${dd} x"          "absent"
+
 ## R-070: ';;' trailing a statement must be FLAGGED; ';;' on its own line spared.
 expect_rule "R-070" "esac${dsemi}"           "present"
 expect_rule "R-070" "${dsemi}"               "absent"
@@ -227,6 +242,34 @@ expect_rule "R-030/R-031" "printf ${sq}%s${nl}${sq} hello"      "absent"
 ## form is still a violation; the compliant form stays spared even commented.
 expect_rule "R-030/R-031" "printf ${sq}%s${nl}${sq} # blank"        "present"
 expect_rule "R-030/R-031" "printf ${sq}%s${nl}${sq} ${dq}${dq} # ok" "absent"
+
+## R-030 format string, numeric-PROBE carve-out. A '%d' printf whose own command
+## discards BOTH stdout and stderr emits nothing, so it is a validator rather than
+## output -- helper-scripts' is_integer(), the guard R-141 mandates before an
+## untrusted value reaches an arithmetic context. Its FAILURE is the check, so it
+## must be SPARED; rewriting such a format to '%s' turns the guard into a no-op.
+## The negatives below are what stops the carve-out becoming a blanket '%d' amnesty.
+r030fmt="R-030 printf format string"
+discard=">/dev/null 2>&1"
+expect_rule "${r030fmt}" "printf ${sq}%d${sq} ${dq}\${1}${dq} ${discard} || exit 1" "absent"
+## Same format, no discard at all: still output, still FLAGGED.
+expect_rule "${r030fmt}" "printf ${sq}%d${sq} ${dq}\${1}${dq}"                      "present"
+## stdout-only discard still lets stderr out, so it does NOT qualify.
+expect_rule "${r030fmt}" "printf ${sq}%d${sq} ${dq}\${1}${dq} >/dev/null"           "present"
+## '2>&1 >/dev/null' sends stderr to the ORIGINAL stdout -- that command still
+## emits, so the ordering must not be treated as a both-streams discard.
+expect_rule "${r030fmt}" "printf ${sq}%d${sq} ${dq}\${1}${dq} 2>&1 >/dev/null"      "present"
+## A DOUBLE-quoted format interpolates, so it never qualifies however redirected:
+## the carve-out's premise is a format literal nothing can be injected into.
+expect_rule "${r030fmt}" "printf ${dq}%d \${x}${dq} ${dq}\${1}${dq} ${discard}"     "present"
+## Scoping: the discard belongs to the SECOND printf, so the first is judged on
+## its own and stays FLAGGED. Guards against exempting a whole line by proximity.
+expect_rule "${r030fmt}" "printf ${sq}%d${sq} ${dq}\${a}${dq} ${sc} printf ${sq}%d${sq} ${dq}\${b}${dq} ${discard}" "present"
+## '&&' is a command separator too, so the tail after it must not leak backwards.
+expect_rule "${r030fmt}" "printf ${sq}%d${sq} ${dq}\${a}${dq} && printf ${sq}%d${sq} ${dq}\${b}${dq} ${discard}" "present"
+## An allowed format stays spared with and without the discard.
+expect_rule "${r030fmt}" "printf ${sq}%s${nl}${sq} ${dq}\${1}${dq}"                 "absent"
+expect_rule "${r030fmt}" "printf ${sq}%s${nl}${sq} ${dq}\${1}${dq} ${discard}"      "absent"
 
 ## The compliant 'printf %s\n' "" IS a blank-line separator, so R-042 (not
 ## R-031) is the rule that owns it -- proves the two checks divide the work
@@ -940,4 +983,4 @@ if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "test_pre_push_static_style_rules: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-026, R-030/R-031, R-042, R-034, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-010, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting double-quote-fixer-vs-black and imported-package-module exemption enforced as expected."
+printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-026, R-030 format string, R-030/R-031, R-042, R-034, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-010, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting double-quote-fixer-vs-black and imported-package-module exemption enforced as expected."
