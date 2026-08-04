@@ -29,50 +29,50 @@ import unittest
 import tcp_testlib as T
 from tor_control_panel import torrc_gen
 
-TOR = shutil.which("tor")
+TOR = shutil.which('tor')
 
 
 def _helper(rel):
-    repo = os.environ.get("TCP_REPO", "").strip()
+    repo = os.environ.get('TCP_REPO', '').strip()
     if repo and os.path.exists(os.path.join(repo, rel)):
         return os.path.join(repo, rel)
-    return "/" + rel
+    return '/' + rel
 
 
-TOR_CONFIG_SANE = _helper("usr/libexec/tor-control-panel/tor-config-sane")
-ACW_WRITE_TORRC = _helper("usr/libexec/anon-connection-wizard/acw-write-torrc")
+TOR_CONFIG_SANE = _helper('usr/libexec/tor-control-panel/tor-config-sane')
+ACW_WRITE_TORRC = _helper('usr/libexec/anon-connection-wizard/acw-write-torrc')
 
 
-@unittest.skipUnless(os.path.exists(ACW_WRITE_TORRC), "acw-write-torrc not found")
+@unittest.skipUnless(os.path.exists(ACW_WRITE_TORRC), 'acw-write-torrc not found')
 class AcwWriteTorrcTest(unittest.TestCase):
     def _write(self, root, contents):
-        comm = os.path.join(root, "comm")
-        dropin = os.path.join(root, "torrc.d", "40_tor_control_panel.conf")
-        with open(comm, "w", encoding="utf-8") as handle:
+        comm = os.path.join(root, 'comm')
+        dropin = os.path.join(root, 'torrc.d', '40_tor_control_panel.conf')
+        with open(comm, 'w', encoding='utf-8') as handle:
             handle.write(contents)
         env = dict(os.environ)
-        env["acw_comm_file_path"] = comm
-        env["torrc_file_path"] = dropin
-        result = subprocess.run(["bash", ACW_WRITE_TORRC], env=env,
+        env['acw_comm_file_path'] = comm
+        env['torrc_file_path'] = dropin
+        result = subprocess.run(['bash', ACW_WRITE_TORRC], env=env,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                encoding="utf-8")
+                                encoding='utf-8')
         return result, dropin
 
     def test_lands_content_with_mode_644(self):
         with tempfile.TemporaryDirectory() as root:
             result, dropin = self._write(
-                root, "DisableNetwork 0\nUseBridges 1\n")
+                root, 'DisableNetwork 0\nUseBridges 1\n')
             self.assertEqual(result.returncode, 0, result.stderr)
-            with open(dropin, encoding="utf-8") as handle:
+            with open(dropin, encoding='utf-8') as handle:
                 self.assertEqual(handle.read(),
-                                 "DisableNetwork 0\nUseBridges 1\n")
-            self.assertEqual(oct(os.stat(dropin).st_mode & 0o777), "0o644")
+                                 'DisableNetwork 0\nUseBridges 1\n')
+            self.assertEqual(oct(os.stat(dropin).st_mode & 0o777), '0o644')
 
     def test_empty_comm_file_rejected(self):
         with tempfile.TemporaryDirectory() as root:
-            result, _ = self._write(root, "")
+            result, _ = self._write(root, '')
             self.assertNotEqual(result.returncode, 0,
-                                "empty comm file must be rejected")
+                                'empty comm file must be rejected')
 
     def test_symlink_source_rejected(self):
         ## Security regression: the spool dir is world-writable, so the root
@@ -80,73 +80,73 @@ class AcwWriteTorrcTest(unittest.TestCase):
         ## could point it at /etc/shadow and have the content copied into the
         ## world-readable drop-in.
         with tempfile.TemporaryDirectory() as root:
-            secret = os.path.join(root, "secret")
-            with open(secret, "w", encoding="utf-8") as handle:
-                handle.write("TOP SECRET\n")
-            comm = os.path.join(root, "comm")
+            secret = os.path.join(root, 'secret')
+            with open(secret, 'w', encoding='utf-8') as handle:
+                handle.write('TOP SECRET\n')
+            comm = os.path.join(root, 'comm')
             os.symlink(secret, comm)
-            dropin = os.path.join(root, "torrc.d", "40_tor_control_panel.conf")
+            dropin = os.path.join(root, 'torrc.d', '40_tor_control_panel.conf')
             env = dict(os.environ)
-            env["acw_comm_file_path"] = comm
-            env["torrc_file_path"] = dropin
-            result = subprocess.run(["bash", ACW_WRITE_TORRC], env=env,
+            env['acw_comm_file_path'] = comm
+            env['torrc_file_path'] = dropin
+            result = subprocess.run(['bash', ACW_WRITE_TORRC], env=env,
                                     stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE, encoding="utf-8")
+                                    stderr=subprocess.PIPE, encoding='utf-8')
             self.assertNotEqual(result.returncode, 0,
-                                "symlinked comm file must be rejected")
+                                'symlinked comm file must be rejected')
             self.assertFalse(os.path.exists(dropin),
-                             "secret content must not be copied to the drop-in")
+                             'secret content must not be copied to the drop-in')
 
 
 @unittest.skipUnless(TOR and os.path.exists(TOR_CONFIG_SANE)
                      and os.path.exists(ACW_WRITE_TORRC),
-                     "tor / helpers not available")
+                     'tor / helpers not available')
 class DebianEndToEndTest(unittest.TestCase):
     def test_full_write_path_produces_a_torrc_tor_reads(self):
         with tempfile.TemporaryDirectory() as root:
-            dropin_dir = os.path.join(root, "usr/local/etc/torrc.d")
-            main_torrc = os.path.join(root, "etc/tor/torrc")
+            dropin_dir = os.path.join(root, 'usr/local/etc/torrc.d')
+            main_torrc = os.path.join(root, 'etc/tor/torrc')
 
             ## 1. tor-config-sane: %include + control socket (Debian branch).
             env = dict(os.environ)
-            env["torrc_dir"] = dropin_dir
-            env["main_torrc"] = main_torrc
-            env["whonix_marker"] = os.path.join(root, "no-marker")
+            env['torrc_dir'] = dropin_dir
+            env['main_torrc'] = main_torrc
+            env['whonix_marker'] = os.path.join(root, 'no-marker')
             self.assertEqual(
-                subprocess.run(["bash", TOR_CONFIG_SANE], env=env).returncode, 0)
+                subprocess.run(['bash', TOR_CONFIG_SANE], env=env).returncode, 0)
 
             ## 2. generate a real config (in the sandbox) and stage it into the
             ## comm file, then run acw-write-torrc into the drop-in dir.
             with T.sandbox() as staged:
-                torrc_gen.gen_torrc(["obfs4", "None", "None"])
-                generated = staged.read_text(encoding="utf-8")
-            comm = os.path.join(root, "comm")
-            with open(comm, "w", encoding="utf-8") as handle:
+                torrc_gen.gen_torrc(['obfs4', 'None', 'None'])
+                generated = staged.read_text(encoding='utf-8')
+            comm = os.path.join(root, 'comm')
+            with open(comm, 'w', encoding='utf-8') as handle:
                 handle.write(generated)
             wenv = dict(os.environ)
-            wenv["acw_comm_file_path"] = comm
-            wenv["torrc_file_path"] = os.path.join(
-                dropin_dir, "40_tor_control_panel.conf")
+            wenv['acw_comm_file_path'] = comm
+            wenv['torrc_file_path'] = os.path.join(
+                dropin_dir, '40_tor_control_panel.conf')
             self.assertEqual(
-                subprocess.run(["bash", ACW_WRITE_TORRC], env=wenv).returncode, 0)
+                subprocess.run(['bash', ACW_WRITE_TORRC], env=wenv).returncode, 0)
 
             ## 3. verify Tor reads the whole chain (main torrc -> include -> the
             ## GUI's drop-in). tor-config-sane writes no ControlSocket (Debian
             ## provides it), so there is nothing to neutralise.
-            os.makedirs(os.path.join(root, "data"))
-            with open(main_torrc, "a", encoding="utf-8") as handle:
-                handle.write("DataDirectory {0}/data\nSocksPort 0\n".format(root))
-            result = subprocess.run([TOR, "-f", main_torrc, "--verify-config"],
+            os.makedirs(os.path.join(root, 'data'))
+            with open(main_torrc, 'a', encoding='utf-8') as handle:
+                handle.write('DataDirectory {0}/data\nSocksPort 0\n'.format(root))
+            result = subprocess.run([TOR, '-f', main_torrc, '--verify-config'],
                                     stdout=subprocess.PIPE,
-                                    stderr=subprocess.STDOUT, encoding="utf-8")
+                                    stderr=subprocess.STDOUT, encoding='utf-8')
             self.assertEqual(
                 result.returncode, 0,
-                "Tor rejected the config the GUI write-path produced:\n"
+                'Tor rejected the config the GUI write-path produced:\n'
                 + result.stdout)
             ## And the GUI's obfs4 config really is in the effective torrc.
-            with open(wenv["torrc_file_path"], encoding="utf-8") as handle:
-                self.assertIn("UseBridges", handle.read())
+            with open(wenv['torrc_file_path'], encoding='utf-8') as handle:
+                self.assertIn('UseBridges', handle.read())
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

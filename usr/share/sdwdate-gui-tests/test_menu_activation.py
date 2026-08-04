@@ -30,7 +30,7 @@ xdotool, so it is not part of this dependency-light unit suite.
 import os
 import unittest
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PyQt5.QtCore import QObject, pyqtSignal
 from PyQt5.QtNetwork import QLocalSocket
@@ -41,11 +41,11 @@ try:
 except ModuleNotFoundError as exc:  # pragma: no cover
     raise unittest.SkipTest(
         "sdwdate-gui is not importable; install the 'sdwdate-gui' package "
-        "or set PYTHONPATH to its dist-packages directory"
+        'or set PYTHONPATH to its dist-packages directory'
     ) from exc
 
 
-_APP: QApplication = QApplication.instance() or QApplication(["sdwdate-gui-tests"])
+_APP: QApplication = QApplication.instance() or QApplication(['sdwdate-gui-tests'])
 
 Reason = QSystemTrayIcon.ActivationReason
 
@@ -65,7 +65,7 @@ class _FakeWaylandApp:  # pylint: disable=too-few-public-methods
     @staticmethod
     def platformName() -> str:  # pylint: disable=invalid-name
         """Mirror QApplication.platformName(), reporting Wayland."""
-        return "wayland"
+        return 'wayland'
 
 
 class MenuActivationTests(unittest.TestCase):
@@ -81,9 +81,9 @@ class MenuActivationTests(unittest.TestCase):
         client = server.SdwdateGuiClient(QLocalSocket())
         self.tray.accept_client(client)
         client.sdwdate_status = server.SdwdateStatus.SUCCESS
-        client.sdwdate_msg = "test"
+        client.sdwdate_msg = 'test'
         client.tor_status = server.TorStatus.ABSENT
-        client.client_name = "disp5711"
+        client.client_name = 'disp5711'
         client.client_name_set = True
         client.clientNameChanged.emit()
         _APP.processEvents()
@@ -95,7 +95,7 @@ class MenuActivationTests(unittest.TestCase):
         self.tray.deleteLater()
         _APP.processEvents()
 
-    def _activate(self, reason: "Reason") -> None:
+    def _activate(self, reason: 'Reason') -> None:
         """Deliver an activation reason to the tray and pump the loop."""
         self.tray.show_menu(reason)
         _APP.processEvents()
@@ -142,5 +142,5 @@ class MenuActivationTests(unittest.TestCase):
         self.assertFalse(self.tray.menu.isVisible())
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

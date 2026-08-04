@@ -27,17 +27,17 @@ import re
 import sys
 import unittest
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 ## Prefer the checkout under SETUP_WIZARD_DIST_REPO so a --component-root run
 ## tests the checkout, not a stale installed copy.
-REPO = os.environ.get("SETUP_WIZARD_DIST_REPO", "").strip()
+REPO = os.environ.get('SETUP_WIZARD_DIST_REPO', '').strip()
 if REPO:
-    _CANDIDATE = os.path.join(REPO, "usr", "lib", "python3", "dist-packages")
-    if not os.path.isdir(os.path.join(_CANDIDATE, "setup_wizard_dist")):
+    _CANDIDATE = os.path.join(REPO, 'usr', 'lib', 'python3', 'dist-packages')
+    if not os.path.isdir(os.path.join(_CANDIDATE, 'setup_wizard_dist')):
         raise SystemExit(
             f"SETUP_WIZARD_DIST_REPO={REPO} does not contain "
-            "usr/lib/python3/dist-packages/setup_wizard_dist"
+            'usr/lib/python3/dist-packages/setup_wizard_dist'
         )
     sys.path.insert(0, _CANDIDATE)
 
@@ -45,29 +45,29 @@ try:
     from PyQt5.QtWidgets import QApplication, QWizard
 except ModuleNotFoundError as exc:  # pragma: no cover
     raise unittest.SkipTest(
-        "PyQt5 is not importable; install python3-pyqt5"
+        'PyQt5 is not importable; install python3-pyqt5'
     ) from exc
 
 try:
     from setup_wizard_dist import setup_wizard_dist as swd
 except ModuleNotFoundError as exc:  # pragma: no cover
     raise unittest.SkipTest(
-        "setup_wizard_dist / guimessages is not importable; install the "
+        'setup_wizard_dist / guimessages is not importable; install the '
         "'setup-wizard-dist' package or set SETUP_WIZARD_DIST_REPO plus a "
-        "helper-scripts PYTHONPATH"
+        'helper-scripts PYTHONPATH'
     ) from exc
 except PermissionError as exc:  # pragma: no cover
     raise unittest.SkipTest(
-        "setup_wizard_dist import needs to create /var/cache/setup-dist "
-        "(run as root or pre-create the directory)"
+        'setup_wizard_dist import needs to create /var/cache/setup-dist '
+        '(run as root or pre-create the directory)'
     ) from exc
 
 ## Point translations at the checkout copy so setupUi() resolves keys from a
 ## --component-root run.
-TRANSLATIONS_YAML = ""
+TRANSLATIONS_YAML = ''
 if REPO:
     _YAML = os.path.join(
-        REPO, "usr", "share", "translations", "setup-wizard-dist.yaml"
+        REPO, 'usr', 'share', 'translations', 'setup-wizard-dist.yaml'
     )
     if os.path.isfile(_YAML):
         swd.Common.translations_path = _YAML
@@ -83,10 +83,10 @@ swd.call = lambda *args, **kwargs: 1  # noqa: E731
 ORIG_ENVIRONMENT = swd.Common.environment
 
 ## One QApplication for the whole process.
-APP = QApplication.instance() or QApplication(["setup-wizard-dist-tests"])
+APP = QApplication.instance() or QApplication(['setup-wizard-dist-tests'])
 
-DISCLAIMER_STEPS = ["disclaimer_1", "disclaimer_2", "finish_page"]
-FINISH_ONLY_STEPS = ["finish_page"]
+DISCLAIMER_STEPS = ['disclaimer_1', 'disclaimer_2', 'finish_page']
+FINISH_ONLY_STEPS = ['finish_page']
 
 ## Every translation key the wizard resolves via self._('...').
 with open(swd.__file__) as _swd_src:
@@ -105,21 +105,21 @@ def make_wizard(testcase, show_disclaimer, steps, environment=None):
     swd.Common.wizard_steps = list(steps)
     if environment is not None:
         swd.Common.environment = environment
-        testcase.addCleanup(setattr, swd.Common, "environment", ORIG_ENVIRONMENT)
+        testcase.addCleanup(setattr, swd.Common, 'environment', ORIG_ENVIRONMENT)
     wizard = swd.setup_wizard_dist()
     testcase.addCleanup(wizard.deleteLater)
     return wizard
 
 
 __all__ = [
-    "APP",
-    "DISCLAIMER_STEPS",
-    "FINISH_ONLY_STEPS",
-    "ORIG_ENVIRONMENT",
-    "QWizard",
-    "REPO",
-    "SOURCE_KEYS",
-    "TRANSLATIONS_YAML",
-    "make_wizard",
-    "swd",
+    'APP',
+    'DISCLAIMER_STEPS',
+    'FINISH_ONLY_STEPS',
+    'ORIG_ENVIRONMENT',
+    'QWizard',
+    'REPO',
+    'SOURCE_KEYS',
+    'TRANSLATIONS_YAML',
+    'make_wizard',
+    'swd',
 ]

@@ -285,7 +285,7 @@ def main():                                              # pragma: no cover - CL
             run(rnd, per_phase, seed, only=name)
         except Exception:
             sys.stderr.write("fuzz_widget: FAILURE in phase '{0}' -- replay with "
-                             "--seed {1}\n".format(name, seed))
+                             '--seed {1}\n'.format(name, seed))
             raise
         print("fuzz_widget: phase '{0}' ok ({1} iterations)".format(name, per_phase),
               flush=True)

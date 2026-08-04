@@ -21,9 +21,9 @@ from tor_control_panel import info
 
 ## Zero-argument functions in info that return a rich-text string.
 _TEXT_FUNCS = [
-    "tor_stopped", "tor_disabled", "tor_disabled_no_controller",
-    "tor_acquiring", "set_disabled", "no_controller", "cookie_error",
-    "invalid_ip_port", "newnym_text",
+    'tor_stopped', 'tor_disabled', 'tor_disabled_no_controller',
+    'tor_acquiring', 'set_disabled', 'no_controller', 'cookie_error',
+    'invalid_ip_port', 'newnym_text',
 ]
 
 
@@ -36,9 +36,9 @@ class ParagraphBalanceTest(unittest.TestCase):
             with self.subTest(func=name):
                 text = func()
                 self.assertEqual(
-                    text.count("<p>"), text.count("</p>"),
-                    "{0}(): <p> and </p> counts differ".format(name))
+                    text.count('<p>'), text.count('</p>'),
+                    '{0}(): <p> and </p> counts differ'.format(name))
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

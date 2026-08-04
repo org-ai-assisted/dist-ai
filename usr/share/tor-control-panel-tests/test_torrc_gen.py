@@ -35,12 +35,12 @@ from tor_control_panel import torrc_gen
 
 def _config_lines(text: str) -> list[str]:
     """Non-empty, non-comment torrc lines."""
-    return [ln for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
+    return [ln for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith('#')]
 
 
 CUSTOM_BRIDGES = (
-    "obfs4 1.2.3.4:1234 ABCDEF0123456789ABCDEF0123456789ABCDEF01\n"
-    "obfs4 5.6.7.8:5678 0123456789ABCDEF0123456789ABCDEF01234567"
+    'obfs4 1.2.3.4:1234 ABCDEF0123456789ABCDEF0123456789ABCDEF01\n'
+    'obfs4 5.6.7.8:5678 0123456789ABCDEF0123456789ABCDEF01234567'
 )
 
 
@@ -50,36 +50,36 @@ class GenTorrcFeatureTest(unittest.TestCase):
     def _gen(self, args):
         with T.sandbox() as torrc:
             torrc_gen.gen_torrc(args)
-            return torrc.read_text(encoding="utf-8")
+            return torrc.read_text(encoding='utf-8')
 
     def test_none_emits_only_disablenetwork0(self):
-        lines = _config_lines(self._gen(["None", "None", "None"]))
-        self.assertEqual(lines, ["DisableNetwork 0"])
+        lines = _config_lines(self._gen(['None', 'None', 'None']))
+        self.assertEqual(lines, ['DisableNetwork 0'])
 
     def test_disablenetwork0_always_present(self):
         for args in (
-            ["None", "None", "None"],
-            ["obfs4", "None", "None"],
-            ["None", "None", "SOCKS5", "127.0.0.1", "9050", "", ""],
+            ['None', 'None', 'None'],
+            ['obfs4', 'None', 'None'],
+            ['None', 'None', 'SOCKS5', '127.0.0.1', '9050', '', ''],
         ):
             with self.subTest(args=args):
-                self.assertIn("DisableNetwork 0", self._gen(args))
+                self.assertIn('DisableNetwork 0', self._gen(args))
 
     def test_obfs4_default_bridges(self):
-        text = self._gen(["obfs4", "None", "None"])
-        self.assertIn("UseBridges 1", text)
-        self.assertIn("ClientTransportPlugin obfs4 exec /usr/bin/obfs4proxy", text)
-        self.assertTrue(any(ln.startswith("Bridge obfs4 ") for ln in _config_lines(text)))
+        text = self._gen(['obfs4', 'None', 'None'])
+        self.assertIn('UseBridges 1', text)
+        self.assertIn('ClientTransportPlugin obfs4 exec /usr/bin/obfs4proxy', text)
+        self.assertTrue(any(ln.startswith('Bridge obfs4 ') for ln in _config_lines(text)))
 
     def test_meek_uses_meek_lite_transport(self):
-        text = self._gen(["meek", "None", "None"])
-        self.assertIn("ClientTransportPlugin meek_lite exec /usr/bin/obfs4proxy", text)
-        self.assertTrue(any(ln.startswith("Bridge meek_lite ") for ln in _config_lines(text)))
+        text = self._gen(['meek', 'None', 'None'])
+        self.assertIn('ClientTransportPlugin meek_lite exec /usr/bin/obfs4proxy', text)
+        self.assertTrue(any(ln.startswith('Bridge meek_lite ') for ln in _config_lines(text)))
 
     def test_snowflake_default_bridges(self):
-        text = self._gen(["snowflake", "None", "None"])
-        self.assertIn("ClientTransportPlugin snowflake exec /usr/bin/snowflake-client", text)
-        self.assertTrue(any(ln.startswith("Bridge snowflake ") for ln in _config_lines(text)))
+        text = self._gen(['snowflake', 'None', 'None'])
+        self.assertIn('ClientTransportPlugin snowflake exec /usr/bin/snowflake-client', text)
+        self.assertTrue(any(ln.startswith('Bridge snowflake ') for ln in _config_lines(text)))
 
     def _resolv_calls_for(self, args):
         ## Count edit_etc_resolv_conf_add() calls during gen_torrc (the Whonix
@@ -97,85 +97,85 @@ class GenTorrcFeatureTest(unittest.TestCase):
     def test_custom_meek_lite_bridge_triggers_resolv_conf(self):
         ## A custom bridge using meek_lite needs the DNS workaround, like the
         ## default meek bridge type (CodeRabbit: it was skipped for custom).
-        meek = ("meek_lite 192.0.2.20:80 "
-                "ABCDEF0123456789ABCDEF0123456789ABCDEF01 url=https://example.com")
-        self.assertEqual(self._resolv_calls_for(["None", meek, "None"]), 1)
+        meek = ('meek_lite 192.0.2.20:80 '
+                'ABCDEF0123456789ABCDEF0123456789ABCDEF01 url=https://example.com')
+        self.assertEqual(self._resolv_calls_for(['None', meek, 'None']), 1)
 
     def test_custom_snowflake_bridge_triggers_resolv_conf(self):
-        snow = "snowflake 192.0.2.30:80 ABCDEF0123456789ABCDEF0123456789ABCDEF01"
-        self.assertEqual(self._resolv_calls_for(["None", snow, "None"]), 1)
+        snow = 'snowflake 192.0.2.30:80 ABCDEF0123456789ABCDEF0123456789ABCDEF01'
+        self.assertEqual(self._resolv_calls_for(['None', snow, 'None']), 1)
 
     def test_custom_obfs4_bridge_does_not_trigger_resolv_conf(self):
-        self.assertEqual(self._resolv_calls_for(["None", CUSTOM_BRIDGES, "None"]), 0)
+        self.assertEqual(self._resolv_calls_for(['None', CUSTOM_BRIDGES, 'None']), 0)
 
     def test_custom_bridges_marker_and_lines(self):
-        text = self._gen(["None", CUSTOM_BRIDGES, "None"])
+        text = self._gen(['None', CUSTOM_BRIDGES, 'None'])
         ## The marker parse_torrc() relies on to recognise custom bridges.
-        self.assertIn("# Custom bridges are used", text)
-        bridge_lines = [ln for ln in _config_lines(text) if ln.startswith("Bridge ")]
+        self.assertIn('# Custom bridges are used', text)
+        bridge_lines = [ln for ln in _config_lines(text) if ln.startswith('Bridge ')]
         self.assertEqual(len(bridge_lines), 2)
-        self.assertIn("Bridge obfs4 1.2.3.4:1234 ABCDEF0123456789ABCDEF0123456789ABCDEF01", text)
-        self.assertIn("Bridge obfs4 5.6.7.8:5678 0123456789ABCDEF0123456789ABCDEF01234567", text)
+        self.assertIn('Bridge obfs4 1.2.3.4:1234 ABCDEF0123456789ABCDEF0123456789ABCDEF01', text)
+        self.assertIn('Bridge obfs4 5.6.7.8:5678 0123456789ABCDEF0123456789ABCDEF01234567', text)
 
     def test_socks5_proxy(self):
-        text = self._gen(["None", "None", "SOCKS5", "127.0.0.1", "9050", "", ""])
-        self.assertIn("Socks5Proxy 127.0.0.1:9050", text)
+        text = self._gen(['None', 'None', 'SOCKS5', '127.0.0.1', '9050', '', ''])
+        self.assertIn('Socks5Proxy 127.0.0.1:9050', text)
 
     def test_socks4_proxy(self):
-        text = self._gen(["None", "None", "SOCKS4", "127.0.0.1", "9050", "", ""])
-        self.assertIn("Socks4Proxy 127.0.0.1:9050", text)
+        text = self._gen(['None', 'None', 'SOCKS4', '127.0.0.1', '9050', '', ''])
+        self.assertIn('Socks4Proxy 127.0.0.1:9050', text)
 
     def test_socks5_proxy_with_auth(self):
-        text = self._gen(["None", "None", "SOCKS5", "127.0.0.1", "9050", "bob", "secret"])
-        self.assertIn("Socks5Proxy 127.0.0.1:9050", text)
-        self.assertIn("Socks5ProxyUsername bob", text)
-        self.assertIn("Socks5ProxyPassword secret", text)
+        text = self._gen(['None', 'None', 'SOCKS5', '127.0.0.1', '9050', 'bob', 'secret'])
+        self.assertIn('Socks5Proxy 127.0.0.1:9050', text)
+        self.assertIn('Socks5ProxyUsername bob', text)
+        self.assertIn('Socks5ProxyPassword secret', text)
 
     def test_a7_full_proxy_request_emits_proxy_line(self):
         ## A7: a complete 7-element proxy request must not be silently dropped.
-        text = self._gen(["None", "None", "SOCKS5", "127.0.0.1", "9050", "None", "None"])
-        self.assertIn("Socks5Proxy 127.0.0.1:9050", text)
+        text = self._gen(['None', 'None', 'SOCKS5', '127.0.0.1', '9050', 'None', 'None'])
+        self.assertIn('Socks5Proxy 127.0.0.1:9050', text)
 
     def _plugins(self, custom_bridges):
-        text = self._gen(["None", custom_bridges, "None"])
-        return [ln for ln in text.splitlines() if ln.startswith("ClientTransportPlugin")]
+        text = self._gen(['None', custom_bridges, 'None'])
+        return [ln for ln in text.splitlines() if ln.startswith('ClientTransportPlugin')]
 
     def test_f8_vanilla_custom_bridge_does_not_crash(self):
         ## A custom bridge whose first token is not a known pluggable transport
         ## (e.g. a plain IP:port) must not raise ValueError/IndexError; it is
         ## written as a Bridge line with no ClientTransportPlugin.
         text = self._gen(
-            ["None", "1.2.3.4:1234 ABCDEF0123456789ABCDEF0123456789ABCDEF01", "None"]
+            ['None', '1.2.3.4:1234 ABCDEF0123456789ABCDEF0123456789ABCDEF01', 'None']
         )
-        self.assertIn("Bridge 1.2.3.4:1234 ABCDEF0123456789ABCDEF0123456789ABCDEF01", text)
-        self.assertEqual(self._plugins("1.2.3.4:1234 ABCDEF0123456789ABCDEF0123456789ABCDEF01"), [])
+        self.assertIn('Bridge 1.2.3.4:1234 ABCDEF0123456789ABCDEF0123456789ABCDEF01', text)
+        self.assertEqual(self._plugins('1.2.3.4:1234 ABCDEF0123456789ABCDEF0123456789ABCDEF01'), [])
 
     def test_f8_custom_meek_lite_gets_its_plugin(self):
         ## meek bridge lines use the 'meek_lite' transport name; the required
         ## ClientTransportPlugin meek_lite line must still be emitted.
         self.assertEqual(
-            self._plugins("meek_lite 192.0.2.20:80 url=https://example.com front=www.example.net"),
-            ["ClientTransportPlugin meek_lite exec /usr/bin/obfs4proxy"],
+            self._plugins('meek_lite 192.0.2.20:80 url=https://example.com front=www.example.net'),
+            ['ClientTransportPlugin meek_lite exec /usr/bin/obfs4proxy'],
         )
 
     def test_f8_custom_snowflake_gets_its_plugin(self):
         self.assertEqual(
-            self._plugins("snowflake 192.0.2.4:80 fingerprint=ABCD"),
-            ["ClientTransportPlugin snowflake exec /usr/bin/snowflake-client"],
+            self._plugins('snowflake 192.0.2.4:80 fingerprint=ABCD'),
+            ['ClientTransportPlugin snowflake exec /usr/bin/snowflake-client'],
         )
 
     def test_f8_mixed_vanilla_first_still_emits_obfs4_plugin(self):
         ## A vanilla bridge listed before an obfs4 bridge must not hide the
         ## obfs4 ClientTransportPlugin.
         self.assertEqual(
-            self._plugins("1.2.3.4:1234 AAAA\nobfs4 5.6.7.8:5678 BBBB"),
-            ["ClientTransportPlugin obfs4 exec /usr/bin/obfs4proxy"],
+            self._plugins('1.2.3.4:1234 AAAA\nobfs4 5.6.7.8:5678 BBBB'),
+            ['ClientTransportPlugin obfs4 exec /usr/bin/obfs4proxy'],
         )
 
     def test_f8_duplicate_transport_plugin_deduplicated(self):
         self.assertEqual(
-            self._plugins("obfs4 1.1.1.1:1 AA\nobfs4 2.2.2.2:2 BB"),
-            ["ClientTransportPlugin obfs4 exec /usr/bin/obfs4proxy"],
+            self._plugins('obfs4 1.1.1.1:1 AA\nobfs4 2.2.2.2:2 BB'),
+            ['ClientTransportPlugin obfs4 exec /usr/bin/obfs4proxy'],
         )
 
 
@@ -188,48 +188,48 @@ class ParseTorrcTest(unittest.TestCase):
             return torrc_gen.parse_torrc()
 
     def test_parse_none(self):
-        result = self._roundtrip(["None", "None", "None"])
-        self.assertEqual(result[0], "None")
-        self.assertEqual(result[1], "None")
+        result = self._roundtrip(['None', 'None', 'None'])
+        self.assertEqual(result[0], 'None')
+        self.assertEqual(result[1], 'None')
 
     def test_parse_obfs4(self):
-        self.assertEqual(self._roundtrip(["obfs4", "None", "None"])[0], "obfs4")
+        self.assertEqual(self._roundtrip(['obfs4', 'None', 'None'])[0], 'obfs4')
 
     def test_parse_meek(self):
         ## Transport is 'meek_lite' in torrc but must be reported as 'meek'.
-        self.assertEqual(self._roundtrip(["meek", "None", "None"])[0], "meek")
+        self.assertEqual(self._roundtrip(['meek', 'None', 'None'])[0], 'meek')
 
     def test_parse_snowflake(self):
-        self.assertEqual(self._roundtrip(["snowflake", "None", "None"])[0], "snowflake")
+        self.assertEqual(self._roundtrip(['snowflake', 'None', 'None'])[0], 'snowflake')
 
     def test_parse_socks5(self):
-        result = self._roundtrip(["None", "None", "SOCKS5", "127.0.0.1", "9050", "", ""])
-        self.assertEqual(result[1], "SOCKS5")
-        self.assertEqual(result[2], "127.0.0.1")
-        self.assertEqual(result[3], "9050")
+        result = self._roundtrip(['None', 'None', 'SOCKS5', '127.0.0.1', '9050', '', ''])
+        self.assertEqual(result[1], 'SOCKS5')
+        self.assertEqual(result[2], '127.0.0.1')
+        self.assertEqual(result[3], '9050')
 
     def test_parse_socks4(self):
         self.assertEqual(
-            self._roundtrip(["None", "None", "SOCKS4", "127.0.0.1", "9050", "", ""])[1],
-            "SOCKS4",
+            self._roundtrip(['None', 'None', 'SOCKS4', '127.0.0.1', '9050', '', ''])[1],
+            'SOCKS4',
         )
 
     def test_parse_socks5_auth(self):
-        result = self._roundtrip(["None", "None", "SOCKS5", "127.0.0.1", "9050", "bob", "secret"])
-        self.assertEqual(result[4], "bob")
-        self.assertEqual(result[5], "secret")
+        result = self._roundtrip(['None', 'None', 'SOCKS5', '127.0.0.1', '9050', 'bob', 'secret'])
+        self.assertEqual(result[4], 'bob')
+        self.assertEqual(result[5], 'secret')
 
     def test_ipv6_proxy_is_bracketed_and_round_trips(self):
         """An IPv6 proxy address is written as [addr]:port and parsed back."""
-        for ip in ("2001:db8::1", "::1"):
+        for ip in ('2001:db8::1', '::1'):
             with self.subTest(ip=ip):
                 with T.sandbox() as torrc:
-                    torrc_gen.gen_torrc(["None", "None", "SOCKS5", ip, "9050", "", ""])
-                    text = torrc.read_text(encoding="utf-8")
-                    self.assertIn("Socks5Proxy [%s]:9050" % ip, text)
+                    torrc_gen.gen_torrc(['None', 'None', 'SOCKS5', ip, '9050', '', ''])
+                    text = torrc.read_text(encoding='utf-8')
+                    self.assertIn('Socks5Proxy [%s]:9050' % ip, text)
                     result = torrc_gen.parse_torrc()
                 self.assertEqual(result[2], ip)
-                self.assertEqual(result[3], "9050")
+                self.assertEqual(result[3], '9050')
 
     ## --- A1 regression: custom-bridge detection / data loss ------------------
 
@@ -239,12 +239,12 @@ class ParseTorrcTest(unittest.TestCase):
         Fails on the unfixed source (parse_torrc looks for the misspelled marker
         '# Custom briges are used', so it reports the transport name 'obfs4').
         """
-        result = self._roundtrip(["None", CUSTOM_BRIDGES, "None"])
+        result = self._roundtrip(['None', CUSTOM_BRIDGES, 'None'])
         self.assertEqual(
             result[0],
-            "Custom bridges",
-            "custom bridges not detected on re-parse -- a later reconfigure would "
-            "replace them with default obfs4 bridges (bug A1)",
+            'Custom bridges',
+            'custom bridges not detected on re-parse -- a later reconfigure would '
+            'replace them with default obfs4 bridges (bug A1)',
         )
 
     def test_torrc_dir_is_distro_aware(self):
@@ -254,16 +254,16 @@ class ParseTorrcTest(unittest.TestCase):
         tor@default fail to start). torrc_gen and tor_status must agree, and the
         choice must track the Whonix marker."""
         from tor_control_panel import tor_status
-        expected = ("/usr/local/etc/torrc.d" if tor_status.whonix
-                    else "/etc/tor/torrc.d")
+        expected = ('/usr/local/etc/torrc.d' if tor_status.whonix
+                    else '/etc/tor/torrc.d')
         self.assertEqual(torrc_gen.torrc_dir, expected)
         self.assertEqual(tor_status.torrc_dir, expected)
-        self.assertTrue(torrc_gen.torrc_path().startswith(expected + "/"))
+        self.assertTrue(torrc_gen.torrc_path().startswith(expected + '/'))
         ## Never /usr/local on non-Whonix -- that is the AppArmor breakage.
         if not tor_status.whonix:
             self.assertFalse(
-                torrc_gen.torrc_dir.startswith("/usr/local"),
-                "plain-Debian drop-in under /usr/local is AppArmor-unreadable")
+                torrc_gen.torrc_dir.startswith('/usr/local'),
+                'plain-Debian drop-in under /usr/local is AppArmor-unreadable')
 
     def test_parse_torrc_missing_file_returns_defaults(self):
         """On plain Debian/Kicksecure the torrc may be absent; parse must return
@@ -271,12 +271,12 @@ class ParseTorrcTest(unittest.TestCase):
         with T.sandbox() as torrc:
             torrc.unlink()  # simulate no tor-control-panel torrc yet
             result = torrc_gen.parse_torrc()
-        self.assertEqual(result, ("None", "None", "", "", "", ""))
+        self.assertEqual(result, ('None', 'None', '', '', '', ''))
 
     def test_parse_torrc_malformed_bridge_line_does_not_crash(self):
         """A bare/short 'Bridge' line must not raise IndexError in parse_torrc."""
         with T.sandbox() as torrc:
-            torrc.write_text("DisableNetwork 0\nUseBridges 1\nBridge\n", encoding="utf-8")
+            torrc.write_text('DisableNetwork 0\nUseBridges 1\nBridge\n', encoding='utf-8')
             result = torrc_gen.parse_torrc()  # must not raise
             self.assertIsInstance(result[0], str)
 
@@ -285,51 +285,51 @@ class ParseTorrcTest(unittest.TestCase):
         effect. Previously 'Proxy' substring-matched the comment, so parse
         returned proxy_type='' instead of 'None'."""
         with T.sandbox() as torrc:
-            torrc.write_text("# HTTPSProxy 1.2.3.4:8080\nDisableNetwork 0\n",
-                             encoding="utf-8")
+            torrc.write_text('# HTTPSProxy 1.2.3.4:8080\nDisableNetwork 0\n',
+                             encoding='utf-8')
             result = torrc_gen.parse_torrc()
-        self.assertEqual(result[1], "None")
+        self.assertEqual(result[1], 'None')
 
     def test_commented_usebridges_parsed_as_none(self):
         """A commented-out UseBridges must not flip bridge_type away from
         'None'."""
         with T.sandbox() as torrc:
-            torrc.write_text("# UseBridges 1\nDisableNetwork 0\n",
-                             encoding="utf-8")
+            torrc.write_text('# UseBridges 1\nDisableNetwork 0\n',
+                             encoding='utf-8')
             result = torrc_gen.parse_torrc()
-        self.assertEqual(result[0], "None")
+        self.assertEqual(result[0], 'None')
 
     def test_read_custom_bridge_lines_sanitizes(self):
         """Custom bridge lines are appended into a rich-text QTextEdit, so the
         shared reader must strip markup/control from the untrusted torrc."""
         with T.sandbox() as torrc:
             torrc.write_text(
-                "# Custom bridges are used\n"
-                "Bridge obfs4 1.2.3.4:1234 <script>x</script>ABC\x1b[31m\n",
-                encoding="utf-8")
+                '# Custom bridges are used\n'
+                'Bridge obfs4 1.2.3.4:1234 <script>x</script>ABC\x1b[31m\n',
+                encoding='utf-8')
             lines = torrc_gen.read_custom_bridge_lines(str(torrc))
         self.assertTrue(lines)
-        self.assertTrue(all("<script>" not in ln for ln in lines))
-        self.assertTrue(all("\x1b" not in ln for ln in lines))
+        self.assertTrue(all('<script>' not in ln for ln in lines))
+        self.assertTrue(all('\x1b' not in ln for ln in lines))
         ## The 'Bridge ' prefix is stripped, the real content survives.
-        self.assertTrue(any(ln.startswith("obfs4 1.2.3.4:1234") for ln in lines))
+        self.assertTrue(any(ln.startswith('obfs4 1.2.3.4:1234') for ln in lines))
 
     def test_read_custom_bridge_lines_ignores_bridge_prefixed_directives(self):
         """Directives that merely start with 'Bridge' (BridgeRelay,
         BridgeDistribution, ...) must not be mistaken for custom bridges."""
         with T.sandbox() as torrc:
             torrc.write_text(
-                "# Custom bridges are used\n"
-                "BridgeRelay 1\n"
-                "BridgeDistribution none\n"
-                "Bridge obfs4 1.2.3.4:1234 FINGERPRINT\n",
-                encoding="utf-8")
+                '# Custom bridges are used\n'
+                'BridgeRelay 1\n'
+                'BridgeDistribution none\n'
+                'Bridge obfs4 1.2.3.4:1234 FINGERPRINT\n',
+                encoding='utf-8')
             lines = torrc_gen.read_custom_bridge_lines(str(torrc))
-        self.assertEqual(lines, ["obfs4 1.2.3.4:1234 FINGERPRINT"])
+        self.assertEqual(lines, ['obfs4 1.2.3.4:1234 FINGERPRINT'])
 
     def test_read_custom_bridge_lines_missing_or_no_marker(self):
         with T.sandbox() as torrc:
-            torrc.write_text("DisableNetwork 0\n", encoding="utf-8")
+            torrc.write_text('DisableNetwork 0\n', encoding='utf-8')
             self.assertEqual(torrc_gen.read_custom_bridge_lines(str(torrc)), [])
             torrc.unlink()
             self.assertEqual(torrc_gen.read_custom_bridge_lines(str(torrc)), [])
@@ -342,15 +342,15 @@ class ParseTorrcTest(unittest.TestCase):
         default bridges. Here we assert the detection that gates that path.
         """
         with T.sandbox() as torrc:
-            torrc_gen.gen_torrc(["None", CUSTOM_BRIDGES, "None"])
+            torrc_gen.gen_torrc(['None', CUSTOM_BRIDGES, 'None'])
             ## The GUI would now call parse_torrc() to preserve existing config.
             bridge_type = torrc_gen.parse_torrc()[0]
-            self.assertEqual(bridge_type, "Custom bridges")
+            self.assertEqual(bridge_type, 'Custom bridges')
             ## The user's custom bridge lines are still present in the torrc.
-            text = torrc.read_text(encoding="utf-8")
-            self.assertIn("Bridge obfs4 1.2.3.4:1234", text)
-            self.assertIn("Bridge obfs4 5.6.7.8:5678", text)
+            text = torrc.read_text(encoding='utf-8')
+            self.assertIn('Bridge obfs4 1.2.3.4:1234', text)
+            self.assertIn('Bridge obfs4 5.6.7.8:5678', text)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

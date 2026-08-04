@@ -67,7 +67,7 @@ class QMPClient:
         if self._sock is None:
             return False
         self._sock.settimeout(timeout)
-        self._rfile = self._sock.makefile("r", encoding="utf-8")
+        self._rfile = self._sock.makefile('r', encoding='utf-8')
         ## Greeting: {"QMP": {...}}. Then enter command mode. A malformed greeting (QMPError)
         ## means this is not a QMP peer -- fail cleanly rather than crash.
         try:
@@ -75,11 +75,11 @@ class QMPClient:
         except QMPError:
             self.close()
             return False
-        if not greeting or "QMP" not in greeting:
+        if not greeting or 'QMP' not in greeting:
             self.close()
             return False
-        resp = self.execute("qmp_capabilities")
-        if resp is None or "error" in resp:
+        resp = self.execute('qmp_capabilities')
+        if resp is None or 'error' in resp:
             ## Close on failure too (not just the greeting paths) so a failed negotiation does
             ## not leak the socket + makefile fds.
             self.close()
@@ -102,9 +102,9 @@ class QMPClient:
         except (ValueError, RecursionError) as exc:
             ## ValueError is the base of json.JSONDecodeError; RecursionError guards against a
             ## deeply nested adversarial payload blowing the parser's stack.
-            raise QMPError("malformed QMP JSON (%d bytes)" % len(line)) from exc
+            raise QMPError('malformed QMP JSON (%d bytes)' % len(line)) from exc
         if not isinstance(message, dict):
-            raise QMPError("QMP message is not a JSON object: %s" % type(message).__name__)
+            raise QMPError('QMP message is not a JSON object: %s' % type(message).__name__)
         return message
 
     def _read_message(self):
@@ -131,12 +131,12 @@ class QMPClient:
         """
         if self._sock is None:
             return None
-        msg = {"execute": command}
+        msg = {'execute': command}
         if arguments:
-            msg["arguments"] = arguments
+            msg['arguments'] = arguments
         deadline = time.monotonic() + timeout
         try:
-            self._sock.sendall((json.dumps(msg) + "\r\n").encode("utf-8"))
+            self._sock.sendall((json.dumps(msg) + '\r\n').encode('utf-8'))
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -150,10 +150,10 @@ class QMPClient:
                     return None
                 if reply is None:
                     return None
-                if "event" in reply:
+                if 'event' in reply:
                     self._record_event(reply)
                     continue
-                if "return" in reply or "error" in reply:
+                if 'return' in reply or 'error' in reply:
                     return reply
                 ## Anything else (a blank {} keep-alive or an unexpected message) is not this
                 ## command's response -- keep reading rather than returning it.
@@ -182,17 +182,17 @@ class QMPClient:
                 return None
             if event is None:
                 return self.last_shutdown_reason
-            if "event" in event:
+            if 'event' in event:
                 self._record_event(event)
-                if event.get("event") == "SHUTDOWN":
+                if event.get('event') == 'SHUTDOWN':
                     return self.last_shutdown_reason
 
     def _record_event(self, event):
-        if event.get("event") == "SHUTDOWN":
+        if event.get('event') == 'SHUTDOWN':
             ## 'data' is normally an object with a 'reason'; a hostile/garbled event may make it
             ## a string/number/missing -- guard so recording never raises.
-            data = event.get("data")
-            self.last_shutdown_reason = data.get("reason") if isinstance(data, dict) else None
+            data = event.get('data')
+            self.last_shutdown_reason = data.get('reason') if isinstance(data, dict) else None
 
     def close(self):
         if self._rfile is not None:

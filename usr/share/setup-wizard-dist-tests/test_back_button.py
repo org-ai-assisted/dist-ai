@@ -31,7 +31,7 @@ class SinglePageTestCase(unittest.TestCase):
     def test_option_is_set(self):
         self.assertTrue(
             self.wizard.testOption(T.QWizard.NoBackButtonOnStartPage),
-            "single-page wizard must set NoBackButtonOnStartPage",
+            'single-page wizard must set NoBackButtonOnStartPage',
         )
 
     def test_back_not_visible_after_show(self):
@@ -39,7 +39,7 @@ class SinglePageTestCase(unittest.TestCase):
         T.APP.processEvents()
         self.assertFalse(
             self.wizard.button(T.QWizard.BackButton).isVisible(),
-            "Back button must not be visible on a single-page wizard",
+            'Back button must not be visible on a single-page wizard',
         )
 
 
@@ -53,7 +53,7 @@ class MultiPageTestCase(unittest.TestCase):
     def test_option_not_set(self):
         self.assertFalse(
             self.wizard.testOption(T.QWizard.NoBackButtonOnStartPage),
-            "multi-page wizard must not suppress the Back button",
+            'multi-page wizard must not suppress the Back button',
         )
 
     def test_back_available_past_start_page(self):
@@ -65,9 +65,9 @@ class MultiPageTestCase(unittest.TestCase):
         T.APP.processEvents()
         self.assertTrue(
             self.wizard.button(T.QWizard.BackButton).isVisible(),
-            "Back button must be available past the start page",
+            'Back button must be available past the start page',
         )
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

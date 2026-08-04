@@ -36,7 +36,7 @@ import functools
 import os
 import unittest
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PyQt5.QtCore import QObject, pyqtSignal
 from PyQt5.QtNetwork import QLocalSocket
@@ -47,19 +47,19 @@ try:
 except ModuleNotFoundError as exc:  # pragma: no cover
     raise unittest.SkipTest(
         "sdwdate-gui is not importable; install the 'sdwdate-gui' package "
-        "or set PYTHONPATH to its dist-packages directory"
+        'or set PYTHONPATH to its dist-packages directory'
     ) from exc
 
 
 ## A single QApplication must exist for the lifetime of the process.
-_APP: QApplication = QApplication.instance() or QApplication(["sdwdate-gui-tests"])
+_APP: QApplication = QApplication.instance() or QApplication(['sdwdate-gui-tests'])
 
 
 class _FakeListener(QObject):  # pylint: disable=too-few-public-methods
     """SdwdateGuiListener stub: no PID-file / socket setup, tracks instances."""
 
     newClient: pyqtSignal = pyqtSignal(object)
-    instances: list["_FakeListener"] = []
+    instances: list['_FakeListener'] = []
 
     def __init__(self, parent: QObject | None = None) -> None:
         QObject.__init__(self, parent)
@@ -133,16 +133,16 @@ class TrayDeferralTestCase(unittest.TestCase):
         self.assertEqual(
             len(_FakeListener.instances),
             1,
-            "listener must be created immediately, before any tray host",
+            'listener must be created immediately, before any tray host',
         )
         self.assertEqual(
             len(self.spy_instances),
             0,
-            "tray icon must NOT be constructed while no host is available",
+            'tray icon must NOT be constructed while no host is available',
         )
         self.assertTrue(
             self._timer.isActive(),
-            "poll timer must keep running until a host appears",
+            'poll timer must keep running until a host appears',
         )
 
     def test_tray_constructed_when_host_available(self) -> None:
@@ -151,10 +151,10 @@ class TrayDeferralTestCase(unittest.TestCase):
         self._timer = server.install_tray_when_available(_APP)
         _APP.processEvents()
 
-        self.assertEqual(len(self.spy_instances), 1, "tray must be built")
+        self.assertEqual(len(self.spy_instances), 1, 'tray must be built')
         self.assertFalse(
             self._timer.isActive(),
-            "poll timer must stop once the tray is installed",
+            'poll timer must stop once the tray is installed',
         )
 
     def test_pre_host_client_is_buffered_then_replayed(self) -> None:
@@ -181,7 +181,7 @@ class TrayDeferralTestCase(unittest.TestCase):
         self.assertIn(
             client,
             tray.client_list,
-            "client buffered before the tray must be replayed into it",
+            'client buffered before the tray must be replayed into it',
         )
 
     def test_buffering_enforces_max_clients(self) -> None:
@@ -212,7 +212,7 @@ class TrayDeferralTestCase(unittest.TestCase):
         self.assertEqual(
             len(kicked),
             overflow,
-            "clients beyond MAX_CLIENTS must be kicked while buffering",
+            'clients beyond MAX_CLIENTS must be kicked while buffering',
         )
 
         ## A host appears: exactly MAX_CLIENTS survive into the tray.
@@ -246,7 +246,7 @@ class TrayDeferralTestCase(unittest.TestCase):
         second = server.SdwdateGuiClient(QLocalSocket())
         listener.newClient.emit(second)
         for client in (first, second):
-            client.client_name = "workstation"
+            client.client_name = 'workstation'
             client.client_name_set = True
             client.clientNameChanged.emit()
         _APP.processEvents()
@@ -260,12 +260,12 @@ class TrayDeferralTestCase(unittest.TestCase):
 
         self.assertEqual(
             [client.client_name for client in tray.client_list],
-            ["workstation"],
-            "a duplicate same-name client must be kicked on replay",
+            ['workstation'],
+            'a duplicate same-name client must be kicked on replay',
         )
         self.assertIn(first, tray.client_list)
         self.assertNotIn(second, tray.client_list)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

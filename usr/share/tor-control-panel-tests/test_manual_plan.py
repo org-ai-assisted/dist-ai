@@ -37,7 +37,7 @@ restart-tor-gui popup) -- a human ticks these off at release time.
 
 import unittest
 
-MANUAL = "manual GUI test -- requires a display and a live Tor daemon"
+MANUAL = 'manual GUI test -- requires a display and a live Tor daemon'
 
 
 @unittest.skip(MANUAL)
@@ -137,5 +137,5 @@ class AnonConnectionWizardManualPlan(unittest.TestCase):
 ## (LiveRestartTorGuiTest), so it is no longer a manual-only scenario.
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

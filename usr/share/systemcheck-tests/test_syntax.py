@@ -26,14 +26,14 @@ class TestSyntax(SystemcheckTestBase):
         ## that matched no files) and passing vacuously.
         self.assertGreater(
             len(scripts), len(self.files),
-            "bash_scripts() must find more than the .bsh fragments "
-            "(the entrypoint and sibling scripts); got "
+            'bash_scripts() must find more than the .bsh fragments '
+            '(the entrypoint and sibling scripts); got '
             f"{len(scripts)} vs {len(self.files)} fragments.",
         )
         for path in scripts:
             with self.subTest(path=path):
                 result = subprocess.run(
-                    ["bash", "-n", "--", path],
+                    ['bash', '-n', '--', path],
                     capture_output=True,
                     text=True,
                     check=False,
@@ -44,5 +44,5 @@ class TestSyntax(SystemcheckTestBase):
                 )
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

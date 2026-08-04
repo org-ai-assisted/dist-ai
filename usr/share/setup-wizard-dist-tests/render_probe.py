@@ -29,16 +29,16 @@ import sys
 
 ## Honour the caller's real backend (xcb / wayland); default to xcb. This runs
 ## before swd_testlib's offscreen setdefault, so offscreen is never chosen here.
-os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
+os.environ.setdefault('QT_QPA_PLATFORM', 'xcb')
 
 import swd_testlib as T  # noqa: E402
 
 
 def main():
-    mode = sys.argv[1] if len(sys.argv) > 1 else "single"
-    png = sys.argv[2] if len(sys.argv) > 2 else ""
+    mode = sys.argv[1] if len(sys.argv) > 1 else 'single'
+    png = sys.argv[2] if len(sys.argv) > 2 else ''
 
-    if mode == "single":
+    if mode == 'single':
         T.swd.Common.show_disclaimer = False
         T.swd.Common.wizard_steps = list(T.FINISH_ONLY_STEPS)
     else:
@@ -49,7 +49,7 @@ def main():
     wizard.show()
     T.APP.processEvents()
 
-    if mode != "single":
+    if mode != 'single':
         ## Advance off the start page so the Back button is reachable.
         wizard.disclaimer_1.yes_button.setChecked(True)
         wizard.next()
@@ -57,19 +57,19 @@ def main():
 
     back = wizard.button(T.QWizard.BackButton)
     result = {
-        "mode": mode,
-        "back_visible": bool(back.isVisible()),
-        "option_no_back_on_start": bool(
+        'mode': mode,
+        'back_visible': bool(back.isVisible()),
+        'option_no_back_on_start': bool(
             wizard.testOption(T.QWizard.NoBackButtonOnStartPage)
         ),
     }
 
     if png:
         wizard.grab().save(png)
-        result["screenshot"] = png
+        result['screenshot'] = png
 
-    sys.stdout.write(json.dumps(result) + "\n")
+    sys.stdout.write(json.dumps(result) + '\n')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

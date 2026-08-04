@@ -30,46 +30,46 @@ class FinishPageTextTestCase(unittest.TestCase):
 
     def _assert_common(self, wizard, text):
         self.assertIsInstance(text, str)
-        self.assertIn(wizard._("finish_page_start"), text)
-        self.assertIn(wizard._("finish_page_end"), text)
+        self.assertIn(wizard._('finish_page_start'), text)
+        self.assertIn(wizard._('finish_page_end'), text)
 
     def test_machine_sysmaint(self):
-        wizard, text = self._text_for("machine", True)
+        wizard, text = self._text_for('machine', True)
         self._assert_common(wizard, text)
         self.assertIn(
-            wizard._("finish_page_middle_browser_choice_sysmaint"), text
+            wizard._('finish_page_middle_browser_choice_sysmaint'), text
         )
-        self.assertIn(wizard._("finish_page_middle_sysmaint"), text)
-        self.assertNotIn(wizard._("finish_page_middle_no_sysmaint"), text)
+        self.assertIn(wizard._('finish_page_middle_sysmaint'), text)
+        self.assertNotIn(wizard._('finish_page_middle_no_sysmaint'), text)
 
     def test_machine_no_sysmaint(self):
-        wizard, text = self._text_for("machine", False)
+        wizard, text = self._text_for('machine', False)
         self._assert_common(wizard, text)
         self.assertIn(
-            wizard._("finish_page_middle_browser_choice_no_sysmaint"), text
+            wizard._('finish_page_middle_browser_choice_no_sysmaint'), text
         )
-        self.assertIn(wizard._("finish_page_middle_no_sysmaint"), text)
-        self.assertNotIn(wizard._("finish_page_middle_sysmaint"), text)
+        self.assertIn(wizard._('finish_page_middle_no_sysmaint'), text)
+        self.assertNotIn(wizard._('finish_page_middle_sysmaint'), text)
 
     def test_gateway_omits_browser_choice(self):
-        wizard, text = self._text_for("gateway", False)
+        wizard, text = self._text_for('gateway', False)
         self._assert_common(wizard, text)
         self.assertNotIn(
-            wizard._("finish_page_middle_browser_choice_sysmaint"), text
+            wizard._('finish_page_middle_browser_choice_sysmaint'), text
         )
         self.assertNotIn(
-            wizard._("finish_page_middle_browser_choice_no_sysmaint"), text
+            wizard._('finish_page_middle_browser_choice_no_sysmaint'), text
         )
-        self.assertIn(wizard._("finish_page_middle_no_sysmaint"), text)
+        self.assertIn(wizard._('finish_page_middle_no_sysmaint'), text)
 
     def test_workstation_omits_browser_choice(self):
-        wizard, text = self._text_for("workstation", True)
+        wizard, text = self._text_for('workstation', True)
         self._assert_common(wizard, text)
         self.assertNotIn(
-            wizard._("finish_page_middle_browser_choice_sysmaint"), text
+            wizard._('finish_page_middle_browser_choice_sysmaint'), text
         )
-        self.assertIn(wizard._("finish_page_middle_sysmaint"), text)
+        self.assertIn(wizard._('finish_page_middle_sysmaint'), text)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

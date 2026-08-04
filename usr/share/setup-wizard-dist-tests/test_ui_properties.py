@@ -24,28 +24,28 @@ import swd_testlib as T
 class WindowTitleTestCase(unittest.TestCase):
     def test_machine_title_is_kicksecure(self):
         wizard = T.make_wizard(
-            self, False, T.FINISH_ONLY_STEPS, environment="machine"
+            self, False, T.FINISH_ONLY_STEPS, environment='machine'
         )
-        self.assertEqual(wizard.windowTitle(), "Kicksecure Setup Wizard")
+        self.assertEqual(wizard.windowTitle(), 'Kicksecure Setup Wizard')
 
     def test_gateway_title_is_whonix(self):
         wizard = T.make_wizard(
-            self, False, T.FINISH_ONLY_STEPS, environment="gateway"
+            self, False, T.FINISH_ONLY_STEPS, environment='gateway'
         )
-        self.assertEqual(wizard.windowTitle(), "Whonix Setup Wizard")
+        self.assertEqual(wizard.windowTitle(), 'Whonix Setup Wizard')
 
     def test_workstation_title_is_whonix(self):
         wizard = T.make_wizard(
-            self, False, T.FINISH_ONLY_STEPS, environment="workstation"
+            self, False, T.FINISH_ONLY_STEPS, environment='workstation'
         )
-        self.assertEqual(wizard.windowTitle(), "Whonix Setup Wizard")
+        self.assertEqual(wizard.windowTitle(), 'Whonix Setup Wizard')
 
 
 class FinishButtonTestCase(unittest.TestCase):
     def test_finish_button_relabelled_ok(self):
         wizard = T.make_wizard(self, False, T.FINISH_ONLY_STEPS)
         self.assertEqual(
-            wizard.button(T.QWizard.FinishButton).text(), "OK"
+            wizard.button(T.QWizard.FinishButton).text(), 'OK'
         )
 
 
@@ -95,7 +95,7 @@ class ButtonSlotSmokeTestCase(unittest.TestCase):
     ## they do not raise on the pages where they are reachable.
     def test_next_slot_on_finish_page(self):
         wizard = T.make_wizard(
-            self, False, T.FINISH_ONLY_STEPS, environment="workstation"
+            self, False, T.FINISH_ONLY_STEPS, environment='workstation'
         )
         wizard.show()
         T.APP.processEvents()
@@ -108,5 +108,5 @@ class ButtonSlotSmokeTestCase(unittest.TestCase):
         wizard.back_button_clicked()  ## must not raise
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

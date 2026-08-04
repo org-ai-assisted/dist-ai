@@ -24,18 +24,18 @@ import sys
 
 def msgcollector_script() -> str:
     """Absolute path of the msgcollector script under test."""
-    repo = os.environ.get("MSGCOLLECTOR_REPO", "").strip()
+    repo = os.environ.get('MSGCOLLECTOR_REPO', '').strip()
     if repo:
-        cand = os.path.join(repo, "usr", "libexec", "msgcollector", "msgcollector")
+        cand = os.path.join(repo, 'usr', 'libexec', 'msgcollector', 'msgcollector')
         if os.path.isfile(cand):
             return cand
         print(f"MSGCOLLECTOR_REPO={repo!r} has no usr/libexec/msgcollector/msgcollector; "
-              "skipping.", file=sys.stderr)
+              'skipping.', file=sys.stderr)
         sys.exit(77)
-    installed = "/usr/libexec/msgcollector/msgcollector"
+    installed = '/usr/libexec/msgcollector/msgcollector'
     if os.path.isfile(installed):
         return installed
-    print("msgcollector not found (set MSGCOLLECTOR_REPO); skipping.", file=sys.stderr)
+    print('msgcollector not found (set MSGCOLLECTOR_REPO); skipping.', file=sys.stderr)
     sys.exit(77)
 
 
@@ -43,11 +43,11 @@ def dispatch_script() -> str:
     """Absolute path of msgdispatcher_dispatch_x (the PyQt5 GUI renderer), a
     sibling of the msgcollector script under test."""
     return os.path.join(os.path.dirname(msgcollector_script()),
-                        "msgdispatcher_dispatch_x.py")
+                        'msgdispatcher_dispatch_x.py')
 
 
 def read(path: str) -> str:
-    with open(path, encoding="utf-8", errors="replace") as handle:
+    with open(path, encoding='utf-8', errors='replace') as handle:
         return handle.read()
 
 
@@ -63,7 +63,7 @@ def extract_python_class(path: str, name: str) -> str:
     return match.group(0)
 
 
-_FUNC_RE_TMPL = r"^%s\(\) \{\n(.*?)^\}"
+_FUNC_RE_TMPL = r'^%s\(\) \{\n(.*?)^\}'
 
 
 def extract_bash_function(path: str, name: str) -> str:
@@ -89,5 +89,3 @@ def extract_python_function(path: str, name: str) -> str:
     if not match:
         raise LookupError(f"function {name!r} not found in {path}")
     return match.group(0)
-
-

@@ -44,10 +44,10 @@ from tor_control_panel.tor_bootstrap_parse import parse_bootstrap_phase
 
 ## Bytes/among these make torrc, bridge and control-output parsers interesting.
 _ALPHABET = (
-    "obfs4 snowflake meek_lite Bridge BridgeRelay DisableNetwork UseBridges "
-    "ClientTransportPlugin # %include /etc/tor 1.2.3.4:1234 [::1]:9050 "
+    'obfs4 snowflake meek_lite Bridge BridgeRelay DisableNetwork UseBridges '
+    'ClientTransportPlugin # %include /etc/tor 1.2.3.4:1234 [::1]:9050 '
     "\t\n\r\x00\x1b[31m <b> obfs4proxy cert= iat-mode=0 . : , = \" ' \\ /"
-).split(" ")
+).split(' ')
 
 _CHARS = "abcdef0123456789.:[]# \t\n\r\x00\x1b<>\"'/=%-"
 
@@ -57,13 +57,13 @@ def _rand_token(rnd):
     if kind < 0.35:
         return rnd.choice(_ALPHABET)
     if kind < 0.7:
-        return "".join(rnd.choice(_CHARS) for _ in range(rnd.randint(0, 40)))
+        return ''.join(rnd.choice(_CHARS) for _ in range(rnd.randint(0, 40)))
     ## Occasionally a very long run, to probe pathological inputs.
     return rnd.choice(_CHARS) * rnd.randint(0, 4000)
 
 
 def _rand_line(rnd):
-    return " ".join(_rand_token(rnd) for _ in range(rnd.randint(0, 6)))
+    return ' '.join(_rand_token(rnd) for _ in range(rnd.randint(0, 6)))
 
 
 def _rand_text(rnd):
@@ -72,10 +72,10 @@ def _rand_text(rnd):
     lines = [_rand_line(rnd) for _ in range(rnd.randint(0, 12))]
     if rnd.random() < 0.4:
         lines.insert(rnd.randint(0, len(lines)),
-                     "# Custom bridges are used")
+                     '# Custom bridges are used')
     if rnd.random() < 0.4:
-        lines.insert(0, "DisableNetwork " + rnd.choice(["0", "1", "x", ""]))
-    return "\n".join(lines)
+        lines.insert(0, 'DisableNetwork ' + rnd.choice(['0', '1', 'x', '']))
+    return '\n'.join(lines)
 
 
 ## ---- fuzz phases ------------------------------------------------------------
@@ -90,45 +90,45 @@ def phase_validators(rnd, iterations):
             result = func(value)
             if not isinstance(result, bool):
                 raise AssertionError(
-                    "{0} returned non-bool {1!r} for {2!r}".format(
+                    '{0} returned non-bool {1!r} for {2!r}'.format(
                         func.__name__, result, value))
 
     ## valid_ip resolves via getaddrinfo (real DNS), so probe it only on a small
     ## curated set of adversarial inputs -- crash-safety, not throughput; a hot
     ## loop here would fire thousands of DNS lookups.
-    for value in ("", " ", "\x00", "[", "]:", ":::", "1.2.3.4:x", "a" * 4000,
-                  "\x1b[31m", "obfs4 1.2.3.4", "\n", "%include", "[::1]"):
+    for value in ('', ' ', '\x00', '[', ']:', ':::', '1.2.3.4:x', 'a' * 4000,
+                  '\x1b[31m', 'obfs4 1.2.3.4', '\n', '%include', '[::1]'):
         if not isinstance(validators.valid_ip(value), bool):
-            raise AssertionError("valid_ip non-bool for {0!r}".format(value))
+            raise AssertionError('valid_ip non-bool for {0!r}'.format(value))
 
 
 def phase_custom_bridges(rnd, iterations):
     with tempfile.TemporaryDirectory() as tmp:
-        path = Path(tmp) / "torrc"
+        path = Path(tmp) / 'torrc'
         for _ in range(iterations):
-            path.write_text(_rand_text(rnd), encoding="utf-8")
+            path.write_text(_rand_text(rnd), encoding='utf-8')
             lines = torrc_gen.read_custom_bridge_lines(str(path))
             if not isinstance(lines, list) or not all(
                     isinstance(item, str) for item in lines):
                 raise AssertionError(
-                    "read_custom_bridge_lines returned {0!r}".format(lines))
+                    'read_custom_bridge_lines returned {0!r}'.format(lines))
             ## Sanitized output must not carry raw control characters through to
             ## the rich-text widget.
             for item in lines:
-                if any(ord(char) < 32 and char not in "\t\n" for char in item):
+                if any(ord(char) < 32 and char not in '\t\n' for char in item):
                     raise AssertionError(
-                        "unsanitized control char in {0!r}".format(item))
+                        'unsanitized control char in {0!r}'.format(item))
 
 
 def phase_gen_parse(rnd, iterations):
-    bridge_choices = ["None", "obfs4", "snowflake", "meek", ""]
-    proxy_choices = ["None", "SOCKS5", "SOCKS4", "HTTP/HTTPS", ""]
+    bridge_choices = ['None', 'obfs4', 'snowflake', 'meek', '']
+    proxy_choices = ['None', 'SOCKS5', 'SOCKS4', 'HTTP/HTTPS', '']
     with T.sandbox() as torrc:
         for _ in range(iterations):
             args = [
                 rnd.choice(bridge_choices) if rnd.random() < 0.7
                 else _rand_token(rnd),
-                rnd.choice(["None", _rand_text(rnd)]),
+                rnd.choice(['None', _rand_text(rnd)]),
                 rnd.choice(proxy_choices) if rnd.random() < 0.7
                 else _rand_token(rnd),
             ]
@@ -141,19 +141,19 @@ def phase_gen_parse(rnd, iterations):
             parsed = torrc_gen.parse_torrc()
             if not isinstance(parsed, (dict, tuple, list)):
                 raise AssertionError(
-                    "parse_torrc returned {0!r} for args {1!r}".format(
+                    'parse_torrc returned {0!r} for args {1!r}'.format(
                         parsed, args))
             ## And an adversarial hand-written torrc must parse too.
-            torrc.write_text(_rand_text(rnd), encoding="utf-8")
+            torrc.write_text(_rand_text(rnd), encoding='utf-8')
             torrc_gen.parse_torrc()
 
 
 def phase_bootstrap(rnd, iterations):
     ## Tor's 'status/bootstrap-phase' control output is untrusted; the parser
     ## must return None or (str phase, int percent) and never crash.
-    tag_phase = {"starting": "Starting", "conn_done": "Connected to a relay",
-                 "done": "Connected to the Tor network!"}
-    tags = list(tag_phase) + ["unknown", ""]
+    tag_phase = {'starting': 'Starting', 'conn_done': 'Connected to a relay',
+                 'done': 'Connected to the Tor network!'}
+    tags = list(tag_phase) + ['unknown', '']
     templates = [
         'NOTICE BOOTSTRAP PROGRESS={p} TAG={t} SUMMARY="{s}"',
         'PROGRESS={p} TAG={t} SUMMARY="{s}"',
@@ -162,7 +162,7 @@ def phase_bootstrap(rnd, iterations):
     for _ in range(iterations):
         if rnd.random() < 0.6:
             line = rnd.choice(templates).format(
-                p=rnd.choice(["0", "10", "100", "999999999999", "",
+                p=rnd.choice(['0', '10', '100', '999999999999', '',
                               str(rnd.randint(0, 10 ** 6))]),
                 t=rnd.choice(tags), s=_rand_token(rnd))
         else:
@@ -172,11 +172,11 @@ def phase_bootstrap(rnd, iterations):
             phase, percent = result
             if not isinstance(phase, str) or not isinstance(percent, int):
                 raise AssertionError(
-                    "parse_bootstrap_phase returned {0!r} for {1!r}".format(
+                    'parse_bootstrap_phase returned {0!r} for {1!r}'.format(
                         result, line))
-            if any(ord(c) < 32 and c not in "\t\n" for c in phase):
+            if any(ord(c) < 32 and c not in '\t\n' for c in phase):
                 raise AssertionError(
-                    "unsanitized control char in phase {0!r}".format(phase))
+                    'unsanitized control char in phase {0!r}'.format(phase))
 
 
 def phase_tor_status(rnd, iterations):
@@ -184,43 +184,43 @@ def phase_tor_status(rnd, iterations):
     ## adversarial torrc content and require a defined string result.
     with T.sandbox() as torrc:
         for _ in range(iterations):
-            torrc.write_text(_rand_text(rnd), encoding="utf-8")
+            torrc.write_text(_rand_text(rnd), encoding='utf-8')
             result = tor_status.tor_status()
-            if result not in ("tor_enabled", "tor_disabled"):
+            if result not in ('tor_enabled', 'tor_disabled'):
                 raise AssertionError(
-                    "tor_status returned {0!r}".format(result))
+                    'tor_status returned {0!r}'.format(result))
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--iterations", type=int, default=20000)
-    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument('--iterations', type=int, default=20000)
+    parser.add_argument('--seed', type=int, default=None)
     opts = parser.parse_args()
 
     seed = opts.seed if opts.seed is not None else random.randrange(2 ** 32)
     rnd = random.Random(seed)
     phases = (
-        ("validators", phase_validators),
-        ("custom_bridges", phase_custom_bridges),
-        ("gen_parse", phase_gen_parse),
-        ("bootstrap", phase_bootstrap),
-        ("tor_status", phase_tor_status),
+        ('validators', phase_validators),
+        ('custom_bridges', phase_custom_bridges),
+        ('gen_parse', phase_gen_parse),
+        ('bootstrap', phase_bootstrap),
+        ('tor_status', phase_tor_status),
     )
     per_phase = max(1, opts.iterations // len(phases))
-    print("fuzz_torrc: seed={0} iterations={1}".format(seed, opts.iterations))
+    print('fuzz_torrc: seed={0} iterations={1}'.format(seed, opts.iterations))
     for name, func in phases:
         try:
             func(rnd, per_phase)
         except Exception:
             sys.stderr.write(
                 "fuzz_torrc: FAILURE in phase '{0}' -- replay with "
-                "--seed {1}\n".format(name, seed))
+                '--seed {1}\n'.format(name, seed))
             raise
         print("fuzz_torrc: phase '{0}' ok ({1} iterations)".format(
             name, per_phase))
 
-    print("fuzz_torrc: PASS")
+    print('fuzz_torrc: PASS')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

@@ -31,7 +31,7 @@ import types
 import unittest
 import unittest.mock as mock
 
-_TCP_BINARY: str = "/usr/bin/tor-control-panel"
+_TCP_BINARY: str = '/usr/bin/tor-control-panel'
 
 
 def _fake_tor_control_panel(tor_status_fn):
@@ -41,14 +41,14 @@ def _fake_tor_control_panel(tor_status_fn):
     to splice into sys.modules.
     """
 
-    pkg = types.ModuleType("tor_control_panel")
+    pkg = types.ModuleType('tor_control_panel')
     pkg.__path__ = []  # mark as a package so submodule imports resolve
-    tor_status_mod = types.ModuleType("tor_control_panel.tor_status")
+    tor_status_mod = types.ModuleType('tor_control_panel.tor_status')
     tor_status_mod.tor_status = tor_status_fn
     pkg.tor_status = tor_status_mod
     return {
-        "tor_control_panel": pkg,
-        "tor_control_panel.tor_status": tor_status_mod,
+        'tor_control_panel': pkg,
+        'tor_control_panel.tor_status': tor_status_mod,
     }
 
 
@@ -72,22 +72,22 @@ def _reload_client(present_paths, fake_modules):
     evicted = {}
     for name in list(sys.modules):
         if (
-            name == "sdwdate_gui.sdwdate_gui_client"
-            or name == "anon_connection_wizard"
-            or name.startswith("anon_connection_wizard.")
-            or name == "tor_control_panel"
-            or name.startswith("tor_control_panel.")
+            name == 'sdwdate_gui.sdwdate_gui_client'
+            or name == 'anon_connection_wizard'
+            or name.startswith('anon_connection_wizard.')
+            or name == 'tor_control_panel'
+            or name.startswith('tor_control_panel.')
         ):
             evicted[name] = sys.modules.pop(name)
 
     sys.modules.update(fake_modules)
     try:
-        with mock.patch("os.path.exists", side_effect=fake_exists):
-            return importlib.import_module("sdwdate_gui.sdwdate_gui_client")
+        with mock.patch('os.path.exists', side_effect=fake_exists):
+            return importlib.import_module('sdwdate_gui.sdwdate_gui_client')
     finally:
         for name in fake_modules:
             sys.modules.pop(name, None)
-        sys.modules.pop("sdwdate_gui.sdwdate_gui_client", None)
+        sys.modules.pop('sdwdate_gui.sdwdate_gui_client', None)
         sys.modules.update(evicted)
 
 
@@ -96,7 +96,7 @@ try:
 except ModuleNotFoundError as exc:  # pragma: no cover
     raise unittest.SkipTest(
         "sdwdate-gui is not importable; install the 'sdwdate-gui' package "
-        "or set PYTHONPATH to its dist-packages directory"
+        'or set PYTHONPATH to its dist-packages directory'
     ) from exc
 
 
@@ -105,10 +105,10 @@ class TorControlPanelImportTests(unittest.TestCase):
 
     def test_tor_status_imported_from_tor_control_panel(self) -> None:
         """With the tooling present, tor_status comes from tor_control_panel."""
-        fake = _fake_tor_control_panel(lambda: "tor_enabled")
+        fake = _fake_tor_control_panel(lambda: 'tor_enabled')
         client = _reload_client({_TCP_BINARY}, fake)
         self.assertTrue(client.GlobalData.tor_control_panel_installed)
-        self.assertIs(client.tor_status, fake["tor_control_panel.tor_status"])
+        self.assertIs(client.tor_status, fake['tor_control_panel.tor_status'])
 
     def test_no_reference_to_removed_anon_connection_wizard(self) -> None:
         """
@@ -117,9 +117,9 @@ class TorControlPanelImportTests(unittest.TestCase):
         'from anon_connection_wizard import tor_status' would raise
         ModuleNotFoundError here; a clean import must not touch acw at all.
         """
-        fake = _fake_tor_control_panel(lambda: "tor_enabled")
+        fake = _fake_tor_control_panel(lambda: 'tor_enabled')
         _reload_client({_TCP_BINARY}, fake)
-        self.assertNotIn("anon_connection_wizard", sys.modules)
+        self.assertNotIn('anon_connection_wizard', sys.modules)
 
     def test_gate_false_when_tooling_absent(self) -> None:
         """No tor-control-panel binary: the import is skipped, status 'absent'."""
@@ -131,7 +131,7 @@ class TorControlPanelImportTests(unittest.TestCase):
         The runtime path works end to end: tor_status() from tor_control_panel
         reporting 'tor_enabled' with a running Tor yields a 'running' update.
         """
-        fake = _fake_tor_control_panel(lambda: "tor_enabled")
+        fake = _fake_tor_control_panel(lambda: 'tor_enabled')
         client = _reload_client({_TCP_BINARY}, fake)
 
         sent: list[str] = []
@@ -149,13 +149,13 @@ class TorControlPanelImportTests(unittest.TestCase):
         real_set = client.set_tor_status
         client.set_tor_status = fake_set_tor_status
         try:
-            with mock.patch("os.path.exists", side_effect=fake_exists):
+            with mock.patch('os.path.exists', side_effect=fake_exists):
                 asyncio.run(client.tor_status_changed())
         finally:
             client.set_tor_status = real_set
 
-        self.assertEqual(sent, ["running"])
+        self.assertEqual(sent, ['running'])
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

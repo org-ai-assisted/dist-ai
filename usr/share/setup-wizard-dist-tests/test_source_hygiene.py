@@ -17,13 +17,13 @@ import swd_testlib as T
 class SourceHygieneTestCase(unittest.TestCase):
     def test_module_is_ascii(self):
         source_path = T.swd.__file__
-        with open(source_path, "rb") as handle:
+        with open(source_path, 'rb') as handle:
             data = handle.read()
         try:
-            data.decode("ascii")
+            data.decode('ascii')
         except UnicodeDecodeError as exc:  # pragma: no cover
             self.fail(f"{source_path} contains non-ASCII bytes: {exc}")
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

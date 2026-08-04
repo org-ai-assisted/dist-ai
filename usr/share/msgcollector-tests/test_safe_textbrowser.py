@@ -36,22 +36,22 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-pytest.importorskip("PyQt5")
+os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+pytest.importorskip('PyQt5')
 # pylint: disable=wrong-import-position
 from PyQt5 import QtWidgets, QtCore, QtGui  # noqa: E402
 
 import msgcollector_testlib as T  # noqa: E402
 
 try:
-    _CLASS_SRC = T.extract_python_class(T.dispatch_script(), "SafeTextBrowser")
+    _CLASS_SRC = T.extract_python_class(T.dispatch_script(), 'SafeTextBrowser')
 except (LookupError, SystemExit):
-    pytest.skip("SafeTextBrowser not available", allow_module_level=True)
+    pytest.skip('SafeTextBrowser not available', allow_module_level=True)
 
 ## Define the REAL class against the real Qt base, without importing the script.
-_NS = {"QtWidgets": QtWidgets}
+_NS = {'QtWidgets': QtWidgets}
 exec(_CLASS_SRC, _NS)  # noqa: S102  (trusted first-party source)  # nosec B102 -- exec of trusted first-party class source extracted from the dispatch script
-SafeTextBrowser = _NS["SafeTextBrowser"]
+SafeTextBrowser = _NS['SafeTextBrowser']
 
 ## One QApplication for the whole module (offscreen; no display needed).
 _APP = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv[:1])
@@ -66,9 +66,9 @@ _RESOURCE_TYPES = [
 ]
 
 _HOSTILE_URLS = [
-    "http://evil.example/x", "https://evil.example/x", "file:///etc/passwd",
-    "ftp://evil/x", "data:text/html,<script>alert(1)</script>", "//evil/x",
-    "qrc:/x", "about:blank", "", "javascript:alert(1)",
+    'http://evil.example/x', 'https://evil.example/x', 'file:///etc/passwd',
+    'ftp://evil/x', 'data:text/html,<script>alert(1)</script>', '//evil/x',
+    'qrc:/x', 'about:blank', '', 'javascript:alert(1)',
 ]
 
 
@@ -79,8 +79,8 @@ def test_defense_override_is_present() -> None:
     ## resource -- so this guards against the override being removed/renamed.
     ## (PyQt wraps inherited methods in fresh objects, so an identity check
     ## against the base is unreliable; the __dict__ membership is the real guard.)
-    assert "loadResource" in SafeTextBrowser.__dict__, \
-        "SafeTextBrowser no longer overrides loadResource -- the resource-refusal defense is gone"
+    assert 'loadResource' in SafeTextBrowser.__dict__, \
+        'SafeTextBrowser no longer overrides loadResource -- the resource-refusal defense is gone'
 
 
 def test_loadresource_refuses_known_hostile_urls() -> None:
@@ -96,7 +96,7 @@ def test_sethtml_adversarial_no_crash() -> None:
         '<a href="file:///etc/passwd">click</a>',
         '<img src=http://x><style>@import url(http://y)</style>',
         '<font color="green">OK.</font><br/>' * 50,
-        "<" * 200,
+        '<' * 200,
         '<img src="data:image/png;base64,AAAA">',
     ]:
         _BROWSER.setHtml(html)  # must not raise
@@ -110,7 +110,7 @@ except ImportError:
 else:
     @settings(max_examples=200, deadline=None)
     @given(st.text(
-        alphabet=st.characters(min_codepoint=1, exclude_categories=("Cs",)),
+        alphabet=st.characters(min_codepoint=1, exclude_categories=('Cs',)),
         max_size=48))
     def test_loadresource_refuses_arbitrary_url(url: str) -> None:
         assert _BROWSER.loadResource(

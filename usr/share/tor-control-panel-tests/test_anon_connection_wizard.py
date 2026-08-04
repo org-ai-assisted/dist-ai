@@ -40,12 +40,12 @@ class AcwCancelCrashTest(unittest.TestCase):
         with T.sandbox(), T.no_modal():
             wizard = self._make_wizard()
             self.assertTrue(
-                hasattr(wizard, "bootstrap_thread"),
-                "bootstrap_thread not initialized in __init__ (bug A2)",
+                hasattr(wizard, 'bootstrap_thread'),
+                'bootstrap_thread not initialized in __init__ (bug A2)',
             )
             self.assertFalse(
                 wizard.bootstrap_thread,
-                "bootstrap_thread should be falsy (no thread running yet)",
+                'bootstrap_thread should be falsy (no thread running yet)',
             )
 
     def test_a2_cancel_before_connect_does_not_crash(self):
@@ -58,5 +58,5 @@ class AcwCancelCrashTest(unittest.TestCase):
                 self.fail(f"cancel_button_clicked() crashed on a fresh wizard: {exc}")
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

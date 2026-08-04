@@ -27,19 +27,19 @@ from tor_control_panel import tor_bootstrap
 ## placeholder instead of progress. "undef" is excluded: it is Tor's internal
 ## pre-bootstrap sentinel, never reported as a phase.
 TOR_BOOTSTRAP_TAGS = (
-    "starting",
-    "conn_pt", "conn_done_pt", "conn_proxy", "conn_done_proxy",
-    "conn", "conn_done", "handshake", "handshake_done",
-    "onehop_create", "requesting_status", "loading_status", "loading_keys",
-    "requesting_descriptors", "loading_descriptors", "enough_dirinfo",
-    "ap_conn_pt", "ap_conn_done_pt", "ap_conn_proxy", "ap_conn_done_proxy",
-    "ap_conn", "ap_conn_done", "ap_handshake", "ap_handshake_done",
-    "circuit_create", "done",
+    'starting',
+    'conn_pt', 'conn_done_pt', 'conn_proxy', 'conn_done_proxy',
+    'conn', 'conn_done', 'handshake', 'handshake_done',
+    'onehop_create', 'requesting_status', 'loading_status', 'loading_keys',
+    'requesting_descriptors', 'loading_descriptors', 'enough_dirinfo',
+    'ap_conn_pt', 'ap_conn_done_pt', 'ap_conn_proxy', 'ap_conn_done_proxy',
+    'ap_conn', 'ap_conn_done', 'ap_handshake', 'ap_handshake_done',
+    'circuit_create', 'done',
 )
 
 ## Tags Tor emitted before 0.4.0.x. Still mapped so an old Tor keeps working.
 TOR_LEGACY_BOOTSTRAP_TAGS = (
-    "conn_dir", "handshake_dir", "conn_or", "handshake_or",
+    'conn_dir', 'handshake_dir', 'conn_or', 'handshake_or',
 )
 
 
@@ -79,7 +79,7 @@ class ParseBootstrapPhaseTest(unittest.TestCase):
     """The extracted, GUI-free parser for untrusted 'status/bootstrap-phase'
     control output (also fuzzed by fuzz_torrc / fuzz/fuzz_bootstrap.py)."""
 
-    TAG_PHASE = {"conn_done": "Connected to a relay", "done": "Done!"}
+    TAG_PHASE = {'conn_done': 'Connected to a relay', 'done': 'Done!'}
 
     def _parse(self, line):
         from tor_control_panel.tor_bootstrap_parse import parse_bootstrap_phase
@@ -88,18 +88,18 @@ class ParseBootstrapPhaseTest(unittest.TestCase):
     def test_known_tag_maps_to_phase(self):
         line = ('NOTICE BOOTSTRAP PROGRESS=10 TAG=conn_done '
                 'SUMMARY="Connected to a relay"')
-        self.assertEqual(self._parse(line), ("Connected to a relay", 10))
+        self.assertEqual(self._parse(line), ('Connected to a relay', 10))
 
     def test_unknown_tag_uses_sanitized_summary(self):
         line = 'x PROGRESS=25 TAG=brand_new SUMMARY="Doing \x1b[31ma thing"'
         phase, percent = self._parse(line)
         self.assertEqual(percent, 25)
-        self.assertNotIn("\x1b", phase)  # escape stripped by sanitize_string
-        self.assertIn("Doing", phase)
+        self.assertNotIn('\x1b', phase)  # escape stripped by sanitize_string
+        self.assertIn('Doing', phase)
 
     def test_malformed_lines_return_none(self):
-        for line in ("", "garbage", "PROGRESS=10", 'TAG=x SUMMARY="y"',
-                     "no progress here TAG=x", "PROGRESS=abc TAG=x SUMMARY=z"):
+        for line in ('', 'garbage', 'PROGRESS=10', 'TAG=x SUMMARY="y"',
+                     'no progress here TAG=x', 'PROGRESS=abc TAG=x SUMMARY=z'):
             with self.subTest(line=line):
                 self.assertIsNone(self._parse(line))
 
@@ -109,5 +109,5 @@ class ParseBootstrapPhaseTest(unittest.TestCase):
         self.assertIsInstance(percent, int)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

@@ -36,7 +36,7 @@ stubbed out to avoid its PID-file / listening-socket side effects.
 import os
 import unittest
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PyQt5.QtCore import QObject, pyqtSignal
 from PyQt5.QtNetwork import QLocalSocket
@@ -47,12 +47,12 @@ try:
 except ModuleNotFoundError as exc:  # pragma: no cover
     raise unittest.SkipTest(
         "sdwdate-gui is not importable; install the 'sdwdate-gui' package "
-        "or set PYTHONPATH to its dist-packages directory"
+        'or set PYTHONPATH to its dist-packages directory'
     ) from exc
 
 
 ## A single QApplication must exist for the lifetime of the process.
-_APP: QApplication = QApplication.instance() or QApplication(["sdwdate-gui-tests"])
+_APP: QApplication = QApplication.instance() or QApplication(['sdwdate-gui-tests'])
 
 
 class _FakeListener(QObject):  # pylint: disable=too-few-public-methods
@@ -100,7 +100,7 @@ class DedupTestCase(unittest.TestCase):
     def add_client(
         self,
         name: str,
-        sdwdate_status: "server.SdwdateStatus | None" = None,
+        sdwdate_status: 'server.SdwdateStatus | None' = None,
     ) -> server.SdwdateGuiClient:
         """
         Create a client backed by an unconnected QLocalSocket, register it
@@ -121,7 +121,7 @@ class DedupTestCase(unittest.TestCase):
 
         ## Make the client "ready" so regen_menu will actually show it.
         client.sdwdate_status = sdwdate_status
-        client.sdwdate_msg = "test"
+        client.sdwdate_msg = 'test'
         client.tor_status = server.TorStatus.ABSENT
 
         client.client_name = name
@@ -166,26 +166,26 @@ class QubesDedupTests(DedupTestCase):
 
         self.set_qubes(True)
 
-        self.add_client("sys-whonix")
-        old_disp = self.add_client("disp5711")
-        new_disp = self.add_client("disp5711")
+        self.add_client('sys-whonix')
+        old_disp = self.add_client('disp5711')
+        new_disp = self.add_client('disp5711')
 
         ## The new connection wins, the stale one is gone.
         self.assertNotIn(old_disp, self.tray.client_list)
         self.assertIn(new_disp, self.tray.client_list)
 
         ## No VM is listed twice.
-        self.assertEqual(sorted(self.client_names()), ["disp5711", "sys-whonix"])
-        self.assertEqual(sorted(self.menu_entry_names()), ["disp5711", "sys-whonix"])
-        self.assertEqual(self.menu_entry_names().count("disp5711"), 1)
+        self.assertEqual(sorted(self.client_names()), ['disp5711', 'sys-whonix'])
+        self.assertEqual(sorted(self.menu_entry_names()), ['disp5711', 'sys-whonix'])
+        self.assertEqual(self.menu_entry_names().count('disp5711'), 1)
 
     def test_three_reconnects_collapse_to_one(self) -> None:
         """A flapping VM that reconnects repeatedly still appears once."""
 
         self.set_qubes(True)
 
-        survivors = [self.add_client("disp9001") for _ in range(4)]
-        self.assertEqual(self.client_names(), ["disp9001"])
+        survivors = [self.add_client('disp9001') for _ in range(4)]
+        self.assertEqual(self.client_names(), ['disp9001'])
         ## Only the most recent connection survives.
         self.assertEqual(self.tray.client_list, [survivors[-1]])
 
@@ -194,12 +194,12 @@ class QubesDedupTests(DedupTestCase):
 
         self.set_qubes(True)
 
-        self.add_client("sys-whonix")
-        self.add_client("anon-whonix")
-        self.add_client("disp5711")
+        self.add_client('sys-whonix')
+        self.add_client('anon-whonix')
+        self.add_client('disp5711')
         self.assertEqual(
             sorted(self.client_names()),
-            ["anon-whonix", "disp5711", "sys-whonix"],
+            ['anon-whonix', 'disp5711', 'sys-whonix'],
         )
 
 
@@ -215,12 +215,12 @@ class NonQubesDedupTests(DedupTestCase):
 
         self.set_qubes(False)
 
-        established = self.add_client("workstation")
-        newcomer = self.add_client("workstation")
+        established = self.add_client('workstation')
+        newcomer = self.add_client('workstation')
 
         self.assertIn(established, self.tray.client_list)
         self.assertNotIn(newcomer, self.tray.client_list)
-        self.assertEqual(self.client_names(), ["workstation"])
+        self.assertEqual(self.client_names(), ['workstation'])
 
 
 class QubesHeaderEmitsNameChangeTests(unittest.TestCase):
@@ -239,14 +239,14 @@ class QubesHeaderEmitsNameChangeTests(unittest.TestCase):
 
         ## qrexec header is "<service> <source-vm> ...\0".
         ## __sock_buf and __parse_qubes_data are name-mangled private members.
-        client._SdwdateGuiClient__sock_buf = b"sdwdate-gui.Connect disp5711\0"
+        client._SdwdateGuiClient__sock_buf = b'sdwdate-gui.Connect disp5711\0'
         result = client._SdwdateGuiClient__parse_qubes_data()
 
         self.assertTrue(result)
-        self.assertEqual(client.client_name, "disp5711")
+        self.assertEqual(client.client_name, 'disp5711')
         self.assertTrue(client.client_name_set)
-        self.assertEqual(fired, ["disp5711"])
+        self.assertEqual(fired, ['disp5711'])
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

@@ -74,9 +74,9 @@ def gen_message(rng: random.Random) -> str:
     parts = [rng.choice(_FRAGMENTS) for _ in range(rng.randint(0, 8))]
     ## Occasionally splice a long run to probe pathological backtracking.
     if rng.random() < 0.1:
-        parts.append('<a href="' + "a" * rng.randint(1, 400) + '">'
-                     + "b" * rng.randint(1, 400) + "</a>")
-    return "".join(parts)
+        parts.append('<a href="' + 'a' * rng.randint(1, 400) + '">'
+                     + 'b' * rng.randint(1, 400) + '</a>')
+    return ''.join(parts)
 
 
 def run(func_def: str, message: str, timeout: float = 5.0):
@@ -84,7 +84,7 @@ def run(func_def: str, message: str, timeout: float = 5.0):
     Raises subprocess.TimeoutExpired on a hang (the bug we hunt)."""
     script = func_def + '\ncli_links_to_footnotes "$1"\n'
     proc = subprocess.run(
-        ["bash", "-c", script, "bash", message],
+        ['bash', '-c', script, 'bash', message],
         capture_output=True, text=True, timeout=timeout)
     return proc.returncode, proc.stdout
 
@@ -102,17 +102,17 @@ def check(func_def: str, message: str) -> None:
     assert rc == 0, f"non-zero exit {rc}"
     ## Every well-formed anchor is rewritten away (body consumed; footer URLs
     ## have no '>', so they cannot form one either).
-    assert not WELL_FORMED_ANCHOR.search(out), "a well-formed anchor survived"
+    assert not WELL_FORMED_ANCHOR.search(out), 'a well-formed anchor survived'
     ## Idempotent: the output has no anchors left, so re-running is the identity.
     rc2, out2 = run(func_def, out)
     assert rc2 == 0, f"non-zero exit {rc2} on second pass"
-    assert out2 == out, "not idempotent"
+    assert out2 == out, 'not idempotent'
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--iterations", type=int, default=3000)
-    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument('--iterations', type=int, default=3000)
+    parser.add_argument('--seed', type=int, default=None)
     args = parser.parse_args()
 
     seed = args.seed if args.seed is not None else random.randrange(2**32)
@@ -122,14 +122,14 @@ def main() -> int:
 
     script = T.msgcollector_script()
     try:
-        func_def = T.extract_bash_function(script, "cli_links_to_footnotes")
+        func_def = T.extract_bash_function(script, 'cli_links_to_footnotes')
     except LookupError as exc:
         print(f"SKIP: {exc}", file=sys.stderr)
         return 77
 
     ## Always retry the curated regressions first, then the random sweep.
-    cases = [("regression", m) for m in _REGRESSIONS]
-    cases += [("random", None)] * args.iterations
+    cases = [('regression', m) for m in _REGRESSIONS]
+    cases += [('random', None)] * args.iterations
     for i, (kind, fixed) in enumerate(cases):
         message = fixed if fixed is not None else gen_message(rng)
         try:
@@ -142,9 +142,9 @@ def main() -> int:
             print(f"FAIL ({kind}): {exc}: seed={seed} i={i} message={message!r}",
                   file=sys.stderr)
             return 1
-    print("ok", file=sys.stderr)
+    print('ok', file=sys.stderr)
     return 0
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     sys.exit(main())

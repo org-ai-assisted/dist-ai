@@ -32,19 +32,19 @@ import tempfile
 import unittest
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_PROBE = os.path.join(_HERE, "render_probe.py")
-_WAYLAND_RUN = os.path.join(_HERE, "wayland-run.sh")
+_PROBE = os.path.join(_HERE, 'render_probe.py')
+_WAYLAND_RUN = os.path.join(_HERE, 'wayland-run.sh')
 _TIMEOUT = 180
 
 
 def _env_for(platform):
     """Subprocess environment: the probe's import path plus the real backend."""
     env = dict(os.environ)
-    env["PYTHONPATH"] = os.pathsep.join(
-        p for p in (_HERE, env.get("PYTHONPATH", "")) if p
+    env['PYTHONPATH'] = os.pathsep.join(
+        p for p in (_HERE, env.get('PYTHONPATH', '')) if p
     )
     ## Override the entrypoint's QT_QPA_PLATFORM=offscreen for the real render.
-    env["QT_QPA_PLATFORM"] = platform
+    env['QT_QPA_PLATFORM'] = platform
     return env
 
 
@@ -86,12 +86,12 @@ class _RenderContract:
     def test_single_page_back_absent(self):
         with tempfile.TemporaryDirectory() as tmp:
             png = os.path.join(tmp, f"{self.backend}_single.png")
-            result = self._run("single", png)
-            self.assertTrue(result["option_no_back_on_start"])
+            result = self._run('single', png)
+            self.assertTrue(result['option_no_back_on_start'])
             self.assertFalse(
-                result["back_visible"],
+                result['back_visible'],
                 f"[{self.backend}] Back button must not render on a "
-                "single-page wizard",
+                'single-page wizard',
             )
             self.assertTrue(
                 os.path.isfile(png) and os.path.getsize(png) > 0,
@@ -99,35 +99,35 @@ class _RenderContract:
             )
 
     def test_multi_page_back_present(self):
-        result = self._run("multi")
-        self.assertFalse(result["option_no_back_on_start"])
+        result = self._run('multi')
+        self.assertFalse(result['option_no_back_on_start'])
         self.assertTrue(
-            result["back_visible"],
+            result['back_visible'],
             f"[{self.backend}] Back button must render past the start page",
         )
 
 
 class X11RenderTestCase(_RenderContract, unittest.TestCase):
-    backend = "x11"
-    platform = "xcb"
+    backend = 'x11'
+    platform = 'xcb'
 
     def _command(self, mode, png):
-        cmd = ["xvfb-run", "-a", sys.executable, _PROBE, mode]
+        cmd = ['xvfb-run', '-a', sys.executable, _PROBE, mode]
         if png:
             cmd.append(png)
         return cmd
 
 
 class WaylandRenderTestCase(_RenderContract, unittest.TestCase):
-    backend = "wayland"
-    platform = "wayland"
+    backend = 'wayland'
+    platform = 'wayland'
 
     def _command(self, mode, png):
-        cmd = ["bash", _WAYLAND_RUN, sys.executable, _PROBE, mode]
+        cmd = ['bash', _WAYLAND_RUN, sys.executable, _PROBE, mode]
         if png:
             cmd.append(png)
         return cmd
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

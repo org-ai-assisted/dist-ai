@@ -40,8 +40,8 @@ import sys
 import tempfile
 import time
 
-WATCHER_IFACE = "org.kde.StatusNotifierWatcher"
-PROPS_IFACE = "org.freedesktop.DBus.Properties"
+WATCHER_IFACE = 'org.kde.StatusNotifierWatcher'
+PROPS_IFACE = 'org.freedesktop.DBus.Properties'
 
 
 def run_watcher(log_path: str) -> None:
@@ -57,46 +57,46 @@ def run_watcher(log_path: str) -> None:
     from gi.repository import GLib
 
     def log(message: str) -> None:
-        with open(log_path, "a", encoding="utf-8") as log_file:
-            log_file.write(message + "\n")
+        with open(log_path, 'a', encoding='utf-8') as log_file:
+            log_file.write(message + '\n')
 
     class Watcher(dbus.service.Object):
-        def __init__(self, bus: "dbus.Bus") -> None:
-            super().__init__(bus, "/StatusNotifierWatcher")
+        def __init__(self, bus: 'dbus.Bus') -> None:
+            super().__init__(bus, '/StatusNotifierWatcher')
             self.items: list = []
 
-        @dbus.service.method(WATCHER_IFACE, in_signature="s")
+        @dbus.service.method(WATCHER_IFACE, in_signature='s')
         def RegisterStatusNotifierItem(self, service: str) -> None:
-            log("REGISTER_ITEM " + str(service))
+            log('REGISTER_ITEM ' + str(service))
             self.items.append(str(service))
             self.StatusNotifierItemRegistered(str(service))
 
-        @dbus.service.method(WATCHER_IFACE, in_signature="s")
+        @dbus.service.method(WATCHER_IFACE, in_signature='s')
         def RegisterStatusNotifierHost(self, service: str) -> None:
-            log("REGISTER_HOST " + str(service))
+            log('REGISTER_HOST ' + str(service))
 
-        @dbus.service.signal(WATCHER_IFACE, signature="s")
+        @dbus.service.signal(WATCHER_IFACE, signature='s')
         def StatusNotifierItemRegistered(self, service: str) -> None:
             pass
 
-        @dbus.service.method(PROPS_IFACE, in_signature="ss", out_signature="v")
+        @dbus.service.method(PROPS_IFACE, in_signature='ss', out_signature='v')
         def Get(self, _iface: str, prop: str) -> object:
-            if prop == "IsStatusNotifierHostRegistered":
+            if prop == 'IsStatusNotifierHostRegistered':
                 return dbus.Boolean(True)
-            if prop == "RegisteredStatusNotifierItems":
-                return dbus.Array(self.items, signature="s")
-            if prop == "ProtocolVersion":
+            if prop == 'RegisteredStatusNotifierItems':
+                return dbus.Array(self.items, signature='s')
+            if prop == 'ProtocolVersion':
                 return dbus.Int32(0)
             return dbus.Boolean(False)
 
-        @dbus.service.method(PROPS_IFACE, in_signature="s", out_signature="a{sv}")
+        @dbus.service.method(PROPS_IFACE, in_signature='s', out_signature='a{sv}')
         def GetAll(self, _iface: str) -> dict:
             return {
-                "IsStatusNotifierHostRegistered": dbus.Boolean(True),
-                "RegisteredStatusNotifierItems": dbus.Array(
-                    self.items, signature="s"
+                'IsStatusNotifierHostRegistered': dbus.Boolean(True),
+                'RegisteredStatusNotifierItems': dbus.Array(
+                    self.items, signature='s'
                 ),
-                "ProtocolVersion": dbus.Int32(0),
+                'ProtocolVersion': dbus.Int32(0),
             }
 
     DBusGMainLoop(set_as_default=True)
@@ -104,14 +104,14 @@ def run_watcher(log_path: str) -> None:
     _name = dbus.service.BusName(WATCHER_IFACE, bus)
     _watcher = Watcher(bus)
     assert _name is not None and _watcher is not None  # hold the D-Bus name + service alive
-    log("WATCHER_UP")
+    log('WATCHER_UP')
     GLib.MainLoop().run()
 
 
-def spawn_watcher(log_path: str) -> "subprocess.Popen":
+def spawn_watcher(log_path: str) -> 'subprocess.Popen':
     ## Long-lived child, terminated by the arm; 'with' would kill it at once.
     return subprocess.Popen(  # pylint: disable=consider-using-with
-        [sys.executable, os.path.realpath(__file__), "--watcher", log_path],
+        [sys.executable, os.path.realpath(__file__), '--watcher', log_path],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -119,9 +119,9 @@ def spawn_watcher(log_path: str) -> "subprocess.Popen":
 
 def registered_via_sni(log_path: str) -> bool:
     try:
-        with open(log_path, "r", encoding="utf-8") as log_file:
+        with open(log_path, 'r', encoding='utf-8') as log_file:
             return any(
-                line.startswith("REGISTER_ITEM") for line in log_file
+                line.startswith('REGISTER_ITEM') for line in log_file
             )
     except FileNotFoundError:
         return False
@@ -132,8 +132,8 @@ def watcher_up(log_path: str, timeout: float = 5.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            with open(log_path, "r", encoding="utf-8") as log_file:
-                if any(l.startswith("WATCHER_UP") for l in log_file):
+            with open(log_path, 'r', encoding='utf-8') as log_file:
+                if any(l.startswith('WATCHER_UP') for l in log_file):
                     return
         except FileNotFoundError:
             # the log is not written yet; the caller retries
@@ -149,12 +149,12 @@ def run_arm(arm: str) -> None:
 
     _lfd, log_path = tempfile.mkstemp(prefix=f"sni-{arm}-")
     os.close(_lfd)
-    app = QApplication(["repro-" + arm])
-    if app.platformName() != "xcb":
+    app = QApplication(['repro-' + arm])
+    if app.platformName() != 'xcb':
         print(f"SKIP {arm}: need the xcb platform, got {app.platformName()!r}")
         sys.exit(2)
 
-    state = {"proc": None, "tray": None}
+    state = {'proc': None, 'tray': None}
 
     def build_and_show() -> None:
         ## The backend (XEmbed vs. SNI) is chosen HERE, at CONSTRUCTION -- Qt
@@ -165,11 +165,11 @@ def run_arm(arm: str) -> None:
         tray = QSystemTrayIcon()
         tray.setIcon(QIcon(pixmap))
         tray.show()
-        state["tray"] = tray
+        state['tray'] = tray
 
-    if arm == "early":
+    if arm == 'early':
         ## Watcher exists BEFORE construction -> Qt binds the SNI backend.
-        state["proc"] = spawn_watcher(log_path)
+        state['proc'] = spawn_watcher(log_path)
         watcher_up(log_path)
         build_and_show()
     else:
@@ -177,15 +177,15 @@ def run_arm(arm: str) -> None:
         ## 1s later never flips this icon to SNI.
         build_and_show()
         QTimer.singleShot(
-            1000, lambda: state.__setitem__("proc", spawn_watcher(log_path))
+            1000, lambda: state.__setitem__('proc', spawn_watcher(log_path))
         )
 
     def finish() -> None:
         registered = registered_via_sni(log_path)
-        print("RESULT " + json.dumps(
-            {"arm": arm, "registered_via_sni": registered}))
-        if state["proc"] is not None:
-            state["proc"].terminate()
+        print('RESULT ' + json.dumps(
+            {'arm': arm, 'registered_via_sni': registered}))
+        if state['proc'] is not None:
+            state['proc'].terminate()
         app.exit(0 if registered else 1)
 
     QTimer.singleShot(4000, finish)
@@ -193,37 +193,37 @@ def run_arm(arm: str) -> None:
 
 
 def main() -> None:
-    expected = {"late": False, "early": True}
+    expected = {'late': False, 'early': True}
     got = {}
-    for arm in ("late", "early"):
+    for arm in ('late', 'early'):
         ## Each arm gets its own private session bus so the watcher and Qt
         ## share one bus and successive arms do not fight over the
         ## well-known StatusNotifierWatcher name.
         out = subprocess.run(
-            ["dbus-run-session", "--",
-             sys.executable, os.path.realpath(__file__), "--arm", arm],
+            ['dbus-run-session', '--',
+             sys.executable, os.path.realpath(__file__), '--arm', arm],
             capture_output=True, text=True, check=False,
         )
         sys.stdout.write(out.stdout)
-        line = [l for l in out.stdout.splitlines() if l.startswith("RESULT ")]
-        got[arm] = json.loads(line[0][len("RESULT "):])["registered_via_sni"] \
+        line = [l for l in out.stdout.splitlines() if l.startswith('RESULT ')]
+        got[arm] = json.loads(line[0][len('RESULT '):])['registered_via_sni'] \
             if line else None
 
-    print("VERDICT " + json.dumps({"expected": expected, "got": got}))
+    print('VERDICT ' + json.dumps({'expected': expected, 'got': got}))
     if got == expected:
         print(
-            "PASS: race confirmed -- same construct+show(), the icon registers "
-            "via SNI only when the watcher exists BEFORE construction."
+            'PASS: race confirmed -- same construct+show(), the icon registers '
+            'via SNI only when the watcher exists BEFORE construction.'
         )
         sys.exit(0)
-    print("MISMATCH: got != expected (see above).")
+    print('MISMATCH: got != expected (see above).')
     sys.exit(1)
 
 
-if __name__ == "__main__":
-    if len(sys.argv) >= 3 and sys.argv[1] == "--watcher":
+if __name__ == '__main__':
+    if len(sys.argv) >= 3 and sys.argv[1] == '--watcher':
         run_watcher(sys.argv[2])
-    elif len(sys.argv) >= 3 and sys.argv[1] == "--arm":
+    elif len(sys.argv) >= 3 and sys.argv[1] == '--arm':
         run_arm(sys.argv[2])
     else:
         main()

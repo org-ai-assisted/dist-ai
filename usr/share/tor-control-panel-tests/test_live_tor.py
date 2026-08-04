@@ -45,21 +45,21 @@ from PyQt5.QtCore import QObject, Qt
 import tcp_testlib as T  # noqa: F401  (sets up sys.path / offscreen Qt + QApplication)
 from tor_control_panel import tor_bootstrap
 
-TOR = shutil.which("tor")
-OBFS4PROXY = "/usr/bin/obfs4proxy"
-SNOWFLAKE_CLIENT = "/usr/bin/snowflake-client"
+TOR = shutil.which('tor')
+OBFS4PROXY = '/usr/bin/obfs4proxy'
+SNOWFLAKE_CLIENT = '/usr/bin/snowflake-client'
 
 ## The current Tor default snowflake bridge (the one shipped bridges_default
 ## uses a TEST-NET placeholder, so spell out a real one for the live test).
 SNOWFLAKE_BRIDGE = (
-    "snowflake 192.0.2.3:80 2B280B23E1107BB62ABFC40DDCC8824814F80A72 "
-    "fingerprint=2B280B23E1107BB62ABFC40DDCC8824814F80A72 "
-    "url=https://1098762253.rsc.cdn77.org/ fronts=www.cdn77.com,docs.plesk.com "
-    "ice=stun:stun.l.google.com:19302,stun:stun.antisip.com:3478,"
-    "stun:stun.bluesip.net:3478,stun:stun.dus.net:3478,stun:stun.epygi.com:3478,"
-    "stun:stun.sonetel.com:3478,stun:stun.uls.co.za:3478,"
-    "stun:stun.voipgate.com:3478,stun:stun.voys.nl:3478 "
-    "utls-imitate=hellorandomizedalpn")
+    'snowflake 192.0.2.3:80 2B280B23E1107BB62ABFC40DDCC8824814F80A72 '
+    'fingerprint=2B280B23E1107BB62ABFC40DDCC8824814F80A72 '
+    'url=https://1098762253.rsc.cdn77.org/ fronts=www.cdn77.com,docs.plesk.com '
+    'ice=stun:stun.l.google.com:19302,stun:stun.antisip.com:3478,'
+    'stun:stun.bluesip.net:3478,stun:stun.dus.net:3478,stun:stun.epygi.com:3478,'
+    'stun:stun.sonetel.com:3478,stun:stun.uls.co.za:3478,'
+    'stun:stun.voipgate.com:3478,stun:stun.voys.nl:3478 '
+    'utls-imitate=hellorandomizedalpn')
 
 try:
     ## tor_bootstrap imports stem lazily; the live tests drive it, so stem must
@@ -74,37 +74,37 @@ def _bundled_bridges(transport):
     """The real Bridge lines the app ships for `transport` (bridges_default).
     obfs4 and meek use working fronts/relays; the shipped snowflake line uses a
     placeholder IP, so the snowflake test spells out a real bridge instead."""
-    with open(T._bridges_default_path(), encoding="utf-8") as handle:
-        bridges = json.load(handle)["bridges"][transport]
+    with open(T._bridges_default_path(), encoding='utf-8') as handle:
+        bridges = json.load(handle)['bridges'][transport]
     return [line for line in bridges if line.strip()]
 
 ## Populated by setUpModule: whether a real bootstrap succeeded, and the shared
 ## instance kept alive for the connected-state tests.
 LIVE = False
-LIVE_REASON = "not probed"
+LIVE_REASON = 'not probed'
 _SHARED = None
 
 
 class _TorInstance:
     """A throwaway tor with a ControlSocket, cookie auth, and its own dirs."""
 
-    def __init__(self, extra_torrc=""):
-        self.dir = tempfile.mkdtemp(prefix="tcp-livetor-")
-        self.data = os.path.join(self.dir, "data")
+    def __init__(self, extra_torrc=''):
+        self.dir = tempfile.mkdtemp(prefix='tcp-livetor-')
+        self.data = os.path.join(self.dir, 'data')
         os.mkdir(self.data)
         os.chmod(self.data, 0o700)
-        self.control_socket = os.path.join(self.dir, "control")
-        self.cookie = os.path.join(self.data, "control_auth_cookie")
-        torrc = os.path.join(self.dir, "torrc")
-        with open(torrc, "w", encoding="utf-8") as handle:
+        self.control_socket = os.path.join(self.dir, 'control')
+        self.cookie = os.path.join(self.data, 'control_auth_cookie')
+        torrc = os.path.join(self.dir, 'torrc')
+        with open(torrc, 'w', encoding='utf-8') as handle:
             handle.write(
-                "DataDirectory {0}\n".format(self.data)
-                + "ControlSocket {0}\n".format(self.control_socket)
-                + "CookieAuthentication 1\n"
-                + "SocksPort auto\n"
+                'DataDirectory {0}\n'.format(self.data)
+                + 'ControlSocket {0}\n'.format(self.control_socket)
+                + 'CookieAuthentication 1\n'
+                + 'SocksPort auto\n'
                 + extra_torrc)
         self.proc = subprocess.Popen(
-            [TOR, "-f", torrc],
+            [TOR, '-f', torrc],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         ## Wait for the control socket to appear (tor is starting up).
         for _ in range(75):
@@ -141,7 +141,7 @@ class _TorInstance:
 
 def _reached_connected(seen):
     return any(pct == 100 for pct, _ in seen) and any(
-        "Connected to the Tor network" in phase for _, phase in seen)
+        'Connected to the Tor network' in phase for _, phase in seen)
 
 
 class _Socks5Forwarder:
@@ -152,7 +152,7 @@ class _Socks5Forwarder:
     def __init__(self):
         self._srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self._srv.bind(("127.0.0.1", 0))
+        self._srv.bind(('127.0.0.1', 0))
         self._srv.listen(64)
         self.port = self._srv.getsockname()[1]
         self._stop = False
@@ -179,10 +179,10 @@ class _Socks5Forwarder:
                 conn.close()
                 return
             conn.recv(head[1])                 # methods
-            conn.sendall(b"\x05\x00")          # no auth
+            conn.sendall(b'\x05\x00')          # no auth
             req = conn.recv(4)
             if len(req) < 4 or req[1] != 0x01:  # CONNECT only
-                conn.sendall(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
+                conn.sendall(b'\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00')
                 conn.close()
                 return
             atyp = req[3]
@@ -195,9 +195,9 @@ class _Socks5Forwarder:
             else:
                 conn.close()
                 return
-            port = struct.unpack(">H", conn.recv(2))[0]
+            port = struct.unpack('>H', conn.recv(2))[0]
             remote = socket.create_connection((host, port), timeout=20)
-            conn.sendall(b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")
+            conn.sendall(b'\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00')
             self._splice(conn, remote)
         except Exception:
             try:
@@ -247,15 +247,15 @@ class _Socks5Forwarder:
 def setUpModule():
     global LIVE, LIVE_REASON, _SHARED
     if not TOR:
-        LIVE_REASON = "tor binary not installed"
+        LIVE_REASON = 'tor binary not installed'
         return
     if not HAVE_STEM:
-        LIVE_REASON = "python3-stem not installed"
+        LIVE_REASON = 'python3-stem not installed'
         return
     inst = _TorInstance()
     if not os.path.exists(inst.control_socket):
         inst.stop()
-        LIVE_REASON = "tor did not start (no control socket)"
+        LIVE_REASON = 'tor did not start (no control socket)'
         return
     ## One real bootstrap, ~10-40s; reused by the connected-state tests.
     seen = inst.bootstrap(timeout_ms=90000)
@@ -264,7 +264,7 @@ def setUpModule():
         _SHARED = inst
     else:
         inst.stop()
-        LIVE_REASON = "tor could not reach the network (no direct Tor access)"
+        LIVE_REASON = 'tor could not reach the network (no direct Tor access)'
 
 
 def tearDownModule():
@@ -272,7 +272,7 @@ def tearDownModule():
         _SHARED.stop()
 
 
-@unittest.skipUnless(TOR and HAVE_STEM, "tor binary / python3-stem not installed")
+@unittest.skipUnless(TOR and HAVE_STEM, 'tor binary / python3-stem not installed')
 class LiveBootstrapTest(unittest.TestCase):
     def setUp(self):
         if not LIVE:
@@ -299,7 +299,7 @@ class LiveBootstrapTest(unittest.TestCase):
         controller.signal(stem.Signal.NEWNYM)  # must not raise
 
 
-@unittest.skipUnless(TOR and HAVE_STEM, "tor binary / python3-stem not installed")
+@unittest.skipUnless(TOR and HAVE_STEM, 'tor binary / python3-stem not installed')
 class LiveDisableNetworkTest(unittest.TestCase):
     def setUp(self):
         if not LIVE:
@@ -309,15 +309,15 @@ class LiveDisableNetworkTest(unittest.TestCase):
         ## Enable-network path: a tor started with DisableNetwork 1 is idle;
         ## TorBootstrap flips it to 0 (tor_bootstrap.run) and bootstraps through
         ## to connected.
-        inst = _TorInstance(extra_torrc="DisableNetwork 1\n")
+        inst = _TorInstance(extra_torrc='DisableNetwork 1\n')
         self.addCleanup(inst.stop)
         self.assertTrue(os.path.exists(inst.control_socket),
-                        "tor did not start")
+                        'tor did not start')
         seen = inst.bootstrap(timeout_ms=90000)
         if not _reached_connected(seen):
             ## Never fail on network slowness -- this is an integration test.
             self.skipTest(
-                "tor did not reach connected in time (network): "
+                'tor did not reach connected in time (network): '
                 + repr(seen[-3:]))
         self.assertTrue(_reached_connected(seen))
 
@@ -341,7 +341,7 @@ class _BootstrapAtSharedInstance:
 
         tor_bootstrap.TorBootstrap.__init__ = patched_init
         ## The widget's privileged 'restart tor' becomes a no-op success.
-        privilege.command = lambda action, *args: ["true"]
+        privilege.command = lambda action, *args: ['true']
         return self
 
     def __exit__(self, *exc):
@@ -350,7 +350,7 @@ class _BootstrapAtSharedInstance:
         return False
 
 
-@unittest.skipUnless(TOR and HAVE_STEM, "tor binary / python3-stem not installed")
+@unittest.skipUnless(TOR and HAVE_STEM, 'tor binary / python3-stem not installed')
 class LiveRestartTorGuiTest(unittest.TestCase):
     def setUp(self):
         if not LIVE:
@@ -370,11 +370,11 @@ class LiveRestartTorGuiTest(unittest.TestCase):
                 ## Integration test: skip on network slowness, do not fail.
                 widget.bootstrap_thread.terminate()
                 widget.bootstrap_thread.wait()
-                self.skipTest("restart-tor-gui bootstrap did not finish in time")
-            self.assertIn("bootstrapping done", widget.text.text().lower())
+                self.skipTest('restart-tor-gui bootstrap did not finish in time')
+            self.assertIn('bootstrapping done', widget.text.text().lower())
 
 
-@unittest.skipUnless(TOR and HAVE_STEM, "tor binary / python3-stem not installed")
+@unittest.skipUnless(TOR and HAVE_STEM, 'tor binary / python3-stem not installed')
 class LiveProxyTest(unittest.TestCase):
     def setUp(self):
         if not LIVE:
@@ -387,19 +387,19 @@ class LiveProxyTest(unittest.TestCase):
         proxy = _Socks5Forwarder()
         self.addCleanup(proxy.stop)
         inst = _TorInstance(
-            extra_torrc="Socks5Proxy 127.0.0.1:{0}\n".format(proxy.port))
+            extra_torrc='Socks5Proxy 127.0.0.1:{0}\n'.format(proxy.port))
         self.addCleanup(inst.stop)
-        self.assertTrue(os.path.exists(inst.control_socket), "tor did not start")
+        self.assertTrue(os.path.exists(inst.control_socket), 'tor did not start')
         seen = inst.bootstrap(timeout_ms=120000)
         if not _reached_connected(seen):
             self.skipTest(
-                "tor could not connect through the SOCKS5 proxy in time: "
+                'tor could not connect through the SOCKS5 proxy in time: '
                 + repr(seen[-3:]))
         self.assertTrue(_reached_connected(seen))
 
 
-@unittest.skipUnless(TOR and HAVE_STEM, "tor binary / python3-stem not installed")
-@unittest.skipUnless(os.path.exists(OBFS4PROXY), "obfs4proxy not installed")
+@unittest.skipUnless(TOR and HAVE_STEM, 'tor binary / python3-stem not installed')
+@unittest.skipUnless(os.path.exists(OBFS4PROXY), 'obfs4proxy not installed')
 class LiveObfs4BridgeTest(unittest.TestCase):
     def setUp(self):
         if not LIVE:
@@ -414,25 +414,25 @@ class LiveObfs4BridgeTest(unittest.TestCase):
         ## is up and carrying traffic (not merely a valid config). Whether a
         ## given public bridge is fast enough to reach 100% right now is not, so
         ## do not require it; if not even one shipped bridge is reachable, skip.
-        bridges = _bundled_bridges("obfs4")
-        self.assertTrue(bridges, "no obfs4 bridges shipped in bridges_default")
-        extra = ("UseBridges 1\n"
-                 "ClientTransportPlugin obfs4 exec {0}\n".format(OBFS4PROXY)
-                 + "\n".join(bridges) + "\n")
+        bridges = _bundled_bridges('obfs4')
+        self.assertTrue(bridges, 'no obfs4 bridges shipped in bridges_default')
+        extra = ('UseBridges 1\n'
+                 'ClientTransportPlugin obfs4 exec {0}\n'.format(OBFS4PROXY)
+                 + '\n'.join(bridges) + '\n')
         inst = _TorInstance(extra_torrc=extra)
         self.addCleanup(inst.stop)
-        self.assertTrue(os.path.exists(inst.control_socket), "tor did not start")
+        self.assertTrue(os.path.exists(inst.control_socket), 'tor did not start')
         seen = inst.bootstrap(timeout_ms=150000)
         max_progress = max((pct for pct, _ in seen), default=0)
         if max_progress < 40:
             self.skipTest(
-                "no shipped obfs4 bridge reachable now (max {0}%): {1}"
+                'no shipped obfs4 bridge reachable now (max {0}%): {1}'
                 .format(max_progress, seen[-3:]))
         self.assertGreaterEqual(max_progress, 40)
 
 
-@unittest.skipUnless(TOR and HAVE_STEM, "tor binary / python3-stem not installed")
-@unittest.skipUnless(os.path.exists(OBFS4PROXY), "obfs4proxy (meek_lite) not installed")
+@unittest.skipUnless(TOR and HAVE_STEM, 'tor binary / python3-stem not installed')
+@unittest.skipUnless(os.path.exists(OBFS4PROXY), 'obfs4proxy (meek_lite) not installed')
 class LiveMeekBridgeTest(unittest.TestCase):
     def setUp(self):
         if not LIVE:
@@ -447,25 +447,25 @@ class LiveMeekBridgeTest(unittest.TestCase):
         ## is up and carrying traffic. (Full 100% over a slow domain-fronted hop
         ## is not deterministic; meek does not emit a distinct 'transport' phase
         ## the way obfs4 does, so progress-through-the-bridge is the signal.)
-        bridges = _bundled_bridges("meek")
-        self.assertTrue(bridges, "no meek bridge shipped in bridges_default")
-        extra = ("UseBridges 1\n"
-                 "ClientTransportPlugin meek_lite exec {0}\n".format(OBFS4PROXY)
-                 + "\n".join(bridges) + "\n")
+        bridges = _bundled_bridges('meek')
+        self.assertTrue(bridges, 'no meek bridge shipped in bridges_default')
+        extra = ('UseBridges 1\n'
+                 'ClientTransportPlugin meek_lite exec {0}\n'.format(OBFS4PROXY)
+                 + '\n'.join(bridges) + '\n')
         inst = _TorInstance(extra_torrc=extra)
         self.addCleanup(inst.stop)
-        self.assertTrue(os.path.exists(inst.control_socket), "tor did not start")
+        self.assertTrue(os.path.exists(inst.control_socket), 'tor did not start')
         seen = inst.bootstrap(timeout_ms=150000)
         max_progress = max((pct for pct, _ in seen), default=0)
         if max_progress < 40:
             self.skipTest(
-                "meek front not reachable now (max {0}%): {1}"
+                'meek front not reachable now (max {0}%): {1}'
                 .format(max_progress, seen[-3:]))
         self.assertGreaterEqual(max_progress, 40)
 
 
-@unittest.skipUnless(TOR and HAVE_STEM, "tor binary / python3-stem not installed")
-@unittest.skipUnless(os.path.exists(SNOWFLAKE_CLIENT), "snowflake-client not installed")
+@unittest.skipUnless(TOR and HAVE_STEM, 'tor binary / python3-stem not installed')
+@unittest.skipUnless(os.path.exists(SNOWFLAKE_CLIENT), 'snowflake-client not installed')
 class LiveSnowflakeBridgeTest(unittest.TestCase):
     def setUp(self):
         if not LIVE:
@@ -476,19 +476,19 @@ class LiveSnowflakeBridgeTest(unittest.TestCase):
         ## snowflake ClientTransportPlugin + a real snowflake bridge and drive it
         ## to connected. Snowflake (WebRTC) is slow, so a long timeout; skip if
         ## the broker/proxy path is not reachable right now.
-        extra = ("UseBridges 1\n"
-                 "ClientTransportPlugin snowflake exec {0}\n".format(SNOWFLAKE_CLIENT)
-                 + "Bridge " + SNOWFLAKE_BRIDGE + "\n")
+        extra = ('UseBridges 1\n'
+                 'ClientTransportPlugin snowflake exec {0}\n'.format(SNOWFLAKE_CLIENT)
+                 + 'Bridge ' + SNOWFLAKE_BRIDGE + '\n')
         inst = _TorInstance(extra_torrc=extra)
         self.addCleanup(inst.stop)
-        self.assertTrue(os.path.exists(inst.control_socket), "tor did not start")
+        self.assertTrue(os.path.exists(inst.control_socket), 'tor did not start')
         seen = inst.bootstrap(timeout_ms=180000)
         if not _reached_connected(seen):
             self.skipTest(
-                "snowflake broker/proxy not reachable in time: "
+                'snowflake broker/proxy not reachable in time: '
                 + repr(seen[-3:]))
         self.assertTrue(_reached_connected(seen))
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

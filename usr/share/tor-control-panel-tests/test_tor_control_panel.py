@@ -38,7 +38,7 @@ from tor_control_panel import tor_control_panel as tcp
 
 def _toggle_counts(combo):
     items = [combo.itemText(i) for i in range(combo.count())]
-    return items.count("Disable network"), items.count("Enable network")
+    return items.count('Disable network'), items.count('Enable network')
 
 
 class BridgesComboToggleTest(unittest.TestCase):
@@ -49,11 +49,11 @@ class BridgesComboToggleTest(unittest.TestCase):
             self.addCleanup(panel.deleteLater)
             ## Force tor_is_running == False -> the stopped refresh branch.
             panel.tor_running_path = os.path.join(
-                tempfile.gettempdir(), "tcp-test-no-such-tor-pid"
+                tempfile.gettempdir(), 'tcp-test-no-such-tor-pid'
             )
             combo = panel.bridges_combo
 
-            self.assertEqual(_toggle_counts(combo), (1, 0), "unexpected initial combo state")
+            self.assertEqual(_toggle_counts(combo), (1, 0), 'unexpected initial combo state')
 
             panel.refresh(False)
             disable, enable = _toggle_counts(combo)
@@ -69,12 +69,12 @@ class BridgesComboToggleTest(unittest.TestCase):
 
     def test_a3_toggle_replaced_not_duplicated_when_disabled(self):
         """When Tor is disabled-but-running the entry becomes 'Enable network' only."""
-        pid = tempfile.NamedTemporaryFile(prefix="tcp-test-pid-", delete=False)
+        pid = tempfile.NamedTemporaryFile(prefix='tcp-test-pid-', delete=False)
         pid.close()
         self.addCleanup(os.unlink, pid.name)
 
         ## 'DisableNetwork 1' => tor_status() reports disabled.
-        with T.sandbox(initial_torrc="DisableNetwork 1\n"), T.no_modal():
+        with T.sandbox(initial_torrc='DisableNetwork 1\n'), T.no_modal():
             panel = tcp.TorControlPanel()
             self.addCleanup(panel.deleteLater)
             panel.tor_running_path = pid.name  # exists -> tor_is_running == True
@@ -103,7 +103,7 @@ class ConfigUiTest(unittest.TestCase):
     def test_proxy_none_hides_all_proxy_fields(self):
         with T.sandbox(), T.no_modal():
             panel = self._panel()
-            panel.update_proxy_settings("None")
+            panel.update_proxy_settings('None')
             for widget in (panel.proxy_ip_edit, panel.proxy_port_edit,
                            panel.proxy_user_edit, panel.proxy_pwd_edit):
                 self.assertTrue(widget.isHidden())
@@ -111,7 +111,7 @@ class ConfigUiTest(unittest.TestCase):
     def test_proxy_socks5_shows_all_proxy_fields(self):
         with T.sandbox(), T.no_modal():
             panel = self._panel()
-            panel.update_proxy_settings("SOCKS5")
+            panel.update_proxy_settings('SOCKS5')
             for widget in (panel.proxy_ip_edit, panel.proxy_port_edit,
                            panel.proxy_user_edit, panel.proxy_pwd_edit):
                 self.assertFalse(widget.isHidden())
@@ -121,7 +121,7 @@ class ConfigUiTest(unittest.TestCase):
         ## but disabled.
         with T.sandbox(), T.no_modal():
             panel = self._panel()
-            panel.update_proxy_settings("SOCKS4")
+            panel.update_proxy_settings('SOCKS4')
             self.assertFalse(panel.proxy_user_edit.isEnabled())
             self.assertFalse(panel.proxy_pwd_edit.isEnabled())
 
@@ -133,13 +133,13 @@ class ConfigUiTest(unittest.TestCase):
             torrc.unlink()
             panel.torrc_button.setChecked(True)
             panel.refresh_logs()  # must not raise
-            self.assertIn("torrc", panel.file_browser.toPlainText().lower())
+            self.assertIn('torrc', panel.file_browser.toPlainText().lower())
 
     def test_tabs_are_labelled_by_their_content(self):
         with T.sandbox(), T.no_modal():
             panel = self._panel()
             labels = [panel.tabs.tabText(i) for i in range(panel.tabs.count())]
-            self.assertEqual(labels, ["Control", "Utilities", "Logs"])
+            self.assertEqual(labels, ['Control', 'Utilities', 'Logs'])
             ## The log-source radio buttons must live in the tab labelled 'Logs'
             ## (i.e. logs_tab), not the utilities tab.
             radios = panel.logs_tab.findChildren(QRadioButton)
@@ -148,5 +148,5 @@ class ConfigUiTest(unittest.TestCase):
             self.assertIn(panel.journal_button, radios)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

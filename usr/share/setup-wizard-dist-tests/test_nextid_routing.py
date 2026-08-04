@@ -28,13 +28,13 @@ class DisclaimerPage1RoutingTestCase(unittest.TestCase):
     def test_accept_routes_to_disclaimer_2(self):
         self.page.yes_button.setChecked(True)
         self.assertEqual(
-            self.page.nextId(), T.DISCLAIMER_STEPS.index("disclaimer_2")
+            self.page.nextId(), T.DISCLAIMER_STEPS.index('disclaimer_2')
         )
 
     def test_reject_routes_to_finish_page(self):
         self.page.no_button.setChecked(True)
         self.assertEqual(
-            self.page.nextId(), T.DISCLAIMER_STEPS.index("finish_page")
+            self.page.nextId(), T.DISCLAIMER_STEPS.index('finish_page')
         )
 
     def test_reject_is_the_default(self):
@@ -42,7 +42,7 @@ class DisclaimerPage1RoutingTestCase(unittest.TestCase):
         ## Next without choosing is routed out to the finish page.
         self.assertTrue(self.page.no_button.isChecked())
         self.assertEqual(
-            self.page.nextId(), T.DISCLAIMER_STEPS.index("finish_page")
+            self.page.nextId(), T.DISCLAIMER_STEPS.index('finish_page')
         )
 
 
@@ -54,14 +54,14 @@ class DisclaimerPage2RoutingTestCase(unittest.TestCase):
 
     def test_always_routes_to_finish_page(self):
         self.assertEqual(
-            self.page.nextId(), T.DISCLAIMER_STEPS.index("finish_page")
+            self.page.nextId(), T.DISCLAIMER_STEPS.index('finish_page')
         )
         ## Independent of the radio state.
         self.page.yes_button.setChecked(True)
         self.assertEqual(
-            self.page.nextId(), T.DISCLAIMER_STEPS.index("finish_page")
+            self.page.nextId(), T.DISCLAIMER_STEPS.index('finish_page')
         )
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

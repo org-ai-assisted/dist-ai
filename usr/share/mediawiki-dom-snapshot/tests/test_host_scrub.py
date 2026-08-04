@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 LIB = str(Path(__file__).resolve().parent.parent)
-HOST = "old.test.invalid"
+HOST = 'old.test.invalid'
 
 
 def _import_with_env(value):
@@ -25,9 +25,9 @@ def _import_with_env(value):
     """
     env = dict(os.environ)
     if value is None:
-        env.pop("DOM_DIFF_HOST_SCRUB", None)
+        env.pop('DOM_DIFF_HOST_SCRUB', None)
     else:
-        env["DOM_DIFF_HOST_SCRUB"] = value
+        env['DOM_DIFF_HOST_SCRUB'] = value
     return env
 
 
@@ -81,16 +81,16 @@ print("OK active=%s" % active)
 def run(value):
     env = _import_with_env(value)
     r = subprocess.run(
-        [sys.executable, "-c", CHECK, LIB],
+        [sys.executable, '-c', CHECK, LIB],
         env=env, capture_output=True, text=True,
     )
     if r.returncode != 0:
         sys.stderr.write(r.stdout + r.stderr)
-        raise SystemExit("FAILED for DOM_DIFF_HOST_SCRUB=%r" % value)
-    print("  %s -> %s" % ("scrub active" if value else "default (no-op)", r.stdout.strip()))
+        raise SystemExit('FAILED for DOM_DIFF_HOST_SCRUB=%r' % value)
+    print('  %s -> %s' % ('scrub active' if value else 'default (no-op)', r.stdout.strip()))
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     run(HOST)   # scrub active: hosts collapse across html, manifest, asset bodies
     run(None)   # default: complete no-op
-    print("all host-scrub tests passed")
+    print('all host-scrub tests passed')
