@@ -74,14 +74,25 @@ fail() {
    failures=$(( failures + 1 ))
 }
 
-## Run the core lane against a fake checkout and return everything it printed.
-## The lane's own registered tests are all absent there, so it exits non-zero
-## either way -- what is asserted is what the GUARD said, not the lane result.
+## Run the core lane against a fake checkout and return everything it printed,
+## plus a trailing 'RUN_LANE_STATUS=<n>' line carrying the runner's real exit
+## status.
+##
+## The status has to travel in the OUTPUT: every caller invokes this inside
+## "$(...)", so a variable set here would die with the subshell.
+##
+## Discarding the status with a bare '|| true' is what made the unauthorized-skip
+## canary below unable to fail -- that lane's whole contract is "name it AND exit
+## non-zero", and only the naming half was ever asserted. A runner that printed
+## UNAUTHORIZED SKIP and still exited 0 satisfied every check.
 run_lane() {
-   local fake
+   local fake status
 
    fake="$1"
-   PRIVATE_AI_CONFIG_PATH="${fake}" bash -- "${runner}" --lane core 2>&1 || true
+   status=0
+   PRIVATE_AI_CONFIG_PATH="${fake}" bash -- "${runner}" --lane core 2>&1 \
+      || status=$?
+   printf '%s\n' "RUN_LANE_STATUS=${status}"
 }
 
 ## ---- an unregistered test file is named -----------------------------------
@@ -171,6 +182,21 @@ case "${out}" in
       ;;
    *)
       fail "an unauthorized skip was still counted as a skip in the summary: ${out}"
+      ;;
+esac
+
+## ...and the lane actually EXITS non-zero. The two checks above read the
+## runner's own prose; this one reads the only thing CI acts on. Without it a
+## runner that names the skip, prints '0 skip' and still returns 0 is green.
+checks=$(( checks + 1 ))
+case "${out}" in
+   *'RUN_LANE_STATUS=0'*)
+      fail "an unauthorized skip left the lane exiting 0, so CI would read it as a pass: ${out}"
+      ;;
+   *'RUN_LANE_STATUS='*)
+      ;;
+   *)
+      fail "run_lane did not report the runner's exit status at all: ${out}"
       ;;
 esac
 
