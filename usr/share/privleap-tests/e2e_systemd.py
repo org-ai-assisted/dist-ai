@@ -217,6 +217,18 @@ def install_repo_dropin(repo: str, restorer: Restorer) -> None:
     ## BindPaths gives the unit its own mount namespace with the checkout's
     ## shim in that place, confined to this service and undone with the
     ## drop-in.
+    ## A drop-in is line-oriented, and this one is written into the live
+    ## systemd directory. A path carrying a newline would inject arbitrary
+    ## directives into the unit and could leave the real service broken after
+    ## the run, so refuse rather than write it.
+    for label, path in (('PRIVLEAP_REPO', repo),):
+        if any(bad in path for bad in ('\n', '\r', '\0')):
+            print(
+                f"FATAL: {label} contains a line break or NUL; it cannot be "
+                'written into a systemd drop-in.',
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
     if not os.path.isfile(repo_shim):
         print(
             f"FATAL: PRIVLEAP_REPO='{repo}' has no usr/libexec/privleap/"
