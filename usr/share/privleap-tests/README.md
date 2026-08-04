@@ -75,10 +75,18 @@ What that number does NOT cover, and why:
   `dist-packages`, not the user site); `sitecustomize` loads under both a
   direct `python3 script` invocation and a shebang execution; and
   `coverage.process_startup()` writes data both on a clean exit and on the
-  SIGINT used at teardown. What remains unverified is whether
-  `reexec_under_mount_namespace()` forwards the coverage variables in a real
-  run -- every successful probe set them on the command line itself, which
-  bypasses exactly that step.
+  SIGINT used at teardown; and `reexec_under_mount_namespace()` does forward
+  the coverage variables (the built argv was captured and contains both).
+
+  The open lead is that `setup_env_injection()` mounts a tmpfs over the
+  calling account's HOME, and it succeeds -- the run reports
+  `pam_environment` among the planted locations. Anything under that home is
+  therefore invisible for the rest of the run, and in a checkout-based setup
+  BOTH the bootstrap directory and `PRIVLEAP_REPO` commonly live there. That
+  would explain the missing data exactly. It is NOT yet confirmed, because
+  the daemon binary also lives under that home and still executes, which the
+  same reasoning says should be impossible. Resolve that contradiction before
+  acting on the lead.
 - `main()`'s full startup path opens the real state directory and requires
   root.
 - `if __name__ == '__main__'` guards cannot be reached by an import-based
