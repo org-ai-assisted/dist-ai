@@ -14,7 +14,8 @@
 ##                        version derived after the amend would differ between
 ##                        the two sides for a non-defect reason.
 ##   flavor/arch          kicksecure-debug / amd64
-##   target               qcow2 (default) or iso, via DM_REPRO_TARGET; matches
+##   target               DM_REPRO_TARGET=qcow2 or iso -- REQUIRED, no default
+##                        (VM image and ISO are equally primary); matches
 ##                        local-build.yml's qcow2 vs iso lanes exactly
 ##   --freshness frozen   pins the Debian snapshot; without it two builds diverge
 ##                        on package versions alone.
@@ -45,12 +46,13 @@ target_sha="${2:?usage: local-repro-build.sh <progress-file> <commit-sha>}"
 remote_tree="${3:-/home/user/derivative-maker}"
 remote_log="${4:-/home/user/local-repro-build.log}"
 
-## Target image to build and later compare against CI. qcow2 (default) mirrors
-## local-build.yml's qcow2 lane (multi-target list 'qcow2', VM image built);
-## iso mirrors its iso lane (EMPTY multi-target list -> ISO only, no VM images).
-## Passed by env so existing positional callers are unchanged. The artifact glob
-## is what the DONE check and the listing match.
-target="${DM_REPRO_TARGET:-qcow2}"
+## Target image to build and later compare against CI. REQUIRED, no default:
+## the VM image and the ISO are equally primary, so the caller must choose
+## rather than silently getting one. qcow2 mirrors local-build.yml's qcow2 lane
+## (multi-target list 'qcow2', VM image built); iso mirrors its iso lane (EMPTY
+## multi-target list -> ISO only, no VM images). The artifact glob is what the
+## DONE check and the listing match. Passed by env (DM_REPRO_TARGET).
+target="${DM_REPRO_TARGET:-}"
 case "${target}" in
    qcow2)
       multi_target_list='qcow2'
@@ -59,6 +61,10 @@ case "${target}" in
    iso)
       multi_target_list=''
       artifact_glob='*.iso'
+      ;;
+   "")
+      printf '%s\n' "dm-local-repro-build: DM_REPRO_TARGET must be set to 'qcow2' or 'iso' (no default -- both are equally primary)" >&2
+      exit 2
       ;;
    *)
       printf '%s\n' "dm-local-repro-build: unsupported DM_REPRO_TARGET '${target}' (qcow2|iso)" >&2
