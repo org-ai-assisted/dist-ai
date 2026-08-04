@@ -72,6 +72,15 @@ case "${target}" in
       ;;
 esac
 
+## Optional submodule commit overrides, so a build can reproduce CI's ACTUAL
+## source rather than the parent gitlink pins. CI's repro lane checks out moving
+## fork-branch TIPS for submodules (ci/checkout-fork-submodule-branches), which
+## are recorded ONLY in the image's buildinfo Submodule-State -- not the parent
+## gitlink -- so a by-gitlink reproducer builds different source and mismatches.
+## Format: space-separated 'submodule/path=sha', taken straight from the
+## buildinfo's Submodule-State lines.
+submodule_overrides="${DM_REPRO_SUBMODULE_OVERRIDES:-}"
+
 note() {
    local stamp
    stamp="$(date --utc +%H:%M:%SZ)"
@@ -254,8 +263,13 @@ if sandbox exec -- bash -c "grep --quiet -- 'ERROR detected in script' ${remote_
    exit 1
 fi
 
+## Match the image OR its '.sha512sums': dm-prepare-release CONSUMES the '.iso'
+## (leaving only sidecars in binary_mnt), while a '.qcow2.libvirt.xz' persists.
+## The checksum file is written on success for BOTH targets, so it is the
+## reliable positive signal -- and its hash is exactly what the CI comparison
+## needs. Without this an ISO build that fully succeeded reported "no artifact".
 image_count="$(sandbox exec - <<COUNT
-find /home/user/binary_mnt -maxdepth 3 -type f -name '${artifact_glob}' -newermt '-3 hours' 2>/dev/null | wc -l
+find /home/user/binary_mnt -maxdepth 3 -type f \( -name '${artifact_glob}' -o -name '${artifact_glob}.sha512sums' \) -newermt '-3 hours' 2>/dev/null | wc -l
 COUNT
 )"
 image_count="${image_count//[!0-9]/}"
@@ -271,6 +285,10 @@ note "=== DONE: build finished, ${image_count} fresh image(s)"
 ## job -- the verdict said DONE while the supervisor said failed. A report step
 ## must never be able to overturn a verdict already reached.
 sandbox exec - <<LIST >> "${progress}" 2>&1 || true
-find /home/user/binary_mnt -maxdepth 3 -type f -name '${artifact_glob}' -newermt '-3 hours' -print
+find /home/user/binary_mnt -maxdepth 3 -type f \( -name '${artifact_glob}' -o -name '${artifact_glob}.sha512sums' \) -newermt '-3 hours' -print
+## Surface the image's sha512 from the build's own checksum file: it is the
+## CI-vs-local comparison key, and for the ISO it is all that remains after
+## dm-prepare-release consumes the '.iso'.
+find /home/user/binary_mnt -maxdepth 3 -type f -name '${artifact_glob}.sha512sums' -newermt '-3 hours' -exec cat {} +
 LIST
 exit 0
