@@ -74,9 +74,17 @@ def shim_path() -> str:
     return installed
 
 
+## Whatever the shim last wrote to stderr, so an unexpected exit code can be
+## explained rather than merely reported. A missing PAM module makes the shim
+## die at import with code 1, which as a bare number looks like a refusal that
+## used the wrong code.
+LAST_STDERR: list[str] = ['']
+
+
 def run_shim(shim: str, args: list[str], timeout_s: float = 20.0) -> int:
     """
-    Run the shim with the given arguments and return its exit code.
+    Run the shim with the given arguments and return its exit code, recording
+    its stderr for the failure message.
 
     A shim that neither exits nor runs anything is a finding in its own
     right, so a timeout is reported as a distinct code rather than hanging
@@ -91,8 +99,19 @@ def run_shim(shim: str, args: list[str], timeout_s: float = 20.0) -> int:
             check=False,
         )
     except subprocess.TimeoutExpired:
+        LAST_STDERR[0] = 'timed out'
         return -1
+    LAST_STDERR[0] = completed.stderr.decode('utf-8', errors='replace').strip()
     return int(completed.returncode)
+
+
+def why(code: int) -> str:
+    """A failure label that names the cause instead of just the exit code."""
+
+    if code == REFUSED:
+        return ''
+    tail: str = LAST_STDERR[0].splitlines()[-1] if LAST_STDERR[0] else ''
+    return f" (exit {code}: {tail or 'no stderr'})"
 
 
 def test_missing_arguments_are_refused(results: Results, shim: str) -> None:
@@ -112,10 +131,9 @@ def test_missing_arguments_are_refused(results: Results, shim: str) -> None:
             [user, 'root', 'root'],
         ]
     ):
+        code: int = run_shim(shim, args)
         results.expect_eq(
-            f"{count} argument(s) is refused",
-            run_shim(shim, args),
-            REFUSED,
+            f"{count} argument(s) is refused{why(code)}", code, REFUSED
         )
 
 
@@ -149,7 +167,8 @@ def test_unresolvable_target_is_refused(
         ),
     ]
     for label, args in cases:
-        results.expect_eq(f"{label} is refused", run_shim(shim, args), REFUSED)
+        code: int = run_shim(shim, args)
+        results.expect_eq(f"{label} is refused{why(code)}", code, REFUSED)
 
 
 def test_malformed_umask_is_refused(results: Results, shim: str) -> None:
@@ -167,11 +186,8 @@ def test_malformed_umask_is_refused(results: Results, shim: str) -> None:
         ('a umask with trailing text', '63abc'),
         ('a floating point umask', '63.5'),
     ):
-        results.expect_eq(
-            f"{label} is refused",
-            run_shim(shim, [user, 'root', 'root', umask, '/bin/true']),
-            REFUSED,
-        )
+        code: int = run_shim(shim, [user, 'root', 'root', umask, '/bin/true'])
+        results.expect_eq(f"{label} is refused{why(code)}", code, REFUSED)
 
 
 def test_refusal_runs_nothing(results: Results, shim: str) -> None:
@@ -198,8 +214,8 @@ def test_refusal_runs_nothing(results: Results, shim: str) -> None:
     ):
         if os.path.exists(sentinel):
             os.unlink(sentinel)
-        code: int = run_shim(shim, args)
-        results.expect_eq(f"{label} is refused", code, REFUSED)
+        code = run_shim(shim, args)
+        results.expect_eq(f"{label} is refused{why(code)}", code, REFUSED)
         results.check(
             f"{label}: the command did not run",
             not os.path.exists(sentinel),
