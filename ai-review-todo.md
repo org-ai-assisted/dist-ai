@@ -13,7 +13,7 @@ when nothing is left. Do not add a completed review here.
 
 ## since 33bde02b52c8
 - reviewers: codex
-- head when last run: c6f2e1377ac8
+- head when last run: ded0ccdbe704
 - re-run: ai-review 33bde02b52c8 --only codex
 
 ## since 17f2dc4662e0
