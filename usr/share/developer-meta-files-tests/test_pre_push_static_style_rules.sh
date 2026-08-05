@@ -307,10 +307,9 @@ expect_rule "${r030fmt}" "${indent}${hash} printf ${sq}%d${sq} ${dq}\${1}${dq}" 
 expect_rule "${r030fmt}" "${hash} printf ${sq}%d${sq} ${dq}\${1}${dq}"             "absent"
 
 ## 'printf %s\n' "" is the correct newline spelling (R-030/R-031 REQUIRE it) and
-## a legitimate blank-line output. It must be flagged by NO rule. The old R-042
-## "blank-line separator" check was removed; assert nothing tagged R-042 ever
-## fires on this form, so a re-introduction cannot regress correct output into a
-## violation again.
+## a legitimate blank-line output, so no rule may flag it. Pin that nothing
+## tagged R-042 fires on this form: a blank-line-separator check would contradict
+## R-030/R-031 and must not exist.
 expect_rule "R-042" "printf ${sq}%s${nl}${sq} ${dq}${dq}"       "absent"
 
 ## R-034: 'echo' run as a command must be FLAGGED; 'echo' as a bareword inside
