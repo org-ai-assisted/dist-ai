@@ -7,8 +7,8 @@
 
 ## Functional test for the pre-push-static single-grep style checks: assert that
 ## R-070 (';;' trailing a statement), R-074 (';'-chained break/continue/return),
-## R-030/R-031 (a newline printf missing its explicit "" data argument), R-042
-## (a blank-line separator), R-034 (echo run as a command), R-011 (set +e),
+## R-030/R-031 (a newline printf missing its explicit "" data argument),
+## R-034 (echo run as a command), R-011 (set +e),
 ## R-051 (a quoted inline trap), R-090 (command -v), R-103 (a
 ## process-replacement exec), R-102 (an extensionless
 ## 'bash script' operand), R-120 (a separator-glued/adjacent rm), and R-010
@@ -243,7 +243,8 @@ expect_rule "R-070" "${dsemi}"               "absent"
 ## R-030/R-031: a newline emitted without an explicit '' data argument must be
 ## FLAGGED -- both 'printf \n' (newline in the format) and a bare 'printf %s\n'
 ## (data arg omitted). The compliant 'printf %s\n' "" and a normal data printf
-## must be SPARED by this rule (the blank-separator form is R-042's job, below).
+## must be SPARED -- 'printf %s\n' "" is the correct newline spelling and is a
+## legitimate blank-line output, not a violation.
 expect_rule "R-030/R-031" "printf ${sq}${nl}${sq}"              "present"
 expect_rule "R-030/R-031" "printf ${sq}%s${nl}${sq}"            "present"
 expect_rule "R-030/R-031" "printf ${sq}%s${nl}${sq} ${dq}${dq}" "absent"
@@ -305,10 +306,12 @@ expect_rule "${r030fmt}" "${indent}printf ${sq}%d${sq} ${dq}\${1}${dq} ${hash} c
 expect_rule "${r030fmt}" "${indent}${hash} printf ${sq}%d${sq} ${dq}\${1}${dq}"    "absent"
 expect_rule "${r030fmt}" "${hash} printf ${sq}%d${sq} ${dq}\${1}${dq}"             "absent"
 
-## The compliant 'printf %s\n' "" IS a blank-line separator, so R-042 (not
-## R-031) is the rule that owns it -- proves the two checks divide the work
-## cleanly rather than both firing or both missing.
-expect_rule "R-042" "printf ${sq}%s${nl}${sq} ${dq}${dq}"       "present"
+## 'printf %s\n' "" is the correct newline spelling (R-030/R-031 REQUIRE it) and
+## a legitimate blank-line output. It must be flagged by NO rule. The old R-042
+## "blank-line separator" check was removed; assert nothing tagged R-042 ever
+## fires on this form, so a re-introduction cannot regress correct output into a
+## violation again.
+expect_rule "R-042" "printf ${sq}%s${nl}${sq} ${dq}${dq}"       "absent"
 
 ## R-034: 'echo' run as a command must be FLAGGED; 'echo' as a bareword inside
 ## a string or as another command's argument must be SPARED (the command-
@@ -323,8 +326,8 @@ expect_rule "R-034" "has echo"                                  "absent"
 ## spaced ('esac ;;') compact forms are FLAGGED; only a bare ';;' is spared.
 expect_rule "R-070" "esac${sp}${dsemi}"                          "present"
 
-## R-042: a DOUBLE-quoted blank-separator format is the same violation.
-expect_rule "R-042" "printf ${dq}%s${nl}${dq} ${dq}${dq}"        "present"
+## The DOUBLE-quoted newline form is equally correct and equally unflagged.
+expect_rule "R-042" "printf ${dq}%s${nl}${dq} ${dq}${dq}"        "absent"
 
 ## R-011: both the long toggle and the short 'set +e' must be FLAGGED.
 expect_rule "R-011" "set +o errexit"                             "present"
@@ -1059,4 +1062,4 @@ if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "test_pre_push_static_style_rules: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-026, R-030 format string, R-030/R-031, R-042, R-034, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-010, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting double-quote-fixer-vs-black and imported-package-module exemption enforced as expected."
+printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-026, R-030 format string, R-030/R-031, R-034, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-010, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting double-quote-fixer-vs-black and imported-package-module exemption enforced as expected."
