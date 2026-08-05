@@ -92,6 +92,7 @@ core_tests=(
    'tests/session-inject-hosted-not-ready-defers-test.sh'
    'tests/session-retire-forced-teardown-test.sh'
    'claude/hooks/tests/test-cowbuilder-guard.py'
+   'claude/hooks/tests/test-external-tool-guard.py'
    'claude/hooks/tests/test-git-command-parse.py'
    'claude/hooks/tests/test-git-policy-config.py'
    'claude/hooks/tests/test-git-policy-guard.py'
