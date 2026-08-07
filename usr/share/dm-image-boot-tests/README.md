@@ -28,11 +28,60 @@ image is never modified:
   have no such field) and, on the `dm-cmdline=` sentinel, exposes the rest as
   `${dm_smbios_extra}`. `insmod smbios; insmod regexp` first.
 - The reader lives in TWO places, one per image kind:
-  - ISO: `live-build-data/grub-config/config.cfg` (derivative-maker main tree).
+  - ISO: `live-build-data/grub-config/smbios-reader.cfg`, appended into
+    `config.cfg` by `3600_convert-raw-to-iso` (derivative-maker main tree).
   - Disk (qcow2/vbox): `vm-config-dist` `etc/grub.d/01_smbios-reader` +
     `etc/default/grub.d/99_smbios-cmdline.cfg` (appends `\${dm_smbios_extra}` to
     every generated kernel line). Regenerated on every `update-grub`.
 - No SMBIOS set -> `${dm_smbios_extra}` empty -> no-op (normal boot unaffected).
+- Kept identical between the two copies by `dm-grub-smbios-tests`.
+
+### The reader is OPT-IN: build with `--smbios-reader true`
+
+**A released image carries no reader.** Boot-test images must be built with the
+derivative-maker build option `--smbios-reader true`, or every boot leg times out
+with a 0-byte serial log. `.github/workflows/local-boot-test.yml` passes it.
+
+Why, in one line: the reader turns a firmware-supplied string into kernel command
+line, and the kernel command line is the part of the boot chain Secure Boot does
+not authenticate.
+
+- **Impact if shipped.** Whoever can write SMBIOS Type 1 Serial gets arbitrary
+  trailing kernel cmdline, so `init=/bin/sh` -- unauthenticated root. The
+  placeholder is appended to `GRUB_CMDLINE_LINUX_DEFAULT`, which trails everything
+  `grub-mkconfig` emits, and the kernel takes the last occurrence. Kicksecure sets
+  no `lockdown=` (commented out in `40_signed_modules.cfg`), and lockdown would not
+  stop `init=` anyway.
+- **Who can write it without OS root.** Supermicro SUM `EditDmiInfo`/`ChangeDmiInfo`
+  over IPMI with no OS on the box; HPE via RBSU through iLO KVM; any OEM/reseller/
+  refurbisher DMI editor. Stock Redfish is narrower -- `SerialNumber` is
+  `readonly: true`, only `AssetTag` is writable. Set once in the supply chain it
+  is persistent: survives disk wipe and reinstall.
+- **Severity: hardening gap, not a CVE.** Every attacker who can reach it can
+  already do worse; it grants convenience, stealth and persistence, not a new
+  capability. Do NOT call it a Secure Boot bypass -- Secure Boot never covered the
+  cmdline. Under SEV-SNP/TDX it would be a genuine boundary crossing, which is
+  exactly why systemd stopped trusting SMBIOS there (PR #28301).
+- **Prior art.** Reading SMBIOS into the cmdline is the GRUB `smbios` module's
+  designed purpose, so this is not a GRUB flaw. No other distro ships it in
+  grub.cfg. systemd ships the equivalent (Type 11 `io.systemd.stub.
+  kernel-cmdline-extra`) but measures it into PCR12; ours is measured nowhere.
+
+Second, weaker layer for an image that IS built with the reader: the serial number
+is read only when SMBIOS Type 1 Manufacturer says `QEMU`. That is detectability,
+not a boundary -- the same vendor DMI tool sets Manufacturer -- but it forces the
+machine to advertise itself as a QEMU guest to `dmidecode` and every inventory
+system instead of hiding in a field nobody reads.
+
+Rejected as too complex for the benefit: blessed-token selectors, an
+operator-supplied unlock device (`search --fs-uuid`), and a signed config fragment
+(`verify_detached`). Notes for whoever revisits this -- all measured, not assumed:
+GRUB has NO unspoofable virtualization detection and cannot have one (`cpuid`
+exposes only `--long-mode`/`--pae`, cannot set a variable; the SMBIOS Type 0 VM bit
+is unset under SeaBIOS; GRUB script has no command substitution, so `lspci` and
+friends are unusable as conditions). `pgp`, `gcry_rsa`, `gcry_sha256`,
+`verify_detached` and `search` DO work under Secure Boot lockdown, so the signed
+fragment remains available if a stronger boundary is ever needed.
 
 ## Serial-console gotchas (hard-won)
 
