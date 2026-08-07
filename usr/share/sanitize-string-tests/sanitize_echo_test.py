@@ -23,11 +23,17 @@ class TestSanitizeEcho(TestStripMarkupBase):
 
     argv0: str = 'sanitize-echo'
     help_str: str = """\
-sanitize-echo: Usage: sanitize-echo [--help] [--max-length LENGTH] [--] [string ...]
-  Prints the sanitized string(s) followed by a newline.
-  Multiple arguments are joined with a single space, as echo does.
-  If no string is provided, it is read from standard input.
-  LENGTH caps the sanitized output; 'nolimit' (the default) does not cap it.
+sanitize-echo: Print a sanitized string.
+Usage: sanitize-echo [--help|-h] [--max-length LENGTH] [--] [string...]
+
+Arguments:
+  --help|-h     Prints this help message.
+  --max-length  Maximum allowable number of output characters, input will be
+                truncated past this point. Omit or set to 'nolimit' to allow
+                arbitrarily long strings.
+  --            End-of-options marker.
+  string...     The strings to sanitize. Multiple strings are joined with a
+                space. If omitted, the string is read from standard input.
 """
 
     def _expect(
