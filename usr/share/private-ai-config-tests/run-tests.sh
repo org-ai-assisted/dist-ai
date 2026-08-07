@@ -92,6 +92,7 @@ core_tests=(
    'tests/reviewer-guard-precedence-test.sh'
    'tests/session-inject-hosted-not-ready-defers-test.sh'
    'tests/session-retire-forced-teardown-test.sh'
+   'tests/watchdog-retire-marker-test.sh'
    'claude/hooks/tests/test-cowbuilder-guard.py'
    'claude/hooks/tests/test-external-tool-guard.py'
    'claude/hooks/tests/test-git-command-parse.py'
