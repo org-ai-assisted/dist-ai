@@ -152,47 +152,95 @@ for pair in "disk:${disk_file}" "iso:${iso_file}"; do
    fi
 done
 
-## ORDER, not mere presence: the serial number must be read INSIDE the QEMU gate.
-## Both lines existing proves nothing -- a reader that reads offset 7 first and
-## consults the manufacturer afterwards passes every grep above while doing exactly
-## what the gate exists to prevent.
-gate_precedes_serial_read() {
+## STRUCTURE, not mere presence. Two independent ways the directives can all be
+## there and the gate still not be a gate:
+##   - the serial read sits AFTER the gate's closing 'fi'. Comparing indices
+##     against the gate's opening line alone still passes, because a read below
+##     the whole block also has the greater index. Hence the matching 'fi'.
+##   - the manufacturer read sits inside or after the gate. dm_smbios_vendor is
+##     pre-cleared, so the gate would then compare an empty string, stay shut
+##     forever and silently break the harness rather than fail loudly.
+## Track nesting from the gate's own 'if' so its OWN 'fi' is found, not the first
+## one in the block.
+assert_gate_structure() {
    local name="${1}"
    local path="${2}"
    local -a block=()
    local line
    local index=0
+   local depth=0
+   local vendor_index=-1
    local gate_index=-1
+   local gate_close_index=-1
    local read_index=-1
 
    mapfile -t block < <(extract_block "${path}")
 
    for line in "${block[@]}"; do
       case "${line}" in
+         'smbios --type 1 --get-string 4 --set dm_smbios_vendor')
+            [ "${vendor_index}" -ge 0 ] || vendor_index="${index}"
+            ;;
          'if [ "${dm_smbios_vendor}" = "QEMU" ]; then')
-            [ "${gate_index}" -ge 0 ] || gate_index="${index}"
+            if [ "${gate_index}" -lt 0 ]; then
+               gate_index="${index}"
+               depth=1
+            fi
             ;;
          'smbios --type 1 --get-string 7 --set dm_smbios_oem')
             [ "${read_index}" -ge 0 ] || read_index="${index}"
             ;;
       esac
+
+      if [ "${gate_index}" -ge 0 ] && [ "${index}" -gt "${gate_index}" ] && [ "${gate_close_index}" -lt 0 ]; then
+         case "${line}" in
+            'fi')
+               depth=$(( depth - 1 ))
+               [ "${depth}" -gt 0 ] || gate_close_index="${index}"
+               ;;
+            'if '*'; then')
+               depth=$(( depth + 1 ))
+               ;;
+         esac
+      fi
+
       index=$(( index + 1 ))
    done
 
    if [ "${gate_index}" -lt 0 ]; then
       check_fail "${name}: QEMU gate 'if [ \"\${dm_smbios_vendor}\" = \"QEMU\" ]; then' MISSING in ${path}"
-   elif [ "${read_index}" -lt 0 ]; then
+      return 0
+   fi
+   if [ "${gate_close_index}" -lt 0 ]; then
+      check_fail "${name}: QEMU gate is never closed by a matching 'fi' in ${path}"
+      return 0
+   fi
+   if [ "${vendor_index}" -lt 0 ]; then
+      check_fail "${name}: manufacturer read MISSING in ${path}"
+      return 0
+   fi
+   if [ "${read_index}" -lt 0 ]; then
       check_fail "${name}: serial-number read MISSING in ${path}"
-   elif [ "${gate_index}" -lt "${read_index}" ]; then
+      return 0
+   fi
+
+   if [ "${vendor_index}" -lt "${gate_index}" ]; then
+      check_pass "${name}: manufacturer is read before the QEMU gate"
+   else
+      check_fail "${name}: manufacturer is read at or AFTER the QEMU gate in ${path}" \
+         "the gate would compare a pre-cleared variable and never open; manufacturer at block line $(( vendor_index + 1 )), gate at $(( gate_index + 1 ))"
+   fi
+
+   if [ "${read_index}" -gt "${gate_index}" ] && [ "${read_index}" -lt "${gate_close_index}" ]; then
       check_pass "${name}: serial number is read inside the QEMU gate"
    else
-      check_fail "${name}: serial number is read BEFORE the QEMU gate in ${path}" \
-         "gate at block line $(( gate_index + 1 )), read at block line $(( read_index + 1 ))"
+      check_fail "${name}: serial number is read OUTSIDE the QEMU gate in ${path}" \
+         "gate spans block lines $(( gate_index + 1 ))..$(( gate_close_index + 1 )), read at $(( read_index + 1 ))"
    fi
 }
 
-gate_precedes_serial_read disk "${disk_file}"
-gate_precedes_serial_read iso "${iso_file}"
+assert_gate_structure disk "${disk_file}"
+assert_gate_structure iso "${iso_file}"
 
 ## Opt-in, default OFF, on both boot paths: a RELEASED image must carry no reader
 ## and no placeholder, so no firmware-supplied string can reach the kernel command
@@ -201,9 +249,6 @@ gate_precedes_serial_read iso "${iso_file}"
 ##
 ## Each entry is 'description|file|extended regexp'.
 optin_checks=(
-   "disk reader is guarded by GRUB_ENABLE_DM_SMBIOS_READER|${disk_file}|GRUB_ENABLE_DM_SMBIOS_READER"
-   "disk reader exits when not enabled|${disk_file}|^[[:space:]]*exit 0\$"
-   "cmdline fragment is guarded|${cmdline_file}|GRUB_ENABLE_DM_SMBIOS_READER:-.*=.*true"
    "cmdline fragment exports the variable to the grub.d helpers|${cmdline_file}|^[[:space:]]*export GRUB_ENABLE_DM_SMBIOS_READER\$"
    "build option --smbios-reader exists|${DERIVATIVE_MAKER_DIR}/help-steps/parse-cmd|--smbios-reader\\)"
    "build option defaults to false|${DERIVATIVE_MAKER_DIR}/help-steps/variables|dist_build_smbios_reader=\"false\""
@@ -224,6 +269,27 @@ for entry in "${optin_checks[@]}"; do
       check_fail "${description}: pattern not found in ${target_file}" "${pattern}"
    fi
 done
+
+## POLARITY, not token presence: an inverted guard keeps every token while
+## reversing the default, so the reader would ship in released images with all the
+## named opt-in checks still green. Match the whole condition, and for the reader
+## also that the line it guards is the 'exit 0' that makes it a guard at all.
+disk_guard_condition='^if \[ "\$\{GRUB_ENABLE_DM_SMBIOS_READER\}" != "true" \]; then$'
+if ! grep -qE -- "${disk_guard_condition}" "${disk_file}"; then
+   check_fail "disk reader guard is missing or INVERTED in ${disk_file}" \
+      "$(grep -nE -- 'GRUB_ENABLE_DM_SMBIOS_READER' "${disk_file}" | tail -3 || true)"
+elif grep -A1 -E -- "${disk_guard_condition}" "${disk_file}" | grep -qE -- '^[[:space:]]*exit 0$'; then
+   check_pass "disk reader guard is default-OFF and exits"
+else
+   check_fail "disk reader guard does not exit when disabled in ${disk_file}"
+fi
+
+if grep -qE -- '^if \[ "\$\{GRUB_ENABLE_DM_SMBIOS_READER:-\}" = "true" \]; then$' "${cmdline_file}"; then
+   check_pass "cmdline fragment guard is default-OFF"
+else
+   check_fail "cmdline fragment guard is missing or INVERTED in ${cmdline_file}" \
+      "$(grep -nE -- 'GRUB_ENABLE_DM_SMBIOS_READER' "${cmdline_file}" | tail -3 || true)"
+fi
 
 ## The ISO placeholder must not be unconditional. 3600 builds it into a variable
 ## that stays empty unless the build opted in, so a bare '${dm_smbios_extra}' left
