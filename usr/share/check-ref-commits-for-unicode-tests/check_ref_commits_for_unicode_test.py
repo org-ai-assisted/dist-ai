@@ -325,9 +325,68 @@ def main():  # pylint: disable=too-many-branches,too-many-statements,too-many-lo
             check('M:exit1', proc.returncode == 1, 'exit %d' % proc.returncode)
             check('M:dirty-flagged', dirty.encode() in proc.stderr,
                   'dirty sha not flagged: %r' % proc.stderr[:240])
-            check('M:clean-logged',
-                  clean1.encode() in proc.stderr and clean2.encode() in proc.stderr,
-                  'clean shas not logged clean: %r' % proc.stderr[:240])
+            ## The tool is SILENT about clean commits -- upstream d4895c28
+            ## turned the per-commit 'log info' into a 'true "INFO: ..."'
+            ## comment on purpose. Asserting that a clean sha appears in stderr
+            ## therefore tested the old chatter, not the contract, and failed on
+            ## a tool that was behaving correctly.
+            ##
+            ## Assert the property that actually matters, and which the old
+            ## check could not express: a clean commit is never FLAGGED. That is
+            ## the false-positive guarantee -- a scanner that cries wolf trains
+            ## reviewers to ignore it.
+            flagged = [line for line in proc.stderr.split(b'\n')
+                       if b'Potentially malicious unicode detected in commit' in line]
+            check('M:clean-not-flagged',
+                  not any(clean1.encode() in line or clean2.encode() in line
+                          for line in flagged),
+                  'clean sha flagged as malicious: %r' % proc.stderr[:240])
+            check('M:only-dirty-flagged',
+                  len(flagged) == 1 and dirty.encode() in flagged[0],
+                  'expected exactly one flagged commit, got: %r' % flagged[:3])
+
+        ## A commit that DELETES hostile unicode is a FIX. With removal lines
+        ## scanned, the diff line '-dirty <RLO>line' flagged the cleanup commit
+        ## with the same warning as the attack that introduced it.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = new_repo(tmp, 'removal')
+            git(repo, ['checkout', '-q', '-b', 'feature'])
+            introduced = commit(repo, 'dirty %sline\n' % RLO, message='introduce')
+            ## Rewrite the file WITHOUT the hostile line: a pure removal.
+            with open(os.path.join(repo, 'f.txt'), 'w', encoding='utf-8') as handle:
+                handle.write('clean again\n')
+            git(repo, ['add', 'f.txt'])
+            git(repo, ['commit', '-q', '-m', 'remove the hostile line'])
+            removal = git(repo, ['rev-parse', 'HEAD']).stdout.decode().strip()
+            git(repo, ['checkout', '-q', 'main'])
+            proc = run_tool(repo, ['feature'])
+            flagged = [line for line in proc.stderr.split(b'\n')
+                       if b'Potentially malicious unicode detected in commit' in line]
+            check('M:introducer-flagged',
+                  any(introduced.encode() in line for line in flagged),
+                  'the commit that ADDED hostile unicode was not flagged: %r'
+                  % proc.stderr[:240])
+            check('M:removal-not-flagged',
+                  not any(removal.encode() in line for line in flagged),
+                  'the commit that REMOVED hostile unicode was flagged: %r'
+                  % proc.stderr[:240])
+
+        ## Guards the removal filter itself: it drops diff lines starting with
+        ## '-', and a COMMIT MESSAGE line may legitimately start with '-'. If the
+        ## filter ever reaches the message, hostile unicode hides behind a
+        ## leading dash -- so the message is scanned separately and unfiltered.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = new_repo(tmp, 'dashmsg')
+            git(repo, ['checkout', '-q', '-b', 'feature'])
+            dash = commit(repo, 'ordinary line\n',
+                          message='changes:\n- bullet %sitem\n' % RLO)
+            git(repo, ['checkout', '-q', 'main'])
+            proc = run_tool(repo, ['feature'])
+            check('M:dash-message-flagged',
+                  proc.returncode == 1 and dash.encode() in proc.stderr,
+                  'hostile unicode in a message line starting with "-" was '
+                  'missed: exit %d stderr=%r' % (proc.returncode,
+                                                 proc.stderr[:240]))
 
         ## [E] error / usage cases. Each fails loud with its OWN message and its
         ## exit code matches this build's error code (2 on the improved tool, 1
