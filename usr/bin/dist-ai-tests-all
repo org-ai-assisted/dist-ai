@@ -61,6 +61,8 @@ timeout_heavy=600
 core_suites=(
    anon-gw-anonymizer-config-tests
    anon-ws-disable-stacked-tor-tests
+   desktop-config-dist-tests
+   user-sysmaint-split-tests
    check-ref-commits-for-unicode-tests
    developer-meta-files-tests
    private-ai-config-tests
@@ -316,6 +318,12 @@ wire() {
          ;;
       anon-ws-disable-stacked-tor)
          wire_env=( "ANON_WS_DISABLE_STACKED_TOR_REPO=$( pkg_dir anon-ws-disable-stacked-tor )" )
+         ;;
+      desktop-config-dist)
+         wire_env=( "DESKTOP_CONFIG_DIST_REPO=$( pkg_dir desktop-config-dist )" )
+         ;;
+      user-sysmaint-split)
+         wire_env=( "USER_SYSMAINT_SPLIT_REPO=$( pkg_dir user-sysmaint-split )" )
          ;;
       qubes-whonix)
          wire_env=( "QUBES_WHONIX_REPO=$( pkg_dir qubes-whonix )" )
@@ -610,6 +618,12 @@ suite_component() {
          ;;
       anon-ws-disable-stacked-tor)
          printf '%s' 'anon-ws-disable-stacked-tor'
+         ;;
+      desktop-config-dist)
+         printf '%s' 'desktop-config-dist'
+         ;;
+      user-sysmaint-split)
+         printf '%s' 'user-sysmaint-split'
          ;;
       qubes-whonix)
          printf '%s' 'qubes-whonix'
