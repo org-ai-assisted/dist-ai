@@ -89,6 +89,42 @@ class BridgesComboToggleTest(unittest.TestCase):
                 disable, 0, "'Disable network' should have been replaced, not kept (bug A3)"
             )
 
+    def test_a3b_toggle_reset_when_tor_enabled_and_running(self):
+        """A stale 'Enable network' must not survive Tor coming back up.
+
+        refresh() rewrote the toggle only in its not-running / not-enabled
+        branches, so once the entry read 'Enable network' it kept that text
+        after Tor was enabled again. The Accept handler dispatches on the entry
+        TEXT, so the panel then offered no way to disable the network and would
+        re-run set_enabled + restart instead.
+        """
+        pid = tempfile.NamedTemporaryFile(prefix='tcp-test-pid-', delete=False)
+        pid.close()
+        self.addCleanup(os.unlink, pid.name)
+
+        ## 'DisableNetwork 1' => tor_status() reports disabled.
+        with T.sandbox(initial_torrc='DisableNetwork 1\n') as torrc, T.no_modal():
+            panel = tcp.TorControlPanel()
+            self.addCleanup(panel.deleteLater)
+            panel.tor_running_path = pid.name  # exists -> tor_is_running == True
+
+            ## Disabled but running -> the entry reads 'Enable network'.
+            panel.refresh(False)
+            self.assertEqual(
+                _toggle_counts(panel.bridges_combo),
+                (0, 1),
+                "expected the disabled-but-running state to offer 'Enable network'",
+            )
+
+            ## Tor enabled again -> the entry must flip back to 'Disable network'.
+            torrc.write_text('DisableNetwork 0\n', encoding='utf-8')
+            panel.refresh(False)
+            self.assertEqual(
+                _toggle_counts(panel.bridges_combo),
+                (1, 0),
+                "stale 'Enable network' survived Tor being enabled again (bug A3b)",
+            )
+
 
 class ConfigUiTest(unittest.TestCase):
     """Guards for the config UI: the update_proxy_settings behaviour (which was
