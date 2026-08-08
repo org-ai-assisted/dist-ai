@@ -180,8 +180,17 @@ onion_ephemeral="$(make_onion)"
 add_status=0
 add_client_auth "${onion_ephemeral}" "$(make_privkey)" >"${work_dir}/ephemeral.log" 2>&1 || add_status=$?
 check "ephemeral ONION_CLIENT_AUTH_ADD succeeds" "0" "${add_status}"
-[ "${add_status}" -eq 0 ] || cat -- "${work_dir}/ephemeral.log" >&2
-check "ephemeral leaves ClientOnionAuthDir empty" "0" "$(count_auth_files)"
+## Assert emptiness ONLY after the add is known to have succeeded. A failed
+## add also leaves the directory empty, so this check passed vacuously while
+## the suite was red -- it was satisfied by the failure, not by correct
+## ephemeral behaviour. Report it as a failure instead of a silent pass.
+if [ "${add_status}" -eq 0 ]; then
+   check "ephemeral leaves ClientOnionAuthDir empty" "0" "$(count_auth_files)"
+else
+   cat -- "${work_dir}/ephemeral.log" >&2
+   check "ephemeral leaves ClientOnionAuthDir empty (add failed, cannot tell)" \
+      "unreachable" "add-failed"
+fi
 
 printf '%s\n' "--- permanent (-n): tor MUST write a credential file ---"
 onion_permanent="$(make_onion)"
