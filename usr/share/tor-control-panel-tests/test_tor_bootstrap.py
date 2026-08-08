@@ -108,6 +108,39 @@ class ParseBootstrapPhaseTest(unittest.TestCase):
         _phase, percent = self._parse(line)
         self.assertIsInstance(percent, int)
 
+    def test_percent_is_clamped_to_100(self):
+        """An out-of-range PROGRESS must not exceed 100.
+
+        tor_bootstrap drives 'while bootstrap_percent < 100', and completion is
+        detected with '== 100'. An unclamped 999 skips past both: the loop ends
+        without the completion branch ever running, so the thread exits and the
+        wizard sits at 'Bootstrapping...' with no finish.
+        """
+        for raw in ('101', '999', '999999999999999999'):
+            with self.subTest(raw=raw):
+                _phase, percent = self._parse(
+                    f'x PROGRESS={raw} TAG=conn_done SUMMARY="s"')
+                self.assertEqual(percent, 100)
+
+    def test_summary_text_cannot_supply_progress(self):
+        """SUMMARY is attacker-influenced text Tor echoes back, so a greedy
+        '.*' that takes the LAST PROGRESS= in the line let it drive the value.
+        """
+        line = ('NOTICE BOOTSTRAP PROGRESS=10 TAG=conn_done '
+                'SUMMARY="relay said PROGRESS=100"')
+        phase, percent = self._parse(line)
+        self.assertEqual(percent, 10)
+        self.assertEqual(phase, 'Connected to a relay')
+
+    def test_summary_text_cannot_extend_the_tag(self):
+        """A greedy 'TAG=(.*) +SUMMARY' matched the LAST ' SUMMARY', so a
+        SUMMARY value containing the word made TAG absorb the text between."""
+        line = ('x PROGRESS=10 TAG=conn_done '
+                'SUMMARY="mentions SUMMARY= again"')
+        phase, percent = self._parse(line)
+        self.assertEqual(percent, 10)
+        self.assertEqual(phase, 'Connected to a relay')
+
 
 if __name__ == '__main__':
     unittest.main()

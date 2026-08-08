@@ -99,6 +99,24 @@ class AcwWriteTorrcTest(unittest.TestCase):
                     f'torrc credential leaked into {stream_name} '
                     f'via the xtrace of acw-write-torrc')
 
+    def test_staged_comm_file_is_removed(self):
+        """The helper must delete the staged comm file after a successful write.
+
+        tor_status.write_to_temp_then_move() documents that this helper removes
+        it ("No need to unlock, acw-write-torrc deletes the original file"), and
+        leaving it behind parks the torrc -- proxy credentials included -- in a
+        mode-0666 file under a world-readable /run directory.
+        """
+        secret = 'hunter2SuperSecretValue'
+        with tempfile.TemporaryDirectory() as root:
+            result, dropin = self._write(
+                root, f'DisableNetwork 0\nSocks5ProxyPassword {secret}\n')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(os.path.exists(dropin))
+            self.assertFalse(
+                os.path.exists(os.path.join(root, 'comm')),
+                'staged comm file left behind, still holding the credentials')
+
     def test_empty_comm_file_rejected(self):
         with tempfile.TemporaryDirectory() as root:
             result, _ = self._write(root, '')

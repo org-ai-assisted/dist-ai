@@ -54,6 +54,19 @@ class DisableNetworkRewriteTest(unittest.TestCase):
             torrc.unlink()
             self.assertEqual(tor_status.tor_status(), 'tor_enabled')
 
+    def test_torrc_without_directive_reports_enabled(self):
+        """A torrc that exists but carries no active DisableNetwork directive
+        is the same case as a missing one: Tor applies its own default of
+        DisableNetwork 0.
+
+        Returning None here made tor_status() report 'tor_disabled', so the
+        panel showed 'disabled-running' and offered 'Enable network' while Tor
+        was in fact running with the network enabled.
+        """
+        with T.sandbox(initial_torrc='# DisableNetwork 1 is commented\n'
+                                     'UseBridges 1\n'):
+            self.assertEqual(tor_status.tor_status(), 'tor_enabled')
+
     def test_missing_torrc_created_on_enable(self):
         """set_enabled() must repair a missing torrc (plain Debian, no drop-in
         yet), not crash -- its docstring guarantees the file ends up existing
