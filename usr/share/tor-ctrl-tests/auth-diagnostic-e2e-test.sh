@@ -29,10 +29,18 @@ shopt -s shift_verbose
 
 work_dir=""
 tor_pid=""
+## Declared here, not where socat is started: every background process this case
+## spawns must be reachable from cleanup(). Otherwise a failure between spawning
+## the listener and the explicit kill at the end -- a bind that never appears in
+## 'ss', a timeout, an assertion abort -- leaves socat listening after the run,
+## holding the captured output descriptors open and hanging a caller that reads
+## them to EOF.
+listener_pid=""
 
 cleanup() {
    trap "" EXIT
    [ -z "${tor_pid}" ] || kill "${tor_pid}" 2>/dev/null || true
+   [ -z "${listener_pid}" ] || kill "${listener_pid}" 2>/dev/null || true
    [ -z "${work_dir}" ] || safe-rm --recursive --force -- "${work_dir}"
    return 0
 }
@@ -243,7 +251,6 @@ expect_text "non-controller socket: says the method was not detected" \
 expect_text "non-controller socket: names the socket as the problem" \
    "does not seems to be tor's controller socket"
 
-kill "${listener_pid}" 2>/dev/null || true
 
 printf '%s\n' "" "${checks} checks, ${failures} failed"
 [ "${failures}" -eq 0 ]
