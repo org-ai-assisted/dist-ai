@@ -204,15 +204,22 @@ print(probe.getsockname()[1])
 probe.close()')"
    socat "TCP-LISTEN:${candidate},fork,reuseaddr,bind=127.0.0.1" /dev/null &
    candidate_pid=$!
+   ## Both conditions: the port answering proves only that SOMETHING listens --
+   ## if socat lost the race to another process, nc -z still succeeds and the
+   ## case would run against a stranger's socket. The spawned socat must also
+   ## still be alive for the listener to be ours.
    waited=0
-   until nc -z 127.0.0.1 "${candidate}" 2>/dev/null; do
+   until kill -0 "${candidate_pid}" 2>/dev/null && nc -z 127.0.0.1 "${candidate}" 2>/dev/null; do
+      if ! kill -0 "${candidate_pid}" 2>/dev/null; then
+         break
+      fi
       sleep 1
       waited=$(( waited + 1 ))
       if [ "${waited}" -ge 5 ]; then
          break
       fi
    done
-   if nc -z 127.0.0.1 "${candidate}" 2>/dev/null; then
+   if kill -0 "${candidate_pid}" 2>/dev/null && nc -z 127.0.0.1 "${candidate}" 2>/dev/null; then
       listener_port="${candidate}"
       listener_pid="${candidate_pid}"
       break
