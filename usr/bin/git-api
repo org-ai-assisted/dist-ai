@@ -1,0 +1,113 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Authenticated GitHub REST call, for dist-ai tools that must also run in CI.
+##
+##   git-api <METHOD> <PATH-or-URL> [extra curl args...]
+##     git-api GET /repos/org-ai-assisted/foo/pulls
+##     git-api POST /repos/org-ai-assisted/foo/pulls --data @/tmp/pr.json
+##
+## A bare /path resolves against https://api.github.com; a full https URL is
+## used as-is. Auth and the standard headers go to curl through a --config
+## document on STDIN, so the token never reaches argv, where /proc/<pid>/cmdline
+## exposes it to every other user for the life of the request.
+##
+## This is the ONE copy. It lives in dist-ai rather than private-ai-config
+## because dist-ai is public and is what CI checks out, and because five public
+## dist-ai tools (dm-ci-dispatch, dm-ci-job-watch, dm-boot-local,
+## dm-repro-verify-against-ci, dm-gitlink-upstream-check) call it -- a public
+## repo must not depend on a private repo's binary. private-ai-config's tools
+## reach it from PATH; its package Recommends dist-ai.
+##
+## The token may come from a file (the operator's) or from GITHUB_TOKEN /
+## GH_TOKEN, since Actions provides an env var and no token file; plain curl is
+## used when scurl -- Kicksecure usability-misc's 'curl --tlsv1.3 --proto
+## =https' -- is absent, as it is in a CI container.
+##
+## Unauthenticated calls are allowed: the public compare endpoints this is used
+## for work without a token, just at a much lower rate limit.
+##
+## style-ok: no-has -- runs in a bare Debian CI container where helper-scripts,
+## and therefore 'has', do not exist.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+[ -v GITHUB_TOKEN_FILE ] || GITHUB_TOKEN_FILE="${HOME:-}/.config/github-token"
+
+if [ "$#" -lt 2 ]; then
+  printf '%s\n' 'Usage: git-api <METHOD> <PATH-or-URL> [extra curl args...]' >&2
+  exit 1
+fi
+
+method="$1"
+target="$2"
+shift 2
+
+case "${target}" in
+  https://*)
+    url="${target}"
+    ;;
+  http://*)
+    printf '%s\n' 'git-api: refusing a plaintext http:// URL (would leak the token)' >&2
+    exit 1
+    ;;
+  *)
+    url="https://api.github.com${target}"
+    ;;
+esac
+
+## The bearer token must only ever be attached to GitHub hosts -- never let a
+## full-URL argument, or a caller that interpolated untrusted data, ship it to
+## an arbitrary host.
+host="${url#https://}"
+host="${host%%/*}"
+host="${host%%:*}"
+case "${host}" in
+  github.com|*.github.com)
+    true "INFO: GitHub host, the token may be attached"
+    ;;
+  *)
+    printf '%s\n' "git-api: refusing non-GitHub host '${host}' (would leak the token)" >&2
+    exit 1
+    ;;
+esac
+
+## Token file first: on a workstation it is the operator's credential, and the
+## environment may hold a weaker CI token.
+token=''
+if [ -r "${GITHUB_TOKEN_FILE}" ]; then
+  token="$(cat -- "${GITHUB_TOKEN_FILE}")"
+elif [ -n "${GITHUB_TOKEN:-}" ]; then
+  token="${GITHUB_TOKEN}"
+elif [ -n "${GH_TOKEN:-}" ]; then
+  token="${GH_TOKEN}"
+fi
+
+curl_program='curl'
+curl_args=(--tlsv1.3 --proto '=https')
+if command -v scurl >/dev/null 2>&1; then
+  ## scurl IS 'curl --tlsv1.3 --proto =https'; prefer it where it exists so the
+  ## TLS policy stays in one place.
+  curl_program='scurl'
+  curl_args=()
+fi
+
+config_document="header = \"Accept: application/vnd.github+json\"
+header = \"X-GitHub-Api-Version: 2022-11-28\""
+if [ -n "${token}" ]; then
+  config_document="header = \"Authorization: Bearer ${token}\"
+${config_document}"
+fi
+
+printf '%s\n' "${config_document}" \
+  | "${curl_program}" "${curl_args[@]}" \
+      --silent --show-error --config - --request "${method}" "$@" "${url}"

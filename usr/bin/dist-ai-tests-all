@@ -66,6 +66,7 @@ core_suites=(
    dist-ai-registry-tests
    github-org-tools-tests
    dm-gitlink-upstream-check-tests
+   git-api-tests
    dm-grub-smbios-tests
    dm-help-steps-tests
    dm-reprepro-tracking-tests
@@ -478,6 +479,13 @@ wire() {
          wire_env=()
          wire_args=()
          ;;
+      git-api)
+         ## Self-contained: the transport is stubbed by a fake curl on PATH, so
+         ## no request leaves the machine and no token is needed. Guards the
+         ## refusals whose failure would leak the bot token.
+         wire_env=()
+         wire_args=()
+         ;;
       dist-ai-registry)
          ## Lints this repo's own suite registry, so its subject is the dist-ai
          ## checkout itself.
@@ -573,7 +581,7 @@ suite_component() {
       private-ai-config)
          printf '%s' 'private-ai-config'
          ;;
-      dist-ai-registry)
+      dist-ai-registry|git-api)
          printf '%s' 'dist-ai'
          ;;
       onion-grater)

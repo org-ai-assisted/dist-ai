@@ -106,6 +106,10 @@ parent_check='auto'
 ## Fixture directory of the running parent self-test, for its cleanup trap.
 parent_self_test_tmp=''
 
+## Where this script lives, so the git-api shipped beside it can be found when
+## dist-ai is checked out rather than installed.
+script_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")"
+
 
 usage() {
   printf '%s\n' \
@@ -125,32 +129,33 @@ usage() {
 
 github_get() {
   ## Fetch a GitHub REST path, printing the raw JSON body (even on 4xx, so the
-  ## caller can classify a 404 as a definitive 'not in this repo'). Prefers the
-  ## private-ai-config 'git-api' wrapper when present (local runs, token off
-  ## argv); falls back to curl in CI.
+  ## caller can classify a 404 as a definitive 'not in this repo': git-api does
+  ## not pass --fail, and exits 0 printing '{"message": "Not Found"}').
   ##
-  ## Both backends must agree on the 4xx contract or a local run would classify
-  ## differently from CI. They do: git-api exits 0 on a 404 and prints the
-  ## '{"message": "Not Found"}' body, and curl is called without --fail.
+  ## Always through the git-api wrapper, never a hand-rolled curl: the wrapper
+  ## is what keeps the token off argv and refuses to attach it to a non-GitHub
+  ## host. It ships beside this script, so CI has it from the dist-ai checkout
+  ## without anything being installed.
   local path="$1"
+  "$(git_api_program)" GET "${path}"
+}
+
+
+git_api_program() {
+  ## Prefer an installed git-api; otherwise the one shipped beside this script,
+  ## which is how CI reaches it (the workflow checks dist-ai out as ./dist-ai).
   if command -v git-api >/dev/null 2>&1; then
-    git-api GET "${path}"
-    return
+    printf '%s\n' 'git-api'
+    return 0
   fi
-  local token="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
-  local -a curl_args=(
-    --silent --show-error
-    --header 'Accept: application/vnd.github+json'
-    --header 'X-GitHub-Api-Version: 2022-11-28'
-  )
-  if [ -z "${token}" ]; then
-    curl "${curl_args[@]}" "https://api.github.com${path}"
-    return
+  local sibling="${script_dir}/git-api"
+  if [ -x "${sibling}" ]; then
+    printf '%s\n' "${sibling}"
+    return 0
   fi
-  ## The token goes in through a --config file on stdin, never on argv, where
-  ## /proc/<pid>/cmdline exposes it to every other user for the request's life.
-  printf '%s\n' "header = \"Authorization: Bearer ${token}\"" \
-    | curl "${curl_args[@]}" --config - "https://api.github.com${path}"
+  printf '%s\n' \
+    "::error::git-api not found on PATH nor beside ${BASH_SOURCE[0]}" >&2
+  return 2
 }
 
 
@@ -842,6 +847,43 @@ enumerate_self_test() {
       ;;
   esac
 
+  ## The wrapper must be found from the checkout, not only from an install:
+  ## in CI nothing is installed and git-api is simply the file next to this
+  ## script. Asserted with a PATH that deliberately has no git-api.
+  local saved_script_dir="${script_dir}"
+  mkdir -p "${tmp}/withapi" "${tmp}/without"
+  printf '%s\n' '#!/bin/bash' 'true' > "${tmp}/withapi/git-api"
+  chmod 0755 "${tmp}/withapi/git-api"
+
+  script_dir="${tmp}/withapi"
+  local resolved
+  resolved="$(PATH="${tmp}/without" git_api_program)"
+  if [ "${resolved}" != "${tmp}/withapi/git-api" ]; then
+    printf '%s\n' \
+      "enumerate self-test FAIL: sibling git-api not resolved; got '${resolved}'" >&2
+    fails=$(( fails + 1 ))
+  fi
+
+  ## And with neither, it must say so rather than silently doing nothing.
+  script_dir="${tmp}/without"
+  rc=0
+  out="$(PATH="${tmp}/without" git_api_program 2>&1)" || rc=$?
+  if (( rc != 2 )); then
+    printf '%s\n' \
+      "enumerate self-test FAIL: absent git-api returned ${rc}, expected 2" >&2
+    fails=$(( fails + 1 ))
+  fi
+  case "${out}" in
+    *'git-api not found'*)
+      true "INFO: the absence is reported"
+      ;;
+    *)
+      printf '%s\n' 'enumerate self-test FAIL: absent git-api not reported; got:' "${out}" >&2
+      fails=$(( fails + 1 ))
+      ;;
+  esac
+  script_dir="${saved_script_dir}"
+
   ## Nothing verified at all is a setup error, not a pass with warnings.
   STATUS_FN='_enumerate_self_test_errors'
   _enumerate_self_test_errors() {
@@ -864,7 +906,7 @@ enumerate_self_test() {
     printf '%s\n' "enumerate self-test: ${fails} assertion(s) FAILED" >&2
     return 1
   fi
-  printf '%s\n' 'enumerate self-test: PASSED (12 cases)'
+  printf '%s\n' 'enumerate self-test: PASSED (15 cases)'
   return 0
 }
 
