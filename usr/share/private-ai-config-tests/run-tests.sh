@@ -132,6 +132,7 @@ excluded_tests=(
    'tests/run-string-parsing-fuzz.sh'               # sandbox wrapper; re-enters
    'tests/run-string-parsing-stress-test.sh'        # sandbox wrapper; re-enters
    'tests/run-confine-enforcement-test.sh'          # sandbox integration; real bwrap in temp-claude
+   'tests/sandbox-boot-deb-replay-test.sh'          # needs unprivileged userns; denied in the CI container (verified: unshare --user in debian:trixie-slim -> EPERM). Run it in temp-claude.
    'tests/resilience/chaos-tick-worker.sh'          # workload for the chaos test
    'tests/resilience/resilience-workload.sh'        # workload, not a test
    'tests/resilience/resilience-stall-supervisor.sh' # support supervisor
