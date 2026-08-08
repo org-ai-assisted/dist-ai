@@ -78,6 +78,7 @@ core_suites=(
    genmkfile-tests
    git-meld-tests
    grep-find-unicode-wrapper-tests
+   lock-screen-tests
    lockfile-tests
    msgcollector-tests
    onion-grater-tests
@@ -294,6 +295,11 @@ wire() {
          ## lockfile.sh ships in helper-scripts; the suite takes either a file
          ## (LOCKFILE_SH) or a checkout it resolves the file from.
          wire_env=( "LOCKFILE_SH_REPO=${hs}" )
+         ;;
+      lock-screen)
+         ## lock-screen ships in helper-scripts too; the suite resolves
+         ## usr/bin/lock-screen from the checkout.
+         wire_env=( "LOCK_SCREEN_REPO=${hs}" )
          ;;
       onion-time-pre-script)
          ## onion-time-pre-script ships in helper-scripts; the suite extracts
@@ -598,7 +604,7 @@ wire() {
 suite_component() {
    local base="${1%%-tests*}"
    case "${base}" in
-      check-ref-commits-for-unicode|grep-find-unicode-wrapper|unicode-show|stcat-family|stdisplay|strip-markup|sanitize-string|lockfile|git-meld|onion-time-pre-script)
+      check-ref-commits-for-unicode|grep-find-unicode-wrapper|unicode-show|stcat-family|stdisplay|strip-markup|sanitize-string|lockfile|lock-screen|git-meld|onion-time-pre-script)
          printf '%s' 'helper-scripts'
          ;;
       developer-meta-files|github-org-tools|dm-virtualbox-wiki-links)

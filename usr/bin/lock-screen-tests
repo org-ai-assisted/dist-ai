@@ -1,0 +1,58 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Suite runner for lock-screen.
+##
+## Runs every *_test.sh in usr/share/lock-screen-tests and fails if any of
+## them does. Discovery is a glob so a new lane needs no edit here.
+##
+## Targets the installed package by default; set LOCK_SCREEN_REPO to test a
+## checkout. A lane that cannot resolve its subject exits 77 and is reported as
+## SKIPPED, never folded into a pass. No root, no network.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/lock-screen-tests" ]; then
+   tests_dir="${script_dir}/../share/lock-screen-tests"
+else
+   tests_dir='/usr/share/lock-screen-tests'
+fi
+
+shopt -s nullglob
+case_scripts=( "${tests_dir}"/*_test.sh )
+shopt -u nullglob
+
+if [ "${#case_scripts[@]}" -eq 0 ]; then
+   printf '%s\n' "FATAL: no case scripts found in '${tests_dir}'" >&2
+   exit 1
+fi
+
+rc=0
+failed=0
+skipped=0
+for case_script in "${case_scripts[@]}"; do
+   printf '%s\n' "== $(basename -- "${case_script}") =="
+   case_rc=0
+   "${case_script}" "$@" || case_rc=$?
+   if [ "${case_rc}" -eq 77 ]; then
+      skipped=$(( skipped + 1 ))
+   elif [ "${case_rc}" -ne 0 ]; then
+      failed=$(( failed + 1 ))
+      rc=1
+   fi
+done
+
+printf '%s\n' ""
+printf '%s\n' "${#case_scripts[@]} case(s), ${failed} failed, ${skipped} skipped"
+exit "${rc}"
