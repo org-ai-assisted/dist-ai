@@ -60,6 +60,7 @@ timeout_heavy=600
 ## it is deliberately excluded.
 core_suites=(
    anon-gw-anonymizer-config-tests
+   anon-ws-disable-stacked-tor-tests
    check-ref-commits-for-unicode-tests
    developer-meta-files-tests
    private-ai-config-tests
@@ -204,7 +205,7 @@ pkg_dir() {
       derivative-maker)
          printf '%s' "${repo_root}"
          ;;
-      anon-gw-anonymizer-config|onion-grater|qubes-whonix)
+      anon-gw-anonymizer-config|anon-ws-disable-stacked-tor|onion-grater|qubes-whonix)
          printf '%s' "${repo_root}/packages/whonix/${name}"
          ;;
       ## Standalone repos with no packages/ subpath at all. Yielding empty (not
@@ -312,6 +313,9 @@ wire() {
          ;;
       anon-gw-anonymizer-config)
          wire_env=( "ANON_GW_ANONYMIZER_CONFIG_REPO=$( pkg_dir anon-gw-anonymizer-config )" )
+         ;;
+      anon-ws-disable-stacked-tor)
+         wire_env=( "ANON_WS_DISABLE_STACKED_TOR_REPO=$( pkg_dir anon-ws-disable-stacked-tor )" )
          ;;
       qubes-whonix)
          wire_env=( "QUBES_WHONIX_REPO=$( pkg_dir qubes-whonix )" )
@@ -603,6 +607,9 @@ suite_component() {
          ;;
       anon-gw-anonymizer-config)
          printf '%s' 'anon-gw-anonymizer-config'
+         ;;
+      anon-ws-disable-stacked-tor)
+         printf '%s' 'anon-ws-disable-stacked-tor'
          ;;
       qubes-whonix)
          printf '%s' 'qubes-whonix'
