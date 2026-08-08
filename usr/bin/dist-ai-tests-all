@@ -63,6 +63,7 @@ core_suites=(
    anon-ws-disable-stacked-tor-tests
    desktop-config-dist-tests
    user-sysmaint-split-tests
+   vm-config-dist-tests
    check-ref-commits-for-unicode-tests
    developer-meta-files-tests
    private-ai-config-tests
@@ -330,6 +331,9 @@ wire() {
          ;;
       user-sysmaint-split)
          wire_env=( "USER_SYSMAINT_SPLIT_REPO=$( pkg_dir user-sysmaint-split )" )
+         ;;
+      vm-config-dist)
+         wire_env=( "VM_CONFIG_DIST_REPO=$( pkg_dir vm-config-dist )" )
          ;;
       qubes-whonix)
          wire_env=( "QUBES_WHONIX_REPO=$( pkg_dir qubes-whonix )" )
@@ -630,6 +634,9 @@ suite_component() {
          ;;
       user-sysmaint-split)
          printf '%s' 'user-sysmaint-split'
+         ;;
+      vm-config-dist)
+         printf '%s' 'vm-config-dist'
          ;;
       qubes-whonix)
          printf '%s' 'qubes-whonix'
