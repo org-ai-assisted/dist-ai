@@ -183,7 +183,14 @@ stop_tor
 ##    occurrences of "Authentication method not detected".
 ##
 ##    A live tor cannot produce this, which is why it needs a stand-in listener.
-listener_port=19801
+## A port the OS just handed out, not a fixed one: a concurrent run or an
+## unrelated local service on a hardcoded port would make this case fail for a
+## reason that has nothing to do with tor-ctrl.
+listener_port="$(python3 -c 'import socket
+probe = socket.socket()
+probe.bind(("127.0.0.1", 0))
+print(probe.getsockname()[1])
+probe.close()')"
 socat "TCP-LISTEN:${listener_port},fork,reuseaddr,bind=127.0.0.1" /dev/null &
 listener_pid=$!
 sleep 1

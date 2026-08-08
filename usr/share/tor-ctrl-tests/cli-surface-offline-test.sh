@@ -68,12 +68,23 @@ check() {
 ## substitution: '$( run_subject ... )' would run it in a subshell, where the
 ## captured output is discarded on return and every text assertion silently
 ## compares against an empty string.
-last_output=""
-last_status=0
+## A closed loopback port, and the ambient controller variables cleared.
+##
+## These cases feed DELIBERATELY malformed onion addresses to a DELETE command.
+## They pass today because validate_onion rejects them before any controller is
+## contacted -- but the regression they exist to catch is validate_onion
+## ACCEPTING one. On that day the command would proceed to DEL_ONION, and with
+## TOR_CONTROL_HOST/PORT inherited (or tor-ctrl's own auto-discovery finding a
+## running system tor) it could delete a real onion service. An offline test must
+## not be one regression away from mutating a live controller.
+isolated_port=1
 run_subject() {
    last_status=0
-   last_output="$( "$@" 2>&1 )" || last_status=$?
+   last_output="$( env --unset=TOR_CONTROL_HOST --unset=TOR_CONTROL_PORT "$@" 2>&1 )" || last_status=$?
 }
+
+last_output=""
+last_status=0
 
 expect() {
    local label="${1}"
@@ -121,20 +132,20 @@ fi
 expect "tor-ctrl-onion -o with no value" 1 "requires an argument" \
    "${bin_dir}/tor-ctrl-onion" -o
 expect "tor-ctrl-onion -o followed by an option" 1 "requires an argument" \
-   "${bin_dir}/tor-ctrl-onion" -o -D
+   "${bin_dir}/tor-ctrl-onion" -s "${isolated_port}" -o -D
 
 ## validate_onion runs before any controller contact, so these are offline.
 ## Wrong LENGTH.
 expect "onion address too short" 1 "is invalid" \
-   "${bin_dir}/tor-ctrl-onion" -D -o notavalidonionaddress
+   "${bin_dir}/tor-ctrl-onion" -s "${isolated_port}" -D -o notavalidonionaddress
 
 ## Right length, but a character outside the base32 lower-case alphabet. '1' and
 ## '8' are not in [a-z2-7], and an upper-case letter is not either -- a check that
 ## only counted characters would pass all three.
 expect "onion address with a non-base32 digit" 1 "is invalid" \
-   "${bin_dir}/tor-ctrl-onion" -D -o "1111111111111111111111111111111111111111111111111111111a"
+   "${bin_dir}/tor-ctrl-onion" -s "${isolated_port}" -D -o "1111111111111111111111111111111111111111111111111111111a"
 expect "onion address with an upper-case letter" 1 "is invalid" \
-   "${bin_dir}/tor-ctrl-onion" -D -o "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaA"
+   "${bin_dir}/tor-ctrl-onion" -s "${isolated_port}" -D -o "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaA"
 
 printf '%s\n' "" "${checks} checks, ${failures} failed"
 [ "${failures}" -eq 0 ]
