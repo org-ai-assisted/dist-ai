@@ -1509,14 +1509,19 @@ check_R130_null_command() {
    ##      truncates and reports an unwritable path.
    ## Still SPARES `: "${var:=default}"` (the parameter-default idiom, used in
    ## usr/libexec/.../github-org-lib.bsh): that has a word after the colon,
-   ## not a redirection. The colon must sit in COMMAND position -- line start
-   ## or after one of ';&|!{' or whitespace -- so '${var:-x}', 'a::b' in a
-   ## PATH, a 'case' pattern and 'https://' are all unmatched. Comment lines
-   ## are excluded, as in the other rules.
+   ## not a redirection. The colon must sit in COMMAND position -- line start,
+   ## or after one of ';&|!{' -- so '${var:-x}', 'a::b' in a PATH, a 'case'
+   ## pattern and 'https://' are all unmatched. Comment lines are excluded, as
+   ## in the other rules.
+   ##
+   ## Plain WHITESPACE after arbitrary text is deliberately NOT accepted as
+   ## command position: it made an HTML message line ending
+   ## '...version         :</td>' match, the '<' of a closing tag read as a
+   ## redirection. See test_pre_push_static_r130_command_position.sh.
    local bare_hits redirect_hits
 
    bare_hits="$(grep --with-filename --line-number --extended-regexp '^[[:space:]]*:[[:space:]]*$' -- "${@}" 2>/dev/null || true)"
-   redirect_hits="$(grep --with-filename --line-number --extended-regexp '^([^#]*[[:space:];&|!{]|[[:space:]]*):[[:space:]]*[<>]' -- "${@}" 2>/dev/null || true)"
+   redirect_hits="$(grep --with-filename --line-number --extended-regexp '^([^#]*[;&|!{][[:space:]]*|[[:space:]]*):[[:space:]]*[<>]' -- "${@}" 2>/dev/null || true)"
    combined_hits="${bare_hits}"$'\n'"${redirect_hits}"
    hits="$(printf '%s\n' "${combined_hits}" | grep --invert-match --extended-regexp '^$' || true)"
    emit_hits "R-130 ':' used as a command" "${hits}"
