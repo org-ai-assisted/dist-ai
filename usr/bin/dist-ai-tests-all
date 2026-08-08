@@ -95,7 +95,6 @@ core_suites=(
    tb-updater-tests
    terminal-poc-corpus-tests
    tor-control-panel-tests
-   tor-ctrl-tests
    unicode-show-tests
    web-analyzer-tests
    website-tests
@@ -123,6 +122,7 @@ fuzz_suites=(
 )
 e2e_suites=(
    onion-grater-tests-e2e
+   tor-ctrl-tests-e2e
    privleap-tests-e2e
    privleap-tests-e2e-systemd
    tb-updater-tests-e2e

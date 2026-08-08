@@ -5,8 +5,13 @@
 
 ## AI-Assisted
 
-## Test suite for the tor-ctrl package. Runs every case script in
+## End-to-end suite for the tor-ctrl package. Runs every case script in
 ## usr/share/tor-ctrl-tests and fails if any of them does.
+##
+## e2e, not core: the cases need a REAL tor to talk to. The core lane is
+## deliberately tor-free (see onion-grater-tests, "no root, no network, no real
+## tor"), and tor is a Recommends rather than a Depends so an offline or x86-only
+## install stays possible. Opt in with --e2e / --all.
 ##
 ## The subject is resolved by each case script:
 ##   * TOR_CTRL_REPO=/path/to/tor-ctrl -> that checkout's usr/bin, OR

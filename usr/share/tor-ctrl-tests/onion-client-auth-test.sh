@@ -52,11 +52,18 @@ fi
 
 onion_tool="${tor_ctrl_bin_dir}/tor-ctrl-onion"
 
-if [ ! -x "${onion_tool}" ]; then
-   printf '%s\n' "SKIP: tor-ctrl-onion not found at '${onion_tool}'" >&2
-   printf '%s\n' "set TOR_CTRL_REPO to a tor-ctrl checkout, or install the package" >&2
-   exit 77
-fi
+## BOTH halves of the subject, not just the one invoked directly. tor-ctrl-onion
+## shells out to 'tor-ctrl' through PATH, so a checkout missing its companion
+## would still resolve to the INSTALLED /usr/bin/tor-ctrl below -- silently
+## pairing new tor-ctrl-onion with an old tor-ctrl and reporting whatever that
+## mismatch produces as a result about the checkout.
+for subject in "${onion_tool}" "${tor_ctrl_bin_dir}/tor-ctrl"; do
+   if [ ! -x "${subject}" ]; then
+      printf '%s\n' "SKIP: subject not found at '${subject}'" >&2
+      printf '%s\n' "set TOR_CTRL_REPO to a complete tor-ctrl checkout, or install the package" >&2
+      exit 77
+   fi
+done
 
 ## tor-ctrl-onion shells out to 'tor-ctrl' from PATH, and the INSTALLED copy can
 ## lag the checkout under test -- it did during development, missing the CR strip
@@ -153,11 +160,18 @@ count_auth_files() {
    find "${work_dir}/auth" -name '*.auth_private' -type f | wc -l
 }
 
+## TOR_CONTROL_HOST / TOR_CONTROL_PORT are UNSET for the subject, not merely
+## overridden by '-s'. tor-ctrl treats them as a FALLBACK: if the socket given on
+## the command line does not answer, it tries the environment pair next. Inherited
+## from the caller, a hiccup on this private tor would silently redirect the
+## authorization command at whatever controller those variables name -- a real
+## one, on a machine where this suite must touch nothing but its own tor.
 add_client_auth() {
    local onion="${1}"
    local key="${2}"
    shift 2
-   "${onion_tool}" -s "${control_port}" -p "${control_password}" \
+   env --unset=TOR_CONTROL_HOST --unset=TOR_CONTROL_PORT \
+      "${onion_tool}" -s "${control_port}" -p "${control_password}" \
       -U "x25519:${key}" -o "${onion}" "$@"
 }
 
