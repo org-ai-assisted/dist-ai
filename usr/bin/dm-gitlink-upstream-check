@@ -127,22 +127,30 @@ github_get() {
   ## Fetch a GitHub REST path, printing the raw JSON body (even on 4xx, so the
   ## caller can classify a 404 as a definitive 'not in this repo'). Prefers the
   ## private-ai-config 'git-api' wrapper when present (local runs, token off
-  ## argv); falls back to curl with a bearer token in CI.
+  ## argv); falls back to curl in CI.
+  ##
+  ## Both backends must agree on the 4xx contract or a local run would classify
+  ## differently from CI. They do: git-api exits 0 on a 404 and prints the
+  ## '{"message": "Not Found"}' body, and curl is called without --fail.
   local path="$1"
   if command -v git-api >/dev/null 2>&1; then
     git-api GET "${path}"
     return
   fi
   local token="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
-  local -a auth=()
-  if [ -n "${token}" ]; then
-    auth=(--header "Authorization: Bearer ${token}")
+  local -a curl_args=(
+    --silent --show-error
+    --header 'Accept: application/vnd.github+json'
+    --header 'X-GitHub-Api-Version: 2022-11-28'
+  )
+  if [ -z "${token}" ]; then
+    curl "${curl_args[@]}" "https://api.github.com${path}"
+    return
   fi
-  curl --silent --show-error \
-       --header 'Accept: application/vnd.github+json' \
-       --header 'X-GitHub-Api-Version: 2022-11-28' \
-       "${auth[@]}" \
-       "https://api.github.com${path}"
+  ## The token goes in through a --config file on stdin, never on argv, where
+  ## /proc/<pid>/cmdline exposes it to every other user for the request's life.
+  printf '%s\n' "header = \"Authorization: Bearer ${token}\"" \
+    | curl "${curl_args[@]}" --config - "https://api.github.com${path}"
 }
 
 
@@ -159,16 +167,22 @@ import sys
 
 try:
     data = json.load(sys.stdin)
+    ## A body that parses but is not an object (a bare list or null, which an
+    ## intercepting proxy or an error page can produce) has no .get, and the
+    ## AttributeError would escape as a non-zero exit with no verdict printed.
+    if not isinstance(data, dict):
+        raise ValueError("not a JSON object")
+    status = data.get("status")
+    message = data.get("message")
 except Exception:
     print("error")
     sys.exit(0)
 
-status = data.get("status")
 if status in ("behind", "identical"):
     print("resolvable")
 elif status in ("ahead", "diverged"):
     print("not-resolvable")
-elif data.get("message") == "Not Found":
+elif message == "Not Found":
     print("not-resolvable")
 else:
     print("error")
@@ -188,38 +202,113 @@ upstream_status() {
 }
 
 
-enumerate_gitlinks() {
-  ## Emit "path<TAB>owner<TAB>repo<TAB>sha" for every submodule pinned in the
-  ## repo_root checkout's HEAD, deriving the canonical upstream owner/repo from
-  ## the .gitmodules URL.
+canonical_owner() {
+  ## The upstream orgs derivative-maker's submodules may live under. The URL in
+  ## .gitmodules is data in the tree being checked, so it cannot be trusted to
+  ## name the canonical upstream: repointing a submodule at a fork would
+  ## otherwise make any fork-only commit 'resolvable'. Extend this list when a
+  ## new upstream org is genuinely adopted.
+  case "$1" in
+    Kicksecure|Whonix)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+
+safe_slug_component() {
+  ## An owner or repo is interpolated into a REST path. A '#' or '?' there
+  ## truncates the request into a DIFFERENT, valid endpoint whose body has no
+  ## 'status', which downgrades a hard failure to a warning.
+  case "$1" in
+    ''|*[!A-Za-z0-9._-]*)
+      return 1
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
+
+gitmodules_url_for() {
+  ## Print the .gitmodules URL declared for tree path ${1}; return 1 if the
+  ## path has no stanza.
+  local wanted="$1"
   local modules="${repo_root}/.gitmodules"
-  local key name path url tail owner_repo owner repo
-  local mode otype sha rest
-  while read -r key path; do
+  local key value name
+  if [ ! -f "${modules}" ]; then
+    return 1
+  fi
+  while read -r key value; do
+    if [ "${value}" != "${wanted}" ]; then
+      continue
+    fi
     name="${key#submodule.}"
     name="${name%.path}"
-    url="$(git config --file "${modules}" --get "submodule.${name}.url")" || continue
-    ## Strip scheme+host (https://github.com/, git@github.com:, ssh://...), then
-    ## the trailing '.git', leaving 'Owner/repo'. Pure bash, no sed/awk.
-    tail="${url##*github.com}"
-    tail="${tail#[:/]}"
-    owner_repo="${tail%.git}"
-    owner="${owner_repo%%/*}"
-    repo="${owner_repo##*/}"
-    if [ -z "${owner}" ] || [ -z "${repo}" ]; then
-      continue
-    fi
-    ## Pinned SHA for this path in HEAD. Empty (or non-gitlink) -> skip: a
-    ## .gitmodules entry with no committed gitlink is not a pin to check. Guard
-    ## the read against EOF so errexit does not abort on an absent path.
-    mode=''
-    read -r mode otype sha rest \
-      < <(git -C "${repo_root}" ls-tree HEAD -- "${path}") || true
-    if [ "${mode}" != '160000' ] || [ -z "${sha}" ]; then
-      continue
-    fi
-    printf '%s\n' "${path}${TAB}${owner}${TAB}${repo}${TAB}${sha}"
+    git config --file "${modules}" --get "submodule.${name}.url" || return 1
+    return 0
   done < <(git config --file "${modules}" --get-regexp '^submodule\..*\.path$')
+  return 1
+}
+
+
+enumerate_gitlinks() {
+  ## Emit "path<TAB>owner<TAB>repo<TAB>sha<TAB>problem" for every gitlink in the
+  ## repo_root checkout's HEAD.
+  ##
+  ## The TREE is the source of truth, not .gitmodules: enumerating from the
+  ## stanzas means a committed 160000 entry with no stanza -- or one whose
+  ## stanza path does not match the tree exactly, e.g. a trailing slash -- is
+  ## never looked at, and an unchecked pin must never be indistinguishable from
+  ## a checked one. Anything that cannot be resolved to a canonical upstream is
+  ## emitted WITH a problem rather than skipped, for the same reason.
+  local mode otype sha path url tail owner_repo owner repo problem path_safe
+  while read -r -d '' mode otype sha path; do
+    if [ "${mode}" != '160000' ]; then
+      continue
+    fi
+    problem=''
+    owner=''
+    repo=''
+    ## -z output is unquoted, so a path may hold anything except NUL. A tab
+    ## would split this record, so such a path is reported, not carried.
+    path_safe="${path//${TAB}/<TAB>}"
+    if [ "${path_safe}" != "${path}" ]; then
+      problem='submodule path contains a tab'
+    elif ! url="$(gitmodules_url_for "${path}")"; then
+      problem='gitlink has no .gitmodules stanza, so its upstream is unknown'
+    else
+      case "${url}" in
+        *github.com[:/]*)
+          ## Strip scheme+host (https://github.com/, git@github.com:,
+          ## ssh://...), then trailing slashes and '.git'. Pure bash, no sed.
+          tail="${url##*github.com}"
+          tail="${tail#[:/]}"
+          owner_repo="${tail%.git}"
+          owner_repo="${owner_repo%/}"
+          owner="${owner_repo%%/*}"
+          repo="${owner_repo##*/}"
+          if ! safe_slug_component "${owner}" || ! safe_slug_component "${repo}"; then
+            problem="unusable owner/repo in submodule URL: ${url}"
+          elif ! canonical_owner "${owner}"; then
+            problem="upstream owner '${owner}' is not a canonical upstream org"
+          fi
+          ;;
+        *)
+          ## Relative ('../foo.git') and non-GitHub URLs cannot be resolved
+          ## against the GitHub API; sending them anyway produced a bogus
+          ## request and a false verdict.
+          problem="submodule URL is not a github.com URL: ${url}"
+          ;;
+      esac
+    fi
+    printf '%s\n' \
+      "${path_safe}${TAB}${owner}${TAB}${repo}${TAB}${sha}${TAB}${problem}"
+  done < <(git -C "${repo_root}" ls-tree -r -z HEAD)
 }
 
 
@@ -227,18 +316,24 @@ evaluate() {
   ## Read "path<TAB>owner<TAB>repo<TAB>sha" lines on stdin, classify each via
   ## ${STATUS_FN}, print a report, and return 1 iff any pin is not-resolvable.
   ## Errors (network / rate limit) are reported but do NOT fail the check.
-  local path owner repo sha verdict
+  local path owner repo sha problem verdict
   local -a bad=() errored=()
-  local count=0
-  while IFS="${TAB}" read -r path owner repo sha; do
+  local count=0 verified=0
+  while IFS="${TAB}" read -r path owner repo sha problem; do
     if [ -z "${path}" ]; then
       continue
     fi
     count=$(( count + 1 ))
+    ## A pin whose upstream could not even be determined is a failure, not a
+    ## skip: it is exactly the shape a repointed submodule takes.
+    if [ -n "${problem}" ]; then
+      bad+=("${path} @ ${sha} -- ${problem}")
+      continue
+    fi
     verdict="$("${STATUS_FN}" "${owner}" "${repo}" "${sha}")"
     case "${verdict}" in
       resolvable)
-        true "INFO: ${path} pin is reachable upstream; nothing to report"
+        verified=$(( verified + 1 ))
         ;;
       not-resolvable)
         bad+=("${path} @ ${sha} -- upstream ${owner}/${repo}")
@@ -260,18 +355,35 @@ evaluate() {
 
   if (( ${#bad[@]} > 0 )); then
     printf '%s\n' \
-      '::error::submodule gitlink(s) NOT reachable on upstream master (fork-only pin on master):' >&2
+      '::error::submodule gitlink(s) NOT verified against a canonical upstream master:' >&2
     for entry in "${bad[@]}"; do
       printf '%s\n' "  [FAIL] ${entry}" >&2
     done
     printf '%s\n' \
       'A gitlink on master must point to a commit that exists on the submodule' \
-      "upstream's master. Bump the pin to an upstream-merged commit, or land the" \
-      'submodule work upstream first. See the git / derivative-maker skills.' >&2
+      "upstream's master, under a canonical upstream org. Bump the pin to an" \
+      'upstream-merged commit, or land the submodule work upstream first. See' \
+      'the git / derivative-maker skills.' >&2
     return 1
   fi
 
-  printf '%s\n' "PASSED: ${count} gitlink(s) reachable on upstream master."
+  ## Some pins erroring is tolerated so a flaky API does not turn CI red. NONE
+  ## of them resolving is a different thing: the sweep did not happen, and a
+  ## run that verified nothing must not report success.
+  if (( count > 0 )) && (( verified == 0 )); then
+    printf '%s\n' \
+      "::error::not one of the ${count} gitlink(s) could be verified; the upstream sweep did not run (no token? rate limited?)" >&2
+    return 2
+  fi
+
+  ## Report what was actually verified. Counting the errored pins here would
+  ## claim a rate-limited run checked them.
+  if (( ${#errored[@]} > 0 )); then
+    printf '%s\n' \
+      "PASSED: ${verified} of ${count} gitlink(s) reachable on upstream master; ${#errored[@]} NOT verified (see warnings above)."
+    return 0
+  fi
+  printf '%s\n' "PASSED: ${verified} gitlink(s) reachable on upstream master."
   return 0
 }
 
@@ -538,6 +650,157 @@ self_test() {
     return 1
   fi
   printf '%s\n' 'self-test: PASSED (3 cases)'
+  return 0
+}
+
+
+enumerate_self_test() {
+  ## Regression test for the enumerator against a real tree: every gitlink is
+  ## reported, and one whose upstream cannot be established as canonical comes
+  ## back WITH a problem instead of being silently dropped.
+  local tmp fails=0 records
+  local sha='4444444444444444444444444444444444444444'
+  parent_self_test_tmp="$(mktemp --directory)"
+  tmp="${parent_self_test_tmp}"
+  trap parent_self_test_cleanup RETURN
+
+  fixture_git init --quiet "${tmp}/tree"
+  ## The 'sneaky' URL is quoted in the fixture on purpose: unquoted, git config
+  ## strips from '#' onward as a comment, and the stanza would no longer carry
+  ## the character the case exists to test.
+  {
+    printf '%s\n' '[submodule "good"]' \
+      '	path = good' \
+      '	url = https://github.com/Kicksecure/good.git' \
+      '[submodule "forked"]' \
+      '	path = forked' \
+      '	url = https://github.com/attacker/forked.git' \
+      '[submodule "elsewhere"]' \
+      '	path = elsewhere' \
+      '	url = ../elsewhere.git' \
+      '[submodule "sneaky"]' \
+      '	path = sneaky' \
+      '	url = "https://github.com/Kicksecure/sneaky#x.git"'
+  } > "${tmp}/tree/.gitmodules"
+  fixture_git -C "${tmp}/tree" add .gitmodules
+  local sub
+  ## 'orphan' deliberately gets NO stanza.
+  for sub in good forked elsewhere sneaky orphan; do
+    fixture_git -C "${tmp}/tree" update-index --add --cacheinfo "160000,${sha},${sub}"
+  done
+  fixture_git -C "${tmp}/tree" commit --quiet --message 'fixture tree'
+
+  repo_root="${tmp}/tree"
+  records="$(enumerate_gitlinks)"
+
+  assert_record() {
+    ## Assert the record for tree path ${2} carries ${3} in its problem field.
+    ## Matching on path plus problem, not on the exact field layout, so the
+    ## test does not break when a diagnostic gains a field.
+    local label="$1" want_path="$2" pattern="$3"
+    local line found='false'
+    while IFS= read -r line; do
+      case "${line}" in
+        "${want_path}${TAB}"*)
+          case "${line}" in
+            *"${pattern}"*)
+              found='true'
+              ;;
+            *)
+              true "INFO: right path, wrong problem; keep looking"
+              ;;
+          esac
+          ;;
+        *)
+          true "INFO: a different submodule's record"
+          ;;
+      esac
+    done <<< "${records}"
+    if [ "${found}" = 'true' ]; then
+      return 0
+    fi
+    printf '%s\n' "enumerate self-test FAIL: ${label}; got:" "${records}" >&2
+    fails=$(( fails + 1 ))
+  }
+
+  ## The canonical one resolves: its record ENDS at the empty problem field.
+  assert_record 'canonical pin resolves' 'good' "${TAB}Kicksecure${TAB}good${TAB}${sha}${TAB}"
+  ## A repointed submodule must not be able to vouch for itself.
+  assert_record 'fork owner rejected' 'forked' \
+    "upstream owner 'attacker' is not a canonical upstream org"
+  ## A relative URL must not be sent to the GitHub API.
+  assert_record 'relative URL rejected' 'elsewhere' \
+    'submodule URL is not a github.com URL'
+  ## A '#' would truncate the REST path into a different, valid endpoint.
+  assert_record 'unsafe slug rejected' 'sneaky' \
+    'unusable owner/repo in submodule URL'
+  ## A gitlink with no stanza used to be invisible.
+  assert_record 'orphan gitlink reported' 'orphan' \
+    'gitlink has no .gitmodules stanza'
+
+  ## Each problem must FAIL the evaluator, not warn.
+  local rc=0 out
+  STATUS_FN='_enumerate_self_test_status'
+  _enumerate_self_test_status() {
+    printf '%s\n' 'resolvable'
+  }
+  out="$(evaluate <<< "${records}" 2>&1)" || rc=$?
+  if (( rc != 1 )); then
+    printf '%s\n' "enumerate self-test FAIL: problem records returned ${rc}, expected 1" >&2
+    fails=$(( fails + 1 ))
+  fi
+
+  ## The PASSED line must not claim unverified pins were verified. 'b' errors,
+  ## 'a' resolves, so the run is a partial success and stays green.
+  STATUS_FN='_enumerate_self_test_one_error'
+  _enumerate_self_test_one_error() {
+    case "$3" in
+      err*)
+        printf '%s\n' 'error'
+        ;;
+      *)
+        printf '%s\n' 'resolvable'
+        ;;
+    esac
+  }
+  rc=0
+  out="$(printf '%s\n' \
+    "a${TAB}Kicksecure${TAB}a${TAB}good1${TAB}" \
+    "b${TAB}Kicksecure${TAB}b${TAB}err2${TAB}" \
+    | evaluate 2>&1)" || rc=$?
+  case "${out}" in
+    *'PASSED: 1 of 2 gitlink(s)'*'1 NOT verified'*)
+      true "INFO: the count reflects what was actually verified"
+      ;;
+    *)
+      printf '%s\n' 'enumerate self-test FAIL: PASSED line overcounts; got:' "${out}" >&2
+      fails=$(( fails + 1 ))
+      ;;
+  esac
+
+  ## Nothing verified at all is a setup error, not a pass with warnings.
+  STATUS_FN='_enumerate_self_test_errors'
+  _enumerate_self_test_errors() {
+    printf '%s\n' 'error'
+  }
+  rc=0
+  out="$(printf '%s\n' \
+    "a${TAB}Kicksecure${TAB}a${TAB}err1${TAB}" \
+    "b${TAB}Kicksecure${TAB}b${TAB}err2${TAB}" \
+    | evaluate 2>&1)" || rc=$?
+  if (( rc != 2 )); then
+    printf '%s\n' \
+      "enumerate self-test FAIL: wholly unverified sweep returned ${rc}, expected 2; got:" \
+      "${out}" >&2
+    fails=$(( fails + 1 ))
+  fi
+  STATUS_FN='upstream_status'
+
+  if (( fails > 0 )); then
+    printf '%s\n' "enumerate self-test: ${fails} assertion(s) FAILED" >&2
+    return 1
+  fi
+  printf '%s\n' 'enumerate self-test: PASSED (9 cases)'
   return 0
 }
 
@@ -849,6 +1112,7 @@ main() {
     ## Both suites run even when the first fails, so one invocation reports
     ## every broken assertion.
     self_test || rc=$?
+    enumerate_self_test || rc=$?
     parent_self_test || rc=$?
     return "${rc}"
   fi
@@ -859,7 +1123,25 @@ main() {
     return 2
   fi
 
-  enumerate_gitlinks | evaluate || rc=$?
+  ## An unusable HEAD used to be absorbed per-entry, leaving a run that checked
+  ## nothing at all printing PASSED.
+  if ! git -C "${repo_root}" rev-parse --verify --quiet HEAD >/dev/null; then
+    printf '%s\n' "::error::HEAD is not usable in ${repo_root}; nothing could be checked" >&2
+    return 2
+  fi
+
+  local records
+  if ! records="$(enumerate_gitlinks)"; then
+    printf '%s\n' "::error::could not enumerate the gitlinks of ${repo_root}" >&2
+    return 2
+  fi
+  if [ -z "${records}" ]; then
+    printf '%s\n' \
+      "::error::no submodule gitlink found in HEAD of ${repo_root}; a derivative-maker checkout has many" >&2
+    return 2
+  fi
+
+  evaluate <<< "${records}" || rc=$?
 
   ## Independent invariants: report both, and let the worse exit code win (2
   ## setup error over 1 violation) rather than short-circuiting on the first.
