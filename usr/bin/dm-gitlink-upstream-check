@@ -208,8 +208,10 @@ canonical_owner() {
   ## name the canonical upstream: repointing a submodule at a fork would
   ## otherwise make any fork-only commit 'resolvable'. Extend this list when a
   ## new upstream org is genuinely adopted.
-  case "$1" in
-    Kicksecure|Whonix)
+  ## Compared case-insensitively: GitHub owner names are, so a URL spelling of
+  ## 'kicksecure' is the same org and must not be reported as a fork.
+  case "${1,,}" in
+    kicksecure|whonix)
       return 0
       ;;
     *)
@@ -239,11 +241,16 @@ gitmodules_url_for() {
   ## path has no stanza.
   local wanted="$1"
   local modules="${repo_root}/.gitmodules"
-  local key value name
+  local line key value name
   if [ ! -f "${modules}" ]; then
     return 1
   fi
-  while read -r key value; do
+  ## Split by hand for the same reason as the tree records: 'read key value'
+  ## strips the surrounding whitespace of a path declared with leading or
+  ## trailing spaces, and the stanza would then never match its own gitlink.
+  while IFS= read -r line; do
+    key="${line%% *}"
+    value="${line#* }"
     if [ "${value}" != "${wanted}" ]; then
       continue
     fi
@@ -266,19 +273,32 @@ enumerate_gitlinks() {
   ## never looked at, and an unchecked pin must never be indistinguishable from
   ## a checked one. Anything that cannot be resolved to a canonical upstream is
   ## emitted WITH a problem rather than skipped, for the same reason.
+  local record meta rest
   local mode otype sha path url tail owner_repo owner repo problem path_safe
-  while read -r -d '' mode otype sha path; do
+  ## The record is split by hand rather than by 'read mode otype sha path':
+  ## word splitting strips leading and trailing IFS whitespace from the last
+  ## field, so a submodule path with a leading or trailing space would come
+  ## back altered and then fail to match its own .gitmodules stanza.
+  while IFS= read -r -d '' record; do
+    meta="${record%%"${TAB}"*}"
+    path="${record#*"${TAB}"}"
+    mode="${meta%% *}"
+    rest="${meta#* }"
+    otype="${rest%% *}"
+    sha="${rest##* }"
     if [ "${mode}" != '160000' ]; then
       continue
     fi
     problem=''
     owner=''
     repo=''
-    ## -z output is unquoted, so a path may hold anything except NUL. A tab
-    ## would split this record, so such a path is reported, not carried.
+    ## -z output is unquoted, so a path may hold anything except NUL. A tab or
+    ## a newline would split the record this function emits, so such a path is
+    ## reported, never carried.
     path_safe="${path//${TAB}/<TAB>}"
+    path_safe="${path_safe//$'\n'/<LF>}"
     if [ "${path_safe}" != "${path}" ]; then
-      problem='submodule path contains a tab'
+      problem='submodule path contains a tab or newline'
     elif ! url="$(gitmodules_url_for "${path}")"; then
       problem='gitlink has no .gitmodules stanza, so its upstream is unknown'
     else
@@ -288,8 +308,17 @@ enumerate_gitlinks() {
           ## ssh://...), then trailing slashes and '.git'. Pure bash, no sed.
           tail="${url##*github.com}"
           tail="${tail#[:/]}"
-          owner_repo="${tail%.git}"
-          owner_repo="${owner_repo%/}"
+          ## Trailing slashes come off BEFORE '.git': the other order leaves
+          ## 'repo.git' for a URL spelled '.../repo.git/', since '%.git' does
+          ## not match a string ending in a slash.
+          owner_repo="${tail}"
+          while [ "${owner_repo}" != "${owner_repo%/}" ]; do
+            owner_repo="${owner_repo%/}"
+          done
+          owner_repo="${owner_repo%.git}"
+          while [ "${owner_repo}" != "${owner_repo%/}" ]; do
+            owner_repo="${owner_repo%/}"
+          done
           owner="${owner_repo%%/*}"
           repo="${owner_repo##*/}"
           if ! safe_slug_component "${owner}" || ! safe_slug_component "${repo}"; then
@@ -680,12 +709,21 @@ enumerate_self_test() {
       '	url = ../elsewhere.git' \
       '[submodule "sneaky"]' \
       '	path = sneaky' \
-      '	url = "https://github.com/Kicksecure/sneaky#x.git"'
+      '	url = "https://github.com/Kicksecure/sneaky#x.git"' \
+      '[submodule "lower"]' \
+      '	path = lower' \
+      '	url = https://github.com/kicksecure/lower.git' \
+      '[submodule "slash"]' \
+      '	path = slash' \
+      '	url = https://github.com/Kicksecure/slash.git/' \
+      '[submodule "spaced"]' \
+      '	path = " a spaced path "' \
+      '	url = https://github.com/Kicksecure/spaced.git'
   } > "${tmp}/tree/.gitmodules"
   fixture_git -C "${tmp}/tree" add .gitmodules
   local sub
   ## 'orphan' deliberately gets NO stanza.
-  for sub in good forked elsewhere sneaky orphan; do
+  for sub in good forked elsewhere sneaky orphan lower slash ' a spaced path '; do
     fixture_git -C "${tmp}/tree" update-index --add --cacheinfo "160000,${sha},${sub}"
   done
   fixture_git -C "${tmp}/tree" commit --quiet --message 'fixture tree'
@@ -723,8 +761,26 @@ enumerate_self_test() {
     fails=$(( fails + 1 ))
   }
 
-  ## The canonical one resolves: its record ENDS at the empty problem field.
-  assert_record 'canonical pin resolves' 'good' "${TAB}Kicksecure${TAB}good${TAB}${sha}${TAB}"
+  assert_clean_record() {
+    ## Assert the record for ${2} is EXACTLY path/owner/repo/sha with an empty
+    ## problem field. A substring match would also match the same record
+    ## carrying a problem, so it could not tell acceptance from rejection --
+    ## which is how the first version of these cases passed a canary it should
+    ## have failed.
+    local label="$1" want_path="$2" want_owner="$3" want_repo="$4"
+    local want line
+    want="${want_path}${TAB}${want_owner}${TAB}${want_repo}${TAB}${sha}${TAB}"
+    while IFS= read -r line; do
+      if [ "${line}" = "${want}" ]; then
+        return 0
+      fi
+    done <<< "${records}"
+    printf '%s\n' "enumerate self-test FAIL: ${label}; got:" "${records}" >&2
+    fails=$(( fails + 1 ))
+  }
+
+  ## The canonical one resolves, with an empty problem field.
+  assert_clean_record 'canonical pin resolves' 'good' 'Kicksecure' 'good'
   ## A repointed submodule must not be able to vouch for itself.
   assert_record 'fork owner rejected' 'forked' \
     "upstream owner 'attacker' is not a canonical upstream org"
@@ -737,6 +793,14 @@ enumerate_self_test() {
   ## A gitlink with no stanza used to be invisible.
   assert_record 'orphan gitlink reported' 'orphan' \
     'gitlink has no .gitmodules stanza'
+  ## GitHub owners are case-insensitive, so this is the same org, not a fork.
+  assert_clean_record 'lowercase owner accepted' 'lower' 'kicksecure' 'lower'
+  ## '.git/' must strip to the repo name, not leave 'slash.git'.
+  assert_clean_record 'trailing slash stripped' 'slash' 'Kicksecure' 'slash'
+  ## Word splitting used to eat the surrounding spaces, after which the path
+  ## no longer matched its own stanza and was reported as an orphan.
+  assert_clean_record 'spaced path keeps its spaces' ' a spaced path ' \
+    'Kicksecure' 'spaced'
 
   ## Each problem must FAIL the evaluator, not warn.
   local rc=0 out
@@ -800,7 +864,7 @@ enumerate_self_test() {
     printf '%s\n' "enumerate self-test: ${fails} assertion(s) FAILED" >&2
     return 1
   fi
-  printf '%s\n' 'enumerate self-test: PASSED (9 cases)'
+  printf '%s\n' 'enumerate self-test: PASSED (12 cases)'
   return 0
 }
 
