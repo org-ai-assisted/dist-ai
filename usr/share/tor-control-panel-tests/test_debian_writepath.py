@@ -68,6 +68,37 @@ class AcwWriteTorrcTest(unittest.TestCase):
                                  'DisableNetwork 0\nUseBridges 1\n')
             self.assertEqual(oct(os.stat(dropin).st_mode & 0o777), '0o644')
 
+    def test_torrc_content_never_reaches_the_trace(self):
+        """The helper must not print the torrc it handles.
+
+        acw-write-torrc runs under 'set -x' for its flow trace, and xtrace
+        prints commands with variables fully expanded. With the trace left on
+        across the read and the write, the whole torrc -- proxy credentials
+        included -- landed on stderr. The helper runs as root and its stderr is
+        captured by the journal, which is the same disclosure
+        tor_status.redact_credentials() prevents on the Python side.
+        """
+        secret = 'hunter2SuperSecretValue'
+        with tempfile.TemporaryDirectory() as root:
+            result, dropin = self._write(
+                root,
+                'DisableNetwork 0\n'
+                f'Socks5ProxyPassword {secret}\n'
+                f'HTTPSProxyAuthenticator alice:{secret}\n')
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            ## The drop-in itself must still carry the real credentials --
+            ## Tor needs them; only the diagnostic output must not.
+            with open(dropin, encoding='utf-8') as handle:
+                self.assertIn(secret, handle.read())
+
+            for stream_name, stream in (('stdout', result.stdout),
+                                        ('stderr', result.stderr)):
+                self.assertNotIn(
+                    secret, stream,
+                    f'torrc credential leaked into {stream_name} '
+                    f'via the xtrace of acw-write-torrc')
+
     def test_empty_comm_file_rejected(self):
         with tempfile.TemporaryDirectory() as root:
             result, _ = self._write(root, '')
