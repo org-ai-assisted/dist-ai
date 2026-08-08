@@ -96,6 +96,9 @@ core_tests=(
    'tests/session-inject-hosted-not-ready-defers-test.sh'
    'tests/session-retire-forced-teardown-test.sh'
    'tests/watchdog-retire-marker-test.sh'
+   'tests/watchdog-straddle-heal-test.sh'
+   'tests/watchdog-light-heal-preserves-tmux-test.sh'
+   'tests/dmf-gate-staging-order-test.py'
    'claude/hooks/tests/test-cowbuilder-guard.py'
    'claude/hooks/tests/test-external-tool-guard.py'
    'claude/hooks/tests/test-git-command-parse.py'
@@ -115,6 +118,7 @@ resilience_tests=(
    'tests/durable-bg-run-no-unwatched-worker-test.sh'
    'tests/durable-bg-run-retry-after-failure-test.sh'
    'tests/safe-systemctl-phantom-success-test.sh'
+   'tests/anti-stall-supervisor-retry-verdict-test.sh'
 )
 
 ## Deliberately NOT a lane member, with the reason, so an omission reads as a
