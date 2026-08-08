@@ -30,7 +30,8 @@
 ##   9. R-070 no ';;' trailing other statements on the same line
 ##      R-074 no ';'-chained break/continue/return (own line)
 ##      R-062 no '--' end-of-options separator passed to a tool on
-##      the verified reject-'--' denylist (git check-ref-format)
+##      the verified reject-'--' denylist (git check-ref-format,
+##      stcat)
 ##  10. R-026 no obsolete empty-array guard '${arr[@]+"${arr[@]}"}'
 ##      (pre-bash-4.4 nounset workaround; drop the +alternate on
 ##      '[@]'). Does NOT flag '${#arr[@]}', a plain '${arr[@]}',
@@ -1057,10 +1058,16 @@ check_R062_dashdash_denylist() {
    ## Each entry MUST be verified against the real binary before adding.
    ## Verified rejecters:
    ##   git check-ref-format -- <ref>  -> exit 129 (usage error)
+   ##   stcat -- <file>                -> FileNotFoundError on '--': it takes
+   ##                                     every argument as a path. This one
+   ##                                     cost four e2e scenarios in
+   ##                                     tb-updater, via helper-scripts'
+   ##                                     read_integer_file.
    ## Entries are extended-regexp fragments for the command token(s); '[space]+'
    ## between words so the literal never self-matches this denylist line.
    denylist=(
       'git[[:space:]]+check-ref-format'
+      'stcat'
    )
    for entry in "${denylist[@]}"; do
       ## Command-position tool token(s), then a STANDALONE '--' in any arg

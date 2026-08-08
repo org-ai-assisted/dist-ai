@@ -225,6 +225,11 @@ expect_rule "R-062" "git check-ref-format refs/heads/x"       "absent"
 expect_rule "R-062" "git rev-parse ${dd} HEAD"                "absent"
 expect_rule "R-062" "git check-ref-format ${dd}branch x"      "absent"
 expect_rule "R-062" "mygit check-ref-format ${dd} x"          "absent"
+## stcat takes EVERY argument as a path, so it reads the separator itself as a
+## filename. This is the shape that broke read_integer_file and with it four of
+## tb-updater's e2e scenarios.
+expect_rule "R-062" "value=\$(stcat ${dd} \"\${target_file}\")"  "present"
+expect_rule "R-062" "value=\$(stcat \"\${target_file}\")"        "absent"
 ## The scan must not cross a command boundary. Here the '--' belongs to grep,
 ## which accepts one; only a ';'-separated denylisted tool precedes it. Letting
 ## the intermediate tokens span ';', '|' or '&' turns every legitimate '--'
