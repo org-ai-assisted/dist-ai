@@ -184,16 +184,46 @@ stop_tor
 ##
 ##    A live tor cannot produce this, which is why it needs a stand-in listener.
 ## A port the OS just handed out, not a fixed one: a concurrent run or an
-## unrelated local service on a hardcoded port would make this case fail for a
-## reason that has nothing to do with tor-ctrl.
-listener_port="$(python3 -c 'import socket
+## unrelated local service on a hardcoded port would fail this case for a reason
+## unrelated to tor-ctrl.
+##
+## Asking python for a free port then letting socat bind it is a race -- another
+## process can take it in between, socat exits in the background, and the case
+## then runs against a DEAD port. That matters here beyond flakiness: a refused
+## connection sends tor-ctrl into its documented fallback chain (environment,
+## then tor's config files, then 127.0.0.1:9051), so the case could end up
+## reporting on a real controller. So the listener is VERIFIED up before the
+## subject runs, and a lost race just picks another port.
+listener_pid=""
+listener_port=""
+for attempt in 1 2 3 4 5; do
+   candidate="$(python3 -c 'import socket
 probe = socket.socket()
 probe.bind(("127.0.0.1", 0))
 print(probe.getsockname()[1])
 probe.close()')"
-socat "TCP-LISTEN:${listener_port},fork,reuseaddr,bind=127.0.0.1" /dev/null &
-listener_pid=$!
-sleep 1
+   socat "TCP-LISTEN:${candidate},fork,reuseaddr,bind=127.0.0.1" /dev/null &
+   candidate_pid=$!
+   waited=0
+   until nc -z 127.0.0.1 "${candidate}" 2>/dev/null; do
+      sleep 1
+      waited=$(( waited + 1 ))
+      if [ "${waited}" -ge 5 ]; then
+         break
+      fi
+   done
+   if nc -z 127.0.0.1 "${candidate}" 2>/dev/null; then
+      listener_port="${candidate}"
+      listener_pid="${candidate_pid}"
+      break
+   fi
+   kill "${candidate_pid}" 2>/dev/null || true
+done
+
+if [ -z "${listener_port}" ]; then
+   printf '%s\n' "FAIL: could not bring up a stand-in listener on any free port" >&2
+   exit 1
+fi
 
 run_tor_ctrl -s "${listener_port}" -c "GETINFO version"
 check "non-controller socket: exit status" "1" "${last_status}"

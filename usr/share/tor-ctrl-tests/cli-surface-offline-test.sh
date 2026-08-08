@@ -68,16 +68,41 @@ check() {
 ## substitution: '$( run_subject ... )' would run it in a subshell, where the
 ## captured output is discarded on return and every text assertion silently
 ## compares against an empty string.
-## A closed loopback port, and the ambient controller variables cleared.
+## A STUB tor-ctrl, first on PATH, so no case here can reach a real controller.
 ##
 ## These cases feed DELIBERATELY malformed onion addresses to a DELETE command.
 ## They pass today because validate_onion rejects them before any controller is
 ## contacted -- but the regression they exist to catch is validate_onion
-## ACCEPTING one. On that day the command would proceed to DEL_ONION, and with
-## TOR_CONTROL_HOST/PORT inherited (or tor-ctrl's own auto-discovery finding a
-## running system tor) it could delete a real onion service. An offline test must
-## not be one regression away from mutating a live controller.
-isolated_port=1
+## ACCEPTING one, and then the command proceeds to DEL_ONION.
+##
+## Pointing '-s' at a closed port does NOT isolate that: tor-ctrl documents the
+## fallback itself -- "if fails use environment variables ... if fails search for
+## socket on tor configuration files ... if it also fails, try 127.0.0.1:9051".
+## A refused connection is therefore an INVITATION to go find a real controller,
+## the opposite of the guarantee wanted here. Clearing TOR_CONTROL_* only removes
+## the first fallback, not the last two.
+##
+## tor-ctrl-onion reaches tor-ctrl through PATH, so a stub in front of it is
+## total: the real binary is never executed by this case, whatever validation
+## does. tor-ctrl itself is still exercised directly, by absolute path, for its
+## own -V and -h cases.
+stub_dir="$(mktemp --directory)"
+cleanup_stub() {
+   safe-rm --recursive --force -- "${stub_dir}"
+}
+trap cleanup_stub EXIT
+
+cat > "${stub_dir}/tor-ctrl" <<'STUB'
+#!/bin/bash
+## Refuses instead of connecting. If a case ever reaches this, the subject tried
+## to talk to a controller when it should have rejected its input first.
+printf '%s\n' "tor-ctrl-tests stub: refused to contact a controller: $*" >&2
+exit 1
+STUB
+chmod 0755 -- "${stub_dir}/tor-ctrl"
+PATH="${stub_dir}:${PATH}"
+export PATH
+
 run_subject() {
    last_status=0
    last_output="$( env --unset=TOR_CONTROL_HOST --unset=TOR_CONTROL_PORT "$@" 2>&1 )" || last_status=$?
@@ -132,20 +157,20 @@ fi
 expect "tor-ctrl-onion -o with no value" 1 "requires an argument" \
    "${bin_dir}/tor-ctrl-onion" -o
 expect "tor-ctrl-onion -o followed by an option" 1 "requires an argument" \
-   "${bin_dir}/tor-ctrl-onion" -s "${isolated_port}" -o -D
+   "${bin_dir}/tor-ctrl-onion" -o -D
 
 ## validate_onion runs before any controller contact, so these are offline.
 ## Wrong LENGTH.
 expect "onion address too short" 1 "is invalid" \
-   "${bin_dir}/tor-ctrl-onion" -s "${isolated_port}" -D -o notavalidonionaddress
+   "${bin_dir}/tor-ctrl-onion" -D -o notavalidonionaddress
 
 ## Right length, but a character outside the base32 lower-case alphabet. '1' and
 ## '8' are not in [a-z2-7], and an upper-case letter is not either -- a check that
 ## only counted characters would pass all three.
 expect "onion address with a non-base32 digit" 1 "is invalid" \
-   "${bin_dir}/tor-ctrl-onion" -s "${isolated_port}" -D -o "1111111111111111111111111111111111111111111111111111111a"
+   "${bin_dir}/tor-ctrl-onion" -D -o "1111111111111111111111111111111111111111111111111111111a"
 expect "onion address with an upper-case letter" 1 "is invalid" \
-   "${bin_dir}/tor-ctrl-onion" -s "${isolated_port}" -D -o "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaA"
+   "${bin_dir}/tor-ctrl-onion" -D -o "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaA"
 
 printf '%s\n' "" "${checks} checks, ${failures} failed"
 [ "${failures}" -eq 0 ]
