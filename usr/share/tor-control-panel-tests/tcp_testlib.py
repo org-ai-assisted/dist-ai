@@ -217,6 +217,7 @@ def no_modal():
         'mbox_question': QMessageBox.question,
         'mbox_information': QMessageBox.information,
         'mbox_warning': QMessageBox.warning,
+        'mbox_critical': QMessageBox.critical,
         ## TorBootstrap inherits start() from QThread (not in its own __dict__);
         ## record that so the finally clause removes our override instead of
         ## re-assigning the inherited C++ slot (which corrupts it).
@@ -231,6 +232,10 @@ def no_modal():
     QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.No)
     QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
     QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)
+    ## critical() too: an error path is exactly what a handler under test hits
+    ## (e.g. no privilege escalation method available), and without this the
+    ## suite HANGS in a real modal loop rather than failing.
+    QMessageBox.critical = staticmethod(lambda *a, **k: QMessageBox.Ok)
     ## A handler under test (e.g. Accept -> set_torrc -> restart_tor) may start a
     ## real TorBootstrap QThread, whose run() imports stem and talks to a control
     ## socket. Make .start() a no-op so widget tests neither depend on stem nor
@@ -246,6 +251,7 @@ def no_modal():
         QMessageBox.question = saved['mbox_question']
         QMessageBox.information = saved['mbox_information']
         QMessageBox.warning = saved['mbox_warning']
+        QMessageBox.critical = saved['mbox_critical']
         if not saved['bootstrap_start_own']:
             del tor_bootstrap.TorBootstrap.start
         ## (if it had ever defined its own start(), it still does -- unchanged)
