@@ -324,7 +324,23 @@ check_shellcheck() {
 
    for script in "${@}"; do
       rc=0
-      shellcheck --external-sources --enable="${shellcheck_optional_checks}" -- "${script}" || rc=$?
+      ## '--source-path=SCRIPTDIR' because shellcheck otherwise resolves a
+      ## '# shellcheck source=' path relative to the CURRENT WORKING DIRECTORY,
+      ## not to the script's own directory. Every such directive in these repos
+      ## is written script-relative -- helper-scripts' usr/bin/gpg-dearmor has
+      ## 'source=../libexec/helper-scripts/has.sh', correct from usr/bin/ -- so
+      ## running the gate from the repo root made them all resolve OUTSIDE the
+      ## repo and report SC1091 "does not exist". Every SC2154 followed from
+      ## that: with the sourced file unread, the variables it defines look
+      ## unassigned.
+      ##
+      ## Measured before landing, because this changes the gate for every repo:
+      ##   helper-scripts  155 bash files, 80 fail -> 46 fail  (34 fixed)
+      ##   6 other packages, 67 files            no change at all
+      ## It fixes files or leaves them alone; on that sample it made nothing
+      ## worse. Regression test: tests/shellcheck-source-path-test.sh
+      shellcheck --external-sources --source-path=SCRIPTDIR \
+         --enable="${shellcheck_optional_checks}" -- "${script}" || rc=$?
       if [ "${rc}" -ne 0 ]; then
          fail "shellcheck" "'${script}'"
       fi
