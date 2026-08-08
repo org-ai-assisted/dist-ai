@@ -121,9 +121,11 @@ fi
 for required in \
    'insmod serial' \
    'set dm_smbios_vendor=' \
+   'set dm_smbios_serial_index=0' \
    'set dm_smbios_oem=' \
    'set dm_smbios_extra=' \
    'smbios --type 1 --get-string 4 --set dm_smbios_vendor' \
+   'smbios --type 1 --get-byte 7 --set dm_smbios_serial_index' \
    'smbios --type 1 --get-string 7 --set dm_smbios_oem' \
    'serial --unit=0' \
    'terminal_output serial' \
@@ -172,6 +174,8 @@ assert_gate_structure() {
    local vendor_index=-1
    local gate_index=-1
    local gate_close_index=-1
+   local index_guard_index=-1
+   local index_probe_index=-1
    local -a read_indexes=()
 
    mapfile -t block < <(extract_block "${path}")
@@ -186,6 +190,12 @@ assert_gate_structure() {
                gate_index="${index}"
                depth=1
             fi
+            ;;
+         'smbios --type 1 --get-byte 7 --set dm_smbios_serial_index')
+            [ "${index_probe_index}" -ge 0 ] || index_probe_index="${index}"
+            ;;
+         'if [ "${dm_smbios_serial_index}" != "0" ]; then')
+            [ "${index_guard_index}" -ge 0 ] || index_guard_index="${index}"
             ;;
          'smbios --type 1 --get-string 7 --set dm_smbios_oem')
             ## EVERY read, not just the first: keeping only the first means a SECOND read
@@ -248,6 +258,29 @@ assert_gate_structure() {
    else
       check_fail "${name}: serial number is read OUTSIDE the QEMU gate in ${path}" \
          "gate spans block lines $(( gate_index + 1 ))..$(( gate_close_index + 1 )); read(s) outside at:${outside}"
+   fi
+
+   ## Offset 7 is a string INDEX and 0 means "no string", so an unguarded --get-string 7
+   ## makes GRUB print an error on EVERY non-injected boot. The index probe must come
+   ## first, its guard next, and the string read after both.
+   if [ "${index_probe_index}" -lt 0 ]; then
+      check_fail "${name}: serial-index probe (--get-byte 7) MISSING in ${path}"
+   elif [ "${index_guard_index}" -lt 0 ]; then
+      check_fail "${name}: serial-index guard 'if [ \"\${dm_smbios_serial_index}\" != \"0\" ]' MISSING in ${path}"
+   elif [ "${index_probe_index}" -ge "${index_guard_index}" ]; then
+      check_fail "${name}: serial-index probe does not precede its guard in ${path}" \
+         "probe at block line $(( index_probe_index + 1 )), guard at $(( index_guard_index + 1 ))"
+   else
+      local before_guard=''
+      for read_index in "${read_indexes[@]}"; do
+         [ "${read_index}" -gt "${index_guard_index}" ] || before_guard="${before_guard} $(( read_index + 1 ))"
+      done
+      if [ -z "${before_guard}" ]; then
+         check_pass "${name}: serial string is read only behind the index guard"
+      else
+         check_fail "${name}: serial string is read WITHOUT the index guard in ${path}" \
+            "guard at block line $(( index_guard_index + 1 )); read(s) before it at:${before_guard}"
+      fi
    fi
 }
 
