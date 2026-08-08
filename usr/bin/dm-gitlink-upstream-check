@@ -78,6 +78,10 @@ repo_root='.'
 ## the network one without touching the evaluator.
 STATUS_FN='upstream_status'
 
+## Same, for the merge-base lookup: it lets the self-test drive the deviation
+## evaluator without a fetch.
+MERGE_BASE_FN='parent_merge_base'
+
 ## Canonical derivative-maker, the merge target this fork's master must stay
 ## gitlink-identical to. Overridden by --parent-upstream, which is what the
 ## self-test points at a local fixture instead of the network.
@@ -315,16 +319,26 @@ parent_deviations() {
   ## Emit "path<TAB>base_sha<TAB>head_sha" for every gitlink this checkout moves
   ## relative to ${1}, the merge base. Either side being mode 160000 counts, so
   ## an added or removed submodule is caught as well as a moved pointer.
+  ## Returns 1 if the diff itself fails.
   local base="$1"
+  local raw
   local oldmode newmode oldsha newsha status path
-  ## --no-abbrev: the reported SHAs are meant to be pasted into a git command,
-  ## and --raw abbreviates them to 7 characters by default.
+  ## The diff is captured, not consumed through a process substitution: a
+  ## failing git there exits into a subshell whose status the loop never sees,
+  ## so a corrupt or unreadable repository would read as 'no deviations'.
+  ## --no-abbrev: the reported SHAs are meant to be pasted into a git command.
+  ## --no-renames: rename detection is on by default for this porcelain, and a
+  ## renamed submodule then emits TWO tab-separated paths in one record, which
+  ## shifts every following field. Delete-plus-add reports both ends correctly.
+  if ! raw="$(git -C "${repo_root}" diff --raw --no-abbrev --no-renames "${base}" HEAD)"; then
+    return 1
+  fi
   while read -r oldmode newmode oldsha newsha status path; do
     if [ "${oldmode#:}" != '160000' ] && [ "${newmode}" != '160000' ]; then
       continue
     fi
     printf '%s\n' "${path}${TAB}${oldsha}${TAB}${newsha}"
-  done < <(git -C "${repo_root}" diff --raw --no-abbrev "${base}" HEAD)
+  done <<< "${raw}"
 }
 
 
@@ -338,10 +352,19 @@ check_parent_deviation() {
   fi
 
   local base
-  if ! base="$(parent_merge_base)"; then
+  if ! base="$("${MERGE_BASE_FN}")"; then
     printf '%s\n' \
       "::warning::could not reach ${parent_upstream_url}; no-deviation check not run" >&2
     return 0
+  fi
+
+  ## Same reason as in parent_deviations: a failure here must not arrive as an
+  ## empty result set, which would print PASSED.
+  local raw
+  if ! raw="$(parent_deviations "${base}")"; then
+    printf '%s\n' \
+      "::error::could not diff ${repo_root} against merge base ${base}" >&2
+    return 2
   fi
 
   local path base_sha head_sha
@@ -351,7 +374,7 @@ check_parent_deviation() {
       continue
     fi
     deviations+=("${path}: ${base_sha} (merge base) -> ${head_sha} (this branch)")
-  done < <(parent_deviations "${base}")
+  done <<< "${raw}"
 
   local entry
   if (( ${#deviations[@]} > 0 )); then
@@ -376,7 +399,7 @@ check_parent_deviation() {
 
 parent_check_applies() {
   ## Decide whether the no-deviation check runs against this checkout.
-  local branch
+  local branch head ref candidate
   case "${parent_check}" in
     never)
       return 1
@@ -385,12 +408,26 @@ parent_check_applies() {
       return 0
       ;;
     *)
-      true "INFO: auto mode; the branch decides"
+      true "INFO: auto mode; the checkout decides"
       ;;
   esac
   branch="$(git -C "${repo_root}" branch --show-current)"
   if [ "${branch}" = "${PARENT_CHECK_BRANCH}" ]; then
     return 0
+  fi
+  ## A detached HEAD is not evidence that this is not master: a tag build or a
+  ## workflow_dispatch can check the master commit out detached, and skipping
+  ## there would silently drop the check on the very branch it guards. Treat a
+  ## detached HEAD that IS the master commit as master.
+  if [ -z "${branch}" ]; then
+    head="$(git -C "${repo_root}" rev-parse HEAD)"
+    for ref in "refs/heads/${PARENT_CHECK_BRANCH}" \
+               "refs/remotes/origin/${PARENT_CHECK_BRANCH}"; do
+      candidate="$(git -C "${repo_root}" rev-parse --verify --quiet "${ref}")" || continue
+      if [ "${candidate}" = "${head}" ]; then
+        return 0
+      fi
+    done
   fi
   printf '%s\n' \
     "SKIPPED: no-deviation check applies to ${PARENT_CHECK_BRANCH} only (on ${branch:-a detached HEAD})."
@@ -611,11 +648,73 @@ parent_self_test() {
     fails=$(( fails + 1 ))
   fi
 
+  ## Case G: a failing diff must be a loud setup error, never an empty result
+  ## set that prints PASSED.
+  _parent_self_test_bogus_base() {
+    printf '%s\n' '0000000000000000000000000000000000000000'
+  }
+  MERGE_BASE_FN='_parent_self_test_bogus_base'
+  rc=0
+  out="$(check_parent_deviation 2>&1)" || rc=$?
+  if (( rc != 2 )); then
+    printf '%s\n' \
+      "parent self-test FAIL: unusable merge base returned ${rc}, expected 2; got:" \
+      "${out}" >&2
+    fails=$(( fails + 1 ))
+  fi
+  MERGE_BASE_FN='parent_merge_base'
+
+  ## Case H: a detached HEAD sitting on the master commit is still master, and
+  ## must not silently skip the check.
+  repo_root="${tmp}/fork"
+  fixture_git -C "${tmp}/fork" checkout --quiet --detach master
+  rc=0
+  parent_check_applies >/dev/null 2>&1 || rc=$?
+  if (( rc != 0 )); then
+    printf '%s\n' 'parent self-test FAIL: detached HEAD on the master commit was skipped' >&2
+    fails=$(( fails + 1 ))
+  fi
+
+  ## Case I: a submodule relocated WITHOUT bumping its pin. git rename-detects
+  ## a gitlink whose SHA is unchanged (R100, two paths in one record), which
+  ## shifts every field after it, so both ends must come back named and intact.
+  ## The pin must stay at the merge-base SHA or there is no exact match and the
+  ## rename path is never taken -- the case would then prove nothing.
+  local zero='0000000000000000000000000000000000000000'
+  fixture_git -C "${tmp}/fork" checkout --quiet master
+  fixture_git -C "${tmp}/fork" update-index --force-remove sub
+  fixture_git -C "${tmp}/fork" update-index --add --cacheinfo "160000,${sha_base},sub-moved"
+  fixture_git -C "${tmp}/fork" commit --quiet --message 'fork moves the submodule path'
+  rc=0
+  out="$(check_parent_deviation 2>&1)" || rc=$?
+  if (( rc != 1 )); then
+    printf '%s\n' "parent self-test FAIL: moved submodule returned ${rc}, expected 1" >&2
+    fails=$(( fails + 1 ))
+  fi
+  case "${out}" in
+    *"[FAIL] sub: ${sha_base} (merge base) -> ${zero} (this branch)"*)
+      true "INFO: the vacated path was reported intact"
+      ;;
+    *)
+      printf '%s\n' 'parent self-test FAIL: vacated submodule path garbled; got:' "${out}" >&2
+      fails=$(( fails + 1 ))
+      ;;
+  esac
+  case "${out}" in
+    *"[FAIL] sub-moved: ${zero} (merge base) -> ${sha_base} (this branch)"*)
+      true "INFO: the new path was reported intact"
+      ;;
+    *)
+      printf '%s\n' 'parent self-test FAIL: new submodule path garbled; got:' "${out}" >&2
+      fails=$(( fails + 1 ))
+      ;;
+  esac
+
   if (( fails > 0 )); then
     printf '%s\n' "parent self-test: ${fails} assertion(s) FAILED" >&2
     return 1
   fi
-  printf '%s\n' 'parent self-test: PASSED (6 cases)'
+  printf '%s\n' 'parent self-test: PASSED (9 cases)'
   return 0
 }
 
