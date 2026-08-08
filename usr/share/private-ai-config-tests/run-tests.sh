@@ -70,6 +70,7 @@ core_tests=(
    'tests/sandbox-transfer-perms-test.sh'
    'tests/sandbox-confine-profile-test.sh'
    'tests/sandbox-confine-wiring-test.sh'
+   'tests/sandbox-provision-guard-shim-test.sh'
    'tests/ai-review-default-set-test.sh'
    'tests/ai-review-guidance-test.sh'
    'tests/ai-review-pending-todo-test.sh'
