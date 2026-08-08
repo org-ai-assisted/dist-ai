@@ -334,6 +334,24 @@ class ParseTorrcTest(unittest.TestCase):
             torrc.unlink()
             self.assertEqual(torrc_gen.read_custom_bridge_lines(str(torrc)), [])
 
+    def test_readers_tolerate_invalid_utf8(self):
+        """A torrc byte sequence that is not valid UTF-8 must not raise.
+
+        Both readers used strict decoding, so a single stray byte in a file
+        that other tools and humans also edit raised UnicodeDecodeError out of
+        a reader the GUI calls on every refresh. The fuzz harness could not
+        reach this: it wrote a decoded string back out, which is always valid
+        UTF-8.
+        """
+        with T.sandbox() as torrc:
+            torrc.write_bytes(
+                b'DisableNetwork 0\n# Custom\nBridge obfs4 \xff\xfe bad\n')
+            parsed = torrc_gen.parse_torrc()
+            self.assertIsInstance(parsed, (dict, tuple, list))
+            lines = torrc_gen.read_custom_bridge_lines(str(torrc))
+            self.assertIsInstance(lines, list)
+            self.assertTrue(all(isinstance(item, str) for item in lines))
+
     def test_a1_custom_bridges_survive_reconfigure(self):
         """Reproduce the data-loss path: custom bridges, then add a proxy.
 

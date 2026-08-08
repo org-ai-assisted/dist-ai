@@ -58,5 +58,35 @@ class AcwCancelCrashTest(unittest.TestCase):
                 self.fail(f"cancel_button_clicked() crashed on a fresh wizard: {exc}")
 
 
+class AcwCustomBridgesStateTest(unittest.TestCase):
+    """The bridges page must validate the editor's CURRENT text.
+
+    check_valid_custom_bridges() read Common.custom_bridges, and nextId() only
+    refreshed that when the editor was non-empty. Clearing the editor therefore
+    left the previous value in Common: validation passed and write_torrc wrote
+    the stale bridges the user had just deleted.
+    """
+
+    BRIDGE = 'obfs4 192.0.2.1:443 CDF2E852BF539B82BD10E27E9115A31734E378C2'
+
+    def _page(self):
+        wizard = acw.AnonConnectionWizard()
+        self.addCleanup(wizard.deleteLater)
+        return wizard.bridge_wizard_page
+
+    def test_cleared_editor_is_not_valid(self):
+        with T.sandbox(), T.no_modal():
+            page = self._page()
+            page.custom_bridges.setPlainText(self.BRIDGE)
+            self.assertTrue(page.check_valid_custom_bridges())
+
+            ## The user deletes what they typed.
+            page.custom_bridges.setPlainText('')
+            self.assertFalse(
+                page.check_valid_custom_bridges(),
+                'cleared custom-bridge editor still validated as valid, so a '
+                'stale value would be written to the torrc')
+
+
 if __name__ == '__main__':
     unittest.main()
