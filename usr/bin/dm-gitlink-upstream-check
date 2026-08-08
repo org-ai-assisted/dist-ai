@@ -5,10 +5,16 @@
 
 ## AI-Assisted
 
-## Fail if any derivative-maker parent submodule gitlink points to a commit NOT
-## reachable on the submodule's canonical upstream (Kicksecure / Whonix) master.
+## Enforce two independent gitlink invariants on derivative-maker master:
 ##
-##   dm-gitlink-upstream-check [--repo-root DIR] [--self-test]
+##   1. RESOLVABLE   -- every submodule gitlink points to a commit reachable on
+##                      that submodule's canonical upstream (Kicksecure /
+##                      Whonix) master.
+##   2. NO-DEVIATION -- master moves no gitlink at all relative to its merge
+##                      base with the parent upstream, Kicksecure/derivative-
+##                      maker master.
+##
+##   dm-gitlink-upstream-check [--repo-root DIR] [--parent-check MODE] [--self-test]
 ##
 ## Why this lives as a CI check, not a git hook: a fork-only gitlink bump
 ## reaches derivative-maker master through a GitHub PR MERGE -- a server-side
@@ -24,9 +30,27 @@
 ## commit (rare; races a just-merged pin) shows 'ahead' and is reported, not
 ## silently passed.
 ##
+## Resolvable is strictly WEAKER than no-deviation, and the gap is not academic:
+## a pointer that is merely BEHIND the submodule's upstream tip passes check 1
+## while still failing check 2. Merging such a master upstream conflicts on the
+## submodule for anyone who has not checked it out -- git needs the submodule's
+## own objects to decide which side's pointer wins, and without them it stops at
+## 'Failed to merge submodule <path> (not checked out)'. A maintainer's clone is
+## exactly that state, so the invariant that matters for an upstream merge is
+## no-deviation, not resolvability.
+##
+## Check 2 runs only on a master checkout by default (--parent-check auto): the
+## 'ai' branch legitimately carries as-yet-unmerged pins for CI testing and must
+## not be flagged.
+##
 ## derivative-maker's CI checks out dist-ai beside its workspace and calls this
 ## as dist-ai/usr/bin/dm-gitlink-upstream-check --repo-root . (mirrors dm-boot-
-## test). '--self-test' is the offline regression test for the evaluator.
+## test). '--self-test' is the offline regression test for both evaluators.
+##
+## style-ok: no-has -- this runs in a bare Debian CI container (git,
+## ca-certificates, curl, python3), where helper-scripts is not installed and
+## 'has' therefore does not exist. 'command -v' is the only probe available.
+## style-ok: no-safe-rm -- same container: safe-rm is a workstation helper.
 
 set -o errexit
 set -o nounset
@@ -42,6 +66,10 @@ shopt -s shift_verbose
 ## Upstream branch every Kicksecure / Whonix submodule uses as its default.
 readonly UPSTREAM_BASE='master'
 
+## Field separator of the records passed from the enumerators to the evaluators.
+## printf format strings stay fixed (R-030), so the tab travels as data.
+readonly TAB=$'\t'
+
 ## The derivative-maker checkout whose gitlinks are checked. Overridden by
 ## --repo-root; defaults to the current directory.
 repo_root='.'
@@ -50,16 +78,39 @@ repo_root='.'
 ## the network one without touching the evaluator.
 STATUS_FN='upstream_status'
 
+## Canonical derivative-maker, the merge target this fork's master must stay
+## gitlink-identical to. Overridden by --parent-upstream, which is what the
+## self-test points at a local fixture instead of the network.
+parent_upstream_url='https://github.com/Kicksecure/derivative-maker.git'
+
+## Branch on the parent upstream that master is compared against.
+parent_upstream_branch='master'
+
+## Branch whose checkout the no-deviation check applies to under 'auto'.
+readonly PARENT_CHECK_BRANCH='master'
+
+## auto   run the no-deviation check only on a PARENT_CHECK_BRANCH checkout
+## always run it whatever branch is checked out
+## never  skip it
+parent_check='auto'
+
+## Fixture directory of the running parent self-test, for its cleanup trap.
+parent_self_test_tmp=''
+
 
 usage() {
   printf '%s\n' \
-    'Usage: dm-gitlink-upstream-check [--repo-root DIR] [--self-test]' \
+    'Usage: dm-gitlink-upstream-check [--repo-root DIR] [--parent-check MODE]' \
+    '                                 [--parent-upstream URL] [--self-test]' \
     '' \
-    '  --repo-root DIR  derivative-maker checkout to inspect (default: .)' \
-    '  --self-test      run the offline evaluator regression test and exit' \
+    '  --repo-root DIR      derivative-maker checkout to inspect (default: .)' \
+    '  --parent-check MODE  no-deviation check: auto (default, master only),' \
+    '                       always, or never' \
+    '  --parent-upstream U  parent upstream repo URL to compare against' \
+    '  --self-test          run the offline regression tests and exit' \
     '' \
-    'Exit: 0 all gitlinks reachable on upstream master; 1 at least one is not;' \
-    '2 usage / setup error.'
+    'Exit: 0 both invariants hold; 1 at least one gitlink is unresolvable or' \
+    'deviates from the parent upstream merge base; 2 usage / setup error.'
 }
 
 
@@ -121,7 +172,7 @@ upstream_status() {
   local owner="$1" repo="$2" sha="$3"
   local json
   if ! json="$(github_get "/repos/${owner}/${repo}/compare/${UPSTREAM_BASE}...${sha}")"; then
-    printf 'error\n'
+    printf '%s\n' 'error'
     return 0
   fi
   printf '%s' "${json}" | classify_compare
@@ -158,7 +209,7 @@ enumerate_gitlinks() {
     if [ "${mode}" != '160000' ] || [ -z "${sha}" ]; then
       continue
     fi
-    printf '%s\t%s\t%s\t%s\n' "${path}" "${owner}" "${repo}" "${sha}"
+    printf '%s\n' "${path}${TAB}${owner}${TAB}${repo}${TAB}${sha}"
   done < <(git config --file "${modules}" --get-regexp '^submodule\..*\.path$')
 }
 
@@ -170,7 +221,7 @@ evaluate() {
   local path owner repo sha verdict
   local -a bad=() errored=()
   local count=0
-  while IFS=$'\t' read -r path owner repo sha; do
+  while IFS="${TAB}" read -r path owner repo sha; do
     if [ -z "${path}" ]; then
       continue
     fi
@@ -178,7 +229,7 @@ evaluate() {
     verdict="$("${STATUS_FN}" "${owner}" "${repo}" "${sha}")"
     case "${verdict}" in
       resolvable)
-        :
+        true "INFO: ${path} pin is reachable upstream; nothing to report"
         ;;
       not-resolvable)
         bad+=("${path} @ ${sha} -- upstream ${owner}/${repo}")
@@ -191,16 +242,18 @@ evaluate() {
 
   local entry
   if (( ${#errored[@]} > 0 )); then
-    printf '::warning::%s\n' 'could not verify some gitlinks (network / rate limit); not failing on these' >&2
+    printf '%s\n' \
+      '::warning::could not verify some gitlinks (network / rate limit); not failing on these' >&2
     for entry in "${errored[@]}"; do
-      printf '  [warn] %s\n' "${entry}" >&2
+      printf '%s\n' "  [warn] ${entry}" >&2
     done
   fi
 
   if (( ${#bad[@]} > 0 )); then
-    printf '::error::%s\n' 'submodule gitlink(s) NOT reachable on upstream master (fork-only pin on master):' >&2
+    printf '%s\n' \
+      '::error::submodule gitlink(s) NOT reachable on upstream master (fork-only pin on master):' >&2
     for entry in "${bad[@]}"; do
-      printf '  [FAIL] %s\n' "${entry}" >&2
+      printf '%s\n' "  [FAIL] ${entry}" >&2
     done
     printf '%s\n' \
       'A gitlink on master must point to a commit that exists on the submodule' \
@@ -209,8 +262,139 @@ evaluate() {
     return 1
   fi
 
-  printf 'PASSED: %d gitlink(s) reachable on upstream master.\n' "${count}"
+  printf '%s\n' "PASSED: ${count} gitlink(s) reachable on upstream master."
   return 0
+}
+
+
+deepen_history() {
+  ## merge-base needs this checkout's history back to the fork point. A shallow
+  ## clone (actions/checkout's default depth 1) has none of it, and only the
+  ## repo's OWN origin carries the fork-only commits, so upstream cannot supply
+  ## them. Returns 2 when the history is unobtainable: a setup error is loud and
+  ## deterministic, unlike a network warning, and must not read as a pass.
+  local shallow
+  shallow="$(git -C "${repo_root}" rev-parse --is-shallow-repository)"
+  if [ "${shallow}" != 'true' ]; then
+    return 0
+  fi
+  if ! git -C "${repo_root}" remote get-url origin >/dev/null 2>&1; then
+    printf '%s\n' \
+      '::error::shallow checkout with no origin remote to deepen from; cannot compute the merge base' >&2
+    return 2
+  fi
+  if ! git -C "${repo_root}" fetch --quiet --no-tags --filter=blob:none --unshallow origin; then
+    printf '%s\n' '::error::could not deepen the shallow checkout from origin' >&2
+    return 2
+  fi
+  return 0
+}
+
+
+parent_merge_base() {
+  ## Print the merge base of the parent upstream branch and this checkout's
+  ## HEAD. --filter=blob:none keeps the fetch to commits and trees; gitlink
+  ## entries live in trees, so no blob is ever needed. Returns 1 when the base
+  ## cannot be determined (network, or unrelated histories).
+  local base
+  if ! git -C "${repo_root}" fetch --quiet --no-tags --filter=blob:none \
+       -- "${parent_upstream_url}" "${parent_upstream_branch}"; then
+    return 1
+  fi
+  if ! base="$(git -C "${repo_root}" merge-base FETCH_HEAD HEAD)"; then
+    return 1
+  fi
+  if [ -z "${base}" ]; then
+    return 1
+  fi
+  printf '%s\n' "${base}"
+}
+
+
+parent_deviations() {
+  ## Emit "path<TAB>base_sha<TAB>head_sha" for every gitlink this checkout moves
+  ## relative to ${1}, the merge base. Either side being mode 160000 counts, so
+  ## an added or removed submodule is caught as well as a moved pointer.
+  local base="$1"
+  local oldmode newmode oldsha newsha status path
+  ## --no-abbrev: the reported SHAs are meant to be pasted into a git command,
+  ## and --raw abbreviates them to 7 characters by default.
+  while read -r oldmode newmode oldsha newsha status path; do
+    if [ "${oldmode#:}" != '160000' ] && [ "${newmode}" != '160000' ]; then
+      continue
+    fi
+    printf '%s\n' "${path}${TAB}${oldsha}${TAB}${newsha}"
+  done < <(git -C "${repo_root}" diff --raw --no-abbrev "${base}" HEAD)
+}
+
+
+check_parent_deviation() {
+  ## Fail iff this checkout moves any gitlink relative to its merge base with
+  ## the parent upstream. Returns 0 clean, 1 deviating, 2 setup error.
+  local rc=0
+  deepen_history || rc=$?
+  if (( rc != 0 )); then
+    return "${rc}"
+  fi
+
+  local base
+  if ! base="$(parent_merge_base)"; then
+    printf '%s\n' \
+      "::warning::could not reach ${parent_upstream_url}; no-deviation check not run" >&2
+    return 0
+  fi
+
+  local path base_sha head_sha
+  local -a deviations=()
+  while IFS="${TAB}" read -r path base_sha head_sha; do
+    if [ -z "${path}" ]; then
+      continue
+    fi
+    deviations+=("${path}: ${base_sha} (merge base) -> ${head_sha} (this branch)")
+  done < <(parent_deviations "${base}")
+
+  local entry
+  if (( ${#deviations[@]} > 0 )); then
+    printf '%s\n' \
+      '::error::submodule gitlink(s) deviate from the parent upstream merge base:' >&2
+    for entry in "${deviations[@]}"; do
+      printf '%s\n' "  [FAIL] ${entry}" >&2
+    done
+    printf '%s\n' \
+      'An upstream merge of this branch then conflicts on the submodule for anyone' \
+      'who has not checked it out: git needs the submodule objects to decide which' \
+      "pointer wins, and a maintainer's clone does not have them. Restore the SHA the" \
+      "merge base records, and carry submodule bumps on the 'ai' branch instead." >&2
+    return 1
+  fi
+
+  printf '%s\n' \
+    "PASSED: no gitlink deviates from ${parent_upstream_url} at merge base ${base:0:9}."
+  return 0
+}
+
+
+parent_check_applies() {
+  ## Decide whether the no-deviation check runs against this checkout.
+  local branch
+  case "${parent_check}" in
+    never)
+      return 1
+      ;;
+    always)
+      return 0
+      ;;
+    *)
+      true "INFO: auto mode; the branch decides"
+      ;;
+  esac
+  branch="$(git -C "${repo_root}" branch --show-current)"
+  if [ "${branch}" = "${PARENT_CHECK_BRANCH}" ]; then
+    return 0
+  fi
+  printf '%s\n' \
+    "SKIPPED: no-deviation check applies to ${PARENT_CHECK_BRANCH} only (on ${branch:-a detached HEAD})."
+  return 1
 }
 
 
@@ -223,13 +407,13 @@ self_test() {
   _self_test_status() {
     case "$3" in
       bad*)
-        printf 'not-resolvable\n'
+        printf '%s\n' 'not-resolvable'
         ;;
       err*)
-        printf 'error\n'
+        printf '%s\n' 'error'
         ;;
       *)
-        printf 'resolvable\n'
+        printf '%s\n' 'resolvable'
         ;;
     esac
   }
@@ -238,45 +422,200 @@ self_test() {
 
   ## Case A: all resolvable -> exit 0.
   rc=0
-  printf 'sub-a\tKicksecure\ta\tgood1\nsub-b\tKicksecure\tb\tgood2\n' \
+  printf '%s\n' \
+    "sub-a${TAB}Kicksecure${TAB}a${TAB}good1" \
+    "sub-b${TAB}Kicksecure${TAB}b${TAB}good2" \
     | evaluate >/dev/null 2>&1 || rc=$?
   if (( rc != 0 )); then
-    printf 'self-test FAIL: all-resolvable set returned %d, expected 0\n' "${rc}" >&2
+    printf '%s\n' "self-test FAIL: all-resolvable set returned ${rc}, expected 0" >&2
     fails=$(( fails + 1 ))
   fi
 
   ## Case B: one fork-only pin -> exit 1, and it is named.
   rc=0
-  out="$(printf 'sub-a\tKicksecure\ta\tgood1\nsub-b\tWhonix\tb\tbad9\n' \
+  out="$(printf '%s\n' \
+    "sub-a${TAB}Kicksecure${TAB}a${TAB}good1" \
+    "sub-b${TAB}Whonix${TAB}b${TAB}bad9" \
     | evaluate 2>&1)" || rc=$?
   if (( rc != 1 )); then
-    printf 'self-test FAIL: fork-only set returned %d, expected 1\n' "${rc}" >&2
+    printf '%s\n' "self-test FAIL: fork-only set returned ${rc}, expected 1" >&2
     fails=$(( fails + 1 ))
   fi
   case "${out}" in
     *'sub-b @ bad9'*)
-      :
+      true "INFO: the fork-only pin was named, as required"
       ;;
     *)
-      printf 'self-test FAIL: fork-only pin not reported in output\n' >&2
+      printf '%s\n' 'self-test FAIL: fork-only pin not reported in output' >&2
       fails=$(( fails + 1 ))
       ;;
   esac
 
   ## Case C: an errored pin only (no fork-only) -> exit 0 (errors do not fail).
   rc=0
-  printf 'sub-a\tKicksecure\ta\tgood1\nsub-c\tKicksecure\tc\terr7\n' \
+  printf '%s\n' \
+    "sub-a${TAB}Kicksecure${TAB}a${TAB}good1" \
+    "sub-c${TAB}Kicksecure${TAB}c${TAB}err7" \
     | evaluate >/dev/null 2>&1 || rc=$?
   if (( rc != 0 )); then
-    printf 'self-test FAIL: error-only set returned %d, expected 0\n' "${rc}" >&2
+    printf '%s\n' "self-test FAIL: error-only set returned ${rc}, expected 0" >&2
     fails=$(( fails + 1 ))
   fi
 
   if (( fails > 0 )); then
-    printf 'self-test: %d assertion(s) FAILED\n' "${fails}" >&2
+    printf '%s\n' "self-test: ${fails} assertion(s) FAILED" >&2
     return 1
   fi
-  printf 'self-test: PASSED (3 cases)\n'
+  printf '%s\n' 'self-test: PASSED (3 cases)'
+  return 0
+}
+
+
+fixture_git() {
+  ## git inside a self-test fixture: never the operator's hooks (the fixture is
+  ## not testing them) and never their identity.
+  git -c core.hooksPath=/dev/null \
+      -c user.name='dist-ai self-test' \
+      -c user.email='self-test@example.com' \
+      -c commit.gpgsign=false \
+      -c init.defaultBranch=master \
+      -c advice.detachedHead=false \
+      "$@"
+}
+
+
+fixture_pin() {
+  ## Record a gitlink at ${2} for path 'sub' in the repo at ${1} and commit it.
+  ## A gitlink is just a tree entry, so the pointed-at commit need not exist --
+  ## which is the point: the check must never need the submodule's objects.
+  local repo="$1" sha="$2" message="$3"
+  fixture_git -C "${repo}" update-index --add --cacheinfo "160000,${sha},sub"
+  fixture_git -C "${repo}" commit --quiet --message "${message}"
+}
+
+
+parent_self_test_cleanup() {
+  ## Trap target for parent_self_test's fixtures.
+  if [ -z "${parent_self_test_tmp}" ]; then
+    return 0
+  fi
+  rm --recursive --force -- "${parent_self_test_tmp}"
+  parent_self_test_tmp=''
+}
+
+
+parent_self_test() {
+  ## End-to-end regression test for the no-deviation check, against real git
+  ## fixtures and no network: a fork that moves a gitlink its merge base
+  ## records must FAIL, and one that moves only files must PASS -- even while
+  ## upstream has moved that same gitlink on its side.
+  local tmp fails=0 rc out
+  local sha_base='1111111111111111111111111111111111111111'
+  local sha_upstream='2222222222222222222222222222222222222222'
+  local sha_fork='3333333333333333333333333333333333333333'
+  parent_self_test_tmp="$(mktemp --directory)"
+  tmp="${parent_self_test_tmp}"
+  trap parent_self_test_cleanup RETURN
+
+  ## Upstream: one commit carrying the shared gitlink, then a bump of its own.
+  fixture_git init --quiet "${tmp}/upstream"
+  printf '%s\n' 'shared' > "${tmp}/upstream/file.txt"
+  fixture_git -C "${tmp}/upstream" add file.txt
+  fixture_pin "${tmp}/upstream" "${sha_base}" 'base'
+
+  ## Fork branches here, so this commit is the merge base.
+  fixture_git clone --quiet "${tmp}/upstream" "${tmp}/fork"
+  fixture_pin "${tmp}/upstream" "${sha_upstream}" 'upstream moves the pin'
+
+  repo_root="${tmp}/fork"
+  ## file:// rather than a bare path: a partial fetch registers the URL as a
+  ## promisor remote name, and git warns on every use of one starting with '/'.
+  parent_upstream_url="file://${tmp}/upstream"
+  parent_upstream_branch='master'
+
+  ## Case A: fork changed files only. Upstream moving the pin on its own side
+  ## is theirs-only and merges clean, so this must not be flagged.
+  printf '%s\n' 'fork work' > "${tmp}/fork/file.txt"
+  fixture_git -C "${tmp}/fork" add file.txt
+  fixture_git -C "${tmp}/fork" commit --quiet --message 'fork changes a file'
+  rc=0
+  check_parent_deviation >/dev/null 2>&1 || rc=$?
+  if (( rc != 0 )); then
+    printf '%s\n' "parent self-test FAIL: file-only fork returned ${rc}, expected 0" >&2
+    fails=$(( fails + 1 ))
+  fi
+
+  ## Case B: fork moves the gitlink. This is the defect the check exists for.
+  fixture_pin "${tmp}/fork" "${sha_fork}" 'fork moves the pin'
+  rc=0
+  out="$(check_parent_deviation 2>&1)" || rc=$?
+  if (( rc != 1 )); then
+    printf '%s\n' "parent self-test FAIL: deviating fork returned ${rc}, expected 1" >&2
+    fails=$(( fails + 1 ))
+  fi
+  case "${out}" in
+    *"sub: ${sha_base} (merge base) -> ${sha_fork}"*)
+      true "INFO: the deviation was reported with both SHAs, as required"
+      ;;
+    *)
+      printf '%s\n' \
+        'parent self-test FAIL: deviation not reported with both SHAs; got:' \
+        "${out}" >&2
+      fails=$(( fails + 1 ))
+      ;;
+  esac
+
+  ## Case C: 'never' suppresses the check even on a deviating tree.
+  parent_check='never'
+  rc=0
+  parent_check_applies >/dev/null 2>&1 || rc=$?
+  if (( rc != 1 )); then
+    printf '%s\n' 'parent self-test FAIL: --parent-check never still applied' >&2
+    fails=$(( fails + 1 ))
+  fi
+
+  ## Case D: under 'auto' a non-master checkout is skipped -- the 'ai' branch
+  ## carries deliberate pins and must not be flagged.
+  parent_check='auto'
+  fixture_git -C "${tmp}/fork" checkout --quiet -b ai
+  rc=0
+  parent_check_applies >/dev/null 2>&1 || rc=$?
+  if (( rc != 1 )); then
+    printf '%s\n' 'parent self-test FAIL: auto mode applied on a non-master branch' >&2
+    fails=$(( fails + 1 ))
+  fi
+
+  ## Case E: ... and is applied on master.
+  fixture_git -C "${tmp}/fork" checkout --quiet master
+  rc=0
+  parent_check_applies >/dev/null 2>&1 || rc=$?
+  if (( rc != 0 )); then
+    printf '%s\n' 'parent self-test FAIL: auto mode skipped a master checkout' >&2
+    fails=$(( fails + 1 ))
+  fi
+
+  ## Case F: the CI shape -- a depth-1 clone, whose history does not reach the
+  ## merge base until deepen_history() pulls it back from origin.
+  fixture_git clone --quiet --depth 1 "file://${tmp}/fork" "${tmp}/shallow"
+  if [ "$(fixture_git -C "${tmp}/shallow" rev-parse --is-shallow-repository)" != 'true' ]; then
+    printf '%s\n' 'parent self-test FAIL: fixture clone is not shallow, case F proves nothing' >&2
+    fails=$(( fails + 1 ))
+  fi
+  repo_root="${tmp}/shallow"
+  rc=0
+  out="$(check_parent_deviation 2>&1)" || rc=$?
+  if (( rc != 1 )); then
+    printf '%s\n' \
+      "parent self-test FAIL: shallow deviating clone returned ${rc}, expected 1; got:" \
+      "${out}" >&2
+    fails=$(( fails + 1 ))
+  fi
+
+  if (( fails > 0 )); then
+    printf '%s\n' "parent self-test: ${fails} assertion(s) FAILED" >&2
+    return 1
+  fi
+  printf '%s\n' 'parent self-test: PASSED (6 cases)'
   return 0
 }
 
@@ -287,10 +626,34 @@ main() {
     case "$1" in
       --repo-root)
         if [ "$#" -lt 2 ]; then
-          printf '::error::--repo-root needs an argument\n' >&2
+          printf '%s\n' '::error::--repo-root needs an argument' >&2
           return 2
         fi
         repo_root="$2"
+        shift 2
+        ;;
+      --parent-check)
+        if [ "$#" -lt 2 ]; then
+          printf '%s\n' '::error::--parent-check needs an argument' >&2
+          return 2
+        fi
+        case "$2" in
+          auto|always|never)
+            parent_check="$2"
+            ;;
+          *)
+            printf '%s\n' "::error::--parent-check must be auto, always or never: $2" >&2
+            return 2
+            ;;
+        esac
+        shift 2
+        ;;
+      --parent-upstream)
+        if [ "$#" -lt 2 ]; then
+          printf '%s\n' '::error::--parent-upstream needs an argument' >&2
+          return 2
+        fi
+        parent_upstream_url="$2"
         shift 2
         ;;
       --self-test)
@@ -302,25 +665,40 @@ main() {
         return 0
         ;;
       *)
-        printf '::error::unknown argument: %s\n' "$1" >&2
+        printf '%s\n' "::error::unknown argument: $1" >&2
         usage >&2
         return 2
         ;;
     esac
   done
 
+  local rc=0
   if [ "${self_test_mode}" = 'true' ]; then
-    self_test
-    return
+    ## Both suites run even when the first fails, so one invocation reports
+    ## every broken assertion.
+    self_test || rc=$?
+    parent_self_test || rc=$?
+    return "${rc}"
   fi
 
   if [ ! -f "${repo_root}/.gitmodules" ]; then
-    printf '::error::no .gitmodules under --repo-root %s (not a derivative-maker checkout?)\n' \
-      "${repo_root}" >&2
+    printf '%s\n' \
+      "::error::no .gitmodules under --repo-root ${repo_root} (not a derivative-maker checkout?)" >&2
     return 2
   fi
 
-  enumerate_gitlinks | evaluate
+  enumerate_gitlinks | evaluate || rc=$?
+
+  ## Independent invariants: report both, and let the worse exit code win (2
+  ## setup error over 1 violation) rather than short-circuiting on the first.
+  local parent_rc=0
+  if parent_check_applies; then
+    check_parent_deviation || parent_rc=$?
+  fi
+  if (( parent_rc > rc )); then
+    rc="${parent_rc}"
+  fi
+  return "${rc}"
 }
 
 main "$@"
