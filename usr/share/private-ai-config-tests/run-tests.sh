@@ -89,6 +89,7 @@ core_tests=(
    'tests/qube-ctl-pull-destination-test.sh'
    'tests/safe-systemctl-guard-test.py'
    'tests/safe-systemctl-cross-scope-hint-test.sh'
+   'tests/ensure-cowbuilder-base-test.sh'
    'tests/shell-function-order-test.py'
    'tests/static-review-checkbashisms-target-test.sh'
    'tests/reviewer-guard-precedence-test.sh'
