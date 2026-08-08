@@ -90,6 +90,7 @@ core_tests=(
    'tests/shell-function-order-test.py'
    'tests/static-review-checkbashisms-target-test.sh'
    'tests/reviewer-guard-precedence-test.sh'
+   'tests/claude-rc-session-number-reuse-test.sh'
    'tests/session-inject-hosted-not-ready-defers-test.sh'
    'tests/session-retire-forced-teardown-test.sh'
    'tests/watchdog-retire-marker-test.sh'
