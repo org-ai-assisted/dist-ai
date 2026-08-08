@@ -95,6 +95,7 @@ core_suites=(
    tb-updater-tests
    terminal-poc-corpus-tests
    tor-control-panel-tests
+   tor-ctrl-tests
    unicode-show-tests
    web-analyzer-tests
    website-tests
@@ -406,6 +407,13 @@ wire() {
             )
          fi
          ;;
+      tor-ctrl)
+         ## The case scripts resolve tor-ctrl-onion and tor-ctrl from
+         ## TOR_CTRL_REPO, else the installed package. Unwired, they fall back
+         ## to /usr/bin, which in CI is absent -- and the suite would then SKIP,
+         ## which this runner reports as a non-clean run rather than a pass.
+         wire_env=( "TOR_CTRL_REPO=$( pkg_dir tor-ctrl )" )
+         ;;
       tor-control-panel)
          ## tcp_testlib resolves the package under test from TCP_REPO (the
          ## tor-control-panel checkout root) else the installed package. The
@@ -625,6 +633,9 @@ suite_component() {
          ;;
       tor-control-panel)
          printf '%s' 'tor-control-panel'
+         ;;
+      tor-ctrl)
+         printf '%s' 'tor-ctrl'
          ;;
    esac
 }
