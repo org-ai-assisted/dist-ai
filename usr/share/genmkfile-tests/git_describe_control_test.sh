@@ -93,10 +93,14 @@ gmf-gitdescribe-pkg (1:20250505) unstable; urgency=medium
 
  -- test <test@example.com>  Thu, 01 Jan 1970 00:00:00 +0000
 CHANGELOG
-   printf '3.0 (native)\n' > "${dir}/debian/source/format"
-   printf '#!/usr/bin/make -f\n%%:\n\tdh $@\n' > "${dir}/debian/rules"
+   printf '%s\n' '3.0 (native)' > "${dir}/debian/source/format"
+   cat > "${dir}/debian/rules" <<'RULES'
+#!/usr/bin/make -f
+%:
+	dh $@
+RULES
    chmod +x -- "${dir}/debian/rules"
-   printf '#!/bin/bash\nmake_use_git_describe_for_version=true\n' \
+   printf '%s\n' '#!/bin/bash' 'make_use_git_describe_for_version=true' \
       > "${dir}/make-helper-overrides.bsh"
    chmod +x -- "${dir}/make-helper-overrides.bsh"
 
@@ -104,7 +108,11 @@ CHANGELOG
    git -C "${dir}" config user.email test@example.com
    git -C "${dir}" config user.name test
    git -C "${dir}" add --all
-   git -C "${dir}" commit --quiet --message init
+   ## The fixture is not testing the operator's hooks. Without this the global
+   ## core.hooksPath style gate runs on the throwaway package and rejects it, so
+   ## the suite fails for a reason unrelated to its subject on any machine that
+   ## has those hooks installed.
+   git -C "${dir}" -c core.hooksPath=/dev/null commit --quiet --message init
    fixture_tag="commit_$(git -C "${dir}" rev-parse HEAD)"
    ## Annotated tag (not lightweight): plain `git describe` only sees these.
    git -C "${dir}" tag --annotate --message . -- "${fixture_tag}"
@@ -135,7 +143,7 @@ failures=0
 
 ## 1) deb-cleanup must be routed through make_get_variables, set the deb
 ##    path variables (no "unbound variable"), and exit cleanly.
-printf '\n===== deb-cleanup (flag + debian/control) =====\n'
+printf '%s\n' '' '===== deb-cleanup (flag + debian/control) ====='
 cleanup_out=""
 cleanup_rc=0
 cleanup_out="$(
@@ -144,24 +152,24 @@ cleanup_out="$(
 )" || cleanup_rc=$?
 
 if printf '%s\n' "${cleanup_out}" | grep --quiet 'unbound variable'; then
-   printf 'FAIL: deb-cleanup tripped an "unbound variable" error (regression):\n'
+   printf '%s\n' 'FAIL: deb-cleanup tripped an "unbound variable" error (regression):'
    printf '%s\n' "${cleanup_out}" | grep 'unbound variable'
    failures=$(( failures + 1 ))
 else
-   printf 'PASS: deb-cleanup did not trip an "unbound variable" error\n'
+   printf '%s\n' 'PASS: deb-cleanup did not trip an "unbound variable" error'
 fi
 
 if printf '%s\n' "${cleanup_out}" | grep --quiet 'make_function_run: make_get_variables'; then
-   printf 'PASS: deb-cleanup routed through make_get_variables\n'
+   printf '%s\n' 'PASS: deb-cleanup routed through make_get_variables'
 else
-   printf 'FAIL: deb-cleanup did NOT run make_get_variables\n'
+   printf '%s\n' 'FAIL: deb-cleanup did NOT run make_get_variables'
    failures=$(( failures + 1 ))
 fi
 
 if [ "${cleanup_rc}" -eq 0 ]; then
-   printf 'PASS: deb-cleanup exited 0\n'
+   printf '%s\n' 'PASS: deb-cleanup exited 0'
 else
-   printf 'FAIL: deb-cleanup exited %s (expected 0):\n' "${cleanup_rc}"
+   printf '%s\n' "FAIL: deb-cleanup exited ${cleanup_rc} (expected 0):"
    printf '%s\n' "${cleanup_out}" | tail -20
    failures=$(( failures + 1 ))
 fi
@@ -170,7 +178,7 @@ fi
 ##    commit_<sha> tag), NOT from the changelog version. Otherwise
 ##    git-verify would compare the changelog version against the repo's
 ##    commit_<sha> tag and fail.
-printf '\n===== git-tag-show (version source preserved) =====\n'
+printf '%s\n' '' '===== git-tag-show (version source preserved) ====='
 tag_show_out="$(
    cd "${pkg_dir}"
    DISTDIR="${dist_dir}" "${genmkfile_bin}" git-tag-show 2>/dev/null
@@ -180,17 +188,17 @@ tag_version="$(printf '%s\n' "${tag_show_out}" \
    | grep --extended-regexp '^(commit_[0-9a-f]{40}|1?:?20250505)$' | head -1 || true)"
 
 if [ "${tag_version}" = "${fixture_tag}" ]; then
-   printf 'PASS: git-tag-show reported the git-describe tag (%s)\n' "${tag_version}"
+   printf '%s\n' "PASS: git-tag-show reported the git-describe tag (${tag_version})"
 else
-   printf 'FAIL: git-tag-show reported "%s", expected the git tag "%s"\n' \
-      "${tag_version}" "${fixture_tag}"
+   printf '%s\n' \
+      "FAIL: git-tag-show reported \"${tag_version}\", expected the git tag \"${fixture_tag}\""
    failures=$(( failures + 1 ))
 fi
 
-printf '\n===== summary =====\n'
+printf '%s\n' '' '===== summary ====='
 if [ "${failures}" -eq 0 ]; then
-   printf 'OK: all genmkfile git-describe+control regression checks passed\n'
+   printf '%s\n' 'OK: all genmkfile git-describe+control regression checks passed'
    exit 0
 fi
-printf 'FAILED: %s genmkfile git-describe+control regression check(s) failed\n' "${failures}"
+printf '%s\n' "FAILED: ${failures} genmkfile git-describe+control regression check(s) failed"
 exit 1

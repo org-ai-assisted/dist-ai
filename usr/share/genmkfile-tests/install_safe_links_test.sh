@@ -34,17 +34,48 @@ set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
 
-## DISABLED (ahead-of-package): this test asserts genmkfile's install-time
-## 'rsync --safe-links' symlink handling (die on a dropped absolute/'..'
-## symlink; skip a dangling in-tree symlink), a behavior NOT implemented in the
-## genmkfile package -- neither the fork nor Kicksecure upstream -- as of
-## 2026-07. Running it against the current package fails
-## (install_safe_links check(s) failed). Skip (exit 77 -> SKIP) until the
-## feature lands; re-enable by setting test_enabled='true'. The variable gate
-## also keeps the body below reachable for shellcheck (no SC2317 cascade).
-test_enabled='false'
-if [ "${test_enabled}" != 'true' ]; then
-   printf '%s\n' "SKIP: genmkfile 'rsync --safe-links' install handling not yet in the package (ahead-of-package); test disabled" >&2
+## Asserts genmkfile's install-time 'rsync --safe-links' symlink handling: die on a
+## dropped absolute / '..' symlink, skip a dangling in-tree symlink.
+##
+## AHEAD OF THE PACKAGE, and the gate below DETECTS that rather than trusting a
+## hand-maintained flag. '--safe-links' is already in genmkfile_rsync_opts, but the
+## handling this test asserts -- comparing link targets and dying on a dropped
+## symlink -- is still a commented-out block marked '## TODO: review'. A boolean
+## someone must remember to flip stays wrong in both directions: it hides the test
+## after the feature lands, and it claims ahead-of-package after it is removed.
+## Keyed on the die message, so the test starts running by itself the moment that
+## block is uncommented.
+locate_helper() {
+   local candidate
+   for candidate in \
+      "${GENMKFILE_SHARE:-}/make-helper-one.bsh" \
+      "/usr/share/genmkfile/make-helper-one.bsh" \
+      "${HOME}/derivative-maker/packages/kicksecure/genmkfile/usr/share/genmkfile/make-helper-one.bsh"
+   do
+      case "${candidate}" in
+         '/make-helper-one.bsh' )
+            continue
+            ;;
+      esac
+      if test -r "${candidate}"; then
+         printf '%s\n' "${candidate}"
+         return 0
+      fi
+   done
+   return 1
+}
+
+if ! subject_helper="$(locate_helper)"; then
+   printf '%s\n' 'SKIP: make-helper-one.bsh not found (set GENMKFILE_SHARE).' >&2
+   exit 77
+fi
+
+## An ACTIVE (non-comment) die on a dropped symlink means the handling is live.
+if ! grep --quiet --extended-regexp \
+   '^[[:space:]]*[^#[:space:]].*refusing to install: symlink' -- "${subject_helper}"
+then
+   printf '%s\n' \
+      "SKIP: genmkfile's dropped-symlink handling is still commented out in ${subject_helper} ('## TODO: review'); this test runs automatically once it is enabled." >&2
    exit 77
 fi
 
@@ -137,11 +168,11 @@ do_install() {
 }
 
 failures=0
-pass() { printf 'PASS: %s\n' "$1"; }
-fail() { printf 'FAIL: %s\n' "$1"; failures=$(( failures + 1 )); }
+pass() { printf '%s\n' "PASS: $1"; }
+fail() { printf '%s\n' "FAIL: $1"; failures=$(( failures + 1 )); }
 
 ## ---- Scenario 1: a normal file installs cleanly. ----
-printf '\n===== scenario: normal file =====\n'
+printf '%s\n' '' '===== scenario: normal file ====='
 s1_pkg="${workdir}/normal/pkg"
 s1_dest="${workdir}/normal/dest"
 mkdir --parents -- "${s1_dest}"
@@ -160,7 +191,7 @@ fi
 ## 'rsync --safe-links' drops it, so it has no destination; genmkfile must
 ## 'die' with a clear message rather than aborting cryptically or silently
 ## skipping a symlink that was not installed.
-printf '\n===== scenario: absolute (escaping) symlink =====\n'
+printf '%s\n' '' '===== scenario: absolute (escaping) symlink ====='
 s2_pkg="${workdir}/escaping/pkg"
 s2_dest="${workdir}/escaping/dest"
 mkdir --parents -- "${s2_dest}"
@@ -190,7 +221,7 @@ fi
 ## so the stale file remains and the destination "exists". The guard must key on
 ## the SOURCE (a symlink whose destination is not itself a symlink), so it still
 ## fails loud here rather than silently chmod-ing the stale file.
-printf '\n===== scenario: absolute (escaping) symlink over a stale destination =====\n'
+printf '%s\n' '' '===== scenario: absolute (escaping) symlink over a stale destination ====='
 s2b_pkg="${workdir}/escaping-stale/pkg"
 s2b_dest="${workdir}/escaping-stale/dest"
 mkdir --parents -- "${s2b_dest}/usr/bin"
@@ -219,7 +250,7 @@ fi
 ## in-tree link) at the path where the source is now an escaping symlink. A
 ## destination '-L' test alone would treat the stale symlink as "installed" and
 ## miss the drop; the guard must compare link TARGETS and still fail loud.
-printf '\n===== scenario: absolute (escaping) symlink over a stale symlink =====\n'
+printf '%s\n' '' '===== scenario: absolute (escaping) symlink over a stale symlink ====='
 s2c_pkg="${workdir}/escaping-stale-link/pkg"
 s2c_dest="${workdir}/escaping-stale-link/dest"
 mkdir --parents -- "${s2c_dest}/usr/bin"
@@ -239,7 +270,7 @@ fi
 ## Positive control: a relative symlink whose target exists inside the tree is
 ## kept by 'rsync --safe-links', so the guard must NOT fire and the symlink must
 ## be installed.
-printf '\n===== scenario: safe relative in-tree symlink =====\n'
+printf '%s\n' '' '===== scenario: safe relative in-tree symlink ====='
 s2d_pkg="${workdir}/safe-link/pkg"
 s2d_dest="${workdir}/safe-link/dest"
 mkdir --parents -- "${s2d_dest}"
@@ -260,7 +291,7 @@ fi
 ## A relative symlink whose target is inside the tree but missing is copied by
 ## rsync (it is "safe"); it lands in DESTDIR as a dangling symlink. genmkfile
 ## must skip it (chmod is meaningless) and still install the rest.
-printf '\n===== scenario: dangling in-tree symlink =====\n'
+printf '%s\n' '' '===== scenario: dangling in-tree symlink ====='
 s3_pkg="${workdir}/dangling/pkg"
 s3_dest="${workdir}/dangling/dest"
 mkdir --parents -- "${s3_dest}"
@@ -276,10 +307,10 @@ else
    printf '%s\n' "${out}" | tail -10
 fi
 
-printf '\n===== summary =====\n'
+printf '%s\n' '' '===== summary ====='
 if [ "${failures}" -eq 0 ]; then
-   printf 'OK: all genmkfile install safe-links checks passed\n'
+   printf '%s\n' 'OK: all genmkfile install safe-links checks passed'
    exit 0
 fi
-printf 'FAILED: %s genmkfile install safe-links check(s) failed\n' "${failures}"
+printf '%s\n' "FAILED: ${failures} genmkfile install safe-links check(s) failed"
 exit 1
