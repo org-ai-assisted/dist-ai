@@ -7,10 +7,13 @@
 
 ## Suite runner for anon-gw-anonymizer-config.
 ##
-## Currently one lane: anon-auth-autogen's private-key file modes, the
-## security fix that had no standing test. Targets the installed
-## /usr/bin/anon-auth-autogen by default; set ANON_GW_ANONYMIZER_CONFIG_REPO
-## (or ANON_AUTH_AUTOGEN_BIN) to test a checkout. No root, no network, no tor.
+## Runs every *_test.sh in usr/share/anon-gw-anonymizer-config-tests and fails
+## if any of them does. Discovery is a glob so a new lane needs no edit here.
+##
+## Targets the installed package by default; set
+## ANON_GW_ANONYMIZER_CONFIG_REPO (or ANON_AUTH_AUTOGEN_BIN) to test a
+## checkout. A lane that cannot resolve its subject exits 77 and is reported as
+## SKIPPED, never folded into a pass. No root, no network, no tor.
 
 set -o errexit
 set -o nounset
@@ -27,7 +30,30 @@ else
    tests_dir='/usr/share/anon-gw-anonymizer-config-tests'
 fi
 
-rc=0
-"${tests_dir}/anon_auth_autogen_permissions_test.sh" "$@" || rc=$?
+shopt -s nullglob
+case_scripts=( "${tests_dir}"/*_test.sh )
+shopt -u nullglob
 
+if [ "${#case_scripts[@]}" -eq 0 ]; then
+   printf '%s\n' "FATAL: no case scripts found in '${tests_dir}'" >&2
+   exit 1
+fi
+
+rc=0
+failed=0
+skipped=0
+for case_script in "${case_scripts[@]}"; do
+   printf '%s\n' "== $(basename -- "${case_script}") =="
+   case_rc=0
+   "${case_script}" "$@" || case_rc=$?
+   if [ "${case_rc}" -eq 77 ]; then
+      skipped=$(( skipped + 1 ))
+   elif [ "${case_rc}" -ne 0 ]; then
+      failed=$(( failed + 1 ))
+      rc=1
+   fi
+done
+
+printf '%s\n' ""
+printf '%s\n' "${#case_scripts[@]} case(s), ${failed} failed, ${skipped} skipped"
 exit "${rc}"
