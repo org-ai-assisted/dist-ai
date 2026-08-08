@@ -408,11 +408,15 @@ assert_inside_conditional() {
    fi
 }
 
+## Matches the INSTALL action only. The unconditional 'safe-rm' names the same
+## path on purpose -- a disabled build must clear a file left by an earlier build
+## in the same slot -- so matching the path alone would report that removal as an
+## unguarded occurrence.
 assert_inside_conditional \
    "disk build drop-in" \
    "${DERIVATIVE_MAKER_DIR}/build-steps.d/3500_install-packages" \
    '^if \[ "\$\{dist_build_smbios_reader:-\}" = "true" \]; then$' \
-   'tee "\$\{CHROOT_FOLDER\}/etc/default/grub.d/50_dm-smbios-reader\.cfg"'
+   '\$\{cp_reproducible\[@\]\}.*50_dm-smbios-reader\.cfg'
 
 assert_inside_conditional \
    "iso reader inlining" \
