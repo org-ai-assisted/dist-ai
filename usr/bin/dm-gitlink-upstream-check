@@ -58,6 +58,11 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+
+## An inherited GIT_DIR / GIT_WORK_TREE outranks every 'git -C', so a run from
+## inside a hook, 'rebase --exec' or 'submodule foreach' would silently inspect
+## whatever repository the environment names instead of --repo-root.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 ## The sweep still reports EVERY unresolvable/erroring submodule in one run, not
 ## just the first: each resolver catches its own failure and returns 0 with an
 ## 'error' verdict, so errexit never fires mid-loop. The only intentional
@@ -298,20 +303,39 @@ deepen_history() {
 parent_merge_base() {
   ## Print the merge base of the parent upstream branch and this checkout's
   ## HEAD. --filter=blob:none keeps the fetch to commits and trees; gitlink
-  ## entries live in trees, so no blob is ever needed. Returns 1 when the base
-  ## cannot be determined (network, or unrelated histories).
+  ## entries live in trees, so no blob is ever needed.
+  ##
+  ## The two failure modes are NOT the same and must not share an exit code:
+  ##   1  the fetch did not get through -- transport, warn, do not fail a run
+  ##   2  there is no merge base, or HEAD is unusable -- nothing was checked,
+  ##      which is a setup error and must never read as a pass
   local base
   if ! git -C "${repo_root}" fetch --quiet --no-tags --filter=blob:none \
        -- "${parent_upstream_url}" "${parent_upstream_branch}"; then
     return 1
   fi
   if ! base="$(git -C "${repo_root}" merge-base FETCH_HEAD HEAD)"; then
-    return 1
+    return 2
   fi
   if [ -z "${base}" ]; then
-    return 1
+    return 2
   fi
   printf '%s\n' "${base}"
+}
+
+
+valid_upstream_url() {
+  ## A git URL may name a remote HELPER ('ext::sh -c ...'), which git executes.
+  ## Only the transports this check needs are accepted, so an argv assembled
+  ## from an untrusted value cannot turn into command execution.
+  case "$1" in
+    https://*|http://*|git://*|ssh://*|file://*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 
@@ -330,7 +354,11 @@ parent_deviations() {
   ## --no-renames: rename detection is on by default for this porcelain, and a
   ## renamed submodule then emits TWO tab-separated paths in one record, which
   ## shifts every following field. Delete-plus-add reports both ends correctly.
-  if ! raw="$(git -C "${repo_root}" diff --raw --no-abbrev --no-renames "${base}" HEAD)"; then
+  ## core.quotePath=false keeps a non-ASCII submodule path readable in the
+  ## report. A path containing a control character is still C-quoted by git;
+  ## the verdict is unaffected, only how that path prints.
+  if ! raw="$(git -C "${repo_root}" -c core.quotePath=false \
+       diff --raw --no-abbrev --no-renames "${base}" HEAD)"; then
     return 1
   fi
   while read -r oldmode newmode oldsha newsha status path; do
@@ -351,11 +379,17 @@ check_parent_deviation() {
     return "${rc}"
   fi
 
-  local base
-  if ! base="$("${MERGE_BASE_FN}")"; then
+  local base mb_rc=0
+  base="$("${MERGE_BASE_FN}")" || mb_rc=$?
+  if (( mb_rc == 1 )); then
     printf '%s\n' \
       "::warning::could not reach ${parent_upstream_url}; no-deviation check not run" >&2
     return 0
+  fi
+  if (( mb_rc != 0 )); then
+    printf '%s\n' \
+      "::error::no merge base between ${parent_upstream_url} ${parent_upstream_branch} and HEAD of ${repo_root}" >&2
+    return 2
   fi
 
   ## Same reason as in parent_deviations: a failure here must not arrive as an
@@ -662,7 +696,41 @@ parent_self_test() {
       "${out}" >&2
     fails=$(( fails + 1 ))
   fi
+  ## Case J: no merge base at all is a setup error, not a transport warning --
+  ## the two must not share the fail-open path.
+  _parent_self_test_no_base() {
+    return 2
+  }
+  MERGE_BASE_FN='_parent_self_test_no_base'
+  rc=0
+  out="$(check_parent_deviation 2>&1)" || rc=$?
+  if (( rc != 2 )); then
+    printf '%s\n' \
+      "parent self-test FAIL: absent merge base returned ${rc}, expected 2; got:" \
+      "${out}" >&2
+    fails=$(( fails + 1 ))
+  fi
+
+  ## Case K: only real transports are accepted, so a remote-helper URL cannot
+  ## turn --parent-upstream into command execution.
   MERGE_BASE_FN='parent_merge_base'
+  local url
+  for url in 'ext::sh -c id' '-upload-pack=id' 'rubbish'; do
+    rc=0
+    valid_upstream_url "${url}" || rc=$?
+    if (( rc == 0 )); then
+      printf '%s\n' "parent self-test FAIL: accepted a non-transport URL: ${url}" >&2
+      fails=$(( fails + 1 ))
+    fi
+  done
+  for url in 'https://example.com/a.git' 'file:///tmp/a' 'ssh://git@example.com/a'; do
+    rc=0
+    valid_upstream_url "${url}" || rc=$?
+    if (( rc != 0 )); then
+      printf '%s\n' "parent self-test FAIL: rejected a valid URL: ${url}" >&2
+      fails=$(( fails + 1 ))
+    fi
+  done
 
   ## Case H: a detached HEAD sitting on the master commit is still master, and
   ## must not silently skip the check.
@@ -714,7 +782,7 @@ parent_self_test() {
     printf '%s\n' "parent self-test: ${fails} assertion(s) FAILED" >&2
     return 1
   fi
-  printf '%s\n' 'parent self-test: PASSED (9 cases)'
+  printf '%s\n' 'parent self-test: PASSED (11 cases)'
   return 0
 }
 
@@ -750,6 +818,11 @@ main() {
       --parent-upstream)
         if [ "$#" -lt 2 ]; then
           printf '%s\n' '::error::--parent-upstream needs an argument' >&2
+          return 2
+        fi
+        if ! valid_upstream_url "$2"; then
+          printf '%s\n' \
+            "::error::--parent-upstream must be an http(s), git, ssh or file URL: $2" >&2
           return 2
         fi
         parent_upstream_url="$2"
