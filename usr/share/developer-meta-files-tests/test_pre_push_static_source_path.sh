@@ -29,6 +29,40 @@ set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
 
+## shellcheck is a HARD PREREQUISITE, not an optional nicety. pre-push-static
+## SKIPS its entire shellcheck tier and returns SUCCESS when shellcheck is
+## absent -- so without this every assertion below would pass while never
+## exercising --source-path at all. A skipped check is a failure, not a pass.
+if ! test -r /usr/libexec/helper-scripts/has.sh ; then
+   printf '%s\n' "FATAL: helper-scripts has.sh is not installed (/usr/libexec/helper-scripts/has.sh)" >&2
+   exit 1
+fi
+# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
+# shellcheck disable=SC1091
+source /usr/libexec/helper-scripts/has.sh
+
+if ! has shellcheck ; then
+   printf '%s\n' "FATAL: shellcheck not on PATH (apt-get install shellcheck)" >&2
+   printf '%s\n' "This test cannot validate --source-path without it." >&2
+   exit 1
+fi
+
+if ! has safe-rm ; then
+   printf '%s\n' "FATAL: safe-rm not on PATH" >&2
+   exit 1
+fi
+
+## Resolve the gate RELATIVE to this test file (usr/share/<suite>/ -> usr/bin/),
+## exactly as test_pre_push_static_style_rules.sh does. A bare 'pre-push-static'
+## takes whatever is on PATH -- the INSTALLED copy -- so a developer editing the
+## in-tree gate would be testing the packaged one and every assertion would
+## report on code they did not change.
+gate_test_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
+GATE="${gate_test_dir}/../../bin/pre-push-static"
+if [ ! -x "${GATE}" ]; then
+   GATE='/usr/bin/pre-push-static'
+fi
+
 base_sha=""
 test_dir="$(mktemp --directory)"
 cleanup() {
@@ -93,7 +127,7 @@ git -C "${repo}" -c core.hooksPath=/dev/null \
 ## script-relative path resolve outside the repo.
 gate_output=""
 gate_rc=0
-gate_output="$( cd -- "${repo}" && pre-push-static "${base_sha}" 2>&1 )" || gate_rc=$?
+gate_output="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || gate_rc=$?
 
 fail=0
 
@@ -122,6 +156,13 @@ if [ "${gate_rc}" -ne 0 ]; then
    fail=1
 else
    printf '%s\n' "PASS: gate green on the compliant fixture"
+fi
+
+## Belt and braces: if the gate reports the shellcheck tier skipped for ANY
+## reason, the three assertions above are meaningless.
+if printf '%s\n' "${gate_output}" | grep --quiet --fixed-strings 'shellcheck not on PATH'; then
+   printf '%s\n' "FAIL: the gate SKIPPED its shellcheck tier -- nothing was tested"
+   fail=1
 fi
 
 if [ "${fail}" -ne 0 ]; then
