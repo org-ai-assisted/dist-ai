@@ -54,7 +54,7 @@ fi
 PATH="${bin_dir}:${PATH}"
 export PATH
 
-for dependency in tor nc socat; do
+for dependency in tor nc socat ss; do
    if ! type -P "${dependency}" >/dev/null; then
       printf '%s\n' "FAIL: required program '${dependency}' is not installed" >&2
       exit 1
@@ -183,54 +183,58 @@ stop_tor
 ##    occurrences of "Authentication method not detected".
 ##
 ##    A live tor cannot produce this, which is why it needs a stand-in listener.
-## A port the OS just handed out, not a fixed one: a concurrent run or an
-## unrelated local service on a hardcoded port would fail this case for a reason
-## unrelated to tor-ctrl.
+## socat picks the port ITSELF (TCP-LISTEN:0) and the port is then read back
+## from the socket that THIS pid owns.
 ##
-## Asking python for a free port then letting socat bind it is a race -- another
-## process can take it in between, socat exits in the background, and the case
-## then runs against a DEAD port. That matters here beyond flakiness: a refused
-## connection sends tor-ctrl into its documented fallback chain (environment,
-## then tor's config files, then 127.0.0.1:9051), so the case could end up
-## reporting on a real controller. So the listener is VERIFIED up before the
-## subject runs, and a lost race just picks another port.
-listener_pid=""
-listener_port=""
-for attempt in 1 2 3 4 5; do
-   candidate="$(python3 -c 'import socket
-probe = socket.socket()
-probe.bind(("127.0.0.1", 0))
-print(probe.getsockname()[1])
-probe.close()')"
-   socat "TCP-LISTEN:${candidate},fork,reuseaddr,bind=127.0.0.1" /dev/null &
-   candidate_pid=$!
-   ## Both conditions: the port answering proves only that SOMETHING listens --
-   ## if socat lost the race to another process, nc -z still succeeds and the
-   ## case would run against a stranger's socket. The spawned socat must also
-   ## still be alive for the listener to be ours.
-   waited=0
-   until kill -0 "${candidate_pid}" 2>/dev/null && nc -z 127.0.0.1 "${candidate}" 2>/dev/null; do
-      if ! kill -0 "${candidate_pid}" 2>/dev/null; then
-         break
-      fi
-      sleep 1
-      waited=$(( waited + 1 ))
-      if [ "${waited}" -ge 5 ]; then
-         break
-      fi
-   done
-   if kill -0 "${candidate_pid}" 2>/dev/null && nc -z 127.0.0.1 "${candidate}" 2>/dev/null; then
-      listener_port="${candidate}"
-      listener_pid="${candidate_pid}"
-      break
-   fi
-   kill "${candidate_pid}" 2>/dev/null || true
-done
+## Allocating a free port first and letting socat bind it afterwards is a race no
+## amount of checking closes: between the probe releasing the port and socat
+## binding it, another process can take it. Neither 'kill -0' nor a connect test
+## sees that -- socat is alive because it has not reached its failing bind yet,
+## and the connect lands on the stranger's listener. The case would then report on
+## someone else's socket, and per tor-ctrl's documented fallback chain a dead port
+## can send it hunting for a real controller.
+##
+## Binding zero removes the window entirely: there is no interval during which
+## the port is allocated but unowned.
+socat "TCP-LISTEN:0,fork,reuseaddr,bind=127.0.0.1" /dev/null &
+listener_pid=$!
 
-if [ -z "${listener_port}" ]; then
-   printf '%s\n' "FAIL: could not bring up a stand-in listener on any free port" >&2
-   exit 1
-fi
+## Pure bash rather than awk: 'ss -ltnpH' prints
+##   LISTEN 0 5 127.0.0.1:38121 0.0.0.0:* users:(("socat",pid=1234,fd=5))
+## and only the line naming this pid is ours.
+find_listener_port() {
+   local line local_address
+   while read -r line; do
+      case "${line}" in
+         *"pid=${listener_pid},"*)
+            ;;
+         *)
+            continue
+            ;;
+      esac
+      read -r _ _ _ local_address _ <<< "${line}"
+      printf '%s' "${local_address##*:}"
+      return 0
+   done < <(ss -ltnpH 2>/dev/null)
+   return 1
+}
+
+listener_port=""
+waited=0
+until [ -n "${listener_port}" ]; do
+   if ! kill -0 "${listener_pid}" 2>/dev/null; then
+      printf '%s\n' "FAIL: the stand-in listener exited before it bound a port" >&2
+      exit 1
+   fi
+   listener_port="$( find_listener_port || true )"
+   [ -z "${listener_port}" ] || break
+   sleep 1
+   waited=$(( waited + 1 ))
+   if [ "${waited}" -ge 15 ]; then
+      printf '%s\n' "FAIL: the stand-in listener did not bind a port within 15s" >&2
+      exit 1
+   fi
+done
 
 run_tor_ctrl -s "${listener_port}" -c "GETINFO version"
 check "non-controller socket: exit status" "1" "${last_status}"
