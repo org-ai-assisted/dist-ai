@@ -172,7 +172,7 @@ assert_gate_structure() {
    local vendor_index=-1
    local gate_index=-1
    local gate_close_index=-1
-   local read_index=-1
+   local -a read_indexes=()
 
    mapfile -t block < <(extract_block "${path}")
 
@@ -188,7 +188,10 @@ assert_gate_structure() {
             fi
             ;;
          'smbios --type 1 --get-string 7 --set dm_smbios_oem')
-            [ "${read_index}" -ge 0 ] || read_index="${index}"
+            ## EVERY read, not just the first: keeping only the first means a SECOND read
+            ## added outside the gate changes nothing here, and the check passes while the
+            ## reader does exactly what the gate exists to prevent.
+            read_indexes+=( "${index}" )
             ;;
       esac
 
@@ -219,7 +222,7 @@ assert_gate_structure() {
       check_fail "${name}: manufacturer read MISSING in ${path}"
       return 0
    fi
-   if [ "${read_index}" -lt 0 ]; then
+   if [ "${#read_indexes[@]}" -eq 0 ]; then
       check_fail "${name}: serial-number read MISSING in ${path}"
       return 0
    fi
@@ -231,11 +234,20 @@ assert_gate_structure() {
          "the gate would compare a pre-cleared variable and never open; manufacturer at block line $(( vendor_index + 1 )), gate at $(( gate_index + 1 ))"
    fi
 
-   if [ "${read_index}" -gt "${gate_index}" ] && [ "${read_index}" -lt "${gate_close_index}" ]; then
-      check_pass "${name}: serial number is read inside the QEMU gate"
+   local read_index
+   local outside=''
+   for read_index in "${read_indexes[@]}"; do
+      if [ "${read_index}" -gt "${gate_index}" ] && [ "${read_index}" -lt "${gate_close_index}" ]; then
+         continue
+      fi
+      outside="${outside} $(( read_index + 1 ))"
+   done
+
+   if [ -z "${outside}" ]; then
+      check_pass "${name}: all ${#read_indexes[@]} serial-number read(s) are inside the QEMU gate"
    else
       check_fail "${name}: serial number is read OUTSIDE the QEMU gate in ${path}" \
-         "gate spans block lines $(( gate_index + 1 ))..$(( gate_close_index + 1 )), read at $(( read_index + 1 ))"
+         "gate spans block lines $(( gate_index + 1 ))..$(( gate_close_index + 1 )); read(s) outside at:${outside}"
    fi
 }
 
@@ -252,8 +264,6 @@ optin_checks=(
    "cmdline fragment exports the variable to the grub.d helpers|${cmdline_file}|^[[:space:]]*export GRUB_ENABLE_DM_SMBIOS_READER\$"
    "build option --smbios-reader exists|${DERIVATIVE_MAKER_DIR}/help-steps/parse-cmd|--smbios-reader\\)"
    "build option defaults to false|${DERIVATIVE_MAKER_DIR}/help-steps/variables|dist_build_smbios_reader=\"false\""
-   "disk build writes the drop-in only when enabled|${DERIVATIVE_MAKER_DIR}/build-steps.d/3500_install-packages|dist_build_smbios_reader:-.*=.*true"
-   "iso build gates the reader and the placeholder|${DERIVATIVE_MAKER_DIR}/build-steps.d/3600_convert-raw-to-iso|dist_build_smbios_reader:-.*=.*true"
 )
 
 for entry in "${optin_checks[@]}"; do
@@ -269,6 +279,119 @@ for entry in "${optin_checks[@]}"; do
       check_fail "${description}: pattern not found in ${target_file}" "${pattern}"
    fi
 done
+
+## CONTAINMENT, not co-occurrence. Finding the enabling condition somewhere in a build step
+## and the guarded action somewhere in the same file proves nothing: an UNCONDITIONAL reader
+## copy plus an unrelated enabled-only statement satisfies both greps while a released image
+## still gets the reader. Assert the action sits inside that condition's own body, and that
+## it appears NOWHERE else in the file.
+assert_inside_conditional() {
+   local name="${1}"
+   local path="${2}"
+   local condition_regex="${3}"
+   local payload_regex="${4}"
+   local -a lines=()
+   local -a payload_indexes=()
+   local -a range_starts=()
+   local -a range_stops=()
+   local line trimmed
+   local index=0
+   local depth=0
+   local start=-1
+
+   if [ ! -r "${path}" ]; then
+      check_fail "${name}: unreadable ${path}"
+      return 0
+   fi
+
+   mapfile -t lines < "${path}"
+
+   ## ALL matching conditionals, not the first: 3600 gates the placeholder and the reader
+   ## inlining in two SEPARATE blocks with the same condition, so a single-range scan would
+   ## report the second one's payload as unguarded.
+   for line in "${lines[@]}"; do
+      trimmed="${line#"${line%%[![:space:]]*}"}"
+
+      if printf '%s\n' "${trimmed}" | grep -qE -- "${payload_regex}"; then
+         payload_indexes+=( "${index}" )
+      fi
+
+      if [ "${start}" -lt 0 ]; then
+         if printf '%s\n' "${trimmed}" | grep -qE -- "${condition_regex}"; then
+            start="${index}"
+            depth=1
+         fi
+      else
+         case "${trimmed}" in
+            'fi')
+               depth=$(( depth - 1 ))
+               if [ "${depth}" -le 0 ]; then
+                  range_starts+=( "${start}" )
+                  range_stops+=( "${index}" )
+                  start=-1
+               fi
+               ;;
+            'if '*)
+               depth=$(( depth + 1 ))
+               ;;
+         esac
+      fi
+
+      index=$(( index + 1 ))
+   done
+
+   if [ "${#range_starts[@]}" -eq 0 ]; then
+      check_fail "${name}: no closed enabling condition found in ${path}" "${condition_regex}"
+      return 0
+   fi
+   if [ "${start}" -ge 0 ]; then
+      check_fail "${name}: an enabling condition at line $(( start + 1 )) is never closed in ${path}"
+      return 0
+   fi
+   if [ "${#payload_indexes[@]}" -eq 0 ]; then
+      check_fail "${name}: guarded action not found in ${path}" "${payload_regex}"
+      return 0
+   fi
+
+   local payload_index range_position
+   local outside=''
+   for payload_index in "${payload_indexes[@]}"; do
+      local contained='false'
+      for range_position in "${!range_starts[@]}"; do
+         if [ "${payload_index}" -gt "${range_starts[range_position]}" ] \
+            && [ "${payload_index}" -lt "${range_stops[range_position]}" ]; then
+            contained='true'
+            break
+         fi
+      done
+      [ "${contained}" = 'true' ] || outside="${outside} $(( payload_index + 1 ))"
+   done
+
+   if [ -z "${outside}" ]; then
+      check_pass "${name}: all ${#payload_indexes[@]} occurrence(s) are inside a build-option branch"
+   else
+      check_fail "${name}: guarded action occurs OUTSIDE the build-option branch in ${path}" \
+         "${#range_starts[@]} guarded branch(es) found; occurrence(s) outside at:${outside}"
+   fi
+}
+
+assert_inside_conditional \
+   "disk build drop-in" \
+   "${DERIVATIVE_MAKER_DIR}/build-steps.d/3500_install-packages" \
+   '^if \[ "\$\{dist_build_smbios_reader:-\}" = "true" \]; then$' \
+   'tee "\$\{CHROOT_FOLDER\}/etc/default/grub.d/50_dm-smbios-reader\.cfg"'
+
+assert_inside_conditional \
+   "iso reader inlining" \
+   "${DERIVATIVE_MAKER_DIR}/build-steps.d/3600_convert-raw-to-iso" \
+   '^if \[ "\$\{dist_build_smbios_reader:-\}" = "true" \]; then$' \
+   '^cat -- bootloaders/grub-pc/smbios-reader\.cfg >> bootloaders/grub-pc/config\.cfg$'
+
+assert_inside_conditional \
+   "iso cmdline placeholder" \
+   "${DERIVATIVE_MAKER_DIR}/build-steps.d/3600_convert-raw-to-iso" \
+   '^if \[ "\$\{dist_build_smbios_reader:-\}" = "true" \]; then$' \
+   '^smbios_reader_cmdline=" .*dm_smbios_extra'
 
 ## POLARITY, not token presence: an inverted guard keeps every token while
 ## reversing the default, so the reader would ship in released images with all the
