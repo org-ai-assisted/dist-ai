@@ -6,9 +6,15 @@
 ## AI-Assisted
 
 ## Runs msgcollector's core property tests (hypothesis) for the CLI link
-## rewriter via pytest. Works installed (/usr/share/msgcollector-tests) or from a
-## git checkout. The msgcollector script under test is resolved by
-## msgcollector_testlib (MSGCOLLECTOR_REPO=<checkout> else the installed script).
+## rewriter via pytest, then every *_test.sh shell case in the same directory.
+## Works installed (/usr/share/msgcollector-tests) or from a git checkout. The
+## msgcollector script under test is resolved by msgcollector_testlib
+## (MSGCOLLECTOR_REPO=<checkout> else the installed script); the shell cases
+## read MSGCOLLECTOR_REPO directly.
+##
+## Both lanes run even when the first fails, so one broken lane cannot hide the
+## other. A shell case that cannot resolve its subject exits 77 and is counted
+## as SKIPPED, never folded into a pass.
 
 set -o errexit
 set -o nounset
@@ -35,4 +41,28 @@ if [ "${rc}" = "5" ]; then
    printf '%s\n' 'FAIL: pytest collected no tests; the suite is not being run.' >&2
    exit 1
 fi
+
+shopt -s nullglob
+shell_cases=( "${tests_dir}"/*_test.sh )
+shopt -u nullglob
+
+shell_failed=0
+shell_skipped=0
+for shell_case in "${shell_cases[@]}"; do
+   printf '%s\n' "== $(basename -- "${shell_case}") =="
+   case_rc=0
+   "${shell_case}" || case_rc=$?
+   if [ "${case_rc}" -eq 77 ]; then
+      shell_skipped=$(( shell_skipped + 1 ))
+   elif [ "${case_rc}" -ne 0 ]; then
+      shell_failed=$(( shell_failed + 1 ))
+      rc=1
+   fi
+done
+
+if [ "${#shell_cases[@]}" -gt 0 ]; then
+   printf '%s\n' ""
+   printf '%s\n' "${#shell_cases[@]} shell case(s), ${shell_failed} failed, ${shell_skipped} skipped"
+fi
+
 exit "${rc}"
