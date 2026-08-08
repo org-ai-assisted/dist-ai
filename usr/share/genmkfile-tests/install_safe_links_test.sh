@@ -49,8 +49,8 @@ locate_helper() {
    local candidate
    for candidate in \
       "${GENMKFILE_SHARE:-}/make-helper-one.bsh" \
-      "/usr/share/genmkfile/make-helper-one.bsh" \
-      "${HOME}/derivative-maker/packages/kicksecure/genmkfile/usr/share/genmkfile/make-helper-one.bsh"
+      "${HOME}/derivative-maker/packages/kicksecure/genmkfile/usr/share/genmkfile/make-helper-one.bsh" \
+      "/usr/share/genmkfile/make-helper-one.bsh"
    do
       case "${candidate}" in
          '/make-helper-one.bsh' )
@@ -84,16 +84,19 @@ locate_genmkfile() {
       printf '%s\n' "${GENMKFILE_BIN}"
       return 0
    fi
-   ## Fixed-location path test (genmkfile installs to /usr/bin/genmkfile
-   ## across the ecosystem) rather than a PATH lookup.
-   if [ -x /usr/bin/genmkfile ]; then
-      printf '%s\n' /usr/bin/genmkfile
-      return 0
-   fi
+   ## The CHECKOUT wins over the installed copy. The installed engine is a
+   ## released package and drifts from the tree under review -- observed 776
+   ## differing lines -- so preferring it made the suite report green for code
+   ## nobody was changing, which is the exact silent-wrong class these tests
+   ## exist to catch. Set GENMKFILE_BIN to test an installed copy deliberately.
    local checkout
    checkout="${HOME}/derivative-maker/packages/kicksecure/genmkfile/usr/bin/genmkfile"
    if [ -x "${checkout}" ]; then
       printf '%s\n' "${checkout}"
+      return 0
+   fi
+   if [ -x /usr/bin/genmkfile ]; then
+      printf '%s\n' /usr/bin/genmkfile
       return 0
    fi
    return 1

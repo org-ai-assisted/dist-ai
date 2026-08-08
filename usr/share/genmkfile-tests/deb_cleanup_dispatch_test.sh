@@ -46,16 +46,19 @@ locate_genmkfile() {
       printf '%s\n' "${GENMKFILE_BIN}"
       return 0
    fi
-   ## Fixed-location path test (genmkfile installs to /usr/bin/genmkfile
-   ## across the ecosystem) rather than a PATH lookup.
-   if [ -x /usr/bin/genmkfile ]; then
-      printf '%s\n' /usr/bin/genmkfile
-      return 0
-   fi
+   ## The CHECKOUT wins over the installed copy. The installed engine is a
+   ## released package and drifts from the tree under review -- observed 776
+   ## differing lines -- so preferring it made the suite report green for code
+   ## nobody was changing, which is the exact silent-wrong class these tests
+   ## exist to catch. Set GENMKFILE_BIN to test an installed copy deliberately.
    local checkout
    checkout="${HOME}/derivative-maker/packages/kicksecure/genmkfile/usr/bin/genmkfile"
    if [ -x "${checkout}" ]; then
       printf '%s\n' "${checkout}"
+      return 0
+   fi
+   if [ -x /usr/bin/genmkfile ]; then
+      printf '%s\n' /usr/bin/genmkfile
       return 0
    fi
    return 1
@@ -128,7 +131,7 @@ arch="$(dpkg --print-architecture)"
 failures=0
 run_target() {
    local target="$1" require_zero="$2" out rc=0
-   printf '\n===== target: %s =====\n' "${target}"
+   printf '%s\n' '' "===== target: ${target} ====="
    ## reprepro-add test -f's the .changes file make_get_variables names.
    ## Recreate it here, not once at setup: deb-cleanup (run earlier)
    ## sweeps *.changes out of DISTDIR, so a setup-time fixture would be
@@ -152,20 +155,20 @@ run_target() {
    )" || rc=$?
 
    if printf '%s\n' "${out}" | grep --quiet 'unbound variable'; then
-      printf 'FAIL: %s tripped an "unbound variable" error (regression):\n' "${target}"
+      printf '%s\n' "FAIL: ${target} tripped an \"unbound variable\" error (regression):"
       printf '%s\n' "${out}" | grep 'unbound variable'
       failures=$(( failures + 1 ))
    fi
 
    if printf '%s\n' "${out}" | grep --quiet 'make_function_run: make_get_variables'; then
-      printf 'PASS: %s routed through make_get_variables\n' "${target}"
+      printf '%s\n' "PASS: ${target} routed through make_get_variables"
    else
-      printf 'FAIL: %s did NOT run make_get_variables (cheap-path mis-classification)\n' "${target}"
+      printf '%s\n' "FAIL: ${target} did NOT run make_get_variables (cheap-path mis-classification)"
       failures=$(( failures + 1 ))
    fi
 
    if [ "${require_zero}" = "true" ] && [ "${rc}" -ne 0 ]; then
-      printf 'FAIL: %s exited %s (expected 0):\n' "${target}" "${rc}"
+      printf '%s\n' "FAIL: ${target} exited ${rc} (expected 0):"
       printf '%s\n' "${out}" | tail -20
       failures=$(( failures + 1 ))
    fi
@@ -177,10 +180,10 @@ run_target deb-cleanup      true
 run_target reprepro-remove  true
 run_target reprepro-add     true
 
-printf '\n===== summary =====\n'
+printf '%s\n' '' '===== summary ====='
 if [ "${failures}" -eq 0 ]; then
-   printf 'OK: all genmkfile dispatch regression checks passed\n'
+   printf '%s\n' 'OK: all genmkfile dispatch regression checks passed'
    exit 0
 fi
-printf 'FAILED: %s genmkfile dispatch regression check(s) failed\n' "${failures}"
+printf '%s\n' "FAILED: ${failures} genmkfile dispatch regression check(s) failed"
 exit 1

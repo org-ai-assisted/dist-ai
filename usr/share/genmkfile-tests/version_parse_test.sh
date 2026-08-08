@@ -33,15 +33,16 @@ error_handler() {
 trap error_handler ERR
 
 ## Subject selection mirrors the rest of this suite (first that exists):
-##   $GENMKFILE_SHARE -> /usr/share/genmkfile -> the derivative-maker submodule
-##   checkout under ~/derivative-maker. Absent means SKIP (77), not failure: the
+##   $GENMKFILE_SHARE -> the derivative-maker submodule checkout -> the installed
+##   /usr/share/genmkfile. Checkout BEFORE installed: the installed copy drifts from
+##   the tree under review, so preferring it tests code nobody is changing. Absent means SKIP (77), not failure: the
 ##   suite must not report a red when the component simply is not present.
 locate_helper() {
    local candidate
    for candidate in \
       "${GENMKFILE_SHARE:-}/make-helper-one.bsh" \
-      "/usr/share/genmkfile/make-helper-one.bsh" \
-      "${HOME}/derivative-maker/packages/kicksecure/genmkfile/usr/share/genmkfile/make-helper-one.bsh"
+      "${HOME}/derivative-maker/packages/kicksecure/genmkfile/usr/share/genmkfile/make-helper-one.bsh" \
+      "/usr/share/genmkfile/make-helper-one.bsh"
    do
       case "${candidate}" in
          '/make-helper-one.bsh' )
