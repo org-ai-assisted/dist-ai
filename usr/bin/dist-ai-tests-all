@@ -82,6 +82,7 @@ core_suites=(
    open-link-confirmation-tests
    privleap-tests
    pyte-tests
+   qubes-whonix-tests
    sanitize-string-tests
    secure-terminal-tests
    secure-terminal-tests-coverage
@@ -203,7 +204,7 @@ pkg_dir() {
       derivative-maker)
          printf '%s' "${repo_root}"
          ;;
-      anon-gw-anonymizer-config|onion-grater)
+      anon-gw-anonymizer-config|onion-grater|qubes-whonix)
          printf '%s' "${repo_root}/packages/whonix/${name}"
          ;;
       ## Standalone repos with no packages/ subpath at all. Yielding empty (not
@@ -311,6 +312,9 @@ wire() {
          ;;
       anon-gw-anonymizer-config)
          wire_env=( "ANON_GW_ANONYMIZER_CONFIG_REPO=$( pkg_dir anon-gw-anonymizer-config )" )
+         ;;
+      qubes-whonix)
+         wire_env=( "QUBES_WHONIX_REPO=$( pkg_dir qubes-whonix )" )
          ;;
       onion-grater)
          wire_env=( "ONION_GRATER_REPO=$( pkg_dir onion-grater )" )
@@ -599,6 +603,9 @@ suite_component() {
          ;;
       anon-gw-anonymizer-config)
          printf '%s' 'anon-gw-anonymizer-config'
+         ;;
+      qubes-whonix)
+         printf '%s' 'qubes-whonix'
          ;;
       onion-grater)
          printf '%s' 'onion-grater'
