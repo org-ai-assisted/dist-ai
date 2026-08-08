@@ -39,11 +39,20 @@ trap error_handler ERR
 ##   suite must not report a red when the component simply is not present.
 locate_helper() {
    local candidate
+   ## GENMKFILE_BIN is how CI points at the component checkout, which lives at neither
+   ## the dm path nor /usr. Derive the share dir from it, or every share-based test
+   ## SKIPs there -- reporting nothing while looking green.
+   local from_bin=''
+   if [ -n "${GENMKFILE_BIN:-}" ]; then
+      from_bin="$(dirname -- "$(dirname -- "${GENMKFILE_BIN}")")/share/genmkfile/make-helper-one.bsh"
+   fi
    for candidate in \
       "${GENMKFILE_SHARE:-}/make-helper-one.bsh" \
+      "${from_bin}" \
       "${HOME}/derivative-maker/packages/kicksecure/genmkfile/usr/share/genmkfile/make-helper-one.bsh" \
       "/usr/share/genmkfile/make-helper-one.bsh"
    do
+      [ -n "${candidate}" ] || continue
       case "${candidate}" in
          '/make-helper-one.bsh' )
             continue

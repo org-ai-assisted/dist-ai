@@ -131,7 +131,9 @@ make_fixture "${pkg_dir}"
 if run_debinstfile "${pkg_dir}"; then
    pass 'debinstfile exited 0'
 else
-   fail "debinstfile failed: $(tail -3 -- "${pkg_dir}/debinstfile.log")"
+   ## The engine prints a long "report this bug" banner, so a plain tail shows only
+   ## the frame. Surface the line that names the cause -- typically a missing tool.
+   fail "debinstfile failed: $(grep -m1 -iE 'not found|No such file|ERROR:' -- "${pkg_dir}/debinstfile.log" || tail -3 -- "${pkg_dir}/debinstfile.log")"
 fi
 
 if [ -f "${pkg_dir}/debian/pkg-one.install" ] && [ -f "${pkg_dir}/debian/pkg-two.install" ]; then

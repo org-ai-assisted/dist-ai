@@ -157,7 +157,10 @@ check_mode() {
 }
 
 ## --- ordinary install (no CI) ------------------------------------------------
-if run_install plain; then
+## CI=true is AMBIENT in a GitHub Actions runner, so this case must clear it explicitly.
+## Assuming it unset passed locally and failed in CI, where the force-exec heuristic
+## fired and the "non-executable installs 0644" assertion saw 0755.
+if run_install plain CI=; then
    pass 'install exited 0'
 else
    fail "install failed: $(tail -3 -- "${work_dir}/install-plain.log")"
@@ -188,7 +191,7 @@ check_mode 'and an already-executable file is unaffected by the opt-out' '755' \
 ## A skip-list entry of '/usr/src' also matched '/usr/share/doc/x/usr/src-notes' under a
 ## substring test, so that file silently kept whatever mode it arrived with -- the same
 ## quiet wrong-permission outcome the checks above exist for.
-run_install skiplist || true
+run_install skiplist CI= || true
 check_mode 'a file genuinely under a skipped folder keeps its mode' '600' \
    "${dest_dir}/usr/src/keep-my-mode"
 check_mode 'a path merely CONTAINING the skip-list text is still mode-fixed' '644' \
