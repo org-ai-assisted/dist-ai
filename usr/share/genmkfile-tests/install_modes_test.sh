@@ -120,6 +120,14 @@ chmod 0644 -- "${pkg_dir}/usr/bin/lost-exec-bit"
 printf '%s\n' 'data' > "${pkg_dir}/usr/share/gmf-mode-pkg/data-file"
 chmod 0644 -- "${pkg_dir}/usr/share/gmf-mode-pkg/data-file"
 
+## folder_permission_skip_list holds '/usr/src'. A file genuinely under it keeps the
+## mode it arrived with; a file merely CONTAINING that text in its path must not.
+mkdir --parents -- "${pkg_dir}/usr/src" "${pkg_dir}/usr/share/doc/gmf-mode-pkg/usr"
+printf '%s\n' 'kept' > "${pkg_dir}/usr/src/keep-my-mode"
+chmod 0600 -- "${pkg_dir}/usr/src/keep-my-mode"
+printf '%s\n' 'notes' > "${pkg_dir}/usr/share/doc/gmf-mode-pkg/usr/src-notes"
+chmod 0600 -- "${pkg_dir}/usr/share/doc/gmf-mode-pkg/usr/src-notes"
+
 ## Run 'genmkfile install' into a fresh DESTDIR and leave it in ${dest_dir}.
 run_install() {
    local tag="$1"
@@ -175,6 +183,16 @@ check_mode 'GENMKFILE_CI_FORCE_EXEC=0 disables the forcing' '644' \
    "${dest_dir}/usr/bin/lost-exec-bit"
 check_mode 'and an already-executable file is unaffected by the opt-out' '755' \
    "${dest_dir}/usr/bin/exec-file"
+
+## --- the skip-list is a PATH question, not a substring one -------------------
+## A skip-list entry of '/usr/src' also matched '/usr/share/doc/x/usr/src-notes' under a
+## substring test, so that file silently kept whatever mode it arrived with -- the same
+## quiet wrong-permission outcome the checks above exist for.
+run_install skiplist || true
+check_mode 'a file genuinely under a skipped folder keeps its mode' '600' \
+   "${dest_dir}/usr/src/keep-my-mode"
+check_mode 'a path merely CONTAINING the skip-list text is still mode-fixed' '644' \
+   "${dest_dir}/usr/share/doc/gmf-mode-pkg/usr/src-notes"
 
 ## --- CANARY ------------------------------------------------------------------
 ## Every check above reads a path under DESTDIR. If install had silently copied
