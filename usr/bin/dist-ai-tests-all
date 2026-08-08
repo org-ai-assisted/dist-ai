@@ -59,6 +59,7 @@ timeout_heavy=600
 ## script. mediawiki-dom-snapshot is a capture tool, not a pass/fail test, so
 ## it is deliberately excluded.
 core_suites=(
+   anon-gw-anonymizer-config-tests
    check-ref-commits-for-unicode-tests
    developer-meta-files-tests
    private-ai-config-tests
@@ -202,8 +203,8 @@ pkg_dir() {
       derivative-maker)
          printf '%s' "${repo_root}"
          ;;
-      onion-grater)
-         printf '%s' "${repo_root}/packages/whonix/onion-grater"
+      anon-gw-anonymizer-config|onion-grater)
+         printf '%s' "${repo_root}/packages/whonix/${name}"
          ;;
       ## Standalone repos with no packages/ subpath at all. Yielding empty (not
       ## a fabricated monorepo path) makes their suites exit 77 SKIP in
@@ -307,6 +308,9 @@ wire() {
          ## nothing to point at.
          wire_env=()
          wire_args=()
+         ;;
+      anon-gw-anonymizer-config)
+         wire_env=( "ANON_GW_ANONYMIZER_CONFIG_REPO=$( pkg_dir anon-gw-anonymizer-config )" )
          ;;
       onion-grater)
          wire_env=( "ONION_GRATER_REPO=$( pkg_dir onion-grater )" )
@@ -592,6 +596,9 @@ suite_component() {
          ;;
       dist-ai-registry|git-api)
          printf '%s' 'dist-ai'
+         ;;
+      anon-gw-anonymizer-config)
+         printf '%s' 'anon-gw-anonymizer-config'
          ;;
       onion-grater)
          printf '%s' 'onion-grater'

@@ -1,0 +1,33 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Suite runner for anon-gw-anonymizer-config.
+##
+## Currently one lane: anon-auth-autogen's private-key file modes, the
+## security fix that had no standing test. Targets the installed
+## /usr/bin/anon-auth-autogen by default; set ANON_GW_ANONYMIZER_CONFIG_REPO
+## (or ANON_AUTH_AUTOGEN_BIN) to test a checkout. No root, no network, no tor.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/anon-gw-anonymizer-config-tests" ]; then
+   tests_dir="${script_dir}/../share/anon-gw-anonymizer-config-tests"
+else
+   tests_dir='/usr/share/anon-gw-anonymizer-config-tests'
+fi
+
+rc=0
+"${tests_dir}/anon_auth_autogen_permissions_test.sh" "$@" || rc=$?
+
+exit "${rc}"
