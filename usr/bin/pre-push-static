@@ -33,6 +33,7 @@
 ##      the verified reject-'--' denylist (git check-ref-format,
 ##      stcat)
 ##  10. R-026 no obsolete empty-array guard '${arr[@]+"${arr[@]}"}'
+##      R-021 locals declared separately from assignment (ADVISORY)
 ##      (pre-bash-4.4 nounset workaround; drop the +alternate on
 ##      '[@]'). Does NOT flag '${#arr[@]}', a plain '${arr[@]}',
 ##      or the ':-'/':+' conditional-substitution forms.
@@ -1153,6 +1154,38 @@ check_R026_empty_array_guard() {
    emit_hits "R-026 obsolete empty-array guard (bash 4.4+; drop the +alternate on [@])" "${hits}"
 }
 
+check_R021_local_assign() {
+   local hits
+   local -a fs
+
+   ## R-021: declare locals at the top of the function, blank line, then the
+   ## assignments. A combined 'local name=value' hides what state a function
+   ## has behind its first use, and its command-substitution form (R-022)
+   ## additionally swallows the exit status -- 'local' returns 0 even when the
+   ## substitution failed, so errexit cannot fire.
+   ##
+   ## Flag 'local' followed by ONE identifier and an '='. Deliberately spared:
+   ##   * a bare declaration list, 'local a b c' (no '='), which is the shape
+   ##     the rule asks for;
+   ##   * an explicitly typed declaration whose initialiser IS the declaration,
+   ##     'local -a arr=()' / 'local -i n=0' -- the attribute must be set at
+   ##     declaration time, so splitting it would change meaning;
+   ##   * 'declare' / 'typeset', which are not function-local by default.
+   mapfile -d '' -t fs < <(filter_self "${@}")
+   if [ "${#fs[@]}" -eq 0 ]; then return 0; fi
+   ##
+   ## ADVISORY, not a failure -- deliberately, and measurably: 203 existing
+   ## sites across 80 files carry this shape today. The gate greps whole
+   ## CHANGED FILES, so failing would block a one-line edit to any of them on
+   ## debt the editor did not create, in every session at once. Promote it by
+   ## swapping this note for emit_hits once the debt is cleared.
+   hits="$(grep_code_lines '^[[:space:]]*local[[:space:]]+[A-Za-z_][A-Za-z0-9_]*=' "${fs[@]}")"
+   if [ -z "${hits}" ]; then return 0; fi
+   note "R-021 local declared with an assignment (ADVISORY -- declare, blank line, then assign):"
+   printf '%s\n' "${hits}"
+}
+
+
 check_R081_source_devnull() {
    local hits
    local -a fs
@@ -2111,6 +2144,7 @@ run_file_checks() {
       check_R062_dashdash_denylist "${shell_files[@]}"
       check_R026_empty_array_guard "${shell_files[@]}"
       check_R080_shellcheck_source_path "${shell_files[@]}"
+      check_R021_local_assign "${shell_files[@]}"
       check_R081_source_devnull "${shell_files[@]}"
       check_R090_command_v "${shell_files[@]}"
       check_R170_tmp_hardcode "${shell_files[@]}"

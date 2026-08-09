@@ -374,6 +374,19 @@ expect_rule "R-070" '   1) out="${plain}" ;;'                            "presen
 expect_rule "R-070" "   argc=\${#args[@]}${sp}${sp}## a note about ;;"    "absent"
 expect_rule "R-074" "if [ \"\${#a[@]}\" -eq 0 ]${sc} continue"           "present"
 
+## R-021: a local declared WITH its assignment must be flagged; a bare
+## declaration list, and a typed declaration whose attribute must be set at
+## declaration time, must be spared. Assembled so the flagged sequence does
+## not appear literally in THIS tracked file, which the gate also greps.
+lcl='lo''cal'
+expect_rule "R-021" "   ${lcl} name=\"\${1}\""        "present"
+expect_rule "R-021" "   ${lcl} out=\"\$(cmd)\""       "present"
+expect_rule "R-021" "   ${lcl} name other value"      "absent"
+expect_rule "R-021" "   ${lcl} -a arr=()"             "absent"
+expect_rule "R-021" "   ${lcl} -i count=0"            "absent"
+## 'declare' is not function-local by default, so it is not this rule's.
+expect_rule "R-021" "   declare name=1"               "absent"
+
 ## R-026: the obsolete pre-4.4 empty-array guard '${arr[@]+"${arr[@]}"}' (a
 ## nounset workaround unneeded since bash 4.4) must be FLAGGED. The legitimate
 ## length '${#arr[@]}', a plain '${arr[@]}', and the conditional-substitution
