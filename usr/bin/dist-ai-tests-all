@@ -69,6 +69,7 @@ core_suites=(
    dist-base-files-tests
    grub-live-tests
    live-config-dist-tests
+   libvirt-dist-tests
    private-ai-config-tests
    private-ai-config-tests-coverage
    dist-ai-registry-tests
@@ -342,6 +343,9 @@ wire() {
          ;;
       desktop-config-dist)
          wire_env=( "DESKTOP_CONFIG_DIST_REPO=$( pkg_dir desktop-config-dist )" )
+         ;;
+      libvirt-dist)
+         wire_env=( "LIBVIRT_DIST_REPO=$( pkg_dir libvirt-dist )" )
          ;;
       user-sysmaint-split)
          wire_env=( "USER_SYSMAINT_SPLIT_REPO=$( pkg_dir user-sysmaint-split )" )
@@ -665,6 +669,9 @@ suite_component() {
          ;;
       desktop-config-dist)
          printf '%s' 'desktop-config-dist'
+         ;;
+      libvirt-dist)
+         printf '%s' 'libvirt-dist'
          ;;
       user-sysmaint-split)
          printf '%s' 'user-sysmaint-split'
