@@ -1179,7 +1179,11 @@ check_R021_local_assign() {
    ## CHANGED FILES, so failing would block a one-line edit to any of them on
    ## debt the editor did not create, in every session at once. Promote it by
    ## swapping this note for emit_hits once the debt is cleared.
-   hits="$(grep_code_lines '^[[:space:]]*local[[:space:]]+[A-Za-z_][A-Za-z0-9_]*=' "${fs[@]}")"
+   ## Any operand may carry the '=', not just the first: 'local first
+   ## second="$(cmd)"' combines declaration and assignment on the SECOND name
+   ## and masks the substitution's exit status exactly as the one-name form
+   ## does. Leading bare names are consumed before the assigned one.
+   hits="$(grep_code_lines '^[[:space:]]*local[[:space:]]+([A-Za-z_][A-Za-z0-9_]*[[:space:]]+)*[A-Za-z_][A-Za-z0-9_]*=' "${fs[@]}")"
    if [ -z "${hits}" ]; then return 0; fi
    note "R-021 local declared with an assignment (ADVISORY -- declare, blank line, then assign):"
    printf '%s\n' "${hits}"

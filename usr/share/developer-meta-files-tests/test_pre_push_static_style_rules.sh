@@ -381,6 +381,10 @@ expect_rule "R-074" "if [ \"\${#a[@]}\" -eq 0 ]${sc} continue"           "presen
 lcl='lo''cal'
 expect_rule "R-021" "   ${lcl} name=\"\${1}\""        "present"
 expect_rule "R-021" "   ${lcl} out=\"\$(cmd)\""       "present"
+## The assignment need not be the FIRST operand: this form combines
+## declaration and assignment on the second name and masks the substitution's
+## exit status just the same.
+expect_rule "R-021" "   ${lcl} first second=\"\$(cmd)\"" "present"
 expect_rule "R-021" "   ${lcl} name other value"      "absent"
 expect_rule "R-021" "   ${lcl} -a arr=()"             "absent"
 expect_rule "R-021" "   ${lcl} -i count=0"            "absent"
