@@ -1,0 +1,166 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## anon-dns: what it writes into /etc/resolv.conf, on each of its paths.
+##
+## Companion to anon_dns_server_test.sh, which covers where the nameserver
+## VALUE comes from. This one covers the file EDITING: add, remove, the
+## already-present no-op, and an unwritable target.
+##
+## THE NOUNSET TRAPS it pins: '$1' read when the script is called with no
+## argument at all -- which is the add path, i.e. the normal invocation -- and
+## '$dns_server', which the script reads before assigning because it is a
+## deliberate environment override.
+##
+## A whole writable /etc is bound, not the single file: 'sed -i' REPLACES its
+## target by rename, which fails outright on a bind-mounted FILE, and it needs
+## to create its temp file in the same directory. Binding the directory gives
+## both, and the result stays readable from outside.
+##
+## No root, no network.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+[ -v TMP ] || TMP=/tmp
+[ -v ANON_GW_ANONYMIZER_CONFIG_REPO ] || ANON_GW_ANONYMIZER_CONFIG_REPO=""
+
+if [ -n "${ANON_GW_ANONYMIZER_CONFIG_REPO}" ]; then
+   subject="${ANON_GW_ANONYMIZER_CONFIG_REPO}/usr/bin/anon-dns"
+else
+   subject='/usr/bin/anon-dns'
+fi
+
+if [ ! -r "${subject}" ]; then
+   printf '%s\n' "SKIP: anon-dns not found at '${subject}'" >&2
+   printf '%s\n' "set ANON_GW_ANONYMIZER_CONFIG_REPO to a checkout, or install the package" >&2
+   exit 77
+fi
+
+work_dir="$(mktemp --directory -- "${TMP}/anon-dns-resolv-test.XXXXXX")"
+
+test_cleanup_handler() {
+   chmod --recursive u+rwX -- "${work_dir}" 2>/dev/null || true
+   safe-rm --recursive --force -- "${work_dir}"
+}
+
+trap test_cleanup_handler EXIT
+
+## as_root must be a no-op: the real one re-execs under sudo, which would take
+## the run out of bwrap entirely.
+stubs="${work_dir}/helper-scripts"
+mkdir --parents -- "${stubs}"
+printf '%s\n' 'as_root() { true; }' >"${stubs}/as_root.sh"
+printf '%s\n' 'has() { [ -n "$(type -t "$1")" ]; }' >"${stubs}/has.sh"
+
+## append-once is provided by helper-scripts as a COMMAND, not a function.
+bin_stubs="${work_dir}/bin"
+mkdir --parents -- "${bin_stubs}"
+{
+   printf '%s\n' '#!/bin/bash'
+   printf '%s\n' 'printf "%s\n" "$2" >>"$1"'
+} >"${bin_stubs}/append-once"
+chmod 0755 -- "${bin_stubs}/append-once"
+
+pass_count=0
+fail_count=0
+
+## SC2086: env_spec is a pre-split assignment list, deliberately unquoted.
+# shellcheck disable=SC2086
+run_anon_dns() {
+   local initial mode env_spec etc_dir resolv status
+
+   initial="$1"
+   mode="$2"
+   env_spec="$3"
+   shift 3
+
+   etc_dir="${work_dir}/etc"
+   chmod --recursive u+rwX -- "${etc_dir}" 2>/dev/null || true
+   safe-rm --recursive --force -- "${etc_dir}"
+   mkdir --parents -- "${etc_dir}"
+   resolv="${etc_dir}/resolv.conf"
+   printf '%s' "${initial}" >"${resolv}"
+   chmod "${mode}" -- "${resolv}"
+
+   status=0
+   bwrap --dev-bind / / \
+      --bind "${stubs}" /usr/libexec/helper-scripts \
+      --bind "${etc_dir}" /etc \
+      -- env PATH="${bin_stubs}:/usr/bin:/bin" ${env_spec} \
+      timeout 20 bash "${subject}" "$@" >"${work_dir}/out" 2>&1 || status=$?
+   chmod u+rw -- "${resolv}" 2>/dev/null || true
+   printf '%s' "${status}"
+}
+
+## check <description> <resolv must contain, or ''> <resolv must NOT contain, or ''>
+##       <initial content> <mode> <env spec> [args...]
+check() {
+   local description want unwanted status output resolv verdict
+
+   description="$1"
+   want="$2"
+   unwanted="$3"
+   shift 3
+
+   status="$(run_anon_dns "$@")"
+   output="$(cat -- "${work_dir}/out")"
+   resolv="$(cat -- "${work_dir}/etc/resolv.conf" 2>/dev/null || true)"
+
+   verdict=PASS
+   if printf '%s\n' "${output}" | grep --extended-regexp -- '^bwrap:' >/dev/null; then
+      verdict=FAIL
+      printf '%s\n' "FAIL: ${description}: the script never ran"
+   elif printf '%s\n' "${output}" | grep --fixed-strings -- 'unbound variable' >/dev/null; then
+      verdict=FAIL
+      printf '%s\n' "FAIL: ${description}: nounset abort -- this is the bug"
+   elif [ -n "${want}" ] \
+      && ! printf '%s\n' "${resolv}" | grep --fixed-strings -- "${want}" >/dev/null; then
+      verdict=FAIL
+      printf '%s\n' "FAIL: ${description}: resolv.conf lacks '${want}'"
+   elif [ -n "${unwanted}" ] \
+      && printf '%s\n' "${resolv}" | grep --fixed-strings -- "${unwanted}" >/dev/null; then
+      verdict=FAIL
+      printf '%s\n' "FAIL: ${description}: resolv.conf still has '${unwanted}'"
+   fi
+
+   if [ "${verdict}" = PASS ]; then
+      pass_count=$(( pass_count + 1 ))
+      printf '%s\n' "PASS: ${description} (exit ${status})"
+   else
+      fail_count=$(( fail_count + 1 ))
+      printf '%s\n' "  resolv.conf: [$(printf '%s' "${resolv}" | tr '\n' '|')]"
+      printf '%s\n' "  output: $(printf '%s' "${output}" | tr '\n' '|' | head -c 160)"
+   fi
+}
+
+markers=$'## START-autogenerated-by-edit-etc-torrc-conf-START\n##\nnameserver 1.2.3.4\n## END-autogenerated-by-edit-etc-torrc-conf-END\n'
+
+## Called with NO argument at all -- the add path, and the normal invocation.
+check 'no argument: a nameserver line is added' 'nameserver' '' \
+   '' 0644 '--unset=dns_server'
+## dns_server is read BEFORE it is assigned, as a deliberate override.
+check 'a preset dns_server is used' 'nameserver 192.0.2.53' '' \
+   '' 0644 'dns_server=192.0.2.53'
+## remove must take the autogenerated block back out again.
+check 'remove strips the autogenerated block' '' 'START-autogenerated' \
+   "${markers}" 0644 '--unset=dns_server' remove
+## Adding twice must not append twice.
+check 'an already present line is not duplicated' 'nameserver 10.0.2.3' '' \
+   $'nameserver 10.0.2.3\n' 0644 '--unset=dns_server'
+## An unwritable target must not abort on an unset variable; whatever it does
+## about the file, it must reach its own handling.
+check 'an unwritable resolv.conf does not abort on nounset' '' '' \
+   '' 0444 '--unset=dns_server'
+
+printf '%s\n' ""
+printf '%s\n' "${pass_count} pass, ${fail_count} fail"
+[ "${fail_count}" -eq 0 ]
