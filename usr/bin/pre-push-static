@@ -94,6 +94,8 @@
 ##
 ##   pre-push-static --staged [--all] [--message-file MSG]
 ##
+##   pre-push-static --staged --all --paths -- usr/bin/tool
+##
 ## Style-guide deviations, documented for reviewers:
 ##   * R-040 (log not printf): self-contained tool, must run on
 ##     a developer machine that may lack helper-scripts. Same
@@ -119,6 +121,8 @@ per_commit_mode=0
 staged_mode=0
 staged_all=0
 message_file=''
+paths_mode=0
+path_specs=()
 while [ "$#" -ge 1 ]; do
    case "${1}" in
       --per-commit)
@@ -142,11 +146,41 @@ while [ "$#" -ge 1 ]; do
          message_file="${1}"
          shift
          ;;
+      --paths)
+         ## Restricts staged mode to these pathspecs; must come LAST, since it
+         ## consumes the rest of the command line. What a pathspec commit
+         ## ('git commit -- a b') needs: that commit records ONLY those paths,
+         ## so gating the whole index reports violations in files the commit
+         ## does not touch -- in a SHARED checkout, another session's
+         ## unfinished work then blocks every commit. Matching is git's own.
+         shift
+         ## Everything after this is a pathspec, INCLUDING a leading '--':
+         ## git's own separator, passed straight through so a path that looks
+         ## like an option still reaches git as a path.
+         if [ "$#" -ge 1 ] && [ "${1}" = '--' ]; then
+            shift
+         fi
+         paths_mode=1
+         path_specs=( "${@}" )
+         set --
+         break
+         ;;
       *)
          break
          ;;
    esac
 done
+
+if [ "${paths_mode}" -eq 1 ]; then
+   if [ "${staged_mode}" -eq 0 ]; then
+      printf '%s\n' 'pre-push-static: --paths only applies with --staged' >&2
+      exit 2
+   fi
+   if [ "${#path_specs[@]}" -eq 0 ]; then
+      printf '%s\n' 'pre-push-static: --paths requires at least one pathspec' >&2
+      exit 2
+   fi
+fi
 
 if [ "${staged_mode}" -eq 1 ] && [ "${per_commit_mode}" -eq 1 ]; then
    printf '%s\n' 'pre-push-static: --staged and --per-commit are mutually exclusive' >&2
@@ -236,6 +270,16 @@ resolve_base() {
 ## exists on no disk path, so every content check silently skipped it.
 list_changed_files() {
    if [ "${staged_mode}" -eq 1 ]; then
+      if [ "${paths_mode}" -eq 1 ]; then
+         ## Pathspec matching is git's own, so a directory or glob behaves
+         ## exactly as it does in the commit being gated.
+         if [ "${staged_all}" -eq 1 ] && git rev-parse --verify --quiet HEAD >/dev/null; then
+            git -c core.quotePath=false diff -z --name-only --diff-filter=ACMRT HEAD -- "${path_specs[@]}"
+         else
+            git -c core.quotePath=false diff -z --name-only --diff-filter=ACMRT --cached -- "${path_specs[@]}"
+         fi
+         return 0
+      fi
       if [ "${staged_all}" -eq 1 ] && git rev-parse --verify --quiet HEAD >/dev/null; then
          git -c core.quotePath=false diff -z --name-only --diff-filter=ACMRT HEAD
       else
@@ -2115,6 +2159,7 @@ restore_head() {
 
 main() {
    local sha saved_base_ref toplevel
+   local -a matched_paths
 
    ## Resolve everything from the repo root. list_changed_files yields
    ## repo-root-relative paths, but every content check reads them relative
@@ -2131,6 +2176,18 @@ main() {
 
    if [ "${staged_mode}" -eq 0 ]; then
       resolve_base
+   fi
+
+   ## A pathspec that matches nothing checks nothing, and a verdict of "all
+   ## checks passed" over zero files is the silent-green shape this gate
+   ## exists to prevent. It is not an error -- a deletion-only commit matches
+   ## no ACMRT path -- so SAY it rather than fail.
+   if [ "${paths_mode}" -eq 1 ]; then
+      matched_paths=()
+      mapfile -d '' -t matched_paths < <(list_changed_files)
+      if [ "${#matched_paths[@]}" -eq 0 ]; then
+         note "--paths matched no added/modified file; nothing was content-checked (a deletion-only commit looks like this)"
+      fi
    fi
 
    ## Commit-message R-001 check covers the whole base..HEAD range

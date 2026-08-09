@@ -71,9 +71,15 @@ mkdir --parents -- "${bin_dir}"
 ## the parse grabs the trap line's trailing word. An empty result (a source that
 ## died before the coupling) is treated as a failure by the caller, not a pass.
 resolve() {
+   ## Scope the config dirs to the IN-TREE buildconfig.d. The default list also
+   ## sources /etc/buildconfig-dist.d and ${HOMEVAR}/buildconfig.d, so a
+   ## developer's local override decides the answer and the test reports a code
+   ## regression that is not one -- observed on a host carrying a
+   ## 50_sign_and_tag.conf.
    env --unset=dist_build_sign_and_tag \
        --unset=dist_build_ignore_unsigned \
        --unset=dist_build_redistributable \
+       dist_build_config_dirs_list="${dm_checkout}/buildconfig.d" \
        "$@" \
        binary_build_folder_dist="${bin_dir}" \
        source_code_folder_dist="${dm_checkout}" \
@@ -89,8 +95,17 @@ INNER
 assert_case() {
    local label="$1" want_sign="$2" want_ignore="$3"
    shift 3
-   local got sign ignore
-   got="$(resolve "$@")"
+   local got sign ignore resolve_rc
+   ## Under errexit a failing 'resolve' would abort the whole test at the
+   ## assignment, with no message at all: exit 1 and silence, which reads as a
+   ## crash rather than as the verdict it is. Capture the status and SAY what
+   ## happened instead.
+   resolve_rc=0
+   got="$(resolve "$@")" || resolve_rc=$?
+   if [ "${resolve_rc}" -ne 0 ] || [ -z "${got}" ]; then
+      fail "${label}: sourcing help-steps/variables failed (rc=${resolve_rc}); no values to compare"
+      return 0
+   fi
    sign="${got%% *}"
    ignore="${got##* }"
    if [ "${sign}" = "${want_sign}" ] && [ "${ignore}" = "${want_ignore}" ]; then

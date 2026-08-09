@@ -87,7 +87,11 @@ cleanup() {
 locate_generator() {
    local candidate source_dir
 
-   if has dm-packages-html-generator; then
+   ## 'type -P', not R-090's 'has': has.sh is deliberately sourced only AFTER
+   ## the subject-absence SKIP below, so 'has' is not defined yet here and the
+   ## installed-binary branch could never succeed -- an installed generator
+   ## with no checkout around it was reported as "not shipped".
+   if [ -n "$(type -P dm-packages-html-generator || true)" ]; then
       printf '%s\n' 'dm-packages-html-generator'
       return 0
    fi
@@ -190,7 +194,7 @@ generator_output="$("${generator}" \
 
 if [ ! -d "${out_dir}" ]; then
    fail "no output directory produced (rc=${generator_rc}): ${generator_output}"
-   printf '\nFAILED: %s check(s) failed\n' "${test_failures}" >&2
+   printf '%s\n' "" "FAILED: ${test_failures} check(s) failed" >&2
    exit 1
 fi
 
@@ -338,8 +342,8 @@ if [ -z "${rendered}" ]; then
 fi
 
 if [ "${test_failures}" -ne 0 ]; then
-   printf '\nFAILED: %s check(s) failed\n' "${test_failures}" >&2
+   printf '%s\n' "" "FAILED: ${test_failures} check(s) failed" >&2
    exit 1
 fi
 
-printf '\nAll dm-packages-html-generator hostile-input checks passed.\n'
+printf '%s\n' "" "All dm-packages-html-generator hostile-input checks passed."
