@@ -1,0 +1,96 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Review AID, not a test: did a strict-mode pass remove 'set -x' from any file
+## that had it?
+##
+## Removing it is occasionally right -- a script whose xtrace is pure noise --
+## but usually wrong. For build-time and boot-time scripts the trace IS the log,
+## and for scripts whose only messages are 'true "INFO: ..."' lines it is the
+## entire user-visible output. Which of those a given removal is cannot be
+## decided mechanically, so this REPORTS and exits 0; a human decides.
+##
+## That is why it is a tool rather than a registered suite: a suite has to have
+## a verdict, and this one does not. It is the same shape as comments-audit,
+## which the static gate runs as an advisory.
+##
+## It compares each package's 'ai' branch against org-ai-assisted/master, so it
+## needs a developer checkout with those refs -- not something a CI runner has.
+##
+## It REPORTS how many packages and files it examined, and FAILS if that is
+## zero. An audit that silently examines nothing and reports "clean" is worse
+## than no audit: the first version of this used '[ -d "${pkg}/.git" ]', which
+## is false for a submodule -- where .git is a FILE -- so it skipped every
+## package and found nothing.
+##
+## Usage: dm-stripped-setx-audit [<packages-root>]
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+packages_root="${1:-${HOME}/derivative-maker/packages}"
+
+if [ ! -d "${packages_root}" ]; then
+   printf '%s\n' "dm-stripped-setx-audit: no packages root at '${packages_root}'" >&2
+   exit 1
+fi
+
+packages_seen=0
+files_seen=0
+stripped=0
+
+for package_dir in "${packages_root}"/*/*; do
+   ## '-e', not '-d': in a submodule .git is a FILE, and testing for a
+   ## directory skipped every package.
+   if [ ! -e "${package_dir}/.git" ]; then
+      continue
+   fi
+   branch=""
+   branch="$(git -C "${package_dir}" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+   if [ ! "${branch}" = "ai" ]; then
+      continue
+   fi
+   packages_seen=$(( packages_seen + 1 ))
+
+   changed=""
+   changed="$(git -C "${package_dir}" diff --name-only org-ai-assisted/master...ai 2>/dev/null || true)"
+   if [ -z "${changed}" ]; then
+      continue
+   fi
+
+   while IFS= read -r relative_path; do
+      if [ -z "${relative_path}" ] || [ ! -f "${package_dir}/${relative_path}" ]; then
+         continue
+      fi
+      files_seen=$(( files_seen + 1 ))
+
+      if ! git -C "${package_dir}" show "org-ai-assisted/master:${relative_path}" 2>/dev/null \
+         | grep --extended-regexp -- '^[[:space:]]*set -x' >/dev/null; then
+         continue
+      fi
+      if grep --extended-regexp -- '^[[:space:]]*set -x' "${package_dir}/${relative_path}" >/dev/null; then
+         continue
+      fi
+
+      stripped=$(( stripped + 1 ))
+      printf '%s\n' "STRIPPED  ${package_dir#"${packages_root}"/}/${relative_path}"
+   done <<< "${changed}"
+done
+
+printf '%s\n' ""
+printf '%s\n' "examined ${packages_seen} package(s) on branch ai, ${files_seen} changed file(s); ${stripped} stripped"
+
+if [ "${packages_seen}" -eq 0 ]; then
+   printf '%s\n' "FAIL: no packages examined at all -- this audit is testing nothing" >&2
+   exit 1
+fi
+
+exit 0

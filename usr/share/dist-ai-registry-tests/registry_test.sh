@@ -38,9 +38,15 @@ shopt -s shift_verbose
 ##   privleap-tests-coverage  a measurement wrapper, not a suite: it RUNS the
 ##     registered privleap suites and reports how much of privleap they reach,
 ##     so registering it would run them a second time and assert nothing new
+##   dm-stripped-setx-audit  a review AID with no verdict: whether removing
+##     'set -x' from a given script was right cannot be decided mechanically,
+##     so it reports and exits 0 and a human decides. It also compares each
+##     package's 'ai' branch against org-ai-assisted/master, which a CI runner
+##     has no refs for. Same shape as comments-audit.
 allowed_unregistered=(
    'dist-ai-tests-all'
    'privleap-tests-coverage'
+   'dm-stripped-setx-audit'
 )
 
 ## Suite BASE names with no owning component repo, so no suite_component()
