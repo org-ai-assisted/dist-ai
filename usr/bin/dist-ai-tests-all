@@ -94,6 +94,7 @@ core_suites=(
    sdwdate-gui-tests
    sdwdate-onion-tester-tests
    sdwdate-tests
+   setup-dist-tests
    setup-wizard-dist-tests
    stcat-family-tests
    stdisplay-tests
@@ -399,6 +400,9 @@ wire() {
             wire_env+=( "PYTHONPATH=${hs}/usr/lib/python3/dist-packages" )
          fi
          ;;
+      setup-dist)
+         wire_env=( "SETUP_DIST_REPO=$( pkg_dir setup-dist )" )
+         ;;
       setup-wizard-dist)
          ## The wizard imports guimessages from helper-scripts; the test adds
          ## the wizard checkout to sys.path from SETUP_WIZARD_DIST_REPO and needs
@@ -667,6 +671,9 @@ suite_component() {
          ;;
       sdwdate|sdwdate-onion-tester)
          printf '%s' 'sdwdate'
+         ;;
+      setup-dist)
+         printf '%s' 'setup-dist'
          ;;
       setup-wizard-dist)
          printf '%s' 'setup-wizard-dist'
