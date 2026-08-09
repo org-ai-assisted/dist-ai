@@ -77,6 +77,7 @@ core_suites=(
    git-api-tests
    dm-grub-smbios-tests
    dm-help-steps-tests
+   dm-package-depends-tests
    dm-reprepro-tracking-tests
    dm-virtualbox-wiki-links-tests
    genmkfile-tests
@@ -522,6 +523,11 @@ wire() {
          ## the derivative-maker checkout (one of them in a submodule).
          wire_env=( "DERIVATIVE_MAKER_DIR=$( pkg_dir derivative-maker )" )
          ;;
+      dm-package-depends)
+         ## A tree-wide packaging lint: it reads every packages/*/*/debian/control
+         ## and the sources under each package, so it needs the checkout root.
+         wire_env=( "DERIVATIVE_MAKER_DIR=$( pkg_dir derivative-maker )" )
+         ;;
       dm-image-boot)
          ## Self-contained: it bundles dm-qemu + dm-image-test under
          ## usr/share/dm-image-boot-tests and takes the image to boot as an
@@ -634,7 +640,7 @@ suite_component() {
       developer-meta-files|github-org-tools|dm-virtualbox-wiki-links)
          printf '%s' 'developer-meta-files'
          ;;
-      dm-help-steps|dm-reprepro-tracking|dm-reproducible-build|dm-grub-smbios)
+      dm-help-steps|dm-package-depends|dm-reprepro-tracking|dm-reproducible-build|dm-grub-smbios)
          printf '%s' 'derivative-maker'
          ;;
       private-ai-config)
