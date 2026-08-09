@@ -1,0 +1,119 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Shared checker: a /etc/grub.d generator must still EMIT its boot menu
+## configuration.
+##
+## These scripts exist to write menuentry blocks. If one emits nothing, the
+## boot menu silently loses entries -- and nothing else notices, because grub
+## simply builds a shorter menu. The property is therefore "it produced
+## output", asserted per generator, with an explicit refusal to treat empty
+## output as a pass.
+##
+## Six generators across three packages ship such a script, so the reasoning
+## lives here once and each component's suite calls it with its own subject.
+##
+## The environment is stubbed so the emit is deterministic and does not depend
+## on the host: every GRUB_* variable grub-mkconfig exports is given a fixed
+## value, 'ischroot' is stubbed, and /etc/grub.d is replaced by stubs of the
+## two dist scripts the main generators exec. Without that last part a
+## generator ran the HOST's real 10_00_linux_dist -- so the output was the
+## host's, not the fixture's -- and another emitted nothing at all because its
+## dist counterpart was not installed here, which read as "not exercised" and
+## left its behaviour unverified.
+##
+## Usage: grub-generator-emit-check <generator> <label> [<must-contain>]
+## Exits 77 when the generator does not exist.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+[ -v TMP ] || TMP=/tmp
+
+generator="${1:?usage: grub-generator-emit-check <generator> <label> [<must-contain>]}"
+label="${2:?usage: grub-generator-emit-check <generator> <label> [<must-contain>]}"
+must_contain="${3:-}"
+
+if [ ! -r "${generator}" ]; then
+   printf '%s\n' "SKIP: ${label}: no generator at '${generator}'" >&2
+   exit 77
+fi
+
+work_dir="$(mktemp --directory -- "${TMP}/grub-emit-check.XXXXXX")"
+
+## Reached only through the EXIT trap below, which shellcheck does not connect
+## to this definition.
+# shellcheck disable=SC2317
+check_cleanup_handler() {
+   safe-rm --recursive --force -- "${work_dir}"
+}
+
+trap check_cleanup_handler EXIT
+
+stub_dir="${work_dir}/stub"
+grubd_dir="${work_dir}/grub.d"
+mkdir --parents -- "${stub_dir}" "${grubd_dir}"
+
+printf '%s\n' '#!/bin/sh' 'exit 0' >"${stub_dir}/ischroot"
+chmod 0755 -- "${stub_dir}/ischroot"
+
+## 10_05_linux_main and 10_55_linux_main_advanced each exec a dist script from
+## /etc/grub.d. Stubbing both keeps the pair deterministic and stops the host
+## leaking into the result.
+for dist_script in 10_00_linux_dist 10_50_linux_dist_advanced; do
+   {
+      printf '%s\n' '#!/bin/sh'
+      printf '%s\n' 'printf "%s\n" "STUB '"${dist_script}"' ran; make_boot_entry=${make_boot_entry:-unset}"'
+   } >"${grubd_dir}/${dist_script}"
+   chmod 0755 -- "${grubd_dir}/${dist_script}"
+done
+
+## Every GRUB_* name grub-mkconfig exports, given a fixed value. A generator
+## reading one that is unset would otherwise behave differently here than in a
+## real grub-mkconfig run.
+grub_env=()
+for grub_var in GRUB_ACTUAL_DEFAULT GRUB_CMDLINE_LINUX GRUB_CMDLINE_LINUX_DEFAULT \
+   GRUB_DEFAULT GRUB_DEVICE GRUB_DEVICE_UUID GRUB_DISABLE_LINUX_UUID \
+   GRUB_DISABLE_RECOVERY GRUB_DISABLE_SUBMENU GRUB_DISTRIBUTOR GRUB_TIMEOUT \
+   GRUB_TERMINAL_OUTPUT GRUB_GFXPAYLOAD_LINUX GRUB_INIT_TUNE GRUB_BACKGROUND; do
+   grub_env+=( "${grub_var}=test-value" )
+done
+
+## stderr is captured too: several generators take an early-exit path whose
+## only output is a diagnostic on fd 2, and discarding it made them look as
+## though they had emitted nothing.
+output="$(bwrap --dev-bind / / \
+   --bind "${grubd_dir}" /etc/grub.d \
+   -- env --ignore-environment \
+   PATH="${stub_dir}:/usr/bin:/bin" \
+   pkgdatadir=/usr/share/grub \
+   datarootdir=/usr/share \
+   "${grub_env[@]}" \
+   sh "${generator}" 2>&1)" || true
+
+fail=0
+
+## An empty emit is NOT a pass. These scripts exist to write menuentry blocks;
+## one that writes nothing has either not been exercised or has stopped doing
+## its job, and the two are indistinguishable from here.
+if [ -z "${output}" ]; then
+   printf '%s\n' "FAIL: ${label}: emitted 0 bytes"
+   fail=1
+elif [ -n "${must_contain}" ] \
+   && ! printf '%s\n' "${output}" | grep --fixed-strings -- "${must_contain}" >/dev/null; then
+   printf '%s\n' "FAIL: ${label}: emitted output lacks '${must_contain}'"
+   printf '%s\n' "  output: $(printf '%s' "${output}" | tr '\n' '|' | head -c 200)"
+   fail=1
+else
+   printf '%s\n' "PASS: ${label}: emitted $(printf '%s' "${output}" | wc --bytes) bytes"
+fi
+
+exit "${fail}"

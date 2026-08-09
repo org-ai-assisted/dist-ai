@@ -66,6 +66,9 @@ core_suites=(
    vm-config-dist-tests
    check-ref-commits-for-unicode-tests
    developer-meta-files-tests
+   dist-base-files-tests
+   grub-live-tests
+   live-config-dist-tests
    private-ai-config-tests
    private-ai-config-tests-coverage
    dist-ai-registry-tests
@@ -401,6 +404,15 @@ wire() {
             wire_env+=( "PYTHONPATH=${hs}/usr/lib/python3/dist-packages" )
          fi
          ;;
+      dist-base-files)
+         wire_env=( "DIST_BASE_FILES_REPO=$( pkg_dir dist-base-files )" )
+         ;;
+      grub-live)
+         wire_env=( "GRUB_LIVE_REPO=$( pkg_dir grub-live )" )
+         ;;
+      live-config-dist)
+         wire_env=( "LIVE_CONFIG_DIST_REPO=$( pkg_dir live-config-dist )" )
+         ;;
       sandbox-app-launcher)
          wire_env=( "SANDBOX_APP_LAUNCHER_REPO=$( pkg_dir sandbox-app-launcher )" )
          ;;
@@ -675,6 +687,15 @@ suite_component() {
          ;;
       sdwdate|sdwdate-onion-tester)
          printf '%s' 'sdwdate'
+         ;;
+      dist-base-files)
+         printf '%s' 'dist-base-files'
+         ;;
+      grub-live)
+         printf '%s' 'grub-live'
+         ;;
+      live-config-dist)
+         printf '%s' 'live-config-dist'
          ;;
       sandbox-app-launcher)
          printf '%s' 'sandbox-app-launcher'
