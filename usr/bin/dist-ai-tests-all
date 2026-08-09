@@ -88,6 +88,7 @@ core_suites=(
    privleap-tests
    pyte-tests
    qubes-whonix-tests
+   sandbox-app-launcher-tests
    sanitize-string-tests
    secure-terminal-tests
    secure-terminal-tests-coverage
@@ -400,6 +401,9 @@ wire() {
             wire_env+=( "PYTHONPATH=${hs}/usr/lib/python3/dist-packages" )
          fi
          ;;
+      sandbox-app-launcher)
+         wire_env=( "SANDBOX_APP_LAUNCHER_REPO=$( pkg_dir sandbox-app-launcher )" )
+         ;;
       setup-dist)
          wire_env=( "SETUP_DIST_REPO=$( pkg_dir setup-dist )" )
          ;;
@@ -671,6 +675,9 @@ suite_component() {
          ;;
       sdwdate|sdwdate-onion-tester)
          printf '%s' 'sdwdate'
+         ;;
+      sandbox-app-launcher)
+         printf '%s' 'sandbox-app-launcher'
          ;;
       setup-dist)
          printf '%s' 'setup-dist'
