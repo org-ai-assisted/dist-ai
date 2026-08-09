@@ -83,6 +83,7 @@ core_suites=(
    genmkfile-tests
    git-meld-tests
    grep-find-unicode-wrapper-tests
+   helper-scripts-lib-tests
    lock-screen-tests
    lockfile-tests
    msgcollector-tests
@@ -297,6 +298,13 @@ wire() {
             "SANITIZE_ECHO_BIN=${hs}/usr/bin/sanitize-echo"
             "PYTHONPATH=${hs}/usr/lib/python3/dist-packages"
          )
+         ;;
+      helper-scripts-lib)
+         ## The sourced shell libraries (has.sh, strings.bsh) live in
+         ## helper-scripts' libexec. Unwired, both lanes fall back to the
+         ## INSTALLED path, which does not exist in CI, and each degrades to a
+         ## SKIP the run would still report as a clean pass.
+         wire_env=( "HELPER_SCRIPTS_REPO=${hs}" )
          ;;
       lockfile)
          ## lockfile.sh ships in helper-scripts; the suite takes either a file
@@ -634,7 +642,7 @@ wire() {
 suite_component() {
    local base="${1%%-tests*}"
    case "${base}" in
-      check-ref-commits-for-unicode|grep-find-unicode-wrapper|unicode-show|stcat-family|stdisplay|strip-markup|sanitize-string|lockfile|lock-screen|git-meld|onion-time-pre-script)
+      check-ref-commits-for-unicode|grep-find-unicode-wrapper|unicode-show|stcat-family|stdisplay|strip-markup|sanitize-string|lockfile|lock-screen|git-meld|onion-time-pre-script|helper-scripts-lib)
          printf '%s' 'helper-scripts'
          ;;
       developer-meta-files|github-org-tools|dm-virtualbox-wiki-links)
