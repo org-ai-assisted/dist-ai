@@ -544,6 +544,31 @@ expect_rule "${guard_fail}" "printf ${sq}%s${nl}${sq} ${dq}was_sourced${dq}" "pr
 ## A real command-position guard call still exempts.
 expect_rule "${guard_fail}" "was_sourced && main"               "absent"
 
+## R-010 shopt sub-check: a source-able guarded script whose guarded block
+## ENABLES errexit must carry the shopt half of the strict block too
+## ('shopt -s inherit_errexit' + 'shopt -s shift_verbose'). The column-0
+## count is 0 (block indented inside the guard), so this shape is exempt
+## from the all-6 top-level rule -- but forgetting the shopt lines is the
+## exact gap this catches. Fail tag 'R-010 shopt block' is distinct from
+## 'R-010 strict-mode block', so it does not collide with the guard tests.
+shopt_fail='R-010 shopt block'
+guarded_no_shopt=$'if was_executed "${BASH_SOURCE[0]}"; then\n   set -o errexit\n   set -o nounset\n   set -o pipefail\n   set -o errtrace\nfi'
+guarded_only_inherit=$'if was_executed "${BASH_SOURCE[0]}"; then\n   set -o errexit\n   set -o nounset\n   shopt -s inherit_errexit\nfi'
+guarded_full_shopt=$'if was_executed "${BASH_SOURCE[0]}"; then\n   set -o errexit\n   set -o nounset\n   set -o pipefail\n   set -o errtrace\n   shopt -s inherit_errexit\n   shopt -s shift_verbose\nfi'
+## errexit enabled, both shopt lines missing => FLAGGED.
+expect_rule "${shopt_fail}" "${guarded_no_shopt}"               "present"
+## errexit enabled, only shift_verbose missing (the make-helper-one.bsh
+## case: inherit_errexit present) => still FLAGGED.
+expect_rule "${shopt_fail}" "${guarded_only_inherit}"           "present"
+## errexit enabled, both shopt lines present => SPARED.
+expect_rule "${shopt_fail}" "${guarded_full_shopt}"             "absent"
+## A guarded script that enables NO strict-mode (just calls main) has
+## nothing for inherit_errexit to complete => SPARED.
+expect_rule "${shopt_fail}" $'if was_executed "${BASH_SOURCE[0]}"; then\n   main "$@"\nfi' "absent"
+## The 'no-strict' waiver exempts a guarded errexit block from the shopt
+## sub-check too (onion-time-pre-script's deliberate minimal-strict shape).
+expect_rule "${shopt_fail}" $'## style-ok: no-strict\nif was_executed "${BASH_SOURCE[0]}"; then\n   set -o errexit\n   set -o pipefail\nfi' "absent"
+
 ## R-080: a 'shellcheck source=' path must be relative, anchored with ./ or
 ## ../ (start with '.'). An absolute path OR a bare name (no ./) is FLAGGED.
 expect_rule "R-080" "# shellcheck source=get_colors.sh"          "present"

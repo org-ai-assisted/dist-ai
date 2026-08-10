@@ -20,7 +20,7 @@
 ##      is absent
 ##   4. LC_ALL=C grep -P  '[^\x00-\x7F]' on the commit-range
 ##      message (R-001)
-##   5. R-010 strict-mode block present in top 120 lines
+##   5. R-010 strict-mode block in top 120 lines (+ the shopt half in a guarded source-able block)
 ##   6. R-011 no 'set +o errexit' toggling
 ##   7. R-030/R-031 no bare-newline printf ('printf \n' or bare
 ##      'printf %s\n' with the data arg omitted; a newline must be
@@ -699,7 +699,7 @@ is_self_referential() {
 ## docstrings before the strict-mode block; head -120 is generous
 ## enough to accommodate them without missing the rule's intent.
 check_R010_strict_block() {
-   local script header directive present
+   local script header directive present shopt_missing
    local -a required
 
    required=(
@@ -711,6 +711,22 @@ check_R010_strict_block() {
       'shopt -s shift_verbose'
    )
    for script in "${@}"; do
+      ## Script-wide waiver: '## style-ok: no-strict' anywhere in the
+      ## file exempts it ENTIRELY. For sourced-ONLY fragments never
+      ## executed (so no was_executed()/was_sourced() guard): '/etc/
+      ## profile.d/*.sh' login-shell fragments, '.bashrc.d' snippets, and
+      ## dual-mode scripts that deliberately keep a MINIMAL strict set
+      ## (e.g. helper-scripts 'onion-time-pre-script' omits nounset by
+      ## design). Enabling strict-mode in a sourced fragment would leak
+      ## 'set -o errexit'/'nounset' into (and could kill) the sourcing
+      ## shell. Same escape-hatch shape as 'no-has'/'no-safe-rm'. Checked
+      ## first so a waived script never reaches the shopt sub-check below.
+      if grep --quiet --extended-regexp \
+            '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*no-strict([[:space:]]|$)' \
+            -- "${script}"; then
+         note "R-010 skipped: 'style-ok: no-strict' waiver in '${script}'"
+         continue
+      fi
       ## Count DISTINCT required directives present at column 0 (whole-line,
       ## fixed-string match), not matching LINES: six copies of
       ## 'set -o errexit' must NOT satisfy the block. head -120 accommodates
@@ -730,12 +746,14 @@ check_R010_strict_block() {
       ## shell. Such scripts therefore keep ZERO column-0 strict lines
       ## and guard the block behind the helper-scripts
       ## was_executed()/was_sourced() runtime check (indented, invisible
-      ## to the whole-line match above). Skip R-010 for exactly that shape:
-      ## fully guarded (present 0) AND the guard present. A partial top-level
-      ## block (present 1..5) is not a clean source-able script and stays
-      ## subject to the check below. This condition also leaves this script
-      ## itself enforced: it keeps all six distinct column-0 directives, so
-      ## it never enters the skip despite naming the tokens.
+      ## to the whole-line match above). This shape -- fully guarded
+      ## (present 0) AND the guard present -- is exempt from R-010's
+      ## top-level all-6 requirement. A partial top-level block
+      ## (present 1..5) is not a clean source-able script and stays
+      ## subject to the all-6 check below. This condition also leaves this
+      ## script itself enforced: it keeps all six distinct column-0
+      ## directives, so it never enters the guarded path despite naming
+      ## the tokens.
       ## '^[^#]*' requires the guard in CODE, not a comment: without it a
       ## mere '## TODO: add was_executed guard' would exempt a script with no
       ## strict-mode block at all -- an unauditable bypass. The guard must be
@@ -750,20 +768,49 @@ check_R010_strict_block() {
          && grep --quiet --extended-regexp \
             '^[^#]*(^|[[:space:];&|!(])(was_executed|was_sourced)([[:space:];&|)]|$)' \
             -- "${script}"; then
-         note "R-010 skipped: source-able guarded script '${script}'"
-         continue
-      fi
-      ## Script-wide waiver: '## style-ok: no-strict' anywhere in the
-      ## file. For sourced-ONLY fragments that are never executed and
-      ## thus do not use the was_executed()/was_sourced() guard above:
-      ## '/etc/profile.d/*.sh' login-shell fragments, '.bashrc.d'
-      ## snippets, and similar. Enabling strict-mode in them would leak
-      ## 'set -o errexit'/'nounset' into (and could kill) the sourcing
-      ## interactive shell. Same escape-hatch shape as 'no-has'/'no-safe-rm'.
-      if grep --quiet --extended-regexp \
-            '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*no-strict([[:space:]]|$)' \
-            -- "${script}"; then
-         note "R-010 skipped: 'style-ok: no-strict' waiver in '${script}'"
+         ## The guarded block is exempt from the all-6 top-level rule, but
+         ## the SHOPT half of the strict block ('shopt -s inherit_errexit'
+         ## and 'shopt -s shift_verbose') was repeatedly FORGOTTEN in this
+         ## form -- authors copy the 'set -o errexit/nounset/pipefail/
+         ## errtrace' lines but drop the two shopt lines -- precisely
+         ## because nothing checked the indented block. Enforce them here.
+         ## Only when the guard actually ENABLES errexit (an indented
+         ## 'set -o errexit'): inherit_errexit completes errexit's contract
+         ## ('$()' subshells respect it) and shift_verbose belongs with it.
+         ## The 'set -o errexit/nounset/pipefail' choice itself stays the
+         ## script's own -- some defer pipefail or omit nounset for
+         ## documented reasons -- so it is NOT re-checked here.
+         ## Scope is deliberately WHOLE-FILE, not the guarded block: the
+         ## block that enables strict-mode is guarded by a script-specific
+         ## condition ('if was_executed ...' in some, 'if [ "${X_sourced}"
+         ## = false ]' in others), so there is no fixed block delimiter to
+         ## scope to without fragile per-script parsing. The only way this
+         ## passes wrongly is a file that omits both shopt from the guard
+         ## yet carries BOTH elsewhere -- and inherit_errexit/shift_verbose
+         ## are strict-preamble-only builtins that do not occur loose in
+         ## function bodies, so that coincidence is not a real accident.
+         if grep --quiet --extended-regexp \
+               '^[[:space:]]+set -o errexit[[:space:]]*$' -- "${script}"; then
+            shopt_missing=""
+            grep --quiet --extended-regexp \
+               '^[[:space:]]*shopt -s inherit_errexit[[:space:]]*$' -- "${script}" \
+               || shopt_missing="shopt -s inherit_errexit"
+            if ! grep --quiet --extended-regexp \
+                  '^[[:space:]]*shopt -s shift_verbose[[:space:]]*$' -- "${script}"; then
+               if [ -n "${shopt_missing}" ]; then
+                  shopt_missing="${shopt_missing}, shopt -s shift_verbose"
+               else
+                  shopt_missing="shopt -s shift_verbose"
+               fi
+            fi
+            if [ -n "${shopt_missing}" ]; then
+               fail "R-010 shopt block" "source-able guarded script '${script}' enables errexit but its was_executed block is missing: ${shopt_missing}"
+            else
+               note "R-010: source-able guarded script '${script}' -- strict shopt block present"
+            fi
+         else
+            note "R-010 skipped: source-able guarded script (no strict-mode enabled) '${script}'"
+         fi
          continue
       fi
       if [ "${present}" -lt 6 ]; then
