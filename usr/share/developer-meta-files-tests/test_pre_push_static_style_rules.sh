@@ -266,6 +266,22 @@ expect_rule "R-030/R-031" "printf ${sq}%s${nl}${sq} hello"      "absent"
 expect_rule "R-030/R-031" "printf ${sq}%s${nl}${sq} # blank"        "present"
 expect_rule "R-030/R-031" "printf ${sq}%s${nl}${sq} ${dq}${dq} # ok" "absent"
 
+## R-030: a printf inside a single-quoted program handed to ANOTHER interpreter
+## is not shell printf. awk's takes a comma-separated argument list and
+## interpolates nothing from the shell, so neither of R-030's failure modes is
+## reachable -- and rewriting the format to '%s' would break the awk program.
+##
+## The quote OPENS on a later line than the 'awk' word (line continuation), so
+## this is only correct if the gate tracks quote state ACROSS lines; the
+## single-line check reads each body line as shell and flagged both printfs.
+awk_program="awk -v a=\"\${x}\" \\${nl}   ${sq}BEGIN {${nl}      if (a <= 0) { printf \"0.00\"; exit }${nl}      printf \"%.2f\", a / 2;${nl}    }${sq}"
+expect_rule "R-030 printf format" "${awk_program}" "absent"
+## CANARY: the state must RESET at the closing quote, or every violation after
+## an awk program in the same file is silently spared -- a fail-OPEN, and the
+## direction that matters. A real shell violation following the program above
+## must still be flagged.
+expect_rule "R-030 printf format" "${awk_program}${nl}printf \"bad \${x}\\n\"" "present"
+
 ## R-030 format string, numeric-PROBE carve-out. A '%d' printf whose own command
 ## discards BOTH stdout and stderr emits nothing, so it is a validator rather than
 ## output -- helper-scripts' is_integer(), the guard R-141 mandates before an

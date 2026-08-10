@@ -930,6 +930,7 @@ check_R030_format_string() {
          continue
       fi
       line_number=0
+      in_quoted_program='false'
       while IFS= read -r line; do
          line_number=$(( line_number + 1 ))
          ## Comments are prose; a comment describing this rule must not trip it.
@@ -946,6 +947,37 @@ check_R030_format_string() {
                continue
                ;;
          esac
+         ## A printf inside a single-quoted program handed to ANOTHER
+         ## interpreter is not shell printf, and R-030's failure modes do not
+         ## exist there: awk's printf takes a comma-separated argument list and
+         ## interpolates nothing from the shell. Flagging it demanded a rewrite
+         ## that would have broken the awk program.
+         ##
+         ## Tracked ACROSS lines, because such a program opens its quote on one
+         ## line and closes it on a later one -- 'awk -v x="${y}" \' then
+         ## ''BEGIN { printf "%.2f", a / b }'' on the next. The single-line
+         ## quote check below cannot see that, and read each body line as shell.
+         ##
+         ## Double-quoted spans are removed before counting so an apostrophe
+         ## inside one ("it's") cannot toggle the state. A genuinely unbalanced
+         ## quote is a shell syntax error that shellcheck reports separately, so
+         ## a corrupted state here cannot hide a violation in valid code.
+         quote_scan="${line}"
+         while [[ "${quote_scan}" =~ \"[^\"]*\" ]]; do
+            quote_scan="${quote_scan//"${BASH_REMATCH[0]}"/}"
+         done
+         single_quotes="${quote_scan//[!\']/}"
+         if [ "${in_quoted_program}" = 'true' ]; then
+            if [ $(( ${#single_quotes} % 2 )) -eq 1 ]; then
+               in_quoted_program='false'
+            fi
+            continue
+         fi
+         if [ $(( ${#single_quotes} % 2 )) -eq 1 ]; then
+            ## Opening line: the quote starts here, so anything BEFORE it on
+            ## this line is still shell and is scanned normally below.
+            in_quoted_program='true'
+         fi
          ## Skip a printf that appears INSIDE a quoted string -- a log line
          ## QUOTING the command rather than running it. 1200_prepare-build-machine
          ## does exactly that and was a false positive. A plain quote-strip will
