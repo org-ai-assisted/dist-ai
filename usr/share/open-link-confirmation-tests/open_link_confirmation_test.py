@@ -21,12 +21,16 @@ three properties that matter for that pipeline:
      bytes (only newline and tab, which sanitize-string allows).
 
   B. Qt RICH-TEXT DIFFERENTIAL - embed the sanitized output in the script's
-     exact HTML wrapper and parse it with the REAL Qt QTextDocument (the same
-     engine QTextBrowser.setText uses). Assert no anchor (<a href>) and no
-     image (<img>) is introduced by the argument. This is where a parser
-     differential bites: sanitize-string uses Python's html.parser, the dialog
-     uses Qt's parser, and the two disagree about what is a tag (see the
-     KNOWN_VULN registry below).
+     ACTUAL HTML wrappers (extracted from the shipped msg="..." assignments, not
+     a copy kept in this file) and parse each with the REAL Qt QTextDocument (the
+     same engine QTextBrowser.setText uses). Assert no anchor (<a href>) and no
+     image (<img>) is introduced by the argument, in EVERY rendering context the
+     script displays it in. This is where a parser differential bites:
+     sanitize-string uses Python's html.parser, the dialog uses Qt's parser, and
+     the two disagree about what is a tag (see the KNOWN_VULN registry below). It
+     is also where a wrapper regression bites: if a future edit embeds the value
+     in a weaker context (an attribute, or without the <code> guard), the real
+     wrapper is what gets tested, so the differential sees it.
 
   C. STATIC AUDIT - read the script source and assert every displayed message
      interpolates only the sanitized representation of the argument, never the
@@ -73,6 +77,11 @@ def resolve_script():
 
 SANITIZE_STRING = resolve_sanitize_string()
 SCRIPT = resolve_script()
+
+## The shipped script source, read once in main() after its existence is
+## confirmed; the Qt differential drives functions out of it and the static
+## audit greps it.
+SCRIPT_SOURCE = ""
 
 ## The trim length the script passes to sanitize-string for the link/file
 ## shown in the confirmation dialog (open-link-confirmation: trim="128").
@@ -228,17 +237,111 @@ INJECTION_CASES = {
 ## empty. See the sanitize-string-tests suite for the parser-differential proof.
 KNOWN_VULN = set()
 
-## The wrapper open-link-confirmation builds around the sanitized link/file in
-## the confirmation dialog (workstation()/final()/qubes_redirect()): the value
-## always appears inside <code><blockquote>...</blockquote></code> within a
-## larger rich-text message.
-HTML_WRAPPER_PREFIX = (
-    "<p>The following <b>link</b> will be opened in <u>Tor Browser</u>.</p>"
-    "<p>Be careful if <b>Tor Browser</b> is already running as your "
-    "activities might get linked.</p>"
-    "<p><code><blockquote>"
-)
-HTML_WRAPPER_SUFFIX = "</blockquote></code></p>"
+## The variable the shipped script assigns the sanitized argument to; a function
+## builds a display context for the untrusted value iff its msg interpolates it.
+DISPLAYED_VALUE_VAR = "input_object_stripped_and_trimmed"
+
+## The shipped functions that build a dialog message embedding the displayed
+## argument, and the fixture each needs to reach that message. We source the
+## REAL function and drive it -- bash parses its msg="..." natively, so a value
+## that flows into an attribute (href/src) or out of the inert <code><blockquote>
+## guard is caught, which a regex over the script text cannot see.
+##
+##   preamble  - bash setup so the function reaches its value-bearing branch
+##               (stub browser detection / the qubes open tool / qubesdb).
+DIALOG_FUNCTIONS = {
+    ## Main confirmation dialog. Sets msg and returns; final() shows it. With no
+    ## browser found and a non-empty argument it takes the "will be opened"
+    ## branch (the <code><blockquote> wrapper).
+    "workstation": (
+        'has() { return 1; }\n'
+        'is_file=0\n'
+        'open_in_tool_bin=""\n'
+        'open_in_tool_bin_name=""\n'
+        'open_in_tool_bin_name_readlink=""\n'
+        'skip_open_link_confirmation=""\n'
+    ),
+    ## Qubes redirect error dialog. Reaches its msg only when the open tool
+    ## fails with output other than "Request refused".
+    "qubes_redirect": (
+        'qubesdb-read() { printf "vm\\n"; }\n'
+        '__olc_open_tool() { printf "open failed\\n"; return 3; }\n'
+        'link_confirmation_vm_open_tool=__olc_open_tool\n'
+    ),
+    ## Sysmaint redirect error dialog. No preconditions before its msg.
+    "sysmaint_redirect": "",
+}
+
+
+def extract_function(source, name):
+    """Return the verbatim shipped definition of bash function NAME (its
+    'name() {' line through the matching top-level '}'), or None."""
+    lines = source.splitlines(keepends=True)
+    start = None
+    opener = re.compile(r"^" + re.escape(name) + r"\(\)\s*\{")
+    for index, line in enumerate(lines):
+        if opener.match(line):
+            start = index
+            break
+    if start is None:
+        return None
+    for index in range(start + 1, len(lines)):
+        if re.match(r"^\}", lines[index]):
+            return "".join(lines[start:index + 1])
+    return None
+
+
+def neutralize_terminal_call(func_src):
+    """Replace the generic_gui_message.py invocation (which would spawn the real
+    dialog and exit) with a capture of the msg the function just built, so a
+    function that fires-and-exits instead emits its message text."""
+    out = []
+    for line in func_src.splitlines(keepends=True):
+        stripped = line.lstrip()
+        if "generic_gui_message.py" in line and not stripped.startswith("#"):
+            indent = line[: len(line) - len(stripped)]
+            out.append(indent + '{ printf "%s" "${msg}"; exit 0; }\n')
+        else:
+            out.append(line)
+    return "".join(out)
+
+
+def render_dialog_msg(name, value):
+    """Source the REAL shipped function NAME and run it to the branch that
+    displays the argument, returning the exact msg HTML it builds with VALUE
+    substituted for the displayed argument. Returns None if the function is
+    absent."""
+    func_src = extract_function(SCRIPT_SOURCE, name)
+    if func_src is None:
+        return None
+    func_src = neutralize_terminal_call(func_src)
+    driver = (
+        "set +e +u\n"
+        'input_type="link"\n'
+        'input_object_original="http://example.com/x"\n'
+        + DISPLAYED_VALUE_VAR + '="${WRAP_VALUE}"\n'
+        'extra_long_link=""\n'
+        'tb_title="Tor Browser"\n'
+        'title=""; msg=""; question=""; button=""\n'
+        + DIALOG_FUNCTIONS[name]
+        + func_src
+        + name + "\n"
+        + 'printf "%s" "${msg}"\n'
+    )
+    child_env = dict(os.environ)
+    child_env["WRAP_VALUE"] = value
+    ## The shipped functions call bare `sanitize-string`; make the wired binary's
+    ## directory resolvable so they run as they would installed.
+    bindir = os.path.dirname(SANITIZE_STRING)
+    if bindir:
+        child_env["PATH"] = bindir + os.pathsep + child_env.get("PATH", "")
+    proc = subprocess.run(
+        ["bash", "-c", driver],
+        capture_output=True,
+        check=False,
+        env=child_env,
+    )
+    return proc.stdout.decode("utf-8", "replace")
 
 
 def qt_active_markup(qtgui, html):
@@ -264,6 +367,13 @@ def qt_active_markup(qtgui, html):
     return anchors, images
 
 
+## A benign, ASCII, sanitize-string-preserved marker used to prove a fixture
+## actually reaches the branch that displays the argument -- if the rendered msg
+## does not contain it, the function changed shape and the differential would be
+## testing an empty/wrong string (a vacuous pass), so that is a hard failure.
+FIXTURE_MARKER = "OLCMARKER12345"
+
+
 def run_qt_differential(results):
     print("[B] Qt rich-text differential (real QTextDocument parse)")
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -278,48 +388,86 @@ def run_qt_differential(results):
         app = QtWidgets.QApplication(sys.argv)
     assert app is not None  # keep the QApplication alive for the widgets built below
 
-    ## Baseline: the wrapper with an inert placeholder must itself introduce no
-    ## anchors or images, so anything new is attributable to the argument.
-    base_anchors, base_images = qt_active_markup(
-        QtGui, HTML_WRAPPER_PREFIX + "PLACEHOLDER" + HTML_WRAPPER_SUFFIX
-    )
-    if base_anchors or base_images:
-        results.fail(
-            "qt:baseline",
-            "wrapper itself yields anchors=" + str(base_anchors)
-            + " images=" + str(base_images),
-        )
-        return
-    results.ok("qt:baseline")
+    ## Drive each SHIPPED dialog function, not a copy of its wrapper: if the
+    ## dialog embeds the value in a new/weaker HTML context (an attribute, or
+    ## dropping the <code> guard), driving the real function reflects it.
+    covered = 0
+    for name in DIALOG_FUNCTIONS:
+        if extract_function(SCRIPT_SOURCE, name) is None:
+            ## A function that used to exist and is now gone is a real change in
+            ## the display surface, not something to skip silently.
+            results.fail(
+                "qt:" + name + ":present",
+                "dialog function " + name + "() not found in " + SCRIPT,
+            )
+            continue
 
-    for name, arg in INJECTION_CASES.items():
-        sanitized = run_sanitize(arg).decode("ascii", "replace")
-        html = HTML_WRAPPER_PREFIX + sanitized + HTML_WRAPPER_SUFFIX
-        anchors, images = qt_active_markup(QtGui, html)
-        new_anchors = anchors - base_anchors
-        new_images = images - base_images
-        injected = bool(new_anchors or new_images)
-        detail = (
-            "sanitized=" + repr(sanitized[:60])
-            + " anchors=" + str(new_anchors) + " images=" + str(new_images)
+        ## Anti-vacuous: the fixture must reach the branch that shows the
+        ## argument. Prove it by rendering a marker value and requiring it back.
+        probe = render_dialog_msg(name, FIXTURE_MARKER)
+        if probe is None or FIXTURE_MARKER not in probe:
+            results.fail(
+                "qt:" + name + ":reaches-display",
+                "fixture no longer drives " + name + "() to a message that "
+                "displays the argument (marker absent); rendered="
+                + repr((probe or "")[:80]),
+            )
+            continue
+        results.ok("qt:" + name + ":reaches-display")
+        covered += 1
+
+        ## Baseline: the real wrapper with an inert placeholder must itself
+        ## introduce no anchors or images, so anything new is attributable to
+        ## the argument.
+        base_anchors, base_images = qt_active_markup(
+            QtGui, render_dialog_msg(name, "PLACEHOLDER")
         )
-        known = name in KNOWN_VULN
-        if injected and known:
-            results.xfail("qt:" + name, detail)
-        elif injected and not known:
+        if base_anchors or base_images:
             results.fail(
-                "qt:" + name,
-                "NEW injection vector (not in KNOWN_VULN): " + detail,
+                "qt:" + name + ":baseline",
+                name + "() wrapper itself yields anchors="
+                + str(base_anchors) + " images=" + str(base_images)
+                + " -- the displayed value is in an active HTML context.",
             )
-        elif not injected and known:
-            results.fail(
-                "qt:" + name,
-                "expected-fail case no longer injects -> the bypass appears "
-                "FIXED; promote it out of KNOWN_VULN to a hard control. "
-                + detail,
+            continue
+        results.ok("qt:" + name + ":baseline")
+
+        for case, arg in INJECTION_CASES.items():
+            sanitized = run_sanitize(arg).decode("ascii", "replace")
+            html = render_dialog_msg(name, sanitized)
+            anchors, images = qt_active_markup(QtGui, html)
+            new_anchors = anchors - base_anchors
+            new_images = images - base_images
+            injected = bool(new_anchors or new_images)
+            detail = (
+                "sanitized=" + repr(sanitized[:60])
+                + " anchors=" + str(new_anchors) + " images=" + str(new_images)
             )
-        else:
-            results.ok("qt:" + name)
+            known = case in KNOWN_VULN
+            if injected and known:
+                results.xfail("qt:" + name + ":" + case, detail)
+            elif injected and not known:
+                results.fail(
+                    "qt:" + name + ":" + case,
+                    "NEW injection vector (not in KNOWN_VULN) in " + name
+                    + "(): " + detail,
+                )
+            elif not injected and known:
+                results.fail(
+                    "qt:" + name + ":" + case,
+                    "expected-fail case no longer injects -> the bypass appears "
+                    "FIXED; promote it out of KNOWN_VULN to a hard control. "
+                    + detail,
+                )
+            else:
+                results.ok("qt:" + name + ":" + case)
+
+    if covered == 0:
+        results.fail(
+            "qt:coverage",
+            "no shipped dialog function could be driven to display the "
+            "argument; the differential tested nothing.",
+        )
 
 
 ## ---------------------------------------------------------------------------
@@ -328,12 +476,7 @@ def run_qt_differential(results):
 
 def run_static_audit(results):
     print("[C] static audit of " + SCRIPT)
-    try:
-        with open(SCRIPT, "r", encoding="utf-8") as handle:
-            source = handle.read()
-    except OSError as exc:
-        results.fail("audit:read", "cannot read script: " + str(exc))
-        return
+    source = SCRIPT_SOURCE
 
     ## C1: the displayed representation of the argument is produced by
     ## sanitize-string.
@@ -396,6 +539,13 @@ def main():
     if not os.path.exists(SCRIPT):
         print("ERROR: open-link-confirmation not found; set "
               "OPEN_LINK_CONFIRMATION_BIN")
+        return 2
+    global SCRIPT_SOURCE
+    try:
+        with open(SCRIPT, "r", encoding="utf-8") as handle:
+            SCRIPT_SOURCE = handle.read()
+    except OSError as exc:
+        print("ERROR: cannot read open-link-confirmation script: " + str(exc))
         return 2
     print()
 

@@ -20,6 +20,7 @@ msgcollector suite.
 
 import os
 import re
+import subprocess
 import sys
 
 
@@ -79,3 +80,52 @@ def extract_bash_function(path: str, name: str) -> str:
     if not match:
         raise LookupError(f"function {name!r} not found in {path}")
     return f"{name}() {{\n{match.group(1)}}}\n"
+
+
+def sanitize_string_bindir() -> str:
+    """Directory of the sanitize-string binary the driven functions call by bare
+    name, resolved from the wired binary / a helper-scripts checkout, so a
+    checkout run behaves like an installed one. Empty if not resolvable."""
+    for var in ("SANITIZE_STRING_BIN",):
+        value = os.environ.get(var, "").strip()
+        if value:
+            return os.path.dirname(value)
+    hs = os.environ.get("HELPER_SCRIPTS_PATH", "").strip()
+    if hs and os.path.isfile(os.path.join(hs, "usr/bin/sanitize-string")):
+        return os.path.join(hs, "usr/bin")
+    if os.path.isfile("/usr/bin/sanitize-string"):
+        return "/usr/bin"
+    return ""
+
+
+def drive_bash_function(path: str, name: str, *, preamble: str = "",
+                        replace=None, args: str = "", env=None,
+                        stdin: str = None) -> subprocess.CompletedProcess:
+    """Source the REAL shipped bash function `name` from `path` and run it,
+    returning the completed process.
+
+    This executes the actual function body (not a copy of it): `replace` rewrites
+    absolute helper/dialog paths in the extracted source to stubs so no real
+    dialog or privileged tool runs, `preamble` provides stub functions and
+    fixture variables, and `args`/`env`/`stdin` drive the call. Errexit/nounset
+    are left off so a fixture that leaves an unrelated variable unset does not
+    abort before the branch under test."""
+    src = extract_bash_function(path, name)
+    if replace:
+        for old, new in replace.items():
+            src = src.replace(old, new)
+    driver = "set +e +u\n" + preamble + src + f"{name} {args}\n"
+    child_env = dict(os.environ)
+    bindir = sanitize_string_bindir()
+    if bindir:
+        child_env["PATH"] = bindir + os.pathsep + child_env.get("PATH", "")
+    if env:
+        child_env.update(env)
+    return subprocess.run(
+        ["bash", "-c", driver],
+        input=stdin,
+        capture_output=True,
+        text=True,
+        env=child_env,
+        check=False,
+    )
