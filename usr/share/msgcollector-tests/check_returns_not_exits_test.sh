@@ -54,12 +54,20 @@ cleanup() {
 }
 trap cleanup EXIT
 
-## Extract the real check() function body, so the test exercises shipped code
-## rather than a reimplementation (and does not source the file's strings.bsh).
+## Extract the real msgcollector_check() function body, so the test exercises
+## shipped code rather than a reimplementation (and does not source the file's
+## strings.bsh).
 check_fn="${workdir}/check_fn.bash"
-sed -n '/^check()/,/^}/p' -- "${check_file}" > "${check_fn}"
+sed -n '/^msgcollector_check()/,/^}/p' -- "${check_file}" > "${check_fn}"
 if [ ! -s "${check_fn}" ]; then
-   printf '%s\n' "FAIL: could not extract check() from ${check_file}" >&2
+   printf '%s\n' "FAIL: could not extract msgcollector_check() from ${check_file}" >&2
+   exit 1
+fi
+## The sed range ends at the first unindented '}'; verify the extracted fragment
+## is a complete, parseable function so a reformatted definition cannot yield a
+## truncated or overlong fragment that silently mis-tests.
+if ! bash -n "${check_fn}" 2>/dev/null; then
+   printf '%s\n' "FAIL: extracted msgcollector_check() does not parse (incomplete extraction)" >&2
    exit 1
 fi
 
@@ -76,10 +84,11 @@ fail_count=0
 pass() { pass_count=$(( pass_count + 1 )); printf '%s\n' "PASS: $*"; }
 fail() { fail_count=$(( fail_count + 1 )); printf '%s\n' "FAIL: $*" >&2; }
 
-## Drive check() through an 'if ! check' caller in a subshell under errexit, with
-## the sub-checks stubbed via the environment. Echoes 'CAUGHT' or 'PASSED', then
-## ':CONTINUED' -- the latter appears ONLY if check() returned (did not exit the
-## subshell). RC_NOTEMPTY / RC_ALNUM / RC_UNICODE select which sub-check fails.
+## Drive msgcollector_check() through an 'if ! msgcollector_check' caller in a
+## subshell under errexit, with the sub-checks stubbed via the environment.
+## Echoes 'CAUGHT' or 'PASSED', then ':CONTINUED' -- the latter appears ONLY if
+## msgcollector_check() returned (did not exit the subshell). RC_NOTEMPTY /
+## RC_ALNUM / RC_UNICODE select which sub-check fails.
 drive() {
    RC_NOTEMPTY="$1" RC_ALNUM="$2" RC_UNICODE="$3" \
    PATH="${stub_bin}:${PATH}" CHECK_FN="${check_fn}" bash -c '
@@ -90,7 +99,7 @@ drive() {
       check_is_alpha_numeric() { return "${RC_ALNUM}"; }
       # shellcheck disable=SC1090
       source "${CHECK_FN}"
-      if ! check "x"; then printf "%s" "CAUGHT"; else printf "%s" "PASSED"; fi
+      if ! msgcollector_check "x"; then printf "%s" "CAUGHT"; else printf "%s" "PASSED"; fi
       printf "%s" ":CONTINUED"
    ' 2>/dev/null || true
 }
