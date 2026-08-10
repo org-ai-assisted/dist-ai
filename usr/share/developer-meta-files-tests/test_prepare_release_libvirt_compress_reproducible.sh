@@ -141,12 +141,19 @@ members_dir="${workdir}/members"
 mkdir --parents -- "${members_dir}"
 ## A regular text member, a binary member, and a SPARSE raw member -- the sparse
 ## case is exactly what libvirt_compress() archives (a raw disk image) and the
-## one most sensitive to the tar path taken.
+## one most sensitive to the tar path taken. The fixture is generated ONCE from
+## /dev/urandom so it holds INCOMPRESSIBLE data: an all-zero / constant blob
+## would collapse under xz and never exercise it on realistic content, and would
+## also make the sparse member almost entirely a hole. Both pipelines read the
+## same generated files, so the archives stay comparable despite random content
+## (this test compares pipeline-to-pipeline, never against a golden hash).
 printf '%s\n' 'reproducible fixture member' > "${members_dir}/notes.txt"
-head --bytes=4096 /dev/zero | tr '\0' 'A' > "${members_dir}/blob.bin"
+head --bytes=65536 /dev/urandom > "${members_dir}/blob.bin"
+## Sparse raw image: a hole in the middle, real (random) data blocks at the head
+## and tail -- so '--sparse' has both a hole and content to encode.
 truncate --size=8M -- "${members_dir}/disk.raw"
-printf '%s' 'HEADER-BYTES' | dd of="${members_dir}/disk.raw" conv=notrunc status=none
-printf '%s' 'TAILER-BYTES' | dd of="${members_dir}/disk.raw" bs=1 seek=8388600 conv=notrunc status=none
+head --bytes=4096 /dev/urandom | dd of="${members_dir}/disk.raw" conv=notrunc status=none
+head --bytes=4096 /dev/urandom | dd of="${members_dir}/disk.raw" bs=1 seek=8384512 conv=notrunc status=none
 
 ## Members in a fixed order; tar --sort=name makes order irrelevant, but keep it
 ## stable so the fixture itself is deterministic.
