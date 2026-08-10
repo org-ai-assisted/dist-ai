@@ -97,6 +97,18 @@ mkdir --parents -- "${stub_bin}"
 ## other URL returns 404. The tool calls it as the LAST argument is the URL.
 cat > "${stub_bin}/scurl" <<'STUB'
 #!/bin/bash
+## A '--head' request is the tool asking for the server's clock: answer with a
+## fixed, deterministic Date header (a 2028 instant, so a 2020 pin bumps forward
+## and a 2099 future pin still trips the rollback guard). Otherwise it is a
+## Release probe answered with an HTTP code.
+for stub_arg in "$@"; do
+   if [ "${stub_arg}" = "--head" ]; then
+      ## A status line and a Date header, one per line. The tool greps '^date:'
+      ## and strips any CR, so plain newlines are fine (and keep printf R-030-clean).
+      printf '%s\n' 'HTTP/2 200' 'date: Wed, 15 Mar 2028 12:00:00 GMT'
+      exit 0
+   fi
+done
 url="${@: -1}"
 case "${url}" in
    */Release)
@@ -140,7 +152,9 @@ run_tool() {
 }
 
 pins_in() {
-   grep --only-matching --extended-regexp '[0-9]{8}T[0-9]{6}Z' "$1" | sort --unique
+   ## '|| true' so a file with no timestamp yields empty rather than a grep exit 1
+   ## that would trip the caller's errexit/pipefail.
+   grep --only-matching --extended-regexp '[0-9]{8}T[0-9]{6}Z' "$1" | sort --unique || true
 }
 
 old_pin='20200101T000000Z'

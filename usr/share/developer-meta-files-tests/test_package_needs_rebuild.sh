@@ -154,6 +154,21 @@ else
    fail "a changelog bump should rebuild, but was skipped"
 fi
 
+## A hash FAILURE ('nohash' sentinel) must force a rebuild, never be compared like
+## a real digest -- otherwise a source tree that fails to hash twice reads as
+## 'unchanged' and is skipped. Force the sentinel by overriding the hash function,
+## record it as the stored hash too, and assert the decision is still rebuild.
+record_now
+dm_source_hash_record "${manifest}" 'testpkg' 'nohash'
+dm_package_source_hash() {
+   printf '%s\n' 'nohash'
+}
+if [ "$(needs_rebuild)" -eq 0 ]; then
+   pass "hash failure (nohash) forces a rebuild even when stored == current == nohash"
+else
+   fail "nohash == nohash was treated as 'unchanged' and skipped (must rebuild)"
+fi
+
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s) (${pass_count} passed)." >&2
    exit 1

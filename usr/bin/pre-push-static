@@ -1633,7 +1633,7 @@ check_R153_help_from_comments() {
          --regexp='\^##?.*(\$0|\$\{?BASH_SOURCE)' \
          --regexp='(\$0|\$\{?BASH_SOURCE).*\^##?' \
          -- "${script}" 2>/dev/null \
-         | grep --invert-match --extended-regexp ':[[:space:]]*#' || true)"
+         | grep --invert-match --extended-regexp '^[0-9]+:[[:space:]]*#' || true)"
       if [ -z "${hits}" ]; then
          continue
       fi
