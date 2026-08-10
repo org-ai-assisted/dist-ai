@@ -49,7 +49,7 @@ fi
 
 helper_scripts='false'
 if [ -f "${cfg}" ] \
-   && [ "$(yq -r '.["dist-ai-tests"]["helper-scripts"] // ""' "${cfg}")" = 'true' ]; then
+   && [ "$(yq -r '.["dist-ai-tests"]["helper-scripts"] // ""' -- "${cfg}")" = 'true' ]; then
    helper_scripts='true'
 fi
 
