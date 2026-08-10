@@ -169,15 +169,15 @@ if [ "${submodules}" = 'true' ]; then
 fi
 
 {
-   printf 'apt_packages=%s\n' "${apt_packages}"
-   printf 'helper_scripts=%s\n' "${helper_scripts}"
-   printf 'terminal_poc_corpus=%s\n' "${terminal_poc_corpus}"
-   printf 'submodules=%s\n' "${submodules}"
-   printf 'skip_args=%s\n' "${skip_args# }"
-   printf 'allow_skip_args=%s\n' "${allow_skip_args# }"
+   printf '%s\n' "apt_packages=${apt_packages}"
+   printf '%s\n' "helper_scripts=${helper_scripts}"
+   printf '%s\n' "terminal_poc_corpus=${terminal_poc_corpus}"
+   printf '%s\n' "submodules=${submodules}"
+   printf '%s\n' "skip_args=${skip_args# }"
+   printf '%s\n' "allow_skip_args=${allow_skip_args# }"
    if [ "${helper_scripts}" = 'true' ]; then
-      printf 'hs_arg=--helper-scripts-root %s/helper-scripts\n' "${GITHUB_WORKSPACE}"
+      printf '%s\n' "hs_arg=--helper-scripts-root ${GITHUB_WORKSPACE}/helper-scripts"
    else
-      printf 'hs_arg=\n'
+      printf '%s\n' "hs_arg="
    fi
 } >> "${GITHUB_OUTPUT}"
