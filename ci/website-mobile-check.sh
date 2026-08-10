@@ -23,9 +23,18 @@ shopt -s shift_verbose
 
 [ -v TMP ] || TMP=/tmp
 
+venv_dir=""
+# shellcheck disable=SC2317  # reached indirectly via 'trap cleanup EXIT'
+cleanup() {
+   ## safe-rm ships with private-ai-config and is absent on a CI runner, so
+   ## tolerate its failure (never fall back to rm); a missed cleanup on the
+   ## runner's ephemeral TMP leaks nothing.
+   [ -n "${venv_dir}" ] || return 0
+   safe-rm --recursive --force -- "${venv_dir}" 2>/dev/null || true
+}
+
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 check_mobile="${script_dir}/../usr/share/website-tests/check_mobile.py"
-venv_dir="${TMP}/website-mobile-venv"
 
 if [ ! -f "${check_mobile}" ]; then
    printf '%s\n' "FAIL: check_mobile.py not found at '${check_mobile}'" >&2
@@ -36,6 +45,21 @@ if [ "$#" -eq 0 ]; then
    printf '%s\n' 'FAIL: no site root given' >&2
    exit 1
 fi
+
+## Reject a misspelled/absent root here: check_mobile.py silently drops a
+## non-directory argument, so a bad root among good ones would let the gate pass
+## without ever loading that site.
+for site_root in "$@"; do
+   if [ ! -d "${site_root}" ]; then
+      printf '%s\n' "FAIL: site root is not a directory: '${site_root}'" >&2
+      exit 1
+   fi
+done
+
+## Per-invocation venv, not a fixed path: concurrent CI jobs must not race on the
+## same directory during create / pip install.
+venv_dir="$(mktemp --directory -- "${TMP}/website-mobile-venv.XXXXXX")"
+trap cleanup EXIT
 
 ## Playwright's python bindings + the chromium engine. A venv because the CI
 ## runner's system python is PEP668 externally-managed; --with-deps pulls the
