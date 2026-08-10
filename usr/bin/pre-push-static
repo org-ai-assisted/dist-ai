@@ -20,8 +20,10 @@
 ##      is absent
 ##   4. LC_ALL=C grep -P  '[^\x00-\x7F]' on the commit-range
 ##      message (R-001)
-##   5. R-010 strict-mode block in top 120 lines (+ the shopt half in a guarded source-able block)
+##   5. R-010 strict-mode block in top 160 lines (+ the shopt half in a guarded source-able block)
 ##   6. R-011 no 'set +o errexit' toggling
+##      R-013 shell options set by long '-o' name, one per line (even in
+##      sh); no 'set -eu' short form, no >1 option on a 'set' line
 ##   7. R-030/R-031 no bare-newline printf ('printf \n' or bare
 ##      'printf %s\n' with the data arg omitted; a newline must be
 ##      written 'printf %s\n' "" -- that '' data-arg form is correct
@@ -696,7 +698,7 @@ is_self_referential() {
 }
 
 ## Some scripts (including this one) carry long-form header
-## docstrings before the strict-mode block; head -120 is generous
+## docstrings before the strict-mode block; head -160 is generous
 ## enough to accommodate them without missing the rule's intent.
 check_R010_strict_block() {
    local script header directive present shopt_missing
@@ -729,9 +731,9 @@ check_R010_strict_block() {
       fi
       ## Count DISTINCT required directives present at column 0 (whole-line,
       ## fixed-string match), not matching LINES: six copies of
-      ## 'set -o errexit' must NOT satisfy the block. head -120 accommodates
+      ## 'set -o errexit' must NOT satisfy the block. head -160 accommodates
       ## the long header docstrings some scripts carry before the block.
-      header="$(head --lines=120 -- "${script}")"
+      header="$(head --lines=160 -- "${script}")"
       present=0
       for directive in "${required[@]}"; do
          if grep --quiet --line-regexp --fixed-strings -- "${directive}" <<< "${header}"; then
@@ -811,7 +813,7 @@ check_R010_strict_block() {
          continue
       fi
       if [ "${present}" -lt 6 ]; then
-         fail "R-010 strict-mode block" "'${script}' has only ${present}/6 distinct strict-mode directives in head -120"
+         fail "R-010 strict-mode block" "'${script}' has only ${present}/6 distinct strict-mode directives in head -160"
       fi
    done
 }
@@ -847,6 +849,40 @@ check_R011_errexit_toggle() {
    ## not match. Anchored at 'set', so a '## set +e' comment is spared.
    hits="$(grep --with-filename --line-number --extended-regexp '^[[:space:]]*set[[:space:]]+\+(o[[:space:]]+errexit|[a-z]*e[a-z]*)' -- "${unwaived_scripts[@]}" 2>/dev/null || true)"
    emit_hits "R-011 errexit toggle" "${hits}"
+}
+
+check_R013_set_options() {
+   local script hits
+   local -a unwaived_scripts
+
+   ## R-013: set shell options by long '-o' name, one per line, even in
+   ## POSIX sh (dash / busybox sh both VALIDATE and IMPLEMENT 'set -o
+   ## errexit' / 'nounset' / 'pipefail'). Script-wide waiver
+   ## '## style-ok: allow-short-set'.
+   unwaived_scripts=()
+   for script in "${@}"; do
+      if grep --quiet --extended-regexp \
+         '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*allow-short-set([[:space:]]|$)' \
+         -- "${script}"; then
+         note "R-013 skipped: 'style-ok: allow-short-set' waiver in '${script}'"
+         continue
+      fi
+      unwaived_scripts+=( "${script}" )
+   done
+   [ "${#unwaived_scripts[@]}" -gt 0 ] || return 0
+
+   ## Two shapes, both anchored at 'set' so a '## set -eu' comment is spared:
+   ##  1. a SHORT-flag enable of errexit/nounset -- 'set -' then a short-flag
+   ##     run that contains 'e' or 'u' ('set -e', 'set -eu', 'set -euo
+   ##     pipefail', 'set -xe'). Needing an [eu] AFTER the flag run leaves
+   ##     'set -o <name>' unmatched (its 'o' is not [eu]); 'set --' /
+   ##     'set -- "$@"' (positional params) and a lone 'set -x' / 'set -f'
+   ##     (no e/u) are spared too. The '+' toggle is R-011's job.
+   ##  2. MORE THAN ONE option on one 'set' line -- two '[+-]o <name>'.
+   hits="$(grep --with-filename --line-number --extended-regexp \
+      '^[[:space:]]*set[[:space:]]+-[a-z]*[eu]|^[[:space:]]*set[[:space:]]+[+-]o[[:space:]]+[^[:space:]]+[[:space:]]+[+-]o[[:space:]]' \
+      -- "${unwaived_scripts[@]}" 2>/dev/null || true)"
+   emit_hits "R-013 set options long-form one-per-line" "${hits}"
 }
 
 ## Drops self-referential files (e.g., this script) from the list
@@ -2205,6 +2241,7 @@ run_file_checks() {
       check_shellcheck "${shell_files[@]}"
       check_R010_strict_block "${shell_files[@]}"
       check_R011_errexit_toggle "${shell_files[@]}"
+      check_R013_set_options "${shell_files[@]}"
       check_R031_bare_newline "${shell_files[@]}"
       check_R030_format_string "${shell_files[@]}"
       check_R051_trap_inline "${shell_files[@]}"

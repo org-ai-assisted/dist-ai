@@ -360,6 +360,24 @@ expect_rule "R-042" "printf ${dq}%s${nl}${dq} ${dq}${dq}"        "absent"
 expect_rule "R-011" "set +o errexit"                             "present"
 expect_rule "R-011" "set +e"                                     "present"
 
+## R-013: shell options in long '-o' name, one per line. Short-flag enables of
+## errexit/nounset (set -e, set -eu, set -euo pipefail) and >1 option on one
+## 'set' line (set -o a -o b) are FLAGGED; a lone 'set -o <name>', 'set --'
+## positional-param forms, and a bare 'set -x'/'set -f' (no e/u) are SPARED.
+r013='R-013 set options long-form one-per-line'
+expect_rule "${r013}" "set -eu"                                  "present"
+expect_rule "${r013}" "set -e"                                   "present"
+expect_rule "${r013}" "set -euo pipefail"                        "present"
+expect_rule "${r013}" "set -o errexit -o nounset"               "present"
+expect_rule "${r013}" "set -o errexit"                           "absent"
+expect_rule "${r013}" "set -o nounset"                           "absent"
+expect_rule "${r013}" "set -- ${dq}\$@${dq}"                     "absent"
+expect_rule "${r013}" "set -x"                                   "absent"
+## A '## set -eu' comment is documentation, not code: SPARED.
+expect_rule "${r013}" "## set -eu"                               "absent"
+## Script-wide waiver disables it.
+expect_rule "${r013}" "## style-ok: allow-short-set${nlreal}set -eu" "absent"
+
 ## R-051: a double-quoted inline trap command is FLAGGED; clearing a trap
 ## with an empty string is SPARED.
 expect_rule "R-051" "trap ${dq}${del} -f x${dq} EXIT"            "present"
