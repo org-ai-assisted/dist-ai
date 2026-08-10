@@ -111,6 +111,32 @@ def test_mixed_labelled_and_url_text_anchors() -> None:
 
 
 ## ---------------------------------------------------------------------------
+## Concrete cli_translate_gui_markup examples: verify the SUBSTITUTIONS and that
+## content survives. The property lane only checks that owned tags are gone,
+## which a transform that DELETED <br> or dropped text would also satisfy.
+## ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(TRANSLATE_FUNC is None,
+                    reason='cli_translate_gui_markup not available')
+def test_translate_br_becomes_newline_not_deleted() -> None:
+    assert _run_translate('a<br>b').stdout == 'a\nb'
+    assert _run_translate('a<br/>b<br />c').stdout == 'a\nb\nc'
+
+
+@pytest.mark.skipif(TRANSLATE_FUNC is None,
+                    reason='cli_translate_gui_markup not available')
+def test_translate_preserves_plain_text() -> None:
+    assert _run_translate('plain words kept').stdout == 'plain words kept'
+
+
+@pytest.mark.skipif(TRANSLATE_FUNC is None,
+                    reason='cli_translate_gui_markup not available')
+def test_translate_font_tag_removed_text_kept() -> None:
+    ## Color disabled: the handled font tag is removed, its text stays.
+    assert _run_translate('<font color="green">colored</font>').stdout == 'colored'
+
+
+## ---------------------------------------------------------------------------
 ## Property-based invariants (needs python3-hypothesis). Unlike the concrete
 ## examples above -- which must always run -- this layer is skipped cleanly
 ## when hypothesis is absent, so a plain 'pytest' still exercises the fix.
@@ -172,3 +198,10 @@ if _HAVE_HYPOTHESIS:
         assert TRANSLATED_FONT.search(proc.stdout) is None, 'a handled <font color> survived'
         assert '</font>' not in proc.stdout, 'a </font> survived'
         assert TRANSLATED_BR.search(proc.stdout) is None, 'a <br> survived'
+        ## Content preservation: with no markup the transform is the identity;
+        ## guards against a version that empties or drops text (which the
+        ## tag-absence checks alone would not catch). subprocess text mode
+        ## normalizes CR/CRLF to \n on read, so compare against that view.
+        if '<' not in message:
+            expected = message.replace('\r\n', '\n').replace('\r', '\n')
+            assert proc.stdout == expected, 'plain text was not preserved verbatim'

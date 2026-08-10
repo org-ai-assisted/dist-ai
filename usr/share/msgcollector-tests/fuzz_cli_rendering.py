@@ -121,6 +121,13 @@ def check_translate(links_def: str, translate_def: str, message: str) -> None:
     assert not TRANSLATED_FONT.search(out), 'a handled <font color> tag survived'
     assert '</font>' not in out, 'a </font> tag survived'
     assert not TRANSLATED_BR.search(out), 'a <br> tag survived'
+    ## Content preservation: with no markup at all the transform is the identity.
+    ## Guards against a version that returns empty, drops text, or deletes rather
+    ## than converts -- which the tag-absence checks alone would not catch.
+    ## subprocess text mode normalizes CR/CRLF to \n on read; compare that view.
+    if '<' not in message:
+        expected = message.replace('\r\n', '\n').replace('\r', '\n')
+        assert out == expected, 'plain text was not preserved verbatim'
 
 
 def check(func_def: str, message: str) -> None:
