@@ -48,9 +48,13 @@ done
 ## it. Prepending the runner's own bin dir makes the two layouts equivalent
 ## instead of leaving tests to guess where the tool landed.
 runner_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")"
-dist_ai_bin="${runner_dir}/../../bin"
+## Canonicalised BEFORE the -d test, so a path that will not resolve fails the
+## test and leaves PATH untouched. Resolving after it instead ('cd && pwd')
+## yields an EMPTY string when the traversal fails, and an empty PATH element
+## means the CURRENT directory -- turning an unreadable bin dir into cwd on the
+## PATH of every test the lane runs.
+dist_ai_bin="$(readlink --canonicalize -- "${runner_dir}/../../bin" || true)"
 if [ -d "${dist_ai_bin}" ]; then
-   dist_ai_bin="$(cd -- "${dist_ai_bin}" && pwd)"
    PATH="${dist_ai_bin}:${PATH}"
    export PATH
 fi
@@ -60,6 +64,11 @@ if [ -z "${repo}" ] || [ ! -d "${repo}/tests" ]; then
    printf '%s\n' 'private-ai-config-tests: PRIVATE_AI_CONFIG_PATH unset or has no tests/ dir; skipping.' >&2
    exit 77
 fi
+## Canonical from here on. PRIVATE_AI_CONFIG_PATH may be RELATIVE, which would
+## put a relative entry on PATH below -- resolved against whatever directory a
+## test happens to chdir into, so the component's tools are found, or not, by
+## accident.
+repo="$(readlink --canonicalize -- "${repo}")"
 
 ## The COMPONENT's own tools (safe-pgrep, safe-systemctl, qube-ctl ...) live in
 ## its usr/bin. On the dev VM they arrive installed, so tests reach them by
