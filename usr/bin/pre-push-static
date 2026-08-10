@@ -872,15 +872,18 @@ check_R013_set_options() {
    [ "${#unwaived_scripts[@]}" -gt 0 ] || return 0
 
    ## Two shapes, both anchored at 'set' so a '## set -eu' comment is spared:
-   ##  1. a SHORT-flag enable of errexit/nounset -- 'set -' then a short-flag
-   ##     run that contains 'e' or 'u' ('set -e', 'set -eu', 'set -euo
-   ##     pipefail', 'set -xe'). Needing an [eu] AFTER the flag run leaves
-   ##     'set -o <name>' unmatched (its 'o' is not [eu]); 'set --' /
-   ##     'set -- "$@"' (positional params) and a lone 'set -x' / 'set -f'
-   ##     (no e/u) are spared too. The '+' toggle is R-011's job.
+   ##  1. a SHORT-flag enable of errexit/nounset -- ANY '-'-flag token whose
+   ##     bundle contains a lowercase 'e' or 'u', scanned across EVERY option
+   ##     token (the '([^[:space:]]+[[:space:]]+)*' skips leading tokens), so
+   ##     'set -e', 'set -eu', 'set -euo pipefail', 'set -x -e' (later token),
+   ##     'set -Eeuo pipefail' (uppercase flags in the bundle) and
+   ##     'set -o errexit -u' (long then short) all match. '[a-zA-Z]*[eu]'
+   ##     requires the lowercase e/u, so 'set -E' (errtrace) and 'set -x' /
+   ##     'set -f' (no e/u) are spared; 'set -o <name>' and 'set --' /
+   ##     'set -- "$@"' carry no such token. The '+' toggle is R-011's job.
    ##  2. MORE THAN ONE option on one 'set' line -- two '[+-]o <name>'.
    hits="$(grep --with-filename --line-number --extended-regexp \
-      '^[[:space:]]*set[[:space:]]+-[a-z]*[eu]|^[[:space:]]*set[[:space:]]+[+-]o[[:space:]]+[^[:space:]]+[[:space:]]+[+-]o[[:space:]]' \
+      '^[[:space:]]*set[[:space:]]+([^[:space:]]+[[:space:]]+)*-[a-zA-Z]*[eu]|^[[:space:]]*set[[:space:]]+[+-]o[[:space:]]+[^[:space:]]+[[:space:]]+[+-]o[[:space:]]' \
       -- "${unwaived_scripts[@]}" 2>/dev/null || true)"
    emit_hits "R-013 set options long-form one-per-line" "${hits}"
 }

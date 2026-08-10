@@ -373,6 +373,13 @@ expect_rule "${r013}" "set -o errexit"                           "absent"
 expect_rule "${r013}" "set -o nounset"                           "absent"
 expect_rule "${r013}" "set -- ${dq}\$@${dq}"                     "absent"
 expect_rule "${r013}" "set -x"                                   "absent"
+## Bypass forms (both reviewers caught): e/u in a LATER token, uppercase flags
+## in the bundle, and a long-then-short mix -- all FLAGGED.
+expect_rule "${r013}" "set -x -e"                                "present"
+expect_rule "${r013}" "set -Eeuo pipefail"                       "present"
+expect_rule "${r013}" "set -o errexit -u"                        "present"
+## 'set -E' (errtrace, no e/u) stays SPARED, like 'set -x'.
+expect_rule "${r013}" "set -E"                                   "absent"
 ## A '## set -eu' comment is documentation, not code: SPARED.
 expect_rule "${r013}" "## set -eu"                               "absent"
 ## Script-wide waiver disables it.
