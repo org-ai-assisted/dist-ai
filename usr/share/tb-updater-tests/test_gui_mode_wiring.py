@@ -28,6 +28,7 @@ covered end to end.
 """
 
 import os
+import shlex
 import subprocess
 import sys
 
@@ -108,7 +109,8 @@ def test_desktop_wrapper_launches_gui_mode(tmp_path):
     stub_bin.mkdir()
     stub = stub_bin / "update-torbrowser"
     stub.write_text(
-        "#!/bin/bash\nprintf '%s\\n' \"$*\" > " + str(marker) + "\n")
+        "#!/bin/bash\nprintf '%s\\n' \"$*\" > " + shlex.quote(str(marker))
+        + "\n")
     stub.chmod(0o755)
     env = dict(os.environ)
     env["PATH"] = str(stub_bin) + os.pathsep + env.get("PATH", "")

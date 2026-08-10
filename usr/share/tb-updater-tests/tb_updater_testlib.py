@@ -100,7 +100,8 @@ def sanitize_string_bindir() -> str:
 
 def drive_bash_function(path: str, name: str, *, preamble: str = "",
                         replace=None, args: str = "", env=None,
-                        stdin: str = None) -> subprocess.CompletedProcess:
+                        stdin: "str | None" = None
+                        ) -> subprocess.CompletedProcess:
     """Source the REAL shipped bash function `name` from `path` and run it,
     returning the completed process.
 
