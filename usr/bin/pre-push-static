@@ -780,15 +780,12 @@ check_R010_strict_block() {
          ## The 'set -o errexit/nounset/pipefail' choice itself stays the
          ## script's own -- some defer pipefail or omit nounset for
          ## documented reasons -- so it is NOT re-checked here.
-         ## Scope is deliberately WHOLE-FILE, not the guarded block: the
-         ## block that enables strict-mode is guarded by a script-specific
-         ## condition ('if was_executed ...' in some, 'if [ "${X_sourced}"
-         ## = false ]' in others), so there is no fixed block delimiter to
-         ## scope to without fragile per-script parsing. The only way this
-         ## passes wrongly is a file that omits both shopt from the guard
-         ## yet carries BOTH elsewhere -- and inherit_errexit/shift_verbose
-         ## are strict-preamble-only builtins that do not occur loose in
-         ## function bodies, so that coincidence is not a real accident.
+         ## Scope is deliberately WHOLE-FILE: the strict block's guard is
+         ## script-specific ('if was_executed ...', 'if [ "${X_sourced}" =
+         ## false ]', ...), so there is no fixed delimiter to scope to. A
+         ## false pass needs both shopt omitted from the guard yet present
+         ## elsewhere -- and these strict-preamble-only builtins do not
+         ## occur loose in function bodies, so that is not a real accident.
          if grep --quiet --extended-regexp \
                '^[[:space:]]+set -o errexit[[:space:]]*$' -- "${script}"; then
             shopt_missing=""
