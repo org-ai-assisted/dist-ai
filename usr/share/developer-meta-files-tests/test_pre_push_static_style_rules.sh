@@ -70,7 +70,9 @@ assert_prerequisite \
 ## PACKAGED gate while a developer edits the in-tree one: every new rule then
 ## reads as "does not fire" and every 'absent' assertion passes vacuously.
 gate_test_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
-GATE="${gate_test_dir}/../../bin/pre-push-static"
+## PRE_PUSH_STATIC_BIN override aims the suite at an alternate gate copy (e.g. the
+## pre-fix version for a canary run); otherwise the in-tree copy, then the packaged.
+GATE="${PRE_PUSH_STATIC_BIN:-${gate_test_dir}/../../bin/pre-push-static}"
 if [ ! -x "${GATE}" ]; then
    GATE='/usr/bin/pre-push-static'
 fi
@@ -460,6 +462,13 @@ expect_rule "R-102" "run${sp}wrapper.sh${sp}/etc/config"         "absent"
 ## line, are both FLAGGED (the invert no longer spares the whole line).
 expect_rule "R-120" "true${sc}${del} -rf x"                      "present"
 expect_rule "R-120" "safe-${del} -- a${sc}${sp}${del} -rf b"     "present"
+## ...but 'git rm' -- a tracked, reversible delete -- is SPARED, INCLUDING with
+## git global options between 'git' and 'rm' ('git -C <dir> rm' is the common
+## test/CI form). A real 'rm' after a non-'rm' git subcommand is still FLAGGED.
+expect_rule "R-120" "git${sp}${del} -f a"                        "absent"
+expect_rule "R-120" "git${sp}-C${sp}x${sp}${del} -f a"           "absent"
+expect_rule "R-120" "git${sp}-c${sp}k=v${sp}${del} b"            "absent"
+expect_rule "R-120" "git${sp}-C${sp}x${sp}log${sp}&&${sp}${del} -rf z" "present"
 
 ## R-170: a hardcoded temp path must be FLAGGED, including the inline
 ## '${TMPDIR:-/tmp}' fallback idiom the rule exists to retire.

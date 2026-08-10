@@ -1527,11 +1527,17 @@ check_R120_rm() {
       ## carrying a REAL 'rm' next to a safe-rm ('safe-rm a; rm -rf b').
       ## Comments are excluded via the '[^#]*' prefix. The invert keeps the
       ## non-filesystem-rm carve-outs (shred, git rm, git remote rm); those
-      ## remain whole-line, a narrow accepted residual.
+      ## remain whole-line, a narrow accepted residual. The git carve-out allows
+      ## git GLOBAL OPTIONS between 'git' and 'rm' -- 'git -C <dir> rm',
+      ## 'git -c k=v rm', 'git --git-dir=<p> rm' -- since 'git rm' is a tracked,
+      ## reversible index/worktree delete, not the coreutil this rule targets. Only
+      ## leading '-...' option tokens (each optionally taking one non-'-' value) are
+      ## skipped, so 'git -C x log && rm -rf z' is NOT spared: 'log' is not an
+      ## option, so the run of options ends and the required 'rm' is not next.
       hits="$(grep --line-number --extended-regexp \
          '^[[:space:]]*[^#]*[[:space:];&|(]rm([[:space:]]|$)|^[[:space:]]*rm([[:space:]]|$)' \
          -- "${script}" 2>/dev/null \
-         | grep --invert-match --extended-regexp 'shred[[:space:]]|git[[:space:]]+(remote[[:space:]]+)?rm[[:space:]]' \
+         | grep --invert-match --extended-regexp 'shred[[:space:]]|git([[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?)*[[:space:]]+(remote[[:space:]]+)?rm[[:space:]]' \
          || true)"
       if [ -z "${hits}" ]; then
          continue

@@ -78,13 +78,26 @@ run_caller() {
       printf '%s\n' "${body}"
    } >"${caller}"
 
-   ## /usr/libexec is replaced wholesale so the sourced file cannot reach the
-   ## host's helper-scripts; only the two stubs above are visible.
-   output="$(bwrap --dev-bind / / \
-      --tmpfs /usr/libexec \
-      --bind "${stubs}" /usr/libexec/helper-scripts \
-      --ro-bind "${shared_file}" "${shared_file}" \
-      -- timeout 20 bash "${caller}" 2>&1)" || true
+   ## Isolate the two sourced helper-scripts so the host install is irrelevant.
+   ## Locally, bwrap gives a throwaway /usr/libexec, leaving the host untouched.
+   ## CI's container denies the unprivileged userns bwrap needs (pivot_root
+   ## EPERM in debian:trixie-slim, same as the sibling sandbox tests -- those
+   ## run only in temp-claude), but it is ephemeral and root, so there we
+   ## install the same two stubs at the real path and run unconfined. No other
+   ## case in this suite reads /usr/libexec/helper-scripts, so the write cannot
+   ## leak between cases.
+   if [ "${CI:-}" = "true" ]; then
+      mkdir --parents -- /usr/libexec/helper-scripts
+      cp --force -- "${stubs}/light_sleep.bsh" "${stubs}/strings.bsh" \
+         /usr/libexec/helper-scripts/
+      output="$(timeout 20 bash "${caller}" 2>&1)" || true
+   else
+      output="$(bwrap --dev-bind / / \
+         --tmpfs /usr/libexec \
+         --bind "${stubs}" /usr/libexec/helper-scripts \
+         --ro-bind "${shared_file}" "${shared_file}" \
+         -- timeout 20 bash "${caller}" 2>&1)" || true
+   fi
    printf '%s' "${output}"
 }
 
