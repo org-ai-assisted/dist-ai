@@ -17,6 +17,10 @@ Locks in:
   * suspend-post prints the message on stdout in the normal case, and
     SUPPRESSES the stdout copy under xtrace (set -x already echoes it),
   * suspend-pre still prints after the vestigial output_cmd toggle was dropped.
+
+These assert behaviour the helpers share before and after the printf change, so
+the suite is safe against either script version. Reintroducing echo is caught by
+the R-034 static gate, so no structural guard is duplicated here.
 """
 
 import os
@@ -86,15 +90,6 @@ class SuspendOutputTest(unittest.TestCase):
         result = _run("suspend-pre", "INFO - canary-pre", "normal")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("INFO - canary-pre", result.stdout)
-
-    def test_no_echo_output_command_remains(self) -> None:
-        ## Guards a revert of the printf fix: neither script may reintroduce the
-        ## echo-based output dispatch.
-        for name in ("suspend-pre", "suspend-post"):
-            with open(_suspend_script(name), encoding="utf-8") as handle:
-                text = handle.read()
-            self.assertNotIn('="echo"', text, name)
-            self.assertNotIn("${output_cmd}", text, name)
 
 
 if __name__ == "__main__":
