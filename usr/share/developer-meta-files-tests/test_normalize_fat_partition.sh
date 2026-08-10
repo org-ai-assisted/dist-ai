@@ -192,6 +192,25 @@ else
    fail "FAT16 handling: status=${status}, image ${fat16_state}"
 fi
 
+## --- 10. a failed root listing ABORTS, not silently drops files -------------
+## Regression: the extraction loop once fed the while via '< <( mdir ... )', a
+## process substitution whose non-zero exit errexit could not see -- an
+## unreadable device listed nothing, normalized to an EMPTY root and dropped
+## every file, yet exited 0. mdir is used ONLY for that listing, so stub it to
+## fail and confirm the tool now aborts instead of stripping the image.
+stub_dir="${work_dir}/stub-bin"
+mkdir -p -- "${stub_dir}"
+printf '%s\n' '#!/bin/sh' 'exit 1' > "${stub_dir}/mdir"
+chmod +x -- "${stub_dir}/mdir"
+make_fat "${work_dir}/listfail.img" EFI/BOOT/grubx64.efi
+status=0
+PATH="${stub_dir}:${PATH}" "${tool}" "${work_dir}/listfail.img" >/dev/null 2>&1 || status="$?"
+if [ "${status}" -ne 0 ]; then
+   pass 'a failed mdir listing aborts (does not silently strip the image)'
+else
+   fail 'the tool exited 0 despite mdir failing -- files would be silently dropped'
+fi
+
 printf '%s\n' "===== dm-normalize-fat-partition: ${pass_count} pass, ${fail_count} fail ====="
 if [ "${fail_count}" -gt 0 ]; then
    exit 1
