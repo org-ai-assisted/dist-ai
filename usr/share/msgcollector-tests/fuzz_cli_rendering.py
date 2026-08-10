@@ -36,6 +36,12 @@ import sys
 import msgcollector_testlib as T
 
 WELL_FORMED_ANCHOR = re.compile(r'<a href="?[^">]*"?>[^<]*</a>')
+## The GUI markup cli_translate_gui_markup translates away (with color disabled):
+## the four handled <font color> openers, its </font> closer, and every <br>
+## spelling. Other tags (<p>, <code>, an unhandled <font color>) are left for
+## strip-markup and are NOT asserted here.
+TRANSLATED_FONT = re.compile(r'<font color="(?:green|orange|yellow|red)">')
+TRANSLATED_BR = re.compile(r'<br ?/?>')
 
 ## Fragments that make the anchor rewriter interesting: valid/edge anchors,
 ## nesting, unclosed tags, odd quoting, control bytes, entities, other markup.
@@ -89,6 +95,34 @@ def run(func_def: str, message: str, timeout: float = 5.0):
     return proc.returncode, proc.stdout
 
 
+def run_translate(links_def: str, translate_def: str, message: str,
+                  timeout: float = 5.0):
+    """Run cli_translate_gui_markup (which calls cli_links_to_footnotes) on
+    `message`, color disabled. Returns (rc, stdout). Raises on a hang."""
+    script = (links_def + '\n' + translate_def
+              + '\ngreen="" yellow="" red="" reset=""\n'
+              + 'cli_translate_gui_markup "$1"\n')
+    proc = subprocess.run(
+        ['bash', '-c', script, 'bash', message],
+        capture_output=True, text=True, timeout=timeout)
+    return proc.returncode, proc.stdout
+
+
+def check_translate(links_def: str, translate_def: str, message: str) -> None:
+    """Raise AssertionError (or let TimeoutExpired propagate) on a violation.
+    The markup cli_translate_gui_markup OWNS -- the four handled <font color>
+    openers, </font>, and every <br> spelling -- must be gone from the output.
+    Anchors are deliberately NOT asserted: cli_links handles most (checked by
+    check()), and the <br>-to-newline pass can turn a <br>-containing anchor
+    text into a well-formed anchor that strip-markup removes later -- that is
+    correct, not a leak."""
+    rc, out = run_translate(links_def, translate_def, message)
+    assert rc == 0, f"cli_translate_gui_markup non-zero exit {rc}"
+    assert not TRANSLATED_FONT.search(out), 'a handled <font color> tag survived'
+    assert '</font>' not in out, 'a </font> tag survived'
+    assert not TRANSLATED_BR.search(out), 'a <br> tag survived'
+
+
 def check(func_def: str, message: str) -> None:
     """Raise AssertionError (or let TimeoutExpired propagate) on a violation.
 
@@ -126,6 +160,14 @@ def main() -> int:
     except LookupError as exc:
         print(f"SKIP: {exc}", file=sys.stderr)
         return 77
+    ## cli_translate_gui_markup wraps cli_links_to_footnotes plus the color-tag
+    ## and <br> translation. Absent on an older msgcollector -> just skip that
+    ## lane rather than the whole run.
+    try:
+        translate_def = T.extract_bash_function(script,
+                                                'cli_translate_gui_markup')
+    except LookupError:
+        translate_def = None
 
     ## Always retry the curated regressions first, then the random sweep.
     cases = [('regression', m) for m in _REGRESSIONS]
@@ -134,6 +176,8 @@ def main() -> int:
         message = fixed if fixed is not None else gen_message(rng)
         try:
             check(func_def, message)
+            if translate_def is not None:
+                check_translate(func_def, translate_def, message)
         except subprocess.TimeoutExpired:
             print(f"FAIL (hang, {kind}): seed={seed} i={i} message={message!r}",
                   file=sys.stderr)
