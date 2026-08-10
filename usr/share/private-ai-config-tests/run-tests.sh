@@ -5,12 +5,17 @@
 
 ## AI-Assisted
 
-## Runs the private-ai-config test surface from a PRIVATE_AI_CONFIG_PATH checkout.
-## Split into lanes because the repo's tests have sharply different runtime
-## requirements: the core lane is container-safe, the fuzz lane is randomized
-## and time-boxed, and the resilience lane needs a live 'systemd --user'
-## manager plus a journal, which a debian:trixie-slim CI container does not
-## have.
+## Entry point for the private-ai-config test surface. Delegates to the
+## component's own runner and adds nothing but this repo's tools.
+##
+## The lane membership, the exclusions and the authorized skips all live in the
+## COMPONENT, beside the tests they describe. They used to live here, as arrays
+## of paths into the other repo, which meant no single commit could add a test
+## and register it: two repos, two PRs, and a red CI in between. Thirty-one test
+## files accumulated in no lane that way -- never run, never reported.
+##
+## So this file must never learn a test's name again. If something here needs
+## editing when a test is added, the split has come back.
 ##
 ## Exit contract (dist-ai-tests-all): 0 PASS / 77 SKIP / anything else FAIL.
 
@@ -21,384 +26,34 @@ set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
 
-lane='core'
+repo="${PRIVATE_AI_CONFIG_PATH:-}"
+if [ -z "${repo}" ] || [ ! -d "${repo}/tests" ]; then
+   printf '%s\n' 'private-ai-config-tests: PRIVATE_AI_CONFIG_PATH unset or has no tests/ dir; skipping.' >&2
+   exit 77
+fi
+## Canonical: PRIVATE_AI_CONFIG_PATH may be RELATIVE, and a relative entry on
+## PATH below resolves against whatever directory a test happens to chdir into.
+repo="$(readlink --canonicalize -- "${repo}")"
 
-while [ "$#" -gt 0 ]; do
-   case "$1" in
-      '--lane')
-         [ "$#" -ge 2 ] || { printf '%s\n' 'run-tests.sh: --lane requires a value' >&2; exit 64; }
-         lane="$2"
-         shift 2
-         ;;
-      '--lane='*)
-         lane="${1#*=}"
-         shift
-         ;;
-      *)
-         ## Remaining arguments are forwarded to the lane's tests (e.g.
-         ## --iters / --seed for the fuzzer).
-         break
-         ;;
-   esac
-done
+runner="${repo}/tests/run"
+if [ ! -f "${runner}" ]; then
+   printf '%s\n' "private-ai-config-tests: no runner at ${runner}; the checkout predates the in-component test runner." >&2
+   exit 1
+fi
 
 ## dist-ai's own tools (pre-push-static and friends) live in THIS repo's
 ## usr/bin. An installed dist-ai already has them on PATH; a CI checkout does
-## not, and a test that drives the REAL gate rather than a stub then cannot find
-## it. Prepending the runner's own bin dir makes the two layouts equivalent
-## instead of leaving tests to guess where the tool landed.
-runner_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")"
+## not, and a test driving the REAL gate rather than a stub then cannot find it.
+##
 ## Canonicalised BEFORE the -d test, so a path that will not resolve fails the
 ## test and leaves PATH untouched. Resolving after it instead ('cd && pwd')
 ## yields an EMPTY string when the traversal fails, and an empty PATH element
-## means the CURRENT directory -- turning an unreadable bin dir into cwd on the
-## PATH of every test the lane runs.
+## means the CURRENT directory.
+runner_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")"
 dist_ai_bin="$(readlink --canonicalize -- "${runner_dir}/../../bin" || true)"
 if [ -d "${dist_ai_bin}" ]; then
    PATH="${dist_ai_bin}:${PATH}"
    export PATH
 fi
 
-repo="${PRIVATE_AI_CONFIG_PATH:-}"
-if [ -z "${repo}" ] || [ ! -d "${repo}/tests" ]; then
-   printf '%s\n' 'private-ai-config-tests: PRIVATE_AI_CONFIG_PATH unset or has no tests/ dir; skipping.' >&2
-   exit 77
-fi
-## Canonical from here on. PRIVATE_AI_CONFIG_PATH may be RELATIVE, which would
-## put a relative entry on PATH below -- resolved against whatever directory a
-## test happens to chdir into, so the component's tools are found, or not, by
-## accident.
-repo="$(readlink --canonicalize -- "${repo}")"
-
-## The COMPONENT's own tools (safe-pgrep, safe-systemctl, qube-ctl ...) live in
-## its usr/bin. On the dev VM they arrive installed, so tests reach them by
-## name; a CI checkout only has the source tree, and a test that shells out to
-## one then took the tool's absence for a real answer -- safe-pgrep missing read
-## as "no such process", which is a fabricated verdict, not a missing tool.
-component_bin="${repo}/usr/bin"
-if [ -d "${component_bin}" ]; then
-   PATH="${component_bin}:${PATH}"
-   export PATH
-fi
-
-## Per-lane test lists. Paths are relative to the checkout root.
-##
-## These are DATA, not comments, because check_registration below compares the
-## checkout against them: a test file that is in neither a lane nor the
-## exclusion list is reported as unregistered. A hand-maintained list drifts
-## silently otherwise -- the suite keeps passing while covering less than it
-## claims, which is indistinguishable from covering everything.
-core_tests=(
-   'tests/claude-goal-state-test.py'
-   'tests/redactor-date-shape-test.py'
-   'tests/safe-pkill-guard-test.py'
-   'tests/ci-status-checkruns-test.py'
-   'tests/git-hooks-unicode-test.sh'
-   'tests/git-hooks-branch-policy-test.py'
-   'tests/ci-status-test.sh'
-   'tests/kcov-shell-coverage-test.sh'
-   'tests/anti-stall-supervisor-wake-arity-test.sh'
-   'tests/claude-session-on-mobile-test.sh'
-   'tests/string-parsing-stress-test.sh'
-   'tests/sandbox-transfer-perms-test.sh'
-   'tests/sandbox-confine-profile-test.sh'
-   'tests/sandbox-confine-wiring-test.sh'
-   'tests/sandbox-provision-guard-shim-test.sh'
-   'tests/ai-review-default-set-test.sh'
-   'tests/ai-review-guidance-test.sh'
-   'tests/ai-review-pending-todo-test.sh'
-   'tests/ai-review-ratelimit-reopen-test.sh'
-   'tests/ai-review-shared-tree-test.sh'
-   'tests/autopilot-goal-terminal-test.sh'
-   'tests/anti-stall-supervisor-max-runtime-test.sh'
-   'tests/bandit-discover-python-test.sh'
-   'tests/bandit-high-gate-test.sh'
-   'tests/codex-reauth-output-fidelity-test.sh'
-   'tests/durable-bg-run-stderr-test.sh'
-   'tests/git-hooks-push-branch-test.py'
-   'tests/git-hooks-style-gate-test.py'
-   'tests/hook-guards-test.sh'
-   'tests/progress-watch-test.sh'
-   'tests/qube-ctl-pull-destination-test.sh'
-   'tests/safe-systemctl-guard-test.py'
-   'tests/safe-systemctl-cross-scope-hint-test.sh'
-   'tests/ensure-cowbuilder-base-test.sh'
-   'tests/shell-function-order-test.py'
-   'tests/static-review-checkbashisms-target-test.sh'
-   'tests/reviewer-guard-precedence-test.sh'
-   'tests/claude-rc-session-number-reuse-test.sh'
-   'tests/session-inject-hosted-not-ready-defers-test.sh'
-   'tests/session-retire-forced-teardown-test.sh'
-   'tests/watchdog-retire-marker-test.sh'
-   'tests/watchdog-straddle-heal-test.sh'
-   'tests/watchdog-light-heal-preserves-tmux-test.sh'
-   'tests/dmf-gate-staging-order-test.py'
-   'claude/hooks/tests/test-cowbuilder-guard.py'
-   'claude/hooks/tests/test-external-tool-guard.py'
-   'claude/hooks/tests/test-git-command-parse.py'
-   'claude/hooks/tests/test-git-policy-config.py'
-   'claude/hooks/tests/test-git-policy-guard.py'
-   'claude/hooks/tests/test-playwright-host-guard.py'
-   'tests/agents-status-stale-test.sh'
-   'tests/ai-review-claude-timeout-scaling-test.sh'
-   'tests/ai-review-queue-unfixable-test.sh'
-   'tests/ai-review-timeout-validation-test.sh'
-   'tests/ai-review-wait-acks-test.sh'
-   'tests/anti-stall-supervisor-pulse-ledger-test.sh'
-   'tests/codeql-sarif-fingerprints-test.py'
-   'tests/coderabbit-backlog-drain-verdict-test.sh'
-   'tests/coderabbit-backlog-verdict-test.sh'
-   'tests/creds-repair-dead-cooldown-test.sh'
-   'tests/creds-status-verdict-test.py'
-   'tests/dmf-gate-missing-gate-test.py'
-   'tests/dmf-gate-pathspec-scope-test.py'
-   'tests/dmf-gate-style-waiver-test.py'
-   'tests/dmf-gate-subdir-pathspec-test.py'
-   'tests/dmf-gate-unresolvable-pathspec-test.py'
-   'tests/durable-bg-payload-progress-test.sh'
-   'tests/external-tool-guard-python-code-test.py'
-   'tests/git-guard-inline-override-test.py'
-   'tests/git-guard-quoted-and-optarg-test.py'
-   'tests/git-hooks-mixed-commit-test.py'
-   'tests/glm-review-large-diff-test.sh'
-   'tests/greptile-backup-validation-test.sh'
-   'tests/greptile-reviewer-wiring-test.sh'
-   'tests/guard-data-vs-code-test.py'
-   'tests/hook-command-substitution-test.py'
-   'tests/installer-secret-sourcing-test.sh'
-   'tests/node-runtime-install-stdout-contract-test.sh'
-   'tests/playwright-host-guard-test.py'
-   'tests/pulse-response-class-test.py'
-   'tests/qube-ctl-stdin-forwarding-test.sh'
-   'tests/refresh-fixture-layout-test.sh'
-   'tests/sandbox-provision-remote-injection-test.sh'
-)
-fuzz_tests=( 'tests/string-parsing-fuzz.sh' )
-resilience_tests=(
-   'tests/resilience/wake-detach-cgroup-test.sh'
-   'tests/resilience/run-resilience-tests.sh'
-   'tests/resilience/durable-bg-run-chaos.sh'
-   'tests/resilience/supervisor-failure-latch-test.sh'
-   'tests/resilience/wake-split-brain-guard-test.sh'
-   'tests/anti-stall-supervisor-phantom-success-test.sh'
-   'tests/anti-stall-supervisor-stopped-not-success-test.sh'
-   'tests/durable-bg-run-no-unwatched-worker-test.sh'
-   'tests/durable-bg-run-retry-after-failure-test.sh'
-   'tests/safe-systemctl-phantom-success-test.sh'
-   'tests/anti-stall-supervisor-retry-verdict-test.sh'
-   ## Drives real transient units: 22 pass / 4 fail with no 'systemd --user'
-   ## manager, so it belongs to the lane that refuses as a whole without one
-   ## rather than to the CI lane.
-   'tests/durable-bg-job-handle-test.sh'
-)
-
-## Deliberately NOT a lane member, with the reason, so an omission reads as a
-## decision rather than an oversight. Support files that a test invokes are
-## listed here too: they are not tests and must not be run as one.
-excluded_tests=(
-   'tests/ci-status-fixtures.py'                    # fixture generator
-   'tests/redactor-selftest-value.py'               # test-support helper
-   'tests/cpu-governance-test.sh'                   # root; writes /sys/fs/cgroup
-   'tests/run-cpu-governance-test.sh'               # sandbox wrapper; re-enters
-   'tests/run-string-parsing-fuzz.sh'               # sandbox wrapper; re-enters
-   'tests/run-string-parsing-stress-test.sh'        # sandbox wrapper; re-enters
-   'tests/run-confine-enforcement-test.sh'          # sandbox integration; real bwrap in temp-claude
-   'tests/sandbox-boot-deb-replay-test.sh'          # needs unprivileged userns; denied in the CI container (verified: unshare --user in debian:trixie-slim -> EPERM). Run it in temp-claude.
-   'tests/resilience/chaos-tick-worker.sh'          # workload for the chaos test
-   'tests/resilience/resilience-workload.sh'        # workload, not a test
-   'tests/resilience/resilience-stall-supervisor.sh' # support supervisor
-   'tests/resilience/mock-404-server.py'            # support server
-   'tests/resilience/netns-api-down-probe.sh'       # root unshare; real creds
-   'tests/resilience/netns-run.sh'                  # root unshare; real creds
-   'tests/resilience/run-claude-inner.sh'           # netns probe invokes it
-   'tests/resilience/self-supervision-gate.sh'      # drives real claude; quota
-)
-
-## Fail when the checkout holds a test-shaped file that no lane runs and no
-## exclusion accounts for. Cheap, so it runs on every lane rather than waiting
-## for a full sweep.
-check_registration() {
-   local candidate rel known entry unregistered=() scanned=0
-   while IFS= read -r candidate; do
-      scanned=$(( scanned + 1 ))
-      rel="${candidate#"${repo}/"}"
-      known='false'
-      for entry in "${core_tests[@]}" "${fuzz_tests[@]}" \
-         "${resilience_tests[@]}" "${excluded_tests[@]}"
-      do
-         if [ "${entry}" = "${rel}" ]; then
-            known='true'
-            break
-         fi
-      done
-      if [ "${known}" = 'false' ]; then
-         unregistered+=( "${rel}" )
-      fi
-   ## Scan roots are DISCOVERED, not hardcoded. Two fixed paths meant a tests/
-   ## directory added anywhere else in the repo was silently ungoverned -- the
-   ## guard would keep passing while covering less than it claims, which is the
-   ## failure class it exists to catch.
-   ##
-   ## '--replace={}' matters: GNU find takes PATHS BEFORE the expression, so appending the
-   ## discovered roots after '-type f' made every invocation die with "paths must
-   ## precede expression". Sent to /dev/null, that left an EMPTY scan -- the guard
-   ## reported "everything registered" while reading nothing, for every file in
-   ## the repo. Errors are no longer discarded, for the same reason.
-   done < <( find "${repo}" -path "${repo}/.git" -prune -o \
-      -type d -name tests -print0 \
-      | xargs --null --no-run-if-empty --replace={} find {} \
-        -type f \( -name '*.sh' -o -name '*.py' \) | sort )
-
-   ## A checkout with a tests/ dir always holds test files, so an empty scan is
-   ## the guard failing to look -- the state it silently sat in for as long as
-   ## its find was malformed. Reported as a failure rather than a clean pass.
-   if [ "${scanned}" -eq 0 ]; then
-      printf '%s\n' '' '########## REGISTRATION SCAN FOUND NO TEST FILES ##########' >&2
-      printf '%s\n' \
-         "Scanned '${repo}' and matched nothing, which cannot be true of a" \
-         'checkout that has a tests/ directory. The guard is broken, not the' \
-         'checkout: treat this as UNVERIFIED, never as "all tests registered".' >&2
-      return 1
-   fi
-
-   if [ "${#unregistered[@]}" -gt 0 ]; then
-      printf '%s\n' '' '########## UNREGISTERED TEST FILE(S) ##########' >&2
-      printf '%s\n' "${unregistered[@]}" >&2
-      printf '%s\n' \
-         'Add each to a lane list, or to excluded_tests WITH a reason.' \
-         'A file in neither is never run and never reported.' >&2
-      return 1
-   fi
-   return 0
-}
-
-## Core-lane tests AUTHORIZED to exit 77 without failing the lane. Empty on
-## purpose: every subject the core lane needs is in the checkout, and every TOOL
-## it needs is declared in the component's .github/dm-consumer.yml, so a 77 here
-## means a prerequisite went missing -- the test did not run, and reporting that
-## as a green skip is how a gate keeps looking wired while never executing.
-## Observed: the bandit high-severity gate and the git-hooks style gate both sat
-## at 77 in CI for want of a declared package, and the lane called it a pass.
-## Add a name WITH its reason only where a human decided the prerequisite may
-## legitimately be absent -- never to turn a red lane green.
-core_allow_skip=(
-   ## Asserts a DEPLOYMENT property of the trusted VM: that the reviewer-guard
-   ## shim outranks a real reviewer CLI on PATH. Its subject is that machine's
-   ## ~/.local/bin, not the checkout, so CI has nothing to assert against and
-   ## never will -- the test says so itself and exits 77 rather than inventing a
-   ## verdict. It still RUNS, and can still fail, where the shim is deployed.
-   'tests/reviewer-guard-precedence-test.sh'
-)
-
-tests=()
-## Only the core lane is gated this way: it is the CI lane, and its prerequisites
-## are all declared. The fuzz and resilience lanes carry environment-dependent
-## tests (a live 'systemd --user' manager, a journal) whose 77 is a real
-## environment answer, and the resilience lane already refuses as a whole when
-## its manager is absent.
-skip_is_fatal='false'
-case "${lane}" in
-   'core')
-      tests=( "${core_tests[@]}" )
-      skip_is_fatal='true'
-      ;;
-   'fuzz')
-      tests=( "${fuzz_tests[@]}" )
-      ## The fuzzer defaults to 500 iterations per phase across four phases,
-      ## which overruns the runner's 600s fuzz budget on a loaded CI box and
-      ## would be reported TIMEOUT rather than a fuzz result. Bound it unless
-      ## the caller passed its own budget.
-      if [ "$#" -eq 0 ]; then
-         set -- '--iters' '150'
-      fi
-      ;;
-   'resilience')
-      ## Every test in this lane drives transient 'systemd --user' units and
-      ## reads the user journal.
-      if ! systemctl --user show-environment >/dev/null 2>&1; then
-         printf '%s\n' 'private-ai-config-tests: no systemd --user manager; skipping the resilience lane.' >&2
-         exit 77
-      fi
-      tests=( "${resilience_tests[@]}" )
-      ;;
-   *)
-      printf '%s\n' "run-tests.sh: unknown lane ${lane} (want: core | fuzz | resilience)" >&2
-      exit 64
-      ;;
-esac
-
-registration_status=0
-check_registration || registration_status=1
-
-passes=0
-failures=0
-skips=0
-
-for rel in "${tests[@]}"; do
-   path="${repo}/${rel}"
-   if [ ! -f "${path}" ]; then
-      ## A renamed or deleted test must be loud: silently dropping it is how a
-      ## suite keeps reporting green while covering less than it claims.
-      printf '%s\n' '' "########## MISSING: ${rel} ##########" >&2
-      failures=$(( failures + 1 ))
-      continue
-   fi
-   printf '%s\n' '' "########## ${rel} ##########"
-   rc=0
-   case "${path}" in
-      *.py)
-         python3 -- "${path}" "$@" || rc=$?
-         ;;
-      *)
-         bash -- "${path}" "$@" || rc=$?
-         ;;
-   esac
-   if [ "${rc}" -eq 77 ]; then
-      authorized='false'
-      if [ "${skip_is_fatal}" != 'true' ]; then
-         authorized='true'
-      fi
-      for entry in "${core_allow_skip[@]}"; do
-         if [ "${entry}" = "${rel}" ]; then
-            authorized='true'
-            break
-         fi
-      done
-      if [ "${authorized}" = 'true' ]; then
-         printf '%s\n' "########## SKIPPED: ${rel} ##########"
-         skips=$(( skips + 1 ))
-      else
-         printf '%s\n' "########## UNAUTHORIZED SKIP: ${rel} ##########" >&2
-         printf '%s\n' \
-            'A prerequisite was missing, so this test never ran. Install it (in CI:' \
-            'the component .github/dm-consumer.yml dist-ai-tests.apt-packages list),' \
-            'or authorize the skip in core_allow_skip WITH a reason.' >&2
-         failures=$(( failures + 1 ))
-      fi
-   elif [ "${rc}" -ne 0 ]; then
-      printf '%s\n' "########## FAILED (${rc}): ${rel} ##########" >&2
-      failures=$(( failures + 1 ))
-   else
-      printf '%s\n' "########## PASSED: ${rel} ##########"
-      passes=$(( passes + 1 ))
-   fi
-done
-
-printf '%s\n' '' \
-   "===== summary (${lane} lane): ${passes} pass, ${failures} fail, ${skips} skip ====="
-
-if [ "${failures}" -ne 0 ]; then
-   exit 1
-fi
-## An unregistered test file fails the lane even when everything that DID run
-## passed: the point is that something was never run at all.
-if [ "${registration_status}" -ne 0 ]; then
-   printf '%s\n' '===== unregistered test file(s): see above =====' >&2
-   exit 1
-fi
-## Nothing actually ran: report SKIP so the runner does not record a vacuous
-## pass for a lane whose prerequisites were all absent.
-if [ "${passes}" -eq 0 ]; then
-   exit 77
-fi
-exit 0
+bash -- "${runner}" "$@"
