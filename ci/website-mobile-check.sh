@@ -22,6 +22,9 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 
 [ -v TMP ] || TMP=/tmp
+## A set-but-empty TMP would put the venv at '/website-mobile-venv.*' (create
+## fails); treat empty like unset.
+[ -n "${TMP}" ] || TMP=/tmp
 
 venv_dir=""
 # shellcheck disable=SC2317  # reached indirectly via 'trap cleanup EXIT'
