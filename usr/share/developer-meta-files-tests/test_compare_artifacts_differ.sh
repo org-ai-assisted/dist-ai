@@ -56,12 +56,17 @@ fail() {
 subject=""
 locate_subject() {
    local candidate
+   ## A prefixed candidate is only considered when its prefix var is set: an unset
+   ## '${DEVELOPER_META_FILES_DIR:-}/usr/bin/...' collapses to '/usr/bin/...' and
+   ## would short-circuit to the INSTALLED (possibly stale) copy before the
+   ## checkout candidate is ever tried -- making the test judge old code.
+   local -a candidates=()
+   [ -z "${DM_COMPARE_ARTIFACTS:-}" ] || candidates+=( "${DM_COMPARE_ARTIFACTS}" )
+   [ -z "${DEVELOPER_META_FILES_DIR:-}" ] || candidates+=( "${DEVELOPER_META_FILES_DIR}/usr/bin/dm-reproducible-compare-artifacts" )
+   candidates+=( "${dm_checkout}/packages/kicksecure/developer-meta-files/usr/bin/dm-reproducible-compare-artifacts" )
+   candidates+=( "/usr/bin/dm-reproducible-compare-artifacts" )
 
-   for candidate in "${DM_COMPARE_ARTIFACTS:-}" \
-      "${DEVELOPER_META_FILES_DIR:-}/usr/bin/dm-reproducible-compare-artifacts" \
-      "${dm_checkout}/packages/kicksecure/developer-meta-files/usr/bin/dm-reproducible-compare-artifacts" \
-      "/usr/bin/dm-reproducible-compare-artifacts"; do
-      [ -n "${candidate}" ] || continue
+   for candidate in "${candidates[@]}"; do
       if [ -r "${candidate}" ]; then
          subject="${candidate}"
          return 0
@@ -106,7 +111,9 @@ case "${out}" in
       ;;
 esac
 
-## --- differing pair, iso: exit 1 and a report naming both sides -------------
+## --- differing pair, iso: exit 4 and a report naming both sides -------------
+## 4 is the DEDICATED 'artifacts differ' verdict; 1 is reserved for an
+## errexit-caught internal error, so a script bug can never read as a difference.
 mkdir --parents -- "${workdir}/iso_a" "${workdir}/iso_b"
 printf '%s\n' 'payload-a' > "${workdir}/iso_a/Kicksecure-CLI-1.iso"
 printf '%s\n' 'payload-b' > "${workdir}/iso_b/Kicksecure-CLI-1.iso"
@@ -115,10 +122,10 @@ rc=0
 out="$("${subject}" --target iso --dir-a "${workdir}/iso_a" --dir-b "${workdir}/iso_b" \
    --output "${workdir}/iso.report" 2>&1)" || rc="$?"
 
-if [ "${rc}" -eq 1 ]; then
-   pass "differing iso pair: exit 1 (the documented 'differ' code)"
+if [ "${rc}" -eq 4 ]; then
+   pass "differing iso pair: exit 4 (the dedicated 'differ' code)"
 else
-   fail "differing iso pair: exit ${rc}, expected 1 -- ${out}"
+   fail "differing iso pair: exit ${rc}, expected 4 -- ${out}"
 fi
 
 if [ -s "${workdir}/iso.report" ]; then
@@ -162,10 +169,10 @@ rc=0
 out="$("${subject}" --target qcow2 --dir-a "${workdir}/q_a" --dir-b "${workdir}/q_b" \
    --output "${workdir}/q.report" 2>&1)" || rc="$?"
 
-if [ "${rc}" -eq 1 ]; then
-   pass "differing qcow2 pair: exit 1"
+if [ "${rc}" -eq 4 ]; then
+   pass "differing qcow2 pair: exit 4"
 else
-   fail "differing qcow2 pair: exit ${rc}, expected 1 -- ${out}"
+   fail "differing qcow2 pair: exit ${rc}, expected 4 -- ${out}"
 fi
 
 if [ -s "${workdir}/q.report" ]; then
@@ -174,9 +181,10 @@ else
    fail "differing qcow2 pair: report is empty"
 fi
 
-## --- setup errors: exit 2, distinct from 'differ' ---------------------------
-## Conflating these with exit 1 is how "expected exactly one *.qcow2, found 0"
-## once read as a reproducibility failure when it was a not-found.
+## --- setup errors: exit 2, distinct from 'differ' (4) -----------------------
+## Conflating these with the 'differ' verdict is how "expected exactly one
+## *.qcow2, found 0" once read as a reproducibility failure when it was a
+## not-found.
 assert_setup_error() {
    local description="$1"
    shift
