@@ -372,6 +372,14 @@ expect_rule "${r013}" "set -o errexit -o nounset"               "present"
 expect_rule "${r013}" "set -o errexit"                           "absent"
 expect_rule "${r013}" "set -o nounset"                           "absent"
 expect_rule "${r013}" "set -- ${dq}\$@${dq}"                     "absent"
+## End-of-options makes the rest POSITIONAL, so these enable nothing: SPARED
+## (the token skip stops at a bare '--'). Regression for the false positive
+## where '--' was scanned through to a following '-e'/'-eu'.
+expect_rule "${r013}" "set -- -e"                                "absent"
+expect_rule "${r013}" "set -- ${dq}\$@${dq} -eu"                 "absent"
+## A trailing '#' comment that mentions 'set -e' is documentation: SPARED (the
+## skip stops at the '#' token).
+expect_rule "${r013}" "set -o errexit # equivalent to set -e"    "absent"
 expect_rule "${r013}" "set -x"                                   "absent"
 ## Bypass forms (both reviewers caught): e/u in a LATER token, uppercase flags
 ## in the bundle, and a long-then-short mix -- all FLAGGED.
