@@ -20,6 +20,7 @@ import importlib.util
 import os
 import re
 import signal
+import subprocess
 import time
 from pathlib import Path
 
@@ -27,6 +28,9 @@ import pytest
 
 HARNESS = Path(__file__).resolve().parent / 'dm-image-test'
 DMSERIAL = Path(__file__).resolve().parent / 'debug' / 'dmserial.py'
+
+## dm-image-test's documented FAIL exit code (dm-image-test: FAIL = 5).
+FAIL_RC = 5
 
 
 def test_harness_present():
@@ -82,6 +86,52 @@ def test_lenient_decoding_survives_invalid_utf8():
     assert 'end' in text
     ## Escape, not the literal glyph: this tree is ASCII-only (R-001).
     assert '\ufffd' in text, 'invalid bytes should decode to the replacement char'
+
+
+def test_dm_image_test_survives_split_multibyte(tmp_path):
+    """End-to-end on the REAL harness: dm-image-test's own read loop must survive
+    non-UTF-8 / split multibyte serial bytes and exit with a DOCUMENTED code, not
+    a decode traceback.
+
+    Where the two tests above check pexpect's kwargs (the source text, and the
+    kwargs on a generic /bin/sh), this drives dm-image-test itself: a stub dm-qemu
+    whose emitted 'serial' process prints a truncated two-byte sequence (0303) and
+    an invalid byte (0377) then hangs, so the login prompt never appears. With the
+    fix the run reads those bytes leniently and ends in FAIL on the deadline; drop
+    codec_errors='replace' and read_nonblocking raises UnicodeDecodeError inside
+    wait_for() (which catches only TIMEOUT/EOF), turning the run into a traceback."""
+    pytest.importorskip('pexpect')
+    if not HARNESS.is_file():
+        pytest.skip('dm-image-test harness absent')
+
+    ## Stub dm-qemu: ignores every argument and, on the --emit-argv call
+    ## dm-image-test makes, prints (one token per line) the argv of a fake serial
+    ## source. 0377 is never valid UTF-8; 0303 alone is a truncated two-byte
+    ## sequence -- the exact shape a read-size boundary cut produces. dash printf
+    ## implements the POSIX octal form, so these become real bytes on the pty.
+    stub = tmp_path / 'dm-qemu'
+    stub.write_text(
+        "#!/bin/bash\n"
+        + r'''printf '%s\n' '/bin/sh' '-c' "printf 'start\377\303 end\n'; sleep 30"'''
+        + "\n"
+    )
+    stub.chmod(0o755)
+    disk = tmp_path / 'dummy.qcow2'
+    disk.write_bytes(b'')
+
+    proc = subprocess.run(
+        [str(HARNESS), '--disk', str(disk), '--dm-qemu', str(stub),
+         '--timeout', '8'],
+        capture_output=True, text=True, timeout=90, check=False,
+    )
+    tail = proc.stderr[-2000:]
+    assert 'UnicodeDecodeError' not in proc.stderr, (
+        'dm-image-test died decoding serial bytes (strict decode):\n' + tail)
+    assert 'Traceback' not in proc.stderr, (
+        'dm-image-test crashed instead of a documented exit:\n' + tail)
+    assert proc.returncode == FAIL_RC, (
+        'expected documented FAIL=%d (login prompt never appeared), got rc=%d\n'
+        'stderr tail:\n%s' % (FAIL_RC, proc.returncode, tail))
 
 
 def _load_dmserial():

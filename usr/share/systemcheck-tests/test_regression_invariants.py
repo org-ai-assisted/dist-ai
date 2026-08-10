@@ -12,9 +12,20 @@ hardening / cleanup fix so it cannot silently regress.
 
 import os
 import re
+import shlex
+import shutil
+import subprocess
+import tempfile
 import unittest
 
-from systemcheck_testlib import SystemcheckTestBase, read
+from systemcheck_testlib import (
+    SystemcheckTestBase,
+    extract_bash_function,
+    read,
+)
+
+## Shell-quote a Python string for safe interpolation into a bash harness.
+_q = shlex.quote
 
 
 def _message_lines(text: str):
@@ -83,24 +94,111 @@ class TestRegressionInvariants(SystemcheckTestBase):
         ):
             self.assertRegex(text, rf"(?m)^{func}\(\) \{{", f"{func} missing")
 
-    def test_log_checker_sanitizes_before_br_add(self) -> None:
-        """Journal content must be HTML-neutralized BEFORE br_add_to_file bakes
-        in <br/> tags (else the GUI setHtml path is injectable)."""
+    def test_log_checker_neutralizes_journal_html_before_br_add(self) -> None:
+        """Behavioral: run the REAL log-checker check_service_logs over crafted
+        journal content carrying HTML-active bytes ('<script>', '<a href>') and
+        assert the rendered output is HTML-neutralized (no active '<tag>'
+        survives) yet newlines still became '<br />'. A source-order lint (the
+        old test) passes even when a reorder leaves the sanitize-string output
+        unused, so drive the real code and observe what it emits.
+
+        Collaborators stubbed (non-subject): leaprun (privileged journal read)
+        and safe-rm (a cross-package tool absent on plain CI). The sanitizer
+        (sanitize-string) and the '<br />' inserter (br_add_to_file) are the REAL
+        helper-scripts tools -- so the neutralization is exercised end to end.
+        """
         log_checker = os.path.join(self.dir, 'log-checker')
         if not os.path.exists(log_checker):
             self.skipTest('log-checker not present')
-        ## Ignore comment lines so a comment that mentions br_add_to_file does
-        ## not skew the order comparison against the actual calls.
-        code = '\n'.join(
-            line for line in read(log_checker).split('\n')
-            if not line.lstrip().startswith('#')
+        ## The subject sanitizes with the bare `sanitize-string` tool; resolve it
+        ## on PATH (the runner puts helper-scripts' usr/bin there). Absent ->
+        ## SKIP, never a false green: an unsanitized run would pass vacuously.
+        sanitize = shutil.which('sanitize-string')
+        if sanitize is None:
+            self.skipTest('sanitize-string not on PATH (wire helper-scripts)')
+        ## helper-scripts root = <root>/usr/bin/sanitize-string; strings.bsh
+        ## (br_add_to_file / stcatn helpers, sourced by absolute path in the real
+        ## script) lives at <root>/usr/libexec/helper-scripts/strings.bsh.
+        hs_root = os.path.dirname(os.path.dirname(os.path.dirname(sanitize)))
+        strings_bsh = os.path.join(
+            hs_root, 'usr', 'libexec', 'helper-scripts', 'strings.bsh')
+        if not os.path.exists(strings_bsh):
+            self.skipTest(f"helper-scripts strings.bsh not found at {strings_bsh}")
+
+        ## Extract the REAL function (anti-vacuous: a rename/refactor that drops
+        ## it raises LookupError, failing the test loudly instead of passing).
+        func_def = extract_bash_function(log_checker, 'check_service_logs')
+        self.assertIn('sanitize-string', func_def,
+                      'check_service_logs no longer sanitizes journal output')
+
+        ## Crafted journal content: each line matches the search pattern
+        ## (error/warn...) so it survives the filters, carries HTML-active bytes,
+        ## and embeds a plaintext marker that sanitization keeps -- proving the
+        ## real code processed the fixture (anti-vacuous).
+        marker_one = 'SANITIZECANARYONE'
+        marker_two = 'SANITIZECANARYTWO'
+        journal = (
+            f'error <script>alert({marker_one})</script>\n'
+            f'warning <a href="http://evil.example">{marker_two}</a>\n'
         )
-        san = code.find('sanitize-string')
-        bra = code.find('br_add_to_file "')
-        self.assertNotEqual(san, -1, 'log-checker does not sanitize journal output')
-        self.assertNotEqual(bra, -1, 'log-checker has no br_add_to_file call')
-        self.assertLess(san, bra,
-                        'sanitize-string must run before br_add_to_file')
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            harness = '\n'.join([
+                'set -o errexit',
+                'set -o nounset',
+                'set -o errtrace',
+                f"export HELPER_SCRIPTS_PATH={_q(hs_root)}",
+                f"export TMPDIR={_q(tmpdir)}",
+                f"export TMP={_q(tmpdir)}",
+                f"source {_q(strings_bsh)}",
+                ## Privileged journal reader: emit the crafted content for the
+                ## boot read; nothing for the apparmor-info read.
+                'leaprun() {',
+                '  case "$1" in',
+                '    read-journalctl-logs-this-boot|read-journalctl-logs-last-boot)',
+                f"      printf '%s' {_q(journal)} ;;",
+                '    *) : ;;',
+                '  esac',
+                '}',
+                ## safe-rm is a cross-package binary not present on plain CI;
+                ## mock the collaborator with coreutils rm so the path runs
+                ## everywhere. Not a production fallback -- a test double.
+                'safe-rm() { command rm "$@"; }',
+                ## These journal-ignore lists come from config the real script
+                ## sources; supply non-matching entries so the fixture survives.
+                'journal_ignore_fixed_list=( "ZZZ_NEVER_MATCH_FIXED_ZZZ" )',
+                'journal_ignore_patterns_list=( "ZZZ_NEVER_MATCH_PATTERN_ZZZ" )',
+                func_def,
+                'check_service_logs this_boot',
+            ])
+            proc = subprocess.run(['bash', '-c', harness],
+                                  capture_output=True, text=True, timeout=60)
+
+        self.assertEqual(
+            proc.returncode, 0,
+            f"log-checker run failed (rc={proc.returncode}): {proc.stdout}")
+        out = proc.stdout
+
+        ## Anti-vacuous: the markers prove the real code actually processed the
+        ## crafted journal (not an empty/short-circuited run passing on nothing).
+        self.assertIn(marker_one, out,
+                      f"fixture did not reach the output; got: {out!r}")
+        self.assertIn(marker_two, out,
+                      f"fixture did not reach the output; got: {out!r}")
+
+        ## Newlines were converted to '<br />' tags.
+        self.assertIn('<br />', out, f"no '<br />' in rendered output: {out!r}")
+
+        ## HTML neutralized: no active tag from the journal content survives. The
+        ## only legitimate '<' is the injected '<br />'; strip those, then any
+        ## remaining '<' is raw journal markup that reached the GUI setHtml path.
+        residue = out.replace('<br />', '')
+        self.assertNotIn('<', residue,
+                         f"raw journal markup survived sanitization: {out!r}")
+        self.assertNotIn('<script', out,
+                         f"'<script' survived sanitization: {out!r}")
+        self.assertNotIn('<a ', out,
+                         f"'<a ' anchor survived sanitization: {out!r}")
 
     def test_no_legacy_stcatn_sanitization_comment(self) -> None:
         """The misleading 'sanitized by ... stcatn' claim must stay gone,

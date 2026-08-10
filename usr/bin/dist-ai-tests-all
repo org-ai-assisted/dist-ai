@@ -336,7 +336,20 @@ wire() {
          wire_args=()
          ;;
       anon-gw-anonymizer-config)
+         ## The onion-grater-add/remove profile test drives the shipped scripts,
+         ## which source helper-scripts strings.bsh and call the REAL
+         ## validate_safe_filename on the profile name. Give it a helper-scripts
+         ## checkout (HELPER_SCRIPTS_PATH + its usr/bin on PATH + dist-packages on
+         ## PYTHONPATH so the validator's sanitize-echo reporting path runs); the
+         ## suite falls back to a stub only when none is wired.
          wire_env=( "ANON_GW_ANONYMIZER_CONFIG_REPO=$( pkg_dir anon-gw-anonymizer-config )" )
+         if [ -n "${hs}" ]; then
+            wire_env+=(
+               "HELPER_SCRIPTS_PATH=${hs}"
+               "PATH=${hs}/usr/bin:${PATH}"
+               "PYTHONPATH=${hs}/usr/lib/python3/dist-packages"
+            )
+         fi
          ;;
       anon-ws-disable-stacked-tor)
          wire_env=( "ANON_WS_DISABLE_STACKED_TOR_REPO=$( pkg_dir anon-ws-disable-stacked-tor )" )

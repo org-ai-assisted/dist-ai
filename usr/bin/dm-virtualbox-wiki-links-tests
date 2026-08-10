@@ -39,8 +39,8 @@ fi
 [ -n "${script}" ] && [ -r "${script}" ] || { printf '%s\n' "ERROR: script not found; pass it as arg 1." >&2; exit 2; }
 
 fails=0
-pass() { printf '  PASS: %s\n' "$1"; }
-fail() { printf '  FAIL: %s\n' "$1" >&2; fails=$((fails + 1)); }
+pass() { printf '%s\n' "  PASS: $1"; }
+fail() { printf '%s\n' "  FAIL: $1" >&2; fails=$((fails + 1)); }
 
 leading_blank_lines() { awk 'NF{exit} {c++} END{print c+0}' "$1"; }
 
@@ -49,29 +49,48 @@ printf '%s\n' "script under test: ${script}"
 
 ## ---------------------------------------------------------------------------
 ## Bug 1: leading blank lines on the uploaded wiki page.
-## Root cause: staging content into a fresh empty mktemp with 'append-once'
-## prepends a newline; 'overwrite' does not. Reproduce both (old vs new tool),
-## then assert the script uses the fixed tool for the wiki writes.
+## Root cause: the wiki page is staged into a fresh empty mktemp and handed to
+## mw-edit; anything that prepends a newline (or otherwise mangles the content)
+## before the write shows up as a blank line at the top of the uploaded page.
+## The fix writes the page verbatim with 'overwrite'. Drive the REAL
+## save_cached_page_to_wiki from the script, stub the non-subject collaborators
+## (page fetch + upload), keep the real write, and assert the file mw-edit
+## receives is the content verbatim: no leading blank line, byte-identical.
 ## ---------------------------------------------------------------------------
-printf '\n%s\n' "[1] leading-newline (append-once vs overwrite)"
-if has append-once && has overwrite; then
-   t_old="$(mktemp)"; append-once "${t_old}" "TOP_LINE" >/dev/null
-   t_new="$(mktemp)"; overwrite   "${t_new}" "TOP_LINE" >/dev/null
-   old_n="$(leading_blank_lines "${t_old}")"
-   new_n="$(leading_blank_lines "${t_new}")"
-   safe-rm -f "${t_old}" "${t_new}"
-   [ "${old_n}" -ge 1 ] && pass "old-broken reproduced: 'append-once' on empty file adds ${old_n} leading blank line(s)" \
-                        || fail "expected 'append-once' to add a leading blank line (root cause not reproduced)"
-   [ "${new_n}" -eq 0 ] && pass "new-fixed: 'overwrite' adds no leading blank line" \
-                        || fail "'overwrite' unexpectedly added ${new_n} leading blank line(s)"
+printf '%s\n' "" "[1] wiki tmpfile written verbatim (no leading blank line)"
+save_src="$(sed -n '/^save_cached_page_to_wiki ()/,/^}/p' "${script}")"
+if [ -z "${save_src}" ]; then
+   ## Anti-vacuous: the subject was renamed/refactored out from under us.
+   fail "could not extract save_cached_page_to_wiki() from the script"
+elif ! has overwrite; then
+   printf '%s\n' "  SKIP: 'overwrite' not on PATH (cannot drive the real write path)"
 else
-   printf '%s\n' "  SKIP: append-once/overwrite not on PATH"
-fi
-if grep -Eq "^[[:space:]]*overwrite \"\\\$\{tmpfile\}\"" "${script}" \
-   && ! grep -Eq "^[[:space:]]*append-once \"\\\$\{tmpfile\}\"" "${script}"; then
-   pass "script writes the wiki tmpfile with 'overwrite', not 'append-once'"
-else
-   fail "script still uses 'append-once' to write the wiki tmpfile (regression)"
+   eval "${save_src}"
+   wiki_capture="$(mktemp)"
+   ## content the real write must reproduce verbatim.
+   canary_content="CANARY_TOP_LINE
+second line
+third line"
+   ## Collaborator stubs. shellcheck cannot see they are called from the
+   ## eval'd save_cached_page_to_wiki, hence SC2317.
+   WIKI_URL='https://example.com/w'
+   # shellcheck disable=SC2317
+   get_wiki_page_cached() { wiki_content="${canary_content}"; }
+   # shellcheck disable=SC2317
+   mw-edit() { cp -- "$2" "${wiki_capture}"; }
+   save_cached_page_to_wiki 'SomePage' >/dev/null
+   cap_lead="$(leading_blank_lines "${wiki_capture}")"
+   ## Pass requires: the marker actually reached the file (anti-vacuous proof the
+   ## real write ran), zero leading blank lines, and byte-identical content
+   ## (command substitution strips the single trailing newline 'overwrite' adds).
+   if grep -q 'CANARY_TOP_LINE' "${wiki_capture}" \
+      && [ "${cap_lead}" -eq 0 ] \
+      && [ "$(cat -- "${wiki_capture}")" = "${canary_content}" ]; then
+      pass "save_cached_page_to_wiki writes the page verbatim (no leading blank line, content intact)"
+   else
+      fail "wiki page not written verbatim (leading blank lines=${cap_lead}); leading-newline/content regression on the uploaded page"
+   fi
+   safe-rm -f "${wiki_capture}"
 fi
 
 ## ---------------------------------------------------------------------------
@@ -79,7 +98,7 @@ fi
 ## warning was dead. Extract the function from the script and verify it now
 ## emits one line PER match (0 / 1 / many distinguishable).
 ## ---------------------------------------------------------------------------
-printf '\n%s\n' "[2] extract_url emits every match"
+printf '%s\n' "" "[2] extract_url emits every match"
 ## stecho is a stub that the eval'd extract_url (pulled from the script under
 ## test below) calls; shellcheck cannot see that indirect use.
 # shellcheck disable=SC2317
@@ -104,14 +123,61 @@ fi
 
 ## ---------------------------------------------------------------------------
 ## Bug 3: an empty scrape ('latest' URL) flowed into the local-file writes and
-## corrupted them. Assert the fail-fast guard is present.
+## corrupted them ('dirname ""' -> '.', download.txt truncated, SHA256SUMS
+## clobbered). Drive the REAL main() with the download-page scrape returning
+## nothing and assert it FAILS FAST -- dies at the guard before any write.
+## Every collaborator is stubbed so that, WITHOUT the guard, main runs to a
+## clean exit; a missing/disabled guard is then observable as a non-failure,
+## not masked by some unrelated error.
 ## ---------------------------------------------------------------------------
-printf '\n%s\n' "[3] fail-fast on empty scrape"
-if grep -q 'no latest Windows VirtualBox URL scraped' "${script}"; then
-   pass "script 'die's on an empty scraped 'latest' URL before any local write"
+printf '%s\n' "" "[3] fail-fast on empty scrape"
+main_src="$(sed -n '/^main ()/,/^}/p' "${script}")"
+if [ -z "${main_src}" ]; then
+   ## Anti-vacuous: the subject was renamed/refactored out from under us.
+   fail "could not extract main() from the script"
 else
-   fail "no fail-fast guard on empty 'latest' URL (local files can be corrupted)"
+   ## Top-level vars main relies on (declared outside main in the script).
+   vbox_download_page='https://www.virtualbox.org/wiki/Downloads'
+   wiki_vbox_page='Template:VirtualBox_Host_Software_Installation'
+   vbox_win_regex='x'; vbox_macos_intel64_regex='x'; vbox_macos_arm64_regex='x'
+   wiki_url_list=('https://example.com/w')
+   derivative_maker_source_code_dir="$(mktemp -d)"
+   ## Collaborator stubs (SC2317: called from the eval'd main). Empty scrape ->
+   ## empty 'latest' URLs, which must trip the guard.
+   # shellcheck disable=SC2317
+   get_url_from_page() { func_result=''; }
+   # shellcheck disable=SC2317
+   get_url_from_wiki() { func_result=''; }
+   # shellcheck disable=SC2317
+   replace_wiki_string() { return 0; }
+   # shellcheck disable=SC2317
+   save_cached_page_to_wiki() { return 0; }
+   # shellcheck disable=SC2317
+   overwrite() { return 0; }
+   # shellcheck disable=SC2317
+   scurl() { return 0; }
+   # shellcheck disable=SC2317
+   stsponge() { cat >/dev/null; }
+   # shellcheck disable=SC2317
+   stecho() { printf '%s\n' "$*"; }
+   ## Faithful stub of the cross-package 'die' collaborator: preserve its
+   ## exit-code + message contract so the SUBJECT's guard is what we observe.
+   # shellcheck disable=SC2317
+   die() { printf '%s\n' "${2}" >&2; exit "${1}"; }
+   eval "${main_src}"
+   scrape_err="$(mktemp)"
+   scrape_rc=0
+   ## Left side of '||' runs with errexit disabled, so main runs to its natural
+   ## end (guard 'die' exits 1; a mutant with no guard exits 0).
+   ( main ) >/dev/null 2>"${scrape_err}" || scrape_rc=$?
+   if [ "${scrape_rc}" -ne 0 ] \
+      && grep -q 'no latest Windows VirtualBox URL scraped' "${scrape_err}"; then
+      pass "empty scrape -> main dies at the guard before any local write"
+   else
+      fail "empty scrape did NOT fail-fast (rc=${scrape_rc}); local files can be corrupted"
+   fi
+   safe-rm -rf "${scrape_err}" "${derivative_maker_source_code_dir}"
 fi
 
-printf '\n%s\n' "==== FAILURES: ${fails} ===="
+printf '%s\n' "" "==== FAILURES: ${fails} ===="
 exit "${fails}"
