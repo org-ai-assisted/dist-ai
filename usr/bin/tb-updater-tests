@@ -7,41 +7,54 @@
 
 ## Runs tb-updater's core tests (pytest): the GUI-mode wiring contract between
 ## update-torbrowser and the msgcollector dialogs, and update-torbrowser's
-## input-routing logic. Pure-source structural checks -- no install, no
-## network, no display. Works installed (/usr/share/tb-updater-tests) or from a
-## git checkout. The tb-updater scripts under test are resolved by
-## tb_updater_testlib (TB_UPDATER_REPO=<checkout> else the installed scripts).
+## input-routing logic. Drives the REAL shipped code -- runs the desktop wrapper
+## with a stub update-torbrowser, and sources update-torbrowser's confirmation
+## functions and drives their TB_INPUT dispatch with a stub dialog -- so no
+## install, no network, no display are needed. Works installed
+## (/usr/share/tb-updater-tests) or from a git checkout. The tb-updater scripts
+## under test are resolved by tb_updater_testlib (TB_UPDATER_REPO=<checkout>
+## else the installed scripts).
 
-set -o errexit
-set -o nounset
-set -o pipefail
-set -o errtrace
-shopt -s inherit_errexit
-shopt -s shift_verbose
+source /usr/libexec/helper-scripts/check_runtime.bsh
 
-script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
-
-if [ -d "${script_dir}/../share/tb-updater-tests" ]; then
-   tests_dir="${script_dir}/../share/tb-updater-tests"
-else
-   tests_dir='/usr/share/tb-updater-tests'
+if was_executed "${BASH_SOURCE[0]}"; then
+   set -o errexit
+   set -o nounset
+   set -o pipefail
+   set -o errtrace
+   shopt -s inherit_errexit
+   shopt -s shift_verbose
 fi
 
-## Resolve the target up front. When the tb-updater checkout/install cannot be
-## found, the test modules skip at import with a module-level pytest.skip -- for
-## which pytest exits 0, not 5 -- so the suite would report PASS though nothing
-## ran. Detect the unavailable target here and report SKIP (77) instead.
-if ! python3 -c "import sys; sys.path.insert(0, '${tests_dir}'); \
+main() {
+   script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+   if [ -d "${script_dir}/../share/tb-updater-tests" ]; then
+      tests_dir="${script_dir}/../share/tb-updater-tests"
+   else
+      tests_dir='/usr/share/tb-updater-tests'
+   fi
+
+   ## Resolve the target up front. When the tb-updater checkout/install cannot be
+   ## found, the test modules skip at import with a module-level pytest.skip -- for
+   ## which pytest exits 0, not 5 -- so the suite would report PASS though nothing
+   ## ran. Detect the unavailable target here and report SKIP (77) instead.
+   if ! python3 -c "import sys; sys.path.insert(0, '${tests_dir}'); \
 import tb_updater_testlib as T; T.update_torbrowser_script(); \
 T.desktop_starter_wrapper()"; then
-   exit 77
-fi
+      exit 77
+   fi
 
-rc=0
-python3 -m pytest --import-mode=importlib -q "${tests_dir}" "$@" || rc=$?
-## pytest exit 5 = no tests collected; report the suite as SKIP (77), not a
-## failure.
-if [ "${rc}" = "5" ]; then
-   exit 77
+   rc=0
+   python3 -m pytest --import-mode=importlib -q "${tests_dir}" "$@" || rc=$?
+   ## pytest exit 5 = no tests collected; report the suite as SKIP (77), not a
+   ## failure.
+   if [ "${rc}" = "5" ]; then
+      exit 77
+   fi
+   exit "${rc}"
+}
+
+if was_executed "${BASH_SOURCE[0]}"; then
+   main "$@"
 fi
-exit "${rc}"

@@ -14,21 +14,31 @@
 ## helper-scripts checkout to test that instead. Extra args (e.g. --iterations
 ## N, --seed N) pass through.
 
-set -o errexit
-set -o nounset
-set -o pipefail
-set -o errtrace
-shopt -s inherit_errexit
-shopt -s shift_verbose
+source /usr/libexec/helper-scripts/check_runtime.bsh
 
-script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
-
-if [ -d "${script_dir}/../share/stcat-family-tests" ]; then
-   tests_dir="${script_dir}/../share/stcat-family-tests"
-else
-   tests_dir='/usr/share/stcat-family-tests'
+if was_executed "${BASH_SOURCE[0]}"; then
+   set -o errexit
+   set -o nounset
+   set -o pipefail
+   set -o errtrace
+   shopt -s inherit_errexit
+   shopt -s shift_verbose
 fi
 
-rc=0
-python3 -- "${tests_dir}/stcat_family_test.py" "$@" || rc=$?
-exit "${rc}"
+main() {
+   script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+   if [ -d "${script_dir}/../share/stcat-family-tests" ]; then
+      tests_dir="${script_dir}/../share/stcat-family-tests"
+   else
+      tests_dir='/usr/share/stcat-family-tests'
+   fi
+
+   rc=0
+   python3 -- "${tests_dir}/stcat_family_test.py" "$@" || rc=$?
+   exit "${rc}"
+}
+
+if was_executed "${BASH_SOURCE[0]}"; then
+   main "$@"
+fi
