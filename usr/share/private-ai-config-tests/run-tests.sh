@@ -42,10 +42,43 @@ while [ "$#" -gt 0 ]; do
    esac
 done
 
+## dist-ai's own tools (pre-push-static and friends) live in THIS repo's
+## usr/bin. An installed dist-ai already has them on PATH; a CI checkout does
+## not, and a test that drives the REAL gate rather than a stub then cannot find
+## it. Prepending the runner's own bin dir makes the two layouts equivalent
+## instead of leaving tests to guess where the tool landed.
+runner_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")"
+## Canonicalised BEFORE the -d test, so a path that will not resolve fails the
+## test and leaves PATH untouched. Resolving after it instead ('cd && pwd')
+## yields an EMPTY string when the traversal fails, and an empty PATH element
+## means the CURRENT directory -- turning an unreadable bin dir into cwd on the
+## PATH of every test the lane runs.
+dist_ai_bin="$(readlink --canonicalize -- "${runner_dir}/../../bin" || true)"
+if [ -d "${dist_ai_bin}" ]; then
+   PATH="${dist_ai_bin}:${PATH}"
+   export PATH
+fi
+
 repo="${PRIVATE_AI_CONFIG_PATH:-}"
 if [ -z "${repo}" ] || [ ! -d "${repo}/tests" ]; then
    printf '%s\n' 'private-ai-config-tests: PRIVATE_AI_CONFIG_PATH unset or has no tests/ dir; skipping.' >&2
    exit 77
+fi
+## Canonical from here on. PRIVATE_AI_CONFIG_PATH may be RELATIVE, which would
+## put a relative entry on PATH below -- resolved against whatever directory a
+## test happens to chdir into, so the component's tools are found, or not, by
+## accident.
+repo="$(readlink --canonicalize -- "${repo}")"
+
+## The COMPONENT's own tools (safe-pgrep, safe-systemctl, qube-ctl ...) live in
+## its usr/bin. On the dev VM they arrive installed, so tests reach them by
+## name; a CI checkout only has the source tree, and a test that shells out to
+## one then took the tool's absence for a real answer -- safe-pgrep missing read
+## as "no such process", which is a fabricated verdict, not a missing tool.
+component_bin="${repo}/usr/bin"
+if [ -d "${component_bin}" ]; then
+   PATH="${component_bin}:${PATH}"
+   export PATH
 fi
 
 ## Per-lane test lists. Paths are relative to the checkout root.
@@ -106,6 +139,37 @@ core_tests=(
    'claude/hooks/tests/test-git-policy-config.py'
    'claude/hooks/tests/test-git-policy-guard.py'
    'claude/hooks/tests/test-playwright-host-guard.py'
+   'tests/agents-status-stale-test.sh'
+   'tests/ai-review-queue-unfixable-test.sh'
+   'tests/ai-review-wait-acks-test.sh'
+   'tests/anti-stall-supervisor-pulse-ledger-test.sh'
+   'tests/codeql-sarif-fingerprints-test.py'
+   'tests/coderabbit-backlog-drain-verdict-test.sh'
+   'tests/coderabbit-backlog-verdict-test.sh'
+   'tests/creds-repair-dead-cooldown-test.sh'
+   'tests/creds-status-verdict-test.py'
+   'tests/dmf-gate-missing-gate-test.py'
+   'tests/dmf-gate-pathspec-scope-test.py'
+   'tests/dmf-gate-style-waiver-test.py'
+   'tests/dmf-gate-subdir-pathspec-test.py'
+   'tests/dmf-gate-unresolvable-pathspec-test.py'
+   'tests/durable-bg-payload-progress-test.sh'
+   'tests/external-tool-guard-python-code-test.py'
+   'tests/git-guard-inline-override-test.py'
+   'tests/git-guard-quoted-and-optarg-test.py'
+   'tests/git-hooks-mixed-commit-test.py'
+   'tests/glm-review-large-diff-test.sh'
+   'tests/greptile-backup-validation-test.sh'
+   'tests/greptile-reviewer-wiring-test.sh'
+   'tests/guard-data-vs-code-test.py'
+   'tests/hook-command-substitution-test.py'
+   'tests/installer-secret-sourcing-test.sh'
+   'tests/node-runtime-install-stdout-contract-test.sh'
+   'tests/playwright-host-guard-test.py'
+   'tests/pulse-response-class-test.py'
+   'tests/qube-ctl-stdin-forwarding-test.sh'
+   'tests/refresh-fixture-layout-test.sh'
+   'tests/sandbox-provision-remote-injection-test.sh'
 )
 fuzz_tests=( 'tests/string-parsing-fuzz.sh' )
 resilience_tests=(
@@ -120,6 +184,10 @@ resilience_tests=(
    'tests/durable-bg-run-retry-after-failure-test.sh'
    'tests/safe-systemctl-phantom-success-test.sh'
    'tests/anti-stall-supervisor-retry-verdict-test.sh'
+   ## Drives real transient units: 22 pass / 4 fail with no 'systemd --user'
+   ## manager, so it belongs to the lane that refuses as a whole without one
+   ## rather than to the CI lane.
+   'tests/durable-bg-job-handle-test.sh'
 )
 
 ## Deliberately NOT a lane member, with the reason, so an omission reads as a
@@ -211,7 +279,14 @@ check_registration() {
 ## at 77 in CI for want of a declared package, and the lane called it a pass.
 ## Add a name WITH its reason only where a human decided the prerequisite may
 ## legitimately be absent -- never to turn a red lane green.
-core_allow_skip=()
+core_allow_skip=(
+   ## Asserts a DEPLOYMENT property of the trusted VM: that the reviewer-guard
+   ## shim outranks a real reviewer CLI on PATH. Its subject is that machine's
+   ## ~/.local/bin, not the checkout, so CI has nothing to assert against and
+   ## never will -- the test says so itself and exits 77 rather than inventing a
+   ## verdict. It still RUNS, and can still fail, where the shim is deployed.
+   'tests/reviewer-guard-precedence-test.sh'
+)
 
 tests=()
 ## Only the core lane is gated this way: it is the CI lane, and its prerequisites
