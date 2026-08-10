@@ -1360,53 +1360,6 @@ check_R190_inline_interpreter() {
    done
 }
 
-repo_declares_black() {
-   local out_var declaration_file guidance_file
-   out_var="${1}"
-
-   ## Two ways a repo can say "black owns formatting here". main() cd's to the
-   ## repo top level, so these are the repo's own files.
-   ##
-   ## 1. '[tool.black]' in pyproject.toml -- black's own config location, and
-   ##    the first choice where a repo can carry one.
-   ## 2. A 'Formatter: Black' line in the repo's agent guidance. A Debian
-   ##    SOURCE package cannot simply add a pyproject.toml: debhelper selects
-   ##    a buildsystem partly from which build files are present, so dropping
-   ##    one in to satisfy a style gate risks changing how the package builds.
-   ##    Those repos declare their formatter in AGENTS.md / agents/*.md
-   ##    instead, which is where this ecosystem's conventions already live.
-   ## Parsed, not grepped: '[tool.black]' can appear at the start of a line
-   ## inside a multi-line string and mean nothing at all, and a false positive
-   ## here silently switches a style check off.
-   if [ -f 'pyproject.toml' ] \
-      && python3 -c '
-import sys, tomllib
-with open("pyproject.toml", "rb") as handle:
-    config = tomllib.load(handle)
-sys.exit(0 if isinstance(config.get("tool", {}).get("black"), dict) else 1)
-' 2>/dev/null; then
-      printf -v "${out_var}" '%s' 'pyproject.toml'
-      return 0
-   fi
-
-   for guidance_file in AGENTS.md CLAUDE.md agents/*.md; do
-      if [ ! -f "${guidance_file}" ]; then
-         continue
-      fi
-      ## Tolerates markdown emphasis and list markers around the words, so
-      ## '- **Formatter:** Black.' and 'Formatter: black' both count. Anchored
-      ## at line start so prose merely mentioning black does not.
-      if grep --quiet --extended-regexp --ignore-case \
-         '^[^A-Za-z]*formatter[^A-Za-z]*black([^A-Za-z]|$)' \
-         -- "${guidance_file}"; then
-         printf -v "${out_var}" '%s' "${guidance_file}"
-         return 0
-      fi
-   done
-
-   return 1
-}
-
 is_installed_python_module() {
    local candidate
    candidate="${1}"
@@ -2007,17 +1960,12 @@ check_precommit_hooks() {
    run_precommit_hook check-ast              -- "${python_files[@]}"
    run_precommit_hook check-builtin-literals -- "${python_files[@]}"
    run_precommit_hook debug-statement-hook   -- "${python_files[@]}"
-   ## double-quote-string-fixer normalises Python strings to SINGLE quotes;
-   ## black normalises them to DOUBLE quotes. The two are mutually exclusive,
-   ## so running the fixer on a black-formatted repo makes the gate demand a
-   ## change that repo's own CI then rejects -- unfixable from either side.
-   ## Where the repo declares black, black wins and the fixer is skipped.
-   black_declared_by=''
-   if repo_declares_black black_declared_by; then
-      note "double-quote-string-fixer skipped: black declared in '${black_declared_by}' (black owns string quoting here)"
-   else
-      run_precommit_fixer double-quote-string-fixer "${python_files[@]}"
-   fi
+   ## double-quote-string-fixer (pre-commit-hooks) is intentionally NOT run. It rewrites Python
+   ## string literals to SINGLE quotes -- the exact opposite of black's DOUBLE-quote
+   ## normalisation -- so on any repo that also runs black the two revert each other in a loop
+   ## the gate can never satisfy (pre-commit/pre-commit-hooks#889:
+   ## https://github.com/pre-commit/pre-commit-hooks/issues/889). Python quote style is left to
+   ## each repo's own formatter rather than enforced here.
    run_precommit_fixer pretty-format-json        "${json_files[@]}"
    run_precommit_fixer requirements-txt-fixer    "${req_files[@]}"
 }

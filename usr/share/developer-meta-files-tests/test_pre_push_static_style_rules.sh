@@ -62,9 +62,6 @@ assert_prerequisite 'safe-rm not on PATH' has safe-rm
 ## pre-commit-hooks).
 assert_prerequisite \
    'check-yaml not on PATH (apt-get install pre-commit-hooks)' has check-yaml
-assert_prerequisite \
-   'double-quote-string-fixer not on PATH (apt-get install pre-commit-hooks)' \
-   has double-quote-string-fixer
 
 ## Resolve the gate RELATIVE to this test file (usr/share/<suite>/ -> usr/bin/).
 ## That path is correct in both layouts -- installed it resolves to
@@ -545,99 +542,25 @@ else
    failures=$((failures + 1))
 fi
 
-## double-quote-string-fixer vs black: the two normalise Python string quotes
-## in OPPOSITE directions, so running the fixer on a black-formatted repo makes
-## the gate demand a change that repo's own CI rejects. Assert the fixer is
-## SKIPPED when pyproject.toml declares '[tool.black]', and still RUNS when it
-## does not -- a guard that never fires is the same bug in reverse.
-## 'declare_black' selects HOW the probe repo declares black:
-##   pyproject -- '[tool.black]' in pyproject.toml
-##   agents    -- a 'Formatter: Black' line in agents/guidelines.md, which is
-##                how a Debian SOURCE package declares it: adding a
-##                pyproject.toml there can change which buildsystem debhelper
-##                selects, so those repos cannot use black's own config file
-##   false     -- no declaration at all
-dq_probe() {
-   local declare_black repo base out
-   declare_black="$1"
-   repo="$(mktemp --directory --tmpdir="${tmp_root}" dq.XXXXXX)"
-   git -C "${repo}" init --quiet
-   git -C "${repo}" config user.email 'ci-test@example.com'
-   git -C "${repo}" config user.name 'ci-test'
-   git -C "${repo}" commit --quiet --no-verify --allow-empty --message base
-   base="$(git -C "${repo}" rev-parse HEAD)"
-   ## A double-quoted string is exactly what the fixer rewrites.
-   printf '%s\n' 'x = "fix me"' > "${repo}/probe.py"
-   if [ "${declare_black}" = 'pyproject' ] || [ "${declare_black}" = 'true' ]; then
-      printf '%s\n' '[tool.black]' 'line-length = 79' \
-         > "${repo}/pyproject.toml"
-   fi
-   if [ "${declare_black}" = 'agents' ]; then
-      mkdir --parents -- "${repo}/agents"
-      printf '%s\n' '# Guidelines' '' \
-         '- **Formatter:** Black. Do not reformat code in ways Black disagrees with.' \
-         > "${repo}/agents/guidelines.md"
-   fi
-   if [ "${declare_black}" = 'toml-string' ]; then
-      ## '[tool.black]' at the start of a line, but inside a string: not a
-      ## declaration, and a grep-based detector would be fooled by it.
-      printf '%s\n' '[project]' 'description = """' '[tool.black]' '"""' \
-         > "${repo}/pyproject.toml"
-   fi
-   if [ "${declare_black}" = 'mentions-black' ]; then
-      mkdir --parents -- "${repo}/agents"
-      printf '%s\n' '# Guidelines' '' \
-         'We deliberately do not use Black in this repository.' \
-         > "${repo}/agents/guidelines.md"
-   fi
-   git -C "${repo}" add --all
-   git -C "${repo}" commit --quiet --no-verify --message probe
-   out="$( cd -- "${repo}" && "${GATE}" "${base}" 2>&1 || true )"
-   printf '%s' "${out}"
-}
-
-if printf '%s' "$(dq_probe true)" | grep --quiet --fixed-strings -- 'double-quote-string-fixer skipped'; then
-   printf '%s\n' 'PASS: double-quote-string-fixer skipped on a black repo'
-else
-   printf '%s\n' 'FAIL: double-quote-string-fixer NOT skipped on a black repo' >&2
+## double-quote-string-fixer is DISABLED in the gate (pre-commit/pre-commit-hooks#889: it
+## rewrites Python strings to SINGLE quotes, fighting black's DOUBLE-quote normalisation in an
+## unresolvable revert loop). A double-quoted Python string must therefore be left ALONE: the
+## gate must neither run the fixer nor otherwise reference it.
+dq_repo="$(mktemp --directory --tmpdir="${tmp_root}" dq.XXXXXX)"
+git -C "${dq_repo}" init --quiet
+git -C "${dq_repo}" config user.email 'ci-test@example.com'
+git -C "${dq_repo}" config user.name 'ci-test'
+git -C "${dq_repo}" commit --quiet --no-verify --allow-empty --message base
+dq_base="$(git -C "${dq_repo}" rev-parse HEAD)"
+printf '%s\n' 'x = "double quoted"' > "${dq_repo}/probe.py"
+git -C "${dq_repo}" add --all
+git -C "${dq_repo}" commit --quiet --no-verify --message probe
+dq_out="$( cd -- "${dq_repo}" && "${GATE}" "${dq_base}" 2>&1 || true )"
+if printf '%s' "${dq_out}" | grep --quiet --fixed-strings -- 'double-quote-string-fixer'; then
+   printf '%s\n' 'FAIL: the gate still references double-quote-string-fixer (should be disabled)' >&2
    failures=$((failures + 1))
-fi
-
-if printf '%s' "$(dq_probe false)" | grep --quiet --fixed-strings -- 'FAIL double-quote-string-fixer'; then
-   printf '%s\n' 'PASS: double-quote-string-fixer still runs without black'
 else
-   printf '%s\n' 'FAIL: double-quote-string-fixer did not run on a non-black repo' >&2
-   failures=$((failures + 1))
-fi
-
-## A repo that cannot carry a pyproject.toml declares black in its agent
-## guidance instead. Without this the gate demands a rewrite that the repo's
-## own formatter immediately reverts, which no one can satisfy from either
-## side.
-if printf '%s' "$(dq_probe agents)" | grep --quiet --fixed-strings -- 'double-quote-string-fixer skipped'; then
-   printf '%s\n' 'PASS: double-quote-string-fixer skipped on an agents-declared black repo'
-else
-   printf '%s\n' 'FAIL: double-quote-string-fixer NOT skipped when agent guidance declares black' >&2
-   failures=$((failures + 1))
-fi
-
-## Prose that merely mentions black is not a declaration. A detector that
-## matched it would silently switch the fixer off for repos that want it.
-if printf '%s' "$(dq_probe mentions-black)" | grep --quiet --fixed-strings -- 'FAIL double-quote-string-fixer'; then
-   printf '%s\n' 'PASS: merely mentioning black does not count as declaring it'
-else
-   printf '%s\n' 'FAIL: prose mentioning black was treated as a black declaration' >&2
-   failures=$((failures + 1))
-fi
-
-## A table-looking line inside a TOML string is not a declaration. A detector
-## that accepted it would switch the fixer off for a repo that never adopted
-## black.
-if printf '%s' "$(dq_probe toml-string)" | grep --quiet --fixed-strings -- 'FAIL double-quote-string-fixer'; then
-   printf '%s\n' 'PASS: a TOML string containing the table name is not a declaration'
-else
-   printf '%s\n' 'FAIL: a TOML string containing the black table name was read as a declaration' >&2
-   failures=$((failures + 1))
+   printf '%s\n' 'PASS: double-quote-string-fixer is disabled -- double quotes are left alone'
 fi
 
 ## A Python file inside an installed package directory is imported, never run.
@@ -1083,4 +1006,4 @@ if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "test_pre_push_static_style_rules: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-026, R-030 format string, R-030/R-031, R-034, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-010, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting double-quote-fixer-vs-black and imported-package-module exemption enforced as expected."
+printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-026, R-030 format string, R-030/R-031, R-034, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-010, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting, double-quote-string-fixer-disabled and imported-package-module exemption enforced as expected."
