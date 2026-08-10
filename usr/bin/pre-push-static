@@ -67,6 +67,8 @@
 ##      if it is a genmkfile auto-bump ('bumped changelog version'
 ##      subject, changelog-family-only diff) or carries a mandatory
 ##      'Changelog-manual-ok: <reason>' override trailer.
+##  21. R-153 no help/usage scraped from the script's own comments
+##      ('grep ^## "$0" | sed ...'); help prints strings you own.
 ##
 ## Scope: files changed in HEAD vs upstream tracking branch
 ## (@{u}). Pass an explicit base ref as $1 to override
@@ -1608,6 +1610,39 @@ check_R034_echo() {
    done
 }
 
+check_R153_help_from_comments() {
+   local script hits line
+   local -a fs
+
+   ## R-153: never build help/usage by scraping the running script's OWN comments
+   ## (e.g. `grep '^##' -- "$0" | sed ...`). Help is a function that PRINTS strings
+   ## you own; comment-scraping breaks on any comment-only edit and couples the
+   ## help wording to comment syntax. Flags a NON-comment line that reads $0 or
+   ## ${BASH_SOURCE} together with a '^#'/'^##' anchor -- the comment-scrape
+   ## signature. A plain 'dirname "${BASH_SOURCE[0]}"' or 'head "$0"' has no '^#'
+   ## anchor and is not matched. filter_self drops this checker, whose own regex
+   ## literals carry both tokens.
+   mapfile -d '' -t fs < <(filter_self "${@}")
+   if [ "${#fs[@]}" -eq 0 ]; then return 0; fi
+   for script in "${fs[@]}"; do
+      ## Two orders: the '^#' anchor before the self-reference ('grep '^##' "$0"')
+      ## or after it. The trailing '| grep -v' drops pure-comment lines (content
+      ## starting with '#'), so a comment that merely NAMES the anti-pattern is
+      ## spared.
+      hits="$(grep --line-number --extended-regexp \
+         --regexp='\^##?.*(\$0|\$\{?BASH_SOURCE)' \
+         --regexp='(\$0|\$\{?BASH_SOURCE).*\^##?' \
+         -- "${script}" 2>/dev/null \
+         | grep --invert-match --extended-regexp ':[[:space:]]*#' || true)"
+      if [ -z "${hits}" ]; then
+         continue
+      fi
+      while IFS= read -r line; do
+         fail "R-153 help scraped from comments" "'${script}:${line}'"
+      done <<< "${hits}"
+   done
+}
+
 check_R103_exec() {
    local script hits line
    local -a fs
@@ -2105,6 +2140,7 @@ run_file_checks() {
       check_R034_echo "${shell_files[@]}"
       check_R103_exec "${shell_files[@]}"
       check_R190_inline_interpreter "${shell_files[@]}"
+      check_R153_help_from_comments "${shell_files[@]}"
    else
       note "no changed shell files"
    fi

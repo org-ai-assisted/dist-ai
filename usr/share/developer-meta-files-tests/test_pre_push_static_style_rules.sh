@@ -173,6 +173,14 @@ del='rm'
 ## A literal ':' as a value, so the R-130 assertion bodies do not embed a
 ## token the gate would flag in THIS tracked file.
 colon=':'
+## Fragments for the R-153 comment-scrape assertions, assembled so the '^##'
+## anchor and the '$0' / '${BASH_SOURCE}' self-reference never co-occur as a
+## literal on any line of THIS tracked file (which the gate would, correctly,
+## flag as a comment-scrape). Combined only inside the assertion bodies, which
+## gate_output writes verbatim to the fixture.
+caret='^'
+hash='#'
+dollar='$'
 ## A real tab, assembled at run time so no literal trailing tab lives in this
 ## tracked file (which the gate's own trailing-whitespace check would flag).
 tab="$(printf '\t')"
@@ -419,6 +427,21 @@ expect_rule "R-103" "exec${sp}${dq}\${impl}${dq} ${dq}\$@${dq}" "present"
 expect_rule "R-103" "  exec  [--workdir DIR] [--raw] -- CMD"     "absent"
 expect_rule "R-103" "exec${sp}9>${dq}\${lock}${dq}"              "absent"
 expect_rule "R-103" "docker${sp}exec${sp}-it name sh"            "absent"
+
+## R-153: scraping the script's OWN comments for help/usage is FLAGGED. The
+## '^##'/'^#' anchor plus a '$0' or '${BASH_SOURCE}' self-reference on a
+## non-comment line is the comment-scrape signature. A plain 'dirname
+## "${BASH_SOURCE[0]}"' or 'head "$0"' (no anchor) and a comment that merely
+## names the pattern are SPARED. Anchor + self-ref assembled from fragments so
+## this tracked file does not itself embed the flagged co-occurrence.
+anchor="${caret}${hash}${hash}"
+self0="${dollar}0"
+selfbs="${dollar}{BASH_SOURCE[0]}"
+expect_rule "R-153" "help=${dq}${dollar}(grep ${sq}${anchor}${sq} -- ${dq}${self0}${dq})${dq}" "present"
+expect_rule "R-153" "sed -n ${sq}s/${anchor} //p${sq} -- ${dq}${selfbs}${dq}"                  "present"
+expect_rule "R-153" "here=${dq}${dollar}(dirname -- ${dq}${selfbs}${dq})${dq}"                  "absent"
+expect_rule "R-153" "head --lines 5 -- ${dq}${self0}${dq}"                                      "absent"
+expect_rule "R-153" "grep ${sq}${caret}pattern${sq} -- somefile.txt"                            "absent"
 
 ## R-102: an extensionless but slashed path operand is FLAGGED; a flag or a
 ## variable operand is SPARED. (Body assembled below via ${sp} so this
