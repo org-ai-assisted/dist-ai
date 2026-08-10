@@ -236,7 +236,7 @@ check() {
    fi
 }
 
-## The error paths that used to abort instead of reporting.
+## Error paths: an unknown or absent profile must report an error, not abort.
 check 'add: an unknown profile reports its own error' \
    'does not exist' onion-grater-add nosuchthing
 check 'remove: an absent profile reports None removed' \

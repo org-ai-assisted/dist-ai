@@ -367,7 +367,7 @@ def qt_active_markup(qtgui, html):
     return anchors, images
 
 
-## A benign, ASCII, sanitize-string-preserved marker used to prove a fixture
+## A benign, ASCII, sanitize-string-preserved marker that proves a fixture
 ## actually reaches the branch that displays the argument -- if the rendered msg
 ## does not contain it, the function changed shape and the differential would be
 ## testing an empty/wrong string (a vacuous pass), so that is a hard failure.
@@ -394,8 +394,8 @@ def run_qt_differential(results):
     covered = 0
     for name in DIALOG_FUNCTIONS:
         if extract_function(SCRIPT_SOURCE, name) is None:
-            ## A function that used to exist and is now gone is a real change in
-            ## the display surface, not something to skip silently.
+            ## A dialog function that is absent is a real change in the display
+            ## surface, not something to skip silently.
             results.fail(
                 "qt:" + name + ":present",
                 "dialog function " + name + "() not found in " + SCRIPT,
