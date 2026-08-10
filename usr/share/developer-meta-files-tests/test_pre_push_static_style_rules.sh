@@ -360,6 +360,39 @@ expect_rule "R-042" "printf ${dq}%s${nl}${dq} ${dq}${dq}"        "absent"
 expect_rule "R-011" "set +o errexit"                             "present"
 expect_rule "R-011" "set +e"                                     "present"
 
+## R-013: shell options in long '-o' name, one per line. Short-flag enables of
+## errexit/nounset (set -e, set -eu, set -euo pipefail) and >1 option on one
+## 'set' line (set -o a -o b) are FLAGGED; a lone 'set -o <name>', 'set --'
+## positional-param forms, and a bare 'set -x'/'set -f' (no e/u) are SPARED.
+r013='R-013 set options long-form one-per-line'
+expect_rule "${r013}" "set -eu"                                  "present"
+expect_rule "${r013}" "set -e"                                   "present"
+expect_rule "${r013}" "set -euo pipefail"                        "present"
+expect_rule "${r013}" "set -o errexit -o nounset"               "present"
+expect_rule "${r013}" "set -o errexit"                           "absent"
+expect_rule "${r013}" "set -o nounset"                           "absent"
+expect_rule "${r013}" "set -- ${dq}\$@${dq}"                     "absent"
+## End-of-options makes the rest POSITIONAL, so these enable nothing: SPARED
+## (the token skip stops at a bare '--'). Regression for the false positive
+## where '--' was scanned through to a following '-e'/'-eu'.
+expect_rule "${r013}" "set -- -e"                                "absent"
+expect_rule "${r013}" "set -- ${dq}\$@${dq} -eu"                 "absent"
+## A trailing '#' comment that mentions 'set -e' is documentation: SPARED (the
+## skip stops at the '#' token).
+expect_rule "${r013}" "set -o errexit # equivalent to set -e"    "absent"
+expect_rule "${r013}" "set -x"                                   "absent"
+## Bypass forms (both reviewers caught): e/u in a LATER token, uppercase flags
+## in the bundle, and a long-then-short mix -- all FLAGGED.
+expect_rule "${r013}" "set -x -e"                                "present"
+expect_rule "${r013}" "set -Eeuo pipefail"                       "present"
+expect_rule "${r013}" "set -o errexit -u"                        "present"
+## 'set -E' (errtrace, no e/u) stays SPARED, like 'set -x'.
+expect_rule "${r013}" "set -E"                                   "absent"
+## A '## set -eu' comment is documentation, not code: SPARED.
+expect_rule "${r013}" "## set -eu"                               "absent"
+## Script-wide waiver disables it.
+expect_rule "${r013}" "## style-ok: allow-short-set${nlreal}set -eu" "absent"
+
 ## R-051: a double-quoted inline trap command is FLAGGED; clearing a trap
 ## with an empty string is SPARED.
 expect_rule "R-051" "trap ${dq}${del} -f x${dq} EXIT"            "present"
@@ -543,6 +576,31 @@ expect_rule "${guard_fail}" "was_executed=1"                     "present"
 expect_rule "${guard_fail}" "printf ${sq}%s${nl}${sq} ${dq}was_sourced${dq}" "present"
 ## A real command-position guard call still exempts.
 expect_rule "${guard_fail}" "was_sourced && main"               "absent"
+
+## R-010 shopt sub-check: a source-able guarded script whose guarded block
+## ENABLES errexit must carry the shopt half of the strict block too
+## ('shopt -s inherit_errexit' + 'shopt -s shift_verbose'). The column-0
+## count is 0 (block indented inside the guard), so this shape is exempt
+## from the all-6 top-level rule -- but forgetting the shopt lines is the
+## exact gap this catches. Fail tag 'R-010 shopt block' is distinct from
+## 'R-010 strict-mode block', so it does not collide with the guard tests.
+shopt_fail='R-010 shopt block'
+guarded_no_shopt=$'if was_executed "${BASH_SOURCE[0]}"; then\n   set -o errexit\n   set -o nounset\n   set -o pipefail\n   set -o errtrace\nfi'
+guarded_only_inherit=$'if was_executed "${BASH_SOURCE[0]}"; then\n   set -o errexit\n   set -o nounset\n   shopt -s inherit_errexit\nfi'
+guarded_full_shopt=$'if was_executed "${BASH_SOURCE[0]}"; then\n   set -o errexit\n   set -o nounset\n   set -o pipefail\n   set -o errtrace\n   shopt -s inherit_errexit\n   shopt -s shift_verbose\nfi'
+## errexit enabled, both shopt lines missing => FLAGGED.
+expect_rule "${shopt_fail}" "${guarded_no_shopt}"               "present"
+## errexit enabled, only shift_verbose missing (the make-helper-one.bsh
+## case: inherit_errexit present) => still FLAGGED.
+expect_rule "${shopt_fail}" "${guarded_only_inherit}"           "present"
+## errexit enabled, both shopt lines present => SPARED.
+expect_rule "${shopt_fail}" "${guarded_full_shopt}"             "absent"
+## A guarded script that enables NO strict-mode (just calls main) has
+## nothing for inherit_errexit to complete => SPARED.
+expect_rule "${shopt_fail}" $'if was_executed "${BASH_SOURCE[0]}"; then\n   main "$@"\nfi' "absent"
+## The 'no-strict' waiver exempts a guarded errexit block from the shopt
+## sub-check too (onion-time-pre-script's deliberate minimal-strict shape).
+expect_rule "${shopt_fail}" $'## style-ok: no-strict\nif was_executed "${BASH_SOURCE[0]}"; then\n   set -o errexit\n   set -o pipefail\nfi' "absent"
 
 ## R-080: a 'shellcheck source=' path must be relative, anchored with ./ or
 ## ../ (start with '.'). An absolute path OR a bare name (no ./) is FLAGGED.

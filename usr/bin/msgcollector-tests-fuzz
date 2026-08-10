@@ -5,13 +5,19 @@
 
 ## AI-Assisted
 
-## Randomized fuzz run of msgcollector's CLI-rendering bash. The --messagecli
-## path rewrites an HTML message for the terminal over attacker-influenceable
-## content; cli_links_to_footnotes (the <a href> -> footnote rewriter) must
-## never hang, crash, or leave a URL in the flow text. See fuzz_cli_rendering.py
-## for the properties checked. Override the sweep with --iterations N and replay
-## a failure with --seed N. The msgcollector script under test is resolved by
-## msgcollector_testlib (MSGCOLLECTOR_REPO=<checkout> else the installed script).
+## Randomized fuzz run of msgcollector's bash over attacker-influenceable
+## content. Two harnesses:
+##   * fuzz_cli_rendering.py  -- the --messagecli HTML-to-terminal rewriter;
+##     cli_links_to_footnotes must never hang, crash, or leave a URL in the
+##     flow text.
+##   * fuzz_output_chunking.py -- msgdispatcher_run_check's output_func, which
+##     splits a message into <= arg_max_bytes chunks; must never hang, reorder
+##     or drop data, or emit an over-sized argument. It does intentionally omit
+##     ONE trailing newline on success -- the only byte it may shed.
+## See each file for the properties checked. Override the sweep with
+## --iterations N and replay a failure with --seed N. The msgcollector script
+## under test is resolved by msgcollector_testlib (MSGCOLLECTOR_REPO=<checkout>
+## else the installed script).
 
 set -o errexit
 set -o nounset
@@ -32,4 +38,18 @@ iterations='6000'
 
 rc=0
 python3 -- "${tests_dir}/fuzz_cli_rendering.py" --iterations "${iterations}" "$@" || rc=$?
-exit "${rc}"
+## output_func chunking: the message-splitting bash in msgdispatcher_run_check.
+chunk_rc=0
+python3 -- "${tests_dir}/fuzz_output_chunking.py" --iterations "${iterations}" "$@" || chunk_rc=$?
+## Aggregate the two lanes. 77 is the SKIP contract, not a failure, so it must
+## not mask a real failure in the other lane: a non-zero, non-77 status from
+## EITHER lane wins. Exit 77 only when every lane skipped and none failed.
+for lane_rc in "${rc}" "${chunk_rc}"; do
+   if [ "${lane_rc}" != 0 ] && [ "${lane_rc}" != 77 ]; then
+      exit "${lane_rc}"
+   fi
+done
+if [ "${rc}" = 0 ] || [ "${chunk_rc}" = 0 ]; then
+   exit 0
+fi
+exit 77
