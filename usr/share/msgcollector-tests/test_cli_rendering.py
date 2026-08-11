@@ -203,5 +203,9 @@ if _HAVE_HYPOTHESIS:
         ## tag-absence checks alone would not catch). subprocess text mode
         ## normalizes CR/CRLF to \n on read, so compare against that view.
         if '<' not in message:
-            expected = message.replace('\r\n', '\n').replace('\r', '\n')
-            assert proc.stdout == expected, 'plain text was not preserved verbatim'
+            ## cli_translate_gui_markup runs the text through bash command
+            ## substitutions, which strip TRAILING newlines, so compare content
+            ## up to trailing-newline stripping (and subprocess CR/CRLF
+            ## normalization). A dropped/emptied non-newline character still fails.
+            expected = message.replace('\r\n', '\n').replace('\r', '\n').rstrip('\n')
+            assert proc.stdout.rstrip('\n') == expected, 'plain text content was not preserved'

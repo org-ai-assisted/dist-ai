@@ -456,9 +456,22 @@ wire() {
          fi
          ;;
       msgcollector)
-         ## The fuzzer extracts msgcollector's CLI-rendering bash from the one
-         ## script and runs it in isolation; no other runtime needed.
+         ## The suite extracts / sources msgcollector's CLI-rendering bash and
+         ## runs it. cli_links_to_footnotes is pure bash, but
+         ## cli_translate_gui_markup drives helper-scripts str_replace, and the
+         ## messagecli / deep unit tests drive stcat, strip-markup and
+         ## sanitize-string -- all '#!/usr/bin/python3 -Bsu' tools. From a
+         ## checkout they need helper-scripts on PATH and its dist-packages on
+         ## PYTHONPATH, else they die with ModuleNotFoundError, emit nothing, and
+         ## cli_translate silently EMPTIES the message (a false-fail / false-green).
          wire_env=( "MSGCOLLECTOR_REPO=$( pkg_dir msgcollector )" )
+         if [ -n "${hs}" ]; then
+            wire_env+=(
+               "HELPER_SCRIPTS_PATH=${hs}"
+               "PATH=${hs}/usr/bin:${PATH}"
+               "PYTHONPATH=${hs}/usr/lib/python3/dist-packages"
+            )
+         fi
          ;;
       tb-updater)
          ## The core suite reads update-torbrowser / desktop-starter-wrapper /
