@@ -82,7 +82,9 @@ run_caller() {
    ## Run under the ambient HELPER_SCRIPTS_PATH / MSGCOLLECTOR_REPO the wire sets,
    ## so msgcollector_shared and its helper-scripts resolve from the checkouts.
    ## /usr/libexec is never written -- nothing to isolate, leak, or restore.
-   output="$(timeout 20 bash "${caller}" 2>&1)" || true
+   ## light_sleep_skip makes the real light_sleep return without waiting where
+   ## helper-scripts honors it; harmless (a 1s real sleep) where it does not yet.
+   output="$(light_sleep_skip=true timeout 20 bash "${caller}" 2>&1)" || true
    printf '%s' "${output}"
 }
 
