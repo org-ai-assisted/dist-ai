@@ -34,13 +34,22 @@ else
    tests_dir='/usr/share/msgcollector-tests'
 fi
 
-iterations='6000'
+## fuzz_cli_rendering drives cli_translate_gui_markup, which shells out to
+## helper-scripts str_replace (a python process) several times per message -- so
+## each iteration costs ~100ms and a 6000-sweep alone blows timeout_fuzz (600s,
+## the measured TIMEOUT). Give the slow HTML-rewrite lane a smaller sweep; the
+## output_func lane is pure bash (~3ms/iter) and keeps the big count. The curated
+## regressions run every time regardless, and each CI run varies the random seed,
+## so randomized coverage still accumulates across runs. Override either with
+## --iterations N.
+cli_iterations='1500'
+chunk_iterations='6000'
 
 rc=0
-python3 -- "${tests_dir}/fuzz_cli_rendering.py" --iterations "${iterations}" "$@" || rc=$?
+python3 -- "${tests_dir}/fuzz_cli_rendering.py" --iterations "${cli_iterations}" "$@" || rc=$?
 ## output_func chunking: the message-splitting bash in msgdispatcher_run_check.
 chunk_rc=0
-python3 -- "${tests_dir}/fuzz_output_chunking.py" --iterations "${iterations}" "$@" || chunk_rc=$?
+python3 -- "${tests_dir}/fuzz_output_chunking.py" --iterations "${chunk_iterations}" "$@" || chunk_rc=$?
 ## Aggregate the two lanes. 77 is the SKIP contract, not a failure, so it must
 ## not mask a real failure in the other lane: a non-zero, non-77 status from
 ## EITHER lane wins. Exit 77 only when every lane skipped and none failed.
