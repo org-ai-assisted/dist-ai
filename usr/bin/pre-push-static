@@ -1575,6 +1575,11 @@ check_R191_systemd_unit_embedded_script() {
             || [[ "${value}" =~ [[:space:]]\&([[:space:]]|$) ]]; then
             ## ';' '&&' '||' pipe, or a standalone '&' background separator (a
             ## space-flanked '&' -- not '&&' and not a '>&'/'2>&1' redirection).
+            ## Known limitation (accepted): a separator inside a NESTED quote --
+            ## e.g. bash -c 'printf "A & B"' -- reads as multi-statement. This
+            ## check is deliberately not shell-quote-aware (parsing quotes in a
+            ## regex gate is fragile); use the allow-embedded-script waiver for
+            ## such a unit. Rare in practice (0 of the tree's ~100 real units).
             has_multi='true'
          elif [[ "${value}" =~ ${keyword_re} ]]; then
             has_multi='true'
