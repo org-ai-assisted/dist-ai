@@ -92,11 +92,11 @@ def gen_case(rng: random.Random):
     return amb, '\n'.join(lines)
 
 
-_DRIVER_HEAD = (
-    'is_whole_number() { case "$1" in \'\'|*[!0-9]*) return 1 ;; '
-    '*) return 0 ;; esac; }\n'
-    "output_func_core() { printf '%s\\0' \"${@: -1}\"; }\n"
-)
+## Populated by main() with the REAL is_whole_number extracted from the current
+## helper-scripts strings.bsh (a reimplementation drifts -- the real one rejects
+## leading zeros). output_func_core is a sink stub recording each chunk
+## NUL-delimited (a bash argument never contains NUL).
+_DRIVER_HEAD = ''
 
 
 def run(func_def: str, amb: int, message: str, timeout: float = 5.0):
@@ -154,6 +154,17 @@ def main() -> int:
     except LookupError as exc:
         print(f"SKIP: {exc}", file=sys.stderr)
         return 77
+
+    strings_bsh = (os.environ.get('HELPER_SCRIPTS_PATH', '')
+                   + '/usr/libexec/helper-scripts/strings.bsh')
+    try:
+        is_whole_number = T.extract_bash_function(strings_bsh, 'is_whole_number')
+    except (LookupError, OSError) as exc:
+        print(f"SKIP: {exc}", file=sys.stderr)
+        return 77
+    global _DRIVER_HEAD
+    _DRIVER_HEAD = (is_whole_number
+                    + "\noutput_func_core() { printf '%s\\0' \"${@: -1}\"; }\n")
 
     for i in range(args.iterations):
         amb, message = gen_case(rng)
