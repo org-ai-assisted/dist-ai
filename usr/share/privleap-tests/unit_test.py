@@ -9,14 +9,22 @@ In-process liveness regression tests for the privleap daemon internals.
 The parser and authorizer fuzzers cover what an unprivileged client can send.
 This suite covers the parts of privleapd that no client message reaches
 directly but that decide whether the daemon stays alive and answerable: the
-systemd watchdog path, the epoll registration bookkeeping, the socket list
-synchronisation between the main and control threads, and the action output
-pump.
+non-blocking accept path, the transient-resource accept backoff, the epoll
+registration bookkeeping the main loop keeps as sockets come and go, the socket
+list synchronisation between the main and control threads, the action output
+pump, and the systemd watchdog ping.
 
-Every test here is a regression test for a specific defect that made
-privleapd stop answering, stop pinging its watchdog, or leak a timing
-side channel. They are written to fail against the code as it was before the
-fix, not merely to exercise the fixed code, so that a revert is caught.
+Every test here is a regression test for a specific way privleapd could stop
+answering, stop pinging its watchdog, or leak a timing side channel. They are
+written to fail against a daemon that regresses the behaviour they cover, not
+merely to exercise the fixed code.
+
+These target the reworked (AB3) daemon: the listening socket is non-blocking
+(``setblocking(False)``), an accept that fails for lack of resources is
+classified by ``classify_accept_error`` and drives ``main_loop``'s inline
+backoff + watchdog withholding, and epoll registration is keyed on the
+``PrivleapdSocketInfo`` object identity that ``main_loop`` rebuilds whenever the
+socket list changes.
 
 Runs without root: the state directory is redirected into a temporary
 directory and the ownership calls only root may make are stubbed.
@@ -25,13 +33,13 @@ directory and the ownership calls only root may make are stubbed.
 import argparse
 import errno
 import os
-import select
 import shutil
 import socket
 import sys
 import tempfile
 import threading
 import time
+import unittest.mock as mock
 from types import ModuleType
 from typing import Any, Callable
 
@@ -50,7 +58,7 @@ from pl_testlib import (  # noqa: E402
 
 ## How long a call that must not block is given before the test declares it
 ## hung. Generous enough not to trip on a loaded machine, far below the
-## indefinite block the unfixed code would take.
+## indefinite block a blocking-accept regression would take.
 NONBLOCKING_BUDGET_S: float = 15.0
 
 ## The daemon delays an authentication failure to this many seconds after the
@@ -166,27 +174,6 @@ def call_with_deadline(
     return True, outcome.get('result'), outcome.get('exception')
 
 
-def fill_datagram_socket(sock: socket.socket) -> bool:
-    """
-    Write to a connected datagram socket until its peer's receive buffer is
-    full. Returns True once the next send would block. Reproduces systemd
-    falling behind on its notification socket.
-    """
-
-    sock.setblocking(False)
-    payload: bytes = b'X' * 512
-    for _ in range(200000):
-        try:
-            sock.send(payload)
-        except BlockingIOError:
-            return True
-        except OSError as exc:
-            if exc.errno in (errno.ENOBUFS, errno.EAGAIN, errno.EMSGSIZE):
-                return True
-            raise
-    return False
-
-
 def make_socket_info(pld: ModuleType, listen_socket: Any = None) -> Any:
     """Build a PrivleapdSocketInfo with a real notification pipe pair."""
 
@@ -213,79 +200,212 @@ def close_socket_info(sock_info: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
+# main_loop drivers
+#
+# The reworked daemon does its epoll registration and its transient-resource
+# accept backoff inline in main_loop, keyed on the PrivleapdSocketInfo object
+# identity it rebuilds whenever the socket list changes. There is no standalone
+# refresh/backoff helper to call, so these tests drive the real main_loop one
+# iteration at a time behind a scripted fake epoll, exactly as the daemon's own
+# focused tests (privleap.tests.test_daemon_defects) do.
+# ---------------------------------------------------------------------------
+
+
+class _StopLoop(Exception):
+    """Sentinel raised by the fake epoll to break main_loop's while True."""
+
+
+class _RecordingNotifier:
+    """Records the sd_notify messages main_loop chose to send."""
+
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def notify(self, message: str) -> None:
+        """Record one notification."""
+
+        self.messages.append(message)
+
+
+class _FakeReadPipe:
+    """A ctm read pipe stand-in whose read() is a no-op returning no bytes."""
+
+    def read(self) -> bytes:
+        """Consume the connection-change wakeup byte(s); value is ignored."""
+
+        return b''
+
+
+class _FakeBackendSocket:
+    """A backend socket stand-in that only has to answer fileno()."""
+
+    def __init__(self, fd: int) -> None:
+        self._fd: int = fd
+
+    def fileno(self) -> int:
+        """Return the descriptor number this fake stands in for."""
+
+        return self._fd
+
+
+class _FakeListenSocket:
+    """
+    A listening-socket stand-in. get_session() either raises the scripted
+    exception (an accept failure) or records that a session was started.
+    """
+
+    def __init__(
+        self,
+        fd: int,
+        socket_type: Any,
+        raise_exc: BaseException | None = None,
+        user_name: str = 'testuser',
+    ) -> None:
+        self.backend_socket: _FakeBackendSocket = _FakeBackendSocket(fd)
+        self.socket_type: Any = socket_type
+        self.user_name: str = user_name
+        self._raise_exc: BaseException | None = raise_exc
+        self.session_started: bool = False
+
+    def get_session(self) -> object:
+        """Accept a connection, or raise the scripted accept failure."""
+
+        if self._raise_exc is not None:
+            raise self._raise_exc
+        self.session_started = True
+        return object()
+
+
+class _FakeEpoll:
+    """
+    A select.epoll stand-in. register() records the fds main_loop watches;
+    poll() replays a scripted list of ready-fd batches, then raises _StopLoop
+    to break the otherwise-infinite main loop.
+    """
+
+    def __init__(self, poll_results: list[list[tuple[int, int]]]) -> None:
+        self._poll_results: list[list[tuple[int, int]]] = list(poll_results)
+        self.registered_fds: list[int] = []
+
+    def register(self, fd: int, _events: int) -> None:
+        """Record that main_loop registered this fd."""
+
+        self.registered_fds.append(fd)
+
+    def poll(self, _timeout: float) -> list[tuple[int, int]]:
+        """Replay one scripted batch, or end the loop."""
+
+        if not self._poll_results:
+            raise _StopLoop()
+        return self._poll_results.pop(0)
+
+
+def _fake_comm_sock_info(
+    pld: ModuleType, fd: int, raise_exc: BaseException | None = None
+) -> Any:
+    """A PrivleapdSocketInfo wrapping a fake comm listening socket."""
+
+    listen_socket: _FakeListenSocket = _FakeListenSocket(
+        fd, pld.PrivleapSocketType.COMMUNICATION, raise_exc=raise_exc
+    )
+    return pld.PrivleapdSocketInfo(listen_socket, -1, -1, None, None)
+
+
+def _drive_main_loop(
+    pld: ModuleType,
+    poll_results: list[list[tuple[int, int]]],
+    ctm_read_pipe: Any = None,
+) -> tuple[_RecordingNotifier, _FakeEpoll, Any, BaseException | None]:
+    """
+    Run the real main_loop for the scripted poll batches, behind a fake epoll,
+    a recording notifier and a mocked time.sleep. The caller sets
+    PrivleapdGlobal.socket_list first; this saves and restores the notifier and
+    the ctm pipe/fd it borrows. Returns the notifier, the fake epoll, the
+    time.sleep mock, and whatever exception ended the loop (normally _StopLoop).
+    """
+
+    saved_notifier: Any = pld.PrivleapdGlobal.sdnotify_object
+    saved_ctm_pipe: Any = pld.PrivleapdGlobal.ctm_read_pipe
+    saved_ctm_fd: int = pld.PrivleapdGlobal.ctm_read_fd
+
+    notifier: _RecordingNotifier = _RecordingNotifier()
+    fake_epoll: _FakeEpoll = _FakeEpoll(poll_results)
+    fake_select: Any = mock.Mock()
+    fake_select.epoll = lambda: fake_epoll
+    fake_select.EPOLLIN = 1
+
+    pld.PrivleapdGlobal.sdnotify_object = notifier
+    pld.PrivleapdGlobal.ctm_read_pipe = (
+        ctm_read_pipe if ctm_read_pipe is not None else _FakeReadPipe()
+    )
+    ## A ctm fd that never collides with a scripted listening fd.
+    pld.PrivleapdGlobal.ctm_read_fd = 9000
+
+    raised: BaseException | None = None
+    try:
+        with mock.patch.object(
+            pld, 'select', fake_select
+        ), mock.patch.object(pld.time, 'sleep') as sleep_mock:
+            try:
+                pld.main_loop()
+            except (Exception, SystemExit) as exc:  # noqa: BLE001
+                raised = exc
+    finally:
+        pld.PrivleapdGlobal.sdnotify_object = saved_notifier
+        pld.PrivleapdGlobal.ctm_read_pipe = saved_ctm_pipe
+        pld.PrivleapdGlobal.ctm_read_fd = saved_ctm_fd
+    return notifier, fake_epoll, sleep_mock, raised
+
+
+# ---------------------------------------------------------------------------
 # Main thread liveness
 # ---------------------------------------------------------------------------
 
 
-def test_listener_accept_is_bounded(results: Results, pl: ModuleType) -> None:
+def test_listening_socket_is_nonblocking(
+    results: Results, pl: ModuleType, pld: ModuleType
+) -> None:
     """
-    A listening socket with nothing pending must not park its caller.
+    The listening socket must be non-blocking, so an accept driven off a stale
+    epoll readiness event returns at once instead of parking the main thread.
 
     privleapd accepts on the main thread, driven by an epoll readiness event.
-    That event can be stale by the time it is acted on (the socket may have
-    been destroyed and its descriptor number handed to a new socket in the
-    meantime), in which case accept() finds nothing waiting. With a blocking
-    listener the main thread parked there forever, stopped pinging the
-    watchdog, and systemd killed the daemon with nothing in the log.
+    That event can be stale by the time it is acted on (the socket may have been
+    destroyed and its descriptor number handed to a new socket in the meantime),
+    in which case accept() finds nothing waiting. A blocking listener would park
+    the main thread there forever; it stops pinging the watchdog and systemd
+    kills the daemon with nothing in the log. The rework makes the listener
+    non-blocking so that empty accept raises a would-block error the daemon
+    classifies as a spurious wakeup and shrugs off.
     """
 
-    print('== listening socket accept() is bounded ==')
+    print('== the listening socket is non-blocking ==')
     with StateDirSandbox(pl):
         listener: Any = pl.PrivleapSocket(pl.PrivleapSocketType.CONTROL)
         try:
-            ## Ordered so that no earlier check leaves a thread parked in
-            ## accept() on this listener: a parked accept would take the late
-            ## client below and the last check would hang on a correct daemon.
-
-            ## The bound must stay OPT-IN. A caller that has just started a
-            ## client and is now waiting to serve it -- which is how the
-            ## upstream test suite drives its fake servers -- needs the accept
-            ## to wait. Making the bound the default broke dozens of those
-            ## tests while every other suite here stayed green.
-            def connect_later() -> None:
-                time.sleep(0.5)
-                late: socket.socket = socket.socket(socket.AF_UNIX)
-                late.connect(str(pl.PrivleapCommon.control_path))
-                _KEEPALIVE.append(late)
-
-            threading.Thread(target=connect_later, daemon=True).start()
-            finished, session, exception = call_with_deadline(
-                listener.get_session, budget_s=10.0
-            )
-            results.check(
-                'an ordinary accept serves a client that arrives later',
-                finished and session is not None and exception is None,
-            )
             results.expect_eq(
-                'the listening socket is left blocking',
+                'the listening socket is non-blocking',
                 listener.backend_socket.gettimeout(),
-                None,
+                0.0,
             )
-
-            finished, _result, exception = call_with_deadline(
-                lambda: listener.get_session(bounded=True)
+            finished, session, exception = call_with_deadline(
+                listener.get_session, budget_s=5.0
             )
             results.check(
-                'a bounded accept on an idle listener returns instead of '
-                'blocking',
+                'get_session on an idle listener returns promptly instead of '
+                'parking',
                 finished,
             )
             results.check(
-                'a bounded accept on an idle listener raises TimeoutError',
-                isinstance(exception, TimeoutError),
-            )
-            results.expect_eq(
-                'a bounded accept restores the socket it borrowed',
-                listener.backend_socket.gettimeout(),
-                None,
-            )
-
-            ## Last: this one leaves a thread parked in accept() for good.
-            finished, _result, _exception = call_with_deadline(
-                listener.get_session, budget_s=2.0
+                'get_session on an idle listener raises rather than returning '
+                'a session',
+                session is None and exception is not None,
             )
             results.check(
-                'an ordinary accept waits rather than giving up', not finished
+                'the empty accept is classified as a spurious wakeup, not a '
+                'resource error',
+                pld.classify_accept_error(exception)
+                is pld.PrivleapdAcceptError.SPURIOUS,
             )
         finally:
             listener.close()
@@ -297,7 +417,7 @@ def test_stale_ready_event_does_not_hang_daemon(
     """
     The main loop's connection handlers must survive a stale readiness event.
 
-    This is the caller-side half of the bounded-accept fix: given a socket
+    This is the caller-side half of the non-blocking accept: given a socket
     with no pending connection, handle_comm_socket_conn and
     handle_control_socket_conn must return promptly rather than block, and
     must not mistake the empty accept for a real session.
@@ -334,11 +454,6 @@ def test_stale_ready_event_does_not_hang_daemon(
             comm_socket.close()
 
 
-# pylint: disable=too-many-locals
-# Rationale:
-#   too-many-locals: reproducing descriptor reuse needs both sockets, both
-#     descriptor numbers, the epoll set, the registration map, the dispatch
-#     map and a client, all at once.
 def test_accept_failure_does_not_spin(
     results: Results, pld: ModuleType
 ) -> None:
@@ -347,54 +462,86 @@ def test_accept_failure_does_not_spin(
     into a spin.
 
     A connection that could not be accepted stays in the kernel's backlog, so
-    the listening socket stays readable and the same event comes straight
-    back. Without a pause the loop runs flat out: busy enough that its
-    heartbeat keeps advancing and the watchdog keeps telling systemd the
-    daemon is healthy, while it answers nobody. Any client can cause this by
-    holding connections open until the descriptor limit is reached.
+    the level-triggered epoll keeps the listening socket readable and the same
+    event comes straight back. Without a pause the loop runs flat out: busy
+    enough that its watchdog keeps telling systemd the daemon is healthy while
+    it answers nobody. Any client can cause this by holding connections open
+    until the descriptor limit is reached. main_loop must, on such an
+    iteration, back off (time.sleep by the resource backoff) AND withhold the
+    watchdog ping. An ordinary accept failure -- a client that hung up -- is not
+    a resource problem and must neither back off nor be reported unhealthy.
     """
 
     print('== an accept that ran out of descriptors does not spin ==')
-    saved_backoff: float = pld.PrivleapdGlobal.accept_backoff_seconds
-    saved_until: float = pld.PrivleapdGlobal.accept_backoff_until
+
+    ## A descriptor-exhaustion accept (EMFILE) on a ready comm fd.
+    emfile_fd: int = 42
+    saved_list: list[Any] = pld.PrivleapdGlobal.socket_list
+    pld.PrivleapdGlobal.socket_list = [
+        _fake_comm_sock_info(
+            pld, emfile_fd, raise_exc=OSError(errno.EMFILE, 'Too many open')
+        )
+    ]
     try:
-        pld.PrivleapdGlobal.accept_backoff_seconds = 0.3
-
-        ## The pause is SCHEDULED here, not taken here. This runs with
-        ## socket_list_lock held, so sleeping would block the control thread
-        ## for the whole backoff and stall leapctl create and destroy along
-        ## with it -- turning a descriptor shortage into a control outage.
-        pld.PrivleapdGlobal.accept_backoff_until = 0.0
-        started: float = time.monotonic()
-        pld.report_accept_failure(
-            OSError(errno.EMFILE, 'Too many open files'), 'unit probe'
-        )
-        exhausted_elapsed: float = time.monotonic() - started
-        results.check(
-            f"running out of descriptors does not wait under the lock "
-            f"({exhausted_elapsed:.2f}s)",
-            exhausted_elapsed < 0.1,
+        notifier, _epoll, sleep_mock, raised = _drive_main_loop(
+            pld, [[(emfile_fd, 1)]]
         )
         results.check(
-            'running out of descriptors schedules a pause',
-            pld.PrivleapdGlobal.accept_backoff_until - time.monotonic()
-            >= 0.25,
+            'the EMFILE iteration ended cleanly', isinstance(raised, _StopLoop)
         )
-
-        ## An ordinary failure -- a client that hung up -- is not a resource
-        ## problem and must not slow the daemon down for every other caller.
-        pld.PrivleapdGlobal.accept_backoff_until = 0.0
-        pld.report_accept_failure(
-            ConnectionAbortedError('client went away'), 'unit probe'
+        results.check(
+            'running out of descriptors backs off by the resource backoff',
+            sleep_mock.call_count == 1
+            and sleep_mock.call_args
+            == mock.call(pld.accept_resource_backoff_seconds),
+        )
+        results.check(
+            'the watchdog is withheld while backing off on EMFILE',
+            'WATCHDOG=1' not in notifier.messages,
         )
         results.expect_eq(
-            'an ordinary accept failure schedules no pause',
-            pld.PrivleapdGlobal.accept_backoff_until,
-            0.0,
+            'the EMFILE socket never established a session',
+            pld.PrivleapdGlobal.socket_list[0].listen_socket.session_started,
+            False,
         )
     finally:
-        pld.PrivleapdGlobal.accept_backoff_seconds = saved_backoff
-        pld.PrivleapdGlobal.accept_backoff_until = saved_until
+        pld.PrivleapdGlobal.socket_list = saved_list
+
+    ## An ordinary accept failure: a client that aborted. Not a resource
+    ## problem, so no backoff, and the iteration is still healthy.
+    ordinary_fd: int = 43
+    pld.PrivleapdGlobal.socket_list = [
+        _fake_comm_sock_info(
+            pld, ordinary_fd, raise_exc=ConnectionAbortedError('went away')
+        )
+    ]
+    try:
+        notifier, _epoll, sleep_mock, _raised = _drive_main_loop(
+            pld, [[(ordinary_fd, 1)]]
+        )
+        results.expect_eq(
+            'an ordinary accept failure schedules no backoff',
+            sleep_mock.call_count,
+            0,
+        )
+        results.check(
+            'an ordinary accept failure still pings the watchdog',
+            'WATCHDOG=1' in notifier.messages,
+        )
+    finally:
+        pld.PrivleapdGlobal.socket_list = saved_list
+
+    ## A healthy idle iteration must still ping the watchdog, so the backoff
+    ## gating did not break ordinary liveness.
+    pld.PrivleapdGlobal.socket_list = []
+    try:
+        notifier, _epoll, sleep_mock, _raised = _drive_main_loop(pld, [[]])
+        results.check(
+            'a healthy idle iteration pings the watchdog',
+            'WATCHDOG=1' in notifier.messages,
+        )
+    finally:
+        pld.PrivleapdGlobal.socket_list = saved_list
 
 
 def test_reused_descriptor_is_registered(
@@ -404,76 +551,154 @@ def test_reused_descriptor_is_registered(
     A socket that reuses a just-closed descriptor number must still be watched.
 
     The kernel hands the descriptor number of a closed socket straight back to
-    the next socket opened. The old bookkeeping tracked epoll registrations by
-    descriptor number, so a destroy immediately followed by a create (what a
-    reload, or a leapctl destroy then create, does) looked like no change at
-    all and the new socket was never registered. Connections to it were then
-    never accepted, for the remaining lifetime of the daemon.
+    the next socket opened. main_loop keys its epoll registrations on the
+    PrivleapdSocketInfo *object*, not on the descriptor number, and rebuilds
+    them whenever the socket list changes -- so a destroy immediately followed
+    by a create (what a reload, or a leapctl destroy then create, does) is a new
+    object and gets registered even though its descriptor number is unchanged.
+    A descriptor-number-keyed scheme would have seen no change at all and never
+    registered the new socket, and connections to it would never be accepted for
+    the remaining lifetime of the daemon.
     """
 
     print('== a reused descriptor number is registered ==')
     user: str = current_username()
     with StateDirSandbox(pl):
         saved_list: list[Any] = pld.PrivleapdGlobal.socket_list
-        pld.PrivleapdGlobal.socket_list = []
-        epoll_obj: select.epoll = select.epoll()
-        registered: dict[Any, int] = {}
         socket_path: Any = pl.Path(pl.PrivleapCommon.comm_dir, user)
-        try:
-            first_socket: Any = pl.PrivleapSocket(
-                pl.PrivleapSocketType.COMMUNICATION, user
-            )
-            pld.socket_list_add(first_socket)
-            first_fd: int = first_socket.backend_socket.fileno()
-            pld.refresh_epoll_registrations(epoll_obj, registered)
+        pld.PrivleapdGlobal.socket_list = []
+        first_socket: Any = pl.PrivleapSocket(
+            pl.PrivleapSocketType.COMMUNICATION, user
+        )
+        pld.socket_list_add(first_socket)
+        first_fd: int = first_socket.backend_socket.fileno()
 
-            ## Destroy and immediately recreate, exactly as a reload does.
-            close_socket_info(pld.PrivleapdGlobal.socket_list.pop(0))
-            first_socket.close()
-            socket_path.unlink()
-            second_socket: Any = pl.PrivleapSocket(
-                pl.PrivleapSocketType.COMMUNICATION, user
-            )
-            pld.socket_list_add(second_socket)
-            second_fd: int = second_socket.backend_socket.fileno()
-            if not results.check(
-                'the new socket reused the closed descriptor number '
-                '(precondition)',
-                second_fd == first_fd,
-            ):
-                ## Without reuse the check below exercises nothing: it would
-                ## pass on the very code this test exists to catch.
+        state: dict[str, Any] = {
+            'swapped': False,
+            'second': None,
+            'second_info': None,
+            'second_fd': None,
+        }
+
+        def swap_on_ctm_read() -> bytes:
+            ## The connection-change the control thread signals during a reload:
+            ## destroy the socket and immediately recreate it, with no main
+            ## loop turn in between, so the new socket reuses the freed fd.
+            if not state['swapped']:
                 close_socket_info(pld.PrivleapdGlobal.socket_list.pop(0))
-                second_socket.close()
-                return
+                first_socket.close()
+                socket_path.unlink(missing_ok=True)
+                second: Any = pl.PrivleapSocket(
+                    pl.PrivleapSocketType.COMMUNICATION, user
+                )
+                pld.socket_list_add(second)
+                state['swapped'] = True
+                state['second'] = second
+                state['second_info'] = pld.PrivleapdGlobal.socket_list[-1]
+                state['second_fd'] = second.backend_socket.fileno()
+            return b''
 
-            fd_map: dict[int, Any]
-            retry_needed: bool
-            fd_map, retry_needed = pld.refresh_epoll_registrations(
-                epoll_obj, registered
-            )
-            results.expect_eq(
-                'no registration was left to retry', retry_needed, False
+        ctm_pipe: Any = type(
+            '_SwapPipe', (), {'read': staticmethod(swap_on_ctm_read)}
+        )()
+        try:
+            ## Poll returns the ctm event once (triggering the destroy/create),
+            ## then _StopLoop -- so main_loop does two registration passes: the
+            ## first for first_socket, the second (after the swap) for the
+            ## recreated socket.
+            _notifier, fake_epoll, _sleep, raised = _drive_main_loop(
+                pld, [[(9000, 1)]], ctm_read_pipe=ctm_pipe
             )
             results.check(
-                'the recreated socket is in the dispatch map',
-                fd_map.get(second_fd) is not None,
+                'the registration passes ended cleanly',
+                isinstance(raised, _StopLoop),
+            )
+            results.check(
+                'the destroy/create cycle ran', state['swapped']
+            )
+            reused: bool = state['second_fd'] == first_fd
+            results.check(
+                'the recreated socket reused the closed descriptor number',
+                reused,
+            )
+            results.check(
+                'the recreated socket was registered with epoll',
+                state['second_fd'] in fake_epoll.registered_fds,
+            )
+            if reused:
+                ## Object-identity keying registers the reused fd a SECOND time
+                ## (once per distinct socket object); a descriptor-keyed scheme
+                ## would have registered it only once and missed the new socket.
+                results.expect_eq(
+                    'the reused descriptor was registered for both sockets',
+                    fake_epoll.registered_fds.count(first_fd),
+                    2,
+                )
+        finally:
+            if state['second_info'] is not None:
+                close_socket_info(state['second_info'])
+            if state['second'] is not None:
+                state['second'].close()
+            else:
+                close_socket_info(pld.PrivleapdGlobal.socket_list.pop(0))
+                first_socket.close()
+            socket_path.unlink(missing_ok=True)
+            pld.PrivleapdGlobal.socket_list = saved_list
+
+
+def test_destroyed_socket_is_unregistered(
+    results: Results, pl: ModuleType, pld: ModuleType
+) -> None:
+    """
+    A readiness event for a socket that was removed from the list must be
+    skipped, not turned into an accept on a closed descriptor.
+
+    A control thread can remove and close a socket in the window between
+    epoll_obj.poll() and the main thread taking socket_list_lock, leaving a
+    stale readiness event for an fd that is gone (or already reused).
+    dispatch_ready_sockets must skip such an fd and report the iteration
+    healthy; turning it into an accept on a closed socket, or terminating the
+    daemon over it, is the defect this guards.
+    """
+
+    print('== a destroyed socket is skipped, not accepted on ==')
+    user: str = current_username()
+    with StateDirSandbox(pl):
+        saved_list: list[Any] = pld.PrivleapdGlobal.socket_list
+        pld.PrivleapdGlobal.socket_list = []
+        try:
+            comm_socket: Any = pl.PrivleapSocket(
+                pl.PrivleapSocketType.COMMUNICATION, user
+            )
+            pld.socket_list_add(comm_socket)
+            comm_fd: int = comm_socket.backend_socket.fileno()
+
+            ## While the socket is live, dispatch accepts on it (a stale event
+            ## on a live socket is a spurious wakeup, handled, healthy).
+            results.check(
+                'a live socket is dispatched healthily',
+                pld.dispatch_ready_sockets([comm_fd]) is True,
             )
 
-            client: socket.socket = socket.socket(socket.AF_UNIX)
-            client.connect(str(socket_path))
-            try:
-                ready: list[int] = [x[0] for x in epoll_obj.poll(2.0)]
-                results.check(
-                    'epoll reports a connection to the recreated socket',
-                    second_fd in ready,
-                )
-            finally:
-                client.close()
+            ## Destroy it: remove from the list and close it.
             close_socket_info(pld.PrivleapdGlobal.socket_list.pop(0))
-            second_socket.close()
+            comm_socket.close()
+
+            queue_empty_before: bool = (
+                pld.PrivleapdGlobal.control_request_queue.empty()
+            )
+            healthy: bool = pld.dispatch_ready_sockets([comm_fd])
+            results.check(
+                'a destroyed socket\'s stale event is skipped and reported '
+                'healthy',
+                healthy is True,
+            )
+            results.check(
+                'no session was queued from a destroyed socket',
+                queue_empty_before
+                and pld.PrivleapdGlobal.control_request_queue.empty(),
+            )
         finally:
-            epoll_obj.close()
             pld.PrivleapdGlobal.socket_list = saved_list
 
 
@@ -683,619 +908,58 @@ def _socket_index(pld: ModuleType, user: str) -> int:
     raise LookupError(f"no comm socket for account '{user}'")
 
 
-def test_control_thread_survives_a_failed_request(
-    results: Results, pl: ModuleType, pld: ModuleType
-) -> None:
-    """
-    One failed control request must not cost the daemon its control socket.
-
-    The control thread ran its request handling with nothing catching an
-    unexpected exception, and nothing restarts that thread. A single failure
-    ended it for good: privleapd carried on accepting comm connections and
-    carried on telling systemd it was healthy, while every socket create,
-    destroy and config reload from then on queued up unanswered. That is the
-    worst shape this class of bug takes, because every external signal still
-    says the daemon is fine.
-    """
-
-    print('== the control thread survives a failed request ==')
-    user: str = current_username()
-    daemon: InProcessDaemon = get_in_process_daemon(pl, pld, user)
-    saved_handler: Any = pld.handle_control_session
-    try:
-        results.check(
-            'the control socket answers before the failure',
-            daemon.control_request(pl.PrivleapControlClientCreateMsg(user))
-            is not None,
-        )
-
-        def poisoned_handler(control_session: Any) -> None:
-            ## Restore immediately so exactly one request fails, then hang up
-            ## on the client and fail the way an unexpected bug would.
-            pld.handle_control_session = saved_handler
-            try:
-                control_session.close_session()
-            except OSError:
-                pass
-            raise RuntimeError('unit-injected control handler failure')
-
-        pld.handle_control_session = poisoned_handler
-        daemon.control_request(pl.PrivleapControlClientDestroyMsg(user))
-
-        results.check(
-            'the control socket still answers after the failure',
-            daemon.control_request(pl.PrivleapControlClientCreateMsg(user))
-            is not None,
-        )
-        results.check(
-            'the comm socket still answers after the failure',
-            daemon.comm_socket_answers(),
-        )
-    finally:
-        pld.handle_control_session = saved_handler
-
-
-def test_live_daemon_keeps_heartbeat_while_serving(
-    results: Results, pl: ModuleType, pld: ModuleType
-) -> None:
-    """
-    The main loop must keep proving it is alive while it is serving requests,
-    not only while it is idle. A heartbeat that only advances between
-    connections is exactly the coupling that let a burst of connection work
-    overrun the watchdog deadline.
-    """
-
-    print('== the main loop keeps its heartbeat while serving requests ==')
-    user: str = current_username()
-    daemon: InProcessDaemon = get_in_process_daemon(pl, pld, user)
-    daemon.control_request(pl.PrivleapControlClientCreateMsg(user))
-    ## Measured against the wall clock, not against the previous reading. A
-    ## heartbeat that stops moving keeps its last value, so comparing
-    ## successive readings would report a gap of zero and pass while the main
-    ## loop was in fact frozen.
-    worst_staleness: float = 0.0
-    advanced: bool = False
-    first_seen: float = float(pld.PrivleapdGlobal.main_loop_heartbeat)
-    deadline: float = time.monotonic() + 3.0
-    while time.monotonic() < deadline:
-        daemon.comm_socket_answers(timeout_s=5.0)
-        now_seen: float = float(pld.PrivleapdGlobal.main_loop_heartbeat)
-        worst_staleness = max(worst_staleness, time.monotonic() - now_seen)
-        if now_seen > first_seen:
-            advanced = True
-    results.check('the heartbeat advanced at all while serving', advanced)
-    results.check(
-        f"the heartbeat never went stale while serving (worst "
-        f"{worst_staleness:.2f}s)",
-        0 <= worst_staleness < 5.0,
-    )
-
-
-def test_destroyed_socket_is_unregistered(
-    results: Results, pl: ModuleType, pld: ModuleType
-) -> None:
-    """
-    A socket removed from the list must leave the dispatch map, so that a
-    readiness event for it is never turned into an accept on a closed socket.
-    """
-
-    print('== a destroyed socket leaves the dispatch map ==')
-    user: str = current_username()
-    with StateDirSandbox(pl):
-        saved_list: list[Any] = pld.PrivleapdGlobal.socket_list
-        pld.PrivleapdGlobal.socket_list = []
-        epoll_obj: select.epoll = select.epoll()
-        registered: dict[Any, int] = {}
-        try:
-            comm_socket: Any = pl.PrivleapSocket(
-                pl.PrivleapSocketType.COMMUNICATION, user
-            )
-            pld.socket_list_add(comm_socket)
-            comm_fd: int = comm_socket.backend_socket.fileno()
-            fd_map: dict[int, Any]
-            fd_map, _retry = pld.refresh_epoll_registrations(
-                epoll_obj, registered
-            )
-            results.check(
-                'the live socket is in the dispatch map',
-                fd_map.get(comm_fd) is not None,
-            )
-            close_socket_info(pld.PrivleapdGlobal.socket_list.pop(0))
-            comm_socket.close()
-            fd_map, _retry = pld.refresh_epoll_registrations(
-                epoll_obj, registered
-            )
-            results.expect_eq(
-                'the destroyed socket is gone from the dispatch map',
-                fd_map.get(comm_fd),
-                None,
-            )
-            results.expect_eq(
-                'the destroyed socket is gone from the registration map',
-                len(registered),
-                0,
-            )
-        finally:
-            epoll_obj.close()
-            pld.PrivleapdGlobal.socket_list = saved_list
-
-
 # ---------------------------------------------------------------------------
 # Watchdog
 # ---------------------------------------------------------------------------
 
 
-def test_watchdog_ping_cadence(results: Results, pld: ModuleType) -> None:
-    """
-    The watchdog ping must leave headroom under the deadline.
-
-    Pinging once per main loop iteration at half the deadline left no margin:
-    any single slow iteration (an account database lookup, a thread start, a
-    descheduled process on a loaded host) overran the deadline and systemd
-    restarted a perfectly healthy daemon. The ping interval must be a
-    comfortable fraction of the deadline, and the main loop must not block for
-    longer than that fraction.
-    """
-
-    print('== watchdog ping cadence leaves headroom ==')
-    saved: dict[str, Any] = _save_watchdog_state(pld)
-    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
-    try:
-        pld.PrivleapdGlobal.sdnotify_object.socket = left
-        os.environ['WATCHDOG_USEC'] = '10000000'
-        ## Poisoned first: left at their real defaults these would already sit
-        ## inside the bounds asserted below, so a setup_sd_notify that did
-        ## nothing at all would pass every check here.
-        pld.PrivleapdGlobal.watchdog_ping_interval = -1.0
-        pld.PrivleapdGlobal.watchdog_heartbeat_timeout = -1.0
-        ## Poisoned HIGH, not low: the daemon only ever lowers this one, so a
-        ## low sentinel would survive untouched and read as a pass.
-        pld.PrivleapdGlobal.main_loop_poll_timeout = 999.0
-        pld.setup_sd_notify()
-
-        deadline_s: float = 10.0
-        interval: float = pld.PrivleapdGlobal.watchdog_ping_interval
-        results.check(
-            'the ping interval is at most a quarter of the deadline',
-            0 < interval <= deadline_s / 4,
-        )
-        results.check(
-            'a stale main loop is detected well inside the deadline',
-            0 < pld.PrivleapdGlobal.watchdog_heartbeat_timeout < deadline_s,
-        )
-        results.check(
-            'the main loop never blocks for longer than a ping interval',
-            0 < pld.PrivleapdGlobal.main_loop_poll_timeout <= interval,
-        )
-        results.expect_eq(
-            'the notification socket is non-blocking', left.gettimeout(), 0.0
-        )
-    finally:
-        left.close()
-        right.close()
-        _restore_watchdog_state(pld, saved)
-
-
-def test_watchdog_disabled_without_systemd(
-    results: Results, pld: ModuleType
+def test_live_daemon_pings_watchdog_while_serving(
+    results: Results, pl: ModuleType, pld: ModuleType
 ) -> None:
     """
-    With no watchdog configured, no ping thread must be started and the main
-    loop must keep its ordinary poll timeout.
+    The main loop must keep pinging the watchdog while it is serving requests,
+    not only while it is idle.
+
+    main_loop pings WATCHDOG=1 on every healthy iteration -- idle, a consumed
+    connection change, or a healthy dispatch -- and withholds it only on a
+    transient-resource backoff. A ping that only fired between connections would
+    let a steady stream of connection work overrun the watchdog deadline while
+    the daemon is in fact healthy. This drives the live daemon through repeated
+    comm requests and confirms the watchdog keeps being pinged throughout.
     """
 
-    print('== no watchdog is configured when systemd asks for none ==')
-    saved: dict[str, Any] = _save_watchdog_state(pld)
-    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+    print('== the main loop keeps pinging the watchdog while serving ==')
+    user: str = current_username()
+    daemon: InProcessDaemon = get_in_process_daemon(pl, pld, user)
+    daemon.control_request(pl.PrivleapControlClientCreateMsg(user))
+
+    ## Swap in a recorder for the live daemon's notifier for the span of the
+    ## probe, so the WATCHDOG=1 pings its main loop sends can be counted.
+    saved_notifier: Any = pld.PrivleapdGlobal.sdnotify_object
+    notifier: _RecordingNotifier = _RecordingNotifier()
+    pld.PrivleapdGlobal.sdnotify_object = notifier
     try:
-        pld.PrivleapdGlobal.sdnotify_object.socket = left
-        pld.PrivleapdGlobal.watchdog_ping_interval = 0.0
-        for value, label in (
-            (None, 'unset'),
-            ('0', 'zero'),
-            ('not-a-number', 'unparseable'),
-        ):
-            if value is None:
-                os.environ.pop('WATCHDOG_USEC', None)
-            else:
-                os.environ['WATCHDOG_USEC'] = value
-            ## Poisoned to a value that is neither the expected result nor a
-            ## plausible default, so "left untouched" cannot masquerade as
-            ## "correctly decided not to run".
-            pld.PrivleapdGlobal.watchdog_ping_interval = -1.0
-            pld.setup_sd_notify()
-            results.expect_eq(
-                f"a {label} WATCHDOG_USEC leaves the ping interval unset",
-                pld.PrivleapdGlobal.watchdog_ping_interval,
-                -1.0,
-            )
-    finally:
-        left.close()
-        right.close()
-        _restore_watchdog_state(pld, saved)
-
-
-def test_watchdog_ping_never_blocks(results: Results, pld: ModuleType) -> None:
-    """
-    A ping must not block when systemd stops draining its notification socket.
-
-    sdnotify sends on a blocking datagram socket, so a full notification
-    socket (which is what a host under memory pressure produces) parks the
-    sender. Parking the thread whose whole job is to prove the process is
-    alive turns a transient stall into a watchdog kill.
-    """
-
-    print('== a watchdog ping does not block on a full notify socket ==')
-    saved: dict[str, Any] = _save_watchdog_state(pld)
-    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
-    try:
-        right.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 2048)
-        left.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 2048)
-        pld.PrivleapdGlobal.sdnotify_object.socket = left
-        pld.setup_sd_notify()
-        ## Whatever setup_sd_notify decided is the thing under test, so it is
-        ## captured before filling (which needs non-blocking mode of its own)
-        ## and put back afterwards. Filling without restoring would leave the
-        ## socket non-blocking regardless, and this test would then pass even
-        ## for a daemon that never set it.
-        mode_under_test: float | None = left.gettimeout()
-        if not results.check(
-            'the notification socket could be filled (precondition)',
-            fill_datagram_socket(left),
-        ):
-            return
-        left.settimeout(mode_under_test)
-        results.expect_eq(
-            'the socket is still in the mode the daemon chose',
-            left.gettimeout(),
-            mode_under_test,
-        )
-        finished, _r, exception = call_with_deadline(
-            lambda: pld.sd_notify('WATCHDOG=1')
-        )
-        results.check('sd_notify returns on a full socket', finished)
-        results.check(
-            'sd_notify swallows the would-block condition', exception is None
-        )
-    finally:
-        left.close()
-        right.close()
-        _restore_watchdog_state(pld, saved)
-
-
-def test_startup_notification_is_not_dropped(
-    results: Results, pld: ModuleType
-) -> None:
-    """
-    A notification systemd is waiting on must not be dropped.
-
-    Making the notification socket non-blocking is what stops a busy systemd
-    from parking the watchdog thread, but it applies to every send. READY=1 is
-    not optional: the unit is Type=notify, so systemd waits for exactly that
-    message and fails the start outright if it never arrives. A ping may be
-    dropped; a readiness notification may not.
-    """
-
-    print('== a notification systemd waits for is not dropped ==')
-    saved: dict[str, Any] = _save_watchdog_state(pld)
-    saved_retry: float = pld.PrivleapdGlobal.sd_notify_retry_seconds
-    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
-    try:
-        right.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 2048)
-        left.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 2048)
-        pld.PrivleapdGlobal.sdnotify_object.socket = left
-        pld.setup_sd_notify()
-        mode_under_test: float | None = left.gettimeout()
-        if not results.check(
-            'the notification socket could be filled (precondition)',
-            fill_datagram_socket(left),
-        ):
-            return
-        left.settimeout(mode_under_test)
-
-        ## Drain from the far end shortly after the send starts, standing in
-        ## for a systemd that was briefly behind and then caught up.
-        def drain_soon() -> None:
-            time.sleep(0.2)
-            _drain_datagrams(right)
-
-        right.setblocking(False)
-        threading.Thread(target=drain_soon, daemon=True).start()
-        pld.PrivleapdGlobal.sd_notify_retry_seconds = 5.0
-        finished, _r, exception = call_with_deadline(
-            lambda: pld.sd_notify('READY=1', must_arrive=True)
-        )
-        results.check('sending READY=1 returns', finished)
-        results.check('sending READY=1 does not raise', exception is None)
-        results.check(
-            'READY=1 reached systemd rather than being dropped',
-            _drain_datagrams(right) > 0,
-        )
-    finally:
-        left.close()
-        right.close()
-        pld.PrivleapdGlobal.sd_notify_retry_seconds = saved_retry
-        _restore_watchdog_state(pld, saved)
-
-
-def test_watchdog_without_notify_socket(
-    results: Results, pld: ModuleType
-) -> None:
-    """
-    Outside systemd there is no notification socket at all. Neither setup nor
-    a ping may raise.
-    """
-
-    print('== the watchdog path is inert without a notification socket ==')
-    saved: dict[str, Any] = _save_watchdog_state(pld)
-    try:
-        pld.PrivleapdGlobal.sdnotify_object.socket = None
-        finished, _r, exception = call_with_deadline(pld.setup_sd_notify)
-        results.check('setup_sd_notify returns', finished)
-        results.check('setup_sd_notify does not raise', exception is None)
-        finished, _r, exception = call_with_deadline(
-            lambda: pld.sd_notify('READY=1')
-        )
-        results.check('sd_notify returns', finished)
-        results.check('sd_notify does not raise', exception is None)
-    finally:
-        _restore_watchdog_state(pld, saved)
-
-
-def test_watchdog_stops_pinging_when_wedged(
-    results: Results, pld: ModuleType
-) -> None:
-    """
-    Decoupling the ping from the main loop must not defeat the watchdog.
-
-    A ping thread that pings unconditionally would tell systemd a wedged
-    daemon is healthy. Pings must stop once the main loop's heartbeat goes
-    stale, which is what still lets systemd restart a genuinely stuck daemon.
-    """
-
-    print('== the watchdog stops pinging a wedged main loop ==')
-    saved: dict[str, Any] = _save_watchdog_state(pld)
-    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
-    ## The daemon offers no way to stop its watchdog thread, so the socket
-    ## pair it sends to has to outlive this test.
-    _KEEPALIVE.extend([left, right])
-    try:
-        left.setblocking(False)
-        right.setblocking(False)
-        pld.PrivleapdGlobal.sdnotify_object.socket = left
-        pld.PrivleapdGlobal.watchdog_ping_interval = 0.05
-        pld.PrivleapdGlobal.watchdog_heartbeat_timeout = 0.5
-        pld.PrivleapdGlobal.main_loop_heartbeat = time.monotonic()
-
-        threading.Thread(target=pld.watchdog_loop, daemon=True).start()
-
-        healthy_pings: int = 0
-        deadline: float = time.monotonic() + 1.0
+        deadline: float = time.monotonic() + 3.0
+        served: int = 0
         while time.monotonic() < deadline:
-            pld.PrivleapdGlobal.main_loop_heartbeat = time.monotonic()
-            time.sleep(0.05)
-            healthy_pings += _drain_datagrams(right)
-        results.check('a live main loop is pinged', healthy_pings > 0)
-
-        ## Stop refreshing the heartbeat: the daemon now looks wedged.
-        pld.PrivleapdGlobal.main_loop_heartbeat = time.monotonic() - 60
-        time.sleep(0.3)
-        _drain_datagrams(right)
-        time.sleep(0.4)
-        results.expect_eq(
-            'a wedged main loop is not pinged', _drain_datagrams(right), 0
+            if daemon.comm_socket_answers(timeout_s=5.0):
+                served += 1
+        pings: int = notifier.messages.count('WATCHDOG=1')
+        results.check(
+            f"the daemon kept serving while watched ({served} answered)",
+            served > 0,
+        )
+        results.check(
+            f"the watchdog was pinged while serving ({pings} pings)",
+            pings > 0,
         )
     finally:
-        ## Park the thread rather than leaving it spinning on a zero interval.
-        pld.PrivleapdGlobal.watchdog_ping_interval = 3600.0
-        pld.PrivleapdGlobal.main_loop_heartbeat = time.monotonic()
-        saved['interval'] = 3600.0
-        _restore_watchdog_state(pld, saved)
-
-
-def _drain_datagrams(sock: socket.socket) -> int:
-    """Count and discard everything queued on a non-blocking datagram socket."""
-
-    count: int = 0
-    while True:
-        try:
-            sock.recv(256)
-            count += 1
-        except BlockingIOError:
-            return count
-
-
-def _save_watchdog_state(pld: ModuleType) -> dict[str, Any]:
-    return {
-        'interval': pld.PrivleapdGlobal.watchdog_ping_interval,
-        'timeout': pld.PrivleapdGlobal.watchdog_heartbeat_timeout,
-        'poll': pld.PrivleapdGlobal.main_loop_poll_timeout,
-        'heartbeat': pld.PrivleapdGlobal.main_loop_heartbeat,
-        'socket': pld.PrivleapdGlobal.sdnotify_object.socket,
-        'env': os.environ.get('WATCHDOG_USEC'),
-    }
-
-
-def _restore_watchdog_state(pld: ModuleType, saved: dict[str, Any]) -> None:
-    pld.PrivleapdGlobal.sdnotify_object.socket = saved['socket']
-    pld.PrivleapdGlobal.watchdog_ping_interval = saved['interval']
-    pld.PrivleapdGlobal.watchdog_heartbeat_timeout = saved['timeout']
-    pld.PrivleapdGlobal.main_loop_poll_timeout = saved['poll']
-    pld.PrivleapdGlobal.main_loop_heartbeat = saved['heartbeat']
-    if saved['env'] is None:
-        os.environ.pop('WATCHDOG_USEC', None)
-    else:
-        os.environ['WATCHDOG_USEC'] = saved['env']
+        pld.PrivleapdGlobal.sdnotify_object = saved_notifier
 
 
 # ---------------------------------------------------------------------------
 # Comm thread liveness
 # ---------------------------------------------------------------------------
-
-
-def test_notify_pipe_write_never_blocks(
-    results: Results, pld: ModuleType
-) -> None:
-    """
-    The control thread writes its wakeup byte while holding socket_list_lock.
-    Only the main thread can clear that pipe, and the main thread may itself
-    be waiting for the lock, so the write must never block.
-    """
-
-    print('== a wakeup pipe write does not block on a full pipe ==')
-    read_fd, write_fd = os.pipe()
-    os.set_blocking(write_fd, False)
-    write_pipe: Any = os.fdopen(write_fd, 'wb', buffering=0)
-    ## A full non-blocking pipe reports itself differently depending on how it
-    ## is wrapped: a raw write returns None, a buffered one raises. The daemon
-    ## must survive both, so both are exercised.
-    buffered_pipe: Any = os.fdopen(os.dup(write_fd), 'wb')
-    try:
-        filled: bool = False
-        for _ in range(200000):
-            if write_pipe.write(b'\x00') is None:
-                filled = True
-                break
-        if not results.check(
-            'the wakeup pipe could be filled (precondition)', filled
-        ):
-            return
-        finished, _r, exception = call_with_deadline(
-            lambda: pld.notify_pipe_write(write_pipe)
-        )
-        results.check(
-            'notify_pipe_write returns on a full raw pipe', finished
-        )
-        results.check(
-            'notify_pipe_write swallows a raw would-block', exception is None
-        )
-
-        finished, _r, exception = call_with_deadline(
-            lambda: pld.notify_pipe_write(buffered_pipe)
-        )
-        results.check(
-            'notify_pipe_write returns on a full buffered pipe', finished
-        )
-        results.check(
-            'notify_pipe_write swallows a buffered would-block',
-            exception is None,
-        )
-    finally:
-        ## Discarding the buffered wrapper's unwritten byte, so closing it
-        ## cannot raise over a pipe the test is about to drop anyway.
-        _discard_buffered(buffered_pipe)
-        write_pipe.close()
-        os.close(read_fd)
-
-
-def _discard_buffered(buffered_pipe: Any) -> None:
-    """
-    Drop a buffered writer without flushing it. Closing normally would retry
-    the buffered byte against a pipe that is still full.
-    """
-
-    try:
-        buffered_pipe.detach().close()
-    except Exception:  # nosec B110 # pylint: disable=broad-exception-caught
-        ## Nothing to salvage: the pipe is about to be dropped either way.
-        pass
-
-
-def test_termination_notice_reaches_every_thread(
-    results: Results, pld: ModuleType
-) -> None:
-    """
-    The termination notice is a sticky broadcast, not a single-reader message.
-
-    Several comm threads can be streaming actions for the same account, all
-    epolling the same notification pipe. When one of them noticed termination
-    it used to close that pipe, so its siblings never woke and kept running
-    their actions to completion. The notice must stay visible to every thread.
-    """
-
-    print('== a termination notice reaches every waiting thread ==')
-    sock_info: Any = make_socket_info(pld)
-    session: FakeSession = FakeSession()
-    try:
-        sock_info.should_terminate = True
-        pld.notify_pipe_write(sock_info.term_notify_write_pipe)
-
-        observed: list[bool] = []
-        acted: list[bool] = []
-        for _ in range(3):
-            epoll_obj: select.epoll = select.epoll()
-            epoll_obj.register(sock_info.term_notify_read_fd, select.EPOLLIN)
-            try:
-                ready: list[int] = [x[0] for x in epoll_obj.poll(1.0)]
-                observed.append(sock_info.term_notify_read_fd in ready)
-            finally:
-                epoll_obj.close()
-            ## Whatever a comm thread does on noticing termination must not
-            ## make the notice invisible to the next thread.
-            acted.append(
-                pld.check_early_action_terminate(
-                    sock_info, [], session, 'unit-action'
-                )
-            )
-        results.expect_eq(
-            'every waiting thread sees the termination notice',
-            observed,
-            [True, True, True],
-        )
-        results.expect_eq(
-            'every waiting thread acts on the notice', acted, [True, True, True]
-        )
-        results.check(
-            'the notification pipes are still open',
-            not sock_info.term_notify_read_pipe.closed
-            and not sock_info.term_notify_write_pipe.closed,
-        )
-    finally:
-        session.close_session()
-        close_socket_info(sock_info)
-
-
-def test_finished_stream_is_unregistered(
-    results: Results, pld: ModuleType
-) -> None:
-    """
-    A stream at end-of-file must leave the action output pump's epoll set.
-
-    An end-of-file descriptor is permanently ready, so leaving it registered
-    turned the pump into a busy loop that burned a core until the other stream
-    closed too, starving the main thread of the interpreter lock.
-    """
-
-    print('== a finished output stream is unregistered ==')
-    read_fd, write_fd = os.pipe()
-    stream: Any = os.fdopen(read_fd, 'rb', buffering=0)
-    epoll_obj: select.epoll = select.epoll()
-    try:
-        epoll_obj.register(read_fd, select.EPOLLIN)
-        os.close(write_fd)
-        results.expect_eq(
-            'a stream at end-of-file is reported ready (precondition)',
-            [x[0] for x in epoll_obj.poll(1.0)],
-            [read_fd],
-        )
-        results.expect_eq(
-            'marking a stream done reports it done',
-            pld.mark_stream_done(epoll_obj, stream, False),
-            True,
-        )
-        results.expect_eq(
-            'the finished stream no longer wakes the pump',
-            [x[0] for x in epoll_obj.poll(0.2)],
-            [],
-        )
-        results.expect_eq(
-            'marking an already finished stream is a no-op',
-            pld.mark_stream_done(epoll_obj, stream, True),
-            True,
-        )
-    finally:
-        epoll_obj.close()
-        stream.close()
 
 
 def test_action_output_pump_is_not_a_busy_loop(
@@ -1474,7 +1138,7 @@ def run_test(
     Run one test, turning an unexpected exception into a recorded failure.
 
     A test that explodes must not take the rest of the suite with it: against
-    an unfixed tree a missing helper or a torn-down socket is exactly the
+    a regressed tree a missing helper or a torn-down socket is exactly the
     kind of failure the suite exists to report, and the remaining tests still
     have findings to contribute.
     """
@@ -1504,29 +1168,18 @@ def main() -> int:
     ## list runs first, while nothing else is looking at it. The tests that
     ## start unstoppable daemon threads run last, because from then on that
     ## state belongs to those threads.
-    run_test(results, test_listener_accept_is_bounded, pl)
+    run_test(results, test_listening_socket_is_nonblocking, pl, pld)
     run_test(results, test_stale_ready_event_does_not_hang_daemon, pl, pld)
     run_test(results, test_accept_failure_does_not_spin, pld)
     run_test(results, test_reused_descriptor_is_registered, pl, pld)
     run_test(results, test_destroyed_socket_is_unregistered, pl, pld)
-    run_test(results, test_watchdog_ping_cadence, pld)
-    run_test(results, test_watchdog_disabled_without_systemd, pld)
-    run_test(results, test_watchdog_ping_never_blocks, pld)
-    run_test(results, test_startup_notification_is_not_dropped, pld)
-    run_test(results, test_watchdog_without_notify_socket, pld)
-    run_test(results, test_notify_pipe_write_never_blocks, pld)
-    run_test(results, test_termination_notice_reaches_every_thread, pld)
-    run_test(results, test_finished_stream_is_unregistered, pld)
     run_test(results, test_action_output_pump_is_not_a_busy_loop, pld)
     run_test(results, test_auth_failure_reply_is_constant_time, pld)
     run_test(results, test_access_check_reply_is_constant_time, pld)
-    ## Before the in-process daemon: its main loop refreshes the very
-    ## heartbeat this test has to hold stale, so running it afterwards would
-    ## be racing the thing under test.
-    run_test(results, test_watchdog_stops_pinging_when_wedged, pld)
     run_test(results, test_live_daemon_answers_after_socket_recreate, pl, pld)
-    run_test(results, test_control_thread_survives_a_failed_request, pl, pld)
-    run_test(results, test_live_daemon_keeps_heartbeat_while_serving, pl, pld)
+    ## Last: it starts the unstoppable in-process daemon threads (via the
+    ## recreate test's shared daemon) and probes them while serving.
+    run_test(results, test_live_daemon_pings_watchdog_while_serving, pl, pld)
 
     print('')
     return results.report('daemon liveness test')
