@@ -96,11 +96,21 @@ def _check_invariants(screen: pyte.Screen) -> None:
         f"cursor.y={screen.cursor.y} out of [0,{screen.lines})"
 
 
-def _one_round(rng: random.Random, use_bytes: bool) -> list[str]:
+def _one_round(
+    rng: random.Random,
+    use_bytes: bool,
+    out_seq: list[str] | None = None,
+) -> list[str]:
     screen = pyte.Screen(rng.choice([1, 3, 8, 20, 80]),
                          rng.choice([1, 3, 8, 24]))
     stream = pyte.ByteStream(screen) if use_bytes else pyte.Stream(screen)
     seq = [rng.choice(TOKENS) for _ in range(rng.randint(1, 10))]
+    # Record the exact sequence before feeding it, so a caller can report the
+    # real crashing input rather than regenerating it from a fresh Random(seed)
+    # -- regeneration omits the two dimension draws above and reports a
+    # different sequence than the one that actually crashed.
+    if out_seq is not None:
+        out_seq[:] = seq
     for tok in seq:
         data = tok.encode('utf-8', 'surrogatepass') if use_bytes else tok
         stream.feed(data)
@@ -138,14 +148,15 @@ def main(argv: list[str] | None = None) -> int:
         seed = args.seed + i
         use_bytes = bool(i & 1)
         rng = random.Random(seed)
+        seq: list[str] = []
         try:
-            _one_round(rng, use_bytes)
+            _one_round(rng, use_bytes, seq)
         except (Exception, SystemExit) as exc:  # fuzz harness: record any target
             # crash (incl. a target calling sys.exit) but let KeyboardInterrupt
             # through so the operator can still stop the run
             sig = _signature(exc)
-            rng2 = random.Random(seed)
-            seq = [rng2.choice(TOKENS) for _ in range(rng2.randint(1, 10))]
+            # seq was captured inside _one_round before the crash, so it is the
+            # exact input that failed -- do not regenerate it.
             seen.setdefault(sig, (seed, use_bytes, seq))
             if sig not in allow:
                 new_findings.setdefault(sig, (seed, use_bytes, seq))

@@ -41,19 +41,56 @@ fi
 
 work_dir="$(mktemp --directory -- "${TMP}/msgcollector-loop-test.XXXXXX")"
 
+## CI-path state (see run_caller): the real absolute path may be a SYMLINK into
+## a shared helper-scripts checkout, so the original is moved aside and a private
+## stub dir swapped in, then restored -- never written THROUGH.
+hs_real=/usr/libexec/helper-scripts
+hs_backup="${work_dir}/hs-original"
+hs_swapped=""
+
+restore_hs_swap() {
+   [ -n "${hs_swapped}" ] || return 0
+   hs_swapped=""
+   ## Retire the consumed stub dir into work_dir (safe-rm'd on exit) rather than
+   ## rm-ing a /usr path, then put back whatever was there before (symlink, real
+   ## dir, or nothing).
+   if [ -e "${hs_real}" ] || [ -L "${hs_real}" ]; then
+      mv --no-target-directory -- "${hs_real}" "${work_dir}/hs-stub-consumed"
+   fi
+   if [ -e "${hs_backup}" ] || [ -L "${hs_backup}" ]; then
+      mv --no-target-directory -- "${hs_backup}" "${hs_real}"
+   fi
+}
+
 test_cleanup_handler() {
+   restore_hs_swap
    safe-rm --recursive --force -- "${work_dir}"
 }
 
 trap test_cleanup_handler EXIT
 
 ## Stub the two helper-scripts the shared file sources, so the test does not
-## depend on the host having them installed.
+## depend on the host having them installed. The marker lets the regression
+## guard below prove the stub never leaks to the shared real path.
 stubs="${work_dir}/helper-scripts"
 mkdir --parents -- "${stubs}"
 printf '%s\n' 'light_sleep() { true; }' >"${stubs}/light_sleep.bsh"
-printf '%s\n' 'is_whole_number() { case "${1:-}" in ""|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }' \
-   >"${stubs}/strings.bsh"
+{
+   printf '%s\n' '## LOOP_PROTECTION_STUB_MARKER'
+   printf '%s\n' 'is_whole_number() { case "${1:-}" in ""|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }'
+} >"${stubs}/strings.bsh"
+
+## Swap the private stub dir in for the real /usr/libexec/helper-scripts once,
+## non-destructively. Idempotent: only the first call moves anything.
+install_hs_stubs() {
+   [ -z "${hs_swapped}" ] || return 0
+   if [ -e "${hs_real}" ] || [ -L "${hs_real}" ]; then
+      mv --no-target-directory -- "${hs_real}" "${hs_backup}"
+   fi
+   mkdir --parents -- "${hs_real}"
+   cp --force -- "${stubs}/light_sleep.bsh" "${stubs}/strings.bsh" "${hs_real}/"
+   hs_swapped=yes
+}
 
 pass_count=0
 fail_count=0
@@ -82,14 +119,18 @@ run_caller() {
    ## Locally, bwrap gives a throwaway /usr/libexec, leaving the host untouched.
    ## CI's container denies the unprivileged userns bwrap needs (pivot_root
    ## EPERM in debian:trixie-slim, same as the sibling sandbox tests -- those
-   ## run only in temp-claude), but it is ephemeral and root, so there we
-   ## install the same two stubs at the real path and run unconfined. No other
-   ## case in this suite reads /usr/libexec/helper-scripts, so the write cannot
-   ## leak between cases.
+   ## run only in temp-claude), but it is ephemeral and root, so there we swap
+   ## the same two stubs in at the real path and run unconfined. That path may
+   ## be a SYMLINK into a shared helper-scripts checkout (CI's
+   ## dist-ai-tests-ci-hs-runtime.sh wires one for helper-scripts:true
+   ## consumers); a plain cp would write THROUGH it and clobber the real
+   ## strings.bsh for every sibling suite in the run (e.g. unit_tests_test.sh).
+   ## install_hs_stubs moves the original aside instead; restore_hs_swap (below
+   ## and in the EXIT trap) puts it back.
    if [ "${CI:-}" = "true" ]; then
-      mkdir --parents -- /usr/libexec/helper-scripts
-      cp --force -- "${stubs}/light_sleep.bsh" "${stubs}/strings.bsh" \
-         /usr/libexec/helper-scripts/
+      ## Stubs were swapped in once by the parent (install_hs_stubs, below):
+      ## run_caller executes under $(...), so doing it here would be
+      ## subshell-local and the restore would never fire.
       output="$(timeout 20 bash "${caller}" 2>&1)" || true
    else
       output="$(bwrap --dev-bind / / \
@@ -135,6 +176,14 @@ check() {
    fi
 }
 
+## In CI, swap the stub helper-scripts in at the real absolute path ONCE, in
+## THIS shell -- run_caller runs under $(...), so an install there would be
+## subshell-local and restore_hs_swap (regression guard + EXIT trap) would never
+## fire, leaving the stub at the shared path for later suites.
+if [ "${CI:-}" = "true" ]; then
+   install_hs_stubs
+fi
+
 ## The real first call: no counter set yet. This is what every --progressx
 ## update does, and the one that aborted.
 ## The counter's base is 0: the first call establishes it, the next increments.
@@ -156,6 +205,22 @@ check 'a counter already at 60 still times out' '' \
 ## A non-numeric value is treated as a fresh start.
 check 'a non-numeric counter resets to a fresh start' 'counter=0' \
    'loop_counter_protection=abc; loop_protection; printf "%s\n" "counter=${loop_counter_protection}"'
+
+## Regression guard for THIS harness's own past bug: the CI stub swap must not
+## leave the stub strings.bsh at the shared real path, or every sibling suite
+## that sources /usr/libexec/helper-scripts/strings.bsh breaks (unit_tests_test.sh
+## once went 39/5 this way). Restore now, then prove the stub marker is gone. In
+## the bwrap branch nothing was swapped, so the host file is read as-is and has
+## no marker -- a clean pass either way.
+restore_hs_swap
+if [ -e "${hs_real}/strings.bsh" ] \
+   && grep --quiet --fixed-strings -- 'LOOP_PROTECTION_STUB_MARKER' "${hs_real}/strings.bsh"; then
+   printf '%s\n' "FAIL: CI helper-scripts stub leaked into the shared ${hs_real}/strings.bsh" >&2
+   fail_count=$(( fail_count + 1 ))
+else
+   printf '%s\n' "PASS: CI helper-scripts stub did not leak to the shared path"
+   pass_count=$(( pass_count + 1 ))
+fi
 
 printf '%s\n' ""
 printf '%s\n' "${pass_count} pass, ${fail_count} fail"
