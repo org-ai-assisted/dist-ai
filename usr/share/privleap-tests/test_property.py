@@ -227,3 +227,16 @@ def test_check_secure_file_permissions_is_total(s: str) -> None:
     """
 
     assert isinstance(PrivleapCommon.check_secure_file_permissions(s), bool)
+
+
+@given(st.integers())
+@settings(max_examples=200)
+def test_check_secure_file_permissions_is_total_over_int_fds(fd: int) -> None:
+    """
+    check_secure_file_permissions also accepts an integer file descriptor and
+    must stay total there too. A negative fd raises OSError, but an out-of-range
+    fd (e.g. >= 2**63) makes os.stat raise OverflowError, not OSError -- which
+    escaped a catch of (OSError, ValueError) alone.
+    """
+
+    assert isinstance(PrivleapCommon.check_secure_file_permissions(fd), bool)

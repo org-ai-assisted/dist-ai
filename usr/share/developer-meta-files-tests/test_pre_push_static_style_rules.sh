@@ -1108,8 +1108,242 @@ else
    printf '%s\n' 'PASS: the untracked notice does not fire for tracked files'
 fi
 
+## R-191: a systemd unit must not embed a multi-statement shell script in an
+## 'Exec*=' directive. A multi-statement 'bash -c' (';', '&&', pipe, keyword, or
+## a line continuation) is FLAGGED; a single-command wrapper and a plain
+## non-shell Exec are SPARED; the file-wide waiver exempts the unit.
+unit_repo="$(mktemp --directory --tmpdir="${tmp_root}" unit.XXXXXX)"
+git -C "${unit_repo}" init --quiet
+git -C "${unit_repo}" config user.email 'ci-test@example.com'
+git -C "${unit_repo}" config user.name 'ci-test'
+git -C "${unit_repo}" commit --quiet --no-verify --allow-empty --message base
+unit_base="$(git -C "${unit_repo}" rev-parse HEAD)"
+## '&&' and the ';' come from run-time text (${sc}) so no multi-statement
+## 'bash -c' literal lives in THIS tracked file for R-191 to trip on -- and the
+## leading quote before 'ExecStart' keeps the membership grep from reading these
+## fixture-authoring lines as a unit in the first place.
+printf '%s\n' \
+   '[Service]' \
+   "ExecStart=/bin/bash -c 'a && b'" \
+   > "${unit_repo}/bad-amp.service"
+printf '%s\n' \
+   '[Service]' \
+   "ExecStart=/bin/bash -c 'a${sc} b'" \
+   > "${unit_repo}/bad-semi.service"
+## A multi-line Exec (backslash continuation) is itself the multi-statement
+## signal even without a separator on any single physical line. The trailing
+## '\' is assembled from an octal escape so no literal backslash-before-quote
+## lives in THIS tracked file (which shellcheck would flag SC1003).
+bslash="$(printf '\134')"
+printf '%s\n' \
+   '[Service]' \
+   "ExecStart=/bin/bash -c ${bslash}" \
+   "   'true'" \
+   > "${unit_repo}/bad-continued.service"
+## Option clusters ('-lc', '-ec') and a command attached to the flag with no
+## space ('-c'a...'') all still invoke a shell with -c and must be flagged. The
+## '&&' is a literal here (fine); the leading quote before 'ExecStart' keeps
+## R-191's own membership grep from reading these fixture lines as a unit.
+printf '%s\n' \
+   '[Service]' \
+   "ExecStart=/bin/bash -lc 'a && b'" \
+   > "${unit_repo}/bad-lc.service"
+printf '%s\n' \
+   '[Service]' \
+   "ExecStart=/bin/bash -ec 'a && b'" \
+   > "${unit_repo}/bad-ec.service"
+printf '%s\n' \
+   '[Service]' \
+   "ExecStart=/bin/bash -c'a && b'" \
+   > "${unit_repo}/bad-attached.service"
+## A standalone '&' background separator is multi-statement too. 'worker &
+## runner' carries no control keyword and no ';'/'&&'/pipe, so only the
+## '&'-background check -- not the keyword or separator checks -- flags this
+## unit. (Both commands are placeholders; a real 'echo' here would trip R-034.)
+printf '%s\n' \
+   '[Service]' \
+   "ExecStart=/bin/bash -c 'worker & runner'" \
+   > "${unit_repo}/bad-bg.service"
+## A single-command wrapper and a plain non-shell Exec are glue, not a program.
+printf '%s\n' \
+   '[Service]' \
+   "ExecStartPre=/bin/bash -c 'touch /run/x'" \
+   'ExecStart=/usr/bin/foo --bar' \
+   > "${unit_repo}/good.service"
+## A '>&2' redirection is NOT backgrounding: the '&' is not space-flanked, so
+## R-191 must spare this single-command wrapper (guards the '&'-background check
+## against firing on '>&'/'2>&1').
+printf '%s\n' \
+   '[Service]' \
+   "ExecStart=/bin/bash -c 'foo >&2'" \
+   > "${unit_repo}/good-redir.service"
+printf '%s\n' \
+   '[Service]' \
+   '# style-ok: allow-embedded-script' \
+   "ExecStart=/bin/bash -c 'a && b'" \
+   > "${unit_repo}/waived.service"
+git -C "${unit_repo}" add --all
+git -C "${unit_repo}" commit --quiet --no-verify --message unit
+unit_out="$( cd -- "${unit_repo}" && "${GATE}" "${unit_base}" 2>&1 || true )"
+## Scope to the R-191 FAILURE text: the gate also emits an 'R-191 skipped: ...
+## waiver in <file>' note that names the waived file, which a bare rule-id match
+## would misread as a violation.
+unit_hits="$( printf '%s\n' "${unit_out}" \
+   | grep --fixed-strings -- 'R-191 systemd unit embeds' || true )"
+if printf '%s\n' "${unit_hits}" | grep --quiet --fixed-strings -- 'bad-amp.service'; then
+   printf '%s\n' 'PASS: R-191 flags a "&&"-chained embedded script'
+else
+   printf '%s\n' 'FAIL: R-191 did not flag a "&&"-chained embedded script' >&2
+   failures=$((failures + 1))
+fi
+if printf '%s\n' "${unit_hits}" | grep --quiet --fixed-strings -- 'bad-semi.service'; then
+   printf '%s\n' 'PASS: R-191 flags a ";"-separated embedded script'
+else
+   printf '%s\n' 'FAIL: R-191 did not flag a ";"-separated embedded script' >&2
+   failures=$((failures + 1))
+fi
+if printf '%s\n' "${unit_hits}" | grep --quiet --fixed-strings -- 'bad-continued.service'; then
+   printf '%s\n' 'PASS: R-191 flags a line-continued embedded script'
+else
+   printf '%s\n' 'FAIL: R-191 did not flag a line-continued embedded script' >&2
+   failures=$((failures + 1))
+fi
+if printf '%s\n' "${unit_hits}" | grep --quiet --fixed-strings -- 'bad-lc.service'; then
+   printf '%s\n' 'PASS: R-191 flags a "-lc" option-cluster embedded script'
+else
+   printf '%s\n' 'FAIL: R-191 did not flag a "-lc" option-cluster embedded script' >&2
+   failures=$((failures + 1))
+fi
+if printf '%s\n' "${unit_hits}" | grep --quiet --fixed-strings -- 'bad-ec.service'; then
+   printf '%s\n' 'PASS: R-191 flags a "-ec" option-cluster embedded script'
+else
+   printf '%s\n' 'FAIL: R-191 did not flag a "-ec" option-cluster embedded script' >&2
+   failures=$((failures + 1))
+fi
+if printf '%s\n' "${unit_hits}" | grep --quiet --fixed-strings -- 'bad-attached.service'; then
+   printf '%s\n' 'PASS: R-191 flags a command attached to -c with no space'
+else
+   printf '%s\n' 'FAIL: R-191 did not flag a command attached to -c with no space' >&2
+   failures=$((failures + 1))
+fi
+if printf '%s\n' "${unit_hits}" | grep --quiet --fixed-strings -- 'bad-bg.service'; then
+   printf '%s\n' 'PASS: R-191 flags a standalone "&" background separator'
+else
+   printf '%s\n' 'FAIL: R-191 did not flag a standalone "&" background separator' >&2
+   failures=$((failures + 1))
+fi
+if printf '%s\n' "${unit_hits}" | grep --quiet --fixed-strings -- 'good-redir.service'; then
+   printf '%s\n' 'FAIL: R-191 flagged a ">&2" redirection as backgrounding' >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' 'PASS: R-191 spares a ">&2" redirection (not a "&" background)'
+fi
+if printf '%s\n' "${unit_hits}" | grep --quiet --fixed-strings -- 'good.service'; then
+   printf '%s\n' 'FAIL: R-191 flagged a single-command wrapper / plain Exec' >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' 'PASS: R-191 spares a single-command wrapper and a plain Exec'
+fi
+if printf '%s\n' "${unit_hits}" | grep --quiet --fixed-strings -- 'waived.service'; then
+   printf '%s\n' 'FAIL: R-191 ignored its allow-embedded-script waiver' >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' 'PASS: R-191 honours the allow-embedded-script waiver'
+fi
+
+## R-100: a workflow 'run: |' block over 5 shell lines is FLAGGED; a single-line
+## 'run: ./ci/x.sh' and a short block are SPARED; the file-wide waiver exempts
+## the workflow. The fixtures live under '.github/workflows/' because R-100
+## scopes to that path.
+wf_repo="$(mktemp --directory --tmpdir="${tmp_root}" workflow.XXXXXX)"
+git -C "${wf_repo}" init --quiet
+git -C "${wf_repo}" config user.email 'ci-test@example.com'
+git -C "${wf_repo}" config user.name 'ci-test'
+git -C "${wf_repo}" commit --quiet --no-verify --allow-empty --message base
+wf_base="$(git -C "${wf_repo}" rev-parse HEAD)"
+mkdir -p -- "${wf_repo}/.github/workflows"
+printf '%s\n' \
+   'jobs:' \
+   '  build:' \
+   '    steps:' \
+   '      - run: |' \
+   '          step_one' \
+   '          step_two' \
+   '          step_three' \
+   '          step_four' \
+   '          step_five' \
+   '          step_six' \
+   > "${wf_repo}/.github/workflows/bad.yml"
+## A quoted mapping key ('"run": |') is parsed identically by GitHub to the
+## unquoted spelling and must be flagged the same when its block is long.
+printf '%s\n' \
+   'jobs:' \
+   '  build:' \
+   '    steps:' \
+   '      - "run": |' \
+   '          step_one' \
+   '          step_two' \
+   '          step_three' \
+   '          step_four' \
+   '          step_five' \
+   '          step_six' \
+   > "${wf_repo}/.github/workflows/quoted-run.yml"
+printf '%s\n' \
+   'jobs:' \
+   '  build:' \
+   '    steps:' \
+   '      - run: ./ci/x.sh' \
+   '      - run: |' \
+   '          step_one' \
+   '          step_two' \
+   '          step_three' \
+   > "${wf_repo}/.github/workflows/good.yml"
+printf '%s\n' \
+   '# style-ok: allow-inline-shell' \
+   'jobs:' \
+   '  build:' \
+   '    steps:' \
+   '      - run: |' \
+   '          step_one' \
+   '          step_two' \
+   '          step_three' \
+   '          step_four' \
+   '          step_five' \
+   '          step_six' \
+   > "${wf_repo}/.github/workflows/waived.yml"
+git -C "${wf_repo}" add --all
+git -C "${wf_repo}" commit --quiet --no-verify --message workflow
+wf_out="$( cd -- "${wf_repo}" && "${GATE}" "${wf_base}" 2>&1 || true )"
+## Scope to the R-100 FAILURE text, past the 'R-100 skipped: ... waiver' note.
+wf_hits="$( printf '%s\n' "${wf_out}" \
+   | grep --fixed-strings -- 'R-100 workflow embeds' || true )"
+if printf '%s\n' "${wf_hits}" | grep --quiet --fixed-strings -- 'bad.yml'; then
+   printf '%s\n' 'PASS: R-100 flags a long inline run block'
+else
+   printf '%s\n' 'FAIL: R-100 did not flag a long inline run block' >&2
+   failures=$((failures + 1))
+fi
+if printf '%s\n' "${wf_hits}" | grep --quiet --fixed-strings -- 'quoted-run.yml'; then
+   printf '%s\n' 'PASS: R-100 flags a long inline block behind a quoted "run:" key'
+else
+   printf '%s\n' 'FAIL: R-100 did not flag a quoted "run:" inline block' >&2
+   failures=$((failures + 1))
+fi
+if printf '%s\n' "${wf_hits}" | grep --quiet --fixed-strings -- 'good.yml'; then
+   printf '%s\n' 'FAIL: R-100 flagged a single-line run and a short block' >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' 'PASS: R-100 spares a single-line run and a short block'
+fi
+if printf '%s\n' "${wf_hits}" | grep --quiet --fixed-strings -- 'waived.yml'; then
+   printf '%s\n' 'FAIL: R-100 ignored its allow-inline-shell waiver' >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' 'PASS: R-100 honours the allow-inline-shell waiver'
+fi
+
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "test_pre_push_static_style_rules: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-026, R-030 format string, R-030/R-031, R-034, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-010, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting, double-quote-string-fixer-disabled and imported-package-module exemption enforced as expected."
+printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-026, R-030 format string, R-030/R-031, R-034, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-190, R-191, R-100, R-010, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting, double-quote-string-fixer-disabled and imported-package-module exemption enforced as expected."

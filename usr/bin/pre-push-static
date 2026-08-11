@@ -71,6 +71,11 @@
 ##      'Changelog-manual-ok: <reason>' override trailer.
 ##  21. R-153 no help/usage scraped from the script's own comments
 ##      ('grep ^## "$0" | sed ...'); help prints strings you own.
+##  22. R-191 a systemd unit must not embed a multi-statement shell
+##      script in an 'Exec*=' directive ('bash -c "a; b"'); move it to
+##      a script with a shebang. '## style-ok: allow-embedded-script'.
+##  23. R-100 a workflow 'run: |' block over 5 shell lines must be
+##      extracted to a ci/ script. '## style-ok: allow-inline-shell'.
 ##
 ## Scope: files changed in HEAD vs upstream tracking branch
 ## (@{u}). Pass an explicit base ref as $1 to override
@@ -1479,6 +1484,209 @@ check_R190_inline_interpreter() {
    done
 }
 
+check_R191_systemd_unit_embedded_script() {
+   local unit line line_number directive_name directive_start value spanned
+   local in_directive has_shell_c has_multi shell_c_re keyword_re
+
+   ## R-191: a systemd unit must not embed a multi-statement shell script in an
+   ## 'Exec*=' directive. 'ExecStart=/bin/bash -c "a; b; c"' is the same defect
+   ## as R-190 (inline interpreter) and R-100 (workflow YAML) in another host:
+   ## the logic is invisible to shellcheck, has no importable home a unit test
+   ## can reach, and no coverage tool can see it. Move it to a script with a
+   ## shebang and call that. A single-command wrapper ('bash -c "touch
+   ## /run/foo"') is glue, not a program, and is allowed -- only multi-statement
+   ## logic is flagged.
+   ##
+   ## A shell control keyword must match as a whole word, so an argument such as
+   ## 'systemctl condrestart' does not read as a 'do'/'if'.
+   ## Match sh/bash/dash invoking -c, incl. an option cluster ending in c
+   ## ('-lc', '-ec'), a preceding option token ('-e -c'), and a command
+   ## attached to the flag with no space ('-c"a; b"').
+   shell_c_re='(^|[[:space:]]|/)(sh|bash|dash)([[:space:]]+-[a-zA-Z]+)*[[:space:]]+-[a-zA-Z]*c(["'"'"'[:space:]]|$)'
+   keyword_re='(^|[[:space:]])(for|while|if|case|until|do|then)([[:space:]]|$)'
+   for unit in "${@}"; do
+      ## Same regular-file floor as check_ascii_files: a submodule gitlink is a
+      ## directory in the work tree and grep errors on it.
+      if [ ! -f "${unit}" ] || [ -L "${unit}" ]; then
+         continue
+      fi
+      ## Membership: only a file carrying an 'Exec*=' directive is a unit worth
+      ## scanning. One grep decides this before the per-line pass, so a plain
+      ## text file changed in the same commit costs nothing.
+      if ! grep --quiet --extended-regexp \
+         '^[[:space:]]*Exec[A-Za-z]*=' -- "${unit}" 2>/dev/null
+      then
+         continue
+      fi
+      ## File-wide waiver. A unit file comments with a single '#', so accept one
+      ## OR two hashes -- anchored so a typo'd superset cannot silently disable
+      ## the rule, mirroring the R-190 waiver.
+      if grep --quiet --extended-regexp \
+         '^[[:space:]]*#{1,2}[[:space:]]*style-ok:[[:space:]]*allow-embedded-script([[:space:]]|$)' \
+         -- "${unit}" 2>/dev/null
+      then
+         note "R-191 skipped: 'style-ok: allow-embedded-script' waiver in '${unit}'"
+         continue
+      fi
+
+      in_directive='false'
+      directive_name=""
+      directive_start=0
+      value=""
+      spanned='false'
+      line_number=0
+      while IFS= read -r line || [ -n "${line}" ]; do
+         line_number=$(( line_number + 1 ))
+         if [ "${in_directive}" = 'true' ]; then
+            ## Continuation line: append its text to the value being built.
+            value="${value}${line}"
+         elif [[ "${line}" =~ ^[[:space:]]*(Exec[A-Za-z]*)=(.*)$ ]]; then
+            directive_name="${BASH_REMATCH[1]}"
+            directive_start="${line_number}"
+            value="${BASH_REMATCH[2]}"
+            spanned='false'
+         else
+            continue
+         fi
+         ## systemd joins a directive across physical lines when the value ends
+         ## in a backslash. Strip it, record that the directive spanned lines
+         ## (which is itself a "multi-statement" signal), and fold in the next
+         ## physical line before judging the whole value.
+         if [ "${value%\\}" != "${value}" ]; then
+            value="${value%\\}"
+            spanned='true'
+            in_directive='true'
+            continue
+         fi
+         in_directive='false'
+
+         ## (a) the value invokes a shell with '-c'.
+         has_shell_c='false'
+         if [[ "${value}" =~ ${shell_c_re} ]]; then
+            has_shell_c='true'
+         fi
+         ## (b) the value embeds multi-statement logic: a separator, a pipe, a
+         ## control keyword, or a line continuation.
+         has_multi='false'
+         if [ "${spanned}" = 'true' ]; then
+            has_multi='true'
+         elif [[ "${value}" == *';'* ]] || [[ "${value}" == *'&&'* ]] \
+            || [[ "${value}" == *'|'* ]] \
+            || [[ "${value}" =~ [[:space:]]\&([[:space:]]|$) ]]; then
+            ## ';' '&&' '||' pipe, or a standalone '&' background separator (a
+            ## space-flanked '&' -- not '&&' and not a '>&'/'2>&1' redirection).
+            ## Known limitation (accepted): a separator inside a NESTED quote --
+            ## e.g. bash -c 'printf "A & B"' -- reads as multi-statement. This
+            ## check is deliberately not shell-quote-aware (parsing quotes in a
+            ## regex gate is fragile); use the allow-embedded-script waiver for
+            ## such a unit. Rare in practice (0 of the tree's ~100 real units).
+            has_multi='true'
+         elif [[ "${value}" =~ ${keyword_re} ]]; then
+            has_multi='true'
+         fi
+         if [ "${has_shell_c}" = 'true' ] && [ "${has_multi}" = 'true' ]; then
+            fail "R-191 systemd unit embeds a multi-statement shell script in ${directive_name}; move the logic to a dedicated script (shebang) and call it" \
+               "'${unit}:${directive_start}'"
+         fi
+      done < "${unit}"
+   done
+}
+
+check_R100_yaml_inline_shell() {
+   local workflow line line_number run_indent body_count block_start
+   local in_block stripped indent
+
+   ## R-100: a workflow must not embed a substantial inline shell block in a
+   ## 'run:' step. Same defect as R-190: the shell is invisible to shellcheck,
+   ## has no file a test can reach, and no coverage tool can see it. Extract it
+   ## to a 'ci/' script and call that. A single-line 'run: ./ci/foo.sh' is the
+   ## good form and is never flagged. The threshold matches R-190's "more than 5
+   ## lines" -- a short block is glue, not a program.
+   for workflow in "${@}"; do
+      if [ ! -f "${workflow}" ] || [ -L "${workflow}" ]; then
+         continue
+      fi
+      ## Scope: GitHub workflow YAML only. The gate runs from the repo root, so a
+      ## repo-root-relative path is the common case; the '*/' arms also match a
+      ## nested checkout.
+      case "${workflow}" in
+         .github/workflows/*.yml|.github/workflows/*.yaml)
+            true
+            ;;
+         */.github/workflows/*.yml|*/.github/workflows/*.yaml)
+            true
+            ;;
+         *)
+            continue
+            ;;
+      esac
+      ## File-wide waiver, same shape as R-191's.
+      if grep --quiet --extended-regexp \
+         '^[[:space:]]*#{1,2}[[:space:]]*style-ok:[[:space:]]*allow-inline-shell([[:space:]]|$)' \
+         -- "${workflow}" 2>/dev/null
+      then
+         note "R-100 skipped: 'style-ok: allow-inline-shell' waiver in '${workflow}'"
+         continue
+      fi
+
+      in_block='false'
+      run_indent=0
+      body_count=0
+      block_start=0
+      line_number=0
+      while IFS= read -r line || [ -n "${line}" ]; do
+         line_number=$(( line_number + 1 ))
+         if [ "${in_block}" = 'true' ]; then
+            stripped="${line#"${line%%[![:space:]]*}"}"
+            ## A blank line stays INSIDE the block scalar (it does not end it)
+            ## and does not count toward the body.
+            if [ -z "${stripped}" ]; then
+               continue
+            fi
+            indent=$(( ${#line} - ${#stripped} ))
+            if [ "${indent}" -le "${run_indent}" ]; then
+               ## The block ends at the first non-blank line dedented to or past
+               ## the 'run:' key. Emit the verdict, then fall through so THIS
+               ## same line can itself open a fresh 'run:' block.
+               if [ "${body_count}" -gt 5 ]; then
+                  fail "R-100 workflow embeds an inline shell block (${body_count} lines) in a 'run:' step; extract it to a ci/ script and call it" \
+                     "'${workflow}:${block_start}'"
+               fi
+               in_block='false'
+               body_count=0
+            else
+               ## A non-blank, non-comment body line counts.
+               case "${stripped}" in
+                  '#'*)
+                     true
+                     ;;
+                  *)
+                     body_count=$(( body_count + 1 ))
+                     ;;
+               esac
+               continue
+            fi
+         fi
+         ## A 'run:' whose value opens a block scalar ('|' or '>'). The prefix up
+         ## to and including any '- ' list marker fixes the key column; body
+         ## lines are indented strictly more than that.
+         ## ["']?run["']? also recognises a quoted mapping key ('"run": |'),
+         ## which GitHub parses identically to the unquoted spelling.
+         if [[ "${line}" =~ ^([[:space:]]*(-[[:space:]]+)?)["'"'"']?run["'"'"']?:[[:space:]]*[\|\>] ]]; then
+            run_indent="${#BASH_REMATCH[1]}"
+            in_block='true'
+            body_count=0
+            block_start="${line_number}"
+         fi
+      done < "${workflow}"
+      ## A block that runs to end-of-file still needs its verdict.
+      if [ "${in_block}" = 'true' ] && [ "${body_count}" -gt 5 ]; then
+         fail "R-100 workflow embeds an inline shell block (${body_count} lines) in a 'run:' step; extract it to a ci/ script and call it" \
+            "'${workflow}:${block_start}'"
+      fi
+   done
+}
+
 is_installed_python_module() {
    local candidate
    candidate="${1}"
@@ -2289,6 +2497,8 @@ run_file_checks() {
             "${file_list[@]}"
       fi
       check_ascii_files "${file_list[@]}"
+      check_R191_systemd_unit_embedded_script "${file_list[@]}"
+      check_R100_yaml_inline_shell "${file_list[@]}"
       check_trailing_whitespace "${file_list[@]}"
       check_precommit_hooks "${file_list[@]}"
       check_comments_audit "${file_list[@]}"
