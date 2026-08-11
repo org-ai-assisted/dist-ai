@@ -126,8 +126,12 @@ def check_translate(links_def: str, translate_def: str, message: str) -> None:
     ## than converts -- which the tag-absence checks alone would not catch.
     ## subprocess text mode normalizes CR/CRLF to \n on read; compare that view.
     if '<' not in message:
-        expected = message.replace('\r\n', '\n').replace('\r', '\n')
-        assert out == expected, 'plain text was not preserved verbatim'
+        ## cli_translate_gui_markup runs the text through bash command
+        ## substitutions, which strip TRAILING newlines, so compare content up to
+        ## trailing-newline stripping (and subprocess CR/CRLF normalization). A
+        ## dropped or emptied non-newline character still fails this.
+        expected = message.replace('\r\n', '\n').replace('\r', '\n').rstrip('\n')
+        assert out.rstrip('\n') == expected, 'plain text content was not preserved'
 
 
 def check(func_def: str, message: str) -> None:
