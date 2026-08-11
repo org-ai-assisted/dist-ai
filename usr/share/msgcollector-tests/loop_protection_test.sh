@@ -47,19 +47,14 @@ test_cleanup_handler() {
 
 trap test_cleanup_handler EXIT
 
-## Stub the two helper-scripts msgcollector_shared sources (is_whole_number and
-## light_sleep) in a private tree, and point the sourced code at it via
-## HELPER_SCRIPTS_PATH -- the same override the shipped scripts honor (unset in
-## production, where it resolves to /usr/libexec). No bwrap and no writing into
-## the shared /usr/libexec: the isolation is one exported variable, so it cannot
-## leak into a sibling suite the way a cp into the shared path once did.
-## light_sleep is a no-op here so the timeout-path check stays instant.
-hs_stub_root="${work_dir}/hs-root"
-stub_hs_dir="${hs_stub_root}/usr/libexec/helper-scripts"
-mkdir --parents -- "${stub_hs_dir}"
-printf '%s\n' 'light_sleep() { true; }' >"${stub_hs_dir}/light_sleep.bsh"
-printf '%s\n' 'is_whole_number() { case "${1:-}" in ""|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }' \
-   >"${stub_hs_dir}/strings.bsh"
+## loop_protection() calls is_whole_number and light_sleep from helper-scripts.
+## Use the REAL ones the wire provides (HELPER_SCRIPTS_PATH, else the installed
+## /usr/libexec) -- the same assumption every sibling suite makes -- so the test
+## exercises the actual dependencies, not a reimplementation. Skip if absent.
+if [ ! -r "${HELPER_SCRIPTS_PATH:-}/usr/libexec/helper-scripts/strings.bsh" ]; then
+   printf '%s\n' "SKIP: helper-scripts not available at ${HELPER_SCRIPTS_PATH:-}/usr/libexec/helper-scripts" >&2
+   exit 77
+fi
 
 pass_count=0
 fail_count=0
@@ -84,10 +79,10 @@ run_caller() {
       printf '%s\n' "${body}"
    } >"${caller}"
 
-   ## Point msgcollector_shared's sourced helper-scripts at the private stub tree
-   ## via the same HELPER_SCRIPTS_PATH override the shipped scripts honor. Host
-   ## install irrelevant, /usr/libexec untouched, nothing to leak or restore.
-   output="$(HELPER_SCRIPTS_PATH="${hs_stub_root}" timeout 20 bash "${caller}" 2>&1)" || true
+   ## Run under the ambient HELPER_SCRIPTS_PATH / MSGCOLLECTOR_REPO the wire sets,
+   ## so msgcollector_shared and its helper-scripts resolve from the checkouts.
+   ## /usr/libexec is never written -- nothing to isolate, leak, or restore.
+   output="$(timeout 20 bash "${caller}" 2>&1)" || true
    printf '%s' "${output}"
 }
 
