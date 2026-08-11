@@ -1140,12 +1140,43 @@ printf '%s\n' \
    "ExecStart=/bin/bash -c ${bslash}" \
    "   'true'" \
    > "${unit_repo}/bad-continued.service"
+## Option clusters ('-lc', '-ec') and a command attached to the flag with no
+## space ('-c'a...'') all still invoke a shell with -c and must be flagged. The
+## '&&' is a literal here (fine); the leading quote before 'ExecStart' keeps
+## R-191's own membership grep from reading these fixture lines as a unit.
+printf '%s\n' \
+   '[Service]' \
+   "ExecStart=/bin/bash -lc 'a && b'" \
+   > "${unit_repo}/bad-lc.service"
+printf '%s\n' \
+   '[Service]' \
+   "ExecStart=/bin/bash -ec 'a && b'" \
+   > "${unit_repo}/bad-ec.service"
+printf '%s\n' \
+   '[Service]' \
+   "ExecStart=/bin/bash -c'a && b'" \
+   > "${unit_repo}/bad-attached.service"
+## A standalone '&' background separator is multi-statement too. 'worker &
+## runner' carries no control keyword and no ';'/'&&'/pipe, so only the
+## '&'-background check -- not the keyword or separator checks -- flags this
+## unit. (Both commands are placeholders; a real 'echo' here would trip R-034.)
+printf '%s\n' \
+   '[Service]' \
+   "ExecStart=/bin/bash -c 'worker & runner'" \
+   > "${unit_repo}/bad-bg.service"
 ## A single-command wrapper and a plain non-shell Exec are glue, not a program.
 printf '%s\n' \
    '[Service]' \
    "ExecStartPre=/bin/bash -c 'touch /run/x'" \
    'ExecStart=/usr/bin/foo --bar' \
    > "${unit_repo}/good.service"
+## A '>&2' redirection is NOT backgrounding: the '&' is not space-flanked, so
+## R-191 must spare this single-command wrapper (guards the '&'-background check
+## against firing on '>&'/'2>&1').
+printf '%s\n' \
+   '[Service]' \
+   "ExecStart=/bin/bash -c 'foo >&2'" \
+   > "${unit_repo}/good-redir.service"
 printf '%s\n' \
    '[Service]' \
    '# style-ok: allow-embedded-script' \
@@ -1176,6 +1207,36 @@ if printf '%s\n' "${unit_hits}" | grep --quiet --fixed-strings -- 'bad-continued
 else
    printf '%s\n' 'FAIL: R-191 did not flag a line-continued embedded script' >&2
    failures=$((failures + 1))
+fi
+if printf '%s\n' "${unit_hits}" | grep --quiet --fixed-strings -- 'bad-lc.service'; then
+   printf '%s\n' 'PASS: R-191 flags a "-lc" option-cluster embedded script'
+else
+   printf '%s\n' 'FAIL: R-191 did not flag a "-lc" option-cluster embedded script' >&2
+   failures=$((failures + 1))
+fi
+if printf '%s\n' "${unit_hits}" | grep --quiet --fixed-strings -- 'bad-ec.service'; then
+   printf '%s\n' 'PASS: R-191 flags a "-ec" option-cluster embedded script'
+else
+   printf '%s\n' 'FAIL: R-191 did not flag a "-ec" option-cluster embedded script' >&2
+   failures=$((failures + 1))
+fi
+if printf '%s\n' "${unit_hits}" | grep --quiet --fixed-strings -- 'bad-attached.service'; then
+   printf '%s\n' 'PASS: R-191 flags a command attached to -c with no space'
+else
+   printf '%s\n' 'FAIL: R-191 did not flag a command attached to -c with no space' >&2
+   failures=$((failures + 1))
+fi
+if printf '%s\n' "${unit_hits}" | grep --quiet --fixed-strings -- 'bad-bg.service'; then
+   printf '%s\n' 'PASS: R-191 flags a standalone "&" background separator'
+else
+   printf '%s\n' 'FAIL: R-191 did not flag a standalone "&" background separator' >&2
+   failures=$((failures + 1))
+fi
+if printf '%s\n' "${unit_hits}" | grep --quiet --fixed-strings -- 'good-redir.service'; then
+   printf '%s\n' 'FAIL: R-191 flagged a ">&2" redirection as backgrounding' >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' 'PASS: R-191 spares a ">&2" redirection (not a "&" background)'
 fi
 if printf '%s\n' "${unit_hits}" | grep --quiet --fixed-strings -- 'good.service'; then
    printf '%s\n' 'FAIL: R-191 flagged a single-command wrapper / plain Exec' >&2
@@ -1213,6 +1274,20 @@ printf '%s\n' \
    '          step_five' \
    '          step_six' \
    > "${wf_repo}/.github/workflows/bad.yml"
+## A quoted mapping key ('"run": |') is parsed identically by GitHub to the
+## unquoted spelling and must be flagged the same when its block is long.
+printf '%s\n' \
+   'jobs:' \
+   '  build:' \
+   '    steps:' \
+   '      - "run": |' \
+   '          step_one' \
+   '          step_two' \
+   '          step_three' \
+   '          step_four' \
+   '          step_five' \
+   '          step_six' \
+   > "${wf_repo}/.github/workflows/quoted-run.yml"
 printf '%s\n' \
    'jobs:' \
    '  build:' \
@@ -1246,6 +1321,12 @@ if printf '%s\n' "${wf_hits}" | grep --quiet --fixed-strings -- 'bad.yml'; then
    printf '%s\n' 'PASS: R-100 flags a long inline run block'
 else
    printf '%s\n' 'FAIL: R-100 did not flag a long inline run block' >&2
+   failures=$((failures + 1))
+fi
+if printf '%s\n' "${wf_hits}" | grep --quiet --fixed-strings -- 'quoted-run.yml'; then
+   printf '%s\n' 'PASS: R-100 flags a long inline block behind a quoted "run:" key'
+else
+   printf '%s\n' 'FAIL: R-100 did not flag a quoted "run:" inline block' >&2
    failures=$((failures + 1))
 fi
 if printf '%s\n' "${wf_hits}" | grep --quiet --fixed-strings -- 'good.yml'; then

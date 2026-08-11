@@ -1499,7 +1499,10 @@ check_R191_systemd_unit_embedded_script() {
    ##
    ## A shell control keyword must match as a whole word, so an argument such as
    ## 'systemctl condrestart' does not read as a 'do'/'if'.
-   shell_c_re='(^|[[:space:]]|/)(sh|bash|dash)[[:space:]]+-c([[:space:]]|$)'
+   ## Match sh/bash/dash invoking -c, incl. an option cluster ending in c
+   ## ('-lc', '-ec'), a preceding option token ('-e -c'), and a command
+   ## attached to the flag with no space ('-c"a; b"').
+   shell_c_re='(^|[[:space:]]|/)(sh|bash|dash)([[:space:]]+-[a-zA-Z]+)*[[:space:]]+-[a-zA-Z]*c(["'"'"'[:space:]]|$)'
    keyword_re='(^|[[:space:]])(for|while|if|case|until|do|then)([[:space:]]|$)'
    for unit in "${@}"; do
       ## Same regular-file floor as check_ascii_files: a submodule gitlink is a
@@ -1568,7 +1571,10 @@ check_R191_systemd_unit_embedded_script() {
          if [ "${spanned}" = 'true' ]; then
             has_multi='true'
          elif [[ "${value}" == *';'* ]] || [[ "${value}" == *'&&'* ]] \
-            || [[ "${value}" == *'|'* ]]; then
+            || [[ "${value}" == *'|'* ]] \
+            || [[ "${value}" =~ [[:space:]]\&([[:space:]]|$) ]]; then
+            ## ';' '&&' '||' pipe, or a standalone '&' background separator (a
+            ## space-flanked '&' -- not '&&' and not a '>&'/'2>&1' redirection).
             has_multi='true'
          elif [[ "${value}" =~ ${keyword_re} ]]; then
             has_multi='true'
@@ -1659,7 +1665,9 @@ check_R100_yaml_inline_shell() {
          ## A 'run:' whose value opens a block scalar ('|' or '>'). The prefix up
          ## to and including any '- ' list marker fixes the key column; body
          ## lines are indented strictly more than that.
-         if [[ "${line}" =~ ^([[:space:]]*(-[[:space:]]+)?)run:[[:space:]]*[\|\>] ]]; then
+         ## ["']?run["']? also recognises a quoted mapping key ('"run": |'),
+         ## which GitHub parses identically to the unquoted spelling.
+         if [[ "${line}" =~ ^([[:space:]]*(-[[:space:]]+)?)["'"'"']?run["'"'"']?:[[:space:]]*[\|\>] ]]; then
             run_indent="${#BASH_REMATCH[1]}"
             in_block='true'
             body_count=0
