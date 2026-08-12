@@ -19,6 +19,7 @@ Each <site-root> is the directory holding a site's index.html. The site's own
 identity is inferred from its directory name (matched against the known family).
 """
 
+import calendar
 import datetime
 import html.parser
 import os
@@ -242,7 +243,7 @@ def check_wording(root, failures):
 # AGAIN. A reproducible run or a test can pin "today" via CHECK_SITE_TODAY.
 _DATED_CLAIM = re.compile(
     r'(?:measured|tested|re-verified|verified|re-counted|counted|as of|updated'
-    r'|last (?:checked|updated|tested))\b[^.\n]{0,32}?'
+    r'|last (?:checked|updated|tested))\b[^.]{0,32}?'
     r'(\d{4})-(\d{2})(?:-(\d{2}))?', re.IGNORECASE)
 _STALE_DAYS = 400
 
@@ -259,8 +260,14 @@ def check_freshness(root, failures):
         ext = Extractor()
         with open(page, encoding='utf-8') as handle:
             ext.feed(handle.read())
-        for match in _DATED_CLAIM.finditer(ext.text()):
-            year, month, day = int(match.group(1)), int(match.group(2)), int(match.group(3) or 1)
+        # collapse HTML whitespace the way a browser renders it, so a claim wrapped
+        # across source lines ("tested\n2025-01-01") is still matched
+        text = re.sub(r'\s+', ' ', ext.text())
+        for match in _DATED_CLAIM.finditer(text):
+            year, month = int(match.group(1)), int(match.group(2))
+            # a month-only claim (YYYY-MM) is measured from the month's LAST day, so
+            # it is not aged early -- it stays fresh until the whole month is past
+            day = int(match.group(3)) if match.group(3) else calendar.monthrange(year, month)[1]
             try:
                 claim_date = datetime.date(year, month, day)
             except ValueError:
