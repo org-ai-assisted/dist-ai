@@ -38,16 +38,17 @@ fi
 ## flock (util-linux) is a hard msgcollector dependency (msgdispatcher requires
 ## it too), so it is required, not skipped.
 
-## Extract the REAL function from the current script text (no drift), then run it.
-fn="$(sed -n '/^escalate_type_file() {/,/^}/p' -- "${subject}")"
-if [ -z "${fn}" ]; then
-   printf '%s\n' "SKIP: escalate_type_file not found in ${subject}" >&2
-   exit 77
-fi
-## escalate_type_file references onlyecho only in the passive path, not here;
-## default it so nounset does not abort the extracted function.
-onlyecho=""
-eval "${fn}"
+## msgcollector is source-able (main() is BASH_SOURCE-guarded) and sources
+## helper-scripts only inside main(), so sourcing it top-level defines the REAL
+## escalate_type_file in its real context -- no fragment extraction, no stubbed
+## globals. Run it in a child shell with the args positional, so a quote in a
+## path cannot break or inject into the command.
+escalate() {
+   MSGC="${subject}" bash -c '
+      source "${MSGC}" </dev/null >/dev/null 2>&1 || true
+      escalate_type_file "$1" "$2"
+   ' bash "$1" "$2"
+}
 
 work_dir="$(mktemp --directory -- "${TMP}/msgcollector-escalate-test.XXXXXX")"
 
@@ -64,8 +65,8 @@ pass() { printf '%s\n' "PASS: $1"; pass_count=$(( pass_count + 1 )); }
 fail() { printf '%s\n' "FAIL: $1" >&2; fail_count=$(( fail_count + 1 )); }
 
 ## 1. Sequential no-downgrade: a later info must not overwrite an error.
-escalate_type_file "${type_file}" error
-escalate_type_file "${type_file}" info
+escalate "${type_file}" error
+escalate "${type_file}" info
 if [ "$(cat -- "${type_file}")" = error ]; then
    pass "sequential: error is not downgraded by a later info"
 else
@@ -79,7 +80,9 @@ fi
 ## on real state, not sleeps that assume timing.
 safe-rm --force -- "${type_file}" "${type_file}.lock"
 ready_file="${work_dir}/holder_ready"
-flock --exclusive "${type_file}.lock" -c "touch -- '${ready_file}'; sleep 30" &
+## Pass the ready-file path as a positional arg (not interpolated into the -c
+## string), so a quote in TMP cannot break or inject into the held command.
+flock --exclusive "${type_file}.lock" bash -c 'touch -- "$1"; sleep 30' bash "${ready_file}" &
 holder_pid=$!
 
 waited=0
@@ -91,7 +94,7 @@ if [ ! -e "${ready_file}" ]; then
    fail "lock holder never acquired the lock (setup failure)"
 fi
 
-escalate_type_file "${type_file}" error &
+escalate "${type_file}" error &
 writer_pid=$!
 ## A correctly-locked writer never writes while the lock is held; an unlocked
 ## one writes almost immediately. Poll to a deadline instead of guessing a sleep.
