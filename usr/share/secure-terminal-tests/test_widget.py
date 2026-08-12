@@ -1135,13 +1135,19 @@ _dsh.apply_mode('show')
 _dsh.resize(600, 300)
 _dsh.show()
 pump(60)
-_dsh._feed_stream(b'A\x1b(0lqk\x1b(B\r\n')   # 'A' is a plain program cell for reference
+_dsh._feed_stream(b'A\x1b(0lqk\x1b(BZ\r\n')   # 'A'/'Z' plain program cells bracket the box-drawing
 _dsh._render_tui()
 pump(30)
 _dshtxt = _dsh.toPlainText()
 ok(any(0x2500 <= ord(c) <= 0x257F for c in _dshtxt),
    'Q1 show: DEC line-drawing (ESC(0 lqk) renders real box-drawing glyphs')
 ok('lqk' not in _dshtxt, 'Q1 show: the DEC letters are no longer shown as literal ASCII')
+# a structural cell takes the program-SGR branch (a COPY of the cached _pyte_format
+# format, tagged with _CP_PROP); the copy must not pollute the shared cached format,
+# or a later plain-ASCII cell of the same SGR would falsely report the box codepoint.
+_zi = _dshtxt.index('Z')                    # a default-SGR ASCII cell AFTER the box-drawing
+ok(_grid_cell(_dsh, _zi)[1] is None,
+   'a plain ASCII cell after a structural cell carries no codepoint tag (shared format not polluted)')
 # a shown box-drawing glyph is structure, not a deception (it cannot pose as ASCII,
 # hide or reorder), so it renders as its real glyph in the PROGRAM's OWN colour --
 # NOT a risk-class tint -- while still carrying its source codepoint for inspection.
