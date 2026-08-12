@@ -1288,6 +1288,20 @@ printf '%s\n' \
    '          step_five' \
    '          step_six' \
    > "${wf_repo}/.github/workflows/quoted-run.yml"
+## 'run : |' (whitespace before the colon) -- YAML parses the key as 'run', so
+## GitHub runs it as an inline shell; a long block must be flagged the same.
+printf '%s\n' \
+   'jobs:' \
+   '  build:' \
+   '    steps:' \
+   '      - run : |' \
+   '          step_one' \
+   '          step_two' \
+   '          step_three' \
+   '          step_four' \
+   '          step_five' \
+   '          step_six' \
+   > "${wf_repo}/.github/workflows/spaced-run.yml"
 printf '%s\n' \
    'jobs:' \
    '  build:' \
@@ -1327,6 +1341,12 @@ if printf '%s\n' "${wf_hits}" | grep --quiet --fixed-strings -- 'quoted-run.yml'
    printf '%s\n' 'PASS: R-100 flags a long inline block behind a quoted "run:" key'
 else
    printf '%s\n' 'FAIL: R-100 did not flag a quoted "run:" inline block' >&2
+   failures=$((failures + 1))
+fi
+if printf '%s\n' "${wf_hits}" | grep --quiet --fixed-strings -- 'spaced-run.yml'; then
+   printf '%s\n' 'PASS: R-100 flags a long inline block behind a whitespace-before-colon run key'
+else
+   printf '%s\n' 'FAIL: R-100 did not flag a "run :" (space before colon) inline block' >&2
    failures=$((failures + 1))
 fi
 if printf '%s\n' "${wf_hits}" | grep --quiet --fixed-strings -- 'good.yml'; then
