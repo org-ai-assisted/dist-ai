@@ -74,8 +74,16 @@ shots_corpus_id() {  ## $1=case
       tui-showcase)
          printf '%s' 'tui-showcase'
          ;;
+      clipboard)
+         printf '%s' 'osc52-clipboard-write'
+         ;;
    esac
 }
+
+## The benign canary the osc52-clipboard-write PoC writes to the clipboard; the
+## clipboard-verdict lane reads it back to decide honored-vs-refused. Kept next to
+## shots_corpus_id so the lane and the corpus id cannot drift.
+shots_clipboard_token='POC-CORPUS-CANARY-FIRED'
 
 shots_payload_cmd() {  ## $1=case -> the command string the terminal displays
    case "$1" in
@@ -90,6 +98,9 @@ shots_payload_cmd() {  ## $1=case -> the command string the terminal displays
          ;;
       tui-showcase)
          printf '%s' 'cat tui-showcase.payload'
+         ;;
+      clipboard)
+         printf '%s' 'cat clipboard.payload'
          ;;
       notify)
          printf '%s' 'cat notify.payload'

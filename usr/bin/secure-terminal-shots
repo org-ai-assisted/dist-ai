@@ -8,7 +8,11 @@
 ## Single entry point for ALL of the secure-terminal.github.io screenshots. The
 ## generators live together in usr/share/secure-terminal-shots/ (see its README).
 ##
-## Usage: secure-terminal-shots [review|hero|modes|comparison|comparison-wayland] [ARGS...]
+## Usage: secure-terminal-shots [review|hero|modes|comparison|comparison-wayland|clipboard] [ARGS...]
+##
+##   clipboard   the OSC 52 clipboard-write VERDICT lane -- per-terminal honored/refused,
+##               read back from the real X clipboard via PyQt6 (no screenshot). NEEDS an X
+##               server; run it in a sandbox. Writes shots/clipboard-verdict.tsv.
 ##
 ##   review      (default) the paste + copy REVIEW-BAR shots -- headless, offscreen
 ##               Qt grab of the real ReviewBar, deterministic. OUTPUT_DIR defaults
@@ -59,13 +63,14 @@ elif [ -d "${script_dir}/../../../../secure-terminal/usr/lib/python3/dist-packag
 fi
 
 if [ -z "${repo}" ] || [ ! -d "${repo}/usr/lib/python3/dist-packages/secure_terminal" ]; then
-   printf 'secure-terminal-shots: SKIP (secure_terminal not found; set SECURE_TERMINAL_REPO)\n' >&2
+   printf '%s\n' 'secure-terminal-shots: SKIP (secure_terminal not found; set SECURE_TERMINAL_REPO)' >&2
    exit 77
 fi
 
 mode='review'
 if [ "$#" -ge 1 ] && { [ "$1" = 'review' ] || [ "$1" = 'modes' ] || [ "$1" = 'hero' ] \
-      || [ "$1" = 'comparison' ] || [ "$1" = 'comparison-wayland' ]; }; then
+      || [ "$1" = 'comparison' ] || [ "$1" = 'comparison-wayland' ] \
+      || [ "$1" = 'clipboard' ]; }; then
    mode="$1"
    shift
 fi
@@ -76,6 +81,12 @@ if [ "${mode}" = 'comparison' ]; then
    ## Real-terminal comparison capture; it resolves ST_REPO / SECURE_TERMINAL_REPO
    ## itself and writes to its own shots/. Needs a display -- fails loudly if none.
    ST_REPO="${repo}" exec "${shots_dir}/comparison-capture.sh" "$@"
+fi
+
+if [ "${mode}" = 'clipboard' ]; then
+   ## The OSC 52 clipboard-write VERDICT lane (not a screenshot): per-terminal
+   ## honored/refused, read back from the real X clipboard. Needs a display.
+   ST_REPO="${repo}" exec "${shots_dir}/clipboard-verdict.sh" "$@"
 fi
 
 if [ "${mode}" = 'comparison-wayland' ]; then
@@ -94,7 +105,7 @@ if [ "${mode}" = 'hero' ] || [ "${mode}" = 'modes' ]; then
    ## real renderer, no display, byte-for-byte regenerable.
    out_dir="${1:-${HOME}/private-sources/secure-terminal.github.io/shots}"
    if [ ! -d "${out_dir}" ]; then
-      printf 'secure-terminal-shots: output dir does not exist: %s\n' "${out_dir}" >&2
+      printf '%s\n' "secure-terminal-shots: output dir does not exist: ${out_dir}" >&2
       exit 1
    fi
    export PYTHONPATH="${repo}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
@@ -105,13 +116,13 @@ fi
 ## review mode: headless review-bar shots into the site's shots/.
 out_dir="${1:-${HOME}/private-sources/secure-terminal.github.io/shots}"
 if [ ! -d "${out_dir}" ]; then
-   printf 'secure-terminal-shots: output dir does not exist: %s\n' "${out_dir}" >&2
+   printf '%s\n' "secure-terminal-shots: output dir does not exist: ${out_dir}" >&2
    exit 1
 fi
 
 shot_script="${shots_dir}/paste-warning-shot.py"
 if [ ! -f "${shot_script}" ]; then
-   printf 'secure-terminal-shots: shot generator missing: %s\n' "${shot_script}" >&2
+   printf '%s\n' "secure-terminal-shots: shot generator missing: ${shot_script}" >&2
    exit 1
 fi
 
@@ -125,4 +136,4 @@ for spec in \
    python3 -- "${shot_script}" "${out_dir}/${file}" "${kind}"
 done
 
-printf 'secure-terminal-shots: wrote paste-warning.png + copy-warning.png to %s\n' "${out_dir}"
+printf '%s\n' "secure-terminal-shots: wrote paste-warning.png + copy-warning.png to ${out_dir}"
