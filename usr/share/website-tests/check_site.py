@@ -19,6 +19,8 @@ Each <site-root> is the directory holding a site's index.html. The site's own
 identity is inferred from its directory name (matched against the known family).
 """
 
+import calendar
+import datetime
 import html.parser
 import os
 import re
@@ -232,6 +234,49 @@ def check_wording(root, failures):
             if pattern.search(text):
                 failures.append('%s: prose uses %r; use %r'
                                 % (rel, bad, good))
+
+
+# A verifiable claim stamped with a date (a coverage %, a line count, a "tested
+# on") goes stale silently as the code moves on. Flag any dated claim that has
+# aged past the threshold so it gets re-verified and re-dated -- the date is the
+# contract that it was true THEN, and this is the backstop that it is checked
+# AGAIN. A reproducible run or a test can pin "today" via CHECK_SITE_TODAY.
+_DATED_CLAIM = re.compile(
+    r'(?:measured|tested|re-verified|verified|re-counted|counted|as of|updated'
+    r'|last (?:checked|updated|tested))\b[^.]{0,32}?'
+    r'(\d{4})-(\d{2})(?:-(\d{2}))?', re.IGNORECASE)
+_STALE_DAYS = 400
+
+
+def _today():
+    override = os.environ.get('CHECK_SITE_TODAY')
+    return datetime.date.fromisoformat(override) if override else datetime.date.today()
+
+
+def check_freshness(root, failures):
+    today = _today()
+    for page in html_files(root):
+        rel = os.path.relpath(page, root)
+        ext = Extractor()
+        with open(page, encoding='utf-8') as handle:
+            ext.feed(handle.read())
+        # collapse HTML whitespace the way a browser renders it, so a claim wrapped
+        # across source lines ("tested\n2025-01-01") is still matched
+        text = re.sub(r'\s+', ' ', ext.text())
+        for match in _DATED_CLAIM.finditer(text):
+            year, month = int(match.group(1)), int(match.group(2))
+            # a month-only claim (YYYY-MM) is measured from the month's LAST day, so
+            # it is not aged early -- it stays fresh until the whole month is past
+            day = int(match.group(3)) if match.group(3) else calendar.monthrange(year, month)[1]
+            try:
+                claim_date = datetime.date(year, month, day)
+            except ValueError:
+                continue
+            age = (today - claim_date).days
+            if age > _STALE_DAYS:
+                failures.append(
+                    '%s: dated claim %r is %d days old (> %d); re-verify and update the date'
+                    % (rel, match.group(0).strip(), age, _STALE_DAYS))
 
 
 def check_footer(root, failures):
@@ -493,6 +538,7 @@ def main():
                 parent_roots = (by_name[parent_name],)
         check_links(root, failures, mount, parent_roots)
         check_wording(root, failures)
+        check_freshness(root, failures)
         check_footer(root, failures)
         check_banner(root, failures)
         check_csp(root, failures)

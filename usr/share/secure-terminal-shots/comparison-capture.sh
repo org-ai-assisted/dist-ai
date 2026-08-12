@@ -172,9 +172,10 @@ start_labwc() {
 
 ## launch an emulator as an Xwayland (X11) client so labwc decorates it.
 launch() {  ## $1=emulator
-   local e="$1"
-   local base=(env --unset=WAYLAND_DISPLAY "DISPLAY=${xwl_display}")
-   local sh=(bash --rcfile "${HOME}/.strc" -i)
+   local e base sh
+   e="$1"
+   base=(env --unset=WAYLAND_DISPLAY "DISPLAY=${xwl_display}")
+   sh=(bash --rcfile "${HOME}/.strc" -i)
    case "${e}" in
       xterm)
          "${base[@]}" xterm -geometry 84x24 -fa 'Monospace' -fs 11 -e "${sh[@]}"
@@ -208,7 +209,8 @@ launch() {  ## $1=emulator
 
 ## type a command into the focused terminal window and run it, as if a user did.
 inject() {  ## $1=window-id  $2=command
-   local wid="$1" cmd="$2"
+   local wid cmd
+   wid="$1"; cmd="$2"
    DISPLAY="${xwl_display}" xdotool windowactivate --sync "${wid}" 2>/dev/null || true
    DISPLAY="${xwl_display}" setxkbmap us 2>/dev/null || true    # '/' else types as '&'
    sleep 0.4
@@ -220,7 +222,8 @@ inject() {  ## $1=window-id  $2=command
 ## screenshot labwc's output, crop to the emulator's window by its geometry grown
 ## by the themed frame (labwc's _NET_FRAME_EXTENTS, fallback FRAME_TOP).
 capture_window() {  ## $1=output-path  $2=xwayland-window-id
-   local dest="$1" wid="$2" tmp X='' Y='' WIDTH='' HEIGHT='' ext l r t b
+   local dest wid tmp X Y WIDTH HEIGHT ext l r t b
+   dest="$1"; wid="$2"; X=''; Y=''; WIDTH=''; HEIGHT=''
    DISPLAY="${host_display}" xdotool mousemove 1439 899 2>/dev/null || true
    sleep 0.3
    tmp="$(mktemp --suffix=.png)"
@@ -278,12 +281,14 @@ find_window() {
 }
 
 shoot() {  ## $1=emulator  $2=case
-   local e="$1" case="$2" wid='' ww
+   local e case wid ww
+   e="$1"; case="$2"; wid=''
    launch "${e}" >/dev/null 2>&1 &
-   local epid="$!"
+   local epid
+   epid="$!"
    wid="$(find_window || true)"
    if [ -z "${wid}" ]; then
-      printf 'warn %s.%s: window never appeared, no shot\n' "${e}" "${case}"
+      printf '%s\n' "warn ${e}.${case}: window never appeared, no shot"
       clear_windows; kill "${epid}" 2>/dev/null || true; sleep 1
       return 1
    fi
@@ -302,14 +307,14 @@ shoot() {  ## $1=emulator  $2=case
       sleep 1.5
    fi
    capture_window "${out}/${e}.${case}.png" "${wid}" \
-      || printf 'warn %s.%s: screenshot failed\n' "${e}" "${case}"
+      || printf '%s\n' "warn ${e}.${case}: screenshot failed"
    clear_windows
    kill "${epid}" 2>/dev/null || true
    sleep 1
 }
 
 if ! start_labwc; then
-   printf 'labwc did not start; log:\n'; tail -6 "${runtime_dir}/labwc.log"; exit 1
+   printf '%s\n' 'labwc did not start; log:'; tail -6 "${runtime_dir}/labwc.log"; exit 1
 fi
 
 ## lxterminal is omitted: its single-instance startup maps no window headless.
@@ -321,16 +326,16 @@ TERMINALS="${TERMINALS:-xterm urxvt st konsole xfce4-terminal mate-terminal qter
 for e in ${TERMINALS}; do
    if ! type -P "${e}" >/dev/null 2>&1; then
       if [ -n "${ALLOW_SKIP:-}" ]; then
-         printf 'SKIP %s (not installed; ALLOW_SKIP authorized)\n' "${e}" >&2
+         printf '%s\n' "SKIP ${e} (not installed; ALLOW_SKIP authorized)" >&2
          continue
       fi
-      printf 'ERROR: terminal %s is not installed. Install it, or set ALLOW_SKIP=1 to authorize skipping.\n' "${e}" >&2
+      printf '%s\n' "ERROR: terminal ${e} is not installed. Install it, or set ALLOW_SKIP=1 to authorize skipping." >&2
       exit 1
    fi
    shoot "${e}" crafted   || true
    shoot "${e}" random    || true
    shoot "${e}" homoglyph || true
-   printf 'captured %s\n' "${e}"
+   printf '%s\n' "captured ${e}"
 done
 
 st_bin="${ST_REPO:-}/usr/bin/secure-terminal"
@@ -342,6 +347,13 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
    ## a coloured box, detail names its exact codepoint (<U+0430 CYRILLIC SMALL
    ## LETTER A>). The homoglyph-strip suffix is kept for the committed PNG /
    ## Pages reference (the mode it captures is now box; the file name is a label).
+   ## Capture size for the ST GUI window. At the app's 820px default Qt collapses the
+   ## trailing toolbar controls (unicode / mode / colours / Zoom) behind a ">>" overflow
+   ## chevron, which reads as a truncated capture. 1360 is the empirically-verified width
+   ## that shows the whole toolbar under the real xcb render (its font metrics run wider
+   ## than an offscreen sizeHint predicts); it fits the 1440x900 labwc output.
+   st_win_w=1360
+   st_win_h=620
    st_specs=(
       'crafted box crafted'
       'random box random'
@@ -357,22 +369,26 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       stwid="$(find_window || true)"
       if [ -n "${stwid}" ]; then
          sleep 2
+         ## Widen the window so the whole toolbar fits (no ">>" overflow chevron),
+         ## then let the layout settle before injecting + grabbing.
+         DISPLAY="${xwl_display}" xdotool windowsize "${stwid}" "${st_win_w}" "${st_win_h}" 2>/dev/null || true
+         sleep 0.6
          inject "${stwid}" "$(shots_payload_cmd "${st_case}")"
          sleep 3
          capture_window "${out}/secure-terminal.${st_suffix}.png" "${stwid}"
       else
-         printf 'warn secure-terminal.%s: window never appeared\n' "${st_suffix}"
+         printf '%s\n' "warn secure-terminal.${st_suffix}: window never appeared"
       fi
       clear_windows
       kill "${epid}" 2>/dev/null || true
       sleep 1.5
    done
-   printf 'captured secure-terminal (real GUI)\n'
+   printf '%s\n' 'captured secure-terminal (real GUI)'
 elif [ -n "${ALLOW_SKIP:-}" ]; then
-   printf 'SKIP secure-terminal (ST_REPO not set/found; ALLOW_SKIP authorized)\n' >&2
+   printf '%s\n' 'SKIP secure-terminal (ST_REPO not set/found; ALLOW_SKIP authorized)' >&2
 else
-   printf 'ERROR: secure-terminal not found. Set ST_REPO=/path/to/checkout, or set ALLOW_SKIP=1 to authorize skipping.\n' >&2
+   printf '%s\n' 'ERROR: secure-terminal not found. Set ST_REPO=/path/to/checkout, or set ALLOW_SKIP=1 to authorize skipping.' >&2
    exit 1
 fi
 
-printf 'done; shots in %s\n' "${out}"
+printf '%s\n' "done; shots in ${out}"
