@@ -67,6 +67,12 @@ mkdir --parents -- "${out}"
 # shellcheck source=./lib-capture.sh
 source "${here}/lib-capture.sh"
 
+## Resolve the corpus NOW, while HOME is still the operator's -- the reassignment
+## below would otherwise hide the documented ~/private-sources default from the
+## resolver. Export it so shots_generate_logs (run after the reassign) reuses it.
+CORPUS_REPO="$(shots_resolve_corpus "${here}/../../../../terminal-poc-corpus" || true)"
+export CORPUS_REPO
+
 host_display="${DISPLAY:-:0}"
 THEME='Clearlooks'
 ## Clearlooks title bar + border height (fallback if _NET_FRAME_EXTENTS is unread).
