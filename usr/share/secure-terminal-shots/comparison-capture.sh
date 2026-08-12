@@ -181,38 +181,44 @@ start_labwc() {
 }
 
 ## launch an emulator as an Xwayland (X11) client so labwc decorates it.
-launch() {  ## $1=emulator
-   local e base sh
-   e="$1"
+launch() {  ## $1=emulator  $2=case
+   local e case base sh rows kh
+   e="$1"; case="$2"
    base=(env --unset=WAYLAND_DISPLAY "DISPLAY=${xwl_display}")
    sh=(bash --rcfile "${HOME}/.strc" -i)
+   ## The tui-showcase board paints ~26 lines on the alternate screen; at the 24 rows
+   ## the short cases use, its title bar scrolled off the top. Only that case gets the
+   ## taller window, so the other cases' shots (and their committed on-page dimensions)
+   ## are unchanged. kitty is sized in pixels, so it gets a matching taller height.
+   rows=24; kh=430
+   if [ "${case}" = tui-showcase ]; then rows=32; kh=620; fi
    case "${e}" in
       xterm)
-         "${base[@]}" xterm -geometry 84x24 -fa 'Monospace' -fs 11 -e "${sh[@]}"
+         "${base[@]}" xterm -geometry "84x${rows}" -fa 'Monospace' -fs 11 -e "${sh[@]}"
          ;;
       urxvt)
-         "${base[@]}" urxvt -geometry 84x24 -fn 'xft:Monospace:size=11' -e "${sh[@]}"
+         "${base[@]}" urxvt -geometry "84x${rows}" -fn 'xft:Monospace:size=11' -e "${sh[@]}"
          ;;
       st)
-         "${base[@]}" st -g 84x24 -f 'Monospace:size=11' -e "${sh[@]}"
+         "${base[@]}" st -g "84x${rows}" -f 'Monospace:size=11' -e "${sh[@]}"
          ;;
       konsole)
-         "${base[@]}" QT_QPA_PLATFORM=xcb konsole --nofork -e "${sh[@]}"
+         "${base[@]}" QT_QPA_PLATFORM=xcb konsole --nofork -p TerminalColumns=84 -p "TerminalRows=${rows}" -e "${sh[@]}"
          ;;
       qterminal)
          "${base[@]}" QT_QPA_PLATFORM=xcb qterminal -e "${sh[@]}"
          ;;
       xfce4-terminal)
-         "${base[@]}" GDK_BACKEND=x11 xfce4-terminal --disable-server --geometry 84x24 -x "${sh[@]}"
+         "${base[@]}" GDK_BACKEND=x11 xfce4-terminal --disable-server --geometry "84x${rows}" -x "${sh[@]}"
          ;;
       mate-terminal)
-         "${base[@]}" GDK_BACKEND=x11 mate-terminal --disable-factory --geometry 84x24 -x "${sh[@]}"
+         "${base[@]}" GDK_BACKEND=x11 mate-terminal --disable-factory --geometry "84x${rows}" -x "${sh[@]}"
          ;;
       alacritty)
-         "${base[@]}" WINIT_UNIX_BACKEND=x11 alacritty -o 'window.dimensions.columns=84' -o 'window.dimensions.lines=24' -o 'font.size=11' -e "${sh[@]}"
+         "${base[@]}" WINIT_UNIX_BACKEND=x11 alacritty -o 'window.dimensions.columns=84' -o "window.dimensions.lines=${rows}" -o 'font.size=11' -e "${sh[@]}"
          ;;
       kitty)
-         "${base[@]}" KITTY_ENABLE_WAYLAND=0 kitty -o 'remember_window_size=no' -o 'initial_window_width=720' -o 'initial_window_height=430' -o 'font_size=11' "${sh[@]}"
+         "${base[@]}" KITTY_ENABLE_WAYLAND=0 kitty -o 'remember_window_size=no' -o 'initial_window_width=720' -o "initial_window_height=${kh}" -o 'font_size=11' "${sh[@]}"
          ;;
    esac
 }
@@ -353,9 +359,13 @@ find_window() {
 }
 
 shoot() {  ## $1=emulator  $2=case
-   local e case wid ww
+   local e case wid ww rescue_h
    e="$1"; case="$2"; wid=''
-   launch "${e}" >/dev/null 2>&1 &
+   ## the tall tui-showcase board needs a taller pixel-resized window (qterminal +
+   ## the shrink rescue); the short cases keep their prior heights so their shots and
+   ## committed page dimensions do not move.
+   rescue_h=430; [ "${case}" = tui-showcase ] && rescue_h=620
+   launch "${e}" "${case}" >/dev/null 2>&1 &
    local epid
    epid="$!"
    wid="$(find_window || true)"
@@ -367,7 +377,7 @@ shoot() {  ## $1=emulator  $2=case
    ## qterminal opens maximized and ignores a plain resize; unmaximize it first.
    if [ "${e}" = qterminal ]; then
       DISPLAY="${xwl_display}" wmctrl -i -r "${wid}" -b remove,maximized_vert,maximized_horz 2>/dev/null || true
-      DISPLAY="${xwl_display}" xdotool windowsize "${wid}" 720 440 2>/dev/null || true
+      DISPLAY="${xwl_display}" xdotool windowsize "${wid}" 720 "${rescue_h}" 2>/dev/null || true
       sleep 0.7
    fi
    sleep 2
@@ -375,7 +385,7 @@ shoot() {  ## $1=emulator  $2=case
    sleep 3
    ww="$(DISPLAY="${xwl_display}" xdotool getwindowgeometry --shell "${wid}" 2>/dev/null | sed -n 's/^WIDTH=//p' || true)"
    if [ -n "${ww}" ] && [ "${ww}" -lt 300 ]; then
-      DISPLAY="${xwl_display}" xdotool windowsize "${wid}" 720 430 2>/dev/null || true
+      DISPLAY="${xwl_display}" xdotool windowsize "${wid}" 720 "${rescue_h}" 2>/dev/null || true
       sleep 1.5
    fi
    capture_window "${out}/${e}.${case}.png" "${wid}" \
@@ -428,7 +438,10 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
    ## that shows the whole toolbar under the real xcb render (its font metrics run wider
    ## than an offscreen sizeHint predicts); it fits the 1440x900 labwc output.
    st_win_w=1360
-   st_win_h=620
+   ## Each entry is "<case> <mode> <suffix> [tui]". The optional 4th field 'tui' launches
+   ## secure-terminal with --tui (opt-in full-screen mode) instead of the default CLI mode.
+   ## The tui-showcase board is captured in CLI-box, CLI-detail AND TUI-box, to show that
+   ## even when full-screen layout is allowed, every cell is still character-filtered.
    st_specs=(
       'crafted box crafted'
       'random box random'
@@ -437,11 +450,20 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       'altscreen box altscreen'
       'tui-showcase box tui-showcase'
       'tui-showcase detail tui-showcase-detail'
+      'tui-showcase box tui-showcase-tui tui'
    )
    for spec in "${st_specs[@]}"; do
-      read -r st_case st_mode st_suffix <<< "${spec}"
+      read -r st_case st_mode st_suffix st_tui <<< "${spec}"
+      st_mode_flags=(--mode "${st_mode}")
+      [ "${st_tui:-}" = tui ] && st_mode_flags+=(--tui)
+      ## tui-showcase: secure-terminal strips the alt-screen escape and renders the
+      ## banner + ~26 board rows INLINE (no alt buffer), so a short window would show
+      ## only the footer -- give it a taller window (820 fits the 900px labwc output
+      ## once grown by the frame). The short cases keep 620 so their committed page
+      ## dimensions do not move; tighten_deadspace trims either back to its content.
+      st_win_h=620; [ "${st_case}" = tui-showcase ] && st_win_h=820
       env --unset=WAYLAND_DISPLAY "DISPLAY=${xwl_display}" QT_QPA_PLATFORM=xcb \
-         PYTHONPATH="${st_pkg}" python3 "${st_bin}" --new-instance --mode "${st_mode}" \
+         PYTHONPATH="${st_pkg}" python3 "${st_bin}" --new-instance "${st_mode_flags[@]}" \
          -- bash --rcfile "${HOME}/.strc" -i >/dev/null 2>&1 &
       epid="$!"
       stwid="$(find_window || true)"
