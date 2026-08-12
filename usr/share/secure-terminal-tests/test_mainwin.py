@@ -2183,6 +2183,21 @@ ok(all(not a.icon().isNull() for a in
 # widening again restores the full labels (covers the compact -> full path).
 _tb_resize(1400)
 ok(not _tw._toolbar_compact, 'toolbar: re-widening restores the full labels')
+
+# The compact threshold must cover the WORST case -- the TUI indicator (the yellow
+# dot, shown only while TUI is active) visible -- so an active-TUI tab near the
+# boundary does not overflow: the dot widens the full layout, and a threshold
+# cached without it would keep full labels a few px too long.
+_dot_prev = _tw.tui_dot_action.isVisible()
+_tw.tui_dot_action.setVisible(True)
+_tb.layout().activate()
+APP.processEvents()
+ok(_tw._toolbar_full_width >= _tb.sizeHint().width(),
+   'toolbar: the compact threshold covers the TUI-indicator width')
+_tw.tui_dot_action.setVisible(_dot_prev)
+_tb.layout().activate()
+APP.processEvents()
+
 _tw.deleteLater()
 APP.processEvents()
 
