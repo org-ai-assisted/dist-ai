@@ -31,6 +31,14 @@ else
    tests_dir='/usr/share/website-tests'
 fi
 
+## Unit regression for check_site's own logic (the image-format gate + the
+## render-source recognition it depends on). Fixture-based, no site checkout or
+## image tools needed; a failure here is a real logic regression, so it fails the
+## run outright rather than hiding behind the no-checkout SKIP below.
+if [ -f "${tests_dir}/check_site_test.py" ]; then
+   python3 -Bsu -- "${tests_dir}/check_site_test.py" || exit 1
+fi
+
 ## Resolve each site root from its env var, else a private-sources default.
 [ -v OUTPUT_LIES_REPO ] || OUTPUT_LIES_REPO=''
 [ -v SECURE_TERMINAL_SITE_REPO ] || SECURE_TERMINAL_SITE_REPO=''
@@ -55,7 +63,7 @@ add_root "${ORG_AI_ASSISTED_REPO}"      "${HOME}/private-sources/org-ai-assisted
 add_root "${GIT_DIFFS_LIE_REPO}"        "${HOME}/private-sources/git-diffs-lie"
 
 if [ "${#roots[@]}" -eq 0 ]; then
-   printf 'website-tests: SKIP (no site checkout found; set OUTPUT_LIES_REPO / SECURE_TERMINAL_SITE_REPO / ORG_AI_ASSISTED_REPO / GIT_DIFFS_LIE_REPO)\n' >&2
+   printf '%s\n' 'website-tests: SKIP (no site checkout found; set OUTPUT_LIES_REPO / SECURE_TERMINAL_SITE_REPO / ORG_AI_ASSISTED_REPO / GIT_DIFFS_LIE_REPO)' >&2
    exit 77
 fi
 
@@ -70,7 +78,7 @@ if [ -f "${tests_dir}/check_mobile.py" ]; then
    mobile_rc=0
    python3 -Bsu -- "${tests_dir}/check_mobile.py" "${roots[@]}" || mobile_rc="$?"
    if [ "${mobile_rc}" = '77' ]; then
-      printf 'website-mobile-tests: SKIP (no Playwright/chromium)\n' >&2
+      printf '%s\n' 'website-mobile-tests: SKIP (no Playwright/chromium)' >&2
    elif [ "${mobile_rc}" != '0' ]; then
       overall=1
    fi

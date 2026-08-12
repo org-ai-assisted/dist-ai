@@ -1,0 +1,379 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Generic, self-contained lossless image optimizer for raster assets.
+##
+## - default: lossless-minimize each file IN PLACE -- optipng (PNG) / jpegoptim
+##   (JPEG), both stripping all metadata. Keeps the SMALLER of before/after, so a
+##   file is never grown.
+## - --webp: additionally emit the best webp and REPLACE the source when the webp
+##   is strictly smaller. PNG source -> LOSSLESS webp (screenshots/line-art would
+##   fringe under lossy). JPEG source -> lossy q82, lossless fallback; smaller wins.
+##   Prints one "<input-path><TAB><result-path>" line per input (result == input
+##   when not converted), so a caller can rewrite references.
+## - --check: NON-mutating gate. Exit 1 (naming the file + reclaimable bytes) if a
+##   file could still be losslessly shrunk beyond the tolerance; exit 0 otherwise.
+##   This is the deterministic property the pre-commit image gate enforces.
+##
+## Self-contained by design: dist-ai is PUBLIC and must not depend on any private
+## repo, so the optipng/jpegoptim/cwebp pipeline is implemented here directly. The
+## floor is defined by optipng/jpegoptim alone (deterministic, idempotent -- they
+## always run last), which is what makes --check stable across environments; no
+## re-encoding metadata stripper (mat2) is used, as -strip already removes
+## metadata and a re-encode would make the floor version-dependent.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+me="${0##*/}"
+
+## Guard the source so a missing helper-scripts yields a DISTINCT environment
+## exit code (3), never 1 -- the pre-commit image gate reads exit 1 as "not
+## optimized" and must not confuse a missing dependency with a real finding.
+# shellcheck disable=SC1091
+if ! source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/strings.bsh 2>/dev/null; then
+   printf '%s\n' "${me}: ERROR: cannot source helper-scripts strings.bsh (set HELPER_SCRIPTS_PATH)" >&2
+   exit 3
+fi
+
+mode_check='false'
+mode_webp='false'
+quiet='false'
+## A file is flagged by --check only when it can shed MORE than max(tol_floor,
+## tol_pct% of its size). Real screenshot bloat is tens of percent; this margin
+## just absorbs any harmless run-to-run jitter on an already-optimized file.
+tol_pct='1'
+tol_floor='32'
+
+usage() {
+   printf '%s\n' "Usage: ${me} [--webp] [--check] [--quiet] [--tolerance-pct N] [--tolerance-bytes N] -- FILE..."
+}
+
+log() {
+   if [ "${quiet}" = 'true' ]; then
+      return 0
+   fi
+   printf '%s\n' "${me}: $*" >&2
+   return 0
+}
+
+err() {
+   printf '%s\n' "${me}: ERROR: $*" >&2
+}
+
+files=()
+while [ "$#" -gt 0 ]; do
+   case "$1" in
+      --check)
+         mode_check='true'
+         shift
+         ;;
+      --webp)
+         mode_webp='true'
+         shift
+         ;;
+      --quiet)
+         quiet='true'
+         shift
+         ;;
+      --tolerance-pct)
+         tol_pct="${2:-}"
+         shift 2
+         ;;
+      --tolerance-bytes)
+         tol_floor="${2:-}"
+         shift 2
+         ;;
+      -h|--help)
+         usage
+         exit 0
+         ;;
+      --)
+         shift
+         files+=( "$@" )
+         break
+         ;;
+      -*)
+         err "unknown option: $1"
+         usage >&2
+         exit 2
+         ;;
+      *)
+         files+=( "$1" )
+         shift
+         ;;
+   esac
+done
+
+if [ "${#files[@]}" -eq 0 ]; then
+   usage >&2
+   exit 2
+fi
+
+if ! [[ "${tol_pct}" =~ ^[0-9]+$ ]] || ! [[ "${tol_floor}" =~ ^[0-9]+$ ]]; then
+   err "tolerance values must be whole numbers"
+   exit 2
+fi
+
+## Precondition checks: the minimizers are needed in every mode (--check also
+## minimizes into a temp copy); cwebp only when converting.
+if ! type -P optipng >/dev/null; then
+   err "required tool not found: optipng"
+   exit 3
+fi
+if ! type -P jpegoptim >/dev/null; then
+   err "required tool not found: jpegoptim"
+   exit 3
+fi
+if ! type -P stat >/dev/null; then
+   err "required tool not found: stat"
+   exit 3
+fi
+if [ "${mode_webp}" = 'true' ] && ! type -P cwebp >/dev/null; then
+   err "required tool not found: cwebp"
+   exit 3
+fi
+
+lc() {
+   printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+## Absolute path (dir canonicalized, basename kept verbatim). Guarantees the path
+## never begins with '-', so it is safe as a positional arg to optipng / jpegoptim
+## / cwebp (cwebp has no '--' end-of-options marker).
+abspath() {
+   local input="$1" dir base
+   if ! dir="$(dirname -- "${input}")"; then
+      return 1
+   fi
+   if ! dir="$(cd -- "${dir}" && pwd)"; then
+      return 1
+   fi
+   base="${input##*/}"
+   printf '%s' "${dir}/${base}"
+}
+
+## png | jpeg | skip, by lower-cased extension.
+img_kind() {
+   local base ext
+   base="${1##*/}"
+   ext="$(lc "${base##*.}")"
+   case "${ext}" in
+      png)
+         printf '%s' 'png'
+         ;;
+      jpg|jpeg)
+         printf '%s' 'jpeg'
+         ;;
+      *)
+         printf '%s' 'skip'
+         ;;
+   esac
+}
+
+## Make a losslessly-minimized COPY of $1 (same dir, same extension) and print its
+## path. Return 1 (leaving nothing behind) on any failure. The optimizer runs last
+## and is the sole definition of the floor, so this is idempotent.
+make_minimized() {
+   local src="$1" dir base ext kind work
+   dir="$(dirname -- "${src}")"
+   base="${src##*/}"
+   ext="$(lc "${base##*.}")"
+   kind="$(img_kind "${src}")"
+   if ! work="$(mktemp --tmpdir="${dir}" --suffix=".${ext}" imgopt.XXXXXX)"; then
+      return 1
+   fi
+   if ! cp --preserve=timestamps -- "${src}" "${work}"; then
+      safe-rm -- "${work}"
+      return 1
+   fi
+   case "${kind}" in
+      png)
+         if ! optipng -quiet -o7 -zm9 -zc9 -zs3 -f5 -strip all -preserve "${work}" >/dev/null 2>&1; then
+            safe-rm -- "${work}"
+            return 1
+         fi
+         ;;
+      jpeg)
+         if ! jpegoptim --quiet --strip-all -- "${work}" >/dev/null 2>&1; then
+            safe-rm -- "${work}"
+            return 1
+         fi
+         ;;
+      *)
+         safe-rm -- "${work}"
+         return 1
+         ;;
+   esac
+   printf '%s' "${work}"
+}
+
+## Produce the best webp for the already-minimized source $1 and print its temp
+## path IF strictly smaller than the source; otherwise print nothing (and clean
+## up). Return 1 on a hard cwebp failure.
+make_webp() {
+   local src="$1" dir kind cand size_src size_cand
+   dir="$(dirname -- "${src}")"
+   kind="$(img_kind "${src}")"
+   size_src="$(stat -c %s -- "${src}")"
+   if ! cand="$(mktemp --tmpdir="${dir}" --suffix='.webp' imgopt.XXXXXX)"; then
+      return 1
+   fi
+   if [ "${kind}" = 'png' ]; then
+      if ! cwebp -mt -quiet -lossless -z 9 "${src}" -o "${cand}"; then
+         safe-rm -- "${cand}"
+         return 1
+      fi
+   else
+      ## JPEG (photographic): lossy first, fall back to lossless when lossy did
+      ## not beat the source.
+      if ! cwebp -mt -quiet -q 82 "${src}" -o "${cand}"; then
+         safe-rm -- "${cand}"
+         return 1
+      fi
+      size_cand="$(stat -c %s -- "${cand}")"
+      if [ "${size_cand}" -ge "${size_src}" ]; then
+         if ! cwebp -mt -quiet -lossless -z 9 "${src}" -o "${cand}"; then
+            safe-rm -- "${cand}"
+            return 1
+         fi
+      fi
+   fi
+   size_cand="$(stat -c %s -- "${cand}")"
+   if [ "${size_cand}" -lt "${size_src}" ]; then
+      printf '%s' "${cand}"
+   else
+      safe-rm -- "${cand}"
+   fi
+}
+
+## Mutating path: minimize in place, then (in --webp mode) replace with webp when
+## smaller. Returns non-zero on a per-file error without aborting the batch.
+process_one() {
+   local input="$1" src base kind size_old size_new work cand webp_path
+   if ! src="$(abspath "${input}")"; then
+      err "cannot resolve path: ${input}"
+      return 1
+   fi
+   if [ ! -f "${src}" ]; then
+      err "not a file: ${input}"
+      return 1
+   fi
+   if [ ! -w "${src}" ]; then
+      err "not writable: ${input}"
+      return 1
+   fi
+   base="${src##*/}"
+   if ! validate_safe_filename base; then
+      err "unsafe filename: ${input}"
+      return 1
+   fi
+   kind="$(img_kind "${src}")"
+   if [ "${kind}" = 'skip' ]; then
+      log "skip (unsupported type): ${input}"
+      if [ "${mode_webp}" = 'true' ]; then
+         printf '%s\n' "${src}"$'\t'"${src}"
+      fi
+      return 0
+   fi
+
+   size_old="$(stat -c %s -- "${src}")"
+   work=''
+   work="$(make_minimized "${src}")" || work=''
+   if [ -z "${work}" ]; then
+      err "minimize failed: ${input}"
+      return 1
+   fi
+   size_new="$(stat -c %s -- "${work}")"
+   if [ "${size_new}" -lt "${size_old}" ]; then
+      mv -f -- "${work}" "${src}"
+      log "minimized: ${input} (${size_old} -> ${size_new} bytes)"
+   else
+      safe-rm -- "${work}"
+      log "already minimal: ${input} (${size_old} bytes)"
+   fi
+
+   if [ "${mode_webp}" != 'true' ]; then
+      return 0
+   fi
+
+   cand=''
+   cand="$(make_webp "${src}")" || cand=''
+   if [ -n "${cand}" ]; then
+      webp_path="${src%.*}.webp"
+      mv -f -- "${cand}" "${webp_path}"
+      safe-rm -- "${src}"
+      log "webp: ${input} -> ${webp_path##*/} ($(stat -c %s -- "${webp_path}") bytes)"
+      printf '%s\n' "${src}"$'\t'"${webp_path}"
+   else
+      log "webp not smaller, kept original: ${input}"
+      printf '%s\n' "${src}"$'\t'"${src}"
+   fi
+   return 0
+}
+
+## Non-mutating gate: exit 1 if the file can shed more than the tolerance.
+check_one() {
+   local input="$1" src base kind size_old size_new work reclaim threshold
+   if ! src="$(abspath "${input}")"; then
+      err "cannot resolve path: ${input}"
+      return 2
+   fi
+   if [ ! -f "${src}" ]; then
+      err "not a file: ${input}"
+      return 2
+   fi
+   base="${src##*/}"
+   if ! validate_safe_filename base; then
+      err "unsafe filename: ${input}"
+      return 2
+   fi
+   kind="$(img_kind "${src}")"
+   ## Only the raster types this tool minimizes are gated; anything else passes.
+   if [ "${kind}" = 'skip' ]; then
+      return 0
+   fi
+
+   size_old="$(stat -c %s -- "${src}")"
+   work=''
+   work="$(make_minimized "${src}")" || work=''
+   if [ -z "${work}" ]; then
+      err "cannot verify (minimize failed): ${input}"
+      return 2
+   fi
+   size_new="$(stat -c %s -- "${work}")"
+   safe-rm -- "${work}"
+
+   reclaim=$(( size_old - size_new ))
+   if [ "${reclaim}" -le 0 ]; then
+      return 0
+   fi
+   threshold=$(( size_old * tol_pct / 100 ))
+   if [ "${threshold}" -lt "${tol_floor}" ]; then
+      threshold="${tol_floor}"
+   fi
+   if [ "${reclaim}" -gt "${threshold}" ]; then
+      printf '%s\n' "${me}: NOT optimized: ${input} (reclaimable ${reclaim} of ${size_old} bytes; run image-optimize)" >&2
+      return 1
+   fi
+   return 0
+}
+
+rc=0
+for file_name in "${files[@]}"; do
+   if [ "${mode_check}" = 'true' ]; then
+      check_one "${file_name}" || rc=1
+   else
+      process_one "${file_name}" || rc=1
+   fi
+done
+
+exit "${rc}"

@@ -116,10 +116,13 @@ def html_files(root):
         for name in files:
             if not name.endswith('.html'):
                 continue
-            # Skip image-generation templates (logo.html -> logo.png, og.html ->
-            # og.png, ...): a .html with a same-basename .png sibling is a render
-            # source for an image, not a navigable page.
-            if name[:-5] + '.png' in present:
+            # Skip image-generation templates (logo.html -> logo.png/.webp,
+            # og.html -> og.png, ...): a .html with a same-basename image sibling
+            # is a render source for an image, not a navigable page. .webp is
+            # included because a content render source is converted to webp.
+            stem = name[:-5]
+            if any(stem + ext in present
+                   for ext in ('.png', '.webp', '.jpg', '.jpeg', '.gif')):
                 continue
             yield os.path.join(base, name)
 
@@ -330,6 +333,70 @@ RESOURCE_ATTR = {
     'object': 'data',
 }
 
+# Content raster references (an <img>/<source> load, a CSS url(), or an <a href>
+# to an image) must be webp -- the site-image-optimize tool converts them, so a
+# leftover .png/.jpg is either unoptimized or a rewrite that missed. og:image /
+# twitter:image (<meta content=...>) and favicons (<link rel=icon>) are NOT loads
+# in this sense (Extractor sees no href/src for meta, and links are excluded
+# below), so they legitimately stay PNG/JPEG for social-scraper compatibility.
+_RASTER_REF = re.compile(r'\.(?:png|jpe?g)$', re.IGNORECASE)
+_CSS_URL = re.compile(r"""url\(\s*['"]?([^'")]+?)['"]?\s*\)""", re.IGNORECASE)
+_SRCSET = re.compile(r'srcset\s*=\s*"([^"]*)"', re.IGNORECASE)
+# Basenames a human has cleared to remain a raster (webp came out no smaller).
+# Keep this SMALL and justified; every entry is a content image that stays PNG.
+STATIC_IMAGE_ALLOWLIST = frozenset()
+
+
+def _is_raster(url):
+    return bool(_RASTER_REF.search(url.split('#', 1)[0].split('?', 1)[0]))
+
+
+def _allowed_raster(url):
+    base = os.path.basename(url.split('#', 1)[0].split('?', 1)[0])
+    return base in STATIC_IMAGE_ALLOWLIST
+
+
+def check_image_format(root, failures):
+    # Content raster references must be webp (except the static allowlist). Covers
+    # <img>/<source> src, srcset candidates, <a href> to a raster, and CSS url()
+    # in a .css file or an inline/embedded style.
+    for page in html_files(root):
+        rel = os.path.relpath(page, root)
+        with open(page, encoding='utf-8') as handle:
+            markup = handle.read()
+        ext = Extractor()
+        ext.feed(markup)
+        for tag, attr, value in ext.links:
+            content = (tag in ('img', 'source') and attr == 'src') or \
+                (tag == 'a' and attr == 'href' and _is_raster(value))
+            if content and _is_raster(value) and not _allowed_raster(value):
+                failures.append('%s: content image %r must be webp (convert with '
+                                'site-image-optimize)' % (rel, value))
+        for srcset in _SRCSET.findall(markup):
+            for candidate in srcset.split(','):
+                token = candidate.strip().split()
+                if token and _is_raster(token[0]) and not _allowed_raster(token[0]):
+                    failures.append('%s: srcset image %r must be webp'
+                                    % (rel, token[0]))
+        for value in _CSS_URL.findall(markup):
+            if _is_raster(value) and not _allowed_raster(value):
+                failures.append('%s: CSS url() image %r must be webp'
+                                % (rel, value))
+    for base_dir, dirs, files in os.walk(root):
+        if '.git' in dirs:
+            dirs.remove('.git')
+        for name in files:
+            if not name.endswith('.css'):
+                continue
+            path = os.path.join(base_dir, name)
+            rel = os.path.relpath(path, root)
+            with open(path, encoding='utf-8') as handle:
+                css = handle.read()
+            for value in _CSS_URL.findall(css):
+                if _is_raster(value) and not _allowed_raster(value):
+                    failures.append('%s: CSS url() image %r must be webp'
+                                    % (rel, value))
+
 
 def check_csp(root, failures):
     # Every page must carry a strict CSP: default-src 'none' and no external host
@@ -473,6 +540,16 @@ _REF_TEXT_EXTS = frozenset({
 })
 
 
+def _referenced(basename, corpus):
+    # Match the basename as a WHOLE path token, not a raw substring: a plain
+    # `basename in corpus` reports logo.png as referenced merely because
+    # osi-logo.png / gnu-logo.png contain the substring "logo.png", masking a
+    # genuinely orphaned file. Bounded: not preceded by a name char / dot / dash
+    # (a '/' path separator is fine), not followed by a name char / dash.
+    return re.search(r'(?<![\w.-])' + re.escape(basename) + r'(?![\w-])',
+                     corpus) is not None
+
+
 def check_assets(root, failures):
     images = []
     ref_text = []
@@ -491,7 +568,7 @@ def check_assets(root, failures):
                     continue
     corpus = '\n'.join(ref_text)
     for image in sorted(images):
-        if os.path.basename(image) not in corpus:
+        if not _referenced(os.path.basename(image), corpus):
             failures.append('%s: orphaned image -- referenced by no page, style, '
                             'script, doc or manifest; remove it or reference it'
                             % os.path.relpath(image, root))

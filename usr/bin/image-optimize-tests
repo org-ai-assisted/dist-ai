@@ -1,0 +1,38 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Runner for the image-optimize regression suite. Drives the REAL
+## usr/bin/image-optimize (no re-embedded copy): lossless minimize, revert /
+## never-grow, --webp replacement, and the --check gate exit codes (including the
+## canary that --check both PASSES an already-minimal file and FAILS a bloated
+## one). SKIPs (exit 77) when the image tools (optipng / jpegoptim / cwebp /
+## ImageMagick) are genuinely absent.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/image-optimize-tests" ]; then
+   tests_dir="${script_dir}/../share/image-optimize-tests"
+else
+   tests_dir='/usr/share/image-optimize-tests'
+fi
+
+## Drive the image-optimize shipped in the SAME tree when run from a checkout,
+## else the installed one. The payload honours IMAGE_OPTIMIZE_BIN.
+if [ -x "${script_dir}/image-optimize" ]; then
+   export IMAGE_OPTIMIZE_BIN="${script_dir}/image-optimize"
+fi
+
+rc=0
+bash -- "${tests_dir}/image_optimize_test.sh" "$@" || rc=$?
+exit "${rc}"

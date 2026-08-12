@@ -85,6 +85,7 @@ core_suites=(
    git-meld-tests
    grep-find-unicode-wrapper-tests
    helper-scripts-lib-tests
+   image-optimize-tests
    lock-screen-tests
    lockfile-tests
    msgcollector-tests
@@ -594,6 +595,15 @@ wire() {
          ## checkout itself.
          wire_env=( "DIST_AI_REPO=$( pkg_dir dist-ai )" )
          ;;
+      image-optimize)
+         ## dist-ai's own tool. It sources helper-scripts strings.bsh
+         ## (validate_safe_filename); the suite requires it real, not stubbed.
+         ## The runner points the payload at the in-tree image-optimize itself.
+         wire_env=()
+         if [ -n "${hs}" ]; then
+            wire_env+=( "HELPER_SCRIPTS_PATH=${hs}" )
+         fi
+         ;;
       private-ai-config)
          ## The tests live in the private-ai-config checkout, not here; the suite
          ## drives them from PRIVATE_AI_CONFIG_PATH. Several exercise tools that
@@ -684,7 +694,7 @@ suite_component() {
       private-ai-config)
          printf '%s' 'private-ai-config'
          ;;
-      dist-ai-registry|git-api)
+      dist-ai-registry|git-api|image-optimize)
          printf '%s' 'dist-ai'
          ;;
       anon-gw-anonymizer-config)
