@@ -102,13 +102,16 @@ shots_generate_logs() {  ## $1=script-relative fallback dir $2=dest-dir
    fi
    rp="${corpus}/tools/reproduce.py"
    ## the corpus-backed cases: reproduce.py writes the exact hex-decoded payload bytes.
+   ## Explicit '|| return 1' -- callers invoke this with '|| exit 77', which suppresses
+   ## errexit inside the function, so a failed reproduce.py must be surfaced by hand or
+   ## the capture would proceed with a missing payload.
    for c in crafted homoglyph altscreen; do
       id="$(shots_corpus_id "${c}")"
-      POC_CORPUS_IN_SANDBOX=1 python3 "${rp}" "${id}" --out "${dest}/${c}.payload"
+      POC_CORPUS_IN_SANDBOX=1 python3 "${rp}" "${id}" --out "${dest}/${c}.payload" || return 1
    done
    ## notify: a page-facing friendly desktop-notification demo -- clearly-safe wording,
    ## no session/reauth framing. Not a corpus detection payload (which carries the
    ## canary token); kept inline deliberately. $'...' gives the real escape bytes.
    notify=$'build log: packaging step 3 of 5\n\033]9;Safe demonstration only: secure-terminal terminal-attack comparison test. No action needed.\007post-install: done\n'
-   printf '%s' "${notify}" > "${dest}/notify.payload"
+   printf '%s' "${notify}" > "${dest}/notify.payload" || return 1
 }
