@@ -60,6 +60,14 @@ fail() {
 XDG_RUNTIME_DIR="$(mktemp --directory)"
 export XDG_RUNTIME_DIR
 
+## Remove the isolated runtime dir on ANY exit -- including an early strict-mode
+## abort, which the per-identifier --forget loop at the end never reaches. Set
+## before sourcing/folder_init so a failure there cannot leak the tree.
+test_cleanup_handler() {
+  safe-rm --recursive --force -- "${XDG_RUNTIME_DIR}"
+}
+trap test_cleanup_handler EXIT
+
 ## Determine the run directory the same way msgcollector does.
 source "${msgcollector_libexec}/msgcollector_shared"
 folder_init
