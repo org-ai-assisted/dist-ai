@@ -935,14 +935,18 @@ win.set_persist_session(False)              # disabling clears the saved session
 win.clear_saved_session()
 _o_qapp_quit = QApplication.quit
 try:
-    QApplication.quit = lambda *_a, **_k: None
+    _quit_calls = []
+    QApplication.quit = lambda *_a, **_k: _quit_calls.append(1)
     win._force_close = False                 # handler must flip this before quit
-    M._install_signal_quit(APP)             # installs SIGINT/SIGTERM -> app.quit
+    M._install_signal_quit(APP)             # installs SIGINT/SIGTERM handlers
     import signal as _sig2
     _h = _sig2.getsignal(_sig2.SIGINT)
     if callable(_h):
-        _h(_sig2.SIGINT, None)              # fire the handler -> app.quit (stubbed)
-    ok(True, 'signal-quit handler calls app.quit')
+        _h(_sig2.SIGINT, None)              # fire the handler
+    # The quit is queued (QTimer.singleShot), so it fires on the event loop, not
+    # synchronously -- pump it so a signal that arrives before exec() is honored.
+    APP.processEvents()
+    ok(_quit_calls, 'signal-quit handler queues app.quit (honored once the loop runs)')
     ok(win._force_close is True,
        'signal-quit handler force-closes windows so teardown skips the modal')
 finally:
