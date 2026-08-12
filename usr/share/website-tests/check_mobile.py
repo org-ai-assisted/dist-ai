@@ -1,3 +1,5 @@
+#!/usr/bin/python3 -Bsu
+
 ## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
 ## See the file COPYING for copying conditions.
 
@@ -71,9 +73,11 @@ def _page_urls(root, mount=''):
     """The URL paths of every navigable page under `root`, prefixed by `mount`
     (the subsite's mount path, or '' for a top-level site)."""
     urls = []
-    for base, _dirs, files in os.walk(root):
-        if os.sep + '.git' in base:
-            continue
+    for base, dirs, files in os.walk(root):
+        # Skip the git metadata dir by EXACT name (not a '/.git' substring test,
+        # which also matches '.github'); prune in place so os.walk skips it.
+        if '.git' in dirs:
+            dirs.remove('.git')
         present = set(files)
         for name in files:
             if not name.endswith('.html'):

@@ -9,8 +9,9 @@
 Static checks for the project's GitHub Pages sites (output-lies.github.io,
 secure-terminal.github.io, org-ai-assisted.github.io). Catches the bug classes
 that shipped before: broken internal links, missing footer "family" links,
-lowercase "open source"/"free software" in prose, and a wrong review-status
-banner. Pure standard library, no network.
+lowercase "open source"/"free software" in prose, a wrong review-status
+banner, and images orphaned when their section is deleted. Pure standard
+library, no network.
 
 Usage: check_site.py <site-root> [<site-root> ...]
 Exit 0 if all checks pass, 1 on any failure, 77 (SKIP) if no root resolves.
@@ -99,10 +100,18 @@ class Extractor(html.parser.HTMLParser):
         return ''.join(self.text_parts)
 
 
+def _prune_git(dirs):
+    # Skip the git metadata dir by EXACT name, in place, so os.walk does not
+    # descend into it. A substring test on the path (`'/.git' in base`) is wrong
+    # both ways: it also matches '.github' (dropping a real reference source) and,
+    # if the checkout path itself contains '.git', matches every directory.
+    if '.git' in dirs:
+        dirs.remove('.git')
+
+
 def html_files(root):
-    for base, _dirs, files in os.walk(root):
-        if os.sep + '.git' in base:
-            continue
+    for base, dirs, files in os.walk(root):
+        _prune_git(dirs)
         present = set(files)
         for name in files:
             if not name.endswith('.html'):
@@ -444,6 +453,50 @@ class LayoutAudit(html.parser.HTMLParser):
             break
 
 
+# Image asset hygiene: an image checked into a site but named by NOTHING (no
+# page, stylesheet, script, doc or manifest references it) is dead weight that
+# accumulates silently -- e.g. screenshots orphaned when the section that showed
+# them is deleted. Flag any image whose filename appears in no text source
+# anywhere in the tree. The match is intentionally loose (basename substring
+# across every text file, README.md included), so it never FALSE-fails an asset
+# that is still used -- a logo referenced only from README counts as referenced.
+# It reliably catches the real bug (a batch of shots left behind) because those
+# names then appear literally nowhere.
+IMAGE_EXTS = frozenset({
+    '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.avif', '.svg',
+})
+# Text sources that can legitimately name an asset: pages, styles, inline or
+# external scripts, docs, web manifests, feeds/sitemaps.
+_REF_TEXT_EXTS = frozenset({
+    '.html', '.htm', '.css', '.js', '.mjs', '.md', '.markdown', '.json',
+    '.webmanifest', '.svg', '.xml', '.txt', '.yml', '.yaml',
+})
+
+
+def check_assets(root, failures):
+    images = []
+    ref_text = []
+    for base, dirs, files in os.walk(root):
+        _prune_git(dirs)
+        for name in files:
+            ext = os.path.splitext(name)[1].lower()
+            path = os.path.join(base, name)
+            if ext in IMAGE_EXTS:
+                images.append(path)
+            if ext in _REF_TEXT_EXTS:
+                try:
+                    with open(path, encoding='utf-8', errors='replace') as handle:
+                        ref_text.append(handle.read())
+                except OSError:
+                    continue
+    corpus = '\n'.join(ref_text)
+    for image in sorted(images):
+        if os.path.basename(image) not in corpus:
+            failures.append('%s: orphaned image -- referenced by no page, style, '
+                            'script, doc or manifest; remove it or reference it'
+                            % os.path.relpath(image, root))
+
+
 def check_card_layout(root, failures):
     # Each page's card sections must grid their cards, not stack them full-width.
     for page in html_files(root):
@@ -546,6 +599,7 @@ def main():
         check_banner(root, failures)
         check_csp(root, failures)
         check_supply_chain(root, failures)
+        check_assets(root, failures)
         check_card_layout(root, failures)
         check_nav(root, failures)
         name = os.path.basename(root)
@@ -555,7 +609,7 @@ def main():
                 sys.stderr.write('FAIL %s: %s\n' % (name, item))
         else:
             sys.stdout.write('ok %s: links + wording + footer + banner + csp + '
-                             'supply-chain + card-layout + nav clean\n' % name)
+                             'supply-chain + assets + card-layout + nav clean\n' % name)
     sys.stdout.write('website-tests: %d failure(s)\n' % total)
     return 1 if total else 0
 
