@@ -255,6 +255,15 @@ eq(S.marking_class(0x2571), 'confusable', 'U+2571 stays a confusable homoglyph o
 _sh_diag, _ = S.cells_to_runs([], [(chr(0x2571), _prog)], 'show', True, True)
 ok(any(k == (S.MARK_KEY, 'confusable', 0x2571) for _t, k in _sh_diag),
    'show mode: a confusable box-drawing diagonal keeps its confusable tint, not program SGR')
+# U+2572 (backslash-like) is NOT in the shipped Unicode confusables data (unlike
+# U+2571 "/" and U+2573 "X"), so by the app's homoglyph authority it is not an ASCII
+# look-alike: marking_class reports 'nonascii', and is_structural DEFERS to that same
+# authority (it excludes exactly the confusables, no ad-hoc visual-similarity guesses),
+# so U+2572 stays structural. is_structural must agree with marking_class about what
+# "can pose as ASCII" is, or the two would contradict; flagging U+2572 belongs in the
+# confusables dataset, not a hardcoded exception here.
+ok(S.is_structural(0x2572) and S.marking_class(0x2572) == 'nonascii',
+   'U+2572 is not a shipped confusable, so it stays structural (is_structural defers to the data)')
 
 # --- deferred autowrap (VT last-column behaviour) + wrap flags -----------------
 _wc, _wcells, _wcol, _ws, _ww = S.feed_line_edits([], 0, {}, 'abcd\n', 4)
