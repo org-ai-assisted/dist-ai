@@ -201,6 +201,14 @@ def run():
         check('.html with no image sibling is a page',
               os.path.join(root, 'logo-wide.html') in pages)
 
+    # 13. The format gate must be WIRED into main(): a check that is defined but
+    # never called silently enforces nothing (it shipped that way once).
+    with open(os.path.join(_HERE, 'check_site.py'), encoding='utf-8') as handle:
+        source = handle.read()
+    main_body = source[source.index('def main('):]
+    check('check_image_format is invoked from main()',
+          'check_image_format(root, failures)' in main_body)
+
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed
     for name, ok, detail in results:

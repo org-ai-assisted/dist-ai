@@ -51,7 +51,15 @@ FAMILY_HOSTS = (
 )
 RASTER_RE = re.compile(r".*\.(png|jpe?g)$", re.IGNORECASE)
 ## url(...) in CSS or inline style, single/double/unquoted.
-CSS_URL_RE = re.compile(r"""url\(\s*['"]?([^'")]+)['"]?\s*\)""", re.IGNORECASE)
+## url() with a quoted value may legitimately contain ')'; match the quoted
+## forms whole and only forbid ')' in the unquoted form.
+CSS_URL_RE = re.compile(
+    r"""url\(\s*(?:"([^"]*)"|'([^']*)'|([^'"()\s]+))\s*\)""", re.IGNORECASE)
+
+
+def css_urls(text):
+    for match in CSS_URL_RE.finditer(text):
+        yield next(group for group in match.groups() if group is not None)
 ## Meta property/name values that carry a social-card image URL.
 OG_KEYS = ("og:image", "og:image:url", "og:image:secure_url", "twitter:image")
 ICON_RELS = ("icon", "shortcut icon", "apple-touch-icon", "mask-icon")
@@ -171,7 +179,7 @@ def collect_refs(site_root, site_host):
             if local and RASTER_RE.match(local):
                 content.add(local)
         ## Inline style url(...) counts as a content reference too.
-        for url in CSS_URL_RE.findall(markup):
+        for url in css_urls(markup):
             local = url_to_local(url, site_root, site_host, page_dir)
             if local and RASTER_RE.match(local):
                 content.add(local)
@@ -182,7 +190,7 @@ def collect_refs(site_root, site_host):
                 css = handle.read()
         except (OSError, UnicodeError):
             continue
-        for url in CSS_URL_RE.findall(css):
+        for url in css_urls(css):
             local = url_to_local(url, site_root, site_host, sheet_dir)
             if local and RASTER_RE.match(local):
                 content.add(local)
@@ -212,7 +220,11 @@ def rewrite_references(site_root, renames):
     ## Bounded so a basename is matched as a whole token (not inside a longer
     ## name): not preceded by a name char / dot / dash (a '/' path separator IS
     ## allowed), not followed by a name char / dash.
-    pattern = re.compile(r"(?<![\w.-])(" + "|".join(keys) + r")(?![\w-])")
+    ## Not followed by a name char / dash, and not by '.<word>' -- so
+    ## "logo.png.zip" (a different file) is left alone, not corrupted to
+    ## "logo.webp.zip".
+    pattern = re.compile(
+        r"(?<![\w.-])(" + "|".join(keys) + r")(?![\w-])(?!\.\w)")
     changed = 0
     for path in list(walk_files(site_root, REWRITE_EXTS)):
         try:
@@ -278,8 +290,20 @@ def main():
 
     tool = image_optimize_bin()
 
-    rasters = sorted(set(os.path.realpath(p)
-                         for p in walk_files(site_root, IMAGE_EXTS)))
+    ## Only rasters whose real path stays INSIDE the site: a symlink pointing out
+    ## of the checkout must never be optimized in place (that would mutate a file
+    ## outside the site, which the dirty-tree guard cannot see).
+    root_real = os.path.realpath(site_root)
+    rasters = []
+    for candidate in walk_files(site_root, IMAGE_EXTS):
+        real = os.path.realpath(candidate)
+        if real == root_real or real.startswith(root_real + os.sep):
+            rasters.append(real)
+        else:
+            sys.stderr.write("site-image-optimize: skipping %s -- symlink target "
+                             "escapes the site root\n"
+                             % os.path.relpath(candidate, site_root))
+    rasters = sorted(set(rasters))
     ## Basename uniqueness underpins the rewrite; refuse if it ever breaks.
     seen = {}
     for path in rasters:

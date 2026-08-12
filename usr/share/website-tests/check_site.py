@@ -340,8 +340,22 @@ RESOURCE_ATTR = {
 # in this sense (Extractor sees no href/src for meta, and links are excluded
 # below), so they legitimately stay PNG/JPEG for social-scraper compatibility.
 _RASTER_REF = re.compile(r'\.(?:png|jpe?g)$', re.IGNORECASE)
-_CSS_URL = re.compile(r"""url\(\s*['"]?([^'")]+?)['"]?\s*\)""", re.IGNORECASE)
-_SRCSET = re.compile(r'srcset\s*=\s*"([^"]*)"', re.IGNORECASE)
+# url() with a quoted value may legitimately contain ')'; match the quoted forms
+# whole, and only forbid ')' in the UNQUOTED form (where it ends the url()).
+_CSS_URL = re.compile(
+    r"""url\(\s*(?:"([^"]*)"|'([^']*)'|([^'"()\s]+))\s*\)""", re.IGNORECASE)
+# srcset may be single- OR double-quoted.
+_SRCSET = re.compile(r"""srcset\s*=\s*(?:"([^"]*)"|'([^']*)')""", re.IGNORECASE)
+
+
+def _css_urls(text):
+    for match in _CSS_URL.finditer(text):
+        yield next(group for group in match.groups() if group is not None)
+
+
+def _srcsets(text):
+    for match in _SRCSET.finditer(text):
+        yield next(group for group in match.groups() if group is not None)
 # Basenames a human has cleared to remain a raster (webp came out no smaller).
 # Keep this SMALL and justified; every entry is a content image that stays PNG.
 STATIC_IMAGE_ALLOWLIST = frozenset()
@@ -372,13 +386,13 @@ def check_image_format(root, failures):
             if content and _is_raster(value) and not _allowed_raster(value):
                 failures.append('%s: content image %r must be webp (convert with '
                                 'site-image-optimize)' % (rel, value))
-        for srcset in _SRCSET.findall(markup):
+        for srcset in _srcsets(markup):
             for candidate in srcset.split(','):
                 token = candidate.strip().split()
                 if token and _is_raster(token[0]) and not _allowed_raster(token[0]):
                     failures.append('%s: srcset image %r must be webp'
                                     % (rel, token[0]))
-        for value in _CSS_URL.findall(markup):
+        for value in _css_urls(markup):
             if _is_raster(value) and not _allowed_raster(value):
                 failures.append('%s: CSS url() image %r must be webp'
                                 % (rel, value))
@@ -392,7 +406,7 @@ def check_image_format(root, failures):
             rel = os.path.relpath(path, root)
             with open(path, encoding='utf-8') as handle:
                 css = handle.read()
-            for value in _CSS_URL.findall(css):
+            for value in _css_urls(css):
                 if _is_raster(value) and not _allowed_raster(value):
                     failures.append('%s: CSS url() image %r must be webp'
                                     % (rel, value))
@@ -545,9 +559,12 @@ def _referenced(basename, corpus):
     # `basename in corpus` reports logo.png as referenced merely because
     # osi-logo.png / gnu-logo.png contain the substring "logo.png", masking a
     # genuinely orphaned file. Bounded: not preceded by a name char / dot / dash
-    # (a '/' path separator is fine), not followed by a name char / dash.
-    return re.search(r'(?<![\w.-])' + re.escape(basename) + r'(?![\w-])',
-                     corpus) is not None
+    # (a '/' path separator is fine), not followed by a name char / dash, and not
+    # by '.<word>' -- so "logo.png.bak" (a different file) does not mask the
+    # orphan logo.png, while a prose "logo.png." (sentence period) still counts.
+    return re.search(
+        r'(?<![\w.-])' + re.escape(basename) + r'(?![\w-])(?!\.\w)',
+        corpus) is not None
 
 
 def check_assets(root, failures):
@@ -676,6 +693,7 @@ def main():
         check_banner(root, failures)
         check_csp(root, failures)
         check_supply_chain(root, failures)
+        check_image_format(root, failures)
         check_assets(root, failures)
         check_card_layout(root, failures)
         check_nav(root, failures)

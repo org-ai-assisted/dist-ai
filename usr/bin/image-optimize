@@ -294,6 +294,9 @@ process_one() {
    fi
    size_new="$(stat -c %s -- "${work}")"
    if [ "${size_new}" -lt "${size_old}" ]; then
+      ## mktemp created work as 0600; carry the source's own mode onto it before
+      ## the replace, so the optimized file is not silently made owner-only.
+      chmod --reference="${src}" -- "${work}"
       mv -f -- "${work}" "${src}"
       log "minimized: ${input} (${size_old} -> ${size_new} bytes)"
    else
@@ -305,10 +308,16 @@ process_one() {
       return 0
    fi
 
+   ## A hard cwebp failure (make_webp returns non-zero) is a real error, not
+   ## "webp was not smaller" (which prints nothing and returns 0).
    cand=''
-   cand="$(make_webp "${src}")" || cand=''
+   if ! cand="$(make_webp "${src}")"; then
+      err "webp conversion failed: ${input}"
+      return 1
+   fi
    if [ -n "${cand}" ]; then
       webp_path="${src%.*}.webp"
+      chmod --reference="${src}" -- "${cand}"
       mv -f -- "${cand}" "${webp_path}"
       safe-rm -- "${src}"
       log "webp: ${input} -> ${webp_path##*/} ($(stat -c %s -- "${webp_path}") bytes)"
@@ -370,7 +379,17 @@ check_one() {
 rc=0
 for file_name in "${files[@]}"; do
    if [ "${mode_check}" = 'true' ]; then
-      check_one "${file_name}" || rc=1
+      ## Preserve check_one's distinction: 1 = definitively not optimized
+      ## (dominant), 2 = could not verify (missing / unsafe / unprocessable). A
+      ## consumer (the pre-commit gate) reads 1 as a finding and any other
+      ## non-zero as an environment problem, so the two must not be collapsed.
+      crc=0
+      check_one "${file_name}" || crc="$?"
+      if [ "${crc}" -eq 1 ]; then
+         rc=1
+      elif [ "${crc}" -ne 0 ] && [ "${rc}" -ne 1 ]; then
+         rc="${crc}"
+      fi
    else
       process_one "${file_name}" || rc=1
    fi
