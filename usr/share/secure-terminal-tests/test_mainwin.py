@@ -16,6 +16,7 @@
 import os
 import sys
 import threading
+import time
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
@@ -52,6 +53,16 @@ def ok(cond, msg):
 
 def eq(got, want, msg):
     ok(got == want, '%s (got %r, want %r)' % (msg, got, want))
+
+
+def pump(ms=10):
+    """Process pending Qt events, then briefly yield so a just-forked child can
+    reach its chdir/exec before the next poll, without busy-spinning. Used by the
+    cwd-restore poll below; reachable only when the child is not ready on the
+    first try, so it must always be defined (not left to a startup-timing race)."""
+    APP.processEvents()
+    time.sleep(ms / 1000.0)
+    APP.processEvents()
 
 
 # The app icon is env-dependent: a desktop with an icon theme resolves one, but
@@ -2110,6 +2121,70 @@ ok(len(list(win.menuBar().findChildren(QMenu))) >= 4,
 eq(_mn_literal, [],
    'no menu item swallows a literal ampersand (write it as "&&")')
 eq(_mn_dupes, [], 'no two items in one menu claim the same mnemonic letter')
+
+# --- responsive toolbar: no ">>" overflow at narrow widths -------------------
+# At the old fixed 820px default (and any window narrower than the full-label
+# layout) Qt folded the trailing chips + zoom behind a ">>" chevron, unreachable
+# without the overflow menu. The toolbar now drops to icon-only buttons with the
+# chip captions hidden below the width it needs, so every control stays on the bar.
+# Driven WITHOUT show(): an offscreen second MainWindow shown under the coverage
+# tracer perturbs Qt teardown (see the module header). resizeEvent + an explicit
+# layout activation exercises the same relayout path deterministically. isHidden()
+# (the explicit hide flag), not isVisible() (false while the window is unshown),
+# is what tells captions apart here.
+from PyQt6.QtCore import Qt as _QtTB, QSize as _QSzTB             # noqa: E402
+from PyQt6.QtGui import QResizeEvent as _QRETB                    # noqa: E402
+_tw = MainWindow()
+_tb = _tw._toolbar
+_caps = _tw._compact_hide
+ok(len(_caps) == 3, 'toolbar: the three chip captions are hideable')
+
+# a resizeEvent dispatched while the toolbar does not yet exist (early in
+# construction) must be a safe no-op, not an AttributeError.
+_saved_tb = _tw._toolbar
+_tw._toolbar = None
+_tw.resizeEvent(_QRETB(_QSzTB(800, 520), _QSzTB(800, 520)))
+ok(_tw._toolbar is None, 'toolbar: a resize before the toolbar exists is a no-op')
+_tw._toolbar = _saved_tb
+
+
+def _tb_resize(width):
+    _tw.resize(width, 520)
+    _tw.resizeEvent(_QRETB(_QSzTB(width, 520), _QSzTB(width, 520)))
+    _tb.layout().activate()          # recompute sizeHint for the new mode, unshown
+    _tb.updateGeometry()
+    APP.processEvents()
+
+
+# wide window: full text-beside-icon labels, captions shown, whole bar fits.
+_tb_resize(1400)
+ok(not _tw._toolbar_compact, 'toolbar: a wide window shows the full labels')
+eq(_tb.toolButtonStyle(), _QtTB.ToolButtonStyle.ToolButtonTextBesideIcon,
+   'toolbar: a wide window uses text-beside-icon buttons')
+ok(not any(c.isHidden() for c in _caps),
+   'toolbar: a wide window shows the chip captions')
+ok(_tb.sizeHint().width() <= _tw.width(),
+   'toolbar: the full toolbar fits a wide window without the >> overflow')
+
+# narrow window (a scaled / 1366-class laptop): icon-only, captions hidden, fits.
+_tb_resize(1000)
+ok(_tw._toolbar_compact, 'toolbar: a narrow window drops to compact')
+eq(_tb.toolButtonStyle(), _QtTB.ToolButtonStyle.ToolButtonIconOnly,
+   'toolbar: a narrow window uses icon-only buttons')
+ok(all(c.isHidden() for c in _caps), 'toolbar: a narrow window hides the chip captions')
+ok(_tb.sizeHint().width() <= _tw.width(),
+   'toolbar: the compact toolbar fits a narrow window without the >> overflow')
+# icon-only is only safe if every button actually has an icon (the fallbacks
+# guarantee one even with no desktop icon theme, as in this offscreen run).
+ok(all(not a.icon().isNull() for a in
+       (_tw.act_new, _tw.act_copy, _tw.act_paste, _tw.act_terminate)),
+   'toolbar: every icon-only button has a non-null icon')
+
+# widening again restores the full labels (covers the compact -> full path).
+_tb_resize(1400)
+ok(not _tw._toolbar_compact, 'toolbar: re-widening restores the full labels')
+_tw.deleteLater()
+APP.processEvents()
 
 win.close()
 win.deleteLater()
