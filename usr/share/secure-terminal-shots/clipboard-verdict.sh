@@ -287,18 +287,24 @@ done
 st_bin="${ST_REPO:-}/usr/bin/secure-terminal"
 st_pkg="${ST_REPO:-}/usr/lib/python3/dist-packages"
 if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
-   seed_clipboard || printf '%s\n' 'warn secure-terminal: could not seed the clipboard' >&2
-   done_marker="${runtime_dir}/secure-terminal.done"
-   safe-rm -f -- "${done_marker}" 2>/dev/null || true
-   env QT_QPA_PLATFORM=xcb PYTHONPATH="${st_pkg}" \
-      python3 "${st_bin}" --new-instance -- bash -c "$(subject_cmd "${done_marker}")" >/dev/null 2>&1 &
-   epid="$!"
-   sleep 7
-   consumed=0
-   [ -e "${done_marker}" ] && consumed=1
-   record 'secure-terminal' "$(read_clip)" "${consumed}"
-   kill_tree "${epid}"
-   sleep 1
+   ## Skip the row if seeding fails, exactly as the emulator loop does: a leftover
+   ## sentinel from a previous subject would otherwise let secure-terminal read 'refused'
+   ## without THIS test having established the clipboard state -- a verdict we did not earn.
+   if ! seed_clipboard; then
+      printf '%s\n' 'warn secure-terminal: could not seed the clipboard; skipping' >&2
+   else
+      done_marker="${runtime_dir}/secure-terminal.done"
+      safe-rm -f -- "${done_marker}" 2>/dev/null || true
+      env QT_QPA_PLATFORM=xcb PYTHONPATH="${st_pkg}" \
+         python3 "${st_bin}" --new-instance -- bash -c "$(subject_cmd "${done_marker}")" >/dev/null 2>&1 &
+      epid="$!"
+      sleep 7
+      consumed=0
+      [ -e "${done_marker}" ] && consumed=1
+      record 'secure-terminal' "$(read_clip)" "${consumed}"
+      kill_tree "${epid}"
+      sleep 1
+   fi
 elif [ -n "${ALLOW_SKIP:-}" ]; then
    printf '%s\n' 'SKIP secure-terminal (ST_REPO not set/found; ALLOW_SKIP authorized)' >&2
 else
@@ -318,12 +324,16 @@ integrity_fail() {  ## $1=message
       '  Not publishing the verdict table. Check openbox, the X clipboard and the subjects.' >&2
    exit 1
 }
-case " ${TERMINALS} " in
-   *' kitty '*)
-      [ "${verdicts[kitty]:-}" = 'honored' ] \
-         || integrity_fail "integrity canary failed -- kitty writes OSC 52 by default, but read '${verdicts[kitty]:-<none>}'."
-      ;;
-esac
+## Gate on whether kitty actually produced a verdict, not on whether it was REQUESTED: an
+## ALLOW_SKIP-authorized missing kitty (or a custom TERMINALS subset without it) must not
+## then hard-fail for a missing row -- but the table is UNVERIFIED without the canary, and
+## that is said out loud rather than passing silently.
+if [ -n "${verdicts[kitty]:-}" ]; then
+   [ "${verdicts[kitty]}" = 'honored' ] \
+      || integrity_fail "integrity canary failed -- kitty writes OSC 52 by default, but read '${verdicts[kitty]}'."
+else
+   printf '%s\n' 'WARN kitty was not tested, so the verdict table is UNVERIFIED by the integrity canary' >&2
+fi
 if [ -n "${verdicts[secure-terminal]:-}" ] && [ "${verdicts[secure-terminal]}" != 'refused' ]; then
    integrity_fail "secure-terminal read '${verdicts[secure-terminal]}', not the expected 'refused' (a crash, or a real regression)."
 fi

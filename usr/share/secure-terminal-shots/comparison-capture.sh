@@ -298,11 +298,15 @@ tighten_deadspace() {  ## $1=png-path
    ## solid-background image (robust to any bg colour, incl. pure black/white) and
    ## threshold it (background -> black, content -> white), then the per-row maximum so
    ## any content pixel lights the whole row. Column 0 read out: an empty row is #000000.
+   ## The statistic neighbourhood is CENTRED, so a width of mw would leave column 0's max
+   ## covering only the left half and miss content near the right edge; 2*mw makes column
+   ## 0 span the full row. Erring wide is safe -- it can only classify a row as non-empty,
+   ## never delete real content.
    tmpmap="$(mktemp)"
    convert "${f}" -crop "${mw}x${h}+${side}+0" +repage \
       \( +clone -fill "${bg}" -colorize 100 \) \
       -compose difference -composite -threshold 6% \
-      -statistic maximum "${mw}x1" -crop "1x${h}+0+0" +repage txt:- \
+      -statistic maximum "$(( 2 * mw ))x1" -crop "1x${h}+0+0" +repage txt:- \
       | tail -n +2 > "${tmpmap}"
    best_start=-1; best_len=0; run_start=-1; run_len=0; y=0
    while IFS= read -r line; do
