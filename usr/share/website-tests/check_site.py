@@ -266,9 +266,12 @@ def check_freshness(root, failures):
         for match in _DATED_CLAIM.finditer(text):
             year, month = int(match.group(1)), int(match.group(2))
             # a month-only claim (YYYY-MM) is measured from the month's LAST day, so
-            # it is not aged early -- it stays fresh until the whole month is past
-            day = int(match.group(3)) if match.group(3) else calendar.monthrange(year, month)[1]
+            # it is not aged early -- it stays fresh until the whole month is past.
+            # monthrange() is inside the try: a malformed month (e.g. 2025-13) raises
+            # calendar.IllegalMonthError (a ValueError), which must be skipped, not crash.
             try:
+                day = int(match.group(3)) if match.group(3) \
+                    else calendar.monthrange(year, month)[1]
                 claim_date = datetime.date(year, month, day)
             except ValueError:
                 continue

@@ -1459,21 +1459,38 @@ check_R190_inline_interpreter() {
          ## Bash allows whitespace between the operator and the delimiter, so
          ## 'python3 - << "PY"' is valid and must not slip past.
          rest="${rest#"${rest%%[![:space:]]*}"}"
-         rest="${rest#\'}"
-         rest="${rest#\"}"
+         ## A delimiter may contain non-identifier chars, e.g. <<'PY-END'. A bare
+         ## [A-Za-z0-9_] scan truncates at the '-', loses the real terminator, and the
+         ## heredoc body then slips past the gate. Track the quote and read to its close;
+         ## for an unquoted delimiter read a word up to whitespace / a shell metachar.
+         quote=""
+         case "${rest}" in
+            \'*)
+               quote="'"
+               rest="${rest#\'}"
+               ;;
+            \"*)
+               quote='"'
+               rest="${rest#\"}"
+               ;;
+         esac
          delimiter=""
-         while [ -n "${rest}" ]; do
-            char="${rest:0:1}"
-            case "${char}" in
-               [A-Za-z0-9_])
-                  delimiter="${delimiter}${char}"
-                  rest="${rest:1}"
-                  ;;
-               *)
-                  break
-                  ;;
-            esac
-         done
+         if [ -n "${quote}" ]; then
+            delimiter="${rest%%"${quote}"*}"
+         else
+            while [ -n "${rest}" ]; do
+               char="${rest:0:1}"
+               case "${char}" in
+                  [[:space:]]|';'|'&'|'|'|'<'|'>'|'('|')'|'`'|'#')
+                     break
+                     ;;
+                  *)
+                     delimiter="${delimiter}${char}"
+                     rest="${rest:1}"
+                     ;;
+               esac
+            done
+         fi
          if [ -n "${delimiter}" ]; then
             in_body="true"
             body_is_interpreter="${is_interpreter}"
