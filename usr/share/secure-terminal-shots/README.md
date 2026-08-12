@@ -75,13 +75,20 @@ X11 path only. `wayland-capture.sh` prints the prompt itself and runs the comman
   claiming a hijack that never happened.
 - qterminal: ignores `-geometry` and opens MAXIMIZED, ignoring a plain resize.
   `shoot()` special-cases it -- `wmctrl -b remove,maximized_vert,maximized_horz`, then
-  `xdotool windowsize 720 440`. Window SELECTION is not special-cased: `find_window()`
-  picks the largest new non-baseline window for every emulator.
+  `xdotool windowsize 720 <h>` (`<h>` is the case's resize height). Window SELECTION is
+  not special-cased: `find_window()` picks the largest new non-baseline window for every
+  emulator.
 - Under labwc the random stream does not shrink or kill windows, so all 9 emulators
   yield a random shot too. A generic post-injection rescue still resizes any window
   left narrower than 300px.
+- Window height is CASE-AWARE. The short cases run at 84x24 (kitty/qterminal at their
+  prior pixel heights) so their shots -- and the committed on-page `<img>` dimensions --
+  do not move. Only `tui-showcase` runs taller (84x32; kitty/qterminal/ST resized up),
+  because its board paints ~26 lines on the alternate screen and would otherwise scroll
+  its title bar off the top. `launch()`/`shoot()` take the case; the ST loop picks
+  `st_win_h` per case. `tighten_deadspace` trims each shot back to its own content.
 
-### The four payloads (inputs to the comparison)
+### The payloads (inputs to the comparison)
 
 - **Case A - random.** `head -c 1200 /dev/random`: genuine random data, no
   crafted escapes.
@@ -93,10 +100,19 @@ X11 path only. `wayland-capture.sh` prints the prompt itself and runs the comman
   `crafted-hostile-log` PoC (decoded by the corpus `tools/reproduce.py`).
 - **Case C - homoglyph.** `homoglyph.payload`: a domain hiding a Cyrillic look-alike
   (U+0430 for Latin a), from the corpus `homoglyph-domain-install-2021` PoC.
-- **Case D - alt-screen hijack.** `altscreen.payload`: flips the terminal into its
-  alternate screen buffer (the full-screen mode pagers and editors use), a
-  whole-screen takeover a traditional terminal enters silently on stray output,
-  from the corpus `alt-screen-hijack` PoC.
+- **Case D - tui-showcase.** `tui-showcase.payload`: ONE safe, display-only board that
+  exercises every text-attack class at once (homoglyph, bidi, zero-width, BOM,
+  combining, fullwidth, control-byte CR+erase, hidden-by-colour SGR, DEC charset, OSC 8
+  hyperlink, OSC 0 title, `?1049h` alt-screen, plus honest foreign text as the non-attack
+  contrast). `cat`-ing it paints a full-screen "what you see vs what is there" table;
+  secure-terminal is shot in BOTH box and detail. From the corpus `tui-showcase` PoC.
+- **alt-screen** (`#altscreen` on the page). `altscreen.payload`: flips the terminal
+  into its alternate screen buffer (the full-screen mode pagers and editors use) and
+  never switches back, a whole-screen takeover entered silently on stray output, from the
+  corpus `alt-screen-hijack` PoC.
+- **notify** (`#notify` on the page). `notify.payload`: an `OSC 9` desktop-notification
+  from a build-log line, with deliberately safe page-facing wording -- generated inline,
+  not a corpus detection payload.
 
 These cases (the payload command + which corpus PoC supplies its bytes) are defined
 ONCE in `lib-capture.sh`, sourced by both comparison generators - the X11

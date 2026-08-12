@@ -21,6 +21,10 @@
 ##                     a traditional terminal shows a clean "example.com". secure-
 ##                     terminal is shot in TWO modes: box (look-alike -> a coloured
 ##                     box) and detail (<U+0430 CYRILLIC SMALL LETTER A>).
+##   Case D (tui-showcase): cat tui-showcase.payload -- a safe display-only board that
+##                     exercises EVERY text-attack class at once (homoglyph, bidi,
+##                     zero-width, BOM, combining, fullwidth, DEC charset, SGR, OSC 8,
+##                     OSC 0 title, alt-screen); secure-terminal box + detail.
 ## secure-terminal (its real GUI, from ST_REPO) is captured the same way. Output
 ## PNGs go to ./shots/ (copy them to the site's comparison/shots/). Usually driven
 ## via 'secure-terminal-shots comparison'; see this dir's README.md. The sibling
@@ -179,38 +183,44 @@ start_labwc() {
 }
 
 ## launch an emulator as an Xwayland (X11) client so labwc decorates it.
-launch() {  ## $1=emulator
-   local e base sh
-   e="$1"
+launch() {  ## $1=emulator  $2=case
+   local e case base sh rows kh
+   e="$1"; case="$2"
    base=(env --unset=WAYLAND_DISPLAY "DISPLAY=${xwl_display}")
    sh=(bash --rcfile "${HOME}/.strc" -i)
+   ## The tui-showcase board paints ~26 lines on the alternate screen; at the 24 rows
+   ## the short cases use, its title bar scrolled off the top. Only that case gets the
+   ## taller window, so the other cases' shots (and their committed on-page dimensions)
+   ## are unchanged. kitty is sized in pixels, so it gets a matching taller height.
+   rows=24; kh=430
+   if [ "${case}" = tui-showcase ]; then rows=32; kh=620; fi
    case "${e}" in
       xterm)
-         "${base[@]}" xterm -geometry 84x24 -fa 'Monospace' -fs 11 -e "${sh[@]}"
+         "${base[@]}" xterm -geometry "84x${rows}" -fa 'Monospace' -fs 11 -e "${sh[@]}"
          ;;
       urxvt)
-         "${base[@]}" urxvt -geometry 84x24 -fn 'xft:Monospace:size=11' -e "${sh[@]}"
+         "${base[@]}" urxvt -geometry "84x${rows}" -fn 'xft:Monospace:size=11' -e "${sh[@]}"
          ;;
       st)
-         "${base[@]}" st -g 84x24 -f 'Monospace:size=11' -e "${sh[@]}"
+         "${base[@]}" st -g "84x${rows}" -f 'Monospace:size=11' -e "${sh[@]}"
          ;;
       konsole)
-         "${base[@]}" QT_QPA_PLATFORM=xcb konsole --nofork -e "${sh[@]}"
+         "${base[@]}" QT_QPA_PLATFORM=xcb konsole --nofork -p TerminalColumns=84 -p "TerminalRows=${rows}" -e "${sh[@]}"
          ;;
       qterminal)
          "${base[@]}" QT_QPA_PLATFORM=xcb qterminal -e "${sh[@]}"
          ;;
       xfce4-terminal)
-         "${base[@]}" GDK_BACKEND=x11 xfce4-terminal --disable-server --geometry 84x24 -x "${sh[@]}"
+         "${base[@]}" GDK_BACKEND=x11 xfce4-terminal --disable-server --geometry "84x${rows}" -x "${sh[@]}"
          ;;
       mate-terminal)
-         "${base[@]}" GDK_BACKEND=x11 mate-terminal --disable-factory --geometry 84x24 -x "${sh[@]}"
+         "${base[@]}" GDK_BACKEND=x11 mate-terminal --disable-factory --geometry "84x${rows}" -x "${sh[@]}"
          ;;
       alacritty)
-         "${base[@]}" WINIT_UNIX_BACKEND=x11 alacritty -o 'window.dimensions.columns=84' -o 'window.dimensions.lines=24' -o 'font.size=11' -e "${sh[@]}"
+         "${base[@]}" WINIT_UNIX_BACKEND=x11 alacritty -o 'window.dimensions.columns=84' -o "window.dimensions.lines=${rows}" -o 'font.size=11' -e "${sh[@]}"
          ;;
       kitty)
-         "${base[@]}" KITTY_ENABLE_WAYLAND=0 kitty -o 'remember_window_size=no' -o 'initial_window_width=720' -o 'initial_window_height=430' -o 'font_size=11' "${sh[@]}"
+         "${base[@]}" KITTY_ENABLE_WAYLAND=0 kitty -o 'remember_window_size=no' -o 'initial_window_width=720' -o "initial_window_height=${kh}" -o 'font_size=11' "${sh[@]}"
          ;;
    esac
 }
@@ -258,6 +268,72 @@ capture_window() {  ## $1=output-path  $2=xwayland-window-id
    safe-rm -f -- "${tmp}"
 }
 
+## Remove the largest contiguous run of empty (background) terminal rows from a shot,
+## so a few lines of content no longer sit above a screenful of dead space. The
+## payloads are short, and the ST GUI will not shrink its window below ~400px (a Qt
+## minimum-size floor), so the tail of every short case is empty terminal rows. Handles
+## both content-at-the-top (traditional emulators: void at the bottom) and a fixed
+## bottom banner/status bar with a void above it (secure-terminal: void in the middle).
+## Only PURE background rows are removed, so content is never touched; a screen-filling
+## case (random) has no large run and is left untouched. Side columns are excluded when
+## classifying a row so a full-height scrollbar cannot mask the void.
+tighten_deadspace() {  ## $1=png-path
+   local f w h side mw bg tmpmap best_start best_len run_start run_len y line
+   local best_end top_h bot_y bot_h margin threshold
+   margin=10
+   threshold=40
+   f="$1"
+   [ -f "${f}" ] || return 0
+   w="$(identify -format '%w' "${f}")"; h="$(identify -format '%h' "${f}")"
+   side=40; [ "${w}" -gt 200 ] || side=0
+   mw=$(( w - 2 * side ))
+   ## background = most-frequent colour of the lower half (skips the light top chrome;
+   ## background dominates even a screen of garble). grep -m1 closes the pipe after the
+   ## top colour; '|| true' keeps the upstream SIGPIPE from tripping errexit+pipefail.
+   bg="$(convert "${f}" -gravity South -crop "${w}x50%+0+0" +repage \
+           -depth 8 -format '%c' histogram:info:- \
+         | sort -rn | grep -m1 -oiE '#[0-9A-F]{6}')" || true
+   [ -n "${bg}" ] || bg="$(convert "${f}" -format "#%[hex:p{2,$(( h - 4 ))}]" info: | cut -c1-7)"
+   ## per-row emptiness map: drop the side columns, take the absolute difference from a
+   ## solid-background image (robust to any bg colour, incl. pure black/white) and
+   ## threshold it (background -> black, content -> white), then the per-row maximum so
+   ## any content pixel lights the whole row. Column 0 read out: an empty row is #000000.
+   ## The statistic neighbourhood is CENTRED, so a width of mw would leave column 0's max
+   ## covering only the left half and miss content near the right edge; 2*mw makes column
+   ## 0 span the full row. Erring wide is safe -- it can only classify a row as non-empty,
+   ## never delete real content.
+   tmpmap="$(mktemp)"
+   convert "${f}" -crop "${mw}x${h}+${side}+0" +repage \
+      \( +clone -fill "${bg}" -colorize 100 \) \
+      -compose difference -composite -threshold 6% \
+      -statistic maximum "$(( 2 * mw ))x1" -crop "1x${h}+0+0" +repage txt:- \
+      | tail -n +2 > "${tmpmap}"
+   best_start=-1; best_len=0; run_start=-1; run_len=0; y=0
+   while IFS= read -r line; do
+      case "${line}" in
+         *"#000000"*)
+            [ "${run_start}" -ge 0 ] || run_start="${y}"
+            run_len=$(( run_len + 1 ))
+            if [ "${run_len}" -gt "${best_len}" ]; then best_len="${run_len}"; best_start="${run_start}"; fi
+            ;;
+         *)
+            run_start=-1; run_len=0
+            ;;
+      esac
+      y=$(( y + 1 ))
+   done < "${tmpmap}"
+   safe-rm -f -- "${tmpmap}"
+   [ "${best_start}" -ge 0 ] && [ "${best_len}" -ge "${threshold}" ] || return 0
+   best_end=$(( best_start + best_len - 1 ))
+   top_h=$(( best_start + margin ))
+   bot_y=$(( best_end - margin )); [ "${bot_y}" -lt "${top_h}" ] && bot_y="${top_h}"
+   bot_h=$(( h - bot_y ))
+   convert "${f}" \
+      \( -clone 0 -crop "${w}x${top_h}+0+0" +repage \) \
+      \( -clone 0 -crop "${w}x${bot_h}+0+${bot_y}" +repage \) \
+      -delete 0 -append "${f}"
+}
+
 clear_windows() {
    local wid
    for wid in $(DISPLAY="${xwl_display}" xdotool search --onlyvisible '' 2>/dev/null || true); do
@@ -289,9 +365,13 @@ find_window() {
 }
 
 shoot() {  ## $1=emulator  $2=case
-   local e case wid ww
+   local e case wid ww rescue_h
    e="$1"; case="$2"; wid=''
-   launch "${e}" >/dev/null 2>&1 &
+   ## the tall tui-showcase board needs a taller pixel-resized window (qterminal +
+   ## the shrink rescue); the short cases keep their prior heights so their shots and
+   ## committed page dimensions do not move.
+   rescue_h=430; [ "${case}" = tui-showcase ] && rescue_h=620
+   launch "${e}" "${case}" >/dev/null 2>&1 &
    local epid
    epid="$!"
    wid="$(find_window || true)"
@@ -303,7 +383,7 @@ shoot() {  ## $1=emulator  $2=case
    ## qterminal opens maximized and ignores a plain resize; unmaximize it first.
    if [ "${e}" = qterminal ]; then
       DISPLAY="${xwl_display}" wmctrl -i -r "${wid}" -b remove,maximized_vert,maximized_horz 2>/dev/null || true
-      DISPLAY="${xwl_display}" xdotool windowsize "${wid}" 720 440 2>/dev/null || true
+      DISPLAY="${xwl_display}" xdotool windowsize "${wid}" 720 "${rescue_h}" 2>/dev/null || true
       sleep 0.7
    fi
    sleep 2
@@ -311,10 +391,11 @@ shoot() {  ## $1=emulator  $2=case
    sleep 3
    ww="$(DISPLAY="${xwl_display}" xdotool getwindowgeometry --shell "${wid}" 2>/dev/null | sed -n 's/^WIDTH=//p' || true)"
    if [ -n "${ww}" ] && [ "${ww}" -lt 300 ]; then
-      DISPLAY="${xwl_display}" xdotool windowsize "${wid}" 720 430 2>/dev/null || true
+      DISPLAY="${xwl_display}" xdotool windowsize "${wid}" 720 "${rescue_h}" 2>/dev/null || true
       sleep 1.5
    fi
    capture_window "${out}/${e}.${case}.png" "${wid}" \
+      && tighten_deadspace "${out}/${e}.${case}.png" \
       || printf '%s\n' "warn ${e}.${case}: screenshot failed"
    clear_windows
    kill "${epid}" 2>/dev/null || true
@@ -340,10 +421,11 @@ for e in ${TERMINALS}; do
       printf '%s\n' "ERROR: terminal ${e} is not installed. Install it, or set ALLOW_SKIP=1 to authorize skipping." >&2
       exit 1
    fi
-   shoot "${e}" crafted   || true
-   shoot "${e}" random    || true
-   shoot "${e}" homoglyph || true
-   shoot "${e}" altscreen || true
+   shoot "${e}" crafted      || true
+   shoot "${e}" random       || true
+   shoot "${e}" homoglyph    || true
+   shoot "${e}" altscreen    || true
+   shoot "${e}" tui-showcase || true
    printf '%s\n' "captured ${e}"
 done
 
@@ -362,18 +444,32 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
    ## that shows the whole toolbar under the real xcb render (its font metrics run wider
    ## than an offscreen sizeHint predicts); it fits the 1440x900 labwc output.
    st_win_w=1360
-   st_win_h=620
+   ## Each entry is "<case> <mode> <suffix> [tui]". The optional 4th field 'tui' launches
+   ## secure-terminal with --tui (opt-in full-screen mode) instead of the default CLI mode.
+   ## The tui-showcase board is captured in CLI-box, CLI-detail AND TUI-box, to show that
+   ## even when full-screen layout is allowed, every cell is still character-filtered.
    st_specs=(
       'crafted box crafted'
       'random box random'
       'homoglyph box homoglyph-strip'
       'homoglyph detail homoglyph-detail'
       'altscreen box altscreen'
+      'tui-showcase box tui-showcase'
+      'tui-showcase detail tui-showcase-detail'
+      'tui-showcase box tui-showcase-tui tui'
    )
    for spec in "${st_specs[@]}"; do
-      read -r st_case st_mode st_suffix <<< "${spec}"
+      read -r st_case st_mode st_suffix st_tui <<< "${spec}"
+      st_mode_flags=(--mode "${st_mode}")
+      [ "${st_tui:-}" = tui ] && st_mode_flags+=(--tui)
+      ## tui-showcase: secure-terminal strips the alt-screen escape and renders the
+      ## banner + ~26 board rows INLINE (no alt buffer), so a short window would show
+      ## only the footer -- give it a taller window (820 fits the 900px labwc output
+      ## once grown by the frame). The short cases keep 620 so their committed page
+      ## dimensions do not move; tighten_deadspace trims either back to its content.
+      st_win_h=620; [ "${st_case}" = tui-showcase ] && st_win_h=820
       env --unset=WAYLAND_DISPLAY "DISPLAY=${xwl_display}" QT_QPA_PLATFORM=xcb \
-         PYTHONPATH="${st_pkg}" python3 "${st_bin}" --new-instance --mode "${st_mode}" \
+         PYTHONPATH="${st_pkg}" python3 "${st_bin}" --new-instance "${st_mode_flags[@]}" \
          -- bash --rcfile "${HOME}/.strc" -i >/dev/null 2>&1 &
       epid="$!"
       stwid="$(find_window || true)"
@@ -386,6 +482,7 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
          inject "${stwid}" "$(shots_payload_cmd "${st_case}")"
          sleep 3
          capture_window "${out}/secure-terminal.${st_suffix}.png" "${stwid}"
+         tighten_deadspace "${out}/secure-terminal.${st_suffix}.png"
       else
          printf '%s\n' "warn secure-terminal.${st_suffix}: window never appeared"
       fi

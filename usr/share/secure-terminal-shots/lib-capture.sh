@@ -28,6 +28,9 @@
 ##                U+0430 for Latin a)
 ##   altscreen -- cat altscreen.payload (an unrestored alternate-screen switch that
 ##                leaves a traditional terminal stuck full-screen)
+##   tui-showcase -- cat tui-showcase.payload (a safe display-only board exercising
+##                every text-attack class at once; a full-screen "what you see vs what
+##                is there" table)
 ##   notify    -- cat notify.payload    (an OSC-9 desktop-notification from log output)
 ##   random    -- head -c N /dev/random (genuine random garble)
 ##
@@ -68,8 +71,19 @@ shots_corpus_id() {  ## $1=case
       altscreen)
          printf '%s' 'alt-screen-hijack'
          ;;
+      tui-showcase)
+         printf '%s' 'tui-showcase'
+         ;;
+      clipboard)
+         printf '%s' 'osc52-clipboard-write'
+         ;;
    esac
 }
+
+## The benign canary the osc52-clipboard-write PoC writes to the clipboard; the
+## clipboard-verdict lane reads it back to decide honored-vs-refused. Kept next to
+## shots_corpus_id so the lane and the corpus id cannot drift.
+shots_clipboard_token='POC-CORPUS-CANARY-FIRED'
 
 shots_payload_cmd() {  ## $1=case -> the command string the terminal displays
    case "$1" in
@@ -81,6 +95,12 @@ shots_payload_cmd() {  ## $1=case -> the command string the terminal displays
          ;;
       altscreen)
          printf '%s' 'cat altscreen.payload'
+         ;;
+      tui-showcase)
+         printf '%s' 'cat tui-showcase.payload'
+         ;;
+      clipboard)
+         printf '%s' 'cat clipboard.payload'
          ;;
       notify)
          printf '%s' 'cat notify.payload'
@@ -108,7 +128,7 @@ shots_generate_logs() {  ## $1=script-relative fallback dir $2=dest-dir
    ## suppresses errexit inside the function, so a failed reproduce.py must be surfaced
    ## by hand (as a NON-77 code, distinct from the missing-corpus skip) or the capture
    ## would proceed with a missing payload.
-   for c in crafted homoglyph altscreen; do
+   for c in crafted homoglyph altscreen tui-showcase; do
       id="$(shots_corpus_id "${c}")"
       POC_CORPUS_IN_SANDBOX=1 python3 "${rp}" "${id}" --out "${dest}/${c}.payload" || return 1
    done

@@ -601,6 +601,26 @@ eq(S.tui_cell('a' + BEL, 'show'), S.BOX, 'tui grapheme with a control -> box')
 ok(isinstance(S.tui_cell(chr(0x1F600) + chr(0x1F600), 'show'), str),
    'tui two-astral cell does not crash')
 
+# --- marking_cp_for_cell: the source code point a NEUTRALIZED grid cell is
+# --- classified/coloured by (the TUI-grid counterpart of the CLI cells_to_runs
+# --- MARK_KEY tag). The FIRST code point that is not plain printable ASCII, so a
+# --- base+combining grapheme classifies by its dangerous mark, not its ASCII base.
+eq(S.marking_cp_for_cell(BIDI), 0x202E, 'marking cp: a lone RLO is the RLO')
+eq(S.marking_cp_for_cell(chr(0x0430)), 0x0430, 'marking cp: a homoglyph is itself')
+eq(S.marking_cp_for_cell(chr(0x2500)), 0x2500, 'marking cp: a box-drawing glyph is itself')
+eq(S.marking_cp_for_cell('a' + ZWSP), 0x200B,
+   'marking cp: base+zero-width classifies by the zero-width, not the ASCII base')
+eq(S.marking_cp_for_cell('a' + BEL), 0x07, 'marking cp: base+control classifies by the control')
+eq(S.marking_cp_for_cell('abc'), None, 'marking cp: pure printable ASCII is not a marking')
+eq(S.marking_cp_for_cell(''), None, 'marking cp: an empty cell is not a marking')
+# tui_cell returning the box placeholder GUARANTEES a marking code point exists, so
+# the grid colouring can classify without a None fallback (checked for every mode).
+for _mode in ('box', 'show', 'reveal', 'detail'):
+    for _ch in (BIDI, ZWSP, chr(0x2500), chr(0x00E9), 'a' + BEL, 'a' + chr(0xFE0F)):
+        if S.tui_cell(_ch, _mode) == S.BOX:
+            ok(S.marking_cp_for_cell(_ch) is not None,
+               'marking cp: a boxed cell (%r/%s) always has a classifiable code point' % (_ch, _mode))
+
 # --- preflight: fail loud (stderr + non-zero exit) on a missing dependency ----
 from secure_terminal import preflight as PRE      # noqa: E402
 import io as _pio                                 # noqa: E402
