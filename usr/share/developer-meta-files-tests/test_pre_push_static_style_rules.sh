@@ -1402,8 +1402,65 @@ else
    printf '%s\n' 'PASS: R-100 honours the allow-inline-shell waiver'
 fi
 
+## ---- R-001 file-based allowlist (.gitattributes binary) ----
+## A file DECLARED binary in .gitattributes is data, not text: R-001 (ASCII) and the
+## pre-commit-hooks text fixers skip it, exactly as they skip a PNG. It is the clean
+## opt-out for a raw byte-stream payload / fixture that cannot carry a '## style-ok'
+## comment (the output-lies terminal-attack demo rides on it). The CANARY is the
+## un-attributed case: the SAME bytes must still be flagged, so the allowlist is a real
+## exemption, not the rule quietly not firing.
+gate_output_data() {  ## $1=.gitattributes line (empty for none) -> gate output over base..HEAD
+   local attr repo base
+   attr="$1"
+   repo="$(mktemp --directory --tmpdir="${tmp_root}" repo.XXXXXX)"
+   git -C "${repo}" init --quiet
+   git -C "${repo}" config user.email 'ci-test@example.com'
+   git -C "${repo}" config user.name 'ci-test'
+   git -C "${repo}" commit --quiet --no-verify --allow-empty --message base
+   base="$(git -C "${repo}" rev-parse HEAD)"
+   ## A raw byte stream's shape: a non-ASCII byte (0xC3 0xA9), a CR, and no final
+   ## newline -- each an independent R-001 / line-ending / end-of-file violation. Built
+   ## with '%b' octal escapes, so no literal non-ASCII lives in THIS tracked file.
+   printf '%b' 'blob header\rcaf\0303\0251 body no-newline' > "${repo}/blob.dat"
+   if [ -n "${attr}" ]; then
+      printf '%s\n' "${attr}" > "${repo}/.gitattributes"
+      git -C "${repo}" add .gitattributes
+   fi
+   git -C "${repo}" add blob.dat
+   git -C "${repo}" commit --quiet --no-verify --message blob
+   (
+      cd -- "${repo}" || exit 1
+      "${GATE}" "${base}"
+   ) 2>&1 || true
+}
+
+data_unattributed="$(gate_output_data '')"
+if printf '%s\n' "${data_unattributed}" | grep --quiet --fixed-strings -- 'R-001 ASCII'; then
+   printf '%s\n' 'PASS: R-001 flags a non-ASCII data file with no .gitattributes entry (canary)'
+else
+   printf '%s\n' 'FAIL: R-001 did not flag a non-ASCII data file without the binary attribute' >&2
+   failures=$((failures + 1))
+fi
+
+data_allowlisted="$(gate_output_data 'blob.dat binary')"
+if printf '%s\n' "${data_allowlisted}" | grep --quiet --fixed-strings -- 'R-001 ASCII'; then
+   printf '%s\n' 'FAIL: R-001 flagged a .gitattributes binary data file (allowlist not honoured)' >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' 'PASS: R-001 spares a .gitattributes binary data file'
+fi
+## The allowlist must clear the WHOLE text-content tier (ASCII + line endings + EOF via
+## is_text_file), so the allowlisted commit reaches a clean verdict, not just a
+## missing R-001 line.
+if printf '%s\n' "${data_allowlisted}" | grep --quiet --fixed-strings -- 'all static checks passed'; then
+   printf '%s\n' 'PASS: a .gitattributes binary data file passes the whole static gate'
+else
+   printf '%s\n' 'FAIL: a .gitattributes binary data file did not reach a clean gate verdict' >&2
+   failures=$((failures + 1))
+fi
+
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "test_pre_push_static_style_rules: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-026, R-030 format string, R-030/R-031, R-034, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-190, R-191, R-100, R-010, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting, double-quote-string-fixer-disabled and imported-package-module exemption enforced as expected."
+printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-026, R-030 format string, R-030/R-031, R-034, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-190, R-191, R-100, R-010, R-001 .gitattributes-binary allowlist, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting, double-quote-string-fixer-disabled and imported-package-module exemption enforced as expected."
