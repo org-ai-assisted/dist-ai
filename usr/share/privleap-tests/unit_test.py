@@ -248,10 +248,66 @@ class _FakeBackendSocket:
         return self._fd
 
 
+class _StartRaisesThread:
+    """
+    Thread stand-in whose start() raises RuntimeError, emulating thread
+    exhaustion (RLIMIT_NPROC / kernel thread cap). Constructed the same way
+    privleapd constructs its comm threads.
+    """
+
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        pass
+
+    def start(self) -> None:
+        """Refuse to start, as the kernel does once threads are exhausted."""
+
+        raise RuntimeError("can't start new thread")
+
+
+class _RecordingCloseSession:
+    """A minimal accepted-session double that records being closed."""
+
+    def __init__(self) -> None:
+        self.closed: bool = False
+
+    def close_session(self) -> None:
+        """Record that the handler closed this session."""
+
+        self.closed = True
+
+
+class _RaisingCloseSession:
+    """
+    An accepted-session double whose close_session() raises OSError, emulating
+    a client that already disconnected (shutdown() then raises ENOTCONN).
+    """
+
+    def __init__(self) -> None:
+        self.close_attempted: bool = False
+
+    def close_session(self) -> None:
+        """Record the close attempt, then raise as a gone client would."""
+
+        self.close_attempted = True
+        raise OSError(errno.ENOTCONN, 'Transport endpoint is not connected')
+
+
+class _TermCommSession:
+    """
+    Minimal comm-session double for check_early_action_terminate: it only needs
+    a backend_socket exposing fileno() and a user_name for logging.
+    """
+
+    def __init__(self, fd: int, user_name: str = 'testuser') -> None:
+        self.backend_socket: _FakeBackendSocket = _FakeBackendSocket(fd)
+        self.user_name: str = user_name
+
+
 class _FakeListenSocket:
     """
     A listening-socket stand-in. get_session() either raises the scripted
-    exception (an accept failure) or records that a session was started.
+    exception (an accept failure), returns the scripted accepted-session double,
+    or records that a session was started.
     """
 
     def __init__(
@@ -260,11 +316,13 @@ class _FakeListenSocket:
         socket_type: Any,
         raise_exc: BaseException | None = None,
         user_name: str = 'testuser',
+        session: object | None = None,
     ) -> None:
         self.backend_socket: _FakeBackendSocket = _FakeBackendSocket(fd)
         self.socket_type: Any = socket_type
         self.user_name: str = user_name
         self._raise_exc: BaseException | None = raise_exc
+        self._session: object | None = session
         self.session_started: bool = False
 
     def get_session(self) -> object:
@@ -273,6 +331,8 @@ class _FakeListenSocket:
         if self._raise_exc is not None:
             raise self._raise_exc
         self.session_started = True
+        if self._session is not None:
+            return self._session
         return object()
 
 
@@ -301,12 +361,18 @@ class _FakeEpoll:
 
 
 def _fake_comm_sock_info(
-    pld: ModuleType, fd: int, raise_exc: BaseException | None = None
+    pld: ModuleType,
+    fd: int,
+    raise_exc: BaseException | None = None,
+    session: object | None = None,
 ) -> Any:
     """A PrivleapdSocketInfo wrapping a fake comm listening socket."""
 
     listen_socket: _FakeListenSocket = _FakeListenSocket(
-        fd, pld.PrivleapSocketType.COMMUNICATION, raise_exc=raise_exc
+        fd,
+        pld.PrivleapSocketType.COMMUNICATION,
+        raise_exc=raise_exc,
+        session=session,
     )
     return pld.PrivleapdSocketInfo(listen_socket, -1, -1, None, None)
 
@@ -700,6 +766,282 @@ def test_destroyed_socket_is_unregistered(
             )
         finally:
             pld.PrivleapdGlobal.socket_list = saved_list
+
+
+def test_thread_exhaustion_backs_off_and_closes_session(
+    results: Results, pld: ModuleType
+) -> None:
+    """
+    An accept that succeeds but whose handler thread cannot start must not crash
+    the daemon.
+
+    accept() returns a session, then Thread.start() raises RuntimeError (thread
+    exhaustion: RLIMIT_NPROC or the kernel thread cap). Any local account can
+    drive the process count to that limit. handle_comm_socket_conn must catch
+    the RuntimeError, close the accepted session, and return False (back off) --
+    not let the RuntimeError escape into dispatch_ready_sockets and main_loop,
+    which would crash the root daemon, the very failure this handler prevents.
+    """
+
+    print('== thread exhaustion backs off and closes the session ==')
+    session: _RecordingCloseSession = _RecordingCloseSession()
+    sock_info: Any = _fake_comm_sock_info(pld, 42, session=session)
+    with mock.patch.object(pld, 'Thread', _StartRaisesThread):
+        finished, result, exception = call_with_deadline(
+            lambda: pld.handle_comm_socket_conn(sock_info)
+        )
+    results.check('the thread-exhaustion handler returns', finished)
+    results.check(
+        'thread exhaustion does not let the RuntimeError escape the handler',
+        exception is None,
+    )
+    results.check(
+        'thread exhaustion returns False to trigger the resource backoff',
+        result is False,
+    )
+    results.check(
+        'the accepted session was closed on thread exhaustion', session.closed
+    )
+
+
+def test_thread_exhaustion_close_oserror_does_not_escape(
+    results: Results, pld: ModuleType
+) -> None:
+    """
+    Closing the accepted session while backing off on thread exhaustion must
+    survive a client that already disconnected.
+
+    Same path as the previous test, but the accepted session's close_session()
+    raises OSError (the client is gone, so shutdown() raises ENOTCONN).
+    handle_comm_socket_conn must swallow that OSError and STILL return False;
+    letting it escape would crash the root daemon just as the unguarded
+    Thread.start() would.
+    """
+
+    print('== a raising close_session on thread exhaustion does not escape ==')
+    session: _RaisingCloseSession = _RaisingCloseSession()
+    sock_info: Any = _fake_comm_sock_info(pld, 42, session=session)
+    with mock.patch.object(pld, 'Thread', _StartRaisesThread):
+        finished, result, exception = call_with_deadline(
+            lambda: pld.handle_comm_socket_conn(sock_info)
+        )
+    results.check(
+        'the handler returns even when close_session raises', finished
+    )
+    results.check(
+        'a raising close_session does not escape the handler',
+        exception is None,
+    )
+    results.check(
+        'a raising close_session still backs off (returns False)',
+        result is False,
+    )
+    results.check(
+        'close_session was attempted before it raised', session.close_attempted
+    )
+
+
+def test_dispatch_breaks_on_first_resource_error(
+    results: Results, pld: ModuleType
+) -> None:
+    """
+    A resource-exhaustion accept must break the per-fd dispatch loop, not go on
+    hammering the rest of the ready batch.
+
+    Two ready comm fds in one batch: the first hits EMFILE, the second would
+    accept cleanly. dispatch_ready_sockets must break on the first RESOURCE
+    error and return False, so the second socket is never accept-attempted and
+    no handler thread is constructed. A loop that only marked the iteration
+    unhealthy but kept iterating would accept the second socket while the daemon
+    is already out of descriptors -- exactly the storm the backoff exists to
+    stop.
+    """
+
+    print('== a RESOURCE error breaks the per-fd dispatch loop ==')
+    saved_list: list[Any] = pld.PrivleapdGlobal.socket_list
+    first: Any = _fake_comm_sock_info(
+        pld, 42, raise_exc=OSError(errno.EMFILE, 'Too many open files')
+    )
+    second: Any = _fake_comm_sock_info(pld, 43)
+    pld.PrivleapdGlobal.socket_list = [first, second]
+    try:
+        with mock.patch.object(pld, 'Thread') as thread_mock:
+            result: bool = pld.dispatch_ready_sockets([42, 43])
+        results.check(
+            'a RESOURCE error makes the iteration report unhealthy',
+            result is False,
+        )
+        results.expect_eq(
+            'the EMFILE socket never established a session',
+            first.listen_socket.session_started,
+            False,
+        )
+        results.expect_eq(
+            'after a RESOURCE error the loop breaks rather than accepting the '
+            'next ready socket in the batch',
+            second.listen_socket.session_started,
+            False,
+        )
+        results.check(
+            'no handler thread was constructed after the RESOURCE error',
+            not thread_mock.called,
+        )
+    finally:
+        pld.PrivleapdGlobal.socket_list = saved_list
+
+
+def test_connection_change_and_emfile_co_occurrence(
+    results: Results, pld: ModuleType
+) -> None:
+    """
+    A poll batch that carries BOTH a connection-change notification and an
+    EMFILE listening fd must consume the notification AND still back off.
+
+    The restructured main loop must, in that one iteration: (a) read the ctm
+    connection-change notification exactly once, (b) still dispatch the
+    co-occurring listening fd so its EMFILE backoff (time.sleep) runs, and (c)
+    withhold the watchdog for the iteration. A loop that consumed the ctm event
+    and then short-circuited the rest of the batch would skip the EMFILE fd
+    entirely -- no backoff, and a WATCHDOG=1 telling systemd the pegged,
+    non-serving daemon is healthy.
+    """
+
+    print('== a connection change co-occurring with EMFILE still backs off ==')
+
+    read_calls: list[int] = [0]
+
+    class _CountingReadPipe:
+        """A ctm read pipe stand-in that counts how often it was read."""
+
+        def read(self) -> bytes:
+            """Consume the connection-change wakeup byte and count the call."""
+
+            read_calls[0] += 1
+            return b''
+
+    emfile_fd: int = 42
+    ## _drive_main_loop pins PrivleapdGlobal.ctm_read_fd to 9000.
+    ctm_fd: int = 9000
+    saved_list: list[Any] = pld.PrivleapdGlobal.socket_list
+    sock_info: Any = _fake_comm_sock_info(
+        pld, emfile_fd, raise_exc=OSError(errno.EMFILE, 'Too many open files')
+    )
+    pld.PrivleapdGlobal.socket_list = [sock_info]
+    try:
+        notifier, _epoll, sleep_mock, raised = _drive_main_loop(
+            pld,
+            [[(ctm_fd, 1), (emfile_fd, 1)]],
+            ctm_read_pipe=_CountingReadPipe(),
+        )
+        results.check(
+            'the co-occurrence iteration ended cleanly',
+            isinstance(raised, _StopLoop),
+        )
+        results.expect_eq(
+            'the connection-change notification was read exactly once',
+            read_calls[0],
+            1,
+        )
+        results.check(
+            'the co-occurring EMFILE fd was still dispatched and backed off',
+            sleep_mock.call_count == 1
+            and sleep_mock.call_args
+            == mock.call(pld.accept_resource_backoff_seconds),
+        )
+        results.expect_eq(
+            'the EMFILE socket never established a session',
+            sock_info.listen_socket.session_started,
+            False,
+        )
+        results.check(
+            'the watchdog is withheld even though a connection change was '
+            'consumed',
+            'WATCHDOG=1' not in notifier.messages,
+        )
+    finally:
+        pld.PrivleapdGlobal.socket_list = saved_list
+
+
+def test_early_terminate_keeps_shared_term_notify_open(
+    results: Results, pld: ModuleType
+) -> None:
+    """
+    A sibling that terminates on should_terminate must not close the term_notify
+    pipes it shares with the account's other comm threads.
+
+    Several comm threads for one account share a single PrivleapdSocketInfo and
+    each epolls its term_notify_read_fd. When should_terminate is set,
+    check_early_action_terminate must return True WITHOUT closing the shared
+    pipes -- otherwise the first sibling to terminate yanks the read fd out from
+    under a still-blocking sibling, which could then miss its terminate wake.
+    This drives two sibling calls against the SAME socket_info (real os.pipe()-
+    backed pipes): both must return True and the pipes must stay open.
+    """
+
+    print('== an early terminate keeps the shared term_notify pipes open ==')
+    read_fd, write_fd = os.pipe()
+    os.set_blocking(write_fd, False)
+    read_pipe: Any = os.fdopen(read_fd, 'rb', buffering=0)
+    write_pipe: Any = os.fdopen(write_fd, 'wb', buffering=0)
+    ## One wake byte, never consumed, so the read fd stays level-triggered
+    ## readable for every sibling.
+    write_pipe.write(b'\x00')
+    sock_info: Any = pld.PrivleapdSocketInfo(
+        _FakeListenSocket(50, pld.PrivleapSocketType.COMMUNICATION),
+        read_fd,
+        write_fd,
+        read_pipe,
+        write_pipe,
+        should_terminate=True,
+    )
+    try:
+        session_a: _TermCommSession = _TermCommSession(60)
+        session_b: _TermCommSession = _TermCommSession(61)
+        ## The sessions' backend fds are deliberately NOT in ready_fds, so the
+        ## should_terminate branch (not the client-TERMINATE branch) is what
+        ## returns True.
+        ready_fds: list[int] = []
+
+        result_a: bool = pld.check_early_action_terminate(
+            sock_info, ready_fds, session_a, 'testaction'
+        )
+        results.check(
+            'the first sibling observes should_terminate and returns True',
+            result_a is True,
+        )
+        results.expect_eq(
+            'the first sibling does not close the shared read pipe',
+            read_pipe.closed,
+            False,
+        )
+        results.expect_eq(
+            'the first sibling does not close the shared write pipe',
+            write_pipe.closed,
+            False,
+        )
+
+        result_b: bool = pld.check_early_action_terminate(
+            sock_info, ready_fds, session_b, 'testaction'
+        )
+        results.check(
+            'the second sibling also returns True on the still-open pipes',
+            result_b is True,
+        )
+        results.expect_eq(
+            'the shared read pipe stays open after both siblings terminate',
+            read_pipe.closed,
+            False,
+        )
+        results.expect_eq(
+            'the shared write pipe stays open after both siblings terminate',
+            write_pipe.closed,
+            False,
+        )
+    finally:
+        if not read_pipe.closed:
+            read_pipe.close()
+        if not write_pipe.closed:
+            write_pipe.close()
 
 
 class InProcessDaemon:
@@ -1173,6 +1515,11 @@ def main() -> int:
     run_test(results, test_accept_failure_does_not_spin, pld)
     run_test(results, test_reused_descriptor_is_registered, pl, pld)
     run_test(results, test_destroyed_socket_is_unregistered, pl, pld)
+    run_test(results, test_thread_exhaustion_backs_off_and_closes_session, pld)
+    run_test(results, test_thread_exhaustion_close_oserror_does_not_escape, pld)
+    run_test(results, test_dispatch_breaks_on_first_resource_error, pld)
+    run_test(results, test_connection_change_and_emfile_co_occurrence, pld)
+    run_test(results, test_early_terminate_keeps_shared_term_notify_open, pld)
     run_test(results, test_action_output_pump_is_not_a_busy_loop, pld)
     run_test(results, test_auth_failure_reply_is_constant_time, pld)
     run_test(results, test_access_check_reply_is_constant_time, pld)
