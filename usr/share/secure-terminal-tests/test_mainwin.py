@@ -335,6 +335,25 @@ try:
     _ev = QCloseEvent()
     w3.closeEvent(_ev)
     ok(not _ev.isAccepted(), 'closeEvent: running program + decline ignores the close')
+    # _force_close (a signal-driven / programmatic quit) accepts the close even
+    # with a program running, WITHOUT opening the modal: the confirmation needs a
+    # user, and a modal run during XCB teardown segfaults. The mock would decline
+    # if asked, so an accepted close proves the prompt was skipped. This checks the
+    # guard decision only -- tab shutdown is stubbed so the real SIGHUP/SIGCHLD
+    # teardown (exercised in the aboutToQuit test) does not fire mid-suite and feed
+    # the known offscreen ipc-reaper race.
+    w3._persist_session = False              # clear, don't write a bogus session
+    for _i in range(w3.tabs.count()):
+        w3.tabs.widget(_i).has_foreground_program = lambda: True
+        w3.tabs.widget(_i).shutdown = lambda: None
+    w3._force_close = True
+    _asked.clear()
+    QMessageBox.question = staticmethod(lambda *_a, **_k: _asked.append(1) or _No)
+    _ev_fc = QCloseEvent()
+    w3.closeEvent(_ev_fc)
+    ok(_ev_fc.isAccepted() and not _asked,
+       'closeEvent: _force_close accepts the close without prompting')
+    w3._force_close = False
 finally:
     QMessageBox.question = _oq
 w3.deleteLater()
@@ -917,12 +936,15 @@ win.clear_saved_session()
 _o_qapp_quit = QApplication.quit
 try:
     QApplication.quit = lambda *_a, **_k: None
+    win._force_close = False                 # handler must flip this before quit
     M._install_signal_quit(APP)             # installs SIGINT/SIGTERM -> app.quit
     import signal as _sig2
     _h = _sig2.getsignal(_sig2.SIGINT)
     if callable(_h):
         _h(_sig2.SIGINT, None)              # fire the handler -> app.quit (stubbed)
     ok(True, 'signal-quit handler calls app.quit')
+    ok(win._force_close is True,
+       'signal-quit handler force-closes windows so teardown skips the modal')
 finally:
     QApplication.quit = _o_qapp_quit
 
