@@ -2095,10 +2095,14 @@ is_yaml_file() {
 ## gate and the server-side check, which already skip git-binary files -- so a
 ## deliberately-classified data file is now treated the same by every gate.
 ## '<path>: binary: set' is git's answer for a file the macro-attribute covers;
-## the suffix match tolerates a ':' in the path itself.
+## the suffix match tolerates a ':' in the path itself. '--cached' reads the attribute
+## from the INDEX, not the working tree, so the opt-out only counts when the
+## '.gitattributes' entry is itself part of the change being committed -- an unstaged or
+## untracked '.gitattributes' cannot silently exempt a file that ships without it, and the
+## allowlist stays reviewable in the diff.
 is_data_file() {
    local out
-   out="$(git check-attr binary -- "${1}" 2>/dev/null)" || return 1
+   out="$(git check-attr --cached binary -- "${1}" 2>/dev/null)" || return 1
    case "${out}" in
       *': binary: set')
          return 0

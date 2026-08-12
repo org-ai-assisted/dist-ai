@@ -91,10 +91,14 @@ PY
 xvfb_pid=''
 ob_pid=''
 seeder_pid=''
+verdict_tmp=''
 cleanup() {
    [ -z "${seeder_pid}" ] || kill "${seeder_pid}" 2>/dev/null || true
    [ -z "${ob_pid}" ] || kill "${ob_pid}" 2>/dev/null || true
    [ -z "${xvfb_pid}" ] || kill "${xvfb_pid}" 2>/dev/null || true
+   ## the in-progress TSV lives next to the final one (same filesystem, atomic rename);
+   ## drop it if a run failed before the publishing mv.
+   [ -z "${verdict_tmp}" ] || safe-rm -f -- "${verdict_tmp}" 2>/dev/null || true
    safe-rm -r -f -- "${runtime_dir}" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -216,8 +220,10 @@ tab=$'\t'
 declare -A verdicts
 verdict_tsv="${out}/clipboard-verdict.tsv"
 ## Build into a temp first; publish atomically at the end only after the integrity gates
-## pass, so a failed or partial run never clobbers a prior good table (codex P2).
-verdict_tmp="${runtime_dir}/verdict.tsv"
+## pass, so a failed or partial run never clobbers a prior good table. The temp sits IN
+## ${out} (same filesystem as the final file) so the closing mv is a true atomic rename,
+## not a cross-filesystem copy-and-delete a reader could catch mid-write (codex P2).
+verdict_tmp="${out}/.clipboard-verdict.tsv.tmp"
 true > "${verdict_tmp}"
 prow 'TERMINAL' 'OSC 52 clipboard write'
 prow '--------' '----------------------'
