@@ -72,18 +72,40 @@ else
    fail "sequential: error was downgraded to '$(cat -- "${type_file}")'"
 fi
 
-## 2. The lock. Hold the type-file lock in a SEPARATE process, then run a writer:
-## a serialized read-modify-write must BLOCK (write nothing) until the lock frees.
+## 2. The lock. A SEPARATE process holds the type-file lock and SIGNALS once it
+## has actually acquired it (no fixed-delay guessing), then a writer must BLOCK
+## (write nothing) until the lock frees. flock runs its -c command only after
+## acquiring, so the touch proves the lock is held. All waits are bounded polls
+## on real state, not sleeps that assume timing.
 safe-rm --force -- "${type_file}" "${type_file}.lock"
-flock --exclusive "${type_file}.lock" -c 'sleep 3' &
+ready_file="${work_dir}/holder_ready"
+flock --exclusive "${type_file}.lock" -c "touch -- '${ready_file}'; sleep 30" &
 holder_pid=$!
-sleep 0.3   ## let the holder acquire the lock
+
+waited=0
+while [ ! -e "${ready_file}" ] && [ "${waited}" -lt 100 ]; do
+   sleep 0.1
+   waited=$(( waited + 1 ))
+done
+if [ ! -e "${ready_file}" ]; then
+   fail "lock holder never acquired the lock (setup failure)"
+fi
 
 escalate_type_file "${type_file}" error &
 writer_pid=$!
-sleep 1     ## the eval'd function runs in-process (no exec) -- fast if unlocked
-
-if [ -s "${type_file}" ]; then
+## A correctly-locked writer never writes while the lock is held; an unlocked
+## one writes almost immediately. Poll to a deadline instead of guessing a sleep.
+wrote_while_locked=no
+polled=0
+while [ "${polled}" -lt 20 ]; do
+   if [ -s "${type_file}" ]; then
+      wrote_while_locked=yes
+      break
+   fi
+   sleep 0.1
+   polled=$(( polled + 1 ))
+done
+if [ "${wrote_while_locked}" = yes ]; then
    fail "a writer wrote the type file while the lock was held -- read-modify-write is unserialized (the downgrade race)"
 else
    pass "a concurrent writer is blocked by the held type lock (nothing written while locked)"
@@ -98,5 +120,6 @@ else
 fi
 
 printf '%s\n' ""
-printf '%s\n' "${pass_count} pass, ${fail_count} fail"
+## No per-test skips: the suite exits 77 at setup if a dependency is missing.
+printf '%s\n' "${pass_count} pass, ${fail_count} fail, 0 skip"
 [ "${fail_count}" -eq 0 ]
