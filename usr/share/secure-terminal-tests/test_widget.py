@@ -1267,6 +1267,26 @@ ok(len(_cap._grid_mark_cache) <= _MARK_CACHE_MAX,
    % len(_cap._grid_mark_cache))
 _cap.close()
 
+# Security regression (codex/agy, PR #5 review): a pyte cell can hold a box-drawing
+# base PLUS a hidden dangerous code point (bidi / zero-width), which tui_cell
+# neutralizes to the box placeholder. The Show-mode structural exemption must NOT fire
+# on such a cell -- the box must wear the RISK tint of the real hazard and stay
+# inspectable AS it, not be waved through as benign structure because its first code
+# point is a line. marking_cp_for_cell now resolves the cell to the worst code point.
+_sec = SecureTerminal(command='/bin/cat', tui=True)
+_sec.apply_mode('show')
+_bidi_fmt = _sec._grid_cell_format(_FakeCell(chr(0x2500) + chr(0x202E)), _BX)
+eq(_bidi_fmt.property(_CPP), 0x202E,
+   'grid: a box-drawing+bidi cell resolves to the BIDI codepoint (the real hazard)')
+eq(_bidi_fmt.foreground().color().name().lower(), _sec.MARKING_COLORS['bidi'].lower(),
+   'grid: a neutralized box+bidi cell wears the bidi RISK colour, not the program SGR')
+# a confusable box-drawing diagonal (U+2571 -> "/") shown in Show mode keeps its
+# confusable tint, not the structural program-colour pass.
+_diag_fmt = _sec._grid_cell_format(_FakeCell(chr(0x2571)), chr(0x2571))
+eq(_diag_fmt.foreground().color().name().lower(), _sec.MARKING_COLORS['confusable'].lower(),
+   'grid: a confusable box-drawing diagonal wears the confusable risk colour')
+_sec.close()
+
 # Ctrl+C is echoed locally as ^C (transparency: make the invisible visible) and
 # de-duped against a shell that also echoes it (bash's readline), so the user
 # always sees exactly one ^C.

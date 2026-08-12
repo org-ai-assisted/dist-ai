@@ -246,6 +246,15 @@ eq(''.join(t for t, _ in _bx_box).count(S.BOX), 1,
    'box mode still neutralizes box-drawing to the box placeholder')
 ok(any(k == (S.MARK_KEY, 'nonascii', 0x2500) for _t, k in _bx_box),
    'box mode: a box-drawing cell is still non-ASCII risk-coloured (strict unchanged)')
+# U+2571 and U+2573 are box-drawing diagonals the Unicode confusables data maps to
+# ASCII '/' and 'X': they CAN pose as ASCII, so they are NOT structural and keep their
+# louder 'confusable' risk colour. "cannot pose as ASCII" is the whole predicate.
+ok(not S.is_structural(0x2571) and not S.is_structural(0x2573),
+   'the confusable box-drawing diagonals (U+2571 "/", U+2573 "X") are not structural')
+eq(S.marking_class(0x2571), 'confusable', 'U+2571 stays a confusable homoglyph of "/"')
+_sh_diag, _ = S.cells_to_runs([], [(chr(0x2571), _prog)], 'show', True, True)
+ok(any(k == (S.MARK_KEY, 'confusable', 0x2571) for _t, k in _sh_diag),
+   'show mode: a confusable box-drawing diagonal keeps its confusable tint, not program SGR')
 
 # --- deferred autowrap (VT last-column behaviour) + wrap flags -----------------
 _wc, _wcells, _wcol, _ws, _ww = S.feed_line_edits([], 0, {}, 'abcd\n', 4)
@@ -658,9 +667,11 @@ ok(isinstance(S.tui_cell(chr(0x1F600) + chr(0x1F600), 'show'), str),
    'tui two-astral cell does not crash')
 
 # --- marking_cp_for_cell: the source code point a NEUTRALIZED grid cell is
-# --- classified/coloured by (the TUI-grid counterpart of the CLI cells_to_runs
-# --- MARK_KEY tag). The FIRST code point that is not plain printable ASCII, so a
-# --- base+combining grapheme classifies by its dangerous mark, not its ASCII base.
+# --- classified/coloured/inspected by (the TUI-grid counterpart of the CLI
+# --- cells_to_runs MARK_KEY tag). The MOST DANGEROUS non-ASCII code point in the
+# --- cell (marking_class severity, box-drawing/blocks ranked lowest), so a
+# --- base+combining grapheme classifies by its dangerous mark, not its ASCII base,
+# --- AND a deception is never masked by a benign box-drawing base in the same cell.
 eq(S.marking_cp_for_cell(BIDI), 0x202E, 'marking cp: a lone RLO is the RLO')
 eq(S.marking_cp_for_cell(chr(0x0430)), 0x0430, 'marking cp: a homoglyph is itself')
 eq(S.marking_cp_for_cell(chr(0x2500)), 0x2500, 'marking cp: a box-drawing glyph is itself')
@@ -669,6 +680,18 @@ eq(S.marking_cp_for_cell('a' + ZWSP), 0x200B,
 eq(S.marking_cp_for_cell('a' + BEL), 0x07, 'marking cp: base+control classifies by the control')
 eq(S.marking_cp_for_cell('abc'), None, 'marking cp: pure printable ASCII is not a marking')
 eq(S.marking_cp_for_cell(''), None, 'marking cp: an empty cell is not a marking')
+# a dangerous code point riding in the SAME pyte cell as a benign box-drawing base
+# (pyte appends combining / zero-width / format marks to the preceding cell) must WIN,
+# or a cell neutralized because of the hidden hazard would be tinted/labelled by the
+# harmless line instead.
+eq(S.marking_cp_for_cell(chr(0x2500) + BIDI), 0x202E,
+   'marking cp: a bidi override riding a box-drawing base wins over the line')
+eq(S.marking_cp_for_cell(chr(0x2500) + ZWSP), 0x200B,
+   'marking cp: a zero-width riding a box-drawing base wins over the line')
+eq(S.marking_cp_for_cell(chr(0x2500) + chr(0x4E2D)), 0x4E2D,
+   'marking cp: honest foreign text still outranks the lowest-ranked box structure')
+eq(S.marking_cp_for_cell(BIDI + ZWSP), 0x202E,
+   'marking cp: among two hazards the worse class (bidi > invisible) wins')
 # tui_cell returning the box placeholder GUARANTEES a marking code point exists, so
 # the grid colouring can classify without a None fallback (checked for every mode).
 for _mode in ('box', 'show', 'reveal', 'detail'):
