@@ -8,7 +8,7 @@
 ## Regression test for developer-meta-files' dm-reproducible-fetch Whonix support.
 ## In --version mode the tool builds a download URL that MIRRORS the build's own
 ## image naming (help-steps/variables): Kicksecure-<desktop> and, for Whonix,
-## Whonix-<Gateway|Workstation>-<desktop>, on the project's download domain. This
+## Whonix-<desktop> (combined image, no role), on the project download domain. This
 ## drives the REAL tool with a stubbed scurl (so the URL is built but nothing is
 ## downloaded) and asserts the constructed URL for kicksecure (regression) and
 ## whonix (new) flavors, including the whonix.org default domain.
@@ -103,19 +103,19 @@ expect_url kicksecure-cli qcow2 \
 expect_url kicksecure-lxqt iso \
    'https://download.kicksecure.com/iso/18.2.1.7/Kicksecure-LXQt-18.2.1.7.Intel_AMD64.iso'
 
-## Whonix (new: domain whonix.org, name Whonix-<role>-<desktop>).
-expect_url whonix-gateway-cli qcow2 \
-   'https://download.whonix.org/libvirt/18.2.1.7/Whonix-Gateway-CLI-18.2.1.7.Intel_AMD64.qcow2.libvirt.xz'
-expect_url whonix-gateway-lxqt virtualbox \
-   'https://download.whonix.org/ova/18.2.1.7/Whonix-Gateway-LXQt-18.2.1.7.Intel_AMD64.ova'
-expect_url whonix-workstation-cli qcow2 \
-   'https://download.whonix.org/libvirt/18.2.1.7/Whonix-Workstation-CLI-18.2.1.7.Intel_AMD64.qcow2.libvirt.xz'
-expect_url whonix-workstation-lxqt iso \
-   'https://download.whonix.org/iso/18.2.1.7/Whonix-Workstation-LXQt-18.2.1.7.Intel_AMD64.iso'
+## Whonix: domain whonix.org, name Whonix-<desktop> (COMBINED image, no role --
+## verified against download.whonix.org: 'Whonix-CLI-<v>...' resolves, the roled
+## 'Whonix-Gateway-CLI-<v>...' 404s).
+expect_url whonix-cli qcow2 \
+   'https://download.whonix.org/libvirt/18.2.1.7/Whonix-CLI-18.2.1.7.Intel_AMD64.qcow2.libvirt.xz'
+expect_url whonix-lxqt virtualbox \
+   'https://download.whonix.org/ova/18.2.1.7/Whonix-LXQt-18.2.1.7.Intel_AMD64.ova'
+expect_url whonix-lxqt iso \
+   'https://download.whonix.org/iso/18.2.1.7/Whonix-LXQt-18.2.1.7.Intel_AMD64.iso'
 
 ## An explicit --project overrides the flavor default.
 override_out="$(PATH="${stub_bin}:${PATH}" bash -- "${subject}" \
-   --version 18.2.1.7 --arch amd64 --target qcow2 --flavor whonix-gateway-cli \
+   --version 18.2.1.7 --arch amd64 --target qcow2 --flavor whonix-cli \
    --project example.com --output-dir "${workdir}/out" 2>&1 || true)"
 override_url="$(printf '%s\n' "${override_out}" | grep --only-matching --max-count=1 --extended-regexp 'https://download[^ ]+' || true)"
 case "${override_url}" in

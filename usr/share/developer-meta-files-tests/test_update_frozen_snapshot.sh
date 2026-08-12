@@ -10,7 +10,7 @@
 ## it pins the CURRENT time and verifies the service serves every pinned suite at
 ## that instant (snapshot.debian.org resolves a pin to the newest snapshot at or
 ## before it, per archive). Drives the REAL tool over a fixture source tree with a
-## STUBBED scurl, so no network is touched; asserts:
+## STUBBED scurl (probes) + url_to_unixtime (server clock), so no network is touched; asserts:
 ##   * served         -> bumps every pin file + the plain timestamp file to a fresh
 ##                       well-formed timestamp, both stanzas in lockstep;
 ##   * a suite absent  -> errors (mid-sync), writes nothing;
@@ -83,8 +83,15 @@ if grep --quiet --extended-regexp -- "date .*--utc.*%Y%m%dT%H%M%SZ|current_utc_t
 else
    fail "structural: no current-time pin (date --utc ...); the simplification was reverted"
 fi
+## The clock must come from sdwdate's url_to_unixtime (server time over Tor), NOT
+## the local clock: a fast local clock would pin a future, non-reproducible snapshot.
+if grep --quiet --fixed-strings -- 'url_to_unixtime' "${subject}"; then
+   pass "structural: the server clock comes from url_to_unixtime (not the local clock)"
+else
+   fail "structural: url_to_unixtime is gone; a local-clock pin is not reproducible with a fast clock"
+fi
 
-## --- BEHAVIOURAL: drive the real tool over a fixture, stubbed scurl ---------
+## --- BEHAVIOURAL: drive the real tool over a fixture; scurl + url_to_unixtime stubbed --
 workdir="$(mktemp --directory)"
 cleanup() {
    safe-rm --recursive --force -- "${workdir}"
@@ -93,22 +100,10 @@ trap cleanup EXIT
 
 stub_bin="${workdir}/bin"
 mkdir --parents -- "${stub_bin}"
-## Stub scurl: a Release probe returns ${STUB_CODE} (default 302 = served); any
-## other URL returns 404. The tool calls it as the LAST argument is the URL.
+## Stub scurl (the clearnet Release probe): returns ${STUB_CODE} (default 302 =
+## served) for a '.../Release' URL, 404 otherwise. The URL is the last argument.
 cat > "${stub_bin}/scurl" <<'STUB'
 #!/bin/bash
-## A '--head' request is the tool asking for the server's clock: answer with a
-## fixed, deterministic Date header (a 2028 instant, so a 2020 pin bumps forward
-## and a 2099 future pin still trips the rollback guard). Otherwise it is a
-## Release probe answered with an HTTP code.
-for stub_arg in "$@"; do
-   if [ "${stub_arg}" = "--head" ]; then
-      ## A status line and a Date header, one per line. The tool greps '^date:'
-      ## and strips any CR, so plain newlines are fine (and keep printf R-030-clean).
-      printf '%s\n' 'HTTP/2 200' 'date: Wed, 15 Mar 2028 12:00:00 GMT'
-      exit 0
-   fi
-done
 url="${@: -1}"
 case "${url}" in
    */Release)
@@ -120,6 +115,15 @@ case "${url}" in
 esac
 STUB
 chmod 0755 -- "${stub_bin}/scurl"
+
+## The server clock comes from sdwdate's url_to_unixtime over Tor. Stub it to a
+## FIXED 2028 unixtime, so the bump is deterministic: a 2020 pin moves forward and
+## a 2099 future pin still trips the rollback guard.
+cat > "${stub_bin}/url_to_unixtime" <<'STUB'
+#!/bin/bash
+printf '%s\n' '1836648000'
+STUB
+chmod 0755 -- "${stub_bin}/url_to_unixtime"
 
 ## Lay down a fresh fixture source tree pinned to ${1}.
 make_fixture() {
