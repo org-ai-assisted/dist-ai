@@ -341,6 +341,7 @@ for e in ${TERMINALS}; do
    shoot "${e}" crafted   || true
    shoot "${e}" random    || true
    shoot "${e}" homoglyph || true
+   shoot "${e}" altscreen || true
    printf '%s\n' "captured ${e}"
 done
 
@@ -365,6 +366,7 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       'random box random'
       'homoglyph box homoglyph-strip'
       'homoglyph detail homoglyph-detail'
+      'altscreen box altscreen'
    )
    for spec in "${st_specs[@]}"; do
       read -r st_case st_mode st_suffix <<< "${spec}"
