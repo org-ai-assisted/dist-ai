@@ -1207,8 +1207,10 @@ for _payload, _wantcp, _wantcls in ((chr(0x202E), 0x202E, 'bidi'),
        'Q2 grid: hover on the %s box resolves the real codepoint (not the box glyph)' % _wantcls)
     _q2.close()
 
-# markings OFF: a neutralized grid cell carries no risk tag -- it falls back to the
-# program's own SGR, so the setting still governs the grid as it governs the line.
+# markings OFF: a neutralized grid cell wears NO risk-class colour (it falls back
+# to the program's own SGR), but it STILL carries the source codepoint -- so hover/
+# inspection identifies the real character in Box/Detail/Reveal even with markings
+# off, at parity with the CLI line renderer (which tags the codepoint regardless).
 _moff = SecureTerminal(command='/bin/cat', tui=True)
 _moff.apply_mode('box')
 _moff.apply_markings(False)
@@ -1218,9 +1220,37 @@ pump(60)
 _moff._feed_stream(('x' + chr(0x202E) + 'y\r\n').encode())
 _moff._render_tui()
 pump(30)
-eq(_grid_cell(_moff, _moff.toPlainText().index('_'))[1], None,
-   'Q2 markings off: a neutralized grid cell carries no risk tag (program SGR only)')
+_mv = _grid_cell(_moff, _moff.toPlainText().index('_'))
+eq(_mv[1], 0x202E,
+   'Q2 markings off: a neutralized grid cell still carries the source codepoint (CLI parity)')
+ok(_mv[2].lower() not in {c.lower() for c in _moff.MARKING_COLORS.values()},
+   'Q2 markings off: but wears no risk-class colour (program SGR only)')
 _moff.close()
+
+# the marking-format caches are ADMISSION-CAPPED: a flood of distinct non-ASCII
+# codepoints (each boxed) cannot grow _grid_mark_cache without bound (the same bound
+# sanitize._is_mark uses), so a long-lived tab cannot leak one QTextCharFormat per
+# codepoint for the whole session. (CodeRabbit PR #4.)
+from secure_terminal.terminal import _MARK_CACHE_MAX                 # noqa: E402
+
+
+class _FakeCell:                                    # minimal pyte-cell stand-in
+    __slots__ = ('data', 'fg', 'bg', 'bold', 'reverse', 'underscore')
+
+    def __init__(self, ch):
+        self.data = ch
+        self.fg = self.bg = 'default'
+        self.bold = self.reverse = self.underscore = False
+
+
+_cap = SecureTerminal(command='/bin/cat', tui=True)
+_cap.apply_mode('box')
+for _i in range(_MARK_CACHE_MAX + 300):
+    _cap._grid_cell_format(_FakeCell(chr(0x3400 + _i)), _BX)     # distinct CJK, boxed
+ok(len(_cap._grid_mark_cache) <= _MARK_CACHE_MAX,
+   'grid marking cache is admission-capped under a distinct-codepoint flood (size %d)'
+   % len(_cap._grid_mark_cache))
+_cap.close()
 
 # Ctrl+C is echoed locally as ^C (transparency: make the invisible visible) and
 # de-duped against a shell that also echoes it (bash's readline), so the user
