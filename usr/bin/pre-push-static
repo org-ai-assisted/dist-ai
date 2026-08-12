@@ -1527,6 +1527,14 @@ check_R191_systemd_unit_embedded_script() {
       if [ ! -f "${unit}" ] || [ -L "${unit}" ]; then
          continue
       fi
+      ## Markdown is documentation, never a systemd unit: a rule doc (this very
+      ## guide) carries example 'Exec*=' lines that the membership grep below
+      ## would otherwise read as a real unit. Exclude it, as R-102 does.
+      case "${unit}" in
+         *.md)
+            continue
+            ;;
+      esac
       ## Membership: only a file carrying an 'Exec*=' directive is a unit worth
       ## scanning. One grep decides this before the per-line pass, so a plain
       ## text file changed in the same commit costs nothing.
