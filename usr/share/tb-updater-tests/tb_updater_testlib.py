@@ -63,6 +63,13 @@ def version_validator_script() -> str:
                     "version-validator")
 
 
+def postinst_script() -> str:
+    """Absolute path of the debian postinst maintainer script under test."""
+    return _resolve("debian/tb-updater.postinst",
+                    "/var/lib/dpkg/info/tb-updater.postinst",
+                    "tb-updater.postinst")
+
+
 def read(path: str) -> str:
     with open(path, encoding="utf-8", errors="replace") as handle:
         return handle.read()

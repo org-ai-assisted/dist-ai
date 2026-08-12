@@ -10,9 +10,9 @@
 ## with grim (wlr-screencopy). Each terminal keeps whatever decoration it draws.
 ##
 ## THREAT MODEL: a terminal cannot protect you from running hostile CODE, only from
-## DISPLAYING hostile DATA. So every case DISPLAYS data -- `cat hostile.log`,
-## `cat homoglyph.log`, `head -c 1200 /dev/random` -- and NEVER runs a script. The
-## logs are generated (deterministically) by the make-*-log.sh creators.
+## DISPLAYING hostile DATA. So every case DISPLAYS data -- `cat crafted.payload`,
+## `cat homoglyph.payload`, `head -c 1200 /dev/random` -- and NEVER runs a script. The
+## attack payloads are reproduced from the terminal-poc-corpus (single source of truth).
 ##
 ## Terminal-set flags (mainly for fast development):
 ##   --wayland-terminals   the native-Wayland set
@@ -99,7 +99,7 @@ while [ "$#" -gt 0 ]; do
          shift 2
          ;;
       *)
-         printf 'unknown option: %s\n' "$1" >&2
+         printf '%s\n' "unknown option: $1" >&2
          exit 2
          ;;
    esac
@@ -124,9 +124,9 @@ here="$(cd -- "$(dirname -- "$0")" && pwd)"
 # shellcheck source=./lib-capture.sh
 source "${here}/lib-capture.sh"
 
-## ---- generate the hostile DATA logs once (deterministic); the demo CATs them ---
+## ---- reproduce the corpus payloads once; the demo CATs them ---------------------
 work="$(mktemp -d)"
-shots_generate_logs "${here}" "${work}"
+shots_generate_logs "${here}" "${work}" || exit 77
 
 ## ---- labwc on the X11 backend (also gives us an Xwayland for the X11 set) -----
 xvfb_pid=''
@@ -164,7 +164,7 @@ start_compositor() {
       sleep 0.2
    done
    if [ -z "${WAYLAND_DISPLAY:-}" ]; then
-      printf 'labwc: no wayland socket\n' >&2
+      printf '%s\n' 'labwc: no wayland socket' >&2
       tail -8 "${out_dir}/.labwc.log" >&2 || true
       return 1
    fi
@@ -181,8 +181,8 @@ start_compositor() {
       [ -n "${xwl_display}" ] && break
       sleep 0.3
    done
-   printf 'labwc up on %s: WAYLAND_DISPLAY=%s xwayland=%s\n' \
-      "${xdisplay}" "${WAYLAND_DISPLAY}" "${xwl_display:-none}"
+   printf '%s\n' \
+      "labwc up on ${xdisplay}: WAYLAND_DISPLAY=${WAYLAND_DISPLAY} xwayland=${xwl_display:-none}"
 }
 
 ## ---- launch one terminal running `sh -c` from the log dir --------------------
@@ -278,17 +278,17 @@ for name in "${term_list[@]}"; do
       capture_one "${out_dir}/${name}.${c}.png" && rc=0 || rc=$?
       case "${rc}" in
          0)
-            printf 'captured %s.%s\n' "${name}" "${c}"
+            printf '%s\n' "captured ${name}.${c}"
             ;;
          2)
-            printf 'captured %s.%s (WARN: window did not render -- full frame kept)\n' "${name}" "${c}"
+            printf '%s\n' "captured ${name}.${c} (WARN: window did not render -- full frame kept)"
             ;;
          *)
-            printf 'FAILED %s.%s\n' "${name}" "${c}" >&2
+            printf '%s\n' "FAILED ${name}.${c}" >&2
             ;;
       esac
       pkill -x "${name}" 2>/dev/null || true
       sleep 0.5
    done
 done
-printf 'done; shots in %s\n' "${out_dir}"
+printf '%s\n' "done; shots in ${out_dir}"

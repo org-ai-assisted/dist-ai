@@ -22,12 +22,19 @@
 
 ## THREAT MODEL: a terminal cannot protect you from running hostile CODE, only from
 ## DISPLAYING hostile DATA. Every case DISPLAYS data and NEVER runs a script.
-##   crafted   -- cat hostile.log   (OSC-0 title hijack + stuck colour + DEC
+##   crafted   -- cat crafted.payload   (OSC-0 title hijack + stuck colour + DEC
 ##                line-drawing shift, none reset)
-##   homoglyph -- cat homoglyph.log (an install one-liner whose domain carries a
-##                Cyrillic look-alike, U+0430 for Latin a)
+##   homoglyph -- cat homoglyph.payload (a domain carrying a Cyrillic look-alike,
+##                U+0430 for Latin a)
+##   altscreen -- cat altscreen.payload (an unrestored alternate-screen switch that
+##                leaves a traditional terminal stuck full-screen)
+##   notify    -- cat notify.payload    (an OSC-9 desktop-notification from log output)
 ##   random    -- head -c N /dev/random (genuine random garble)
-## crafted + homoglyph read the deterministic logs from make-*-log.sh.
+##
+## SINGLE SOURCE OF TRUTH: the attack payloads come from the terminal-poc-corpus
+## (canary-forked, hex-encoded, harness-verified), reproduced by its tools/reproduce.py
+## -- NOT hand-written here. Only `notify` (a page-facing friendly-wording demo, not a
+## detection payload) and `random` are generated inline.
 
 ## /dev/random (not urandom): equivalent once seeded on a modern kernel, and
 ## Kicksecure prefers it. https://www.kicksecure.com/wiki/Dev/Entropy
@@ -35,22 +42,76 @@
 shots_random_bytes=1200
 shots_random_source='/dev/random'
 
-shots_payload_cmd() {  ## $1=case -> the command string the terminal displays
+## Resolve the terminal-poc-corpus checkout (CORPUS_REPO, a default under
+## private-sources, or a script-relative fallback). Echoes the path, or returns 1.
+shots_resolve_corpus() {  ## $1=script-relative fallback dir
+   local cand
+   for cand in "${CORPUS_REPO:-}" "${HOME}/private-sources/terminal-poc-corpus" "$1"; do
+      [ -n "${cand}" ] || continue
+      if [ -f "${cand}/tools/reproduce.py" ]; then
+         printf '%s' "${cand}"
+         return 0
+      fi
+   done
+   return 1
+}
+
+## case -> corpus PoC id (empty for the inline cases notify / random).
+shots_corpus_id() {  ## $1=case
    case "$1" in
       crafted)
-         printf 'cat hostile.log'
+         printf '%s' 'crafted-hostile-log'
          ;;
       homoglyph)
-         printf 'cat homoglyph.log'
+         printf '%s' 'homoglyph-domain-install-2021'
          ;;
-      random)
-         printf 'head -c %s %s' "${shots_random_bytes}" "${shots_random_source}"
+      altscreen)
+         printf '%s' 'alt-screen-hijack'
          ;;
    esac
 }
 
-shots_generate_logs() {  ## $1=generators-dir $2=dest-dir -> hostile.log + homoglyph.log
-   local gen_dir="$1" dest="$2"
-   "${gen_dir}/make-hostile-log.sh"   > "${dest}/hostile.log"
-   "${gen_dir}/make-homoglyph-log.sh" > "${dest}/homoglyph.log"
+shots_payload_cmd() {  ## $1=case -> the command string the terminal displays
+   case "$1" in
+      crafted)
+         printf '%s' 'cat crafted.payload'
+         ;;
+      homoglyph)
+         printf '%s' 'cat homoglyph.payload'
+         ;;
+      altscreen)
+         printf '%s' 'cat altscreen.payload'
+         ;;
+      notify)
+         printf '%s' 'cat notify.payload'
+         ;;
+      random)
+         printf '%s' "head -c ${shots_random_bytes} ${shots_random_source}"
+         ;;
+   esac
+}
+
+## Reproduce the corpus-backed payloads into the dest dir; returns 1 (loud) if the
+## terminal-poc-corpus is absent, so the caller can SKIP.
+shots_generate_logs() {  ## $1=script-relative fallback dir $2=dest-dir
+   local fallback="$1" dest="$2"
+   local corpus rp c id notify
+   if ! corpus="$(shots_resolve_corpus "${fallback}/../../../../terminal-poc-corpus")"; then
+      printf '%s\n' 'lib-capture: terminal-poc-corpus not found (set CORPUS_REPO)' >&2
+      return 1
+   fi
+   rp="${corpus}/tools/reproduce.py"
+   ## the corpus-backed cases: reproduce.py writes the exact hex-decoded payload bytes.
+   ## Explicit '|| return 1' -- callers invoke this with '|| exit 77', which suppresses
+   ## errexit inside the function, so a failed reproduce.py must be surfaced by hand or
+   ## the capture would proceed with a missing payload.
+   for c in crafted homoglyph altscreen; do
+      id="$(shots_corpus_id "${c}")"
+      POC_CORPUS_IN_SANDBOX=1 python3 "${rp}" "${id}" --out "${dest}/${c}.payload" || return 1
+   done
+   ## notify: a page-facing friendly desktop-notification demo -- clearly-safe wording,
+   ## no session/reauth framing. Not a corpus detection payload (which carries the
+   ## canary token); kept inline deliberately. $'...' gives the real escape bytes.
+   notify=$'build log: packaging step 3 of 5\n\033]9;Safe demonstration only: secure-terminal terminal-attack comparison test. No action needed.\007post-install: done\n'
+   printf '%s' "${notify}" > "${dest}/notify.payload" || return 1
 }

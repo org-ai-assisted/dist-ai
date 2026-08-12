@@ -12,12 +12,12 @@
 ## reproduce it), and screenshots the DECORATED window (title bar included):
 ##   Case A (random) : head -c 1200 /dev/random   -- genuine random data, sized so
 ##                     the returned prompt stays visible below the garble.
-##   Case B (crafted): cat hostile.log            -- an OSC-0 title hijack plus a
+##   Case B (crafted): cat crafted.payload       -- an OSC-0 title hijack plus a
 ##                     stuck colour and a DEC line-drawing charset shift, none reset
-##                     (generated deterministically by make-hostile-log.sh, so the
-##                     shots use the exact bytes that script emits).
-##   Case C (homoglyph): cat homoglyph.log          -- an install one-liner whose
-##                     domain carries a Cyrillic look-alike (U+0430 for Latin a), so
+##                     (the terminal-poc-corpus crafted-hostile-log PoC, decoded by
+##                     its reproduce.py -- the single source of truth for the bytes).
+##   Case C (homoglyph): cat homoglyph.payload      -- a domain carrying a Cyrillic
+##                     look-alike (U+0430 for Latin a), so
 ##                     a traditional terminal shows a clean "example.com". secure-
 ##                     terminal is shot in TWO modes: box (look-alike -> a coloured
 ##                     box) and detail (<U+0430 CYRILLIC SMALL LETTER A>).
@@ -67,6 +67,12 @@ mkdir --parents -- "${out}"
 # shellcheck source=./lib-capture.sh
 source "${here}/lib-capture.sh"
 
+## Resolve the corpus NOW, while HOME is still the operator's -- the reassignment
+## below would otherwise hide the documented ~/private-sources default from the
+## resolver. Export it so shots_generate_logs (run after the reassign) reuses it.
+CORPUS_REPO="$(shots_resolve_corpus "${here}/../../../../terminal-poc-corpus" || true)"
+export CORPUS_REPO
+
 host_display="${DISPLAY:-:0}"
 THEME='Clearlooks'
 ## Clearlooks title bar + border height (fallback if _NET_FRAME_EXTENTS is unread).
@@ -78,10 +84,10 @@ export HOME="${runtime_dir}/home"
 export XDG_CONFIG_HOME="${runtime_dir}/config"
 mkdir --parents -- "${HOME}" "${XDG_CONFIG_HOME}/labwc"
 
-## Generate the two payloads from their deterministic ASCII source scripts (so
-## this subsystem is self-contained and its source stays ASCII -- the non-ASCII
-## homoglyph byte exists only in the generated file).
-shots_generate_logs "${here}" "${HOME}"
+## Attack payloads come from the terminal-poc-corpus (single source of truth), decoded
+## by its reproduce.py. shots_generate_logs resolves the checkout and SKIPs (77) if
+## absent, like a missing ST_REPO.
+shots_generate_logs "${here}" "${HOME}" || exit 77
 cat > "${HOME}/.strc" <<'RC'
 PS1='user@host:~$ '
 RC
@@ -114,7 +120,7 @@ cat > "${XDG_CONFIG_HOME}/labwc/rc.xml" <<XML
 </labwc_config>
 XML
 
-## launch each emulator FROM ${HOME} so a plain "cat hostile.log" finds it.
+## launch each emulator FROM ${HOME} so a plain "cat crafted.payload" finds it.
 cd "${HOME}"
 
 wm_pid=''
@@ -335,6 +341,7 @@ for e in ${TERMINALS}; do
    shoot "${e}" crafted   || true
    shoot "${e}" random    || true
    shoot "${e}" homoglyph || true
+   shoot "${e}" altscreen || true
    printf '%s\n' "captured ${e}"
 done
 
@@ -359,6 +366,7 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       'random box random'
       'homoglyph box homoglyph-strip'
       'homoglyph detail homoglyph-detail'
+      'altscreen box altscreen'
    )
    for spec in "${st_specs[@]}"; do
       read -r st_case st_mode st_suffix <<< "${spec}"
