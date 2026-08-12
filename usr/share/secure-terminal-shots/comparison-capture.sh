@@ -21,6 +21,10 @@
 ##                     a traditional terminal shows a clean "example.com". secure-
 ##                     terminal is shot in TWO modes: box (look-alike -> a coloured
 ##                     box) and detail (<U+0430 CYRILLIC SMALL LETTER A>).
+##   Case D (tui-showcase): cat tui-showcase.payload -- a safe display-only board that
+##                     exercises EVERY text-attack class at once (homoglyph, bidi,
+##                     zero-width, BOM, combining, fullwidth, DEC charset, SGR, OSC 8,
+##                     OSC 0 title, alt-screen); secure-terminal box + detail.
 ## secure-terminal (its real GUI, from ST_REPO) is captured the same way. Output
 ## PNGs go to ./shots/ (copy them to the site's comparison/shots/). Usually driven
 ## via 'secure-terminal-shots comparison'; see this dir's README.md. The sibling
@@ -256,6 +260,68 @@ capture_window() {  ## $1=output-path  $2=xwayland-window-id
    safe-rm -f -- "${tmp}"
 }
 
+## Remove the largest contiguous run of empty (background) terminal rows from a shot,
+## so a few lines of content no longer sit above a screenful of dead space. The
+## payloads are short, and the ST GUI will not shrink its window below ~400px (a Qt
+## minimum-size floor), so the tail of every short case is empty terminal rows. Handles
+## both content-at-the-top (traditional emulators: void at the bottom) and a fixed
+## bottom banner/status bar with a void above it (secure-terminal: void in the middle).
+## Only PURE background rows are removed, so content is never touched; a screen-filling
+## case (random) has no large run and is left untouched. Side columns are excluded when
+## classifying a row so a full-height scrollbar cannot mask the void.
+tighten_deadspace() {  ## $1=png-path
+   local f w h side mw bg tmpmap best_start best_len run_start run_len y line
+   local best_end top_h bot_y bot_h margin threshold
+   margin=10
+   threshold=40
+   f="$1"
+   [ -f "${f}" ] || return 0
+   w="$(identify -format '%w' "${f}")"; h="$(identify -format '%h' "${f}")"
+   side=40; [ "${w}" -gt 200 ] || side=0
+   mw=$(( w - 2 * side ))
+   ## background = most-frequent colour of the lower half (skips the light top chrome;
+   ## background dominates even a screen of garble). grep -m1 closes the pipe after the
+   ## top colour; '|| true' keeps the upstream SIGPIPE from tripping errexit+pipefail.
+   bg="$(convert "${f}" -gravity South -crop "${w}x50%+0+0" +repage \
+           -depth 8 -format '%c' histogram:info:- \
+         | sort -rn | grep -m1 -oiE '#[0-9A-F]{6}')" || true
+   [ -n "${bg}" ] || bg="$(convert "${f}" -format "#%[hex:p{2,$(( h - 4 ))}]" info: | cut -c1-7)"
+   ## per-row emptiness map: drop the side columns, take the absolute difference from a
+   ## solid-background image (robust to any bg colour, incl. pure black/white) and
+   ## threshold it (background -> black, content -> white), then the per-row maximum so
+   ## any content pixel lights the whole row. Column 0 read out: an empty row is #000000.
+   tmpmap="$(mktemp)"
+   convert "${f}" -crop "${mw}x${h}+${side}+0" +repage \
+      \( +clone -fill "${bg}" -colorize 100 \) \
+      -compose difference -composite -threshold 6% \
+      -statistic maximum "${mw}x1" -crop "1x${h}+0+0" +repage txt:- \
+      | tail -n +2 > "${tmpmap}"
+   best_start=-1; best_len=0; run_start=-1; run_len=0; y=0
+   while IFS= read -r line; do
+      case "${line}" in
+         *"#000000"*)
+            [ "${run_start}" -ge 0 ] || run_start="${y}"
+            run_len=$(( run_len + 1 ))
+            if [ "${run_len}" -gt "${best_len}" ]; then best_len="${run_len}"; best_start="${run_start}"; fi
+            ;;
+         *)
+            run_start=-1; run_len=0
+            ;;
+      esac
+      y=$(( y + 1 ))
+   done < "${tmpmap}"
+   safe-rm -f -- "${tmpmap}"
+   [ "${best_start}" -ge 0 ] && [ "${best_len}" -ge "${threshold}" ] || return 0
+   best_end=$(( best_start + best_len - 1 ))
+   top_h=$(( best_start + margin ))
+   bot_y=$(( best_end - margin )); [ "${bot_y}" -lt "${top_h}" ] && bot_y="${top_h}"
+   bot_h=$(( h - bot_y ))
+   convert "${f}" \
+      \( -clone 0 -crop "${w}x${top_h}+0+0" +repage \) \
+      \( -clone 0 -crop "${w}x${bot_h}+0+${bot_y}" +repage \) \
+      -delete 0 -append "${f}"
+}
+
 clear_windows() {
    local wid
    for wid in $(DISPLAY="${xwl_display}" xdotool search --onlyvisible '' 2>/dev/null || true); do
@@ -313,6 +379,7 @@ shoot() {  ## $1=emulator  $2=case
       sleep 1.5
    fi
    capture_window "${out}/${e}.${case}.png" "${wid}" \
+      && tighten_deadspace "${out}/${e}.${case}.png" \
       || printf '%s\n' "warn ${e}.${case}: screenshot failed"
    clear_windows
    kill "${epid}" 2>/dev/null || true
@@ -338,10 +405,11 @@ for e in ${TERMINALS}; do
       printf '%s\n' "ERROR: terminal ${e} is not installed. Install it, or set ALLOW_SKIP=1 to authorize skipping." >&2
       exit 1
    fi
-   shoot "${e}" crafted   || true
-   shoot "${e}" random    || true
-   shoot "${e}" homoglyph || true
-   shoot "${e}" altscreen || true
+   shoot "${e}" crafted      || true
+   shoot "${e}" random       || true
+   shoot "${e}" homoglyph    || true
+   shoot "${e}" altscreen    || true
+   shoot "${e}" tui-showcase || true
    printf '%s\n' "captured ${e}"
 done
 
@@ -367,6 +435,8 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       'homoglyph box homoglyph-strip'
       'homoglyph detail homoglyph-detail'
       'altscreen box altscreen'
+      'tui-showcase box tui-showcase'
+      'tui-showcase detail tui-showcase-detail'
    )
    for spec in "${st_specs[@]}"; do
       read -r st_case st_mode st_suffix <<< "${spec}"
@@ -384,6 +454,7 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
          inject "${stwid}" "$(shots_payload_cmd "${st_case}")"
          sleep 3
          capture_window "${out}/secure-terminal.${st_suffix}.png" "${stwid}"
+         tighten_deadspace "${out}/secure-terminal.${st_suffix}.png"
       else
          printf '%s\n' "warn secure-terminal.${st_suffix}: window never appeared"
       fi
