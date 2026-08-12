@@ -350,6 +350,7 @@ try:
     _asked.clear()
     QMessageBox.question = staticmethod(lambda *_a, **_k: _asked.append(1) or _No)
     _ev_fc = QCloseEvent()
+    _ev_fc.ignore()                          # start REJECTED so only an explicit accept passes
     w3.closeEvent(_ev_fc)
     ok(_ev_fc.isAccepted() and not _asked,
        'closeEvent: _force_close accepts the close without prompting')
@@ -944,8 +945,10 @@ try:
     _h = _sig2.getsignal(_sig2.SIGINT)
     if callable(_h):
         _h(_sig2.SIGINT, None)              # fire the handler
-    # The quit is queued (QTimer.singleShot), so it fires on the event loop, not
-    # synchronously -- pump it so a signal that arrives before exec() is honored.
+    # The quit is QUEUED (QTimer.singleShot), not synchronous: it must NOT have
+    # fired yet -- that is exactly what lets a signal arriving before exec() still
+    # be honored. The event loop then delivers it.
+    ok(not _quit_calls, 'signal-quit handler does not call app.quit synchronously')
     APP.processEvents()
     ok(_quit_calls, 'signal-quit handler queues app.quit (honored once the loop runs)')
     ok(win._force_close is True,
