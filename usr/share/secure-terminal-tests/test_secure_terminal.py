@@ -191,6 +191,62 @@ eq(''.join(t for t, _ in _box_r), ''.join(t for t, _ in
 _us, _ = S.cells_to_runs([], [('_', ())], 'show', False, True)
 eq(''.join(t for t, _ in _us), '_', 'a real ASCII underscore stays an underscore, not a box')
 
+# --- structural (box-drawing / block elements) are benign, not a risk ----------
+# The Unicode Box Drawing (U+2500..U+257F) and Block Elements (U+2580..U+259F)
+# blocks are the borders/bars a curses program draws. They cannot pose as ASCII,
+# hide or reorder, so is_structural marks them for the milder SHOW-mode treatment.
+ok(S.is_structural(0x2500) and S.is_structural(0x257F),
+   'the Box Drawing block is structural')
+ok(S.is_structural(0x2580) and S.is_structural(0x2588) and S.is_structural(0x259F),
+   'the Block Elements block is structural')
+ok(not S.is_structural(0x24FF) and not S.is_structural(0x25A0),
+   'the structural range is exactly U+2500..U+259F (its neighbours are not)')
+ok(not S.is_structural(0x0430) and not S.is_structural(ord('a'))
+   and not S.is_structural(0x4E2D) and not S.is_structural(0x25A1),
+   'a homoglyph, plain ASCII, CJK, and the box PLACEHOLDER are not structural')
+# marking_class is UNCHANGED: box-drawing still reports 'nonascii', so the display
+# marking and the paste review keep agreeing (a benign glyph is still a non-ASCII
+# byte). is_structural is only a SHOW-mode display refinement, not a reclassify.
+eq(S.marking_class(0x2500), 'nonascii',
+   'marking_class still reports box-drawing as nonascii (paste-review parity held)')
+
+# SHOW mode renders a box-drawing glyph as its REAL glyph in the PROGRAM's own SGR
+# (not a risk-class tint), while still tagging it with the source codepoint. Before,
+# it wore the 'nonascii' purple like honest foreign text -- dishonest for a line.
+_prog = tuple(sorted({'fg': 2, 'bg': None, 'bold': False}.items()))
+_sh_box, _ = S.cells_to_runs([], [(chr(0x2500), _prog)], 'show', True, True)
+eq(''.join(t for t, _ in _sh_box), chr(0x2500),
+   'show mode renders the real box-drawing glyph (not a box placeholder)')
+_bx_marks = [k for _t, k in _sh_box if isinstance(k, tuple) and k and k[0] == S.MARK_KEY]
+ok(_bx_marks and all(k[1] == _prog and k[2] == 0x2500 for k in _bx_marks),
+   'show mode: a box-drawing glyph carries the program SGR as its colour + its cp')
+ok(not any(isinstance(k, tuple) and k[:2] == (S.MARK_KEY, 'nonascii') for _t, k in _sh_box),
+   'show mode: a box-drawing glyph is NOT tinted the non-ASCII risk colour')
+# a block element behaves identically
+_sh_blk, _ = S.cells_to_runs([], [(chr(0x2588), _prog)], 'show', True, True)
+ok(not any(isinstance(k, tuple) and k[:2] == (S.MARK_KEY, 'nonascii') for _t, k in _sh_blk),
+   'show mode: a block element is program-coloured, not risk-tinted')
+# with ANSI colours OFF (and markings on) a structural glyph is still TAGGED with its
+# codepoint for inspection, but wears no colour (None) -- structural never invents a
+# tint of its own; it only ever borrows the program's real SGR.
+_sh_box_nc, _ = S.cells_to_runs([], [(chr(0x2500), _prog)], 'show', False, True)
+_nc_marks = [k for _t, k in _sh_box_nc if isinstance(k, tuple) and k and k[0] == S.MARK_KEY]
+ok(_nc_marks and all(k[1] is None and k[2] == 0x2500 for k in _nc_marks),
+   'show mode + colours off: a box-drawing glyph is codepoint-tagged but uncoloured')
+# honest foreign text (CJK) in show mode is STILL risk-tinted -- the carve-out must
+# not flatten every non-ASCII glyph, only the structural blocks.
+_sh_cjk2, _ = S.cells_to_runs([], [(chr(0x4E2D), _prog)], 'show', True, True)
+ok(any(k == (S.MARK_KEY, 'nonascii', 0x4E2D) for _t, k in _sh_cjk2),
+   'show mode: honest foreign text keeps its non-ASCII risk colour (not structural)')
+# BOX mode is UNCHANGED: box-drawing is still neutralized and risk-coloured. The
+# structural refinement is a SHOW-mode display choice; strict modes keep the
+# ASCII-only guarantee and its risk tint.
+_bx_box, _ = S.cells_to_runs([], [(chr(0x2500), _prog)], 'box', True, True)
+eq(''.join(t for t, _ in _bx_box).count(S.BOX), 1,
+   'box mode still neutralizes box-drawing to the box placeholder')
+ok(any(k == (S.MARK_KEY, 'nonascii', 0x2500) for _t, k in _bx_box),
+   'box mode: a box-drawing cell is still non-ASCII risk-coloured (strict unchanged)')
+
 # --- deferred autowrap (VT last-column behaviour) + wrap flags -----------------
 _wc, _wcells, _wcol, _ws, _ww = S.feed_line_edits([], 0, {}, 'abcd\n', 4)
 eq(len(_wc), 1, 'exactly-width output + newline is one line, no spurious blank wrap')

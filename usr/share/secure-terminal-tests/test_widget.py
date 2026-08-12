@@ -714,6 +714,17 @@ _icopy.click()
 ok(_icopy.text().startswith('Copied'),
    'the popup Copy button confirms the copy (text becomes "Copied ...")')
 _idlg.close()
+# the inspect popup names a box-drawing / block-element glyph as STRUCTURAL, not as
+# generic "foreign text": marking_class still reports it 'nonascii' (paste-review
+# parity), so the popup must special-case the honest structural label itself.
+_spop = SecureTerminal(command='/bin/cat')
+_spop._show_char_popup(0x2500, _QPoint(10, 10))
+_slbl = ' '.join(_lb.text() for _lb in _spop._char_popup.findChildren(_QLabelIP)).lower()
+ok('structural' in _slbl,
+   'popup labels a box-drawing glyph as structural (benign), not a risk class')
+ok('foreign text' not in _slbl,
+   'popup does not mislabel a box-drawing glyph as generic non-ASCII foreign text')
+_spop._char_popup.close()
 # a write lands where a program left the cursor mid-line (zsh prompt + fill),
 # not at end-of-document -- the wall-of-spaces-before-input bug
 pc = SecureTerminal(command='/bin/cat')
@@ -1124,23 +1135,27 @@ _dsh.apply_mode('show')
 _dsh.resize(600, 300)
 _dsh.show()
 pump(60)
-_dsh._feed_stream(b'\x1b(0lqk\x1b(B\r\n')
+_dsh._feed_stream(b'A\x1b(0lqk\x1b(B\r\n')   # 'A' is a plain program cell for reference
 _dsh._render_tui()
 pump(30)
 _dshtxt = _dsh.toPlainText()
 ok(any(0x2500 <= ord(c) <= 0x257F for c in _dshtxt),
    'Q1 show: DEC line-drawing (ESC(0 lqk) renders real box-drawing glyphs')
 ok('lqk' not in _dshtxt, 'Q1 show: the DEC letters are no longer shown as literal ASCII')
-# a shown box-drawing glyph is rendered as its real glyph AND tinted by risk class
-# (the milder non-ASCII colour) and carries its source codepoint -- exactly what the
-# compatibility page claims ("Show mode renders the real glyphs ... each tinted by
-# risk class"), and at parity with the CLI shown_nonascii tinting.
+# a shown box-drawing glyph is structure, not a deception (it cannot pose as ASCII,
+# hide or reorder), so it renders as its real glyph in the PROGRAM's OWN colour --
+# NOT a risk-class tint -- while still carrying its source codepoint for inspection.
+# The plain 'A' cell gives the program's colour to compare against.
+_ai = _dshtxt.index('A')
+_ach, _acp, _afg = _grid_cell(_dsh, _ai)
 _bdi = next(i for i, c in enumerate(_dshtxt) if 0x2500 <= ord(c) <= 0x257F)
 _bdch, _bdcp, _bdfg = _grid_cell(_dsh, _bdi)
 ok(0x2500 <= ord(_bdch) <= 0x257F, 'Q1 show: the cell holds the real box-drawing glyph')
 eq(_bdcp, ord(_bdch), 'Q2 show: a shown box-drawing glyph carries its own codepoint (inspectable)')
-eq(_bdfg.lower(), _dsh.MARKING_COLORS['nonascii'].lower(),
-   'Q2 show: a shown box-drawing glyph is tinted with the non-ASCII risk colour')
+eq(_bdfg.lower(), _afg.lower(),
+   'Q2 show: a shown box-drawing glyph wears the PROGRAM colour (structural, like a real terminal)')
+ok(_bdfg.lower() != _dsh.MARKING_COLORS['nonascii'].lower(),
+   'Q2 show: a shown box-drawing glyph is NOT painted the non-ASCII risk colour')
 _dsh.close()
 
 # Q2 show: a homoglyph shown as its glyph wears the LOUDER confusable colour, so a
