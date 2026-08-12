@@ -872,6 +872,27 @@ if os.path.isdir(fuzz_dir):
                 ok(alias.name in exported.get(submodule, set()),
                    'fuzz/%s: name %s.%s exists' % (name, submodule, alias.name))
 
+# --- the coverage gate must select a thread-safe core ------------------------
+# test_mainwin drives a REAL single-instance ipc handoff with the client in a
+# background thread while the server side (on_ready) runs on the main thread in
+# the Qt event loop. Under coverage's default C tracer (per-thread sys.settrace)
+# the two traced threads race Qt native code and the SIGCHLD that reaps the
+# windows' pty children -> an intermittent SIGSEGV (exit 139) mid-gate. The gate
+# must select sys.monitoring (PEP 669), which does not use sys.settrace. This
+# guards the selection so it cannot be silently dropped (which would return the
+# flake). Runner lives in the dist-ai repo, two levels up from this suite dir.
+_cov_runner = os.path.normpath(os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    '..', '..', 'bin', 'secure-terminal-tests-coverage'))
+ok(os.path.isfile(_cov_runner),
+   'coverage runner present (%s)' % _cov_runner)
+if os.path.isfile(_cov_runner):
+    with open(_cov_runner, encoding='utf-8') as _crh:
+        _cov_src = _crh.read()
+    ok('COVERAGE_CORE=sysmon' in _cov_src and 'coverage.sysmon' in _cov_src,
+       'coverage gate selects the thread-safe sys.monitoring core '
+       '(guards the C-tracer SIGSEGV on the threaded ipc handoff)')
+
 # --- session persistence (pure JSON under a temp state dir) -------------------
 import tempfile                                    # noqa: E402
 os.environ['XDG_STATE_HOME'] = tempfile.mkdtemp(prefix='st-session-')

@@ -892,8 +892,9 @@ ok(win._find_tab('no-such-tab-title') is None,
 # segfaults often even without coverage (the window installs a SIGCHLD handler
 # to reap its pty children, so an unrelated child races it), and a same-thread
 # non-blocking socket driven by processEvents() segfaults inside on_ready.
-# This shape is clean without coverage; see the coverage runner for why that
-# suite selects a different tracer.
+# This shape is clean WITHOUT coverage. UNDER coverage the C tracer's per-thread
+# sys.settrace races this handoff and segfaults, so the coverage gate selects the
+# sys.monitoring core (COVERAGE_CORE=sysmon); see secure-terminal-tests-coverage.
 # start a server and drive a genuine ping handoff through the Qt event loop
 _srvwin = MainWindow()
 _srvwin._remote_control = True
