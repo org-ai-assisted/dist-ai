@@ -335,6 +335,26 @@ try:
     _ev = QCloseEvent()
     w3.closeEvent(_ev)
     ok(not _ev.isAccepted(), 'closeEvent: running program + decline ignores the close')
+    # _force_close (a signal-driven / programmatic quit) accepts the close even
+    # with a program running, WITHOUT opening the modal: the confirmation needs a
+    # user, and a modal run during XCB teardown segfaults. The mock would decline
+    # if asked, so an accepted close proves the prompt was skipped. This checks the
+    # guard decision only -- tab shutdown is stubbed so the real SIGHUP/SIGCHLD
+    # teardown (exercised in the aboutToQuit test) does not fire mid-suite and feed
+    # the known offscreen ipc-reaper race.
+    w3._persist_session = False              # clear, don't write a bogus session
+    for _i in range(w3.tabs.count()):
+        w3.tabs.widget(_i).has_foreground_program = lambda: True
+        w3.tabs.widget(_i).shutdown = lambda: None
+    w3._force_close = True
+    _asked.clear()
+    QMessageBox.question = staticmethod(lambda *_a, **_k: _asked.append(1) or _No)
+    _ev_fc = QCloseEvent()
+    _ev_fc.ignore()                          # start REJECTED so only an explicit accept passes
+    w3.closeEvent(_ev_fc)
+    ok(_ev_fc.isAccepted() and not _asked,
+       'closeEvent: _force_close accepts the close without prompting')
+    w3._force_close = False
 finally:
     QMessageBox.question = _oq
 w3.deleteLater()
@@ -873,8 +893,9 @@ ok(win._find_tab('no-such-tab-title') is None,
 # segfaults often even without coverage (the window installs a SIGCHLD handler
 # to reap its pty children, so an unrelated child races it), and a same-thread
 # non-blocking socket driven by processEvents() segfaults inside on_ready.
-# This shape is clean without coverage; see the coverage runner for why that
-# suite selects a different tracer.
+# This shape is clean WITHOUT coverage. UNDER coverage the C tracer's per-thread
+# sys.settrace races this handoff and segfaults, so the coverage gate selects the
+# sys.monitoring core (COVERAGE_CORE=sysmon); see secure-terminal-tests-coverage.
 # start a server and drive a genuine ping handoff through the Qt event loop
 _srvwin = MainWindow()
 _srvwin._remote_control = True
@@ -916,13 +937,22 @@ win.set_persist_session(False)              # disabling clears the saved session
 win.clear_saved_session()
 _o_qapp_quit = QApplication.quit
 try:
-    QApplication.quit = lambda *_a, **_k: None
-    M._install_signal_quit(APP)             # installs SIGINT/SIGTERM -> app.quit
+    _quit_calls = []
+    QApplication.quit = lambda *_a, **_k: _quit_calls.append(1)
+    win._force_close = False                 # handler must flip this before quit
+    M._install_signal_quit(APP)             # installs SIGINT/SIGTERM handlers
     import signal as _sig2
     _h = _sig2.getsignal(_sig2.SIGINT)
     if callable(_h):
-        _h(_sig2.SIGINT, None)              # fire the handler -> app.quit (stubbed)
-    ok(True, 'signal-quit handler calls app.quit')
+        _h(_sig2.SIGINT, None)              # fire the handler
+    # The quit is QUEUED (QTimer.singleShot), not synchronous: it must NOT have
+    # fired yet -- that is exactly what lets a signal arriving before exec() still
+    # be honored. The event loop then delivers it.
+    ok(not _quit_calls, 'signal-quit handler does not call app.quit synchronously')
+    APP.processEvents()
+    ok(_quit_calls, 'signal-quit handler queues app.quit (honored once the loop runs)')
+    ok(win._force_close is True,
+       'signal-quit handler force-closes windows so teardown skips the modal')
 finally:
     QApplication.quit = _o_qapp_quit
 

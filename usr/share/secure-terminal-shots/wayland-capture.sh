@@ -126,7 +126,9 @@ source "${here}/lib-capture.sh"
 
 ## ---- reproduce the corpus payloads once; the demo CATs them ---------------------
 work="$(mktemp -d)"
-shots_generate_logs "${here}" "${work}" || exit 77
+## propagate the real code: 77 is the missing-corpus SKIP, any other non-zero is a
+## genuine payload-generation failure that must not read as a skip.
+shots_generate_logs "${here}" "${work}" || exit "$?"
 
 ## ---- labwc on the X11 backend (also gives us an Xwayland for the X11 set) -----
 xvfb_pid=''

@@ -1182,6 +1182,15 @@ printf '%s\n' \
    '# style-ok: allow-embedded-script' \
    "ExecStart=/bin/bash -c 'a && b'" \
    > "${unit_repo}/waived.service"
+## A markdown doc is documentation, never a systemd unit: a rule doc (the bash
+## style guide itself) carries an example 'Exec*=' multi-statement line that
+## R-191 must NOT flag. The leading quote before 'ExecStart' keeps R-191's own
+## membership grep from reading THIS authoring line as a unit.
+printf '%s\n' \
+   '# Example unit (documentation)' \
+   '' \
+   "    ExecStart=/bin/bash -c 'a && b'" \
+   > "${unit_repo}/doc.md"
 git -C "${unit_repo}" add --all
 git -C "${unit_repo}" commit --quiet --no-verify --message unit
 unit_out="$( cd -- "${unit_repo}" && "${GATE}" "${unit_base}" 2>&1 || true )"
@@ -1249,6 +1258,12 @@ if printf '%s\n' "${unit_hits}" | grep --quiet --fixed-strings -- 'waived.servic
    failures=$((failures + 1))
 else
    printf '%s\n' 'PASS: R-191 honours the allow-embedded-script waiver'
+fi
+if printf '%s\n' "${unit_hits}" | grep --quiet --fixed-strings -- 'doc.md'; then
+   printf '%s\n' 'FAIL: R-191 flagged an example Exec= line in a markdown doc' >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' 'PASS: R-191 spares a markdown doc carrying an example Exec= line'
 fi
 
 ## R-100: a workflow 'run: |' block over 5 shell lines is FLAGGED; a single-line

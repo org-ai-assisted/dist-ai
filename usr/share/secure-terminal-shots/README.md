@@ -81,7 +81,7 @@ X11 path only. `wayland-capture.sh` prints the prompt itself and runs the comman
   yield a random shot too. A generic post-injection rescue still resizes any window
   left narrower than 300px.
 
-### The three payloads (inputs to the comparison)
+### The four payloads (inputs to the comparison)
 
 - **Case A - random.** `head -c 1200 /dev/random`: genuine random data, no
   crafted escapes.
@@ -93,6 +93,10 @@ X11 path only. `wayland-capture.sh` prints the prompt itself and runs the comman
   `crafted-hostile-log` PoC (decoded by the corpus `tools/reproduce.py`).
 - **Case C - homoglyph.** `homoglyph.payload`: a domain hiding a Cyrillic look-alike
   (U+0430 for Latin a), from the corpus `homoglyph-domain-install-2021` PoC.
+- **Case D - alt-screen hijack.** `altscreen.payload`: flips the terminal into its
+  alternate screen buffer (the full-screen mode pagers and editors use), a
+  whole-screen takeover a traditional terminal enters silently on stray output,
+  from the corpus `alt-screen-hijack` PoC.
 
 These cases (the payload command + which corpus PoC supplies its bytes) are defined
 ONCE in `lib-capture.sh`, sourced by both comparison generators - the X11
