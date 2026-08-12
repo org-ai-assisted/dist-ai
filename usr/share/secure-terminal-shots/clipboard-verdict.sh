@@ -99,16 +99,35 @@ cleanup() {
 }
 trap cleanup EXIT
 
-## A private headless X server plus a lightweight WM. openbox is REQUIRED, not cosmetic:
-## some terminals (alacritty) only honour an OSC 52 clipboard write while their window is
-## FOCUSED -- a deliberate anti-hijack gate -- so a bare X server with no WM would report
-## them as 'refused' spuriously. openbox focuses each newly-mapped window; the payload waits
-## a moment before firing so focus has settled. A dedicated display keeps out of the way of
-## a concurrent screenshot run on :99.
-Xvfb :98 -screen 0 1024x768x24 >"${runtime_dir}/xvfb.log" 2>&1 &
+## A private headless X server plus a lightweight WM. Let Xvfb pick a FREE display
+## (-displayfd) instead of a hard-coded number: a fixed display already in use -- a
+## concurrent clipboard run -- would leave OUR Xvfb dead while the script silently attached
+## to the OTHER server and blended two runs' clipboard measurements (identical sentinel and
+## token). We read the number Xvfb reports and confirm the server we started is alive.
+##
+## openbox is REQUIRED, not cosmetic: some terminals (alacritty) only honour an OSC 52
+## write while their window is FOCUSED -- a deliberate anti-hijack gate -- so a bare X
+## server with no WM would report them 'refused' spuriously. openbox focuses each
+## newly-mapped window; the payload waits a moment before firing so focus has settled.
+Xvfb -displayfd 1 -screen 0 1024x768x24 >"${runtime_dir}/display" 2>"${runtime_dir}/xvfb.log" &
 xvfb_pid="$!"
-export DISPLAY=:98
+disp_num=''
+for _ in $(seq 1 40); do
+   kill -0 "${xvfb_pid}" 2>/dev/null || break
+   disp_num="$(tr -dc '0-9' < "${runtime_dir}/display" 2>/dev/null || true)"
+   [ -n "${disp_num}" ] && break
+   sleep 0.25
+done
+if [ -z "${disp_num}" ] || ! kill -0 "${xvfb_pid}" 2>/dev/null; then
+   printf '%s\n' 'ERROR: Xvfb did not start (no free display?); see the xvfb log' >&2
+   exit 1
+fi
+export DISPLAY=":${disp_num}"
+## Xvfb reports its display number over -displayfd before it is fully ready to accept
+## clients; give it a moment (and confirm it stays up) so the first subjects do not race a
+## half-started server and read a spurious 'error'.
 sleep 2
+kill -0 "${xvfb_pid}" 2>/dev/null || { printf '%s\n' 'ERROR: Xvfb exited during startup; see the xvfb log' >&2; exit 1; }
 if ! type -P openbox >/dev/null 2>&1; then
    if [ -n "${ALLOW_SKIP:-}" ]; then
       printf '%s\n' 'WARN openbox not installed; focus-gated terminals (alacritty) may read refused spuriously (ALLOW_SKIP authorized)' >&2
@@ -175,6 +194,16 @@ launch_cat() {  ## $1=emulator  $2=command
    esac
 }
 
+## Reap a backgrounded subject and its emulator. 'launch_cat ... &' is a subshell whose
+## CHILD is the emulator (no process-replacement exec, per the style gate), so killing the
+## subshell alone would orphan the emulator to linger through its trailing 'sleep 8' and
+## overlap the next subject. '-P' is parent-based (not the pattern match the safe-pkill
+## rule guards against), so it targets exactly this subshell's children.
+kill_tree() {  ## $1=pid
+   pkill -P "$1" 2>/dev/null || true
+   kill "$1" 2>/dev/null || true
+}
+
 ## Left-pad a subject to a fixed column so the table lines up, without a printf width
 ## verb (R-030 keeps the printf format a fixed '%s'/'%s\n').
 prow() {  ## $1=subject  $2=phrase
@@ -184,30 +213,43 @@ prow() {  ## $1=subject  $2=phrase
 }
 
 tab=$'\t'
+declare -A verdicts
 verdict_tsv="${out}/clipboard-verdict.tsv"
-true > "${verdict_tsv}"
+## Build into a temp first; publish atomically at the end only after the integrity gates
+## pass, so a failed or partial run never clobbers a prior good table (codex P2).
+verdict_tmp="${runtime_dir}/verdict.tsv"
+true > "${verdict_tmp}"
 prow 'TERMINAL' 'OSC 52 clipboard write'
 prow '--------' '----------------------'
 
-## classify a read-back value into a verdict word + a human phrase.
-record() {  ## $1=subject  $2=read-back
-   local subj rb verdict phrase
-   subj="$1"; rb="$2"
-   if [ "${rb}" = "${TOKEN}" ]; then
+## classify a subject's result into a verdict word + a human phrase. A subject that never
+## CONSUMED the payload (crashed on launch, missing runtime plugin, ...) leaves no
+## done-marker and is recorded 'error', NOT 'refused' -- a crash must never read as a clean
+## refusal, which for secure-terminal would be a FABRICATED security pass (codex P1).
+record() {  ## $1=subject  $2=read-back  $3=consumed(1/0)
+   local subj rb consumed verdict phrase
+   subj="$1"; rb="$2"; consumed="$3"
+   if [ "${consumed}" != '1' ]; then
+      verdict='error'; phrase='error -- subject never ran the payload (crashed on launch?)'
+   elif [ "${rb}" = "${TOKEN}" ]; then
       verdict='honored'; phrase='honored -- output overwrote the clipboard'
    elif [ "${rb}" = "${SENTINEL}" ]; then
       verdict='refused'; phrase='refused -- clipboard untouched'
    else
       verdict='inconclusive'; phrase="inconclusive -- read back [${rb}]"
    fi
+   verdicts["${subj}"]="${verdict}"
    prow "${subj}" "${phrase}"
-   printf '%s\n' "${subj}${tab}${verdict}${tab}${rb}" >> "${verdict_tsv}"
+   printf '%s\n' "${subj}${tab}${verdict}${tab}${rb}" >> "${verdict_tmp}"
 }
 
-## the command a terminal runs: wait a beat so the WM has focused the new window (some
-## terminals gate OSC 52 write on focus), cat the payload (fires the OSC 52 write), then
-## linger so it keeps clipboard ownership while we read.
-catcmd="sleep 1; cat $(printf '%q' "${payload}"); sleep 8"
+## The command a subject runs: wait a beat so the WM has focused the new window (some
+## terminals gate OSC 52 write on focus), cat the payload (fires the write), TOUCH a
+## done-marker to prove it consumed the payload, then linger so it keeps clipboard
+## ownership while we read. Paths are %q-quoted so a spaced temp dir cannot break it.
+subject_cmd() {  ## $1=done-marker -> the shell command string
+   printf '%s' "sleep 1; cat $(printf '%q' "${payload}"); touch $(printf '%q' "${1}"); sleep 8"
+}
 
 TERMINALS="${TERMINALS:-xterm urxvt st konsole xfce4-terminal mate-terminal qterminal alacritty kitty}"
 for e in ${TERMINALS}; do
@@ -223,11 +265,15 @@ for e in ${TERMINALS}; do
       printf '%s\n' "warn ${e}: could not seed the clipboard; skipping" >&2
       continue
    fi
-   launch_cat "${e}" "${catcmd}" >/dev/null 2>&1 &
+   done_marker="${runtime_dir}/${e}.done"
+   safe-rm -f -- "${done_marker}" 2>/dev/null || true
+   launch_cat "${e}" "$(subject_cmd "${done_marker}")" >/dev/null 2>&1 &
    epid="$!"
    sleep 6
-   record "${e}" "$(read_clip)"
-   kill "${epid}" 2>/dev/null || true
+   consumed=0
+   [ -e "${done_marker}" ] && consumed=1
+   record "${e}" "$(read_clip)" "${consumed}"
+   kill_tree "${epid}"
    sleep 1
 done
 
@@ -236,12 +282,16 @@ st_bin="${ST_REPO:-}/usr/bin/secure-terminal"
 st_pkg="${ST_REPO:-}/usr/lib/python3/dist-packages"
 if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
    seed_clipboard || printf '%s\n' 'warn secure-terminal: could not seed the clipboard' >&2
+   done_marker="${runtime_dir}/secure-terminal.done"
+   safe-rm -f -- "${done_marker}" 2>/dev/null || true
    env QT_QPA_PLATFORM=xcb PYTHONPATH="${st_pkg}" \
-      python3 "${st_bin}" --new-instance -- bash -c "${catcmd}" >/dev/null 2>&1 &
+      python3 "${st_bin}" --new-instance -- bash -c "$(subject_cmd "${done_marker}")" >/dev/null 2>&1 &
    epid="$!"
    sleep 7
-   record 'secure-terminal' "$(read_clip)"
-   kill "${epid}" 2>/dev/null || true
+   consumed=0
+   [ -e "${done_marker}" ] && consumed=1
+   record 'secure-terminal' "$(read_clip)" "${consumed}"
+   kill_tree "${epid}"
    sleep 1
 elif [ -n "${ALLOW_SKIP:-}" ]; then
    printf '%s\n' 'SKIP secure-terminal (ST_REPO not set/found; ALLOW_SKIP authorized)' >&2
@@ -250,21 +300,27 @@ else
    exit 1
 fi
 
-## Integrity canary. kitty writes OSC 52 by default, so a tested kitty MUST read 'honored'.
-## If it does not, the measurement rig itself is broken -- no window focus, no X clipboard,
-## the wrong display -- and every 'refused' in the table is then a FABRICATED pass, the
-## exact failure this lane exists to avoid. Fail loudly instead of emitting a wrong table.
+## Integrity gates before the table is trusted or published:
+##  - kitty writes OSC 52 by default, so a tested kitty MUST read 'honored'. If it does
+##    not, the rig is broken (no focus / no X clipboard / wrong display) and every
+##    'refused' is a fabricated pass -- the exact failure this lane exists to avoid.
+##  - secure-terminal MUST read a definitive 'refused'. An 'error' (it crashed on launch)
+##    or anything but 'refused' must never publish as a clean security result: it is either
+##    a broken rig or a real regression, and both need a human, not a green table.
+integrity_fail() {  ## $1=message
+   printf '%s\n' "ERROR: ${1}" \
+      '  Not publishing the verdict table. Check openbox, the X clipboard and the subjects.' >&2
+   exit 1
+}
 case " ${TERMINALS} " in
    *' kitty '*)
-      kv="$(awk -F'\t' '$1 == "kitty" { print $2 }' "${verdict_tsv}" 2>/dev/null || true)"
-      if [ "${kv}" != 'honored' ]; then
-         printf '%s\n' \
-            "ERROR: integrity canary failed -- kitty writes OSC 52 by default, but read '${kv:-<none>}'." \
-            '  The measurement rig is broken (window focus / X clipboard / display); the verdicts are' \
-            '  unreliable. Not emitting a table. Check that openbox started and the terminals are focused.' >&2
-         exit 1
-      fi
+      [ "${verdicts[kitty]:-}" = 'honored' ] \
+         || integrity_fail "integrity canary failed -- kitty writes OSC 52 by default, but read '${verdicts[kitty]:-<none>}'."
       ;;
 esac
+if [ -n "${verdicts[secure-terminal]:-}" ] && [ "${verdicts[secure-terminal]}" != 'refused' ]; then
+   integrity_fail "secure-terminal read '${verdicts[secure-terminal]}', not the expected 'refused' (a crash, or a real regression)."
+fi
 
+mv -- "${verdict_tmp}" "${verdict_tsv}"
 printf '%s\n' "done; verdicts in ${verdict_tsv}"
