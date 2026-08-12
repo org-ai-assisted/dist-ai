@@ -1097,6 +1097,131 @@ if tui_available():
     eq(_fbar.value(), _held,
        'TUI does not yank a scrolled-up view back to the bottom')
     _fol.close()
+
+# --- TUI grid: DEC line-drawing renders, and neutralized cells are risk-coloured -
+# pyte's ByteStream runs in UTF-8 mode, where it treats an `ESC ( 0` DEC
+# line-drawing designation as a no-op, so a curses program's box borders used to
+# arrive as literal `lqqqk` text. _Utf8CharsetByteStream re-arms the designation
+# (still UTF-8-decoding), so the grid draws the real box-drawing glyphs.
+from secure_terminal.terminal import _CP_PROP as _CPP, BOX as _BX     # noqa: E402
+
+
+def _grid_cell(term, idx):
+    """(display char, source codepoint tag, foreground name) for a grid cell.
+    selectedText() is the RAW document glyph (the box placeholder), not the
+    export form (toPlainText maps the box back to '_')."""
+    _c = QTextCursor(term.document())
+    _c.setPosition(idx)
+    _c.movePosition(QTextCursor.MoveOperation.NextCharacter,
+                    QTextCursor.MoveMode.KeepAnchor)
+    _f = _c.charFormat()
+    return _c.selectedText(), _f.property(_CPP), _f.foreground().color().name()
+
+
+# Q1 SHOW mode: `ESC ( 0 lqk ESC ( B` becomes real box-drawing glyphs, not `lqk`.
+_dsh = SecureTerminal(command='/bin/cat', tui=True)
+_dsh.apply_mode('show')
+_dsh.resize(600, 300)
+_dsh.show()
+pump(60)
+_dsh._feed_stream(b'\x1b(0lqk\x1b(B\r\n')
+_dsh._render_tui()
+pump(30)
+_dshtxt = _dsh.toPlainText()
+ok(any(0x2500 <= ord(c) <= 0x257F for c in _dshtxt),
+   'Q1 show: DEC line-drawing (ESC(0 lqk) renders real box-drawing glyphs')
+ok('lqk' not in _dshtxt, 'Q1 show: the DEC letters are no longer shown as literal ASCII')
+# a shown box-drawing glyph is rendered as its real glyph AND tinted by risk class
+# (the milder non-ASCII colour) and carries its source codepoint -- exactly what the
+# compatibility page claims ("Show mode renders the real glyphs ... each tinted by
+# risk class"), and at parity with the CLI shown_nonascii tinting.
+_bdi = next(i for i, c in enumerate(_dshtxt) if 0x2500 <= ord(c) <= 0x257F)
+_bdch, _bdcp, _bdfg = _grid_cell(_dsh, _bdi)
+ok(0x2500 <= ord(_bdch) <= 0x257F, 'Q1 show: the cell holds the real box-drawing glyph')
+eq(_bdcp, ord(_bdch), 'Q2 show: a shown box-drawing glyph carries its own codepoint (inspectable)')
+eq(_bdfg.lower(), _dsh.MARKING_COLORS['nonascii'].lower(),
+   'Q2 show: a shown box-drawing glyph is tinted with the non-ASCII risk colour')
+_dsh.close()
+
+# Q2 show: a homoglyph shown as its glyph wears the LOUDER confusable colour, so a
+# Cyrillic 'a' posing as Latin stands out even while its glyph is readable.
+_hsh = SecureTerminal(command='/bin/cat', tui=True)
+_hsh.apply_mode('show')
+_hsh.resize(600, 300)
+_hsh.show()
+pump(60)
+_hsh._feed_stream(('p' + chr(0x0430) + 'y\r\n').encode())        # Cyrillic small a
+_hsh._render_tui()
+pump(30)
+_hi = _hsh.toPlainText().index(chr(0x0430))
+_hch, _hcp, _hfg = _grid_cell(_hsh, _hi)
+eq(_hcp, 0x0430, 'Q2 show: a shown homoglyph carries its source codepoint')
+eq(_hfg.lower(), _hsh.MARKING_COLORS['confusable'].lower(),
+   'Q2 show: a shown homoglyph is tinted with the louder confusable risk colour')
+_hsh.close()
+
+# Q1 BOX mode: DEC line-drawing is neutralized to the box placeholder (strict), and
+# Q2: that neutralized cell is coloured by risk class and carries its source cp.
+_dbx = SecureTerminal(command='/bin/cat', tui=True)
+_dbx.apply_mode('box')
+_dbx.resize(600, 300)
+_dbx.show()
+pump(60)
+_dbx._feed_stream(b'\x1b(0lqqk\x1b(B\r\n')                 # repeated q -> repeated cell
+_dbx._render_tui()
+pump(30)
+_dbxtxt = _dbx.toPlainText()
+ok('lqqk' not in _dbxtxt, 'Q1 box: DEC line-drawing is not shown as literal ASCII')
+ok('_' in _dbxtxt, 'Q1 box: DEC line-drawing is neutralized (exported as _)')
+_bi = _dbxtxt.index('_')
+_disp, _cp, _fg = _grid_cell(_dbx, _bi)
+eq(_disp, _BX, 'Q2 box: the neutralized cell is the box placeholder glyph')
+ok(_cp is not None and 0x2500 <= _cp <= 0x257F,
+   'Q2 box: the box cell carries the SOURCE box-drawing codepoint (not U+25A1)')
+eq(_fg.lower(), _dbx.MARKING_COLORS['nonascii'].lower(),
+   'Q2 box: a boxed box-drawing cell wears the non-ASCII risk colour')
+_dbx.close()
+
+# Q2 by-class colours: a bidi override, a homoglyph and a zero-width each get their
+# own class colour + inspectable codepoint in the grid, exactly as CLI box mode.
+for _payload, _wantcp, _wantcls in ((chr(0x202E), 0x202E, 'bidi'),
+                                    (chr(0x0430), 0x0430, 'confusable'),
+                                    (chr(0x200B), 0x200B, 'invisible')):
+    _q2 = SecureTerminal(command='/bin/cat', tui=True)
+    _q2.apply_mode('box')
+    _q2.resize(600, 300)
+    _q2.show()
+    pump(60)
+    _q2._feed_stream(('x' + _payload + 'y\r\n').encode())
+    _q2._render_tui()
+    pump(30)
+    _idx = _q2.toPlainText().index('_')
+    _d, _c2, _fg2 = _grid_cell(_q2, _idx)
+    eq(_c2, _wantcp, 'Q2 grid: %s box carries its source codepoint' % _wantcls)
+    eq(_fg2.lower(), _q2.MARKING_COLORS[_wantcls].lower(),
+       'Q2 grid: %s box wears the %s risk colour' % (_wantcls, _wantcls))
+    # _cp_at parity: hovering the box cell resolves the REAL character, not U+25A1
+    _hc = QTextCursor(_q2.document())
+    _hc.setPosition(_idx)
+    eq(_q2._cp_at(_q2.cursorRect(_hc).center()), _wantcp,
+       'Q2 grid: hover on the %s box resolves the real codepoint (not the box glyph)' % _wantcls)
+    _q2.close()
+
+# markings OFF: a neutralized grid cell carries no risk tag -- it falls back to the
+# program's own SGR, so the setting still governs the grid as it governs the line.
+_moff = SecureTerminal(command='/bin/cat', tui=True)
+_moff.apply_mode('box')
+_moff.apply_markings(False)
+_moff.resize(600, 300)
+_moff.show()
+pump(60)
+_moff._feed_stream(('x' + chr(0x202E) + 'y\r\n').encode())
+_moff._render_tui()
+pump(30)
+eq(_grid_cell(_moff, _moff.toPlainText().index('_'))[1], None,
+   'Q2 markings off: a neutralized grid cell carries no risk tag (program SGR only)')
+_moff.close()
+
 # Ctrl+C is echoed locally as ^C (transparency: make the invisible visible) and
 # de-duped against a shell that also echoes it (bash's readline), so the user
 # always sees exactly one ^C.
