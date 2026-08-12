@@ -89,9 +89,11 @@ export XDG_CONFIG_HOME="${runtime_dir}/config"
 mkdir --parents -- "${HOME}" "${XDG_CONFIG_HOME}/labwc"
 
 ## Attack payloads come from the terminal-poc-corpus (single source of truth), decoded
-## by its reproduce.py. shots_generate_logs resolves the checkout and SKIPs (77) if
-## absent, like a missing ST_REPO.
-shots_generate_logs "${here}" "${HOME}" || exit 77
+## by its reproduce.py. shots_generate_logs resolves the checkout and returns 77
+## (a SKIP, like a missing ST_REPO) ONLY when the corpus is absent; a real
+## payload-generation failure returns a distinct non-77 code, which is propagated
+## here so a broken reproduce.py is not reported as a skip.
+shots_generate_logs "${here}" "${HOME}" || exit "$?"
 cat > "${HOME}/.strc" <<'RC'
 PS1='user@host:~$ '
 RC

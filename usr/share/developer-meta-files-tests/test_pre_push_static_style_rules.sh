@@ -916,6 +916,25 @@ printf '%s\n' \
    'e = 5' \
    'f = 6' \
    'PY' > "${inline_repo}/spaced.sh"
+## A '#'-bearing heredoc delimiter must not swallow a REAL inline interpreter that
+## follows it: `<<EOF#x` has delimiter EOF#x, and mis-recording it as EOF (breaking
+## the delimiter word at '#') never matches the EOF#x terminator, so the body would
+## run on and mask the python heredoc below.
+printf '%s\n' \
+   '#!/bin/bash' \
+   'cat > /dev/null <<EOF#x' \
+   'one' \
+   'two' \
+   'EOF#x' \
+   'python3 - <<'"'"'PY'"'"'' \
+   'a = 1' \
+   'b = 2' \
+   'c = 3' \
+   'd = 4' \
+   'e = 5' \
+   'f = 6' \
+   'print(a, b, c, d, e, f)' \
+   'PY' > "${inline_repo}/hashdelim.sh"
 chmod 0755 -- "${inline_repo}"/*.sh
 git -C "${inline_repo}" add --all
 git -C "${inline_repo}" commit --quiet --no-verify --message inline
@@ -961,6 +980,12 @@ if printf '%s\n' "${inline_hits}" | grep --quiet --fixed-strings -- 'spaced.sh';
    printf '%s\n' 'PASS: R-190 catches whitespace after the heredoc operator'
 else
    printf '%s\n' 'FAIL: R-190 missed "<< DELIM" with whitespace' >&2
+   failures=$((failures + 1))
+fi
+if printf '%s\n' "${inline_hits}" | grep --quiet --fixed-strings -- 'hashdelim.sh'; then
+   printf '%s\n' 'PASS: a "#"-bearing heredoc delimiter does not mask a later inline program'
+else
+   printf '%s\n' 'FAIL: "<<EOF#x" delimiter swallowed a real inline interpreter' >&2
    failures=$((failures + 1))
 fi
 if printf '%s\n' "${inline_hits}" | grep --quiet --fixed-strings -- 'waived.sh'; then

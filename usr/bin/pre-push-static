@@ -1481,7 +1481,12 @@ check_R190_inline_interpreter() {
             while [ -n "${rest}" ]; do
                char="${rest:0:1}"
                case "${char}" in
-                  [[:space:]]|';'|'&'|'|'|'<'|'>'|'('|')'|'`'|'#')
+                  ## Break on the bash metacharacters that end an unquoted heredoc
+                  ## delimiter word. NOT '#': it introduces a comment only at a word
+                  ## boundary (whitespace already breaks there), so mid-word it
+                  ## belongs TO the delimiter -- `<<EOF#x` has delimiter EOF#x, and
+                  ## recording just EOF would never match the real terminator line.
+                  [[:space:]]|';'|'&'|'|'|'<'|'>'|'('|')'|'`')
                      break
                      ;;
                   *)
