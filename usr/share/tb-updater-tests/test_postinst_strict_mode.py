@@ -51,6 +51,19 @@ if not (os.path.isfile(PRE_BSH) and os.path.isfile(LOG_RUN_DIE)):
     pytest.skip(f"helper-scripts not installed ({PRE_BSH}); skipping",
                 allow_module_level=True)
 
+## The postinst's logging shells out to the real stecho / sanitize-string; they
+## sit next to sanitize-string, which the testlib resolves from the checkout
+## (HELPER_SCRIPTS_PATH) or a system install. Require them -- an ordinary
+## postinst run dies early without them.
+HELPER_BINDIR = T.sanitize_string_bindir()
+if not (HELPER_BINDIR and os.path.isfile(os.path.join(HELPER_BINDIR, "stecho"))
+        and os.path.isfile(os.path.join(HELPER_BINDIR, "sanitize-string"))):
+    if not (os.path.isfile("/usr/bin/stecho")
+            and os.path.isfile("/usr/bin/sanitize-string")):
+        pytest.skip("stecho / sanitize-string not available; skipping",
+                    allow_module_level=True)
+    HELPER_BINDIR = "/usr/bin"
+
 ## Config variables that an ordinary 'apt install' leaves unset -- the whole
 ## point of the nounset audit. Cleared from the child env so a stray value in
 ## the runner's environment cannot mask a missing guard.
@@ -85,7 +98,15 @@ def _run(tmp_path, arg, extra_env=None):
         path.write_text(body)
         path.chmod(0o755)
     env = {k: v for k, v in os.environ.items() if k not in UNSET_VARS}
-    env["PATH"] = str(stub_bin) + os.pathsep + env.get("PATH", "")
+    ## The postinst's logging (log_run_die.sh) calls the real helper-scripts
+    ## binaries stecho / sanitize-string by bare name. When helper-scripts is a
+    ## checkout rather than a system install (the CI dist-ai-tests job), they
+    ## live in HELPER_SCRIPTS_PATH/usr/bin, not /usr/bin -- put that on PATH so
+    ## the REAL tools resolve (the gui_mode_wiring suite does the same).
+    path_parts = [str(stub_bin)]
+    if HELPER_BINDIR:
+        path_parts.append(HELPER_BINDIR)
+    env["PATH"] = os.pathsep.join(path_parts + [env.get("PATH", "")])
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
