@@ -31,6 +31,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 def _load_check_site():
     spec = importlib.util.spec_from_file_location(
         'check_site', os.path.join(_HERE, 'check_site.py'))
+    assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -101,6 +102,24 @@ def run():
         _png(root, 'icon-192.png')
         fails = _assets_failures(check_site, root)
         check('manifest icon cleared', fails == [], repr(fails))
+
+    # 5. Canary: a logo referenced only from .github/README.md must NOT be flagged.
+    # A '/.git' substring skip drops '.github' too, so the reference goes unread
+    # and the logo is falsely orphaned; only exact-name pruning reads it.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', '<p>no image here</p>')
+        _write(root, '.github/README.md', '`org-logo.png` is the org logo.\n')
+        _png(root, 'org-logo.png')
+        fails = _assets_failures(check_site, root)
+        check('.github reference cleared', fails == [], repr(fails))
+
+    # 6. The git metadata dir must NOT be scanned for images (would add noise and
+    # be catastrophic on a real .git). An image path under .git is ignored.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', '<p>no image here</p>')
+        _png(root, '.git/objects/stray.png')
+        fails = _assets_failures(check_site, root)
+        check('.git contents ignored', fails == [], repr(fails))
 
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed

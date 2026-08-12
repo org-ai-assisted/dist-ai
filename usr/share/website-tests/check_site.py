@@ -100,10 +100,18 @@ class Extractor(html.parser.HTMLParser):
         return ''.join(self.text_parts)
 
 
+def _prune_git(dirs):
+    # Skip the git metadata dir by EXACT name, in place, so os.walk does not
+    # descend into it. A substring test on the path (`'/.git' in base`) is wrong
+    # both ways: it also matches '.github' (dropping a real reference source) and,
+    # if the checkout path itself contains '.git', matches every directory.
+    if '.git' in dirs:
+        dirs.remove('.git')
+
+
 def html_files(root):
-    for base, _dirs, files in os.walk(root):
-        if os.sep + '.git' in base:
-            continue
+    for base, dirs, files in os.walk(root):
+        _prune_git(dirs)
         present = set(files)
         for name in files:
             if not name.endswith('.html'):
@@ -461,16 +469,15 @@ IMAGE_EXTS = frozenset({
 # external scripts, docs, web manifests, feeds/sitemaps.
 _REF_TEXT_EXTS = frozenset({
     '.html', '.htm', '.css', '.js', '.mjs', '.md', '.markdown', '.json',
-    '.webmanifest', '.svg', '.xml', '.txt',
+    '.webmanifest', '.svg', '.xml', '.txt', '.yml', '.yaml',
 })
 
 
 def check_assets(root, failures):
     images = []
     ref_text = []
-    for base, _dirs, files in os.walk(root):
-        if os.sep + '.git' in base:
-            continue
+    for base, dirs, files in os.walk(root):
+        _prune_git(dirs)
         for name in files:
             ext = os.path.splitext(name)[1].lower()
             path = os.path.join(base, name)
