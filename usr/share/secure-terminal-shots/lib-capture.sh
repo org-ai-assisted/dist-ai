@@ -91,20 +91,23 @@ shots_payload_cmd() {  ## $1=case -> the command string the terminal displays
    esac
 }
 
-## Reproduce the corpus-backed payloads into the dest dir; returns 1 (loud) if the
-## terminal-poc-corpus is absent, so the caller can SKIP.
+## Reproduce the corpus-backed payloads into the dest dir. Two DISTINCT failures:
+## 77 (a legitimate SKIP) ONLY when the terminal-poc-corpus is absent; any other
+## non-zero is a real generation failure (reproduce.py / write) that a caller must
+## NOT convert to a skip -- otherwise a broken payload is reported as green.
 shots_generate_logs() {  ## $1=script-relative fallback dir $2=dest-dir
    local fallback="$1" dest="$2"
    local corpus rp c id notify
    if ! corpus="$(shots_resolve_corpus "${fallback}/../../../../terminal-poc-corpus")"; then
       printf '%s\n' 'lib-capture: terminal-poc-corpus not found (set CORPUS_REPO)' >&2
-      return 1
+      return 77
    fi
    rp="${corpus}/tools/reproduce.py"
    ## the corpus-backed cases: reproduce.py writes the exact hex-decoded payload bytes.
-   ## Explicit '|| return 1' -- callers invoke this with '|| exit 77', which suppresses
-   ## errexit inside the function, so a failed reproduce.py must be surfaced by hand or
-   ## the capture would proceed with a missing payload.
+   ## Explicit '|| return 1' -- a caller runs this with '|| exit "$?"', and the '||'
+   ## suppresses errexit inside the function, so a failed reproduce.py must be surfaced
+   ## by hand (as a NON-77 code, distinct from the missing-corpus skip) or the capture
+   ## would proceed with a missing payload.
    for c in crafted homoglyph altscreen; do
       id="$(shots_corpus_id "${c}")"
       POC_CORPUS_IN_SANDBOX=1 python3 "${rp}" "${id}" --out "${dest}/${c}.payload" || return 1

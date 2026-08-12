@@ -106,7 +106,11 @@ def _run(tmp_path, arg, extra_env=None):
     path_parts = [str(stub_bin)]
     if HELPER_BINDIR:
         path_parts.append(HELPER_BINDIR)
-    env["PATH"] = os.pathsep.join(path_parts + [env.get("PATH", "")])
+    path_parts.append(env.get("PATH", ""))
+    # Drop empty parts: a trailing os.pathsep means an empty PATH element, which a
+    # shell treats as the CWD -- the child bash would then resolve stecho /
+    # sanitize-string / the stubbed externals from the working directory.
+    env["PATH"] = os.pathsep.join(part for part in path_parts if part)
     if extra_env:
         env.update(extra_env)
     return subprocess.run(

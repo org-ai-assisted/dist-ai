@@ -778,8 +778,9 @@ printf '%s\n' "$0: === br_add (Python line-break conversion) ==="
 
 test_br_add() {
   if [ -x "${msgcollector_libexec}/br_add.py" ]; then
-    local output
-    output="$("${msgcollector_libexec}/br_add.py" $'line1\nline2\nline3')"
+    local output input
+    input=$'line1\nline2\nline3'
+    output="$("${msgcollector_libexec}/br_add.py" "${input}")"
     if printf '%s\n' "${output}" | grep '<br />' &>/dev/null; then
       pass "br_add: inserts <br /> tags"
     else
