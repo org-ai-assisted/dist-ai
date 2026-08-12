@@ -40,7 +40,7 @@ if HERE not in sys.path:
 ## environment, not a reason to pass. Skipping here reported the whole
 ## privleap suite as PASS while the property layer ran nothing at all.
 # pylint: disable=wrong-import-position
-from hypothesis import given, settings, strategies as st  # noqa: E402
+from hypothesis import example, given, settings, strategies as st  # noqa: E402
 
 from pl_testlib import import_privleap  # noqa: E402
 
@@ -230,6 +230,8 @@ def test_check_secure_file_permissions_is_total(s: str) -> None:
 
 
 @given(st.integers())
+@example(-1)        ## OSError boundary (negative fd)
+@example(2**63)     ## OverflowError boundary (os.stat out-of-range fd)
 @settings(max_examples=200)
 def test_check_secure_file_permissions_is_total_over_int_fds(fd: int) -> None:
     """

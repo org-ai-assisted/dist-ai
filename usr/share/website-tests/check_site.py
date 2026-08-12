@@ -135,6 +135,11 @@ def resolve_internal(root, page, target, mount=None, parent_roots=()):
     frag = ''
     if '#' in target:
         target, frag = target.split('#', 1)
+    # A query string (a cache-buster like style.css?v=2) is a valid same-origin
+    # URL; the static server ignores it and returns the file, so resolve against
+    # the path only. Fragment is split first so path?query#frag keeps its frag.
+    if '?' in target:
+        target = target.split('?', 1)[0]
     if target == '':
         return ('#self', None, frag)         # same-page fragment (no candidate list)
     if target.startswith('/'):
