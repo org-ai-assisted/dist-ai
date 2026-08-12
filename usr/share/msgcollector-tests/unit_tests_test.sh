@@ -20,12 +20,12 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 
 ## dist-ai suite case. These are the DEEP unit tests: they source and RUN the
-## real msgcollector scripts (which source their siblings by absolute
-## /usr/libexec path), not extracted fragments. Resolve the checkout
-## (MSGCOLLECTOR_REPO, the derivative-maker tree, or an already-installed copy)
-## and install it into /usr/libexec so those sources resolve; helper-scripts is
-## provided by the consumer (dm-consumer.yml helper-scripts:true). Skip (77)
-## when the subject cannot be found, per the suite's skip contract.
+## real msgcollector scripts, not extracted fragments. Those scripts resolve
+## their siblings and helper-scripts via the ${MSGCOLLECTOR_REPO:-} /
+## ${HELPER_SCRIPTS_PATH:-} bases they honor (unset in production -> /usr/libexec),
+## so pointing both at the checkouts runs everything straight from the tree with
+## NO install into the shared /usr/libexec. Skip (77) when the subject cannot be
+## found, per the suite's skip contract.
 if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
   dm_checkout="${DERIVATIVE_MAKER_DIR}"
 else
@@ -45,20 +45,18 @@ if [ -z "${msgcollector_src}" ]; then
   printf '%s\n' "SKIP: msgcollector not found (set MSGCOLLECTOR_REPO)." >&2
   exit 77
 fi
-if [ ! -r /usr/libexec/helper-scripts/strings.bsh ]; then
-  printf '%s\n' "SKIP: helper-scripts not available at /usr/libexec." >&2
+## MSGCOLLECTOR_REPO is the checkout root (empty when the copy found is the
+## installed /usr/libexec one); msgcollector_libexec is its
+## usr/libexec/msgcollector. Export the base so the child processes the tests
+## spawn (msgcollector, msgprogress, pv_wrapper) resolve their siblings the same
+## way. helper-scripts comes from HELPER_SCRIPTS_PATH (the consumer wire's
+## checkout root), else the installed /usr/libexec.
+export MSGCOLLECTOR_REPO="${msgcollector_src%/usr/libexec/msgcollector}"
+msgcollector_libexec="${msgcollector_src}"
+helper_scripts_libexec="${HELPER_SCRIPTS_PATH:-}/usr/libexec/helper-scripts"
+if [ ! -r "${helper_scripts_libexec}/strings.bsh" ]; then
+  printf '%s\n' "SKIP: helper-scripts not available at ${helper_scripts_libexec}." >&2
   exit 77
-fi
-## Install the checkout so the run-the-real-script tests exercise it. Root in the
-## CI container; sudo in the dev sandbox.
-if [ "${msgcollector_src}" != "/usr/libexec/msgcollector" ]; then
-  if [ "$(id -u)" = 0 ]; then
-    sudo_cmd=()
-  else
-    sudo_cmd=(sudo)
-  fi
-  "${sudo_cmd[@]}" mkdir --parents -- /usr/libexec/msgcollector
-  "${sudo_cmd[@]}" cp -a -- "${msgcollector_src}/." /usr/libexec/msgcollector/
 fi
 
 PASS=0
@@ -77,8 +75,8 @@ fail() {
 }
 
 ## Source dependencies.
-source /usr/libexec/helper-scripts/strings.bsh
-source /usr/libexec/msgcollector/check
+source "${helper_scripts_libexec}/strings.bsh"
+source "${msgcollector_libexec}/check"
 
 ## --------------------------------------------------------------------------
 printf '%s\n' "$0: === msgcollector_check() function tests ==="
@@ -384,7 +382,7 @@ printf '%s\n' "$0: === msgcollector argument parsing tests ==="
 test_msgcollector_reject_bad_identifier() {
   local result
   result=0
-  /usr/libexec/msgcollector/msgcollector \
+  "${msgcollector_libexec}/msgcollector" \
     --identifier "../../tmp/evil" \
     --messagecli --typecli info --message "test" 2>/dev/null || result=$?
   if [ "${result}" != "0" ]; then
@@ -397,7 +395,7 @@ test_msgcollector_reject_bad_identifier() {
 test_msgcollector_reject_empty_identifier() {
   local result
   result=0
-  /usr/libexec/msgcollector/msgcollector \
+  "${msgcollector_libexec}/msgcollector" \
     --identifier "" \
     --messagecli --typecli info --message "test" 2>/dev/null || result=$?
   if [ "${result}" != "0" ]; then
@@ -410,7 +408,7 @@ test_msgcollector_reject_empty_identifier() {
 test_msgcollector_reject_bad_progressbaridx() {
   local result
   result=0
-  /usr/libexec/msgcollector/msgcollector \
+  "${msgcollector_libexec}/msgcollector" \
     --identifier "test" \
     --progressx "50" \
     --progressbaridx "../evil" 2>/dev/null || result=$?
@@ -429,7 +427,7 @@ printf '%s\n' "$0: === msgprogress validation tests ==="
 test_msgprogress_reject_non_numeric_progress() {
   local result
   result=0
-  /usr/libexec/msgcollector/msgprogress \
+  "${msgcollector_libexec}/msgprogress" \
     --identifier "test" \
     --progressbaridx "testidx" \
     --progress '$(whoami)' 2>/dev/null || result=$?
@@ -443,7 +441,7 @@ test_msgprogress_reject_non_numeric_progress() {
 test_msgprogress_reject_bad_identifier() {
   local result
   result=0
-  /usr/libexec/msgcollector/msgprogress \
+  "${msgcollector_libexec}/msgprogress" \
     --identifier "../evil" \
     --progressbaridx "testidx" \
     --progress "50" 2>/dev/null || result=$?
@@ -466,7 +464,7 @@ test_pv_wrapper_filters_non_numeric() {
   output="$(printf '%s\n' "50" '$(whoami)' "75" "abc" "100" | \
     pv_echo_command='printf "%s\n" "$percent"' \
     pv_wrapper_command='true' \
-    /usr/libexec/msgcollector/pv_wrapper 2>/dev/null)"
+    "${msgcollector_libexec}/pv_wrapper" 2>/dev/null)"
   local expected
   expected="$(printf '%s\n' "50" "75" "100")"
   if [ "${output}" = "${expected}" ]; then
@@ -482,7 +480,7 @@ test_pv_wrapper_reject_injection() {
   output="$(printf '%s\n' '; echo HACKED' '$(echo HACKED)' '`echo HACKED`' | \
     pv_echo_command='printf "%s\n" "$percent"' \
     pv_wrapper_command='true' \
-    /usr/libexec/msgcollector/pv_wrapper 2>/dev/null)" || true
+    "${msgcollector_libexec}/pv_wrapper" 2>/dev/null)" || true
   if printf '%s\n' "${output}" | grep "HACKED" &>/dev/null; then
     fail "pv_wrapper allowed injection through stdin"
   else
@@ -497,7 +495,7 @@ printf '%s\n' "$0: === source-based: msgcollector pure functions (#33) ==="
 
 ## msgcollector is source-able (main() + BASH_SOURCE guard), so its pure
 ## functions can be driven directly instead of shelling out through the CLI.
-MSGCOLLECTOR_SCRIPT="/usr/libexec/msgcollector/msgcollector"
+MSGCOLLECTOR_SCRIPT="${msgcollector_libexec}/msgcollector"
 
 run_sourced() {
   ## Run $1 (shell code) in a clean child shell with msgcollector sourced:

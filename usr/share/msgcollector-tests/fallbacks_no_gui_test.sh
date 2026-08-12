@@ -42,6 +42,12 @@ if [ ! -r "${subject}" ]; then
    exit 77
 fi
 
+## msgfallbacks sources helper-scripts has.sh itself; require it (do not stub).
+if [ ! -r "${HELPER_SCRIPTS_PATH:-}/usr/libexec/helper-scripts/has.sh" ]; then
+   printf '%s\n' "SKIP: helper-scripts has.sh not available at ${HELPER_SCRIPTS_PATH:-}/usr/libexec/helper-scripts" >&2
+   exit 77
+fi
+
 work_dir="$(mktemp --directory -- "${TMP}/msgfallbacks-test.XXXXXX")"
 
 test_cleanup_handler() {
@@ -69,9 +75,9 @@ run_fallbacks() {
       printf '%s\n' '#!/bin/bash'
       printf '%s\n' 'set -o errexit' 'set -o nounset' 'set -o pipefail' \
          'set -o errtrace' 'shopt -s inherit_errexit'
-      ## The callers provide these two before sourcing the file.
+      ## The caller provides error_handler before sourcing the file; msgfallbacks
+      ## sources the real has.sh itself, so has is NOT stubbed here.
       printf '%s\n' 'error_handler() { printf "%s\n" "STUB error_handler"; }'
-      printf '%s\n' 'has() { [ -n "$(type -t "$1")" ]; }'
       printf '%s\n' "source ${subject}"
       printf '%s\n' 'fallbacks'
       printf '%s\n' 'printf "%s\n" "no_gui=[${no_gui}]"'

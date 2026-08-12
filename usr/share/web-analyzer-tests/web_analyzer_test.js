@@ -53,6 +53,12 @@ function cls(cp, expected, msg) {
   var got = info === null ? 'null' : info.cls;
   ok(got === expected, (msg || ('U+' + cp.toString(16))) + ' -> class ' + got + ', want ' + expected);
 }
+// assert the ASCII character a homoglyph/fullwidth codepoint imitates
+function tgt(cp, want) {
+  var info = OL.classify(cp);
+  var got = info ? info.target : undefined;
+  ok(got === want, 'U+' + cp.toString(16) + ' target ' + got + ', want ' + want);
+}
 
 // --- safe: printable ASCII + ordinary whitespace ------------------------------
 [0x09, 0x0A, 0x0D, 0x20, 0x21, 0x41, 0x5A, 0x61, 0x7A, 0x30, 0x39, 0x7E].forEach(function (cp) {
@@ -85,14 +91,47 @@ cls(0xE007F, 'ctrl', 'tag character end');
   .forEach(function (cp) { cls(cp, 'comb', 'combining/variation'); });
 ok(OL.classify(0x034F).visible === false, 'combining grapheme joiner is invisible');
 
-// --- homoglyph-prone scripts --------------------------------------------------
-[0x0400, 0x0430, 0x04FF, 0x0500, 0x052F].forEach(function (cp) { cls(cp, 'homo', 'Cyrillic'); });
-[0x0370, 0x03BF, 0x03FF].forEach(function (cp) { cls(cp, 'homo', 'Greek'); });
-cls(0x0531, 'homo', 'Armenian');
-cls(0x13A0, 'homo', 'Cherokee');
+// --- homoglyphs: named by the ASCII char they imitate (confusable pairs) ------
+// Cyrillic look-alikes -> Latin
+[[0x0430,'a'],[0x0435,'e'],[0x043E,'o'],[0x0440,'p'],[0x0441,'c'],[0x0445,'x'],
+ [0x0456,'i'],[0x0410,'A'],[0x0415,'E'],[0x041E,'O'],[0x0420,'P'],[0x0421,'C']]
+  .forEach(function (t) { cls(t[0], 'homo', 'Cyrillic->' + t[1]); tgt(t[0], t[1]); });
+// Greek look-alikes -> Latin
+[[0x03BF,'o'],[0x03B1,'a'],[0x03BD,'v'],[0x0391,'A'],[0x0392,'B'],[0x039F,'O'],[0x03A1,'P']]
+  .forEach(function (t) { cls(t[0], 'homo', 'Greek->' + t[1]); tgt(t[0], t[1]); });
+// Armenian look-alikes -> Latin
+[[0x0585,'o'],[0x057D,'u'],[0x0578,'n'],[0x0570,'h']]
+  .forEach(function (t) { cls(t[0], 'homo', 'Armenian->' + t[1]); tgt(t[0], t[1]); });
+// mathematical alphanumeric symbols -> ASCII (exact block arithmetic)
+[[0x1D400,'A'],[0x1D41A,'a'],[0x1D434,'A'],[0x1D467,'z'],[0x1D49C,'A'],[0x1D4EA,'a'],
+ [0x1D504,'A'],[0x1D538,'A'],[0x1D670,'A'],[0x1D68A,'a'],[0x1D7CE,'0'],[0x1D7FF,'9']]
+  .forEach(function (t) { cls(t[0], 'homo', 'math->' + t[1]); tgt(t[0], t[1]); });
+// styled Letterlike Symbols that fill the maths-block holes
+[[0x210E,'h'],[0x2102,'C'],[0x210D,'H'],[0x2115,'N'],[0x2119,'P'],[0x211D,'R'],[0x2124,'Z']]
+  .forEach(function (t) { cls(t[0], 'homo', 'letterlike->' + t[1]); tgt(t[0], t[1]); });
+// a NON-confusable letter in a look-alike script is surfaced by script, NOT homo
+cls(0x0416, 'other', 'Cyrillic Zhe (no ASCII look-alike)');   // Zhe
+ok(OL.classify(0x0416).name === 'Cyrillic letter', 'non-confusable Cyrillic named by script');
+cls(0x0398, 'other', 'Greek Theta (no ASCII look-alike)');    // Theta
+ok(OL.classify(0x0398).name === 'Greek letter', 'non-confusable Greek named by script');
+cls(0x13A0, 'other', 'Cherokee (script-labelled, not a false homoglyph)');
+ok(OL.classify(0x13A0).name === 'Cherokee letter', 'Cherokee named by script');
+// reserved (unassigned) holes in the maths blocks must NOT map to a look-alike
+[0x1D455, 0x1D49D, 0x1D4BA, 0x1D506, 0x1D53A, 0x1D551].forEach(function (cp) {
+  cls(cp, 'other', 'math reserved hole not a false homoglyph');
+  ok(OL.classify(cp).target === undefined, 'U+' + cp.toString(16) + ' has no false target');
+});
+// the relocated script small g / o glyphs (Letterlike) ARE resolved
+cls(0x210A, 'homo', 'script small g'); tgt(0x210A, 'g');
+cls(0x2134, 'homo', 'script small o'); tgt(0x2134, 'o');
+// removed inaccurate Armenian mapping: 0x0566 is surfaced by script, not 'q'
+cls(0x0566, 'other', 'Armenian 0x0566 is not a q look-alike');
 
-// --- fullwidth / halfwidth ----------------------------------------------------
-[0xFF00, 0xFF41, 0xFFEF].forEach(function (cp) { cls(cp, 'wide', 'fullwidth'); });
+// --- fullwidth / halfwidth: kept in the `wide` class, ASCII target attached ----
+[0xFF00, 0xFFEF].forEach(function (cp) { cls(cp, 'wide', 'fullwidth'); });
+cls(0xFF41, 'wide', 'fullwidth a'); tgt(0xFF41, 'a');
+cls(0xFF21, 'wide', 'fullwidth A'); tgt(0xFF21, 'A');
+cls(0xFF10, 'wide', 'fullwidth 0'); tgt(0xFF10, '0');
 
 // --- private use / other non-ASCII --------------------------------------------
 [0xE000, 0xF8FF, 0xF0000, 0x100000].forEach(function (cp) { cls(cp, 'other', 'private use'); });
@@ -102,8 +141,9 @@ cls(0x1F600, 'other', 'emoji (astral)');
 // --- boundary pairs (edge in one class, next codepoint in another) ------------
 cls(0x7E, 'null', 'boundary 0x7E safe');   cls(0x7F, 'ctrl', 'boundary 0x7F ctrl');
 cls(0x9F, 'ctrl', 'boundary 0x9F ctrl');   cls(0x00A0, 'space', 'boundary 0xA0 space');
-cls(0x036F, 'comb', 'boundary 0x36F comb'); cls(0x0370, 'homo', 'boundary 0x370 Greek');
-cls(0x03FF, 'homo', 'boundary 0x3FF Greek'); cls(0x0400, 'homo', 'boundary 0x400 Cyrillic');
+cls(0x036F, 'comb', 'boundary 0x36F comb'); cls(0x0370, 'other', 'boundary 0x370 Greek (non-confusable)');
+cls(0x03BF, 'homo', 'Greek omicron confusable'); cls(0x0430, 'homo', 'Cyrillic a confusable');
+cls(0x0400, 'other', 'boundary 0x400 Cyrillic (non-confusable)');
 
 // --- visibility flag ----------------------------------------------------------
 ok(OL.classify(0x202E).visible === false, 'RLO invisible');
@@ -124,7 +164,7 @@ ok(OL.hex(0x1F600) === 'U+1F600', 'hex 5-digit astral');
           String.fromCodePoint(0x1F600);                     // emoji (astral)
   var r = OL.analyze(s);
   ok(r.flagged === 3, 'analyze flagged=3, got ' + r.flagged);
-  ok(r.counts['Cyrillic'] === 1, 'analyze Cyrillic count');
+  ok(r.counts["looks like 'a'"] === 1, 'analyze homoglyph count');
   ok(r.counts['zero-width space'] === 1, 'analyze zw count');
   // safe runs must coalesce and reconstruct the original string exactly
   var rebuilt = r.items.map(function (it) { return it.safe !== undefined ? it.safe : it.ch; }).join('');

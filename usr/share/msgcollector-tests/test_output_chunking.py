@@ -51,12 +51,21 @@ try:
 except (LookupError, OSError, SystemExit):
     pytest.skip('output_func not available', allow_module_level=True)
 
-## Stub is_whole_number (from strings.bsh) and output_func_core: the latter
+## Use the REAL is_whole_number from helper-scripts (extracted from the current
+## strings.bsh via HELPER_SCRIPTS_PATH, else the installed path), so output_func
+## validates arg_max_bytes exactly as in production -- a reimplementation drifts
+## (the real one rejects leading zeros). output_func_core is a sink stub that
 ## records each chunk NUL-delimited (a bash argument never contains NUL).
+_STRINGS_BSH = (os.environ.get('HELPER_SCRIPTS_PATH', '')
+                + '/usr/libexec/helper-scripts/strings.bsh')
+try:
+    _IS_WHOLE_NUMBER = T.extract_bash_function(_STRINGS_BSH, 'is_whole_number')
+except (LookupError, OSError):
+    pytest.skip('helper-scripts is_whole_number not available',
+                allow_module_level=True)
 _DRIVER = (
-    "is_whole_number() { case \"$1\" in ''|*[!0-9]*) return 1 ;; "
-    "*) return 0 ;; esac; }\n"
-    "output_func_core() { printf '%s\\0' \"${@: -1}\"; }\n"
+    _IS_WHOLE_NUMBER
+    + "\noutput_func_core() { printf '%s\\0' \"${@: -1}\"; }\n"
 )
 
 
