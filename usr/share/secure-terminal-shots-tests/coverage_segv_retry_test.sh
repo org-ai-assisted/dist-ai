@@ -74,7 +74,7 @@ sed -n '/## BEGIN-EXTRACT run_suite_under_coverage/,/## END-EXTRACT run_suite_un
    -- "${runner}" > "${fn}"
 if ! grep -q 'run_suite_under_coverage()' -- "${fn}"; then
    printf '%s\n' 'FAIL: run_suite_under_coverage not found in the runner -- no SIGSEGV retry (old runner)'
-   printf '%s\n' '' '0 pass, 1 fail'
+   printf '%s\n' '' '0 pass, 1 fail, 0 skip'
    exit 1
 fi
 
@@ -125,7 +125,20 @@ rc2="$(drive 99 3 "${c2}")"
 check "${rc2}" 139 'a suite that SIGSEGVs every time still FAILS (persistent crash is fatal)'
 check "$(cat "${c2}")" 3 'a persistent crash is bounded by COVERAGE_SEGV_RETRIES (no infinite retry)'
 
-printf '%s\n' '' "${pass} pass, ${fail} fail"
+## ---- invalid retries: 0 / non-numeric coerces to the default -> rc stays DEFINED ---------
+## An unset/empty/non-numeric/<1 retry count must NOT leave the C-style for-loop unentered:
+## that left rc unbound so `return "${rc}"` aborted under nounset. It coerces to the default
+## and runs the (non-crashing) suite once, returning a defined rc 0.
+c3="${work}/counter3"
+rc3="$(drive 0 0 "${c3}")"
+check "${rc3}" 0 'a 0 retry count coerces to the default and returns a defined rc (no nounset abort)'
+check "$(cat "${c3}" 2>/dev/null)" 1 'a non-crashing suite runs exactly once under the coerced default'
+c4="${work}/counter4"
+rc4="$(drive 0 abc "${c4}")"
+check "${rc4}" 0 'a non-numeric retry count coerces to the default and returns a defined rc'
+check "$(cat "${c4}" 2>/dev/null)" 1 'a non-numeric retry count still runs the suite exactly once'
+
+printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
    exit 1
 fi

@@ -99,7 +99,7 @@ run_gen 'paste-warning-shot (paste)' "${work}/paste.png" \
 run_gen 'paste-warning-shot (copy)'  "${work}/copy.png" \
    "${shots_dir}/paste-warning-shot.py" "${work}/copy.png" copy
 
-printf '%s\n' '' "${pass} pass, ${fail} fail"
+printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
    exit 1
 fi

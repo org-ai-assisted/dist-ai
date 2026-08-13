@@ -435,7 +435,9 @@ shoot() {  ## $1=emulator  $2=case
    ## launch the emulator in its own session (records its PGID into pgf); arm a per-capture
    ## watchdog that reaps that group if the render hangs past the deadline.
    launch "${e}" "${case}" "${pgf}" >/dev/null 2>&1
-   wdog="$(shots_watchdog_start "${SHOT_DEADLINE}" "${pgf}" "${flagf}")"
+   ## A non-numeric SHOT_DEADLINE makes shots_watchdog_start refuse (return 1); under errexit
+   ## that must NOT abort the whole capture -- run this shot unbounded (no watchdog) instead.
+   wdog="$(shots_watchdog_start "${SHOT_DEADLINE}" "${pgf}" "${flagf}")" || wdog=''
    wid="$(find_window || true)"
    if [ -z "${wid}" ]; then
       printf '%s\n' "warn ${e}.${case}: window never appeared, no shot"
@@ -576,7 +578,8 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
          QT_FONT_DPI=72 \
          PYTHONPATH="${st_pkg}" python3 "${st_bin}" --new-instance "${st_mode_flags[@]}" \
          -- bash --rcfile "${HOME}/.strc" -i >/dev/null 2>&1
-      st_wdog="$(shots_watchdog_start "${SHOT_DEADLINE}" "${st_pgf}" "${st_flagf}")"
+      ## same guard as the emulator shots: an invalid SHOT_DEADLINE must not errexit-abort.
+      st_wdog="$(shots_watchdog_start "${SHOT_DEADLINE}" "${st_pgf}" "${st_flagf}")" || st_wdog=''
       stwid="$(find_window || true)"
       if [ -n "${stwid}" ]; then
          sleep 2

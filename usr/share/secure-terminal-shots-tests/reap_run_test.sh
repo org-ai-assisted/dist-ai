@@ -80,7 +80,7 @@ trap cleanup EXIT
 ## The harness API MUST exist -- absent means the old, leaky harness (regression tripwire).
 if ! declare -F shots_reap_run >/dev/null 2>&1 || ! declare -F shots_require_safe_ps >/dev/null 2>&1; then
    printf '%s\n' 'FAIL: shots_reap_run / shots_require_safe_ps not defined -- old harness has no marker-scoped reaper'
-   printf '%s\n' '' '0 pass, 1 fail'
+   printf '%s\n' '' '0 pass, 1 fail, 0 skip'
    exit 1
 fi
 
@@ -128,7 +128,7 @@ else
    check ok hardfail 'shots_require_safe_ps hard-fails when safe-pgrep/pkill are absent'
 fi
 
-printf '%s\n' '' "${pass} pass, ${fail} fail"
+printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
    exit 1
 fi

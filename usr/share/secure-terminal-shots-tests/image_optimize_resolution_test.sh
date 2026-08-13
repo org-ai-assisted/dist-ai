@@ -83,7 +83,7 @@ check "${r4a}" 'OK' 'shots_require_image_optimize passes for the bundled optimiz
 r4b="$(bash -c "source '${lib}'; shots_image_optimize=/nonexistent/image-optimize; shots_require_image_optimize >/dev/null 2>&1 && printf '%s' BAD || printf '%s' GOOD")"
 check "${r4b}" 'GOOD' 'shots_require_image_optimize fails fast when the optimizer is missing'
 
-printf '%s\n' '' "${pass} pass, ${fail} fail"
+printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
    exit 1
 fi

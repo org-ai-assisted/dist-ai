@@ -6200,17 +6200,24 @@ eq(_fmt_of_char(_th, '<').foreground().color().name(), mark_fg(_th, 'nonascii'),
 # same glyph but its source cp is the space byte, so it collapses to '_'. The copy
 # path tells them apart via the recorded codepoint (a blind string map clobbered
 # the real glyph -- the regression).
-_rb = SecureTerminal(command='/bin/cat'); _rb.apply_mode('show')
+_rb = SecureTerminal(command='/bin/cat')
+_rb.apply_mode('show')
 feed_output(_rb, b'\xe2\x90\xa3')                          # a literal U+2423 OPEN BOX
 _rb.selectAll()
 ok('\u2423' in _rb._selection_text(),
    'reconcile#6: a real printed U+2423 in Show mode is kept as its glyph on copy')
-_sm = SecureTerminal(command='/bin/cat'); _sm.apply_mode('show')
+_sm = SecureTerminal(command='/bin/cat')
+_sm.apply_mode('show')
 feed_output(_sm, b'\xc2\xa0')                              # NBSP -> synthetic SPACE_MARK
 _sm.selectAll()
 _sm_copy = _sm._selection_text()
 ok('_' in _sm_copy and '\u2423' not in _sm_copy,
    'reconcile#6: the synthetic non-ASCII-space marker still copies as _ (never a space)')
+
+# each reconcile widget owns a /bin/cat pty child; hang them up so the master fds and
+# child processes do not linger into the suite's os._exit teardown.
+for _rw in (_bp_no, _bp_yes, _hs, _dp, _th, _rb, _sm):
+    _rw.shutdown()
 
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(widget): %d passed, %d failed\n'

@@ -110,7 +110,7 @@ def run_in_pty(argv, feed=b'', feed2=b'', feed2_delay=0.4, tty_stdin=True,
             try:
                 os.write(writer, feed2)
             except OSError:
-                pass
+                pass        # the child may have exited; the feed is best-effort
         if close_stdin and not tty_stdin:
             try:
                 os.close(in_w)                 # EOF on the wrapper's stdin

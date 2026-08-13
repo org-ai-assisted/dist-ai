@@ -71,7 +71,7 @@ if ! declare -F shots_spawn_session >/dev/null 2>&1 \
       || ! declare -F shots_watchdog_start >/dev/null 2>&1 \
       || ! declare -F shots_reap_group >/dev/null 2>&1; then
    printf '%s\n' 'FAIL: shots_spawn_session / shots_watchdog_start / shots_reap_group not defined -- old harness has no per-capture deadline'
-   printf '%s\n' '' '0 pass, 1 fail'
+   printf '%s\n' '' '0 pass, 1 fail, 0 skip'
    exit 1
 fi
 
@@ -142,7 +142,7 @@ fi
 ## reap the survivor now (its group is real).
 shots_reap_group "${pgid2}"
 
-printf '%s\n' '' "${pass} pass, ${fail} fail"
+printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
    exit 1
 fi

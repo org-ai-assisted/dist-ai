@@ -262,13 +262,17 @@ def inv4_corpus():
 # Widget-driven invariants: INV-1 (the GUI paste path), plus INV-2, INV-5, INV-6.
 # One offscreen widget per invariant, reused across examples (no pty fork).
 # ===========================================================================
-_HAVE_QT = True
 try:
     from PyQt6.QtWidgets import QApplication
     from PyQt6.QtGui import QKeyEvent, QGuiApplication
     from PyQt6.QtCore import QEvent, Qt, QMimeData
     from secure_terminal.terminal import SecureTerminal
     import secure_terminal.terminal as TERM
+    # APP is never READ but MUST be retained: it anchors the QApplication for the module's
+    # lifetime. Drop the reference and PyQt6 destroys the app, so the first SecureTerminal
+    # QWidget below aborts with "Must construct a QApplication before a QWidget". CodeQL's
+    # unused-global alert on APP is therefore a false positive -- the value is the live-app
+    # anchor, not dead.
     APP = QApplication.instance() or QApplication([])
 except Exception as exc:  # pylint: disable=broad-except
     # A widget suite must FAIL closed on a missing GUI dep, never skip: the paste and

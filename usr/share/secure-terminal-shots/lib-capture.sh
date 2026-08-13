@@ -231,12 +231,36 @@ shots_optimize_to_webp() {  ## $@=produced PNG shots -> convert each to webp in 
 ## process-group kill. XDG_RUNTIME_DIR is already per-user 0700; otherwise a uid-scoped 0700 dir.
 [ -v TMP ] || TMP=/tmp
 if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "${XDG_RUNTIME_DIR}" ]; then
+   ## XDG_RUNTIME_DIR is per-user and already mode 0700: safe to nest under directly.
    shots_state_dir="${XDG_RUNTIME_DIR}/secure-terminal-shots"
+   mkdir --parents -- "${shots_state_dir}" 2>/dev/null || true
+   chmod 0700 -- "${shots_state_dir}" 2>/dev/null || true
 else
-   shots_state_dir="${TMP}/secure-terminal-shots-$(id --user)"
+   ## /tmp fallback: /tmp is world-writable + sticky, so a pre-existing entry at this fixed
+   ## path could have been PLANTED by another local user, who could then read our run markers
+   ## or plant a marker that shots_reap_registered feeds to a process-group kill. Trust it
+   ## ONLY if it is a plain directory we OWN (never a symlink, never another uid's), and force
+   ## it 0700; REFUSE a symlink / non-directory / foreign-owned entry rather than reuse it.
+   shots_uid="$(id --user)"
+   shots_state_dir="${TMP}/secure-terminal-shots-${shots_uid}"
+   if [ -L "${shots_state_dir}" ] || { [ -e "${shots_state_dir}" ] && [ ! -d "${shots_state_dir}" ]; }; then
+      printf '%s\n' "shots: refusing state dir '${shots_state_dir}': a symlink or non-directory at a world-writable temp path is a planting attack. Set XDG_RUNTIME_DIR or remove it." >&2
+      exit 1
+   fi
+   if [ -d "${shots_state_dir}" ]; then
+      shots_owner="$(stat --format='%u' -- "${shots_state_dir}" 2>/dev/null || true)"
+      if [ "${shots_owner}" != "${shots_uid}" ]; then
+         printf '%s\n' "shots: refusing state dir '${shots_state_dir}': owned by uid '${shots_owner:-unknown}', not us (${shots_uid}) -- another user planted it. Set XDG_RUNTIME_DIR or remove it." >&2
+         exit 1
+      fi
+      chmod 0700 -- "${shots_state_dir}" 2>/dev/null || true
+   else
+      ( umask 077 && mkdir -- "${shots_state_dir}" ) || {
+         printf '%s\n' "shots: failed to create private state dir '${shots_state_dir}'" >&2
+         exit 1
+      }
+   fi
 fi
-mkdir --parents -- "${shots_state_dir}" 2>/dev/null || true
-chmod 0700 -- "${shots_state_dir}" 2>/dev/null || true
 shots_run_registry="${SHOTS_RUN_REGISTRY:-${shots_state_dir}/markers}"
 
 ## HARD-FAIL if the safe-pgrep/safe-pkill wrappers are absent. They ship with private-ai-config

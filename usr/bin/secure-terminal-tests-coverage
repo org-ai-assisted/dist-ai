@@ -162,16 +162,26 @@ export QT_FONT_DPI="${QT_FONT_DPI:-72}"
 ## cannot inflate or corrupt the measurement. Retry a segfaulting suite so the gate is
 ## not flaky-red for no code reason; fail loud only if it crashes on EVERY attempt.
 ## Bounded by COVERAGE_SEGV_RETRIES.
-COVERAGE_SEGV_RETRIES="${COVERAGE_SEGV_RETRIES:-5}"
 ## BEGIN-EXTRACT run_suite_under_coverage (the canary test sources this block by sentinel)
 run_suite_under_coverage() {  ## $1 = suite .py path -> returns the final rc
-   local suite_path="$1" attempt rc
-   for (( attempt=1; attempt<=COVERAGE_SEGV_RETRIES; attempt++ )); do
+   local suite_path="$1" attempt rc=0 retries
+   ## Coerce COVERAGE_SEGV_RETRIES to a positive integer (default 5). An unset/empty/
+   ## non-numeric/<1 value would leave the C-style loop unentered, so rc would be unbound
+   ## and `return "${rc}"` would abort under nounset; rc is pre-set to 0 for the same
+   ## reason -- a defined "nothing crashed" result if the body never runs.
+   retries="${COVERAGE_SEGV_RETRIES:-5}"
+   case "${retries}" in
+      ''|*[!0-9]*)
+         retries=5
+         ;;
+   esac
+   [ "${retries}" -ge 1 ] || retries=5
+   for (( attempt=1; attempt<=retries; attempt++ )); do
       rc=0
       python3 -m coverage run --parallel-mode --source="${pkg},${hooks}" -- \
          "${suite_path}" || rc="$?"
       [ "${rc}" = '139' ] || return "${rc}"
-      printf '%s\n' "secure-terminal-tests-coverage: $(basename -- "${suite_path}" .py) SIGSEGV (attempt ${attempt}/${COVERAGE_SEGV_RETRIES}); known Qt-IPC/SIGCHLD race under coverage, retrying" >&2
+      printf '%s\n' "secure-terminal-tests-coverage: $(basename -- "${suite_path}" .py) SIGSEGV (attempt ${attempt}/${retries}); known Qt-IPC/SIGCHLD race under coverage, retrying" >&2
    done
    return "${rc}"
 }
