@@ -37,7 +37,7 @@ die() {
    local code
    code="$1"
    shift
-   printf '%s: ERROR: %s\n' "${me}" "$*" >&2
+   printf '%s\n' "${me}: ERROR: $*" >&2
    exit "${code}"
 }
 
@@ -93,7 +93,7 @@ while [ "$#" -gt 0 ]; do
    esac
 done
 
-[ -n "${repo_dir}" ] || repo_dir="$PWD"
+[ -n "${repo_dir}" ] || repo_dir="${PWD}"
 repo_dir="$(readlink --canonicalize -- "${repo_dir}")" \
    || die 66 "cannot resolve --repo path"
 [ -d "${repo_dir}" ] || die 66 "not a directory: '${repo_dir}'"
@@ -125,15 +125,12 @@ case "${site_name}" in
    'org-ai-assisted.github.io')
       site_var='ORG_AI_ASSISTED_REPO'
       ;;
-   'git-diffs-lie')
-      site_var='GIT_DIFFS_LIE_REPO'
-      ;;
    *)
-      die 64 "'${site_name}' is not a known Pages site checkout (expected one of: output-lies.github.io, secure-terminal.github.io, org-ai-assisted.github.io, git-diffs-lie)"
+      die 64 "'${site_name}' is not a known Pages site checkout (expected one of: output-lies.github.io, secure-terminal.github.io, org-ai-assisted.github.io)"
       ;;
 esac
 
-printf '%s: testing %s\n' "${me}" "${repo_dir}" >&2
+printf '%s\n' "${me}: testing ${repo_dir}" >&2
 
 test_rc=0
 env "${site_var}=${repo_dir}" "${website_tests}" || test_rc="$?"
@@ -145,10 +142,10 @@ if [ "${test_rc}" -ne 0 ]; then
    die 1 "website-tests failed (exit ${test_rc}). Refusing to publish."
 fi
 
-printf '%s: suite green\n' "${me}" >&2
+printf '%s\n' "${me}: suite green" >&2
 
 if [ "${check_only}" = 'true' ]; then
-   printf '%s: --check-only, not pushing\n' "${me}" >&2
+   printf '%s\n' "${me}: --check-only, not pushing" >&2
    exit 0
 fi
 
@@ -156,6 +153,6 @@ branch="$(git -C "${repo_dir}" rev-parse --abbrev-ref HEAD)"
 [ "${branch}" != 'HEAD' ] \
    || die 1 'detached HEAD: check out the publishing branch first'
 
-printf '%s: pushing %s -> %s/%s\n' "${me}" "${branch}" "${remote}" "${branch}" >&2
+printf '%s\n' "${me}: pushing ${branch} -> ${remote}/${branch}" >&2
 git -C "${repo_dir}" push -- "${remote}" "${branch}"
-printf '%s: published\n' "${me}" >&2
+printf '%s\n' "${me}: published" >&2
