@@ -26,6 +26,7 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 | `onion-grater-tests`     | shipping | `usr/share/onion-grater-tests/` |
 | `privleap-tests`         | shipping | `usr/share/privleap-tests/` |
 | `pyte-tests`             | shipping | `usr/share/pyte-tests/` |
+| `dist-installer-cli-tests` | shipping | `usr/share/dist-installer-cli-tests/` |
 | `genmkfile-tests`        | shipping | `usr/share/genmkfile-tests/` |
 | `dm-help-steps-tests`    | shipping | `usr/share/dm-help-steps-tests/` |
 | `open-link-confirmation-tests` | shipping | `usr/share/open-link-confirmation-tests/` |
@@ -320,6 +321,35 @@ e.g. `sandbox-run --dir <staged-dir> -- sudo bash ./umount_kill_test.sh`
 with a copy of `umount_kill.sh` staged next to the test. Subject
 selection: `UMOUNT_KILL_SH`, then a staged sibling copy, then
 `~/derivative-maker/help-steps/umount_kill.sh`.
+
+## dist-installer-cli-tests
+
+Regression tests for usability-misc's `dist-installer-cli` CI glue. The docker
+build workflow's "back to default repository" step installs VirtualBox from the
+default (non-Oracle) repository; on Debian-family that aborts with exit code 108
+(Oracle repo not selected), which is expected and retried after dropping the
+packages. Any OTHER failure is real and the step must propagate the installer's
+OWN exit code.
+
+A prior version ran `exit "$?"` inside the failure handler, where `$?` was the
+status of the `if` that had just tested the code - so every distinct installer
+failure collapsed into a meaningless 1 and the CI log no longer said WHICH
+failure occurred. The step was extracted from the YAML into a real script
+(`ci/vbox-back-to-default-repo.sh`) so it can be linted and tested against the
+shipped text. The suite drives that real script with `sudo` stubbed to a
+distinctive non-108 code and asserts the code propagates. No root, no network.
+Point it at a usability-misc checkout with `USABILITY_MISC_REPO`; it exits 77
+(SKIP) without one.
+
+### Usage
+
+```
+# regression suite (resolves the checkout from USABILITY_MISC_REPO or ~/derivative-maker)
+dist-installer-cli-tests
+
+# against a specific usability-misc checkout
+USABILITY_MISC_REPO=/path/to/usability-misc dist-installer-cli-tests
+```
 
 ## genmkfile-tests
 

@@ -81,6 +81,7 @@ core_suites=(
    dm-package-depends-tests
    dm-reprepro-tracking-tests
    dm-virtualbox-wiki-links-tests
+   dist-installer-cli-tests
    genmkfile-tests
    git-meld-tests
    grep-find-unicode-wrapper-tests
@@ -354,6 +355,11 @@ wire() {
          ;;
       anon-ws-disable-stacked-tor)
          wire_env=( "ANON_WS_DISABLE_STACKED_TOR_REPO=$( pkg_dir anon-ws-disable-stacked-tor )" )
+         ;;
+      dist-installer-cli)
+         ## The suite drives usability-misc's shipped ci/vbox-back-to-default-repo.sh
+         ## with a stubbed installer; it needs the usability-misc checkout.
+         wire_env=( "USABILITY_MISC_REPO=$( pkg_dir usability-misc )" )
          ;;
       desktop-config-dist)
          wire_env=( "DESKTOP_CONFIG_DIST_REPO=$( pkg_dir desktop-config-dist )" )
@@ -690,6 +696,9 @@ suite_component() {
          ;;
       dm-help-steps|dm-package-depends|dm-reprepro-tracking|dm-reproducible-build|dm-grub-smbios)
          printf '%s' 'derivative-maker'
+         ;;
+      dist-installer-cli)
+         printf '%s' 'usability-misc'
          ;;
       private-ai-config)
          printf '%s' 'private-ai-config'
