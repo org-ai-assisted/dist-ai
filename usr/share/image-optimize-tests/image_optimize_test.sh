@@ -192,5 +192,40 @@ assert_fail 'check on a missing input yields non-zero exit' \
    "${BIN}" --check -- "${workdir}/does-not-exist.png"
 
 ## ---------------------------------------------------------------------------
+## A symlinked image must be refused, not silently skipped: 'stat -c %s' reports
+## the link's path length (not the target size), so the old code judged it
+## "already minimal" and returned success. (Regression: fails on that old code.)
+## ---------------------------------------------------------------------------
+real_png="${workdir}/real.png"
+convert -size 150x150 plasma:fractal "${real_png}"
+ln -s real.png "${workdir}/link.png"
+assert_fail 'refuses to optimize a symlink (stat misreads its size)' \
+   "${BIN}" --quiet -- "${workdir}/link.png"
+
+## ---------------------------------------------------------------------------
+## --webp stem collision: two sources sharing a stem (foo.png + foo.jpg) both map
+## to foo.webp. The old code let the second mv clobber the first's webp AND
+## deleted both sources -- permanent data loss. It must now error and keep the
+## second source, so exactly one original survives and no content is lost.
+## (Regression: on the old code both sources are gone and the run exits 0.)
+## ---------------------------------------------------------------------------
+col="${workdir}/collide"
+mkdir -- "${col}"
+convert -size 120x120 plasma:fractal "${col}/img.png"
+convert -size 120x120 plasma: "${col}/img.jpg"
+col_rc=0
+"${BIN}" --webp --quiet -- "${col}/img.png" "${col}/img.jpg" || col_rc=$?
+survivors=0
+[ -e "${col}/img.png" ] && survivors=$(( survivors + 1 ))
+[ -e "${col}/img.jpg" ] && survivors=$(( survivors + 1 ))
+webp_made='no'
+[ -f "${col}/img.webp" ] && webp_made='yes'
+if [ "${col_rc}" -ne 0 ] && [ "${webp_made}" = 'yes' ] && [ "${survivors}" -eq 1 ]; then
+   report pass 'webp stem collision errors and loses no source content'
+else
+   report fail "webp stem collision (rc=${col_rc}, survivors=${survivors}, webp=${webp_made})"
+fi
+
+## ---------------------------------------------------------------------------
 printf '%s\n' '' "image-optimize-tests: ${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ]

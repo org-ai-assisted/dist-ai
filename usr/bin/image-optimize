@@ -47,6 +47,12 @@ fi
 mode_check='false'
 mode_webp='false'
 quiet='false'
+## --webp maps every source to "${stem}.webp" and deletes the source. Two inputs
+## with the same stem but different extensions (foo.png + foo.jpg) collide on one
+## foo.webp; without this the second mv clobbers the first and both sources are
+## deleted -- permanent data loss. Track the claimed webp paths and refuse a
+## collision instead of destroying data.
+declare -A webp_claimed=()
 ## A file is flagged by --check only when it can shed MORE than max(tol_floor,
 ## tol_pct% of its size). Real screenshot bloat is tens of percent; this margin
 ## just absorbs any harmless run-to-run jitter on an already-optimized file.
@@ -279,6 +285,14 @@ process_one() {
       err "not writable: ${input}"
       return 1
    fi
+   ## 'stat -c %s' does NOT dereference a symlink (it reports the link's own path
+   ## length, not the target's size), so a symlinked image reads as tiny and is
+   ## silently judged "already minimal" -- or, in --webp mode, the link is replaced
+   ## by a regular file. Refuse it; the caller should optimize the real target.
+   if [ -L "${src}" ]; then
+      err "refusing to optimize a symlink (optimize its target instead): ${input}"
+      return 1
+   fi
    base="${src##*/}"
    if ! validate_safe_filename base; then
       err "unsafe filename: ${input}"
@@ -325,6 +339,15 @@ process_one() {
    fi
    if [ -n "${cand}" ]; then
       webp_path="${src%.*}.webp"
+      ## Refuse a stem collision rather than clobber the earlier source's webp and
+      ## delete this one too: the first source keeps its webp, this one is left
+      ## untouched, and the operator is told which two collided.
+      if [ -n "${webp_claimed["${webp_path}"]:-}" ]; then
+         err "webp stem collision: ${input} and ${webp_claimed["${webp_path}"]} both map to ${webp_path##*/}; refusing to overwrite and delete"
+         safe-rm -- "${cand}"
+         return 1
+      fi
+      webp_claimed["${webp_path}"]="${input}"
       chmod --reference="${src}" -- "${cand}"
       mv -f -- "${cand}" "${webp_path}"
       safe-rm -- "${src}"
