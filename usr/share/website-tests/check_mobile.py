@@ -37,7 +37,6 @@ VIEWPORT = 390
 
 # Subsite dir basename -> (parent dir basename, mount path). Mirrors check_site.py.
 SUBSITES = {
-    'git-diffs-lie': ('output-lies.github.io', '/git-diffs-lie/'),
 }
 
 

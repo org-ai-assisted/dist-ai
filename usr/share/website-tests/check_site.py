@@ -40,7 +40,6 @@ FAMILY = {
 # so they are valid live URLs even though no file for them exists in THIS repo.
 # Verified deployed via the Pages API; treated as external (not a local file).
 KNOWN_PROJECT_PATHS = (
-    '/git-diffs-lie/',
 )
 
 # Sub-sites served UNDER another family site's domain (a project-Pages repo): the
@@ -51,7 +50,6 @@ KNOWN_PROJECT_PATHS = (
 # site). Both must be checked out to verify the cross-site links; when the parent
 # is absent those links are treated as external (unverifiable), never failed.
 SUBSITES = {
-    'git-diffs-lie': ('output-lies.github.io', '/git-diffs-lie/'),
 }
 
 # Prose wording rule: these must be capitalized as proper labels.
