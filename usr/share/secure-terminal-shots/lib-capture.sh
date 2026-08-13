@@ -152,10 +152,13 @@ shots_generate_logs() {  ## $1=script-relative fallback dir $2=dest-dir
    notify=$'build log: packaging step 3 of 5\n\033]9;Safe demonstration only: secure-terminal terminal-attack comparison test. No action needed.\007post-install: done\n'
    printf '%s' "${notify}" > "${dest}/notify.payload" || return 1
    ## zerowidth: a page-facing display demo of an invisible byte -- a single U+200B
-   ## (zero-width space) hidden inside 'administrator'. On a normal terminal the word
-   ## reads clean; secure-terminal boxes the hidden byte. Self-describing so the shot
-   ## needs no external caption. No canary token, so kept inline like notify.
-   zerowidth=$'A hidden zero-width byte sits inside this word: admin\u200bistrator -- invisible on a normal terminal, boxed by secure-terminal.\n'
+   ## (zero-width space, UTF-8 e2 80 8b) hidden inside 'administrator'. On a normal
+   ## terminal the word reads clean; secure-terminal boxes the hidden byte. Self-describing
+   ## so the shot needs no external caption. No canary token, so kept inline like notify.
+   ## Written as raw \x byte escapes, NOT \u200b: bash's \u encodes to the CURRENT locale,
+   ## so under LC_ALL=C $'\u200b' yields the literal text "\u200b" and the demo would carry
+   ## no zero-width byte at all. \x is locale-independent.
+   zerowidth=$'A hidden zero-width byte sits inside this word: admin\xe2\x80\x8bistrator -- invisible on a normal terminal, boxed by secure-terminal.\n'
    printf '%s' "${zerowidth}" > "${dest}/zerowidth.payload" || return 1
 }
 
