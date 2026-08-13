@@ -459,9 +459,10 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
    st_win_w=1360
    ## Each entry is "<case> <mode> <suffix> [tui]". The optional 4th field 'tui' launches
    ## secure-terminal with --tui (opt-in full-screen mode) instead of the default CLI mode.
-   ## The tui-showcase board is captured across the full CLI/TUI x box/detail matrix
-   ## (CLI-box, CLI-detail, TUI-box, TUI-detail) so the page's mode switcher has a real
-   ## shot per combo -- even when full-screen layout is allowed, every cell is still
+   ## The tui-showcase board is captured across the CLI/TUI mode x box/show/detail
+   ## unicode matrix so the page's view switcher has a real shot per combo. Show renders
+   ## printable unicode as its glyph (readable) while still boxing invisible/bidi/control
+   ## bytes; detail names each codepoint inline. Even in full-screen TUI every cell stays
    ## character-filtered.
    st_specs=(
       'crafted box crafted'
@@ -472,9 +473,10 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       'zerowidth box zerowidth'
       'altscreen box altscreen'
       'tui-showcase box tui-showcase'
+      'tui-showcase show tui-showcase-show'
       'tui-showcase detail tui-showcase-detail'
       'tui-showcase box tui-showcase-tui tui'
-      'tui-showcase detail tui-showcase-tui-detail tui'
+      'tui-showcase show tui-showcase-tui-show tui'
    )
    for spec in "${st_specs[@]}"; do
       read -r st_case st_mode st_suffix st_tui <<< "${spec}"
