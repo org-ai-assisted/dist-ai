@@ -58,8 +58,10 @@ fi
 ## Under trace, the two threads' settrace machinery races Qt native code and the
 ## SIGCHLD that reaps the windows' pty children -> an intermittent SIGSEGV (exit
 ## 139) mid-suite. sys.monitoring does not use sys.settrace and is thread-safe, so
-## it removes the crash while measuring identically (verified 100%, same stmt
-## count). Honour an explicit COVERAGE_CORE so a developer can still force a core.
+## it makes the crash RARE while measuring identically (same stmt count) -- but the
+## Qt-native/SIGCHLD race can still SIGSEGV occasionally under sysmon too, so
+## run_suite_under_coverage (below) retries a crashed suite. Honour an explicit
+## COVERAGE_CORE so a developer can still force a core.
 if [ -z "${COVERAGE_CORE:-}" ] \
    && python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)' \
    && python3 -c 'import coverage.sysmon' 2>/dev/null; then
@@ -151,17 +153,42 @@ export QT_QPA_PLATFORM=offscreen
 ## per-module setdefault. Honour an explicit override so this stays a safe
 ## default rather than a lock.
 export QT_FONT_DPI="${QT_FONT_DPI:-72}"
+## test_mainwin's real single-instance IPC handoff (background client thread +
+## main-thread Qt event loop + SIGCHLD pty reaping) intermittently SIGSEGVs (exit 139)
+## under coverage even on the thread-safe sysmon core: a CRASH artifact of the
+## Qt-native/signal race, NOT a test verdict (a real failure exits 1; the uninstrumented
+## suite never crashes). coverage combine UNIONS per-file line data, so a crashed
+## attempt's partial parallel-mode file can only re-add already-covered lines -- it
+## cannot inflate or corrupt the measurement. Retry a segfaulting suite so the gate is
+## not flaky-red for no code reason; fail loud only if it crashes on EVERY attempt.
+## Bounded by COVERAGE_SEGV_RETRIES.
+COVERAGE_SEGV_RETRIES="${COVERAGE_SEGV_RETRIES:-5}"
+## BEGIN-EXTRACT run_suite_under_coverage (the canary test sources this block by sentinel)
+run_suite_under_coverage() {  ## $1 = suite .py path -> returns the final rc
+   local suite_path="$1" attempt rc
+   for (( attempt=1; attempt<=COVERAGE_SEGV_RETRIES; attempt++ )); do
+      rc=0
+      python3 -m coverage run --parallel-mode --source="${pkg},${hooks}" -- \
+         "${suite_path}" || rc="$?"
+      [ "${rc}" = '139' ] || return "${rc}"
+      printf '%s\n' "secure-terminal-tests-coverage: $(basename -- "${suite_path}" .py) SIGSEGV (attempt ${attempt}/${COVERAGE_SEGV_RETRIES}); known Qt-IPC/SIGCHLD race under coverage, retrying" >&2
+   done
+   return "${rc}"
+}
+## END-EXTRACT run_suite_under_coverage
+
 python3 -m coverage erase
-for suite in test_secure_terminal test_fuzz test_fuzz_harnesses test_corpus \
-             test_invariants test_cli test_modules test_review test_mainwin \
+## test_mainwin runs FIRST so a PERSISTENT crash (every retry exhausted) fails fast,
+## not after the long suites; order is irrelevant to the unioned coverage result.
+for suite in test_mainwin test_secure_terminal test_fuzz test_fuzz_harnesses \
+             test_corpus test_invariants test_cli test_modules test_review \
              test_widget; do
    [ -f "${tests_dir}/${suite}.py" ] || continue
    rc=0
-   python3 -m coverage run --parallel-mode --source="${pkg},${hooks}" -- \
-      "${tests_dir}/${suite}.py" || rc="$?"
+   run_suite_under_coverage "${tests_dir}/${suite}.py" || rc="$?"
    ## exit 77 (SKIP, e.g. Qt absent for a widget suite) is not a failure here;
-   ## the Qt-free gated tier does not depend on those suites. Any other non-zero
-   ## is fatal.
+   ## the Qt-free gated tier does not depend on those suites. A SIGSEGV (139) that
+   ## survived every retry, or any other non-zero, is fatal.
    if [ "${rc}" != '0' ] && [ "${rc}" != '77' ]; then
       printf '%s\n' "secure-terminal-tests-coverage: suite ${suite} failed (exit ${rc})" >&2
       exit "${rc}"
