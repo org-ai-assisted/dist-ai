@@ -10,8 +10,9 @@
 ## TYPES a command into it (so the shot shows the prompt, the command, its output
 ## and the state of the prompt AFTER it -- what a user actually sees, and how to
 ## reproduce it), and screenshots the DECORATED window (title bar included):
-##   Case A (random) : head -c 1200 /dev/random   -- genuine random data, sized so
-##                     the returned prompt stays visible below the garble.
+##   Case A (random) : cat random.payload         -- a FIXED pseudo-random garble field
+##                     (deterministic, seeded; see lib-capture.sh), sized so the returned
+##                     prompt stays visible below the garble.
 ##   Case B (crafted): cat crafted.payload       -- an OSC-0 title hijack plus a
 ##                     stuck colour and a DEC line-drawing charset shift, none reset
 ##                     (the terminal-poc-corpus crafted-hostile-log PoC, decoded by
@@ -231,7 +232,12 @@ launch() {  ## $1=emulator  $2=case  $3=pgid-file
    cmd=()
    case "${e}" in
       xterm)
-         cmd=("${base[@]}" xterm -geometry "84x${rows}" -fa 'Monospace' -fs 11 -e "${sh[@]}")
+         ## forceBoxChars: draw DEC line-drawing with xterm's own crisp integer
+         ## line-drawing, not the AA'd font glyph. The font glyph rendered with a
+         ## bistable 1px sub-pixel jitter run-to-run on the tui-showcase box border;
+         ## the internal line-drawing is pixel-exact and deterministic.
+         cmd=("${base[@]}" xterm -xrm 'XTerm.vt100.forceBoxChars: true' \
+            -geometry "84x${rows}" -fa 'Monospace' -fs 11 -e "${sh[@]}")
          ;;
       urxvt)
          cmd=("${base[@]}" urxvt -geometry "84x${rows}" -fn 'xft:Monospace:size=11' -e "${sh[@]}")

@@ -100,8 +100,9 @@ X11 path only. `wayland-capture.sh` prints the prompt itself and runs the comman
 
 ### The payloads (inputs to the comparison)
 
-- **Case A - random.** `head -c 1200 /dev/random`: genuine random data, no
-  crafted escapes.
+- **Case A - random.** `cat random.payload`: a fixed pseudo-random garble field,
+  seeded and deterministic (regeneration is byte-identical), ESC bytes filtered
+  out so it carries no crafted escapes.
 - **Case B - a crafted hostile log.** `crafted.payload` carries, mid-stream, the
   escapes real hostile output can carry: `OSC 0` (silently rewrites the window
   title, never reset), `SGR 31;41` (a stuck red-on-red), and `ESC ( 0` (a DEC

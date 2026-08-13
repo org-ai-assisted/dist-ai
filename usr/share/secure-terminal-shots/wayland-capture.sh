@@ -11,8 +11,9 @@
 ##
 ## THREAT MODEL: a terminal cannot protect you from running hostile CODE, only from
 ## DISPLAYING hostile DATA. So every case DISPLAYS data -- `cat crafted.payload`,
-## `cat homoglyph.payload`, `head -c 1200 /dev/random` -- and NEVER runs a script. The
-## attack payloads are reproduced from the terminal-poc-corpus (single source of truth).
+## `cat homoglyph.payload`, `cat random.payload` -- and NEVER runs a script. The
+## attack payloads are reproduced from the terminal-poc-corpus (single source of truth);
+## the inline demos (notify / zerowidth / random) are generated deterministically.
 ##
 ## Terminal-set flags (mainly for fast development):
 ##   --wayland-terminals   the native-Wayland set

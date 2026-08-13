@@ -36,19 +36,23 @@
 ##                every text-attack class at once; a full-screen "what you see vs what
 ##                is there" table)
 ##   notify    -- cat notify.payload    (an OSC-9 desktop-notification from log output)
-##   random    -- head -c N /dev/random (genuine random garble)
+##   random    -- cat random.payload    (a fixed pseudo-random garble field, deterministic)
 ##
 ## SINGLE SOURCE OF TRUTH: the attack payloads come from the terminal-poc-corpus
 ## (canary-forked, hex-encoded, harness-verified), reproduced by its tools/reproduce.py
 ## -- NOT hand-written here. The inline exceptions are the page-facing display demos that
 ## carry NO canary detection token: `notify` (friendly-wording OSC-9 demo), `zerowidth`
-## (a self-describing hidden zero-width byte) and `random` (genuine kernel garble).
+## (a self-describing hidden zero-width byte) and `random` (a fixed pseudo-random field).
 
-## /dev/random (not urandom): equivalent once seeded on a modern kernel, and
-## Kicksecure prefers it. https://www.kicksecure.com/wiki/Dev/Entropy
-## Sized so the returned prompt stays visible below the garble.
+## DETERMINISTIC pseudo-random garble field, sized so the returned prompt stays visible
+## below it. A live /dev/random would churn the shot on every run (never byte-identical);
+## a FIXED-seed generator makes regeneration a no-op when nothing else changed. Generated
+## by python3's seeded Mersenne-Twister (specified + stable across versions/platforms). ESC
+## (0x1b) bytes are dropped so no escape sequence that happens to fall in the garble can
+## hijack the terminal (alt-screen / clear / OSC title) -- the field renders as pure garble
+## every run, and the exact bytes are irrelevant to the demonstration.
 shots_random_bytes=1200
-shots_random_source='/dev/random'
+shots_random_seed=0
 
 ## image-optimize (lossless PNG->webp) is a bundled dist-ai tool at usr/bin/image-optimize,
 ## a FIXED location relative to THIS file (usr/share/secure-terminal-shots/lib-capture.sh) in
@@ -135,7 +139,7 @@ shots_payload_cmd() {  ## $1=case -> the command string the terminal displays
          printf '%s' 'cat notify.payload'
          ;;
       random)
-         printf '%s' "head -c ${shots_random_bytes} ${shots_random_source}"
+         printf '%s' 'cat random.payload'
          ;;
    esac
 }
@@ -177,6 +181,17 @@ shots_generate_logs() {  ## $1=script-relative fallback dir $2=dest-dir
    ## no zero-width byte at all. \x is locale-independent.
    zerowidth=$'A hidden zero-width byte sits inside this word: admin\xe2\x80\x8bistrator -- invisible on a normal terminal, boxed by secure-terminal.\n'
    printf '%s' "${zerowidth}" > "${dest}/zerowidth.payload" || return 1
+   ## random: a DETERMINISTIC pseudo-random garble field (shots_random_seed / _bytes). A live
+   ## /dev/random churned the shot every run; a fixed-seed generator gives byte-identical output
+   ## so regeneration is a no-op when nothing changed. Drawn from python3's seeded Mersenne-
+   ## Twister (stable across versions/platforms); 2x bytes are drawn and ESC (0x1b) filtered out
+   ## so a stray escape sequence in the garble can never hijack the terminal (alt-screen / clear /
+   ## OSC title), then sliced to the exact size. Not a corpus detection payload (no canary token)
+   ## -- an inline page-facing demo like notify / zerowidth.
+   python3 -c 'import random,sys
+n=int(sys.argv[1]); r=random.Random(int(sys.argv[2]))
+buf=bytes(x for x in (r.getrandbits(8) for _ in range(n*2)) if x!=0x1b)[:n]
+sys.stdout.buffer.write(buf)' "${shots_random_bytes}" "${shots_random_seed}" > "${dest}/random.payload" || return 1
 }
 
 shots_optimize_to_webp() {  ## $@=produced PNG shots -> convert each to webp in place
