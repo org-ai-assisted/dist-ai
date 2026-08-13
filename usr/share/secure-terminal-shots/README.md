@@ -2,7 +2,10 @@
 
 All the screenshots on <https://secure-terminal.github.io> are produced here, by
 committed generators. To update a shot, RE-RUN the generator; nothing is
-hand-drawn. One entry point drives both:
+hand-drawn. Each generator captures a PNG and then losslessly converts it to
+`.webp` (via the shipped `image-optimize --webp`), because the site references
+the shots as `.webp`; a regenerated shot therefore lands already optimized. One
+entry point drives both:
 
     secure-terminal-shots [review|comparison|comparison-wayland] [ARGS...]
 

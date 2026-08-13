@@ -509,4 +509,7 @@ else
    exit 1
 fi
 
+## Convert the captured PNGs to webp (the site references them as .webp).
+shots_optimize_to_webp "${out}"/*.png
+
 printf '%s\n' "done; shots in ${out}"

@@ -52,6 +52,22 @@ else
    shots_dir='/usr/share/secure-terminal-shots'
 fi
 
+optimize_to_webp() {  ## $@=produced PNG shots -> convert each to webp in place
+   ## The site references these shots as .webp; convert a freshly generated PNG
+   ## (removing it) with the shipped image-optimize, so a regenerated shot lands
+   ## optimized rather than being caught later by the pre-commit image gate.
+   ## Missing tool -> warn, leave PNGs (never a silent skip).
+   if ! type -P image-optimize >/dev/null; then
+      printf '%s\n' "secure-terminal-shots: image-optimize not on PATH; shots left as PNG (run 'image-optimize --webp' on them before committing)" >&2
+      return 0
+   fi
+   local shot
+   for shot in "$@"; do
+      [ -f "${shot}" ] || continue
+      image-optimize --webp --quiet -- "${shot}" >/dev/null
+   done
+}
+
 repo=''
 [ -v SECURE_TERMINAL_REPO ] || SECURE_TERMINAL_REPO=''
 if [ -n "${SECURE_TERMINAL_REPO}" ]; then
@@ -110,6 +126,7 @@ if [ "${mode}" = 'hero' ] || [ "${mode}" = 'modes' ]; then
    fi
    export PYTHONPATH="${repo}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
    python3 -- "${shots_dir}/${gen}" "${out_dir}/${outfile}"
+   optimize_to_webp "${out_dir}/${outfile}"
    exit 0
 fi
 
@@ -134,6 +151,7 @@ for spec in \
    'copy copy-warning.png'; do
    read -r kind file <<< "${spec}"
    python3 -- "${shot_script}" "${out_dir}/${file}" "${kind}"
+   optimize_to_webp "${out_dir}/${file}"
 done
 
-printf '%s\n' "secure-terminal-shots: wrote paste-warning.png + copy-warning.png to ${out_dir}"
+printf '%s\n' "secure-terminal-shots: wrote paste-warning + copy-warning shots to ${out_dir}"
