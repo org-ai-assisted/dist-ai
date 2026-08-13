@@ -191,3 +191,164 @@ shots_optimize_to_webp() {  ## $@=produced PNG shots -> convert each to webp in 
       "${shots_image_optimize}" --webp --quiet -- "${shot}" >/dev/null
    done
 }
+
+## ---- reliable process-group reaping + per-capture deadline ------------------------
+##
+## THE REAPING MODEL. Every terminal / GUI a capture starts is launched in its OWN session
+## (setsid), and that session's PGID is recorded, so teardown takes down the WHOLE tree with a
+## single `kill -- -PGID`. This is the ONLY reliable reaper for the secure-terminal GUI, which
+## runs as `python3 .../usr/bin/secure-terminal`: its process NAME is `python3`, so the old
+## `pkill -x secure-terminal` never matched it, and a `kill <child-pid>` reached only the direct
+## child, leaking the GUI + its shell + child programs. Reaping by the recorded PGID, and (for
+## orphans left by a crashed run) by the run's unique MARKER via the safe-pgrep/safe-pkill
+## wrappers, is what stops the pile-up. NEVER `pkill -x python3` -- it would kill unrelated
+## python GUIs across the whole session; NEVER bare `pgrep -f` / `pkill -f` -- they self-match
+## this shell.
+
+## A run's unique MARKER is its mktemp runtime dir path (present in every spawned process's argv
+## -- via the shell's `--rcfile <runtime>/home/.strc` and the recorded pgid file). The registry
+## records live-run markers so a crashed run's orphans can be reaped by the NEXT run's startup
+## pre-clean or by `secure-terminal-shots --cleanup`. Overridable for tests; a fixed ${TMP} path
+## so it is shared between a run and a later cleanup invocation.
+[ -v TMP ] || TMP=/tmp
+shots_run_registry="${SHOTS_RUN_REGISTRY:-${TMP}/secure-terminal-shots.markers}"
+
+## HARD-FAIL if the safe-pgrep/safe-pkill wrappers are absent. They ship with private-ai-config
+## and are REQUIRED: reliable reaping must never fall back to bare pgrep/pkill (self-match trap)
+## or to `pkill -x python3` (cross-session GUI kill). Their absence is a provisioning bug.
+shots_require_safe_ps() {
+   ## `type -P` (a bash builtin: no PATH lookup of its own, so it still answers under an empty
+   ## PATH) resolves an executable ON PATH only -- unlike `command -v` it ignores aliases/
+   ## functions, matching helper-scripts `has`. `has` itself is not used here: this fragment is
+   ## deliberately self-contained (its sandbox has no helper-scripts checkout to source has.sh
+   ## from), so it must not add that dependency.
+   if type -P safe-pgrep >/dev/null 2>&1 && type -P safe-pkill >/dev/null 2>&1; then
+      return 0
+   fi
+   printf '%s\n' 'shots: safe-pgrep/safe-pkill not found on PATH. They ship with private-ai-config and are REQUIRED for reliable process-group reaping (bare pgrep -f self-matches this shell; pkill -x python3 kills unrelated GUIs across sessions). This is a provisioning bug -- install private-ai-config in this sandbox. Refusing to fall back.' >&2
+   return 1
+}
+
+## Echo the PGID of a PID (via ps -o pgid=, robust to a comm containing spaces/parens); return 1
+## if unknown.
+shots_pgid_of() {  ## $1=pid -> PGID
+   local pid="$1" pgid
+   [ -n "${pid}" ] || return 1
+   pgid="$(ps -o pgid= -p "${pid}" 2>/dev/null | tr -d '[:space:]')" || return 1
+   [ -n "${pgid}" ] || return 1
+   printf '%s' "${pgid}"
+}
+
+## Launch a command in its OWN session (a fresh process group) and record that group's PGID into
+## PGID-FILE, so teardown reaps the whole process tree with `kill -- -PGID`. Backgrounds; returns
+## at once (the process is fully detached -- it does not need this shell to stay alive).
+shots_spawn_session() {  ## $1=pgid-file  $2..=command
+   local pgid_file="$1"
+   shift
+   ## setsid makes the inner bash a session/group leader, so its PID == its PGID == $$; it records
+   ## that, then runs the real command as a CHILD in the same session. The child inherits that
+   ## PGID, so teardown's `kill -- -PGID` reaps the whole group (leader bash + child + any tree it
+   ## spawns) exactly as before. No explicit `exec` (R-103): whether bash forks the final command
+   ## or last-command-optimises it into an in-place replacement, the recorded PGID is unchanged.
+   setsid -- bash -c 'echo "$$" >"$1"; shift; "$@"' bash "${pgid_file}" "$@" &
+}
+
+## Reap ONE recorded process group: TERM the whole group, then KILL after a short grace. Guards
+## against a non-numeric / bogus id and against ever signalling this shell's OWN group.
+shots_reap_group() {  ## $1=pgid
+   local pgid="$1" self i
+   [ -n "${pgid}" ] || return 0
+   case "${pgid}" in ''|*[!0-9]*) return 0 ;; esac
+   [ "${pgid}" -gt 1 ] || return 0
+   self="$(shots_pgid_of "$$" || true)"
+   [ "${pgid}" = "${self}" ] && return 0
+   kill -s TERM "-${pgid}" 2>/dev/null || true
+   for i in 1 2 3 4 5 6; do
+      kill -0 "-${pgid}" 2>/dev/null || return 0
+      sleep 0.5
+   done
+   kill -s KILL "-${pgid}" 2>/dev/null || true
+}
+
+## Reap every process group belonging to the run identified by its unique MARKER. Discovery is
+## via safe-pgrep (read-only, self-match-safe); the kill is by NUMERIC PGID (kill -- -PGID), the
+## only reliable way to take down a `python3` GUI and its whole child tree. A final safe-pkill
+## sweep catches any marked straggler whose group was missed. Safe wrappers ONLY -- never bare
+## pgrep -f / pkill -f / pkill -x. Because MARKER is a per-run mktemp path, this can NEVER touch a
+## process that does not carry that exact marker.
+shots_reap_run() {  ## $1=marker
+   local marker="$1" pid pgid self pgids='' p
+   shots_require_safe_ps || return 1
+   [ -n "${marker}" ] || return 0
+   self="$(shots_pgid_of "$$" || true)"
+   ## safe-pgrep exits 1 when nothing matches -- not an error here.
+   for pid in $(safe-pgrep --full -- "${marker}" 2>/dev/null || true); do
+      pgid="$(shots_pgid_of "${pid}" || true)"
+      case "${pgid}" in ''|*[!0-9]*) continue ;; esac
+      [ "${pgid}" -gt 1 ] || continue
+      [ "${pgid}" = "${self}" ] && continue
+      case " ${pgids} " in *" ${pgid} "*) : ;; *) pgids+=" ${pgid}" ;; esac
+   done
+   for p in ${pgids}; do kill -s TERM "-${p}" 2>/dev/null || true; done
+   [ -n "${pgids}" ] && sleep 2
+   for p in ${pgids}; do kill -s KILL "-${p}" 2>/dev/null || true; done
+   ## final sweep: a MARKED straggler whose group we missed (exit 1 = none, forgiven).
+   safe-pkill --signal KILL --full -- "${marker}" 2>/dev/null || true
+}
+
+## Record / drop / reap the run registry (markers of currently-live runs).
+shots_register_run() {  ## $1=marker
+   printf '%s\n' "$1" >> "${shots_run_registry}" 2>/dev/null || true
+}
+shots_deregister_run() {  ## $1=marker -- drop it from the registry on a clean exit
+   local marker="$1" tmp
+   [ -f "${shots_run_registry}" ] || return 0
+   tmp="$(mktemp)" || return 0
+   grep -Fxv -- "${marker}" "${shots_run_registry}" > "${tmp}" 2>/dev/null || true
+   mv -- "${tmp}" "${shots_run_registry}" 2>/dev/null || safe-rm -f -- "${tmp}" 2>/dev/null || true
+}
+## Reap + clear EVERY registered marker (orphans from prior crashed runs). Each marker is unique,
+## so this only ever touches that run's own processes.
+shots_reap_registered() {
+   local marker
+   shots_require_safe_ps || return 1
+   [ -f "${shots_run_registry}" ] || return 0
+   while IFS= read -r marker; do
+      [ -n "${marker}" ] || continue
+      shots_reap_run "${marker}"
+   done < "${shots_run_registry}"
+   safe-rm -f -- "${shots_run_registry}" 2>/dev/null || true
+}
+
+## Per-capture deadline. A long-lived GUI must stay alive WHILE it is screenshotted, so it cannot
+## run under `timeout` (that would kill it mid-capture). Instead a background watchdog reaps the
+## capture's whole process group (read from PGID-FILE) if the orchestration has not finished
+## within DEADLINE seconds, and touches FLAG-FILE so the caller can log the timeout. Cancel it
+## with shots_watchdog_cancel once the capture completes in time.
+shots_watchdog_start() {  ## $1=deadline-secs $2=pgid-file $3=flag-file -> echoes watchdog PID
+   local deadline="$1" pgid_file="$2" flag_file="$3"
+   ## The watchdog's fds MUST be redirected off any command-substitution pipe: a caller does
+   ## `wdog="$(shots_watchdog_start ...)"`, and a backgrounded child that inherited that pipe's
+   ## write end would make the `$()` block until the watchdog exits -- i.e. stall every capture
+   ## for the whole deadline. `</dev/null >/dev/null 2>&1` releases the pipe so `$()` returns at
+   ## once with just the PID.
+   (
+      i=0
+      while [ "${i}" -lt "${deadline}" ]; do
+         sleep 1
+         i=$(( i + 1 ))
+      done
+      pgid="$(cat "${pgid_file}" 2>/dev/null || true)"
+      if [ -n "${pgid}" ]; then
+         true > "${flag_file}" 2>/dev/null || true
+         shots_reap_group "${pgid}"
+      fi
+   ) </dev/null >/dev/null 2>&1 &
+   printf '%s' "$!"
+}
+shots_watchdog_cancel() {  ## $1=watchdog-pid
+   local wp="$1"
+   [ -n "${wp}" ] || return 0
+   kill "${wp}" 2>/dev/null || true
+   wait "${wp}" 2>/dev/null || true
+}

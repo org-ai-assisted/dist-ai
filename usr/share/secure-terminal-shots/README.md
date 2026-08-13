@@ -62,6 +62,13 @@ on an LXQt desktop. It writes to its own `shots/`; copy those to the site's
   a DIRECTORY (files land in `LOCAL_DIR/<basename-of-REMOTE>/`) and MERGES into an
   existing target. Pull into a FRESH empty dir, or stale shots from an earlier run
   contaminate the set.
+- Reaping: each terminal + the secure-terminal GUI runs in its OWN session (setsid) and is
+  reaped by the recorded PGID (`kill -- -PGID`), with a per-capture `SHOT_DEADLINE` (default
+  90s) watchdog. The GUI runs as `python3 .../secure-terminal`, so it is NEVER reaped by name
+  (`pkill -x secure-terminal` misses it; `pkill -x python3` would hit unrelated GUIs). Orphans
+  from a crashed run are marker-scoped (the run's unique mktemp dir, in every spawned argv);
+  a startup pre-clean reaps the prior run, and `secure-terminal-shots --cleanup` reaps leftovers
+  by hand. Discovery/sweep uses `safe-pgrep` / `safe-pkill` only -- their absence HARD-FAILS.
 
 ### Why comparison-capture.sh does what it does
 

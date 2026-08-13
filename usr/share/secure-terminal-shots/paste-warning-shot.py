@@ -38,6 +38,12 @@ from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout   # noqa: E402
 from PyQt6.QtGui import QPalette, QColor                         # noqa: E402
 
 from secure_terminal.review import ReviewBar               # noqa: E402
+from secure_terminal.sanitize import THEMES                # noqa: E402
+
+# Match the app's shipped default theme so the shot never drifts from what users
+# see. Colours come from THEMES (the single source of truth); only THEME_NAME
+# needs touching if the app's default theme ever changes again.
+THEME_NAME = 'light'
 
 # A paste that looks like an ordinary install one-liner but hides look-alikes and
 # invisibles: the 'a' in "example" and in "bash" are Cyrillic (U+0430), there is a
@@ -53,8 +59,8 @@ COUNTDOWN_SECONDS = 4
 
 class _Term:
     """Minimal stand-in for the tab that held the paste: the bar reads its theme
-    and font to style the preview panes (a real dark terminal, Hack font)."""
-    _theme = 'dark'
+    and font to style the preview panes (the terminal's theme, Hack font)."""
+    _theme = THEME_NAME
 
     def current_font_family(self):
         return 'Hack'
@@ -63,17 +69,23 @@ class _Term:
         pass
 
 
-def _dark_palette(app):
-    """The terminal's dark look, so the shot is identical regardless of the desktop
-    theme the capture happens to run under (reproducible output)."""
+def _theme_palette(app):
+    """Style the shot from the app theme (THEMES = source of truth), so it is
+    identical regardless of the desktop theme the capture runs under, and tracks
+    the app's default theme automatically."""
     app.setStyle('Fusion')
+    bg, fg = THEMES[THEME_NAME]
+    light = QColor(bg).lightnessF() >= 0.5
+    # button chrome derived from the base so it reads as a raised control against
+    # the terminal background in either theme.
+    button = QColor(bg).darker(108) if light else QColor(bg).lighter(160)
     pal = QPalette()
-    pal.setColor(QPalette.ColorRole.Window, QColor('#1b1e24'))
-    pal.setColor(QPalette.ColorRole.WindowText, QColor('#e6e6e6'))
-    pal.setColor(QPalette.ColorRole.Base, QColor('#14161b'))
-    pal.setColor(QPalette.ColorRole.Text, QColor('#e6e6e6'))
-    pal.setColor(QPalette.ColorRole.Button, QColor('#2a2e37'))
-    pal.setColor(QPalette.ColorRole.ButtonText, QColor('#e6e6e6'))
+    pal.setColor(QPalette.ColorRole.Window, QColor(bg))
+    pal.setColor(QPalette.ColorRole.WindowText, QColor(fg))
+    pal.setColor(QPalette.ColorRole.Base, QColor(bg))
+    pal.setColor(QPalette.ColorRole.Text, QColor(fg))
+    pal.setColor(QPalette.ColorRole.Button, button)
+    pal.setColor(QPalette.ColorRole.ButtonText, QColor(fg))
     app.setPalette(pal)
 
 
@@ -88,7 +100,7 @@ def main(argv):
     delay = COUNTDOWN_SECONDS if kind == 'paste' else 0
 
     app = QApplication([argv[0], '-platform', os.environ['QT_QPA_PLATFORM']])
-    _dark_palette(app)
+    _theme_palette(app)
 
     host = QWidget()
     layout = QVBoxLayout(host)

@@ -42,7 +42,7 @@ elif [ -d "${script_dir}/../../../../secure-terminal/usr/lib/python3/dist-packag
 fi
 
 if [ -z "${repo}" ] || [ ! -d "${repo}/usr/lib/python3/dist-packages/secure_terminal" ]; then
-   printf 'secure-terminal-tests: SKIP (secure_terminal not found; set SECURE_TERMINAL_REPO)\n' >&2
+   printf '%s\n' 'secure-terminal-tests: SKIP (secure_terminal not found; set SECURE_TERMINAL_REPO)' >&2
    exit 77
 fi
 
@@ -52,6 +52,13 @@ fi
 ## skipped). The only SKIP is a genuinely absent target checkout (above).
 
 export PYTHONPATH="${repo}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
+
+## Pin the font DPI to 72 for every suite process BEFORE Qt starts, so the Qt
+## suites' font-metric-derived geometry (the responsive-toolbar tier widths in
+## test_mainwin especially) is deterministic without each module having to
+## remember its own setdefault. Honour an explicit override (e.g. a real-compositor
+## run) so this is a safe default, not a lock.
+export QT_FONT_DPI="${QT_FONT_DPI:-72}"
 
 ## The pure, Qt-free tests always run; the Qt suites fail closed (exit 1) on a
 ## missing PyQt6/pyte rather than skipping. The suite fails if any test fails,
@@ -67,6 +74,7 @@ for test_file in \
    "${tests_dir}/test_fuzz.py" \
    "${tests_dir}/test_fuzz_harnesses.py" \
    "${tests_dir}/test_corpus.py" \
+   "${tests_dir}/test_invariants.py" \
    "${tests_dir}/test_cli.py" \
    "${tests_dir}/test_modules.py" \
    "${tests_dir}/test_review.py" \

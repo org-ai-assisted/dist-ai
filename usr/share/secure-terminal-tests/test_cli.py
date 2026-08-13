@@ -60,7 +60,8 @@ def _set_winsize(fd, rows, cols):
         pass                # a pty may reject the window size; it is advisory
 
 
-def run_in_pty(argv, feed=b'', tty_stdin=True, settle=0.8, feed_delay=0.0,
+def run_in_pty(argv, feed=b'', feed2=b'', feed2_delay=0.4, tty_stdin=True,
+               settle=0.8, feed_delay=0.0,
                winsize=None, close_stdin=False, send_winsize=False,
                send_sigint=False):
     """Run cli.main(argv) on THIS thread with fd 0/1/2 redirected to a pty (or,
@@ -93,6 +94,15 @@ def run_in_pty(argv, feed=b'', tty_stdin=True, settle=0.8, feed_delay=0.0,
                 os.write(writer, feed)
             except OSError:
                 pass        # the child may have exited; the feed is best-effort
+        if feed2:
+            # a SEPARATE later write, so the wrapper takes a distinct os.read() --
+            # e.g. a real Enter keystroke arriving after a pasted burst (the burst
+            # is stripped of its trailing submit; the lone Enter then submits).
+            time.sleep(feed2_delay)
+            try:
+                os.write(writer, feed2)
+            except OSError:
+                pass
         if close_stdin and not tty_stdin:
             try:
                 os.close(in_w)                 # EOF on the wrapper's stdin
@@ -226,9 +236,25 @@ _o4b, _rc4b = run_in_pty(['--', 'cat'], tty_stdin=False, feed=b'hi\n',
 ok(b'hi' in _o4b, 'the wrapper forwards our input to the child (cat echoes it)')
 eq(_rc4b, 0, 'a stdin EOF is forwarded so the child (cat) sees end-of-input and exits')
 
-# --- stdin forwarding + EOF: a shell reads our keystrokes and exits ------------
-_o5, _rc5 = run_in_pty([], feed=b'exit 3\n', settle=1.2, feed_delay=0.6)
-eq(_rc5, 3, 'the default shell runs, reads forwarded input, and its exit propagates')
+# --- stdin forwarding + Enter: typed input runs on the user's explicit Enter ----
+# 'exit 3' is forwarded verbatim (it carries no submit byte), then a SEPARATE lone
+# Enter keystroke submits it -- so an ordinary command still runs.
+_o5, _rc5 = run_in_pty([], feed=b'exit 3', feed2=b'\r', settle=1.5, feed_delay=0.6)
+eq(_rc5, 3, 'typed input plus a real Enter runs the command and its exit propagates')
+
+# --- SECURITY: a pasted stdin BURST must NOT auto-execute ----------------------
+# Unlike the GUI, the CLI has no bracketed paste (TERM=dumb strips DECSET 2004),
+# so a raw newline would submit the pasted command the instant it is written. A
+# multi-byte burst ending in a submit byte is treated as a paste and its trailing
+# submit dropped, so the command waits at the prompt. _strip_burst_submit is the
+# policy; the units below pin it (a raw forward -- the old behaviour -- fails them).
+eq(cli._strip_burst_submit(b'echo hi\n'), b'echo hi',
+   'a multi-byte burst ending in newline drops its trailing submit (no auto-run)')
+eq(cli._strip_burst_submit(b'a\nb\n'), b'a\nb',
+   'only the TRAILING submit is dropped; an embedded newline is preserved')
+eq(cli._strip_burst_submit(b'\r'), b'\r',
+   'a lone Enter keystroke is forwarded unchanged (typing still submits)')
+eq(cli._strip_burst_submit(b'x'), b'x', 'a single character is forwarded unchanged')
 
 # --- SIGWINCH during a run drives the resize handler (window size re-pushed) ---
 _o6, _rc6 = run_in_pty(['--', 'sh', '-c', 'sleep 0.6'], feed_delay=0.2,

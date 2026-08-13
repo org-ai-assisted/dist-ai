@@ -130,6 +130,17 @@ shots_require_image_optimize || exit 1
 
 ## ---- reproduce the corpus payloads once; the demo CATs them ---------------------
 work="$(mktemp -d)"
+## The run's unique reaping MARKER: the mktemp work dir, which every launched terminal / GUI
+## carries in its argv (each runs `sh -c 'cd ${work}; ...'`). Reaping is by session PGID, with
+## this marker as the orphan-sweep key -- so it can never touch a process lacking exactly it.
+run_marker="${work}"
+## Per-capture deadline (seconds): a hung render has its process group reaped, loop continues.
+SHOT_DEADLINE="${SHOT_DEADLINE:-90}"
+## Reliable reaping REQUIRES safe-pgrep/safe-pkill -- fail loudly, never fall back.
+shots_require_safe_ps || exit 1
+## Pre-clean orphans from a prior crashed run (marker-scoped), then register this run.
+shots_reap_registered || true
+shots_register_run "${run_marker}"
 ## propagate the real code: 77 is the missing-corpus SKIP, any other non-zero is a
 ## genuine payload-generation failure that must not read as a skip.
 shots_generate_logs "${here}" "${work}" || exit "$?"
@@ -191,46 +202,50 @@ start_compositor() {
       "labwc up on ${xdisplay}: WAYLAND_DISPLAY=${WAYLAND_DISPLAY} xwayland=${xwl_display:-none}"
 }
 
-## ---- launch one terminal running `sh -c` from the log dir --------------------
-launch_terminal() {
-   local name="$1" cmd="$2"
+## ---- launch one terminal running `sh -c` from the log dir, in its OWN session ----
+## so the whole tree can be reaped by the recorded PGID (the secure-terminal GUI runs as
+## `python3 .../secure-terminal`, process name `python3`, so a name kill never reaches it).
+launch_terminal() {  ## $1=name  $2=payload-command  $3=pgid-file
+   local name="$1" cmd="$2" pgf="$3" tcmd
    local sh="cd ${work}; printf 'user@host:~\$ %s\n' \"${cmd}\"; ${cmd}; sleep 600"
    local wl=(env -u DISPLAY GDK_BACKEND=wayland QT_QPA_PLATFORM=wayland
              "WAYLAND_DISPLAY=${WAYLAND_DISPLAY}" "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}")
    local x=(env -u WAYLAND_DISPLAY "DISPLAY=${xwl_display}")
+   tcmd=()
    case "${name}" in
       konsole)
-         "${wl[@]}" konsole --separate --hide-menubar --hide-tabbar -e sh -c "${sh}" >/dev/null 2>&1 &
+         tcmd=("${wl[@]}" konsole --separate --hide-menubar --hide-tabbar -e sh -c "${sh}")
          ;;
       qterminal)
-         "${wl[@]}" qterminal --hide-menu-bar -e "sh -c '${sh}'" >/dev/null 2>&1 &
+         tcmd=("${wl[@]}" qterminal --hide-menu-bar -e "sh -c '${sh}'")
          ;;
       xfce4-terminal)
-         "${wl[@]}" xfce4-terminal --disable-server --hide-menubar -x sh -c "${sh}" >/dev/null 2>&1 &
+         tcmd=("${wl[@]}" xfce4-terminal --disable-server --hide-menubar -x sh -c "${sh}")
          ;;
       mate-terminal)
-         "${wl[@]}" mate-terminal --disable-factory --hide-menubar -x sh -c "${sh}" >/dev/null 2>&1 &
+         tcmd=("${wl[@]}" mate-terminal --disable-factory --hide-menubar -x sh -c "${sh}")
          ;;
       alacritty)
-         "${wl[@]}" alacritty -o 'window.dimensions.columns=84' -o 'window.dimensions.lines=24' -e sh -c "${sh}" >/dev/null 2>&1 &
+         tcmd=("${wl[@]}" alacritty -o 'window.dimensions.columns=84' -o 'window.dimensions.lines=24' -e sh -c "${sh}")
          ;;
       kitty)
-         "${wl[@]}" kitty -o remember_window_size=no -o initial_window_width=780 -o initial_window_height=520 sh -c "${sh}" >/dev/null 2>&1 &
+         tcmd=("${wl[@]}" kitty -o remember_window_size=no -o initial_window_width=780 -o initial_window_height=520 sh -c "${sh}")
          ;;
       secure-terminal)
-         "${wl[@]}" PYTHONPATH="${st_repo}/usr/lib/python3/dist-packages" \
-            python3 "${st_repo}/usr/bin/secure-terminal" -- bash -c "${sh}" >/dev/null 2>&1 &
+         tcmd=("${wl[@]}" PYTHONPATH="${st_repo}/usr/lib/python3/dist-packages" \
+            python3 "${st_repo}/usr/bin/secure-terminal" -- bash -c "${sh}")
          ;;
       xterm)
-         "${x[@]}" xterm -geometry 84x24 -e sh -c "${sh}" >/dev/null 2>&1 &
+         tcmd=("${x[@]}" xterm -geometry 84x24 -e sh -c "${sh}")
          ;;
       urxvt)
-         "${x[@]}" urxvt -geometry 84x24 -e sh -c "${sh}" >/dev/null 2>&1 &
+         tcmd=("${x[@]}" urxvt -geometry 84x24 -e sh -c "${sh}")
          ;;
       st)
-         "${x[@]}" st -g 84x24 -e sh -c "${sh}" >/dev/null 2>&1 &
+         tcmd=("${x[@]}" st -g 84x24 -e sh -c "${sh}")
          ;;
    esac
+   [ "${#tcmd[@]}" -gt 0 ] && shots_spawn_session "${pgf}" "${tcmd[@]}" >/dev/null 2>&1
 }
 
 ## ---- capture: grim whole output, trim black margin to the window -------------
@@ -253,9 +268,14 @@ capture_one() {
 }
 
 cleanup() {
+   ## reap any capture group that leaked (marker-scoped safety net), then drop this run from the
+   ## registry before the work dir -- the marker -- is removed.
+   shots_reap_run "${run_marker}" 2>/dev/null || true
+   shots_deregister_run "${run_marker}" 2>/dev/null || true
    safe-rm --recursive --force -- "${work}" || true
    [ "${keep}" = 1 ] && return 0
-   pkill -x labwc 2>/dev/null || true
+   ## labwc + Xvfb are our own recorded children; kill them by PID (no name kill, which could
+   ## hit another session's labwc).
    kill "${labwc_pid}" "${xvfb_pid}" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -279,9 +299,16 @@ esac
 rc=0
 for name in "${term_list[@]}"; do
    for c in "${cases[@]}"; do
-      launch_terminal "${name}" "$(shots_payload_cmd "${c}")"
+      pgf="$(mktemp)"
+      flagf="${pgf}.timeout"
+      ## launch in its own session (records PGID into pgf); arm the per-capture watchdog so a
+      ## hung terminal is reaped rather than stalling the grid.
+      launch_terminal "${name}" "$(shots_payload_cmd "${c}")" "${pgf}"
+      wdog="$(shots_watchdog_start "${SHOT_DEADLINE}" "${pgf}" "${flagf}")"
       sleep "${settle}"
       capture_one "${out_dir}/${name}.${c}.png" && rc=0 || rc=$?
+      shots_watchdog_cancel "${wdog}"
+      [ -e "${flagf}" ] && printf '%s\n' "WARN ${name}.${c}: capture exceeded ${SHOT_DEADLINE}s deadline, group reaped" >&2
       case "${rc}" in
          0)
             printf '%s\n' "captured ${name}.${c}"
@@ -293,7 +320,11 @@ for name in "${term_list[@]}"; do
             printf '%s\n' "FAILED ${name}.${c}" >&2
             ;;
       esac
-      pkill -x "${name}" 2>/dev/null || true
+      ## reap the terminal by its recorded session PGID (NOT `pkill -x ${name}`, which never
+      ## matched the `python3` GUI and could hit other sessions' same-named processes).
+      term_pgid="$(cat "${pgf}" 2>/dev/null || true)"
+      shots_reap_group "${term_pgid}"
+      safe-rm -f -- "${pgf}" "${flagf}" 2>/dev/null || true
       sleep 0.5
    done
 done

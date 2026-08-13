@@ -145,9 +145,16 @@ assert_every_module_gated
 ## pyte is missing -- a security-relevant suite must never silently disable
 ## itself -- so both tiers below are always gated.
 export QT_QPA_PLATFORM=offscreen
+## Pin the font DPI to 72 for every suite process BEFORE Qt starts, so the Qt
+## suites' font-metric-derived geometry (the responsive-toolbar tier widths in
+## test_mainwin especially) is deterministic under coverage without relying on a
+## per-module setdefault. Honour an explicit override so this stays a safe
+## default rather than a lock.
+export QT_FONT_DPI="${QT_FONT_DPI:-72}"
 python3 -m coverage erase
 for suite in test_secure_terminal test_fuzz test_fuzz_harnesses test_corpus \
-             test_cli test_modules test_review test_mainwin test_widget; do
+             test_invariants test_cli test_modules test_review test_mainwin \
+             test_widget; do
    [ -f "${tests_dir}/${suite}.py" ] || continue
    rc=0
    python3 -m coverage run --parallel-mode --source="${pkg},${hooks}" -- \

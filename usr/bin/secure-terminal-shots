@@ -9,6 +9,11 @@
 ## generators live together in usr/share/secure-terminal-shots/ (see its README).
 ##
 ## Usage: secure-terminal-shots [review|hero|modes|comparison|comparison-wayland|clipboard] [ARGS...]
+##        secure-terminal-shots --cleanup
+##
+##   --cleanup   reap any leftover capture process groups (the terminals + the secure-terminal
+##               GUI) a crashed/interrupted comparison run left behind. Marker-scoped -- only
+##               reaps a registered run's own processes, never anything else. Needs no checkout.
 ##
 ##   clipboard   the OSC 52 clipboard-write VERDICT lane -- per-terminal honored/refused,
 ##               read back from the real X clipboard via PyQt6 (no screenshot). NEEDS an X
@@ -50,6 +55,15 @@ if [ -d "${script_dir}/../share/secure-terminal-shots" ]; then
    shots_dir="${script_dir}/../share/secure-terminal-shots"
 else
    shots_dir='/usr/share/secure-terminal-shots'
+fi
+
+## --cleanup: reap any leftover capture process groups (terminals + the secure-terminal GUI) a
+## crashed/interrupted run left behind. Marker-scoped; needs no secure-terminal checkout, so it
+## runs BEFORE the repo resolution + SKIP logic below.
+if [ "${1:-}" = '--cleanup' ]; then
+   run_rc=0
+   "${shots_dir}/shots-cleanup" || run_rc="$?"
+   exit "${run_rc}"
 fi
 
 optimize_to_webp() {  ## $@=produced PNG shots -> convert each to webp in place

