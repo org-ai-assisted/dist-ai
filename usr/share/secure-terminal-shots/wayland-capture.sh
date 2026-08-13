@@ -293,4 +293,7 @@ for name in "${term_list[@]}"; do
       sleep 0.5
    done
 done
+## Convert the captured PNGs to webp (the site references them as .webp).
+shots_optimize_to_webp "${out_dir}"/*.png
+
 printf '%s\n' "done; shots in ${out_dir}"

@@ -2,7 +2,10 @@
 
 All the screenshots on <https://secure-terminal.github.io> are produced here, by
 committed generators. To update a shot, RE-RUN the generator; nothing is
-hand-drawn. One entry point drives both:
+hand-drawn. Each generator captures a PNG and then losslessly converts it to
+`.webp` (via the shipped `image-optimize --webp`), because the site references
+the shots as `.webp`; a regenerated shot therefore lands already optimized. One
+entry point drives both:
 
     secure-terminal-shots [review|comparison|comparison-wayland] [ARGS...]
 
@@ -27,7 +30,7 @@ on an LXQt desktop. It writes to its own `shots/`; copy those to the site's
 
     # install the emulators + compositor (this repo installs nothing itself):
     sudo apt install --no-install-recommends \
-      xterm rxvt-unicode stterm konsole xfce4-terminal mate-terminal \
+      xterm rxvt-unicode stterm konsole gnome-terminal xfce4-terminal mate-terminal \
       lxterminal qterminal alacritty kitty \
       labwc openbox xdotool wmctrl x11-utils x11-xserver-utils imagemagick
 
@@ -78,7 +81,7 @@ X11 path only. `wayland-capture.sh` prints the prompt itself and runs the comman
   `xdotool windowsize 720 <h>` (`<h>` is the case's resize height). Window SELECTION is
   not special-cased: `find_window()` picks the largest new non-baseline window for every
   emulator.
-- Under labwc the random stream does not shrink or kill windows, so all 9 emulators
+- Under labwc the random stream does not shrink or kill windows, so all 10 emulators
   yield a random shot too. A generic post-injection rescue still resizes any window
   left narrower than 300px.
 - Window height is CASE-AWARE. The short cases run at 84x24 (kitty/qterminal at their

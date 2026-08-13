@@ -138,3 +138,19 @@ shots_generate_logs() {  ## $1=script-relative fallback dir $2=dest-dir
    notify=$'build log: packaging step 3 of 5\n\033]9;Safe demonstration only: secure-terminal terminal-attack comparison test. No action needed.\007post-install: done\n'
    printf '%s' "${notify}" > "${dest}/notify.payload" || return 1
 }
+
+shots_optimize_to_webp() {  ## $@=produced PNG shots -> convert each to webp in place
+   ## Match the site's webp image references: a freshly captured PNG is losslessly
+   ## converted to <name>.webp (the PNG removed) via the shipped image-optimize, so
+   ## a regenerated shot lands optimized rather than being caught later by the
+   ## pre-commit image gate. Missing tool -> warn, leave PNGs (never a silent skip).
+   if ! type -P image-optimize >/dev/null; then
+      printf '%s\n' "shots: image-optimize not on PATH; shots left as PNG (run 'image-optimize --webp' on them before committing)" >&2
+      return 0
+   fi
+   local shot
+   for shot in "$@"; do
+      [ -f "${shot}" ] || continue
+      image-optimize --webp --quiet -- "${shot}" >/dev/null
+   done
+}

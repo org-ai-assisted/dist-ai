@@ -1,0 +1,428 @@
+#!/usr/bin/python3 -Bsu
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+"""Site-level image optimizer for the static GitHub Pages sites.
+
+Layers on top of the generic `image-optimize`: it knows the site policy that the
+generic tool deliberately does not.
+
+  - CONTENT images (referenced by <img>/<source>/<a href>/CSS url()) -> converted
+    to webp via `image-optimize --webp` (the PNG/JPEG is deleted), and every
+    reference to them in *.html / *.css is rewritten to the .webp name.
+  - og:image / twitter:image and favicon / apple-touch-icon targets -> lossless
+    minimize IN PLACE, format kept (webp is still spotty in social scrapers, and
+    favicons must stay what the <link> declares).
+  - Rasters referenced by NOTHING in the site -> minimize in place, format kept
+    and name unchanged (they may be consumed externally, e.g. an org avatar; the
+    tool never orphans a file it cannot see a use for). Reported, not converted.
+
+Reference rewriting is by basename: the sites keep every raster basename unique
+(verified up front; the tool refuses to rewrite if that ever stops holding), so a
+bounded basename swap covers root-absolute (/foo.png), relative (foo.png,
+sub/foo.png) and same-site absolute-URL forms alike.
+
+Usage: site-image-optimize [--check] [--force] <site-root>
+  --check  dry run: classify and report, mutate nothing.
+  --force  run even if the git work tree is dirty (default: refuse, to avoid
+           clobbering a concurrent session's or your own uncommitted work).
+
+Exit: 0 ok, 1 on error, 2 on usage error.
+"""
+
+import html.parser
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+IMAGE_EXTS = (".png", ".jpg", ".jpeg")
+RASTER_RE = re.compile(r".*\.(png|jpe?g)$", re.IGNORECASE)
+## url(...) in CSS or inline style, single/double/unquoted.
+## url() with a quoted value may legitimately contain ')'; match the quoted
+## forms whole and only forbid ')' in the unquoted form.
+CSS_URL_RE = re.compile(
+    r"""url\(\s*(?:"([^"]*)"|'([^']*)'|([^'"()\s]+))\s*\)""", re.IGNORECASE)
+
+
+def css_urls(text):
+    for match in CSS_URL_RE.finditer(text):
+        yield next(group for group in match.groups() if group is not None)
+## Meta property/name values that carry a social-card image URL.
+OG_KEYS = ("og:image", "og:image:url", "og:image:secure_url", "twitter:image")
+ICON_RELS = ("icon", "shortcut icon", "apple-touch-icon", "mask-icon")
+
+
+def image_optimize_bin():
+    tool = os.environ.get("IMAGE_OPTIMIZE_BIN") or shutil.which("image-optimize")
+    if not tool:
+        sys.stderr.write("site-image-optimize: image-optimize not on PATH "
+                         "(set IMAGE_OPTIMIZE_BIN)\n")
+        sys.exit(1)
+    return tool
+
+
+class RefParser(html.parser.HTMLParser):
+    """Collect an HTML file's image references, split into 'protected'
+    (og:image / favicon targets) and 'content' (subresource / anchor)."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.protected = []       # raw URL strings
+        self.content = []         # raw URL strings
+        self.styles = []          # CSS text: style="" attrs + <style> bodies
+        self._in_style = 0
+
+    def handle_endtag(self, tag):
+        if tag == "style" and self._in_style:
+            self._in_style -= 1
+
+    def handle_data(self, data):
+        if self._in_style:
+            self.styles.append(data)
+
+    def handle_starttag(self, tag, attrs):
+        amap = {k: (v or "") for k, v in attrs}
+        if tag == "style":
+            self._in_style += 1
+        if amap.get("style"):
+            self.styles.append(amap["style"])
+        if tag == "meta":
+            key = (amap.get("property") or amap.get("name") or "").lower()
+            if key in OG_KEYS and amap.get("content"):
+                self.protected.append(amap["content"])
+            return
+        if tag == "link":
+            rels = (amap.get("rel") or "").lower().split()
+            rel = " ".join(rels)
+            if (rel in ICON_RELS or any(r in ("icon", "apple-touch-icon")
+                                        for r in rels)) and amap.get("href"):
+                self.protected.append(amap["href"])
+            return
+        if tag in ("img", "source"):
+            if amap.get("src"):
+                self.content.append(amap["src"])
+            if amap.get("srcset"):
+                self.content.extend(_srcset_urls(amap["srcset"]))
+            return
+        if tag == "a" and amap.get("href"):
+            if RASTER_RE.match(amap["href"].split("#")[0].split("?")[0]):
+                self.content.append(amap["href"])
+
+
+def _srcset_urls(value):
+    urls = []
+    for part in value.split(","):
+        token = part.strip().split()
+        if token:
+            urls.append(token[0])
+    return urls
+
+
+def url_to_local(url, site_root, site_host, page_dir):
+    """Resolve a reference URL to an absolute path under site_root, or None if it
+    is external / non-local / escapes the tree."""
+    target = url.split("#", 1)[0].split("?", 1)[0]
+    if not target:
+        return None
+    ## Only THIS site's own absolute URL maps back onto the tree as a root-absolute
+    ## path; a sibling-site host is external (its asset lives in another checkout).
+    for scheme in ("http://", "https://"):
+        prefix = scheme + site_host + "/"
+        if target.startswith(prefix):
+            target = "/" + target[len(prefix):]
+            break
+    if target.startswith(("http://", "https://", "//", "data:", "mailto:")):
+        return None
+    if target.startswith("/"):
+        candidate = os.path.join(site_root, target.lstrip("/"))
+    else:
+        candidate = os.path.join(page_dir, target)
+    candidate = os.path.realpath(candidate)
+    root_real = os.path.realpath(site_root)
+    if candidate == root_real or candidate.startswith(root_real + os.sep):
+        return candidate
+    return None
+
+
+def walk_files(root, suffixes):
+    for base, dirs, files in os.walk(root):
+        if ".git" in dirs:
+            dirs.remove(".git")
+        for name in files:
+            if name.lower().endswith(suffixes):
+                yield os.path.join(base, name)
+
+
+def collect_refs(site_root, site_host):
+    """Return (protected_paths, content_paths): sets of absolute raster paths."""
+    protected = set()
+    content = set()
+    for page in walk_files(site_root, (".html",)):
+        page_dir = os.path.dirname(page)
+        try:
+            with open(page, encoding="utf-8") as handle:
+                markup = handle.read()
+        except (OSError, UnicodeError):
+            continue
+        parser = RefParser()
+        parser.feed(markup)
+        for url in parser.protected:
+            local = url_to_local(url, site_root, site_host, page_dir)
+            if local and RASTER_RE.match(local):
+                protected.add(local)
+        for url in parser.content:
+            local = url_to_local(url, site_root, site_host, page_dir)
+            if local and RASTER_RE.match(local):
+                content.add(local)
+        ## url(...) in a style attribute or <style> block counts as a content
+        ## reference too -- but NOT url(...) in a script, comment or code sample.
+        for url in css_urls("\n".join(parser.styles)):
+            local = url_to_local(url, site_root, site_host, page_dir)
+            if local and RASTER_RE.match(local):
+                content.add(local)
+    for sheet in walk_files(site_root, (".css",)):
+        sheet_dir = os.path.dirname(sheet)
+        try:
+            with open(sheet, encoding="utf-8") as handle:
+                css = handle.read()
+        except (OSError, UnicodeError):
+            continue
+        for url in css_urls(css):
+            local = url_to_local(url, site_root, site_host, sheet_dir)
+            if local and RASTER_RE.match(local):
+                content.add(local)
+    ## An image used as BOTH a social card and content must stay the card format.
+    content -= protected
+    return protected, content
+
+
+## The reference corpus to rewrite -- kept in step with check_site's
+## _REF_TEXT_EXTS so a converted image leaves NO stale .png/.jpg mention anywhere
+## the orphaned-asset gate looks (a shots/README.md that still names copy-warning.png
+## after it became copy-warning.webp).
+REWRITE_EXTS = (
+    ".html", ".htm", ".css", ".js", ".mjs", ".md", ".markdown", ".json",
+    ".webmanifest", ".svg", ".xml", ".txt", ".yml", ".yaml",
+)
+
+
+def rewrite_references(site_root, renames):
+    """renames: {old_basename: new_basename}. Rewrite each old basename to its new
+    one wherever it appears as a complete path token in the reference corpus.
+    Returns the number of files changed."""
+    if not renames:
+        return 0
+    ## Longest-first so 'foo.png' cannot be shadowed by a prefix alternative.
+    keys = sorted((re.escape(k) for k in renames), key=len, reverse=True)
+    ## Bounded so a basename is matched as a whole token (not inside a longer
+    ## name): not preceded by a name char / dot / dash (a '/' path separator IS
+    ## allowed), not followed by a name char / dash.
+    ## Not followed by a name char / dash, and not by '.<word>' -- so
+    ## "logo.png.zip" (a different file) is left alone, not corrupted to
+    ## "logo.webp.zip".
+    pattern = re.compile(
+        r"(?<![\w.-])(" + "|".join(keys) + r")(?![\w-])(?!\.\w)")
+    changed = 0
+    root_real = os.path.realpath(site_root)
+    for path in list(walk_files(site_root, REWRITE_EXTS)):
+        ## Never write THROUGH a symlink: a repo symlink could otherwise modify a
+        ## file outside the checkout. Skip a symlink or any path resolving out.
+        if os.path.islink(path):
+            continue
+        real = os.path.realpath(path)
+        if real != root_real and not real.startswith(root_real + os.sep):
+            continue
+        try:
+            with open(path, encoding="utf-8") as handle:
+                text = handle.read()
+        except (OSError, UnicodeError):
+            continue
+        new_text = pattern.sub(lambda m: renames[m.group(1)], text)
+        if new_text != text:
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(new_text)
+            changed += 1
+    return changed
+
+
+def run_optimize(tool, args):
+    return subprocess.run([tool] + args, capture_output=True, text=True)
+
+
+def main():
+    argv = sys.argv[1:]
+    check = False
+    force = False
+    roots = []
+    for arg in argv:
+        if arg == "--check":
+            check = True
+        elif arg == "--force":
+            force = True
+        elif arg.startswith("-"):
+            sys.stderr.write("site-image-optimize: unknown option %r\n" % arg)
+            return 2
+        else:
+            roots.append(arg)
+    if len(roots) != 1:
+        sys.stderr.write("Usage: site-image-optimize [--check] <site-root>\n")
+        return 2
+    site_root = os.path.realpath(roots[0])
+    if not os.path.isdir(site_root):
+        sys.stderr.write("site-image-optimize: not a directory: %s\n" % roots[0])
+        return 2
+    site_host = os.path.basename(site_root)
+
+    ## Refuse to MUTATE a dirty git work tree: this tool deletes and rewrites
+    ## files across the whole site, so a concurrent session's uncommitted work (or
+    ## your own) would be clobbered -- and a bulk conversion is exactly what should
+    ## land as its own clean commit. --check is read-only and always allowed.
+    if not check and not force:
+        top = subprocess.run(
+            ["git", "-C", site_root, "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True)
+        if top.returncode != 0:
+            ## No git safety net at all is MORE dangerous than a dirty one, not
+            ## less: a bad conversion could not be reverted. Require --force.
+            sys.stderr.write(
+                "site-image-optimize: refusing to run -- %s is not a git work "
+                "tree, so a conversion could not be reverted. Pass --force to "
+                "override.\n" % site_root)
+            return 1
+        dirty = subprocess.run(
+            ["git", "-C", site_root, "status", "--porcelain"],
+            capture_output=True, text=True)
+        if dirty.returncode == 0 and dirty.stdout.strip():
+            sys.stderr.write(
+                "site-image-optimize: refusing to run -- the git work tree at "
+                "%s has uncommitted changes; a concurrent session's work (or "
+                "your own) could be clobbered. Commit them first, or pass "
+                "--force.\n" % top.stdout.strip())
+            return 1
+
+    tool = image_optimize_bin()
+
+    ## Only rasters whose real path stays INSIDE the site: a symlink pointing out
+    ## of the checkout must never be optimized in place (that would mutate a file
+    ## outside the site, which the dirty-tree guard cannot see).
+    root_real = os.path.realpath(site_root)
+    rasters = []
+    for candidate in walk_files(site_root, IMAGE_EXTS):
+        ## A symlinked raster breaks on conversion (its target is deleted but the
+        ## symlink-name references are not renamed), and a target outside the root
+        ## must never be mutated. Skip both.
+        if os.path.islink(candidate):
+            sys.stderr.write("site-image-optimize: skipping %s -- symlink\n"
+                             % os.path.relpath(candidate, site_root))
+            continue
+        real = os.path.realpath(candidate)
+        if real == root_real or real.startswith(root_real + os.sep):
+            rasters.append(real)
+        else:
+            sys.stderr.write("site-image-optimize: skipping %s -- symlink target "
+                             "escapes the site root\n"
+                             % os.path.relpath(candidate, site_root))
+    rasters = sorted(set(rasters))
+    ## Basename uniqueness underpins the rewrite; refuse if it ever breaks.
+    seen = {}
+    for path in rasters:
+        seen.setdefault(os.path.basename(path), []).append(path)
+    dups = {b: p for b, p in seen.items() if len(p) > 1}
+    if dups:
+        sys.stderr.write("site-image-optimize: raster basenames are not unique; "
+                         "cannot rewrite references safely:\n")
+        for base, paths in sorted(dups.items()):
+            sys.stderr.write("  %s: %s\n" % (base, ", ".join(paths)))
+        return 1
+
+    protected, content = collect_refs(site_root, site_host)
+
+    to_convert = [p for p in rasters if p in content]
+    to_minimize = [p for p in rasters if p not in content]  # protected + unref'd
+    unreferenced = [p for p in to_minimize if p not in protected]
+
+    def rel(path):
+        return os.path.relpath(path, site_root)
+
+    ## Basename uniqueness does not stop foo.png and foo.jpg from both producing
+    ## foo.webp -- image-optimize replaces its derived destination, so the second
+    ## conversion would destroy the first. Refuse a stem collision up front.
+    stems = {}
+    for path in to_convert:
+        stem = os.path.splitext(path)[0] + ".webp"
+        stems.setdefault(stem, []).append(path)
+    collisions = {s: p for s, p in stems.items() if len(p) > 1}
+    if collisions:
+        sys.stderr.write("site-image-optimize: refusing -- multiple images would "
+                         "convert to the same webp:\n")
+        for dest, paths in sorted(collisions.items()):
+            sys.stderr.write("  %s <- %s\n"
+                             % (rel(dest), ", ".join(rel(x) for x in paths)))
+        return 1
+
+    if check:
+        print("site-image-optimize (dry run): %s" % site_root)
+        print("  content -> webp (%d):" % len(to_convert))
+        for path in to_convert:
+            print("    %s" % rel(path))
+        print("  keep format, minimize (%d): og:image/favicon + unreferenced"
+              % len(to_minimize))
+        for path in sorted(protected):
+            print("    [card/icon] %s" % rel(path))
+        for path in unreferenced:
+            print("    [unreferenced] %s" % rel(path))
+        return 0
+
+    renames = {}
+    errors = 0
+
+    ## Minimize the keep-format set (og/favicon + unreferenced).
+    if to_minimize:
+        result = run_optimize(tool, ["--quiet", "--"] + to_minimize)
+        if result.returncode != 0:
+            sys.stderr.write(result.stderr)
+            errors += 1
+
+    ## Convert the content set; capture OLD<TAB>NEW to drive the rewrite.
+    for path in to_convert:
+        result = run_optimize(tool, ["--webp", "--quiet", "--", path])
+        if result.returncode != 0:
+            sys.stderr.write("site-image-optimize: image-optimize failed for "
+                             "%s:\n%s" % (rel(path), result.stderr))
+            errors += 1
+            continue
+        line = result.stdout.strip().splitlines()
+        if not line:
+            continue
+        old_path, _, new_path = line[0].partition("\t")
+        if new_path and new_path != old_path:
+            renames[os.path.basename(old_path)] = os.path.basename(new_path)
+        else:
+            ## webp was not smaller: a content raster stays as an optimized
+            ## PNG/JPEG. Report it -- check_site's format gate needs it in the
+            ## static-image allowlist, a deliberate, human-reviewed exception.
+            sys.stderr.write("site-image-optimize: NOTE: webp not smaller, kept "
+                             "as %s: %s (add to check_site STATIC_IMAGE_ALLOWLIST)\n"
+                             % (os.path.splitext(rel(path))[1], rel(path)))
+
+    changed = rewrite_references(site_root, renames)
+
+    print("site-image-optimize: %s" % site_root)
+    print("  converted %d image(s) to webp; rewrote refs in %d file(s)"
+          % (len(renames), changed))
+    print("  minimized %d kept-format image(s) (%d card/icon, %d unreferenced)"
+          % (len(to_minimize), len(protected), len(unreferenced)))
+    if unreferenced:
+        print("  unreferenced (kept format, not renamed):")
+        for path in unreferenced:
+            print("    %s" % rel(path))
+    return 1 if errors else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -213,6 +213,17 @@ launch() {  ## $1=emulator  $2=case
       xfce4-terminal)
          "${base[@]}" GDK_BACKEND=x11 xfce4-terminal --disable-server --geometry "84x${rows}" -x "${sh[@]}"
          ;;
+      gnome-terminal)
+         ## gnome-terminal is a thin client to gnome-terminal-server over D-Bus
+         ## (--disable-factory was removed in 3.14+): give each launch a PRIVATE
+         ## session bus so its server starts fresh and dies with the bus, and
+         ## --wait so this backgrounded launcher blocks until the window closes
+         ## (clear_windows/windowkill then unblocks it). VTE reads its profile
+         ## from dconf; with no dconf daemon on the private bus it falls back to
+         ## the built-in default profile -- the shipped default we want to show.
+         "${base[@]}" GDK_BACKEND=x11 dbus-run-session -- \
+            gnome-terminal --wait --geometry "84x${rows}" -- "${sh[@]}"
+         ;;
       mate-terminal)
          "${base[@]}" GDK_BACKEND=x11 mate-terminal --disable-factory --geometry "84x${rows}" -x "${sh[@]}"
          ;;
@@ -411,7 +422,7 @@ fi
 ## A MISSING terminal is a HARD ERROR, not a silent skip -- an incomplete grid
 ## would misrepresent the comparison. Install the emulator, or set ALLOW_SKIP=1 to
 ## deliberately authorize skipping (it is then logged, never silent).
-TERMINALS="${TERMINALS:-xterm urxvt st konsole xfce4-terminal mate-terminal qterminal alacritty kitty}"
+TERMINALS="${TERMINALS:-xterm urxvt st konsole gnome-terminal xfce4-terminal mate-terminal qterminal alacritty kitty}"
 for e in ${TERMINALS}; do
    if ! type -P "${e}" >/dev/null 2>&1; then
       if [ -n "${ALLOW_SKIP:-}" ]; then
@@ -497,5 +508,8 @@ else
    printf '%s\n' 'ERROR: secure-terminal not found. Set ST_REPO=/path/to/checkout, or set ALLOW_SKIP=1 to authorize skipping.' >&2
    exit 1
 fi
+
+## Convert the captured PNGs to webp (the site references them as .webp).
+shots_optimize_to_webp "${out}"/*.png
 
 printf '%s\n' "done; shots in ${out}"
