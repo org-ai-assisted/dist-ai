@@ -47,12 +47,6 @@ fi
 mode_check='false'
 mode_webp='false'
 quiet='false'
-## --webp maps every source to "${stem}.webp" and deletes the source. Two inputs
-## with the same stem but different extensions (foo.png + foo.jpg) collide on one
-## foo.webp; without this the second mv clobbers the first and both sources are
-## deleted -- permanent data loss. Track the claimed webp paths and refuse a
-## collision instead of destroying data.
-declare -A webp_claimed=()
 ## A file is flagged by --check only when it can shed MORE than max(tol_floor,
 ## tol_pct% of its size). Real screenshot bloat is tens of percent; this margin
 ## just absorbs any harmless run-to-run jitter on an already-optimized file.
@@ -317,9 +311,14 @@ process_one() {
    size_new="$(stat -c %s -- "${work}")"
    if [ "${size_new}" -lt "${size_old}" ]; then
       ## mktemp created work as 0600; carry the source's own mode onto it before
-      ## the replace, so the optimized file is not silently made owner-only.
-      chmod --reference="${src}" -- "${work}"
-      mv -f -- "${work}" "${src}"
+      ## the replace, so the optimized file is not silently made owner-only. Check
+      ## the status: errexit is suppressed inside process_one (batch '|| rc=1'), so a
+      ## failed chmod/mv must not fall through to a "minimized" success log.
+      if ! { chmod --reference="${src}" -- "${work}" && mv -f -- "${work}" "${src}"; }; then
+         err "replace failed: ${input}"
+         safe-rm -- "${work}" 2>/dev/null || true
+         return 1
+      fi
       log "minimized: ${input} (${size_old} -> ${size_new} bytes)"
    else
       safe-rm -- "${work}"
@@ -339,17 +338,23 @@ process_one() {
    fi
    if [ -n "${cand}" ]; then
       webp_path="${src%.*}.webp"
-      ## Refuse a stem collision rather than clobber the earlier source's webp and
-      ## delete this one too: the first source keeps its webp, this one is left
-      ## untouched, and the operator is told which two collided.
-      if [ -n "${webp_claimed["${webp_path}"]:-}" ]; then
-         err "webp stem collision: ${input} and ${webp_claimed["${webp_path}"]} both map to ${webp_path##*/}; refusing to overwrite and delete"
+      ## Never overwrite an existing "${stem}.webp" and then delete the source: that
+      ## destroys the pre-existing target's content, and it is also how a same-stem
+      ## batch loses data (foo.png then foo.jpg both map to foo.webp -- the second
+      ## sees the first's output here). Refuse; keep both files.
+      if [ -e "${webp_path}" ]; then
+         err "webp target already exists: ${webp_path##*/} (from ${input}); refusing to overwrite it and delete the source"
          safe-rm -- "${cand}"
          return 1
       fi
-      webp_claimed["${webp_path}"]="${input}"
-      chmod --reference="${src}" -- "${cand}"
-      mv -f -- "${cand}" "${webp_path}"
+      ## errexit is suppressed inside process_one (the batch calls it as
+      ## 'process_one ... || rc=1'), so a failed chmod/mv would otherwise fall through
+      ## to the success log and leave the source deleted against a half-written target.
+      if ! { chmod --reference="${src}" -- "${cand}" && mv -f -- "${cand}" "${webp_path}"; }; then
+         err "webp replace failed: ${input}"
+         safe-rm -- "${cand}"
+         return 1
+      fi
       safe-rm -- "${src}"
       log "webp: ${input} -> ${webp_path##*/} ($(stat -c %s -- "${webp_path}") bytes)"
       printf '%s\n' "${src}"$'\t'"${webp_path}"

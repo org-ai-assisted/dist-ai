@@ -226,6 +226,25 @@ else
    report fail "webp stem collision (rc=${col_rc}, survivors=${survivors}, webp=${webp_made})"
 fi
 
+## --webp must REFUSE an existing <stem>.webp target rather than overwrite it and
+## delete the source -- that destroys the pre-existing target's content. (Regression:
+## the old code overwrote the target and removed the source, exit 0.)
+pre="${workdir}/pre"
+mkdir -- "${pre}"
+convert -size 120x120 plasma:fractal "${pre}/x.png"
+printf '%s' 'PRE-EXISTING-WEBP' > "${pre}/x.webp"      # an unrelated file already at the target
+pre_rc=0
+"${BIN}" --webp --quiet -- "${pre}/x.png" || pre_rc=$?
+pre_kept='no'
+[ "$(cat "${pre}/x.webp" 2>/dev/null)" = 'PRE-EXISTING-WEBP' ] && pre_kept='yes'
+pre_png='no'
+[ -e "${pre}/x.png" ] && pre_png='yes'
+if [ "${pre_rc}" -ne 0 ] && [ "${pre_png}" = 'yes' ] && [ "${pre_kept}" = 'yes' ]; then
+   report pass 'webp refuses an existing target: source kept, pre-existing webp intact'
+else
+   report fail "webp existing-target (rc=${pre_rc}, png=${pre_png}, kept=${pre_kept})"
+fi
+
 ## ---------------------------------------------------------------------------
 printf '%s\n' '' "image-optimize-tests: ${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ]
