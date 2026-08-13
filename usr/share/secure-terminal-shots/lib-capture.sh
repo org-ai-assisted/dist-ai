@@ -208,10 +208,21 @@ shots_optimize_to_webp() {  ## $@=produced PNG shots -> convert each to webp in 
 ## A run's unique MARKER is its mktemp runtime dir path (present in every spawned process's argv
 ## -- via the shell's `--rcfile <runtime>/home/.strc` and the recorded pgid file). The registry
 ## records live-run markers so a crashed run's orphans can be reaped by the NEXT run's startup
-## pre-clean or by `secure-terminal-shots --cleanup`. Overridable for tests; a fixed ${TMP} path
+## pre-clean or by `secure-terminal-shots --cleanup`. Overridable for tests; a fixed per-user path
 ## so it is shared between a run and a later cleanup invocation.
+##
+## PER-USER, non-shared: a world-writable /tmp path would let another local user pre-own the
+## registry (silent registration failure) or plant a marker that shots_reap_registered feeds to a
+## process-group kill. XDG_RUNTIME_DIR is already per-user 0700; otherwise a uid-scoped 0700 dir.
 [ -v TMP ] || TMP=/tmp
-shots_run_registry="${SHOTS_RUN_REGISTRY:-${TMP}/secure-terminal-shots.markers}"
+if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "${XDG_RUNTIME_DIR}" ]; then
+   shots_state_dir="${XDG_RUNTIME_DIR}/secure-terminal-shots"
+else
+   shots_state_dir="${TMP}/secure-terminal-shots-$(id --user)"
+fi
+mkdir --parents -- "${shots_state_dir}" 2>/dev/null || true
+chmod 0700 -- "${shots_state_dir}" 2>/dev/null || true
+shots_run_registry="${SHOTS_RUN_REGISTRY:-${shots_state_dir}/markers}"
 
 ## HARD-FAIL if the safe-pgrep/safe-pkill wrappers are absent. They ship with private-ai-config
 ## and are REQUIRED: reliable reaping must never fall back to bare pgrep/pkill (self-match trap)
@@ -270,6 +281,27 @@ shots_reap_group() {  ## $1=pgid
    kill -s KILL "-${pgid}" 2>/dev/null || true
 }
 
+## Escape a string into a LITERAL POSIX-ERE pattern. safe-pgrep / safe-pkill match `--full` via
+## `pgrep -f`, which is a REGEX (pgrep has no fixed-string mode), so a marker carrying a regex
+## metacharacter -- the `.` in a default mktemp name, or a `+`/`[` in a custom TMPDIR -- would
+## otherwise match loosely (a false straggler) or make pgrep error out (miss a real one).
+## Backslash-escape every ERE metachar so the marker matches exactly its literal path.
+shots_ere_escape() {  ## $1=literal -> ERE-escaped
+   local s="$1" out='' c i
+   for (( i=0; i<${#s}; i++ )); do
+      c="${s:i:1}"
+      case "${c}" in
+         \\|'.'|'['|']'|'('|')'|'{'|'}'|'*'|'+'|'?'|'|'|'^'|'$')
+            out+="\\${c}"
+            ;;
+         *)
+            out+="${c}"
+            ;;
+      esac
+   done
+   printf '%s' "${out}"
+}
+
 ## Reap every process group belonging to the run identified by its unique MARKER. Discovery is
 ## via safe-pgrep (read-only, self-match-safe); the kill is by NUMERIC PGID (kill -- -PGID), the
 ## only reliable way to take down a `python3` GUI and its whole child tree. A final safe-pkill
@@ -277,12 +309,14 @@ shots_reap_group() {  ## $1=pgid
 ## pgrep -f / pkill -f / pkill -x. Because MARKER is a per-run mktemp path, this can NEVER touch a
 ## process that does not carry that exact marker.
 shots_reap_run() {  ## $1=marker
-   local marker="$1" pid pgid self pgids='' p
+   local marker="$1" pid pgid self pgids='' p marker_re
    shots_require_safe_ps || return 1
    [ -n "${marker}" ] || return 0
+   ## match the marker LITERALLY (pgrep -f is a regex; the marker is a filesystem path).
+   marker_re="$(shots_ere_escape "${marker}")"
    self="$(shots_pgid_of "$$" || true)"
    ## safe-pgrep exits 1 when nothing matches -- not an error here.
-   for pid in $(safe-pgrep --full -- "${marker}" 2>/dev/null || true); do
+   for pid in $(safe-pgrep --full -- "${marker_re}" 2>/dev/null || true); do
       pgid="$(shots_pgid_of "${pid}" || true)"
       case "${pgid}" in ''|*[!0-9]*) continue ;; esac
       [ "${pgid}" -gt 1 ] || continue
@@ -293,7 +327,7 @@ shots_reap_run() {  ## $1=marker
    [ -n "${pgids}" ] && sleep 2
    for p in ${pgids}; do kill -s KILL "-${p}" 2>/dev/null || true; done
    ## final sweep: a MARKED straggler whose group we missed (exit 1 = none, forgiven).
-   safe-pkill --signal KILL --full -- "${marker}" 2>/dev/null || true
+   safe-pkill --signal KILL --full -- "${marker_re}" 2>/dev/null || true
 }
 
 ## Record / drop / reap the run registry (markers of currently-live runs).
@@ -315,6 +349,17 @@ shots_reap_registered() {
    [ -f "${shots_run_registry}" ] || return 0
    while IFS= read -r marker; do
       [ -n "${marker}" ] || continue
+      ## Defence in depth: a registry line is only ever a mktemp runtime-dir path this harness
+      ## wrote. Reap only an absolute path of plausible length -- never a stray/relative token a
+      ## corrupted registry could otherwise expand into a broad process-group kill.
+      case "${marker}" in
+         /?*)
+            [ "${#marker}" -ge 6 ] || continue
+            ;;
+         *)
+            continue
+            ;;
+      esac
       shots_reap_run "${marker}"
    done < "${shots_run_registry}"
    safe-rm -f -- "${shots_run_registry}" 2>/dev/null || true
@@ -327,6 +372,16 @@ shots_reap_registered() {
 ## with shots_watchdog_cancel once the capture completes in time.
 shots_watchdog_start() {  ## $1=deadline-secs $2=pgid-file $3=flag-file -> echoes watchdog PID
    local deadline="$1" pgid_file="$2" flag_file="$3"
+   ## A non-numeric deadline (callers read SHOT_DEADLINE from the environment) would make the
+   ## loop's `[ i -lt deadline ]` error on the FIRST pass, so the watchdog would reap the capture
+   ## group immediately and every capture would fail with no clear cause. Refuse it: no watchdog
+   ## (the capture still runs, just unbounded) is far better than a self-inflicted instant reap.
+   case "${deadline}" in
+      ''|*[!0-9]*)
+         printf '%s\n' "shots: ignoring invalid non-numeric deadline '${deadline}' (no watchdog armed)" >&2
+         return 1
+         ;;
+   esac
    ## The watchdog's fds MUST be redirected off any command-substitution pipe: a caller does
    ## `wdog="$(shots_watchdog_start ...)"`, and a backgrounded child that inherited that pipe's
    ## write end would make the `$()` block until the watchdog exits -- i.e. stall every capture

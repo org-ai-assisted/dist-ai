@@ -269,7 +269,13 @@ launch() {  ## $1=emulator  $2=case  $3=pgid-file
          cmd=("${base[@]}" KITTY_ENABLE_WAYLAND=0 kitty -o 'remember_window_size=no' -o 'initial_window_width=720' -o "initial_window_height=${kh}" -o 'font_size=11' "${sh[@]}")
          ;;
    esac
-   [ "${#cmd[@]}" -gt 0 ] && shots_spawn_session "${pgf}" "${cmd[@]}"
+   if [ "${#cmd[@]}" -eq 0 ]; then
+      ## an unknown emulator name must SKIP this cell, not return non-zero: the call site is a
+      ## bare top-level command and `set -o errexit` would abort the whole capture run.
+      printf '%s\n' "launch: no launch recipe for '${e}', skipped" >&2
+      return 0
+   fi
+   shots_spawn_session "${pgf}" "${cmd[@]}"
 }
 
 ## type a command into the focused terminal window and run it, as if a user did.

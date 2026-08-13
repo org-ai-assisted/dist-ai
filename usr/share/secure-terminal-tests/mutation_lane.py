@@ -119,10 +119,19 @@ def _run_suite(repo_copy, suite):
         + os.pathsep + env.get('PYTHONPATH', '')
     env['SECURE_TERMINAL_REPO'] = repo_copy
     env['QT_QPA_PLATFORM'] = 'offscreen'
-    proc = subprocess.run([sys.executable, '-Bsu',
-                           os.path.join(TESTS_DIR, suite)],
-                          env=env, stdin=subprocess.DEVNULL,
-                          capture_output=True, text=True, timeout=600, check=False)
+    try:
+        proc = subprocess.run([sys.executable, '-Bsu',
+                               os.path.join(TESTS_DIR, suite)],
+                              env=env, stdin=subprocess.DEVNULL,
+                              capture_output=True, text=True, timeout=600,
+                              check=False)
+    except subprocess.TimeoutExpired as exc:
+        # A mutant that hangs the suite (e.g. an unbounded loop) is a KILL, not a lane
+        # crash: report a non-zero, non-77 code so the caller counts it as caught.
+        out = (exc.stdout or '') + (exc.stderr or '')
+        if isinstance(out, bytes):
+            out = out.decode('utf-8', 'replace')
+        return 124, out + '\n[mutation_lane: suite timed out after 600s]\n'
     return proc.returncode, (proc.stdout + proc.stderr)
 
 
@@ -136,6 +145,12 @@ def _staged_pkg(mutate=None):
     shutil.copytree(REPO, dst, ignore=shutil.ignore_patterns('.git'))
     if mutate is not None:
         module, old, new = mutate
+        if new == old:
+            # A no-op "mutation" runs the CLEAN package, so its killer passes and the lane
+            # would falsely report a SURVIVOR -- the exact false signal the anchor check
+            # guards against. Fail loud instead.
+            shutil.rmtree(root, ignore_errors=True)
+            raise AssertionError('mutation is a no-op (new == old) for %s' % module)
         path = os.path.join(dst, _PKG_REL, 'secure_terminal', module)
         with open(path, encoding='utf-8') as handle:
             src = handle.read()
@@ -153,6 +168,12 @@ def main():
     # Baseline: every killer suite must PASS on the CLEAN (copied) package, or a
     # "mutant killed" verdict would be meaningless (the suite fails regardless).
     killers = sorted({s for m in MUTANTS for s in m['killers']})
+    # A renamed/absent killer suite must SKIP (77, per the docstring contract), not surface
+    # later as a misleading baseline FAIL from python3 failing to open the script.
+    for suite in killers:
+        if not os.path.isfile(os.path.join(TESTS_DIR, suite)):
+            sys.stderr.write('mutation_lane: SKIP (killer suite %s not found)\n' % suite)
+            sys.exit(77)
     print('== baseline: killer suites on the clean package ==')
     clean_root, clean_cleanup = _staged_pkg()
     baseline_ok = True

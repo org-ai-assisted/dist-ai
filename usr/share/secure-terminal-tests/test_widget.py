@@ -945,8 +945,10 @@ gz = SecureTerminal(command='/bin/cat')
 gz.resize(820, 400)
 gz.show()
 pump(40)
-ok(gz.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff,
-   'the terminal never shows a horizontal scrollbar (line mode wraps, grid fits)')
+ok(gz.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded,
+   'the horizontal scrollbar is AS-NEEDED (kept only for expanded-Unicode overflow)')
+ok(gz.horizontalScrollBar().maximum() == 0,
+   'a grid that fits the viewport shows no horizontal scrollbar (nothing to scroll)')
 _gcols, _grows = gz._tui_grid_size()
 _gcw = gz.fontMetrics().horizontalAdvance('M') or 1
 _gmargin = int(gz.document().documentMargin())
@@ -6073,6 +6075,122 @@ pump(900)
 ok(not _rw3._tui_hint_shown,
    'the raw-mode fallback is confined to the line_edits-off setting')
 _rw3.shutdown()
+
+# ==============================================================================
+# ai-review reconcile regression tests (each canary-verified: FAILS on pre-fix code)
+# ==============================================================================
+import secure_terminal.terminal as _TERM_rc                # noqa: E402
+
+
+def _feed_defer(term, raw):
+    """Feed `raw` through the live streaming path (defer=True) WITHOUT flushing the
+    paint, so a debounced paint is left pending exactly as it is mid-16ms-window in
+    the running app -- unlike feed_output, which flushes."""
+    r, w = os.pipe()
+    old = term._fd                             # pylint: disable=protected-access
+    term._fd = r
+    try:
+        os.write(w, raw)
+        os.close(w)
+        w = None
+        term._on_readable()                    # pylint: disable=protected-access
+    finally:
+        term._fd = old
+        os.close(r)
+        if w is not None:
+            os.close(w)
+
+
+# --- reconcile #1: a MULTILINE paste in a TUI WITHOUT bracketed paste is HELD ---
+# The forced review is exempted for a multiline paste ONLY when the child enabled
+# bracketed paste (DEC 2004): only then is the payload buffered as inert data and
+# cannot auto-run. A TUI that has NOT enabled it is no safer than line mode -- an
+# embedded \r auto-executes -- so it must be held. paste_warn='never' isolates the
+# forced-review gate from the ordinary risky-content gate. (Pre-fix: force_review
+# = multiline and not tui_active(), so a non-bracketed TUI wrongly auto-ran it.)
+_bp_no = SecureTerminal(command='/bin/cat', tui=True)
+_bp_no.apply_paste_warn('never')
+ok(_TERM_rc._BRACKETED_PASTE_MODE not in getattr(_bp_no._screen, 'mode', ()),
+   'reconcile#1: the TUI child has NOT enabled bracketed paste')
+_bp_sent = spy_writes(_bp_no)
+_pm_bp = QMimeData()
+_pm_bp.setText('echo one\nrm -rf ~\n')                     # embedded newline
+_bp_no.insertFromMimeData(_pm_bp)
+ok(_bp_no.review_pending() and _bp_sent == [],
+   'reconcile#1: a multiline paste in a NON-bracketed TUI is held (nothing auto-runs)')
+_bp_no.dispatch_pending_paste('reject')
+
+# with bracketed paste ACTIVE the child buffers the payload, so the same multiline
+# paste is exempt from the forced hold and delivered framed between 200~/201~.
+_bp_yes = SecureTerminal(command='/bin/cat', tui=True)
+_bp_yes.apply_paste_warn('never')
+feed_output(_bp_yes, b'\x1b[?2004h')                       # enable DEC 2004
+ok(_TERM_rc._BRACKETED_PASTE_MODE in getattr(_bp_yes._screen, 'mode', ()),
+   'reconcile#1: bracketed paste is now enabled on the TUI child')
+_bp_sent2 = spy_writes(_bp_yes)
+_pm_bp2 = QMimeData()
+_pm_bp2.setText('echo one\nrm -rf ~\n')
+_bp_yes.insertFromMimeData(_pm_bp2)
+ok(not _bp_yes.review_pending(), 'reconcile#1: a bracketed multiline paste is not held')
+_bp_frame = b''.join(_bp_sent2)
+ok(_bp_frame.startswith(b'\x1b[200~') and _bp_frame.endswith(b'\x1b[201~'),
+   'reconcile#1: a bracketed paste is delivered framed as inert data')
+
+# --- reconcile #3: expanded Unicode stays reachable (h-scrollbar as-needed) ------
+# NoWrap keeps a glyph's column stable across box<->show (the #28 fix), but a line
+# of many non-ASCII cells renders each as a long Detail badge -> wider than the
+# viewport. The horizontal scrollbar must be AVAILABLE-AS-NEEDED so that overflow
+# is reachable; ScrollBarAlwaysOff (the regressed policy) clipped it away unusably.
+ok(_bp_no.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded,
+   'reconcile#3: the horizontal scrollbar policy is as-needed')
+_hs = SecureTerminal(command='/bin/cat')                   # default Detail mode
+_hs.resize(220, 120)
+feed_output(_hs, ('\u00e9' * 40).encode('utf-8'))     # 40 long badges -> wide line
+pump(20)
+ok(_hs.horizontalScrollBar().maximum() > 0,
+   'reconcile#3: a long Detail-badge line overflows the width and can be scrolled to')
+
+# --- reconcile #4: a mid-debounce mode change drops the stale pending paint ------
+# If a mode/color/marking change calls _rerender() during the 16ms paint debounce,
+# the pending completed lines must be cleared FIRST -- else _rerender replays the
+# raw tail AND the stale pending flushes too, duplicating output.
+_dp = SecureTerminal(command='/bin/cat')
+_feed_defer(_dp, b'dupline\ntail')                         # one completed line + tail
+ok(_dp._paint_dirty, 'reconcile#4: a paint is pending mid-debounce (not yet flushed)')
+_dp.apply_markings(not _dp.markings_enabled())             # a live toggle -> _rerender
+eq(_dp.transcript_text().count('dupline'), 1,
+   'reconcile#4: a mid-debounce rerender does not duplicate the pending line')
+
+# --- reconcile #5: a theme switch recolours existing CLI markings ----------------
+# MARKING_COLORS is theme-keyed. apply_theme() clears the caches, but formats
+# already in the CLI document keep the old palette until repainted. A theme switch
+# must rebuild the CLI document so existing markings take the new theme's colours.
+_th = SecureTerminal(command='/bin/cat')
+_th.apply_theme('light')
+feed_output(_th, b'\xc3\xa9')                              # e-acute -> a nonascii marking
+eq(_fmt_of_char(_th, '<').foreground().color().name(), mark_fg(_th, 'nonascii'),
+   'reconcile#5: the existing marking uses the light-theme colour before the switch')
+_th.apply_theme('dark')
+eq(_fmt_of_char(_th, '<').foreground().color().name(), mark_fg(_th, 'nonascii'),
+   'reconcile#5: after the switch the existing marking uses the DARK theme colour')
+
+# --- reconcile #6: Show mode keeps a REAL U+2423, collapses the synthetic marker --
+# A U+2423 OPEN BOX the child actually printed (source cp IS 0x2423) is kept as its
+# glyph on copy; the SYNTHETIC SPACE_MARK for a neutralized non-ASCII space is the
+# same glyph but its source cp is the space byte, so it collapses to '_'. The copy
+# path tells them apart via the recorded codepoint (a blind string map clobbered
+# the real glyph -- the regression).
+_rb = SecureTerminal(command='/bin/cat'); _rb.apply_mode('show')
+feed_output(_rb, b'\xe2\x90\xa3')                          # a literal U+2423 OPEN BOX
+_rb.selectAll()
+ok('\u2423' in _rb._selection_text(),
+   'reconcile#6: a real printed U+2423 in Show mode is kept as its glyph on copy')
+_sm = SecureTerminal(command='/bin/cat'); _sm.apply_mode('show')
+feed_output(_sm, b'\xc2\xa0')                              # NBSP -> synthetic SPACE_MARK
+_sm.selectAll()
+_sm_copy = _sm._selection_text()
+ok('_' in _sm_copy and '\u2423' not in _sm_copy,
+   'reconcile#6: the synthetic non-ASCII-space marker still copies as _ (never a space)')
 
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(widget): %d passed, %d failed\n'

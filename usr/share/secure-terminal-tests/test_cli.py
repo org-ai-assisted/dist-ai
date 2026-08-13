@@ -96,8 +96,8 @@ def run_in_pty(argv, feed=b'', feed2=b'', feed2_delay=0.4, tty_stdin=True,
                 pass        # the child may have exited; the feed is best-effort
         if feed2:
             # a SEPARATE later write, so the wrapper takes a distinct os.read() --
-            # e.g. a real Enter keystroke arriving after a pasted burst (the burst
-            # is stripped of its trailing submit; the lone Enter then submits).
+            # e.g. a rescue keystroke arriving after a first burst (used to tell the
+            # verbatim-forward behaviour apart from the old submit-stripping one).
             time.sleep(feed2_delay)
             try:
                 os.write(writer, feed2)
@@ -242,19 +242,22 @@ eq(_rc4b, 0, 'a stdin EOF is forwarded so the child (cat) sees end-of-input and 
 _o5, _rc5 = run_in_pty([], feed=b'exit 3', feed2=b'\r', settle=1.5, feed_delay=0.6)
 eq(_rc5, 3, 'typed input plus a real Enter runs the command and its exit propagates')
 
-# --- SECURITY: a pasted stdin BURST must NOT auto-execute ----------------------
-# Unlike the GUI, the CLI has no bracketed paste (TERM=dumb strips DECSET 2004),
-# so a raw newline would submit the pasted command the instant it is written. A
-# multi-byte burst ending in a submit byte is treated as a paste and its trailing
-# submit dropped, so the command waits at the prompt. _strip_burst_submit is the
-# policy; the units below pin it (a raw forward -- the old behaviour -- fails them).
-eq(cli._strip_burst_submit(b'echo hi\n'), b'echo hi',
-   'a multi-byte burst ending in newline drops its trailing submit (no auto-run)')
-eq(cli._strip_burst_submit(b'a\nb\n'), b'a\nb',
-   'only the TRAILING submit is dropped; an embedded newline is preserved')
-eq(cli._strip_burst_submit(b'\r'), b'\r',
-   'a lone Enter keystroke is forwarded unchanged (typing still submits)')
-eq(cli._strip_burst_submit(b'x'), b'x', 'a single character is forwarded unchanged')
+# --- HONESTY: stdin is forwarded VERBATIM (no paste/typing heuristic) -----------
+# A raw stdin stream cannot reliably tell a paste from typing: os.read() boundaries
+# are scheduling artifacts, so fast typing (or SSH/TTY-coalesced keystrokes) and a
+# paste arrive in the same shape -- a multi-byte read ending in a submit byte. The
+# CLI therefore forwards keystrokes UNCHANGED and does NOT strip a trailing submit;
+# auto-submit protection lives in the GUI. The old code shipped a burst-strip
+# heuristic that BROKE normal typing: 'cmd\r' delivered in ONE read lost its Enter
+# and the command never ran. This canary pins the honest behaviour and FAILS on
+# that old code: 'exit 5\r' as a SINGLE burst submits (rc 5). The rescue burst
+# (Ctrl-C to abort any pending line, then 'exit 7') only fires under the old
+# stripping code -- there the first burst never submitted -- yielding rc 7, so the
+# two behaviours are told apart with no hang and no reliance on terminal echo.
+_ob, _rcb = run_in_pty([], feed=b'exit 5\r', feed2=b'\x03exit 7\r',
+                       settle=1.8, feed_delay=0.6, feed2_delay=0.6)
+eq(_rcb, 5, 'a single-read burst ending in Enter submits verbatim (typing is not '
+            'eaten); the old submit-stripping heuristic would rescue to exit 7')
 
 # --- SIGWINCH during a run drives the resize handler (window size re-pushed) ---
 _o6, _rc6 = run_in_pty(['--', 'sh', '-c', 'sleep 0.6'], feed_delay=0.2,

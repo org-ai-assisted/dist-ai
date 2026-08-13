@@ -245,7 +245,13 @@ launch_terminal() {  ## $1=name  $2=payload-command  $3=pgid-file
          tcmd=("${x[@]}" st -g 84x24 -e sh -c "${sh}")
          ;;
    esac
-   [ "${#tcmd[@]}" -gt 0 ] && shots_spawn_session "${pgf}" "${tcmd[@]}" >/dev/null 2>&1
+   if [ "${#tcmd[@]}" -eq 0 ]; then
+      ## an unknown terminal name (e.g. a bad --only) must SKIP this cell, not return non-zero:
+      ## the call site is a bare top-level command and `set -o errexit` would abort the whole run.
+      printf '%s\n' "launch_terminal: no launch recipe for '${name}', skipped" >&2
+      return 0
+   fi
+   shots_spawn_session "${pgf}" "${tcmd[@]}" >/dev/null 2>&1
 }
 
 ## ---- capture: grim whole output, trim black margin to the window -------------

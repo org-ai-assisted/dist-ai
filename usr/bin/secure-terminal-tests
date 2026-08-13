@@ -82,10 +82,14 @@ for test_file in \
    "${tests_dir}/test_widget.py" \
    "${tests_dir}/test_fuzz_widget.py"; do
    [ -f "${test_file}" ] || continue
-   if python3 -Bsu -- "${test_file}" "$@"; then
+   ## Capture the suite's real exit status. A bare `if python3 ...; then` would leave `$?` as the
+   ## `if`'s own status (0 when no branch runs), so `rc` could never see a 77 SKIP or a failure
+   ## code -- the `|| rc="$?"` reads the actual status while keeping errexit happy.
+   rc=0
+   python3 -Bsu -- "${test_file}" "$@" || rc="$?"
+   if [ "${rc}" = '0' ]; then
       continue
    fi
-   rc="$?"
    if [ "${rc}" = '77' ]; then
       ## a SKIP from the pure test means the module is missing -> skip all
       if [ "${test_file}" = "${tests_dir}/test_secure_terminal.py" ]; then

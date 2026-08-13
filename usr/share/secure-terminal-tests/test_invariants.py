@@ -9,12 +9,14 @@
 Hypothesis HYPOTHESIS-PROPERTY tests for secure-terminal's security invariants
 (#31 P1/P2, from the #30 unknown-unknowns research). Each INV is a UNIVERSAL
 property over random streams (and, where it applies, the real adversarial corpus),
-driven through the REAL code path -- the pure sanitizer, the live Qt widget's paste
-and output paths, and the standalone CLI choke point -- not a hand-picked fixture.
+driven through the REAL code path -- the pure sanitizer and the live Qt widget's
+paste and output paths -- not a hand-picked fixture. (The standalone CLI wrapper is
+NOT covered here: a raw stdin stream cannot reliably tell a paste from typing -- see
+cli.py -- so it forwards keystrokes verbatim and makes no auto-submit claim to pin.)
 
   INV-1  no paste auto-executes: for ANY clipboard string, insertFromMimeData
-         writes no submit CR without a review interposed OR strips it, across the
-         GUI paste path AND the CLI stdin burst path.
+         writes no submit CR without a review interposed OR strips it, on the GUI
+         paste path.
   INV-2  no output reaches an earlier line / scrollback: a committed line is
          byte-identical before and after ANY subsequently-fed output chunk (the
          line editor honours only line-LOCAL edits; vertical addressing is stripped).
@@ -37,8 +39,8 @@ and output paths, and the standalone CLI choke point -- not a hand-picked fixtur
 Every property is CANARY-VERIFIED: a deliberately-broken stub (an un-stripped paste,
 a leaked escape, a reflected write, a modified earlier line) must make the property's
 assertion FAIL, so a green result means the check has teeth. The pure invariants
-(INV-3, INV-4, and the CLI half of INV-1) run Qt-free; the widget invariants (the GUI
-half of INV-1, INV-2, INV-5, INV-6) reuse ONE offscreen widget each so no example
+(INV-3, INV-4) run Qt-free; the widget invariants (INV-1, INV-2, INV-5, INV-6) reuse
+ONE offscreen widget each so no example
 forks a pty. A missing PyQt6/pyte is a hard FAILURE for the widget half (a
 security-relevant suite must never silently disable itself), not a skip.
 
@@ -257,34 +259,7 @@ def inv4_corpus():
 
 
 # ===========================================================================
-# INV-1 (CLI half): the standalone stdin-burst choke point never leaves a paste
-# ending in a submit byte.
-# ===========================================================================
-try:
-    from secure_terminal.cli import _strip_burst_submit
-except Exception as exc:  # pylint: disable=broad-except
-    sys.stderr.write('secure-terminal-tests(invariants): FAIL cli import: %s\n' % exc)
-    sys.exit(1)
-
-
-def _inv1_cli_predicate(strip_fn, keys):
-    """The invariant as a predicate of the strip function under test, so a broken
-    stub can be canaried. A pasted BURST (more than one byte) that ends in a submit
-    byte must be forwarded WITHOUT a trailing submit -- else it auto-runs."""
-    out = strip_fn(keys)
-    if len(keys) > 1 and keys[-1:] in (b'\r', b'\n'):
-        return not out.endswith((b'\r', b'\n'))
-    return True                               # a single keystroke is forwarded as-is
-
-
-@RUN
-@given(st.binary(max_size=64))
-def prop_inv1_cli(keys):
-    assert _inv1_cli_predicate(_strip_burst_submit, keys), repr(keys)
-
-
-# ===========================================================================
-# Widget-driven invariants: the GUI half of INV-1, plus INV-2, INV-5, INV-6.
+# Widget-driven invariants: INV-1 (the GUI paste path), plus INV-2, INV-5, INV-6.
 # One offscreen widget per invariant, reused across examples (no pty fork).
 # ===========================================================================
 _HAVE_QT = True
@@ -526,11 +501,6 @@ def _expect_violation(label, thunk):
 
 
 def _canaries():
-    # INV-1 CLI: a strip that does NOT drop the submit -> a burst auto-runs.
-    def canary_inv1_cli():
-        assert _inv1_cli_predicate(lambda k: k, b'echo x\r'), 'identity strip'
-    _expect_violation('INV-1/cli', canary_inv1_cli)
-
     # INV-1 GUI: monkeypatch paste_no_autosubmit to identity so the trailing submit
     # is NOT stripped -> a single-line paste auto-runs.
     orig = TERM.paste_no_autosubmit
@@ -576,11 +546,17 @@ def _canaries():
         TERM.paste_no_autosubmit = orig5
         _reset_paste(_WL, _WL_SENT)
 
-    # INV-6: a reflected write-back (the synthetic vulnerable observable) must be
-    # caught by the spy-empty assertion.
+    # INV-6: drive the REAL observation path -- feed a DSR query through _on_readable,
+    # then simulate a vulnerable terminal's reply THROUGH the same _WT6._write sink the
+    # property reads, and assert the property's own spy-empty check fires. Routing the
+    # reply via _WT6._write (not a local literal) also gives the canary teeth: if the
+    # _WT6._write -> _WT6_SENT spy wiring were broken, the reply would not land, the
+    # assertion would hold, and _expect_violation would report the canary toothless.
     def canary_inv6():
-        sent = [b'\x1b[24;80R']               # a DSR reply a vulnerable terminal writes
-        assert sent == [], 'reflected write-back'
+        _WT6_SENT.clear()
+        feed_output(_WT6, b'\x1b[6n')         # a DSR cursor-position query
+        _WT6._write(b'\x1b[24;80R')           # pylint: disable=protected-access
+        assert _WT6_SENT == [], 'reflected write-back'
     _expect_violation('INV-6', canary_inv6)
 
     # INV-2: commit a real sentinel line through the live widget, then TAMPER it in
@@ -616,7 +592,6 @@ def _canaries():
 PROPS = [
     ('INV-3 logical==rendered (random)', prop_inv3_random),
     ('INV-4 inert display (random)', prop_inv4_random),
-    ('INV-1 cli no auto-submit', prop_inv1_cli),
     ('INV-1 gui paste no auto-exec', prop_inv1_gui),
     ('INV-5 single-line waits for Enter', prop_inv5_single_line_waits_for_enter),
     ('INV-5 multi-line held until dispatch', prop_inv5_multiline_held_until_dispatch),
