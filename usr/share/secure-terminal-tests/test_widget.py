@@ -2700,6 +2700,35 @@ if tui_available():
     _lm.apply_mode('box')
     win.set_mode('box')
 
+# a closed auto-Boxed tab must not linger in _pre_tui_mode (else the terminal leaks)
+if tui_available():
+    win.set_mode('detail')
+    win.new_tab(tui=True)                       # a TUI tab born in Detail -> auto-Boxed
+    _leak = win.current()
+    ok(_leak in win._pre_tui_mode, 'the auto-Boxed tab recorded its pre-TUI mode')
+    win.close_tab(win.tabs.indexOf(_leak))
+    ok(_leak not in win._pre_tui_mode,
+       'closing an auto-Boxed tab clears its _pre_tui_mode entry (no leak)')
+    win.set_mode('box')
+
+# the autobox notice must NOT clobber a pending OSC notice (security-relevant, de-duped):
+# the greyed controls convey the switch, so the OSC banner wins the one-per-tab slot.
+if tui_available():
+    _oc = win.current()
+    win.set_tui(False)
+    win._dismiss_advisory()
+    win.set_tui_autobox_notice(True)
+    win.set_mode('detail')
+    win._on_advise(_oc, 'An application used an OSC escape ...', 'osc')
+    eq(win._advisories.get(_oc, (None,))[0], 'osc', 'an OSC notice is pending')
+    win.set_tui(True)                           # auto-Box fires, but must not clobber osc
+    eq(win.current().current_mode(), 'box', 'the tab still auto-switched to Box')
+    eq(win._advisories.get(_oc, (None,))[0], 'osc',
+       'the pending OSC notice survives the auto-Box (not clobbered)')
+    win.set_tui(False)
+    win._dismiss_advisory()
+    win.set_mode('box')
+
 # a plain tab switch must not mutate persisted settings (setChecked on toggled
 # actions is blocked): flip colours off on tab B, switch away and back.
 _before_colors = win._default_colors
