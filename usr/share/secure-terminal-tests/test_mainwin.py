@@ -781,6 +781,8 @@ _sl = set(win._locked)
 try:
     win._locked = {'osc_notice'}
     win.set_osc_notice(True)
+    win._locked = {'tui_autobox_notice'}
+    win.set_tui_autobox_notice(False)       # admin-locked -> refused
     win._locked = {'tui'}
     win.set_tui(True)
     win._locked = {'allow_title'}
@@ -1386,6 +1388,7 @@ try:
     win._apply_global({'theme': 'dark', 'zoom': 100, 'mode': 'box',
                        'font_family': 'Attacker Font', 'font_size': 20,
                        'colors': True, 'line_edits': True, 'tui': True, 'osc_notice': True,
+                       'tui_autobox_notice': True,
                        'osc': {'osc_title': True}, 'scrollback': 1000,
                        'paste_delay': 3, 'persist': False})
     ok(win._default_font_family == 'Hack',
@@ -1509,7 +1512,7 @@ try:
                        'font_family': win._default_font_family,
                        'font_size': win._default_font_size, 'mode': 'box',
                        'colors': True, 'line_edits': True, 'tui': False,
-                       'osc': {}, 'osc_notice': True,
+                       'osc': {}, 'osc_notice': True, 'tui_autobox_notice': True,
                        'scrollback': 0, 'paste_delay': 3,
                        'paste_warn': 'always', 'copy_warn': 'never', 'persist': False})
     eq((win._paste_warn, win._copy_warn), ('always', 'never'),
@@ -1541,7 +1544,8 @@ try:
                        'font_family': win._default_font_family,
                        'font_size': win._default_font_size, 'ui_scale': 175,
                        'mode': 'box', 'colors': True, 'line_edits': True, 'tui': False, 'osc': {},
-                       'osc_notice': True, 'scrollback': 0, 'paste_delay': 3,
+                       'osc_notice': True, 'tui_autobox_notice': True,
+                       'scrollback': 0, 'paste_delay': 3,
                        'persist': False})
     eq(win._ui_scale, 175, '_apply_global stores the menu (UI) scale')
 finally:
@@ -1672,15 +1676,22 @@ _pcfg_prev = os.environ.get('XDG_CONFIG_HOME')
 os.environ['XDG_CONFIG_HOME'] = tempfile.mkdtemp(prefix='st-persist-')
 try:
     _pw = MainWindow()
+    ok(_pw._tui_autobox_notice,
+       'tui_autobox_notice loads default-on from a fresh (absent) config')
     _pw._apply_global({'theme': 'light', 'zoom': 175, 'mode': 'reveal', 'colors': True, 'line_edits': True,
                        'tui': False, 'osc': {}, 'osc_notice': False,
+                       'tui_autobox_notice': False,
                        'scrollback': 7000, 'paste_delay': 5, 'persist': True})
+    ok(not _pw._tui_autobox_notice and not _pw.act_tui_autobox_notice.isChecked(),
+       '_apply_global stores tui_autobox_notice and mirrors it on the menu action')
     _pc = _ps.load()
     eq(_pc.get('theme'), 'light', 'settings persist: theme written to config')
     eq(_pc.get('zoom'), '175', 'settings persist: zoom written to config')
     eq(_pc.get('unicode_mode'), 'reveal', 'settings persist: unicode mode written')
     eq(_pc.get('scrollback'), '7000', 'settings persist: scrollback written')
     eq(_pc.get('paste_delay'), '5', 'settings persist: paste delay written')
+    eq(_pc.get('tui_autobox_notice'), 'false',
+       'settings persist: tui_autobox_notice written to config')
     _pw.close()
     _pw.deleteLater()
 finally:
@@ -1805,7 +1816,7 @@ try:
        '#99 (F1): the active tab is enabled, placeholders are disabled (unselectable)')
     # a bulk "apply to all tabs" must skip placeholders, not call a setter on a QWidget
     _iw._apply_global({'theme': 'dark', 'zoom': 100, 'mode': 'box', 'colors': True, 'line_edits': True,
-                       'tui': False, 'osc_notice': True, 'osc': {},
+                       'tui': False, 'osc_notice': True, 'tui_autobox_notice': True, 'osc': {},
                        'scrollback': 1000, 'paste_delay': 0, 'persist': True})
     ok(_iw.current().current_theme() == 'dark',
        '#99 (F1): apply-to-all updates real tabs and skips placeholders (no crash)')

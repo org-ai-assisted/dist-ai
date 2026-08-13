@@ -26,6 +26,10 @@
 ##                line-drawing shift, none reset)
 ##   homoglyph -- cat homoglyph.payload (a domain carrying a Cyrillic look-alike,
 ##                U+0430 for Latin a)
+##   bidi      -- cat bidi.payload      (Trojan-Source bidi-override controls that
+##                reorder the rendered line vs its logical bytes)
+##   zerowidth -- cat zerowidth.payload (a zero-width byte hidden inside a word --
+##                invisible on a normal terminal, boxed by secure-terminal)
 ##   altscreen -- cat altscreen.payload (an unrestored alternate-screen switch that
 ##                leaves a traditional terminal stuck full-screen)
 ##   tui-showcase -- cat tui-showcase.payload (a safe display-only board exercising
@@ -36,8 +40,9 @@
 ##
 ## SINGLE SOURCE OF TRUTH: the attack payloads come from the terminal-poc-corpus
 ## (canary-forked, hex-encoded, harness-verified), reproduced by its tools/reproduce.py
-## -- NOT hand-written here. Only `notify` (a page-facing friendly-wording demo, not a
-## detection payload) and `random` are generated inline.
+## -- NOT hand-written here. The inline exceptions are the page-facing display demos that
+## carry NO canary detection token: `notify` (friendly-wording OSC-9 demo), `zerowidth`
+## (a self-describing hidden zero-width byte) and `random` (genuine kernel garble).
 
 ## /dev/random (not urandom): equivalent once seeded on a modern kernel, and
 ## Kicksecure prefers it. https://www.kicksecure.com/wiki/Dev/Entropy
@@ -68,6 +73,9 @@ shots_corpus_id() {  ## $1=case
       homoglyph)
          printf '%s' 'homoglyph-domain-install-2021'
          ;;
+      bidi)
+         printf '%s' 'trojan-source-bidi-2021'
+         ;;
       altscreen)
          printf '%s' 'alt-screen-hijack'
          ;;
@@ -93,6 +101,12 @@ shots_payload_cmd() {  ## $1=case -> the command string the terminal displays
       homoglyph)
          printf '%s' 'cat homoglyph.payload'
          ;;
+      bidi)
+         printf '%s' 'cat bidi.payload'
+         ;;
+      zerowidth)
+         printf '%s' 'cat zerowidth.payload'
+         ;;
       altscreen)
          printf '%s' 'cat altscreen.payload'
          ;;
@@ -116,8 +130,10 @@ shots_payload_cmd() {  ## $1=case -> the command string the terminal displays
 ## non-zero is a real generation failure (reproduce.py / write) that a caller must
 ## NOT convert to a skip -- otherwise a broken payload is reported as green.
 shots_generate_logs() {  ## $1=script-relative fallback dir $2=dest-dir
-   local fallback="$1" dest="$2"
-   local corpus rp c id notify
+   local fallback dest corpus rp c id notify zerowidth
+
+   fallback="$1"
+   dest="$2"
    if ! corpus="$(shots_resolve_corpus "${fallback}/../../../../terminal-poc-corpus")"; then
       printf '%s\n' 'lib-capture: terminal-poc-corpus not found (set CORPUS_REPO)' >&2
       return 77
@@ -128,7 +144,7 @@ shots_generate_logs() {  ## $1=script-relative fallback dir $2=dest-dir
    ## suppresses errexit inside the function, so a failed reproduce.py must be surfaced
    ## by hand (as a NON-77 code, distinct from the missing-corpus skip) or the capture
    ## would proceed with a missing payload.
-   for c in crafted homoglyph altscreen tui-showcase; do
+   for c in crafted homoglyph bidi altscreen tui-showcase; do
       id="$(shots_corpus_id "${c}")"
       POC_CORPUS_IN_SANDBOX=1 python3 "${rp}" "${id}" --out "${dest}/${c}.payload" || return 1
    done
@@ -137,17 +153,24 @@ shots_generate_logs() {  ## $1=script-relative fallback dir $2=dest-dir
    ## canary token); kept inline deliberately. $'...' gives the real escape bytes.
    notify=$'build log: packaging step 3 of 5\n\033]9;Safe demonstration only: secure-terminal terminal-attack comparison test. No action needed.\007post-install: done\n'
    printf '%s' "${notify}" > "${dest}/notify.payload" || return 1
+   ## zerowidth: a page-facing display demo of an invisible byte -- a single U+200B
+   ## (zero-width space, UTF-8 e2 80 8b) hidden inside 'administrator'. On a normal
+   ## terminal the word reads clean; secure-terminal boxes the hidden byte. Self-describing
+   ## so the shot needs no external caption. No canary token, so kept inline like notify.
+   ## Written as raw \x byte escapes, NOT \u200b: bash's \u encodes to the CURRENT locale,
+   ## so under LC_ALL=C $'\u200b' yields the literal text "\u200b" and the demo would carry
+   ## no zero-width byte at all. \x is locale-independent.
+   zerowidth=$'A hidden zero-width byte sits inside this word: admin\xe2\x80\x8bistrator -- invisible on a normal terminal, boxed by secure-terminal.\n'
+   printf '%s' "${zerowidth}" > "${dest}/zerowidth.payload" || return 1
 }
 
 shots_optimize_to_webp() {  ## $@=produced PNG shots -> convert each to webp in place
    ## Match the site's webp image references: a freshly captured PNG is losslessly
-   ## converted to <name>.webp (the PNG removed) via the shipped image-optimize, so
-   ## a regenerated shot lands optimized rather than being caught later by the
-   ## pre-commit image gate. Missing tool -> warn, leave PNGs (never a silent skip).
-   if ! type -P image-optimize >/dev/null; then
-      printf '%s\n' "shots: image-optimize not on PATH; shots left as PNG (run 'image-optimize --webp' on them before committing)" >&2
-      return 0
-   fi
+   ## converted to <name>.webp (the PNG removed) via image-optimize, so a regenerated shot
+   ## lands optimized rather than being caught later by the pre-commit image gate.
+   ## image-optimize is a REQUIRED dependency (shipped by private-ai-config; the sandbox
+   ## gets it via `sandbox provision disttools`). No fallback: if it is absent that is a
+   ## provisioning bug, and this fails loudly rather than silently shipping PNGs.
    local shot
    for shot in "$@"; do
       [ -f "${shot}" ] || continue

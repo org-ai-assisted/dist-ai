@@ -2445,7 +2445,10 @@ if tui_available():
     ok(not _tuifired, 'TUI mode does not flag an OSC as ignored (it may be handled)')
 # turning on TUI mode auto-dismisses a "use TUI mode" (tui-kind) advisory, but NOT
 # an unrelated OSC notice on the same tab (codex P2: only TUI hints are stale).
+# Box mode so the switch raises no auto-Box notice of its own -- this asserts the
+# tui-hint/OSC-notice handling in isolation.
 _tuitab = win.current()
+win.set_mode('box')
 win._on_advise(_tuitab, 'This program wants a full-screen interface. Turn on TUI.')
 ok(not win._banner.isHidden(), 'the full-screen advisory is showing before the switch')
 win.set_tui(True)
@@ -2596,14 +2599,136 @@ if tui_available():
     eq((win._mode_level()[1], win._mode_level()[0]), ('TUI', '#e5a50a'),
        'TUI -> yellow mode lamp (independent of the display lamp)')
     win.set_tui(False)
-    # enabling TUI leans this tab to 'show' for readability but must NOT persist
-    # 'show' as the global default, and turning TUI off restores the prior mode.
+    # Box and Show already render full-screen, so entering TUI leaves them as the
+    # user set them (no auto-switch, no restore state).
     win.set_mode('box')
     win.set_tui(True)
-    eq(win.current().current_mode(), 'show', 'TUI leans the tab to show')
-    eq(win._default_mode, 'box', 'TUI does NOT persist show as the global default')
+    eq(win.current().current_mode(), 'box', 'TUI leaves Box as Box (renders full-screen)')
+    ok(win.current() not in win._pre_tui_mode, 'a Box tab needs no restore state in TUI')
     win.set_tui(False)
-    eq(win.current().current_mode(), 'box', 'turning TUI off restores box')
+    # Reveal/Detail cannot expand a codepoint in the fixed grid, so entering TUI
+    # auto-switches this TAB to Box (which still marks every byte) WITHOUT persisting
+    # Box as the global default, and disables the Reveal/Detail controls. Turning
+    # TUI off restores the prior mode and re-enables them.
+    win.set_mode('detail')
+    win.set_tui(True)
+    eq(win.current().current_mode(), 'box', 'TUI auto-switches Detail to Box')
+    eq(win._default_mode, 'detail',
+       'TUI does NOT persist the auto-Box as the global default')
+    ok(not win.act_reveal.isEnabled() and not win.act_detail.isEnabled(),
+       'Reveal/Detail controls are disabled while the tab is in TUI')
+    ok(win.act_box.isEnabled() and win.act_show.isEnabled(),
+       'Box and Show stay selectable in TUI')
+    ok(not win._mode_buttons['reveal'].isEnabled()
+       and not win._mode_buttons['detail'].isEnabled(),
+       'the Reveal/Detail toolbar chips are disabled in TUI too')
+    win.set_tui(False)
+    eq(win.current().current_mode(), 'detail',
+       'turning TUI off restores the prior mode (Detail)')
+    ok(win.act_reveal.isEnabled() and win.act_detail.isEnabled(),
+       'Reveal/Detail re-enabled after leaving TUI')
+    ok(win._mode_buttons['reveal'].isEnabled()
+       and win._mode_buttons['detail'].isEnabled(),
+       'the Reveal/Detail chips re-enabled after leaving TUI')
+    win.set_mode('box')
+
+# The passive "switched to Box" notice: fires on the auto-switch when on, clears on
+# CLI, and stays silent when the setting is off (the switch itself is unconditional).
+if tui_available():
+    _nt = win.current()
+    win.set_tui(False)
+    win._dismiss_advisory()                    # start from a clean banner
+    win.set_tui_autobox_notice(True)
+    win.set_mode('detail')
+    win.set_tui(True)
+    eq(win._advisories.get(_nt, (None,))[0], 'autobox',
+       'entering TUI raises the auto-Box notice when the setting is on')
+    ok(not win._banner.isHidden(), 'the auto-Box banner is showing')
+    win.set_tui(False)
+    ok(win._advisories.get(_nt) is None,
+       'leaving TUI clears the auto-Box notice and restores the mode')
+    eq(win.current().current_mode(), 'detail', 'the prior mode (Detail) is restored')
+    # notice OFF: the tab still boxes, but no banner is raised
+    win.set_tui_autobox_notice(False)
+    win.set_mode('reveal')
+    win.set_tui(True)
+    eq(win.current().current_mode(), 'box',
+       'the auto-Box switch still happens with the notice off')
+    ok(win._advisories.get(_nt) is None, 'the notice off raises no banner')
+    win.set_tui(False)
+    # a showing notice is dropped the moment the setting is switched off
+    win.set_tui_autobox_notice(True)
+    win.set_mode('detail')
+    win.set_tui(True)
+    ok(win._advisories.get(_nt, (None,))[0] == 'autobox', 'a notice is showing')
+    win.set_tui_autobox_notice(False)
+    ok(win._advisories.get(_nt) is None,
+       'switching the notice off clears a showing auto-Box banner')
+    win.set_tui(False)
+    win.set_tui_autobox_notice(True)
+    win.set_mode('box')
+
+# the /mode slash command is refused for Reveal/Detail while the tab owns the TUI
+# grid (it bypasses the disabled chips, so the choke point is in set_mode).
+if tui_available():
+    win.set_mode('box')
+    win.set_tui(True)
+    win.run_command('mode reveal')
+    eq(win.current().current_mode(), 'box',
+       '/mode reveal is refused while the tab is in TUI (mode unchanged)')
+    win.run_command('mode show')
+    eq(win.current().current_mode(), 'show',
+       '/mode show still applies in TUI (Show renders full-screen)')
+    win.set_tui(False)
+    win.set_mode('box')
+
+# an admin-locked display mode is a deliberate hardening choice: entering TUI must
+# NOT auto-switch it, and the controls are left to _apply_locks (not re-enabled).
+if tui_available():
+    _lm = win.current()
+    win.set_tui(False)
+    _lm.apply_mode('detail')               # force the term mode past the locked setter
+    _saved_locks = set(win._locked)
+    try:
+        win._locked = {'unicode_mode'}
+        win.set_tui(True)
+        eq(_lm.current_mode(), 'detail',
+           'a locked mode is respected: TUI does not auto-Box it')
+    finally:
+        win._locked = _saved_locks
+        win.set_tui(False)
+    _lm.apply_mode('box')
+    win.set_mode('box')
+
+# a closed auto-Boxed tab must not linger in _pre_tui_mode (else the terminal leaks)
+if tui_available():
+    win.set_mode('detail')
+    win.new_tab(tui=True)                       # a TUI tab born in Detail -> auto-Boxed
+    _leak = win.current()
+    ok(_leak in win._pre_tui_mode, 'the auto-Boxed tab recorded its pre-TUI mode')
+    win.close_tab(win.tabs.indexOf(_leak))
+    ok(_leak not in win._pre_tui_mode,
+       'closing an auto-Boxed tab clears its _pre_tui_mode entry (no leak)')
+    win.set_mode('box')
+
+# the autobox notice must NOT clobber a pending OSC notice (security-relevant, de-duped):
+# the greyed controls convey the switch, so the OSC banner wins the one-per-tab slot.
+if tui_available():
+    _oc = win.current()
+    win.set_tui(False)
+    win._dismiss_advisory()
+    win.set_tui_autobox_notice(True)
+    win.set_mode('detail')
+    win._on_advise(_oc, 'An application used an OSC escape ...', 'osc')
+    eq(win._advisories.get(_oc, (None,))[0], 'osc', 'an OSC notice is pending')
+    win.set_tui(True)                           # auto-Box fires, but must not clobber osc
+    eq(win.current().current_mode(), 'box', 'the tab still auto-switched to Box')
+    eq(win._advisories.get(_oc, (None,))[0], 'osc',
+       'the pending OSC notice survives the auto-Box (not clobbered)')
+    win.set_tui(False)
+    win._dismiss_advisory()
+    win.set_mode('box')
+
 # a plain tab switch must not mutate persisted settings (setChecked on toggled
 # actions is blocked): flip colours off on tab B, switch away and back.
 _before_colors = win._default_colors
@@ -2630,6 +2755,7 @@ finally:
 win.new_tab()
 win._apply_global({'theme': 'light', 'zoom': 130, 'mode': 'reveal',
                    'colors': True, 'line_edits': True, 'tui': False,
+                   'tui_autobox_notice': True,
                    'osc': {'osc_title': True, 'osc_clipboard': True},
                    'scrollback': 1000, 'paste_delay': 5, 'persist': True})
 ok(all((win.tabs.widget(i).current_theme(), win.tabs.widget(i).current_mode(),
@@ -2641,7 +2767,8 @@ ok(all(win.tabs.widget(i).osc_enabled('osc_title')
        for i in range(win.tabs.count())),
    'global settings apply the granular OSC toggles to every tab')
 win._apply_global({'theme': 'light', 'zoom': 130, 'mode': 'reveal', 'colors': True, 'line_edits': True,
-                   'tui': False, 'osc': {'osc_title': False, 'osc_clipboard': False},
+                   'tui': False, 'tui_autobox_notice': True,
+                   'osc': {'osc_title': False, 'osc_clipboard': False},
                    'scrollback': 1000, 'paste_delay': 5, 'persist': True})
 eq(win._default_mode, 'reveal', 'global settings updated the default mode')
 # slash-command palette: applies settings, leading slash optional, invalid -> False

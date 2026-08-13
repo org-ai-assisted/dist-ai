@@ -214,9 +214,9 @@ launch() {  ## $1=emulator  $2=case
          "${base[@]}" GDK_BACKEND=x11 xfce4-terminal --disable-server --geometry "84x${rows}" -x "${sh[@]}"
          ;;
       gnome-terminal)
-         ## gnome-terminal is a thin client to gnome-terminal-server over D-Bus
-         ## (--disable-factory was removed in 3.14+): give each launch a PRIVATE
-         ## session bus so its server starts fresh and dies with the bus, and
+         ## gnome-terminal is a thin client to gnome-terminal-server over D-Bus, with no
+         ## flag to force a private server: give each launch a PRIVATE session bus so its
+         ## server starts fresh and dies with the bus, and
          ## --wait so this backgrounded launcher blocks until the window closes
          ## (clear_windows/windowkill then unblocks it). VTE reads its profile
          ## from dconf; with no dconf daemon on the private bus it falls back to
@@ -424,17 +424,30 @@ fi
 ## deliberately authorize skipping (it is then logged, never silent).
 TERMINALS="${TERMINALS:-xterm urxvt st konsole gnome-terminal xfce4-terminal mate-terminal qterminal alacritty kitty}"
 for e in ${TERMINALS}; do
-   if ! type -P "${e}" >/dev/null 2>&1; then
+   ## `type -P` finds a binary that is on PATH and carries SOME exec bit, but that does
+   ## not mean the CURRENT user may run it: a hardened Kicksecure/Whonix permission-hardener
+   ## strips the others-exec bit from urxvt (mode 0754, owner root), so `type -P` succeeds
+   ## yet the launch dies with "Permission denied" and the shot silently never appears.
+   ## `[ -x ]` tests access for THIS user, so it catches that -- with an actionable message.
+   e_path="$(type -P "${e}" 2>/dev/null || true)"
+   if [ -z "${e_path}" ] || [ ! -x "${e_path}" ]; then
+      if [ -z "${e_path}" ]; then
+         reason="is not installed"
+      else
+         reason="is present at ${e_path} but not executable by you (a permission-hardener may have stripped its exec bit; restore it with: sudo chmod a+x ${e_path})"
+      fi
       if [ -n "${ALLOW_SKIP:-}" ]; then
-         printf '%s\n' "SKIP ${e} (not installed; ALLOW_SKIP authorized)" >&2
+         printf '%s\n' "SKIP ${e} (${reason}; ALLOW_SKIP authorized)" >&2
          continue
       fi
-      printf '%s\n' "ERROR: terminal ${e} is not installed. Install it, or set ALLOW_SKIP=1 to authorize skipping." >&2
+      printf '%s\n' "ERROR: terminal ${e} ${reason}. Install/fix it, or set ALLOW_SKIP=1 to authorize skipping." >&2
       exit 1
    fi
    shoot "${e}" crafted      || true
    shoot "${e}" random       || true
    shoot "${e}" homoglyph    || true
+   shoot "${e}" bidi         || true
+   shoot "${e}" zerowidth    || true
    shoot "${e}" altscreen    || true
    shoot "${e}" tui-showcase || true
    printf '%s\n' "captured ${e}"
@@ -457,17 +470,24 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
    st_win_w=1360
    ## Each entry is "<case> <mode> <suffix> [tui]". The optional 4th field 'tui' launches
    ## secure-terminal with --tui (opt-in full-screen mode) instead of the default CLI mode.
-   ## The tui-showcase board is captured in CLI-box, CLI-detail AND TUI-box, to show that
-   ## even when full-screen layout is allowed, every cell is still character-filtered.
+   ## The tui-showcase board is captured across the CLI/TUI mode x box/show/detail
+   ## unicode matrix so the page's view switcher has a real shot per combo. Show renders
+   ## printable unicode as its glyph (readable) while still boxing invisible/bidi/control
+   ## bytes; detail names each codepoint inline. Even in full-screen TUI every cell stays
+   ## character-filtered.
    st_specs=(
       'crafted box crafted'
       'random box random'
       'homoglyph box homoglyph-strip'
       'homoglyph detail homoglyph-detail'
+      'bidi box bidi'
+      'zerowidth box zerowidth'
       'altscreen box altscreen'
       'tui-showcase box tui-showcase'
+      'tui-showcase show tui-showcase-show'
       'tui-showcase detail tui-showcase-detail'
       'tui-showcase box tui-showcase-tui tui'
+      'tui-showcase show tui-showcase-tui-show tui'
    )
    for spec in "${st_specs[@]}"; do
       read -r st_case st_mode st_suffix st_tui <<< "${spec}"
