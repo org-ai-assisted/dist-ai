@@ -326,6 +326,14 @@ eq(_paste([b'\x1b[A'])[0], b'\x1b[A',
 eq(_paste([b'\x1b[200~a\x1b[31mb\x1b[201~'])[0], b'a[31mb',
    'an escape inside a paste body has its ESC control byte stripped')
 
+# regression (ai-review, agy): a LONE ESC is forwarded verbatim, NOT held. A bare ESC
+# is a prefix of the 200~/201~ markers; holding it (only a >=2-byte split prefix is
+# carried now) would swallow an interactive Escape (vim, an arrow-key prefix) until the
+# next keystroke. Pre-fix: carry held b'\x1b' and out was empty.
+_lone = _paste([b'\x1b'])
+eq(_lone[0], b'\x1b', 'a lone ESC is forwarded verbatim (vim / interactive Escape works)')
+eq(_lone[1][2], b'', 'a lone ESC is not buffered in carry (no indefinite hold)')
+
 # END-TO-END: a framed paste through cli.main does NOT auto-submit. The paste is
 # `echo N''EUT` with a trailing newline; were that newline to auto-submit, the
 # command would RUN and print NEUT. Instead its trailing submit is stripped, so the
