@@ -45,12 +45,7 @@ work_dir="$( mktemp --directory -- "${TMP}/dist-installer-cli-tests.XXXXXX" )"
 ## Reached only via the EXIT trap; shellcheck cannot see that path (SC2317).
 # shellcheck disable=SC2317
 cleanup() {
-   ## safe-rm ships with private-ai-config and is absent on a CI runner, where
-   ## this runs as the EXIT trap: its 127 would become the test's exit status,
-   ## turning a green run red. Tolerate its absence rather than falling back to
-   ## rm - the target is our own mktemp dir, so leaving it behind costs nothing.
-   safe-rm --recursive --force -- "${work_dir}" || true
-   return 0
+   safe-rm --recursive --force -- "${work_dir}"
 }
 trap cleanup EXIT
 
