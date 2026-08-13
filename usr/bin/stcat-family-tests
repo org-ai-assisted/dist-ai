@@ -14,6 +14,15 @@
 ## helper-scripts checkout to test that instead. Extra args (e.g. --iterations
 ## N, --seed N) pass through.
 
+## check_runtime.bsh provides was_executed + the strict-mode gate below. If it is
+## absent the source fails BEFORE strict mode, was_executed is undefined (127), both
+## guards read false, main never runs, and the suite exits 0 -- a false PASS for a
+## file that was never tested. Fail loud (SKIP) instead. A source-able test
+## caller runs in an env that HAS the helper, so the guard never fires there.
+if [ ! -r /usr/libexec/helper-scripts/check_runtime.bsh ]; then
+   printf '%s\n' 'stcat-family-tests: SKIP (helper-scripts check_runtime.bsh not found)' >&2
+   exit 77
+fi
 source /usr/libexec/helper-scripts/check_runtime.bsh
 
 if was_executed "${BASH_SOURCE[0]}"; then
