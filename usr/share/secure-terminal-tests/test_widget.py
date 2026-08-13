@@ -938,6 +938,22 @@ if sw.current_tui():
     ok('history-line-A' in sw.toPlainText(),
        'scrollback restored after a full-screen program exits')
 sw.apply_tui(False)
+# regression (#7): a debounced CLI paint must NOT survive entry into the TUI grid.
+# _sync_display is reached directly from apply_tui (not via _rerender), so a still-
+# armed _paint_timer would fire _flush_paint AFTER the grid is built and write stale
+# CLI content into the grid document, corrupting it. Pre-fix the timer stayed armed.
+pw = SecureTerminal(command='/bin/cat')
+pw.apply_tui(True)
+if pw.current_tui():
+    pw._paint_dirty = True
+    pw._paint_timer.start(0)                # arm the CLI paint debounce
+    ok(pw._paint_timer.isActive(), 'a CLI paint is armed before the grid takes over')
+    pw._alt_screen = True
+    pw._sync_display()                      # a full-screen program takes the grid
+    ok(not pw._paint_timer.isActive() and not pw._paint_dirty,
+       'grid entry drops the pending CLI paint (no stale _flush_paint corrupts the grid)')
+    pw._alt_screen = False
+pw.apply_tui(False)
 # CLI->TUI grid fits the viewport: no useless horizontal scrollbar and no clipped
 # right edge. The grid must be sized to the text AREA (viewport minus the doc
 # margins): the raw viewport is one column too wide and overflows.
