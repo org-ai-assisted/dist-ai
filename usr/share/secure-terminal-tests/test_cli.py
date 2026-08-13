@@ -299,9 +299,11 @@ ok(b'\x1b[200~' not in _p_out and b'\x1b[201~' not in _p_out,
    'the 200~/201~ paste markers are stripped from the child input')
 eq(_p_st, (False, b'', b''), 'a complete framed paste leaves no carried state')
 
-# an interior newline in a multi-line paste is kept (only the FINAL auto-run goes)
-eq(_paste([b'\x1b[200~a\nb\n\x1b[201~'])[0], b'a\rb',
-   'a multi-line paste keeps interior line breaks; only the trailing submit is cut')
+# a multi-line CLI paste strips EVERY submit -- the CLI has no hold-for-review, so an
+# interior CR would auto-run the command before it (embedded-CR pastejacking). Canary:
+# the child gets "ab" (no CR); "a\rb" would submit "a" the instant the paste lands.
+eq(_paste([b'\x1b[200~a\nb\n\x1b[201~'])[0], b'ab',
+   'a multi-line CLI paste strips EVERY submit so no interior CR auto-runs a command')
 
 # a paste split across reads: BODY across the boundary carries correctly
 eq(_paste([b'\x1b[200~echo ', b'hi\n\x1b[201~'])[0], b'echo hi',
