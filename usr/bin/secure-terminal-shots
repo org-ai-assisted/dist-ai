@@ -46,6 +46,12 @@ shopt -s shift_verbose
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
+## image-optimize ships alongside this script in dist-ai/usr/bin; the capture lanes call it
+## by bare name. Put this bin dir on PATH so it (and any sibling dist-ai tool) resolves even
+## in a sandbox that has not symlinked dist-ai into PATH -- it is a REQUIRED, bundled tool,
+## always present next to us, so no fallback is needed.
+export PATH="${script_dir}:${PATH}"
+
 if [ -d "${script_dir}/../share/secure-terminal-shots" ]; then
    shots_dir="${script_dir}/../share/secure-terminal-shots"
 else
@@ -92,17 +98,31 @@ if [ "$#" -ge 1 ] && { [ "$1" = 'review' ] || [ "$1" = 'modes' ] || [ "$1" = 'he
 fi
 
 export SECURE_TERMINAL_REPO="${repo}"
+export ST_REPO="${repo}"
+
+## The comparison + clipboard lanes need an X server on $DISPLAY (labwc nests on it; the
+## clipboard lives on it) but do NOT start one themselves, so run them under a private Xvfb
+## via xvfb-run -- a bare `secure-terminal-shots comparison` then just works in a headless
+## sandbox with no display to remember. xvfb-run is a REQUIRED dependency (provisioned; the
+## sandbox has it): no fallback, its absence is a provisioning bug and exec fails loudly.
+## A fresh nested Xvfb each run also keeps the capture deterministic and off any real desktop.
 
 if [ "${mode}" = 'comparison' ]; then
    ## Real-terminal comparison capture; it resolves ST_REPO / SECURE_TERMINAL_REPO
-   ## itself and writes to its own shots/. Needs a display -- fails loudly if none.
-   ST_REPO="${repo}" exec "${shots_dir}/comparison-capture.sh" "$@"
+   ## itself and writes to its own shots/. Run under xvfb-run + forward its exit.
+   run_rc=0
+   xvfb-run --auto-servernum --server-args='-screen 0 1600x1000x24' \
+      "${shots_dir}/comparison-capture.sh" "$@" || run_rc="$?"
+   exit "${run_rc}"
 fi
 
 if [ "${mode}" = 'clipboard' ]; then
    ## The OSC 52 clipboard-write VERDICT lane (not a screenshot): per-terminal
-   ## honored/refused, read back from the real X clipboard. Needs a display.
-   ST_REPO="${repo}" exec "${shots_dir}/clipboard-verdict.sh" "$@"
+   ## honored/refused, read back from the real X clipboard. xvfb-run + forward its exit.
+   run_rc=0
+   xvfb-run --auto-servernum --server-args='-screen 0 1600x1000x24' \
+      "${shots_dir}/clipboard-verdict.sh" "$@" || run_rc="$?"
+   exit "${run_rc}"
 fi
 
 if [ "${mode}" = 'comparison-wayland' ]; then

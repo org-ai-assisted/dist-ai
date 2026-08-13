@@ -130,8 +130,10 @@ shots_payload_cmd() {  ## $1=case -> the command string the terminal displays
 ## non-zero is a real generation failure (reproduce.py / write) that a caller must
 ## NOT convert to a skip -- otherwise a broken payload is reported as green.
 shots_generate_logs() {  ## $1=script-relative fallback dir $2=dest-dir
-   local fallback="$1" dest="$2"
-   local corpus rp c id notify zerowidth
+   local fallback dest corpus rp c id notify zerowidth
+
+   fallback="$1"
+   dest="$2"
    if ! corpus="$(shots_resolve_corpus "${fallback}/../../../../terminal-poc-corpus")"; then
       printf '%s\n' 'lib-capture: terminal-poc-corpus not found (set CORPUS_REPO)' >&2
       return 77
@@ -164,13 +166,11 @@ shots_generate_logs() {  ## $1=script-relative fallback dir $2=dest-dir
 
 shots_optimize_to_webp() {  ## $@=produced PNG shots -> convert each to webp in place
    ## Match the site's webp image references: a freshly captured PNG is losslessly
-   ## converted to <name>.webp (the PNG removed) via the shipped image-optimize, so
-   ## a regenerated shot lands optimized rather than being caught later by the
-   ## pre-commit image gate. Missing tool -> warn, leave PNGs (never a silent skip).
-   if ! type -P image-optimize >/dev/null; then
-      printf '%s\n' "shots: image-optimize not on PATH; shots left as PNG (run 'image-optimize --webp' on them before committing)" >&2
-      return 0
-   fi
+   ## converted to <name>.webp (the PNG removed) via image-optimize, so a regenerated shot
+   ## lands optimized rather than being caught later by the pre-commit image gate.
+   ## image-optimize is a REQUIRED dependency (shipped by private-ai-config; the sandbox
+   ## gets it via `sandbox provision disttools`). No fallback: if it is absent that is a
+   ## provisioning bug, and this fails loudly rather than silently shipping PNGs.
    local shot
    for shot in "$@"; do
       [ -f "${shot}" ] || continue
