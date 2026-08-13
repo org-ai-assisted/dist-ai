@@ -71,6 +71,10 @@ mkdir --parents -- "${out}"
 # shellcheck source=./lib-capture.sh
 source "${here}/lib-capture.sh"
 
+## Fail BEFORE the expensive capture if the bundled webp optimizer is missing -- a direct
+## run (not via the secure-terminal-shots wrapper) resolves it checkout-relative, not by PATH.
+shots_require_image_optimize || exit 1
+
 ## Resolve the corpus NOW, while HOME is still the operator's -- the reassignment
 ## below would otherwise hide the documented ~/private-sources default from the
 ## resolver. Export it so shots_generate_logs (run after the reassign) reuses it.

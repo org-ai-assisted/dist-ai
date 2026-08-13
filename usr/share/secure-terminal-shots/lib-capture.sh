@@ -50,6 +50,21 @@
 shots_random_bytes=1200
 shots_random_source='/dev/random'
 
+## image-optimize (lossless PNG->webp) is a bundled dist-ai tool at usr/bin/image-optimize,
+## a FIXED location relative to THIS file (usr/share/secure-terminal-shots/lib-capture.sh) in
+## both the installed tree and a source checkout. Resolve it by that path: a DIRECT
+## comparison-capture.sh / wayland-capture.sh run has no wrapper to prime PATH, so a bare
+## name would resolve only when usr/bin happens to be on PATH -- and fail AFTER the whole
+## capture. BASH_SOURCE[0] is the absolute path both entry points source us by.
+shots_image_optimize="$(dirname -- "${BASH_SOURCE[0]}")/../../bin/image-optimize"
+
+## Fail BEFORE an expensive capture if that bundled optimizer is missing, never after it.
+shots_require_image_optimize() {
+   [ -x "${shots_image_optimize}" ] && return 0
+   printf '%s\n' "shots: bundled image-optimize not found/executable at ${shots_image_optimize} -- the dist-ai checkout is incomplete; refusing to run the capture only to fail at the end" >&2
+   return 1
+}
+
 ## Resolve the terminal-poc-corpus checkout (CORPUS_REPO, a default under
 ## private-sources, or a script-relative fallback). Echoes the path, or returns 1.
 shots_resolve_corpus() {  ## $1=script-relative fallback dir
@@ -168,12 +183,11 @@ shots_optimize_to_webp() {  ## $@=produced PNG shots -> convert each to webp in 
    ## Match the site's webp image references: a freshly captured PNG is losslessly
    ## converted to <name>.webp (the PNG removed) via image-optimize, so a regenerated shot
    ## lands optimized rather than being caught later by the pre-commit image gate.
-   ## image-optimize is a REQUIRED dependency (shipped by private-ai-config; the sandbox
-   ## gets it via `sandbox provision disttools`). No fallback: if it is absent that is a
-   ## provisioning bug, and this fails loudly rather than silently shipping PNGs.
+   ## image-optimize is a REQUIRED, BUNDLED dist-ai sibling (${shots_image_optimize}); no
+   ## fallback -- an absent one is a broken checkout, and this fails loudly.
    local shot
    for shot in "$@"; do
       [ -f "${shot}" ] || continue
-      image-optimize --webp --quiet -- "${shot}" >/dev/null
+      "${shots_image_optimize}" --webp --quiet -- "${shot}" >/dev/null
    done
 }

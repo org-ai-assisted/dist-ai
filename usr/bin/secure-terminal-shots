@@ -46,12 +46,6 @@ shopt -s shift_verbose
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
-## image-optimize ships alongside this script in dist-ai/usr/bin; the capture lanes call it
-## by bare name. Put this bin dir on PATH so it (and any sibling dist-ai tool) resolves even
-## in a sandbox that has not symlinked dist-ai into PATH -- it is a REQUIRED, bundled tool,
-## always present next to us, so no fallback is needed.
-export PATH="${script_dir}:${PATH}"
-
 if [ -d "${script_dir}/../share/secure-terminal-shots" ]; then
    shots_dir="${script_dir}/../share/secure-terminal-shots"
 else
@@ -59,18 +53,15 @@ else
 fi
 
 optimize_to_webp() {  ## $@=produced PNG shots -> convert each to webp in place
-   ## The site references these shots as .webp; convert a freshly generated PNG
-   ## (removing it) with the shipped image-optimize, so a regenerated shot lands
-   ## optimized rather than being caught later by the pre-commit image gate.
-   ## Missing tool -> warn, leave PNGs (never a silent skip).
-   if ! type -P image-optimize >/dev/null; then
-      printf '%s\n' "secure-terminal-shots: image-optimize not on PATH; shots left as PNG (run 'image-optimize --webp' on them before committing)" >&2
-      return 0
-   fi
+   ## The site references these shots as .webp; convert a freshly generated PNG (removing it)
+   ## with the bundled image-optimize sibling in THIS bin dir, so a regenerated shot lands
+   ## optimized rather than being caught later by the pre-commit image gate. Required, bundled,
+   ## resolved by path (not PATH -- $0 is readlink-canonicalized, so a ~/.local/bin symlink
+   ## still points script_dir at the real dist-ai/usr/bin); no fallback.
    local shot
    for shot in "$@"; do
       [ -f "${shot}" ] || continue
-      image-optimize --webp --quiet -- "${shot}" >/dev/null
+      "${script_dir}/image-optimize" --webp --quiet -- "${shot}" >/dev/null
    done
 }
 

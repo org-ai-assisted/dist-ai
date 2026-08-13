@@ -124,6 +124,10 @@ here="$(cd -- "$(dirname -- "$0")" && pwd)"
 # shellcheck source=./lib-capture.sh
 source "${here}/lib-capture.sh"
 
+## Fail BEFORE the expensive capture if the bundled webp optimizer is missing -- a direct
+## run (not via the secure-terminal-shots wrapper) resolves it checkout-relative, not by PATH.
+shots_require_image_optimize || exit 1
+
 ## ---- reproduce the corpus payloads once; the demo CATs them ---------------------
 work="$(mktemp -d)"
 ## propagate the real code: 77 is the missing-corpus SKIP, any other non-zero is a
