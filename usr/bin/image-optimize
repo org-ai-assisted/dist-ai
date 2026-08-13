@@ -85,11 +85,19 @@ while [ "$#" -gt 0 ]; do
          shift
          ;;
       --tolerance-pct)
-         tol_pct="${2:-}"
+         if [ "$#" -lt 2 ]; then
+            err "--tolerance-pct requires a value"
+            exit 2
+         fi
+         tol_pct="$2"
          shift 2
          ;;
       --tolerance-bytes)
-         tol_floor="${2:-}"
+         if [ "$#" -lt 2 ]; then
+            err "--tolerance-bytes requires a value"
+            exit 2
+         fi
+         tol_floor="$2"
          shift 2
          ;;
       -h|--help)

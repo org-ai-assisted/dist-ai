@@ -71,16 +71,22 @@ class Extractor(html.parser.HTMLParser):
         self.ids = set()
         self.text_parts = []
         self.csp = None          # content of the CSP <meta http-equiv>
+        self.styles = []         # CSS text: style="" attrs + <style> element bodies
         self._skip = 0
+        self._in_style = 0
 
     def handle_starttag(self, tag, attrs):
         if tag in ('script', 'style'):
             self._skip += 1
+        if tag == 'style':
+            self._in_style += 1
         amap = dict(attrs)
         if amap.get('id'):
             self.ids.add(amap['id'])
         if amap.get('name') and tag == 'a':
             self.ids.add(amap['name'])
+        if amap.get('style'):
+            self.styles.append(amap['style'])
         if tag == 'meta' and (amap.get('http-equiv') or '').lower() \
                 == 'content-security-policy':
             self.csp = amap.get('content') or ''
@@ -91,8 +97,12 @@ class Extractor(html.parser.HTMLParser):
     def handle_endtag(self, tag):
         if tag in ('script', 'style') and self._skip:
             self._skip -= 1
+        if tag == 'style' and self._in_style:
+            self._in_style -= 1
 
     def handle_data(self, data):
+        if self._in_style:
+            self.styles.append(data)
         if not self._skip:
             self.text_parts.append(data)
 
@@ -392,7 +402,7 @@ def check_image_format(root, failures):
                 if token and _is_raster(token[0]) and not _allowed_raster(token[0]):
                     failures.append('%s: srcset image %r must be webp'
                                     % (rel, token[0]))
-        for value in _css_urls(markup):
+        for value in _css_urls('\n'.join(ext.styles)):
             if _is_raster(value) and not _allowed_raster(value):
                 failures.append('%s: CSS url() image %r must be webp'
                                 % (rel, value))

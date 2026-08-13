@@ -131,7 +131,7 @@ assert_le 'second optimize never grows the file' "${png_again}" "${png_after}"
 jpg="${workdir}/photo.jpg"
 convert -size 400x400 plasma: "${jpg}"
 jpg_before="$(fsize "${jpg}")"
-map="$("${BIN}" --webp --quiet -- "${jpg}")"
+map="$("${BIN}" --webp --quiet -- "${jpg}")" || map=""
 webp="${workdir}/photo.webp"
 if [ -f "${webp}" ] && [ ! -e "${jpg}" ]; then
    report pass 'JPEG converted to webp (source removed, .webp created)'
@@ -152,7 +152,7 @@ png2="${workdir}/logo.png"
 convert -size 200x200 plasma:fractal "${png2}"
 "${BIN}" --quiet -- "${png2}"          # minimize first so the comparison is fair
 png2_min="$(fsize "${png2}")"
-map2="$("${BIN}" --webp --quiet -- "${png2}")"
+map2="$("${BIN}" --webp --quiet -- "${png2}")" || map2=""
 result2="${map2#*$'\t'}"
 if [ -f "${result2}" ]; then
    report pass 'PNG --webp result path exists'
@@ -168,7 +168,7 @@ assert_le 'PNG --webp result is never larger than the minimized source' \
 gif="${workdir}/anim.gif"
 printf '%s' 'GIF89a and some bytes that are not a real gif' > "${gif}"
 gif_sum_before="$(cksum < "${gif}")"
-skip_map="$("${BIN}" --webp --quiet -- "${gif}")"
+skip_map="$("${BIN}" --webp --quiet -- "${gif}")" || skip_map=""
 gif_sum_after="$(cksum < "${gif}")"
 if [ "${gif_sum_before}" = "${gif_sum_after}" ]; then
    report pass 'unsupported type left byte-identical'

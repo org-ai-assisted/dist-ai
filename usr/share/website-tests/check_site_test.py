@@ -166,6 +166,14 @@ def run():
                _page % '<div style="background:url(/bg.png)">x</div>')
         check('inline css url() raster flagged',
               any('bg.png' in f for f in _fmt_failures(root)))
+        # But url(...) inside a code sample / script is NOT a style -> not flagged.
+        _write(root, 'index.html',
+               _page % '<pre>body { background: url(/sample.png) }</pre>'
+                       '<script>var s = "url(/scripted.png)";</script>')
+        fails = _fmt_failures(root)
+        check('url() in a code sample / script is not flagged',
+              not any('sample.png' in f or 'scripted.png' in f for f in fails),
+              repr(fails))
 
     # 10. og:image / twitter:image / favicon are metadata, not content loads --
     # they may stay PNG/JPEG for social-scraper compatibility.

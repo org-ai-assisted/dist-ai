@@ -41,14 +41,6 @@ import subprocess
 import sys
 
 IMAGE_EXTS = (".png", ".jpg", ".jpeg")
-## The sibling Pages sites. A social-card URL is written absolute
-## (https://<host>/og.png); resolving it to the local file must not depend on the
-## checkout directory happening to be named exactly like its host.
-FAMILY_HOSTS = (
-    "output-lies.github.io",
-    "secure-terminal.github.io",
-    "org-ai-assisted.github.io",
-)
 RASTER_RE = re.compile(r".*\.(png|jpe?g)$", re.IGNORECASE)
 ## url(...) in CSS or inline style, single/double/unquoted.
 ## url() with a quoted value may legitimately contain ')'; match the quoted
@@ -82,9 +74,23 @@ class RefParser(html.parser.HTMLParser):
         super().__init__(convert_charrefs=True)
         self.protected = []       # raw URL strings
         self.content = []         # raw URL strings
+        self.styles = []          # CSS text: style="" attrs + <style> bodies
+        self._in_style = 0
+
+    def handle_endtag(self, tag):
+        if tag == "style" and self._in_style:
+            self._in_style -= 1
+
+    def handle_data(self, data):
+        if self._in_style:
+            self.styles.append(data)
 
     def handle_starttag(self, tag, attrs):
         amap = {k: (v or "") for k, v in attrs}
+        if tag == "style":
+            self._in_style += 1
+        if amap.get("style"):
+            self.styles.append(amap["style"])
         if tag == "meta":
             key = (amap.get("property") or amap.get("name") or "").lower()
             if key in OG_KEYS and amap.get("content"):
@@ -123,17 +129,12 @@ def url_to_local(url, site_root, site_host, page_dir):
     target = url.split("#", 1)[0].split("?", 1)[0]
     if not target:
         return None
-    ## A same-site absolute URL (this checkout's own host, or any sibling family
-    ## host) maps back onto the tree as a root-absolute path.
-    for host in (site_host,) + FAMILY_HOSTS:
-        matched = False
-        for scheme in ("http://", "https://"):
-            prefix = scheme + host + "/"
-            if target.startswith(prefix):
-                target = "/" + target[len(prefix):]
-                matched = True
-                break
-        if matched:
+    ## Only THIS site's own absolute URL maps back onto the tree as a root-absolute
+    ## path; a sibling-site host is external (its asset lives in another checkout).
+    for scheme in ("http://", "https://"):
+        prefix = scheme + site_host + "/"
+        if target.startswith(prefix):
+            target = "/" + target[len(prefix):]
             break
     if target.startswith(("http://", "https://", "//", "data:", "mailto:")):
         return None
@@ -178,8 +179,9 @@ def collect_refs(site_root, site_host):
             local = url_to_local(url, site_root, site_host, page_dir)
             if local and RASTER_RE.match(local):
                 content.add(local)
-        ## Inline style url(...) counts as a content reference too.
-        for url in css_urls(markup):
+        ## url(...) in a style attribute or <style> block counts as a content
+        ## reference too -- but NOT url(...) in a script, comment or code sample.
+        for url in css_urls("\n".join(parser.styles)):
             local = url_to_local(url, site_root, site_host, page_dir)
             if local and RASTER_RE.match(local):
                 content.add(local)
@@ -226,7 +228,15 @@ def rewrite_references(site_root, renames):
     pattern = re.compile(
         r"(?<![\w.-])(" + "|".join(keys) + r")(?![\w-])(?!\.\w)")
     changed = 0
+    root_real = os.path.realpath(site_root)
     for path in list(walk_files(site_root, REWRITE_EXTS)):
+        ## Never write THROUGH a symlink: a repo symlink could otherwise modify a
+        ## file outside the checkout. Skip a symlink or any path resolving out.
+        if os.path.islink(path):
+            continue
+        real = os.path.realpath(path)
+        if real != root_real and not real.startswith(root_real + os.sep):
+            continue
         try:
             with open(path, encoding="utf-8") as handle:
                 text = handle.read()
@@ -276,17 +286,24 @@ def main():
         top = subprocess.run(
             ["git", "-C", site_root, "rev-parse", "--show-toplevel"],
             capture_output=True, text=True)
-        if top.returncode == 0:
-            dirty = subprocess.run(
-                ["git", "-C", site_root, "status", "--porcelain"],
-                capture_output=True, text=True)
-            if dirty.returncode == 0 and dirty.stdout.strip():
-                sys.stderr.write(
-                    "site-image-optimize: refusing to run -- the git work tree at "
-                    "%s has uncommitted changes; a concurrent session's work (or "
-                    "your own) could be clobbered. Commit them first, or pass "
-                    "--force.\n" % top.stdout.strip())
-                return 1
+        if top.returncode != 0:
+            ## No git safety net at all is MORE dangerous than a dirty one, not
+            ## less: a bad conversion could not be reverted. Require --force.
+            sys.stderr.write(
+                "site-image-optimize: refusing to run -- %s is not a git work "
+                "tree, so a conversion could not be reverted. Pass --force to "
+                "override.\n" % site_root)
+            return 1
+        dirty = subprocess.run(
+            ["git", "-C", site_root, "status", "--porcelain"],
+            capture_output=True, text=True)
+        if dirty.returncode == 0 and dirty.stdout.strip():
+            sys.stderr.write(
+                "site-image-optimize: refusing to run -- the git work tree at "
+                "%s has uncommitted changes; a concurrent session's work (or "
+                "your own) could be clobbered. Commit them first, or pass "
+                "--force.\n" % top.stdout.strip())
+            return 1
 
     tool = image_optimize_bin()
 
@@ -296,6 +313,13 @@ def main():
     root_real = os.path.realpath(site_root)
     rasters = []
     for candidate in walk_files(site_root, IMAGE_EXTS):
+        ## A symlinked raster breaks on conversion (its target is deleted but the
+        ## symlink-name references are not renamed), and a target outside the root
+        ## must never be mutated. Skip both.
+        if os.path.islink(candidate):
+            sys.stderr.write("site-image-optimize: skipping %s -- symlink\n"
+                             % os.path.relpath(candidate, site_root))
+            continue
         real = os.path.realpath(candidate)
         if real == root_real or real.startswith(root_real + os.sep):
             rasters.append(real)
@@ -324,6 +348,22 @@ def main():
 
     def rel(path):
         return os.path.relpath(path, site_root)
+
+    ## Basename uniqueness does not stop foo.png and foo.jpg from both producing
+    ## foo.webp -- image-optimize replaces its derived destination, so the second
+    ## conversion would destroy the first. Refuse a stem collision up front.
+    stems = {}
+    for path in to_convert:
+        stem = os.path.splitext(path)[0] + ".webp"
+        stems.setdefault(stem, []).append(path)
+    collisions = {s: p for s, p in stems.items() if len(p) > 1}
+    if collisions:
+        sys.stderr.write("site-image-optimize: refusing -- multiple images would "
+                         "convert to the same webp:\n")
+        for dest, paths in sorted(collisions.items()):
+            sys.stderr.write("  %s <- %s\n"
+                             % (rel(dest), ", ".join(rel(x) for x in paths)))
+        return 1
 
     if check:
         print("site-image-optimize (dry run): %s" % site_root)
