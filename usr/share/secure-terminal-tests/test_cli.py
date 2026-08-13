@@ -53,6 +53,14 @@ def eq(got, want, msg):
     ok(got == want, '%s (got %r, want %r)' % (msg, got, want))
 
 
+def _strip_bp(out):
+    """Drop the bracketed-paste enable/disable the wrapper now writes to the OUTER
+    terminal on a tty (DECSET 2004 on at startup, off at teardown). They are the
+    ONLY escapes the wrapper legitimately emits itself; every other escape in the
+    child's output must still be stripped, so tests assert on the remainder."""
+    return out.replace(cli._BP_ENABLE, b'').replace(cli._BP_DISABLE, b'')
+
+
 def _set_winsize(fd, rows, cols):
     try:
         fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
@@ -156,7 +164,9 @@ def run_in_pty(argv, feed=b'', feed2=b'', feed2_delay=0.4, tty_stdin=True,
 # --- output is sanitized: escapes stripped, non-ASCII neutralised --------------
 _out, _rc = run_in_pty(['--', 'printf',
                         'a\x1b[31mRED\x1b]0;title\x07b\xc2\xa0c'], winsize=(30, 100))
-ok(b'\x1b' not in _out, 'CLI output carries no escape byte (ANSI/OSC stripped)')
+ok(b'\x1b' not in _strip_bp(_out),
+   'CLI output carries no escape byte (ANSI/OSC stripped; only the outer-terminal '
+   'bracketed-paste enable/disable is the wrapper\'s own)')
 ok(b'RED' in _out and b'title' not in _out,
    'the SGR colour text shows; the OSC title payload is stripped')
 ok(b'\xc2\xa0' not in _out, 'a non-ASCII byte is neutralised (not passed through)')
@@ -181,7 +191,9 @@ ok(b'31m' not in _split_o,
    'a CSI split across two reads leaks no parameter bytes (no "31m")')
 ok(b'root@host' not in _split_o,
    'an OSC split across two reads never spills a fake prompt onto the terminal')
-ok(b'\x1b' not in _split_o, 'no escape byte reaches the outer terminal either way')
+ok(b'\x1b' not in _strip_bp(_split_o),
+   'no escape byte reaches the outer terminal either way (bar the wrapper\'s own '
+   'bracketed-paste enable/disable)')
 eq(_split_rc, 0, 'the split-sequence child exits cleanly')
 
 # --- display modes ------------------------------------------------------------
@@ -209,8 +221,9 @@ ok(b'P=cat,' in _oenv, 'the cli wrapper child sees PAGER=cat by default')
 _prog_o, _prog_rc = run_in_pty(['--', 'sh', '-c',
     'printf "beta\\nalpha\\n" | sort | sed "s/^/> /" | grep -c "^> " '
     + '| sed "s/^/count=/" && ls -1 /bin/sh && printf "awk=" && awk "BEGIN{print 6*7}"'])
-ok(b'\x1b' not in _prog_o,
-   'real line tools (sort/sed/grep/ls/awk) leave no escape byte in the output')
+ok(b'\x1b' not in _strip_bp(_prog_o),
+   'real line tools (sort/sed/grep/ls/awk) leave no escape byte in the output '
+   '(bar the wrapper\'s own bracketed-paste enable/disable)')
 ok(b'count=2' in _prog_o,
    'the sort|sed|grep -c pipeline yields exactly 2 lines (labelled, not a stray digit)')
 ok(b'/bin/sh' in _prog_o, 'ls output passes through')
@@ -258,6 +271,97 @@ _ob, _rcb = run_in_pty([], feed=b'exit 5\r', feed2=b'\x03exit 7\r',
                        settle=1.8, feed_delay=0.6, feed2_delay=0.6)
 eq(_rcb, 5, 'a single-read burst ending in Enter submits verbatim (typing is not '
             'eaten); the old submit-stripping heuristic would rescue to exit 7')
+
+# --- #50 CLI bracketed-paste protection --------------------------------------
+# Auto-submit protection reaches the CLI the way every shell already gets it: the
+# wrapper enables bracketed paste (DECSET 2004) on the OUTER terminal, so a paste
+# arrives wrapped in ESC[200~ .. ESC[201~ framing that TELLS it apart from typing.
+# feed_stdin_paste is the pure state machine; drive its branches directly (chars
+# and split boundaries) here, then the end-to-end wiring through cli.main below.
+
+
+def _paste(chunks, state=(False, b'', b'')):
+    """Feed each bytes chunk through feed_stdin_paste in turn; return the
+    concatenated child-bound bytes and the final carried state."""
+    out = b''
+    for chunk in chunks:
+        piece, state = cli.feed_stdin_paste(chunk, state)
+        out += piece
+    return out, state
+
+
+# a framed paste's trailing auto-submit ('\n' -> '\r') is neutralized, and the
+# 200~/201~ markers never reach the child
+_p_out, _p_st = _paste([b'\x1b[200~ls -la\n\x1b[201~'])
+eq(_p_out, b'ls -la',
+   'a framed paste is neutralized: trailing auto-submit dropped, command waits')
+ok(b'\x1b[200~' not in _p_out and b'\x1b[201~' not in _p_out,
+   'the 200~/201~ paste markers are stripped from the child input')
+eq(_p_st, (False, b'', b''), 'a complete framed paste leaves no carried state')
+
+# an interior newline in a multi-line paste is kept (only the FINAL auto-run goes)
+eq(_paste([b'\x1b[200~a\nb\n\x1b[201~'])[0], b'a\rb',
+   'a multi-line paste keeps interior line breaks; only the trailing submit is cut')
+
+# a paste split across reads: BODY across the boundary carries correctly
+eq(_paste([b'\x1b[200~echo ', b'hi\n\x1b[201~'])[0], b'echo hi',
+   'a paste body split across two reads is buffered whole before neutralizing')
+
+# a paste split across reads: the MARKER itself split across the boundary carries
+eq(_paste([b'\x1b[20', b'0~echo hi\n\x1b[2', b'01~'])[0], b'echo hi',
+   'a 200~/201~ marker split across two reads is carried, not leaked as text')
+
+# typed (UNFRAMED) bytes are forwarded byte-for-byte, submit byte and all
+eq(_paste([b'exit 5\r'])[0], b'exit 5\r',
+   'typed (unframed) input is forwarded verbatim -- no submit strip on typing')
+
+# a typed escape (an arrow key) is forwarded verbatim, not mistaken for a marker
+eq(_paste([b'\x1b[A'])[0], b'\x1b[A',
+   'a typed escape sequence is forwarded verbatim (not confused with 200~)')
+
+# an escape INSIDE a paste body is neutralized by sanitize_paste (ESC byte dropped;
+# its residual printable letters are inert -- the same as the GUI paste path)
+eq(_paste([b'\x1b[200~a\x1b[31mb\x1b[201~'])[0], b'a[31mb',
+   'an escape inside a paste body has its ESC control byte stripped')
+
+# END-TO-END: a framed paste through cli.main does NOT auto-submit. The paste is
+# `echo N''EUT` with a trailing newline; were that newline to auto-submit, the
+# command would RUN and print NEUT. Instead its trailing submit is stripped, so the
+# command waits UN-run; a Ctrl-U (VKILL) then erases the pending line and `exit 9`
+# terminates. The input echo shows the literal "N''EUT" (no contiguous "NEUT"), so a
+# contiguous NEUT in the output can ONLY be the command's own run -- its ABSENCE is
+# the proof the paste never auto-submitted. (Ctrl-C is unusable as the rescue: VINTR
+# flushes the rest of the same write, taking `exit 9` with it; Ctrl-U erases only the
+# pending line and leaves the following bytes.)
+_pe_o, _pe_rc = run_in_pty([], feed=b"\x1b[200~echo N''EUT\n\x1b[201~",
+                           feed2=b'\x15exit 9\r', settle=2.0,
+                           feed_delay=0.6, feed2_delay=0.8)
+eq(_pe_rc, 9, 'the rescue exit runs end to end (paste framing handled, tty restored)')
+ok(b'NEUT' not in _pe_o,
+   'a framed paste carrying a newline does NOT auto-submit -- the echo command never '
+   'ran; an unprotected wrapper would auto-run it and print NEUT')
+
+# END-TO-END: a paste split across two reads (body in the first, end marker in the
+# second) is still held un-submitted; a following typed Enter runs it (rc 4). This
+# exercises the real read loop's cross-read paste carry and the empty-forward path.
+_ps_o, _ps_rc = run_in_pty([], feed=b'\x1b[200~exit 4', feed2=b'\x1b[201~\r',
+                           settle=1.8, feed_delay=0.6, feed2_delay=0.6)
+eq(_ps_rc, 4, 'a paste split across reads waits un-submitted; a later typed Enter '
+              'runs it (rc 4)')
+
+# the wrapper enables bracketed paste on a tty OUTER terminal, and disables it on
+# teardown -- so a paste is framed and can be told from typing
+_bp_o, _ = run_in_pty(['--', 'printf', 'x'])
+ok(cli._BP_ENABLE in _bp_o,
+   'on a tty the wrapper enables bracketed paste (DECSET 2004h) on the outer term')
+ok(cli._BP_DISABLE in _bp_o,
+   'on teardown the wrapper disables bracketed paste (DECSET 2004l)')
+
+# a NON-tty stdin has no outer terminal to frame a paste, so 2004 is NOT enabled
+# and bytes are forwarded unchanged (a legacy-console / piped-input path)
+_bpn_o, _ = run_in_pty(['--', 'printf', 'x'], tty_stdin=False)
+ok(cli._BP_ENABLE not in _bpn_o,
+   'a non-tty stdin does not enable bracketed paste (nothing to frame)')
 
 # --- SIGWINCH during a run drives the resize handler (window size re-pushed) ---
 _o6, _rc6 = run_in_pty(['--', 'sh', '-c', 'sleep 0.6'], feed_delay=0.2,
