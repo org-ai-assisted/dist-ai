@@ -157,6 +157,9 @@ shots_payload_cmd() {  ## $1=case -> the command string the terminal displays
       art)
          printf '%s' 'cat art.payload'
          ;;
+      unicode)
+         printf '%s' 'cat unicode.payload'
+         ;;
    esac
 }
 
@@ -220,6 +223,14 @@ sys.stdout.buffer.write(buf)' "${shots_random_bytes}" "${shots_random_seed}" > "
    ## scrollback clean. A page-facing capability demo: secure-terminal renders full 24-bit colour
    ## in every mode. Deterministic (pure function of position), so regeneration is a no-op.
    "${fallback}/truecolor-art.py" > "${dest}/art.payload" || return 1
+   ## unicode: an exhaustive-by-class Unicode gallery -- a renderable-subset glyph chart plus
+   ## raw-byte RISK specimens (C0/C1 controls, bidi, zero-width/invisible, combining), each
+   ## specimen inline-ISOLATED one-per-line so an escape it starts aborts at the newline; SO is
+   ## paired with SI so no charset shift lingers. Grids emit only graphic glyphs (safe anywhere);
+   ## display-only, no alt-screen / OSC / persistent state. A capability demo: secure-terminal
+   ## shows and risk-TINTS every class where a plain terminal shows flat text. Deterministic for a
+   ## fixed Unicode version, so regeneration is a no-op.
+   "${fallback}/unicode-gallery.py" > "${dest}/unicode.payload" || return 1
 }
 
 ## Install secure-terminal's icon into a session icon theme at ${1}=XDG_DATA_HOME, so labwc
@@ -240,10 +251,12 @@ shots_shot_is_blank() {  ## $1=png
 }
 
 ## Cases the emulator loop does NOT shoot (secure-terminal-only showcases): notify has no
-## standard emulator equivalent, art is a secure-terminal truecolor-render demo. Single source
-## of truth for "which cases yield an emulator shot", shared by the capture loop's own skip and
-## by shots_missing_emulator_shots below -- keep the two in step.
-SHOTS_EMULATOR_SKIP_CASES=' notify art '
+## standard emulator equivalent, art is a secure-terminal truecolor-render demo, unicode is a
+## secure-terminal risk-tint capability demo (its raw-byte specimens behave unpredictably across
+## emulators and add no attack comparison). Single source of truth for "which cases yield an
+## emulator shot", shared by the capture loop's own skip and by shots_missing_emulator_shots
+## below -- keep the two in step.
+SHOTS_EMULATOR_SKIP_CASES=' notify art unicode '
 
 ## Print the emulator shots (one "<emulator> <case>" per line) that are EXPECTED but MISSING from
 ## the shots dir. Drives the --jobs orchestrator's sequential re-capture net: a parallel lane can

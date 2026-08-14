@@ -1,0 +1,249 @@
+{
+  "by_category": {
+    "Cc": 65,
+    "Cf": 170,
+    "Ll": 2233,
+    "Lm": 397,
+    "Lo": 132234,
+    "Lt": 31,
+    "Lu": 1831,
+    "Mc": 452,
+    "Me": 13,
+    "Mn": 1985,
+    "Nd": 680,
+    "Nl": 236,
+    "No": 915,
+    "Pc": 10,
+    "Pd": 26,
+    "Pe": 77,
+    "Pf": 10,
+    "Pi": 12,
+    "Po": 628,
+    "Ps": 79,
+    "Sc": 63,
+    "Sk": 125,
+    "Sm": 948,
+    "So": 6639,
+    "Zl": 1,
+    "Zp": 1,
+    "Zs": 17
+  },
+  "by_class": {
+    "bidi": 12,
+    "combining": 2155,
+    "confusable": 1457,
+    "control": 65,
+    "invisible": 443,
+    "nonascii": 145746
+  },
+  "display_blocks": [
+    {
+      "by_class": {
+        "confusable": 3,
+        "invisible": 2,
+        "nonascii": 91
+      },
+      "count": 96,
+      "hi": 255,
+      "lo": 160,
+      "name": "Latin-1 Supplement"
+    },
+    {
+      "by_class": {
+        "confusable": 2,
+        "nonascii": 126
+      },
+      "count": 128,
+      "hi": 383,
+      "lo": 256,
+      "name": "Latin Extended-A"
+    },
+    {
+      "by_class": {
+        "confusable": 14,
+        "nonascii": 194
+      },
+      "count": 208,
+      "hi": 591,
+      "lo": 384,
+      "name": "Latin Extended-B"
+    },
+    {
+      "by_class": {
+        "confusable": 9,
+        "nonascii": 87
+      },
+      "count": 96,
+      "hi": 687,
+      "lo": 592,
+      "name": "IPA Extensions"
+    },
+    {
+      "by_class": {
+        "confusable": 18,
+        "nonascii": 62
+      },
+      "count": 80,
+      "hi": 767,
+      "lo": 688,
+      "name": "Spacing Modifier Letters"
+    },
+    {
+      "by_class": {
+        "confusable": 35,
+        "nonascii": 100
+      },
+      "count": 135,
+      "hi": 1023,
+      "lo": 880,
+      "name": "Greek and Coptic"
+    },
+    {
+      "by_class": {
+        "combining": 7,
+        "confusable": 39,
+        "nonascii": 210
+      },
+      "count": 256,
+      "hi": 1279,
+      "lo": 1024,
+      "name": "Cyrillic"
+    },
+    {
+      "by_class": {
+        "confusable": 16,
+        "nonascii": 75
+      },
+      "count": 91,
+      "hi": 1423,
+      "lo": 1329,
+      "name": "Armenian"
+    },
+    {
+      "by_class": {
+        "confusable": 7,
+        "nonascii": 226
+      },
+      "count": 233,
+      "hi": 8191,
+      "lo": 7936,
+      "name": "Greek Extended"
+    },
+    {
+      "by_class": {
+        "nonascii": 32
+      },
+      "count": 32,
+      "hi": 8383,
+      "lo": 8352,
+      "name": "Currency Symbols"
+    },
+    {
+      "by_class": {
+        "confusable": 34,
+        "nonascii": 46
+      },
+      "count": 80,
+      "hi": 8527,
+      "lo": 8448,
+      "name": "Letterlike Symbols"
+    },
+    {
+      "by_class": {
+        "confusable": 13,
+        "nonascii": 47
+      },
+      "count": 60,
+      "hi": 8591,
+      "lo": 8528,
+      "name": "Number Forms"
+    },
+    {
+      "by_class": {
+        "nonascii": 112
+      },
+      "count": 112,
+      "hi": 8703,
+      "lo": 8592,
+      "name": "Arrows"
+    },
+    {
+      "by_class": {
+        "confusable": 13,
+        "nonascii": 243
+      },
+      "count": 256,
+      "hi": 8959,
+      "lo": 8704,
+      "name": "Mathematical Operators"
+    },
+    {
+      "by_class": {
+        "confusable": 4,
+        "nonascii": 252
+      },
+      "count": 256,
+      "hi": 9215,
+      "lo": 8960,
+      "name": "Miscellaneous Technical"
+    },
+    {
+      "by_class": {
+        "nonascii": 39
+      },
+      "count": 39,
+      "hi": 9279,
+      "lo": 9216,
+      "name": "Control Pictures"
+    },
+    {
+      "by_class": {
+        "confusable": 2,
+        "nonascii": 126
+      },
+      "count": 128,
+      "hi": 9599,
+      "lo": 9472,
+      "name": "Box Drawing"
+    },
+    {
+      "by_class": {
+        "nonascii": 32
+      },
+      "count": 32,
+      "hi": 9631,
+      "lo": 9600,
+      "name": "Block Elements"
+    },
+    {
+      "by_class": {
+        "nonascii": 96
+      },
+      "count": 96,
+      "hi": 9727,
+      "lo": 9632,
+      "name": "Geometric Shapes"
+    },
+    {
+      "by_class": {
+        "confusable": 10,
+        "nonascii": 182
+      },
+      "count": 192,
+      "hi": 10175,
+      "lo": 9984,
+      "name": "Dingbats"
+    },
+    {
+      "by_class": {
+        "nonascii": 256
+      },
+      "count": 256,
+      "hi": 10495,
+      "lo": 10240,
+      "name": "Braille Patterns"
+    }
+  ],
+  "total_assigned": 149878,
+  "unidata_version": "15.1.0"
+}
