@@ -276,11 +276,14 @@ expect_rule "R-030/R-031" "printf ${sq}%s${nl}${sq} ${dq}${dq} # ok" "absent"
 ## single-line check reads each body line as shell and flagged both printfs.
 awk_program="awk -v a=\"\${x}\" \\${nl}   ${sq}BEGIN {${nl}      if (a <= 0) { printf \"0.00\"; exit }${nl}      printf \"%.2f\", a / 2;${nl}    }${sq}"
 expect_rule "R-030 printf format" "${awk_program}" "absent"
-## CANARY: the state must RESET at the closing quote, or every violation after
-## an awk program in the same file is silently spared -- a fail-OPEN, and the
-## direction that matters. A real shell violation following the program above
-## must still be flagged.
-expect_rule "R-030 printf format" "${awk_program}${nl}printf \"bad \${x}\\n\"" "present"
+## CANARY: the cross-line quote state must RESET at the closing quote, or every
+## violation after an awk program in the same file is silently spared -- a
+## fail-OPEN, the direction that matters. A REAL newline puts the trailing printf
+## on its own line (the in_quoted_program reset path this exercises); a literal
+## '\n' would glue it to the program as one physical line, where the format regex
+## cannot reach a printf butted against the 'n' and the inner awk printfs (spared
+## by quote depth) leave nothing to flag.
+expect_rule "R-030 printf format" "${awk_program}${nlreal}printf \"bad \${x}\\n\"" "present"
 
 ## R-030 format string, numeric-PROBE carve-out. A '%d' printf whose own command
 ## discards BOTH stdout and stderr emits nothing, so it is a validator rather than
@@ -315,6 +318,26 @@ expect_rule "${r030fmt}" "printf ${sq}%d${sq} ${dq}\$(probe ${discard})${dq}"   
 ## An allowed format stays spared with and without the discard.
 expect_rule "${r030fmt}" "printf ${sq}%s${nl}${sq} ${dq}\${1}${dq}"                 "absent"
 expect_rule "${r030fmt}" "printf ${sq}%s${nl}${sq} ${dq}\${1}${dq} ${discard}"      "absent"
+
+## A printf spelled INSIDE another printf's double-quoted DATA argument is a
+## payload string, not a command -- e.g. a canary feeding a deliberately malformed
+## 'printf %s\n a b c' to a checker. The outer printf is compliant; the nested one
+## must NOT be extracted and flagged. The format loop tracks quote depth so only a
+## depth-zero printf is judged. FAILS on the pre-fix gate, which flagged the nested
+## format.
+expect_rule "${r030fmt}" "printf ${sq}%s${nl}${sq} ${dq}note printf ${sq}bad %s here${sq} a b c${dq}" "absent"
+## CANARY: quote depth resets per line, so a REAL violation on the NEXT line still
+## fires -- a nested-printf line must not fail the rule OPEN for what follows.
+expect_rule "${r030fmt}" "printf ${sq}%s${nl}${sq} ${dq}has printf ${sq}x %s${sq}${dq}${nlreal}printf ${dq}real \${bad}${dq}" "present"
+## A printf spelled in a trailing '#' comment is documentation, not a call: spared.
+expect_rule "${r030fmt}" "printf ${sq}%s${nl}${sq} ${dq}\${v}${dq} ${hash} printf ${sq}%d${sq} ${dq}\${x}${dq}" "absent"
+## CANARY: an unquoted backslash escapes ONE character (a literal quote), it does not
+## open a string -- so a real violation after '\"' must still be flagged. FAILS on a
+## walker that treats '\"' as a string opener (fail-OPEN).
+expect_rule "${r030fmt}" "echo \\${dq} ${sc} printf ${dq}bad \${x}${nl}${dq}" "present"
+## A '#' inside a substring-removal expansion '${v#/p}' is not a comment, so a real printf
+## violation later on the same line is still flagged (not masked by a false comment-truncation).
+expect_rule "${r030fmt}" "x=${dollar}{v${hash}/p} ${sc} printf ${dq}bad \${z}${dq}" "present"
 
 ## A '#' INSIDE the format does not make the line a comment. The comment skip
 ## globbed '[[:space:]]*#*' -- one whitespace char, then anything, then a '#'
@@ -994,6 +1017,41 @@ if printf '%s\n' "${inline_hits}" | grep --quiet --fixed-strings -- 'waived.sh';
 else
    printf '%s\n' 'PASS: R-190 honours the allow-inline-interpreter waiver'
 fi
+
+## R-193: an in-repo script is called DIRECTLY via its shebang + exec bit, not
+## through an interpreter prefix that re-names it (which also drops shebang flags).
+## Only a LITERAL '<interpreter> -- <path>.py' is flagged. Fragments keep the flagged
+## sequence from appearing literally in THIS tracked file.
+py='foo.py'
+## The FAIL message is the tag, not the bare rule id: the waiver-skip NOTE also
+## carries 'R-193', so a bare-id match would read the skip as a violation.
+r193='R-193 call the +x script'
+## The interpreter-prefixed call is FLAGGED.
+expect_rule "${r193}" "python3 ${dd} ${dq}\${dir}/${py}${dq} arg" "present"
+## The direct call (shebang honoured) is SPARED.
+expect_rule "${r193}" "${dq}\${dir}/${py}${dq} arg"              "absent"
+## A generic dispatcher ('interpreter -- "$@"') names no literal script -- glue, not
+## a call; SPARED.
+expect_rule "${r193}" "python3 ${dd} ${dq}\$@${dq}"              "absent"
+## A COMMENT that merely spells the pattern must not self-trip.
+expect_rule "${r193}" "${hash}${hash} example python3 ${dd} bar.py" "absent"
+## The per-file waiver (a script deliberately NOT +x, or an external path) is honoured.
+expect_rule "${r193}" "${hash}${hash} style-ok: allow-python-dashdash${nlreal}python3 ${dd} ${dq}\${dir}/${py}${dq}" "absent"
+## The 'python' token is word-bounded: a command that merely ENDS in 'python' is spared.
+expect_rule "${r193}" "run_python ${dd} ${dq}\${dir}/${py}${dq}"  "absent"
+## The '.py' must end at a path boundary: 'x.py.txt' (not a .py file) is spared.
+expect_rule "${r193}" "python3 ${dd} script.py.txt"              "absent"
+## A 'python3 -- x.py' spelled INSIDE a quoted string is data, not a call: spared.
+expect_rule "${r193}" "echo ${sq}python3 ${dd} ${py}${sq}"       "absent"
+## A trailing inline comment that merely spells the call is documentation: spared.
+expect_rule "${r193}" "run something ${hash} python3 ${dd} ${py}" "absent"
+## A '/' after '.py' is a path continuation, not a boundary: 'foo.py/bar' is spared.
+expect_rule "${r193}" "python3 ${dd} ${py}/bar"                  "absent"
+## A '#' inside a word (substring-removal '${var#pre}') is NOT a comment, so a real call
+## LATER on the same line is still scanned and flagged.
+expect_rule "${r193}" "run ${dollar}{var${hash}pre} && python3 ${dd} real.py" "present"
+## A benign quoted occurrence before a real call on the same line does not mask the call.
+expect_rule "${r193}" "echo ${dq}python3 ${dd} ${py}${dq} ${sc} python3 ${dd} real.py" "present"
 
 ## check-shebang-scripts-are-executable gains a per-file waiver. A SOURCED fragment
 ## carries a shebang for shellcheck dialect detection yet must stay non-executable:

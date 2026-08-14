@@ -108,7 +108,7 @@ check() {
 ## Delegates to onion-address-generate.py, which documents the v3 address format.
 ## Generated per call rather than hardcoded, so this never names a real service.
 make_onion() {
-   python3 -- "${payload_dir}/onion-address-generate.py"
+   "${payload_dir}/onion-address-generate.py"
 }
 
 make_privkey() {

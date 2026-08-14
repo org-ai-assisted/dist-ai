@@ -1,0 +1,125 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Forget-proof host-side driver for the secure-terminal comparison shots. The in-sandbox
+## runner (secure-terminal-shots) captures against WHATEVER trees are present; if the operator
+## forgets to sync a fresh secure-terminal / dist-ai / terminal-poc-corpus into temp-claude,
+## it silently shoots a STALE install -- confidently-wrong screenshots (the shot analogue of
+## the PYTHONPATH stale-install trap). This driver removes that step from memory: it ALWAYS
+## fresh-syncs all three trees into the sandbox, runs the real lane there, and pulls the shots
+## back into the site. No stale copy is ever reused; a missing tree or a failed sync HARD-FAILS.
+##
+## Usage: secure-terminal-shots-sandbox [comparison] [ARGS...]   (comparison is the only lane
+##   this driver pulls back -- the wayland / clipboard lanes write to other paths / a TSV and
+##   are run directly in the sandbox). ARGS pass through (e.g. --only NAME, --case C, --st-only).
+##
+## Env overrides (all default to ~/private-sources/<name>):
+##   SECURE_TERMINAL_REPO   the Qt app source (holds usr/lib/.../secure_terminal)
+##   CORPUS_REPO            terminal-poc-corpus (payload source)
+##   SECURE_TERMINAL_SITE   the site checkout (shots land in its comparison/shots/)
+##   SANDBOX_TARGET         non-default sandbox qube (passed to `sandbox --target`)
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+die() {
+   printf '%s\n' "secure-terminal-shots-sandbox: $*" >&2
+   exit 1
+}
+
+pull_tmp=''
+cleanup() {
+   [ -n "${pull_tmp}" ] || return 0
+   safe-rm --recursive --force -- "${pull_tmp}" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+lane='comparison'
+if [ "$#" -ge 1 ]; then
+   case "$1" in
+      comparison)
+         lane="$1"
+         shift
+         ;;
+      comparison-wayland|clipboard)
+         die "this driver auto-syncs + pulls the 'comparison' shots only; '$1' writes elsewhere (shots-wayland / a .tsv). Run that lane directly in the sandbox."
+         ;;
+   esac
+fi
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+## dist-ai is the tree THIS driver ships in: script is at dist-ai/usr/bin, so ../.. is the root.
+dist_ai="$(readlink --canonicalize -- "${script_dir}/../..")"
+
+secure_terminal="${SECURE_TERMINAL_REPO:-${HOME}/private-sources/secure-terminal}"
+corpus="${CORPUS_REPO:-${HOME}/private-sources/terminal-poc-corpus}"
+site="${SECURE_TERMINAL_SITE:-${HOME}/private-sources/secure-terminal.github.io}"
+
+[ -d "${secure_terminal}/usr/lib/python3/dist-packages/secure_terminal" ] \
+   || die "secure-terminal source not found at '${secure_terminal}' (set SECURE_TERMINAL_REPO)"
+[ -f "${corpus}/tools/reproduce.py" ] \
+   || die "terminal-poc-corpus not found at '${corpus}' (set CORPUS_REPO)"
+[ -f "${dist_ai}/usr/bin/secure-terminal-shots" ] \
+   || die "dist-ai runner not found at '${dist_ai}/usr/bin/secure-terminal-shots'"
+[ -d "${site}/comparison/shots" ] \
+   || die "site shots dir not found at '${site}/comparison/shots' (set SECURE_TERMINAL_SITE)"
+
+## Transport check AFTER the tree checks so a missing tree is reported first and the preflight
+## is testable without a sandbox: a bad SECURE_TERMINAL_REPO refuses here, never a stale capture.
+type -P sandbox >/dev/null || die "the 'sandbox' driver is absent (private-ai-config); cannot reach temp-claude"
+
+target_arg=()
+[ -n "${SANDBOX_TARGET:-}" ] && target_arg=(--target "${SANDBOX_TARGET}")
+
+base='st-shots-sandbox'
+
+printf '%s\n' "secure-terminal-shots-sandbox: fresh-syncing three trees into the sandbox ..." >&2
+sandbox "${target_arg[@]}" sync --delete "${secure_terminal}" "${base}/secure-terminal" \
+   || die "sync of secure-terminal into the sandbox failed"
+sandbox "${target_arg[@]}" sync --delete "${dist_ai}" "${base}/dist-ai" \
+   || die "sync of dist-ai into the sandbox failed"
+sandbox "${target_arg[@]}" sync --delete "${corpus}" "${base}/terminal-poc-corpus" \
+   || die "sync of terminal-poc-corpus into the sandbox failed"
+
+printf '%s\n' "secure-terminal-shots-sandbox: running '${lane}' in the sandbox ..." >&2
+remote_shots="${base}/dist-ai/usr/share/secure-terminal-shots/shots"
+## Run the capture in the BACKGROUND and heartbeat local progress from the sandbox shot count.
+## `sandbox exec` buffers the qrexec stream, so the lane's own per-terminal output never reaches
+## the caller until it exits -- a long silent run then false-stalls the durable-bg supervisor
+## (which watches the progress file for growth). Polling the rendered-PNG count is a REAL
+## liveness signal that still exposes a genuine wedge (the count stops advancing). Delegates to
+## the synced sibling script, NOT an inline bash -lc.
+sandbox "${target_arg[@]}" exec -- \
+   "${HOME}/${base}/dist-ai/usr/share/secure-terminal-shots/run-lane-in-sandbox.sh" \
+   "${base}" "${lane}" "$@" &
+capture_pid=$!
+while kill -0 "${capture_pid}" 2>/dev/null; do
+   sleep 20
+   rendered="$(sandbox "${target_arg[@]}" exec -- bash -c 'ls "$HOME/'"${remote_shots}"'"/*.png "$HOME/'"${remote_shots}"'"/*.webp 2>/dev/null | wc -l' 2>/dev/null || printf '?')"
+   printf '%s\n' "secure-terminal-shots-sandbox: ${lane} capturing -- ${rendered} shot(s) rendered ..."
+done
+wait "${capture_pid}" || die "the in-sandbox '${lane}' run failed"
+
+## Pull the freshly captured shots back. The comparison lane writes webp into
+## secure-terminal-shots/shots/; copy only the webp into the site (never the .png/.log noise).
+pull_tmp="$(mktemp --directory)"
+
+printf '%s\n' "secure-terminal-shots-sandbox: pulling shots back into ${site}/comparison/shots/ ..." >&2
+sandbox "${target_arg[@]}" pull "${remote_shots}" "${pull_tmp}/" \
+   || die "pull of the captured shots out of the sandbox failed"
+
+shopt -s nullglob
+webp=("${pull_tmp}/shots/"*.webp)
+[ "${#webp[@]}" -gt 0 ] || die "no .webp shots were produced in the sandbox (capture failed silently?)"
+cp --force -- "${webp[@]}" "${site}/comparison/shots/"
+
+printf '%s\n' "secure-terminal-shots-sandbox: pulled ${#webp[@]} shot(s) into ${site}/comparison/shots/" >&2

@@ -1498,6 +1498,19 @@ ok(_db.document().toPlainText() == '',
 ok('debounced-last-line' in _db.transcript_text(),
    'transcript_text flushes the pending paint, so a save never misses the last line')
 _db.close()
+# A read notifier can fire AFTER teardown closed the fd (_fd set to None): _on_readable
+# must be a no-op then, not os.read(None) -> TypeError (an uncaught type error that
+# BlockingIOError/OSError do not catch).
+_rn = SecureTerminal(command='/bin/cat')
+_rn._fd = None
+_rn_raised = False
+try:
+    _rn._on_readable()
+except Exception:                                     # noqa: BLE001
+    _rn_raised = True
+ok(not _rn_raised,
+   '_on_readable is a no-op when the fd is already closed (teardown-race guard)')
+_rn.close()
 # shutdown flushes too, so the last line survives teardown
 _db2 = SecureTerminal(command='/bin/cat')
 _db2._mode = 'show'
@@ -4150,6 +4163,129 @@ _tgd.apply_tui(True)
 ok(_tgdsent == [],
    'a recalled (unmirrored) line defers the re-export too')
 _tgd.close()
+
+# The same hazard reached from TUImode. TUI never mirrors the shell's line, so
+# text typed at a BARE prompt (no foreground program) touches neither _line_buffer
+# nor -- until now -- _line_dirty. Left unflagged, a TUI->CLI switch fired an
+# immediate CR-terminated re-export that concatenated onto and SUBMITTED that
+# typed line: an Enter nobody pressed, routed around command_hook. So a TUI
+# keystroke at a bare prompt marks the line dirty, and the switch defers exactly
+# like a mirrored CLI line.
+_tt = SecureTerminal(command=None, tui=True)
+_ttsent = spy_writes(_tt)
+_tt.has_foreground_program = lambda: False              # bare shell prompt
+key(_tt, Qt.Key.Key_L, 'l')                             # type `ls` at the TUI prompt
+key(_tt, Qt.Key.Key_S, 's')
+ok(_tt._line_dirty and _tt._line_buffer == '',
+   'typing at a bare TUI prompt marks the line dirty (the buffer stays unmirrored)')
+ok(_tt._line_pending(),
+   '_line_pending() sees the TUI-typed line, so a re-export must wait for it')
+_ttsent.clear()
+_tt.apply_tui(False)                                    # flip TUI -> CLI
+ok(_ttsent == [],
+   'the TUI-typed line defers the re-export: nothing is typed into the shell')
+ok(not any(b'\r' in s for s in _ttsent),
+   'no CR is generated, so the typed line is never force-submitted past the hook')
+# It must still LAND once the prompt clears, or the switch is merely broken. The
+# tab is in CLI mode now; submitting the line releases the deferral.
+key(_tt, Qt.Key.Key_Return)                             # user submits -> prompt clears
+_ttsent.clear()                                         # drop the CR itself
+feed_output(_tt, b'prompt$ ')                           # a returning prompt is the cue
+ok(any(b'export TERM=secure-terminal\r' == s for s in _ttsent),
+   'the deferred re-export lands once the TUI-typed line is submitted')
+_tt.close()
+
+# A history recall (Up) at a bare TUI prompt is the same hazard with an INVISIBLE
+# line -- it marks dirty too (covers the mapped-key path, not just printable text).
+_th = SecureTerminal(command=None, tui=True)
+spy_writes(_th)                                         # sink the writes; not inspected
+_th.has_foreground_program = lambda: False
+key(_th, Qt.Key.Key_Up)                                 # recall a previous command
+ok(_th._line_dirty,
+   'history recall at a bare TUI prompt marks the line unmirrored')
+_th.close()
+
+# But keys consumed by a FOREGROUND PROGRAM must NOT mark the line: a program that
+# exits without an accept-line key (e.g. `less` quit with `q`) would otherwise
+# strand the flag and defer the re-export forever.
+_tp = SecureTerminal(command=None, tui=True)
+_tpsent = spy_writes(_tp)
+_tp.has_foreground_program = lambda: True               # a full-screen program owns it
+_tp._line_dirty = False
+key(_tp, Qt.Key.Key_Q, 'q')                             # e.g. `q` to quit less
+ok(not _tp._line_dirty,
+   'a keystroke into a running program does not mark the line (no stranded defer)')
+# and because it was never stranded, once the program exits the switch re-exports
+# immediately instead of deferring on a phantom pending line.
+_tp.has_foreground_program = lambda: False              # program exited -> bare prompt
+_tp.apply_tui(False)
+ok(any(b'export TERM=secure-terminal\r' == s for s in _tpsent),
+   'once the program exits, the switch re-exports immediately (nothing stranded)')
+_tp.close()
+
+# A bare shell prompt in TUI mode must NOT be a silent bypass of the command hook:
+# switching to TUI, typing a command, and pressing Enter has to be judged too. TUI
+# does not mirror the line, so the hook sees _line_dirty and falls through to a human
+# review (fail-safe), never an unjudged submit.
+_thk = SecureTerminal(command=None, tui=True)
+_thk.apply_hook({'argv': ['/bin/true'], 'timeout': 10, 'on_error': 'allow',
+                 'transcript': 'none'})
+_thksent = spy_writes(_thk)
+_thk.has_foreground_program = lambda: False
+_tui_asked = []
+_thk._hook_ask = lambda _c, _r: (_tui_asked.append(1) or 'discard')
+key(_thk, Qt.Key.Key_L, 'l')                            # type `ls` at the TUI prompt
+key(_thk, Qt.Key.Key_S, 's')
+key(_thk, Qt.Key.Key_Return)                            # accept-line
+ok(_tui_asked and b'\r' not in _thksent and b'\x15' in _thksent,
+   'a bare TUI prompt routes accept-line through the hook (no silent bypass)')
+# an EMPTY bare prompt has nothing to judge -> the hook passes, Enter submits, no ask
+_thksent.clear(); _tui_asked.clear()
+_thk._line_dirty = False
+_thk._line_buffer = ''
+key(_thk, Qt.Key.Key_Return)
+ok(not _tui_asked and b'\r' in _thksent,
+   'an empty TUI prompt submits normally (the hook has nothing to judge)')
+# while a foreground program owns the terminal, accept-line goes to IT, not the hook
+_thksent.clear(); _tui_asked.clear()
+_thk.has_foreground_program = lambda: True
+key(_thk, Qt.Key.Key_Return)
+ok(not _tui_asked and b'\r' in _thksent,
+   'a program owning the terminal receives accept-line directly (hook not consulted)')
+_thk.close()
+
+# A no-op key at an EMPTY bare TUI prompt introduces no content, so it must NOT
+# flag the line pending -- else the TUI->CLI switch would needlessly defer the
+# re-export at a clean prompt, leaving TERM stale for the next command. Pure
+# navigation (Left/Home/...) and deletion (Backspace/Delete) can only ACT on
+# content a content-introducing key already flagged.
+_tn = SecureTerminal(command=None, tui=True)
+_tnsent = spy_writes(_tn)
+_tn.has_foreground_program = lambda: False
+key(_tn, Qt.Key.Key_Backspace)                          # no-op at an empty prompt
+key(_tn, Qt.Key.Key_Left)                               # pure cursor move
+ok(not _tn._line_dirty and not _tn._line_pending(),
+   'navigation/deletion at an empty TUI prompt does not flag the line pending')
+_tnsent.clear()
+_tn.apply_tui(False)                                    # flip TUI -> CLI
+ok(any(b'export TERM=secure-terminal\r' == s for s in _tnsent),
+   'a clean prompt re-exports immediately -- no needless deferral for no-op keys')
+_tn.close()
+
+# The discard branch requires `not shift`, matching the control-byte branch below
+# it: Ctrl+Shift+C is a copy shortcut, not a discard, so it must NOT clear the line.
+# (The window filters Ctrl+Shift before _tui_key; this keeps the two branches self-
+# consistent, so a clear can never fire without the matching byte being sent.)
+_ts = SecureTerminal(command=None, tui=True)
+spy_writes(_ts)
+_ts.has_foreground_program = lambda: False
+_ts._line_buffer = 'held'
+_ts._tui_key(QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_C,
+                       Qt.KeyboardModifier.ControlModifier
+                       | Qt.KeyboardModifier.ShiftModifier, ''))
+ok(_ts._line_buffer == 'held',
+   'Ctrl+Shift+C does not clear the line in _tui_key (it is not a discard)')
+_ts.close()
 
 # Toggling line editing live must re-export TERM too, not only re-render: the
 # renderer stops honouring el/cuf/hpa, so a shell still told they work keeps

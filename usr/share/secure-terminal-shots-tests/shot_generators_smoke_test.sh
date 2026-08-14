@@ -83,10 +83,10 @@ trap cleanup EXIT
 
 pass=0
 fail=0
-run_gen() {  ## $1=label $2=output $3...=argv to python3
+run_gen() {  ## $1=label $2=output $3...=argv (first is the +x generator, called directly)
    local label="$1" out="$2"; shift 2
    local rc=0
-   python3 -- "$@" >/dev/null 2>"${work}/err.log" || rc=$?
+   "$@" >/dev/null 2>"${work}/err.log" || rc=$?
    if [ "${rc}" -eq 0 ] && [ -s "${out}" ]; then
       printf '%s\n' "PASS: ${label} produced $(basename -- "${out}")"
       pass=$(( pass + 1 ))
@@ -118,7 +118,7 @@ check_tight() {  ## $1=label $2=png
       return
    fi
    ## Largest run of rows entirely equal to the corner (background) pixel.
-   run="$(python3 -- "${script_dir}/largest_bg_row_run.py" "${png}")" || run=''
+   run="$("${script_dir}/largest_bg_row_run.py" "${png}")" || run=''
    if [[ "${run}" =~ ^[0-9]+$ ]] && [ "${run}" -le "${MAX_DEAD_ROWS}" ]; then
       printf '%s\n' "PASS: ${label} tight (largest bg-row run ${run} <= ${MAX_DEAD_ROWS})"
       pass=$(( pass + 1 ))

@@ -115,9 +115,28 @@ export ST_REPO="${repo}"
 if [ "${mode}" = 'comparison' ]; then
    ## Real-terminal comparison capture; it resolves ST_REPO / SECURE_TERMINAL_REPO
    ## itself and writes to its own shots/. Run under xvfb-run + forward its exit.
+   ## EXCEPTION: `--jobs N` (N>1) is the orchestrator -- it launches each lane under its
+   ## OWN xvfb-run, so it must NOT sit inside a single shared outer Xvfb (that would put
+   ## every lane's compositor on one display and defeat the parallelism). Detect the flag
+   ## value and, for N>1, run the orchestrator directly.
+   jobs_val=1
+   prev=''
+   for a in "$@"; do
+      [ "${prev}" = '--jobs' ] && jobs_val="${a}"
+      prev="${a}"
+   done
+   case "${jobs_val}" in
+      ''|*[!0-9]*)
+         jobs_val=1
+         ;;
+   esac
    run_rc=0
-   xvfb-run --auto-servernum --server-args='-screen 0 1600x1000x24' \
+   if [ "${jobs_val}" -gt 1 ]; then
       "${shots_dir}/comparison-capture.sh" "$@" || run_rc="$?"
+   else
+      xvfb-run --auto-servernum --server-args='-screen 0 1600x1000x24' \
+         "${shots_dir}/comparison-capture.sh" "$@" || run_rc="$?"
+   fi
    exit "${run_rc}"
 fi
 
@@ -150,7 +169,7 @@ if [ "${mode}" = 'hero' ] || [ "${mode}" = 'modes' ]; then
       exit 1
    fi
    export PYTHONPATH="${repo}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
-   python3 -- "${shots_dir}/${gen}" "${out_dir}/${outfile}"
+   "${shots_dir}/${gen}" "${out_dir}/${outfile}"
    optimize_to_webp "${out_dir}/${outfile}"
    exit 0
 fi

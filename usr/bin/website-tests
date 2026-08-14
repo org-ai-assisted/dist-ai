@@ -39,6 +39,13 @@ if [ -f "${tests_dir}/check_site_test.py" ]; then
    python3 -Bsu -- "${tests_dir}/check_site_test.py" || exit 1
 fi
 
+## Unit regression for check_mobile's browser-free logic (page discovery +
+## gate wiring). Playwright is imported inside its main(), so this test runs
+## everywhere without a browser; a failure is a real logic regression.
+if [ -f "${tests_dir}/check_mobile_test.py" ]; then
+   python3 -Bsu -- "${tests_dir}/check_mobile_test.py" || exit 1
+fi
+
 ## Resolve each site root from its env var, else a private-sources default.
 [ -v OUTPUT_LIES_REPO ] || OUTPUT_LIES_REPO=''
 [ -v SECURE_TERMINAL_SITE_REPO ] || SECURE_TERMINAL_SITE_REPO=''
@@ -46,7 +53,11 @@ fi
 
 declare -a roots=()
 add_root(){
-   local given="$1" default="$2"
+   local given
+   local default
+
+   given="$1"
+   default="$2"
    if [ -n "${given}" ] && [ -f "${given}/index.html" ]; then
       roots+=( "${given}" )
    elif [ -f "${default}/index.html" ]; then

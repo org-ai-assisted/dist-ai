@@ -111,6 +111,196 @@ run_marker="${runtime_dir}"
 ## reaped and the loop continues, so a wedged terminal cannot stall the whole grid.
 SHOT_DEADLINE="${SHOT_DEADLINE:-90}"
 
+## Optional scope filters (a FAST PATH for iteration; the FULL matrix is the default, so a bare
+## run never silently skips anything). --only NAME restricts the emulators (repeatable); --case C
+## restricts the cases in BOTH loops (repeatable); --st-only skips the emulators; --quick is a
+## smoke shortcut. The full case list is the single source of truth for both loops.
+## notify is a secure-terminal-only case (emulators have no standard notify shot -- the page's
+## kitty.notify popup is captured separately), so it is in the full matrix for the ST loop but
+## skipped in the emulator loop below.
+all_cases='crafted random homoglyph bidi zerowidth altscreen notify tui-showcase'
+CASES="${CASES:-${all_cases}}"
+## The emulator set, single source of truth for BOTH the capture loop and the --jobs
+## orchestrator's partition. lxterminal is omitted: its single-instance startup maps no
+## window headless.
+DEFAULT_TERMINALS='xterm urxvt st konsole gnome-terminal xfce4-terminal mate-terminal qterminal alacritty kitty'
+only_terminals=''
+cases_sel=''
+st_only=''
+## --jobs N (N>1): orchestrator mode -- partition the grid across N concurrent lanes, each
+## its OWN nested Xvfb+compositor (via its own xvfb-run), then optimize once. --no-st skips the
+## secure-terminal pass (for an emulator-only lane); --optimize-only just webp-converts existing
+## PNGs (the orchestrator's final merge step); --no-optimize leaves PNGs for that merge.
+jobs=1
+no_st=''
+no_optimize=''
+optimize_only=''
+while [ "$#" -gt 0 ]; do
+   case "$1" in
+      --only)
+         [ "$#" -ge 2 ] || { printf '%s\n' 'comparison-capture: --only needs a terminal name' >&2; exit 2; }
+         only_terminals="${only_terminals:+${only_terminals} }$2"
+         shift 2
+         ;;
+      --case)
+         [ "$#" -ge 2 ] || { printf '%s\n' 'comparison-capture: --case needs a case name' >&2; exit 2; }
+         cases_sel="${cases_sel:+${cases_sel} }$2"
+         shift 2
+         ;;
+      --st-only)
+         st_only='true'
+         shift
+         ;;
+      --quick)
+         only_terminals='kitty'
+         cases_sel='crafted'
+         shift
+         ;;
+      --jobs)
+         [ "$#" -ge 2 ] || { printf '%s\n' 'comparison-capture: --jobs needs a count' >&2; exit 2; }
+         jobs="$2"
+         shift 2
+         ;;
+      --no-st)
+         no_st='true'
+         shift
+         ;;
+      --no-optimize)
+         no_optimize='true'
+         shift
+         ;;
+      --optimize-only)
+         optimize_only='true'
+         shift
+         ;;
+      *)
+         printf '%s\n' "comparison-capture: unknown argument '$1'" >&2
+         exit 2
+         ;;
+   esac
+done
+if [ -n "${cases_sel}" ]; then
+   CASES="${cases_sel}"
+fi
+
+case "${jobs}" in
+   ''|*[!0-9]*)
+      printf '%s\n' "comparison-capture: --jobs needs a non-negative integer, got '${jobs}'" >&2
+      exit 2
+      ;;
+esac
+
+## --optimize-only: webp-convert the PNGs already in ${out} and stop (the orchestrator's
+## single final merge, after its --no-optimize lanes finished). No capture, no runtime dir.
+if [ -n "${optimize_only}" ]; then
+   safe-rm --recursive --force -- "${runtime_dir}" 2>/dev/null || true
+   shots_optimize_to_webp "${out}"/*.png
+   printf '%s\n' "optimized; webp in ${out}"
+   exit 0
+fi
+
+## --jobs N (N>1): orchestrator. Partition the grid across N concurrent lanes, each a full
+## comparison-capture.sh run over a scope subset in its OWN nested Xvfb + compositor (own
+## xvfb-run --auto-servernum -> a distinct display, so no shared-compositor race). The capture
+## code is reused UNCHANGED; only the work is split. A final --optimize-only pass webp-converts
+## once, so concurrent lanes never race on the shared shots dir's optimize step.
+if [ "${jobs}" -gt 1 ]; then
+   self="${here}/comparison-capture.sh"
+   ## the runtime dir this orchestrator made is unused -- each lane makes its own.
+   safe-rm --recursive --force -- "${runtime_dir}" 2>/dev/null || true
+   fwd_case=()
+   for fc in ${cases_sel}; do fwd_case+=(--case "${fc}"); done
+   if [ -n "${st_only}" ]; then
+      emu_set=''
+   elif [ -n "${only_terminals}" ]; then
+      emu_set="${only_terminals}"
+   else
+      emu_set="${DEFAULT_TERMINALS}"
+   fi
+   lane_dir="$(mktemp --directory)"
+   lane_pids=()
+   lane_logs=()
+   lane_i=0
+   spawn_lane() {  ## $@ = args forwarded to a comparison-capture.sh lane
+      local log
+      log="${lane_dir}/lane.${lane_i}.log"
+      ## SHOTS_LANE_DRY_RUN: print the lane's scope instead of running it, to verify the
+      ## partition (which emulators / ST / cases each lane gets) without a capture.
+      if [ -n "${SHOTS_LANE_DRY_RUN:-}" ]; then
+         printf '%s\n' "LANE ${lane_i}:$(printf ' %s' "$@") --no-optimize"
+         lane_i=$(( lane_i + 1 ))
+         return 0
+      fi
+      xvfb-run --auto-servernum --server-args='-screen 0 1600x1000x24' \
+         "${self}" "$@" --no-optimize >"${log}" 2>&1 &
+      lane_pids+=("$!")
+      lane_logs+=("${log}")
+      lane_i=$(( lane_i + 1 ))
+   }
+   emu_lanes="${jobs}"
+   ## The full grid includes the secure-terminal pass; give it its own lane, and split the
+   ## emulators across the rest. A --st-only run has no emulators, so all lanes go to ST
+   ## (split by case); an emulator-only run (--only, no ST wanted) is not expressible here --
+   ## the orchestrator always captures the full grid it was asked for.
+   if [ -z "${st_only}" ] && [ -n "${emu_set}" ]; then
+      spawn_lane --st-only "${fwd_case[@]}"
+      emu_lanes=$(( jobs - 1 ))
+      [ "${emu_lanes}" -lt 1 ] && emu_lanes=1
+   fi
+   if [ -n "${emu_set}" ]; then
+      ## round-robin the emulators into emu_lanes buckets, each its own --only lane.
+      bucket=()
+      idx=0
+      for e in ${emu_set}; do
+         b=$(( idx % emu_lanes ))
+         bucket[b]="${bucket[b]:+${bucket[b]} }${e}"
+         idx=$(( idx + 1 ))
+      done
+      b=0
+      while [ "${b}" -lt "${emu_lanes}" ]; do
+         if [ -n "${bucket[b]:-}" ]; then
+            only_args=()
+            for e in ${bucket[b]}; do only_args+=(--only "${e}"); done
+            spawn_lane "${only_args[@]}" --no-st "${fwd_case[@]}"
+         fi
+         b=$(( b + 1 ))
+      done
+   elif [ -n "${st_only}" ]; then
+      ## --st-only + --jobs: split the ST pass across lanes by CASE.
+      set -- ${CASES}
+      per=$(( ($# + jobs - 1) / jobs ))
+      [ "${per}" -lt 1 ] && per=1
+      group=()
+      for cse in "$@"; do
+         group+=("${cse}")
+         if [ "${#group[@]}" -ge "${per}" ]; then
+            ca=()
+            for g in "${group[@]}"; do ca+=(--case "${g}"); done
+            spawn_lane --st-only "${ca[@]}"
+            group=()
+         fi
+      done
+      if [ "${#group[@]}" -gt 0 ]; then
+         ca=()
+         for g in "${group[@]}"; do ca+=(--case "${g}"); done
+         spawn_lane --st-only "${ca[@]}"
+      fi
+   fi
+   rc=0
+   i=0
+   while [ "${i}" -lt "${#lane_pids[@]}" ]; do
+      lrc=0
+      wait "${lane_pids[i]}" || lrc="$?"
+      cat -- "${lane_logs[i]}" 2>/dev/null || true
+      [ "${lrc}" -eq 0 ] || rc="${lrc}"
+      i=$(( i + 1 ))
+   done
+   safe-rm --recursive --force -- "${lane_dir}" 2>/dev/null || true
+   "${self}" --optimize-only || true
+   printf '%s\n' "done; ${lane_i} lane(s); shots in ${out}"
+   exit "${rc}"
+fi
+
 ## Reliable reaping REQUIRES the safe-pgrep/safe-pkill wrappers -- fail loudly, never fall back.
 shots_require_safe_ps || exit 1
 ## Pre-clean: reap orphaned groups left by any PRIOR crashed run (marker-scoped -- it can never
@@ -291,7 +481,7 @@ inject() {  ## $1=window-id  $2=command
    DISPLAY="${xwl_display}" xdotool windowactivate --sync "${wid}" 2>/dev/null || true
    DISPLAY="${xwl_display}" setxkbmap us 2>/dev/null || true    # '/' else types as '&'
    sleep 0.4
-   DISPLAY="${xwl_display}" xdotool type --delay 45 -- "${cmd}"
+   DISPLAY="${xwl_display}" xdotool type --delay 12 -- "${cmd}"
    sleep 0.3
    DISPLAY="${xwl_display}" xdotool key --clearmodifiers Return
 }
@@ -424,7 +614,7 @@ find_window() {
 }
 
 shoot() {  ## $1=emulator  $2=case
-   local e case wid ww rescue_h pgf flagf epgid wdog
+   local e case wid ww rescue_h pgf flagf epgid wdog cur_w
    e="$1"; case="$2"; wid=''
    ## the tall tui-showcase board needs a taller pixel-resized window (qterminal +
    ## the shrink rescue); the short cases keep their prior heights so their shots and
@@ -455,6 +645,17 @@ shoot() {  ## $1=emulator  $2=case
       sleep 0.7
    fi
    sleep 2
+   ## tui-showcase's ~26-line board is taller than some emulators actually render (konsole
+   ## ignores TerminalRows headlessly and paints ~22 rows), so the board's TOP line -- the
+   ## embedded 'cat tui-showcase.payload' prompt that shows what produced the board -- scrolls
+   ## off. Force a taller WINDOW before the board renders (the emulator reflows on the resize),
+   ## keeping the emulator's own width, so that top line stays on-screen.
+   if [ "${case}" = tui-showcase ]; then
+      cur_w="$(DISPLAY="${xwl_display}" xdotool getwindowgeometry --shell "${wid}" 2>/dev/null | sed -n 's/^WIDTH=//p' || true)"
+      [ -n "${cur_w}" ] || cur_w=1100
+      DISPLAY="${xwl_display}" xdotool windowsize "${wid}" "${cur_w}" 880 2>/dev/null || true
+      sleep 0.6
+   fi
    inject "${wid}" "$(shots_payload_cmd "${case}")"
    sleep 3
    ww="$(DISPLAY="${xwl_display}" xdotool getwindowgeometry --shell "${wid}" 2>/dev/null | sed -n 's/^WIDTH=//p' || true)"
@@ -482,7 +683,13 @@ fi
 ## A MISSING terminal is a HARD ERROR, not a silent skip -- an incomplete grid
 ## would misrepresent the comparison. Install the emulator, or set ALLOW_SKIP=1 to
 ## deliberately authorize skipping (it is then logged, never silent).
-TERMINALS="${TERMINALS:-xterm urxvt st konsole gnome-terminal xfce4-terminal mate-terminal qterminal alacritty kitty}"
+if [ -n "${st_only}" ]; then
+   TERMINALS=''
+elif [ -n "${only_terminals}" ]; then
+   TERMINALS="${only_terminals}"
+else
+   TERMINALS="${TERMINALS:-${DEFAULT_TERMINALS}}"
+fi
 for e in ${TERMINALS}; do
    ## `type -P` finds a binary that is on PATH and carries SOME exec bit, but that does
    ## not mean the CURRENT user may run it: a hardened Kicksecure/Whonix permission-hardener
@@ -503,15 +710,29 @@ for e in ${TERMINALS}; do
       printf '%s\n' "ERROR: terminal ${e} ${reason}. Install/fix it, or set ALLOW_SKIP=1 to authorize skipping." >&2
       exit 1
    fi
-   shoot "${e}" crafted      || true
-   shoot "${e}" random       || true
-   shoot "${e}" homoglyph    || true
-   shoot "${e}" bidi         || true
-   shoot "${e}" zerowidth    || true
-   shoot "${e}" altscreen    || true
-   shoot "${e}" tui-showcase || true
+   for c in ${CASES}; do
+      ## notify is secure-terminal-only: the emulators have no standard notify shot (kitty's
+      ## popup is a separate capture), so skip it here even though it is in the full ST matrix.
+      case "${c}" in
+         notify)
+            continue
+            ;;
+      esac
+      shoot "${e}" "${c}" || true
+   done
    printf '%s\n' "captured ${e}"
 done
+
+## secure-terminal renders the board INLINE and shows the real typed prompt, so the board's
+## embedded 'cat tui-showcase.payload' line would DUPLICATE it. The emulators (captured above)
+## keep that embedded line -- their alt-screen hides the real command, so it is what puts 'cat'
+## at the top of their shots. Strip it now, for the secure-terminal pass ONLY (dedicated sibling
+## script, not inline scripting). An emulator-only lane (--no-st) skips both the strip and the
+## whole secure-terminal pass.
+if [ -n "${no_st}" ]; then
+   printf '%s\n' 'skipping secure-terminal pass (--no-st)'
+else
+"${here}/strip-tui-showcase-prompt.py" "${HOME}/tui-showcase.payload"
 
 st_bin="${ST_REPO:-}/usr/bin/secure-terminal"
 st_pkg="${ST_REPO:-}/usr/lib/python3/dist-packages"
@@ -536,14 +757,46 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
    ## printable unicode as its glyph (readable) while still boxing invisible/bidi/control
    ## bytes; detail names each codepoint inline. Even in full-screen TUI every cell stays
    ## character-filtered.
+   ## Every demo case is captured in all 5 VALID secure-terminal views so the page's per-row
+   ## switcher has a real shot per combo: CLI x {box, detail, show} + TUI x {box, show}. Detail
+   ## (and Reveal) are CLI-only -- the fixed TUI grid cannot expand a codepoint inline. Suffix
+   ## scheme: <box-suffix>, -detail, -show, -tui, -tui-show (matching tui-showcase's).
    st_specs=(
       'crafted box crafted'
+      'crafted detail crafted-detail'
+      'crafted show crafted-show'
+      'crafted box crafted-tui tui'
+      'crafted show crafted-tui-show tui'
       'notify box notify'
+      'notify detail notify-detail'
+      'notify show notify-show'
+      'notify box notify-tui tui'
+      'notify show notify-tui-show tui'
       'random box random'
+      'random detail random-detail'
+      'random show random-show'
+      'random box random-tui tui'
+      'random show random-tui-show tui'
       'homoglyph box homoglyph-strip'
+      'homoglyph detail homoglyph-strip-detail'
+      'homoglyph show homoglyph-strip-show'
+      'homoglyph box homoglyph-strip-tui tui'
+      'homoglyph show homoglyph-strip-tui-show tui'
       'bidi box bidi'
+      'bidi detail bidi-detail'
+      'bidi show bidi-show'
+      'bidi box bidi-tui tui'
+      'bidi show bidi-tui-show tui'
       'zerowidth box zerowidth'
+      'zerowidth detail zerowidth-detail'
+      'zerowidth show zerowidth-show'
+      'zerowidth box zerowidth-tui tui'
+      'zerowidth show zerowidth-tui-show tui'
       'altscreen box altscreen'
+      'altscreen detail altscreen-detail'
+      'altscreen show altscreen-show'
+      'altscreen box altscreen-tui tui'
+      'altscreen show altscreen-tui-show tui'
       'tui-showcase box tui-showcase'
       'tui-showcase show tui-showcase-show'
       'tui-showcase detail tui-showcase-detail'
@@ -552,6 +805,16 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
    )
    for spec in "${st_specs[@]}"; do
       read -r st_case st_mode st_suffix st_tui <<< "${spec}"
+      ## honour --case: skip a spec whose case is not selected (default = all cases).
+      st_case_selected=false
+      case " ${CASES} " in
+         *" ${st_case} "*)
+            st_case_selected=true
+            ;;
+      esac
+      if [ "${st_case_selected}" = false ]; then
+         continue
+      fi
       st_mode_flags=(--mode "${st_mode}")
       [ "${st_tui:-}" = tui ] && st_mode_flags+=(--tui)
       ## tui-showcase: secure-terminal strips the alt-screen escape and renders the
@@ -589,7 +852,8 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
          DISPLAY="${xwl_display}" xdotool windowsize "${stwid}" "${st_win_w}" "${st_win_h}" 2>/dev/null || true
          sleep 0.6
          inject "${stwid}" "$(shots_payload_cmd "${st_case}")"
-         sleep 3
+         ## SECURE_TERMINAL_SHOT=1 renders synchronously, so a long fixed settle is unneeded.
+         sleep 1
          capture_window "${out}/secure-terminal.${st_suffix}.png" "${stwid}"
          tighten_deadspace "${out}/secure-terminal.${st_suffix}.png"
       else
@@ -609,8 +873,12 @@ else
    printf '%s\n' 'ERROR: secure-terminal not found. Set ST_REPO=/path/to/checkout, or set ALLOW_SKIP=1 to authorize skipping.' >&2
    exit 1
 fi
+fi
 
-## Convert the captured PNGs to webp (the site references them as .webp).
-shots_optimize_to_webp "${out}"/*.png
+## Convert the captured PNGs to webp (the site references them as .webp). A lane run with
+## --no-optimize leaves the PNGs for the orchestrator's single final --optimize-only merge.
+if [ -z "${no_optimize}" ]; then
+   shots_optimize_to_webp "${out}"/*.png
+fi
 
 printf '%s\n' "done; shots in ${out}"
