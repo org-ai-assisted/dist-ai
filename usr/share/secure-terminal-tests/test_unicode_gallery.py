@@ -167,44 +167,61 @@ def _control_bytes(text):
 
 def _first_newline_not_in_ground(data):
     """Line number (1-based) of the first newline a terminal would reach while NOT
-    in ground state -- i.e. an escape / control sequence / control string that
-    spans a newline. None if every newline is reached in ground state. A tiny
-    ECMA-48 state model, INDEPENDENT of the generator: a newline does NOT terminate
-    a control string, so an unterminated OSC/DCS/... is caught here."""
+    in ground state -- an escape / control sequence / control string / single-shift
+    / locking shift that spans a newline. None if every newline is reached in
+    ground state (no active shift). A tiny ECMA-48 state model, INDEPENDENT of the
+    generator: a newline does NOT terminate a control string, so an unterminated
+    OSC/DCS/... is caught here."""
     string_intro = {0x90, 0x98, 0x9D, 0x9E, 0x9F}   # DCS/SOS/OSC/PM/APC (C1)
+    single_shift = {0x8E, 0x8F, 0x99, 0x9A}         # SS2/SS3/SGC/SCI: consume one byte
     state = 'ground'
+    string_is_osc = False        # only OSC is BEL-terminable; the rest need ST
+    shifted_out = False          # SO locking shift, until SI restores it
     line = 1
     for ch in data:
         cp = ord(ch)
         if state == 'ground':
-            if cp == 0x1B:
+            if cp == 0x0E:
+                shifted_out = True                  # SO: locking shift OUT
+            elif cp == 0x0F:
+                shifted_out = False                 # SI: restore
+            elif cp == 0x1B:
                 state = 'esc'
             elif cp in string_intro:
                 state = 'string'
+                string_is_osc = cp == 0x9D
             elif cp == 0x9B:
                 state = 'csi'
-            elif cp in (0x8E, 0x8F):
+            elif cp in single_shift:
                 state = 'ss'
         elif state == 'esc':
             if ch == '[':
                 state = 'csi'
-            elif ch in ']PX^_':
+            elif ch == ']':
                 state = 'string'
+                string_is_osc = True
+            elif ch in 'PX^_':
+                state = 'string'
+                string_is_osc = False
             elif ch != '\n':
-                state = 'ground'                    # ESC <final> (incl ESC \ = ST)
+                state = 'ground'                    # ESC <final> (a 2-char escape)
         elif state == 'csi':
             if 0x40 <= cp <= 0x7E:
                 state = 'ground'                    # a final byte ends the sequence
         elif state == 'string':
-            if cp in (0x9C, 0x07):
-                state = 'ground'                    # ST or BEL ends the string
+            if cp == 0x9C:
+                state = 'ground'                    # ST ends any control string
+            elif cp == 0x07 and string_is_osc:
+                state = 'ground'                    # BEL ends ONLY OSC (xterm extension)
             elif cp == 0x1B:
-                state = 'esc'                       # maybe ESC \ (7-bit ST)
+                state = 'string_esc'                # maybe ESC \ (7-bit ST)
+        elif state == 'string_esc':
+            state = 'ground' if ch == '\\' else 'string'   # ESC \ = ST; else still open
         elif state == 'ss':
             if ch != '\n':
-                state = 'ground'                    # the single shifted byte
+                state = 'ground'                    # the single consumed byte
         if ch == '\n':
-            if state != 'ground':
+            if state != 'ground' or shifted_out:
                 return line
             line += 1
     return None
@@ -245,13 +262,21 @@ def test_payload_safety():
 
 
 def test_payload_safety_canary():
-    """An unterminated OSC control string must trip the ground-state check -- proves
-    it has teeth (a plain newline does NOT contain it)."""
-    hostile = 'safe line\n%sOSC never closed\nmore\n' % chr(0x9D)   # raw OSC, no ST
-    if _first_newline_not_in_ground(hostile) is None:
-        fail('CANARY: the ground-state check missed an unterminated OSC string')
+    """Each hostile pattern the newline does NOT contain must trip the ground-state
+    check -- proves it has teeth for every control class it models."""
+    hostile = {
+        'unterminated OSC': 'x\n%sno ST\nmore\n' % chr(0x9D),
+        'DCS closed only by BEL': 'x\n%s\x07\n' % chr(0x90),   # BEL ends OSC only, not DCS
+        'SO without SI': 'x\n%sshifted\n' % chr(0x0E),
+        'SCI eating the newline': 'x\n%s\n' % chr(0x9A),
+        'ESC non-ST inside a string': 'x\n%s\x1bA\n' % chr(0x9D),
+    }
+    missed = [name for name, payload in hostile.items()
+              if _first_newline_not_in_ground(payload) is None]
+    if missed:
+        fail('CANARY: ground-state check missed: %s' % ', '.join(missed))
     else:
-        ok('canary: ground-state check fires on an unterminated control string')
+        ok('canary: ground-state check fires on every hostile control pattern')
 
 
 def test_summary():

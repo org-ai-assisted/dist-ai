@@ -264,8 +264,9 @@ def honest_foreign(limit=20):
 
 
 def _spec_line(cp, label, glyph):
-    """One isolated specimen: ASCII label, then the raw glyph LAST, then the
-    caller's newline -- so any sequence the raw byte starts aborts at that newline."""
+    """One specimen: ASCII label, then the glyph. `glyph` for a raw control MUST
+    already carry its terminator (see _neutralize) -- a newline does NOT terminate
+    a control string, so the caller cannot rely on it to close one."""
     return 'U+%04X  %-34s : %s' % (cp, label, glyph)
 
 
@@ -294,8 +295,8 @@ def _neutralize(cp):
         return _ST
     if cp == 0x9B:                               # CSI: complete a harmless SGR reset
         return 'm'
-    if cp in (0x8E, 0x8F):                        # SS2/SS3: feed the one byte it shifts
-        return ' '
+    if cp in (0x8E, 0x8F, 0x99, 0x9A):           # SS2/SS3/SGC/SCI: feed the one byte
+        return ' '                               # each consumes -- else it eats the newline
     return ''
 
 
