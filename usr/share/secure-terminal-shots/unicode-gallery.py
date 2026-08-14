@@ -13,10 +13,11 @@
 ##     / emoji / tofu): only spacing GRAPHIC glyphs, spaces and newlines -- zero
 ##     control bytes, so a grid is safe to cat on ANY terminal;
 ##   - dedicated RISK-SPECIMEN sections carrying the raw dangerous bytes (C0/C1
-##     controls, bidi, zero-width/invisible, non-ASCII spaces, combining), each
-##     specimen ISOLATED one-per-line so an escape it starts aborts at the newline
-##     (the accepted inline-isolated containment). SO is paired with SI so no
-##     charset shift lingers. secure-terminal neutralizes/tints all of it.
+##     controls, bidi, zero-width/invisible, non-ASCII spaces, combining), one per
+##     line: the raw byte is shown, then a minimal TERMINATOR closes what it opened
+##     (ST for a control string, a final for CSI, SI for SO), so a terminal that
+##     honours the byte is back in ground state before the newline -- a newline does
+##     NOT terminate a control string. secure-terminal neutralizes/tints all of it.
 ##   No SGR of our own: every colour you see is secure-terminal's risk tint.
 ##   No alt-screen, no OSC, no persistent state -> no `reset` needed.
 ##
@@ -194,11 +195,11 @@ def _grid_cell(cp):
 
 
 def _block_grid(lo, hi):
-    lines = []
+    lines: list = []
     lines.append('       ' + '  '.join('%X' % c for c in range(GRID_COLS)))
     start = lo - (lo % GRID_COLS)
     for base in range(start, hi + 1, GRID_COLS):
-        cells = []
+        cells: list = []
         for col in range(GRID_COLS):
             cp = base + col
             cells.append(_grid_cell(cp) if lo <= cp <= hi else ' ')
@@ -276,8 +277,30 @@ def _control_name(cp):
     return _C1_NAMES[cp - 0x80]
 
 
+_ST = '\u009c'      # C1 STRING TERMINATOR
+
+
+def _neutralize(cp):
+    """Bytes to append after a raw control specimen so a terminal that HONOURS it
+    is back in ground state before the newline -- a newline does NOT terminate a
+    control string, so an unterminated OSC/DCS/... would swallow the rest of the
+    file. The raw byte is still shown (and secure-terminal still tints it); we just
+    close what it opened, on the same line. Empty for a single-action control."""
+    if cp == 0x0E:                               # SO: locking shift -> restore with SI
+        return chr(0x0F)
+    if cp == 0x1B:                               # ESC: complete a harmless ST (ESC \)
+        return '\\'
+    if cp in (0x90, 0x98, 0x9D, 0x9E, 0x9F):     # DCS/SOS/OSC/PM/APC: close the string
+        return _ST
+    if cp == 0x9B:                               # CSI: complete a harmless SGR reset
+        return 'm'
+    if cp in (0x8E, 0x8F):                        # SS2/SS3: feed the one byte it shifts
+        return ' '
+    return ''
+
+
 def render_payload():
-    out = []
+    out: list = []
     top = '=' * 72
     out.append(top)
     out.append('secure-terminal Unicode gallery -- safe to cat.')
@@ -285,9 +308,9 @@ def render_payload():
                % UNIDATA_VERSION)
     out.append('every character by risk class and boxes what has no safe glyph.')
     out.append('Grids below emit only graphic glyphs (safe anywhere). The RISK')
-    out.append('sections carry raw control/bidi/invisible bytes, isolated one per')
-    out.append('line; on a plain terminal expect one BEL beep and minor cursor')
-    out.append('nudges -- bounded, no persistent state, no `reset` needed.')
+    out.append('sections carry raw control/bidi/invisible bytes, one per line, each')
+    out.append('control terminated so the terminal returns to ground state before the')
+    out.append('newline: bounded, no persistent state, no `reset` needed (a BEL beeps).')
     out.append(top)
 
     # Renderable-subset block chart.
@@ -295,16 +318,16 @@ def render_payload():
         out.append(_rule('%s  U+%04X..U+%04X' % (name, lo, hi)))
         out.extend(_block_grid(lo, hi))
 
-    # Risk specimens (raw dangerous bytes, inline-isolated).
+    # Risk specimens: the raw dangerous byte, then its terminator (_neutralize) so
+    # a terminal that honours it is back in ground state before the newline.
     out.append(_rule('RISK: C0 control bytes  (secure-terminal tint: control)'))
     for cp in range(0x20):
-        glyph = chr(cp) + (chr(0x0F) if cp == 0x0E else '')   # SO paired with SI
-        out.append(_spec_line(cp, _control_name(cp), glyph))
+        out.append(_spec_line(cp, _control_name(cp), chr(cp) + _neutralize(cp)))
     out.append(_spec_line(0x7F, 'DEL', chr(0x7F)))
 
     out.append(_rule('RISK: C1 control bytes  (tint: control)'))
     for cp in range(0x80, 0xA0):
-        out.append(_spec_line(cp, _control_name(cp), chr(cp)))
+        out.append(_spec_line(cp, _control_name(cp), chr(cp) + _neutralize(cp)))
 
     out.append(_rule('RISK: bidirectional controls  (tint: bidi -- reorders text)'))
     for cp in sorted(_BIDI_CONTROL):
@@ -378,7 +401,10 @@ def main(argv):
     if len(argv) > 1:
         sys.stderr.write('usage: unicode-gallery.py [--summary]\n')
         return 2
-    sys.stdout.write(render_payload())
+    # Encode to UTF-8 ourselves and write the binary buffer: the payload carries
+    # non-ASCII, so a naive stdout.write would raise UnicodeEncodeError under a
+    # non-UTF-8 locale (LC_ALL=C in a build/CI shell) when redirected to a file.
+    sys.stdout.buffer.write(render_payload().encode('utf-8'))
     return 0
 
 

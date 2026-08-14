@@ -52,6 +52,8 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _GEN_PATH = os.path.join(_HERE, '..', 'secure-terminal-shots', 'unicode-gallery.py')
 try:
     _spec = importlib.util.spec_from_file_location('unicode_gallery', _GEN_PATH)
+    if _spec is None or _spec.loader is None:
+        raise ImportError('no import spec for %s' % _GEN_PATH)
     G = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(G)
 except Exception as exc:      # pylint: disable=broad-except
@@ -163,6 +165,51 @@ def _control_bytes(text):
             or ord(c) == 0x7F or 0x80 <= ord(c) <= 0x9F}
 
 
+def _first_newline_not_in_ground(data):
+    """Line number (1-based) of the first newline a terminal would reach while NOT
+    in ground state -- i.e. an escape / control sequence / control string that
+    spans a newline. None if every newline is reached in ground state. A tiny
+    ECMA-48 state model, INDEPENDENT of the generator: a newline does NOT terminate
+    a control string, so an unterminated OSC/DCS/... is caught here."""
+    string_intro = {0x90, 0x98, 0x9D, 0x9E, 0x9F}   # DCS/SOS/OSC/PM/APC (C1)
+    state = 'ground'
+    line = 1
+    for ch in data:
+        cp = ord(ch)
+        if state == 'ground':
+            if cp == 0x1B:
+                state = 'esc'
+            elif cp in string_intro:
+                state = 'string'
+            elif cp == 0x9B:
+                state = 'csi'
+            elif cp in (0x8E, 0x8F):
+                state = 'ss'
+        elif state == 'esc':
+            if ch == '[':
+                state = 'csi'
+            elif ch in ']PX^_':
+                state = 'string'
+            elif ch != '\n':
+                state = 'ground'                    # ESC <final> (incl ESC \ = ST)
+        elif state == 'csi':
+            if 0x40 <= cp <= 0x7E:
+                state = 'ground'                    # a final byte ends the sequence
+        elif state == 'string':
+            if cp in (0x9C, 0x07):
+                state = 'ground'                    # ST or BEL ends the string
+            elif cp == 0x1B:
+                state = 'esc'                       # maybe ESC \ (7-bit ST)
+        elif state == 'ss':
+            if ch != '\n':
+                state = 'ground'                    # the single shifted byte
+        if ch == '\n':
+            if state != 'ground':
+                return line
+            line += 1
+    return None
+
+
 def test_payload_safety():
     """The generator's cat-safety contract."""
     data = G.render_payload()
@@ -176,7 +223,7 @@ def test_payload_safety():
         fail('payload does not stamp the Unicode version')
 
     lines = data.split('\n')
-    first_risk = next((i for i, l in enumerate(lines) if 'RISK:' in l), None)
+    first_risk = next((i for i, line in enumerate(lines) if 'RISK:' in line), None)
     if first_risk is None:
         fail('payload has no RISK section')
         return
@@ -185,47 +232,26 @@ def test_payload_safety():
         fail('grid region carries control bytes: %s'
              % sorted(hex(c) for c in _control_bytes(grid_region)))
 
-    # Every raw ESC and every C1 string-introducer must abort at a newline; SO
-    # must be immediately restored by SI; no escape sequence may form.
-    c1_intro = (0x90, 0x98, 0x9B, 0x9C, 0x9D, 0x9E, 0x9F)
-    seq_starts = set('[]PX^_()NO0123456789')
-    bad_esc = bad_c1 = bad_so = seq = 0
-    for i, c in enumerate(data):
-        nxt = data[i + 1] if i + 1 < len(data) else ''
-        if c == '\x1b':
-            if nxt != '\n':
-                bad_esc += 1
-            if nxt in seq_starts:
-                seq += 1
-        elif ord(c) in c1_intro and nxt != '\n':
-            bad_c1 += 1
-        elif c == '\x0e' and nxt != '\x0f':
-            bad_so += 1
-    if bad_esc:
-        fail('%d raw ESC not aborted by a newline' % bad_esc)
-    if seq:
-        fail('%d ESC-led escape sequences present' % seq)
-    if bad_c1:
-        fail('%d C1 string-introducers not aborted by a newline' % bad_c1)
-    if bad_so:
-        fail('%d SO not paired with SI' % bad_so)
-    if not (bad_esc or seq or bad_c1 or bad_so):
-        ok('payload byte-safety invariants hold')
+    # The real containment: every control the payload emits is terminated before
+    # its newline, so a terminal is in ground state at every line boundary. A
+    # newline does NOT terminate a control string, so this catches an unterminated
+    # OSC/DCS/... that would swallow the rest of the file.
+    bad = _first_newline_not_in_ground(data)
+    if bad is not None:
+        fail('a control is unterminated at newline %d (spans the line boundary)'
+             % bad)
+    else:
+        ok('payload returns to ground state at every newline')
 
 
 def test_payload_safety_canary():
-    """A payload with an un-isolated ESC sequence must trip test_payload_safety's
-    detectors -- proves those checks have teeth."""
-    hostile = 'safe line\n\x1b]0;pwned\x07more\n'
-    c1_intro = (0x90, 0x98, 0x9B, 0x9C, 0x9D, 0x9E, 0x9F)  # noqa: F841 (parity)
-    seq_starts = set('[]PX^_()NO0123456789')
-    seq = sum(1 for i, c in enumerate(hostile)
-              if c == '\x1b' and (hostile[i + 1] if i + 1 < len(hostile) else '')
-              in seq_starts)
-    if seq == 0:
-        fail('CANARY: the escape-sequence detector missed an OSC hijack')
+    """An unterminated OSC control string must trip the ground-state check -- proves
+    it has teeth (a plain newline does NOT contain it)."""
+    hostile = 'safe line\n%sOSC never closed\nmore\n' % chr(0x9D)   # raw OSC, no ST
+    if _first_newline_not_in_ground(hostile) is None:
+        fail('CANARY: the ground-state check missed an unterminated OSC string')
     else:
-        ok('canary: escape-sequence detector fires on a hostile payload')
+        ok('canary: ground-state check fires on an unterminated control string')
 
 
 def test_summary():
@@ -243,6 +269,25 @@ def test_summary():
     else:
         ok('summary well-formed (%d assigned, %d display blocks)'
            % (s['total_assigned'], len(s['display_blocks'])))
+
+    # The COMMITTED artifact must match what the generator produces now: a Unicode
+    # or confusables-data change alters summary() but not a stale committed file, so
+    # compare bytes and force regeneration on drift (same dump params as --summary).
+    import json as _json
+    committed_path = os.path.join(os.path.dirname(_GEN_PATH),
+                                  'unicode-gallery-summary.json')
+    fresh = _json.dumps(s, indent=2, ensure_ascii=True, sort_keys=True) + '\n'
+    try:
+        with open(committed_path, encoding='utf-8') as handle:
+            committed = handle.read()
+    except OSError as exc:
+        fail('cannot read committed summary %s: %s' % (committed_path, exc))
+        return
+    if committed != fresh:
+        fail('committed unicode-gallery-summary.json is STALE -- regenerate it: '
+             'unicode-gallery.py --summary > unicode-gallery-summary.json')
+    else:
+        ok('committed summary matches generated output')
 
 
 def main():
