@@ -301,6 +301,20 @@ process_one() {
       return 0
    fi
 
+   ## In --webp mode the source is REPLACED by "${stem}.webp". If that target already
+   ## exists, refuse NOW -- before make_minimized rewrites the source in place -- so a
+   ## refused conversion never mutates or loses the source. Two inputs sharing a stem
+   ## (foo.png then foo.jpg) both map to foo.webp: the second must abort untouched, and a
+   ## pre-existing unrelated foo.webp must never be clobbered. The identical check remains
+   ## before the final mv, closing a create-after-this-check race on the target.
+   if [ "${mode_webp}" = 'true' ]; then
+      webp_path="${src%.*}.webp"
+      if [ -e "${webp_path}" ]; then
+         err "webp target already exists: ${webp_path##*/} (from ${input}); refusing to overwrite it and delete the source"
+         return 1
+      fi
+   fi
+
    size_old="$(stat -c %s -- "${src}")"
    work=''
    work="$(make_minimized "${src}")" || work=''

@@ -54,6 +54,7 @@ fi
 printf '%s\n' "INFO: genmkfile under test: ${genmkfile_bin}"
 
 work_dir="$(mktemp --directory -- "${TMP}/genmkfile-clean-pyc.XXXXXX")"
+passes=0
 failures=0
 
 ## Reached only via the EXIT trap; shellcheck cannot see that path (SC2317).
@@ -132,7 +133,10 @@ for f in "${must_go[@]}"; do
       failures=$(( failures + 1 ))
    fi
 done
-[ "${failures}" -eq 0 ] && printf '%s\n' 'PASS: canary -- all bytecode seeds present before the sweep'
+if [ "${failures}" -eq 0 ]; then
+   printf '%s\n' 'PASS: canary -- all bytecode seeds present before the sweep'
+   passes=$(( passes + 1 ))
+fi
 
 clean_rc=0
 (
@@ -148,6 +152,7 @@ if [ "${clean_rc}" -ne 0 ]; then
    failures=$(( failures + 1 ))
 else
    printf '%s\n' 'PASS: deb-cleanup exited 0'
+   passes=$(( passes + 1 ))
 fi
 
 for f in "${must_go[@]}"; do
@@ -156,6 +161,7 @@ for f in "${must_go[@]}"; do
       failures=$(( failures + 1 ))
    else
       printf '%s\n' "PASS: swept: ${f}"
+      passes=$(( passes + 1 ))
    fi
 done
 
@@ -166,12 +172,14 @@ for d in 'sub/__pycache__' '__pycache__'; do
       failures=$(( failures + 1 ))
    else
       printf '%s\n' "PASS: removed directory: ${d}"
+      passes=$(( passes + 1 ))
    fi
 done
 
 for f in "${must_stay[@]}"; do
    if [ -e "${pkg_dir}/${f}" ]; then
       printf '%s\n' "PASS: survived: ${f}"
+      passes=$(( passes + 1 ))
    else
       printf '%s\n' "FAIL: deleted a non-bytecode file: ${f}" >&2
       failures=$(( failures + 1 ))
@@ -198,8 +206,20 @@ root_rc=0
       "${genmkfile_bin}" deb-cleanup
 ) > "${work_dir}/root.log" 2>&1 || root_rc=$?
 
+## A non-zero exit here would otherwise be swallowed: the survival checks below hold
+## even when the sweep aborted early, so assert the exit code explicitly.
+if [ "${root_rc}" -ne 0 ]; then
+   printf '%s\n' "FAIL: deb-cleanup (root named __pycache__) exited ${root_rc}" >&2
+   tail -20 -- "${work_dir}/root.log" >&2
+   failures=$(( failures + 1 ))
+else
+   printf '%s\n' 'PASS: deb-cleanup (root named __pycache__) exited 0'
+   passes=$(( passes + 1 ))
+fi
+
 if [ -d "${root_pkg}" ] && [ -e "${root_pkg}/keep.txt" ]; then
    printf '%s\n' 'PASS: a project root named __pycache__ is NOT deleted (root and its files survive)'
+   passes=$(( passes + 1 ))
 else
    printf '%s\n' 'FAIL: the sweep deleted a project root named __pycache__ -- data loss' >&2
    failures=$(( failures + 1 ))
@@ -209,9 +229,10 @@ if [ -e "${root_pkg}/sub/__pycache__/nested.cpython-311.pyc" ]; then
    failures=$(( failures + 1 ))
 else
    printf '%s\n' 'PASS: nested bytecode under a __pycache__-named root is still swept'
+   passes=$(( passes + 1 ))
 fi
 
-printf '%s\n' "" "${failures} failure(s)"
+printf '%s\n' "" "${passes} pass, ${failures} fail, 0 skip"
 if [ "${failures}" -ne 0 ]; then
    exit 1
 fi
