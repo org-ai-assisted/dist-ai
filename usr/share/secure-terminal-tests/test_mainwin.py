@@ -780,6 +780,21 @@ try:
     _QA.exec = lambda _self: 0
     sys.argv = ['secure-terminal', '--title', 'fresh']
     eq(_main(), 0, 'main: with no running instance it starts the app + event loop')
+    # SECURE_TERMINAL_SHOT=1 (#51 deterministic screenshot mode): main() stops the
+    # app-wide caret blink so no captured frame depends on the caret phase. Drive the
+    # full startup with the env set and confirm _shot_mode() takes the shot branch
+    # (setCursorFlashTime(0)); with the env unset it is a no-op (covered above).
+    ok(M._shot_mode() is False, 'shot: _shot_mode() is False when the env is unset')
+    os.environ['SECURE_TERMINAL_SHOT'] = '1'
+    _o_flash = APP.cursorFlashTime()
+    try:
+        ok(M._shot_mode() is True, 'shot: SECURE_TERMINAL_SHOT=1 -> _shot_mode() True')
+        sys.argv = ['secure-terminal', '--title', 'shot']
+        eq(_main(), 0, 'shot: main() starts with SECURE_TERMINAL_SHOT=1')
+        eq(APP.cursorFlashTime(), 0, 'shot: main() stops the caret blink (flash time 0)')
+    finally:
+        del os.environ['SECURE_TERMINAL_SHOT']
+        APP.setCursorFlashTime(_o_flash)
 finally:
     sys.argv = _o_argv
     M.ipc.send_request = _o_sr

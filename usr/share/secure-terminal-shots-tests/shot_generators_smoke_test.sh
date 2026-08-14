@@ -16,6 +16,13 @@
 ## FAILS on the pre-fix tree (paste-warning-shot.py -> NameError: _dark_palette), so it is a
 ## genuine regression test, not a tautology.
 ##
+## It ALSO gates the review-shot framing: the paste/copy shots must be TIGHT -- no band of
+## dead white space below their one-line payload. The ReviewBar panes carry a 130px minimum
+## height and auto scrollbars sized for a multi-line paste, so a verbatim grab leaves a
+## screenful of empty pane (bare white, or a stray horizontal scrollbar). paste-warning-shot.py
+## sizes each pane to its line and trims to a uniform margin; this asserts no run of background
+## rows exceeds MAX_DEAD_ROWS. FAILS on a tree that drops that (largest run ~150-180 rows).
+##
 ## Subjects: the generators in secure-terminal-shots/, plus the secure_terminal package
 ## (PyQt6 + the checkout) they import. Any genuinely absent -> exit 77 (SKIP), never FAIL.
 ## Offscreen Qt, no display; safe in the sandbox.
@@ -98,6 +105,31 @@ run_gen 'paste-warning-shot (paste)' "${work}/paste.png" \
    "${shots_dir}/paste-warning-shot.py" "${work}/paste.png" paste
 run_gen 'paste-warning-shot (copy)'  "${work}/copy.png" \
    "${shots_dir}/paste-warning-shot.py" "${work}/copy.png" copy
+
+## The largest contiguous run of pure-background rows a tight review shot may contain: the
+## uniform frame margin plus small inter-element gaps. A dead-space regression (empty pane
+## height / scrollbar band) blows far past this.
+MAX_DEAD_ROWS=30
+check_tight() {  ## $1=label $2=png
+   local label="$1" png="$2" run=''
+   if [ ! -s "${png}" ]; then
+      printf '%s\n' "FAIL: ${label} tightness (no image; generation failed)"
+      fail=$(( fail + 1 ))
+      return
+   fi
+   ## Largest run of rows entirely equal to the corner (background) pixel.
+   run="$(python3 -- "${script_dir}/largest_bg_row_run.py" "${png}")" || run=''
+   if [[ "${run}" =~ ^[0-9]+$ ]] && [ "${run}" -le "${MAX_DEAD_ROWS}" ]; then
+      printf '%s\n' "PASS: ${label} tight (largest bg-row run ${run} <= ${MAX_DEAD_ROWS})"
+      pass=$(( pass + 1 ))
+   else
+      printf '%s\n' "FAIL: ${label} has a dead-space band (largest bg-row run ${run:-?} > ${MAX_DEAD_ROWS})"
+      fail=$(( fail + 1 ))
+   fi
+}
+
+check_tight 'paste-warning-shot (paste)' "${work}/paste.png"
+check_tight 'paste-warning-shot (copy)'  "${work}/copy.png"
 
 printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
