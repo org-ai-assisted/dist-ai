@@ -329,6 +329,12 @@ expect_rule "${r030fmt}" "printf ${sq}%s${nl}${sq} ${dq}note printf ${sq}bad %s 
 ## CANARY: quote depth resets per line, so a REAL violation on the NEXT line still
 ## fires -- a nested-printf line must not fail the rule OPEN for what follows.
 expect_rule "${r030fmt}" "printf ${sq}%s${nl}${sq} ${dq}has printf ${sq}x %s${sq}${dq}${nlreal}printf ${dq}real \${bad}${dq}" "present"
+## A printf spelled in a trailing '#' comment is documentation, not a call: spared.
+expect_rule "${r030fmt}" "printf ${sq}%s${nl}${sq} ${dq}\${v}${dq} ${hash} printf ${sq}%d${sq} ${dq}\${x}${dq}" "absent"
+## CANARY: an unquoted backslash escapes ONE character (a literal quote), it does not
+## open a string -- so a real violation after '\"' must still be flagged. FAILS on a
+## walker that treats '\"' as a string opener (fail-OPEN).
+expect_rule "${r030fmt}" "echo \\${dq} ${sc} printf ${dq}bad \${x}${nl}${dq}" "present"
 
 ## A '#' INSIDE the format does not make the line a comment. The comment skip
 ## globbed '[[:space:]]*#*' -- one whitespace char, then anything, then a '#'
@@ -1028,6 +1034,14 @@ expect_rule "${r193}" "python3 ${dd} ${dq}\$@${dq}"              "absent"
 expect_rule "${r193}" "${hash}${hash} example python3 ${dd} bar.py" "absent"
 ## The per-file waiver (a script deliberately NOT +x, or an external path) is honoured.
 expect_rule "${r193}" "${hash}${hash} style-ok: allow-python-dashdash${nlreal}python3 ${dd} ${dq}\${dir}/${py}${dq}" "absent"
+## The 'python' token is word-bounded: a command that merely ENDS in 'python' is spared.
+expect_rule "${r193}" "run_python ${dd} ${dq}\${dir}/${py}${dq}"  "absent"
+## The '.py' must end at a path boundary: 'x.py.txt' (not a .py file) is spared.
+expect_rule "${r193}" "python3 ${dd} script.py.txt"              "absent"
+## A 'python3 -- x.py' spelled INSIDE a quoted string is data, not a call: spared.
+expect_rule "${r193}" "echo ${sq}python3 ${dd} ${py}${sq}"       "absent"
+## A trailing inline comment that merely spells the call is documentation: spared.
+expect_rule "${r193}" "run something ${hash} python3 ${dd} ${py}" "absent"
 
 ## check-shebang-scripts-are-executable gains a per-file waiver. A SOURCED fragment
 ## carries a shebang for shellcheck dialect detection yet must stay non-executable:

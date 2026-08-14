@@ -967,6 +967,13 @@ r030_printf_is_command() {
          fi
          continue
       fi
+      ## At quote depth zero a backslash escapes the next character, so an
+      ## unquoted '\"' is a LITERAL quote, not a string opener. Skipping it keeps
+      ## the tracker from entering a phantom string and missing a real command.
+      if [ "${char}" = "\\" ]; then
+         index=$(( index + 1 ))
+         continue
+      fi
       case "${char}" in
          "'"|'"')
             quote="${char}"
@@ -1002,6 +1009,12 @@ r030_offset_is_command() {
          fi
          continue
       fi
+      ## Unquoted backslash escapes the next character (a literal quote, not an
+      ## opener); skip it so the state does not flip on '\"'.
+      if [ "${char}" = "\\" ]; then
+         index=$(( index + 1 ))
+         continue
+      fi
       case "${char}" in
          "'"|'"')
             quote="${char}"
@@ -1011,11 +1024,59 @@ r030_offset_is_command() {
    [ -z "${quote}" ]
 }
 
+line_code_length() {
+   ## Echo the index of the first quote-depth-zero, unquoted '#' in TEXT (the start
+   ## of an inline comment), or the full length if none. A rule scanning for a
+   ## command must ignore text after it -- a 'printf'/'python3 --' spelled in a
+   ## trailing comment is documentation, not code. Honours ' " ` and '$(...)' and
+   ## an unquoted backslash escape.
+   local text="$1" index char quote='' depth=0
+   local length="${#text}"
+
+   for (( index=0; index<length; index++ )); do
+      char="${text:index:1}"
+      if [ -n "${quote}" ]; then
+         if [ "${quote}" = '"' ] && [ "${char}" = "\\" ]; then
+            index=$(( index + 1 )); continue
+         fi
+         if [ "${char}" = "${quote}" ]; then quote=''; fi
+         continue
+      fi
+      if [ "${char}" = "\\" ]; then
+         index=$(( index + 1 ))
+         continue
+      fi
+      case "${char}" in
+         "'"|'"')
+            quote="${char}"
+            continue
+            ;;
+         '`')
+            continue
+            ;;
+      esac
+      if [ "${char}" = '$' ] && [ "${text:index+1:1}" = '(' ]; then
+         depth=$(( depth + 1 ))
+         index=$(( index + 1 ))
+         continue
+      fi
+      if [ "${char}" = ')' ] && [ "${depth}" -gt 0 ]; then
+         depth=$(( depth - 1 ))
+         continue
+      fi
+      if [ "${char}" = '#' ] && [ "${depth}" -eq 0 ]; then
+         printf '%s\n' "${index}"
+         return 0
+      fi
+   done
+   printf '%s\n' "${length}"
+}
+
 
 check_R030_format_string() {
    local hits script line_number line remainder format_literal format_inner
    local printf_command printf_redirects printf_scan
-   local match pre grp1 printf_abs consumed
+   local match pre grp1 printf_abs consumed code code_length
    local -a fs
 
    mapfile -d '' -t fs < <(filter_self "${@}")
@@ -1116,7 +1177,11 @@ check_R030_format_string() {
          if ! r030_printf_is_command "${line}"; then
             continue
          fi
-         remainder="${line}"
+         ## Scan only the executable prefix: a printf spelled in a trailing '#'
+         ## comment is documentation, not a call, and must not be flagged.
+         code_length="$(line_code_length "${line}")"
+         code="${line:0:code_length}"
+         remainder="${code}"
          consumed=0
          while [[ "${remainder}" =~ (^|[^-[:alnum:]_])printf[[:space:]]+(\'[^\']*\'|\"[^\"]*\") ]]; do
             match="${BASH_REMATCH[0]}"
@@ -1132,7 +1197,7 @@ check_R030_format_string() {
             consumed=$(( consumed + ${#pre} + ${#match} ))
             ## Only a printf at quote depth zero is a command; one nested inside
             ## a quoted argument (a canary payload) is data, not a call.
-            if ! r030_offset_is_command "${line}" "${printf_abs}"; then
+            if ! r030_offset_is_command "${code}" "${printf_abs}"; then
                continue
             fi
             ## Numeric-probe carve-out (see the block comment above). Only a
@@ -1761,17 +1826,20 @@ check_R192_shell_inline_shell_c() {
 }
 
 check_R193_python_dashdash_script() {
-   local script line line_number dashdash_re
+   local script line line_number dashdash_re code code_length pre python_offset
 
    ## R-193: an in-repo script committed +x with a shebang is called DIRECTLY
    ## ('"${dir}"/foo dot py args'), not via an interpreter prefix that re-names it. The shebang
    ## plus exec bit is the project idiom (chmod +x once, run it like any program), and it also
    ## honours interpreter flags in the shebang (e.g. -Bsu) that a bare 'interpreter -- file'
-   ## silently drops. A COMMENT line is skipped so this rule's own docstring cannot self-trip.
-   ## Only a LITERAL '<interpreter> -- <path ending in .py>' is flagged; a generic dispatcher
-   ## ('interpreter -- "$@"') has no literal path and is glue, not a named script. Waiver (a
-   ## script deliberately NOT +x, or an external path): '## style-ok: allow-python-dashdash'.
-   dashdash_re='python3?[[:space:]]+--[[:space:]]+[^[:space:]]*\.py'
+   ## silently drops. Only a LITERAL '<interpreter> -- <path ending in .py>' spelled as a real
+   ## command is flagged: the 'python' token must be word-bounded (so 'run_python' is not a
+   ## match), the '.py' must end at a path boundary (so 'x.py.txt' is not), an inline '#'
+   ## comment is stripped, and the token must sit at quote depth zero (so 'python3 -- x.py'
+   ## QUOTED as data is not a call). A generic dispatcher ('interpreter -- "$@"') has no
+   ## literal path and is glue. Waiver (a script deliberately NOT +x, or an external path):
+   ## '## style-ok: allow-python-dashdash'.
+   dashdash_re='(^|[^[:alnum:]_])(python3?)[[:space:]]+--[[:space:]]+[^[:space:]]*\.py([^.[:alnum:]_-]|$)'
    for script in "${@}"; do
       if [ ! -f "${script}" ] || [ -L "${script}" ]; then
          continue
@@ -1786,12 +1854,17 @@ check_R193_python_dashdash_script() {
       line_number=0
       while IFS= read -r line || [ -n "${line}" ]; do
          line_number=$(( line_number + 1 ))
-         if [[ "${line}" =~ ^[[:space:]]*# ]]; then
-            continue
-         fi
-         if [[ "${line}" =~ ${dashdash_re} ]]; then
-            fail "R-193 call the +x script directly via its shebang, not through an interpreter prefix" \
-               "'${script}:${line_number}'"
+         code_length="$(line_code_length "${line}")"
+         code="${line:0:code_length}"
+         if [[ "${code}" =~ ${dashdash_re} ]]; then
+            ## Absolute index of the 'python' token: text before the whole match
+            ## plus the leading boundary char (group 1 empty at line start).
+            pre="${code%%"${BASH_REMATCH[0]}"*}"
+            python_offset=$(( ${#pre} + ${#BASH_REMATCH[1]} ))
+            if r030_offset_is_command "${code}" "${python_offset}"; then
+               fail "R-193 call the +x script directly via its shebang, not through an interpreter prefix" \
+                  "'${script}:${line_number}'"
+            fi
          fi
       done < "${script}"
    done
