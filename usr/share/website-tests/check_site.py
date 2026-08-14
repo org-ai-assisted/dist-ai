@@ -826,6 +826,69 @@ def check_contrast(root, failures):
                        props[name][2], ratio, AA_SMALL))
 
 
+# --- Undefined "sole" CSS classes -------------------------------------------
+# A class that is the ONLY class token on its element and is defined in no
+# stylesheet (nor referenced from JS) renders unstyled -- the bug where a hero
+# label used class="eyebrow" (undefined) instead of the styled .kicker and lost
+# its accent/prompt treatment. Scoped to SOLE classes so a co-class marker
+# (`cat faq`, `var x-gnome-terminal`, `zone sandbox`) -- where another class
+# supplies the styling -- is NOT flagged; that keeps the check low-noise WITHOUT
+# a growing allowlist to maintain. The only entries here are sole-class hooks
+# styled by a player/script rather than CSS.
+UNDEFINED_CLASS_ALLOWLIST = frozenset({'asplayer', 'ascontrols'})
+
+
+class _SoleClassAudit(html.parser.HTMLParser):
+    """Collect every class that appears as the ONLY class token on some element."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.sole = set()
+
+    def handle_starttag(self, tag, attrs):
+        value = dict(attrs).get('class')
+        if value:
+            tokens = value.split()
+            if len(tokens) == 1:
+                self.sole.add(tokens[0])
+
+    handle_startendtag = handle_starttag
+
+
+def check_undefined_classes(root, failures):
+    css = '\n'.join(text for _label, text in _css_sources(root))  # all .css + inline
+    defined = set(re.findall(r'\.(-?[_a-zA-Z][_a-zA-Z0-9-]*)', css))
+    js_parts = []
+    for base, dirs, files in os.walk(root):
+        _prune_git(dirs)
+        for name in files:
+            if not name.endswith('.js'):
+                continue
+            try:
+                with open(os.path.join(base, name), encoding='utf-8') as handle:
+                    js_parts.append(handle.read())
+            except OSError:
+                continue
+    per_page = {}
+    for page in html_files(root):
+        with open(page, encoding='utf-8') as handle:
+            markup = handle.read()
+        for block in re.findall(r'<script[^>]*>(.*?)</script>', markup, re.S | re.I):
+            js_parts.append(block)
+        audit = _SoleClassAudit()
+        audit.feed(markup)
+        per_page[os.path.relpath(page, root)] = audit.sole
+    js = '\n'.join(js_parts)
+    for rel, classes in sorted(per_page.items()):
+        for name in sorted(classes):
+            if (name not in defined and name not in UNDEFINED_CLASS_ALLOWLIST
+                    and name not in js):
+                failures.append(
+                    '%s: sole class %r has no CSS rule (and no JS use) -- the '
+                    'element renders unstyled; define it or use the intended class'
+                    % (rel, name))
+
+
 def main():
     roots = [os.path.normpath(r) for r in sys.argv[1:] if os.path.isdir(r)]
     if not roots:
@@ -857,6 +920,7 @@ def main():
         check_nav(root, failures)
         check_heading_breaks(root, failures)
         check_contrast(root, failures)
+        check_undefined_classes(root, failures)
         name = os.path.basename(root)
         if failures:
             total += len(failures)
@@ -865,7 +929,7 @@ def main():
         else:
             sys.stdout.write('ok %s: links + wording + footer + banner + csp + '
                              'supply-chain + assets + card-layout + nav + '
-                             'heading-breaks + contrast clean\n' % name)
+                             'heading-breaks + contrast + undefined-classes clean\n' % name)
     sys.stdout.write('website-tests: %d failure(s)\n' % total)
     return 1 if total else 0
 

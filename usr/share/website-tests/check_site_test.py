@@ -303,6 +303,37 @@ def run():
     check('<span> status pill still text-checked',
           _banner_failures(_page % '<span class="status">shipping</span>') != [])
 
+    # check_undefined_classes: a SOLE class defined nowhere renders unstyled (the
+    # eyebrow bug); a co-class marker, an allowlisted hook, and a JS-referenced
+    # class must NOT be flagged (keeps it low-noise).
+    def _uc_failures(root):
+        failures = []
+        check_site.check_undefined_classes(root, failures)
+        return failures
+
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _page % (
+            '<style>.kicker{color:green}.cat{}</style>'
+            '<p class="eyebrow">bad</p>'                    # sole + undefined -> flag
+            '<p class="kicker">ok</p>'                      # sole + defined -> ok
+            '<section class="cat faq">co</section>'))       # co-class marker -> ok
+        fails = _uc_failures(root)
+        check('sole undefined class flagged', any('eyebrow' in x for x in fails), repr(fails))
+        check('defined sole class not flagged', not any("'kicker'" in x for x in fails), repr(fails))
+        check('co-class marker not flagged', not any("'faq'" in x for x in fails), repr(fails))
+
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _page % (
+            '<div class="asplayer">p</div>'                 # allowlisted sole hook
+            '<span class="jshook">j</span>'                 # referenced from JS
+            '<script>document.querySelector(".jshook")</script>'))
+        fails = _uc_failures(root)
+        check('allowlisted sole hook not flagged', not any('asplayer' in x for x in fails), repr(fails))
+        check('JS-referenced sole class not flagged', not any('jshook' in x for x in fails), repr(fails))
+
+    check('check_undefined_classes invoked from main()',
+          'check_undefined_classes(root, failures)' in main_body)
+
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed
     for name, ok, detail in results:
