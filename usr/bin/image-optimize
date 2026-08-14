@@ -352,20 +352,27 @@ process_one() {
    fi
    if [ -n "${cand}" ]; then
       webp_path="${src%.*}.webp"
-      ## Never overwrite an existing "${stem}.webp" and then delete the source: that
-      ## destroys the pre-existing target's content, and it is also how a same-stem
-      ## batch loses data (foo.png then foo.jpg both map to foo.webp -- the second
-      ## sees the first's output here). Refuse; keep both files.
-      if [ -e "${webp_path}" ]; then
-         err "webp target already exists: ${webp_path##*/} (from ${input}); refusing to overwrite it and delete the source"
+      ## Move the webp into place ATOMICALLY without overwriting, then delete the source
+      ## only after that succeeds. 'mv -n' is a no-clobber rename (renameat2 /
+      ## RENAME_NOREPLACE on coreutils 9+), so it never overwrites an existing
+      ## "${stem}.webp" -- a pre-existing target, a same-stem batch (foo.png then
+      ## foo.jpg both map to foo.webp), or a CONCURRENT writer racing between a check and
+      ## the move. On a name clash mv -n SKIPS, leaving cand in place; detect that and
+      ## refuse rather than destroy data. errexit is suppressed inside process_one (the
+      ## batch calls it '... || rc=1'), so every step is checked explicitly.
+      if ! chmod --reference="${src}" -- "${cand}"; then
+         err "webp chmod failed: ${input}"
          safe-rm -- "${cand}"
          return 1
       fi
-      ## errexit is suppressed inside process_one (the batch calls it as
-      ## 'process_one ... || rc=1'), so a failed chmod/mv would otherwise fall through
-      ## to the success log and leave the source deleted against a half-written target.
-      if ! { chmod --reference="${src}" -- "${cand}" && mv -f -- "${cand}" "${webp_path}"; }; then
-         err "webp replace failed: ${input}"
+      if ! mv -n -- "${cand}" "${webp_path}"; then
+         err "webp move failed: ${input}"
+         safe-rm -- "${cand}"
+         return 1
+      fi
+      if [ -e "${cand}" ]; then
+         ## mv -n left cand in place -> the target already existed (or appeared concurrently).
+         err "webp target already exists: ${webp_path##*/} (from ${input}); refusing to overwrite it and delete the source"
          safe-rm -- "${cand}"
          return 1
       fi
