@@ -15,11 +15,12 @@
 ## foreground = top pixel, background = bottom pixel -- doubling vertical
 ## resolution for smooth gradients.
 
+import argparse
 import math
 import sys
 
-WIDTH = 80          # columns
-ROWS = 22           # text rows -> 2*ROWS pixels tall
+WIDTH = 80          # columns (default; --cols overrides)
+ROWS = 22           # text rows -> 2*ROWS pixels tall (default; --rows overrides)
 HEIGHT = ROWS * 2
 
 UPPER_HALF = '\u2580'   # the upper-half-block glyph; ASCII-escaped source per R-001
@@ -139,5 +140,24 @@ def render():
     return '\n'.join(out) + '\n'
 
 
-if __name__ == '__main__':
+def main(argv=None):
+    global WIDTH, ROWS, HEIGHT
+    parser = argparse.ArgumentParser(
+        description='Display-only truecolor sunset terminal-art (SGR + half-block only).')
+    parser.add_argument('--cols', type=int, default=WIDTH,
+                        help='width in character columns (default: %(default)s)')
+    parser.add_argument('--rows', type=int, default=ROWS,
+                        help='text rows, each 2 pixels tall (default: %(default)s)')
+    args = parser.parse_args(argv)
+    # pixel() normalises by (WIDTH-1) / (HEIGHT-1); a 1-wide/1-tall frame divides by
+    # zero and carries no gradient. Require a real canvas.
+    if args.cols < 2 or args.rows < 2:
+        parser.error('--cols and --rows must each be >= 2')
+    WIDTH = args.cols
+    ROWS = args.rows
+    HEIGHT = ROWS * 2
     sys.stdout.write(render())
+
+
+if __name__ == '__main__':
+    main()

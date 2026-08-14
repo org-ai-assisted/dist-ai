@@ -412,6 +412,15 @@ else
 fi
 cat > "${HOME}/.strc" <<'RC'
 PS1='user@host:~$ '
+## Record the live terminal size (ROWS COLS) to ~/.st_geom so the art capture can size
+## its payload to the REAL viewport instead of a hardcoded column count. stty reads the
+## tty directly, so the SIGWINCH from the capture-time window resize is reflected without
+## waiting for a new prompt; PROMPT_COMMAND covers the resize-before-first-prompt case.
+shopt -s checkwinsize
+__st_geom() { stty size 2>/dev/null > "${HOME}/.st_geom"; }
+PROMPT_COMMAND=__st_geom
+trap __st_geom WINCH
+__st_geom
 RC
 
 ## labwc config: the Clearlooks theme, server-side decorations.
@@ -901,6 +910,34 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
    ## wider frame only shrank the terminal text relative to the window; this matches
    ## how the app actually opens and keeps the frame close to the competitor shots.
    st_win_w=860
+   ## Size the art payload to the REAL secure-terminal viewport so the sunset fills the
+   ## frame instead of leaving a dead-white margin on the right. The geometry comes from
+   ## the LIVE window (stty in .strc -> ~/.st_geom) under the actual capture compositor --
+   ## never a hardcoded column count, which would silently drift when the font or the
+   ## default width changes. A non-readable geometry keeps the pre-generated 80x22 payload.
+   ## BEGIN st_size_art_payload -- extracted verbatim by truecolor_art_sizing_test.sh
+   st_size_art_payload() {
+      local geom rows cols art_rows i
+      ## ~/.st_geom is "ROWS COLS" from stty; the WINCH trap + PROMPT_COMMAND keep it current.
+      for i in 1 2 3 4 5 6 7 8 9 10; do
+         geom="$(cat "${HOME}/.st_geom" 2>/dev/null || true)"
+         [ -n "${geom}" ] && break
+         sleep 0.2
+      done
+      read -r rows cols <<< "${geom}"
+      ## Each field must be a non-empty run of digits; anything else keeps the fallback.
+      case "${rows}" in ''|*[!0-9]*) return 0 ;; esac
+      case "${cols}" in ''|*[!0-9]*) return 0 ;; esac
+      ## Height: the reported winsize rows overcount what a full-screen (TUI/alt-screen) view
+      ## actually shows -- the alt-screen effective viewport is ~2/3 of the reported rows, so a
+      ## rows-2 art clips at the bottom in the -tui-show variant. Both variants share one art
+      ## payload, so size the scene to ~2/3 of the reported rows: it fills the width and reads as
+      ## a clean wide panorama in TUI, and sits as a bounded landscape (prompt below) in CLI.
+      art_rows=$(( rows * 2 / 3 ))
+      { [ "${cols}" -ge 2 ] && [ "${art_rows}" -ge 2 ]; } || return 0
+      "${here}/truecolor-art.py" --cols "${cols}" --rows "${art_rows}" > "${HOME}/art.payload" || return 0
+   }
+   ## END st_size_art_payload
    ## Each entry is "<case> <mode> <suffix> [tui]". The optional 4th field 'tui' launches
    ## secure-terminal with --tui (opt-in full-screen mode) instead of the default CLI mode.
    ## The tui-showcase board is captured across the CLI/TUI mode x box/show/detail
@@ -1037,6 +1074,8 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
          ## or the 'cat' is injected into a not-yet-ready window and never runs (a black shot,
          ## seen on the FIRST secure-terminal launch under the parallel --jobs load).
          wait_window_ready "${stwid}"
+         ## art is the only case sized to the viewport; every other payload is fixed content.
+         [ "${st_case}" = art ] && st_size_art_payload
          inject "${stwid}" "$(shots_payload_cmd "${st_case}")"
          ## SECURE_TERMINAL_SHOT=1 renders synchronously, so a long fixed settle is unneeded.
          sleep 1

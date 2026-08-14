@@ -221,7 +221,9 @@ sys.stdout.buffer.write(buf)' "${shots_random_bytes}" "${shots_random_seed}" > "
    ## SAFE to cat -- the generator emits ONLY SGR truecolour, the half-block glyph, newlines and
    ## a trailing reset (no cursor moves, no clear, no OSC), so it repaints nothing and leaves the
    ## scrollback clean. A page-facing capability demo: secure-terminal renders full 24-bit colour
-   ## in every mode. Deterministic (pure function of position), so regeneration is a no-op.
+   ## in every mode. This writes the DEFAULT 80x22 scene; the secure-terminal capture pass
+   ## regenerates it at the live viewport size (st_size_art_payload) so the sunset fills the
+   ## frame. Deterministic (pure function of position + size), so regeneration is a no-op.
    "${fallback}/truecolor-art.py" > "${dest}/art.payload" || return 1
    ## unicode: an exhaustive-by-class Unicode gallery -- a renderable-subset glyph chart plus
    ## raw-byte RISK specimens (C0/C1 controls, bidi, zero-width/invisible, combining), each
