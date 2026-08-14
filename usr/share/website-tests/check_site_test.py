@@ -217,6 +217,75 @@ def run():
     check('check_image_format is invoked from main()',
           'check_image_format(root, failures)' in main_body)
 
+    # check_heading_breaks: a hard <br> inside a heading is the mobile-orphan bug.
+    def _hb_failures(root):
+        failures = []
+        check_site.check_heading_breaks(root, failures)
+        return failures
+
+    # 14. A <br> inside an h1 is flagged; the same h1 without it passes. Both the
+    # <br> and <br/> spellings count (the pre-fix sites used the bare form).
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _page % '<h1>The text on your screen<br>can lie.</h1>')
+        check('heading <br> flagged', any('heading' in f for f in _hb_failures(root)),
+              repr(_hb_failures(root)))
+        _write(root, 'index.html', _page % '<h1>The text on your screen<br/>can lie.</h1>')
+        check('heading <br/> self-closing flagged', _hb_failures(root) != [])
+        _write(root, 'index.html', _page % '<h1>The text on your screen can lie.</h1>')
+        check('heading with no <br> passes', _hb_failures(root) == [])
+
+    # 15. Canary: a <br> OUTSIDE a heading (body prose, a table cell) must NOT be
+    # flagged -- the rule is heading-scoped, not a blanket "no <br>".
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               _page % '<p>line one<br>line two</p>'
+                       '<table><tr><td>a<br>b</td></tr></table>'
+                       '<h2>clean heading</h2>')
+        check('body / cell <br> not flagged', _hb_failures(root) == [],
+              repr(_hb_failures(root)))
+
+    # check_contrast: a token used as small text on --bg must clear WCAG AA.
+    def _ct_failures(root):
+        failures = []
+        check_site.check_contrast(root, failures)
+        return failures
+
+    # 16. A low-contrast accent used as text is flagged; a high-contrast one is
+    # not (the both-way canary that proves the math runs, not a constant).
+    with tempfile.TemporaryDirectory() as root:
+        # #d83933 on #f3f2ee == 4.12:1 (below AA); #c21a74 == 5.08:1 (above).
+        _write(root, 'index.html',
+               _page % '<link rel="stylesheet" href="style.css">')
+        _write(root, 'style.css',
+               ':root{--bg:#f3f2ee;--accent:#d83933}.kicker{color:var(--accent)}')
+        check('low-contrast accent flagged',
+              any('--accent' in f and '4.12' in f for f in _ct_failures(root)),
+              repr(_ct_failures(root)))
+        _write(root, 'style.css',
+               ':root{--bg:#f3f2ee;--accent:#c21a74}.kicker{color:var(--accent)}')
+        check('high-contrast accent passes', _ct_failures(root) == [],
+              repr(_ct_failures(root)))
+
+    # 17. Canary: a token defined but used only as a BACKGROUND (never as text)
+    # is not judged against --bg -- and the dark terminal palette (not in the
+    # paper-text vocabulary) is never flagged even at low paper contrast.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               _page % '<link rel="stylesheet" href="style.css">')
+        _write(root, 'style.css',
+               ':root{--bg:#f3f2ee;--accent:#d83933;--tfg:#727a8a}'
+               '.pill{background:var(--accent)}'          # accent as bg only
+               '.term{color:var(--tfg)}')                 # dark-palette text token
+        check('background-only + dark-palette token not flagged',
+              _ct_failures(root) == [], repr(_ct_failures(root)))
+
+    # 18. Both new checks must be WIRED into main() (defined-but-uncalled = a
+    # silent no-op, the exact regression case 13 guards for check_image_format).
+    check('check_heading_breaks is invoked from main()',
+          'check_heading_breaks(root, failures)' in main_body)
+    check('check_contrast is invoked from main()',
+          'check_contrast(root, failures)' in main_body)
+
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed
     for name, ok, detail in results:

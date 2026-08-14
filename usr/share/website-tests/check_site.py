@@ -676,6 +676,154 @@ def check_nav(root, failures):
                         '(%s)' % (rel, '; '.join(detail)))
 
 
+# --- Forced line breaks in headings -------------------------------------------
+# A hard <br> inside a heading forces a wrap point that fights responsive
+# reflow: on a narrow phone the heading's first segment already wraps on its own,
+# and the <br> then adds ANOTHER line, orphaning a word ("The text on your /
+# screen / can lie to you." -- 3 lines, "screen" alone). Headings must wrap
+# naturally (CSS text-wrap:balance), never with a hard break. Flagged for h1-h6
+# only; a <br> in body prose or a table cell is legitimate and never touched.
+_HEADINGS = frozenset({'h1', 'h2', 'h3', 'h4', 'h5', 'h6'})
+
+
+class _HeadingBreakAudit(html.parser.HTMLParser):
+    """Count <br> elements that occur while a heading (h1-h6) is open."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._depth = 0          # open heading elements
+        self.hits = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in _HEADINGS:
+            self._depth += 1
+        elif tag == 'br' and self._depth:
+            self.hits += 1
+
+    def handle_startendtag(self, tag, attrs):
+        # <br/> self-closing form still counts.
+        if tag == 'br' and self._depth:
+            self.hits += 1
+
+    def handle_endtag(self, tag):
+        if tag in _HEADINGS and self._depth:
+            self._depth -= 1
+
+
+def check_heading_breaks(root, failures):
+    for page in html_files(root):
+        rel = os.path.relpath(page, root)
+        audit = _HeadingBreakAudit()
+        with open(page, encoding='utf-8') as handle:
+            audit.feed(handle.read())
+        if audit.hits:
+            failures.append(
+                '%s: %d hard <br> inside a heading; remove it and let the heading '
+                'wrap naturally (CSS text-wrap:balance) so it never orphans a word '
+                'on mobile' % (rel, audit.hits))
+
+
+# --- Color contrast of on-paper text tokens ----------------------------------
+# The family's shared color vocabulary: these CSS custom properties are used as
+# small text on the light page background (--bg). Each must clear WCAG AA for
+# small text (4.5:1) against --bg, or an accent reads washed-out / "off" -- the
+# low-contrast red kicker bug (git-diffs-lie --accent #d83933 = 4.12:1). The dark
+# terminal palette (--tfg, --tadd, ...) is a SEPARATE vocabulary rendered on a
+# dark pane and is deliberately excluded; a token here is checked ONLY when the
+# site actually uses it as `color:var(--token)` somewhere (so a token used only
+# as a background or border is never judged against the page background).
+PAPER_TEXT_TOKENS = frozenset({'accent', 'safe', 'muted', 'ink', 'danger'})
+AA_SMALL = 4.5
+
+_ROOT_VAR = re.compile(r'--([\w-]+)\s*:\s*([^;}]+)')
+_COLOR_VAR_USE = re.compile(r'color\s*:\s*var\(\s*--([\w-]+)\s*\)', re.IGNORECASE)
+_HEX = re.compile(r'^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$')
+_RGB = re.compile(r'^rgba?\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)', re.IGNORECASE)
+
+
+def _parse_color(value):
+    """(r, g, b) for a hex or rgb()/rgba() color, else None (var(), named, ...)."""
+    value = value.strip()
+    match = _HEX.match(value)
+    if match:
+        digits = match.group(1)
+        if len(digits) == 3:
+            digits = ''.join(ch * 2 for ch in digits)
+        return (int(digits[0:2], 16), int(digits[2:4], 16), int(digits[4:6], 16))
+    match = _RGB.match(value)
+    if match:
+        return tuple(min(255, int(component)) for component in match.groups())
+    return None
+
+
+def _relative_luminance(rgb):
+    def channel(component):
+        srgb = component / 255
+        return srgb / 12.92 if srgb <= 0.03928 else ((srgb + 0.055) / 1.055) ** 2.4
+    red, green, blue = (channel(component) for component in rgb)
+    return 0.2126 * red + 0.7152 * green + 0.0722 * blue
+
+
+def _contrast(fg, bg):
+    light = _relative_luminance(fg)
+    dark = _relative_luminance(bg)
+    hi, lo = max(light, dark), min(light, dark)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+_ROOT_BLOCK = re.compile(r':root\s*\{([^}]*)\}')
+
+
+def _css_sources(root):
+    """Each independent stylesheet scope of a site, as (label, css-text): every
+    .css file, plus each page's embedded <style>/style="" bundle. Scopes are kept
+    SEPARATE -- a subsite (git-diffs-lie/style.css) carries its own theme with its
+    own --bg and --accent, so merging it into the parent's CSS would conflate two
+    different color vocabularies (and pick the wrong --accent, last-wins)."""
+    for base, dirs, files in os.walk(root):
+        _prune_git(dirs)
+        for name in sorted(files):
+            if not name.endswith('.css'):
+                continue
+            path = os.path.join(base, name)
+            try:
+                with open(path, encoding='utf-8') as handle:
+                    yield os.path.relpath(path, root), handle.read()
+            except OSError:
+                continue
+    for page in html_files(root):
+        ext = Extractor()
+        with open(page, encoding='utf-8') as handle:
+            ext.feed(handle.read())
+        if ext.styles:
+            yield os.path.relpath(page, root), '\n'.join(ext.styles)
+
+
+def check_contrast(root, failures):
+    # Per stylesheet scope: parse its :root token palette and, when it defines a
+    # page background (--bg), check every paper-text token it both defines and
+    # uses as text (color:var(--token)) clears WCAG AA for small text.
+    for label, css in _css_sources(root):
+        props = {}
+        for block in _ROOT_BLOCK.findall(css):
+            for name, value in _ROOT_VAR.findall(block):
+                rgb = _parse_color(value)
+                if rgb is not None:
+                    props[name] = rgb          # later definition wins (cascade)
+        bg = props.get('bg')
+        if bg is None:
+            continue                            # scope has no page bg -> cannot judge
+        used = {name.lower() for name in _COLOR_VAR_USE.findall(css)}
+        for name in sorted(PAPER_TEXT_TOKENS & set(props) & used):
+            ratio = _contrast(props[name], bg)
+            if ratio < AA_SMALL:
+                failures.append(
+                    '%s: color token --%s (#%02x%02x%02x) on --bg is %.2f:1, below '
+                    'WCAG AA for small text (%.1f:1); darken it'
+                    % (label, name, props[name][0], props[name][1],
+                       props[name][2], ratio, AA_SMALL))
+
+
 def main():
     roots = [os.path.normpath(r) for r in sys.argv[1:] if os.path.isdir(r)]
     if not roots:
@@ -705,6 +853,8 @@ def main():
         check_assets(root, failures)
         check_card_layout(root, failures)
         check_nav(root, failures)
+        check_heading_breaks(root, failures)
+        check_contrast(root, failures)
         name = os.path.basename(root)
         if failures:
             total += len(failures)
@@ -712,7 +862,8 @@ def main():
                 sys.stderr.write('FAIL %s: %s\n' % (name, item))
         else:
             sys.stdout.write('ok %s: links + wording + footer + banner + csp + '
-                             'supply-chain + assets + card-layout + nav clean\n' % name)
+                             'supply-chain + assets + card-layout + nav + '
+                             'heading-breaks + contrast clean\n' % name)
     sys.stdout.write('website-tests: %d failure(s)\n' % total)
     return 1 if total else 0
 
