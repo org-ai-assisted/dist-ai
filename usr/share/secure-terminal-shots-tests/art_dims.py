@@ -22,7 +22,8 @@ def strip_sgr(text):
 
 
 def main():
-    data = open(sys.argv[1], encoding='utf-8').read()
+    with open(sys.argv[1], encoding='utf-8') as handle:
+        data = handle.read()
     lines = data.rstrip('\n').split('\n')
     widths = sorted({len(strip_sgr(line)) for line in lines})
     residue = re.sub(r'\x1b\[[0-9;]*m|\u2580|\n', '', data)

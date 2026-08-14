@@ -882,9 +882,10 @@ def check_undefined_classes(root, failures):
     for page in html_files(root):
         with open(page, encoding='utf-8') as handle:
             markup = handle.read()
-        # `</script\s*>`: the end tag may carry whitespace before '>' (`</script >`), which a
-        # bare `</script>` misses -- the block's JS would then be skipped by the class audit.
-        for block in re.findall(r'<script[^>]*>(.*?)</script\s*>', markup, re.S | re.I):
+        # `</script[^>]*>`: an HTML script end tag may carry whitespace OR trailing junk before
+        # '>' (`</script >`, `</script bar>`) and still ends the block in a browser; `</script>`
+        # or `</script\s*>` would miss those and skip the block's JS in the class audit.
+        for block in re.findall(r'<script[^>]*>(.*?)</script[^>]*>', markup, re.S | re.I):
             js_parts.append(block)
         audit = _SoleClassAudit()
         audit.feed(markup)
