@@ -447,6 +447,94 @@ finally:
     os.close(_pr)
     os.close(_pw)
 
+# --- BOUNDED-EXHAUSTIVE paste-FSM verification -------------------------------------------
+# feed_stdin_paste is a pure state machine, and the pastejacking class (a paste's content
+# reaching the child as TYPED input -- via a split marker, an interior CR, or an oversized
+# frame) is a safety property over ALL inputs and ALL read-boundary splits, not something a
+# handful of examples can settle. Here we EXHAUSTIVELY enumerate every bracketed-paste token
+# sequence up to _FSM_TOKENS tokens (START / END / CR / X) and, for each, over EVERY
+# byte-boundary split, verify two invariants:
+#   (1) split-invariance -- any chunking yields the SAME bytes-to-child as the whole input
+#       (a marker split across reads must behave exactly like the whole marker); and
+#   (2) no paste-region CR is ever forwarded -- a carriage return inside a bracketed paste is
+#       an auto-run, so the count of CRs reaching the child must equal the TYPED-CR count.
+# This is a bounded proof (complete for <= _FSM_TOKENS tokens, ~10^5 split-checks), not a
+# sampled test: it FAILS on the pre-fix split-marker leak and the overflow-exits-paste leak.
+import itertools                                    # noqa: E402
+_FSM_S, _FSM_E, _FSM_CR, _FSM_X = b'\x1b[200~', b'\x1b[201~', b'\r', b'x'
+_FSM_TOKENS = 6
+
+
+def _fsm_feed(chunks):
+    _out = b''
+    _st = (False, b'', b'')
+    for _c in chunks:
+        _p, _st = cli.feed_stdin_paste(_c, _st)
+        _out += _p
+    return _out
+
+
+def _fsm_typed_cr(seq):
+    """Reference oracle: CRs OUTSIDE a complete bracketed-paste frame -- the only CRs allowed
+    to reach the child."""
+    n = 0
+    i = 0
+    inp = False
+    while i < len(seq):
+        if not inp and seq[i:i + 6] == _FSM_S:
+            inp = True
+            i += 6
+        elif inp and seq[i:i + 6] == _FSM_E:
+            inp = False
+            i += 6
+        else:
+            if seq[i:i + 1] == _FSM_CR and not inp:
+                n += 1
+            i += 1
+    return n
+
+
+_fsm_bad = None
+for _fsm_r in range(_FSM_TOKENS + 1):
+    for _fsm_combo in itertools.product((_FSM_S, _FSM_E, _FSM_CR, _FSM_X), repeat=_fsm_r):
+        _fsm_seq = b''.join(_fsm_combo)
+        _fsm_whole = _fsm_feed([_fsm_seq]) if _fsm_seq else b''
+        _fsm_splits = [[_fsm_seq[:_k], _fsm_seq[_k:]] for _k in range(1, len(_fsm_seq))]
+        if _fsm_seq:
+            _fsm_splits.append([bytes([_b]) for _b in _fsm_seq])   # the all-single-byte split
+        for _fsm_sp in _fsm_splits:
+            if _fsm_feed(_fsm_sp) != _fsm_whole:
+                _fsm_bad = ('split-invariance', _fsm_seq, _fsm_sp)
+                break
+        if _fsm_bad is None and _fsm_whole.count(_FSM_CR) != _fsm_typed_cr(_fsm_seq):
+            _fsm_bad = ('paste-CR-forwarded', _fsm_seq, _fsm_whole)
+        if _fsm_bad:
+            break
+    if _fsm_bad:
+        break
+ok(_fsm_bad is None,
+   'paste-FSM bounded-exhaustive: split-invariance + no paste-CR forwarded over every token '
+   'sequence up to %d tokens and every split (%r)' % (_FSM_TOKENS, _fsm_bad))
+
+# The OVERFLOW class needs a body past _PASTE_MAX; shrink the cap and verify that an over-cap
+# paste never lets its tail reach the child as typed input, across every read-boundary split.
+_fsm_ov_saved = cli._PASTE_MAX
+cli._PASTE_MAX = 4
+try:
+    _fsm_ov_bad = None
+    for _fsm_tail in (b'A' * 10 + b'echo pwned\r', b'echo pwned\r' + b'A' * 10):
+        _fsm_s = _FSM_S + b'A' * 10 + _fsm_tail + _FSM_E + b'q\r'
+        for _fsm_k in range(1, len(_fsm_s)):
+            if b'pwned' in _fsm_feed([_fsm_s[:_fsm_k], _fsm_s[_fsm_k:]]):
+                _fsm_ov_bad = _fsm_k
+                break
+        if _fsm_ov_bad:
+            break
+    ok(_fsm_ov_bad is None,
+       'paste-FSM overflow: an over-cap paste tail never reaches the child as typed input')
+finally:
+    cli._PASTE_MAX = _fsm_ov_saved
+
 print('secure-terminal-tests(cli): %d passed, %d failed'
       % (0, _failures) if _failures else
       'secure-terminal-tests(cli): all passed')

@@ -1889,9 +1889,14 @@ ok(chr(0x202E) not in _out and '\x1b' not in _out,
 # so a code point safe in one mode and dangerous in another is a bypass reachable
 # from the View menu.
 _STREAM_CONTROLS = frozenset((0x07, 0x08, 0x09, 0x0A, 0x0D, ord(S.BOX)))
-_SWEEP = ([c for c in range(0x00, 0x3000) if c not in _STREAM_CONTROLS]
-          + list(range(0xFE00, 0xFE10)) + list(range(0xFFA0, 0xFFA2))
-          + [0xFEFF, 0xE0100, 0xE01EF, 0x1D173, 0x1F600, 0x4E2D, 0x10FFFF])
+# EXHAUSTIVE over every Unicode scalar value. The single-code-point neutralization
+# invariant is decidable per code point, so this sweep is not a sample of interesting
+# ranges -- it is EVERY one of the ~1.1M scalar values, making the property a proof for
+# length-1 input rather than a spot check. Excluded: the stream controls the transport
+# layer owns (tested in test_cli.py), and the surrogate block D800..DFFF -- not a scalar
+# value, and unreachable as a UTF-8-decoded character on a real terminal.
+_SWEEP = [c for c in range(0x00, 0x110000)
+          if c not in _STREAM_CONTROLS and not (0xD800 <= c <= 0xDFFF)]
 _DIVERGE = []
 _NOT_ONE_UNIT = []
 _MODE_BAD = []
@@ -1997,8 +2002,9 @@ _CLASS_MAP = {
     'combining': 'non-ASCII character', 'nonascii': 'non-ASCII character',
 }
 _CLASS_BAD = []
-for _cp in (list(range(0x00, 0x3000)) + [0xFEFF, 0xFE0F, 0xFFA0, 0xE0100,
-                                         0x1F600, 0x4E2D, 0x10FFFF]):
+for _cp in range(0x00, 0x110000):         # EXHAUSTIVE, same as the neutralization sweep
+    if 0xD800 <= _cp <= 0xDFFF:
+        continue                          # surrogate block: not a scalar value
     if _cp in (0x09, 0x0A, 0x0D) or 0x20 <= _cp <= 0x7E:
         continue                          # plain ASCII: neither guard reports it
     _ch = chr(_cp)
