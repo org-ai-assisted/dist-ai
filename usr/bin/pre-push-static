@@ -1630,6 +1630,84 @@ check_R191_systemd_unit_embedded_script() {
    done
 }
 
+check_R192_shell_inline_shell_c() {
+   local script line line_number in_body body start_line qchar shell_c_re
+   local trimmed lastchar qcount
+
+   ## R-192: a substantial inline shell program passed to 'sh -c'/'bash -c' FROM A SHELL SCRIPT
+   ## is the same defect as R-190 (heredoc) and R-191 (systemd Exec=): the program is invisible
+   ## to shellcheck, has no importable home a unit test can reach, and no coverage tool measures
+   ## it. R-191 scans only systemd units, so a plain script's 'foo -- bash -lc "<multi-line>"'
+   ## slipped through -- this rule closes that gap. Move the program to a script with a shebang
+   ## and call it. Only a MULTI-LINE program (>5 body lines) is flagged; a one-line
+   ## 'bash -c "echo hi"' is glue. Waiver: '## style-ok: allow-inline-interpreter' (shared with
+   ## R-190).
+   ##
+   ## Detection is conservative and quote-quote-parity based (no fragile offset math): a shell
+   ## '-c' invocation whose OPENER quote is left open AT END OF LINE (the last non-space char is
+   ## a quote with an odd count on the line) starts a body; the body ends on the next line that
+   ## rebalances that quote. Requiring the opener at line end is what keeps 'bash -c "echo it'"'"'s"'
+   ## (closes on the same line) from tripping. shell_c_re mirrors R-191's.
+   shell_c_re='(^|[[:space:]]|/)(sh|bash|dash)([[:space:]]+-[a-zA-Z]+)*[[:space:]]+-[a-zA-Z]*c(["'"'"'[:space:]]|$)'
+   for script in "${@}"; do
+      if [ ! -f "${script}" ] || [ -L "${script}" ]; then
+         continue
+      fi
+      if grep --quiet --extended-regexp \
+         '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*allow-inline-interpreter([[:space:]]|$)' \
+         -- "${script}" 2>/dev/null
+      then
+         note "R-192 skipped: 'style-ok: allow-inline-interpreter' waiver in '${script}'"
+         continue
+      fi
+      in_body='false'
+      body=0
+      start_line=0
+      qchar=''
+      line_number=0
+      while IFS= read -r line || [ -n "${line}" ]; do
+         line_number=$(( line_number + 1 ))
+         if [ "${in_body}" = 'true' ]; then
+            ## still inside the quoted -c program: this line rebalances (closes) the quote when
+            ## it carries an ODD number of the opener quote char.
+            qcount="${line//[!"${qchar}"]/}"
+            if [ $(( ${#qcount} % 2 )) -eq 1 ]; then
+               if [ "${body}" -gt 5 ]; then
+                  fail "R-192 inline shell program (${body} lines) passed to a shell '-c' belongs in its own file" \
+                     "'${script}:${start_line}'"
+               fi
+               in_body='false'
+               qchar=''
+               body=0
+               continue
+            fi
+            body=$(( body + 1 ))
+            continue
+         fi
+         ## A comment line can never START an inline program -- and skipping it keeps this
+         ## rule's own docstring (which names 'bash -c') from self-tripping.
+         if [[ "${line}" =~ ^[[:space:]]*# ]]; then
+            continue
+         fi
+         if [[ "${line}" =~ ${shell_c_re} ]]; then
+            ## strip trailing whitespace, take the last char; only an opener quote left open
+            ## at end of line begins a multi-line program.
+            trimmed="${line%"${line##*[![:space:]]}"}"
+            lastchar="${trimmed: -1}"
+            if [ "${lastchar}" = "'" ] || [ "${lastchar}" = '"' ]; then
+               qcount="${line//[!"${lastchar}"]/}"
+               if [ $(( ${#qcount} % 2 )) -eq 1 ]; then
+                  in_body='true'
+                  body=0
+                  start_line="${line_number}"
+                  qchar="${lastchar}"
+               fi
+            fi
+         fi
+      done < "${script}"
+   done
+}
+
 check_R100_yaml_inline_shell() {
    local workflow line line_number run_indent body_count block_start
    local in_block stripped indent
@@ -2543,6 +2621,7 @@ run_file_checks() {
       check_R034_echo "${shell_files[@]}"
       check_R103_exec "${shell_files[@]}"
       check_R190_inline_interpreter "${shell_files[@]}"
+      check_R192_shell_inline_shell_c "${shell_files[@]}"
       check_R153_help_from_comments "${shell_files[@]}"
    else
       note "no changed shell files"
