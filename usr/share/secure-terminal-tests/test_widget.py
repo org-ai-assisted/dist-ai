@@ -1150,6 +1150,24 @@ if tui_available():
     _fol._render_tui()
     eq(_fbar.value(), _held,
        'TUI does not yank a scrolled-up view back to the bottom')
+    # Regression (operator report): a ONE-line scroll-up must not be yanked back either. The
+    # old `>= maximum - 2` tolerance mistook value==maximum-1 for "at bottom" and snapped the
+    # view to the tail on the next frame (the reported scroll flicker). FAILS on the old code:
+    # value would return to maximum.
+    _fbar.setValue(_fbar.maximum())          # re-enter auto-follow
+    _fol._render_tui()
+    _one_up = _fbar.maximum() - 1
+    _fbar.setValue(_one_up)                  # user wheels up a single line
+    _fol._feed_stream(b'and-more\r\n')       # new output keeps arriving
+    _fol._render_tui()
+    ok(_fbar.value() < _fbar.maximum(),
+       'a one-line scroll-up is not yanked back to the bottom (no scroll flicker)')
+    # ...and returning to the very bottom RESUMES auto-follow.
+    _fbar.setValue(_fbar.maximum())
+    _fol._feed_stream(b'tail-again\r\n')
+    _fol._render_tui()
+    eq(_fbar.value(), _fbar.maximum(),
+       'returning to the bottom resumes TUI auto-follow')
     _fol.close()
 
 # --- TUI grid: DEC line-drawing renders, and neutralized cells are risk-coloured -
