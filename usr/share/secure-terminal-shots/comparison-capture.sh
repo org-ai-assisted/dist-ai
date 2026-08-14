@@ -263,14 +263,20 @@ if [ "${jobs}" -gt 1 ]; then
       lane_i=$(( lane_i + 1 ))
    }
    rc=0
-   wait_lanes() {  ## wait for all currently-spawned lanes; echo logs; fold worst rc into ${rc}
+   wait_lanes() {  ## wait for all currently-spawned lanes; echo their logs
+      ## A lane's exit code is NOT folded into the run's rc: under --jobs load a lane can die
+      ## transiently (labwc bringup racing) yet every shot it lost is re-shot by the sequential
+      ## re-capture net below. The AUTHORITATIVE emulator-phase verdict is that net's final
+      ## missing-check (a genuinely absent terminal is caught by the installed-check there), so a
+      ## fully-recovered grid exits 0 and the shots are pulled -- a transient lane failure alone
+      ## must not fail the whole run. A non-zero lane is noted for visibility only.
       local i lrc
       i=0
       while [ "${i}" -lt "${#lane_pids[@]}" ]; do
          lrc=0
          wait "${lane_pids[i]}" || lrc="$?"
          cat -- "${lane_logs[i]}" 2>/dev/null || true
-         [ "${lrc}" -eq 0 ] || rc="${lrc}"
+         [ "${lrc}" -eq 0 ] || printf '%s\n' "note: an emulator lane exited ${lrc} (transient under --jobs load; the re-capture net backstops any missing shot)"
          i=$(( i + 1 ))
       done
       lane_pids=()
@@ -295,6 +301,62 @@ if [ "${jobs}" -gt 1 ]; then
          b=$(( b + 1 ))
       done
       wait_lanes
+   fi
+   ## PHASE 1.5: sequential re-capture net for the emulator pass. Under parallel CPU load a lane
+   ## can screenshot an emulator window before its content paints; capture_settled DISCARDS that
+   ## blank (never publishes black), so a discarded shot leaves no file and a full reshoot would
+   ## omit it -- the residual "manual per-emulator re-run" problem. With every parallel lane now
+   ## finished (zero CPU contention -- the condition under which a sequential re-run reliably
+   ## succeeds), re-shoot any still-missing emulator shot SEQUENTIALLY, one xvfb-run at a time,
+   ## like the ST pass. Bounded rounds; anything still missing after the net is a HARD failure
+   ## (rc=1), never a silent stale shot.
+   if [ -n "${emu_set}" ] && [ -z "${SHOTS_LANE_DRY_RUN:-}" ]; then
+      ## only INSTALLED emulators are expected to yield shots. A genuinely ABSENT emulator is a
+      ## hard error here (an incomplete grid misrepresents the comparison) unless ALLOW_SKIP
+      ## authorizes it -- the same rule the per-lane loop enforces, restated here because lane
+      ## exit codes are no longer folded into rc (a transient labwc failure must not fail the run,
+      ## but a missing terminal must). Only the installed set is chased by the net below.
+      emu_present=''
+      for e in ${emu_set}; do
+         e_path="$(type -P "${e}" 2>/dev/null || true)"
+         if [ -n "${e_path}" ] && [ -x "${e_path}" ]; then
+            emu_present="${emu_present:+${emu_present} }${e}"
+         elif [ -n "${ALLOW_SKIP:-}" ]; then
+            printf '%s\n' "SKIP ${e} (not installed/executable; ALLOW_SKIP authorized)" >&2
+         else
+            printf '%s\n' "ERROR: emulator ${e} is not installed/executable; install it or set ALLOW_SKIP=1" >&2
+            rc=1
+         fi
+      done
+      recap_prep=()
+      [ -n "${orch_prep}" ] && recap_prep=(--prep-dir "${orch_prep}")
+      recap_round=0
+      while [ "${recap_round}" -lt 3 ]; do
+         mapfile -t recap_missing < <(shots_missing_emulator_shots "${out}" "${emu_present}" "${CASES}")
+         [ "${#recap_missing[@]}" -eq 0 ] && break
+         printf '%s\n' "re-capture net (round $(( recap_round + 1 ))): ${#recap_missing[@]} emulator shot(s) missing after the parallel pass; re-shooting sequentially"
+         for pair in "${recap_missing[@]}"; do
+            read -r re_e re_c <<< "${pair}"
+            ## A re-shoot may itself exit non-zero (labwc bringup can still flake) -- its rc is
+            ## NOT folded into the run's rc. Whether the shot now exists is decided by the
+            ## authoritative missing-check after the rounds; a shot still absent then fails hard.
+            xvfb-run --auto-servernum --server-args='-screen 0 1600x1000x24' \
+               "${self}" --only "${re_e}" --case "${re_c}" --no-st "${recap_prep[@]}" --no-optimize \
+               > "${lane_dir}/recap.${re_e}.${re_c}.log" 2>&1 || true
+            cat -- "${lane_dir}/recap.${re_e}.${re_c}.log" 2>/dev/null || true
+         done
+         recap_round=$(( recap_round + 1 ))
+      done
+      mapfile -t recap_missing < <(shots_missing_emulator_shots "${out}" "${emu_present}" "${CASES}")
+      if [ "${#recap_missing[@]}" -gt 0 ]; then
+         printf '%s\n' "ERROR: ${#recap_missing[@]} emulator shot(s) STILL missing after the re-capture net:" >&2
+         for pair in "${recap_missing[@]}"; do
+            printf '%s\n' "   ${pair}" >&2
+         done
+         rc=1
+      else
+         printf '%s\n' "re-capture net: emulator grid complete, 0 shots missing"
+      fi
    fi
    ## PHASE 2: the secure-terminal pass, run SEQUENTIALLY and ALONE. Each ST spec is a fresh Qt
    ## '--new-instance' cold start; when it competes with the emulator captures (or other ST
@@ -746,8 +808,25 @@ shoot() {  ## $1=emulator  $2=case
    safe-rm -f -- "${pgf}" "${flagf}" 2>/dev/null || true
 }
 
-if ! start_labwc; then
-   printf '%s\n' 'labwc did not start; log:'; tail -6 "${runtime_dir}/labwc.log"; exit 1
+## labwc intermittently fails to come up under the parallel --jobs load (its wlroots x11
+## backend racing several nested compositors) -- the single dominant cause of lost shots in a
+## full --jobs run. Retry its bringup a few times, killing a half-started instance first so the
+## next attempt starts clean. The orchestrator's re-capture net is the outer backstop, but
+## retrying here removes most of its work (and most of the transient lane failures).
+labwc_started=''
+for labwc_try in 1 2 3 4; do
+   if start_labwc; then
+      labwc_started=1
+      break
+   fi
+   [ -z "${wm_pid}" ] || kill "${wm_pid}" 2>/dev/null || true
+   [ -z "${wm_pid}" ] || wait "${wm_pid}" 2>/dev/null || true
+   wm_pid=''
+   printf '%s\n' "labwc bringup attempt ${labwc_try} failed; retrying" >&2
+   sleep 1
+done
+if [ -z "${labwc_started}" ]; then
+   printf '%s\n' 'labwc did not start after retries; log:'; tail -6 "${runtime_dir}/labwc.log"; exit 1
 fi
 
 ## lxterminal is omitted: its single-instance startup maps no window headless.
@@ -786,12 +865,10 @@ for e in ${TERMINALS}; do
       ## notify + art are secure-terminal showcases, not attack comparisons: notify has no
       ## standard emulator shot (kitty's popup is captured separately), and art is a capability
       ## demo of secure-terminal's own truecolor rendering across its modes. Skip both in the
-      ## emulator loop even though they are in the full ST matrix.
-      case "${c}" in
-         notify|art)
-            continue
-            ;;
-      esac
+      ## emulator loop even though they are in the full ST matrix. SHOTS_EMULATOR_SKIP_CASES
+      ## (lib-capture.sh) is the single source of truth, shared with the re-capture net's
+      ## expected-shot accounting so the two never drift.
+      case "${SHOTS_EMULATOR_SKIP_CASES}" in *" ${c} "*) continue ;; esac
       shoot "${e}" "${c}" || true
    done
    printf '%s\n' "captured ${e}"

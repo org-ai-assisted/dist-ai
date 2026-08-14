@@ -239,6 +239,33 @@ shots_shot_is_blank() {  ## $1=png
    [ "${flat}" = '1' ]
 }
 
+## Cases the emulator loop does NOT shoot (secure-terminal-only showcases): notify has no
+## standard emulator equivalent, art is a secure-terminal truecolor-render demo. Single source
+## of truth for "which cases yield an emulator shot", shared by the capture loop's own skip and
+## by shots_missing_emulator_shots below -- keep the two in step.
+SHOTS_EMULATOR_SKIP_CASES=' notify art '
+
+## Print the emulator shots (one "<emulator> <case>" per line) that are EXPECTED but MISSING from
+## the shots dir. Drives the --jobs orchestrator's sequential re-capture net: a parallel lane can
+## screenshot a window before its content painted, and capture_settled DISCARDS that blank rather
+## than publish black, so a discarded shot leaves no file. Enumerating the gaps lets the net
+## re-shoot exactly them, so a full reshoot never omits a shot (no manual per-emulator re-run).
+## Expected = (each given emulator) x (each given case except SHOTS_EMULATOR_SKIP_CASES). A shot
+## counts present if EITHER the .png (pre-merge) or the .webp (post-merge) exists. The caller
+## passes only INSTALLED emulators, so an authorized skip (absent emulator) has no expected shot
+## and is never chased.
+shots_missing_emulator_shots() {  ## $1=out-dir  $2=emulators (space-sep)  $3=cases (space-sep)
+   local out_dir emus cases e c
+   out_dir="$1"; emus="$2"; cases="$3"
+   for e in ${emus}; do
+      for c in ${cases}; do
+         case "${SHOTS_EMULATOR_SKIP_CASES}" in *" ${c} "*) continue ;; esac
+         [ -f "${out_dir}/${e}.${c}.png" ] || [ -f "${out_dir}/${e}.${c}.webp" ] \
+            || printf '%s\n' "${e} ${c}"
+      done
+   done
+}
+
 shots_install_icon_theme() {  ## $1 = XDG_DATA_HOME target dir
    local data_home th st_icon sz
    data_home="$1"
