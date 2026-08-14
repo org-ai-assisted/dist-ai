@@ -118,7 +118,7 @@ SHOT_DEADLINE="${SHOT_DEADLINE:-90}"
 ## notify is a secure-terminal-only case (emulators have no standard notify shot -- the page's
 ## kitty.notify popup is captured separately), so it is in the full matrix for the ST loop but
 ## skipped in the emulator loop below.
-all_cases='crafted random homoglyph bidi zerowidth altscreen notify art tui-showcase'
+all_cases='crafted escape contrast title random homoglyph bidi zerowidth altscreen notify art tui-showcase'
 CASES="${CASES:-${all_cases}}"
 ## The emulator set, single source of truth for BOTH the capture loop and the --jobs
 ## orchestrator's partition. lxterminal is omitted: its single-instance startup maps no
@@ -837,6 +837,21 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       'crafted show crafted-show'
       'crafted box crafted-tui tui'
       'crafted show crafted-tui-show tui'
+      'escape box escape'
+      'escape detail escape-detail'
+      'escape show escape-show'
+      'escape box escape-tui tui'
+      'escape show escape-tui-show tui'
+      'contrast box contrast'
+      'contrast detail contrast-detail'
+      'contrast show contrast-show'
+      'contrast box contrast-tui tui'
+      'contrast show contrast-tui-show tui'
+      'title box title'
+      'title detail title-detail'
+      'title show title-show'
+      'title box title-tui tui'
+      'title show title-tui-show tui'
       'notify box notify'
       'notify detail notify-detail'
       'notify show notify-show'

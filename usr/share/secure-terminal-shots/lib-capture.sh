@@ -89,6 +89,15 @@ shots_corpus_id() {  ## $1=case
       crafted)
          printf '%s' 'crafted-hostile-log'
          ;;
+      escape)
+         printf '%s' 'charset-shift-deception'
+         ;;
+      contrast)
+         printf '%s' 'stuck-colour-contrast'
+         ;;
+      title)
+         printf '%s' 'title-set-hijack'
+         ;;
       homoglyph)
          printf '%s' 'homoglyph-domain-install-2021'
          ;;
@@ -116,6 +125,15 @@ shots_payload_cmd() {  ## $1=case -> the command string the terminal displays
    case "$1" in
       crafted)
          printf '%s' 'cat crafted.payload'
+         ;;
+      escape)
+         printf '%s' 'cat escape.payload'
+         ;;
+      contrast)
+         printf '%s' 'cat contrast.payload'
+         ;;
+      title)
+         printf '%s' 'cat title.payload'
          ;;
       homoglyph)
          printf '%s' 'cat homoglyph.payload'
@@ -166,7 +184,7 @@ shots_generate_logs() {  ## $1=script-relative fallback dir $2=dest-dir
    ## suppresses errexit inside the function, so a failed reproduce.py must be surfaced
    ## by hand (as a NON-77 code, distinct from the missing-corpus skip) or the capture
    ## would proceed with a missing payload.
-   for c in crafted homoglyph bidi altscreen tui-showcase; do
+   for c in crafted escape contrast title homoglyph bidi altscreen tui-showcase; do
       id="$(shots_corpus_id "${c}")"
       POC_CORPUS_IN_SANDBOX=1 python3 "${rp}" "${id}" --out "${dest}/${c}.payload" || return 1
    done
