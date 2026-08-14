@@ -518,10 +518,9 @@ st_pkg="${ST_REPO:-}/usr/lib/python3/dist-packages"
 if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
    ## Each entry is "<case> <mode> <output-suffix>". secure-terminal is captured in
    ## the display mode that matters for each case: box for the byte-stream cases,
-   ## and BOTH box and detail for the homoglyph -- box flags the look-alike byte as
-   ## a coloured box, detail names its exact codepoint (<U+0430 CYRILLIC SMALL
-   ## LETTER A>). The homoglyph-strip suffix is kept for the committed PNG /
-   ## Pages reference (the mode it captures is now box; the file name is a label).
+   ## including the homoglyph -- box flags the look-alike byte as a coloured box.
+   ## The homoglyph-strip suffix is kept for the committed PNG / Pages reference
+   ## (the mode it captures is box; the file name is a label).
    ## Capture width for the ST GUI window. 860 is the app's own default width
    ## (main.py TOOLBAR_DEFAULT_WIDTH): the responsive toolbar renders its "labeled"
    ## tier there -- icon-only action buttons plus every chip group captioned
@@ -542,7 +541,6 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       'notify box notify'
       'random box random'
       'homoglyph box homoglyph-strip'
-      'homoglyph detail homoglyph-detail'
       'bidi box bidi'
       'zerowidth box zerowidth'
       'altscreen box altscreen'
