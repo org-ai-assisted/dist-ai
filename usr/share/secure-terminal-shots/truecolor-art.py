@@ -30,11 +30,11 @@ def lerp(a, b, t):
 
 
 def mix(c1, c2, t):
-    return tuple(int(round(lerp(c1[i], c2[i], t))) for i in range(3))
+    return tuple(round(lerp(c1[i], c2[i], t)) for i in range(3))
 
 
 def clamp(v):
-    return max(0, min(255, int(round(v))))
+    return max(0, min(255, round(v)))
 
 
 def pixel(x, y):
