@@ -4151,6 +4151,59 @@ ok(_tgdsent == [],
    'a recalled (unmirrored) line defers the re-export too')
 _tgd.close()
 
+# The same hazard reached from TUImode. TUI never mirrors the shell's line, so
+# text typed at a BARE prompt (no foreground program) touches neither _line_buffer
+# nor -- until now -- _line_dirty. Left unflagged, a TUI->CLI switch fired an
+# immediate CR-terminated re-export that concatenated onto and SUBMITTED that
+# typed line: an Enter nobody pressed, routed around command_hook. So a TUI
+# keystroke at a bare prompt marks the line dirty, and the switch defers exactly
+# like a mirrored CLI line.
+_tt = SecureTerminal(command=None, tui=True)
+_ttsent = spy_writes(_tt)
+_tt.has_foreground_program = lambda: False              # bare shell prompt
+key(_tt, Qt.Key.Key_L, 'l')                             # type `ls` at the TUI prompt
+key(_tt, Qt.Key.Key_S, 's')
+ok(_tt._line_dirty and _tt._line_buffer == '',
+   'typing at a bare TUI prompt marks the line dirty (the buffer stays unmirrored)')
+ok(_tt._line_pending(),
+   '_line_pending() sees the TUI-typed line, so a re-export must wait for it')
+_ttsent.clear()
+_tt.apply_tui(False)                                    # flip TUI -> CLI
+ok(_ttsent == [],
+   'the TUI-typed line defers the re-export: nothing is typed into the shell')
+ok(not any(b'\r' in s for s in _ttsent),
+   'no CR is generated, so the typed line is never force-submitted past the hook')
+# It must still LAND once the prompt clears, or the switch is merely broken. The
+# tab is in CLI mode now; submitting the line releases the deferral.
+key(_tt, Qt.Key.Key_Return)                             # user submits -> prompt clears
+_ttsent.clear()                                         # drop the CR itself
+feed_output(_tt, b'prompt$ ')                           # a returning prompt is the cue
+ok(any(b'export TERM=secure-terminal\r' == s for s in _ttsent),
+   'the deferred re-export lands once the TUI-typed line is submitted')
+_tt.close()
+
+# A history recall (Up) at a bare TUI prompt is the same hazard with an INVISIBLE
+# line -- it marks dirty too (covers the mapped-key path, not just printable text).
+_th = SecureTerminal(command=None, tui=True)
+_thsent = spy_writes(_th)
+_th.has_foreground_program = lambda: False
+key(_th, Qt.Key.Key_Up)                                 # recall a previous command
+ok(_th._line_dirty,
+   'history recall at a bare TUI prompt marks the line unmirrored')
+_th.close()
+
+# But keys consumed by a FOREGROUND PROGRAM must NOT mark the line: a program that
+# exits without an accept-line key (e.g. `less` quit with `q`) would otherwise
+# strand the flag and defer the re-export forever.
+_tp = SecureTerminal(command=None, tui=True)
+_tpsent = spy_writes(_tp)
+_tp.has_foreground_program = lambda: True               # a full-screen program owns it
+_tp._line_dirty = False
+key(_tp, Qt.Key.Key_Q, 'q')                             # e.g. `q` to quit less
+ok(not _tp._line_dirty,
+   'a keystroke into a running program does not mark the line (no stranded defer)')
+_tp.close()
+
 # Toggling line editing live must re-export TERM too, not only re-render: the
 # renderer stops honouring el/cuf/hpa, so a shell still told they work keeps
 # emitting redraws that vanish (a mangled completion). Same reachability guard as
