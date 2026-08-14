@@ -279,6 +279,34 @@ def run():
         check('background-only + dark-palette token not flagged',
               _ct_failures(root) == [], repr(_ct_failures(root)))
 
+    # 17b. regression (reviewdrain3): a :root nested in @media (prefers-color-scheme:
+    # dark) must NOT be merged into the default palette. Its dark --bg would otherwise
+    # be contrast-paired with the un-overridden light --accent (a pairing that never
+    # renders together) and falsely fail. Both-way canary so it is not a constant-pass:
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               _page % '<link rel="stylesheet" href="style.css">')
+        # light --accent passes on the light --bg (5.08:1); a dark-scheme :root overrides
+        # only --bg. Pre-fix the flat merge paired that dark --bg with the light --accent
+        # (#c21a74 on #111418 == 3.25:1) and falsely flagged it.
+        _write(root, 'style.css',
+               ':root{--bg:#f3f2ee;--accent:#c21a74}'
+               '@media (prefers-color-scheme:dark){:root{--bg:#111418}}'
+               '.kicker{color:var(--accent)}')
+        check('a dark-scheme :root override does not cause a false contrast failure',
+              _ct_failures(root) == [], repr(_ct_failures(root)))
+        # canary: a nested dark :root must not SUPPRESS a real TOP-LEVEL failure either.
+        # The top-level --accent is low-contrast on the light --bg (#d83933 == 4.12:1);
+        # only the top-level fix reports exactly 4.12 (the flat merge would judge it on
+        # the dark --bg and report a different ratio), so this is non-tautological.
+        _write(root, 'style.css',
+               ':root{--bg:#f3f2ee;--accent:#d83933}'
+               '@media (prefers-color-scheme:dark){:root{--bg:#111418}}'
+               '.kicker{color:var(--accent)}')
+        check('a real top-level low-contrast is still flagged despite a dark :root block',
+              any('--accent' in f and '4.12' in f for f in _ct_failures(root)),
+              repr(_ct_failures(root)))
+
     # 18. Both new checks must be WIRED into main() (defined-but-uncalled = a
     # silent no-op, the exact regression case 13 guards for check_image_format).
     check('check_heading_breaks is invoked from main()',

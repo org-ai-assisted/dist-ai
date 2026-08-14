@@ -807,8 +807,17 @@ def check_contrast(root, failures):
     # uses as text (color:var(--token)) clears WCAG AA for small text.
     for label, css in _css_sources(root):
         props = {}
-        for block in _ROOT_BLOCK.findall(css):
-            for name, value in _ROOT_VAR.findall(block):
+        for m in _ROOT_BLOCK.finditer(css):
+            # Only the TOP-LEVEL :root palette (the default color scheme). A :root nested
+            # inside an at-rule -- e.g. @media (prefers-color-scheme: dark) -- must NOT be
+            # merged in: its override (say a dark --bg) would then be contrast-paired with
+            # an un-overridden light-mode token (--accent), a cross-color-scheme pairing
+            # that never renders together, i.e. a false failure. Top level == balanced
+            # braces before the match (same brace-counting the rest of this file tolerates).
+            before = css[:m.start()]
+            if before.count('{') != before.count('}'):
+                continue
+            for name, value in _ROOT_VAR.findall(m.group(1)):
                 rgb = _parse_color(value)
                 if rgb is not None:
                     props[name] = rgb          # later definition wins (cascade)
