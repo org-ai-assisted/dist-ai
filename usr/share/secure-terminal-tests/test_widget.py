@@ -482,7 +482,14 @@ import secure_terminal.terminal as _T_fg                        # noqa: E402
 
 _fg = SecureTerminal(command=None)          # a login-shell tab, no -- PROGRAM
 _o_fgpgrp = _T_fg.SecureTerminal._foreground_pgrp
+_o_getpgid = _T_fg.os.getpgid
 try:
+    # Pin the child-pgrp lookup to a live, distinct pgrp: the real login-shell child
+    # is auto-reaped (SIGCHLD SIG_IGN), so a real os.getpgid(self._pid) FLAKES between
+    # a valid pgrp and ProcessLookupError -- and the early-return on that error skipped
+    # the "still owned by us" branch below, flapping the coverage gate. Mocking it makes
+    # the branch deterministic without depending on the child still being alive.
+    _T_fg.os.getpgid = lambda _pid: os.getpgrp() + 50000
     # Simulate the startup window: the tty is still ours.
     _T_fg.SecureTerminal._foreground_pgrp = lambda _self: os.getpgrp()
     ok(_fg.has_foreground_program() is False,
@@ -494,6 +501,7 @@ try:
        'a third-party foreground pgrp is still reported as a running program')
 finally:
     _T_fg.SecureTerminal._foreground_pgrp = _o_fgpgrp
+    _T_fg.os.getpgid = _o_getpgid
 _fg.close()
 
 # --- cli_terminfo_dir freshness: no-source, and an unreadable mtime -----------
@@ -6229,6 +6237,78 @@ _sm.selectAll()
 _sm_copy = _sm._selection_text()
 ok('_' in _sm_copy and '\u2423' not in _sm_copy,
    'reconcile#6: the synthetic non-ASCII-space marker still copies as _ (never a space)')
+
+# --- SECURE_TERMINAL_SHOT: deterministic screenshot mode (#51) ----------------
+# A startup capture MODE (env, not a persisted per-tab setting): the caret is
+# hidden and the document renders SYNCHRONOUSLY, so a capture of unchanged content
+# is byte-identical run to run (the comparison shots jitter otherwise -- an async
+# paint race lands the prompt +/-1 row, plus the blinking caret). Every branch is
+# gated on the flag; with it OFF the render path is unchanged (a matched control
+# widget asserts that below).
+import hashlib as _st_hl
+
+
+def _grab_sha(w):
+    """sha256 of the widget's rendered pixels -- the 'byte-identical output' the
+    shot mode must guarantee for the same content across two independent renders."""
+    img = w.grab().toImage()
+    ptr = img.constBits()
+    ptr.setsize(img.sizeInBytes())
+    return _st_hl.sha256(bytes(ptr)).hexdigest()
+
+
+# Control (shot mode OFF, built with the env unset): the CLI paint DEFERS to the
+# 16ms debounce timer and the caret keeps its normal width -- normal behaviour.
+_ns = SecureTerminal(command='/bin/cat')
+ok(_ns._shot is False, 'shot off: the flag is False when SECURE_TERMINAL_SHOT is unset')
+ok(_ns.cursorWidth() != 0, 'shot off: the caret keeps its normal (non-zero) width')
+_ns._feed_line('deferred-line\n', defer=True)
+ok(_ns._paint_dirty is True, 'shot off: a deferred CLI paint stays pending (not flushed)')
+ok(_ns._paint_timer.isActive(), 'shot off: the CLI paint is debounced on the timer')
+# Control (shot OFF) TUI: the grid repaint defers to _render_timer, so the fed row
+# is NOT in the document yet (no event loop ran the single-shot timer).
+_nst = SecureTerminal(command='/bin/cat', tui=True)
+feed_output(_nst, b'grid-off\r\n')
+ok(_nst._render_timer.isActive(), 'shot off: the TUI grid repaint is debounced on the timer')
+
+os.environ['SECURE_TERMINAL_SHOT'] = '1'
+try:
+    # __init__: the flag is read and the caret is hidden (cursorWidth 0 -> no frame
+    # depends on the blink phase).
+    _s1 = SecureTerminal(command='/bin/cat')
+    ok(_s1._shot is True, 'shot on: SECURE_TERMINAL_SHOT=1 sets the flag')
+    eq(_s1.cursorWidth(), 0, 'shot on: the caret is hidden (cursorWidth 0)')
+    # _feed_line: a deferred CLI paint is forced synchronous -> painted NOW, no timer.
+    _s1._feed_line('sync-line\n', defer=True)
+    ok(_s1._paint_dirty is False, 'shot on: the CLI paint flushed synchronously (nothing pending)')
+    ok(not _s1._paint_timer.isActive(), 'shot on: no CLI debounce timer is armed')
+    ok('sync-line' in _s1.toPlainText(), 'shot on: the fed line is in the document immediately')
+    # TUI read path: the grid repaint renders synchronously (no _render_timer), so the
+    # fed row is already in the document with no event loop.
+    _st = SecureTerminal(command='/bin/cat', tui=True)
+    feed_output(_st, b'grid-on\r\n')
+    ok(not _st._render_timer.isActive(), 'shot on: the TUI grid rendered synchronously, no debounce timer')
+    ok('grid-on' in _st.toPlainText(), 'shot on: the fed grid row is in the document immediately')
+
+    # Determinism proof: two INDEPENDENT shot-mode widgets fed identical content render
+    # byte-identical pixels; different content renders different pixels (so the hash is
+    # not trivially constant). This is the jitter the mode removes.
+    _d1 = SecureTerminal(command='/bin/cat'); _d1.resize(600, 400)
+    _d2 = SecureTerminal(command='/bin/cat'); _d2.resize(600, 400)
+    _payload = b'user@host:~$ echo hello\r\nhello\r\nuser@host:~$ \r\n'
+    feed_output(_d1, _payload)
+    feed_output(_d2, _payload)
+    _h1, _h2 = _grab_sha(_d1), _grab_sha(_d2)
+    ok(_h1 == _h2, 'shot on: identical content renders byte-identical pixels (sha256 match)')
+    _d3 = SecureTerminal(command='/bin/cat'); _d3.resize(600, 400)
+    feed_output(_d3, b'user@host:~$ echo DIFFERENT\r\nDIFFERENT\r\n')
+    ok(_grab_sha(_d3) != _h1, 'shot on: different content renders different pixels (hash reflects content)')
+    for _sw in (_s1, _st, _d1, _d2, _d3):
+        _sw.shutdown()
+finally:
+    del os.environ['SECURE_TERMINAL_SHOT']
+for _sw in (_ns, _nst):
+    _sw.shutdown()
 
 # each reconcile widget owns a /bin/cat pty child; hang them up so the master fds and
 # child processes do not linger into the suite's os._exit teardown.
