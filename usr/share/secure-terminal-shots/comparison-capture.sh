@@ -118,7 +118,7 @@ SHOT_DEADLINE="${SHOT_DEADLINE:-90}"
 ## notify is a secure-terminal-only case (emulators have no standard notify shot -- the page's
 ## kitty.notify popup is captured separately), so it is in the full matrix for the ST loop but
 ## skipped in the emulator loop below.
-all_cases='crafted escape contrast title random homoglyph bidi zerowidth altscreen notify art tui-showcase'
+all_cases='escape contrast title random homoglyph bidi zerowidth altscreen notify art tui-showcase'
 CASES="${CASES:-${all_cases}}"
 ## The emulator set, single source of truth for BOTH the capture loop and the --jobs
 ## orchestrator's partition. lxterminal is omitted: its single-instance startup maps no
@@ -157,7 +157,7 @@ while [ "$#" -gt 0 ]; do
          ;;
       --quick)
          only_terminals='kitty'
-         cases_sel='crafted'
+         cases_sel='escape'
          shift
          ;;
       --jobs)
@@ -362,7 +362,7 @@ cat > "${XDG_CONFIG_HOME}/labwc/rc.xml" <<XML
 </labwc_config>
 XML
 
-## launch each emulator FROM ${HOME} so a plain "cat crafted.payload" finds it.
+## launch each emulator FROM ${HOME} so a plain "cat escape.payload" finds it.
 cd "${HOME}"
 
 wm_pid=''
@@ -836,11 +836,6 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
    ## (and Reveal) are CLI-only -- the fixed TUI grid cannot expand a codepoint inline. Suffix
    ## scheme: <box-suffix>, -detail, -show, -tui, -tui-show (matching tui-showcase's).
    st_specs=(
-      'crafted box crafted'
-      'crafted detail crafted-detail'
-      'crafted show crafted-show'
-      'crafted box crafted-tui tui'
-      'crafted show crafted-tui-show tui'
       'escape box escape'
       'escape detail escape-detail'
       'escape show escape-show'
@@ -861,10 +856,7 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       'notify show notify-show'
       'notify box notify-tui tui'
       'notify show notify-tui-show tui'
-      'art box art'
-      'art detail art-detail'
       'art show art-show'
-      'art box art-tui tui'
       'art show art-tui-show tui'
       'random box random'
       'random detail random-detail'

@@ -22,8 +22,9 @@
 
 ## THREAT MODEL: a terminal cannot protect you from running hostile CODE, only from
 ## DISPLAYING hostile DATA. Every case DISPLAYS data and NEVER runs a script.
-##   crafted   -- cat crafted.payload   (OSC-0 title hijack + stuck colour + DEC
-##                line-drawing shift, none reset)
+##   escape    -- cat escape.payload    (a DEC special-graphics charset shift, ESC(0)
+##   contrast  -- cat contrast.payload  (a stuck red-on-red SGR that hides a line)
+##   title     -- cat title.payload     (a silent OSC-0 window/tab title set)
 ##   homoglyph -- cat homoglyph.payload (a domain carrying a Cyrillic look-alike,
 ##                U+0430 for Latin a)
 ##   bidi      -- cat bidi.payload      (Trojan-Source bidi-override controls that
@@ -86,9 +87,6 @@ shots_resolve_corpus() {  ## $1=script-relative fallback dir
 ## case -> corpus PoC id (empty for the inline cases notify / random).
 shots_corpus_id() {  ## $1=case
    case "$1" in
-      crafted)
-         printf '%s' 'crafted-hostile-log'
-         ;;
       escape)
          printf '%s' 'charset-shift-deception'
          ;;
@@ -123,9 +121,6 @@ shots_clipboard_token='POC-CORPUS-CANARY-FIRED'
 
 shots_payload_cmd() {  ## $1=case -> the command string the terminal displays
    case "$1" in
-      crafted)
-         printf '%s' 'cat crafted.payload'
-         ;;
       escape)
          printf '%s' 'cat escape.payload'
          ;;
@@ -184,7 +179,7 @@ shots_generate_logs() {  ## $1=script-relative fallback dir $2=dest-dir
    ## suppresses errexit inside the function, so a failed reproduce.py must be surfaced
    ## by hand (as a NON-77 code, distinct from the missing-corpus skip) or the capture
    ## would proceed with a missing payload.
-   for c in crafted escape contrast title homoglyph bidi altscreen tui-showcase; do
+   for c in escape contrast title homoglyph bidi altscreen tui-showcase; do
       id="$(shots_corpus_id "${c}")"
       POC_CORPUS_IN_SANDBOX=1 python3 "${rp}" "${id}" --out "${dest}/${c}.payload" || return 1
    done
