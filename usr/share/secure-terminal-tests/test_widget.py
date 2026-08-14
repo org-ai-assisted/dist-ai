@@ -4223,6 +4223,37 @@ ok(any(b'export TERM=secure-terminal\r' == s for s in _tpsent),
    'once the program exits, the switch re-exports immediately (nothing stranded)')
 _tp.close()
 
+# A bare shell prompt in TUI mode must NOT be a silent bypass of the command hook:
+# switching to TUI, typing a command, and pressing Enter has to be judged too. TUI
+# does not mirror the line, so the hook sees _line_dirty and falls through to a human
+# review (fail-safe), never an unjudged submit.
+_thk = SecureTerminal(command=None, tui=True)
+_thk.apply_hook({'argv': ['/bin/true'], 'timeout': 10, 'on_error': 'allow',
+                 'transcript': 'none'})
+_thksent = spy_writes(_thk)
+_thk.has_foreground_program = lambda: False
+_tui_asked = []
+_thk._hook_ask = lambda _c, _r: (_tui_asked.append(1) or 'discard')
+key(_thk, Qt.Key.Key_L, 'l')                            # type `ls` at the TUI prompt
+key(_thk, Qt.Key.Key_S, 's')
+key(_thk, Qt.Key.Key_Return)                            # accept-line
+ok(_tui_asked and b'\r' not in _thksent and b'\x15' in _thksent,
+   'a bare TUI prompt routes accept-line through the hook (no silent bypass)')
+# an EMPTY bare prompt has nothing to judge -> the hook passes, Enter submits, no ask
+_thksent.clear(); _tui_asked.clear()
+_thk._line_dirty = False
+_thk._line_buffer = ''
+key(_thk, Qt.Key.Key_Return)
+ok(not _tui_asked and b'\r' in _thksent,
+   'an empty TUI prompt submits normally (the hook has nothing to judge)')
+# while a foreground program owns the terminal, accept-line goes to IT, not the hook
+_thksent.clear(); _tui_asked.clear()
+_thk.has_foreground_program = lambda: True
+key(_thk, Qt.Key.Key_Return)
+ok(not _tui_asked and b'\r' in _thksent,
+   'a program owning the terminal receives accept-line directly (hook not consulted)')
+_thk.close()
+
 # A no-op key at an EMPTY bare TUI prompt introduces no content, so it must NOT
 # flag the line pending -- else the TUI->CLI switch would needlessly defer the
 # re-export at a clean prompt, leaving TERM stale for the next command. Pure
