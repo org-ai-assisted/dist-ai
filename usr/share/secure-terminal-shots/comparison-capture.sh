@@ -390,7 +390,11 @@ start_labwc() {
       before_sock+="${f##*/} "
    done
    before_win=" $(DISPLAY="${host_display}" xdotool search --onlyvisible '' 2>/dev/null | tr '\n' ' ')"
-   WLR_BACKENDS=x11 WLR_X11_OUTPUTS=1 DISPLAY="${host_display}" \
+   ## WLR_RENDERER=pixman: force wlroots' software renderer. The default GL renderer needs a GPU
+   ## / DRM device that a nested Xvfb does not provide, so labwc intermittently fails to start
+   ## ("try WLR_RENDERER=pixman") -- more often under the parallel --jobs load, which stands up
+   ## several labwc instances. Software rendering is deterministic and plenty for a screenshot.
+   WLR_RENDERER=pixman WLR_BACKENDS=x11 WLR_X11_OUTPUTS=1 DISPLAY="${host_display}" \
       labwc >"${runtime_dir}/labwc.log" 2>&1 &
    wm_pid="$!"
    labwc_wid=''; xwl_display=''
