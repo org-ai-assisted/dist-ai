@@ -71,22 +71,10 @@ POC_CORPUS_IN_SANDBOX=1 python3 "${CORPUS_REPO}/tools/reproduce.py" \
    "$(shots_corpus_id clipboard)" --out "${payload}"
 
 ## A PyQt6 clipboard owner (sets text, then holds ownership so the value survives) and a
-## one-shot reader. No xclip: PyQt6 talks to the X CLIPBOARD selection directly.
-seeder_py="${runtime_dir}/seed.py"
-reader_py="${runtime_dir}/read.py"
-cat > "${seeder_py}" <<'PY'
-import sys
-from PyQt6.QtWidgets import QApplication
-app = QApplication(sys.argv)
-app.clipboard().setText(sys.argv[1])
-app.exec()   # hold the selection until killed
-PY
-cat > "${reader_py}" <<'PY'
-import sys
-from PyQt6.QtWidgets import QApplication
-app = QApplication(sys.argv)
-sys.stdout.write(app.clipboard().text())
-PY
+## one-shot reader, each a committed sibling program (not a runtime heredoc, per R-190). No
+## xclip: PyQt6 talks to the X CLIPBOARD selection directly.
+seeder_py="${here}/clipboard-verdict-seed.py"
+reader_py="${here}/clipboard-verdict-read.py"
 
 xvfb_pid=''
 ob_pid=''

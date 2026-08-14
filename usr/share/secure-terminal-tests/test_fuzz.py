@@ -289,7 +289,7 @@ def prop_parse_sgr_colours(param):
 def prop_marking_class(cp):
     # every codepoint classifies as exactly one marking kind, never raises.
     assert S.marking_class(cp) in ('bidi', 'invisible', 'control',
-                                   'confusable', 'nonascii')
+                                   'confusable', 'combining', 'nonascii')
 
 
 @RUN

@@ -192,5 +192,77 @@ assert_fail 'check on a missing input yields non-zero exit' \
    "${BIN}" --check -- "${workdir}/does-not-exist.png"
 
 ## ---------------------------------------------------------------------------
+## A symlinked image must be REFUSED, not optimized: 'stat -c %s' reports the link's
+## own path length rather than the target's size, so a symlink would misread as
+## "already minimal" (or, in --webp mode, be replaced by a regular file). The refusal
+## must leave BOTH the link and its target untouched -- a non-zero exit alone does not
+## prove nothing was mutated.
+## ---------------------------------------------------------------------------
+real_png="${workdir}/real.png"
+convert -size 150x150 plasma:fractal "${real_png}"
+real_sum_before="$(cksum < "${real_png}")"
+ln -s real.png "${workdir}/link.png"
+assert_fail 'refuses to optimize a symlink (stat misreads its size)' \
+   "${BIN}" --quiet -- "${workdir}/link.png"
+link_target="$(readlink -- "${workdir}/link.png" 2>/dev/null || true)"
+real_sum_after="$(cksum < "${real_png}")"
+if [ -L "${workdir}/link.png" ] && [ "${link_target}" = 'real.png' ]; then
+   report pass 'refused symlink is left intact (still points at its target)'
+else
+   report fail "refused symlink is left intact (link target: ${link_target})"
+fi
+if [ "${real_sum_before}" = "${real_sum_after}" ]; then
+   report pass 'refused symlink leaves its target byte-identical'
+else
+   report fail 'refused symlink leaves its target byte-identical'
+fi
+
+## ---------------------------------------------------------------------------
+## --webp stem collision: two sources sharing a stem (foo.png + foo.jpg) both map to
+## foo.webp. The tool must convert exactly one and REFUSE the other rather than let the
+## second clobber the first's webp and delete both sources: exactly one original
+## survives, one webp is produced, and the run exits non-zero (no content lost).
+## ---------------------------------------------------------------------------
+col="${workdir}/collide"
+mkdir -- "${col}"
+convert -size 120x120 plasma:fractal "${col}/img.png"
+convert -size 120x120 plasma: "${col}/img.jpg"
+col_rc=0
+"${BIN}" --webp --quiet -- "${col}/img.png" "${col}/img.jpg" || col_rc=$?
+survivors=0
+[ -e "${col}/img.png" ] && survivors=$(( survivors + 1 ))
+[ -e "${col}/img.jpg" ] && survivors=$(( survivors + 1 ))
+webp_made='no'
+[ -f "${col}/img.webp" ] && webp_made='yes'
+if [ "${col_rc}" -ne 0 ] && [ "${webp_made}" = 'yes' ] && [ "${survivors}" -eq 1 ]; then
+   report pass 'webp stem collision errors and loses no source content'
+else
+   report fail "webp stem collision (rc=${col_rc}, survivors=${survivors}, webp=${webp_made})"
+fi
+
+## --webp must REFUSE an existing <stem>.webp target rather than overwrite it and delete
+## the source: overwriting destroys the pre-existing target's content. The refusal must
+## also fire BEFORE the source is minimized in place, so the source is left BYTE-IDENTICAL,
+## not merely present. A stored-uncompressed PNG guarantees an in-place minimize would be a
+## visible byte change, so this fails if the collision is caught only after the source is
+## already rewritten.
+pre="${workdir}/pre"
+mkdir -- "${pre}"
+convert -size 120x120 plasma:fractal -define png:compression-level=0 "${pre}/x.png"
+pre_png_before="$(cksum < "${pre}/x.png")"
+printf '%s' 'PRE-EXISTING-WEBP' > "${pre}/x.webp"      # an unrelated file already at the target
+pre_rc=0
+"${BIN}" --webp --quiet -- "${pre}/x.png" || pre_rc=$?
+pre_kept='no'
+[ "$(cat "${pre}/x.webp" 2>/dev/null)" = 'PRE-EXISTING-WEBP' ] && pre_kept='yes'
+pre_png='no'
+[ "$(cksum < "${pre}/x.png" 2>/dev/null)" = "${pre_png_before}" ] && pre_png='yes'
+if [ "${pre_rc}" -ne 0 ] && [ "${pre_png}" = 'yes' ] && [ "${pre_kept}" = 'yes' ]; then
+   report pass 'webp refuses an existing target: source byte-identical, pre-existing webp intact'
+else
+   report fail "webp existing-target (rc=${pre_rc}, png_unchanged=${pre_png}, kept=${pre_kept})"
+fi
+
+## ---------------------------------------------------------------------------
 printf '%s\n' '' "image-optimize-tests: ${pass} pass, ${fail} fail, 0 skip"
 [ "${fail}" -eq 0 ]

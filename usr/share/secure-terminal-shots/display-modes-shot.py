@@ -50,6 +50,11 @@ ScrollBarPolicy = Qt.ScrollBarPolicy
 
 from secure_terminal.terminal import SecureTerminal, THEMES       # noqa: E402
 
+# Compose on the app's shipped default theme so the grid never drifts from what
+# users see. Colours come from THEMES; only THEME_NAME needs touching if the
+# app's default theme changes again. (The panels already use the live default.)
+THEME_NAME = 'light'
+
 # An `ls` listing where four of the five names are lying, so every class the modes
 # treat differently is present at once:
 #   report<RLO>fdp.txt   a right-to-left override (U+202E) reorders the extension
@@ -125,8 +130,12 @@ def main(argv=None):
 
     total_h = PAD + sum(LABEL_H + img.height() + PAD for img, _ in panels)
     canvas = QImage(PANEL_W + 2 * PAD, total_h, QImage.Format.Format_RGB32)
-    # The page background, so the grid sits on the site without a seam.
-    canvas.fill(QColor(THEMES['dark'][0]))
+    # Compose on the app theme's background (THEMES = source of truth) so the grid
+    # sits on the site without a seam and tracks the default theme automatically.
+    bg, fg = THEMES[THEME_NAME]
+    light = QColor(bg).lightnessF() >= 0.5
+    hairline = QColor(bg).darker(118) if light else QColor(bg).lighter(150)
+    canvas.fill(QColor(bg))
 
     painter = QPainter(canvas)
     label_font = QFont('DejaVu Sans', 10)
@@ -135,12 +144,12 @@ def main(argv=None):
 
     y = PAD
     for image, caption in panels:
-        painter.setPen(QColor('#d8d4cc'))
+        painter.setPen(QColor(fg))
         painter.drawText(PAD, y + LABEL_H - 10, caption)
         y += LABEL_H
         painter.drawImage(PAD, y, image)
         # A hairline so each panel reads as its own terminal, not one long block.
-        painter.setPen(QColor('#4a4740'))
+        painter.setPen(hairline)
         painter.drawRect(PAD, y, image.width() - 1, image.height() - 1)
         y += image.height() + PAD
     painter.end()

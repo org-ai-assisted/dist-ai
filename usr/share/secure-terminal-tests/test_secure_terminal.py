@@ -72,8 +72,58 @@ eq(S.render_output(CAFE, 'show'), CAFE, 'show renders e-acute')
 eq(S.render_output(CJK + EMOJI, 'show'), CJK + EMOJI, 'show renders cjk+emoji')
 eq(S.render_output('a' + BIDI + 'b', 'show'), 'a_b', 'show still neutralizes bidi')
 eq(S.render_output('a' + ZWSP + 'b', 'show'), 'a_b', 'show still neutralizes zero-width')
-eq(S.render_output('a' + NBSP + 'b', 'show'), 'a_b', 'show still neutralizes nbsp')
 eq(S.render_output('a' + NUL + 'b', 'show'), 'a_b', 'show still neutralizes control')
+
+# --- non-ASCII space carve-out (task #36): SHOW marks a Zs (minus U+0020) with a
+# DISTINCT visible glyph (SPACE_MARK), not a full box and never a plain space, so a
+# log with a non-breaking space stays readable while the deception stays flagged.
+# Strict modes keep boxing it. The whitelist is category-derived, so this asserts
+# every member and canaries the classes that must NOT take the marker.
+import unicodedata as _ud
+_ZS = [cp for cp in range(0x110000)
+       if _ud.category(chr(cp)) == 'Zs' and cp != 0x20]
+ok(sorted(_ZS) == [0x00A0, 0x1680, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004,
+                   0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200A, 0x202F,
+                   0x205F, 0x3000],
+   'space carve-out: the Zs-minus-ASCII whitelist is exactly the known members')
+ok(ord(S.SPACE_MARK) > 0x7F and S.SPACE_MARK != ' ',
+   'space carve-out: SPACE_MARK is a distinct non-ASCII glyph, never a plain space')
+for _cp in _ZS:
+    _ch = chr(_cp)
+    ok(S.is_space_separator(_cp), 'space carve-out: is_space_separator(%04X)' % _cp)
+    eq(S.render_output('a' + _ch + 'b', 'show'), 'a' + S.SPACE_MARK + 'b',
+       'space carve-out: show marks U+%04X as SPACE_MARK' % _cp)
+    eq(S.tui_cell(_ch, 'show'), S.SPACE_MARK,
+       'space carve-out: tui_cell(show) marks U+%04X as SPACE_MARK' % _cp)
+    # strict modes still box it; render_output(box) uses the '_' placeholder
+    eq(S.render_output('a' + _ch + 'b', 'box'), 'a_b',
+       'space carve-out: box still neutralizes U+%04X' % _cp)
+    eq(S.tui_cell(_ch, 'box'), S.BOX,
+       'space carve-out: tui_cell(box) still boxes U+%04X' % _cp)
+    # marking_class stays 'invisible' (no new class), so the paste review agrees
+    eq(S.marking_class(_cp), 'invisible',
+       'space carve-out: U+%04X classes as invisible' % _cp)
+# the marker copies as '_', NEVER as a space (that would restore the deception)
+eq(S._display_glyph_to_ascii(S.SPACE_MARK), '_',
+   'space carve-out: SPACE_MARK copies as _, never a space')
+ok(S._display_glyph_to_ascii(S.SPACE_MARK) != ' ',
+   'space carve-out: SPACE_MARK never copies as a plain space')
+# U+3000 is East-Asian WIDE; the marker is a 1-column glyph -- the same width the
+# box path already gave it (a pre-existing property of the neutralized cell).
+eq(S.render_output(chr(0x3000), 'show'), S.SPACE_MARK,
+   'space carve-out: wide U+3000 renders as the 1-column marker')
+# CANARY: characters that merely LOOK blank but are line/paragraph separators,
+# zero-width, format or bidi controls must NEVER take the marker -- they stay
+# strictly boxed. If is_space_separator ever widened past category Zs this fails.
+for _cp in (0x20, 0x2028, 0x2029, 0x200B, 0x200E, 0x202E, 0x2060, 0xFEFF,
+            0x061C, 0x00, 0x09, 0x2500):
+    ok(not S.is_space_separator(_cp),
+       'space carve-out CANARY: U+%04X must not be a space separator' % _cp)
+    if _cp not in (0x20, 0x09):               # ASCII space/tab pass through as-is
+        ok(S.SPACE_MARK not in S.render_output('x' + chr(_cp) + 'y', 'show'),
+           'space carve-out CANARY: U+%04X never renders as the marker' % _cp)
+        ok(S.tui_cell(chr(_cp), 'show') != S.SPACE_MARK,
+           'space carve-out CANARY: U+%04X cell never becomes the marker' % _cp)
 
 # --- render_output: reveal ----------------------------------------------------
 eq(S.render_output(CAFE, 'reveal'), 'caf<U+00E9>', 'reveal e-acute')
@@ -102,6 +152,23 @@ eq(S.marking_class(0x0430), 'confusable', 'Cyrillic small a (look-alike of Latin
 eq(S.marking_class(0x03BF), 'confusable', 'Greek small omicron (look-alike of o) is confusable')
 eq(S.marking_class(0x4E2D), 'nonascii', 'CJK zhong is foreign, not an ASCII look-alike')
 eq(S.marking_class(0x00E9), 'nonascii', 'e-acute is foreign, not an ASCII look-alike')
+# combining marks (Zalgo) are their OWN class, split off from generic 'nonascii'.
+# Before, a stacked combining mark fell through to 'nonascii' and was tinted the SAME
+# colour as HONEST foreign text -- a taxonomy collision that let it hide. The anti-
+# collision guarantee: a combining mark classifies 'combining', a non-combining
+# non-ASCII letter stays 'nonascii'.
+eq(S.marking_class(0x0301), 'combining', 'a combining acute is combining')
+eq(S.marking_class(0x0483), 'combining', 'a Cyrillic combining titlo is combining')
+eq(S.marking_class(0x093E), 'combining',
+   'a spacing combining mark (Devanagari sign AA, category Mc) is combining')
+eq(S.marking_class(0x4E2D), 'nonascii',
+   'anti-collision: a non-combining foreign letter (CJK) stays nonascii, not combining')
+eq(S.marking_class(0x00E9), 'nonascii',
+   'anti-collision: a precomposed foreign letter (e-acute) stays nonascii, not combining')
+# a default-ignorable combining code point (U+034F combining grapheme joiner) is
+# caught by the EARLIER 'invisible' branch and must NOT regress to 'combining'.
+eq(S.marking_class(0x034F), 'invisible',
+   'the combining grapheme joiner stays invisible (default-ignorable wins over combining)')
 ok(len(S._ascii_confusables()) > 500,
    'the Unicode confusables set is populated (%d code points)' % len(S._ascii_confusables()))
 ok(all(cp > 0x7F for cp in S._ascii_confusables()),
@@ -675,6 +742,28 @@ eq(S.tui_cell('a' + BEL, 'show'), S.BOX, 'tui grapheme with a control -> box')
 ok(isinstance(S.tui_cell(chr(0x1F600) + chr(0x1F600), 'show'), str),
    'tui two-astral cell does not crash')
 
+# --- claude-code prompt verdict (task #32, refined by task #36): claude prints
+# "<U+276F><U+00A0>Try ..." as its input prompt. The reported "box icon" is the
+# U+00A0 NO-BREAK SPACE that follows the caret, NOT the caret itself. In Show mode:
+#   * U+276F (the caret) is a printable glyph -> rendered AS ITSELF (correct); it
+#     wears the 'confusable' tint because Unicode maps it as a look-alike of '>'.
+#   * U+00A0 is a non-ASCII space that renders BLANK. Task #32 boxed it; task #36
+#     refines that to a DISTINCT visible marker (SPACE_MARK) so the line stays
+#     readable -- still an honest non-ASCII glyph that can never pose as a plain
+#     space, still tinted, and still copies as '_' (never ' '). Rendering it as a
+#     real space would hide a non-ASCII byte behind an ASCII look-alike, the exact
+#     "output lies" hazard; the marker does not.
+eq(S.tui_cell(chr(0x276F), 'show'), chr(0x276F),
+   'claude prompt: the caret U+276F renders as its own glyph in show (printable)')
+eq(S.marking_class(0x276F), 'confusable',
+   'claude prompt: U+276F is tinted confusable (a Unicode look-alike of ">")')
+eq(S.tui_cell(chr(0x00A0), 'show'), S.SPACE_MARK,
+   'claude prompt: the trailing U+00A0 NO-BREAK SPACE is marked in show, not boxed')
+ok(not chr(0x00A0).isprintable() and S.is_invisible(chr(0x00A0)),
+   'claude prompt: U+00A0 is a blank, non-printable separator -> flagged, not shown as a space')
+eq(S._display_glyph_to_ascii(S.tui_cell(chr(0x00A0), 'show')), '_',
+   'claude prompt: the marked NBSP still copies as _, never a space')
+
 # --- marking_cp_for_cell: the source code point a NEUTRALIZED grid cell is
 # --- classified/coloured/inspected by (the TUI-grid counterpart of the CLI
 # --- cells_to_runs MARK_KEY tag). The MOST DANGEROUS non-ASCII code point in the
@@ -701,6 +790,17 @@ eq(S.marking_cp_for_cell(chr(0x2500) + chr(0x4E2D)), 0x4E2D,
    'marking cp: honest foreign text still outranks the lowest-ranked box structure')
 eq(S.marking_cp_for_cell(BIDI + ZWSP), 0x202E,
    'marking cp: among two hazards the worse class (bidi > invisible) wins')
+# 'combining' sits strictly between confusable and honest nonascii in the severity
+# order, so a combining mark riding an honest-foreign base is the one the cell is
+# classified by (combining > nonascii), but a bidi override in the same cell still
+# outranks it (bidi > combining).
+eq(S.marking_cp_for_cell(chr(0x4E2D) + chr(0x0301)), 0x0301,
+   'marking cp: a combining mark outranks honest foreign in the same cell')
+eq(S.marking_cp_for_cell(chr(0x0301) + BIDI), 0x202E,
+   'marking cp: a bidi override outranks a combining mark in the same cell')
+ok(S._MARKING_SEVERITY['confusable'] > S._MARKING_SEVERITY['combining']
+   > S._MARKING_SEVERITY['nonascii'],
+   'severity: combining ranks strictly between confusable and honest nonascii')
 # tui_cell returning the box placeholder GUARANTEES a marking code point exists, so
 # the grid colouring can classify without a None fallback (checked for every mode).
 for _mode in ('box', 'show', 'reveal', 'detail'):
@@ -736,6 +836,27 @@ ok(_prc == 1 and 'secure_terminal_missing_dep_xyz' in _pmsg
 _prc2, _pmsg2 = _pre_run(('secure_terminal_absent_pkg_xyz.submod', 'python3-x'))
 ok(_prc2 == 1 and 'secure_terminal_absent_pkg_xyz.submod' in _pmsg2,
    'preflight.require handles a dotted name whose parent is absent')
+# on ANY missing dependency the install line lists ALL declared packages, not only
+# the one that failed -- so a single apt run installs the complete set instead of
+# surfacing the next missing package on the following launch. Here two deps are
+# present and one absent, yet all three packages appear on one line, and every
+# missing module is named.
+_prc3, _pmsg3 = _pre_run(('sys', 'python3-aaa'),
+                         ('secure_terminal_missing_one_xyz', 'python3-bbb'),
+                         ('os', 'python3-ccc'),
+                         ('secure_terminal_missing_two_xyz', 'python3-ddd'))
+_pinstall3 = [ln for ln in _pmsg3.splitlines() if ln.startswith('sudo apt install')]
+ok(_prc3 == 1 and len(_pinstall3) == 1
+   and _pinstall3[0] == 'sudo apt install python3-aaa python3-bbb python3-ccc python3-ddd',
+   'preflight.require lists ALL declared packages in one install line, not just the failed one')
+ok('secure_terminal_missing_one_xyz' in _pmsg3
+   and 'secure_terminal_missing_two_xyz' in _pmsg3,
+   'preflight.require names EVERY missing module, not only the first')
+# a package named by two deps (e.g. two PyQt6 submodules) appears once, in order.
+_prc4, _pmsg4 = _pre_run(('secure_terminal_absent_a_xyz', 'python3-dup'),
+                         ('secure_terminal_absent_b_xyz', 'python3-dup'))
+ok('sudo apt install python3-dup\n' in _pmsg4,
+   'preflight.require de-duplicates a package named by more than one dependency')
 
 # apply_line_edits: the pure line-editing model behind the fast bulk render path
 eq(S.apply_line_edits('', 0, 'abc'), ([], 'abc', 3), 'line edits: plain append')
@@ -794,6 +915,27 @@ eq(S.sanitize_clipboard_unicode('cafe' + chr(0x0301)), 'cafe' + chr(0x0301),
    'a real combining accent is kept (decomposed text is not mangled)')
 ok(S.is_default_ignorable(chr(0xFE0F)) and not S.is_default_ignorable(chr(0x0301)),
    'is_default_ignorable: a variation selector yes, a combining accent no')
+
+# --- sanitize_clipboard_display: the ASCII clipboard strip for text lifted from the
+# RENDERED display. Plain sanitize_clipboard drops the inert Show-mode display glyphs
+# (the U+25A1 neutralization box and the structural box-drawing / block elements) to
+# NOTHING, so a copied box collapses to the surrounding spaces (FIX A). This variant
+# maps each to an ASCII stand-in FIRST, then strips the rest of the non-ASCII.
+eq(S.sanitize_clipboard_display('x' + chr(0x25A1) + 'y'), 'x_y',
+   'display strip: the neutralization box (U+25A1) exports as ASCII _, not lost')
+eq(S.sanitize_clipboard_display(chr(0x2500) + chr(0x2502) + chr(0x250C) + chr(0x2588)),
+   '-|+#',
+   'display strip: box-drawing horiz/vert/corner + block map to -/|/+/#')
+# a homoglyph is NOT turned into its ASCII look-alike here -- it is still dropped, so
+# the display strip cannot manufacture a spoof the plain strip would have removed.
+eq(S.sanitize_clipboard_display('a' + chr(0x0430) + 'b'), 'ab',
+   'display strip: a non-structural homoglyph is dropped (never mapped to ASCII)')
+# the two box-drawing diagonals the confusables data maps to ASCII stay 'confusable',
+# so they are dropped like any homoglyph, not waved through as structure.
+eq(S.sanitize_clipboard_display(chr(0x2571) + chr(0x2573)), '',
+   'display strip: the confusable diagonals U+2571/U+2573 are dropped, not mapped')
+eq(S.sanitize_clipboard_display('plain\nok\t.'), 'plain\nok\t.',
+   'display strip: plain ASCII plus newline/tab pass through unchanged')
 
 # --- feed_line_edits combining-mark cap: a base plus a flood of combining marks
 # renders as one grapheme cluster the text engine reshapes in O(n^2) (seconds of
@@ -1766,7 +1908,17 @@ for _cp in _SWEEP:
     for _mode in S.DISPLAY_MODES:
         _t = S.tui_cell(_ch, _mode)
         _keeps_tui = (_t == _ch)
-        if not _keeps_tui and _t != S.BOX:
+        # a neutralized cell is one column: the box placeholder, or -- in show, for
+        # a non-ASCII space (task #36) -- the distinct SPACE_MARK. Both are a single
+        # display unit, so the grid and the neutralization hold.
+        if not _keeps_tui and _t not in (S.BOX, S.SPACE_MARK):
+            _NOT_ONE_UNIT.append((_cp, _mode, _t))
+        # SPACE_MARK as a NEUTRALIZATION output (the cell was NOT kept as itself)
+        # may arise ONLY in show and ONLY for a non-ASCII space; a strict mode or a
+        # non-space code point must never neutralize to it. (A program that literally
+        # prints U+2423 is kept as itself in show -- _keeps_tui -- which is fine.)
+        if (not _keeps_tui and _t == S.SPACE_MARK
+                and not (_mode == 'show' and S.is_space_separator(_cp))):
             _NOT_ONE_UNIT.append((_cp, _mode, _t))
         if _mode in ('box', 'show'):
             # same policy, two implementations: they must agree exactly
@@ -1781,7 +1933,8 @@ eq(_MODE_BAD[:8], [],
 eq(_DIVERGE[:8], [],
    'tui_cell and render_output neutralize the same code points in box/show')
 eq(_NOT_ONE_UNIT[:8], [],
-   'a neutralized TUI cell is always exactly the one-column box placeholder')
+   'a neutralized TUI cell is always one column: the box, or SPACE_MARK for a '
+   'non-ASCII space in show')
 
 # The concrete spoof the sweep generalizes, named so a failure is legible.
 for _inv in (0x3164, 0x115F, 0xFE0F, 0x034F, 0x180B, 0xE0100, 0x17B4, 0xFFA0):
@@ -1841,7 +1994,7 @@ ok('root@host' not in ''.join(_parts),
 _CLASS_MAP = {
     'bidi': 'bidirectional control', 'control': 'control character',
     'invisible': 'invisible character', 'confusable': 'non-ASCII character',
-    'nonascii': 'non-ASCII character',
+    'combining': 'non-ASCII character', 'nonascii': 'non-ASCII character',
 }
 _CLASS_BAD = []
 for _cp in (list(range(0x00, 0x3000)) + [0xFEFF, 0xFE0F, 0xFFA0, 0xE0100,

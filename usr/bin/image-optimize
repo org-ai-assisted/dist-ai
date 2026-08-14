@@ -279,6 +279,14 @@ process_one() {
       err "not writable: ${input}"
       return 1
    fi
+   ## 'stat -c %s' does NOT dereference a symlink (it reports the link's own path
+   ## length, not the target's size), so a symlinked image reads as tiny and is
+   ## silently judged "already minimal" -- or, in --webp mode, the link is replaced
+   ## by a regular file. Refuse it; the caller should optimize the real target.
+   if [ -L "${src}" ]; then
+      err "refusing to optimize a symlink (optimize its target instead): ${input}"
+      return 1
+   fi
    base="${src##*/}"
    if ! validate_safe_filename base; then
       err "unsafe filename: ${input}"
@@ -293,6 +301,20 @@ process_one() {
       return 0
    fi
 
+   ## In --webp mode the source is REPLACED by "${stem}.webp". If that target already
+   ## exists, refuse NOW -- before make_minimized rewrites the source in place -- so a
+   ## refused conversion never mutates or loses the source. Two inputs sharing a stem
+   ## (foo.png then foo.jpg) both map to foo.webp: the second must abort untouched, and a
+   ## pre-existing unrelated foo.webp must never be clobbered. The identical check remains
+   ## before the final mv, closing a create-after-this-check race on the target.
+   if [ "${mode_webp}" = 'true' ]; then
+      webp_path="${src%.*}.webp"
+      if [ -e "${webp_path}" ]; then
+         err "webp target already exists: ${webp_path##*/} (from ${input}); refusing to overwrite it and delete the source"
+         return 1
+      fi
+   fi
+
    size_old="$(stat -c %s -- "${src}")"
    work=''
    work="$(make_minimized "${src}")" || work=''
@@ -303,9 +325,14 @@ process_one() {
    size_new="$(stat -c %s -- "${work}")"
    if [ "${size_new}" -lt "${size_old}" ]; then
       ## mktemp created work as 0600; carry the source's own mode onto it before
-      ## the replace, so the optimized file is not silently made owner-only.
-      chmod --reference="${src}" -- "${work}"
-      mv -f -- "${work}" "${src}"
+      ## the replace, so the optimized file is not silently made owner-only. Check
+      ## the status: errexit is suppressed inside process_one (batch '|| rc=1'), so a
+      ## failed chmod/mv must not fall through to a "minimized" success log.
+      if ! { chmod --reference="${src}" -- "${work}" && mv -f -- "${work}" "${src}"; }; then
+         err "replace failed: ${input}"
+         safe-rm -- "${work}" 2>/dev/null || true
+         return 1
+      fi
       log "minimized: ${input} (${size_old} -> ${size_new} bytes)"
    else
       safe-rm -- "${work}"
@@ -325,8 +352,23 @@ process_one() {
    fi
    if [ -n "${cand}" ]; then
       webp_path="${src%.*}.webp"
-      chmod --reference="${src}" -- "${cand}"
-      mv -f -- "${cand}" "${webp_path}"
+      ## Never overwrite an existing "${stem}.webp" and then delete the source: that
+      ## destroys the pre-existing target's content, and it is also how a same-stem
+      ## batch loses data (foo.png then foo.jpg both map to foo.webp -- the second
+      ## sees the first's output here). Refuse; keep both files.
+      if [ -e "${webp_path}" ]; then
+         err "webp target already exists: ${webp_path##*/} (from ${input}); refusing to overwrite it and delete the source"
+         safe-rm -- "${cand}"
+         return 1
+      fi
+      ## errexit is suppressed inside process_one (the batch calls it as
+      ## 'process_one ... || rc=1'), so a failed chmod/mv would otherwise fall through
+      ## to the success log and leave the source deleted against a half-written target.
+      if ! { chmod --reference="${src}" -- "${cand}" && mv -f -- "${cand}" "${webp_path}"; }; then
+         err "webp replace failed: ${input}"
+         safe-rm -- "${cand}"
+         return 1
+      fi
       safe-rm -- "${src}"
       log "webp: ${input} -> ${webp_path##*/} ($(stat -c %s -- "${webp_path}") bytes)"
       printf '%s\n' "${src}"$'\t'"${webp_path}"

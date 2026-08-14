@@ -515,6 +515,192 @@ for _mode in MODES:
     ok(not _fmt, 'all-unicode/%s: an invisible FORMAT (Cf) char survived: %s'
        % (_mode, ['U+%04X' % c for c in _fmt[:6]]))
 
+# --- #43 perf refactors: BYTE-IDENTICAL differential --------------------------
+# Two hot-path optimizations must not change a single output byte:
+#   (1) feed_line_edits caches the SGR state tuple instead of rebuilding
+#       tuple(sorted(sgr.items())) per printable char;
+#   (2) render_output guards the escape strip with `if '\x1b' in text`.
+# Both are proven byte-identical against a reference over the whole corpus plus
+# payloads chosen to stress the exact sites (SGR-heavy, colour transitions, a
+# cursor-pad AFTER an SGR change -- the cache-sensitive path -- bidi, homoglyph,
+# combining runs, invisibles, split escapes).
+
+
+def _ref_feed_line_edits(cells, col, sgr, raw, max_line=0, line_edits=True):
+    """Reference oracle: feed_line_edits WITHOUT the SGR-tuple cache -- it rebuilds
+    tuple(sorted(sgr.items())) at every append/pad site, the pre-optimization form.
+    All parsing internals come from the real module, so only the cache placement
+    differs; if the live cache ever goes stale, a cell tuple diverges here."""
+    completed = []
+    wraps = []
+    cells = list(cells)
+    i, n = 0, len(raw)
+    while i < n:
+        ch = raw[i]
+        if ch == '\x1b':
+            m = S._LINE_CSI_RE.match(raw, i) if line_edits else None
+            if m:
+                num = S._safe_int(m.group(1), None) if m.group(1) else None
+                op = m.group(2)
+                if op == 'C':
+                    col = col + (num or 1)
+                    col = min(col, max_line - 1) if max_line else min(col, len(cells))
+                    while len(cells) < col:
+                        cells.append((' ', tuple(sorted(sgr.items()))))
+                elif op == 'D':
+                    col = max(0, col - (num or 1))
+                elif op == 'G':
+                    col = max(0, (num or 1) - 1)
+                    col = min(col, max_line - 1) if max_line else min(col, len(cells))
+                    while len(cells) < col:
+                        cells.append((' ', tuple(sorted(sgr.items()))))
+                else:
+                    if num in (None, 0):
+                        del cells[col:]
+                    elif num == 1:
+                        for j in range(0, min(col + 1, len(cells))):
+                            cells[j] = (' ', cells[j][1])
+                    elif num == 2:
+                        cells = []
+                        col = 0
+                if max_line and col >= max_line:
+                    col = max_line - 1
+                i = m.end()
+                continue
+            m = S._SGR_ONLY_RE.match(raw, i)
+            if m:
+                sgr = dict(sgr)
+                S.parse_sgr(m.group(1), sgr)
+                i = m.end()
+                continue
+            if raw.startswith(S.PROMPT_START, i):
+                j = i + len(S.PROMPT_START)
+                if col != 0 and S._printable_follows(raw, j):
+                    completed.append(cells)
+                    wraps.append(False)
+                    cells, col = [], 0
+                i = j
+                continue
+            m = S.ANSI_RE.match(raw, i)
+            if m:
+                i = m.end()
+                continue
+            i += 1
+            continue
+        if ch == '\n':
+            completed.append(cells)
+            wraps.append(False)
+            cells, col = [], 0
+        elif ch == '\r':
+            col = 0
+        elif ch == '\x08':
+            if col > 0:
+                col -= 1
+        elif ch == '\x07':
+            pass
+        else:
+            if max_line and col >= max_line:
+                completed.append(cells)
+                wraps.append(True)
+                cells, col = [], 0
+            if ord(ch) >= 0x0300 and S._is_mark(ch):
+                left = 0
+                j = col - 1
+                while 0 <= j < len(cells) and S._is_mark(cells[j][0]):
+                    left += 1
+                    if left >= S._COMBINING_RUN_MAX:
+                        break
+                    j -= 1
+                right = 0
+                j = col + 1
+                while j < len(cells) and S._is_mark(cells[j][0]):
+                    right += 1
+                    if right >= S._COMBINING_RUN_MAX:
+                        break
+                    j += 1
+                if left + 1 + right > S._COMBINING_RUN_MAX:
+                    i += 1
+                    continue
+            state = tuple(sorted(sgr.items()))
+            if col < len(cells):
+                cells[col] = (ch, state)
+            else:
+                cells.append((ch, state))
+            col += 1
+        i += 1
+    return completed, cells, col, sgr, wraps
+
+
+# the differential corpus: every text fixture above, plus site-stressing payloads
+_diff_payloads = {}
+for _src, _prefix in ((_dang, 'dangerous'), (_troj, 'trojan')):
+    for _n, _t in _src.items():
+        _diff_payloads['%s:%s' % (_prefix, _n)] = _t
+for _n, _b in _gdl.items():
+    _diff_payloads['gdl:' + _n] = _b.decode('utf-8', 'replace')
+_diff_payloads.update({
+    'sgr-heavy': '\x1b[31mA\x1b[1;32mB\x1b[4;33;44mC\x1b[0mD\x1b[7mE\x1b[27mF',
+    'sgr-transitions': ''.join('\x1b[3%dm%d' % (k % 8, k) for k in range(20)),
+    # a cursor pad AFTER an SGR change: the padded blank cells must carry the NEW
+    # state -- the exact site the cache could serve stale.
+    'sgr-then-C-pad': '\x1b[31m\x1b[6Cx\x1b[32m\x1b[3Cy',
+    'sgr-then-G-pad': '\x1b[45m\x1b[9Gz\x1b[0m\x1b[2Gw',
+    'sgr-then-erase': '\x1b[31mabc\x1b[1K\x1b[32mdef\x1b[0K',
+    'colour-then-text': '\x1b[38;5;208msunset\x1b[48;5;19mnavy\x1b[0mplain',
+    'combining-under-cap': 'e' + '\u0301' * 8 + 'x',
+    'combining-over-cap': 'e' + '\u0301' * 60 + 'x',
+    'split-escape-tail': 'abc\x1b[3',
+    'lone-esc-tail': 'abc\x1b',
+    'bidi-run': 'a\u202eBODY\u202cb',
+    'homoglyph-run': 'p\u0430ss\u043erd',       # Cyrillic a, o
+    'invisibles-run': 'ad\u200b\u200c\ufe0fmin',
+})
+
+_line_diff = 0
+for _name, _text in _diff_payloads.items():
+    # (1) feed_line_edits cells (chars AND state tuples) byte-identical, for
+    # line_edits on/off and wrap off/on.
+    for _le in (True, False):
+        for _ml in (0, 20):
+            _got = S.feed_line_edits([], 0, {}, _text, _ml, _le)
+            _ref = _ref_feed_line_edits([], 0, {}, _text, _ml, _le)
+            if _got != _ref:
+                _line_diff += 1
+            ok(_got == _ref,
+               'feed_line_edits differs from the pre-cache reference (%s, '
+               'line_edits=%s, max_line=%d)' % (_name, _le, _ml))
+    # (2) render_output byte-identical to the forced-strip reference, every mode.
+    # render_output(pre-stripped) forces the sub the guard may skip, so an unequal
+    # result would mean the guard wrongly skipped a needed strip.
+    _stripped = S.ANSI_RE.sub('', _text)
+    for _mode in MODES:
+        ok(S.render_output(_text, _mode) == S.render_output(_stripped, _mode),
+           'render_output differs from the forced-strip reference (%s/%s)'
+           % (_name, _mode))
+    # (3) the downstream cell render is unaffected too, colours/markings on+off.
+    _cells = S.feed_line_edits([], 0, {}, _text)[1]
+    _rcells = _ref_feed_line_edits([], 0, {}, _text)[1]
+    for _colors in (True, False):
+        for _markings in (True, False):
+            ok(S.cells_to_runs([], _cells, 'show', _colors, _markings)
+               == S.cells_to_runs([], _rcells, 'show', _colors, _markings),
+               'cells_to_runs differs from the reference (%s, colors=%s, '
+               'markings=%s)' % (_name, _colors, _markings))
+
+# CANARY: the reference must be able to DISAGREE with a stale cache -- a payload
+# that changes SGR then pads blanks (a cursor-forward past end-of-line) forces the
+# padded cells to carry the post-change state. Prove the live path puts the NEW
+# state on those blanks (a stale/empty cache would leave them state ()), so this
+# differential is not vacuously green. max_line>0 is required for the pad to run
+# (with no wrap width a forward-cursor clamps to len(cells) and pads nothing).
+_can = S.feed_line_edits([], 0, {}, '\x1b[31m\x1b[4Cx', 20, True)[1]
+ok(len(_can) == 5 and _can[0][1] == _can[4][1] and _can[0][1] != (),
+   'cache canary: SGR-set blanks from a cursor pad carry the live SGR state '
+   '(got %r)' % (_can[:1],))
+
+ok(_line_diff == 0, 'feed_line_edits matched the reference on every payload '
+   '(%d mismatches)' % _line_diff)
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(corpus): %d passed, %d failed\n'
                  % (PASS, FAIL))

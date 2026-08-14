@@ -1,0 +1,31 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Reap any leftover secure-terminal-shots capture process groups -- the terminals + the
+## secure-terminal GUI a crashed or interrupted comparison-capture.sh / wayland-capture.sh run
+## left behind. Marker-scoped: it only reaps process groups whose argv carries a registered
+## run's unique runtime-dir marker, so it can NEVER touch an unrelated process. Discovery is via
+## safe-pgrep / safe-pkill (self-match-safe); the kill is by numeric PGID. Exposed as
+## `secure-terminal-shots --cleanup`.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+here="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+# shellcheck source=./lib-capture.sh
+source "${here}/lib-capture.sh"
+
+## REQUIRED wrappers -- fail loudly rather than fall back to bare pgrep/pkill.
+shots_require_safe_ps || exit 1
+
+shots_reap_registered
+printf '%s\n' 'shots-cleanup: reaped any registered secure-terminal-shots run groups'

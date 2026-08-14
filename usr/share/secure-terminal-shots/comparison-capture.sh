@@ -10,8 +10,9 @@
 ## TYPES a command into it (so the shot shows the prompt, the command, its output
 ## and the state of the prompt AFTER it -- what a user actually sees, and how to
 ## reproduce it), and screenshots the DECORATED window (title bar included):
-##   Case A (random) : head -c 1200 /dev/random   -- genuine random data, sized so
-##                     the returned prompt stays visible below the garble.
+##   Case A (random) : cat random.payload         -- a FIXED pseudo-random garble field
+##                     (deterministic, seeded; see lib-capture.sh), sized so the returned
+##                     prompt stays visible below the garble.
 ##   Case B (crafted): cat crafted.payload       -- an OSC-0 title hijack plus a
 ##                     stuck colour and a DEC line-drawing charset shift, none reset
 ##                     (the terminal-poc-corpus crafted-hostile-log PoC, decoded by
@@ -52,6 +53,16 @@
 ##
 ## NOTE: on a hardened Kicksecure/Whonix system the permission-hardener strips the
 ## exec bit from urxvt; restore it first: sudo chmod a+x /usr/bin/urxvt
+##
+## REAPING (do not chase the wrong cause again): every terminal + the secure-terminal GUI is
+## started in its OWN session (shots_spawn_session -> setsid) and reaped by the recorded PGID
+## (kill -- -PGID) with a per-capture deadline; leaked orphans are swept by the run's unique
+## MARKER via safe-pgrep/safe-pkill. This exists because the GUI runs as `python3
+## .../secure-terminal` (process name `python3`), so a name kill never reaped it and there was
+## no timeout, so GUIs piled up. Reaping model + cleanup command: lib-capture.sh.
+##   MISDIAGNOSIS to NOT re-open: "TERMINALS='' makes secure-terminal capture first" is FALSE.
+##   The loop below reads ${TERMINALS:-<full list>}, so an EMPTY TERMINALS coerces to the full
+##   emulator list; the secure-terminal block always runs AFTER the loop, never before it.
 
 ## style-ok: no-tmp-hardcode -- /tmp/.X11-unix is the X11 socket directory fixed by
 ## the protocol; libX11 looks there and nowhere else, so it cannot follow TMPDIR.
@@ -71,6 +82,10 @@ mkdir --parents -- "${out}"
 # shellcheck source=./lib-capture.sh
 source "${here}/lib-capture.sh"
 
+## Fail BEFORE the expensive capture if the bundled webp optimizer is missing -- a direct
+## run (not via the secure-terminal-shots wrapper) resolves it checkout-relative, not by PATH.
+shots_require_image_optimize || exit 1
+
 ## Resolve the corpus NOW, while HOME is still the operator's -- the reassignment
 ## below would otherwise hide the documented ~/private-sources default from the
 ## resolver. Export it so shots_generate_logs (run after the reassign) reuses it.
@@ -87,6 +102,21 @@ export XDG_RUNTIME_DIR="${runtime_dir}"
 export HOME="${runtime_dir}/home"
 export XDG_CONFIG_HOME="${runtime_dir}/config"
 mkdir --parents -- "${HOME}" "${XDG_CONFIG_HOME}/labwc"
+
+## The run's unique reaping MARKER: the mktemp runtime dir, which every spawned terminal / GUI
+## carries in its argv (via `--rcfile ${HOME}/.strc` and the recorded pgid file), so a crashed
+## run's orphans can be swept by exactly this string and nothing else.
+run_marker="${runtime_dir}"
+## Per-capture deadline (seconds): a render that hangs longer than this has its process group
+## reaped and the loop continues, so a wedged terminal cannot stall the whole grid.
+SHOT_DEADLINE="${SHOT_DEADLINE:-90}"
+
+## Reliable reaping REQUIRES the safe-pgrep/safe-pkill wrappers -- fail loudly, never fall back.
+shots_require_safe_ps || exit 1
+## Pre-clean: reap orphaned groups left by any PRIOR crashed run (marker-scoped -- it can never
+## touch a process lacking that run's unique marker), then register this run.
+shots_reap_registered || true
+shots_register_run "${run_marker}"
 
 ## Attack payloads come from the terminal-poc-corpus (single source of truth), decoded
 ## by its reproduce.py. shots_generate_logs resolves the checkout and returns 77
@@ -134,6 +164,10 @@ labwc_wid=''
 xwl_display=''
 base_wids=''
 cleanup() {
+   ## safety net: reap any capture group that leaked from a failed shoot, then drop this run
+   ## from the registry (its groups are gone) BEFORE the runtime dir is removed.
+   shots_reap_run "${run_marker}" 2>/dev/null || true
+   shots_deregister_run "${run_marker}" 2>/dev/null || true
    [ -z "${wm_pid}" ] || kill "${wm_pid}" 2>/dev/null || true
    [ -z "${wm_pid}" ] || wait "${wm_pid}" 2>/dev/null || true
    safe-rm -r -f -- "${runtime_dir}" 2>/dev/null || true
@@ -182,10 +216,11 @@ start_labwc() {
    return 1
 }
 
-## launch an emulator as an Xwayland (X11) client so labwc decorates it.
-launch() {  ## $1=emulator  $2=case
-   local e case base sh rows kh
-   e="$1"; case="$2"
+## launch an emulator as an Xwayland (X11) client so labwc decorates it, in its OWN session so
+## the whole tree (emulator + shell + any server it spawns) can be reaped by one recorded PGID.
+launch() {  ## $1=emulator  $2=case  $3=pgid-file
+   local e case pgf base sh rows kh cmd
+   e="$1"; case="$2"; pgf="$3"
    base=(env --unset=WAYLAND_DISPLAY "DISPLAY=${xwl_display}")
    sh=(bash --rcfile "${HOME}/.strc" -i)
    ## The tui-showcase board paints ~26 lines on the alternate screen; at the 24 rows
@@ -194,46 +229,59 @@ launch() {  ## $1=emulator  $2=case
    ## are unchanged. kitty is sized in pixels, so it gets a matching taller height.
    rows=24; kh=430
    if [ "${case}" = tui-showcase ]; then rows=32; kh=620; fi
+   cmd=()
    case "${e}" in
       xterm)
-         "${base[@]}" xterm -geometry "84x${rows}" -fa 'Monospace' -fs 11 -e "${sh[@]}"
+         ## forceBoxChars: draw DEC line-drawing with xterm's own crisp integer
+         ## line-drawing, not the AA'd font glyph. The font glyph rendered with a
+         ## bistable 1px sub-pixel jitter run-to-run on the tui-showcase box border;
+         ## the internal line-drawing is pixel-exact and deterministic.
+         cmd=("${base[@]}" xterm -xrm 'XTerm.vt100.forceBoxChars: true' \
+            -geometry "84x${rows}" -fa 'Monospace' -fs 11 -e "${sh[@]}")
          ;;
       urxvt)
-         "${base[@]}" urxvt -geometry "84x${rows}" -fn 'xft:Monospace:size=11' -e "${sh[@]}"
+         cmd=("${base[@]}" urxvt -geometry "84x${rows}" -fn 'xft:Monospace:size=11' -e "${sh[@]}")
          ;;
       st)
-         "${base[@]}" st -g "84x${rows}" -f 'Monospace:size=11' -e "${sh[@]}"
+         cmd=("${base[@]}" st -g "84x${rows}" -f 'Monospace:size=11' -e "${sh[@]}")
          ;;
       konsole)
-         "${base[@]}" QT_QPA_PLATFORM=xcb konsole --nofork -p TerminalColumns=84 -p "TerminalRows=${rows}" -e "${sh[@]}"
+         cmd=("${base[@]}" QT_QPA_PLATFORM=xcb konsole --nofork -p TerminalColumns=84 -p "TerminalRows=${rows}" -e "${sh[@]}")
          ;;
       qterminal)
-         "${base[@]}" QT_QPA_PLATFORM=xcb qterminal -e "${sh[@]}"
+         cmd=("${base[@]}" QT_QPA_PLATFORM=xcb qterminal -e "${sh[@]}")
          ;;
       xfce4-terminal)
-         "${base[@]}" GDK_BACKEND=x11 xfce4-terminal --disable-server --geometry "84x${rows}" -x "${sh[@]}"
+         cmd=("${base[@]}" GDK_BACKEND=x11 xfce4-terminal --disable-server --geometry "84x${rows}" -x "${sh[@]}")
          ;;
       gnome-terminal)
          ## gnome-terminal is a thin client to gnome-terminal-server over D-Bus, with no
          ## flag to force a private server: give each launch a PRIVATE session bus so its
-         ## server starts fresh and dies with the bus, and
-         ## --wait so this backgrounded launcher blocks until the window closes
-         ## (clear_windows/windowkill then unblocks it). VTE reads its profile
-         ## from dconf; with no dconf daemon on the private bus it falls back to
-         ## the built-in default profile -- the shipped default we want to show.
-         "${base[@]}" GDK_BACKEND=x11 dbus-run-session -- \
-            gnome-terminal --wait --geometry "84x${rows}" -- "${sh[@]}"
+         ## server starts fresh and dies with the bus, and --wait so the launched process stays
+         ## alive until the window closes. The private bus + server sit in the same session, so
+         ## reaping the recorded PGID takes the whole thing down. VTE reads its profile from
+         ## dconf; with no dconf daemon on the private bus it falls back to the built-in default
+         ## profile -- the shipped default we want to show.
+         cmd=("${base[@]}" GDK_BACKEND=x11 dbus-run-session -- \
+            gnome-terminal --wait --geometry "84x${rows}" -- "${sh[@]}")
          ;;
       mate-terminal)
-         "${base[@]}" GDK_BACKEND=x11 mate-terminal --disable-factory --geometry "84x${rows}" -x "${sh[@]}"
+         cmd=("${base[@]}" GDK_BACKEND=x11 mate-terminal --disable-factory --geometry "84x${rows}" -x "${sh[@]}")
          ;;
       alacritty)
-         "${base[@]}" WINIT_UNIX_BACKEND=x11 alacritty -o 'window.dimensions.columns=84' -o "window.dimensions.lines=${rows}" -o 'font.size=11' -e "${sh[@]}"
+         cmd=("${base[@]}" WINIT_UNIX_BACKEND=x11 alacritty -o 'window.dimensions.columns=84' -o "window.dimensions.lines=${rows}" -o 'font.size=11' -e "${sh[@]}")
          ;;
       kitty)
-         "${base[@]}" KITTY_ENABLE_WAYLAND=0 kitty -o 'remember_window_size=no' -o 'initial_window_width=720' -o "initial_window_height=${kh}" -o 'font_size=11' "${sh[@]}"
+         cmd=("${base[@]}" KITTY_ENABLE_WAYLAND=0 kitty -o 'remember_window_size=no' -o 'initial_window_width=720' -o "initial_window_height=${kh}" -o 'font_size=11' "${sh[@]}")
          ;;
    esac
+   if [ "${#cmd[@]}" -eq 0 ]; then
+      ## an unknown emulator name must SKIP this cell, not return non-zero: the call site is a
+      ## bare top-level command and `set -o errexit` would abort the whole capture run.
+      printf '%s\n' "launch: no launch recipe for '${e}', skipped" >&2
+      return 0
+   fi
+   shots_spawn_session "${pgf}" "${cmd[@]}"
 }
 
 ## type a command into the focused terminal window and run it, as if a user did.
@@ -376,19 +424,28 @@ find_window() {
 }
 
 shoot() {  ## $1=emulator  $2=case
-   local e case wid ww rescue_h
+   local e case wid ww rescue_h pgf flagf epgid wdog
    e="$1"; case="$2"; wid=''
    ## the tall tui-showcase board needs a taller pixel-resized window (qterminal +
    ## the shrink rescue); the short cases keep their prior heights so their shots and
    ## committed page dimensions do not move.
    rescue_h=430; [ "${case}" = tui-showcase ] && rescue_h=620
-   launch "${e}" "${case}" >/dev/null 2>&1 &
-   local epid
-   epid="$!"
+   pgf="$(mktemp -- "${runtime_dir}/pgid.XXXXXX")"
+   flagf="${pgf}.timeout"
+   ## launch the emulator in its own session (records its PGID into pgf); arm a per-capture
+   ## watchdog that reaps that group if the render hangs past the deadline.
+   launch "${e}" "${case}" "${pgf}" >/dev/null 2>&1
+   ## A non-numeric SHOT_DEADLINE makes shots_watchdog_start refuse (return 1); under errexit
+   ## that must NOT abort the whole capture -- run this shot unbounded (no watchdog) instead.
+   wdog="$(shots_watchdog_start "${SHOT_DEADLINE}" "${pgf}" "${flagf}")" || wdog=''
    wid="$(find_window || true)"
    if [ -z "${wid}" ]; then
       printf '%s\n' "warn ${e}.${case}: window never appeared, no shot"
-      clear_windows; kill "${epid}" 2>/dev/null || true; sleep 1
+      shots_watchdog_cancel "${wdog}"
+      epgid="$(cat "${pgf}" 2>/dev/null || true)"
+      clear_windows
+      shots_reap_group "${epgid}"
+      safe-rm -f -- "${pgf}" "${flagf}" 2>/dev/null || true
       return 1
    fi
    ## qterminal opens maximized and ignores a plain resize; unmaximize it first.
@@ -408,9 +465,12 @@ shoot() {  ## $1=emulator  $2=case
    capture_window "${out}/${e}.${case}.png" "${wid}" \
       && tighten_deadspace "${out}/${e}.${case}.png" \
       || printf '%s\n' "warn ${e}.${case}: screenshot failed"
+   shots_watchdog_cancel "${wdog}"
+   [ -e "${flagf}" ] && printf '%s\n' "warn ${e}.${case}: capture exceeded ${SHOT_DEADLINE}s deadline, group reaped"
+   epgid="$(cat "${pgf}" 2>/dev/null || true)"
    clear_windows
-   kill "${epid}" 2>/dev/null || true
-   sleep 1
+   shots_reap_group "${epgid}"
+   safe-rm -f -- "${pgf}" "${flagf}" 2>/dev/null || true
 }
 
 if ! start_labwc; then
@@ -462,12 +522,14 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
    ## a coloured box, detail names its exact codepoint (<U+0430 CYRILLIC SMALL
    ## LETTER A>). The homoglyph-strip suffix is kept for the committed PNG /
    ## Pages reference (the mode it captures is now box; the file name is a label).
-   ## Capture size for the ST GUI window. At the app's 820px default Qt collapses the
-   ## trailing toolbar controls (unicode / mode / colours / Zoom) behind a ">>" overflow
-   ## chevron, which reads as a truncated capture. 1360 is the empirically-verified width
-   ## that shows the whole toolbar under the real xcb render (its font metrics run wider
-   ## than an offscreen sizeHint predicts); it fits the 1440x900 labwc output.
-   st_win_w=1360
+   ## Capture width for the ST GUI window. 860 is the app's own default width
+   ## (main.py TOOLBAR_DEFAULT_WIDTH): the responsive toolbar renders its "labeled"
+   ## tier there -- icon-only action buttons plus every chip group captioned
+   ## (unicode / mode / colours / Zoom) -- with no ">>" overflow chevron (labeled
+   ## sizeHint 730 < 860 < full 902, so the compact tier is the one that fits). A
+   ## wider frame only shrank the terminal text relative to the window; this matches
+   ## how the app actually opens and keeps the frame close to the competitor shots.
+   st_win_w=860
    ## Each entry is "<case> <mode> <suffix> [tui]". The optional 4th field 'tui' launches
    ## secure-terminal with --tui (opt-in full-screen mode) instead of the default CLI mode.
    ## The tui-showcase board is captured across the CLI/TUI mode x box/show/detail
@@ -477,6 +539,7 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
    ## character-filtered.
    st_specs=(
       'crafted box crafted'
+      'notify box notify'
       'random box random'
       'homoglyph box homoglyph-strip'
       'homoglyph detail homoglyph-detail'
@@ -499,14 +562,28 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       ## once grown by the frame). The short cases keep 620 so their committed page
       ## dimensions do not move; tighten_deadspace trims either back to its content.
       st_win_h=620; [ "${st_case}" = tui-showcase ] && st_win_h=820
-      env --unset=WAYLAND_DISPLAY "DISPLAY=${xwl_display}" QT_QPA_PLATFORM=xcb \
+      ## The GUI runs as `python3 .../secure-terminal` -- process name `python3` -- so it MUST
+      ## be reaped by its session PGID, never by name. Launch it in its own session and arm the
+      ## per-capture watchdog, exactly like the emulator shots.
+      st_pgf="$(mktemp -- "${runtime_dir}/pgid.XXXXXX")"
+      st_flagf="${st_pgf}.timeout"
+      ## Pin the font DPI to 72 so the render is deterministic regardless of the X
+      ## server's DPI. The responsive toolbar's 860 default (st_win_w) is calibrated
+      ## to the real compositor's ~9pt/72-DPI metrics (labeled tier: captioned chips,
+      ## no ">>" overflow); a default Xvfb reports 96 DPI, which widens the toolbar
+      ## and silently drops it to the leaner icons tier (captions hidden). Same
+      ## font-metric determinism the test runner pins for the tier assertions.
+      shots_spawn_session "${st_pgf}" \
+         env --unset=WAYLAND_DISPLAY "DISPLAY=${xwl_display}" QT_QPA_PLATFORM=xcb \
+         QT_FONT_DPI=72 \
          PYTHONPATH="${st_pkg}" python3 "${st_bin}" --new-instance "${st_mode_flags[@]}" \
-         -- bash --rcfile "${HOME}/.strc" -i >/dev/null 2>&1 &
-      epid="$!"
+         -- bash --rcfile "${HOME}/.strc" -i >/dev/null 2>&1
+      ## same guard as the emulator shots: an invalid SHOT_DEADLINE must not errexit-abort.
+      st_wdog="$(shots_watchdog_start "${SHOT_DEADLINE}" "${st_pgf}" "${st_flagf}")" || st_wdog=''
       stwid="$(find_window || true)"
       if [ -n "${stwid}" ]; then
          sleep 2
-         ## Widen the window so the whole toolbar fits (no ">>" overflow chevron),
+         ## Size the window so the whole toolbar fits (no ">>" overflow chevron),
          ## then let the layout settle before injecting + grabbing.
          DISPLAY="${xwl_display}" xdotool windowsize "${stwid}" "${st_win_w}" "${st_win_h}" 2>/dev/null || true
          sleep 0.6
@@ -517,9 +594,12 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       else
          printf '%s\n' "warn secure-terminal.${st_suffix}: window never appeared"
       fi
+      shots_watchdog_cancel "${st_wdog}"
+      [ -e "${st_flagf}" ] && printf '%s\n' "warn secure-terminal.${st_suffix}: capture exceeded ${SHOT_DEADLINE}s deadline, group reaped"
+      st_epgid="$(cat "${st_pgf}" 2>/dev/null || true)"
       clear_windows
-      kill "${epid}" 2>/dev/null || true
-      sleep 1.5
+      shots_reap_group "${st_epgid}"
+      safe-rm -f -- "${st_pgf}" "${st_flagf}" 2>/dev/null || true
    done
    printf '%s\n' 'captured secure-terminal (real GUI)'
 elif [ -n "${ALLOW_SKIP:-}" ]; then

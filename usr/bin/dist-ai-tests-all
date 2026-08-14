@@ -98,6 +98,7 @@ core_suites=(
    qubes-whonix-tests
    sandbox-app-launcher-tests
    sanitize-string-tests
+   secure-terminal-shots-tests
    secure-terminal-tests
    secure-terminal-tests-coverage
    sdwdate-gui-tests
