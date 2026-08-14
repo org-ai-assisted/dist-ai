@@ -2116,12 +2116,28 @@ for _cp in _CLUSTER_CPS:
 eq(_CLUSTER_BAD, [],
    'no extender builds a cluster past the cap in the rendered cell model')
 
-# The cap must not fire on conformant text: UAX #15 stream-safe format allows up
-# to 30 marks per base, so a 20-mark cluster must survive intact. A cap that ate
-# real decomposed text would pass the assertion above while being wrong.
+# The CELL-MODEL cap must not fire on conformant text: UAX #15 allows up to 30 marks per
+# base, so a 20-mark cluster survives feed_line_edits intact (a cap that ate real decomposed
+# text would pass the flood assertion above while being wrong). SHOW-mode DISPLAY, separately,
+# boxes a > _ZALGO_MARK_MAX cluster as a Zalgo attack (a strong full-cell tint); <= the
+# threshold stays shown.
 _ok_run = 'a' + chr(0x0301) * 20
-eq(_render_cells(_ok_run).count(chr(0x0301)), 20,
-   'a conformant 20-mark cluster is not truncated by the cap')
+_zc, _zcells, _zcol, _zsgr, _zw = S.feed_line_edits([], 0, {}, _ok_run)
+eq(sum(1 for c, _ in _zcells if c == chr(0x0301)), 20,
+   'the cell-model cap does not truncate a conformant 20-mark cluster')
+eq(_render_cells(_ok_run).count(chr(0x0301)), 0,
+   'a 20-mark Zalgo cluster is boxed (not shown) in show-mode display')
+ok(S.BOX in _render_cells(_ok_run),
+   'the boxed Zalgo cluster shows the box placeholder in the line model')
+# a light stack (<= the threshold, e.g. Masoretic-Hebrew depth) stays SHOWN
+_light = 'a' + chr(0x0301) * S._ZALGO_MARK_MAX
+eq(_render_cells(_light).count(chr(0x0301)), S._ZALGO_MARK_MAX,
+   'a combining stack at or below the Zalgo threshold is still shown (legit decomposed text)')
+eq(S.tui_cell('a' + chr(0x0301) * (S._ZALGO_MARK_MAX + 1), 'show'), S.BOX,
+   'the TUI grid also boxes a Zalgo cell above the threshold in show')
+eq(S.tui_cell('a' + chr(0x0301) * S._ZALGO_MARK_MAX, 'show'),
+   'a' + chr(0x0301) * S._ZALGO_MARK_MAX,
+   'the TUI grid keeps a stack at/below the threshold shown')
 
 # The predicate must agree with \X over the WHOLE range, not just the samples --
 # this is what would have caught the original hole on the day it was written.

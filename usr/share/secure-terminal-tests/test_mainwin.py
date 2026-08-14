@@ -425,6 +425,25 @@ try:
 finally:
     QFileDialog.getSaveFileName = _ogsf
 
+# --- open_transcript: writes the transcript to a temp file + opens it in the editor ----
+from PyQt6.QtGui import QDesktopServices as _QDS         # noqa: E402
+_oou = _QDS.openUrl
+_opened = []
+try:
+    _QDS.openUrl = staticmethod(lambda url: _opened.append(url.toLocalFile()) or True)
+    _ocur = win.current
+    win.current = lambda: None                  # no active tab -> no-op
+    win.open_transcript()
+    ok(_opened == [], 'open_transcript: no active tab is a no-op')
+    win.current = _ocur
+    win.open_transcript()
+    ok(len(_opened) == 1 and os.path.exists(_opened[0])
+       and os.path.getsize(_opened[0]) > 0,
+       'open_transcript: writes the transcript to a temp file and opens it in the editor')
+    os.unlink(_opened[0])
+finally:
+    _QDS.openUrl = _oou
+
 # --- _test_canary: writes the marker + echoes; loud failure on a bad path -----
 import secure_terminal.main as _MM              # noqa: E402
 eq(_test_canary(), 0, '_test_canary: writes the marker and returns 0')
