@@ -157,6 +157,9 @@ shots_payload_cmd() {  ## $1=case -> the command string the terminal displays
       art)
          printf '%s' 'cat art.payload'
          ;;
+      gradient)
+         printf '%s' 'cat gradient.payload'
+         ;;
       unicode)
          printf '%s' 'cat unicode.payload'
          ;;
@@ -225,6 +228,12 @@ sys.stdout.buffer.write(buf)' "${shots_random_bytes}" "${shots_random_seed}" > "
    ## regenerates it at the live viewport size (st_size_art_payload) so the sunset fills the
    ## frame. Deterministic (pure function of position + size), so regeneration is a no-op.
    "${fallback}/truecolor-art.py" > "${dest}/art.payload" || return 1
+   ## gradient: a display-only 24-bit colour board -- a curated 2D slice of the truecolour gamut
+   ## (hue across, lightness down, plus a greyscale ramp). SAME cat-safe contract as art (SGR +
+   ## half-block + newlines only). This writes the DEFAULT 80x22 board; the secure-terminal pass
+   ## regenerates it at the live viewport size (st_size_viewport_payload) so it fills the frame.
+   ## Its point beside a 256-colour terminal: the ramps are smooth here, banded there.
+   "${fallback}/truecolor-gradient.py" > "${dest}/gradient.payload" || return 1
    ## unicode: an exhaustive-by-class Unicode gallery -- a renderable-subset glyph chart plus
    ## raw-byte RISK specimens (C0/C1 controls, bidi, zero-width/invisible, combining), each
    ## specimen inline-ISOLATED one-per-line so an escape it starts aborts at the newline; SO is

@@ -17,11 +17,14 @@ import re
 import sys
 
 
+def strip_sgr(text):
+    return re.sub(r'\x1b\[[0-9;]*m', '', text)
+
+
 def main():
     data = open(sys.argv[1], encoding='utf-8').read()
     lines = data.rstrip('\n').split('\n')
-    strip = lambda s: re.sub(r'\x1b\[[0-9;]*m', '', s)
-    widths = sorted({len(strip(line)) for line in lines})
+    widths = sorted({len(strip_sgr(line)) for line in lines})
     residue = re.sub(r'\x1b\[[0-9;]*m|\u2580|\n', '', data)
     print(len(lines), *widths, 'SAFE' if residue == '' else 'UNSAFE')
 

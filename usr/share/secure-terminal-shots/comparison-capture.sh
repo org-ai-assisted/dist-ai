@@ -118,7 +118,7 @@ SHOT_DEADLINE="${SHOT_DEADLINE:-90}"
 ## notify is a secure-terminal-only case (emulators have no standard notify shot -- the page's
 ## kitty.notify popup is captured separately), so it is in the full matrix for the ST loop but
 ## skipped in the emulator loop below.
-all_cases='escape contrast title random homoglyph bidi zerowidth altscreen notify art unicode tui-showcase'
+all_cases='escape contrast title random homoglyph bidi zerowidth altscreen notify art gradient unicode tui-showcase'
 CASES="${CASES:-${all_cases}}"
 ## The emulator set, single source of truth for BOTH the capture loop and the --jobs
 ## orchestrator's partition. lxterminal is omitted: its single-instance startup maps no
@@ -702,6 +702,34 @@ capture_settled() {  ## $1=output-path  $2=window-id
    return 1
 }
 
+## Block until the window's rendering has SETTLED: grab throwaway frames until two consecutive
+## grabs match within a jitter tolerance. capture_settled only rejects a BLANK frame, so a heavy
+## still-painting TUI pyte grid would be grabbed half-drawn; a whole unpainted row band differs by
+## thousands of pixels between grabs, while the known ~1px sub-pixel border jitter differs by only
+## a handful, so a small AE tolerance settles without waiting forever. Best-effort: a failed grab
+## or a missing `compare` just returns and lets capture_settled proceed.
+st_wait_render_settled() {  ## $1=window-id
+   local wid a b i diff
+   wid="$1"
+   type -P compare >/dev/null || return 0
+   a="$(mktemp -- "${runtime_dir}/settle.XXXXXX.png")"
+   b="$(mktemp -- "${runtime_dir}/settle.XXXXXX.png")"
+   if ! capture_window "${a}" "${wid}" 2>/dev/null; then
+      safe-rm --force -- "${a}" "${b}" 2>/dev/null || true
+      return 0
+   fi
+   for i in 1 2 3 4 5 6 7 8 9 10; do
+      sleep 0.8
+      capture_window "${b}" "${wid}" 2>/dev/null || break
+      diff="$(compare -metric AE "${a}" "${b}" null: 2>&1 || true)"
+      diff="${diff%%[!0-9]*}"
+      case "${diff}" in '') diff=999999 ;; esac
+      [ "${diff}" -lt 300 ] 2>/dev/null && break   # only jitter left -> settled
+      mv --force -- "${b}" "${a}"
+   done
+   safe-rm --force -- "${a}" "${b}" 2>/dev/null || true
+}
+
 ## Wait until a freshly-launched window has actually RENDERED (its content is no longer a flat
 ## blank) before typing into it. The first secure-terminal launch is a Qt cold start that, under
 ## the parallel --jobs CPU load, can still be painting nothing when the fixed settle elapses --
@@ -910,34 +938,42 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
    ## wider frame only shrank the terminal text relative to the window; this matches
    ## how the app actually opens and keeps the frame close to the competitor shots.
    st_win_w=860
-   ## Size the art payload to the REAL secure-terminal viewport so the sunset fills the
-   ## frame instead of leaving a dead-white margin on the right. The geometry comes from
-   ## the LIVE window (stty in .strc -> ~/.st_geom) under the actual capture compositor --
-   ## never a hardcoded column count, which would silently drift when the font or the
-   ## default width changes. A non-readable geometry keeps the pre-generated 80x22 payload.
-   ## BEGIN st_size_art_payload -- extracted verbatim by truecolor_art_sizing_test.sh
-   st_size_art_payload() {
-      local geom rows cols art_rows i
+   ## Size a viewport-filling display payload (the sunset art, the truecolour board) to the
+   ## REAL secure-terminal viewport so it fills the frame instead of leaving a dead-white
+   ## margin on the right. The geometry comes from the LIVE window (stty in .strc ->
+   ## ~/.st_geom) under the actual capture compositor -- never a hardcoded column count, which
+   ## would silently drift when the font or the default width changes. A non-readable geometry
+   ## keeps the pre-generated default payload.
+   ## BEGIN st_size_viewport_payload -- extracted verbatim by truecolor_art_sizing_test.sh
+   st_size_viewport_payload() {  ## $1=generator basename in ${here}  $2=payload basename in ${HOME}
+      local gen="$1" payload="$2" geom prev rows cols scene_rows i
       ## ~/.st_geom is "ROWS COLS" from stty; the WINCH trap + PROMPT_COMMAND keep it current.
-      for i in 1 2 3 4 5 6 7 8 9 10; do
+      ## A window resize fires SEVERAL WINCH events (the WM animates 520 -> the target height),
+      ## and the trap rewrites the file for each, so the first value can be a mid-resize frame.
+      ## Read until it STABILISES (a non-empty value unchanged across two reads) = settled window.
+      prev=''
+      for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
          geom="$(cat "${HOME}/.st_geom" 2>/dev/null || true)"
-         [ -n "${geom}" ] && break
+         { [ -n "${geom}" ] && [ "${geom}" = "${prev}" ]; } && break
+         prev="${geom}"
          sleep 0.2
       done
       read -r rows cols <<< "${geom}"
       ## Each field must be a non-empty run of digits; anything else keeps the fallback.
       case "${rows}" in ''|*[!0-9]*) return 0 ;; esac
       case "${cols}" in ''|*[!0-9]*) return 0 ;; esac
-      ## Height: the reported winsize rows overcount what a full-screen (TUI/alt-screen) view
-      ## actually shows -- the alt-screen effective viewport is ~2/3 of the reported rows, so a
-      ## rows-2 art clips at the bottom in the -tui-show variant. Both variants share one art
-      ## payload, so size the scene to ~2/3 of the reported rows: it fills the width and reads as
-      ## a clean wide panorama in TUI, and sits as a bounded landscape (prompt below) in CLI.
-      art_rows=$(( rows * 2 / 3 ))
-      { [ "${cols}" -ge 2 ] && [ "${art_rows}" -ge 2 ]; } || return 0
-      "${here}/truecolor-art.py" --cols "${cols}" --rows "${art_rows}" > "${HOME}/art.payload" || return 0
+      ## Fill the width; leave the injected 'cat' prompt line above and a fresh prompt below.
+      scene_rows=$(( rows - 2 ))
+      { [ "${cols}" -ge 2 ] && [ "${scene_rows}" -ge 2 ]; } || return 0
+      ## Generate into a temp file and swap in on success, so a mid-write generator failure
+      ## leaves the pre-generated fallback payload intact rather than an empty/partial file.
+      if "${here}/${gen}" --cols "${cols}" --rows "${scene_rows}" > "${HOME}/${payload}.new"; then
+         mv --force -- "${HOME}/${payload}.new" "${HOME}/${payload}"
+      else
+         safe-rm --force -- "${HOME}/${payload}.new" 2>/dev/null || true
+      fi
    }
-   ## END st_size_art_payload
+   ## END st_size_viewport_payload
    ## Each entry is "<case> <mode> <suffix> [tui]". The optional 4th field 'tui' launches
    ## secure-terminal with --tui (opt-in full-screen mode) instead of the default CLI mode.
    ## The tui-showcase board is captured across the CLI/TUI mode x box/show/detail
@@ -972,6 +1008,8 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       'notify show notify-tui-show tui'
       'art show art-show'
       'art show art-tui-show tui'
+      'gradient show gradient-show'
+      'gradient show gradient-tui-show tui'
       'unicode show unicode-show'
       'unicode show unicode-tui-show tui'
       'unicode detail unicode-detail'
@@ -1066,6 +1104,11 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       stwid="$(find_window || true)"
       if [ -n "${stwid}" ]; then
          sleep 2
+         ## Drop any ~/.st_geom left by the warmup or the previous spec BEFORE resizing, so the
+         ## only value st_size_viewport_payload can read is the one THIS window's WINCH handler
+         ## writes at the resized size -- otherwise a slow cold start lets the art capture size
+         ## to the prior window's dimensions and reintroduce clipping/margins.
+         safe-rm --force -- "${HOME}/.st_geom" 2>/dev/null || true
          ## Size the window so the whole toolbar fits (no ">>" overflow chevron),
          ## then let the layout settle before injecting + grabbing.
          DISPLAY="${xwl_display}" xdotool windowsize "${stwid}" "${st_win_w}" "${st_win_h}" 2>/dev/null || true
@@ -1074,11 +1117,25 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
          ## or the 'cat' is injected into a not-yet-ready window and never runs (a black shot,
          ## seen on the FIRST secure-terminal launch under the parallel --jobs load).
          wait_window_ready "${stwid}"
-         ## art is the only case sized to the viewport; every other payload is fixed content.
-         [ "${st_case}" = art ] && st_size_art_payload
+         ## art + gradient are the viewport-sized display boards; every other payload is fixed.
+         case "${st_case}" in
+            art)
+               st_size_viewport_payload truecolor-art.py art.payload
+               ;;
+            gradient)
+               st_size_viewport_payload truecolor-gradient.py gradient.payload
+               ;;
+         esac
          inject "${stwid}" "$(shots_payload_cmd "${st_case}")"
          ## SECURE_TERMINAL_SHOT=1 renders synchronously, so a long fixed settle is unneeded.
          sleep 1
+         ## The full-viewport colour boards in TUI Show paint a large pyte grid (rows x cols cells
+         ## rebuilt into the document) -- much heavier than CLI line mode, and capture_settled only
+         ## rejects a BLANK frame, not a half-drawn one. Wait until the frame stops changing before
+         ## the grab, or the board clips to the rows painted so far.
+         if { [ "${st_case}" = art ] || [ "${st_case}" = gradient ]; } && [ "${st_tui:-}" = tui ]; then
+            st_wait_render_settled "${stwid}"
+         fi
          capture_settled "${out}/secure-terminal.${st_suffix}.png" "${stwid}"
       else
          printf '%s\n' "warn secure-terminal.${st_suffix}: window never appeared"
