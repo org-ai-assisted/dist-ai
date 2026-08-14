@@ -1498,6 +1498,19 @@ ok(_db.document().toPlainText() == '',
 ok('debounced-last-line' in _db.transcript_text(),
    'transcript_text flushes the pending paint, so a save never misses the last line')
 _db.close()
+# A read notifier can fire AFTER teardown closed the fd (_fd set to None): _on_readable
+# must be a no-op then, not os.read(None) -> TypeError (an uncaught type error that
+# BlockingIOError/OSError do not catch).
+_rn = SecureTerminal(command='/bin/cat')
+_rn._fd = None
+_rn_raised = False
+try:
+    _rn._on_readable()
+except Exception:                                     # noqa: BLE001
+    _rn_raised = True
+ok(not _rn_raised,
+   '_on_readable is a no-op when the fd is already closed (teardown-race guard)')
+_rn.close()
 # shutdown flushes too, so the last line survives teardown
 _db2 = SecureTerminal(command='/bin/cat')
 _db2._mode = 'show'
