@@ -596,14 +596,46 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
    ## printable unicode as its glyph (readable) while still boxing invisible/bidi/control
    ## bytes; detail names each codepoint inline. Even in full-screen TUI every cell stays
    ## character-filtered.
+   ## Every demo case is captured in all 5 VALID secure-terminal views so the page's per-row
+   ## switcher has a real shot per combo: CLI x {box, detail, show} + TUI x {box, show}. Detail
+   ## (and Reveal) are CLI-only -- the fixed TUI grid cannot expand a codepoint inline. Suffix
+   ## scheme: <box-suffix>, -detail, -show, -tui, -tui-show (matching tui-showcase's).
    st_specs=(
       'crafted box crafted'
+      'crafted detail crafted-detail'
+      'crafted show crafted-show'
+      'crafted box crafted-tui tui'
+      'crafted show crafted-tui-show tui'
       'notify box notify'
+      'notify detail notify-detail'
+      'notify show notify-show'
+      'notify box notify-tui tui'
+      'notify show notify-tui-show tui'
       'random box random'
+      'random detail random-detail'
+      'random show random-show'
+      'random box random-tui tui'
+      'random show random-tui-show tui'
       'homoglyph box homoglyph-strip'
+      'homoglyph detail homoglyph-strip-detail'
+      'homoglyph show homoglyph-strip-show'
+      'homoglyph box homoglyph-strip-tui tui'
+      'homoglyph show homoglyph-strip-tui-show tui'
       'bidi box bidi'
+      'bidi detail bidi-detail'
+      'bidi show bidi-show'
+      'bidi box bidi-tui tui'
+      'bidi show bidi-tui-show tui'
       'zerowidth box zerowidth'
+      'zerowidth detail zerowidth-detail'
+      'zerowidth show zerowidth-show'
+      'zerowidth box zerowidth-tui tui'
+      'zerowidth show zerowidth-tui-show tui'
       'altscreen box altscreen'
+      'altscreen detail altscreen-detail'
+      'altscreen show altscreen-show'
+      'altscreen box altscreen-tui tui'
+      'altscreen show altscreen-tui-show tui'
       'tui-showcase box tui-showcase'
       'tui-showcase show tui-showcase-show'
       'tui-showcase detail tui-showcase-detail'
