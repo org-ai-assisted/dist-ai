@@ -286,6 +286,23 @@ def run():
     check('check_contrast is invoked from main()',
           'check_contrast(root, failures)' in main_body)
 
+    # check_banner: the status pill may be a <span> OR an <a> (it links to the
+    # review-model explanation). Either form must still be text-checked -- a
+    # <span>-only regex silently stopped validating once the pill became a link.
+    def _banner_failures(markup):
+        with tempfile.TemporaryDirectory() as root:
+            _write(root, 'index.html', markup)
+            failures = []
+            check_site.check_banner(root, failures)
+            return failures
+
+    check('<a> status pill saying review passes',
+          _banner_failures(_page % '<a class="status" href="/x">unreviewed</a>') == [])
+    check('<a> status pill NOT saying review is flagged',
+          _banner_failures(_page % '<a class="status" href="/x">working</a>') != [])
+    check('<span> status pill still text-checked',
+          _banner_failures(_page % '<span class="status">shipping</span>') != [])
+
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed
     for name, ok, detail in results:

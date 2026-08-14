@@ -327,7 +327,9 @@ def check_banner(root, failures):
     # A review-status pill, WHERE PRESENT, must say review is needed -- never a
     # "working"/green claim. Not every site carries one, so absence is allowed.
     if 'class="status"' in markup:
-        pill = re.search(r'<span class="status"[^>]*>([^<]*)</span>', markup)
+        # the pill may be a <span> (static) or an <a> (links to the review-model
+        # explanation) -- accept either so a link form is still text-checked.
+        pill = re.search(r'<(?:span|a) class="status"[^>]*>([^<]*)</(?:span|a)>', markup)
         if pill and 'review' not in pill.group(1).lower():
             failures.append('index.html: status banner is %r; must indicate '
                             'human review needed' % pill.group(1).strip())
