@@ -4198,7 +4198,7 @@ _tt.close()
 # A history recall (Up) at a bare TUI prompt is the same hazard with an INVISIBLE
 # line -- it marks dirty too (covers the mapped-key path, not just printable text).
 _th = SecureTerminal(command=None, tui=True)
-_thsent = spy_writes(_th)
+spy_writes(_th)                                         # sink the writes; not inspected
 _th.has_foreground_program = lambda: False
 key(_th, Qt.Key.Key_Up)                                 # recall a previous command
 ok(_th._line_dirty,
@@ -4215,6 +4215,12 @@ _tp._line_dirty = False
 key(_tp, Qt.Key.Key_Q, 'q')                             # e.g. `q` to quit less
 ok(not _tp._line_dirty,
    'a keystroke into a running program does not mark the line (no stranded defer)')
+# and because it was never stranded, once the program exits the switch re-exports
+# immediately instead of deferring on a phantom pending line.
+_tp.has_foreground_program = lambda: False              # program exited -> bare prompt
+_tp.apply_tui(False)
+ok(any(b'export TERM=secure-terminal\r' == s for s in _tpsent),
+   'once the program exits, the switch re-exports immediately (nothing stranded)')
 _tp.close()
 
 # A no-op key at an EMPTY bare TUI prompt introduces no content, so it must NOT
