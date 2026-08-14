@@ -335,6 +335,9 @@ expect_rule "${r030fmt}" "printf ${sq}%s${nl}${sq} ${dq}\${v}${dq} ${hash} print
 ## open a string -- so a real violation after '\"' must still be flagged. FAILS on a
 ## walker that treats '\"' as a string opener (fail-OPEN).
 expect_rule "${r030fmt}" "echo \\${dq} ${sc} printf ${dq}bad \${x}${nl}${dq}" "present"
+## A '#' inside a substring-removal expansion '${v#/p}' is not a comment, so a real printf
+## violation later on the same line is still flagged (not masked by a false comment-truncation).
+expect_rule "${r030fmt}" "x=${dollar}{v${hash}/p} ${sc} printf ${dq}bad \${z}${dq}" "present"
 
 ## A '#' INSIDE the format does not make the line a comment. The comment skip
 ## globbed '[[:space:]]*#*' -- one whitespace char, then anything, then a '#'
@@ -1042,6 +1045,13 @@ expect_rule "${r193}" "python3 ${dd} script.py.txt"              "absent"
 expect_rule "${r193}" "echo ${sq}python3 ${dd} ${py}${sq}"       "absent"
 ## A trailing inline comment that merely spells the call is documentation: spared.
 expect_rule "${r193}" "run something ${hash} python3 ${dd} ${py}" "absent"
+## A '/' after '.py' is a path continuation, not a boundary: 'foo.py/bar' is spared.
+expect_rule "${r193}" "python3 ${dd} ${py}/bar"                  "absent"
+## A '#' inside a word (substring-removal '${var#pre}') is NOT a comment, so a real call
+## LATER on the same line is still scanned and flagged.
+expect_rule "${r193}" "run ${dollar}{var${hash}pre} && python3 ${dd} real.py" "present"
+## A benign quoted occurrence before a real call on the same line does not mask the call.
+expect_rule "${r193}" "echo ${dq}python3 ${dd} ${py}${dq} ${sc} python3 ${dd} real.py" "present"
 
 ## check-shebang-scripts-are-executable gains a per-file waiver. A SOURCED fragment
 ## carries a shebang for shellcheck dialect detection yet must stay non-executable:

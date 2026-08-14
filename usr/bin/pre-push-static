@@ -1030,7 +1030,7 @@ line_code_length() {
    ## command must ignore text after it -- a 'printf'/'python3 --' spelled in a
    ## trailing comment is documentation, not code. Honours ' " ` and '$(...)' and
    ## an unquoted backslash escape.
-   local text="$1" index char quote='' depth=0
+   local text="$1" index char quote='' depth=0 prev
    local length="${#text}"
 
    for (( index=0; index<length; index++ )); do
@@ -1065,8 +1065,18 @@ line_code_length() {
          continue
       fi
       if [ "${char}" = '#' ] && [ "${depth}" -eq 0 ]; then
-         printf '%s\n' "${index}"
-         return 0
+         ## A '#' begins a comment ONLY at a word boundary -- start of line, or after
+         ## whitespace or a command separator. A '#' inside a word (a substring-removal
+         ## parameter expansion '${var#prefix}', or a literal 'foo#bar') is NOT a comment,
+         ## so truncating there would mask any real command later on the line.
+         prev=''
+         [ "${index}" -gt 0 ] && prev="${text:index-1:1}"
+         case "${prev}" in
+            ''|[[:space:]]|';'|'|'|'&'|'('|'`')
+               printf '%s\n' "${index}"
+               return 0
+               ;;
+         esac
       fi
    done
    printf '%s\n' "${length}"
@@ -1827,7 +1837,13 @@ check_R192_shell_inline_shell_c() {
 
 check_R193_python_dashdash_script() {
    local script line line_number dashdash_re code code_length pre python_offset
+   local scan match_length blank
 
+   ## Known limitation (accepted, fail-OPEN): a call nested inside a DOUBLE-QUOTED
+   ## command substitution -- 'out="$(python3 -- x.py)"' -- is not flagged. The quote
+   ## walk treats the whole "$(...)" as string data, so the token reads as quoted. A
+   ## correct call/data split there needs a context stack (the same reason R-104 has no
+   ## gate); the rare miss never over-blocks. Rewrite it to a direct call anyway.
    ## R-193: an in-repo script committed +x with a shebang is called DIRECTLY
    ## ('"${dir}"/foo dot py args'), not via an interpreter prefix that re-names it. The shebang
    ## plus exec bit is the project idiom (chmod +x once, run it like any program), and it also
@@ -1839,7 +1855,7 @@ check_R193_python_dashdash_script() {
    ## QUOTED as data is not a call). A generic dispatcher ('interpreter -- "$@"') has no
    ## literal path and is glue. Waiver (a script deliberately NOT +x, or an external path):
    ## '## style-ok: allow-python-dashdash'.
-   dashdash_re='(^|[^[:alnum:]_])(python3?)[[:space:]]+--[[:space:]]+[^[:space:]]*\.py([^.[:alnum:]_-]|$)'
+   dashdash_re='(^|[^[:alnum:]_])(python3?)[[:space:]]+--[[:space:]]+[^[:space:]]*\.py([^./[:alnum:]_-]|$)'
    for script in "${@}"; do
       if [ ! -f "${script}" ] || [ -L "${script}" ]; then
          continue
@@ -1856,16 +1872,23 @@ check_R193_python_dashdash_script() {
          line_number=$(( line_number + 1 ))
          code_length="$(line_code_length "${line}")"
          code="${line:0:code_length}"
-         if [[ "${code}" =~ ${dashdash_re} ]]; then
-            ## Absolute index of the 'python' token: text before the whole match
-            ## plus the leading boundary char (group 1 empty at line start).
-            pre="${code%%"${BASH_REMATCH[0]}"*}"
+         ## Scan EVERY match on the line, not just the first: a benign quoted occurrence
+         ## ('echo "python3 -- x.py"') must not mask a real call later on the same line.
+         ## A rejected (quoted) match is blanked to same-length spaces in the working copy
+         ## so offsets stay aligned with 'code' and the next match is found.
+         scan="${code}"
+         while [[ "${scan}" =~ ${dashdash_re} ]]; do
+            pre="${scan%%"${BASH_REMATCH[0]}"*}"
             python_offset=$(( ${#pre} + ${#BASH_REMATCH[1]} ))
             if r030_offset_is_command "${code}" "${python_offset}"; then
                fail "R-193 call the +x script directly via its shebang, not through an interpreter prefix" \
                   "'${script}:${line_number}'"
+               break
             fi
-         fi
+            match_length="${#BASH_REMATCH[0]}"
+            blank="$(printf '%*s' "${match_length}" '')"
+            scan="${scan:0:${#pre}}${blank}${scan:$(( ${#pre} + match_length ))}"
+         done
       done < "${script}"
    done
 }
