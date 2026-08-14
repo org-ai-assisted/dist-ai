@@ -120,9 +120,21 @@ SHOT_DEADLINE="${SHOT_DEADLINE:-90}"
 ## skipped in the emulator loop below.
 all_cases='crafted random homoglyph bidi zerowidth altscreen notify tui-showcase'
 CASES="${CASES:-${all_cases}}"
+## The emulator set, single source of truth for BOTH the capture loop and the --jobs
+## orchestrator's partition. lxterminal is omitted: its single-instance startup maps no
+## window headless.
+DEFAULT_TERMINALS='xterm urxvt st konsole gnome-terminal xfce4-terminal mate-terminal qterminal alacritty kitty'
 only_terminals=''
 cases_sel=''
 st_only=''
+## --jobs N (N>1): orchestrator mode -- partition the grid across N concurrent lanes, each
+## its OWN nested Xvfb+compositor (via its own xvfb-run), then optimize once. --no-st skips the
+## secure-terminal pass (for an emulator-only lane); --optimize-only just webp-converts existing
+## PNGs (the orchestrator's final merge step); --no-optimize leaves PNGs for that merge.
+jobs=1
+no_st=''
+no_optimize=''
+optimize_only=''
 while [ "$#" -gt 0 ]; do
    case "$1" in
       --only)
@@ -144,6 +156,23 @@ while [ "$#" -gt 0 ]; do
          cases_sel='crafted'
          shift
          ;;
+      --jobs)
+         [ "$#" -ge 2 ] || { printf '%s\n' 'comparison-capture: --jobs needs a count' >&2; exit 2; }
+         jobs="$2"
+         shift 2
+         ;;
+      --no-st)
+         no_st='true'
+         shift
+         ;;
+      --no-optimize)
+         no_optimize='true'
+         shift
+         ;;
+      --optimize-only)
+         optimize_only='true'
+         shift
+         ;;
       *)
          printf '%s\n' "comparison-capture: unknown argument '$1'" >&2
          exit 2
@@ -152,6 +181,124 @@ while [ "$#" -gt 0 ]; do
 done
 if [ -n "${cases_sel}" ]; then
    CASES="${cases_sel}"
+fi
+
+case "${jobs}" in
+   ''|*[!0-9]*)
+      printf '%s\n' "comparison-capture: --jobs needs a non-negative integer, got '${jobs}'" >&2
+      exit 2
+      ;;
+esac
+
+## --optimize-only: webp-convert the PNGs already in ${out} and stop (the orchestrator's
+## single final merge, after its --no-optimize lanes finished). No capture, no runtime dir.
+if [ -n "${optimize_only}" ]; then
+   safe-rm --recursive --force -- "${runtime_dir}" 2>/dev/null || true
+   shots_optimize_to_webp "${out}"/*.png
+   printf '%s\n' "optimized; webp in ${out}"
+   exit 0
+fi
+
+## --jobs N (N>1): orchestrator. Partition the grid across N concurrent lanes, each a full
+## comparison-capture.sh run over a scope subset in its OWN nested Xvfb + compositor (own
+## xvfb-run --auto-servernum -> a distinct display, so no shared-compositor race). The capture
+## code is reused UNCHANGED; only the work is split. A final --optimize-only pass webp-converts
+## once, so concurrent lanes never race on the shared shots dir's optimize step.
+if [ "${jobs}" -gt 1 ]; then
+   self="${here}/comparison-capture.sh"
+   ## the runtime dir this orchestrator made is unused -- each lane makes its own.
+   safe-rm --recursive --force -- "${runtime_dir}" 2>/dev/null || true
+   fwd_case=()
+   for fc in ${cases_sel}; do fwd_case+=(--case "${fc}"); done
+   if [ -n "${st_only}" ]; then
+      emu_set=''
+   elif [ -n "${only_terminals}" ]; then
+      emu_set="${only_terminals}"
+   else
+      emu_set="${DEFAULT_TERMINALS}"
+   fi
+   lane_dir="$(mktemp --directory)"
+   lane_pids=()
+   lane_logs=()
+   lane_i=0
+   spawn_lane() {  ## $@ = args forwarded to a comparison-capture.sh lane
+      local log
+      log="${lane_dir}/lane.${lane_i}.log"
+      ## SHOTS_LANE_DRY_RUN: print the lane's scope instead of running it, to verify the
+      ## partition (which emulators / ST / cases each lane gets) without a capture.
+      if [ -n "${SHOTS_LANE_DRY_RUN:-}" ]; then
+         printf '%s\n' "LANE ${lane_i}:$(printf ' %s' "$@") --no-optimize"
+         lane_i=$(( lane_i + 1 ))
+         return 0
+      fi
+      xvfb-run --auto-servernum --server-args='-screen 0 1600x1000x24' \
+         "${self}" "$@" --no-optimize >"${log}" 2>&1 &
+      lane_pids+=("$!")
+      lane_logs+=("${log}")
+      lane_i=$(( lane_i + 1 ))
+   }
+   emu_lanes="${jobs}"
+   ## The full grid includes the secure-terminal pass; give it its own lane, and split the
+   ## emulators across the rest. A --st-only run has no emulators, so all lanes go to ST
+   ## (split by case); an emulator-only run (--only, no ST wanted) is not expressible here --
+   ## the orchestrator always captures the full grid it was asked for.
+   if [ -z "${st_only}" ] && [ -n "${emu_set}" ]; then
+      spawn_lane --st-only "${fwd_case[@]}"
+      emu_lanes=$(( jobs - 1 ))
+      [ "${emu_lanes}" -lt 1 ] && emu_lanes=1
+   fi
+   if [ -n "${emu_set}" ]; then
+      ## round-robin the emulators into emu_lanes buckets, each its own --only lane.
+      bucket=()
+      idx=0
+      for e in ${emu_set}; do
+         b=$(( idx % emu_lanes ))
+         bucket[b]="${bucket[b]:+${bucket[b]} }${e}"
+         idx=$(( idx + 1 ))
+      done
+      b=0
+      while [ "${b}" -lt "${emu_lanes}" ]; do
+         if [ -n "${bucket[b]:-}" ]; then
+            only_args=()
+            for e in ${bucket[b]}; do only_args+=(--only "${e}"); done
+            spawn_lane "${only_args[@]}" --no-st "${fwd_case[@]}"
+         fi
+         b=$(( b + 1 ))
+      done
+   elif [ -n "${st_only}" ]; then
+      ## --st-only + --jobs: split the ST pass across lanes by CASE.
+      set -- ${CASES}
+      per=$(( ($# + jobs - 1) / jobs ))
+      [ "${per}" -lt 1 ] && per=1
+      group=()
+      for cse in "$@"; do
+         group+=("${cse}")
+         if [ "${#group[@]}" -ge "${per}" ]; then
+            ca=()
+            for g in "${group[@]}"; do ca+=(--case "${g}"); done
+            spawn_lane --st-only "${ca[@]}"
+            group=()
+         fi
+      done
+      if [ "${#group[@]}" -gt 0 ]; then
+         ca=()
+         for g in "${group[@]}"; do ca+=(--case "${g}"); done
+         spawn_lane --st-only "${ca[@]}"
+      fi
+   fi
+   rc=0
+   i=0
+   while [ "${i}" -lt "${#lane_pids[@]}" ]; do
+      lrc=0
+      wait "${lane_pids[i]}" || lrc="$?"
+      cat -- "${lane_logs[i]}" 2>/dev/null || true
+      [ "${lrc}" -eq 0 ] || rc="${lrc}"
+      i=$(( i + 1 ))
+   done
+   safe-rm --recursive --force -- "${lane_dir}" 2>/dev/null || true
+   "${self}" --optimize-only || true
+   printf '%s\n' "done; ${lane_i} lane(s); shots in ${out}"
+   exit "${rc}"
 fi
 
 ## Reliable reaping REQUIRES the safe-pgrep/safe-pkill wrappers -- fail loudly, never fall back.
@@ -541,7 +688,7 @@ if [ -n "${st_only}" ]; then
 elif [ -n "${only_terminals}" ]; then
    TERMINALS="${only_terminals}"
 else
-   TERMINALS="${TERMINALS:-xterm urxvt st konsole gnome-terminal xfce4-terminal mate-terminal qterminal alacritty kitty}"
+   TERMINALS="${TERMINALS:-${DEFAULT_TERMINALS}}"
 fi
 for e in ${TERMINALS}; do
    ## `type -P` finds a binary that is on PATH and carries SOME exec bit, but that does
@@ -580,7 +727,11 @@ done
 ## embedded 'cat tui-showcase.payload' line would DUPLICATE it. The emulators (captured above)
 ## keep that embedded line -- their alt-screen hides the real command, so it is what puts 'cat'
 ## at the top of their shots. Strip it now, for the secure-terminal pass ONLY (dedicated sibling
-## script, not inline scripting).
+## script, not inline scripting). An emulator-only lane (--no-st) skips both the strip and the
+## whole secure-terminal pass.
+if [ -n "${no_st}" ]; then
+   printf '%s\n' 'skipping secure-terminal pass (--no-st)'
+else
 "${here}/strip-tui-showcase-prompt.py" "${HOME}/tui-showcase.payload"
 
 st_bin="${ST_REPO:-}/usr/bin/secure-terminal"
@@ -722,8 +873,12 @@ else
    printf '%s\n' 'ERROR: secure-terminal not found. Set ST_REPO=/path/to/checkout, or set ALLOW_SKIP=1 to authorize skipping.' >&2
    exit 1
 fi
+fi
 
-## Convert the captured PNGs to webp (the site references them as .webp).
-shots_optimize_to_webp "${out}"/*.png
+## Convert the captured PNGs to webp (the site references them as .webp). A lane run with
+## --no-optimize leaves the PNGs for the orchestrator's single final --optimize-only merge.
+if [ -z "${no_optimize}" ]; then
+   shots_optimize_to_webp "${out}"/*.png
+fi
 
 printf '%s\n' "done; shots in ${out}"
