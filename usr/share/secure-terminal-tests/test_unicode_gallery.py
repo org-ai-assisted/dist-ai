@@ -102,6 +102,22 @@ def test_oracle_fixtures():
     ok('oracle spot-checks pass (%d code points)' % len(_ORACLE_FIXTURES))
 
 
+def test_honest_foreign_is_nonascii():
+    """The footer's non-attack contrast row must be genuinely 'nonascii' (mild
+    tint), not confusable -- else the caption lies about the colour. It is computed
+    from this environment's confusables data, so the pool must yield some."""
+    hf = G.honest_foreign()
+    if not hf:
+        fail('honest_foreign() is empty -- the candidate pool yielded no nonascii')
+        return
+    bad = [cp for cp in hf if G.classify(cp) != 'nonascii']
+    if bad:
+        fail('honest-foreign glyphs not nonascii: %s'
+             % ' '.join('U+%04X=%s' % (cp, G.classify(cp)) for cp in bad))
+    else:
+        ok('honest-foreign row is all nonascii (%d glyphs)' % len(hf))
+
+
 def test_marking_class_conformance():
     """marking_class == oracle for EVERY assigned code point."""
     mism = []
@@ -230,9 +246,9 @@ def test_summary():
 
 
 def main():
-    for test in (test_oracle_fixtures, test_marking_class_conformance,
-                 test_conformance_canary, test_payload_safety,
-                 test_payload_safety_canary, test_summary):
+    for test in (test_oracle_fixtures, test_honest_foreign_is_nonascii,
+                 test_marking_class_conformance, test_conformance_canary,
+                 test_payload_safety, test_payload_safety_canary, test_summary):
         test()
     if FAIL:
         sys.stderr.write('secure-terminal-tests(unicode_gallery): %d FAILURE(s)\n'

@@ -34,9 +34,8 @@ import unicodedata
 
 UNIDATA_VERSION = unicodedata.unidata_version
 
-# Box-drawing frame (structural: secure-terminal shows these in the program's own
-# colour, a live demo of the structural carve-out; a plain terminal draws them too).
-H = '\u2500'          # BOX DRAWINGS LIGHT HORIZONTAL
+# ASCII rules/frame: a box-drawing frame would explode into <U+2500 ...> badge
+# walls in detail/reveal mode. Box drawing is showcased in its own grid instead.
 DOTTED_CIRCLE = '\u25cc'   # standard isolated presentation of a combining mark
 
 GRID_COLS = 16
@@ -208,8 +207,8 @@ def _block_grid(lo, hi):
 
 
 def _rule(title):
-    bar = H * 4
-    return '\n%s %s %s' % (bar, title, H * max(3, 66 - len(title)))
+    bar = '-' * 4
+    return '\n%s %s %s' % (bar, title, '-' * max(3, 66 - len(title)))
 
 
 # --- payload: the risk-specimen sections (raw dangerous bytes) ----------------
@@ -245,6 +244,22 @@ _CONFUSABLE = ((0x0430, 'a'), (0x0435, 'e'), (0x043E, 'o'), (0x0440, 'p'),
                (0x0392, 'B'), (0x0395, 'E'), (0x2170, 'i'), (0x2160, 'I'))
 # Noncharacters: labeled, a few examples only (never a full 66-cell grid).
 _NONCHARS = (0xFDD0, 0xFFFE, 0x10FFFF)
+# Candidate pool for the non-attack contrast row: Greek + Cyrillic lowercase.
+_HONEST_FOREIGN_POOL = tuple(range(0x03B1, 0x03CA)) + tuple(range(0x0430, 0x0450))
+
+
+def honest_foreign(limit=20):
+    """Foreign letters that classify 'nonascii' (mild tint) in THIS environment's
+    confusables data -- COMPUTED, not hard-coded, because which Greek/Cyrillic
+    letters the data flags confusable varies by dataset version, and the row must
+    match whatever tint the SAME environment's marking_class renders. Falls back to
+    the raw pool if classify's deps are absent (that env's marking_class cannot flag
+    them either, so they still render 'nonascii')."""
+    try:
+        picked = [cp for cp in _HONEST_FOREIGN_POOL if classify(cp) == 'nonascii']
+    except Exception:      # pylint: disable=broad-except
+        picked = list(_HONEST_FOREIGN_POOL)
+    return picked[:limit]
 
 
 def _spec_line(cp, label, glyph):
@@ -263,7 +278,7 @@ def _control_name(cp):
 
 def render_payload():
     out = []
-    top = H * 72
+    top = '=' * 72
     out.append(top)
     out.append('secure-terminal Unicode gallery -- safe to cat.')
     out.append('Unicode %s. A plain terminal shows this flat; secure-terminal tints'
@@ -318,8 +333,8 @@ def render_payload():
         out.append(_spec_line(cp, 'noncharacter', chr(cp)))
 
     out.append(_rule('honest foreign text is the mild "nonascii" tint, not a hazard'))
-    out.append('Greek: ' + ''.join(chr(c) for c in range(0x0391, 0x03A2))
-               + '   Cyrillic: ' + ''.join(chr(c) for c in range(0x0410, 0x0420)))
+    out.append('honest foreign glyphs: '
+               + ' '.join(chr(c) for c in honest_foreign()))
     out.append(top)
     return '\n'.join(out) + '\n'
 
