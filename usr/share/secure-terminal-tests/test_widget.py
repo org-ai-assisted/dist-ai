@@ -4254,6 +4254,37 @@ ok(not _tui_asked and b'\r' in _thksent,
    'a program owning the terminal receives accept-line directly (hook not consulted)')
 _thk.close()
 
+# A paste at a bare TUI shell prompt is a command the next Enter submits, so it must
+# mark the line unverifiable too -- else it reaches the shell and Enter submits it
+# past the hook (the same bypass, via paste instead of typing).
+_tpp = SecureTerminal(command=None, tui=True)
+spy_writes(_tpp)
+_tpp.has_foreground_program = lambda: False
+_tpp._line_dirty = False
+_tpp._dispatch_paste('rm -rf ~', 'unicode')             # paste at a bare TUI prompt
+ok(_tpp._line_dirty,
+   'a paste at a bare TUI prompt marks the line unverifiable (Enter routes to the hook)')
+_tpp.has_foreground_program = lambda: True               # a program owns the terminal
+_tpp._line_dirty = False
+_tpp._dispatch_paste('data', 'unicode')                  # paste is the program's data
+ok(not _tpp._line_dirty,
+   'a paste delivered to a foreground TUI program does not mark the line')
+_tpp.close()
+
+# A CLI-typed line carried into TUI stays in _line_buffer; editing it there with a
+# key TUI cannot mirror (Backspace/Home/Delete) desyncs the buffer from the real
+# shell line, so it must invalidate the buffer -- else the hook judges the stale
+# (safe) buffer while the shell runs the edited (dangerous) command.
+_tce = SecureTerminal(command=None, tui=True)
+spy_writes(_tce)
+_tce.has_foreground_program = lambda: False
+_tce._line_buffer = '#rm -rf ~'                          # carried CLI line, commented
+_tce._line_dirty = False
+key(_tce, Qt.Key.Key_Backspace)                          # edit it in TUI (delete the #)
+ok(_tce._line_dirty,
+   'a TUI edit of a carried CLI line invalidates the stale buffer (hook fails safe)')
+_tce.close()
+
 # A no-op key at an EMPTY bare TUI prompt introduces no content, so it must NOT
 # flag the line pending -- else the TUI->CLI switch would needlessly defer the
 # re-export at a clean prompt, leaving TERM stale for the next command. Pure
