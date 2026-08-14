@@ -97,6 +97,7 @@ class DaemonSandbox:
             try:
                 sock_info.listen_socket.close()
             except OSError:
+                ## already closed or never opened during teardown; nothing to do
                 pass
         common.state_dir = self.saved['state_dir']
         common.control_path = self.saved['control_path']
@@ -1102,7 +1103,7 @@ def _returns_normally(func: Callable[[], Any]) -> bool:
 
     try:
         func()
-    except BaseException:  # pylint: disable=broad-exception-caught
+    except (Exception, SystemExit):  # pylint: disable=broad-exception-caught
         return False
     return True
 
@@ -1114,7 +1115,7 @@ def _exits_with(func: Callable[[], Any], code: int) -> bool:
         func()
     except SystemExit as exc:
         return int(exc.code or 0) == code
-    except BaseException:  # pylint: disable=broad-exception-caught
+    except Exception:  # pylint: disable=broad-exception-caught
         return False
     return False
 
@@ -1126,7 +1127,7 @@ def run_test(
 
     try:
         test(results, *args)
-    except BaseException as exc:  # pylint: disable=broad-exception-caught
+    except (Exception, SystemExit) as exc:  # pylint: disable=broad-exception-caught
         results.check(
             f"{test.__name__} raised {type(exc).__name__}: {exc}", False
         )

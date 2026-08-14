@@ -24,10 +24,12 @@ if len(sys.argv) != 2:
     sys.exit(2)
 
 path = sys.argv[1]
-data = open(path, "rb").read()
+with open(path, "rb") as handle:
+    data = handle.read()
 esc = data.find(b"\x1b")
 if esc < 0:
     sys.stderr.write("strip-tui-showcase-header: no ESC anchor found in %s\n" % path)
     sys.exit(1)
 if esc:
-    open(path, "wb").write(data[esc:])
+    with open(path, "wb") as handle:
+        handle.write(data[esc:])

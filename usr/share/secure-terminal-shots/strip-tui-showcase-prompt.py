@@ -21,9 +21,11 @@ if len(sys.argv) != 2:
     sys.exit(2)
 
 path = sys.argv[1]
-data = open(path, "rb").read()
+with open(path, "rb") as handle:
+    data = handle.read()
 embedded_prompt = b"user@host:~$ cat tui-showcase.payload\n"
 at = data.find(embedded_prompt)
 if at >= 0:
     data = data[:at] + data[at + len(embedded_prompt):]
-    open(path, "wb").write(data)
+    with open(path, "wb") as handle:
+        handle.write(data)

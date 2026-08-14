@@ -20,7 +20,7 @@ retrying.
 
 import asyncio
 import unittest
-from unittest import mock
+import unittest.mock as mock
 
 try:
     from sdwdate_gui import sdwdate_gui_client as client
