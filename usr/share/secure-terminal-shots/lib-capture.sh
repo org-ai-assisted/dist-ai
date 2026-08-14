@@ -141,6 +141,9 @@ shots_payload_cmd() {  ## $1=case -> the command string the terminal displays
       random)
          printf '%s' 'cat random.payload'
          ;;
+      art)
+         printf '%s' 'cat art.payload'
+         ;;
    esac
 }
 
@@ -198,6 +201,47 @@ shots_generate_logs() {  ## $1=script-relative fallback dir $2=dest-dir
 n=int(sys.argv[1]); r=random.Random(int(sys.argv[2]))
 buf=bytes(x for x in (r.getrandbits(8) for _ in range(n*2)) if x!=0x1b)[:n]
 sys.stdout.buffer.write(buf)' "${shots_random_bytes}" "${shots_random_seed}" > "${dest}/random.payload" || return 1
+   ## art: a display-only truecolor terminal-art scene (a sunset beach + rolling green hills).
+   ## SAFE to cat -- the generator emits ONLY SGR truecolour, the half-block glyph, newlines and
+   ## a trailing reset (no cursor moves, no clear, no OSC), so it repaints nothing and leaves the
+   ## scrollback clean. A page-facing capability demo: secure-terminal renders full 24-bit colour
+   ## in every mode. Deterministic (pure function of position), so regeneration is a no-op.
+   "${fallback}/truecolor-art.py" > "${dest}/art.payload" || return 1
+}
+
+## Install secure-terminal's icon into a session icon theme at ${1}=XDG_DATA_HOME, so labwc
+## (which resolves a window's title-bar icon by app-id through the icon theme, not
+## _NET_WM_ICON) shows the real logo. A no-op when ST_REPO / the svg is absent. Extracted so
+## the --jobs orchestrator can build it ONCE and share it, instead of every lane re-rasterising
+## the eight sizes concurrently (which spiked memory).
+## True when a captured shot is (near) a single flat colour -- a blank/black grab, which
+## happens when the window is screenshotted before its content finished rendering (more
+## likely under the parallel --jobs load, where CPU contention slows the render past the
+## fixed settle). The caller waits and re-grabs. Uses ImageMagick's own standard-deviation
+## metric (0 = perfectly flat) so no extra tool is pulled in.
+shots_shot_is_blank() {  ## $1=png
+   local flat
+   [ -s "$1" ] || return 0
+   flat="$(convert "$1" -colorspace Gray -format '%[fx:standard_deviation<0.012?1:0]' info: 2>/dev/null || printf '0')"
+   [ "${flat}" = '1' ]
+}
+
+shots_install_icon_theme() {  ## $1 = XDG_DATA_HOME target dir
+   local data_home th st_icon sz
+   data_home="$1"
+   st_icon="${ST_REPO:-}/usr/share/icons/hicolor/scalable/apps/secure-terminal.svg"
+   if [ -z "${ST_REPO:-}" ] || [ ! -f "${st_icon}" ]; then
+      return 0
+   fi
+   th="${data_home}/icons/hicolor"
+   mkdir --parents -- "${th}/scalable/apps"
+   cp -- "${st_icon}" "${th}/scalable/apps/secure-terminal.svg"
+   for sz in 16 22 24 32 48 64 128 256; do
+      mkdir --parents -- "${th}/${sz}x${sz}/apps"
+      convert -background none -resize "${sz}x${sz}" "${st_icon}" \
+         "${th}/${sz}x${sz}/apps/secure-terminal.png" 2>/dev/null || true
+   done
+   gtk-update-icon-cache -f "${th}" 2>/dev/null || true
 }
 
 shots_optimize_to_webp() {  ## $@=produced PNG shots -> convert each to webp in place
