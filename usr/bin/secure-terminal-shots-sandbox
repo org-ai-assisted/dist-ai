@@ -91,17 +91,26 @@ sandbox "${target_arg[@]}" sync --delete "${corpus}" "${base}/terminal-poc-corpu
    || die "sync of terminal-poc-corpus into the sandbox failed"
 
 printf '%s\n' "secure-terminal-shots-sandbox: running '${lane}' in the sandbox ..." >&2
-## Delegate to the synced sibling run-lane-in-sandbox.sh (NOT an inline bash -lc: an inline
-## multi-line interpreter program is a style violation). ${HOME} here is the SANDBOX home,
-## same uid/path as this host, so the path resolves correctly inside temp-claude.
+remote_shots="${base}/dist-ai/usr/share/secure-terminal-shots/shots"
+## Run the capture in the BACKGROUND and heartbeat local progress from the sandbox shot count.
+## `sandbox exec` buffers the qrexec stream, so the lane's own per-terminal output never reaches
+## the caller until it exits -- a long silent run then false-stalls the durable-bg supervisor
+## (which watches the progress file for growth). Polling the rendered-PNG count is a REAL
+## liveness signal that still exposes a genuine wedge (the count stops advancing). Delegates to
+## the synced sibling script, NOT an inline bash -lc.
 sandbox "${target_arg[@]}" exec -- \
    "${HOME}/${base}/dist-ai/usr/share/secure-terminal-shots/run-lane-in-sandbox.sh" \
-   "${base}" "${lane}" "$@" \
-   || die "the in-sandbox '${lane}' run failed"
+   "${base}" "${lane}" "$@" &
+capture_pid=$!
+while kill -0 "${capture_pid}" 2>/dev/null; do
+   sleep 20
+   rendered="$(sandbox "${target_arg[@]}" exec -- bash -c 'ls "$HOME/'"${remote_shots}"'"/*.png "$HOME/'"${remote_shots}"'"/*.webp 2>/dev/null | wc -l' 2>/dev/null || printf '?')"
+   printf '%s\n' "secure-terminal-shots-sandbox: ${lane} capturing -- ${rendered} shot(s) rendered ..."
+done
+wait "${capture_pid}" || die "the in-sandbox '${lane}' run failed"
 
 ## Pull the freshly captured shots back. The comparison lane writes webp into
 ## secure-terminal-shots/shots/; copy only the webp into the site (never the .png/.log noise).
-remote_shots="${base}/dist-ai/usr/share/secure-terminal-shots/shots"
 pull_tmp="$(mktemp --directory)"
 
 printf '%s\n' "secure-terminal-shots-sandbox: pulling shots back into ${site}/comparison/shots/ ..." >&2
