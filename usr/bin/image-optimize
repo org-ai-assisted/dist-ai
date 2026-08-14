@@ -390,6 +390,13 @@ check_one() {
       err "not a file: ${input}"
       return 2
    fi
+   ## Same 'stat -c %s' symlink trap as process_one (it reports the LINK path length,
+   ## not the target): for a symlink size_old reads tiny, reclaim goes negative, and the
+   ## gate would falsely PASS an unoptimized image. Refuse it, as the mutating path does.
+   if [ -L "${src}" ]; then
+      err "refusing to check a symlink (check its target instead): ${input}"
+      return 2
+   fi
    base="${src##*/}"
    if ! validate_safe_filename base; then
       err "unsafe filename: ${input}"

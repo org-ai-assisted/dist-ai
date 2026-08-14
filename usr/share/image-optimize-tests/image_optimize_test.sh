@@ -204,6 +204,10 @@ real_sum_before="$(cksum < "${real_png}")"
 ln -s real.png "${workdir}/link.png"
 assert_fail 'refuses to optimize a symlink (stat misreads its size)' \
    "${BIN}" --quiet -- "${workdir}/link.png"
+## The --check GATE must refuse a symlink too, not false-pass it: stat's link-size
+## misread makes reclaim negative, which the old code reported as "already minimal".
+assert_fail 'refuses to --check a symlink (gate must not false-pass it)' \
+   "${BIN}" --check -- "${workdir}/link.png"
 link_target="$(readlink -- "${workdir}/link.png" 2>/dev/null || true)"
 real_sum_after="$(cksum < "${real_png}")"
 if [ -L "${workdir}/link.png" ] && [ "${link_target}" = 'real.png' ]; then
