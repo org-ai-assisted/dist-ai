@@ -51,7 +51,7 @@ fi
 
 ## Argument counting lives in its own file (R-190): the helper is a real program
 ## a reader can open and run, not a blob embedded in a quoted heredoc.
-report="$(python3 -- "${test_dir}/debconf_record_argcount.py" "${preinst}")"
+report="$("${test_dir}/debconf_record_argcount.py" "${preinst}")"
 total="$(printf '%s\n' "${report}" | sed -n '1p')"
 bad="$(printf '%s\n' "${report}" | sed -n '2p')"
 
@@ -70,7 +70,7 @@ fi
 ## CANARY: prove the check can actually fail, using the broken form itself.
 canary="$(mktemp)"
 printf '%s\n' "   printf '%s\\n' pkg pkg/question boolean true | debconf-set-selections" > "${canary}"
-canary_bad="$(python3 -- "${test_dir}/debconf_record_argcount.py" "${canary}" | sed -n '2p')"
+canary_bad="$("${test_dir}/debconf_record_argcount.py" "${canary}" | sed -n '2p')"
 safe-rm --force -- "${canary}"
 if [ -n "${canary_bad}" ]; then
    pass "canary: the unquoted form IS detected"

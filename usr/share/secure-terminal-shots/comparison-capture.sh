@@ -581,7 +581,7 @@ done
 ## keep that embedded line -- their alt-screen hides the real command, so it is what puts 'cat'
 ## at the top of their shots. Strip it now, for the secure-terminal pass ONLY (dedicated sibling
 ## script, not inline scripting).
-python3 -- "${here}/strip-tui-showcase-prompt.py" "${HOME}/tui-showcase.payload"
+"${here}/strip-tui-showcase-prompt.py" "${HOME}/tui-showcase.payload"
 
 st_bin="${ST_REPO:-}/usr/bin/secure-terminal"
 st_pkg="${ST_REPO:-}/usr/lib/python3/dist-packages"

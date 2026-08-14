@@ -47,4 +47,4 @@ repo_root="${DEVELOPER_META_FILES_PATH:?run via the github-org-tools-tests entry
 
 ## Run as a child (not process-replacement exec): a plain final call forwards
 ## the script's exit status under errexit, and keeps this wrapper in the ps tree.
-python3 -- "${script_dir}/test_workflow_yaml.py" "${repo_root}"
+"${script_dir}/test_workflow_yaml.py" "${repo_root}"

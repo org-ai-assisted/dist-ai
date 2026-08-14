@@ -980,10 +980,42 @@ r030_printf_is_command() {
    return 1
 }
 
+r030_offset_is_command() {
+   ## True when the character at TARGET index in TEXT sits at quote depth zero,
+   ## i.e. a 'printf' token there is a command, not one nested inside a quoted
+   ## argument (a canary payload / log line that merely spells 'printf'). Same
+   ## quote + double-quote-backslash walk as r030_printf_is_command, stopped at
+   ## TARGET. Without this the format-extraction loop re-scanned a printf inside
+   ## an OUTER printf's double-quoted data argument and flagged the inner
+   ## format -- a false positive on 'printf %s\n "... printf ... |cmd"'.
+   local text="$1" target="$2" index char quote=""
+
+   for (( index=0; index<target && index<${#text}; index++ )); do
+      char="${text:index:1}"
+      if [ "${quote}" = '"' ] && [ "${char}" = "\\" ]; then
+         index=$(( index + 1 ))
+         continue
+      fi
+      if [ -n "${quote}" ]; then
+         if [ "${char}" = "${quote}" ]; then
+            quote=""
+         fi
+         continue
+      fi
+      case "${char}" in
+         "'"|'"')
+            quote="${char}"
+            ;;
+      esac
+   done
+   [ -z "${quote}" ]
+}
+
 
 check_R030_format_string() {
    local hits script line_number line remainder format_literal format_inner
    local printf_command printf_redirects printf_scan
+   local match pre grp1 printf_abs consumed
    local -a fs
 
    mapfile -d '' -t fs < <(filter_self "${@}")
@@ -1085,10 +1117,24 @@ check_R030_format_string() {
             continue
          fi
          remainder="${line}"
+         consumed=0
          while [[ "${remainder}" =~ (^|[^-[:alnum:]_])printf[[:space:]]+(\'[^\']*\'|\"[^\"]*\") ]]; do
+            match="${BASH_REMATCH[0]}"
+            grp1="${BASH_REMATCH[1]}"
+            pre="${remainder%%"${match}"*}"
+            ## Absolute index of the 'printf' token in the ORIGINAL line: chars
+            ## already consumed + text before the match + the leading boundary
+            ## char (group 1 is empty at line start, one char otherwise).
+            printf_abs=$(( consumed + ${#pre} + ${#grp1} ))
             format_literal="${BASH_REMATCH[2]}"
             format_inner="${format_literal:1:${#format_literal}-2}"
-            remainder="${remainder#*"${BASH_REMATCH[0]}"}"
+            remainder="${remainder#*"${match}"}"
+            consumed=$(( consumed + ${#pre} + ${#match} ))
+            ## Only a printf at quote depth zero is a command; one nested inside
+            ## a quoted argument (a canary payload) is data, not a call.
+            if ! r030_offset_is_command "${line}" "${printf_abs}"; then
+               continue
+            fi
             ## Numeric-probe carve-out (see the block comment above). Only a
             ## single-quoted format qualifies, so nothing can be interpolated
             ## into it. Whitespace is squeezed out before matching so
@@ -1709,6 +1755,43 @@ check_R192_shell_inline_shell_c() {
                   qchar="${lastchar}"
                fi
             fi
+         fi
+      done < "${script}"
+   done
+}
+
+check_R193_python_dashdash_script() {
+   local script line line_number dashdash_re
+
+   ## R-193: an in-repo script committed +x with a shebang is called DIRECTLY
+   ## ('"${dir}"/foo dot py args'), not via an interpreter prefix that re-names it. The shebang
+   ## plus exec bit is the project idiom (chmod +x once, run it like any program), and it also
+   ## honours interpreter flags in the shebang (e.g. -Bsu) that a bare 'interpreter -- file'
+   ## silently drops. A COMMENT line is skipped so this rule's own docstring cannot self-trip.
+   ## Only a LITERAL '<interpreter> -- <path ending in .py>' is flagged; a generic dispatcher
+   ## ('interpreter -- "$@"') has no literal path and is glue, not a named script. Waiver (a
+   ## script deliberately NOT +x, or an external path): '## style-ok: allow-python-dashdash'.
+   dashdash_re='python3?[[:space:]]+--[[:space:]]+[^[:space:]]*\.py'
+   for script in "${@}"; do
+      if [ ! -f "${script}" ] || [ -L "${script}" ]; then
+         continue
+      fi
+      if grep --quiet --extended-regexp \
+         '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*allow-python-dashdash([[:space:]]|$)' \
+         -- "${script}" 2>/dev/null
+      then
+         note "R-193 skipped: 'style-ok: allow-python-dashdash' waiver in '${script}'"
+         continue
+      fi
+      line_number=0
+      while IFS= read -r line || [ -n "${line}" ]; do
+         line_number=$(( line_number + 1 ))
+         if [[ "${line}" =~ ^[[:space:]]*# ]]; then
+            continue
+         fi
+         if [[ "${line}" =~ ${dashdash_re} ]]; then
+            fail "R-193 call the +x script directly via its shebang, not through an interpreter prefix" \
+               "'${script}:${line_number}'"
          fi
       done < "${script}"
    done
@@ -2628,6 +2711,7 @@ run_file_checks() {
       check_R103_exec "${shell_files[@]}"
       check_R190_inline_interpreter "${shell_files[@]}"
       check_R192_shell_inline_shell_c "${shell_files[@]}"
+      check_R193_python_dashdash_script "${shell_files[@]}"
       check_R153_help_from_comments "${shell_files[@]}"
    else
       note "no changed shell files"

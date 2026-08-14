@@ -113,7 +113,7 @@ else
 fi
 ## The secure-terminal-pass prompt strip then removes the embedded prompt (it renders inline and
 ## shows the real prompt, so the embedded copy would duplicate). Board stays intact.
-python3 -- "${shots_dir}/strip-tui-showcase-prompt.py" "${payload}"
+"${shots_dir}/strip-tui-showcase-prompt.py" "${payload}"
 if grep -qF 'user@host:~$ cat tui-showcase.payload' -- "${payload}"; then
    assert 'embedded prompt removed for secure-terminal pass' no
 else
