@@ -111,6 +111,46 @@ run_marker="${runtime_dir}"
 ## reaped and the loop continues, so a wedged terminal cannot stall the whole grid.
 SHOT_DEADLINE="${SHOT_DEADLINE:-90}"
 
+## Optional scope filters (a FAST PATH for iteration; the FULL matrix is the default, so a bare
+## run never silently skips anything). --only NAME restricts the emulators (repeatable); --case C
+## restricts the cases in BOTH loops (repeatable); --st-only skips the emulators; --quick is a
+## smoke shortcut. The full case list is the single source of truth for both loops.
+all_cases='crafted random homoglyph bidi zerowidth altscreen tui-showcase'
+CASES="${CASES:-${all_cases}}"
+only_terminals=''
+cases_sel=''
+st_only=''
+while [ "$#" -gt 0 ]; do
+   case "$1" in
+      --only)
+         [ "$#" -ge 2 ] || { printf '%s\n' 'comparison-capture: --only needs a terminal name' >&2; exit 2; }
+         only_terminals="${only_terminals:+${only_terminals} }$2"
+         shift 2
+         ;;
+      --case)
+         [ "$#" -ge 2 ] || { printf '%s\n' 'comparison-capture: --case needs a case name' >&2; exit 2; }
+         cases_sel="${cases_sel:+${cases_sel} }$2"
+         shift 2
+         ;;
+      --st-only)
+         st_only='true'
+         shift
+         ;;
+      --quick)
+         only_terminals='kitty'
+         cases_sel='crafted'
+         shift
+         ;;
+      *)
+         printf '%s\n' "comparison-capture: unknown argument '$1'" >&2
+         exit 2
+         ;;
+   esac
+done
+if [ -n "${cases_sel}" ]; then
+   CASES="${cases_sel}"
+fi
+
 ## Reliable reaping REQUIRES the safe-pgrep/safe-pkill wrappers -- fail loudly, never fall back.
 shots_require_safe_ps || exit 1
 ## Pre-clean: reap orphaned groups left by any PRIOR crashed run (marker-scoped -- it can never
@@ -291,7 +331,7 @@ inject() {  ## $1=window-id  $2=command
    DISPLAY="${xwl_display}" xdotool windowactivate --sync "${wid}" 2>/dev/null || true
    DISPLAY="${xwl_display}" setxkbmap us 2>/dev/null || true    # '/' else types as '&'
    sleep 0.4
-   DISPLAY="${xwl_display}" xdotool type --delay 45 -- "${cmd}"
+   DISPLAY="${xwl_display}" xdotool type --delay 12 -- "${cmd}"
    sleep 0.3
    DISPLAY="${xwl_display}" xdotool key --clearmodifiers Return
 }
@@ -424,7 +464,7 @@ find_window() {
 }
 
 shoot() {  ## $1=emulator  $2=case
-   local e case wid ww rescue_h pgf flagf epgid wdog
+   local e case wid ww rescue_h pgf flagf epgid wdog cur_w
    e="$1"; case="$2"; wid=''
    ## the tall tui-showcase board needs a taller pixel-resized window (qterminal +
    ## the shrink rescue); the short cases keep their prior heights so their shots and
@@ -455,6 +495,17 @@ shoot() {  ## $1=emulator  $2=case
       sleep 0.7
    fi
    sleep 2
+   ## tui-showcase's ~26-line board is taller than some emulators actually render (konsole
+   ## ignores TerminalRows headlessly and paints ~22 rows), so the board's TOP line -- the
+   ## embedded 'cat tui-showcase.payload' prompt that shows what produced the board -- scrolls
+   ## off. Force a taller WINDOW before the board renders (the emulator reflows on the resize),
+   ## keeping the emulator's own width, so that top line stays on-screen.
+   if [ "${case}" = tui-showcase ]; then
+      cur_w="$(DISPLAY="${xwl_display}" xdotool getwindowgeometry --shell "${wid}" 2>/dev/null | sed -n 's/^WIDTH=//p' || true)"
+      [ -n "${cur_w}" ] || cur_w=1100
+      DISPLAY="${xwl_display}" xdotool windowsize "${wid}" "${cur_w}" 880 2>/dev/null || true
+      sleep 0.6
+   fi
    inject "${wid}" "$(shots_payload_cmd "${case}")"
    sleep 3
    ww="$(DISPLAY="${xwl_display}" xdotool getwindowgeometry --shell "${wid}" 2>/dev/null | sed -n 's/^WIDTH=//p' || true)"
@@ -482,7 +533,13 @@ fi
 ## A MISSING terminal is a HARD ERROR, not a silent skip -- an incomplete grid
 ## would misrepresent the comparison. Install the emulator, or set ALLOW_SKIP=1 to
 ## deliberately authorize skipping (it is then logged, never silent).
-TERMINALS="${TERMINALS:-xterm urxvt st konsole gnome-terminal xfce4-terminal mate-terminal qterminal alacritty kitty}"
+if [ -n "${st_only}" ]; then
+   TERMINALS=''
+elif [ -n "${only_terminals}" ]; then
+   TERMINALS="${only_terminals}"
+else
+   TERMINALS="${TERMINALS:-xterm urxvt st konsole gnome-terminal xfce4-terminal mate-terminal qterminal alacritty kitty}"
+fi
 for e in ${TERMINALS}; do
    ## `type -P` finds a binary that is on PATH and carries SOME exec bit, but that does
    ## not mean the CURRENT user may run it: a hardened Kicksecure/Whonix permission-hardener
@@ -503,15 +560,18 @@ for e in ${TERMINALS}; do
       printf '%s\n' "ERROR: terminal ${e} ${reason}. Install/fix it, or set ALLOW_SKIP=1 to authorize skipping." >&2
       exit 1
    fi
-   shoot "${e}" crafted      || true
-   shoot "${e}" random       || true
-   shoot "${e}" homoglyph    || true
-   shoot "${e}" bidi         || true
-   shoot "${e}" zerowidth    || true
-   shoot "${e}" altscreen    || true
-   shoot "${e}" tui-showcase || true
+   for c in ${CASES}; do
+      shoot "${e}" "${c}" || true
+   done
    printf '%s\n' "captured ${e}"
 done
+
+## secure-terminal renders the board INLINE and shows the real typed prompt, so the board's
+## embedded 'cat tui-showcase.payload' line would DUPLICATE it. The emulators (captured above)
+## keep that embedded line -- their alt-screen hides the real command, so it is what puts 'cat'
+## at the top of their shots. Strip it now, for the secure-terminal pass ONLY (dedicated sibling
+## script, not inline scripting).
+python3 -- "${here}/strip-tui-showcase-prompt.py" "${HOME}/tui-showcase.payload"
 
 st_bin="${ST_REPO:-}/usr/bin/secure-terminal"
 st_pkg="${ST_REPO:-}/usr/lib/python3/dist-packages"
@@ -552,6 +612,16 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
    )
    for spec in "${st_specs[@]}"; do
       read -r st_case st_mode st_suffix st_tui <<< "${spec}"
+      ## honour --case: skip a spec whose case is not selected (default = all cases).
+      st_case_selected=false
+      case " ${CASES} " in
+         *" ${st_case} "*)
+            st_case_selected=true
+            ;;
+      esac
+      if [ "${st_case_selected}" = false ]; then
+         continue
+      fi
       st_mode_flags=(--mode "${st_mode}")
       [ "${st_tui:-}" = tui ] && st_mode_flags+=(--tui)
       ## tui-showcase: secure-terminal strips the alt-screen escape and renders the
@@ -589,7 +659,8 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
          DISPLAY="${xwl_display}" xdotool windowsize "${stwid}" "${st_win_w}" "${st_win_h}" 2>/dev/null || true
          sleep 0.6
          inject "${stwid}" "$(shots_payload_cmd "${st_case}")"
-         sleep 3
+         ## SECURE_TERMINAL_SHOT=1 renders synchronously, so a long fixed settle is unneeded.
+         sleep 1
          capture_window "${out}/secure-terminal.${st_suffix}.png" "${stwid}"
          tighten_deadspace "${out}/secure-terminal.${st_suffix}.png"
       else

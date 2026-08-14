@@ -98,11 +98,31 @@ if [ -s "${payload}" ] && head -c 1 -- "${payload}" | od -An -tx1 | grep -q '1b'
 else
    assert 'payload starts with ESC (header stripped)' no
 fi
-## Keeps the cat echo (educational: what produced the board).
-if grep -qF 'cat tui-showcase.payload' -- "${payload}"; then
-   assert "keeps 'cat tui-showcase.payload' echo" ok
+## After the HEADER strip the embedded prompt is KEPT (traditional emulators need it: their
+## alt-screen hides the real typed command, so it puts 'cat' at the top of THEIR shots).
+if grep -qF 'user@host:~$ cat tui-showcase.payload' -- "${payload}"; then
+   assert 'embedded prompt kept after header strip (for emulators)' ok
 else
-   assert "keeps 'cat tui-showcase.payload' echo" no
+   assert 'embedded prompt kept after header strip (for emulators)' no
+fi
+## The board itself is intact (only the header was trimmed).
+if grep -qF 'TERMINAL TEXT' -- "${payload}"; then
+   assert 'board content intact' ok
+else
+   assert 'board content intact' no
+fi
+## The secure-terminal-pass prompt strip then removes the embedded prompt (it renders inline and
+## shows the real prompt, so the embedded copy would duplicate). Board stays intact.
+python3 -- "${shots_dir}/strip-tui-showcase-prompt.py" "${payload}"
+if grep -qF 'user@host:~$ cat tui-showcase.payload' -- "${payload}"; then
+   assert 'embedded prompt removed for secure-terminal pass' no
+else
+   assert 'embedded prompt removed for secure-terminal pass' ok
+fi
+if grep -qF 'TERMINAL TEXT' -- "${payload}"; then
+   assert 'board content intact after prompt strip' ok
+else
+   assert 'board content intact after prompt strip' no
 fi
 ## Header text and its URL are gone.
 if grep -qF 'read me first' -- "${payload}"; then

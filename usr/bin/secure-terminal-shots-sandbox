@@ -86,19 +86,13 @@ sandbox "${target_arg[@]}" sync --delete "${corpus}" "${base}/terminal-poc-corpu
    || die "sync of terminal-poc-corpus into the sandbox failed"
 
 printf '%s\n' "secure-terminal-shots-sandbox: running '${lane}' in the sandbox ..." >&2
-## The in-sandbox runner resolves SECURE_TERMINAL_REPO explicitly and the corpus as a sibling
-## of dist-ai (${fallback}/../../../../terminal-poc-corpus == ${base}/terminal-poc-corpus), which
-## the sibling layout above satisfies; CORPUS_REPO is exported too, belt and braces. $HOME is
-## the SANDBOX home (same uid/path), so it is expanded in the sandbox, not here.
-sandbox "${target_arg[@]}" exec -- bash -lc '
-   set -o errexit
-   export SECURE_TERMINAL_REPO="${HOME}/'"${base}"'/secure-terminal"
-   export CORPUS_REPO="${HOME}/'"${base}"'/terminal-poc-corpus"
-   ## stdbuf -oL: line-buffer the lane output so its per-terminal "captured X" progress
-   ## streams to the caller (and thence the durable-bg progress file) as it happens,
-   ## rather than flushing at the end -- otherwise a silent multi-minute capture false-stalls.
-   stdbuf -oL -eL "${HOME}/'"${base}"'/dist-ai/usr/bin/secure-terminal-shots" "$@"
-' bash "${lane}" "$@" || die "the in-sandbox '${lane}' run failed"
+## Delegate to the synced sibling run-lane-in-sandbox.sh (NOT an inline bash -lc: an inline
+## multi-line interpreter program is a style violation). ${HOME} here is the SANDBOX home,
+## same uid/path as this host, so the path resolves correctly inside temp-claude.
+sandbox "${target_arg[@]}" exec -- \
+   "${HOME}/${base}/dist-ai/usr/share/secure-terminal-shots/run-lane-in-sandbox.sh" \
+   "${base}" "${lane}" "$@" \
+   || die "the in-sandbox '${lane}' run failed"
 
 ## Pull the freshly captured shots back. The comparison lane writes webp into
 ## secure-terminal-shots/shots/; copy only the webp into the site (never the .png/.log noise).

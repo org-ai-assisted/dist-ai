@@ -8,9 +8,14 @@
 ## Strip the human-facing "read me first" safety preamble from a tui-showcase SHOT payload,
 ## in place. The board proper begins at the first ESC (0x1b) -- the OSC title / alt-screen
 ## switch; everything before it is the leading '#'-comment header. The corpus file keeps the
-## header for raw downloads; only the shot copy is stripped. The kept region still starts with
-## the 'user@host:~$ cat tui-showcase.payload' echo (it sits AFTER the escapes). HARD-FAIL if
-## no ESC anchor is found (a corpus format change), never silently ship the header.
+## header for raw downloads; only the shot copy is stripped. HARD-FAIL if no ESC anchor is
+## found (a corpus format change), never silently ship the header.
+##
+## The board's EMBEDDED prompt line is deliberately KEPT here: a traditional emulator hides
+## the real typed command on the primary screen (it renders the board on the alt screen), so
+## the embedded prompt is what shows 'cat tui-showcase.payload' at the top of THOSE shots.
+## secure-terminal renders inline and shows the real prompt, so the embedded copy is stripped
+## for its capture only -- separately, by strip-tui-showcase-prompt.py, between the two loops.
 
 import sys
 
