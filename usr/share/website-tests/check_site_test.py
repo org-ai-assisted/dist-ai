@@ -354,7 +354,9 @@ def run():
         _write(root, 'index.html', _page % (
             '<div class="asplayer">p</div>'                 # allowlisted sole hook
             '<span class="jshook">j</span>'                 # referenced from JS
-            '<script>document.querySelector(".jshook")</script>'))
+            # a whitespace-bearing end tag (</script >) must still be captured, or the JS
+            # reference is missed and jshook is falsely flagged undefined (CodeQL py/bad-tag-filter).
+            '<script>document.querySelector(".jshook")</script >'))
         fails = _uc_failures(root)
         check('allowlisted sole hook not flagged', not any('asplayer' in x for x in fails), repr(fails))
         check('JS-referenced sole class not flagged', not any('jshook' in x for x in fails), repr(fails))
