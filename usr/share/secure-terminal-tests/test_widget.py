@@ -832,6 +832,26 @@ _rpress = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(1, 1), QPointF(1, 1)
 _selfz.mousePressEvent(_rpress)
 ok(not _selfz._mouse_selecting, 'a non-left press does not mark a drag-selection')
 _selfz.close()
+
+# Regression (ai-review): typing in TUI mode CLEARS a held selection so the frozen grid
+# resumes. TUI keys go straight to the child (never Qt's editor), so without this the
+# selection would persist and _render_tui stay a no-op until a mouse click.
+_seltype = SecureTerminal(command='/bin/cat', tui=True)
+_seltype.resize(700, 300)
+_seltype.show()
+pump(40)
+for _i in range(20):
+    _seltype._feed_stream(('t-%d\r\n' % _i).encode())
+_seltype._render_tui()
+_stc = QTextCursor(_seltype.document())
+_stc.setPosition(3)
+_stc.setPosition(9, QTextCursor.MoveMode.KeepAnchor)
+_seltype.setTextCursor(_stc)
+ok(_seltype.textCursor().hasSelection(), 'a completed selection is established')
+key(_seltype, Qt.Key.Key_A, 'a')
+ok(not _seltype.textCursor().hasSelection(),
+   'typing in TUI mode clears a held selection so the frozen grid resumes')
+_seltype.close()
 # scrollback navigation in line mode: PageUp scrolls the buffer up, Shift+Home/
 # End jump to the ends, plain Home is left for line editing (does not scroll)
 sc = SecureTerminal(command='/bin/cat')

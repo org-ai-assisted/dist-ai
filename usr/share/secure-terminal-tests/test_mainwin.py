@@ -425,24 +425,34 @@ try:
 finally:
     QFileDialog.getSaveFileName = _ogsf
 
-# --- open_transcript: writes the transcript to a temp file + opens it in the editor ----
+# --- open_transcript: writes the transcript under the XDG state dir + opens it -----------
+# (NOT /tmp: the shipped AppArmor profile allows ~/.local/state/secure-terminal/** but not
+# /tmp; a fixed reused file so history does not accumulate.)
 from PyQt6.QtGui import QDesktopServices as _QDS         # noqa: E402
+import secure_terminal.session as _sess                  # noqa: E402
 _oou = _QDS.openUrl
+_osd = _sess._state_dir
 _opened = []
+_state_tmp = tempfile.mkdtemp(prefix='st-transcript-state-')
 try:
     _QDS.openUrl = staticmethod(lambda url: _opened.append(url.toLocalFile()) or True)
+    _sess._state_dir = lambda: _state_tmp
     _ocur = win.current
     win.current = lambda: None                  # no active tab -> no-op
     win.open_transcript()
     ok(_opened == [], 'open_transcript: no active tab is a no-op')
     win.current = _ocur
     win.open_transcript()
-    ok(len(_opened) == 1 and os.path.exists(_opened[0])
+    ok(len(_opened) == 1 and os.path.dirname(_opened[0]) == _state_tmp
+       and os.path.basename(_opened[0]) == 'transcript.txt'
        and os.path.getsize(_opened[0]) > 0,
-       'open_transcript: writes the transcript to a temp file and opens it in the editor')
-    os.unlink(_opened[0])
+       'open_transcript: writes transcript.txt under the state dir and opens it')
+    win.open_transcript()                        # a second open REUSES the one file (no leak)
+    ok(len(_opened) == 2 and _opened[0] == _opened[1],
+       'open_transcript: reuses one file rather than leaking a new temp each time')
 finally:
     _QDS.openUrl = _oou
+    _sess._state_dir = _osd
 
 # --- _test_canary: writes the marker + echoes; loud failure on a bad path -----
 import secure_terminal.main as _MM              # noqa: E402

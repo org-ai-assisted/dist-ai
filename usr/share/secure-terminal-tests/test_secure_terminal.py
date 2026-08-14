@@ -2138,6 +2138,19 @@ eq(S.tui_cell('a' + chr(0x0301) * (S._ZALGO_MARK_MAX + 1), 'show'), S.BOX,
 eq(S.tui_cell('a' + chr(0x0301) * S._ZALGO_MARK_MAX, 'show'),
    'a' + chr(0x0301) * S._ZALGO_MARK_MAX,
    'the TUI grid keeps a stack at/below the threshold shown')
+# caret alignment (ai-review): cells_display_col collapses a Zalgo run to ONE box exactly as
+# cells_to_runs renders it, so the caret does not drift past text following a Zalgo cluster.
+_zcaret = [('a', None)] + [(chr(0x0301), None)] * (S._ZALGO_MARK_MAX + 1) + [('b', None)]
+eq(S.cells_display_col(_zcaret, len(_zcaret), 'show'), 2,
+   'cells_display_col counts a boxed Zalgo cluster as ONE column (caret stays aligned)')
+_lcaret = [('a', None)] + [(chr(0x0301), None)] * S._ZALGO_MARK_MAX
+eq(S.cells_display_col(_lcaret, len(_lcaret), 'show'), 1 + S._ZALGO_MARK_MAX,
+   'a shown (<= threshold) combining stack keeps each mark offset for the caret')
+# a wide (CJK) base is NOT collapsed (a one-column box would shrink a two-column base)
+eq(len([c for c, _ in S._collapse_zalgo_runs(
+        [(chr(0x4E2D), None)] + [(chr(0x0301), None)] * (S._ZALGO_MARK_MAX + 1))]),
+   S._ZALGO_MARK_MAX + 2,
+   'a Zalgo run on a wide (East-Asian) base is left un-collapsed (no caret/width desync)')
 
 # The predicate must agree with \X over the WHOLE range, not just the samples --
 # this is what would have caught the original hole on the day it was written.

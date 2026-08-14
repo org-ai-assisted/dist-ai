@@ -342,25 +342,28 @@ _lone = _paste([b'\x1b'])
 eq(_lone[0], b'', 'a lone ESC is held (deferred), not forwarded inline')
 eq(_lone[1][2], b'\x1b', 'a lone ESC is carried so a split paste-start marker can reassemble')
 
-# regression (reviewdrain3): an unterminated / oversized bracketed-paste frame must not
-# grow paste_buf without bound or lock out input forever (in_paste never clearing). The
-# buffer is capped: on overflow it is dropped and paste mode is left, so typed input
-# recovers. Cap is shrunk here so the test stays tiny. Two overflow paths are exercised:
+# regression (reviewdrain3 + ai-review): an oversized bracketed-paste frame must (a) bound
+# memory and (b) NOT let its runaway tail become typed input. On overflow the buffer stops
+# growing but STAYS in paste, so the tail is swallowed (never auto-runs); the close marker
+# ends it and typed input recovers. Cap shrunk so the test stays tiny.
 _saved_max = cli._PASTE_MAX
 cli._PASTE_MAX = 8
 try:
-    # (a) overflow at the end-of-chunk tail (no close marker in the read at all)
-    _ov_out, _ov_st = _paste([b'\x1b[200~' + b'A' * 20, b'exit\r'])
-    eq(_ov_st, (False, b'', b''),
-       'an unterminated over-cap paste is dropped, leaving no in_paste / buffered state')
-    eq(_ov_out, b'exit\r',
-       'typed input recovers after an unterminated over-cap paste (no input lockout)')
-    ok(b'A' not in _ov_out, 'the runaway paste body is not forwarded to the child')
-    # (b) overflow detected at loop entry on the NEXT read (buffer carried a trailing ESC)
-    _ov2_out, _ov2_st = _paste([b'\x1b[200~' + b'A' * 20 + b'\x1b', b'q', b'ok\r'])
-    eq(_ov2_st[0], False,
-       'an over-cap paste carried across reads leaves paste mode on the next read')
-    eq(_ov2_out, b'ok\r', 'typed input recovers after an over-cap paste carried across reads')
+    # SECURITY: the over-cap tail (here 'echo pwned\r') must never reach the child as typed
+    # input -- even when it arrives in a LATER read than the overflow (the pastejacking the
+    # old drop-and-exit had). It is dropped; the close marker ends the paste; 'exit\r' after
+    # the marker is ordinary typing and IS forwarded.
+    _ov_out, _ov_st = _paste([b'\x1b[200~' + b'A' * 20, b'echo pwned\r', b'\x1b[201~exit\r'])
+    ok(b'pwned' not in _ov_out,
+       'an over-cap paste tail is dropped, NOT forwarded as typed input (no pastejacking)')
+    ok(_ov_out.endswith(b'exit\r') and _ov_st[0] is False,
+       'the paste closes on its end marker even after overflow; later typing recovers')
+    ok(len(_ov_st[1]) <= cli._PASTE_MAX, 'the paste buffer stays bounded at the cap')
+    # memory is bounded even for a never-closing flood, and it stays IN paste (tail swallowed)
+    _ov2_out, _ov2_st = _paste([b'\x1b[200~' + b'A' * 5000])
+    ok(_ov2_st[0] is True and len(_ov2_st[1]) <= cli._PASTE_MAX,
+       'an unterminated over-cap flood stays in paste with a bounded buffer (no typed tail)')
+    ok(_ov2_out == b'', 'nothing from an unterminated over-cap flood reaches the child')
 finally:
     cli._PASTE_MAX = _saved_max
 
