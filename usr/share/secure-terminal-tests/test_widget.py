@@ -791,6 +791,47 @@ _sel.setPosition(4, QTextCursor.MoveMode.KeepAnchor)
 cs.setTextCursor(_sel)
 cs.mouseReleaseEvent(_release)
 ok(cs.textCursor().hasSelection(), 'a drag selection survives the release')
+
+# Regression (operator): the TUI grid rebuild must NOT run while a selection is active, or
+# it re-anchors the selection and drags it to the bottom. A left press marks the drag; while
+# a selection is held _render_tui is a no-op (the view freezes) so the selection is preserved.
+_selfz = SecureTerminal(command='/bin/cat', tui=True)
+_selfz.resize(700, 300)
+_selfz.show()
+pump(40)
+for _i in range(60):
+    _selfz._feed_stream(('row-%d\r\n' % _i).encode())
+_selfz._render_tui()
+def _set_sel(term, a=5, p=20):
+    tc = QTextCursor(term.document())
+    tc.setPosition(a)
+    tc.setPosition(p, QTextCursor.MoveMode.KeepAnchor)
+    term.setTextCursor(tc)
+_selpress = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(1, 1), QPointF(1, 1),
+                        Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                        Qt.KeyboardModifier.NoModifier)
+_selfz.mousePressEvent(_selpress)          # begins a drag; clears any prior selection
+ok(_selfz._mouse_selecting, 'a left-button press marks a drag-selection in progress')
+_set_sel(_selfz)                           # the drag extends a selection while _mouse_selecting
+_selfz._feed_stream(b'more-output\r\n')
+_selfz._render_tui()
+eq((_selfz.textCursor().anchor(), _selfz.textCursor().position()), (5, 20),
+   'TUI rebuild is frozen during a drag -- the selection is not dragged to the bottom')
+_selfz.mouseReleaseEvent(_release)
+ok(not _selfz._mouse_selecting, 'mouse release ends the drag-selection freeze')
+_set_sel(_selfz)                           # a completed selection is still held
+_selfz._feed_stream(b'and-more\r\n')
+_selfz._render_tui()
+eq((_selfz.textCursor().anchor(), _selfz.textCursor().position()), (5, 20),
+   'a held selection keeps the rebuild frozen so it is not collapsed')
+# a NON-left press does not begin a drag-selection freeze (button branch)
+_selfz.setTextCursor(QTextCursor(_selfz.document()))   # clear selection first
+_rpress = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(1, 1), QPointF(1, 1),
+                      Qt.MouseButton.RightButton, Qt.MouseButton.RightButton,
+                      Qt.KeyboardModifier.NoModifier)
+_selfz.mousePressEvent(_rpress)
+ok(not _selfz._mouse_selecting, 'a non-left press does not mark a drag-selection')
+_selfz.close()
 # scrollback navigation in line mode: PageUp scrolls the buffer up, Shift+Home/
 # End jump to the ends, plain Home is left for line editing (does not scroll)
 sc = SecureTerminal(command='/bin/cat')
@@ -5840,6 +5881,18 @@ _tk2.apply_tui(True)
 _tks2 = spy_writes(_tk2)
 key(_tk2, Qt.Key.Key_A, 'a')
 ok(_tks2 == [b'a'], 'TUI mode: keyPressEvent routes a plain key through _tui_key')
+
+# a MODIFIED cursor/End key is CSI-encoded so the child sees the modifier -- e.g.
+# claude-code's Ctrl+End "jump to bottom" (ESC[1;5F). Bare End stays ESC[F.
+_tkm = SecureTerminal(command='/bin/cat')
+_tkm.apply_tui(True)
+_tkms = spy_writes(_tkm)
+key(_tkm, Qt.Key.Key_End, mods=Qt.KeyboardModifier.ControlModifier)
+key(_tkm, Qt.Key.Key_End, mods=Qt.KeyboardModifier.ShiftModifier)
+key(_tkm, Qt.Key.Key_Up, mods=Qt.KeyboardModifier.ControlModifier)
+key(_tkm, Qt.Key.Key_End)
+eq(_tkms, [b'\x1b[1;5F', b'\x1b[1;2F', b'\x1b[1;5A', b'\x1b[F'],
+   'TUI: a modified cursor/End key is CSI-encoded (Ctrl+End=ESC[1;5F); bare End=ESC[F')
 
 # hook_enabled reflects whether a hook is configured
 _he = SecureTerminal(command='/bin/cat')

@@ -708,6 +708,32 @@ win._restore_tab({'text': '', 'cwd': '/no/such/dir/for/restore', 'osc': {}})
 ok(win.current()._pid is not None,
    '_restore_tab with a vanished saved cwd still spawns a shell')
 
+# a NEW tab opens in the ACTIVE tab's current working directory (like konsole), not the
+# app's launch dir. Restore a tab into a known cwd, wait for its shell to land there, then
+# open a new tab and confirm it spawned in that same dir (bug: new tabs used the launch dir).
+_ncwd = tempfile.mkdtemp(prefix='st-newtab-cwd-')
+win._restore_tab({'text': '', 'cwd': _ncwd, 'osc': {}})
+_nactive = win.current()
+for _ in range(60):
+    if (_nactive.shell_cwd()
+            and os.path.realpath(_nactive.shell_cwd()) == os.path.realpath(_ncwd)):
+        break
+    pump(10)
+win.new_tab()
+_nnew = win.current()
+_ncwd_ok = False
+for _ in range(60):
+    try:
+        if os.path.realpath(os.readlink('/proc/%d/cwd' % _nnew._pid)) \
+                == os.path.realpath(_ncwd):
+            _ncwd_ok = True
+            break
+    except OSError:
+        ## /proc/<pid>/cwd unreadable until the forked child has chdir'd + exec'd.
+        pass
+    pump(10)
+ok(_ncwd_ok, 'a new tab opens in the ACTIVE tab current working directory')
+
 # set_tui refuses + reverts the toggle when a program is running (the shell's
 # terminfo cannot be re-exported under a running program) -- #63.
 _stt = win.current()
