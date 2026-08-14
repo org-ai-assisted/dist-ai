@@ -4204,6 +4204,39 @@ ok(not _tp._line_dirty,
    'a keystroke into a running program does not mark the line (no stranded defer)')
 _tp.close()
 
+# A no-op key at an EMPTY bare TUI prompt introduces no content, so it must NOT
+# flag the line pending -- else the TUI->CLI switch would needlessly defer the
+# re-export at a clean prompt, leaving TERM stale for the next command. Pure
+# navigation (Left/Home/...) and deletion (Backspace/Delete) can only ACT on
+# content a content-introducing key already flagged.
+_tn = SecureTerminal(command=None, tui=True)
+_tnsent = spy_writes(_tn)
+_tn.has_foreground_program = lambda: False
+key(_tn, Qt.Key.Key_Backspace)                          # no-op at an empty prompt
+key(_tn, Qt.Key.Key_Left)                               # pure cursor move
+ok(not _tn._line_dirty and not _tn._line_pending(),
+   'navigation/deletion at an empty TUI prompt does not flag the line pending')
+_tnsent.clear()
+_tn.apply_tui(False)                                    # flip TUI -> CLI
+ok(any(b'export TERM=secure-terminal\r' == s for s in _tnsent),
+   'a clean prompt re-exports immediately -- no needless deferral for no-op keys')
+_tn.close()
+
+# The discard branch requires `not shift`, matching the control-byte branch below
+# it: Ctrl+Shift+C is a copy shortcut, not a discard, so it must NOT clear the line.
+# (The window filters Ctrl+Shift before _tui_key; this keeps the two branches self-
+# consistent, so a clear can never fire without the matching byte being sent.)
+_ts = SecureTerminal(command=None, tui=True)
+spy_writes(_ts)
+_ts.has_foreground_program = lambda: False
+_ts._line_buffer = 'held'
+_ts._tui_key(QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_C,
+                       Qt.KeyboardModifier.ControlModifier
+                       | Qt.KeyboardModifier.ShiftModifier, ''))
+ok(_ts._line_buffer == 'held',
+   'Ctrl+Shift+C does not clear the line in _tui_key (it is not a discard)')
+_ts.close()
+
 # Toggling line editing live must re-export TERM too, not only re-render: the
 # renderer stops honouring el/cuf/hpa, so a shell still told they work keeps
 # emitting redraws that vanish (a mangled completion). Same reachability guard as
