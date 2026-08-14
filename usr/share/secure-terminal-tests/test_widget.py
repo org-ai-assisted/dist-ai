@@ -2556,6 +2556,7 @@ if tui_available():
     class _Cell:                                            # a default-coloured cell
         fg = bg = 'default'
         bold = reverse = underscore = False
+        data = ' '
     tui._handle_osc(b'\x1b]11;#123456\x07')                 # osc_colors OFF
     ok(tui._osc_palette == {}, 'OSC palette change is ignored until osc_colors is on')
     tui.apply_osc('osc_colors', True)
@@ -4409,6 +4410,17 @@ ok(_tc._format_for({'fg': 3, 'bg': None, 'bold': False}).foreground().color().is
 ok(_tc._format_for({'fg': '#123456', 'bg': '#123456', 'bold': False})
    .foreground().color().name() != '#123456',
    'the contrast guard forces a readable fg even when a truecolour fg == bg')
+# a STRUCTURAL block/half-block glyph keeps BOTH its truecolour fg and bg: the readability
+# guard is skipped for it, because its deliberately near-equal fg/bg are the two pixels of a
+# colour ramp, not hidden text. Without this a half-block gradient renders banded (bg dropped).
+_bfmt = _tc._format_for({'fg': '#c0c0c0', 'bg': '#b4b4b4', 'bold': False}, structural=True)
+eq(_bfmt.background().color().name(), '#b4b4b4',
+   'a structural glyph keeps its truecolour bg (contrast guard skipped)')
+eq(_bfmt.foreground().color().name(), '#c0c0c0',
+   'a structural glyph keeps its truecolour fg (contrast guard skipped)')
+ok(_tc._format_for({'fg': '#c0c0c0', 'bg': '#b4b4b4', 'bold': False})
+   .foreground().color().name() != '#c0c0c0',
+   'the contrast guard STILL fires for a non-structural near-equal fg/bg')
 _tc.close()
 # a child sees COLORTERM=truecolor (we render it faithfully, so we advertise it)
 _cte = SecureTerminal(command=['sh', '-c', 'printf C=$COLORTERM,CTEND'])
@@ -5380,12 +5392,13 @@ from PyQt6.QtGui import QFont          # noqa: E402
 
 class _Cell:                                # a minimal duck-typed pyte cell
     def __init__(self, fg='default', bg='default', bold=False, reverse=False,
-                 underscore=False):
+                 underscore=False, data=' '):
         self.fg = fg
         self.bg = bg
         self.bold = bold
         self.reverse = reverse
         self.underscore = underscore
+        self.data = data
 
 
 _rt = SecureTerminal(command='/bin/cat')
@@ -5395,6 +5408,17 @@ ok(_f1.foreground().color().name() == '#ff0000',
    '_pyte_format: a truecolor fg hex is applied')
 ok(_f1.background().color().name() == '#00ff00',
    '_pyte_format: a background colour is applied')
+# a STRUCTURAL half-block glyph (U+2580) keeps its near-equal truecolour bg: the grid
+# contrast guard is skipped for it, so a half-block colour ramp is not banded.
+_fs = _rt._pyte_format(_Cell(fg='c0c0c0', bg='b4b4b4', data='\u2580'))
+ok(_fs.background().color().name() == '#b4b4b4',
+   '_pyte_format: a structural glyph keeps its truecolour bg (guard skipped)')
+ok(_fs.foreground().color().name() == '#c0c0c0',
+   '_pyte_format: a structural glyph keeps its truecolour fg (guard skipped)')
+# a NON-structural cell with the same near-equal fg/bg still triggers the guard.
+ok(_rt._pyte_format(_Cell(fg='c0c0c0', bg='b4b4b4', data='X'))
+   .foreground().color().name() != '#c0c0c0',
+   '_pyte_format: the guard still fires for a non-structural near-equal fg/bg')
 # an invalid hex colour falls back to the default foreground
 ok(_rt._pyte_qcolor('nothex', None) is None,
    '_pyte_qcolor: an invalid hex with no default -> None')
