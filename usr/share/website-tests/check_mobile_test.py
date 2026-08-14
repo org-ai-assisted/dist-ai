@@ -84,6 +84,17 @@ def run():
     check('overflow widths iterated in main', 'for width in OVERFLOW_WIDTHS' in main_body)
     check('header gate wired', '_HEADER_JS' in main_body and 'HEADER_MAX_PX' in main_body)
     check('contrast gate wired', '_CONTRAST_JS' in main_body)
+    check('header-overlap sweep wired',
+          'for width in HEADER_SWEEP_WIDTHS' in main_body
+          and '_HEADER_OVERLAP_JS' in main_body)
+
+    # 4. Header-overlap detection is configured: a range of sweep widths (not a
+    #    single one) and the icon<->label logic present in the JS.
+    check('header sweep covers >=4 widths', len(cm.HEADER_SWEEP_WIDTHS) >= 4,
+          repr(cm.HEADER_SWEEP_WIDTHS))
+    check('overlap JS checks icon<->label gap',
+          'overlaps its icon' in cm._HEADER_OVERLAP_JS
+          and 'header items overlap' in cm._HEADER_OVERLAP_JS)
 
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed

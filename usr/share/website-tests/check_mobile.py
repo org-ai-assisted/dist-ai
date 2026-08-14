@@ -44,6 +44,12 @@ VIEWPORT = 390                       # primary phone width (used in messages/che
 OVERFLOW_WIDTHS = (320, 390, 768)
 # A mobile sticky header must stay a compact single bar, not a stack of rows.
 HEADER_MAX_PX = 100
+# Widths swept for header-overlap: phone through the mobile<->desktop handoff,
+# where a toggle label, a status pill and the brand crowd each other. The header
+# is uniform across a site's pages, so this sweeps the index once per site.
+HEADER_SWEEP_WIDTHS = (340, 360, 414, 560, 680, 768, 900, 1100)
+# Minimum gap (px) required between the toggle's icon and its label text.
+_ICON_TEXT_MIN_GAP = 3
 
 # Subsite dir basename -> (parent dir basename, mount path). Mirrors check_site.py.
 SUBSITES = {
@@ -130,6 +136,69 @@ _CONTRAST_JS = r"""
     }
   }
   return out.slice(0, 12);
+}
+"""
+
+# Header overlap audit (swept across widths): catches the menu-toggle label
+# running into its own hamburger icon, and any two header items (brand, status,
+# toggle, nav) whose boxes overlap. Args: (minGap) for the icon<->label spacing.
+_HEADER_OVERLAP_JS = r"""
+(minGap) => {
+  const out = [];
+  const hdr = document.querySelector('header');
+  if (!hdr) return out;
+  const shown = (el) => {
+    const s = getComputedStyle(el);
+    if (s.display === 'none' || s.visibility === 'hidden') return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  };
+  // 1) the menu toggle's label text must not sit on top of its icon (::before)
+  const btn = hdr.querySelector('.menubtn, summary');
+  if (btn && shown(btn)) {
+    const cs = getComputedStyle(btn);
+    if (parseFloat(cs.fontSize) > 0) {                 // a text label is rendered
+      const bf = getComputedStyle(btn, '::before');
+      const iconW = parseFloat(bf.width) || 0;
+      if (iconW > 0) {
+        const r = btn.getBoundingClientRect();
+        const iconVisualRight = r.left + (parseFloat(cs.paddingLeft) || 0) + iconW;
+        const w = document.createTreeWalker(btn, NodeFilter.SHOW_TEXT);
+        let node, textLeft = null;
+        while ((node = w.nextNode())) {
+          if (node.textContent.trim()) {
+            const rng = document.createRange();
+            rng.selectNodeContents(node);
+            textLeft = rng.getBoundingClientRect().left;
+            break;
+          }
+        }
+        if (textLeft !== null && textLeft - iconVisualRight < minGap) {
+          out.push('menu toggle label overlaps its icon (gap ' +
+            Math.round(textLeft - iconVisualRight) + 'px < ' + minGap + 'px)');
+        }
+      }
+    }
+  }
+  // 2) header items must not overlap each other (closed state: nav is a normal
+  // inline row on desktop / hidden on mobile, so this compares what is visible)
+  const name = (el) => el.tagName.toLowerCase() +
+    (el.className ? '.' + String(el.className).split(' ')[0] : '');
+  const kids = [...hdr.querySelectorAll('.brand, .status, .menubtn, summary, nav')]
+    .filter(shown);
+  for (let i = 0; i < kids.length; i++) {
+    for (let j = i + 1; j < kids.length; j++) {
+      if (kids[i].contains(kids[j]) || kids[j].contains(kids[i])) continue;
+      const a = kids[i].getBoundingClientRect(), b = kids[j].getBoundingClientRect();
+      const ox = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+      const oy = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+      if (ox > 2 && oy > 2) {
+        out.push('header items overlap: ' + name(kids[i]) + ' & ' + name(kids[j]) +
+          ' (' + Math.round(ox) + 'x' + Math.round(oy) + 'px)');
+      }
+    }
+  }
+  return out;
 }
 """
 
@@ -278,6 +347,21 @@ def main():
                                            item['tag'].lower(), item['cls'], item['text']))
                         finally:
                             page.close()
+                # Header-overlap sweep: the header is uniform across a site's
+                # pages, so check the index across a range of widths where the
+                # brand / status / toggle crowd each other.
+                for width in HEADER_SWEEP_WIDTHS:
+                    page = browser.new_page(viewport={'width': width, 'height': 800})
+                    try:
+                        resp = page.goto('http://127.0.0.1:%d/' % port)
+                        if resp is not None and resp.status >= 400:
+                            continue
+                        page.wait_for_timeout(150)
+                        for msg in page.evaluate(_HEADER_OVERLAP_JS, _ICON_TEXT_MIN_GAP):
+                            failures += 1
+                            sys.stderr.write('FAIL / header at %dpx: %s\n' % (width, msg))
+                    finally:
+                        page.close()
             finally:
                 httpd.shutdown()
                 httpd.server_close()
@@ -290,8 +374,9 @@ def main():
                          % (failures, checked))
         return 1
     sys.stdout.write('website-mobile-tests: %d pages clean -- no overflow at %s px, '
-                     'header <=%dpx, WCAG-AA text contrast\n'
-                     % (checked, '/'.join(str(w) for w in OVERFLOW_WIDTHS), HEADER_MAX_PX))
+                     'header <=%dpx, WCAG-AA text contrast, no header overlap %s px\n'
+                     % (checked, '/'.join(str(w) for w in OVERFLOW_WIDTHS), HEADER_MAX_PX,
+                        '/'.join(str(w) for w in HEADER_SWEEP_WIDTHS)))
     return 0
 
 
