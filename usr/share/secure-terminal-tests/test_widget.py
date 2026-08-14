@@ -282,6 +282,7 @@ _fwc = _fw._screen.columns
 feed_output(_fw, ('A' * _fwc + '\n' + 'B' * _fwc + '\n').encode('utf-8'))
 ok(_fw._screen.buffer[0][0].data == 'A' and _fw._screen.buffer[1][0].data == 'B',
    'TUI full-width line + bare LF: the next line is consecutive, with no blank row from a doubled wrap')
+_fw.close()
 # a real accent after a flood still lands (the run resets, not a permanent gag)
 _zt2 = SecureTerminal(command='/bin/cat'); _zt2.apply_mode('show')
 feed_output(_zt2, ('x' + _ac * 100 + 'y' + _ac + '\n').encode('utf-8'))

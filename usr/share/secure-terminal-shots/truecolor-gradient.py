@@ -104,9 +104,13 @@ def main(argv=None):
     parser.add_argument('--rows', type=int, default=ROWS,
                         help='text rows, each 2 pixels tall (default: %(default)s)')
     args = parser.parse_args(argv)
-    # pixel() normalises by (WIDTH-1); the main field needs at least one row above the ramp.
-    if args.cols < 2 or args.rows < 2:
-        parser.error('--cols and --rows must each be >= 2')
+    # pixel() normalises by (WIDTH-1), and the bottom RAMP_PX pixels are the greyscale ramp, so
+    # the hue x lightness field needs at least one pixel row above it (2*rows > RAMP_PX). Below
+    # that the whole canvas is the ramp -- an all-grey board, not the field the comment describes.
+    min_rows = RAMP_PX // 2 + 1
+    if args.cols < 2 or args.rows < min_rows:
+        parser.error('--cols must be >= 2 and --rows >= %d (one row above the %d-pixel ramp)'
+                     % (min_rows, RAMP_PX))
     WIDTH = args.cols
     ROWS = args.rows
     HEIGHT = ROWS * 2

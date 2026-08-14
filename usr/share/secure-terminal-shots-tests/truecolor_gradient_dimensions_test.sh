@@ -89,9 +89,11 @@ check_size 'default'          22 80
 check_size 'board fill'       25 130 --cols 130 --rows 25
 check_size 'tall + narrow'    40 60  --cols 60  --rows 40
 
-reject '1-wide canvas'  --cols 1
-reject '1-tall canvas'  --rows 1
-reject '0-wide canvas'  --cols 0
+reject '1-wide canvas'   --cols 1
+reject '1-tall canvas'   --rows 1
+reject '0-wide canvas'   --cols 0
+## rows == 2 leaves no hue field above the greyscale ramp (all-grey board) -> rejected
+reject '2-tall (all-grey) canvas'  --rows 2
 
 printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then

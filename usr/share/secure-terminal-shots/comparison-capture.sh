@@ -725,7 +725,10 @@ st_wait_render_settled() {  ## $1=window-id
       diff="${diff%%[!0-9]*}"
       case "${diff}" in '') diff=999999 ;; esac
       [ "${diff}" -lt 300 ] 2>/dev/null && break   # only jitter left -> settled
-      mv --force -- "${b}" "${a}"
+      ## Copy (not move) the newer frame to the baseline: mv would unlink ${b}, and the next
+      ## capture_window would recreate that path OUTSIDE mktemp's protection. ${runtime_dir} is
+      ## owner-only, so this is belt-and-braces, but it keeps ${b} a mktemp-created file.
+      cp --force -- "${b}" "${a}"
    done
    safe-rm --force -- "${a}" "${b}" 2>/dev/null || true
 }
