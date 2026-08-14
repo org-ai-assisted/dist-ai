@@ -1648,6 +1648,12 @@ check_R192_shell_inline_shell_c() {
    ## a quote with an odd count on the line) starts a body; the body ends on the next line that
    ## rebalances that quote. Requiring the opener at line end is what keeps 'bash -c "echo it'"'"'s"'
    ## (closes on the same line) from tripping. shell_c_re mirrors R-191's.
+   ##
+   ## Known limitation (accepted, same tradeoff R-191 documents): parity is not escape- or
+   ## nesting-aware, so an ESCAPED quote (bash -c "echo \"...) or a stray quote in a body
+   ## comment miscounts and the rule can MISS such a program (a false NEGATIVE). It never
+   ## over-blocks. Escape-parsing in a regex gate is fragile; for the rare miss, extract the
+   ## program to its own file anyway, or waive with 'style-ok: allow-inline-interpreter'.
    shell_c_re='(^|[[:space:]]|/)(sh|bash|dash)([[:space:]]+-[a-zA-Z]+)*[[:space:]]+-[a-zA-Z]*c(["'"'"'[:space:]]|$)'
    for script in "${@}"; do
       if [ ! -f "${script}" ] || [ -L "${script}" ]; then

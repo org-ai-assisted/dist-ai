@@ -115,7 +115,10 @@ SHOT_DEADLINE="${SHOT_DEADLINE:-90}"
 ## run never silently skips anything). --only NAME restricts the emulators (repeatable); --case C
 ## restricts the cases in BOTH loops (repeatable); --st-only skips the emulators; --quick is a
 ## smoke shortcut. The full case list is the single source of truth for both loops.
-all_cases='crafted random homoglyph bidi zerowidth altscreen tui-showcase'
+## notify is a secure-terminal-only case (emulators have no standard notify shot -- the page's
+## kitty.notify popup is captured separately), so it is in the full matrix for the ST loop but
+## skipped in the emulator loop below.
+all_cases='crafted random homoglyph bidi zerowidth altscreen notify tui-showcase'
 CASES="${CASES:-${all_cases}}"
 only_terminals=''
 cases_sel=''
@@ -561,6 +564,13 @@ for e in ${TERMINALS}; do
       exit 1
    fi
    for c in ${CASES}; do
+      ## notify is secure-terminal-only: the emulators have no standard notify shot (kitty's
+      ## popup is a separate capture), so skip it here even though it is in the full ST matrix.
+      case "${c}" in
+         notify)
+            continue
+            ;;
+      esac
       shoot "${e}" "${c}" || true
    done
    printf '%s\n' "captured ${e}"

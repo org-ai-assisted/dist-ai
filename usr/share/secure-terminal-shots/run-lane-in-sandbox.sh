@@ -32,6 +32,12 @@ shift
 export SECURE_TERMINAL_REPO="${HOME}/${sandbox_base}/secure-terminal"
 export CORPUS_REPO="${HOME}/${sandbox_base}/terminal-poc-corpus"
 
+## The synced dist-ai tree carries its local (gitignored) shots/ dir; clear it so this run pulls
+## back ONLY the shots it just captured, never stale ones from an earlier local/filtered capture.
+shots_out="${HOME}/${sandbox_base}/dist-ai/usr/share/secure-terminal-shots/shots"
+safe-rm --recursive --force -- "${shots_out}"
+mkdir --parents -- "${shots_out}"
+
 ## stdbuf -oL: line-buffer the lane so its per-terminal "captured X" progress reaches the
 ## caller (and the durable-bg progress file) as it happens, not flushed at the end -- a silent
 ## multi-minute capture was false-stalling the supervisor.

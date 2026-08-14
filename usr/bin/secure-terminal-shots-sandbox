@@ -13,7 +13,9 @@
 ## fresh-syncs all three trees into the sandbox, runs the real lane there, and pulls the shots
 ## back into the site. No stale copy is ever reused; a missing tree or a failed sync HARD-FAILS.
 ##
-## Usage: secure-terminal-shots-sandbox [comparison|comparison-wayland|clipboard] [ARGS...]
+## Usage: secure-terminal-shots-sandbox [comparison] [ARGS...]   (comparison is the only lane
+##   this driver pulls back -- the wayland / clipboard lanes write to other paths / a TSV and
+##   are run directly in the sandbox). ARGS pass through (e.g. --only NAME, --case C, --st-only).
 ##
 ## Env overrides (all default to ~/private-sources/<name>):
 ##   SECURE_TERMINAL_REPO   the Qt app source (holds usr/lib/.../secure_terminal)
@@ -43,9 +45,12 @@ trap cleanup EXIT
 lane='comparison'
 if [ "$#" -ge 1 ]; then
    case "$1" in
-      comparison|comparison-wayland|clipboard)
+      comparison)
          lane="$1"
          shift
+         ;;
+      comparison-wayland|clipboard)
+         die "this driver auto-syncs + pulls the 'comparison' shots only; '$1' writes elsewhere (shots-wayland / a .tsv). Run that lane directly in the sandbox."
          ;;
    esac
 fi

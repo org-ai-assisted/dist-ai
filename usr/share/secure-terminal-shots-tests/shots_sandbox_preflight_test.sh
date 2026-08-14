@@ -56,7 +56,11 @@ if [ -d "${st_repo}/usr/lib/python3/dist-packages/secure_terminal" ]; then
    refuses 'missing corpus refuses' 'terminal-poc-corpus not found' \
       SECURE_TERMINAL_REPO="${st_repo}" CORPUS_REPO=/nonexistent-corpus SECURE_TERMINAL_SITE=/nonexistent-site
 else
-   printf '%s\n' "note: secure-terminal checkout absent; skipping the corpus-refusal case only" >&2
+   ## The corpus-refusal case needs a real secure-terminal checkout to get past the first
+   ## tree check; without it the test cannot fully verify, so SKIP the whole thing (77) rather
+   ## than report a partial run as green (an unauthorized skip is a failure, not a pass).
+   printf '%s\n' 'SKIP: secure-terminal checkout absent; cannot verify the corpus-refusal case' >&2
+   exit 77
 fi
 
 printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"
