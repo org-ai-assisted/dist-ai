@@ -167,6 +167,12 @@ shots_generate_logs() {  ## $1=script-relative fallback dir $2=dest-dir
       id="$(shots_corpus_id "${c}")"
       POC_CORPUS_IN_SANDBOX=1 python3 "${rp}" "${id}" --out "${dest}/${c}.payload" || return 1
    done
+   ## Strip the human-facing "read me first" safety preamble from the tui-showcase SHOT
+   ## payload ONLY (the corpus file keeps it for raw downloads). The header only ever lingers
+   ## in secure-terminal's CLI shot (normal terminals hide it via the alt-screen switch),
+   ## wasting vertical space and skewing the ST-vs-others compare. The sibling script slices
+   ## to the first ESC and hard-fails if none is found; ${fallback} is the shots dir it lives in.
+   python3 -- "${fallback}/strip-tui-showcase-header.py" "${dest}/tui-showcase.payload" || return 1
    ## notify: a page-facing friendly desktop-notification demo -- clearly-safe wording,
    ## no session/reauth framing. Not a corpus detection payload (which carries the
    ## canary token); kept inline deliberately. $'...' gives the real escape bytes.
