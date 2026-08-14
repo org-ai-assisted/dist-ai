@@ -272,6 +272,16 @@ ok(len(_ztu._screen.buffer[0][0].data) <= 34,
    'zalgo TUI: the merged pyte cell is bounded (base + capped marks), not 100')
 ok(_ztu._screen.buffer[0][1].data == _cjk,
    'zalgo TUI: a non-combining char after the flood resets the run and lands in its own cell')
+# TUI full-width wrap: a line that fills the EXACT grid width leaves pyte in its pending-wrap
+# state (cursor.x == columns); pyte lazy-wraps on the next printable char with its own CR+LF, so
+# a BARE LF (no ONLCR carriage return) would advance a SECOND line and insert a blank row between
+# every full-width line -- a full-screen `cat` of a width-filling board rendered row/blank/row.
+# _SafeHistoryScreen.linefeed consumes the pending wrap; the two lines must land consecutively.
+_fw = SecureTerminal(command='/bin/cat', tui=True)
+_fwc = _fw._screen.columns
+feed_output(_fw, ('A' * _fwc + '\n' + 'B' * _fwc + '\n').encode('utf-8'))
+ok(_fw._screen.buffer[0][0].data == 'A' and _fw._screen.buffer[1][0].data == 'B',
+   'TUI full-width line + bare LF: the next line is consecutive, with no blank row from a doubled wrap')
 # a real accent after a flood still lands (the run resets, not a permanent gag)
 _zt2 = SecureTerminal(command='/bin/cat'); _zt2.apply_mode('show')
 feed_output(_zt2, ('x' + _ac * 100 + 'y' + _ac + '\n').encode('utf-8'))
