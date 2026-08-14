@@ -573,9 +573,12 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       ## no ">>" overflow); a default Xvfb reports 96 DPI, which widens the toolbar
       ## and silently drops it to the leaner icons tier (captions hidden). Same
       ## font-metric determinism the test runner pins for the tier assertions.
+      ## SECURE_TERMINAL_SHOT=1: deterministic screenshot mode (caret hidden +
+      ## synchronous render) so the GUI shot is byte-reproducible run-to-run. Set on
+      ## the secure-terminal GUI launch ONLY -- never on the competitor terminals.
       shots_spawn_session "${st_pgf}" \
          env --unset=WAYLAND_DISPLAY "DISPLAY=${xwl_display}" QT_QPA_PLATFORM=xcb \
-         QT_FONT_DPI=72 \
+         QT_FONT_DPI=72 SECURE_TERMINAL_SHOT=1 \
          PYTHONPATH="${st_pkg}" python3 "${st_bin}" --new-instance "${st_mode_flags[@]}" \
          -- bash --rcfile "${HOME}/.strc" -i >/dev/null 2>&1
       ## same guard as the emulator shots: an invalid SHOT_DEADLINE must not errexit-abort.

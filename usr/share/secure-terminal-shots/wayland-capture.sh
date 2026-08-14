@@ -233,7 +233,11 @@ launch_terminal() {  ## $1=name  $2=payload-command  $3=pgid-file
          tcmd=("${wl[@]}" kitty -o remember_window_size=no -o initial_window_width=780 -o initial_window_height=520 sh -c "${sh}")
          ;;
       secure-terminal)
-         tcmd=("${wl[@]}" PYTHONPATH="${st_repo}/usr/lib/python3/dist-packages" \
+         ## SECURE_TERMINAL_SHOT=1: deterministic screenshot mode (caret hidden +
+         ## synchronous render) so the GUI shot is byte-reproducible. ST GUI launch
+         ## ONLY -- never on the competitor terminals above.
+         tcmd=("${wl[@]}" SECURE_TERMINAL_SHOT=1 \
+            PYTHONPATH="${st_repo}/usr/lib/python3/dist-packages" \
             python3 "${st_repo}/usr/bin/secure-terminal" -- bash -c "${sh}")
          ;;
       xterm)
