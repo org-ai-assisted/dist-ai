@@ -64,24 +64,28 @@ check() {  ## $1=label $2=condition-rc (0 pass) -- caller already evaluated
    fi
 }
 
+## Every predicate below feeds `check` an rc computed in an errexit-safe way (an if/else,
+## or `|| rc=$?` off a real COMMAND) -- never a bare `cond; check "$?"`, which under errexit
+## would abort the script on a false predicate before `check` records the failure and the
+## summary prints.
+
 ## 1. The board emits all four primitives and stays cat-safe.
 rc=0
 "${gen}" > "${work}/hero.payload" 2>"${work}/err.log" || rc=$?
 check 'generator exits 0 with no args' "${rc}"
 verdict="$(python3 "${checker}" "${work}/hero.payload" 2>/dev/null || true)"
-[ "${verdict}" = 'OK cat-safe' ]; check "board carries the four primitives and is cat-safe (got '${verdict}')" "$?"
+if [ "${verdict}" = 'OK cat-safe' ]; then rc=0; else rc=1; fi
+check "board carries the four primitives and is cat-safe (got '${verdict}')" "${rc}"
 
 ## 2. The SOURCE is pure ASCII -- the hostile bytes are \u/\x escapes, not literals.
-if grep -qP '[^\x00-\x7F]' "${gen}"; then
-   check 'hero-board.py source is pure ASCII' 1
-else
-   check 'hero-board.py source is pure ASCII' 0
-fi
+if grep -qP '[^\x00-\x7F]' "${gen}"; then rc=1; else rc=0; fi
+check 'hero-board.py source is pure ASCII' "${rc}"
 
 ## 3. Extra args are rejected (usage error), so a mis-call cannot silently emit a partial board.
 rc=0
 "${gen}" unexpected-arg >/dev/null 2>&1 || rc=$?
-[ "${rc}" -ne 0 ]; check "extra argument rejected (rc=${rc})" "$?"
+if [ "${rc}" -ne 0 ]; then argok=0; else argok=1; fi
+check "extra argument rejected (rc=${rc})" "${argok}"
 
 printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then

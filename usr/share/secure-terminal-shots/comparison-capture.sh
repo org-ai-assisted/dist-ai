@@ -501,10 +501,11 @@ launch() {  ## $1=emulator  $2=case  $3=pgid-file
    ## are unchanged. kitty is sized in pixels, so it gets a matching taller height.
    rows=24; kh=430; cols=84
    if [ "${case}" = tui-showcase ]; then rows=32; kh=620; fi
-   ## hero-compare: a narrower board than the 84-col comparison shots, so the homepage slider's
-   ## terminal text stays legible when the shot is scaled down to a ~390px phone AND the board fills
-   ## the frame (less dead space to the right). Matched to the secure-terminal hero window width.
-   if [ "${case}" = hero-compare ]; then cols=65; fi
+   ## hero-compare: match the secure-terminal hero window WIDTH (~640px -- the app's minimum with
+   ## its labelled toolbar) at the shared Hack/72-DPI cell size, so the homepage slider's two
+   ## windows are the same size and their text overlaps. 95 cols of Hack at 11pt/72-DPI lands near
+   ## that width.
+   if [ "${case}" = hero-compare ]; then cols=96; fi
    cmd=()
    case "${e}" in
       xterm)
@@ -538,8 +539,16 @@ launch() {  ## $1=emulator  $2=case  $3=pgid-file
          ## reaping the recorded PGID takes the whole thing down. VTE reads its profile from
          ## dconf; with no dconf daemon on the private bus it falls back to the built-in default
          ## profile -- the shipped default we want to show.
-         cmd=("${base[@]}" GDK_BACKEND=x11 dbus-run-session -- \
-            gnome-terminal --wait --geometry "${cols}x${rows}" -- "${sh[@]}")
+         if [ "${case}" = hero-compare ]; then
+            ## Match secure-terminal's Hack font at 72-DPI cell metrics so the homepage slider's text
+            ## overlaps. The gsettings + Xft.dpi setup lives in a sibling helper (no inline sh -c /
+            ## exec); it runs inside the dbus session and launches gnome-terminal --wait.
+            cmd=("${base[@]}" GDK_BACKEND=x11 dbus-run-session -- \
+               "${here}/gnome-hero-launch.sh" "${cols}x${rows}" -- "${sh[@]}")
+         else
+            cmd=("${base[@]}" GDK_BACKEND=x11 dbus-run-session -- \
+               gnome-terminal --wait --geometry "${cols}x${rows}" -- "${sh[@]}")
+         fi
          ;;
       mate-terminal)
          cmd=("${base[@]}" GDK_BACKEND=x11 mate-terminal --disable-factory --geometry "${cols}x${rows}" -x "${sh[@]}")
@@ -670,16 +679,18 @@ tighten_deadspace() {  ## $1=png-path
 }
 
 ## Compose the homepage before/after slider pair from the hero-compare shots: secure-terminal's
-## SHOW-mode board and the gnome-terminal render of the SAME board, padded to ONE shared canvas so
-## the site's CSS resize slider overlays them at identical dimensions (pixel-for-pixel). Runs at the
-## END of a single-lane run, from the two .png shots before webp optimization; a no-op (logged) if
-## either is absent (e.g. an emulator-only or --jobs lane). gnome-terminal is the traditional side:
-## it HONOURS the OSC-0 title hijack (the spoofed title shows in its title bar) where konsole resets
-## it, and its white/light theme matches secure-terminal's, so the wipe reads as ONE session secured
-## vs not. Deterministic: canvas = the max of the two shots' dimensions; both terminals are white-bg
-## so a WHITE pad (top-left anchored -- title bars and the left text margin align) is seamless.
+## SHOW-mode board and the gnome-terminal render of the SAME board. The site's CSS resize slider
+## overlays them, so they must be identical size AND their terminal text must sit at the same
+## coordinates. hero-slider-compose.py keeps the title bars aligned at the top, inserts a white band
+## above the shallower-chrome terminal's text so both text tops line up (secure-terminal carries a
+## toolbar + tab strip + a bottom notice a plain terminal lacks), then pads both to one shared canvas.
+## Runs at the END of a single-lane run, from the two .png shots before webp optimization; a no-op
+## (logged) if either is absent (e.g. an emulator-only or --jobs lane). gnome-terminal is the
+## traditional side: it HONOURS the OSC-0 title hijack (the spoofed title shows in its title bar)
+## where konsole resets it, and -- captured with secure-terminal's own Hack font at 72 DPI (see
+## launch()) -- its text is cell-for-cell the same size, so the wipe reads as ONE session secured vs not.
 compose_hero_slider() {  ## $1=out-dir
-   local out sec trad sw sh tw th cw ch
+   local out sec trad
    out="$1"
    sec="${out}/secure-terminal.hero-compare-show.png"
    trad="${out}/gnome-terminal.hero-compare.png"
@@ -687,18 +698,15 @@ compose_hero_slider() {  ## $1=out-dir
       printf '%s\n' 'compose_hero_slider: secure-terminal + gnome-terminal hero-compare shots not both present; skipping slider compose' >&2
       return 0
    fi
-   sw="$(identify -format '%w' "${sec}")"; sh="$(identify -format '%h' "${sec}")"
-   tw="$(identify -format '%w' "${trad}")"; th="$(identify -format '%h' "${trad}")"
-   cw=$(( sw > tw ? sw : tw )); ch=$(( sh > th ? sh : th ))
-   convert "${sec}"  -background white -gravity NorthWest -extent "${cw}x${ch}" "${out}/hero-secure.png"
-   convert "${trad}" -background white -gravity NorthWest -extent "${cw}x${ch}" "${out}/hero-traditional.png"
+   "${here}/hero-slider-compose.py" "${sec}" "${trad}" "${out}/hero-secure.png" "${out}/hero-traditional.png"
    ## Drop the raw per-terminal hero-compare shots: only the composed pair is referenced by the
    ## site, so leaving the sources behind would land them in comparison/shots/ (the driver pulls
    ## every .webp) as ORPHANS that website-tests rejects. Removing them here keeps the site green on
    ## every regeneration with no step to remember. The honest per-terminal captures still exist
    ## mid-run; only the composed hero-secure/hero-traditional are published.
-   safe-rm -f -- "${out}"/*.hero-compare.png "${out}/secure-terminal.hero-compare-show.png" 2>/dev/null || true
-   printf '%s\n' "composed hero slider pair (${cw}x${ch}): hero-secure.png, hero-traditional.png (raw hero-compare shots dropped)"
+   safe-rm -f -- "${out}"/*.hero-compare.png "${out}"/*.hero-compare.webp \
+      "${out}/secure-terminal.hero-compare-show.png" "${out}/secure-terminal.hero-compare-show.webp" 2>/dev/null || true
+   printf '%s\n' 'composed hero slider pair: hero-secure.png, hero-traditional.png (raw hero-compare shots dropped)'
 }
 
 ## Capture the window, then guard against a blank/black grab (the content had not finished
@@ -1095,7 +1103,7 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       ## under the capture compositor's 72-DPI metrics), so the toolbar stays complete (no ">>"
       ## overflow) at that clamped size -- which is the narrow hero width we want. RE-MEASURE if the
       ## toolbar/chip CSS changes; the emulator width (65 cols) above is matched to this result.
-      st_win_w=860; [ "${st_case}" = hero-compare ] && st_win_w=600
+      st_win_w=860; [ "${st_case}" = hero-compare ] && st_win_w=560
       ## The GUI runs as `python3 .../secure-terminal` -- process name `python3` -- so it MUST
       ## be reaped by its session PGID, never by name. Launch it in its own session and arm the
       ## per-capture watchdog, exactly like the emulator shots.
