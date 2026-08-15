@@ -76,6 +76,10 @@
 ##      a script with a shebang. '## style-ok: allow-embedded-script'.
 ##  23. R-100 a workflow 'run: |' block over 5 shell lines must be
 ##      extracted to a ci/ script. '## style-ok: allow-inline-shell'.
+##  24. R-172 a 'mkdir' creating a temp dir ($TMPDIR/$TMP/$TEMP/$TEMPDIR)
+##      must set the mode ATOMICALLY via '--mode=' (never a later 'chmod':
+##      that is a TOCTOU window); the short '-m' must be the long '--mode='.
+##      '## style-ok: allow-mkdir-no-mode'.
 ##
 ## Scope: files changed in HEAD vs upstream tracking branch
 ## (@{u}). Pass an explicit base ref as $1 to override
@@ -1508,6 +1512,64 @@ check_R170_tmp_hardcode() {
    done
 }
 
+check_R172_mkdir_tmp_mode() {
+   local script candidate line
+
+   ## R-172: a 'mkdir' that creates a temp directory (operand is a
+   ## TMPDIR/TMP/TEMP/TEMPDIR variable ref) MUST set the mode ATOMICALLY with
+   ## '--mode='. Splitting perms into a following 'chmod' -- or dropping the
+   ## mode entirely -- leaves a window in which the directory exists with the
+   ## umask-default (world-traversable) mode: a TOCTOU hole that lets other
+   ## processes race the temp path. The long '--mode=' form is required (the
+   ## short '-m' is upgraded by pre-push-fix; standalone here it still FAILS so
+   ## the long form is what lands).
+   for script in "${@}"; do
+      ## This script carries 'mkdir' and the temp-var names in its own regex
+      ## and message text.
+      is_self_referential "${script}" && continue
+      ## Script-wide waiver: '## style-ok: allow-mkdir-no-mode' anywhere in the
+      ## file disables R-172 for it -- for a temp dir whose perms genuinely do
+      ## not matter, or a mkdir whose mode is set by a form this rule cannot
+      ## read (symbolic '-m u=rwx', a '${mode}' variable). Anchored regex,
+      ## mirroring the R-120/R-170 waivers.
+      if grep --quiet --extended-regexp \
+         '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*allow-mkdir-no-mode([[:space:]]|$)' \
+         -- "${script}"; then
+         continue
+      fi
+      ## Candidate: 'mkdir' in COMMAND position (line start or after a
+      ## separator), later on the line a '$TMPDIR' / '${TMP}' / '$TEMP' /
+      ## '$TEMPDIR' operand, bounded so '$TMPFILE' is NOT a match. '^[^#]*'
+      ## excludes comment lines, as R-070/R-170 do.
+      candidate="$(grep --line-number --extended-regexp \
+         '^[^#]*(^|[[:space:]([;&|])mkdir[[:space:]].*\$\{?(TMPDIR|TEMPDIR|TEMP|TMP)([^A-Za-z]|$)' \
+         -- "${script}" 2>/dev/null || true)"
+      if [ -z "${candidate}" ]; then
+         continue
+      fi
+      while IFS= read -r line; do
+         if [ -z "${line}" ]; then
+            continue
+         fi
+         ## Long '--mode' present (either '--mode=700' or '--mode 700') -> the
+         ## atomic form is already there; compliant.
+         if printf '%s\n' "${line}" \
+            | grep --quiet --extended-regexp -- '--mode(=|[[:space:]])'; then
+            continue
+         fi
+         ## Short '-m' present (standalone '-m 700', attached '-m700', or
+         ## bundled '-pm700') -> the mode is atomic but must use the long form.
+         if printf '%s\n' "${line}" \
+            | grep --quiet --extended-regexp -- \
+               '(^|[[:space:]])-[[:alpha:]]*m([[:space:]]|[0-9]|=|$)'; then
+            fail "R-172 mkdir temp dir: use --mode= not -m" "'${script}:${line}'"
+         else
+            fail "R-172 mkdir temp dir missing --mode= (TOCTOU; set perms atomically, not via a later chmod)" "'${script}:${line}'"
+         fi
+      done <<< "${candidate}"
+   done
+}
+
 check_R190_inline_interpreter() {
    local script line delimiter rest char body start_line line_number in_body
    local is_interpreter body_is_interpreter
@@ -2801,6 +2863,7 @@ run_file_checks() {
       check_R081_source_devnull "${shell_files[@]}"
       check_R090_command_v "${shell_files[@]}"
       check_R170_tmp_hardcode "${shell_files[@]}"
+      check_R172_mkdir_tmp_mode "${shell_files[@]}"
       check_R120_rm "${shell_files[@]}"
       check_R130_null_command "${shell_files[@]}"
       check_R034_echo "${shell_files[@]}"
