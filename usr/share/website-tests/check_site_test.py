@@ -364,6 +364,68 @@ def run():
     check('check_undefined_classes invoked from main()',
           'check_undefined_classes(root, failures)' in main_body)
 
+    # check_csp: script-src must not permit inline execution. A page keeps
+    # style-src 'unsafe-inline' (inline CSS is untouched) -- the check must read
+    # the script-src directive alone, never the whole string.
+    _csp = ("default-src 'none'; script-src %s; style-src 'self' 'unsafe-inline';"
+            " img-src 'self' data:; base-uri 'none'; form-action 'none'")
+    _cpage = ('<!doctype html><html><head><title>t</title>'
+              '<meta http-equiv="Content-Security-Policy" content="%s">'
+              '</head><body>%s</body></html>')
+
+    def _csp_failures(root):
+        failures = []
+        check_site.check_csp(root, failures)
+        return failures
+
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _cpage % (_csp % "'self' 'unsafe-inline'", ''))
+        fails = _csp_failures(root)
+        check('script-src unsafe-inline flagged',
+              any('unsafe-inline' in f for f in fails), repr(fails))
+    with tempfile.TemporaryDirectory() as root:
+        # Strict script-src, but style-src STILL carries unsafe-inline: must pass
+        # (the canary that the check does not scan the whole CSP string).
+        _write(root, 'index.html', _cpage % (_csp % "'self'", ''))
+        check('strict script-src (with inline style) passes',
+              _csp_failures(root) == [], repr(_csp_failures(root)))
+
+    # check_no_inline_script: inline <script> body, on*= handler, javascript: URL.
+    def _inline_failures(root):
+        failures = []
+        check_site.check_no_inline_script(root, failures)
+        return failures
+
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _cpage % (_csp % "'self'",
+               '<script>doThing();</script>'))
+        check('inline <script> body flagged',
+              any('inline <script>' in f for f in _inline_failures(root)),
+              repr(_inline_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # </script > (whitespace end tag) must still close the block; an external
+        # <script src> is the intended shape and must NOT be flagged.
+        _write(root, 'a.js', 'doThing();\n')
+        _write(root, 'index.html', _cpage % (_csp % "'self'",
+               '<script src="/a.js"></script >'))
+        check('external <script src> not flagged',
+              _inline_failures(root) == [], repr(_inline_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _cpage % (_csp % "'self'",
+               '<button onClick="x()">go</button>'))
+        check('inline on*= handler flagged',
+              any('onclick' in f for f in _inline_failures(root)),
+              repr(_inline_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _cpage % (_csp % "'self'",
+               '<a href="javascript:void(0)">x</a>'))
+        check('javascript: URL flagged',
+              any('javascript:' in f for f in _inline_failures(root)),
+              repr(_inline_failures(root)))
+
+    check('check_no_inline_script invoked from main()',
+          'check_no_inline_script(root, failures)' in main_body)
+
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed
     for name, ok, detail in results:

@@ -422,9 +422,22 @@ def check_image_format(root, failures):
                                     % (rel, value))
 
 
+def _csp_directives(csp):
+    # CSP is ';'-separated directives; each is a whitespace-separated name then
+    # its source tokens. Return {name: [tokens]} (all lower-cased).
+    out = {}
+    for part in csp.split(';'):
+        toks = part.split()
+        if toks:
+            out[toks[0].lower()] = [t.lower() for t in toks[1:]]
+    return out
+
+
 def check_csp(root, failures):
-    # Every page must carry a strict CSP: default-src 'none' and no external host
-    # allow-listed (the site's baseline is self + unsafe-inline + data: only).
+    # Every page must carry a strict CSP: default-src 'none', no external host
+    # allow-listed, and scripts confined to same-origin files -- script-src must
+    # NOT permit 'unsafe-inline'. That is what lets every inline <script> move to
+    # an external .js and keeps the policy nonce-free and hash-free.
     for page in html_files(root):
         rel = os.path.relpath(page, root)
         ext = Extractor()
@@ -438,6 +451,72 @@ def check_csp(root, failures):
             failures.append("%s: CSP default-src is not 'none'" % rel)
         if 'http:' in csp or 'https:' in csp or '//' in csp:
             failures.append('%s: CSP allow-lists an external host' % rel)
+        directives = _csp_directives(csp)
+        # script-src falls back to default-src ('none') when absent.
+        script_src = directives.get('script-src', directives.get('default-src', []))
+        if "'unsafe-inline'" in script_src:
+            failures.append("%s: CSP script-src allows 'unsafe-inline'" % rel)
+
+
+class _InlineJSAudit(html.parser.HTMLParser):
+    """Flag anything that needs 'unsafe-inline' to run: an inline <script> (a
+    body with no src attribute), an inline event-handler attribute (on*=), or a
+    javascript: URL. All three are blocked once script-src drops 'unsafe-inline',
+    so the suite fails BEFORE such a page is published and silently broken."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.inline_script = False
+        self.handlers = set()
+        self.js_url = False
+        self._script_depth = 0
+        self._script_has_src = False
+
+    def _scan_attrs(self, attrs):
+        for name, value in attrs:
+            if name.startswith('on'):
+                self.handlers.add(name)
+            if value and value.strip().lower().startswith('javascript:'):
+                self.js_url = True
+
+    def handle_startendtag(self, tag, attrs):
+        # A self-closing tag (e.g. <input onfocus=..>) has no body, so it never
+        # opens an inline <script>; only its attributes matter.
+        self._scan_attrs(attrs)
+
+    def handle_starttag(self, tag, attrs):
+        self._scan_attrs(attrs)
+        if tag == 'script':
+            self._script_depth += 1
+            self._script_has_src = any(n == 'src' and v for n, v in attrs)
+
+    def handle_endtag(self, tag):
+        if tag == 'script' and self._script_depth:
+            self._script_depth -= 1
+
+    def handle_data(self, data):
+        if self._script_depth and not self._script_has_src and data.strip():
+            self.inline_script = True
+
+
+def check_no_inline_script(root, failures):
+    # Belt to check_csp's braces: even with the right CSP, a leftover inline
+    # <script> / on*= / javascript: would just silently stop working. Flag it.
+    for page in html_files(root):
+        rel = os.path.relpath(page, root)
+        audit = _InlineJSAudit()
+        with open(page, encoding='utf-8') as handle:
+            audit.feed(handle.read())
+        if audit.inline_script:
+            failures.append('%s: inline <script> body -- move it to an external '
+                            '.js file (script-src forbids inline)' % rel)
+        for name in sorted(audit.handlers):
+            failures.append('%s: inline event handler %s= -- bind it in an '
+                            'external .js file (script-src forbids inline)'
+                            % (rel, name))
+        if audit.js_url:
+            failures.append('%s: javascript: URL -- script-src forbids inline'
+                            % rel)
 
 
 def check_supply_chain(root, failures):
@@ -925,6 +1004,7 @@ def main():
         check_footer(root, failures)
         check_banner(root, failures)
         check_csp(root, failures)
+        check_no_inline_script(root, failures)
         check_supply_chain(root, failures)
         check_image_format(root, failures)
         check_assets(root, failures)
@@ -940,6 +1020,7 @@ def main():
                 sys.stderr.write('FAIL %s: %s\n' % (name, item))
         else:
             sys.stdout.write('ok %s: links + wording + footer + banner + csp + '
+                             'no-inline-js + '
                              'supply-chain + assets + card-layout + nav + '
                              'heading-breaks + contrast + undefined-classes clean\n' % name)
     sys.stdout.write('website-tests: %d failure(s)\n' % total)
