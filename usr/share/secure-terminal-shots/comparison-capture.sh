@@ -505,7 +505,7 @@ launch() {  ## $1=emulator  $2=case  $3=pgid-file
    ## its labelled toolbar) at the shared Hack/72-DPI cell size, so the homepage slider's two
    ## windows are the same size and their text overlaps. 95 cols of Hack at 11pt/72-DPI lands near
    ## that width.
-   if [ "${case}" = hero-compare ]; then cols=96; fi
+   if [ "${case}" = hero-compare ]; then cols=97; fi
    cmd=()
    case "${e}" in
       xterm)
@@ -1103,7 +1103,7 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       ## under the capture compositor's 72-DPI metrics), so the toolbar stays complete (no ">>"
       ## overflow) at that clamped size -- which is the narrow hero width we want. RE-MEASURE if the
       ## toolbar/chip CSS changes; the emulator width (65 cols) above is matched to this result.
-      st_win_w=860; [ "${st_case}" = hero-compare ] && st_win_w=560
+      st_win_w=860; [ "${st_case}" = hero-compare ] && st_win_w=700
       ## The GUI runs as `python3 .../secure-terminal` -- process name `python3` -- so it MUST
       ## be reaped by its session PGID, never by name. Launch it in its own session and arm the
       ## per-capture watchdog, exactly like the emulator shots.

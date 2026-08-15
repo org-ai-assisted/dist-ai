@@ -65,8 +65,10 @@ BIDI_FILE = 'q3-report.' + RLO + 'fdp.exe' + PDF
 # secure-terminal.
 ZW_ID = 'admin' + ZWSP + 'istrator'
 
-# OSC 0: silently set the window/tab title to a program-chosen domain (trusted chrome).
-OSC0_TITLE = '\x1b]0;example.com\x07'
+# OSC 0: silently set the window/tab title from program output (trusted chrome). The demo
+# title names the injection itself, so the spoof is legible on the page; secure-terminal
+# ignores it and keeps its own honest title.
+OSC0_TITLE = '\x1b]0;gnome-terminal (window title injected)\x07'
 
 # OSC 52: silently overwrite the clipboard. The planted text is an INERT shell comment
 # (leading '#'): it demonstrates the silent overwrite yet runs NOTHING if pasted.
