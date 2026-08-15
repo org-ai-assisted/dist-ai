@@ -424,12 +424,14 @@ def check_image_format(root, failures):
 
 def _csp_directives(csp):
     # CSP is ';'-separated directives; each is a whitespace-separated name then
-    # its source tokens. Return {name: [tokens]} (all lower-cased).
+    # its source tokens. Return {name: [tokens]} (all lower-cased). A repeated
+    # directive is ignored by the browser after its FIRST occurrence, so keep
+    # the first (setdefault) -- matching what the page actually enforces.
     out = {}
     for part in csp.split(';'):
         toks = part.split()
         if toks:
-            out[toks[0].lower()] = [t.lower() for t in toks[1:]]
+            out.setdefault(toks[0].lower(), [t.lower() for t in toks[1:]])
     return out
 
 
@@ -452,17 +454,38 @@ def check_csp(root, failures):
         if 'http:' in csp or 'https:' in csp or '//' in csp:
             failures.append('%s: CSP allow-lists an external host' % rel)
         directives = _csp_directives(csp)
-        # script-src falls back to default-src ('none') when absent.
-        script_src = directives.get('script-src', directives.get('default-src', []))
-        if "'unsafe-inline'" in script_src:
-            failures.append("%s: CSP script-src allows 'unsafe-inline'" % rel)
+        # Inline <script> elements obey script-src-elem, event handlers obey
+        # script-src-attr; each falls back to script-src, then default-src
+        # ('none'). Any of them permitting 'unsafe-inline' re-opens inline JS.
+        def effective(name):
+            return directives.get(name, directives.get(
+                'script-src', directives.get('default-src', [])))
+        if any("'unsafe-inline'" in effective(name)
+               for name in ('script-src-elem', 'script-src-attr')):
+            failures.append("%s: CSP allows inline script ('unsafe-inline' in "
+                            "script-src / script-src-elem / script-src-attr)" % rel)
+
+
+# A <script> runs its body only when it is a classic or module script (empty
+# type, a JavaScript MIME type, or "module"); any other type (application/ld+json,
+# text/template, ...) is an inert data block the browser never executes.
+_JS_SCRIPT_TYPES = frozenset((
+    '', 'module', 'text/javascript', 'application/javascript',
+    'text/ecmascript', 'application/ecmascript', 'application/x-javascript',
+    'text/jscript',
+))
+# Attributes whose value is a navigable URL, so a 'javascript:' value executes.
+# (A data-* attribute or a code sample carrying the text does not.)
+_URL_ATTRS = frozenset((
+    'href', 'xlink:href', 'src', 'action', 'formaction', 'data', 'poster',
+))
 
 
 class _InlineJSAudit(html.parser.HTMLParser):
-    """Flag anything that needs 'unsafe-inline' to run: an inline <script> (a
-    body with no src attribute), an inline event-handler attribute (on*=), or a
-    javascript: URL. All three are blocked once script-src drops 'unsafe-inline',
-    so the suite fails BEFORE such a page is published and silently broken."""
+    """Flag anything that needs 'unsafe-inline' to run: an executable inline
+    <script> (a body with no src attribute), an inline event-handler attribute
+    (on*=), or a javascript: URL. All three are blocked once script-src drops
+    'unsafe-inline', so the suite fails BEFORE such a page publishes broken."""
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
@@ -470,13 +493,14 @@ class _InlineJSAudit(html.parser.HTMLParser):
         self.handlers = set()
         self.js_url = False
         self._script_depth = 0
-        self._script_has_src = False
+        self._script_executable = False
 
     def _scan_attrs(self, attrs):
         for name, value in attrs:
             if name.startswith('on'):
                 self.handlers.add(name)
-            if value and value.strip().lower().startswith('javascript:'):
+            if (name in _URL_ATTRS and value
+                    and value.strip().lower().startswith('javascript:')):
                 self.js_url = True
 
     def handle_startendtag(self, tag, attrs):
@@ -488,14 +512,19 @@ class _InlineJSAudit(html.parser.HTMLParser):
         self._scan_attrs(attrs)
         if tag == 'script':
             self._script_depth += 1
-            self._script_has_src = any(n == 'src' and v for n, v in attrs)
+            amap = dict(attrs)
+            # A src attribute (any value) makes the browser ignore the body.
+            has_src = 'src' in amap
+            stype = (amap.get('type') or '').strip().lower()
+            self._script_executable = (
+                not has_src and stype in _JS_SCRIPT_TYPES)
 
     def handle_endtag(self, tag):
         if tag == 'script' and self._script_depth:
             self._script_depth -= 1
 
     def handle_data(self, data):
-        if self._script_depth and not self._script_has_src and data.strip():
+        if self._script_depth and self._script_executable and data.strip():
             self.inline_script = True
 
 
