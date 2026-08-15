@@ -272,16 +272,21 @@ ok(len(_ztu._screen.buffer[0][0].data) <= 34,
    'zalgo TUI: the merged pyte cell is bounded (base + capped marks), not 100')
 ok(_ztu._screen.buffer[0][1].data == _cjk,
    'zalgo TUI: a non-combining char after the flood resets the run and lands in its own cell')
-# TUI full-width wrap: a line that fills the EXACT grid width leaves pyte in its pending-wrap
-# state (cursor.x == columns); pyte lazy-wraps on the next printable char with its own CR+LF, so
-# a BARE LF (no ONLCR carriage return) would advance a SECOND line and insert a blank row between
-# every full-width line -- a full-screen `cat` of a width-filling board rendered row/blank/row.
-# _SafeHistoryScreen.linefeed consumes the pending wrap; the two lines must land consecutively.
+# TUI full-width line + bare LF: a line that fills the EXACT grid width parks the cursor in
+# pyte's last-column-flag state (cursor.x == columns); pyte defers the wrap to the next printable
+# char (its own CR+LF), so a BARE LF (no ONLCR carriage return) would advance a SECOND line and
+# insert a blank row between every full-width line. _SafeHistoryScreen.linefeed clears the flag
+# but KEEPS the column, exactly as a real terminal does (verified against xterm by an ESC[6n DSR
+# probe): no blank row, and the next line staircases from the last column -- NOT normalised to
+# column 0. So the first B lands in the last column of row 1 and the rest wrap onto row 2.
 _fw = SecureTerminal(command='/bin/cat', tui=True)
 _fwc = _fw._screen.columns
 feed_output(_fw, ('A' * _fwc + '\n' + 'B' * _fwc + '\n').encode('utf-8'))
-ok(_fw._screen.buffer[0][0].data == 'A' and _fw._screen.buffer[1][0].data == 'B',
-   'TUI full-width line + bare LF: the next line is consecutive, with no blank row from a doubled wrap')
+ok(_fw._screen.buffer[0][0].data == 'A'
+   and _fw._screen.buffer[1][_fwc - 1].data == 'B'          # no blank row: first B at the last column
+   and _fw._screen.buffer[2][0].data == 'B',                # the rest wrapped onto the next row
+   'TUI full-width line + bare LF: the flag clears and the column is kept (xterm-accurate), '
+   'so no blank row and the next line staircases from the last column')
 _fw.close()
 # a real accent after a flood still lands (the run resets, not a permanent gag)
 _zt2 = SecureTerminal(command='/bin/cat'); _zt2.apply_mode('show')
