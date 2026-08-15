@@ -68,9 +68,10 @@ has_trailing_ws() {
    grep --perl-regexp --quiet '[[:blank:]]+$' -- "${1}"
 }
 
-## --- 1: confusables + trailing whitespace fixed, result ASCII-clean --------
+## --- 1: always-safe confusables + trailing whitespace, result ASCII-clean --
+## em dash, ellipsis, arrow -- the structure-safe set applied in code too.
 f="${test_dir}/basic.sh"
-printf '%b' '#!/bin/bash\n## a \342\200\224 b and \342\200\230hi\342\200\231   \nx=1\t\n' >"${f}"
+printf '%b' '#!/bin/bash\n## a \342\200\224 b \342\200\246 c \342\206\222 d   \nx=1\t\n' >"${f}"
 ## Canary: the fixture must actually be dirty, else a no-op fixer "passes".
 if has_non_ascii "${f}" ; then
    note_pass "fixture is genuinely dirty (canary)"
@@ -80,9 +81,8 @@ fi
 "${FIX}" "${f}" >/dev/null 2>&1
 if has_non_ascii "${f}" ; then
    note_fail "confusables not fully substituted"
-elif grep --quiet --fixed-strings -- '## a -- b' "${f}" \
-   && grep --quiet --fixed-strings -- "'hi'" "${f}" ; then
-   note_pass "confusables substituted to ASCII"
+elif grep --quiet --fixed-strings -- '## a -- b ... c -> d' "${f}" ; then
+   note_pass "always-safe confusables substituted to ASCII"
 else
    note_fail "confusable substitution wrong"
 fi
@@ -155,6 +155,60 @@ if [ "$(cksum < "${f}")" = "${first}" ] ; then
    note_pass "idempotent (second run changes nothing)"
 else
    note_fail "not idempotent"
+fi
+
+## --- 7b: smart quotes are markup-only (safe in code) --------------------
+## In a .sh file a smart apostrophe stays (rewriting it to ASCII ' could break
+## a single-quoted string); the em dash on the same line is still fixed.
+f="${test_dir}/quotes.sh"
+printf '%b' '#!/bin/bash\nx=\342\200\230hi\342\200\231 \342\200\224 y\n' >"${f}"
+"${FIX}" "${f}" >/dev/null 2>&1
+if has_non_ascii "${f}" && grep --quiet --fixed-strings -- ' -- ' "${f}" ; then
+   note_pass "smart quotes kept in code, em dash still fixed"
+else
+   note_fail "smart-quote-in-code handling wrong"
+fi
+## In a .md file the same smart quotes ARE fixed (quotes are content there).
+f="${test_dir}/quotes.md"
+printf '%b' 'a \342\200\230hi\342\200\231 b\n' >"${f}"
+"${FIX}" "${f}" >/dev/null 2>&1
+if ! has_non_ascii "${f}" && grep --quiet --fixed-strings -- "'hi'" "${f}" ; then
+   note_pass "smart quotes fixed in markup"
+else
+   note_fail "smart-quote-in-markup handling wrong"
+fi
+
+## --- 7c: no-break space is actually substituted --------------------------
+f="${test_dir}/nbsp.sh"
+printf '%b' '#!/bin/bash\nx=\302\2401\n' >"${f}"
+"${FIX}" "${f}" >/dev/null 2>&1
+if ! has_non_ascii "${f}" ; then
+   note_pass "no-break space substituted to a plain space"
+else
+   note_fail "no-break space not substituted"
+fi
+
+## --- 7d: waiver grammar parity (no space after the colon) ----------------
+## The gate accepts '##style-ok:allow-non-ascii'; the fixer must too, or it
+## rewrites a file the gate exempts.
+f="${test_dir}/waiver2.sh"
+printf '%b' '#!/bin/bash\n##style-ok:allow-non-ascii\ny=\342\200\224\n' >"${f}"
+"${FIX}" "${f}" >/dev/null 2>&1
+if has_non_ascii "${f}" ; then
+   note_pass "waiver honored without whitespace after the colon (gate parity)"
+else
+   note_fail "waiver grammar not in lockstep with the gate"
+fi
+
+## --- 7e: --staged outside a repo is an ERROR, not a false green ----------
+nonrepo="${test_dir}/nonrepo"
+mkdir --parents -- "${nonrepo}"
+rc=0
+( cd -- "${nonrepo}" && "${FIX}" --staged >/dev/null 2>&1 ) || rc=$?
+if [ "${rc}" -eq 2 ] ; then
+   note_pass "--staged discovery failure exits 2 (no false green)"
+else
+   note_fail "--staged outside a repo returned ${rc}, expected 2"
 fi
 
 ## --- 8: GATE PARITY / round-trip proof ------------------------------------

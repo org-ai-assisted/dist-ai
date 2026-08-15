@@ -9,24 +9,29 @@
 
 pre-push-static DETECTS violations; the model then spends a turn CORRECTING
 them. This tool removes that round trip for the MECHANICAL, provably
-semantics-preserving rules: it rewrites the fixable violations in place, so
-the gate that follows passes silently and the model never sees them.
+structure-preserving rules: it rewrites the fixable violations in place, so the
+gate that follows passes silently and the model never sees them.
 
 Bucket-1 transforms only (see the plan):
-  * R-001  -- substitute the KNOWN confusable set (em/en dash, smart quotes,
-              ellipsis, arrows, nbsp, bullet) to its intended ASCII form,
-              plus the HTML-entity spellings in prose/markup files.
+  * R-001  -- substitute the KNOWN confusable set to its intended ASCII form.
+              The always-safe set (em/en dash, ellipsis, arrows, nbsp, bullet)
+              maps to characters that are never quote/syntax, so it applies to
+              every file. SMART QUOTES map to ASCII quote characters, which ARE
+              shell/python syntax -- a smart apostrophe inside a single-quoted
+              string would become a real quote and break it -- so they are
+              substituted ONLY in prose/markup files (with the HTML-entity
+              spellings); in code they stay a reported R-001 for a human.
   * trailing-whitespace -- strip blanks before end-of-line.
 
-HARD SAFETY LINE: only the known-confusable table is touched. Any OTHER
-non-ASCII byte is left exactly as-is for pre-push-static to report (bucket-2)
--- so an intentional UTF-8 test fixture is never silently rewritten.
+HARD SAFETY LINE: only the known table is touched. Any OTHER non-ASCII byte is
+left exactly as-is for pre-push-static to report (bucket-2) -- so an intentional
+UTF-8 test fixture is never silently rewritten.
 
-Exemptions are kept in lockstep with pre-push-static's R-001 / trailing-
-whitespace checks (a .gitattributes binary data file, the per-file
-'## style-ok: allow-non-ascii' waiver, symlinks, non-regular files, and the
-is_text_file set for whitespace). test_pre_push_fix.sh pins that parity so
-detector and fixer cannot drift.
+Exemptions are kept in lockstep with pre-push-static (a .gitattributes binary
+data file, the per-file '## style-ok: allow-non-ascii' waiver matched by the
+gate's own grammar, symlinks, non-regular files, and the is_text_file set for
+whitespace). test_pre_push_fix.sh pins that parity so detector and fixer cannot
+drift.
 
 Idempotent: a second run over its own output changes nothing.
 
@@ -39,20 +44,17 @@ Exit: 0 success; in --check mode 1 means "changes are needed"; 2 usage/error.
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 
-## R-001 raw-codepoint confusables -> intended ASCII. Deliberately SMALL and
-## explicit: every entry is a character whose ASCII intent is unambiguous.
-## Anything not here stays a reported violation, never a guess. Keys are \u
-## escapes so THIS source stays ASCII (the tool must pass its own R-001).
+## Always-safe confusables: the ASCII form is never a quote or other
+## syntactically significant character, so substituting cannot change code
+## STRUCTURE -- only string CONTENT, which the ASCII policy mandates anyway.
+## Keys are \u escapes so THIS source stays ASCII (it must pass its own R-001).
 CONFUSABLES = {
     "\u2014": "--",   ## em dash
     "\u2013": "-",    ## en dash
-    "\u2018": "'",    ## left single quote
-    "\u2019": "'",    ## right single quote / apostrophe
-    "\u201c": '"',    ## left double quote
-    "\u201d": '"',    ## right double quote
     "\u2026": "...",  ## horizontal ellipsis
     "\u2192": "->",   ## rightwards arrow
     "\u2190": "<-",   ## leftwards arrow
@@ -60,9 +62,17 @@ CONFUSABLES = {
     "\u2022": "-",    ## bullet
 }
 
-## HTML-entity spellings that RENDER as an em/en dash. Applied only to markup
-## files (an entity in a shell script is literal text, not a dash). Mirrors
-## emdash-check.py's set.
+## Smart quotes -> ASCII quote characters. These ARE syntax in code, so applied
+## MARKUP-ONLY (see the module docstring).
+QUOTES = {
+    "\u2018": "'",    ## left single quote
+    "\u2019": "'",    ## right single quote / apostrophe
+    "\u201c": '"',    ## left double quote
+    "\u201d": '"',    ## right double quote
+}
+
+## HTML-entity spellings that RENDER as an em/en dash. Markup-only, like QUOTES
+## (an entity in a shell script is literal text). Mirrors emdash-check.py's set.
 ENTITIES = {
     "&mdash;": "--",
     "&ndash;": "-",
@@ -86,6 +96,16 @@ TEXT_EXTS = (
     ".dockerfile",
 )
 TEXT_BASENAMES = ("Dockerfile", "Makefile", "COPYING", "README", "LICENSE")
+
+## The gate's R-001 waiver grammar, mirrored EXACTLY so the fixer's exemption
+## stays in lockstep: '## style-ok: allow-non-ascii' with any (or no) horizontal
+## whitespace around the tokens, terminated by whitespace or end-of-line.
+WAIVER_RE = re.compile(
+    r'^[ \t]*##[ \t]*style-ok:[ \t]*allow-non-ascii(?:[ \t]|$)', re.MULTILINE)
+
+
+class StagedDiscoveryError(Exception):
+    """git could not enumerate the staged set -- distinct from 'nothing staged'."""
 
 
 def have(name):
@@ -133,34 +153,15 @@ def is_text_file(path):
 
 
 def has_non_ascii_waiver(text):
-    """The gate's per-file '## style-ok: allow-non-ascii' R-001 opt-out."""
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith("##"):
-            continue
-        body = stripped[2:].strip()
-        if body == "style-ok: allow-non-ascii" or body.startswith(
-                "style-ok: allow-non-ascii "):
-            return True
-    return False
+    return bool(WAIVER_RE.search(text))
 
 
-def substitute_confusables(text):
+def substitute(text, table):
     count = 0
-    for char, repl in CONFUSABLES.items():
+    for char, repl in table.items():
         found = text.count(char)
         if found:
             text = text.replace(char, repl)
-            count += found
-    return text, count
-
-
-def substitute_entities(text):
-    count = 0
-    for entity, repl in ENTITIES.items():
-        found = text.count(entity)
-        if found:
-            text = text.replace(entity, repl)
             count += found
     return text, count
 
@@ -193,8 +194,8 @@ def strip_trailing_whitespace(text):
 def fix_file(path, check):
     """Return a dict of change counts for PATH; write in place unless CHECK.
 
-    None -> the file was skipped (not a regular file, symlink, data file, or
-    undecodable). An empty dict -> examined, already clean."""
+    None -> skipped (not a regular file, symlink, data file, undecodable, or
+    unwritable). Empty dict -> examined, already clean."""
     if not os.path.isfile(path) or os.path.islink(path):
         return None
     if is_data_file(path):
@@ -214,15 +215,17 @@ def fix_file(path, check):
     original = text
     changes = {}
 
-    ## R-001: raw confusables, unless the file carries the non-ASCII waiver.
+    ## R-001: always-safe confusables (unless the file carries the waiver);
+    ## quote-like substitutions and entities only in prose/markup files.
     if not has_non_ascii_waiver(text):
-        text, num = substitute_confusables(text)
+        text, num = substitute(text, CONFUSABLES)
         if num:
             changes["R-001"] = num
         if path.lower().endswith(MARKUP_EXTS):
-            text, num = substitute_entities(text)
-            if num:
-                changes["R-001-entity"] = num
+            text, num_q = substitute(text, QUOTES)
+            text, num_e = substitute(text, ENTITIES)
+            if num_q + num_e:
+                changes["R-001-markup"] = num_q + num_e
 
     ## Trailing whitespace: same file scope as the gate (is_text_file).
     if is_text_file(path):
@@ -233,27 +236,38 @@ def fix_file(path, check):
     if text == original:
         return {}
     if not check:
-        with open(path, "wb") as handle:
-            handle.write(text.encode("utf-8"))
+        try:
+            with open(path, "wb") as handle:
+                handle.write(text.encode("utf-8"))
+        except OSError:
+            ## Readable but not writable: leave it for the gate to report rather
+            ## than crash the whole fix-then-verify pass on one file.
+            return None
     return changes
 
 
 def staged_files():
+    """Absolute paths of staged text files. Raises StagedDiscoveryError on a git
+    failure so the caller can exit non-zero rather than mistake a broken git
+    invocation for 'nothing staged' (a false green). Filenames are decoded with
+    surrogateescape, since git permits bytes invalid in the locale encoding."""
     try:
-        out = subprocess.run(
-            ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR",
+        names = subprocess.run(
+            ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMRT",
              "-z"],
-            capture_output=True, text=True, check=True,
+            capture_output=True, check=True,
         ).stdout
-    except (OSError, subprocess.CalledProcessError):
-        return []
-    top = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
-        capture_output=True, text=True,
-    ).stdout.strip()
-    if not top:
-        return []
-    return [os.path.join(top, name) for name in out.split("\0") if name]
+        top = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True, check=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise StagedDiscoveryError(str(exc)) from exc
+    root = os.fsdecode(top.strip())
+    return [
+        os.path.join(root, os.fsdecode(name))
+        for name in names.split(b"\0") if name
+    ]
 
 
 def main():
@@ -267,7 +281,12 @@ def main():
 
     targets = list(args.files)
     if args.staged:
-        targets.extend(staged_files())
+        try:
+            targets.extend(staged_files())
+        except StagedDiscoveryError as exc:
+            print("pre-push-fix: could not list staged files: %s" % exc,
+                  file=sys.stderr)
+            return 2
     if not targets:
         return 0
 
@@ -277,9 +296,10 @@ def main():
         if changes:
             any_changed = True
             summary = ", ".join(
-                f"{rule} x{num}" for rule, num in changes.items())
+                "%s x%d" % (rule, num) for rule, num in changes.items())
             verb = "would fix" if args.check else "fixed"
-            print(f"pre-push-fix: {verb} {path}: {summary}", file=sys.stderr)
+            print("pre-push-fix: %s %s: %s" % (verb, path, summary),
+                  file=sys.stderr)
 
     if args.check and any_changed:
         return 1
