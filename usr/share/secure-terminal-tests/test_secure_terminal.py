@@ -1889,9 +1889,14 @@ ok(chr(0x202E) not in _out and '\x1b' not in _out,
 # so a code point safe in one mode and dangerous in another is a bypass reachable
 # from the View menu.
 _STREAM_CONTROLS = frozenset((0x07, 0x08, 0x09, 0x0A, 0x0D, ord(S.BOX)))
-_SWEEP = ([c for c in range(0x00, 0x3000) if c not in _STREAM_CONTROLS]
-          + list(range(0xFE00, 0xFE10)) + list(range(0xFFA0, 0xFFA2))
-          + [0xFEFF, 0xE0100, 0xE01EF, 0x1D173, 0x1F600, 0x4E2D, 0x10FFFF])
+# EXHAUSTIVE over every Unicode scalar value. The single-code-point neutralization
+# invariant is decidable per code point, so this sweep is not a sample of interesting
+# ranges -- it is EVERY one of the ~1.1M scalar values, making the property a proof for
+# length-1 input rather than a spot check. Excluded: the stream controls the transport
+# layer owns (tested in test_cli.py), and the surrogate block D800..DFFF -- not a scalar
+# value, and unreachable as a UTF-8-decoded character on a real terminal.
+_SWEEP = [c for c in range(0x00, 0x110000)
+          if c not in _STREAM_CONTROLS and not (0xD800 <= c <= 0xDFFF)]
 _DIVERGE = []
 _NOT_ONE_UNIT = []
 _MODE_BAD = []
@@ -1997,8 +2002,9 @@ _CLASS_MAP = {
     'combining': 'non-ASCII character', 'nonascii': 'non-ASCII character',
 }
 _CLASS_BAD = []
-for _cp in (list(range(0x00, 0x3000)) + [0xFEFF, 0xFE0F, 0xFFA0, 0xE0100,
-                                         0x1F600, 0x4E2D, 0x10FFFF]):
+for _cp in range(0x00, 0x110000):         # EXHAUSTIVE, same as the neutralization sweep
+    if 0xD800 <= _cp <= 0xDFFF:
+        continue                          # surrogate block: not a scalar value
     if _cp in (0x09, 0x0A, 0x0D) or 0x20 <= _cp <= 0x7E:
         continue                          # plain ASCII: neither guard reports it
     _ch = chr(_cp)
@@ -2116,12 +2122,41 @@ for _cp in _CLUSTER_CPS:
 eq(_CLUSTER_BAD, [],
    'no extender builds a cluster past the cap in the rendered cell model')
 
-# The cap must not fire on conformant text: UAX #15 stream-safe format allows up
-# to 30 marks per base, so a 20-mark cluster must survive intact. A cap that ate
-# real decomposed text would pass the assertion above while being wrong.
+# The CELL-MODEL cap must not fire on conformant text: UAX #15 allows up to 30 marks per
+# base, so a 20-mark cluster survives feed_line_edits intact (a cap that ate real decomposed
+# text would pass the flood assertion above while being wrong). SHOW-mode DISPLAY, separately,
+# boxes a > _ZALGO_MARK_MAX cluster as a Zalgo attack (a strong full-cell tint); <= the
+# threshold stays shown.
 _ok_run = 'a' + chr(0x0301) * 20
-eq(_render_cells(_ok_run).count(chr(0x0301)), 20,
-   'a conformant 20-mark cluster is not truncated by the cap')
+_zc, _zcells, _zcol, _zsgr, _zw = S.feed_line_edits([], 0, {}, _ok_run)
+eq(sum(1 for c, _ in _zcells if c == chr(0x0301)), 20,
+   'the cell-model cap does not truncate a conformant 20-mark cluster')
+eq(_render_cells(_ok_run).count(chr(0x0301)), 0,
+   'a 20-mark Zalgo cluster is boxed (not shown) in show-mode display')
+ok(S.BOX in _render_cells(_ok_run),
+   'the boxed Zalgo cluster shows the box placeholder in the line model')
+# a light stack (<= the threshold, e.g. Masoretic-Hebrew depth) stays SHOWN
+_light = 'a' + chr(0x0301) * S._ZALGO_MARK_MAX
+eq(_render_cells(_light).count(chr(0x0301)), S._ZALGO_MARK_MAX,
+   'a combining stack at or below the Zalgo threshold is still shown (legit decomposed text)')
+eq(S.tui_cell('a' + chr(0x0301) * (S._ZALGO_MARK_MAX + 1), 'show'), S.BOX,
+   'the TUI grid also boxes a Zalgo cell above the threshold in show')
+eq(S.tui_cell('a' + chr(0x0301) * S._ZALGO_MARK_MAX, 'show'),
+   'a' + chr(0x0301) * S._ZALGO_MARK_MAX,
+   'the TUI grid keeps a stack at/below the threshold shown')
+# caret alignment (ai-review): cells_display_col collapses a Zalgo run to ONE box exactly as
+# cells_to_runs renders it, so the caret does not drift past text following a Zalgo cluster.
+_zcaret = [('a', None)] + [(chr(0x0301), None)] * (S._ZALGO_MARK_MAX + 1) + [('b', None)]
+eq(S.cells_display_col(_zcaret, len(_zcaret), 'show'), 2,
+   'cells_display_col counts a boxed Zalgo cluster as ONE column (caret stays aligned)')
+_lcaret = [('a', None)] + [(chr(0x0301), None)] * S._ZALGO_MARK_MAX
+eq(S.cells_display_col(_lcaret, len(_lcaret), 'show'), 1 + S._ZALGO_MARK_MAX,
+   'a shown (<= threshold) combining stack keeps each mark offset for the caret')
+# a wide (CJK) base is NOT collapsed (a one-column box would shrink a two-column base)
+eq(len([c for c, _ in S._collapse_zalgo_runs(
+        [(chr(0x4E2D), None)] + [(chr(0x0301), None)] * (S._ZALGO_MARK_MAX + 1))]),
+   S._ZALGO_MARK_MAX + 2,
+   'a Zalgo run on a wide (East-Asian) base is left un-collapsed (no caret/width desync)')
 
 # The predicate must agree with \X over the WHOLE range, not just the samples --
 # this is what would have caught the original hole on the day it was written.

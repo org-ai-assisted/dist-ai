@@ -279,6 +279,34 @@ def run():
         check('background-only + dark-palette token not flagged',
               _ct_failures(root) == [], repr(_ct_failures(root)))
 
+    # 17b. regression (reviewdrain3): a :root nested in @media (prefers-color-scheme:
+    # dark) must NOT be merged into the default palette. Its dark --bg would otherwise
+    # be contrast-paired with the un-overridden light --accent (a pairing that never
+    # renders together) and falsely fail. Both-way canary so it is not a constant-pass:
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               _page % '<link rel="stylesheet" href="style.css">')
+        # light --accent passes on the light --bg (5.08:1); a dark-scheme :root overrides
+        # only --bg. Pre-fix the flat merge paired that dark --bg with the light --accent
+        # (#c21a74 on #111418 == 3.25:1) and falsely flagged it.
+        _write(root, 'style.css',
+               ':root{--bg:#f3f2ee;--accent:#c21a74}'
+               '@media (prefers-color-scheme:dark){:root{--bg:#111418}}'
+               '.kicker{color:var(--accent)}')
+        check('a dark-scheme :root override does not cause a false contrast failure',
+              _ct_failures(root) == [], repr(_ct_failures(root)))
+        # canary: a nested dark :root must not SUPPRESS a real TOP-LEVEL failure either.
+        # The top-level --accent is low-contrast on the light --bg (#d83933 == 4.12:1);
+        # only the top-level fix reports exactly 4.12 (the flat merge would judge it on
+        # the dark --bg and report a different ratio), so this is non-tautological.
+        _write(root, 'style.css',
+               ':root{--bg:#f3f2ee;--accent:#d83933}'
+               '@media (prefers-color-scheme:dark){:root{--bg:#111418}}'
+               '.kicker{color:var(--accent)}')
+        check('a real top-level low-contrast is still flagged despite a dark :root block',
+              any('--accent' in f and '4.12' in f for f in _ct_failures(root)),
+              repr(_ct_failures(root)))
+
     # 18. Both new checks must be WIRED into main() (defined-but-uncalled = a
     # silent no-op, the exact regression case 13 guards for check_image_format).
     check('check_heading_breaks is invoked from main()',
@@ -302,6 +330,39 @@ def run():
           _banner_failures(_page % '<a class="status" href="/x">working</a>') != [])
     check('<span> status pill still text-checked',
           _banner_failures(_page % '<span class="status">shipping</span>') != [])
+
+    # check_undefined_classes: a SOLE class defined nowhere renders unstyled (the
+    # eyebrow bug); a co-class marker, an allowlisted hook, and a JS-referenced
+    # class must NOT be flagged (keeps it low-noise).
+    def _uc_failures(root):
+        failures = []
+        check_site.check_undefined_classes(root, failures)
+        return failures
+
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _page % (
+            '<style>.kicker{color:green}.cat{}</style>'
+            '<p class="eyebrow">bad</p>'                    # sole + undefined -> flag
+            '<p class="kicker">ok</p>'                      # sole + defined -> ok
+            '<section class="cat faq">co</section>'))       # co-class marker -> ok
+        fails = _uc_failures(root)
+        check('sole undefined class flagged', any('eyebrow' in x for x in fails), repr(fails))
+        check('defined sole class not flagged', not any("'kicker'" in x for x in fails), repr(fails))
+        check('co-class marker not flagged', not any("'faq'" in x for x in fails), repr(fails))
+
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _page % (
+            '<div class="asplayer">p</div>'                 # allowlisted sole hook
+            '<span class="jshook">j</span>'                 # referenced from JS
+            # a whitespace-bearing end tag (</script >) must still be captured, or the JS
+            # reference is missed and jshook is falsely flagged undefined (CodeQL py/bad-tag-filter).
+            '<script>document.querySelector(".jshook")</script >'))
+        fails = _uc_failures(root)
+        check('allowlisted sole hook not flagged', not any('asplayer' in x for x in fails), repr(fails))
+        check('JS-referenced sole class not flagged', not any('jshook' in x for x in fails), repr(fails))
+
+    check('check_undefined_classes invoked from main()',
+          'check_undefined_classes(root, failures)' in main_body)
 
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed

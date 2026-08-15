@@ -425,6 +425,35 @@ try:
 finally:
     QFileDialog.getSaveFileName = _ogsf
 
+# --- open_transcript: writes the transcript under the XDG state dir + opens it -----------
+# (NOT /tmp: the shipped AppArmor profile allows ~/.local/state/secure-terminal/** but not
+# /tmp; a fixed reused file so history does not accumulate.)
+from PyQt6.QtGui import QDesktopServices as _QDS         # noqa: E402
+import secure_terminal.session as _sess                  # noqa: E402
+_oou = _QDS.openUrl
+_osd = _sess._state_dir
+_opened = []
+_state_tmp = tempfile.mkdtemp(prefix='st-transcript-state-')
+try:
+    _QDS.openUrl = staticmethod(lambda url: _opened.append(url.toLocalFile()) or True)
+    _sess._state_dir = lambda: _state_tmp
+    _ocur = win.current
+    win.current = lambda: None                  # no active tab -> no-op
+    win.open_transcript()
+    ok(_opened == [], 'open_transcript: no active tab is a no-op')
+    win.current = _ocur
+    win.open_transcript()
+    ok(len(_opened) == 1 and os.path.dirname(_opened[0]) == _state_tmp
+       and os.path.basename(_opened[0]) == 'transcript.txt'
+       and os.path.getsize(_opened[0]) > 0,
+       'open_transcript: writes transcript.txt under the state dir and opens it')
+    win.open_transcript()                        # a second open REUSES the one file (no leak)
+    ok(len(_opened) == 2 and _opened[0] == _opened[1],
+       'open_transcript: reuses one file rather than leaking a new temp each time')
+finally:
+    _QDS.openUrl = _oou
+    _sess._state_dir = _osd
+
 # --- _test_canary: writes the marker + echoes; loud failure on a bad path -----
 import secure_terminal.main as _MM              # noqa: E402
 eq(_test_canary(), 0, '_test_canary: writes the marker and returns 0')
@@ -707,6 +736,32 @@ ok(_rok, '_restore_tab spawns the restored tab in its saved cwd')
 win._restore_tab({'text': '', 'cwd': '/no/such/dir/for/restore', 'osc': {}})
 ok(win.current()._pid is not None,
    '_restore_tab with a vanished saved cwd still spawns a shell')
+
+# a NEW tab opens in the ACTIVE tab's current working directory (like konsole), not the
+# app's launch dir. Restore a tab into a known cwd, wait for its shell to land there, then
+# open a new tab and confirm it spawned in that same dir (bug: new tabs used the launch dir).
+_ncwd = tempfile.mkdtemp(prefix='st-newtab-cwd-')
+win._restore_tab({'text': '', 'cwd': _ncwd, 'osc': {}})
+_nactive = win.current()
+for _ in range(60):
+    if (_nactive.shell_cwd()
+            and os.path.realpath(_nactive.shell_cwd()) == os.path.realpath(_ncwd)):
+        break
+    pump(10)
+win.new_tab()
+_nnew = win.current()
+_ncwd_ok = False
+for _ in range(60):
+    try:
+        if os.path.realpath(os.readlink('/proc/%d/cwd' % _nnew._pid)) \
+                == os.path.realpath(_ncwd):
+            _ncwd_ok = True
+            break
+    except OSError:
+        ## /proc/<pid>/cwd unreadable until the forked child has chdir'd + exec'd.
+        pass
+    pump(10)
+ok(_ncwd_ok, 'a new tab opens in the ACTIVE tab current working directory')
 
 # set_tui refuses + reverts the toggle when a program is running (the shell's
 # terminfo cannot be re-exported under a running program) -- #63.

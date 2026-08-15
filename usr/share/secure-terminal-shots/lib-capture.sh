@@ -22,8 +22,9 @@
 
 ## THREAT MODEL: a terminal cannot protect you from running hostile CODE, only from
 ## DISPLAYING hostile DATA. Every case DISPLAYS data and NEVER runs a script.
-##   crafted   -- cat crafted.payload   (OSC-0 title hijack + stuck colour + DEC
-##                line-drawing shift, none reset)
+##   escape    -- cat escape.payload    (a DEC special-graphics charset shift, ESC(0)
+##   contrast  -- cat contrast.payload  (a stuck red-on-red SGR that hides a line)
+##   title     -- cat title.payload     (a silent OSC-0 window/tab title set)
 ##   homoglyph -- cat homoglyph.payload (a domain carrying a Cyrillic look-alike,
 ##                U+0430 for Latin a)
 ##   bidi      -- cat bidi.payload      (Trojan-Source bidi-override controls that
@@ -35,6 +36,11 @@
 ##   tui-showcase -- cat tui-showcase.payload (a safe display-only board exercising
 ##                every text-attack class at once; a full-screen "what you see vs what
 ##                is there" table)
+##   hero-compare -- cat hero-compare.payload (the homepage hero board: one short,
+##                realistic "verify before you trust" session laced with four
+##                still-applicable display deceptions -- homoglyph, bidi, OSC-0 title,
+##                OSC-52 clipboard -- rendered innocent on a traditional emulator and
+##                flagged by secure-terminal SHOW mode, for the before/after slider)
 ##   notify    -- cat notify.payload    (an OSC-9 desktop-notification from log output)
 ##   random    -- cat random.payload    (a fixed pseudo-random garble field, deterministic)
 ##
@@ -86,8 +92,14 @@ shots_resolve_corpus() {  ## $1=script-relative fallback dir
 ## case -> corpus PoC id (empty for the inline cases notify / random).
 shots_corpus_id() {  ## $1=case
    case "$1" in
-      crafted)
-         printf '%s' 'crafted-hostile-log'
+      escape)
+         printf '%s' 'charset-shift-deception'
+         ;;
+      contrast)
+         printf '%s' 'stuck-colour-contrast'
+         ;;
+      title)
+         printf '%s' 'title-set-hijack'
          ;;
       homoglyph)
          printf '%s' 'homoglyph-domain-install-2021'
@@ -114,8 +126,14 @@ shots_clipboard_token='POC-CORPUS-CANARY-FIRED'
 
 shots_payload_cmd() {  ## $1=case -> the command string the terminal displays
    case "$1" in
-      crafted)
-         printf '%s' 'cat crafted.payload'
+      escape)
+         printf '%s' 'cat escape.payload'
+         ;;
+      contrast)
+         printf '%s' 'cat contrast.payload'
+         ;;
+      title)
+         printf '%s' 'cat title.payload'
          ;;
       homoglyph)
          printf '%s' 'cat homoglyph.payload'
@@ -132,6 +150,9 @@ shots_payload_cmd() {  ## $1=case -> the command string the terminal displays
       tui-showcase)
          printf '%s' 'cat tui-showcase.payload'
          ;;
+      hero-compare)
+         printf '%s' 'cat hero-compare.payload'
+         ;;
       clipboard)
          printf '%s' 'cat clipboard.payload'
          ;;
@@ -140,6 +161,15 @@ shots_payload_cmd() {  ## $1=case -> the command string the terminal displays
          ;;
       random)
          printf '%s' 'cat random.payload'
+         ;;
+      art)
+         printf '%s' 'cat art.payload'
+         ;;
+      gradient)
+         printf '%s' 'cat gradient.payload'
+         ;;
+      unicode)
+         printf '%s' 'cat unicode.payload'
          ;;
    esac
 }
@@ -163,7 +193,7 @@ shots_generate_logs() {  ## $1=script-relative fallback dir $2=dest-dir
    ## suppresses errexit inside the function, so a failed reproduce.py must be surfaced
    ## by hand (as a NON-77 code, distinct from the missing-corpus skip) or the capture
    ## would proceed with a missing payload.
-   for c in crafted homoglyph bidi altscreen tui-showcase; do
+   for c in escape contrast title homoglyph bidi altscreen tui-showcase; do
       id="$(shots_corpus_id "${c}")"
       POC_CORPUS_IN_SANDBOX=1 python3 "${rp}" "${id}" --out "${dest}/${c}.payload" || return 1
    done
@@ -198,6 +228,105 @@ shots_generate_logs() {  ## $1=script-relative fallback dir $2=dest-dir
 n=int(sys.argv[1]); r=random.Random(int(sys.argv[2]))
 buf=bytes(x for x in (r.getrandbits(8) for _ in range(n*2)) if x!=0x1b)[:n]
 sys.stdout.buffer.write(buf)' "${shots_random_bytes}" "${shots_random_seed}" > "${dest}/random.payload" || return 1
+   ## art + gradient: display-only full-viewport colour boards (a sunset scene; a 24-bit gamut
+   ## slice -- hue across, lightness down, plus a greyscale ramp). SAFE to cat -- each generator
+   ## emits ONLY SGR truecolour, the half-block glyph, newlines and a trailing reset (no cursor
+   ## moves, no clear, no OSC), so it repaints nothing and leaves the scrollback clean. A
+   ## page-facing capability demo: secure-terminal renders full 24-bit colour in every mode, and
+   ## the gradient's ramps are smooth here where a 256-colour terminal bands.
+   ##
+   ## PINNED board size (deterministic): the secure-terminal shot window is 860x620 (st_win_w x
+   ## st_win_h in comparison-capture.sh); at that size, Hack 9pt @ 72 DPI gives a 121-col x 39-row
+   ## grid. Size the board to 120 x 36 -- one column inside the grid (a vertical scrollbar can
+   ## reclaim one), and rows for the board plus the 'cat' prompt line above and a fresh prompt
+   ## below. A fixed size makes the shot byte-reproducible; sizing to the LIVE viewport instead
+   ## caught the WM resize mid-animation and produced run-to-run height drift. RE-DERIVE these two
+   ## numbers (offscreen probe of the real grid) if st_win_w/st_win_h or the shot font changes.
+   "${fallback}/truecolor-art.py" --cols 120 --rows 36 > "${dest}/art.payload" || return 1
+   "${fallback}/truecolor-gradient.py" --cols 120 --rows 36 > "${dest}/gradient.payload" || return 1
+   ## unicode: an exhaustive-by-class Unicode gallery -- a renderable-subset glyph chart plus
+   ## raw-byte RISK specimens (C0/C1 controls, bidi, zero-width/invisible, combining), each
+   ## specimen inline-ISOLATED one-per-line so an escape it starts aborts at the newline; SO is
+   ## paired with SI so no charset shift lingers. Grids emit only graphic glyphs (safe anywhere);
+   ## display-only, no alt-screen / OSC / persistent state. A capability demo: secure-terminal
+   ## shows and risk-TINTS every class where a plain terminal shows flat text. Deterministic for a
+   ## fixed Unicode version, so regeneration is a no-op.
+   "${fallback}/unicode-gallery.py" > "${dest}/unicode.payload" || return 1
+   ## hero-compare: the homepage hero board -- one short, realistic "verify before you trust"
+   ## session laced with four still-applicable display deceptions (homoglyph U+0430, bidi
+   ## U+202E/U+202C, an OSC-0 title-set, an OSC-52 clipboard-write). A traditional emulator
+   ## renders it innocent; secure-terminal SHOW mode shows the same bytes AND flags every trap,
+   ## which is exactly the before/after the homepage slider overlays. A PAGE-FACING display demo
+   ## with NO canary token (like notify / zerowidth / art / gradient / unicode above), so it is
+   ## generated here rather than reproduced from the corpus -- while reusing the corpus's canonical
+   ## code points so the demonstration stays consistent with its homoglyph / bidi / title-set /
+   ## osc52-clipboard-write PoCs. SAFE to cat: text plus two display-only OSC escapes, both undone
+   ## by reset; no cursor addressing, alt-screen or clear.
+   "${fallback}/hero-board.py" > "${dest}/hero-compare.payload" || return 1
+}
+
+## Install secure-terminal's icon into a session icon theme at ${1}=XDG_DATA_HOME, so labwc
+## (which resolves a window's title-bar icon by app-id through the icon theme, not
+## _NET_WM_ICON) shows the real logo. A no-op when ST_REPO / the svg is absent. Extracted so
+## the --jobs orchestrator can build it ONCE and share it, instead of every lane re-rasterising
+## the eight sizes concurrently (which spiked memory).
+## True when a captured shot is (near) a single flat colour -- a blank/black grab, which
+## happens when the window is screenshotted before its content finished rendering (more
+## likely under the parallel --jobs load, where CPU contention slows the render past the
+## fixed settle). The caller waits and re-grabs. Uses ImageMagick's own standard-deviation
+## metric (0 = perfectly flat) so no extra tool is pulled in.
+shots_shot_is_blank() {  ## $1=png
+   local flat
+   [ -s "$1" ] || return 0
+   flat="$(convert "$1" -colorspace Gray -format '%[fx:standard_deviation<0.012?1:0]' info: 2>/dev/null || printf '0')"
+   [ "${flat}" = '1' ]
+}
+
+## Cases the emulator loop does NOT shoot (secure-terminal-only showcases): notify has no
+## standard emulator equivalent, art is a secure-terminal truecolor-render demo, unicode is a
+## secure-terminal risk-tint capability demo (its raw-byte specimens behave unpredictably across
+## emulators and add no attack comparison). Single source of truth for "which cases yield an
+## emulator shot", shared by the capture loop's own skip and by shots_missing_emulator_shots
+## below -- keep the two in step.
+SHOTS_EMULATOR_SKIP_CASES=' notify art unicode '
+
+## Print the emulator shots (one "<emulator> <case>" per line) that are EXPECTED but MISSING from
+## the shots dir. Drives the --jobs orchestrator's sequential re-capture net: a parallel lane can
+## screenshot a window before its content painted, and capture_settled DISCARDS that blank rather
+## than publish black, so a discarded shot leaves no file. Enumerating the gaps lets the net
+## re-shoot exactly them, so a full reshoot never omits a shot (no manual per-emulator re-run).
+## Expected = (each given emulator) x (each given case except SHOTS_EMULATOR_SKIP_CASES). A shot
+## counts present if EITHER the .png (pre-merge) or the .webp (post-merge) exists. The caller
+## passes only INSTALLED emulators, so an authorized skip (absent emulator) has no expected shot
+## and is never chased.
+shots_missing_emulator_shots() {  ## $1=out-dir  $2=emulators (space-sep)  $3=cases (space-sep)
+   local out_dir emus cases e c
+   out_dir="$1"; emus="$2"; cases="$3"
+   for e in ${emus}; do
+      for c in ${cases}; do
+         case "${SHOTS_EMULATOR_SKIP_CASES}" in *" ${c} "*) continue ;; esac
+         [ -f "${out_dir}/${e}.${c}.png" ] || [ -f "${out_dir}/${e}.${c}.webp" ] \
+            || printf '%s\n' "${e} ${c}"
+      done
+   done
+}
+
+shots_install_icon_theme() {  ## $1 = XDG_DATA_HOME target dir
+   local data_home th st_icon sz
+   data_home="$1"
+   st_icon="${ST_REPO:-}/usr/share/icons/hicolor/scalable/apps/secure-terminal.svg"
+   if [ -z "${ST_REPO:-}" ] || [ ! -f "${st_icon}" ]; then
+      return 0
+   fi
+   th="${data_home}/icons/hicolor"
+   mkdir --parents -- "${th}/scalable/apps"
+   cp -- "${st_icon}" "${th}/scalable/apps/secure-terminal.svg"
+   for sz in 16 22 24 32 48 64 128 256; do
+      mkdir --parents -- "${th}/${sz}x${sz}/apps"
+      convert -background none -resize "${sz}x${sz}" "${st_icon}" \
+         "${th}/${sz}x${sz}/apps/secure-terminal.png" 2>/dev/null || true
+   done
+   gtk-update-icon-cache -f "${th}" 2>/dev/null || true
 }
 
 shots_optimize_to_webp() {  ## $@=produced PNG shots -> convert each to webp in place

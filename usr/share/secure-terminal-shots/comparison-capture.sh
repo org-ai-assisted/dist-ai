@@ -118,7 +118,7 @@ SHOT_DEADLINE="${SHOT_DEADLINE:-90}"
 ## notify is a secure-terminal-only case (emulators have no standard notify shot -- the page's
 ## kitty.notify popup is captured separately), so it is in the full matrix for the ST loop but
 ## skipped in the emulator loop below.
-all_cases='crafted random homoglyph bidi zerowidth altscreen notify tui-showcase'
+all_cases='escape contrast title random homoglyph bidi zerowidth altscreen notify art gradient unicode tui-showcase hero-compare'
 CASES="${CASES:-${all_cases}}"
 ## The emulator set, single source of truth for BOTH the capture loop and the --jobs
 ## orchestrator's partition. lxterminal is omitted: its single-instance startup maps no
@@ -135,6 +135,10 @@ jobs=1
 no_st=''
 no_optimize=''
 optimize_only=''
+## --prep-dir DIR: a lane copies its payloads + icon theme from DIR (pre-generated ONCE by the
+## orchestrator) instead of running reproduce.py + rasterising the icon itself. Removes the
+## redundant, memory-spiking per-lane setup that OOM-killed a lane at higher --jobs.
+prep_dir=''
 while [ "$#" -gt 0 ]; do
    case "$1" in
       --only)
@@ -153,7 +157,7 @@ while [ "$#" -gt 0 ]; do
          ;;
       --quick)
          only_terminals='kitty'
-         cases_sel='crafted'
+         cases_sel='escape'
          shift
          ;;
       --jobs)
@@ -172,6 +176,11 @@ while [ "$#" -gt 0 ]; do
       --optimize-only)
          optimize_only='true'
          shift
+         ;;
+      --prep-dir)
+         [ "$#" -ge 2 ] || { printf '%s\n' 'comparison-capture: --prep-dir needs a directory' >&2; exit 2; }
+         prep_dir="$2"
+         shift 2
          ;;
       *)
          printf '%s\n' "comparison-capture: unknown argument '$1'" >&2
@@ -217,12 +226,25 @@ if [ "${jobs}" -gt 1 ]; then
    else
       emu_set="${DEFAULT_TERMINALS}"
    fi
+   ## Pre-generate the payloads + icon theme ONCE into a shared dir; lanes copy from it via
+   ## --prep-dir instead of each running reproduce.py + rasterising the icon (the concurrent,
+   ## memory-spiking setup that OOM-killed a lane). Not in dry-run (no capture happens).
+   orch_prep=''
+   if [ -z "${SHOTS_LANE_DRY_RUN:-}" ]; then
+      orch_prep="$(mktemp --directory)"
+      export XDG_DATA_HOME="${orch_prep}/data"
+      shots_generate_logs "${here}" "${orch_prep}" || exit "$?"
+      shots_install_icon_theme "${orch_prep}/data"
+   fi
    lane_dir="$(mktemp --directory)"
    lane_pids=()
    lane_logs=()
    lane_i=0
+   ## Stagger emulator-lane startup so their (brief) compositor-bringup phases do not all peak at
+   ## once; the long capture phase still overlaps fully.
+   lane_stagger="${SHOTS_LANE_STAGGER:-6}"
    spawn_lane() {  ## $@ = args forwarded to a comparison-capture.sh lane
-      local log
+      local log prep_args
       log="${lane_dir}/lane.${lane_i}.log"
       ## SHOTS_LANE_DRY_RUN: print the lane's scope instead of running it, to verify the
       ## partition (which emulators / ST / cases each lane gets) without a capture.
@@ -231,33 +253,46 @@ if [ "${jobs}" -gt 1 ]; then
          lane_i=$(( lane_i + 1 ))
          return 0
       fi
+      prep_args=()
+      [ -n "${orch_prep}" ] && prep_args=(--prep-dir "${orch_prep}")
+      [ "${lane_i}" -gt 0 ] && sleep "${lane_stagger}"
       xvfb-run --auto-servernum --server-args='-screen 0 1600x1000x24' \
-         "${self}" "$@" --no-optimize >"${log}" 2>&1 &
+         "${self}" "$@" "${prep_args[@]}" --no-optimize >"${log}" 2>&1 &
       lane_pids+=("$!")
       lane_logs+=("${log}")
       lane_i=$(( lane_i + 1 ))
    }
-   emu_lanes="${jobs}"
-   ## The full grid includes the secure-terminal pass; give it its own lane, and split the
-   ## emulators across the rest. A --st-only run has no emulators, so all lanes go to ST
-   ## (split by case); an emulator-only run (--only, no ST wanted) is not expressible here --
-   ## the orchestrator always captures the full grid it was asked for.
-   if [ -z "${st_only}" ] && [ -n "${emu_set}" ]; then
-      spawn_lane --st-only "${fwd_case[@]}"
-      emu_lanes=$(( jobs - 1 ))
-      [ "${emu_lanes}" -lt 1 ] && emu_lanes=1
-   fi
+   rc=0
+   wait_lanes() {  ## wait for all currently-spawned lanes; echo their logs
+      ## A lane's exit code is NOT folded into the run's rc: under --jobs load a lane can die
+      ## transiently (labwc bringup racing) yet every shot it lost is re-shot by the sequential
+      ## re-capture net below. The AUTHORITATIVE emulator-phase verdict is that net's final
+      ## missing-check (a genuinely absent terminal is caught by the installed-check there), so a
+      ## fully-recovered grid exits 0 and the shots are pulled -- a transient lane failure alone
+      ## must not fail the whole run. A non-zero lane is noted for visibility only.
+      local i lrc
+      i=0
+      while [ "${i}" -lt "${#lane_pids[@]}" ]; do
+         lrc=0
+         wait "${lane_pids[i]}" || lrc="$?"
+         cat -- "${lane_logs[i]}" 2>/dev/null || true
+         [ "${lrc}" -eq 0 ] || printf '%s\n' "note: an emulator lane exited ${lrc} (transient under --jobs load; the re-capture net backstops any missing shot)"
+         i=$(( i + 1 ))
+      done
+      lane_pids=()
+      lane_logs=()
+   }
+   ## PHASE 1: the emulators, in ${jobs} parallel lanes (they tolerate CPU contention).
    if [ -n "${emu_set}" ]; then
-      ## round-robin the emulators into emu_lanes buckets, each its own --only lane.
       bucket=()
       idx=0
       for e in ${emu_set}; do
-         b=$(( idx % emu_lanes ))
+         b=$(( idx % jobs ))
          bucket[b]="${bucket[b]:+${bucket[b]} }${e}"
          idx=$(( idx + 1 ))
       done
       b=0
-      while [ "${b}" -lt "${emu_lanes}" ]; do
+      while [ "${b}" -lt "${jobs}" ]; do
          if [ -n "${bucket[b]:-}" ]; then
             only_args=()
             for e in ${bucket[b]}; do only_args+=(--only "${e}"); done
@@ -265,39 +300,85 @@ if [ "${jobs}" -gt 1 ]; then
          fi
          b=$(( b + 1 ))
       done
-   elif [ -n "${st_only}" ]; then
-      ## --st-only + --jobs: split the ST pass across lanes by CASE.
-      set -- ${CASES}
-      per=$(( ($# + jobs - 1) / jobs ))
-      [ "${per}" -lt 1 ] && per=1
-      group=()
-      for cse in "$@"; do
-         group+=("${cse}")
-         if [ "${#group[@]}" -ge "${per}" ]; then
-            ca=()
-            for g in "${group[@]}"; do ca+=(--case "${g}"); done
-            spawn_lane --st-only "${ca[@]}"
-            group=()
+      wait_lanes
+   fi
+   ## PHASE 1.5: sequential re-capture net for the emulator pass. Under parallel CPU load a lane
+   ## can screenshot an emulator window before its content paints; capture_settled DISCARDS that
+   ## blank (never publishes black), so a discarded shot leaves no file and a full reshoot would
+   ## omit it -- the residual "manual per-emulator re-run" problem. With every parallel lane now
+   ## finished (zero CPU contention -- the condition under which a sequential re-run reliably
+   ## succeeds), re-shoot any still-missing emulator shot SEQUENTIALLY, one xvfb-run at a time,
+   ## like the ST pass. Bounded rounds; anything still missing after the net is a HARD failure
+   ## (rc=1), never a silent stale shot.
+   if [ -n "${emu_set}" ] && [ -z "${SHOTS_LANE_DRY_RUN:-}" ]; then
+      ## only INSTALLED emulators are expected to yield shots. A genuinely ABSENT emulator is a
+      ## hard error here (an incomplete grid misrepresents the comparison) unless ALLOW_SKIP
+      ## authorizes it -- the same rule the per-lane loop enforces, restated here because lane
+      ## exit codes are no longer folded into rc (a transient labwc failure must not fail the run,
+      ## but a missing terminal must). Only the installed set is chased by the net below.
+      emu_present=''
+      for e in ${emu_set}; do
+         e_path="$(type -P "${e}" 2>/dev/null || true)"
+         if [ -n "${e_path}" ] && [ -x "${e_path}" ]; then
+            emu_present="${emu_present:+${emu_present} }${e}"
+         elif [ -n "${ALLOW_SKIP:-}" ]; then
+            printf '%s\n' "SKIP ${e} (not installed/executable; ALLOW_SKIP authorized)" >&2
+         else
+            printf '%s\n' "ERROR: emulator ${e} is not installed/executable; install it or set ALLOW_SKIP=1" >&2
+            rc=1
          fi
       done
-      if [ "${#group[@]}" -gt 0 ]; then
-         ca=()
-         for g in "${group[@]}"; do ca+=(--case "${g}"); done
-         spawn_lane --st-only "${ca[@]}"
+      recap_prep=()
+      [ -n "${orch_prep}" ] && recap_prep=(--prep-dir "${orch_prep}")
+      recap_round=0
+      while [ "${recap_round}" -lt 3 ]; do
+         mapfile -t recap_missing < <(shots_missing_emulator_shots "${out}" "${emu_present}" "${CASES}")
+         [ "${#recap_missing[@]}" -eq 0 ] && break
+         printf '%s\n' "re-capture net (round $(( recap_round + 1 ))): ${#recap_missing[@]} emulator shot(s) missing after the parallel pass; re-shooting sequentially"
+         for pair in "${recap_missing[@]}"; do
+            read -r re_e re_c <<< "${pair}"
+            ## A re-shoot may itself exit non-zero (labwc bringup can still flake) -- its rc is
+            ## NOT folded into the run's rc. Whether the shot now exists is decided by the
+            ## authoritative missing-check after the rounds; a shot still absent then fails hard.
+            xvfb-run --auto-servernum --server-args='-screen 0 1600x1000x24' \
+               "${self}" --only "${re_e}" --case "${re_c}" --no-st "${recap_prep[@]}" --no-optimize \
+               > "${lane_dir}/recap.${re_e}.${re_c}.log" 2>&1 || true
+            cat -- "${lane_dir}/recap.${re_e}.${re_c}.log" 2>/dev/null || true
+         done
+         recap_round=$(( recap_round + 1 ))
+      done
+      mapfile -t recap_missing < <(shots_missing_emulator_shots "${out}" "${emu_present}" "${CASES}")
+      if [ "${#recap_missing[@]}" -gt 0 ]; then
+         printf '%s\n' "ERROR: ${#recap_missing[@]} emulator shot(s) STILL missing after the re-capture net:" >&2
+         for pair in "${recap_missing[@]}"; do
+            printf '%s\n' "   ${pair}" >&2
+         done
+         rc=1
+      else
+         printf '%s\n' "re-capture net: emulator grid complete, 0 shots missing"
       fi
    fi
-   rc=0
-   i=0
-   while [ "${i}" -lt "${#lane_pids[@]}" ]; do
-      lrc=0
-      wait "${lane_pids[i]}" || lrc="$?"
-      cat -- "${lane_logs[i]}" 2>/dev/null || true
-      [ "${lrc}" -eq 0 ] || rc="${lrc}"
-      i=$(( i + 1 ))
-   done
+   ## PHASE 2: the secure-terminal pass, run SEQUENTIALLY and ALONE. Each ST spec is a fresh Qt
+   ## '--new-instance' cold start; when it competes with the emulator captures (or other ST
+   ## launches) for CPU its render is starved and the shot comes out blank. Running ST after the
+   ## emulator phase, one launch at a time, is what keeps it reliable. (A --st-only request skips
+   ## phase 1 and runs only this.)
+   if [ -z "${SHOTS_LANE_DRY_RUN:-}" ]; then
+      st_prep=()
+      [ -n "${orch_prep}" ] && st_prep=(--prep-dir "${orch_prep}")
+      st_rc=0
+      xvfb-run --auto-servernum --server-args='-screen 0 1600x1000x24' \
+         "${self}" --st-only "${fwd_case[@]}" "${st_prep[@]}" --no-optimize \
+         > "${lane_dir}/st.log" 2>&1 || st_rc="$?"
+      cat -- "${lane_dir}/st.log" 2>/dev/null || true
+      [ "${st_rc}" -eq 0 ] || rc="${st_rc}"
+   else
+      printf '%s\n' "LANE st(sequential): --st-only$(printf ' %s' "${fwd_case[@]}") --no-optimize"
+   fi
    safe-rm --recursive --force -- "${lane_dir}" 2>/dev/null || true
+   [ -n "${orch_prep}" ] && safe-rm --recursive --force -- "${orch_prep}" 2>/dev/null || true
    "${self}" --optimize-only || true
-   printf '%s\n' "done; ${lane_i} lane(s); shots in ${out}"
+   printf '%s\n' "done; emulators parallel + secure-terminal sequential; shots in ${out}"
    exit "${rc}"
 fi
 
@@ -313,28 +394,25 @@ shots_register_run "${run_marker}"
 ## (a SKIP, like a missing ST_REPO) ONLY when the corpus is absent; a real
 ## payload-generation failure returns a distinct non-77 code, which is propagated
 ## here so a broken reproduce.py is not reported as a skip.
-shots_generate_logs "${here}" "${HOME}" || exit "$?"
+export XDG_DATA_HOME="${runtime_dir}/data"
+mkdir --parents -- "${XDG_DATA_HOME}"
+if [ -n "${prep_dir}" ]; then
+   ## Lane: reuse the orchestrator's pre-generated payloads + icon theme. COPY (not symlink) the
+   ## payloads so this lane can strip its own tui-showcase copy without mutating the shared one.
+   cp -- "${prep_dir}"/*.payload "${HOME}/" || exit 1
+   if [ -d "${prep_dir}/data" ]; then
+      cp --recursive -- "${prep_dir}/data/." "${XDG_DATA_HOME}/" 2>/dev/null || true
+   fi
+else
+   ## Attack payloads come from the terminal-poc-corpus (single source of truth), decoded by its
+   ## reproduce.py; secure-terminal's icon is rasterised into the session icon theme so labwc
+   ## shows the real title-bar logo.
+   shots_generate_logs "${here}" "${HOME}" || exit "$?"
+   shots_install_icon_theme "${XDG_DATA_HOME}"
+fi
 cat > "${HOME}/.strc" <<'RC'
 PS1='user@host:~$ '
 RC
-
-## Install secure-terminal's icon into the session icon theme, so labwc -- which
-## resolves a window's title-bar icon by its app-id (WM_CLASS) through the icon
-## theme, NOT via _NET_WM_ICON -- shows the real logo in secure-terminal's title
-## bar, exactly as on a system where the package (and its icon) is installed.
-export XDG_DATA_HOME="${runtime_dir}/data"
-st_icon="${ST_REPO:-}/usr/share/icons/hicolor/scalable/apps/secure-terminal.svg"
-if [ -n "${ST_REPO:-}" ] && [ -f "${st_icon}" ]; then
-   th="${XDG_DATA_HOME}/icons/hicolor"
-   mkdir --parents -- "${th}/scalable/apps"
-   cp -- "${st_icon}" "${th}/scalable/apps/secure-terminal.svg"
-   for sz in 16 22 24 32 48 64 128 256; do
-      mkdir --parents -- "${th}/${sz}x${sz}/apps"
-      convert -background none -resize "${sz}x${sz}" "${st_icon}" \
-         "${th}/${sz}x${sz}/apps/secure-terminal.png" 2>/dev/null || true
-   done
-   gtk-update-icon-cache -f "${th}" 2>/dev/null || true
-fi
 
 ## labwc config: the Clearlooks theme, server-side decorations.
 cat > "${XDG_CONFIG_HOME}/labwc/rc.xml" <<XML
@@ -346,7 +424,7 @@ cat > "${XDG_CONFIG_HOME}/labwc/rc.xml" <<XML
 </labwc_config>
 XML
 
-## launch each emulator FROM ${HOME} so a plain "cat crafted.payload" finds it.
+## launch each emulator FROM ${HOME} so a plain "cat escape.payload" finds it.
 cd "${HOME}"
 
 wm_pid=''
@@ -374,7 +452,11 @@ start_labwc() {
       before_sock+="${f##*/} "
    done
    before_win=" $(DISPLAY="${host_display}" xdotool search --onlyvisible '' 2>/dev/null | tr '\n' ' ')"
-   WLR_BACKENDS=x11 WLR_X11_OUTPUTS=1 DISPLAY="${host_display}" \
+   ## WLR_RENDERER=pixman: force wlroots' software renderer. The default GL renderer needs a GPU
+   ## / DRM device that a nested Xvfb does not provide, so labwc intermittently fails to start
+   ## ("try WLR_RENDERER=pixman") -- more often under the parallel --jobs load, which stands up
+   ## several labwc instances. Software rendering is deterministic and plenty for a screenshot.
+   WLR_RENDERER=pixman WLR_BACKENDS=x11 WLR_X11_OUTPUTS=1 DISPLAY="${host_display}" \
       labwc >"${runtime_dir}/labwc.log" 2>&1 &
    wm_pid="$!"
    labwc_wid=''; xwl_display=''
@@ -417,8 +499,13 @@ launch() {  ## $1=emulator  $2=case  $3=pgid-file
    ## the short cases use, its title bar scrolled off the top. Only that case gets the
    ## taller window, so the other cases' shots (and their committed on-page dimensions)
    ## are unchanged. kitty is sized in pixels, so it gets a matching taller height.
-   rows=24; kh=430
+   rows=24; kh=430; cols=84
    if [ "${case}" = tui-showcase ]; then rows=32; kh=620; fi
+   ## hero-compare: match the secure-terminal hero window WIDTH (~640px -- the app's minimum with
+   ## its labelled toolbar) at the shared Hack/72-DPI cell size, so the homepage slider's two
+   ## windows are the same size and their text overlaps. 95 cols of Hack at 11pt/72-DPI lands near
+   ## that width.
+   if [ "${case}" = hero-compare ]; then cols=97; fi
    cmd=()
    case "${e}" in
       xterm)
@@ -427,22 +514,22 @@ launch() {  ## $1=emulator  $2=case  $3=pgid-file
          ## bistable 1px sub-pixel jitter run-to-run on the tui-showcase box border;
          ## the internal line-drawing is pixel-exact and deterministic.
          cmd=("${base[@]}" xterm -xrm 'XTerm.vt100.forceBoxChars: true' \
-            -geometry "84x${rows}" -fa 'Monospace' -fs 11 -e "${sh[@]}")
+            -geometry "${cols}x${rows}" -fa 'Monospace' -fs 11 -e "${sh[@]}")
          ;;
       urxvt)
-         cmd=("${base[@]}" urxvt -geometry "84x${rows}" -fn 'xft:Monospace:size=11' -e "${sh[@]}")
+         cmd=("${base[@]}" urxvt -geometry "${cols}x${rows}" -fn 'xft:Monospace:size=11' -e "${sh[@]}")
          ;;
       st)
-         cmd=("${base[@]}" st -g "84x${rows}" -f 'Monospace:size=11' -e "${sh[@]}")
+         cmd=("${base[@]}" st -g "${cols}x${rows}" -f 'Monospace:size=11' -e "${sh[@]}")
          ;;
       konsole)
-         cmd=("${base[@]}" QT_QPA_PLATFORM=xcb konsole --nofork -p TerminalColumns=84 -p "TerminalRows=${rows}" -e "${sh[@]}")
+         cmd=("${base[@]}" QT_QPA_PLATFORM=xcb konsole --nofork -p "TerminalColumns=${cols}" -p "TerminalRows=${rows}" -e "${sh[@]}")
          ;;
       qterminal)
          cmd=("${base[@]}" QT_QPA_PLATFORM=xcb qterminal -e "${sh[@]}")
          ;;
       xfce4-terminal)
-         cmd=("${base[@]}" GDK_BACKEND=x11 xfce4-terminal --disable-server --geometry "84x${rows}" -x "${sh[@]}")
+         cmd=("${base[@]}" GDK_BACKEND=x11 xfce4-terminal --disable-server --geometry "${cols}x${rows}" -x "${sh[@]}")
          ;;
       gnome-terminal)
          ## gnome-terminal is a thin client to gnome-terminal-server over D-Bus, with no
@@ -452,14 +539,22 @@ launch() {  ## $1=emulator  $2=case  $3=pgid-file
          ## reaping the recorded PGID takes the whole thing down. VTE reads its profile from
          ## dconf; with no dconf daemon on the private bus it falls back to the built-in default
          ## profile -- the shipped default we want to show.
-         cmd=("${base[@]}" GDK_BACKEND=x11 dbus-run-session -- \
-            gnome-terminal --wait --geometry "84x${rows}" -- "${sh[@]}")
+         if [ "${case}" = hero-compare ]; then
+            ## Match secure-terminal's Hack font at 72-DPI cell metrics so the homepage slider's text
+            ## overlaps. The gsettings + Xft.dpi setup lives in a sibling helper (no inline sh -c /
+            ## exec); it runs inside the dbus session and launches gnome-terminal --wait.
+            cmd=("${base[@]}" GDK_BACKEND=x11 dbus-run-session -- \
+               "${here}/gnome-hero-launch.sh" "${cols}x${rows}" -- "${sh[@]}")
+         else
+            cmd=("${base[@]}" GDK_BACKEND=x11 dbus-run-session -- \
+               gnome-terminal --wait --geometry "${cols}x${rows}" -- "${sh[@]}")
+         fi
          ;;
       mate-terminal)
-         cmd=("${base[@]}" GDK_BACKEND=x11 mate-terminal --disable-factory --geometry "84x${rows}" -x "${sh[@]}")
+         cmd=("${base[@]}" GDK_BACKEND=x11 mate-terminal --disable-factory --geometry "${cols}x${rows}" -x "${sh[@]}")
          ;;
       alacritty)
-         cmd=("${base[@]}" WINIT_UNIX_BACKEND=x11 alacritty -o 'window.dimensions.columns=84' -o "window.dimensions.lines=${rows}" -o 'font.size=11' -e "${sh[@]}")
+         cmd=("${base[@]}" WINIT_UNIX_BACKEND=x11 alacritty -o "window.dimensions.columns=${cols}" -o "window.dimensions.lines=${rows}" -o 'font.size=11' -e "${sh[@]}")
          ;;
       kitty)
          cmd=("${base[@]}" KITTY_ENABLE_WAYLAND=0 kitty -o 'remember_window_size=no' -o 'initial_window_width=720' -o "initial_window_height=${kh}" -o 'font_size=11' "${sh[@]}")
@@ -583,6 +678,125 @@ tighten_deadspace() {  ## $1=png-path
       -delete 0 -append "${f}"
 }
 
+## Compose the homepage before/after slider pair from the hero-compare shots: secure-terminal's
+## SHOW-mode board and the gnome-terminal render of the SAME board. The site's CSS resize slider
+## overlays them, so they must be identical size AND their terminal text must sit at the same
+## coordinates. hero-slider-compose.py keeps the title bars aligned at the top, inserts a white band
+## above the shallower-chrome terminal's text so both text tops line up (secure-terminal carries a
+## toolbar + tab strip + a bottom notice a plain terminal lacks), then pads both to one shared canvas.
+## Runs at the END of a single-lane run, from the two .png shots before webp optimization; a no-op
+## (logged) if either is absent (e.g. an emulator-only or --jobs lane). gnome-terminal is the
+## traditional side: it HONOURS the OSC-0 title hijack (the spoofed title shows in its title bar)
+## where konsole resets it, and -- captured with secure-terminal's own Hack font at 72 DPI (see
+## launch()) -- its text is cell-for-cell the same size, so the wipe reads as ONE session secured vs not.
+compose_hero_slider() {  ## $1=out-dir
+   local out sec trad
+   out="$1"
+   sec="${out}/secure-terminal.hero-compare-show.png"
+   trad="${out}/gnome-terminal.hero-compare.png"
+   if [ ! -f "${sec}" ] || [ ! -f "${trad}" ]; then
+      printf '%s\n' 'compose_hero_slider: secure-terminal + gnome-terminal hero-compare shots not both present; skipping slider compose' >&2
+      return 0
+   fi
+   "${here}/hero-slider-compose.py" "${sec}" "${trad}" "${out}/hero-secure.png" "${out}/hero-traditional.png"
+   ## Drop the raw per-terminal hero-compare shots: only the composed pair is referenced by the
+   ## site, so leaving the sources behind would land them in comparison/shots/ (the driver pulls
+   ## every .webp) as ORPHANS that website-tests rejects. Removing them here keeps the site green on
+   ## every regeneration with no step to remember. The honest per-terminal captures still exist
+   ## mid-run; only the composed hero-secure/hero-traditional are published.
+   safe-rm -f -- "${out}"/*.hero-compare.png "${out}"/*.hero-compare.webp \
+      "${out}/secure-terminal.hero-compare-show.png" "${out}/secure-terminal.hero-compare-show.webp" 2>/dev/null || true
+   printf '%s\n' 'composed hero slider pair: hero-secure.png, hero-traditional.png (raw hero-compare shots dropped)'
+}
+
+## Capture the window, then guard against a blank/black grab (the content had not finished
+## rendering when the screenshot was taken -- more likely under the parallel --jobs CPU load).
+## Re-grab a couple of times WITHOUT re-injecting (the command already ran; it just needs to
+## finish painting), then tighten. A shot still blank after retries is warned, never silent.
+capture_settled() {  ## $1=output-path  $2=window-id  [$3='skip-tighten']
+   local dest wid skip_tighten tries
+   dest="$1"; wid="$2"; skip_tighten="${3:-}"; tries=0
+   while [ "${tries}" -lt 3 ]; do
+      if ! capture_window "${dest}" "${wid}"; then
+         printf '%s\n' "warn: screenshot failed for $(basename -- "${dest}")"
+         return 1
+      fi
+      if ! shots_shot_is_blank "${dest}"; then
+         ## skip-tighten: the pinned full-viewport colour boards fill the terminal, so there
+         ## is no screenful of dead space to trim, and tighten's content/background boundary
+         ## detection is non-deterministic on a board whose edge colour is close to the
+         ## terminal background -- it drifts the crop height run-to-run. The raw grab is the
+         ## pinned window geometry, so leaving it untightened keeps the dimensions deterministic.
+         [ "${skip_tighten}" = 'skip-tighten' ] || tighten_deadspace "${dest}"
+         return 0
+      fi
+      tries=$(( tries + 1 ))
+      printf '%s\n' "warn: $(basename -- "${dest}") blank (attempt ${tries}); waiting to re-grab"
+      sleep 2
+   done
+   ## Still blank: DISCARD it rather than emit a black shot. A missing PNG is not webp'd or
+   ## pulled, so a previously-good published shot is left intact instead of being overwritten
+   ## with black. The caller warns.
+   safe-rm --force -- "${dest}" 2>/dev/null || true
+   printf '%s\n' "warn: $(basename -- "${dest}") still blank after retries -- discarded (kept any prior good shot)"
+   return 1
+}
+
+## Block until the window's rendering has SETTLED: grab throwaway frames until two consecutive
+## grabs match within a jitter tolerance. capture_settled only rejects a BLANK frame, so a heavy
+## still-painting TUI pyte grid would be grabbed half-drawn; a whole unpainted row band differs by
+## thousands of pixels between grabs, while the known ~1px sub-pixel border jitter differs by only
+## a handful, so a small AE tolerance settles without waiting forever. Best-effort: a failed grab
+## or a missing `compare` just returns and lets capture_settled proceed.
+st_wait_render_settled() {  ## $1=window-id
+   local wid a b i diff
+   wid="$1"
+   type -P compare >/dev/null || return 0
+   a="$(mktemp -- "${runtime_dir}/settle.XXXXXX.png")"
+   b="$(mktemp -- "${runtime_dir}/settle.XXXXXX.png")"
+   if ! capture_window "${a}" "${wid}" 2>/dev/null; then
+      safe-rm --force -- "${a}" "${b}" 2>/dev/null || true
+      return 0
+   fi
+   for i in 1 2 3 4 5 6 7 8 9 10; do
+      sleep 0.8
+      capture_window "${b}" "${wid}" 2>/dev/null || break
+      diff="$(compare -metric AE "${a}" "${b}" null: 2>&1 || true)"
+      diff="${diff%%[!0-9]*}"
+      case "${diff}" in '') diff=999999 ;; esac
+      [ "${diff}" -lt 300 ] 2>/dev/null && break   # only jitter left -> settled
+      ## Copy (not move) the newer frame to the baseline: mv would unlink ${b}, and the next
+      ## capture_window would recreate that path OUTSIDE mktemp's protection. ${runtime_dir} is
+      ## owner-only, so this is belt-and-braces, but it keeps ${b} a mktemp-created file.
+      cp --force -- "${b}" "${a}"
+   done
+   safe-rm --force -- "${a}" "${b}" 2>/dev/null || true
+}
+
+## Wait until a freshly-launched window has actually RENDERED (its content is no longer a flat
+## blank) before typing into it. The first secure-terminal launch is a Qt cold start that, under
+## the parallel --jobs CPU load, can still be painting nothing when the fixed settle elapses --
+## so the injected 'cat' is typed into a not-yet-ready app and never runs, leaving a black shot.
+## Polls a light grab of the window; proceeds anyway on timeout (the capture's own blank-retry +
+## warning is the backstop).
+wait_window_ready() {  ## $1=window-id
+   local wid tmp tries
+   wid="$1"; tries=0
+   tmp="$(mktemp --suffix=.png)"
+   ## Generous ceiling: the first secure-terminal cold start under parallel --jobs contention can
+   ## take tens of seconds (until the competing lane frees CPU). Each poll is a light grab.
+   while [ "${tries}" -lt 30 ]; do
+      if capture_window "${tmp}" "${wid}" 2>/dev/null && ! shots_shot_is_blank "${tmp}"; then
+         safe-rm --force -- "${tmp}" 2>/dev/null || true
+         return 0
+      fi
+      tries=$(( tries + 1 ))
+      sleep 1
+   done
+   safe-rm --force -- "${tmp}" 2>/dev/null || true
+   return 0
+}
+
 clear_windows() {
    local wid
    for wid in $(DISPLAY="${xwl_display}" xdotool search --onlyvisible '' 2>/dev/null || true); do
@@ -656,6 +870,7 @@ shoot() {  ## $1=emulator  $2=case
       DISPLAY="${xwl_display}" xdotool windowsize "${wid}" "${cur_w}" 880 2>/dev/null || true
       sleep 0.6
    fi
+   wait_window_ready "${wid}"
    inject "${wid}" "$(shots_payload_cmd "${case}")"
    sleep 3
    ww="$(DISPLAY="${xwl_display}" xdotool getwindowgeometry --shell "${wid}" 2>/dev/null | sed -n 's/^WIDTH=//p' || true)"
@@ -663,8 +878,7 @@ shoot() {  ## $1=emulator  $2=case
       DISPLAY="${xwl_display}" xdotool windowsize "${wid}" 720 "${rescue_h}" 2>/dev/null || true
       sleep 1.5
    fi
-   capture_window "${out}/${e}.${case}.png" "${wid}" \
-      && tighten_deadspace "${out}/${e}.${case}.png" \
+   capture_settled "${out}/${e}.${case}.png" "${wid}" \
       || printf '%s\n' "warn ${e}.${case}: screenshot failed"
    shots_watchdog_cancel "${wdog}"
    [ -e "${flagf}" ] && printf '%s\n' "warn ${e}.${case}: capture exceeded ${SHOT_DEADLINE}s deadline, group reaped"
@@ -674,8 +888,25 @@ shoot() {  ## $1=emulator  $2=case
    safe-rm -f -- "${pgf}" "${flagf}" 2>/dev/null || true
 }
 
-if ! start_labwc; then
-   printf '%s\n' 'labwc did not start; log:'; tail -6 "${runtime_dir}/labwc.log"; exit 1
+## labwc intermittently fails to come up under the parallel --jobs load (its wlroots x11
+## backend racing several nested compositors) -- the single dominant cause of lost shots in a
+## full --jobs run. Retry its bringup a few times, killing a half-started instance first so the
+## next attempt starts clean. The orchestrator's re-capture net is the outer backstop, but
+## retrying here removes most of its work (and most of the transient lane failures).
+labwc_started=''
+for labwc_try in 1 2 3 4; do
+   if start_labwc; then
+      labwc_started=1
+      break
+   fi
+   [ -z "${wm_pid}" ] || kill "${wm_pid}" 2>/dev/null || true
+   [ -z "${wm_pid}" ] || wait "${wm_pid}" 2>/dev/null || true
+   wm_pid=''
+   printf '%s\n' "labwc bringup attempt ${labwc_try} failed; retrying" >&2
+   sleep 1
+done
+if [ -z "${labwc_started}" ]; then
+   printf '%s\n' 'labwc did not start after retries; log:'; tail -6 "${runtime_dir}/labwc.log"; exit 1
 fi
 
 ## lxterminal is omitted: its single-instance startup maps no window headless.
@@ -711,13 +942,13 @@ for e in ${TERMINALS}; do
       exit 1
    fi
    for c in ${CASES}; do
-      ## notify is secure-terminal-only: the emulators have no standard notify shot (kitty's
-      ## popup is a separate capture), so skip it here even though it is in the full ST matrix.
-      case "${c}" in
-         notify)
-            continue
-            ;;
-      esac
+      ## notify + art are secure-terminal showcases, not attack comparisons: notify has no
+      ## standard emulator shot (kitty's popup is captured separately), and art is a capability
+      ## demo of secure-terminal's own truecolor rendering across its modes. Skip both in the
+      ## emulator loop even though they are in the full ST matrix. SHOTS_EMULATOR_SKIP_CASES
+      ## (lib-capture.sh) is the single source of truth, shared with the re-capture net's
+      ## expected-shot accounting so the two never drift.
+      case "${SHOTS_EMULATOR_SKIP_CASES}" in *" ${c} "*) continue ;; esac
       shoot "${e}" "${c}" || true
    done
    printf '%s\n' "captured ${e}"
@@ -762,16 +993,39 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
    ## (and Reveal) are CLI-only -- the fixed TUI grid cannot expand a codepoint inline. Suffix
    ## scheme: <box-suffix>, -detail, -show, -tui, -tui-show (matching tui-showcase's).
    st_specs=(
-      'crafted box crafted'
-      'crafted detail crafted-detail'
-      'crafted show crafted-show'
-      'crafted box crafted-tui tui'
-      'crafted show crafted-tui-show tui'
+      'escape box escape'
+      'escape detail escape-detail'
+      'escape show escape-show'
+      'escape box escape-tui tui'
+      'escape show escape-tui-show tui'
+      'contrast box contrast'
+      'contrast detail contrast-detail'
+      'contrast show contrast-show'
+      'contrast box contrast-tui tui'
+      'contrast show contrast-tui-show tui'
+      'title box title'
+      'title detail title-detail'
+      'title show title-show'
+      'title box title-tui tui'
+      'title show title-tui-show tui'
       'notify box notify'
       'notify detail notify-detail'
       'notify show notify-show'
       'notify box notify-tui tui'
       'notify show notify-tui-show tui'
+      'art box art'
+      'art detail art-detail'
+      'art show art-show'
+      'art box art-tui tui'
+      'art show art-tui-show tui'
+      'gradient box gradient'
+      'gradient detail gradient-detail'
+      'gradient show gradient-show'
+      'gradient box gradient-tui tui'
+      'gradient show gradient-tui-show tui'
+      'unicode show unicode-show'
+      'unicode show unicode-tui-show tui'
+      'unicode detail unicode-detail'
       'random box random'
       'random detail random-detail'
       'random show random-show'
@@ -802,7 +1056,27 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       'tui-showcase detail tui-showcase-detail'
       'tui-showcase box tui-showcase-tui tui'
       'tui-showcase show tui-showcase-tui-show tui'
+      ## hero-compare: the homepage before/after slider. Captured in SHOW mode only (the
+      ## page shows content AND flags danger) -- the one secure-terminal view the hero
+      ## slider overlays against the traditional-emulator shot of the SAME board.
+      'hero-compare show hero-compare-show'
    )
+   ## Cold-start warmup: the FIRST secure-terminal launch in a lane, under parallel --jobs
+   ## contention, has been observed to never paint the spec it captures (a black shot) even after
+   ## a long wait -- the first launch pays for building fontconfig / Qt / icon caches. Prime the
+   ## app with ONE throwaway launch (waited-on, then killed) so every real spec below is warm.
+   warm_pgf="$(mktemp -- "${runtime_dir}/pgid.XXXXXX")"
+   shots_spawn_session "${warm_pgf}" \
+      env --unset=WAYLAND_DISPLAY "DISPLAY=${xwl_display}" QT_QPA_PLATFORM=xcb \
+      QT_FONT_DPI=72 SECURE_TERMINAL_SHOT=1 \
+      PYTHONPATH="${st_pkg}" python3 "${st_bin}" --new-instance --mode box \
+      -- bash --rcfile "${HOME}/.strc" -i >/dev/null 2>&1
+   warm_wid="$(find_window || true)"
+   [ -n "${warm_wid}" ] && wait_window_ready "${warm_wid}"
+   clear_windows
+   shots_reap_group "$(cat "${warm_pgf}" 2>/dev/null || true)"
+   safe-rm --force -- "${warm_pgf}" 2>/dev/null || true
+
    for spec in "${st_specs[@]}"; do
       read -r st_case st_mode st_suffix st_tui <<< "${spec}"
       ## honour --case: skip a spec whose case is not selected (default = all cases).
@@ -823,6 +1097,13 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       ## once grown by the frame). The short cases keep 620 so their committed page
       ## dimensions do not move; tighten_deadspace trims either back to its content.
       st_win_h=620; [ "${st_case}" = tui-showcase ] && st_win_h=820
+      ## hero-compare: request a narrower secure-terminal window than the 860 comparison default so
+      ## the homepage slider shot scales to a ~390px phone with legible text and the board fills the
+      ## frame. Qt clamps the width up to the app's own minimum for the fully-labeled toolbar (~640
+      ## under the capture compositor's 72-DPI metrics), so the toolbar stays complete (no ">>"
+      ## overflow) at that clamped size -- which is the narrow hero width we want. RE-MEASURE if the
+      ## toolbar/chip CSS changes; the emulator width (65 cols) above is matched to this result.
+      st_win_w=860; [ "${st_case}" = hero-compare ] && st_win_w=700
       ## The GUI runs as `python3 .../secure-terminal` -- process name `python3` -- so it MUST
       ## be reaped by its session PGID, never by name. Launch it in its own session and arm the
       ## per-capture watchdog, exactly like the emulator shots.
@@ -851,11 +1132,28 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
          ## then let the layout settle before injecting + grabbing.
          DISPLAY="${xwl_display}" xdotool windowsize "${stwid}" "${st_win_w}" "${st_win_h}" 2>/dev/null || true
          sleep 0.6
+         ## Qt cold start: wait until the app has actually painted its prompt before typing,
+         ## or the 'cat' is injected into a not-yet-ready window and never runs (a black shot,
+         ## seen on the FIRST secure-terminal launch under the parallel --jobs load).
+         wait_window_ready "${stwid}"
          inject "${stwid}" "$(shots_payload_cmd "${st_case}")"
          ## SECURE_TERMINAL_SHOT=1 renders synchronously, so a long fixed settle is unneeded.
          sleep 1
-         capture_window "${out}/secure-terminal.${st_suffix}.png" "${stwid}"
-         tighten_deadspace "${out}/secure-terminal.${st_suffix}.png"
+         ## The full-viewport colour boards paint a large grid (rows x cols cells rebuilt into the
+         ## document) -- much heavier than a short attack payload, and capture_settled only rejects
+         ## a BLANK frame, not a half-drawn one. In BOTH CLI and TUI, wait until the frame stops
+         ## changing before the grab. (CLI too: it also grabs a partially-painted board otherwise.)
+         ## These boards fill the viewport, so there is nothing for tighten_deadspace to trim, and
+         ## its content/background boundary detection is non-deterministic on a board whose edge
+         ## colour is near the terminal background (the gradient's near-white greyscale ramp on the
+         ## light theme drifts the crop height by a row run-to-run). Skip tighten so the shot is the
+         ## pinned window geometry -- deterministic dimensions, mode-agnostic (box/detail too).
+         st_tighten_arg=''
+         if [ "${st_case}" = art ] || [ "${st_case}" = gradient ]; then
+            st_wait_render_settled "${stwid}"
+            st_tighten_arg='skip-tighten'
+         fi
+         capture_settled "${out}/secure-terminal.${st_suffix}.png" "${stwid}" "${st_tighten_arg}"
       else
          printf '%s\n' "warn secure-terminal.${st_suffix}: window never appeared"
       fi
@@ -874,6 +1172,15 @@ else
    exit 1
 fi
 fi
+
+## Homepage hero slider: pad the secure-terminal + gnome-terminal hero-compare shots to one shared
+## canvas so the site's CSS resize slider overlays them at identical dimensions. Before optimize, so
+## the produced PNGs are webp-converted with the rest. Only when hero-compare was actually captured.
+case " ${CASES} " in
+   *' hero-compare '*)
+      compose_hero_slider "${out}"
+      ;;
+esac
 
 ## Convert the captured PNGs to webp (the site references them as .webp). A lane run with
 ## --no-optimize leaves the PNGs for the orchestrator's single final --optimize-only merge.

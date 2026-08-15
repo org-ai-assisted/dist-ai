@@ -231,7 +231,7 @@ def run_test(
 
     try:
         test(results, *args)
-    except BaseException as exc:  # pylint: disable=broad-exception-caught
+    except (Exception, SystemExit) as exc:  # pylint: disable=broad-exception-caught
         results.check(
             f"{test.__name__} raised {type(exc).__name__}: {exc}", False
         )

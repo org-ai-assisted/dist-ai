@@ -326,13 +326,46 @@ eq(_paste([b'\x1b[A'])[0], b'\x1b[A',
 eq(_paste([b'\x1b[200~a\x1b[31mb\x1b[201~'])[0], b'a[31mb',
    'an escape inside a paste body has its ESC control byte stripped')
 
-# regression (ai-review, agy): a LONE ESC is forwarded verbatim, NOT held. A bare ESC
-# is a prefix of the 200~/201~ markers; holding it (only a >=2-byte split prefix is
-# carried now) would swallow an interactive Escape (vim, an arrow-key prefix) until the
-# next keystroke. Pre-fix: carry held b'\x1b' and out was empty.
+# regression (reviewdrain3, SECURITY): a paste-START marker split by a read boundary as
+# ESC | '[200~...' is now HELD, so it still enters paste mode and its body is neutralized.
+# Pre-fix a lone ESC was forwarded inline, so the trailing '[200~echo hi\r' reached the
+# child as TYPED input and the CR auto-ran it (pastejacking). Canary: the CR is stripped.
+_split = _paste([b'\x1b', b'[200~echo hi\r\x1b[201~'])
+eq(_split[0], b'echo hi',
+   'a split ESC|[200~ paste-start marker is held and enters paste mode (body neutralized)')
+ok(b'\r' not in _split[0],
+   'the split paste body has its interior CR stripped -- no auto-run (pastejacking closed)')
+
+# the lone ESC is now HELD in carry (out empty); _run flushes it to the child after a
+# bounded timeout so an interactive Escape still reaches the child (end-to-end test below).
 _lone = _paste([b'\x1b'])
-eq(_lone[0], b'\x1b', 'a lone ESC is forwarded verbatim (vim / interactive Escape works)')
-eq(_lone[1][2], b'', 'a lone ESC is not buffered in carry (no indefinite hold)')
+eq(_lone[0], b'', 'a lone ESC is held (deferred), not forwarded inline')
+eq(_lone[1][2], b'\x1b', 'a lone ESC is carried so a split paste-start marker can reassemble')
+
+# regression (reviewdrain3 + ai-review): an oversized bracketed-paste frame must (a) bound
+# memory and (b) NOT let its runaway tail become typed input. On overflow the buffer stops
+# growing but STAYS in paste, so the tail is swallowed (never auto-runs); the close marker
+# ends it and typed input recovers. Cap shrunk so the test stays tiny.
+_saved_max = cli._PASTE_MAX
+cli._PASTE_MAX = 8
+try:
+    # SECURITY: the over-cap tail (here 'echo pwned\r') must never reach the child as typed
+    # input -- even when it arrives in a LATER read than the overflow (the pastejacking the
+    # old drop-and-exit had). It is dropped; the close marker ends the paste; 'exit\r' after
+    # the marker is ordinary typing and IS forwarded.
+    _ov_out, _ov_st = _paste([b'\x1b[200~' + b'A' * 20, b'echo pwned\r', b'\x1b[201~exit\r'])
+    ok(b'pwned' not in _ov_out,
+       'an over-cap paste tail is dropped, NOT forwarded as typed input (no pastejacking)')
+    ok(_ov_out.endswith(b'exit\r') and _ov_st[0] is False,
+       'the paste closes on its end marker even after overflow; later typing recovers')
+    ok(len(_ov_st[1]) <= cli._PASTE_MAX, 'the paste buffer stays bounded at the cap')
+    # memory is bounded even for a never-closing flood, and it stays IN paste (tail swallowed)
+    _ov2_out, _ov2_st = _paste([b'\x1b[200~' + b'A' * 5000])
+    ok(_ov2_st[0] is True and len(_ov2_st[1]) <= cli._PASTE_MAX,
+       'an unterminated over-cap flood stays in paste with a bounded buffer (no typed tail)')
+    ok(_ov2_out == b'', 'nothing from an unterminated over-cap flood reaches the child')
+finally:
+    cli._PASTE_MAX = _saved_max
 
 # END-TO-END: a framed paste through cli.main does NOT auto-submit. The paste is
 # `echo N''EUT` with a trailing newline; were that newline to auto-submit, the
@@ -358,6 +391,14 @@ _ps_o, _ps_rc = run_in_pty([], feed=b'\x1b[200~exit 4', feed2=b'\x1b[201~\r',
                            settle=1.8, feed_delay=0.6, feed2_delay=0.6)
 eq(_ps_rc, 4, 'a paste split across reads waits un-submitted; a later typed Enter '
               'runs it (rc 4)')
+
+# END-TO-END (reviewdrain3): a lone interactive ESC is HELD, then flushed to the child
+# after the bounded _ESC_HOLD_TIMEOUT when no paste continuation arrives -- so an
+# interactive Escape is not swallowed and the run still completes. Exercises the _run
+# ESC-hold-and-flush path (the child ignores the ESC and exits on its own).
+_esc_o, _esc_rc = run_in_pty(['--', 'sh', '-c', 'sleep 0.4; exit 7'],
+                             feed=b'\x1b', feed_delay=0.2, settle=1.2)
+eq(_esc_rc, 7, 'a held lone ESC is flushed after the timeout; the run completes (rc 7)')
 
 # the wrapper enables bracketed paste on a tty OUTER terminal, and disables it on
 # teardown -- so a paste is framed and can be told from typing
@@ -405,6 +446,94 @@ try:
 finally:
     os.close(_pr)
     os.close(_pw)
+
+# --- BOUNDED-EXHAUSTIVE paste-FSM verification -------------------------------------------
+# feed_stdin_paste is a pure state machine, and the pastejacking class (a paste's content
+# reaching the child as TYPED input -- via a split marker, an interior CR, or an oversized
+# frame) is a safety property over ALL inputs and ALL read-boundary splits, not something a
+# handful of examples can settle. Here we EXHAUSTIVELY enumerate every bracketed-paste token
+# sequence up to _FSM_TOKENS tokens (START / END / CR / X) and, for each, over EVERY
+# byte-boundary split, verify two invariants:
+#   (1) split-invariance -- any chunking yields the SAME bytes-to-child as the whole input
+#       (a marker split across reads must behave exactly like the whole marker); and
+#   (2) no paste-region CR is ever forwarded -- a carriage return inside a bracketed paste is
+#       an auto-run, so the count of CRs reaching the child must equal the TYPED-CR count.
+# This is a bounded proof (complete for <= _FSM_TOKENS tokens, ~10^5 split-checks), not a
+# sampled test: it FAILS on the pre-fix split-marker leak and the overflow-exits-paste leak.
+import itertools                                    # noqa: E402
+_FSM_S, _FSM_E, _FSM_CR, _FSM_X = b'\x1b[200~', b'\x1b[201~', b'\r', b'x'
+_FSM_TOKENS = 6
+
+
+def _fsm_feed(chunks):
+    _out = b''
+    _st = (False, b'', b'')
+    for _c in chunks:
+        _p, _st = cli.feed_stdin_paste(_c, _st)
+        _out += _p
+    return _out
+
+
+def _fsm_typed_cr(seq):
+    """Reference oracle: CRs OUTSIDE a complete bracketed-paste frame -- the only CRs allowed
+    to reach the child."""
+    n = 0
+    i = 0
+    inp = False
+    while i < len(seq):
+        if not inp and seq[i:i + 6] == _FSM_S:
+            inp = True
+            i += 6
+        elif inp and seq[i:i + 6] == _FSM_E:
+            inp = False
+            i += 6
+        else:
+            if seq[i:i + 1] == _FSM_CR and not inp:
+                n += 1
+            i += 1
+    return n
+
+
+_fsm_bad = None
+for _fsm_r in range(_FSM_TOKENS + 1):
+    for _fsm_combo in itertools.product((_FSM_S, _FSM_E, _FSM_CR, _FSM_X), repeat=_fsm_r):
+        _fsm_seq = b''.join(_fsm_combo)
+        _fsm_whole = _fsm_feed([_fsm_seq]) if _fsm_seq else b''
+        _fsm_splits = [[_fsm_seq[:_k], _fsm_seq[_k:]] for _k in range(1, len(_fsm_seq))]
+        if _fsm_seq:
+            _fsm_splits.append([bytes([_b]) for _b in _fsm_seq])   # the all-single-byte split
+        for _fsm_sp in _fsm_splits:
+            if _fsm_feed(_fsm_sp) != _fsm_whole:
+                _fsm_bad = ('split-invariance', _fsm_seq, _fsm_sp)
+                break
+        if _fsm_bad is None and _fsm_whole.count(_FSM_CR) != _fsm_typed_cr(_fsm_seq):
+            _fsm_bad = ('paste-CR-forwarded', _fsm_seq, _fsm_whole)
+        if _fsm_bad:
+            break
+    if _fsm_bad:
+        break
+ok(_fsm_bad is None,
+   'paste-FSM bounded-exhaustive: split-invariance + no paste-CR forwarded over every token '
+   'sequence up to %d tokens and every split (%r)' % (_FSM_TOKENS, _fsm_bad))
+
+# The OVERFLOW class needs a body past _PASTE_MAX; shrink the cap and verify that an over-cap
+# paste never lets its tail reach the child as typed input, across every read-boundary split.
+_fsm_ov_saved = cli._PASTE_MAX
+cli._PASTE_MAX = 4
+try:
+    _fsm_ov_bad = None
+    for _fsm_tail in (b'A' * 10 + b'echo pwned\r', b'echo pwned\r' + b'A' * 10):
+        _fsm_s = _FSM_S + b'A' * 10 + _fsm_tail + _FSM_E + b'q\r'
+        for _fsm_k in range(1, len(_fsm_s)):
+            if b'pwned' in _fsm_feed([_fsm_s[:_fsm_k], _fsm_s[_fsm_k:]]):
+                _fsm_ov_bad = _fsm_k
+                break
+        if _fsm_ov_bad:
+            break
+    ok(_fsm_ov_bad is None,
+       'paste-FSM overflow: an over-cap paste tail never reaches the child as typed input')
+finally:
+    cli._PASTE_MAX = _fsm_ov_saved
 
 print('secure-terminal-tests(cli): %d passed, %d failed'
       % (0, _failures) if _failures else

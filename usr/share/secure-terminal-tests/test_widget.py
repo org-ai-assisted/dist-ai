@@ -272,6 +272,22 @@ ok(len(_ztu._screen.buffer[0][0].data) <= 34,
    'zalgo TUI: the merged pyte cell is bounded (base + capped marks), not 100')
 ok(_ztu._screen.buffer[0][1].data == _cjk,
    'zalgo TUI: a non-combining char after the flood resets the run and lands in its own cell')
+# TUI full-width line + bare LF: a line that fills the EXACT grid width parks the cursor in
+# pyte's last-column-flag state (cursor.x == columns); pyte defers the wrap to the next printable
+# char (its own CR+LF), so a BARE LF (no ONLCR carriage return) would advance a SECOND line and
+# insert a blank row between every full-width line. _SafeHistoryScreen.linefeed clears the flag
+# but KEEPS the column, exactly as a real terminal does (verified against xterm by an ESC[6n DSR
+# probe): no blank row, and the next line staircases from the last column -- NOT normalised to
+# column 0. So the first B lands in the last column of row 1 and the rest wrap onto row 2.
+_fw = SecureTerminal(command='/bin/cat', tui=True)
+_fwc = _fw._screen.columns
+feed_output(_fw, ('A' * _fwc + '\n' + 'B' * _fwc + '\n').encode('utf-8'))
+ok(_fw._screen.buffer[0][0].data == 'A'
+   and _fw._screen.buffer[1][_fwc - 1].data == 'B'          # no blank row: first B at the last column
+   and _fw._screen.buffer[2][0].data == 'B',                # the rest wrapped onto the next row
+   'TUI full-width line + bare LF: the flag clears and the column is kept (xterm-accurate), '
+   'so no blank row and the next line staircases from the last column')
+_fw.close()
 # a real accent after a flood still lands (the run resets, not a permanent gag)
 _zt2 = SecureTerminal(command='/bin/cat'); _zt2.apply_mode('show')
 feed_output(_zt2, ('x' + _ac * 100 + 'y' + _ac + '\n').encode('utf-8'))
@@ -791,6 +807,67 @@ _sel.setPosition(4, QTextCursor.MoveMode.KeepAnchor)
 cs.setTextCursor(_sel)
 cs.mouseReleaseEvent(_release)
 ok(cs.textCursor().hasSelection(), 'a drag selection survives the release')
+
+# Regression (operator): the TUI grid rebuild must NOT run while a selection is active, or
+# it re-anchors the selection and drags it to the bottom. A left press marks the drag; while
+# a selection is held _render_tui is a no-op (the view freezes) so the selection is preserved.
+_selfz = SecureTerminal(command='/bin/cat', tui=True)
+_selfz.resize(700, 300)
+_selfz.show()
+pump(40)
+for _i in range(60):
+    _selfz._feed_stream(('row-%d\r\n' % _i).encode())
+_selfz._render_tui()
+def _set_sel(term, a=5, p=20):
+    tc = QTextCursor(term.document())
+    tc.setPosition(a)
+    tc.setPosition(p, QTextCursor.MoveMode.KeepAnchor)
+    term.setTextCursor(tc)
+_selpress = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(1, 1), QPointF(1, 1),
+                        Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                        Qt.KeyboardModifier.NoModifier)
+_selfz.mousePressEvent(_selpress)          # begins a drag; clears any prior selection
+ok(_selfz._mouse_selecting, 'a left-button press marks a drag-selection in progress')
+_set_sel(_selfz)                           # the drag extends a selection while _mouse_selecting
+_selfz._feed_stream(b'more-output\r\n')
+_selfz._render_tui()
+eq((_selfz.textCursor().anchor(), _selfz.textCursor().position()), (5, 20),
+   'TUI rebuild is frozen during a drag -- the selection is not dragged to the bottom')
+_selfz.mouseReleaseEvent(_release)
+ok(not _selfz._mouse_selecting, 'mouse release ends the drag-selection freeze')
+_set_sel(_selfz)                           # a completed selection is still held
+_selfz._feed_stream(b'and-more\r\n')
+_selfz._render_tui()
+eq((_selfz.textCursor().anchor(), _selfz.textCursor().position()), (5, 20),
+   'a held selection keeps the rebuild frozen so it is not collapsed')
+# a NON-left press does not begin a drag-selection freeze (button branch)
+_selfz.setTextCursor(QTextCursor(_selfz.document()))   # clear selection first
+_rpress = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(1, 1), QPointF(1, 1),
+                      Qt.MouseButton.RightButton, Qt.MouseButton.RightButton,
+                      Qt.KeyboardModifier.NoModifier)
+_selfz.mousePressEvent(_rpress)
+ok(not _selfz._mouse_selecting, 'a non-left press does not mark a drag-selection')
+_selfz.close()
+
+# Regression (ai-review): typing in TUI mode CLEARS a held selection so the frozen grid
+# resumes. TUI keys go straight to the child (never Qt's editor), so without this the
+# selection would persist and _render_tui stay a no-op until a mouse click.
+_seltype = SecureTerminal(command='/bin/cat', tui=True)
+_seltype.resize(700, 300)
+_seltype.show()
+pump(40)
+for _i in range(20):
+    _seltype._feed_stream(('t-%d\r\n' % _i).encode())
+_seltype._render_tui()
+_stc = QTextCursor(_seltype.document())
+_stc.setPosition(3)
+_stc.setPosition(9, QTextCursor.MoveMode.KeepAnchor)
+_seltype.setTextCursor(_stc)
+ok(_seltype.textCursor().hasSelection(), 'a completed selection is established')
+key(_seltype, Qt.Key.Key_A, 'a')
+ok(not _seltype.textCursor().hasSelection(),
+   'typing in TUI mode clears a held selection so the frozen grid resumes')
+_seltype.close()
 # scrollback navigation in line mode: PageUp scrolls the buffer up, Shift+Home/
 # End jump to the ends, plain Home is left for line editing (does not scroll)
 sc = SecureTerminal(command='/bin/cat')
@@ -1150,6 +1227,24 @@ if tui_available():
     _fol._render_tui()
     eq(_fbar.value(), _held,
        'TUI does not yank a scrolled-up view back to the bottom')
+    # Regression (operator report): a ONE-line scroll-up must not be yanked back either. The
+    # old `>= maximum - 2` tolerance mistook value==maximum-1 for "at bottom" and snapped the
+    # view to the tail on the next frame (the reported scroll flicker). FAILS on the old code:
+    # value would return to maximum.
+    _fbar.setValue(_fbar.maximum())          # re-enter auto-follow
+    _fol._render_tui()
+    _one_up = _fbar.maximum() - 1
+    _fbar.setValue(_one_up)                  # user wheels up a single line
+    _fol._feed_stream(b'and-more\r\n')       # new output keeps arriving
+    _fol._render_tui()
+    ok(_fbar.value() < _fbar.maximum(),
+       'a one-line scroll-up is not yanked back to the bottom (no scroll flicker)')
+    # ...and returning to the very bottom RESUMES auto-follow.
+    _fbar.setValue(_fbar.maximum())
+    _fol._feed_stream(b'tail-again\r\n')
+    _fol._render_tui()
+    eq(_fbar.value(), _fbar.maximum(),
+       'returning to the bottom resumes TUI auto-follow')
     _fol.close()
 
 # --- TUI grid: DEC line-drawing renders, and neutralized cells are risk-coloured -
@@ -2556,6 +2651,7 @@ if tui_available():
     class _Cell:                                            # a default-coloured cell
         fg = bg = 'default'
         bold = reverse = underscore = False
+        data = ' '
     tui._handle_osc(b'\x1b]11;#123456\x07')                 # osc_colors OFF
     ok(tui._osc_palette == {}, 'OSC palette change is ignored until osc_colors is on')
     tui.apply_osc('osc_colors', True)
@@ -4409,6 +4505,17 @@ ok(_tc._format_for({'fg': 3, 'bg': None, 'bold': False}).foreground().color().is
 ok(_tc._format_for({'fg': '#123456', 'bg': '#123456', 'bold': False})
    .foreground().color().name() != '#123456',
    'the contrast guard forces a readable fg even when a truecolour fg == bg')
+# a STRUCTURAL block/half-block glyph keeps BOTH its truecolour fg and bg: the readability
+# guard is skipped for it, because its deliberately near-equal fg/bg are the two pixels of a
+# colour ramp, not hidden text. Without this a half-block gradient renders banded (bg dropped).
+_bfmt = _tc._format_for({'fg': '#c0c0c0', 'bg': '#b4b4b4', 'bold': False}, structural=True)
+eq(_bfmt.background().color().name(), '#b4b4b4',
+   'a structural glyph keeps its truecolour bg (contrast guard skipped)')
+eq(_bfmt.foreground().color().name(), '#c0c0c0',
+   'a structural glyph keeps its truecolour fg (contrast guard skipped)')
+ok(_tc._format_for({'fg': '#c0c0c0', 'bg': '#b4b4b4', 'bold': False})
+   .foreground().color().name() != '#c0c0c0',
+   'the contrast guard STILL fires for a non-structural near-equal fg/bg')
 _tc.close()
 # a child sees COLORTERM=truecolor (we render it faithfully, so we advertise it)
 _cte = SecureTerminal(command=['sh', '-c', 'printf C=$COLORTERM,CTEND'])
@@ -5380,12 +5487,13 @@ from PyQt6.QtGui import QFont          # noqa: E402
 
 class _Cell:                                # a minimal duck-typed pyte cell
     def __init__(self, fg='default', bg='default', bold=False, reverse=False,
-                 underscore=False):
+                 underscore=False, data=' '):
         self.fg = fg
         self.bg = bg
         self.bold = bold
         self.reverse = reverse
         self.underscore = underscore
+        self.data = data
 
 
 _rt = SecureTerminal(command='/bin/cat')
@@ -5395,6 +5503,17 @@ ok(_f1.foreground().color().name() == '#ff0000',
    '_pyte_format: a truecolor fg hex is applied')
 ok(_f1.background().color().name() == '#00ff00',
    '_pyte_format: a background colour is applied')
+# a STRUCTURAL half-block glyph (U+2580) keeps its near-equal truecolour bg: the grid
+# contrast guard is skipped for it, so a half-block colour ramp is not banded.
+_fs = _rt._pyte_format(_Cell(fg='c0c0c0', bg='b4b4b4', data='\u2580'))
+ok(_fs.background().color().name() == '#b4b4b4',
+   '_pyte_format: a structural glyph keeps its truecolour bg (guard skipped)')
+ok(_fs.foreground().color().name() == '#c0c0c0',
+   '_pyte_format: a structural glyph keeps its truecolour fg (guard skipped)')
+# a NON-structural cell with the same near-equal fg/bg still triggers the guard.
+ok(_rt._pyte_format(_Cell(fg='c0c0c0', bg='b4b4b4', data='X'))
+   .foreground().color().name() != '#c0c0c0',
+   '_pyte_format: the guard still fires for a non-structural near-equal fg/bg')
 # an invalid hex colour falls back to the default foreground
 ok(_rt._pyte_qcolor('nothex', None) is None,
    '_pyte_qcolor: an invalid hex with no default -> None')
@@ -5798,6 +5917,18 @@ _tk2.apply_tui(True)
 _tks2 = spy_writes(_tk2)
 key(_tk2, Qt.Key.Key_A, 'a')
 ok(_tks2 == [b'a'], 'TUI mode: keyPressEvent routes a plain key through _tui_key')
+
+# a MODIFIED cursor/End key is CSI-encoded so the child sees the modifier -- e.g.
+# claude-code's Ctrl+End "jump to bottom" (ESC[1;5F). Bare End stays ESC[F.
+_tkm = SecureTerminal(command='/bin/cat')
+_tkm.apply_tui(True)
+_tkms = spy_writes(_tkm)
+key(_tkm, Qt.Key.Key_End, mods=Qt.KeyboardModifier.ControlModifier)
+key(_tkm, Qt.Key.Key_End, mods=Qt.KeyboardModifier.ShiftModifier)
+key(_tkm, Qt.Key.Key_Up, mods=Qt.KeyboardModifier.ControlModifier)
+key(_tkm, Qt.Key.Key_End)
+eq(_tkms, [b'\x1b[1;5F', b'\x1b[1;2F', b'\x1b[1;5A', b'\x1b[F'],
+   'TUI: a modified cursor/End key is CSI-encoded (Ctrl+End=ESC[1;5F); bare End=ESC[F')
 
 # hook_enabled reflects whether a hook is configured
 _he = SecureTerminal(command='/bin/cat')
