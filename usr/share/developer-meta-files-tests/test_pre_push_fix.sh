@@ -292,6 +292,21 @@ else
    note_fail "R-172 SC2174 disable insertion not idempotent"
 fi
 
+## --- 7k: the disable is NOT wedged into a '\'-continuation -----------------
+## A temp mkdir that continues a '\'-terminated line must not get a comment
+## inserted between the two -- that would break the continuation. The fixer
+## leaves such a line alone (SC2174 there is a rare human fix).
+f="${test_dir}/mkdircont.sh"
+printf '%b' '#!/bin/bash\ntrue \\\n&& mkdir --parents --mode=700 -- "$TMPDIR"\n' >"${f}"
+before="$(cksum < "${f}")"
+"${FIX}" "${f}" >/dev/null 2>&1
+if [ "$(cksum < "${f}")" = "${before}" ] \
+   && ! grep --quiet --fixed-strings -- 'disable=SC2174' "${f}" ; then
+   note_pass "R-172 does not insert a disable into a line continuation"
+else
+   note_fail "R-172 broke a '\\'-continuation with an inserted disable"
+fi
+
 ## --- 8: GATE PARITY / round-trip proof ------------------------------------
 ## A dirty file FAILS pre-push-static R-001; after the fixer it no longer does.
 if [ ! -x "${GATE}" ]; then

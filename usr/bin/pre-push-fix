@@ -261,7 +261,12 @@ def upgrade_mkdir_mode(text):
             continue
         new, num = SHORT_MODE.subn(r"--mode=\1", line)
         count += num
+        ## Insert the disable ONLY when it is safe to do so: never between a
+        ## '\'-continued line and its continuation (a comment there breaks the
+        ## continuation), and not when a disable already covers the line.
+        prev_continues = bool(out) and out[-1].rstrip("\r\n").endswith("\\")
         if (PARENTS.search(new) and LONG_MODE.search(new)
+                and not prev_continues
                 and not SC2174_DISABLE.search(new)
                 and not (out and SC2174_DISABLE.search(out[-1]))):
             indent = new[:len(new) - len(new.lstrip())]
