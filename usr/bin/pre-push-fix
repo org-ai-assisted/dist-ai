@@ -118,16 +118,20 @@ WAIVER_RE = re.compile(
 ## FAIL for a human to correct.
 ##
 ## MKDIR_TMP_LINE is only a cheap PRE-FILTER (is a temp mkdir plausibly on this
-## line). The real work is per-COMMAND: MKDIR_SPAN isolates each 'mkdir ...'
-## command up to the next separator (';' '&&' '||' '|' '&') or '#' comment, so a
-## second command sharing the line ('mkdir ... && install -m 755 x') is never
-## rewritten, and a mode flag belonging to another command cannot count.
-## TMPVAR (bounded name class -> '$TMPFILE' excluded) says a span creates a temp
-## dir.
+## line -- command position includes a leading backtick command substitution).
+## The real work is per-COMMAND: MKDIR_SPAN isolates each 'mkdir ...' command up
+## to the next separator (';' '&&' '||' '|' '&') or '#' comment, so a second
+## command sharing the line ('mkdir ... && install -m 755 x') is never
+## rewritten. TMPVAR (name bounded by a non-word char, so '$TMPFILE' and
+## '$TMPDIR_SUFFIX' are NOT it) says a span creates a temp dir. OPT_END marks
+## where the mkdir OPTIONS stop -- a standalone '--' end-of-options token or the
+## first quote -- so an '-m' inside a quoted path or after '--' (a literal
+## directory name, not a flag) is never rewritten.
 MKDIR_TMP_LINE = re.compile(
-    r'(^|[\s(;&|])mkdir\s.*\$\{?(TMPDIR|TEMPDIR|TEMP|TMP)([^A-Za-z]|$)')
+    r'(^|[\s(;&|`])mkdir\s.*\$\{?(TMPDIR|TEMPDIR|TEMP|TMP)([^A-Za-z0-9_]|$)')
 MKDIR_SPAN = re.compile(r'mkdir\b[^;&|#]*')
-TMPVAR = re.compile(r'\$\{?(?:TMPDIR|TEMPDIR|TEMP|TMP)(?:[^A-Za-z]|$)')
+TMPVAR = re.compile(r'\$\{?(?:TMPDIR|TEMPDIR|TEMP|TMP)(?:[^A-Za-z0-9_]|$)')
+OPT_END = re.compile(r'(?<=\s)--(?=\s|$)|["\']')
 ## Standalone short '-m' with a numeric mode ('-m 700' or '-m700'); the
 ## lookbehind rules out the '-m' inside '--mode' and a bundled '-pm700' (whose
 ## 'm' is preceded by a letter, not the leading '-'), both left untouched so
@@ -143,8 +147,15 @@ SHORT_MODE = re.compile(r'(?<![\w-])-m[ \t]*([0-7]{3,4})\b')
 ## waiver (so a second run is a no-op).
 PARENTS = re.compile(r'(?:^|\s)(?:--parents\b|-[A-Za-z]*p[A-Za-z]*)(?:\s|$)')
 LONG_MODE = re.compile(r'--mode(=|[ \t])')
-SC2174_DISABLE = re.compile(r'#[ \t]*shellcheck[ \t]+disable=[A-Z0-9, ]*SC2174')
+SC2174_DISABLE = re.compile(
+    r'#[ \t]*shellcheck[ \t]+disable=[A-Z0-9, ]*SC2174(?![0-9])')
 SC2174_DIRECTIVE = "# shellcheck disable=SC2174"
+## Script-wide waiver, in lockstep with pre-push-static's R-172: a file
+## carrying it opts out of the whole rule, so the fixer must not rewrite it
+## either (otherwise the fixer forces a change the gate would have exempted).
+MKDIR_WAIVER_RE = re.compile(
+    r'^[ \t]*##[ \t]*style-ok:[ \t]*allow-mkdir-no-mode(?:[ \t]|$)',
+    re.MULTILINE)
 
 SHELL_EXTS = (".sh", ".bsh")
 SHELL_SHEBANG_RE = re.compile(r'#!.*(/|\s)(bash|sh|dash)(\s|$)')
@@ -270,7 +281,7 @@ def upgrade_mkdir_mode(text):
             out.append(line)
             continue
         ## Rebuild the line span by span; only a temp-dir mkdir command's own
-        ## text is ever rewritten.
+        ## OPTION text is ever rewritten.
         pieces = []
         pos = 0
         needs_disable = False
@@ -278,20 +289,32 @@ def upgrade_mkdir_mode(text):
             span = match.group(0)
             if not TMPVAR.search(span):
                 continue
-            newspan, num = SHORT_MODE.subn(r"--mode=\1", span)
-            if num:
+            ## Confine the rewrite to the option region (before '--' / the first
+            ## quote): an '-m 700' inside a quoted path or after '--' is a
+            ## literal directory name, never a flag.
+            stop = OPT_END.search(span)
+            cut = stop.start() if stop else len(span)
+            newopts, num = SHORT_MODE.subn(r"--mode=\1", span[:cut])
+            newspan = newopts + span[cut:]
+            if newspan != span:
                 count += num
                 pieces.append(line[pos:match.start()])
                 pieces.append(newspan)
                 pos = match.end()
-            if PARENTS.search(newspan) and LONG_MODE.search(newspan):
+            if PARENTS.search(newopts) and LONG_MODE.search(newopts):
                 needs_disable = True
         pieces.append(line[pos:])
         new = "".join(pieces)
         ## Insert the disable ONLY when safe: never between a '\'-continued line
         ## and its continuation (a comment there breaks the continuation), and
-        ## not when a disable already covers the line.
-        prev_continues = bool(out) and out[-1].rstrip("\r\n").endswith("\\")
+        ## not when a disable already covers the line. A line continues only on
+        ## an ODD run of trailing backslashes ('echo \\' is an escaped
+        ## backslash, not a continuation).
+        prev_bs = 0
+        if out:
+            prev_bs = len(out[-1].rstrip("\r\n")) \
+                - len(out[-1].rstrip("\r\n").rstrip("\\"))
+        prev_continues = prev_bs % 2 == 1
         if (needs_disable and not prev_continues
                 and not SC2174_DISABLE.search(new)
                 and not (out and SC2174_DISABLE.search(out[-1]))):
@@ -346,9 +369,10 @@ def fix_file(path, check):
             changes["trailing-whitespace"] = num
 
     ## R-172: upgrade a temp-dir mkdir's short '-m' to the long '--mode='
-    ## (shell files only). The missing-mode / chmod-split forms are not
-    ## rewritten -- the gate FAILS those for a human to fix atomically.
-    if is_shell_file(path):
+    ## (shell files only, and not when the file waives the rule -- lockstep with
+    ## the gate). The missing-mode / chmod-split forms are not rewritten -- the
+    ## gate FAILS those for a human to fix atomically.
+    if is_shell_file(path) and not MKDIR_WAIVER_RE.search(text):
         text, num = upgrade_mkdir_mode(text)
         if num:
             changes["R-172"] = num

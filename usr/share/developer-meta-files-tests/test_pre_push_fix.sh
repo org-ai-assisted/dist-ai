@@ -325,6 +325,59 @@ else
    note_fail "R-172 upgrade leaked into another command on the line"
 fi
 
+## --- 7m: reviewer edge cases -- the rewrite stays provably safe -----------
+## An '-m' inside a quoted path or after '--' is a literal directory name, not
+## a flag, and must never be rewritten.
+f="${test_dir}/mkdiredge.sh"
+printf '%b' '#!/bin/bash\nmkdir "$TMPDIR/keep -m 700 name"\nmkdir -- -m 700 "$TMPDIR"\n' >"${f}"
+before="$(cksum < "${f}")"
+"${FIX}" "${f}" >/dev/null 2>&1
+if [ "$(cksum < "${f}")" = "${before}" ] ; then
+   note_pass "R-172 leaves an -m inside a quoted path / after -- untouched"
+else
+   note_fail "R-172 rewrote a literal directory name"
+fi
+## A backtick command substitution is command position -> the mkdir is upgraded.
+f="${test_dir}/mkdirbtick.sh"
+printf '%b' '#!/bin/bash\nfoo=`mkdir --mode=700 -- "$TMPDIR"`\n' >"${f}"
+"${FIX}" "${f}" >/dev/null 2>&1
+if grep --quiet --fixed-strings -- '--mode=700' "${f}" \
+   && ! grep --quiet --extended-regexp -- '(^|[[:space:]])-m' "${f}" ; then
+   note_pass "R-172 upgrades a backtick-substitution mkdir"
+else
+   note_fail "R-172 missed a backtick-substitution mkdir"
+fi
+## The allow-mkdir-no-mode waiver disables the fixer too (lockstep with the gate).
+f="${test_dir}/mkdirwaiver.sh"
+printf '%b' '#!/bin/bash\n## style-ok: allow-mkdir-no-mode\nmkdir -m 700 -- "$TMPDIR"\n' >"${f}"
+before="$(cksum < "${f}")"
+"${FIX}" "${f}" >/dev/null 2>&1
+if [ "$(cksum < "${f}")" = "${before}" ] ; then
+   note_pass "R-172 honors the allow-mkdir-no-mode waiver (fixer/gate parity)"
+else
+   note_fail "R-172 rewrote a file that waived the rule"
+fi
+## The SC2174 skip is exact: 'SC21745' is a different code and must not mask the
+## required directive, which is still inserted (as its own whole line).
+f="${test_dir}/mkdirsc.sh"
+printf '%b' '#!/bin/bash\n# shellcheck disable=SC21745\nmkdir -p --mode=700 -- "$TMPDIR"\n' >"${f}"
+"${FIX}" "${f}" >/dev/null 2>&1
+if grep --quiet --line-regexp --fixed-strings -- '# shellcheck disable=SC2174' "${f}" ; then
+   note_pass "R-172 SC2174 skip is exact (SC21745 does not mask it)"
+else
+   note_fail "R-172 SC2174 boundary wrong (directive not inserted)"
+fi
+## An EVEN run of trailing backslashes is an escaped backslash, not a line
+## continuation, so the disable IS inserted above the next mkdir.
+f="${test_dir}/mkdireven.sh"
+printf '%b' '#!/bin/bash\necho \\\\\nmkdir -p --mode=700 -- "$TMPDIR"\n' >"${f}"
+"${FIX}" "${f}" >/dev/null 2>&1
+if grep --quiet --line-regexp --fixed-strings -- '# shellcheck disable=SC2174' "${f}" ; then
+   note_pass "R-172 treats an even '\\\\' run as not a continuation"
+else
+   note_fail "R-172 mis-read an escaped backslash as a line continuation"
+fi
+
 ## --- 8: GATE PARITY / round-trip proof ------------------------------------
 ## A dirty file FAILS pre-push-static R-001; after the fixer it no longer does.
 if [ ! -x "${GATE}" ]; then

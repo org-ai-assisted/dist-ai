@@ -619,6 +619,12 @@ expect_rule "R-172" "foo${sp}--mode=700${sc}${sp}${mkd}${sp}--parents${sp}--${sp
 ## ... but a COMPLIANT mkdir followed by another command on the line is SPARED:
 ## the '&& cd' must not read as ambiguous and false-positive.
 expect_rule "R-172" "${mkd}${sp}--parents${sp}--mode=700${sp}--${sp}${dq}${tv}${dq}${sp}&&${sp}cd${sp}--${sp}${dq}${tv}${dq}" "absent"
+## A backtick command substitution is COMMAND position -> a temp mkdir there is
+## still checked. And a name that merely STARTS with a temp prefix followed by a
+## word char ('$TMPDIR_SUFFIX') is a DIFFERENT variable, not the temp dir.
+btick='`'
+expect_rule "R-172" "foo=${btick}${mkd}${sp}--parents${sp}--${sp}${dq}${tv}${dq}${btick}"    "present"
+expect_rule "R-172" "${mkd}${sp}--parents${sp}--${sp}${dq}${dollar}TMPDIR_SUFFIX${dq}"        "absent"
 
 ## R-010: six COPIES of one directive must NOT satisfy the block (DISTINCT
 ## directives are counted); the six distinct directives pass.

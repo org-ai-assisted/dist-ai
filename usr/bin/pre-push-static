@@ -1550,7 +1550,7 @@ check_R172_mkdir_tmp_mode() {
       ## '^[^#]*' excludes comment lines, as R-070/R-170 do. The per-command
       ## span check below re-confirms the temp var belongs to the mkdir.
       candidate="$(grep --line-number --extended-regexp \
-         '^[^#]*(^|[[:space:]([;&|])mkdir[[:space:]].*\$\{?(TMPDIR|TEMPDIR|TEMP|TMP)([^A-Za-z]|$)' \
+         '^[^#]*(^|[[:space:]([;&|`])mkdir[[:space:]].*\$\{?(TMPDIR|TEMPDIR|TEMP|TMP)([^A-Za-z0-9_]|$)' \
          -- "${script}" 2>/dev/null || true)"
       if [ -z "${candidate}" ]; then
          continue
@@ -1565,7 +1565,7 @@ check_R172_mkdir_tmp_mode() {
          while IFS= read -r span; do
             ## Only a span that itself creates a temp dir is in scope.
             if ! printf '%s\n' "${span}" | grep --quiet --extended-regexp -- \
-               '\$\{?(TMPDIR|TEMPDIR|TEMP|TMP)([^A-Za-z]|$)'; then
+               '\$\{?(TMPDIR|TEMPDIR|TEMP|TMP)([^A-Za-z0-9_]|$)'; then
                continue
             fi
             ## Long '--mode' on the mkdir itself ('--mode=700' or '--mode 700')
