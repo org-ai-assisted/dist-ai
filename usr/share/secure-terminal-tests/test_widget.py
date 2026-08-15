@@ -1341,6 +1341,63 @@ eq(_fg.lower(), mark_fg(_dbx, 'nonascii').lower(),
    'Q2 box: a boxed box-drawing cell wears the non-ASCII risk colour')
 _dbx.close()
 
+# The structural contrast-guard bypass is Show-ONLY. In a strict mode a structural glyph
+# is NEUTRALIZED to a placeholder, so the guard must stay -- else a program that painted
+# it fg==bg would render the placeholder invisible, defeating the neutralization the strict
+# mode exists for. Box mode + markings OFF (the program-SGR branch) + a red-on-red full
+# block. FAILS pre-fix, where the bypass came from the source glyph regardless of display.
+def _cell_fg_bg(term, idx):
+    _cc = QTextCursor(term.document())
+    _cc.setPosition(idx)
+    _cc.movePosition(QTextCursor.MoveOperation.NextCharacter,
+                     QTextCursor.MoveMode.KeepAnchor)
+    _cf = _cc.charFormat()
+    _fg = _cf.foreground().color().name().lower()
+    _bg = (_cf.background().color().name().lower()
+           if _cf.background().style() != Qt.BrushStyle.NoBrush else None)
+    return _fg, _bg
+
+
+_RED_ON_RED = b'\x1b[38;2;200;0;0;48;2;200;0;0m' + '\u2588'.encode() + b'\x1b[0m\r\n'
+_sgb = SecureTerminal(command='/bin/cat', tui=True)
+_sgb.apply_mode('box')
+_sgb.apply_markings(False)          # the program-SGR branch (no risk tint)
+_sgb.apply_colors(True)
+_sgb.resize(600, 300)
+_sgb.show()
+pump(60)
+_sgb._feed_stream(_RED_ON_RED)
+_sgb._render_tui()
+pump(30)
+_sbfg, _sbbg = _cell_fg_bg(_sgb, _sgb.toPlainText().index('_'))
+ok(_sbfg != _sbbg,
+   'box mode: a neutralized structural glyph keeps the contrast guard (fg==bg cannot hide the placeholder)')
+_sgb.close()
+
+# Cache invalidation: a Show-mode structural cell caches the bypass (fg==bg allowed, the
+# glyph is displayed); toggling to a strict mode must re-clamp it -- _rerender drops the
+# format caches, which are keyed by codepoint + SGR, not by mode.
+_sgc = SecureTerminal(command='/bin/cat', tui=True)
+_sgc.apply_mode('show')
+_sgc.apply_markings(False)
+_sgc.apply_colors(True)
+_sgc.resize(600, 300)
+_sgc.show()
+pump(60)
+_sgc._feed_stream(_RED_ON_RED)
+_sgc._render_tui()
+pump(30)
+_scfg_show, _scbg_show = _cell_fg_bg(_sgc, next(
+    i for i, ch in enumerate(_sgc.toPlainText()) if ch == '\u2588'))
+eq(_scfg_show, _scbg_show,
+   'show mode: a displayed structural glyph keeps its program fg==bg (colour ramp intact)')
+_sgc.apply_mode('box')
+pump(30)
+_scfg_box, _scbg_box = _cell_fg_bg(_sgc, _sgc.toPlainText().index('_'))
+ok(_scfg_box != _scbg_box,
+   'toggling Show->box re-clamps the neutralized structural cell (format caches cleared)')
+_sgc.close()
+
 # Q2 by-class colours: a bidi override, a homoglyph and a zero-width each get their
 # own class colour + inspectable codepoint in the grid, exactly as CLI box mode.
 for _payload, _wantcp, _wantcls in ((chr(0x202E), 0x202E, 'bidi'),
