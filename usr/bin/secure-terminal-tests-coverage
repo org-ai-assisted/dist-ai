@@ -85,7 +85,7 @@ export COVERAGE_FILE="${work}/.coverage"
 ## justified `# pragma: no cover` in the source, not a blanket exclusion.
 ##
 ## Tier 1 -- covered by the Qt-FREE suites.
-gated_free='*/__init__.py,*/sanitize.py,*/cli.py,*/hook.py,*/ipc.py,*/session.py,*/settings.py,*/preflight.py'
+gated_free='*/__init__.py,*/sanitize.py,*/cli.py,*/hook.py,*/ipc.py,*/session.py,*/settings.py,*/preflight.py,*/unicode_tag.py'
 ## Tier 2 -- covered by the offscreen Qt widget suites, which fail closed
 ## (exit 1) on a missing PyQt6/pyte rather than skipping, so both tiers are
 ## always gated.
@@ -191,8 +191,8 @@ python3 -m coverage erase
 ## test_mainwin runs FIRST so a PERSISTENT crash (every retry exhausted) fails fast,
 ## not after the long suites; order is irrelevant to the unioned coverage result.
 for suite in test_mainwin test_secure_terminal test_fuzz test_fuzz_harnesses \
-             test_corpus test_invariants test_cli test_modules test_review \
-             test_widget; do
+             test_corpus test_invariants test_cli test_unicode_tag test_modules \
+             test_review test_widget; do
    [ -f "${tests_dir}/${suite}.py" ] || continue
    rc=0
    run_suite_under_coverage "${tests_dir}/${suite}.py" || rc="$?"
