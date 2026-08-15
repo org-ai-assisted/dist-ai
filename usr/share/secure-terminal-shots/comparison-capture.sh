@@ -410,8 +410,12 @@ else
    shots_generate_logs "${here}" "${HOME}" || exit "$?"
    shots_install_icon_theme "${XDG_DATA_HOME}"
 fi
-cat > "${HOME}/.strc" <<'RC'
-PS1='user@host:~$ '
+## The shell prompt for every shot. Single-sourced so the content-verify
+## (shots_transcript_has_content) strips the EXACT prompt the shell prints when
+## deciding whether an injected payload actually rendered.
+SHOT_PROMPT='user@host:~$ '
+cat > "${HOME}/.strc" <<RC
+PS1='${SHOT_PROMPT}'
 RC
 
 ## labwc config: the Clearlooks theme, server-side decorations.
@@ -954,15 +958,21 @@ for e in ${TERMINALS}; do
    printf '%s\n' "captured ${e}"
 done
 
-## secure-terminal renders the board INLINE and shows the real typed prompt, so the board's
-## embedded 'cat tui-showcase.payload' line would DUPLICATE it. The emulators (captured above)
-## keep that embedded line -- their alt-screen hides the real command, so it is what puts 'cat'
-## at the top of their shots. Strip it now, for the secure-terminal pass ONLY (dedicated sibling
-## script, not inline scripting). An emulator-only lane (--no-st) skips both the strip and the
-## whole secure-terminal pass.
+## tui-showcase board: its embedded 'cat tui-showcase.payload' line is what puts 'cat' at the
+## top of an ALT-SCREEN shot (the alt screen hides the real typed command). secure-terminal in
+## CLI mode renders the board INLINE and shows the REAL typed prompt, so there the embedded line
+## would DUPLICATE it -- so tui-showcase.payload is stripped IN PLACE for the CLI specs (they cat
+## it by its clean name, and the real echo reads 'cat tui-showcase.payload'). secure-terminal in
+## TUI mode enters the alt screen just like the emulators, so it needs the WITH-prompt board:
+## saved first as a sibling (tui-showcase-withprompt.payload). Its real echo (the sibling's name)
+## is hidden by the alt screen; the board's EMBEDDED clean-name prompt is what shows at the top.
+## shots_st_inject_cmd picks the right one per mode. An emulator-only lane (--no-st) skips both
+## the strip and the whole secure-terminal pass. Strip via the dedicated sibling script (not
+## inline scripting).
 if [ -n "${no_st}" ]; then
    printf '%s\n' 'skipping secure-terminal pass (--no-st)'
 else
+cp -- "${HOME}/tui-showcase.payload" "${HOME}/tui-showcase-withprompt.payload"
 "${here}/strip-tui-showcase-prompt.py" "${HOME}/tui-showcase.payload"
 
 st_bin="${ST_REPO:-}/usr/bin/secure-terminal"
@@ -1109,6 +1119,12 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       ## per-capture watchdog, exactly like the emulator shots.
       st_pgf="$(mktemp -- "${runtime_dir}/pgid.XXXXXX")"
       st_flagf="${st_pgf}.timeout"
+      ## secure-terminal writes its live transcript here (fresh per spec) via the generic
+      ## SECURE_TERMINAL_TRANSCRIPT_FILE config. Read after the grab to VERIFY the injected
+      ## payload actually rendered -- a screenshot cannot tell an empty terminal from a
+      ## full one (the window chrome paints either way).
+      st_transcript="${st_pgf}.transcript"
+      safe-rm -f -- "${st_transcript}" 2>/dev/null || true
       ## Pin the font DPI to 72 so the render is deterministic regardless of the X
       ## server's DPI. The responsive toolbar's 860 default (st_win_w) is calibrated
       ## to the real compositor's ~9pt/72-DPI metrics (labeled tier: captioned chips,
@@ -1121,6 +1137,7 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       shots_spawn_session "${st_pgf}" \
          env --unset=WAYLAND_DISPLAY "DISPLAY=${xwl_display}" QT_QPA_PLATFORM=xcb \
          QT_FONT_DPI=72 SECURE_TERMINAL_SHOT=1 \
+         "SECURE_TERMINAL_TRANSCRIPT_FILE=${st_transcript}" \
          PYTHONPATH="${st_pkg}" python3 "${st_bin}" --new-instance "${st_mode_flags[@]}" \
          -- bash --rcfile "${HOME}/.strc" -i >/dev/null 2>&1
       ## same guard as the emulator shots: an invalid SHOT_DEADLINE must not errexit-abort.
@@ -1136,24 +1153,51 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
          ## or the 'cat' is injected into a not-yet-ready window and never runs (a black shot,
          ## seen on the FIRST secure-terminal launch under the parallel --jobs load).
          wait_window_ready "${stwid}"
-         inject "${stwid}" "$(shots_payload_cmd "${st_case}")"
-         ## SECURE_TERMINAL_SHOT=1 renders synchronously, so a long fixed settle is unneeded.
-         sleep 1
-         ## The full-viewport colour boards paint a large grid (rows x cols cells rebuilt into the
-         ## document) -- much heavier than a short attack payload, and capture_settled only rejects
-         ## a BLANK frame, not a half-drawn one. In BOTH CLI and TUI, wait until the frame stops
-         ## changing before the grab. (CLI too: it also grabs a partially-painted board otherwise.)
-         ## These boards fill the viewport, so there is nothing for tighten_deadspace to trim, and
-         ## its content/background boundary detection is non-deterministic on a board whose edge
-         ## colour is near the terminal background (the gradient's near-white greyscale ramp on the
-         ## light theme drifts the crop height by a row run-to-run). Skip tighten so the shot is the
-         ## pinned window geometry -- deterministic dimensions, mode-agnostic (box/detail too).
-         st_tighten_arg=''
-         if [ "${st_case}" = art ] || [ "${st_case}" = gradient ]; then
-            st_wait_render_settled "${stwid}"
-            st_tighten_arg='skip-tighten'
-         fi
-         capture_settled "${out}/secure-terminal.${st_suffix}.png" "${stwid}" "${st_tighten_arg}"
+         ## The command to inject (mode-aware; see shots_st_inject_cmd). secure-terminal now
+         ## pins the alternate screen to the top (as a real terminal does), so a short
+         ## alt-screen frame (the altscreen demo's one line) stays visible even when the
+         ## shell's prompt returns below it.
+         st_cmd="$(shots_st_inject_cmd "${st_case}" "${st_tui:-}")"
+         ## Inject, grab, and VERIFY via the transcript file that the payload actually
+         ## rendered; re-inject + re-grab on an empty transcript, and DISCARD (never
+         ## publish an empty shot) if it never lands. The transcript catches an injection
+         ## that never reached the window (a focus race under --jobs load) -- the shell is
+         ## back at its prompt in that case, so a re-inject runs cleanly.
+         st_verify_tries=0
+         while : ; do
+            inject "${stwid}" "${st_cmd}"
+            ## SECURE_TERMINAL_SHOT=1 renders synchronously, so a long fixed settle is unneeded.
+            sleep 1
+            ## The full-viewport colour boards paint a large grid (rows x cols cells rebuilt into the
+            ## document) -- much heavier than a short attack payload, and capture_settled only rejects
+            ## a BLANK frame, not a half-drawn one. In BOTH CLI and TUI, wait until the frame stops
+            ## changing before the grab. (CLI too: it also grabs a partially-painted board otherwise.)
+            ## These boards fill the viewport, so there is nothing for tighten_deadspace to trim, and
+            ## its content/background boundary detection is non-deterministic on a board whose edge
+            ## colour is near the terminal background (the gradient's near-white greyscale ramp on the
+            ## light theme drifts the crop height by a row run-to-run). Skip tighten so the shot is the
+            ## pinned window geometry -- deterministic dimensions, mode-agnostic (box/detail too).
+            st_tighten_arg=''
+            if [ "${st_case}" = art ] || [ "${st_case}" = gradient ]; then
+               st_wait_render_settled "${stwid}"
+               st_tighten_arg='skip-tighten'
+            fi
+            capture_settled "${out}/secure-terminal.${st_suffix}.png" "${stwid}" "${st_tighten_arg}"
+            ## A shot passes once it exists AND the transcript carries real content (capture_settled
+            ## discards a blank grab, leaving no file -- also a miss).
+            if [ -f "${out}/secure-terminal.${st_suffix}.png" ] \
+                  && shots_transcript_has_content "${st_transcript}" "${SHOT_PROMPT}"; then
+               break
+            fi
+            st_verify_tries=$(( st_verify_tries + 1 ))
+            if [ "${st_verify_tries}" -ge 3 ]; then
+               safe-rm --force -- "${out}/secure-terminal.${st_suffix}.png" 2>/dev/null || true
+               printf '%s\n' "warn secure-terminal.${st_suffix}: injected content never rendered (transcript empty after ${st_verify_tries} tries) -- discarded, not published"
+               break
+            fi
+            printf '%s\n' "warn secure-terminal.${st_suffix}: transcript still empty (attempt ${st_verify_tries}); re-injecting"
+            sleep 1
+         done
       else
          printf '%s\n' "warn secure-terminal.${st_suffix}: window never appeared"
       fi
@@ -1162,7 +1206,7 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       st_epgid="$(cat "${st_pgf}" 2>/dev/null || true)"
       clear_windows
       shots_reap_group "${st_epgid}"
-      safe-rm -f -- "${st_pgf}" "${st_flagf}" 2>/dev/null || true
+      safe-rm -f -- "${st_pgf}" "${st_flagf}" "${st_transcript}" 2>/dev/null || true
    done
    printf '%s\n' 'captured secure-terminal (real GUI)'
 elif [ -n "${ALLOW_SKIP:-}" ]; then

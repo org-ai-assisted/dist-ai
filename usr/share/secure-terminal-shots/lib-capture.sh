@@ -174,6 +174,22 @@ shots_payload_cmd() {  ## $1=case -> the command string the terminal displays
    esac
 }
 
+## The command to inject for a secure-terminal GUI shot. Same payload the emulators get,
+## EXCEPT tui-showcase in TUI mode. tui-showcase.payload is stripped of its embedded prompt in
+## place for the CLI specs (they cat it by its clean name and show the real typed prompt, so an
+## embedded copy would duplicate it). TUI enters the alt screen, which HIDES the real typed
+## command, so it needs the board WITH the embedded prompt -- that line is what puts
+## 'cat tui-showcase.payload' at the top, exactly as the emulators' alt-screen shots do. It
+## cats the with-prompt sibling; the sibling's own (ugly) name only ever appears in the hidden
+## real echo, never on screen.
+shots_st_inject_cmd() {  ## $1=case  $2='tui' when launched with --tui, else empty
+   if [ "$1" = tui-showcase ] && [ "${2:-}" = tui ]; then
+      printf '%s' 'cat tui-showcase-withprompt.payload'
+      return
+   fi
+   shots_payload_cmd "$1"
+}
+
 ## Reproduce the corpus-backed payloads into the dest dir. Two DISTINCT failures:
 ## 77 (a legitimate SKIP) ONLY when the terminal-poc-corpus is absent; any other
 ## non-zero is a real generation failure (reproduce.py / write) that a caller must
@@ -280,6 +296,24 @@ shots_shot_is_blank() {  ## $1=png
    [ -s "$1" ] || return 0
    flat="$(convert "$1" -colorspace Gray -format '%[fx:standard_deviation<0.012?1:0]' info: 2>/dev/null || printf '0')"
    [ "${flat}" = '1' ]
+}
+
+## True when secure-terminal's live transcript carries REAL injected content, not just
+## bare shell prompts + grid padding. A screenshot cannot tell an empty terminal (an
+## injection that never reached the window) from a full one -- the window chrome paints
+## either way, so shots_shot_is_blank (a flat frame) passes an empty grab. secure-terminal
+## writes its rendered transcript to SECURE_TERMINAL_TRANSCRIPT_FILE after every read;
+## strip ALL whitespace and every prompt echo, and anything left is real payload output
+## (a command echo, the payload's text, or a full board). Marker-free on purpose: no
+## per-case expected-string map to drift as payloads change.
+shots_transcript_has_content() {  ## $1=transcript-file  $2=prompt-literal
+   local file prompt body
+   file="$1"; prompt="$2"
+   [ -r "${file}" ] || return 1
+   body="$(tr -d '[:space:]' < "${file}")"        # spaces, tabs, newlines, grid padding
+   prompt="$(printf '%s' "${prompt}" | tr -d '[:space:]')"
+   body="${body//"${prompt}"/}"                    # drop every (space-less) prompt echo
+   [ -n "${body}" ]
 }
 
 ## Cases the emulator loop does NOT shoot (secure-terminal-only showcases): notify has no
