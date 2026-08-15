@@ -220,20 +220,22 @@ shots_generate_logs() {  ## $1=script-relative fallback dir $2=dest-dir
 n=int(sys.argv[1]); r=random.Random(int(sys.argv[2]))
 buf=bytes(x for x in (r.getrandbits(8) for _ in range(n*2)) if x!=0x1b)[:n]
 sys.stdout.buffer.write(buf)' "${shots_random_bytes}" "${shots_random_seed}" > "${dest}/random.payload" || return 1
-   ## art: a display-only truecolor terminal-art scene (a sunset beach + rolling green hills).
-   ## SAFE to cat -- the generator emits ONLY SGR truecolour, the half-block glyph, newlines and
-   ## a trailing reset (no cursor moves, no clear, no OSC), so it repaints nothing and leaves the
-   ## scrollback clean. A page-facing capability demo: secure-terminal renders full 24-bit colour
-   ## in every mode. This writes the DEFAULT 80x22 scene; the secure-terminal capture pass
-   ## regenerates it at the live viewport size (st_size_art_payload) so the sunset fills the
-   ## frame. Deterministic (pure function of position + size), so regeneration is a no-op.
-   "${fallback}/truecolor-art.py" > "${dest}/art.payload" || return 1
-   ## gradient: a display-only 24-bit colour board -- a curated 2D slice of the truecolour gamut
-   ## (hue across, lightness down, plus a greyscale ramp). SAME cat-safe contract as art (SGR +
-   ## half-block + newlines only). This writes the DEFAULT 80x22 board; the secure-terminal pass
-   ## regenerates it at the live viewport size (st_size_viewport_payload) so it fills the frame.
-   ## Its point beside a 256-colour terminal: the ramps are smooth here, banded there.
-   "${fallback}/truecolor-gradient.py" > "${dest}/gradient.payload" || return 1
+   ## art + gradient: display-only full-viewport colour boards (a sunset scene; a 24-bit gamut
+   ## slice -- hue across, lightness down, plus a greyscale ramp). SAFE to cat -- each generator
+   ## emits ONLY SGR truecolour, the half-block glyph, newlines and a trailing reset (no cursor
+   ## moves, no clear, no OSC), so it repaints nothing and leaves the scrollback clean. A
+   ## page-facing capability demo: secure-terminal renders full 24-bit colour in every mode, and
+   ## the gradient's ramps are smooth here where a 256-colour terminal bands.
+   ##
+   ## PINNED board size (deterministic): the secure-terminal shot window is 860x620 (st_win_w x
+   ## st_win_h in comparison-capture.sh); at that size, Hack 9pt @ 72 DPI gives a 121-col x 39-row
+   ## grid. Size the board to 120 x 36 -- one column inside the grid (a vertical scrollbar can
+   ## reclaim one), and rows for the board plus the 'cat' prompt line above and a fresh prompt
+   ## below. A fixed size makes the shot byte-reproducible; sizing to the LIVE viewport instead
+   ## caught the WM resize mid-animation and produced run-to-run height drift. RE-DERIVE these two
+   ## numbers (offscreen probe of the real grid) if st_win_w/st_win_h or the shot font changes.
+   "${fallback}/truecolor-art.py" --cols 120 --rows 36 > "${dest}/art.payload" || return 1
+   "${fallback}/truecolor-gradient.py" --cols 120 --rows 36 > "${dest}/gradient.payload" || return 1
    ## unicode: an exhaustive-by-class Unicode gallery -- a renderable-subset glyph chart plus
    ## raw-byte RISK specimens (C0/C1 controls, bidi, zero-width/invisible, combining), each
    ## specimen inline-ISOLATED one-per-line so an escape it starts aborts at the newline; SO is

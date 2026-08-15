@@ -5,9 +5,9 @@
 
 ## AI-Assisted
 
-## Regression: truecolor-art.py must honour --cols/--rows so the comparison-capture pass can
-## size the sunset to the REAL secure-terminal viewport (st_size_art_payload) instead of the
-## fixed 80x22 that left a dead-white margin on the right of the art shot.
+## Regression: truecolor-art.py must honour --cols/--rows so the comparison-capture pass can pin
+## the board to a fixed size instead of the old fixed 80x22 that left a dead-white margin on the
+## right of the art shot.
 ##
 ## Asserts, per size: the rendered scene is exactly <cols> glyphs wide on every line and
 ## <rows> lines tall, and stays cat-safe (ONLY SGR colour, the U+2580 half-block, and

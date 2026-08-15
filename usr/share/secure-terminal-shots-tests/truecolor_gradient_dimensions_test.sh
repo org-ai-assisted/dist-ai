@@ -6,8 +6,8 @@
 ## AI-Assisted
 
 ## Regression: truecolor-gradient.py (the 24-bit colour board) must honour --cols/--rows so the
-## comparison-capture pass can size the board to the REAL secure-terminal viewport
-## (st_size_viewport_payload), and must stay cat-safe: ONLY SGR colour, the U+2580 half-block,
+## comparison-capture pass can pin the board to a fixed size, and must stay cat-safe: ONLY SGR
+## colour, the U+2580 half-block,
 ## and newlines -- no cursor moves / clear / OSC. Asserts, per size: the board is exactly <cols>
 ## glyphs wide on every line and <rows> lines tall, and a degenerate 1-wide/1-tall canvas is
 ## rejected.
