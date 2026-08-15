@@ -118,7 +118,7 @@ SHOT_DEADLINE="${SHOT_DEADLINE:-90}"
 ## notify is a secure-terminal-only case (emulators have no standard notify shot -- the page's
 ## kitty.notify popup is captured separately), so it is in the full matrix for the ST loop but
 ## skipped in the emulator loop below.
-all_cases='escape contrast title random homoglyph bidi zerowidth altscreen notify art gradient unicode tui-showcase'
+all_cases='escape contrast title random homoglyph bidi zerowidth altscreen notify art gradient unicode tui-showcase hero-compare'
 CASES="${CASES:-${all_cases}}"
 ## The emulator set, single source of truth for BOTH the capture loop and the --jobs
 ## orchestrator's partition. lxterminal is omitted: its single-instance startup maps no
@@ -499,8 +499,12 @@ launch() {  ## $1=emulator  $2=case  $3=pgid-file
    ## the short cases use, its title bar scrolled off the top. Only that case gets the
    ## taller window, so the other cases' shots (and their committed on-page dimensions)
    ## are unchanged. kitty is sized in pixels, so it gets a matching taller height.
-   rows=24; kh=430
+   rows=24; kh=430; cols=84
    if [ "${case}" = tui-showcase ]; then rows=32; kh=620; fi
+   ## hero-compare: a narrower board than the 84-col comparison shots, so the homepage slider's
+   ## terminal text stays legible when the shot is scaled down to a ~390px phone AND the board fills
+   ## the frame (less dead space to the right). Matched to the secure-terminal hero window width.
+   if [ "${case}" = hero-compare ]; then cols=65; fi
    cmd=()
    case "${e}" in
       xterm)
@@ -509,22 +513,22 @@ launch() {  ## $1=emulator  $2=case  $3=pgid-file
          ## bistable 1px sub-pixel jitter run-to-run on the tui-showcase box border;
          ## the internal line-drawing is pixel-exact and deterministic.
          cmd=("${base[@]}" xterm -xrm 'XTerm.vt100.forceBoxChars: true' \
-            -geometry "84x${rows}" -fa 'Monospace' -fs 11 -e "${sh[@]}")
+            -geometry "${cols}x${rows}" -fa 'Monospace' -fs 11 -e "${sh[@]}")
          ;;
       urxvt)
-         cmd=("${base[@]}" urxvt -geometry "84x${rows}" -fn 'xft:Monospace:size=11' -e "${sh[@]}")
+         cmd=("${base[@]}" urxvt -geometry "${cols}x${rows}" -fn 'xft:Monospace:size=11' -e "${sh[@]}")
          ;;
       st)
-         cmd=("${base[@]}" st -g "84x${rows}" -f 'Monospace:size=11' -e "${sh[@]}")
+         cmd=("${base[@]}" st -g "${cols}x${rows}" -f 'Monospace:size=11' -e "${sh[@]}")
          ;;
       konsole)
-         cmd=("${base[@]}" QT_QPA_PLATFORM=xcb konsole --nofork -p TerminalColumns=84 -p "TerminalRows=${rows}" -e "${sh[@]}")
+         cmd=("${base[@]}" QT_QPA_PLATFORM=xcb konsole --nofork -p "TerminalColumns=${cols}" -p "TerminalRows=${rows}" -e "${sh[@]}")
          ;;
       qterminal)
          cmd=("${base[@]}" QT_QPA_PLATFORM=xcb qterminal -e "${sh[@]}")
          ;;
       xfce4-terminal)
-         cmd=("${base[@]}" GDK_BACKEND=x11 xfce4-terminal --disable-server --geometry "84x${rows}" -x "${sh[@]}")
+         cmd=("${base[@]}" GDK_BACKEND=x11 xfce4-terminal --disable-server --geometry "${cols}x${rows}" -x "${sh[@]}")
          ;;
       gnome-terminal)
          ## gnome-terminal is a thin client to gnome-terminal-server over D-Bus, with no
@@ -535,13 +539,13 @@ launch() {  ## $1=emulator  $2=case  $3=pgid-file
          ## dconf; with no dconf daemon on the private bus it falls back to the built-in default
          ## profile -- the shipped default we want to show.
          cmd=("${base[@]}" GDK_BACKEND=x11 dbus-run-session -- \
-            gnome-terminal --wait --geometry "84x${rows}" -- "${sh[@]}")
+            gnome-terminal --wait --geometry "${cols}x${rows}" -- "${sh[@]}")
          ;;
       mate-terminal)
-         cmd=("${base[@]}" GDK_BACKEND=x11 mate-terminal --disable-factory --geometry "84x${rows}" -x "${sh[@]}")
+         cmd=("${base[@]}" GDK_BACKEND=x11 mate-terminal --disable-factory --geometry "${cols}x${rows}" -x "${sh[@]}")
          ;;
       alacritty)
-         cmd=("${base[@]}" WINIT_UNIX_BACKEND=x11 alacritty -o 'window.dimensions.columns=84' -o "window.dimensions.lines=${rows}" -o 'font.size=11' -e "${sh[@]}")
+         cmd=("${base[@]}" WINIT_UNIX_BACKEND=x11 alacritty -o "window.dimensions.columns=${cols}" -o "window.dimensions.lines=${rows}" -o 'font.size=11' -e "${sh[@]}")
          ;;
       kitty)
          cmd=("${base[@]}" KITTY_ENABLE_WAYLAND=0 kitty -o 'remember_window_size=no' -o 'initial_window_width=720' -o "initial_window_height=${kh}" -o 'font_size=11' "${sh[@]}")
@@ -663,6 +667,38 @@ tighten_deadspace() {  ## $1=png-path
       \( -clone 0 -crop "${w}x${top_h}+0+0" +repage \) \
       \( -clone 0 -crop "${w}x${bot_h}+0+${bot_y}" +repage \) \
       -delete 0 -append "${f}"
+}
+
+## Compose the homepage before/after slider pair from the hero-compare shots: secure-terminal's
+## SHOW-mode board and the gnome-terminal render of the SAME board, padded to ONE shared canvas so
+## the site's CSS resize slider overlays them at identical dimensions (pixel-for-pixel). Runs at the
+## END of a single-lane run, from the two .png shots before webp optimization; a no-op (logged) if
+## either is absent (e.g. an emulator-only or --jobs lane). gnome-terminal is the traditional side:
+## it HONOURS the OSC-0 title hijack (the spoofed title shows in its title bar) where konsole resets
+## it, and its white/light theme matches secure-terminal's, so the wipe reads as ONE session secured
+## vs not. Deterministic: canvas = the max of the two shots' dimensions; both terminals are white-bg
+## so a WHITE pad (top-left anchored -- title bars and the left text margin align) is seamless.
+compose_hero_slider() {  ## $1=out-dir
+   local out sec trad sw sh tw th cw ch
+   out="$1"
+   sec="${out}/secure-terminal.hero-compare-show.png"
+   trad="${out}/gnome-terminal.hero-compare.png"
+   if [ ! -f "${sec}" ] || [ ! -f "${trad}" ]; then
+      printf '%s\n' 'compose_hero_slider: secure-terminal + gnome-terminal hero-compare shots not both present; skipping slider compose' >&2
+      return 0
+   fi
+   sw="$(identify -format '%w' "${sec}")"; sh="$(identify -format '%h' "${sec}")"
+   tw="$(identify -format '%w' "${trad}")"; th="$(identify -format '%h' "${trad}")"
+   cw=$(( sw > tw ? sw : tw )); ch=$(( sh > th ? sh : th ))
+   convert "${sec}"  -background white -gravity NorthWest -extent "${cw}x${ch}" "${out}/hero-secure.png"
+   convert "${trad}" -background white -gravity NorthWest -extent "${cw}x${ch}" "${out}/hero-traditional.png"
+   ## Drop the raw per-terminal hero-compare shots: only the composed pair is referenced by the
+   ## site, so leaving the sources behind would land them in comparison/shots/ (the driver pulls
+   ## every .webp) as ORPHANS that website-tests rejects. Removing them here keeps the site green on
+   ## every regeneration with no step to remember. The honest per-terminal captures still exist
+   ## mid-run; only the composed hero-secure/hero-traditional are published.
+   safe-rm -f -- "${out}"/*.hero-compare.png "${out}/secure-terminal.hero-compare-show.png" 2>/dev/null || true
+   printf '%s\n' "composed hero slider pair (${cw}x${ch}): hero-secure.png, hero-traditional.png (raw hero-compare shots dropped)"
 }
 
 ## Capture the window, then guard against a blank/black grab (the content had not finished
@@ -1012,6 +1048,10 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       'tui-showcase detail tui-showcase-detail'
       'tui-showcase box tui-showcase-tui tui'
       'tui-showcase show tui-showcase-tui-show tui'
+      ## hero-compare: the homepage before/after slider. Captured in SHOW mode only (the
+      ## page shows content AND flags danger) -- the one secure-terminal view the hero
+      ## slider overlays against the traditional-emulator shot of the SAME board.
+      'hero-compare show hero-compare-show'
    )
    ## Cold-start warmup: the FIRST secure-terminal launch in a lane, under parallel --jobs
    ## contention, has been observed to never paint the spec it captures (a black shot) even after
@@ -1049,6 +1089,13 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       ## once grown by the frame). The short cases keep 620 so their committed page
       ## dimensions do not move; tighten_deadspace trims either back to its content.
       st_win_h=620; [ "${st_case}" = tui-showcase ] && st_win_h=820
+      ## hero-compare: request a narrower secure-terminal window than the 860 comparison default so
+      ## the homepage slider shot scales to a ~390px phone with legible text and the board fills the
+      ## frame. Qt clamps the width up to the app's own minimum for the fully-labeled toolbar (~640
+      ## under the capture compositor's 72-DPI metrics), so the toolbar stays complete (no ">>"
+      ## overflow) at that clamped size -- which is the narrow hero width we want. RE-MEASURE if the
+      ## toolbar/chip CSS changes; the emulator width (65 cols) above is matched to this result.
+      st_win_w=860; [ "${st_case}" = hero-compare ] && st_win_w=600
       ## The GUI runs as `python3 .../secure-terminal` -- process name `python3` -- so it MUST
       ## be reaped by its session PGID, never by name. Launch it in its own session and arm the
       ## per-capture watchdog, exactly like the emulator shots.
@@ -1117,6 +1164,15 @@ else
    exit 1
 fi
 fi
+
+## Homepage hero slider: pad the secure-terminal + gnome-terminal hero-compare shots to one shared
+## canvas so the site's CSS resize slider overlays them at identical dimensions. Before optimize, so
+## the produced PNGs are webp-converted with the rest. Only when hero-compare was actually captured.
+case " ${CASES} " in
+   *' hero-compare '*)
+      compose_hero_slider "${out}"
+      ;;
+esac
 
 ## Convert the captured PNGs to webp (the site references them as .webp). A lane run with
 ## --no-optimize leaves the PNGs for the orchestrator's single final --optimize-only merge.

@@ -36,6 +36,11 @@
 ##   tui-showcase -- cat tui-showcase.payload (a safe display-only board exercising
 ##                every text-attack class at once; a full-screen "what you see vs what
 ##                is there" table)
+##   hero-compare -- cat hero-compare.payload (the homepage hero board: one short,
+##                realistic "verify before you trust" session laced with four
+##                still-applicable display deceptions -- homoglyph, bidi, OSC-0 title,
+##                OSC-52 clipboard -- rendered innocent on a traditional emulator and
+##                flagged by secure-terminal SHOW mode, for the before/after slider)
 ##   notify    -- cat notify.payload    (an OSC-9 desktop-notification from log output)
 ##   random    -- cat random.payload    (a fixed pseudo-random garble field, deterministic)
 ##
@@ -145,6 +150,9 @@ shots_payload_cmd() {  ## $1=case -> the command string the terminal displays
       tui-showcase)
          printf '%s' 'cat tui-showcase.payload'
          ;;
+      hero-compare)
+         printf '%s' 'cat hero-compare.payload'
+         ;;
       clipboard)
          printf '%s' 'cat clipboard.payload'
          ;;
@@ -244,6 +252,17 @@ sys.stdout.buffer.write(buf)' "${shots_random_bytes}" "${shots_random_seed}" > "
    ## shows and risk-TINTS every class where a plain terminal shows flat text. Deterministic for a
    ## fixed Unicode version, so regeneration is a no-op.
    "${fallback}/unicode-gallery.py" > "${dest}/unicode.payload" || return 1
+   ## hero-compare: the homepage hero board -- one short, realistic "verify before you trust"
+   ## session laced with four still-applicable display deceptions (homoglyph U+0430, bidi
+   ## U+202E/U+202C, an OSC-0 title-set, an OSC-52 clipboard-write). A traditional emulator
+   ## renders it innocent; secure-terminal SHOW mode shows the same bytes AND flags every trap,
+   ## which is exactly the before/after the homepage slider overlays. A PAGE-FACING display demo
+   ## with NO canary token (like notify / zerowidth / art / gradient / unicode above), so it is
+   ## generated here rather than reproduced from the corpus -- while reusing the corpus's canonical
+   ## code points so the demonstration stays consistent with its homoglyph / bidi / title-set /
+   ## osc52-clipboard-write PoCs. SAFE to cat: text plus two display-only OSC escapes, both undone
+   ## by reset; no cursor addressing, alt-screen or clear.
+   "${fallback}/hero-board.py" > "${dest}/hero-compare.payload" || return 1
 }
 
 ## Install secure-terminal's icon into a session icon theme at ${1}=XDG_DATA_HOME, so labwc
