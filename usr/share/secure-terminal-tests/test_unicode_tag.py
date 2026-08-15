@@ -162,6 +162,28 @@ def run():
         ok(rc == 0 and captured == 'm[U+0430 CYRILLIC SMALL LETTER A]ster',
            'main_stdin() tags stdin and ignores its argv')
 
+        # main_stdin on an unreadable stdin (e.g. a directory) exits 1 cleanly.
+        class _BadInBuffer:
+            @staticmethod
+            def read():
+                raise IsADirectoryError(21, 'Is a directory')
+
+        class _BadIn:
+            buffer = _BadInBuffer()
+
+        saved_stdin = sys.stdin
+        saved_err = sys.stderr
+        try:
+            sys.stdin = _BadIn()
+            sys.stderr = io.StringIO()
+            rc = unicode_tag.main_stdin()
+            err = sys.stderr.getvalue()
+        finally:
+            sys.stdin = saved_stdin
+            sys.stderr = saved_err
+        ok(rc == 1 and 'unicode-tag:' in err,
+           'main_stdin reports an unreadable stdin cleanly (rc=1)')
+
         # A downstream pipe closing early (BrokenPipeError) exits 1, no traceback.
         class _BrokenBuffer:
             @staticmethod
