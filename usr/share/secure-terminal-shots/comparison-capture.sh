@@ -669,16 +669,21 @@ tighten_deadspace() {  ## $1=png-path
 ## rendering when the screenshot was taken -- more likely under the parallel --jobs CPU load).
 ## Re-grab a couple of times WITHOUT re-injecting (the command already ran; it just needs to
 ## finish painting), then tighten. A shot still blank after retries is warned, never silent.
-capture_settled() {  ## $1=output-path  $2=window-id
-   local dest wid tries
-   dest="$1"; wid="$2"; tries=0
+capture_settled() {  ## $1=output-path  $2=window-id  [$3='skip-tighten']
+   local dest wid skip_tighten tries
+   dest="$1"; wid="$2"; skip_tighten="${3:-}"; tries=0
    while [ "${tries}" -lt 3 ]; do
       if ! capture_window "${dest}" "${wid}"; then
          printf '%s\n' "warn: screenshot failed for $(basename -- "${dest}")"
          return 1
       fi
       if ! shots_shot_is_blank "${dest}"; then
-         tighten_deadspace "${dest}"
+         ## skip-tighten: the pinned full-viewport colour boards fill the terminal, so there
+         ## is no screenful of dead space to trim, and tighten's content/background boundary
+         ## detection is non-deterministic on a board whose edge colour is close to the
+         ## terminal background -- it drifts the crop height run-to-run. The raw grab is the
+         ## pinned window geometry, so leaving it untightened keeps the dimensions deterministic.
+         [ "${skip_tighten}" = 'skip-tighten' ] || tighten_deadspace "${dest}"
          return 0
       fi
       tries=$(( tries + 1 ))
@@ -964,9 +969,15 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       'notify show notify-show'
       'notify box notify-tui tui'
       'notify show notify-tui-show tui'
+      'art box art'
+      'art detail art-detail'
       'art show art-show'
+      'art box art-tui tui'
       'art show art-tui-show tui'
+      'gradient box gradient'
+      'gradient detail gradient-detail'
       'gradient show gradient-show'
+      'gradient box gradient-tui tui'
       'gradient show gradient-tui-show tui'
       'unicode show unicode-show'
       'unicode show unicode-tui-show tui'
@@ -1076,13 +1087,18 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
          ## The full-viewport colour boards paint a large grid (rows x cols cells rebuilt into the
          ## document) -- much heavier than a short attack payload, and capture_settled only rejects
          ## a BLANK frame, not a half-drawn one. In BOTH CLI and TUI, wait until the frame stops
-         ## changing before the grab; with a complete render of a pinned-size board, tighten then
-         ## crops to the same content box every run -- deterministic. (CLI too: it also grabs a
-         ## partially-painted board otherwise.)
+         ## changing before the grab. (CLI too: it also grabs a partially-painted board otherwise.)
+         ## These boards fill the viewport, so there is nothing for tighten_deadspace to trim, and
+         ## its content/background boundary detection is non-deterministic on a board whose edge
+         ## colour is near the terminal background (the gradient's near-white greyscale ramp on the
+         ## light theme drifts the crop height by a row run-to-run). Skip tighten so the shot is the
+         ## pinned window geometry -- deterministic dimensions, mode-agnostic (box/detail too).
+         st_tighten_arg=''
          if [ "${st_case}" = art ] || [ "${st_case}" = gradient ]; then
             st_wait_render_settled "${stwid}"
+            st_tighten_arg='skip-tighten'
          fi
-         capture_settled "${out}/secure-terminal.${st_suffix}.png" "${stwid}"
+         capture_settled "${out}/secure-terminal.${st_suffix}.png" "${stwid}" "${st_tighten_arg}"
       else
          printf '%s\n' "warn secure-terminal.${st_suffix}: window never appeared"
       fi
