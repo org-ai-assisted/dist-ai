@@ -6621,33 +6621,51 @@ for _sw in (_ns, _nst):
 _tp = os.path.join(tempfile.mkdtemp(prefix='st-tr-'), 'transcript.txt')
 os.environ['SECURE_TERMINAL_TRANSCRIPT_FILE'] = _tp
 try:
-    # Mode-agnostic: the env is honoured even with shot mode OFF (the path is not gated
-    # on shot mode). The CLI paint flushes synchronously, so the file is current at once.
+    # Mode-agnostic: the env is honoured even with shot mode OFF (the path is not gated on
+    # shot mode). The write is debounced to the trailing edge of an output burst, so pump
+    # the loop past the ~30ms timer before reading -- this is also AFTER the render, so the
+    # file reflects the painted frame (CLI and TUI alike).
     _td = SecureTerminal(command='/bin/cat')          # NB: shot mode is OFF here
     eq(_td._transcript_file, _tp,
        'transcript file: the path is read from the env (mode-agnostic, no shot mode needed)')
     feed_output(_td, b'user@host:~$ cat demo\r\nMARKER-CLI\r\n')
-    ok(os.path.exists(_tp), 'transcript file: written after a read')
+    pump(80)
+    ok(os.path.exists(_tp), 'transcript file: written once output settles')
     with open(_tp, encoding='utf-8') as _fh:
         _written = _fh.read()
     ok('MARKER-CLI' in _written, 'transcript file: carries the CLI rendered output')
     _td.shutdown()
-    # TUI / alt screen: transcript_text() walks the rendered document. Under SHOT mode
-    # (the real capture scenario) the grid renders synchronously, so the alt-screen frame
-    # is in the file right after the read -- exactly the surface a capture uses to reject
-    # an empty grab. (Outside shot mode the TUI repaint defers to the 16ms timer, so the
-    # live file is merely eventually-consistent, catching up on the next read.)
-    os.environ['SECURE_TERMINAL_SHOT'] = '1'
-    try:
-        _tdt = SecureTerminal(command='/bin/cat', tui=True)
-        feed_output(_tdt, b'\x1b[?1049h\x1b[2J\x1b[HMARKER-TUI')
-        with open(_tp, encoding='utf-8') as _fh:
-            _written_tui = _fh.read()
-        ok('MARKER-TUI' in _written_tui,
-           'transcript file: carries the TUI (alt-screen) rendered frame (shot mode)')
-        _tdt.shutdown()
-    finally:
-        del os.environ['SECURE_TERMINAL_SHOT']
+    # TUI / alt screen: transcript_text() walks the rendered document, so the alt-screen
+    # frame lands in the file too -- exactly the surface a capture uses to reject an empty
+    # grab. The debounce fires after the deferred TUI render, so no pre-render lag.
+    _tdt = SecureTerminal(command='/bin/cat', tui=True)
+    _tdt.resize(600, 300)
+    _tdt.show()
+    pump(40)
+    feed_output(_tdt, b'\x1b[?1049h\x1b[2J\x1b[HMARKER-TUI')
+    pump(80)
+    with open(_tp, encoding='utf-8') as _fh:
+        _written_tui = _fh.read()
+    ok('MARKER-TUI' in _written_tui,
+       'transcript file: carries the TUI (alt-screen) rendered frame')
+    _tdt.shutdown()
+    # Race guarantee: the write forces a PENDING grid render before serialising, so the
+    # file reflects the latest frame even if the transcript debounce fires before the
+    # render debounce (possible under load). Write IMMEDIATELY (render still pending, no
+    # pump) and the flush makes the frame land anyway.
+    _tdr = SecureTerminal(command='/bin/cat', tui=True)
+    _tdr.resize(600, 300)
+    _tdr.show()
+    pump(40)
+    feed_output(_tdr, b'\x1b[?1049h\x1b[2J\x1b[HMARKER-RACE')
+    ok(_tdr._render_timer.isActive(),
+       'transcript file: a TUI grid render is pending right after the read')
+    _tdr._write_transcript_file()          # must flush that pending render first
+    with open(_tp, encoding='utf-8') as _fh:
+        _raced = _fh.read()
+    ok('MARKER-RACE' in _raced,
+       'transcript file: the write forces a pending render (no pre-render lag under load)')
+    _tdr.shutdown()
 finally:
     del os.environ['SECURE_TERMINAL_TRANSCRIPT_FILE']
 # Opt-in only: no env -> no path, no writes (a normal session never spills to disk).

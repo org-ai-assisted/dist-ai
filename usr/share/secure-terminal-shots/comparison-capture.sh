@@ -1165,6 +1165,10 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
          ## back at its prompt in that case, so a re-inject runs cleanly.
          st_verify_tries=0
          while : ; do
+            ## Clear the transcript at the START of each attempt so the content check reflects
+            ## THIS injection only -- else a prior attempt that rendered content but whose grab
+            ## was discarded could leave stale content that validates a later empty grab.
+            safe-rm -f -- "${st_transcript}" 2>/dev/null || true
             inject "${stwid}" "${st_cmd}"
             ## SECURE_TERMINAL_SHOT=1 renders synchronously, so a long fixed settle is unneeded.
             sleep 1
