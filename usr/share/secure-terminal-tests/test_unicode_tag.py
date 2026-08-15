@@ -134,6 +134,18 @@ def run():
             sys.stdin = saved_stdin
         ok(rc == 0 and captured == 'a[U+200B ZERO WIDTH SPACE]b',
            'main() with no args reads stdin')
+
+        # A bad file path (OSError, same clause a closed pipe hits) exits
+        # non-zero with a clean stderr message, not a traceback.
+        saved_err = sys.stderr
+        try:
+            sys.stderr = io.StringIO()
+            rc = unicode_tag.main(['/nonexistent/unicode-tag/path'])
+            err = sys.stderr.getvalue()
+        finally:
+            sys.stderr = saved_err
+        ok(rc == 1 and 'unicode-tag:' in err,
+           'main() reports an unreadable file cleanly (rc=1), no traceback')
     finally:
         sys.stdout = saved_out
 
