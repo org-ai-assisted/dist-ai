@@ -579,6 +579,53 @@ expect_rule "R-170" "TMPDIR=${tmpp}/wrong"                       "present"
 ## A script-wide waiver disables the rule for the whole file.
 expect_rule "R-170" "## style-ok: no-tmp-hardcode${nlreal}w=${dq}${tmpp}/x${dq}" "absent"
 
+## R-172: a 'mkdir' creating a temp dir must set the mode ATOMICALLY with
+## '--mode='. The command word and the '$TMPDIR' operand are assembled at run
+## time so neither the literal 'mkdir ... $TMPDIR' nor a bare '$TMP' ever
+## appears in THIS tracked file (which the gate greps and would, correctly,
+## flag as an R-172 violation).
+mkd='mkdir'
+tv="${dollar}TMPDIR"
+tvbrace="${dollar}{TMP}"
+tvalias="${dollar}TMP"
+## The missing-mode form -- the exact regression: perms dropped, or split into
+## a following 'chmod' (a TOCTOU window). Both FLAG the mkdir line.
+expect_rule "R-172" "${mkd}${sp}--parents${sp}--${sp}${dq}${tv}${dq}"                                  "present"
+expect_rule "R-172" "${mkd}${sp}--parents${sp}--${sp}${dq}${tv}${dq}${nlreal}chmod${sp}700${sp}--${sp}${dq}${tv}${dq}" "present"
+## The '$TMP' alias operand (e.g. 'TMP=\"\$TMPDIR\"; mkdir ... \"\$TMP\"').
+expect_rule "R-172" "${mkd}${sp}--parents${sp}--${sp}${dq}${tvalias}${dq}"                             "present"
+## The short '-m' is atomic but must be the long '--mode=' -- standalone,
+## attached, and bundled ('-pm700') spellings all FLAG.
+expect_rule "R-172" "${mkd}${sp}-m${sp}700${sp}--${sp}${dq}${tv}${dq}"                                 "present"
+expect_rule "R-172" "${mkd}${sp}-m700${sp}--${sp}${dq}${tv}${dq}"                                      "present"
+expect_rule "R-172" "${mkd}${sp}-pm700${sp}--${sp}${dq}${tv}${dq}"                                     "present"
+## The compliant atomic long form is SPARED -- both '--mode=700' and
+## '--mode 700', and the '${TMP}' brace operand.
+expect_rule "R-172" "${mkd}${sp}--parents${sp}--mode=700${sp}--${sp}${dq}${tv}${dq}"                   "absent"
+expect_rule "R-172" "${mkd}${sp}--mode${sp}700${sp}--${sp}${dq}${tv}${dq}"                             "absent"
+expect_rule "R-172" "${mkd}${sp}--mode=700${sp}--${sp}${dq}${tvbrace}${dq}"                            "absent"
+## A mkdir NOT creating a temp dir is none of R-172's business, and a name that
+## merely STARTS with a temp prefix ('$TMPFILE') is not the temp DIR family.
+expect_rule "R-172" "${mkd}${sp}--parents${sp}--${sp}${dq}${dollar}dir${dq}"                           "absent"
+expect_rule "R-172" "${mkd}${sp}--parents${sp}--${sp}${dq}${dollar}TMPFILE${dq}"                       "absent"
+## A script-wide waiver disables the rule for the whole file.
+expect_rule "R-172" "## style-ok: allow-mkdir-no-mode${nlreal}${mkd}${sp}--parents${sp}--${sp}${dq}${tv}${dq}" "absent"
+## The mode is judged on the mkdir COMMAND, not the whole line: a '--mode' in a
+## trailing comment or a SECOND command on the line must NOT mask a mode the
+## mkdir itself lacks (the whole-line-grep bypass).
+expect_rule "R-172" "${mkd}${sp}--${sp}${dq}${tv}${dq}${sc}${sp}foo${sp}--mode=700"                  "present"
+expect_rule "R-172" "${mkd}${sp}--parents${sp}--${sp}${dq}${tv}${dq}${sp}${sp}${hash}${sp}--mode=700" "present"
+expect_rule "R-172" "foo${sp}--mode=700${sc}${sp}${mkd}${sp}--parents${sp}--${sp}${dq}${tv}${dq}"     "present"
+## ... but a COMPLIANT mkdir followed by another command on the line is SPARED:
+## the '&& cd' must not read as ambiguous and false-positive.
+expect_rule "R-172" "${mkd}${sp}--parents${sp}--mode=700${sp}--${sp}${dq}${tv}${dq}${sp}&&${sp}cd${sp}--${sp}${dq}${tv}${dq}" "absent"
+## A backtick command substitution is COMMAND position -> a temp mkdir there is
+## still checked. And a name that merely STARTS with a temp prefix followed by a
+## word char ('$TMPDIR_SUFFIX') is a DIFFERENT variable, not the temp dir.
+btick='`'
+expect_rule "R-172" "foo=${btick}${mkd}${sp}--parents${sp}--${sp}${dq}${tv}${dq}${btick}"    "present"
+expect_rule "R-172" "${mkd}${sp}--parents${sp}--${sp}${dq}${dollar}TMPDIR_SUFFIX${dq}"        "absent"
+
 ## R-010: six COPIES of one directive must NOT satisfy the block (DISTINCT
 ## directives are counted); the six distinct directives pass.
 sixsame=$'set -o errexit\nset -o errexit\nset -o errexit\nset -o errexit\nset -o errexit\nset -o errexit'

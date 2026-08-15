@@ -22,6 +22,13 @@ Bucket-1 transforms only (see the plan):
               substituted ONLY in prose/markup files (with the HTML-entity
               spellings); in code they stay a reported R-001 for a human.
   * trailing-whitespace -- strip blanks before end-of-line.
+  * R-172  -- upgrade a temp-dir mkdir's short '-m 700' / '-m700' to the long
+              '--mode=700' (shell files only), and insert a
+              '# shellcheck disable=SC2174' above the atomic '--parents
+              ... --mode' form (which SC2174 flags by design) so the mandated
+              form stays shellcheck-clean. The missing-mode and 'chmod'-split
+              forms are NOT fixed here -- a mode value cannot be guessed and a
+              re-merge is multi-line, so pre-push-static FAILS those.
 
 HARD SAFETY LINE: only the known table is touched. Any OTHER non-ASCII byte is
 left exactly as-is for pre-push-static to report (bucket-2) -- so an intentional
@@ -102,6 +109,56 @@ TEXT_BASENAMES = ("Dockerfile", "Makefile", "COPYING", "README", "LICENSE")
 ## whitespace around the tokens, terminated by whitespace or end-of-line.
 WAIVER_RE = re.compile(
     r'^[ \t]*##[ \t]*style-ok:[ \t]*allow-non-ascii(?:[ \t]|$)', re.MULTILINE)
+
+## R-172 (temp-dir mkdir mode) -- the write side of pre-push-static's rule.
+## A 'mkdir' whose operand is a TMPDIR/TMP/TEMP/TEMPDIR variable is the
+## security-relevant surface; only there is the short '-m' upgraded to the long
+## '--mode='. The missing-mode / 'chmod'-split forms are NOT rewritten here (a
+## multi-line structure change is out of the bucket-1 remit) -- they stay a gate
+## FAIL for a human to correct.
+##
+## MKDIR_TMP_LINE is only a cheap PRE-FILTER (is a temp mkdir plausibly on this
+## line -- command position includes a leading backtick command substitution).
+## The real work is per-COMMAND: MKDIR_SPAN isolates each 'mkdir ...' command up
+## to the next separator (';' '&&' '||' '|' '&') or '#' comment, so a second
+## command sharing the line ('mkdir ... && install -m 755 x') is never
+## rewritten. TMPVAR (name bounded by a non-word char, so '$TMPFILE' and
+## '$TMPDIR_SUFFIX' are NOT it) says a span creates a temp dir. OPT_END marks
+## where the mkdir OPTIONS stop -- a standalone '--' end-of-options token or the
+## first quote -- so an '-m' inside a quoted path or after '--' (a literal
+## directory name, not a flag) is never rewritten.
+MKDIR_TMP_LINE = re.compile(
+    r'(^|[\s(;&|`])mkdir\s.*\$\{?(TMPDIR|TEMPDIR|TEMP|TMP)([^A-Za-z0-9_]|$)')
+MKDIR_SPAN = re.compile(r'mkdir\b[^;&|#]*')
+TMPVAR = re.compile(r'\$\{?(?:TMPDIR|TEMPDIR|TEMP|TMP)(?:[^A-Za-z0-9_]|$)')
+OPT_END = re.compile(r'(?<=\s)--(?=\s|$)|["\']')
+## Standalone short '-m' with a numeric mode ('-m 700' or '-m700'); the
+## lookbehind rules out the '-m' inside '--mode' and a bundled '-pm700' (whose
+## 'm' is preceded by a letter, not the leading '-'), both left untouched so
+## the rewrite is provably structure-preserving and idempotent.
+SHORT_MODE = re.compile(r'(?<![\w-])-m[ \t]*([0-7]{3,4})\b')
+
+## The atomic idempotent form 'mkdir --parents ... --mode=' trips shellcheck
+## SC2174 (with -p, -m applies only to the deepest dir) -- which is the intent
+## for a temp dir whose parents pre-exist. Insert the disable so R-172's own
+## mandated form stays shellcheck-clean, rather than trade one gate failure for
+## another. PARENTS matches '--parents' or a short cluster carrying 'p' ('-p',
+## '-pv'); LONG_MODE the post-upgrade '--mode'; DISABLE an existing SC2174
+## waiver (so a second run is a no-op).
+PARENTS = re.compile(r'(?:^|\s)(?:--parents\b|-[A-Za-z]*p[A-Za-z]*)(?:\s|$)')
+LONG_MODE = re.compile(r'--mode(=|[ \t])')
+SC2174_DISABLE = re.compile(
+    r'#[ \t]*shellcheck[ \t]+disable=[A-Z0-9, ]*SC2174(?![0-9])')
+SC2174_DIRECTIVE = "# shellcheck disable=SC2174"
+## Script-wide waiver, in lockstep with pre-push-static's R-172: a file
+## carrying it opts out of the whole rule, so the fixer must not rewrite it
+## either (otherwise the fixer forces a change the gate would have exempted).
+MKDIR_WAIVER_RE = re.compile(
+    r'^[ \t]*##[ \t]*style-ok:[ \t]*allow-mkdir-no-mode(?:[ \t]|$)',
+    re.MULTILINE)
+
+SHELL_EXTS = (".sh", ".bsh")
+SHELL_SHEBANG_RE = re.compile(r'#!.*(/|\s)(bash|sh|dash)(\s|$)')
 
 
 class StagedDiscoveryError(Exception):
@@ -191,6 +248,84 @@ def strip_trailing_whitespace(text):
     return "".join(out), count
 
 
+def is_shell_file(path):
+    """True for a shell script: a .sh/.bsh extension, or a bash/sh/dash
+    shebang. Mirrors pre-push-static's is_shell_file so the R-172 transform
+    touches exactly the file set the gate checks that rule against -- the
+    style-guide markdown that cites the pattern is never rewritten."""
+    if path.endswith(SHELL_EXTS):
+        return True
+    try:
+        with open(path, "rb") as handle:
+            first = handle.readline()
+    except OSError:
+        return False
+    return bool(SHELL_SHEBANG_RE.match(
+        first.decode("utf-8", "replace").rstrip("\r\n")))
+
+
+def upgrade_mkdir_mode(text):
+    """Per temp-dir mkdir COMMAND (not per line):
+      1. upgrade a short '-m <mode>' to the long '--mode=<mode>' within THAT
+         command's span, so a second command on the same line is untouched;
+      2. if a temp-dir mkdir span is the atomic idempotent form
+         '--parents ... --mode', insert a '# shellcheck disable=SC2174' above
+         the line -- unless one already precedes it -- so R-172's mandated form
+         does not fail shellcheck.
+    Idempotent: the long form never re-matches, and the disable is inserted
+    only when absent."""
+    count = 0
+    out = []
+    for line in text.splitlines(keepends=True):
+        if line.lstrip().startswith("#") or not MKDIR_TMP_LINE.search(line):
+            out.append(line)
+            continue
+        ## Rebuild the line span by span; only a temp-dir mkdir command's own
+        ## OPTION text is ever rewritten.
+        pieces = []
+        pos = 0
+        needs_disable = False
+        for match in MKDIR_SPAN.finditer(line):
+            span = match.group(0)
+            if not TMPVAR.search(span):
+                continue
+            ## Confine the rewrite to the option region (before '--' / the first
+            ## quote): an '-m 700' inside a quoted path or after '--' is a
+            ## literal directory name, never a flag.
+            stop = OPT_END.search(span)
+            cut = stop.start() if stop else len(span)
+            newopts, num = SHORT_MODE.subn(r"--mode=\1", span[:cut])
+            newspan = newopts + span[cut:]
+            if newspan != span:
+                count += num
+                pieces.append(line[pos:match.start()])
+                pieces.append(newspan)
+                pos = match.end()
+            if PARENTS.search(newopts) and LONG_MODE.search(newopts):
+                needs_disable = True
+        pieces.append(line[pos:])
+        new = "".join(pieces)
+        ## Insert the disable ONLY when safe: never between a '\'-continued line
+        ## and its continuation (a comment there breaks the continuation), and
+        ## not when a disable already covers the line. A line continues only on
+        ## an ODD run of trailing backslashes ('echo \\' is an escaped
+        ## backslash, not a continuation).
+        prev_bs = 0
+        if out:
+            prev_bs = len(out[-1].rstrip("\r\n")) \
+                - len(out[-1].rstrip("\r\n").rstrip("\\"))
+        prev_continues = prev_bs % 2 == 1
+        if (needs_disable and not prev_continues
+                and not SC2174_DISABLE.search(new)
+                and not (out and SC2174_DISABLE.search(out[-1]))):
+            indent = new[:len(new) - len(new.lstrip())]
+            newline = "\r\n" if new.endswith("\r\n") else "\n"
+            out.append(indent + SC2174_DIRECTIVE + newline)
+            count += 1
+        out.append(new)
+    return "".join(out), count
+
+
 def fix_file(path, check):
     """Return a dict of change counts for PATH; write in place unless CHECK.
 
@@ -232,6 +367,15 @@ def fix_file(path, check):
         text, num = strip_trailing_whitespace(text)
         if num:
             changes["trailing-whitespace"] = num
+
+    ## R-172: upgrade a temp-dir mkdir's short '-m' to the long '--mode='
+    ## (shell files only, and not when the file waives the rule -- lockstep with
+    ## the gate). The missing-mode / chmod-split forms are not rewritten -- the
+    ## gate FAILS those for a human to fix atomically.
+    if is_shell_file(path) and not MKDIR_WAIVER_RE.search(text):
+        text, num = upgrade_mkdir_mode(text)
+        if num:
+            changes["R-172"] = num
 
     if text == original:
         return {}

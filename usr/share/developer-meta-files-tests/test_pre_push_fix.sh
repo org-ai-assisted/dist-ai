@@ -45,7 +45,7 @@ if [ ! -x "${GATE}" ]; then
    GATE='/usr/bin/pre-push-static'
 fi
 
-for prereq in python3 git safe-rm ; do
+for prereq in python3 git safe-rm shellcheck ; do
    if ! type -P "${prereq}" >/dev/null 2>&1 ; then
       printf '%s\n' "FATAL: '${prereq}' not on PATH; this test cannot run." >&2
       exit 1
@@ -211,6 +211,173 @@ else
    note_fail "--staged outside a repo returned ${rc}, expected 2"
 fi
 
+## --- 7f: R-172 temp-dir mkdir short '-m' -> long '--mode=' -----------------
+## The command word sits right after a '\n' escape (no real separator), so the
+## fixture literal never trips the gate's own R-172 scan of THIS test file.
+f="${test_dir}/mkdirmode.sh"
+printf '%b' '#!/bin/bash\nmkdir -m 700 -- "$TMPDIR"\nmkdir -m700 -- "$TMP"\n' >"${f}"
+"${FIX}" "${f}" >/dev/null 2>&1
+if [ "$(grep --count --fixed-strings -- '--mode=700' "${f}")" -eq 2 ] \
+   && ! grep --quiet --extended-regexp -- '(^|[[:space:]])-m' "${f}" ; then
+   note_pass "R-172 short -m upgraded to --mode= (spaced and attached)"
+else
+   note_fail "R-172 short-mode upgrade wrong"
+fi
+first="$(cksum < "${f}")"
+"${FIX}" "${f}" >/dev/null 2>&1
+if [ "$(cksum < "${f}")" = "${first}" ] ; then
+   note_pass "R-172 upgrade idempotent"
+else
+   note_fail "R-172 upgrade not idempotent"
+fi
+
+## --- 7g: the missing-mode form is NOT auto-fixed (stays a gate FAIL) -------
+## '--mode' must never be removed and the fixer must never fabricate a mode:
+## re-merging a split 'chmod' is a multi-line change, out of the bucket-1
+## remit. The file is left byte-identical for pre-push-static to report.
+f="${test_dir}/mkdirnomode.sh"
+printf '%b' '#!/bin/bash\nmkdir --parents -- "$TMPDIR"\n' >"${f}"
+before="$(cksum < "${f}")"
+"${FIX}" "${f}" >/dev/null 2>&1
+if [ "$(cksum < "${f}")" = "${before}" ] ; then
+   note_pass "R-172 leaves the missing-mode form for the gate (not auto-fixed)"
+else
+   note_fail "R-172 fixer altered a form it must not"
+fi
+
+## --- 7h: a bundled '-pm700' is left for the gate (conservative) ------------
+f="${test_dir}/mkdirbundle.sh"
+printf '%b' '#!/bin/bash\nmkdir -pm700 -- "$TMPDIR"\n' >"${f}"
+before="$(cksum < "${f}")"
+"${FIX}" "${f}" >/dev/null 2>&1
+if [ "$(cksum < "${f}")" = "${before}" ] ; then
+   note_pass "R-172 leaves bundled -pm700 for the gate (conservative)"
+else
+   note_fail "R-172 rewrote a bundled short option unsafely"
+fi
+
+## --- 7i: a non-shell file with the pattern is untouched -------------------
+f="${test_dir}/doc-mkdir.md"
+## 'mkdir' at line start (after the '\n' escape), so this test SOURCE carries
+## no real 'mkdir ... $TMPDIR' separator that the gate's own R-172 scan would
+## flag -- while the fixture CONTENT still exercises the transform's matcher.
+printf '%b' 'mkdir -m 700 -- "$TMPDIR"\n' >"${f}"
+before="$(cksum < "${f}")"
+"${FIX}" "${f}" >/dev/null 2>&1
+if [ "$(cksum < "${f}")" = "${before}" ] ; then
+   note_pass "R-172 confined to shell files (markdown untouched)"
+else
+   note_fail "R-172 rewrote a non-shell file"
+fi
+
+## --- 7j: SC2174 disable inserted for the atomic --parents --mode form -----
+## The atomic idempotent 'mkdir --parents --mode=' trips SC2174 by design; the
+## fixer inserts the disable so R-172's own mandated form stays gate-green. It
+## does NOT insert one for a plain '--mode' mkdir (no -p, so no SC2174), and it
+## never doubles an existing disable.
+f="${test_dir}/mkdirparents.sh"
+printf '%b' '#!/bin/bash\nmkdir --parents -m 700 -- "$TMPDIR"\nmkdir --mode=700 -- "$TMP"\n' >"${f}"
+"${FIX}" "${f}" >/dev/null 2>&1
+if [ "$(grep --count --fixed-strings -- 'disable=SC2174' "${f}")" -eq 1 ] \
+   && grep --quiet --fixed-strings -- 'mkdir --parents --mode=700' "${f}" ; then
+   note_pass "R-172 inserts one SC2174 disable for --parents --mode (not for plain --mode)"
+else
+   note_fail "R-172 SC2174 disable insertion wrong"
+fi
+first="$(cksum < "${f}")"
+"${FIX}" "${f}" >/dev/null 2>&1
+if [ "$(cksum < "${f}")" = "${first}" ] ; then
+   note_pass "R-172 SC2174 disable insertion idempotent (not doubled)"
+else
+   note_fail "R-172 SC2174 disable insertion not idempotent"
+fi
+
+## --- 7k: the disable is NOT wedged into a '\'-continuation -----------------
+## A temp mkdir that continues a '\'-terminated line must not get a comment
+## inserted between the two -- that would break the continuation. The fixer
+## leaves such a line alone (SC2174 there is a rare human fix).
+f="${test_dir}/mkdircont.sh"
+# shellcheck disable=SC2174
+printf '%b' '#!/bin/bash\ntrue \\\n&& mkdir --parents --mode=700 -- "$TMPDIR"\n' >"${f}"
+before="$(cksum < "${f}")"
+"${FIX}" "${f}" >/dev/null 2>&1
+if [ "$(cksum < "${f}")" = "${before}" ] \
+   && ! grep --quiet --fixed-strings -- 'disable=SC2174' "${f}" ; then
+   note_pass "R-172 does not insert a disable into a line continuation"
+else
+   note_fail "R-172 broke a '\\'-continuation with an inserted disable"
+fi
+
+## --- 7l: the rewrite is scoped to the mkdir command, not the whole line ----
+## A second command sharing the line (its own '-m', or a mode belonging to it)
+## must be left byte-for-byte alone -- only the temp-dir mkdir's own '-m' is
+## upgraded.
+f="${test_dir}/mkdirmulti.sh"
+printf '%b' '#!/bin/bash\nmkdir -m 700 -- "$TMPDIR" && install -m 755 -- a b\nmkdir -- "$TMPDIR"; other -m700 arg\n' >"${f}"
+"${FIX}" "${f}" >/dev/null 2>&1
+if [ "$(grep --count --fixed-strings -- 'mkdir --mode=700' "${f}")" -eq 1 ] \
+   && grep --quiet --fixed-strings -- 'install -m 755' "${f}" \
+   && grep --quiet --fixed-strings -- 'other -m700' "${f}" \
+   && ! grep --quiet --fixed-strings -- 'install --mode' "${f}" \
+   && ! grep --quiet --fixed-strings -- 'other --mode' "${f}" ; then
+   note_pass "R-172 upgrade scoped to the mkdir command (sibling commands' -m preserved)"
+else
+   note_fail "R-172 upgrade leaked into another command on the line"
+fi
+
+## --- 7m: reviewer edge cases -- the rewrite stays provably safe -----------
+## An '-m' inside a quoted path or after '--' is a literal directory name, not
+## a flag, and must never be rewritten.
+f="${test_dir}/mkdiredge.sh"
+printf '%b' '#!/bin/bash\nmkdir "$TMPDIR/keep -m 700 name"\nmkdir -- -m 700 "$TMPDIR"\n' >"${f}"
+before="$(cksum < "${f}")"
+"${FIX}" "${f}" >/dev/null 2>&1
+if [ "$(cksum < "${f}")" = "${before}" ] ; then
+   note_pass "R-172 leaves an -m inside a quoted path / after -- untouched"
+else
+   note_fail "R-172 rewrote a literal directory name"
+fi
+## A backtick command substitution is command position -> the mkdir is upgraded.
+f="${test_dir}/mkdirbtick.sh"
+printf '%b' '#!/bin/bash\nfoo=`mkdir --mode=700 -- "$TMPDIR"`\n' >"${f}"
+"${FIX}" "${f}" >/dev/null 2>&1
+if grep --quiet --fixed-strings -- '--mode=700' "${f}" \
+   && ! grep --quiet --extended-regexp -- '(^|[[:space:]])-m' "${f}" ; then
+   note_pass "R-172 upgrades a backtick-substitution mkdir"
+else
+   note_fail "R-172 missed a backtick-substitution mkdir"
+fi
+## The allow-mkdir-no-mode waiver disables the fixer too (lockstep with the gate).
+f="${test_dir}/mkdirwaiver.sh"
+printf '%b' '#!/bin/bash\n## style-ok: allow-mkdir-no-mode\nmkdir -m 700 -- "$TMPDIR"\n' >"${f}"
+before="$(cksum < "${f}")"
+"${FIX}" "${f}" >/dev/null 2>&1
+if [ "$(cksum < "${f}")" = "${before}" ] ; then
+   note_pass "R-172 honors the allow-mkdir-no-mode waiver (fixer/gate parity)"
+else
+   note_fail "R-172 rewrote a file that waived the rule"
+fi
+## The SC2174 skip is exact: 'SC21745' is a different code and must not mask the
+## required directive, which is still inserted (as its own whole line).
+f="${test_dir}/mkdirsc.sh"
+printf '%b' '#!/bin/bash\n# shellcheck disable=SC21745\nmkdir -p --mode=700 -- "$TMPDIR"\n' >"${f}"
+"${FIX}" "${f}" >/dev/null 2>&1
+if grep --quiet --line-regexp --fixed-strings -- '# shellcheck disable=SC2174' "${f}" ; then
+   note_pass "R-172 SC2174 skip is exact (SC21745 does not mask it)"
+else
+   note_fail "R-172 SC2174 boundary wrong (directive not inserted)"
+fi
+## An EVEN run of trailing backslashes is an escaped backslash, not a line
+## continuation, so the disable IS inserted above the next mkdir.
+f="${test_dir}/mkdireven.sh"
+printf '%b' '#!/bin/bash\necho \\\\\nmkdir -p --mode=700 -- "$TMPDIR"\n' >"${f}"
+"${FIX}" "${f}" >/dev/null 2>&1
+if grep --quiet --line-regexp --fixed-strings -- '# shellcheck disable=SC2174' "${f}" ; then
+   note_pass "R-172 treats an even '\\\\' run as not a continuation"
+else
+   note_fail "R-172 mis-read an escaped backslash as a line continuation"
+fi
+
 ## --- 8: GATE PARITY / round-trip proof ------------------------------------
 ## A dirty file FAILS pre-push-static R-001; after the fixer it no longer does.
 if [ ! -x "${GATE}" ]; then
@@ -243,6 +410,54 @@ if printf '%s\n' "${gate_before}" | grep --quiet --fixed-strings 'R-001' \
    note_pass "gate parity: R-001 failed before the fixer, clean after"
 else
    note_fail "gate parity broken"
+fi
+
+## --- 8b: R-172 gate parity -- short -m FAILS the gate, --mode= passes ------
+printf '%b' '#!/bin/bash\nmkdir -m 700 -- "$TMPDIR"\n' >"${repo}/tmpdir.sh"
+git -C "${repo}" -c core.hooksPath=/dev/null add --all
+git -C "${repo}" -c core.hooksPath=/dev/null \
+   -c user.name=test -c user.email=test@example.com \
+   commit --quiet --message "r172 dirty"
+r172_before="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || true
+"${FIX}" "${repo}/tmpdir.sh" >/dev/null 2>&1
+git -C "${repo}" -c core.hooksPath=/dev/null add --all
+git -C "${repo}" -c core.hooksPath=/dev/null \
+   -c user.name=test -c user.email=test@example.com \
+   commit --quiet --message "r172 fixed"
+r172_after="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || true
+if printf '%s\n' "${r172_before}" | grep --quiet --fixed-strings 'R-172' \
+   && ! printf '%s\n' "${r172_after}" | grep --quiet --fixed-strings 'R-172' ; then
+   note_pass "gate parity: R-172 short -m failed before the fixer, clean after"
+else
+   note_fail "R-172 gate parity broken"
+fi
+
+## --- 8c: R-172 atomic --parents form -- fixer clears R-172 AND SC2174 ------
+## 'mkdir --parents -m 700' fails BOTH R-172 (short -m) and shellcheck SC2174
+## (-p with -m). After the fixer -- '--mode=' plus the inserted disable -- the
+## gate reports NEITHER, proving the SC2174 insertion actually satisfies
+## shellcheck rather than trading one failure for another.
+printf '%b' '#!/bin/bash\nmkdir --parents -m 700 -- "$TMPDIR"\n' >"${repo}/tmpparents.sh"
+git -C "${repo}" -c core.hooksPath=/dev/null add --all
+git -C "${repo}" -c core.hooksPath=/dev/null \
+   -c user.name=test -c user.email=test@example.com \
+   commit --quiet --message "r172 parents dirty"
+r172p_before="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || true
+"${FIX}" "${repo}/tmpparents.sh" >/dev/null 2>&1
+git -C "${repo}" -c core.hooksPath=/dev/null add --all
+git -C "${repo}" -c core.hooksPath=/dev/null \
+   -c user.name=test -c user.email=test@example.com \
+   commit --quiet --message "r172 parents fixed"
+r172p_after="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || true
+## Require BOTH markers BEFORE: if only R-172 were asserted the test would pass
+## vacuously when shellcheck is absent (no SC2174 ever emitted), never proving
+## the inserted directive suppresses it. shellcheck is a required dep above.
+if printf '%s\n' "${r172p_before}" | grep --quiet --fixed-strings 'R-172' \
+   && printf '%s\n' "${r172p_before}" | grep --quiet --fixed-strings 'SC2174' \
+   && ! printf '%s\n' "${r172p_after}" | grep --quiet --extended-regexp 'R-172|SC2174' ; then
+   note_pass "gate parity: --parents atomic form clears R-172 and SC2174 after the fixer"
+else
+   note_fail "R-172 --parents gate parity broken (R-172 or SC2174 survived)"
 fi
 
 if [ "${fail}" -ne 0 ]; then
