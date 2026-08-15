@@ -125,12 +125,19 @@ fi
 
 ## The capture loop must actually PASS 'skip-tighten' for art/gradient (and only tighten
 ## otherwise). Assert the wiring in the source so a future edit that drops the argument is caught.
-if grep -Eq "st_tighten_arg='skip-tighten'" "${subject}" \
+## The gate must cover BOTH boards: the drift was gradient-specific, so dropping just `gradient`
+## from the condition would silently regress it while `st_tighten_arg='skip-tighten'` still exists.
+## Check the condition guarding the skip-tighten assignment names both cases, that the flag defaults
+## OFF (empty) for every other case, and that the flag is forwarded to capture_settled.
+gate_ctx="$(grep -B3 "st_tighten_arg='skip-tighten'" "${subject}" || true)"
+if printf '%s\n' "${gate_ctx}" | grep -Eq '\= *art\b' \
+   && printf '%s\n' "${gate_ctx}" | grep -Eq '\= *gradient\b' \
+   && grep -Eq "^[[:space:]]*st_tighten_arg=''" "${subject}" \
    && grep -Eq 'capture_settled .*"\$\{st_tighten_arg\}"' "${subject}"; then
-   printf '%s\n' 'PASS: capture loop wires st_tighten_arg=skip-tighten into capture_settled'
+   printf '%s\n' 'PASS: loop gates skip-tighten on art AND gradient, defaults off, forwards to capture_settled'
    pass=$(( pass + 1 ))
 else
-   printf '%s\n' 'FAIL: capture loop no longer passes st_tighten_arg to capture_settled' >&2
+   printf '%s\n' 'FAIL: skip-tighten wiring changed -- gate must cover art AND gradient, default off, and forward the flag' >&2
    fail=$(( fail + 1 ))
 fi
 
