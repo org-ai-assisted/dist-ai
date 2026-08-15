@@ -610,6 +610,15 @@ expect_rule "R-172" "${mkd}${sp}--parents${sp}--${sp}${dq}${dollar}dir${dq}"    
 expect_rule "R-172" "${mkd}${sp}--parents${sp}--${sp}${dq}${dollar}TMPFILE${dq}"                       "absent"
 ## A script-wide waiver disables the rule for the whole file.
 expect_rule "R-172" "## style-ok: allow-mkdir-no-mode${nlreal}${mkd}${sp}--parents${sp}--${sp}${dq}${tv}${dq}" "absent"
+## The mode is judged on the mkdir COMMAND, not the whole line: a '--mode' in a
+## trailing comment or a SECOND command on the line must NOT mask a mode the
+## mkdir itself lacks (the whole-line-grep bypass).
+expect_rule "R-172" "${mkd}${sp}--${sp}${dq}${tv}${dq}${sc}${sp}foo${sp}--mode=700"                  "present"
+expect_rule "R-172" "${mkd}${sp}--parents${sp}--${sp}${dq}${tv}${dq}${sp}${sp}${hash}${sp}--mode=700" "present"
+expect_rule "R-172" "foo${sp}--mode=700${sc}${sp}${mkd}${sp}--parents${sp}--${sp}${dq}${tv}${dq}"     "present"
+## ... but a COMPLIANT mkdir followed by another command on the line is SPARED:
+## the '&& cd' must not read as ambiguous and false-positive.
+expect_rule "R-172" "${mkd}${sp}--parents${sp}--mode=700${sp}--${sp}${dq}${tv}${dq}${sp}&&${sp}cd${sp}--${sp}${dq}${tv}${dq}" "absent"
 
 ## R-010: six COPIES of one directive must NOT satisfy the block (DISTINCT
 ## directives are counted); the six distinct directives pass.

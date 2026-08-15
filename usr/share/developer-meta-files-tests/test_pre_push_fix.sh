@@ -45,7 +45,7 @@ if [ ! -x "${GATE}" ]; then
    GATE='/usr/bin/pre-push-static'
 fi
 
-for prereq in python3 git safe-rm ; do
+for prereq in python3 git safe-rm shellcheck ; do
    if ! type -P "${prereq}" >/dev/null 2>&1 ; then
       printf '%s\n' "FATAL: '${prereq}' not on PATH; this test cannot run." >&2
       exit 1
@@ -297,6 +297,7 @@ fi
 ## inserted between the two -- that would break the continuation. The fixer
 ## leaves such a line alone (SC2174 there is a rare human fix).
 f="${test_dir}/mkdircont.sh"
+# shellcheck disable=SC2174
 printf '%b' '#!/bin/bash\ntrue \\\n&& mkdir --parents --mode=700 -- "$TMPDIR"\n' >"${f}"
 before="$(cksum < "${f}")"
 "${FIX}" "${f}" >/dev/null 2>&1
@@ -305,6 +306,23 @@ if [ "$(cksum < "${f}")" = "${before}" ] \
    note_pass "R-172 does not insert a disable into a line continuation"
 else
    note_fail "R-172 broke a '\\'-continuation with an inserted disable"
+fi
+
+## --- 7l: the rewrite is scoped to the mkdir command, not the whole line ----
+## A second command sharing the line (its own '-m', or a mode belonging to it)
+## must be left byte-for-byte alone -- only the temp-dir mkdir's own '-m' is
+## upgraded.
+f="${test_dir}/mkdirmulti.sh"
+printf '%b' '#!/bin/bash\nmkdir -m 700 -- "$TMPDIR" && install -m 755 -- a b\nmkdir -- "$TMPDIR"; other -m700 arg\n' >"${f}"
+"${FIX}" "${f}" >/dev/null 2>&1
+if [ "$(grep --count --fixed-strings -- 'mkdir --mode=700' "${f}")" -eq 1 ] \
+   && grep --quiet --fixed-strings -- 'install -m 755' "${f}" \
+   && grep --quiet --fixed-strings -- 'other -m700' "${f}" \
+   && ! grep --quiet --fixed-strings -- 'install --mode' "${f}" \
+   && ! grep --quiet --fixed-strings -- 'other --mode' "${f}" ; then
+   note_pass "R-172 upgrade scoped to the mkdir command (sibling commands' -m preserved)"
+else
+   note_fail "R-172 upgrade leaked into another command on the line"
 fi
 
 ## --- 8: GATE PARITY / round-trip proof ------------------------------------
@@ -378,7 +396,11 @@ git -C "${repo}" -c core.hooksPath=/dev/null \
    -c user.name=test -c user.email=test@example.com \
    commit --quiet --message "r172 parents fixed"
 r172p_after="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || true
-if printf '%s\n' "${r172p_before}" | grep --quiet --extended-regexp 'R-172|SC2174' \
+## Require BOTH markers BEFORE: if only R-172 were asserted the test would pass
+## vacuously when shellcheck is absent (no SC2174 ever emitted), never proving
+## the inserted directive suppresses it. shellcheck is a required dep above.
+if printf '%s\n' "${r172p_before}" | grep --quiet --fixed-strings 'R-172' \
+   && printf '%s\n' "${r172p_before}" | grep --quiet --fixed-strings 'SC2174' \
    && ! printf '%s\n' "${r172p_after}" | grep --quiet --extended-regexp 'R-172|SC2174' ; then
    note_pass "gate parity: --parents atomic form clears R-172 and SC2174 after the fixer"
 else

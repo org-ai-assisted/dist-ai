@@ -113,12 +113,21 @@ WAIVER_RE = re.compile(
 ## R-172 (temp-dir mkdir mode) -- the write side of pre-push-static's rule.
 ## A 'mkdir' whose operand is a TMPDIR/TMP/TEMP/TEMPDIR variable is the
 ## security-relevant surface; only there is the short '-m' upgraded to the long
-## '--mode='. The bounded name class (an ending non-alpha) keeps '$TMPFILE' out,
-## matching the gate. The missing-mode / 'chmod'-split forms are NOT rewritten
-## here (a multi-line structure change is out of the bucket-1 remit) -- they
-## stay a gate FAIL for a human to correct.
+## '--mode='. The missing-mode / 'chmod'-split forms are NOT rewritten here (a
+## multi-line structure change is out of the bucket-1 remit) -- they stay a gate
+## FAIL for a human to correct.
+##
+## MKDIR_TMP_LINE is only a cheap PRE-FILTER (is a temp mkdir plausibly on this
+## line). The real work is per-COMMAND: MKDIR_SPAN isolates each 'mkdir ...'
+## command up to the next separator (';' '&&' '||' '|' '&') or '#' comment, so a
+## second command sharing the line ('mkdir ... && install -m 755 x') is never
+## rewritten, and a mode flag belonging to another command cannot count.
+## TMPVAR (bounded name class -> '$TMPFILE' excluded) says a span creates a temp
+## dir.
 MKDIR_TMP_LINE = re.compile(
     r'(^|[\s(;&|])mkdir\s.*\$\{?(TMPDIR|TEMPDIR|TEMP|TMP)([^A-Za-z]|$)')
+MKDIR_SPAN = re.compile(r'mkdir\b[^;&|#]*')
+TMPVAR = re.compile(r'\$\{?(?:TMPDIR|TEMPDIR|TEMP|TMP)(?:[^A-Za-z]|$)')
 ## Standalone short '-m' with a numeric mode ('-m 700' or '-m700'); the
 ## lookbehind rules out the '-m' inside '--mode' and a bundled '-pm700' (whose
 ## 'm' is preceded by a letter, not the leading '-'), both left untouched so
@@ -245,12 +254,13 @@ def is_shell_file(path):
 
 
 def upgrade_mkdir_mode(text):
-    """On a temp-dir mkdir line ('$TMPDIR' family operand, non-comment):
-      1. upgrade a short '-m <mode>' to the long '--mode=<mode>';
-      2. if the (possibly upgraded) line is the atomic idempotent form
+    """Per temp-dir mkdir COMMAND (not per line):
+      1. upgrade a short '-m <mode>' to the long '--mode=<mode>' within THAT
+         command's span, so a second command on the same line is untouched;
+      2. if a temp-dir mkdir span is the atomic idempotent form
          '--parents ... --mode', insert a '# shellcheck disable=SC2174' above
-         it -- unless one already precedes it -- so R-172's mandated form does
-         not fail shellcheck.
+         the line -- unless one already precedes it -- so R-172's mandated form
+         does not fail shellcheck.
     Idempotent: the long form never re-matches, and the disable is inserted
     only when absent."""
     count = 0
@@ -259,14 +269,30 @@ def upgrade_mkdir_mode(text):
         if line.lstrip().startswith("#") or not MKDIR_TMP_LINE.search(line):
             out.append(line)
             continue
-        new, num = SHORT_MODE.subn(r"--mode=\1", line)
-        count += num
-        ## Insert the disable ONLY when it is safe to do so: never between a
-        ## '\'-continued line and its continuation (a comment there breaks the
-        ## continuation), and not when a disable already covers the line.
+        ## Rebuild the line span by span; only a temp-dir mkdir command's own
+        ## text is ever rewritten.
+        pieces = []
+        pos = 0
+        needs_disable = False
+        for match in MKDIR_SPAN.finditer(line):
+            span = match.group(0)
+            if not TMPVAR.search(span):
+                continue
+            newspan, num = SHORT_MODE.subn(r"--mode=\1", span)
+            if num:
+                count += num
+                pieces.append(line[pos:match.start()])
+                pieces.append(newspan)
+                pos = match.end()
+            if PARENTS.search(newspan) and LONG_MODE.search(newspan):
+                needs_disable = True
+        pieces.append(line[pos:])
+        new = "".join(pieces)
+        ## Insert the disable ONLY when safe: never between a '\'-continued line
+        ## and its continuation (a comment there breaks the continuation), and
+        ## not when a disable already covers the line.
         prev_continues = bool(out) and out[-1].rstrip("\r\n").endswith("\\")
-        if (PARENTS.search(new) and LONG_MODE.search(new)
-                and not prev_continues
+        if (needs_disable and not prev_continues
                 and not SC2174_DISABLE.search(new)
                 and not (out and SC2174_DISABLE.search(out[-1]))):
             indent = new[:len(new) - len(new.lstrip())]

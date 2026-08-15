@@ -77,8 +77,10 @@
 ##  23. R-100 a workflow 'run: |' block over 5 shell lines must be
 ##      extracted to a ci/ script. '## style-ok: allow-inline-shell'.
 ##  24. R-172 a 'mkdir' creating a temp dir ($TMPDIR/$TMP/$TEMP/$TEMPDIR)
-##      must set the mode ATOMICALLY via '--mode=' (never a later 'chmod':
-##      that is a TOCTOU window); the short '-m' must be the long '--mode='.
+##      must set the mode ATOMICALLY via '--mode' (never a later 'chmod':
+##      that is a TOCTOU window); the short '-m' must be the long '--mode'
+##      (canonically '--mode=700'; the space form is equally atomic). Judged
+##      per mkdir command, so a '--mode' elsewhere on the line does not count.
 ##      '## style-ok: allow-mkdir-no-mode'.
 ##
 ## Scope: files changed in HEAD vs upstream tracking branch
@@ -1513,16 +1515,22 @@ check_R170_tmp_hardcode() {
 }
 
 check_R172_mkdir_tmp_mode() {
-   local script candidate line
+   local script candidate line text span
 
    ## R-172: a 'mkdir' that creates a temp directory (operand is a
    ## TMPDIR/TMP/TEMP/TEMPDIR variable ref) MUST set the mode ATOMICALLY with
-   ## '--mode='. Splitting perms into a following 'chmod' -- or dropping the
+   ## '--mode'. Splitting perms into a following 'chmod' -- or dropping the
    ## mode entirely -- leaves a window in which the directory exists with the
    ## umask-default (world-traversable) mode: a TOCTOU hole that lets other
-   ## processes race the temp path. The long '--mode=' form is required (the
+   ## processes race the temp path. The long '--mode' form is required (the
    ## short '-m' is upgraded by pre-push-fix; standalone here it still FAILS so
    ## the long form is what lands).
+   ##
+   ## The mode is judged on the mkdir COMMAND, not the whole source line: the
+   ## check isolates each 'mkdir ...' up to the next separator (';' '&&' '||'
+   ## '|' '&') or '#' comment, so a '--mode' in a trailing comment or in a
+   ## SECOND command on the line cannot mask a mode missing from the mkdir
+   ## itself ('mkdir -- "$TMPDIR"; foo --mode=700' is still a FAIL).
    for script in "${@}"; do
       ## This script carries 'mkdir' and the temp-var names in its own regex
       ## and message text.
@@ -1537,10 +1545,10 @@ check_R172_mkdir_tmp_mode() {
          -- "${script}"; then
          continue
       fi
-      ## Candidate: 'mkdir' in COMMAND position (line start or after a
-      ## separator), later on the line a '$TMPDIR' / '${TMP}' / '$TEMP' /
-      ## '$TEMPDIR' operand, bounded so '$TMPFILE' is NOT a match. '^[^#]*'
-      ## excludes comment lines, as R-070/R-170 do.
+      ## Candidate PRE-FILTER: a command-position 'mkdir' with a temp-var
+      ## somewhere on the line ('$TMPFILE' excluded by the bounded class).
+      ## '^[^#]*' excludes comment lines, as R-070/R-170 do. The per-command
+      ## span check below re-confirms the temp var belongs to the mkdir.
       candidate="$(grep --line-number --extended-regexp \
          '^[^#]*(^|[[:space:]([;&|])mkdir[[:space:]].*\$\{?(TMPDIR|TEMPDIR|TEMP|TMP)([^A-Za-z]|$)' \
          -- "${script}" 2>/dev/null || true)"
@@ -1551,21 +1559,31 @@ check_R172_mkdir_tmp_mode() {
          if [ -z "${line}" ]; then
             continue
          fi
-         ## Long '--mode' present (either '--mode=700' or '--mode 700') -> the
-         ## atomic form is already there; compliant.
-         if printf '%s\n' "${line}" \
-            | grep --quiet --extended-regexp -- '--mode(=|[[:space:]])'; then
-            continue
-         fi
-         ## Short '-m' present (standalone '-m 700', attached '-m700', or
-         ## bundled '-pm700') -> the mode is atomic but must use the long form.
-         if printf '%s\n' "${line}" \
-            | grep --quiet --extended-regexp -- \
-               '(^|[[:space:]])-[[:alpha:]]*m([[:space:]]|[0-9]|=|$)'; then
-            fail "R-172 mkdir temp dir: use --mode= not -m" "'${script}:${line}'"
-         else
-            fail "R-172 mkdir temp dir missing --mode= (TOCTOU; set perms atomically, not via a later chmod)" "'${script}:${line}'"
-         fi
+         ## Strip grep's leading '<n>:' so the span extraction sees the code.
+         text="${line#*:}"
+         ## Each 'mkdir ...' command span (to the next separator / '#' comment).
+         while IFS= read -r span; do
+            ## Only a span that itself creates a temp dir is in scope.
+            if ! printf '%s\n' "${span}" | grep --quiet --extended-regexp -- \
+               '\$\{?(TMPDIR|TEMPDIR|TEMP|TMP)([^A-Za-z]|$)'; then
+               continue
+            fi
+            ## Long '--mode' on the mkdir itself ('--mode=700' or '--mode 700')
+            ## -> atomic form present; compliant.
+            if printf '%s\n' "${span}" \
+               | grep --quiet --extended-regexp -- '--mode(=|[[:space:]])'; then
+               continue
+            fi
+            ## Short '-m' on the mkdir ('-m 700', '-m700', bundled '-pm700')
+            ## -> atomic but must use the long form.
+            if printf '%s\n' "${span}" \
+               | grep --quiet --extended-regexp -- \
+                  '(^|[[:space:]])-[[:alpha:]]*m([[:space:]]|[0-9]|=|$)'; then
+               fail "R-172 mkdir temp dir: use --mode not -m" "'${script}:${line}'"
+            else
+               fail "R-172 mkdir temp dir missing --mode (TOCTOU; set perms atomically, not via a later chmod)" "'${script}:${line}'"
+            fi
+         done < <(printf '%s\n' "${text}" | grep --only-matching --perl-regexp 'mkdir\b[^;&|#]*' || true)
       done <<< "${candidate}"
    done
 }
