@@ -3456,9 +3456,14 @@ try:
     eq(rcwin._dispatch_request(
         b'{"op":"ctl-send-text","tab":"title:nope","text":"x"}').get('ok'), False,
         'ctl: an unmatched tab is an error')
-    # dump-tab: read back a tab's current rendered text (for E2E assertions)
+    # dump-tab: read back a tab's current rendered text (for E2E assertions). Do NOT pump
+    # between the append and the dump: the tab runs the real login shell, whose prompt
+    # arrives asynchronously via the pty, and an event-loop turn here would let that prompt
+    # land AFTER 'gamma' and end the document with the prompt instead (a flake seen under
+    # coverage's slowdown). transcript_text() flushes any pending paint itself, so the dump
+    # sees the appended text with no pump; without a pump no _on_readable can run to insert
+    # a late prompt.
     rcwin.current()._append('alpha\nbeta\ngamma')
-    pump(20)
     _dr = rcwin._dispatch_request(b'{"op":"ctl-dump-tab","tab":"id:0"}')
     ok(_dr.get('ok') and _dr['text'].endswith('gamma'), 'ctl: dump-tab reads the tab text')
     _dr2 = rcwin._dispatch_request(
@@ -6607,6 +6612,94 @@ finally:
     del os.environ['SECURE_TERMINAL_SHOT']
 for _sw in (_ns, _nst):
     _sw.shutdown()
+
+# --- SECURE_TERMINAL_TRANSCRIPT_FILE: live transcript file (mode-agnostic) -----
+# A generic configuration (NOT shot-mode-gated): when the env names a path, each read
+# (re)writes this tab's transcript_text() there, atomically. A capture harness reads it
+# to VERIFY a shot actually rendered its payload -- a screenshot cannot tell an empty
+# terminal from a full one, the window chrome paints either way.
+_tp = os.path.join(tempfile.mkdtemp(prefix='st-tr-'), 'transcript.txt')
+os.environ['SECURE_TERMINAL_TRANSCRIPT_FILE'] = _tp
+try:
+    # Mode-agnostic: the env is honoured even with shot mode OFF (the path is not gated on
+    # shot mode). The write is debounced to the trailing edge of an output burst, so pump
+    # the loop past the ~30ms timer before reading -- this is also AFTER the render, so the
+    # file reflects the painted frame (CLI and TUI alike).
+    _td = SecureTerminal(command='/bin/cat')          # NB: shot mode is OFF here
+    eq(_td._transcript_file, _tp,
+       'transcript file: the path is read from the env (mode-agnostic, no shot mode needed)')
+    feed_output(_td, b'user@host:~$ cat demo\r\nMARKER-CLI\r\n')
+    pump(80)
+    ok(os.path.exists(_tp), 'transcript file: written once output settles')
+    with open(_tp, encoding='utf-8') as _fh:
+        _written = _fh.read()
+    ok('MARKER-CLI' in _written, 'transcript file: carries the CLI rendered output')
+    _td.shutdown()
+    # TUI / alt screen: transcript_text() walks the rendered document, so the alt-screen
+    # frame lands in the file too -- exactly the surface a capture uses to reject an empty
+    # grab. The debounce fires after the deferred TUI render, so no pre-render lag.
+    _tdt = SecureTerminal(command='/bin/cat', tui=True)
+    _tdt.resize(600, 300)
+    _tdt.show()
+    pump(40)
+    feed_output(_tdt, b'\x1b[?1049h\x1b[2J\x1b[HMARKER-TUI')
+    pump(80)
+    with open(_tp, encoding='utf-8') as _fh:
+        _written_tui = _fh.read()
+    ok('MARKER-TUI' in _written_tui,
+       'transcript file: carries the TUI (alt-screen) rendered frame')
+    _tdt.shutdown()
+    # Race guarantee: the write forces a PENDING grid render before serialising, so the
+    # file reflects the latest frame even if the transcript debounce fires before the
+    # render debounce (possible under load). Write IMMEDIATELY (render still pending, no
+    # pump) and the flush makes the frame land anyway.
+    _tdr = SecureTerminal(command='/bin/cat', tui=True)
+    _tdr.resize(600, 300)
+    _tdr.show()
+    pump(40)
+    feed_output(_tdr, b'\x1b[?1049h\x1b[2J\x1b[HMARKER-RACE')
+    ok(_tdr._render_timer.isActive(),
+       'transcript file: a TUI grid render is pending right after the read')
+    _tdr._write_transcript_file()          # must flush that pending render first
+    with open(_tp, encoding='utf-8') as _fh:
+        _raced = _fh.read()
+    ok('MARKER-RACE' in _raced,
+       'transcript file: the write forces a pending render (no pre-render lag under load)')
+    _tdr.shutdown()
+finally:
+    del os.environ['SECURE_TERMINAL_TRANSCRIPT_FILE']
+# Opt-in only: no env -> no path, no writes (a normal session never spills to disk).
+_tn = SecureTerminal(command='/bin/cat')
+ok(_tn._transcript_file is None,
+   'transcript file: no path unless SECURE_TERMINAL_TRANSCRIPT_FILE is set')
+_tn.shutdown()
+
+# --- alt-screen viewport pins to the TOP (row 0 stays visible) -----------------
+# A full-screen program on the alternate screen owns a fixed canvas with no scrollback:
+# its row 0 is the TOP of its screen and must stay visible. When the grid is TALLER than
+# the viewport (a scroll range exists), the OLD code followed the tail and scrolled that
+# row 0 off the top -- the bug that rendered the altscreen-tui comparison shot as an empty
+# terminal (its payload draws a single line at row 0). Force the scroll range: enter the
+# alt screen, grow the pyte grid past the viewport, put content at row 0, and assert the
+# view is pinned to the TOP (row 0 visible, scrollbar at its minimum), not the tail. FAILS
+# on the pre-fix follow-tail behaviour, so it is a real regression trip.
+_avs = SecureTerminal(command='/bin/cat', tui=True)
+_avs.resize(600, 300)                       # ~18-row viewport
+_avs.show()
+pump(60)
+feed_output(_avs, b'\x1b[?1049h')           # enter the alternate screen
+_avs._screen.resize(60, _avs._screen.columns)   # grid far taller than the viewport
+feed_output(_avs, b'\x1b[2J\x1b[HTOP-ROW-CONTENT')   # content at row 0 of the tall grid
+pump(60)
+ok(_avs._alt_screen, 'alt-screen top-pin: on the alternate screen after the enter marker')
+_avs_bar = _avs.verticalScrollBar()
+ok(_avs_bar.maximum() > _avs_bar.minimum(),
+   'alt-screen top-pin: the tall grid really does create a scroll range (else the test is vacuous)')
+eq(_avs.firstVisibleBlock().blockNumber(), 0,
+   'alt-screen top-pin: row 0 stays visible (the frame is not scrolled off the top)')
+eq(_avs_bar.value(), _avs_bar.minimum(),
+   'alt-screen top-pin: the view is pinned to the top, not the tail')
+_avs.shutdown()
 
 # each reconcile widget owns a /bin/cat pty child; hang them up so the master fds and
 # child processes do not linger into the suite's os._exit teardown.

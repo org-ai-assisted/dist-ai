@@ -135,8 +135,8 @@ def run():
         ok(rc == 0 and captured == 'a[U+200B ZERO WIDTH SPACE]b',
            'main() with no args reads stdin')
 
-        # A bad file path (OSError, same clause a closed pipe hits) exits
-        # non-zero with a clean stderr message, not a traceback.
+        # A bad file path (OSError on the file read) exits non-zero with a clean
+        # stderr message, not a traceback.
         saved_err = sys.stderr
         try:
             sys.stderr = io.StringIO()
@@ -146,6 +146,58 @@ def run():
             sys.stderr = saved_err
         ok(rc == 1 and 'unicode-tag:' in err,
            'main() reports an unreadable file cleanly (rc=1), no traceback')
+
+        # main_stdin(): stdin-only, ignores argv (opens NO file, so a confining
+        # AppArmor profile can deny file reads). Same tagging.
+        saved_stdin = sys.stdin
+        try:
+            sys.stdin = io.TextIOWrapper(io.BytesIO('m\u0430ster'.encode('utf-8')),
+                                         encoding='utf-8')
+            sys.stdout = io.TextIOWrapper(io.BytesIO(), encoding='utf-8')
+            rc = unicode_tag.main_stdin(['ignored-path'])
+            sys.stdout.flush()
+            captured = sys.stdout.buffer.getvalue().decode('utf-8')
+        finally:
+            sys.stdin = saved_stdin
+        ok(rc == 0 and captured == 'm[U+0430 CYRILLIC SMALL LETTER A]ster',
+           'main_stdin() tags stdin and ignores its argv')
+
+        # main_stdin on an unreadable stdin (e.g. a directory) exits 1 cleanly.
+        class _BadInBuffer:
+            @staticmethod
+            def read():
+                raise IsADirectoryError(21, 'Is a directory')
+
+        class _BadIn:
+            buffer = _BadInBuffer()
+
+        saved_stdin = sys.stdin
+        saved_err = sys.stderr
+        try:
+            sys.stdin = _BadIn()
+            sys.stderr = io.StringIO()
+            rc = unicode_tag.main_stdin()
+            err = sys.stderr.getvalue()
+        finally:
+            sys.stdin = saved_stdin
+            sys.stderr = saved_err
+        ok(rc == 1 and 'unicode-tag:' in err,
+           'main_stdin reports an unreadable stdin cleanly (rc=1)')
+
+        # A downstream pipe closing early (BrokenPipeError) exits 1, no traceback.
+        class _BrokenBuffer:
+            @staticmethod
+            def write(_data):
+                raise BrokenPipeError()
+
+        class _BrokenOut:
+            buffer = _BrokenBuffer()
+
+        sys.stdout = _BrokenOut()
+        broken_rc = unicode_tag._write_tagged(b'x')
+        sys.stdout = saved_out          # restore BEFORE ok() prints
+        ok(broken_rc == 1,
+           'a closed output pipe exits 1 (BrokenPipeError), no traceback')
     finally:
         sys.stdout = saved_out
 

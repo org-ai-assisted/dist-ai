@@ -31,7 +31,7 @@ shopt -s shift_verbose
 source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/has.sh
 
 skip() {
-   printf 'secure-terminal-tests(apparmor): SKIP -- %s\n' "$1"
+   printf '%s\n' "secure-terminal-tests(apparmor): SKIP -- $1"
    exit 77
 }
 
@@ -69,6 +69,9 @@ done
 
 apparmor_remove_profile() {
    apparmor_parser --remove "${profile}" >/dev/null 2>&1 || true
+   if [ -n "${utag_profile:-}" ]; then
+      apparmor_parser --remove "${utag_profile}" >/dev/null 2>&1 || true
+   fi
 }
 
 apparmor_parser --replace --skip-cache "${profile}"
@@ -88,7 +91,7 @@ if [ "${allow_rc}" -eq 0 ]; then
    pass=$(( pass + 1 ))
 else
    fail=$(( fail + 1 ))
-   printf 'FAIL: the profile DENIED a granted path (%s)\n' "${allow_probe}"
+   printf '%s\n' "FAIL: the profile DENIED a granted path (${allow_probe})"
 fi
 
 ## DENY: a path the profile does not grant (AppArmor is default-deny once loaded).
@@ -100,8 +103,8 @@ if [ "${deny_rc}" -ne 0 ]; then
    pass=$(( pass + 1 ))
 else
    fail=$(( fail + 1 ))
-   printf 'FAIL: the profile ALLOWED a non-granted path (%s) -- NOT enforcing\n' \
-      "${deny_probe}"
+   printf '%s\n' \
+      "FAIL: the profile ALLOWED a non-granted path (${deny_probe}) -- NOT enforcing"
 fi
 
 ## ALLOW (write): the predefined canary subtree that `secure-terminal
@@ -126,11 +129,63 @@ if [ "${canary_rc}" -eq 0 ] && [ -s "${canary_probe}" ]; then
    pass=$(( pass + 1 ))
 else
    fail=$(( fail + 1 ))
-   printf 'FAIL: the profile DENIED the predefined canary write (%s)\n' \
-      "${canary_probe}"
+   printf '%s\n' \
+      "FAIL: the profile DENIED the predefined canary write (${canary_probe})"
 fi
 
 safe-rm --force "${allow_probe}" "${deny_probe}" "${canary_src}" "${canary_probe}"
 rmdir "${canary_dir}" 2>/dev/null || true
-printf 'secure-terminal-tests(apparmor): %d passed, %d failed\n' "${pass}" "${fail}"
+
+## --- unicode-tag-stdin: the tight, stdin-only neutralizer profile ---
+## Prove the SAME enforcement on it: a granted read ALLOWED, a non-granted read
+## DENIED. No write/canary probe -- the profile grants no write by design.
+utag_profile=""
+for candidate in \
+   "${SECURE_TERMINAL_REPO:-}/etc/apparmor.d/unicode-tag-stdin" \
+   /etc/apparmor.d/unicode-tag-stdin; do
+   if [ -n "${candidate}" ] && [ -r "${candidate}" ]; then
+      utag_profile="${candidate}"
+      break
+   fi
+done
+if [ -z "${utag_profile}" ]; then
+   fail=$(( fail + 1 ))
+   printf '%s\n' 'FAIL: unicode-tag-stdin profile not found (set SECURE_TERMINAL_REPO)'
+else
+   ## apparmor_remove_profile (the EXIT trap) already removes utag_profile now.
+   apparmor_parser --replace --skip-cache "${utag_profile}"
+
+   ## ALLOW: a path the profile grants (the secure_terminal package tree).
+   utag_allow_dir=/usr/lib/python3/dist-packages/secure_terminal
+   mkdir --parents "${utag_allow_dir}"
+   utag_allow_probe="${utag_allow_dir}/aa-utag-probe"
+   printf granted > "${utag_allow_probe}"
+   utag_allow_rc=0
+   aa-exec -p unicode-tag-stdin -- cat "${utag_allow_probe}" >/dev/null 2>&1 \
+      || utag_allow_rc=$?
+   if [ "${utag_allow_rc}" -eq 0 ]; then
+      pass=$(( pass + 1 ))
+   else
+      fail=$(( fail + 1 ))
+      printf '%s\n' \
+         "FAIL: unicode-tag-stdin DENIED a granted path (${utag_allow_probe})"
+   fi
+
+   ## DENY: a path the profile does not grant (default-deny once loaded).
+   utag_deny_probe=/root/aa-utag-deny-probe
+   printf secret > "${utag_deny_probe}"
+   utag_deny_rc=0
+   aa-exec -p unicode-tag-stdin -- cat "${utag_deny_probe}" >/dev/null 2>&1 \
+      || utag_deny_rc=$?
+   if [ "${utag_deny_rc}" -ne 0 ]; then
+      pass=$(( pass + 1 ))
+   else
+      fail=$(( fail + 1 ))
+      printf '%s\n' \
+         "FAIL: unicode-tag-stdin ALLOWED a non-granted path (${utag_deny_probe}) -- NOT enforcing"
+   fi
+   safe-rm --force "${utag_allow_probe}" "${utag_deny_probe}"
+fi
+
+printf '%s\n' "secure-terminal-tests(apparmor): ${pass} passed, ${fail} failed"
 [ "${fail}" -eq 0 ]
