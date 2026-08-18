@@ -416,7 +416,7 @@ def t1_canaries():
 #   * every printable write is at index `col` with 0 <= col <= L == len(cells),
 #     so it OVERWRITES a current-line cell (col < L) or APPENDS (col == L) -- it
 #     can never index a negative or out-of-range position, hence never reach a
-#     cell of a previously COMPLETED line;
+#     cell of an already-committed line;
 #   * `completed` grows only by append (structural: completed[i] is never on the
 #     left of an assignment in feed_line_edits), so a line, once emitted, is
 #     immutable. Output cannot reach an earlier line or the scrollback (INV-2).
