@@ -13,7 +13,8 @@
 ##
 ## Technique: the upper-half-block 'U+2580' shows TWO stacked pixels per cell --
 ## foreground = top pixel, background = bottom pixel -- doubling vertical
-## resolution for smooth gradients.
+## resolution. Supersampling averages several scene samples into each pixel so
+## curved edges and narrow details stay smooth at terminal resolution.
 
 import argparse
 import math
@@ -22,6 +23,7 @@ import sys
 WIDTH = 80          # columns (default; --cols overrides)
 ROWS = 22           # text rows -> 2*ROWS pixels tall (default; --rows overrides)
 HEIGHT = ROWS * 2
+SUPERSAMPLE = 4
 
 UPPER_HALF = '\u2580'   # the upper-half-block glyph; ASCII-escaped source per R-001
 
@@ -31,66 +33,83 @@ def lerp(a, b, t):
 
 
 def mix(c1, c2, t):
-    return tuple(round(lerp(c1[i], c2[i], t)) for i in range(3))
+    return tuple(lerp(c1[i], c2[i], t) for i in range(3))
+
+
+def smoothstep(edge0, edge1, value):
+    t = max(0.0, min(1.0, (value - edge0) / (edge1 - edge0)))
+    return t * t * (3.0 - 2.0 * t)
 
 
 def clamp(v):
     return max(0, min(255, round(v)))
 
 
-def pixel(x, y):
-    """RGB for pixel (x,y). y=0 top."""
-    nx = x / (WIDTH - 1)
-    ny = y / (HEIGHT - 1)
-
+def scene_color(nx, ny):
+    """Return the continuous RGB scene colour at normalized coordinates."""
     horizon = 0.52          # sea/sky boundary
     beach_top = 0.86        # sand starts
+    edge_x = 0.5 / WIDTH
+    edge_y = 0.5 / HEIGHT
 
-    # --- sun ---
+    # SKY: deep indigo (top) -> warm orange near the horizon.
+    top = (34.0, 40.0, 92.0)
+    midtop = (120.0, 78.0, 140.0)
+    low = (250.0, 156.0, 92.0)
+    sky_t = ny / horizon
+    sky = mix(top, midtop, smoothstep(0.0, 0.55, sky_t))
+    sky = mix(sky, low, smoothstep(0.55, 1.0, sky_t))
+
+    # Smooth radial masks keep both the bright disc and its glow continuous.
     sun_x, sun_y = 0.30, horizon - 0.04
     sun_r = 0.11
     dx = (nx - sun_x) * (WIDTH / HEIGHT)   # correct aspect
     dy = ny - sun_y
     sun_d = math.hypot(dx, dy)
+    radial_epsilon = edge_y
+    glow = 1.0 - smoothstep(sun_r - radial_epsilon,
+                            sun_r + 0.10, sun_d)
+    disc = 1.0 - smoothstep(sun_r - radial_epsilon,
+                            sun_r + radial_epsilon, sun_d)
+    sky = mix(sky, (255.0, 214.0, 150.0), glow)
+    sky = mix(sky, (255.0, 240.0, 200.0), disc)
 
-    if ny < horizon:
-        # SKY: deep indigo (top) -> warm orange near the horizon
-        t = ny / horizon
-        top = (34, 40, 92)
-        midtop = (120, 78, 140)
-        low = (250, 156, 92)
-        if t < 0.55:
-            col = mix(top, midtop, t / 0.55)
-        else:
-            col = mix(midtop, low, (t - 0.55) / 0.45)
-        # the sun disc + glow
-        if sun_d < sun_r:
-            col = (255, 240, 200)
-        elif sun_d < sun_r + 0.10:
-            g = (sun_d - sun_r) / 0.10
-            col = mix((255, 214, 150), col, g)
-        return col
+    # SEA: horizon glow -> deeper teal, with a vertical reflection shimmer.
+    sea_t = smoothstep(horizon, beach_top, ny)
+    sea = mix((232.0, 150.0, 110.0), (18.0, 74.0, 96.0), sea_t)
+    wobble = 0.012 * math.sin(ny * 34.0 + 0.7)
+    reflection_width = 0.035 + 0.06 * sea_t
+    reflection_distance = abs(nx - sun_x - wobble)
+    reflection = 1.0 - smoothstep(reflection_width - edge_x,
+                                  reflection_width + edge_x,
+                                  reflection_distance)
+    shimmer = smoothstep(-0.15, 0.35, math.sin(ny * 90.0))
+    reflection_strength = (0.5 * (1.0 - sea_t) ** 1.3
+                           * reflection * shimmer)
+    sea = mix(sea, (255.0, 228.0, 172.0), reflection_strength)
 
-    if ny < beach_top:
-        # SEA: horizon glow -> deeper teal, with a vertical sun-reflection shimmer
-        t = (ny - horizon) / (beach_top - horizon)
-        near = (232, 150, 110)     # reflected sunset at the waterline
-        far = (18, 74, 96)
-        col = mix(near, far, t)
-        # vertical sun-reflection column: horizontal shimmer bands directly
-        # below the sun, widening and fading with depth.
-        wobble = 0.012 * math.sin(ny * 34 + 0.7)
-        refl = abs(nx - sun_x - wobble) < (0.035 + 0.06 * t)
-        band = math.sin(ny * 90) > 0.1
-        if refl and band:
-            col = mix(col, (255, 228, 172), 0.5 * (1 - t) ** 1.3)
-        return col
+    # BEACH: wet sand near the sea -> dry warm sand at the bottom.
+    beach_t = smoothstep(beach_top, 1.0, ny)
+    beach = mix((150.0, 120.0, 92.0), (214.0, 190.0, 150.0), beach_t)
 
-    # BEACH: wet sand near the sea -> dry warm sand at the bottom
-    t = (ny - beach_top) / (1 - beach_top)
-    wet = (150, 120, 92)
-    dry = (214, 190, 150)
-    return mix(wet, dry, t)
+    # Smooth surface transitions prevent the horizon and shoreline aliasing.
+    col = mix(sky, sea,
+              smoothstep(horizon - edge_y, horizon + edge_y, ny))
+    col = mix(col, beach,
+              smoothstep(beach_top - edge_y, beach_top + edge_y, ny))
+
+    ridge = hill_ridge(nx)
+    hill_left = smoothstep(0.52 - edge_x, 0.52 + edge_x, nx)
+    hill_top = smoothstep(ridge - edge_y, ridge + edge_y, ny)
+    hill_bottom = 1.0 - smoothstep(horizon - edge_y,
+                                   horizon + edge_y, ny)
+    hill_mask = hill_left * hill_top * hill_bottom
+
+    shade = max(0.0, min(1.0, (ny - ridge) / (horizon - ridge)))
+    hill = mix((86.0, 150.0, 84.0), (22.0, 66.0, 40.0), shade ** 0.7)
+    rim = 0.5 * (1.0 - smoothstep(0.0, 0.12, shade))
+    hill = mix(hill, (196.0, 210.0, 150.0), rim)
+    return mix(col, hill, hill_mask)
 
 
 def hill_ridge(nx):
@@ -103,33 +122,29 @@ def hill_ridge(nx):
     return r
 
 
-def apply_hills(x, y, col):
-    nx = x / (WIDTH - 1)
-    ny = y / (HEIGHT - 1)
-    horizon = 0.52
-    ridge = hill_ridge(nx)
-    # hills sit on the far shore (right side), crest above the waterline
-    if nx > 0.52 and ridge < ny < horizon:
-        shade = (ny - ridge) / max(0.001, (horizon - ridge))
-        crest = (86, 150, 84)     # sun-lit crest
-        deep = (22, 66, 40)       # shadowed base
-        base = mix(crest, deep, shade ** 0.7)
-        # rim light along the very top edge
-        if shade < 0.12:
-            base = mix(base, (196, 210, 150), 0.5 * (1 - shade / 0.12))
-        return base
-    return col
+def sample_pixel(x, y, supersample):
+    """Average a sample grid across one normalized scene pixel."""
+    total = [0.0, 0.0, 0.0]
+    for sy in range(supersample):
+        ny = (y + (sy + 0.5) / supersample) / HEIGHT
+        for sx in range(supersample):
+            nx = (x + (sx + 0.5) / supersample) / WIDTH
+            col = scene_color(nx, ny)
+            for channel in range(3):
+                total[channel] += col[channel]
+    sample_count = supersample * supersample
+    return tuple(value / sample_count for value in total)
 
 
-def render():
+def render(supersample=SUPERSAMPLE):
     out = []
     for row in range(ROWS):
         line = []
         for x in range(WIDTH):
             ytop = row * 2
             ybot = row * 2 + 1
-            ct = apply_hills(x, ytop, pixel(x, ytop))
-            cb = apply_hills(x, ybot, pixel(x, ybot))
+            ct = sample_pixel(x, ytop, supersample)
+            cb = sample_pixel(x, ybot, supersample)
             line.append(
                 '\x1b[38;2;%d;%d;%dm\x1b[48;2;%d;%d;%dm%s'
                 % (clamp(ct[0]), clamp(ct[1]), clamp(ct[2]),
@@ -148,15 +163,17 @@ def main(argv=None):
                         help='width in character columns (default: %(default)s)')
     parser.add_argument('--rows', type=int, default=ROWS,
                         help='text rows, each 2 pixels tall (default: %(default)s)')
+    parser.add_argument('--supersample', type=int, default=SUPERSAMPLE,
+                        help='samples per axis for each pixel (default: %(default)s)')
     args = parser.parse_args(argv)
-    # pixel() normalises by (WIDTH-1) / (HEIGHT-1); a 1-wide/1-tall frame divides by
-    # zero and carries no gradient. Require a real canvas.
     if args.cols < 2 or args.rows < 2:
         parser.error('--cols and --rows must each be >= 2')
+    if args.supersample < 1:
+        parser.error('--supersample must be >= 1')
     WIDTH = args.cols
     ROWS = args.rows
     HEIGHT = ROWS * 2
-    sys.stdout.write(render())
+    sys.stdout.write(render(args.supersample))
 
 
 if __name__ == '__main__':
