@@ -79,6 +79,7 @@ dd='--'
 bs=$'\\'
 sc=';'
 hash='#'
+dq='"'
 
 fixture_prologue=(
    '#!/bin/bash'
@@ -197,6 +198,14 @@ assert_flagged "short-with-unrelated-pipe" \
    "$(body_of "${grp} ${qs} x /etc/os-release ${pipe} ${grp} bar")"
 assert_flagged "short-after-unrelated-pipe" \
    "$(body_of "seq 5 ${pipe} ${grp} x${sc} ${grp} ${qs} y /etc/os-release")"
+## A command whose NAME merely starts with 'grep' (a wrapper) is not GNU grep.
+assert_spared "grep-prefixed-command" \
+   "$(body_of "${grp}wrap() { return 0${sc} }" "${grp}wrap ${qs} input")"
+## 'grep -- <pattern>' where the pattern LOOKS like a flag is a search, not a
+## quiet option (a quoted flag-pattern is spared; the unquoted form stays a
+## documented residual).
+assert_spared "dashdash-quiet-pattern" \
+   "$(body_of "${grp} ${dd} '--quiet' /etc/os-release")"
 
 ## --- (3) pre-push-fix behaviour ---
 run_fix() {
@@ -265,6 +274,12 @@ assert_fix_unchanged "instring-keyword" "printf '%s' \"if ${grp} ${qs} x\""
 assert_fix_unchanged "in-comment" "true ${hash} note${sc} ${grp} ${qs} file"
 ## 'in' word list -- grep is a literal iterated word.
 assert_fix_unchanged "for-in" "for arg in ${grp} ${qs} foo${sc} do true${sc} done"
+## An ESCAPED quote inside a double-quoted string must not fake a closed string.
+assert_fix_unchanged "escaped-quote" \
+   "printf ${dq}run ${bs}${dq}${sc} ${grp} ${qs} here${dq}"
+## A comment that starts right after a metacharacter ('; #') is comment text.
+assert_fix_unchanged "comment-after-semicolon" \
+   "true${sc}${hash} note${sc} ${grp} ${qs} file"
 
 ## A leading assignment does not stop the expansion (grep IS the command).
 run_fix "assign-expand" "LC_ALL=C ${grp} ${qs} x /etc/os-release"

@@ -2326,7 +2326,7 @@ check_R034_echo() {
 
 check_R161_grep_pipe_quiet() {
    local script pipe_hits short_raw line lineno
-   local sp qc assign neg re_a re_b1 re_b2 re_b3
+   local qtail assign neg gpre quiet re_a re_b1 re_b2 re_b3
    local -a fs
    local -A pipe_lines
 
@@ -2343,35 +2343,40 @@ check_R161_grep_pipe_quiet() {
    ##
    ## Shared regex fragments (built once, so the pipe and short-flag scans cannot
    ## drift apart):
-   ##   sp     -- grep's OWN argument run: stops at a later '|', a command
-   ##             terminator (';' '&' ')') or a '#', so a following '[ ... -eq N ]'
-   ##             test operator is never read as part of grep.
-   ##   qc     -- a SHORT single-dash quiet cluster. '[^-[:space:]efmABCdD]*'
+   ##   gpre   -- 'grep' as a whole command WORD: 'grep', then >=1 space (so
+   ##             'grep_file'/'grepfoo' never matches), then optionally more
+   ##             argument tokens each ending in a space, up to the quiet flag.
+   ##             The trailing '[^|;&)#]*' stops at a later '|', a command
+   ##             terminator (';' '&' ')') or a '#', so a following
+   ##             '[ ... -eq N ]' test operator is never read as part of grep.
+   ##   qtail  -- a SHORT single-dash quiet flag word. '[^-[:space:]efmABCdD]*'
    ##             forbids an ARG-TAKING short option before the 'q', so '-eq'
-   ##             ('-e' with pattern 'q') is not mistaken for a quiet flag;
-   ##             '--quiet' cannot match (its second char is '-', excluded).
+   ##             ('-e' with pattern 'q') is not mistaken for a quiet flag.
+   ##   quiet  -- qtail OR the long '--quiet'/'--silent' (each as a whole word).
    ##   assign -- any run of leading 'VAR=value' assignments ('LC_ALL=C grep').
    ##   neg    -- an optional '!' negation ('if ! grep -q').
    ## Residuals accepted (a line grep cannot parse shell): a quiet grep inside a
-   ## string that opens with a separator, a literal flag PATTERN after '--'
-   ## ('grep -- -q'), and a pipe split across physical lines with no backslash.
-   sp='[^|;&)#]*'
-   qc='[[:space:]]-[^-[:space:]efmABCdD]*q[[:alpha:]]*([[:space:]]|$)'
+   ## string that opens with a separator, an UNQUOTED literal flag pattern after
+   ## '--' ('grep -- -q'), and a pipe split across physical lines with no
+   ## backslash.
+   qtail='-[^-[:space:]efmABCdD]*q[[:alpha:]]*([[:space:]]|$)'
+   gpre='grep[[:space:]]+([^|;&)#]*[[:space:]])?'
+   quiet="(--quiet([[:space:]]|$)|--silent([[:space:]]|$)|${qtail})"
    assign='([A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|]*[[:space:]]+)*'
    neg='(!([[:space:]]+))?'
    ## (1) A single '|' (or '|&') -- NOT '||' -- then optional assignments, then
    ## grep with a quiet flag (long or short). The prefix ends in a non-'#'-non-'|'
    ## char (or is absent for a leading '|'), which both excludes '||' and keeps a
    ## comment '#' from reaching the pipe.
-   re_a="^([^#]*[^#|])?[|][&]?[[:space:]]*${assign}grep${sp}(--quiet|--silent|${qc})"
+   re_a="^([^#]*[^#|])?[|][&]?[[:space:]]*${assign}${gpre}${quiet}"
    ## (2) grep in COMMAND position -- line start, after a separator, or after a
    ## control keyword (NOT 'in', which heads a word list) -- with a SHORT quiet
-   ## cluster, each position allowing '!' and assignment prefixes. Modeled on
+   ## flag, each position allowing '!' and assignment prefixes. Modeled on
    ## check_R034_echo, so a 'grep -q' inside a string is not flagged from a bare
    ## space.
-   re_b1="^[[:space:]]*${neg}${assign}grep${sp}${qc}"
-   re_b2="^[[:space:]]*[^#]*[;&|(){}\`][[:space:]]*${neg}${assign}grep${sp}${qc}"
-   re_b3="^[[:space:]]*([^#]*[[:space:]])?(then|do|else|if|elif|while|until)[[:space:]]+${neg}${assign}grep${sp}${qc}"
+   re_b1="^[[:space:]]*${neg}${assign}${gpre}${qtail}"
+   re_b2="^[[:space:]]*[^#]*[;&|(){}\`][[:space:]]*${neg}${assign}${gpre}${qtail}"
+   re_b3="^[[:space:]]*([^#]*[[:space:]])?(then|do|else|if|elif|while|until)[[:space:]]+${neg}${assign}${gpre}${qtail}"
 
    mapfile -d '' -t fs < <(filter_self "${@}")
    if [ "${#fs[@]}" -eq 0 ]; then return 0; fi
