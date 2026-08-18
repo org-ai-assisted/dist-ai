@@ -158,12 +158,18 @@ def run_in_pty(argv, feed=b'', feed2=b'', feed2_delay=0.4, tty_stdin=True,
                 os.close(fd)
             except OSError:
                 pass        # a saved fd may already be closed; ignore
+        # Restore each handler INDEPENDENTLY: a failure restoring SIGWINCH (e.g. a
+        # C-installed prev_winch is None -> TypeError) must not skip the SIGINT
+        # restore and leak the default handler into later tests.
         try:
             signal.signal(signal.SIGWINCH, prev_winch)
-            if send_sigint:
-                signal.signal(signal.SIGINT, prev_sigint)
         except (OSError, ValueError, TypeError):
             pass            # restoring the handler off the main thread may fail
+        if send_sigint:
+            try:
+                signal.signal(signal.SIGINT, prev_sigint)
+            except (OSError, ValueError, TypeError):
+                pass
         for fd in (out_master, out_slave, in_r, in_w):
             if fd is not None:
                 try:
