@@ -70,7 +70,7 @@ note "watching '${job_filter}' job(s) for ${head_sha}"
 last_state=""
 unreadable=0
 while true; do
-   payload="$(git-api GET "/repos/org-ai-assisted/derivative-maker/commits/${head_sha}/check-runs?per_page=100" 2>/dev/null || printf '')"
+   payload="$(github-api GET "/repos/org-ai-assisted/derivative-maker/commits/${head_sha}/check-runs?per_page=100" 2>/dev/null || printf '')"
 
    state=""
    if [ -n "${payload}" ]; then

@@ -91,8 +91,14 @@ test_large_message_not_truncated() {
     dispatch_x_active "${type}" "${msg}"
   ) || rc=$?
 
-  got_len="$(wc -c < "${record}")"
-  if [ "${rc}" = "0" ] \
+  ## Guard the read: if dispatch_x_active errored before the recorder ran, the
+  ## record file may not exist, and 'wc -c < missing' would abort under errexit
+  ## before the assertion.
+  got_len=0
+  if [ -f "${record}" ]; then
+    got_len="$(wc -c < "${record}")"
+  fi
+  if [ "${rc}" = "0" ] && [ -f "${record}" ] \
      && grep --quiet --fixed-strings -- "__TAIL_SENTINEL__" "${record}" \
      && [ "${got_len}" -ge "40000" ]; then
     pass "dispatch_x_active: full message reaches renderer (no argv truncation)"

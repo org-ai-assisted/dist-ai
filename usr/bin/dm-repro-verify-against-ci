@@ -86,7 +86,25 @@ while [ "$#" -gt 0 ]; do
          shift 2
          ;;
       -h|--help)
-         grep '^##' -- "${BASH_SOURCE[0]}" | sed 's/^## \{0,1\}//'
+         cat <<'USAGE'
+Verify a LOCALLY built image against the one CI built: same inputs, same bytes?
+
+Usage:
+  dm-repro-verify-against-ci --local <file-or-dir> [--run-id <id>]
+                             [--repo <owner/repo>] [--target <qcow2|iso|...>]
+                             [--keep <dir>]
+
+  --local    the built artifact, or a directory holding it plus its
+             '<artifact>.dm-buildinfo'.
+  --run-id   the CI run to compare against (default: the most recent SUCCESSFUL
+             run of the build workflow on the current branch).
+  --repo     owner/repo to fetch the CI artifact from.
+  --target   artifact target type (qcow2, iso, ...).
+  --keep     keep the downloaded CI artifact in this directory.
+
+Exit: 0 reproducible | 1 same inputs, DIFFERENT bytes | 2 usage/setup |
+      3 inputs differ, so nothing is proven about reproducibility.
+USAGE
          exit 0
          ;;
       *)
@@ -105,7 +123,7 @@ if [ ! -e "${local_path}" ]; then
    exit 2
 fi
 
-for required_tool in git-api unzip; do
+for required_tool in github-api unzip; do
    if ! type -P "${required_tool}" >/dev/null; then
       printf '%s\n' "${0##*/}: '${required_tool}' is not on PATH; its absence is a gap to fix, not a reason to report a verdict." >&2
       exit 2
@@ -181,7 +199,7 @@ esac
 ## Resolve the run to compare against.
 if [ -z "${run_id}" ]; then
    printf '%s\n' "${0##*/}: resolving the most recent successful '${workflow}' run on ${repo}..." >&2
-   run_id="$( git-api GET "/repos/${repo}/actions/workflows/${workflow}/runs?status=success&per_page=1" 2>/dev/null \
+   run_id="$( github-api GET "/repos/${repo}/actions/workflows/${workflow}/runs?status=success&per_page=1" 2>/dev/null \
       | python3 -c 'import json,sys
 try:
     payload = json.load(sys.stdin)
@@ -199,7 +217,7 @@ printf '%s\n' "${0##*/}: comparing against run ${run_id}." >&2
 
 ## Download every artifact of that run whose name looks like a built image, and
 ## take the one carrying a buildinfo.
-artifact_list="$( git-api GET "/repos/${repo}/actions/runs/${run_id}/artifacts?per_page=100" 2>/dev/null \
+artifact_list="$( github-api GET "/repos/${repo}/actions/runs/${run_id}/artifacts?per_page=100" 2>/dev/null \
    | python3 -c 'import json,sys
 try:
     payload = json.load(sys.stdin)
@@ -228,7 +246,7 @@ while IFS=$'\t' read -r artifact_id artifact_name; do
    esac
    printf '%s\n' "${0##*/}: downloading artifact '${artifact_name}'..." >&2
    artifact_seen='true'
-   if ! git-api GET "/repos/${repo}/actions/artifacts/${artifact_id}/zip" --location \
+   if ! github-api GET "/repos/${repo}/actions/artifacts/${artifact_id}/zip" --location \
       -o "${work_dir}/${artifact_name}.zip" 2>/dev/null; then
       printf '%s\n' "${0##*/}: could not download '${artifact_name}'; skipping." >&2
       continue
@@ -239,7 +257,7 @@ while IFS=$'\t' read -r artifact_id artifact_name; do
    ## reproducibility run publishes the same image twice ('repro-image-a' and
    ## '-b', proven byte-identical by its own compare job), so downloading both
    ## doubles half a gigabyte of transfer to compare against the same thing.
-   if find "${ci_dir}" -type f -name '*.dm-buildinfo' -print -quit | grep --quiet .; then
+   if [ -n "$(find "${ci_dir}" -type f -name '*.dm-buildinfo' -print -quit)" ]; then
       printf '%s\n' "${0##*/}: got a provenance record from '${artifact_name}'; not fetching the rest." >&2
       break
    fi

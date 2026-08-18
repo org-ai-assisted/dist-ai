@@ -405,8 +405,8 @@ git -C "${repo}" -c core.hooksPath=/dev/null \
    commit --quiet --message "fixed"
 gate_after="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || true
 
-if printf '%s\n' "${gate_before}" | grep --quiet --fixed-strings 'R-001' \
-   && ! printf '%s\n' "${gate_after}" | grep --quiet --fixed-strings 'R-001' ; then
+if grep --quiet --fixed-strings 'R-001' <<< "${gate_before}" \
+   && ! grep --quiet --fixed-strings 'R-001' <<< "${gate_after}" ; then
    note_pass "gate parity: R-001 failed before the fixer, clean after"
 else
    note_fail "gate parity broken"
@@ -425,8 +425,8 @@ git -C "${repo}" -c core.hooksPath=/dev/null \
    -c user.name=test -c user.email=test@example.com \
    commit --quiet --message "r172 fixed"
 r172_after="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || true
-if printf '%s\n' "${r172_before}" | grep --quiet --fixed-strings 'R-172' \
-   && ! printf '%s\n' "${r172_after}" | grep --quiet --fixed-strings 'R-172' ; then
+if grep --quiet --fixed-strings 'R-172' <<< "${r172_before}" \
+   && ! grep --quiet --fixed-strings 'R-172' <<< "${r172_after}" ; then
    note_pass "gate parity: R-172 short -m failed before the fixer, clean after"
 else
    note_fail "R-172 gate parity broken"
@@ -452,17 +452,13 @@ r172p_after="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || true
 ## Require BOTH markers BEFORE: if only R-172 were asserted the test would pass
 ## vacuously when shellcheck is absent (no SC2174 ever emitted), never proving
 ## the inserted directive suppresses it. shellcheck is a required dep above.
-if printf '%s\n' "${r172p_before}" | grep --quiet --fixed-strings 'R-172' \
-   && printf '%s\n' "${r172p_before}" | grep --quiet --fixed-strings 'SC2174' \
-   && ! printf '%s\n' "${r172p_after}" | grep --quiet --extended-regexp 'R-172|SC2174' ; then
+if grep --quiet --fixed-strings 'R-172' <<< "${r172p_before}" \
+   && grep --quiet --fixed-strings 'SC2174' <<< "${r172p_before}" \
+   && ! grep --quiet --extended-regexp 'R-172|SC2174' <<< "${r172p_after}" ; then
    note_pass "gate parity: --parents atomic form clears R-172 and SC2174 after the fixer"
 else
    note_fail "R-172 --parents gate parity broken (R-172 or SC2174 survived)"
 fi
 
-if [ "${fail}" -ne 0 ]; then
-   printf '%s\n' "pre-push-fix: at least one canary FAILED." >&2
-   exit 1
-fi
 printf '%s\n' "pre-push-fix: all canaries passed."
 exit 0

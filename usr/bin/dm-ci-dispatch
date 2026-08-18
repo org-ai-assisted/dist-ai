@@ -97,7 +97,23 @@ while [ "$#" -gt 0 ]; do
          shift
          ;;
       -h|--help)
-         grep '^##' -- "${BASH_SOURCE[0]}" | sed 's/^## \{0,1\}//'
+         cat <<'USAGE'
+Trigger a derivative-maker CI workflow deliberately, after proving the tree is
+worth spending runners on.
+
+Usage:
+  dm-ci-dispatch --workflow <file.yml> [--ref <git-ref>] [--dir <checkout>]
+                 [--input key=value]... [--no-preflight] [--dry-run]
+
+  --workflow      workflow file under .github/workflows to dispatch.
+  --ref           git ref to run against (default: the checkout's current branch).
+  --dir           checkout to dispatch from (default: current directory).
+  --input         a workflow input, key=value; repeatable.
+  --no-preflight  skip the dm-preflight gate (prints why that is a bad idea).
+  --dry-run       print what WOULD be dispatched and stop; starts no jobs.
+
+Exit: 0 dispatched | 1 preflight failed / dispatch rejected | 2 usage.
+USAGE
          exit 0
          ;;
       *)
@@ -181,7 +197,7 @@ resolve_remote_sha() {
    local candidate response
 
    for candidate in "${remote_ref_candidates[@]}"; do
-      response="$( git-api GET "/repos/${repo}/git/ref/${candidate}" 2>/dev/null )" || continue
+      response="$( github-api GET "/repos/${repo}/git/ref/${candidate}" 2>/dev/null )" || continue
       ## The object sha, or nothing when the API returned a "Not Found" body.
       printf '%s' "${response}" \
          | python3 -c 'import json,sys
@@ -239,8 +255,12 @@ if [ "${dry_run}" = "true" ]; then
 fi
 
 printf '%s\n' "${0##*/}: dispatching ${workflow} on ${repo}@${ref} (${local_sha:0:12})..." >&2
-if ! git-api POST "/repos/${repo}/actions/workflows/${workflow}/dispatches" --data "@${payload_file}"; then
+# --fail-with-body: github-api's curl uses --silent --show-error only (no
+# --fail, so callers can read a 4xx body), which means curl exits 0 on a 404/422
+# and a REJECTED dispatch would otherwise print 'dispatched'. --fail-with-body
+# makes curl exit non-zero on >= 400 while still printing the rejection body.
+if ! github-api POST "/repos/${repo}/actions/workflows/${workflow}/dispatches" --data "@${payload_file}" --fail-with-body; then
    printf '%s\n' "${0##*/}: dispatch REJECTED. Note that workflow_dispatch only fires for a workflow file present on the DEFAULT branch." >&2
    exit 1
 fi
-printf '%s\n' "${0##*/}: dispatched. Watch it with: git-api GET /repos/${repo}/actions/workflows/${workflow}/runs?per_page=1" >&2
+printf '%s\n' "${0##*/}: dispatched. Watch it with: github-api GET /repos/${repo}/actions/workflows/${workflow}/runs?per_page=1" >&2

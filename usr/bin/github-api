@@ -7,9 +7,9 @@
 
 ## Authenticated GitHub REST call, for dist-ai tools that must also run in CI.
 ##
-##   git-api <METHOD> <PATH-or-URL> [extra curl args...]
-##     git-api GET /repos/org-ai-assisted/foo/pulls
-##     git-api POST /repos/org-ai-assisted/foo/pulls --data @/tmp/pr.json
+##   github-api <METHOD> <PATH-or-URL> [extra curl args...]
+##     github-api GET /repos/org-ai-assisted/foo/pulls
+##     github-api POST /repos/org-ai-assisted/foo/pulls --data @/tmp/pr.json
 ##
 ## A bare /path resolves against https://api.github.com; a full https URL is
 ## used as-is. Auth and the standard headers go to curl through a --config
@@ -44,7 +44,7 @@ shopt -s shift_verbose
 [ -v GITHUB_TOKEN_FILE ] || GITHUB_TOKEN_FILE="${HOME:-}/.config/github-token"
 
 if [ "$#" -lt 2 ]; then
-  printf '%s\n' 'Usage: git-api <METHOD> <PATH-or-URL> [extra curl args...]' >&2
+  printf '%s\n' 'Usage: github-api <METHOD> <PATH-or-URL> [extra curl args...]' >&2
   exit 1
 fi
 
@@ -57,7 +57,7 @@ case "${target}" in
     url="${target}"
     ;;
   http://*)
-    printf '%s\n' 'git-api: refusing a plaintext http:// URL (would leak the token)' >&2
+    printf '%s\n' 'github-api: refusing a plaintext http:// URL (would leak the token)' >&2
     exit 1
     ;;
   *)
@@ -76,7 +76,7 @@ case "${host}" in
     true "INFO: GitHub host, the token may be attached"
     ;;
   *)
-    printf '%s\n' "git-api: refusing non-GitHub host '${host}' (would leak the token)" >&2
+    printf '%s\n' "github-api: refusing non-GitHub host '${host}' (would leak the token)" >&2
     exit 1
     ;;
 esac
@@ -91,6 +91,25 @@ elif [ -n "${GITHUB_TOKEN:-}" ]; then
 elif [ -n "${GH_TOKEN:-}" ]; then
   token="${GH_TOKEN}"
 fi
+
+## The token reaches curl inside the --config document as
+## header = "Authorization: Bearer <token>". A newline or double-quote in the
+## value would END that directive and turn the remainder into further curl
+## config (url / proxy / output / insecure) -- so a stray second line in the
+## token file, or a CI variable with a trailing newline, could silently
+## redirect the request. Refuse anything outside [A-Za-z0-9_.-]: that rejects
+## every config-injection byte (newline, quote, space, '=') while still allowing
+## PATs ([A-Za-z0-9_]) AND GitHub App JWTs (header.payload.signature -- the dots
+## are harmless in the header value). Inline, because this tool must run in a
+## bare CI container with no helper-scripts (see the 'no-has' note above).
+case "${token}" in
+  '')
+    ;;
+  *[!A-Za-z0-9_.-]*)
+    printf '%s\n' 'github-api: refusing a token with characters outside [A-Za-z0-9_.-] (a newline or quote could break out of the curl --config Authorization directive and redirect the request)' >&2
+    exit 1
+    ;;
+esac
 
 curl_program='curl'
 curl_args=(--tlsv1.3 --proto '=https')
