@@ -439,53 +439,6 @@ def expand_grep_short_quiet(text):
     return "".join(out), count
 
 
-## R-013 (multiple options on one 'set' line) -- the write side of one of
-## pre-push-static's two R-013 shapes. Only the PURE multi-'-o' shape is fixed:
-## a 'set' line whose entire argument list is two or more '[+-]o <name>' tokens.
-## The SHORT-flag shape ('set -eu', 'set -Eeuo pipefail') is NOT fixed here --
-## mapping short flags to long names and splitting them is not a single safe
-## token edit, so it stays a reported R-013 for a human, exactly like the pipe
-## half of R-161.
-##
-## Script-wide waiver, in lockstep with pre-push-static's R-013: a file carrying
-## '## style-ok: allow-short-set' opts out of the whole rule.
-ALLOW_SHORT_SET_WAIVER_RE = re.compile(
-    r'^[ \t]*##[ \t]*style-ok:[ \t]*allow-short-set(?:[ \t]|$)', re.M)
-## A full 'set' line that is ONLY 2+ '[+-]o <name>' tokens. The '#'-excluding
-## name class plus the '$' anchor mean a trailing comment or any non-'-o' token
-## fails the match, so the line is left for the gate rather than mis-split.
-SET_MULTI_O_LINE = re.compile(
-    r'^([ \t]*)set[ \t]+((?:[+-]o[ \t]+[^\s#]+[ \t]*){2,})$')
-SET_O_TOKEN = re.compile(r'([+-])o[ \t]+([^\s#]+)')
-
-
-def split_multi_set_options(text):
-    """Split a 'set' line enabling MULTIPLE long '-o <name>' options into one
-    'set [+-]o <name>' per line (R-013). Semantics-preserving: shell 'set'
-    applies its options left to right, so the split lines run in the same order
-    to the same effect. Indentation and each token's '+'/'-' sign are preserved.
-    Idempotent: a single-option line has one token and never matches."""
-    count = 0
-    out = []
-    for line in text.splitlines(keepends=True):
-        body = line.rstrip("\r\n")
-        ending = line[len(body):]
-        match = SET_MULTI_O_LINE.match(body)
-        if not match:
-            out.append(line)
-            continue
-        indent = match.group(1)
-        tokens = SET_O_TOKEN.findall(match.group(2))
-        newline = "\r\n" if ending == "\r\n" else "\n"
-        for sign, name in tokens:
-            out.append("%sset %so %s%s" % (indent, sign, name, newline))
-        ## Preserve a missing final newline (a multi-'-o' line at EOF).
-        if ending == "":
-            out[-1] = out[-1].rstrip("\n")
-        count += 1
-    return "".join(out), count
-
-
 def fix_file(path, check):
     """Return a dict of change counts for PATH; write in place unless CHECK.
 
@@ -545,15 +498,6 @@ def fix_file(path, check):
         text, num = expand_grep_short_quiet(text)
         if num:
             changes["R-161"] = num
-
-    ## R-013: split a 'set' line enabling MULTIPLE long '-o <name>' options into
-    ## one per line. Shell files only; skip when the file waives the rule
-    ## (lockstep with the gate). Short-flag bundles and mixed lines are left for
-    ## the gate -- rewriting those is not a semantics-safe single edit.
-    if is_shell_file(path) and not ALLOW_SHORT_SET_WAIVER_RE.search(text):
-        text, num = split_multi_set_options(text)
-        if num:
-            changes["R-013"] = num
 
     if text == original:
         return {}
