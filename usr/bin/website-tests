@@ -46,6 +46,13 @@ if [ -f "${tests_dir}/check_mobile_test.py" ]; then
    python3 -Bsu -- "${tests_dir}/check_mobile_test.py" || exit 1
 fi
 
+## Unit regression for check_width's browser-free logic (the offender predicate +
+## gate wiring). Playwright is imported inside its main(), so this runs everywhere
+## without a browser; a failure is a real logic regression.
+if [ -f "${tests_dir}/check_width_test.py" ]; then
+   python3 -Bsu -- "${tests_dir}/check_width_test.py" || exit 1
+fi
+
 ## Resolve each site root from its env var, else a private-sources default.
 [ -v OUTPUT_LIES_REPO ] || OUTPUT_LIES_REPO=''
 [ -v SECURE_TERMINAL_SITE_REPO ] || SECURE_TERMINAL_SITE_REPO=''
@@ -86,6 +93,20 @@ if [ -f "${tests_dir}/check_mobile.py" ]; then
    if [ "${mobile_rc}" = '77' ]; then
       printf '%s\n' 'website-mobile-tests: SKIP (no Playwright/chromium)' >&2
    elif [ "${mobile_rc}" != '0' ]; then
+      overall=1
+   fi
+fi
+
+## Desktop width-utilization guard ("the virtual ruler"): render each page at a
+## desktop viewport and assert no tall text section wastes its width in a narrow
+## column with a wide empty gutter. Same browser dependency + SKIP semantics as
+## the mobile guard, so the static checks above still run everywhere.
+if [ -f "${tests_dir}/check_width.py" ]; then
+   width_rc=0
+   python3 -Bsu -- "${tests_dir}/check_width.py" "${roots[@]}" || width_rc="$?"
+   if [ "${width_rc}" = '77' ]; then
+      printf '%s\n' 'website-width-tests: SKIP (no Playwright/chromium)' >&2
+   elif [ "${width_rc}" != '0' ]; then
       overall=1
    fi
 fi

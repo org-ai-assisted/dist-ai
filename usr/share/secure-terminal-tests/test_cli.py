@@ -89,6 +89,16 @@ def run_in_pty(argv, feed=b'', feed2=b'', feed2_delay=0.4, tty_stdin=True,
     chunks = []
     stop = threading.Event()
     prev_winch = signal.getsignal(signal.SIGWINCH)
+    # A real interactive terminal delivers Ctrl-C with SIGINT at its DEFAULT
+    # disposition (-> KeyboardInterrupt). When the whole suite is launched in the
+    # BACKGROUND (CI, nohup, a detached runner), the shell hands its children
+    # SIGINT as SIG_IGN; Python then KEEPS SIG_IGN and never installs its
+    # KeyboardInterrupt handler, so the Ctrl-C test can reach 130 only when the
+    # suite happens to run in the foreground. Pin the default handler for the
+    # duration so the test reflects real terminal use however it was started.
+    prev_sigint = signal.getsignal(signal.SIGINT)
+    if send_sigint:
+        signal.signal(signal.SIGINT, signal.default_int_handler)
 
     def driver():
         if feed_delay:
@@ -148,10 +158,18 @@ def run_in_pty(argv, feed=b'', feed2=b'', feed2_delay=0.4, tty_stdin=True,
                 os.close(fd)
             except OSError:
                 pass        # a saved fd may already be closed; ignore
+        # Restore each handler INDEPENDENTLY: a failure restoring SIGWINCH (e.g. a
+        # C-installed prev_winch is None -> TypeError) must not skip the SIGINT
+        # restore and leak the default handler into later tests.
         try:
             signal.signal(signal.SIGWINCH, prev_winch)
         except (OSError, ValueError, TypeError):
             pass            # restoring the handler off the main thread may fail
+        if send_sigint:
+            try:
+                signal.signal(signal.SIGINT, prev_sigint)
+            except (OSError, ValueError, TypeError):
+                pass
         for fd in (out_master, out_slave, in_r, in_w):
             if fd is not None:
                 try:

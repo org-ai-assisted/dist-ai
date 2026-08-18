@@ -858,6 +858,73 @@ _prc4, _pmsg4 = _pre_run(('secure_terminal_absent_a_xyz', 'python3-dup'),
 ok('sudo apt install python3-dup\n' in _pmsg4,
    'preflight.require de-duplicates a package named by more than one dependency')
 
+# --- every launcher's preflight require() package is a hard debian/control
+# Depends. A require()d apt package absent from Depends means a clean install
+# fails at first launch (preflight exit 1) -- the class the python3-wcwidth gap
+# was. AST over the REAL launchers + the REAL control, so it cannot drift.
+import ast as _ast                                # noqa: E402
+import glob as _glob                              # noqa: E402
+_repo = S.__file__
+for _ in range(6):                                # sanitize.py -> ... -> repo root
+    _repo = os.path.dirname(_repo)
+_control = os.path.join(_repo, 'debian', 'control')
+_bindir = os.path.join(_repo, 'usr', 'bin')
+ok(os.path.isfile(_control) and os.path.isdir(_bindir),
+   'dep-audit: located debian/control and usr/bin in the checkout')
+
+
+def _control_depends(path):
+    """Package names across EVERY binary stanza's Depends field: version
+    constraints and ${...} substvar macros stripped, and each `a | b`
+    alternative counted (a require()d package satisfied as an alternative is
+    still declared)."""
+    lines = open(path, encoding='utf-8').read().splitlines()
+    names = set()
+    for i, ln in enumerate(lines):
+        if not ln.startswith('Depends:'):
+            continue
+        chunk = [ln[len('Depends:'):]]
+        for cont in lines[i + 1:]:
+            if cont[:1] in (' ', '\t'):
+                chunk.append(cont)
+            else:
+                break
+        for tok in ' '.join(chunk).split(','):
+            for alt in tok.split('|'):
+                head = alt.split()[0] if alt.split() else ''
+                if head and not head.startswith('${'):
+                    names.add(head)
+    return names
+
+
+def _require_packages(bindir):
+    """Every apt package (2nd element of each require() tuple) across all
+    launchers, read from the current script text via AST."""
+    pkgs = set()
+    for launcher in sorted(_glob.glob(os.path.join(bindir, '*'))):
+        if not os.path.isfile(launcher):        # skip a subdir (e.g. __pycache__)
+            continue
+        try:
+            tree = _ast.parse(open(launcher, encoding='utf-8').read())
+        except (SyntaxError, UnicodeDecodeError, OSError):
+            continue
+        for node in _ast.walk(tree):
+            if (isinstance(node, _ast.Call) and isinstance(node.func, _ast.Name)
+                    and node.func.id == 'require'):
+                for arg in node.args:
+                    if (isinstance(arg, (_ast.Tuple, _ast.List))
+                            and len(arg.elts) == 2
+                            and isinstance(arg.elts[1], _ast.Constant)):
+                        pkgs.add(arg.elts[1].value)
+    return pkgs
+
+
+_missing_dep = sorted(p for p in _require_packages(_bindir)
+                      if p not in _control_depends(_control))
+ok(not _missing_dep,
+   'dep-audit: every preflight-required package is a debian/control Depends '
+   '(missing: %r)' % _missing_dep)
+
 # apply_line_edits: the pure line-editing model behind the fast bulk render path
 eq(S.apply_line_edits('', 0, 'abc'), ([], 'abc', 3), 'line edits: plain append')
 _cl, _ln, _col = S.apply_line_edits('', 0, 'l1\nl2\n')
