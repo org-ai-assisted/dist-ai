@@ -891,6 +891,26 @@ finally:
     _QA.exec = _o_qexec
     _signal.signal(_signal.SIGCHLD, _o_chld)
 
+# --- launch parsing: the instance dispositions are mutually exclusive ----------
+# --reuse (join the primary) and --new-instance (standalone, never the primary)
+# directly contradict; --window is the explicit default. The parser must reject
+# any two together (argparse SystemExit) and parse each alone.
+_pla = M._parse_launch_args
+ok(_pla(['--reuse']).reuse is True and _pla(['--reuse']).new_instance is False,
+   'parse: --reuse alone -> reuse')
+ok(_pla(['--window']).reuse is False and _pla(['--window']).new_instance is False,
+   'parse: --window alone -> new independent window (the default)')
+ok(_pla(['--new-instance']).new_instance is True and _pla(['--new-instance']).reuse is False,
+   'parse: --new-instance alone -> standalone')
+for _combo in (['--reuse', '--new-instance'], ['--window', '--new-instance'],
+               ['--reuse', '--window']):
+    _rej = False
+    try:
+        _pla(_combo)
+    except SystemExit:
+        _rej = True
+    ok(_rej, 'parse: %s is rejected (mutually exclusive dispositions)' % ' '.join(_combo))
+
 # --- set_* admin-locked returns + bell channels + run_command palette ---------
 from PyQt6.QtWidgets import QMessageBox                          # noqa: E402
 _o_info = QMessageBox.information
@@ -1055,32 +1075,44 @@ finally:
     M.ipc.ensure_socket_dir = _o_ens
 
 # REGRESSION (socket must not be STOLEN from a live primary): with multiple
-# independent instances, a second instance that finds a live primary on the group
+# independent instances, a second instance that finds a live listener on the group
 # socket must stay server-less rather than rebind. The old code unconditionally
 # removeServer()'d + listened, stealing the live socket -- so it ALWAYS created a
-# _server, even when a primary was already up. Drive the ping-first decision with
-# ipc.send_request mocked and assert the observable outcome (whether this instance
-# bound a _server). This assertion FAILS on the old always-bind code.
-_o_sr_steal = M.ipc.send_request
-try:
-    # a live primary answers the ping -> stay server-less, do not rebind its socket
-    M.ipc.send_request = lambda *_a, **_k: {'ok': True, 'pid': 1}
-    _steal = MainWindow()
-    _steal.start_instance_server('busy-group')
-    ok(getattr(_steal, '_server', None) is None,
-       'start_instance_server: a live primary -> stays server-less (socket not stolen)')
-    _steal.deleteLater()
-    APP.processEvents()
-    # no answer (stale/absent socket) -> this instance claims the group and binds
-    M.ipc.send_request = lambda *_a, **_k: None
-    _claim = MainWindow()
-    _claim.start_instance_server('free-group')
-    ok(getattr(_claim, '_server', None) is not None,
-       'start_instance_server: a free group -> this instance claims it (binds)')
-    _claim.deleteLater()
-    APP.processEvents()
-finally:
-    M.ipc.send_request = _o_sr_steal
+# _server, even when a primary was already up. This drives the REAL sockets (no
+# mock): a connect probe (ipc.socket_is_live) sees a bound peer even before its
+# event loop can reply, so a concurrent second launch cannot steal it. These
+# assertions FAIL on the old always-bind code.
+_primary = MainWindow()
+_primary.start_instance_server('steal-group')
+ok(getattr(_primary, '_server', None) is not None,
+   'start_instance_server: a free group -> the first instance claims it (binds)')
+ok(M.ipc.socket_is_live('steal-group'),
+   'ipc.socket_is_live: a bound listener answers a raw connect')
+ok(not M.ipc.socket_is_live('no-such-live-group'),
+   'ipc.socket_is_live: an absent socket -> not live (connect refused)')
+_second = MainWindow()
+_second.start_instance_server('steal-group')     # a live peer owns it
+ok(getattr(_second, '_server', None) is None,
+   'start_instance_server: a live peer -> the second instance stays server-less')
+ok(M.ipc.socket_is_live('steal-group'),
+   'start_instance_server: the first instance still owns the socket (not stolen)')
+_second.deleteLater()
+_primary.deleteLater()
+APP.processEvents()
+# a genuinely STALE socket file (no listener) is reclaimed, not treated as live
+_stale_grp = 'stale-group'
+_stale_path = M.ipc.socket_path(_stale_grp)
+os.makedirs(os.path.dirname(_stale_path), exist_ok=True)
+with open(_stale_path, 'w', encoding='utf-8') as _sf3:
+    _sf3.write('')                               # a plain file: exists, nobody listening
+ok(not M.ipc.socket_is_live(_stale_grp),
+   'ipc.socket_is_live: a stale socket file is not live')
+_reclaim = MainWindow()
+_reclaim.start_instance_server(_stale_grp)       # clears the stale file, binds
+ok(getattr(_reclaim, '_server', None) is not None,
+   'start_instance_server: a stale socket is cleared and reclaimed')
+_reclaim.deleteLater()
+APP.processEvents()
 
 # --- session persistence + quit/close hooks -----------------------------------
 win.set_persist_session(False)              # disabling clears the saved session

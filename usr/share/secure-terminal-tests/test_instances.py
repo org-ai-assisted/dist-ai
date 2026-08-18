@@ -137,6 +137,9 @@ try:
     _drc = None
     try:
         _drc = _d.wait(timeout=15)
+        # cleanly reaped and childless (it exits before forking a shell): drop it
+        # from the reap list so the finally never killpg's its now-freed PID.
+        _kids.remove(_d)
     except subprocess.TimeoutExpired:
         pass
     ok(_drc == 0, 'D: --reuse hands off to the primary and exits 0')
@@ -148,25 +151,26 @@ try:
     _re = _wait_primary('other')
     ok(_re is not None and _re.get('pid') == _e.pid,
        'E: --instance-group other owns its own socket (an independent primary)')
-    ok(_ping().get('pid') == _a.pid if _ping() else False,
+    # capture the reply ONCE: a second _ping() could time out to None and .get()
+    # would raise, crashing the suite instead of reporting a clean failure.
+    _rdefault = _ping()
+    ok(_rdefault is not None and _rdefault.get('pid') == _a.pid,
        'E: the default-group primary is untouched by the other group')
 finally:
     # Reap by process-group (each child is its own session), TERM then KILL, so a
     # crash mid-suite leaves no orphan and the reaper never reaches another
-    # session's processes.
-    for _p in _kids:
-        if _p.poll() is None:
+    # session's processes. Signal UNCONDITIONALLY, not only while the leader is
+    # alive: a leader that exited (a handed-off --reuse client) or crashed can
+    # still leave live group members, and a poll()-guarded reap would orphan them.
+    # A group that is already gone raises ProcessLookupError, which is swallowed.
+    for _sig in (signal.SIGTERM, signal.SIGKILL):
+        for _p in _kids:
             try:
-                os.killpg(_p.pid, signal.SIGTERM)
+                os.killpg(_p.pid, _sig)
             except (ProcessLookupError, PermissionError):
                 pass
-    time.sleep(1.5)
-    for _p in _kids:
-        if _p.poll() is None:
-            try:
-                os.killpg(_p.pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass
+        if _sig is signal.SIGTERM:
+            time.sleep(1.5)
 
 if _failures:
     print('secure-terminal-tests(instances): %d failed' % _failures)
