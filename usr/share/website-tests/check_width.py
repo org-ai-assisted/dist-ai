@@ -58,6 +58,16 @@ MIN_CHARS = 500
 # (clientWidth minus padding), the union horizontal span of every content unit
 # inside it (elements owning >= 40 chars of direct text, plus form controls and
 # media), and the widest genuinely-wide element present.
+#
+# Denominator = the page's STANDARD content column, i.e. the widest .wrap on the
+# page, not each section's own container. Measuring against the section's own
+# wrap would let a section that narrows its OWN wrap to a third of the page pass
+# at ~1.0 (its content fills that narrow wrap) -- the very layout the gate must
+# reject. A section with no .wrap is judged against its own width (self-relative).
+#
+# Section weight (MIN_CHARS) counts the section's FULL rendered text, not only the
+# text in blocks with >= 40 direct chars: a tall FAQ split into many short items
+# would otherwise sum to near zero and slip through.
 _MEASURE_JS = r"""
 () => {
   const WIDE_TAGS = new Set(['TABLE','PRE','FIGURE','IMG','SVG','CANVAS','VIDEO','IFRAME']);
@@ -68,21 +78,31 @@ _MEASURE_JS = r"""
     for (const c of el.childNodes) if (c.nodeType === 3) n += c.textContent.trim().length;
     return n;
   };
+  const innerW = (el) => {
+    const cs = getComputedStyle(el);
+    return el.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+  };
+  // the page's standard reading column: the widest .wrap present
+  let pageWrap = 0;
+  document.querySelectorAll('.wrap').forEach((w) => {
+    const iw = innerW(w);
+    if (iw > pageWrap) pageWrap = iw;
+  });
   const out = [];
   document.querySelectorAll('main > section, body > section').forEach((sec) => {
-    const wrap = sec.querySelector(':scope > .wrap') || sec;
-    const cs = getComputedStyle(wrap);
-    const avail = wrap.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+    const ownWrap = sec.querySelector(':scope > .wrap');
+    const wrap = ownWrap || sec;
+    // judge against the full column this section COULD use (the page-standard
+    // wrap) when it uses a wrap; against its own width otherwise
+    const avail = ownWrap ? (pageWrap || innerW(wrap)) : innerW(wrap);
     if (avail < 1) return;
-    let nchars = 0, wideW = 0, extMinL = Infinity, extMaxR = -Infinity;
+    let wideW = 0, extMinL = Infinity, extMaxR = -Infinity;
     wrap.querySelectorAll('*').forEach((e) => {
       const s = getComputedStyle(e);
       if (s.visibility === 'hidden' || s.display === 'none') return;
       const r = e.getBoundingClientRect();
       if (r.width < 1 || r.height < 1) return;
-      const dt = directText(e);
-      if (dt >= 40) {
-        nchars += dt;
+      if (directText(e) >= 40) {
         if (r.left < extMinL) extMinL = r.left;
         if (r.right > extMaxR) extMaxR = r.right;
       }
@@ -93,13 +113,14 @@ _MEASURE_JS = r"""
       if (WIDE_TAGS.has(e.tagName) && r.width > wideW) wideW = r.width;
     });
     const extentW = (extMaxR > extMinL) ? (extMaxR - extMinL) : 0;
+    const totalChars = (sec.textContent || '').replace(/\s+/g, ' ').trim().length;
     out.push({
       id: sec.id || '',
       cls: String(sec.className || '').slice(0, 40),
       avail: Math.round(avail),
       extUtil: avail ? Math.round(extentW / avail * 1000) / 1000 : 0,
       wideUtil: avail ? Math.round(wideW / avail * 1000) / 1000 : 0,
-      nchars: nchars,
+      totalChars: totalChars,
       secH: Math.round(sec.getBoundingClientRect().height),
       sample: (sec.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60),
     });
@@ -116,7 +137,7 @@ def is_offender(s):
     return (s['extUtil'] < MIN_UTIL
             and s['wideUtil'] < WIDE_EXEMPT
             and s['secH'] >= MIN_SECTION_PX
-            and s['nchars'] >= MIN_CHARS)
+            and s['totalChars'] >= MIN_CHARS)
 
 
 def _docroots(roots):

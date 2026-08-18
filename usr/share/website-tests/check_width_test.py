@@ -41,10 +41,12 @@ def _load():
     return module
 
 
-def _sec(extUtil=0.63, wideUtil=0.0, secH=600, nchars=800):
+def _sec(extUtil=0.63, wideUtil=0.0, secH=600, totalChars=800):
+    # totalChars = the section's FULL rendered text (not only >=40-char blocks),
+    # so a tall FAQ split into many short items is still weighed as text-heavy.
     return {'id': 's', 'cls': 'cat', 'avail': 1000,
             'extUtil': extUtil, 'wideUtil': wideUtil, 'secH': secH,
-            'nchars': nchars, 'sample': 'x'}
+            'totalChars': totalChars, 'sample': 'x'}
 
 
 def run():
@@ -66,7 +68,11 @@ def run():
     check('wide-element section not flagged',
           not cw.is_offender(_sec(wideUtil=0.95)))
     check('light section not flagged',
-          not cw.is_offender(_sec(nchars=cw.MIN_CHARS - 1)))
+          not cw.is_offender(_sec(totalChars=cw.MIN_CHARS - 1)))
+    # a tall narrow FAQ whose text is spread across many SHORT items still counts
+    # (the weight is the section's full text, so it is not silently accepted)
+    check('short-item text-heavy section still flagged',
+          cw.is_offender(_sec(totalChars=cw.MIN_CHARS)))
 
     # 2. constants sane
     check('MIN_UTIL is a sensible fraction', 0.5 < cw.MIN_UTIL < 0.95, repr(cw.MIN_UTIL))
@@ -79,6 +85,13 @@ def run():
           'FILL_TAGS' in cw._MEASURE_JS and 'TEXTAREA' in cw._MEASURE_JS)
     check('extent unions text blocks',
           'extMinL' in cw._MEASURE_JS and 'extentW' in cw._MEASURE_JS)
+    # denominator is the page-standard column (widest .wrap), so a section that
+    # narrows its OWN wrap to a third of the page is still judged against the
+    # full column it could use, not against its own narrow container.
+    check('denominator is the page-standard wrap',
+          'pageWrap' in cw._MEASURE_JS)
+    check('section weight uses full text',
+          'totalChars' in cw._MEASURE_JS)
 
     # 4. the predicate must be WIRED into main() (defined-but-unused enforces nothing).
     with open(os.path.join(_HERE, 'check_width.py'), encoding='utf-8') as handle:

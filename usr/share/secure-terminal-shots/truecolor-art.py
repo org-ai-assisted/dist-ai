@@ -105,7 +105,9 @@ def scene_color(nx, ny):
                                    horizon + edge_y, ny)
     hill_mask = hill_left * hill_top * hill_bottom
 
-    shade = max(0.0, min(1.0, (ny - ridge) / (horizon - ridge)))
+    # floor the denominator: hill_ridge can land on horizon, and shade is clamped
+    # to [0, 1] regardless, so this only removes a divide-by-zero at that edge.
+    shade = max(0.0, min(1.0, (ny - ridge) / max(1e-6, horizon - ridge)))
     hill = mix((86.0, 150.0, 84.0), (22.0, 66.0, 40.0), shade ** 0.7)
     rim = 0.5 * (1.0 - smoothstep(0.0, 0.12, shade))
     hill = mix(hill, (196.0, 210.0, 150.0), rim)
