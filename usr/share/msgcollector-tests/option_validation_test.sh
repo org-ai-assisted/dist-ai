@@ -27,8 +27,8 @@ shopt -s shift_verbose
 msgcollector_libexec="${MSGCOLLECTOR_REPO}/usr/libexec/msgcollector"
 MSGCOLLECTOR="${msgcollector_libexec}/msgcollector"
 
-if [ ! -r "${MSGCOLLECTOR}" ]; then
-  printf '%s\n' "$0: SKIP: msgcollector not found at '${MSGCOLLECTOR}'" >&2
+if [ ! -x "${MSGCOLLECTOR}" ]; then
+  printf '%s\n' "$0: SKIP: msgcollector not executable at '${MSGCOLLECTOR}'" >&2
   exit 77
 fi
 
