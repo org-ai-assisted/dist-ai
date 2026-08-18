@@ -405,8 +405,8 @@ git -C "${repo}" -c core.hooksPath=/dev/null \
    commit --quiet --message "fixed"
 gate_after="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || true
 
-if printf '%s\n' "${gate_before}" | grep --quiet --fixed-strings 'R-001' \
-   && ! printf '%s\n' "${gate_after}" | grep --quiet --fixed-strings 'R-001' ; then
+if grep --quiet --fixed-strings 'R-001' <<< "${gate_before}" \
+   && ! grep --quiet --fixed-strings 'R-001' <<< "${gate_after}" ; then
    note_pass "gate parity: R-001 failed before the fixer, clean after"
 else
    note_fail "gate parity broken"
@@ -425,8 +425,8 @@ git -C "${repo}" -c core.hooksPath=/dev/null \
    -c user.name=test -c user.email=test@example.com \
    commit --quiet --message "r172 fixed"
 r172_after="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || true
-if printf '%s\n' "${r172_before}" | grep --quiet --fixed-strings 'R-172' \
-   && ! printf '%s\n' "${r172_after}" | grep --quiet --fixed-strings 'R-172' ; then
+if grep --quiet --fixed-strings 'R-172' <<< "${r172_before}" \
+   && ! grep --quiet --fixed-strings 'R-172' <<< "${r172_after}" ; then
    note_pass "gate parity: R-172 short -m failed before the fixer, clean after"
 else
    note_fail "R-172 gate parity broken"
@@ -452,12 +452,100 @@ r172p_after="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || true
 ## Require BOTH markers BEFORE: if only R-172 were asserted the test would pass
 ## vacuously when shellcheck is absent (no SC2174 ever emitted), never proving
 ## the inserted directive suppresses it. shellcheck is a required dep above.
-if printf '%s\n' "${r172p_before}" | grep --quiet --fixed-strings 'R-172' \
-   && printf '%s\n' "${r172p_before}" | grep --quiet --fixed-strings 'SC2174' \
-   && ! printf '%s\n' "${r172p_after}" | grep --quiet --extended-regexp 'R-172|SC2174' ; then
+if grep --quiet --fixed-strings 'R-172' <<< "${r172p_before}" \
+   && grep --quiet --fixed-strings 'SC2174' <<< "${r172p_before}" \
+   && ! grep --quiet --extended-regexp 'R-172|SC2174' <<< "${r172p_after}" ; then
    note_pass "gate parity: --parents atomic form clears R-172 and SC2174 after the fixer"
 else
    note_fail "R-172 --parents gate parity broken (R-172 or SC2174 survived)"
+fi
+
+## --- 9: R-013 split multiple '-o' options onto one 'set' line each ---------
+## Only the PURE multi-'-o' shape is a safe single edit; the short-flag shape
+## and mixed/commented lines stay a reported R-013 for a human.
+r13="${test_dir}/r013.sh"
+printf '%b' '#!/bin/bash\nset -o errexit -o nounset -o pipefail\n' >"${r13}"
+"${FIX}" "${r13}" >/dev/null 2>&1
+if [ "$(grep --count --line-regexp -- 'set -o errexit' "${r13}")" = '1' ] \
+   && [ "$(grep --count --line-regexp -- 'set -o nounset' "${r13}")" = '1' ] \
+   && [ "$(grep --count --line-regexp -- 'set -o pipefail' "${r13}")" = '1' ] \
+   && ! grep --quiet --fixed-strings -- 'set -o errexit -o' "${r13}" ; then
+   note_pass "R-013: multi '-o' line split one per line"
+else
+   note_fail "R-013: multi '-o' split wrong"
+fi
+
+r13_snapshot="$(cat -- "${r13}")"
+"${FIX}" "${r13}" >/dev/null 2>&1
+if [ "$(cat -- "${r13}")" = "${r13_snapshot}" ]; then
+   note_pass "R-013: split is idempotent"
+else
+   note_fail "R-013: second run changed the file"
+fi
+
+## Indentation preserved (a set line inside a function body).
+r13i="${test_dir}/r013_indent.sh"
+printf '%b' '#!/bin/bash\nf() {\n   set -o errexit -o nounset\n}\n' >"${r13i}"
+"${FIX}" "${r13i}" >/dev/null 2>&1
+if grep --quiet --line-regexp -- '   set -o errexit' "${r13i}" \
+   && grep --quiet --line-regexp -- '   set -o nounset' "${r13i}" ; then
+   note_pass "R-013: indentation preserved on split"
+else
+   note_fail "R-013: indentation not preserved"
+fi
+
+## '+o' toggle sign preserved.
+r13p="${test_dir}/r013_plus.sh"
+printf '%b' '#!/bin/bash\nset -o errexit +o history\n' >"${r13p}"
+"${FIX}" "${r13p}" >/dev/null 2>&1
+if grep --quiet --line-regexp -- 'set -o errexit' "${r13p}" \
+   && grep --quiet --line-regexp -- 'set +o history' "${r13p}" ; then
+   note_pass "R-013: '+o' toggle sign preserved"
+else
+   note_fail "R-013: '+o' sign lost"
+fi
+
+## NOT touched: single-option, short-flag bundle, trailing comment -- each is
+## already fine or left for the gate (not a safe single edit here).
+r13n="${test_dir}/r013_untouched.sh"
+printf '%b' '#!/bin/bash\nset -o errexit\nset -eu\nset -o errexit -o nounset # keep\n' >"${r13n}"
+r13n_before="$(cat -- "${r13n}")"
+"${FIX}" "${r13n}" >/dev/null 2>&1
+if [ "$(cat -- "${r13n}")" = "${r13n_before}" ]; then
+   note_pass "R-013: single-option, short-flag, and commented lines left untouched"
+else
+   note_fail "R-013: touched a line outside the pure multi-'-o' shape"
+fi
+
+## Waiver: 'allow-short-set' suppresses the split, lockstep with the gate.
+r13w="${test_dir}/r013_waived.sh"
+printf '%b' '#!/bin/bash\n## style-ok: allow-short-set\nset -o errexit -o nounset\n' >"${r13w}"
+r13w_before="$(cat -- "${r13w}")"
+"${FIX}" "${r13w}" >/dev/null 2>&1
+if [ "$(cat -- "${r13w}")" = "${r13w_before}" ]; then
+   note_pass "R-013: allow-short-set waiver suppresses the split"
+else
+   note_fail "R-013: waiver not honored"
+fi
+
+## Gate parity: a file FAILING pre-push-static R-013 PASSES after the fixer.
+printf '%b' '#!/bin/bash\nset -o errexit -o nounset -o pipefail\n' >"${repo}/r013gate.sh"
+git -C "${repo}" -c core.hooksPath=/dev/null add --all
+git -C "${repo}" -c core.hooksPath=/dev/null \
+   -c user.name=test -c user.email=test@example.com \
+   commit --quiet --message "r013 dirty"
+r13_gate_before="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || true
+"${FIX}" "${repo}/r013gate.sh" >/dev/null 2>&1
+git -C "${repo}" -c core.hooksPath=/dev/null add --all
+git -C "${repo}" -c core.hooksPath=/dev/null \
+   -c user.name=test -c user.email=test@example.com \
+   commit --quiet --message "r013 fixed"
+r13_gate_after="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || true
+if grep --quiet --fixed-strings 'R-013' <<< "${r13_gate_before}" \
+   && ! grep --quiet --fixed-strings 'R-013' <<< "${r13_gate_after}" ; then
+   note_pass "gate parity: R-013 failed before the fixer, clean after"
+else
+   note_fail "R-013 gate parity broken"
 fi
 
 if [ "${fail}" -ne 0 ]; then
