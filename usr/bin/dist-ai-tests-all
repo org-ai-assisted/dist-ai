@@ -75,7 +75,7 @@ core_suites=(
    dist-ai-registry-tests
    github-org-tools-tests
    dm-gitlink-upstream-check-tests
-   git-api-tests
+   github-api-tests
    dm-grub-smbios-tests
    dm-help-steps-tests
    dm-package-depends-tests
@@ -590,7 +590,7 @@ wire() {
          wire_env=()
          wire_args=()
          ;;
-      git-api)
+      github-api)
          ## Self-contained: the transport is stubbed by a fake curl on PATH, so
          ## no request leaves the machine and no token is needed. Guards the
          ## refusals whose failure would leak the bot token.
@@ -704,7 +704,7 @@ suite_component() {
       private-ai-config)
          printf '%s' 'private-ai-config'
          ;;
-      dist-ai-registry|git-api|image-optimize)
+      dist-ai-registry|github-api|image-optimize)
          printf '%s' 'dist-ai'
          ;;
       anon-gw-anonymizer-config)

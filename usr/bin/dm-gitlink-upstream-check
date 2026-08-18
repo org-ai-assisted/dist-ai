@@ -106,7 +106,7 @@ parent_check='auto'
 ## Fixture directory of the running parent self-test, for its cleanup trap.
 parent_self_test_tmp=''
 
-## Where this script lives, so the git-api shipped beside it can be found when
+## Where this script lives, so the github-api shipped beside it can be found when
 ## dist-ai is checked out rather than installed.
 script_dir="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")"
 
@@ -129,10 +129,10 @@ usage() {
 
 github_get() {
   ## Fetch a GitHub REST path, printing the raw JSON body (even on 4xx, so the
-  ## caller can classify a 404 as a definitive 'not in this repo': git-api does
+  ## caller can classify a 404 as a definitive 'not in this repo': github-api does
   ## not pass --fail, and exits 0 printing '{"message": "Not Found"}').
   ##
-  ## Always through the git-api wrapper, never a hand-rolled curl: the wrapper
+  ## Always through the github-api wrapper, never a hand-rolled curl: the wrapper
   ## is what keeps the token off argv and refuses to attach it to a non-GitHub
   ## host. It ships beside this script, so CI has it from the dist-ai checkout
   ## without anything being installed.
@@ -142,19 +142,19 @@ github_get() {
 
 
 git_api_program() {
-  ## Prefer an installed git-api; otherwise the one shipped beside this script,
+  ## Prefer an installed github-api; otherwise the one shipped beside this script,
   ## which is how CI reaches it (the workflow checks dist-ai out as ./dist-ai).
-  if command -v git-api >/dev/null 2>&1; then
-    printf '%s\n' 'git-api'
+  if command -v github-api >/dev/null 2>&1; then
+    printf '%s\n' 'github-api'
     return 0
   fi
-  local sibling="${script_dir}/git-api"
+  local sibling="${script_dir}/github-api"
   if [ -x "${sibling}" ]; then
     printf '%s\n' "${sibling}"
     return 0
   fi
   printf '%s\n' \
-    "::error::git-api not found on PATH nor beside ${BASH_SOURCE[0]}" >&2
+    "::error::github-api not found on PATH nor beside ${BASH_SOURCE[0]}" >&2
   return 2
 }
 
@@ -848,19 +848,19 @@ enumerate_self_test() {
   esac
 
   ## The wrapper must be found from the checkout, not only from an install:
-  ## in CI nothing is installed and git-api is simply the file next to this
-  ## script. Asserted with a PATH that deliberately has no git-api.
+  ## in CI nothing is installed and github-api is simply the file next to this
+  ## script. Asserted with a PATH that deliberately has no github-api.
   local saved_script_dir="${script_dir}"
   mkdir -p "${tmp}/withapi" "${tmp}/without"
-  printf '%s\n' '#!/bin/bash' 'true' > "${tmp}/withapi/git-api"
-  chmod 0755 "${tmp}/withapi/git-api"
+  printf '%s\n' '#!/bin/bash' 'true' > "${tmp}/withapi/github-api"
+  chmod 0755 "${tmp}/withapi/github-api"
 
   script_dir="${tmp}/withapi"
   local resolved
   resolved="$(PATH="${tmp}/without" git_api_program)"
-  if [ "${resolved}" != "${tmp}/withapi/git-api" ]; then
+  if [ "${resolved}" != "${tmp}/withapi/github-api" ]; then
     printf '%s\n' \
-      "enumerate self-test FAIL: sibling git-api not resolved; got '${resolved}'" >&2
+      "enumerate self-test FAIL: sibling github-api not resolved; got '${resolved}'" >&2
     fails=$(( fails + 1 ))
   fi
 
@@ -870,15 +870,15 @@ enumerate_self_test() {
   out="$(PATH="${tmp}/without" git_api_program 2>&1)" || rc=$?
   if (( rc != 2 )); then
     printf '%s\n' \
-      "enumerate self-test FAIL: absent git-api returned ${rc}, expected 2" >&2
+      "enumerate self-test FAIL: absent github-api returned ${rc}, expected 2" >&2
     fails=$(( fails + 1 ))
   fi
   case "${out}" in
-    *'git-api not found'*)
+    *'github-api not found'*)
       true "INFO: the absence is reported"
       ;;
     *)
-      printf '%s\n' 'enumerate self-test FAIL: absent git-api not reported; got:' "${out}" >&2
+      printf '%s\n' 'enumerate self-test FAIL: absent github-api not reported; got:' "${out}" >&2
       fails=$(( fails + 1 ))
       ;;
   esac

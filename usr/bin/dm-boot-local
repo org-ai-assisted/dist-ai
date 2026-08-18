@@ -32,7 +32,18 @@ image_type='qcow2'
 legs='bios/user bios/sysmaint efi/user efi/sysmaint efi-secureboot/user efi-secureboot/sysmaint'
 
 usage() {
-   sed -n '3,13p' -- "${BASH_SOURCE[0]}" | sed 's/^## \{0,1\}//'
+   cat <<'USAGE'
+Local boot-test loop: take an ALREADY BUILT image and run the firmware x session
+matrix in the sandbox, so a boot-side change costs minutes instead of a ~50 min
+CI round trip.
+
+  dm-boot-local --image PATH [--legs "bios/user efi/user ..."]
+  dm-boot-local --from-ci [--run ID] [--type qcow2|iso]   fetch a CI image first
+
+A change that lands INSIDE the image (a package, an /etc/grub.d snippet) still
+needs a rebuild -- this loop is for iterating the BOOT side, or for re-testing an
+image whose contents you have edited in place.
+USAGE
 }
 
 while [ "$#" -gt 0 ]; do
@@ -74,7 +85,7 @@ done
 fetch_from_ci() {
    local runs art_id
    if [ -z "${run_id}" ]; then
-      runs="$(git-api GET "/repos/${REPO}/actions/runs?per_page=30" 2>/dev/null)"
+      runs="$(github-api GET "/repos/${REPO}/actions/runs?per_page=30" 2>/dev/null)"
       run_id="$(printf '%s' "${runs}" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
@@ -89,7 +100,7 @@ for r in d['workflow_runs']:
    ## 'serial-log-qcow2-bios-user' and so on, so a 'qcow2' substring match picks
    ## a 0-byte LOG, and a largest-wins tiebreak silently prefers the ISO when
    ## the qcow2 was asked for.
-   art_id="$(git-api GET "/repos/${REPO}/actions/runs/${run_id}/artifacts?per_page=60" 2>/dev/null \
+   art_id="$(github-api GET "/repos/${REPO}/actions/runs/${run_id}/artifacts?per_page=60" 2>/dev/null \
       | IMAGE_TYPE="${image_type}" python3 -c "
 import json,os,sys
 want='boot-image-'+os.environ['IMAGE_TYPE']
@@ -105,9 +116,9 @@ else:
    [ -n "${art_id}" ] || { printf '%s\n' "run ${run_id} has no unexpired '${image_type}' image artifact (a re-run wipes them)" >&2; exit 1; }
 
    printf '%s\n' "fetching artifact ${art_id} from run ${run_id} ..." >&2
-   git-api GET "/repos/${REPO}/actions/artifacts/${art_id}/zip" -L -o "${TMP}/dm-image.zip"
+   github-api GET "/repos/${REPO}/actions/artifacts/${art_id}/zip" -L -o "${TMP}/dm-image.zip"
    safe-rm -rf -- "${TMP}/dm-image"
-   mkdir --parents -- "${TMP}/dm-image"
+   mkdir --mode=0700 -- "${TMP}/dm-image"
    unzip -q -d "${TMP}/dm-image" -- "${TMP}/dm-image.zip"
    image="$(find "${TMP}/dm-image" -type f \( -name '*.qcow2*' -o -name '*.iso' \) -print -quit)"
    [ -n "${image}" ] || { printf '%s\n' "artifact contained no image" >&2; exit 1; }
@@ -136,7 +147,7 @@ results=''
 for leg in ${legs}; do
    firmware="${leg%%/*}"
    session="${leg##*/}"
-   printf '\n===== %s / %s =====\n' "${firmware}" "${session}" >&2
+   printf '%s\n' "" "===== ${firmware} / ${session} =====" >&2
    rc=0
    ## Separate argv entries, NOT one quoted string: sandbox-run execs what it is
    ## given, so a single string is looked up as one executable PATH and dies 127.
@@ -155,5 +166,5 @@ for leg in ${legs}; do
    fi
 done
 
-printf '\n===== matrix =====\n%s\n%s passed, %s failed\n' "${results}" "${pass}" "${fail}"
+printf '%s\n' "" "===== matrix =====" "${results}" "${pass} passed, ${fail} failed"
 [ "${fail}" -eq 0 ]
