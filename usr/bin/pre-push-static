@@ -243,7 +243,7 @@ if [ "${staged_mode}" -eq 1 ]; then
    ## touches is misread as newly added and fails check-added-large-files.
    base_ref='HEAD'
 elif [ "$#" -ge 1 ] && [ -n "${1}" ]; then
-   if git remote 2>/dev/null | grep --quiet --line-regexp --fixed-strings -- "${1}"; then
+   if git remote 2>/dev/null | grep --line-regexp --fixed-strings -- "${1}" >/dev/null; then
       base_ref='@{u}'
    else
       base_ref="${1}"
@@ -1564,21 +1564,21 @@ check_R172_mkdir_tmp_mode() {
          ## Each 'mkdir ...' command span (to the next separator / '#' comment).
          while IFS= read -r span; do
             ## Only a span that itself creates a temp dir is in scope.
-            if ! printf '%s\n' "${span}" | grep --quiet --extended-regexp -- \
-               '\$\{?(TMPDIR|TEMPDIR|TEMP|TMP)([^A-Za-z0-9_]|$)'; then
+            if ! grep --quiet --extended-regexp -- \
+               '\$\{?(TMPDIR|TEMPDIR|TEMP|TMP)([^A-Za-z0-9_]|$)' <<< "${span}"; then
                continue
             fi
             ## Long '--mode' on the mkdir itself ('--mode=700' or '--mode 700')
             ## -> atomic form present; compliant.
-            if printf '%s\n' "${span}" \
-               | grep --quiet --extended-regexp -- '--mode(=|[[:space:]])'; then
+            if grep --quiet --extended-regexp -- '--mode(=|[[:space:]])' \
+               <<< "${span}"; then
                continue
             fi
             ## Short '-m' on the mkdir ('-m 700', '-m700', bundled '-pm700')
             ## -> atomic but must use the long form.
-            if printf '%s\n' "${span}" \
-               | grep --quiet --extended-regexp -- \
-                  '(^|[[:space:]])-[[:alpha:]]*m([[:space:]]|[0-9]|=|$)'; then
+            if grep --quiet --extended-regexp -- \
+                  '(^|[[:space:]])-[[:alpha:]]*m([[:space:]]|[0-9]|=|$)' \
+                  <<< "${span}"; then
                fail "R-172 mkdir temp dir: use --mode not -m" "'${script}:${line}'"
             else
                fail "R-172 mkdir temp dir missing --mode (TOCTOU; set perms atomically, not via a later chmod)" "'${script}:${line}'"
@@ -1658,8 +1658,9 @@ check_R190_inline_interpreter() {
          ## demonstrates an inline program must be consumed as body text;
          ## treating the inner example as an opener fails a valid push.
          is_interpreter='false'
-         if printf '%s\n' "${line}" | grep --quiet --extended-regexp \
-            '(python3?|perl|ruby|node|php)([[:space:]]+[^|;&<]*)?<<-?[[:space:]]*['"'"'"]?[A-Za-z_][A-Za-z0-9_]*'
+         if grep --quiet --extended-regexp \
+            '(python3?|perl|ruby|node|php)([[:space:]]+[^|;&<]*)?<<-?[[:space:]]*['"'"'"]?[A-Za-z_][A-Za-z0-9_]*' \
+            <<< "${line}"
          then
             is_interpreter='true'
          fi
@@ -2323,6 +2324,60 @@ check_R034_echo() {
    done
 }
 
+check_R161_grep_pipe_quiet() {
+   local script pipe_hits short_hits line
+   local -a fs
+
+   ## R-161, two related bans on grep's quiet flag:
+   ##  (1) A quiet grep (-q/--quiet/--silent) CONSUMING a pipe is a pipefail
+   ##      bug: it exits at the first match, SIGPIPEs the writer on the left,
+   ##      and 'set -o pipefail' (R-010) fails the pipeline with 141. Size-
+   ##      dependent, so it passes on small inputs and flakes on large ones.
+   ##  (2) grep never takes a SHORT quiet flag ('-q','-iq','-Fq') -- R-060.
+   ## A here-string ('grep --quiet ... <<< "$v"') and a plain file read
+   ## ('grep --quiet -- PAT FILE') are NOT pipes and are deliberately spared.
+   ## filter_self drops THIS checker, whose own regex literals name the tokens
+   ## and whose scaffolding uses piped greps it cannot rewrite.
+   mapfile -d '' -t fs < <(filter_self "${@}")
+   if [ "${#fs[@]}" -eq 0 ]; then return 0; fi
+   for script in "${fs[@]}"; do
+      ## (1) grep is the FIRST command after a '|' (a leading '|' covers a
+      ## line-continued pipe stage) and carries a quiet flag among ITS OWN args.
+      ## '[^|;&)#]*' bounds the scan to grep's own arguments -- it stops at a
+      ## later '|', a command terminator (';' '&' ')') or a comment, so a
+      ## following '[ ... -eq N ]' test operator is never read as a short quiet
+      ## cluster. The long '--quiet'/'--silent' and a SHORT single-dash cluster
+      ## carrying 'q' all count. '^[^#]*' excludes comment lines.
+      pipe_hits="$(grep --line-number --extended-regexp \
+         '^[^#]*[|][[:space:]]*grep[^|;&)#]*(--quiet|--silent|[[:space:]]-[[:alpha:]]*q[[:alpha:]]*([[:space:]]|$))' \
+         -- "${script}" 2>/dev/null || true)"
+      if [ -n "${pipe_hits}" ]; then
+         while IFS= read -r line; do
+            fail "R-161 quiet grep consuming a pipe" "'${script}:${line}'"
+         done <<< "${pipe_hits}"
+      fi
+      ## (2) 'grep' in COMMAND position with a SHORT quiet cluster, regardless of
+      ## pipe. Command position (modeled on check_R034_echo, so a 'grep -q' in a
+      ## string is not flagged) is line start, after a separator, or after a
+      ## control keyword -- each with an optional '!' negation ('if ! grep -q').
+      ## The '--quiet'/'--silent' long forms never match: '[[:space:]]-[[:alpha:]]*q'
+      ## needs a SINGLE leading dash. The trailing invert drops a line already
+      ## reported by (1), so a piped '| grep -iq' is not double-flagged.
+      short_hits="$(grep --line-number --extended-regexp \
+            --regexp='^[[:space:]]*(!([[:space:]]+))?grep[^|;&)#]*[[:space:]]-[[:alpha:]]*q[[:alpha:]]*([[:space:]]|$)' \
+            --regexp='^[[:space:]]*[^#]*[;&|(){}`][[:space:]]*(!([[:space:]]+))?grep[^|;&)#]*[[:space:]]-[[:alpha:]]*q[[:alpha:]]*([[:space:]]|$)' \
+            --regexp='^[[:space:]]*([^#]*[[:space:]])?(then|do|else|in|if|elif|while|until)[[:space:]]+(!([[:space:]]+))?grep[^|;&)#]*[[:space:]]-[[:alpha:]]*q[[:alpha:]]*([[:space:]]|$)' \
+            -- "${script}" 2>/dev/null \
+         | grep --invert-match --extended-regexp '[|][[:space:]]*grep' \
+         || true)"
+      if [ -n "${short_hits}" ]; then
+         while IFS= read -r line; do
+            fail "R-161 grep short quiet flag (use --quiet)" "'${script}:${line}'"
+         done <<< "${short_hits}"
+      fi
+   done
+}
+
 check_R153_help_from_comments() {
    local script hits line
    local -a fs
@@ -2796,7 +2851,7 @@ check_comments_audit() {
       return 0
    fi
    out="$( "${auditor}" --files "$@" 2>/dev/null || true )"
-   if [ -n "${out}" ] && ! printf '%s\n' "${out}" | grep --quiet -- '0 candidate findings'; then
+   if [ -n "${out}" ] && ! grep --quiet -- '0 candidate findings' <<< "${out}"; then
       note "R-151 comment-audit candidates (ADVISORY -- review, not a gate failure):"
       printf '%s\n' "${out}" >&2
    fi
@@ -2885,6 +2940,7 @@ run_file_checks() {
       check_R120_rm "${shell_files[@]}"
       check_R130_null_command "${shell_files[@]}"
       check_R034_echo "${shell_files[@]}"
+      check_R161_grep_pipe_quiet "${shell_files[@]}"
       check_R103_exec "${shell_files[@]}"
       check_R190_inline_interpreter "${shell_files[@]}"
       check_R192_shell_inline_shell_c "${shell_files[@]}"
