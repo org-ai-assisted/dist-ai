@@ -97,15 +97,16 @@ fi
 ## value would END that directive and turn the remainder into further curl
 ## config (url / proxy / output / insecure) -- so a stray second line in the
 ## token file, or a CI variable with a trailing newline, could silently
-## redirect the request. GitHub tokens are [A-Za-z0-9_]; refuse anything outside
-## helper-scripts' canonical alnum set [0-9a-zA-Z_-] (check_is_alpha_numeric),
-## inline because this tool must run in a bare CI container with no
-## helper-scripts (see the 'no-has' note above).
+## redirect the request. Refuse anything outside [A-Za-z0-9_.-]: that rejects
+## every config-injection byte (newline, quote, space, '=') while still allowing
+## PATs ([A-Za-z0-9_]) AND GitHub App JWTs (header.payload.signature -- the dots
+## are harmless in the header value). Inline, because this tool must run in a
+## bare CI container with no helper-scripts (see the 'no-has' note above).
 case "${token}" in
   '')
     ;;
-  *[!0-9a-zA-Z_-]*)
-    printf '%s\n' 'github-api: refusing a token with characters outside [0-9a-zA-Z_-] (a newline or quote could break out of the curl --config Authorization directive and redirect the request)' >&2
+  *[!A-Za-z0-9_.-]*)
+    printf '%s\n' 'github-api: refusing a token with characters outside [A-Za-z0-9_.-] (a newline or quote could break out of the curl --config Authorization directive and redirect the request)' >&2
     exit 1
     ;;
 esac

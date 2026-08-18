@@ -185,15 +185,34 @@ out="$(PATH="${tmp}/bin:${PATH}" GITHUB_TOKEN_FILE="${tmp}/token-newline" \
 if [ "${rc}" -eq 0 ]; then
   printf '%s\n' "FAIL: a newline-bearing token was accepted (rc 0): ${out}" >&2
   fails=$(( fails + 1 ))
-elif [ -z "${out##*ARGV:*}" ]; then
-  printf '%s\n' "FAIL: transport ran despite a rejected token: ${out}" >&2
-  fails=$(( fails + 1 ))
 else
-  printf '%s\n' 'ok   newline-bearing token refused before the transport ran'
+  case "${out}" in
+    *'ARGV:'*)
+      printf '%s\n' "FAIL: transport ran despite a rejected token: ${out}" >&2
+      fails=$(( fails + 1 ))
+      ;;
+    *)
+      printf '%s\n' 'ok   newline-bearing token refused before the transport ran'
+      ;;
+  esac
 fi
+
+## A dotted token (a GitHub App JWT, header.payload.signature) must be ACCEPTED
+## -- the dots are safe in the config value, and app auth needs them.
+out="$(PATH="${tmp}/bin:${PATH}" GITHUB_TOKEN_FILE="${tmp}/absent" \
+  GITHUB_TOKEN='eyJhbGci.eyJpc.sig-nature_0' "${git_api}" GET /rate_limit 2>&1)"
+case "${out}" in
+  *'STDIN: '*'Authorization: Bearer eyJhbGci.eyJpc.sig-nature_0'*)
+    printf '%s\n' 'ok   a dotted App-JWT token is accepted'
+    ;;
+  *)
+    printf '%s\n' "FAIL: a dotted App-JWT token was rejected: ${out}" >&2
+    fails=$(( fails + 1 ))
+    ;;
+esac
 
 if (( fails > 0 )); then
   printf '%s\n' "github-api-tests: ${fails} check(s) FAILED" >&2
   exit 1
 fi
-printf '%s\n' 'github-api-tests: PASSED (9 checks, 0 failed, 0 skipped)'
+printf '%s\n' 'github-api-tests: PASSED (10 checks, 0 failed, 0 skipped)'
