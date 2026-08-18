@@ -703,11 +703,17 @@ try:
 finally:
     win._remote_control = _saved_rc
 
-# open (the server side of a single-instance handoff)
+# open (the server side of a --reuse handoff)
 ok(win._ipc_open({'tabs': [{'title': 'opened', 'mode': 'box'}]})['ok'],
    'ipc: open creates the requested tabs')
-win._ipc_open({'tabs': 'not-a-list'})       # opened 0 -> ensure a usable tab
-ok(True, 'ipc: a bare open reuse still leaves a usable tab')
+# --reuse always asks for a new tab, so a bare reuse (no specs) opens a fresh
+# default tab -- it never leaves the running instance unchanged (the old
+# behaviour, which only added a tab when the window had none, was the bug: a
+# bare relaunch did nothing). Assert the tab count actually grew.
+_before_bare = win.tabs.count()
+win._ipc_open({'tabs': 'not-a-list'})       # opened 0 -> a new default tab
+ok(win.tabs.count() == _before_bare + 1,
+   'ipc: a bare reuse opens a NEW default tab (count grows by one)')
 
 # _restore_tab: rebuild a tab from saved session state (bad ints fall back)
 win._restore_tab({'text': 'hi', 'theme': 'dark', 'zoom': 'notanint',
@@ -813,13 +819,15 @@ try:
     # --test-canary fires the headless positive control
     sys.argv = ['secure-terminal', '--new-instance', '--test-canary']
     eq(_main(), 0, 'main: --test-canary runs the headless canary before Qt')
-    # a running instance accepts the launch -> exit 0 without starting Qt
+    # --reuse: hand off to the running primary -> exit 0 without starting Qt.
+    # (Reuse is the ONLY path that hands off now; a bare launch always builds its
+    # own window -- see the new-window test below and the no-handoff regression.)
     M.ipc.send_request = lambda *_a, **_k: {'ok': True}
-    sys.argv = ['secure-terminal', '--title', 'x']
-    eq(_main(), 0, 'main: an existing instance accepts the launch -> 0')
-    # a running instance refusing the launch -> exit 1
+    sys.argv = ['secure-terminal', '--reuse', '--title', 'x']
+    eq(_main(), 0, 'main: --reuse hands off to an existing instance -> 0')
+    # the primary refusing the handoff -> exit 1
     M.ipc.send_request = lambda *_a, **_k: {'ok': False, 'error': 'refused'}
-    eq(_main(), 1, 'main: an existing instance refusing the launch -> 1')
+    eq(_main(), 1, 'main: --reuse to an instance that refuses -> 1')
     # no running instance -> full startup (QApplication + window + event loop),
     # with the app object and its blocking exec() replaced
     M.ipc.send_request = lambda *_a, **_k: None
@@ -835,6 +843,32 @@ try:
     _QA.exec = lambda _self: 0
     sys.argv = ['secure-terminal', '--title', 'fresh']
     eq(_main(), 0, 'main: with no running instance it starts the app + event loop')
+
+    # REGRESSION (the core bug): a bare launch (no --reuse) must NEVER hand off to
+    # a running instance -- it builds its OWN window. Old behaviour handed a bare
+    # relaunch to the running instance, which then did nothing visible. Record every
+    # request main() sends and assert no 'open' handoff is issued without --reuse,
+    # but IS issued with it. (send_request returns a reply so that, on the old code,
+    # a handoff would short-circuit before Qt -- making the regression observable
+    # rather than a hang.)
+    _seen_ops = []
+
+    def _rec(_group, req, *_a, **_k):
+        _seen_ops.append(req.get('op'))
+        return {'ok': True} if req.get('op') == 'open' else None
+
+    M.ipc.send_request = _rec
+    _seen_ops.clear()
+    sys.argv = ['secure-terminal', '--title', 'bare']
+    eq(_main(), 0, 'main: a bare launch builds its own window')
+    ok('open' not in _seen_ops,
+       'main: a bare launch sends NO open handoff (new independent window)')
+    _seen_ops.clear()
+    sys.argv = ['secure-terminal', '--reuse', '--title', 'joined']
+    eq(_main(), 0, 'main: --reuse issues the open handoff and exits')
+    ok('open' in _seen_ops,
+       'main: --reuse DOES send an open handoff to the primary')
+    M.ipc.send_request = lambda *_a, **_k: None
     # SECURE_TERMINAL_SHOT=1 (#51 deterministic screenshot mode): main() stops the
     # app-wide caret blink so no captured frame depends on the caret phase. Drive the
     # full startup with the env set and confirm _shot_mode() takes the shot branch
@@ -1019,6 +1053,34 @@ try:
     APP.processEvents()
 finally:
     M.ipc.ensure_socket_dir = _o_ens
+
+# REGRESSION (socket must not be STOLEN from a live primary): with multiple
+# independent instances, a second instance that finds a live primary on the group
+# socket must stay server-less rather than rebind. The old code unconditionally
+# removeServer()'d + listened, stealing the live socket -- so it ALWAYS created a
+# _server, even when a primary was already up. Drive the ping-first decision with
+# ipc.send_request mocked and assert the observable outcome (whether this instance
+# bound a _server). This assertion FAILS on the old always-bind code.
+_o_sr_steal = M.ipc.send_request
+try:
+    # a live primary answers the ping -> stay server-less, do not rebind its socket
+    M.ipc.send_request = lambda *_a, **_k: {'ok': True, 'pid': 1}
+    _steal = MainWindow()
+    _steal.start_instance_server('busy-group')
+    ok(getattr(_steal, '_server', None) is None,
+       'start_instance_server: a live primary -> stays server-less (socket not stolen)')
+    _steal.deleteLater()
+    APP.processEvents()
+    # no answer (stale/absent socket) -> this instance claims the group and binds
+    M.ipc.send_request = lambda *_a, **_k: None
+    _claim = MainWindow()
+    _claim.start_instance_server('free-group')
+    ok(getattr(_claim, '_server', None) is not None,
+       'start_instance_server: a free group -> this instance claims it (binds)')
+    _claim.deleteLater()
+    APP.processEvents()
+finally:
+    M.ipc.send_request = _o_sr_steal
 
 # --- session persistence + quit/close hooks -----------------------------------
 win.set_persist_session(False)              # disabling clears the saved session
