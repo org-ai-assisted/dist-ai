@@ -47,10 +47,18 @@ mkdir -p "${tmp}/bin"
 } > "${tmp}/bin/curl"
 chmod 0755 "${tmp}/bin/curl"
 
+## github-api PREFERS scurl when present ('command -v scurl'); on a box that has
+## it (Kicksecure), an unstubbed scurl would run a LIVE authenticated request
+## with the fixture token and every assertion would fail on real output. Stub
+## scurl identically so the platform's transport choice is always CAPTURED,
+## never executed.
+cp -- "${tmp}/bin/curl" "${tmp}/bin/scurl"
+
 printf '%s\n' 'secret-token-value' > "${tmp}/token"
 
 run_git_api() {
-  ## github-api with the stub transport, no scurl, and the fixture token file.
+  ## github-api with the stub transport (curl AND scurl both faked) and the
+  ## fixture token file.
   PATH="${tmp}/bin:${PATH}" \
   GITHUB_TOKEN_FILE="${tmp}/token" \
     "${git_api}" "$@" 2>&1
@@ -165,8 +173,27 @@ case "${out}" in
     ;;
 esac
 
+## SECURITY (token injection): a token carrying a byte outside [A-Za-z0-9_.-]
+## -- here a two-line token file, i.e. an embedded newline -- must be REFUSED
+## before the transport runs, or it would break out of the curl --config
+## Authorization directive and could redirect the request. Asserted: non-zero
+## exit AND the stub transport never invoked.
+printf '%s\n' 'goodpart' 'url = "https://evil.example.com"' > "${tmp}/token-newline"
+rc=0
+out="$(PATH="${tmp}/bin:${PATH}" GITHUB_TOKEN_FILE="${tmp}/token-newline" \
+  "${git_api}" GET /rate_limit 2>&1)" || rc=$?
+if [ "${rc}" -eq 0 ]; then
+  printf '%s\n' "FAIL: a newline-bearing token was accepted (rc 0): ${out}" >&2
+  fails=$(( fails + 1 ))
+elif [ -z "${out##*ARGV:*}" ]; then
+  printf '%s\n' "FAIL: transport ran despite a rejected token: ${out}" >&2
+  fails=$(( fails + 1 ))
+else
+  printf '%s\n' 'ok   newline-bearing token refused before the transport ran'
+fi
+
 if (( fails > 0 )); then
   printf '%s\n' "github-api-tests: ${fails} check(s) FAILED" >&2
   exit 1
 fi
-printf '%s\n' 'github-api-tests: PASSED (8 checks, 0 failed, 0 skipped)'
+printf '%s\n' 'github-api-tests: PASSED (9 checks, 0 failed, 0 skipped)'

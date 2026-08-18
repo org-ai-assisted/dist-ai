@@ -255,7 +255,11 @@ if [ "${dry_run}" = "true" ]; then
 fi
 
 printf '%s\n' "${0##*/}: dispatching ${workflow} on ${repo}@${ref} (${local_sha:0:12})..." >&2
-if ! github-api POST "/repos/${repo}/actions/workflows/${workflow}/dispatches" --data "@${payload_file}"; then
+# --fail-with-body: github-api's curl uses --silent --show-error only (no
+# --fail, so callers can read a 4xx body), which means curl exits 0 on a 404/422
+# and a REJECTED dispatch would otherwise print 'dispatched'. --fail-with-body
+# makes curl exit non-zero on >= 400 while still printing the rejection body.
+if ! github-api POST "/repos/${repo}/actions/workflows/${workflow}/dispatches" --data "@${payload_file}" --fail-with-body; then
    printf '%s\n' "${0##*/}: dispatch REJECTED. Note that workflow_dispatch only fires for a workflow file present on the DEFAULT branch." >&2
    exit 1
 fi

@@ -92,6 +92,24 @@ elif [ -n "${GH_TOKEN:-}" ]; then
   token="${GH_TOKEN}"
 fi
 
+## The token reaches curl inside the --config document as
+## header = "Authorization: Bearer <token>". A newline or double-quote in the
+## value would END that directive and turn the remainder into further curl
+## config (url / proxy / output / insecure) -- so a stray second line in the
+## token file, or a CI variable with a trailing newline, could silently
+## redirect the request. GitHub tokens are [A-Za-z0-9_]; refuse anything outside
+## helper-scripts' canonical alnum set [0-9a-zA-Z_-] (check_is_alpha_numeric),
+## inline because this tool must run in a bare CI container with no
+## helper-scripts (see the 'no-has' note above).
+case "${token}" in
+  '')
+    ;;
+  *[!0-9a-zA-Z_-]*)
+    printf '%s\n' 'github-api: refusing a token with characters outside [0-9a-zA-Z_-] (a newline or quote could break out of the curl --config Authorization directive and redirect the request)' >&2
+    exit 1
+    ;;
+esac
+
 curl_program='curl'
 curl_args=(--tlsv1.3 --proto '=https')
 if command -v scurl >/dev/null 2>&1; then
