@@ -81,6 +81,7 @@ for test_file in \
    "${tests_dir}/test_modules.py" \
    "${tests_dir}/test_review.py" \
    "${tests_dir}/test_mainwin.py" \
+   "${tests_dir}/test_instances.py" \
    "${tests_dir}/test_widget.py" \
    "${tests_dir}/test_fuzz_widget.py"; do
    [ -f "${test_file}" ] || continue

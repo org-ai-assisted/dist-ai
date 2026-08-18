@@ -29,6 +29,11 @@ Bucket-1 transforms only (see the plan):
               form stays shellcheck-clean. The missing-mode and 'chmod'-split
               forms are NOT fixed here -- a mode value cannot be guessed and a
               re-merge is multi-line, so pre-push-static FAILS those.
+  * R-161  -- expand a grep SHORT quiet cluster ('-iq' -> '--ignore-case
+              --quiet') to its long-option form (shell files only). The PIPE
+              half of R-161 (a quiet grep consuming a pipe) is NOT fixed here --
+              relocating a redirect / switching to a here-string is multi-token,
+              so pre-push-static FAILS it.
 
 HARD SAFETY LINE: only the known table is touched. Any OTHER non-ASCII byte is
 left exactly as-is for pre-push-static to report (bucket-2) -- so an intentional
@@ -159,6 +164,59 @@ MKDIR_WAIVER_RE = re.compile(
 
 SHELL_EXTS = (".sh", ".bsh")
 SHELL_SHEBANG_RE = re.compile(r'#!.*(/|\s)(bash|sh|dash)(\s|$)')
+
+## R-161 (grep short quiet flag) -- the write side of pre-push-static's
+## short-quiet ban. A bundled short cluster carrying 'q' ('-q','-iq','-Fq') is
+## expanded to its long-option spelling ('--quiet', '--ignore-case --quiet',
+## '--fixed-strings --quiet'). Only NO-ARG grep short options are mappable;
+## GREP_LONG is that table. The PIPE half of R-161 (a quiet grep consuming a
+## pipe) is NOT rewritten here -- relocating a redirect / switching to a
+## here-string is a multi-token structural change, so the gate FAILS it for a
+## human, exactly like R-172's missing-mode mkdir.
+GREP_LONG = {
+    "i": "--ignore-case", "q": "--quiet", "v": "--invert-match",
+    "n": "--line-number", "c": "--count", "l": "--files-with-matches",
+    "L": "--files-without-match", "w": "--word-regexp", "x": "--line-regexp",
+    "E": "--extended-regexp", "F": "--fixed-strings", "G": "--basic-regexp",
+    "P": "--perl-regexp", "o": "--only-matching", "s": "--no-messages",
+    "h": "--no-filename", "H": "--with-filename", "r": "--recursive",
+    "R": "--dereference-recursive", "a": "--text", "z": "--null-data",
+    "Z": "--null", "b": "--byte-offset",
+}
+## Each 'grep ...' command isolated up to the next separator / '#' comment, so a
+## second command sharing the line is never rewritten (mirrors MKDIR_SPAN).
+GREP_SPAN = re.compile(r'grep\b[^;&|#]*')
+## 'grep' must be in COMMAND position for a rewrite -- checked against the text
+## BEFORE the match. Valid: line start, right after a separator ';&|(){}`', or
+## after a control keyword, each with an optional '!' negation and any run of
+## leading VAR=value assignments ('LC_ALL=C grep ...'). 'in' is NOT a command
+## introducer -- it heads a word list ('for x in grep ...'), so it is excluded.
+## This is stricter than the gate's REPORT-side match on purpose: the fixer
+## WRITES, so it only touches the unambiguously-safe subset.
+GREP_CMD_POS = re.compile(
+    r'(?:^\s*|[;&|(){}`]\s*'
+    r'|(?:^|[^\w])(?:then|do|else|if|elif|while|until)\s+)'
+    r'(?:!\s+)?'
+    r'(?:[A-Za-z_]\w*=\S*\s+)*$')
+## Any quote, backslash or '#' in the text BEFORE grep means the line carries
+## quoting / escaping / comment structure a single regex cannot resolve
+## (backslash escapes in "..." but is literal in '...'; '#' may or may not open a
+## comment). Rather than parse shell, the fixer BAILS on such a line -- grep
+## might be string data or a comment -- and leaves it for the gate to REPORT.
+GREP_UNSAFE_PREFIX = re.compile(r'''["'\\#]''')
+## A single-dash short cluster containing 'q' -- the candidate to expand. The
+## lookbehind rules out '--quiet' (preceded by '-') and a bundled value; the
+## lookahead pins the token to a whole word so a quoted pattern is untouched.
+GREP_SHORT_Q = re.compile(r'(?<![\w-])-[A-Za-z]*q[A-Za-z]*(?![\w-])')
+## An ARG-TAKING grep option anywhere in the option region makes a following
+## '-iq'-shaped run ambiguous (it could be that option's VALUE), so the whole
+## grep span is left for the gate rather than risk a wrong rewrite. Short
+## arg-takers end a cluster in one of 'efmABCdD'; the long arg-takers are named.
+GREP_ARG_TAKING = re.compile(
+    r'(?<![\w-])-[A-Za-z]*[efmABCdD](?![\w-])'
+    r'|(?<![\w-])--(?:regexp|file|max-count|after-context|before-context'
+    r'|context|colou?r|binary-files|devices|directories|label'
+    r'|group-separator|exclude(?:-dir|-from)?|include)(?:=|\b)')
 
 
 class StagedDiscoveryError(Exception):
@@ -326,6 +384,61 @@ def upgrade_mkdir_mode(text):
     return "".join(out), count
 
 
+def expand_grep_short_quiet(text):
+    """Per grep COMMAND (not per line): expand a short cluster carrying 'q'
+    ('-iq' -> '--ignore-case --quiet') to its long-option spelling. Confined to
+    the OPTION region (before the first quote or '--'), only when grep is in
+    command position (GREP_CMD_POS) and the region carries no arg-taking grep
+    option (GREP_ARG_TAKING) -- otherwise a '-iq'-shaped run could be another
+    option's value. A token with a letter outside GREP_LONG is left as-is.
+    Idempotent: a long option never re-matches GREP_SHORT_Q."""
+    count = 0
+    out = []
+    for line in text.splitlines(keepends=True):
+        if "grep" not in line:
+            out.append(line)
+            continue
+        pieces = []
+        pos = 0
+        for match in GREP_SPAN.finditer(line):
+            ## Safety FIRST (the HARD SAFETY LINE): only rewrite a grep in an
+            ## UNAMBIGUOUS command position. A quote / backslash / '#' anywhere
+            ## before grep means the line has quoting or comment structure a
+            ## regex cannot safely resolve, so bail -- grep may be string data or
+            ## a comment. The gate still REPORTS the violation.
+            prefix = line[:match.start()]
+            if GREP_UNSAFE_PREFIX.search(prefix):
+                continue
+            if not GREP_CMD_POS.search(prefix):
+                continue
+            span = match.group(0)
+            stop = OPT_END.search(span)
+            cut = stop.start() if stop else len(span)
+            optregion = span[:cut]
+            if GREP_ARG_TAKING.search(optregion):
+                continue
+            rebuilt = []
+            last = 0
+            local = 0
+            for tok in GREP_SHORT_Q.finditer(optregion):
+                letters = tok.group(0)[1:]
+                if not all(char in GREP_LONG for char in letters):
+                    continue
+                rebuilt.append(optregion[last:tok.start()])
+                rebuilt.append(" ".join(GREP_LONG[char] for char in letters))
+                last = tok.end()
+                local += 1
+            if local:
+                newspan = "".join(rebuilt) + optregion[last:] + span[cut:]
+                pieces.append(line[pos:match.start()])
+                pieces.append(newspan)
+                pos = match.end()
+                count += local
+        pieces.append(line[pos:])
+        out.append("".join(pieces))
+    return "".join(out), count
+
+
 def fix_file(path, check):
     """Return a dict of change counts for PATH; write in place unless CHECK.
 
@@ -376,6 +489,15 @@ def fix_file(path, check):
         text, num = upgrade_mkdir_mode(text)
         if num:
             changes["R-172"] = num
+
+    ## R-161: expand a grep short quiet cluster ('-iq') to its long form. Shell
+    ## files only, mirroring the gate's shell scope. The pipe half of R-161 is
+    ## left for the gate (a redirect/here-string move is not a single-token
+    ## edit).
+    if is_shell_file(path):
+        text, num = expand_grep_short_quiet(text)
+        if num:
+            changes["R-161"] = num
 
     if text == original:
         return {}

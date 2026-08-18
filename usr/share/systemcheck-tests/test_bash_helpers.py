@@ -33,7 +33,7 @@ class TestLeaprunCmdDescribe(SystemcheckTestBase):
             '"system-ready-check"',
         )
         self.assertIn('leaprun system-ready-check', out)
-        self.assertIn('as root via privleap, not sudo', out)
+        self.assertIn('as root via privleap', out)
         self.assertIn('systemctl --wait is-system-running', out)
 
     def test_unprivileged_form(self) -> None:

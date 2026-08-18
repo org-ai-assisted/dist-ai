@@ -125,8 +125,37 @@ def test_translate_br_becomes_newline_not_deleted() -> None:
 
 @pytest.mark.skipif(TRANSLATE_FUNC is None,
                     reason='cli_translate_gui_markup not available')
+def test_translate_line_leading_br_collapses_source_newline() -> None:
+    ## Regression: callers write multi-line HTML with a literal source newline
+    ## AND a line-leading <br> per line (the newline is insignificant HTML
+    ## whitespace; the <br> is the break). One logical break must render as ONE
+    ## newline, not a blank line. Mirrors systemcheck's "Time Synchronization
+    ## Result" message shape.
+    msg = ('<p>Result: OK.\n'
+           '<br/>status: <code>success</code>\n'
+           '<br/>sdwdate reports: <code>done</code></p>')
+    ## <p>/<code> are removed by strip-markup downstream; here we only assert the
+    ## line-break translation leaves single newlines between the fields.
+    out = _run_translate(msg).stdout
+    assert '\n\n' not in out, f'blank line from doubled newline: {out!r}'
+    assert out.count('\n') == 2, f'expected 2 line breaks, got: {out!r}'
+
+
+@pytest.mark.skipif(TRANSLATE_FUNC is None,
+                    reason='cli_translate_gui_markup not available')
+def test_translate_intentional_double_br_keeps_blank_line() -> None:
+    ## An explicit blank line (<br><br> with no whitespace between) must survive
+    ## the whitespace-absorbing collapse as two newlines.
+    assert _run_translate('a<br/><br/>b').stdout == 'a\n\nb'
+
+
+@pytest.mark.skipif(TRANSLATE_FUNC is None,
+                    reason='cli_translate_gui_markup not available')
 def test_translate_preserves_plain_text() -> None:
     assert _run_translate('plain words kept').stdout == 'plain words kept'
+    ## A CLI-native message (literal newlines, no <br>) must be left untouched
+    ## by the collapse -- only whitespace adjacent to a <br> is absorbed.
+    assert _run_translate('line1\nline2\nline3').stdout == 'line1\nline2\nline3'
 
 
 @pytest.mark.skipif(TRANSLATE_FUNC is None,
