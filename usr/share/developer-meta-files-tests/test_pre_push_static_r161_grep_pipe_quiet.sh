@@ -280,6 +280,12 @@ assert_fix_unchanged "escaped-quote" \
 ## A comment that starts right after a metacharacter ('; #') is comment text.
 assert_fix_unchanged "comment-after-semicolon" \
    "true${sc}${hash} note${sc} ${grp} ${qs} file"
+## A backslash inside single quotes is LITERAL, so the '\' does not escape the
+## following quote -- grep sits in the SECOND single-quoted string (data).
+assert_fix_unchanged "single-quote-escape" \
+   ": 'foo${bs}' 'run ${sc} ${grp} ${qs} here'"
+## '\'-glued to a keyword is a different command name ('ifx'), not 'if grep'.
+assert_fix_unchanged "backslash-keyword" "if${bs}x ${grp} ${qs} foo"
 
 ## A leading assignment does not stop the expansion (grep IS the command).
 run_fix "assign-expand" "LC_ALL=C ${grp} ${qs} x /etc/os-release"

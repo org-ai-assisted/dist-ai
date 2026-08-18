@@ -2356,9 +2356,10 @@ check_R161_grep_pipe_quiet() {
    ##   assign -- any run of leading 'VAR=value' assignments ('LC_ALL=C grep').
    ##   neg    -- an optional '!' negation ('if ! grep -q').
    ## Residuals accepted (a line grep cannot parse shell): a quiet grep inside a
-   ## string that opens with a separator, an UNQUOTED literal flag pattern after
-   ## '--' ('grep -- -q'), and a pipe split across physical lines with no
-   ## backslash.
+   ## string that opens with a separator; an UNQUOTED literal flag pattern after
+   ## '--' ('grep -- -q'); a QUOTED flag ('grep "--quiet"', a rare false
+   ## negative -- catching it would re-flag the far commoner 'grep -- "--quiet"'
+   ## pattern search); and a pipe split across physical lines with no backslash.
    qtail='-[^-[:space:]efmABCdD]*q[[:alpha:]]*([[:space:]]|$)'
    gpre='grep[[:space:]]+([^|;&)#]*[[:space:]])?'
    quiet="(--quiet([[:space:]]|$)|--silent([[:space:]]|$)|${qtail})"
