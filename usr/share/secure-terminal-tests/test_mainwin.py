@@ -40,6 +40,20 @@ except Exception as exc:  # fail closed: a required dependency must not silently
 
 APP = QApplication.instance() or QApplication([])
 
+# _require_default_font (main) aborts startup with exit 1 when the default font
+# (Hack / fonts-hack, a hard dependency) is absent, so Qt cannot silently
+# substitute a fallback that reintroduces confusable glyphs / ligatures. fonts-hack
+# need not be installed in the test environment, so every full-startup test pins
+# the check present via this fake QFontDatabase; the dedicated _require_default_font
+# test drives both branches AND the real families() API (to catch an API break).
+_REAL_QFONTDB = M.QFontDatabase
+
+
+class _FontDBPresent:
+    @staticmethod
+    def families():
+        return [M.DEFAULT_FONT_FAMILY, 'DejaVu Sans Mono']
+
 # Isolate config/state so the window loads clean defaults regardless of what any
 # earlier suite (run in the same coverage batch) may have written to the real
 # drop-in dirs -- keeps this suite deterministic in any run order.
@@ -806,6 +820,9 @@ import signal as _signal                             # noqa: E402
 from secure_terminal.main import main as _main       # noqa: E402
 from PyQt6.QtWidgets import QApplication as _QA       # noqa: E402
 
+import io as _io                                       # noqa: E402
+import contextlib as _ctx                              # noqa: E402
+
 _o_argv = sys.argv[:]
 _o_sr = M.ipc.send_request
 _o_qa = M.QApplication
@@ -841,6 +858,10 @@ try:
 
     M.QApplication = _AppProxy()
     _QA.exec = lambda _self: 0
+
+    # Pin the default-font check present (see _FontDBPresent) so the startup tests
+    # here do not depend on fonts-hack being installed.
+    M.QFontDatabase = _FontDBPresent
     sys.argv = ['secure-terminal', '--title', 'fresh']
     eq(_main(), 0, 'main: with no running instance it starts the app + event loop')
 
@@ -868,6 +889,38 @@ try:
     ok('open' in _seen_ops,
        'main: --reuse DOES send an open handoff to the primary')
     M.ipc.send_request = lambda *_a, **_k: None
+
+    # _require_default_font: the Hack font (fonts-hack) is a hard dependency. Qt
+    # would SILENTLY substitute a fallback that may reintroduce the confusable
+    # glyphs / ligatures Hack is chosen to avoid, so a missing default font fails
+    # loud like a missing Python dependency (preflight.require) -- main() aborts
+    # with exit 1 before building a window. Drive both branches via the module's
+    # QFontDatabase alias (present is pinned above for the other startup tests).
+    class _FontDBAbsent:
+        @staticmethod
+        def families():
+            return ['DejaVu Sans Mono', 'monospace']
+
+    ok(M._require_default_font() is True,
+       'font: _require_default_font True when the default family is installed')
+    M.QFontDatabase = _FontDBAbsent
+    _err = _io.StringIO()
+    with _ctx.redirect_stderr(_err):
+        ok(M._require_default_font() is False,
+           'font: _require_default_font False when the default family is missing')
+    ok('fonts-hack' in _err.getvalue(),
+       'font: the missing-font message names the fonts-hack package')
+    sys.argv = ['secure-terminal', '--title', 'nofont']
+    with _ctx.redirect_stderr(_io.StringIO()):
+        eq(_main(), 1, 'font: main() exits 1 when the default font is missing')
+    # Drive the REAL QFontDatabase.families() path so an API break (as hasFamily
+    # was removed in Qt6) is caught here, without assuming Hack is installed.
+    M.QFontDatabase = _REAL_QFONTDB
+    with _ctx.redirect_stderr(_io.StringIO()):
+        ok(isinstance(M._require_default_font(), bool),
+           'font: _require_default_font uses a live QFontDatabase API (returns bool)')
+    M.QFontDatabase = _FontDBPresent    # restore present for the shot test below
+
     # SECURE_TERMINAL_SHOT=1 (#51 deterministic screenshot mode): main() stops the
     # app-wide caret blink so no captured frame depends on the caret phase. Drive the
     # full startup with the env set and confirm _shot_mode() takes the shot branch
@@ -888,6 +941,7 @@ finally:
     M.ipc.send_request = _o_sr
     M.QApplication = _o_qa
     _QA.exec = _o_qexec
+    M.QFontDatabase = _REAL_QFONTDB
     _signal.signal(_signal.SIGCHLD, _o_chld)
 
 # --- launch parsing: the instance dispositions are mutually exclusive ----------
@@ -1160,6 +1214,7 @@ try:
             return getattr(QApplication, _n)
 
     M.QApplication = _AP2()
+    M.QFontDatabase = _FontDBPresent    # startup is font-independent here
     QApplication.exec = lambda _s: 0
     sys.argv = ['secure-terminal', '--new-instance', '--name', 'wmname',
                 '--class', 'wmclass']
@@ -1171,6 +1226,7 @@ finally:
     sys.argv = _o_argv2
     M.ipc.send_request = _o_sr3
     M.QApplication = _o_qa2
+    M.QFontDatabase = _REAL_QFONTDB
     QApplication.exec = _o_qexec2
     __import__('signal').signal(__import__('signal').SIGCHLD, _o_chld2)
 
@@ -1618,6 +1674,7 @@ try:
             return getattr(QApplication, _n)
 
     M.QApplication = _AP3()
+    M.QFontDatabase = _FontDBPresent    # startup is font-independent here
     QApplication.exec = lambda _s: 0
 
     def _sig_maybe_raise(signum, handler):
@@ -1633,6 +1690,7 @@ finally:
     sys.argv = _o_argv3
     M.ipc.send_request = _o_sr4
     M.QApplication = _o_qa3
+    M.QFontDatabase = _REAL_QFONTDB
     QApplication.exec = _o_qexec3
     _sig3.signal(_sig3.SIGCHLD, _o_chld3)
 
