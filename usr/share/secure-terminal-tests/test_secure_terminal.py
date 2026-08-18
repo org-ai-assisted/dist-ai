@@ -874,25 +874,26 @@ ok(os.path.isfile(_control) and os.path.isdir(_bindir),
 
 
 def _control_depends(path):
-    """Package names in the folded Depends field (version constraints and the
-    ${...} substvar macros stripped)."""
+    """Package names across EVERY binary stanza's Depends field: version
+    constraints and ${...} substvar macros stripped, and each `a | b`
+    alternative counted (a require()d package satisfied as an alternative is
+    still declared)."""
     lines = open(path, encoding='utf-8').read().splitlines()
-    body = ''
-    for i, ln in enumerate(lines):
-        if ln.startswith('Depends:'):
-            chunk = [ln[len('Depends:'):]]
-            for cont in lines[i + 1:]:
-                if cont[:1] in (' ', '\t'):
-                    chunk.append(cont)
-                else:
-                    break
-            body = ' '.join(chunk)
-            break
     names = set()
-    for tok in body.split(','):
-        head = tok.split()[0] if tok.split() else ''
-        if head and not head.startswith('${'):
-            names.add(head)
+    for i, ln in enumerate(lines):
+        if not ln.startswith('Depends:'):
+            continue
+        chunk = [ln[len('Depends:'):]]
+        for cont in lines[i + 1:]:
+            if cont[:1] in (' ', '\t'):
+                chunk.append(cont)
+            else:
+                break
+        for tok in ' '.join(chunk).split(','):
+            for alt in tok.split('|'):
+                head = alt.split()[0] if alt.split() else ''
+                if head and not head.startswith('${'):
+                    names.add(head)
     return names
 
 
@@ -901,9 +902,11 @@ def _require_packages(bindir):
     launchers, read from the current script text via AST."""
     pkgs = set()
     for launcher in sorted(_glob.glob(os.path.join(bindir, '*'))):
+        if not os.path.isfile(launcher):        # skip a subdir (e.g. __pycache__)
+            continue
         try:
             tree = _ast.parse(open(launcher, encoding='utf-8').read())
-        except (SyntaxError, UnicodeDecodeError):
+        except (SyntaxError, UnicodeDecodeError, OSError):
             continue
         for node in _ast.walk(tree):
             if (isinstance(node, _ast.Call) and isinstance(node.func, _ast.Name)

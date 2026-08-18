@@ -910,9 +910,6 @@ try:
            'font: _require_default_font False when the default family is missing')
     ok('fonts-hack' in _err.getvalue(),
        'font: the missing-font message names the fonts-hack package')
-    sys.argv = ['secure-terminal', '--title', 'nofont']
-    with _ctx.redirect_stderr(_io.StringIO()):
-        eq(_main(), 1, 'font: main() exits 1 when the default font is missing')
     # Drive the REAL QFontDatabase.families() path so an API break (as hasFamily
     # was removed in Qt6) is caught here, without assuming Hack is installed.
     M.QFontDatabase = _REAL_QFONTDB
@@ -920,6 +917,9 @@ try:
         ok(isinstance(M._require_default_font(), bool),
            'font: _require_default_font uses a live QFontDatabase API (returns bool)')
     M.QFontDatabase = _FontDBPresent    # restore present for the shot test below
+    # NOTE: the exit-1 wiring (main() -> `return 1`) is asserted in the block below,
+    # AFTER the threaded single-instance handoff test -- an extra main() call BEFORE
+    # that delicate block destabilizes it into an intermittent segfault.
 
     # SECURE_TERMINAL_SHOT=1 (#51 deterministic screenshot mode): main() stops the
     # app-wide caret blink so no captured frame depends on the caret phase. Drive the
@@ -1222,6 +1222,14 @@ try:
     # a `--` before --test-canary means the canary belongs to the child command
     sys.argv = ['secure-terminal', '--new-instance', '--', '--test-canary']
     ok(M.main() == 0, 'main: --test-canary after -- is left to the child')
+    # the missing-default-font wiring: main() -> `if not _require_default_font():
+    # return 1`. Asserted here (after the threaded handoff test) on purpose -- see
+    # the note in the font block above.
+    M.QFontDatabase = _FontDBAbsent
+    sys.argv = ['secure-terminal', '--new-instance', '--title', 'nofont']
+    with _ctx.redirect_stderr(_io.StringIO()):
+        eq(M.main(), 1, 'font: main() exits 1 when the default font is missing')
+    M.QFontDatabase = _FontDBPresent
 finally:
     sys.argv = _o_argv2
     M.ipc.send_request = _o_sr3
