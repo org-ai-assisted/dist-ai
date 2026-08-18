@@ -85,9 +85,8 @@ def run():
           'FILL_TAGS' in cw._MEASURE_JS and 'TEXTAREA' in cw._MEASURE_JS)
     check('extent unions text blocks',
           'extMinL' in cw._MEASURE_JS and 'extentW' in cw._MEASURE_JS)
-    # denominator is the page-standard column (widest .wrap), so a section that
-    # narrows its OWN wrap to a third of the page is still judged against the
-    # full column it could use, not against its own narrow container.
+    # without this, a section that narrows its OWN wrap to a third of the page
+    # would pass at ~1.0 because its content fills that narrow wrap (codex).
     check('denominator is the page-standard wrap',
           'pageWrap' in cw._MEASURE_JS)
     check('section weight uses full text',
