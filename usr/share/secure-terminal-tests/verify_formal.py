@@ -180,29 +180,18 @@ def t1_z3():
     nibble = z3.Int('nibble')
     in_range = z3.And(0 <= cp, cp <= MAX_CP)
 
-    # (1) The hex-badge nibble lemma: EVERY nibble renders to a SAFE_ASCII digit.
-    # This is the only code-point-dependent part of the reveal/detail badge, so it
-    # is what makes the badge inert for every code point. Proved over the whole
-    # nibble domain, symbolically -- covering every digit position of every cp.
-    if z3_prove('badge-nibble-inert',
-                _in_safe_ascii_z3(_hexchar_z3(nibble)),
-                assumptions=[z3.And(0 <= nibble, nibble <= 15)]):
-        pass
+    # (1) The hex-badge nibble lemma: EVERY hex digit value renders to a SAFE_ASCII
+    # character. Every digit of '%04X' % cp is one such nibble (a value in [0, 15]),
+    # and the width-4 zero padding is '0' (0x30, itself SAFE), so by this lemma the
+    # whole hex field of the reveal / detail badge is inert -- for cp anywhere in
+    # range. The lemma is proved over the entire nibble domain symbolically; that
+    # each real badge's digits are in fact these nibbles is confirmed concretely by
+    # the exhaustive enumeration below (which renders the badge on every code point).
+    z3_prove('badge-nibble-inert',
+             _in_safe_ascii_z3(_hexchar_z3(nibble)),
+             assumptions=[z3.And(0 <= nibble, nibble <= 15)])
 
-    # (2) Each hex DIGIT of a code point is a nibble in [0, 15], so by (1) every
-    # digit of '%04X' % cp is a SAFE_ASCII character -- for cp anywhere in range.
-    # cp < 16**6, so six nibbles cover it; the width-4 zero padding is '0' (0x30),
-    # itself SAFE. Prove the digit-extraction stays in [0, 15] for all cp.
-    for k in range(6):
-        digit = (cp / (16 ** k)) % 16         # z3 Int division is the // we want
-        z3_prove('badge-digit-%d-is-nibble' % k,
-                 z3.And(0 <= digit, digit <= 15),
-                 assumptions=[in_range])
-        z3_prove('badge-digit-%d-inert' % k,
-                 _in_safe_ascii_z3(_hexchar_z3(digit)),
-                 assumptions=[in_range])
-
-    # (3) The badge FRAME + pad characters are all SAFE_ASCII constants:
+    # (2) The badge FRAME + pad characters are all SAFE_ASCII constants:
     #   '<' 0x3C, 'U' 0x55, '+' 0x2B, '>' 0x3E, ' ' 0x20, '0' 0x30 (pad).
     # (The detail badge also carries the Unicode NAME; that its characters are
     # ASCII is the one assumption discharged by enumeration, below.)
@@ -211,7 +200,7 @@ def t1_z3():
             fail('Z3 badge-frame: %r (0x%02X) is not SAFE_ASCII' % (ch, ord(ch)))
     z3_prove('box-placeholder-inert', _in_safe_ascii_z3(z3.IntVal(0x5F)))
 
-    # (4) The strict-mode classifier is TOTAL and DETERMINISTIC: every code point
+    # (3) The strict-mode classifier is TOTAL and DETERMINISTIC: every code point
     # in range is assigned exactly one of the four known classes -- none falls
     # through unclassified (which would be an unhandled byte reaching the screen).
     for mode in STRICT_MODES:
@@ -434,9 +423,14 @@ def t1_canaries():
 #
 # Z3 proves INV is INDUCTIVE: from ANY state satisfying it, EVERY transition
 # lands in a state satisfying it -- for symbolic col, L, M, and numeric parameter,
-# i.e. for input of ANY length (enumeration cannot reach that). The abstract
-# model is then validated against the REAL feed_line_edits on a concrete grid, so
-# the proof binds to the actual code, not just a hand model.
+# i.e. for input of ANY length (enumeration cannot reach that). Two honest limits,
+# both closed by the wide cross-check below: (a) the invariant is verified on the
+# REAL feed_line_edits directly, over the grid; (b) the abstract model is shown
+# equal to the real function point-for-point on that grid, so it is a faithful
+# transcription -- the Z3 induction then extends the invariant past the grid to
+# input of any length. The model is a transcription of the cited code, validated,
+# not the code itself; the grid is finite though it covers every behavioural
+# region and boundary of the (piecewise-linear) transitions.
 # ===========================================================================
 def _zmin(a, b):
     return z3.If(a < b, a, b)
@@ -546,8 +540,8 @@ def _t2_real_step(col, L, M, cls, num):
         'K1': '\x1b[1K', 'K2': '\x1b[2K', 'K3': '\x1b[3K',
     }[cls]
     cells = [('a', ())] * L
-    comp, cells2, col2, _sgr, _wraps = S.feed_line_edits(cells, col, {}, token,
-                                                         max_line=M)
+    _comp, cells2, col2, _sgr, _wraps = S.feed_line_edits(cells, col, {}, token,
+                                                          max_line=M)
     return col2, len(cells2)
 
 
@@ -560,13 +554,23 @@ def _t2_model_step(cls, col, L, M, num):
 
 
 def t2_crosscheck():
-    """Validate the abstract model against the REAL feed_line_edits on an
-    exhaustive concrete grid of INV-satisfying entry states x classes x params,
-    and confirm INV holds on the real result. A model that drifts from the code is
-    caught here (fail loud), so the Z3 proof binds to the real function.
+    """Confirm two things across a WIDE grid of INV-satisfying entry states x
+    classes x parameters:
+      (a) the REAL feed_line_edits keeps the invariant (0 <= col <= len(cells),
+          and len <= max_line) on its result -- the security property, checked
+          directly on the shipped code;
+      (b) the abstract Z3 model predicts the real (col, len) exactly -- so the
+          model the inductive proof reasons over is a faithful transcription of
+          the code on every tested state, and the proof's generalization to
+          UNBOUNDED input is anchored to the real function rather than a free-
+          standing hand model.
+    A model that drifts from the code is caught here (fail loud).
 
-    PROMPT_FLUSH's real flush also needs col != 0 (a flush at column 0 is a no-op);
-    the grid covers col == 0 too, where real behaves as PROMPT_NOOP -- handled."""
+    The grid spans widths incl. the unbounded case and the small widths where the
+    autowrap phantom lives, line lengths past every width, every cursor column, and
+    the CSI parameter break points (empty/0/1/2 and >=3, plus values large enough to
+    exercise the width clamps). The transitions are piecewise-linear in these, so
+    covering each region and its boundaries validates the model, not just points."""
     mismatches = 0
     inv_violations = 0
     # PROMPT_FLUSH is excluded from the concrete grid: its raw form needs printable
@@ -576,15 +580,19 @@ def t2_crosscheck():
     # cells, col = [], 0 -> (0, 0) -- which IS grid-validated, and the Z3 proof
     # covers PROMPT_FLUSH preserving INV directly.
     grid_classes = [c for c in _T2_CLASSES if c != 'PROMPT_FLUSH']
-    for M in (0, 1, 2, 5):
-        for L in range(0, 7):
+    # Widths: unbounded (0), the tiny widths where the autowrap phantom lives
+    # (1, 2), a mid width (3, the "width 3" a reviewer flagged) and a larger one
+    # (5). Params: the empty/0/1/2/>=3 break points (3 and 4 both land in the ">=3"
+    # region, catching an off-by-one) and a value large enough to trip the clamp.
+    for M in (0, 1, 2, 3, 5):
+        for L in range(0, 8):
             if M > 0 and L > M:
                 continue                             # not an INV state
             for col in range(0, L + 1):
                 if M > 0 and col > M:
                     continue
                 for cls in grid_classes:
-                    for num in (None, 0, 1, 2, 3, 7, 50):
+                    for num in (None, 0, 1, 2, 3, 4, 50):
                         real = _t2_real_step(col, L, M, cls, num)
                         model = _t2_model_step(cls, col, L, M, num)
                         if real != model:
@@ -608,46 +616,92 @@ def t2_crosscheck():
 # emitted, is never re-indexed for modification. Establish that MECHANICALLY from
 # the source AST of feed_line_edits (not by sampling), then demonstrate the
 # consequence operationally.
-def t2_append_only_ast():
-    """Assert, from feed_line_edits' own AST, that `completed` is written ONLY by
-    an initial `completed = []` and `completed.append(...)` calls -- never a
-    subscript / slice / augmented assignment. So a completed line's content, once
-    appended, cannot be rewritten: it is immutable within the function, and across
-    calls it has left the carried state entirely (only `cells`, the CURRENT line,
-    is carried). This is the append-only backbone of INV-2 at the pure level."""
-    import ast
-    import inspect
-    tree = ast.parse(inspect.getsource(S.feed_line_edits))
-    plain_assigns = 0
-    for node in ast.walk(tree):
-        # any subscript / attribute store, or augmented assign, targeting completed
-        if isinstance(node, ast.AugAssign) and _names(node.target) == {'completed'}:
-            fail('T2 append-only: `completed` is AUGMENT-assigned (not append-only)')
-        targets = []
-        if isinstance(node, ast.Assign):
-            targets = node.targets
-        for tgt in targets:
-            if isinstance(tgt, ast.Subscript) and _names(tgt.value) == {'completed'}:
-                fail('T2 append-only: `completed` is SUBSCRIPT-assigned')
-            if isinstance(tgt, ast.Name) and tgt.id == 'completed':
-                plain_assigns += 1
-    # exactly one plain rebind: the initial `completed = []`
-    if plain_assigns != 1:
-        fail('T2 append-only: `completed` is plain-assigned %d times (expected 1 '
-             'init)' % plain_assigns)
-    # and every method call on `completed` must be .append
-    for node in ast.walk(tree):
-        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                and isinstance(node.func.value, ast.Name)
-                and node.func.value.id == 'completed'
-                and node.func.attr != 'append'):
-            fail('T2 append-only: `completed.%s(...)` called (only append allowed)'
-                 % node.func.attr)
-
-
 def _names(node):
     import ast
     return {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+
+
+def _append_only_violations(source, name):
+    """Return the list of ways `name` is written OTHER than an initial plain
+    `name = ...` and `name.append(...)`, found in `source` (an ast-parseable
+    string). An empty list means `name` is provably append-only in `source`.
+
+    Collects EVERY store target across every binding form -- not only ast.Assign:
+    an AnnAssign, a walrus, a for / with target, or an augmented assign each rebind
+    or mutate a name, a subscript / del hides a slice store, and a subscript store
+    can hide inside a tuple target. Missing any would let a real mutation pass
+    unreported. Kept as a pure function of `source` so it can be canaried against
+    crafted mutations below."""
+    import ast
+    tree = ast.parse(source)
+    violations = []
+    plain_assigns = 0
+    for node in ast.walk(tree):
+        targets = []
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+        elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)):
+            targets = [node.target]
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            targets = [node.target]
+        elif isinstance(node, ast.withitem) and node.optional_vars is not None:
+            targets = [node.optional_vars]
+        elif isinstance(node, ast.AugAssign):
+            if _names(node.target) == {name}:
+                violations.append('`%s` is AUGMENT-assigned' % name)
+            continue
+        elif isinstance(node, ast.Delete):
+            for tgt in node.targets:            # `del name` / `del name[i]`
+                if _names(tgt) == {name}:
+                    violations.append('`%s` is deleted / del-sliced' % name)
+            continue
+        else:
+            continue
+        flat = []                               # flatten tuple/list/starred targets
+        while targets:
+            tgt = targets.pop()
+            if isinstance(tgt, (ast.Tuple, ast.List)):
+                targets.extend(tgt.elts)
+            elif isinstance(tgt, ast.Starred):
+                targets.append(tgt.value)
+            else:
+                flat.append(tgt)
+        for tgt in flat:
+            if isinstance(tgt, ast.Subscript) and _names(tgt.value) == {name}:
+                violations.append('`%s` is SUBSCRIPT-assigned' % name)
+            if isinstance(tgt, ast.Attribute) and _names(tgt.value) == {name}:
+                violations.append('`%s` attribute is assigned' % name)
+            if isinstance(tgt, ast.Name) and tgt.id == name:
+                plain_assigns += 1
+    if plain_assigns != 1:                      # exactly the initial `name = ...`
+        violations.append('`%s` is plain-assigned %d times (expected 1 init)'
+                          % (name, plain_assigns))
+    for node in ast.walk(tree):                 # every method call must be .append
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == name and node.func.attr != 'append'):
+            violations.append('`%s.%s(...)` called (only append allowed)'
+                              % (name, node.func.attr))
+    return violations
+
+
+def t2_append_only_ast():
+    """Assert, from feed_line_edits' own AST, that `completed` is written ONLY by
+    an initial `completed = []` and `completed.append(...)` calls. So a completed
+    line's content, once appended, cannot be rewritten: it is immutable within the
+    function, and across calls it has left the carried state entirely (only `cells`,
+    the CURRENT line, is carried). This is the append-only backbone of INV-2 at the
+    pure level.
+
+    `completed` is never bound to another name here (which could alias-mutate it) --
+    the single plain assign is `completed = []` and no RHS is a bare `completed` --
+    so no alias exists to mutate through. Aliasing through an arbitrary expression is
+    out of scope for a static check; the cited function has none, and the
+    incremental-equivalence check below exercises the real behaviour."""
+    import inspect
+    for msg in _append_only_violations(inspect.getsource(S.feed_line_edits),
+                                       'completed'):
+        fail('T2 append-only: ' + msg)
 
 
 # Operational consequence: feeding a stream whole equals feeding it in pieces at
@@ -666,7 +720,7 @@ def t2_incremental_equiv():
     for M in (0, 4):
         seqs = [[]]
         for _ in range(3):
-            seqs = [s + [t] for s in seqs for t in _T2_INCR_TOKENS]
+            seqs = [[*s, t] for s in seqs for t in _T2_INCR_TOKENS]
         for toks in seqs:
             whole = S.feed_line_edits([], 0, {}, ''.join(toks), max_line=M)
             comp_whole = whole[0]
@@ -700,6 +754,22 @@ def t2_canaries():
     # (0, L)) must be caught by the real-vs-model comparison.
     real = _t2_real_step(3, 5, 0, 'CR', None)          # real CR -> (0, 5)
     _expect_caught('T2/crosscheck', real != (3, 5))
+
+    # Append-only canary: every crafted mutation of `completed` must be flagged, and
+    # a clean append-only source must NOT be (no false positive).
+    for label, bad in (
+            ('subscript', 'def f():\n completed = []\n completed[0] = 1\n'),
+            ('del-slice', 'def f():\n completed = []\n del completed[0]\n'),
+            ('non-append-call', 'def f():\n completed = []\n completed.pop()\n'),
+            ('tuple-rebind', 'def f():\n completed = []\n a, completed = 1, 2\n'),
+            ('aug-assign', 'def f():\n completed = []\n completed += [1]\n'),
+            ('ann-assign', 'def f():\n completed = []\n completed: list = x\n'),
+            ('for-target', 'def f():\n completed = []\n for completed in x:\n  pass\n')):
+        _expect_caught('T2/append-only:%s' % label,
+                       bool(_append_only_violations(bad, 'completed')))
+    clean = 'def f():\n completed = []\n completed.append(1)\n completed.append(2)\n'
+    if _append_only_violations(clean, 'completed'):
+        fail('T2 append-only: false positive on a clean append-only source')
 
 
 # ===========================================================================
