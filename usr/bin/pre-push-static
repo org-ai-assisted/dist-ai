@@ -2325,8 +2325,10 @@ check_R034_echo() {
 }
 
 check_R161_grep_pipe_quiet() {
-   local script pipe_hits short_hits line
+   local script pipe_hits short_raw line lineno
+   local sp qc assign neg re_a re_b1 re_b2 re_b3
    local -a fs
+   local -A pipe_lines
 
    ## R-161, two related bans on grep's quiet flag:
    ##  (1) A quiet grep (-q/--quiet/--silent) CONSUMING a pipe is a pipefail
@@ -2338,42 +2340,65 @@ check_R161_grep_pipe_quiet() {
    ## ('grep --quiet -- PAT FILE') are NOT pipes and are deliberately spared.
    ## filter_self drops THIS checker, whose own regex literals name the tokens
    ## and whose scaffolding uses piped greps it cannot rewrite.
+   ##
+   ## Shared regex fragments (built once, so the pipe and short-flag scans cannot
+   ## drift apart):
+   ##   sp     -- grep's OWN argument run: stops at a later '|', a command
+   ##             terminator (';' '&' ')') or a '#', so a following '[ ... -eq N ]'
+   ##             test operator is never read as part of grep.
+   ##   qc     -- a SHORT single-dash quiet cluster. '[^-[:space:]efmABCdD]*'
+   ##             forbids an ARG-TAKING short option before the 'q', so '-eq'
+   ##             ('-e' with pattern 'q') is not mistaken for a quiet flag;
+   ##             '--quiet' cannot match (its second char is '-', excluded).
+   ##   assign -- any run of leading 'VAR=value' assignments ('LC_ALL=C grep').
+   ##   neg    -- an optional '!' negation ('if ! grep -q').
+   ## Residuals accepted (a line grep cannot parse shell): a quiet grep inside a
+   ## string that opens with a separator, a literal flag PATTERN after '--'
+   ## ('grep -- -q'), and a pipe split across physical lines with no backslash.
+   sp='[^|;&)#]*'
+   qc='[[:space:]]-[^-[:space:]efmABCdD]*q[[:alpha:]]*([[:space:]]|$)'
+   assign='([A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|]*[[:space:]]+)*'
+   neg='(!([[:space:]]+))?'
+   ## (1) A single '|' (or '|&') -- NOT '||' -- then optional assignments, then
+   ## grep with a quiet flag (long or short). The prefix ends in a non-'#'-non-'|'
+   ## char (or is absent for a leading '|'), which both excludes '||' and keeps a
+   ## comment '#' from reaching the pipe.
+   re_a="^([^#]*[^#|])?[|][&]?[[:space:]]*${assign}grep${sp}(--quiet|--silent|${qc})"
+   ## (2) grep in COMMAND position -- line start, after a separator, or after a
+   ## control keyword (NOT 'in', which heads a word list) -- with a SHORT quiet
+   ## cluster, each position allowing '!' and assignment prefixes. Modeled on
+   ## check_R034_echo, so a 'grep -q' inside a string is not flagged from a bare
+   ## space.
+   re_b1="^[[:space:]]*${neg}${assign}grep${sp}${qc}"
+   re_b2="^[[:space:]]*[^#]*[;&|(){}\`][[:space:]]*${neg}${assign}grep${sp}${qc}"
+   re_b3="^[[:space:]]*([^#]*[[:space:]])?(then|do|else|if|elif|while|until)[[:space:]]+${neg}${assign}grep${sp}${qc}"
+
    mapfile -d '' -t fs < <(filter_self "${@}")
    if [ "${#fs[@]}" -eq 0 ]; then return 0; fi
    for script in "${fs[@]}"; do
-      ## (1) grep is the FIRST command after a '|' (a leading '|' covers a
-      ## line-continued pipe stage) and carries a quiet flag among ITS OWN args.
-      ## '[^|;&)#]*' bounds the scan to grep's own arguments -- it stops at a
-      ## later '|', a command terminator (';' '&' ')') or a comment, so a
-      ## following '[ ... -eq N ]' test operator is never read as a short quiet
-      ## cluster. The long '--quiet'/'--silent' and a SHORT single-dash cluster
-      ## carrying 'q' all count. '^[^#]*' excludes comment lines.
-      pipe_hits="$(grep --line-number --extended-regexp \
-         '^[^#]*[|][[:space:]]*grep[^|;&)#]*(--quiet|--silent|[[:space:]]-[[:alpha:]]*q[[:alpha:]]*([[:space:]]|$))' \
+      pipe_lines=()
+      pipe_hits="$(grep --line-number --extended-regexp "${re_a}" \
          -- "${script}" 2>/dev/null || true)"
       if [ -n "${pipe_hits}" ]; then
          while IFS= read -r line; do
+            [ -z "${line}" ] && continue
             fail "R-161 quiet grep consuming a pipe" "'${script}:${line}'"
+            pipe_lines["${line%%:*}"]=1
          done <<< "${pipe_hits}"
       fi
-      ## (2) 'grep' in COMMAND position with a SHORT quiet cluster, regardless of
-      ## pipe. Command position (modeled on check_R034_echo, so a 'grep -q' in a
-      ## string is not flagged) is line start, after a separator, or after a
-      ## control keyword -- each with an optional '!' negation ('if ! grep -q').
-      ## The '--quiet'/'--silent' long forms never match: '[[:space:]]-[[:alpha:]]*q'
-      ## needs a SINGLE leading dash. The trailing invert drops a line already
-      ## reported by (1), so a piped '| grep -iq' is not double-flagged.
-      short_hits="$(grep --line-number --extended-regexp \
-            --regexp='^[[:space:]]*(!([[:space:]]+))?grep[^|;&)#]*[[:space:]]-[[:alpha:]]*q[[:alpha:]]*([[:space:]]|$)' \
-            --regexp='^[[:space:]]*[^#]*[;&|(){}`][[:space:]]*(!([[:space:]]+))?grep[^|;&)#]*[[:space:]]-[[:alpha:]]*q[[:alpha:]]*([[:space:]]|$)' \
-            --regexp='^[[:space:]]*([^#]*[[:space:]])?(then|do|else|in|if|elif|while|until)[[:space:]]+(!([[:space:]]+))?grep[^|;&)#]*[[:space:]]-[[:alpha:]]*q[[:alpha:]]*([[:space:]]|$)' \
-            -- "${script}" 2>/dev/null \
-         | grep --invert-match --extended-regexp '[|][[:space:]]*grep' \
-         || true)"
-      if [ -n "${short_hits}" ]; then
+      ## Short-flag hits, minus any LINE already reported by (1) -- dedup by line
+      ## number, not by dropping every line that merely contains a '| grep' (that
+      ## let an unrelated 'a | grep x; grep -q y' slip past).
+      short_raw="$(grep --line-number --extended-regexp \
+            --regexp="${re_b1}" --regexp="${re_b2}" --regexp="${re_b3}" \
+            -- "${script}" 2>/dev/null || true)"
+      if [ -n "${short_raw}" ]; then
          while IFS= read -r line; do
+            [ -z "${line}" ] && continue
+            lineno="${line%%:*}"
+            [ -n "${pipe_lines[${lineno}]:-}" ] && continue
             fail "R-161 grep short quiet flag (use --quiet)" "'${script}:${line}'"
-         done <<< "${short_hits}"
+         done <<< "${short_raw}"
       fi
    done
 }

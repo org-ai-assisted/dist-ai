@@ -78,6 +78,7 @@ iqs='-iq'
 dd='--'
 bs=$'\\'
 sc=';'
+hash='#'
 
 fixture_prologue=(
    '#!/bin/bash'
@@ -175,6 +176,28 @@ assert_spared "eq-test-operator" \
    "$(body_of "if [ \"\$(${grp} --count ${dd} x /etc/os-release)\" -eq 2 ]${sc} then" \
       '   true' 'fi')"
 
+## --- (2b) reviewer-driven edge cases ---
+## An OR-list '||' is not a pipe; grep reads the file, so a long quiet flag
+## there is fine (was a false positive that read the second '|' as a pipe).
+assert_spared "or-list" \
+   "$(body_of "false ${pipe}${pipe} ${grp} ${ql} needle /etc/os-release")"
+## '-eq' is '-e' with pattern 'q', not a quiet flag (arg-taker before 'q').
+assert_spared "eq-bundled" "$(body_of "seq 5 ${pipe} ${grp} -eq foo")"
+## 'in' heads a word list, not a command -- grep there is a literal word.
+assert_spared "for-in-wordlist" \
+   "$(body_of "for arg in ${grp} ${qs} foo${sc} do printf '%s' \"\${arg}\"${sc} done")"
+## A leading 'VAR=value' assignment must not hide the violation (false negative).
+assert_flagged "pipe-assign" \
+   "$(body_of "seq 5 ${pipe} LC_ALL=C ${grp} ${ql} 5")"
+assert_flagged "short-assign" \
+   "$(body_of "LC_ALL=C ${grp} -Fq needle /etc/os-release")"
+## A short quiet grep must still be caught when an UNRELATED piped grep shares
+## the line (the old whole-line invert dropped it).
+assert_flagged "short-with-unrelated-pipe" \
+   "$(body_of "${grp} ${qs} x /etc/os-release ${pipe} ${grp} bar")"
+assert_flagged "short-after-unrelated-pipe" \
+   "$(body_of "seq 5 ${pipe} ${grp} x${sc} ${grp} ${qs} y /etc/os-release")"
+
 ## --- (3) pre-push-fix behaviour ---
 run_fix() {
    local name body file
@@ -213,6 +236,42 @@ if grep --fixed-strings -- "run ${grp} ${qs} here" <<< "${fix_result}" >/dev/nul
    printf '%s\n' "PASS: pre-push-fix left a string-embedded grep untouched"
 else
    printf '%s\n' "FAIL: pre-push-fix rewrote a grep inside a string"
+   printf '%s\n' "${fix_result}"
+   fail=1
+fi
+
+## SAFETY: the fixer must never rewrite program DATA -- a grep inside a string
+## (even one that opens with a separator, or with a control keyword) or after a
+## comment stays byte-for-byte. Each fixture is fed verbatim and must come back
+## unchanged.
+assert_fix_unchanged() {
+   local name body
+   name="$1"
+   body="$2"
+   run_fix "${name}" "${body}"
+   if [ "${fix_result}" = "$(printf '%s\n' '#!/bin/bash' "${body}")" ]; then
+      printf '%s\n' "PASS: pre-push-fix left ${name} unchanged"
+   else
+      printf '%s\n' "FAIL: pre-push-fix modified ${name}"
+      printf '%s\n' "${fix_result}"
+      fail=1
+   fi
+}
+## separator inside a double-quoted string.
+assert_fix_unchanged "instring-sep" "printf '%s' \"run${sc} ${grp} ${qs} here\""
+## a control keyword inside a string.
+assert_fix_unchanged "instring-keyword" "printf '%s' \"if ${grp} ${qs} x\""
+## a trailing '#' comment.
+assert_fix_unchanged "in-comment" "true ${hash} note${sc} ${grp} ${qs} file"
+## 'in' word list -- grep is a literal iterated word.
+assert_fix_unchanged "for-in" "for arg in ${grp} ${qs} foo${sc} do true${sc} done"
+
+## A leading assignment does not stop the expansion (grep IS the command).
+run_fix "assign-expand" "LC_ALL=C ${grp} ${qs} x /etc/os-release"
+if grep --fixed-strings -- "LC_ALL=C ${grp} --quiet x" <<< "${fix_result}" >/dev/null; then
+   printf '%s\n' "PASS: pre-push-fix expanded a short cluster behind an assignment"
+else
+   printf '%s\n' "FAIL: pre-push-fix did not expand behind an assignment"
    printf '%s\n' "${fix_result}"
    fail=1
 fi

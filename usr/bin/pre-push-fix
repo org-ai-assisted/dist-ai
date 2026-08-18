@@ -187,16 +187,21 @@ GREP_LONG = {
 ## second command sharing the line is never rewritten (mirrors MKDIR_SPAN).
 GREP_SPAN = re.compile(r'grep\b[^;&|#]*')
 ## 'grep' must be in COMMAND position for a rewrite -- checked against the text
-## BEFORE the match, so a 'grep -q' inside a string ('echo "run grep -q"') or as
-## another word's argument is never rewritten. Valid: line start, right after a
-## separator ';&|(){}`', or after a control keyword, each with an optional '!'
-## negation. This is stricter than the gate's REPORT-side match on purpose: the
-## fixer WRITES, so it only touches the unambiguously-safe subset and leaves the
-## rest for the gate to flag.
+## BEFORE the match. Valid: line start, right after a separator ';&|(){}`', or
+## after a control keyword, each with an optional '!' negation and any run of
+## leading VAR=value assignments ('LC_ALL=C grep ...'). 'in' is NOT a command
+## introducer -- it heads a word list ('for x in grep ...'), so it is excluded.
+## This is stricter than the gate's REPORT-side match on purpose: the fixer
+## WRITES, so it only touches the unambiguously-safe subset.
 GREP_CMD_POS = re.compile(
     r'(?:^\s*|[;&|(){}`]\s*'
-    r'|(?:^|[^\w])(?:then|do|else|in|if|elif|while|until)\s+)'
-    r'(?:!\s+)?$')
+    r'|(?:^|[^\w])(?:then|do|else|if|elif|while|until)\s+)'
+    r'(?:!\s+)?'
+    r'(?:[A-Za-z_]\w*=\S*\s+)*$')
+## A '#' at a word boundary in the prefix means a comment already started before
+## grep -- never rewrite comment text. (Quote PARITY, checked separately, guards
+## the in-a-string case; a '#' inside a still-open quote is caught by that.)
+GREP_IN_COMMENT = re.compile(r'(?:^|\s)#')
 ## A single-dash short cluster containing 'q' -- the candidate to expand. The
 ## lookbehind rules out '--quiet' (preceded by '-') and a bundled value; the
 ## lookahead pins the token to a whole word so a quoted pattern is untouched.
@@ -388,13 +393,22 @@ def expand_grep_short_quiet(text):
     count = 0
     out = []
     for line in text.splitlines(keepends=True):
-        if line.lstrip().startswith("#") or "grep" not in line:
+        if "grep" not in line:
             out.append(line)
             continue
         pieces = []
         pos = 0
         for match in GREP_SPAN.finditer(line):
-            if not GREP_CMD_POS.search(line[:match.start()]):
+            prefix = line[:match.start()]
+            ## Safety FIRST (the HARD SAFETY LINE): never rewrite a grep inside a
+            ## string or a comment -- altering quoted data or comment text would
+            ## corrupt the program. Odd quote count -> grep sits inside an open
+            ## quote; a '#' at a word boundary -> a comment already started.
+            if prefix.count('"') % 2 or prefix.count("'") % 2:
+                continue
+            if GREP_IN_COMMENT.search(prefix):
+                continue
+            if not GREP_CMD_POS.search(prefix):
                 continue
             span = match.group(0)
             stop = OPT_END.search(span)
