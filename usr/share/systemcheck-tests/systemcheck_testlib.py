@@ -165,7 +165,7 @@ def run_bash_function(func_def: str, call: str, env_setup: str = '') -> str:
 ## runner pulls the REAL definitions (so emit_status_line / emit_message output
 ## is exercised for real) rather than stubbing them.
 _EMIT_HELPERS = (
-    'output_if_verbose',
+    'run_if_verbose',
     'html_link',
     'emit_status_line',
     'emit_message',

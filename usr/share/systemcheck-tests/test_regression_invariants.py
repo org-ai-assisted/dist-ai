@@ -85,7 +85,7 @@ class TestRegressionInvariants(SystemcheckTestBase):
         all be defined at column 0."""
         text = read(self.preparation)
         for func in (
-            'output_if_verbose',
+            'run_if_verbose',
             'html_link',
             'emit_status_line',
             'emit_message',

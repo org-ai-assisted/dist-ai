@@ -845,12 +845,11 @@ try:
     eq(_main(), 0, 'main: with no running instance it starts the app + event loop')
 
     # REGRESSION (the core bug): a bare launch (no --reuse) must NEVER hand off to
-    # a running instance -- it builds its OWN window. Old behaviour handed a bare
-    # relaunch to the running instance, which then did nothing visible. Record every
-    # request main() sends and assert no 'open' handoff is issued without --reuse,
-    # but IS issued with it. (send_request returns a reply so that, on the old code,
-    # a handoff would short-circuit before Qt -- making the regression observable
-    # rather than a hang.)
+    # a running instance -- it builds its OWN window. Record every request main()
+    # sends and assert no 'open' handoff is issued without --reuse, but IS issued
+    # with it. send_request returns a reply so that a mistaken handoff would
+    # short-circuit before Qt -- making a regression observable as a wrong result
+    # rather than a hang.
     _seen_ops = []
 
     def _rec(_group, req, *_a, **_k):
@@ -1076,12 +1075,12 @@ finally:
 
 # REGRESSION (socket must not be STOLEN from a live primary): with multiple
 # independent instances, a second instance that finds a live listener on the group
-# socket must stay server-less rather than rebind. The old code unconditionally
-# removeServer()'d + listened, stealing the live socket -- so it ALWAYS created a
-# _server, even when a primary was already up. This drives the REAL sockets (no
+# socket must stay server-less rather than rebind. A mistaken always-bind
+# (removeServer + listen regardless) would steal the live socket, creating a
+# _server even when a primary is already up. This drives the REAL sockets (no
 # mock): a connect probe (ipc.socket_is_live) sees a bound peer even before its
 # event loop can reply, so a concurrent second launch cannot steal it. These
-# assertions FAIL on the old always-bind code.
+# assertions catch a regression to that always-bind behaviour.
 _primary = MainWindow()
 _primary.start_instance_server('steal-group')
 ok(getattr(_primary, '_server', None) is not None,

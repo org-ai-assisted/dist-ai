@@ -23,11 +23,15 @@ import time
 import signal
 import tempfile
 import subprocess
+import importlib.util
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 try:
-    import PyQt6.QtWidgets  # noqa: F401  -- children need it; fail closed if absent
+    # The spawned instances need PyQt6; probe (not import) so a missing dependency
+    # fails this suite LOUD here instead of surfacing as a child that never binds.
+    if importlib.util.find_spec('PyQt6.QtWidgets') is None:
+        raise ImportError('PyQt6.QtWidgets')
     from secure_terminal import ipc
 except Exception as exc:  # fail closed: a required dependency must not silently skip
     sys.stderr.write('secure-terminal-tests(instances): FAIL missing dependency: '
@@ -113,8 +117,8 @@ try:
     ok(_ra is not None and _ra.get('pid') == _a.pid, 'A: the primary pid is A')
 
     # B: a BARE second launch is a NEW INDEPENDENT process, never a handoff -- the
-    # core bug fix (a bare relaunch used to do nothing). Both stay alive, and the
-    # primary is STILL A: B did not steal the live socket.
+    # invariant this suite guards. Both stay alive, and the primary is STILL A: B
+    # did not steal the live socket.
     _b = _spawn('--instance-group', _GROUP)
     time.sleep(5)
     ok(_alive(_a) and _alive(_b),
@@ -141,7 +145,7 @@ try:
         # from the reap list so the finally never killpg's its now-freed PID.
         _kids.remove(_d)
     except subprocess.TimeoutExpired:
-        pass
+        pass  # _drc stays None -> the assertion below fails loud (a stuck --reuse)
     ok(_drc == 0, 'D: --reuse hands off to the primary and exits 0')
     ok(_alive(_a), 'D: the primary A is still alive after serving the --reuse handoff')
 
@@ -168,7 +172,7 @@ finally:
             try:
                 os.killpg(_p.pid, _sig)
             except (ProcessLookupError, PermissionError):
-                pass
+                pass  # group already reaped, or not ours: nothing left to kill
         if _sig is signal.SIGTERM:
             time.sleep(1.5)
 
