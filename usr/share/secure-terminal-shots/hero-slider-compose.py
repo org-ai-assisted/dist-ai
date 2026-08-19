@@ -24,11 +24,22 @@ bottom notice than a plain terminal, so its text starts lower. This:
     hero-slider-compose.py <secure.png> <traditional.png> <out-secure.png> <out-traditional.png>
 """
 
+import os
 import sys
 
 from PIL import Image
 
 WHITE = (255, 255, 255)
+
+
+def shot_scale():
+    """SHOT_SCALE from the environment (default 1), validated like the shell side: a
+    non-integer or < 1 value falls back to 1 rather than distorting the tolerance."""
+    try:
+        s = int(os.environ.get('SHOT_SCALE', '1'))
+    except (TypeError, ValueError):
+        return 1
+    return s if s >= 1 else 1
 
 
 def text_top(im):
@@ -66,10 +77,13 @@ def extent(im, w, h):
 
 # Both hero windows are pinned to ONE width at CAPTURE time (comparison-capture.sh
 # HERO_WIN_W_BASE), so each shot -- cropped to its own window -- should already be the same
-# width bar a few px of VTE cell-snap on the traditional side. A gap wider than one shared
-# cell means that pin BROKE (a narrower window would leave a dead-space band on one side of
-# the slider). Fail loud rather than paper over it with white padding.
-MAX_WIDTH_GAP = 40
+# width bar a few px of VTE cell-snap on the traditional side. A gap wider than a few cells
+# means that pin BROKE (a narrower window would leave a dead-space band on one side of the
+# slider). Fail loud rather than paper over it with white padding. The tolerance is scaled by
+# SHOT_SCALE (the capture pipeline scales every geometry by it) so it keeps meaning ~3 Hack
+# cells at any scale: a FIXED px tolerance would accept multi-cell cropping at SHOT_SCALE=1
+# and could reject a legitimate one-cell snap at a high scale.
+MAX_WIDTH_GAP_BASE = 20   # 1x px, ~3 Hack cells; multiplied by SHOT_SCALE at use
 
 
 def main(argv=None):
@@ -86,12 +100,13 @@ def main(argv=None):
     # band when dragged. They are pinned equal at capture; refuse a composition where they are
     # not (the capture-time pin regressed) instead of hiding it behind padding.
     gap = abs(sec.width - trad.width)
-    if gap > MAX_WIDTH_GAP:
+    max_gap = MAX_WIDTH_GAP_BASE * shot_scale()
+    if gap > max_gap:
         sys.stderr.write(
             'hero-slider-compose: hero window widths differ by %d px (secure %d, traditional'
             ' %d) -- exceeds the %d px cell-snap tolerance; the capture-time width pin'
             ' (HERO_WIN_W_BASE) regressed. Not composing a mismatched slider pair.\n'
-            % (gap, sec.width, trad.width, MAX_WIDTH_GAP))
+            % (gap, sec.width, trad.width, max_gap))
         return 1
 
     tt_sec = text_top(sec)

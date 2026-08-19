@@ -14,7 +14,7 @@
 ## Asserts:
 ##   match     a 6 px cell-snap gap composes to two EQUAL-sized outputs unified to the narrower
 ##             window (no white dead-space band on one side of the slider).
-##   mismatch  the pre-fix 123 px gap is REJECTED (non-zero) instead of papered over.
+##   mismatch  a 125 px gap is REJECTED (non-zero) instead of papered over.
 ##
 ## FAILS on the pre-change tree: the old compose padded to the MAX width and returned 0 for any
 ## gap, so the mismatch case is accepted and the outputs are unequal-width -- a genuine
