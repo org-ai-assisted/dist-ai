@@ -16,7 +16,7 @@ width pin regressed) instead of padding the gap with white.
 
   match     synthetic 1402- and 1396-wide windows (6 px cell-snap): compose must succeed,
             emit two EQUAL-sized outputs, and unify the width to the narrower (1396).
-  mismatch  synthetic 1402- and 1277-wide windows (the pre-fix 123 px gap): compose must
+  mismatch  synthetic 1402- and 1277-wide windows (a 125 px gap): compose must
             REJECT it (non-zero) -- this is the regression canary. The pre-change compose
             padded to the max width and returned 0, so this case fails on the old tree.
 
