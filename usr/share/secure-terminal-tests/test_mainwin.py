@@ -791,9 +791,22 @@ ok(win.tabs.count() == _before_bare + 1,
 
 # _restore_tab: rebuild a tab from saved session state (bad ints fall back)
 win._restore_tab({'text': 'hi', 'theme': 'dark', 'zoom': 'notanint',
-                  'scrollback': 'nope', 'mode': 'box', 'osc': {}})
+                  'scrollback': 'nope', 'mode': 'box', 'osc': {},
+                  'font_family': 123, 'font_size': 'invalid'})
+_bad_tab = win.current()
 win._restore_tab({'allow_title': True, 'bell': 'audible'})   # legacy pre-OSC path
 ok(True, '_restore_tab rebuilds a tab and tolerates bad zoom/scrollback values')
+# a corrupt/hand-edited session with a non-str font_family or non-int font_size must
+# fall back to the default, not crash the restore (.strip() / int() on a bad type).
+eq(_bad_tab.current_font_family(), win._default_font_family,
+   '_restore_tab falls back to the default font family on a non-string saved value')
+eq(_bad_tab.current_font_size(), win._default_font_size,
+   '_restore_tab falls back to the default font size on a non-int saved value')
+# an unhashable saved theme (a JSON array/object) must not crash the membership test
+# (THEMES is a dict); it falls back to the default theme.
+win._restore_tab({'text': '', 'theme': [], 'osc': {}})
+eq(win.current().current_theme(), win._default_theme,
+   '_restore_tab falls back to the default theme on an unhashable saved value')
 
 # a restored tab spawns its shell in the SAVED cwd (bug: pwd was not restored)
 _rcwd = tempfile.mkdtemp(prefix='st-restore-cwd-')
