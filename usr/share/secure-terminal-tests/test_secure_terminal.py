@@ -1103,6 +1103,11 @@ ok(not _capped_on_space.endswith(' '), 'title no trailing space after cap')
 ok(len(S.ANSI_PALETTE) == 16, '16-colour palette')
 ok(S.DISPLAY_MODES == ('box', 'show', 'reveal', 'detail'), 'display modes')
 ok(set(S.THEMES) == {'dark', 'light'}, 'themes')
+# The light theme is "black on white": the foreground must be PURE black, not a soft
+# grey. A grey foreground renders every glyph anti-aliased with no fully-black pixels --
+# soft and less legible than a standard terminal (and it broke the homepage hero
+# comparison). Guard the contrast contract at both ends of the light theme.
+eq(S.THEMES['light'], ('#ffffff', '#000000'), 'light theme is pure black on white')
 
 # --- HTML-injection safety: the widget layer must not use an HTML sink --------
 # secure-terminal shows output via QPlainTextEdit.insertText (plain text), never
