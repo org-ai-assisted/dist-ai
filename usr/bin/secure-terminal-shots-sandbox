@@ -80,6 +80,15 @@ type -P sandbox >/dev/null || die "the 'sandbox' driver is absent (private-ai-co
 target_arg=()
 [ -n "${SANDBOX_TARGET:-}" ] && target_arg=(--target "${SANDBOX_TARGET}")
 
+## Preflight the capture stack in the sandbox. Without it (labwc / Xwayland / the
+## window + screenshot + webp tools) the capture renders 0 shots and fails deep
+## inside the lane with a cryptic message; check the load-bearing binaries up front
+## and point at the one-shot provisioner instead. `sandbox exec` passes the remote
+## exit code through, so a missing binary makes the loop exit 1 here.
+if ! sandbox "${target_arg[@]}" exec 'for b in labwc Xwayland xvfb-run xdotool wmctrl grim xwininfo import optipng jpegoptim cwebp; do type -P "$b" >/dev/null 2>&1 || exit 1; done'; then
+   die "the comparison-shot capture stack (labwc/Xwayland/xdotool/wmctrl/grim/xwininfo/import/optipng/jpegoptim/cwebp) is missing or incomplete in the sandbox -- run:  sandbox provision shots"
+fi
+
 base='st-shots-sandbox'
 
 printf '%s\n' "secure-terminal-shots-sandbox: fresh-syncing three trees into the sandbox ..." >&2
