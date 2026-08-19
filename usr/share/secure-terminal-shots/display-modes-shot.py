@@ -127,7 +127,12 @@ def panel_image(mode):
     needed = rows * metrics.lineSpacing() + 2 * PANEL_INSET
     view.setFixedHeight(max(PANEL_MIN_H, needed))
     QApplication.processEvents()
-    return view.grab().toImage()
+    # Compose in RAW device pixels: pin DPR=1 so the QPainter composition in main() draws each
+    # panel at its full physical size (under QT_SCALE_FACTOR the grab can carry DPR>1, which
+    # QPainter would honour by drawing at half size into the physical-pixel canvas).
+    img = view.grab().toImage()
+    img.setDevicePixelRatio(1.0)
+    return img
 
 
 def main(argv=None):

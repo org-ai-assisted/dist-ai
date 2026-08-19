@@ -128,9 +128,12 @@ SHOT_DEADLINE="${SHOT_DEADLINE:-90}"
 ## the shots keep their size (CSS width:100%); the committed <img> width/height become the
 ## new raster dims (= raster; the browser never upscales them).
 SHOT_SCALE="${SHOT_SCALE:-2}"
+## Reject empty, non-digit, AND any leading zero: a leading-zero value (0, 00, 08, 09) is
+## read as OCTAL in bash arithmetic below -- 00 -> a 0 scale, 08/09 -> a fatal "value too
+## great for base" abort. '0*' rejects the whole leading-zero class in one pattern.
 case "${SHOT_SCALE}" in
-   ''|*[!0-9]*|0)
-      printf '%s\n' "comparison-capture: SHOT_SCALE must be a positive integer, got '${SHOT_SCALE}'" >&2
+   ''|*[!0-9]*|0*)
+      printf '%s\n' "comparison-capture: SHOT_SCALE must be a positive integer with no leading zero, got '${SHOT_SCALE}'" >&2
       exit 2
       ;;
 esac
@@ -696,15 +699,19 @@ capture_window() {  ## $1=output-path  $2=xwayland-window-id
 ## classifying a row so a full-height scrollbar cannot mask the void.
 tighten_deadspace() {  ## $1=png-path
    local f w h side mw bg tmpmap best_start best_len run_start run_len y line
-   local best_end top_h bot_y bot_h margin threshold
+   local best_end top_h bot_y bot_h margin threshold scale
    ## margin/threshold/side are PIXEL tolerances -> scale with the HiDPI factor so the trim
-   ## keeps the same visual behaviour (a "40-row void" is 40*SHOT_SCALE px at 2x).
-   margin="$(px 10)"
-   threshold="$(px 40)"
+   ## keeps the same visual behaviour (a "40-row void" is 40*SHOT_SCALE px at 2x). Read
+   ## SHOT_SCALE directly (default 1) instead of the top-level px() helper, so the function
+   ## stays SELF-CONTAINED when tighten_skip_test.sh extracts and evals it in isolation (the
+   ## helper is not extracted, so a px() call would abort with 'px: command not found').
+   scale="${SHOT_SCALE:-1}"
+   margin=$(( 10 * scale ))
+   threshold=$(( 40 * scale ))
    f="$1"
    [ -f "${f}" ] || return 0
    w="$(identify -format '%w' "${f}")"; h="$(identify -format '%h' "${f}")"
-   side="$(px 40)"; [ "${w}" -gt "$(px 200)" ] || side=0
+   side=$(( 40 * scale )); [ "${w}" -gt $(( 200 * scale )) ] || side=0
    mw=$(( w - 2 * side ))
    ## background = most-frequent colour of the lower half (skips the light top chrome;
    ## background dominates even a screen of garble). grep -m1 closes the pipe after the

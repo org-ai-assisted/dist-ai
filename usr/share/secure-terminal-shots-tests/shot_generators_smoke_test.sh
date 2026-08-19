@@ -108,8 +108,14 @@ run_gen 'paste-warning-shot (copy)'  "${work}/copy.png" \
 
 ## The largest contiguous run of pure-background rows a tight review shot may contain: the
 ## uniform frame margin plus small inter-element gaps. A dead-space regression (empty pane
-## height / scrollbar band) blows far past this.
-MAX_DEAD_ROWS=30
+## height / scrollbar band) blows far past this. The generators default to HiDPI SHOT_SCALE=2,
+## so every pixel dimension -- the frame margin AND the tolerance here -- scales with it; a
+## 2x-composition regression (a wrongly-DPR'd panel drawn at half size) leaves a huge dead
+## band that still blows far past the scaled bound. Mirror the generators' own default so the
+## two stay in step.
+shot_scale="${SHOT_SCALE:-2}"
+case "${shot_scale}" in ''|*[!0-9]*|0*) shot_scale=2 ;; esac
+MAX_DEAD_ROWS=$(( 30 * shot_scale ))
 check_tight() {  ## $1=label $2=png
    local label="$1" png="$2" run=''
    if [ ! -s "${png}" ]; then
