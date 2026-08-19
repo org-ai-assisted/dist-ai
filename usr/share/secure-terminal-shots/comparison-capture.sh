@@ -69,420 +69,30 @@
 ## style-ok: no-tmp-hardcode -- /tmp/.X11-unix is the X11 socket directory fixed by
 ## the protocol; libX11 looks there and nowhere else, so it cannot follow TMPDIR.
 
-set -o errexit
-set -o nounset
-set -o pipefail
-set -o errtrace
-shopt -s inherit_errexit
-shopt -s shift_verbose
 
-here="$(dirname -- "$(readlink --canonicalize -- "$0")")"
-out="${here}/shots"
-mkdir --parents -- "${out}"
-
+here="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")"
 ## the shared hostile-DATA contract (payload command + log generation).
 # shellcheck source=./lib-capture.sh
 source "${here}/lib-capture.sh"
 
-## Fail BEFORE the expensive capture if the bundled webp optimizer is missing -- a direct
-## run (not via the secure-terminal-shots wrapper) resolves it checkout-relative, not by PATH.
-shots_require_image_optimize || exit 1
+## check_runtime.bsh provides was_executed, so this script can be SOURCED (its functions reused
+## by the dist-ai secure-terminal-shots tests) WITHOUT running the capture. Absent -> fail loud.
+if [ ! -r /usr/libexec/helper-scripts/check_runtime.bsh ]; then
+   printf '%s\n' 'comparison-capture: helper-scripts check_runtime.bsh not found' >&2
+   exit 1
+fi
+source /usr/libexec/helper-scripts/check_runtime.bsh
 
-## Resolve the corpus NOW, while HOME is still the operator's -- the reassignment
-## below would otherwise hide the documented ~/private-sources default from the
-## resolver. Export it so shots_generate_logs (run after the reassign) reuses it.
-CORPUS_REPO="$(shots_resolve_corpus "${here}/../../../../terminal-poc-corpus" || true)"
-export CORPUS_REPO
-
-host_display="${DISPLAY:-:0}"
-THEME='Clearlooks'
-## Clearlooks title bar + border height (fallback if _NET_FRAME_EXTENTS is unread).
-## Scaled by SHOT_SCALE below, once the knob is parsed (the real frame grows with the
-## scaled title-bar font; _NET_FRAME_EXTENTS is read dynamically, this is only the fallback).
-FRAME_TOP_BASE=26
-
-runtime_dir="$(mktemp --directory)"
-export XDG_RUNTIME_DIR="${runtime_dir}"
-export HOME="${runtime_dir}/home"
-export XDG_CONFIG_HOME="${runtime_dir}/config"
-mkdir --parents -- "${HOME}" "${XDG_CONFIG_HOME}/labwc"
-
-## The run's unique reaping MARKER: the mktemp runtime dir, which every spawned terminal / GUI
-## carries in its argv (via `--rcfile ${HOME}/.strc` and the recorded pgid file), so a crashed
-## run's orphans can be swept by exactly this string and nothing else.
-run_marker="${runtime_dir}"
-## Per-capture deadline (seconds): a render that hangs longer than this has its process group
-## reaped and the loop continues, so a wedged terminal cannot stall the whole grid.
-SHOT_DEADLINE="${SHOT_DEADLINE:-90}"
-
-## HiDPI capture: render every shot at SHOT_SCALE x device resolution so the published webp
-## stays crisp when a browser upscales it on a HiDPI/Retina display (a 1x shot was blurry
-## both on-page and opened fullscreen). The whole SITE already follows the 2x-source /
-## display-1x convention (logo/icons/badges); the shots were the one 1x exception. The knob
-## drives: Xft.dpi for X clients (xterm/urxvt/st/VTE/konsole/qterminal/alacritty scale their
-## fonts by it), QT_SCALE_FACTOR for the secure-terminal Qt GUI, kitty's own font DPI, the
-## labwc title-bar font (so the server-side chrome scales WITH the content, not against it),
-## and every hardcoded pixel geometry (compositor output, Xvfb screen, window resizes,
-## mouse-park, dead-space trim). The character GRID (cols x rows) is unchanged -- only the
-## pixels-per-cell doubles -- so payload sizing and the toolbar tier are preserved. On-page
-## the shots keep their size (CSS width:100%); the committed <img> width/height become the
-## new raster dims (= raster; the browser never upscales them).
-SHOT_SCALE="${SHOT_SCALE:-2}"
-## Reject empty, non-digit, AND any leading zero: a leading-zero value (0, 00, 08, 09) is
-## read as OCTAL in bash arithmetic below -- 00 -> a 0 scale, 08/09 -> a fatal "value too
-## great for base" abort. '0*' rejects the whole leading-zero class in one pattern.
-case "${SHOT_SCALE}" in
-   ''|*[!0-9]*|0*)
-      printf '%s\n' "comparison-capture: SHOT_SCALE must be a positive integer with no leading zero, got '${SHOT_SCALE}'" >&2
-      exit 2
-      ;;
-esac
-## Force base 10: '08'/'09' pass the all-digit check above but the arithmetic
-## below reads them as OCTAL and dies ('value too great for base'). An accepted
-## value must not abort the run later.
-SHOT_SCALE=$(( 10#${SHOT_SCALE} ))
-## Exported so child scripts inherit the same factor: gnome-hero-launch.sh (hero cell size)
-## and the --jobs lanes / re-capture net / ST pass (which re-exec this script).
-export SHOT_SCALE
-## Xft base DPI a bare Xvfb reports; SHOT_SCALE x this is what X clients render their fonts at.
-XFT_BASE_DPI=96
-xft_dpi=$(( XFT_BASE_DPI * SHOT_SCALE ))
 ## px() -- scale a base (1x) pixel constant by SHOT_SCALE. Used at every hardcoded geometry.
 px() { printf '%s' "$(( $1 * SHOT_SCALE ))"; }
-FRAME_TOP="$(px "${FRAME_TOP_BASE}")"
 
-## Optional scope filters (a FAST PATH for iteration; the FULL matrix is the default, so a bare
-## run never silently skips anything). --only NAME restricts the emulators (repeatable); --case C
-## restricts the cases in BOTH loops (repeatable); --st-only skips the emulators; --quick is a
-## smoke shortcut. The full case list is the single source of truth for both loops.
-## notify is a secure-terminal-only case (emulators have no standard notify shot -- the page's
-## kitty.notify popup is captured separately), so it is in the full matrix for the ST loop but
-## skipped in the emulator loop below.
-all_cases='escape contrast title random homoglyph bidi zerowidth altscreen notify art gradient unicode tui-showcase hero-compare'
-CASES="${CASES:-${all_cases}}"
-## The emulator set, single source of truth for BOTH the capture loop and the --jobs
-## orchestrator's partition. lxterminal is omitted: its single-instance startup maps no
-## window headless.
-DEFAULT_TERMINALS='xterm urxvt st konsole gnome-terminal xfce4-terminal mate-terminal qterminal alacritty kitty'
-only_terminals=''
-cases_sel=''
-st_only=''
-## --jobs N (N>1): orchestrator mode -- partition the grid across N concurrent lanes, each
-## its OWN nested Xvfb+compositor (via its own xvfb-run), then optimize once. --no-st skips the
-## secure-terminal pass (for an emulator-only lane); --optimize-only just webp-converts existing
-## PNGs (the orchestrator's final merge step); --no-optimize leaves PNGs for that merge.
-jobs=1
-no_st=''
-no_optimize=''
-optimize_only=''
-## --prep-dir DIR: a lane copies its payloads + icon theme from DIR (pre-generated ONCE by the
-## orchestrator) instead of running reproduce.py + rasterising the icon itself. Removes the
-## redundant, memory-spiking per-lane setup that OOM-killed a lane at higher --jobs.
-prep_dir=''
-while [ "$#" -gt 0 ]; do
-   case "$1" in
-      --only)
-         [ "$#" -ge 2 ] || { printf '%s\n' 'comparison-capture: --only needs a terminal name' >&2; exit 2; }
-         only_terminals="${only_terminals:+${only_terminals} }$2"
-         shift 2
-         ;;
-      --case)
-         [ "$#" -ge 2 ] || { printf '%s\n' 'comparison-capture: --case needs a case name' >&2; exit 2; }
-         cases_sel="${cases_sel:+${cases_sel} }$2"
-         shift 2
-         ;;
-      --st-only)
-         st_only='true'
-         shift
-         ;;
-      --quick)
-         only_terminals='kitty'
-         cases_sel='escape'
-         shift
-         ;;
-      --jobs)
-         [ "$#" -ge 2 ] || { printf '%s\n' 'comparison-capture: --jobs needs a count' >&2; exit 2; }
-         jobs="$2"
-         shift 2
-         ;;
-      --no-st)
-         no_st='true'
-         shift
-         ;;
-      --no-optimize)
-         no_optimize='true'
-         shift
-         ;;
-      --optimize-only)
-         optimize_only='true'
-         shift
-         ;;
-      --prep-dir)
-         [ "$#" -ge 2 ] || { printf '%s\n' 'comparison-capture: --prep-dir needs a directory' >&2; exit 2; }
-         prep_dir="$2"
-         shift 2
-         ;;
-      *)
-         printf '%s\n' "comparison-capture: unknown argument '$1'" >&2
-         exit 2
-         ;;
-   esac
-done
-if [ -n "${cases_sel}" ]; then
-   CASES="${cases_sel}"
-fi
+## Shared hero-compare window WIDTH (logical 1x px, scaled through px()). The homepage
+## before/after slider overlays the secure-terminal and gnome-terminal hero shots, so BOTH
+## windows are pinned to this ONE width -- secure-terminal in the ST pass, gnome-terminal in
+## shoot() -- and cannot drift apart. Any other width leaves the narrower window ending short
+## of the wider one, so dragging the slider exposes a dead-space band on one side.
+HERO_WIN_W_BASE=700
 
-case "${jobs}" in
-   ''|*[!0-9]*)
-      printf '%s\n' "comparison-capture: --jobs needs a non-negative integer, got '${jobs}'" >&2
-      exit 2
-      ;;
-esac
-
-## --optimize-only: webp-convert the PNGs already in ${out} and stop (the orchestrator's
-## single final merge, after its --no-optimize lanes finished). No capture, no runtime dir.
-if [ -n "${optimize_only}" ]; then
-   safe-rm --recursive --force -- "${runtime_dir}" 2>/dev/null || true
-   shots_optimize_to_webp "${out}"/*.png
-   printf '%s\n' "optimized; webp in ${out}"
-   exit 0
-fi
-
-## --jobs N (N>1): orchestrator. Partition the grid across N concurrent lanes, each a full
-## comparison-capture.sh run over a scope subset in its OWN nested Xvfb + compositor (own
-## xvfb-run --auto-servernum -> a distinct display, so no shared-compositor race). The capture
-## code is reused UNCHANGED; only the work is split. A final --optimize-only pass webp-converts
-## once, so concurrent lanes never race on the shared shots dir's optimize step.
-if [ "${jobs}" -gt 1 ]; then
-   self="${here}/comparison-capture.sh"
-   ## the runtime dir this orchestrator made is unused -- each lane makes its own.
-   safe-rm --recursive --force -- "${runtime_dir}" 2>/dev/null || true
-   fwd_case=()
-   for fc in ${cases_sel}; do fwd_case+=(--case "${fc}"); done
-   if [ -n "${st_only}" ]; then
-      emu_set=''
-   elif [ -n "${only_terminals}" ]; then
-      emu_set="${only_terminals}"
-   else
-      emu_set="${DEFAULT_TERMINALS}"
-   fi
-   ## Pre-generate the payloads + icon theme ONCE into a shared dir; lanes copy from it via
-   ## --prep-dir instead of each running reproduce.py + rasterising the icon (the concurrent,
-   ## memory-spiking setup that OOM-killed a lane). Not in dry-run (no capture happens).
-   orch_prep=''
-   if [ -z "${SHOTS_LANE_DRY_RUN:-}" ]; then
-      orch_prep="$(mktemp --directory)"
-      export XDG_DATA_HOME="${orch_prep}/data"
-      shots_generate_logs "${here}" "${orch_prep}" || exit "$?"
-      shots_install_icon_theme "${orch_prep}/data"
-   fi
-   lane_dir="$(mktemp --directory)"
-   lane_pids=()
-   lane_logs=()
-   lane_i=0
-   ## Stagger emulator-lane startup so their (brief) compositor-bringup phases do not all peak at
-   ## once; the long capture phase still overlaps fully.
-   lane_stagger="${SHOTS_LANE_STAGGER:-6}"
-   spawn_lane() {  ## $@ = args forwarded to a comparison-capture.sh lane
-      local log prep_args
-      log="${lane_dir}/lane.${lane_i}.log"
-      ## SHOTS_LANE_DRY_RUN: print the lane's scope instead of running it, to verify the
-      ## partition (which emulators / ST / cases each lane gets) without a capture.
-      if [ -n "${SHOTS_LANE_DRY_RUN:-}" ]; then
-         printf '%s\n' "LANE ${lane_i}:$(printf ' %s' "$@") --no-optimize"
-         lane_i=$(( lane_i + 1 ))
-         return 0
-      fi
-      prep_args=()
-      [ -n "${orch_prep}" ] && prep_args=(--prep-dir "${orch_prep}")
-      [ "${lane_i}" -gt 0 ] && sleep "${lane_stagger}"
-      xvfb-run --auto-servernum --server-args="-screen 0 $(px 1600)x$(px 1000)x24" \
-         "${self}" "$@" "${prep_args[@]}" --no-optimize >"${log}" 2>&1 &
-      lane_pids+=("$!")
-      lane_logs+=("${log}")
-      lane_i=$(( lane_i + 1 ))
-   }
-   rc=0
-   wait_lanes() {  ## wait for all currently-spawned lanes; echo their logs
-      ## A lane's exit code is NOT folded into the run's rc: under --jobs load a lane can die
-      ## transiently (labwc bringup racing) yet every shot it lost is re-shot by the sequential
-      ## re-capture net below. The AUTHORITATIVE emulator-phase verdict is that net's final
-      ## missing-check (a genuinely absent terminal is caught by the installed-check there), so a
-      ## fully-recovered grid exits 0 and the shots are pulled -- a transient lane failure alone
-      ## must not fail the whole run. A non-zero lane is noted for visibility only.
-      local i lrc
-      i=0
-      while [ "${i}" -lt "${#lane_pids[@]}" ]; do
-         lrc=0
-         wait "${lane_pids[i]}" || lrc="$?"
-         cat -- "${lane_logs[i]}" 2>/dev/null || true
-         [ "${lrc}" -eq 0 ] || printf '%s\n' "note: an emulator lane exited ${lrc} (transient under --jobs load; the re-capture net backstops any missing shot)"
-         i=$(( i + 1 ))
-      done
-      lane_pids=()
-      lane_logs=()
-   }
-   ## PHASE 1: the emulators, in ${jobs} parallel lanes (they tolerate CPU contention).
-   if [ -n "${emu_set}" ]; then
-      bucket=()
-      idx=0
-      for e in ${emu_set}; do
-         b=$(( idx % jobs ))
-         bucket[b]="${bucket[b]:+${bucket[b]} }${e}"
-         idx=$(( idx + 1 ))
-      done
-      b=0
-      while [ "${b}" -lt "${jobs}" ]; do
-         if [ -n "${bucket[b]:-}" ]; then
-            only_args=()
-            for e in ${bucket[b]}; do only_args+=(--only "${e}"); done
-            spawn_lane "${only_args[@]}" --no-st "${fwd_case[@]}"
-         fi
-         b=$(( b + 1 ))
-      done
-      wait_lanes
-   fi
-   ## PHASE 1.5: sequential re-capture net for the emulator pass. Under parallel CPU load a lane
-   ## can screenshot an emulator window before its content paints; capture_settled DISCARDS that
-   ## blank (never publishes black), so a discarded shot leaves no file and a full reshoot would
-   ## omit it -- the residual "manual per-emulator re-run" problem. With every parallel lane now
-   ## finished (zero CPU contention -- the condition under which a sequential re-run reliably
-   ## succeeds), re-shoot any still-missing emulator shot SEQUENTIALLY, one xvfb-run at a time,
-   ## like the ST pass. Bounded rounds; anything still missing after the net is a HARD failure
-   ## (rc=1), never a silent stale shot.
-   if [ -n "${emu_set}" ] && [ -z "${SHOTS_LANE_DRY_RUN:-}" ]; then
-      ## only INSTALLED emulators are expected to yield shots. A genuinely ABSENT emulator is a
-      ## hard error here (an incomplete grid misrepresents the comparison) unless ALLOW_SKIP
-      ## authorizes it -- the same rule the per-lane loop enforces, restated here because lane
-      ## exit codes are no longer folded into rc (a transient labwc failure must not fail the run,
-      ## but a missing terminal must). Only the installed set is chased by the net below.
-      emu_present=''
-      for e in ${emu_set}; do
-         e_path="$(type -P "${e}" 2>/dev/null || true)"
-         if [ -n "${e_path}" ] && [ -x "${e_path}" ]; then
-            emu_present="${emu_present:+${emu_present} }${e}"
-         elif [ -n "${ALLOW_SKIP:-}" ]; then
-            printf '%s\n' "SKIP ${e} (not installed/executable; ALLOW_SKIP authorized)" >&2
-         else
-            printf '%s\n' "ERROR: emulator ${e} is not installed/executable; install it or set ALLOW_SKIP=1" >&2
-            rc=1
-         fi
-      done
-      recap_prep=()
-      [ -n "${orch_prep}" ] && recap_prep=(--prep-dir "${orch_prep}")
-      recap_round=0
-      while [ "${recap_round}" -lt 3 ]; do
-         mapfile -t recap_missing < <(shots_missing_emulator_shots "${out}" "${emu_present}" "${CASES}")
-         [ "${#recap_missing[@]}" -eq 0 ] && break
-         printf '%s\n' "re-capture net (round $(( recap_round + 1 ))): ${#recap_missing[@]} emulator shot(s) missing after the parallel pass; re-shooting sequentially"
-         for pair in "${recap_missing[@]}"; do
-            read -r re_e re_c <<< "${pair}"
-            ## A re-shoot may itself exit non-zero (labwc bringup can still flake) -- its rc is
-            ## NOT folded into the run's rc. Whether the shot now exists is decided by the
-            ## authoritative missing-check after the rounds; a shot still absent then fails hard.
-            xvfb-run --auto-servernum --server-args="-screen 0 $(px 1600)x$(px 1000)x24" \
-               "${self}" --only "${re_e}" --case "${re_c}" --no-st "${recap_prep[@]}" --no-optimize \
-               > "${lane_dir}/recap.${re_e}.${re_c}.log" 2>&1 || true
-            cat -- "${lane_dir}/recap.${re_e}.${re_c}.log" 2>/dev/null || true
-         done
-         recap_round=$(( recap_round + 1 ))
-      done
-      mapfile -t recap_missing < <(shots_missing_emulator_shots "${out}" "${emu_present}" "${CASES}")
-      if [ "${#recap_missing[@]}" -gt 0 ]; then
-         printf '%s\n' "ERROR: ${#recap_missing[@]} emulator shot(s) STILL missing after the re-capture net:" >&2
-         for pair in "${recap_missing[@]}"; do
-            printf '%s\n' "   ${pair}" >&2
-         done
-         rc=1
-      else
-         printf '%s\n' "re-capture net: emulator grid complete, 0 shots missing"
-      fi
-   fi
-   ## PHASE 2: the secure-terminal pass, run SEQUENTIALLY and ALONE. Each ST spec is a fresh Qt
-   ## '--new-instance' cold start; when it competes with the emulator captures (or other ST
-   ## launches) for CPU its render is starved and the shot comes out blank. Running ST after the
-   ## emulator phase, one launch at a time, is what keeps it reliable. (A --st-only request skips
-   ## phase 1 and runs only this.)
-   if [ -z "${SHOTS_LANE_DRY_RUN:-}" ]; then
-      st_prep=()
-      [ -n "${orch_prep}" ] && st_prep=(--prep-dir "${orch_prep}")
-      st_rc=0
-      xvfb-run --auto-servernum --server-args="-screen 0 $(px 1600)x$(px 1000)x24" \
-         "${self}" --st-only "${fwd_case[@]}" "${st_prep[@]}" --no-optimize \
-         > "${lane_dir}/st.log" 2>&1 || st_rc="$?"
-      cat -- "${lane_dir}/st.log" 2>/dev/null || true
-      [ "${st_rc}" -eq 0 ] || rc="${st_rc}"
-   else
-      printf '%s\n' "LANE st(sequential): --st-only$(printf ' %s' "${fwd_case[@]}") --no-optimize"
-   fi
-   safe-rm --recursive --force -- "${lane_dir}" 2>/dev/null || true
-   [ -n "${orch_prep}" ] && safe-rm --recursive --force -- "${orch_prep}" 2>/dev/null || true
-   "${self}" --optimize-only || true
-   printf '%s\n' "done; emulators parallel + secure-terminal sequential; shots in ${out}"
-   exit "${rc}"
-fi
-
-## Reliable reaping REQUIRES the safe-pgrep/safe-pkill wrappers -- fail loudly, never fall back.
-shots_require_safe_ps || exit 1
-## Pre-clean: reap orphaned groups left by any PRIOR crashed run (marker-scoped -- it can never
-## touch a process lacking that run's unique marker), then register this run.
-shots_reap_registered || true
-shots_register_run "${run_marker}"
-
-## Attack payloads come from the terminal-poc-corpus (single source of truth), decoded
-## by its reproduce.py. shots_generate_logs resolves the checkout and returns 77
-## (a SKIP, like a missing ST_REPO) ONLY when the corpus is absent; a real
-## payload-generation failure returns a distinct non-77 code, which is propagated
-## here so a broken reproduce.py is not reported as a skip.
-export XDG_DATA_HOME="${runtime_dir}/data"
-mkdir --parents -- "${XDG_DATA_HOME}"
-if [ -n "${prep_dir}" ]; then
-   ## Lane: reuse the orchestrator's pre-generated payloads + icon theme. COPY (not symlink) the
-   ## payloads so this lane can strip its own tui-showcase copy without mutating the shared one.
-   cp -- "${prep_dir}"/*.payload "${HOME}/" || exit 1
-   if [ -d "${prep_dir}/data" ]; then
-      cp --recursive -- "${prep_dir}/data/." "${XDG_DATA_HOME}/" 2>/dev/null || true
-   fi
-else
-   ## Attack payloads come from the terminal-poc-corpus (single source of truth), decoded by its
-   ## reproduce.py; secure-terminal's icon is rasterised into the session icon theme so labwc
-   ## shows the real title-bar logo.
-   shots_generate_logs "${here}" "${HOME}" || exit "$?"
-   shots_install_icon_theme "${XDG_DATA_HOME}"
-fi
-## The shell prompt for every shot. Single-sourced so the content-verify
-## (shots_transcript_has_content) strips the EXACT prompt the shell prints when
-## deciding whether an injected payload actually rendered.
-SHOT_PROMPT='user@host:~$ '
-cat > "${HOME}/.strc" <<RC
-PS1='${SHOT_PROMPT}'
-RC
-
-## labwc config: the Clearlooks theme, server-side decorations. The title-bar font is
-## scaled by SHOT_SCALE so the server-side chrome (and its title -- where the OSC-0 hijack
-## shows) renders at the same 2x as the terminal content, not half-scale against it. labwc
-## is a native Wayland compositor and does NOT read Xft.dpi, so its font is scaled here.
-titlebar_pt="$(( 10 * SHOT_SCALE ))"
-cat > "${XDG_CONFIG_HOME}/labwc/rc.xml" <<XML
-<?xml version="1.0"?>
-<labwc_config>
-  <theme>
-    <name>${THEME}</name>
-    <font place="ActiveWindow"><name>sans</name><size>${titlebar_pt}</size></font>
-    <font place="InactiveWindow"><name>sans</name><size>${titlebar_pt}</size></font>
-  </theme>
-  <core><decoration>server</decoration></core>
-  <placement><policy>automatic</policy></placement>
-</labwc_config>
-XML
-
-## launch each emulator FROM ${HOME} so a plain "cat escape.payload" finds it.
-cd "${HOME}"
-
-wm_pid=''
-labwc_wid=''
-xwl_display=''
-base_wids=''
 cleanup() {
    ## safety net: reap any capture group that leaked from a failed shoot, then drop this run
    ## from the registry (its groups are gone) BEFORE the runtime dir is removed.
@@ -492,7 +102,6 @@ cleanup() {
    [ -z "${wm_pid}" ] || wait "${wm_pid}" 2>/dev/null || true
    safe-rm -r -f -- "${runtime_dir}" 2>/dev/null || true
 }
-trap cleanup EXIT
 
 ## List the child window IDs of the root window on the host X server. labwc's
 ## wlroots x11-backend output window is a normal child of root but carries NO
@@ -573,11 +182,9 @@ launch() {  ## $1=emulator  $2=case  $3=pgid-file
    ## PIXELS, so it scales with SHOT_SCALE.
    rows=24; kh="$(px 430)"; cols=84
    if [ "${case}" = tui-showcase ]; then rows=32; kh="$(px 620)"; fi
-   ## hero-compare: match the secure-terminal hero window WIDTH (~640px -- the app's minimum with
-   ## its labelled toolbar) at the shared Hack/72-DPI cell size, so the homepage slider's two
-   ## windows are the same size and their text overlaps. 95 cols of Hack at 11pt/72-DPI lands near
-   ## that width.
-   if [ "${case}" = hero-compare ]; then cols=97; fi
+   ## hero-compare: the window is pinned to the shared HERO_WIN_W_BASE width AFTER launch (in
+   ## shoot()), so the initial column count here is not load-bearing for the final width -- the
+   ## board is injected only once the window is at its final size. Keep the default grid.
    cmd=()
    case "${e}" in
       xterm)
@@ -941,7 +548,7 @@ find_window() {
 }
 
 shoot() {  ## $1=emulator  $2=case
-   local e case wid ww rescue_h pgf flagf epgid wdog cur_w
+   local e case wid ww rescue_h pgf flagf epgid wdog cur_w cur_h
    e="$1"; case="$2"; wid=''
    ## the tall tui-showcase board needs a taller pixel-resized window (qterminal +
    ## the shrink rescue); the short cases keep their prior heights so their shots and
@@ -983,6 +590,17 @@ shoot() {  ## $1=emulator  $2=case
       DISPLAY="${xwl_display}" xdotool windowsize "${wid}" "${cur_w}" "$(px 880)" 2>/dev/null || true
       sleep 0.6
    fi
+   ## hero-compare: pin the window to the shared HERO_WIN_W_BASE width, so this traditional
+   ## terminal is the SAME horizontal length as the secure-terminal hero window and the two
+   ## overlay perfectly in the homepage before/after slider (no dead-space band on either side).
+   ## Keep the emulator's own height (compose aligns the text tops and pads heights). Resize
+   ## BEFORE inject so the board renders at the final width and never reflows after.
+   if [ "${case}" = hero-compare ]; then
+      cur_h="$(DISPLAY="${xwl_display}" xdotool getwindowgeometry --shell "${wid}" 2>/dev/null | sed -n 's/^HEIGHT=//p' || true)"
+      [ -n "${cur_h}" ] || cur_h="${rescue_h}"
+      DISPLAY="${xwl_display}" xdotool windowsize "${wid}" "$(px "${HERO_WIN_W_BASE}")" "${cur_h}" 2>/dev/null || true
+      sleep 0.6
+   fi
    wait_window_ready "${wid}"
    inject "${wid}" "$(shots_payload_cmd "${case}")"
    sleep 3
@@ -1000,6 +618,424 @@ shoot() {  ## $1=emulator  $2=case
    shots_reap_group "${epgid}"
    safe-rm -f -- "${pgf}" "${flagf}" 2>/dev/null || true
 }
+
+## Strict mode ONLY when executed, so sourcing this file (a test reusing the functions above)
+## does not inherit errexit/nounset into the caller's shell.
+if was_executed "${BASH_SOURCE[0]}"; then
+   set -o errexit
+   set -o nounset
+   set -o pipefail
+   set -o errtrace
+   shopt -s inherit_errexit
+   shopt -s shift_verbose
+fi
+
+## SOURCE-SAFE boundary: the functions ABOVE are now defined; stop here when sourced so none of
+## the capture set-up, orchestration or main loop BELOW runs. Everything below runs on a direct run.
+was_executed "${BASH_SOURCE[0]}" || return 0
+
+out="${here}/shots"
+mkdir --parents -- "${out}"
+
+
+## Fail BEFORE the expensive capture if the bundled webp optimizer is missing -- a direct
+## run (not via the secure-terminal-shots wrapper) resolves it checkout-relative, not by PATH.
+shots_require_image_optimize || exit 1
+
+## Resolve the corpus NOW, while HOME is still the operator's -- the reassignment
+## below would otherwise hide the documented ~/private-sources default from the
+## resolver. Export it so shots_generate_logs (run after the reassign) reuses it.
+CORPUS_REPO="$(shots_resolve_corpus "${here}/../../../../terminal-poc-corpus" || true)"
+export CORPUS_REPO
+
+host_display="${DISPLAY:-:0}"
+THEME='Clearlooks'
+## Clearlooks title bar + border height (fallback if _NET_FRAME_EXTENTS is unread).
+## Scaled by SHOT_SCALE below, once the knob is parsed (the real frame grows with the
+## scaled title-bar font; _NET_FRAME_EXTENTS is read dynamically, this is only the fallback).
+FRAME_TOP_BASE=26
+
+runtime_dir="$(mktemp --directory)"
+export XDG_RUNTIME_DIR="${runtime_dir}"
+export HOME="${runtime_dir}/home"
+export XDG_CONFIG_HOME="${runtime_dir}/config"
+mkdir --parents -- "${HOME}" "${XDG_CONFIG_HOME}/labwc"
+
+## The run's unique reaping MARKER: the mktemp runtime dir, which every spawned terminal / GUI
+## carries in its argv (via `--rcfile ${HOME}/.strc` and the recorded pgid file), so a crashed
+## run's orphans can be swept by exactly this string and nothing else.
+run_marker="${runtime_dir}"
+## Per-capture deadline (seconds): a render that hangs longer than this has its process group
+## reaped and the loop continues, so a wedged terminal cannot stall the whole grid.
+SHOT_DEADLINE="${SHOT_DEADLINE:-90}"
+
+## HiDPI capture: render every shot at SHOT_SCALE x device resolution so the published webp
+## stays crisp when a browser upscales it on a HiDPI/Retina display (a 1x shot was blurry
+## both on-page and opened fullscreen). The whole SITE already follows the 2x-source /
+## display-1x convention (logo/icons/badges); the shots were the one 1x exception. The knob
+## drives: Xft.dpi for X clients (xterm/urxvt/st/VTE/konsole/qterminal/alacritty scale their
+## fonts by it), QT_SCALE_FACTOR for the secure-terminal Qt GUI, kitty's own font DPI, the
+## labwc title-bar font (so the server-side chrome scales WITH the content, not against it),
+## and every hardcoded pixel geometry (compositor output, Xvfb screen, window resizes,
+## mouse-park, dead-space trim). The character GRID (cols x rows) is unchanged -- only the
+## pixels-per-cell doubles -- so payload sizing and the toolbar tier are preserved. On-page
+## the shots keep their size (CSS width:100%); the committed <img> width/height become the
+## new raster dims (= raster; the browser never upscales them).
+SHOT_SCALE="${SHOT_SCALE:-2}"
+## Reject empty, non-digit, AND any leading zero: a leading-zero value (0, 00, 08, 09) is
+## read as OCTAL in bash arithmetic below -- 00 -> a 0 scale, 08/09 -> a fatal "value too
+## great for base" abort. '0*' rejects the whole leading-zero class in one pattern.
+case "${SHOT_SCALE}" in
+   ''|*[!0-9]*|0*)
+      printf '%s\n' "comparison-capture: SHOT_SCALE must be a positive integer with no leading zero, got '${SHOT_SCALE}'" >&2
+      exit 2
+      ;;
+esac
+## Force base 10: '08'/'09' pass the all-digit check above but the arithmetic
+## below reads them as OCTAL and dies ('value too great for base'). An accepted
+## value must not abort the run later.
+SHOT_SCALE=$(( 10#${SHOT_SCALE} ))
+## Exported so child scripts inherit the same factor: gnome-hero-launch.sh (hero cell size)
+## and the --jobs lanes / re-capture net / ST pass (which re-exec this script).
+export SHOT_SCALE
+## Xft base DPI a bare Xvfb reports; SHOT_SCALE x this is what X clients render their fonts at.
+XFT_BASE_DPI=96
+xft_dpi=$(( XFT_BASE_DPI * SHOT_SCALE ))
+FRAME_TOP="$(px "${FRAME_TOP_BASE}")"
+
+## Optional scope filters (a FAST PATH for iteration; the FULL matrix is the default, so a bare
+## run never silently skips anything). --only NAME restricts the emulators (repeatable); --case C
+## restricts the cases in BOTH loops (repeatable); --st-only skips the emulators; --quick is a
+## smoke shortcut. The full case list is the single source of truth for both loops.
+## notify is a secure-terminal-only case (emulators have no standard notify shot -- the page's
+## kitty.notify popup is captured separately), so it is in the full matrix for the ST loop but
+## skipped in the emulator loop below.
+all_cases='escape contrast title random homoglyph bidi zerowidth altscreen notify art gradient unicode tui-showcase hero-compare'
+CASES="${CASES:-${all_cases}}"
+## The emulator set, single source of truth for BOTH the capture loop and the --jobs
+## orchestrator's partition. lxterminal is omitted: its single-instance startup maps no
+## window headless.
+DEFAULT_TERMINALS='xterm urxvt st konsole gnome-terminal xfce4-terminal mate-terminal qterminal alacritty kitty'
+only_terminals=''
+cases_sel=''
+st_only=''
+## --jobs N (N>1): orchestrator mode -- partition the grid across N concurrent lanes, each
+## its OWN nested Xvfb+compositor (via its own xvfb-run), then optimize once. --no-st skips the
+## secure-terminal pass (for an emulator-only lane); --optimize-only just webp-converts existing
+## PNGs (the orchestrator's final merge step); --no-optimize leaves PNGs for that merge.
+jobs=1
+no_st=''
+no_optimize=''
+optimize_only=''
+## --prep-dir DIR: a lane copies its payloads + icon theme from DIR (pre-generated ONCE by the
+## orchestrator) instead of running reproduce.py + rasterising the icon itself. Removes the
+## redundant, memory-spiking per-lane setup that OOM-killed a lane at higher --jobs.
+prep_dir=''
+while [ "$#" -gt 0 ]; do
+   case "$1" in
+      --only)
+         [ "$#" -ge 2 ] || { printf '%s\n' 'comparison-capture: --only needs a terminal name' >&2; exit 2; }
+         only_terminals="${only_terminals:+${only_terminals} }$2"
+         shift 2
+         ;;
+      --case)
+         [ "$#" -ge 2 ] || { printf '%s\n' 'comparison-capture: --case needs a case name' >&2; exit 2; }
+         cases_sel="${cases_sel:+${cases_sel} }$2"
+         shift 2
+         ;;
+      --st-only)
+         st_only='true'
+         shift
+         ;;
+      --quick)
+         only_terminals='kitty'
+         cases_sel='escape'
+         shift
+         ;;
+      --jobs)
+         [ "$#" -ge 2 ] || { printf '%s\n' 'comparison-capture: --jobs needs a count' >&2; exit 2; }
+         jobs="$2"
+         shift 2
+         ;;
+      --no-st)
+         no_st='true'
+         shift
+         ;;
+      --no-optimize)
+         no_optimize='true'
+         shift
+         ;;
+      --optimize-only)
+         optimize_only='true'
+         shift
+         ;;
+      --prep-dir)
+         [ "$#" -ge 2 ] || { printf '%s\n' 'comparison-capture: --prep-dir needs a directory' >&2; exit 2; }
+         prep_dir="$2"
+         shift 2
+         ;;
+      *)
+         printf '%s\n' "comparison-capture: unknown argument '$1'" >&2
+         exit 2
+         ;;
+   esac
+done
+if [ -n "${cases_sel}" ]; then
+   CASES="${cases_sel}"
+fi
+
+case "${jobs}" in
+   ''|*[!0-9]*)
+      printf '%s\n' "comparison-capture: --jobs needs a non-negative integer, got '${jobs}'" >&2
+      exit 2
+      ;;
+esac
+
+## --optimize-only: webp-convert the PNGs already in ${out} and stop (the orchestrator's
+## single final merge, after its --no-optimize lanes finished). No capture, no runtime dir.
+if [ -n "${optimize_only}" ]; then
+   safe-rm --recursive --force -- "${runtime_dir}" 2>/dev/null || true
+   shots_optimize_to_webp "${out}"/*.png
+   printf '%s\n' "optimized; webp in ${out}"
+   exit 0
+fi
+
+## --jobs N (N>1): orchestrator. Partition the grid across N concurrent lanes, each a full
+## comparison-capture.sh run over a scope subset in its OWN nested Xvfb + compositor (own
+## xvfb-run --auto-servernum -> a distinct display, so no shared-compositor race). The capture
+## code is reused UNCHANGED; only the work is split. A final --optimize-only pass webp-converts
+## once, so concurrent lanes never race on the shared shots dir's optimize step.
+if [ "${jobs}" -gt 1 ]; then
+   self="${here}/comparison-capture.sh"
+   ## the runtime dir this orchestrator made is unused -- each lane makes its own.
+   safe-rm --recursive --force -- "${runtime_dir}" 2>/dev/null || true
+   fwd_case=()
+   for fc in ${cases_sel}; do fwd_case+=(--case "${fc}"); done
+   if [ -n "${st_only}" ]; then
+      emu_set=''
+   elif [ -n "${only_terminals}" ]; then
+      emu_set="${only_terminals}"
+   else
+      emu_set="${DEFAULT_TERMINALS}"
+   fi
+   ## Pre-generate the payloads + icon theme ONCE into a shared dir; lanes copy from it via
+   ## --prep-dir instead of each running reproduce.py + rasterising the icon (the concurrent,
+   ## memory-spiking setup that OOM-killed a lane). Not in dry-run (no capture happens).
+   orch_prep=''
+   if [ -z "${SHOTS_LANE_DRY_RUN:-}" ]; then
+      orch_prep="$(mktemp --directory)"
+      export XDG_DATA_HOME="${orch_prep}/data"
+      shots_generate_logs "${here}" "${orch_prep}" || exit "$?"
+      shots_install_icon_theme "${orch_prep}/data"
+   fi
+   lane_dir="$(mktemp --directory)"
+   lane_pids=()
+   lane_logs=()
+   lane_i=0
+   ## Stagger emulator-lane startup so their (brief) compositor-bringup phases do not all peak at
+   ## once; the long capture phase still overlaps fully.
+   lane_stagger="${SHOTS_LANE_STAGGER:-6}"
+   spawn_lane() {  ## $@ = args forwarded to a comparison-capture.sh lane
+      local log prep_args
+      log="${lane_dir}/lane.${lane_i}.log"
+      ## SHOTS_LANE_DRY_RUN: print the lane's scope instead of running it, to verify the
+      ## partition (which emulators / ST / cases each lane gets) without a capture.
+      if [ -n "${SHOTS_LANE_DRY_RUN:-}" ]; then
+         printf '%s\n' "LANE ${lane_i}:$(printf ' %s' "$@") --no-optimize"
+         lane_i=$(( lane_i + 1 ))
+         return 0
+      fi
+      prep_args=()
+      [ -n "${orch_prep}" ] && prep_args=(--prep-dir "${orch_prep}")
+      [ "${lane_i}" -gt 0 ] && sleep "${lane_stagger}"
+      xvfb-run --auto-servernum --server-args="-screen 0 $(px 1600)x$(px 1000)x24" \
+         "${self}" "$@" "${prep_args[@]}" --no-optimize >"${log}" 2>&1 &
+      lane_pids+=("$!")
+      lane_logs+=("${log}")
+      lane_i=$(( lane_i + 1 ))
+   }
+   rc=0
+   wait_lanes() {  ## wait for all currently-spawned lanes; echo their logs
+      ## A lane's exit code is NOT folded into the run's rc: under --jobs load a lane can die
+      ## transiently (labwc bringup racing) yet every shot it lost is re-shot by the sequential
+      ## re-capture net below. The AUTHORITATIVE emulator-phase verdict is that net's final
+      ## missing-check (a genuinely absent terminal is caught by the installed-check there), so a
+      ## fully-recovered grid exits 0 and the shots are pulled -- a transient lane failure alone
+      ## must not fail the whole run. A non-zero lane is noted for visibility only.
+      local i lrc
+      i=0
+      while [ "${i}" -lt "${#lane_pids[@]}" ]; do
+         lrc=0
+         wait "${lane_pids[i]}" || lrc="$?"
+         cat -- "${lane_logs[i]}" 2>/dev/null || true
+         [ "${lrc}" -eq 0 ] || printf '%s\n' "note: an emulator lane exited ${lrc} (transient under --jobs load; the re-capture net backstops any missing shot)"
+         i=$(( i + 1 ))
+      done
+      lane_pids=()
+      lane_logs=()
+   }
+   ## PHASE 1: the emulators, in ${jobs} parallel lanes (they tolerate CPU contention).
+   if [ -n "${emu_set}" ]; then
+      bucket=()
+      idx=0
+      for e in ${emu_set}; do
+         b=$(( idx % jobs ))
+         bucket[b]="${bucket[b]:+${bucket[b]} }${e}"
+         idx=$(( idx + 1 ))
+      done
+      b=0
+      while [ "${b}" -lt "${jobs}" ]; do
+         if [ -n "${bucket[b]:-}" ]; then
+            only_args=()
+            for e in ${bucket[b]}; do only_args+=(--only "${e}"); done
+            spawn_lane "${only_args[@]}" --no-st "${fwd_case[@]}"
+         fi
+         b=$(( b + 1 ))
+      done
+      wait_lanes
+   fi
+   ## PHASE 1.5: sequential re-capture net for the emulator pass. Under parallel CPU load a lane
+   ## can screenshot an emulator window before its content paints; capture_settled DISCARDS that
+   ## blank (never publishes black), so a discarded shot leaves no file and a full reshoot would
+   ## omit it -- the residual "manual per-emulator re-run" problem. With every parallel lane now
+   ## finished (zero CPU contention -- the condition under which a sequential re-run reliably
+   ## succeeds), re-shoot any still-missing emulator shot SEQUENTIALLY, one xvfb-run at a time,
+   ## like the ST pass. Bounded rounds; anything still missing after the net is a HARD failure
+   ## (rc=1), never a silent stale shot.
+   if [ -n "${emu_set}" ] && [ -z "${SHOTS_LANE_DRY_RUN:-}" ]; then
+      ## only INSTALLED emulators are expected to yield shots. A genuinely ABSENT emulator is a
+      ## hard error here (an incomplete grid misrepresents the comparison) unless ALLOW_SKIP
+      ## authorizes it -- the same rule the per-lane loop enforces, restated here because lane
+      ## exit codes are no longer folded into rc (a transient labwc failure must not fail the run,
+      ## but a missing terminal must). Only the installed set is chased by the net below.
+      emu_present=''
+      for e in ${emu_set}; do
+         e_path="$(type -P "${e}" 2>/dev/null || true)"
+         if [ -n "${e_path}" ] && [ -x "${e_path}" ]; then
+            emu_present="${emu_present:+${emu_present} }${e}"
+         elif [ -n "${ALLOW_SKIP:-}" ]; then
+            printf '%s\n' "SKIP ${e} (not installed/executable; ALLOW_SKIP authorized)" >&2
+         else
+            printf '%s\n' "ERROR: emulator ${e} is not installed/executable; install it or set ALLOW_SKIP=1" >&2
+            rc=1
+         fi
+      done
+      recap_prep=()
+      [ -n "${orch_prep}" ] && recap_prep=(--prep-dir "${orch_prep}")
+      recap_round=0
+      while [ "${recap_round}" -lt 3 ]; do
+         mapfile -t recap_missing < <(shots_missing_emulator_shots "${out}" "${emu_present}" "${CASES}")
+         [ "${#recap_missing[@]}" -eq 0 ] && break
+         printf '%s\n' "re-capture net (round $(( recap_round + 1 ))): ${#recap_missing[@]} emulator shot(s) missing after the parallel pass; re-shooting sequentially"
+         for pair in "${recap_missing[@]}"; do
+            read -r re_e re_c <<< "${pair}"
+            ## A re-shoot may itself exit non-zero (labwc bringup can still flake) -- its rc is
+            ## NOT folded into the run's rc. Whether the shot now exists is decided by the
+            ## authoritative missing-check after the rounds; a shot still absent then fails hard.
+            xvfb-run --auto-servernum --server-args="-screen 0 $(px 1600)x$(px 1000)x24" \
+               "${self}" --only "${re_e}" --case "${re_c}" --no-st "${recap_prep[@]}" --no-optimize \
+               > "${lane_dir}/recap.${re_e}.${re_c}.log" 2>&1 || true
+            cat -- "${lane_dir}/recap.${re_e}.${re_c}.log" 2>/dev/null || true
+         done
+         recap_round=$(( recap_round + 1 ))
+      done
+      mapfile -t recap_missing < <(shots_missing_emulator_shots "${out}" "${emu_present}" "${CASES}")
+      if [ "${#recap_missing[@]}" -gt 0 ]; then
+         printf '%s\n' "ERROR: ${#recap_missing[@]} emulator shot(s) STILL missing after the re-capture net:" >&2
+         for pair in "${recap_missing[@]}"; do
+            printf '%s\n' "   ${pair}" >&2
+         done
+         rc=1
+      else
+         printf '%s\n' "re-capture net: emulator grid complete, 0 shots missing"
+      fi
+   fi
+   ## PHASE 2: the secure-terminal pass, run SEQUENTIALLY and ALONE. Each ST spec is a fresh Qt
+   ## '--new-instance' cold start; when it competes with the emulator captures (or other ST
+   ## launches) for CPU its render is starved and the shot comes out blank. Running ST after the
+   ## emulator phase, one launch at a time, is what keeps it reliable. (A --st-only request skips
+   ## phase 1 and runs only this.)
+   if [ -z "${SHOTS_LANE_DRY_RUN:-}" ]; then
+      st_prep=()
+      [ -n "${orch_prep}" ] && st_prep=(--prep-dir "${orch_prep}")
+      st_rc=0
+      xvfb-run --auto-servernum --server-args="-screen 0 $(px 1600)x$(px 1000)x24" \
+         "${self}" --st-only "${fwd_case[@]}" "${st_prep[@]}" --no-optimize \
+         > "${lane_dir}/st.log" 2>&1 || st_rc="$?"
+      cat -- "${lane_dir}/st.log" 2>/dev/null || true
+      [ "${st_rc}" -eq 0 ] || rc="${st_rc}"
+   else
+      printf '%s\n' "LANE st(sequential): --st-only$(printf ' %s' "${fwd_case[@]}") --no-optimize"
+   fi
+   safe-rm --recursive --force -- "${lane_dir}" 2>/dev/null || true
+   [ -n "${orch_prep}" ] && safe-rm --recursive --force -- "${orch_prep}" 2>/dev/null || true
+   "${self}" --optimize-only || true
+   printf '%s\n' "done; emulators parallel + secure-terminal sequential; shots in ${out}"
+   exit "${rc}"
+fi
+
+## Reliable reaping REQUIRES the safe-pgrep/safe-pkill wrappers -- fail loudly, never fall back.
+shots_require_safe_ps || exit 1
+## Pre-clean: reap orphaned groups left by any PRIOR crashed run (marker-scoped -- it can never
+## touch a process lacking that run's unique marker), then register this run.
+shots_reap_registered || true
+shots_register_run "${run_marker}"
+
+## Attack payloads come from the terminal-poc-corpus (single source of truth), decoded
+## by its reproduce.py. shots_generate_logs resolves the checkout and returns 77
+## (a SKIP, like a missing ST_REPO) ONLY when the corpus is absent; a real
+## payload-generation failure returns a distinct non-77 code, which is propagated
+## here so a broken reproduce.py is not reported as a skip.
+export XDG_DATA_HOME="${runtime_dir}/data"
+mkdir --parents -- "${XDG_DATA_HOME}"
+if [ -n "${prep_dir}" ]; then
+   ## Lane: reuse the orchestrator's pre-generated payloads + icon theme. COPY (not symlink) the
+   ## payloads so this lane can strip its own tui-showcase copy without mutating the shared one.
+   cp -- "${prep_dir}"/*.payload "${HOME}/" || exit 1
+   if [ -d "${prep_dir}/data" ]; then
+      cp --recursive -- "${prep_dir}/data/." "${XDG_DATA_HOME}/" 2>/dev/null || true
+   fi
+else
+   ## Attack payloads come from the terminal-poc-corpus (single source of truth), decoded by its
+   ## reproduce.py; secure-terminal's icon is rasterised into the session icon theme so labwc
+   ## shows the real title-bar logo.
+   shots_generate_logs "${here}" "${HOME}" || exit "$?"
+   shots_install_icon_theme "${XDG_DATA_HOME}"
+fi
+## The shell prompt for every shot. Single-sourced so the content-verify
+## (shots_transcript_has_content) strips the EXACT prompt the shell prints when
+## deciding whether an injected payload actually rendered.
+SHOT_PROMPT='user@host:~$ '
+cat > "${HOME}/.strc" <<RC
+PS1='${SHOT_PROMPT}'
+RC
+
+## labwc config: the Clearlooks theme, server-side decorations. The title-bar font is
+## scaled by SHOT_SCALE so the server-side chrome (and its title -- where the OSC-0 hijack
+## shows) renders at the same 2x as the terminal content, not half-scale against it. labwc
+## is a native Wayland compositor and does NOT read Xft.dpi, so its font is scaled here.
+titlebar_pt="$(( 10 * SHOT_SCALE ))"
+cat > "${XDG_CONFIG_HOME}/labwc/rc.xml" <<XML
+<?xml version="1.0"?>
+<labwc_config>
+  <theme>
+    <name>${THEME}</name>
+    <font place="ActiveWindow"><name>sans</name><size>${titlebar_pt}</size></font>
+    <font place="InactiveWindow"><name>sans</name><size>${titlebar_pt}</size></font>
+  </theme>
+  <core><decoration>server</decoration></core>
+  <placement><policy>automatic</policy></placement>
+</labwc_config>
+XML
+
+## launch each emulator FROM ${HOME} so a plain "cat escape.payload" finds it.
+cd "${HOME}"
+
+wm_pid=''
+labwc_wid=''
+xwl_display=''
+base_wids=''
+trap cleanup EXIT
 
 ## labwc intermittently fails to come up under the parallel --jobs load (its wlroots x11
 ## backend racing several nested compositors) -- the single dominant cause of lost shots in a
@@ -1217,13 +1253,13 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       ## once grown by the frame). The short cases keep 620 so their committed page
       ## dimensions do not move; tighten_deadspace trims either back to its content.
       st_win_h="$(px 620)"; [ "${st_case}" = tui-showcase ] && st_win_h="$(px 820)"
-      ## hero-compare: request a narrower secure-terminal window than the 860 comparison default so
-      ## the homepage slider shot scales to a ~390px phone with legible text and the board fills the
-      ## frame. Qt clamps the width up to the app's own minimum for the fully-labeled toolbar (~640
-      ## under the capture compositor's 72-DPI metrics), so the toolbar stays complete (no ">>"
-      ## overflow) at that clamped size -- which is the narrow hero width we want. RE-MEASURE if the
-      ## toolbar/chip CSS changes; the emulator width (65 cols) above is matched to this result.
-      st_win_w="$(px 860)"; [ "${st_case}" = hero-compare ] && st_win_w="$(px 700)"
+      ## hero-compare: use the shared HERO_WIN_W_BASE width (narrower than the 860 comparison
+      ## default) so the homepage slider shot scales to a ~390px phone with legible text and the
+      ## board fills the frame. The SAME constant pins the gnome-terminal hero window (shoot()),
+      ## so the two are identical horizontal length and overlay perfectly. This width still lands
+      ## in the labeled toolbar tier (captioned chips, no ">>" overflow) at 72-DPI metrics;
+      ## RE-MEASURE if the toolbar/chip CSS changes.
+      st_win_w="$(px 860)"; [ "${st_case}" = hero-compare ] && st_win_w="$(px "${HERO_WIN_W_BASE}")"
       ## The GUI runs as `python3 .../secure-terminal` -- process name `python3` -- so it MUST
       ## be reaped by its session PGID, never by name. Launch it in its own session and arm the
       ## per-capture watchdog, exactly like the emulator shots.

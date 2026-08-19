@@ -61,15 +61,15 @@ if ! type -P compare >/dev/null 2>&1; then
    exit 77
 fi
 
-## Extract the function from the current script text (opens `name() {` at column 0, closes with a
-## column-0 `}`), so the tested body stays in step with the source -- no re-embedded copy to drift.
-fn="$(sed -n '/^st_wait_render_settled() {/,/^}/p' "${subject}")"
-if [ -z "${fn}" ]; then
-   printf '%s\n' 'FAIL: could not extract st_wait_render_settled from comparison-capture.sh' >&2
+## SOURCE the real script (it is source-safe: its was_executed guard runs no capture when sourced),
+## so the tested function is the CURRENT one with zero drift. Stubs below override its collaborators.
+# shellcheck source=../secure-terminal-shots/comparison-capture.sh
+source "${subject}"
+if ! declare -F st_wait_render_settled >/dev/null 2>&1; then
+   printf '%s\n' 'FAIL: st_wait_render_settled not defined after sourcing comparison-capture.sh' >&2
    printf '%s\n' '' '0 pass, 1 fail, 0 skip'
    exit 1
 fi
-eval "${fn}"
 
 work="$(mktemp --directory)"
 cleanup() { safe-rm --recursive --force -- "${work}" 2>/dev/null || true; }
