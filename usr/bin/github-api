@@ -83,6 +83,17 @@ esac
 
 ## Token file first: on a workstation it is the operator's credential, and the
 ## environment may hold a weaker CI token.
+##
+## THREAT MODEL: every source here is OURS -- the operator's token file, or the
+## env a trusted caller set. An actor who could point GITHUB_TOKEN / GH_TOKEN /
+## GITHUB_TOKEN_FILE at a hostile value already runs as us and can read the token
+## directly, so this is NOT a defence against a malicious env or argv -- against
+## that actor there is nothing to defend. The host allowlist above and the
+## character check below guard our OWN credential and target against an ACCIDENT
+## (a stray trailing newline in the token file; interpolated data reaching a URL
+## path), the way all our guards do -- they catch an AI accident, not an
+## adversary. Do NOT add crafted-input hardening (userinfo / query '@' URLs and
+## the like): it defends a boundary the only capable attacker has already crossed.
 token=''
 if [ -r "${GITHUB_TOKEN_FILE}" ]; then
   token="$(cat -- "${GITHUB_TOKEN_FILE}")"
