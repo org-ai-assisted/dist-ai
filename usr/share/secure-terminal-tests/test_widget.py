@@ -1332,7 +1332,28 @@ if tui_available():
 # line-drawing designation as a no-op, so a curses program's box borders used to
 # arrive as literal `lqqqk` text. _Utf8CharsetByteStream re-arms the designation
 # (still UTF-8-decoding), so the grid draws the real box-drawing glyphs.
-from secure_terminal.terminal import _CP_PROP as _CPP, BOX as _BX     # noqa: E402
+from secure_terminal.terminal import (_CP_PROP as _CPP, BOX as _BX,   # noqa: E402
+                                       _GridRow as _GR)
+
+
+def _cell_fmt(term, idx):
+    """The effective (QTextCharFormat, source codepoint) painting the grid cell at
+    document position idx: from the block's _GridRow in TUI grid mode (the layout
+    formats the highlighter paints are not queryable via charFormat), else the
+    char format in CLI line mode."""
+    _blk = term.document().findBlock(idx)
+    _off = idx - _blk.position()
+    _data = _blk.userData()
+    if isinstance(_data, _GR):
+        for _start, _length, _fmt, _cp in _data.runs:
+            if _start <= _off < _start + _length:
+                return _fmt, _cp
+    _c = QTextCursor(term.document())
+    _c.setPosition(idx)
+    _c.movePosition(QTextCursor.MoveOperation.NextCharacter,
+                    QTextCursor.MoveMode.KeepAnchor)
+    _f = _c.charFormat()
+    return _f, _f.property(_CPP)
 
 
 def _grid_cell(term, idx):
@@ -1343,8 +1364,8 @@ def _grid_cell(term, idx):
     _c.setPosition(idx)
     _c.movePosition(QTextCursor.MoveOperation.NextCharacter,
                     QTextCursor.MoveMode.KeepAnchor)
-    _f = _c.charFormat()
-    return _c.selectedText(), _f.property(_CPP), _f.foreground().color().name()
+    _fmt, _cp = _cell_fmt(term, idx)
+    return _c.selectedText(), _cp, _fmt.foreground().color().name()
 
 
 # Q1 SHOW mode: `ESC ( 0 lqk ESC ( B` becomes real box-drawing glyphs, not `lqk`.
@@ -1427,11 +1448,7 @@ _dbx.close()
 # mode exists for. Box mode + markings OFF (the program-SGR branch) + a red-on-red full
 # block. FAILS pre-fix, where the bypass came from the source glyph regardless of display.
 def _cell_fg_bg(term, idx):
-    _cc = QTextCursor(term.document())
-    _cc.setPosition(idx)
-    _cc.movePosition(QTextCursor.MoveOperation.NextCharacter,
-                     QTextCursor.MoveMode.KeepAnchor)
-    _cf = _cc.charFormat()
+    _cf, _ = _cell_fmt(term, idx)
     _fg = _cf.foreground().color().name().lower()
     _bg = (_cf.background().color().name().lower()
            if _cf.background().style() != Qt.BrushStyle.NoBrush else None)
@@ -1847,6 +1864,17 @@ def _midpt(term, i):
 eq(inb._cp_at(_midpt(inb, 1)), 0x202E, 'a point over "_" reads the RLO codepoint')
 ok(inb._cp_at(_midpt(inb, 0)) is None, 'a point over the adjacent "a" is not the marking')
 ok(inb._cp_at(_midpt(inb, 2)) is None, 'a point over the adjacent "b" is not the marking')
+# _run_cp_at's no-run fall-through: a position in a block that no run covers (an
+# empty grid document right after a reset) has no source code point.
+_ecp = SecureTerminal(command='/bin/cat', tui=True)
+_ecp.apply_mode('show')
+_ecp.resize(300, 200)
+_ecp.show()
+pump(20)
+_ecp._reset_grid_view()                                  # empty document, no runs
+ok(_ecp._run_cp_at(0) is None,
+   '_run_cp_at returns None where no run covers the position (empty grid)')
+_ecp.shutdown()
 # an astral glyph (2 UTF-16 units) in show mode is hit-tested as ONE character:
 # the whole code point, never a lone surrogate half (codex P2 fix).
 ina = SecureTerminal(command='/bin/cat')
