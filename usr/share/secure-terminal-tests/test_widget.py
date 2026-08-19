@@ -7180,6 +7180,64 @@ ok('past-cap-row' in _sb.toPlainText(),
    'output after a cap reduction still renders (grid model resynced)')
 _sb.shutdown()
 
+# 14. Box mode is bounded in row-inserts too, not only show mode (#2): the
+# incremental reconcile is mode-independent, so a distinct board fed progressively
+# inserts each row about once, not once per read.
+_bx = SecureTerminal(command='/bin/cat', tui=True)
+_bx.apply_mode('box')
+_bx.resize(1200, 700)
+_bx.show()
+pump(60)
+_bxr = min(18, _bx._screen.lines - 2)
+_bx_board = _distinct_board(min(60, _bx._screen.columns), _bxr)
+_igr_calls[0] = 0
+SecureTerminal._insert_grid_row = _counting_igr
+try:
+    _feed_render_chunks(_bx, _bx_board, 12)
+finally:
+    SecureTerminal._insert_grid_row = _orig_igr
+ok(_igr_calls[0] < 3 * _bxr,
+   'box-mode incremental grid inserts each row ~once (%d inserts for %d rows over 12 reads), '
+   'not once per read' % (_igr_calls[0], _bxr))
+_bx.shutdown()
+
+# 15. Scroll-flood linearity by INSERT COUNT (#3 checks byte-identity + a bounded
+# live grid): feeding 3 screens of distinct rows over many reads inserts about one
+# block per output row, promoting scrolled-off rows rather than re-drawing them. A
+# full rebuild per read would be ~ visible_lines * reads; the incremental render
+# stays ~ total rows.
+_sf = _show_grid()
+_sf_rows = _sf._screen.lines * 3
+_sf_board = _distinct_board(min(50, _sf._screen.columns), _sf_rows)
+_igr_calls[0] = 0
+SecureTerminal._insert_grid_row = _counting_igr
+try:
+    _feed_render_chunks(_sf, _sf_board, 20)
+finally:
+    SecureTerminal._insert_grid_row = _orig_igr
+ok(_igr_calls[0] < 2 * _sf_rows,
+   'scroll-flood inserts ~1 block per output row (%d inserts for %d rows over 20 reads), '
+   'not one screen per read' % (_igr_calls[0], _sf_rows))
+_sf.shutdown()
+
+# 16. A no-change re-render inserts ZERO grid rows and deletes no block: the
+# positional signature diff keeps every block, so the reconcile appends nothing
+# (#7 checks the block count; this asserts the insert path explicitly).
+_nn = _show_grid()
+_nn._feed_stream(_distinct_board(min(40, _nn._screen.columns), 6))
+_nn._render_tui()
+_nn_bc = _nn.document().blockCount()
+_igr_calls[0] = 0
+SecureTerminal._insert_grid_row = _counting_igr
+try:
+    _nn._render_tui()                                # identical state -> no append
+finally:
+    SecureTerminal._insert_grid_row = _orig_igr
+eq(_igr_calls[0], 0,
+   'a no-change re-render inserts zero grid rows (positional sig diff keeps all blocks)')
+eq(_nn.document().blockCount(), _nn_bc, 'a no-change re-render deletes no block')
+_nn.shutdown()
+
 # each reconcile widget owns a /bin/cat pty child; hang them up so the master fds and
 # child processes do not linger into the suite's os._exit teardown.
 for _rw in (_bp_no, _bp_yes, _hs, _dp, _th, _rb, _sm):
