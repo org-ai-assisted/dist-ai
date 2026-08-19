@@ -44,7 +44,7 @@
 ## by the WM's title bar (labwc's _NET_FRAME_EXTENTS). Nothing is painted on.
 ##
 ## Needs: an X server on $DISPLAY, labwc (+ its Xwayland), the Clearlooks Openbox
-## theme, x11-xserver-utils (setxkbmap), xdotool, wmctrl, grim, xprop, xwininfo,
+## theme, x11-xserver-utils (setxkbmap), xdotool, wmctrl, xprop, xwininfo,
 ## ImageMagick, and optipng/jpegoptim/cwebp for the webp encode. Installs NOTHING
 ## itself (supply-chain hygiene); in the sandbox `sandbox provision shots` installs
 ## the whole set, and secure-terminal-shots-sandbox preflights it.
