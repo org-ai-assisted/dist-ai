@@ -832,19 +832,36 @@ capture_settled() {  ## $1=output-path  $2=window-id  [$3='skip-tighten']
 ## grabs match within a jitter tolerance. capture_settled only rejects a BLANK frame, so a heavy
 ## still-painting TUI pyte grid would be grabbed half-drawn; a whole unpainted row band differs by
 ## thousands of pixels between grabs, while the known ~1px sub-pixel border jitter differs by only
-## a handful, so a small AE tolerance settles without waiting forever. Best-effort: a failed grab
+## a handful, so a small AE tolerance settles once painting stops. Best-effort: a failed grab
 ## or a missing `compare` just returns and lets capture_settled proceed.
+##
+## The wait is WALL-CLOCK bounded, not a fixed iteration count: a full-viewport 24-bit board in
+## SHOW/TUI mode paints ROW BY ROW over ~20s -- every cell carries a distinct truecolour format,
+## which defeats the same-format run coalescing the grid renderer relies on, so the document is
+## rebuilt one slow frame per read. A fixed 8s cap timed out mid-paint and the capture grabbed a
+## half-drawn board (the bottom rows + the returning prompt missing). Wait for a REAL settle,
+## capped just under the per-capture SHOT_DEADLINE so a never-settling window still falls through
+## to capture_settled's blank/content retry rather than hanging.
 st_wait_render_settled() {  ## $1=window-id
-   local wid a b i diff
+   local wid a b diff budget start
    wid="$1"
    type -P compare >/dev/null || return 0
+   ## Cap the wait under the watchdog's reap (SHOT_DEADLINE, default 90s), leaving margin so the
+   ## group is not torn down mid-settle. A non-numeric deadline keeps the safe 75s default.
+   ## A non-numeric SHOT_DEADLINE makes the -lt test error (suppressed) and short-circuit, keeping
+   ## the safe 75s default -- the same numeric-guard idiom the settle diff test below uses.
+   budget=75
+   if [ "${SHOT_DEADLINE}" -lt 90 ] 2>/dev/null; then
+      budget=$(( SHOT_DEADLINE > 20 ? SHOT_DEADLINE - 15 : 5 ))
+   fi
    a="$(mktemp -- "${runtime_dir}/settle.XXXXXX.png")"
    b="$(mktemp -- "${runtime_dir}/settle.XXXXXX.png")"
    if ! capture_window "${a}" "${wid}" 2>/dev/null; then
       safe-rm --force -- "${a}" "${b}" 2>/dev/null || true
       return 0
    fi
-   for i in 1 2 3 4 5 6 7 8 9 10; do
+   start=${SECONDS}
+   while [ $(( SECONDS - start )) -lt "${budget}" ]; do
       sleep 0.8
       capture_window "${b}" "${wid}" 2>/dev/null || break
       diff="$(compare -metric AE "${a}" "${b}" null: 2>&1 || true)"
