@@ -860,6 +860,29 @@ try:
 finally:
     win._locked = _rl_saved
 
+# session restore honours a locked allow_title in the LEGACY branch too: a session
+# saved before the granular OSC controls carries a bare 'allow_title' bool and NO
+# 'osc' key, so _restore_tab takes its legacy branch. That branch applied the saved
+# value UNCONDITIONALLY, ignoring the lock the granular branch honours -> a pre-lock
+# legacy session could re-enable an admin-locked title/notify capability on restart.
+# Locked -> the admin default wins over the saved bool; unlocked -> the saved value
+# is restored. Fails on the pre-fix legacy branch (which applied the saved True). (ai-review)
+_al_saved_locked = set(win._locked)
+_al_saved_default = win._default_allow_title
+try:
+    win._default_allow_title = False              # admin default: title + notify OFF
+    win._locked = {'allow_title'}
+    win._restore_tab({'text': '', 'allow_title': True}, activate=True)   # legacy, no 'osc'
+    ok(not win.current().allow_title_enabled(),
+       'legacy restore honours a locked allow_title (admin default wins over the saved bool)')
+    win._locked = set()
+    win._restore_tab({'text': '', 'allow_title': True}, activate=True)   # legacy, no 'osc'
+    ok(win.current().allow_title_enabled(),
+       'legacy restore keeps the saved allow_title when unlocked')
+finally:
+    win._locked = _al_saved_locked
+    win._default_allow_title = _al_saved_default
+
 # a NEW tab opens in the ACTIVE tab's current working directory (like konsole), not the
 # app's launch dir. Restore a tab into a known cwd, wait for its shell to land there, then
 # open a new tab and confirm it spawned in that same dir (bug: new tabs used the launch dir).
