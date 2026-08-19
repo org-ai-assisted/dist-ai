@@ -35,10 +35,15 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 # 2x-source convention the rest of the site uses. This is a single grab (no composition),
 # so QT_SCALE_FACTOR alone gives a SHOT_SCALE x image. Assign, do not setdefault: Qt reads
 # it at QApplication construction, so the shot must pin its own factor over any inherited one.
-_shot_scale = os.environ.get('SHOT_SCALE', '2')
-if not _shot_scale.isdigit() or int(_shot_scale) < 1:
-    _shot_scale = '2'
-os.environ['QT_SCALE_FACTOR'] = _shot_scale
+## Parse via int(), not str.isdigit(): isdigit() accepts unicode digits (superscripts etc.)
+## that int() then rejects, which would crash at import.
+try:
+    _shot_scale = int(os.environ.get('SHOT_SCALE', '2'))
+except (TypeError, ValueError):
+    _shot_scale = 2
+if _shot_scale < 1:
+    _shot_scale = 2
+os.environ['QT_SCALE_FACTOR'] = str(_shot_scale)
 
 from PyQt6.QtWidgets import QApplication                          # noqa: E402
 from PyQt6.QtCore import Qt                                       # noqa: E402

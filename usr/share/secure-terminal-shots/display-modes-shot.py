@@ -48,14 +48,18 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 # scales each panel's widget tree, so grab() returns SHOT_SCALE x pixel images; the QPainter
 # COMPOSITION below is in those device pixels, so its own constants (PAD/LABEL_H/label font)
 # are scaled to match, and the canvas is sized from the real panel-image dimensions.
-_shot_scale = os.environ.get('SHOT_SCALE', '2')
-if not _shot_scale.isdigit() or int(_shot_scale) < 1:
-    _shot_scale = '2'
+## Parse via int(), not str.isdigit(): isdigit() accepts unicode digits (superscripts etc.)
+## that int() then rejects, which would crash at import.
+try:
+    SHOT_SCALE = int(os.environ.get('SHOT_SCALE', '2'))
+except (TypeError, ValueError):
+    SHOT_SCALE = 2
+if SHOT_SCALE < 1:
+    SHOT_SCALE = 2
 ## Assign, do not setdefault: Qt reads QT_SCALE_FACTOR at QApplication construction,
 ## so an inherited value would apply a different global scale and desync the panel
 ## captures from the composition below. The shot must pin its own factor.
-os.environ['QT_SCALE_FACTOR'] = _shot_scale
-SHOT_SCALE = int(_shot_scale)
+os.environ['QT_SCALE_FACTOR'] = str(SHOT_SCALE)
 
 from PyQt6.QtWidgets import QApplication                          # noqa: E402
 from PyQt6.QtGui import QColor, QFont, QImage, QPainter           # noqa: E402

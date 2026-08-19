@@ -38,14 +38,18 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 # crisp when a browser upscales it on a HiDPI display -- the site shows it at 1x via CSS
 # (width:100%), matching the 2x-source convention the rest of the site uses. QT_SCALE_FACTOR
 # scales the whole widget tree uniformly, so grab() returns a SHOT_SCALE x pixel image.
-_shot_scale = os.environ.get('SHOT_SCALE', '2')
-if not _shot_scale.isdigit() or int(_shot_scale) < 1:
-    _shot_scale = '2'
+## Parse via int(), not str.isdigit(): isdigit() accepts unicode digits (superscripts etc.)
+## that int() then rejects, which would crash at import.
+try:
+    SHOT_SCALE = int(os.environ.get('SHOT_SCALE', '2'))
+except (TypeError, ValueError):
+    SHOT_SCALE = 2
+if SHOT_SCALE < 1:
+    SHOT_SCALE = 2
 ## Assign, do not setdefault: Qt reads QT_SCALE_FACTOR at QApplication construction, so an
 ## inherited value would apply a different global scale than the MARGIN scaling below expects.
 ## The shot must pin its own factor.
-os.environ['QT_SCALE_FACTOR'] = _shot_scale
-SHOT_SCALE = int(_shot_scale)
+os.environ['QT_SCALE_FACTOR'] = str(SHOT_SCALE)
 
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout   # noqa: E402
 from PyQt6.QtGui import QImage, QPainter, QPalette, QColor       # noqa: E402

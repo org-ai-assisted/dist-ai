@@ -706,6 +706,10 @@ tighten_deadspace() {  ## $1=png-path
    ## stays SELF-CONTAINED when tighten_skip_test.sh extracts and evals it in isolation (the
    ## helper is not extracted, so a px() call would abort with 'px: command not found').
    scale="${SHOT_SCALE:-1}"
+   ## Sanitize LOCALLY too: when tighten_skip_test.sh extracts this function it runs without
+   ## the top-level SHOT_SCALE validation, so a stray value must not reach the arithmetic below
+   ## (a leading zero is octal -> 08/09 abort; a non-digit would be evaluated as a name/index).
+   case "${scale}" in ''|*[!0-9]*|0*) scale=1 ;; esac
    margin=$(( 10 * scale ))
    threshold=$(( 40 * scale ))
    f="$1"
