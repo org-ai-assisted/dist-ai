@@ -1,0 +1,126 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## style-ok: no-has -- standalone host/sandbox driver; does not source helper-scripts.
+
+## Run the browser-dependent website lanes (check_mobile.py + check_width.py) inside
+## the review sandbox qube, CONFINED under bwrap's Playwright profile, and exit 0/1
+## on their real pass/fail. This is the forget-proof default the host publish gate
+## uses when no local browser is present: it runs the checks for real instead of
+## letting website-tests emit a silent SKIP that would read as a green publish gate.
+##
+## Fails CLOSED: a missing sandbox, missing confinement, or a failed provision is a
+## hard error (exit 1), never a skip -- the whole point is that these checks cannot
+## be quietly not-run. Playwright lives ONLY in a sandbox venv exposed by the
+## `sandbox-confine --profile playwright` bwrap profile; a plain `python3` there
+## reports "python3-playwright not installed".
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+## The sandbox Playwright venv + its chromium engine (provisioned by
+## `sandbox provision playwright`; same path web-render / playwright-run bind).
+readonly SANDBOX_VENV_PY='/home/user/.venvs/web-render/bin/python'
+## Per-run working dir inside the sandbox (bound read-write by the profile). PID-unique
+## so two concurrent gates (e.g. parallel deploys) never clobber each other's staging
+## through `sandbox sync --delete`.
+readonly SANDBOX_WORKDIR="/home/user/website-tests-sandbox-run.$$"
+
+die(){
+   printf '%s\n' "website-tests-sandbox: $1" >&2
+   exit 1
+}
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+if [ -d "${script_dir}/../share/website-tests" ]; then
+   tests_dir="${script_dir}/../share/website-tests"
+else
+   tests_dir='/usr/share/website-tests'
+fi
+
+if [ "$#" -eq 0 ]; then
+   die 'usage: website-tests-sandbox <site-root> [<site-root> ...]'
+fi
+
+command -v sandbox >/dev/null 2>&1 \
+   || die 'the review sandbox (sandbox command) is not available on this host'
+
+## Provisioned? The venv is the tell. Provision once if absent (idempotent, slow the
+## first time -- chromium download); a failed provision fails the gate, never skips.
+if ! sandbox exec -- test -x "${SANDBOX_VENV_PY}" >/dev/null 2>&1; then
+   printf '%s\n' 'website-tests-sandbox: provisioning Playwright in the sandbox (one-time)...' >&2
+   sandbox provision playwright >&2 \
+      || die 'sandbox is not provisioned for Playwright and provisioning failed (sandbox provision playwright)'
+   sandbox exec -- test -x "${SANDBOX_VENV_PY}" >/dev/null 2>&1 \
+      || die 'Playwright venv still absent after provisioning'
+fi
+
+sandbox exec -- type sandbox-confine >/dev/null 2>&1 \
+   || die 'sandbox is missing sandbox-confine (bwrap confinement)'
+
+## Stage the two runners plus each site root (no .git) into one tree, then sync it in
+## and run both lanes confined. Basenames must be unique across the roots.
+staging="$(mktemp --directory)"
+synced=0
+cleanup(){
+   # shellcheck disable=SC2317  # invoked indirectly via the EXIT trap
+   safe-rm --recursive --force -- "${staging}"
+   # shellcheck disable=SC2317
+   [ "${synced}" = '1' ] && sandbox exec -- safe-rm --recursive --force -- "${SANDBOX_WORKDIR}" >/dev/null 2>&1
+   # shellcheck disable=SC2317
+   return 0
+}
+trap cleanup EXIT
+
+mkdir --parents -- "${staging}/wt"
+for runner in check_mobile.py check_width.py; do
+   [ -f "${tests_dir}/${runner}" ] || die "missing runner: ${tests_dir}/${runner}"
+   cp --archive -- "${tests_dir}/${runner}" "${staging}/wt/${runner}"
+done
+
+declare -a remote_roots=()
+for root in "$@"; do
+   [ -f "${root}/index.html" ] || die "not a site root (no index.html): ${root}"
+   ## Canonicalize first: a relative root like '.' or '..' would basename to '.'/'..',
+   ## which always collide with the staging dir / its parent.
+   root="$(readlink --canonicalize -- "${root}")"
+   base="$(basename -- "${root}")"
+   if [ -e "${staging}/${base}" ]; then
+      die "duplicate site-root basename '${base}' -- roots must have distinct names"
+   fi
+   rsync --archive --exclude='.git' -- "${root}/" "${staging}/${base}/"
+   remote_roots+=( "${base}" )
+done
+
+sandbox sync --delete "${staging}" "$(basename -- "${SANDBOX_WORKDIR}")" >&2 \
+   || die 'failed to sync the staging tree into the sandbox'
+synced=1
+
+overall=0
+run_lane(){
+   local runner rc
+   runner="$1"
+   rc=0
+   sandbox exec -- sandbox-confine --profile playwright --workdir "${SANDBOX_WORKDIR}" -- \
+      "${SANDBOX_VENV_PY}" "wt/${runner}" "${remote_roots[@]}" || rc="$?"
+   ## A lane must actually run: 77 (SKIP) from inside the sandbox means Playwright did
+   ## not fire, which defeats the purpose -- treat it as failure, never a pass.
+   if [ "${rc}" = '77' ]; then
+      printf '%s\n' "website-tests-sandbox: ${runner} SKIPped inside the sandbox (Playwright did not run) -- treating as failure" >&2
+      rc=1
+   fi
+   return "${rc}"
+}
+
+run_lane check_mobile.py || overall=1
+run_lane check_width.py  || overall=1
+
+exit "${overall}"

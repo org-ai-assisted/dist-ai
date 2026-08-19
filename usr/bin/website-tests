@@ -5,6 +5,8 @@
 
 ## AI-Assisted
 
+## style-ok: no-has -- standalone gate wrapper; does not source helper-scripts.
+
 ## Static consistency checks for the project's GitHub Pages sites
 ## (output-lies.github.io, secure-terminal.github.io, org-ai-assisted.github.io):
 ## every internal link resolves to a real target (no reliance on redirects; known
@@ -83,31 +85,61 @@ fi
 overall=0
 python3 -Bsu -- "${tests_dir}/check_site.py" "${roots[@]}" || overall=1
 
-## Mobile-overflow guard: load each page in a headless browser at a phone viewport
-## and assert the body never scrolls sideways. Needs Playwright + chromium; SKIPs
-## (exit 77) cleanly when the browser is absent, so the static checks above still
-## run everywhere.
+## Browser lanes -- mobile-overflow ("no sideways scroll at a phone viewport") and
+## width-utilization ("no tall text section wasted in a narrow column"). Both need
+## Playwright + chromium.
+##
+## Prefer a local browser (CI installs one). When none is present we do NOT skip on a
+## host that has the review sandbox: a silent SKIP here is a false-green publish gate,
+## exactly the failure mode this guard exists to prevent. Instead we run both lanes in
+## the sandbox, CONFINED, via website-tests-sandbox -- the safe path is the DEFAULT,
+## nothing to remember. Only a context with neither a local browser nor the sandbox
+## (e.g. a minimal CI runner) SKIPs, and it says so.
+
+## Probe the local browser once by attempting the mobile lane; its own exit 77 means
+## Playwright/chromium is absent (covers both the module and the engine). Capture the
+## probe's stderr (FAIL detail + the SKIP notice) into a variable while its stdout
+## streams through, and replay it only when the lane genuinely ran (rc != 77) -- so a
+## delegated run is not preceded by a misleading "SKIP" line.
+mobile_rc=0
 if [ -f "${tests_dir}/check_mobile.py" ]; then
-   mobile_rc=0
-   python3 -Bsu -- "${tests_dir}/check_mobile.py" "${roots[@]}" || mobile_rc="$?"
-   if [ "${mobile_rc}" = '77' ]; then
-      printf '%s\n' 'website-mobile-tests: SKIP (no Playwright/chromium)' >&2
-   elif [ "${mobile_rc}" != '0' ]; then
-      overall=1
+   ## fd3 = the real stdout; inside $() the command's stdout goes to fd3 (streams to
+   ## the terminal) while its stderr is captured into probe_err. The 3>&1 must wrap the
+   ## assignment from OUTSIDE $(), or fd3 would bind to the capture buffer and swallow
+   ## stdout too.
+   { probe_err="$(python3 -Bsu -- "${tests_dir}/check_mobile.py" "${roots[@]}" 2>&1 1>&3 3>&-)" || mobile_rc="$?"; } 3>&1
+   if [ "${mobile_rc}" != '77' ] && [ -n "${probe_err}" ]; then
+      printf '%s\n' "${probe_err}" >&2
    fi
 fi
 
-## Desktop width-utilization guard ("the virtual ruler"): render each page at a
-## desktop viewport and assert no tall text section wastes its width in a narrow
-## column with a wide empty gutter. Same browser dependency + SKIP semantics as
-## the mobile guard, so the static checks above still run everywhere.
-if [ -f "${tests_dir}/check_width.py" ]; then
-   width_rc=0
-   python3 -Bsu -- "${tests_dir}/check_width.py" "${roots[@]}" || width_rc="$?"
-   if [ "${width_rc}" = '77' ]; then
-      printf '%s\n' 'website-width-tests: SKIP (no Playwright/chromium)' >&2
-   elif [ "${width_rc}" != '0' ]; then
-      overall=1
+if [ "${mobile_rc}" = '77' ]; then
+   ## No local browser. Delegate BOTH lanes to the sandbox when it is available.
+   ## WEBSITE_TESTS_SANDBOX_DRIVER overrides the driver path (used by the regression
+   ## test); otherwise prefer the co-located driver, then one on PATH.
+   driver="${WEBSITE_TESTS_SANDBOX_DRIVER:-}"
+   if [ -z "${driver}" ]; then
+      driver="${script_dir}/website-tests-sandbox"
+      [ -x "${driver}" ] || driver="$(command -v website-tests-sandbox 2>/dev/null || true)"
+   fi
+   if [ "${WEBSITE_TESTS_NO_SANDBOX:-}" != '1' ] \
+      && [ -n "${driver}" ] && [ -x "${driver}" ] && command -v sandbox >/dev/null 2>&1; then
+      "${driver}" "${roots[@]}" || overall=1
+   else
+      printf '%s\n' 'website-mobile-tests: SKIP (no Playwright/chromium; no sandbox)' >&2
+      printf '%s\n' 'website-width-tests: SKIP (no Playwright/chromium; no sandbox)' >&2
+   fi
+else
+   ## Local browser present -- mobile ran here. Gate it, then run the width lane too.
+   [ "${mobile_rc}" = '0' ] || overall=1
+   if [ -f "${tests_dir}/check_width.py" ]; then
+      width_rc=0
+      python3 -Bsu -- "${tests_dir}/check_width.py" "${roots[@]}" || width_rc="$?"
+      if [ "${width_rc}" = '77' ]; then
+         printf '%s\n' 'website-width-tests: SKIP (no Playwright/chromium)' >&2
+      elif [ "${width_rc}" != '0' ]; then
+         overall=1
+      fi
    fi
 fi
 

@@ -1,0 +1,134 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## style-ok: no-has -- standalone test harness; does not source helper-scripts.
+
+## Regression for the website-tests browser-lane DELEGATION, i.e. the fix for the
+## silent-SKIP false green: on a host with no local browser but with the review
+## sandbox, website-tests must run the mobile/width lanes via website-tests-sandbox
+## and GATE on their result -- never print a SKIP and exit green.
+##
+## Drives the REAL usr/bin/website-tests wrapper (no copy) with a STUB driver injected
+## via WEBSITE_TESTS_SANDBOX_DRIVER and a stub `sandbox` on PATH, so the delegation
+## branch is exercised without a real sandbox. Asserts, against the actual sites:
+##   - a delegated FAILURE propagates (wrapper exits non-zero), not swallowed to green
+##   - a delegated SUCCESS passes and the driver was actually invoked
+##   - with the sandbox disabled, the wrapper SKIPs and does NOT invoke the driver
+##
+## Runs only where the delegation branch is reachable: it needs at least one site
+## checkout AND no local Playwright (so the mobile probe returns 77). Absent either,
+## it SKIPs (exit 77) -- an authorized, environmental skip, not a masked failure.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+website_tests="${script_dir}/website-tests"
+if [ -d "${script_dir}/../share/website-tests" ]; then
+   tests_dir="${script_dir}/../share/website-tests"
+else
+   tests_dir='/usr/share/website-tests'
+fi
+
+[ -x "${website_tests}" ] || website_tests="$(command -v website-tests)"
+
+pass_count=0
+fail_count=0
+pass(){ printf '%s\n' "website-tests-delegation-test: pass $1"; pass_count=$(( pass_count + 1 )); }
+fail(){ printf '%s\n' "website-tests-delegation-test: FAIL $1" >&2; fail_count=$(( fail_count + 1 )); }
+skip(){ printf '%s\n' "website-tests-delegation-test: SKIP ($1)" >&2; exit 77; }
+
+## Resolve the site roots the same way website-tests does; export the ones present so
+## the wrapper (and the local probe) see the same set.
+[ -v OUTPUT_LIES_REPO ]         || OUTPUT_LIES_REPO=''
+[ -v SECURE_TERMINAL_SITE_REPO ] || SECURE_TERMINAL_SITE_REPO=''
+[ -v ORG_AI_ASSISTED_REPO ]     || ORG_AI_ASSISTED_REPO=''
+declare -a roots=()
+resolve(){
+   local given
+   local default
+   given="$1"
+   default="$2"
+   if [ -n "${given}" ] && [ -f "${given}/index.html" ]; then
+      roots+=( "${given}" )
+   elif [ -f "${default}/index.html" ]; then
+      roots+=( "${default}" )
+   fi
+}
+resolve "${OUTPUT_LIES_REPO}"          "${HOME}/private-sources/output-lies.github.io"
+resolve "${SECURE_TERMINAL_SITE_REPO}" "${HOME}/private-sources/secure-terminal.github.io"
+resolve "${ORG_AI_ASSISTED_REPO}"      "${HOME}/private-sources/org-ai-assisted.github.io"
+[ "${#roots[@]}" -ge 1 ] || skip 'no site checkout found'
+
+## The delegation branch fires only when the local mobile probe returns 77 (no local
+## Playwright). If a local browser is present the branch is unreachable here.
+probe_rc=0
+python3 -Bsu -- "${tests_dir}/check_mobile.py" "${roots[@]}" >/dev/null 2>&1 || probe_rc="$?"
+[ "${probe_rc}" = '77' ] || skip 'local Playwright present; delegation path not reachable'
+
+## Sandbox stubs: a `sandbox` on PATH (only its existence is probed by the wrapper)
+## and a driver stub that records its invocation and returns a configurable code.
+stub_dir="$(mktemp --directory)"
+marker="${stub_dir}/driver-invoked"
+cleanup(){ safe-rm --recursive --force -- "${stub_dir}"; }
+trap cleanup EXIT
+printf '%s\n' '#!/bin/bash' 'exit 0' > "${stub_dir}/sandbox"
+cat > "${stub_dir}/driver" <<'STUB'
+#!/bin/bash
+touch -- "${DRIVER_MARKER}"
+exit "${DRIVER_RC:-0}"
+STUB
+chmod +x -- "${stub_dir}/sandbox" "${stub_dir}/driver"
+
+out="${stub_dir}/out.log"
+
+## Run the real wrapper with the stubs; $1 = extra env assignments; output -> $out.
+run_wrapper(){
+   local rc
+   rc=0
+   env PATH="${stub_dir}:${PATH}" \
+       OUTPUT_LIES_REPO="${OUTPUT_LIES_REPO}" \
+       SECURE_TERMINAL_SITE_REPO="${SECURE_TERMINAL_SITE_REPO}" \
+       ORG_AI_ASSISTED_REPO="${ORG_AI_ASSISTED_REPO}" \
+       DRIVER_MARKER="${marker}" \
+       "$@" \
+       "${website_tests}" > "${out}" 2>&1 || rc="$?"
+   printf '%s' "${rc}"
+}
+
+driver_env="WEBSITE_TESTS_SANDBOX_DRIVER=${stub_dir}/driver"
+
+## Scenario 1: delegated FAILURE must propagate (the core regression). Pass each
+## NAME=VALUE as its own arg -- never a space-joined string -- so a stub_dir path
+## containing a space cannot split mid-value.
+safe-rm --force -- "${marker}"
+rc="$(run_wrapper "${driver_env}" 'DRIVER_RC=1')"
+if [ "${rc}" != '0' ]; then pass 'delegated failure -> wrapper non-zero'; else fail "delegated failure swallowed to green (rc=${rc})"; fi
+if [ -f "${marker}" ]; then pass 'driver invoked on delegation'; else fail 'driver not invoked (no delegation happened)'; fi
+if ! grep --quiet 'no sandbox' -- "${out}"; then pass 'no false SKIP emitted while delegating'; else fail 'wrapper printed the no-sandbox SKIP while a driver was available'; fi
+
+## Scenario 2: delegated SUCCESS must pass (and confirms check_site passes on these
+## roots, so scenario 1's non-zero came from the driver).
+safe-rm --force -- "${marker}"
+rc="$(run_wrapper "${driver_env}" 'DRIVER_RC=0')"
+if [ "${rc}" = '0' ]; then pass 'delegated success -> wrapper zero'; else fail "delegated success not green (rc=${rc}); see ${out}"; fi
+if [ -f "${marker}" ]; then pass 'driver invoked on success path'; else fail 'driver not invoked on success path'; fi
+
+## Scenario 3: with the sandbox disabled, the wrapper SKIPs, does NOT delegate, and
+## stays green (only the static lane gates).
+safe-rm --force -- "${marker}"
+rc="$(run_wrapper "${driver_env}" 'DRIVER_RC=1' 'WEBSITE_TESTS_NO_SANDBOX=1')"
+if [ "${rc}" = '0' ]; then pass 'no-sandbox path stays green (static only)'; else fail "no-sandbox path non-zero (rc=${rc})"; fi
+if grep --quiet 'website-mobile-tests: SKIP (no Playwright/chromium; no sandbox)' -- "${out}"; then pass 'no-sandbox context SKIPs explicitly'; else fail 'no-sandbox context did not emit the SKIP notice'; fi
+if [ ! -f "${marker}" ]; then pass 'driver not invoked when sandbox disabled'; else fail 'driver invoked despite sandbox disabled'; fi
+
+printf '%s\n' "website-tests-delegation-test: ${pass_count} pass, ${fail_count} fail, 0 skip"
+[ "${fail_count}" -eq 0 ]

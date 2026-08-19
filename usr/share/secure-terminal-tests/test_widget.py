@@ -248,6 +248,73 @@ ok('\u00e9' in _sh_export, 'show mode copies a real printable glyph as itself (e
 ok('\u25a1' in _sh_export and '\u200b' not in _sh_export,
    'show mode copies a no-glyph char as the box, never the raw zero-width byte')
 
+# --- horizontal scroll: a terminal WRAPS to the width, never hides content off-screen ---
+# A real terminal has no horizontal scroll. Detail/Reveal expand each cell to a wide
+# <U+XXXX> badge, so the DISPLAY wraps to the viewport (WidgetWidth); Box/Show cells are
+# ~1 column and stay NoWrap so a glyph keeps its line/column across a box<->show toggle;
+# the TUI grid is sized to fit and never wraps. Regression: Detail was NoWrap, so a long
+# line overflowed the width and the auto-follow (ensureCursorVisible) scrolled the viewport
+# to the caret's column, parking it mid-line and hiding the start of every row.
+from PyQt6.QtWidgets import QPlainTextEdit as _QPTE                # noqa: E402
+_WW = _QPTE.LineWrapMode.WidgetWidth
+_NW = _QPTE.LineWrapMode.NoWrap
+_wm = SecureTerminal(command='/bin/cat')
+eq(_wm.lineWrapMode(), _WW, 'CLI Detail (default) wraps the display to the width')
+_wm.apply_mode('reveal')
+eq(_wm.lineWrapMode(), _WW, 'CLI Reveal wraps the display to the width')
+_wm.apply_mode('box')
+eq(_wm.lineWrapMode(), _NW, 'CLI Box does not wrap (glyph line/column stable across box<->show)')
+_wm.apply_mode('show')
+eq(_wm.lineWrapMode(), _NW, 'CLI Show does not wrap (glyph line/column stable across box<->show)')
+_wm.close()
+_wmt = SecureTerminal(command='/bin/cat', tui=True)
+eq(_wmt.lineWrapMode(), _NW,
+   'TUI grid never wraps (sized to fit; Detail/Reveal cells fall back to the box)')
+_wmt.close()
+# home-pin: a terminal does not auto-scroll horizontally -- a paint anchors the view at
+# the left so the START of every row stays visible (the reported bug: the auto-follow
+# parked the viewport mid-line, clipping every row's left edge) -- but NEVER by hiding
+# the caret. Box/Show stay NoWrap, so a long line can overflow; Detail/Reveal wrap.
+#
+# Case A: the caret sits at the far right of an overflowing NoWrap line (interactive
+# typing past the edge). It MUST stay visible -- home-pinning it off-screen would hide
+# the input and block manual scroll. Guards the ai-review regression an unconditional
+# home-pin introduced.
+_pinA = SecureTerminal(command='/bin/cat')
+_pinA.apply_mode('show')                # NoWrap, so the line can overflow horizontally
+_pinA.resize(240, 120)
+_pinA.show()
+APP.processEvents()
+feed_output(_pinA, ('\u4f60\u597d' * 200).encode('utf-8'))         # caret at the far right, no LF
+_hbA = _pinA.horizontalScrollBar()
+ok(_hbA.maximum() > _hbA.minimum(),
+   'canary: the wide Show line overflows the viewport (else caret-visibility is untested)')
+_crA = _pinA.cursorRect()
+ok(0 <= _crA.x() and _crA.x() + _pinA.cursorWidth() <= _pinA.viewport().width(),
+   'home-pin never hides the caret: the FULL caret (its width included, not just the left '
+   'edge) stays within the viewport on an overflowing NoWrap line')
+_pinA.close()
+# Case B: the overflow lives in the scrollback above and the caret is near the start of
+# a short current line, so home-pinning keeps the caret visible AND anchors the line
+# starts. Scroll fully right, force a repaint: the view re-homes to column 0. On the old
+# code ensureCursorVisible only scrolled the caret into view (left edge), leaving the
+# line starts off-screen; the home-pin brings them back.
+_pinB = SecureTerminal(command='/bin/cat')
+_pinB.apply_mode('show')
+_pinB.resize(240, 120)
+_pinB.show()
+APP.processEvents()
+feed_output(_pinB, ('\u4f60\u597d' * 200 + '\n\u4f60').encode('utf-8'))  # long scrollback + short current line
+_hbB = _pinB.horizontalScrollBar()
+ok(_hbB.maximum() > _hbB.minimum(),
+   'canary: the scrollback line overflows the viewport before the repaint')
+_hbB.setValue(_hbB.maximum())           # scroll fully right
+_pinB._paint_dirty = True               # force a repaint of the current line
+_pinB._flush_paint()
+eq(_hbB.value(), _hbB.minimum(),
+   'home-pin: a paint re-homes to column 0 when that keeps the (col-0) caret visible')
+_pinB.close()
+
 # --- Zalgo flood: a base char plus thousands of stacked combining marks is one
 # grapheme cluster that makes the text engine (Qt in CLI mode, pyte's NFC merge in
 # TUI mode) reshape it in O(n^2) -- seconds of GUI freeze per line. The CLI cell
@@ -6540,19 +6607,30 @@ _bp_frame = b''.join(_bp_sent2)
 ok(_bp_frame.startswith(b'\x1b[200~') and _bp_frame.endswith(b'\x1b[201~'),
    'reconcile#1: a bracketed paste is delivered framed as inert data')
 
-# --- reconcile #3: expanded Unicode stays reachable (h-scrollbar as-needed) ------
-# NoWrap keeps a glyph's column stable across box<->show (the #28 fix), but a line
-# of many non-ASCII cells renders each as a long Detail badge -> wider than the
-# viewport. The horizontal scrollbar must be AVAILABLE-AS-NEEDED so that overflow
-# is reachable; ScrollBarAlwaysOff (the regressed policy) clipped it away unusably.
+# --- reconcile #3: expanded Unicode stays reachable by WRAPPING, never hidden -----
+# A line of many non-ASCII cells renders each as a long Detail badge, far wider than
+# the viewport. A real terminal has no horizontal scroll: the display WRAPS to the
+# width (WidgetWidth) so every badge stays on screen -- nothing pushed off the right
+# edge, and no auto-scroll that would clip the START of each row. The horizontal
+# scrollbar policy stays as-needed only for the residual Box/Show wide-glyph overflow
+# (left NoWrap for cross-mode stability, and home-pinned by _paint_line); it must NOT
+# appear for a wrapped Detail line.
 ok(_bp_no.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded,
    'reconcile#3: the horizontal scrollbar policy is as-needed')
 _hs = SecureTerminal(command='/bin/cat')                   # default Detail mode
 _hs.resize(220, 120)
+_hs.show()
+APP.processEvents()
 feed_output(_hs, ('\u00e9' * 40).encode('utf-8'))     # 40 long badges -> wide line
-pump(20)
-ok(_hs.horizontalScrollBar().maximum() > 0,
-   'reconcile#3: a long Detail-badge line overflows the width and can be scrolled to')
+APP.processEvents()
+eq(_hs.lineWrapMode(), _QPTE.LineWrapMode.WidgetWidth,
+   'reconcile#3: Detail wraps the display to the width')
+# The line is ~40 badges * ~40 chars, far wider than a 220px viewport: under NoWrap
+# it would overflow (max > 0, as the home-pin canary above proves for Show mode), so
+# max == 0 here IS the proof it wrapped to the width instead of scrolling.
+ok(_hs.horizontalScrollBar().maximum() == 0,
+   'reconcile#3: the wrapped Detail line needs NO horizontal scroll (nothing hidden off-screen)')
+_hs.close()
 
 # --- reconcile #4: a mid-debounce mode change drops the stale pending paint ------
 # If a mode/color/marking change calls _rerender() during the 16ms paint debounce,
