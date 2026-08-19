@@ -99,14 +99,18 @@ run_wrapper(){
        SECURE_TERMINAL_SITE_REPO="${SECURE_TERMINAL_SITE_REPO}" \
        ORG_AI_ASSISTED_REPO="${ORG_AI_ASSISTED_REPO}" \
        DRIVER_MARKER="${marker}" \
-       $1 \
+       "$@" \
        "${website_tests}" > "${out}" 2>&1 || rc="$?"
    printf '%s' "${rc}"
 }
 
-## Scenario 1: delegated FAILURE must propagate (the core regression).
+driver_env="WEBSITE_TESTS_SANDBOX_DRIVER=${stub_dir}/driver"
+
+## Scenario 1: delegated FAILURE must propagate (the core regression). Pass each
+## NAME=VALUE as its own arg -- never a space-joined string -- so a stub_dir path
+## containing a space cannot split mid-value.
 safe-rm --force -- "${marker}"
-rc="$(run_wrapper "WEBSITE_TESTS_SANDBOX_DRIVER=${stub_dir}/driver DRIVER_RC=1")"
+rc="$(run_wrapper "${driver_env}" 'DRIVER_RC=1')"
 if [ "${rc}" != '0' ]; then pass 'delegated failure -> wrapper non-zero'; else fail "delegated failure swallowed to green (rc=${rc})"; fi
 if [ -f "${marker}" ]; then pass 'driver invoked on delegation'; else fail 'driver not invoked (no delegation happened)'; fi
 if ! grep --quiet 'no sandbox' -- "${out}"; then pass 'no false SKIP emitted while delegating'; else fail 'wrapper printed the no-sandbox SKIP while a driver was available'; fi
@@ -114,13 +118,15 @@ if ! grep --quiet 'no sandbox' -- "${out}"; then pass 'no false SKIP emitted whi
 ## Scenario 2: delegated SUCCESS must pass (and confirms check_site passes on these
 ## roots, so scenario 1's non-zero came from the driver).
 safe-rm --force -- "${marker}"
-rc="$(run_wrapper "WEBSITE_TESTS_SANDBOX_DRIVER=${stub_dir}/driver DRIVER_RC=0")"
+rc="$(run_wrapper "${driver_env}" 'DRIVER_RC=0')"
 if [ "${rc}" = '0' ]; then pass 'delegated success -> wrapper zero'; else fail "delegated success not green (rc=${rc}); see ${out}"; fi
 if [ -f "${marker}" ]; then pass 'driver invoked on success path'; else fail 'driver not invoked on success path'; fi
 
-## Scenario 3: with the sandbox disabled, the wrapper SKIPs and does NOT delegate.
+## Scenario 3: with the sandbox disabled, the wrapper SKIPs, does NOT delegate, and
+## stays green (only the static lane gates).
 safe-rm --force -- "${marker}"
-rc="$(run_wrapper "WEBSITE_TESTS_SANDBOX_DRIVER=${stub_dir}/driver DRIVER_RC=1 WEBSITE_TESTS_NO_SANDBOX=1")"
+rc="$(run_wrapper "${driver_env}" 'DRIVER_RC=1' 'WEBSITE_TESTS_NO_SANDBOX=1')"
+if [ "${rc}" = '0' ]; then pass 'no-sandbox path stays green (static only)'; else fail "no-sandbox path non-zero (rc=${rc})"; fi
 if grep --quiet 'website-mobile-tests: SKIP (no Playwright/chromium; no sandbox)' -- "${out}"; then pass 'no-sandbox context SKIPs explicitly'; else fail 'no-sandbox context did not emit the SKIP notice'; fi
 if [ ! -f "${marker}" ]; then pass 'driver not invoked when sandbox disabled'; else fail 'driver invoked despite sandbox disabled'; fi
 

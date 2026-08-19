@@ -29,8 +29,10 @@ shopt -s shift_verbose
 ## The sandbox Playwright venv + its chromium engine (provisioned by
 ## `sandbox provision playwright`; same path web-render / playwright-run bind).
 readonly SANDBOX_VENV_PY='/home/user/.venvs/web-render/bin/python'
-## Stable per-run working dir inside the sandbox (bound read-write by the profile).
-readonly SANDBOX_WORKDIR='/home/user/website-tests-sandbox-run'
+## Per-run working dir inside the sandbox (bound read-write by the profile). PID-unique
+## so two concurrent gates (e.g. parallel deploys) never clobber each other's staging
+## through `sandbox sync --delete`.
+readonly SANDBOX_WORKDIR="/home/user/website-tests-sandbox-run.$$"
 
 die(){
    printf '%s\n' "website-tests-sandbox: $1" >&2
@@ -67,9 +69,14 @@ sandbox exec -- type sandbox-confine >/dev/null 2>&1 \
 ## Stage the two runners plus each site root (no .git) into one tree, then sync it in
 ## and run both lanes confined. Basenames must be unique across the roots.
 staging="$(mktemp --directory)"
+synced=0
 cleanup(){
    # shellcheck disable=SC2317  # invoked indirectly via the EXIT trap
    safe-rm --recursive --force -- "${staging}"
+   # shellcheck disable=SC2317
+   [ "${synced}" = '1' ] && sandbox exec -- safe-rm --recursive --force -- "${SANDBOX_WORKDIR}" >/dev/null 2>&1
+   # shellcheck disable=SC2317
+   return 0
 }
 trap cleanup EXIT
 
@@ -82,6 +89,9 @@ done
 declare -a remote_roots=()
 for root in "$@"; do
    [ -f "${root}/index.html" ] || die "not a site root (no index.html): ${root}"
+   ## Canonicalize first: a relative root like '.' or '..' would basename to '.'/'..',
+   ## which always collide with the staging dir / its parent.
+   root="$(readlink --canonicalize -- "${root}")"
    base="$(basename -- "${root}")"
    if [ -e "${staging}/${base}" ]; then
       die "duplicate site-root basename '${base}' -- roots must have distinct names"
@@ -92,6 +102,7 @@ done
 
 sandbox sync --delete "${staging}" "$(basename -- "${SANDBOX_WORKDIR}")" >&2 \
    || die 'failed to sync the staging tree into the sandbox'
+synced=1
 
 overall=0
 run_lane(){
