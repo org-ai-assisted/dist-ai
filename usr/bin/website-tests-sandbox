@@ -73,8 +73,13 @@ synced=0
 cleanup(){
    # shellcheck disable=SC2317  # invoked indirectly via the EXIT trap
    safe-rm --recursive --force -- "${staging}"
+   # Remote cleanup is best-effort: it must never fail the gate (errexit + the EXIT
+   # trap would otherwise turn a green run red if the sandbox is gone at exit, or a
+   # minimally-provisioned sandbox lacks safe-rm).
    # shellcheck disable=SC2317
-   [ "${synced}" = '1' ] && sandbox exec -- safe-rm --recursive --force -- "${SANDBOX_WORKDIR}" >/dev/null 2>&1
+   if [ "${synced}" = '1' ]; then
+      sandbox exec -- safe-rm --recursive --force -- "${SANDBOX_WORKDIR}" >/dev/null 2>&1 || true
+   fi
    # shellcheck disable=SC2317
    return 0
 }
