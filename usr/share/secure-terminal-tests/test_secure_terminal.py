@@ -878,7 +878,8 @@ def _control_depends(path):
     constraints and ${...} substvar macros stripped, and each `a | b`
     alternative counted (a require()d package satisfied as an alternative is
     still declared)."""
-    lines = open(path, encoding='utf-8').read().splitlines()
+    with open(path, encoding='utf-8') as fh:
+        lines = fh.read().splitlines()
     names = set()
     for i, ln in enumerate(lines):
         if not ln.startswith('Depends:'):
@@ -905,7 +906,8 @@ def _require_packages(bindir):
         if not os.path.isfile(launcher):        # skip a subdir (e.g. __pycache__)
             continue
         try:
-            tree = _ast.parse(open(launcher, encoding='utf-8').read())
+            with open(launcher, encoding='utf-8') as fh:
+                tree = _ast.parse(fh.read())
         except (SyntaxError, UnicodeDecodeError, OSError):
             continue
         for node in _ast.walk(tree):

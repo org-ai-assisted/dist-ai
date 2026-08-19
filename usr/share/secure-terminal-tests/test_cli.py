@@ -169,7 +169,7 @@ def run_in_pty(argv, feed=b'', feed2=b'', feed2_delay=0.4, tty_stdin=True,
             try:
                 signal.signal(signal.SIGINT, prev_sigint)
             except (OSError, ValueError, TypeError):
-                pass
+                pass        # an off-main-thread restore may fail; harmless
         for fd in (out_master, out_slave, in_r, in_w):
             if fd is not None:
                 try:
