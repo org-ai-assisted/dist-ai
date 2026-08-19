@@ -44,8 +44,10 @@
 ## by the WM's title bar (labwc's _NET_FRAME_EXTENTS). Nothing is painted on.
 ##
 ## Needs: an X server on $DISPLAY, labwc (+ its Xwayland), the Clearlooks Openbox
-## theme, x11-xserver-utils (setxkbmap), xdotool, xprop, ImageMagick. Installs
-## NOTHING itself (supply-chain hygiene).
+## theme, x11-xserver-utils (setxkbmap), xdotool, wmctrl, xprop, xwininfo,
+## ImageMagick, and optipng/jpegoptim/cwebp for the webp encode. Installs NOTHING
+## itself (supply-chain hygiene); in the sandbox `sandbox provision shots` installs
+## the whole set, and secure-terminal-shots-sandbox preflights it.
 ##
 ## Usage (normally via the wrapper: 'secure-terminal-shots comparison'):
 ##   ST_REPO=/path/to/secure-terminal/checkout ./comparison-capture.sh
@@ -446,6 +448,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
+## List the child window IDs of the root window on the host X server. labwc's
+## wlroots x11-backend output window is a normal child of root but carries NO
+## WM_NAME: over a nested Xvfb wlroots cannot set it (the `BadAtom` ChangeProperty
+## warnings in labwc.log), so a name-based `xdotool search --name` never matches it
+## and the bringup wait times out ("labwc did not start"). Enumerate children by ID
+## instead -- name-independent, so it is robust to that wlroots/labwc behaviour.
+host_child_windows() {
+   DISPLAY="${host_display}" xwininfo -root -children 2>/dev/null \
+      | awk '/[0-9]+ (child|children):/{f=1; next} f && $1 ~ /^0x[0-9a-fA-F]+$/ {print $1}'
+}
+
 ## start labwc nested on the host X server; discover its Xwayland display and its
 ## host window (the compositor output we screenshot).
 start_labwc() {
@@ -455,7 +468,7 @@ start_labwc() {
       [ -e "${f}" ] || continue        # no match -> the literal glob; skip it
       before_sock+="${f##*/} "
    done
-   before_win=" $(DISPLAY="${host_display}" xdotool search --onlyvisible '' 2>/dev/null | tr '\n' ' ')"
+   before_win=" $(host_child_windows | tr '\n' ' ')"
    ## WLR_RENDERER=pixman: force wlroots' software renderer. The default GL renderer needs a GPU
    ## / DRM device that a nested Xvfb does not provide, so labwc intermittently fails to start
    ## ("try WLR_RENDERER=pixman") -- more often under the parallel --jobs load, which stands up
@@ -474,7 +487,7 @@ start_labwc() {
          done
       fi
       if [ -z "${labwc_wid}" ]; then
-         after_win=" $(DISPLAY="${host_display}" xdotool search --onlyvisible '' 2>/dev/null | tr '\n' ' ')"
+         after_win=" $(host_child_windows | tr '\n' ' ')"
          for w in ${after_win}; do
             case "${before_win}" in *" ${w} "*) : ;; *) labwc_wid="${w}" ;; esac
          done
