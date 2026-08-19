@@ -271,31 +271,48 @@ _wmt = SecureTerminal(command='/bin/cat', tui=True)
 eq(_wmt.lineWrapMode(), _NW,
    'TUI grid never wraps (sized to fit; Detail/Reveal cells fall back to the box)')
 _wmt.close()
-# home-pin: where a line legitimately overflows (Box/Show stay NoWrap), a paint must
-# leave the view anchored at column 0 so the START of every row stays visible -- it
-# must never scroll horizontally to the caret (the reported bug: the auto-follow parked
-# the viewport mid-line, clipping every row's left edge). Show mode + a long run of wide
-# glyphs genuinely overflows a narrow viewport; the caret sits at the far right (no
-# trailing newline). Then scroll all the way right and force a repaint: the pin must
-# bring it home. On the old code ensureCursorVisible kept the far-right caret visible,
-# so the view stayed scrolled right (value == maximum, not minimum).
-_pin = SecureTerminal(command='/bin/cat')
-_pin.apply_mode('show')                 # NoWrap, so the line can overflow horizontally
-_pin.resize(240, 120)
-_pin.show()
+# home-pin: a terminal does not auto-scroll horizontally -- a paint anchors the view at
+# the left so the START of every row stays visible (the reported bug: the auto-follow
+# parked the viewport mid-line, clipping every row's left edge) -- but NEVER by hiding
+# the caret. Box/Show stay NoWrap, so a long line can overflow; Detail/Reveal wrap.
+#
+# Case A: the caret sits at the far right of an overflowing NoWrap line (interactive
+# typing past the edge). It MUST stay visible -- home-pinning it off-screen would hide
+# the input and block manual scroll. Guards the ai-review regression an unconditional
+# home-pin introduced.
+_pinA = SecureTerminal(command='/bin/cat')
+_pinA.apply_mode('show')                # NoWrap, so the line can overflow horizontally
+_pinA.resize(240, 120)
+_pinA.show()
 APP.processEvents()
-feed_output(_pin, ('\u4f60\u597d' * 200).encode('utf-8'))          # wide CJK glyphs, no LF
-_hb = _pin.horizontalScrollBar()
-ok(_hb.maximum() > _hb.minimum(),
-   'canary: the show-mode wide line actually overflows the viewport (else the pin is untested)')
-_hb.setValue(_hb.maximum())             # user/auto-follow scrolls right toward the caret
-ok(_hb.value() == _hb.maximum(),
-   'canary: the horizontal view is scrolled fully right before the repaint')
-_pin._paint_dirty = True                # force a repaint of the same current line
-_pin._flush_paint()
-eq(_hb.value(), _hb.minimum(),
-   'home-pin: a paint re-homes the horizontal view to column 0, never following the caret right')
-_pin.close()
+feed_output(_pinA, ('\u4f60\u597d' * 200).encode('utf-8'))         # caret at the far right, no LF
+_hbA = _pinA.horizontalScrollBar()
+ok(_hbA.maximum() > _hbA.minimum(),
+   'canary: the wide Show line overflows the viewport (else caret-visibility is untested)')
+_crA = _pinA.cursorRect()
+ok(0 <= _crA.x() <= _pinA.viewport().width(),
+   'home-pin never hides the caret: on an overflowing NoWrap line the caret stays visible')
+_pinA.close()
+# Case B: the overflow lives in the scrollback above and the caret is near the start of
+# a short current line, so home-pinning keeps the caret visible AND anchors the line
+# starts. Scroll fully right, force a repaint: the view re-homes to column 0. On the old
+# code ensureCursorVisible only scrolled the caret into view (left edge), leaving the
+# line starts off-screen; the home-pin brings them back.
+_pinB = SecureTerminal(command='/bin/cat')
+_pinB.apply_mode('show')
+_pinB.resize(240, 120)
+_pinB.show()
+APP.processEvents()
+feed_output(_pinB, ('\u4f60\u597d' * 200 + '\n\u4f60').encode('utf-8'))  # long scrollback + short current line
+_hbB = _pinB.horizontalScrollBar()
+ok(_hbB.maximum() > _hbB.minimum(),
+   'canary: the scrollback line overflows the viewport before the repaint')
+_hbB.setValue(_hbB.maximum())           # scroll fully right
+_pinB._paint_dirty = True               # force a repaint of the current line
+_pinB._flush_paint()
+eq(_hbB.value(), _hbB.minimum(),
+   'home-pin: a paint re-homes to column 0 when that keeps the (col-0) caret visible')
+_pinB.close()
 
 # --- Zalgo flood: a base char plus thousands of stacked combining marks is one
 # grapheme cluster that makes the text engine (Qt in CLI mode, pyte's NFC merge in
