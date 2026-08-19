@@ -6849,6 +6849,281 @@ eq(_avs_bar.value(), _avs_bar.minimum(),
    'alt-screen top-pin: the view is pinned to the top, not the tail')
 _avs.shutdown()
 
+# --- Incremental TUI grid render: same document as a full rebuild, but linear --
+# A full-viewport 24-bit board has a DISTINCT truecolour in every cell, so the
+# same-format run coalescing never fires and each row is ~one insertText per
+# column. Re-rendering the WHOLE grid on every PTY read was then quadratic (the
+# ~20s show-mode gradient-board render). The incremental renderer keeps every
+# unchanged block, promotes scrolled-off rows to permanent scrollback, and
+# re-renders only the changed rows -- so a row is drawn about once (linear) while
+# producing a byte-identical document. The signature IS the rendered runs, so any
+# theme / mode / marking / colour change forces a correct re-render (never stale).
+
+
+def _distinct_board(cols, rows):
+    """Bytes for a rows x cols board where every cell is a distinct truecolour
+    upper-half-block, so no two adjacent cells share a format (no run coalescing
+    -- the renderer's worst case, and the real gradient board's shape)."""
+    block = '\u2580'                       # upper half block, ASCII-escaped
+    out = []
+    for y in range(rows):
+        line = []
+        for x in range(cols):
+            line.append('\x1b[38;2;%d;%d;%dm\x1b[48;2;%d;%d;%dm%s'
+                        % ((x * 7) % 256, (y * 11) % 256, (x + y) % 256,
+                           (y * 13) % 256, (x * 5) % 256, (x * y) % 256, block))
+        out.append(''.join(line) + '\x1b[0m')
+    return ('\r\n'.join(out) + '\r\n').encode()
+
+
+def _doc_cells(term):
+    """Every rendered character with its format (fg / bg / weight / underline),
+    so two documents can be compared for identical CONTENT and IDENTICAL
+    formatting -- an incremental render that left a cell stale diverges here."""
+    doc = term.document()
+    cells = []
+    blk = doc.begin()
+    while blk.isValid():
+        it = blk.begin()
+        while not it.atEnd():
+            frag = it.fragment()
+            fmt = frag.charFormat()
+            fkey = (fmt.foreground().color().name(), fmt.background().color().name(),
+                    int(fmt.fontWeight()), fmt.fontUnderline())
+            for ch in frag.text():
+                cells.append((ch, fkey))
+            it += 1
+        cells.append(('\n', None))
+        blk = blk.next()
+    return cells
+
+
+def _feed_render_chunks(term, data, chunks):
+    """Feed `data` in `chunks` reads, rendering after each -- the shot-mode /
+    progressive-draw path the incremental renderer has to keep linear."""
+    n = len(data)
+    step = max(1, n // chunks)
+    i = 0
+    while i < n:
+        term._feed_stream(data[i:i + step])
+        term._render_tui()
+        i += step
+
+
+def _show_grid(mode_markings_theme=(None, None)):
+    _t = SecureTerminal(command='/bin/cat', tui=True)
+    _t.apply_mode('show')
+    _t.resize(1200, 700)
+    _t.show()
+    pump(60)
+    _mk, _th = mode_markings_theme
+    if _mk is not None:
+        _t.apply_markings(_mk)
+    if _th is not None and _th != _t._theme:
+        _t.apply_theme(_th)
+    return _t
+
+
+# 1. A fits-on-screen board drawn progressively over many reads renders to the
+# SAME document (content + formats) as one full-rebuild render of the same bytes.
+_ib = _show_grid()
+_ibc = min(60, _ib._screen.columns)
+_ibr = min(18, _ib._screen.lines - 2)
+_ib_board = _distinct_board(_ibc, _ibr)
+_feed_render_chunks(_ib, _ib_board, 12)
+_ib_ref = _show_grid()
+_ib_ref._feed_stream(_ib_board)
+_ib_ref._render_tui()
+eq(_doc_cells(_ib), _doc_cells(_ib_ref),
+   'incremental progressive render == a single full rebuild (content + every format)')
+_ib.shutdown()
+_ib_ref.shutdown()
+
+# 2. Linearity: each of the board's rows is inserted about once (plus a small
+# re-render of the active tail), NOT re-inserted on every read. A full rebuild
+# per read would insert many multiples of the row count. FAILS on the old code.
+_orig_igr = SecureTerminal._insert_grid_row
+_igr_calls = [0]
+
+
+def _counting_igr(self, cursor, row, columns):
+    _igr_calls[0] += 1
+    return _orig_igr(self, cursor, row, columns)
+
+
+SecureTerminal._insert_grid_row = _counting_igr
+try:
+    _pf = _show_grid()
+    _pfr = min(18, _pf._screen.lines - 2)
+    _feed_render_chunks(_pf, _distinct_board(min(60, _pf._screen.columns), _pfr), 12)
+    _rowins = _igr_calls[0]
+    _pf.shutdown()
+finally:
+    SecureTerminal._insert_grid_row = _orig_igr
+ok(_rowins < 3 * _pfr,
+   'incremental grid inserts each row ~once (%d inserts for %d rows over 12 reads), '
+   'not once per read' % (_rowins, _pfr))
+
+# 3. Scroll flood (3 screens): the incremental render, promoting scrolled-off
+# rows to permanent scrollback, is byte-identical to a full rebuild, and keeps
+# the live grid bounded to ~one screen even as the document grows.
+_fl = _show_grid()
+_flr = _fl._screen.lines
+_fl_flood = _distinct_board(min(50, _fl._screen.columns), _flr * 3)
+_feed_render_chunks(_fl, _fl_flood, 20)
+_fl_ref = _show_grid()
+_fl_ref._feed_stream(_fl_flood)
+_fl_ref._render_tui()
+eq(_doc_cells(_fl), _doc_cells(_fl_ref),
+   'incremental scroll flood == full rebuild (promoted scrollback rows byte-identical)')
+ok(_fl._grid_rows <= _flr + 1,
+   'scroll flood keeps the live grid bounded (rows promoted to permanent scrollback)')
+ok(_fl.document().blockCount() > _flr + 1,
+   'scroll flood grew the document past one screen (scrollback retained)')
+_fl.shutdown()
+_fl_ref.shutdown()
+
+# 4. Fallback: rows that scroll into history without having been rendered as
+# leading grid blocks (many lines fed with NO render between) take the correct
+# full-rebuild path.
+_fb = SecureTerminal(command='/bin/cat', tui=True)
+_fb.apply_mode('show')
+_fb.resize(700, 300)
+_fb.show()
+pump(40)
+for _k in range(_fb._screen.lines * 2):
+    _fb._feed_stream(('fb-row-%02d\r\n' % _k).encode())        # NO render between feeds
+_fb._render_tui()                                              # one render -> fallback
+ok('fb-row-%02d' % (_fb._screen.lines * 2 - 1) in _fb.toPlainText(),
+   'fallback full rebuild renders the latest row')
+ok('fb-row-00' in _fb.toPlainText(),
+   'fallback full rebuild renders the scrolled-off history')
+_fb.shutdown()
+
+# 5. A row mutated AND scrolled off within a single un-rendered read is NOT
+# promoted from its now-stale block: the signature recheck fails, so the frame
+# takes the full-rebuild fallback and shows the NEW content.
+_mu = SecureTerminal(command='/bin/cat', tui=True)
+_mu.apply_mode('show')
+_mu.resize(700, 300)
+_mu.show()
+pump(40)
+_mu._feed_stream(b'\x1b[1;1HORIG-TOP\r\nsecond\r\n')
+_mu._render_tui()                                    # ORIG-TOP rendered as grid row 0
+_mu._feed_stream(b'\x1b[1;1HNEWTOP-X' + b'\r\n' * (_mu._screen.lines + 2))
+_mu._render_tui()
+ok('NEWTOP-X' in _mu.toPlainText(),
+   'a row mutated then scrolled within one read renders its NEW content (fallback)')
+ok('ORIG-TOP' not in _mu.toPlainText(),
+   'the stale pre-mutation row content is not kept')
+_mu.shutdown()
+
+# 6. Drift-proof: an incremental re-render after a markings + theme change equals
+# a fresh full build already in that final state -- no cell keeps a stale format,
+# because the per-row signature is the rendered runs themselves.
+_drb = _distinct_board(30, 8)
+_A = _show_grid((False, 'dark'))
+_A._feed_stream(_drb)
+_A._render_tui()
+_A.apply_markings(True)                              # cache clear -> incremental re-render
+_A.apply_theme('light')                              # cache clear -> incremental re-render
+_B = _show_grid((True, 'light'))                     # the final state, up front
+_B._feed_stream(_drb)
+_B._render_tui()                                      # a single full build
+eq(_doc_cells(_A), _doc_cells(_B),
+   'incremental re-render after markings+theme change == a fresh full build (no stale formats)')
+_A.shutdown()
+_B.shutdown()
+
+# 7. A no-change re-render is a near-noop: nothing is deleted or appended (the
+# empty-append and no-delete branches), and the content is preserved.
+_nc = SecureTerminal(command='/bin/cat', tui=True)
+_nc.apply_mode('show')
+_nc.resize(700, 300)
+_nc.show()
+pump(40)
+_nc._feed_stream(b'\x1b[1;1Hstable-row')
+_nc._render_tui()
+_nc_bc = _nc.document().blockCount()
+_nc._render_tui()                                    # identical state -> no delete, no append
+eq(_nc.document().blockCount(), _nc_bc,
+   'a no-change re-render neither deletes nor appends grid blocks')
+ok('stable-row' in _nc.toPlainText(), 'a no-change re-render preserves content')
+_nc.shutdown()
+
+# 8. The grid shrinks when output clears to fewer rows: the divergent-tail delete
+# removes the now-absent trailing blocks (target shorter than the live grid).
+_sk = SecureTerminal(command='/bin/cat', tui=True)
+_sk.apply_mode('show')
+_sk.resize(700, 300)
+_sk.show()
+pump(40)
+_sk._feed_stream(b'\x1b[1;1Hr1\r\nr2\r\nr3\r\nr4\r\nr5')
+_sk._render_tui()
+_sk_tall = _sk.document().blockCount()
+_sk._feed_stream(b'\x1b[2J\x1b[1;1Hjust-one')        # clear -> a single short row
+_sk._render_tui()
+ok(_sk.document().blockCount() < _sk_tall,
+   'incremental render shrinks the grid when output clears to fewer rows')
+ok(_sk.toPlainText().strip().endswith('just-one'),
+   'the shrunk grid ends at the new short content')
+_sk.shutdown()
+
+# 9. Alt screen reconciles incrementally too: a full-screen program repainting
+# one row updates that row and keeps the rest, with a correct frame. Driven via
+# the real read path (feed_output) so the alternate-screen state is tracked.
+_alt = SecureTerminal(command='/bin/cat', tui=True)
+_alt.apply_mode('show')
+_alt.resize(700, 300)
+_alt.show()
+pump(40)
+feed_output(_alt, b'\x1b[?1049h')                    # enter the alternate screen
+feed_output(_alt, b'\x1b[2J\x1b[1;1HALT-A\x1b[2;1HALT-B\x1b[3;1HALT-C')
+_alt._render_tui()
+ok(_alt._alt_screen and 'ALT-A' in _alt.toPlainText() and 'ALT-C' in _alt.toPlainText(),
+   'alt-screen incremental: the initial frame is rendered')
+feed_output(_alt, b'\x1b[2;1HALT-XYZ')               # repaint only row 2
+_alt._render_tui()
+_alt_txt = _alt.toPlainText()
+ok('ALT-XYZ' in _alt_txt and 'ALT-A' in _alt_txt and 'ALT-C' in _alt_txt,
+   'alt-screen incremental: a one-row repaint updates that row and keeps the others')
+ok('ALT-B' not in _alt_txt, 'alt-screen incremental: the old row content is gone')
+_alt.shutdown()
+
+# 10. A scrollback cap smaller than one screen prunes the oldest grid blocks: the
+# incremental model keeps only the surviving trailing rows in step, so the next
+# delete never computes a negative start (no crash, model stays consistent).
+_cap = SecureTerminal(command='/bin/cat', tui=True)
+_cap.apply_mode('show')
+_cap.apply_scrollback(4)
+_cap.resize(700, 400)
+_cap.show()
+pump(40)
+for _k in range(_cap._screen.lines):
+    _cap._feed_stream(('cap-%02d\r\n' % _k).encode())
+    _cap._render_tui()
+ok(_cap.document().blockCount() >= 1 and _cap._grid_rows <= _cap.document().blockCount(),
+   'a tiny scrollback cap keeps the incremental grid render consistent (no crash)')
+eq(len(_cap._grid_row_sig), _cap._grid_rows,
+   'the incremental model tracks exactly the surviving grid blocks under a tiny cap')
+_cap.shutdown()
+
+# 11. The trailing-blank trim tests the RENDERED glyph, not cell.data.strip(): a
+# lone U+00A0 (str.strip() drops it as whitespace) renders as a visible MARKED
+# placeholder, so its row below the cursor must be kept, never trimmed away and
+# hidden. FAILS on the old str.strip() trim.
+_tr = SecureTerminal(command='/bin/cat', tui=True)
+_tr.apply_mode('show')
+_tr.resize(700, 400)
+_tr.show()
+pump(40)
+# draw a marked non-breaking space at screen row 6, then move the cursor UP to row 2
+_tr._feed_stream('\x1b[1;1Htop\x1b[6;1H\u00a0\x1b[2;1H'.encode())
+_tr._render_tui()
+ok(_tr._grid_rows >= 6,
+   'a marked space (U+00A0) below the cursor keeps its row (rendered-glyph trim, not strip())')
+_tr.shutdown()
+
 # each reconcile widget owns a /bin/cat pty child; hang them up so the master fds and
 # child processes do not linger into the suite's os._exit teardown.
 for _rw in (_bp_no, _bp_yes, _hs, _dp, _th, _rb, _sm):

@@ -107,6 +107,22 @@ ok(win.current().current_theme() == 'light',
    'a tab of a freshly-defaulted window is light')
 
 # --- window dialogs: built and shown with exec() stubbed ----------------------
+from PyQt6.QtWidgets import QFormLayout as _QFL                 # noqa: E402
+
+
+def _dlg_field(dlg, label_text):
+    # the field widget on the form row whose label contains label_text (labels
+    # carry an "(i)" HTML marker, so match by substring, not equality).
+    for _form in dlg.findChildren(_QFL):
+        for _r in range(_form.rowCount()):
+            _l = _form.itemAt(_r, _QFL.ItemRole.LabelRole)
+            _f = _form.itemAt(_r, _QFL.ItemRole.FieldRole)
+            if _l and _f and _l.widget() is not None \
+               and label_text in _l.widget().text():
+                return _f.widget()
+    return None
+
+
 _orig_exec = QDialog.exec
 _dialogs = []
 QDialog.exec = lambda _self: (_dialogs.append(_self),
@@ -177,6 +193,33 @@ try:
     eq(_zoomed, [1],
        'Ctrl+wheel steps the zoom; a plain wheel scrolls without zooming')
     win._ui_scale = _us0
+    # a locked ui_scale refuses the live Ctrl+wheel scale (else a locked chrome
+    # size is changeable for the session, though _persist drops it from disk).
+    _sl_uiz = set(win._locked)
+    win._locked = {'ui_scale'}
+    _us_lk = win._ui_scale
+    _dialogs.clear()
+    win.show_global_settings()
+    _zlk = [d for d in _dialogs if isinstance(d, _ZD)][-1]
+    _zlk.on_zoom(1)
+    eq(win._ui_scale, _us_lk,
+       'a locked ui_scale ignores the settings-dialog Ctrl+wheel live zoom')
+    # a locked key disables its Global Settings control, so it cannot be edited
+    # into a value _apply_global then silently discards. Every control asserted
+    # here was ungated before the table-driven disable loop.
+    win._locked = {'theme', 'scrollback', 'persist_session', 'unicode_mode',
+                   M.OSC_FEATURES[0][0]}
+    _dialogs.clear()
+    win.show_global_settings()
+    _gs = _dialogs[-1]
+    ok(_dlg_field(_gs, 'Theme') is not None
+       and not _dlg_field(_gs, 'Theme').isEnabled()
+       and not _dlg_field(_gs, 'Scrollback').isEnabled()
+       and not _dlg_field(_gs, 'Restore session on start').isEnabled()
+       and not _dlg_field(_gs, 'Unicode').isEnabled()
+       and not _dlg_field(_gs, 'OSC ' + M.OSC_FEATURES[0][1]).isEnabled(),
+       'a locked global-settings key disables its dialog control')
+    win._locked = _sl_uiz
 finally:
     QDialog.exec = _orig_exec
 
@@ -523,10 +566,19 @@ try:
     ok(all(not a.isEnabled() for a in win._copy_warn_actions.values())
        and all(not a.isEnabled() for a in win._paste_warn_actions.values()),
        'a locked paste_warn / copy_warn greys out its menu actions')
+    # a locked zoom greys its View-menu actions too (its setter already refuses,
+    # so an enabled-but-no-op click would only mislead), matching the zoom_box.
+    win._locked = {'zoom'}
+    win._apply_locks()
+    ok(not win.act_zin.isEnabled() and not win.act_zout.isEnabled()
+       and not win.act_zreset.isEnabled(),
+       'a locked zoom greys out its View-menu Zoom In/Out/Reset actions')
 finally:
     win._locked = _saved_locked
     win._bell_sound_locked = _saved_bsl
-    for _a in list(win._copy_warn_actions.values()) + list(win._paste_warn_actions.values()):
+    for _a in (list(win._copy_warn_actions.values())
+               + list(win._paste_warn_actions.values())
+               + [win.act_zin, win.act_zout, win.act_zreset]):
         _a.setEnabled(True)             # undo the lock disable for later tests
 
 # --- the tray context menu is built from fixed, safe actions ------------------
