@@ -7124,6 +7124,62 @@ ok(_tr._grid_rows >= 6,
    'a marked space (U+00A0) below the cursor keeps its row (rendered-glyph trim, not strip())')
 _tr.shutdown()
 
+# 12. Scrollback tracking holds already-rendered history rows BY REFERENCE, not by
+# id(): Python can recycle an evicted row's id for a new object, so an id-only set
+# could mistake a genuinely new scrolled row for one already rendered and DROP it.
+# _new_history_rows compares by identity against the held _top_rows. (ai-review)
+_ir = SecureTerminal(command='/bin/cat', tui=True)
+_ir.apply_mode('show')
+_ir.resize(700, 300)
+_ir.show()
+pump(40)
+_r1, _r2, _r3 = {'r': 1}, {'r': 2}, {'r': 3}
+_ir._top_rows = [_r1, _r2]                          # already rendered as scrollback
+eq(_ir._new_history_rows([_r1, _r2, _r3]), [_r3],
+   'only the genuinely new (by identity) history row counts as new')
+_r2b = {'r': 2}                                     # value-equal to _r2, different object
+_new = _ir._new_history_rows([_r1, _r2b])
+ok(len(_new) == 1 and _new[0] is _r2b,
+   'a different object is new even when value-equal (identity, not value, comparison)')
+# after a real render _top_rows holds the history rows by reference (so their ids
+# cannot be recycled), not a set of ints
+for _k in range(_ir._screen.lines + 3):
+    _ir._feed_stream(('href-%02d\r\n' % _k).encode())
+_ir._render_tui()
+_htop = list(_ir._screen.history.top)
+ok(_htop and all(any(_h is _t for _t in _ir._top_rows) for _h in _htop[-3:]),
+   'after a render _top_rows holds the current history rows by reference')
+_ir.shutdown()
+
+# 13. Lowering the scrollback cap below the live-grid size prunes leading blocks
+# immediately (setMaximumBlockCount), which would desync the incremental grid
+# model (grid_rows / ids / sigs) from the document and let the next _delete_grid
+# operate on a stale count. apply_scrollback resyncs the grid view, so the model
+# stays aligned and output keeps rendering. (ai-review)
+_sb = SecureTerminal(command='/bin/cat', tui=True)
+_sb.apply_mode('show')
+_sb.resize(700, 400)
+_sb.show()
+pump(40)
+for _k in range(_sb._screen.lines):                 # fill a full grid of content
+    _sb._feed_stream(('sbrow-%02d\r\n' % _k).encode())
+_sb._render_tui()
+ok(_sb._grid_rows > 3, 'a full grid rendered before lowering the scrollback cap')
+_sb.apply_scrollback(3)                             # lower the cap BELOW the grid size
+ok(_sb.document().blockCount() >= 1,
+   'lowering the scrollback cap below the grid does not wipe the document')
+eq(len(_sb._grid_row_sig), _sb._grid_rows,
+   'the incremental model sigs stay aligned after a cap reduction')
+eq(len(_sb._grid_row_ids), _sb._grid_rows,
+   'the incremental model ids stay aligned after a cap reduction')
+ok(_sb._grid_rows <= _sb.document().blockCount(),
+   'grid_rows stays within the pruned document after a cap reduction')
+_sb._feed_stream(b'past-cap-row\r\n')               # more output after the cap change
+_sb._render_tui()                                   # must not crash on a stale model
+ok('past-cap-row' in _sb.toPlainText(),
+   'output after a cap reduction still renders (grid model resynced)')
+_sb.shutdown()
+
 # each reconcile widget owns a /bin/cat pty child; hang them up so the master fds and
 # child processes do not linger into the suite's os._exit teardown.
 for _rw in (_bp_no, _bp_yes, _hs, _dp, _th, _rb, _sm):
