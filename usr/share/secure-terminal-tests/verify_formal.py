@@ -678,12 +678,13 @@ def _append_only_violations(source, name):
         else:
             continue
         flat = []                               # flatten tuple/list/starred targets
-        while targets:
-            tgt = targets.pop()
+        stack = list(targets)                   # a work-list of ast.expr nodes
+        while stack:
+            tgt = stack.pop()
             if isinstance(tgt, (ast.Tuple, ast.List)):
-                targets.extend(tgt.elts)
+                stack.extend(tgt.elts)
             elif isinstance(tgt, ast.Starred):
-                targets.append(tgt.value)
+                stack.append(tgt.value)
             else:
                 flat.append(tgt)
         for tgt in flat:
@@ -988,12 +989,26 @@ def t_input_enumerate():
         # --- T7 classify_paste / paste_findings agree with marking_class ---
         if not plain:
             fam = _classify_family(cp)
-            mfam = _MARKING_FAMILY[S.marking_class(cp)]
+            mcls = S.marking_class(cp)
             res = S.classify_paste(ch)
-            cfam = _LABEL_FAMILY[res[0][0]] if res else None
-            if not (fam == mfam == cfam):
-                note('classify', 'T7 classify: U+%04X classify=%s marking=%s '
-                     'family=%s disagree' % (cp, cfam, mfam, fam))
+            label = res[0][0] if res else None
+            # An UNMAPPED class/label is exactly the drift this check exists to
+            # catch -- report it as a FAILURE, never let it KeyError and abort the
+            # enumeration (which would leave every later code point unchecked).
+            if mcls not in _MARKING_FAMILY or (label is not None
+                                               and label not in _LABEL_FAMILY):
+                note('classify', 'T7 classify: U+%04X unmapped class/label '
+                     '(marking=%r label=%r)' % (cp, mcls, label))
+            else:
+                mfam = _MARKING_FAMILY[mcls]
+                cfam = _LABEL_FAMILY[label] if label is not None else None
+                if not (fam == mfam == cfam):
+                    note('classify', 'T7 classify: U+%04X classify=%s marking=%s '
+                         'family=%s disagree' % (cp, cfam, mfam, fam))
+            # paste_findings classifies a SINGLE character, so its if/else makes
+            # control and non-ASCII mutually exclusive here (a C1 byte is reported
+            # as control, not unicode); the enumeration feeds one code point at a
+            # time, so has_uni is exactly `not has_ctrl`.
             has_uni, has_ctrl = S.paste_findings(ch)
             want_ctrl = _is_control_cp(cp)
             if has_ctrl != want_ctrl or has_uni != (not want_ctrl):
@@ -1032,12 +1047,18 @@ def t_input_strings():
             fail('T3 no-autosubmit: %r still ends with CR' % probe)
         if S.paste_no_autosubmit(stripped) != stripped:
             fail('T3 no-autosubmit: not idempotent on %r' % probe)
-        # the CLI dumb-child path strips EVERY CR (not only the trailing run)
-        if '\r' in S.sanitize_paste(probe).replace('\r', ''):
-            fail('T3 cli-cr-strip: a CR survived on %r' % probe)
+        # The exact bytes cli.py forwards to the dumb child (cli.py:
+        # sanitize_paste(text).replace('\r', '') -- EVERY CR, not just the trailing
+        # run). They must be inert AND submit-free: tab + printable ASCII only, so
+        # no CR (no auto-run), no control and no escape reach the child. (Not the
+        # tautology `'\r' in x.replace('\r','')`, which is always False.)
+        child = S.sanitize_paste(probe).replace('\r', '')
+        if any(not (c == '\t' or 0x20 <= ord(c) <= 0x7E) for c in child):
+            fail('T3 cli-cr-strip: the dumb child would receive a non-inert byte '
+                 'on %r' % probe)
 
     # sanitize_title: idempotent and length-bounded, for any input.
-    for probe in _STR_PROBES + ['\x1b]0;' + 'A' * 300 + '\x07']:
+    for probe in [*_STR_PROBES, '\x1b]0;' + 'A' * 300 + '\x07']:
         t1 = S.sanitize_title(probe)
         if S.sanitize_title(t1) != t1:
             fail('T5 title: not idempotent on %r' % probe[:40])
@@ -1074,6 +1095,10 @@ def t_input_canaries():
                    any(ord(oc) not in _PASTE_SAFE for oc in leaked))
     # no-autosubmit canary: an identity strip leaves the trailing CR.
     _expect_caught('T3/no-autosubmit', 'echo x\r'.endswith('\r'))
+    # cli-cr-strip canary: a child input that still holds a CR (or any non-inert
+    # byte) must be caught by the tab+printable-ASCII alphabet check.
+    _expect_caught('T3/cli-cr-strip',
+                   any(not (c == '\t' or 0x20 <= ord(c) <= 0x7E) for c in 'echo\r'))
     # T4 canary: a raw homoglyph left on the ASCII clipboard.
     _expect_caught('T4/clip-ascii',
                    any(ord(oc) not in _CLIP_ASCII for oc in 'a\u0430'))
@@ -1085,8 +1110,6 @@ def t_input_canaries():
     # disagrees with the display marking (which calls it bidi).
     _expect_caught('T7/classify', _LABEL_FAMILY['non-ASCII character']
                    != _MARKING_FAMILY[S.marking_class(0x202E)])
-
-
 
 
 # ===========================================================================
@@ -1209,8 +1232,6 @@ def t8_canaries():
     # the > cap assertion.
     fake_carry = 'x' * 100
     _expect_caught('T8/memory-bound', len(fake_carry) > 16)
-
-
 
 
 # ===========================================================================
