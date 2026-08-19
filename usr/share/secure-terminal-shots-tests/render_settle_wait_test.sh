@@ -27,8 +27,8 @@
 ## stops at 10 -> FAIL; drop the settle break entirely and the fast case runs to the cap -> FAIL.
 ##
 ## Subject: comparison-capture.sh, resolved from SECURE_TERMINAL_SHOTS_DIR / a checkout default /
-## the install path (absent -> exit 77 SKIP). Needs ImageMagick's `compare` on PATH (the function
-## early-returns without it); the actual comparisons are stubbed, so it is only the PATH guard.
+## the install path (absent -> exit 77 SKIP: the code under test is not present). ImageMagick's
+## `compare` is REQUIRED tooling and FAILS loud if absent (the comparisons themselves are stubbed).
 
 set -o errexit
 set -o nounset
@@ -55,25 +55,18 @@ if [ -z "${subject}" ]; then
    exit 77
 fi
 
-## The function early-returns unless `compare` is on PATH; require it so the loop is exercised.
+## `compare` (ImageMagick) is REQUIRED tooling: st_wait_render_settled early-returns without it, so
+## its absence is a dependency bug that must FAIL loud, never a silent skip.
 if ! type -P compare >/dev/null 2>&1; then
-   printf '%s\n' 'SKIP: ImageMagick `compare` not on PATH (st_wait_render_settled early-returns)' >&2
-   exit 77
+   printf '%s\n' 'FAIL: ImageMagick `compare` not on PATH -- required to exercise st_wait_render_settled' >&2
+   printf '%s\n' '' '0 pass, 1 fail, 0 skip'
+   exit 1
 fi
 
 ## SOURCE the real script (it is source-safe: its was_executed guard runs no capture when sourced),
 ## so the tested function is the CURRENT one with zero drift. Stubs below override its collaborators.
-## The script hard-exits (exit 1) before its source-safe boundary if check_runtime.bsh or its
-## lib-capture.sh sibling is missing; precheck so a genuinely absent dependency SKIPs (77) rather
-## than aborting this test with a raw non-zero.
-if [ ! -r /usr/libexec/helper-scripts/check_runtime.bsh ]; then
-   printf '%s\n' 'SKIP: helper-scripts check_runtime.bsh not present' >&2
-   exit 77
-fi
-if [ ! -r "$(dirname -- "${subject}")/lib-capture.sh" ]; then
-   printf '%s\n' 'SKIP: lib-capture.sh not present beside comparison-capture.sh' >&2
-   exit 77
-fi
+## check_runtime.bsh and the lib-capture.sh sibling are REQUIRED tooling assumed present; if either
+## is genuinely absent the source hard-fails, which is the correct loud FAILURE (not a skip).
 # shellcheck source=../secure-terminal-shots/comparison-capture.sh
 source "${subject}"
 if ! declare -F st_wait_render_settled >/dev/null 2>&1; then

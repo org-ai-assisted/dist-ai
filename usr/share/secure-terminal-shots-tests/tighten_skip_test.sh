@@ -26,8 +26,9 @@
 ## break capture_settled (never emit an image) and the non-skip case FAILs too.
 ##
 ## Subject: comparison-capture.sh, resolved from SECURE_TERMINAL_SHOTS_DIR / a checkout default /
-## the install path (absent -> exit 77 SKIP). Needs ImageMagick (convert, identify); no Qt, no
-## display -- runs in the dist-ai container in milliseconds.
+## the install path (absent -> exit 77 SKIP: the code under test is not present). ImageMagick
+## (convert, identify) is REQUIRED tooling and FAILS loud if absent. No Qt, no display -- runs in
+## the dist-ai container in milliseconds.
 
 set -o errexit
 set -o nounset
@@ -56,24 +57,19 @@ if [ -z "${subject}" ]; then
    exit 77
 fi
 
+## ImageMagick (convert/identify) is REQUIRED tooling: absence is a dependency bug that must FAIL
+## loud, not a silent skip.
 if ! type -P convert >/dev/null 2>&1 || ! type -P identify >/dev/null 2>&1; then
-   printf '%s\n' 'SKIP: ImageMagick (convert/identify) not on PATH' >&2
-   exit 77
+   printf '%s\n' 'FAIL: ImageMagick (convert/identify) not on PATH -- required tooling for this test' >&2
+   printf '%s\n' '' '0 pass, 1 fail, 0 skip'
+   exit 1
 fi
 
 ## SOURCE the real script (it is source-safe: its was_executed guard runs no capture when
 ## sourced), so capture_settled + tighten_deadspace are the CURRENT bodies with zero drift.
 ## The stubs below override capture_settled's collaborators (capture_window, shots_shot_is_blank).
-## The script hard-exits (exit 1) before its source-safe boundary if check_runtime.bsh or its
-## lib-capture.sh sibling is missing; precheck so a genuinely absent dependency SKIPs (77).
-if [ ! -r /usr/libexec/helper-scripts/check_runtime.bsh ]; then
-   printf '%s\n' 'SKIP: helper-scripts check_runtime.bsh not present' >&2
-   exit 77
-fi
-if [ ! -r "$(dirname -- "${subject}")/lib-capture.sh" ]; then
-   printf '%s\n' 'SKIP: lib-capture.sh not present beside comparison-capture.sh' >&2
-   exit 77
-fi
+## check_runtime.bsh and the lib-capture.sh sibling are REQUIRED tooling assumed present; if either
+## is genuinely absent the source hard-fails, which is the correct loud FAILURE (not a skip).
 # shellcheck source=../secure-terminal-shots/comparison-capture.sh
 source "${subject}"
 if ! declare -F capture_settled >/dev/null 2>&1 || ! declare -F tighten_deadspace >/dev/null 2>&1; then
