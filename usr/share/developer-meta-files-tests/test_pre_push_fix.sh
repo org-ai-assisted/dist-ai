@@ -58,8 +58,33 @@ cleanup() { safe-rm --recursive --force -- "${test_dir}"; }
 trap cleanup EXIT
 
 fail=0
-note_pass() { printf '%s\n' "PASS: ${1}" ; }
-note_fail() { printf '%s\n' "FAIL: ${1}" >&2 ; fail=1 ; }
+passc=0
+note_pass() { printf '%s\n' "PASS: ${1}" ; passc=$(( passc + 1 )) ; }
+note_fail() { printf '%s\n' "FAIL: ${1}" >&2 ; fail=$(( fail + 1 )) ; }
+
+## The single exit point: a non-zero 'fail' MUST exit 1. This suite once set
+## 'fail' but never read it, so every FAIL reported a green exit -- a silent
+## pass. Both messages carry the tally so an unauthorized skip cannot hide.
+exit_gate() {
+   if [ "${fail}" -ne 0 ]; then
+      printf '%s\n' "pre-push-fix: ${passc} pass, ${fail} fail, 0 skip -- FAILURES above." >&2
+      exit 1
+   fi
+   printf '%s\n' "pre-push-fix: ${passc} pass, 0 fail, 0 skip -- all canaries passed."
+   exit 0
+}
+
+## Self-test the FAIL gate on every run, so it cannot silently regress to the
+## old always-exit-0. Child (flag set): force one failure and hit the gate,
+## which must exit 1. Parent: re-invoke the child and REFUSE if it exits 0.
+if [ -n "${TEST_SELFCHECK_FAIL_GATE:-}" ]; then
+   note_fail "self-test: forced failure to exercise the FAIL gate"
+   exit_gate
+fi
+if TEST_SELFCHECK_FAIL_GATE=1 "$0" >/dev/null 2>&1; then
+   printf '%s\n' "pre-push-fix: FAIL gate regressed -- a forced failure still exits 0" >&2
+   exit 1
+fi
 
 has_non_ascii() {
    LC_ALL=C grep --quiet --perl-regexp '[^\x00-\x7F]' -- "${1}"
@@ -460,5 +485,4 @@ else
    note_fail "R-172 --parents gate parity broken (R-172 or SC2174 survived)"
 fi
 
-printf '%s\n' "pre-push-fix: all canaries passed."
-exit 0
+exit_gate
