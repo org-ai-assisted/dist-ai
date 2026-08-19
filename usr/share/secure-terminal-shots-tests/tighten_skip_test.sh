@@ -61,20 +61,25 @@ if ! type -P convert >/dev/null 2>&1 || ! type -P identify >/dev/null 2>&1; then
    exit 77
 fi
 
-## Extract the two functions from the current script text. Each opens at column 0 as
-## `name() {` and closes with a `}` at column 0 (only the final brace is unindented), so the
-## line range is exact and stays in step with the source -- no re-embedded copy to drift.
-extract_fn() {  ## $1=name -> function text on stdout
-   sed -n "/^$1() {/,/^}/p" "${subject}"
-}
-fn_capture_settled="$(extract_fn capture_settled)"
-fn_tighten="$(extract_fn tighten_deadspace)"
-if [ -z "${fn_capture_settled}" ] || [ -z "${fn_tighten}" ]; then
-   printf '%s\n' 'FAIL: could not extract capture_settled / tighten_deadspace from comparison-capture.sh' >&2
+## SOURCE the real script (it is source-safe: its was_executed guard runs no capture when
+## sourced), so capture_settled + tighten_deadspace are the CURRENT bodies with zero drift.
+## The stubs below override capture_settled's collaborators (capture_window, shots_shot_is_blank).
+## The script hard-exits (exit 1) before its source-safe boundary if check_runtime.bsh or its
+## lib-capture.sh sibling is missing; precheck so a genuinely absent dependency SKIPs (77).
+if [ ! -r /usr/libexec/helper-scripts/check_runtime.bsh ]; then
+   printf '%s\n' 'SKIP: helper-scripts check_runtime.bsh not present' >&2
+   exit 77
+fi
+if [ ! -r "$(dirname -- "${subject}")/lib-capture.sh" ]; then
+   printf '%s\n' 'SKIP: lib-capture.sh not present beside comparison-capture.sh' >&2
+   exit 77
+fi
+# shellcheck source=../secure-terminal-shots/comparison-capture.sh
+source "${subject}"
+if ! declare -F capture_settled >/dev/null 2>&1 || ! declare -F tighten_deadspace >/dev/null 2>&1; then
+   printf '%s\n' 'FAIL: capture_settled / tighten_deadspace not defined after sourcing comparison-capture.sh' >&2
    exit 1
 fi
-eval "${fn_tighten}"
-eval "${fn_capture_settled}"
 
 work="$(mktemp --directory)"
 cleanup() { safe-rm --recursive --force -- "${work}" 2>/dev/null || true; }
@@ -130,10 +135,10 @@ fi
 ## Check the condition guarding the skip-tighten assignment names both cases, that the flag defaults
 ## OFF (empty) for every other case, and that the flag is forwarded to capture_settled.
 gate_ctx="$(grep -B3 "st_tighten_arg='skip-tighten'" "${subject}" || true)"
-if printf '%s\n' "${gate_ctx}" | grep -Eq '\= *art\b' \
-   && printf '%s\n' "${gate_ctx}" | grep -Eq '\= *gradient\b' \
-   && grep -Eq "^[[:space:]]*st_tighten_arg=''" "${subject}" \
-   && grep -Eq 'capture_settled .*"\$\{st_tighten_arg\}"' "${subject}"; then
+if grep -E --quiet '\= *art\b' <<< "${gate_ctx}" \
+   && grep -E --quiet '\= *gradient\b' <<< "${gate_ctx}" \
+   && grep -E --quiet "^[[:space:]]*st_tighten_arg=''" "${subject}" \
+   && grep -E --quiet 'capture_settled .*"\$\{st_tighten_arg\}"' "${subject}"; then
    printf '%s\n' 'PASS: loop gates skip-tighten on art AND gradient, defaults off, forwards to capture_settled'
    pass=$(( pass + 1 ))
 else

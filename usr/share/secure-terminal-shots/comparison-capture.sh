@@ -69,20 +69,574 @@
 ## style-ok: no-tmp-hardcode -- /tmp/.X11-unix is the X11 socket directory fixed by
 ## the protocol; libX11 looks there and nowhere else, so it cannot follow TMPDIR.
 
-set -o errexit
-set -o nounset
-set -o pipefail
-set -o errtrace
-shopt -s inherit_errexit
-shopt -s shift_verbose
 
-here="$(dirname -- "$(readlink --canonicalize -- "$0")")"
-out="${here}/shots"
-mkdir --parents -- "${out}"
-
+here="$(dirname -- "$(readlink --canonicalize -- "${BASH_SOURCE[0]}")")"
 ## the shared hostile-DATA contract (payload command + log generation).
 # shellcheck source=./lib-capture.sh
 source "${here}/lib-capture.sh"
+
+## check_runtime.bsh provides was_executed, so this script can be SOURCED (its functions reused
+## by the dist-ai secure-terminal-shots tests) WITHOUT running the capture. Absent -> fail loud.
+if [ ! -r /usr/libexec/helper-scripts/check_runtime.bsh ]; then
+   printf '%s\n' 'comparison-capture: helper-scripts check_runtime.bsh not found' >&2
+   exit 1
+fi
+source /usr/libexec/helper-scripts/check_runtime.bsh
+
+## px() -- scale a base (1x) pixel constant by SHOT_SCALE. Used at every hardcoded geometry.
+px() { printf '%s' "$(( $1 * SHOT_SCALE ))"; }
+
+## Shared hero-compare window WIDTH (logical 1x px, scaled through px()). The homepage
+## before/after slider overlays the secure-terminal and gnome-terminal hero shots, so BOTH
+## windows are pinned to this ONE width -- secure-terminal in the ST pass, gnome-terminal in
+## shoot() -- and cannot drift apart. Any other width leaves the narrower window ending short
+## of the wider one, so dragging the slider exposes a dead-space band on one side.
+HERO_WIN_W_BASE=700
+
+cleanup() {
+   ## safety net: reap any capture group that leaked from a failed shoot, then drop this run
+   ## from the registry (its groups are gone) BEFORE the runtime dir is removed.
+   shots_reap_run "${run_marker}" 2>/dev/null || true
+   shots_deregister_run "${run_marker}" 2>/dev/null || true
+   [ -z "${wm_pid}" ] || kill "${wm_pid}" 2>/dev/null || true
+   [ -z "${wm_pid}" ] || wait "${wm_pid}" 2>/dev/null || true
+   safe-rm -r -f -- "${runtime_dir}" 2>/dev/null || true
+}
+
+## List the child window IDs of the root window on the host X server. labwc's
+## wlroots x11-backend output window is a normal child of root but carries NO
+## WM_NAME: over a nested Xvfb wlroots cannot set it (the `BadAtom` ChangeProperty
+## warnings in labwc.log), so a name-based `xdotool search --name` never matches it
+## and the bringup wait times out ("labwc did not start"). Enumerate children by ID
+## instead -- name-independent, so it is robust to that wlroots/labwc behaviour.
+host_child_windows() {
+   DISPLAY="${host_display}" xwininfo -root -children 2>/dev/null \
+      | awk '/[0-9]+ (child|children):/{f=1; next} f && $1 ~ /^0x[0-9a-fA-F]+$/ {print $1}'
+}
+
+## start labwc nested on the host X server; discover its Xwayland display and its
+## host window (the compositor output we screenshot).
+start_labwc() {
+   local before_sock before_win after_win _ s w f
+   before_sock=' '
+   for f in /tmp/.X11-unix/X*; do
+      [ -e "${f}" ] || continue        # no match -> the literal glob; skip it
+      before_sock+="${f##*/} "
+   done
+   before_win=" $(host_child_windows | tr '\n' ' ')"
+   ## WLR_RENDERER=pixman: force wlroots' software renderer. The default GL renderer needs a GPU
+   ## / DRM device that a nested Xvfb does not provide, so labwc intermittently fails to start
+   ## ("try WLR_RENDERER=pixman") -- more often under the parallel --jobs load, which stands up
+   ## several labwc instances. Software rendering is deterministic and plenty for a screenshot.
+   WLR_RENDERER=pixman WLR_BACKENDS=x11 WLR_X11_OUTPUTS=1 DISPLAY="${host_display}" \
+      labwc >"${runtime_dir}/labwc.log" 2>&1 &
+   wm_pid="$!"
+   labwc_wid=''; xwl_display=''
+   for _ in $(seq 1 60); do
+      kill -0 "${wm_pid}" 2>/dev/null || return 1
+      if [ -z "${xwl_display}" ]; then
+         for f in /tmp/.X11-unix/X*; do
+            [ -e "${f}" ] || continue
+            s="${f##*/}"
+            case "${before_sock}" in *" ${s} "*) : ;; *) xwl_display=":${s#X}" ;; esac
+         done
+      fi
+      if [ -z "${labwc_wid}" ]; then
+         after_win=" $(host_child_windows | tr '\n' ' ')"
+         for w in ${after_win}; do
+            case "${before_win}" in *" ${w} "*) : ;; *) labwc_wid="${w}" ;; esac
+         done
+      fi
+      if [ -n "${xwl_display}" ] && [ -n "${labwc_wid}" ]; then
+         sleep 1
+         ## give labwc a roomier output than the 1024x768 default (scaled for HiDPI capture,
+         ## so a 2x window still fits within the compositor output).
+         DISPLAY="${host_display}" xdotool windowsize "${labwc_wid}" "$(px 1440)" "$(px 900)" 2>/dev/null || true
+         ## HiDPI: set the Xft DPI every X client on this Xwayland reads, so xterm / urxvt / st /
+         ## VTE (gnome/xfce4/mate) / konsole / qterminal / alacritty all render their fonts at
+         ## SHOT_SCALE x pixels for the SAME point size -- the character grid is unchanged, only
+         ## the pixels-per-cell double. secure-terminal pins its own QT_FONT_DPI and scales via
+         ## QT_SCALE_FACTOR instead (see the ST pass); kitty sets its own font DPI at launch.
+         printf '%s\n' "Xft.dpi: ${xft_dpi}" | DISPLAY="${xwl_display}" xrdb -merge 2>/dev/null || true
+         sleep 1
+         base_wids=" $(DISPLAY="${xwl_display}" xdotool search --onlyvisible '' 2>/dev/null | tr '\n' ' ')"
+         return 0
+      fi
+      sleep 0.5
+   done
+   return 1
+}
+
+## launch an emulator as an Xwayland (X11) client so labwc decorates it, in its OWN session so
+## the whole tree (emulator + shell + any server it spawns) can be reaped by one recorded PGID.
+launch() {  ## $1=emulator  $2=case  $3=pgid-file
+   local e case pgf base sh rows kh cmd
+   e="$1"; case="$2"; pgf="$3"
+   base=(env --unset=WAYLAND_DISPLAY "DISPLAY=${xwl_display}")
+   sh=(bash --rcfile "${HOME}/.strc" -i)
+   ## The tui-showcase board paints ~26 lines on the alternate screen; at the 24 rows
+   ## the short cases use, its title bar scrolled off the top. Only that case gets the
+   ## taller window, so the other cases' shots (and their committed on-page dimensions)
+   ## are unchanged. kitty is sized in pixels, so it gets a matching taller height.
+   ## rows/cols are the character GRID (unchanged by HiDPI). kh is kitty's window height in
+   ## PIXELS, so it scales with SHOT_SCALE.
+   rows=24; kh="$(px 430)"; cols=84
+   if [ "${case}" = tui-showcase ]; then rows=32; kh="$(px 620)"; fi
+   ## hero-compare: the window is pinned to the shared HERO_WIN_W_BASE width AFTER launch (in
+   ## shoot()), so the initial column count here is not load-bearing for the final width -- the
+   ## board is injected only once the window is at its final size. Keep the default grid.
+   cmd=()
+   case "${e}" in
+      xterm)
+         ## forceBoxChars: draw DEC line-drawing with xterm's own crisp integer
+         ## line-drawing, not the AA'd font glyph. The font glyph rendered with a
+         ## bistable 1px sub-pixel jitter run-to-run on the tui-showcase box border;
+         ## the internal line-drawing is pixel-exact and deterministic.
+         cmd=("${base[@]}" xterm -xrm 'XTerm.vt100.forceBoxChars: true' \
+            -geometry "${cols}x${rows}" -fa 'Monospace' -fs 11 -e "${sh[@]}")
+         ;;
+      urxvt)
+         cmd=("${base[@]}" urxvt -geometry "${cols}x${rows}" -fn 'xft:Monospace:size=11' -e "${sh[@]}")
+         ;;
+      st)
+         cmd=("${base[@]}" st -g "${cols}x${rows}" -f 'Monospace:size=11' -e "${sh[@]}")
+         ;;
+      konsole)
+         cmd=("${base[@]}" QT_QPA_PLATFORM=xcb konsole --nofork -p "TerminalColumns=${cols}" -p "TerminalRows=${rows}" -e "${sh[@]}")
+         ;;
+      qterminal)
+         cmd=("${base[@]}" QT_QPA_PLATFORM=xcb qterminal -e "${sh[@]}")
+         ;;
+      xfce4-terminal)
+         cmd=("${base[@]}" GDK_BACKEND=x11 xfce4-terminal --disable-server --geometry "${cols}x${rows}" -x "${sh[@]}")
+         ;;
+      gnome-terminal)
+         ## gnome-terminal is a thin client to gnome-terminal-server over D-Bus, with no
+         ## flag to force a private server: give each launch a PRIVATE session bus so its
+         ## server starts fresh and dies with the bus, and --wait so the launched process stays
+         ## alive until the window closes. The private bus + server sit in the same session, so
+         ## reaping the recorded PGID takes the whole thing down. VTE reads its profile from
+         ## dconf; with no dconf daemon on the private bus it falls back to the built-in default
+         ## profile -- the shipped default we want to show.
+         if [ "${case}" = hero-compare ]; then
+            ## Match secure-terminal's Hack font at 72-DPI cell metrics so the homepage slider's text
+            ## overlaps. The gsettings + Xft.dpi setup lives in a sibling helper (no inline sh -c /
+            ## exec); it runs inside the dbus session and launches gnome-terminal --wait.
+            cmd=("${base[@]}" GDK_BACKEND=x11 dbus-run-session -- \
+               "${here}/gnome-hero-launch.sh" "${cols}x${rows}" -- "${sh[@]}")
+         else
+            cmd=("${base[@]}" GDK_BACKEND=x11 dbus-run-session -- \
+               gnome-terminal --wait --geometry "${cols}x${rows}" -- "${sh[@]}")
+         fi
+         ;;
+      mate-terminal)
+         cmd=("${base[@]}" GDK_BACKEND=x11 mate-terminal --disable-factory --geometry "${cols}x${rows}" -x "${sh[@]}")
+         ;;
+      alacritty)
+         cmd=("${base[@]}" WINIT_UNIX_BACKEND=x11 alacritty -o "window.dimensions.columns=${cols}" -o "window.dimensions.lines=${rows}" -o 'font.size=11' -e "${sh[@]}")
+         ;;
+      kitty)
+         ## kitty computes its cell from font_size(pt) x the X server DPI (the Xft.dpi we set),
+         ## so its font scales like the other X clients; only its PIXEL window size is scaled
+         ## here so the same column count fits the now-2x cells.
+         cmd=("${base[@]}" KITTY_ENABLE_WAYLAND=0 kitty -o 'remember_window_size=no' -o "initial_window_width=$(px 720)" -o "initial_window_height=${kh}" -o 'font_size=11' "${sh[@]}")
+         ;;
+   esac
+   if [ "${#cmd[@]}" -eq 0 ]; then
+      ## an unknown emulator name must SKIP this cell, not return non-zero: the call site is a
+      ## bare top-level command and `set -o errexit` would abort the whole capture run.
+      printf '%s\n' "launch: no launch recipe for '${e}', skipped" >&2
+      return 0
+   fi
+   shots_spawn_session "${pgf}" "${cmd[@]}"
+}
+
+## type a command into the focused terminal window and run it, as if a user did.
+inject() {  ## $1=window-id  $2=command
+   local wid cmd
+   wid="$1"; cmd="$2"
+   DISPLAY="${xwl_display}" xdotool windowactivate --sync "${wid}" 2>/dev/null || true
+   DISPLAY="${xwl_display}" setxkbmap us 2>/dev/null || true    # '/' else types as '&'
+   sleep 0.4
+   DISPLAY="${xwl_display}" xdotool type --delay 12 -- "${cmd}"
+   sleep 0.3
+   DISPLAY="${xwl_display}" xdotool key --clearmodifiers Return
+}
+
+## screenshot labwc's output, crop to the emulator's window by its geometry grown
+## by the themed frame (labwc's _NET_FRAME_EXTENTS, fallback FRAME_TOP).
+capture_window() {  ## $1=output-path  $2=xwayland-window-id
+   local dest wid tmp X Y WIDTH HEIGHT ext l r t b
+   dest="$1"; wid="$2"; X=''; Y=''; WIDTH=''; HEIGHT=''
+   ## park the pointer in the far corner of the (scaled) compositor output, off any window.
+   DISPLAY="${host_display}" xdotool mousemove "$(px 1439)" "$(px 899)" 2>/dev/null || true
+   sleep 0.3
+   tmp="$(mktemp --suffix=.png)"
+   if ! import -display "${host_display}" -window "${labwc_wid}" "${tmp}" 2>/dev/null; then
+      safe-rm -f -- "${tmp}"
+      return 1
+   fi
+   eval "$(DISPLAY="${xwl_display}" xdotool getwindowgeometry --shell "${wid}" 2>/dev/null \
+      | grep -E '^(X|Y|WIDTH|HEIGHT)=' || true)"
+   ext="$(DISPLAY="${xwl_display}" xprop -id "${wid}" _NET_FRAME_EXTENTS 2>/dev/null | grep -oE '= .*' || true)"
+   ext="${ext#= }"; ext="${ext//,/}"
+   read -r l r t b <<< "${ext}"
+   [ -n "${b:-}" ] || { l=1; r=1; t="${FRAME_TOP}"; b=1; }
+   if [ -n "${X}" ] && [ -n "${WIDTH}" ] && [ "${WIDTH}" -gt 0 ]; then
+      local cx cy cw ch
+      cx=$(( X - l )); [ "${cx}" -lt 0 ] && cx=0
+      cy=$(( Y - t )); [ "${cy}" -lt 0 ] && cy=0
+      cw=$(( WIDTH + l + r )); ch=$(( HEIGHT + t + b ))
+      convert "${tmp}" -crop "${cw}x${ch}+${cx}+${cy}" +repage "${dest}" \
+         2>/dev/null || cp -- "${tmp}" "${dest}"
+   else
+      cp -- "${tmp}" "${dest}"
+   fi
+   safe-rm -f -- "${tmp}"
+}
+
+## Remove the largest contiguous run of empty (background) terminal rows from a shot,
+## so a few lines of content no longer sit above a screenful of dead space. The
+## payloads are short, and the ST GUI will not shrink its window below ~400px (a Qt
+## minimum-size floor), so the tail of every short case is empty terminal rows. Handles
+## both content-at-the-top (traditional emulators: void at the bottom) and a fixed
+## bottom banner/status bar with a void above it (secure-terminal: void in the middle).
+## Only PURE background rows are removed, so content is never touched; a screen-filling
+## case (random) has no large run and is left untouched. Side columns are excluded when
+## classifying a row so a full-height scrollbar cannot mask the void.
+tighten_deadspace() {  ## $1=png-path
+   local f w h side mw bg tmpmap best_start best_len run_start run_len y line
+   local best_end top_h bot_y bot_h margin threshold scale
+   ## margin/threshold/side are PIXEL tolerances -> scale with the HiDPI factor so the trim
+   ## keeps the same visual behaviour (a "40-row void" is 40*SHOT_SCALE px at 2x). Read
+   ## SHOT_SCALE directly (default 1) instead of px(), so the function stays SELF-CONTAINED for a
+   ## caller that SOURCED this file (tighten_skip_test.sh): the top-level SHOT_SCALE parse and
+   ## validation run only on a direct execution, so a sourced caller leaves it unset/unvalidated.
+   scale="${SHOT_SCALE:-1}"
+   ## Sanitize LOCALLY: a sourced caller has not run the top-level SHOT_SCALE validation, so a
+   ## stray value must not reach the arithmetic below (a leading zero is octal -> 08/09 abort;
+   ## a non-digit would be evaluated as a name/index).
+   case "${scale}" in ''|*[!0-9]*|0*) scale=1 ;; esac
+   margin=$(( 10 * scale ))
+   threshold=$(( 40 * scale ))
+   f="$1"
+   [ -f "${f}" ] || return 0
+   w="$(identify -format '%w' "${f}")"; h="$(identify -format '%h' "${f}")"
+   side=$(( 40 * scale )); [ "${w}" -gt $(( 200 * scale )) ] || side=0
+   mw=$(( w - 2 * side ))
+   ## background = most-frequent colour of the lower half (skips the light top chrome;
+   ## background dominates even a screen of garble). grep -m1 closes the pipe after the
+   ## top colour; '|| true' keeps the upstream SIGPIPE from tripping errexit+pipefail.
+   bg="$(convert "${f}" -gravity South -crop "${w}x50%+0+0" +repage \
+           -depth 8 -format '%c' histogram:info:- \
+         | sort -rn | grep -m1 -oiE '#[0-9A-F]{6}')" || true
+   [ -n "${bg}" ] || bg="$(convert "${f}" -format "#%[hex:p{2,$(( h - 4 ))}]" info: | cut -c1-7)"
+   ## per-row emptiness map: drop the side columns, take the absolute difference from a
+   ## solid-background image (robust to any bg colour, incl. pure black/white) and
+   ## threshold it (background -> black, content -> white), then the per-row maximum so
+   ## any content pixel lights the whole row. Column 0 read out: an empty row is #000000.
+   ## The statistic neighbourhood is CENTRED, so a width of mw would leave column 0's max
+   ## covering only the left half and miss content near the right edge; 2*mw makes column
+   ## 0 span the full row. Erring wide is safe -- it can only classify a row as non-empty,
+   ## never delete real content.
+   tmpmap="$(mktemp)"
+   convert "${f}" -crop "${mw}x${h}+${side}+0" +repage \
+      \( +clone -fill "${bg}" -colorize 100 \) \
+      -compose difference -composite -threshold 6% \
+      -statistic maximum "$(( 2 * mw ))x1" -crop "1x${h}+0+0" +repage txt:- \
+      | tail -n +2 > "${tmpmap}"
+   best_start=-1; best_len=0; run_start=-1; run_len=0; y=0
+   while IFS= read -r line; do
+      case "${line}" in
+         *"#000000"*)
+            [ "${run_start}" -ge 0 ] || run_start="${y}"
+            run_len=$(( run_len + 1 ))
+            if [ "${run_len}" -gt "${best_len}" ]; then best_len="${run_len}"; best_start="${run_start}"; fi
+            ;;
+         *)
+            run_start=-1; run_len=0
+            ;;
+      esac
+      y=$(( y + 1 ))
+   done < "${tmpmap}"
+   safe-rm -f -- "${tmpmap}"
+   [ "${best_start}" -ge 0 ] && [ "${best_len}" -ge "${threshold}" ] || return 0
+   best_end=$(( best_start + best_len - 1 ))
+   top_h=$(( best_start + margin ))
+   bot_y=$(( best_end - margin )); [ "${bot_y}" -lt "${top_h}" ] && bot_y="${top_h}"
+   bot_h=$(( h - bot_y ))
+   convert "${f}" \
+      \( -clone 0 -crop "${w}x${top_h}+0+0" +repage \) \
+      \( -clone 0 -crop "${w}x${bot_h}+0+${bot_y}" +repage \) \
+      -delete 0 -append "${f}"
+}
+
+## Compose the homepage before/after slider pair from the hero-compare shots: secure-terminal's
+## SHOW-mode board and the gnome-terminal render of the SAME board. The site's CSS resize slider
+## overlays them, so they must be identical size AND their terminal text must sit at the same
+## coordinates. hero-slider-compose.py keeps the title bars aligned at the top, inserts a white band
+## above the shallower-chrome terminal's text so both text tops line up (secure-terminal carries a
+## toolbar + tab strip + a bottom notice a plain terminal lacks), then pads both to one shared canvas.
+## Runs at the END of a single-lane run, from the two .png shots before webp optimization; a no-op
+## (logged) if either is absent (e.g. an emulator-only or --jobs lane). gnome-terminal is the
+## traditional side: it HONOURS the OSC-0 title hijack (the spoofed title shows in its title bar)
+## where konsole resets it, and -- captured with secure-terminal's own Hack font at 72 DPI (see
+## launch()) -- its text is cell-for-cell the same size, so the wipe reads as ONE session secured vs not.
+compose_hero_slider() {  ## $1=out-dir
+   local out sec trad
+   out="$1"
+   sec="${out}/secure-terminal.hero-compare-show.png"
+   trad="${out}/gnome-terminal.hero-compare.png"
+   if [ ! -f "${sec}" ] || [ ! -f "${trad}" ]; then
+      printf '%s\n' 'compose_hero_slider: secure-terminal + gnome-terminal hero-compare shots not both present; skipping slider compose' >&2
+      return 0
+   fi
+   "${here}/hero-slider-compose.py" "${sec}" "${trad}" "${out}/hero-secure.png" "${out}/hero-traditional.png"
+   ## Drop the raw per-terminal hero-compare shots: only the composed pair is referenced by the
+   ## site, so leaving the sources behind would land them in comparison/shots/ (the driver pulls
+   ## every .webp) as ORPHANS that website-tests rejects. Removing them here keeps the site green on
+   ## every regeneration with no step to remember. The honest per-terminal captures still exist
+   ## mid-run; only the composed hero-secure/hero-traditional are published.
+   safe-rm -f -- "${out}"/*.hero-compare.png "${out}"/*.hero-compare.webp \
+      "${out}/secure-terminal.hero-compare-show.png" "${out}/secure-terminal.hero-compare-show.webp" 2>/dev/null || true
+   printf '%s\n' 'composed hero slider pair: hero-secure.png, hero-traditional.png (raw hero-compare shots dropped)'
+}
+
+## Capture the window, then guard against a blank/black grab (the content had not finished
+## rendering when the screenshot was taken -- more likely under the parallel --jobs CPU load).
+## Re-grab a couple of times WITHOUT re-injecting (the command already ran; it just needs to
+## finish painting), then tighten. A shot still blank after retries is warned, never silent.
+capture_settled() {  ## $1=output-path  $2=window-id  [$3='skip-tighten']
+   local dest wid skip_tighten tries
+   dest="$1"; wid="$2"; skip_tighten="${3:-}"; tries=0
+   while [ "${tries}" -lt 3 ]; do
+      if ! capture_window "${dest}" "${wid}"; then
+         printf '%s\n' "warn: screenshot failed for $(basename -- "${dest}")"
+         return 1
+      fi
+      if ! shots_shot_is_blank "${dest}"; then
+         ## skip-tighten: the pinned full-viewport colour boards fill the terminal, so there
+         ## is no screenful of dead space to trim, and tighten's content/background boundary
+         ## detection is non-deterministic on a board whose edge colour is close to the
+         ## terminal background -- it drifts the crop height run-to-run. The raw grab is the
+         ## pinned window geometry, so leaving it untightened keeps the dimensions deterministic.
+         [ "${skip_tighten}" = 'skip-tighten' ] || tighten_deadspace "${dest}"
+         return 0
+      fi
+      tries=$(( tries + 1 ))
+      printf '%s\n' "warn: $(basename -- "${dest}") blank (attempt ${tries}); waiting to re-grab"
+      sleep 2
+   done
+   ## Still blank: DISCARD it rather than emit a black shot. A missing PNG is not webp'd or
+   ## pulled, so a previously-good published shot is left intact instead of being overwritten
+   ## with black. The caller warns.
+   safe-rm --force -- "${dest}" 2>/dev/null || true
+   printf '%s\n' "warn: $(basename -- "${dest}") still blank after retries -- discarded (kept any prior good shot)"
+   return 1
+}
+
+## Block until the window's rendering has SETTLED: grab throwaway frames until two consecutive
+## grabs match within a jitter tolerance. capture_settled only rejects a BLANK frame, so a heavy
+## still-painting TUI pyte grid would be grabbed half-drawn; a whole unpainted row band differs by
+## thousands of pixels between grabs, while the known ~1px sub-pixel border jitter differs by only
+## a handful, so a small AE tolerance settles once painting stops. Best-effort: a failed grab
+## or a missing `compare` just returns and lets capture_settled proceed.
+##
+## The wait is WALL-CLOCK bounded, not a fixed iteration count: a full-viewport 24-bit board in
+## SHOW/TUI mode paints ROW BY ROW over ~20s -- every cell carries a distinct truecolour format,
+## which defeats the same-format run coalescing the grid renderer relies on, so the document is
+## rebuilt one slow frame per read. A fixed 8s cap timed out mid-paint and the capture grabbed a
+## half-drawn board (the bottom rows + the returning prompt missing). Wait for a REAL settle,
+## capped just under the per-capture SHOT_DEADLINE so a never-settling window still falls through
+## to capture_settled's blank/content retry rather than hanging.
+st_wait_render_settled() {  ## $1=window-id
+   local wid a b diff budget start deadline
+   wid="$1"
+   type -P compare >/dev/null || return 0
+   ## Cap the wait under the watchdog's reap (SHOT_DEADLINE, default 90s), leaving margin so the
+   ## group is not torn down mid-settle. A non-numeric deadline keeps the safe 75s default.
+   ## Wall-clock cap for the settle, kept UNDER the watchdog's SHOT_DEADLINE reap (default 90s) so
+   ## the window group is not torn down mid-settle. Validate the deadline as base-10 digits: a value
+   ## like 09 must NOT be read as octal (bash arithmetic would error out under errexit), and a
+   ## non-numeric or unset deadline keeps the 90s assumption. budget = deadline - 15 leaves margin,
+   ## clamped to [1, 75] so it never exceeds a tiny deadline nor over-waits the default.
+   case "${SHOT_DEADLINE:-}" in
+      *[!0-9]*|'')
+         deadline=90
+         ;;
+      *)
+         deadline=$(( 10#${SHOT_DEADLINE} ))
+         ;;
+   esac
+   budget=$(( deadline - 15 ))
+   [ "${budget}" -gt 75 ] && budget=75
+   [ "${budget}" -lt 1 ] && budget=1
+   a="$(mktemp -- "${runtime_dir}/settle.XXXXXX.png")"
+   b="$(mktemp -- "${runtime_dir}/settle.XXXXXX.png")"
+   if ! capture_window "${a}" "${wid}" 2>/dev/null; then
+      safe-rm --force -- "${a}" "${b}" 2>/dev/null || true
+      return 0
+   fi
+   start=${SECONDS}
+   while [ $(( SECONDS - start )) -lt "${budget}" ]; do
+      sleep 0.8
+      capture_window "${b}" "${wid}" 2>/dev/null || break
+      diff="$(compare -metric AE "${a}" "${b}" null: 2>&1 || true)"
+      diff="${diff%%[!0-9]*}"
+      case "${diff}" in '') diff=999999 ;; esac
+      [ "${diff}" -lt 300 ] 2>/dev/null && break   # only jitter left -> settled
+      ## Copy (not move) the newer frame to the baseline: mv would unlink ${b}, and the next
+      ## capture_window would recreate that path OUTSIDE mktemp's protection. ${runtime_dir} is
+      ## owner-only, so this is belt-and-braces, but it keeps ${b} a mktemp-created file.
+      cp --force -- "${b}" "${a}"
+   done
+   safe-rm --force -- "${a}" "${b}" 2>/dev/null || true
+}
+
+## Wait until a freshly-launched window has actually RENDERED (its content is no longer a flat
+## blank) before typing into it. The first secure-terminal launch is a Qt cold start that, under
+## the parallel --jobs CPU load, can still be painting nothing when the fixed settle elapses --
+## so the injected 'cat' is typed into a not-yet-ready app and never runs, leaving a black shot.
+## Polls a light grab of the window; proceeds anyway on timeout (the capture's own blank-retry +
+## warning is the backstop).
+wait_window_ready() {  ## $1=window-id
+   local wid tmp tries
+   wid="$1"; tries=0
+   tmp="$(mktemp --suffix=.png)"
+   ## Generous ceiling: the first secure-terminal cold start under parallel --jobs contention can
+   ## take tens of seconds (until the competing lane frees CPU). Each poll is a light grab.
+   while [ "${tries}" -lt 30 ]; do
+      if capture_window "${tmp}" "${wid}" 2>/dev/null && ! shots_shot_is_blank "${tmp}"; then
+         safe-rm --force -- "${tmp}" 2>/dev/null || true
+         return 0
+      fi
+      tries=$(( tries + 1 ))
+      sleep 1
+   done
+   safe-rm --force -- "${tmp}" 2>/dev/null || true
+   return 0
+}
+
+clear_windows() {
+   local wid
+   for wid in $(DISPLAY="${xwl_display}" xdotool search --onlyvisible '' 2>/dev/null || true); do
+      case "${base_wids}" in *" ${wid} "*) continue ;; esac
+      DISPLAY="${xwl_display}" xdotool windowkill "${wid}" 2>/dev/null || true
+   done
+}
+
+## the largest NEW (non-baseline) window: the emulator's real top-level.
+find_window() {
+   local _ cur wid best X Y WIDTH HEIGHT area
+   for _ in $(seq 1 80); do
+      kill -0 "${wm_pid}" 2>/dev/null || return 1
+      wid=''; best=0
+      for cur in $(DISPLAY="${xwl_display}" xdotool search --onlyvisible '' 2>/dev/null || true); do
+         case "${base_wids}" in *" ${cur} "*) continue ;; esac
+         X=''; Y=''; WIDTH=''; HEIGHT=''
+         eval "$(DISPLAY="${xwl_display}" xdotool getwindowgeometry --shell "${cur}" 2>/dev/null | grep -E '^(WIDTH|HEIGHT)=' || true)"
+         area=$(( ${WIDTH:-0} * ${HEIGHT:-0} ))
+         if [ "${area}" -gt "${best}" ]; then best="${area}"; wid="${cur}"; fi
+      done
+      if [ -n "${wid}" ] && [ "${best}" -gt 40000 ]; then
+         printf '%s' "${wid}"
+         return 0
+      fi
+      sleep 0.25
+   done
+   return 1
+}
+
+shoot() {  ## $1=emulator  $2=case
+   local e case wid ww rescue_h pgf flagf epgid wdog cur_w cur_h
+   e="$1"; case="$2"; wid=''
+   ## the tall tui-showcase board needs a taller pixel-resized window (qterminal +
+   ## the shrink rescue); the short cases keep their prior heights so their shots and
+   ## committed page dimensions do not move.
+   rescue_h="$(px 430)"; [ "${case}" = tui-showcase ] && rescue_h="$(px 620)"
+   pgf="$(mktemp -- "${runtime_dir}/pgid.XXXXXX")"
+   flagf="${pgf}.timeout"
+   ## launch the emulator in its own session (records its PGID into pgf); arm a per-capture
+   ## watchdog that reaps that group if the render hangs past the deadline.
+   launch "${e}" "${case}" "${pgf}" >/dev/null 2>&1
+   ## A non-numeric SHOT_DEADLINE makes shots_watchdog_start refuse (return 1); under errexit
+   ## that must NOT abort the whole capture -- run this shot unbounded (no watchdog) instead.
+   wdog="$(shots_watchdog_start "${SHOT_DEADLINE}" "${pgf}" "${flagf}")" || wdog=''
+   wid="$(find_window || true)"
+   if [ -z "${wid}" ]; then
+      printf '%s\n' "warn ${e}.${case}: window never appeared, no shot"
+      shots_watchdog_cancel "${wdog}"
+      epgid="$(cat "${pgf}" 2>/dev/null || true)"
+      clear_windows
+      shots_reap_group "${epgid}"
+      safe-rm -f -- "${pgf}" "${flagf}" 2>/dev/null || true
+      return 1
+   fi
+   ## qterminal opens maximized and ignores a plain resize; unmaximize it first.
+   if [ "${e}" = qterminal ]; then
+      DISPLAY="${xwl_display}" wmctrl -i -r "${wid}" -b remove,maximized_vert,maximized_horz 2>/dev/null || true
+      DISPLAY="${xwl_display}" xdotool windowsize "${wid}" "$(px 720)" "${rescue_h}" 2>/dev/null || true
+      sleep 0.7
+   fi
+   sleep 2
+   ## tui-showcase's ~26-line board is taller than some emulators actually render (konsole
+   ## ignores TerminalRows headlessly and paints ~22 rows), so the board's TOP line -- the
+   ## embedded 'cat tui-showcase.payload' prompt that shows what produced the board -- scrolls
+   ## off. Force a taller WINDOW before the board renders (the emulator reflows on the resize),
+   ## keeping the emulator's own width, so that top line stays on-screen.
+   if [ "${case}" = tui-showcase ]; then
+      cur_w="$(DISPLAY="${xwl_display}" xdotool getwindowgeometry --shell "${wid}" 2>/dev/null | sed -n 's/^WIDTH=//p' || true)"
+      [ -n "${cur_w}" ] || cur_w="$(px 1100)"
+      DISPLAY="${xwl_display}" xdotool windowsize "${wid}" "${cur_w}" "$(px 880)" 2>/dev/null || true
+      sleep 0.6
+   fi
+   ## hero-compare: pin the window to the shared HERO_WIN_W_BASE width, so this traditional
+   ## terminal is the SAME horizontal length as the secure-terminal hero window and the two
+   ## overlay perfectly in the homepage before/after slider (no dead-space band on either side).
+   ## Keep the emulator's own height (compose aligns the text tops and pads heights). Resize
+   ## BEFORE inject so the board renders at the final width and never reflows after.
+   if [ "${case}" = hero-compare ]; then
+      cur_h="$(DISPLAY="${xwl_display}" xdotool getwindowgeometry --shell "${wid}" 2>/dev/null | sed -n 's/^HEIGHT=//p' || true)"
+      [ -n "${cur_h}" ] || cur_h="${rescue_h}"
+      DISPLAY="${xwl_display}" xdotool windowsize "${wid}" "$(px "${HERO_WIN_W_BASE}")" "${cur_h}" 2>/dev/null || true
+      sleep 0.6
+   fi
+   wait_window_ready "${wid}"
+   inject "${wid}" "$(shots_payload_cmd "${case}")"
+   sleep 3
+   ww="$(DISPLAY="${xwl_display}" xdotool getwindowgeometry --shell "${wid}" 2>/dev/null | sed -n 's/^WIDTH=//p' || true)"
+   if [ -n "${ww}" ] && [ "${ww}" -lt 300 ]; then
+      DISPLAY="${xwl_display}" xdotool windowsize "${wid}" "$(px 720)" "${rescue_h}" 2>/dev/null || true
+      sleep 1.5
+   fi
+   capture_settled "${out}/${e}.${case}.png" "${wid}" \
+      || printf '%s\n' "warn ${e}.${case}: screenshot failed"
+   shots_watchdog_cancel "${wdog}"
+   [ -e "${flagf}" ] && printf '%s\n' "warn ${e}.${case}: capture exceeded ${SHOT_DEADLINE}s deadline, group reaped"
+   epgid="$(cat "${pgf}" 2>/dev/null || true)"
+   clear_windows
+   shots_reap_group "${epgid}"
+   safe-rm -f -- "${pgf}" "${flagf}" 2>/dev/null || true
+}
+
+## Strict mode ONLY when executed, so sourcing this file (a test reusing the functions above)
+## does not inherit errexit/nounset into the caller's shell.
+if was_executed "${BASH_SOURCE[0]}"; then
+   set -o errexit
+   set -o nounset
+   set -o pipefail
+   set -o errtrace
+   shopt -s inherit_errexit
+   shopt -s shift_verbose
+fi
+
+## SOURCE-SAFE boundary: the functions ABOVE are now defined; stop here when sourced so none of
+## the capture set-up, orchestration or main loop BELOW runs. Everything below runs on a direct run.
+was_executed "${BASH_SOURCE[0]}" || return 0
+
+out="${here}/shots"
+mkdir --parents -- "${out}"
+
 
 ## Fail BEFORE the expensive capture if the bundled webp optimizer is missing -- a direct
 ## run (not via the secure-terminal-shots wrapper) resolves it checkout-relative, not by PATH.
@@ -147,8 +701,6 @@ export SHOT_SCALE
 ## Xft base DPI a bare Xvfb reports; SHOT_SCALE x this is what X clients render their fonts at.
 XFT_BASE_DPI=96
 xft_dpi=$(( XFT_BASE_DPI * SHOT_SCALE ))
-## px() -- scale a base (1x) pixel constant by SHOT_SCALE. Used at every hardcoded geometry.
-px() { printf '%s' "$(( $1 * SHOT_SCALE ))"; }
 FRAME_TOP="$(px "${FRAME_TOP_BASE}")"
 
 ## Optional scope filters (a FAST PATH for iteration; the FULL matrix is the default, so a bare
@@ -232,9 +784,12 @@ if [ -n "${cases_sel}" ]; then
    CASES="${cases_sel}"
 fi
 
+## Reject empty, non-digit, AND any leading zero: `0` divides by zero in `$(( idx % jobs ))`
+## below, and a leading-zero value (08/09) is read as OCTAL by that arithmetic and aborts under
+## errexit -- the same class the SHOT_SCALE validation rejects with `0*`.
 case "${jobs}" in
-   ''|*[!0-9]*)
-      printf '%s\n' "comparison-capture: --jobs needs a non-negative integer, got '${jobs}'" >&2
+   ''|*[!0-9]*|0*)
+      printf '%s\n' "comparison-capture: --jobs must be a positive integer with no leading zero, got '${jobs}'" >&2
       exit 2
       ;;
 esac
@@ -483,496 +1038,7 @@ wm_pid=''
 labwc_wid=''
 xwl_display=''
 base_wids=''
-cleanup() {
-   ## safety net: reap any capture group that leaked from a failed shoot, then drop this run
-   ## from the registry (its groups are gone) BEFORE the runtime dir is removed.
-   shots_reap_run "${run_marker}" 2>/dev/null || true
-   shots_deregister_run "${run_marker}" 2>/dev/null || true
-   [ -z "${wm_pid}" ] || kill "${wm_pid}" 2>/dev/null || true
-   [ -z "${wm_pid}" ] || wait "${wm_pid}" 2>/dev/null || true
-   safe-rm -r -f -- "${runtime_dir}" 2>/dev/null || true
-}
 trap cleanup EXIT
-
-## List the child window IDs of the root window on the host X server. labwc's
-## wlroots x11-backend output window is a normal child of root but carries NO
-## WM_NAME: over a nested Xvfb wlroots cannot set it (the `BadAtom` ChangeProperty
-## warnings in labwc.log), so a name-based `xdotool search --name` never matches it
-## and the bringup wait times out ("labwc did not start"). Enumerate children by ID
-## instead -- name-independent, so it is robust to that wlroots/labwc behaviour.
-host_child_windows() {
-   DISPLAY="${host_display}" xwininfo -root -children 2>/dev/null \
-      | awk '/[0-9]+ (child|children):/{f=1; next} f && $1 ~ /^0x[0-9a-fA-F]+$/ {print $1}'
-}
-
-## start labwc nested on the host X server; discover its Xwayland display and its
-## host window (the compositor output we screenshot).
-start_labwc() {
-   local before_sock before_win after_win _ s w f
-   before_sock=' '
-   for f in /tmp/.X11-unix/X*; do
-      [ -e "${f}" ] || continue        # no match -> the literal glob; skip it
-      before_sock+="${f##*/} "
-   done
-   before_win=" $(host_child_windows | tr '\n' ' ')"
-   ## WLR_RENDERER=pixman: force wlroots' software renderer. The default GL renderer needs a GPU
-   ## / DRM device that a nested Xvfb does not provide, so labwc intermittently fails to start
-   ## ("try WLR_RENDERER=pixman") -- more often under the parallel --jobs load, which stands up
-   ## several labwc instances. Software rendering is deterministic and plenty for a screenshot.
-   WLR_RENDERER=pixman WLR_BACKENDS=x11 WLR_X11_OUTPUTS=1 DISPLAY="${host_display}" \
-      labwc >"${runtime_dir}/labwc.log" 2>&1 &
-   wm_pid="$!"
-   labwc_wid=''; xwl_display=''
-   for _ in $(seq 1 60); do
-      kill -0 "${wm_pid}" 2>/dev/null || return 1
-      if [ -z "${xwl_display}" ]; then
-         for f in /tmp/.X11-unix/X*; do
-            [ -e "${f}" ] || continue
-            s="${f##*/}"
-            case "${before_sock}" in *" ${s} "*) : ;; *) xwl_display=":${s#X}" ;; esac
-         done
-      fi
-      if [ -z "${labwc_wid}" ]; then
-         after_win=" $(host_child_windows | tr '\n' ' ')"
-         for w in ${after_win}; do
-            case "${before_win}" in *" ${w} "*) : ;; *) labwc_wid="${w}" ;; esac
-         done
-      fi
-      if [ -n "${xwl_display}" ] && [ -n "${labwc_wid}" ]; then
-         sleep 1
-         ## give labwc a roomier output than the 1024x768 default (scaled for HiDPI capture,
-         ## so a 2x window still fits within the compositor output).
-         DISPLAY="${host_display}" xdotool windowsize "${labwc_wid}" "$(px 1440)" "$(px 900)" 2>/dev/null || true
-         ## HiDPI: set the Xft DPI every X client on this Xwayland reads, so xterm / urxvt / st /
-         ## VTE (gnome/xfce4/mate) / konsole / qterminal / alacritty all render their fonts at
-         ## SHOT_SCALE x pixels for the SAME point size -- the character grid is unchanged, only
-         ## the pixels-per-cell double. secure-terminal pins its own QT_FONT_DPI and scales via
-         ## QT_SCALE_FACTOR instead (see the ST pass); kitty sets its own font DPI at launch.
-         printf '%s\n' "Xft.dpi: ${xft_dpi}" | DISPLAY="${xwl_display}" xrdb -merge 2>/dev/null || true
-         sleep 1
-         base_wids=" $(DISPLAY="${xwl_display}" xdotool search --onlyvisible '' 2>/dev/null | tr '\n' ' ')"
-         return 0
-      fi
-      sleep 0.5
-   done
-   return 1
-}
-
-## launch an emulator as an Xwayland (X11) client so labwc decorates it, in its OWN session so
-## the whole tree (emulator + shell + any server it spawns) can be reaped by one recorded PGID.
-launch() {  ## $1=emulator  $2=case  $3=pgid-file
-   local e case pgf base sh rows kh cmd
-   e="$1"; case="$2"; pgf="$3"
-   base=(env --unset=WAYLAND_DISPLAY "DISPLAY=${xwl_display}")
-   sh=(bash --rcfile "${HOME}/.strc" -i)
-   ## The tui-showcase board paints ~26 lines on the alternate screen; at the 24 rows
-   ## the short cases use, its title bar scrolled off the top. Only that case gets the
-   ## taller window, so the other cases' shots (and their committed on-page dimensions)
-   ## are unchanged. kitty is sized in pixels, so it gets a matching taller height.
-   ## rows/cols are the character GRID (unchanged by HiDPI). kh is kitty's window height in
-   ## PIXELS, so it scales with SHOT_SCALE.
-   rows=24; kh="$(px 430)"; cols=84
-   if [ "${case}" = tui-showcase ]; then rows=32; kh="$(px 620)"; fi
-   ## hero-compare: match the secure-terminal hero window WIDTH (~640px -- the app's minimum with
-   ## its labelled toolbar) at the shared Hack/72-DPI cell size, so the homepage slider's two
-   ## windows are the same size and their text overlaps. 95 cols of Hack at 11pt/72-DPI lands near
-   ## that width.
-   if [ "${case}" = hero-compare ]; then cols=97; fi
-   cmd=()
-   case "${e}" in
-      xterm)
-         ## forceBoxChars: draw DEC line-drawing with xterm's own crisp integer
-         ## line-drawing, not the AA'd font glyph. The font glyph rendered with a
-         ## bistable 1px sub-pixel jitter run-to-run on the tui-showcase box border;
-         ## the internal line-drawing is pixel-exact and deterministic.
-         cmd=("${base[@]}" xterm -xrm 'XTerm.vt100.forceBoxChars: true' \
-            -geometry "${cols}x${rows}" -fa 'Monospace' -fs 11 -e "${sh[@]}")
-         ;;
-      urxvt)
-         cmd=("${base[@]}" urxvt -geometry "${cols}x${rows}" -fn 'xft:Monospace:size=11' -e "${sh[@]}")
-         ;;
-      st)
-         cmd=("${base[@]}" st -g "${cols}x${rows}" -f 'Monospace:size=11' -e "${sh[@]}")
-         ;;
-      konsole)
-         cmd=("${base[@]}" QT_QPA_PLATFORM=xcb konsole --nofork -p "TerminalColumns=${cols}" -p "TerminalRows=${rows}" -e "${sh[@]}")
-         ;;
-      qterminal)
-         cmd=("${base[@]}" QT_QPA_PLATFORM=xcb qterminal -e "${sh[@]}")
-         ;;
-      xfce4-terminal)
-         cmd=("${base[@]}" GDK_BACKEND=x11 xfce4-terminal --disable-server --geometry "${cols}x${rows}" -x "${sh[@]}")
-         ;;
-      gnome-terminal)
-         ## gnome-terminal is a thin client to gnome-terminal-server over D-Bus, with no
-         ## flag to force a private server: give each launch a PRIVATE session bus so its
-         ## server starts fresh and dies with the bus, and --wait so the launched process stays
-         ## alive until the window closes. The private bus + server sit in the same session, so
-         ## reaping the recorded PGID takes the whole thing down. VTE reads its profile from
-         ## dconf; with no dconf daemon on the private bus it falls back to the built-in default
-         ## profile -- the shipped default we want to show.
-         if [ "${case}" = hero-compare ]; then
-            ## Match secure-terminal's Hack font at 72-DPI cell metrics so the homepage slider's text
-            ## overlaps. The gsettings + Xft.dpi setup lives in a sibling helper (no inline sh -c /
-            ## exec); it runs inside the dbus session and launches gnome-terminal --wait.
-            cmd=("${base[@]}" GDK_BACKEND=x11 dbus-run-session -- \
-               "${here}/gnome-hero-launch.sh" "${cols}x${rows}" -- "${sh[@]}")
-         else
-            cmd=("${base[@]}" GDK_BACKEND=x11 dbus-run-session -- \
-               gnome-terminal --wait --geometry "${cols}x${rows}" -- "${sh[@]}")
-         fi
-         ;;
-      mate-terminal)
-         cmd=("${base[@]}" GDK_BACKEND=x11 mate-terminal --disable-factory --geometry "${cols}x${rows}" -x "${sh[@]}")
-         ;;
-      alacritty)
-         cmd=("${base[@]}" WINIT_UNIX_BACKEND=x11 alacritty -o "window.dimensions.columns=${cols}" -o "window.dimensions.lines=${rows}" -o 'font.size=11' -e "${sh[@]}")
-         ;;
-      kitty)
-         ## kitty computes its cell from font_size(pt) x the X server DPI (the Xft.dpi we set),
-         ## so its font scales like the other X clients; only its PIXEL window size is scaled
-         ## here so the same column count fits the now-2x cells.
-         cmd=("${base[@]}" KITTY_ENABLE_WAYLAND=0 kitty -o 'remember_window_size=no' -o "initial_window_width=$(px 720)" -o "initial_window_height=${kh}" -o 'font_size=11' "${sh[@]}")
-         ;;
-   esac
-   if [ "${#cmd[@]}" -eq 0 ]; then
-      ## an unknown emulator name must SKIP this cell, not return non-zero: the call site is a
-      ## bare top-level command and `set -o errexit` would abort the whole capture run.
-      printf '%s\n' "launch: no launch recipe for '${e}', skipped" >&2
-      return 0
-   fi
-   shots_spawn_session "${pgf}" "${cmd[@]}"
-}
-
-## type a command into the focused terminal window and run it, as if a user did.
-inject() {  ## $1=window-id  $2=command
-   local wid cmd
-   wid="$1"; cmd="$2"
-   DISPLAY="${xwl_display}" xdotool windowactivate --sync "${wid}" 2>/dev/null || true
-   DISPLAY="${xwl_display}" setxkbmap us 2>/dev/null || true    # '/' else types as '&'
-   sleep 0.4
-   DISPLAY="${xwl_display}" xdotool type --delay 12 -- "${cmd}"
-   sleep 0.3
-   DISPLAY="${xwl_display}" xdotool key --clearmodifiers Return
-}
-
-## screenshot labwc's output, crop to the emulator's window by its geometry grown
-## by the themed frame (labwc's _NET_FRAME_EXTENTS, fallback FRAME_TOP).
-capture_window() {  ## $1=output-path  $2=xwayland-window-id
-   local dest wid tmp X Y WIDTH HEIGHT ext l r t b
-   dest="$1"; wid="$2"; X=''; Y=''; WIDTH=''; HEIGHT=''
-   ## park the pointer in the far corner of the (scaled) compositor output, off any window.
-   DISPLAY="${host_display}" xdotool mousemove "$(px 1439)" "$(px 899)" 2>/dev/null || true
-   sleep 0.3
-   tmp="$(mktemp --suffix=.png)"
-   if ! import -display "${host_display}" -window "${labwc_wid}" "${tmp}" 2>/dev/null; then
-      safe-rm -f -- "${tmp}"
-      return 1
-   fi
-   eval "$(DISPLAY="${xwl_display}" xdotool getwindowgeometry --shell "${wid}" 2>/dev/null \
-      | grep -E '^(X|Y|WIDTH|HEIGHT)=' || true)"
-   ext="$(DISPLAY="${xwl_display}" xprop -id "${wid}" _NET_FRAME_EXTENTS 2>/dev/null | grep -oE '= .*' || true)"
-   ext="${ext#= }"; ext="${ext//,/}"
-   read -r l r t b <<< "${ext}"
-   [ -n "${b:-}" ] || { l=1; r=1; t="${FRAME_TOP}"; b=1; }
-   if [ -n "${X}" ] && [ -n "${WIDTH}" ] && [ "${WIDTH}" -gt 0 ]; then
-      local cx cy cw ch
-      cx=$(( X - l )); [ "${cx}" -lt 0 ] && cx=0
-      cy=$(( Y - t )); [ "${cy}" -lt 0 ] && cy=0
-      cw=$(( WIDTH + l + r )); ch=$(( HEIGHT + t + b ))
-      convert "${tmp}" -crop "${cw}x${ch}+${cx}+${cy}" +repage "${dest}" \
-         2>/dev/null || cp -- "${tmp}" "${dest}"
-   else
-      cp -- "${tmp}" "${dest}"
-   fi
-   safe-rm -f -- "${tmp}"
-}
-
-## Remove the largest contiguous run of empty (background) terminal rows from a shot,
-## so a few lines of content no longer sit above a screenful of dead space. The
-## payloads are short, and the ST GUI will not shrink its window below ~400px (a Qt
-## minimum-size floor), so the tail of every short case is empty terminal rows. Handles
-## both content-at-the-top (traditional emulators: void at the bottom) and a fixed
-## bottom banner/status bar with a void above it (secure-terminal: void in the middle).
-## Only PURE background rows are removed, so content is never touched; a screen-filling
-## case (random) has no large run and is left untouched. Side columns are excluded when
-## classifying a row so a full-height scrollbar cannot mask the void.
-tighten_deadspace() {  ## $1=png-path
-   local f w h side mw bg tmpmap best_start best_len run_start run_len y line
-   local best_end top_h bot_y bot_h margin threshold scale
-   ## margin/threshold/side are PIXEL tolerances -> scale with the HiDPI factor so the trim
-   ## keeps the same visual behaviour (a "40-row void" is 40*SHOT_SCALE px at 2x). Read
-   ## SHOT_SCALE directly (default 1) instead of the top-level px() helper, so the function
-   ## stays SELF-CONTAINED when tighten_skip_test.sh extracts and evals it in isolation (the
-   ## helper is not extracted, so a px() call would abort with 'px: command not found').
-   scale="${SHOT_SCALE:-1}"
-   ## Sanitize LOCALLY too: when tighten_skip_test.sh extracts this function it runs without
-   ## the top-level SHOT_SCALE validation, so a stray value must not reach the arithmetic below
-   ## (a leading zero is octal -> 08/09 abort; a non-digit would be evaluated as a name/index).
-   case "${scale}" in ''|*[!0-9]*|0*) scale=1 ;; esac
-   margin=$(( 10 * scale ))
-   threshold=$(( 40 * scale ))
-   f="$1"
-   [ -f "${f}" ] || return 0
-   w="$(identify -format '%w' "${f}")"; h="$(identify -format '%h' "${f}")"
-   side=$(( 40 * scale )); [ "${w}" -gt $(( 200 * scale )) ] || side=0
-   mw=$(( w - 2 * side ))
-   ## background = most-frequent colour of the lower half (skips the light top chrome;
-   ## background dominates even a screen of garble). grep -m1 closes the pipe after the
-   ## top colour; '|| true' keeps the upstream SIGPIPE from tripping errexit+pipefail.
-   bg="$(convert "${f}" -gravity South -crop "${w}x50%+0+0" +repage \
-           -depth 8 -format '%c' histogram:info:- \
-         | sort -rn | grep -m1 -oiE '#[0-9A-F]{6}')" || true
-   [ -n "${bg}" ] || bg="$(convert "${f}" -format "#%[hex:p{2,$(( h - 4 ))}]" info: | cut -c1-7)"
-   ## per-row emptiness map: drop the side columns, take the absolute difference from a
-   ## solid-background image (robust to any bg colour, incl. pure black/white) and
-   ## threshold it (background -> black, content -> white), then the per-row maximum so
-   ## any content pixel lights the whole row. Column 0 read out: an empty row is #000000.
-   ## The statistic neighbourhood is CENTRED, so a width of mw would leave column 0's max
-   ## covering only the left half and miss content near the right edge; 2*mw makes column
-   ## 0 span the full row. Erring wide is safe -- it can only classify a row as non-empty,
-   ## never delete real content.
-   tmpmap="$(mktemp)"
-   convert "${f}" -crop "${mw}x${h}+${side}+0" +repage \
-      \( +clone -fill "${bg}" -colorize 100 \) \
-      -compose difference -composite -threshold 6% \
-      -statistic maximum "$(( 2 * mw ))x1" -crop "1x${h}+0+0" +repage txt:- \
-      | tail -n +2 > "${tmpmap}"
-   best_start=-1; best_len=0; run_start=-1; run_len=0; y=0
-   while IFS= read -r line; do
-      case "${line}" in
-         *"#000000"*)
-            [ "${run_start}" -ge 0 ] || run_start="${y}"
-            run_len=$(( run_len + 1 ))
-            if [ "${run_len}" -gt "${best_len}" ]; then best_len="${run_len}"; best_start="${run_start}"; fi
-            ;;
-         *)
-            run_start=-1; run_len=0
-            ;;
-      esac
-      y=$(( y + 1 ))
-   done < "${tmpmap}"
-   safe-rm -f -- "${tmpmap}"
-   [ "${best_start}" -ge 0 ] && [ "${best_len}" -ge "${threshold}" ] || return 0
-   best_end=$(( best_start + best_len - 1 ))
-   top_h=$(( best_start + margin ))
-   bot_y=$(( best_end - margin )); [ "${bot_y}" -lt "${top_h}" ] && bot_y="${top_h}"
-   bot_h=$(( h - bot_y ))
-   convert "${f}" \
-      \( -clone 0 -crop "${w}x${top_h}+0+0" +repage \) \
-      \( -clone 0 -crop "${w}x${bot_h}+0+${bot_y}" +repage \) \
-      -delete 0 -append "${f}"
-}
-
-## Compose the homepage before/after slider pair from the hero-compare shots: secure-terminal's
-## SHOW-mode board and the gnome-terminal render of the SAME board. The site's CSS resize slider
-## overlays them, so they must be identical size AND their terminal text must sit at the same
-## coordinates. hero-slider-compose.py keeps the title bars aligned at the top, inserts a white band
-## above the shallower-chrome terminal's text so both text tops line up (secure-terminal carries a
-## toolbar + tab strip + a bottom notice a plain terminal lacks), then pads both to one shared canvas.
-## Runs at the END of a single-lane run, from the two .png shots before webp optimization; a no-op
-## (logged) if either is absent (e.g. an emulator-only or --jobs lane). gnome-terminal is the
-## traditional side: it HONOURS the OSC-0 title hijack (the spoofed title shows in its title bar)
-## where konsole resets it, and -- captured with secure-terminal's own Hack font at 72 DPI (see
-## launch()) -- its text is cell-for-cell the same size, so the wipe reads as ONE session secured vs not.
-compose_hero_slider() {  ## $1=out-dir
-   local out sec trad
-   out="$1"
-   sec="${out}/secure-terminal.hero-compare-show.png"
-   trad="${out}/gnome-terminal.hero-compare.png"
-   if [ ! -f "${sec}" ] || [ ! -f "${trad}" ]; then
-      printf '%s\n' 'compose_hero_slider: secure-terminal + gnome-terminal hero-compare shots not both present; skipping slider compose' >&2
-      return 0
-   fi
-   "${here}/hero-slider-compose.py" "${sec}" "${trad}" "${out}/hero-secure.png" "${out}/hero-traditional.png"
-   ## Drop the raw per-terminal hero-compare shots: only the composed pair is referenced by the
-   ## site, so leaving the sources behind would land them in comparison/shots/ (the driver pulls
-   ## every .webp) as ORPHANS that website-tests rejects. Removing them here keeps the site green on
-   ## every regeneration with no step to remember. The honest per-terminal captures still exist
-   ## mid-run; only the composed hero-secure/hero-traditional are published.
-   safe-rm -f -- "${out}"/*.hero-compare.png "${out}"/*.hero-compare.webp \
-      "${out}/secure-terminal.hero-compare-show.png" "${out}/secure-terminal.hero-compare-show.webp" 2>/dev/null || true
-   printf '%s\n' 'composed hero slider pair: hero-secure.png, hero-traditional.png (raw hero-compare shots dropped)'
-}
-
-## Capture the window, then guard against a blank/black grab (the content had not finished
-## rendering when the screenshot was taken -- more likely under the parallel --jobs CPU load).
-## Re-grab a couple of times WITHOUT re-injecting (the command already ran; it just needs to
-## finish painting), then tighten. A shot still blank after retries is warned, never silent.
-capture_settled() {  ## $1=output-path  $2=window-id  [$3='skip-tighten']
-   local dest wid skip_tighten tries
-   dest="$1"; wid="$2"; skip_tighten="${3:-}"; tries=0
-   while [ "${tries}" -lt 3 ]; do
-      if ! capture_window "${dest}" "${wid}"; then
-         printf '%s\n' "warn: screenshot failed for $(basename -- "${dest}")"
-         return 1
-      fi
-      if ! shots_shot_is_blank "${dest}"; then
-         ## skip-tighten: the pinned full-viewport colour boards fill the terminal, so there
-         ## is no screenful of dead space to trim, and tighten's content/background boundary
-         ## detection is non-deterministic on a board whose edge colour is close to the
-         ## terminal background -- it drifts the crop height run-to-run. The raw grab is the
-         ## pinned window geometry, so leaving it untightened keeps the dimensions deterministic.
-         [ "${skip_tighten}" = 'skip-tighten' ] || tighten_deadspace "${dest}"
-         return 0
-      fi
-      tries=$(( tries + 1 ))
-      printf '%s\n' "warn: $(basename -- "${dest}") blank (attempt ${tries}); waiting to re-grab"
-      sleep 2
-   done
-   ## Still blank: DISCARD it rather than emit a black shot. A missing PNG is not webp'd or
-   ## pulled, so a previously-good published shot is left intact instead of being overwritten
-   ## with black. The caller warns.
-   safe-rm --force -- "${dest}" 2>/dev/null || true
-   printf '%s\n' "warn: $(basename -- "${dest}") still blank after retries -- discarded (kept any prior good shot)"
-   return 1
-}
-
-## Block until the window's rendering has SETTLED: grab throwaway frames until two consecutive
-## grabs match within a jitter tolerance. capture_settled only rejects a BLANK frame, so a heavy
-## still-painting TUI pyte grid would be grabbed half-drawn; a whole unpainted row band differs by
-## thousands of pixels between grabs, while the known ~1px sub-pixel border jitter differs by only
-## a handful, so a small AE tolerance settles without waiting forever. Best-effort: a failed grab
-## or a missing `compare` just returns and lets capture_settled proceed.
-st_wait_render_settled() {  ## $1=window-id
-   local wid a b i diff
-   wid="$1"
-   type -P compare >/dev/null || return 0
-   a="$(mktemp -- "${runtime_dir}/settle.XXXXXX.png")"
-   b="$(mktemp -- "${runtime_dir}/settle.XXXXXX.png")"
-   if ! capture_window "${a}" "${wid}" 2>/dev/null; then
-      safe-rm --force -- "${a}" "${b}" 2>/dev/null || true
-      return 0
-   fi
-   for i in 1 2 3 4 5 6 7 8 9 10; do
-      sleep 0.8
-      capture_window "${b}" "${wid}" 2>/dev/null || break
-      diff="$(compare -metric AE "${a}" "${b}" null: 2>&1 || true)"
-      diff="${diff%%[!0-9]*}"
-      case "${diff}" in '') diff=999999 ;; esac
-      [ "${diff}" -lt 300 ] 2>/dev/null && break   # only jitter left -> settled
-      ## Copy (not move) the newer frame to the baseline: mv would unlink ${b}, and the next
-      ## capture_window would recreate that path OUTSIDE mktemp's protection. ${runtime_dir} is
-      ## owner-only, so this is belt-and-braces, but it keeps ${b} a mktemp-created file.
-      cp --force -- "${b}" "${a}"
-   done
-   safe-rm --force -- "${a}" "${b}" 2>/dev/null || true
-}
-
-## Wait until a freshly-launched window has actually RENDERED (its content is no longer a flat
-## blank) before typing into it. The first secure-terminal launch is a Qt cold start that, under
-## the parallel --jobs CPU load, can still be painting nothing when the fixed settle elapses --
-## so the injected 'cat' is typed into a not-yet-ready app and never runs, leaving a black shot.
-## Polls a light grab of the window; proceeds anyway on timeout (the capture's own blank-retry +
-## warning is the backstop).
-wait_window_ready() {  ## $1=window-id
-   local wid tmp tries
-   wid="$1"; tries=0
-   tmp="$(mktemp --suffix=.png)"
-   ## Generous ceiling: the first secure-terminal cold start under parallel --jobs contention can
-   ## take tens of seconds (until the competing lane frees CPU). Each poll is a light grab.
-   while [ "${tries}" -lt 30 ]; do
-      if capture_window "${tmp}" "${wid}" 2>/dev/null && ! shots_shot_is_blank "${tmp}"; then
-         safe-rm --force -- "${tmp}" 2>/dev/null || true
-         return 0
-      fi
-      tries=$(( tries + 1 ))
-      sleep 1
-   done
-   safe-rm --force -- "${tmp}" 2>/dev/null || true
-   return 0
-}
-
-clear_windows() {
-   local wid
-   for wid in $(DISPLAY="${xwl_display}" xdotool search --onlyvisible '' 2>/dev/null || true); do
-      case "${base_wids}" in *" ${wid} "*) continue ;; esac
-      DISPLAY="${xwl_display}" xdotool windowkill "${wid}" 2>/dev/null || true
-   done
-}
-
-## the largest NEW (non-baseline) window: the emulator's real top-level.
-find_window() {
-   local _ cur wid best X Y WIDTH HEIGHT area
-   for _ in $(seq 1 80); do
-      kill -0 "${wm_pid}" 2>/dev/null || return 1
-      wid=''; best=0
-      for cur in $(DISPLAY="${xwl_display}" xdotool search --onlyvisible '' 2>/dev/null || true); do
-         case "${base_wids}" in *" ${cur} "*) continue ;; esac
-         X=''; Y=''; WIDTH=''; HEIGHT=''
-         eval "$(DISPLAY="${xwl_display}" xdotool getwindowgeometry --shell "${cur}" 2>/dev/null | grep -E '^(WIDTH|HEIGHT)=' || true)"
-         area=$(( ${WIDTH:-0} * ${HEIGHT:-0} ))
-         if [ "${area}" -gt "${best}" ]; then best="${area}"; wid="${cur}"; fi
-      done
-      if [ -n "${wid}" ] && [ "${best}" -gt 40000 ]; then
-         printf '%s' "${wid}"
-         return 0
-      fi
-      sleep 0.25
-   done
-   return 1
-}
-
-shoot() {  ## $1=emulator  $2=case
-   local e case wid ww rescue_h pgf flagf epgid wdog cur_w
-   e="$1"; case="$2"; wid=''
-   ## the tall tui-showcase board needs a taller pixel-resized window (qterminal +
-   ## the shrink rescue); the short cases keep their prior heights so their shots and
-   ## committed page dimensions do not move.
-   rescue_h="$(px 430)"; [ "${case}" = tui-showcase ] && rescue_h="$(px 620)"
-   pgf="$(mktemp -- "${runtime_dir}/pgid.XXXXXX")"
-   flagf="${pgf}.timeout"
-   ## launch the emulator in its own session (records its PGID into pgf); arm a per-capture
-   ## watchdog that reaps that group if the render hangs past the deadline.
-   launch "${e}" "${case}" "${pgf}" >/dev/null 2>&1
-   ## A non-numeric SHOT_DEADLINE makes shots_watchdog_start refuse (return 1); under errexit
-   ## that must NOT abort the whole capture -- run this shot unbounded (no watchdog) instead.
-   wdog="$(shots_watchdog_start "${SHOT_DEADLINE}" "${pgf}" "${flagf}")" || wdog=''
-   wid="$(find_window || true)"
-   if [ -z "${wid}" ]; then
-      printf '%s\n' "warn ${e}.${case}: window never appeared, no shot"
-      shots_watchdog_cancel "${wdog}"
-      epgid="$(cat "${pgf}" 2>/dev/null || true)"
-      clear_windows
-      shots_reap_group "${epgid}"
-      safe-rm -f -- "${pgf}" "${flagf}" 2>/dev/null || true
-      return 1
-   fi
-   ## qterminal opens maximized and ignores a plain resize; unmaximize it first.
-   if [ "${e}" = qterminal ]; then
-      DISPLAY="${xwl_display}" wmctrl -i -r "${wid}" -b remove,maximized_vert,maximized_horz 2>/dev/null || true
-      DISPLAY="${xwl_display}" xdotool windowsize "${wid}" "$(px 720)" "${rescue_h}" 2>/dev/null || true
-      sleep 0.7
-   fi
-   sleep 2
-   ## tui-showcase's ~26-line board is taller than some emulators actually render (konsole
-   ## ignores TerminalRows headlessly and paints ~22 rows), so the board's TOP line -- the
-   ## embedded 'cat tui-showcase.payload' prompt that shows what produced the board -- scrolls
-   ## off. Force a taller WINDOW before the board renders (the emulator reflows on the resize),
-   ## keeping the emulator's own width, so that top line stays on-screen.
-   if [ "${case}" = tui-showcase ]; then
-      cur_w="$(DISPLAY="${xwl_display}" xdotool getwindowgeometry --shell "${wid}" 2>/dev/null | sed -n 's/^WIDTH=//p' || true)"
-      [ -n "${cur_w}" ] || cur_w="$(px 1100)"
-      DISPLAY="${xwl_display}" xdotool windowsize "${wid}" "${cur_w}" "$(px 880)" 2>/dev/null || true
-      sleep 0.6
-   fi
-   wait_window_ready "${wid}"
-   inject "${wid}" "$(shots_payload_cmd "${case}")"
-   sleep 3
-   ww="$(DISPLAY="${xwl_display}" xdotool getwindowgeometry --shell "${wid}" 2>/dev/null | sed -n 's/^WIDTH=//p' || true)"
-   if [ -n "${ww}" ] && [ "${ww}" -lt 300 ]; then
-      DISPLAY="${xwl_display}" xdotool windowsize "${wid}" "$(px 720)" "${rescue_h}" 2>/dev/null || true
-      sleep 1.5
-   fi
-   capture_settled "${out}/${e}.${case}.png" "${wid}" \
-      || printf '%s\n' "warn ${e}.${case}: screenshot failed"
-   shots_watchdog_cancel "${wdog}"
-   [ -e "${flagf}" ] && printf '%s\n' "warn ${e}.${case}: capture exceeded ${SHOT_DEADLINE}s deadline, group reaped"
-   epgid="$(cat "${pgf}" 2>/dev/null || true)"
-   clear_windows
-   shots_reap_group "${epgid}"
-   safe-rm -f -- "${pgf}" "${flagf}" 2>/dev/null || true
-}
 
 ## labwc intermittently fails to come up under the parallel --jobs load (its wlroots x11
 ## backend racing several nested compositors) -- the single dominant cause of lost shots in a
@@ -1190,13 +1256,13 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       ## once grown by the frame). The short cases keep 620 so their committed page
       ## dimensions do not move; tighten_deadspace trims either back to its content.
       st_win_h="$(px 620)"; [ "${st_case}" = tui-showcase ] && st_win_h="$(px 820)"
-      ## hero-compare: request a narrower secure-terminal window than the 860 comparison default so
-      ## the homepage slider shot scales to a ~390px phone with legible text and the board fills the
-      ## frame. Qt clamps the width up to the app's own minimum for the fully-labeled toolbar (~640
-      ## under the capture compositor's 72-DPI metrics), so the toolbar stays complete (no ">>"
-      ## overflow) at that clamped size -- which is the narrow hero width we want. RE-MEASURE if the
-      ## toolbar/chip CSS changes; the emulator width (65 cols) above is matched to this result.
-      st_win_w="$(px 860)"; [ "${st_case}" = hero-compare ] && st_win_w="$(px 700)"
+      ## hero-compare: use the shared HERO_WIN_W_BASE width (narrower than the 860 comparison
+      ## default) so the homepage slider shot scales to a ~390px phone with legible text and the
+      ## board fills the frame. The SAME constant pins the gnome-terminal hero window (shoot()),
+      ## so the two are identical horizontal length and overlay perfectly. This width still lands
+      ## in the labeled toolbar tier (captioned chips, no ">>" overflow) at 72-DPI metrics;
+      ## RE-MEASURE if the toolbar/chip CSS changes.
+      st_win_w="$(px 860)"; [ "${st_case}" = hero-compare ] && st_win_w="$(px "${HERO_WIN_W_BASE}")"
       ## The GUI runs as `python3 .../secure-terminal` -- process name `python3` -- so it MUST
       ## be reaped by its session PGID, never by name. Launch it in its own session and arm the
       ## per-capture watchdog, exactly like the emulator shots.

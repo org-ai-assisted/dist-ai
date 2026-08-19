@@ -16,7 +16,10 @@ bottom notice than a plain terminal, so its text starts lower. This:
   2. keeps the TITLE BARS aligned at y=0, and inserts a white band ABOVE the text of the
      shallower-chrome terminal so both text tops line up (padding with terminal
      background, so the band reads as ordinary empty terminal space);
-  3. pads both to one shared canvas (max width x max height, white, top-left).
+  3. unifies the WIDTH to the narrower window (both windows are pinned to one width at
+     capture, so this only trims a few px of border off the wider one; a larger gap fails
+     loud -- the pin regressed) and pads the height to the taller shot, so both land on one
+     shared canvas and the two windows overlay exactly.
 
     hero-slider-compose.py <secure.png> <traditional.png> <out-secure.png> <out-traditional.png>
 """
@@ -61,6 +64,14 @@ def extent(im, w, h):
     return out
 
 
+# Both hero windows are pinned to ONE width at CAPTURE time (comparison-capture.sh
+# HERO_WIN_W_BASE), so each shot -- cropped to its own window -- should already be the same
+# width bar a few px of VTE cell-snap on the traditional side. A gap wider than one shared
+# cell means that pin BROKE (a narrower window would leave a dead-space band on one side of
+# the slider). Fail loud rather than paper over it with white padding.
+MAX_WIDTH_GAP = 40
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if len(argv) != 4:
@@ -71,17 +82,35 @@ def main(argv=None):
     sec = Image.open(sec_p).convert('RGB')
     trad = Image.open(trad_p).convert('RGB')
 
+    # The two windows must be the SAME horizontal length or the slider exposes a dead-space
+    # band when dragged. They are pinned equal at capture; refuse a composition where they are
+    # not (the capture-time pin regressed) instead of hiding it behind padding.
+    gap = abs(sec.width - trad.width)
+    if gap > MAX_WIDTH_GAP:
+        sys.stderr.write(
+            'hero-slider-compose: hero window widths differ by %d px (secure %d, traditional'
+            ' %d) -- exceeds the %d px cell-snap tolerance; the capture-time width pin'
+            ' (HERO_WIN_W_BASE) regressed. Not composing a mismatched slider pair.\n'
+            % (gap, sec.width, trad.width, MAX_WIDTH_GAP))
+        return 1
+
     tt_sec = text_top(sec)
     tt_trad = text_top(trad)
     target = max(tt_sec, tt_trad)
     sec = pad_above_text(sec, tt_sec, target - tt_sec)
     trad = pad_above_text(trad, tt_trad, target - tt_trad)
 
-    w = max(sec.width, trad.width)
+    # Unify the width to the NARROWER window and crop both to it, so both windows end at the
+    # same x and overlay exactly -- trimming only the few px of window border the wider one
+    # carries past the shared width (the gap is <= MAX_WIDTH_GAP, guarded above, so no content
+    # is cut). Height still pads to the taller shot (compose aligned the text tops; the extra
+    # is empty terminal rows).
+    w = min(sec.width, trad.width)
     h = max(sec.height, trad.height)
-    extent(sec, w, h).save(out_sec)
-    extent(trad, w, h).save(out_trad)
-    print('hero-slider-compose: %dx%d (text top aligned at y=%d)' % (w, h, target))
+    extent(sec.crop((0, 0, w, sec.height)), w, h).save(out_sec)
+    extent(trad.crop((0, 0, w, trad.height)), w, h).save(out_trad)
+    print('hero-slider-compose: %dx%d (text top aligned at y=%d, width gap %d px)'
+          % (w, h, target, gap))
     return 0
 
 
