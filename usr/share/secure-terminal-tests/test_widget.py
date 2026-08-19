@@ -7108,6 +7108,22 @@ eq(len(_cap._grid_row_sig), _cap._grid_rows,
    'the incremental model tracks exactly the surviving grid blocks under a tiny cap')
 _cap.shutdown()
 
+# 11. The trailing-blank trim tests the RENDERED glyph, not cell.data.strip(): a
+# lone U+00A0 (str.strip() drops it as whitespace) renders as a visible MARKED
+# placeholder, so its row below the cursor must be kept, never trimmed away and
+# hidden. FAILS on the old str.strip() trim.
+_tr = SecureTerminal(command='/bin/cat', tui=True)
+_tr.apply_mode('show')
+_tr.resize(700, 400)
+_tr.show()
+pump(40)
+# draw a marked non-breaking space at screen row 6, then move the cursor UP to row 2
+_tr._feed_stream('\x1b[1;1Htop\x1b[6;1H\u00a0\x1b[2;1H'.encode())
+_tr._render_tui()
+ok(_tr._grid_rows >= 6,
+   'a marked space (U+00A0) below the cursor keeps its row (rendered-glyph trim, not strip())')
+_tr.shutdown()
+
 # each reconcile widget owns a /bin/cat pty child; hang them up so the master fds and
 # child processes do not linger into the suite's os._exit teardown.
 for _rw in (_bp_no, _bp_yes, _hs, _dp, _th, _rb, _sm):
