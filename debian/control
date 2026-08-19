@@ -2,7 +2,7 @@ Source: dist-ai
 Section: utils
 Priority: optional
 Maintainer: Patrick Schleizer <adrelanos@whonix.org>
-Build-Depends: debhelper-compat (= 13), genmkfile
+Build-Depends: debhelper-compat (= 13)
 Homepage: https://github.com/org-ai-assisted/dist-ai
 Vcs-Browser: https://github.com/org-ai-assisted/dist-ai
 Vcs-Git: https://github.com/org-ai-assisted/dist-ai.git
