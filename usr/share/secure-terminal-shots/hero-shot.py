@@ -30,6 +30,21 @@ import sys
 # initialises, unless the caller already chose one.
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
+# HiDPI: render at SHOT_SCALE x device pixels (default 2) so the shot stays crisp when a
+# browser upscales it on a HiDPI display -- the site shows it at 1x via CSS, matching the
+# 2x-source convention the rest of the site uses. This is a single grab (no composition),
+# so QT_SCALE_FACTOR alone gives a SHOT_SCALE x image. Assign, do not setdefault: Qt reads
+# it at QApplication construction, so the shot must pin its own factor over any inherited one.
+## Parse via int(), not str.isdigit(): isdigit() accepts unicode digits (superscripts etc.)
+## that int() then rejects, which would crash at import.
+try:
+    _shot_scale = int(os.environ.get('SHOT_SCALE', '2'))
+except (TypeError, ValueError):
+    _shot_scale = 2
+if _shot_scale < 1:
+    _shot_scale = 2
+os.environ['QT_SCALE_FACTOR'] = str(_shot_scale)
+
 from PyQt6.QtWidgets import QApplication                          # noqa: E402
 from PyQt6.QtCore import Qt                                       # noqa: E402
 
@@ -90,6 +105,7 @@ def main(argv=None):
     QApplication.processEvents()
 
     image = view.grab().toImage()
+    image.setDevicePixelRatio(1.0)   # write raw device pixels, no DPR metadata
     if not image.save(out_path, 'PNG'):
         sys.stderr.write('hero-shot: could not write %s\n' % out_path)
         return 1

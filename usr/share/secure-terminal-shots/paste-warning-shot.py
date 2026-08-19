@@ -38,11 +38,18 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 # crisp when a browser upscales it on a HiDPI display -- the site shows it at 1x via CSS
 # (width:100%), matching the 2x-source convention the rest of the site uses. QT_SCALE_FACTOR
 # scales the whole widget tree uniformly, so grab() returns a SHOT_SCALE x pixel image.
-_shot_scale = os.environ.get('SHOT_SCALE', '2')
-if not _shot_scale.isdigit() or int(_shot_scale) < 1:
-    _shot_scale = '2'
-os.environ.setdefault('QT_SCALE_FACTOR', _shot_scale)
-SHOT_SCALE = int(_shot_scale)
+## Parse via int(), not str.isdigit(): isdigit() accepts unicode digits (superscripts etc.)
+## that int() then rejects, which would crash at import.
+try:
+    SHOT_SCALE = int(os.environ.get('SHOT_SCALE', '2'))
+except (TypeError, ValueError):
+    SHOT_SCALE = 2
+if SHOT_SCALE < 1:
+    SHOT_SCALE = 2
+## Assign, do not setdefault: Qt reads QT_SCALE_FACTOR at QApplication construction, so an
+## inherited value would apply a different global scale than the MARGIN scaling below expects.
+## The shot must pin its own factor.
+os.environ['QT_SCALE_FACTOR'] = str(SHOT_SCALE)
 
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout   # noqa: E402
 from PyQt6.QtGui import QImage, QPainter, QPalette, QColor       # noqa: E402
@@ -132,6 +139,11 @@ def _trim_to_content(image, bg, margin):
     is safe: the threshold can only classify a pixel as content, never delete it.
     """
     image = image.convertToFormat(QImage.Format.Format_RGB32)
+    # Compose in RAW device pixels. Under QT_SCALE_FACTOR the grab carries a >1
+    # devicePixelRatio, and QPainter.drawImage() would then draw it at logical (half) size
+    # into the physical-pixel-sized output, cramming the content into a corner and leaving a
+    # dead band. Pin DPR=1 so every pixel dimension below is unambiguous; copies inherit it.
+    image.setDevicePixelRatio(1.0)
     width, height = image.width(), image.height()
     bg_r, bg_g, bg_b = bg.red(), bg.green(), bg.blue()
     tol = 8   # absorb the anti-alias fringe against the flat background
