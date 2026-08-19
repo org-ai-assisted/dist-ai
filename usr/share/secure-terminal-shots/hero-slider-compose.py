@@ -42,6 +42,14 @@ def shot_scale():
     return s if s >= 1 else 1
 
 
+# Never strip a shot below this height: a real black band is a thin bottom strip, so a
+# trim that would consume almost the whole image means the shot is degenerate (a blank /
+# all-black grab that capture_settled should have discarded upstream). Stopping at a floor
+# keeps the result taller than text_top()'s default (28) so the later crop stays valid --
+# an all-black image would otherwise strip to ~0 and crash pad_above_text with lower<upper.
+MIN_KEEP = 40
+
+
 def strip_bottom_black(im, thresh=16, frac=0.98):
     """Trim trailing near-uniform-BLACK rows off the bottom of a window shot.
 
@@ -51,12 +59,13 @@ def strip_bottom_black(im, thresh=16, frac=0.98):
     compose-padding). Trimming it lets both shots end on their real content, so the shared
     canvas pads BOTH with the same white below the window. A row counts as background only
     when nearly every pixel is near-black, so a content row (status pills, text) is never
-    cut."""
+    cut; and it never strips below MIN_KEEP, so a degenerate all-black grab cannot strip to
+    nothing and crash the crop below."""
     g = im.convert('L')
     w, h = g.size
     px = g.load()
     y = h
-    while y > 0 and sum(1 for x in range(w) if px[x, y - 1] < thresh) >= w * frac:
+    while y > MIN_KEEP and sum(1 for x in range(w) if px[x, y - 1] < thresh) >= w * frac:
         y -= 1
     return im if y == h else im.crop((0, 0, w, y))
 
