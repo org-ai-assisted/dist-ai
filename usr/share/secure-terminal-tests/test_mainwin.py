@@ -809,6 +809,57 @@ win._restore_tab({'text': '', 'cwd': '/no/such/dir/for/restore', 'osc': {}})
 ok(win.current()._pid is not None,
    '_restore_tab with a vanished saved cwd still spawns a shell')
 
+# session restore honours admin locks: a session saved BEFORE a lock was applied
+# must not reopen bypassing it. _restore_tab applied the saved per-tab settings
+# (mode/tui/colors/line_edits/markings/zoom/theme/scrollback/font) without the
+# _locked check it applies to OSC/bell, so a pre-lock session could reload an
+# admin-locked terminal in the wrong state. Locked -> the admin DEFAULT wins over
+# the saved value; unlocked -> the saved value is still restored. (ai-review)
+_rl_saved = set(win._locked)
+try:
+    _rl_other_mode = next(_m for _m in _MM.DISPLAY_MODES if _m != win._default_mode)
+    _rl_info = {
+        'text': '', 'osc': {},
+        'mode': _rl_other_mode,
+        'tui': not win._default_tui,
+        'colors': not win._default_colors,
+        'line_edits': not win._default_line_edits,
+        'markings': not win._default_markings,
+        'theme': 'light' if win._default_theme == 'dark' else 'dark',
+        'zoom': win._default_zoom + 40,
+        'scrollback': win._scrollback + 500,
+        'font_family': win._default_font_family,
+        'font_size': win._default_font_size + 3,
+    }
+    win._locked = {'unicode_mode', 'tui', 'colors', 'line_edits',
+                   'colored_markings', 'theme', 'zoom', 'scrollback',
+                   'font_family', 'font_size'}
+    win._restore_tab(_rl_info, activate=True)
+    _rt = win.current()
+    eq(_rt.current_mode(), win._default_mode, 'restore honours a locked unicode_mode')
+    eq(_rt.current_tui(), win._default_tui, 'restore honours a locked tui')
+    eq(_rt.colors_enabled(), win._default_colors, 'restore honours a locked colors')
+    eq(_rt.line_edits_enabled(), win._default_line_edits,
+       'restore honours a locked line_edits')
+    eq(_rt.markings_enabled(), win._default_markings,
+       'restore honours a locked colored_markings')
+    eq(_rt.current_theme(), win._default_theme, 'restore honours a locked theme')
+    eq(_rt.current_zoom(), win._default_zoom, 'restore honours a locked zoom')
+    eq(_rt.current_scrollback(), win._scrollback, 'restore honours a locked scrollback')
+    eq(_rt.current_font_size(), win._default_font_size,
+       'restore honours a locked font_size')
+    # nothing locked: the saved values are restored, not clobbered by the default
+    win._locked = set()
+    win._restore_tab(_rl_info, activate=True)
+    _ru = win.current()
+    eq(_ru.current_mode(), _rl_other_mode, 'restore keeps a saved mode when unlocked')
+    eq(_ru.current_scrollback(), win._scrollback + 500,
+       'restore keeps a saved scrollback when unlocked')
+    eq(_ru.current_zoom(), win._default_zoom + 40,
+       'restore keeps a saved zoom when unlocked')
+finally:
+    win._locked = _rl_saved
+
 # a NEW tab opens in the ACTIVE tab's current working directory (like konsole), not the
 # app's launch dir. Restore a tab into a known cwd, wait for its shell to land there, then
 # open a new tab and confirm it spawned in that same dir (bug: new tabs used the launch dir).

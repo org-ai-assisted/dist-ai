@@ -112,6 +112,18 @@ def main(argv=None):
             print('OK mismatch')
             return 0
 
+        if mode == 'degenerate':
+            # A degenerate all-near-black secure shot (a blank grab that slipped past the
+            # capture blank-check) must NOT crash compose: strip_bottom_black must floor at
+            # MIN_KEEP so the later crop stays valid, not strip to ~0 and raise ValueError.
+            proc, _, _ = run_compose(compose, work, (1402, 700), (1396, 680), sec_black=700)
+            if proc.returncode != 0:
+                print('FAIL: all-black secure shot crashed compose (rc=%d): %s'
+                      % (proc.returncode, proc.stderr.strip()[:160]))
+                return 1
+            print('OK degenerate')
+            return 0
+
         if mode == 'blackband':
             # secure carries a 19px captured black band below its window; compose must trim
             # it so NEITHER composed output ends in a black strip (both share white padding).
