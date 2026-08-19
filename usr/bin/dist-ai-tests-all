@@ -117,6 +117,7 @@ core_suites=(
    unicode-show-tests
    web-analyzer-tests
    website-tests
+   website-tests-delegation-test
 )
 fuzz_suites=(
    check-ref-commits-for-unicode-tests-fuzz
