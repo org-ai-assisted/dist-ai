@@ -573,12 +573,20 @@ try:
     ok(not win.act_zin.isEnabled() and not win.act_zout.isEnabled()
        and not win.act_zreset.isEnabled(),
        'a locked zoom greys out its View-menu Zoom In/Out/Reset actions')
+    # a locked font_family greys the View > Font action: its setter (set_font_family)
+    # refuses a locked change, so an enabled trigger would open the picker and then
+    # silently discard the pick -- a UI that lies. Same class as the greyed zoom
+    # triggers. Fails on the pre-fix _apply_locks (act_font was never gated).
+    win._locked = {'font_family'}
+    win._apply_locks()
+    ok(not win.act_font.isEnabled(),
+       'a locked font_family greys out the View > Font action')
 finally:
     win._locked = _saved_locked
     win._bell_sound_locked = _saved_bsl
     for _a in (list(win._copy_warn_actions.values())
                + list(win._paste_warn_actions.values())
-               + [win.act_zin, win.act_zout, win.act_zreset]):
+               + [win.act_zin, win.act_zout, win.act_zreset, win.act_font]):
         _a.setEnabled(True)             # undo the lock disable for later tests
 
 # --- the tray context menu is built from fixed, safe actions ------------------
@@ -783,9 +791,22 @@ ok(win.tabs.count() == _before_bare + 1,
 
 # _restore_tab: rebuild a tab from saved session state (bad ints fall back)
 win._restore_tab({'text': 'hi', 'theme': 'dark', 'zoom': 'notanint',
-                  'scrollback': 'nope', 'mode': 'box', 'osc': {}})
+                  'scrollback': 'nope', 'mode': 'box', 'osc': {},
+                  'font_family': 123, 'font_size': 'invalid'})
+_bad_tab = win.current()
 win._restore_tab({'allow_title': True, 'bell': 'audible'})   # legacy pre-OSC path
 ok(True, '_restore_tab rebuilds a tab and tolerates bad zoom/scrollback values')
+# a corrupt/hand-edited session with a non-str font_family or non-int font_size must
+# fall back to the default, not crash the restore (.strip() / int() on a bad type).
+eq(_bad_tab.current_font_family(), win._default_font_family,
+   '_restore_tab falls back to the default font family on a non-string saved value')
+eq(_bad_tab.current_font_size(), win._default_font_size,
+   '_restore_tab falls back to the default font size on a non-int saved value')
+# an unhashable saved theme (a JSON array/object) must not crash the membership test
+# (THEMES is a dict); it falls back to the default theme.
+win._restore_tab({'text': '', 'theme': [], 'osc': {}})
+eq(win.current().current_theme(), win._default_theme,
+   '_restore_tab falls back to the default theme on an unhashable saved value')
 
 # a restored tab spawns its shell in the SAVED cwd (bug: pwd was not restored)
 _rcwd = tempfile.mkdtemp(prefix='st-restore-cwd-')
@@ -859,6 +880,46 @@ try:
        'restore keeps a saved zoom when unlocked')
 finally:
     win._locked = _rl_saved
+
+# session restore honours a locked allow_title in the LEGACY branch too: a session
+# saved before the granular OSC controls carries a bare 'allow_title' bool and NO
+# 'osc' key, so _restore_tab takes its legacy branch. That branch applied the saved
+# value UNCONDITIONALLY, ignoring the lock the granular branch honours -> a pre-lock
+# legacy session could re-enable an admin-locked title/notify capability on restart.
+# Locked -> the admin default wins over the saved bool; unlocked -> the saved value
+# is restored. Fails on the pre-fix legacy branch (which applied the saved True). (ai-review)
+_al_saved_locked = set(win._locked)
+_al_saved_default = win._default_allow_title
+_al_saved_osc = dict(win._osc_defaults)
+try:
+    # 1. allow_title locked -> title + notify both forced to the admin default
+    win._default_allow_title = False
+    win._osc_defaults['osc_title'] = False
+    win._osc_defaults['osc_notify'] = False
+    win._locked = {'allow_title'}
+    win._restore_tab({'text': '', 'allow_title': True}, activate=True)   # legacy, no 'osc'
+    ok(not win.current().allow_title_enabled(),
+       'legacy restore honours a locked allow_title (admin default wins over the saved bool)')
+    # 2. nothing locked -> the saved legacy value is restored
+    win._locked = set()
+    win._restore_tab({'text': '', 'allow_title': True}, activate=True)   # legacy, no 'osc'
+    ok(win.current().allow_title_enabled(),
+       'legacy restore keeps the saved allow_title when unlocked')
+    # 3. a GRANULAR lock on osc_title alone (allow_title NOT locked) must win in the
+    # legacy branch too: osc_title holds the admin default, osc_notify keeps the saved
+    # bool. Fails on a fix that only checked 'allow_title' in _locked.
+    win._osc_defaults['osc_title'] = False
+    win._locked = {'osc_title'}
+    win._restore_tab({'text': '', 'allow_title': True}, activate=True)   # legacy, no 'osc'
+    _rt = win.current()
+    ok(not _rt.osc_enabled('osc_title'),
+       'legacy restore honours a granular osc_title lock (default wins over the legacy bool)')
+    ok(_rt.osc_enabled('osc_notify'),
+       'legacy restore keeps the saved value for the unlocked osc_notify')
+finally:
+    win._locked = _al_saved_locked
+    win._default_allow_title = _al_saved_default
+    win._osc_defaults = _al_saved_osc
 
 # a NEW tab opens in the ACTIVE tab's current working directory (like konsole), not the
 # app's launch dir. Restore a tab into a known cwd, wait for its shell to land there, then
