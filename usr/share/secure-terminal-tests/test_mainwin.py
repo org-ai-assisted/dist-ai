@@ -212,12 +212,12 @@ try:
     _dialogs.clear()
     win.show_global_settings()
     _gs = _dialogs[-1]
-    ok(_dlg_field(_gs, 'Theme') is not None
-       and not _dlg_field(_gs, 'Theme').isEnabled()
-       and not _dlg_field(_gs, 'Scrollback').isEnabled()
-       and not _dlg_field(_gs, 'Restore session on start').isEnabled()
-       and not _dlg_field(_gs, 'Unicode').isEnabled()
-       and not _dlg_field(_gs, 'OSC ' + M.OSC_FEATURES[0][1]).isEnabled(),
+    # collect first so a not-found field fails the ok() gracefully rather than
+    # raising AttributeError on None.isEnabled() (e.g. if a label is renamed).
+    _locked_ctls = [_dlg_field(_gs, _lbl) for _lbl in
+                    ('Theme', 'Scrollback', 'Restore session on start',
+                     'Unicode', 'OSC ' + M.OSC_FEATURES[0][1])]
+    ok(all(_c is not None and not _c.isEnabled() for _c in _locked_ctls),
        'a locked global-settings key disables its dialog control')
     win._locked = _sl_uiz
 finally:
