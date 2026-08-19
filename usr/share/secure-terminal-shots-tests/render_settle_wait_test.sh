@@ -115,6 +115,17 @@ settle_at=1
 st_wait_render_settled dummy-wid
 eq "$(cat "${work}/n")" 1 'a window already settled returns on the first comparison (fast render not over-waited)'
 
+## --- a leading-zero deadline (09) must not be read as octal and crash the arithmetic ----------
+## budget = 10#deadline - 15, clamped [1,75], so `09` is decimal 9 (not an invalid-octal errexit
+## abort) and a tiny deadline never yields a budget over it. The window settles at once here, so a
+## clean return (counter reaches 1) proves the budget computation did not abort the function.
+printf '%s' 0 > "${work}/n"
+settle_at=1
+## || true: a regressed budget arithmetic aborts this subshell under errexit; swallow it so the
+## assertion below reports a clean FAIL (counter stuck at 0) instead of killing the whole suite.
+( SHOT_DEADLINE=09; st_wait_render_settled dummy-wid ) || true
+eq "$(cat "${work}/n")" 1 'a leading-zero SHOT_DEADLINE (09) computes the budget without an octal errexit abort'
+
 ## --- source-level: the loop bound is wall-clock, not the old fixed 10 iterations ---------------
 if grep -E --quiet 'while \[ \$\(\( SECONDS - start \)\) -lt "\$\{budget\}" \]' "${subject}" \
    && ! grep -E --quiet 'for i in 1 2 3 4 5 6 7 8 9 10; do' "${subject}"; then

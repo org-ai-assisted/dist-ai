@@ -843,17 +843,27 @@ capture_settled() {  ## $1=output-path  $2=window-id  [$3='skip-tighten']
 ## capped just under the per-capture SHOT_DEADLINE so a never-settling window still falls through
 ## to capture_settled's blank/content retry rather than hanging.
 st_wait_render_settled() {  ## $1=window-id
-   local wid a b diff budget start
+   local wid a b diff budget start deadline
    wid="$1"
    type -P compare >/dev/null || return 0
    ## Cap the wait under the watchdog's reap (SHOT_DEADLINE, default 90s), leaving margin so the
    ## group is not torn down mid-settle. A non-numeric deadline keeps the safe 75s default.
-   ## A non-numeric SHOT_DEADLINE makes the -lt test error (suppressed) and short-circuit, keeping
-   ## the safe 75s default -- the same numeric-guard idiom the settle diff test below uses.
-   budget=75
-   if [ "${SHOT_DEADLINE}" -lt 90 ] 2>/dev/null; then
-      budget=$(( SHOT_DEADLINE > 20 ? SHOT_DEADLINE - 15 : 5 ))
-   fi
+   ## Wall-clock cap for the settle, kept UNDER the watchdog's SHOT_DEADLINE reap (default 90s) so
+   ## the window group is not torn down mid-settle. Validate the deadline as base-10 digits: a value
+   ## like 09 must NOT be read as octal (bash arithmetic would error out under errexit), and a
+   ## non-numeric or unset deadline keeps the 90s assumption. budget = deadline - 15 leaves margin,
+   ## clamped to [1, 75] so it never exceeds a tiny deadline nor over-waits the default.
+   case "${SHOT_DEADLINE:-}" in
+      *[!0-9]*|'')
+         deadline=90
+         ;;
+      *)
+         deadline=$(( 10#${SHOT_DEADLINE} ))
+         ;;
+   esac
+   budget=$(( deadline - 15 ))
+   [ "${budget}" -gt 75 ] && budget=75
+   [ "${budget}" -lt 1 ] && budget=1
    a="$(mktemp -- "${runtime_dir}/settle.XXXXXX.png")"
    b="$(mktemp -- "${runtime_dir}/settle.XXXXXX.png")"
    if ! capture_window "${a}" "${wid}" 2>/dev/null; then
