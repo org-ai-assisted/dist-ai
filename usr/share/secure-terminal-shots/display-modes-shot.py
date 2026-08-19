@@ -51,7 +51,10 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 _shot_scale = os.environ.get('SHOT_SCALE', '2')
 if not _shot_scale.isdigit() or int(_shot_scale) < 1:
     _shot_scale = '2'
-os.environ.setdefault('QT_SCALE_FACTOR', _shot_scale)
+## Assign, do not setdefault: Qt reads QT_SCALE_FACTOR at QApplication construction,
+## so an inherited value would apply a different global scale and desync the panel
+## captures from the composition below. The shot must pin its own factor.
+os.environ['QT_SCALE_FACTOR'] = _shot_scale
 SHOT_SCALE = int(_shot_scale)
 
 from PyQt6.QtWidgets import QApplication                          # noqa: E402

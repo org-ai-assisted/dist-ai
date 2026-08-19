@@ -134,6 +134,10 @@ case "${SHOT_SCALE}" in
       exit 2
       ;;
 esac
+## Force base 10: '08'/'09' pass the all-digit check above but the arithmetic
+## below reads them as OCTAL and dies ('value too great for base'). An accepted
+## value must not abort the run later.
+SHOT_SCALE=$(( 10#${SHOT_SCALE} ))
 ## Exported so child scripts inherit the same factor: gnome-hero-launch.sh (hero cell size)
 ## and the --jobs lanes / re-capture net / ST pass (which re-exec this script).
 export SHOT_SCALE
