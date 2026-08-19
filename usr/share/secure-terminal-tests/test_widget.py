@@ -290,8 +290,9 @@ _hbA = _pinA.horizontalScrollBar()
 ok(_hbA.maximum() > _hbA.minimum(),
    'canary: the wide Show line overflows the viewport (else caret-visibility is untested)')
 _crA = _pinA.cursorRect()
-ok(0 <= _crA.x() <= _pinA.viewport().width(),
-   'home-pin never hides the caret: on an overflowing NoWrap line the caret stays visible')
+ok(0 <= _crA.x() and _crA.x() + _pinA.cursorWidth() <= _pinA.viewport().width(),
+   'home-pin never hides the caret: the FULL caret (its width included, not just the left '
+   'edge) stays within the viewport on an overflowing NoWrap line')
 _pinA.close()
 # Case B: the overflow lives in the scrollback above and the caret is near the start of
 # a short current line, so home-pinning keeps the caret visible AND anchors the line
