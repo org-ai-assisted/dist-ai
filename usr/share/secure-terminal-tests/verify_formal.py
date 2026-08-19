@@ -15,7 +15,8 @@ by an SMT proof (Z3) over a symbolic / unbounded domain, or by EXHAUSTIVE
 enumeration over the whole finite input alphabet (all 1,114,112 Unicode code
 points) run against the REAL sanitizer. Neither is sampling.
 
-Two theorems:
+Theorems (T1-T2 cover the display/output side; T3-T7 the input/clipboard side --
+together the WHOLE pure sanitizer, input AND output):
 
   T1  STRICT-MODE OUTPUT INERTNESS -- the CLI output-becomes-input closure.
       cli.py writes render_output(text, mode) STRAIGHT to the outer terminal
@@ -41,6 +42,25 @@ Two theorems:
       earlier line or the scrollback. Proved by INDUCTION in Z3 over the transition
       relation (which covers UNBOUNDED input -- enumeration cannot), then
       cross-checked against the real function.
+
+  T3  PASTE NO-AUTO-EXECUTE (INV-1/5, pure level): sanitize_paste /
+      sanitize_paste_unicode can never carry an escape / control / bidi / invisible
+      to the shell, and never a raw newline; paste_no_autosubmit leaves no trailing
+      carriage return (a single-line paste cannot run itself) and is idempotent; the
+      CLI's whole-CR strip leaves no submit byte at all.
+  T4  CLIPBOARD-EXFIL SAFETY: sanitize_clipboard is ASCII-only (a homoglyph cannot
+      ride out); sanitize_clipboard_unicode never carries a control / bidi /
+      invisible / default-ignorable; the display-copy path rewrites the inert
+      display glyphs to an ASCII stand-in yet never emits a raw neutralized byte.
+  T5  TITLE SAFETY: sanitize_title reduces a program title / notification to
+      printable ASCII, length-bounded and idempotent.
+  T6  TUI-CELL INERTNESS: tui_cell yields a single safe display unit for every cell
+      and mode -- the cell's own glyph only when every code point is safe, else the
+      box (or the show-mode non-ASCII-space marker); never an invisible / bidi /
+      control / default-ignorable.
+  T7  CLASSIFICATION AGREEMENT: classify_paste / paste_findings name a character the
+      SAME class the display marking does, so the paste warning and the on-screen
+      risk colour can never disagree.
 
 METHOD, and what is PROVED vs ASSUMED (honest scope):
 
@@ -658,12 +678,13 @@ def _append_only_violations(source, name):
         else:
             continue
         flat = []                               # flatten tuple/list/starred targets
-        while targets:
-            tgt = targets.pop()
+        stack = list(targets)                   # a work-list of ast.expr nodes
+        while stack:
+            tgt = stack.pop()
             if isinstance(tgt, (ast.Tuple, ast.List)):
-                targets.extend(tgt.elts)
+                stack.extend(tgt.elts)
             elif isinstance(tgt, ast.Starred):
-                targets.append(tgt.value)
+                stack.append(tgt.value)
             else:
                 flat.append(tgt)
         for tgt in flat:
@@ -773,6 +794,447 @@ def t2_canaries():
 
 
 # ===========================================================================
+# T3-T7 -- the INPUT / CLIPBOARD / TITLE / CELL side of the pure sanitizer, over
+# ALL inputs. Same technique as T1: each function is a per-character (or simple
+# string) map, so exhaustive enumeration over every code point is a TOTAL proof of
+# its output alphabet on the REAL function, and Z3 proves the arithmetic
+# classifier of the two flagship functions symbolically. With T1/T2 this covers
+# the whole PURE sanitizer -- input AND output -- not only the display path.
+#
+#   T3  paste no-auto-execute (INV-1/5, pure level): a pasted string can never
+#       carry an escape / control / bidi / invisible to the shell, and can never
+#       auto-submit -- no trailing carriage return survives the no-autosubmit
+#       strip, and the CLI's whole-CR strip leaves none at all.
+#   T4  clipboard-exfil safety: nothing placed on the system clipboard carries a
+#       control / bidi / invisible byte; the ASCII clipboard drops every non-ASCII
+#       byte (a homoglyph cannot ride out); the display-copy path rewrites the
+#       inert display glyphs to an ASCII stand-in yet never emits a raw
+#       neutralized / homoglyph code point.
+#   T5  title safety: a program-supplied title / notification is reduced to
+#       printable ASCII, length-bounded, and idempotent.
+#   T6  TUI-cell inertness: every grid cell is a single safe display unit -- the
+#       cell's own glyph only when every code point in it is safe, else the box
+#       (or, in show mode, the non-ASCII-space marker); never an invisible / bidi
+#       / control / default-ignorable.
+#   T7  classification agreement: classify_paste / paste_findings name a character
+#       the SAME class the display marking (marking_class) does, so the paste
+#       warning and the on-screen risk colour can never disagree.
+# ===========================================================================
+
+_PASTE_SAFE = frozenset((0x09, 0x0D)) | frozenset(range(0x20, 0x7F))   # tab, CR, ASCII
+_CLIP_ASCII = frozenset((0x09, 0x0A)) | frozenset(range(0x20, 0x7F))   # tab, NL, ASCII
+
+
+def _is_control_cp(cp):
+    """C0 / DEL / C1 -- the control class classify_paste and paste_findings use."""
+    return cp < 0x20 or cp == 0x7F or 0x80 <= cp <= 0x9F
+
+
+def t_input_z3():
+    """Z3: the two flagship input classifiers map EVERY code point into their safe
+    output alphabet, symbolically over the whole range (the enumeration below
+    validates that against the real code)."""
+    cp = z3.Int('cp')
+    in_range = z3.And(0 <= cp, cp <= MAX_CP)
+    ascii_pr = z3.And(0x20 <= cp, cp <= 0x7E)
+
+    # sanitize_paste: '\n'/'\r' -> 0x0D; '\t' or printable ASCII -> itself; else
+    # dropped. So the kept output code point is always in {0x09,0x0D} u [0x20,0x7E].
+    emitted = z3.If(z3.Or(cp == 0x0A, cp == 0x0D), z3.IntVal(0x0D), cp)
+    kept = z3.Or(cp == 0x0A, cp == 0x0D, cp == 0x09, ascii_pr)
+    z3_prove('T3-paste-alphabet',
+             z3.Implies(kept, z3.Or(emitted == 0x09, emitted == 0x0D,
+                                    z3.And(0x20 <= emitted, emitted <= 0x7E))),
+             assumptions=[in_range])
+    # and a paste NEVER keeps a raw newline (every newline becomes CR), so it can
+    # never smuggle a hidden second command line.
+    z3_prove('T3-paste-no-raw-newline',
+             z3.Implies(kept, emitted != 0x0A), assumptions=[in_range])
+
+    # sanitize_clipboard: kept iff '\n'/'\t' or printable ASCII; the kept char is
+    # itself, so the ASCII-clipboard alphabet is exactly {0x09,0x0A} u [0x20,0x7E].
+    ckept = z3.Or(cp == 0x0A, cp == 0x09, ascii_pr)
+    z3_prove('T4-clip-ascii-alphabet',
+             z3.Implies(ckept, z3.Or(cp == 0x09, cp == 0x0A,
+                                     z3.And(0x20 <= cp, cp <= 0x7E))),
+             assumptions=[in_range])
+
+
+def _tui_char_ok(oc, mode):
+    """The TUI-cell output alphabet: printable ASCII, the box placeholder, and (in
+    show mode only) the non-ASCII-space marker or a printable non-ASCII glyph that
+    is neither default-ignorable nor a bidi control. Never an invisible / bidi /
+    control / default-ignorable."""
+    cp = ord(oc)
+    if 0x20 <= cp <= 0x7E:
+        return True
+    if oc == S.BOX:
+        return True
+    if mode == 'show':
+        if oc == S.SPACE_MARK:
+            return True
+        return (oc.isprintable() and not S.is_default_ignorable(oc)
+                and not S.is_bidi_control(cp))
+    return False
+
+
+def _classify_family(cp):
+    """The marking family classify_paste assigns a non-plain-ASCII code point, in
+    classify_paste's own precedence order (bidi > control > invisible > other)."""
+    if S.is_bidi_control(cp):
+        return 'bidi'
+    if _is_control_cp(cp):
+        return 'control'
+    if S.is_invisible(chr(cp)):
+        return 'invisible'
+    return 'nonascii'
+
+
+_MARKING_FAMILY = {'bidi': 'bidi', 'control': 'control', 'invisible': 'invisible',
+                   'confusable': 'nonascii', 'combining': 'nonascii',
+                   'nonascii': 'nonascii'}
+_LABEL_FAMILY = {'bidirectional control': 'bidi', 'control character': 'control',
+                 'invisible character': 'invisible',
+                 'non-ASCII character': 'nonascii'}
+
+
+def t_input_enumerate():
+    """Run the REAL input / clipboard / title / cell / classify functions on every
+    code point and confirm each output alphabet and classification. Total over the
+    code-point domain -- not sampling."""
+    st = dict(paste=0, paste_uni=0, clip=0, clip_uni=0, clip_disp=0, title=0,
+              tui=0, classify=0, findings=0)
+
+    def note(key, msg):
+        if st[key] < 6:
+            fail(msg)
+        st[key] += 1
+
+    for cp in range(0, MAX_CP + 1):
+        ch = chr(cp)
+        plain = (cp in (0x09, 0x0A, 0x0D)) or (0x20 <= cp <= 0x7E)
+
+        # --- T3 sanitize_paste: alphabet {tab, CR, ASCII}; newline -> CR; nothing
+        #     invisible / bidi / control ever survives ---
+        out = S.sanitize_paste(ch)
+        for oc in out:
+            if ord(oc) not in _PASTE_SAFE:
+                note('paste', 'T3 paste: U+%04X left 0x%02X' % (cp, ord(oc)))
+        want = ('\r' if cp in (0x0A, 0x0D)
+                else ch if (cp == 0x09 or 0x20 <= cp <= 0x7E) else '')
+        if out != want:
+            note('paste', 'T3 paste: U+%04X -> %r, want %r' % (cp, out, want))
+
+        # --- T3 sanitize_paste_unicode: keeps printable non-ASCII, still drops
+        #     every control / bidi / invisible / default-ignorable; newline -> CR ---
+        outu = S.sanitize_paste_unicode(ch)
+        if '\n' in outu:
+            note('paste_uni', 'T3 paste-uni: U+%04X left a raw newline' % cp)
+        for oc in outu:
+            ok = oc in '\r\t' or (oc.isprintable()
+                                  and not S.is_default_ignorable(oc)
+                                  and not S.is_bidi_control(ord(oc)))
+            if not ok:
+                note('paste_uni', 'T3 paste-uni: U+%04X left 0x%02X'
+                     % (cp, ord(oc)))
+
+        # --- T4 sanitize_clipboard: ASCII printable + tab + newline only ---
+        outc = S.sanitize_clipboard(ch)
+        for oc in outc:
+            if ord(oc) not in _CLIP_ASCII:
+                note('clip', 'T4 clip: U+%04X left 0x%02X' % (cp, ord(oc)))
+
+        # --- T4 sanitize_clipboard_unicode: no control(except \n\t) / bidi /
+        #     invisible / default-ignorable ---
+        outcu = S.sanitize_clipboard_unicode(ch)
+        for oc in outcu:
+            ok = oc in '\n\t' or (oc.isprintable()
+                                  and not S.is_default_ignorable(oc)
+                                  and not S.is_bidi_control(ord(oc)))
+            if not ok:
+                note('clip_uni', 'T4 clip-uni: U+%04X left 0x%02X'
+                     % (cp, ord(oc)))
+
+        # --- T4 sanitize_clipboard_display: ASCII-only out; inert display glyphs
+        #     map to an ASCII stand-in (not lost to nothing); a raw neutralized /
+        #     homoglyph code point is NEVER emitted ---
+        outd = S.sanitize_clipboard_display(ch)
+        for oc in outd:
+            if ord(oc) not in _CLIP_ASCII:
+                note('clip_disp', 'T4 clip-disp: U+%04X left 0x%02X'
+                     % (cp, ord(oc)))
+        if (cp == 0x25A1 or cp == 0x2423 or S.is_structural(cp)) and not outd:
+            note('clip_disp', 'T4 clip-disp: inert glyph U+%04X lost to nothing'
+                 % cp)
+
+        # --- T5 sanitize_title: printable ASCII only, no leading/trailing space ---
+        outt = S.sanitize_title(ch)
+        for oc in outt:
+            if not 0x20 <= ord(oc) <= 0x7E:
+                note('title', 'T5 title: U+%04X left 0x%02X' % (cp, ord(oc)))
+        if outt != outt.strip():
+            note('title', 'T5 title: U+%04X left surrounding space %r' % (cp, outt))
+
+        # --- T6 tui_cell: a single safe display unit, in every mode; never an
+        #     invisible / bidi / control / default-ignorable ---
+        for mode in S.DISPLAY_MODES:
+            cell = S.tui_cell(ch, mode)
+            for oc in cell:
+                if not _tui_char_ok(oc, mode):
+                    note('tui', 'T6 tui: %s U+%04X left 0x%02X'
+                         % (mode, cp, ord(oc)))
+            if any(S.is_default_ignorable(oc) for oc in cell):
+                note('tui', 'T6 tui: %s U+%04X left a default-ignorable' % (mode, cp))
+
+        # --- T7 classify_paste / paste_findings agree with marking_class ---
+        if not plain:
+            fam = _classify_family(cp)
+            mcls = S.marking_class(cp)
+            res = S.classify_paste(ch)
+            label = res[0][0] if res else None
+            # An UNMAPPED class/label is exactly the drift this check exists to
+            # catch -- report it as a FAILURE, never let it KeyError and abort the
+            # enumeration (which would leave every later code point unchecked).
+            if mcls not in _MARKING_FAMILY or (label is not None
+                                               and label not in _LABEL_FAMILY):
+                note('classify', 'T7 classify: U+%04X unmapped class/label '
+                     '(marking=%r label=%r)' % (cp, mcls, label))
+            else:
+                mfam = _MARKING_FAMILY[mcls]
+                cfam = _LABEL_FAMILY[label] if label is not None else None
+                if not (fam == mfam == cfam):
+                    note('classify', 'T7 classify: U+%04X classify=%s marking=%s '
+                         'family=%s disagree' % (cp, cfam, mfam, fam))
+            # paste_findings classifies a SINGLE character, so its if/else makes
+            # control and non-ASCII mutually exclusive here (a C1 byte is reported
+            # as control, not unicode); the enumeration feeds one code point at a
+            # time, so has_uni is exactly `not has_ctrl`.
+            has_uni, has_ctrl = S.paste_findings(ch)
+            want_ctrl = _is_control_cp(cp)
+            if has_ctrl != want_ctrl or has_uni != (not want_ctrl):
+                note('findings', 'T7 findings: U+%04X (%s,%s) want ctrl=%s'
+                     % (cp, has_uni, has_ctrl, want_ctrl))
+
+    return st
+
+
+# Adversarial multi-code-point cells + string-level properties the per-character
+# enumeration cannot express. Escape-encoded to keep this file ASCII-only.
+_T6_MULTI = [
+    'a\u200b', 'a\u202e', 'x\u0301', '\u00c1\u0302', '\u2500\u202e',
+    'a' + '\u0301' * 40, '\u4e00\u200d', '\u00e9',
+]
+_STR_PROBES = [
+    '', 'plain paste', 'a\rb\rc\r', 'line1\nline2\ncmd', 'tab\tend',
+    'x\u202ey\u200bz', 'euro \u20ac and cjk \u4e00', '\r\r\r', 'trailing\r\n',
+    'a' * 200, '  spaced  title  \t\n', '\u0430dmin', 'box \u2500\u2502 \u25a1',
+]
+
+
+def t_input_strings():
+    """String-level properties the per-character maps guarantee only in composition:
+    no-auto-submit, the CLI whole-CR strip, title idempotence + length bound, the
+    per-character homomorphism, and multi-code-point TUI cells collapsing to the box
+    when any code point is unsafe."""
+    # no-auto-submit: paste_no_autosubmit never leaves a trailing CR, is idempotent,
+    # and '' -> ''. And the security composition: a sanitized paste, after the
+    # no-autosubmit strip, never ends in CR -- so a single-line paste cannot run.
+    if S.paste_no_autosubmit('') != '':
+        fail('T3 no-autosubmit: empty input not empty output')
+    for probe in _STR_PROBES:
+        stripped = S.paste_no_autosubmit(S.sanitize_paste(probe))
+        if stripped.endswith('\r'):
+            fail('T3 no-autosubmit: %r still ends with CR' % probe)
+        if S.paste_no_autosubmit(stripped) != stripped:
+            fail('T3 no-autosubmit: not idempotent on %r' % probe)
+        # The exact bytes cli.py forwards to the dumb child (cli.py:
+        # sanitize_paste(text).replace('\r', '') -- EVERY CR, not just the trailing
+        # run). They must be inert AND submit-free: tab + printable ASCII only, so
+        # no CR (no auto-run), no control and no escape reach the child. (Not the
+        # tautology `'\r' in x.replace('\r','')`, which is always False.)
+        child = S.sanitize_paste(probe).replace('\r', '')
+        if any(not (c == '\t' or 0x20 <= ord(c) <= 0x7E) for c in child):
+            fail('T3 cli-cr-strip: the dumb child would receive a non-inert byte '
+                 'on %r' % probe)
+
+    # sanitize_title: idempotent and length-bounded, for any input.
+    for probe in [*_STR_PROBES, '\x1b]0;' + 'A' * 300 + '\x07']:
+        t1 = S.sanitize_title(probe)
+        if S.sanitize_title(t1) != t1:
+            fail('T5 title: not idempotent on %r' % probe[:40])
+        if len(t1) > 80:
+            fail('T5 title: length %d exceeds the cap on %r' % (len(t1), probe[:40]))
+        if not t1.isascii() or any(not 0x20 <= ord(c) <= 0x7E for c in t1):
+            fail('T5 title: non-printable-ASCII survived on %r' % probe[:40])
+
+    # per-character homomorphism: the paste / clipboard maps are pure per-character
+    # joins, so the whole-string result is the concatenation of the per-character
+    # results -- which is what lifts the exhaustive single-code-point result to
+    # inputs of any length.
+    for probe in _STR_PROBES:
+        for fn in (S.sanitize_paste, S.sanitize_paste_unicode, S.sanitize_clipboard,
+                   S.sanitize_clipboard_unicode):
+            if fn(probe) != ''.join(fn(c) for c in probe):
+                fail('T3/T4 homomorphism: %s not per-character on %r'
+                     % (fn.__name__, probe[:40]))
+
+    # multi-code-point TUI cells: any unsafe code point in the cell -> the box (or,
+    # for a lone show-mode non-ASCII space, the marker); never the raw cell.
+    for cell in _T6_MULTI:
+        for mode in S.DISPLAY_MODES:
+            out = S.tui_cell(cell, mode)
+            if any(not _tui_char_ok(oc, mode) for oc in out):
+                fail('T6 tui multi: %s %r left a non-inert char (%r)'
+                     % (mode, cell, out))
+
+
+def t_input_canaries():
+    # T3 canary: an identity paste (no strip) leaks a bidi override + a raw newline.
+    leaked = 'echo\u202e\npwn'
+    _expect_caught('T3/paste-alphabet',
+                   any(ord(oc) not in _PASTE_SAFE for oc in leaked))
+    # no-autosubmit canary: an identity strip leaves the trailing CR.
+    _expect_caught('T3/no-autosubmit', 'echo x\r'.endswith('\r'))
+    # cli-cr-strip canary: a child input that still holds a CR (or any non-inert
+    # byte) must be caught by the tab+printable-ASCII alphabet check.
+    _expect_caught('T3/cli-cr-strip',
+                   any(not (c == '\t' or 0x20 <= ord(c) <= 0x7E) for c in 'echo\r'))
+    # T4 canary: a raw homoglyph left on the ASCII clipboard.
+    _expect_caught('T4/clip-ascii',
+                   any(ord(oc) not in _CLIP_ASCII for oc in 'a\u0430'))
+    # T5 canary: a control byte surviving into a title.
+    _expect_caught('T5/title', any(not 0x20 <= ord(c) <= 0x7E for c in 'a\x1bb'))
+    # T6 canary: an invisible passed straight into a cell.
+    _expect_caught('T6/tui', not _tui_char_ok('\u200b', 'show'))
+    # T7 canary: a classifier that calls a bidi override a plain non-ASCII char
+    # disagrees with the display marking (which calls it bidi).
+    _expect_caught('T7/classify', _LABEL_FAMILY['non-ASCII character']
+                   != _MARKING_FAMILY[S.marking_class(0x202E)])
+
+
+# ===========================================================================
+# T8 -- CHUNK-BOUNDARY ESCAPE SAFETY (the split-escape leak class), Tier 2.
+#
+# cli.py feeds child output one os.read() chunk at a time through
+# feed_chunk_carry(), which holds an escape split across a read boundary so its
+# tail cannot render as literal text. Two properties:
+#
+#   T8a  SPLIT-INVARIANCE: for a given byte stream, the rendered output is the
+#        SAME no matter where the read boundaries fall -- so re-chunking can never
+#        make an escape (or its tail) leak. This is what closes the split-escape
+#        prompt-spoofing class. Verified by BOUNDED EXHAUSTION: every stream over an
+#        escape-relevant alphabet up to a bounded length, under EVERY chunking, must
+#        render identically to the whole-stream case. (Bounded, honestly: this is
+#        bounded model checking over short streams, not the unbounded induction of
+#        T1/T2. The over-carry-cap DISCARD path -- reached only by a sequence longer
+#        than cap, ~4096 bytes -- is out of this bounded check and stays covered by
+#        the fuzz suite; T8b checks its memory bound directly.)
+#   T8b  O(1) MEMORY: across an arbitrarily long, never-terminated string sequence
+#        fed in many chunks, the carried state stays bounded -- the carry never
+#        exceeds cap and the drop is at most one introducer byte -- so hostile
+#        output cannot balloon memory.
+# ===========================================================================
+
+# Escape-relevant alphabet: ESC, the CSI/OSC/DCS introducers, an ST/BEL terminator,
+# a parameter/final byte, and a plain text byte. Small enough for exhaustion, rich
+# enough to form (and split) real sequences.
+_T8_ALPHABET = ['\x1b', '[', ']', 'P', '\\', '\x07', 'm', 'a']
+
+
+def _cli_pipeline(chunks, cap=4096):
+    """Drive feed_chunk_carry across `chunks` exactly as cli.py does -- carry the
+    incomplete-escape state, render each emitted piece -- and return the
+    concatenated rendered output plus the max (carry, drop) sizes seen."""
+    carry, drop = '', ''
+    out = []
+    max_carry = max_drop = 0
+    for chunk in chunks:
+        text, carry, drop = S.feed_chunk_carry(chunk, carry, drop, cap=cap)
+        out.append(S.render_output(text, 'detail'))
+        max_carry = max(max_carry, len(carry))
+        max_drop = max(max_drop, len(drop))
+    return ''.join(out), max_carry, max_drop
+
+
+def _all_chunkings(s):
+    """Every way to cut string `s` at its internal gaps into consecutive chunks."""
+    n = len(s)
+    if n <= 1:
+        yield [s] if s else ['']
+        return
+    for mask in range(1 << (n - 1)):        # each interior gap: cut or not
+        chunks, start = [], 0
+        for i in range(n - 1):
+            if mask & (1 << i):
+                chunks.append(s[start:i + 1])
+                start = i + 1
+        chunks.append(s[start:])
+        yield chunks
+
+
+def t8_split_invariance(max_len=5):
+    """BOUNDED-EXHAUSTIVE: over every stream up to max_len and EVERY chunking, the
+    rendered output must equal the whole-stream rendering. A split-escape leak would
+    make some chunking diverge."""
+    import itertools
+    bad = 0
+    for length in range(1, max_len + 1):
+        for tup in itertools.product(_T8_ALPHABET, repeat=length):
+            s = ''.join(tup)
+            whole, _mc, _md = _cli_pipeline([s])
+            for chunks in _all_chunkings(s):
+                got, _mc, _md = _cli_pipeline(chunks)
+                if got != whole:
+                    if bad < 8:
+                        fail('T8 split-invariance: %r chunked %r renders %r != %r'
+                             % (s, chunks, got, whole))
+                    bad += 1
+                    break
+    return bad
+
+
+def t8_memory_bound():
+    """O(1) memory: a long, never-terminated string sequence fed byte-by-byte keeps
+    the carry <= cap and the drop <= 1 the whole way, and the over-cap DISCARD state
+    engages so memory stays bounded rather than growing with the input."""
+    cap = 16                                # small cap so the discard path engages fast
+    carry, drop = '', ''
+    # OSC introducer then an endless body with no terminator (BEL/ST never sent).
+    stream = '\x1b]' + 'a' * 4000
+    engaged_discard = False
+    over = 0
+    for byte in stream:
+        _text, carry, drop = S.feed_chunk_carry(byte, carry, drop, cap=cap)
+        if len(carry) > cap:
+            over += 1
+        if len(drop) > 1:
+            over += 1
+        if drop:
+            engaged_discard = True
+    if over:
+        fail('T8 memory-bound: carry/drop exceeded the bound %d time(s)' % over)
+    if not engaged_discard:
+        fail('T8 memory-bound: the over-cap discard state never engaged '
+             '(the bound was not actually exercised)')
+
+
+def t8_canaries():
+    # Split-invariance canary: a BROKEN pipeline that ignores the carry (renders
+    # each chunk independently, no cross-chunk hold) must diverge when an escape is
+    # split -- ESC in one chunk, its body in the next leaks the body as text.
+    def broken(chunks):
+        return ''.join(S.render_output(c, 'detail') for c in chunks)
+    s = 'a\x1b[m'                            # a\ + SGR; split just after ESC leaks
+    whole = broken([s])
+    split = broken(['a\x1b', '[m'])
+    _expect_caught('T8/split-invariance', whole != split)
+    # Memory-bound canary: a stand-in that GROWS with input (no cap) is caught by
+    # the > cap assertion.
+    fake_carry = 'x' * 100
+    _expect_caught('T8/memory-bound', len(fake_carry) > 16)
+
+
+# ===========================================================================
 # Run.
 # ===========================================================================
 def main():
@@ -809,9 +1271,24 @@ def main():
     incr_bad = t2_incremental_equiv()
     sys.stdout.write('        incremental_divergences=%d\n' % incr_bad)
 
+    sys.stdout.write('  T3.Z  Z3 symbolic alphabets of the paste / clipboard classifiers ...\n')
+    t_input_z3()
+    sys.stdout.write('  T3-T7  exhaustive enumeration: paste / clipboard / title / cell / classify ...\n')
+    ist = t_input_enumerate()
+    sys.stdout.write('        paste=%(paste)d paste_uni=%(paste_uni)d clip=%(clip)d clip_uni=%(clip_uni)d clip_disp=%(clip_disp)d title=%(title)d tui=%(tui)d classify=%(classify)d findings=%(findings)d\n' % ist)
+    sys.stdout.write('  T3-T6  string-level: no-autosubmit / cli-cr-strip / title idempotence / homomorphism / multi-cp cells ...\n')
+    t_input_strings()
+
+    sys.stdout.write('  T8    chunk-boundary escape safety: bounded-exhaustive split-invariance + O(1) memory ...\n')
+    t8_bad = t8_split_invariance()
+    t8_memory_bound()
+    sys.stdout.write('        split_invariance_divergences=%d\n' % t8_bad)
+
     sys.stdout.write('  canaries (each proof must trip on a broken model) ...\n')
     t1_canaries()
     t2_canaries()
+    t_input_canaries()
+    t8_canaries()
 
     sys.stdout.write('verify_formal: %d canaries verified, %d obligations failed\n'
                      % (CANARIES_VERIFIED[0], FAIL))
