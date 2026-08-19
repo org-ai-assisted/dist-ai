@@ -34,6 +34,16 @@ import sys
 # initialises, unless the caller already chose one.
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
+# HiDPI: render at SHOT_SCALE x device pixels (default 2) so the published shot stays
+# crisp when a browser upscales it on a HiDPI display -- the site shows it at 1x via CSS
+# (width:100%), matching the 2x-source convention the rest of the site uses. QT_SCALE_FACTOR
+# scales the whole widget tree uniformly, so grab() returns a SHOT_SCALE x pixel image.
+_shot_scale = os.environ.get('SHOT_SCALE', '2')
+if not _shot_scale.isdigit() or int(_shot_scale) < 1:
+    _shot_scale = '2'
+os.environ.setdefault('QT_SCALE_FACTOR', _shot_scale)
+SHOT_SCALE = int(_shot_scale)
+
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout   # noqa: E402
 from PyQt6.QtGui import QImage, QPainter, QPalette, QColor       # noqa: E402
 from PyQt6.QtCore import Qt                                      # noqa: E402
@@ -64,8 +74,9 @@ COUNTDOWN_SECONDS = 4
 # the grab is trimmed to the pixels that actually differ from the window
 # background and re-padded with this margin on every side, so the shot is tight
 # and framed consistently with the other top-level shots. Small enough to read as
-# a snug card, large enough not to crowd the content.
-MARGIN = 12
+# a snug card, large enough not to crowd the content. Scaled with SHOT_SCALE because it is
+# applied on the already-scaled (device-pixel) grab, so the frame stays proportional.
+MARGIN = 12 * SHOT_SCALE
 
 # Vertical padding kept inside each preview pane, around its single line of text
 # (px). The panes carry a 130px minimum height (review.py) and default (auto)

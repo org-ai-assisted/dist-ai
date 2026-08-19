@@ -97,7 +97,9 @@ export CORPUS_REPO
 host_display="${DISPLAY:-:0}"
 THEME='Clearlooks'
 ## Clearlooks title bar + border height (fallback if _NET_FRAME_EXTENTS is unread).
-FRAME_TOP=26
+## Scaled by SHOT_SCALE below, once the knob is parsed (the real frame grows with the
+## scaled title-bar font; _NET_FRAME_EXTENTS is read dynamically, this is only the fallback).
+FRAME_TOP_BASE=26
 
 runtime_dir="$(mktemp --directory)"
 export XDG_RUNTIME_DIR="${runtime_dir}"
@@ -112,6 +114,35 @@ run_marker="${runtime_dir}"
 ## Per-capture deadline (seconds): a render that hangs longer than this has its process group
 ## reaped and the loop continues, so a wedged terminal cannot stall the whole grid.
 SHOT_DEADLINE="${SHOT_DEADLINE:-90}"
+
+## HiDPI capture: render every shot at SHOT_SCALE x device resolution so the published webp
+## stays crisp when a browser upscales it on a HiDPI/Retina display (a 1x shot was blurry
+## both on-page and opened fullscreen). The whole SITE already follows the 2x-source /
+## display-1x convention (logo/icons/badges); the shots were the one 1x exception. The knob
+## drives: Xft.dpi for X clients (xterm/urxvt/st/VTE/konsole/qterminal/alacritty scale their
+## fonts by it), QT_SCALE_FACTOR for the secure-terminal Qt GUI, kitty's own font DPI, the
+## labwc title-bar font (so the server-side chrome scales WITH the content, not against it),
+## and every hardcoded pixel geometry (compositor output, Xvfb screen, window resizes,
+## mouse-park, dead-space trim). The character GRID (cols x rows) is unchanged -- only the
+## pixels-per-cell doubles -- so payload sizing and the toolbar tier are preserved. On-page
+## the shots keep their size (CSS width:100%); the committed <img> width/height become the
+## new raster dims (= raster; the browser never upscales them).
+SHOT_SCALE="${SHOT_SCALE:-2}"
+case "${SHOT_SCALE}" in
+   ''|*[!0-9]*|0)
+      printf '%s\n' "comparison-capture: SHOT_SCALE must be a positive integer, got '${SHOT_SCALE}'" >&2
+      exit 2
+      ;;
+esac
+## Exported so child scripts inherit the same factor: gnome-hero-launch.sh (hero cell size)
+## and the --jobs lanes / re-capture net / ST pass (which re-exec this script).
+export SHOT_SCALE
+## Xft base DPI a bare Xvfb reports; SHOT_SCALE x this is what X clients render their fonts at.
+XFT_BASE_DPI=96
+xft_dpi=$(( XFT_BASE_DPI * SHOT_SCALE ))
+## px() -- scale a base (1x) pixel constant by SHOT_SCALE. Used at every hardcoded geometry.
+px() { printf '%s' "$(( $1 * SHOT_SCALE ))"; }
+FRAME_TOP="$(px "${FRAME_TOP_BASE}")"
 
 ## Optional scope filters (a FAST PATH for iteration; the FULL matrix is the default, so a bare
 ## run never silently skips anything). --only NAME restricts the emulators (repeatable); --case C
@@ -258,7 +289,7 @@ if [ "${jobs}" -gt 1 ]; then
       prep_args=()
       [ -n "${orch_prep}" ] && prep_args=(--prep-dir "${orch_prep}")
       [ "${lane_i}" -gt 0 ] && sleep "${lane_stagger}"
-      xvfb-run --auto-servernum --server-args='-screen 0 1600x1000x24' \
+      xvfb-run --auto-servernum --server-args="-screen 0 $(px 1600)x$(px 1000)x24" \
          "${self}" "$@" "${prep_args[@]}" --no-optimize >"${log}" 2>&1 &
       lane_pids+=("$!")
       lane_logs+=("${log}")
@@ -342,7 +373,7 @@ if [ "${jobs}" -gt 1 ]; then
             ## A re-shoot may itself exit non-zero (labwc bringup can still flake) -- its rc is
             ## NOT folded into the run's rc. Whether the shot now exists is decided by the
             ## authoritative missing-check after the rounds; a shot still absent then fails hard.
-            xvfb-run --auto-servernum --server-args='-screen 0 1600x1000x24' \
+            xvfb-run --auto-servernum --server-args="-screen 0 $(px 1600)x$(px 1000)x24" \
                "${self}" --only "${re_e}" --case "${re_c}" --no-st "${recap_prep[@]}" --no-optimize \
                > "${lane_dir}/recap.${re_e}.${re_c}.log" 2>&1 || true
             cat -- "${lane_dir}/recap.${re_e}.${re_c}.log" 2>/dev/null || true
@@ -369,7 +400,7 @@ if [ "${jobs}" -gt 1 ]; then
       st_prep=()
       [ -n "${orch_prep}" ] && st_prep=(--prep-dir "${orch_prep}")
       st_rc=0
-      xvfb-run --auto-servernum --server-args='-screen 0 1600x1000x24' \
+      xvfb-run --auto-servernum --server-args="-screen 0 $(px 1600)x$(px 1000)x24" \
          "${self}" --st-only "${fwd_case[@]}" "${st_prep[@]}" --no-optimize \
          > "${lane_dir}/st.log" 2>&1 || st_rc="$?"
       cat -- "${lane_dir}/st.log" 2>/dev/null || true
@@ -420,11 +451,19 @@ cat > "${HOME}/.strc" <<RC
 PS1='${SHOT_PROMPT}'
 RC
 
-## labwc config: the Clearlooks theme, server-side decorations.
+## labwc config: the Clearlooks theme, server-side decorations. The title-bar font is
+## scaled by SHOT_SCALE so the server-side chrome (and its title -- where the OSC-0 hijack
+## shows) renders at the same 2x as the terminal content, not half-scale against it. labwc
+## is a native Wayland compositor and does NOT read Xft.dpi, so its font is scaled here.
+titlebar_pt="$(( 10 * SHOT_SCALE ))"
 cat > "${XDG_CONFIG_HOME}/labwc/rc.xml" <<XML
 <?xml version="1.0"?>
 <labwc_config>
-  <theme><name>${THEME}</name></theme>
+  <theme>
+    <name>${THEME}</name>
+    <font place="ActiveWindow"><name>sans</name><size>${titlebar_pt}</size></font>
+    <font place="InactiveWindow"><name>sans</name><size>${titlebar_pt}</size></font>
+  </theme>
   <core><decoration>server</decoration></core>
   <placement><policy>automatic</policy></placement>
 </labwc_config>
@@ -494,8 +533,15 @@ start_labwc() {
       fi
       if [ -n "${xwl_display}" ] && [ -n "${labwc_wid}" ]; then
          sleep 1
-         ## give labwc a roomier output than the 1024x768 default.
-         DISPLAY="${host_display}" xdotool windowsize "${labwc_wid}" 1440 900 2>/dev/null || true
+         ## give labwc a roomier output than the 1024x768 default (scaled for HiDPI capture,
+         ## so a 2x window still fits within the compositor output).
+         DISPLAY="${host_display}" xdotool windowsize "${labwc_wid}" "$(px 1440)" "$(px 900)" 2>/dev/null || true
+         ## HiDPI: set the Xft DPI every X client on this Xwayland reads, so xterm / urxvt / st /
+         ## VTE (gnome/xfce4/mate) / konsole / qterminal / alacritty all render their fonts at
+         ## SHOT_SCALE x pixels for the SAME point size -- the character grid is unchanged, only
+         ## the pixels-per-cell double. secure-terminal pins its own QT_FONT_DPI and scales via
+         ## QT_SCALE_FACTOR instead (see the ST pass); kitty sets its own font DPI at launch.
+         printf '%s\n' "Xft.dpi: ${xft_dpi}" | DISPLAY="${xwl_display}" xrdb -merge 2>/dev/null || true
          sleep 1
          base_wids=" $(DISPLAY="${xwl_display}" xdotool search --onlyvisible '' 2>/dev/null | tr '\n' ' ')"
          return 0
@@ -516,8 +562,10 @@ launch() {  ## $1=emulator  $2=case  $3=pgid-file
    ## the short cases use, its title bar scrolled off the top. Only that case gets the
    ## taller window, so the other cases' shots (and their committed on-page dimensions)
    ## are unchanged. kitty is sized in pixels, so it gets a matching taller height.
-   rows=24; kh=430; cols=84
-   if [ "${case}" = tui-showcase ]; then rows=32; kh=620; fi
+   ## rows/cols are the character GRID (unchanged by HiDPI). kh is kitty's window height in
+   ## PIXELS, so it scales with SHOT_SCALE.
+   rows=24; kh="$(px 430)"; cols=84
+   if [ "${case}" = tui-showcase ]; then rows=32; kh="$(px 620)"; fi
    ## hero-compare: match the secure-terminal hero window WIDTH (~640px -- the app's minimum with
    ## its labelled toolbar) at the shared Hack/72-DPI cell size, so the homepage slider's two
    ## windows are the same size and their text overlaps. 95 cols of Hack at 11pt/72-DPI lands near
@@ -574,7 +622,10 @@ launch() {  ## $1=emulator  $2=case  $3=pgid-file
          cmd=("${base[@]}" WINIT_UNIX_BACKEND=x11 alacritty -o "window.dimensions.columns=${cols}" -o "window.dimensions.lines=${rows}" -o 'font.size=11' -e "${sh[@]}")
          ;;
       kitty)
-         cmd=("${base[@]}" KITTY_ENABLE_WAYLAND=0 kitty -o 'remember_window_size=no' -o 'initial_window_width=720' -o "initial_window_height=${kh}" -o 'font_size=11' "${sh[@]}")
+         ## kitty computes its cell from font_size(pt) x the X server DPI (the Xft.dpi we set),
+         ## so its font scales like the other X clients; only its PIXEL window size is scaled
+         ## here so the same column count fits the now-2x cells.
+         cmd=("${base[@]}" KITTY_ENABLE_WAYLAND=0 kitty -o 'remember_window_size=no' -o "initial_window_width=$(px 720)" -o "initial_window_height=${kh}" -o 'font_size=11' "${sh[@]}")
          ;;
    esac
    if [ "${#cmd[@]}" -eq 0 ]; then
@@ -603,7 +654,8 @@ inject() {  ## $1=window-id  $2=command
 capture_window() {  ## $1=output-path  $2=xwayland-window-id
    local dest wid tmp X Y WIDTH HEIGHT ext l r t b
    dest="$1"; wid="$2"; X=''; Y=''; WIDTH=''; HEIGHT=''
-   DISPLAY="${host_display}" xdotool mousemove 1439 899 2>/dev/null || true
+   ## park the pointer in the far corner of the (scaled) compositor output, off any window.
+   DISPLAY="${host_display}" xdotool mousemove "$(px 1439)" "$(px 899)" 2>/dev/null || true
    sleep 0.3
    tmp="$(mktemp --suffix=.png)"
    if ! import -display "${host_display}" -window "${labwc_wid}" "${tmp}" 2>/dev/null; then
@@ -641,12 +693,14 @@ capture_window() {  ## $1=output-path  $2=xwayland-window-id
 tighten_deadspace() {  ## $1=png-path
    local f w h side mw bg tmpmap best_start best_len run_start run_len y line
    local best_end top_h bot_y bot_h margin threshold
-   margin=10
-   threshold=40
+   ## margin/threshold/side are PIXEL tolerances -> scale with the HiDPI factor so the trim
+   ## keeps the same visual behaviour (a "40-row void" is 40*SHOT_SCALE px at 2x).
+   margin="$(px 10)"
+   threshold="$(px 40)"
    f="$1"
    [ -f "${f}" ] || return 0
    w="$(identify -format '%w' "${f}")"; h="$(identify -format '%h' "${f}")"
-   side=40; [ "${w}" -gt 200 ] || side=0
+   side="$(px 40)"; [ "${w}" -gt "$(px 200)" ] || side=0
    mw=$(( w - 2 * side ))
    ## background = most-frequent colour of the lower half (skips the light top chrome;
    ## background dominates even a screen of garble). grep -m1 closes the pipe after the
@@ -850,7 +904,7 @@ shoot() {  ## $1=emulator  $2=case
    ## the tall tui-showcase board needs a taller pixel-resized window (qterminal +
    ## the shrink rescue); the short cases keep their prior heights so their shots and
    ## committed page dimensions do not move.
-   rescue_h=430; [ "${case}" = tui-showcase ] && rescue_h=620
+   rescue_h="$(px 430)"; [ "${case}" = tui-showcase ] && rescue_h="$(px 620)"
    pgf="$(mktemp -- "${runtime_dir}/pgid.XXXXXX")"
    flagf="${pgf}.timeout"
    ## launch the emulator in its own session (records its PGID into pgf); arm a per-capture
@@ -872,7 +926,7 @@ shoot() {  ## $1=emulator  $2=case
    ## qterminal opens maximized and ignores a plain resize; unmaximize it first.
    if [ "${e}" = qterminal ]; then
       DISPLAY="${xwl_display}" wmctrl -i -r "${wid}" -b remove,maximized_vert,maximized_horz 2>/dev/null || true
-      DISPLAY="${xwl_display}" xdotool windowsize "${wid}" 720 "${rescue_h}" 2>/dev/null || true
+      DISPLAY="${xwl_display}" xdotool windowsize "${wid}" "$(px 720)" "${rescue_h}" 2>/dev/null || true
       sleep 0.7
    fi
    sleep 2
@@ -883,8 +937,8 @@ shoot() {  ## $1=emulator  $2=case
    ## keeping the emulator's own width, so that top line stays on-screen.
    if [ "${case}" = tui-showcase ]; then
       cur_w="$(DISPLAY="${xwl_display}" xdotool getwindowgeometry --shell "${wid}" 2>/dev/null | sed -n 's/^WIDTH=//p' || true)"
-      [ -n "${cur_w}" ] || cur_w=1100
-      DISPLAY="${xwl_display}" xdotool windowsize "${wid}" "${cur_w}" 880 2>/dev/null || true
+      [ -n "${cur_w}" ] || cur_w="$(px 1100)"
+      DISPLAY="${xwl_display}" xdotool windowsize "${wid}" "${cur_w}" "$(px 880)" 2>/dev/null || true
       sleep 0.6
    fi
    wait_window_ready "${wid}"
@@ -892,7 +946,7 @@ shoot() {  ## $1=emulator  $2=case
    sleep 3
    ww="$(DISPLAY="${xwl_display}" xdotool getwindowgeometry --shell "${wid}" 2>/dev/null | sed -n 's/^WIDTH=//p' || true)"
    if [ -n "${ww}" ] && [ "${ww}" -lt 300 ]; then
-      DISPLAY="${xwl_display}" xdotool windowsize "${wid}" 720 "${rescue_h}" 2>/dev/null || true
+      DISPLAY="${xwl_display}" xdotool windowsize "${wid}" "$(px 720)" "${rescue_h}" 2>/dev/null || true
       sleep 1.5
    fi
    capture_settled "${out}/${e}.${case}.png" "${wid}" \
@@ -1003,7 +1057,8 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
    ## sizeHint 730 < 860 < full 902, so the compact tier is the one that fits). A
    ## wider frame only shrank the terminal text relative to the window; this matches
    ## how the app actually opens and keeps the frame close to the competitor shots.
-   st_win_w=860
+   ## Device px = logical 860 x SHOT_SCALE (re-set per-spec in the loop below).
+   st_win_w="$(px 860)"
    ## Each entry is "<case> <mode> <suffix> [tui]". The optional 4th field 'tui' launches
    ## secure-terminal with --tui (opt-in full-screen mode) instead of the default CLI mode.
    ## The tui-showcase board is captured across the CLI/TUI mode x box/show/detail
@@ -1091,7 +1146,7 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
    warm_pgf="$(mktemp -- "${runtime_dir}/pgid.XXXXXX")"
    shots_spawn_session "${warm_pgf}" \
       env --unset=WAYLAND_DISPLAY "DISPLAY=${xwl_display}" QT_QPA_PLATFORM=xcb \
-      QT_FONT_DPI=72 SECURE_TERMINAL_SHOT=1 \
+      QT_FONT_DPI=72 QT_SCALE_FACTOR="${SHOT_SCALE}" QT_AUTO_SCREEN_SCALE_FACTOR=0 SECURE_TERMINAL_SHOT=1 \
       PYTHONPATH="${st_pkg}" python3 "${st_bin}" --new-instance --mode box \
       -- bash --rcfile "${HOME}/.strc" -i >/dev/null 2>&1
    warm_wid="$(find_window || true)"
@@ -1119,14 +1174,14 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       ## only the footer -- give it a taller window (820 fits the 900px labwc output
       ## once grown by the frame). The short cases keep 620 so their committed page
       ## dimensions do not move; tighten_deadspace trims either back to its content.
-      st_win_h=620; [ "${st_case}" = tui-showcase ] && st_win_h=820
+      st_win_h="$(px 620)"; [ "${st_case}" = tui-showcase ] && st_win_h="$(px 820)"
       ## hero-compare: request a narrower secure-terminal window than the 860 comparison default so
       ## the homepage slider shot scales to a ~390px phone with legible text and the board fills the
       ## frame. Qt clamps the width up to the app's own minimum for the fully-labeled toolbar (~640
       ## under the capture compositor's 72-DPI metrics), so the toolbar stays complete (no ">>"
       ## overflow) at that clamped size -- which is the narrow hero width we want. RE-MEASURE if the
       ## toolbar/chip CSS changes; the emulator width (65 cols) above is matched to this result.
-      st_win_w=860; [ "${st_case}" = hero-compare ] && st_win_w=700
+      st_win_w="$(px 860)"; [ "${st_case}" = hero-compare ] && st_win_w="$(px 700)"
       ## The GUI runs as `python3 .../secure-terminal` -- process name `python3` -- so it MUST
       ## be reaped by its session PGID, never by name. Launch it in its own session and arm the
       ## per-capture watchdog, exactly like the emulator shots.
@@ -1147,9 +1202,15 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       ## SECURE_TERMINAL_SHOT=1: deterministic screenshot mode (caret hidden +
       ## synchronous render) so the GUI shot is byte-reproducible run-to-run. Set on
       ## the secure-terminal GUI launch ONLY -- never on the competitor terminals.
+      ## QT_SCALE_FACTOR scales the WHOLE Qt UI (toolbar, tabs, terminal, banner) by SHOT_SCALE
+      ## uniformly -> crisp 2x pixels at the SAME logical layout. QT_FONT_DPI stays 72 (font-metric
+      ## determinism for the toolbar tier); QT_AUTO_SCREEN_SCALE_FACTOR=0 stops Qt ALSO auto-scaling
+      ## from the Xft.dpi we set for the X clients (that would compound to 4x). The window is sized in
+      ## DEVICE px below (= logical st_win_w x SHOT_SCALE), so the logical width still lands in the
+      ## labeled toolbar tier.
       shots_spawn_session "${st_pgf}" \
          env --unset=WAYLAND_DISPLAY "DISPLAY=${xwl_display}" QT_QPA_PLATFORM=xcb \
-         QT_FONT_DPI=72 SECURE_TERMINAL_SHOT=1 \
+         QT_FONT_DPI=72 QT_SCALE_FACTOR="${SHOT_SCALE}" QT_AUTO_SCREEN_SCALE_FACTOR=0 SECURE_TERMINAL_SHOT=1 \
          "SECURE_TERMINAL_TRANSCRIPT_FILE=${st_transcript}" \
          PYTHONPATH="${st_pkg}" python3 "${st_bin}" --new-instance "${st_mode_flags[@]}" \
          -- bash --rcfile "${HOME}/.strc" -i >/dev/null 2>&1
