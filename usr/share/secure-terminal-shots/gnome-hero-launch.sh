@@ -34,7 +34,14 @@ geom="$1"
 shift
 [ "${1:-}" = '--' ] && shift
 
+## HiDPI: scale the hero cell size by SHOT_SCALE (default 2) so this gnome-terminal render
+## overlaps secure-terminal's hero shot, which is captured at QT_FONT_DPI=72 x QT_SCALE_FACTOR.
+## 72 DPI x SHOT_SCALE keeps the SAME Hack cell at 2x pixels (the shared cell the slider needs).
+shot_scale="${SHOT_SCALE:-2}"
+case "${shot_scale}" in ''|*[!0-9]*|0) shot_scale=2 ;; esac
+hero_dpi="$(( 72 * shot_scale ))"
+
 gsettings set org.gnome.desktop.interface monospace-font-name 'Hack 11' 2>/dev/null || true
-printf '%s\n' 'Xft.dpi: 72' | xrdb -merge 2>/dev/null || true
+printf '%s\n' "Xft.dpi: ${hero_dpi}" | xrdb -merge 2>/dev/null || true
 
 gnome-terminal --wait --geometry "${geom}" -- "$@"

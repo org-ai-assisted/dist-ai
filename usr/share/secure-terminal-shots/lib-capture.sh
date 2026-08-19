@@ -317,12 +317,15 @@ shots_transcript_has_content() {  ## $1=transcript-file  $2=prompt-literal
 }
 
 ## Cases the emulator loop does NOT shoot (secure-terminal-only showcases): notify has no
-## standard emulator equivalent, art is a secure-terminal truecolor-render demo, unicode is a
-## secure-terminal risk-tint capability demo (its raw-byte specimens behave unpredictably across
-## emulators and add no attack comparison). Single source of truth for "which cases yield an
-## emulator shot", shared by the capture loop's own skip and by shots_missing_emulator_shots
-## below -- keep the two in step.
-SHOTS_EMULATOR_SKIP_CASES=' notify art unicode '
+## standard emulator equivalent; art and gradient are secure-terminal truecolor-render demos
+## (24-bit smooth ramps -- a page-facing capability shown for secure-terminal only, not an
+## attack comparison); unicode is a secure-terminal risk-tint capability demo (its raw-byte
+## specimens behave unpredictably across emulators and add no attack comparison). The site
+## references only secure-terminal.gradient*/art*/unicode*, so an emulator shot for these is an
+## unreferenced orphan the website-tests gate rejects. Single source of truth for "which cases
+## yield an emulator shot", shared by the capture loop's own skip and by
+## shots_missing_emulator_shots below -- keep the two in step.
+SHOTS_EMULATOR_SKIP_CASES=' notify art gradient unicode '
 
 ## Print the emulator shots (one "<emulator> <case>" per line) that are EXPECTED but MISSING from
 ## the shots dir. Drives the --jobs orchestrator's sequential re-capture net: a parallel lane can

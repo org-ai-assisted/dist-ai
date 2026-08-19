@@ -42,6 +42,21 @@ import sys
 # initialises, unless the caller already chose one.
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
+# HiDPI: render at SHOT_SCALE x device pixels (default 2) so the published grid stays crisp
+# when a browser upscales it on a HiDPI display -- the site shows it at 1x via CSS
+# (width:100%), matching the 2x-source convention the rest of the site uses. QT_SCALE_FACTOR
+# scales each panel's widget tree, so grab() returns SHOT_SCALE x pixel images; the QPainter
+# COMPOSITION below is in those device pixels, so its own constants (PAD/LABEL_H/label font)
+# are scaled to match, and the canvas is sized from the real panel-image dimensions.
+_shot_scale = os.environ.get('SHOT_SCALE', '2')
+if not _shot_scale.isdigit() or int(_shot_scale) < 1:
+    _shot_scale = '2'
+## Assign, do not setdefault: Qt reads QT_SCALE_FACTOR at QApplication construction,
+## so an inherited value would apply a different global scale and desync the panel
+## captures from the composition below. The shot must pin its own factor.
+os.environ['QT_SCALE_FACTOR'] = _shot_scale
+SHOT_SCALE = int(_shot_scale)
+
 from PyQt6.QtWidgets import QApplication                          # noqa: E402
 from PyQt6.QtGui import QColor, QFont, QImage, QPainter           # noqa: E402
 from PyQt6.QtCore import Qt                                       # noqa: E402
@@ -128,8 +143,14 @@ def main(argv=None):
 
     panels = [(panel_image(mode), caption) for mode, caption in MODES]
 
-    total_h = PAD + sum(LABEL_H + img.height() + PAD for img, _ in panels)
-    canvas = QImage(PANEL_W + 2 * PAD, total_h, QImage.Format.Format_RGB32)
+    # The grabbed panels are in DEVICE pixels (SHOT_SCALE x logical), so the composition
+    # constants are scaled to those pixels and the canvas width comes from the real panel
+    # image width -- otherwise a logical PANEL_W/PAD would clip the wider 2x panels.
+    pad = PAD * SHOT_SCALE
+    label_h = LABEL_H * SHOT_SCALE
+    panel_w = max(img.width() for img, _ in panels)
+    total_h = pad + sum(label_h + img.height() + pad for img, _ in panels)
+    canvas = QImage(panel_w + 2 * pad, total_h, QImage.Format.Format_RGB32)
     # Compose on the app theme's background (THEMES = source of truth) so the grid
     # sits on the site without a seam and tracks the default theme automatically.
     bg, fg = THEMES[THEME_NAME]
@@ -138,20 +159,20 @@ def main(argv=None):
     canvas.fill(QColor(bg))
 
     painter = QPainter(canvas)
-    label_font = QFont('DejaVu Sans', 10)
+    label_font = QFont('DejaVu Sans', 10 * SHOT_SCALE)
     label_font.setBold(True)
     painter.setFont(label_font)
 
-    y = PAD
+    y = pad
     for image, caption in panels:
         painter.setPen(QColor(fg))
-        painter.drawText(PAD, y + LABEL_H - 10, caption)
-        y += LABEL_H
-        painter.drawImage(PAD, y, image)
+        painter.drawText(pad, y + label_h - 10 * SHOT_SCALE, caption)
+        y += label_h
+        painter.drawImage(pad, y, image)
         # A hairline so each panel reads as its own terminal, not one long block.
         painter.setPen(hairline)
-        painter.drawRect(PAD, y, image.width() - 1, image.height() - 1)
-        y += image.height() + PAD
+        painter.drawRect(pad, y, image.width() - 1, image.height() - 1)
+        y += image.height() + pad
     painter.end()
 
     if not canvas.save(out_path, 'PNG'):
