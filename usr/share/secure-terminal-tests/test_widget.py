@@ -276,6 +276,17 @@ _wmt.close()
 # parked the viewport mid-line, clipping every row's left edge) -- but NEVER by hiding
 # the caret. Box/Show stay NoWrap, so a long line can overflow; Detail/Reveal wrap.
 #
+# Build the overflow font-robustly. In normal use the child autowraps output at the
+# widget's measured column count, so a NoWrap line overflows the width only when a
+# glyph renders WIDER than the measured cell (CJK/emoji in Show mode) -- and CI's
+# fonts-hack is monospace with no CJK/emoji, so no real glyph is ever wider there and
+# that overflow cannot be reproduced (a CJK run renders zero-width and silently
+# disarms the canaries -- the local-vs-CI trap this comment exists to prevent).
+# Instead disable the autowrap (_cols = 0 -> the hard-wrap falls back to _MAX_LINE) and
+# feed a long ASCII run: it stays ONE block and overflows purely by character count, so
+# it overflows identically everywhere. The home-pin logic is glyph-agnostic (it works
+# on pixel positions), so this exercises it faithfully.
+_LONG = 'M' * 800
 # Case A: the caret sits at the far right of an overflowing NoWrap line (interactive
 # typing past the edge). It MUST stay visible -- home-pinning it off-screen would hide
 # the input and block manual scroll. Guards the ai-review regression an unconditional
@@ -285,10 +296,11 @@ _pinA.apply_mode('show')                # NoWrap, so the line can overflow horiz
 _pinA.resize(240, 120)
 _pinA.show()
 APP.processEvents()
-feed_output(_pinA, ('\u4f60\u597d' * 200).encode('utf-8'))         # caret at the far right, no LF
+_pinA._cols = 0                          # disable the autowrap so the long line overflows
+feed_output(_pinA, _LONG.encode('ascii'))                  # caret at the far right, no LF
 _hbA = _pinA.horizontalScrollBar()
 ok(_hbA.maximum() > _hbA.minimum(),
-   'canary: the wide Show line overflows the viewport (else caret-visibility is untested)')
+   'canary: the long Show line overflows the viewport (else caret-visibility is untested)')
 _crA = _pinA.cursorRect()
 ok(0 <= _crA.x() and _crA.x() + _pinA.cursorWidth() <= _pinA.viewport().width(),
    'home-pin never hides the caret: the FULL caret (its width included, not just the left '
@@ -304,7 +316,8 @@ _pinB.apply_mode('show')
 _pinB.resize(240, 120)
 _pinB.show()
 APP.processEvents()
-feed_output(_pinB, ('\u4f60\u597d' * 200 + '\n\u4f60').encode('utf-8'))  # long scrollback + short current line
+_pinB._cols = 0                          # disable the autowrap so the scrollback line overflows
+feed_output(_pinB, (_LONG + '\nM').encode('ascii'))        # long scrollback + short current line
 _hbB = _pinB.horizontalScrollBar()
 ok(_hbB.maximum() > _hbB.minimum(),
    'canary: the scrollback line overflows the viewport before the repaint')
