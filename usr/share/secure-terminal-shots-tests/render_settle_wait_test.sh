@@ -63,6 +63,17 @@ fi
 
 ## SOURCE the real script (it is source-safe: its was_executed guard runs no capture when sourced),
 ## so the tested function is the CURRENT one with zero drift. Stubs below override its collaborators.
+## The script hard-exits (exit 1) before its source-safe boundary if check_runtime.bsh or its
+## lib-capture.sh sibling is missing; precheck so a genuinely absent dependency SKIPs (77) rather
+## than aborting this test with a raw non-zero.
+if [ ! -r /usr/libexec/helper-scripts/check_runtime.bsh ]; then
+   printf '%s\n' 'SKIP: helper-scripts check_runtime.bsh not present' >&2
+   exit 77
+fi
+if [ ! -r "$(dirname -- "${subject}")/lib-capture.sh" ]; then
+   printf '%s\n' 'SKIP: lib-capture.sh not present beside comparison-capture.sh' >&2
+   exit 77
+fi
 # shellcheck source=../secure-terminal-shots/comparison-capture.sh
 source "${subject}"
 if ! declare -F st_wait_render_settled >/dev/null 2>&1; then

@@ -309,13 +309,13 @@ tighten_deadspace() {  ## $1=png-path
    local best_end top_h bot_y bot_h margin threshold scale
    ## margin/threshold/side are PIXEL tolerances -> scale with the HiDPI factor so the trim
    ## keeps the same visual behaviour (a "40-row void" is 40*SHOT_SCALE px at 2x). Read
-   ## SHOT_SCALE directly (default 1) instead of the top-level px() helper, so the function
-   ## stays SELF-CONTAINED when tighten_skip_test.sh extracts and evals it in isolation (the
-   ## helper is not extracted, so a px() call would abort with 'px: command not found').
+   ## SHOT_SCALE directly (default 1) instead of px(), so the function stays SELF-CONTAINED for a
+   ## caller that SOURCED this file (tighten_skip_test.sh): the top-level SHOT_SCALE parse and
+   ## validation run only on a direct execution, so a sourced caller leaves it unset/unvalidated.
    scale="${SHOT_SCALE:-1}"
-   ## Sanitize LOCALLY too: when tighten_skip_test.sh extracts this function it runs without
-   ## the top-level SHOT_SCALE validation, so a stray value must not reach the arithmetic below
-   ## (a leading zero is octal -> 08/09 abort; a non-digit would be evaluated as a name/index).
+   ## Sanitize LOCALLY: a sourced caller has not run the top-level SHOT_SCALE validation, so a
+   ## stray value must not reach the arithmetic below (a leading zero is octal -> 08/09 abort;
+   ## a non-digit would be evaluated as a name/index).
    case "${scale}" in ''|*[!0-9]*|0*) scale=1 ;; esac
    margin=$(( 10 * scale ))
    threshold=$(( 40 * scale ))
@@ -784,9 +784,12 @@ if [ -n "${cases_sel}" ]; then
    CASES="${cases_sel}"
 fi
 
+## Reject empty, non-digit, AND any leading zero: `0` divides by zero in `$(( idx % jobs ))`
+## below, and a leading-zero value (08/09) is read as OCTAL by that arithmetic and aborts under
+## errexit -- the same class the SHOT_SCALE validation rejects with `0*`.
 case "${jobs}" in
-   ''|*[!0-9]*)
-      printf '%s\n' "comparison-capture: --jobs needs a non-negative integer, got '${jobs}'" >&2
+   ''|*[!0-9]*|0*)
+      printf '%s\n' "comparison-capture: --jobs must be a positive integer with no leading zero, got '${jobs}'" >&2
       exit 2
       ;;
 esac
