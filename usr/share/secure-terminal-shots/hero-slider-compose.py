@@ -42,6 +42,25 @@ def shot_scale():
     return s if s >= 1 else 1
 
 
+def strip_bottom_black(im, thresh=16, frac=0.98):
+    """Trim trailing near-uniform-BLACK rows off the bottom of a window shot.
+
+    The taller shot (secure-terminal) carries a band of the captured compositor / window
+    frame -- pure black -- below its status bar; the shorter shot has none. Left in, that
+    band shows as a black strip on one side of the slider (the other side is white
+    compose-padding). Trimming it lets both shots end on their real content, so the shared
+    canvas pads BOTH with the same white below the window. A row counts as background only
+    when nearly every pixel is near-black, so a content row (status pills, text) is never
+    cut."""
+    g = im.convert('L')
+    w, h = g.size
+    px = g.load()
+    y = h
+    while y > 0 and sum(1 for x in range(w) if px[x, y - 1] < thresh) >= w * frac:
+        y -= 1
+    return im if y == h else im.crop((0, 0, w, y))
+
+
 def text_top(im):
     """First row (below the title bar) that is a white terminal row carrying dark text."""
     g = im.convert('L')
@@ -93,8 +112,8 @@ def main(argv=None):
                          ' <out-secure.png> <out-traditional.png>\n')
         return 2
     sec_p, trad_p, out_sec, out_trad = argv
-    sec = Image.open(sec_p).convert('RGB')
-    trad = Image.open(trad_p).convert('RGB')
+    sec = strip_bottom_black(Image.open(sec_p).convert('RGB'))
+    trad = strip_bottom_black(Image.open(trad_p).convert('RGB'))
 
     # The two windows must be the SAME horizontal length or the slider exposes a dead-space
     # band when dragged. They are pinned equal at capture; refuse a composition where they are

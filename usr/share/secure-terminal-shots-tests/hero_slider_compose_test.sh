@@ -71,6 +71,7 @@ check() {  ## $1=label $2=mode $3=expected-verdict
 
 check 'a cell-snap gap unifies to the narrower window (equal-width outputs)' match 'OK match'
 check 'a large width gap is rejected (capture-time pin regression canary)'   mismatch 'OK mismatch'
+check 'a captured black band below the window is trimmed (no black slider strip)' blackband 'OK blackband'
 
 printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
