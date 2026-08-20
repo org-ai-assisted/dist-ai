@@ -31,13 +31,11 @@ Depends: ${misc:Depends},
  python3-bs4,
  python3-lxml,
  python3-pil,
- python3-imagehash,
  python3-dbus,
  python3-gi,
  python3-pyqt5,
  python3-pyqt6,
  python3-pyte,
- python3-playwright,
  qtwayland5,
  libxcb-cursor0,
  libxcb-icccm4,
@@ -71,8 +69,13 @@ Depends: ${misc:Depends},
  sed,
  diffutils,
  jq,
+ yq,
  file,
+ curl,
+ openssl,
  kcov,
+ labwc,
+ wtype,
  sudo,
  procps,
  shellcheck,
@@ -80,6 +83,14 @@ Depends: ${misc:Depends},
  genmkfile,
  helper-scripts,
  safe-rm
+## Deliberately NOT in Depends: playwright and imagehash are not Debian-packaged
+## (no apt candidate), so listing them makes the .deb itself uninstallable and
+## breaks 'genmkfile deb-run-dep', which apt-installs the whole Depends set in one
+## all-or-nothing call. playwright is pip-installed into a venv by
+## 'sandbox provision playwright'; imagehash (mediawiki-dom-snapshot/diff.py, an
+## opt-in suite) is pip-only too. Their suites exit 77 (SKIP) when absent, so a
+## bare install stays usable -- an absent SUBJECT/tool is the one thing that earns
+## a SKIP here rather than a FAIL.
 ## arm64 boot testing, and the services only the e2e suites drive. Recommends,
 ## not Depends, so an x86-only or offline install stays possible; the suites that
 ## need them are opt-in (--e2e / --integration) and fail loudly when run without.
