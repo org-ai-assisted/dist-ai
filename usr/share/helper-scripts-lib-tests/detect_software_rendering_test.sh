@@ -192,6 +192,19 @@ eg_count="$(count_of "${count_file}")"
 check "cache: both calls report software" "${c1}:${c2}" "software:software"
 check "cache: eglinfo probed at most once across two shells" "${eg_count}" "1"
 
+## LIBGL_ALWAYS_SOFTWARE set is a per-env override -> the cache is NOT written,
+## so a later shell without the var cannot read the forced-software marker.
+lg_xdg="${test_dir}/lg-xdg"
+mkdir --parents -- "${lg_xdg}"
+LIBGL_ALWAYS_SOFTWARE=1 DETECT_SOFTWARE_RENDERING_DRI_DIR="${with_dri}" \
+   DETECT_SOFTWARE_RENDERING_NVIDIA_CTL="${nvidia_absent}" XDG_RUNTIME_DIR="${lg_xdg}" \
+   PATH="${probe_path}" "${subject}" >/dev/null 2>&1 || true
+lg_cached="no"
+if [ -e "${lg_xdg}/detect-software-rendering.software" ]; then
+   lg_cached="yes"
+fi
+check "LIBGL_ALWAYS_SOFTWARE set -> cache not written" "${lg_cached}" "no"
+
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "FAILED"
