@@ -18,13 +18,13 @@
 ## deb-run-dep failed wholesale -- while the suites still 'worked' because they
 ## exit 77 (SKIP) on an absent tool, so nobody noticed the .deb could not install.
 ## playwright is pip-installed into a venv by 'sandbox provision playwright';
-## imagehash (mediawiki-dom-snapshot, opt-in) is pip-only too -- neither is a
+## imagehash (mediawiki-dom-snapshot, opt-in) is pip-only -- neither is a
 ## Depends. This test keeps them (and their kind) out.
 ##
-## Deterministic (no network): alternatives + a denylist + well-formed-name checks.
-## When apt is fully populated it ALSO asserts every name has a live candidate.
 ## Source-tree test: set DIST_AI_REPO or run from a checkout; exits 77 (SKIP)
-## without one.
+## only when the SUBJECT (the dist-ai tree) is absent. Its required tooling
+## (grep-dctrl, apt-cache) is assumed present -- an absent one FAILS, it does not
+## skip: 'an unauthorized skip is a failure, not green'.
 
 set -o errexit
 set -o nounset
@@ -32,6 +32,10 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+## No pathname expansion: package names are iterated unquoted, so a stray glob
+## char in Depends (e.g. 'Depends: *') must stay literal to be judged, never
+## expand against the CWD.
+set -o noglob
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -46,9 +50,12 @@ if [ -z "${repo}" ] || [ ! -f "${repo}/debian/control" ]; then
    printf '%s\n' 'control-depends-installable-test: no dist-ai source tree (set DIST_AI_REPO); skipping.' >&2
    exit 77
 fi
-if [ -z "$(type -P grep-dctrl)" ]; then
-   printf '%s\n' 'control-depends-installable-test: grep-dctrl (dctrl-tools) absent; skipping.' >&2
-   exit 77
+## 'type -P', not the house 'has': this test does not source helper-scripts,
+## matching the sibling ci_config_test.sh. dctrl-tools is a declared Depends, so
+## an absent grep-dctrl is a broken test environment -> FAIL, not a 77 skip.
+if ! type -P grep-dctrl >/dev/null; then
+   printf '%s\n' 'FAIL: control-depends-installable-test: grep-dctrl (dctrl-tools, a declared Depends) not on PATH; the gate cannot run' >&2
+   exit 1
 fi
 
 control="${repo}/debian/control"
@@ -78,8 +85,12 @@ else
    pass "Depends has no '|' alternative"
 fi
 
+## Package-name list. Strip, in order: commas, version '(...)', arch-restriction
+## '[...]', substvars '${...}', and the multiarch ':qualifier' suffix (python3:any),
+## so both the well-formed check and the candidate lookup see the bare name -- the
+## same shape deb-run-dep hands to apt.
 depends_names="$(printf '%s\n' "${raw_depends}" \
-   | sed -e 's/,/ /g' -e 's/([^)]*)//g' -e 's/\[[^]]*\]//g' -e 's/${[^}]*}//g' \
+   | sed -e 's/,/ /g' -e 's/([^)]*)//g' -e 's/\[[^]]*\]//g' -e 's/${[^}]*}//g' -e 's/:[a-z0-9-]*//g' \
    | tr -s ' \n' ' ')"
 
 ## --- Denylist ---
@@ -117,7 +128,8 @@ else
    fail "Depends has a malformed package name: '${malformed}'"
 fi
 
-## --- Optional: every name has an apt candidate (gated on a populated apt env) ---
+## --- Every name has an apt candidate (REQUIRED, never a silent green) ---
+## '--' so a name that starts with '-' cannot be read by apt-cache as an option.
 apt_candidate() {
    local line
    while IFS= read -r line; do
@@ -128,10 +140,17 @@ apt_candidate() {
             return 0
             ;;
       esac
-   done < <(apt-cache policy "$1" 2>/dev/null)
+   done < <(apt-cache policy -- "$1" 2>/dev/null)
 }
-if [ -n "$(type -P apt-cache)" ] \
-   && [ -n "$(apt_candidate bash)" ] && [ -n "$(apt_candidate helper-scripts)" ]; then
+## apt-cache is required tooling here; a populated apt env is proven by resolving a
+## Debian sentinel (bash) and a Kicksecure one (helper-scripts). If either is
+## missing the environment cannot verify installability -> FAIL, never pass over
+## an unrun assertion.
+if ! type -P apt-cache >/dev/null; then
+   fail 'apt-cache (apt) not on PATH; cannot verify Depends installability'
+elif [ -z "$(apt_candidate bash)" ] || [ -z "$(apt_candidate helper-scripts)" ]; then
+   fail 'apt sources incomplete (bash/helper-scripts unresolvable); cannot verify Depends installability'
+else
    missing=''
    for name in ${depends_names}; do
       cand="$(apt_candidate "${name}")"
@@ -144,8 +163,6 @@ if [ -n "$(type -P apt-cache)" ] \
    else
       fail "Depends names with NO apt candidate:${missing}"
    fi
-else
-   printf '%s\n' 'NOTE: apt sources not fully populated; skipped the live-candidate check' >&2
 fi
 
 printf '%s\n' "control-depends-installable-test: ${pass_count} pass, ${fail_count} fail"
