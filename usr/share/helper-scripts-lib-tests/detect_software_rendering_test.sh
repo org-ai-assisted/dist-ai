@@ -179,6 +179,17 @@ check "llvmpipe -> software/0"    "$(run_subject "${llvmpipe_line}" '' "${with_d
 check "unrecognized -> unknown/2" "$(run_subject 'some unrelated line' '' "${with_dri}" '')" "unknown:2"
 check "empty output -> unknown/2" "$(run_subject '' '' "${with_dri}" '')" "unknown:2"
 
+## eglinfo NOT installed (GPU node present, no eglinfo on PATH) -> unknown/2.
+## PATH is an empty dir: probe_renderer reaches the 'has eglinfo' check using only
+## shell builtins, so no other tool is needed before that early return.
+empty_bin="${test_dir}/empty-bin"
+mkdir --parents -- "${empty_bin}"
+ea_rc=0
+ea_out="$(LIBGL_ALWAYS_SOFTWARE='' DETECT_SOFTWARE_RENDERING_DRI_DIR="${with_dri}" \
+   DETECT_SOFTWARE_RENDERING_NVIDIA_CTL="${nvidia_absent}" \
+   PATH="${empty_bin}" "${subject}")" || ea_rc=$?
+check "eglinfo absent (node present) -> unknown/2" "${ea_out}:${ea_rc}" "unknown:2"
+
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "FAILED"
