@@ -1467,9 +1467,14 @@ check_R002_header_first() {
 
    for script in "${@}"; do
       is_self_referential "${script}" && continue
-      style_hit="$(grep --line-number --max-count=1 --extended-regexp '^[[:space:]]*##[[:space:]]*style-ok:' -- "${script}")" || true
+      ## '--text' so a stray NUL byte cannot turn grep's output into
+      ## 'Binary file ... matches' and feed a non-numeric value to the arithmetic
+      ## compare below. Both patterns anchor to a real header COMMENT line ('##'
+      ## at line start) so a '## Copyright' mentioned inside a string or an echo
+      ## does not count as the header.
+      style_hit="$(grep --text --line-number --max-count=1 --extended-regexp '^[[:space:]]*##[[:space:]]*style-ok:' -- "${script}")" || true
       [ -n "${style_hit}" ] || continue
-      copy_hit="$(grep --line-number --max-count=1 --fixed-strings '## Copyright' -- "${script}")" || true
+      copy_hit="$(grep --text --line-number --max-count=1 --extended-regexp '^[[:space:]]*##[[:space:]]+Copyright' -- "${script}")" || true
       [ -n "${copy_hit}" ] || continue
       style_line="${style_hit%%:*}"
       copy_line="${copy_hit%%:*}"
