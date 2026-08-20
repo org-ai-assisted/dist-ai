@@ -162,6 +162,11 @@ assert_flagged "cmd-subst"     "$(body_of "printf '%s' \"\$(${tmo} 5 do_thing)\"
 assert_spared "ka-long"        "$(body_of "${tmo} ${ka}=5 5 do_thing")"
 assert_spared "ka-short"       "$(body_of "${tmo} ${ks} 5 10 do_thing")"
 assert_spared "ka-after-signal" "$(body_of "${tmo} ${sig} ${ka}=5 5 do_thing")"
+## Valid GNU syntax with SPACE-separated option values, long and short: a
+## '--signal TERM'/'-s TERM' before the kill-after must not hide it (the value
+## 'TERM' is not the kill-after, but the option run still carries one).
+assert_spared "ka-space"       "$(body_of "${tmo} --signal TERM ${ka} 1 5 do_thing")"
+assert_spared "ka-short-space" "$(body_of "${tmo} -s TERM ${ks} 1 5 do_thing")"
 ## The deferred 'x="timeout 5"' spelling -- timeout is string data, not a command.
 assert_spared "in-string" \
    "$(body_of "deferred=${dq}${tmo} 5${dq}" "printf '%s' ${dq}\${deferred}${dq}")"
@@ -250,6 +255,10 @@ assert_fix_unchanged "instring" "deferred=${dq}${tmo} 5${dq}"
 assert_fix_unchanged "in-comment" "true ${hash} note${sc} ${tmo} 5 do_thing"
 ## timeout as an argument to another command.
 assert_fix_unchanged "argument" "printf '%s' ${tmo} 5"
+## A file that WAIVES R-200 keeps its deliberately-bare timeout: the fixer must
+## honor '## style-ok: allow-bare-timeout' just as the gate does.
+assert_fix_unchanged "waived" \
+   "$(printf '%s\n' '## style-ok: allow-bare-timeout' "${tmo} 5 do_thing")"
 ## A leading-option timeout whose WRAPPED command carries a literal 'timeout <N>'
 ## argument: the anchored duration regex must not wander onto that argument.
 assert_fix_unchanged "opt-then-arg" "${tmo} ${sig} 5 echo ${tmo} 5"

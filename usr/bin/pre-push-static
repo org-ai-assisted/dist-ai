@@ -2466,28 +2466,32 @@ check_R200_timeout_kill_after() {
    ## the common deferred-invocation spelling this rule CANNOT safely reason
    ## about) or as another command's argument ('run timeout 5') -- so fix those
    ## by hand. Residuals accepted (a line gate cannot parse shell): a separator
-   ## inside a string still matches; and if a single line carries both a
-   ## kill-after timeout AND a bare one, the whole line is treated as OK (a rare
-   ## false negative -- one 'timeout' per statement keeps this exact).
+   ## inside a string still matches; a single line carrying both a kill-after
+   ## timeout AND a bare one reads as OK (rare, one 'timeout' per statement keeps
+   ## it exact); and a '-k'/'--kill-after' appearing in the WRAPPED command's
+   ## OWN arguments ('timeout 5 foo --kill-after=x') spares the bare timeout (a
+   ## rare false NEGATIVE -- the safe direction, since a valid kill-after must
+   ## never be false-flagged).
    mapfile -d '' -t fs < <(filter_self "${@}")
    if [ "${#fs[@]}" -eq 0 ]; then return 0; fi
 
    neg='(!([[:space:]]+))?'
    assign='([A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|]*[[:space:]]+)*'
-   ## The timeout's LEADING option run (each token a '-...' word, before the
-   ## DURATION), one of which is a kill-after option. '(-[^space]+ )*' consumes
-   ## any earlier options (e.g. '--signal=TERM') so kill-after need not be first.
-   ## A '--kill-after'/'-k' AFTER the duration belongs to the wrapped command,
-   ## not to timeout, and correctly does NOT match here.
-   killrun='(-[^[:space:]]+[[:space:]]+)*(-k|--kill-after)'
+   ## A kill-after option ('-k', '-k5', '--kill-after', '--kill-after=5') as a
+   ## whole word anywhere in the timeout's own pipeline segment (up to a
+   ## separator or '#'). '([^;&|#]*[[:space:]])?' skips any earlier options AND
+   ## their SPACE-separated values -- so '--signal TERM --kill-after 1' and
+   ## '-s TERM -k 1' (valid GNU syntax) are recognised, not just the '=' / no-arg
+   ## forms. A trailing space/'='/EOL pins it to a whole token.
+   killrun="([^;&|#]*[[:space:]])?(-k[^[:space:];&|#]*|--kill-after)([[:space:]=]|\$)"
    ## COMMAND-position 'timeout' with at least one following token (candidate).
    cand_re1="^[[:space:]]*${neg}${assign}timeout[[:space:]]"
    cand_re2="^[[:space:]]*[^#]*[;&|(){}\`][[:space:]]*${neg}${assign}timeout[[:space:]]"
    cand_re3="^[[:space:]]*([^#]*[[:space:]])?(then|do|else|if|elif|while|until)[[:space:]]+${neg}${assign}timeout[[:space:]]"
-   ## Same three positions, but a kill-after option sits in the leading run.
-   ok_re1="^[[:space:]]*${neg}${assign}timeout[[:space:]]+${killrun}"
-   ok_re2="^[[:space:]]*[^#]*[;&|(){}\`][[:space:]]*${neg}${assign}timeout[[:space:]]+${killrun}"
-   ok_re3="^[[:space:]]*([^#]*[[:space:]])?(then|do|else|if|elif|while|until)[[:space:]]+${neg}${assign}timeout[[:space:]]+${killrun}"
+   ## Same three positions, but a kill-after option is present in the segment.
+   ok_re1="^[[:space:]]*${neg}${assign}timeout[[:space:]]${killrun}"
+   ok_re2="^[[:space:]]*[^#]*[;&|(){}\`][[:space:]]*${neg}${assign}timeout[[:space:]]${killrun}"
+   ok_re3="^[[:space:]]*([^#]*[[:space:]])?(then|do|else|if|elif|while|until)[[:space:]]+${neg}${assign}timeout[[:space:]]${killrun}"
 
    for script in "${fs[@]}"; do
       if grep --quiet --extended-regexp \

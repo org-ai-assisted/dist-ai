@@ -172,6 +172,15 @@ MKDIR_WAIVER_RE = re.compile(
     r'^[ \t]*##[ \t]*style-ok:[ \t]*allow-mkdir-no-mode(?:[ \t]|$)',
     re.MULTILINE)
 
+## R-200 (bare timeout) script-wide waiver, in lockstep with pre-push-static: a
+## file carrying '## style-ok: allow-bare-timeout' has DELIBERATELY bare timeouts
+## (a child that must be allowed to finish its own SIGTERM cleanup), so the fixer
+## must not add '--kill-after' -- that would change termination semantics the
+## author intentionally chose. The gate skips such a file too.
+TIMEOUT_WAIVER_RE = re.compile(
+    r'^[ \t]*##[ \t]*style-ok:[ \t]*allow-bare-timeout(?:[ \t]|$)',
+    re.MULTILINE)
+
 SHELL_EXTS = (".sh", ".bsh")
 SHELL_SHEBANG_RE = re.compile(r'#!.*(/|\s)(bash|sh|dash)(\s|$)')
 
@@ -692,9 +701,10 @@ def fix_file(path, check):
             changes["R-161"] = num
 
     ## R-200: insert '--kill-after=<N>' into a bare 'timeout <N>' (shell files
-    ## only, mirroring the gate's shell scope). Option-carrying or non-literal
-    ## forms are left for the gate to report.
-    if is_shell_file(path):
+    ## only, mirroring the gate's shell scope, and NOT when the file waives the
+    ## rule -- lockstep with the gate). Option-carrying or non-literal forms are
+    ## left for the gate to report.
+    if is_shell_file(path) and not TIMEOUT_WAIVER_RE.search(text):
         text, num = insert_timeout_kill_after(text)
         if num:
             changes["R-200"] = num
