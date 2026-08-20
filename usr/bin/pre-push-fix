@@ -506,7 +506,15 @@ def code_line_flags(text):
     command continued after an operator ('true && \' then 'timeout 5 cmd' -- the
     next line IS a command, but it is skipped); a '<<' on the continuation of a
     multi-line '$(( ... ))'; and '$( )'/backtick subshell bodies. All are
-    reported by the gate."""
+    reported by the gate.
+
+    Scope: this assumes SYNTACTICALLY VALID shell (balanced quotes and arithmetic
+    parentheses). A MALFORMED script -- an unbalanced arithmetic paren whose match
+    is inside a string ('$(( (")" ))'), an unclosed quote in a parameter
+    expansion ('${var#\'}') -- can leave the scanner mis-stated and is out of
+    scope: such a script does not run and is flagged by shellcheck and the gate
+    anyway. The tooling targets developer mistakes, not adversarial or malformed
+    input (mirrors the guard threat model)."""
     flags = []
     heredocs = []
     quote = ""
