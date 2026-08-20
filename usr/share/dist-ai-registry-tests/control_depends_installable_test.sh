@@ -143,6 +143,11 @@ apt_candidate() {
             ;;
       esac
    done < <(apt-cache policy -- "$1" 2>/dev/null)
+   ## No Candidate line (empty output): print nothing, succeed EXPLICITLY. The
+   ## implicit status here is already 0 (a while whose body did not match returns
+   ## 0), but the caller consumes this under errexit as cand="$(apt_candidate ...)",
+   ## so make the always-succeeds contract explicit rather than rely on that rule.
+   return 0
 }
 ## apt-cache is required tooling here; a populated apt env is proven by resolving a
 ## Debian sentinel (bash) and a Kicksecure one (helper-scripts). If either is
