@@ -1459,6 +1459,26 @@ check_R081_source_devnull() {
    emit_hits "R-081 source=/dev/null" "${hits}"
 }
 
+## R-002: the Copyright header leads the file. A '## style-ok:' waiver must not
+## sit ABOVE the '## Copyright' line; waivers belong under the header, not before
+## it. Only fires when both lines exist, so a file without either is unaffected.
+check_R002_header_first() {
+   local script style_hit copy_hit style_line copy_line
+
+   for script in "${@}"; do
+      is_self_referential "${script}" && continue
+      style_hit="$(grep --line-number --max-count=1 --extended-regexp '^[[:space:]]*##[[:space:]]*style-ok:' -- "${script}")" || true
+      [ -n "${style_hit}" ] || continue
+      copy_hit="$(grep --line-number --max-count=1 --fixed-strings '## Copyright' -- "${script}")" || true
+      [ -n "${copy_hit}" ] || continue
+      style_line="${style_hit%%:*}"
+      copy_line="${copy_hit%%:*}"
+      if [ "${style_line}" -lt "${copy_line}" ]; then
+         fail "R-002 header" "'${script}': '## style-ok' at line ${style_line} precedes '## Copyright' at line ${copy_line}; move the waiver below the header"
+      fi
+   done
+}
+
 check_R170_tmp_hardcode() {
    local script hits line
 
@@ -2955,6 +2975,7 @@ run_file_checks() {
    if [ "${#shell_files[@]}" -gt 0 ]; then
       check_bash_n "${shell_files[@]}"
       check_shellcheck "${shell_files[@]}"
+      check_R002_header_first "${shell_files[@]}"
       check_R010_strict_block "${shell_files[@]}"
       check_R011_errexit_toggle "${shell_files[@]}"
       check_R013_set_options "${shell_files[@]}"
