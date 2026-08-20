@@ -180,10 +180,15 @@ git -C "${repo2}" -c core.hooksPath=/dev/null -c user.name=test -c user.email=te
    commit --quiet --message "broken settings"
 rc=0
 out="$( cd -- "${repo2}" && "${GATE}" "${base2}" 2>&1 )" || rc=$?
-if [ "${rc}" -ne 0 ] && grep --quiet --fixed-strings 'FAIL check-json' <<< "${out}" ; then
-   note_pass "check-json still validates settings.json syntax (exemption is formatter-only)"
+## Require FAIL check-json AND the ABSENCE of FAIL pretty-format-json: the formatter must stay
+## skipped for the exempt file even when it is invalid. Without the absence check, a broken
+## exemption (formatter run on settings.json) would emit BOTH failures and still pass here.
+if [ "${rc}" -ne 0 ] \
+   && grep --quiet --fixed-strings 'FAIL check-json' <<< "${out}" \
+   && ! grep --quiet --fixed-strings 'FAIL pretty-format-json' <<< "${out}" ; then
+   note_pass "check-json still validates settings.json syntax; the formatter stays skipped even when invalid"
 else
-   note_fail "invalid settings.json was not caught by check-json (rc=${rc}); out: ${out}"
+   note_fail "invalid settings.json handling wrong (rc=${rc}); out: ${out}"
 fi
 
 exit_gate
