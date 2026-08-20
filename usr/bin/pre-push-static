@@ -2703,7 +2703,7 @@ check_precommit_hooks() {
 
    local f
    local -a text_files exec_text_files symlink_files \
-            yaml_files json_files toml_files xml_files \
+            yaml_files json_files json_fmt_files toml_files xml_files \
             python_files req_files
 
    text_files=()
@@ -2711,6 +2711,7 @@ check_precommit_hooks() {
    symlink_files=()
    yaml_files=()
    json_files=()
+   json_fmt_files=()
    toml_files=()
    xml_files=()
    python_files=()
@@ -2860,7 +2861,25 @@ check_precommit_hooks() {
    ## the gate can never satisfy (pre-commit/pre-commit-hooks#889:
    ## https://github.com/pre-commit/pre-commit-hooks/issues/889). Python quote style is left to
    ## each repo's own formatter rather than enforced here.
-   run_precommit_fixer pretty-format-json        "${json_files[@]}"
+   ## pretty-format-json REWRITES (and by default key-SORTS) a JSON file. An
+   ## app-MANAGED settings file -- Claude Code's claude/settings.json and
+   ## settings.local.json -- is rewritten by the app itself, unsorted and
+   ## human-grouped, on every settings change, so enforcing a sorted/reformatted
+   ## shape here is both futile (the app re-writes it) and destructive (it flattens
+   ## the app's grouping into alphabetical order). check-json above still validates
+   ## its SYNTAX; only the formatter is skipped for it.
+   for f in "${json_files[@]}"; do
+      case "${f}" in
+         *claude/settings.json|*claude/settings.local.json)
+            note "pretty-format-json skipped: '${f}' is an app-managed settings file (syntax still checked by check-json; the app owns its format)"
+            continue
+            ;;
+         *)
+            json_fmt_files+=("${f}")
+            ;;
+      esac
+   done
+   run_precommit_fixer pretty-format-json        "${json_fmt_files[@]}"
    run_precommit_fixer requirements-txt-fixer    "${req_files[@]}"
 }
 
