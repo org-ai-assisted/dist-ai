@@ -5,17 +5,20 @@
 
 ## AI-Assisted
 
-## detect-software-rendering: source-ability, classification and per-boot cache.
-##  (1) Sourcing the script does NOT auto-run and does NOT leak strict-mode into
-##      the sourcing shell, and the reusable detect_software_rendering() is pure
-##      (calling it does not enable errexit) and defined. Probed by the committed
-##      non-strict helper detect_software_rendering_source_probe.sh via its exit
-##      code and stdout -- no inline shell program here.
-##  (2) With the committed mock eglinfo (detect_software_rendering_eglinfo_stub.sh)
-##      an executed run classifies the renderer: a vendor string -> accelerated
-##      (exit 1), llvmpipe -> software (exit 0), unrecognized or empty -> unknown
-##      (exit 2).
-##  (3) The per-boot cache means the probe runs at most once across two shells.
+## detect-software-rendering: short-circuits, source-ability, classification and
+## the per-boot cache.
+##  (1) Fast-exit before any GL probe: LIBGL_ALWAYS_SOFTWARE truthy -> software,
+##      and no DRM node -> software; both WITHOUT invoking eglinfo.
+##  (2) Sourcing the script does NOT auto-run and does NOT leak strict-mode, and
+##      the reusable detect_software_rendering() is pure and defined. Probed by
+##      the committed non-strict detect_software_rendering_source_probe.sh -- no
+##      inline shell program here.
+##  (3) With a DRM node present it falls through to the mock eglinfo
+##      (detect_software_rendering_eglinfo_stub.sh): a vendor string ->
+##      accelerated (exit 1), llvmpipe -> software (exit 0), unrecognized or
+##      empty -> unknown (exit 2).
+##  (4) The per-boot cache means the eglinfo fall-through runs at most once across
+##      two shells.
 ##
 ## Drives the REAL script. A missing dependency is a HARD FAIL, never a skip.
 
@@ -73,10 +76,30 @@ mkdir --parents -- "${bindir}"
 ln -s -- "${stub_file}" "${bindir}/eglinfo"
 probe_path="${bindir}:${PATH}"
 
+## Two DRM-node dirs for the short-circuit seam: one WITH a fake render node (so
+## the subject falls through to eglinfo), one empty (so it short-circuits).
+with_dri="${test_dir}/with-dri"
+no_dri="${test_dir}/no-dri"
+mkdir --parents -- "${with_dri}" "${no_dri}"
+touch -- "${with_dri}/renderD128"
+
 ## The subject resolves its own libs via HELPER_SCRIPTS_PATH.
 export HELPER_SCRIPTS_PATH="${HELPER_SCRIPTS_REPO}"
 
+## Env prefix that forces the eglinfo fall-through: no forced-software, a DRM node
+## present, cache disabled.
+count_file="${test_dir}/eglinfo.count"
 llvmpipe_line='OpenGL core profile renderer: llvmpipe (LLVM)'
+
+## Byte count of a file, or 0 when it does not exist (a short-circuit never
+## creates the eglinfo counter).
+count_of() {
+   if [ -e "${1}" ]; then
+      wc -c <"${1}" | tr -d ' '
+   else
+      printf '%s' 0
+   fi
+}
 
 pass=0
 fail=0
@@ -95,7 +118,34 @@ check() {
    fi
 }
 
-## --- (1) source-ability: no auto-run, no strict leak, pure + defined ---
+## Runs the subject and reports 'word:exitcode'. Named args after the env:
+## $1 renderer line for the mock, $2 LIBGL value, $3 DRM dir, $4 count file (or '').
+run_subject() {
+   local line libgl dri_dir count out rc
+
+   line="$1"
+   libgl="$2"
+   dri_dir="$3"
+   count="$4"
+   rc=0
+   out="$(LIBGL_ALWAYS_SOFTWARE="${libgl}" DETECT_SOFTWARE_RENDERING_DRI_DIR="${dri_dir}" \
+      EGLINFO_STUB_RENDERER="${line}" EGLINFO_STUB_COUNT="${count}" \
+      XDG_RUNTIME_DIR='' PATH="${probe_path}" "${subject}")" || rc=$?
+   printf '%s\n' "${out}:${rc}"
+}
+
+## --- (1) fast-exit short-circuits: no eglinfo invoked ---
+safe-rm -f -- "${count_file}"
+sc1="$(run_subject "${llvmpipe_line}" 1 "${with_dri}" "${count_file}")"
+check "LIBGL_ALWAYS_SOFTWARE=1 -> software/0" "${sc1}" "software:0"
+check "LIBGL short-circuit does not invoke eglinfo" "$(count_of "${count_file}")" "0"
+
+safe-rm -f -- "${count_file}"
+sc2="$(run_subject "${llvmpipe_line}" '' "${no_dri}" "${count_file}")"
+check "no DRM node -> software/0" "${sc2}" "software:0"
+check "no-DRM short-circuit does not invoke eglinfo" "$(count_of "${count_file}")" "0"
+
+## --- (2) source-ability: no auto-run, no strict leak, pure + defined ---
 src_out=""
 src_rc=0
 src_out="$(SUBJECT="${subject}" PATH="${probe_path}" "${probe}" source 2>/dev/null)" || src_rc=$?
@@ -106,28 +156,19 @@ call_rc=0
 SUBJECT="${subject}" PATH="${probe_path}" "${probe}" call >/dev/null 2>&1 || call_rc=$?
 check "calling detect_software_rendering stays pure and defined" "${call_rc}" "0"
 
-## --- (2) classification (executed; XDG_RUNTIME_DIR='' disables the cache) ---
-classify() {
-   local line out rc
+## --- (3) classification via the eglinfo fall-through (DRM node present) ---
+check "vendor -> accelerated/1"   "$(run_subject 'OpenGL core profile renderer: NVIDIA GeForce' '' "${with_dri}" '')" "accelerated:1"
+check "llvmpipe -> software/0"    "$(run_subject "${llvmpipe_line}" '' "${with_dri}" '')" "software:0"
+check "unrecognized -> unknown/2" "$(run_subject 'some unrelated line' '' "${with_dri}" '')" "unknown:2"
+check "empty output -> unknown/2" "$(run_subject '' '' "${with_dri}" '')" "unknown:2"
 
-   line="$1"
-   rc=0
-   out="$(EGLINFO_STUB_RENDERER="${line}" XDG_RUNTIME_DIR='' PATH="${probe_path}" "${subject}")" || rc=$?
-   printf '%s\n' "${out}:${rc}"
-}
-check "vendor -> accelerated/1"   "$(classify 'OpenGL core profile renderer: NVIDIA GeForce')" "accelerated:1"
-check "llvmpipe -> software/0"    "$(classify "${llvmpipe_line}")" "software:0"
-check "unrecognized -> unknown/2" "$(classify 'some unrelated line')" "unknown:2"
-check "empty output -> unknown/2" "$(classify '')" "unknown:2"
-
-## --- (3) per-boot cache: the probe runs at most once across two shells ---
-count_file="${test_dir}/eglinfo.count"
+## --- (4) per-boot cache: the eglinfo fall-through runs at most once ---
 safe-rm -f -- "${count_file}"
 xdg="${test_dir}/xdg"
 mkdir --parents -- "${xdg}"
-c1="$(EGLINFO_STUB_RENDERER="${llvmpipe_line}" EGLINFO_STUB_COUNT="${count_file}" XDG_RUNTIME_DIR="${xdg}" PATH="${probe_path}" "${subject}")" || true
-c2="$(EGLINFO_STUB_RENDERER="${llvmpipe_line}" EGLINFO_STUB_COUNT="${count_file}" XDG_RUNTIME_DIR="${xdg}" PATH="${probe_path}" "${subject}")" || true
-eg_count="$(wc -c <"${count_file}" | tr -d ' ')"
+c1="$(LIBGL_ALWAYS_SOFTWARE='' DETECT_SOFTWARE_RENDERING_DRI_DIR="${with_dri}" EGLINFO_STUB_RENDERER="${llvmpipe_line}" EGLINFO_STUB_COUNT="${count_file}" XDG_RUNTIME_DIR="${xdg}" PATH="${probe_path}" "${subject}")" || true
+c2="$(LIBGL_ALWAYS_SOFTWARE='' DETECT_SOFTWARE_RENDERING_DRI_DIR="${with_dri}" EGLINFO_STUB_RENDERER="${llvmpipe_line}" EGLINFO_STUB_COUNT="${count_file}" XDG_RUNTIME_DIR="${xdg}" PATH="${probe_path}" "${subject}")" || true
+eg_count="$(count_of "${count_file}")"
 check "cache: both calls report software" "${c1}:${c2}" "software:software"
 check "cache: eglinfo probed at most once across two shells" "${eg_count}" "1"
 
