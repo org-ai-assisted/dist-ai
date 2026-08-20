@@ -34,6 +34,12 @@ Bucket-1 transforms only (see the plan):
               half of R-161 (a quiet grep consuming a pipe) is NOT fixed here --
               relocating a redirect / switching to a here-string is multi-token,
               so pre-push-static FAILS it.
+  * R-200  -- insert '--kill-after=<N>' into a bare 'timeout <N> cmd' in command
+              position (shell files only), so a wedged child ignoring SIGTERM
+              still gets SIGKILL. Only the no-option LITERAL-duration form is
+              rewritten; an option-carrying ('timeout --signal=TERM 5') or
+              expression-duration ('timeout "$T"') timeout is left for the gate,
+              like R-172's missing-mode mkdir.
 
 HARD SAFETY LINE: only the known table is touched. Any OTHER non-ASCII byte is
 left exactly as-is for pre-push-static to report (bucket-2) -- so an intentional
@@ -186,18 +192,20 @@ GREP_LONG = {
 ## Each 'grep ...' command isolated up to the next separator / '#' comment, so a
 ## second command sharing the line is never rewritten (mirrors MKDIR_SPAN).
 GREP_SPAN = re.compile(r'grep\b[^;&|#]*')
-## 'grep' must be in COMMAND position for a rewrite -- checked against the text
-## BEFORE the match. Valid: line start, right after a separator ';&|(){}`', or
-## after a control keyword, each with an optional '!' negation and any run of
-## leading VAR=value assignments ('LC_ALL=C grep ...'). 'in' is NOT a command
-## introducer -- it heads a word list ('for x in grep ...'), so it is excluded.
-## This is stricter than the gate's REPORT-side match on purpose: the fixer
-## WRITES, so it only touches the unambiguously-safe subset.
-GREP_CMD_POS = re.compile(
+## A command must be in COMMAND position for a rewrite -- checked against the
+## text BEFORE the command word. Valid: line start, right after a separator
+## ';&|(){}`', or after a control keyword, each with an optional '!' negation and
+## any run of leading VAR=value assignments ('LC_ALL=C grep ...'). 'in' is NOT a
+## command introducer -- it heads a word list ('for x in grep ...'), so it is
+## excluded. This is stricter than the gate's REPORT-side match on purpose: the
+## fixer WRITES, so it only touches the unambiguously-safe subset. Shared by the
+## grep (R-161) and timeout (R-200) fixers from ONE pattern so they cannot drift.
+CMD_POS_PATTERN = (
     r'(?:^\s*|[;&|(){}`]\s*'
     r'|(?:^|[^\w])(?:then|do|else|if|elif|while|until)\s+)'
     r'(?:!\s+)?'
     r'(?:[A-Za-z_]\w*=\S*\s+)*$')
+GREP_CMD_POS = re.compile(CMD_POS_PATTERN)
 ## Any quote, backslash or '#' in the text BEFORE grep means the line carries
 ## quoting / escaping / comment structure a single regex cannot resolve
 ## (backslash escapes in "..." but is literal in '...'; '#' may or may not open a
@@ -217,6 +225,30 @@ GREP_ARG_TAKING = re.compile(
     r'|(?<![\w-])--(?:regexp|file|max-count|after-context|before-context'
     r'|context|colou?r|binary-files|devices|directories|label'
     r'|group-separator|exclude(?:-dir|-from)?|include)(?:=|\b)')
+
+## R-200 (bare timeout) -- the write side of pre-push-static's rule. A bare
+## 'timeout N cmd' only sends SIGTERM, which a child wedged in a syscall can
+## ignore and then run forever; the fixer inserts '--kill-after=<N>' so a
+## follow-up SIGKILL guarantees the child dies. TIMEOUT_CMD_POS reuses the same
+## command-position grammar as grep. Each 'timeout ...' command is isolated up to
+## the next separator / '#' comment (mirrors GREP_SPAN).
+TIMEOUT_CMD_POS = re.compile(CMD_POS_PATTERN)
+TIMEOUT_SPAN = re.compile(r'timeout\b[^;&|#]*')
+## A quote/backslash/'#' before 'timeout' means quoting or comment structure a
+## regex cannot resolve (notably the deferred 'x="timeout 5"' spelling) -- bail,
+## the same HARD SAFETY LINE as GREP_UNSAFE_PREFIX.
+TIMEOUT_UNSAFE_PREFIX = re.compile(r'''["'\\#]''')
+## Only the provably safe subset is auto-fixed: 'timeout' followed IMMEDIATELY by
+## a LITERAL duration (GNU timeout's floating-point seconds with an optional
+## [smhd] unit) as its very next token, and no leading options. The lookahead
+## needs whitespace after the duration (a command follows). A value starting with
+## '-' (an option, whose space-separated argument a regex could not skip safely),
+## '$' or a quote (an expression) does NOT match, so it is left for the gate to
+## report and a human to fix -- exactly as R-172 leaves a missing-mode mkdir.
+## Idempotent: the inserted '--kill-after=' makes the next token an option, so a
+## second pass never re-matches.
+TIMEOUT_BARE_DURATION = re.compile(
+    r'(timeout\s+)([0-9]+(?:\.[0-9]+)?[smhd]?)(?=\s)')
 
 
 class StagedDiscoveryError(Exception):
@@ -439,6 +471,47 @@ def expand_grep_short_quiet(text):
     return "".join(out), count
 
 
+def insert_timeout_kill_after(text):
+    """Per timeout COMMAND (not per line): insert '--kill-after=<DURATION>' into
+    a bare 'timeout <DURATION> ...' whose duration is a literal number and which
+    carries no leading options, so SIGTERM is always backed by a SIGKILL.
+    Command position only (TIMEOUT_CMD_POS), bailing on any quote/backslash/'#'
+    before 'timeout' (TIMEOUT_UNSAFE_PREFIX) so a deferred 'x="timeout 5"' is
+    never touched. An option-carrying or non-literal-duration timeout is left for
+    the gate to report. Idempotent: the inserted '--kill-after' makes the next
+    token an option, so a second pass does not re-match."""
+    count = 0
+    out = []
+    for line in text.splitlines(keepends=True):
+        if "timeout" not in line:
+            out.append(line)
+            continue
+        pieces = []
+        pos = 0
+        for match in TIMEOUT_SPAN.finditer(line):
+            ## Safety FIRST (the HARD SAFETY LINE): only rewrite a timeout in an
+            ## UNAMBIGUOUS command position. A quote / backslash / '#' before it
+            ## means quoting or comment structure a regex cannot resolve, so bail
+            ## -- 'timeout' may be string data or a comment. The gate still
+            ## REPORTS a genuine violation.
+            prefix = line[:match.start()]
+            if TIMEOUT_UNSAFE_PREFIX.search(prefix):
+                continue
+            if not TIMEOUT_CMD_POS.search(prefix):
+                continue
+            span = match.group(0)
+            newspan, num = TIMEOUT_BARE_DURATION.subn(
+                r"\1--kill-after=\2 \2", span, count=1)
+            if num:
+                pieces.append(line[pos:match.start()])
+                pieces.append(newspan)
+                pos = match.end()
+                count += num
+        pieces.append(line[pos:])
+        out.append("".join(pieces))
+    return "".join(out), count
+
+
 def fix_file(path, check):
     """Return a dict of change counts for PATH; write in place unless CHECK.
 
@@ -498,6 +571,14 @@ def fix_file(path, check):
         text, num = expand_grep_short_quiet(text)
         if num:
             changes["R-161"] = num
+
+    ## R-200: insert '--kill-after=<N>' into a bare 'timeout <N>' (shell files
+    ## only, mirroring the gate's shell scope). Option-carrying or non-literal
+    ## forms are left for the gate to report.
+    if is_shell_file(path):
+        text, num = insert_timeout_kill_after(text)
+        if num:
+            changes["R-200"] = num
 
     if text == original:
         return {}
