@@ -6904,23 +6904,37 @@ def _distinct_board(cols, rows):
     return ('\r\n'.join(out) + '\r\n').encode()
 
 
+def _fmt_key(fmt):
+    return (fmt.foreground().color().name(), fmt.background().color().name(),
+            int(fmt.fontWeight()), fmt.fontUnderline())
+
+
 def _doc_cells(term):
-    """Every rendered character with its format (fg / bg / weight / underline),
-    so two documents can be compared for identical CONTENT and IDENTICAL
-    formatting -- an incremental render that left a cell stale diverges here."""
+    """Every rendered character with its format (fg / bg / weight / underline), so
+    two documents can be compared for identical CONTENT and IDENTICAL formatting --
+    an incremental render that left a cell stale diverges here. In TUI grid mode the
+    formats live in the block's _GridRow (the highlighter's layout formats are not
+    on the char format), so read them from there; line mode reads the fragments."""
     doc = term.document()
     cells = []
     blk = doc.begin()
     while blk.isValid():
-        it = blk.begin()
-        while not it.atEnd():
-            frag = it.fragment()
-            fmt = frag.charFormat()
-            fkey = (fmt.foreground().color().name(), fmt.background().color().name(),
-                    int(fmt.fontWeight()), fmt.fontUnderline())
-            for ch in frag.text():
-                cells.append((ch, fkey))
-            it += 1
+        data = blk.userData()
+        if isinstance(data, _GR):
+            base = blk.position()
+            for start, length, fmt, _cp in data.runs:
+                seg = QTextCursor(doc)
+                seg.setPosition(base + start)
+                seg.setPosition(base + start + length, QTextCursor.MoveMode.KeepAnchor)
+                for ch in seg.selectedText():
+                    cells.append((ch, _fmt_key(fmt)))
+        else:
+            it = blk.begin()
+            while not it.atEnd():
+                frag = it.fragment()
+                for ch in frag.text():
+                    cells.append((ch, _fmt_key(frag.charFormat())))
+                it += 1
         cells.append(('\n', None))
         blk = blk.next()
     return cells
@@ -7265,6 +7279,37 @@ eq(_igr_calls[0], 0,
    'a no-change re-render inserts zero grid rows (positional sig diff keeps all blocks)')
 eq(_nn.document().blockCount(), _nn_bc, 'a no-change re-render deletes no block')
 _nn.shutdown()
+
+# 17. The _GridRow code-point model is DURABLE across scrollback promotion: a
+# marked cell that scrolls off the live grid into permanent scrollback keeps its
+# source code point, so _run_cp_at (hover) and the lossless transcript still name
+# it -- a pyte-buffer lookup could not, the row is no longer in screen.buffer. This
+# is why the grid stores the cp on the block, not only in the live buffer.
+_pb = SecureTerminal(command='/bin/cat', tui=True)
+_pb.apply_mode('box')
+_pb.resize(700, 300)
+_pb.show()
+pump(40)
+_pb._feed_stream((chr(0x202E) + '\r\n').encode())               # a lone RLO -> a box, row 0
+_pb._render_tui()
+for _pk in range(_pb._screen.lines + 5):                        # scroll row 0 into scrollback
+    _pb._feed_stream(('fill-%02d\r\n' % _pk).encode())
+    _pb._render_tui()
+pump(5)
+_grid_top = _pb.document().blockCount() - _pb._grid_rows        # first live-grid block
+_pbox = None
+_pblk = _pb.document().begin()
+while _pblk.isValid():
+    if _BX in _pblk.text() and _pblk.blockNumber() < _grid_top:   # a box BELOW the live grid
+        _pbox = _pblk.position() + _pblk.text().index(_BX)
+        break
+    _pblk = _pblk.next()
+ok(_pbox is not None, 'the marked box scrolled into permanent scrollback (below the live grid)')
+eq(_pb._run_cp_at(_pbox), 0x202E,
+   '_run_cp_at names a promoted-scrollback box (durable _GridRow across scroll)')
+ok('<U+202E' in _pb.transcript_text(),
+   'transcript names a promoted-scrollback neutralized codepoint (durable across scroll)')
+_pb.shutdown()
 
 # each reconcile widget owns a /bin/cat pty child; hang them up so the master fds and
 # child processes do not linger into the suite's os._exit teardown.
