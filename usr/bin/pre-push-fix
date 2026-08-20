@@ -383,8 +383,8 @@ def is_shell_file(path):
 ## after '<<' the next char is '<', not '-'/a quote/a word char, so nothing
 ## matches. Anchored per position by re.match in the scanner below.
 HEREDOC_OPEN = re.compile(
-    r'<<-\s*(["\']?)([A-Za-z_][A-Za-z0-9_]*)\1'
-    r'|<<\s*(["\']?)([A-Za-z_][A-Za-z0-9_]*)\3')
+    r'<<-\s*(["\']?)([A-Za-z0-9_][A-Za-z0-9_.-]*)\1'
+    r'|<<\s*(["\']?)([A-Za-z0-9_][A-Za-z0-9_.-]*)\3')
 
 
 def _scan_quote_only(line, quote):
@@ -403,13 +403,24 @@ def _scan_quote_only(line, quote):
     return quote
 
 
+def _line_continues(line):
+    """True when LINE ends with an UNESCAPED trailing backslash (an odd run), so
+    the next physical line is a continuation of this command -- its first word is
+    then an argument, never a fresh command."""
+    trailing = len(line) - len(line.rstrip("\\"))
+    return trailing % 2 == 1
+
+
 def _scan_code_line(line):
-    """Scan a depth-0 CODE line; return (quote_open_at_eol, [heredoc, ...]) where
-    each heredoc is (terminator, strip_tabs). Tracks '...'/"..." quotes with
-    backslash escapes, stops at a depth-0 '#' comment, and records '<<WORD'
-    heredoc openers (never '<<<')."""
+    """Scan a depth-0 CODE line; return (quote_open_at_eol, [heredoc, ...],
+    continues) where each heredoc is (terminator, strip_tabs) and `continues` is
+    True if the line ends with a line-continuation backslash. Tracks '...'/"..."
+    quotes with backslash escapes, stops at a depth-0 '#' comment, tracks
+    arithmetic '(( ))' / '$(( ))' depth (so a bit-shift '<<' there is not read as
+    a heredoc), and records '<<WORD' heredoc openers (never '<<<')."""
     quote = ""
     heredocs = []
+    arith = 0
     index = 0
     length = len(line)
     while index < length:
@@ -425,13 +436,27 @@ def _scan_code_line(line):
         if char == "\\":
             index += 2
             continue
-        if char == "#" and (index == 0 or line[index - 1] in " \t"):
+        ## '#' opens a comment at the start of a word: line start, or after
+        ## whitespace or a command separator (';' '&' '|' '(') -- NOT mid-word
+        ## ('foo#bar') and NOT after '$' ('$#').
+        if char == "#" and (index == 0 or line[index - 1] in " \t;&|("):
             break
         if char in ('"', "'"):
             quote = char
             index += 1
             continue
-        if line[index:index + 2] == "<<" and line[index:index + 3] != "<<<":
+        ## Arithmetic '((' / '$((' opens a context where '<<' is a bit-shift, not
+        ## a heredoc; ')' closes it. Track the depth so a shift is not misread.
+        if line[index:index + 2] == "((":
+            arith += 1
+            index += 2
+            continue
+        if arith > 0 and char == ")":
+            arith -= 1
+            index += 1
+            continue
+        if arith == 0 and line[index:index + 2] == "<<" \
+                and line[index:index + 3] != "<<<":
             match = HEREDOC_OPEN.match(line, index)
             if match:
                 term = match.group(2) or match.group(4)
@@ -439,7 +464,10 @@ def _scan_code_line(line):
                 index = match.end()
                 continue
         index += 1
-    return quote, heredocs
+    ## A trailing backslash matters only at quote depth zero; inside an open
+    ## quote the next line is handled as quote data regardless.
+    continues = quote == "" and _line_continues(line)
+    return quote, heredocs, continues
 
 
 def code_line_flags(text):
@@ -448,12 +476,15 @@ def code_line_flags(text):
     or a line inside an unterminated multi-line quote -- shell DATA, which a fixer
     must never rewrite (the HARD SAFETY LINE). Single pass, honoring '<<-' tab
     strip, quoted heredoc delimiters, backslash escapes and depth-0 '#' comments.
-    Not modeled (rare): '$( )'/backtick subshells and multiple heredocs opened on
-    one line; there the per-line command-position + unsafe-prefix checks stay the
-    backstop, so at worst the fixer is over-conservative, never data-corrupting."""
+    Line-continuation ('\' at end of line) is carried: the continued line is the
+    previous command's arguments, so it is DATA too. Not modeled (rare): '$( )'/
+    backtick subshells and multiple heredocs opened on one line; there the
+    per-line command-position + unsafe-prefix checks stay the backstop, so at
+    worst the fixer is over-conservative, never data-corrupting."""
     flags = []
     heredocs = []
     quote = ""
+    continued = False
     for raw in text.splitlines(keepends=True):
         line = raw.rstrip("\r\n")
         if heredocs:
@@ -467,8 +498,11 @@ def code_line_flags(text):
             flags.append(False)
             quote = _scan_quote_only(line, quote)
             continue
-        flags.append(True)
-        quote, opened = _scan_code_line(line)
+        ## A line continuing the previous command (that line ended with '\') is
+        ## that command's arguments, never a fresh command word -> DATA. It is
+        ## still scanned so a quote/heredoc it opens is tracked.
+        flags.append(not continued)
+        quote, opened, continued = _scan_code_line(line)
         heredocs.extend(opened)
     return flags
 

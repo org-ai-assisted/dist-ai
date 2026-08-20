@@ -81,6 +81,7 @@ sig='--signal=TERM'
 sc=';'
 hash='#'
 dq='"'
+bs=$'\\'
 
 fixture_prologue=(
    '#!/bin/bash'
@@ -274,6 +275,35 @@ assert_fix_unchanged "heredoc-quoted" "${heredoc_quoted}"
 ## A line inside an unterminated multi-line double-quote is data.
 mlquote_body="$(printf '%s\n' "msg=${dq}line one" "${tmo} 5 still-in-string${dq}")"
 assert_fix_unchanged "mlquote-body" "${mlquote_body}"
+## A line CONTINUED from the previous command ('echo \') is that command's
+## arguments, not a fresh command word.
+continuation="$(printf '%s\n' "echo ${bs}" "${tmo} 5 cmd")"
+assert_fix_unchanged "line-continuation" "${continuation}"
+## A heredoc whose delimiter contains hyphens ('END-OF-FILE') must be tracked in
+## full: its body is spared AND the real command after the terminator is fixed. A
+## delimiter charset that stopped at the hyphen would take 'END' as the
+## terminator, never close, and wrongly skip the command that follows.
+run_fix "heredoc-hyphen" \
+   "$(printf '%s\n' "cat <<END-OF-FILE" "${tmo} 5 body" "END-OF-FILE" "${tmo} 5 real")"
+if grep --fixed-strings -- "${tmo} 5 body" <<< "${fix_result}" >/dev/null \
+   && grep --fixed-strings -- "${tmo} ${ka}=5 5 real" <<< "${fix_result}" >/dev/null; then
+   printf '%s\n' "PASS: pre-push-fix tracked a hyphenated heredoc delimiter in full"
+else
+   printf '%s\n' "FAIL: pre-push-fix mishandled a hyphenated heredoc delimiter"
+   printf '%s\n' "${fix_result}"
+   fail=1
+fi
+## A bit-shift '<<' inside arithmetic '$(( ))' is NOT a heredoc opener: the
+## timeout after it is still fixed (a naive '<<' scan would open a bogus heredoc
+## and swallow the rest of the file).
+run_fix "arith-shift" "$(printf '%s\n' "y=\$((x << n))" "${tmo} 5 real")"
+if grep --fixed-strings -- "${tmo} ${ka}=5 5 real" <<< "${fix_result}" >/dev/null; then
+   printf '%s\n' "PASS: pre-push-fix did not mistake an arithmetic shift for a heredoc"
+else
+   printf '%s\n' "FAIL: pre-push-fix mistook an arithmetic '<<' for a heredoc"
+   printf '%s\n' "${fix_result}"
+   fail=1
+fi
 ## But a REAL command after the heredoc closes IS fixed (the body is not).
 run_fix "heredoc-then-cmd" \
    "$(printf '%s\n' "cat <<EOF" "${tmo} 5 body" "EOF" "${tmo} 5 real")"
