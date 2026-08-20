@@ -109,8 +109,10 @@ fi
 ## --- Well-formed names ---
 malformed=''
 for name in ${depends_names}; do
+   ## Debian policy: start with an alphanumeric; thereafter only [a-z0-9.+-]. A
+   ## name may END in '+' (g++, clang++), so do not require a trailing alphanumeric.
    case "${name}" in
-      [a-z0-9]*[a-z0-9]|[a-z0-9])
+      [a-z0-9]*)
          ;;
       *)
          malformed="${name}"
