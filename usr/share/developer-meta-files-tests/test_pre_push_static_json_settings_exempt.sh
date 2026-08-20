@@ -81,7 +81,7 @@ fi
 ## A fresh repo with a base commit; -c core.hooksPath=/dev/null so the operator's own hooks
 ## never run against this fixture (we are testing pre-push-static, not the host hooks).
 repo="${test_dir}/repo"
-mkdir --parents -- "${repo}/claude" "${repo}/data"
+mkdir --parents -- "${repo}/claude" "${repo}/.claude" "${repo}/data"
 git -c init.defaultBranch=master -c core.hooksPath=/dev/null init --quiet -- "${repo}"
 gitc() { git -C "${repo}" -c core.hooksPath=/dev/null -c user.name=test -c user.email=test@example.com "${@}"; }
 gitc commit --quiet --allow-empty --message "base"
@@ -117,6 +117,19 @@ else
    note_fail "settings.json exemption wrong (rc=${rc}); out: ${out}"
 fi
 
+## --- 1b: the hidden .claude/settings.json spelling is exempted too ------------------------
+printf '%s' "${unsorted}" > "${repo}/.claude/settings.json"
+gitc add --all
+gitc commit --quiet --message "hidden settings"
+rc=0
+out="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || rc=$?
+if [ "${rc}" -eq 0 ] \
+   && grep --quiet --fixed-strings "pretty-format-json skipped: '.claude/settings.json'" <<< "${out}" ; then
+   note_pass "the hidden .claude/settings.json spelling is exempted too"
+else
+   note_fail ".claude/settings.json exemption wrong (rc=${rc}); out: ${out}"
+fi
+
 ## --- 2: exemption is SCOPED -- an unsorted non-settings JSON still fails pretty-format-json -
 printf '%s' "${unsorted}" > "${repo}/data/other.json"
 gitc add --all
@@ -129,6 +142,26 @@ else
    note_fail "exemption leaked to a non-settings JSON (rc=${rc}); out: ${out}"
 fi
 
+## --- 2b: 'myclaude/' is NOT a 'claude' path component -- still formatted (anchor proof) ----
+## A fresh repo so the still-broken data/other.json above does not confound the result.
+repo3="${test_dir}/repo3"
+mkdir --parents -- "${repo3}/myclaude"
+git -c init.defaultBranch=master -c core.hooksPath=/dev/null init --quiet -- "${repo3}"
+git -C "${repo3}" -c core.hooksPath=/dev/null -c user.name=test -c user.email=test@example.com \
+   commit --quiet --allow-empty --message "base"
+base3="$(git -C "${repo3}" rev-parse HEAD)"
+printf '%s' "${unsorted}" > "${repo3}/myclaude/settings.json"
+git -C "${repo3}" -c core.hooksPath=/dev/null add --all
+git -C "${repo3}" -c core.hooksPath=/dev/null -c user.name=test -c user.email=test@example.com \
+   commit --quiet --message "myclaude"
+rc=0
+out="$( cd -- "${repo3}" && "${GATE}" "${base3}" 2>&1 )" || rc=$?
+if [ "${rc}" -ne 0 ] && grep --quiet --fixed-strings 'FAIL pretty-format-json' <<< "${out}" ; then
+   note_pass "myclaude/settings.json is NOT exempted (component-anchored, not a suffix match)"
+else
+   note_fail "myclaude/ wrongly exempted (rc=${rc}); out: ${out}"
+fi
+
 ## --- 3: check-json still runs -- a syntactically invalid settings.json still fails ---------
 ## Fresh repo so the still-broken data/other.json above does not confound the result.
 repo2="${test_dir}/repo2"
@@ -138,13 +171,16 @@ git -C "${repo2}" -c core.hooksPath=/dev/null -c user.name=test -c user.email=te
    commit --quiet --allow-empty --message "base"
 base2="$(git -C "${repo2}" rev-parse HEAD)"
 ## Not valid JSON (trailing comma, no close): check-json must reject it despite the exemption.
-printf '%s' '{"zebra": 1,' > "${repo2}/claude/settings.json"
+## A valid FINAL NEWLINE so end-of-file-fixer stays green -- then the ONLY failure is check-json,
+## and the assertion below matches the 'FAIL check-json' line specifically (not the mere string
+## 'check-json', which also appears in the pretty-format-json skip note).
+printf '%s\n' '{"zebra": 1,' > "${repo2}/claude/settings.json"
 git -C "${repo2}" -c core.hooksPath=/dev/null add --all
 git -C "${repo2}" -c core.hooksPath=/dev/null -c user.name=test -c user.email=test@example.com \
    commit --quiet --message "broken settings"
 rc=0
 out="$( cd -- "${repo2}" && "${GATE}" "${base2}" 2>&1 )" || rc=$?
-if [ "${rc}" -ne 0 ] && grep --quiet --fixed-strings 'check-json' <<< "${out}" ; then
+if [ "${rc}" -ne 0 ] && grep --quiet --fixed-strings 'FAIL check-json' <<< "${out}" ; then
    note_pass "check-json still validates settings.json syntax (exemption is formatter-only)"
 else
    note_fail "invalid settings.json was not caught by check-json (rc=${rc}); out: ${out}"

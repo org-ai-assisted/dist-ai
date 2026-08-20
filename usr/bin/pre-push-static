@@ -2868,9 +2868,16 @@ check_precommit_hooks() {
    ## shape here is both futile (the app re-writes it) and destructive (it flattens
    ## the app's grouping into alphabetical order). check-json above still validates
    ## its SYNTAX; only the formatter is skipped for it.
+   ## Anchor 'claude'/'.claude' as a FULL path component (top-level or '/'-preceded), so
+   ## 'myclaude/settings.json' does not match. Both spellings are covered: the repo that
+   ## deploys ~/.claude/settings.json checks it in under a plain 'claude/' directory, while a
+   ## live tree carries the hidden '.claude/'.
    for f in "${json_files[@]}"; do
       case "${f}" in
-         *claude/settings.json|*claude/settings.local.json)
+         claude/settings.json|.claude/settings.json \
+         |*/claude/settings.json|*/.claude/settings.json \
+         |claude/settings.local.json|.claude/settings.local.json \
+         |*/claude/settings.local.json|*/.claude/settings.local.json)
             note "pretty-format-json skipped: '${f}' is an app-managed settings file (syntax still checked by check-json; the app owns its format)"
             continue
             ;;
