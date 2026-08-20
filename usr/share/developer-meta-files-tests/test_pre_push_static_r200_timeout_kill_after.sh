@@ -304,6 +304,39 @@ else
    printf '%s\n' "${fix_result}"
    fail=1
 fi
+## A nested '( )' inside arithmetic must not close the context early (which would
+## expose the following '<<' as a bogus heredoc and swallow the rest).
+run_fix "arith-nested" "$(printf '%s\n' "y=\$(( (x) << n ))" "${tmo} 5 real")"
+if grep --fixed-strings -- "${tmo} ${ka}=5 5 real" <<< "${fix_result}" >/dev/null; then
+   printf '%s\n' "PASS: pre-push-fix handled nested parens in arithmetic"
+else
+   printf '%s\n' "FAIL: a nested paren cleared arithmetic context early"
+   printf '%s\n' "${fix_result}"
+   fail=1
+fi
+## A backslash in a '#' comment tail is comment text, not a line continuation:
+## the command on the next line is still fixed.
+run_fix "comment-backslash" "$(printf '%s\n' "true ${hash} note ${bs}" "${tmo} 5 cmd")"
+if grep --fixed-strings -- "${tmo} ${ka}=5 5 cmd" <<< "${fix_result}" >/dev/null; then
+   printf '%s\n' "PASS: pre-push-fix did not treat a comment backslash as a continuation"
+else
+   printf '%s\n' "FAIL: a comment-tail backslash was treated as a line continuation"
+   printf '%s\n' "${fix_result}"
+   fail=1
+fi
+## An EXOTIC heredoc delimiter (leading hyphen, dots) must still be tracked, so
+## its body is spared (a charset that rejected it would rewrite the body -- the
+## one data-CORRUPTION path).
+run_fix "heredoc-exotic-delim" \
+   "$(printf '%s\n' "cat << -E.F-" "${tmo} 5 body" "-E.F-" "${tmo} 5 real")"
+if grep --fixed-strings -- "${tmo} 5 body" <<< "${fix_result}" >/dev/null \
+   && grep --fixed-strings -- "${tmo} ${ka}=5 5 real" <<< "${fix_result}" >/dev/null; then
+   printf '%s\n' "PASS: pre-push-fix tracked an exotic heredoc delimiter (body spared)"
+else
+   printf '%s\n' "FAIL: pre-push-fix mishandled an exotic heredoc delimiter"
+   printf '%s\n' "${fix_result}"
+   fail=1
+fi
 ## But a REAL command after the heredoc closes IS fixed (the body is not).
 run_fix "heredoc-then-cmd" \
    "$(printf '%s\n' "cat <<EOF" "${tmo} 5 body" "EOF" "${tmo} 5 real")"

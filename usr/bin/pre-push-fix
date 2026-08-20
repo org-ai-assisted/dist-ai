@@ -382,9 +382,15 @@ def is_shell_file(path):
 ## ('<<"EOF"'/"<<'EOF'"). Deliberately NOT '<<<' (a here-string, not a heredoc):
 ## after '<<' the next char is '<', not '-'/a quote/a word char, so nothing
 ## matches. Anchored per position by re.match in the scanner below.
+## The delimiter charset is PERMISSIVE on purpose: any run of non-space,
+## non-metacharacter bytes (so hyphens, dots, digits-first are all accepted). A
+## MISSED delimiter would treat the heredoc body as code and rewrite it -- the
+## one unsafe direction -- so the match errs toward capturing whatever the '<<'
+## is followed by. An over-broad capture only means a body is (correctly) treated
+## as data.
 HEREDOC_OPEN = re.compile(
-    r'<<-\s*(["\']?)([A-Za-z0-9_][A-Za-z0-9_.-]*)\1'
-    r'|<<\s*(["\']?)([A-Za-z0-9_][A-Za-z0-9_.-]*)\3')
+    r'<<-\s*(["\']?)([^\s;&|<>()"\'`]+)\1'
+    r'|<<\s*(["\']?)([^\s;&|<>()"\'`]+)\3')
 
 
 def _scan_quote_only(line, quote):
@@ -414,13 +420,19 @@ def _line_continues(line):
 def _scan_code_line(line):
     """Scan a depth-0 CODE line; return (quote_open_at_eol, [heredoc, ...],
     continues) where each heredoc is (terminator, strip_tabs) and `continues` is
-    True if the line ends with a line-continuation backslash. Tracks '...'/"..."
-    quotes with backslash escapes, stops at a depth-0 '#' comment, tracks
-    arithmetic '(( ))' / '$(( ))' depth (so a bit-shift '<<' there is not read as
-    a heredoc), and records '<<WORD' heredoc openers (never '<<<')."""
+    True if the line ends with a line-continuation backslash OUTSIDE a comment.
+    Tracks '...'/"..." quotes with backslash escapes, stops at a depth-0 '#'
+    comment, tracks arithmetic '(( ))' / '$(( ))' paren depth (so a bit-shift
+    '<<' there is not read as a heredoc, nesting included), and records '<<WORD'
+    heredoc openers (never '<<<'). Arithmetic depth is per-line: a '$((' left
+    open at end of line (a multi-line arithmetic) is NOT carried, so a '<<' on
+    its continuation reads as a (bogus) heredoc and the fixer over-skips -- the
+    SAFE direction (carrying the depth could instead leave a real later heredoc
+    undetected, which would corrupt)."""
     quote = ""
     heredocs = []
     arith = 0
+    broke_at_comment = False
     index = 0
     length = len(line)
     while index < length:
@@ -436,27 +448,33 @@ def _scan_code_line(line):
         if char == "\\":
             index += 2
             continue
+        ## Inside arithmetic only parentheses matter: '<<' is a bit-shift, and
+        ## there are no commands, comments or heredocs to track. Count every
+        ## paren so a NESTED '(a+b)' does not close the context early.
+        if arith > 0:
+            if char == "(":
+                arith += 1
+            elif char == ")":
+                arith -= 1
+            index += 1
+            continue
         ## '#' opens a comment at the start of a word: line start, or after
         ## whitespace or a command separator (';' '&' '|' '(') -- NOT mid-word
-        ## ('foo#bar') and NOT after '$' ('$#').
+        ## ('foo#bar') and NOT after '$' ('$#'). A backslash in the comment tail
+        ## is comment text, not a line-continuation (broke_at_comment below).
         if char == "#" and (index == 0 or line[index - 1] in " \t;&|("):
+            broke_at_comment = True
             break
         if char in ('"', "'"):
             quote = char
             index += 1
             continue
-        ## Arithmetic '((' / '$((' opens a context where '<<' is a bit-shift, not
-        ## a heredoc; ')' closes it. Track the depth so a shift is not misread.
+        ## '((' / '$((' enters arithmetic (two parens' worth of depth).
         if line[index:index + 2] == "((":
-            arith += 1
+            arith += 2
             index += 2
             continue
-        if arith > 0 and char == ")":
-            arith -= 1
-            index += 1
-            continue
-        if arith == 0 and line[index:index + 2] == "<<" \
-                and line[index:index + 3] != "<<<":
+        if line[index:index + 2] == "<<" and line[index:index + 3] != "<<<":
             match = HEREDOC_OPEN.match(line, index)
             if match:
                 term = match.group(2) or match.group(4)
@@ -464,9 +482,10 @@ def _scan_code_line(line):
                 index = match.end()
                 continue
         index += 1
-    ## A trailing backslash matters only at quote depth zero; inside an open
-    ## quote the next line is handled as quote data regardless.
-    continues = quote == "" and _line_continues(line)
+    ## A trailing backslash continues the line only at quote depth zero and
+    ## outside a comment; inside an open quote the next line is quote data anyway.
+    continues = (quote == "" and not broke_at_comment
+                 and _line_continues(line))
     return quote, heredocs, continues
 
 
@@ -475,12 +494,17 @@ def code_line_flags(text):
     line a structural fixer may rewrite; False = HEREDOC BODY (or its terminator)
     or a line inside an unterminated multi-line quote -- shell DATA, which a fixer
     must never rewrite (the HARD SAFETY LINE). Single pass, honoring '<<-' tab
-    strip, quoted heredoc delimiters, backslash escapes and depth-0 '#' comments.
-    Line-continuation ('\' at end of line) is carried: the continued line is the
-    previous command's arguments, so it is DATA too. Not modeled (rare): '$( )'/
-    backtick subshells and multiple heredocs opened on one line; there the
-    per-line command-position + unsafe-prefix checks stay the backstop, so at
-    worst the fixer is over-conservative, never data-corrupting."""
+    strip, permissive heredoc delimiters, backslash escapes and depth-0 '#'
+    comments. Line-continuation ('\' at end of line) is carried: the continued
+    line is treated as DATA.
+
+    Design bias: on ANY uncertainty the classifier leans toward DATA (skip), so
+    the fixer's only failure mode is over-conservatism (a real violation is left
+    for the gate to report), never rewriting data. Known SAFE over-skips: a
+    command continued after an operator ('true && \' then 'timeout 5 cmd' -- the
+    next line IS a command, but it is skipped); a '<<' on the continuation of a
+    multi-line '$(( ... ))'; and '$( )'/backtick subshell bodies. All are
+    reported by the gate."""
     flags = []
     heredocs = []
     quote = ""
