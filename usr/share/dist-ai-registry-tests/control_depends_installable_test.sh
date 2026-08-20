@@ -23,7 +23,7 @@
 ##
 ## Source-tree test: set DIST_AI_REPO or run from a checkout; exits 77 (SKIP)
 ## only when the SUBJECT (the dist-ai tree) is absent. Its required tooling
-## (grep-dctrl, apt-cache) is assumed present -- an absent one FAILS, it does not
+## (grep-dctrl, apt-get) is assumed present -- an absent one FAILS, it does not
 ## skip: 'an unauthorized skip is a failure, not green'.
 
 set -o errexit
@@ -130,45 +130,26 @@ else
    fail "Depends has a malformed package name: '${malformed}'"
 fi
 
-## --- Every name has an apt candidate (REQUIRED, never a silent green) ---
-## '--' so a name that starts with '-' cannot be read by apt-cache as an option.
-apt_candidate() {
-   local line
-   while IFS= read -r line; do
-      case "${line}" in
-         *'Candidate:'*)
-            line="${line#*Candidate: }"
-            printf '%s' "${line%% *}"
-            return 0
-            ;;
-      esac
-   done < <(apt-cache policy -- "$1" 2>/dev/null)
-   ## No Candidate line (empty output): print nothing, succeed EXPLICITLY. The
-   ## implicit status here is already 0 (a while whose body did not match returns
-   ## 0), but the caller consumes this under errexit as cand="$(apt_candidate ...)",
-   ## so make the always-succeeds contract explicit rather than rely on that rule.
-   return 0
-}
-## apt-cache is required tooling here; a populated apt env is proven by resolving a
-## Debian sentinel (bash) and a Kicksecure one (helper-scripts). If either is
-## missing the environment cannot verify installability -> FAIL, never pass over
-## an unrun assertion.
-if ! type -P apt-cache >/dev/null; then
-   fail 'apt-cache (apt) not on PATH; cannot verify Depends installability'
-elif [ -z "$(apt_candidate bash)" ] || [ -z "$(apt_candidate helper-scripts)" ]; then
-   fail 'apt sources incomplete (bash/helper-scripts unresolvable); cannot verify Depends installability'
+## --- The declared set installs together (REQUIRED, never a silent green) ---
+## Faithful to what deb-run-dep actually does: apt-install the whole Depends set in
+## one '--no-install-recommends' call. Gate on the EXIT CODE, not on parsed output,
+## so this is locale-independent (apt-cache's 'Candidate:' label is gettext-translated,
+## e.g. 'Candidat :' under fr_FR) and correct for virtual packages / providers (apt
+## resolves a single-provider virtual, and aborts a multi-provider one exactly as
+## deb-run-dep would). LC_ALL=C for a stable message; 'apt-get --simulate' needs no root.
+if ! type -P apt-get >/dev/null; then
+   fail 'apt-get not on PATH; cannot verify Depends installability'
 else
-   missing=''
-   for name in ${depends_names}; do
-      cand="$(apt_candidate "${name}")"
-      if [ -z "${cand}" ] || [ "${cand}" = '(none)' ]; then
-         missing="${missing} ${name}"
-      fi
-   done
-   if [ -z "${missing}" ]; then
-      pass 'every Depends name has an apt candidate'
+   ## noglob (set above) lets ${depends_names} split into args without expanding.
+   # shellcheck disable=SC2086
+   if sim_out="$(LC_ALL=C apt-get install --simulate --no-install-recommends -- ${depends_names} 2>&1)"; then
+      pass 'the declared Depends set installs together (apt-get --simulate)'
    else
-      fail "Depends names with NO apt candidate:${missing}"
+      fail 'the declared Depends set does not install together (apt-get --simulate); apt says:'
+      ## Best-effort diagnostic (|| true: a no-match grep must not abort under pipefail).
+      printf '%s\n' "${sim_out}" \
+         | grep --ignore-case --extended-regexp 'unable to locate|no installation candidate|but it is not|^E:' \
+         | head -5 >&2 || true
    fi
 fi
 
