@@ -448,9 +448,15 @@ def _scan_code_line(line):
         if char == "\\":
             index += 2
             continue
+        ## Quote-open is checked BEFORE arithmetic so a paren inside a quoted
+        ## string ('(( x = "(" ))') does not perturb the arithmetic depth.
+        if char in ('"', "'"):
+            quote = char
+            index += 1
+            continue
         ## Inside arithmetic only parentheses matter: '<<' is a bit-shift, and
-        ## there are no commands, comments or heredocs to track. Count every
-        ## paren so a NESTED '(a+b)' does not close the context early.
+        ## there are no commands or heredocs to track. Count every paren so a
+        ## NESTED '(a+b)' does not close the context early.
         if arith > 0:
             if char == "(":
                 arith += 1
@@ -465,10 +471,6 @@ def _scan_code_line(line):
         if char == "#" and (index == 0 or line[index - 1] in " \t;&|("):
             broke_at_comment = True
             break
-        if char in ('"', "'"):
-            quote = char
-            index += 1
-            continue
         ## '((' / '$((' enters arithmetic (two parens' worth of depth).
         if line[index:index + 2] == "((":
             arith += 2

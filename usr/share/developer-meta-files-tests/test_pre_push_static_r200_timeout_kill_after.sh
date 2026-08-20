@@ -314,6 +314,20 @@ else
    printf '%s\n' "${fix_result}"
    fail=1
 fi
+## A paren inside a QUOTED string within arithmetic must not perturb the depth,
+## so a heredoc later on the same line is still tracked and its body spared. A
+## naive count of that quoted paren would leave arithmetic 'open', miss the
+## heredoc, and rewrite its body -- data corruption.
+run_fix "arith-quoted-paren" \
+   "$(printf '%s\n' "x=\$(( ${dq}(${dq} ))${sc} cat <<EOF" "${tmo} 5 body" "EOF" "${tmo} 5 real")"
+if grep --fixed-strings -- "${tmo} 5 body" <<< "${fix_result}" >/dev/null \
+   && grep --fixed-strings -- "${tmo} ${ka}=5 5 real" <<< "${fix_result}" >/dev/null; then
+   printf '%s\n' "PASS: pre-push-fix ignored a quoted paren inside arithmetic"
+else
+   printf '%s\n' "FAIL: a quoted paren in arithmetic broke heredoc tracking"
+   printf '%s\n' "${fix_result}"
+   fail=1
+fi
 ## A backslash in a '#' comment tail is comment text, not a line continuation:
 ## the command on the next line is still fixed.
 run_fix "comment-backslash" "$(printf '%s\n' "true ${hash} note ${bs}" "${tmo} 5 cmd")"
