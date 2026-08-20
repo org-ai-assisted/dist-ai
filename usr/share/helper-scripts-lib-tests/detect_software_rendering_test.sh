@@ -191,6 +191,13 @@ c2="$(LIBGL_ALWAYS_SOFTWARE='' DETECT_SOFTWARE_RENDERING_DRI_DIR="${with_dri}" E
 eg_count="$(count_of "${count_file}")"
 check "cache: both calls report software" "${c1}:${c2}" "software:software"
 check "cache: eglinfo probed at most once across two shells" "${eg_count}" "1"
+## Positively pin the marker filename, so the "cache not written" negative checks
+## below (which test for this exact path) cannot pass vacuously.
+xdg_cached="no"
+if [ -e "${xdg}/detect-software-rendering.software" ]; then
+   xdg_cached="yes"
+fi
+check "cache: marker written under the expected name" "${xdg_cached}" "yes"
 
 ## LIBGL_ALWAYS_SOFTWARE set is a per-env override -> the cache is NOT written,
 ## so a later shell without the var cannot read the forced-software marker.
