@@ -205,6 +205,19 @@ if [ -e "${lg_xdg}/detect-software-rendering.software" ]; then
 fi
 check "LIBGL_ALWAYS_SOFTWARE set -> cache not written" "${lg_cached}" "no"
 
+## The no-GPU-node short-circuit must NOT write a cache marker either -- it would
+## go stale if a GPU node appears later this boot (NVIDIA on-demand nodes, hot-add).
+sc_xdg="${test_dir}/sc-xdg"
+mkdir --parents -- "${sc_xdg}"
+LIBGL_ALWAYS_SOFTWARE='' DETECT_SOFTWARE_RENDERING_DRI_DIR="${no_dri}" \
+   DETECT_SOFTWARE_RENDERING_NVIDIA_CTL="${nvidia_absent}" XDG_RUNTIME_DIR="${sc_xdg}" \
+   PATH="${probe_path}" "${subject}" >/dev/null 2>&1 || true
+sc_cached="no"
+if [ -e "${sc_xdg}/detect-software-rendering.software" ]; then
+   sc_cached="yes"
+fi
+check "no-GPU-node short-circuit -> cache not written" "${sc_cached}" "no"
+
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "FAILED"
