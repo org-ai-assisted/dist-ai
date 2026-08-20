@@ -89,6 +89,10 @@ nvidia_absent="${test_dir}/no-nvidiactl"
 nvidia_present="${test_dir}/nvidiactl"
 touch -- "${nvidia_present}"
 
+## A nonexistent runtime dir disables the cache (an EMPTY XDG_RUNTIME_DIR would
+## fall back to /run/user/<uid>, which exists on the test host).
+no_cache_dir="${test_dir}/absent-runtime-dir"
+
 ## The subject resolves its own libs via HELPER_SCRIPTS_PATH.
 export HELPER_SCRIPTS_PATH="${HELPER_SCRIPTS_REPO}"
 
@@ -137,7 +141,7 @@ run_subject() {
    out="$(LIBGL_ALWAYS_SOFTWARE="${libgl}" DETECT_SOFTWARE_RENDERING_DRI_DIR="${dri_dir}" \
       DETECT_SOFTWARE_RENDERING_NVIDIA_CTL="${nvidia_absent}" \
       EGLINFO_STUB_RENDERER="${line}" EGLINFO_STUB_COUNT="${count}" \
-      XDG_RUNTIME_DIR='' PATH="${probe_path}" "${subject}")" || rc=$?
+      XDG_RUNTIME_DIR="${no_cache_dir}" PATH="${probe_path}" "${subject}")" || rc=$?
    printf '%s\n' "${out}:${rc}"
 }
 
@@ -158,7 +162,7 @@ nv_rc=0
 nv_out="$(LIBGL_ALWAYS_SOFTWARE='' DETECT_SOFTWARE_RENDERING_DRI_DIR="${no_dri}" \
    DETECT_SOFTWARE_RENDERING_NVIDIA_CTL="${nvidia_present}" \
    EGLINFO_STUB_RENDERER='OpenGL core profile renderer: NVIDIA GeForce' \
-   XDG_RUNTIME_DIR='' PATH="${probe_path}" "${subject}")" || nv_rc=$?
+   XDG_RUNTIME_DIR="${no_cache_dir}" PATH="${probe_path}" "${subject}")" || nv_rc=$?
 check "NVIDIA node present, no DRM -> falls through to eglinfo" "${nv_out}:${nv_rc}" "accelerated:1"
 
 ## --- (2) source-ability: no auto-run, no strict leak, pure + defined ---
