@@ -15,8 +15,10 @@
 ##      another command's argument, and any file bearing the
 ##      '## style-ok: allow-bare-timeout' waiver.
 ##  (2) pre-push-fix INSERTS '--kill-after=<N>' into a bare literal-duration
-##      'timeout <N> cmd', LEAVES an option-carrying / expression-duration /
-##      string-embedded timeout untouched, and is idempotent.
+##      'timeout <N> cmd', LEAVES untouched an option-carrying / expression-
+##      duration / string-embedded timeout, a timeout whose wrapped command
+##      carries a literal 'timeout <N>' argument, a keyword-as-argument line, and
+##      any HEREDOC body or multi-line-quote body (shell DATA), and is idempotent.
 ##
 ## Fixture bodies are ASSEMBLED from fragments so no command-position
 ## 'timeout <N>' appears literally on a source line of THIS tracked file -- the
@@ -248,6 +250,32 @@ assert_fix_unchanged "instring" "deferred=${dq}${tmo} 5${dq}"
 assert_fix_unchanged "in-comment" "true ${hash} note${sc} ${tmo} 5 do_thing"
 ## timeout as an argument to another command.
 assert_fix_unchanged "argument" "printf '%s' ${tmo} 5"
+## A leading-option timeout whose WRAPPED command carries a literal 'timeout <N>'
+## argument: the anchored duration regex must not wander onto that argument.
+assert_fix_unchanged "opt-then-arg" "${tmo} ${sig} 5 echo ${tmo} 5"
+## A control keyword passed as a literal ARGUMENT is not command position.
+assert_fix_unchanged "keyword-arg" "echo then ${tmo} 5 x"
+
+## --- (2b) heredoc / multi-line-quote bodies are shell DATA, never rewritten ---
+heredoc_body="$(printf '%s\n' "cat <<EOF" "${tmo} 5 body" "EOF")"
+assert_fix_unchanged "heredoc-body" "${heredoc_body}"
+## A quoted-delimiter heredoc body is data too.
+heredoc_quoted="$(printf '%s\n' "cat <<'EOF'" "${tmo} 5 body" "EOF")"
+assert_fix_unchanged "heredoc-quoted" "${heredoc_quoted}"
+## A line inside an unterminated multi-line double-quote is data.
+mlquote_body="$(printf '%s\n' "msg=${dq}line one" "${tmo} 5 still-in-string${dq}")"
+assert_fix_unchanged "mlquote-body" "${mlquote_body}"
+## But a REAL command after the heredoc closes IS fixed (the body is not).
+run_fix "heredoc-then-cmd" \
+   "$(printf '%s\n' "cat <<EOF" "${tmo} 5 body" "EOF" "${tmo} 5 real")"
+if grep --fixed-strings -- "${tmo} 5 body" <<< "${fix_result}" >/dev/null \
+   && grep --fixed-strings -- "${tmo} ${ka}=5 5 real" <<< "${fix_result}" >/dev/null; then
+   printf '%s\n' "PASS: pre-push-fix spared the heredoc body but fixed the command after it"
+else
+   printf '%s\n' "FAIL: pre-push-fix mishandled a heredoc-then-command file"
+   printf '%s\n' "${fix_result}"
+   fail=1
+fi
 
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "" "FAILED"

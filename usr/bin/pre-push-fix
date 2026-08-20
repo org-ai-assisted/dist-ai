@@ -43,7 +43,11 @@ Bucket-1 transforms only (see the plan):
 
 HARD SAFETY LINE: only the known table is touched. Any OTHER non-ASCII byte is
 left exactly as-is for pre-push-static to report (bucket-2) -- so an intentional
-UTF-8 test fixture is never silently rewritten.
+UTF-8 test fixture is never silently rewritten. The STRUCTURAL rewriters (R-172
+mkdir, R-161 grep, R-200 timeout) additionally skip any line that code_line_flags
+marks as DATA -- a heredoc body or a line inside an unterminated multi-line quote
+-- so a 'timeout 5 x' (or 'grep -q x') that is program text, not a command, is
+never rewritten.
 
 Exemptions are kept in lockstep with pre-push-static (a .gitattributes binary
 data file, the per-file '## style-ok: allow-non-ascii' waiver matched by the
@@ -200,9 +204,16 @@ GREP_SPAN = re.compile(r'grep\b[^;&|#]*')
 ## excluded. This is stricter than the gate's REPORT-side match on purpose: the
 ## fixer WRITES, so it only touches the unambiguously-safe subset. Shared by the
 ## grep (R-161) and timeout (R-200) fixers from ONE pattern so they cannot drift.
+## The control keyword must ITSELF be at command position (line start or after a
+## separator) -- a bash 'then'/'do'/... only ever follows ';' or a newline. Were
+## the keyword allowed after any non-word char, a keyword passed as a literal
+## ARGUMENT ('echo then grep -q x') would falsely read as command position and the
+## fixer would rewrite the argument.
 CMD_POS_PATTERN = (
-    r'(?:^\s*|[;&|(){}`]\s*'
-    r'|(?:^|[^\w])(?:then|do|else|if|elif|while|until)\s+)'
+    r'(?:'
+    r'(?:^\s*|[;&|(){}`]\s*)'
+    r'|(?:^\s*|[;&|(){}`]\s*)(?:then|do|else|if|elif|while|until)\s+'
+    r')'
     r'(?:!\s+)?'
     r'(?:[A-Za-z_]\w*=\S*\s+)*$')
 GREP_CMD_POS = re.compile(CMD_POS_PATTERN)
@@ -245,10 +256,14 @@ TIMEOUT_UNSAFE_PREFIX = re.compile(r'''["'\\#]''')
 ## '-' (an option, whose space-separated argument a regex could not skip safely),
 ## '$' or a quote (an expression) does NOT match, so it is left for the gate to
 ## report and a human to fix -- exactly as R-172 leaves a missing-mode mkdir.
+## '^'-ANCHORED to the start of the isolated span (which begins at 'timeout'), so
+## a leading-option timeout ('timeout --signal=TERM 5 ...') fails at the start and
+## re.subn does NOT then wander on to a literal 'timeout <N>' sitting later in the
+## WRAPPED command's arguments -- rewriting that argument would corrupt data.
 ## Idempotent: the inserted '--kill-after=' makes the next token an option, so a
 ## second pass never re-matches.
 TIMEOUT_BARE_DURATION = re.compile(
-    r'(timeout\s+)([0-9]+(?:\.[0-9]+)?[smhd]?)(?=\s)')
+    r'^(timeout\s+)([0-9]+(?:\.[0-9]+)?[smhd]?)(?=\s)')
 
 
 class StagedDiscoveryError(Exception):
@@ -354,6 +369,101 @@ def is_shell_file(path):
         first.decode("utf-8", "replace").rstrip("\r\n")))
 
 
+## A heredoc opener: '<<WORD', '<< WORD', '<<-WORD' or a quoted delimiter
+## ('<<"EOF"'/"<<'EOF'"). Deliberately NOT '<<<' (a here-string, not a heredoc):
+## after '<<' the next char is '<', not '-'/a quote/a word char, so nothing
+## matches. Anchored per position by re.match in the scanner below.
+HEREDOC_OPEN = re.compile(
+    r'<<-\s*(["\']?)([A-Za-z_][A-Za-z0-9_]*)\1'
+    r'|<<\s*(["\']?)([A-Za-z_][A-Za-z0-9_]*)\3')
+
+
+def _scan_quote_only(line, quote):
+    """Advance an already-open multi-line quote across LINE; return the quote
+    char still open at end of line, or '' if it closed."""
+    index = 0
+    while index < len(line):
+        char = line[index]
+        ## Backslash escapes inside "" (not inside ''), so '\"' does not close.
+        if quote == '"' and char == "\\":
+            index += 2
+            continue
+        if char == quote:
+            return ""
+        index += 1
+    return quote
+
+
+def _scan_code_line(line):
+    """Scan a depth-0 CODE line; return (quote_open_at_eol, [heredoc, ...]) where
+    each heredoc is (terminator, strip_tabs). Tracks '...'/"..." quotes with
+    backslash escapes, stops at a depth-0 '#' comment, and records '<<WORD'
+    heredoc openers (never '<<<')."""
+    quote = ""
+    heredocs = []
+    index = 0
+    length = len(line)
+    while index < length:
+        char = line[index]
+        if quote:
+            if quote == '"' and char == "\\":
+                index += 2
+                continue
+            if char == quote:
+                quote = ""
+            index += 1
+            continue
+        if char == "\\":
+            index += 2
+            continue
+        if char == "#" and (index == 0 or line[index - 1] in " \t"):
+            break
+        if char in ('"', "'"):
+            quote = char
+            index += 1
+            continue
+        if line[index:index + 2] == "<<" and line[index:index + 3] != "<<<":
+            match = HEREDOC_OPEN.match(line, index)
+            if match:
+                term = match.group(2) or match.group(4)
+                heredocs.append((term, line[index:index + 3] == "<<-"))
+                index = match.end()
+                continue
+        index += 1
+    return quote, heredocs
+
+
+def code_line_flags(text):
+    """Return one bool per splitlines(keepends=True) line: True = a shell CODE
+    line a structural fixer may rewrite; False = HEREDOC BODY (or its terminator)
+    or a line inside an unterminated multi-line quote -- shell DATA, which a fixer
+    must never rewrite (the HARD SAFETY LINE). Single pass, honoring '<<-' tab
+    strip, quoted heredoc delimiters, backslash escapes and depth-0 '#' comments.
+    Not modeled (rare): '$( )'/backtick subshells and multiple heredocs opened on
+    one line; there the per-line command-position + unsafe-prefix checks stay the
+    backstop, so at worst the fixer is over-conservative, never data-corrupting."""
+    flags = []
+    heredocs = []
+    quote = ""
+    for raw in text.splitlines(keepends=True):
+        line = raw.rstrip("\r\n")
+        if heredocs:
+            term, strip_tabs = heredocs[0]
+            probe = line.lstrip("\t") if strip_tabs else line
+            if probe == term:
+                heredocs.pop(0)
+            flags.append(False)
+            continue
+        if quote:
+            flags.append(False)
+            quote = _scan_quote_only(line, quote)
+            continue
+        flags.append(True)
+        quote, opened = _scan_code_line(line)
+        heredocs.extend(opened)
+    return flags
+
+
 def upgrade_mkdir_mode(text):
     """Per temp-dir mkdir COMMAND (not per line):
       1. upgrade a short '-m <mode>' to the long '--mode=<mode>' within THAT
@@ -366,7 +476,12 @@ def upgrade_mkdir_mode(text):
     only when absent."""
     count = 0
     out = []
-    for line in text.splitlines(keepends=True):
+    flags = code_line_flags(text)
+    for line, is_code in zip(text.splitlines(keepends=True), flags):
+        ## Never rewrite a heredoc body / open-quote line -- it is shell DATA.
+        if not is_code:
+            out.append(line)
+            continue
         if line.lstrip().startswith("#") or not MKDIR_TMP_LINE.search(line):
             out.append(line)
             continue
@@ -426,8 +541,10 @@ def expand_grep_short_quiet(text):
     Idempotent: a long option never re-matches GREP_SHORT_Q."""
     count = 0
     out = []
-    for line in text.splitlines(keepends=True):
-        if "grep" not in line:
+    flags = code_line_flags(text)
+    for line, is_code in zip(text.splitlines(keepends=True), flags):
+        ## Never rewrite a heredoc body / open-quote line -- it is shell DATA.
+        if not is_code or "grep" not in line:
             out.append(line)
             continue
         pieces = []
@@ -482,8 +599,10 @@ def insert_timeout_kill_after(text):
     token an option, so a second pass does not re-match."""
     count = 0
     out = []
-    for line in text.splitlines(keepends=True):
-        if "timeout" not in line:
+    flags = code_line_flags(text)
+    for line, is_code in zip(text.splitlines(keepends=True), flags):
+        ## Never rewrite a heredoc body / open-quote line -- it is shell DATA.
+        if not is_code or "timeout" not in line:
             out.append(line)
             continue
         pieces = []
