@@ -1103,6 +1103,49 @@ if sw.current_tui():
     ok('history-line-A' in sw.toPlainText(),
        'scrollback restored after a full-screen program exits')
 sw.apply_tui(False)
+# regression: applying an UNRELATED global setting must not erase TUI scrollback.
+# _apply_global re-applies the SAME scrollback value to every tab on every global-
+# settings change (theme, font, zoom, ...). apply_scrollback used to unconditionally
+# clear the document and rebuild the TUI view from pyte's bounded history (cap 2000),
+# so any promoted scrollback row ABOVE that cap -- which exists only in the document --
+# was silently dropped. With the default scrollback (10000 > pyte's 2000 cap) that
+# erased visible history on an unrelated setting change.
+_sb = SecureTerminal(command='/bin/cat', tui=True)
+if _sb.current_tui():
+    _sb.show()
+    _sb.resize(800, 400)                             # a real viewport so the grid renders
+    _sbN = 2300                                      # > pyte's 2000-line history cap
+    # Feed in chunks and pump so the debounced grid render (_render_timer) fires and
+    # promotes each scrolled-off batch into the document; a single feed larger than
+    # pyte's history would overflow it before the promote pass runs.
+    for _sbi in range(0, _sbN, 100):
+        feed_output(_sb, ''.join('row-%04d\n' % i
+                                 for i in range(_sbi, min(_sbi + 100, _sbN))).encode('ascii'))
+        pump(20)
+    pump(50)
+    # setup canary: the oldest rows live ONLY in the document (pyte kept the last
+    # ~2000), proving the document holds more than pyte's history cap.
+    ok('row-0000' in _sb.toPlainText(),
+       'TUI scrollback: the oldest promoted row is retained in the document')
+    _sbBlocks = _sb.blockCount()
+    # apply the SAME scrollback -- exactly what _apply_global does on any unrelated
+    # setting. The destructive rebuild must NOT fire: nothing was pruned.
+    _sb.apply_scrollback(_sb.current_scrollback())
+    ok('row-0000' in _sb.toPlainText(),
+       'apply_scrollback(unchanged) keeps the promoted scrollback (no destructive rebuild)')
+    eq(_sb.blockCount(), _sbBlocks,
+       'apply_scrollback(unchanged) does not shrink the document')
+    # a RAISE prunes nothing either, so it too must preserve the promoted rows.
+    _sb.apply_scrollback(_sb.current_scrollback() * 2)
+    ok('row-0000' in _sb.toPlainText(),
+       'apply_scrollback(raise) preserves the promoted scrollback (no prune, no rebuild)')
+    # a genuine REDUCTION below the document size prunes and resyncs the grid model.
+    _sb.apply_scrollback(500)
+    eq(_sb.current_scrollback(), 500, 'apply_scrollback(reduce) applies the new cap')
+    ok(_sb.blockCount() <= 500,
+       'apply_scrollback(reduce) prunes the document to the new cap')
+_sb.close()
+
 # regression (#7): a debounced CLI paint must NOT survive entry into the TUI grid.
 # _sync_display is reached directly from apply_tui (not via _rerender), so a still-
 # armed _paint_timer would fire _flush_paint AFTER the grid is built and write stale

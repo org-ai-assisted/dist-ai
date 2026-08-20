@@ -82,6 +82,11 @@
 ##      (canonically '--mode=700'; the space form is equally atomic). Judged
 ##      per mkdir command, so a '--mode' elsewhere on the line does not count.
 ##      '## style-ok: allow-mkdir-no-mode'.
+##  25. R-200 a 'timeout N cmd' in command position must carry a kill-after
+##      option ('--kill-after='/'-k'); SIGTERM alone can be ignored by a wedged
+##      child, so the follow-up SIGKILL is what guarantees it dies. A timeout in
+##      a string or as another command's argument is spared (fix by hand).
+##      '## style-ok: allow-bare-timeout'.
 ##
 ## Scope: files changed in HEAD vs upstream tracking branch
 ## (@{u}). Pass an explicit base ref as $1 to override
@@ -2437,6 +2442,91 @@ check_R161_grep_pipe_quiet() {
    done
 }
 
+check_R200_timeout_kill_after() {
+   local script hits ok_hits line lineno
+   local neg assign killrun
+   local cand_re1 cand_re2 cand_re3 ok_re1 ok_re2 ok_re3
+   local -A ok_lines
+   local -a fs
+
+   ## R-200: 'timeout N cmd' sends only SIGTERM after N seconds; a child wedged
+   ## in a syscall can ignore SIGTERM and then run FOREVER, defeating the very
+   ## bound 'timeout' was added for. Require a kill-after option ('--kill-after='
+   ## or its short '-k') so a follow-up SIGKILL guarantees the child dies.
+   ## Flags a 'timeout' in COMMAND position whose leading option run carries no
+   ## kill-after; spares one that does. Per-script waiver:
+   ## '## style-ok: allow-bare-timeout'. filter_self drops this checker (its own
+   ## regex literals and comments name 'timeout').
+   ##
+   ## Command position is modeled on check_R034_echo/check_R161: line start,
+   ## after a separator ';&|(){}`' (so '$(timeout 5 x)' and a backtick both
+   ## count), or after a control keyword, each allowing a '!' negation and a run
+   ## of leading 'VAR=value' assignments. Like R-034/R-161 it deliberately spares
+   ## a 'timeout' that is NOT a command word -- inside a string ('x="timeout 5"',
+   ## the common deferred-invocation spelling this rule CANNOT safely reason
+   ## about) or as another command's argument ('run timeout 5') -- so fix those
+   ## by hand. Residuals accepted (a line gate cannot parse shell): a separator
+   ## inside a string still matches; a single line carrying both a kill-after
+   ## timeout AND a bare one reads as OK (rare, one 'timeout' per statement keeps
+   ## it exact); and a '-k'/'--kill-after' appearing in the WRAPPED command's
+   ## OWN arguments ('timeout 5 foo --kill-after=x') spares the bare timeout (a
+   ## rare false NEGATIVE -- the safe direction, since a valid kill-after must
+   ## never be false-flagged).
+   mapfile -d '' -t fs < <(filter_self "${@}")
+   if [ "${#fs[@]}" -eq 0 ]; then return 0; fi
+
+   neg='(!([[:space:]]+))?'
+   assign='([A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|]*[[:space:]]+)*'
+   ## A kill-after option ('-k', '-k5', '--kill-after', '--kill-after=5') as a
+   ## whole word anywhere in the timeout's own pipeline segment (up to a
+   ## separator or '#'). '([^;&|#]*[[:space:]])?' skips any earlier options AND
+   ## their SPACE-separated values -- so '--signal TERM --kill-after 1' and
+   ## '-s TERM -k 1' (valid GNU syntax) are recognised, not just the '=' / no-arg
+   ## forms. A trailing space/'='/EOL pins it to a whole token.
+   killrun="([^;&|#]*[[:space:]])?(-k[^[:space:];&|#]*|--kill-after)([[:space:]=]|\$)"
+   ## COMMAND-position 'timeout' with at least one following token (candidate).
+   cand_re1="^[[:space:]]*${neg}${assign}timeout[[:space:]]"
+   cand_re2="^[[:space:]]*[^#]*[;&|(){}\`][[:space:]]*${neg}${assign}timeout[[:space:]]"
+   cand_re3="^[[:space:]]*([^#]*[[:space:]])?(then|do|else|if|elif|while|until)[[:space:]]+${neg}${assign}timeout[[:space:]]"
+   ## Same three positions, but a kill-after option is present in the segment.
+   ok_re1="^[[:space:]]*${neg}${assign}timeout[[:space:]]${killrun}"
+   ok_re2="^[[:space:]]*[^#]*[;&|(){}\`][[:space:]]*${neg}${assign}timeout[[:space:]]${killrun}"
+   ok_re3="^[[:space:]]*([^#]*[[:space:]])?(then|do|else|if|elif|while|until)[[:space:]]+${neg}${assign}timeout[[:space:]]${killrun}"
+
+   for script in "${fs[@]}"; do
+      if grep --quiet --extended-regexp \
+         '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*allow-bare-timeout([[:space:]]|$)' \
+         -- "${script}"; then
+         note "R-200 skipped: 'style-ok: allow-bare-timeout' waiver in '${script}'"
+         continue
+      fi
+      ## OK lines first: a command-position timeout that already carries
+      ## kill-after. Dedup the candidate scan against these by LINE number.
+      ok_lines=()
+      ok_hits="$(grep --line-number --extended-regexp \
+         --regexp="${ok_re1}" --regexp="${ok_re2}" --regexp="${ok_re3}" \
+         -- "${script}" 2>/dev/null || true)"
+      if [ -n "${ok_hits}" ]; then
+         while IFS= read -r line; do
+            [ -z "${line}" ] && continue
+            ok_lines["${line%%:*}"]=1
+         done <<< "${ok_hits}"
+      fi
+      hits="$(grep --line-number --extended-regexp \
+         --regexp="${cand_re1}" --regexp="${cand_re2}" --regexp="${cand_re3}" \
+         -- "${script}" 2>/dev/null || true)"
+      if [ -z "${hits}" ]; then
+         continue
+      fi
+      while IFS= read -r line; do
+         [ -z "${line}" ] && continue
+         lineno="${line%%:*}"
+         [ -n "${ok_lines[${lineno}]:-}" ] && continue
+         fail "R-200 timeout without --kill-after= (SIGTERM alone can be ignored)" "'${script}:${line}'"
+      done <<< "${hits}"
+   done
+}
+
 check_R153_help_from_comments() {
    local script hits line
    local -a fs
@@ -3027,6 +3117,7 @@ run_file_checks() {
       check_R130_null_command "${shell_files[@]}"
       check_R034_echo "${shell_files[@]}"
       check_R161_grep_pipe_quiet "${shell_files[@]}"
+      check_R200_timeout_kill_after "${shell_files[@]}"
       check_R103_exec "${shell_files[@]}"
       check_R190_inline_interpreter "${shell_files[@]}"
       check_R192_shell_inline_shell_c "${shell_files[@]}"

@@ -34,10 +34,20 @@ Bucket-1 transforms only (see the plan):
               half of R-161 (a quiet grep consuming a pipe) is NOT fixed here --
               relocating a redirect / switching to a here-string is multi-token,
               so pre-push-static FAILS it.
+  * R-200  -- insert '--kill-after=<N>' into a bare 'timeout <N> cmd' in command
+              position (shell files only), so a wedged child ignoring SIGTERM
+              still gets SIGKILL. Only the no-option LITERAL-duration form is
+              rewritten; an option-carrying ('timeout --signal=TERM 5') or
+              expression-duration ('timeout "$T"') timeout is left for the gate,
+              like R-172's missing-mode mkdir.
 
 HARD SAFETY LINE: only the known table is touched. Any OTHER non-ASCII byte is
 left exactly as-is for pre-push-static to report (bucket-2) -- so an intentional
-UTF-8 test fixture is never silently rewritten.
+UTF-8 test fixture is never silently rewritten. The STRUCTURAL rewriters (R-172
+mkdir, R-161 grep, R-200 timeout) additionally skip any line that code_line_flags
+marks as DATA -- a heredoc body or a line inside an unterminated multi-line quote
+-- so a 'timeout 5 x' (or 'grep -q x') that is program text, not a command, is
+never rewritten.
 
 Exemptions are kept in lockstep with pre-push-static (a .gitattributes binary
 data file, the per-file '## style-ok: allow-non-ascii' waiver matched by the
@@ -162,6 +172,15 @@ MKDIR_WAIVER_RE = re.compile(
     r'^[ \t]*##[ \t]*style-ok:[ \t]*allow-mkdir-no-mode(?:[ \t]|$)',
     re.MULTILINE)
 
+## R-200 (bare timeout) script-wide waiver, in lockstep with pre-push-static: a
+## file carrying '## style-ok: allow-bare-timeout' has DELIBERATELY bare timeouts
+## (a child that must be allowed to finish its own SIGTERM cleanup), so the fixer
+## must not add '--kill-after' -- that would change termination semantics the
+## author intentionally chose. The gate skips such a file too.
+TIMEOUT_WAIVER_RE = re.compile(
+    r'^[ \t]*##[ \t]*style-ok:[ \t]*allow-bare-timeout(?:[ \t]|$)',
+    re.MULTILINE)
+
 SHELL_EXTS = (".sh", ".bsh")
 SHELL_SHEBANG_RE = re.compile(r'#!.*(/|\s)(bash|sh|dash)(\s|$)')
 
@@ -186,18 +205,27 @@ GREP_LONG = {
 ## Each 'grep ...' command isolated up to the next separator / '#' comment, so a
 ## second command sharing the line is never rewritten (mirrors MKDIR_SPAN).
 GREP_SPAN = re.compile(r'grep\b[^;&|#]*')
-## 'grep' must be in COMMAND position for a rewrite -- checked against the text
-## BEFORE the match. Valid: line start, right after a separator ';&|(){}`', or
-## after a control keyword, each with an optional '!' negation and any run of
-## leading VAR=value assignments ('LC_ALL=C grep ...'). 'in' is NOT a command
-## introducer -- it heads a word list ('for x in grep ...'), so it is excluded.
-## This is stricter than the gate's REPORT-side match on purpose: the fixer
-## WRITES, so it only touches the unambiguously-safe subset.
-GREP_CMD_POS = re.compile(
-    r'(?:^\s*|[;&|(){}`]\s*'
-    r'|(?:^|[^\w])(?:then|do|else|if|elif|while|until)\s+)'
+## A command must be in COMMAND position for a rewrite -- checked against the
+## text BEFORE the command word. Valid: line start, right after a separator
+## ';&|(){}`', or after a control keyword, each with an optional '!' negation and
+## any run of leading VAR=value assignments ('LC_ALL=C grep ...'). 'in' is NOT a
+## command introducer -- it heads a word list ('for x in grep ...'), so it is
+## excluded. This is stricter than the gate's REPORT-side match on purpose: the
+## fixer WRITES, so it only touches the unambiguously-safe subset. Shared by the
+## grep (R-161) and timeout (R-200) fixers from ONE pattern so they cannot drift.
+## The control keyword must ITSELF be at command position (line start or after a
+## separator) -- a bash 'then'/'do'/... only ever follows ';' or a newline. Were
+## the keyword allowed after any non-word char, a keyword passed as a literal
+## ARGUMENT ('echo then grep -q x') would falsely read as command position and the
+## fixer would rewrite the argument.
+CMD_POS_PATTERN = (
+    r'(?:'
+    r'(?:^\s*|[;&|(){}`]\s*)'
+    r'|(?:^\s*|[;&|(){}`]\s*)(?:then|do|else|if|elif|while|until)\s+'
+    r')'
     r'(?:!\s+)?'
     r'(?:[A-Za-z_]\w*=\S*\s+)*$')
+GREP_CMD_POS = re.compile(CMD_POS_PATTERN)
 ## Any quote, backslash or '#' in the text BEFORE grep means the line carries
 ## quoting / escaping / comment structure a single regex cannot resolve
 ## (backslash escapes in "..." but is literal in '...'; '#' may or may not open a
@@ -217,6 +245,34 @@ GREP_ARG_TAKING = re.compile(
     r'|(?<![\w-])--(?:regexp|file|max-count|after-context|before-context'
     r'|context|colou?r|binary-files|devices|directories|label'
     r'|group-separator|exclude(?:-dir|-from)?|include)(?:=|\b)')
+
+## R-200 (bare timeout) -- the write side of pre-push-static's rule. A bare
+## 'timeout N cmd' only sends SIGTERM, which a child wedged in a syscall can
+## ignore and then run forever; the fixer inserts '--kill-after=<N>' so a
+## follow-up SIGKILL guarantees the child dies. TIMEOUT_CMD_POS reuses the same
+## command-position grammar as grep. Each 'timeout ...' command is isolated up to
+## the next separator / '#' comment (mirrors GREP_SPAN).
+TIMEOUT_CMD_POS = re.compile(CMD_POS_PATTERN)
+TIMEOUT_SPAN = re.compile(r'timeout\b[^;&|#]*')
+## A quote/backslash/'#' before 'timeout' means quoting or comment structure a
+## regex cannot resolve (notably the deferred 'x="timeout 5"' spelling) -- bail,
+## the same HARD SAFETY LINE as GREP_UNSAFE_PREFIX.
+TIMEOUT_UNSAFE_PREFIX = re.compile(r'''["'\\#]''')
+## Only the provably safe subset is auto-fixed: 'timeout' followed IMMEDIATELY by
+## a LITERAL duration (GNU timeout's floating-point seconds with an optional
+## [smhd] unit) as its very next token, and no leading options. The lookahead
+## needs whitespace after the duration (a command follows). A value starting with
+## '-' (an option, whose space-separated argument a regex could not skip safely),
+## '$' or a quote (an expression) does NOT match, so it is left for the gate to
+## report and a human to fix -- exactly as R-172 leaves a missing-mode mkdir.
+## '^'-ANCHORED to the start of the isolated span (which begins at 'timeout'), so
+## a leading-option timeout ('timeout --signal=TERM 5 ...') fails at the start and
+## re.subn does NOT then wander on to a literal 'timeout <N>' sitting later in the
+## WRAPPED command's arguments -- rewriting that argument would corrupt data.
+## Idempotent: the inserted '--kill-after=' makes the next token an option, so a
+## second pass never re-matches.
+TIMEOUT_BARE_DURATION = re.compile(
+    r'^(timeout\s+)([0-9]+(?:\.[0-9]+)?[smhd]?)(?=\s)')
 
 
 class StagedDiscoveryError(Exception):
@@ -322,6 +378,169 @@ def is_shell_file(path):
         first.decode("utf-8", "replace").rstrip("\r\n")))
 
 
+## A heredoc opener: '<<WORD', '<< WORD', '<<-WORD' or a quoted delimiter
+## ('<<"EOF"'/"<<'EOF'"). Deliberately NOT '<<<' (a here-string, not a heredoc):
+## after '<<' the next char is '<', not '-'/a quote/a word char, so nothing
+## matches. Anchored per position by re.match in the scanner below.
+## The delimiter charset is PERMISSIVE on purpose: any run of non-space,
+## non-metacharacter bytes (so hyphens, dots, digits-first are all accepted). A
+## MISSED delimiter would treat the heredoc body as code and rewrite it -- the
+## one unsafe direction -- so the match errs toward capturing whatever the '<<'
+## is followed by. An over-broad capture only means a body is (correctly) treated
+## as data.
+HEREDOC_OPEN = re.compile(
+    r'<<-\s*(["\']?)([^\s;&|<>()"\'`]+)\1'
+    r'|<<\s*(["\']?)([^\s;&|<>()"\'`]+)\3')
+
+
+def _scan_quote_only(line, quote):
+    """Advance an already-open multi-line quote across LINE; return the quote
+    char still open at end of line, or '' if it closed."""
+    index = 0
+    while index < len(line):
+        char = line[index]
+        ## Backslash escapes inside "" (not inside ''), so '\"' does not close.
+        if quote == '"' and char == "\\":
+            index += 2
+            continue
+        if char == quote:
+            return ""
+        index += 1
+    return quote
+
+
+def _line_continues(line):
+    """True when LINE ends with an UNESCAPED trailing backslash (an odd run), so
+    the next physical line is a continuation of this command -- its first word is
+    then an argument, never a fresh command."""
+    trailing = len(line) - len(line.rstrip("\\"))
+    return trailing % 2 == 1
+
+
+def _scan_code_line(line):
+    """Scan a depth-0 CODE line; return (quote_open_at_eol, [heredoc, ...],
+    continues) where each heredoc is (terminator, strip_tabs) and `continues` is
+    True if the line ends with a line-continuation backslash OUTSIDE a comment.
+    Tracks '...'/"..." quotes with backslash escapes, stops at a depth-0 '#'
+    comment, tracks arithmetic '(( ))' / '$(( ))' paren depth (so a bit-shift
+    '<<' there is not read as a heredoc, nesting included), and records '<<WORD'
+    heredoc openers (never '<<<'). Arithmetic depth is per-line: a '$((' left
+    open at end of line (a multi-line arithmetic) is NOT carried, so a '<<' on
+    its continuation reads as a (bogus) heredoc and the fixer over-skips -- the
+    SAFE direction (carrying the depth could instead leave a real later heredoc
+    undetected, which would corrupt)."""
+    quote = ""
+    heredocs = []
+    arith = 0
+    broke_at_comment = False
+    index = 0
+    length = len(line)
+    while index < length:
+        char = line[index]
+        if quote:
+            if quote == '"' and char == "\\":
+                index += 2
+                continue
+            if char == quote:
+                quote = ""
+            index += 1
+            continue
+        if char == "\\":
+            index += 2
+            continue
+        ## Quote-open is checked BEFORE arithmetic so a paren inside a quoted
+        ## string ('(( x = "(" ))') does not perturb the arithmetic depth.
+        if char in ('"', "'"):
+            quote = char
+            index += 1
+            continue
+        ## Inside arithmetic only parentheses matter: '<<' is a bit-shift, and
+        ## there are no commands or heredocs to track. Count every paren so a
+        ## NESTED '(a+b)' does not close the context early.
+        if arith > 0:
+            if char == "(":
+                arith += 1
+            elif char == ")":
+                arith -= 1
+            index += 1
+            continue
+        ## '#' opens a comment at the start of a word: line start, or after
+        ## whitespace or a command separator (';' '&' '|' '(') -- NOT mid-word
+        ## ('foo#bar') and NOT after '$' ('$#'). A backslash in the comment tail
+        ## is comment text, not a line-continuation (broke_at_comment below).
+        if char == "#" and (index == 0 or line[index - 1] in " \t;&|("):
+            broke_at_comment = True
+            break
+        ## '((' / '$((' enters arithmetic (two parens' worth of depth).
+        if line[index:index + 2] == "((":
+            arith += 2
+            index += 2
+            continue
+        if line[index:index + 2] == "<<" and line[index:index + 3] != "<<<":
+            match = HEREDOC_OPEN.match(line, index)
+            if match:
+                term = match.group(2) or match.group(4)
+                heredocs.append((term, line[index:index + 3] == "<<-"))
+                index = match.end()
+                continue
+        index += 1
+    ## A trailing backslash continues the line only at quote depth zero and
+    ## outside a comment; inside an open quote the next line is quote data anyway.
+    continues = (quote == "" and not broke_at_comment
+                 and _line_continues(line))
+    return quote, heredocs, continues
+
+
+def code_line_flags(text):
+    """Return one bool per splitlines(keepends=True) line: True = a shell CODE
+    line a structural fixer may rewrite; False = HEREDOC BODY (or its terminator)
+    or a line inside an unterminated multi-line quote -- shell DATA, which a fixer
+    must never rewrite (the HARD SAFETY LINE). Single pass, honoring '<<-' tab
+    strip, permissive heredoc delimiters, backslash escapes and depth-0 '#'
+    comments. Line-continuation ('\' at end of line) is carried: the continued
+    line is treated as DATA.
+
+    Design bias: on ANY uncertainty the classifier leans toward DATA (skip), so
+    the fixer's only failure mode is over-conservatism (a real violation is left
+    for the gate to report), never rewriting data. Known SAFE over-skips: a
+    command continued after an operator ('true && \' then 'timeout 5 cmd' -- the
+    next line IS a command, but it is skipped); a '<<' on the continuation of a
+    multi-line '$(( ... ))'; and '$( )'/backtick subshell bodies. All are
+    reported by the gate.
+
+    Scope: this assumes SYNTACTICALLY VALID shell (balanced quotes and arithmetic
+    parentheses). A MALFORMED script -- an unbalanced arithmetic paren whose match
+    is inside a string ('$(( (")" ))'), an unclosed quote in a parameter
+    expansion ('${var#\'}') -- can leave the scanner mis-stated and is out of
+    scope: such a script does not run and is flagged by shellcheck and the gate
+    anyway. The tooling targets developer mistakes, not adversarial or malformed
+    input (mirrors the guard threat model)."""
+    flags = []
+    heredocs = []
+    quote = ""
+    continued = False
+    for raw in text.splitlines(keepends=True):
+        line = raw.rstrip("\r\n")
+        if heredocs:
+            term, strip_tabs = heredocs[0]
+            probe = line.lstrip("\t") if strip_tabs else line
+            if probe == term:
+                heredocs.pop(0)
+            flags.append(False)
+            continue
+        if quote:
+            flags.append(False)
+            quote = _scan_quote_only(line, quote)
+            continue
+        ## A line continuing the previous command (that line ended with '\') is
+        ## that command's arguments, never a fresh command word -> DATA. It is
+        ## still scanned so a quote/heredoc it opens is tracked.
+        flags.append(not continued)
+        quote, opened, continued = _scan_code_line(line)
+        heredocs.extend(opened)
+    return flags
+
+
 def upgrade_mkdir_mode(text):
     """Per temp-dir mkdir COMMAND (not per line):
       1. upgrade a short '-m <mode>' to the long '--mode=<mode>' within THAT
@@ -334,7 +553,12 @@ def upgrade_mkdir_mode(text):
     only when absent."""
     count = 0
     out = []
-    for line in text.splitlines(keepends=True):
+    flags = code_line_flags(text)
+    for line, is_code in zip(text.splitlines(keepends=True), flags):
+        ## Never rewrite a heredoc body / open-quote line -- it is shell DATA.
+        if not is_code:
+            out.append(line)
+            continue
         if line.lstrip().startswith("#") or not MKDIR_TMP_LINE.search(line):
             out.append(line)
             continue
@@ -394,8 +618,10 @@ def expand_grep_short_quiet(text):
     Idempotent: a long option never re-matches GREP_SHORT_Q."""
     count = 0
     out = []
-    for line in text.splitlines(keepends=True):
-        if "grep" not in line:
+    flags = code_line_flags(text)
+    for line, is_code in zip(text.splitlines(keepends=True), flags):
+        ## Never rewrite a heredoc body / open-quote line -- it is shell DATA.
+        if not is_code or "grep" not in line:
             out.append(line)
             continue
         pieces = []
@@ -434,6 +660,49 @@ def expand_grep_short_quiet(text):
                 pieces.append(newspan)
                 pos = match.end()
                 count += local
+        pieces.append(line[pos:])
+        out.append("".join(pieces))
+    return "".join(out), count
+
+
+def insert_timeout_kill_after(text):
+    """Per timeout COMMAND (not per line): insert '--kill-after=<DURATION>' into
+    a bare 'timeout <DURATION> ...' whose duration is a literal number and which
+    carries no leading options, so SIGTERM is always backed by a SIGKILL.
+    Command position only (TIMEOUT_CMD_POS), bailing on any quote/backslash/'#'
+    before 'timeout' (TIMEOUT_UNSAFE_PREFIX) so a deferred 'x="timeout 5"' is
+    never touched. An option-carrying or non-literal-duration timeout is left for
+    the gate to report. Idempotent: the inserted '--kill-after' makes the next
+    token an option, so a second pass does not re-match."""
+    count = 0
+    out = []
+    flags = code_line_flags(text)
+    for line, is_code in zip(text.splitlines(keepends=True), flags):
+        ## Never rewrite a heredoc body / open-quote line -- it is shell DATA.
+        if not is_code or "timeout" not in line:
+            out.append(line)
+            continue
+        pieces = []
+        pos = 0
+        for match in TIMEOUT_SPAN.finditer(line):
+            ## Safety FIRST (the HARD SAFETY LINE): only rewrite a timeout in an
+            ## UNAMBIGUOUS command position. A quote / backslash / '#' before it
+            ## means quoting or comment structure a regex cannot resolve, so bail
+            ## -- 'timeout' may be string data or a comment. The gate still
+            ## REPORTS a genuine violation.
+            prefix = line[:match.start()]
+            if TIMEOUT_UNSAFE_PREFIX.search(prefix):
+                continue
+            if not TIMEOUT_CMD_POS.search(prefix):
+                continue
+            span = match.group(0)
+            newspan, num = TIMEOUT_BARE_DURATION.subn(
+                r"\1--kill-after=\2 \2", span, count=1)
+            if num:
+                pieces.append(line[pos:match.start()])
+                pieces.append(newspan)
+                pos = match.end()
+                count += num
         pieces.append(line[pos:])
         out.append("".join(pieces))
     return "".join(out), count
@@ -498,6 +767,15 @@ def fix_file(path, check):
         text, num = expand_grep_short_quiet(text)
         if num:
             changes["R-161"] = num
+
+    ## R-200: insert '--kill-after=<N>' into a bare 'timeout <N>' (shell files
+    ## only, mirroring the gate's shell scope, and NOT when the file waives the
+    ## rule -- lockstep with the gate). Option-carrying or non-literal forms are
+    ## left for the gate to report.
+    if is_shell_file(path) and not TIMEOUT_WAIVER_RE.search(text):
+        text, num = insert_timeout_kill_after(text)
+        if num:
+            changes["R-200"] = num
 
     if text == original:
         return {}
