@@ -75,7 +75,10 @@ fail() {
    printf '%s\n' "FAIL: $1"
 }
 
-raw_depends="$(grep-dctrl --show-field=Depends --no-field-names '' "${control}")"
+## BOTH Depends AND Pre-Depends: a non-installable name in either makes the .deb
+## uninstallable, so both must clear these checks -- omitting Pre-Depends would be a
+## FALSE GREEN (a bad Pre-Depends passing) of exactly the class this test catches.
+raw_depends="$(grep-dctrl --show-field=Depends,Pre-Depends --no-field-names '' "${control}")"
 
 ## --- Alternatives: no '|' in Depends ---
 ## here-string, not a pipe: a quiet grep on the reading end of a pipe is R-161.
