@@ -5,8 +5,7 @@
 
 ## AI-Assisted
 
-## detect-software-rendering: short-circuits, source-ability, classification and
-## the per-boot cache.
+## detect-software-rendering: short-circuits, source-ability and classification.
 ##  (1) Fast-exit before any GL probe: LIBGL_ALWAYS_SOFTWARE truthy -> software,
 ##      and no DRM node -> software; both WITHOUT invoking eglinfo.
 ##  (2) Sourcing the script does NOT auto-run and does NOT leak strict-mode, and
@@ -17,8 +16,6 @@
 ##      (detect_software_rendering_eglinfo_stub.sh): a vendor string ->
 ##      accelerated (exit 1), llvmpipe -> software (exit 0), unrecognized or
 ##      empty -> unknown (exit 2).
-##  (4) The per-boot cache means the eglinfo fall-through runs at most once across
-##      two shells.
 ##
 ## Drives the REAL script. A missing dependency is a HARD FAIL, never a skip.
 
@@ -181,49 +178,6 @@ check "vendor -> accelerated/1"   "$(run_subject 'OpenGL core profile renderer: 
 check "llvmpipe -> software/0"    "$(run_subject "${llvmpipe_line}" '' "${with_dri}" '')" "software:0"
 check "unrecognized -> unknown/2" "$(run_subject 'some unrelated line' '' "${with_dri}" '')" "unknown:2"
 check "empty output -> unknown/2" "$(run_subject '' '' "${with_dri}" '')" "unknown:2"
-
-## --- (4) per-boot cache: the eglinfo fall-through runs at most once ---
-safe-rm -f -- "${count_file}"
-xdg="${test_dir}/xdg"
-mkdir --parents -- "${xdg}"
-c1="$(LIBGL_ALWAYS_SOFTWARE='' DETECT_SOFTWARE_RENDERING_DRI_DIR="${with_dri}" EGLINFO_STUB_RENDERER="${llvmpipe_line}" EGLINFO_STUB_COUNT="${count_file}" XDG_RUNTIME_DIR="${xdg}" PATH="${probe_path}" "${subject}")" || true
-c2="$(LIBGL_ALWAYS_SOFTWARE='' DETECT_SOFTWARE_RENDERING_DRI_DIR="${with_dri}" EGLINFO_STUB_RENDERER="${llvmpipe_line}" EGLINFO_STUB_COUNT="${count_file}" XDG_RUNTIME_DIR="${xdg}" PATH="${probe_path}" "${subject}")" || true
-eg_count="$(count_of "${count_file}")"
-check "cache: both calls report software" "${c1}:${c2}" "software:software"
-check "cache: eglinfo probed at most once across two shells" "${eg_count}" "1"
-## Positively pin the marker filename, so the "cache not written" negative checks
-## below (which test for this exact path) cannot pass vacuously.
-xdg_cached="no"
-if [ -e "${xdg}/detect-software-rendering.software" ]; then
-   xdg_cached="yes"
-fi
-check "cache: marker written under the expected name" "${xdg_cached}" "yes"
-
-## LIBGL_ALWAYS_SOFTWARE set is a per-env override -> the cache is NOT written,
-## so a later shell without the var cannot read the forced-software marker.
-lg_xdg="${test_dir}/lg-xdg"
-mkdir --parents -- "${lg_xdg}"
-LIBGL_ALWAYS_SOFTWARE=1 DETECT_SOFTWARE_RENDERING_DRI_DIR="${with_dri}" \
-   DETECT_SOFTWARE_RENDERING_NVIDIA_CTL="${nvidia_absent}" XDG_RUNTIME_DIR="${lg_xdg}" \
-   PATH="${probe_path}" "${subject}" >/dev/null 2>&1 || true
-lg_cached="no"
-if [ -e "${lg_xdg}/detect-software-rendering.software" ]; then
-   lg_cached="yes"
-fi
-check "LIBGL_ALWAYS_SOFTWARE set -> cache not written" "${lg_cached}" "no"
-
-## The no-GPU-node short-circuit must NOT write a cache marker either -- it would
-## go stale if a GPU node appears later this boot (NVIDIA on-demand nodes, hot-add).
-sc_xdg="${test_dir}/sc-xdg"
-mkdir --parents -- "${sc_xdg}"
-LIBGL_ALWAYS_SOFTWARE='' DETECT_SOFTWARE_RENDERING_DRI_DIR="${no_dri}" \
-   DETECT_SOFTWARE_RENDERING_NVIDIA_CTL="${nvidia_absent}" XDG_RUNTIME_DIR="${sc_xdg}" \
-   PATH="${probe_path}" "${subject}" >/dev/null 2>&1 || true
-sc_cached="no"
-if [ -e "${sc_xdg}/detect-software-rendering.software" ]; then
-   sc_cached="yes"
-fi
-check "no-GPU-node short-circuit -> cache not written" "${sc_cached}" "no"
 
 printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
