@@ -83,6 +83,12 @@ no_dri="${test_dir}/no-dri"
 mkdir --parents -- "${with_dri}" "${no_dri}"
 touch -- "${with_dri}/renderD128"
 
+## NVIDIA control-node seam: an absent path (default for run_subject, so the
+## no-DRM cases short-circuit) and a present one (for the fall-through case).
+nvidia_absent="${test_dir}/no-nvidiactl"
+nvidia_present="${test_dir}/nvidiactl"
+touch -- "${nvidia_present}"
+
 ## The subject resolves its own libs via HELPER_SCRIPTS_PATH.
 export HELPER_SCRIPTS_PATH="${HELPER_SCRIPTS_REPO}"
 
@@ -129,6 +135,7 @@ run_subject() {
    count="$4"
    rc=0
    out="$(LIBGL_ALWAYS_SOFTWARE="${libgl}" DETECT_SOFTWARE_RENDERING_DRI_DIR="${dri_dir}" \
+      DETECT_SOFTWARE_RENDERING_NVIDIA_CTL="${nvidia_absent}" \
       EGLINFO_STUB_RENDERER="${line}" EGLINFO_STUB_COUNT="${count}" \
       XDG_RUNTIME_DIR='' PATH="${probe_path}" "${subject}")" || rc=$?
    printf '%s\n' "${out}:${rc}"
@@ -144,6 +151,15 @@ safe-rm -f -- "${count_file}"
 sc2="$(run_subject "${llvmpipe_line}" '' "${no_dri}" "${count_file}")"
 check "no DRM node -> software/0" "${sc2}" "software:0"
 check "no-DRM short-circuit does not invoke eglinfo" "$(count_of "${count_file}")" "0"
+
+## NVIDIA control node present with no DRM node -> NOT short-circuited; falls
+## through to eglinfo (proprietary NVIDIA renders via /dev/nvidia*, not a DRM node).
+nv_rc=0
+nv_out="$(LIBGL_ALWAYS_SOFTWARE='' DETECT_SOFTWARE_RENDERING_DRI_DIR="${no_dri}" \
+   DETECT_SOFTWARE_RENDERING_NVIDIA_CTL="${nvidia_present}" \
+   EGLINFO_STUB_RENDERER='OpenGL core profile renderer: NVIDIA GeForce' \
+   XDG_RUNTIME_DIR='' PATH="${probe_path}" "${subject}")" || nv_rc=$?
+check "NVIDIA node present, no DRM -> falls through to eglinfo" "${nv_out}:${nv_rc}" "accelerated:1"
 
 ## --- (2) source-ability: no auto-run, no strict leak, pure + defined ---
 src_out=""
