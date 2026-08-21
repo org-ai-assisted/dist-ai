@@ -156,6 +156,18 @@ def m_strip(args):
     return out
 
 
+## --- output guards: the properties the enumeration asserts on the REAL bash.
+## Named so the canaries below exercise the SAME predicate (no drift between the
+## guard that gates a real run and the guard a canary claims to cover). ---
+
+def _percent_in_range(text):
+    return text.isdigit() and 0 <= int(text) <= 100
+
+
+def _verdict_ok(text):
+    return text in ("0", "81", "113", "114")
+
+
 ## --- run the REAL bash functions over a batch (source curl-prgrs once) ---
 
 def _bash_lines(subject, env, body):
@@ -214,15 +226,22 @@ def t1_enumerate(subject, env):
         want = m_compute_percent(b, length)
         if g != str(want):
             fail("T1 enumerate: compute_percent %d %d -> bash %s, model %d" % (b, length, g, want))
-        if not (g.isdigit() and 0 <= int(g) <= 100):
+        if not _percent_in_range(g):
             fail("T1 enumerate: compute_percent %d %d -> out-of-range %s" % (b, length, g))
+
+
+def _unclamped_percent(bytes_v, length_v):
+    """Broken: forgets the ceiling clamp, so bytes > length exceeds 100."""
+    if length_v <= 0:
+        return 100
+    return bytes_v * 100 // length_v
 
 
 def t1_canaries():
     _expect_caught("T1/z3-clamp", not t1_z3(broken=True))
-    ## the model itself must reject an out-of-range claim
-    _expect_caught("T1/model-range", m_compute_percent(200, 100) == 100 and
-                   not (m_compute_percent(200, 100) > 100))
+    ## An unclamped compute_percent(200, 100) -> 200 must FAIL the range guard;
+    ## if it were (wrongly) clamped, _percent_in_range accepts it and this fails.
+    _expect_caught("T1/model-range", not _percent_in_range(str(_unclamped_percent(200, 100))))
 
 
 ## ========================= T2: classify_download_size =======================
@@ -270,13 +289,23 @@ def t2_enumerate(subject, env):
         want = m_classify(s, mx, cl)
         if g != str(want):
             fail("T2 enumerate: classify %r %d %d -> bash %s, model %d" % (s, mx, cl, g, want))
-        if g not in ("0", "81", "113", "114"):
+        if not _verdict_ok(g):
             fail("T2 enumerate: classify %r %d %d -> bad verdict %s" % (s, mx, cl, g))
+
+
+def _bogus_verdict_classify(downloaded, max_v, cl_v):
+    """Broken: emits an undocumented verdict for the non-whole (113) path."""
+    if not _is_whole(downloaded):
+        return 999
+    return m_classify(downloaded, max_v, cl_v)
 
 
 def t2_canaries():
     _expect_caught("T2/z3-precedence", not t2_z3(broken=True))
-    _expect_caught("T2/model-113", m_classify("x", 100, 100) == 113)
+    ## A classify that emits an undocumented verdict for garbage input must FAIL
+    ## the verdict-set guard; a model returning a real {0,81,113,114} would pass
+    ## it and this canary would fail.
+    _expect_caught("T2/verdict-set", not _verdict_ok(str(_bogus_verdict_classify("x", 100, 100))))
 
 
 ## ================== T3: remove_argument_for_header_request ==================
@@ -322,11 +351,25 @@ def t3_enumerate(subject, env):
             fail("T3 enumerate: strip %r -> %r is not a subsequence" % (list(args), out))
 
 
+def _leaky_strip(args):
+    """Broken: drops the recognized flag but KEEPS the value that follows it."""
+    return [a for a in args if a not in _STRIP_FLAGS]
+
+
+def _injecting_strip(args):
+    """Broken: appends an argument absent from the input (not a subsequence)."""
+    return m_strip(args) + ["--injected"]
+
+
 def t3_canaries():
-    ## the model drops recognized flag+value pairs and preserves plain args.
-    _expect_caught("T3/model-strip", m_strip(["-o", "/f", "url"]) == ["url"])
+    ## A strip that keeps a flag's value (["-o","/f","url"] -> ["/f","url"]) must
+    ## DIFFER from the correct model ["url"] -- the enumeration's equality guard
+    ## catches it; if _leaky_strip also dropped the value this canary would fail.
+    _expect_caught("T3/model-strip",
+                   _leaky_strip(["-o", "/f", "url"]) != m_strip(["-o", "/f", "url"]))
+    ## A strip that injects an argument must FAIL the subsequence guard.
     _expect_caught("T3/model-subseq",
-                   _is_subsequence(m_strip(["-o", "/f", "url", "-sSL"]), ["-o", "/f", "url", "-sSL"]))
+                   not _is_subsequence(_injecting_strip(["-o", "/f", "url"]), ["-o", "/f", "url"]))
 
 
 def main():
