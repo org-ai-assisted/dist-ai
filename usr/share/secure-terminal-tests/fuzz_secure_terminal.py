@@ -190,13 +190,6 @@ def phase_lines(rnd, iterations, seed):
                 seed)
         ## feeding the resulting state again must not raise
         S.feed_line_edits(cells, col, sgr, text, max_line)
-        ## legacy bulk editor
-        line = _rand_text(rnd, max_tokens=8)
-        completed, cur, newcol = S.apply_line_edits(
-            line, rnd.randint(0, len(line)), text, rnd.randint(0, 200))
-        _assert(0 <= newcol <= len(cur),
-                'apply_line_edits cursor out of bounds on {0!r}'.format(text),
-                seed)
         ## per-cell TUI sanitizer: any control in the cell -> neutralized to the
         ## single-column BOX placeholder (matches CLI box/show rendering)
         cell = ''.join(rnd.choice(_DANGER + _TEXT) for _ in range(rnd.randint(0,

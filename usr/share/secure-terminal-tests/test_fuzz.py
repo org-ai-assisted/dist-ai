@@ -250,18 +250,6 @@ def prop_feed_line_edits_vt(raw, max_line):
 
 
 @RUN
-@given(st.text(max_size=40), VT, st.integers(min_value=0, max_value=64),
-       st.integers(min_value=0, max_value=128))
-def prop_apply_line_edits_vt(line, chunk, col, max_line):
-    # the line editor fed escape-rich input: cursor CSI ops (C/D/G/K), SGR folds
-    # and stripped escapes must not raise or lose a completed line.
-    completed, cur, newcol = S.apply_line_edits(line, min(col, len(line)),
-                                                chunk, max_line)
-    assert isinstance(completed, list) and isinstance(cur, str)
-    assert 0 <= newcol <= len(cur)
-
-
-@RUN
 @given(st.integers(min_value=-16, max_value=300))
 def prop_color_256(idx):
     # the whole 256-colour map: <0 or >255 -> None, 0..15 a palette index, the
@@ -484,20 +472,6 @@ def prop_ipc_framer(chunks):
 
 
 @RUN
-@given(st.text(max_size=64), st.text(max_size=64),
-       st.integers(min_value=0, max_value=64),
-       st.integers(min_value=0, max_value=128))
-def prop_apply_line_edits(line, text, col, max_line):
-    # the legacy bulk line-editor: any (line, cursor, chunk) must not raise, the
-    # cursor stays within the line, and no completed line is lost.
-    completed, cur, newcol = S.apply_line_edits(line, min(col, len(line)),
-                                                text, max_line)
-    assert isinstance(completed, list) and isinstance(cur, str)
-    assert all(isinstance(c, str) for c in completed)
-    assert 0 <= newcol <= len(cur)
-
-
-@RUN
 @given(st.text())
 def prop_settings_parse(text):
     # a config drop-in with arbitrary contents must parse to a str->str dict and
@@ -613,7 +587,6 @@ PROPS = [
     ('sanitize_bytes', prop_sanitize_bytes),
     ('describe_codepoint', prop_describe_codepoint),
     ('ipc_framer', prop_ipc_framer),
-    ('apply_line_edits', prop_apply_line_edits),
     ('settings_parse', prop_settings_parse),
     ('session_load', prop_session_load),
     ('read_rules', prop_read_rules),
@@ -635,7 +608,6 @@ PROPS = [
     ('parse_sgr_extended', prop_parse_sgr_extended),
     ('render_output_vt', prop_render_output_vt),
     ('feed_line_edits_vt', prop_feed_line_edits_vt),
-    ('apply_line_edits_vt', prop_apply_line_edits_vt),
     ('color_256', prop_color_256),
     ('parse_sgr_colours', prop_parse_sgr_colours),
     ('marking_class', prop_marking_class),
