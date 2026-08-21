@@ -1224,6 +1224,105 @@ finally:
     QMessageBox.information = _o_info
     QMessageBox.warning = _o_warn
 
+# --- clipboard-sanitizer controls (menu / setters / systray coupling) ----------
+from secure_terminal import clipboard_watch as _cw                # noqa: E402
+from PyQt6.QtCore import QProcess                                  # noqa: E402
+from PyQt6.QtWidgets import QMenu                                  # noqa: E402
+
+_cw_saved = (_cw.is_running, _cw.stop_running, _cw.push_warn_any,
+             _cw.set_autostart, _cw.autostart_enabled)
+_o_startdet = QProcess.startDetached
+_o_avail_c = QSystemTrayIcon.isSystemTrayAvailable
+_calls = {}
+try:
+    _cw.is_running = lambda: _calls.get('running', False)
+    _cw.stop_running = lambda: _calls.__setitem__('stopped', True)
+    _cw.push_warn_any = lambda v: _calls.__setitem__('pushed', v)
+    _cw.set_autostart = lambda v: _calls.__setitem__('autostart', v)
+    _cw.autostart_enabled = lambda: _calls.get('autostart_state', True)
+    QProcess.startDetached = staticmethod(
+        lambda *a, **k: _calls.__setitem__('launched', True))
+
+    _calls.clear(); _calls['running'] = False
+    win.set_clip_run(True)
+    ok('launched' in _calls, 'clip: set_clip_run(True) launches the daemon when absent')
+    _calls.clear(); _calls['running'] = True
+    win.set_clip_run(True)
+    ok('launched' not in _calls, 'clip: set_clip_run(True) idempotent when already running')
+    _calls.clear()
+    win.set_clip_run(False)
+    ok(_calls.get('stopped'), 'clip: set_clip_run(False) stops the daemon')
+
+    win.set_clip_warn_any(True)
+    ok(win._clip_warn_any is True, 'clip: set_clip_warn_any records the setting')
+    eq(_calls.get('pushed'), True, 'clip: set_clip_warn_any live-updates the daemon')
+    win.set_clip_warn_any(False)
+
+    QSystemTrayIcon.isSystemTrayAvailable = staticmethod(lambda: True)
+    win._systray = True
+    ok(win._clip_controls_enabled(), 'clip: controls enabled when systray on + available')
+    win._systray = False
+    ok(not win._clip_controls_enabled(), 'clip: controls disabled when systray off')
+    QSystemTrayIcon.isSystemTrayAvailable = staticmethod(lambda: False)
+    win._systray = True
+    ok(not win._clip_controls_enabled(), 'clip: controls disabled when no tray available')
+
+    # set_clip_autostart is gated on the controls; off always applies
+    win._systray = False
+    _calls.pop('autostart', None)
+    win.set_clip_autostart(True)
+    ok('autostart' not in _calls, 'clip: set_clip_autostart(True) refused with no tray')
+    QSystemTrayIcon.isSystemTrayAvailable = staticmethod(lambda: True)
+    win._systray = True
+    win.set_clip_autostart(True)
+    eq(_calls.get('autostart'), True, 'clip: autostart on when controls enabled')
+    win.set_clip_autostart(False)
+    eq(_calls.get('autostart'), False, 'clip: autostart off always applies')
+
+    # populate both tooltip branches + the context-menu injection
+    win._systray = False
+    _m = QMenu()
+    win._populate_clipboard_menu(_m)
+    ok(len(_m.actions()) >= 4, 'clip: menu populated (disabled-controls branch)')
+    win._systray = True
+    _m2 = QMenu()
+    win._populate_clipboard_menu(_m2)
+    ok(len(_m2.actions()) >= 4, 'clip: menu populated (enabled-controls branch)')
+    _ctxmenu = QMenu()
+    win.add_terminal_context_actions(_ctxmenu)
+    ok(any(a.text() == 'System tray icon' for a in _ctxmenu.actions()),
+       'clip: context menu gains the system-tray toggle')
+
+    # systray coupling: turning the tray OFF clears clipboard autostart only when on
+    QSystemTrayIcon.isSystemTrayAvailable = _o_avail_c
+    win._systray = False
+    _calls.clear(); _calls['autostart_state'] = True
+    win.set_systray(False)
+    eq(_calls.get('autostart'), False,
+       'clip: disabling systray clears clipboard autostart')
+    _calls.clear(); _calls['autostart_state'] = False
+    win.set_systray(False)
+    ok('autostart' not in _calls,
+       'clip: disabling systray leaves an already-off autostart alone')
+
+    # Review-now builds an in-process reviewer for the current clipboard
+    APP.clipboard().setText('deceptive \u202e text')
+    win._clip_review_now()
+    ok(win._clip_reviewer is not None, 'clip: Review-now builds an in-process reviewer')
+    win._clip_reviewer._popup.hide()
+finally:
+    (_cw.is_running, _cw.stop_running, _cw.push_warn_any,
+     _cw.set_autostart, _cw.autostart_enabled) = _cw_saved
+    QProcess.startDetached = _o_startdet
+    QSystemTrayIcon.isSystemTrayAvailable = _o_avail_c
+    win._systray = False
+
+# a tab terminal's right-click menu gains the app toggles through its MainWindow
+from PyQt6.QtCore import QPoint                                    # noqa: E402
+_rcmenu = win.current()._reviewed_context_menu(QPoint(0, 0))
+ok(any(a.text() == 'System tray icon' for a in _rcmenu.actions()),
+   'context menu: a tab terminal gains the app toggles via its window')
+
 # icon helpers build an icon (themed, path, or letter fallback)
 ok(M._app_icon() is not None, '_app_icon returns an icon')
 ok(M._letter_icon('A', '#3b82f6') is not None, '_letter_icon renders a fallback icon')
