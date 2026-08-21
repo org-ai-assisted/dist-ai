@@ -203,23 +203,34 @@ check "curl_exit clears the published curl PID" "$("${probe_script}" pidfile_cle
 check "shutdown err + no statusfile -> 112"       "$(probe_rc shutdown err NOFILE 0 true no)"   "112"
 check "shutdown err + specific status 81 -> 81 (code survives)" \
    "$(probe_rc shutdown err 81 0 true no)" "81"
+## Any abnormal signal -- anything but the clean 'exit' -- with a recorded 0
+## status resolves to the generic 110: a process killed mid-run must never report
+## success. The SIGTERM/SIGINT/SIGHUP arms guard the false-success race where a
+## header curl_exit recorded 0 and a signal arrives before the body completes.
 check "shutdown err + status 0 -> 110 (generic, not false success)" \
    "$(probe_rc shutdown err 0 0 true no)" "110"
-check "shutdown exit + status 0 -> 0"             "$(probe_rc shutdown exit 0 0 true no)"        "0"
-check "shutdown sigterm + status 7 -> 7"          "$(probe_rc shutdown sigterm 7 0 true no)"     "7"
+check "shutdown sigterm + status 0 -> 110 (killed mid-download is not success)" \
+   "$(probe_rc shutdown sigterm 0 0 true no)" "110"
+check "shutdown sighup + status 0 -> 110" \
+   "$(probe_rc shutdown sighup 0 0 true no)" "110"
+check "shutdown exit + status 0 -> 0 (only the clean path reports success)" \
+   "$(probe_rc shutdown exit 0 0 true no)" "0"
+check "shutdown sigterm + status 7 -> 7 (recorded code survives)" \
+   "$(probe_rc shutdown sigterm 7 0 true no)" "7"
 check "shutdown exit + non-numeric status -> 111" "$(probe_rc shutdown exit garbage 0 true no)"  "111"
-check "shutdown sigint + status 0 + live pid + no auto temp -> 0" \
-   "$(probe_rc shutdown sigint 0 0 false live)" "0"
+check "shutdown sigint + status 0 + live pid + no auto temp -> 110" \
+   "$(probe_rc shutdown sigint 0 0 false live)" "110"
 
 ## ============================================================
 ## (H) shutdown_* trap wrappers -- each forwards to shutdown.
 ## ============================================================
-check "wrapper shutdown_sigint"  "$(probe_rc wrapper shutdown_sigint)"  "0"
-check "wrapper shutdown_sigterm" "$(probe_rc wrapper shutdown_sigterm)" "0"
-check "wrapper shutdown_sighup"  "$(probe_rc wrapper shutdown_sighup)"  "0"
-check "wrapper shutdown_exit"    "$(probe_rc wrapper shutdown_exit)"    "0"
-## shutdown_err takes the ERR arm: the generic 110 wins over the status 0.
-check "wrapper shutdown_err -> 110" "$(probe_rc wrapper shutdown_err)"  "110"
+## Every signal wrapper but shutdown_exit resolves a clean-0 status file to the
+## generic 110 -- only the normal 'exit' path may report success.
+check "wrapper shutdown_sigint -> 110"  "$(probe_rc wrapper shutdown_sigint)"  "110"
+check "wrapper shutdown_sigterm -> 110" "$(probe_rc wrapper shutdown_sigterm)" "110"
+check "wrapper shutdown_sighup -> 110"  "$(probe_rc wrapper shutdown_sighup)"  "110"
+check "wrapper shutdown_exit -> 0"      "$(probe_rc wrapper shutdown_exit)"    "0"
+check "wrapper shutdown_err -> 110"     "$(probe_rc wrapper shutdown_err)"     "110"
 
 ## ============================================================
 ## (I) check_variables -- the two mandatory-variable guards and the happy path.
