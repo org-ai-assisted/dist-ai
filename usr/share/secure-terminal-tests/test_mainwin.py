@@ -1100,6 +1100,22 @@ try:
     finally:
         del os.environ['SECURE_TERMINAL_SHOT']
         APP.setCursorFlashTime(_o_flash)
+
+    # --clipboard-watch: the tray-only clipboard sanitizer, dispatched early in
+    # main() (opening no terminal window). With no system tray (offscreen) its
+    # run() returns 1; this covers the dispatch branch and _clipboard_watch_main.
+    # Placed AFTER the delicate threaded-handoff + shot tests so it cannot perturb
+    # them (see the note above).
+    _o_qlwc = APP.quitOnLastWindowClosed()
+    sys.argv = ['secure-terminal', '--clipboard-watch']
+    eq(_main(), 1, 'main: --clipboard-watch runs the tray sanitizer (no tray -> 1)')
+    APP.setQuitOnLastWindowClosed(_o_qlwc)
+    # its own font-missing abort (like the normal path, it fails loud before Qt work)
+    M.QFontDatabase = _FontDBAbsent
+    with _ctx.redirect_stderr(_io.StringIO()):
+        eq(_main(), 1,
+           'main: --clipboard-watch aborts (exit 1) when the default font is missing')
+    M.QFontDatabase = _FontDBPresent
 finally:
     sys.argv = _o_argv
     M.ipc.send_request = _o_sr
