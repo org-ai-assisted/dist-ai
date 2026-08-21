@@ -36,6 +36,11 @@ shopt -s shift_verbose
 ## char in Depends (e.g. 'Depends: *') must stay literal to be judged, never
 ## expand against the CWD.
 set -o noglob
+## C locale for the WHOLE script: the well-formed-name check uses [a-z0-9] glob ranges
+## whose membership is collation-dependent (under some locales [a-z] also matches
+## uppercase, so an invalid 'Foobar' would read well-formed), and apt output must be
+## stable to parse. One export covers both, so no per-command LC_ALL=C is needed.
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -92,9 +97,12 @@ fi
 ## '[...]', substvars '${...}', and the multiarch ':qualifier' suffix (python3:any),
 ## so both the well-formed check and the candidate lookup see the bare name -- the
 ## same shape deb-run-dep hands to apt.
-depends_names="$(printf '%s\n' "${raw_depends}" \
+## Join continuation lines FIRST (tr '\n'), so a version '(...)' folded across a line
+## boundary is stripped as one by the line-oriented sed.
+depends_names="$(printf '%s' "${raw_depends}" \
+   | tr '\n' ' ' \
    | sed -e 's/,/ /g' -e 's/([^)]*)//g' -e 's/\[[^]]*\]//g' -e 's/${[^}]*}//g' -e 's/:[a-z0-9-]*//g' \
-   | tr -s ' \n' ' ')"
+   | tr -s ' ' ' ')"
 
 ## --- Denylist ---
 deny_hit=''
@@ -134,15 +142,19 @@ else
 fi
 
 ## --- The declared set installs together (REQUIRED, never a silent green) ---
-## Faithful to what deb-run-dep actually does: apt-install the whole Depends set in
-## one '--no-install-recommends' call. Gate on the EXIT CODE, not on parsed output,
-## so this is locale-independent (apt-cache's 'Candidate:' label is gettext-translated,
-## e.g. 'Candidat :' under fr_FR) and correct for virtual packages / providers (apt
-## resolves a single-provider virtual, and aborts a multi-provider one exactly as
-## deb-run-dep would). LC_ALL=C for a stable message; 'apt-get --simulate' needs no root.
-if ! type -P apt-get >/dev/null; then
+## Faithful to what deb-run-dep actually does: apt-install the whole set in one
+## '--no-install-recommends' call, gated on the EXIT CODE (not parsed output) -- so it
+## is correct for virtual packages / providers (apt resolves a single-provider virtual,
+## and aborts a multi-provider one exactly as deb-run-dep would). 'apt-get --simulate'
+## needs no root. (LC_ALL=C is set script-wide in the preamble.)
+if [ -z "${depends_names// /}" ]; then
+   ## Only substvars (e.g. ${misc:Depends}) -> no explicit names to verify. Trivially
+   ## installable, and do NOT hand apt-get an empty operand list (behaviour varies by
+   ## apt version). The other checks above equally no-op here, so this masks nothing new.
+   pass 'no explicit Depends/Pre-Depends names to verify (substvars only)'
+elif ! type -P apt-get >/dev/null; then
    fail 'apt-get not on PATH; cannot verify Depends installability'
-elif ! LC_ALL=C apt-get install --simulate --no-install-recommends -- bash helper-scripts >/dev/null 2>&1; then
+elif ! apt-get install --simulate --no-install-recommends -- bash helper-scripts >/dev/null 2>&1; then
    ## Sentinel: a Debian package (bash) and a Kicksecure one (helper-scripts, itself a
    ## declared Depends) must resolve, proving the apt lists are populated for BOTH
    ## archives. Without it, a minimal container with cleaned/absent lists would fail a
@@ -152,7 +164,7 @@ elif ! LC_ALL=C apt-get install --simulate --no-install-recommends -- bash helpe
 else
    ## noglob (set above) lets ${depends_names} split into args without expanding.
    # shellcheck disable=SC2086
-   if sim_out="$(LC_ALL=C apt-get install --simulate --no-install-recommends -- ${depends_names} 2>&1)"; then
+   if sim_out="$(apt-get install --simulate --no-install-recommends -- ${depends_names} 2>&1)"; then
       pass 'the declared Depends set installs together (apt-get --simulate)'
    else
       fail 'the declared Depends set does not install together (apt-get --simulate); apt says:'
