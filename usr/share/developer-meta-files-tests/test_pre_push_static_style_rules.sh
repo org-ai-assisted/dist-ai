@@ -1420,6 +1420,11 @@ printf '%s\n' \
    '// style-ok: allow-embedded-script' \
    "DPkg::Post-Invoke {\"a${sc} b\"}${sc}" \
    > "${apt_repo}/etc/apt/apt.conf.d/40waived"
+## A '|' that is DATA inside a quoted grep pattern, plus '|| true' glue, is a
+## single command -- the defang must keep R-194 from over-blocking it.
+printf '%s\n' \
+   "DPkg::Post-Invoke {\"grep -E 'foo|bar' /etc/x || true\"}${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/50good-quoted-pipe"
 git -C "${apt_repo}" add --all
 git -C "${apt_repo}" commit --quiet --no-verify --message apt
 apt_out="$( cd -- "${apt_repo}" && "${GATE}" "${apt_base}" 2>&1 || true )"
@@ -1457,6 +1462,12 @@ if grep --quiet --fixed-strings -- '40waived' <<< "${apt_hits}"; then
 else
    printf '%s\n' 'PASS: R-194 honours the allow-embedded-script waiver'
 fi
+if grep --quiet --fixed-strings -- '50good-quoted-pipe' <<< "${apt_hits}"; then
+   printf '%s\n' 'FAIL: R-194 over-blocked a "|" inside a quoted grep pattern' >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' 'PASS: R-194 defangs a "|" inside a quoted value'
+fi
 
 ## R-195: a cron entry must not embed a multi-statement command. A ';'-separated
 ## or piped command is FLAGGED; the stock-Debian 'cd / && run-parts' and 'test
@@ -1491,6 +1502,17 @@ printf '%s\n' \
    '# scheduled cleanup' \
    '@daily root /usr/local/bin/clean' \
    > "${cron_repo}/etc/cron.d/good-env"
+## Single commands whose ';' / '|' is DATA, not a separator: an escaped 'find
+## -exec ... \;' terminator and a '|' inside a quoted awk pattern. The defang
+## must keep R-195 from over-blocking these ordinary idioms.
+## '${tmpp}' (=/tmp) and '${del}' (=rm) are assembled at run time so the literal
+## '/tmp' / 'rm' the gate flags (R-170 / R-120) never appears in THIS file.
+printf '%s\n' \
+   "0 3 * * * root find ${tmpp} -type f -mtime +7 -exec ${del} -- {} \\;" \
+   > "${cron_repo}/etc/cron.d/good-find-exec"
+printf '%s\n' \
+   "0 4 * * * root awk '/foo|bar/{print}' /var/log/x" \
+   > "${cron_repo}/etc/cron.d/good-awk-pipe"
 git -C "${cron_repo}" add --all
 git -C "${cron_repo}" commit --quiet --no-verify --message cron
 cron_out="$( cd -- "${cron_repo}" && "${GATE}" "${cron_base}" 2>&1 || true )"
@@ -1519,6 +1541,18 @@ if grep --quiet --fixed-strings -- 'good-ortest' <<< "${cron_hits}"; then
    failures=$((failures + 1))
 else
    printf '%s\n' 'PASS: R-195 spares the stock "test || ( ... )" glue'
+fi
+if grep --quiet --fixed-strings -- 'good-find-exec' <<< "${cron_hits}"; then
+   printf '%s\n' 'FAIL: R-195 over-blocked an escaped "find -exec ... \;" terminator' >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' 'PASS: R-195 defangs an escaped "\;" find terminator'
+fi
+if grep --quiet --fixed-strings -- 'good-awk-pipe' <<< "${cron_hits}"; then
+   printf '%s\n' 'FAIL: R-195 over-blocked a "|" inside a quoted awk pattern' >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' 'PASS: R-195 defangs a "|" inside a quoted pattern'
 fi
 if grep --quiet --fixed-strings -- 'good-env' <<< "${cron_hits}"; then
    printf '%s\n' 'FAIL: R-195 flagged an env assignment / single-command entry' >&2

@@ -2022,8 +2022,32 @@ config_value_embeds_script() {
    ## ';'-separated sequence or a pipe is the unambiguous "a script was inlined"
    ## signal. Shared by R-194 (apt) and R-195 (cron); NOT R-191, which is
    ## stricter because systemd has a native directive for each such construct.
+   ##
+   ## DEFANG first: a ';' or '|' that is DATA, not a shell separator, must not
+   ## trip the rule -- an escaped 'find ... -exec rm {} \;' terminator, or a
+   ## quoted 'awk "/foo|bar/"' / "grep -E 'a|b'" pattern. Strip backslash
+   ## escapes, then single/double-quoted spans, '$(...)', and backticks (the
+   ## same bounded defang R-030 uses at ~1256-1267). This is NOT a shell parser:
+   ## it only ever DELETES data, so it can MISS a separator hidden inside a quote
+   ## (a documented fail-OPEN, e.g. cron 'sh -c "a; b"'), never over-block a
+   ## valid single command. Each pass strictly shortens the string -> terminates.
    local value stripped
    value="$1"
+   while [[ "${value}" =~ \\. ]]; do
+      value="${value//"${BASH_REMATCH[0]}"/}"
+   done
+   while [[ "${value}" =~ \'[^\']*\' ]]; do
+      value="${value//"${BASH_REMATCH[0]}"/}"
+   done
+   while [[ "${value}" =~ \"[^\"]*\" ]]; do
+      value="${value//"${BASH_REMATCH[0]}"/}"
+   done
+   while [[ "${value}" =~ \$\([^()]*\) ]]; do
+      value="${value//"${BASH_REMATCH[0]}"/}"
+   done
+   while [[ "${value}" =~ \`[^\`]*\` ]]; do
+      value="${value//"${BASH_REMATCH[0]}"/}"
+   done
    case "${value}" in
       *';'*)
          return 0
