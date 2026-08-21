@@ -1425,6 +1425,12 @@ printf '%s\n' \
 printf '%s\n' \
    "DPkg::Post-Invoke {\"grep -E 'foo|bar' /etc/x || true\"}${sc}" \
    > "${apt_repo}/etc/apt/apt.conf.d/50good-quoted-pipe"
+## A non-hook setting whose quoted VALUE merely mentions a hook keyword (and a
+## ';') must not be read as a hook -- the directive detect defangs the line first,
+## so the keyword inside the value does not count.
+printf '%s\n' \
+   "Acquire::http::User-Agent \"mentions Post-Invoke and a${sc} b\"${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/60good-keyword-in-value"
 git -C "${apt_repo}" add --all
 git -C "${apt_repo}" commit --quiet --no-verify --message apt
 apt_out="$( cd -- "${apt_repo}" && "${GATE}" "${apt_base}" 2>&1 || true )"
@@ -1467,6 +1473,12 @@ if grep --quiet --fixed-strings -- '50good-quoted-pipe' <<< "${apt_hits}"; then
    failures=$((failures + 1))
 else
    printf '%s\n' 'PASS: R-194 defangs a "|" inside a quoted value'
+fi
+if grep --quiet --fixed-strings -- '60good-keyword-in-value' <<< "${apt_hits}"; then
+   printf '%s\n' 'FAIL: R-194 read a non-hook setting as a hook (keyword inside a value)' >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' 'PASS: R-194 defangs the line before matching the hook directive'
 fi
 
 ## R-195: a cron entry must not embed a multi-statement command. A ';'-separated
@@ -1513,6 +1525,16 @@ printf '%s\n' \
 printf '%s\n' \
    "0 4 * * * root awk '/foo|bar/{print}' /var/log/x" \
    > "${cron_repo}/etc/cron.d/good-awk-pipe"
+## A cron command's first UNESCAPED '%' ends the command -- the rest is stdin, so
+## a ';' after it is message DATA, not a shell separator.
+printf '%s\n' \
+   "0 5 * * * root mail user%body${sc} more text" \
+   > "${cron_repo}/etc/cron.d/good-percent"
+## A whitespace-introduced '#' begins a shell comment in the command; a ';' inside
+## that comment is not executable.
+printf '%s\n' \
+   "0 6 * * * root /usr/bin/job # note${sc} monitored elsewhere" \
+   > "${cron_repo}/etc/cron.d/good-hash"
 git -C "${cron_repo}" add --all
 git -C "${cron_repo}" commit --quiet --no-verify --message cron
 cron_out="$( cd -- "${cron_repo}" && "${GATE}" "${cron_base}" 2>&1 || true )"
@@ -1553,6 +1575,18 @@ if grep --quiet --fixed-strings -- 'good-awk-pipe' <<< "${cron_hits}"; then
    failures=$((failures + 1))
 else
    printf '%s\n' 'PASS: R-195 defangs a "|" inside a quoted pattern'
+fi
+if grep --quiet --fixed-strings -- 'good-percent' <<< "${cron_hits}"; then
+   printf '%s\n' 'FAIL: R-195 over-blocked a ";" after a cron "%" (stdin body)' >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' 'PASS: R-195 scans only the command before a cron "%"'
+fi
+if grep --quiet --fixed-strings -- 'good-hash' <<< "${cron_hits}"; then
+   printf '%s\n' 'FAIL: R-195 over-blocked a ";" inside a "#" shell comment' >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' 'PASS: R-195 strips a trailing "#" comment before the test'
 fi
 if grep --quiet --fixed-strings -- 'good-env' <<< "${cron_hits}"; then
    printf '%s\n' 'FAIL: R-195 flagged an env assignment / single-command entry' >&2

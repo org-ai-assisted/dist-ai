@@ -189,6 +189,19 @@ assert_spared "help"    "$(body_of "${tmo} --help")"
 assert_spared "version" "$(body_of "${tmo} --version")"
 ## A function DEFINITION named timeout is not a timeout invocation.
 assert_spared "funcdef" "$(body_of "${tmo} () {" '   true' '}')"
+## A ZERO-duration timeout ('timeout 0') is a no-op -- it bounds nothing, so there
+## is no SIGTERM to back with a kill-after; flagging it would demand a kill-after
+## the fixer (rightly) will not add.
+assert_spared "zero-duration" "$(body_of "${tmo} 0 do_thing")"
+## The no-op exemption covers EVERY all-zero GNU duration spelling, not only a
+## bare '0': a leading-dot '.0' and a trailing-dot '0.' are zero too. Flagging
+## them would demand a kill-after the fixer (rightly) refuses to add.
+assert_spared "zero-leading-dot"  "$(body_of "${tmo} .0 do_thing")"
+assert_spared "zero-trailing-dot" "$(body_of "${tmo} 0. do_thing")"
+## A file defining its OWN timeout() function: every call targets that function,
+## not coreutils, so R-200 skips the whole file.
+assert_spared "local-timeout-def" \
+   "$(body_of "${tmo} () { command ${tmo} ${dq}\${@}${dq}${sc} }" "${tmo} 5 do_thing")"
 
 ## --- (2) pre-push-fix behaviour ---
 run_fix() {
@@ -243,6 +256,28 @@ else
    fail=1
 fi
 
+## A POSITIVE duration in an unusual-but-valid GNU spelling is still expanded: a
+## leading zero ('05') and a trailing dot ('5.') are positive, so the fixer must
+## add a kill-after -- otherwise the gate flags a line the fixer cannot fix (an
+## unresolvable lint loop). Every format the gate flags, the fixer must handle.
+run_fix "leading-zero-dur" "${tmo} 05 do_thing"
+if grep --fixed-strings -- "${tmo} ${ka}=05 05 do_thing" <<< "${fix_result}" >/dev/null; then
+   printf '%s\n' "PASS: pre-push-fix expanded a leading-zero duration"
+else
+   printf '%s\n' "FAIL: pre-push-fix did not expand a leading-zero duration"
+   printf '%s\n' "${fix_result}"
+   fail=1
+fi
+
+run_fix "trailing-dot-dur" "${tmo} 5. do_thing"
+if grep --fixed-strings -- "${tmo} ${ka}=5. 5. do_thing" <<< "${fix_result}" >/dev/null; then
+   printf '%s\n' "PASS: pre-push-fix expanded a trailing-dot duration"
+else
+   printf '%s\n' "FAIL: pre-push-fix did not expand a trailing-dot duration"
+   printf '%s\n' "${fix_result}"
+   fail=1
+fi
+
 ## SAFETY: the fixer must never rewrite an option-carrying, expression-duration,
 ## string-embedded, comment, or argument timeout -- each comes back byte-for-byte.
 assert_fix_unchanged() {
@@ -288,6 +323,16 @@ assert_fix_unchanged "waived" \
 assert_fix_unchanged "opt-then-arg" "${tmo} ${sig} 5 echo ${tmo} 5"
 ## A control keyword passed as a literal ARGUMENT is not command position.
 assert_fix_unchanged "keyword-arg" "echo then ${tmo} 5 x"
+## A ZERO-duration timeout is a no-op; the fixer must NOT emit '--kill-after=0'.
+assert_fix_unchanged "zero-duration" "${tmo} 0 do_thing"
+## ... in EVERY all-zero spelling, so a loosened duration regex can never start
+## emitting a disabled '--kill-after=0'.
+assert_fix_unchanged "zero-leading-dot"  "${tmo} .0 do_thing"
+assert_fix_unchanged "zero-trailing-dot" "${tmo} 0. do_thing"
+## A file defining its own timeout(): the fixer DECLINES it -- a call targets the
+## function, and rewriting it to '--kill-after=5 5 ...' would corrupt its args.
+assert_fix_unchanged "local-timeout-def" \
+   "$(printf '%s\n%s' "${tmo} () { command ${tmo} ${dq}\${@}${dq}${sc} }" "${tmo} 5 do_thing")"
 
 ## --- (2b) heredoc / multi-line-quote bodies are shell DATA, never rewritten ---
 heredoc_body="$(printf '%s\n' "cat <<EOF" "${tmo} 5 body" "EOF")"
