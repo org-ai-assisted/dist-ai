@@ -47,6 +47,7 @@ itself.
 import itertools
 import os
 import re
+import shlex
 import subprocess
 import sys
 
@@ -159,8 +160,10 @@ def m_strip(args):
 
 def _bash_lines(subject, env, body):
     ## Feed the (large) batch through stdin, not argv -- an exhaustive enumeration
-    ## exceeds ARG_MAX as a 'bash -c' argument.
-    full = 'source "%s"\n%s\n' % (subject, body)
+    ## exceeds ARG_MAX as a 'bash -c' argument. shlex.quote the subject so a
+    ## checkout path with a space / quote / '$' cannot break or inject into the
+    ## source command.
+    full = "source %s\n%s\n" % (shlex.quote(subject), body)
     proc = subprocess.run(
         ["bash", "-s"], input=full, env=env, capture_output=True, text=True, timeout=120
     )
