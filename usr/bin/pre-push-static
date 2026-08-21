@@ -42,6 +42,12 @@
 ##  11. R-080 'shellcheck source=...' is a relative source-tree
 ##      path (no absolute /usr/..., /home/..., /dev/null)
 ##  12. R-081 no 'shellcheck source=/dev/null'
+##      R-085 no '# shellcheck disable=SC1091' on a helper-scripts
+##      source (ADVISORY): the reusable gate checks out helper-scripts
+##      as the repo sibling when the consumer sets
+##      'dist-ai-tests: helper-scripts: true', so shellcheck FOLLOWS
+##      the source= directive and the disable is dead. '## style-ok:
+##      allow-sc1091-disable' waives. See the 'shellcheck' skill.
 ##  13. R-090 'has' not 'command -v' (allowlist for documented
 ##      bootstrap exceptions per R-093)
 ##  14. R-102 no 'bash' / 'sh' prepend on script invocations
@@ -1470,6 +1476,40 @@ check_R081_source_devnull() {
    if [ "${#fs[@]}" -eq 0 ]; then return 0; fi
    hits="$(grep --with-filename --line-number 'shellcheck source=/dev/null' -- "${fs[@]}" 2>/dev/null || true)"
    emit_hits "R-081 source=/dev/null" "${hits}"
+}
+
+## R-085: no '# shellcheck disable=SC1091'. The reusable-pre-push-static gate
+## checks out helper-scripts as the repo sibling when the consumer sets
+## 'dist-ai-tests: helper-scripts: true', so 'shellcheck -x' FOLLOWS the
+## '# shellcheck source=' directive instead of emitting SC1091. The per-line
+## disable is then dead code; drop it and set the flag. See the 'shellcheck'
+## skill. ADVISORY while the tree is converted repo-by-repo -- a repo that has
+## not yet opted in still needs its disable -- and flips to a hard fail once
+## every consumer is converted. Escape: '## style-ok: allow-sc1091-disable'
+## for a genuinely-unfollowable optional source.
+check_R085_sc1091_disable() {
+   local script hits
+   local -a fs
+
+   mapfile -d '' -t fs < <(filter_self "${@}")
+   if [ "${#fs[@]}" -eq 0 ]; then return 0; fi
+   for script in "${fs[@]}"; do
+      if grep --quiet --extended-regexp \
+         '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*allow-sc1091-disable([[:space:]]|$)' \
+         -- "${script}"; then
+         continue
+      fi
+      ## SC1091 as a token in the disable list: alone, or comma-joined with other
+      ## codes on either side. Trailing '1' (e.g. SC10911) is not a match.
+      hits="$(grep --with-filename --line-number --extended-regexp \
+         '^[[:space:]]*#[[:space:]]*shellcheck[[:space:]]+disable=([A-Z0-9]+,)*SC1091([,[:space:]]|$)' \
+         -- "${script}" 2>/dev/null || true)"
+      if [ -z "${hits}" ]; then
+         continue
+      fi
+      note "R-085 '# shellcheck disable=SC1091' is dead once the CI sibling checkout follows the source; drop it and set 'dist-ai-tests: helper-scripts: true' (see the shellcheck skill) (ADVISORY):"
+      printf '%s\n' "${hits}"
+   done
 }
 
 ## R-002: the Copyright header leads the file. A '## style-ok:' waiver must not
@@ -3395,6 +3435,7 @@ run_file_checks() {
       check_R080_shellcheck_source_path "${shell_files[@]}"
       check_R021_local_assign "${shell_files[@]}"
       check_R081_source_devnull "${shell_files[@]}"
+      check_R085_sc1091_disable "${shell_files[@]}"
       check_R090_command_v "${shell_files[@]}"
       check_R170_tmp_hardcode "${shell_files[@]}"
       check_R172_mkdir_tmp_mode "${shell_files[@]}"
