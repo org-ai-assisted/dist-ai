@@ -161,7 +161,7 @@ def _bin_dir():
 def _write_stub(path, body):
     with open(path, 'w', encoding='utf-8') as handle:
         handle.write('#!/bin/sh\n' + body + '\n')
-    os.chmod(path, 0o755)
+    os.chmod(path, 0o700)   # owner-only: executable by this test, not world-readable
 
 
 def _wrapper_tests():
