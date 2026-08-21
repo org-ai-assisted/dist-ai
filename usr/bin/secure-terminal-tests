@@ -79,6 +79,8 @@ for test_file in \
    "${tests_dir}/test_unicode_gallery.py" \
    "${tests_dir}/test_cli.py" \
    "${tests_dir}/test_unicode_tag.py" \
+   "${tests_dir}/test_sclip.py" \
+   "${tests_dir}/test_clipboard_watch.py" \
    "${tests_dir}/test_modules.py" \
    "${tests_dir}/test_review.py" \
    "${tests_dir}/test_mainwin.py" \
