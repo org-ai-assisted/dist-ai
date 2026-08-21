@@ -294,13 +294,18 @@ TIMEOUT_UNSAFE_PREFIX = re.compile(r'''["'\\#]''')
 ## WRAPPED command's arguments -- rewriting that argument would corrupt data.
 ## Idempotent: the inserted '--kill-after=' makes the next token an option, so a
 ## second pass never re-matches.
-## Duration must be POSITIVE: a non-zero integer part (5, 10, 5.5) OR a zero
-## integer with a non-zero fraction (0.5, 0.05). 'timeout 0' / '0.0' / '0s' is a
-## no-op timeout (no bound), so inserting '--kill-after=0' would emit a DISABLED
-## kill escalation that reads as R-200-compliant -- a semi-false-green. Leave a
-## zero-duration timeout untouched (the gate exempts it as a no-op).
+## Duration must be POSITIVE: at least one NON-ZERO digit anywhere in the GNU
+## strtod-style number -- integer OR fractional, with or without a leading zero
+## and with or without a trailing dot ('5', '05', '50', '5.', '.5', '5.0' all
+## match). A zero duration ('0', '00', '0.', '.0', '0.0', '0s') carries NO
+## non-zero digit and is a no-op timeout (no bound), so inserting
+## '--kill-after=0' would emit a DISABLED kill escalation that reads as
+## R-200-compliant -- a semi-false-green. Leave a zero-duration timeout
+## untouched (the gate exempts it as a no-op). Matching every positive format
+## the gate can flag keeps the fixer from leaving a flagged line unfixable.
 TIMEOUT_BARE_DURATION = re.compile(
-    r'^(timeout\s+)((?:[1-9][0-9]*(?:\.[0-9]+)?|0*\.[0-9]*[1-9][0-9]*)[smhd]?)(?=\s)')
+    r'^(timeout\s+)('
+    r'(?:[0-9]*[1-9][0-9]*(?:\.[0-9]*)?|[0-9]*\.[0-9]*[1-9][0-9]*)[smhd]?)(?=\s)')
 
 ## A script defining its OWN timeout() function: a later 'timeout N child' calls
 ## THAT function, not GNU coreutils, so rewriting it to '--kill-after=N N child'

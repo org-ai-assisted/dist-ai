@@ -2738,16 +2738,17 @@ check_R200_timeout_kill_after() {
    ##    match inside the one assignment.
    ##  - an informational run: 'timeout --help' / '--version' times no child.
    ##  - a function DEFINITION named timeout: 'timeout ()' / 'timeout()'.
-   ##  - a NO-OP timeout: 'timeout 0' (or '0.0' / '0s') bounds nothing, so there
-   ##    is no SIGTERM to back with a kill-after; the fixer likewise leaves it
-   ##    untouched. (A timeout's OWN '--kill-after=0' DISABLES the kill -- an
+   ##  - a NO-OP timeout: an all-zero GNU duration ('0', '00', '0.', '.0',
+   ##    '0.0', '0s') bounds nothing, so there is no SIGTERM to back with a
+   ##    kill-after; the fixer likewise leaves it untouched. (A timeout's OWN
+   ##    '--kill-after=0' DISABLES the kill -- an
    ##    accepted fail-OPEN this line-gate does not flag: telling it apart from a
    ##    zero '-k' in the WRAPPED command's own args needs positional parsing,
    ##    which this rule deliberately does not do. The fixer no longer EMITS one.)
    exempt_array='[A-Za-z_][A-Za-z0-9_]*=\([^;&|#]*timeout'
    exempt_info="timeout[[:space:]]+(--help|--version|--usage)([[:space:]]|\$)"
    exempt_funcdef='timeout[[:space:]]*\(\)'
-   exempt_zero_timeout="timeout[[:space:]]+0+(\.0+)?[smhd]?([[:space:]]|\$)"
+   exempt_zero_timeout="timeout[[:space:]]+(0+(\.0*)?|\.0+)[smhd]?([[:space:]]|\$)"
 
    for script in "${fs[@]}"; do
       if grep --quiet --extended-regexp \
