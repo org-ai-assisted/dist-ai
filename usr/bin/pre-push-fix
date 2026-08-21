@@ -44,10 +44,27 @@ Bucket-1 transforms only (see the plan):
 HARD SAFETY LINE: only the known table is touched. Any OTHER non-ASCII byte is
 left exactly as-is for pre-push-static to report (bucket-2) -- so an intentional
 UTF-8 test fixture is never silently rewritten. The STRUCTURAL rewriters (R-172
-mkdir, R-161 grep, R-200 timeout) additionally skip any line that code_line_flags
-marks as DATA -- a heredoc body or a line inside an unterminated multi-line quote
--- so a 'timeout 5 x' (or 'grep -q x') that is program text, not a command, is
-never rewritten.
+mkdir, R-161 grep, R-200 timeout) never rewrite DATA that only looks like a
+command: instead of PARSING shell (a bash parser is the wrong tool for a rare
+rewrite), they DECLINE any file that has a heredoc, a line-continuation, or a
+line ending inside a quote (has_multiline_construct) -- multi-line data lives
+only in those -- and otherwise rely on a per-command 'command position' + 'no
+quote/backslash/# before the command' check on the single line. Files they
+decline are still reported by the gate.
+
+HARD RULE -- NEVER REINVENT A BASH (OR CONFIG) PARSER. Neither a fixer here nor
+a check in pre-push-static may grow a shell/config parser -- a quote/brace/
+here-doc state machine -- to reach a rare construct. The occurrences that would
+need one are, by definition, rare; for those the correct behaviour is to DECLINE
+(fixer) or REPORT (gate) and let a human/model fix it by hand. A one-line
+notification covers the rare case; chasing full-parse correctness burns rounds
+and tokens on an endless tail of edge cases and lands more parser bugs than it
+prevents. This is why every structural rewriter bails on multi-line constructs
+rather than parsing them, why the gate's R-190/191/192/194/195 REPORT an
+embedded program rather than auto-fix it (extracting one is a semantic refactor,
+not a mechanical rewrite), and why R-194/R-195 scan a single line at a time and
+accept a documented fail-OPEN on the rare multi-line form instead of tracking it
+across lines.
 
 Exemptions are kept in lockstep with pre-push-static (a .gitattributes binary
 data file, the per-file '## style-ok: allow-non-ascii' waiver matched by the
@@ -384,48 +401,25 @@ def is_shell_file(path):
         first.decode("utf-8", "replace").rstrip("\r\n")))
 
 
-## A heredoc opener: '<<WORD', '<< WORD', '<<-WORD' or a quoted delimiter
-## ('<<"EOF"'/"<<'EOF'"). Deliberately NOT '<<<' (a here-string, not a heredoc):
-## after '<<' the next char is '<', not '-'/a quote/a word char, so nothing
-## matches. Anchored per position by re.match in the scanner below.
-## The delimiter charset is PERMISSIVE on purpose: any run of non-space,
-## non-metacharacter bytes (so hyphens, dots, digits-first are all accepted). A
-## MISSED delimiter would treat the heredoc body as code and rewrite it -- the
-## one unsafe direction -- so the match errs toward capturing whatever the '<<'
-## is followed by. An over-broad capture only means a body is (correctly) treated
-## as data.
-HEREDOC_OPEN = re.compile(
-    r'<<-\s*(["\']?)([^\s;&|<>()"\'`]+)\1'
-    r'|<<\s*(["\']?)([^\s;&|<>()"\'`]+)\3')
+## HARD-RULE guard for the STRUCTURAL fixers (R-172 mkdir, R-161 grep, R-200
+## timeout). Rather than PARSE shell to tell a command from multi-line DATA, the
+## fixers simply DECLINE any file carrying a construct whose data can span lines
+## -- a heredoc, a line-continuation, or a line that ends inside a quote (a
+## multi-line string). Those files are left to the gate to report; only plain
+## single-line command files are auto-fixed, where the per-command 'command
+## position' + 'no quote/backslash/# before the command' checks are enough. The
+## guard deliberately OVER-declines (a '<<' or an odd quote in a comment trips it)
+## -- the safe direction for what is a rare rewrite. This replaces the former
+## line-by-line shell scanner: a bash parser is the wrong tool here.
+HEREDOC_MARKER = re.compile(r'(?<!<)<<(?!<)')
 
 
-def _line_continues(line):
-    """True when LINE ends with an UNESCAPED trailing backslash (an odd run), so
-    the next physical line is a continuation of this command -- its first word is
-    then an argument, never a fresh command."""
-    trailing = len(line) - len(line.rstrip("\\"))
-    return trailing % 2 == 1
-
-
-def _scan_code_line(line, quote_in=""):
-    """Scan a line starting at quote state `quote_in` (default: not in a quote);
-    return (quote_open_at_eol, [heredoc, ...], continues) where each heredoc is
-    (terminator, strip_tabs) and `continues` is True if the line ends with a
-    line-continuation backslash OUTSIDE a comment. `quote_in` carries an open
-    multi-line quote in: the scanner closes it and KEEPS scanning the remainder,
-    so a quote that closes and another quote/heredoc that opens on the SAME
-    physical line are both tracked. Tracks '...'/"..." quotes with backslash
-    escapes, stops at a depth-0 '#' comment, tracks arithmetic '(( ))' / '$(( ))'
-    paren depth (so a bit-shift '<<' there is not read as a heredoc, nesting
-    included), and records '<<WORD' heredoc openers (never '<<<'). Arithmetic
-    depth is per-line: a '$((' left open at end of line (a multi-line arithmetic)
-    is NOT carried, so a '<<' on its continuation reads as a (bogus) heredoc and
-    the fixer over-skips -- the SAFE direction (carrying the depth could instead
-    leave a real later heredoc undetected, which would corrupt)."""
-    quote = quote_in
-    heredocs = []
-    arith = 0
-    broke_at_comment = False
+def _line_open_quote_or_continues(line):
+    """True if LINE ends inside an unterminated quote (a multi-line string opens
+    here) or with a line-continuation backslash. Single-line only, no cross-line
+    state. A '#' opens a comment only after whitespace or line start (so '$#'
+    keeps scanning); a backslash in that comment tail is not a continuation."""
+    quote = ""
     index = 0
     length = len(line)
     while index < length:
@@ -441,103 +435,29 @@ def _scan_code_line(line, quote_in=""):
         if char == "\\":
             index += 2
             continue
-        ## Quote-open is checked BEFORE arithmetic so a paren inside a quoted
-        ## string ('(( x = "(" ))') does not perturb the arithmetic depth.
+        if char == "#" and (index == 0 or line[index - 1] in " \t"):
+            ## Comment to end of line: no open quote, and a trailing '\' there is
+            ## comment text, not a line-continuation.
+            return False
         if char in ('"', "'"):
             quote = char
-            index += 1
-            continue
-        ## Inside arithmetic only parentheses matter: '<<' is a bit-shift, and
-        ## there are no commands or heredocs to track. Count every paren so a
-        ## NESTED '(a+b)' does not close the context early.
-        if arith > 0:
-            if char == "(":
-                arith += 1
-            elif char == ")":
-                arith -= 1
-            index += 1
-            continue
-        ## '#' opens a comment at the start of a word: line start, or after
-        ## whitespace or a command separator (';' '&' '|' '(') -- NOT mid-word
-        ## ('foo#bar') and NOT after '$' ('$#'). A backslash in the comment tail
-        ## is comment text, not a line-continuation (broke_at_comment below).
-        if char == "#" and (index == 0 or line[index - 1] in " \t;&|("):
-            broke_at_comment = True
-            break
-        ## '((' / '$((' enters arithmetic (two parens' worth of depth).
-        if line[index:index + 2] == "((":
-            arith += 2
-            index += 2
-            continue
-        if line[index:index + 2] == "<<" and line[index:index + 3] != "<<<":
-            match = HEREDOC_OPEN.match(line, index)
-            if match:
-                term = match.group(2) or match.group(4)
-                heredocs.append((term, line[index:index + 3] == "<<-"))
-                index = match.end()
-                continue
         index += 1
-    ## A trailing backslash continues the line only at quote depth zero and
-    ## outside a comment; inside an open quote the next line is quote data anyway.
-    continues = (quote == "" and not broke_at_comment
-                 and _line_continues(line))
-    return quote, heredocs, continues
+    if quote:
+        return True
+    return (len(line) - len(line.rstrip("\\"))) % 2 == 1
 
 
-def code_line_flags(text):
-    """Return one bool per splitlines(keepends=True) line: True = a shell CODE
-    line a structural fixer may rewrite; False = HEREDOC BODY (or its terminator)
-    or a line inside an unterminated multi-line quote -- shell DATA, which a fixer
-    must never rewrite (the HARD SAFETY LINE). Single pass, honoring '<<-' tab
-    strip, permissive heredoc delimiters, backslash escapes and depth-0 '#'
-    comments. Line-continuation ('\' at end of line) is carried: the continued
-    line is treated as DATA.
-
-    Design bias: on ANY uncertainty the classifier leans toward DATA (skip), so
-    the fixer's only failure mode is over-conservatism (a real violation is left
-    for the gate to report), never rewriting data. Known SAFE over-skips: a
-    command continued after an operator ('true && \' then 'timeout 5 cmd' -- the
-    next line IS a command, but it is skipped); a '<<' on the continuation of a
-    multi-line '$(( ... ))'; and '$( )'/backtick subshell bodies. All are
-    reported by the gate.
-
-    Scope: this assumes SYNTACTICALLY VALID shell (balanced quotes and arithmetic
-    parentheses). A MALFORMED script -- an unbalanced arithmetic paren whose match
-    is inside a string ('$(( (")" ))'), an unclosed quote in a parameter
-    expansion ('${var#\'}') -- can leave the scanner mis-stated and is out of
-    scope: such a script does not run and is flagged by shellcheck and the gate
-    anyway. The tooling targets developer mistakes, not adversarial or malformed
-    input (mirrors the guard threat model)."""
-    flags = []
-    heredocs = []
-    quote = ""
-    continued = False
-    for raw in text.splitlines(keepends=True):
-        line = raw.rstrip("\r\n")
-        if heredocs:
-            term, strip_tabs = heredocs[0]
-            probe = line.lstrip("\t") if strip_tabs else line
-            if probe == term:
-                heredocs.pop(0)
-            flags.append(False)
-            continue
-        if quote:
-            ## A line that STARTS inside a multi-line quote is DATA, but it is
-            ## scanned (carrying the quote in) so that a quote which CLOSES and a
-            ## new quote/heredoc which OPENS on this same line are both tracked
-            ## for the next line -- otherwise the reopened-quote state is lost and
-            ## the next line's string data is misread as code.
-            flags.append(False)
-            quote, opened, continued = _scan_code_line(line, quote_in=quote)
-            heredocs.extend(opened)
-            continue
-        ## A line continuing the previous command (that line ended with '\') is
-        ## that command's arguments, never a fresh command word -> DATA. It is
-        ## still scanned so a quote/heredoc it opens is tracked.
-        flags.append(not continued)
-        quote, opened, continued = _scan_code_line(line)
-        heredocs.extend(opened)
-    return flags
+def has_multiline_construct(text):
+    """True if TEXT carries a construct whose DATA can span physical lines -- a
+    heredoc ('<<' but not '<<<'), or ANY line that ends inside a quote or with a
+    line-continuation backslash. The structural fixers skip such a file wholesale
+    rather than risk rewriting data that only looks like a command."""
+    if HEREDOC_MARKER.search(text):
+        return True
+    for raw in text.splitlines():
+        if _line_open_quote_or_continues(raw):
+            return True
+    return False
 
 
 def upgrade_mkdir_mode(text):
@@ -552,12 +472,7 @@ def upgrade_mkdir_mode(text):
     only when absent."""
     count = 0
     out = []
-    flags = code_line_flags(text)
-    for line, is_code in zip(text.splitlines(keepends=True), flags):
-        ## Never rewrite a heredoc body / open-quote line -- it is shell DATA.
-        if not is_code:
-            out.append(line)
-            continue
+    for line in text.splitlines(keepends=True):
         if line.lstrip().startswith("#") or not MKDIR_TMP_LINE.search(line):
             out.append(line)
             continue
@@ -617,10 +532,8 @@ def expand_grep_short_quiet(text):
     Idempotent: a long option never re-matches GREP_SHORT_Q."""
     count = 0
     out = []
-    flags = code_line_flags(text)
-    for line, is_code in zip(text.splitlines(keepends=True), flags):
-        ## Never rewrite a heredoc body / open-quote line -- it is shell DATA.
-        if not is_code or "grep" not in line:
+    for line in text.splitlines(keepends=True):
+        if "grep" not in line:
             out.append(line)
             continue
         pieces = []
@@ -675,10 +588,8 @@ def insert_timeout_kill_after(text):
     token an option, so a second pass does not re-match."""
     count = 0
     out = []
-    flags = code_line_flags(text)
-    for line, is_code in zip(text.splitlines(keepends=True), flags):
-        ## Never rewrite a heredoc body / open-quote line -- it is shell DATA.
-        if not is_code or "timeout" not in line:
+    for line in text.splitlines(keepends=True):
+        if "timeout" not in line:
             out.append(line)
             continue
         pieces = []
@@ -749,29 +660,33 @@ def fix_file(path, check):
         if num:
             changes["trailing-whitespace"] = num
 
-    ## R-172: upgrade a temp-dir mkdir's short '-m' to the long '--mode='
-    ## (shell files only, and not when the file waives the rule -- lockstep with
-    ## the gate). The missing-mode / chmod-split forms are not rewritten -- the
-    ## gate FAILS those for a human to fix atomically.
-    if is_shell_file(path) and not MKDIR_WAIVER_RE.search(text):
+    ## HARD RULE for the STRUCTURAL rewriters below: shell files only, and never
+    ## a file carrying a heredoc / line-continuation / multi-line string -- there
+    ## a rewrite could hit DATA that only looks like a command. Such a file is
+    ## left entirely to the gate. This is why no shell parser is needed here.
+    structural = is_shell_file(path) and not has_multiline_construct(text)
+
+    ## R-172: upgrade a temp-dir mkdir's short '-m' to the long '--mode=' (not
+    ## when the file waives the rule -- lockstep with the gate). The missing-mode
+    ## / chmod-split forms are not rewritten -- the gate FAILS those for a human
+    ## to fix atomically.
+    if structural and not MKDIR_WAIVER_RE.search(text):
         text, num = upgrade_mkdir_mode(text)
         if num:
             changes["R-172"] = num
 
-    ## R-161: expand a grep short quiet cluster ('-iq') to its long form. Shell
-    ## files only, mirroring the gate's shell scope. The pipe half of R-161 is
-    ## left for the gate (a redirect/here-string move is not a single-token
-    ## edit).
-    if is_shell_file(path):
+    ## R-161: expand a grep short quiet cluster ('-iq') to its long form. The pipe
+    ## half of R-161 is left for the gate (a redirect/here-string move is not a
+    ## single-token edit).
+    if structural:
         text, num = expand_grep_short_quiet(text)
         if num:
             changes["R-161"] = num
 
-    ## R-200: insert '--kill-after=<N>' into a bare 'timeout <N>' (shell files
-    ## only, mirroring the gate's shell scope, and NOT when the file waives the
-    ## rule -- lockstep with the gate). Option-carrying or non-literal forms are
-    ## left for the gate to report.
-    if is_shell_file(path) and not TIMEOUT_WAIVER_RE.search(text):
+    ## R-200: insert '--kill-after=<N>' into a bare 'timeout <N>' (not when the
+    ## file waives the rule -- lockstep with the gate). Option-carrying or
+    ## non-literal forms are left for the gate to report.
+    if structural and not TIMEOUT_WAIVER_RE.search(text):
         text, num = insert_timeout_kill_after(text)
         if num:
             changes["R-200"] = num

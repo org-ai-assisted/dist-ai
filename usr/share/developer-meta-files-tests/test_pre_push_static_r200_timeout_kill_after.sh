@@ -302,86 +302,22 @@ assert_fix_unchanged "mlquote-body" "${mlquote_body}"
 ## arguments, not a fresh command word.
 continuation="$(printf '%s\n' "echo ${bs}" "${tmo} 5 cmd")"
 assert_fix_unchanged "line-continuation" "${continuation}"
-## A heredoc whose delimiter contains hyphens ('END-OF-FILE') must be tracked in
-## full: its body is spared AND the real command after the terminator is fixed. A
-## delimiter charset that stopped at the hyphen would take 'END' as the
-## terminator, never close, and wrongly skip the command that follows.
-run_fix "heredoc-hyphen" \
-   "$(printf '%s\n' "cat <<END-OF-FILE" "${tmo} 5 body" "END-OF-FILE" "${tmo} 5 real")"
-if grep --fixed-strings -- "${tmo} 5 body" <<< "${fix_result}" >/dev/null \
-   && grep --fixed-strings -- "${tmo} ${ka}=5 5 real" <<< "${fix_result}" >/dev/null; then
-   printf '%s\n' "PASS: pre-push-fix tracked a hyphenated heredoc delimiter in full"
-else
-   printf '%s\n' "FAIL: pre-push-fix mishandled a hyphenated heredoc delimiter"
-   printf '%s\n' "${fix_result}"
-   fail=1
-fi
-## A bit-shift '<<' inside arithmetic '$(( ))' is NOT a heredoc opener: the
-## timeout after it is still fixed (a naive '<<' scan would open a bogus heredoc
-## and swallow the rest of the file).
-run_fix "arith-shift" "$(printf '%s\n' "y=\$((x << n))" "${tmo} 5 real")"
-if grep --fixed-strings -- "${tmo} ${ka}=5 5 real" <<< "${fix_result}" >/dev/null; then
-   printf '%s\n' "PASS: pre-push-fix did not mistake an arithmetic shift for a heredoc"
-else
-   printf '%s\n' "FAIL: pre-push-fix mistook an arithmetic '<<' for a heredoc"
-   printf '%s\n' "${fix_result}"
-   fail=1
-fi
-## A nested '( )' inside arithmetic must not close the context early (which would
-## expose the following '<<' as a bogus heredoc and swallow the rest).
-run_fix "arith-nested" "$(printf '%s\n' "y=\$(( (x) << n ))" "${tmo} 5 real")"
-if grep --fixed-strings -- "${tmo} ${ka}=5 5 real" <<< "${fix_result}" >/dev/null; then
-   printf '%s\n' "PASS: pre-push-fix handled nested parens in arithmetic"
-else
-   printf '%s\n' "FAIL: a nested paren cleared arithmetic context early"
-   printf '%s\n' "${fix_result}"
-   fail=1
-fi
-## A paren inside a QUOTED string within arithmetic must not perturb the depth,
-## so a heredoc later on the same line is still tracked and its body spared. A
-## naive count of that quoted paren would leave arithmetic 'open', miss the
-## heredoc, and rewrite its body -- data corruption.
-run_fix "arith-quoted-paren" \
-   "$(printf '%s\n' "x=\$(( ${dq}(${dq} ))${sc} cat <<EOF" "${tmo} 5 body" "EOF" "${tmo} 5 real")"
-if grep --fixed-strings -- "${tmo} 5 body" <<< "${fix_result}" >/dev/null \
-   && grep --fixed-strings -- "${tmo} ${ka}=5 5 real" <<< "${fix_result}" >/dev/null; then
-   printf '%s\n' "PASS: pre-push-fix ignored a quoted paren inside arithmetic"
-else
-   printf '%s\n' "FAIL: a quoted paren in arithmetic broke heredoc tracking"
-   printf '%s\n' "${fix_result}"
-   fail=1
-fi
-## A backslash in a '#' comment tail is comment text, not a line continuation:
-## the command on the next line is still fixed.
+## A '<<' bit-shift reads as a heredoc marker too, so the WHOLE file is declined
+## (over-conservative but safe -- the gate still reports the timeout after it).
+arith_declined="$(printf '%s\n' "y=\$((x << n))" "${tmo} 5 real")"
+assert_fix_unchanged "arith-declined" "${arith_declined}"
+## A heredoc file is declined WHOLESALE: the body AND a real command after the
+## terminator are BOTH left untouched (the gate reports them). No shell parser,
+## no per-line rescue -- the hard rule keeps the fixer off multi-line data.
+heredoc_then_cmd="$(printf '%s\n' "cat <<EOF" "${tmo} 5 body" "EOF" "${tmo} 5 real")"
+assert_fix_unchanged "heredoc-declined-with-cmd" "${heredoc_then_cmd}"
+## A backslash in a '#' comment tail is comment TEXT, not a continuation, so the
+## file stays SIMPLE and the command on the next line IS fixed.
 run_fix "comment-backslash" "$(printf '%s\n' "true ${hash} note ${bs}" "${tmo} 5 cmd")"
 if grep --fixed-strings -- "${tmo} ${ka}=5 5 cmd" <<< "${fix_result}" >/dev/null; then
-   printf '%s\n' "PASS: pre-push-fix did not treat a comment backslash as a continuation"
+   printf '%s\n' "PASS: a comment-tail backslash keeps the file simple (fixed)"
 else
-   printf '%s\n' "FAIL: a comment-tail backslash was treated as a line continuation"
-   printf '%s\n' "${fix_result}"
-   fail=1
-fi
-## An EXOTIC heredoc delimiter (leading hyphen, dots) must still be tracked, so
-## its body is spared (a charset that rejected it would rewrite the body -- the
-## one data-CORRUPTION path).
-run_fix "heredoc-exotic-delim" \
-   "$(printf '%s\n' "cat << -E.F-" "${tmo} 5 body" "-E.F-" "${tmo} 5 real")"
-if grep --fixed-strings -- "${tmo} 5 body" <<< "${fix_result}" >/dev/null \
-   && grep --fixed-strings -- "${tmo} ${ka}=5 5 real" <<< "${fix_result}" >/dev/null; then
-   printf '%s\n' "PASS: pre-push-fix tracked an exotic heredoc delimiter (body spared)"
-else
-   printf '%s\n' "FAIL: pre-push-fix mishandled an exotic heredoc delimiter"
-   printf '%s\n' "${fix_result}"
-   fail=1
-fi
-## But a REAL command after the heredoc closes IS fixed (the body is not).
-run_fix "heredoc-then-cmd" \
-   "$(printf '%s\n' "cat <<EOF" "${tmo} 5 body" "EOF" "${tmo} 5 real")"
-if grep --fixed-strings -- "${tmo} 5 body" <<< "${fix_result}" >/dev/null \
-   && grep --fixed-strings -- "${tmo} ${ka}=5 5 real" <<< "${fix_result}" >/dev/null; then
-   printf '%s\n' "PASS: pre-push-fix spared the heredoc body but fixed the command after it"
-else
-   printf '%s\n' "FAIL: pre-push-fix mishandled a heredoc-then-command file"
+   printf '%s\n' "FAIL: a comment-tail backslash wrongly declined the file"
    printf '%s\n' "${fix_result}"
    fail=1
 fi
