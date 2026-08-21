@@ -67,8 +67,18 @@ done
 # shellcheck disable=SC1090
 source "${libdir}/has.sh"
 
+## curl-prgrs runs helper-scripts' OWN executables (stecho, stcat). On a checkout
+## that is not installed to /usr/bin (the CI container), they resolve only from
+## the checkout's usr/bin -- put it on PATH FIRST so the dependency check below
+## sees them and the tool is not silently missing its output helpers (a 127 that
+## corrupts the status file). stecho/stcat are '#!/usr/bin/python3 -Bsu'
+## (no user-site) tools importing the stdisplay package, so its module dir must
+## be on PYTHONPATH too or they die with ModuleNotFoundError on a checkout.
+export PATH="${repo%/}/usr/bin:${PATH}"
+export PYTHONPATH="${repo%/}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
+
 ## Real dependencies the subject and this test need. A missing one is a FAIL.
-for dep in curl safe-rm tput mktemp truncate stat; do
+for dep in curl safe-rm tput mktemp truncate stat stecho stcat; do
    if ! has "${dep}" ; then
       printf '%s\n' "FATAL: dependency '${dep}' not on PATH" >&2
       exit 1
