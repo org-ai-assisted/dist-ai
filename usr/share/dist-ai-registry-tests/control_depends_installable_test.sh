@@ -142,6 +142,13 @@ fi
 ## deb-run-dep would). LC_ALL=C for a stable message; 'apt-get --simulate' needs no root.
 if ! type -P apt-get >/dev/null; then
    fail 'apt-get not on PATH; cannot verify Depends installability'
+elif ! LC_ALL=C apt-get install --simulate --no-install-recommends -- bash helper-scripts >/dev/null 2>&1; then
+   ## Sentinel: a Debian package (bash) and a Kicksecure one (helper-scripts, itself a
+   ## declared Depends) must resolve, proving the apt lists are populated for BOTH
+   ## archives. Without it, a minimal container with cleaned/absent lists would fail a
+   ## VALID control on the set-simulate with a misleading per-package "unable to locate".
+   ## Report the real cause -- still a FAIL (never a false green), just honest.
+   fail 'apt lists empty/incomplete (bash/helper-scripts do not resolve); cannot verify Depends installability -- not a control fault'
 else
    ## noglob (set above) lets ${depends_names} split into args without expanding.
    # shellcheck disable=SC2086
