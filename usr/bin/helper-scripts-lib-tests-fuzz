@@ -1,0 +1,45 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Runs the end-to-end randomized fuzz for curl-prgrs (fuzz_curl_prgrs_e2e.py):
+## drives the REAL curl-prgrs through complete runs against the deterministic
+## fake-curl stub and asserts the process exit code matches a model of the
+## documented behavior -- exercising the orchestration, poll loop, endless-data
+## ceilings, truncation and exit-code paths, not just the pure functions. No
+## external dependencies beyond curl-prgrs' own runtime tools (curl, tput,
+## stecho, stcat, safe-rm); SKIPs (77) if the subject or a tool is absent.
+##
+## Any extra arguments are forwarded (e.g. --iterations N, --seed N), so a
+## finding printed with its seed reproduces deterministically. Targets the
+## installed helper-scripts by default; set HELPER_SCRIPTS_REPO to a checkout.
+## No root, no network.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/helper-scripts-lib-tests" ]; then
+  tests_dir="${script_dir}/../share/helper-scripts-lib-tests"
+else
+  tests_dir='/usr/share/helper-scripts-lib-tests'
+fi
+
+if [ "$#" -eq 0 ]; then
+  set -- --iterations "${CURL_PRGRS_E2E_ITERATIONS:-150}"
+fi
+
+rc=0
+## style-ok: allow-python-dashdash -- run through the python3 on PATH (venv /
+## user-site), not the harness shebang.
+python3 -- "${tests_dir}/fuzz_curl_prgrs_e2e.py" "$@" || rc=$?
+exit "${rc}"
