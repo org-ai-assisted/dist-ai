@@ -23,6 +23,14 @@ shift || true
 ## Scaffolding the reusable functions expect. fd 4 is curl-prgrs' progress sink.
 exec 4>/dev/null
 probe_tmp="$(mktemp --directory)"
+## Clean up on exit -- the suite invokes this probe dozens of times. The shutdown
+## and wrapper operations run curl-prgrs' own 'trap - EXIT' and remove the dir
+## themselves; for every other operation this trap is what reaps it.
+# shellcheck disable=SC2317
+probe_cleanup() {
+   safe-rm -r -f -- "${probe_tmp}" 2>/dev/null || true
+}
+trap probe_cleanup EXIT
 statusfile="${probe_tmp}/status"
 curl_pid=""
 

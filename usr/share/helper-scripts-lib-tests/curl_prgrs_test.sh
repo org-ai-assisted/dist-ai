@@ -307,37 +307,62 @@ rc="$(CURL_OUT_FILE="${out_file}" CURL_PRGRS_MAX_FILE_SIZE_BYTES=100000 \
    run_rc -o "${out_file}" https://example.com/nofile)"
 check "exec: body never writes a file -> 0" "${rc}" "0"
 
-## M9 the whole body lands in a single final write the poll loop never sees, and
-## it is over the max-file-size cap: the post-loop final-size check must catch it.
-out_file="${test_dir}/M9.bin"
-rc="$(CURL_OUT_FILE="${out_file}" CURL_PRGRS_MAX_FILE_SIZE_BYTES=100 \
-   FAKE_CURL_HEADER_CL=100000 FAKE_CURL_BODY_CREATE_AT_END=500 \
-   run_rc -o "${out_file}" https://example.com/finalburst)"
-check "exec: over-cap final write caught post-loop -> 81" "${rc}" "81"
+## (The post-loop final-size over-cap path is covered deterministically by the
+## direct enforce_final_size probe above; a full-run version would race the poll
+## loop against the post-loop check and is therefore omitted.)
+
+## M10 the body worker dies WITHOUT curl_exit: a failing CURL_PRGRS_EXEC progress
+## hook. The header wrote 0 to the status file; without the between-phase reset
+## the parent would read that stale 0 and report success. Must resolve to an
+## error (112), not 0.
+out_file="${test_dir}/M10.bin"
+rc="$(CURL_OUT_FILE="${out_file}" CURL_PRGRS_MAX_FILE_SIZE_BYTES=100000 \
+   CURL_PRGRS_EXEC=false \
+   FAKE_CURL_HEADER_CL=100 FAKE_CURL_BODY_BYTES=100 FAKE_CURL_BODY_STEPS=4 \
+   FAKE_CURL_BODY_STEP_SLEEP=0.05 \
+   run_rc -o "${out_file}" https://example.com/hookfails)"
+check "exec: failing CURL_PRGRS_EXEC hook -> error, not false success" \
+   "$([ "${rc}" -ne 0 ] && printf nonzero || printf zero)" "nonzero"
+
+## M11 an implausibly large advertised Content-Length (would overflow Bash's
+## 64-bit arithmetic downstream) is rejected as a bad header.
+out_file="${test_dir}/M11.bin"
+rc="$(CURL_OUT_FILE="${out_file}" CURL_PRGRS_MAX_FILE_SIZE_BYTES=100000 \
+   FAKE_CURL_HEADER_CL=99999999999999999999 FAKE_CURL_BODY_BYTES=10 \
+   run_rc -o "${out_file}" https://example.com/huge-cl)"
+check "exec: implausibly large Content-Length -> 116" "${rc}" "116"
 
 ## ============================================================
 ## (N) Real SIGTERM during an in-flight download: the subject handles the signal
 ## and terminates promptly (exercises shutdown_sigterm via a real trap). The
 ## body child idles (FAKE_CURL_BODY_PRESLEEP) so SIGTERM lands mid-download.
 ## ============================================================
+## The body idles far longer (12s) than the whole ~6.5s deadline below, so a
+## subject that IGNORED SIGTERM would still be downloading past the deadline and
+## fail this test -- it cannot pass by simply finishing on its own.
 sig_out="${test_dir}/sig.bin"
 CURL_OUT_FILE="${sig_out}" CURL_PRGRS_MAX_FILE_SIZE_BYTES=10000000 \
    FAKE_CURL_HEADER_CL=1000000 FAKE_CURL_BODY_BYTES=1000000 \
-   FAKE_CURL_BODY_PRESLEEP=3 \
+   FAKE_CURL_BODY_PRESLEEP=12 \
    "${subject}" -o "${sig_out}" https://example.com/slow >/dev/null 2>&1 &
 subject_pid=$!
-## The header phase (a fast fake-curl call) is well over within 1s, so the body
+## The header phase (a fast fake-curl call) is well over within 1.5s, so the body
 ## poll loop is running when SIGTERM arrives.
-sleep 1
+sleep 1.5
 kill -s SIGTERM "${subject_pid}" 2>/dev/null || true
 gone=no
-for _ in $(seq 1 30); do
+for _ in $(seq 1 50); do
    if ! kill -0 "${subject_pid}" 2>/dev/null; then
       gone=yes
       break
    fi
    sleep 0.1
 done
+## Never block on 'wait' for a subject that ignored the signal: SIGKILL it, then
+## reap. The orphaned fake-curl body idles then exits on its own.
+if [ "${gone}" = "no" ]; then
+   kill -s SIGKILL "${subject_pid}" 2>/dev/null || true
+fi
 wait "${subject_pid}" 2>/dev/null || true
 check "signal: SIGTERM terminates the subject promptly (no hang)" "${gone}" "yes"
 

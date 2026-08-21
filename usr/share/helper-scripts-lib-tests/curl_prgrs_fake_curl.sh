@@ -22,12 +22,6 @@
 ##   FAKE_CURL_BODY_EXIT       exit code for a body request (default 0)
 ##   FAKE_CURL_BODY_NO_FILE    if 1, never create $CURL_OUT_FILE (exercises the
 ##                             'no file on disk yet' arm of the poll loop)
-##   FAKE_CURL_BODY_CREATE_AT_END
-##                             if set to a byte count, keep the file absent for
-##                             the whole run, then create it at that size as the
-##                             very last act before exit -- so the poll loop
-##                             never sees it and the post-loop final-size check
-##                             is what inspects it
 ##
 ## A '--head' request is detected by the flag curl-prgrs itself passes; every
 ## other invocation is a body download. The file is grown with 'truncate' (a
@@ -74,15 +68,6 @@ if [ "${FAKE_CURL_BODY_NO_FILE:-0}" = "1" ]; then
   else
     sleep 0.1
   fi
-  exit "${FAKE_CURL_BODY_EXIT:-0}"
-fi
-
-if [ -n "${FAKE_CURL_BODY_CREATE_AT_END:-}" ]; then
-  ## Keep the file absent through the poll loop, then create it at the target
-  ## size as the last act before exiting: the loop never inspects it, so the
-  ## post-loop final-size check is the only thing that sees it.
-  sleep 0.2
-  truncate --size="${FAKE_CURL_BODY_CREATE_AT_END}" -- "${out}"
   exit "${FAKE_CURL_BODY_EXIT:-0}"
 fi
 
