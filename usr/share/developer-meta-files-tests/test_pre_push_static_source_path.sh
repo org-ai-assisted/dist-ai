@@ -28,6 +28,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 ## shellcheck is a HARD PREREQUISITE, not an optional nicety. pre-push-static
 ## SKIPS its entire shellcheck tier and returns SUCCESS when shellcheck is
@@ -38,7 +39,6 @@ if ! test -r /usr/libexec/helper-scripts/has.sh ; then
    exit 1
 fi
 # shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
-# shellcheck disable=SC1091
 source /usr/libexec/helper-scripts/has.sh
 
 if ! has shellcheck ; then
@@ -99,6 +99,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 # shellcheck source=../lib/helper.sh
 source "${0%/*}"/../lib/helper.sh
@@ -131,7 +132,7 @@ gate_output="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || gate_rc=$?
 
 fail=0
 
-if printf '%s\n' "${gate_output}" | grep --quiet --fixed-strings 'SC1091'; then
+if grep --quiet --fixed-strings 'SC1091' <<< "${gate_output}"; then
    printf '%s\n' "FAIL: SC1091 -- the script-relative source= path did not resolve"
    printf '%s\n' "${gate_output}" | grep --fixed-strings 'SC1091' | head -2
    fail=1
@@ -139,7 +140,7 @@ else
    printf '%s\n' "PASS: script-relative source= resolves from the repo root"
 fi
 
-if printf '%s\n' "${gate_output}" | grep --quiet --fixed-strings 'SC2154'; then
+if grep --quiet --fixed-strings 'SC2154' <<< "${gate_output}"; then
    printf '%s\n' "FAIL: SC2154 -- the sourced assignment was not seen"
    printf '%s\n' "${gate_output}" | grep --fixed-strings 'SC2154' | head -2
    fail=1
@@ -160,7 +161,7 @@ fi
 
 ## Belt and braces: if the gate reports the shellcheck tier skipped for ANY
 ## reason, the three assertions above are meaningless.
-if printf '%s\n' "${gate_output}" | grep --quiet --fixed-strings 'shellcheck not on PATH'; then
+if grep --quiet --fixed-strings 'shellcheck not on PATH' <<< "${gate_output}"; then
    printf '%s\n' "FAIL: the gate SKIPPED its shellcheck tier -- nothing was tested"
    fail=1
 fi

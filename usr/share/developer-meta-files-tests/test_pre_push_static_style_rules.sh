@@ -28,6 +28,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 ## The gate under test (pre-push-static) now ships in dist-ai itself
 ## (usr/bin/pre-push-static), so this test no longer needs DMF_REPO.
@@ -625,12 +626,22 @@ btick='`'
 expect_rule "R-172" "foo=${btick}${mkd}${sp}--parents${sp}--${sp}${dq}${tv}${dq}${btick}"    "present"
 expect_rule "R-172" "${mkd}${sp}--parents${sp}--${sp}${dq}${dollar}TMPDIR_SUFFIX${dq}"        "absent"
 
-## R-010: six COPIES of one directive must NOT satisfy the block (DISTINCT
-## directives are counted); the six distinct directives pass.
-sixsame=$'set -o errexit\nset -o errexit\nset -o errexit\nset -o errexit\nset -o errexit\nset -o errexit'
-sixdistinct=$'set -o errexit\nset -o nounset\nset -o pipefail\nset -o errtrace\nshopt -s inherit_errexit\nshopt -s shift_verbose'
-expect_rule "R-010" "${sixsame}"                                 "present"
-expect_rule "R-010" "${sixdistinct}"                             "absent"
+## R-010: seven COPIES of one directive must NOT satisfy the block (DISTINCT
+## directives are counted); the seven distinct directives pass.
+sevensame=$'set -o errexit\nset -o errexit\nset -o errexit\nset -o errexit\nset -o errexit\nset -o errexit\nset -o errexit'
+sevendistinct=$'set -o errexit\nset -o nounset\nset -o pipefail\nset -o errtrace\nshopt -s inherit_errexit\nshopt -s shift_verbose\nexport LC_ALL=C'
+expect_rule "R-010" "${sevensame}"                               "present"
+expect_rule "R-010" "${sevendistinct}"                           "absent"
+## The six set/shopt lines WITHOUT 'export LC_ALL=C' are 6/7 -- flagged. This
+## is the LC_ALL regression: the old gate (six required) passed this body, the
+## new gate (seven required) must flag it.
+sixmissing_lcall=$'set -o errexit\nset -o nounset\nset -o pipefail\nset -o errtrace\nshopt -s inherit_errexit\nshopt -s shift_verbose'
+expect_rule "R-010" "${sixmissing_lcall}"                        "present"
+## 'export LC_ALL=C' is whole-line exact: a 'C.UTF-8' global does NOT satisfy
+## the requirement (a multibyte need is a per-command override, not the block
+## default), so six lines + 'export LC_ALL=C.UTF-8' is still 6/7 -- flagged.
+sixplus_utf8=$'set -o errexit\nset -o nounset\nset -o pipefail\nset -o errtrace\nshopt -s inherit_errexit\nshopt -s shift_verbose\nexport LC_ALL=C.UTF-8'
+expect_rule "R-010" "${sixplus_utf8}"                            "present"
 
 ## R-010 source-able exemption (present==0 AND a was_executed/was_sourced
 ## GUARD CALL) must fire ONLY for a real command-position call, not for an
@@ -650,19 +661,27 @@ expect_rule "${guard_fail}" "was_sourced && main"               "absent"
 ## ENABLES errexit must carry the shopt half of the strict block too
 ## ('shopt -s inherit_errexit' + 'shopt -s shift_verbose'). The column-0
 ## count is 0 (block indented inside the guard), so this shape is exempt
-## from the all-6 top-level rule -- but forgetting the shopt lines is the
-## exact gap this catches. Fail tag 'R-010 shopt block' is distinct from
-## 'R-010 strict-mode block', so it does not collide with the guard tests.
+## from the all-7 top-level rule -- but forgetting the shopt lines (or the
+## guarded 'export LC_ALL=C') is the exact gap this catches. Fail tag
+## 'R-010 shopt block' is distinct from 'R-010 strict-mode block', so it
+## does not collide with the guard tests.
 shopt_fail='R-010 shopt block'
 guarded_no_shopt=$'if was_executed "${BASH_SOURCE[0]}"; then\n   set -o errexit\n   set -o nounset\n   set -o pipefail\n   set -o errtrace\nfi'
 guarded_only_inherit=$'if was_executed "${BASH_SOURCE[0]}"; then\n   set -o errexit\n   set -o nounset\n   shopt -s inherit_errexit\nfi'
-guarded_full_shopt=$'if was_executed "${BASH_SOURCE[0]}"; then\n   set -o errexit\n   set -o nounset\n   set -o pipefail\n   set -o errtrace\n   shopt -s inherit_errexit\n   shopt -s shift_verbose\nfi'
+## Both shopt lines present but 'export LC_ALL=C' still missing: the guarded
+## LC_ALL regression -- the old gate spared this, the new gate must flag it.
+guarded_no_lcall=$'if was_executed "${BASH_SOURCE[0]}"; then\n   set -o errexit\n   set -o nounset\n   set -o pipefail\n   set -o errtrace\n   shopt -s inherit_errexit\n   shopt -s shift_verbose\nfi'
+guarded_full_shopt=$'if was_executed "${BASH_SOURCE[0]}"; then\n   set -o errexit\n   set -o nounset\n   set -o pipefail\n   set -o errtrace\n   shopt -s inherit_errexit\n   shopt -s shift_verbose\n   export LC_ALL=C\nfi'
 ## errexit enabled, both shopt lines missing => FLAGGED.
 expect_rule "${shopt_fail}" "${guarded_no_shopt}"               "present"
 ## errexit enabled, only shift_verbose missing (the make-helper-one.bsh
 ## case: inherit_errexit present) => still FLAGGED.
 expect_rule "${shopt_fail}" "${guarded_only_inherit}"           "present"
-## errexit enabled, both shopt lines present => SPARED.
+## errexit enabled, shopt half present but guarded 'export LC_ALL=C' missing
+## => FLAGGED.
+expect_rule "${shopt_fail}" "${guarded_no_lcall}"              "present"
+## errexit enabled, both shopt lines AND guarded 'export LC_ALL=C' present
+## => SPARED.
 expect_rule "${shopt_fail}" "${guarded_full_shopt}"             "absent"
 ## A guarded script that enables NO strict-mode (just calls main) has
 ## nothing for inherit_errexit to complete => SPARED.

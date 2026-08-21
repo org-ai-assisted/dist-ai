@@ -34,13 +34,13 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 if ! test -r /usr/libexec/helper-scripts/has.sh ; then
    printf '%s\n' "FATAL: helper-scripts has.sh is not installed (/usr/libexec/helper-scripts/has.sh)" >&2
    exit 1
 fi
 # shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
-# shellcheck disable=SC1091
 source /usr/libexec/helper-scripts/has.sh
 
 if ! has safe-rm ; then
@@ -92,6 +92,7 @@ fixture_prologue=(
    'set -o errtrace'
    'shopt -s inherit_errexit'
    'shopt -s shift_verbose'
+   'export LC_ALL=C'
    ''
 )
 
