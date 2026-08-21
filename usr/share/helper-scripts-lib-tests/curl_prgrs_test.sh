@@ -341,17 +341,20 @@ rc="$(CURL_OUT_FILE="" CURL_PRGRS_MAX_FILE_SIZE_BYTES=100000 \
 check "exec: empty CURL_OUT_FILE -> 57 (setup failure not masked)" "${rc}" "57"
 
 ## ============================================================
-## (N) Real SIGTERM during an in-flight download: the subject handles the signal
-## and terminates promptly (exercises shutdown_sigterm via a real trap). The
-## body child idles (FAKE_CURL_BODY_PRESLEEP) so SIGTERM lands mid-download.
+## (N) Real SIGTERM during an in-flight download: the subject must both terminate
+## promptly AND stop the download (kill curl). The body child idles
+## (FAKE_CURL_BODY_PRESLEEP) then writes; SIGTERM lands during that idle. If the
+## signal did not kill curl, the orphaned body would still complete the write
+## after the idle -- the size check below is the regression canary for that.
 ## ============================================================
-## The body idles far longer (12s) than the whole ~6.5s deadline below, so a
-## subject that IGNORED SIGTERM would still be downloading past the deadline and
-## fail this test -- it cannot pass by simply finishing on its own.
+## Idle (8s) outlasts the ~6.5s terminate deadline, so a subject that IGNORED
+## SIGTERM stays alive past the deadline and fails the 'gone' check rather than
+## passing by finishing on its own.
 sig_out="${test_dir}/sig.bin"
+sig_body=200000
 CURL_OUT_FILE="${sig_out}" CURL_PRGRS_MAX_FILE_SIZE_BYTES=10000000 \
-   FAKE_CURL_HEADER_CL=1000000 FAKE_CURL_BODY_BYTES=1000000 \
-   FAKE_CURL_BODY_PRESLEEP=12 \
+   FAKE_CURL_HEADER_CL="${sig_body}" FAKE_CURL_BODY_BYTES="${sig_body}" \
+   FAKE_CURL_BODY_PRESLEEP=8 \
    "${subject}" -o "${sig_out}" https://example.com/slow >/dev/null 2>&1 &
 subject_pid=$!
 ## The header phase (a fast fake-curl call) is well over within 1.5s, so the body
@@ -367,12 +370,20 @@ for _ in $(seq 1 50); do
    sleep 0.1
 done
 ## Never block on 'wait' for a subject that ignored the signal: SIGKILL it, then
-## reap. The orphaned fake-curl body idles then exits on its own.
+## reap. (SIGKILL to the SUBJECT does not reach the orphaned body -- that is the
+## point of the size check.)
 if [ "${gone}" = "no" ]; then
    kill -s SIGKILL "${subject_pid}" 2>/dev/null || true
 fi
 wait "${subject_pid}" 2>/dev/null || true
 check "signal: SIGTERM terminates the subject promptly (no hang)" "${gone}" "yes"
+## Wait past the body's idle (8s): had SIGTERM failed to kill curl, the orphaned
+## body would have finished the ${sig_body}-byte write by now.
+sleep 8
+sig_final=0
+[ -f "${sig_out}" ] && sig_final="$(stat -c "%s" -- "${sig_out}")"
+check "signal: SIGTERM actually stopped the download (curl killed)" \
+   "$([ "${sig_final}" -lt "${sig_body}" ] && printf stopped || printf completed)" "stopped"
 
 ## ============================================================
 ## (O) Property fuzz: drive the REAL pure bash functions over many random inputs

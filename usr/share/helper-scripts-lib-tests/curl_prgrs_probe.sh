@@ -32,6 +32,7 @@ probe_cleanup() {
 }
 trap probe_cleanup EXIT
 statusfile="${probe_tmp}/status"
+curl_pid_file="${probe_tmp}/curl.pid"
 curl_pid=""
 
 case "${operation}" in
