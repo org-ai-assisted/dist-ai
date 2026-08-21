@@ -304,10 +304,30 @@ def _test_daemon_ipc():
             ok(bad.state() == unconnected,
                'ipc: an over-long frame is aborted by the server')
 
-            # a second instance finds the socket live -> declines
+            # a second instance finds the lock already held -> declines
             other = CW.ClipboardWatchApp(APP)
             ok(other._claim_singleton() is False,
-               'singleton: a second instance sees it live and declines')
+               'singleton: a second instance finds the lock held and declines')
+
+            # TOCTOU regression: even in the concurrent window -- where neither watcher
+            # yet sees the other's socket as live (socket_is_live == False) -- the flock
+            # gate still rejects the second claimant, so two watchers never both bind and
+            # race duplicate review bars. Pre-flock, the second removeServer()'d the
+            # incumbent's just-bound socket and listen()'d, so BOTH ran.
+            _live = ipc.socket_is_live
+            ipc.socket_is_live = lambda *a, **k: False
+            try:
+                race = CW.ClipboardWatchApp(APP)
+                ok(race._claim_singleton() is False,
+                   'singleton: flock rejects a concurrent second binder (TOCTOU)')
+                ok(race._server is None,
+                   'singleton: the rejected claimant binds no socket')
+                ok(race._lock_fd is None,
+                   'singleton: the rejected claimant holds no lock fd')
+            finally:
+                ipc.socket_is_live = _live
+            ok(CW.is_running(),
+               'singleton: the incumbent socket survived the concurrent claim')
 
             # ensure_socket_dir failure -> proceed without a singleton
             _real = ipc.ensure_socket_dir
@@ -324,6 +344,7 @@ def _test_daemon_ipc():
                 ipc.ensure_socket_dir = _real
 
             app._server.close()
+            os.close(app._lock_fd)          # release the singleton flock (test isolation)
         finally:
             if old is None:
                 os.environ.pop('XDG_RUNTIME_DIR', None)
