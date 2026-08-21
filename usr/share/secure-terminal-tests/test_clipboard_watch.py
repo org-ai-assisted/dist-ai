@@ -343,6 +343,52 @@ def _test_daemon_ipc():
             finally:
                 ipc.ensure_socket_dir = _real
 
+            # lock-file open error -> best effort, proceed without a singleton
+            _open = CW.os.open
+
+            def _open_boom(*_a, **_k):
+                raise OSError('cannot open lock file')
+
+            CW.os.open = _open_boom
+            try:
+                oe = CW.ClipboardWatchApp(APP)
+                ok(oe._claim_singleton() is True,
+                   'singleton: lock-file open error -> proceed (True)')
+                ok(oe._lock_fd is None, 'singleton: no lock fd when open fails')
+            finally:
+                CW.os.open = _open
+
+            # flock UNSUPPORTED (rare fs, non-contention OSError) -> best effort, proceed
+            _flock = CW.fcntl.flock
+
+            def _flock_unsupported(*_a, **_k):
+                raise OSError('flock unsupported')      # NOT BlockingIOError
+
+            CW.fcntl.flock = _flock_unsupported
+            try:
+                fu = CW.ClipboardWatchApp(APP)
+                ok(fu._claim_singleton() is True,
+                   'singleton: flock unsupported -> proceed (True)')
+                ok(fu._lock_fd is None, 'singleton: no lock fd when flock unsupported')
+            finally:
+                CW.fcntl.flock = _flock
+
+            # live incumbent socket held by a PRE-flock watcher (e.g. mid upgrade):
+            # the lock is free, so flock succeeds, but a live socket means back off
+            # rather than steal it.
+            _live2 = ipc.socket_is_live
+            CW.fcntl.flock = lambda *_a, **_k: None      # pretend the lock is free
+            ipc.socket_is_live = lambda *_a, **_k: True   # but a socket is live
+            try:
+                inc = CW.ClipboardWatchApp(APP)
+                ok(inc._claim_singleton() is False,
+                   'singleton: live incumbent socket -> back off (False)')
+                ok(inc._server is None, 'singleton: incumbent back-off binds no socket')
+                ok(inc._lock_fd is None, 'singleton: incumbent back-off releases the lock fd')
+            finally:
+                CW.fcntl.flock = _flock
+                ipc.socket_is_live = _live2
+
             app._server.close()
             os.close(app._lock_fd)          # release the singleton flock (test isolation)
         finally:
