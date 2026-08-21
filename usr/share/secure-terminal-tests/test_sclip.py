@@ -15,6 +15,7 @@
 
 import io
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -146,9 +147,34 @@ def run():
     eq(rc, 1, 'filter: BrokenPipe on stdout -> exit 1')
 
     _wrapper_tests()
+    _apparmor_registration_check()
 
     print('\n%s' % ('PASS' if _failures == 0 else 'FAIL'))
     return 1 if _failures else 0
+
+
+def _apparmor_registration_check():
+    """Every shipped AppArmor profile must be registered with dh_apparmor in
+    debian/rules, or the package installs the profile FILE but its postinst never
+    loads it -- the confinement is inert. (Found on a real .deb install: sclip
+    shipped to /etc/apparmor.d but was never dh_apparmor-registered, so aa-exec -p
+    sclip reported "profile does not exist".) Source-tree check; skipped against an
+    installed package, which has no debian/ tree."""
+    pkg = os.path.dirname(os.path.realpath(clipboard.__file__))
+    root = os.path.normpath(os.path.join(pkg, '..', '..', '..', '..', '..'))
+    rules = os.path.join(root, 'debian', 'rules')
+    profiles_dir = os.path.join(root, 'etc', 'apparmor.d')
+    if not (os.path.isfile(rules) and os.path.isdir(profiles_dir)):
+        return                          # installed-package context, not a checkout
+    with open(rules, encoding='utf-8') as handle:
+        registered = set(re.findall(r'dh_apparmor\s+--profile-name=(\S+)',
+                                    handle.read()))
+    shipped = {name for name in os.listdir(profiles_dir)
+               if os.path.isfile(os.path.join(profiles_dir, name))}
+    missing = shipped - registered
+    ok(not missing,
+       'packaging: every shipped AppArmor profile is dh_apparmor-registered so it '
+       'loads on install (unregistered: %s)' % sorted(missing))
 
 
 def _bin_dir():
