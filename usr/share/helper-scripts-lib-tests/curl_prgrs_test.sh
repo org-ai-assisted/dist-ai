@@ -215,6 +215,11 @@ check "shutdown sighup + status 0 -> 110" \
    "$(probe_rc shutdown sighup 0 0 true no)" "110"
 check "shutdown exit + status 0 -> 0 (only the clean path reports success)" \
    "$(probe_rc shutdown exit 0 0 true no)" "0"
+## The clean 'exit' path can still carry a NON-zero code: 'exit ${wait_exit_code}'
+## when wait captured a failure, which does not trip ERR. A 0 status file must not
+## mask it as success.
+check "shutdown exit + status 0 + exit code 5 -> 110 (failed wait not masked)" \
+   "$(probe_rc shutdown exit 0 5 true no)" "110"
 check "shutdown sigterm + status 7 -> 7 (recorded code survives)" \
    "$(probe_rc shutdown sigterm 7 0 true no)" "7"
 check "shutdown exit + non-numeric status -> 111" "$(probe_rc shutdown exit garbage 0 true no)"  "111"
