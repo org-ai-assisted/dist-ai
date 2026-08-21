@@ -182,6 +182,9 @@ check "initialize_terminal: non-TTY branch (exec 4>/dev/null)" "$(probe_rc term 
 check "curl_exit 0: returns 0, records 0"             "$("${probe_script}" curl_exit 0 no)"   "0:0"
 check "curl_exit 81 (no pid): returns 81, records 81" "$("${probe_script}" curl_exit 81 no)"   "81:81"
 check "curl_exit 81 (live pid): kills pid, returns 81" "$("${probe_script}" curl_exit 81 live)" "81:81"
+## curl_exit drops the published PID so a later shutdown cannot SIGKILL a
+## reaped/reused PID (only the still-live SIGTERM path keeps it published).
+check "curl_exit clears the published curl PID" "$("${probe_script}" pidfile_clear)" "cleared"
 
 ## ============================================================
 ## (G) shutdown -- status resolution across signal, statusfile and code arms.

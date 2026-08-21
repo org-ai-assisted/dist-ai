@@ -151,6 +151,19 @@ case "${operation}" in
       printf '%s' "${size_file_downloaded_bytes}"
       ;;
 
+   ## curl_exit must drop the published curl PID so a later shutdown cannot
+   ## SIGKILL a reaped/reused PID. Publish a sentinel, run curl_exit, report
+   ## whether the pid file was cleared.
+   pidfile_clear)
+      printf '%s\n' 999999 > "${curl_pid_file}"
+      curl_exit 0 >/dev/null 2>&1 || true
+      if [ -s "${curl_pid_file}" ]; then
+         printf '%s' not-cleared
+      else
+         printf '%s' cleared
+      fi
+      ;;
+
    ## enforce_final_size when the output file is absent: nothing to do, returns 0.
    enforce_nofile)
       CURL_OUT_FILE="${probe_tmp}/does-not-exist"
