@@ -176,6 +176,19 @@ assert_spared "as-argument"    "$(body_of "printf '%s' ${tmo} 5")"
 ## Per-script waiver exempts an otherwise-flagged bare timeout.
 assert_spared "waiver" \
    "$(body_of "## style-ok: allow-bare-timeout" "${tmo} 5 do_thing")"
+## An array ELEMENT: the '(' in 'cmd=(...)' is array syntax, not a command
+## separator, so 'timeout' there is DATA, not a bare invocation.
+assert_spared "array-element" \
+   "$(body_of "cmd=(${tmo} 5 sleep 10)" "printf '%s' ${dq}\${cmd[@]}${dq}")"
+## A timeout whose invocation is CONTINUED to the next line (the options, maybe
+## '--kill-after', follow) must not be flagged on the 'timeout \\' line alone.
+assert_spared "multiline" \
+   "$(body_of "${tmo} ${bs}" "   ${ka}=5 5 do_thing")"
+## Informational runs time no child and need no kill-after.
+assert_spared "help"    "$(body_of "${tmo} --help")"
+assert_spared "version" "$(body_of "${tmo} --version")"
+## A function DEFINITION named timeout is not a timeout invocation.
+assert_spared "funcdef" "$(body_of "${tmo} () {" '   true' '}')"
 
 ## --- (2) pre-push-fix behaviour ---
 run_fix() {
@@ -256,6 +269,16 @@ assert_fix_unchanged "instring" "deferred=${dq}${tmo} 5${dq}"
 assert_fix_unchanged "in-comment" "true ${hash} note${sc} ${tmo} 5 do_thing"
 ## timeout as an argument to another command.
 assert_fix_unchanged "argument" "printf '%s' ${tmo} 5"
+## An ARRAY element -- 'cmd=(timeout 5 x)' is DATA, not a command: the '(' is
+## array syntax. The fixer must not rewrite it.
+assert_fix_unchanged "array-element" "cmd=(${tmo} 5 sleep 10)"
+## A multi-line string that CLOSES one quote and OPENS another on the same line:
+## the 'timeout' on the next line is inside the reopened string (DATA). A scanner
+## that stopped at the first closing quote would lose the reopened-quote state
+## and rewrite the string.
+mlquote_reopen="$(printf '%s\n' \
+   "a=${dq}one" "two${dq} ${sc} b=${dq}three" "${tmo} 5 inside-b${dq}")"
+assert_fix_unchanged "mlquote-reopen" "${mlquote_reopen}"
 ## A file that WAIVES R-200 keeps its deliberately-bare timeout: the fixer must
 ## honor '## style-ok: allow-bare-timeout' just as the gate does.
 assert_fix_unchanged "waived" \

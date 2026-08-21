@@ -2443,8 +2443,8 @@ check_R161_grep_pipe_quiet() {
 }
 
 check_R200_timeout_kill_after() {
-   local script hits ok_hits line lineno
-   local neg assign killrun
+   local script hits exempt_hits line lineno content
+   local neg assign killrun exempt_array exempt_info exempt_funcdef
    local cand_re1 cand_re2 cand_re3 ok_re1 ok_re2 ok_re3
    local -A ok_lines
    local -a fs
@@ -2492,6 +2492,15 @@ check_R200_timeout_kill_after() {
    ok_re1="^[[:space:]]*${neg}${assign}timeout[[:space:]]${killrun}"
    ok_re2="^[[:space:]]*[^#]*[;&|(){}\`][[:space:]]*${neg}${assign}timeout[[:space:]]${killrun}"
    ok_re3="^[[:space:]]*([^#]*[[:space:]])?(then|do|else|if|elif|while|until)[[:space:]]+${neg}${assign}timeout[[:space:]]${killrun}"
+   ## Extra SPARES (not command-position timeouts that time a child):
+   ##  - an array ELEMENT: 'cmd=(timeout 5 x)' -- the '(' is array syntax, not a
+   ##    command separator, so the word 'timeout' is DATA. '[^;&|#]*' keeps the
+   ##    match inside the one assignment.
+   ##  - an informational run: 'timeout --help' / '--version' times no child.
+   ##  - a function DEFINITION named timeout: 'timeout ()' / 'timeout()'.
+   exempt_array='[A-Za-z_][A-Za-z0-9_]*=\([^;&|#]*timeout'
+   exempt_info="timeout[[:space:]]+(--help|--version|--usage)([[:space:]]|\$)"
+   exempt_funcdef='timeout[[:space:]]*\(\)'
 
    for script in "${fs[@]}"; do
       if grep --quiet --extended-regexp \
@@ -2502,15 +2511,19 @@ check_R200_timeout_kill_after() {
       fi
       ## OK lines first: a command-position timeout that already carries
       ## kill-after. Dedup the candidate scan against these by LINE number.
+      ## A kill-after present (ok_re*), plus the extra spares (array element,
+      ## informational run, function definition), all mark a line OK by number.
       ok_lines=()
-      ok_hits="$(grep --line-number --extended-regexp \
+      exempt_hits="$(grep --line-number --extended-regexp \
          --regexp="${ok_re1}" --regexp="${ok_re2}" --regexp="${ok_re3}" \
+         --regexp="${exempt_array}" --regexp="${exempt_info}" \
+         --regexp="${exempt_funcdef}" \
          -- "${script}" 2>/dev/null || true)"
-      if [ -n "${ok_hits}" ]; then
+      if [ -n "${exempt_hits}" ]; then
          while IFS= read -r line; do
             [ -z "${line}" ] && continue
             ok_lines["${line%%:*}"]=1
-         done <<< "${ok_hits}"
+         done <<< "${exempt_hits}"
       fi
       hits="$(grep --line-number --extended-regexp \
          --regexp="${cand_re1}" --regexp="${cand_re2}" --regexp="${cand_re3}" \
@@ -2522,6 +2535,16 @@ check_R200_timeout_kill_after() {
          [ -z "${line}" ] && continue
          lineno="${line%%:*}"
          [ -n "${ok_lines[${lineno}]:-}" ] && continue
+         ## A line whose 'timeout' invocation is CONTINUED onto the next line
+         ## ('timeout \' with the options -- perhaps '--kill-after' -- below) is
+         ## spared: a line gate cannot see the continuation, so flagging it would
+         ## risk a false positive on a valid multi-line timeout.
+         content="${line#*:}"
+         case "${content}" in
+            *\\)
+               continue
+               ;;
+         esac
          fail "R-200 timeout without --kill-after= (SIGTERM alone can be ignored)" "'${script}:${line}'"
       done <<< "${hits}"
    done

@@ -218,11 +218,17 @@ GREP_SPAN = re.compile(r'grep\b[^;&|#]*')
 ## the keyword allowed after any non-word char, a keyword passed as a literal
 ## ARGUMENT ('echo then grep -q x') would falsely read as command position and the
 ## fixer would rewrite the argument.
+## A command starts at line start, after a separator ';&|){}`', or after a '('
+## that is NOT part of an array assignment ('items=(...)') or a function
+## definition ('name(...)') -- i.e. a '(' not preceded by '=' or a word char.
+## That '(' guard keeps the fixer from treating an array ELEMENT ('cmd=(timeout
+## 5 x)') as a command and rewriting DATA; '$('/'(' subshells still qualify.
+_CMD_START = r"(?:^\s*|[;&|){}`]\s*|(?<![=\w])\(\s*)"
 CMD_POS_PATTERN = (
     r'(?:'
-    r'(?:^\s*|[;&|(){}`]\s*)'
-    r'|(?:^\s*|[;&|(){}`]\s*)(?:then|do|else|if|elif|while|until)\s+'
-    r')'
+    + _CMD_START
+    + r'|' + _CMD_START + r'(?:then|do|else|if|elif|while|until)\s+'
+    + r')'
     r'(?:!\s+)?'
     r'(?:[A-Za-z_]\w*=\S*\s+)*$')
 GREP_CMD_POS = re.compile(CMD_POS_PATTERN)
@@ -393,22 +399,6 @@ HEREDOC_OPEN = re.compile(
     r'|<<\s*(["\']?)([^\s;&|<>()"\'`]+)\3')
 
 
-def _scan_quote_only(line, quote):
-    """Advance an already-open multi-line quote across LINE; return the quote
-    char still open at end of line, or '' if it closed."""
-    index = 0
-    while index < len(line):
-        char = line[index]
-        ## Backslash escapes inside "" (not inside ''), so '\"' does not close.
-        if quote == '"' and char == "\\":
-            index += 2
-            continue
-        if char == quote:
-            return ""
-        index += 1
-    return quote
-
-
 def _line_continues(line):
     """True when LINE ends with an UNESCAPED trailing backslash (an odd run), so
     the next physical line is a continuation of this command -- its first word is
@@ -417,19 +407,22 @@ def _line_continues(line):
     return trailing % 2 == 1
 
 
-def _scan_code_line(line):
-    """Scan a depth-0 CODE line; return (quote_open_at_eol, [heredoc, ...],
-    continues) where each heredoc is (terminator, strip_tabs) and `continues` is
-    True if the line ends with a line-continuation backslash OUTSIDE a comment.
-    Tracks '...'/"..." quotes with backslash escapes, stops at a depth-0 '#'
-    comment, tracks arithmetic '(( ))' / '$(( ))' paren depth (so a bit-shift
-    '<<' there is not read as a heredoc, nesting included), and records '<<WORD'
-    heredoc openers (never '<<<'). Arithmetic depth is per-line: a '$((' left
-    open at end of line (a multi-line arithmetic) is NOT carried, so a '<<' on
-    its continuation reads as a (bogus) heredoc and the fixer over-skips -- the
-    SAFE direction (carrying the depth could instead leave a real later heredoc
-    undetected, which would corrupt)."""
-    quote = ""
+def _scan_code_line(line, quote_in=""):
+    """Scan a line starting at quote state `quote_in` (default: not in a quote);
+    return (quote_open_at_eol, [heredoc, ...], continues) where each heredoc is
+    (terminator, strip_tabs) and `continues` is True if the line ends with a
+    line-continuation backslash OUTSIDE a comment. `quote_in` carries an open
+    multi-line quote in: the scanner closes it and KEEPS scanning the remainder,
+    so a quote that closes and another quote/heredoc that opens on the SAME
+    physical line are both tracked. Tracks '...'/"..." quotes with backslash
+    escapes, stops at a depth-0 '#' comment, tracks arithmetic '(( ))' / '$(( ))'
+    paren depth (so a bit-shift '<<' there is not read as a heredoc, nesting
+    included), and records '<<WORD' heredoc openers (never '<<<'). Arithmetic
+    depth is per-line: a '$((' left open at end of line (a multi-line arithmetic)
+    is NOT carried, so a '<<' on its continuation reads as a (bogus) heredoc and
+    the fixer over-skips -- the SAFE direction (carrying the depth could instead
+    leave a real later heredoc undetected, which would corrupt)."""
+    quote = quote_in
     heredocs = []
     arith = 0
     broke_at_comment = False
@@ -529,8 +522,14 @@ def code_line_flags(text):
             flags.append(False)
             continue
         if quote:
+            ## A line that STARTS inside a multi-line quote is DATA, but it is
+            ## scanned (carrying the quote in) so that a quote which CLOSES and a
+            ## new quote/heredoc which OPENS on this same line are both tracked
+            ## for the next line -- otherwise the reopened-quote state is lost and
+            ## the next line's string data is misread as code.
             flags.append(False)
-            quote = _scan_quote_only(line, quote)
+            quote, opened, continued = _scan_code_line(line, quote_in=quote)
+            heredocs.extend(opened)
             continue
         ## A line continuing the previous command (that line ended with '\') is
         ## that command's arguments, never a fresh command word -> DATA. It is
