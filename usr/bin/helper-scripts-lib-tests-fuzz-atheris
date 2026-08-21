@@ -40,6 +40,10 @@ if [ "$#" -eq 0 ]; then
 fi
 
 rc=0
-## The harness is +x with a '#!/usr/bin/python3 -su' shebang; call it directly.
-"${tests_dir}/fuzz_curl_prgrs.py" "$@" || rc=$?
+## style-ok: allow-python-dashdash -- run the harness through the python3 on
+## PATH (the active venv / user-site), NOT its '#!/usr/bin/python3 -su' shebang:
+## atheris is a 'pip install' dependency that commonly lives in a virtualenv or
+## user-site, and '-s' would hide user-site, making the harness falsely report
+## atheris missing. Same reason privleap-tests-fuzz-atheris uses 'python3 --'.
+python3 -- "${tests_dir}/fuzz_curl_prgrs.py" "$@" || rc=$?
 exit "${rc}"
