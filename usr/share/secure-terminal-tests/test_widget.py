@@ -298,6 +298,16 @@ _asent.clear()
 _alt._alt_screen = False
 _alt.wheelEvent(_wheel_ev(-120))          # normal screen -> local scroll, no arrows
 eq(_asent, [], 'normal-screen wheel does not send arrows (keeps local scrollback scroll)')
+# a high-res trackpad streams tiny deltas: accumulate one line per ~40 units, NOT one
+# arrow per micro-event (the hyperscroll a min-1-per-event formula would cause)
+_alt._alt_screen = True
+_alt._wheel_accum = 0
+_asent.clear()
+for _ in range(39):
+    _alt.wheelEvent(_wheel_ev(-1))
+eq(_asent, [], 'trackpad micro-deltas below one line send nothing yet (no hyperscroll)')
+_alt.wheelEvent(_wheel_ev(-1))            # the 40th unit crosses one line
+eq(b''.join(_asent), b'\x1b[B', 'accumulated micro-deltas emit one line per ~40 units')
 _alt.close()
 # home-pin: a terminal does not auto-scroll horizontally -- a paint anchors the view at
 # the left so the START of every row stays visible (the reported bug: the auto-follow
