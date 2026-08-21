@@ -332,6 +332,14 @@ rc="$(CURL_OUT_FILE="${out_file}" CURL_PRGRS_MAX_FILE_SIZE_BYTES=100000 \
    run_rc -o "${out_file}" https://example.com/huge-cl)"
 check "exec: implausibly large Content-Length -> 116" "${rc}" "116"
 
+## M12 a setup-validation failure (empty CURL_OUT_FILE) reaches the caller as the
+## documented 57, not masked to a generic shutdown code -- the traps are armed
+## only after check_variables.
+rc="$(CURL_OUT_FILE="" CURL_PRGRS_MAX_FILE_SIZE_BYTES=100000 \
+   FAKE_CURL_HEADER_CL=100 FAKE_CURL_BODY_BYTES=10 \
+   run_rc https://example.com/nooutfile)"
+check "exec: empty CURL_OUT_FILE -> 57 (setup failure not masked)" "${rc}" "57"
+
 ## ============================================================
 ## (N) Real SIGTERM during an in-flight download: the subject handles the signal
 ## and terminates promptly (exercises shutdown_sigterm via a real trap). The
