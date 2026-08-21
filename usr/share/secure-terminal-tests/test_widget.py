@@ -271,6 +271,34 @@ _wmt = SecureTerminal(command='/bin/cat', tui=True)
 eq(_wmt.lineWrapMode(), _NW,
    'TUI grid never wraps (sized to fit; Detail/Reveal cells fall back to the box)')
 _wmt.close()
+
+# alternate scroll: in the ALTERNATE screen a full-screen program owns the display
+# (no local scrollback, no mouse reporting), so the wheel is translated into arrow-key
+# line scrolls sent to the child -- the reported bug was a dead wheel while Page
+# Up/Down worked. The normal screen keeps the local wheel scroll (no arrows).
+from PyQt6.QtGui import QWheelEvent                                # noqa: E402
+from PyQt6.QtCore import QPoint as _QP, QPointF as _QPF           # noqa: E402
+_alt = SecureTerminal(command='/bin/cat', tui=True)
+_asent = spy_writes(_alt)
+
+
+def _wheel_ev(dy):
+    return QWheelEvent(_QPF(5, 5), _QPF(5, 5), _QP(0, 0), _QP(0, dy),
+                       Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+                       Qt.ScrollPhase.NoScrollPhase, False)
+
+
+_alt._alt_screen = True
+_alt.wheelEvent(_wheel_ev(-120))          # wheel DOWN -> arrow-down x3
+eq(b''.join(_asent), b'\x1b[B' * 3, 'alt-screen wheel down sends arrow-down to the child')
+_asent.clear()
+_alt.wheelEvent(_wheel_ev(120))           # wheel UP -> arrow-up x3
+eq(b''.join(_asent), b'\x1b[A' * 3, 'alt-screen wheel up sends arrow-up to the child')
+_asent.clear()
+_alt._alt_screen = False
+_alt.wheelEvent(_wheel_ev(-120))          # normal screen -> local scroll, no arrows
+eq(_asent, [], 'normal-screen wheel does not send arrows (keeps local scrollback scroll)')
+_alt.close()
 # home-pin: a terminal does not auto-scroll horizontally -- a paint anchors the view at
 # the left so the START of every row stays visible (the reported bug: the auto-follow
 # parked the viewport mid-line, clipping every row's left edge) -- but NEVER by hiding
