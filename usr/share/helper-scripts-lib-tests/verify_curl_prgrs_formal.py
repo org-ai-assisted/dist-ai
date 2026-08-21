@@ -161,7 +161,10 @@ def m_strip(args):
 ## guard that gates a real run and the guard a canary claims to cover). ---
 
 def _percent_in_range(text):
-    return text.isdigit() and 0 <= int(text) <= 100
+    ## _is_whole (ASCII decimal only), not str.isdigit(): isdigit() is True for
+    ## non-decimal Unicode digits that int() then rejects, so the guard would
+    ## crash on such output instead of rejecting it.
+    return _is_whole(text) and 0 <= int(text) <= 100
 
 
 def _verdict_ok(text):
@@ -358,7 +361,7 @@ def _leaky_strip(args):
 
 def _injecting_strip(args):
     """Broken: appends an argument absent from the input (not a subsequence)."""
-    return m_strip(args) + ["--injected"]
+    return [*m_strip(args), "--injected"]
 
 
 def t3_canaries():
