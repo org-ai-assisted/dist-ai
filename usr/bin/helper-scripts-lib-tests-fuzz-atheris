@@ -1,0 +1,49 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Runs the Atheris (libFuzzer) coverage-guided fuzz harness for curl-prgrs'
+## pure decision functions (fuzz_curl_prgrs.py). Unlike the no-dependency
+## real-bash property fuzz inside curl_prgrs_test.sh (curl_prgrs_fuzz.sh), this
+## is coverage-guided and needs Atheris (pip install atheris); without it the
+## harness reports a clean SKIP (exit 77). No root, no network.
+##
+## Default time budget is 60s; override with CURL_PRGRS_FUZZ_SECONDS or by
+## passing libFuzzer flags directly. Extra arguments are forwarded to the
+## harness, so a corpus directory and flags like -max_total_time=600 or
+## -runs=1000000 work as usual:
+##   helper-scripts-lib-tests-fuzz-atheris -max_total_time=600 ~/curl-prgrs-corpus
+## Targets the installed helper-scripts by default; set HELPER_SCRIPTS_REPO to a
+## derivative-maker checkout instead. Works installed or from a git checkout.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
+
+if [ -d "${script_dir}/../share/helper-scripts-lib-tests" ]; then
+  tests_dir="${script_dir}/../share/helper-scripts-lib-tests"
+else
+  tests_dir='/usr/share/helper-scripts-lib-tests'
+fi
+
+if [ "$#" -eq 0 ]; then
+  set -- "-max_total_time=${CURL_PRGRS_FUZZ_SECONDS:-60}"
+fi
+
+rc=0
+## style-ok: allow-python-dashdash -- run the harness through the python3 on
+## PATH (the active venv / user-site), NOT its '#!/usr/bin/python3 -su' shebang:
+## atheris is a 'pip install' dependency that commonly lives in a virtualenv or
+## user-site, and '-s' would hide user-site, making the harness falsely report
+## atheris missing. Same reason privleap-tests-fuzz-atheris uses 'python3 --'.
+python3 -- "${tests_dir}/fuzz_curl_prgrs.py" "$@" || rc=$?
+exit "${rc}"
