@@ -87,6 +87,7 @@ core_suites=(
    git-meld-tests
    grep-find-unicode-wrapper-tests
    helper-scripts-lib-tests
+   helper-scripts-lib-tests-verify
    image-optimize-tests
    lock-screen-tests
    lockfile-tests
