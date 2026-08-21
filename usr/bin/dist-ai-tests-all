@@ -87,6 +87,7 @@ core_suites=(
    git-meld-tests
    grep-find-unicode-wrapper-tests
    helper-scripts-lib-tests
+   helper-scripts-lib-tests-verify
    image-optimize-tests
    lock-screen-tests
    lockfile-tests
@@ -125,6 +126,7 @@ fuzz_suites=(
    private-ai-config-tests-fuzz
    git-meld-tests-fuzz
    grep-find-unicode-wrapper-tests-fuzz
+   helper-scripts-lib-tests-fuzz
    helper-scripts-lib-tests-fuzz-atheris
    iso-boot-tests-fuzz
    lockfile-tests-fuzz
