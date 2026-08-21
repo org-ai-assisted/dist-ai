@@ -27,6 +27,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v TMP ] || TMP=/tmp
 
@@ -96,7 +97,8 @@ loose_format="'value: %s\\n'"
 {
    printf '%s\n' '#!/bin/bash' ''
    printf '%s\n' 'set -o errexit' 'set -o nounset' 'set -o pipefail' \
-      'set -o errtrace' 'shopt -s inherit_errexit' 'shopt -s shift_verbose' ''
+      'set -o errtrace' 'shopt -s inherit_errexit' 'shopt -s shift_verbose' \
+      'export LC_ALL=C' ''
    printf '%s\n' 'value="mine"' "${print_verb} ${fixed_format} \"\${value}\""
 } >"${repo}/usr/bin/mine"
 chmod 0755 -- "${repo}/usr/bin/mine"
@@ -117,7 +119,7 @@ git -C "${repo}" -c core.hooksPath=/dev/null add --all
 all_rc=0
 all_output="$( cd -- "${repo}" && "${GATE}" --staged 2>&1 )" || all_rc=$?
 if [ "${all_rc}" -ne 0 ] \
-   && printf '%s\n' "${all_output}" | grep --quiet --fixed-strings 'usr/bin/theirs'; then
+   && grep --quiet --fixed-strings 'usr/bin/theirs' <<< "${all_output}"; then
    record PASS 'unrestricted staged mode fails on the violating file'
 else
    record FAIL "unrestricted staged mode did not fail on usr/bin/theirs (rc=${all_rc})"
@@ -135,7 +137,7 @@ else
    printf '%s\n' "  output: $(printf '%s' "${scoped_output}" | tr '\n' '|' | head -c 300)"
 fi
 
-if printf '%s\n' "${scoped_output}" | grep --quiet --fixed-strings 'usr/bin/theirs'; then
+if grep --quiet --fixed-strings 'usr/bin/theirs' <<< "${scoped_output}"; then
    record FAIL 'the scoped run still reported the file outside the pathspec'
    printf '%s\n' "  output: $(printf '%s' "${scoped_output}" | tr '\n' '|' | head -c 300)"
 else
@@ -148,7 +150,7 @@ guilty_rc=0
 guilty_output="$( cd -- "${repo}" \
    && "${GATE}" --staged --paths -- usr/bin/theirs 2>&1 )" || guilty_rc=$?
 if [ "${guilty_rc}" -ne 0 ] \
-   && printf '%s\n' "${guilty_output}" | grep --quiet --fixed-strings 'usr/bin/theirs'; then
+   && grep --quiet --fixed-strings 'usr/bin/theirs' <<< "${guilty_output}"; then
    record PASS 'a pathspec scoped to the violating file still fails'
 else
    record FAIL "the scoped run passed on a violating file (rc=${guilty_rc})"
@@ -160,7 +162,7 @@ fi
 empty_rc=0
 empty_output="$( cd -- "${repo}" \
    && "${GATE}" --staged --paths -- usr/bin/absent 2>&1 )" || empty_rc=$?
-if printf '%s\n' "${empty_output}" | grep --quiet --fixed-strings 'matched no added/modified file'; then
+if grep --quiet --fixed-strings 'matched no added/modified file' <<< "${empty_output}"; then
    record PASS 'a pathspec that matches nothing says so'
 else
    record FAIL "a pathspec that matches nothing was silent (rc=${empty_rc})"
@@ -172,7 +174,7 @@ fi
 misuse_rc=0
 misuse_output="$( cd -- "${repo}" && "${GATE}" --paths -- usr/bin/mine 2>&1 )" || misuse_rc=$?
 if [ "${misuse_rc}" -eq 2 ] \
-   && printf '%s\n' "${misuse_output}" | grep --quiet --fixed-strings 'only applies with --staged'; then
+   && grep --quiet --fixed-strings 'only applies with --staged' <<< "${misuse_output}"; then
    record PASS '--paths without --staged is refused'
 else
    record FAIL "--paths without --staged was not refused (rc=${misuse_rc})"

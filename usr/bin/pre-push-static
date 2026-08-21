@@ -20,7 +20,10 @@
 ##      is absent
 ##   4. LC_ALL=C grep -P  '[^\x00-\x7F]' on the commit-range
 ##      message (R-001)
-##   5. R-010 strict-mode block in top 160 lines (+ the shopt half in a guarded source-able block)
+##   5. R-010 strict-mode block in top 160 lines -- the seven directives
+##      'set -o errexit/nounset/pipefail/errtrace', 'shopt -s
+##      inherit_errexit/shift_verbose', and 'export LC_ALL=C' (+ the
+##      shopt/LC_ALL half in a guarded source-able block)
 ##   6. R-011 no 'set +o errexit' toggling
 ##      R-013 shell options set by long '-o' name, one per line (even in
 ##      sh); no 'set -eu' short form, no >1 option on a 'set' line
@@ -150,6 +153,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 ## Mode flags. Must precede the base-ref positional.
 per_commit_mode=0
@@ -749,6 +753,7 @@ check_R010_strict_block() {
       'set -o errtrace'
       'shopt -s inherit_errexit'
       'shopt -s shift_verbose'
+      'export LC_ALL=C'
    )
    for script in "${@}"; do
       ## Script-wide waiver: '## style-ok: no-strict' anywhere in the
@@ -768,7 +773,7 @@ check_R010_strict_block() {
          continue
       fi
       ## Count DISTINCT required directives present at column 0 (whole-line,
-      ## fixed-string match), not matching LINES: six copies of
+      ## fixed-string match), not matching LINES: seven copies of
       ## 'set -o errexit' must NOT satisfy the block. head -160 accommodates
       ## the long header docstrings some scripts carry before the block.
       header="$(head --lines=160 -- "${script}")"
@@ -788,10 +793,10 @@ check_R010_strict_block() {
       ## was_executed()/was_sourced() runtime check (indented, invisible
       ## to the whole-line match above). This shape -- fully guarded
       ## (present 0) AND the guard present -- is exempt from R-010's
-      ## top-level all-6 requirement. A partial top-level block
-      ## (present 1..5) is not a clean source-able script and stays
-      ## subject to the all-6 check below. This condition also leaves this
-      ## script itself enforced: it keeps all six distinct column-0
+      ## top-level all-7 requirement. A partial top-level block
+      ## (present 1..6) is not a clean source-able script and stays
+      ## subject to the all-7 check below. This condition also leaves this
+      ## script itself enforced: it keeps all seven distinct column-0
       ## directives, so it never enters the guarded path despite naming
       ## the tokens.
       ## '^[^#]*' requires the guard in CODE, not a comment: without it a
@@ -808,12 +813,13 @@ check_R010_strict_block() {
          && grep --quiet --extended-regexp \
             '^[^#]*(^|[[:space:];&|!(])(was_executed|was_sourced)([[:space:];&|)]|$)' \
             -- "${script}"; then
-         ## The guarded block is exempt from the all-6 top-level rule, but
+         ## The guarded block is exempt from the all-7 top-level rule, but
          ## the SHOPT half of the strict block ('shopt -s inherit_errexit'
-         ## and 'shopt -s shift_verbose') was repeatedly FORGOTTEN in this
-         ## form -- authors copy the 'set -o errexit/nounset/pipefail/
-         ## errtrace' lines but drop the two shopt lines -- precisely
-         ## because nothing checked the indented block. Enforce them here.
+         ## and 'shopt -s shift_verbose') plus 'export LC_ALL=C' were
+         ## repeatedly FORGOTTEN in this form -- authors copy the
+         ## 'set -o errexit/nounset/pipefail/errtrace' lines but drop the
+         ## rest -- precisely because nothing checked the indented block.
+         ## Enforce them here.
          ## Only when the guard actually ENABLES errexit (an indented
          ## 'set -o errexit'): inherit_errexit completes errexit's contract
          ## ('$()' subshells respect it) and shift_verbose belongs with it.
@@ -840,6 +846,27 @@ check_R010_strict_block() {
                   shopt_missing="shopt -s shift_verbose"
                fi
             fi
+            ## 'export LC_ALL=C' MUST also live inside the guard, indented: an
+            ## unguarded top-level 'export LC_ALL=C' in a source-able script
+            ## leaks the C locale into the sourcing shell (worse than the shopt
+            ## leak -- an env mutation, silent). Enforced alongside the shopt
+            ## half for the same reason: copying the 'set -o' lines makes it
+            ## easy to place at column 0 by reflex, where it would leak.
+            ## Like the shopt half, this is a WHOLE-FILE match (the guard has no
+            ## fixed delimiter to scope to), so an indented 'export LC_ALL=C'
+            ## ELSEWHERE would satisfy it. Unlike the preamble-only shopt
+            ## builtins an export could in principle sit loose in a function, so
+            ## the guarantee is looser here -- accepted under the AI-accident
+            ## threat model (the block is copied in as a unit); tightening it to
+            ## the guarded block needs the bash-block parser the gate avoids.
+            if ! grep --quiet --extended-regexp \
+                  '^[[:space:]]+export LC_ALL=C[[:space:]]*$' -- "${script}"; then
+               if [ -n "${shopt_missing}" ]; then
+                  shopt_missing="${shopt_missing}, export LC_ALL=C"
+               else
+                  shopt_missing="export LC_ALL=C"
+               fi
+            fi
             if [ -n "${shopt_missing}" ]; then
                fail "R-010 shopt block" "source-able guarded script '${script}' enables errexit but its was_executed block is missing: ${shopt_missing}"
             else
@@ -850,8 +877,8 @@ check_R010_strict_block() {
          fi
          continue
       fi
-      if [ "${present}" -lt 6 ]; then
-         fail "R-010 strict-mode block" "'${script}' has only ${present}/6 distinct strict-mode directives in head -160"
+      if [ "${present}" -lt "${#required[@]}" ]; then
+         fail "R-010 strict-mode block" "'${script}' has only ${present}/${#required[@]} distinct strict-mode directives in head -160"
       fi
    done
 }

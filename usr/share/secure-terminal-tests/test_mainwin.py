@@ -1233,6 +1233,8 @@ _cw_saved = (_cw.is_running, _cw.stop_running, _cw.push_warn_any,
              _cw.set_autostart, _cw.autostart_enabled)
 _o_startdet = QProcess.startDetached
 _o_avail_c = QSystemTrayIcon.isSystemTrayAvailable
+_o_systray_c = win._systray
+_o_warnany_c = win._clip_warn_any
 _calls = {}
 try:
     _cw.is_running = lambda: _calls.get('running', False)
@@ -1315,7 +1317,10 @@ finally:
      _cw.set_autostart, _cw.autostart_enabled) = _cw_saved
     QProcess.startDetached = _o_startdet
     QSystemTrayIcon.isSystemTrayAvailable = _o_avail_c
-    win._systray = False
+    win._systray = _o_systray_c
+    win._clip_warn_any = _o_warnany_c
+    win._clip_reviewer = None
+    APP.clipboard().clear()
 
 # a tab terminal's right-click menu gains the app toggles through its MainWindow
 from PyQt6.QtCore import QPoint                                    # noqa: E402
@@ -1611,6 +1616,20 @@ _tip2.hide()
 _tip2._source = None
 _tip2._check_pointer()                        # not over tip or source -> hide + stop
 ok(_tip2._source is None, 'InfoTip: a destroyed source is handled and it hides')
+# regression: a long tip at a high zoom must NOT be clipped (the wrapped last line
+# used to vanish), and the tip must not be maximizable full-screen (max size capped
+# to content, so a WM maximize is a no-op and the pointer poll can still hide it)
+_longtip = ('The monospace font family used for the terminal grid. The default Hack '
+            'avoids confusable glyphs and has no ligatures. Applies to every tab.')
+_tip2.show_for(win, _longtip, QPoint(5, 5), 300)
+ok(_tip2.height() >= _tip2.heightForWidth(_tip2.width()),
+   'InfoTip: a long tip at high zoom fits its wrapped text (not clipped)')
+ok(_tip2.maximumSize() == _tip2.size(),
+   'InfoTip: max size is capped to content, so a WM maximize is a no-op')
+_tip_running = _tip2._poll.isActive()
+_tip2.close()
+ok(_tip_running and not _tip2._poll.isActive(),
+   'InfoTip: closeEvent stops the pointer poll')
 _tip2.deleteLater()
 APP.processEvents()
 
