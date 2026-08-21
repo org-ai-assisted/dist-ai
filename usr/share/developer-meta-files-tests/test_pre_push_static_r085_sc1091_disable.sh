@@ -135,10 +135,14 @@ gate_output="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || gate_rc=$?
 
 fail=0
 
-## The rule fires for the flagged file. Anchor to the file path so a stray
-## 'R-085' elsewhere cannot make this pass vacuously (canary: 0 hits = 0
-## coverage).
-if [[ "${gate_output}" == *"R-085"* ]] && [[ "${gate_output}" == *"bin/flagged"* ]]; then
+## Bind every assertion to the R-085 diagnostic RECORD, not to the whole gate
+## output: the note prints '<path>:<lineno>:# shellcheck disable=SC1091' hit
+## lines, and no other check emits 'disable=SC1091', so an unrelated rule that
+## merely names one of these paths cannot satisfy or break a check vacuously.
+r085_hits="$(printf '%s\n' "${gate_output}" | grep --fixed-strings 'disable=SC1091' || true)"
+
+## The rule fires for the flagged file (canary: 0 hits = 0 coverage).
+if [[ "${gate_output}" == *"R-085"* ]] && [[ "${r085_hits}" == *"bin/flagged"* ]]; then
    printf '%s\n' "PASS: R-085 flags the file carrying the dead disable"
 else
    printf '%s\n' "FAIL: R-085 did not flag bin/flagged"
@@ -146,16 +150,16 @@ else
    fail=1
 fi
 
-## The waiver silences it.
-if [[ "${gate_output}" == *"bin/waived"* ]]; then
+## The waiver silences it: no R-085 record for bin/waived.
+if [[ "${r085_hits}" == *"bin/waived"* ]]; then
    printf '%s\n' "FAIL: '## style-ok: allow-sc1091-disable' did not waive R-085 on bin/waived"
    fail=1
 else
    printf '%s\n' "PASS: the waiver silences R-085"
 fi
 
-## The clean file is not flagged (no false positive).
-if [[ "${gate_output}" == *"bin/clean"* ]]; then
+## The clean file is not flagged (no false positive): no R-085 record for it.
+if [[ "${r085_hits}" == *"bin/clean"* ]]; then
    printf '%s\n' "FAIL: R-085 falsely flagged bin/clean (no disable present)"
    fail=1
 else
