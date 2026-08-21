@@ -14,6 +14,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 mydir="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )"
 
@@ -124,6 +125,7 @@ fuzz_suites=(
    private-ai-config-tests-fuzz
    git-meld-tests-fuzz
    grep-find-unicode-wrapper-tests-fuzz
+   helper-scripts-lib-tests-fuzz-atheris
    iso-boot-tests-fuzz
    lockfile-tests-fuzz
    msgcollector-tests-fuzz
