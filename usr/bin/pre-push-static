@@ -87,6 +87,14 @@
 ##      child, so the follow-up SIGKILL is what guarantees it dies. A timeout in
 ##      a string or as another command's argument is spared (fix by hand).
 ##      '## style-ok: allow-bare-timeout'.
+##  26. R-194 an apt config hook (Pre-Invoke / Post-Invoke / Pre-Install-Pkgs)
+##      must not embed a multi-statement shell command in its quoted value
+##      ('{"a; b"}'); move it to a script. Per-line, single-line directives
+##      only. '// style-ok: allow-embedded-script'.
+##  27. R-195 a cron entry (in '*/cron.d/*' or a 'crontab' file) must not embed
+##      a multi-statement command ('cmd1; cmd2', 'cmd | proc'); move it to a
+##      script. '&&'/'||' glue is tolerated (no native cron alternative).
+##      '# style-ok: allow-embedded-script'.
 ##
 ## Scope: files changed in HEAD vs upstream tracking branch
 ## (@{u}). Pass an explicit base ref as $1 to override
@@ -2004,6 +2012,187 @@ check_R193_python_dashdash_script() {
    done
 }
 
+config_value_embeds_script() {
+   ## True (0) if a shell command string embeds multi-statement logic per the
+   ## config-host threshold: a ';' statement separator or a real '|' pipe. A
+   ## '&&' / '||' chain and a '()' subshell are TOLERATED -- an apt hook and a
+   ## cron entry have no native alternative for setting a directory ('cd X &&
+   ## ...') or suppressing an error ('... || true'), and the OS's own
+   ## '/etc/crontab' and 'apt.conf.d/70debconf' use exactly that glue. A
+   ## ';'-separated sequence or a pipe is the unambiguous "a script was inlined"
+   ## signal. Shared by R-194 (apt) and R-195 (cron); NOT R-191, which is
+   ## stricter because systemd has a native directive for each such construct.
+   local value stripped
+   value="$1"
+   case "${value}" in
+      *';'*)
+         return 0
+         ;;
+   esac
+   ## Remove '&&' and '||' so a lone '|' pipe is detected without matching the
+   ## '||' OR-list operator.
+   stripped="${value//&&/}"
+   stripped="${stripped//||/}"
+   case "${stripped}" in
+      *'|'*)
+         return 0
+         ;;
+   esac
+   return 1
+}
+
+check_R194_apt_hook_embedded_script() {
+   local file line line_number invoke_re rest after inner
+
+   ## R-194: an apt configuration hook ('Pre-Invoke' / 'Post-Invoke' /
+   ## 'Pre-Install-Pkgs') runs its double-quoted value as a shell command via
+   ## 'sh -c'. A multi-statement value is the same defect as R-191 (systemd
+   ## Exec=): logic invisible to shellcheck, with no importable home a unit test
+   ## can reach and no coverage tool can see it. Move it to a script with a
+   ## shebang and call that from the hook.
+   ##
+   ## Deliberately NOT a config parser: the check is per-line. On a line that
+   ## carries a hook directive, the double-quoted value(s) on THAT line are
+   ## tested. Only the INNER text of each quoted value is looked at -- the ';'
+   ## apt uses to terminate a directive or separate a '{...}' list element sits
+   ## OUTSIDE the quotes and is config syntax, not a shell separator. Threshold:
+   ## config_value_embeds_script (a ';' or a pipe; '&&'/'||' glue tolerated).
+   ## Scope is apt config PATHS only, so a shell/python file that merely mentions
+   ## 'Post-Invoke' in a string is never mis-scanned. Waiver:
+   ## '// style-ok: allow-embedded-script' (or '#').
+   ##
+   ## Known limitation (accepted, fail-OPEN): the rare multi-LINE brace form,
+   ## whose value strings sit on lines that do not repeat the directive keyword,
+   ## is not followed across lines -- a cross-line state machine there would be
+   ## reinventing a config parser for a rare case. Such a form may be MISSED,
+   ## never over-blocked. Put the logic in a script anyway, or waive.
+   invoke_re='(^|[^[:alnum:]])(Pre-Invoke|Post-Invoke|Pre-Install-Pkgs)([^[:alnum:]]|$)'
+   for file in "${@}"; do
+      if [ ! -f "${file}" ] || [ -L "${file}" ]; then
+         continue
+      fi
+      case "${file}" in
+         */apt.conf.d/*|*/apt.conf|apt.conf)
+            true
+            ;;
+         *)
+            continue
+            ;;
+      esac
+      ## Cheap membership: only an apt file carrying a hook directive is scanned.
+      if ! grep --quiet --extended-regexp -- "${invoke_re}" "${file}" 2>/dev/null; then
+         continue
+      fi
+      ## File-wide waiver. apt config comments with '#' or '//'.
+      if grep --quiet --extended-regexp \
+         '^[[:space:]]*(#|//)[[:space:]]*style-ok:[[:space:]]*allow-embedded-script([[:space:]]|$)' \
+         -- "${file}" 2>/dev/null
+      then
+         note "R-194 skipped: 'style-ok: allow-embedded-script' waiver in '${file}'"
+         continue
+      fi
+      line_number=0
+      while IFS= read -r line || [ -n "${line}" ]; do
+         line_number=$(( line_number + 1 ))
+         case "${line#"${line%%[![:space:]]*}"}" in
+            '#'*|'//'*)
+               continue
+               ;;
+         esac
+         ## Only a line that itself carries a hook directive is examined.
+         if ! [[ "${line}" =~ ${invoke_re} ]]; then
+            continue
+         fi
+         ## Test the inner text of every double-quoted value on this line.
+         rest="${line}"
+         while true; do
+            case "${rest}" in
+               *'"'*)
+                  true
+                  ;;
+               *)
+                  break
+                  ;;
+            esac
+            after="${rest#*\"}"
+            case "${after}" in
+               *'"'*)
+                  true
+                  ;;
+               *)
+                  ## No closing quote on this line: an unbalanced quote (fail-open).
+                  break
+                  ;;
+            esac
+            inner="${after%%\"*}"
+            if config_value_embeds_script "${inner}"; then
+               fail "R-194 apt hook embeds a multi-statement shell command; move the logic to a dedicated script (shebang) and call it" \
+                  "'${file}:${line_number}'"
+            fi
+            rest="${after#*\"}"
+         done
+      done < "${file}"
+   done
+}
+
+check_R195_cron_embedded_script() {
+   local file line line_number trimmed
+
+   ## R-195: a cron entry's command field runs via 'sh -c'; a multi-statement
+   ## command inlines a script that belongs in a file (same defect as R-191).
+   ## Scope: cron TABLES only ('*/cron.d/*', a 'crontab' file) -- NOT the
+   ## '/etc/cron.{daily,hourly,...}/' run-parts directories, whose entries are
+   ## ordinary +x scripts already covered by the shell rules. Threshold:
+   ## config_value_embeds_script (a ';' or a pipe; '&&'/'||' glue tolerated, as
+   ## the stock '/etc/crontab' uses 'cd / && run-parts' and 'test -x X || (...)'
+   ## and cron has no native cwd/conditional directive). Blank, comment, and
+   ## environment-assignment lines ('SHELL=', 'PATH=', 'MAILTO=') are skipped.
+   ## Waiver: '# style-ok: allow-embedded-script'.
+   for file in "${@}"; do
+      if [ ! -f "${file}" ] || [ -L "${file}" ]; then
+         continue
+      fi
+      case "${file}" in
+         */cron.d/*|*/crontab|crontab)
+            true
+            ;;
+         *)
+            continue
+            ;;
+      esac
+      if grep --quiet --extended-regexp \
+         '^[[:space:]]*#[[:space:]]*style-ok:[[:space:]]*allow-embedded-script([[:space:]]|$)' \
+         -- "${file}" 2>/dev/null
+      then
+         note "R-195 skipped: 'style-ok: allow-embedded-script' waiver in '${file}'"
+         continue
+      fi
+      line_number=0
+      while IFS= read -r line || [ -n "${line}" ]; do
+         line_number=$(( line_number + 1 ))
+         trimmed="${line#"${line%%[![:space:]]*}"}"
+         if [ -z "${trimmed}" ]; then
+            continue
+         fi
+         case "${trimmed}" in
+            '#'*)
+               continue
+               ;;
+         esac
+         ## An environment assignment ('NAME=value') is not a command entry.
+         if [[ "${trimmed}" =~ ^[A-Za-z_][A-Za-z0-9_]*[[:space:]]*= ]]; then
+            continue
+         fi
+         ## The schedule and user fields never carry a ';' or a pipe, so testing
+         ## the whole entry is safe; any hit is in the command field.
+         if config_value_embeds_script "${line}"; then
+            fail "R-195 cron entry embeds a multi-statement shell command; move the logic to a dedicated script (shebang) and call it" \
+               "'${file}:${line_number}'"
+         fi
+      done < "${file}"
+   done
+}
+
 check_R100_yaml_inline_shell() {
    local workflow line line_number run_indent body_count block_start
    local in_block stripped indent
@@ -3171,6 +3360,8 @@ run_file_checks() {
       fi
       check_ascii_files "${file_list[@]}"
       check_R191_systemd_unit_embedded_script "${file_list[@]}"
+      check_R194_apt_hook_embedded_script "${file_list[@]}"
+      check_R195_cron_embedded_script "${file_list[@]}"
       check_R100_yaml_inline_shell "${file_list[@]}"
       check_trailing_whitespace "${file_list[@]}"
       check_precommit_hooks "${file_list[@]}"
