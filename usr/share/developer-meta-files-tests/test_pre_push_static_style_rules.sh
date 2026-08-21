@@ -134,14 +134,13 @@ expect_rule() {
    ## 'shellcheck not on PATH; skipping') would otherwise satisfy a weaker
    ## check even if the gate crashed before reaching the rule under test, so
    ## an 'absent' assertion could pass spuriously on a real regression.
-   if ! printf '%s\n' "${out}" \
-      | grep --quiet --extended-regexp 'all static checks passed|[0-9]+ check\(s\) failed'; then
+   if ! grep --quiet --extended-regexp 'all static checks passed|[0-9]+ check\(s\) failed' <<< "${out}"; then
       printf '%s\n' \
          "FAIL: gate produced no final verdict for body '${body}'" >&2
       failures=$((failures + 1))
       return 0
    fi
-   if printf '%s\n' "${out}" | grep --quiet --fixed-strings -- "${tag}"; then
+   if grep --quiet --fixed-strings -- "${tag}" <<< "${out}"; then
       got="present"
    else
       got="absent"
@@ -711,7 +710,7 @@ printf '%s\n' "#!/bin/bash${cr}" "true${sc}${del} -rf x" > "${crlf_repo}/deploy"
 git -C "${crlf_repo}" add deploy
 git -C "${crlf_repo}" commit --quiet --no-verify --message crlf
 crlf_out="$( cd -- "${crlf_repo}" && "${GATE}" "${crlf_base}" 2>&1 || true )"
-if printf '%s\n' "${crlf_out}" | grep --quiet --fixed-strings -- "R-120"; then
+if grep --quiet --fixed-strings -- "R-120" <<< "${crlf_out}"; then
    printf '%s\n' 'PASS: is_shell_file detects a CRLF shebang (shell tier ran, R-120 flagged)'
 else
    printf '%s\n' 'FAIL: CRLF-shebang file was NOT shell-checked (R-120 missing)' >&2
@@ -732,7 +731,7 @@ printf '%s\n' 'x = "double quoted"' > "${dq_repo}/probe.py"
 git -C "${dq_repo}" add --all
 git -C "${dq_repo}" commit --quiet --no-verify --message probe
 dq_out="$( cd -- "${dq_repo}" && "${GATE}" "${dq_base}" 2>&1 || true )"
-if printf '%s' "${dq_out}" | grep --quiet --fixed-strings -- 'double-quote-string-fixer'; then
+if grep --quiet --fixed-strings -- 'double-quote-string-fixer' <<< "${dq_out}"; then
    printf '%s\n' 'FAIL: the gate still references double-quote-string-fixer (should be disabled)' >&2
    failures=$((failures + 1))
 else
@@ -762,16 +761,14 @@ module_probe() {
    printf '%s' "${out}"
 }
 
-if printf '%s' "$(module_probe 'usr/lib/python3/dist-packages/probe/mod.py')" \
-   | grep --quiet --fixed-strings -- 'is an imported package module'; then
+if grep --quiet --fixed-strings -- 'is an imported package module' <<< "$(module_probe 'usr/lib/python3/dist-packages/probe/mod.py')"; then
    printf '%s\n' 'PASS: an imported package module is exempt from the shebang/+x rules'
 else
    printf '%s\n' 'FAIL: an imported package module was held to the shebang/+x rules' >&2
    failures=$((failures + 1))
 fi
 
-if printf '%s' "$(module_probe 'usr/bin/probe-tool.py')" \
-   | grep --quiet --fixed-strings -- 'check-shebang-scripts-are-executable'; then
+if grep --quiet --fixed-strings -- 'check-shebang-scripts-are-executable' <<< "$(module_probe 'usr/bin/probe-tool.py')"; then
    printf '%s\n' 'PASS: an ordinary script with a shebang still needs +x'
 else
    printf '%s\n' 'FAIL: the shebang/+x rule stopped firing for ordinary scripts' >&2
@@ -781,8 +778,7 @@ fi
 ## A directory merely NAMED dist-packages is not a Python library path. An
 ## unanchored exemption would let any script opt out of the rule by sitting in
 ## one.
-if printf '%s' "$(module_probe 'usr/bin/dist-packages/probe-tool.py')" \
-   | grep --quiet --fixed-strings -- 'check-shebang-scripts-are-executable'; then
+if grep --quiet --fixed-strings -- 'check-shebang-scripts-are-executable' <<< "$(module_probe 'usr/bin/dist-packages/probe-tool.py')"; then
    printf '%s\n' 'PASS: a directory merely named dist-packages is not exempt'
 else
    printf '%s\n' 'FAIL: a script escaped the shebang/+x rule via a dist-packages directory name' >&2
@@ -810,7 +806,7 @@ git -C "${addel_repo}" commit --quiet --no-verify --message add
 ## delete it WITHOUT committing: present at HEAD, gone from the working tree
 safe-rm --force -- "${addel_repo}/transient.txt"
 addel_out="$( cd -- "${addel_repo}" && "${GATE}" "${addel_base}" 2>&1 || true )"
-if printf '%s\n' "${addel_out}" | grep --quiet --fixed-strings -- 'FileNotFoundError'; then
+if grep --quiet --fixed-strings -- 'FileNotFoundError' <<< "${addel_out}"; then
    printf '%s\n' 'FAIL: uncommitted deletion crashed check-added-large-files' >&2
    failures=$((failures + 1))
 else
@@ -837,7 +833,7 @@ git -C "${bigstaged_repo}" commit --quiet --no-verify --message base
 printf '%s\n' 'appended' >> "${bigstaged_repo}/big.txt"
 git -C "${bigstaged_repo}" add big.txt
 bigstaged_out="$( cd -- "${bigstaged_repo}" && "${GATE}" --staged 2>&1 || true )"
-if printf '%s\n' "${bigstaged_out}" | grep --quiet --fixed-strings -- 'FAIL check-added-large-files'; then
+if grep --quiet --fixed-strings -- 'FAIL check-added-large-files' <<< "${bigstaged_out}"; then
    printf '%s\n' 'FAIL: a pre-existing large file was flagged as newly added in staged mode (no upstream)' >&2
    failures=$((failures + 1))
 else
@@ -852,7 +848,7 @@ git -C "${bignew_repo}" commit --quiet --no-verify --allow-empty --message base
 head --bytes=600000 /dev/zero | tr '\0' 'y' > "${bignew_repo}/bignew.txt"
 git -C "${bignew_repo}" add bignew.txt
 bignew_out="$( cd -- "${bignew_repo}" && "${GATE}" --staged 2>&1 || true )"
-if printf '%s\n' "${bignew_out}" | grep --quiet --fixed-strings -- 'FAIL check-added-large-files'; then
+if grep --quiet --fixed-strings -- 'FAIL check-added-large-files' <<< "${bignew_out}"; then
    printf '%s\n' 'PASS: a genuinely new large staged file is still flagged'
 else
    printf '%s\n' 'FAIL: the staged-mode base fix disabled check-added-large-files for new large files' >&2
@@ -876,19 +872,19 @@ chmod 0755 -- "${py_repo}/withshebang.py"
 git -C "${py_repo}" add --all
 git -C "${py_repo}" commit --quiet --no-verify --message py
 py_out="$( cd -- "${py_repo}" && "${GATE}" "${py_base}" 2>&1 || true )"
-if printf '%s\n' "${py_out}" | grep --quiet --fixed-strings -- 'R-180'; then
+if grep --quiet --fixed-strings -- 'R-180' <<< "${py_out}"; then
    printf '%s\n' 'PASS: R-180 flags a python file with no shebang'
 else
    printf '%s\n' 'FAIL: R-180 did not flag a shebang-less python file' >&2
    failures=$((failures + 1))
 fi
-if printf '%s\n' "${py_out}" | grep --quiet --fixed-strings -- 'withshebang.py'; then
+if grep --quiet --fixed-strings -- 'withshebang.py' <<< "${py_out}"; then
    printf '%s\n' 'FAIL: R-180 flagged a compliant python file' >&2
    failures=$((failures + 1))
 else
    printf '%s\n' 'PASS: R-180 spares a shebang+executable python file'
 fi
-if printf '%s\n' "${py_out}" | grep --quiet --fixed-strings -- '__init__.py'; then
+if grep --quiet --fixed-strings -- '__init__.py' <<< "${py_out}"; then
    printf '%s\n' 'FAIL: R-180 flagged an EMPTY package marker' >&2
    failures=$((failures + 1))
 else
@@ -1016,49 +1012,49 @@ inline_out="$( cd -- "${inline_repo}" && "${GATE}" "${inline_base}" 2>&1 || true
 ## waiver spared and would read as a violation.
 inline_hits="$( printf '%s\n' "${inline_out}" \
    | grep --fixed-strings -- 'R-190 inline interpreter program' || true )"
-if printf '%s\n' "${inline_hits}" | grep --quiet --fixed-strings -- 'longinline.sh'; then
+if grep --quiet --fixed-strings -- 'longinline.sh' <<< "${inline_hits}"; then
    printf '%s\n' 'PASS: R-190 flags a long inline interpreter program'
 else
    printf '%s\n' 'FAIL: R-190 did not flag a long inline interpreter program' >&2
    failures=$((failures + 1))
 fi
-if printf '%s\n' "${inline_hits}" | grep --quiet --fixed-strings -- 'shortglue.sh'; then
+if grep --quiet --fixed-strings -- 'shortglue.sh' <<< "${inline_hits}"; then
    printf '%s\n' 'FAIL: R-190 flagged short glue' >&2
    failures=$((failures + 1))
 else
    printf '%s\n' 'PASS: R-190 spares a short inline one-liner'
 fi
-if printf '%s\n' "${inline_hits}" | grep --quiet --fixed-strings -- 'plaindoc.sh'; then
+if grep --quiet --fixed-strings -- 'plaindoc.sh' <<< "${inline_hits}"; then
    printf '%s\n' 'FAIL: R-190 flagged a non-interpreter heredoc' >&2
    failures=$((failures + 1))
 else
    printf '%s\n' 'PASS: R-190 ignores a heredoc feeding a non-interpreter'
 fi
-if printf '%s\n' "${inline_hits}" | grep --quiet --fixed-strings -- 'docexample.sh'; then
+if grep --quiet --fixed-strings -- 'docexample.sh' <<< "${inline_hits}"; then
    printf '%s\n' 'FAIL: R-190 flagged an interpreter example inside a doc heredoc' >&2
    failures=$((failures + 1))
 else
    printf '%s\n' 'PASS: R-190 ignores an interpreter example inside a doc heredoc'
 fi
-if printf '%s\n' "${inline_hits}" | grep --quiet --fixed-strings -- 'masked.sh'; then
+if grep --quiet --fixed-strings -- 'masked.sh' <<< "${inline_hits}"; then
    printf '%s\n' 'PASS: R-190 still sees a violation after a commented opener'
 else
    printf '%s\n' 'FAIL: a commented opener masked a real inline program' >&2
    failures=$((failures + 1))
 fi
-if printf '%s\n' "${inline_hits}" | grep --quiet --fixed-strings -- 'spaced.sh'; then
+if grep --quiet --fixed-strings -- 'spaced.sh' <<< "${inline_hits}"; then
    printf '%s\n' 'PASS: R-190 catches whitespace after the heredoc operator'
 else
    printf '%s\n' 'FAIL: R-190 missed "<< DELIM" with whitespace' >&2
    failures=$((failures + 1))
 fi
-if printf '%s\n' "${inline_hits}" | grep --quiet --fixed-strings -- 'hashdelim.sh'; then
+if grep --quiet --fixed-strings -- 'hashdelim.sh' <<< "${inline_hits}"; then
    printf '%s\n' 'PASS: a "#"-bearing heredoc delimiter does not mask a later inline program'
 else
    printf '%s\n' 'FAIL: "<<EOF#x" delimiter swallowed a real inline interpreter' >&2
    failures=$((failures + 1))
 fi
-if printf '%s\n' "${inline_hits}" | grep --quiet --fixed-strings -- 'waived.sh'; then
+if grep --quiet --fixed-strings -- 'waived.sh' <<< "${inline_hits}"; then
    printf '%s\n' 'FAIL: R-190 ignored its style-ok waiver' >&2
    failures=$((failures + 1))
 else
@@ -1122,15 +1118,13 @@ git -C "${shebang_repo}" commit --quiet --no-verify --message shebang
 shebang_out="$( cd -- "${shebang_repo}" && "${GATE}" "${shebang_base}" 2>&1 || true )"
 ## Anchor on the hook's own verdict line, not the filename: the gate's SKIP note
 ## names the waived file too, so a bare filename match would confirm itself.
-if printf '%s\n' "${shebang_out}" \
-   | grep --quiet --fixed-strings -- 'plain.conf: has a shebang but is not marked executable'; then
+if grep --quiet --fixed-strings -- 'plain.conf: has a shebang but is not marked executable' <<< "${shebang_out}"; then
    printf '%s\n' 'PASS: shebang check still fires without the waiver'
 else
    printf '%s\n' 'FAIL: shebang check missed an unwaived non-executable shebang file' >&2
    failures=$((failures + 1))
 fi
-if printf '%s\n' "${shebang_out}" \
-   | grep --quiet --fixed-strings -- 'waived.conf: has a shebang but is not marked executable'; then
+if grep --quiet --fixed-strings -- 'waived.conf: has a shebang but is not marked executable' <<< "${shebang_out}"; then
    printf '%s\n' 'FAIL: shebang check ignored its sourced-fragment waiver' >&2
    failures=$((failures + 1))
 else
@@ -1155,7 +1149,7 @@ git -C "${gitlink_repo}" -c protocol.file.allow=always \
 git -C "${gitlink_repo}" add --all
 git -C "${gitlink_repo}" commit --quiet --no-verify --message gitlink
 gitlink_out="$( cd -- "${gitlink_repo}" && "${GATE}" "${gitlink_base}" 2>&1 || true )"
-if printf '%s\n' "${gitlink_out}" | grep --quiet --fixed-strings -- 'Is a directory'; then
+if grep --quiet --fixed-strings -- 'Is a directory' <<< "${gitlink_out}"; then
    printf '%s\n' 'FAIL: gate grepped a submodule gitlink as if it were a file' >&2
    failures=$((failures + 1))
 else
@@ -1163,8 +1157,7 @@ else
 fi
 ## forbid-new-submodules diffs '--staged' unless the range env vars are set, so
 ## in push mode it inspected an empty diff and passed unconditionally.
-if printf '%s\n' "${gitlink_out}" \
-   | grep --quiet --fixed-strings -- 'new submodule introduced'; then
+if grep --quiet --fixed-strings -- 'new submodule introduced' <<< "${gitlink_out}"; then
    printf '%s\n' 'PASS: forbid-new-submodules sees the push-mode diff range'
 else
    printf '%s\n' 'FAIL: forbid-new-submodules missed a newly added submodule' >&2
@@ -1195,13 +1188,13 @@ chmod 0755 -- "${ascii_repo}/plain.py" "${ascii_repo}/waived.py"
 git -C "${ascii_repo}" add --all
 git -C "${ascii_repo}" commit --quiet --no-verify --message ascii
 ascii_out="$( cd -- "${ascii_repo}" && "${GATE}" "${ascii_base}" 2>&1 || true )"
-if printf '%s\n' "${ascii_out}" | grep --quiet --fixed-strings -- "'plain.py' contains non-ASCII"; then
+if grep --quiet --fixed-strings -- "'plain.py' contains non-ASCII" <<< "${ascii_out}"; then
    printf '%s\n' 'PASS: R-001 still flags non-ASCII without the waiver'
 else
    printf '%s\n' 'FAIL: R-001 did not flag non-ASCII -- the waiver is too broad' >&2
    failures=$((failures + 1))
 fi
-if printf '%s\n' "${ascii_out}" | grep --quiet --fixed-strings -- "'waived.py' contains non-ASCII"; then
+if grep --quiet --fixed-strings -- "'waived.py' contains non-ASCII" <<< "${ascii_out}"; then
    printf '%s\n' 'FAIL: R-001 waiver did not take effect' >&2
    failures=$((failures + 1))
 else
@@ -1221,7 +1214,7 @@ untracked_base="$(git -C "${untracked_repo}" rev-parse HEAD)"
 ## Never added: that is the whole point of the case.
 printf '%s\n' '#!/bin/bash' 'true' > "${untracked_repo}/brand-new-tool"
 untracked_out="$( cd -- "${untracked_repo}" && "${GATE}" "${untracked_base}" 2>&1 || true )"
-if printf '%s\n' "${untracked_out}" | grep --quiet --fixed-strings 'brand-new-tool'; then
+if grep --quiet --fixed-strings 'brand-new-tool' <<< "${untracked_out}"; then
    printf '%s\n' 'PASS: an untracked shell file is named as NOT checked'
 else
    printf '%s\n' \
@@ -1231,7 +1224,7 @@ fi
 
 ## A tracked, committed file must NOT be reported as untracked, or the notice
 ## would fire on every run and stop meaning anything.
-if printf '%s\n' "${untracked_out}" | grep --quiet --fixed-strings 'sample.sh'; then
+if grep --quiet --fixed-strings 'sample.sh' <<< "${untracked_out}"; then
    printf '%s\n' 'FAIL: a tracked file was reported as untracked' >&2
    failures=$((failures + 1))
 else
@@ -1329,71 +1322,243 @@ unit_out="$( cd -- "${unit_repo}" && "${GATE}" "${unit_base}" 2>&1 || true )"
 ## would misread as a violation.
 unit_hits="$( printf '%s\n' "${unit_out}" \
    | grep --fixed-strings -- 'R-191 systemd unit embeds' || true )"
-if printf '%s\n' "${unit_hits}" | grep --quiet --fixed-strings -- 'bad-amp.service'; then
+if grep --quiet --fixed-strings -- 'bad-amp.service' <<< "${unit_hits}"; then
    printf '%s\n' 'PASS: R-191 flags a "&&"-chained embedded script'
 else
    printf '%s\n' 'FAIL: R-191 did not flag a "&&"-chained embedded script' >&2
    failures=$((failures + 1))
 fi
-if printf '%s\n' "${unit_hits}" | grep --quiet --fixed-strings -- 'bad-semi.service'; then
+if grep --quiet --fixed-strings -- 'bad-semi.service' <<< "${unit_hits}"; then
    printf '%s\n' 'PASS: R-191 flags a ";"-separated embedded script'
 else
    printf '%s\n' 'FAIL: R-191 did not flag a ";"-separated embedded script' >&2
    failures=$((failures + 1))
 fi
-if printf '%s\n' "${unit_hits}" | grep --quiet --fixed-strings -- 'bad-continued.service'; then
+if grep --quiet --fixed-strings -- 'bad-continued.service' <<< "${unit_hits}"; then
    printf '%s\n' 'PASS: R-191 flags a line-continued embedded script'
 else
    printf '%s\n' 'FAIL: R-191 did not flag a line-continued embedded script' >&2
    failures=$((failures + 1))
 fi
-if printf '%s\n' "${unit_hits}" | grep --quiet --fixed-strings -- 'bad-lc.service'; then
+if grep --quiet --fixed-strings -- 'bad-lc.service' <<< "${unit_hits}"; then
    printf '%s\n' 'PASS: R-191 flags a "-lc" option-cluster embedded script'
 else
    printf '%s\n' 'FAIL: R-191 did not flag a "-lc" option-cluster embedded script' >&2
    failures=$((failures + 1))
 fi
-if printf '%s\n' "${unit_hits}" | grep --quiet --fixed-strings -- 'bad-ec.service'; then
+if grep --quiet --fixed-strings -- 'bad-ec.service' <<< "${unit_hits}"; then
    printf '%s\n' 'PASS: R-191 flags a "-ec" option-cluster embedded script'
 else
    printf '%s\n' 'FAIL: R-191 did not flag a "-ec" option-cluster embedded script' >&2
    failures=$((failures + 1))
 fi
-if printf '%s\n' "${unit_hits}" | grep --quiet --fixed-strings -- 'bad-attached.service'; then
+if grep --quiet --fixed-strings -- 'bad-attached.service' <<< "${unit_hits}"; then
    printf '%s\n' 'PASS: R-191 flags a command attached to -c with no space'
 else
    printf '%s\n' 'FAIL: R-191 did not flag a command attached to -c with no space' >&2
    failures=$((failures + 1))
 fi
-if printf '%s\n' "${unit_hits}" | grep --quiet --fixed-strings -- 'bad-bg.service'; then
+if grep --quiet --fixed-strings -- 'bad-bg.service' <<< "${unit_hits}"; then
    printf '%s\n' 'PASS: R-191 flags a standalone "&" background separator'
 else
    printf '%s\n' 'FAIL: R-191 did not flag a standalone "&" background separator' >&2
    failures=$((failures + 1))
 fi
-if printf '%s\n' "${unit_hits}" | grep --quiet --fixed-strings -- 'good-redir.service'; then
+if grep --quiet --fixed-strings -- 'good-redir.service' <<< "${unit_hits}"; then
    printf '%s\n' 'FAIL: R-191 flagged a ">&2" redirection as backgrounding' >&2
    failures=$((failures + 1))
 else
    printf '%s\n' 'PASS: R-191 spares a ">&2" redirection (not a "&" background)'
 fi
-if printf '%s\n' "${unit_hits}" | grep --quiet --fixed-strings -- 'good.service'; then
+if grep --quiet --fixed-strings -- 'good.service' <<< "${unit_hits}"; then
    printf '%s\n' 'FAIL: R-191 flagged a single-command wrapper / plain Exec' >&2
    failures=$((failures + 1))
 else
    printf '%s\n' 'PASS: R-191 spares a single-command wrapper and a plain Exec'
 fi
-if printf '%s\n' "${unit_hits}" | grep --quiet --fixed-strings -- 'waived.service'; then
+if grep --quiet --fixed-strings -- 'waived.service' <<< "${unit_hits}"; then
    printf '%s\n' 'FAIL: R-191 ignored its allow-embedded-script waiver' >&2
    failures=$((failures + 1))
 else
    printf '%s\n' 'PASS: R-191 honours the allow-embedded-script waiver'
 fi
-if printf '%s\n' "${unit_hits}" | grep --quiet --fixed-strings -- 'doc.md'; then
+if grep --quiet --fixed-strings -- 'doc.md' <<< "${unit_hits}"; then
    printf '%s\n' 'FAIL: R-191 flagged an example Exec= line in a markdown doc' >&2
    failures=$((failures + 1))
 else
    printf '%s\n' 'PASS: R-191 spares a markdown doc carrying an example Exec= line'
+fi
+
+## R-194: an apt config hook must not embed a multi-statement shell command in
+## its quoted value. A ';'-separated or piped value is FLAGGED; a '|| true' /
+## single-command value and a non-hook path setting are SPARED; the file-wide
+## waiver exempts the file. Fixtures live under 'apt.conf.d/' because R-194
+## scopes to that path. The multi-statement ';' comes from run-time text (${sc})
+## so no literal lives in THIS tracked file.
+apt_repo="$(mktemp --directory --tmpdir="${tmp_root}" apt.XXXXXX)"
+git -C "${apt_repo}" init --quiet
+git -C "${apt_repo}" config user.email 'ci-test@example.com'
+git -C "${apt_repo}" config user.name 'ci-test'
+git -C "${apt_repo}" commit --quiet --no-verify --allow-empty --message base
+apt_base="$(git -C "${apt_repo}" rev-parse HEAD)"
+mkdir -p -- "${apt_repo}/etc/apt/apt.conf.d"
+printf '%s\n' \
+   "DPkg::Post-Invoke {\"/usr/bin/a${sc} /usr/bin/b\"}${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/10bad-semi"
+printf '%s\n' \
+   'DPkg::Post-Invoke {"/usr/bin/a | /usr/bin/b"};' \
+   > "${apt_repo}/etc/apt/apt.conf.d/11bad-pipe"
+## '|| true' error-suppression and a single command are glue, not a program.
+printf '%s\n' \
+   'DPkg::Pre-Install-Pkgs {"/usr/sbin/dpkg-preconfigure --apt || true"};' \
+   > "${apt_repo}/etc/apt/apt.conf.d/20good-ortrue"
+## A non-hook setting whose quoted value is a path must never be scanned.
+printf '%s\n' \
+   'Dir::Cache "/var/cache/apt";' \
+   > "${apt_repo}/etc/apt/apt.conf.d/30good-setting"
+printf '%s\n' \
+   '// style-ok: allow-embedded-script' \
+   "DPkg::Post-Invoke {\"a${sc} b\"}${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/40waived"
+## A '|' that is DATA inside a quoted grep pattern, plus '|| true' glue, is a
+## single command -- the defang must keep R-194 from over-blocking it.
+printf '%s\n' \
+   "DPkg::Post-Invoke {\"grep -E 'foo|bar' /etc/x || true\"}${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/50good-quoted-pipe"
+git -C "${apt_repo}" add --all
+git -C "${apt_repo}" commit --quiet --no-verify --message apt
+apt_out="$( cd -- "${apt_repo}" && "${GATE}" "${apt_base}" 2>&1 || true )"
+## Scope to the R-194 FAILURE text: the 'R-194 skipped: ... waiver' note names
+## the waived file, which a bare rule-id match would misread as a violation.
+apt_hits="$( printf '%s\n' "${apt_out}" \
+   | grep --fixed-strings -- 'R-194 apt hook embeds' || true )"
+if grep --quiet --fixed-strings -- '10bad-semi' <<< "${apt_hits}"; then
+   printf '%s\n' 'PASS: R-194 flags a ";"-separated apt hook command'
+else
+   printf '%s\n' 'FAIL: R-194 did not flag a ";"-separated apt hook command' >&2
+   failures=$((failures + 1))
+fi
+if grep --quiet --fixed-strings -- '11bad-pipe' <<< "${apt_hits}"; then
+   printf '%s\n' 'PASS: R-194 flags a piped apt hook command'
+else
+   printf '%s\n' 'FAIL: R-194 did not flag a piped apt hook command' >&2
+   failures=$((failures + 1))
+fi
+if grep --quiet --fixed-strings -- '20good-ortrue' <<< "${apt_hits}"; then
+   printf '%s\n' 'FAIL: R-194 flagged a "|| true" glue apt hook' >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' 'PASS: R-194 spares a "|| true" glue apt hook'
+fi
+if grep --quiet --fixed-strings -- '30good-setting' <<< "${apt_hits}"; then
+   printf '%s\n' 'FAIL: R-194 scanned a non-hook apt setting value' >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' 'PASS: R-194 spares a non-hook apt setting'
+fi
+if grep --quiet --fixed-strings -- '40waived' <<< "${apt_hits}"; then
+   printf '%s\n' 'FAIL: R-194 ignored its allow-embedded-script waiver' >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' 'PASS: R-194 honours the allow-embedded-script waiver'
+fi
+if grep --quiet --fixed-strings -- '50good-quoted-pipe' <<< "${apt_hits}"; then
+   printf '%s\n' 'FAIL: R-194 over-blocked a "|" inside a quoted grep pattern' >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' 'PASS: R-194 defangs a "|" inside a quoted value'
+fi
+
+## R-195: a cron entry must not embed a multi-statement command. A ';'-separated
+## or piped command is FLAGGED; the stock-Debian 'cd / && run-parts' and 'test
+## -x X || ( ... )' glue, an env assignment, and a single command are SPARED; the
+## file-wide waiver exempts the file. Fixtures live under 'cron.d/' because R-195
+## scopes to that path.
+cron_repo="$(mktemp --directory --tmpdir="${tmp_root}" cron.XXXXXX)"
+git -C "${cron_repo}" init --quiet
+git -C "${cron_repo}" config user.email 'ci-test@example.com'
+git -C "${cron_repo}" config user.name 'ci-test'
+git -C "${cron_repo}" commit --quiet --no-verify --allow-empty --message base
+cron_base="$(git -C "${cron_repo}" rev-parse HEAD)"
+mkdir -p -- "${cron_repo}/etc/cron.d"
+printf '%s\n' \
+   "*/5 * * * * root /usr/bin/a${sc} /usr/bin/b" \
+   > "${cron_repo}/etc/cron.d/bad-semi"
+printf '%s\n' \
+   '0 3 * * * root /usr/bin/a | /usr/bin/b' \
+   > "${cron_repo}/etc/cron.d/bad-pipe"
+## The stock '/etc/crontab' idiom: cron has no native cwd / conditional-run
+## directive, so '&&' and '|| ( ... )' glue must be tolerated.
+printf '%s\n' \
+   '17 * * * * root cd / && run-parts --report /etc/cron.hourly' \
+   > "${cron_repo}/etc/cron.d/good-amp"
+printf '%s\n' \
+   '25 6 * * * root test -x /usr/sbin/anacron || ( cd / && run-parts /etc/cron.daily )' \
+   > "${cron_repo}/etc/cron.d/good-ortest"
+## Env assignments, a comment, and a single-command entry are not programs.
+printf '%s\n' \
+   'MAILTO=""' \
+   'PATH=/usr/local/bin:/usr/bin:/bin' \
+   '# scheduled cleanup' \
+   '@daily root /usr/local/bin/clean' \
+   > "${cron_repo}/etc/cron.d/good-env"
+## Single commands whose ';' / '|' is DATA, not a separator: an escaped 'find
+## -exec ... \;' terminator and a '|' inside a quoted awk pattern. The defang
+## must keep R-195 from over-blocking these ordinary idioms.
+## '${tmpp}' (=/tmp) and '${del}' (=rm) are assembled at run time so the literal
+## '/tmp' / 'rm' the gate flags (R-170 / R-120) never appears in THIS file.
+printf '%s\n' \
+   "0 3 * * * root find ${tmpp} -type f -mtime +7 -exec ${del} -- {} \\;" \
+   > "${cron_repo}/etc/cron.d/good-find-exec"
+printf '%s\n' \
+   "0 4 * * * root awk '/foo|bar/{print}' /var/log/x" \
+   > "${cron_repo}/etc/cron.d/good-awk-pipe"
+git -C "${cron_repo}" add --all
+git -C "${cron_repo}" commit --quiet --no-verify --message cron
+cron_out="$( cd -- "${cron_repo}" && "${GATE}" "${cron_base}" 2>&1 || true )"
+cron_hits="$( printf '%s\n' "${cron_out}" \
+   | grep --fixed-strings -- 'R-195 cron entry embeds' || true )"
+if grep --quiet --fixed-strings -- 'bad-semi' <<< "${cron_hits}"; then
+   printf '%s\n' 'PASS: R-195 flags a ";"-separated cron command'
+else
+   printf '%s\n' 'FAIL: R-195 did not flag a ";"-separated cron command' >&2
+   failures=$((failures + 1))
+fi
+if grep --quiet --fixed-strings -- 'bad-pipe' <<< "${cron_hits}"; then
+   printf '%s\n' 'PASS: R-195 flags a piped cron command'
+else
+   printf '%s\n' 'FAIL: R-195 did not flag a piped cron command' >&2
+   failures=$((failures + 1))
+fi
+if grep --quiet --fixed-strings -- 'good-amp' <<< "${cron_hits}"; then
+   printf '%s\n' 'FAIL: R-195 flagged the stock "cd / && run-parts" glue' >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' 'PASS: R-195 spares the stock "cd / && run-parts" glue'
+fi
+if grep --quiet --fixed-strings -- 'good-ortest' <<< "${cron_hits}"; then
+   printf '%s\n' 'FAIL: R-195 flagged the stock "test || ( ... )" glue' >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' 'PASS: R-195 spares the stock "test || ( ... )" glue'
+fi
+if grep --quiet --fixed-strings -- 'good-find-exec' <<< "${cron_hits}"; then
+   printf '%s\n' 'FAIL: R-195 over-blocked an escaped "find -exec ... \;" terminator' >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' 'PASS: R-195 defangs an escaped "\;" find terminator'
+fi
+if grep --quiet --fixed-strings -- 'good-awk-pipe' <<< "${cron_hits}"; then
+   printf '%s\n' 'FAIL: R-195 over-blocked a "|" inside a quoted awk pattern' >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' 'PASS: R-195 defangs a "|" inside a quoted pattern'
+fi
+if grep --quiet --fixed-strings -- 'good-env' <<< "${cron_hits}"; then
+   printf '%s\n' 'FAIL: R-195 flagged an env assignment / single-command entry' >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' 'PASS: R-195 spares env assignments and a single-command entry'
 fi
 
 ## R-100: a workflow 'run: |' block over 5 shell lines is FLAGGED; a single-line
@@ -1476,31 +1641,31 @@ wf_out="$( cd -- "${wf_repo}" && "${GATE}" "${wf_base}" 2>&1 || true )"
 ## Scope to the R-100 FAILURE text, past the 'R-100 skipped: ... waiver' note.
 wf_hits="$( printf '%s\n' "${wf_out}" \
    | grep --fixed-strings -- 'R-100 workflow embeds' || true )"
-if printf '%s\n' "${wf_hits}" | grep --quiet --fixed-strings -- 'bad.yml'; then
+if grep --quiet --fixed-strings -- 'bad.yml' <<< "${wf_hits}"; then
    printf '%s\n' 'PASS: R-100 flags a long inline run block'
 else
    printf '%s\n' 'FAIL: R-100 did not flag a long inline run block' >&2
    failures=$((failures + 1))
 fi
-if printf '%s\n' "${wf_hits}" | grep --quiet --fixed-strings -- 'quoted-run.yml'; then
+if grep --quiet --fixed-strings -- 'quoted-run.yml' <<< "${wf_hits}"; then
    printf '%s\n' 'PASS: R-100 flags a long inline block behind a quoted "run:" key'
 else
    printf '%s\n' 'FAIL: R-100 did not flag a quoted "run:" inline block' >&2
    failures=$((failures + 1))
 fi
-if printf '%s\n' "${wf_hits}" | grep --quiet --fixed-strings -- 'spaced-run.yml'; then
+if grep --quiet --fixed-strings -- 'spaced-run.yml' <<< "${wf_hits}"; then
    printf '%s\n' 'PASS: R-100 flags a long inline block behind a whitespace-before-colon run key'
 else
    printf '%s\n' 'FAIL: R-100 did not flag a "run :" (space before colon) inline block' >&2
    failures=$((failures + 1))
 fi
-if printf '%s\n' "${wf_hits}" | grep --quiet --fixed-strings -- 'good.yml'; then
+if grep --quiet --fixed-strings -- 'good.yml' <<< "${wf_hits}"; then
    printf '%s\n' 'FAIL: R-100 flagged a single-line run and a short block' >&2
    failures=$((failures + 1))
 else
    printf '%s\n' 'PASS: R-100 spares a single-line run and a short block'
 fi
-if printf '%s\n' "${wf_hits}" | grep --quiet --fixed-strings -- 'waived.yml'; then
+if grep --quiet --fixed-strings -- 'waived.yml' <<< "${wf_hits}"; then
    printf '%s\n' 'FAIL: R-100 ignored its allow-inline-shell waiver' >&2
    failures=$((failures + 1))
 else
@@ -1540,7 +1705,7 @@ gate_output_data() {  ## $1=.gitattributes line (empty for none) -> gate output 
 }
 
 data_unattributed="$(gate_output_data '')"
-if printf '%s\n' "${data_unattributed}" | grep --quiet --fixed-strings -- 'R-001 ASCII'; then
+if grep --quiet --fixed-strings -- 'R-001 ASCII' <<< "${data_unattributed}"; then
    printf '%s\n' 'PASS: R-001 flags a non-ASCII data file with no .gitattributes entry (canary)'
 else
    printf '%s\n' 'FAIL: R-001 did not flag a non-ASCII data file without the binary attribute' >&2
@@ -1548,7 +1713,7 @@ else
 fi
 
 data_allowlisted="$(gate_output_data 'blob.dat binary')"
-if printf '%s\n' "${data_allowlisted}" | grep --quiet --fixed-strings -- 'R-001 ASCII'; then
+if grep --quiet --fixed-strings -- 'R-001 ASCII' <<< "${data_allowlisted}"; then
    printf '%s\n' 'FAIL: R-001 flagged a .gitattributes binary data file (allowlist not honoured)' >&2
    failures=$((failures + 1))
 else
@@ -1557,7 +1722,7 @@ fi
 ## The allowlist must clear the WHOLE text-content tier (ASCII + line endings + EOF via
 ## is_text_file), so the allowlisted commit reaches a clean verdict, not just a
 ## missing R-001 line.
-if printf '%s\n' "${data_allowlisted}" | grep --quiet --fixed-strings -- 'all static checks passed'; then
+if grep --quiet --fixed-strings -- 'all static checks passed' <<< "${data_allowlisted}"; then
    printf '%s\n' 'PASS: a .gitattributes binary data file passes the whole static gate'
 else
    printf '%s\n' 'FAIL: a .gitattributes binary data file did not reach a clean gate verdict' >&2
@@ -1568,4 +1733,4 @@ if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "test_pre_push_static_style_rules: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-026, R-030 format string, R-030/R-031, R-034, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-190, R-191, R-100, R-010, R-001 .gitattributes-binary allowlist, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting, double-quote-string-fixer-disabled and imported-package-module exemption enforced as expected."
+printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-026, R-030 format string, R-030/R-031, R-034, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-190, R-191, R-194, R-195, R-100, R-010, R-001 .gitattributes-binary allowlist, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting, double-quote-string-fixer-disabled and imported-package-module exemption enforced as expected."
