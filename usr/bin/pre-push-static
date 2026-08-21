@@ -852,6 +852,13 @@ check_R010_strict_block() {
             ## leak -- an env mutation, silent). Enforced alongside the shopt
             ## half for the same reason: copying the 'set -o' lines makes it
             ## easy to place at column 0 by reflex, where it would leak.
+            ## Like the shopt half, this is a WHOLE-FILE match (the guard has no
+            ## fixed delimiter to scope to), so an indented 'export LC_ALL=C'
+            ## ELSEWHERE would satisfy it. Unlike the preamble-only shopt
+            ## builtins an export could in principle sit loose in a function, so
+            ## the guarantee is looser here -- accepted under the AI-accident
+            ## threat model (the block is copied in as a unit); tightening it to
+            ## the guarded block needs the bash-block parser the gate avoids.
             if ! grep --quiet --extended-regexp \
                   '^[[:space:]]+export LC_ALL=C[[:space:]]*$' -- "${script}"; then
                if [ -n "${shopt_missing}" ]; then

@@ -134,7 +134,7 @@ fail=0
 
 if grep --quiet --fixed-strings 'SC1091' <<< "${gate_output}"; then
    printf '%s\n' "FAIL: SC1091 -- the script-relative source= path did not resolve"
-   printf '%s\n' "${gate_output}" | grep --fixed-strings 'SC1091' | head -2
+   grep --max-count=2 --fixed-strings 'SC1091' <<< "${gate_output}"
    fail=1
 else
    printf '%s\n' "PASS: script-relative source= resolves from the repo root"
@@ -142,7 +142,7 @@ fi
 
 if grep --quiet --fixed-strings 'SC2154' <<< "${gate_output}"; then
    printf '%s\n' "FAIL: SC2154 -- the sourced assignment was not seen"
-   printf '%s\n' "${gate_output}" | grep --fixed-strings 'SC2154' | head -2
+   grep --max-count=2 --fixed-strings 'SC2154' <<< "${gate_output}"
    fail=1
 else
    printf '%s\n' "PASS: the variable the sourced helper defines is seen as assigned"
