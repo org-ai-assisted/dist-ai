@@ -218,7 +218,10 @@ def _wrapper_tests():
         eq(read('xclip_args'), b'-selection clipboard',
            'st-xclip: forwards native selection flags')
 
-        # st-xclip: a READ (-o) passes through UNCHANGED (raw bytes reach xclip)
+        # st-xclip: a READ (-o) passes through UNCHANGED (raw bytes reach xclip).
+        # Clear the stale write-case capture first so this asserts the -o run, not
+        # leftover content (a missing file then fails loudly rather than silently).
+        os.remove(os.path.join(stub, 'xclipped'))
         subprocess.run([st_xclip, '-o'], input=payload.encode('utf-8'),
                        capture_output=True, env=env)
         eq(read('xclipped'), payload.encode('utf-8'),

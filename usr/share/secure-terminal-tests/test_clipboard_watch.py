@@ -257,8 +257,11 @@ def _test_tray_and_run():
     finally:
         CW.QSystemTrayIcon = orig
         QApplication.exec = o_exec
-        signal.signal(signal.SIGTERM, o_term)
-        signal.signal(signal.SIGINT, o_int)
+        # getsignal returns None for a handler not installed from Python, and
+        # signal.signal rejects None -- restore only the real handlers.
+        for sig, handler in ((signal.SIGTERM, o_term), (signal.SIGINT, o_int)):
+            if handler is not None:
+                signal.signal(sig, handler)
         APP.setQuitOnLastWindowClosed(o_qlwc)
 
 
