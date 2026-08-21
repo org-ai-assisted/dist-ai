@@ -227,6 +227,26 @@ def _wrapper_tests():
         eq(read('xclipped'), payload.encode('utf-8'),
            'st-xclip: -o read passes stdin through unsanitized (no sclip stage)')
 
+        # fail CLOSED on the native modes the wrapper cannot sanitize (bypass holes)
+        r = subprocess.run([st_wl_copy, 'literal text'], input=b'',
+                           capture_output=True, env=env)
+        eq(r.returncode, 2, 'st-wl-copy: rejects a text operand (would bypass sclip)')
+        ok(b'pipe the text' in r.stderr, 'st-wl-copy: reject guides to piping')
+        # a value-taking option (--type VALUE) is NOT mistaken for a text operand
+        r = subprocess.run([st_wl_copy, '--type', 'text/plain'],
+                           input=payload.encode('utf-8'), capture_output=True, env=env)
+        eq(r.returncode, 0, 'st-wl-copy: --type VALUE is not treated as a text operand')
+
+        r = subprocess.run([st_wl_paste, '--watch', 'cat'], capture_output=True, env=env)
+        eq(r.returncode, 2, 'st-wl-paste: rejects --watch (would bypass sclip)')
+        ok(b'watch' in r.stderr, 'st-wl-paste: reject names --watch')
+
+        operand = os.path.join(stub, 'payload')     # an existing file
+        r = subprocess.run([st_xclip, '-selection', 'clipboard', operand],
+                           input=payload.encode('utf-8'), capture_output=True, env=env)
+        eq(r.returncode, 2, 'st-xclip: rejects a file operand on a write (would bypass)')
+        ok(b'file operand' in r.stderr, 'st-xclip: reject names the file operand')
+
     # loud-fail when the native tool is absent: a PATH with the coreutils the
     # wrapper needs (dirname/readlink) but NO wl-paste.
     with tempfile.TemporaryDirectory() as onlybin:

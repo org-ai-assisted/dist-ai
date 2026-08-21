@@ -190,9 +190,23 @@ def _test_watch():
     ok(not w._popup.isVisible(), 'watch: dismissed text does not re-prompt')
 
     # unicode replace keeps the printable homoglyph
-    w.resolve('p' + CYR_A + 'ypal', 'unicode')
-    eq(cb.text(), sanitize_clipboard_unicode('p' + CYR_A + 'ypal'),
+    homo = 'p' + CYR_A + 'ypal'
+    cb.setText(homo)
+    w.resolve(homo, 'unicode')
+    eq(cb.text(), sanitize_clipboard_unicode(homo),
        'watch: Replace(keep unicode) keeps the printable homoglyph')
+
+    # TOCTOU guard: a Replace must NOT clobber content copied AFTER the popup opened.
+    # Show a review for A, then the user copies clean B; resolving stale A leaves B.
+    a_text = 'x' + RLO + 'y'
+    cb.setText(a_text)
+    w._on_change()
+    ok(w._popup.isVisible(), 'watch: deceptive A -> popup')
+    cb.setText('newer clean text')            # user copies B while the popup is open
+    w.resolve(a_text, 'stripped')             # resolving the now-stale A review
+    eq(cb.text(), 'newer clean text',
+       'watch: Replace does not clobber content copied after the popup opened (TOCTOU)')
+    ok(not w._popup.isVisible(), 'watch: the stale review still closes')
 
     # review-on-demand: nothing when empty, a popup even for clean text
     cb.setText('')
