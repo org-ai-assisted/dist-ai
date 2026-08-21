@@ -189,6 +189,14 @@ assert_spared "help"    "$(body_of "${tmo} --help")"
 assert_spared "version" "$(body_of "${tmo} --version")"
 ## A function DEFINITION named timeout is not a timeout invocation.
 assert_spared "funcdef" "$(body_of "${tmo} () {" '   true' '}')"
+## A ZERO-duration timeout ('timeout 0') is a no-op -- it bounds nothing, so there
+## is no SIGTERM to back with a kill-after; flagging it would demand a kill-after
+## the fixer (rightly) will not add.
+assert_spared "zero-duration" "$(body_of "${tmo} 0 do_thing")"
+## A file defining its OWN timeout() function: every call targets that function,
+## not coreutils, so R-200 skips the whole file.
+assert_spared "local-timeout-def" \
+   "$(body_of "${tmo} () { command ${tmo} ${dq}\${@}${dq}${sc} }" "${tmo} 5 do_thing")"
 
 ## --- (2) pre-push-fix behaviour ---
 run_fix() {
@@ -288,6 +296,12 @@ assert_fix_unchanged "waived" \
 assert_fix_unchanged "opt-then-arg" "${tmo} ${sig} 5 echo ${tmo} 5"
 ## A control keyword passed as a literal ARGUMENT is not command position.
 assert_fix_unchanged "keyword-arg" "echo then ${tmo} 5 x"
+## A ZERO-duration timeout is a no-op; the fixer must NOT emit '--kill-after=0'.
+assert_fix_unchanged "zero-duration" "${tmo} 0 do_thing"
+## A file defining its own timeout(): the fixer DECLINES it -- a call targets the
+## function, and rewriting it to '--kill-after=5 5 ...' would corrupt its args.
+assert_fix_unchanged "local-timeout-def" \
+   "$(printf '%s\n%s' "${tmo} () { command ${tmo} ${dq}\${@}${dq}${sc} }" "${tmo} 5 do_thing")"
 
 ## --- (2b) heredoc / multi-line-quote bodies are shell DATA, never rewritten ---
 heredoc_body="$(printf '%s\n' "cat <<EOF" "${tmo} 5 body" "EOF")"
