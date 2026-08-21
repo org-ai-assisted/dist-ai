@@ -347,7 +347,9 @@ def _test_daemon_ipc():
             _open = CW.os.open
 
             def _open_boom(*_a, **_k):
-                raise OSError('cannot open lock file')
+                # os.open itself raising EAGAIN (FUSE / mandatory-lock conflict): must
+                # degrade to best effort, never reach os.close(None) and crash.
+                raise BlockingIOError('cannot open lock file')
 
             def _flock_unsupported(*_a, **_k):
                 raise OSError('flock unsupported')      # NOT BlockingIOError
