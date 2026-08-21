@@ -1226,7 +1226,7 @@ finally:
 
 # --- clipboard-sanitizer controls (menu / setters / systray coupling) ----------
 from secure_terminal import clipboard_watch as _cw                # noqa: E402
-from PyQt6.QtCore import QProcess                                  # noqa: E402
+from PyQt6.QtCore import QMimeData, QProcess                       # noqa: E402
 from PyQt6.QtWidgets import QMenu                                  # noqa: E402
 
 _cw_saved = (_cw.is_running, _cw.stop_running, _cw.push_warn_any,
@@ -1235,6 +1235,14 @@ _o_startdet = QProcess.startDetached
 _o_avail_c = QSystemTrayIcon.isSystemTrayAvailable
 _o_systray_c = win._systray
 _o_warnany_c = win._clip_warn_any
+## Save the process clipboard (every MIME format) and restore it in finally:
+## the test overwrites it, and a bare clear() would discard a developer's real
+## clipboard on a live (non-offscreen) desktop session.
+_o_clip_c = QMimeData()
+_src_clip_c = APP.clipboard().mimeData()   # None under the offscreen platform
+if _src_clip_c is not None:
+    for _clip_fmt_c in _src_clip_c.formats():
+        _o_clip_c.setData(_clip_fmt_c, _src_clip_c.data(_clip_fmt_c))
 _calls = {}
 try:
     _cw.is_running = lambda: _calls.get('running', False)
@@ -1320,7 +1328,7 @@ finally:
     win._systray = _o_systray_c
     win._clip_warn_any = _o_warnany_c
     win._clip_reviewer = None
-    APP.clipboard().clear()
+    APP.clipboard().setMimeData(_o_clip_c)
 
 # a tab terminal's right-click menu gains the app toggles through its MainWindow
 from PyQt6.QtCore import QPoint                                    # noqa: E402
