@@ -412,6 +412,46 @@ def _test_daemon_ipc():
                 fu._server.close()
             finally:
                 CW.fcntl.flock = _flock
+
+            # (e) flock taken but the control socket FAILS to bind -> release the
+            #     lock and raise _SingletonBindError. A wedged, uncontrollable,
+            #     lock-holding daemon (no stop_running() socket, blocks every
+            #     replacement) must NOT start. Old code returned True with the
+            #     lock still held -- the canary here fails on it.
+            from PyQt6.QtNetwork import QLocalServer   # noqa: PLC0415
+            _listen = QLocalServer.listen
+            QLocalServer.listen = lambda _self, _name: False
+            try:
+                # (e1) a real flock is held -> its fd must be closed on failure.
+                lf = CW.ClipboardWatchApp(APP)
+                raised = False
+                try:
+                    lf._claim_singleton()
+                except CW._SingletonBindError:
+                    raised = True
+                ok(raised, 'singleton: listen failure raises _SingletonBindError')
+                ok(lf._lock_fd is None,
+                   'singleton: listen failure releases the held flock (no fd leak)')
+                ok(lf._server is None, 'singleton: listen failure keeps no server')
+
+                # (e2) best-effort (flock unsupported, no lock fd) -> same raise,
+                #      no fd to close.
+                CW.fcntl.flock = _flock_unsupported
+                try:
+                    be = CW.ClipboardWatchApp(APP)
+                    raised2 = False
+                    try:
+                        be._claim_singleton()
+                    except CW._SingletonBindError:
+                        raised2 = True
+                    ok(raised2,
+                       'singleton: best-effort listen failure also raises')
+                    ok(be._lock_fd is None and be._server is None,
+                       'singleton: best-effort listen failure leaves nothing held')
+                finally:
+                    CW.fcntl.flock = _flock
+            finally:
+                QLocalServer.listen = _listen
         finally:
             if old is None:
                 os.environ.pop('XDG_RUNTIME_DIR', None)
@@ -491,6 +531,20 @@ def _test_tray_and_run():
         app4 = CW.ClipboardWatchApp(APP)
         app4._claim_singleton = lambda: True
         eq(app4.run(), 0, 'run: with a tray it enters the event loop (stubbed exec)')
+
+        # run(): the flock was taken but the control socket did not bind ->
+        # _SingletonBindError -> exit 1 (startup failure, NOT 0 'another watcher')
+        _FakeTray.available = True
+        app5 = CW.ClipboardWatchApp(APP)
+
+        def _raise_bind():
+            raise CW._SingletonBindError('/run/user/x/clipboard-watch.sock')
+
+        app5._claim_singleton = _raise_bind
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            eq(app5.run(), 1, 'run: singleton bind failure -> exit 1')
+        ok('could not bind' in err.getvalue(), 'run: reports the bind failure')
     finally:
         CW.QSystemTrayIcon = orig_tray
         QApplication.exec = o_exec
