@@ -62,6 +62,15 @@ together the WHOLE pure sanitizer, input AND output):
       SAME class the display marking does, so the paste warning and the on-screen
       risk colour can never disagree.
 
+  T8  CHUNK-BOUNDARY ESCAPE SAFETY: feed_chunk_carry renders a byte stream the
+      SAME no matter where the read boundaries fall (bounded-exhaustive), so a
+      split escape cannot leak its tail as text; its carry/drop memory is O(1).
+  T9  GUI RENDER-PATH INERTNESS: cells_to_runs -- the pure render function the
+      live Qt widget paints -- emits only safe display units for ANY cells and
+      mode (the GUI alphabet: SAFE_ASCII, plus the box glyph, plus show-mode
+      printable non-ASCII), never a bidi / invisible / control byte. It reduces
+      to T1 (its run text IS render_output, +/- the documented '_'->BOX rewrite).
+
 METHOD, and what is PROVED vs ASSUMED (honest scope):
 
   * Z3 (SMT) proves the SYMBOLIC / UNBOUNDED core:
@@ -93,8 +102,10 @@ METHOD, and what is PROVED vs ASSUMED (honest scope):
   Qt widget layer is NOT: the no-write-back property (INV-6, "output never induces
   an input reply") and the full-widget earlier-line immutability remain covered by
   the property tests in test_invariants.py, which drive the live widget. This file
-  proves the sanitizer core those tests exercise; it does not model Qt, pyte, the
-  pty, or terminal.py.
+  proves the sanitizer core those tests exercise -- including T9's alphabet of
+  cells_to_runs, the pure render function the live widget paints (the core behind
+  INV-4's GUI half); the Qt insertion of those runs stays property-tested. It
+  does not model Qt, pyte, the pty, or terminal.py.
 
 Exit 0 on a fully discharged proof, 1 on any counterexample or unmet assumption.
 A missing z3 or secure_terminal is a hard FAILURE (a verification suite must never
@@ -1235,6 +1246,241 @@ def t8_canaries():
 
 
 # ===========================================================================
+# T9 -- GUI RENDER-PATH INERTNESS (cells_to_runs), the live widget's paint step.
+#
+# T1 proves render_output inert for the CLI (its output is written STRAIGHT to the
+# outer terminal, so it must be pure SAFE_ASCII in strict modes). The Qt widget does
+# NOT paint render_output; it paints cells_to_runs(completed, current, mode, ...) --
+# the function that turns the cell line-model into the coalesced (text, sgr_key) runs
+# QTextCursor inserts (terminal.py: `runs, prefix = cells_to_runs(...)`). So the
+# GUI display alphabet is what cells_to_runs' run TEXT contains. Theorem: for any
+# cells and any mode, every character of every run's text is a safe display unit --
+# never a bidi control, an invisible / default-ignorable, or a C0/C1/DEL byte.
+#
+# The GUI alphabet is WIDER than the CLI's on purpose, and this is the honest point
+# T1 cannot make: a neutralized no-glyph cell is drawn as the box U+25A1 (a real
+# printable glyph the widget maps back to '_' on export), NOT the CLI's ASCII '_'.
+# There is no output-becomes-input closure in the widget (a QTextEdit glyph is inert
+# by construction), so a printable non-ASCII marker is safe here though it would not
+# be in the CLI. The per-mode safe alphabet:
+#   reveal / detail : pure SAFE_ASCII  -- cells_to_runs never boxes in these modes
+#                     (the <U+XXXX> badge stays), so its text IS render_output, and
+#                     T1's exhaustive inertness transfers VERBATIM.
+#   box             : SAFE_ASCII u {BOX}         -- render_output's '_' becomes BOX.
+#   show            : the documented show whitelist (SAFE_ASCII, BOX, the non-ASCII
+#                     space marker, honest structural glyphs, a printable non-ASCII
+#                     glyph that is neither default-ignorable nor bidi).
+# The run '\n' separators are 0x0A, already in SAFE_ASCII.
+#
+# METHOD (the T1 pattern, one layer up): cells_to_runs' displayed text is built
+# ONLY from the per-cell display (_cell_display == render_output, except a show-mode
+# Zalgo cell -> BOX) with a documented '_'->BOX rewrite, plus '\n' separators; the
+# run coalescing and the _RUN_CAP only REGROUP and RE-TAG runs, never alter a
+# displayed character (the sgr_key is metadata, not text). So:
+#   * EXHAUSTION + REDUCTION (t9_enumerate): ONE pass over every code point, in every
+#     mode, checks BOTH that the REAL cells_to_runs display equals render_output with
+#     exactly the one documented '_'->BOX substitution (box/show) -- pinning the GUI
+#     text to the T1-proven map -- AND that it lies in the per-mode alphabet with no
+#     invisible. One cells_to_runs call per (cp, mode) keeps this inside the 300s
+#     core-suite budget (the whole suite runs verify_formal, not only the 15min lane).
+#   * COMPOSITION (t9_compose): on adversarial multi-cell, multi-line inputs (mixed
+#     SGR keys, wraps, a current line, AND a >2000-run line that passes _RUN_CAP so the
+#     post-cap untagged path is exercised) the alphabet + no-invisible result still
+#     holds on the whole real function -- the run coalescing cannot smuggle a byte in.
+#   * HOMOMORPHISM (t9_homomorphism): in box/reveal/detail the displayed characters
+#     are the per-cell concatenation (with a '\n' after each finished line), so the
+#     single-code-point exhaustion lifts to lines of any length. SHOW mode is
+#     excluded from this identity ONLY because _collapse_zalgo_runs merges a base +
+#     >8 combining marks ACROSS cells into one box -- a display-REDUCING collapse
+#     (fewer glyphs, all still inert); show keeps the full alphabet+invisible checks.
+# ===========================================================================
+
+# Faithful cell keys: feed_line_edits stores a cell as (source_char, sgr_state) with
+# sgr_state = tuple(sorted(sgr.items())). Distinct keys force run splits so the
+# coalescing is actually exercised; None models colours-off.
+_T9_KEYS = (None, (), (('bold', True),), (('fg', 1),))
+
+
+def _runs_char_ok(oc, mode):
+    """The GUI run-text alphabet, per mode (see the header). '\\n' run separators are
+    SAFE_ASCII, so they pass here too."""
+    cp = ord(oc)
+    if mode == 'show':
+        return _show_char_ok(oc)                 # SAFE_ASCII, BOX, SPACE_MARK, ...
+    if mode == 'box':
+        return cp in SAFE_ASCII or oc == S.BOX
+    return cp in SAFE_ASCII                       # reveal, detail: strictly ASCII
+
+
+def _cells_to_runs_text(lines, current, mode, colors=True, markings=True,
+                        wraps=None):
+    """The displayed text the REAL cells_to_runs would paint: the run texts
+    concatenated (the sgr_key is metadata, dropped here)."""
+    runs, _prefix = S.cells_to_runs(lines, current, mode, colors, markings, wraps)
+    return ''.join(text for text, _key in runs)
+
+
+def _single_cell_display(ch, mode):
+    """The REAL cells_to_runs display of ONE cell as the current line (no trailing
+    '\\n' is added after the current line)."""
+    return _cells_to_runs_text([], [(ch, None)], mode)
+
+
+def t9_enumerate():
+    """ONE exhaustive pass over every code point, in every mode, on the single-cell
+    current line -- checking BOTH obligations with one cells_to_runs call each:
+
+      (a) REDUCTION -- the display equals render_output (T1-proven inert) with only
+          the documented '_'->BOX rewrite in box/show; a literal ASCII '_' cell (where
+          the source already IS '_') stays '_' (emit()'s guard: `disp == '_' and
+          disp != ch`). No other GUI substitution exists, so T1's inertness carries to
+          the GUI text, and any drift trips here.
+      (b) ALPHABET -- every displayed character is in the per-mode GUI alphabet and is
+          not a default-ignorable.
+
+    Total over the code-point domain -- not sampling. Folding the reduction and the
+    alphabet check into a single traversal (one call per cp/mode) keeps T9 within the
+    core-suite time budget; the finished-line '\\n' separator path is covered by
+    t9_compose / t9_homomorphism on genuine multi-line input."""
+    reduce_drift = 0
+    alpha_bad = 0
+    invisible = 0
+    for cp in range(0, MAX_CP + 1):
+        ch = chr(cp)
+        for mode in ('box', 'show', 'reveal', 'detail'):
+            disp = _single_cell_display(ch, mode)
+            base = S.render_output(ch, mode)
+            want = ((S.BOX if (base == '_' and ch != '_') else base)
+                    if mode in ('box', 'show') else base)   # box/show: '_'->BOX
+            if disp != want:
+                if reduce_drift < 8:
+                    fail('T9 reduce: %s U+%04X display %r != render_output-derived %r'
+                         % (mode, cp, disp, want))
+                reduce_drift += 1
+            for oc in disp:
+                if not _runs_char_ok(oc, mode):
+                    if alpha_bad < 8:
+                        fail('T9 alphabet: %s U+%04X left 0x%02X'
+                             % (mode, cp, ord(oc)))
+                    alpha_bad += 1
+                if S.is_default_ignorable(oc):
+                    if invisible < 8:
+                        fail('T9 invisible: %s U+%04X left a default-ignorable'
+                             % (mode, cp))
+                    invisible += 1
+    return dict(reduce_drift=reduce_drift, alpha_bad=alpha_bad, invisible=invisible)
+
+
+# Adversarial cells the per-code-point pass cannot express: multi-cp Zalgo cells, a
+# bidi/zero-width/homoglyph mix, box-drawing, and astral glyphs. Escape-encoded to
+# keep this file ASCII-only (the repo convention; mirrors _T6_MULTI). BOX (U+25A1)
+# and SPACE_MARK (U+2423) are included as raw display glyphs a hostile program might
+# feed back in, to confirm they are re-neutralized and never trusted.
+_T9_CELLCHARS = [
+    'a', ' ', '_', '\u25a1', '\u2423', 'x\u202e', '\u200b', '\u0301',
+    '\u00c1\u0302', 'a' + '\u0301' * 40, '\u2500', '\u4e00\u200d',
+    '\U0001f600', '\ufeff', '\u3164', '\u00e9', '\u0430',
+]
+
+
+def _adversarial_lines():
+    """A handful of adversarial (finished-lines, current, wraps) shapes built from
+    the hostile cell chars, with mixed SGR keys so the run coalescing is exercised."""
+    cells_a = [(_T9_CELLCHARS[i % len(_T9_CELLCHARS)],
+                _T9_KEYS[i % len(_T9_KEYS)]) for i in range(len(_T9_CELLCHARS))]
+    cells_b = [(c, k) for c, k
+               in zip(reversed(_T9_CELLCHARS), _T9_KEYS * 8, strict=False)]
+    yield ([], cells_a, None)
+    yield ([cells_a], cells_b, [True])
+    yield ([cells_a, cells_b], cells_a, [False, True])
+    yield ([cells_b], [], [False])
+    # >2000-run line: 2100 non-coalescing safe cells (alternating keys) drive the run
+    # count PAST _RUN_CAP (2000), then hostile cells land on the post-cap UNTAGGED
+    # path -- confirming a neutralized cell past the cap still displays inert. chr()
+    # (not a literal) keeps this ASCII-only.
+    big_a, big_b = (('fg', 2),), (('fg', 3),)
+    big = [('a' if i % 2 else 'b', big_a if i % 2 else big_b) for i in range(2100)]
+    big += [(chr(c), ()) for c in (0x202e, 0x200b, 0x0430, 0x0301, 0x2500)]
+    yield ([], big, None)
+
+
+def t9_compose():
+    """The alphabet + no-invisible result on the WHOLE real cells_to_runs, over
+    adversarial multi-cell / multi-line inputs with mixed keys and wraps -- INCLUDING
+    a >2000-run line that passes _RUN_CAP so the post-cap untagged path runs -- in
+    every mode and with colours + markings both on and off. A run-coalescing or
+    _RUN_CAP path that smuggled a byte in would be caught here on the shipped code."""
+    bad = 0
+    for lines, current, wraps in _adversarial_lines():
+        for mode in ('box', 'show', 'reveal', 'detail'):
+            for colors in (True, False):
+                for markings in (True, False):
+                    text = _cells_to_runs_text(lines, current, mode, colors,
+                                               markings, wraps)
+                    for oc in text:
+                        if not _runs_char_ok(oc, mode) or S.is_default_ignorable(oc):
+                            if bad < 8:
+                                fail('T9 compose: %s (colors=%s markings=%s) left '
+                                     '0x%02X' % (mode, colors, markings, ord(oc)))
+                            bad += 1
+    return bad
+
+
+def t9_homomorphism():
+    """In box/reveal/detail the displayed characters are the per-cell concatenation
+    with a '\\n' after each finished line -- so the run coalescing and _RUN_CAP only
+    regroup runs, they never change a displayed character, and the per-code-point
+    exhaustion lifts to lines of any length. (SHOW is excluded: _collapse_zalgo_runs
+    merges a base + >8 marks ACROSS cells into one box, a display-reducing collapse
+    the per-cell identity cannot model; show keeps the alphabet + invisible checks.)"""
+    bad = 0
+    for lines, current, wraps in _adversarial_lines():
+        for mode in ('box', 'reveal', 'detail'):
+            whole = _cells_to_runs_text(lines, current, mode, wraps=wraps)
+            piece = ''.join(
+                ''.join(_single_cell_display(ch, mode) for ch, _k in cellline) + '\n'
+                for cellline in lines)
+            piece += ''.join(_single_cell_display(ch, mode) for ch, _k in current)
+            if whole != piece:
+                if bad < 8:
+                    fail('T9 homomorphism: %s run text not the per-cell '
+                         'concatenation' % mode)
+                bad += 1
+    return bad
+
+
+def t9_canaries():
+    # Alphabet canary: a bidi override or the BOX glyph leaked into a strict (reveal)
+    # run must trip _runs_char_ok (reveal/detail admit SAFE_ASCII only).
+    _expect_caught('T9/alphabet-bidi', not _runs_char_ok('\u202e', 'reveal'))
+    _expect_caught('T9/alphabet-box-strict', not _runs_char_ok(S.BOX, 'reveal'))
+    # BOX is legitimately allowed where it is actually drawn (box + show), so the
+    # predicate must NOT reject it there (a false positive would mask real leaks).
+    if not (_runs_char_ok(S.BOX, 'box') and _runs_char_ok(S.BOX, 'show')):
+        fail('T9 canary: _runs_char_ok wrongly rejects BOX in box/show mode')
+    # Invisible canary: a PRINTABLE-yet-default-ignorable char (U+3164 HANGUL FILLER,
+    # which str.isprintable() keeps but renders as nothing -- the ad<U+3164>min
+    # spoof) must be flagged by is_default_ignorable AND rejected by the show guard.
+    _expect_caught('T9/invisible', S.is_default_ignorable('\u3164'))
+    _expect_caught('T9/invisible-guard', not _runs_char_ok('\u3164', 'show'))
+    # Homomorphism canary (mirrors t1_canaries): a stateful map -- one carrying state
+    # ACROSS cells (drops a char it has already seen) -- must diverge from the same map
+    # run per-cell with FRESH state, which is what the real per-cell display satisfies.
+    # Both sides APPLY the map (a plain copy of the input would not model piecewise
+    # execution and would miss a char-altering stateless map).
+    def stateful(seen, ch):
+        if ch in seen:
+            return ''
+        seen.add(ch)
+        return ch
+    s = 'aabb'
+    seen = set()
+    whole = ''.join(stateful(seen, c) for c in s)      # state carried -> 'ab'
+    piece = ''.join(stateful(set(), c) for c in s)     # fresh per cell -> 'aabb'
+    _expect_caught('T9/homomorphism', whole != piece)
+
+
+# ===========================================================================
 # Run.
 # ===========================================================================
 def main():
@@ -1284,11 +1530,18 @@ def main():
     t8_memory_bound()
     sys.stdout.write('        split_invariance_divergences=%d\n' % t8_bad)
 
+    sys.stdout.write('  T9    GUI render-path inertness: cells_to_runs alphabet over all code points ...\n')
+    e9 = t9_enumerate()
+    c9 = t9_compose()
+    h9 = t9_homomorphism()
+    sys.stdout.write('        reduce_drift=%d alpha_bad=%d invisible=%d compose_bad=%d homomorphism_bad=%d\n'
+                     % (e9['reduce_drift'], e9['alpha_bad'], e9['invisible'], c9, h9))
     sys.stdout.write('  canaries (each proof must trip on a broken model) ...\n')
     t1_canaries()
     t2_canaries()
     t_input_canaries()
     t8_canaries()
+    t9_canaries()
 
     sys.stdout.write('verify_formal: %d canaries verified, %d obligations failed\n'
                      % (CANARIES_VERIFIED[0], FAIL))

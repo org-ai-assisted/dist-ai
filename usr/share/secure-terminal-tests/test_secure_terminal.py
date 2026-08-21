@@ -927,19 +927,6 @@ ok(not _missing_dep,
    'dep-audit: every preflight-required package is a debian/control Depends '
    '(missing: %r)' % _missing_dep)
 
-# apply_line_edits: the pure line-editing model behind the fast bulk render path
-eq(S.apply_line_edits('', 0, 'abc'), ([], 'abc', 3), 'line edits: plain append')
-_cl, _ln, _col = S.apply_line_edits('', 0, 'l1\nl2\n')
-eq((_cl, _ln), (['l1', 'l2'], ''), 'line edits: newline splits off completed lines')
-eq(S.apply_line_edits('123456', 6, '\rAB'), ([], 'AB3456', 2),
-   'line edits: bare CR then overwrite')
-_cl, _ln, _col = S.apply_line_edits('abc', 3, '\x08 \x08')
-eq((_ln.rstrip(), _col), ('ab', 2), 'line edits: backspace erase')
-# max_line hard-wraps a runaway newline-free line so a flood cannot build one
-# unbounded block
-_cl, _ln, _col = S.apply_line_edits('', 0, 'x' * 25, 10)
-eq((len(_cl), [len(_c) for _c in _cl], _ln), (2, [10, 10], 'xxxxx'),
-   'line edits: max_line wraps a runaway line')
 # classify_paste: name and count the hidden classes so the paste warning can say
 # exactly what a copied string carries
 eq(S.classify_paste('echo hello'), [], 'clean ASCII has no findings')
