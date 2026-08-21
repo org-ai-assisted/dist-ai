@@ -26,6 +26,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 image=""
 arch=""
@@ -128,8 +129,8 @@ if [ "${#boot_test_missing[@]}" -eq 0 ]; then
    printf '%s\n' "${BASH_SOURCE[0]}: all runtime dependencies already installed; skipping apt." >&2
 else
    printf '%s\n' "${BASH_SOURCE[0]}: installing missing dependencies: ${boot_test_missing[*]}" >&2
-   sudo --non-interactive -- apt-get update
-   sudo --non-interactive -- apt-get install --yes --no-install-recommends \
+   sudo --non-interactive -- apt-get-noninteractive update
+   sudo --non-interactive -- apt-get-noninteractive install --yes --no-install-recommends \
       -- "${boot_test_missing[@]}"
 fi
 

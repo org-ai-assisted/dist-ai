@@ -25,6 +25,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 # shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
 # shellcheck disable=SC1091
@@ -135,6 +136,30 @@ fi
 
 safe-rm --force "${allow_probe}" "${deny_probe}" "${canary_src}" "${canary_probe}"
 rmdir "${canary_dir}" 2>/dev/null || true
+
+## ALLOW (flock): the clipboard-watch singleton lock file. The daemon opens
+## '<runtime>/secure-terminal/*.lock' O_CREAT and takes an flock on it as its
+## singleton gate; the profile must grant create+write+lock ('k') or the watcher
+## never starts under enforcement (os.open raises PermissionError). uid 0 here ->
+## /run/user/0; the profile pattern is /run/user/[0-9]*/.
+lock_dir="/run/user/$(id --user)/secure-terminal"
+mkdir --parents "${lock_dir}"
+lock_probe="${lock_dir}/clipboard-watch.sock.lock"
+lock_rc=0
+aa-exec -p secure-terminal -- python3 -Bsu -c '
+import os, fcntl, sys
+fd = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+' "${lock_probe}" >/dev/null 2>&1 || lock_rc=$?
+if [ "${lock_rc}" -eq 0 ]; then
+   pass=$(( pass + 1 ))
+else
+   fail=$(( fail + 1 ))
+   printf '%s\n' \
+      "FAIL: the profile DENIED the clipboard-watch flock lock (${lock_probe})"
+fi
+safe-rm --force "${lock_probe}"
+rmdir "${lock_dir}" 2>/dev/null || true
 
 ## --- unicode-tag-stdin: the tight, stdin-only neutralizer profile ---
 ## Prove the SAME enforcement on it: a granted read ALLOWED, a non-granted read

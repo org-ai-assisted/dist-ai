@@ -304,10 +304,30 @@ def _test_daemon_ipc():
             ok(bad.state() == unconnected,
                'ipc: an over-long frame is aborted by the server')
 
-            # a second instance finds the socket live -> declines
+            # a second instance finds the lock already held -> declines
             other = CW.ClipboardWatchApp(APP)
             ok(other._claim_singleton() is False,
-               'singleton: a second instance sees it live and declines')
+               'singleton: a second instance finds the lock held and declines')
+
+            # TOCTOU regression: even in the concurrent window -- where neither watcher
+            # yet sees the other's socket as live (socket_is_live == False) -- the flock
+            # gate still rejects the second claimant, so two watchers never both bind and
+            # race duplicate review bars. Pre-flock, the second removeServer()'d the
+            # incumbent's just-bound socket and listen()'d, so BOTH ran.
+            _live = ipc.socket_is_live
+            ipc.socket_is_live = lambda *a, **k: False
+            try:
+                race = CW.ClipboardWatchApp(APP)
+                ok(race._claim_singleton() is False,
+                   'singleton: flock rejects a concurrent second binder (TOCTOU)')
+                ok(race._server is None,
+                   'singleton: the rejected claimant binds no socket')
+                ok(race._lock_fd is None,
+                   'singleton: the rejected claimant holds no lock fd')
+            finally:
+                ipc.socket_is_live = _live
+            ok(CW.is_running(),
+               'singleton: the incumbent socket survived the concurrent claim')
 
             # ensure_socket_dir failure -> proceed without a singleton
             _real = ipc.ensure_socket_dir
@@ -323,7 +343,75 @@ def _test_daemon_ipc():
             finally:
                 ipc.ensure_socket_dir = _real
 
+            _flock = CW.fcntl.flock
+            _open = CW.os.open
+
+            def _open_boom(*_a, **_k):
+                # os.open itself raising EAGAIN (FUSE / mandatory-lock conflict): must
+                # degrade to best effort, never reach os.close(None) and crash.
+                raise BlockingIOError('cannot open lock file')
+
+            def _flock_unsupported(*_a, **_k):
+                raise OSError('flock unsupported')      # NOT BlockingIOError
+
+            # DEFER, never steal (app still holds a real, live socket here):
+            # (a) flock taken, but a pre-flock incumbent's socket is live -> back off,
+            #     releasing the just-taken lock.
+            CW.fcntl.flock = lambda *_a, **_k: None      # pretend the lock is free
+            try:
+                inc = CW.ClipboardWatchApp(APP)
+                ok(inc._claim_singleton() is False,
+                   'singleton: live incumbent (lock free) -> back off (False)')
+                ok(inc._server is None, 'singleton: incumbent back-off binds no socket')
+                ok(inc._lock_fd is None,
+                   'singleton: incumbent back-off releases the lock fd')
+            finally:
+                CW.fcntl.flock = _flock
+
+            # (b) lock file unusable AND a live incumbent -> back off, no lock to release.
+            CW.os.open = _open_boom
+            try:
+                oi = CW.ClipboardWatchApp(APP)
+                ok(oi._claim_singleton() is False,
+                   'singleton: no usable lock + live incumbent -> back off (False)')
+                ok(oi._lock_fd is None and oi._server is None,
+                   'singleton: back-off binds nothing when the lock is unusable')
+            finally:
+                CW.os.open = _open
+
+            # release the primary so the best-effort BIND cases below see no incumbent
             app._server.close()
+            os.close(app._lock_fd)          # release the singleton flock (test isolation)
+            app._server = None
+            app._lock_fd = None
+
+            # (c) lock-file open error, no incumbent -> best effort STILL binds the socket
+            #     (drops only the flock gate), so is_running() keeps working. Without this
+            #     the daemon would run with no IPC and terminals would spawn duplicates.
+            CW.os.open = _open_boom
+            try:
+                oe = CW.ClipboardWatchApp(APP)
+                ok(oe._claim_singleton() is True,
+                   'singleton: lock open error, no incumbent -> best-effort bind (True)')
+                ok(oe._lock_fd is None, 'singleton: best-effort holds no lock fd')
+                ok(oe._server is not None,
+                   'singleton: best-effort still binds the IPC socket')
+                oe._server.close()
+            finally:
+                CW.os.open = _open
+
+            # (d) flock unsupported (non-contention OSError), no incumbent -> best-effort bind
+            CW.fcntl.flock = _flock_unsupported
+            try:
+                fu = CW.ClipboardWatchApp(APP)
+                ok(fu._claim_singleton() is True,
+                   'singleton: flock unsupported, no incumbent -> best-effort bind (True)')
+                ok(fu._lock_fd is None, 'singleton: no lock fd when flock unsupported')
+                ok(fu._server is not None,
+                   'singleton: flock-unsupported still binds the socket')
+                fu._server.close()
+            finally:
+                CW.fcntl.flock = _flock
         finally:
             if old is None:
                 os.environ.pop('XDG_RUNTIME_DIR', None)
