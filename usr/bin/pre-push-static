@@ -2706,12 +2706,17 @@ check_R200_timeout_kill_after() {
    ## the common deferred-invocation spelling this rule CANNOT safely reason
    ## about) or as another command's argument ('run timeout 5') -- so fix those
    ## by hand. Residuals accepted (a line gate cannot parse shell): a separator
-   ## inside a string still matches; a single line carrying both a kill-after
-   ## timeout AND a bare one reads as OK (rare, one 'timeout' per statement keeps
-   ## it exact); and a '-k'/'--kill-after' appearing in the WRAPPED command's
-   ## OWN arguments ('timeout 5 foo --kill-after=x') spares the bare timeout (a
-   ## rare false NEGATIVE -- the safe direction, since a valid kill-after must
-   ## never be false-flagged).
+   ## inside a string still matches; the OK/exempt scan is per-LINE, so a single
+   ## physical line carrying ANY OK/exempt construct -- a kill-after timeout, a
+   ## no-op 'timeout 0', a 'timeout --help', or an array-element timeout -- marks
+   ## the WHOLE line OK, sparing a SEPARATE bare timeout on it (a second
+   ## ';'-statement, or a trailing '#' comment that names an exempt form; the
+   ## candidate scan is '#'-aware but the exempt scan is not). One 'timeout' per
+   ## statement keeps it exact -- isolating statements/comments needs the shell
+   ## parsing this gate deliberately avoids. Likewise a '-k'/'--kill-after' in the
+   ## WRAPPED command's OWN arguments ('timeout 5 foo --kill-after=x') spares the
+   ## bare timeout. All are rare false NEGATIVES -- the safe direction, since a
+   ## valid kill-after must never be false-flagged.
    mapfile -d '' -t fs < <(filter_self "${@}")
    if [ "${#fs[@]}" -eq 0 ]; then return 0; fi
 
