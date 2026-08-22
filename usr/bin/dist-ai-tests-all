@@ -385,7 +385,13 @@ wire() {
          wire_env=( "VM_CONFIG_DIST_REPO=$( pkg_dir vm-config-dist )" )
          ;;
       qubes-whonix)
+         ## HELPER_SCRIPTS_PATH lets the entrypoint source check_runtime.bsh from
+         ## the helper-scripts checkout (dm-consumer 'helper-scripts: true') rather
+         ## than the absent install.
          wire_env=( "QUBES_WHONIX_REPO=$( pkg_dir qubes-whonix )" )
+         if [ -n "${hs}" ]; then
+            wire_env+=( "HELPER_SCRIPTS_PATH=${hs}" )
+         fi
          ;;
       onion-grater)
          wire_env=( "ONION_GRATER_REPO=$( pkg_dir onion-grater )" )
@@ -495,8 +501,13 @@ wire() {
          ## The core suite reads update-torbrowser / desktop-starter-wrapper /
          ## version-validator source from the checkout; the e2e suite installs
          ## the package and drives the installed binaries. Both resolve the
-         ## checkout from TB_UPDATER_REPO.
+         ## checkout from TB_UPDATER_REPO. HELPER_SCRIPTS_PATH lets the entrypoint
+         ## source check_runtime.bsh from the helper-scripts checkout (dm-consumer
+         ## 'helper-scripts: true') rather than the absent install.
          wire_env=( "TB_UPDATER_REPO=$( pkg_dir tb-updater )" )
+         if [ -n "${hs}" ]; then
+            wire_env+=( "HELPER_SCRIPTS_PATH=${hs}" )
+         fi
          ;;
       systemcheck)
          ## The scenario harness runs the REAL check_*.bsh fragments, several of
