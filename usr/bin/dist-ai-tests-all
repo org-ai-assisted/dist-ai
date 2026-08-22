@@ -389,7 +389,8 @@ wire() {
          ## the helper-scripts checkout (dm-consumer 'helper-scripts: true') rather
          ## than the absent install.
          wire_env=( "QUBES_WHONIX_REPO=$( pkg_dir qubes-whonix )" )
-         if [ -n "${hs}" ]; then
+         ## Only when the checkout actually holds check_runtime.bsh (see tb-updater).
+         if [ -n "${hs}" ] && [ -r "${hs}/usr/libexec/helper-scripts/check_runtime.bsh" ]; then
             wire_env+=( "HELPER_SCRIPTS_PATH=${hs}" )
          fi
          ;;
@@ -505,7 +506,10 @@ wire() {
          ## source check_runtime.bsh from the helper-scripts checkout (dm-consumer
          ## 'helper-scripts: true') rather than the absent install.
          wire_env=( "TB_UPDATER_REPO=$( pkg_dir tb-updater )" )
-         if [ -n "${hs}" ]; then
+         ## Only when the checkout actually holds check_runtime.bsh: pkg_dir can
+         ## yield a non-empty path for an absent/uninitialised submodule, and a
+         ## bad HELPER_SCRIPTS_PATH would defeat the entrypoint's installed fallback.
+         if [ -n "${hs}" ] && [ -r "${hs}/usr/libexec/helper-scripts/check_runtime.bsh" ]; then
             wire_env+=( "HELPER_SCRIPTS_PATH=${hs}" )
          fi
          ;;
