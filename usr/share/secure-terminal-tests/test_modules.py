@@ -12,6 +12,7 @@
 ## imported, so this runs headless with only python3.
 
 import os
+import fcntl
 import sys
 import json
 import glob
@@ -302,6 +303,167 @@ ok('remote_control' not in _cfg,
    'settings: a locked key is not persisted to the user file')
 ok(not _cfg.is_locked('font_size'),
    'settings: an unlocked key reports is_locked False')
+
+# ---- set_user_key / update_user honor an admin lock -------------------------
+# The lock path is exercised by monkeypatching _system_dirs in-process (the
+# suite-wide convention, cf. test_widget.py); production keeps these dirs fixed to
+# the root-writable privileged folders, so a lock can be neither set nor bypassed
+# without root. set_user_key/update_user are the Finding-1/2 writers; test_widget
+# already covers load()/save-locked/violations/UI.
+_lk_sys = tempfile.mkdtemp(prefix='st-sys-')
+_lk_usr = tempfile.mkdtemp(prefix='st-usr-')
+_orig_sysd, _orig_usrd = settings._system_dirs, settings._user_config_dir
+settings._system_dirs = lambda: [_lk_sys]
+settings._user_config_dir = lambda: _lk_usr
+try:
+    with open(os.path.join(_lk_sys, '10_admin.conf'), 'w', encoding='utf-8') as _h:
+        _h.write('lock=clip_warn_any\nclip_warn_any=true\n')
+
+    def _user_file_keys():
+        _d = {}
+        settings._parse_into(settings.user_config_file(), _d)
+        return _d
+
+    # set_user_key never writes the admin-locked key to the (dead) user file
+    settings.set_user_key('clip_warn_any', 'false')
+    ok('clip_warn_any' not in _user_file_keys(),
+       'settings: set_user_key drops an admin-locked key')
+    settings.set_user_key('theme', 'mono')
+    eq(_user_file_keys().get('theme'), 'mono',
+       'settings: set_user_key persists a non-locked key')
+    eq(settings.load().get('clip_warn_any'), 'true',
+       'settings: the admin lock value still wins after set_user_key')
+
+    # update_user drops the locked key but PRESERVES a key an earlier writer set
+    # here that is `theme`, from the set_user_key above; the tray-set clip_warn_any
+    # is locked so it drops, so the clip_warn_any-specific no-clobber contract is
+    # the integration test in test_mainwin. This covers the generic merge property.
+    settings.update_user({'clip_warn_any': 'false', 'font_size': '20'})
+    _uf = _user_file_keys()
+    ok('clip_warn_any' not in _uf, 'settings: update_user drops an admin-locked key')
+    eq(_uf.get('font_size'), '20', 'settings: update_user persists a non-locked key')
+    eq(_uf.get('theme'), 'mono',
+       'settings: update_user preserves a key another writer set (no clobber)')
+finally:
+    settings._system_dirs, settings._user_config_dir = _orig_sysd, _orig_usrd
+
+# ---- a non-UTF-8 user file is defensive: never raises AND never clobbered ---
+_bad_usr = tempfile.mkdtemp(prefix='st-badutf-')
+_orig_bud = settings._user_config_dir
+settings._user_config_dir = lambda: _bad_usr
+try:
+    _bad_bytes = b'theme=dark\nzoom=150\nclip_warn_any=\xff\n'
+    with open(os.path.join(_bad_usr, '50_user.conf'), 'wb') as _bh:
+        _bh.write(_bad_bytes)
+    settings.load()                       # a non-UTF-8 drop-in must not raise
+    settings.set_user_key('theme', 'light')   # unreadable base -> SKIP, not clobber
+    settings.update_user({'zoom': '2'})       # unreadable base -> SKIP, not clobber
+    with open(os.path.join(_bad_usr, '50_user.conf'), 'rb') as _rb:
+        ok(_rb.read() == _bad_bytes,
+           'settings: a non-UTF-8 user file is left untouched, not clobbered (no data loss)')
+finally:
+    settings._user_config_dir = _orig_bud
+
+# ---- the user-file write lock serializes the two writers (flock) ------------
+_lockd = tempfile.mkdtemp(prefix='st-lock-')
+_orig_lud = settings._user_config_dir
+settings._user_config_dir = lambda: _lockd
+try:
+    _held = settings._user_write_lock()
+    ok(_held is not None, 'settings: _user_write_lock acquires an exclusive lock')
+    _probe = os.open(settings.user_config_file() + '.lock', os.O_CREAT | os.O_RDWR, 0o600)
+    _blocked = False
+    try:
+        fcntl.flock(_probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        _blocked = True
+    ok(_blocked, 'settings: a held write lock blocks a second writer')
+    os.close(_held)                                       # release
+    fcntl.flock(_probe, fcntl.LOCK_EX | fcntl.LOCK_NB)    # succeeds now, no raise
+    os.close(_probe)
+    ok(True, 'settings: the write lock is re-acquirable once released')
+finally:
+    settings._user_config_dir = _orig_lud
+
+# ---- the write lock is best-effort: None when its dir cannot be created -----
+_nolockp = os.path.join(tempfile.mkdtemp(prefix='st-nolock-'), 'afile')
+with open(_nolockp, 'w', encoding='utf-8') as _nf:
+    _nf.write('x')
+_orig_nud = settings._user_config_dir
+settings._user_config_dir = lambda: os.path.join(_nolockp, 'sub')   # parent is a file
+try:
+    ok(settings._user_write_lock() is None,
+       'settings: _user_write_lock yields None when the lock dir is unavailable')
+    settings.set_user_key('theme', 'x')   # tolerates a missing lock (handle-None path)
+    settings.update_user({'zoom': '3'})
+    ok(True, 'settings: set_user_key/update_user tolerate a missing write lock')
+finally:
+    settings._user_config_dir = _orig_nud
+
+# ---- a failed flock closes the fd and yields None (no descriptor leak) ------
+_flockd = tempfile.mkdtemp(prefix='st-flockfail-')
+_orig_flud = settings._user_config_dir
+_orig_flock = settings.fcntl.flock
+settings._user_config_dir = lambda: _flockd
+def _boom_flock(*_a):
+    raise OSError('flock unsupported')
+settings.fcntl.flock = _boom_flock
+try:
+    ok(settings._user_write_lock() is None,
+       'settings: _user_write_lock returns None when flock fails')
+    _fd0 = len(os.listdir('/proc/self/fd'))
+    for _ in range(20):
+        settings._user_write_lock()       # each opens the sidecar then flock fails
+    _fd1 = len(os.listdir('/proc/self/fd'))
+    ok(_fd1 <= _fd0 + 2, 'settings: a failed flock leaks no fd (%d -> %d)' % (_fd0, _fd1))
+    settings.set_user_key('theme', 'x')   # still writes, best-effort (unserialized)
+    eq(settings.load().get('theme'), 'x',
+       'settings: a write still proceeds when the lock is unavailable')
+finally:
+    settings.fcntl.flock = _orig_flock
+    settings._user_config_dir = _orig_flud
+
+# ---- set_user_key AND update_user actually ACQUIRE the write lock -----------
+_acqd = tempfile.mkdtemp(prefix='st-acq-')
+_orig_aud = settings._user_config_dir
+_orig_uwl = settings._user_write_lock
+_lock_calls = []
+def _spy_lock():
+    _lock_calls.append(1)
+    return _orig_uwl()
+settings._user_config_dir = lambda: _acqd
+settings._user_write_lock = _spy_lock
+try:
+    settings.set_user_key('theme', 'a')
+    settings.update_user({'zoom': '5'})
+    ok(len(_lock_calls) >= 2,
+       'settings: set_user_key and update_user each acquire the write lock')
+finally:
+    settings._user_write_lock = _orig_uwl
+    settings._user_config_dir = _orig_aud
+
+# ---- update_user honors an EXPLICIT locked= (the window's startup snapshot) --
+# so a key locked at launch is dropped even when load() no longer locks it: an
+# admin who removes a lock while the GUI is open cannot have the stale value pinned.
+_es = tempfile.mkdtemp(prefix='st-esys-')
+_eu = tempfile.mkdtemp(prefix='st-euser-')
+_o_es, _o_eu = settings._system_dirs, settings._user_config_dir
+settings._system_dirs = lambda: [_es]           # no active admin lock here
+settings._user_config_dir = lambda: _eu
+try:
+    settings.update_user({'theme': 'dark', 'osc_clipboard_read_always': 'true'},
+                         locked=frozenset({'osc_clipboard_read_always'}))
+    _w = {}
+    settings._parse_into(settings.user_config_file(), _w)
+    ok('osc_clipboard_read_always' not in _w and _w.get('theme') == 'dark',
+       'settings: update_user drops a key named in explicit locked=, keeps the rest')
+    settings.update_user({'shade': 'x'}, locked=None)   # None must not raise
+    _wn = {}
+    settings._parse_into(settings.user_config_file(), _wn)
+    ok(_wn.get('shade') == 'x',
+       'settings: update_user(locked=None) does not raise and writes (never raises)')
+finally:
+    settings._system_dirs, settings._user_config_dir = _o_es, _o_eu
 
 # _parse_into on an unreadable path is swallowed (returns without touching out)
 _out = {}
