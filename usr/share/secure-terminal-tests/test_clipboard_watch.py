@@ -175,6 +175,24 @@ def _test_tray_warn_any_persist():
                'tray warn-any: toggling OFF persists too')
             ok(app._watcher._any_mode is False,
                'tray warn-any: OFF also live-updates this watcher')
+
+            ## The persist writes ONLY the app's own user file (50_user.conf), never
+            ## the MERGED config -- else it would pin a system/admin (or another
+            ## drop-in's) key into user config, overriding a later policy change.
+            confd = os.path.join(cfg, 'secure-terminal.d')
+            os.makedirs(confd, exist_ok=True)
+            with open(os.path.join(confd, '40_foreign.conf'), 'w', encoding='utf-8') as h:
+                h.write('foreign_key=x\n')
+            app2 = CW.ClipboardWatchApp(APP)
+            menu2 = app2._build_menu()
+            next(a for a in menu2.actions()
+                 if a.text() == 'Warn on any non-ASCII').setChecked(True)
+            with open(os.path.join(confd, '50_user.conf'), encoding='utf-8') as h:
+                written = h.read()
+            ok('clip_warn_any=true' in written,
+               'tray persist writes clip_warn_any to the app user file')
+            ok('foreign_key' not in written,
+               'tray persist does NOT pin a merged (other-drop-in/admin) key into user config')
         finally:
             if old is None:
                 os.environ.pop('XDG_CONFIG_HOME', None)
