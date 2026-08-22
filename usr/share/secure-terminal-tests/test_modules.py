@@ -470,6 +470,16 @@ _out = {}
 settings._parse_into(os.path.join(_cfg_root, 'no', 'such.conf'), _out)
 eq(_out, {}, 'settings: parsing a missing drop-in is a no-op')
 
+# a drop-in that decodes PART-WAY then fails does not partially apply (atomic)
+_atomicf = os.path.join(_cfg_root, 'atomic.conf')
+with open(_atomicf, 'wb') as _af:
+    _af.write(b'a=1\n' * 4000)         # >8 KiB of valid lines (spans read buffers)
+    _af.write(b'b=\xff\n')             # a bad byte only AFTER the first buffer
+_aout = {'keep': 'yes'}
+settings._parse_into(_atomicf, _aout)
+eq(_aout, {'keep': 'yes'},
+   'settings: a drop-in failing to decode partway does not partially apply')
+
 # _load_dir swallows a glob error (defensive; glob almost never raises)
 _orig_glob = glob.glob
 def _boom_glob(*_a, **_k):
