@@ -347,17 +347,20 @@ try:
 finally:
     settings._system_dirs, settings._user_config_dir = _orig_sysd, _orig_usrd
 
-# ---- a non-UTF-8 user file is defensive: no writer raises -------------------
+# ---- a non-UTF-8 user file is defensive: never raises AND never clobbered ---
 _bad_usr = tempfile.mkdtemp(prefix='st-badutf-')
 _orig_bud = settings._user_config_dir
 settings._user_config_dir = lambda: _bad_usr
 try:
+    _bad_bytes = b'theme=dark\nzoom=150\nclip_warn_any=\xff\n'
     with open(os.path.join(_bad_usr, '50_user.conf'), 'wb') as _bh:
-        _bh.write(b'theme=dark\nclip_warn_any=\xff\n')
+        _bh.write(_bad_bytes)
     settings.load()                       # a non-UTF-8 drop-in must not raise
-    settings.set_user_key('theme', 'light')
-    settings.update_user({'zoom': '2'})
-    ok(True, 'settings: a non-UTF-8 user file never raises (load/set_user_key/update_user)')
+    settings.set_user_key('theme', 'light')   # unreadable base -> SKIP, not clobber
+    settings.update_user({'zoom': '2'})       # unreadable base -> SKIP, not clobber
+    with open(os.path.join(_bad_usr, '50_user.conf'), 'rb') as _rb:
+        ok(_rb.read() == _bad_bytes,
+           'settings: a non-UTF-8 user file is left untouched, not clobbered (no data loss)')
 finally:
     settings._user_config_dir = _orig_bud
 
@@ -396,6 +399,29 @@ try:
     ok(True, 'settings: set_user_key/update_user tolerate a missing write lock')
 finally:
     settings._user_config_dir = _orig_nud
+
+# ---- a failed flock closes the fd and yields None (no descriptor leak) ------
+_flockd = tempfile.mkdtemp(prefix='st-flockfail-')
+_orig_flud = settings._user_config_dir
+_orig_flock = settings.fcntl.flock
+settings._user_config_dir = lambda: _flockd
+def _boom_flock(*_a):
+    raise OSError('flock unsupported')
+settings.fcntl.flock = _boom_flock
+try:
+    ok(settings._user_write_lock() is None,
+       'settings: _user_write_lock returns None when flock fails')
+    _fd0 = len(os.listdir('/proc/self/fd'))
+    for _ in range(20):
+        settings._user_write_lock()       # each opens the sidecar then flock fails
+    _fd1 = len(os.listdir('/proc/self/fd'))
+    ok(_fd1 <= _fd0 + 2, 'settings: a failed flock leaks no fd (%d -> %d)' % (_fd0, _fd1))
+    settings.set_user_key('theme', 'x')   # still writes, best-effort (unserialized)
+    eq(settings.load().get('theme'), 'x',
+       'settings: a write still proceeds when the lock is unavailable')
+finally:
+    settings.fcntl.flock = _orig_flock
+    settings._user_config_dir = _orig_flud
 
 # ---- update_user honors an EXPLICIT locked= (the window's startup snapshot) --
 # so a key locked at launch is dropped even when load() no longer locks it: an
