@@ -1468,21 +1468,27 @@ def t9_canaries():
     # spoof) must be flagged by is_default_ignorable AND rejected by the show guard.
     _expect_caught('T9/invisible', S.is_default_ignorable('\u3164'))
     _expect_caught('T9/invisible-guard', not _runs_char_ok('\u3164', 'show'))
-    # C0 boundary: the run alphabet admits EXACTLY the four C0 controls
-    # render_output whitelists (TAB/LF/CR/BS -- whitespace and the line-edit
-    # controls the widget honors, painted inertly). Every OTHER C0 -- BEL, ESC,
-    # NUL here -- must be rejected; without this the "no control byte" half of the
-    # theorem rests on SAFE_ASCII untested at its edge, and adding a stray C0 to
-    # SAFE_ASCII would pass silently.
-    _expect_caught('T9/c0-bel-rejected', not _runs_char_ok('\x07', 'reveal'))
-    _expect_caught('T9/c0-esc-rejected', not _runs_char_ok('\x1b', 'reveal'))
-    _expect_caught('T9/c0-nul-rejected', not _runs_char_ok('\x00', 'reveal'))
-    # ...and the four whitelisted controls MUST stay admitted (a narrowing that
-    # dropped one would silently strip legitimate whitespace / line editing).
-    for _wl in ('\t', '\n', '\r', '\x08'):
-        if not _runs_char_ok(_wl, 'reveal'):
-            fail('T9 canary: _runs_char_ok wrongly rejects whitelisted C0 0x%02X'
-                 % ord(_wl))
+    # C0 boundary, EXACT and per mode: the run alphabet admits ONLY the four C0
+    # controls render_output whitelists (TAB/LF/CR/BS -- whitespace + line-edit
+    # controls the widget honors, painted inertly); EVERY other C0 and DEL must be
+    # rejected in EVERY mode. Iterating the whole 0x00-0x1F range + 0x7F over all
+    # modes catches a checker weakened to admit e.g. VT (0x0B), or a leak specific
+    # to one mode's predicate -- which a BEL-in-reveal sample would miss.
+    c0_whitelist = frozenset((0x08, 0x09, 0x0A, 0x0D))
+    for mode in ('box', 'show', 'reveal', 'detail'):
+        for cp in list(range(0x00, 0x20)) + [0x7F]:
+            admitted = _runs_char_ok(chr(cp), mode)
+            if cp in c0_whitelist and not admitted:
+                fail('T9 canary: _runs_char_ok drops whitelisted C0 0x%02X in %s'
+                     % (cp, mode))
+            if cp not in c0_whitelist and admitted:
+                fail('T9 canary: _runs_char_ok admits forbidden control 0x%02X in %s'
+                     % (cp, mode))
+    # Counted representatives (teeth-tracked): a forbidden C0 rejected, a
+    # whitelisted one admitted, in a strict (reveal) run.
+    _expect_caught('T9/c0-forbidden-rejected', not _runs_char_ok('\x0b', 'reveal'))
+    _expect_caught('T9/c0-whitelist-admitted', _runs_char_ok('\t', 'reveal'))
+
     # Homomorphism canary (mirrors t1_canaries): a stateful map -- one carrying state
     # ACROSS cells (drops a char it has already seen) -- must diverge from the same map
     # run per-cell with FRESH state, which is what the real per-cell display satisfies.
