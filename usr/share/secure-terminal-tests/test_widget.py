@@ -308,6 +308,15 @@ for _ in range(39):
 eq(_asent, [], 'trackpad micro-deltas below one line send nothing yet (no hyperscroll)')
 _alt.wheelEvent(_wheel_ev(-1))            # the 40th unit crosses one line
 eq(b''.join(_asent), b'\x1b[B', 'accumulated micro-deltas emit one line per ~40 units')
+# A stale sub-line wheel remainder must NOT survive an alt-screen transition, or
+# the first small wheel in the NEXT full-screen app crosses the per-line threshold
+# early and emits a spurious arrow. feed_output drives the real transition path.
+_alt._wheel_accum = 39
+feed_output(_alt, b'\x1b[?1049l')          # leave the alt screen
+eq(_alt._wheel_accum, 0, 'alt-screen EXIT drops any stale wheel-scroll remainder')
+_alt._wheel_accum = 39
+feed_output(_alt, b'\x1b[?1049h')          # re-enter the alt screen
+eq(_alt._wheel_accum, 0, 'alt-screen ENTER drops any stale wheel-scroll remainder')
 _alt.close()
 # home-pin: a terminal does not auto-scroll horizontally -- a paint anchors the view at
 # the left so the START of every row stays visible (the reported bug: the auto-follow
