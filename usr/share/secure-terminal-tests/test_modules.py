@@ -457,6 +457,11 @@ try:
     settings._parse_into(settings.user_config_file(), _w)
     ok('osc_clipboard_read_always' not in _w and _w.get('theme') == 'dark',
        'settings: update_user drops a key named in explicit locked=, keeps the rest')
+    settings.update_user({'shade': 'x'}, locked=None)   # None must not raise
+    _wn = {}
+    settings._parse_into(settings.user_config_file(), _wn)
+    ok(_wn.get('shade') == 'x',
+       'settings: update_user(locked=None) does not raise and writes (never raises)')
 finally:
     settings._system_dirs, settings._user_config_dir = _o_es, _o_eu
 
