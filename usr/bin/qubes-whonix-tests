@@ -19,11 +19,16 @@
 ## guards read false, main never runs, and the suite exits 0 -- a false PASS for a
 ## file that was never tested. Fail loud (SKIP) instead. A source-able test
 ## caller runs in an env that HAS the helper, so the guard never fires there.
-if [ ! -r /usr/libexec/helper-scripts/check_runtime.bsh ]; then
-   printf '%s\n' 'qubes-whonix-tests: SKIP (helper-scripts check_runtime.bsh not found)' >&2
+## Resolve it from HELPER_SCRIPTS_PATH (the wire's helper-scripts checkout),
+## falling back to the installed path -- in CI nothing is installed.
+[ -v HELPER_SCRIPTS_PATH ] || HELPER_SCRIPTS_PATH=""
+check_runtime_bsh="${HELPER_SCRIPTS_PATH:+${HELPER_SCRIPTS_PATH%/}}/usr/libexec/helper-scripts/check_runtime.bsh"
+if [ ! -r "${check_runtime_bsh}" ]; then
+   printf '%s\n' "qubes-whonix-tests: SKIP (helper-scripts check_runtime.bsh not found at '${check_runtime_bsh}')" >&2
    exit 77
 fi
-source /usr/libexec/helper-scripts/check_runtime.bsh
+# shellcheck disable=SC1090  # dynamic path: check_runtime.bsh from the checkout or install
+source "${check_runtime_bsh}"
 
 if was_executed "${BASH_SOURCE[0]}"; then
    set -o errexit
@@ -32,6 +37,7 @@ if was_executed "${BASH_SOURCE[0]}"; then
    set -o errtrace
    shopt -s inherit_errexit
    shopt -s shift_verbose
+   export LC_ALL=C
 fi
 
 main() {
