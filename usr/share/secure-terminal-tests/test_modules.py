@@ -423,6 +423,25 @@ finally:
     settings.fcntl.flock = _orig_flock
     settings._user_config_dir = _orig_flud
 
+# ---- set_user_key AND update_user actually ACQUIRE the write lock -----------
+_acqd = tempfile.mkdtemp(prefix='st-acq-')
+_orig_aud = settings._user_config_dir
+_orig_uwl = settings._user_write_lock
+_lock_calls = []
+def _spy_lock():
+    _lock_calls.append(1)
+    return _orig_uwl()
+settings._user_config_dir = lambda: _acqd
+settings._user_write_lock = _spy_lock
+try:
+    settings.set_user_key('theme', 'a')
+    settings.update_user({'zoom': '5'})
+    ok(len(_lock_calls) >= 2,
+       'settings: set_user_key and update_user each acquire the write lock')
+finally:
+    settings._user_write_lock = _orig_uwl
+    settings._user_config_dir = _orig_aud
+
 # ---- update_user honors an EXPLICIT locked= (the window's startup snapshot) --
 # so a key locked at launch is dropped even when load() no longer locks it: an
 # admin who removes a lock while the GUI is open cannot have the stale value pinned.

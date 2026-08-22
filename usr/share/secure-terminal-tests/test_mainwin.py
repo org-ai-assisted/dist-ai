@@ -1306,17 +1306,41 @@ try:
            'apply: a clip_warn_any unchanged in the dialog is not clobbered')
         ok('pushed' not in _calls,
            'apply: no daemon push when clip_warn_any was not toggled')
-        # ...but a value the user DID toggle here is written and pushed.
+        # ...but a value the user DID toggle here is written to DISK and pushed.
+        _st_clip.set_user_key('clip_warn_any', 'false')  # reset disk so the write shows
         win._clip_warn_any = False
         _calls.clear()
         win._apply_global({'theme': 'dark', 'zoom': 100, 'mode': 'box',
                            'colors': True, 'line_edits': True, 'scrollback': 1000,
                            'paste_delay': 3, 'persist': False,
                            'clip_warn_any': True})        # toggled ON in the dialog
-        ok(win._clip_warn_any is True and _calls.get('pushed') is True,
-           'apply: a clip_warn_any toggled in the dialog is written and pushed')
+        ok(win._clip_warn_any is True and _calls.get('pushed') is True
+           and _st_clip.load().get('clip_warn_any') == 'true',
+           'apply: a clip_warn_any toggled in the dialog is written to disk and pushed')
     finally:
         _st_clip._system_dirs = _clip_orig_sysd3
+
+    # _persist must DROP a key locked at STARTUP (win._locked) even when it is not
+    # currently locked in the system config -- i.e. it passes its startup snapshot
+    # to update_user. Isolate the privileged dirs to an empty dir so load() locks
+    # nothing; only win._locked should cause the drop.
+    _pl_sysd = tempfile.mkdtemp(prefix='st-plsys-')
+    _pl_usrd = tempfile.mkdtemp(prefix='st-plusr-')
+    _pl_o_sys, _pl_o_usr = _st_clip._system_dirs, _st_clip._user_config_dir
+    _pl_o_locked, _pl_o_theme = set(win._locked), win._default_theme
+    _st_clip._system_dirs = lambda: [_pl_sysd]
+    _st_clip._user_config_dir = lambda: _pl_usrd
+    try:
+        win._locked = frozenset({'theme'})              # theme locked at launch
+        win._default_theme = 'dark'
+        win._persist()
+        _pw = {}
+        _st_clip._parse_into(_st_clip.user_config_file(), _pw)
+        ok('theme' not in _pw and 'zoom' in _pw,
+           '_persist drops a startup-locked key (theme) but writes the rest')
+    finally:
+        win._locked, win._default_theme = _pl_o_locked, _pl_o_theme
+        _st_clip._system_dirs, _st_clip._user_config_dir = _pl_o_sys, _pl_o_usr
 
     QSystemTrayIcon.isSystemTrayAvailable = staticmethod(lambda: True)
     win._systray = True
