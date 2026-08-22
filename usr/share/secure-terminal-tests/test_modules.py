@@ -303,6 +303,47 @@ ok('remote_control' not in _cfg,
 ok(not _cfg.is_locked('font_size'),
    'settings: an unlocked key reports is_locked False')
 
+# ---- set_user_key / update_user honor an admin lock -------------------------
+# The lock path is exercised by monkeypatching _system_dirs in-process (the
+# suite-wide convention, cf. test_widget.py); production keeps these dirs fixed to
+# the root-writable privileged folders, so a lock can be neither set nor bypassed
+# without root. set_user_key/update_user are the Finding-1/2 writers; test_widget
+# already covers load()/save-locked/violations/UI.
+_lk_sys = tempfile.mkdtemp(prefix='st-sys-')
+_lk_usr = tempfile.mkdtemp(prefix='st-usr-')
+_orig_sysd, _orig_usrd = settings._system_dirs, settings._user_config_dir
+settings._system_dirs = lambda: [_lk_sys]
+settings._user_config_dir = lambda: _lk_usr
+try:
+    with open(os.path.join(_lk_sys, '10_admin.conf'), 'w', encoding='utf-8') as _h:
+        _h.write('lock=clip_warn_any\nclip_warn_any=true\n')
+
+    def _user_file_keys():
+        _d = {}
+        settings._parse_into(settings.user_config_file(), _d)
+        return _d
+
+    # set_user_key never writes the admin-locked key to the (dead) user file
+    settings.set_user_key('clip_warn_any', 'false')
+    ok('clip_warn_any' not in _user_file_keys(),
+       'settings: set_user_key drops an admin-locked key')
+    settings.set_user_key('theme', 'mono')
+    eq(_user_file_keys().get('theme'), 'mono',
+       'settings: set_user_key persists a non-locked key')
+    eq(settings.load().get('clip_warn_any'), 'true',
+       'settings: the admin lock value still wins after set_user_key')
+
+    # update_user drops the locked key but PRESERVES a key another writer set
+    # (Finding 2: a bulk write must not clobber the tray-set clip_warn_any)
+    settings.update_user({'clip_warn_any': 'false', 'font_size': '20'})
+    _uf = _user_file_keys()
+    ok('clip_warn_any' not in _uf, 'settings: update_user drops an admin-locked key')
+    eq(_uf.get('font_size'), '20', 'settings: update_user persists a non-locked key')
+    eq(_uf.get('theme'), 'mono',
+       'settings: update_user preserves a key another writer set (no clobber)')
+finally:
+    settings._system_dirs, settings._user_config_dir = _orig_sysd, _orig_usrd
+
 # _parse_into on an unreadable path is swallowed (returns without touching out)
 _out = {}
 settings._parse_into(os.path.join(_cfg_root, 'no', 'such.conf'), _out)

@@ -1268,6 +1268,16 @@ try:
     eq(_calls.get('pushed'), True, 'clip: set_clip_warn_any live-updates the daemon')
     win.set_clip_warn_any(False)
 
+    ## Finding-2 regression: the clipboard-watch tray persists clip_warn_any via a
+    ## single-key write; a later terminal _persist (a bulk write for some OTHER
+    ## setting) must PRESERVE it, not clobber it with the terminal's stale value.
+    from secure_terminal import settings as _st_clip   # noqa: PLC0415
+    _st_clip.set_user_key('clip_warn_any', 'true')     # the tray toggles it ON on disk
+    win._clip_warn_any = False                          # the terminal's stale in-memory value
+    win._persist()                                      # a bulk write for another setting
+    ok(_st_clip.load().get('clip_warn_any') == 'true',
+       'terminal _persist preserves the tray-set clip_warn_any (no clobber)')
+
     QSystemTrayIcon.isSystemTrayAvailable = staticmethod(lambda: True)
     win._systray = True
     ok(win._clip_controls_enabled(), 'clip: controls enabled when systray on + available')
