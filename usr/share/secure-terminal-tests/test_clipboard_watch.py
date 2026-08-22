@@ -152,6 +152,36 @@ def _test_warn_any_default():
                 os.environ['XDG_CONFIG_HOME'] = old
 
 
+def _test_tray_warn_any_persist():
+    ## The tray "Warn on any non-ASCII" toggle PERSISTS the choice -- unlike the
+    ## live-only IPC set-warn-any -- so it survives a daemon restart (a later
+    ## daemon reads clip_warn_any via warn_any_default() at startup). Canary: on
+    ## the pre-fix wiring the toggle only live-updated, so nothing was persisted.
+    with tempfile.TemporaryDirectory() as cfg:
+        old = os.environ.get('XDG_CONFIG_HOME')
+        os.environ['XDG_CONFIG_HOME'] = cfg
+        try:
+            app = CW.ClipboardWatchApp(APP)
+            menu = app._build_menu()
+            warn_act = next(a for a in menu.actions()
+                            if a.text() == 'Warn on any non-ASCII')
+            warn_act.setChecked(True)
+            ok(CW.warn_any_default(),
+               'tray warn-any: toggling ON persists (survives a daemon restart)')
+            ok(app._watcher._any_mode is True,
+               'tray warn-any: ON also live-updates this watcher')
+            warn_act.setChecked(False)
+            ok(not CW.warn_any_default(),
+               'tray warn-any: toggling OFF persists too')
+            ok(app._watcher._any_mode is False,
+               'tray warn-any: OFF also live-updates this watcher')
+        finally:
+            if old is None:
+                os.environ.pop('XDG_CONFIG_HOME', None)
+            else:
+                os.environ['XDG_CONFIG_HOME'] = old
+
+
 def _test_watcher():
     # theme=None exercises _load_theme (invalid theme -> loaded default)
     w = CW.ClipboardWatcher(APP, theme=None, any_mode=False, watch=True)
@@ -557,6 +587,7 @@ def run():
     _test_predicates()
     _test_autostart()
     _test_warn_any_default()
+    _test_tray_warn_any_persist()
     _test_watcher()
     _test_daemon_ipc()
     _test_module_ipc_helpers()
