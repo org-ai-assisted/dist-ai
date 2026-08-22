@@ -32,6 +32,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v TMP ] || TMP=/tmp
 [ -v HELPER_SCRIPTS_REPO ] || HELPER_SCRIPTS_REPO=""
@@ -61,6 +62,16 @@ fi
 ## stcat and says nothing about the code under test.
 PATH="$(dirname -- "${stcat_bin}"):${PATH}"
 export PATH
+
+## stcat is '#!/usr/bin/python3 -Bsu' and does 'from stdisplay.stcat import main'.
+## With a checkout, put its modules on PYTHONPATH so that stcat resolves the
+## CHECKOUT's stdisplay -- otherwise, where helper-scripts is not installed (CI),
+## stcat dies ModuleNotFoundError and read_integer_file reports every valid read
+## as an error. Installed mode (no HELPER_SCRIPTS_REPO) uses the system module.
+if [ -n "${HELPER_SCRIPTS_REPO}" ]; then
+   PYTHONPATH="${HELPER_SCRIPTS_REPO%/}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
+   export PYTHONPATH
+fi
 
 ## shellcheck resolves the file statically from dist-ai's own tree, which has
 ## no helper-scripts copy, so there is nothing to point 'source=' at.
