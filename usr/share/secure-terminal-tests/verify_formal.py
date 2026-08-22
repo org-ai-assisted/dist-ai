@@ -68,8 +68,13 @@ together the WHOLE pure sanitizer, input AND output):
   T9  GUI RENDER-PATH INERTNESS: cells_to_runs -- the pure render function the
       live Qt widget paints -- emits only safe display units for ANY cells and
       mode (the GUI alphabet: SAFE_ASCII, plus the box glyph, plus show-mode
-      printable non-ASCII), never a bidi / invisible / control byte. It reduces
-      to T1 (its run text IS render_output, +/- the documented '_'->BOX rewrite).
+      printable non-ASCII), never a bidi / invisible byte, a C1 / DEL, nor any
+      C0 control OTHER than the four SAFE_ASCII whitelists render_output passes
+      verbatim (TAB, LF, CR, BS -- whitespace and the line-edit controls the
+      widget honors and Qt paints inertly, never as terminal cursor motion). It
+      reduces to T1 (its run text IS render_output, +/- the documented
+      '_'->BOX rewrite), so it inherits EXACTLY render_output's alphabet -- the
+      whitelisted C0 included, every other control excluded.
 
 METHOD, and what is PROVED vs ASSUMED (honest scope):
 
@@ -1463,6 +1468,21 @@ def t9_canaries():
     # spoof) must be flagged by is_default_ignorable AND rejected by the show guard.
     _expect_caught('T9/invisible', S.is_default_ignorable('\u3164'))
     _expect_caught('T9/invisible-guard', not _runs_char_ok('\u3164', 'show'))
+    # C0 boundary: the run alphabet admits EXACTLY the four C0 controls
+    # render_output whitelists (TAB/LF/CR/BS -- whitespace and the line-edit
+    # controls the widget honors, painted inertly). Every OTHER C0 -- BEL, ESC,
+    # NUL here -- must be rejected; without this the "no control byte" half of the
+    # theorem rests on SAFE_ASCII untested at its edge, and adding a stray C0 to
+    # SAFE_ASCII would pass silently.
+    _expect_caught('T9/c0-bel-rejected', not _runs_char_ok('\x07', 'reveal'))
+    _expect_caught('T9/c0-esc-rejected', not _runs_char_ok('\x1b', 'reveal'))
+    _expect_caught('T9/c0-nul-rejected', not _runs_char_ok('\x00', 'reveal'))
+    # ...and the four whitelisted controls MUST stay admitted (a narrowing that
+    # dropped one would silently strip legitimate whitespace / line editing).
+    for _wl in ('\t', '\n', '\r', '\x08'):
+        if not _runs_char_ok(_wl, 'reveal'):
+            fail('T9 canary: _runs_char_ok wrongly rejects whitelisted C0 0x%02X'
+                 % ord(_wl))
     # Homomorphism canary (mirrors t1_canaries): a stateful map -- one carrying state
     # ACROSS cells (drops a char it has already seen) -- must diverge from the same map
     # run per-cell with FRESH state, which is what the real per-cell display satisfies.
