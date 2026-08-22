@@ -313,7 +313,12 @@ wire() {
          ## helper-scripts' libexec. Unwired, both lanes fall back to the
          ## INSTALLED path, which does not exist in CI, and each degrades to a
          ## SKIP the run would still report as a clean pass.
-         wire_env=( "HELPER_SCRIPTS_REPO=${hs}" )
+         ## HELPER_SCRIPTS_REPO lets a suite LOCATE the library to source;
+         ## HELPER_SCRIPTS_PATH lets that library resolve its OWN siblings (e.g.
+         ## strings.bsh sources wc-test.sh via ${HELPER_SCRIPTS_PATH:-}). Both
+         ## point at the checkout, else the sibling source hits the absent
+         ## /usr/libexec and the suite dies mid-source.
+         wire_env=( "HELPER_SCRIPTS_REPO=${hs}" "HELPER_SCRIPTS_PATH=${hs}" )
          ;;
       lockfile)
          ## lockfile.sh ships in helper-scripts; the suite takes either a file
