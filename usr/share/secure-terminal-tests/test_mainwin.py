@@ -1287,6 +1287,37 @@ try:
     finally:
         _st_clip._system_dirs = _clip_orig_sysd
 
+    # Fix-3: Global-settings Apply must NOT write clip_warn_any when the user did
+    # not toggle it here -- the daemon may have changed it on disk since the dialog
+    # opened, so a theme-only Apply must leave the daemon value and not push a stale
+    # checkbox to a running daemon.
+    _clip_sysd3 = tempfile.mkdtemp(prefix='st-clipsys3-')
+    _clip_orig_sysd3 = _st_clip._system_dirs
+    _st_clip._system_dirs = lambda: [_clip_sysd3]
+    try:
+        win._clip_warn_any = False                       # dialog opened with it OFF
+        _st_clip.set_user_key('clip_warn_any', 'true')   # daemon turns it ON afterwards
+        _calls.clear()
+        win._apply_global({'theme': 'dark', 'zoom': 100, 'mode': 'box',
+                           'colors': True, 'line_edits': True, 'scrollback': 1000,
+                           'paste_delay': 3, 'persist': False,
+                           'clip_warn_any': False})       # unchanged from win._clip_warn_any
+        eq(_st_clip.load().get('clip_warn_any'), 'true',
+           'apply: a clip_warn_any unchanged in the dialog is not clobbered')
+        ok('pushed' not in _calls,
+           'apply: no daemon push when clip_warn_any was not toggled')
+        # ...but a value the user DID toggle here is written and pushed.
+        win._clip_warn_any = False
+        _calls.clear()
+        win._apply_global({'theme': 'dark', 'zoom': 100, 'mode': 'box',
+                           'colors': True, 'line_edits': True, 'scrollback': 1000,
+                           'paste_delay': 3, 'persist': False,
+                           'clip_warn_any': True})        # toggled ON in the dialog
+        ok(win._clip_warn_any is True and _calls.get('pushed') is True,
+           'apply: a clip_warn_any toggled in the dialog is written and pushed')
+    finally:
+        _st_clip._system_dirs = _clip_orig_sysd3
+
     QSystemTrayIcon.isSystemTrayAvailable = staticmethod(lambda: True)
     win._systray = True
     ok(win._clip_controls_enabled(), 'clip: controls enabled when systray on + available')

@@ -12,6 +12,7 @@
 ## imported, so this runs headless with only python3.
 
 import os
+import fcntl
 import sys
 import json
 import glob
@@ -345,6 +346,74 @@ try:
        'settings: update_user preserves a key another writer set (no clobber)')
 finally:
     settings._system_dirs, settings._user_config_dir = _orig_sysd, _orig_usrd
+
+# ---- a non-UTF-8 user file is defensive: no writer raises -------------------
+_bad_usr = tempfile.mkdtemp(prefix='st-badutf-')
+_orig_bud = settings._user_config_dir
+settings._user_config_dir = lambda: _bad_usr
+try:
+    with open(os.path.join(_bad_usr, '50_user.conf'), 'wb') as _bh:
+        _bh.write(b'theme=dark\nclip_warn_any=\xff\n')
+    settings.load()                       # a non-UTF-8 drop-in must not raise
+    settings.set_user_key('theme', 'light')
+    settings.update_user({'zoom': '2'})
+    ok(True, 'settings: a non-UTF-8 user file never raises (load/set_user_key/update_user)')
+finally:
+    settings._user_config_dir = _orig_bud
+
+# ---- the user-file write lock serializes the two writers (flock) ------------
+_lockd = tempfile.mkdtemp(prefix='st-lock-')
+_orig_lud = settings._user_config_dir
+settings._user_config_dir = lambda: _lockd
+try:
+    _held = settings._user_write_lock()
+    ok(_held is not None, 'settings: _user_write_lock acquires an exclusive lock')
+    _probe = os.open(settings.user_config_file() + '.lock', os.O_CREAT | os.O_RDWR, 0o600)
+    _blocked = False
+    try:
+        fcntl.flock(_probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        _blocked = True
+    ok(_blocked, 'settings: a held write lock blocks a second writer')
+    os.close(_held)                                       # release
+    fcntl.flock(_probe, fcntl.LOCK_EX | fcntl.LOCK_NB)    # succeeds now, no raise
+    os.close(_probe)
+    ok(True, 'settings: the write lock is re-acquirable once released')
+finally:
+    settings._user_config_dir = _orig_lud
+
+# ---- the write lock is best-effort: None when its dir cannot be created -----
+_nolockp = os.path.join(tempfile.mkdtemp(prefix='st-nolock-'), 'afile')
+with open(_nolockp, 'w', encoding='utf-8') as _nf:
+    _nf.write('x')
+_orig_nud = settings._user_config_dir
+settings._user_config_dir = lambda: os.path.join(_nolockp, 'sub')   # parent is a file
+try:
+    ok(settings._user_write_lock() is None,
+       'settings: _user_write_lock yields None when the lock dir is unavailable')
+    settings.set_user_key('theme', 'x')   # tolerates a missing lock (handle-None path)
+    settings.update_user({'zoom': '3'})
+    ok(True, 'settings: set_user_key/update_user tolerate a missing write lock')
+finally:
+    settings._user_config_dir = _orig_nud
+
+# ---- update_user honors an EXPLICIT locked= (the window's startup snapshot) --
+# so a key locked at launch is dropped even when load() no longer locks it: an
+# admin who removes a lock while the GUI is open cannot have the stale value pinned.
+_es = tempfile.mkdtemp(prefix='st-esys-')
+_eu = tempfile.mkdtemp(prefix='st-euser-')
+_o_es, _o_eu = settings._system_dirs, settings._user_config_dir
+settings._system_dirs = lambda: [_es]           # no active admin lock here
+settings._user_config_dir = lambda: _eu
+try:
+    settings.update_user({'theme': 'dark', 'osc_clipboard_read_always': 'true'},
+                         locked=frozenset({'osc_clipboard_read_always'}))
+    _w = {}
+    settings._parse_into(settings.user_config_file(), _w)
+    ok('osc_clipboard_read_always' not in _w and _w.get('theme') == 'dark',
+       'settings: update_user drops a key named in explicit locked=, keeps the rest')
+finally:
+    settings._system_dirs, settings._user_config_dir = _o_es, _o_eu
 
 # _parse_into on an unreadable path is swallowed (returns without touching out)
 _out = {}
