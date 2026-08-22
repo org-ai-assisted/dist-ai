@@ -385,14 +385,7 @@ wire() {
          wire_env=( "VM_CONFIG_DIST_REPO=$( pkg_dir vm-config-dist )" )
          ;;
       qubes-whonix)
-         ## HELPER_SCRIPTS_PATH lets the entrypoint source check_runtime.bsh from
-         ## the helper-scripts checkout (dm-consumer 'helper-scripts: true') rather
-         ## than the absent install.
          wire_env=( "QUBES_WHONIX_REPO=$( pkg_dir qubes-whonix )" )
-         ## Only when the checkout actually holds check_runtime.bsh (see tb-updater).
-         if [ -n "${hs}" ] && [ -r "${hs}/usr/libexec/helper-scripts/check_runtime.bsh" ]; then
-            wire_env+=( "HELPER_SCRIPTS_PATH=${hs}" )
-         fi
          ;;
       onion-grater)
          wire_env=( "ONION_GRATER_REPO=$( pkg_dir onion-grater )" )
@@ -502,16 +495,8 @@ wire() {
          ## The core suite reads update-torbrowser / desktop-starter-wrapper /
          ## version-validator source from the checkout; the e2e suite installs
          ## the package and drives the installed binaries. Both resolve the
-         ## checkout from TB_UPDATER_REPO. HELPER_SCRIPTS_PATH lets the entrypoint
-         ## source check_runtime.bsh from the helper-scripts checkout (dm-consumer
-         ## 'helper-scripts: true') rather than the absent install.
+         ## checkout from TB_UPDATER_REPO.
          wire_env=( "TB_UPDATER_REPO=$( pkg_dir tb-updater )" )
-         ## Only when the checkout actually holds check_runtime.bsh: pkg_dir can
-         ## yield a non-empty path for an absent/uninitialised submodule, and a
-         ## bad HELPER_SCRIPTS_PATH would defeat the entrypoint's installed fallback.
-         if [ -n "${hs}" ] && [ -r "${hs}/usr/libexec/helper-scripts/check_runtime.bsh" ]; then
-            wire_env+=( "HELPER_SCRIPTS_PATH=${hs}" )
-         fi
          ;;
       systemcheck)
          ## The scenario harness runs the REAL check_*.bsh fragments, several of
