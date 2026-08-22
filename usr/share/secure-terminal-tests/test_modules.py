@@ -333,8 +333,10 @@ try:
     eq(settings.load().get('clip_warn_any'), 'true',
        'settings: the admin lock value still wins after set_user_key')
 
-    # update_user drops the locked key but PRESERVES a key another writer set
-    # (Finding 2: a bulk write must not clobber the tray-set clip_warn_any)
+    # update_user drops the locked key but PRESERVES a key an earlier writer set
+    # here that is `theme`, from the set_user_key above; the tray-set clip_warn_any
+    # is locked so it drops, so the clip_warn_any-specific no-clobber contract is
+    # the integration test in test_mainwin. This covers the generic merge property.
     settings.update_user({'clip_warn_any': 'false', 'font_size': '20'})
     _uf = _user_file_keys()
     ok('clip_warn_any' not in _uf, 'settings: update_user drops an admin-locked key')
