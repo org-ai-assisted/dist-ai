@@ -462,6 +462,17 @@ try:
     settings._parse_into(settings.user_config_file(), _wn)
     ok(_wn.get('shade') == 'x',
        'settings: update_user(locked=None) does not raise and writes (never raises)')
+    # UNION, not "choose one": a key locked by the CURRENT system config is dropped
+    # even when a NON-EMPTY, DIFFERENT locked= is passed. A broken impl that uses one
+    # set OR the other (never both) writes the system-locked key -- caught only here.
+    with open(os.path.join(_es, '10_admin.conf'), 'w', encoding='utf-8') as _ah:
+        _ah.write('lock=osc_clipboard_read_always\n')
+    settings.update_user({'osc_clipboard_read_always': 'true'},
+                         locked=frozenset({'theme'}))     # different key in the passed set
+    _wu = {}
+    settings._parse_into(settings.user_config_file(), _wu)
+    ok('osc_clipboard_read_always' not in _wu,
+       'settings: update_user unions current+startup locks (system lock honored with a non-empty locked=)')
 finally:
     settings._system_dirs, settings._user_config_dir = _o_es, _o_eu
 
