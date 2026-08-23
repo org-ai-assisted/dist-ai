@@ -305,6 +305,12 @@ assert_fix_unchanged "instring" "deferred=${dq}${tmo} 5${dq}"
 assert_fix_unchanged "in-comment" "true ${hash} note${sc} ${tmo} 5 do_thing"
 ## timeout as an argument to another command.
 assert_fix_unchanged "argument" "printf '%s' ${tmo} 5"
+## CANARY: timeout as an ARGUMENT after an inline-assignment + separator + command
+## ('DEBUG=1;run timeout 5 x' -- timeout is run's arg). A greedy assignment-value
+## '\S*' swallowed the ';run' run and mis-read timeout as command-position,
+## corrupting run's arguments. The value now stops at ';'/'&'/'|' (lockstep with
+## the gate's _pkg_cmd_re), so the argument is left intact.
+assert_fix_unchanged "arg-after-inline-assign" "DEBUG=1${sc}run ${tmo} 5 do_thing"
 ## An ARRAY element -- 'cmd=(timeout 5 x)' is DATA, not a command: the '(' is
 ## array syntax. The fixer must not rewrite it.
 assert_fix_unchanged "array-element" "cmd=(${tmo} 5 sleep 10)"

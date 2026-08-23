@@ -254,7 +254,11 @@ CMD_POS_PATTERN = (
     + r'|' + _CMD_START + r'(?:then|do|else|if|elif|while|until)\s+'
     + r')'
     r'(?:!\s+)?'
-    r'(?:[A-Za-z_]\w*=\S*\s+)*$')
+    ## Assignment VALUE stops at a command separator (';', '&', '|'), exactly like
+    ## the gate's _pkg_cmd_re '[^[:space:];&|]*'. A greedy '\S*' would swallow a
+    ## separator and the following command word, so 'DEBUG=1;echo timeout 5 x'
+    ## looked command-position and the fixer mutated echo's ARGUMENT.
+    r'(?:[A-Za-z_]\w*=[^\s;&|]*\s+)*$')
 GREP_CMD_POS = re.compile(CMD_POS_PATTERN)
 ## Any quote, backslash or '#' in the text BEFORE grep means the line carries
 ## quoting / escaping / comment structure a single regex cannot resolve
