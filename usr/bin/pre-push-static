@@ -104,6 +104,22 @@
 ##      a multi-statement command ('cmd1; cmd2', 'cmd | proc'); move it to a
 ##      script. '&&'/'||' glue is tolerated (no native cron alternative).
 ##      '# style-ok: allow-embedded-script'.
+##  28. R-210 'apt-get' in command position must be the helper-scripts wrapper
+##      'apt-get-noninteractive' (sets DEBIAN_FRONTEND=noninteractive etc.).
+##      The wrapper file itself is exempt. Human-operator override (a wrapper
+##      unavailable, e.g. a minimal CI image): '## style-ok: allow-apt-get'.
+##  29. R-211 a STATE-CHANGING 'dpkg' (--install/-i, --unpack, --configure,
+##      --remove/-r, --purge/-P, --record-avail/-A, --{set,clear}-selections,
+##      --{update,merge}-avail, --forget-old-unavail, --triggers-only) must be
+##      'dpkg-noninteractive'. Read-only queries ('dpkg --compare-versions',
+##      '-l', '-L', '-s', ...) and the 'dpkg-*' sub-tools ('dpkg-deb',
+##      'dpkg-query') are NOT flagged. Override: '## style-ok: allow-dpkg'.
+##  30. R-212 '--allow-downgrades' is forbidden (silent downgrades hide a
+##      dependency/repo regression); prefer the default refuse-downgrade.
+##      Human-operator override: '## style-ok: allow-downgrades'.
+##  31. R-213 'make_use_lintian=false' disables lintian and is forbidden without
+##      authorization -- fix the lintian findings instead. Human-operator
+##      override: '## style-ok: allow-lintian-disable'.
 ##
 ## Scope: files changed in HEAD vs upstream tracking branch
 ## (@{u}). Pass an explicit base ref as $1 to override
@@ -733,6 +749,19 @@ emit_hits() {
 is_self_referential() {
    case "${1}" in
       usr/bin/pre-push-static)
+         return 0
+         ;;
+   esac
+   return 1
+}
+
+## The helper-scripts wrappers themselves DEFINE 'apt-get-noninteractive' /
+## 'dpkg-noninteractive' by calling bare apt-get / dpkg with the noninteractive
+## options -- that IS their job, so R-210/R-211 must not flag them. Matched by
+## basename so a checkout at any path is exempt.
+is_pkg_wrapper_file() {
+   case "${1##*/}" in
+      apt-get-noninteractive|dpkg-noninteractive)
          return 0
          ;;
    esac
@@ -2879,6 +2908,164 @@ check_R200_timeout_kill_after() {
    done
 }
 
+## Shared command-position fragments for R-210/R-211 (apt-get / dpkg as a command
+## word). Modeled on check_R200: line start, after a separator ';&|(){}`', or
+## after a control keyword, each allowing a '!' negation and a run of leading
+## 'VAR=value' assignments; PLUS an optional 'sudo'/'doas' wrapper (with its own
+## options / env-assignments) since 'sudo apt-get' is the dominant real form.
+## '${cmd}([[:space:]]|$)' pins the command to a whole word so 'apt-get-
+## noninteractive' / 'dpkg-noninteractive' / 'dpkg-deb' (a '-' after the name)
+## never match. Callers add a quote-bail on the matched line: an apt-get/dpkg
+## after an opening quote is string DATA (a help/skip message like
+## '(apt-get install x)'), not a command -- the same bail pre-push-fix uses; a
+## real '"$(apt-get ...)"' is a tolerated false negative (fix by hand).
+_pkg_cmd_re() {
+   local cmd neg assign wrap
+   cmd="${1}"
+   neg='(!([[:space:]]+))?'
+   assign='([A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|]*[[:space:]]+)*'
+   wrap='((sudo|doas)([[:space:]]+(-[^[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*))*[[:space:]]+)?'
+   printf '%s\n' \
+      "^[[:space:]]*${neg}${assign}${wrap}${assign}${cmd}([[:space:]]|\$)" \
+      "^[[:space:]]*[^#]*[;&|(){}\`][[:space:]]*${neg}${assign}${wrap}${assign}${cmd}([[:space:]]|\$)" \
+      "^[[:space:]]*([^#]*[[:space:]])?(then|do|else|if|elif|while|until)[[:space:]]+${neg}${assign}${wrap}${assign}${cmd}([[:space:]]|\$)"
+}
+
+## True if a quote opens in TEXT before the FIRST occurrence of NEEDLE: the needle
+## is then string data, not a command word. Conservative (any quote before it),
+## matching pre-push-fix's quote-bail.
+_pkg_quote_before() {
+   local text needle before
+   text="${1}"
+   needle="${2}"
+   before="${text%%"${needle}"*}"
+   case "${before}" in
+      *\'*|*\"*)
+         return 0
+         ;;
+   esac
+   return 1
+}
+
+check_R210_apt_get_noninteractive() {
+   local script hits line content
+   local -a fs cand_re
+
+   ## R-210: 'apt-get' -> 'apt-get-noninteractive' (helper-scripts wrapper:
+   ## DEBIAN_FRONTEND=noninteractive, policy-rc.d, force-conf* -- so an install
+   ## in a script never blocks on a debconf prompt or a conffile question).
+   ## filter_self drops this checker (its own doc/regex name 'apt-get'); the
+   ## wrapper file itself is exempt (is_pkg_wrapper_file). Human-operator
+   ## override for a wrapper-less environment (a minimal CI image):
+   ## '## style-ok: allow-apt-get'.
+   mapfile -d '' -t fs < <(filter_self "${@}")
+   [ "${#fs[@]}" -gt 0 ] || return 0
+   mapfile -t cand_re < <(_pkg_cmd_re 'apt-get')
+   for script in "${fs[@]}"; do
+      is_pkg_wrapper_file "${script}" && continue
+      if grep --quiet --extended-regexp \
+         '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*allow-apt-get([[:space:]]|$)' \
+         -- "${script}"; then
+         note "R-210 skipped: 'style-ok: allow-apt-get' waiver in '${script}'"
+         continue
+      fi
+      hits="$(grep --line-number --extended-regexp \
+         --regexp="${cand_re[0]}" --regexp="${cand_re[1]}" --regexp="${cand_re[2]}" \
+         -- "${script}" 2>/dev/null || true)"
+      [ -n "${hits}" ] || continue
+      while IFS= read -r line; do
+         [ -z "${line}" ] && continue
+         content="${line#*:}"
+         _pkg_quote_before "${content}" 'apt-get' && continue
+         fail "R-210 apt-get not apt-get-noninteractive" "'${script}:${line}'"
+      done <<< "${hits}"
+   done
+}
+
+check_R211_dpkg_noninteractive() {
+   local script hits line content dpkg_action
+   local -a fs cand_re
+
+   ## R-211: a STATE-CHANGING 'dpkg' -> 'dpkg-noninteractive' (dpkg
+   ## --force-confnew). ONLY the actions that unpack/configure/change package
+   ## state are flagged; a read-only query ('dpkg --compare-versions', '-l',
+   ## '-L', '-s', '-S', ...) and the separate 'dpkg-*' tools ('dpkg-deb',
+   ## 'dpkg-query') are spared -- forcing a query through the wrapper is
+   ## meaningless and would break early-boot code where the wrapper may be
+   ## absent. filter_self drops this checker; the wrapper file is exempt.
+   ## Override: '## style-ok: allow-dpkg'.
+   mapfile -d '' -t fs < <(filter_self "${@}")
+   [ "${#fs[@]}" -gt 0 ] || return 0
+   mapfile -t cand_re < <(_pkg_cmd_re 'dpkg')
+   ## An action token in dpkg's OWN segment (up to a separator / '#'), as a whole
+   ## word. Single-letter actions ('-i','-r','-P','-A') are dpkg's, never
+   ## clustered with other flags.
+   dpkg_action='dpkg[[:space:]]([^;&|#]*[[:space:]])?(--install|--unpack|--configure|--remove|--purge|--record-avail|--set-selections|--clear-selections|--update-avail|--merge-avail|--forget-old-unavail|--triggers-only|-i|-r|-P|-A)([[:space:]]|=|$)'
+   for script in "${fs[@]}"; do
+      is_pkg_wrapper_file "${script}" && continue
+      if grep --quiet --extended-regexp \
+         '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*allow-dpkg([[:space:]]|$)' \
+         -- "${script}"; then
+         note "R-211 skipped: 'style-ok: allow-dpkg' waiver in '${script}'"
+         continue
+      fi
+      hits="$(grep --line-number --extended-regexp \
+         --regexp="${cand_re[0]}" --regexp="${cand_re[1]}" --regexp="${cand_re[2]}" \
+         -- "${script}" 2>/dev/null || true)"
+      [ -n "${hits}" ] || continue
+      while IFS= read -r line; do
+         [ -z "${line}" ] && continue
+         content="${line#*:}"
+         _pkg_quote_before "${content}" 'dpkg' && continue
+         ## Only a state-changing action counts.
+         printf '%s' "${content}" | grep --quiet --extended-regexp -- "${dpkg_action}" || continue
+         fail "R-211 state-changing dpkg not dpkg-noninteractive" "'${script}:${line}'"
+      done <<< "${hits}"
+   done
+}
+
+check_R212_allow_downgrades() {
+   local script hits
+   local -a fs
+
+   ## R-212: '--allow-downgrades' is forbidden -- a silent downgrade masks a
+   ## dependency or repository regression that should fail loudly. filter_self
+   ## drops this checker (its doc names the flag). Human-operator override:
+   ## '## style-ok: allow-downgrades'.
+   mapfile -d '' -t fs < <(filter_self "${@}")
+   [ "${#fs[@]}" -gt 0 ] || return 0
+   for script in "${fs[@]}"; do
+      if grep --quiet --extended-regexp \
+         '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*allow-downgrades([[:space:]]|$)' \
+         -- "${script}"; then
+         note "R-212 skipped: 'style-ok: allow-downgrades' waiver in '${script}'"
+         continue
+      fi
+      hits="$(grep_code_lines '(^|[[:space:]=])--allow-downgrades([[:space:]]|=|$)' "${script}")"
+      emit_hits "R-212 --allow-downgrades forbidden" "${hits}"
+   done
+}
+
+check_R213_lintian_disabled() {
+   local script hits
+
+   ## R-213: 'make_use_lintian=false' disables the lintian gate on a genmkfile
+   ## build; forbidden without authorization -- fix the lintian findings
+   ## instead. filter_self drops this checker. Human-operator override:
+   ## '## style-ok: allow-lintian-disable'.
+   for script in "${@}"; do
+      is_self_referential "${script}" && continue
+      if grep --quiet --extended-regexp \
+         '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*allow-lintian-disable([[:space:]]|$)' \
+         -- "${script}"; then
+         note "R-213 skipped: 'style-ok: allow-lintian-disable' waiver in '${script}'"
+         continue
+      fi
+      hits="$(grep_code_lines "make_use_lintian=('|\")?false('|\")?([[:space:]]|;|&|\\||\$)" "${script}")"
+      emit_hits "R-213 lintian disabled (make_use_lintian=false) without authorization" "${hits}"
+   done
+}
+
 check_R153_help_from_comments() {
    local script hits line
    local -a fs
@@ -3471,6 +3658,10 @@ run_file_checks() {
       check_R034_echo "${shell_files[@]}"
       check_R161_grep_pipe_quiet "${shell_files[@]}"
       check_R200_timeout_kill_after "${shell_files[@]}"
+      check_R210_apt_get_noninteractive "${shell_files[@]}"
+      check_R211_dpkg_noninteractive "${shell_files[@]}"
+      check_R212_allow_downgrades "${shell_files[@]}"
+      check_R213_lintian_disabled "${shell_files[@]}"
       check_R103_exec "${shell_files[@]}"
       check_R190_inline_interpreter "${shell_files[@]}"
       check_R192_shell_inline_shell_c "${shell_files[@]}"

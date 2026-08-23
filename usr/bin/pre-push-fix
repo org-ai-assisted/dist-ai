@@ -40,6 +40,15 @@ Bucket-1 transforms only (see the plan):
               rewritten; an option-carrying ('timeout --signal=TERM 5') or
               expression-duration ('timeout "$T"') timeout is left for the gate,
               like R-172's missing-mode mkdir.
+  * R-210  -- rewrite 'apt-get' in command position (optionally behind
+              'sudo'/'doas') to the helper-scripts wrapper
+              'apt-get-noninteractive' (shell files only). A single-token,
+              structure-preserving rename; the file bearing '## style-ok:
+              allow-apt-get' is left alone, in lockstep with the gate. dpkg
+              (R-211), '--allow-downgrades' (R-212) and 'make_use_lintian=false'
+              (R-213) are NOT auto-fixed -- dpkg needs an action-aware decision,
+              and the other two are a deliberate removal a human must make -- so
+              the gate REPORTS those.
 
 HARD SAFETY LINE: only the known table is touched. Any OTHER non-ASCII byte is
 left exactly as-is for pre-push-static to report (bucket-2) -- so an intentional
@@ -313,6 +322,35 @@ TIMEOUT_BARE_DURATION = re.compile(
 ## the whole file (the gate still REPORTS). Matches 'timeout()' / 'timeout ()' /
 ## 'function timeout ()' at a line start.
 TIMEOUT_FUNCDEF = re.compile(r'^[ \t]*(function[ \t]+)?timeout[ \t]*\([ \t]*\)', re.MULTILINE)
+
+## R-210 (apt-get -> apt-get-noninteractive) -- the write side of
+## pre-push-static's rule. A single-token rename of 'apt-get' in command position
+## to the helper-scripts wrapper. APT_CMD_POS extends the shared command-position
+## grammar with an optional 'sudo'/'doas' prefix (its own options / env
+## assignments), since 'sudo apt-get' is the dominant real form. APT_SPAN pins the
+## match to the whole word 'apt-get' NOT followed by a word char or '-', so
+## 'apt-get-noninteractive' is never re-matched -- making the rewrite idempotent.
+## Same HARD SAFETY LINE as the other structural fixers: bail on any
+## quote/backslash/'#' before the token (string data / comment).
+APT_CMD_POS = re.compile(
+    r'(?:'
+    + _CMD_START
+    + r'|' + _CMD_START + r'(?:then|do|else|if|elif|while|until)\s+'
+    + r')'
+    r'(?:!\s+)?'
+    r'(?:[A-Za-z_]\w*=\S*\s+)*'
+    r'(?:(?:sudo|doas)(?:\s+(?:-\S+|[A-Za-z_]\w*=\S*))*\s+)?'
+    r'(?:[A-Za-z_]\w*=\S*\s+)*$')
+APT_TOKEN = re.compile(r'apt-get(?![\w-])')
+APT_UNSAFE_PREFIX = re.compile(r'''["'\\#]''')
+## R-210 script-wide waiver, in lockstep with pre-push-static: a file bearing
+## '## style-ok: allow-apt-get' has a human-approved bare apt-get (a wrapper-less
+## environment), so the fixer must not rename it.
+APT_WAIVER_RE = re.compile(
+    r'^[ \t]*##[ \t]*style-ok:[ \t]*allow-apt-get(?:[ \t]|$)', re.MULTILINE)
+## The wrapper file itself DEFINES apt-get-noninteractive by calling bare
+## apt-get; never rename that.
+PKG_WRAPPER_BASENAMES = ("apt-get-noninteractive", "dpkg-noninteractive")
 
 
 class StagedDiscoveryError(Exception):
@@ -639,6 +677,36 @@ def insert_timeout_kill_after(text):
     return "".join(out), count
 
 
+def wrap_apt_get(text):
+    """Per apt-get COMMAND (not per line): rename a command-position 'apt-get'
+    (optionally behind 'sudo'/'doas') to 'apt-get-noninteractive'. Command
+    position only (APT_CMD_POS), bailing on any quote/backslash/'#' before the
+    token (APT_UNSAFE_PREFIX) so an apt-get inside a string / comment is never
+    touched. Idempotent: APT_TOKEN excludes 'apt-get-' so the wrapper is never
+    re-matched."""
+    count = 0
+    out = []
+    for line in text.splitlines(keepends=True):
+        if "apt-get" not in line:
+            out.append(line)
+            continue
+        pieces = []
+        pos = 0
+        for match in APT_TOKEN.finditer(line):
+            prefix = line[:match.start()]
+            if APT_UNSAFE_PREFIX.search(prefix):
+                continue
+            if not APT_CMD_POS.search(prefix):
+                continue
+            pieces.append(line[pos:match.start()])
+            pieces.append("apt-get-noninteractive")
+            pos = match.end()
+            count += 1
+        pieces.append(line[pos:])
+        out.append("".join(pieces))
+    return "".join(out), count
+
+
 def fix_file(path, check):
     """Return a dict of change counts for PATH; write in place unless CHECK.
 
@@ -711,6 +779,16 @@ def fix_file(path, check):
         text, num = insert_timeout_kill_after(text)
         if num:
             changes["R-200"] = num
+
+    ## R-210: rename a command-position 'apt-get' to 'apt-get-noninteractive'
+    ## (not when the file waives the rule, and never the wrapper file itself --
+    ## lockstep with the gate). dpkg/--allow-downgrades/make_use_lintian are NOT
+    ## auto-fixed (see the docstring); the gate reports those.
+    if (structural and not APT_WAIVER_RE.search(text)
+            and os.path.basename(path) not in PKG_WRAPPER_BASENAMES):
+        text, num = wrap_apt_get(text)
+        if num:
+            changes["R-210"] = num
 
     if text == original:
         return {}

@@ -41,6 +41,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v TMP ] || TMP=/tmp
 
@@ -182,6 +183,12 @@ seed_source_artifacts() {
    printf '%s\n' 'fixture' > "${dist_dir}/gmf-sec-pkg_1.0-1.debian.tar.xz"
    printf '%s\n' 'fixture' > "${dist_dir}/gmf-sec-pkg_1.0-1.dsc"
 }
+
+## style-ok: allow-lintian-disable
+## R-213 waiver: this unit test drives genmkfile against a STUBBED cowbuilder to
+## verify the per-architecture skip decision and invocation log, not to produce a
+## real deliverable. lintian and debsign are turned off so the unit exercises the
+## build-dispatch logic without invoking the real packaging tools.
 
 ## Run 'genmkfile deb-pkg-build' across ${arch_list} and return its exit status.
 ## The recorded cowbuilder invocations are left in ${invocation_log}.

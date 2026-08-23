@@ -152,9 +152,9 @@ if [ -z "${depends_names// /}" ]; then
    ## installable, and do NOT hand apt-get an empty operand list (behaviour varies by
    ## apt version). The other checks above equally no-op here, so this masks nothing new.
    pass 'no explicit Depends/Pre-Depends names to verify (substvars only)'
-elif ! type -P apt-get >/dev/null; then
-   fail 'apt-get not on PATH; cannot verify Depends installability'
-elif ! apt-get install --simulate --no-install-recommends -- bash helper-scripts >/dev/null 2>&1; then
+elif ! type -P apt-get-noninteractive >/dev/null; then
+   fail 'apt-get-noninteractive not on PATH; cannot verify Depends installability'
+elif ! apt-get-noninteractive install --simulate --no-install-recommends -- bash helper-scripts >/dev/null 2>&1; then
    ## Sentinel: a Debian package (bash) and a Kicksecure one (helper-scripts, itself a
    ## declared Depends) must resolve, proving the apt lists are populated for BOTH
    ## archives. Without it, a minimal container with cleaned/absent lists would fail a
@@ -164,10 +164,10 @@ elif ! apt-get install --simulate --no-install-recommends -- bash helper-scripts
 else
    ## noglob (set above) lets ${depends_names} split into args without expanding.
    # shellcheck disable=SC2086
-   if sim_out="$(apt-get install --simulate --no-install-recommends -- ${depends_names} 2>&1)"; then
-      pass 'the declared Depends set installs together (apt-get --simulate)'
+   if sim_out="$(apt-get-noninteractive install --simulate --no-install-recommends -- ${depends_names} 2>&1)"; then
+      pass 'the declared Depends set installs together (apt-get-noninteractive --simulate)'
    else
-      fail 'the declared Depends set does not install together (apt-get --simulate); apt says:'
+      fail 'the declared Depends set does not install together (apt-get-noninteractive --simulate); apt says:'
       ## Best-effort diagnostic (|| true: a no-match grep must not abort under pipefail).
       printf '%s\n' "${sim_out}" \
          | grep --ignore-case --extended-regexp 'unable to locate|no installation candidate|but it is not|^E:' \
