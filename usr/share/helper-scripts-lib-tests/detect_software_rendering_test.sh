@@ -220,6 +220,17 @@ check "real ATI Radeon -> accelerated/1" \
 check "real Apple M1 -> accelerated/1" \
    "$(run_subject 'OpenGL core profile renderer: Apple M1' '' "${with_dri}" '')" "accelerated:1"
 
+## REGRESSION (multi-platform): 'eglinfo -B' prints a renderer line per EGL
+## platform. A platform that falls back to llvmpipe must NOT mask another platform
+## reporting the real GPU -- hardware wins across lines. All-software multi-line
+## stays software.
+mixed_renderer=$'OpenGL core profile renderer: llvmpipe (LLVM 15.0.7)\nOpenGL core profile renderer: NVIDIA GeForce RTX 4090'
+check "mixed llvmpipe + NVIDIA lines -> accelerated/1 (hardware wins)" \
+   "$(run_subject "${mixed_renderer}" '' "${with_dri}" '')" "accelerated:1"
+multi_software=$'OpenGL core profile renderer: llvmpipe (LLVM 15.0.7)\nOpenGL core profile renderer: softpipe'
+check "multiple software-only lines -> software/0" \
+   "$(run_subject "${multi_software}" '' "${with_dri}" '')" "software:0"
+
 ## eglinfo NOT installed (GPU node present, no eglinfo on PATH) -> unknown/2.
 ## PATH is an empty dir: probe_renderer reaches the 'has eglinfo' check using only
 ## shell builtins, so no other tool is needed before that early return.
