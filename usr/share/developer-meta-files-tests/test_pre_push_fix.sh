@@ -30,6 +30,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 tool_test_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
 FIX="${tool_test_dir}/../../bin/pre-push-fix"
@@ -483,6 +484,71 @@ if grep --quiet --fixed-strings 'R-172' <<< "${r172p_before}" \
    note_pass "gate parity: --parents atomic form clears R-172 and SC2174 after the fixer"
 else
    note_fail "R-172 --parents gate parity broken (R-172 or SC2174 survived)"
+fi
+
+## --- 9: AST fixer reaches files with multi-line constructs -----------------
+## The former regex fixer DECLINED any file containing a heredoc / line
+## continuation / multi-line string (has_multiline_construct), so a real
+## violation there went unfixed and the model corrected it by hand. The AST
+## fixer parses the file: a command OUTSIDE a heredoc is fixed, while the same
+## token INSIDE the heredoc (data) and inside an array (not a command) is left
+## untouched. Also proves command position after a 'VAR=value' assignment prefix.
+## The short-quiet grep literal is assembled from variables ('${g} ${iq}') so
+## THIS test source carries no 'grep -<q>' cluster of its own for R-161 to flag.
+g='grep'
+iq='-iq'
+f="${test_dir}/heredoc.sh"
+printf '%b' "#!/bin/bash\ntimeout 5 sleep 1\nDEBUG=1 ${g} ${iq} foo bar\ncat <<HD\ntimeout 5 sleep 1 stays as heredoc data\nHD\narr=(timeout 5 x)\n" >"${f}"
+if grep --quiet --fixed-strings 'timeout --kill-after=5 5 sleep 1' "${f}" ; then
+   note_fail "heredoc fixture not dirty -- canary would let a no-op fixer pass"
+fi
+"${FIX}" "${f}" >/dev/null 2>&1
+if grep --quiet --fixed-strings 'timeout --kill-after=5 5 sleep 1' "${f}" \
+   && grep --quiet --fixed-strings 'DEBUG=1 grep --ignore-case --quiet foo bar' "${f}" \
+   && grep --quiet --fixed-strings 'timeout 5 sleep 1 stays as heredoc data' "${f}" \
+   && grep --quiet --fixed-strings 'arr=(timeout 5 x)' "${f}" ; then
+   note_pass "AST fixer: heredoc file fixed; heredoc body + array left as data; assignment prefix handled"
+else
+   note_fail "AST structural fix wrong on a multi-line file"
+fi
+
+## --- 9b: gate parity CANARY -- a heredoc file failed R-200 before, clean after
+## The headline win of the AST port. The regex fixer declined this file (it has
+## a heredoc), so R-200 SURVIVED it -- this assertion FAILS on the old fixer and
+## passes on the AST one.
+printf '%b' '#!/bin/bash\ntimeout 5 sleep 1\ncat <<HD\nx\nHD\n' >"${repo}/heredoc_to.sh"
+git -C "${repo}" -c core.hooksPath=/dev/null add --all
+git -C "${repo}" -c core.hooksPath=/dev/null \
+   -c user.name=test -c user.email=test@example.com \
+   commit --quiet --message "heredoc r200 dirty"
+hd_before="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || true
+"${FIX}" "${repo}/heredoc_to.sh" >/dev/null 2>&1
+git -C "${repo}" -c core.hooksPath=/dev/null add --all
+git -C "${repo}" -c core.hooksPath=/dev/null \
+   -c user.name=test -c user.email=test@example.com \
+   commit --quiet --message "heredoc r200 fixed"
+hd_after="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || true
+if grep --quiet --fixed-strings 'R-200' <<< "${hd_before}" \
+   && ! grep --quiet --fixed-strings 'R-200' <<< "${hd_after}" ; then
+   note_pass "gate parity: heredoc file failed R-200 before the fixer, clean after (AST port canary)"
+else
+   note_fail "AST port canary broken: R-200 not cleared on a heredoc file"
+fi
+
+## --- 9c: a file shfmt cannot parse is DECLINED structurally, not crashed ----
+## A syntax error must not abort the fixer; the text transforms still run and the
+## structural rules are left to the gate (which also runs 'bash -n').
+f="${test_dir}/broken.sh"
+printf '%b' '#!/bin/bash\nif [ 1 ; then\ntimeout 5 sleep 1\n## a \342\200\224 b   \n' >"${f}"
+rc=0
+"${FIX}" "${f}" >/dev/null 2>&1 || rc=$?
+if [ "${rc}" -eq 0 ] \
+   && ! has_non_ascii "${f}" \
+   && ! has_trailing_ws "${f}" \
+   && grep --quiet --fixed-strings 'timeout 5 sleep 1' "${f}" ; then
+   note_pass "unparseable file: text transforms applied, structural declined, no crash"
+else
+   note_fail "unparseable file mishandled (rc=${rc})"
 fi
 
 exit_gate

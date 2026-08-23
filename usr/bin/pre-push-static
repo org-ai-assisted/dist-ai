@@ -760,18 +760,6 @@ is_self_referential() {
    return 1
 }
 
-## The helper-scripts wrappers themselves DEFINE 'apt-get-noninteractive' /
-## 'dpkg-noninteractive' by calling bare apt-get / dpkg with the noninteractive
-## options -- that IS their job, so R-210/R-211 must not flag them. Matched by
-## basename so a checkout at any path is exempt.
-is_pkg_wrapper_file() {
-   case "${1##*/}" in
-      apt-get-noninteractive|dpkg-noninteractive)
-         return 0
-         ;;
-   esac
-   return 1
-}
 
 ## Some scripts (including this one) carry long-form header
 ## docstrings before the strict-mode block; head -160 is generous
@@ -1653,207 +1641,6 @@ check_R170_tmp_hardcode() {
    done
 }
 
-check_R172_mkdir_tmp_mode() {
-   local script candidate line text span
-
-   ## R-172: a 'mkdir' that creates a temp directory (operand is a
-   ## TMPDIR/TMP/TEMP/TEMPDIR variable ref) MUST set the mode ATOMICALLY with
-   ## '--mode'. Splitting perms into a following 'chmod' -- or dropping the
-   ## mode entirely -- leaves a window in which the directory exists with the
-   ## umask-default (world-traversable) mode: a TOCTOU hole that lets other
-   ## processes race the temp path. The long '--mode' form is required (the
-   ## short '-m' is upgraded by pre-push-fix; standalone here it still FAILS so
-   ## the long form is what lands).
-   ##
-   ## The mode is judged on the mkdir COMMAND, not the whole source line: the
-   ## check isolates each 'mkdir ...' up to the next separator (';' '&&' '||'
-   ## '|' '&') or '#' comment, so a '--mode' in a trailing comment or in a
-   ## SECOND command on the line cannot mask a mode missing from the mkdir
-   ## itself ('mkdir -- "$TMPDIR"; foo --mode=700' is still a FAIL).
-   for script in "${@}"; do
-      ## This script carries 'mkdir' and the temp-var names in its own regex
-      ## and message text.
-      is_self_referential "${script}" && continue
-      ## Script-wide waiver: '## style-ok: allow-mkdir-no-mode' anywhere in the
-      ## file disables R-172 for it -- for a temp dir whose perms genuinely do
-      ## not matter, or a mkdir whose mode is set by a form this rule cannot
-      ## read (symbolic '-m u=rwx', a '${mode}' variable). Anchored regex,
-      ## mirroring the R-120/R-170 waivers.
-      if grep --quiet --extended-regexp \
-         '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*allow-mkdir-no-mode([[:space:]]|$)' \
-         -- "${script}"; then
-         continue
-      fi
-      ## Candidate PRE-FILTER: a command-position 'mkdir' with a temp-var
-      ## somewhere on the line ('$TMPFILE' excluded by the bounded class).
-      ## '^[^#]*' excludes comment lines, as R-070/R-170 do. The per-command
-      ## span check below re-confirms the temp var belongs to the mkdir.
-      candidate="$(grep --line-number --extended-regexp \
-         '^[^#]*(^|[[:space:]([;&|`])mkdir[[:space:]].*\$\{?(TMPDIR|TEMPDIR|TEMP|TMP)([^A-Za-z0-9_]|$)' \
-         -- "${script}" 2>/dev/null || true)"
-      if [ -z "${candidate}" ]; then
-         continue
-      fi
-      while IFS= read -r line; do
-         if [ -z "${line}" ]; then
-            continue
-         fi
-         ## Strip grep's leading '<n>:' so the span extraction sees the code.
-         text="${line#*:}"
-         ## Each 'mkdir ...' command span (to the next separator / '#' comment).
-         while IFS= read -r span; do
-            ## Only a span that itself creates a temp dir is in scope.
-            if ! grep --quiet --extended-regexp -- \
-               '\$\{?(TMPDIR|TEMPDIR|TEMP|TMP)([^A-Za-z0-9_]|$)' <<< "${span}"; then
-               continue
-            fi
-            ## Long '--mode' on the mkdir itself ('--mode=700' or '--mode 700')
-            ## -> atomic form present; compliant.
-            if grep --quiet --extended-regexp -- '--mode(=|[[:space:]])' \
-               <<< "${span}"; then
-               continue
-            fi
-            ## Short '-m' on the mkdir ('-m 700', '-m700', bundled '-pm700')
-            ## -> atomic but must use the long form.
-            if grep --quiet --extended-regexp -- \
-                  '(^|[[:space:]])-[[:alpha:]]*m([[:space:]]|[0-9]|=|$)' \
-                  <<< "${span}"; then
-               fail "R-172 mkdir temp dir: use --mode not -m" "'${script}:${line}'"
-            else
-               fail "R-172 mkdir temp dir missing --mode (TOCTOU; set perms atomically, not via a later chmod)" "'${script}:${line}'"
-            fi
-         done < <(printf '%s\n' "${text}" | grep --only-matching --perl-regexp 'mkdir\b[^;&|#]*' || true)
-      done <<< "${candidate}"
-   done
-}
-
-check_R190_inline_interpreter() {
-   local script line delimiter rest char body start_line line_number in_body
-   local is_interpreter body_is_interpreter
-
-   ## R-190: a substantial interpreter program does not belong in a shell
-   ## heredoc. Same defect as R-100 for workflow YAML: the body is invisible to
-   ## the tools that would check it. ruff and pyrefly only see real '*.py'
-   ## files, coverage.py cannot measure a heredoc at all, and no unit test can
-   ## reach a function that has no importable home. Extract it to a program
-   ## with a shebang and call it.
-   ##
-   ## Threshold matches R-100's "more than ~5 lines". A short one-liner is
-   ## glue, not a program.
-   for script in "${@}"; do
-      ## Script-wide waiver: '## style-ok: allow-inline-interpreter'. Anchored
-      ## so a typo'd superset does not silently disable the rule.
-      if grep --quiet --extended-regexp \
-         '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*allow-inline-interpreter([[:space:]]|$)' \
-         -- "${script}" 2>/dev/null
-      then
-         note "R-190 skipped: 'style-ok: allow-inline-interpreter' waiver in '${script}'"
-         continue
-      fi
-
-      in_body="false"
-      body_is_interpreter='false'
-      delimiter=""
-      body=0
-      start_line=0
-      line_number=0
-      while IFS= read -r line || [ -n "${line}" ]; do
-         line_number=$(( line_number + 1 ))
-         if [ "${in_body}" = "true" ]; then
-            ## The terminator is the delimiter alone on its line; leading
-            ## whitespace is allowed because '<<-' strips indentation.
-            if [ "${line#"${line%%[![:space:]]*}"}" = "${delimiter}" ]; then
-               if [ "${body}" -gt 5 ] && [ "${body_is_interpreter}" = 'true' ]; then
-                  fail "R-190 inline interpreter program (${body} lines) belongs in its own file" \
-                     "'${script}:${start_line}'"
-               fi
-               in_body="false"
-               delimiter=""
-               body=0
-               continue
-            fi
-            body=$(( body + 1 ))
-            continue
-         fi
-         ## Only lines with a heredoc operator can start one; checking that
-         ## first keeps this to one grep per candidate rather than per line.
-         case "${line}" in
-            *'<<'*)
-               true
-               ;;
-            *)
-               continue
-               ;;
-         esac
-         ## A COMMENTED example is documentation, not a program. Without this a
-         ## '## e.g. python3 - <<PY' line starts a phantom body.
-         case "${line#"${line%%[![:space:]]*}"}" in
-            '#'*)
-               continue
-               ;;
-         esac
-         ## Track EVERY heredoc, not just interpreter ones, and only flag the
-         ## interpreter ones. A documentation block ('cat <<DOC') whose body
-         ## demonstrates an inline program must be consumed as body text;
-         ## treating the inner example as an opener fails a valid push.
-         is_interpreter='false'
-         if grep --quiet --extended-regexp \
-            '(python3?|perl|ruby|node|php)([[:space:]]+[^|;&<]*)?<<-?[[:space:]]*['"'"'"]?[A-Za-z_][A-Za-z0-9_]*' \
-            <<< "${line}"
-         then
-            is_interpreter='true'
-         fi
-         rest="${line##*<<}"
-         rest="${rest#-}"
-         ## Bash allows whitespace between the operator and the delimiter, so
-         ## 'python3 - << "PY"' is valid and must not slip past.
-         rest="${rest#"${rest%%[![:space:]]*}"}"
-         ## A delimiter may contain non-identifier chars, e.g. <<'PY-END'. A bare
-         ## [A-Za-z0-9_] scan truncates at the '-', loses the real terminator, and the
-         ## heredoc body then slips past the gate. Track the quote and read to its close;
-         ## for an unquoted delimiter read a word up to whitespace / a shell metachar.
-         quote=""
-         case "${rest}" in
-            \'*)
-               quote="'"
-               rest="${rest#\'}"
-               ;;
-            \"*)
-               quote='"'
-               rest="${rest#\"}"
-               ;;
-         esac
-         delimiter=""
-         if [ -n "${quote}" ]; then
-            delimiter="${rest%%"${quote}"*}"
-         else
-            while [ -n "${rest}" ]; do
-               char="${rest:0:1}"
-               case "${char}" in
-                  ## Break on the bash metacharacters that end an unquoted heredoc
-                  ## delimiter word. NOT '#': it introduces a comment only at a word
-                  ## boundary (whitespace already breaks there), so mid-word it
-                  ## belongs TO the delimiter -- `<<EOF#x` has delimiter EOF#x, and
-                  ## recording just EOF would never match the real terminator line.
-                  [[:space:]]|';'|'&'|'|'|'<'|'>'|'('|')'|'`')
-                     break
-                     ;;
-                  *)
-                     delimiter="${delimiter}${char}"
-                     rest="${rest:1}"
-                     ;;
-               esac
-            done
-         fi
-         if [ -n "${delimiter}" ]; then
-            in_body="true"
-            body_is_interpreter="${is_interpreter}"
-            body=0
-            start_line="${line_number}"
-         fi
-      done < "${script}"
-   done
-}
 
 check_R191_systemd_unit_embedded_script() {
    local unit line line_number directive_name directive_start value spanned
@@ -2055,63 +1842,6 @@ check_R192_shell_inline_shell_c() {
    done
 }
 
-check_R193_python_dashdash_script() {
-   local script line line_number dashdash_re code code_length pre python_offset
-   local scan match_length blank
-
-   ## Known limitation (accepted, fail-OPEN): a call nested inside a DOUBLE-QUOTED
-   ## command substitution -- 'out="$(python3 -- x.py)"' -- is not flagged. The quote
-   ## walk treats the whole "$(...)" as string data, so the token reads as quoted. A
-   ## correct call/data split there needs a context stack (the same reason R-104 has no
-   ## gate); the rare miss never over-blocks. Rewrite it to a direct call anyway.
-   ## R-193: an in-repo script committed +x with a shebang is called DIRECTLY
-   ## ('"${dir}"/foo dot py args'), not via an interpreter prefix that re-names it. The shebang
-   ## plus exec bit is the project idiom (chmod +x once, run it like any program), and it also
-   ## honours interpreter flags in the shebang (e.g. -Bsu) that a bare 'interpreter -- file'
-   ## silently drops. Only a LITERAL '<interpreter> -- <path ending in .py>' spelled as a real
-   ## command is flagged: the 'python' token must be word-bounded (so 'run_python' is not a
-   ## match), the '.py' must end at a path boundary (so 'x.py.txt' is not), an inline '#'
-   ## comment is stripped, and the token must sit at quote depth zero (so 'python3 -- x.py'
-   ## QUOTED as data is not a call). A generic dispatcher ('interpreter -- "$@"') has no
-   ## literal path and is glue. Waiver (a script deliberately NOT +x, or an external path):
-   ## '## style-ok: allow-python-dashdash'.
-   dashdash_re='(^|[^[:alnum:]_])(python3?)[[:space:]]+--[[:space:]]+[^[:space:]]*\.py([^./[:alnum:]_-]|$)'
-   for script in "${@}"; do
-      if [ ! -f "${script}" ] || [ -L "${script}" ]; then
-         continue
-      fi
-      if grep --quiet --extended-regexp \
-         '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*allow-python-dashdash([[:space:]]|$)' \
-         -- "${script}" 2>/dev/null
-      then
-         note "R-193 skipped: 'style-ok: allow-python-dashdash' waiver in '${script}'"
-         continue
-      fi
-      line_number=0
-      while IFS= read -r line || [ -n "${line}" ]; do
-         line_number=$(( line_number + 1 ))
-         code_length="$(line_code_length "${line}")"
-         code="${line:0:code_length}"
-         ## Scan EVERY match on the line, not just the first: a benign quoted occurrence
-         ## ('echo "python3 -- x.py"') must not mask a real call later on the same line.
-         ## A rejected (quoted) match is blanked to same-length spaces in the working copy
-         ## so offsets stay aligned with 'code' and the next match is found.
-         scan="${code}"
-         while [[ "${scan}" =~ ${dashdash_re} ]]; do
-            pre="${scan%%"${BASH_REMATCH[0]}"*}"
-            python_offset=$(( ${#pre} + ${#BASH_REMATCH[1]} ))
-            if r030_offset_is_command "${code}" "${python_offset}"; then
-               fail "R-193 call the +x script directly via its shebang, not through an interpreter prefix" \
-                  "'${script}:${line_number}'"
-               break
-            fi
-            match_length="${#BASH_REMATCH[0]}"
-            blank="$(printf '%*s' "${match_length}" '')"
-            scan="${scan:0:${#pre}}${blank}${scan:$(( ${#pre} + match_length ))}"
-         done
-      done < "${script}"
-   done
-}
 
 defang_shell_string() {
    ## Bounded, PARSER-FREE defang of a shell command string: DELETE backslash
@@ -2492,56 +2222,6 @@ check_R180_python_shebang() {
    done
 }
 
-check_R090_command_v() {
-   local script hits line
-
-   for script in "${@}"; do
-      ## R-093 documented bootstrap exceptions: scripts that must
-      ## run before helper-scripts/has.sh is reachable.
-      case "${script}" in
-         .github/actions/install-deps/install-helper-scripts.sh \
-         |usr/bin/pre-push-static)
-            continue
-            ;;
-      esac
-      ## POSIX '/bin/sh' scripts are exempt: both of R-090's remedies are
-      ## bash-only. 'type -P' is undefined in POSIX sh (shellcheck SC3045
-      ## flags it), and 'has' means sourcing helper-scripts, which a
-      ## root-owned boot script must not do. 'command -v' IS the portable
-      ## idiom there, so flagging it would demand code that another gate
-      ## check rejects.
-      case "$(head -n 1 -- "${script}" 2>/dev/null || true)" in
-         '#!/bin/sh'|'#!/usr/bin/sh'|'#!/usr/bin/env sh'|'#!/bin/sh '*|'#!/usr/bin/env sh '*)
-            continue
-            ;;
-      esac
-      ## Script-wide waiver: '## style-ok: no-has' anywhere in the
-      ## file disables R-090 for that file. Same shape as the
-      ## 'style-ok: no-safe-rm' waiver below for R-120; used by
-      ## bootstrap scripts that run before helper-scripts is on the
-      ## system but aren't part of the R-093 hard-coded allowlist.
-      ## Anchored regex (not --fixed-strings) so a typo'd
-      ## superset like 'no-has-typo' or 'no-hash' doesn't
-      ## silently disable R-090.
-      if grep --quiet --extended-regexp \
-         '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*no-has([[:space:]]|$)' \
-         -- "${script}"; then
-         continue
-      fi
-      ## Match 'command -v' only in CODE, not in a comment or string: the
-      ## '[^#]*' prefix cannot cross a '#', so a line whose 'command -v'
-      ## sits in a '##' comment (or a trailing comment, e.g. a script that
-      ## documents 'use has, not command -v') is not flagged. A 'command -v'
-      ## embedded in a string is a rare residual, same class as R-034/R-120.
-      hits="$(grep --line-number --extended-regexp '^[[:space:]]*[^#]*command[[:space:]]+-v' -- "${script}" 2>/dev/null || true)"
-      if [ -z "${hits}" ]; then
-         continue
-      fi
-      while IFS= read -r line; do
-         fail "R-090 command -v" "'${script}:${line}'"
-      done <<< "${hits}"
-   done
-}
 
 check_R102_interpreter_prepend() {
    local hits
@@ -2580,515 +2260,6 @@ check_R102_interpreter_prepend() {
    emit_hits "R-102 interpreter prepend (use shebang)" "${hits}"
 }
 
-check_R120_rm() {
-   local script hits line
-
-   for script in "${@}"; do
-      ## Skip this script: it carries 'rm' in fail messages and regex
-      ## needles (not filesystem deletes), which the invert no longer
-      ## spares now that 'safe-rm' left it.
-      is_self_referential "${script}" && continue
-      ## Script-wide waiver: '## style-ok: no-safe-rm' anywhere in
-      ## the file disables R-120 for that file. Anchored regex (not
-      ## --fixed-strings) so a typo'd superset doesn't silently
-      ## disable R-120; mirrors the no-has waiver above.
-      if grep --quiet --extended-regexp \
-         '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*no-safe-rm([[:space:]]|$)' \
-         -- "${script}"; then
-         continue
-      fi
-      ## 'rm' as a command word: at start-of-line, or preceded by
-      ## whitespace OR a command separator (; & | (), so a separator-glued
-      ## form like 'true;rm -rf x' is caught too), then followed by
-      ## whitespace or end-of-line. 'safe-rm' never matches because its
-      ## 'rm' is preceded by '-' (not in the class), so it is NOT in the
-      ## invert below: dropping it there would have spared a whole line
-      ## carrying a REAL 'rm' next to a safe-rm ('safe-rm a; rm -rf b').
-      ## Comments are excluded via the '[^#]*' prefix. The invert keeps the
-      ## non-filesystem-rm carve-outs (shred, git rm, git remote rm); those
-      ## remain whole-line, a narrow accepted residual. The git carve-out allows
-      ## git GLOBAL OPTIONS between 'git' and 'rm' -- 'git -C <dir> rm',
-      ## 'git -c k=v rm', 'git --git-dir=<p> rm' -- since 'git rm' is a tracked,
-      ## reversible index/worktree delete, not the coreutil this rule targets. Only
-      ## leading '-...' option tokens (each optionally taking one non-'-' value) are
-      ## skipped, so 'git -C x log && rm -rf z' is NOT spared: 'log' is not an
-      ## option, so the run of options ends and the required 'rm' is not next.
-      hits="$(grep --line-number --extended-regexp \
-         '^[[:space:]]*[^#]*[[:space:];&|(]rm([[:space:]]|$)|^[[:space:]]*rm([[:space:]]|$)' \
-         -- "${script}" 2>/dev/null \
-         | grep --invert-match --extended-regexp 'shred[[:space:]]|git([[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?)*[[:space:]]+(remote[[:space:]]+)?rm[[:space:]]' \
-         || true)"
-      if [ -z "${hits}" ]; then
-         continue
-      fi
-      while IFS= read -r line; do
-         fail "R-120 rm not safe-rm" "'${script}:${line}'"
-      done <<< "${hits}"
-   done
-}
-
-check_R130_null_command() {
-   local hits combined_hits
-
-   ## Two forms of ':' used as a COMMAND:
-   ##   1. bare ':' on its own line
-   ##   2. ':' as the truncate idiom ('`: > file`', '`if ! : > file`') --
-   ##      opaque under xtrace, and 'printf '%s' "" | tee -- file' both
-   ##      truncates and reports an unwritable path.
-   ## Still SPARES `: "${var:=default}"` (the parameter-default idiom, used in
-   ## usr/libexec/.../github-org-lib.bsh): that has a word after the colon,
-   ## not a redirection. The colon must sit in COMMAND position -- line start,
-   ## or after one of ';&|!{' -- so '${var:-x}', 'a::b' in a PATH, a 'case'
-   ## pattern and 'https://' are all unmatched. Comment lines are excluded, as
-   ## in the other rules.
-   ##
-   ## Plain WHITESPACE after arbitrary text is deliberately NOT accepted as
-   ## command position: it made an HTML message line ending
-   ## '...version         :</td>' match, the '<' of a closing tag read as a
-   ## redirection. See test_pre_push_static_r130_command_position.sh.
-   local bare_hits redirect_hits
-
-   bare_hits="$(grep --with-filename --line-number --extended-regexp '^[[:space:]]*:[[:space:]]*$' -- "${@}" 2>/dev/null || true)"
-   redirect_hits="$(grep --with-filename --line-number --extended-regexp '^([^#]*[;&|!{][[:space:]]*|[[:space:]]*):[[:space:]]*[<>]' -- "${@}" 2>/dev/null || true)"
-   combined_hits="${bare_hits}"$'\n'"${redirect_hits}"
-   hits="$(printf '%s\n' "${combined_hits}" | grep --invert-match --extended-regexp '^$' || true)"
-   emit_hits "R-130 ':' used as a command" "${hits}"
-}
-
-check_R034_echo() {
-   local script hits line
-   local -a fs
-
-   ## R-034: 'echo' as a command (use printf). Per-script so a script-wide
-   ## '## style-ok: allow-echo' waiver can exempt a file that genuinely needs it.
-   ## filter_self drops this script (its own tag/comment text contains 'echo').
-   mapfile -d '' -t fs < <(filter_self "${@}")
-   if [ "${#fs[@]}" -eq 0 ]; then return 0; fi
-   for script in "${fs[@]}"; do
-      if grep --quiet --extended-regexp \
-         '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*allow-echo([[:space:]]|$)' \
-         -- "${script}"; then
-         continue
-      fi
-      ## 'echo' in COMMAND POSITION only: at line start, or immediately after
-      ## a command separator (; & | && || ( ) { } backtick) or a control
-      ## keyword (if/elif/while/until/then/do/else/in, whether the keyword is
-      ## at line start as in 'if echo x' or mid-line as in '; then echo x').
-      ## Modeled on check_R103_exec. This is the fix for the old
-      ## '[[:space:]]echo' form, which matched 'echo' as a bareword anywhere
-      ## after a space -- flagging it inside a string ('the echo test') or as
-      ## an argument ('has echo'), neither of which runs echo as a command. A
-      ## leading '#' blocks the '[^#]*' prefix, so comment lines are excluded.
-      ## Residual (accepted, same as R-103): a separator inside a string
-      ## ('a; echo b') still matches.
-      hits="$(grep --line-number --extended-regexp \
-         --regexp='^[[:space:]]*echo([[:space:]]|$)' \
-         --regexp='^[[:space:]]*[^#]*[;&|(){}`][[:space:]]*echo([[:space:]]|$)' \
-         --regexp='^[[:space:]]*([^#]*[[:space:]])?(then|do|else|in|if|elif|while|until)[[:space:]]+echo([[:space:]]|$)' \
-         -- "${script}" 2>/dev/null || true)"
-      if [ -z "${hits}" ]; then
-         continue
-      fi
-      while IFS= read -r line; do
-         fail "R-034 echo not printf" "'${script}:${line}'"
-      done <<< "${hits}"
-   done
-}
-
-check_R161_grep_pipe_quiet() {
-   local script pipe_hits short_raw line lineno
-   local qtail assign neg gpre quiet re_a re_b1 re_b2 re_b3
-   local -a fs
-   local -A pipe_lines
-
-   ## R-161, two related bans on grep's quiet flag:
-   ##  (1) A quiet grep (-q/--quiet/--silent) CONSUMING a pipe is a pipefail
-   ##      bug: it exits at the first match, SIGPIPEs the writer on the left,
-   ##      and 'set -o pipefail' (R-010) fails the pipeline with 141. Size-
-   ##      dependent, so it passes on small inputs and flakes on large ones.
-   ##  (2) grep never takes a SHORT quiet flag ('-q','-iq','-Fq') -- R-060.
-   ## A here-string ('grep --quiet ... <<< "$v"') and a plain file read
-   ## ('grep --quiet -- PAT FILE') are NOT pipes and are deliberately spared.
-   ## filter_self drops THIS checker, whose own regex literals name the tokens
-   ## and whose scaffolding uses piped greps it cannot rewrite.
-   ##
-   ## Shared regex fragments (built once, so the pipe and short-flag scans cannot
-   ## drift apart):
-   ##   gpre   -- 'grep' as a whole command WORD: 'grep', then >=1 space (so
-   ##             'grep_file'/'grepfoo' never matches), then optionally more
-   ##             argument tokens each ending in a space, up to the quiet flag.
-   ##             The trailing '[^|;&)#]*' stops at a later '|', a command
-   ##             terminator (';' '&' ')') or a '#', so a following
-   ##             '[ ... -eq N ]' test operator is never read as part of grep.
-   ##   qtail  -- a SHORT single-dash quiet flag word. '[^-[:space:]efmABCdD]*'
-   ##             forbids an ARG-TAKING short option before the 'q', so '-eq'
-   ##             ('-e' with pattern 'q') is not mistaken for a quiet flag.
-   ##   quiet  -- qtail OR the long '--quiet'/'--silent' (each as a whole word).
-   ##   assign -- any run of leading 'VAR=value' assignments ('LC_ALL=C grep').
-   ##   neg    -- an optional '!' negation ('if ! grep -q').
-   ## Residuals accepted (a line grep cannot parse shell): a quiet grep inside a
-   ## string that opens with a separator; an UNQUOTED flag PATTERN after the
-   ## '--' option terminator, short OR long ('grep -- -q', 'seq | grep -- --quiet'
-   ## -- gpre's arg run can span the '--', a false positive; stopping the scan at
-   ## a standalone '--' is not cleanly expressible here); a QUOTED flag ('grep
-   ## "--quiet"', a rare false NEGATIVE -- catching it would re-flag the far
-   ## commoner 'grep -- "--quiet"' pattern search); and a pipe split across
-   ## physical lines with no backslash.
-   qtail='-[^-[:space:]efmABCdD]*q[[:alpha:]]*([[:space:]]|$)'
-   gpre='grep[[:space:]]+([^|;&)#]*[[:space:]])?'
-   quiet="(--quiet([[:space:]]|$)|--silent([[:space:]]|$)|${qtail})"
-   assign='([A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|]*[[:space:]]+)*'
-   neg='(!([[:space:]]+))?'
-   ## (1) A single '|' (or '|&') -- NOT '||' -- then optional assignments, then
-   ## grep with a quiet flag (long or short). The prefix ends in a non-'#'-non-'|'
-   ## char (or is absent for a leading '|'), which both excludes '||' and keeps a
-   ## comment '#' from reaching the pipe.
-   re_a="^([^#]*[^#|])?[|][&]?[[:space:]]*${assign}${gpre}${quiet}"
-   ## (2) grep in COMMAND position -- line start, after a separator, or after a
-   ## control keyword (NOT 'in', which heads a word list) -- with a SHORT quiet
-   ## flag, each position allowing '!' and assignment prefixes. Modeled on
-   ## check_R034_echo, so a 'grep -q' inside a string is not flagged from a bare
-   ## space.
-   re_b1="^[[:space:]]*${neg}${assign}${gpre}${qtail}"
-   re_b2="^[[:space:]]*[^#]*[;&|(){}\`][[:space:]]*${neg}${assign}${gpre}${qtail}"
-   re_b3="^[[:space:]]*([^#]*[[:space:]])?(then|do|else|if|elif|while|until)[[:space:]]+${neg}${assign}${gpre}${qtail}"
-
-   mapfile -d '' -t fs < <(filter_self "${@}")
-   if [ "${#fs[@]}" -eq 0 ]; then return 0; fi
-   for script in "${fs[@]}"; do
-      pipe_lines=()
-      pipe_hits="$(grep --line-number --extended-regexp "${re_a}" \
-         -- "${script}" 2>/dev/null || true)"
-      if [ -n "${pipe_hits}" ]; then
-         while IFS= read -r line; do
-            [ -z "${line}" ] && continue
-            fail "R-161 quiet grep consuming a pipe" "'${script}:${line}'"
-            pipe_lines["${line%%:*}"]=1
-         done <<< "${pipe_hits}"
-      fi
-      ## Short-flag hits, minus any LINE already reported by (1) -- dedup by line
-      ## number, not by dropping every line that merely contains a '| grep' (that
-      ## let an unrelated 'a | grep x; grep -q y' slip past).
-      short_raw="$(grep --line-number --extended-regexp \
-            --regexp="${re_b1}" --regexp="${re_b2}" --regexp="${re_b3}" \
-            -- "${script}" 2>/dev/null || true)"
-      if [ -n "${short_raw}" ]; then
-         while IFS= read -r line; do
-            [ -z "${line}" ] && continue
-            lineno="${line%%:*}"
-            [ -n "${pipe_lines[${lineno}]:-}" ] && continue
-            fail "R-161 grep short quiet flag (use --quiet)" "'${script}:${line}'"
-         done <<< "${short_raw}"
-      fi
-   done
-}
-
-check_R200_timeout_kill_after() {
-   local script hits exempt_hits line lineno content
-   local neg assign killrun exempt_array exempt_info exempt_funcdef
-   local cand_re1 cand_re2 cand_re3 ok_re1 ok_re2 ok_re3
-   local -A ok_lines
-   local -a fs
-
-   ## R-200: 'timeout N cmd' sends only SIGTERM after N seconds; a child wedged
-   ## in a syscall can ignore SIGTERM and then run FOREVER, defeating the very
-   ## bound 'timeout' was added for. Require a kill-after option ('--kill-after='
-   ## or its short '-k') so a follow-up SIGKILL guarantees the child dies.
-   ## Flags a 'timeout' in COMMAND position whose leading option run carries no
-   ## kill-after; spares one that does. Per-script waiver:
-   ## '## style-ok: allow-bare-timeout'. filter_self drops this checker (its own
-   ## regex literals and comments name 'timeout').
-   ##
-   ## Command position is modeled on check_R034_echo/check_R161: line start,
-   ## after a separator ';&|(){}`' (so '$(timeout 5 x)' and a backtick both
-   ## count), or after a control keyword, each allowing a '!' negation and a run
-   ## of leading 'VAR=value' assignments. Like R-034/R-161 it deliberately spares
-   ## a 'timeout' that is NOT a command word -- inside a string ('x="timeout 5"',
-   ## the common deferred-invocation spelling this rule CANNOT safely reason
-   ## about) or as another command's argument ('run timeout 5') -- so fix those
-   ## by hand. Residuals accepted (a line gate cannot parse shell): a separator
-   ## inside a string still matches; the OK/exempt scan is per-LINE, so a single
-   ## physical line carrying ANY OK/exempt construct -- a kill-after timeout, a
-   ## no-op 'timeout 0', a 'timeout --help', or an array-element timeout -- marks
-   ## the WHOLE line OK, sparing a SEPARATE bare timeout on it (a second
-   ## ';'-statement, or a trailing '#' comment that names an exempt form; the
-   ## candidate scan is '#'-aware but the exempt scan is not). One 'timeout' per
-   ## statement keeps it exact -- isolating statements/comments needs the shell
-   ## parsing this gate deliberately avoids. Likewise a '-k'/'--kill-after' in the
-   ## WRAPPED command's OWN arguments ('timeout 5 foo --kill-after=x') spares the
-   ## bare timeout. All are rare false NEGATIVES -- the safe direction, since a
-   ## valid kill-after must never be false-flagged.
-   mapfile -d '' -t fs < <(filter_self "${@}")
-   if [ "${#fs[@]}" -eq 0 ]; then return 0; fi
-
-   neg='(!([[:space:]]+))?'
-   assign='([A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|]*[[:space:]]+)*'
-   ## A kill-after option ('-k', '-k5', '--kill-after', '--kill-after=5') as a
-   ## whole word anywhere in the timeout's own pipeline segment (up to a
-   ## separator or '#'). '([^;&|#]*[[:space:]])?' skips any earlier options AND
-   ## their SPACE-separated values -- so '--signal TERM --kill-after 1' and
-   ## '-s TERM -k 1' (valid GNU syntax) are recognised, not just the '=' / no-arg
-   ## forms. A trailing space/'='/EOL pins it to a whole token.
-   killrun="([^;&|#]*[[:space:]])?(-k[^[:space:];&|#]*|--kill-after)([[:space:]=]|\$)"
-   ## COMMAND-position 'timeout' with at least one following token (candidate).
-   cand_re1="^[[:space:]]*${neg}${assign}timeout[[:space:]]"
-   cand_re2="^[[:space:]]*[^#]*[;&|(){}\`][[:space:]]*${neg}${assign}timeout[[:space:]]"
-   cand_re3="^[[:space:]]*([^#]*[[:space:]])?(then|do|else|if|elif|while|until)[[:space:]]+${neg}${assign}timeout[[:space:]]"
-   ## Same three positions, but a kill-after option is present in the segment.
-   ok_re1="^[[:space:]]*${neg}${assign}timeout[[:space:]]${killrun}"
-   ok_re2="^[[:space:]]*[^#]*[;&|(){}\`][[:space:]]*${neg}${assign}timeout[[:space:]]${killrun}"
-   ok_re3="^[[:space:]]*([^#]*[[:space:]])?(then|do|else|if|elif|while|until)[[:space:]]+${neg}${assign}timeout[[:space:]]${killrun}"
-   ## Extra SPARES (not command-position timeouts that time a child):
-   ##  - an array ELEMENT: 'cmd=(timeout 5 x)' -- the '(' is array syntax, not a
-   ##    command separator, so the word 'timeout' is DATA. '[^;&|#]*' keeps the
-   ##    match inside the one assignment.
-   ##  - an informational run: 'timeout --help' / '--version' times no child.
-   ##  - a function DEFINITION named timeout: 'timeout ()' / 'timeout()'.
-   ##  - a NO-OP timeout: an all-zero GNU duration ('0', '00', '0.', '.0',
-   ##    '0.0', '0s') bounds nothing, so there is no SIGTERM to back with a
-   ##    kill-after; the fixer likewise leaves it untouched. (A timeout's OWN
-   ##    '--kill-after=0' DISABLES the kill -- an
-   ##    accepted fail-OPEN this line-gate does not flag: telling it apart from a
-   ##    zero '-k' in the WRAPPED command's own args needs positional parsing,
-   ##    which this rule deliberately does not do. The fixer no longer EMITS one.)
-   exempt_array='[A-Za-z_][A-Za-z0-9_]*=\([^;&|#]*timeout'
-   exempt_info="timeout[[:space:]]+(--help|--version|--usage)([[:space:]]|\$)"
-   exempt_funcdef='timeout[[:space:]]*\(\)'
-   exempt_zero_timeout="timeout[[:space:]]+(0+(\.0*)?|\.0+)[smhd]?([[:space:]]|\$)"
-
-   for script in "${fs[@]}"; do
-      if grep --quiet --extended-regexp \
-         '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*allow-bare-timeout([[:space:]]|$)' \
-         -- "${script}"; then
-         note "R-200 skipped: 'style-ok: allow-bare-timeout' waiver in '${script}'"
-         continue
-      fi
-      ## A file defining its OWN timeout() function: every 'timeout N ...' in it
-      ## calls THAT function, not GNU coreutils, so the kill-after rule does not
-      ## apply and the fixer (pre-push-fix) likewise declines the file. Skip it.
-      if grep --quiet --extended-regexp \
-         '^[[:space:]]*(function[[:space:]]+)?timeout[[:space:]]*\([[:space:]]*\)' \
-         -- "${script}"; then
-         note "R-200 skipped: '${script}' defines its own timeout() -- calls target it, not coreutils"
-         continue
-      fi
-      ## OK lines first: a command-position timeout that already carries
-      ## kill-after. Dedup the candidate scan against these by LINE number.
-      ## A kill-after present (ok_re*), plus the extra spares (array element,
-      ## informational run, function definition), all mark a line OK by number.
-      ok_lines=()
-      exempt_hits="$(grep --line-number --extended-regexp \
-         --regexp="${ok_re1}" --regexp="${ok_re2}" --regexp="${ok_re3}" \
-         --regexp="${exempt_array}" --regexp="${exempt_info}" \
-         --regexp="${exempt_funcdef}" --regexp="${exempt_zero_timeout}" \
-         -- "${script}" 2>/dev/null || true)"
-      if [ -n "${exempt_hits}" ]; then
-         while IFS= read -r line; do
-            [ -z "${line}" ] && continue
-            ok_lines["${line%%:*}"]=1
-         done <<< "${exempt_hits}"
-      fi
-      hits="$(grep --line-number --extended-regexp \
-         --regexp="${cand_re1}" --regexp="${cand_re2}" --regexp="${cand_re3}" \
-         -- "${script}" 2>/dev/null || true)"
-      if [ -z "${hits}" ]; then
-         continue
-      fi
-      while IFS= read -r line; do
-         [ -z "${line}" ] && continue
-         lineno="${line%%:*}"
-         [ -n "${ok_lines[${lineno}]:-}" ] && continue
-         ## A line whose 'timeout' invocation is CONTINUED onto the next line
-         ## ('timeout \' with the options -- perhaps '--kill-after' -- below) is
-         ## spared: a line gate cannot see the continuation, so flagging it would
-         ## risk a false positive on a valid multi-line timeout.
-         content="${line#*:}"
-         case "${content}" in
-            *\\)
-               continue
-               ;;
-         esac
-         fail "R-200 timeout without --kill-after= (SIGTERM alone can be ignored)" "'${script}:${line}'"
-      done <<< "${hits}"
-   done
-}
-
-## Shared command-position fragments for R-210/R-211 (apt-get / dpkg as a command
-## word). Two SIMPLE positions only: line start, or right after a command
-## separator ';&|(){}`', each allowing a '!' negation, a run of leading
-## 'VAR=value' assignments, and an optional 'sudo'/'doas' wrapper (with its own
-## ATTACHED options / env-assignments) since 'sudo apt-get' is the dominant real
-## form. '${cmd}([[:space:]]|$)' pins the command to a whole word so
-## 'apt-get-noninteractive' / 'dpkg-noninteractive' / 'dpkg-deb' (a '-' after the
-## name) never match. Callers add a simple quote/array-context bail.
-##
-## Deliberate RESIDUAL false NEGATIVES (the safe direction; catching them needs a
-## bash parser the gate refuses to grow -- see the CLAUDE.md / bash-style-guide
-## rule):
-##   - a control-keyword-introduced command ('if apt-get install ...; then',
-##     'while apt-get ...'). A keyword-introducer pattern flagged ordinary PROSE
-##     ('echo wait until apt-get finishes'), a false POSITIVE that fails a valid
-##     push -- worse than the miss -- so it was removed.
-##   - a space-separated wrapper option value ('sudo -u root apt-get'). Running
-##     apt-get/dpkg as a non-root user is nonsensical, so it does not occur here.
-_pkg_cmd_re() {
-   local cmd neg assign wrap
-   cmd="${1}"
-   neg='(!([[:space:]]+))?'
-   assign='([A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|]*[[:space:]]+)*'
-   wrap='((sudo|doas)([[:space:]]+(-[^[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*))*[[:space:]]+)?'
-   printf '%s\n' \
-      "^[[:space:]]*${neg}${assign}${wrap}${assign}${cmd}([[:space:]]|\$)" \
-      "^[[:space:]]*[^#]*[;&|(){}\`][[:space:]]*${neg}${assign}${wrap}${assign}${cmd}([[:space:]]|\$)"
-}
-
-## SIMPLE quote-PRESENCE check (deliberately NOT a quote-state parser -- the gate
-## does not build one, per the bash-style-guide / CLAUDE.md rule). If a single or
-## double quote appears before NEEDLE, treat NEEDLE as string DATA and skip it --
-## the common help/skip-message form '... "(apt-get install x)" ...'. Accepted
-## RESIDUAL, the safe direction (a false NEGATIVE, never a false positive): a
-## command after a CLOSED quote on the same line ('echo "x"; apt-get ...') is
-## missed. Catching it needs quote-STATE tracking, which is exactly the parser
-## the gate refuses to grow.
-_pkg_quote_before() {
-   case "${1}" in
-      *\'*|*\"*)
-         return 0
-         ;;
-   esac
-   return 1
-}
-
-## True if TEXT ends inside an OPEN array/compound assignment 'VAR=(' or 'VAR+=('
-## with no closing ')' yet -- so a package command word there is an array ELEMENT
-## (DATA), not an invocation. A single anchored match (not a parser), mirroring
-## R-200's exempt_array spare. A closed 'VAR=(x); apt-get ...' does NOT match (the
-## ')' ends the run), so a real command after the array is still flagged.
-_pkg_array_before() {
-   [[ "${1}" =~ [A-Za-z_][A-Za-z0-9_]*\+?=\([^\)]*$ ]]
-}
-
-## Shared per-candidate filter for R-210/R-211/R-212: given the line CONTENT and
-## the needle, return 0 (skip) when the needle is string data or an array element
-## rather than a command-position token.
-_pkg_skip_context() {
-   local before
-   before="${1%%"${2}"*}"
-   _pkg_quote_before "${before}" && return 0
-   _pkg_array_before "${before}" && return 0
-   return 1
-}
-
-check_R210_apt_get_noninteractive() {
-   local script hits line content
-   local -a fs cand_re
-
-   ## R-210: 'apt-get' -> 'apt-get-noninteractive' (helper-scripts wrapper:
-   ## DEBIAN_FRONTEND=noninteractive, policy-rc.d, force-conf* -- so an install
-   ## in a script never blocks on a debconf prompt or a conffile question).
-   ## filter_self drops this checker (its own doc/regex name 'apt-get'); the
-   ## wrapper file itself is exempt (is_pkg_wrapper_file). Human-operator
-   ## override for a wrapper-less environment (a minimal CI image):
-   ## '## style-ok: allow-apt-get'.
-   mapfile -d '' -t fs < <(filter_self "${@}")
-   [ "${#fs[@]}" -gt 0 ] || return 0
-   mapfile -t cand_re < <(_pkg_cmd_re 'apt-get')
-   for script in "${fs[@]}"; do
-      is_pkg_wrapper_file "${script}" && continue
-      if grep --quiet --extended-regexp \
-         '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*allow-apt-get([[:space:]]|$)' \
-         -- "${script}"; then
-         note "R-210 skipped: 'style-ok: allow-apt-get' waiver in '${script}'"
-         continue
-      fi
-      hits="$(grep --line-number --extended-regexp \
-         --regexp="${cand_re[0]}" --regexp="${cand_re[1]}" \
-         -- "${script}" 2>/dev/null || true)"
-      [ -n "${hits}" ] || continue
-      while IFS= read -r line; do
-         [ -z "${line}" ] && continue
-         content="${line#*:}"
-         _pkg_skip_context "${content}" 'apt-get' && continue
-         note "R-210 (ADVISORY): 'apt-get' looks command-position -- prefer 'apt-get-noninteractive' (regex-detected, verify; '## style-ok: allow-apt-get' to silence): '${script}:${line}'"
-      done <<< "${hits}"
-   done
-}
-
-check_R211_dpkg_noninteractive() {
-   local script hits line content content_nc dpkg_action
-   local -a fs cand_re
-
-   ## R-211: a STATE-CHANGING 'dpkg' -> 'dpkg-noninteractive' (dpkg
-   ## --force-confnew). ONLY the actions that unpack/configure/change package
-   ## state are flagged; a read-only query ('dpkg --compare-versions', '-l',
-   ## '-L', '-s', '-S', ...) and the separate 'dpkg-*' tools ('dpkg-deb',
-   ## 'dpkg-query') are spared -- forcing a query through the wrapper is
-   ## meaningless and would break early-boot code where the wrapper may be
-   ## absent. filter_self drops this checker; the wrapper file is exempt.
-   ## Override: '## style-ok: allow-dpkg'.
-   mapfile -d '' -t fs < <(filter_self "${@}")
-   [ "${#fs[@]}" -gt 0 ] || return 0
-   mapfile -t cand_re < <(_pkg_cmd_re 'dpkg')
-   ## An action token in dpkg's OWN segment (up to a separator / '#'), as a whole
-   ## word. Single-letter actions ('-i','-r','-P','-A') are dpkg's, never
-   ## clustered with other flags.
-   dpkg_action='dpkg[[:space:]]([^;&|#]*[[:space:]])?(--install|--unpack|--configure|--remove|--purge|--record-avail|--set-selections|--clear-selections|--update-avail|--merge-avail|--forget-old-unavail|--triggers-only|-i|-r|-P|-A)([[:space:]]|=|$)'
-   for script in "${fs[@]}"; do
-      is_pkg_wrapper_file "${script}" && continue
-      if grep --quiet --extended-regexp \
-         '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*allow-dpkg([[:space:]]|$)' \
-         -- "${script}"; then
-         note "R-211 skipped: 'style-ok: allow-dpkg' waiver in '${script}'"
-         continue
-      fi
-      hits="$(grep --line-number --extended-regexp \
-         --regexp="${cand_re[0]}" --regexp="${cand_re[1]}" \
-         -- "${script}" 2>/dev/null || true)"
-      [ -n "${hits}" ] || continue
-      while IFS= read -r line; do
-         [ -z "${line}" ] && continue
-         content="${line#*:}"
-         _pkg_skip_context "${content}" 'dpkg' && continue
-         ## Only a state-changing action counts, and only in dpkg's OWN code --
-         ## strip a trailing '#' comment first so 'dpkg --version # dpkg --install'
-         ## (executed op read-only) is not flagged by the action named in the note.
-         content_nc="$(printf '%s' "${content}" | sed -e 's/\(^\|[[:space:]]\)#.*$//')"
-         printf '%s' "${content_nc}" | grep --quiet --extended-regexp -- "${dpkg_action}" || continue
-         note "R-211 (ADVISORY): state-changing 'dpkg' looks command-position -- prefer 'dpkg-noninteractive' (regex-detected, verify; '## style-ok: allow-dpkg' to silence): '${script}:${line}'"
-      done <<< "${hits}"
-   done
-}
-
-check_R212_allow_downgrades() {
-   local script hits line content
-   local -a fs
-
-   ## R-212: '--allow-downgrades' is forbidden -- a silent downgrade masks a
-   ## dependency or repository regression that should fail loudly. filter_self
-   ## drops this checker (its doc names the flag). The quote-state skip keeps
-   ## prose that merely names the flag inside a string ('never use
-   ## --allow-downgrades') from being reported. Human-operator override:
-   ## '## style-ok: allow-downgrades'.
-   mapfile -d '' -t fs < <(filter_self "${@}")
-   [ "${#fs[@]}" -gt 0 ] || return 0
-   for script in "${fs[@]}"; do
-      if grep --quiet --extended-regexp \
-         '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*allow-downgrades([[:space:]]|$)' \
-         -- "${script}"; then
-         note "R-212 skipped: 'style-ok: allow-downgrades' waiver in '${script}'"
-         continue
-      fi
-      hits="$(grep_code_lines '(^|[[:space:]=])--allow-downgrades([[:space:]]|=|$)' "${script}")"
-      [ -n "${hits}" ] || continue
-      while IFS= read -r line; do
-         [ -z "${line}" ] && continue
-         content="${line#*:}"
-         content="${content#*:}"
-         _pkg_skip_context "${content}" '--allow-downgrades' && continue
-         fail "R-212 --allow-downgrades forbidden" "${line}"
-      done <<< "${hits}"
-   done
-}
 
 check_R213_lintian_disabled() {
    local script hits
@@ -3146,44 +2317,6 @@ check_R153_help_from_comments() {
    done
 }
 
-check_R103_exec() {
-   local script hits line
-   local -a fs
-
-   ## R-103: process-replacement 'exec <command>' (run as child, forward rc).
-   ## Only COMMAND-POSITION 'exec' is process replacement: at line start, or right
-   ## after a command separator (; & | && || ( ) { }) or a control keyword
-   ## (then/do/else/in). 'exec' as an ARGUMENT to another command -- 'docker exec',
-   ## 'kubectl exec', 'nsenter ... exec' -- is a bareword-preceded subcommand, NOT
-   ## process replacement, so it must NOT match. fd-redirection exec ('exec 9>lock',
-   ## 'exec {fd}>&-', 'exec >file') is exempt via the trailing class (a digit / '{'
-   ## / '<' / '>' / '&' immediately follows 'exec'). A '[' immediately after 'exec'
-   ## is likewise exempt: that is usage/help TEXT describing an 'exec' SUBCOMMAND and
-   ## its options ('exec [--workdir DIR] -- CMD'), which a line-based grep otherwise
-   ## cannot tell from code. No real script replaces itself with the '[' builtin.
-   ## Per-script '## style-ok: allow-exec' waiver for surfaces that must genuinely
-   ## hand off the process. filter_self drops this script.
-   mapfile -d '' -t fs < <(filter_self "${@}")
-   if [ "${#fs[@]}" -eq 0 ]; then return 0; fi
-   for script in "${fs[@]}"; do
-      if grep --quiet --extended-regexp \
-         '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*allow-exec([[:space:]]|$)' \
-         -- "${script}"; then
-         continue
-      fi
-      hits="$(grep --line-number --extended-regexp \
-         --regexp='^[[:space:]]*exec[[:space:]]+[^[:space:]0-9{<>&[]' \
-         --regexp='^[[:space:]]*[^#]*[;&|(){}][[:space:]]*exec[[:space:]]+[^[:space:]0-9{<>&[]' \
-         --regexp='^[[:space:]]*[^#]*[[:space:]](then|do|else|in)[[:space:]]+exec[[:space:]]+[^[:space:]0-9{<>&[]' \
-         -- "${script}" 2>/dev/null || true)"
-      if [ -z "${hits}" ]; then
-         continue
-      fi
-      while IFS= read -r line; do
-         fail "R-103 process-replacement exec" "'${script}:${line}'"
-      done <<< "${hits}"
-   done
-}
 
 check_R080_shellcheck_source_path() {
    local hits
@@ -3619,6 +2752,53 @@ check_comments_audit() {
    return 0
 }
 
+## Parser-backed shell-structure rules (command position, quote/heredoc state),
+## run via pre-push-detect over the shfmt AST -- exact where a regex could only
+## approximate (a command inside a string / heredoc / array, a 'sudo'-wrapped
+## invocation). Findings are rendered through this gate's own fail()/note(), so
+## the output and every per-rule test are unchanged. pre-push-detect ships beside
+## this gate (dist-ai usr/bin) or installed on PATH.
+##
+## A MISSING detector, or shfmt absent (exit 2), is a REQUIRED-tool FAILURE, not
+## a skip: silently dropping these rules would be a false green. Same discipline
+## as R-090's own no-unauthorized-skip rule.
+run_ast_detector() {
+   local detector cand output severity message location rc
+
+   detector=""
+   for cand in \
+      "$( dirname -- "$( readlink --canonicalize -- "$0" )" )/pre-push-detect" \
+      '/usr/bin/pre-push-detect'; do
+      if [ -x "${cand}" ]; then
+         detector="${cand}"
+         break
+      fi
+   done
+   if [ -z "${detector}" ]; then
+      fail "pre-push-detect not found; parser-backed shell rules could not run" "(required tool)"
+      return 0
+   fi
+   rc=0
+   output="$( "${detector}" "$@" )" || rc=$?
+   if [ "${rc}" -eq 2 ]; then
+      fail "pre-push-detect could not run" "shfmt is required and absent"
+      return 0
+   fi
+   if [ -z "${output}" ]; then
+      return 0
+   fi
+   while IFS=$'\x1f' read -r severity message location; do
+      case "${severity}" in
+         FAIL)
+            fail "${message}" "${location}"
+            ;;
+         NOTE)
+            note "${message}"
+            ;;
+      esac
+   done <<< "${output}"
+}
+
 warn_untracked_shell_files() {
    ## A brand-new script is invisible to 'git diff', so it contributes no
    ## changed file and every check silently skips it -- while the gate still
@@ -3697,22 +2877,15 @@ run_file_checks() {
       check_R021_local_assign "${shell_files[@]}"
       check_R081_source_devnull "${shell_files[@]}"
       check_R085_sc1091_disable "${shell_files[@]}"
-      check_R090_command_v "${shell_files[@]}"
       check_R170_tmp_hardcode "${shell_files[@]}"
-      check_R172_mkdir_tmp_mode "${shell_files[@]}"
-      check_R120_rm "${shell_files[@]}"
-      check_R130_null_command "${shell_files[@]}"
-      check_R034_echo "${shell_files[@]}"
-      check_R161_grep_pipe_quiet "${shell_files[@]}"
-      check_R200_timeout_kill_after "${shell_files[@]}"
-      check_R210_apt_get_noninteractive "${shell_files[@]}"
-      check_R211_dpkg_noninteractive "${shell_files[@]}"
-      check_R212_allow_downgrades "${shell_files[@]}"
       check_R213_lintian_disabled "${shell_files[@]}"
-      check_R103_exec "${shell_files[@]}"
-      check_R190_inline_interpreter "${shell_files[@]}"
+      ## Parser-backed shell-structure rules on the shfmt AST: R-090, R-103,
+      ## R-120, R-034, R-130, R-161, R-172, R-200, R-210, R-211, R-212. One AST
+      ## pass replaces the former per-rule regex bodies (the _pkg_* command-
+      ## position approximation, the defang-based scans, and the quote/heredoc
+      ## fail-open residuals each of those documented).
+      run_ast_detector "${shell_files[@]}"
       check_R192_shell_inline_shell_c "${shell_files[@]}"
-      check_R193_python_dashdash_script "${shell_files[@]}"
       check_R153_help_from_comments "${shell_files[@]}"
    else
       note "no changed shell files"
