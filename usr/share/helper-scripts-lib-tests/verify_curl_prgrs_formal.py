@@ -60,7 +60,7 @@ import sys
 
 try:
     import z3
-except Exception as exc:  # pylint: disable=broad-except
+except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001 -- any z3 load failure (import or native lib) must FAIL clean
     sys.stderr.write(
         "helper-scripts-lib-tests(verify_curl_prgrs_formal): FAIL missing "
         "dependency (z3 / python3-z3): %s\n" % exc
@@ -240,7 +240,7 @@ def t1_enumerate(subject, env):
     if len(got) != len(grid):
         fail("T1 enumerate: expected %d results, got %d" % (len(grid), len(got)))
         return
-    for (b, length), g in zip(grid, got):
+    for (b, length), g in zip(grid, got, strict=True):
         want = m_compute_percent(b, length)
         if g != str(want):
             fail("T1 enumerate: compute_percent %d %d -> bash %s, model %d" % (b, length, g, want))
@@ -303,7 +303,7 @@ def t2_enumerate(subject, env):
     if len(got) != len(grid):
         fail("T2 enumerate: expected %d results, got %d" % (len(grid), len(got)))
         return
-    for (s, mx, cl), g in zip(grid, got):
+    for (s, mx, cl), g in zip(grid, got, strict=True):
         want = m_classify(s, mx, cl)
         if g != str(want):
             fail("T2 enumerate: classify %r %d %d -> bash %s, model %d" % (s, mx, cl, g, want))
@@ -441,7 +441,7 @@ def t4_enumerate(subject, env):
     if len(got) != len(grid):
         fail("T4 enumerate: expected %d ceiling results, got %d" % (len(grid), len(got)))
         return
-    for (h, a, m), g in zip(grid, got):
+    for (h, a, m), g in zip(grid, got, strict=True):
         want = m_ceiling(h, a, m)
         if g != str(want):
             fail("T4 enumerate: ceiling %r %d %d -> bash %s, model %d" % (h, a, m, g, want))
@@ -461,7 +461,7 @@ def t4_enumerate(subject, env):
     if len(comp_got) != len(sizes):
         fail("T4 compose: expected %d results, got %d" % (len(sizes), len(comp_got)))
         return
-    for s, g in zip(sizes, comp_got):
+    for s, g in zip(sizes, comp_got, strict=True):
         want = 81 if s > cap else 0            # header phase: 0 within cap, 81 over
         if g != str(want):
             fail("T4 compose: header size %d (est %d cap %d) -> bash %s, want %d"
