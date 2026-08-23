@@ -104,16 +104,21 @@
 ##      a multi-statement command ('cmd1; cmd2', 'cmd | proc'); move it to a
 ##      script. '&&'/'||' glue is tolerated (no native cron alternative).
 ##      '# style-ok: allow-embedded-script'.
-##  28. R-210 'apt-get' in command position must be the helper-scripts wrapper
+##  28. R-210 'apt-get' in command position should be the helper-scripts wrapper
 ##      'apt-get-noninteractive' (sets DEBIAN_FRONTEND=noninteractive etc.).
-##      The wrapper file itself is exempt. Human-operator override (a wrapper
-##      unavailable, e.g. a minimal CI image): '## style-ok: allow-apt-get'.
+##      ADVISORY (notify-only), never a gate failure: detecting a shell COMMAND
+##      position by regex cannot be made exact without a bash parser (quoted
+##      strings, 'FOO=a;b apt-get' arg lists, case-arm patterns all fooled it),
+##      and per the no-bash-parser rule an honest flag-for-human beats a fragile
+##      matcher that FAILS valid pushes. The wrapper file itself is exempt.
+##      Suppress the note: '## style-ok: allow-apt-get'.
 ##  29. R-211 a STATE-CHANGING 'dpkg' (--install/-i, --unpack, --configure,
 ##      --remove/-r, --purge/-P, --record-avail/-A, --{set,clear}-selections,
-##      --{update,merge}-avail, --forget-old-unavail, --triggers-only) must be
-##      'dpkg-noninteractive'. Read-only queries ('dpkg --compare-versions',
-##      '-l', '-L', '-s', ...) and the 'dpkg-*' sub-tools ('dpkg-deb',
-##      'dpkg-query') are NOT flagged. Override: '## style-ok: allow-dpkg'.
+##      --{update,merge}-avail, --forget-old-unavail, --triggers-only) should be
+##      'dpkg-noninteractive'. ADVISORY (notify-only), same reason as R-210.
+##      Read-only queries ('dpkg --compare-versions', '-l', '-L', '-s', ...) and
+##      the 'dpkg-*' sub-tools ('dpkg-deb', 'dpkg-query') are NOT noted.
+##      Suppress the note: '## style-ok: allow-dpkg'.
 ##  30. R-212 '--allow-downgrades' is forbidden (silent downgrades hide a
 ##      dependency/repo regression); prefer the default refuse-downgrade.
 ##      Human-operator override: '## style-ok: allow-downgrades'.
@@ -3004,7 +3009,7 @@ check_R210_apt_get_noninteractive() {
          [ -z "${line}" ] && continue
          content="${line#*:}"
          _pkg_skip_context "${content}" 'apt-get' && continue
-         fail "R-210 apt-get not apt-get-noninteractive" "'${script}:${line}'"
+         note "R-210 (ADVISORY): 'apt-get' looks command-position -- prefer 'apt-get-noninteractive' (regex-detected, verify; '## style-ok: allow-apt-get' to silence): '${script}:${line}'"
       done <<< "${hits}"
    done
 }
@@ -3049,7 +3054,7 @@ check_R211_dpkg_noninteractive() {
          ## (executed op read-only) is not flagged by the action named in the note.
          content_nc="$(printf '%s' "${content}" | sed -e 's/\(^\|[[:space:]]\)#.*$//')"
          printf '%s' "${content_nc}" | grep --quiet --extended-regexp -- "${dpkg_action}" || continue
-         fail "R-211 state-changing dpkg not dpkg-noninteractive" "'${script}:${line}'"
+         note "R-211 (ADVISORY): state-changing 'dpkg' looks command-position -- prefer 'dpkg-noninteractive' (regex-detected, verify; '## style-ok: allow-dpkg' to silence): '${script}:${line}'"
       done <<< "${hits}"
    done
 }

@@ -5,24 +5,27 @@
 
 ## AI-Assisted
 
-## Functional test for the package-management rules, both sides of each:
-##  R-210 apt-get         -> apt-get-noninteractive (gate FLAGS + fixer REWRITES)
-##  R-211 state-changing dpkg -> dpkg-noninteractive (gate FLAGS; query/dpkg-*
-##                            spared; fixer does NOT touch dpkg)
-##  R-212 --allow-downgrades forbidden (gate FLAGS; fixer does NOT touch)
-##  R-213 make_use_lintian=false forbidden (gate FLAGS; fixer does NOT touch)
+## Functional test for the package-management rules:
+##  R-210 apt-get         -> apt-get-noninteractive: ADVISORY (gate NOTES, never
+##                            fails; fixer does NOT touch apt-get)
+##  R-211 state-changing dpkg -> dpkg-noninteractive: ADVISORY (gate NOTES;
+##                            query/dpkg-* not noted; fixer does NOT touch dpkg)
+##  R-212 --allow-downgrades forbidden: HARD FAIL (gate FLAGS; fixer does NOT touch)
+##  R-213 make_use_lintian=false forbidden: HARD FAIL (gate FLAGS; fixer untouched)
 ##
-## Each rule carries a CONTROL (a command it MUST flag) so no ALLOW passes
-## vacuously, the spared forms (the wrapper itself, a query dpkg, a dpkg-* tool,
-## an in-string mention, a waived file), and the human-operator waiver.
+## R-210/R-211 are notify-only because a shell COMMAND position cannot be pinned
+## by regex without a bash parser (the no-bash-parser rule): a fragile matcher
+## that FAILS a valid push, or a fixer that CORRUPTS 'apt-get' as an argument
+## ('FOO=a;b apt-get') or a case-arm pattern, is worse than an honest human-facing
+## note. So the R-210/R-211 assertions check a NOTE + a GREEN gate; R-212/R-213
+## check a hard FAIL. Each rule carries a CONTROL and the spared/waived forms.
 ##
 ## Fixture bodies are ASSEMBLED from fragments so no command-position apt-get /
 ## 'dpkg <action>' / '--allow-downgrades' / 'make_use_lintian=false' appears
 ## literally on a source line of THIS tracked file -- the gate scans it too. The
 ## waiver strings are wrapped inside a 'body_of "..."' argument so their '##'
-## never anchors as a real waiver on this file. Assertions match the gate's FAIL
-## line ('FAIL R-21x') so a waiver-SKIP note (which also names the rule) is not
-## mistaken for a violation.
+## never anchors as a real waiver on this file. Advisory assertions match the
+## '(ADVISORY)' note (not a waiver-SKIP note, which lacks that marker).
 
 set -o errexit
 set -o nounset
@@ -148,49 +151,98 @@ assert_spared() {
    fi
 }
 
-## --- R-210: apt-get -> apt-get-noninteractive ---
-assert_flagged "R-210" "apt-sudo"     "$(body_of "sudo ${ag} install foo")"
-assert_flagged "R-210" "apt-linestart" "$(body_of "${ag} update")"
-assert_flagged "R-210" "apt-cmdsubst" "$(body_of "out=\$(${ag} update)")"
-assert_flagged "R-210" "apt-after-sep" "$(body_of "true${sc} ${ag} install foo")"
-assert_spared  "R-210" "apt-wrapper"  "$(body_of "sudo ${agn} install foo")"
-assert_spared  "R-210" "apt-instring" "$(body_of "printf '%s' 'run (${ag} install x)'")"
-assert_spared  "R-210" "apt-waiver" \
+## assert_noted <rule> <name> <body> -- an '<rule> (ADVISORY)' note must appear
+## and the gate must stay GREEN (advisory never fails a push).
+assert_noted() {
+   local rule="$1" name="$2" body="$3"
+   run_gate_on_body "${name}" "${body}"
+   if ! grep --fixed-strings -- "${rule} (ADVISORY)" <<< "${gate_output}" >/dev/null; then
+      printf '%s\n' "FAIL: ${rule} did NOT note ${name}"
+      printf '%s\n' "${gate_output}" | tail -5
+      fail=1
+   elif [ "${gate_rc}" -ne 0 ]; then
+      printf '%s\n' "FAIL: advisory ${rule} FAILED the gate on ${name} (rc=${gate_rc}) -- must be notify-only"
+      printf '%s\n' "${gate_output}" | tail -5
+      fail=1
+   else
+      printf '%s\n' "PASS: ${rule} noted ${name} (advisory, gate green)"
+   fi
+}
+
+## assert_green <name> <body> -- the gate must be GREEN, regardless of any note.
+## For the imperfect-detection cases (a prose keyword, a state-changing action
+## quoted in a string): advisory means a false note is HARMLESS -- the one thing
+## that must hold is the push is not blocked.
+assert_green() {
+   local name="$1" body="$2"
+   run_gate_on_body "${name}" "${body}"
+   if [ "${gate_rc}" -ne 0 ]; then
+      printf '%s\n' "FAIL: gate not green on ${name} (rc=${gate_rc})"
+      printf '%s\n' "${gate_output}" | tail -5
+      fail=1
+   else
+      printf '%s\n' "PASS: gate green on ${name}"
+   fi
+}
+
+## assert_not_noted <rule> <name> <body> -- no '<rule> (ADVISORY)' note and green.
+assert_not_noted() {
+   local rule="$1" name="$2" body="$3"
+   run_gate_on_body "${name}" "${body}"
+   if grep --fixed-strings -- "${rule} (ADVISORY)" <<< "${gate_output}" >/dev/null; then
+      printf '%s\n' "FAIL: ${rule} wrongly noted ${name}"
+      printf '%s\n' "${gate_output}" | grep --fixed-strings -- "${rule} (ADVISORY)" | head -2
+      fail=1
+   elif [ "${gate_rc}" -ne 0 ]; then
+      printf '%s\n' "FAIL: gate not green on spared fixture ${name} (rc=${gate_rc})"
+      printf '%s\n' "${gate_output}" | tail -5
+      fail=1
+   else
+      printf '%s\n' "PASS: ${rule} spared ${name}"
+   fi
+}
+
+## --- R-210: apt-get -> apt-get-noninteractive (ADVISORY: note + green) ---
+assert_noted "R-210" "apt-sudo"     "$(body_of "sudo ${ag} install foo")"
+assert_noted "R-210" "apt-linestart" "$(body_of "${ag} update")"
+assert_noted "R-210" "apt-cmdsubst" \
+   "$(body_of "out=\$(${ag} update)" "printf '%s' ${dq}\${out}${dq}")"
+assert_noted "R-210" "apt-after-sep" "$(body_of "true${sc} ${ag} install foo")"
+assert_not_noted "R-210" "apt-wrapper"  "$(body_of "sudo ${agn} install foo")"
+assert_not_noted "R-210" "apt-instring" "$(body_of "printf '%s' 'run (${ag} install x)'")"
+assert_not_noted "R-210" "apt-waiver" \
    "$(body_of "## style-ok: allow-apt-get" "sudo ${ag} install foo")"
 ## A subshell '(cmd)' IS a command position; an ARRAY element 'v=(cmd)' is DATA.
-assert_flagged "R-210" "apt-subshell"  "$(body_of "(${ag} install foo)")"
-assert_spared  "R-210" "apt-array" \
+assert_noted "R-210" "apt-subshell"  "$(body_of "(${ag} install foo)")"
+assert_not_noted "R-210" "apt-array" \
    "$(body_of "cmd=(${ag} install foo)" "printf '%s' ${dq}\${cmd[@]}${dq}")"
-## PROSE: a control keyword ('until') mid-sentence must NOT be read as a command
-## introducer -- the removed keyword-introducer pattern flagged this (a false
-## POSITIVE that fails a valid push). allow-echo waives the echo so only the
-## R-210 decision is under test. Documented RESIDUAL (safe direction, NOT tested
-## as a hard assertion): a real keyword-introduced command ('if ${ag} ...; then')
-## and a command after a CLOSED quote ('echo "x"${sc} ${ag} ...') are missed --
-## catching them needs a bash parser the gate refuses to grow.
-assert_spared  "R-210" "prose-keyword" \
+## Because R-210 is advisory, a false POSITIVE note is harmless (the push is not
+## blocked) -- the key property is the gate stays GREEN. A prose keyword line that
+## fooled the old FAIL-ing matcher must NOT fail the push now. (allow-echo silences
+## an unrelated echo lint.)
+assert_green "prose-keyword" \
    "$(body_of "## style-ok: allow-echo" "echo wait until ${ag} finishes")"
 
-## --- R-211: state-changing dpkg -> dpkg-noninteractive ---
-assert_flagged "R-211" "dpkg-i"          "$(body_of "sudo ${dp} -i ./x.deb")"
-assert_flagged "R-211" "dpkg-install"    "$(body_of "sudo ${dp} --install -- ./x.deb")"
-assert_flagged "R-211" "dpkg-configure"  "$(body_of "sudo ${dp} --configure -a")"
-assert_flagged "R-211" "dpkg-purge"      "$(body_of "sudo ${dp} -P somepkg")"
-assert_spared  "R-211" "dpkg-compare"    "$(body_of "${dp} --compare-versions a gt b")"
-assert_spared  "R-211" "dpkg-listfiles"  "$(body_of "${dp} -L somepkg")"
-assert_spared  "R-211" "dpkg-deb"        "$(body_of "${dp}-deb --field ./x.deb Version")"
-assert_spared  "R-211" "dpkg-wrapper"    "$(body_of "sudo ${dp}-noninteractive --install --refuse-downgrade -- ./x.deb")"
-assert_spared  "R-211" "dpkg-instring"   "$(body_of "printf '%s' 'try (${dp} -i x)'")"
-assert_spared  "R-211" "dpkg-waiver" \
+## --- R-211: state-changing dpkg -> dpkg-noninteractive (ADVISORY: note + green) ---
+assert_noted "R-211" "dpkg-i"          "$(body_of "sudo ${dp} -i ./x.deb")"
+assert_noted "R-211" "dpkg-install"    "$(body_of "sudo ${dp} --install -- ./x.deb")"
+assert_noted "R-211" "dpkg-configure"  "$(body_of "sudo ${dp} --configure -a")"
+assert_noted "R-211" "dpkg-purge"      "$(body_of "sudo ${dp} -P somepkg")"
+assert_not_noted "R-211" "dpkg-compare"    "$(body_of "${dp} --compare-versions a gt b")"
+assert_not_noted "R-211" "dpkg-listfiles"  "$(body_of "${dp} -L somepkg")"
+assert_not_noted "R-211" "dpkg-deb"        "$(body_of "${dp}-deb --field ./x.deb Version")"
+assert_not_noted "R-211" "dpkg-wrapper"    "$(body_of "sudo ${dp}-noninteractive --install --refuse-downgrade -- ./x.deb")"
+assert_not_noted "R-211" "dpkg-instring"   "$(body_of "printf '%s' 'try (${dp} -i x)'")"
+assert_not_noted "R-211" "dpkg-waiver" \
    "$(body_of "## style-ok: allow-dpkg" "sudo ${dp} -i ./x.deb")"
 ## A state-changing action named only in a trailing COMMENT is not executed.
-assert_spared  "R-211" "dpkg-action-in-comment" \
+assert_not_noted "R-211" "dpkg-action-in-comment" \
    "$(body_of "${dp} --version ${hash} ${dp} --install ./x.deb")"
-## Command-position residual (documented, NOT fixed): a space-separated sudo
-## option value ('sudo -u root ${dp} ...') is a false negative. Running dpkg as a
-## non-root user is nonsensical, so this form does not occur for these targets;
-## growing the wrap into a sudo-option parser is the treadmill the style rules
-## forbid. No assertion -- see the R-210 note.
+## A read-only query line that merely QUOTES a state-changing dpkg in a string
+## must stay GREEN -- the old FAIL-ing matcher flagged the quoted '--install' and
+## blocked this valid push; advisory makes any such note harmless.
+assert_green "dpkg-query-quotes-install" \
+   "$(body_of "${dp} --compare-versions a gt b || printf '%s' ${dq}${dp} --install foo${dq}")"
 
 ## --- R-212: --allow-downgrades forbidden ---
 assert_flagged "R-212" "downgrade"       "$(body_of "sudo ${agn} install ${adg} -- foo")"
@@ -213,7 +265,7 @@ assert_spared  "R-213" "lintian-in-string" \
 assert_spared  "R-213" "lintian-substring" \
    "$(body_of "disable_${mul}=false" "printf '%s' ${dq}\${disable_${mul}}${dq}")"
 
-## --- fixer (pre-push-fix): R-210 rewrites; R-211/212/213 are gate-report-only ---
+## --- fixer (pre-push-fix): R-210/R-211 are NOT auto-fixed (advisory in the gate) ---
 run_fix() {
    local name body file
    name="$1"
@@ -224,29 +276,8 @@ run_fix() {
    fix_result="$(cat -- "${file}")"
 }
 
-## A command-position apt-get is renamed to the wrapper.
-run_fix "apt-rename" "sudo ${ag} install foo"
-if grep --fixed-strings -- "sudo ${agn} install foo" <<< "${fix_result}" >/dev/null; then
-   printf '%s\n' "PASS: pre-push-fix renamed apt-get to the wrapper"
-else
-   printf '%s\n' "FAIL: pre-push-fix did not rename apt-get"
-   printf '%s\n' "${fix_result}"
-   fail=1
-fi
-
-## Idempotent: a second pass changes nothing.
-run_fix "apt-idem" "sudo ${ag} install foo"
-first="${fix_result}"
-"${FIX}" "${test_dir}/fix-apt-idem.sh" >/dev/null 2>&1 || true
-if [ "${first}" = "$(cat -- "${test_dir}/fix-apt-idem.sh")" ]; then
-   printf '%s\n' "PASS: pre-push-fix apt-get rename is idempotent"
-else
-   printf '%s\n' "FAIL: pre-push-fix apt-get rename is not idempotent"
-   fail=1
-fi
-
-## SAFETY: the fixer must NOT rewrite an already-wrapped apt-get, an in-string
-## mention, a waived file, a dpkg, an --allow-downgrades, or make_use_lintian.
+## SAFETY: the fixer must NOT rewrite apt-get/dpkg AT ALL (advisory rules), nor an
+## --allow-downgrades or make_use_lintian.
 assert_fix_unchanged() {
    local name body
    name="$1"
@@ -260,10 +291,19 @@ assert_fix_unchanged() {
       fail=1
    fi
 }
+## A plain command-position apt-get is NOT renamed any more (R-210 is advisory).
+assert_fix_unchanged "apt-cmdpos"      "sudo ${ag} install foo"
 assert_fix_unchanged "already-wrapped" "sudo ${agn} install foo"
 assert_fix_unchanged "apt-in-string"   "printf '%s' 'run (${ag} install x)'"
 assert_fix_unchanged "apt-waived" \
    "$(printf '%s\n' '## style-ok: allow-apt-get' "sudo ${ag} install foo")"
+## CANARY: the removed auto-fixer CORRUPTED these -- 'apt-get' as an argument
+## after a 'VAR=a;b' / 'VAR=a|b' command list, and as a case-arm PATTERN -- by
+## renaming it to 'apt-get-noninteractive'. The fixer must now leave them intact.
+assert_fix_unchanged "apt-arg-after-semi"  "FOO=a${sc}b ${ag} install"
+assert_fix_unchanged "apt-arg-after-pipe"  "FOO=bar|baz ${ag} install"
+assert_fix_unchanged "apt-case-arm" \
+   "$(printf '%s\n' 'case ${1} in' "${ag} )" '  printf x' '  ;;' 'esac')"
 ## dpkg is gate-report-only: the fixer never touches it (an action-aware
 ## decision, not a single-token rename).
 assert_fix_unchanged "dpkg-untouched"  "sudo ${dp} -i ./x.deb"
