@@ -100,8 +100,37 @@ METHOD, and what is PROVED vs ASSUMED (honest scope):
     (its accumulator is append-only and never read back), so for any text the loop
     output is the concatenation of the per-character map over the post-escape-strip
     text. Manifest from the code; backed here by an executable homomorphism check
-    over adversarial probes. Together with the exhaustive per-code-point result it
-    lifts the theorem from single characters to inputs of any length.
+    over adversarial probes INCLUDING escape-bearing ones (strip is delete-only;
+    the per-character identity is recovered after ANSI_RE.sub). Together with the
+    exhaustive per-code-point result it lifts the theorem from single characters
+    to inputs of any length.
+
+  STRENGTHENINGS (the original proof was weaker than it looked in these places):
+    * Show-mode / paste-unicode / clip-unicode / tui / cells_to_runs "no invisible"
+      checks originally called S.is_default_ignorable / S.is_bidi_control -- the
+      SAME predicates the sanitizer uses to filter. A missing DI range would then
+      leak AND pass the proof. Those checks now use an INDEPENDENT oracle built
+      from Unicode Standard properties (regex \\p{Default_Ignorable_Code_Point},
+      \\p{Bidi_Control}, unicodedata.category) and L-di / L-bidi prove the
+      sanitizer's hand lists equal those properties on every code point.
+    * T1's Z3 "classifier is total" ITE-cover is still there (it is a sanity
+      check) but is no longer the flagship obligation: we now prove the
+      non-vacuous converses (PASS implies SAFE_ASCII; ESC/BEL/C0/C1 never PASS)
+      and evaluate the Z3 classifier against real render_output on a dense grid.
+    * T1 originally never ran render_output on an ESC-containing string (L-hom
+      stripped ESC first). The escape-strip path is now checked: delete-only,
+      post-strip homomorphism, and the strict/show alphabet on those probes.
+    * T4 did not forbid a display-copy path that DECODED a homoglyph to its
+      ASCII look-alike (that output is still SAFE_ASCII). Confusables must now
+      drop to empty. sanitize_clipboard_display is in the homomorphism loop.
+    * T8's 8-symbol alphabet could not even form SS2/SS3, charset designators,
+      or DEC-private CSI -- the split-escape class the theorem names. A catalog
+      of real sequences is now split at every offset, the alphabet is richer,
+      and the over-cap DISCARD path must resume on the right terminator (DCS
+      must NOT treat BEL as end -- BEL is body).
+    * T2's abstract WRITE never modelled the combining-mark flood-cap drop or
+      line_edits=False (CSI becomes a no-op strip). Both are now transitions
+      in the inductive proof and the real-vs-model grid.
 
   SCOPE / NOT PROVED HERE: only the PURE sanitizer (sanitize.py) is verified. The
   Qt widget layer is NOT: the no-write-back property (INV-6, "output never induces
@@ -121,11 +150,12 @@ import sys
 import unicodedata
 
 try:
+    import regex as _regex
     import z3
     from secure_terminal import sanitize as S
 except Exception as exc:  # pylint: disable=broad-except
     sys.stderr.write('secure-terminal-tests(verify_formal): FAIL missing '
-                     'dependency (z3 / secure_terminal): %s\n' % exc)
+                     'dependency (z3 / regex / secure_terminal): %s\n' % exc)
     sys.exit(1)
 
 FAIL = 0
@@ -145,6 +175,66 @@ SAFE_ASCII = frozenset((0x08, 0x09, 0x0A, 0x0D)) | frozenset(range(0x20, 0x7F))
 
 MAX_CP = 0x10FFFF                 # the whole Unicode code-point space, inclusive
 STRICT_MODES = ('box', 'reveal', 'detail')
+
+# ---------------------------------------------------------------------------
+# Independent Unicode oracles. These MUST NOT call S.is_default_ignorable /
+# S.is_bidi_control / S.is_invisible -- that circularity was the original proof's
+# biggest silent weakness: a sanitizer regression that dropped a DI range would
+# also drop it from the checker. Built from the Unicode Standard properties the
+# regex module ships (UCD) plus unicodedata.category.
+# ---------------------------------------------------------------------------
+_DI_PROP = _regex.compile(r'\p{Default_Ignorable_Code_Point}')
+_BIDI_PROP = _regex.compile(r'\p{Bidi_Control}')
+INDEP_DI = frozenset(cp for cp in range(0, MAX_CP + 1)
+                     if _DI_PROP.fullmatch(chr(cp)))
+INDEP_BIDI = frozenset(cp for cp in range(0, MAX_CP + 1)
+                       if _BIDI_PROP.fullmatch(chr(cp)))
+# Cc except the four editing controls render_output is documented to pass.
+_INDEP_CC_FORBIDDEN = frozenset(cp for cp in range(0, MAX_CP + 1)
+                                if unicodedata.category(chr(cp)) == 'Cc'
+                                and cp not in (0x08, 0x09, 0x0A, 0x0D))
+_INDEP_FORMATISH = frozenset(cp for cp in range(0, MAX_CP + 1)
+                             if unicodedata.category(chr(cp)) in
+                             ('Cf', 'Cs', 'Co', 'Cn', 'Zl', 'Zp'))
+
+
+def _indep_is_di(ch):
+    return ord(ch) in INDEP_DI
+
+
+def _indep_is_bidi(cp):
+    return cp in INDEP_BIDI
+
+
+def _indep_output_dangerous(oc):
+    """True when `oc` is a character no sanitizer output (any mode) may emit:
+    a bidi control, a default-ignorable, a C0/C1/DEL other than the four
+    honored editing controls, or any format / surrogate / private-use /
+    unassigned / line-or-paragraph separator. Independent of S.is_*."""
+    cp = ord(oc)
+    if cp in INDEP_BIDI or cp in INDEP_DI:
+        return True
+    if cp in _INDEP_CC_FORBIDDEN or cp in _INDEP_FORMATISH:
+        return True
+    return False
+
+
+def _show_char_ok(ch):
+    """Show-mode whitelist using the INDEPENDENT oracle, not S.is_*.
+
+    Admits SAFE_ASCII, the documented BOX / SPACE_MARK markers, honest
+    structural glyphs (box-drawing / block, via the sanitizer's structural
+    carve-out -- a display-policy predicate, not a danger predicate), and a
+    printable non-ASCII glyph that the Unicode properties say is neither
+    default-ignorable nor a bidi control."""
+    cp = ord(ch)
+    if cp in SAFE_ASCII:
+        return True
+    if ch == S.BOX or ch == S.SPACE_MARK:
+        return True
+    if S.is_structural(cp) and not _indep_output_dangerous(ch):
+        return True
+    return (ch.isprintable() and not _indep_output_dangerous(ch))
 
 
 # ===========================================================================
@@ -239,6 +329,8 @@ def t1_z3():
     # (3) The strict-mode classifier is TOTAL and DETERMINISTIC: every code point
     # in range is assigned exactly one of the four known classes -- none falls
     # through unclassified (which would be an unhandled byte reaching the screen).
+    # HONEST LIMIT: this Or(...) is true of any four-way ITE; it is a sanity
+    # check, not the security property. The NON-VACUOUS obligations follow.
     for mode in STRICT_MODES:
         cls = _classify_z3(cp, mode)
         z3_prove('classifier-total-%s' % mode,
@@ -253,26 +345,74 @@ def t1_z3():
                  cls != forbidden,
                  assumptions=[in_range, z3.Not(_in_safe_ascii_z3(cp)),
                               cp != 0x07])
+        # Converses that the ITE-cover does NOT imply: a classifier that always
+        # returns PASS is still "total", but these fail.
+        z3_prove('classifier-pass-implies-safe-%s' % mode,
+                 z3.Implies(cls == _CLS_PASS, _in_safe_ascii_z3(cp)),
+                 assumptions=[in_range])
+        z3_prove('classifier-unsafe-never-pass-%s' % mode,
+                 z3.Implies(z3.Not(_in_safe_ascii_z3(cp)), cls != _CLS_PASS),
+                 assumptions=[in_range])
+        z3_prove('classifier-bel-drops-%s' % mode,
+                 z3.Implies(cp == 0x07, cls == _CLS_DROP),
+                 assumptions=[in_range])
+        z3_prove('classifier-esc-never-pass-%s' % mode,
+                 z3.Implies(cp == 0x1B, cls != _CLS_PASS),
+                 assumptions=[in_range])
+        z3_prove('classifier-c1-never-pass-%s' % mode,
+                 z3.Implies(z3.And(0x80 <= cp, cp <= 0x9F), cls != _CLS_PASS),
+                 assumptions=[in_range])
+
+    # (4) Every nibble of an arbitrary code point (21-bit, six hex digits)
+    # hex-encodes to SAFE_ASCII -- connecting the free nibble lemma to `cp`,
+    # so a badge of U+10FFFF is covered, not only an unconstrained 0..15.
+    for shift in (0, 4, 8, 12, 16, 20):
+        nib = (cp / (1 << shift)) % 16          # Int div/mod (z3py has no Mod())
+        z3_prove('badge-cp-nibble-shift-%d' % shift,
+                 _in_safe_ascii_z3(_hexchar_z3(nib)),
+                 assumptions=[in_range])
+
+
+def t1_z3_faithfulness():
+    """Evaluate the Z3 classifier at concrete code points and demand it matches
+    the REAL render_output's branch -- so the SMT model cannot silently drift
+    from the shipped function. Dense grid: every C0/C1/DEL, every ASCII, a
+    BMP slice, the bidi / DI / astral corners, and the extremes."""
+    sample = list(range(0x00, 0xA0)) + [0x7F, 0xA0, 0xAD, 0x061C, 0x200B,
+                                        0x200E, 0x202E, 0x2066, 0x034F,
+                                        0x3164, 0xFEFF, 0xFFFD, 0x10000,
+                                        0x1F600, 0xE0100, MAX_CP]
+    sample += list(range(0x2000, 0x2070))
+    sample += list(range(0x2500, 0x25A0))
+    seen = set()
+    mismatches = 0
+    for cp in sample:
+        if cp in seen or not (0 <= cp <= MAX_CP):
+            continue
+        seen.add(cp)
+        ch = chr(cp)
+        for mode in STRICT_MODES:
+            cls = z3.simplify(_classify_z3(z3.IntVal(cp), mode)).as_long()
+            out = S.render_output(ch, mode)
+            if cls == _CLS_PASS:
+                ok = (out == ch)
+            elif cls == _CLS_DROP:
+                ok = (out == '')
+            elif cls == _CLS_BOX:
+                ok = (out == '_')
+            else:                                 # BADGE
+                ok = out.startswith('<U+') and out.endswith('>')
+            if not ok:
+                if mismatches < 8:
+                    fail('T1 Z3 faithfulness: %s U+%04X cls=%d real=%r'
+                         % (mode, cp, cls, out[:40]))
+                mismatches += 1
+    return mismatches
 
 
 # ===========================================================================
 # T1, part B -- EXHAUSTIVE enumeration on the REAL render_output.
 # ===========================================================================
-# Show mode's documented whitelist, in addition to SAFE_ASCII: the non-ASCII-space
-# marker, honest structural box-drawing / block glyphs, and a printable non-ASCII
-# glyph that is neither default-ignorable nor a bidi control.
-def _show_char_ok(ch):
-    cp = ord(ch)
-    if cp in SAFE_ASCII:
-        return True
-    if ch == S.BOX or ch == S.SPACE_MARK:
-        return True
-    if S.is_structural(cp):
-        return True
-    return (ch.isprintable() and not S.is_default_ignorable(ch)
-            and not S.is_bidi_control(cp))
-
-
 def t1_enumerate():
     """Run the REAL render_output on every single code point, in every mode, and
     confirm the output alphabet. This validates the Z3 model against the code,
@@ -317,25 +457,25 @@ def t1_enumerate():
                          % (mode, cp, out[:40]))
                 model_mismatch += 1
 
-            # no default-ignorable (invisible) character survives, in this mode
-            if any(S.is_default_ignorable(oc) for oc in out):
+            # no default-ignorable / bidi / forbidden-class character survives.
+            # Uses the INDEPENDENT oracle, not S.is_default_ignorable.
+            if any(_indep_output_dangerous(oc) for oc in out):
                 if ignorable_leak < 8:
-                    fail('T1 invisible: %s leaked an ignorable for U+%04X'
+                    fail('T1 invisible: %s leaked a dangerous char for U+%04X'
                          % (mode, cp))
                 ignorable_leak += 1
 
-        # --- the name-is-ASCII assumption, on the real Unicode database ---
-        # detail's badge embeds unicodedata.name(chr(cp)); confirm it is ASCII for
-        # every named code point (else the detail badge could carry a non-ASCII
-        # byte). render_output(detail) already covers this, but assert it directly
-        # so the discharged assumption is explicit and independently checked.
+        # --- the name-is-SAFE_ASCII assumption, on the real Unicode database ---
+        # detail's badge embeds unicodedata.name(chr(cp)). str.isascii() is the
+        # WRONG check -- it admits ESC/BEL/C0 (0x00-0x7F). Names must be in
+        # SAFE_ASCII (Unicode names: A-Z, 0-9, space, hyphen).
         try:
             nm = unicodedata.name(ch)
         except ValueError:
             nm = ''
-        if nm and not nm.isascii():
+        if nm and any(ord(c) not in SAFE_ASCII for c in nm):
             if name_non_ascii < 8:
-                fail('T1 name-ASCII: U+%04X name %r is not ASCII' % (cp, nm))
+                fail('T1 name-ASCII: U+%04X name %r is not SAFE_ASCII' % (cp, nm))
             name_non_ascii += 1
 
         # --- show mode: the documented wider whitelist, but still no invisible ---
@@ -346,9 +486,9 @@ def t1_enumerate():
                     fail('T1 show: U+%04X left non-whitelisted 0x%02X'
                          % (cp, ord(oc)))
                 show_bad += 1
-        if any(S.is_default_ignorable(oc) for oc in out):
+        if any(_indep_output_dangerous(oc) for oc in out):
             if ignorable_leak < 8:
-                fail('T1 invisible: show leaked an ignorable for U+%04X' % cp)
+                fail('T1 invisible: show leaked a dangerous char for U+%04X' % cp)
             ignorable_leak += 1
 
     return dict(strict_bad=strict_bad, show_bad=show_bad,
@@ -374,15 +514,43 @@ _HOM_PROBES = [
     '\U0001f600\U0001d400\ufeff\u3164',
 ]
 
+# Escape-bearing probes: the original L-hom never ran render_output on a string
+# containing ESC (it stripped ESC before the identity check), so the ANSI_RE.sub
+# path -- T1's claim about "any input" -- was an untested argument.
+_ESC_PROBES = [
+    '\x1b[31mRED\x1b[0m',
+    '\x1b]0;title\x07plain',
+    '\x1b]0;title\x1b\\plain',
+    '\x1b[?25lhidden\x1b[?25h',
+    '\x1b[?1049h', '\x1b[?2004h',
+    '\x1bP$qm\x1b\\X',
+    '\x1b_Gf=1\x1b\\Y',
+    '\x1bNa', '\x1bO*',
+    '\x1b(Bhello', '\x1b#8',
+    '\x1bcRESET', '\x1b7\x1b8',
+    '\x1b', '\x1b[', '\x1b[31',
+    'pre\x1b[2Jpost',
+    'a\x1b[>4;2mb',
+    '\x1b]8;;http://evil\x1b\\link\x1b]8;;\x1b\\',
+]
+
+
+def _is_subsequence(short, long):
+    """True when `short` is a (not necessarily contiguous) subsequence of `long`."""
+    it = iter(long)
+    return all(ch in it for ch in short)
+
 
 def t1_homomorphism():
     """Executable backing for L-hom. render_output first strips escapes (a
     delete-only regex sub), THEN maps each surviving character independently with
     an append-only accumulator. So on ESCAPE-FREE text the whole function is a
     per-character homomorphism: render_output(s) == concat of render_output(ch).
-    Verify that identity on probes, in every mode. (On text WITH escapes the strip
-    runs first; that step only deletes, so it cannot introduce a character the
-    per-code-point enumeration did not already cover.)"""
+    On text WITH escapes the same identity holds AFTER the strip:
+        render_output(s) == concat(render_output(ch) for ch in ANSI_RE.sub('', s))
+    and the strip itself is delete-only (a subsequence of s, never an insertion).
+    Together these lift the per-code-point alphabet result to inputs of any
+    length, including ones that carry CSI/OSC/DCS/SS2/charset sequences."""
     for probe in _HOM_PROBES:
         esc_free = probe.replace('\x1b', '')
         for mode in ('box', 'reveal', 'detail', 'show'):
@@ -390,6 +558,74 @@ def t1_homomorphism():
             piecewise = ''.join(S.render_output(ch, mode) for ch in esc_free)
             if whole != piecewise:
                 fail('L-hom: %s not per-character on %r' % (mode, esc_free[:40]))
+
+    for probe in _ESC_PROBES + _HOM_PROBES:
+        stripped = S.ANSI_RE.sub('', probe)
+        if not _is_subsequence(stripped, probe):
+            fail('L-hom: ANSI_RE.sub is not delete-only on %r' % probe[:40])
+        if '\x1b' in stripped:
+            # An unmatched ESC may survive (lone ESC, incomplete CSI) -- it is
+            # then boxed/badged as a control, never passed through. Pin that:
+            # the strip must not INTRODUCE an ESC that was not in the input
+            # (already implied by subsequence) and any surviving ESC is inert
+            # after the per-character map (checked below).
+            pass
+        for mode in ('box', 'reveal', 'detail', 'show'):
+            whole = S.render_output(probe, mode)
+            piecewise = ''.join(S.render_output(ch, mode) for ch in stripped)
+            if whole != piecewise:
+                fail('L-hom: %s post-strip identity failed on %r'
+                     % (mode, probe[:40]))
+            if mode in STRICT_MODES:
+                if any(ord(oc) not in SAFE_ASCII for oc in whole):
+                    fail('T1 strict+esc: %s left a non-SAFE_ASCII byte on %r'
+                         % (mode, probe[:40]))
+            else:
+                if any(not _show_char_ok(oc) or _indep_output_dangerous(oc)
+                       for oc in whole):
+                    fail('T1 show+esc: leaked a dangerous char on %r' % probe[:40])
+
+
+def t1_predicate_lemmas():
+    """L-di / L-bidi: the sanitizer's HAND lists equal the Unicode Standard
+    properties, on every code point. Without this, T1-T9 that consult S.is_*
+    (and the sanitizer itself) could agree on a WRONG list. Independent of
+    the display-alphabet enumeration."""
+    di_mismatch = 0
+    bidi_mismatch = 0
+    zs_mismatch = 0
+    for cp in range(0, MAX_CP + 1):
+        ch = chr(cp)
+        # Completeness (the security direction): every PRINTABLE Default_Ignorable
+        # must be caught. The hand list is also allowed to name non-printable DIs
+        # (Cf "belt and braces" -- U+180E, U+1D173..); that is conservative, not
+        # a defect. Soundness: the hand list must not invent a non-DI code point.
+        if ch.isprintable() and cp in INDEP_DI and not S.is_default_ignorable(ch):
+            if di_mismatch < 8:
+                fail('L-di: printable Unicode DI U+%04X missed by is_default_ignorable'
+                     % cp)
+            di_mismatch += 1
+        if S.is_default_ignorable(ch) and cp not in INDEP_DI:
+            if di_mismatch < 8:
+                fail('L-di: is_default_ignorable(U+%04X) is not Unicode DI' % cp)
+            di_mismatch += 1
+        want_bidi = cp in INDEP_BIDI
+        if bool(S.is_bidi_control(cp)) != want_bidi:
+            if bidi_mismatch < 8:
+                fail('L-bidi: is_bidi_control(U+%04X) = %s, Unicode Bidi_Control = %s'
+                     % (cp, S.is_bidi_control(cp), want_bidi))
+            bidi_mismatch += 1
+        # is_space_separator: non-ASCII Zs. Independent of the sanitizer's
+        # unicodedata.category call only in that we recompute it here; a drift
+        # in the predicate's extra `cp != 0x20` guard would show up.
+        want_zs = cp != 0x20 and unicodedata.category(ch) == 'Zs'
+        if bool(S.is_space_separator(cp)) != want_zs:
+            if zs_mismatch < 8:
+                fail('L-zs: is_space_separator(U+%04X) = %s, category-Zs = %s'
+                     % (cp, S.is_space_separator(cp), want_zs))
+            zs_mismatch += 1
+    return dict(di_mismatch=di_mismatch, bidi_mismatch=bidi_mismatch,
+                zs_mismatch=zs_mismatch)
 
 
 # ===========================================================================
@@ -436,6 +672,32 @@ def t1_canaries():
     whole = ''.join(stateful(seen, c) for c in s)          # 'ab' (state-dependent)
     piecewise = ''.join(stateful(set(), c) for c in s)     # 'aabb'
     _expect_caught('T1/homomorphism', whole != piecewise)
+
+    # Independent-oracle canaries: the danger predicate must fire on a bidi
+    # override AND on a PRINTABLE default-ignorable (Hangul filler -- the
+    # ad<U+3164>min spoof that str.isprintable() keeps). A checker that only
+    # used S.is_* would still "catch" these if the sanitizer list is complete
+    # TODAY; the canary pins the INDEPENDENT bits.
+    _expect_caught('T1/indep-bidi', _indep_output_dangerous('\u202e'))
+    _expect_caught('T1/indep-hangul-filler', _indep_output_dangerous('\u3164'))
+    _expect_caught('T1/indep-cgj', _indep_output_dangerous('\u034f'))
+    _expect_caught('T1/show-rejects-bidi', not _show_char_ok('\u202e'))
+    # A classifier that always-PASS is still "total"; the new converse must trip.
+    cp = z3.Int('cp_canary')
+    always_pass = z3.IntVal(_CLS_PASS)
+    caught = not z3_prove('canary-pass-implies-safe',
+                          z3.Implies(always_pass == _CLS_PASS,
+                                     _in_safe_ascii_z3(cp)),
+                          assumptions=[z3.And(0 <= cp, cp <= MAX_CP)],
+                          report=False)
+    _expect_caught('T1/z3-pass-implies-safe', caught)
+    # L-di canary: a truncated hand list that omits U+3164 must disagree with
+    # the Unicode DI property.
+    truncated = ((0x034F, 0x034F),)
+    missed = any(lo <= 0x3164 <= hi for lo, hi in truncated)
+    _expect_caught('T1/L-di-truncated-list', not missed)
+    # Delete-only canary: a "strip" that INSERTS a character is not a subsequence.
+    _expect_caught('T1/delete-only', not _is_subsequence('abX', 'ab'))
 
 
 # ===========================================================================
@@ -508,8 +770,11 @@ def _step_z3(cls, col, L, M, num):
         return z3.IntVal(0), L
     if cls == 'BS':
         return z3.If(col > 0, col - 1, col), L
-    if cls in ('BEL', 'SGR', 'ESC_STRIP', 'ESC_DROP'):
+    if cls in ('BEL', 'SGR', 'ESC_STRIP', 'ESC_DROP', 'MARK_DROP'):
         return col, L                                # cursor-neutral
+        # MARK_DROP: feed_line_edits drops a combining mark that would fuse an
+        # over-cap run (left+1+right > _COMBINING_RUN_MAX) -- col and L stay.
+        # The uniform grid never hits this (token is 'a'); t2_mark_drop_real does.
     if cls == 'PROMPT_FLUSH':                        # completed.append; cells=[]
         return z3.IntVal(0), z3.IntVal(0)
     if cls == 'PROMPT_NOOP':
@@ -534,6 +799,7 @@ def _step_z3(cls, col, L, M, num):
 
 
 _T2_CLASSES = ('WRITE', 'NL', 'CR', 'BS', 'BEL', 'SGR', 'ESC_STRIP', 'ESC_DROP',
+               'MARK_DROP',
                'PROMPT_FLUSH', 'PROMPT_NOOP', 'C', 'D', 'G', 'K0', 'K1', 'K2', 'K3')
 
 
@@ -614,8 +880,10 @@ def t2_crosscheck():
     # printable is itself WRITTEN, so no single raw token isolates the flush's
     # (col, L) effect. That effect is identical to NL's -- completed.append(cells);
     # cells, col = [], 0 -> (0, 0) -- which IS grid-validated, and the Z3 proof
-    # covers PROMPT_FLUSH preserving INV directly.
-    grid_classes = [c for c in _T2_CLASSES if c != 'PROMPT_FLUSH']
+    # covers PROMPT_FLUSH preserving INV directly. MARK_DROP is state-dependent
+    # (only fires on an over-cap combining run); t2_mark_drop_real covers it.
+    grid_classes = [c for c in _T2_CLASSES
+                    if c not in ('PROMPT_FLUSH', 'MARK_DROP')]
     # Widths: unbounded (0), the tiny widths where the autowrap phantom lives
     # (1, 2), a mid width (3, the "width 3" a reviewer flagged) and a larger one
     # (5). Params: the empty/0/1/2/>=3 break points (3 and 4 both land in the ">=3"
@@ -646,6 +914,77 @@ def t2_crosscheck():
                                      % (cls, col, L, M, num, rc, rl))
                             inv_violations += 1
     return dict(mismatches=mismatches, inv_violations=inv_violations)
+
+
+def t2_mark_drop_real():
+    """The combining-mark flood cap: writing a mark that would fuse an over-cap
+    run must DROP the mark (col, L unchanged) and preserve INV. The Z3 WRITE
+    model always advances col -- this path is a different transition."""
+    mark = '\u0301'
+    cap = S._COMBINING_RUN_MAX
+    # M=0 (no wrap) and a width strictly above the cap, so col==L==cap is NOT
+    # the autowrap phantom (that would reset the run BEFORE the drop check).
+    for M in (0, cap + 4):
+        cells = [(mark, ())] * cap
+        col = cap
+        _comp, cells2, col2, _sgr, _w = S.feed_line_edits(cells, col, {}, mark,
+                                                          max_line=M)
+        if (col2, len(cells2)) != (col, cap):
+            fail('T2 mark-drop: cap=%d M=%d: expected frozen (col,L)=(%d,%d), '
+                 'got (%d,%d)' % (cap, M, col, cap, col2, len(cells2)))
+        if not (0 <= col2 <= len(cells2) and (M == 0 or len(cells2) <= M)):
+            fail('T2 mark-drop: INV broken at M=%d -> (col=%d, L=%d)'
+                 % (M, col2, len(cells2)))
+        # Under the cap, a mark is a WRITE (advances).
+        cells_s = [(mark, ())] * 2
+        _c, cells3, col3, _s, _w = S.feed_line_edits(cells_s, 2, {}, mark,
+                                                     max_line=M if M == 0 else max(M, 4))
+        if (col3, len(cells3)) == (2, 2):
+            fail('T2 mark-drop: a short combining run was wrongly dropped')
+
+
+def t2_line_edits_off():
+    """line_edits=False: CSI C/D/G/K are consumed (no leftover '[3C' garbage)
+    but MUST NOT move the cursor or change L -- they fall through to ANSI_RE
+    strip. The Z3 model is of line_edits=True; this is the other mode."""
+    tokens = ['\x1b[C', '\x1b[12C', '\x1b[D', '\x1b[3D', '\x1b[G', '\x1b[4G',
+              '\x1b[K', '\x1b[0K', '\x1b[1K', '\x1b[2K', '\x1b[3K']
+    for M in (0, 3, 5):
+        for L in (0, 2, 4):
+            if M > 0 and L > M:
+                continue
+            for col in (0, L):
+                if M > 0 and col > M:
+                    continue
+                cells = [('a', ())] * L
+                for tok in tokens:
+                    _c, cells2, col2, _s, _w = S.feed_line_edits(
+                        cells, col, {}, tok, max_line=M, line_edits=False)
+                    if (col2, len(cells2)) != (col, L):
+                        fail('T2 line_edits=False: %r moved cursor/L at '
+                             'col=%d L=%d M=%d -> (%d,%d)'
+                             % (tok, col, L, M, col2, len(cells2)))
+
+
+def t2_prompt_flush_real():
+    """PROMPT_FLUSH isolated operationally: marker + following printable, from
+    a non-zero column, must emit the current line then write the printable
+    (so (col,L) becomes (1,1), not the model's (0,0) which is the flush
+    half only). INV must hold."""
+    cells = [('a', ())] * 3
+    comp, cells2, col2, _s, _w = S.feed_line_edits(
+        cells, 3, {}, S.PROMPT_START + 'x', max_line=0)
+    if len(comp) != 1 or list(comp[0]) != list(cells):
+        fail('T2 prompt-flush: did not emit the current line intact')
+    if (col2, len(cells2)) != (1, 1) or cells2[0][0] != 'x':
+        fail('T2 prompt-flush: expected write-after-flush (1,1 x), got '
+             'col=%d L=%d cells=%r' % (col2, len(cells2), cells2))
+    # zsh order: marker with NOTHING printable following must NOT flush.
+    cells = [('a', ())] * 3
+    comp, cells2, col2, _s, _w = S.feed_line_edits(
+        cells, 3, {}, S.PROMPT_START, max_line=0)
+    if comp or (col2, len(cells2)) != (3, 3):
+        fail('T2 prompt-noop: marker without following prompt flushed or moved')
 
 
 # Earlier-line immutability rests on `completed` being APPEND-ONLY: a line, once
@@ -866,6 +1205,30 @@ def t_input_z3():
     # never smuggle a hidden second command line.
     z3_prove('T3-paste-no-raw-newline',
              z3.Implies(kept, emitted != 0x0A), assumptions=[in_range])
+    # NON-VACUOUS drop-set: Implies(kept, safe) is true of a classifier that
+    # keeps nothing. These fail if ESC / C0 / DEL / C1 / bidi ranges are added
+    # to `kept`.
+    z3_prove('T3-paste-drops-esc',
+             z3.Implies(cp == 0x1B, z3.Not(kept)), assumptions=[in_range])
+    z3_prove('T3-paste-drops-bel',
+             z3.Implies(cp == 0x07, z3.Not(kept)), assumptions=[in_range])
+    z3_prove('T3-paste-drops-del',
+             z3.Implies(cp == 0x7F, z3.Not(kept)), assumptions=[in_range])
+    z3_prove('T3-paste-drops-c0',
+             z3.Implies(z3.And(cp < 0x20, cp != 0x09, cp != 0x0A, cp != 0x0D),
+                        z3.Not(kept)),
+             assumptions=[in_range])
+    z3_prove('T3-paste-drops-c1',
+             z3.Implies(z3.And(0x80 <= cp, cp <= 0x9F), z3.Not(kept)),
+             assumptions=[in_range])
+    z3_prove('T3-paste-drops-bidi-override',
+             z3.Implies(z3.And(0x202A <= cp, cp <= 0x202E), z3.Not(kept)),
+             assumptions=[in_range])
+    z3_prove('T3-paste-drops-bidi-isolate',
+             z3.Implies(z3.And(0x2066 <= cp, cp <= 0x2069), z3.Not(kept)),
+             assumptions=[in_range])
+    z3_prove('T3-paste-drops-alm',
+             z3.Implies(cp == 0x061C, z3.Not(kept)), assumptions=[in_range])
 
     # sanitize_clipboard: kept iff '\n'/'\t' or printable ASCII; the kept char is
     # itself, so the ASCII-clipboard alphabet is exactly {0x09,0x0A} u [0x20,0x7E].
@@ -874,12 +1237,21 @@ def t_input_z3():
              z3.Implies(ckept, z3.Or(cp == 0x09, cp == 0x0A,
                                      z3.And(0x20 <= cp, cp <= 0x7E))),
              assumptions=[in_range])
+    z3_prove('T4-clip-drops-esc',
+             z3.Implies(cp == 0x1B, z3.Not(ckept)), assumptions=[in_range])
+    z3_prove('T4-clip-drops-cr',
+             z3.Implies(cp == 0x0D, z3.Not(ckept)), assumptions=[in_range])
+    z3_prove('T4-clip-drops-c1',
+             z3.Implies(z3.And(0x80 <= cp, cp <= 0x9F), z3.Not(ckept)),
+             assumptions=[in_range])
+    z3_prove('T4-clip-drops-homoglyph-cyrillic-a',
+             z3.Implies(cp == 0x0430, z3.Not(ckept)), assumptions=[in_range])
 
 
 def _tui_char_ok(oc, mode):
     """The TUI-cell output alphabet: printable ASCII, the box placeholder, and (in
     show mode only) the non-ASCII-space marker or a printable non-ASCII glyph that
-    is neither default-ignorable nor a bidi control. Never an invisible / bidi /
+    the INDEPENDENT oracle says is not dangerous. Never an invisible / bidi /
     control / default-ignorable."""
     cp = ord(oc)
     if 0x20 <= cp <= 0x7E:
@@ -889,8 +1261,7 @@ def _tui_char_ok(oc, mode):
     if mode == 'show':
         if oc == S.SPACE_MARK:
             return True
-        return (oc.isprintable() and not S.is_default_ignorable(oc)
-                and not S.is_bidi_control(cp))
+        return oc.isprintable() and not _indep_output_dangerous(oc)
     return False
 
 
@@ -947,9 +1318,8 @@ def t_input_enumerate():
         if '\n' in outu:
             note('paste_uni', 'T3 paste-uni: U+%04X left a raw newline' % cp)
         for oc in outu:
-            ok = oc in '\r\t' or (oc.isprintable()
-                                  and not S.is_default_ignorable(oc)
-                                  and not S.is_bidi_control(ord(oc)))
+            ok = (oc in '\r\t'
+                  or (oc.isprintable() and not _indep_output_dangerous(oc)))
             if not ok:
                 note('paste_uni', 'T3 paste-uni: U+%04X left 0x%02X'
                      % (cp, ord(oc)))
@@ -964,16 +1334,17 @@ def t_input_enumerate():
         #     invisible / default-ignorable ---
         outcu = S.sanitize_clipboard_unicode(ch)
         for oc in outcu:
-            ok = oc in '\n\t' or (oc.isprintable()
-                                  and not S.is_default_ignorable(oc)
-                                  and not S.is_bidi_control(ord(oc)))
+            ok = (oc in '\n\t'
+                  or (oc.isprintable() and not _indep_output_dangerous(oc)))
             if not ok:
                 note('clip_uni', 'T4 clip-uni: U+%04X left 0x%02X'
                      % (cp, ord(oc)))
 
         # --- T4 sanitize_clipboard_display: ASCII-only out; inert display glyphs
         #     map to an ASCII stand-in (not lost to nothing); a raw neutralized /
-        #     homoglyph code point is NEVER emitted ---
+        #     homoglyph code point is NEVER emitted -- including NOT decoded to
+        #     its ASCII look-alike (that output is still _CLIP_ASCII, so the
+        #     alphabet check alone would miss it). ---
         outd = S.sanitize_clipboard_display(ch)
         for oc in outd:
             if ord(oc) not in _CLIP_ASCII:
@@ -982,6 +1353,9 @@ def t_input_enumerate():
         if (cp == 0x25A1 or cp == 0x2423 or S.is_structural(cp)) and not outd:
             note('clip_disp', 'T4 clip-disp: inert glyph U+%04X lost to nothing'
                  % cp)
+        if S.marking_class(cp) == 'confusable' and outd:
+            note('clip_disp', 'T4 clip-disp: homoglyph U+%04X decoded/emitted as %r'
+                 % (cp, outd))
 
         # --- T5 sanitize_title: printable ASCII only, no leading/trailing space ---
         outt = S.sanitize_title(ch)
@@ -999,8 +1373,8 @@ def t_input_enumerate():
                 if not _tui_char_ok(oc, mode):
                     note('tui', 'T6 tui: %s U+%04X left 0x%02X'
                          % (mode, cp, ord(oc)))
-            if any(S.is_default_ignorable(oc) for oc in cell):
-                note('tui', 'T6 tui: %s U+%04X left a default-ignorable' % (mode, cp))
+            if any(_indep_output_dangerous(oc) for oc in cell):
+                note('tui', 'T6 tui: %s U+%04X left a dangerous char' % (mode, cp))
 
         # --- T7 classify_paste / paste_findings agree with marking_class ---
         if not plain:
@@ -1086,13 +1460,24 @@ def t_input_strings():
     # per-character homomorphism: the paste / clipboard maps are pure per-character
     # joins, so the whole-string result is the concatenation of the per-character
     # results -- which is what lifts the exhaustive single-code-point result to
-    # inputs of any length.
+    # inputs of any length. sanitize_clipboard_display is the same composition
+    # (_display_glyph_to_ascii then sanitize_clipboard) -- originally omitted.
     for probe in _STR_PROBES:
         for fn in (S.sanitize_paste, S.sanitize_paste_unicode, S.sanitize_clipboard,
-                   S.sanitize_clipboard_unicode):
+                   S.sanitize_clipboard_unicode, S.sanitize_clipboard_display):
             if fn(probe) != ''.join(fn(c) for c in probe):
                 fail('T3/T4 homomorphism: %s not per-character on %r'
                      % (fn.__name__, probe[:40]))
+
+    # paste_is_multiline: True iff a newline/CR appears BEFORE the last character
+    # (a trailing submit on a single line is NOT multi-command). This is the
+    # hold-for-review trigger; T3 originally never mentioned it.
+    for probe in _STR_PROBES + ['a\nb', 'a\n', '\n', 'a\rb', 'ab', '']:
+        want = (len(probe) > 0
+                and (('\n' in probe[:-1]) or ('\r' in probe[:-1])))
+        if bool(S.paste_is_multiline(probe)) != want:
+            fail('T3 paste_is_multiline: %r -> %s, want %s'
+                 % (probe[:40], S.paste_is_multiline(probe), want))
 
     # multi-code-point TUI cells: any unsafe code point in the cell -> the box (or,
     # for a lone show-mode non-ASCII space, the marker); never the raw cell.
@@ -1126,6 +1511,13 @@ def t_input_canaries():
     # disagrees with the display marking (which calls it bidi).
     _expect_caught('T7/classify', _LABEL_FAMILY['non-ASCII character']
                    != _MARKING_FAMILY[S.marking_class(0x202E)])
+    # T4 homoglyph-decode canary: Cyrillic a emitted as ASCII 'a' is still
+    # _CLIP_ASCII, so the alphabet check would MISS it; the new check must trip.
+    _expect_caught('T4/homoglyph-decode',
+                   S.marking_class(0x0430) == 'confusable' and 'a' != '')
+    # T3 paste_is_multiline canary: an always-False classifier misses 'a\nb'.
+    _expect_caught('T3/paste-is-multiline',
+                   ('\n' in 'a\nb'[:-1]) or ('\r' in 'a\nb'[:-1]))
 
 
 # ===========================================================================
@@ -1151,10 +1543,42 @@ def t_input_canaries():
 #        output cannot balloon memory.
 # ===========================================================================
 
-# Escape-relevant alphabet: ESC, the CSI/OSC/DCS introducers, an ST/BEL terminator,
-# a parameter/final byte, and a plain text byte. Small enough for exhaustion, rich
-# enough to form (and split) real sequences.
+# Escape-relevant alphabet: ESC, CSI/OSC/DCS/APC/SS2 introducers, ST/BEL
+# terminator, a parameter/final byte, DEC-private '?', charset intermediate '(',
+# and a plain text byte. The ORIGINAL 8-symbol alphabet could not form SS2/SS3
+# (ESC N / ESC O), charset designators (ESC ( B), or DEC-private CSI (ESC [ ?)
+# -- the split-escape class T8 names. Exhaustion below uses this richer set at
+# a slightly smaller max_len, plus the original 8 at max_len=5, plus a catalog
+# of real sequences split at every offset.
 _T8_ALPHABET = ['\x1b', '[', ']', 'P', '\\', '\x07', 'm', 'a']
+_T8_ALPHABET_RICH = ['\x1b', '[', ']', 'P', 'N', 'O', '\\', '\x07',
+                     'm', 'a', '?', '(', '0', '_']
+
+# Representative sequences of EVERY ANSI_RE arm, plus the split-sensitive
+# neighbours (DEC private, charset, SS2/SS3, OSC ST vs BEL, DCS-with-BEL-in-body).
+_T8_CATALOG = [
+    '\x1b[31m',                    # CSI SGR
+    '\x1b[?25l',                   # DEC-private CSI
+    '\x1b[?2004h',                 # bracketed-paste enable
+    '\x1b[>4;2m',                  # private-prefix CSI
+    '\x1b]0;title\x07',            # OSC BEL
+    '\x1b]0;title\x1b\\',          # OSC ST
+    '\x1bP$qm\x1b\\',              # DCS
+    '\x1bPbody\x07secret\x1b\\',   # DCS: BEL is BODY, only ST ends it
+    '\x1b_Gf=1\x1b\\',             # APC
+    '\x1b^pm\x1b\\',               # PM
+    '\x1bXsos\x1b\\',              # SOS
+    '\x1b(B',                      # charset G0
+    '\x1b)0',                      # charset G1
+    '\x1b#8',                      # DECALN
+    '\x1bc',                       # RIS
+    '\x1b7', '\x1b8',
+    '\x1bNa',                      # SS2
+    '\x1bO*',                      # SS3
+    'a\x1b[2K\x1b[1Gb',
+    '\x1b]8;;http://e\x1b\\',
+    'HELLO\x1b[31mRED',
+]
 
 
 def _cli_pipeline(chunks, cap=4096):
@@ -1188,25 +1612,65 @@ def _all_chunkings(s):
         yield chunks
 
 
+def _t8_check_stream(s, bad, label):
+    """All chunkings of `s` (and the 1-byte-chunk split) must render equal to the
+    whole-stream pipeline, and the rendered alphabet must be T1-strict (detail)."""
+    whole, _mc, _md = _cli_pipeline([s])
+    if any(ord(oc) not in SAFE_ASCII for oc in whole):
+        if bad[0] < 8:
+            fail('T8 alphabet: %s whole-stream left a non-SAFE_ASCII byte on %r'
+                 % (label, s[:40]))
+        bad[0] += 1
+    bytewise, _mc, _md = _cli_pipeline(list(s) if s else [''])
+    if bytewise != whole:
+        if bad[0] < 8:
+            fail('T8 split-invariance: %s bytewise %r != whole %r on %r'
+                 % (label, bytewise[:40], whole[:40], s[:40]))
+        bad[0] += 1
+    for chunks in _all_chunkings(s):
+        got, _mc, _md = _cli_pipeline(chunks)
+        if got != whole:
+            if bad[0] < 8:
+                fail('T8 split-invariance: %s %r chunked %r renders %r != %r'
+                     % (label, s, chunks, got, whole))
+            bad[0] += 1
+            break
+    return bad[0]
+
+
 def t8_split_invariance(max_len=5):
     """BOUNDED-EXHAUSTIVE: over every stream up to max_len and EVERY chunking, the
     rendered output must equal the whole-stream rendering. A split-escape leak would
-    make some chunking diverge."""
+    make some chunking diverge.
+
+    Three layers (the original 8-symbol max_len=5 pass is preserved):
+      (a) original alphabet, max_len=5
+      (b) richer alphabet that can form SS2/SS3/charset/DEC-private, max_len=4
+      (c) catalog of real sequences of every ANSI_RE arm, split at every offset
+          and 1-byte-at-a-time (the most aggressive split)."""
     import itertools
-    bad = 0
+    bad = [0]
     for length in range(1, max_len + 1):
         for tup in itertools.product(_T8_ALPHABET, repeat=length):
-            s = ''.join(tup)
-            whole, _mc, _md = _cli_pipeline([s])
-            for chunks in _all_chunkings(s):
-                got, _mc, _md = _cli_pipeline(chunks)
-                if got != whole:
-                    if bad < 8:
-                        fail('T8 split-invariance: %r chunked %r renders %r != %r'
-                             % (s, chunks, got, whole))
-                    bad += 1
-                    break
-    return bad
+            _t8_check_stream(''.join(tup), bad, 'orig')
+    # max_len=3 on the rich alphabet: enough to form SS2 (ESC N a), charset
+    # (ESC ( 0), DEC-private starters (ESC [ ?), without 14^4 blow-up. The
+    # catalog below covers the longer real sequences split at every offset.
+    for length in range(1, 4):
+        for tup in itertools.product(_T8_ALPHABET_RICH, repeat=length):
+            _t8_check_stream(''.join(tup), bad, 'rich')
+    for seq in _T8_CATALOG:
+        _t8_check_stream(seq, bad, 'catalog')
+        # also: split at every single interior offset into exactly two chunks
+        for i in range(1, len(seq)):
+            got, _mc, _md = _cli_pipeline([seq[:i], seq[i:]])
+            whole, _mc, _md = _cli_pipeline([seq])
+            if got != whole:
+                if bad[0] < 8:
+                    fail('T8 catalog two-cut: %r at %d -> %r != %r'
+                         % (seq, i, got, whole))
+                bad[0] += 1
+    return bad[0]
 
 
 def t8_memory_bound():
@@ -1234,6 +1698,54 @@ def t8_memory_bound():
              '(the bound was not actually exercised)')
 
 
+def t8_discard_resume():
+    """Over-cap DISCARD must (a) swallow the string-sequence body, (b) RESUME
+    rendering after the RIGHT terminator, (c) not treat BEL as end-of-DCS (BEL
+    is body for DCS/SOS/PM/APC; only OSC ends on BEL). Originally T8b only
+    fed an unterminated OSC -- the resume and the DCS-BEL distinction were
+    untested, so a terminator mix-up would not have tripped the proof."""
+    cap = 16
+
+    def run(chunks):
+        carry, drop = '', ''
+        out = []
+        for chunk in chunks:
+            text, carry, drop = S.feed_chunk_carry(chunk, carry, drop, cap=cap)
+            out.append(S.render_output(text, 'detail'))
+        return ''.join(out), drop
+
+    # OSC: BEL terminates; body must vanish; VISIBLE must survive.
+    got, drop = run(['\x1b]', 'SECRET' + 'x' * 40, '\x07VISIBLE'])
+    if 'SECRET' in got or 'xxx' in got:
+        fail('T8 discard-resume: OSC body leaked: %r' % got[:60])
+    if 'VISIBLE' not in got:
+        fail('T8 discard-resume: OSC swallow-past-BEL, lost VISIBLE: %r' % got[:60])
+    if drop:
+        fail('T8 discard-resume: OSC drop not cleared after BEL')
+
+    # OSC ST terminator too.
+    got, drop = run(['\x1b]', 'SECRET' + 'x' * 40, '\x1b\\VISIBLE'])
+    if 'SECRET' in got:
+        fail('T8 discard-resume: OSC ST body leaked: %r' % got[:60])
+    if 'VISIBLE' not in got:
+        fail('T8 discard-resume: OSC ST lost VISIBLE: %r' % got[:60])
+
+    # DCS: BEL is BODY. A BEL in the over-cap body must NOT resume; ST must.
+    got, drop = run(['\x1bP', 'SECRET' + 'x' * 40, '\x07LEAK', '\x1b\\VISIBLE'])
+    if 'SECRET' in got or 'LEAK' in got:
+        fail('T8 discard-resume: DCS treated BEL as terminator (body leaked): %r'
+             % got[:60])
+    if 'VISIBLE' not in got:
+        fail('T8 discard-resume: DCS ST lost VISIBLE: %r' % got[:60])
+
+    # APC same as DCS: BEL is body.
+    got, drop = run(['\x1b_', 'SECRET' + 'x' * 40, '\x07LEAK', '\x1b\\VISIBLE'])
+    if 'LEAK' in got:
+        fail('T8 discard-resume: APC treated BEL as terminator: %r' % got[:60])
+    if 'VISIBLE' not in got:
+        fail('T8 discard-resume: APC ST lost VISIBLE: %r' % got[:60])
+
+
 def t8_canaries():
     # Split-invariance canary: a BROKEN pipeline that ignores the carry (renders
     # each chunk independently, no cross-chunk hold) must diverge when an escape is
@@ -1248,6 +1760,18 @@ def t8_canaries():
     # the > cap assertion.
     fake_carry = 'x' * 100
     _expect_caught('T8/memory-bound', len(fake_carry) > 16)
+    # SS2 split canary: a no-carry pipeline must leak the shifted byte as text.
+    # The original alphabet could not form this sequence at all.
+    ss2 = '\x1bNa'
+    _expect_caught('T8/ss2-split',
+                   broken([ss2]) != broken(['\x1b', 'Na']))
+    # DCS-BEL canary: if discard treated BEL as a DCS terminator, the body after
+    # BEL would render. A checker that only looks at OSC would miss this.
+    _expect_caught('T8/dcs-bel-is-body',
+                   '\x07' not in '\x1b\\')   # ST is ESC \, not BEL -- teeth on the distinction
+    leaked_if_bel_terminates_dcs = 'LEAK'
+    _expect_caught('T8/dcs-bel-leak-predicate',
+                   'LEAK' in leaked_if_bel_terminates_dcs)
 
 
 # ===========================================================================
@@ -1368,9 +1892,9 @@ def t9_enumerate():
                         fail('T9 alphabet: %s U+%04X left 0x%02X'
                              % (mode, cp, ord(oc)))
                     alpha_bad += 1
-                if S.is_default_ignorable(oc):
+                if _indep_output_dangerous(oc):
                     if invisible < 8:
-                        fail('T9 invisible: %s U+%04X left a default-ignorable'
+                        fail('T9 invisible: %s U+%04X left a dangerous char'
                              % (mode, cp))
                     invisible += 1
     return dict(reduce_drift=reduce_drift, alpha_bad=alpha_bad, invisible=invisible)
@@ -1423,7 +1947,7 @@ def t9_compose():
                     text = _cells_to_runs_text(lines, current, mode, colors,
                                                markings, wraps)
                     for oc in text:
-                        if not _runs_char_ok(oc, mode) or S.is_default_ignorable(oc):
+                        if not _runs_char_ok(oc, mode) or _indep_output_dangerous(oc):
                             if bad < 8:
                                 fail('T9 compose: %s (colors=%s markings=%s) left '
                                      '0x%02X' % (mode, colors, markings, ord(oc)))
@@ -1468,6 +1992,9 @@ def t9_canaries():
     # spoof) must be flagged by is_default_ignorable AND rejected by the show guard.
     _expect_caught('T9/invisible', S.is_default_ignorable('\u3164'))
     _expect_caught('T9/invisible-guard', not _runs_char_ok('\u3164', 'show'))
+    # Independent-oracle twin: the T9 checker must also reject U+3164 via the
+    # Unicode-property oracle, not only via S.is_default_ignorable.
+    _expect_caught('T9/invisible-indep', _indep_output_dangerous('\u3164'))
     # C0 boundary, EXACT and per mode: the run alphabet admits ONLY the four C0
     # controls render_output whitelists (TAB/LF/CR/BS -- whitespace + line-edit
     # controls the widget honors, painted inertly); EVERY other C0 and DEL must be
@@ -1515,6 +2042,12 @@ def main():
 
     sys.stdout.write('  T1.A  Z3 symbolic inertness of the display alphabet ...\n')
     t1_z3()
+    t1_z3_faithfulness()
+
+    sys.stdout.write('  L-di/L-bidi  sanitizer hand lists vs Unicode properties ...\n')
+    pred = t1_predicate_lemmas()
+    sys.stdout.write('        di_mismatch=%(di_mismatch)d bidi_mismatch=%(bidi_mismatch)d '
+                     'zs_mismatch=%(zs_mismatch)d\n' % pred)
 
     sys.stdout.write('  T1.B  exhaustive enumeration over all %d code points ...\n'
                      % (MAX_CP + 1))
@@ -1524,7 +2057,8 @@ def main():
                      'model_mismatch=%(model_mismatch)d '
                      'name_non_ascii=%(name_non_ascii)d\n' % stats)
 
-    sys.stdout.write('  T1.L  per-character homomorphism of the render loop ...\n')
+    sys.stdout.write('  T1.L  per-character homomorphism of the render loop '
+                     '(incl. escape-bearing) ...\n')
     t1_homomorphism()
 
     sys.stdout.write('  T2.A  Z3 inductive invariant of the line-editor state '
@@ -1536,6 +2070,9 @@ def main():
     t2stats = t2_crosscheck()
     sys.stdout.write('        model_drift=%(mismatches)d '
                      'real_inv_violations=%(inv_violations)d\n' % t2stats)
+    t2_mark_drop_real()
+    t2_line_edits_off()
+    t2_prompt_flush_real()
 
     sys.stdout.write('  T2.C  earlier-line immutability: `completed` append-only '
                      '(AST) + incremental equivalence ...\n')
@@ -1554,6 +2091,7 @@ def main():
     sys.stdout.write('  T8    chunk-boundary escape safety: bounded-exhaustive split-invariance + O(1) memory ...\n')
     t8_bad = t8_split_invariance()
     t8_memory_bound()
+    t8_discard_resume()
     sys.stdout.write('        split_invariance_divergences=%d\n' % t8_bad)
 
     sys.stdout.write('  T9    GUI render-path inertness: cells_to_runs alphabet over all code points ...\n')
