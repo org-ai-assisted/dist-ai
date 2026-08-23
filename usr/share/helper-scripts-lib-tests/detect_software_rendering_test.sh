@@ -25,6 +25,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 tool_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
 stub_file="${tool_dir}/detect_software_rendering_eglinfo_stub.sh"
@@ -168,6 +169,24 @@ nv_out="$(LIBGL_ALWAYS_SOFTWARE='' DETECT_SOFTWARE_RENDERING_DRI_DIR="${no_dri}"
    XDG_RUNTIME_DIR="${no_cache_dir}" PATH="${probe_path}" "${subject}")" || nv_rc=$?
 check "NVIDIA node present, no DRM -> falls through to eglinfo" "${nv_out}:${nv_rc}" "accelerated:1"
 
+## REGRESSION: LIBGL_ALWAYS_SOFTWARE is Mesa-only; the proprietary NVIDIA libGL
+## ignores it. With an NVIDIA node present the short-circuit must NOT declare
+## software -- fall through to the eglinfo probe, which sees the real (accelerated)
+## renderer. (Old code returned software:0 without probing.)
+libgl_nv_rc=0
+libgl_nv_out="$(LIBGL_ALWAYS_SOFTWARE=1 DETECT_SOFTWARE_RENDERING_DRI_DIR="${no_dri}" \
+   DETECT_SOFTWARE_RENDERING_NVIDIA_CTL="${nvidia_present}" \
+   EGLINFO_STUB_RENDERER='OpenGL core profile renderer: NVIDIA GeForce RTX 4090' \
+   XDG_RUNTIME_DIR="${no_cache_dir}" PATH="${probe_path}" "${subject}")" || libgl_nv_rc=$?
+check "LIBGL_ALWAYS_SOFTWARE=1 + NVIDIA node -> probes eglinfo (accelerated:1)" \
+   "${libgl_nv_out}:${libgl_nv_rc}" "accelerated:1"
+
+## The 'yes' spelling is truthy too (Mesa treats it so). With no NVIDIA node it
+## short-circuits to software without probing, even though eglinfo would report a
+## vendor. (Old code accepted only '1'/'true', so 'yes' probed -> accelerated.)
+check "LIBGL_ALWAYS_SOFTWARE=yes (no NVIDIA) -> software/0 without probing" \
+   "$(run_subject 'OpenGL core profile renderer: NVIDIA GeForce' yes "${with_dri}" '')" "software:0"
+
 ## --- (2) source-ability: no auto-run, no strict leak, pure + defined ---
 src_out=""
 src_rc=0
@@ -184,6 +203,22 @@ check "vendor -> accelerated/1"   "$(run_subject 'OpenGL core profile renderer: 
 check "llvmpipe -> software/0"    "$(run_subject "${llvmpipe_line}" '' "${with_dri}" '')" "software:0"
 check "unrecognized -> unknown/2" "$(run_subject 'some unrelated line' '' "${with_dri}" '')" "unknown:2"
 check "empty output -> unknown/2" "$(run_subject '' '' "${with_dri}" '')" "unknown:2"
+
+## REGRESSION (classification): a software renderer whose name embeds a hardware
+## vendor token must NOT be reported as accelerated. Software markers are matched
+## BEFORE the vendor list, and vendor matching is whole-word. (Old code reported
+## all three as accelerated: 'Apple'/'D3D12' substrings, and 'ATI' inside 'NATIVE'.)
+check "Apple Software Renderer -> software/0" \
+   "$(run_subject 'OpenGL core profile renderer: Apple Software Renderer' '' "${with_dri}" '')" "software:0"
+check "WARP D3D12 Basic Render Driver -> software/0" \
+   "$(run_subject 'OpenGL core profile renderer: D3D12 (Microsoft Basic Render Driver)' '' "${with_dri}" '')" "software:0"
+check "ATI substring in NATIVE not matched -> software/0" \
+   "$(run_subject 'OpenGL core profile renderer: NATIVE software rasterizer' '' "${with_dri}" '')" "software:0"
+## Real hardware whose name contains the same tokens still classifies as accelerated.
+check "real ATI Radeon -> accelerated/1" \
+   "$(run_subject 'OpenGL core profile renderer: ATI Radeon HD 5770' '' "${with_dri}" '')" "accelerated:1"
+check "real Apple M1 -> accelerated/1" \
+   "$(run_subject 'OpenGL core profile renderer: Apple M1' '' "${with_dri}" '')" "accelerated:1"
 
 ## eglinfo NOT installed (GPU node present, no eglinfo on PATH) -> unknown/2.
 ## PATH is an empty dir: probe_renderer reaches the 'has eglinfo' check using only

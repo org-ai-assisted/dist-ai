@@ -369,6 +369,28 @@ rc="$(CURL_OUT_FILE="" CURL_PRGRS_MAX_FILE_SIZE_BYTES=100000 \
    run_rc https://example.com/nooutfile)"
 check "exec: empty CURL_OUT_FILE -> 57 (setup failure not masked)" "${rc}" "57"
 
+## M13 REGRESSION (header-phase ceiling): a large-but-legal header response
+## (over expected_header_size 8000, under maximum_http_header_size 32000) must
+## NOT be rejected as 114. enforce_final_size treated the 8000-byte ESTIMATE as a
+## hard ceiling for the header phase; the real limit is maximum_http_header_size.
+## A 9000-byte header file -> download proceeds -> 0. (Old code: 114.)
+out_file="${test_dir}/M13.bin"
+rc="$(CURL_OUT_FILE="${out_file}" CURL_PRGRS_MAX_FILE_SIZE_BYTES=100000 \
+   FAKE_CURL_HEADER_CL=100 FAKE_CURL_HEADER_FILE_BYTES=9000 \
+   FAKE_CURL_BODY_BYTES=100 FAKE_CURL_BODY_STEPS=2 FAKE_CURL_BODY_STEP_SLEEP=0.05 \
+   run_rc -o "${out_file}" https://example.com/bigheader)"
+check "exec: large-but-legal header (9000B) -> 0 (ceiling is max, not estimate)" "${rc}" "0"
+
+## M14 GUARD: the header hard cap still fires. A header file beyond
+## maximum_http_header_size (32000) must be rejected as 81 (over max), so raising
+## the header ceiling to the cap did not disable the header size limit entirely.
+out_file="${test_dir}/M14.bin"
+rc="$(CURL_OUT_FILE="${out_file}" CURL_PRGRS_MAX_FILE_SIZE_BYTES=100000 \
+   FAKE_CURL_HEADER_CL=100 FAKE_CURL_HEADER_FILE_BYTES=40000 \
+   FAKE_CURL_BODY_BYTES=100 \
+   run_rc -o "${out_file}" https://example.com/hugeheader)"
+check "exec: oversize header (40000B > 32000 cap) -> 81" "${rc}" "81"
+
 ## ============================================================
 ## (N) Real SIGTERM during an in-flight download: the subject must both terminate
 ## promptly AND stop the download (kill curl). The body child idles

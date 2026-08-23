@@ -133,9 +133,15 @@ def _test_autostart():
 
 
 def _test_warn_any_default():
-    with tempfile.TemporaryDirectory() as cfg:
+    from secure_terminal import settings as _st          # noqa: PLC0415
+    with tempfile.TemporaryDirectory() as cfg, tempfile.TemporaryDirectory() as _sysd:
         old = os.environ.get('XDG_CONFIG_HOME')
         os.environ['XDG_CONFIG_HOME'] = cfg
+        ## Isolate the privileged dirs: warn_any_default() -> settings.load() merges
+        ## /usr/lib,/etc,/usr/local/etc, so a real admin lock=clip_warn_any would
+        ## false-fail/green these defaults (cf. _test_tray_warn_any_persist).
+        _orig_sysd = _st._system_dirs
+        _st._system_dirs = lambda: [_sysd]
         try:
             ok(not CW.warn_any_default(),
                'warn-any default: off when unset in settings')
@@ -146,6 +152,7 @@ def _test_warn_any_default():
             ok(CW.warn_any_default(),
                'warn-any default: on when clip_warn_any=true is persisted')
         finally:
+            _st._system_dirs = _orig_sysd
             if old is None:
                 os.environ.pop('XDG_CONFIG_HOME', None)
             else:

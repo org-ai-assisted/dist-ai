@@ -13,6 +13,10 @@
 ##   FAKE_CURL_HEADER_CL       stdout for a '--head' request -- the value
 ##                             curl-prgrs parses as the Content-Length (default 0)
 ##   FAKE_CURL_HEADER_EXIT     exit code for a '--head' request (default 0)
+##   FAKE_CURL_HEADER_FILE_BYTES  size to grow $CURL_OUT_FILE to on a '--head'
+##                             request (default 0 = leave it absent). Real curl
+##                             writes the response headers to --output, so this
+##                             lets a test exercise the header-phase size ceiling.
 ##   FAKE_CURL_BODY_BYTES      final size to grow $CURL_OUT_FILE to (default 0)
 ##   FAKE_CURL_BODY_STEPS      grow the body in N increments (default 1), so the
 ##                             poll loop iterates and redraws progress
@@ -44,6 +48,11 @@ for arg in "$@"; do
 done
 
 if [ "${is_head}" = "1" ]; then
+  ## Real curl writes the response headers to --output; mirror that so a test can
+  ## drive the header-phase size ceiling. Sparse file -- only its stat size matters.
+  if [ "${FAKE_CURL_HEADER_FILE_BYTES:-0}" != "0" ] && [ -n "${CURL_OUT_FILE:-}" ]; then
+    truncate --size="${FAKE_CURL_HEADER_FILE_BYTES}" -- "${CURL_OUT_FILE}"
+  fi
   printf '%s' "${FAKE_CURL_HEADER_CL:-0}"
   exit "${FAKE_CURL_HEADER_EXIT:-0}"
 fi
