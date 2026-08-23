@@ -30,6 +30,13 @@ Theorems:
                                         the input and every recognized flag is
                                         dropped together with its following value
                                         (exhaustive over bounded argv).
+  T4  content_length_ceiling_for_phase -- the phase-selection feeding
+                                        classify_download_size picks the hard cap
+                                        for the header phase and the advertised
+                                        length for the body phase; COMPOSED with
+                                        classify, the header phase never yields 114
+                                        (a large-but-legal header is not a false
+                                        over-length failure).
 
 SCOPE -- honest. Z3 proves the ARITHMETIC/logic over Bash's signed-64-bit-safe
 domain (curl-prgrs bounds an advertised Content-Length to 16 digits, keeping
@@ -140,6 +147,14 @@ def m_classify(downloaded, max_v, cl_v):
     if d > int(cl_v):
         return 114
     return 0
+
+
+def m_ceiling(header_download, advertised, max_bytes):
+    ## Header phase (exact "true") enforces the hard cap; every other value is the
+    ## body phase and enforces the advertised length.
+    if header_download == "true":
+        return int(max_bytes)
+    return int(advertised)
 
 
 def m_strip(args):
@@ -375,6 +390,100 @@ def t3_canaries():
                    not _is_subsequence(_injecting_strip(["-o", "/f", "url"]), ["-o", "/f", "url"]))
 
 
+## ============= T4: content_length_ceiling_for_phase (+ composition) ==========
+
+def t4_z3(broken=False):
+    """The phase-selection feeding classify_download_size is correct:
+      - header phase selects the hard cap (max_bytes), body phase the advertised
+        length;
+      - COMPOSED with classify_download_size, the header phase can NEVER yield 114
+        (an over-advertised verdict) -- only 0 (<= cap) or 81 (> cap) -- so a
+        large-but-legal header is never a false over-length failure. This is the
+        property the estimate-as-ceiling bug violated.
+    'broken' makes the header phase enforce the estimate, which the canary catches."""
+    d = z3.Int("d")
+    adv = z3.Int("adv")
+    mx = z3.Int("mx")
+    dom = [d >= 0, d <= _MAX16, adv >= 0, adv <= _MAX16, mx >= 0, mx <= _MAX16]
+
+    header_ceiling = adv if broken else mx     # BUG: header enforces the estimate
+    body_ceiling = adv
+
+    def classify(cl):
+        ## classify_download_size for a WHOLE d: over-cap 81 beats over-length 114.
+        return z3.If(d > mx, z3.IntVal(81), z3.If(d > cl, z3.IntVal(114), z3.IntVal(0)))
+
+    sel_header = header_ceiling == mx
+    sel_body = body_ceiling == adv
+    header_never_114 = z3.Not(classify(header_ceiling) == 114)
+
+    ok_h = z3_prove("T4-ceiling-header-is-cap", sel_header, dom, report=not broken)
+    ok_b = z3_prove("T4-ceiling-body-is-advertised", sel_body, dom, report=not broken)
+    ok_no114 = z3_prove("T4-header-never-114", header_never_114, dom, report=not broken)
+    return ok_h and ok_b and ok_no114
+
+
+def t4_enumerate(subject, env):
+    """Run the REAL content_length_ceiling_for_phase over a grid (confirm it equals
+    the model, using EXACT 'true' for the header phase), then drive the REAL
+    composed pipeline (ceiling -> classify) and confirm the header phase never
+    yields 114 for a size within the cap."""
+    ## (a) the selection function itself.
+    phases = ["true", "false", "", "TRUE", "yes"]     # only exact "true" is header
+    advs = [0, 1, 100, 8000, 32000]
+    caps = [0, 1, 100, 8000, 32000]
+    grid = [(h, a, m) for h in phases for a in advs for m in caps]
+    body = "\n".join(
+        'content_length_ceiling_for_phase %s %s %s; printf "\\n"' % (_q(h), a, m)
+        for h, a, m in grid
+    )
+    got = _bash_lines(subject, env, body)
+    if len(got) != len(grid):
+        fail("T4 enumerate: expected %d ceiling results, got %d" % (len(grid), len(got)))
+        return
+    for (h, a, m), g in zip(grid, got):
+        want = m_ceiling(h, a, m)
+        if g != str(want):
+            fail("T4 enumerate: ceiling %r %d %d -> bash %s, model %d" % (h, a, m, g, want))
+
+    ## (b) composition on the REAL pipeline: header phase, size between the
+    ## advertised estimate and the cap must classify 0 (never 114); size over the
+    ## cap must be 81. This is the estimate-as-ceiling bug scenario, on real bash.
+    cap = 32000
+    est = 8000
+    sizes = [0, est, est + 1, 9000, cap, cap + 1, cap + 5000]
+    comp = "\n".join(
+        'cl="$(content_length_ceiling_for_phase true %s %s)"; '
+        'classify_download_size %s %s "${cl}"; printf "\\n"' % (est, cap, s, cap)
+        for s in sizes
+    )
+    comp_got = _bash_lines(subject, env, comp)
+    if len(comp_got) != len(sizes):
+        fail("T4 compose: expected %d results, got %d" % (len(sizes), len(comp_got)))
+        return
+    for s, g in zip(sizes, comp_got):
+        want = 81 if s > cap else 0            # header phase: 0 within cap, 81 over
+        if g != str(want):
+            fail("T4 compose: header size %d (est %d cap %d) -> bash %s, want %d"
+                 % (s, est, cap, g, want))
+        if g == "114":
+            fail("T4 compose: header size %d wrongly classified over-length (114)" % s)
+
+
+def _estimate_ceiling(header_download, advertised, max_bytes):
+    """Broken: header phase enforces the estimate (advertised), reintroducing 114."""
+    return int(advertised)
+
+
+def t4_canaries():
+    _expect_caught("T4/z3-header-cap", not t4_z3(broken=True))
+    ## With the broken estimate ceiling, a header size between the estimate and the
+    ## cap classifies 114; the correct cap ceiling gives 0. The composition guard
+    ## must catch that 114.
+    broken_cl = _estimate_ceiling("true", 8000, 32000)
+    _expect_caught("T4/compose-no-114", m_classify("9000", 32000, broken_cl) == 114)
+
+
 def main():
     subject, env = _subject_and_env()
     sys.stdout.write("curl-prgrs formal verification (Z3 %s)\n" % z3.get_version_string())
@@ -394,6 +503,12 @@ def main():
     sys.stdout.write("  T3  remove_argument_for_header_request -- exhaustive enumeration\n")
     t3_enumerate(subject, env)
     t3_canaries()
+
+    sys.stdout.write("  T4  content_length_ceiling_for_phase -- Z3 selection + no-114 composition\n")
+    t4_z3()
+    sys.stdout.write("  T4  content_length_ceiling_for_phase -- enumeration + real pipeline\n")
+    t4_enumerate(subject, env)
+    t4_canaries()
 
     sys.stdout.write(
         "verify_curl_prgrs_formal: %d canaries verified, %d obligations failed\n"
