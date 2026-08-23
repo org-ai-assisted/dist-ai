@@ -147,7 +147,7 @@ case "${operation}" in
       CURL_PRGRS_MAX_FILE_SIZE_BYTES="${2}"
       curl_prgrs_content_length="${3}"
       set -o errexit
-      enforce_final_size
+      enforce_final_size "${curl_prgrs_content_length}"
       printf '%s' "${size_file_downloaded_bytes}"
       ;;
 
@@ -169,7 +169,7 @@ case "${operation}" in
       CURL_OUT_FILE="${probe_tmp}/does-not-exist"
       CURL_PRGRS_MAX_FILE_SIZE_BYTES=100
       curl_prgrs_content_length=100
-      enforce_final_size
+      enforce_final_size "${curl_prgrs_content_length}"
       ;;
 
    *)
