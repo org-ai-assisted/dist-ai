@@ -146,10 +146,10 @@ check "source: every function defined" \
    "$("${probe_script}" defined \
       stderr_is_tty initialize_terminal initialize_variables check_variables \
       shutdown traps_enable compute_percent print_progress curl_exit \
-      classify_download_size enforce_final_size curl_download \
-      remove_argument_for_header_request run_body_download run_download main \
-      was_executed)" \
-   "function,function,function,function,function,function,function,function,function,function,function,function,function,function,function,function,function,"
+      classify_download_size content_length_ceiling_for_phase enforce_final_size \
+      curl_download remove_argument_for_header_request run_body_download \
+      run_download main was_executed)" \
+   "function,function,function,function,function,function,function,function,function,function,function,function,function,function,function,function,function,function,"
 
 ## ============================================================
 ## (B) compute_percent -- pure, including the div-by-zero (length 0) guard.

@@ -169,23 +169,29 @@ nv_out="$(LIBGL_ALWAYS_SOFTWARE='' DETECT_SOFTWARE_RENDERING_DRI_DIR="${no_dri}"
    XDG_RUNTIME_DIR="${no_cache_dir}" PATH="${probe_path}" "${subject}")" || nv_rc=$?
 check "NVIDIA node present, no DRM -> falls through to eglinfo" "${nv_out}:${nv_rc}" "accelerated:1"
 
-## REGRESSION: LIBGL_ALWAYS_SOFTWARE is Mesa-only; the proprietary NVIDIA libGL
-## ignores it. With an NVIDIA node present the short-circuit must NOT declare
-## software -- fall through to the eglinfo probe, which sees the real (accelerated)
-## renderer. (Old code returned software:0 without probing.)
+## LIBGL_ALWAYS_SOFTWARE is a deliberate user/admin directive: honored
+## unconditionally (software), even with an NVIDIA node present, and WITHOUT
+## probing eglinfo. Reports the requested intent, not a driver guess.
+safe-rm -f -- "${count_file}"
 libgl_nv_rc=0
 libgl_nv_out="$(LIBGL_ALWAYS_SOFTWARE=1 DETECT_SOFTWARE_RENDERING_DRI_DIR="${no_dri}" \
    DETECT_SOFTWARE_RENDERING_NVIDIA_CTL="${nvidia_present}" \
    EGLINFO_STUB_RENDERER='OpenGL core profile renderer: NVIDIA GeForce RTX 4090' \
+   EGLINFO_STUB_COUNT="${count_file}" \
    XDG_RUNTIME_DIR="${no_cache_dir}" PATH="${probe_path}" "${subject}")" || libgl_nv_rc=$?
-check "LIBGL_ALWAYS_SOFTWARE=1 + NVIDIA node -> probes eglinfo (accelerated:1)" \
-   "${libgl_nv_out}:${libgl_nv_rc}" "accelerated:1"
+check "LIBGL_ALWAYS_SOFTWARE=1 + NVIDIA node -> software/0 (directive honored)" \
+   "${libgl_nv_out}:${libgl_nv_rc}" "software:0"
+check "LIBGL directive honored without probing eglinfo (NVIDIA node present)" \
+   "$(count_of "${count_file}")" "0"
 
 ## The 'yes' spelling is truthy too (Mesa treats it so). With no NVIDIA node it
 ## short-circuits to software without probing, even though eglinfo would report a
 ## vendor. (Old code accepted only '1'/'true', so 'yes' probed -> accelerated.)
 check "LIBGL_ALWAYS_SOFTWARE=yes (no NVIDIA) -> software/0 without probing" \
    "$(run_subject 'OpenGL core profile renderer: NVIDIA GeForce' yes "${with_dri}" '')" "software:0"
+## Case-insensitive: uppercase spellings are lowercased before the compare.
+check "LIBGL_ALWAYS_SOFTWARE=TRUE (uppercase, no NVIDIA) -> software/0" \
+   "$(run_subject 'OpenGL core profile renderer: NVIDIA GeForce' TRUE "${with_dri}" '')" "software:0"
 
 ## --- (2) source-ability: no auto-run, no strict leak, pure + defined ---
 src_out=""
@@ -219,6 +225,17 @@ check "real ATI Radeon -> accelerated/1" \
    "$(run_subject 'OpenGL core profile renderer: ATI Radeon HD 5770' '' "${with_dri}" '')" "accelerated:1"
 check "real Apple M1 -> accelerated/1" \
    "$(run_subject 'OpenGL core profile renderer: Apple M1' '' "${with_dri}" '')" "accelerated:1"
+
+## REGRESSION (multi-platform): 'eglinfo -B' prints a renderer line per EGL
+## platform. A platform that falls back to llvmpipe must NOT mask another platform
+## reporting the real GPU -- hardware wins across lines. All-software multi-line
+## stays software.
+mixed_renderer=$'OpenGL core profile renderer: llvmpipe (LLVM 15.0.7)\nOpenGL core profile renderer: NVIDIA GeForce RTX 4090'
+check "mixed llvmpipe + NVIDIA lines -> accelerated/1 (hardware wins)" \
+   "$(run_subject "${mixed_renderer}" '' "${with_dri}" '')" "accelerated:1"
+multi_software=$'OpenGL core profile renderer: llvmpipe (LLVM 15.0.7)\nOpenGL core profile renderer: softpipe'
+check "multiple software-only lines -> software/0" \
+   "$(run_subject "${multi_software}" '' "${with_dri}" '')" "software:0"
 
 ## eglinfo NOT installed (GPU node present, no eglinfo on PATH) -> unknown/2.
 ## PATH is an empty dir: probe_renderer reaches the 'has eglinfo' check using only
