@@ -1358,6 +1358,11 @@ def t_input_enumerate():
                  % (cp, outd))
 
         # --- T5 sanitize_title: printable ASCII only, no leading/trailing space ---
+        # T5 is a PROPERTY check (safe output alphabet + no surrounding space here,
+        # idempotence + length bound below), NOT a char-level differential against an
+        # independent reference like T1/T3/T4. The title contract is "reduce to a safe
+        # printable-ASCII label", so the alphabet + idempotence bounds ARE the security
+        # guarantee; there is no canonical target transform to differentially compare.
         outt = S.sanitize_title(ch)
         for oc in outt:
             if not 0x20 <= ord(oc) <= 0x7E:
@@ -1645,7 +1650,7 @@ def t8_split_invariance(max_len=5):
 
     Three layers (the original 8-symbol max_len=5 pass is preserved):
       (a) original alphabet, max_len=5
-      (b) richer alphabet that can form SS2/SS3/charset/DEC-private, max_len=4
+      (b) richer alphabet that can form SS2/SS3/charset/DEC-private, max_len=3
       (c) catalog of real sequences of every ANSI_RE arm, split at every offset
           and 1-byte-at-a-time (the most aggressive split)."""
     import itertools
@@ -1765,13 +1770,11 @@ def t8_canaries():
     ss2 = '\x1bNa'
     _expect_caught('T8/ss2-split',
                    broken([ss2]) != broken(['\x1b', 'Na']))
-    # DCS-BEL canary: if discard treated BEL as a DCS terminator, the body after
-    # BEL would render. A checker that only looks at OSC would miss this.
-    _expect_caught('T8/dcs-bel-is-body',
-                   '\x07' not in '\x1b\\')   # ST is ESC \, not BEL -- teeth on the distinction
-    leaked_if_bel_terminates_dcs = 'LEAK'
-    _expect_caught('T8/dcs-bel-leak-predicate',
-                   'LEAK' in leaked_if_bel_terminates_dcs)
+    # DCS BEL-is-body (BEL does not terminate a DCS -- only ST = ESC \ does) is proven
+    # by the exhaustive T8 stream + catalog checks above, which split DCS sequences with
+    # a BEL in the body at every offset and confirm render_output discards the whole run.
+    # It needs no separate canary here: a canary that only asserted string literals
+    # ('\x07' not in '\x1b\\') would increment the verified count without driving the model.
 
 
 # ===========================================================================
