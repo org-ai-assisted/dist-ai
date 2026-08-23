@@ -157,9 +157,15 @@ def _test_tray_warn_any_persist():
     ## live-only IPC set-warn-any -- so it survives a daemon restart (a later
     ## daemon reads clip_warn_any via warn_any_default() at startup). Canary: on
     ## the pre-fix wiring the toggle only live-updated, so nothing was persisted.
-    with tempfile.TemporaryDirectory() as cfg:
+    from secure_terminal import settings as _st          # noqa: PLC0415
+    with tempfile.TemporaryDirectory() as cfg, tempfile.TemporaryDirectory() as _sysd:
         old = os.environ.get('XDG_CONFIG_HOME')
         os.environ['XDG_CONFIG_HOME'] = cfg
+        ## Isolate the privileged dirs too: warn_any_default() -> settings.load()
+        ## also merges /usr/lib,/etc,/usr/local/etc, so a real admin lock=clip_warn_any
+        ## would false-fail/false-green these persist assertions (cf. test_mainwin).
+        _orig_sysd = _st._system_dirs
+        _st._system_dirs = lambda: [_sysd]
         try:
             app = CW.ClipboardWatchApp(APP)
             menu = app._build_menu()
@@ -194,6 +200,7 @@ def _test_tray_warn_any_persist():
             ok('foreign_key' not in written,
                'tray persist does NOT pin a merged (other-drop-in/admin) key into user config')
         finally:
+            _st._system_dirs = _orig_sysd
             if old is None:
                 os.environ.pop('XDG_CONFIG_HOME', None)
             else:
