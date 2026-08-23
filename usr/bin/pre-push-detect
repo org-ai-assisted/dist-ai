@@ -32,8 +32,8 @@ _LIB = os.path.join(
 if os.path.isdir(_LIB) and _LIB not in sys.path:
     sys.path.insert(0, _LIB)
 
-from dist_ai import bash_ast
-from dist_ai import detect
+from dist_ai import bash_ast  # noqa: E402
+from dist_ai import detect  # noqa: E402
 
 US = "\x1f"
 

@@ -63,25 +63,33 @@ def is_posix_sh(source):
     return bool(re.match(r'#!\s*(\S*/)?(env\s+)?sh(\s|$)', line))
 
 
-def _assign_prefix(lit):
-    return bool(re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', lit))
+## sudo/doas options that take a SEPARATE value ('sudo -u www-data cmd'); their
+## value must not be mistaken for the wrapped command.
+SUDO_VALUE_SHORT = frozenset("ughprtCTRDU")
+SUDO_VALUE_LONG = frozenset({
+    "user", "group", "host", "prompt", "role", "type", "close-from",
+    "command-timeout", "chroot", "chdir", "other-user"})
 
 
-def effective_command(call):
+def effective_command(call, source):
     """The literal name of the program CALL actually runs, unwrapping a leading
-    'sudo'/'doas' (skipping its options and 'VAR=value' prefixes). None when the
-    command word is quoted/expanded (not a plain literal) or cannot be resolved
-    past the wrapper -- the safe direction (a rule declines rather than guesses)."""
+    'sudo'/'doas' (skipping its options, their values, and 'VAR=value' prefixes).
+    None when the wrapped command word is quoted/expanded or cannot be resolved --
+    the safe direction (a rule declines rather than guesses)."""
     name = bash_ast.command_name(call)
     if name not in EXEC_WRAPPERS:
         return name
-    for word in bash_ast.args(call)[1:]:
-        lit = bash_ast.word_lit(word)
-        if lit is None:
-            return None
-        if lit.startswith("-") or _assign_prefix(lit):
+    for kind, word, _text in bash_ast.command_tokens(
+            call, source, SUDO_VALUE_SHORT, SUDO_VALUE_LONG):
+        if kind == "value":
             continue
-        return lit
+        if kind == "operand":
+            ## The first word past the wrapper's options is the real command; a
+            ## leading 'VAR=value' env-assignment is still not the command.
+            lit = bash_ast.word_lit(word)
+            if lit is not None and re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', lit):
+                continue
+            return lit
     return None
 
 
@@ -95,18 +103,24 @@ CONTEXT_COND = "cond"
 
 def _walk_stmts(stmts, context, out):
     for stmt in stmts or []:
-        out.append((stmt, context))
-        _walk_command(stmt.get("Cmd"), out)
+        _walk_command_stmt(stmt, context, out)
 
 
-def _walk_command(cmd, out):
+def _walk_command_stmt(stmt, context, out):
+    if not isinstance(stmt, dict):
+        return
+    out.append((stmt, context))
+    _walk_command(stmt.get("Cmd"), context, out)
+
+
+def _walk_command(cmd, context, out):
     if not isinstance(cmd, dict):
         return
     kind = cmd.get("Type")
-    if kind == "Block":
-        _walk_stmts(cmd.get("Stmts"), CONTEXT_STMT, out)
-    elif kind == "Subshell":
-        _walk_stmts(cmd.get("Stmts"), CONTEXT_STMT, out)
+    if kind in ("Block", "Subshell"):
+        ## A group/subshell INHERITS its enclosing context -- a block that IS a
+        ## loop/if condition keeps its statements in condition context.
+        _walk_stmts(cmd.get("Stmts"), context, out)
     elif kind == "IfClause":
         _walk_if(cmd, out)
     elif kind == "WhileClause":
@@ -118,11 +132,12 @@ def _walk_command(cmd, out):
         for item in cmd.get("Items") or []:
             _walk_stmts(item.get("Stmts"), CONTEXT_STMT, out)
     elif kind == "BinaryCmd":
-        ## A pipeline / '&&' / '||': both sides keep the enclosing context.
-        _walk_command_stmt(cmd.get("X"), out)
-        _walk_command_stmt(cmd.get("Y"), out)
+        ## A pipeline / '&&' / '||': both sides KEEP the enclosing context, so a
+        ## ':' that is only the left side of a CONDITION pipeline stays 'cond'.
+        _walk_command_stmt(cmd.get("X"), context, out)
+        _walk_command_stmt(cmd.get("Y"), context, out)
     elif kind == "FuncDecl":
-        _walk_command(cmd.get("Body", {}).get("Cmd"), out)
+        _walk_command_stmt(cmd.get("Body"), CONTEXT_STMT, out)
 
 
 def _walk_if(cmd, out):
@@ -134,12 +149,6 @@ def _walk_if(cmd, out):
         _walk_if(else_node, out) if else_node.get("Cond") else \
             _walk_stmts(else_node.get("Then") or else_node.get("Stmts"),
                         CONTEXT_STMT, out)
-
-
-def _walk_command_stmt(stmt, out):
-    if isinstance(stmt, dict):
-        out.append((stmt, CONTEXT_STMT))
-        _walk_command(stmt.get("Cmd"), out)
 
 
 def statements(tree):
@@ -157,6 +166,14 @@ def _line_of(node):
 
 def _fail(rule, message, path, node):
     return Finding(FAIL, rule, message, path, _line_of(node))
+
+
+def _line_is_bare(source, node):
+    """True if NODE's physical line is just ':' (optional surrounding
+    whitespace) -- the legacy 'bare colon alone on a line' form for R-130."""
+    lines = source.split("\n")
+    index = node["Pos"]["Line"] - 1
+    return 0 <= index < len(lines) and lines[index].strip() == ":"
 
 
 ## --- command-position rules -----------------------------------------------
@@ -206,7 +223,7 @@ def r120_rm(path, source, tree):
     if path == "usr/bin/pre-push-static" or waiver(source, "no-safe-rm"):
         return
     for call in bash_ast.call_exprs(tree):
-        if effective_command(call) == "rm":
+        if effective_command(call, source) == "rm":
             yield _fail("R-120", "R-120 rm not safe-rm", path, call)
 
 
@@ -215,7 +232,7 @@ def r034_echo(path, source, tree):
     if waiver(source, "allow-echo"):
         return
     for call in bash_ast.call_exprs(tree):
-        if effective_command(call) == "echo":
+        if effective_command(call, source) == "echo":
             yield _fail("R-034", "R-034 echo not printf", path, call)
 
 
@@ -231,9 +248,15 @@ def r130_null_command(path, source, tree):
             continue
         has_redirect = bool(stmt.get("Redirs"))
         only_colon = len(bash_ast.args(cmd)) == 1
-        if has_redirect and only_colon:
+        if not only_colon:
+            continue
+        if has_redirect:
+            ## The ': > file' truncation idiom (opaque under xtrace).
             yield _fail("R-130", "R-130 ':' used as a command", path, cmd)
-        elif only_colon and context == CONTEXT_STMT:
+        elif context == CONTEXT_STMT and _line_is_bare(source, cmd):
+            ## A bare ':' ALONE on its line -- a filler no-op statement. NOT a
+            ## ':' stub sharing a line ('f() { :; }', 'case x) : ;;'), which is
+            ## the standard empty-body idiom, nor a loop/if condition.
             yield _fail("R-130", "R-130 ':' used as a command", path, cmd)
 
 
@@ -268,7 +291,7 @@ def r210_apt_get(path, source, tree):
             or waiver(source, "allow-apt-get"):
         return
     for call in bash_ast.call_exprs(tree):
-        if effective_command(call) == "apt-get":
+        if effective_command(call, source) == "apt-get":
             yield Finding(
                 NOTE, "R-210",
                 "R-210 (ADVISORY): 'apt-get' in command position -- prefer "
@@ -287,7 +310,7 @@ def r211_dpkg(path, source, tree):
             or waiver(source, "allow-dpkg"):
         return
     for call in bash_ast.call_exprs(tree):
-        if effective_command(call) != "dpkg":
+        if effective_command(call, source) != "dpkg":
             continue
         ## Only a state-changing action, as a whole plain-literal argument word.
         args_after = bash_ast.args(call)
@@ -316,35 +339,45 @@ def r211_dpkg(path, source, tree):
 ## Temp-dir parameter names whose mkdir operand makes R-172 apply.
 TMP_PARAMS = {"TMPDIR", "TEMPDIR", "TEMP", "TMP"}
 
-## grep short options that take a SEPARATE value; a '-...q' cluster carrying one
-## BEFORE the 'q' is not a quiet flag ('-eq' is '-e' with pattern 'q').
-GREP_ARG_TAKING_SHORT = set("efmABCdD")
+## grep options that take a SEPARATE value. A value-taker's own value must not be
+## read as a flag ('grep -e -q' -- the '-q' is '-e's pattern), and the scan must
+## skip PAST it so a later real '-q' is still seen ('grep -e foo -q').
+GREP_VALUE_SHORT = frozenset("efmABCdD")
+GREP_VALUE_LONG = frozenset({
+    "regexp", "file", "max-count", "after-context", "before-context",
+    "context", "color", "colour", "binary-files", "devices", "directories",
+    "label", "group-separator", "exclude", "exclude-dir", "exclude-from",
+    "include"})
 
 ## A zero (no-op) GNU timeout duration: bounds nothing, so there is no SIGTERM to
 ## back with a kill-after -- R-200 exempts it (mirrors the fixer).
 ZERO_DURATION = re.compile(r'^(?:0+(?:\.0*)?|\.0+)[smhd]?$')
 
 
-def _grep_quiet(call):
+def _grep_quiet(call, source):
     """(is_quiet, is_short_quiet) for a grep CALL: does its option region carry a
-    quiet flag, and is that flag a SHORT cluster ('-q','-iq')? A long '--quiet'/
-    '--silent' sets is_quiet only. Scans the option region (up to the first
-    operand, '--', or a quoted/expanded word)."""
+    quiet flag, and is that flag a SHORT cluster ('-q','-iq')? Uses the shared
+    option scanner, so a value-taking option's VALUE is skipped ('grep -e foo -q'
+    still sees the '-q'; 'grep -e -q' does not treat the '-q' value as a flag)."""
     is_quiet = False
     is_short = False
-    for word in bash_ast.args(call)[1:]:
-        lit = bash_ast.word_lit(word)
-        if lit is None or lit == "--" or not lit.startswith("-") or lit == "-":
-            break
-        if lit in ("--quiet", "--silent"):
+    for kind, _word, text in bash_ast.command_tokens(
+            call, source, GREP_VALUE_SHORT, GREP_VALUE_LONG):
+        if kind != "opt":
+            continue
+        if text in ("--quiet", "--silent"):
             is_quiet = True
-            continue
-        if lit.startswith("--"):
-            continue
-        cluster = lit[1:]
-        if "q" in cluster:
-            before_q = cluster[:cluster.index("q")]
-            if not any(char in GREP_ARG_TAKING_SHORT for char in before_q):
+        elif text.startswith("-") and not text.startswith("--"):
+            ## In a short cluster, chars up to the first value-taker are real
+            ## flags; the value-taker and the rest are its value. 'q' among the
+            ## flags is a quiet flag.
+            cluster = text[1:]
+            flags = cluster
+            for position, letter in enumerate(cluster):
+                if letter in GREP_VALUE_SHORT:
+                    flags = cluster[:position]
+                    break
+            if "q" in flags:
                 is_quiet = True
                 is_short = True
     return is_quiet, is_short
@@ -364,14 +397,14 @@ def r161_grep_quiet(path, source, tree):
             continue
         if bash_ast.command_name(cmd) != "grep":
             continue
-        is_quiet, _ = _grep_quiet(cmd)
+        is_quiet, _ = _grep_quiet(cmd, source)
         if is_quiet:
             pipe_reported.add(id(cmd))
             yield _fail("R-161", "R-161 quiet grep consuming a pipe", path, cmd)
     for call in bash_ast.call_exprs(tree):
         if bash_ast.command_name(call) != "grep" or id(call) in pipe_reported:
             continue
-        _, is_short = _grep_quiet(call)
+        _, is_short = _grep_quiet(call, source)
         if is_short:
             yield _fail("R-161",
                         "R-161 grep short quiet flag (use --quiet)", path, call)
@@ -386,20 +419,26 @@ def r172_mkdir_tmp_mode(path, source, tree):
     for call in bash_ast.call_exprs(tree):
         if bash_ast.command_name(call) != "mkdir":
             continue
-        option_lits = [bash_ast.word_lit(word) for word in bash_ast.args(call)[1:]]
         is_temp = any(bash_ast.word_param_names(word) & TMP_PARAMS
                       for word in bash_ast.args(call)[1:])
         if not is_temp:
             continue
-        has_long = any(
-            lit and (lit == "--mode" or lit.startswith("--mode="))
-            for lit in option_lits)
+        has_long = False
+        has_short_m = False
+        ## '-m' and '--mode' take a value; scan options only (values and the
+        ## operand region are skipped), so '--mode="$x"' counts, a '-m' after
+        ## '--' does not, and 'mkdir -- "$TMPDIR" -m' is not misread.
+        for kind, _word, text in bash_ast.command_tokens(
+                call, source, frozenset("m"), frozenset({"mode"})):
+            if kind != "opt":
+                continue
+            if text == "--mode" or text.startswith("--mode="):
+                has_long = True
+            elif text.startswith("-") and not text.startswith("--") \
+                    and "m" in text[1:]:
+                has_short_m = True
         if has_long:
             continue
-        has_short_m = any(
-            lit and lit.startswith("-") and not lit.startswith("--")
-            and "m" in lit[1:]
-            for lit in option_lits)
         if has_short_m:
             yield _fail("R-172", "R-172 mkdir temp dir: use --mode not -m",
                         path, call)
@@ -435,27 +474,23 @@ def r200_timeout_kill_after(path, source, tree):
         has_kill = False
         informational = False
         duration = None
-        expect_value = False
-        for word in call_args[1:]:
-            lit = bash_ast.word_lit(word)
-            if expect_value:
-                ## The SEPARATE value of the previous space-form option (e.g.
-                ## '--signal TERM', '-k 1') -- not the duration.
-                expect_value = False
+        ## timeout's value-taking options: -k/--kill-after and -s/--signal. The
+        ## scanner skips their values, so a '--signal TERM' value is not read as
+        ## the duration and an expanded '--kill-after="$k"' still counts.
+        for kind, word, text in bash_ast.command_tokens(
+                call, source, frozenset("ks"),
+                frozenset({"kill-after", "signal"})):
+            if kind == "value":
                 continue
-            if lit is not None and lit.startswith("-") and lit != "-":
-                if lit == "--kill-after" or lit.startswith("--kill-after=") \
-                        or lit.startswith("-k"):
-                    has_kill = True
-                if lit in ("--help", "--version", "--usage"):
-                    informational = True
-                ## timeout's OWN arg-taking options in SPACE form: the next token
-                ## is their value, so it must not be read as the duration.
-                if lit in ("--signal", "-s", "--kill-after", "-k"):
-                    expect_value = True
-                continue
-            duration = lit
-            break
+            if kind == "operand":
+                ## The first operand is the duration.
+                duration = bash_ast.word_lit(word)
+                break
+            if text == "--kill-after" or text.startswith("--kill-after=") \
+                    or (text.startswith("-k") and not text.startswith("--")):
+                has_kill = True
+            if text in ("--help", "--version", "--usage"):
+                informational = True
         if has_kill or informational:
             continue
         if duration is not None and ZERO_DURATION.match(duration):
@@ -504,29 +539,35 @@ def r193_python_dashdash_script(path, source, tree):
     for call in bash_ast.call_exprs(tree):
         if bash_ast.command_name(call) not in PY_INTERPRETERS:
             continue
-        call_args = bash_ast.args(call)
-        ## The '--' must be PYTHON'S OWN option terminator: it may follow python's
-        ## single-dash options (-B, -s, -u) but NOT a '-m'/'-c' or a script/module
-        ## operand -- after those, python is already running something and a later
-        ## '--' belongs to IT ('python3 -m coverage run -- harness.py' is coverage's
-        ## separator, not a 'python3 -- file' call).
-        for index in range(1, len(call_args)):
-            lit = bash_ast.word_lit(call_args[index])
-            if lit is None:
-                break
-            if lit == "--":
-                operand = bash_ast.word_source(call_args[index + 1], source) \
-                    if index + 1 < len(call_args) else ""
+        ## The '--' must be PYTHON'S OWN option terminator: python's single-dash
+        ## options may precede it (incl value-takers '-W error' / '-X k=v', whose
+        ## values the scanner skips), but NOT a '-m'/'-c' or a script/module
+        ## operand -- after those python is already running something and a later
+        ## '--' belongs to IT ('python3 -m coverage run -- harness.py' is
+        ## coverage's separator, not a 'python3 -- file' call).
+        tokens = list(bash_ast.command_tokens(
+            call, source, frozenset("WX"), frozenset()))
+        for index, (kind, _word, text) in enumerate(tokens):
+            if kind == "value":
+                continue
+            if kind == "opt" and text == "--":
+                after = tokens[index + 1] if index + 1 < len(tokens) else None
                 ## The operand often carries an expansion ('"${dir}/foo.py"'), so
-                ## check its raw spelling, not a plain literal. Strip a trailing
-                ## quote so the '.py' at the path end is seen.
-                if operand.rstrip("\"'").endswith(".py"):
+                ## check its raw spelling; strip a trailing quote so a '.py' at
+                ## the path end is seen.
+                if after and after[2].rstrip("\"'").endswith(".py"):
                     yield _fail(
                         "R-193",
                         "R-193 call the +x script directly via its shebang, not "
                         "through an interpreter prefix", path, call)
                 break
-            if lit in ("-m", "-c") or not lit.startswith("-"):
+            if kind == "opt" and (text in ("-m", "-c")
+                                  or (not text.startswith("--")
+                                      and ("m" in text[1:] or "c" in text[1:]))):
+                ## '-m'/'-c' (or a cluster carrying one): python runs a module or
+                ## command string; a later '--' is not python's own.
+                break
+            if kind == "operand":
                 break
 
 

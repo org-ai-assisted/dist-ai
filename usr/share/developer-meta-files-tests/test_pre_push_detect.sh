@@ -124,6 +124,43 @@ run_det "$(printf '%s\n' \
    'timeout 5 cmd')"
 assert_at "R-200 sees a command hidden by a comment-tail backslash" "R-200" 3
 
+## --- arg-taking option VALUES: skipped, never mistaken for a flag/operand -----
+## (regression for ai-review findings: the shared option scanner must skip a
+## value-taking option's separate value.)
+g='grep'
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'sudo -u www-data rm -rf /x' \
+   "${g} -e foo -q file" \
+   "${g} -e -q pattern" \
+   'python3 -W error -- tool.py' \
+   'python3 -m coverage run -- harness.py')"
+assert_at     "R-120 unwraps 'sudo -u VALUE rm' (value skipped)"     "R-120" 2
+assert_at     "R-161 sees '-q' after 'grep -e foo' (value skipped)"  "grep short quiet flag" 3
+assert_not_at "R-161 spares 'grep -e -q' (-q is -e's value)"         "R-161" 4
+assert_at     "R-193 sees '--' after 'python -W error' (value skipped)" "R-193" 5
+assert_not_at "R-193 spares 'python -m coverage run -- x.py'"        "R-193" 6
+
+## --- expanded option values ('--mode=\"\$x\"') counted, not false-flagged -----
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'mkdir --mode="$m" "$TMPDIR/x"' \
+   'timeout --kill-after="$k" 5 cmd')"
+assert_not_at "R-172 spares an atomic --mode with an expanded value"  "R-172" 2
+assert_not_at "R-200 spares --kill-after with an expanded value"      "R-200" 3
+
+## --- R-130 spares no-op stubs + condition pipelines, keeps bare/redirect ------
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   ':' \
+   'stub() { :; }' \
+   'case "$x" in a) : ;; esac' \
+   'while : | true; do break; done')"
+assert_at     "R-130 flags a bare ':' alone on its line"             "R-130" 2
+assert_not_at "R-130 spares a ':' no-op function stub"               "R-130" 3
+assert_not_at "R-130 spares a ':' no-op case arm"                    "R-130" 4
+assert_not_at "R-130 spares ':' in a condition pipeline"             "R-130" 5
+
 ## Self-test the FAIL gate: a forced failure must make the script exit non-zero.
 if [ -n "${TEST_SELFCHECK_FAIL_GATE:-}" ]; then
    note_fail "self-test forced failure"

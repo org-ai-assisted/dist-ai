@@ -535,6 +535,30 @@ else
    note_fail "AST port canary broken: R-200 not cleared on a heredoc file"
 fi
 
+## --- 9d: SC2174 insertion uses BYTE offsets (non-ASCII before the mkdir) -----
+## Regression: a non-ASCII char earlier in the file must not shift the inserted
+## disable into the previous line (str char-index vs shfmt byte-offset mismatch).
+f="${test_dir}/nonascii.sh"
+printf '%b' '#!/bin/bash\n## caf\303\251 padding comment here\nmkdir --parents -m 700 -- "$TMPDIR"\n' >"${f}"
+"${FIX}" "${f}" >/dev/null 2>&1
+if grep --line-regexp --quiet -- '# shellcheck disable=SC2174' "${f}" \
+   && grep --quiet --fixed-strings -- 'mkdir --parents --mode=700 -- "$TMPDIR"' "${f}" \
+   && grep --quiet --fixed-strings -- 'padding comment here' "${f}" ; then
+   note_pass "SC2174 lands on its own line despite non-ASCII above (byte offsets)"
+else
+   note_fail "SC2174 insertion corrupted by a non-ASCII line above the mkdir"
+fi
+
+## --- 9e: space-form '--mode 700 -p' still detects -p and inserts SC2174 -------
+f="${test_dir}/spacemode.sh"
+printf '%b' '#!/bin/bash\nmkdir --mode 700 -p "$TMPDIR/x"\n' >"${f}"
+"${FIX}" "${f}" >/dev/null 2>&1
+if grep --line-regexp --quiet -- '# shellcheck disable=SC2174' "${f}" ; then
+   note_pass "space-form --mode with -p gets the SC2174 disable (value skipped)"
+else
+   note_fail "space-form '--mode 700 -p' missed -p, no SC2174 inserted"
+fi
+
 ## --- 9c: a file shfmt cannot parse is DECLINED structurally, not crashed ----
 ## A syntax error must not abort the fixer; the text transforms still run and the
 ## structural rules are left to the gate (which also runs 'bash -n').

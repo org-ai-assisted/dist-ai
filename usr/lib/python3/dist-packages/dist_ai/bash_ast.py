@@ -246,6 +246,59 @@ def command_name(call):
     return word_lit(word) if word is not None else None
 
 
+def command_tokens(call, source, value_short=frozenset(), value_long=frozenset()):
+    """Classify a command's arguments (Args[1:]) for option parsing, yielding
+    (kind, word, text):
+      - 'opt'     -- an option word ('-p', '-iq', '--mode', '--mode=700', or the
+                     '--' end-of-options marker). text is its source spelling, so
+                     an option whose VALUE carries an expansion ('--mode="$x"',
+                     which is not a plain literal) is still classed 'opt', never
+                     mistaken for an operand.
+      - 'value'   -- the SEPARATE value of the preceding value-taking option
+                     (space form: the '700' of '--mode 700', the 'foo' of
+                     'grep -e foo'). Skipping these is why a later flag is not
+                     lost and a value is not mistaken for a flag.
+      - 'operand' -- the first non-option word, and everything after it (and
+                     everything after a '--').
+    value_short: single letters that, as the LAST char of a short cluster, take a
+    separate next-word value ('-e' -> the next word). value_long: long option
+    NAMES (no leading '--', no '=') that take a separate value in space form
+    ('--signal' -> the next word)."""
+    expect_value = False
+    operand_region = False
+    for word in args(call)[1:]:
+        lit = word_lit(word)
+        text = lit if lit is not None else word_source(word, source)
+        if operand_region:
+            yield ("operand", word, text)
+            continue
+        if expect_value:
+            expect_value = False
+            yield ("value", word, text)
+            continue
+        if text == "--":
+            yield ("opt", word, text)
+            operand_region = True
+            continue
+        if text.startswith("-") and text != "-":
+            yield ("opt", word, text)
+            if text.startswith("--"):
+                if "=" not in text and text[2:] in value_long:
+                    expect_value = True
+            else:
+                ## A value-taker letter consumes the REST of the cluster as its
+                ## value; only when it is the LAST char does it take the next word.
+                cluster = text[1:]
+                for position, letter in enumerate(cluster):
+                    if letter in value_short:
+                        if position == len(cluster) - 1:
+                            expect_value = True
+                        break
+            continue
+        operand_region = True
+        yield ("operand", word, text)
+
+
 def word_param_names(word):
     """Set of parameter names expanded anywhere in WORD, including inside double
     quotes -- so 'mkdir ... "$TMPDIR/x"' reports {'TMPDIR'}. Used to tell a

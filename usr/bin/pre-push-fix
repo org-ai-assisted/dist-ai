@@ -88,7 +88,7 @@ _LIB = os.path.join(
 if os.path.isdir(_LIB) and _LIB not in sys.path:
     sys.path.insert(0, _LIB)
 
-from dist_ai import bash_ast
+from dist_ai import bash_ast  # noqa: E402
 
 ## Always-safe confusables: the ASCII form is never a quote or other
 ## syntactically significant character, so substituting cannot change code
@@ -311,23 +311,6 @@ def strip_trailing_whitespace(text):
     return "".join(out), count
 
 
-def _line_start(text, offset):
-    """Byte offset of the start of the line containing byte OFFSET."""
-    newline = text.rfind("\n", 0, offset)
-    return newline + 1
-
-
-def _prev_line_continues(text, line_start):
-    """True if the line before LINE_START ends with a line-continuation (an ODD
-    run of trailing backslashes) -- inserting a comment there would break it."""
-    if line_start == 0:
-        return False
-    prev = text[:line_start - 1]
-    prev_line = prev[_line_start(text, len(prev)):] if prev else ""
-    trailing = len(prev_line) - len(prev_line.rstrip("\\"))
-    return trailing % 2 == 1
-
-
 def _grep_option_words(call):
     """The leading option Words of a grep CALL: Args[1:] up to (not including) the
     first operand or a '--' end-of-options token. Returns (options, saw_unparsed)
@@ -369,7 +352,10 @@ def mkdir_edits(text, tree):
     """Edits for R-172: upgrade a temp-dir mkdir's short '-m' to '--mode=', and
     insert a '# shellcheck disable=SC2174' above an atomic '--parents ... --mode'
     form. Per COMMAND via the AST, so a second command on the line is untouched
-    and a '-m' inside a quoted path or an array is never seen as a flag."""
+    and a '-m' inside a quoted path or an array is never seen as a flag. The
+    shared option scanner skips a value-taking option's value, so a space-form
+    '--mode 700 -p' still sees the '-p'."""
+    data = text.encode("utf-8")
     edits = []
     disabled_lines = set()
     count = 0
@@ -383,62 +369,63 @@ def mkdir_edits(text, tree):
             continue
         has_parents = False
         has_mode = False
-        index = 1
-        while index < len(call_args):
-            word = call_args[index]
-            lit = bash_ast.word_lit(word)
-            if lit is None or lit == "--" or not lit.startswith("-") \
-                    or lit == "-":
-                ## A '--' end-of-options token, the first operand, or a
-                ## quoted/expanded word: the option region ends here.
-                break
-            if lit.startswith("--"):
-                if lit == "--parents":
-                    has_parents = True
-                elif lit == "--mode" or lit.startswith("--mode="):
-                    has_mode = True
-                index += 1
+        ## '-m' and '--mode' take a value; the scanner yields the value as 'value'
+        ## so it is never mistaken for an operand and a following '-p' is seen.
+        tokens = list(bash_ast.command_tokens(
+            call, text, frozenset("m"), frozenset({"mode"})))
+        for index, (kind, word, lit) in enumerate(tokens):
+            if kind != "opt":
                 continue
-            ## Short cluster.
-            cluster = lit[1:]
-            if "p" in cluster:
-                has_parents = True
-            jammed = MKDIR_M_JAMMED.match(lit)
-            if jammed:
-                start, end = bash_ast.word_span(word)
-                edits.append((start, end, "--mode=" + jammed.group(1)))
+            if lit == "--mode" or lit.startswith("--mode="):
                 has_mode = True
-                count += 1
-                index += 1
                 continue
-            if lit == "-m" and index + 1 < len(call_args):
-                mode_word = call_args[index + 1]
-                mode_lit = bash_ast.word_lit(mode_word)
-                if mode_lit and re.fullmatch(r'[0-7]{3,4}', mode_lit):
-                    start, _ = bash_ast.word_span(word)
-                    _, end = bash_ast.word_span(mode_word)
-                    edits.append((start, end, "--mode=" + mode_lit))
+            if not lit.startswith("--"):
+                cluster = lit[1:]
+                if "p" in cluster:
+                    has_parents = True
+                jammed = MKDIR_M_JAMMED.match(lit)
+                if jammed:
+                    start, end = bash_ast.word_span(word)
+                    edits.append((start, end, "--mode=" + jammed.group(1)))
                     has_mode = True
                     count += 1
-                    index += 2
-                    continue
-            index += 1
+                elif lit == "-m" and index + 1 < len(tokens) \
+                        and tokens[index + 1][0] == "value":
+                    mode_word = tokens[index + 1][1]
+                    mode_lit = bash_ast.word_lit(mode_word)
+                    if mode_lit and re.fullmatch(r'[0-7]{3,4}', mode_lit):
+                        start, _ = bash_ast.word_span(word)
+                        _, end = bash_ast.word_span(mode_word)
+                        edits.append((start, end, "--mode=" + mode_lit))
+                        has_mode = True
+                        count += 1
+            elif lit == "--parents":
+                has_parents = True
         if has_parents and has_mode:
-            line_start = _line_start(text, call["Pos"]["Offset"])
+            ## Insert the disable above the mkdir's line. All offsets here are
+            ## BYTE offsets (apply_edits splices bytes; shfmt Pos.Offset is a byte
+            ## index), so a non-ASCII char earlier in the file cannot shift the
+            ## insertion into the wrong line.
+            line_start = data.rfind(b"\n", 0, call["Pos"]["Offset"]) + 1
             if line_start in disabled_lines:
                 continue
-            line_end = text.find("\n", line_start)
-            line = text[line_start:(line_end if line_end != -1 else len(text))]
-            prev_line = text[_line_start(text, line_start - 1):line_start] \
-                if line_start > 0 else ""
+            line_end = data.find(b"\n", line_start)
+            line = data[line_start:(line_end if line_end != -1 else len(data))] \
+                .decode("utf-8", "replace")
+            prev_start = data.rfind(b"\n", 0, line_start - 1) + 1 \
+                if line_start > 0 else 0
+            prev_line = data[prev_start:max(line_start - 1, 0)] \
+                .decode("utf-8", "replace")
             if SC2174_DISABLE.search(line) or SC2174_DISABLE.search(prev_line):
                 continue
-            if _prev_line_continues(text, line_start):
+            ## A line continues onto the mkdir only on an ODD run of trailing
+            ## backslashes; inserting a comment there would break the continuation.
+            trailing = len(prev_line) - len(prev_line.rstrip("\\"))
+            if trailing % 2 == 1:
                 continue
             indent = line[:len(line) - len(line.lstrip())]
             edits.append(
-                (line_start, line_start,
-                 indent + SC2174_DIRECTIVE + "\n"))
+                (line_start, line_start, indent + SC2174_DIRECTIVE + "\n"))
             disabled_lines.add(line_start)
             count += 1
     return edits, count
