@@ -38,6 +38,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v TMP ] || TMP=/tmp
 
@@ -149,6 +150,12 @@ seed_artifacts() {
    printf '%s\n' 'fixture' > "${dist_dir}/gmf-argv-pkg_1.0-1.dsc"
    printf '%s\n' 'fixture' > "${dist_dir}/gmf-argv-pkg_1.0-1_all.deb"
 }
+
+## style-ok: allow-lintian-disable
+## R-213 waiver: this unit test drives genmkfile against a STUBBED cowbuilder to
+## verify the constructed argv, not to produce a real deliverable. lintian (like
+## debsign in the sibling test) is turned off so the unit exercises argv
+## construction without invoking the real packaging tools.
 
 ## Run deb-pkg-build with the given environment and leave the recorded argv in
 ## ${argv_log}. Returns genmkfile's exit status.
