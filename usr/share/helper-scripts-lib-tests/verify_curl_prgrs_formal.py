@@ -60,7 +60,7 @@ import sys
 
 try:
     import z3
-except Exception as exc:  # pylint: disable=broad-except  # noqa: BLE001 -- any z3 load failure (import or native lib) must FAIL clean
+except (ImportError, OSError) as exc:  # any z3 load failure (module or native lib) must FAIL clean
     sys.stderr.write(
         "helper-scripts-lib-tests(verify_curl_prgrs_formal): FAIL missing "
         "dependency (z3 / python3-z3): %s\n" % exc
