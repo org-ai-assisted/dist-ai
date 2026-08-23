@@ -76,6 +76,7 @@ adg='--allow-downgrades'
 mul='make_use_lintian'
 sc=';'
 dq='"'
+hash='#'
 
 fixture_prologue=(
    '#!/bin/bash'
@@ -156,6 +157,19 @@ assert_spared  "R-210" "apt-wrapper"  "$(body_of "sudo ${agn} install foo")"
 assert_spared  "R-210" "apt-instring" "$(body_of "printf '%s' 'run (${ag} install x)'")"
 assert_spared  "R-210" "apt-waiver" \
    "$(body_of "## style-ok: allow-apt-get" "sudo ${ag} install foo")"
+## A subshell '(cmd)' IS a command position; an ARRAY element 'v=(cmd)' is DATA.
+assert_flagged "R-210" "apt-subshell"  "$(body_of "(${ag} install foo)")"
+assert_spared  "R-210" "apt-array" \
+   "$(body_of "cmd=(${ag} install foo)" "printf '%s' ${dq}\${cmd[@]}${dq}")"
+## PROSE: a control keyword ('until') mid-sentence must NOT be read as a command
+## introducer -- the removed keyword-introducer pattern flagged this (a false
+## POSITIVE that fails a valid push). allow-echo waives the echo so only the
+## R-210 decision is under test. Documented RESIDUAL (safe direction, NOT tested
+## as a hard assertion): a real keyword-introduced command ('if ${ag} ...; then')
+## and a command after a CLOSED quote ('echo "x"${sc} ${ag} ...') are missed --
+## catching them needs a bash parser the gate refuses to grow.
+assert_spared  "R-210" "prose-keyword" \
+   "$(body_of "## style-ok: allow-echo" "echo wait until ${ag} finishes")"
 
 ## --- R-211: state-changing dpkg -> dpkg-noninteractive ---
 assert_flagged "R-211" "dpkg-i"          "$(body_of "sudo ${dp} -i ./x.deb")"
@@ -169,18 +183,35 @@ assert_spared  "R-211" "dpkg-wrapper"    "$(body_of "sudo ${dp}-noninteractive -
 assert_spared  "R-211" "dpkg-instring"   "$(body_of "printf '%s' 'try (${dp} -i x)'")"
 assert_spared  "R-211" "dpkg-waiver" \
    "$(body_of "## style-ok: allow-dpkg" "sudo ${dp} -i ./x.deb")"
+## A state-changing action named only in a trailing COMMENT is not executed.
+assert_spared  "R-211" "dpkg-action-in-comment" \
+   "$(body_of "${dp} --version ${hash} ${dp} --install ./x.deb")"
+## Command-position residual (documented, NOT fixed): a space-separated sudo
+## option value ('sudo -u root ${dp} ...') is a false negative. Running dpkg as a
+## non-root user is nonsensical, so this form does not occur for these targets;
+## growing the wrap into a sudo-option parser is the treadmill the style rules
+## forbid. No assertion -- see the R-210 note.
 
 ## --- R-212: --allow-downgrades forbidden ---
 assert_flagged "R-212" "downgrade"       "$(body_of "sudo ${agn} install ${adg} -- foo")"
 assert_spared  "R-212" "no-downgrade"    "$(body_of "sudo ${agn} install --yes -- foo")"
 assert_spared  "R-212" "downgrade-waiver" \
    "$(body_of "## style-ok: allow-downgrades" "sudo ${agn} install ${adg} -- foo")"
+## The flag named inside a quoted string (prose) is not an invocation.
+assert_spared  "R-212" "downgrade-in-string" \
+   "$(body_of "printf '%s' 'never use ${adg} here'")"
 
 ## --- R-213: make_use_lintian=false forbidden ---
 assert_flagged "R-213" "lintian-off"     "$(body_of "${mul}=false genmkfile deb-pkg")"
 assert_spared  "R-213" "lintian-on"      "$(body_of "${mul}=true genmkfile deb-pkg")"
 assert_spared  "R-213" "lintian-waiver" \
    "$(body_of "## style-ok: allow-lintian-disable" "${mul}=false genmkfile deb-pkg")"
+## Inside a quoted string, or as the tail of a LONGER variable name, is not a
+## disable (word-boundary anchored).
+assert_spared  "R-213" "lintian-in-string" \
+   "$(body_of "message='${mul}=false is forbidden'" "printf '%s' ${dq}\${message}${dq}")"
+assert_spared  "R-213" "lintian-substring" \
+   "$(body_of "disable_${mul}=false" "printf '%s' ${dq}\${disable_${mul}}${dq}")"
 
 ## --- fixer (pre-push-fix): R-210 rewrites; R-211/212/213 are gate-report-only ---
 run_fix() {
@@ -240,6 +271,16 @@ assert_fix_unchanged "dpkg-untouched"  "sudo ${dp} -i ./x.deb"
 ## must make; the fixer leaves them for the gate to report.
 assert_fix_unchanged "downgrade-untouched" "sudo ${agn} install ${adg} -- foo"
 assert_fix_unchanged "lintian-untouched"   "${mul}=false genmkfile deb-pkg"
+## The fixer must NOT rename a function DEFINITION, an assignment, or an array
+## element -- none of which the gate flags (whole-word 'apt-get' + trailing
+## space/EOL); renaming them would mutate gate-clean code.
+assert_fix_unchanged "apt-funcdef" "${ag}() { command ${ag} ${dq}\$@${dq}; }"
+assert_fix_unchanged "apt-assign"  "${ag}=/usr/bin/${ag}"
+assert_fix_unchanged "apt-array"   "cmd=( ${ag} install foo )"
+## Residual, in lockstep with the gate: a command after a CLOSED quote is left
+## alone (the gate does not flag it either). The fixer builds no quote-state
+## parser, so the two never disagree.
+assert_fix_unchanged "apt-after-closed-quote" "printf '%s' ok${sc} sudo ${ag} install foo"
 
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "" "FAILED"

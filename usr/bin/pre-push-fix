@@ -325,23 +325,36 @@ TIMEOUT_FUNCDEF = re.compile(r'^[ \t]*(function[ \t]+)?timeout[ \t]*\([ \t]*\)',
 
 ## R-210 (apt-get -> apt-get-noninteractive) -- the write side of
 ## pre-push-static's rule. A single-token rename of 'apt-get' in command position
-## to the helper-scripts wrapper. APT_CMD_POS extends the shared command-position
-## grammar with an optional 'sudo'/'doas' prefix (its own options / env
-## assignments), since 'sudo apt-get' is the dominant real form. APT_SPAN pins the
-## match to the whole word 'apt-get' NOT followed by a word char or '-', so
-## 'apt-get-noninteractive' is never re-matched -- making the rewrite idempotent.
+## to the helper-scripts wrapper. APT_CMD_POS matches the gate's TWO simple
+## positions -- line start or right after a command separator -- plus an optional
+## 'sudo'/'doas' prefix (its own ATTACHED options / env assignments), since
+## 'sudo apt-get' is the dominant real form. It does NOT add a control-keyword
+## introducer (kept OUT here to stay in lockstep with the gate, which dropped it
+## to avoid a prose false positive), so 'if apt-get ...' is a shared residual.
 ## Same HARD SAFETY LINE as the other structural fixers: bail on any
 ## quote/backslash/'#' before the token (string data / comment).
 APT_CMD_POS = re.compile(
-    r'(?:'
-    + _CMD_START
-    + r'|' + _CMD_START + r'(?:then|do|else|if|elif|while|until)\s+'
-    + r')'
-    r'(?:!\s+)?'
+    _CMD_START
+    + r'(?:!\s+)?'
     r'(?:[A-Za-z_]\w*=\S*\s+)*'
     r'(?:(?:sudo|doas)(?:\s+(?:-\S+|[A-Za-z_]\w*=\S*))*\s+)?'
     r'(?:[A-Za-z_]\w*=\S*\s+)*$')
-APT_TOKEN = re.compile(r'apt-get(?![\w-])')
+## The token is 'apt-get' as a whole COMMAND word: followed by whitespace or
+## end-of-line, exactly like the gate's 'apt-get([[:space:]]|$)'. This excludes a
+## function definition ('apt-get() { ... }'), an assignment ('apt-get=...') and
+## the wrapper ('apt-get-noninteractive') -- none of which the gate flags -- so
+## the fixer never mutates gate-clean code. Idempotent: '-' after the rename is
+## not whitespace/EOL.
+APT_TOKEN = re.compile(r'apt-get(?=\s|$)')
+## An OPEN array/compound assignment before the token ('cmd=(' / 'arr+=(' with no
+## ')' yet): the token is an array ELEMENT (DATA), not a command. Mirrors the
+## gate's _pkg_array_before.
+APT_ARRAY_OPEN = re.compile(r'[A-Za-z_]\w*\+?=\([^)]*$')
+## SIMPLE presence bail (deliberately NOT a quote-state parser -- lockstep with
+## the gate's _pkg_quote_before): a quote/backslash/'#' before the token means it
+## is string data / a comment. Accepted residual (safe direction): a command
+## after a CLOSED quote on the line is not rewritten -- the gate does not flag it
+## either, so the two stay consistent.
 APT_UNSAFE_PREFIX = re.compile(r'''["'\\#]''')
 ## R-210 script-wide waiver, in lockstep with pre-push-static: a file bearing
 ## '## style-ok: allow-apt-get' has a human-approved bare apt-get (a wrapper-less
@@ -680,10 +693,13 @@ def insert_timeout_kill_after(text):
 def wrap_apt_get(text):
     """Per apt-get COMMAND (not per line): rename a command-position 'apt-get'
     (optionally behind 'sudo'/'doas') to 'apt-get-noninteractive'. Command
-    position only (APT_CMD_POS), bailing on any quote/backslash/'#' before the
-    token (APT_UNSAFE_PREFIX) so an apt-get inside a string / comment is never
-    touched. Idempotent: APT_TOKEN excludes 'apt-get-' so the wrapper is never
-    re-matched."""
+    position only (APT_CMD_POS); skip the token when a quote/backslash/'#' appears
+    before it (string data / comment -- APT_UNSAFE_PREFIX) or it is an array
+    element ('cmd=( apt-get ... )' -- APT_ARRAY_OPEN), so the fixer never mutates
+    what the gate would not flag. Deliberately no quote-STATE parser: a command
+    after a CLOSED quote is a shared residual with the gate. Idempotent: APT_TOKEN
+    requires whitespace/EOL after 'apt-get', so the renamed wrapper never
+    re-matches."""
     count = 0
     out = []
     for line in text.splitlines(keepends=True):
@@ -695,6 +711,8 @@ def wrap_apt_get(text):
         for match in APT_TOKEN.finditer(line):
             prefix = line[:match.start()]
             if APT_UNSAFE_PREFIX.search(prefix):
+                continue
+            if APT_ARRAY_OPEN.search(prefix):
                 continue
             if not APT_CMD_POS.search(prefix):
                 continue

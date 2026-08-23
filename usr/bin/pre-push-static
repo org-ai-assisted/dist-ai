@@ -2909,16 +2909,23 @@ check_R200_timeout_kill_after() {
 }
 
 ## Shared command-position fragments for R-210/R-211 (apt-get / dpkg as a command
-## word). Modeled on check_R200: line start, after a separator ';&|(){}`', or
-## after a control keyword, each allowing a '!' negation and a run of leading
-## 'VAR=value' assignments; PLUS an optional 'sudo'/'doas' wrapper (with its own
-## options / env-assignments) since 'sudo apt-get' is the dominant real form.
-## '${cmd}([[:space:]]|$)' pins the command to a whole word so 'apt-get-
-## noninteractive' / 'dpkg-noninteractive' / 'dpkg-deb' (a '-' after the name)
-## never match. Callers add a quote-bail on the matched line: an apt-get/dpkg
-## after an opening quote is string DATA (a help/skip message like
-## '(apt-get install x)'), not a command -- the same bail pre-push-fix uses; a
-## real '"$(apt-get ...)"' is a tolerated false negative (fix by hand).
+## word). Two SIMPLE positions only: line start, or right after a command
+## separator ';&|(){}`', each allowing a '!' negation, a run of leading
+## 'VAR=value' assignments, and an optional 'sudo'/'doas' wrapper (with its own
+## ATTACHED options / env-assignments) since 'sudo apt-get' is the dominant real
+## form. '${cmd}([[:space:]]|$)' pins the command to a whole word so
+## 'apt-get-noninteractive' / 'dpkg-noninteractive' / 'dpkg-deb' (a '-' after the
+## name) never match. Callers add a simple quote/array-context bail.
+##
+## Deliberate RESIDUAL false NEGATIVES (the safe direction; catching them needs a
+## bash parser the gate refuses to grow -- see the CLAUDE.md / bash-style-guide
+## rule):
+##   - a control-keyword-introduced command ('if apt-get install ...; then',
+##     'while apt-get ...'). A keyword-introducer pattern flagged ordinary PROSE
+##     ('echo wait until apt-get finishes'), a false POSITIVE that fails a valid
+##     push -- worse than the miss -- so it was removed.
+##   - a space-separated wrapper option value ('sudo -u root apt-get'). Running
+##     apt-get/dpkg as a non-root user is nonsensical, so it does not occur here.
 _pkg_cmd_re() {
    local cmd neg assign wrap
    cmd="${1}"
@@ -2927,23 +2934,43 @@ _pkg_cmd_re() {
    wrap='((sudo|doas)([[:space:]]+(-[^[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*))*[[:space:]]+)?'
    printf '%s\n' \
       "^[[:space:]]*${neg}${assign}${wrap}${assign}${cmd}([[:space:]]|\$)" \
-      "^[[:space:]]*[^#]*[;&|(){}\`][[:space:]]*${neg}${assign}${wrap}${assign}${cmd}([[:space:]]|\$)" \
-      "^[[:space:]]*([^#]*[[:space:]])?(then|do|else|if|elif|while|until)[[:space:]]+${neg}${assign}${wrap}${assign}${cmd}([[:space:]]|\$)"
+      "^[[:space:]]*[^#]*[;&|(){}\`][[:space:]]*${neg}${assign}${wrap}${assign}${cmd}([[:space:]]|\$)"
 }
 
-## True if a quote opens in TEXT before the FIRST occurrence of NEEDLE: the needle
-## is then string data, not a command word. Conservative (any quote before it),
-## matching pre-push-fix's quote-bail.
+## SIMPLE quote-PRESENCE check (deliberately NOT a quote-state parser -- the gate
+## does not build one, per the bash-style-guide / CLAUDE.md rule). If a single or
+## double quote appears before NEEDLE, treat NEEDLE as string DATA and skip it --
+## the common help/skip-message form '... "(apt-get install x)" ...'. Accepted
+## RESIDUAL, the safe direction (a false NEGATIVE, never a false positive): a
+## command after a CLOSED quote on the same line ('echo "x"; apt-get ...') is
+## missed. Catching it needs quote-STATE tracking, which is exactly the parser
+## the gate refuses to grow.
 _pkg_quote_before() {
-   local text needle before
-   text="${1}"
-   needle="${2}"
-   before="${text%%"${needle}"*}"
-   case "${before}" in
+   case "${1}" in
       *\'*|*\"*)
          return 0
          ;;
    esac
+   return 1
+}
+
+## True if TEXT ends inside an OPEN array/compound assignment 'VAR=(' or 'VAR+=('
+## with no closing ')' yet -- so a package command word there is an array ELEMENT
+## (DATA), not an invocation. A single anchored match (not a parser), mirroring
+## R-200's exempt_array spare. A closed 'VAR=(x); apt-get ...' does NOT match (the
+## ')' ends the run), so a real command after the array is still flagged.
+_pkg_array_before() {
+   [[ "${1}" =~ [A-Za-z_][A-Za-z0-9_]*\+?=\([^\)]*$ ]]
+}
+
+## Shared per-candidate filter for R-210/R-211/R-212: given the line CONTENT and
+## the needle, return 0 (skip) when the needle is string data or an array element
+## rather than a command-position token.
+_pkg_skip_context() {
+   local before
+   before="${1%%"${2}"*}"
+   _pkg_quote_before "${before}" && return 0
+   _pkg_array_before "${before}" && return 0
    return 1
 }
 
@@ -2970,20 +2997,20 @@ check_R210_apt_get_noninteractive() {
          continue
       fi
       hits="$(grep --line-number --extended-regexp \
-         --regexp="${cand_re[0]}" --regexp="${cand_re[1]}" --regexp="${cand_re[2]}" \
+         --regexp="${cand_re[0]}" --regexp="${cand_re[1]}" \
          -- "${script}" 2>/dev/null || true)"
       [ -n "${hits}" ] || continue
       while IFS= read -r line; do
          [ -z "${line}" ] && continue
          content="${line#*:}"
-         _pkg_quote_before "${content}" 'apt-get' && continue
+         _pkg_skip_context "${content}" 'apt-get' && continue
          fail "R-210 apt-get not apt-get-noninteractive" "'${script}:${line}'"
       done <<< "${hits}"
    done
 }
 
 check_R211_dpkg_noninteractive() {
-   local script hits line content dpkg_action
+   local script hits line content content_nc dpkg_action
    local -a fs cand_re
 
    ## R-211: a STATE-CHANGING 'dpkg' -> 'dpkg-noninteractive' (dpkg
@@ -3010,27 +3037,32 @@ check_R211_dpkg_noninteractive() {
          continue
       fi
       hits="$(grep --line-number --extended-regexp \
-         --regexp="${cand_re[0]}" --regexp="${cand_re[1]}" --regexp="${cand_re[2]}" \
+         --regexp="${cand_re[0]}" --regexp="${cand_re[1]}" \
          -- "${script}" 2>/dev/null || true)"
       [ -n "${hits}" ] || continue
       while IFS= read -r line; do
          [ -z "${line}" ] && continue
          content="${line#*:}"
-         _pkg_quote_before "${content}" 'dpkg' && continue
-         ## Only a state-changing action counts.
-         printf '%s' "${content}" | grep --quiet --extended-regexp -- "${dpkg_action}" || continue
+         _pkg_skip_context "${content}" 'dpkg' && continue
+         ## Only a state-changing action counts, and only in dpkg's OWN code --
+         ## strip a trailing '#' comment first so 'dpkg --version # dpkg --install'
+         ## (executed op read-only) is not flagged by the action named in the note.
+         content_nc="$(printf '%s' "${content}" | sed -e 's/\(^\|[[:space:]]\)#.*$//')"
+         printf '%s' "${content_nc}" | grep --quiet --extended-regexp -- "${dpkg_action}" || continue
          fail "R-211 state-changing dpkg not dpkg-noninteractive" "'${script}:${line}'"
       done <<< "${hits}"
    done
 }
 
 check_R212_allow_downgrades() {
-   local script hits
+   local script hits line content
    local -a fs
 
    ## R-212: '--allow-downgrades' is forbidden -- a silent downgrade masks a
    ## dependency or repository regression that should fail loudly. filter_self
-   ## drops this checker (its doc names the flag). Human-operator override:
+   ## drops this checker (its doc names the flag). The quote-state skip keeps
+   ## prose that merely names the flag inside a string ('never use
+   ## --allow-downgrades') from being reported. Human-operator override:
    ## '## style-ok: allow-downgrades'.
    mapfile -d '' -t fs < <(filter_self "${@}")
    [ "${#fs[@]}" -gt 0 ] || return 0
@@ -3042,7 +3074,14 @@ check_R212_allow_downgrades() {
          continue
       fi
       hits="$(grep_code_lines '(^|[[:space:]=])--allow-downgrades([[:space:]]|=|$)' "${script}")"
-      emit_hits "R-212 --allow-downgrades forbidden" "${hits}"
+      [ -n "${hits}" ] || continue
+      while IFS= read -r line; do
+         [ -z "${line}" ] && continue
+         content="${line#*:}"
+         content="${content#*:}"
+         _pkg_skip_context "${content}" '--allow-downgrades' && continue
+         fail "R-212 --allow-downgrades forbidden" "${line}"
+      done <<< "${hits}"
    done
 }
 
@@ -3051,8 +3090,11 @@ check_R213_lintian_disabled() {
 
    ## R-213: 'make_use_lintian=false' disables the lintian gate on a genmkfile
    ## build; forbidden without authorization -- fix the lintian findings
-   ## instead. filter_self drops this checker. Human-operator override:
-   ## '## style-ok: allow-lintian-disable'.
+   ## instead. filter_self drops this checker. The leading '(^|[[:space:]])'
+   ## anchor pins it to a real assignment start, so a longer variable that ends
+   ## in the name ('disable_make_use_lintian=false') and a mention inside a
+   ## quoted string ("'make_use_lintian=false' is forbidden") are not flagged.
+   ## Human-operator override: '## style-ok: allow-lintian-disable'.
    for script in "${@}"; do
       is_self_referential "${script}" && continue
       if grep --quiet --extended-regexp \
@@ -3061,7 +3103,7 @@ check_R213_lintian_disabled() {
          note "R-213 skipped: 'style-ok: allow-lintian-disable' waiver in '${script}'"
          continue
       fi
-      hits="$(grep_code_lines "make_use_lintian=('|\")?false('|\")?([[:space:]]|;|&|\\||\$)" "${script}")"
+      hits="$(grep_code_lines "(^|[[:space:]])make_use_lintian=('|\")?false('|\")?([[:space:]]|;|&|\\||\$)" "${script}")"
       emit_hits "R-213 lintian disabled (make_use_lintian=false) without authorization" "${hits}"
    done
 }
