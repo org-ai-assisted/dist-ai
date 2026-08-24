@@ -83,8 +83,8 @@
 ##  22. R-191 a systemd unit must not embed a multi-statement shell
 ##      script in an 'Exec*=' directive ('bash -c "a; b"'); move it to
 ##      a script with a shebang. '## style-ok: allow-embedded-script'.
-##  23. R-100 a workflow 'run: |' block over 5 shell lines must be
-##      extracted to a ci/ script. '## style-ok: allow-inline-shell'.
+##  23. R-100 a workflow 'run: |' block of more than 5 shell statements must
+##      be extracted to a ci/ script. '## style-ok: allow-inline-shell'.
 ##  24. R-172 a 'mkdir' creating a temp dir ($TMPDIR/$TMP/$TEMP/$TEMPDIR)
 ##      must set the mode ATOMICALLY via '--mode' (never a later 'chmod':
 ##      that is a TOCTOU window); the short '-m' must be the long '--mode'

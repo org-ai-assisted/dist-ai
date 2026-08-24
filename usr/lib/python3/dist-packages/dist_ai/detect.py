@@ -932,8 +932,13 @@ def r195_cron_table(path, source):
 
 def r100_yaml_inline_shell(path, source):
     """R-100: a workflow 'run:' step must not embed a substantial inline shell
-    block (>5 non-blank, non-comment lines). Uses a real YAML parse (marks) to
-    find each 'run:' scalar and its start line."""
+    SCRIPT (more than 5 top-level shell statements). The count comes from a real
+    bash parse of the run: body, not a line count, so a single command wrapped
+    over many backslash-continued lines is ONE statement (not a block), and a
+    heredoc's data lines are not miscounted. A run: body that does not parse as
+    bash (e.g. it inlines a '${{ }}' expression) is left to the command-injection
+    rules, not flagged here. Uses a real YAML parse (marks) to locate each 'run:'
+    scalar and its start line."""
     if not is_workflow_yaml(path):
         return
     if config_waiver(source, "allow-inline-shell"):
@@ -949,14 +954,17 @@ def r100_yaml_inline_shell(path, source):
     if root is None:
         return
     for key_node, value_node in _yaml_run_scalars(root):
-        body = [ln for ln in (value_node.value or "").split("\n")
-                if ln.strip() and not ln.lstrip().startswith("#")]
-        if len(body) > 5:
+        try:
+            tree = bash_ast.parse_normalized(value_node.value or "")
+        except bash_ast.BashParseError:
+            continue
+        count = len(tree.get("Stmts") or [])
+        if count > 5:
             yield Finding(
                 FAIL, "R-100",
-                "R-100 workflow embeds an inline shell block (%d lines) in a "
-                "'run:' step; extract it to a ci/ script and call it"
-                % len(body), path, key_node.start_mark.line + 1)
+                "R-100 workflow embeds an inline shell script (%d statements) "
+                "in a 'run:' step; extract it to a ci/ script and call it"
+                % count, path, key_node.start_mark.line + 1)
 
 
 def _yaml_run_scalars(node):

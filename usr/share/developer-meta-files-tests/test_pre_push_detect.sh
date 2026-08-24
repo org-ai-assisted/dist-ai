@@ -206,7 +206,15 @@ run_det_at ".github/workflows/ci.yml" \
    "$(printf '%s\n' 'jobs:' '  x:' '    steps:' '      - run: |' \
       '          a' '          b' '          c' '          d' '          e' \
       '          f')"
-assert_at "R-100 flags a >5-line workflow run block" "R-100" 4
+assert_at "R-100 flags a 6-statement workflow run block" "R-100" 4
+
+## A single command wrapped over 6 backslash-continued lines is ONE statement,
+## not a block -- the old line count wrongly flagged it (canary for that fix).
+run_det_at ".github/workflows/cont.yml" \
+   "$(printf '%s\n' 'jobs:' '  x:' '    steps:' '      - run: |' \
+      "          cppcheck \\" "            --a \\" "            --b \\" \
+      "            --c \\" "            --d \\" '            --e')"
+assert_not_at "R-100 spares a single backslash-continued command" "R-100" 4
 
 ## --- R-220 unauthorized skip -------------------------------------------------
 run_det "$(printf '%s\n' \

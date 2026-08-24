@@ -913,8 +913,8 @@ fi
 ## R-190: a substantial interpreter program does not belong in a shell
 ## heredoc. Same defect as R-100 for workflow YAML -- ruff and pyrefly only see
 ## real '*.py' files, coverage.py cannot measure a heredoc, and no unit test can
-## import a function that has no file. Short glue is fine; the threshold matches
-## R-100's "more than ~5 lines".
+## import a function that has no file. Short glue is fine; a substantial program
+## (like R-100's inline-shell block) must live in its own file.
 inline_repo="$(mktemp --directory --tmpdir="${tmp_root}" inline.XXXXXX)"
 git -C "${inline_repo}" init --quiet
 git -C "${inline_repo}" config user.email 'ci-test@example.com'
@@ -1614,10 +1614,11 @@ else
    printf '%s\n' 'PASS: R-195 spares env assignments and a single-command entry'
 fi
 
-## R-100: a workflow 'run: |' block over 5 shell lines is FLAGGED; a single-line
-## 'run: ./ci/x.sh' and a short block are SPARED; the file-wide waiver exempts
-## the workflow. The fixtures live under '.github/workflows/' because R-100
-## scopes to that path.
+## R-100: a workflow 'run: |' block of more than 5 shell STATEMENTS is FLAGGED
+## (the six 'step_*' commands below); a single-line 'run: ./ci/x.sh' and a
+## short (<=5-statement) block are SPARED; the file-wide waiver exempts the
+## workflow. The fixtures live under '.github/workflows/' because R-100 scopes
+## to that path.
 wf_repo="$(mktemp --directory --tmpdir="${tmp_root}" workflow.XXXXXX)"
 git -C "${wf_repo}" init --quiet
 git -C "${wf_repo}" config user.email 'ci-test@example.com'
