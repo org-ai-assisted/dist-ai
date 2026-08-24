@@ -10,10 +10,10 @@
 ## values themselves never reach the script.
 ##
 ## WHY this exists: the guard's whole job is to FAIL when a secret that must be
-## isolated from a reusable context (OPENAI_API_KEY, COVERITY_SCAN_TOKEN,
+## isolated from a secrets context (OPENAI_API_KEY, COVERITY_SCAN_TOKEN,
 ## COVERITY_SCAN_EMAIL) is nonetheless visible there. If any of those checks
 ## regressed to a warning (or was dropped), a real secret leak would pass CI
-## green. Pin: each leak flag fails; a clean context passes; the ANTHROPIC
+## green. Pin: each leak flag fails; a clean context passes; the CLAUDE_CODE_OAUTH_TOKEN
 ## absence is a warning, not a failure.
 ##
 ## Source-tree test: set DIST_AI_REPO, or run it from a checkout. No source tree
@@ -51,11 +51,11 @@ fail() {
    failures=$(( failures + 1 ))
 }
 
-## Clean baseline: only ANTHROPIC forwarded, nothing leaked.
+## Clean baseline: only the AI-review key forwarded, nothing leaked.
 run_audit() {
    local rc=0
    ALLOW_LOCAL=true \
-   ANTHROPIC_PRESENT="${a:-true}" \
+   CLAUDE_OAUTH_PRESENT="${a:-true}" \
    OPENAI_PRESENT="${o:-false}" \
    COVERITY_TOKEN_PRESENT="${ct:-false}" \
    COVERITY_EMAIL_PRESENT="${ce:-false}" \
@@ -66,7 +66,7 @@ run_audit() {
 ## ---- CI guard: refuses without CI or ALLOW_LOCAL --------------------------
 rc=0
 env -u CI -u ALLOW_LOCAL \
-   ANTHROPIC_PRESENT=true OPENAI_PRESENT=false \
+   CLAUDE_OAUTH_PRESENT=true OPENAI_PRESENT=false \
    COVERITY_TOKEN_PRESENT=false COVERITY_EMAIL_PRESENT=false \
    bash -- "${audit}" >/dev/null 2>&1 || rc=$?
 if [ "${rc}" -ne 1 ]; then
@@ -97,10 +97,10 @@ if [ "$(run_audit)" != '1' ]; then
    fail 'a COVERITY_SCAN_EMAIL leak did not fail the audit'
 fi
 
-## ---- ANTHROPIC absent is a warning, not a failure -> exit 0 ---------------
+## ---- CLAUDE_CODE_OAUTH_TOKEN absent is a warning, not a failure -> exit 0 ---------------
 a=false o=false ct=false ce=false
 if [ "$(run_audit)" != '0' ]; then
-   fail 'an absent ANTHROPIC forward was treated as a failure (should warn)'
+   fail 'an absent CLAUDE_CODE_OAUTH_TOKEN forward was treated as a failure (should warn)'
 fi
 
 if [ "${failures}" -ne 0 ]; then
