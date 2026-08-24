@@ -415,11 +415,13 @@ def mkdir_edits(text, tree):
             prev_start = data.rfind(b"\n", 0, line_start - 1) + 1 \
                 if line_start > 0 else 0
             prev_line = data[prev_start:max(line_start - 1, 0)] \
-                .decode("utf-8", "replace")
+                .decode("utf-8", "replace").rstrip("\r")
             if SC2174_DISABLE.search(line) or SC2174_DISABLE.search(prev_line):
                 continue
             ## A line continues onto the mkdir only on an ODD run of trailing
-            ## backslashes; inserting a comment there would break the continuation.
+            ## backslashes; inserting a comment there would break the
+            ## continuation. The trailing CR (CRLF) is stripped above, else it
+            ## would hide the backslash and detach the continued line.
             trailing = len(prev_line) - len(prev_line.rstrip("\\"))
             if trailing % 2 == 1:
                 continue

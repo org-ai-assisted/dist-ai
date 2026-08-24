@@ -59,7 +59,8 @@ def main():
         if source is None:
             continue
         try:
-            findings = detect.detect_shell(path, source)
+            findings = detect.detect_file(
+                path, source, detect.is_shell_file(path, source))
         except bash_ast.ShfmtMissing as exc:
             print("pre-push-detect: shfmt is required but unavailable: %s"
                   % exc, file=sys.stderr)

@@ -100,12 +100,17 @@ def parse_normalized(source, dialect="bash"):
         if not 0 <= index < len(lines):
             continue
         line = lines[index]
-        trailing = len(line) - len(line.rstrip("\\"))
+        ## Strip a trailing CR (CRLF input) BEFORE counting backslashes -- else a
+        ## '# c \<CR>' line ends in '\r', rstrip("\\") removes nothing, the
+        ## continuation is not neutralized, and shfmt stays BLIND to the next line.
+        carriage = "\r" if line.endswith("\r") else ""
+        body = line[:-1] if carriage else line
+        trailing = len(body) - len(body.rstrip("\\"))
         ## Odd trailing-backslash run: the last one escapes the newline and makes
         ## shfmt continue the comment. A comment runs to end of line, so this
         ## backslash is unambiguously comment text -- safe to neutralize.
         if trailing % 2 == 1:
-            lines[index] = line[:-1] + " "
+            lines[index] = body[:-1] + " " + carriage
             changed = True
     if changed:
         return parse("\n".join(lines), dialect)

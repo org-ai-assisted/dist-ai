@@ -161,6 +161,53 @@ assert_not_at "R-130 spares a ':' no-op function stub"               "R-130" 3
 assert_not_at "R-130 spares a ':' no-op case arm"                    "R-130" 4
 assert_not_at "R-130 spares ':' in a condition pipeline"             "R-130" 5
 
+## run the detector over a specifically-NAMED file (config rules select by path).
+run_det_at() {
+   local f="${test_dir}/$1"
+   mkdir --parents -- "$(dirname -- "${f}")"
+   printf '%s\n' "$2" > "${f}"
+   output="$("${DET}" "${f}" 2>/dev/null || true)"
+}
+
+## --- gate-BYPASS / gate-BLINDING regressions (ai-review findings) ------------
+## sudo with an arg-taking option whose value is QUOTED: the unwrap must not
+## abort on the None literal and miss the real command.
+run_det "$(printf '%s\n' '#!/bin/bash' 'sudo FOO="bar" rm -rf /x' \
+   'sudo -u www-data rm -rf /y')"
+assert_at "R-120 sees rm past a quoted 'sudo FOO=\"bar\"' prefix" "R-120" 2
+assert_at "R-120 sees rm past 'sudo -u www-data'"                "R-120" 3
+## CRLF: a comment-tail backslash must still be neutralized so the next command
+## is not swallowed (a '\r' left on the line would defeat the backslash strip).
+printf '%b' '#!/bin/bash\r\n# c \\\r\nrm -rf /x\r\n' > "${test_dir}/crlf.sh"
+output="$("${DET}" "${test_dir}/crlf.sh" 2>/dev/null || true)"
+assert_at "R-120 not blinded by a CRLF comment-tail backslash" "R-120" 3
+
+## --- config-hosted embedded shell: R-191/192/194/195/100 --------------------
+run_det "$(printf '%s\n' '#!/bin/bash' 'bash -c "a' 'b' 'c' 'd' 'e' 'f' 'g"')"
+assert_at "R-192 flags a >5-line bash -c program" "R-192" 2
+
+run_det_at "etc/systemd/system/x.service" \
+   "$(printf '%s\n' '[Service]' 'ExecStart=/bin/bash -c "a; b; c"')"
+assert_at "R-191 flags a multi-statement systemd Exec" "R-191" 2
+run_det_at "etc/systemd/system/glue.service" \
+   "$(printf '%s\n' '[Service]' 'ExecStart=/bin/echo done')"
+assert_not_at "R-191 spares a single-command Exec" "R-191" 2
+
+run_det_at "etc/apt/apt.conf.d/99x" \
+   'DPkg::Post-Invoke {"if [ -x /x ]; then /x; fi"};'
+assert_at "R-194 flags an if-block in an apt hook" "R-194" 1
+run_det_at "etc/apt/apt.conf.d/98x" 'DPkg::Post-Invoke {"/usr/libexec/hook"};'
+assert_not_at "R-194 spares a single-command apt hook" "R-194" 1
+
+run_det_at "etc/cron.d/job" '0 3 * * * root cd /s && ./p.sh; systemctl restart a'
+assert_at "R-195 flags a multi-statement cron command" "R-195" 1
+
+run_det_at ".github/workflows/ci.yml" \
+   "$(printf '%s\n' 'jobs:' '  x:' '    steps:' '      - run: |' \
+      '          a' '          b' '          c' '          d' '          e' \
+      '          f')"
+assert_at "R-100 flags a >5-line workflow run block" "R-100" 4
+
 ## Self-test the FAIL gate: a forced failure must make the script exit non-zero.
 if [ -n "${TEST_SELFCHECK_FAIL_GATE:-}" ]; then
    note_fail "self-test forced failure"

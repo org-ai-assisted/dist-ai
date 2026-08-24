@@ -24,10 +24,24 @@ the on-screen output and every existing per-rule gate test are unchanged.
 """
 
 import collections
+import fnmatch
 import os
 import re
 
 from dist_ai import bash_ast
+
+SHELL_EXTS = (".sh", ".bsh")
+SHELL_SHEBANG_RE = re.compile(r'#!.*(/|\s)(bash|sh|dash)(\s|$)')
+
+
+def is_shell_file(path, source):
+    """True for a shell script -- a .sh/.bsh extension or a bash/sh/dash shebang.
+    Mirrors pre-push-static's is_shell_file so detector and gate agree on the
+    shell set."""
+    if path.endswith(SHELL_EXTS):
+        return True
+    first = source.split("\n", 1)[0]
+    return bool(SHELL_SHEBANG_RE.match(first))
 
 Finding = collections.namedtuple(
     "Finding", ["severity", "rule", "message", "path", "line"])
@@ -47,6 +61,17 @@ def waiver(source, tag):
     pattern = re.compile(
         r'^[ \t]*##[ \t]*style-ok:[ \t]*' + re.escape(tag) + r'(?:[ \t]|$)',
         re.MULTILINE)
+    return bool(pattern.search(source))
+
+
+def config_waiver(source, tag, slashes=False):
+    """True if SOURCE carries a '# style-ok: <tag>' waiver in CONFIG comment
+    syntax -- one or two '#' (systemd/cron/YAML), or '//' when SLASHES (apt). The
+    shell waiver() requires '##'; config files comment with a single '#'."""
+    prefix = r'(?:#{1,2}|//)' if slashes else r'#{1,2}'
+    pattern = re.compile(
+        r'^[ \t]*' + prefix + r'[ \t]*style-ok:[ \t]*'
+        + re.escape(tag) + r'(?:[ \t]|$)', re.MULTILINE)
     return bool(pattern.search(source))
 
 
@@ -85,11 +110,13 @@ def effective_command(call, source):
             continue
         if kind == "operand":
             ## The first word past the wrapper's options is the real command; a
-            ## leading 'VAR=value' env-assignment is still not the command.
-            lit = bash_ast.word_lit(word)
-            if lit is not None and re.match(r'^[A-Za-z_][A-Za-z0-9_]*=', lit):
+            ## leading 'VAR=value' env-assignment is still not the command. Test
+            ## the SOURCE, since a quoted value ('FOO="bar"') makes word_lit None
+            ## -- otherwise the unwrap aborts and 'sudo FOO="bar" rm' bypasses R-120.
+            if re.match(r'^[A-Za-z_][A-Za-z0-9_]*=',
+                        bash_ast.word_source(word, source)):
                 continue
-            return lit
+            return bash_ast.word_lit(word)
     return None
 
 
@@ -571,8 +598,101 @@ def r193_python_dashdash_script(path, source, tree):
                 break
 
 
+## --- embedded shell in a '-c' string / config value ------------------------
+
+SHELL_C_CMDS = frozenset({"sh", "bash", "dash"})
+
+
+def _unquote(text):
+    """Strip ONE layer of matching outer quotes from TEXT (the inner shell of a
+    '-c' argument or a config value)."""
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        return text[1:-1]
+    return text
+
+
+def shell_c_programs(tree, source):
+    """Yield (call, program_text, line_count) for each 'sh -c <program>' /
+    'bash -c' / 'dash -c' in TREE. program_text is the raw source of the program
+    argument (quotes included); line_count is how many physical lines it spans.
+    Handles both the SEPARATE form ('-c "prog"') and the ATTACHED form
+    ('-c"prog"'). The command may be a path ('/bin/bash'); the basename decides."""
+    for call in bash_ast.call_exprs(tree):
+        name = bash_ast.command_name(call)
+        if name is None or name.rsplit("/", 1)[-1] not in SHELL_C_CMDS:
+            continue
+        tokens = list(bash_ast.command_tokens(
+            call, source, frozenset("c"), frozenset()))
+        for index, (kind, word, text) in enumerate(tokens):
+            if kind != "opt" or text.startswith("--") or not text.startswith("-"):
+                continue
+            cluster = text[1:]
+            if "c" not in cluster:
+                continue
+            if cluster.index("c") == len(cluster) - 1:
+                ## Separate form: the next word is the program.
+                if index + 1 < len(tokens) and tokens[index + 1][0] == "value":
+                    program = tokens[index + 1][1]
+                    span = program["End"]["Line"] - program["Pos"]["Line"] + 1
+                    yield (call, bash_ast.word_source(program, source), span)
+            else:
+                ## Attached form ('-c"prog"'): the program is the rest of this
+                ## word after the 'c'.
+                span = word["End"]["Line"] - word["Pos"]["Line"] + 1
+                yield (call, text[cluster.index("c") + 2:], span)
+            break
+
+
+def _embeds_multi_statement(value, strict):
+    """True if VALUE (a shell command string) embeds multi-statement logic.
+    Non-strict (apt/cron): more than one top-level statement (a ';' or newline) or
+    a pipe; '&&'/'||'/subshell glue is tolerated. Strict (systemd): also a
+    '&&'/'||' chain or a shell control keyword. Parsed with shfmt -- a ';' or '|'
+    inside a nested quote is correctly string DATA, closing the former regex's
+    documented false positive. A value shfmt cannot parse (config-specific syntax)
+    is NOT flagged (the safe direction)."""
+    try:
+        tree = bash_ast.parse(value)
+    except bash_ast.BashParseError:
+        return False
+    ## More than one top-level statement (a ';' or newline separator), a pipe, or
+    ## an inlined control construct (if/for/while/until/case) -- all "a script was
+    ## inlined". A '&&'/'||' chain and a subshell are GLUE (an apt hook / cron
+    ## entry has no native cwd/conditional), tolerated in non-strict; systemd has
+    ## a native directive for each, so strict flags them too.
+    if len(tree.get("Stmts") or []) > 1:
+        return True
+    if any(True for _ in bash_ast.pipe_binary_cmds(tree)):
+        return True
+    control = ("IfClause", "WhileClause", "UntilClause", "ForClause",
+               "CaseClause")
+    pipe_ops = bash_ast.pipe_ops()
+    for node in bash_ast.iter_nodes(tree):
+        kind = node.get("Type")
+        if kind in control:
+            return True
+        if strict and kind == "BinaryCmd" and node.get("Op") not in pipe_ops:
+            return True
+    return False
+
+
+def r192_shell_inline_shell_c(path, source, tree):
+    """R-192: a substantial inline shell program (>5 lines) passed to a shell
+    '-c' from a shell script belongs in its own file. The '-c' program string is
+    read straight from the AST (no quote-parity guessing)."""
+    if waiver(source, "allow-inline-interpreter"):
+        return
+    for call, _program, line_count in shell_c_programs(tree, source):
+        if line_count > 5:
+            yield _fail(
+                "R-192",
+                "R-192 inline shell program (%d lines) passed to a shell '-c' "
+                "belongs in its own file" % line_count, path, call)
+
+
 ## Rules that run over a parsed shell file, in gate dispatch order.
 SHELL_RULES = (
+    r192_shell_inline_shell_c,
     r090_command_v,
     r103_exec,
     r120_rm,
@@ -600,4 +720,214 @@ def detect_shell(path, source):
     findings = []
     for rule in SHELL_RULES:
         findings.extend(rule(path, source, tree))
+    return findings
+
+
+## --- config-hosted embedded shell: systemd / apt / cron / workflow YAML ------
+
+
+def _matches(path, patterns):
+    base = os.path.basename(path)
+    return any(fnmatch.fnmatch(path, p) or fnmatch.fnmatch(base, p)
+               for p in patterns)
+
+
+def is_workflow_yaml(path):
+    return _matches(path, (".github/workflows/*.yml", ".github/workflows/*.yaml",
+                           "*/.github/workflows/*.yml",
+                           "*/.github/workflows/*.yaml"))
+
+
+def is_apt_conf(path):
+    return _matches(path, ("*/apt.conf.d/*", "*/apt.conf", "apt.conf"))
+
+
+def is_cron_table(path):
+    return _matches(path, ("*/cron.d/*", "*/crontab", "crontab"))
+
+
+EXEC_DIRECTIVE = re.compile(r'^[ \t]*(Exec[A-Za-z]*)=(.*)$', re.MULTILINE)
+APT_HOOK = re.compile(
+    r'(^|[^A-Za-z0-9])(Pre-Invoke|Post-Invoke|Pre-Install-Pkgs)([^A-Za-z0-9]|$)')
+CRON_ENV = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*[ \t]*=')
+
+
+def r191_systemd_unit(path, source):
+    """R-191: a systemd unit must not embed a multi-statement shell script in an
+    'Exec*=' directive. Flags an 'Exec*=' that invokes a shell '-c' whose program
+    embeds multiple statements (strict: ';', a pipe, '&&'/'||', or a control
+    keyword), or a directive that spans physical lines. The '-c' program is
+    parsed, so a ';'/'&' inside a nested quote is data, not a separator."""
+    if path.endswith(".md") or not EXEC_DIRECTIVE.search(source) \
+            or "Exec" not in source:
+        return
+    if config_waiver(source, "allow-embedded-script"):
+        yield Finding(NOTE, "R-191",
+                      "R-191 skipped: 'style-ok: allow-embedded-script' waiver "
+                      "in '%s'" % path, path, 1)
+        return
+    lines = source.split("\n")
+    index = 0
+    while index < len(lines):
+        match = EXEC_DIRECTIVE.match(lines[index])
+        if not match:
+            index += 1
+            continue
+        directive, value = match.group(1), match.group(2)
+        start = index + 1
+        spanned = False
+        while value.endswith("\\") and index + 1 < len(lines):
+            value = value[:-1]
+            index += 1
+            value += lines[index]
+            spanned = True
+        index += 1
+        try:
+            vtree = bash_ast.parse(value)
+        except bash_ast.BashParseError:
+            continue
+        programs = list(shell_c_programs(vtree, value))
+        if not programs:
+            continue
+        multi = spanned or any(
+            _embeds_multi_statement(_unquote(program_text), strict=True)
+            for _call, program_text, _lc in programs)
+        if multi:
+            yield Finding(
+                FAIL, "R-191",
+                "R-191 systemd unit embeds a multi-statement shell script in %s; "
+                "move the logic to a dedicated script (shebang) and call it"
+                % directive, path, start)
+
+
+def _double_quoted_spans(line):
+    """Yield the inner text of each double-quoted run on LINE (apt config values
+    are double-quoted). Not escape-aware -- apt values do not carry escaped
+    quotes in practice."""
+    rest = line
+    while '"' in rest:
+        after = rest.split('"', 1)[1]
+        if '"' not in after:
+            break
+        inner, rest = after.split('"', 1)
+        yield inner
+
+
+def r194_apt_hook(path, source):
+    """R-194: an apt configuration hook ('Pre-Invoke' / 'Post-Invoke' /
+    'Pre-Install-Pkgs') runs its double-quoted value via 'sh -c'; a
+    multi-statement value belongs in a script. The value is parsed, not defanged
+    by regex."""
+    if not is_apt_conf(path) or not APT_HOOK.search(source):
+        return
+    if config_waiver(source, "allow-embedded-script", slashes=True):
+        yield Finding(NOTE, "R-194",
+                      "R-194 skipped: 'style-ok: allow-embedded-script' waiver "
+                      "in '%s'" % path, path, 1)
+        return
+    for number, line in enumerate(source.split("\n"), start=1):
+        stripped = line.lstrip()
+        if stripped.startswith("#") or stripped.startswith("//"):
+            continue
+        ## The directive must be in config position, before any quoted value.
+        before = line.split('"', 1)[0]
+        if not APT_HOOK.search(before):
+            continue
+        for inner in _double_quoted_spans(line):
+            if _embeds_multi_statement(inner, strict=False):
+                yield Finding(
+                    FAIL, "R-194",
+                    "R-194 apt hook embeds a multi-statement shell command; move "
+                    "the logic to a dedicated script (shebang) and call it",
+                    path, number)
+
+
+def r195_cron_table(path, source):
+    """R-195: a cron entry's command field runs via 'sh -c'; a multi-statement
+    command belongs in a script. The command field (before the first unescaped
+    '%') is parsed, not defanged."""
+    if not is_cron_table(path):
+        return
+    if config_waiver(source, "allow-embedded-script"):
+        yield Finding(NOTE, "R-195",
+                      "R-195 skipped: 'style-ok: allow-embedded-script' waiver "
+                      "in '%s'" % path, path, 1)
+        return
+    for number, line in enumerate(source.split("\n"), start=1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or CRON_ENV.match(stripped):
+            continue
+        ## A cron command ends at the first UNESCAPED '%'; the rest is stdin.
+        command = re.split(r'(?<!\\)%', line, maxsplit=1)[0]
+        if _embeds_multi_statement(command, strict=False):
+            yield Finding(
+                FAIL, "R-195",
+                "R-195 cron entry embeds a multi-statement shell command; move "
+                "the logic to a dedicated script (shebang) and call it",
+                path, number)
+
+
+def r100_yaml_inline_shell(path, source):
+    """R-100: a workflow 'run:' step must not embed a substantial inline shell
+    block (>5 non-blank, non-comment lines). Uses a real YAML parse (marks) to
+    find each 'run:' scalar and its start line."""
+    if not is_workflow_yaml(path):
+        return
+    if config_waiver(source, "allow-inline-shell"):
+        yield Finding(NOTE, "R-100",
+                      "R-100 skipped: 'style-ok: allow-inline-shell' waiver in "
+                      "'%s'" % path, path, 1)
+        return
+    import yaml  # noqa: E402
+    try:
+        root = yaml.compose(source)
+    except yaml.YAMLError:
+        return
+    if root is None:
+        return
+    for key_node, value_node in _yaml_run_scalars(root):
+        body = [ln for ln in (value_node.value or "").split("\n")
+                if ln.strip() and not ln.lstrip().startswith("#")]
+        if len(body) > 5:
+            yield Finding(
+                FAIL, "R-100",
+                "R-100 workflow embeds an inline shell block (%d lines) in a "
+                "'run:' step; extract it to a ci/ script and call it"
+                % len(body), path, key_node.start_mark.line + 1)
+
+
+def _yaml_run_scalars(node):
+    """Yield (key_node, value_node) for every 'run:' mapping entry whose value is
+    a scalar, anywhere in the composed YAML NODE."""
+    import yaml  # noqa: E402
+    if isinstance(node, yaml.MappingNode):
+        for key_node, value_node in node.value:
+            if isinstance(key_node, yaml.ScalarNode) \
+                    and key_node.value == "run" \
+                    and isinstance(value_node, yaml.ScalarNode):
+                yield key_node, value_node
+            yield from _yaml_run_scalars(value_node)
+    elif isinstance(node, yaml.SequenceNode):
+        for item in node.value:
+            yield from _yaml_run_scalars(item)
+
+
+## Config rules keyed by their file predicate. Each takes (path, source).
+CONFIG_RULES = (
+    r191_systemd_unit,
+    r194_apt_hook,
+    r195_cron_table,
+    r100_yaml_inline_shell,
+)
+
+
+def detect_file(path, source, is_shell):
+    """Run every applicable rule over PATH. IS_SHELL is the gate's own
+    shell-file verdict (so detector and gate agree on the shell set). Shell rules
+    run over the parsed shell tree; the config rules self-select by path."""
+    findings = []
+    if is_shell:
+        findings.extend(detect_shell(path, source))
+    for rule in CONFIG_RULES:
+        findings.extend(rule(path, source))
     return findings
