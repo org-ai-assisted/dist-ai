@@ -36,19 +36,19 @@ shopt -s shift_verbose
 export LC_ALL=C
 
 if ! test -r /usr/libexec/helper-scripts/has.sh ; then
-   printf '%s\n' "FATAL: helper-scripts has.sh is not installed (/usr/libexec/helper-scripts/has.sh)" >&2
-   exit 1
+   printf '%s\n' "SKIP: helper-scripts has.sh not installed (/usr/libexec/helper-scripts/has.sh)." >&2
+   exit 77
 fi
 # shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
 source /usr/libexec/helper-scripts/has.sh
 
 if ! has safe-rm ; then
-   printf '%s\n' "FATAL: safe-rm not on PATH" >&2
-   exit 1
+   printf '%s\n' "SKIP: safe-rm not on PATH." >&2
+   exit 77
 fi
 if ! has git ; then
-   printf '%s\n' "FATAL: git not on PATH" >&2
-   exit 1
+   printf '%s\n' "SKIP: git not on PATH." >&2
+   exit 77
 fi
 
 ## Resolve the tools RELATIVE to this test file (usr/share/<suite>/ -> usr/bin/)
@@ -69,6 +69,7 @@ cleanup_handler() {
 }
 trap cleanup_handler EXIT
 
+pass=0
 fail=0
 
 ## Fragments, so no command-position needle appears literally in this file.
@@ -120,16 +121,20 @@ run_gate_on_body() {
    gate_output="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || gate_rc=$?
 }
 
-## assert_flagged <rule> <name> <body> -- 'FAIL <rule>' must appear.
+## assert_flagged <rule> <name> <body> -- HARD-failure contract: 'FAIL <rule>'
+## must appear AND the gate must exit nonzero. A gate that prints 'FAIL R-212'
+## but returns 0 would not block the push, so the string alone is insufficient.
 assert_flagged() {
    local rule="$1" name="$2" body="$3"
    run_gate_on_body "${name}" "${body}"
-   if grep --fixed-strings -- "FAIL ${rule}" <<< "${gate_output}" >/dev/null; then
-      printf '%s\n' "PASS: ${rule} flagged ${name}"
+   if grep --fixed-strings -- "FAIL ${rule}" <<< "${gate_output}" >/dev/null \
+      && [ "${gate_rc}" -ne 0 ]; then
+      printf '%s\n' "PASS: ${rule} hard-failed ${name} (rc=${gate_rc})"
+      pass=$((pass + 1))
    else
-      printf '%s\n' "FAIL: ${rule} did NOT flag ${name}"
+      printf '%s\n' "FAIL: ${rule} did NOT hard-fail ${name} (rc=${gate_rc}; needs 'FAIL ${rule}' + nonzero rc)"
       printf '%s\n' "${gate_output}" | tail -5
-      fail=1
+      fail=$((fail + 1))
    fi
 }
 
@@ -141,13 +146,14 @@ assert_spared() {
    if grep --fixed-strings -- "FAIL ${rule}" <<< "${gate_output}" >/dev/null; then
       printf '%s\n' "FAIL: ${rule} wrongly flagged ${name}"
       printf '%s\n' "${gate_output}" | grep --fixed-strings -- "FAIL ${rule}" | head -2
-      fail=1
+      fail=$((fail + 1))
    elif [ "${gate_rc}" -ne 0 ]; then
       printf '%s\n' "FAIL: gate not green on spared fixture ${name} (rc=${gate_rc})"
       printf '%s\n' "${gate_output}" | tail -5
-      fail=1
+      fail=$((fail + 1))
    else
       printf '%s\n' "PASS: ${rule} spared ${name}"
+      pass=$((pass + 1))
    fi
 }
 
@@ -159,13 +165,14 @@ assert_noted() {
    if ! grep --fixed-strings -- "${rule} (ADVISORY)" <<< "${gate_output}" >/dev/null; then
       printf '%s\n' "FAIL: ${rule} did NOT note ${name}"
       printf '%s\n' "${gate_output}" | tail -5
-      fail=1
+      fail=$((fail + 1))
    elif [ "${gate_rc}" -ne 0 ]; then
       printf '%s\n' "FAIL: advisory ${rule} FAILED the gate on ${name} (rc=${gate_rc}) -- must be notify-only"
       printf '%s\n' "${gate_output}" | tail -5
-      fail=1
+      fail=$((fail + 1))
    else
       printf '%s\n' "PASS: ${rule} noted ${name} (advisory, gate green)"
+      pass=$((pass + 1))
    fi
 }
 
@@ -179,9 +186,10 @@ assert_green() {
    if [ "${gate_rc}" -ne 0 ]; then
       printf '%s\n' "FAIL: gate not green on ${name} (rc=${gate_rc})"
       printf '%s\n' "${gate_output}" | tail -5
-      fail=1
+      fail=$((fail + 1))
    else
       printf '%s\n' "PASS: gate green on ${name}"
+      pass=$((pass + 1))
    fi
 }
 
@@ -192,13 +200,14 @@ assert_not_noted() {
    if grep --fixed-strings -- "${rule} (ADVISORY)" <<< "${gate_output}" >/dev/null; then
       printf '%s\n' "FAIL: ${rule} wrongly noted ${name}"
       printf '%s\n' "${gate_output}" | grep --fixed-strings -- "${rule} (ADVISORY)" | head -2
-      fail=1
+      fail=$((fail + 1))
    elif [ "${gate_rc}" -ne 0 ]; then
       printf '%s\n' "FAIL: gate not green on spared fixture ${name} (rc=${gate_rc})"
       printf '%s\n' "${gate_output}" | tail -5
-      fail=1
+      fail=$((fail + 1))
    else
       printf '%s\n' "PASS: ${rule} spared ${name}"
+      pass=$((pass + 1))
    fi
 }
 
@@ -285,10 +294,11 @@ assert_fix_unchanged() {
    run_fix "${name}" "${body}"
    if [ "${fix_result}" = "$(printf '%s\n' '#!/bin/bash' "${body}")" ]; then
       printf '%s\n' "PASS: pre-push-fix left ${name} unchanged"
+      pass=$((pass + 1))
    else
       printf '%s\n' "FAIL: pre-push-fix modified ${name}"
       printf '%s\n' "${fix_result}"
-      fail=1
+      fail=$((fail + 1))
    fi
 }
 ## A plain command-position apt-get is NOT renamed any more (R-210 is advisory).
@@ -322,8 +332,9 @@ assert_fix_unchanged "apt-array"   "cmd=( ${ag} install foo )"
 ## parser, so the two never disagree.
 assert_fix_unchanged "apt-after-closed-quote" "printf '%s' ok${sc} sudo ${ag} install foo"
 
+printf '%s\n' "" "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
-   printf '%s\n' "" "FAILED"
+   printf '%s\n' "FAILED"
    exit 1
 fi
-printf '%s\n' "" "OK"
+printf '%s\n' "OK"
