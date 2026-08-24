@@ -267,20 +267,42 @@ def r034_echo(path, source, tree):
 ## --- printf -v injection guard ---------------------------------------------
 
 
-def _printf_v_target(call):
-    """The variable-NAME Word of a 'printf -v NAME ...' call, or None when the
-    printf has no '-v'. Only the SEPARATE form 'printf -v NAME' is analyzed -- the
-    one every occurrence in the tree uses; an option-terminating '--' before any
-    '-v' ends the search. An attached '-vNAME' is left alone (its name is embedded
-    literally, so it carries no injectable expansion anyway)."""
+def _printf_v_target(call, source):
+    """The Word carrying the EFFECTIVE 'printf -v' target NAME, or None when the
+    printf writes no variable. Follows bash's own printf option parsing (verified):
+
+      - Options precede the FORMAT operand; the first non-option word is the format
+        and ENDS option scanning, so a later '-v' ('printf "%s" -v "$x"') is a data
+        argument, not the option -- not a target.
+      - '--' also ends option scanning ('printf -- -v x' prints '-v').
+      - Both spellings of the option are targets: separate 'printf -v NAME' (the
+        next word) and attached 'printf -vNAME' (this word; word_string reads
+        '-vfoo' as a fixed name, '-v${x}' as dynamic).
+      - Multiple '-v' -> bash uses the LAST, so the last target before the format
+        is the effective one ('printf -v safe -v "$x"' writes "$x")."""
     call_args = bash_ast.args(call)
-    for index in range(1, len(call_args)):
-        lit = bash_ast.word_lit(call_args[index])
+    target = None
+    index = 1
+    while index < len(call_args):
+        word = call_args[index]
+        lit = bash_ast.word_lit(word)
         if lit == "--":
-            return None
+            break
         if lit == "-v":
-            return call_args[index + 1] if index + 1 < len(call_args) else None
-    return None
+            if index + 1 < len(call_args):
+                target = call_args[index + 1]
+                index += 2
+                continue
+            index += 1
+            continue
+        raw = lit if lit is not None else bash_ast.word_source(word, source)
+        if raw.startswith("-v") and len(raw) > 2:
+            target = word
+            index += 1
+            continue
+        ## First non-option word: the format operand. Option scanning ends.
+        break
+    return target
 
 
 def _check_variable_name_sites(tree):
@@ -326,14 +348,27 @@ def r063_printf_v_unchecked(path, source, tree):
     RUNS cmd -- a command injection driven by whatever supplied the name. A
     literal target ('printf -v out ...') carries no expansion and is spared; a
     pure command-substitution name ('printf -v "$(f)"') shares no parameter with
-    any guard, so it can never be counted as guarded."""
+    any guard, so it can never be counted as guarded.
+
+    SCOPE (honest limits -- this catches the accidental unguarded printf -v, not
+    an adversary deliberately hiding the guard):
+      - A guard is matched by TEXTUAL precedence within the enclosing function
+        plus a shared parameter name; control-flow REACHABILITY is not modelled.
+        A check parked in an unreachable/sibling branch ('if false; then check ...
+        fi') still counts. Modelling dominance needs a CFG, and any stricter
+        block-level scoping would FALSE-POSITIVE the real idiom (guard at function
+        top, printf -v in a case/if arm, as in github-policy-lib.bsh), so the
+        function-wide precedence scope is deliberate.
+      - Only a direct 'printf' call is analyzed. A 'command printf'/'builtin
+        printf' dispatch (absent from the codebase, never an accidental spelling)
+        is out of scope."""
     if waiver(source, "allow-unchecked-printf-v"):
         return
     guards = _check_variable_name_sites(tree)
     for call in bash_ast.call_exprs(tree):
         if bash_ast.command_name(call) != "printf":
             continue
-        name_word = _printf_v_target(call)
+        name_word = _printf_v_target(call, source)
         if name_word is None:
             continue
         if bash_ast.word_string(name_word) is not None:

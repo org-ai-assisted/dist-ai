@@ -320,6 +320,31 @@ assert_at "R-063 flags a guard naming a different variable"     "R-063" 8
 assert_at "R-063 flags a command-substitution target name"      "R-063" 11
 assert_at "R-063 flags a guard confined to a sibling function"  "R-063" 17
 
+## The ATTACHED spelling 'printf -vNAME' is analyzed too: a literal name is
+## spared, an expanded one is guarded like the separate form.
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'attached_literal() {' \
+   '  printf -vout "%s" "z"' \
+   '}' \
+   'attached_dynamic() {' \
+   '  printf -v"${d}" "%s" "z"' \
+   '}')"
+assert_not_at "R-063 spares an attached literal '-vout'"        "R-063" 3
+assert_at     "R-063 flags an attached dynamic '-v\${d}'"       "R-063" 6
+
+## bash printf option parsing: the FORMAT operand and '--' both END option
+## scanning, so a '-v' after either is DATA, not a target (no false positive).
+## Multiple '-v' -> bash writes the LAST, so that target is the one analyzed.
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'printf "%s" -v "${notatarget}"' \
+   'printf -- -v "${alsonot}"' \
+   'printf -v safe -v "${last}" "%s" x')"
+assert_not_at "R-063 spares a '-v' after the format operand (data)"  "R-063" 2
+assert_not_at "R-063 spares a '-v' after '--' (data)"                "R-063" 3
+assert_at     "R-063 analyzes the LAST '-v' target (bash uses it)"   "R-063" 4
+
 ## A top-level guard before a top-level printf -v counts (scope starts at 0).
 run_det "$(printf '%s\n' \
    '#!/bin/bash' \
