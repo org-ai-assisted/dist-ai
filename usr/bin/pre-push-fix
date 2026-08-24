@@ -348,6 +348,21 @@ def _grep_has_arg_taker(options):
     return False
 
 
+def editable_calls(tree):
+    """CallExprs the fixer may auto-edit: every command EXCEPT one whose position
+    is inside a here-document body. A command there (a '$(...)' in heredoc text)
+    is not at a real command-line position -- inserting a comment above it (R-172
+    SC2174) splices into the here-document DATA and corrupts it, and even a
+    word-span rewrite would edit deliberate here-document content. The DETECTOR
+    still sees these (it only reports); only the writer declines them."""
+    spans = list(bash_ast.heredoc_spans(tree))
+    for call in bash_ast.call_exprs(tree):
+        offset = call["Pos"]["Offset"]
+        if any(start <= offset < end for start, end in spans):
+            continue
+        yield call
+
+
 def mkdir_edits(text, tree):
     """Edits for R-172: upgrade a temp-dir mkdir's short '-m' to '--mode=', and
     insert a '# shellcheck disable=SC2174' above an atomic '--parents ... --mode'
@@ -359,7 +374,7 @@ def mkdir_edits(text, tree):
     edits = []
     disabled_lines = set()
     count = 0
-    for call in bash_ast.call_exprs(tree):
+    for call in editable_calls(tree):
         if bash_ast.command_name(call) != "mkdir":
             continue
         call_args = bash_ast.args(call)
@@ -439,7 +454,7 @@ def grep_edits(text, tree):
     for the gate (a following '-q'-shaped token could be that option's value)."""
     edits = []
     count = 0
-    for call in bash_ast.call_exprs(tree):
+    for call in editable_calls(tree):
         if bash_ast.command_name(call) != "grep":
             continue
         options, _ = _grep_option_words(call)
@@ -467,7 +482,7 @@ def timeout_edits(text, tree):
         return [], 0
     edits = []
     count = 0
-    for call in bash_ast.call_exprs(tree):
+    for call in editable_calls(tree):
         if bash_ast.command_name(call) != "timeout":
             continue
         call_args = bash_ast.args(call)

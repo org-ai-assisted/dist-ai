@@ -318,6 +318,21 @@ else
    note_fail "R-172 SC2174 disable insertion not idempotent"
 fi
 
+## --- 7l: a mkdir inside a HEREDOC body is never edited (no data corruption) --
+## A '$(mkdir --parents -m 700 ...)' in here-document text is real code, so the
+## AST yields it -- but the fixer must NOT touch it: inserting the SC2174 comment
+## would splice into the here-document DATA. Canary: the old fixer corrupted it.
+f="${test_dir}/mkdirheredoc.sh"
+printf '%b' '#!/bin/bash\ncat <<EOF\n$(mkdir --parents -m 700 -- "$TMPDIR")\nEOF\n' >"${f}"
+before="$(cksum < "${f}")"
+"${FIX}" "${f}" >/dev/null 2>&1
+if [ "$(cksum < "${f}")" = "${before}" ] \
+   && ! grep --quiet --fixed-strings -- 'disable=SC2174' "${f}" ; then
+   note_pass "R-172 leaves a mkdir inside a heredoc body untouched (no corruption)"
+else
+   note_fail "R-172 corrupted a heredoc body (edited a command inside it)"
+fi
+
 ## --- 7k: the disable is NOT wedged into a '\'-continuation -----------------
 ## A temp mkdir that continues a '\'-terminated line must not get a comment
 ## inserted between the two -- that would break the continuation. The fixer

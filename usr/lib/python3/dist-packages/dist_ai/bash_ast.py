@@ -219,6 +219,19 @@ def heredoc_bodies(stmt):
         yield redirect, lines
 
 
+def heredoc_spans(tree):
+    """Yield (start, end) byte offsets of every here-document BODY in TREE. A
+    command that appears only inside one of these spans (e.g. a '$(...)' in the
+    here-document text) is not at a real command-line position: a fixer that
+    inserts a comment line there would splice it into the here-document DATA and
+    corrupt it."""
+    for stmt in iter_stmts(tree):
+        for redirect, _lines in heredoc_bodies(stmt):
+            hdoc = redirect.get("Hdoc")
+            if isinstance(hdoc, dict):
+                yield hdoc["Pos"]["Offset"], hdoc["End"]["Offset"]
+
+
 def defines_function(tree, name):
     """True if the script defines a shell function called NAME. A later 'name ...'
     then calls THAT function, not the coreutils tool -- so a command-name rule
