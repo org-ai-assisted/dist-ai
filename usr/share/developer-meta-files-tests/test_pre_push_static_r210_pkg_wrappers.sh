@@ -36,19 +36,19 @@ shopt -s shift_verbose
 export LC_ALL=C
 
 if ! test -r /usr/libexec/helper-scripts/has.sh ; then
-   printf '%s\n' "SKIP: helper-scripts has.sh not installed (/usr/libexec/helper-scripts/has.sh)." >&2
-   exit 77
+   printf '%s\n' "FATAL: helper-scripts has.sh is not installed (/usr/libexec/helper-scripts/has.sh)" >&2
+   exit 1
 fi
 # shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
 source /usr/libexec/helper-scripts/has.sh
 
 if ! has safe-rm ; then
-   printf '%s\n' "SKIP: safe-rm not on PATH." >&2
-   exit 77
+   printf '%s\n' "FATAL: safe-rm not on PATH" >&2
+   exit 1
 fi
 if ! has git ; then
-   printf '%s\n' "SKIP: git not on PATH." >&2
-   exit 77
+   printf '%s\n' "FATAL: git not on PATH" >&2
+   exit 1
 fi
 
 ## Resolve the tools RELATIVE to this test file (usr/share/<suite>/ -> usr/bin/)
