@@ -218,7 +218,11 @@ def r090_command_v(path, source, tree):
         if bash_ast.command_name(call) != "command":
             continue
         first = bash_ast.args(call)[1:2]
-        if first and bash_ast.word_lit(first[0]) == "-v":
+        ## word_string (quote-aware), not word_lit: a detector matching a
+        ## forbidden LITERAL token must catch its quoted spellings too --
+        ## 'command "-v" foo' IS 'command -v foo'. word_lit declines any quoted
+        ## word (that is for the rewriters, which need a plain-literal target).
+        if first and bash_ast.word_string(first[0]) == "-v":
             yield _fail("R-090", "R-090 command -v", path, call)
 
 
@@ -460,7 +464,11 @@ def r212_allow_downgrades(path, source, tree):
         return
     for call in bash_ast.call_exprs(tree):
         for word in bash_ast.args(call):
-            if bash_ast.word_lit(word) == "--allow-downgrades":
+            ## word_string, not word_lit: catch the quoted spellings too
+            ## ('"--allow-downgrades"' / "'--allow-downgrades'" still pass the
+            ## flag to apt-get); still spares a prose mention (a multi-word
+            ## string never equals the exact flag).
+            if bash_ast.word_string(word) == "--allow-downgrades":
                 yield _fail("R-212", "R-212 --allow-downgrades forbidden",
                             path, word)
 
@@ -533,11 +541,11 @@ def r211_dpkg(path, source, tree):
         if wrapped:
             ## Skip past the wrapper and its options to dpkg's own args.
             for index in range(1, len(args_after)):
-                if bash_ast.word_lit(args_after[index]) == "dpkg":
+                if bash_ast.word_string(args_after[index]) == "dpkg":
                     start = index + 1
                     break
         state_changing = any(
-            bash_ast.word_lit(word) in DPKG_STATE_ACTIONS
+            bash_ast.word_string(word) in DPKG_STATE_ACTIONS
             for word in args_after[start:])
         if state_changing:
             yield Finding(
