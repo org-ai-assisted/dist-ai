@@ -71,7 +71,12 @@ emit_empty_for() {
 read_key() {
    local key="$1" mode="$2"
    local value out_name
-   value="$(yq -r ".\"${section}\".\"${key}\" // \"\"" "${cfg_file}")"
+   ## Bind section/key as ENV vars referenced via jq's env(...) rather than
+   ## interpolating them into the filter: a crafted section/key would otherwise
+   ## inject jq (e.g. `x" | env.SOME_SECRET #`) and exfiltrate a secret from the
+   ## environment into $GITHUB_OUTPUT. Every arg is data, never query text.
+   value="$(DM_SECTION="${section}" DM_KEY="${key}" \
+      yq -r '.[env.DM_SECTION][env.DM_KEY] // ""' "${cfg_file}")"
    if [ "${value}" = 'null' ]; then
       value=''
    fi
@@ -100,7 +105,7 @@ if [ ! -f "${cfg_file}" ]; then
    exit 0
 fi
 
-section_value="$(yq -r ".\"${section}\" // \"\"" "${cfg_file}")"
+section_value="$(DM_SECTION="${section}" yq -r '.[env.DM_SECTION] // ""' "${cfg_file}")"
 if [ -z "${section_value}" ] || [ "${section_value}" = 'null' ]; then
    if [ -n "${required_csv}" ]; then
       printf '%s\n' \

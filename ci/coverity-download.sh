@@ -97,6 +97,8 @@ if [ -f "${sha256_pin_file}" ]; then
   ## hard-pin check closed with an opaque error the first time a repo commits a
   ## pin. First non-blank, non-'#' line's first field is the expected sha256.
   expected_sha256="$(awk 'NF && $1 !~ /^#/ {print $1; exit}' < "${sha256_pin_file}")"
+  ## Strip a trailing CR so a CRLF pin file does not fail the compare closed.
+  expected_sha256="${expected_sha256%$'\r'}"
   if [ -z "${expected_sha256}" ]; then
     printf '%s\n' "::error::${sha256_pin_file} exists but contains no sha256 value." >&2
     exit 1

@@ -51,16 +51,23 @@ fail() {
    failures=$(( failures + 1 ))
 }
 
-## Clean baseline: only the AI-review key forwarded, nothing leaked.
+## Run the audit; capture BOTH exit code and combined output so a check can
+## assert the specific ::error::/::warning:: marker, not just the exit code (an
+## exit-code-only test lets a regression of the warning/error text pass silent).
+audit_rc=0
+audit_out=''
 run_audit() {
-   local rc=0
-   ALLOW_LOCAL=true \
-   CLAUDE_OAUTH_PRESENT="${a:-true}" \
-   OPENAI_PRESENT="${o:-false}" \
-   COVERITY_TOKEN_PRESENT="${ct:-false}" \
-   COVERITY_EMAIL_PRESENT="${ce:-false}" \
-      bash -- "${audit}" >/dev/null 2>&1 || rc=$?
-   printf '%s' "${rc}"
+   audit_rc=0
+   audit_out="$( ALLOW_LOCAL=true \
+      CLAUDE_OAUTH_PRESENT="${a:-true}" \
+      OPENAI_PRESENT="${o:-false}" \
+      COVERITY_TOKEN_PRESENT="${ct:-false}" \
+      COVERITY_EMAIL_PRESENT="${ce:-false}" \
+      bash -- "${audit}" 2>&1 )" || audit_rc=$?
+}
+
+has_marker() {
+   grep --quiet --fixed-strings -- "$1" <<< "${audit_out}"
 }
 
 ## ---- CI guard: refuses without CI or ALLOW_LOCAL --------------------------
@@ -73,34 +80,57 @@ if [ "${rc}" -ne 1 ]; then
    fail "did not refuse outside CI without ALLOW_LOCAL (rc '${rc}', expected 1)"
 fi
 
-## ---- clean context -> exit 0 ----------------------------------------------
+## ---- clean context -> exit 0, no error, no warning ------------------------
 a=true o=false ct=false ce=false
-if [ "$(run_audit)" != '0' ]; then
+run_audit
+if [ "${audit_rc}" -ne 0 ]; then
    fail 'a clean secrets context did not pass'
 fi
+if has_marker '::error::'; then
+   fail 'a clean secrets context emitted an ::error::'
+fi
+if has_marker '::warning::'; then
+   fail 'a clean context (AI key present) emitted the not-forwarded warning'
+fi
 
-## ---- OPENAI leaked -> exit 1 ----------------------------------------------
+## ---- OPENAI leaked -> exit 1 + its ::error:: ------------------------------
 a=true o=true ct=false ce=false
-if [ "$(run_audit)" != '1' ]; then
+run_audit
+if [ "${audit_rc}" -ne 1 ]; then
    fail 'an OPENAI_API_KEY leak did not fail the audit'
 fi
+if ! has_marker '::error::OPENAI_API_KEY leaked'; then
+   fail 'the OPENAI leak did not emit its ::error:: marker'
+fi
 
-## ---- COVERITY token leaked -> exit 1 --------------------------------------
+## ---- COVERITY token leaked -> exit 1 + its ::error:: ----------------------
 a=true o=false ct=true ce=false
-if [ "$(run_audit)" != '1' ]; then
+run_audit
+if [ "${audit_rc}" -ne 1 ]; then
    fail 'a COVERITY_SCAN_TOKEN leak did not fail the audit'
 fi
-
-## ---- COVERITY email leaked -> exit 1 --------------------------------------
-a=true o=false ct=false ce=true
-if [ "$(run_audit)" != '1' ]; then
-   fail 'a COVERITY_SCAN_EMAIL leak did not fail the audit'
+if ! has_marker '::error::COVERITY_SCAN_TOKEN leaked'; then
+   fail 'the COVERITY_SCAN_TOKEN leak did not emit its ::error:: marker'
 fi
 
-## ---- CLAUDE_CODE_OAUTH_TOKEN absent is a warning, not a failure -> exit 0 ---------------
+## ---- COVERITY email leaked -> exit 1 + its ::error:: ----------------------
+a=true o=false ct=false ce=true
+run_audit
+if [ "${audit_rc}" -ne 1 ]; then
+   fail 'a COVERITY_SCAN_EMAIL leak did not fail the audit'
+fi
+if ! has_marker '::error::COVERITY_SCAN_EMAIL leaked'; then
+   fail 'the COVERITY_SCAN_EMAIL leak did not emit its ::error:: marker'
+fi
+
+## ---- CLAUDE_CODE_OAUTH_TOKEN absent -> exit 0 + the not-forwarded warning --
 a=false o=false ct=false ce=false
-if [ "$(run_audit)" != '0' ]; then
+run_audit
+if [ "${audit_rc}" -ne 0 ]; then
    fail 'an absent CLAUDE_CODE_OAUTH_TOKEN forward was treated as a failure (should warn)'
+fi
+if ! has_marker '::warning::CLAUDE_CODE_OAUTH_TOKEN not forwarded'; then
+   fail 'an absent AI key did not emit the not-forwarded ::warning:: (dead-check regression)'
 fi
 
 if [ "${failures}" -ne 0 ]; then

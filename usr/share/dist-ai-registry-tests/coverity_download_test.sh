@@ -158,6 +158,20 @@ if ! grep --quiet --fixed-strings -- 'only md5 was verified' "${r[0]}/out.log"; 
    fail 'an absent pin did not warn that only md5 was verified'
 fi
 
+## ---- CRLF pin file: a trailing CR must not fail the compare closed --------
+crlf_cwd="$(mktemp --directory -- "${work_dir}/consumer.XXXXXX")"
+printf '%s\n' "${good_sha256}"$'\r' > "${crlf_cwd}/.coverity-tool-sha256.expected"
+crlf_rc=0
+( cd -- "${crlf_cwd}" && PATH="${stub_bin}:${PATH}" ALLOW_LOCAL=true \
+   STUB_MD5_VALUE='' COVERITY_TOKEN=tok COVERITY_PROJECT=org/example \
+   bash -- "${downloader}" >"${crlf_cwd}/out.log" 2>&1 ) || crlf_rc=$?
+if [ "${crlf_rc}" -ne 0 ]; then
+   fail "a CRLF sha256 pin failed the compare closed (rc '${crlf_rc}')"
+fi
+if ! grep --quiet --fixed-strings -- 'sha256 hard-pin verified' "${crlf_cwd}/out.log"; then
+   fail 'a CRLF pin did not verify (trailing CR not stripped)'
+fi
+
 ## ---- CI guard: refuses without CI or ALLOW_LOCAL --------------------------
 guard_rc=0
 ( cd -- "${work_dir}" && env -u CI -u ALLOW_LOCAL PATH="${stub_bin}:${PATH}" \

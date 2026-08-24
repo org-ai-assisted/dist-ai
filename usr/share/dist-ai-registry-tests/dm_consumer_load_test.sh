@@ -180,6 +180,26 @@ if [ "${loader_rc}" -ne 1 ]; then
    fail "absent section with a required key did not hard-fail (rc '${loader_rc}')"
 fi
 
+## ---- yq expression injection: a crafted section name is DATA, not query ----
+## The section arg tries to break out of the yq filter and read an env secret
+## (`x" | env.REVIEW_SECRET #`). The loader must treat it as a literal key: no
+## secret in the output, and (required) a hard fail because no such section.
+inj_cwd="$(mktemp --directory -- "${work_dir}/inject.XXXXXX")"
+mkdir -p -- "${inj_cwd}/.github"
+printf '%s' "${section_yaml}" > "${inj_cwd}/.github/dm-consumer.yml"
+printf '%s' '' > "${out_file}"
+inj_rc=0
+( cd -- "${inj_cwd}" \
+   && REVIEW_SECRET='topsecret-exfil' GITHUB_OUTPUT="${out_file}" \
+      bash -- "${loader}" 'x" | env.REVIEW_SECRET #' 'build-command' '' ) \
+   >/dev/null 2>&1 || inj_rc=$?
+if grep --quiet --fixed-strings -- 'topsecret-exfil' "${out_file}"; then
+   fail 'yq expression injection exfiltrated an env secret into GITHUB_OUTPUT'
+fi
+if [ "${inj_rc}" -ne 1 ]; then
+   fail "injection payload as section did not hard-fail a required load (rc '${inj_rc}')"
+fi
+
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "dm-consumer-load-test: ${failures} check(s) failed" >&2
    exit 1

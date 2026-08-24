@@ -44,31 +44,25 @@ exclude_args=(
    -not -path './.github/dist-ai/*'
 )
 
-## Append submodule paths from .gitmodules if present. Each
-## submodule.<id>.path entry becomes an exclude.
+## Exclude submodule working trees. Source the paths from the git INDEX
+## (mode-160000 gitlinks), NOT .gitmodules: .gitmodules is attacker-controllable
+## committed text, so a crafted `path = src` (a real source dir) or `path = *`
+## (a glob) there would exclude real code from the scan. A gitlink in the index
+## is the authoritative, unspoofable list of actual submodule paths.
 ##
-## 'git config -z' NUL-terminates each ENTRY and puts a NEWLINE between the key
-## and its value, i.e. records are 'submodule.<id>.path<newline><path><NUL>'.
-## Read NUL-delimited records ('read -d ""') and strip up to the first newline
-## for the value -- a plain newline-delimited read splits mid-record and yields
-## a garbage path, so real submodule sources go unexcluded and get scanned.
-if [ -f .gitmodules ]; then
-   while IFS= read -r -d '' entry; do
-      key="${entry%%$'\n'*}"
-      sub_path="${entry#*$'\n'}"
-      case "${key}" in
-         submodule.*.path)
-            ;;
-         *)
-            continue
-            ;;
-      esac
-      ## A record with no newline has no value; skip it.
-      if [ -n "${sub_path}" ] && [ "${sub_path}" != "${entry}" ]; then
-         exclude_args+=( -not -path "./${sub_path}/*" )
-      fi
-   done < <(git config -z --file .gitmodules --get-regexp 'submodule\..*\.path' 2>/dev/null || true)
-fi
+## 'git ls-files -z --stage' emits NUL-terminated records
+## '<mode> <object> <stage><TAB><path>'. Keep only mode 160000; the path is the
+## text after the TAB. Not a git tree (or no submodules) -> no excludes.
+while IFS= read -r -d '' entry; do
+   mode="${entry%% *}"
+   if [ "${mode}" != '160000' ]; then
+      continue
+   fi
+   sub_path="${entry#*$'\t'}"
+   if [ -n "${sub_path}" ]; then
+      exclude_args+=( -not -path "./${sub_path}/*" )
+   fi
+done < <(git ls-files -z --stage 2>/dev/null || true)
 
 ## Stage 1: files with .py extension.
 find . -type f "${exclude_args[@]}" -name '*.py' -print0
