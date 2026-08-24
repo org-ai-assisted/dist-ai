@@ -40,6 +40,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
    dm_checkout="${DERIVATIVE_MAKER_DIR}"
@@ -75,8 +76,8 @@ for candidate in "${candidates[@]}"; do
    fi
 done
 if [ -z "${subject}" ]; then
-   printf '%s\n' "SKIP: dm-prepare-release not found (set DM_PREPARE_RELEASE)." >&2
-   exit 77
+   printf '%s\n' "FATAL: dm-prepare-release not found (set DM_PREPARE_RELEASE)." >&2
+   exit 1
 fi
 
 ## Present subject: its prerequisites are required, not optional.
@@ -100,27 +101,27 @@ fi
 code="$(printf '%s\n' "${func_src}" | grep --invert-match --extended-regexp -- '^[[:space:]]*#')"
 
 ## --- STRUCTURAL: fast guards on the shipped pipeline ------------------------
-if printf '%s\n' "${code}" | grep --quiet --extended-regexp -- '[|][[:space:]]*pv[[:space:]]+-s[[:space:]]'; then
+if grep --quiet --extended-regexp -- '[|][[:space:]]*pv[[:space:]]+-s[[:space:]]' <<< "${code}"; then
    pass "structural: pv runs with an explicit size ('pv -s'), so the meter shows a real percentage"
 else
    fail "structural: pv is not given a size; the meter would show throughput only (or was removed)"
 fi
-if printf '%s\n' "${code}" | grep --quiet --extended-regexp -- '[|][[:space:]]*xz\b'; then
+if grep --quiet --extended-regexp -- '[|][[:space:]]*xz\b' <<< "${code}"; then
    pass "structural: xz is an explicit pipeline stage"
 else
    fail "structural: xz is not an explicit stage"
 fi
-if printf '%s\n' "${code}" | grep --quiet --extended-regexp -- '(^|[[:space:]])--xz($|[[:space:]])'; then
+if grep --quiet --extended-regexp -- '(^|[[:space:]])--xz($|[[:space:]])' <<< "${code}"; then
    fail "structural: tar still uses '--xz'; that compresses inside tar, defeating the pv size meter"
 else
    pass "structural: tar does not use its internal '--xz'"
 fi
-if printf '%s\n' "${code}" | grep --quiet --fixed-strings -- '--mtime="@${SOURCE_DATE_EPOCH}"'; then
+if grep --quiet --fixed-strings -- '--mtime="@${SOURCE_DATE_EPOCH}"' <<< "${code}"; then
    pass "structural: member mtime pinned to SOURCE_DATE_EPOCH (not a hardcoded date)"
 else
    fail "structural: member mtime is not @SOURCE_DATE_EPOCH; a hardcoded date desyncs the archive from every other artifact"
 fi
-if printf '%s\n' "${code}" | grep --quiet --fixed-strings -- 'SOURCE_DATE_EPOCH:-'; then
+if grep --quiet --fixed-strings -- 'SOURCE_DATE_EPOCH:-' <<< "${code}"; then
    pass "structural: unset SOURCE_DATE_EPOCH is guarded (fails loudly, not silently)"
 else
    fail "structural: SOURCE_DATE_EPOCH is used without an unset guard"

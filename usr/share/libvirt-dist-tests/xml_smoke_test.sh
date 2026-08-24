@@ -21,6 +21,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 ## Resolve the component's shipped XML: a checkout via LIBVIRT_DIST_REPO, else
 ## the installed package.
@@ -30,7 +31,7 @@ elif [ -d /usr/share/libvirt-dist/xml ]; then
    xml_source_dir='/usr/share/libvirt-dist/xml'
 else
    printf '%s\n' "SKIP: libvirt-dist XML not found (set LIBVIRT_DIST_REPO or install libvirt-dist)" >&2
-   exit 77
+   exit 77  ## style-ok: allow-skip: libvirt/qemu stack is an opt-in apt set, absent in the core lane
 fi
 
 ## The libvirt/qemu stack is an opt-in apt set; a lane without it SKIPs (77),
@@ -43,7 +44,7 @@ for cmd in virsh virt-xml-validate qemu-img runuser safe-rm; do
 done
 if [ -n "${missing}" ]; then
    printf '%s\n' "SKIP: missing required command(s):${missing}" >&2
-   exit 77
+   exit 77  ## style-ok: allow-skip: libvirt/qemu stack is an opt-in apt set, absent in the core lane
 fi
 
 ## qemu:///session needs a non-root user; re-exec as a throwaway one when root.
@@ -51,7 +52,7 @@ if [ "$(id -u)" -eq 0 ]; then
    test_user='libvirtdisttest'
    if ! id -u "${test_user}" >/dev/null 2>&1; then
       adduser --disabled-password --gecos '' "${test_user}" >/dev/null 2>&1 \
-         || { printf '%s\n' "SKIP: cannot create a non-root user for qemu:///session" >&2; exit 77; }
+         || { printf '%s\n' "SKIP: cannot create a non-root user for qemu:///session" >&2; exit 77; }  ## style-ok: allow-skip: qemu:///session needs a non-root user; unprivileged lane cannot create one
    fi
    runtime_dir="/run/user/$(id -u "${test_user}")"
    install -d -m 0700 -o "${test_user}" -g "${test_user}" "${runtime_dir}"
@@ -98,7 +99,7 @@ main() {
    printf '%s\n' "${sep}"
    ## Without KVM (CI / nested virt) libvirt refuses domain type 'kvm'; since
    ## define/undefine never starts the VM, the 'qemu' type validates identically.
-   if virsh -c qemu:///session capabilities | grep --quiet -- "<domain type='kvm'/\?>"; then
+   if grep --quiet -- "<domain type='kvm'/\?>" <<< "$(virsh -c qemu:///session capabilities)"; then
       printf '%s\n' "KVM available: testing the XML unmodified."
    else
       printf '%s\n' "KVM unavailable: rewriting domain type 'kvm' -> 'qemu'."
@@ -142,7 +143,7 @@ main() {
    home_image=''
    virsh -c qemu:///session pool-refresh "${test_pool}"
    virsh -c qemu:///session vol-list "${test_pool}" \
-      | grep --quiet --fixed-strings -- "${image_name}" \
+     grep --quiet --fixed-strings -- "${image_name}" <<< "$()" \
       || { printf '%s\n' "FAIL: imported image not registered as a pool volume" >&2; exit 1; }
 
    printf '%s\n' "${sep}"

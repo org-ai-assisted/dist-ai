@@ -21,7 +21,7 @@
 ##
 ## Usage: corpus-lib.sh [<dir-with-git-diff-review>]
 ##   GIT_DIFFS_LIE_DIR=<checkout> overrides corpus discovery.
-## Exit 77 == SKIP (git-diff-review or the corpus not available).
+## git-diff-review + the git-diffs-lie corpus are REQUIRED: absent -> exit 1 (FATAL, R-220).
 
 set -o errexit
 set -o nounset
@@ -29,6 +29,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 # shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
 source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/has.sh
@@ -53,17 +54,23 @@ fi
 if [ ! -x "${gdr}" ] || [ -z "${corpus_src}" ] \
    || [ ! -f "${corpus_src}/tools/build-corpus.sh" ]; then
    printf '%s\n' \
-      "corpus-lib: git-diff-review or git-diffs-lie corpus missing; skipping." >&2
-   exit 77
+      "FATAL: corpus-lib: git-diff-review or git-diffs-lie corpus missing." >&2
+   exit 1
 fi
 
-## Optional name scanner for the refname cases.
+## unicode-show (helper-scripts) is REQUIRED for the refname cases: the scan must
+## use the real tool, not a hand-rolled '[^\x00-\x7f]' grep that would drift from
+## what dm-review-branch actually flags (require-deps: never reimplement, never
+## paper over a missing dependency).
 unicode_show=""
 if has unicode-show; then
    unicode_show="unicode-show"
 elif [ -n "${HELPER_SCRIPTS_PATH:-}" ] \
    && [ -x "${HELPER_SCRIPTS_PATH}/usr/bin/unicode-show" ]; then
    unicode_show="${HELPER_SCRIPTS_PATH}/usr/bin/unicode-show"
+else
+   printf '%s\n' 'FATAL: corpus-lib: unicode-show (helper-scripts) not found; required for the refname scan.' >&2
+   exit 1
 fi
 
 printf '%s\n' "== git-diffs-lie corpus suite =="
@@ -84,8 +91,8 @@ corpus="${work}/corpus"
 cd -- "${corpus}"
 
 fails=0
-pass() { printf '  PASS  %s\n' "$1"; }
-fail() { printf '  FAIL  %s\n' "$1" >&2; fails=$(( fails + 1 )); }
+pass() { printf '%s\n' "  PASS  $1"; }
+fail() { printf '%s\n' "  FAIL  $1" >&2; fails=$(( fails + 1 )); }
 
 out_file="${work}/out"
 
@@ -94,11 +101,7 @@ hex_to_pcre() { printf '%s' "$1" | sed 's/../\\x&/g'; }
 
 ## name_is_flagged <branch> -- true if a ref-name scan flags the branch name.
 name_is_flagged() {
-   if [ -n "${unicode_show}" ]; then
-      printf '%s' "$1" | "${unicode_show}" >/dev/null 2>&1 && return 1 || return 0
-   fi
-   ## Fallback: any byte outside 7-bit ASCII is the (only) payload here.
-   printf '%s' "$1" | LC_ALL=C grep --quiet --perl-regexp '[^\x00-\x7f]'
+   printf '%s' "$1" | "${unicode_show}" >/dev/null 2>&1 && return 1 || return 0
 }
 
 while IFS="$( printf '\t' )" read -r branch class assert arg _summary; do

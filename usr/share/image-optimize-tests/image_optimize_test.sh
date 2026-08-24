@@ -16,7 +16,7 @@
 ##   - a --webp PNG result is never larger than the source;
 ##   - unsupported types are skipped and left untouched;
 ##   - a missing / unreadable input yields a non-zero exit without aborting a batch.
-## SKIP (77) only when the image tools are genuinely absent.
+## exit 1 (FATAL) when the subject or a required image tool is absent (R-220).
 
 set -o errexit
 set -o nounset
@@ -24,14 +24,15 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 BIN="${IMAGE_OPTIMIZE_BIN:-}"
 if [ -z "${BIN}" ]; then
    if [ -x /usr/bin/image-optimize ]; then
       BIN='/usr/bin/image-optimize'
    else
-      printf '%s\n' 'image-optimize-tests: SKIP (image-optimize not found; set IMAGE_OPTIMIZE_BIN)' >&2
-      exit 77
+      printf '%s\n' 'image-optimize-tests: FATAL (image-optimize not found; set IMAGE_OPTIMIZE_BIN)' >&2
+      exit 1
    fi
 fi
 
@@ -40,14 +41,14 @@ fi
 ## is real, not stubbed.
 hs_prefix="${HELPER_SCRIPTS_PATH:-}"
 if [ ! -r "${hs_prefix}/usr/libexec/helper-scripts/strings.bsh" ]; then
-   printf '%s\n' 'image-optimize-tests: SKIP (helper-scripts strings.bsh not found; set HELPER_SCRIPTS_PATH)' >&2
-   exit 77
+   printf '%s\n' 'image-optimize-tests: FATAL (helper-scripts strings.bsh not found; set HELPER_SCRIPTS_PATH)' >&2
+   exit 1
 fi
 
 for tool in convert optipng jpegoptim cwebp stat; do
    if ! type -P "${tool}" >/dev/null; then
-      printf '%s\n' "image-optimize-tests: SKIP (missing tool: ${tool})" >&2
-      exit 77
+      printf '%s\n' "image-optimize-tests: FATAL (missing tool: ${tool})" >&2
+      exit 1
    fi
 done
 

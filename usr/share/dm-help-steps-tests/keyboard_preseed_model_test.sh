@@ -28,6 +28,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -52,8 +53,8 @@ locate_subject() {
 }
 
 if ! locate_subject; then
-   printf '%s\n' "SKIP: legacy-dist.preinst not found (set LEGACY_DIST_PREINST)." >&2
-   exit 77
+   printf '%s\n' "FATAL: legacy-dist.preinst not found (set LEGACY_DIST_PREINST)." >&2
+   exit 1
 fi
 
 xkb_rules=""
@@ -64,8 +65,8 @@ for candidate in /usr/share/X11/xkb/rules/base.lst /usr/share/X11/xkb/rules/evde
    fi
 done
 if [ -z "${xkb_rules}" ]; then
-   printf '%s\n' "SKIP: no /usr/share/X11/xkb/rules/*.lst here; cannot validate the model against the real list (install xkb-data)." >&2
-   exit 77
+   printf '%s\n' "FATAL: no /usr/share/X11/xkb/rules/*.lst here; cannot validate the model against the real list (install xkb-data)." >&2
+   exit 1
 fi
 
 ## The '! Model' section only; the same tokens appear under layouts and options.

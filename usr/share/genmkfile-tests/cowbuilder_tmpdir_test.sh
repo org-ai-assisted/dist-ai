@@ -36,6 +36,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 ## Subject selection mirrors the rest of this suite (first that exists):
 ##   $GENMKFILE_SHARE -> the derivative-maker submodule checkout -> the installed
@@ -71,8 +72,8 @@ locate_helper() {
 }
 
 if ! helper_file="$(locate_helper)"; then
-   printf '%s\n' 'SKIP: make-helper-one.bsh not found (set GENMKFILE_SHARE).' >&2
-   exit 77
+   printf '%s\n' 'FATAL: make-helper-one.bsh not found (set GENMKFILE_SHARE).' >&2
+   exit 1
 fi
 
 tests_total=0

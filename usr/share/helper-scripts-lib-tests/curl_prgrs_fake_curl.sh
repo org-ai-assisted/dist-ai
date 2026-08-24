@@ -48,6 +48,12 @@ for arg in "$@"; do
 done
 
 if [ "${is_head}" = "1" ]; then
+  ## Record the --head invocation's argv (one arg per line) so a test can assert
+  ## curl-prgrs passes ITS own '--output' ahead of the caller's args (output-hijack
+  ## guard). Only the head phase is logged -- that is where the ordering matters.
+  if [ -n "${FAKE_CURL_ARGV_LOG:-}" ]; then
+    printf '%s\n' "$@" >>"${FAKE_CURL_ARGV_LOG}"
+  fi
   ## Real curl writes the response headers to --output; mirror that so a test can
   ## drive the header-phase size ceiling. Sparse file -- only its stat size matters.
   if [ "${FAKE_CURL_HEADER_FILE_BYTES:-0}" != "0" ] && [ -n "${CURL_OUT_FILE:-}" ]; then

@@ -628,6 +628,7 @@ if was_executed "${BASH_SOURCE[0]}"; then
    set -o errtrace
    shopt -s inherit_errexit
    shopt -s shift_verbose
+   export LC_ALL=C
 fi
 
 ## SOURCE-SAFE boundary: the functions ABOVE are now defined; stop here when sourced so none of
@@ -985,10 +986,9 @@ shots_reap_registered || true
 shots_register_run "${run_marker}"
 
 ## Attack payloads come from the terminal-poc-corpus (single source of truth), decoded
-## by its reproduce.py. shots_generate_logs resolves the checkout and returns 77
-## (a SKIP, like a missing ST_REPO) ONLY when the corpus is absent; a real
-## payload-generation failure returns a distinct non-77 code, which is propagated
-## here so a broken reproduce.py is not reported as a skip.
+## by its reproduce.py. shots_generate_logs resolves the checkout and returns
+## non-zero when the corpus is absent or a payload-generation fails; propagated
+## here as a hard failure so a missing corpus or broken reproduce.py is not a skip.
 export XDG_DATA_HOME="${runtime_dir}/data"
 mkdir --parents -- "${XDG_DATA_HOME}"
 if [ -n "${prep_dir}" ]; then

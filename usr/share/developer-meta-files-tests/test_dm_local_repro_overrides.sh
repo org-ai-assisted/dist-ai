@@ -25,6 +25,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 failures=0
 
@@ -49,8 +50,8 @@ else
 fi
 
 if [ ! -f "${subject}" ]; then
-   printf '%s\n' 'test_dm_local_repro_overrides: dm-local-repro-build not found; skipping.' >&2
-   exit 77
+   printf '%s\n' 'FATAL: test_dm_local_repro_overrides: dm-local-repro-build not found.' >&2
+   exit 1
 fi
 
 git_plain() {
@@ -65,7 +66,7 @@ if [ -z "${block}" ]; then
    printf '%s\n' '' "FAILED: ${failures} check(s) failed" >&2
    exit 1
 fi
-if ! printf '%s\n' "${block}" | grep --quiet -- 'repro_overrides'; then
+if ! grep --quiet -- 'repro_overrides' <<< "${block}"; then
    fail 'the extracted block does not mention repro_overrides -- extraction is matching the wrong region'
    printf '%s\n' '' "FAILED: ${failures} check(s) failed" >&2
    exit 1

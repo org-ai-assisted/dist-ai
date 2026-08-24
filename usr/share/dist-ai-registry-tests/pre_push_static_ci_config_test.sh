@@ -25,6 +25,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v TMP ] || TMP=/tmp
 
@@ -39,8 +40,8 @@ if [ -z "${repo}" ]; then
 fi
 
 if [ -z "${repo}" ] || [ ! -f "${repo}/ci/pre-push-static-ci-config.sh" ]; then
-   printf '%s\n' 'pre-push-static-ci-config-test: no dist-ai source tree (set DIST_AI_REPO); skipping.' >&2
-   exit 77
+   printf '%s\n' 'FATAL: pre-push-static-ci-config-test: no dist-ai source tree (set DIST_AI_REPO).' >&2
+   exit 1
 fi
 
 resolver="${repo}/ci/pre-push-static-ci-config.sh"

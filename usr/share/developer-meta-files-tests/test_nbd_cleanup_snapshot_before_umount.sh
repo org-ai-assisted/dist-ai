@@ -32,6 +32,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
    dm_checkout="${DERIVATIVE_MAKER_DIR}"
@@ -62,8 +63,8 @@ for candidate in "${DM_NBD_CLEANUP:-}" \
    fi
 done
 if [ -z "${subject}" ]; then
-   printf '%s\n' "SKIP: dm-nbd-cleanup not found (set DM_NBD_CLEANUP)." >&2
-   exit 77
+   printf '%s\n' "FATAL: dm-nbd-cleanup not found (set DM_NBD_CLEANUP)." >&2
+   exit 1
 fi
 
 ## The line closing the collection loop that reads /proc/mounts.

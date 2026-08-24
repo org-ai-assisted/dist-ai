@@ -26,6 +26,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -42,8 +43,8 @@ for candidate in "${DM_PREFLIGHT:-}" \
    fi
 done
 if [ -z "${subject}" ]; then
-   printf '%s\n' "SKIP: dm-preflight not found (set DM_PREFLIGHT)." >&2
-   exit 77
+   printf '%s\n' "FATAL: dm-preflight not found (set DM_PREFLIGHT)." >&2
+   exit 1
 fi
 
 ## dm-preflight fails a tree whose static gate it cannot run, so these cases need
@@ -54,8 +55,8 @@ if [ -n "${gate_bin_dir}" ] && [ -x "${gate_bin_dir}/pre-push-static" ]; then
    export PATH
 fi
 if ! type -P pre-push-static >/dev/null; then
-   printf '%s\n' "SKIP: pre-push-static not reachable; dm-preflight cannot complete a run." >&2
-   exit 77
+   printf '%s\n' "FATAL: pre-push-static not reachable; dm-preflight cannot complete a run." >&2
+   exit 1
 fi
 
 pass_count=0
@@ -158,10 +159,10 @@ output="$( run_preflight "${super}" )"
 ## Absence of FORK-ONLY is NOT enough: a probe that failed outright is also
 ## silent, so this must confirm the pin was POSITIVELY verified. UNVERIFIED here
 ## means the probe never reached a conclusion, which would make the case vacuous.
-if printf '%s\n' "${output}" | grep -q 'FORK-ONLY'; then
+if grep --quiet 'FORK-ONLY' <<< "${output}"; then
    fail "a pin that IS reachable from the configured url was reported FORK-ONLY -- the tip-only false positive is back:
 $( printf '%s\n' "${output}" | grep 'FORK-ONLY' )"
-elif printf '%s\n' "${output}" | grep -q 'UNVERIFIED'; then
+elif grep --quiet 'UNVERIFIED' <<< "${output}"; then
    fail "the probe reached no conclusion for a reachable pin, so this case proves nothing:
 $( printf '%s\n' "${output}" | grep 'UNVERIFIED' )"
 else
@@ -186,7 +187,7 @@ git_quiet -C "${super_bad}" add .gitmodules
 git_quiet -C "${super_bad}" commit --quiet --message repoint
 
 output_bad="$( run_preflight "${super_bad}" )"
-if printf '%s\n' "${output_bad}" | grep -q 'FORK-ONLY'; then
+if grep --quiet 'FORK-ONLY' <<< "${output_bad}"; then
    pass 'a pin absent from the configured url is still reported FORK-ONLY'
 else
    fail "a genuinely unreachable pin was NOT reported; the check has been relaxed into uselessness:
@@ -212,10 +213,10 @@ git_quiet -C "${unreachable}" add .gitmodules
 git_quiet -C "${unreachable}" commit --quiet --message repoint-nowhere
 
 output_unreachable="$( run_preflight "${unreachable}" )"
-if printf '%s\n' "${output_unreachable}" | grep -q 'FORK-ONLY'; then
+if grep --quiet 'FORK-ONLY' <<< "${output_unreachable}"; then
    fail "an unreachable server produced a FORK-ONLY verdict; an outage would flag every pin:
 $( printf '%s\n' "${output_unreachable}" | grep 'FORK-ONLY' )"
-elif printf '%s\n' "${output_unreachable}" | grep -q 'not contactable'; then
+elif grep --quiet 'not contactable' <<< "${output_unreachable}"; then
    pass 'an unreachable server is reported UNVERIFIED, naming the reason'
 else
    fail "expected an UNVERIFIED 'not contactable' verdict; got neither that nor FORK-ONLY:

@@ -31,6 +31,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
    dm_checkout="${DERIVATIVE_MAKER_DIR}"
@@ -61,8 +62,8 @@ for candidate in "${DM_INSTALL_FROM_LOCAL_REPOSITORY:-}" \
    fi
 done
 if [ -z "${subject}" ]; then
-   printf '%s\n' "SKIP: dm-install-from-local-repository not found (set DM_INSTALL_FROM_LOCAL_REPOSITORY)." >&2
-   exit 77
+   printf '%s\n' "FATAL: dm-install-from-local-repository not found (set DM_INSTALL_FROM_LOCAL_REPOSITORY)." >&2
+   exit 1
 fi
 ## The canonical meta-package list lives in the anon-meta-packages control file.
 control=""
@@ -75,8 +76,8 @@ for candidate in "${ANON_META_PACKAGES_CONTROL:-}" \
    fi
 done
 if [ -z "${control}" ]; then
-   printf '%s\n' "SKIP: anon-meta-packages/debian/control not found (set ANON_META_PACKAGES_CONTROL)." >&2
-   exit 77
+   printf '%s\n' "FATAL: anon-meta-packages/debian/control not found (set ANON_META_PACKAGES_CONTROL)." >&2
+   exit 1
 fi
 
 ## --- STRUCTURAL -------------------------------------------------------------

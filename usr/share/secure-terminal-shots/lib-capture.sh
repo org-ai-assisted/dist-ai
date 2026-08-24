@@ -190,18 +190,18 @@ shots_st_inject_cmd() {  ## $1=case  $2='tui' when launched with --tui, else emp
    shots_payload_cmd "$1"
 }
 
-## Reproduce the corpus-backed payloads into the dest dir. Two DISTINCT failures:
-## 77 (a legitimate SKIP) ONLY when the terminal-poc-corpus is absent; any other
-## non-zero is a real generation failure (reproduce.py / write) that a caller must
-## NOT convert to a skip -- otherwise a broken payload is reported as green.
+## Reproduce the corpus-backed payloads into the dest dir. The terminal-poc-corpus
+## is a REQUIRED input: absent it (or any reproduce.py / write failure) returns
+## non-zero, which a caller propagates as a hard failure -- never a skip (R-220),
+## so a missing or broken payload is not reported as green.
 shots_generate_logs() {  ## $1=script-relative fallback dir $2=dest-dir
    local fallback dest corpus rp c id notify zerowidth
 
    fallback="$1"
    dest="$2"
    if ! corpus="$(shots_resolve_corpus "${fallback}/../../../../terminal-poc-corpus")"; then
-      printf '%s\n' 'lib-capture: terminal-poc-corpus not found (set CORPUS_REPO)' >&2
-      return 77
+      printf '%s\n' 'FATAL: lib-capture: terminal-poc-corpus not found (set CORPUS_REPO)' >&2
+      return 1
    fi
    rp="${corpus}/tools/reproduce.py"
    ## the corpus-backed cases: reproduce.py writes the exact hex-decoded payload bytes.

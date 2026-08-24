@@ -22,6 +22,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 tool_test_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
 GATE="${tool_test_dir}/../../bin/pre-push-static"
@@ -44,8 +45,8 @@ done
 ## that whole layer, so the exemption cannot be exercised: SKIP (exit 77), never a false pass.
 for binary in check-json pretty-format-json ; do
    if ! type -P "${binary}" >/dev/null 2>&1 ; then
-      printf '%s\n' "SKIP: pre-commit-hooks ('${binary}') not on PATH; cannot verify the JSON exemption (apt-get install pre-commit-hooks)." >&2
-      exit 77
+      printf '%s\n' "FATAL: pre-commit-hooks ('${binary}') not on PATH; cannot verify the JSON exemption (apt-get install pre-commit-hooks)." >&2
+      exit 1
    fi
 done
 

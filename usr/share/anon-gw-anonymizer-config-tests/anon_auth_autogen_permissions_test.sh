@@ -27,8 +27,9 @@
 ## real -- the key material is the subject.
 ##
 ## Set ANON_GW_ANONYMIZER_CONFIG_REPO to test a checkout; otherwise the
-## installed /usr/bin/anon-auth-autogen is used. Exits 77 (SKIP) when neither
-## resolves. No root, no network, no tor.
+## installed /usr/bin/anon-auth-autogen is used. Exits 1 (FATAL) when neither
+## resolves -- a required subject absent is an environment bug (R-220). No root,
+## no network, no tor.
 
 set -o errexit
 set -o nounset
@@ -36,6 +37,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v TMP ] || TMP=/tmp
 
@@ -76,8 +78,8 @@ if [ -z "${subject}" ]; then
    subject='/usr/bin/anon-auth-autogen'
 fi
 if [ ! -r "${subject}" ]; then
-   printf '%s\n' "SKIP: no anon-auth-autogen to test (looked at '${subject}'); set ANON_GW_ANONYMIZER_CONFIG_REPO" >&2
-   exit 77
+   printf '%s\n' "FATAL: no anon-auth-autogen to test (looked at '${subject}'); set ANON_GW_ANONYMIZER_CONFIG_REPO" >&2
+   exit 1
 fi
 
 test_dir="$(mktemp --directory -- "${TMP}/anon-auth-autogen-test.XXXXXX")"

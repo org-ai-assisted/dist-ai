@@ -28,6 +28,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v TMP ] || TMP=/tmp
 [ -v ANON_WS_DISABLE_STACKED_TOR_REPO ] || ANON_WS_DISABLE_STACKED_TOR_REPO=""
@@ -39,9 +40,9 @@ else
 fi
 
 if [ ! -r "${subject}" ]; then
-   printf '%s\n' "SKIP: socat-unix-sockets not found at '${subject}'" >&2
+   printf '%s\n' "FATAL: socat-unix-sockets not found at '${subject}'" >&2
    printf '%s\n' "set ANON_WS_DISABLE_STACKED_TOR_REPO to a checkout, or install the package" >&2
-   exit 77
+   exit 1
 fi
 
 ## The sourcing loop is lifted out by anchor. If the loop is renamed or
@@ -93,7 +94,7 @@ run_dropin() {
       printf '%s\n' 'printf "%s\n" "REACHED_END"'
    } >"${base}/driver"
 
-   timeout 20 bash "${base}/driver" 2>&1 || true
+   timeout --kill-after=20 20 bash "${base}/driver" 2>&1 || true
 }
 
 ## check <description> <must-contain> <drop-in body>

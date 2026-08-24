@@ -34,6 +34,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 ## The derivative-maker checkout under test. An explicitly named tree is the ONLY
 ## answer: falling back to '~/derivative-maker' reports on a DIFFERENT tree than
@@ -78,8 +79,8 @@ locate_subject() {
 }
 
 if ! locate_subject; then
-   printf '%s\n' "SKIP: dm-reproducible-compare-artifacts not found." >&2
-   exit 77
+   printf '%s\n' "FATAL: dm-reproducible-compare-artifacts not found." >&2
+   exit 1
 fi
 
 ## The guard under test: from the function head down to the 'mkdir' that follows

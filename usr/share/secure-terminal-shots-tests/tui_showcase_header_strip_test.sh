@@ -14,7 +14,7 @@
 ## shot look artificially different from the emulator shots.
 ##
 ## Drives the REAL shots_generate_logs (no synthetic copy). Subjects: lib-capture.sh + the
-## terminal-poc-corpus (reproduce.py). Genuinely absent -> exit 77 (SKIP), never FAIL.
+## terminal-poc-corpus (reproduce.py). Absent is an environment bug -> exit 1 (FATAL, R-220).
 
 set -o errexit
 set -o nounset
@@ -22,6 +22,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -38,11 +39,11 @@ for cand in \
    fi
 done
 if [ -z "${shots_dir}" ]; then
-   printf '%s\n' 'SKIP: secure-terminal-shots dir not found (set SECURE_TERMINAL_SHOTS_DIR)' >&2
-   exit 77
+   printf '%s\n' 'FATAL: secure-terminal-shots dir not found (set SECURE_TERMINAL_SHOTS_DIR)' >&2
+   exit 1
 fi
 
-## The corpus (reproduce.py) is the payload source; absent -> SKIP, matching shots_generate_logs.
+## The corpus (reproduce.py) is the payload source; absent -> exit 1 (FATAL), matching shots_generate_logs.
 corpus=''
 for cand in \
    "${CORPUS_REPO:-}" \
@@ -54,8 +55,8 @@ for cand in \
    fi
 done
 if [ -z "${corpus}" ]; then
-   printf '%s\n' 'SKIP: terminal-poc-corpus not found (set CORPUS_REPO)' >&2
-   exit 77
+   printf '%s\n' 'FATAL: terminal-poc-corpus not found (set CORPUS_REPO)' >&2
+   exit 1
 fi
 export CORPUS_REPO="${corpus}"
 
@@ -66,14 +67,10 @@ work="$(mktemp --directory)"
 cleanup() { safe-rm --recursive --force -- "${work}" 2>/dev/null || true; }
 trap cleanup EXIT
 
-## Real generation. 77 from the function means the corpus vanished mid-run -> SKIP; any other
-## non-zero is a real generation failure.
+## Real generation. Any non-zero (corpus absent or a real generation failure) is a
+## hard failure -- the corpus is a required input (R-220).
 rc=0
 shots_generate_logs "${shots_dir}" "${work}" || rc=$?
-if [ "${rc}" -eq 77 ]; then
-   printf '%s\n' 'SKIP: shots_generate_logs reported the corpus absent' >&2
-   exit 77
-fi
 if [ "${rc}" -ne 0 ]; then
    printf '%s\n' "FAIL: shots_generate_logs exited ${rc}" >&2
    exit 1
@@ -93,20 +90,20 @@ assert() {  ## $1=description ; succeeds iff $2==ok
 [ -s "${payload}" ] && assert 'tui-showcase.payload produced' ok || assert 'tui-showcase.payload produced' no
 
 ## Starts with ESC (header stripped to the board's first escape).
-if [ -s "${payload}" ] && head -c 1 -- "${payload}" | od -An -tx1 | grep -q '1b'; then
+if [ -s "${payload}" ] && grep --quiet '1b' <<< "$(head -c 1 -- "${payload}" | od -An -tx1)"; then
    assert 'payload starts with ESC (header stripped)' ok
 else
    assert 'payload starts with ESC (header stripped)' no
 fi
 ## After the HEADER strip the embedded prompt is KEPT (traditional emulators need it: their
 ## alt-screen hides the real typed command, so it puts 'cat' at the top of THEIR shots).
-if grep -qF 'user@host:~$ cat tui-showcase.payload' -- "${payload}"; then
+if grep --quiet --fixed-strings 'user@host:~$ cat tui-showcase.payload' -- "${payload}"; then
    assert 'embedded prompt kept after header strip (for emulators)' ok
 else
    assert 'embedded prompt kept after header strip (for emulators)' no
 fi
 ## The board itself is intact (only the header was trimmed).
-if grep -qF 'TERMINAL TEXT' -- "${payload}"; then
+if grep --quiet --fixed-strings 'TERMINAL TEXT' -- "${payload}"; then
    assert 'board content intact' ok
 else
    assert 'board content intact' no
@@ -114,23 +111,23 @@ fi
 ## The secure-terminal-pass prompt strip then removes the embedded prompt (it renders inline and
 ## shows the real prompt, so the embedded copy would duplicate). Board stays intact.
 "${shots_dir}/strip-tui-showcase-prompt.py" "${payload}"
-if grep -qF 'user@host:~$ cat tui-showcase.payload' -- "${payload}"; then
+if grep --quiet --fixed-strings 'user@host:~$ cat tui-showcase.payload' -- "${payload}"; then
    assert 'embedded prompt removed for secure-terminal pass' no
 else
    assert 'embedded prompt removed for secure-terminal pass' ok
 fi
-if grep -qF 'TERMINAL TEXT' -- "${payload}"; then
+if grep --quiet --fixed-strings 'TERMINAL TEXT' -- "${payload}"; then
    assert 'board content intact after prompt strip' ok
 else
    assert 'board content intact after prompt strip' no
 fi
 ## Header text and its URL are gone.
-if grep -qF 'read me first' -- "${payload}"; then
+if grep --quiet --fixed-strings 'read me first' -- "${payload}"; then
    assert 'read-me-first header removed' no
 else
    assert 'read-me-first header removed' ok
 fi
-if head -c 200 -- "${payload}" | grep -qF 'secure-terminal.github.io'; then
+if grep --quiet --fixed-strings 'secure-terminal.github.io' <<< "$(head -c 200 -- "${payload}")"; then
    assert 'header URL removed from top of payload' no
 else
    assert 'header URL removed from top of payload' ok

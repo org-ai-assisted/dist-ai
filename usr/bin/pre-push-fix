@@ -12,7 +12,7 @@ them. This tool removes that round trip for the MECHANICAL, provably
 structure-preserving rules: it rewrites the fixable violations in place, so the
 gate that follows passes silently and the model never sees them.
 
-Bucket-1 transforms only (see the plan):
+Transforms:
   * R-001  -- substitute the KNOWN confusable set to its intended ASCII form.
               The always-safe set (em/en dash, ellipsis, arrows, nbsp, bullet)
               maps to characters that are never quote/syntax, so it applies to
@@ -23,63 +23,44 @@ Bucket-1 transforms only (see the plan):
               spellings); in code they stay a reported R-001 for a human.
   * trailing-whitespace -- strip blanks before end-of-line.
   * R-172  -- upgrade a temp-dir mkdir's short '-m 700' / '-m700' to the long
-              '--mode=700' (shell files only), and insert a
-              '# shellcheck disable=SC2174' above the atomic '--parents
-              ... --mode' form (which SC2174 flags by design) so the mandated
-              form stays shellcheck-clean. The missing-mode and 'chmod'-split
-              forms are NOT fixed here -- a mode value cannot be guessed and a
-              re-merge is multi-line, so pre-push-static FAILS those.
+              '--mode=700', and insert a '# shellcheck disable=SC2174' above the
+              atomic '--parents ... --mode' form (which SC2174 flags by design)
+              so the mandated form stays shellcheck-clean. A missing-mode or
+              'chmod'-split mkdir is NOT fixed (a mode value cannot be guessed
+              and a re-merge is multi-line) -- pre-push-static FAILS those.
   * R-161  -- expand a grep SHORT quiet cluster ('-iq' -> '--ignore-case
-              --quiet') to its long-option form (shell files only). The PIPE
-              half of R-161 (a quiet grep consuming a pipe) is NOT fixed here --
-              relocating a redirect / switching to a here-string is multi-token,
-              so pre-push-static FAILS it.
-  * R-200  -- insert '--kill-after=<N>' into a bare 'timeout <N> cmd' in command
-              position (shell files only), so a wedged child ignoring SIGTERM
-              still gets SIGKILL. Only the no-option LITERAL-duration form is
-              rewritten; an option-carrying ('timeout --signal=TERM 5') or
-              expression-duration ('timeout "$T"') timeout is left for the gate,
-              like R-172's missing-mode mkdir.
-  * R-210  -- rewrite 'apt-get' in command position (optionally behind
-              'sudo'/'doas') to the helper-scripts wrapper
-              'apt-get-noninteractive' (shell files only). A single-token,
-              structure-preserving rename; the file bearing '## style-ok:
-              allow-apt-get' is left alone, in lockstep with the gate. dpkg
-              (R-211), '--allow-downgrades' (R-212) and 'make_use_lintian=false'
-              (R-213) are NOT auto-fixed -- dpkg needs an action-aware decision,
-              and the other two are a deliberate removal a human must make -- so
-              the gate REPORTS those.
+              --quiet') to its long-option form. The PIPE half of R-161 (a
+              quiet grep consuming a pipe) is NOT fixed here -- relocating a
+              redirect is multi-token, so pre-push-static FAILS it.
+  * R-200  -- insert '--kill-after=<N>' into a bare 'timeout <N> cmd', so a
+              wedged child ignoring SIGTERM still gets SIGKILL. Only the
+              no-option LITERAL-duration form is rewritten; an option-carrying
+              ('timeout --signal=TERM 5') or expression-duration ('timeout
+              "$T"') timeout is left for the gate.
 
-HARD SAFETY LINE: only the known table is touched. Any OTHER non-ASCII byte is
-left exactly as-is for pre-push-static to report (bucket-2) -- so an intentional
-UTF-8 test fixture is never silently rewritten. The STRUCTURAL rewriters (R-172
-mkdir, R-161 grep, R-200 timeout) never rewrite DATA that only looks like a
-command: instead of PARSING shell (a bash parser is the wrong tool for a rare
-rewrite), they DECLINE any file that has a heredoc, a line-continuation, or a
-line ending inside a quote (has_multiline_construct) -- multi-line data lives
-only in those -- and otherwise rely on a per-command 'command position' + 'no
-quote/backslash/# before the command' check on the single line. Files they
-decline are still reported by the gate.
+REAL PARSER, NOT A HAND-ROLLED ONE. The structural rewriters (R-172 mkdir, R-161
+grep, R-200 timeout) act on the shfmt AST (dist_ai.bash_ast, wrapping
+'shfmt --to-json'), never on a regex guess of shell structure. The parser tells a
+COMMAND from data that only looks like one -- a token inside a string, a heredoc,
+an array, or after a 'VAR=value' assignment prefix -- so these files, which the
+former regex fixer DECLINED wholesale, are now fixed correctly. The style rule is
+"never HAND-ROLL a parser", not "never parse": here we use the canonical shell
+parser and query its typed tree. A file shfmt cannot parse is DECLINED by the
+structural rewriters (left for the gate, which also runs 'bash -n'); the text
+transforms (R-001, whitespace) still apply, since they need no parse.
 
-HARD RULE -- NEVER REINVENT A BASH (OR CONFIG) PARSER. Neither a fixer here nor
-a check in pre-push-static may grow a shell/config parser -- a quote/brace/
-here-doc state machine -- to reach a rare construct. The occurrences that would
-need one are, by definition, rare; for those the correct behaviour is to DECLINE
-(fixer) or REPORT (gate) and let a human/model fix it by hand. A one-line
-notification covers the rare case; chasing full-parse correctness burns rounds
-and tokens on an endless tail of edge cases and lands more parser bugs than it
-prevents. This is why every structural rewriter bails on multi-line constructs
-rather than parsing them, why the gate's R-190/191/192/194/195 REPORT an
-embedded program rather than auto-fix it (extracting one is a semantic refactor,
-not a mechanical rewrite), and why R-194/R-195 scan a single line at a time and
-accept a documented fail-OPEN on the rare multi-line form instead of tracking it
-across lines.
+Edits are SURGICAL: the byte span of each target node is spliced in the original
+source, so existing formatting is preserved (no whole-file reprint).
+
+HARD SAFETY LINE for R-001: only the known confusable table is touched. Any OTHER
+non-ASCII byte is left as-is for pre-push-static to report -- so an intentional
+UTF-8 test fixture is never silently rewritten.
 
 Exemptions are kept in lockstep with pre-push-static (a .gitattributes binary
-data file, the per-file '## style-ok: allow-non-ascii' waiver matched by the
-gate's own grammar, symlinks, non-regular files, and the is_text_file set for
-whitespace). test_pre_push_fix.sh pins that parity so detector and fixer cannot
-drift.
+data file, the per-file '## style-ok: allow-non-ascii' waiver, the per-rule
+'allow-mkdir-no-mode' / 'allow-bare-timeout' waivers, symlinks, non-regular
+files, and the is_text_file set for whitespace). test_pre_push_fix.sh pins that
+parity so detector and fixer cannot drift.
 
 Idempotent: a second run over its own output changes nothing.
 
@@ -87,7 +68,8 @@ Usage:
   pre-push-fix [--check] FILE...     fix (or, with --check, only report) FILEs
   pre-push-fix [--check] --staged    fix the repo's staged text files
 
-Exit: 0 success; in --check mode 1 means "changes are needed"; 2 usage/error.
+Exit: 0 success; in --check mode 1 means "changes are needed"; 2 usage/error
+(includes a required tool, shfmt, being absent when a shell file must be parsed).
 """
 
 import argparse
@@ -95,6 +77,18 @@ import os
 import re
 import subprocess
 import sys
+
+## Self-locate the shared library: '<root>/usr/bin/pre-push-fix' ->
+## '<root>/usr/lib/python3/dist-packages'. Works both installed (/usr) and from a
+## checkout with no env wiring -- the safe path is the DEFAULT, not a thing to
+## remember. Harmless when installed (that dir is already on sys.path).
+_LIB = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+    "lib", "python3", "dist-packages")
+if os.path.isdir(_LIB) and _LIB not in sys.path:
+    sys.path.insert(0, _LIB)
+
+from dist_ai import bash_ast  # noqa: E402
 
 ## Always-safe confusables: the ASCII form is never a quote or other
 ## syntactically significant character, so substituting cannot change code
@@ -151,58 +145,14 @@ TEXT_BASENAMES = ("Dockerfile", "Makefile", "COPYING", "README", "LICENSE")
 WAIVER_RE = re.compile(
     r'^[ \t]*##[ \t]*style-ok:[ \t]*allow-non-ascii(?:[ \t]|$)', re.MULTILINE)
 
-## R-172 (temp-dir mkdir mode) -- the write side of pre-push-static's rule.
-## A 'mkdir' whose operand is a TMPDIR/TMP/TEMP/TEMPDIR variable is the
-## security-relevant surface; only there is the short '-m' upgraded to the long
-## '--mode='. The missing-mode / 'chmod'-split forms are NOT rewritten here (a
-## multi-line structure change is out of the bucket-1 remit) -- they stay a gate
-## FAIL for a human to correct.
-##
-## MKDIR_TMP_LINE is only a cheap PRE-FILTER (is a temp mkdir plausibly on this
-## line -- command position includes a leading backtick command substitution).
-## The real work is per-COMMAND: MKDIR_SPAN isolates each 'mkdir ...' command up
-## to the next separator (';' '&&' '||' '|' '&') or '#' comment, so a second
-## command sharing the line ('mkdir ... && install -m 755 x') is never
-## rewritten. TMPVAR (name bounded by a non-word char, so '$TMPFILE' and
-## '$TMPDIR_SUFFIX' are NOT it) says a span creates a temp dir. OPT_END marks
-## where the mkdir OPTIONS stop -- a standalone '--' end-of-options token or the
-## first quote -- so an '-m' inside a quoted path or after '--' (a literal
-## directory name, not a flag) is never rewritten.
-MKDIR_TMP_LINE = re.compile(
-    r'(^|[\s(;&|`])mkdir\s.*\$\{?(TMPDIR|TEMPDIR|TEMP|TMP)([^A-Za-z0-9_]|$)')
-MKDIR_SPAN = re.compile(r'mkdir\b[^;&|#]*')
-TMPVAR = re.compile(r'\$\{?(?:TMPDIR|TEMPDIR|TEMP|TMP)(?:[^A-Za-z0-9_]|$)')
-OPT_END = re.compile(r'(?<=\s)--(?=\s|$)|["\']')
-## Standalone short '-m' with a numeric mode ('-m 700' or '-m700'); the
-## lookbehind rules out the '-m' inside '--mode' and a bundled '-pm700' (whose
-## 'm' is preceded by a letter, not the leading '-'), both left untouched so
-## the rewrite is provably structure-preserving and idempotent.
-SHORT_MODE = re.compile(r'(?<![\w-])-m[ \t]*([0-7]{3,4})\b')
-
-## The atomic idempotent form 'mkdir --parents ... --mode=' trips shellcheck
-## SC2174 (with -p, -m applies only to the deepest dir) -- which is the intent
-## for a temp dir whose parents pre-exist. Insert the disable so R-172's own
-## mandated form stays shellcheck-clean, rather than trade one gate failure for
-## another. PARENTS matches '--parents' or a short cluster carrying 'p' ('-p',
-## '-pv'); LONG_MODE the post-upgrade '--mode'; DISABLE an existing SC2174
-## waiver (so a second run is a no-op).
-PARENTS = re.compile(r'(?:^|\s)(?:--parents\b|-[A-Za-z]*p[A-Za-z]*)(?:\s|$)')
-LONG_MODE = re.compile(r'--mode(=|[ \t])')
-SC2174_DISABLE = re.compile(
-    r'#[ \t]*shellcheck[ \t]+disable=[A-Z0-9, ]*SC2174(?![0-9])')
-SC2174_DIRECTIVE = "# shellcheck disable=SC2174"
-## Script-wide waiver, in lockstep with pre-push-static's R-172: a file
-## carrying it opts out of the whole rule, so the fixer must not rewrite it
-## either (otherwise the fixer forces a change the gate would have exempted).
+## Script-wide waivers, in lockstep with pre-push-static: a file carrying the
+## R-172 waiver opts out of the mkdir-mode rule; one carrying the R-200 waiver has
+## DELIBERATELY bare timeouts (a child that must finish its own SIGTERM cleanup).
+## The fixer must not rewrite an opted-out file (else it forces a change the gate
+## exempts).
 MKDIR_WAIVER_RE = re.compile(
     r'^[ \t]*##[ \t]*style-ok:[ \t]*allow-mkdir-no-mode(?:[ \t]|$)',
     re.MULTILINE)
-
-## R-200 (bare timeout) script-wide waiver, in lockstep with pre-push-static: a
-## file carrying '## style-ok: allow-bare-timeout' has DELIBERATELY bare timeouts
-## (a child that must be allowed to finish its own SIGTERM cleanup), so the fixer
-## must not add '--kill-after' -- that would change termination semantics the
-## author intentionally chose. The gate skips such a file too.
 TIMEOUT_WAIVER_RE = re.compile(
     r'^[ \t]*##[ \t]*style-ok:[ \t]*allow-bare-timeout(?:[ \t]|$)',
     re.MULTILINE)
@@ -210,14 +160,27 @@ TIMEOUT_WAIVER_RE = re.compile(
 SHELL_EXTS = (".sh", ".bsh")
 SHELL_SHEBANG_RE = re.compile(r'#!.*(/|\s)(bash|sh|dash)(\s|$)')
 
-## R-161 (grep short quiet flag) -- the write side of pre-push-static's
-## short-quiet ban. A bundled short cluster carrying 'q' ('-q','-iq','-Fq') is
-## expanded to its long-option spelling ('--quiet', '--ignore-case --quiet',
-## '--fixed-strings --quiet'). Only NO-ARG grep short options are mappable;
-## GREP_LONG is that table. The PIPE half of R-161 (a quiet grep consuming a
-## pipe) is NOT rewritten here -- relocating a redirect / switching to a
-## here-string is a multi-token structural change, so the gate FAILS it for a
-## human, exactly like R-172's missing-mode mkdir.
+## Temp-dir parameter names: a mkdir whose operand expands one of these is the
+## security-relevant surface R-172 governs.
+TMP_PARAMS = {"TMPDIR", "TEMPDIR", "TEMP", "TMP"}
+
+## A standalone short '-m' option carrying a numeric mode, either jammed ('-m700')
+## or as the flag alone ('-m', with the mode in the following argument word).
+MKDIR_M_JAMMED = re.compile(r'^-m([0-7]{3,4})$')
+
+## The atomic idempotent form 'mkdir --parents ... --mode=' trips shellcheck
+## SC2174 (with -p, -m applies only to the deepest dir) -- the intent for a temp
+## dir whose parents pre-exist. Insert the disable so R-172's own mandated form
+## stays shellcheck-clean.
+SC2174_DISABLE = re.compile(
+    r'#[ \t]*shellcheck[ \t]+disable=[A-Z0-9, ]*SC2174(?![0-9])')
+SC2174_DIRECTIVE = "# shellcheck disable=SC2174"
+
+## R-161: a bundled grep short cluster carrying 'q' is expanded to its long
+## spelling. GREP_LONG maps each NO-ARG short option; a cluster containing any
+## letter outside it is left as-is. The ARG-TAKING short options end an option
+## expecting a value -- a following '-q'-shaped token could be that value, so a
+## grep carrying one is left ENTIRELY for the gate (matches the former fixer).
 GREP_LONG = {
     "i": "--ignore-case", "q": "--quiet", "v": "--invert-match",
     "n": "--line-number", "c": "--count", "l": "--files-with-matches",
@@ -228,142 +191,22 @@ GREP_LONG = {
     "R": "--dereference-recursive", "a": "--text", "z": "--null-data",
     "Z": "--null", "b": "--byte-offset",
 }
-## Each 'grep ...' command isolated up to the next separator / '#' comment, so a
-## second command sharing the line is never rewritten (mirrors MKDIR_SPAN).
-GREP_SPAN = re.compile(r'grep\b[^;&|#]*')
-## A command must be in COMMAND position for a rewrite -- checked against the
-## text BEFORE the command word. Valid: line start, right after a separator
-## ';&|(){}`', or after a control keyword, each with an optional '!' negation and
-## any run of leading VAR=value assignments ('LC_ALL=C grep ...'). 'in' is NOT a
-## command introducer -- it heads a word list ('for x in grep ...'), so it is
-## excluded. This is stricter than the gate's REPORT-side match on purpose: the
-## fixer WRITES, so it only touches the unambiguously-safe subset. Shared by the
-## grep (R-161) and timeout (R-200) fixers from ONE pattern so they cannot drift.
-## The control keyword must ITSELF be at command position (line start or after a
-## separator) -- a bash 'then'/'do'/... only ever follows ';' or a newline. Were
-## the keyword allowed after any non-word char, a keyword passed as a literal
-## ARGUMENT ('echo then grep -q x') would falsely read as command position and the
-## fixer would rewrite the argument.
-## A command starts at line start, after a separator ';&|){}`', or after a '('
-## that is NOT part of an array assignment ('items=(...)') or a function
-## definition ('name(...)') -- i.e. a '(' not preceded by '=' or a word char.
-## That '(' guard keeps the fixer from treating an array ELEMENT ('cmd=(timeout
-## 5 x)') as a command and rewriting DATA; '$('/'(' subshells still qualify.
-_CMD_START = r"(?:^\s*|[;&|){}`]\s*|(?<![=\w])\(\s*)"
-CMD_POS_PATTERN = (
-    r'(?:'
-    + _CMD_START
-    + r'|' + _CMD_START + r'(?:then|do|else|if|elif|while|until)\s+'
-    + r')'
-    r'(?:!\s+)?'
-    r'(?:[A-Za-z_]\w*=\S*\s+)*$')
-GREP_CMD_POS = re.compile(CMD_POS_PATTERN)
-## Any quote, backslash or '#' in the text BEFORE grep means the line carries
-## quoting / escaping / comment structure a single regex cannot resolve
-## (backslash escapes in "..." but is literal in '...'; '#' may or may not open a
-## comment). Rather than parse shell, the fixer BAILS on such a line -- grep
-## might be string data or a comment -- and leaves it for the gate to REPORT.
-GREP_UNSAFE_PREFIX = re.compile(r'''["'\\#]''')
-## A single-dash short cluster containing 'q' -- the candidate to expand. The
-## lookbehind rules out '--quiet' (preceded by '-') and a bundled value; the
-## lookahead pins the token to a whole word so a quoted pattern is untouched.
-GREP_SHORT_Q = re.compile(r'(?<![\w-])-[A-Za-z]*q[A-Za-z]*(?![\w-])')
-## An ARG-TAKING grep option anywhere in the option region makes a following
-## '-iq'-shaped run ambiguous (it could be that option's VALUE), so the whole
-## grep span is left for the gate rather than risk a wrong rewrite. Short
-## arg-takers end a cluster in one of 'efmABCdD'; the long arg-takers are named.
-GREP_ARG_TAKING = re.compile(
-    r'(?<![\w-])-[A-Za-z]*[efmABCdD](?![\w-])'
-    r'|(?<![\w-])--(?:regexp|file|max-count|after-context|before-context'
-    r'|context|colou?r|binary-files|devices|directories|label'
-    r'|group-separator|exclude(?:-dir|-from)?|include)(?:=|\b)')
+GREP_ARG_TAKING_SHORT = set("efmABCdD")
+GREP_ARG_TAKING_LONG = {
+    "--regexp", "--file", "--max-count", "--after-context",
+    "--before-context", "--context", "--color", "--colour",
+    "--binary-files", "--devices", "--directories", "--label",
+    "--group-separator", "--exclude", "--exclude-dir", "--exclude-from",
+    "--include",
+}
 
-## R-200 (bare timeout) -- the write side of pre-push-static's rule. A bare
-## 'timeout N cmd' only sends SIGTERM, which a child wedged in a syscall can
-## ignore and then run forever; the fixer inserts '--kill-after=<N>' so a
-## follow-up SIGKILL guarantees the child dies. TIMEOUT_CMD_POS reuses the same
-## command-position grammar as grep. Each 'timeout ...' command is isolated up to
-## the next separator / '#' comment (mirrors GREP_SPAN).
-TIMEOUT_CMD_POS = re.compile(CMD_POS_PATTERN)
-TIMEOUT_SPAN = re.compile(r'timeout\b[^;&|#]*')
-## A quote/backslash/'#' before 'timeout' means quoting or comment structure a
-## regex cannot resolve (notably the deferred 'x="timeout 5"' spelling) -- bail,
-## the same HARD SAFETY LINE as GREP_UNSAFE_PREFIX.
-TIMEOUT_UNSAFE_PREFIX = re.compile(r'''["'\\#]''')
-## Only the provably safe subset is auto-fixed: 'timeout' followed IMMEDIATELY by
-## a LITERAL duration (GNU timeout's floating-point seconds with an optional
-## [smhd] unit) as its very next token, and no leading options. The lookahead
-## needs whitespace after the duration (a command follows). A value starting with
-## '-' (an option, whose space-separated argument a regex could not skip safely),
-## '$' or a quote (an expression) does NOT match, so it is left for the gate to
-## report and a human to fix -- exactly as R-172 leaves a missing-mode mkdir.
-## '^'-ANCHORED to the start of the isolated span (which begins at 'timeout'), so
-## a leading-option timeout ('timeout --signal=TERM 5 ...') fails at the start and
-## re.subn does NOT then wander on to a literal 'timeout <N>' sitting later in the
-## WRAPPED command's arguments -- rewriting that argument would corrupt data.
-## Idempotent: the inserted '--kill-after=' makes the next token an option, so a
-## second pass never re-matches.
-## Duration must be POSITIVE: at least one NON-ZERO digit anywhere in the GNU
-## strtod-style number -- integer OR fractional, with or without a leading zero
-## and with or without a trailing dot ('5', '05', '50', '5.', '.5', '5.0' all
-## match). A zero duration ('0', '00', '0.', '.0', '0.0', '0s') carries NO
-## non-zero digit and is a no-op timeout (no bound), so inserting
-## '--kill-after=0' would emit a DISABLED kill escalation that reads as
-## R-200-compliant -- a semi-false-green. Leave a zero-duration timeout
-## untouched (the gate exempts it as a no-op). Matching every positive format
-## the gate can flag keeps the fixer from leaving a flagged line unfixable.
-TIMEOUT_BARE_DURATION = re.compile(
-    r'^(timeout\s+)('
-    r'(?:[0-9]*[1-9][0-9]*(?:\.[0-9]*)?|[0-9]*\.[0-9]*[1-9][0-9]*)[smhd]?)(?=\s)')
-
-## A script defining its OWN timeout() function: a later 'timeout N child' calls
-## THAT function, not GNU coreutils, so rewriting it to '--kill-after=N N child'
-## would corrupt the function's arguments. When present, the R-200 fixer declines
-## the whole file (the gate still REPORTS). Matches 'timeout()' / 'timeout ()' /
-## 'function timeout ()' at a line start.
-TIMEOUT_FUNCDEF = re.compile(r'^[ \t]*(function[ \t]+)?timeout[ \t]*\([ \t]*\)', re.MULTILINE)
-
-## R-210 (apt-get -> apt-get-noninteractive) -- the write side of
-## pre-push-static's rule. A single-token rename of 'apt-get' in command position
-## to the helper-scripts wrapper. APT_CMD_POS matches the gate's TWO simple
-## positions -- line start or right after a command separator -- plus an optional
-## 'sudo'/'doas' prefix (its own ATTACHED options / env assignments), since
-## 'sudo apt-get' is the dominant real form. It does NOT add a control-keyword
-## introducer (kept OUT here to stay in lockstep with the gate, which dropped it
-## to avoid a prose false positive), so 'if apt-get ...' is a shared residual.
-## Same HARD SAFETY LINE as the other structural fixers: bail on any
-## quote/backslash/'#' before the token (string data / comment).
-APT_CMD_POS = re.compile(
-    _CMD_START
-    + r'(?:!\s+)?'
-    r'(?:[A-Za-z_]\w*=\S*\s+)*'
-    r'(?:(?:sudo|doas)(?:\s+(?:-\S+|[A-Za-z_]\w*=\S*))*\s+)?'
-    r'(?:[A-Za-z_]\w*=\S*\s+)*$')
-## The token is 'apt-get' as a whole COMMAND word: followed by whitespace or
-## end-of-line, exactly like the gate's 'apt-get([[:space:]]|$)'. This excludes a
-## function definition ('apt-get() { ... }'), an assignment ('apt-get=...') and
-## the wrapper ('apt-get-noninteractive') -- none of which the gate flags -- so
-## the fixer never mutates gate-clean code. Idempotent: '-' after the rename is
-## not whitespace/EOL.
-APT_TOKEN = re.compile(r'apt-get(?=\s|$)')
-## An OPEN array/compound assignment before the token ('cmd=(' / 'arr+=(' with no
-## ')' yet): the token is an array ELEMENT (DATA), not a command. Mirrors the
-## gate's _pkg_array_before.
-APT_ARRAY_OPEN = re.compile(r'[A-Za-z_]\w*\+?=\([^)]*$')
-## SIMPLE presence bail (deliberately NOT a quote-state parser -- lockstep with
-## the gate's _pkg_quote_before): a quote/backslash/'#' before the token means it
-## is string data / a comment. Accepted residual (safe direction): a command
-## after a CLOSED quote on the line is not rewritten -- the gate does not flag it
-## either, so the two stay consistent.
-APT_UNSAFE_PREFIX = re.compile(r'''["'\\#]''')
-## R-210 script-wide waiver, in lockstep with pre-push-static: a file bearing
-## '## style-ok: allow-apt-get' has a human-approved bare apt-get (a wrapper-less
-## environment), so the fixer must not rename it.
-APT_WAIVER_RE = re.compile(
-    r'^[ \t]*##[ \t]*style-ok:[ \t]*allow-apt-get(?:[ \t]|$)', re.MULTILINE)
-## The wrapper file itself DEFINES apt-get-noninteractive by calling bare
-## apt-get; never rename that.
-PKG_WRAPPER_BASENAMES = ("apt-get-noninteractive", "dpkg-noninteractive")
+## R-200: a bare 'timeout <DURATION> cmd' where DURATION is a POSITIVE literal
+## number (GNU strtod-style, optional [smhd] unit). A zero duration ('0', '.0',
+## '0s') is a no-op timeout (no bound); inserting '--kill-after=0' there would
+## emit a DISABLED escalation reading as compliant, a semi-false-green, so it is
+## left untouched (the gate exempts it as a no-op).
+TIMEOUT_DURATION = re.compile(
+    r'^(?:[0-9]*[1-9][0-9]*(?:\.[0-9]*)?|[0-9]*\.[0-9]*[1-9][0-9]*)[smhd]?$')
 
 
 class StagedDiscoveryError(Exception):
@@ -414,6 +257,21 @@ def is_text_file(path):
     return any(needle in mime for needle in needles)
 
 
+def is_shell_file(path):
+    """True for a shell script: a .sh/.bsh extension, or a bash/sh/dash shebang.
+    Mirrors pre-push-static's is_shell_file so the structural transforms touch
+    exactly the file set the gate checks those rules against."""
+    if path.endswith(SHELL_EXTS):
+        return True
+    try:
+        with open(path, "rb") as handle:
+            first = handle.readline()
+    except OSError:
+        return False
+    return bool(SHELL_SHEBANG_RE.match(
+        first.decode("utf-8", "replace").rstrip("\r\n")))
+
+
 def has_non_ascii_waiver(text):
     return bool(WAIVER_RE.search(text))
 
@@ -453,283 +311,228 @@ def strip_trailing_whitespace(text):
     return "".join(out), count
 
 
-def is_shell_file(path):
-    """True for a shell script: a .sh/.bsh extension, or a bash/sh/dash
-    shebang. Mirrors pre-push-static's is_shell_file so the R-172 transform
-    touches exactly the file set the gate checks that rule against -- the
-    style-guide markdown that cites the pattern is never rewritten."""
-    if path.endswith(SHELL_EXTS):
-        return True
-    try:
-        with open(path, "rb") as handle:
-            first = handle.readline()
-    except OSError:
-        return False
-    return bool(SHELL_SHEBANG_RE.match(
-        first.decode("utf-8", "replace").rstrip("\r\n")))
+def _grep_option_words(call):
+    """The leading option Words of a grep CALL: Args[1:] up to (not including) the
+    first operand or a '--' end-of-options token. Returns (options, saw_unparsed)
+    where saw_unparsed is True if a non-literal (quoted/expanded) option-region
+    word was seen -- then the caller declines, since it cannot classify it."""
+    options = []
+    for word in bash_ast.args(call)[1:]:
+        lit = bash_ast.word_lit(word)
+        if lit is None:
+            ## A quoted/expanded word: could be the pattern operand or an option
+            ## value. Stop scanning; earlier options are already collected.
+            return options, False
+        if lit == "--":
+            break
+        if not lit.startswith("-") or lit == "-":
+            ## First non-option operand: options end here.
+            break
+        options.append((word, lit))
+    return options, False
 
 
-## HARD-RULE guard for the STRUCTURAL fixers (R-172 mkdir, R-161 grep, R-200
-## timeout). Rather than PARSE shell to tell a command from multi-line DATA, the
-## fixers simply DECLINE any file carrying a construct whose data can span lines
-## -- a heredoc, a line-continuation, or a line that ends inside a quote (a
-## multi-line string). Those files are left to the gate to report; only plain
-## single-line command files are auto-fixed, where the per-command 'command
-## position' + 'no quote/backslash/# before the command' checks are enough. The
-## guard deliberately OVER-declines (a '<<' or an odd quote in a comment trips it)
-## -- the safe direction for what is a rare rewrite. This replaces the former
-## line-by-line shell scanner: a bash parser is the wrong tool here.
-HEREDOC_MARKER = re.compile(r'(?<!<)<<(?!<)')
-
-
-def _line_open_quote_or_continues(line):
-    """True if LINE ends inside an unterminated quote (a multi-line string opens
-    here) or with a line-continuation backslash. Single-line only, no cross-line
-    state. A '#' opens a comment only after whitespace or line start (so '$#'
-    keeps scanning); a backslash in that comment tail is not a continuation."""
-    quote = ""
-    index = 0
-    length = len(line)
-    while index < length:
-        char = line[index]
-        if quote:
-            if quote == '"' and char == "\\":
-                index += 2
-                continue
-            if char == quote:
-                quote = ""
-            index += 1
-            continue
-        if char == "\\":
-            index += 2
-            continue
-        if char == "#" and (index == 0 or line[index - 1] in " \t"):
-            ## Comment to end of line: no open quote, and a trailing '\' there is
-            ## comment text, not a line-continuation.
-            return False
-        if char in ('"', "'"):
-            quote = char
-        index += 1
-    if quote:
-        return True
-    return (len(line) - len(line.rstrip("\\"))) % 2 == 1
-
-
-def has_multiline_construct(text):
-    """True if TEXT carries a construct whose DATA can span physical lines -- a
-    heredoc ('<<' but not '<<<'), or ANY line that ends inside a quote or with a
-    line-continuation backslash. The structural fixers skip such a file wholesale
-    rather than risk rewriting data that only looks like a command."""
-    if HEREDOC_MARKER.search(text):
-        return True
-    for raw in text.splitlines():
-        if _line_open_quote_or_continues(raw):
-            return True
+def _grep_has_arg_taker(options):
+    """True if any grep option in OPTIONS expects a separate value -- a short
+    cluster containing an arg-taking letter, or a long arg-taking option without
+    an '=' value. Then a following '-q'-shaped token is ambiguous, so the whole
+    grep is left for the gate."""
+    for _word, lit in options:
+        if lit.startswith("--"):
+            name = lit.split("=", 1)[0]
+            if "=" not in lit and name in GREP_ARG_TAKING_LONG:
+                return True
+        elif lit.startswith("-"):
+            if set(lit[1:]) & GREP_ARG_TAKING_SHORT:
+                return True
     return False
 
 
-def upgrade_mkdir_mode(text):
-    """Per temp-dir mkdir COMMAND (not per line):
-      1. upgrade a short '-m <mode>' to the long '--mode=<mode>' within THAT
-         command's span, so a second command on the same line is untouched;
-      2. if a temp-dir mkdir span is the atomic idempotent form
-         '--parents ... --mode', insert a '# shellcheck disable=SC2174' above
-         the line -- unless one already precedes it -- so R-172's mandated form
-         does not fail shellcheck.
-    Idempotent: the long form never re-matches, and the disable is inserted
-    only when absent."""
-    count = 0
-    out = []
-    for line in text.splitlines(keepends=True):
-        if line.lstrip().startswith("#") or not MKDIR_TMP_LINE.search(line):
-            out.append(line)
+def editable_calls(tree):
+    """CallExprs the fixer may auto-edit: every command EXCEPT one whose position
+    is inside a here-document body. A command there (a '$(...)' in heredoc text)
+    is not at a real command-line position -- inserting a comment above it (R-172
+    SC2174) splices into the here-document DATA and corrupts it, and even a
+    word-span rewrite would edit deliberate here-document content. The DETECTOR
+    still sees these (it only reports); only the writer declines them."""
+    spans = list(bash_ast.heredoc_spans(tree))
+    for call in bash_ast.call_exprs(tree):
+        offset = call["Pos"]["Offset"]
+        if any(start <= offset < end for start, end in spans):
             continue
-        ## Rebuild the line span by span; only a temp-dir mkdir command's own
-        ## OPTION text is ever rewritten.
-        pieces = []
-        pos = 0
-        needs_disable = False
-        for match in MKDIR_SPAN.finditer(line):
-            span = match.group(0)
-            if not TMPVAR.search(span):
+        yield call
+
+
+def mkdir_edits(text, tree):
+    """Edits for R-172: upgrade a temp-dir mkdir's short '-m' to '--mode=', and
+    insert a '# shellcheck disable=SC2174' above an atomic '--parents ... --mode'
+    form. Per COMMAND via the AST, so a second command on the line is untouched
+    and a '-m' inside a quoted path or an array is never seen as a flag. The
+    shared option scanner skips a value-taking option's value, so a space-form
+    '--mode 700 -p' still sees the '-p'."""
+    data = text.encode("utf-8")
+    edits = []
+    disabled_lines = set()
+    count = 0
+    for call in editable_calls(tree):
+        if bash_ast.command_name(call) != "mkdir":
+            continue
+        call_args = bash_ast.args(call)
+        ## Temp-dir mkdir only: some operand expands a TMP* parameter.
+        if not any(bash_ast.word_param_names(word) & TMP_PARAMS
+                   for word in call_args[1:]):
+            continue
+        has_parents = False
+        has_mode = False
+        ## '-m' and '--mode' take a value; the scanner yields the value as 'value'
+        ## so it is never mistaken for an operand and a following '-p' is seen.
+        tokens = list(bash_ast.command_tokens(
+            call, text, frozenset("m"), frozenset({"mode"})))
+        for index, (kind, word, lit) in enumerate(tokens):
+            if kind != "opt":
                 continue
-            ## Confine the rewrite to the option region (before '--' / the first
-            ## quote): an '-m 700' inside a quoted path or after '--' is a
-            ## literal directory name, never a flag.
-            stop = OPT_END.search(span)
-            cut = stop.start() if stop else len(span)
-            newopts, num = SHORT_MODE.subn(r"--mode=\1", span[:cut])
-            newspan = newopts + span[cut:]
-            if newspan != span:
-                count += num
-                pieces.append(line[pos:match.start()])
-                pieces.append(newspan)
-                pos = match.end()
-            if PARENTS.search(newopts) and LONG_MODE.search(newopts):
-                needs_disable = True
-        pieces.append(line[pos:])
-        new = "".join(pieces)
-        ## Insert the disable ONLY when safe: never between a '\'-continued line
-        ## and its continuation (a comment there breaks the continuation), and
-        ## not when a disable already covers the line. A line continues only on
-        ## an ODD run of trailing backslashes ('echo \\' is an escaped
-        ## backslash, not a continuation).
-        prev_bs = 0
-        if out:
-            prev_bs = len(out[-1].rstrip("\r\n")) \
-                - len(out[-1].rstrip("\r\n").rstrip("\\"))
-        prev_continues = prev_bs % 2 == 1
-        if (needs_disable and not prev_continues
-                and not SC2174_DISABLE.search(new)
-                and not (out and SC2174_DISABLE.search(out[-1]))):
-            indent = new[:len(new) - len(new.lstrip())]
-            newline = "\r\n" if new.endswith("\r\n") else "\n"
-            out.append(indent + SC2174_DIRECTIVE + newline)
+            if lit == "--mode" or lit.startswith("--mode="):
+                has_mode = True
+                continue
+            if not lit.startswith("--"):
+                cluster = lit[1:]
+                if "p" in cluster:
+                    has_parents = True
+                jammed = MKDIR_M_JAMMED.match(lit)
+                if jammed:
+                    start, end = bash_ast.word_span(word)
+                    edits.append((start, end, "--mode=" + jammed.group(1)))
+                    has_mode = True
+                    count += 1
+                elif lit == "-m" and index + 1 < len(tokens) \
+                        and tokens[index + 1][0] == "value":
+                    mode_word = tokens[index + 1][1]
+                    mode_lit = bash_ast.word_lit(mode_word)
+                    if mode_lit and re.fullmatch(r'[0-7]{3,4}', mode_lit):
+                        start, _ = bash_ast.word_span(word)
+                        _, end = bash_ast.word_span(mode_word)
+                        edits.append((start, end, "--mode=" + mode_lit))
+                        has_mode = True
+                        count += 1
+            elif lit == "--parents":
+                has_parents = True
+        if has_parents and has_mode:
+            ## Insert the disable above the mkdir's line. All offsets here are
+            ## BYTE offsets (apply_edits splices bytes; shfmt Pos.Offset is a byte
+            ## index), so a non-ASCII char earlier in the file cannot shift the
+            ## insertion into the wrong line.
+            line_start = data.rfind(b"\n", 0, call["Pos"]["Offset"]) + 1
+            if line_start in disabled_lines:
+                continue
+            line_end = data.find(b"\n", line_start)
+            line = data[line_start:(line_end if line_end != -1 else len(data))] \
+                .decode("utf-8", "replace")
+            prev_start = data.rfind(b"\n", 0, line_start - 1) + 1 \
+                if line_start > 0 else 0
+            prev_line = data[prev_start:max(line_start - 1, 0)] \
+                .decode("utf-8", "replace").rstrip("\r")
+            if SC2174_DISABLE.search(line) or SC2174_DISABLE.search(prev_line):
+                continue
+            ## A line continues onto the mkdir only on an ODD run of trailing
+            ## backslashes; inserting a comment there would break the
+            ## continuation. The trailing CR (CRLF) is stripped above, else it
+            ## would hide the backslash and detach the continued line.
+            trailing = len(prev_line) - len(prev_line.rstrip("\\"))
+            if trailing % 2 == 1:
+                continue
+            indent = line[:len(line) - len(line.lstrip())]
+            edits.append(
+                (line_start, line_start, indent + SC2174_DIRECTIVE + "\n"))
+            disabled_lines.add(line_start)
             count += 1
-        out.append(new)
-    return "".join(out), count
+    return edits, count
 
 
-def expand_grep_short_quiet(text):
-    """Per grep COMMAND (not per line): expand a short cluster carrying 'q'
-    ('-iq' -> '--ignore-case --quiet') to its long-option spelling. Confined to
-    the OPTION region (before the first quote or '--'), only when grep is in
-    command position (GREP_CMD_POS) and the region carries no arg-taking grep
-    option (GREP_ARG_TAKING) -- otherwise a '-iq'-shaped run could be another
-    option's value. A token with a letter outside GREP_LONG is left as-is.
-    Idempotent: a long option never re-matches GREP_SHORT_Q."""
+def grep_edits(text, tree):
+    """Edits for R-161: expand each grep short cluster carrying 'q' to its long
+    spelling. Per COMMAND via the AST; a grep with an arg-taking option is left
+    for the gate (a following '-q'-shaped token could be that option's value)."""
+    edits = []
     count = 0
-    out = []
-    for line in text.splitlines(keepends=True):
-        if "grep" not in line:
-            out.append(line)
+    for call in editable_calls(tree):
+        if bash_ast.command_name(call) != "grep":
             continue
-        pieces = []
-        pos = 0
-        for match in GREP_SPAN.finditer(line):
-            ## Safety FIRST (the HARD SAFETY LINE): only rewrite a grep in an
-            ## UNAMBIGUOUS command position. A quote / backslash / '#' anywhere
-            ## before grep means the line has quoting or comment structure a
-            ## regex cannot safely resolve, so bail -- grep may be string data or
-            ## a comment. The gate still REPORTS the violation.
-            prefix = line[:match.start()]
-            if GREP_UNSAFE_PREFIX.search(prefix):
-                continue
-            if not GREP_CMD_POS.search(prefix):
-                continue
-            span = match.group(0)
-            stop = OPT_END.search(span)
-            cut = stop.start() if stop else len(span)
-            optregion = span[:cut]
-            if GREP_ARG_TAKING.search(optregion):
-                continue
-            rebuilt = []
-            last = 0
-            local = 0
-            for tok in GREP_SHORT_Q.finditer(optregion):
-                letters = tok.group(0)[1:]
-                if not all(char in GREP_LONG for char in letters):
-                    continue
-                rebuilt.append(optregion[last:tok.start()])
-                rebuilt.append(" ".join(GREP_LONG[char] for char in letters))
-                last = tok.end()
-                local += 1
-            if local:
-                newspan = "".join(rebuilt) + optregion[last:] + span[cut:]
-                pieces.append(line[pos:match.start()])
-                pieces.append(newspan)
-                pos = match.end()
-                count += local
-        pieces.append(line[pos:])
-        out.append("".join(pieces))
-    return "".join(out), count
-
-
-def insert_timeout_kill_after(text):
-    """Per timeout COMMAND (not per line): insert '--kill-after=<DURATION>' into
-    a bare 'timeout <DURATION> ...' whose duration is a literal number and which
-    carries no leading options, so SIGTERM is always backed by a SIGKILL.
-    Command position only (TIMEOUT_CMD_POS), bailing on any quote/backslash/'#'
-    before 'timeout' (TIMEOUT_UNSAFE_PREFIX) so a deferred 'x="timeout 5"' is
-    never touched. An option-carrying or non-literal-duration timeout is left for
-    the gate to report. Idempotent: the inserted '--kill-after' makes the next
-    token an option, so a second pass does not re-match."""
-    ## Decline a file that defines its own timeout() -- a call targets that
-    ## function, not coreutils; rewriting it would corrupt the function's args.
-    if TIMEOUT_FUNCDEF.search(text):
-        return text, 0
-    count = 0
-    out = []
-    for line in text.splitlines(keepends=True):
-        if "timeout" not in line:
-            out.append(line)
+        options, _ = _grep_option_words(call)
+        if _grep_has_arg_taker(options):
             continue
-        pieces = []
-        pos = 0
-        for match in TIMEOUT_SPAN.finditer(line):
-            ## Safety FIRST (the HARD SAFETY LINE): only rewrite a timeout in an
-            ## UNAMBIGUOUS command position. A quote / backslash / '#' before it
-            ## means quoting or comment structure a regex cannot resolve, so bail
-            ## -- 'timeout' may be string data or a comment. The gate still
-            ## REPORTS a genuine violation.
-            prefix = line[:match.start()]
-            if TIMEOUT_UNSAFE_PREFIX.search(prefix):
+        for word, lit in options:
+            cluster = lit[1:]
+            if "q" not in cluster:
                 continue
-            if not TIMEOUT_CMD_POS.search(prefix):
+            if not all(char in GREP_LONG for char in cluster):
                 continue
-            span = match.group(0)
-            newspan, num = TIMEOUT_BARE_DURATION.subn(
-                r"\1--kill-after=\2 \2", span, count=1)
-            if num:
-                pieces.append(line[pos:match.start()])
-                pieces.append(newspan)
-                pos = match.end()
-                count += num
-        pieces.append(line[pos:])
-        out.append("".join(pieces))
-    return "".join(out), count
-
-
-def wrap_apt_get(text):
-    """Per apt-get COMMAND (not per line): rename a command-position 'apt-get'
-    (optionally behind 'sudo'/'doas') to 'apt-get-noninteractive'. Command
-    position only (APT_CMD_POS); skip the token when a quote/backslash/'#' appears
-    before it (string data / comment -- APT_UNSAFE_PREFIX) or it is an array
-    element ('cmd=( apt-get ... )' -- APT_ARRAY_OPEN), so the fixer never mutates
-    what the gate would not flag. Deliberately no quote-STATE parser: a command
-    after a CLOSED quote is a shared residual with the gate. Idempotent: APT_TOKEN
-    requires whitespace/EOL after 'apt-get', so the renamed wrapper never
-    re-matches."""
-    count = 0
-    out = []
-    for line in text.splitlines(keepends=True):
-        if "apt-get" not in line:
-            out.append(line)
-            continue
-        pieces = []
-        pos = 0
-        for match in APT_TOKEN.finditer(line):
-            prefix = line[:match.start()]
-            if APT_UNSAFE_PREFIX.search(prefix):
-                continue
-            if APT_ARRAY_OPEN.search(prefix):
-                continue
-            if not APT_CMD_POS.search(prefix):
-                continue
-            pieces.append(line[pos:match.start()])
-            pieces.append("apt-get-noninteractive")
-            pos = match.end()
+            start, end = bash_ast.word_span(word)
+            edits.append(
+                (start, end,
+                 " ".join(GREP_LONG[char] for char in cluster)))
             count += 1
-        pieces.append(line[pos:])
-        out.append("".join(pieces))
-    return "".join(out), count
+    return edits, count
+
+
+def timeout_edits(text, tree):
+    """Edits for R-200: insert '--kill-after=<DURATION>' into a bare
+    'timeout <DURATION> cmd'. Declines the whole file if it defines its own
+    timeout() (a call targets that function, not coreutils)."""
+    if bash_ast.defines_function(tree, "timeout"):
+        return [], 0
+    edits = []
+    count = 0
+    for call in editable_calls(tree):
+        if bash_ast.command_name(call) != "timeout":
+            continue
+        call_args = bash_ast.args(call)
+        if len(call_args) < 3:
+            ## Need a duration and at least one wrapped command word.
+            continue
+        duration = bash_ast.word_lit(call_args[1])
+        if not duration or not TIMEOUT_DURATION.match(duration):
+            continue
+        start, _ = bash_ast.word_span(call_args[1])
+        edits.append((start, start, "--kill-after=%s " % duration))
+        count += 1
+    return edits, count
+
+
+def structural_fixes(text):
+    """Apply the AST-backed structural rewriters (R-172, R-161, R-200) to TEXT
+    and return (new_text, {rule: count}). Parses TEXT ONCE. Raises ShfmtMissing
+    if shfmt is absent (a required tool -- never a silent skip). A parse failure
+    means the caller DECLINES structural fixes (returns TEXT unchanged, empty
+    counts) -- the gate reports it and 'bash -n' catches the syntax error."""
+    try:
+        tree = bash_ast.parse_normalized(text)
+    except bash_ast.BashParseError:
+        return text, {}
+    edits = []
+    changes = {}
+    if not MKDIR_WAIVER_RE.search(text):
+        rule_edits, num = mkdir_edits(text, tree)
+        if num:
+            edits.extend(rule_edits)
+            changes["R-172"] = num
+    rule_edits, num = grep_edits(text, tree)
+    if num:
+        edits.extend(rule_edits)
+        changes["R-161"] = num
+    if not TIMEOUT_WAIVER_RE.search(text):
+        rule_edits, num = timeout_edits(text, tree)
+        if num:
+            edits.extend(rule_edits)
+            changes["R-200"] = num
+    return bash_ast.apply_edits(text, edits), changes
 
 
 def fix_file(path, check):
     """Return a dict of change counts for PATH; write in place unless CHECK.
 
     None -> skipped (not a regular file, symlink, data file, undecodable, or
-    unwritable). Empty dict -> examined, already clean."""
+    unwritable). Empty dict -> examined, already clean. Raises ShfmtMissing when
+    a shell file must be parsed but shfmt is absent."""
     if not os.path.isfile(path) or os.path.islink(path):
         return None
     if is_data_file(path):
@@ -749,6 +552,12 @@ def fix_file(path, check):
     original = text
     changes = {}
 
+    ## Structural rewriters FIRST, on the original text, so the node byte offsets
+    ## from the parse stay valid (the text transforms below shift offsets).
+    if is_shell_file(path):
+        text, structural_changes = structural_fixes(text)
+        changes.update(structural_changes)
+
     ## R-001: always-safe confusables (unless the file carries the waiver);
     ## quote-like substitutions and entities only in prose/markup files.
     if not has_non_ascii_waiver(text):
@@ -766,47 +575,6 @@ def fix_file(path, check):
         text, num = strip_trailing_whitespace(text)
         if num:
             changes["trailing-whitespace"] = num
-
-    ## HARD RULE for the STRUCTURAL rewriters below: shell files only, and never
-    ## a file carrying a heredoc / line-continuation / multi-line string -- there
-    ## a rewrite could hit DATA that only looks like a command. Such a file is
-    ## left entirely to the gate. This is why no shell parser is needed here.
-    structural = is_shell_file(path) and not has_multiline_construct(text)
-
-    ## R-172: upgrade a temp-dir mkdir's short '-m' to the long '--mode=' (not
-    ## when the file waives the rule -- lockstep with the gate). The missing-mode
-    ## / chmod-split forms are not rewritten -- the gate FAILS those for a human
-    ## to fix atomically.
-    if structural and not MKDIR_WAIVER_RE.search(text):
-        text, num = upgrade_mkdir_mode(text)
-        if num:
-            changes["R-172"] = num
-
-    ## R-161: expand a grep short quiet cluster ('-iq') to its long form. The pipe
-    ## half of R-161 is left for the gate (a redirect/here-string move is not a
-    ## single-token edit).
-    if structural:
-        text, num = expand_grep_short_quiet(text)
-        if num:
-            changes["R-161"] = num
-
-    ## R-200: insert '--kill-after=<N>' into a bare 'timeout <N>' (not when the
-    ## file waives the rule -- lockstep with the gate). Option-carrying or
-    ## non-literal forms are left for the gate to report.
-    if structural and not TIMEOUT_WAIVER_RE.search(text):
-        text, num = insert_timeout_kill_after(text)
-        if num:
-            changes["R-200"] = num
-
-    ## R-210: rename a command-position 'apt-get' to 'apt-get-noninteractive'
-    ## (not when the file waives the rule, and never the wrapper file itself --
-    ## lockstep with the gate). dpkg/--allow-downgrades/make_use_lintian are NOT
-    ## auto-fixed (see the docstring); the gate reports those.
-    if (structural and not APT_WAIVER_RE.search(text)
-            and os.path.basename(path) not in PKG_WRAPPER_BASENAMES):
-        text, num = wrap_apt_get(text)
-        if num:
-            changes["R-210"] = num
 
     if text == original:
         return {}
@@ -854,7 +622,13 @@ def main():
     parser.add_argument("files", nargs="*")
     args = parser.parse_args()
 
-    targets = list(args.files)
+    ## A directory arg is walked recursively; a missing path is a loud error, not
+    ## a silent skip (the false-green a bare directory used to produce).
+    try:
+        targets = list(bash_ast.walk_files(args.files))
+    except FileNotFoundError as exc:
+        print("pre-push-fix: no such path: %s" % exc, file=sys.stderr)
+        return 2
     if args.staged:
         try:
             targets.extend(staged_files())
@@ -867,7 +641,12 @@ def main():
 
     any_changed = False
     for path in targets:
-        changes = fix_file(path, args.check)
+        try:
+            changes = fix_file(path, args.check)
+        except bash_ast.ShfmtMissing as exc:
+            print("pre-push-fix: shfmt is required to parse shell files "
+                  "but is unavailable: %s" % exc, file=sys.stderr)
+            return 2
         if changes:
             any_changed = True
             summary = ", ".join(

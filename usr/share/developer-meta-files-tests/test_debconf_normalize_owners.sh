@@ -25,6 +25,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
    dm_checkout="${DERIVATIVE_MAKER_DIR}"
@@ -36,8 +37,8 @@ if [ ! -x "${tool}" ]; then
    tool="$( type -P dm-debconf-normalize-owners || true )"
 fi
 if [ -z "${tool}" ] || [ ! -x "${tool}" ]; then
-   printf '%s\n' "SKIP: dm-debconf-normalize-owners not found (set DERIVATIVE_MAKER_DIR)." >&2
-   exit 77
+   printf '%s\n' "FATAL: dm-debconf-normalize-owners not found (set DERIVATIVE_MAKER_DIR)." >&2
+   exit 1
 fi
 
 pass_count=0
@@ -108,9 +109,9 @@ fi
 f="${work_dir}/other.dat"
 stanza 'shim-signed:amd64' > "${f}"
 "${tool}" "${f}" >/dev/null
-if grep -q '^Name: shim-signed/no-valid-sigs$' "${f}" \
-   && grep -q '^Template: shim-signed/no-valid-sigs$' "${f}" \
-   && grep -q '^Flags: seen$' "${f}"; then
+if grep --quiet '^Name: shim-signed/no-valid-sigs$' "${f}" \
+   && grep --quiet '^Template: shim-signed/no-valid-sigs$' "${f}" \
+   && grep --quiet '^Flags: seen$' "${f}"; then
    pass 'Name/Template/Flags lines are left untouched'
 else
    fail 'a non-Owners line was altered'
@@ -153,7 +154,7 @@ evil_name='touch PWNED |'
 ( cd "${meta_dir}" && stanza 'shim-signed:amd64' > "${evil_name}" )
 ( cd "${meta_dir}" && "${tool}" "${evil_name}" >/dev/null )
 if [ ! -e "${meta_dir}/PWNED" ] \
-   && grep -q '^Owners: shim-signed$' "${meta_dir}/${evil_name}"; then
+   && grep --quiet '^Owners: shim-signed$' "${meta_dir}/${evil_name}"; then
    pass 'a filename ending in a pipe is read as a path, not executed'
 else
    fail 'a metacharacter filename was mishandled (possible command execution)'
@@ -169,7 +170,7 @@ else
 fi
 
 ## --- 9. CANARY: the fixture really carries the dual spelling ----------------
-if stanza 'shim-signed, shim-signed:amd64' | grep -q 'shim-signed:amd64'; then
+if grep --quiet 'shim-signed:amd64' <<< "$(stanza 'shim-signed, shim-signed:amd64')"; then
    pass 'canary: the fixture carries the arch-qualified spelling under test'
 else
    fail 'canary broken: the fixture lost the arch spelling'
@@ -203,9 +204,9 @@ ucf_stanza 'GvtL9uK0zG' > "${work_dir}/ub.dat"
 out_a="$( cat "${work_dir}/ua.dat" )"
 out_b="$( cat "${work_dir}/ub.dat" )"
 if [ "${out_a}" = "${out_b}" ] \
-   && printf '%s\n' "${out_a}" | grep -q '^ NEW = /tmp/grub[.]XXXXXX$' \
-   && printf '%s\n' "${out_a}" | grep -q '^ FILE = /etc/default/grub$' \
-   && printf '%s\n' "${out_a}" | grep -q '^ KEEP = /tmp/cache[.]release$'; then
+   && grep --quiet '^ NEW = /tmp/grub[.]XXXXXX$' <<< "${out_a}" \
+   && grep --quiet '^ FILE = /etc/default/grub$' <<< "${out_a}" \
+   && grep --quiet '^ KEEP = /tmp/cache[.]release$' <<< "${out_a}"; then
    pass 'ucf NEW mktemp path converges; a non-NEW /tmp value and a real value are untouched'
 else
    fail "tmp-path normalization: converge/precision failed: a=[${out_a}] b=[${out_b}]"

@@ -25,11 +25,12 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 repo="${PRIVATE_AI_CONFIG_PATH:-}"
 if [ -z "${repo}" ] || [ ! -d "${repo}/tests" ]; then
    printf '%s\n' 'private-ai-config-tests: PRIVATE_AI_CONFIG_PATH unset or has no tests/ dir; skipping.' >&2
-   exit 77
+   exit 77  ## style-ok: allow-skip: private-ai-config is a private repo, absent from the public dist-ai lane by design
 fi
 ## Canonical: PRIVATE_AI_CONFIG_PATH may be RELATIVE, and a relative entry on
 ## PATH below resolves against whatever directory a test happens to chdir into.

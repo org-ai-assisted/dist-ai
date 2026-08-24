@@ -25,6 +25,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v TMP ] || TMP=/tmp
 [ -v VM_CONFIG_DIST_REPO ] || VM_CONFIG_DIST_REPO=""
@@ -36,9 +37,9 @@ else
 fi
 
 if [ ! -r "${subject}" ]; then
-   printf '%s\n' "SKIP: vbox-guest-installer not found at '${subject}'" >&2
+   printf '%s\n' "FATAL: vbox-guest-installer not found at '${subject}'" >&2
    printf '%s\n' "set VM_CONFIG_DIST_REPO to a checkout, or install the package" >&2
-   exit 77
+   exit 1
 fi
 
 if ! grep --quiet -- '^_get_newest_kernel_debian() {' "${subject}"; then

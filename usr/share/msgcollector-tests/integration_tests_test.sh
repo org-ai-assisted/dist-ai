@@ -21,6 +21,7 @@ set -o errtrace
 set -o pipefail
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v TMP ] || TMP=/tmp
 [ -v MSGCOLLECTOR_REPO ] || MSGCOLLECTOR_REPO=""
@@ -28,9 +29,9 @@ shopt -s shift_verbose
 msgcollector_libexec="${MSGCOLLECTOR_REPO}/usr/libexec/msgcollector"
 
 if [ ! -r "${msgcollector_libexec}/msgcollector" ]; then
-  printf '%s\n' "$0: SKIP: msgcollector not found at '${msgcollector_libexec}/msgcollector'" >&2
+  printf '%s\n' "$0: FATAL: msgcollector not found at '${msgcollector_libexec}/msgcollector'" >&2
   printf '%s\n' "$0: set MSGCOLLECTOR_REPO to a msgcollector checkout, or install the package" >&2
-  exit 77
+  exit 1
 fi
 
 PASS=0
@@ -934,7 +935,7 @@ msgprogressbar_capture_yad() {
   ## no dummy is defined, and the stub records the argv. The stub never connects
   ## to X, so no real server is needed.
   DISPLAY=:99 YAD_CAPTURE="${capture}" PATH="${stub_dir}:${PATH}" \
-    timeout 20 "${msgcollector_libexec}/msgprogressbar" \
+    timeout --kill-after=20 20 "${msgcollector_libexec}/msgprogressbar" \
       --identifier "${identifier}" \
       --progressbaridx "pbidx" \
       "$@" >/dev/null 2>&1 || true
@@ -951,13 +952,13 @@ test_progressbar_empty_title_not_alarming() {
     fail "msgprogressbar: yad never launched for the empty-title case"
     return
   fi
-  if printf '%s\n' "${argv}" | grep --quiet --fixed-strings -- "Please report this bug"; then
+  if grep --quiet --fixed-strings -- "Please report this bug" <<< "${argv}"; then
     fail "msgprogressbar: empty title still shows the alarming 'report this bug' popup"
   else
     pass "msgprogressbar: empty title does not show the alarming 'report this bug' popup"
   fi
   ## Falls back to the identifier, matching msgdispatcher's convention.
-  if printf '%s\n' "${argv}" | grep --quiet --fixed-strings -- "--title=pbtitletest"; then
+  if grep --quiet --fixed-strings -- "--title=pbtitletest" <<< "${argv}"; then
     pass "msgprogressbar: empty title falls back to the identifier"
   else
     fail "msgprogressbar: empty title did not fall back to the identifier (--title=pbtitletest)"
@@ -971,14 +972,14 @@ test_progressbar_empty_message_not_alarming() {
     fail "msgprogressbar: yad never launched for the empty-message case"
     return
   fi
-  if printf '%s\n' "${argv}" | grep --quiet --fixed-strings -- "report this msgcollector bug"; then
+  if grep --quiet --fixed-strings -- "report this msgcollector bug" <<< "${argv}"; then
     fail "msgprogressbar: empty message still shows the alarming 'report this msgcollector bug' text"
   else
     pass "msgprogressbar: empty message does not show the alarming text"
   fi
   ## A real title must still pass through verbatim; the identifier fallback must
   ## not clobber a title the caller actually provided.
-  if printf '%s\n' "${argv}" | grep --quiet --fixed-strings -- "--title=Real Title"; then
+  if grep --quiet --fixed-strings -- "--title=Real Title" <<< "${argv}"; then
     pass "msgprogressbar: a real title is passed through to yad verbatim"
   else
     fail "msgprogressbar: a real title was not passed through (--title=Real Title)"
@@ -1004,13 +1005,13 @@ test_messagecli_sanitizes_dangerous_input() {
   fi
   ## The raw clear-screen escape (ESC + '[2J') must be gone: stdisplay replaces
   ## the ESC, so the raw sequence no longer appears.
-  if LC_ALL=C grep -Fq -- "$(printf '\033')[2J" "${out}"; then
+  if LC_ALL=C grep --fixed-strings --quiet -- "$(printf '\033')[2J" "${out}"; then
     fail "messagecli sanitize: raw clear-screen escape survived"
   else
     pass "messagecli sanitize: dangerous escape neutralized"
   fi
   ## The non-ASCII bytes must be gone (replaced by stdisplay).
-  if LC_ALL=C grep -Fq -- "$(printf '\303\251')" "${out}"; then
+  if LC_ALL=C grep --fixed-strings --quiet -- "$(printf '\303\251')" "${out}"; then
     fail "messagecli sanitize: non-ASCII byte survived"
   else
     pass "messagecli sanitize: non-ASCII neutralized"
@@ -1032,7 +1033,7 @@ test_messagecli_color_conversion_preserved() {
     return
   fi
   ## The literal tag must be gone (converted, not passed through).
-  if LC_ALL=C grep -Fq -- '<font' "${out}"; then
+  if LC_ALL=C grep --fixed-strings --quiet -- '<font' "${out}"; then
     fail "messagecli color: <font> tag was not converted"
   else
     pass "messagecli color: <font> tag converted"
@@ -1041,7 +1042,7 @@ test_messagecli_color_conversion_preserved() {
   ## (ESC '[' ... 'm') immediately precedes the word. Asserting merely that
   ## SOME ESC exists would pass on the [INFO] prefix's own color even if the
   ## markup conversion were removed, so match the escape right before the word.
-  if LC_ALL=C grep -Pq '\x1b\[[0-9;]*mGREENWORD' "${out}"; then
+  if LC_ALL=C grep --perl-regexp --quiet '\x1b\[[0-9;]*mGREENWORD' "${out}"; then
     pass "messagecli color: markup ANSI color applied to GREENWORD and preserved"
   else
     fail "messagecli color: markup color not applied to GREENWORD"
@@ -1149,7 +1150,7 @@ test_newlinecli_append() {
   local file content
   file="${msgcollector_run_dir}/nlclitest_messagecli"
   content="$(cat -- "${file}" 2>/dev/null || true)"
-  if [ -f "${file}" ] && printf '%s' "${content}" | grep -Fq 'NLLINE'; then
+  if [ -f "${file}" ] && grep --fixed-strings --quiet 'NLLINE' <<< "${content}"; then
     pass "--newlinecli writes the message (newline-prefixed variant)"
   else
     fail "--newlinecli did not write the message (got '${content}')"
@@ -1169,13 +1170,13 @@ test_unknown_option_output_sanitized() {
   esc=$'\033'
   evil=$'--evil\033[2Jinjection'
   err="$(${MSGCOLLECTOR} "${evil}" 2>&1 >/dev/null || true)"
-  if printf '%s' "${err}" | LC_ALL=C grep -Fq -- "${esc}[2J"; then
+  if LC_ALL=C grep --fixed-strings --quiet -- "${esc}[2J" <<< "${err}"; then
     fail "unknown option: raw terminal escape survived on stderr (injection)"
   else
     pass "unknown option: terminal escape sanitized on stderr"
   fi
   ## The diagnostic is still emitted.
-  if printf '%s' "${err}" | grep -q 'unknown option'; then
+  if grep --quiet 'unknown option' <<< "${err}"; then
     pass "unknown option: diagnostic still reported"
   else
     fail "unknown option: no 'unknown option' diagnostic emitted"

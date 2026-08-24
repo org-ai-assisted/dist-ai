@@ -19,8 +19,14 @@ Runners: `usr/bin/<component>-tests*`. Orchestrator: `usr/bin/dist-ai-tests-all`
 
 ## Require dependencies -- do not stub or reimplement them
 
-- Assume real dependencies (helper-scripts etc.) are present; `exit 77` (SKIP) if genuinely
-  absent. Check e.g. `[ -r "${HELPER_SCRIPTS_PATH:-}/usr/libexec/helper-scripts/strings.bsh" ]`.
+- Assume real dependencies are present. A REQUIRED dependency's absence
+  (helper-scripts, shfmt, a tool the suite cannot run without) is an ENVIRONMENT
+  BUG -> `exit 1` (FATAL), NEVER a skip: a required tool that vanished must fail
+  loudly, not quietly stop gating. `exit 77` (SKIP) is ONLY for a genuinely
+  OPTIONAL target (an `--e2e`-only service, an opt-in component) AND must carry a
+  per-skip `## style-ok: allow-skip: <why optional>` waiver, or R-220 fails the
+  gate. Adding an unwaived `exit 77` to go green is the exact silent-pass this
+  closes.
 - NEVER reimplement a helper-scripts function (`is_whole_number`, `has`,
   `validate_safe_filename`, ...). Source the real file or `extract_bash_function` it -- a
   reimplementation drifts (e.g. `is_whole_number` rejects leading zeros; a hand copy did not).

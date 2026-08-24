@@ -32,6 +32,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -59,8 +60,8 @@ locate_subject() {
 }
 
 if ! locate_subject; then
-   printf '%s\n' "SKIP: build-steps.d not found (set DM_SANITY_TESTS)." >&2
-   exit 77
+   printf '%s\n' "FATAL: build-steps.d not found (set DM_SANITY_TESTS)." >&2
+   exit 1
 fi
 
 sanity_tests="${build_steps_dir}/1100_sanity-tests"
@@ -73,7 +74,7 @@ fi
 ## The precondition belongs to the step that does the copy, in ONE place. A
 ## second copy in 1100_sanity-tests has to duplicate 1600's target gating to stay
 ## correct, and drifts the moment either side changes.
-if sed -n '/^main()/,/^}/p' -- "${sanity_tests}" | grep --quiet -- 'libvirt'; then
+if grep --quiet -- 'libvirt' <<< "$(sed -n '/^main()/,/^}/p' -- "${sanity_tests}")"; then
    fail "1100_sanity-tests calls a libvirt check again; 1600_export-libvirt-xml owns this precondition"
 else
    pass "1100_sanity-tests does not duplicate the libvirt precondition"

@@ -35,6 +35,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v TMP ] || TMP=/tmp
 [ -v ANON_GW_ANONYMIZER_CONFIG_REPO ] || ANON_GW_ANONYMIZER_CONFIG_REPO=""
@@ -47,9 +48,9 @@ else
 fi
 
 if [ ! -r "${bin_dir}/onion-grater-add" ]; then
-   printf '%s\n' "SKIP: onion-grater-add not found in '${bin_dir}'" >&2
+   printf '%s\n' "FATAL: onion-grater-add not found in '${bin_dir}'" >&2
    printf '%s\n' "set ANON_GW_ANONYMIZER_CONFIG_REPO to a checkout, or install the package" >&2
-   exit 77
+   exit 1
 fi
 
 ## Resolve the REAL validate_safe_filename the shipped scripts call. Order:
@@ -182,7 +183,7 @@ run_script() {
        -e "s|^source /usr/libexec/helper-scripts/strings.bsh$|source ${strings_src}|" \
        -- "${bin_dir}/${script}" >"${base}/${script}"
 
-   timeout 20 bash "${base}/${script}" ${arg:+"${arg}"} 2>&1 || true
+   timeout --kill-after=20 20 bash "${base}/${script}" ${arg:+"${arg}"} 2>&1 || true
 }
 
 ## check <description> <must-contain> <script> <arg> <fixture profiles...>

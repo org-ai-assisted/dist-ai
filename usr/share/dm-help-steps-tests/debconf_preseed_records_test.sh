@@ -27,6 +27,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -45,8 +46,8 @@ for candidate in "${LEGACY_DIST_PREINST:-}" \
    fi
 done
 if [ -z "${preinst}" ]; then
-   printf '%s\n' "SKIP: legacy-dist.preinst not found (set LEGACY_DIST_PREINST)." >&2
-   exit 77
+   printf '%s\n' "FATAL: legacy-dist.preinst not found (set LEGACY_DIST_PREINST)." >&2
+   exit 1
 fi
 
 ## Argument counting lives in its own file (R-190): the helper is a real program

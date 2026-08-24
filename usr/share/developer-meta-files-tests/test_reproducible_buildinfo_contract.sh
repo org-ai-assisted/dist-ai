@@ -28,6 +28,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 ## The derivative-maker checkout under test. An explicitly named tree is the ONLY
 ## answer: falling back to '~/derivative-maker' reports on a DIFFERENT tree than
@@ -60,8 +61,8 @@ for candidate in "${DM_BUILDINFO:-}" \
    fi
 done
 if [ -z "${subject}" ]; then
-   printf '%s\n' "SKIP: dm-reproducible-buildinfo not found (set DM_BUILDINFO)." >&2
-   exit 77
+   printf '%s\n' "FATAL: dm-reproducible-buildinfo not found (set DM_BUILDINFO)." >&2
+   exit 1
 fi
 
 workdir=""

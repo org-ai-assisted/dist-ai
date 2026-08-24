@@ -29,6 +29,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -50,8 +51,8 @@ for candidate in "${DM_PARSE_CMD:-}" \
    fi
 done
 if [ -z "${parse_cmd}" ]; then
-   printf '%s\n' "SKIP: parse-cmd not found (set DM_PARSE_CMD)." >&2
-   exit 77
+   printf '%s\n' "FATAL: parse-cmd not found (set DM_PARSE_CMD)." >&2
+   exit 1
 fi
 
 ## The body of one '--target <name>' arm: from its test to the next 'elif'.

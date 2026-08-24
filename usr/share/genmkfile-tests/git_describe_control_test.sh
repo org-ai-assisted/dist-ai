@@ -43,6 +43,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 locate_genmkfile() {
    if [ -n "${GENMKFILE_BIN:-}" ]; then
@@ -122,8 +123,8 @@ RULES
 }
 
 genmkfile_bin="$(locate_genmkfile)" || {
-   printf '%s\n' "SKIP: no genmkfile found (set GENMKFILE_BIN, install genmkfile, or check out derivative-maker)" >&2
-   exit 77
+   printf '%s\n' "FATAL: no genmkfile found (set GENMKFILE_BIN, install genmkfile, or check out derivative-maker)" >&2
+   exit 1
 }
 printf '%s\n' "INFO: genmkfile under test: ${genmkfile_bin}"
 
@@ -154,7 +155,7 @@ cleanup_out="$(
    DISTDIR="${dist_dir}" "${genmkfile_bin}" deb-cleanup 2>&1
 )" || cleanup_rc=$?
 
-if printf '%s\n' "${cleanup_out}" | grep --quiet 'unbound variable'; then
+if grep --quiet 'unbound variable' <<< "${cleanup_out}"; then
    printf '%s\n' 'FAIL: deb-cleanup tripped an "unbound variable" error (regression):'
    printf '%s\n' "${cleanup_out}" | grep 'unbound variable'
    failures=$(( failures + 1 ))
@@ -162,7 +163,7 @@ else
    printf '%s\n' 'PASS: deb-cleanup did not trip an "unbound variable" error'
 fi
 
-if printf '%s\n' "${cleanup_out}" | grep --quiet 'make_function_run: make_get_variables'; then
+if grep --quiet 'make_function_run: make_get_variables' <<< "${cleanup_out}"; then
    printf '%s\n' 'PASS: deb-cleanup routed through make_get_variables'
 else
    printf '%s\n' 'FAIL: deb-cleanup did NOT run make_get_variables'

@@ -26,6 +26,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 ## Resolve the shipped scripts: a checkout via LIBVIRT_DIST_REPO, else the
 ## installed package.
@@ -35,7 +36,7 @@ elif [ -d /usr/libexec/libvirt-dist ]; then
    libexec_source='/usr/libexec/libvirt-dist'
 else
    printf '%s\n' "SKIP: libvirt-dist libexec not found (set LIBVIRT_DIST_REPO or install libvirt-dist)" >&2
-   exit 77
+   exit 77  ## style-ok: allow-skip: libvirt/qemu stack is an opt-in apt set, absent in the core lane
 fi
 
 for cmd in bash sed timeout grep safe-rm; do
@@ -133,7 +134,7 @@ expect() {
    root="${work_dir}/run"
    prepare "${root}" "${live}" "${vm_list}" "${virt_xml_exit}" "${images}" "${virsh_exit}"
    status=0
-   out="$(PATH="${root}/stubs:${PATH}" timeout 15 \
+   out="$(PATH="${root}/stubs:${PATH}" timeout --kill-after=15 15 \
       bash "${root}/usr/libexec/libvirt-dist/${script}" 2>&1)" || status="$?"
    ## VMs actually disk-edited -- the property the accumulator design guarantees.
    calls="$(printf '%s\n' "${out}" | grep --count 'STUB virt-xml' || true)"

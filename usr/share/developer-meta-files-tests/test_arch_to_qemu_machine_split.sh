@@ -25,6 +25,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -61,8 +62,8 @@ for candidate in "${build_candidates[@]}"; do
    fi
 done
 if [ -z "${build_copy}" ]; then
-   printf '%s\n' "SKIP: developer-meta-files arch-to-qemu-machine.bsh not found (set DEVELOPER_META_FILES_DIR)." >&2
-   exit 77
+   printf '%s\n' "FATAL: developer-meta-files arch-to-qemu-machine.bsh not found (set DEVELOPER_META_FILES_DIR)." >&2
+   exit 1
 fi
 
 ## The boot-test copy bundled in dist-ai, beside this test's share tree.

@@ -22,6 +22,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 passed=0
 failed=0
@@ -71,14 +72,17 @@ for arg in "\${@}"; do
 done
 printf '%s\n' "\${out}" >> "${tmpdir}/outputs.log"
 if [ "${found}" = 'true' ]; then
-   printf 'snapshot body containing ${hash} here\n' > "\${out}"
+   printf '%s\n' 'snapshot body containing ${hash} here' > "\${out}"
 else
-   printf 'unrelated calendar html\n' > "\${out}"
+   printf '%s\n' 'unrelated calendar html' > "\${out}"
 fi
 exit 0
 STUB_EOF
    chmod +x -- "${tmpdir}/curl"
 
+   ## style-ok: allow-inline-interpreter -- fresh isolation shell must inherit
+   ## errexit ONLY from the sourced subject; a strict-mode preamble or an
+   ## extracted script would pre-set it and defeat the test.
    PATH="${tmpdir}:${PATH}" bash -c '
       set -o errexit
       set -o nounset
@@ -165,8 +169,8 @@ main() {
 
    if [ ! -f "${subject}" ]; then
       printf '%s\n' \
-         "SKIP: onion-tester-verify-evidence not found at '${subject}' -- set VERIFY_EVIDENCE_BIN" >&2
-      exit 77
+         "FATAL: onion-tester-verify-evidence not found at '${subject}' -- set VERIFY_EVIDENCE_BIN" >&2
+      exit 1
    fi
 
    work_dir="$(mktemp --directory)"

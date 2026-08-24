@@ -26,6 +26,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v TMP ] || TMP=/tmp
 [ -v MSGCOLLECTOR_REPO ] || MSGCOLLECTOR_REPO=""
@@ -37,15 +38,15 @@ else
 fi
 
 if [ ! -r "${subject}" ]; then
-   printf '%s\n' "SKIP: msgfallbacks not found at '${subject}'" >&2
+   printf '%s\n' "FATAL: msgfallbacks not found at '${subject}'" >&2
    printf '%s\n' "set MSGCOLLECTOR_REPO to a msgcollector checkout, or install the package" >&2
-   exit 77
+   exit 1
 fi
 
 ## msgfallbacks sources helper-scripts has.sh itself; require it (do not stub).
 if [ ! -r "${HELPER_SCRIPTS_PATH:-}/usr/libexec/helper-scripts/has.sh" ]; then
-   printf '%s\n' "SKIP: helper-scripts has.sh not available at ${HELPER_SCRIPTS_PATH:-}/usr/libexec/helper-scripts" >&2
-   exit 77
+   printf '%s\n' "FATAL: helper-scripts has.sh not available at ${HELPER_SCRIPTS_PATH:-}/usr/libexec/helper-scripts" >&2
+   exit 1
 fi
 
 work_dir="$(mktemp --directory -- "${TMP}/msgfallbacks-test.XXXXXX")"

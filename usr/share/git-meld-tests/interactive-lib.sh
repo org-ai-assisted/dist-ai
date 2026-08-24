@@ -14,7 +14,6 @@
 ## so it drives the wrapper through git-meld-tests-pty.py.
 ##
 ## Usage: interactive-lib.sh [<dir-with-git-diff-review>]
-## Exit 77 == SKIP (git-diff-review or python3 not available).
 
 set -o errexit
 set -o nounset
@@ -22,6 +21,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 # shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
 source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/has.sh
@@ -32,8 +32,8 @@ gdr="${bindir}/git-diff-review"
 pyhelper="${mydir}/git-meld-tests-pty.py"
 
 if [ ! -x "${gdr}" ] || ! has python3 || [ ! -f "${pyhelper}" ]; then
-   printf '%s\n' "interactive-lib: git-diff-review / python3 / pty helper missing; skipping." >&2
-   exit 77
+   printf '%s\n' "FATAL: interactive-lib: git-diff-review / python3 / pty helper missing." >&2
+   exit 1
 fi
 
 printf '%s\n' "== git-diff-review interactive-consent suite =="
@@ -50,17 +50,17 @@ cleanup() { safe-rm --recursive --force -- "${work}"; }
 trap cleanup EXIT
 
 fails=0
-pass() { printf '  PASS  %s\n' "$1"; }
-fail() { printf '  FAIL  %s\n' "$1" >&2; fails=$(( fails + 1 )); }
+pass() { printf '%s\n' "  PASS  $1"; }
+fail() { printf '%s\n' "  FAIL  $1" >&2; fails=$(( fails + 1 )); }
 
 ## Repo whose HEAD~1..HEAD change is undecodable (fatal) content.
 repo="${work}/r"
 git init -q "${repo}"
 cd -- "${repo}"
-printf 'ok\n' > bad.txt
+printf '%s\n' 'ok' > bad.txt
 git add -A
 git commit -qm base
-printf 'x \xff\xfe y\n' > bad.txt
+printf '%b' 'x \xff\xfe y\n' > bad.txt
 git add -A
 git commit -qm bad
 
@@ -71,9 +71,10 @@ git commit -qm bad
 ## is a named FAIL here instead of a hang.
 pager_log="${work}/pager.log"
 pager_stub="${work}/pager-stub"
+pager_log_q="$(printf '%q' "${pager_log}")"
 {
    printf '%s\n' '#!/bin/bash'
-   printf 'printf "PAGER-CALLED\\n" >> %q\n' "${pager_log}"
+   printf '%s\n' "printf \"PAGER-CALLED\\n\" >> ${pager_log_q}"
    printf '%s\n' 'exec cat'
 } > "${pager_stub}"
 chmod +x -- "${pager_stub}"
@@ -112,5 +113,5 @@ else
    fail "interactive: 'n' did not fail closed (exit '${n_code}')"
 fi
 
-printf '\n==== interactive FAILURES: %s ====\n' "${fails}"
+printf '%s\n' '' "==== interactive FAILURES: ${fails} ===="
 [ "${fails}" -eq 0 ]

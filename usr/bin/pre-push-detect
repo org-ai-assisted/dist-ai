@@ -1,0 +1,98 @@
+#!/usr/bin/python3
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+"""Parser-backed style detector CLI -- the read-side twin of pre-push-fix.
+
+Runs the shell-STRUCTURE rules (dist_ai.detect, over the shfmt AST) that a regex
+could only approximate, so a command is told from data that only looks like one.
+pre-push-static calls this for those rules and renders the findings through its
+own fail()/note(), so its output and every per-rule gate test are unchanged.
+
+The caller passes the shell files to scan (it already classifies them); this tool
+parses each and emits one finding per line, fields separated by US (0x1f) so a
+message may contain any punctuation:
+
+    FAIL <US> <message> <US> <location>      -> gate runs: fail <message> <location>
+    NOTE <US> <message>                      -> gate runs: note <message>
+
+Exit: 0 no failures; 1 one or more FAIL findings; 2 a required tool (shfmt) is
+absent (never a silent pass).
+"""
+
+import os
+import sys
+
+_LIB = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+    "lib", "python3", "dist-packages")
+if os.path.isdir(_LIB) and _LIB not in sys.path:
+    sys.path.insert(0, _LIB)
+
+from dist_ai import bash_ast  # noqa: E402
+from dist_ai import detect  # noqa: E402
+
+US = "\x1f"
+
+
+def read_text(path):
+    """UTF-8 text of PATH, or None for a symlink / non-regular / undecodable
+    file (left to the gate's own handling, never guessed at)."""
+    if not os.path.isfile(path) or os.path.islink(path):
+        return None
+    try:
+        with open(path, "rb") as handle:
+            return handle.read().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        print("usage: pre-push-detect <file|dir>...", file=sys.stderr)
+        return 2
+    try:
+        paths = list(bash_ast.walk_files(args))
+    except FileNotFoundError as exc:
+        print("pre-push-detect: no such path: %s" % exc, file=sys.stderr)
+        return 2
+    any_fail = False
+    out = []
+    for path in paths:
+        source = read_text(path)
+        if source is None:
+            continue
+        try:
+            findings = detect.detect_file(
+                path, source, detect.is_shell_file(path, source))
+        except bash_ast.ShfmtMissing as exc:
+            print("pre-push-detect: shfmt is required but unavailable: %s"
+                  % exc, file=sys.stderr)
+            return 2
+        for finding in findings:
+            if finding.severity == detect.FAIL:
+                any_fail = True
+                out.append(US.join(
+                    (detect.FAIL, finding.message,
+                     "'%s:%d'" % (finding.path, finding.line))))
+            else:
+                out.append(US.join((detect.NOTE, finding.message)))
+    if out:
+        sys.stdout.write("\n".join(out) + "\n")
+    return 1 if any_fail else 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception:  # noqa: BLE001 -- any crash must exit DISTINCTLY from findings
+        import traceback
+        ## Exit 3 (not Python's default 1) so the gate can tell a CRASH -- where no
+        ## parser-backed rule actually ran -- from a clean "findings present" exit
+        ## 1. Treating a crash as "no findings" would be a false green.
+        traceback.print_exc()
+        sys.exit(3)

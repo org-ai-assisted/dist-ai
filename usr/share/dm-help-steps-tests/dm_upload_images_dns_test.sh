@@ -30,6 +30,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -49,14 +50,12 @@ locate_subject() {
    ## than the caller named.
    if [ -n "${DM_UPLOAD_IMAGES:-}" ]; then
       if [ ! -r "${DM_UPLOAD_IMAGES}" ]; then
-         ## SKIP, not error: dist-ai-tests-all CONSTRUCTS this path
+         ## FATAL, not skip: dist-ai-tests-all CONSTRUCTS this path
          ## unconditionally, so an unreadable value means the target is not
-         ## checked out (the dist-ai-tests lane takes no submodules), which is
-         ## exactly what 77 is for. A genuine typo still surfaces -- the runner
-         ## reports SKIPPED, and an unauthorized skip is a failure under
-         ## --component.
-         printf '%s\n' "SKIP: DM_UPLOAD_IMAGES='${DM_UPLOAD_IMAGES}' is not readable (developer-meta-files not checked out?)." >&2
-         exit 77
+         ## checked out (the dist-ai-tests lane takes no submodules) -- a
+         ## required subject absent is an environment bug (R-220).
+         printf '%s\n' "FATAL: DM_UPLOAD_IMAGES='${DM_UPLOAD_IMAGES}' is not readable (developer-meta-files not checked out?)." >&2
+         exit 1
       fi
       subject_path="${DM_UPLOAD_IMAGES}"
       return 0
@@ -70,12 +69,11 @@ locate_subject() {
          return 0
       fi
    done
-   ## Absent target -> SKIP (77), the convention every dist-ai suite follows:
-   ## the dist-ai-tests lane checks the component out WITHOUT submodules, so
-   ## packages/kicksecure/developer-meta-files is simply not there. Hard-failing
-   ## would report a missing checkout as a broken tool.
-   printf '%s\n' "SKIP: dm-upload-images not readable (developer-meta-files not checked out; set DM_UPLOAD_IMAGES to override)." >&2
-   exit 77
+   ## Absent target -> exit 1 (FATAL): the dist-ai-tests lane checks the
+   ## component out WITHOUT submodules, so packages/kicksecure/developer-meta-files
+   ## may be absent -- a required subject absent is an environment bug (R-220).
+   printf '%s\n' "FATAL: dm-upload-images not readable (developer-meta-files not checked out; set DM_UPLOAD_IMAGES to override)." >&2
+   exit 1
 }
 
 require_host() {

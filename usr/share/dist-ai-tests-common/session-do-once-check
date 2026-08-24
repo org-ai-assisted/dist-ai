@@ -26,6 +26,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v TMP ] || TMP=/tmp
 
@@ -33,8 +34,8 @@ subject="${1:?usage: session-do-once-check <session-script> <label>}"
 label="${2:?usage: session-do-once-check <session-script> <label>}"
 
 if [ ! -r "${subject}" ]; then
-   printf '%s\n' "SKIP: ${label}: no session script at '${subject}'" >&2
-   exit 77
+   printf '%s\n' "FATAL: ${label}: no session script at '${subject}'" >&2
+   exit 1
 fi
 
 ## The do_once block is lifted out by anchor. If the anchor stops matching, the
@@ -84,7 +85,7 @@ run_do_once() {
    } >"${base}/driver"
 
    chmod "${home_mode}" -- "${home}"
-   output="$( HOME="${home}" timeout 20 bash "${base}/driver" 2>&1 )" || true
+   output="$( HOME="${home}" timeout --kill-after=20 20 bash "${base}/driver" 2>&1 )" || true
    chmod 0755 -- "${home}" 2>/dev/null || true
    printf '%s' "${output}"
 }

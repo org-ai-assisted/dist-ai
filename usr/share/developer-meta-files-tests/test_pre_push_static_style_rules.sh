@@ -368,7 +368,7 @@ expect_rule "R-042" "printf ${sq}%s${nl}${sq} ${dq}${dq}"       "absent"
 ## position anchoring that replaced the old '[[:space:]]echo' form).
 expect_rule "R-034" "echo hi"                                   "present"
 ## echo run as a condition command (line-start keyword) must also be FLAGGED.
-expect_rule "R-034" "if echo hi${sc} then"                      "present"
+expect_rule "R-034" "if echo hi${sc} then true${sc} fi"         "present"
 expect_rule "R-034" "printf ${sq}%s${nl}${sq} ${dq}a echo b${dq}" "absent"
 expect_rule "R-034" "has echo"                                  "absent"
 
@@ -438,7 +438,7 @@ expect_rule "R-051" "trap ${dq}\${cmd} -f x${dq} EXIT"           "present"
 ## that is not in command position are SPARED.
 expect_rule "R-130" "${colon}"                                    "present"
 expect_rule "R-130" "${colon} > ${dq}\${report}${dq}"            "present"
-expect_rule "R-130" "if ! ${colon} > ${dq}\${report}${dq}; then" "present"
+expect_rule "R-130" "if ! ${colon} > ${dq}\${report}${dq}${sc} then true${sc} fi" "present"
 expect_rule "R-130" "${colon} ${dq}\${var:=default}${dq}"        "absent"
 expect_rule "R-130" "value=${dq}\${var:-fallback}${dq}"          "absent"
 expect_rule "R-130" "PATH=${dq}/a::/b${dq}"                      "absent"
@@ -485,12 +485,12 @@ expect_rule "R-026" "f=\${arr${atall}:-fallback}"      "absent"
 expect_rule "R-026" "c=\${arr${atall}:${altop}word}"   "absent"
 
 ## R-090: 'command -v' in code is FLAGGED; in a comment it is SPARED.
-expect_rule "R-090" "if ! command${sp}-v foo"                    "present"
+expect_rule "R-090" "if ! command${sp}-v foo${sc} then true${sc} fi" "present"
 expect_rule "R-090" "## uses command${sp}-v not has"             "absent"
 ## ... and it does NOT fire in a POSIX '/bin/sh' script, where 'type -P' is
 ## undefined (SC3045) and sourcing has.sh is not an option: 'command -v' is the
 ## only portable spelling, so flagging it would demand code shellcheck rejects.
-expect_rule "R-090" "if ! command${sp}-v foo"                    "absent"  '#!/bin/sh'
+expect_rule "R-090" "if ! command${sp}-v foo${sc} then true${sc} fi" "absent"  '#!/bin/sh'
 
 ## R-103: a COMMAND-POSITION 'exec <command>' is FLAGGED. An 'exec' that is an
 ## argument to another command, an fd-redirection exec, and a usage-TEXT line
@@ -913,8 +913,8 @@ fi
 ## R-190: a substantial interpreter program does not belong in a shell
 ## heredoc. Same defect as R-100 for workflow YAML -- ruff and pyrefly only see
 ## real '*.py' files, coverage.py cannot measure a heredoc, and no unit test can
-## import a function that has no file. Short glue is fine; the threshold matches
-## R-100's "more than ~5 lines".
+## import a function that has no file. Short glue is fine; a substantial program
+## (like R-100's inline-shell block) must live in its own file.
 inline_repo="$(mktemp --directory --tmpdir="${tmp_root}" inline.XXXXXX)"
 git -C "${inline_repo}" init --quiet
 git -C "${inline_repo}" config user.email 'ci-test@example.com'
@@ -1614,10 +1614,11 @@ else
    printf '%s\n' 'PASS: R-195 spares env assignments and a single-command entry'
 fi
 
-## R-100: a workflow 'run: |' block over 5 shell lines is FLAGGED; a single-line
-## 'run: ./ci/x.sh' and a short block are SPARED; the file-wide waiver exempts
-## the workflow. The fixtures live under '.github/workflows/' because R-100
-## scopes to that path.
+## R-100: a workflow 'run: |' block of more than 5 shell STATEMENTS is FLAGGED
+## (the six 'step_*' commands below); a single-line 'run: ./ci/x.sh' and a
+## short (<=5-statement) block are SPARED; the file-wide waiver exempts the
+## workflow. The fixtures live under '.github/workflows/' because R-100 scopes
+## to that path.
 wf_repo="$(mktemp --directory --tmpdir="${tmp_root}" workflow.XXXXXX)"
 git -C "${wf_repo}" init --quiet
 git -C "${wf_repo}" config user.email 'ci-test@example.com'

@@ -21,6 +21,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 ## Reached only via the ERR trap; shellcheck cannot see that path (SC2317).
 # shellcheck disable=SC2317
@@ -35,8 +36,8 @@ trap error_handler ERR
 ## Subject selection mirrors the rest of this suite (first that exists):
 ##   $GENMKFILE_SHARE -> the derivative-maker submodule checkout -> the installed
 ##   /usr/share/genmkfile. Checkout BEFORE installed: the installed copy drifts from
-##   the tree under review, so preferring it tests code nobody is changing. Absent means SKIP (77), not failure: the
-##   suite must not report a red when the component simply is not present.
+##   the tree under review, so preferring it tests code nobody is changing. Absent means
+##   exit 1 (FATAL): a required subject absent is an environment bug (R-220).
 locate_helper() {
    local candidate
    ## GENMKFILE_BIN is how CI points at the component checkout, which lives at neither
@@ -67,8 +68,8 @@ locate_helper() {
 }
 
 if ! helper_file="$(locate_helper)"; then
-   printf '%s\n' 'SKIP: make-helper-one.bsh not found (set GENMKFILE_SHARE).' >&2
-   exit 77
+   printf '%s\n' 'FATAL: make-helper-one.bsh not found (set GENMKFILE_SHARE).' >&2
+   exit 1
 fi
 
 test_root="$(mktemp --directory)"

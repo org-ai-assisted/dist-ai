@@ -39,14 +39,16 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 # shellcheck source=./help_steps_test_lib.bsh
 source "${test_dir}/help_steps_test_lib.bsh"
 
-## Resolve the two shipped files under test. SKIP (77) rather than fail when no
-## derivative-maker checkout is present -- "cannot run here" is not a defect.
+## Resolve the two shipped files under test. exit 1 (FATAL) when no
+## derivative-maker checkout is present -- a required subject absent is an
+## environment bug that must fail loud, not skip (R-220).
 repo_root=""
 locate_repo_root() {
    local candidate
@@ -63,8 +65,8 @@ locate_repo_root() {
 }
 
 if ! locate_repo_root; then
-   printf '%s\n' "SKIP: no derivative-maker checkout with ci/reproducible-build-twice + help-steps/variables." >&2
-   exit 77
+   printf '%s\n' "FATAL: no derivative-maker checkout with ci/reproducible-build-twice + help-steps/variables." >&2
+   exit 1
 fi
 
 build_twice="${repo_root}/ci/reproducible-build-twice"

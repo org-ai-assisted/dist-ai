@@ -27,6 +27,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v TMP ] || TMP=/tmp
 [ -v LOCK_SCREEN_REPO ] || LOCK_SCREEN_REPO=""
@@ -38,9 +39,9 @@ else
 fi
 
 if [ ! -r "${subject}" ]; then
-   printf '%s\n' "SKIP: lock-screen not found at '${subject}'" >&2
+   printf '%s\n' "FATAL: lock-screen not found at '${subject}'" >&2
    printf '%s\n' "set LOCK_SCREEN_REPO to a helper-scripts checkout, or install the package" >&2
-   exit 77
+   exit 1
 fi
 
 work_dir="$(mktemp --directory -- "${TMP}/lock-screen-test.XXXXXX")"

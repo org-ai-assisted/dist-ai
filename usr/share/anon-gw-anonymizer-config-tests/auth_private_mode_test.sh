@@ -33,6 +33,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v TMP ] || TMP=/tmp
 [ -v ANON_GW_ANONYMIZER_CONFIG_REPO ] || ANON_GW_ANONYMIZER_CONFIG_REPO=""
@@ -45,9 +46,9 @@ else
 fi
 
 if [ ! -x "${installer}" ]; then
-   printf '%s\n' "SKIP: anon-server-to-client-install not found at '${installer}'" >&2
+   printf '%s\n' "FATAL: anon-server-to-client-install not found at '${installer}'" >&2
    printf '%s\n' "set ANON_GW_ANONYMIZER_CONFIG_REPO to a checkout, or install the package" >&2
-   exit 77
+   exit 1
 fi
 
 ## Re-run once inside a user namespace where this process is uid 0. The

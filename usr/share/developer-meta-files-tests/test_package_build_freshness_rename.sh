@@ -21,6 +21,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
    dm_checkout="${DERIVATIVE_MAKER_DIR}"
@@ -47,8 +48,8 @@ if [ -n "${DEVELOPER_META_FILES_DIR:-}" ]; then
    dmf_libexec="${DEVELOPER_META_FILES_DIR}/usr/libexec/developer-meta-files"
 fi
 if [ ! -r "${caller}" ] || [ ! -d "${dmf_libexec}" ]; then
-   printf '%s\n' "SKIP: derivative-maker superproject checkout not found (set DERIVATIVE_MAKER_DIR)." >&2
-   exit 77
+   printf '%s\n' "FATAL: derivative-maker superproject checkout not found (set DERIVATIVE_MAKER_DIR)." >&2
+   exit 1
 fi
 
 new_name='package-build-freshness.bsh'

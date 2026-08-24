@@ -41,8 +41,8 @@ if [ ! -x "${GATE}" ]; then
 fi
 
 if [ ! -x "${GATE}" ]; then
-   printf '%s\n' "SKIP: no pre-push-static to test" >&2
-   exit 77
+   printf '%s\n' "FATAL: no pre-push-static to test" >&2
+   exit 1
 fi
 
 if ! grep --quiet --fixed-strings -- '--paths' "${GATE}"; then

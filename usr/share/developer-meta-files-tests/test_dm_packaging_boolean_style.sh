@@ -20,6 +20,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
    dm_checkout="${DERIVATIVE_MAKER_DIR}"
@@ -52,8 +53,8 @@ for candidate in "${candidates[@]}"; do
    fi
 done
 if [ -z "${subject}" ]; then
-   printf '%s\n' "SKIP: dm-packaging-helper-script not found (set DM_PACKAGING_HELPER_SCRIPT)." >&2
-   exit 77
+   printf '%s\n' "FATAL: dm-packaging-helper-script not found (set DM_PACKAGING_HELPER_SCRIPT)." >&2
+   exit 1
 fi
 
 ## Boolean-shaped 'y'/'n' tokens: an assignment ('=y'), a comparison ('= y' /

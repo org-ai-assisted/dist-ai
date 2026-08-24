@@ -32,6 +32,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 ## Gated tools: 'path-suffix:minimum-percent'. The key is matched against the
 ## END of the measured path, not its basename: the sandbox tools are named
@@ -57,7 +58,7 @@ script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 repo="${PRIVATE_AI_CONFIG_PATH:-}"
 if [ -z "${repo}" ] || [ ! -d "${repo}/tests" ]; then
    printf '%s\n' 'private-ai-config-tests-coverage: PRIVATE_AI_CONFIG_PATH unset or has no tests/ dir; skipping.' >&2
-   exit 77
+   exit 77  ## style-ok: allow-skip: private-ai-config is a private repo, absent from the public dist-ai lane by design
 fi
 
 ## Sourced after the checkout guard above, so a missing PRIVATE_AI_CONFIG_PATH
@@ -105,7 +106,7 @@ kcov --include-path="${repo}/usr/bin,${repo}/usr/libexec" \
 ## such rather than reading coverage off a run that did not complete.
 if [ "${rc}" -eq 77 ]; then
    printf '%s\n' 'private-ai-config-tests-coverage: core lane skipped; nothing to measure.' >&2
-   exit 77
+   exit 77  ## style-ok: allow-skip: propagates the optional core lane's skip (private repo absent from the public lane)
 fi
 if [ "${rc}" -ne 0 ]; then
    printf '%s\n' "private-ai-config-tests-coverage: core lane FAILED (${rc}); coverage not evaluated." >&2

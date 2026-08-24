@@ -39,6 +39,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -60,16 +61,16 @@ locate_repo_root() {
 }
 
 if ! locate_repo_root; then
-   printf '%s\n' "SKIP: no derivative-maker checkout with ci/reproducible-build-twice." >&2
-   exit 77
+   printf '%s\n' "FATAL: no derivative-maker checkout with ci/reproducible-build-twice." >&2
+   exit 1
 fi
 
 comparator_src="${repo_root}/packages/kicksecure/developer-meta-files/usr/bin/dm-reproducible-compare-artifacts"
 if [ ! -r "${comparator_src}" ]; then
    ## The script delegates its verdict to that submodule, so without it the run
-   ## cannot complete -- absent subject, not a defect.
-   printf '%s\n' "SKIP: developer-meta-files submodule not checked out (no dm-reproducible-compare-artifacts)." >&2
-   exit 77
+   ## cannot complete -- a required subject absent is an environment bug (R-220).
+   printf '%s\n' "FATAL: developer-meta-files submodule not checked out (no dm-reproducible-compare-artifacts)." >&2
+   exit 1
 fi
 
 workdir=""

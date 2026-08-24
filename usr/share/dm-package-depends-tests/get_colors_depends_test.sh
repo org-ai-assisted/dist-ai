@@ -29,13 +29,14 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v DERIVATIVE_MAKER_DIR ] || DERIVATIVE_MAKER_DIR=""
 
 if [ -z "${DERIVATIVE_MAKER_DIR}" ] || [ ! -d "${DERIVATIVE_MAKER_DIR}/packages" ]; then
-   printf '%s\n' "SKIP: no derivative-maker checkout to scan" >&2
+   printf '%s\n' "FATAL: no derivative-maker checkout to scan" >&2
    printf '%s\n' "set DERIVATIVE_MAKER_DIR to one" >&2
-   exit 77
+   exit 1
 fi
 
 packages_root="${DERIVATIVE_MAKER_DIR}/packages"

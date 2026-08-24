@@ -28,6 +28,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v TMP ] || TMP=/tmp
 [ -v HELPER_SCRIPTS_REPO ] || HELPER_SCRIPTS_REPO=""
@@ -39,9 +40,9 @@ else
 fi
 
 if [ ! -r "${has_sh_path}" ]; then
-   printf '%s\n' "SKIP: has.sh not readable at '${has_sh_path}'" >&2
+   printf '%s\n' "FATAL: has.sh not readable at '${has_sh_path}'" >&2
    printf '%s\n' "set HELPER_SCRIPTS_REPO to a checkout, or install helper-scripts" >&2
-   exit 77
+   exit 1
 fi
 
 ## shellcheck resolves the file statically from dist-ai's own tree, which has

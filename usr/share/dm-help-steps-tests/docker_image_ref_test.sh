@@ -29,6 +29,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -56,8 +57,8 @@ locate_subject() {
 }
 
 if ! locate_subject; then
-   printf '%s\n' "SKIP: no derivative-maker checkout found (set DM_SANITY_TESTS)." >&2
-   exit 77
+   printf '%s\n' "FATAL: no derivative-maker checkout found (set DM_SANITY_TESTS)." >&2
+   exit 1
 fi
 
 image_ref_helper="${repo_root}/docker/derivative-maker-docker-image-ref"

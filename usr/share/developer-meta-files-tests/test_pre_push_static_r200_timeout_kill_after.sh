@@ -305,6 +305,12 @@ assert_fix_unchanged "instring" "deferred=${dq}${tmo} 5${dq}"
 assert_fix_unchanged "in-comment" "true ${hash} note${sc} ${tmo} 5 do_thing"
 ## timeout as an argument to another command.
 assert_fix_unchanged "argument" "printf '%s' ${tmo} 5"
+## CANARY: timeout as an ARGUMENT after an inline-assignment + separator + command
+## ('DEBUG=1;run timeout 5 x' -- timeout is run's arg). A greedy assignment-value
+## '\S*' swallowed the ';run' run and mis-read timeout as command-position,
+## corrupting run's arguments. The value now stops at ';'/'&'/'|' (lockstep with
+## the gate's _pkg_cmd_re), so the argument is left intact.
+assert_fix_unchanged "arg-after-inline-assign" "DEBUG=1${sc}run ${tmo} 5 do_thing"
 ## An ARRAY element -- 'cmd=(timeout 5 x)' is DATA, not a command: the '(' is
 ## array syntax. The fixer must not rewrite it.
 assert_fix_unchanged "array-element" "cmd=(${tmo} 5 sleep 10)"
@@ -348,15 +354,32 @@ assert_fix_unchanged "mlquote-body" "${mlquote_body}"
 ## arguments, not a fresh command word.
 continuation="$(printf '%s\n' "echo ${bs}" "${tmo} 5 cmd")"
 assert_fix_unchanged "line-continuation" "${continuation}"
-## A '<<' bit-shift reads as a heredoc marker too, so the WHOLE file is declined
-## (over-conservative but safe -- the gate still reports the timeout after it).
-arith_declined="$(printf '%s\n' "y=\$((x << n))" "${tmo} 5 real")"
-assert_fix_unchanged "arith-declined" "${arith_declined}"
-## A heredoc file is declined WHOLESALE: the body AND a real command after the
-## terminator are BOTH left untouched (the gate reports them). No shell parser,
-## no per-line rescue -- the hard rule keeps the fixer off multi-line data.
+## A '<<' bit-shift is ARITHMETIC, not a heredoc: the AST fixer parses it and
+## FIXES the real timeout after it. The former regex fixer declined the whole
+## file on the bare '<<' -- a blind spot the parser closes.
+arith_then_cmd="$(printf '%s\n' "y=\$((x << n))" "${tmo} 5 real")"
+run_fix "arith-fixed" "${arith_then_cmd}"
+if grep --fixed-strings -- "${tmo} ${ka}=5 5 real" <<< "${fix_result}" >/dev/null \
+   && grep --fixed-strings -- 'y=$((x << n))' <<< "${fix_result}" >/dev/null; then
+   printf '%s\n' "PASS: AST fixer fixes a timeout after arithmetic '<<' (arith untouched)"
+else
+   printf '%s\n' "FAIL: AST fixer wrong on arithmetic '<<' + timeout"
+   printf '%s\n' "${fix_result}"
+   fail=1
+fi
+## A heredoc file: the AST fixer leaves the BODY (data) untouched but FIXES a real
+## command AFTER the terminator. The former regex fixer declined the whole file
+## wholesale, so both were left for a human -- the parser splits data from code.
 heredoc_then_cmd="$(printf '%s\n' "cat <<EOF" "${tmo} 5 body" "EOF" "${tmo} 5 real")"
-assert_fix_unchanged "heredoc-declined-with-cmd" "${heredoc_then_cmd}"
+run_fix "heredoc-then-cmd" "${heredoc_then_cmd}"
+if grep --fixed-strings -- "${tmo} ${ka}=5 5 real" <<< "${fix_result}" >/dev/null \
+   && grep --fixed-strings -- "${tmo} 5 body" <<< "${fix_result}" >/dev/null; then
+   printf '%s\n' "PASS: AST fixer fixes a command after a heredoc; body left as data"
+else
+   printf '%s\n' "FAIL: AST fixer wrong on heredoc + trailing command"
+   printf '%s\n' "${fix_result}"
+   fail=1
+fi
 ## A backslash in a '#' comment tail is comment TEXT, not a continuation, so the
 ## file stays SIMPLE and the command on the next line IS fixed.
 run_fix "comment-backslash" "$(printf '%s\n' "true ${hash} note ${bs}" "${tmo} 5 cmd")"

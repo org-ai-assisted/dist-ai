@@ -22,7 +22,8 @@
 ## extraction tripwire fires), so it is a genuine regression test.
 ##
 ## Subject: usr/bin/secure-terminal-tests-coverage. Needs importable coverage; absent ->
-## exit 77 (SKIP). Runs coverage on a NULL-deref stub, so run it in the sandbox.
+## exit 1 (FATAL): a required subject/dep is an environment bug (R-220). Runs coverage on a
+## NULL-deref stub, so run it in the sandbox.
 
 set -o errexit
 set -o nounset
@@ -30,6 +31,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -44,12 +46,12 @@ for cand in \
    fi
 done
 if [ -z "${runner}" ]; then
-   printf '%s\n' 'SKIP: secure-terminal-tests-coverage not found (set SECURE_TERMINAL_TESTS_COVERAGE)' >&2
-   exit 77
+   printf '%s\n' 'FATAL: secure-terminal-tests-coverage not found (set SECURE_TERMINAL_TESTS_COVERAGE)' >&2
+   exit 1
 fi
 if ! python3 -c 'import coverage' 2>/dev/null; then
-   printf '%s\n' 'SKIP: python3 coverage not importable' >&2
-   exit 77
+   printf '%s\n' 'FATAL: python3 coverage not importable' >&2
+   exit 1
 fi
 
 work="$(mktemp --directory)"
@@ -72,7 +74,7 @@ check() {  ## $1=got $2=want $3=label
 fn="${work}/run_suite_under_coverage.sh"
 sed -n '/## BEGIN-EXTRACT run_suite_under_coverage/,/## END-EXTRACT run_suite_under_coverage/p' \
    -- "${runner}" > "${fn}"
-if ! grep -q 'run_suite_under_coverage()' -- "${fn}"; then
+if ! grep --quiet 'run_suite_under_coverage()' -- "${fn}"; then
    printf '%s\n' 'FAIL: run_suite_under_coverage not found in the runner -- no SIGSEGV retry (old runner)'
    printf '%s\n' '' '0 pass, 1 fail, 0 skip'
    exit 1

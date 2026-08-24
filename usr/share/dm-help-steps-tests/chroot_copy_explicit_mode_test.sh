@@ -26,6 +26,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
    dm_checkout="${DERIVATIVE_MAKER_DIR}"
@@ -33,8 +34,8 @@ else
    dm_checkout="${HOME}/derivative-maker"
 fi
 if [ ! -d "${dm_checkout}/build-steps.d" ]; then
-   printf '%s\n' "SKIP: no derivative-maker checkout (set DERIVATIVE_MAKER_DIR)." >&2
-   exit 77
+   printf '%s\n' "FATAL: no derivative-maker checkout (set DERIVATIVE_MAKER_DIR)." >&2
+   exit 1
 fi
 
 pass_count=0
@@ -77,7 +78,7 @@ cleanup() {
 }
 trap cleanup EXIT
 printf '%s\n' '   ${SUDO_TO_ROOT} cp -- "${src}/x" "${CHROOT_FOLDER}/etc/x"' > "${canary_file}"
-if grep -qE "cp (--|-[a-zA-Z]+ )?.*${chroot_folder_ref}" -- "${canary_file}"; then
+if grep --quiet --extended-regexp "cp (--|-[a-zA-Z]+ )?.*${chroot_folder_ref}" -- "${canary_file}"; then
    pass 'canary: the pattern does match a plain chroot cp, so a clean result means something'
 else
    fail 'canary broken: the pattern matches nothing, so this test proves nothing'
@@ -85,7 +86,7 @@ fi
 
 ## ...and it must NOT flag the fixed form, or the rule would be unusable.
 printf '%s\n' '   ${SUDO_TO_ROOT} "${cp_reproducible[@]}" "${src}/x" "${CHROOT_FOLDER}/etc/x"' > "${canary_file}"
-if grep -qE "cp (--|-[a-zA-Z]+ )?.*${chroot_folder_ref}" -- "${canary_file}"; then
+if grep --quiet --extended-regexp "cp (--|-[a-zA-Z]+ )?.*${chroot_folder_ref}" -- "${canary_file}"; then
    fail 'the pattern flags the CORRECT cp_reproducible form; it would fire forever'
 else
    pass 'the fixed cp_reproducible form is not flagged'
@@ -93,7 +94,7 @@ fi
 
 ## UNBRACED canary: the form coderabbit flagged as bypassing the braced pattern.
 printf '%s\n' '   ${SUDO_TO_ROOT} cp -- "${src}/x" "$CHROOT_FOLDER/etc/x"' > "${canary_file}"
-if grep -qE "cp (--|-[a-zA-Z]+ )?.*${chroot_folder_ref}" -- "${canary_file}"; then
+if grep --quiet --extended-regexp "cp (--|-[a-zA-Z]+ )?.*${chroot_folder_ref}" -- "${canary_file}"; then
    pass 'canary: the unbraced $CHROOT_FOLDER form is matched too'
 else
    fail 'the unbraced $CHROOT_FOLDER form is NOT matched; a build step using it would bypass this test'
@@ -101,7 +102,7 @@ fi
 
 ## The build must also pin a umask, or every file it creates outside these five
 ## sites still inherits the builder's. That is the same defect, one layer up.
-if grep -qE '^umask 0022' -- "${dm_checkout}/help-steps/variables"; then
+if grep --quiet --extended-regexp '^umask 0022' -- "${dm_checkout}/help-steps/variables"; then
    pass 'help-steps/variables pins a deterministic umask'
 else
    fail 'help-steps/variables does not pin a umask; file modes still depend on the builder'

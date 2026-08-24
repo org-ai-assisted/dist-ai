@@ -23,6 +23,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v TOR_CTRL_REPO ] || TOR_CTRL_REPO=""
 if [ -n "${TOR_CTRL_REPO}" ]; then
@@ -33,9 +34,9 @@ fi
 
 for subject in tor-ctrl tor-ctrl-onion tor-ctrl-circuit tor-ctrl-stream tor-ctrl-observer; do
    if [ ! -x "${bin_dir}/${subject}" ]; then
-      printf '%s\n' "SKIP: subject not found at '${bin_dir}/${subject}'" >&2
+      printf '%s\n' "FATAL: subject not found at '${bin_dir}/${subject}'" >&2
       printf '%s\n' "set TOR_CTRL_REPO to a complete tor-ctrl checkout, or install the package" >&2
-      exit 77
+      exit 1
    fi
 done
 
@@ -118,7 +119,7 @@ expect() {
    shift 3
    run_subject "$@"
    check "${label}: exit status" "${want_status}" "${last_status}"
-   if printf '%s' "${last_output}" | grep -qF -- "${want_text}"; then
+   if grep --quiet --fixed-strings -- "${want_text}" <<< "${last_output}"; then
       check "${label}: reports the reason" "found" "found"
    else
       check "${label}: reports the reason" "found" "missing: ${last_output:0:60}"

@@ -28,6 +28,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 bindir="${1:-}"
 if [ -z "${bindir}" ]; then
@@ -43,9 +44,8 @@ fi
 difftool_bin="${bindir}/git-review-difftool"
 mergetool_bin="${bindir}/git-review-mergetool"
 if [ ! -x "${difftool_bin}" ] || [ ! -x "${mergetool_bin}" ]; then
-   ## 77 == SKIP in the dist-ai-tests-all convention (target not found).
-   printf '%s\n' "difftool-mergetool-lib: git-review-difftool/mergetool not found under '${bindir}'; skipping." >&2
-   exit 77
+   printf '%s\n' "FATAL: difftool-mergetool-lib: git-review-difftool/mergetool not found under '${bindir}'." >&2
+   exit 1
 fi
 
 printf '%s\n' "== git review tools: difftool / mergetool contract suite =="
@@ -70,7 +70,7 @@ mkdir --parents -- "${stubdir}"
 for gui in meld kdiff3; do
    cat > "${stubdir}/${gui}" <<'STUB'
 #!/bin/bash
-printf '%s %s\n' "$#" "$*" >> "${GUI_LOG:-/dev/null}"
+printf '%s\n' "$# $*" >> "${GUI_LOG:-/dev/null}"
 exit 0
 STUB
    chmod +x "${stubdir}/${gui}"
@@ -78,8 +78,8 @@ done
 export PATH="${stubdir}:${PATH}"
 
 fails=0
-pass() { printf '  PASS  %s\n' "$1"; }
-fail() { printf '  FAIL  %s\n' "$1"; fails=$(( fails + 1 )); }
+pass() { printf '%s\n' "  PASS  $1"; }
+fail() { printf '%s\n' "  FAIL  $1"; fails=$(( fails + 1 )); }
 
 ## Fresh repo with a committed change; leaves HEAD~1..HEAD diffing 'f'.
 ## $1 dir, $2 old content, $3 new content.
@@ -133,8 +133,8 @@ fi
 r="${tmproot}/dt-diff"
 make_change_repo "${r}" 'a\nb\n' 'a\nB\n'
 out_diff="$( run_difftool "${r}" diff-review )"
-if printf '%s' "${out_diff}" | grep --quiet -- '-b' \
-   && printf '%s' "${out_diff}" | grep --quiet -- '+B'; then
+if grep --quiet -- '-b' <<< "${out_diff}" \
+   && grep --quiet -- '+B' <<< "${out_diff}"; then
    pass "difftool review-diff: textual diff shown"
 else
    fail "difftool review-diff: textual diff missing"
@@ -145,7 +145,7 @@ r="${tmproot}/dt-badutf8"
 make_change_repo "${r}" 'clean\n' 'x\xff y\n'
 out_bad="$( run_difftool "${r}" meld )"
 if ! grep --quiet '^2 ' "${r}/gui.log" \
-   && printf '%s' "${out_bad}" | grep --quiet --ignore-case 'undecodable\|non-UTF-8'; then
+   && grep --quiet --ignore-case 'undecodable\|non-UTF-8' <<< "${out_bad}"; then
    pass "difftool: undecodable blob fails closed (viewer never opened)"
 else
    fail "difftool: undecodable blob was NOT fail-closed (log: $( cat "${r}/gui.log" ))"
@@ -156,7 +156,7 @@ r="${tmproot}/dt-binary"
 make_change_repo "${r}" 'clean\n' 'a\x00b\n'
 out_bin="$( run_difftool "${r}" meld )"
 if ! grep --quiet '^2 ' "${r}/gui.log" \
-   && printf '%s' "${out_bin}" | grep --quiet --ignore-case 'binary'; then
+   && grep --quiet --ignore-case 'binary' <<< "${out_bin}"; then
    pass "difftool: binary blob skipped (viewer never opened)"
 else
    fail "difftool: binary blob was NOT skipped (log: $( cat "${r}/gui.log" ))"
@@ -167,7 +167,7 @@ r="${tmproot}/dt-bidi"
 make_change_repo "${r}" 'clean\n' 'x=1 //\xe2\x80\xae evil\n'
 out_bidi="$( run_difftool "${r}" meld )"
 if grep --quiet '^2 ' "${r}/gui.log" \
-   && printf '%s' "${out_bidi}" | grep --quiet -- 'WARN'; then
+   && grep --quiet -- 'WARN' <<< "${out_bidi}"; then
    pass "difftool: bidi/suspicious blob warns but still opens (non-fatal)"
 else
    fail "difftool: bidi handling wrong (log: $( cat "${r}/gui.log" ), out: ${out_bidi})"
@@ -198,7 +198,7 @@ make_conflict_repo() {
    git -C "${dir}" config user.email t@example.com
    git -C "${dir}" config user.name test
    git -C "${dir}" config merge.verifySignatures false
-   printf 'l1\nl2\nl3\n' > "${dir}/f"
+   printf '%s\n' 'l1' 'l2' 'l3' > "${dir}/f"
    git -C "${dir}" add f
    git -C "${dir}" commit --quiet --message init
    git -C "${dir}" switch --quiet --create feat
@@ -271,17 +271,17 @@ fi
 ## directly with a saving vs a non-saving stub viewer. ---
 r="${tmproot}/mt-auth"
 mkdir --parents -- "${r}"
-printf 'BASE\n'   > "${r}/base"
-printf 'LOCAL\n'  > "${r}/local"
-printf 'REMOTE\n' > "${r}/remote"
+printf '%s\n' 'BASE'   > "${r}/base"
+printf '%s\n' 'LOCAL'  > "${r}/local"
+printf '%s\n' 'REMOTE' > "${r}/remote"
 ## A saving meld writes the resolved result to its middle arg (= MERGED).
 savedir="${r}/save-bin"
 mkdir --parents -- "${savedir}"
 # $2 is the stub's own runtime arg (= MERGED), intentionally NOT expanded here.
 # shellcheck disable=SC2016
-printf '#!/bin/bash\nprintf resolved > "$2"\nexit 0\n' > "${savedir}/meld"
+printf '%s\n' '#!/bin/bash' 'printf resolved > "$2"' 'exit 0' > "${savedir}/meld"
 chmod +x "${savedir}/meld"
-printf 'MERGED-conflict\n' > "${r}/merged"
+printf '%s\n' 'MERGED-conflict' > "${r}/merged"
 save_rc=0
 PATH="${savedir}:${PATH}" "${mergetool_bin}" meld "${r}/base" "${r}/local" "${r}/remote" "${r}/merged" >/dev/null 2>&1 || save_rc=$?
 if [ "${save_rc}" -eq 0 ]; then
@@ -291,7 +291,7 @@ else
 fi
 ## The default stub viewer (stubdir, on PATH) logs args and exits 0 WITHOUT
 ## touching MERGED -> the wrapper must report unresolved.
-printf 'MERGED-conflict\n' > "${r}/merged"
+printf '%s\n' 'MERGED-conflict' > "${r}/merged"
 unsave_rc=0
 "${mergetool_bin}" meld "${r}/base" "${r}/local" "${r}/remote" "${r}/merged" >/dev/null 2>&1 || unsave_rc=$?
 if [ "${unsave_rc}" -ne 0 ]; then
@@ -301,8 +301,8 @@ else
 fi
 
 ## --- wrapper argument / viewer validation (die 2 guards) ---
-printf 'aa\n' > "${tmproot}/a"
-printf 'bb\n' > "${tmproot}/b"
+printf '%s\n' 'aa' > "${tmproot}/a"
+printf '%s\n' 'bb' > "${tmproot}/b"
 argc_rc=0
 "${difftool_bin}" only-one-arg >/dev/null 2>&1 || argc_rc=$?
 if [ "${argc_rc}" -eq 2 ]; then
@@ -312,7 +312,7 @@ else
 fi
 badview_rc=0
 badview_out="$( "${difftool_bin}" bogusviewer "${tmproot}/a" "${tmproot}/b" 2>&1 )" || badview_rc=$?
-if [ "${badview_rc}" -eq 2 ] && printf '%s' "${badview_out}" | grep --quiet --fixed-strings 'unknown viewer'; then
+if [ "${badview_rc}" -eq 2 ] && grep --quiet --fixed-strings 'unknown viewer' <<< "${badview_out}"; then
    pass "difftool: unknown viewer exits 2 with a message"
 else
    fail "difftool: unknown viewer handling wrong (rc='${badview_rc}')"
@@ -326,7 +326,7 @@ else
 fi
 mbadview_rc=0
 mbadview_out="$( "${mergetool_bin}" bogusviewer "${tmproot}/a" "${tmproot}/a" "${tmproot}/a" "${tmproot}/a" 2>&1 )" || mbadview_rc=$?
-if [ "${mbadview_rc}" -eq 2 ] && printf '%s' "${mbadview_out}" | grep --quiet --fixed-strings 'unknown viewer'; then
+if [ "${mbadview_rc}" -eq 2 ] && grep --quiet --fixed-strings 'unknown viewer' <<< "${mbadview_out}"; then
    pass "mergetool: unknown viewer exits 2 with a message"
 else
    fail "mergetool: unknown viewer handling wrong (rc='${mbadview_rc}')"
@@ -335,9 +335,9 @@ fi
 ## --- mergetool add/add conflict: $BASE is /dev/null, must still work ---
 r="${tmproot}/mt-addadd"
 mkdir --parents -- "${r}"
-printf 'FEAT\n'   > "${r}/local"
-printf 'MAIN\n'   > "${r}/remote"
-printf 'MERGED\n' > "${r}/merged"
+printf '%s\n' 'FEAT'   > "${r}/local"
+printf '%s\n' 'MAIN'   > "${r}/remote"
+printf '%s\n' 'MERGED' > "${r}/merged"
 addadd_rc=0
 "${mergetool_bin}" meld /dev/null "${r}/local" "${r}/remote" "${r}/merged" >/dev/null 2>&1 || addadd_rc=$?
 ## The saving stub (savedir, still on nothing here) is absent; the default stub
@@ -350,5 +350,5 @@ else
    pass "mergetool: add/add conflict with /dev/null BASE resolved"
 fi
 
-printf '\n==== difftool/mergetool FAILURES: %s ====\n' "${fails}"
+printf '%s\n' '' "==== difftool/mergetool FAILURES: ${fails} ===="
 [ "${fails}" -eq 0 ]

@@ -26,6 +26,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
    dm_checkout="${DERIVATIVE_MAKER_DIR}"
@@ -58,8 +59,8 @@ for candidate in "${candidates[@]}"; do
    fi
 done
 if [ -z "${subject}" ]; then
-   printf '%s\n' "SKIP: package-build-freshness.bsh not found (set PACKAGE_BUILD_FRESHNESS_BSH)." >&2
-   exit 77
+   printf '%s\n' "FATAL: package-build-freshness.bsh not found (set PACKAGE_BUILD_FRESHNESS_BSH)." >&2
+   exit 1
 fi
 for tool in dpkg-parsechangelog sha256sum find; do
    if ! command -v "${tool}" >/dev/null; then
@@ -75,7 +76,7 @@ else
    pass "structural: the reprepro published-version path stays removed"
 fi
 block="$(sed -n '/^dm_package_needs_rebuild()/,/^}/p' -- "${subject}")"
-if printf '%s\n' "${block}" | grep --quiet --fixed-strings -- 'repository_name'; then
+if grep --quiet --fixed-strings -- 'repository_name' <<< "${block}"; then
    fail "structural: dm_package_needs_rebuild still takes a repository_name (reprepro arg)"
 else
    pass "structural: dm_package_needs_rebuild no longer takes repository_name"

@@ -27,6 +27,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 work_dir=""
 tor_pid=""
@@ -59,9 +60,9 @@ onion_tool="${tor_ctrl_bin_dir}/tor-ctrl-onion"
 ## mismatch produces as a result about the checkout.
 for subject in "${onion_tool}" "${tor_ctrl_bin_dir}/tor-ctrl"; do
    if [ ! -x "${subject}" ]; then
-      printf '%s\n' "SKIP: subject not found at '${subject}'" >&2
+      printf '%s\n' "FATAL: subject not found at '${subject}'" >&2
       printf '%s\n' "set TOR_CTRL_REPO to a complete tor-ctrl checkout, or install the package" >&2
-      exit 77
+      exit 1
    fi
 done
 

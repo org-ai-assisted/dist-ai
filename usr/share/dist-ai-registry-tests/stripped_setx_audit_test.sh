@@ -28,6 +28,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v TMP ] || TMP=/tmp
 [ -v DIST_AI_REPO ] || DIST_AI_REPO=""
@@ -45,8 +46,8 @@ if [ -z "${repo}" ]; then
 fi
 
 if [ -z "${repo}" ] || [ ! -x "${repo}/usr/bin/dm-stripped-setx-audit" ]; then
-   printf '%s\n' 'dist-ai-registry-tests: no dist-ai source tree (set DIST_AI_REPO); skipping.' >&2
-   exit 77
+   printf '%s\n' 'FATAL: dist-ai-registry-tests: no dist-ai source tree (set DIST_AI_REPO).' >&2
+   exit 1
 fi
 
 subject="${repo}/usr/bin/dm-stripped-setx-audit"
@@ -151,28 +152,28 @@ else
    printf '%s\n' "  output: ${output}"
 fi
 
-if printf '%s\n' "${output}" | grep --quiet --extended-regexp 'examined 2 package'; then
+if grep --quiet --extended-regexp 'examined 2 package' <<< "${output}"; then
    record PASS 'both submodule-shaped packages were examined'
 else
    record FAIL 'the package count is not 2 -- the .git FILE shape was skipped'
    printf '%s\n' "  output: ${output}"
 fi
 
-if printf '%s\n' "${output}" | grep --quiet --fixed-strings 'kicksecure/dropper/usr/bin/tool'; then
+if grep --quiet --fixed-strings 'kicksecure/dropper/usr/bin/tool' <<< "${output}"; then
    record PASS 'the file that lost set -x is reported'
 else
    record FAIL 'the stripped file was not reported'
    printf '%s\n' "  output: ${output}"
 fi
 
-if printf '%s\n' "${output}" | grep --quiet --fixed-strings 'kicksecure/keeper'; then
+if grep --quiet --fixed-strings 'kicksecure/keeper' <<< "${output}"; then
    record FAIL 'a file that KEPT set -x was reported as stripped'
    printf '%s\n' "  output: ${output}"
 else
    record PASS 'the file that kept set -x is not reported'
 fi
 
-if printf '%s\n' "${output}" | grep --quiet --extended-regexp '1 stripped'; then
+if grep --quiet --extended-regexp '1 stripped' <<< "${output}"; then
    record PASS 'the stripped count is 1'
 else
    record FAIL 'the stripped count is not 1'
@@ -185,7 +186,7 @@ mkdir --parents -- "${work_dir}/empty"
 empty_rc=0
 empty_output="$("${subject}" "${work_dir}/empty" 2>&1)" || empty_rc=$?
 if [ "${empty_rc}" -ne 0 ] \
-   && printf '%s\n' "${empty_output}" | grep --quiet --fixed-strings 'testing nothing'; then
+   && grep --quiet --fixed-strings 'testing nothing' <<< "${empty_output}"; then
    record PASS 'an empty tree fails loudly instead of reporting clean'
 else
    record FAIL "an empty tree exited ${empty_rc} without saying it tested nothing"

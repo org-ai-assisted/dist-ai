@@ -22,6 +22,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -76,6 +77,7 @@ for test_file in \
    "${tests_dir}/test_corpus.py" \
    "${tests_dir}/test_invariants.py" \
    "${tests_dir}/verify_formal.py" \
+   "${tests_dir}/verify_formal_absint.py" \
    "${tests_dir}/test_unicode_gallery.py" \
    "${tests_dir}/test_cli.py" \
    "${tests_dir}/test_unicode_tag.py" \

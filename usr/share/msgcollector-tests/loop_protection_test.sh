@@ -23,6 +23,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v TMP ] || TMP=/tmp
 [ -v MSGCOLLECTOR_REPO ] || MSGCOLLECTOR_REPO=""
@@ -34,9 +35,9 @@ else
 fi
 
 if [ ! -r "${shared_file}" ]; then
-   printf '%s\n' "SKIP: msgcollector_shared not found at '${shared_file}'" >&2
+   printf '%s\n' "FATAL: msgcollector_shared not found at '${shared_file}'" >&2
    printf '%s\n' "set MSGCOLLECTOR_REPO to a msgcollector checkout, or install the package" >&2
-   exit 77
+   exit 1
 fi
 
 work_dir="$(mktemp --directory -- "${TMP}/msgcollector-loop-test.XXXXXX")"
@@ -52,8 +53,8 @@ trap test_cleanup_handler EXIT
 ## /usr/libexec) -- the same assumption every sibling suite makes -- so the test
 ## exercises the actual dependencies, not a reimplementation. Skip if absent.
 if [ ! -r "${HELPER_SCRIPTS_PATH:-}/usr/libexec/helper-scripts/strings.bsh" ]; then
-   printf '%s\n' "SKIP: helper-scripts not available at ${HELPER_SCRIPTS_PATH:-}/usr/libexec/helper-scripts" >&2
-   exit 77
+   printf '%s\n' "FATAL: helper-scripts not available at ${HELPER_SCRIPTS_PATH:-}/usr/libexec/helper-scripts" >&2
+   exit 1
 fi
 
 pass_count=0
@@ -84,7 +85,7 @@ run_caller() {
    ## /usr/libexec is never written -- nothing to isolate, leak, or restore.
    ## light_sleep_skip makes the real light_sleep return without waiting where
    ## helper-scripts honors it; harmless (a 1s real sleep) where it does not yet.
-   output="$(light_sleep_skip=true timeout 20 bash "${caller}" 2>&1)" || true
+   output="$(light_sleep_skip=true timeout --kill-after=20 20 bash "${caller}" 2>&1)" || true
    printf '%s' "${output}"
 }
 

@@ -269,6 +269,11 @@ assert_fix_unchanged() {
 }
 ## separator inside a double-quoted string.
 assert_fix_unchanged "instring-sep" "printf '%s' \"run${sc} ${grp} ${qs} here\""
+## CANARY: grep as an ARGUMENT after an inline-assignment + separator + command
+## ('X=1;run grep -iq foo' -- grep is run's arg). A greedy assignment-value '\S*'
+## swallowed the ';run' run and mis-read grep as command-position, mutating run's
+## args. The value now stops at ';'/'&'/'|' (lockstep with the gate's _pkg_cmd_re).
+assert_fix_unchanged "arg-after-inline-assign" "X=1${sc}run ${grp} ${iqs} foo"
 ## a control keyword inside a string.
 assert_fix_unchanged "instring-keyword" "printf '%s' \"if ${grp} ${qs} x\""
 ## a trailing '#' comment.

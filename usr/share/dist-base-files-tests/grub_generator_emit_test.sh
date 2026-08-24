@@ -21,6 +21,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v DIST_BASE_FILES_REPO ] || DIST_BASE_FILES_REPO=""
 
@@ -62,8 +63,8 @@ done
 ## Every generator skipping is not a pass: it means the subject was never
 ## resolved, and the run would otherwise report a clean sweep over nothing.
 if [ "${checked}" -eq 0 ]; then
-   printf '%s\n' "SKIP: no generator resolved; set DIST_BASE_FILES_REPO" >&2
-   exit 77
+   printf '%s\n' "FATAL: no generator resolved; set DIST_BASE_FILES_REPO" >&2
+   exit 1
 fi
 
 printf '%s\n' "" "${checked} generator(s) checked, ${skipped} skipped"
