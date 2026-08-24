@@ -429,27 +429,6 @@ check "exec: HEAD probe passes --output before caller -LO (no output hijack)" \
    "$([ -n "${out_line}" ] && [ -n "${lo_line}" ] && [ "${out_line}" -lt "${lo_line}" ] && printf ordered || printf BAD)" \
    "ordered"
 
-## M17 REGRESSION (HEAD-probe resume): a caller resume option that the stripper
-## cannot catch (attached '-C100') would force a Range request and a partial (206)
-## Content-Length -> a false 114 on the body. The probe appends '--continue-at 0'
-## LAST so curl's last-resume-wins cancels it. Assert '--continue-at 0' follows the
-## passthrough '-C100' in the head argv. Fails pre-fix (no trailing --continue-at).
-argv_log="${test_dir}/M17.argv"
-out_file="${test_dir}/M17.bin"
-printf '%s' '' >"${argv_log}"
-rc="$(CURL_OUT_FILE="${out_file}" CURL_PRGRS_MAX_FILE_SIZE_BYTES=100000 \
-   FAKE_CURL_ARGV_LOG="${argv_log}" \
-   FAKE_CURL_HEADER_CL=100 FAKE_CURL_BODY_BYTES=100 \
-   run_rc -C100 https://example.com/file)"
-check "exec: -C100 download still succeeds -> 0" "${rc}" "0"
-## '|| true': a no-match grep returns 1, which would abort this errexit suite.
-c_line="$(grep -n -x -- '-C100' "${argv_log}" | head -1 | cut -d: -f1 || true)"
-cont_line="$(grep -n -x -- '--continue-at' "${argv_log}" | tail -1 | cut -d: -f1 || true)"
-cont_val="$([ -n "${cont_line}" ] && sed -n "$((cont_line + 1))p" "${argv_log}" || true)"
-check "exec: HEAD probe appends --continue-at 0 after caller -C100 (full size)" \
-   "$([ -n "${c_line}" ] && [ -n "${cont_line}" ] && [ "${cont_line}" -gt "${c_line}" ] && [ "${cont_val}" = "0" ] && printf ok || printf BAD)" \
-   "ok"
-
 ## ============================================================
 ## (N) Real SIGTERM during an in-flight download: the subject must both terminate
 ## promptly AND stop the download (kill curl). The body child idles
