@@ -61,6 +61,10 @@
 ##      (does NOT flag the ': "${var:=default}"' parameter-default
 ##      idiom widely used in the codebase)
 ##  17. R-034 no 'echo' command (use printf); '## style-ok: allow-echo'
+##      R-063 a 'printf -v <dynamic-name>' must be guarded by
+##      check_variable_name (an unchecked name evaluates an array
+##      subscript -- 'name[$(cmd)]' RUNS cmd);
+##      '## style-ok: allow-unchecked-printf-v'
 ##  18. R-103 no process-replacement 'exec <cmd>' (fd-redirect exec
 ##      exempt); '## style-ok: allow-exec'
 ##  19. pre-commit-hooks (direct binary execution, no framework)

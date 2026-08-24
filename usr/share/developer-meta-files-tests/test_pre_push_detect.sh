@@ -273,6 +273,125 @@ run_det "$(printf '%s\n' \
    'make_use_lintian=false genmkfile deb-pkg')"
 assert_not_at "R-213 respects the allow-lintian-disable waiver" "R-213" 3
 
+## --- R-063 printf -v injection guard ----------------------------------------
+## A dynamic '-v' target evaluates an array subscript ('name[$(cmd)]' RUNS cmd),
+## so it must be guarded by check_variable_name on the SAME name, earlier in the
+## SAME function. Line numbers assert both the match and the scope/ordering.
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'guarded() {' \
+   '  check_variable_name "${n}" || return 1' \
+   '  printf -v "${n}" "%s" "x"' \
+   '}' \
+   'unguarded() {' \
+   '  printf -v "${m}" "%s" "y"' \
+   '}' \
+   'literal() {' \
+   '  printf -v out "%s" "z"' \
+   '}')"
+assert_not_at "R-063 spares a guarded dynamic printf -v"        "R-063" 4
+assert_at     "R-063 flags an unguarded dynamic printf -v"      "R-063" 7
+assert_not_at "R-063 spares a literal (static) target"          "R-063" 10
+
+## Scope + ordering + matching: a guard AFTER the printf, a guard for a DIFFERENT
+## variable, a guard in a SIBLING function, and a command-substitution name all
+## leave the printf UNGUARDED.
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'after() {' \
+   '  printf -v "${a}" "%s" "x"' \
+   '  check_variable_name "${a}" || return 1' \
+   '}' \
+   'wrongvar() {' \
+   '  check_variable_name "${good}" || return 1' \
+   '  printf -v "${bad}" "%s" "x"' \
+   '}' \
+   'cmdsub() {' \
+   '  printf -v "$(build_name)" "%s" "x"' \
+   '}' \
+   'sibling_guard() {' \
+   '  check_variable_name "${v}" || return 1' \
+   '}' \
+   'sibling_use() {' \
+   '  printf -v "${v}" "%s" "x"' \
+   '}')"
+assert_at "R-063 flags a guard placed AFTER the printf"         "R-063" 3
+assert_at "R-063 flags a guard naming a different variable"     "R-063" 8
+assert_at "R-063 flags a command-substitution target name"      "R-063" 11
+assert_at "R-063 flags a guard confined to a sibling function"  "R-063" 17
+
+## The ATTACHED spelling 'printf -vNAME' is analyzed too: a literal name is
+## spared, an expanded one is guarded like the separate form.
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'attached_literal() {' \
+   '  printf -vout "%s" "z"' \
+   '}' \
+   'attached_dynamic() {' \
+   '  printf -v"${d}" "%s" "z"' \
+   '}')"
+assert_not_at "R-063 spares an attached literal '-vout'"        "R-063" 3
+assert_at     "R-063 flags an attached dynamic '-v\${d}'"       "R-063" 6
+
+## bash printf option parsing: the FORMAT operand and '--' both END option
+## scanning, so a '-v' after either is DATA, not a target (no false positive).
+## Multiple '-v' -> bash writes the LAST, so that target is the one analyzed.
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'printf "%s" -v "${notatarget}"' \
+   'printf -- -v "${alsonot}"' \
+   'printf -v safe -v "${last}" "%s" x')"
+assert_not_at "R-063 spares a '-v' after the format operand (data)"  "R-063" 2
+assert_not_at "R-063 spares a '-v' after '--' (data)"                "R-063" 3
+assert_at     "R-063 analyzes the LAST '-v' target (bash uses it)"   "R-063" 4
+
+## Quote removal happens before printf's getopt, so a QUOTED '-v' (separate or
+## attached) is still the option -- a raw-text check would miss these.
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'printf "-v" "${qsep}" "%s" x' \
+   'printf "-v${qatt}" "%s" x' \
+   'printf "%s" "-v" "${notopt}"')"
+assert_at     "R-063 flags a quoted separate '\"-v\"' target"    "R-063" 2
+assert_at     "R-063 flags a quoted attached '\"-v\${x}\"'"      "R-063" 3
+assert_not_at "R-063 spares a quoted '-v' that is DATA"          "R-063" 4
+
+## A name built from several expansions is guarded only if EVERY component was
+## checked (bash evaluates the whole subscript); one covered component is not
+## enough. And a guard in a NESTED function does not count for an outer printf.
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'partial() {' \
+   '  check_variable_name "${a}" || return 1' \
+   '  printf -v "${a}${b}" "%s" x' \
+   '}' \
+   'complete() {' \
+   '  check_variable_name "${c}" || return 1' \
+   '  check_variable_name "${d}" || return 1' \
+   '  printf -v "${c}${d}" "%s" x' \
+   '}' \
+   'nested() {' \
+   '  helper() { check_variable_name "${n}" || return 1; }' \
+   '  printf -v "${n}" "%s" x' \
+   '}')"
+assert_at     "R-063 flags a multi-component name with one component unchecked" "R-063" 4
+assert_not_at "R-063 spares a multi-component name with every component checked" "R-063" 9
+assert_at     "R-063 flags a guard confined to a NESTED function"               "R-063" 13
+
+## A top-level guard before a top-level printf -v counts (scope starts at 0).
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'check_variable_name "${t}" || exit 1' \
+   'printf -v "${t}" "%s" "x"')"
+assert_not_at "R-063 spares a top-level guard before the printf" "R-063" 3
+
+## The script-wide waiver silences the rule.
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   '## style-ok: allow-unchecked-printf-v' \
+   'printf -v "${n}" "%s" "x"')"
+assert_not_at "R-063 respects the allow-unchecked-printf-v waiver" "R-063" 3
+
 ## Self-test the FAIL gate: a forced failure must make the script exit non-zero.
 if [ -n "${TEST_SELFCHECK_FAIL_GATE:-}" ]; then
    note_fail "self-test forced failure"
