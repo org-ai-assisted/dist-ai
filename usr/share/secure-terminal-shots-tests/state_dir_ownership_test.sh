@@ -12,7 +12,7 @@
 ## dir we own is tightened to 0700.
 ##
 ## Subject: lib-capture.sh, resolved from SECURE_TERMINAL_SHOTS_DIR, a checkout default, or the
-## installed path. Absent -> exit 77 (SKIP), never FAIL. Creates dirs/symlinks under mktemp
+## installed path. Absent -> exit 1 (FATAL): a required subject is an environment bug (R-220). Creates dirs/symlinks under mktemp
 ## trees only (its OWN throwaway paths); run it in the sandbox.
 
 set -o errexit
@@ -21,6 +21,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -36,16 +37,16 @@ for cand in \
    fi
 done
 if [ -z "${lib}" ]; then
-   printf '%s\n' 'SKIP: lib-capture.sh not found (set SECURE_TERMINAL_SHOTS_DIR)' >&2
-   exit 77
+   printf '%s\n' 'FATAL: lib-capture.sh not found (set SECURE_TERMINAL_SHOTS_DIR)' >&2
+   exit 1
 fi
 
 ## safe-rm (ships with private-ai-config) does the throwaway-tree cleanup below; the trap
 ## suppresses its errors, so an absent one would leave the temp tree AND read as a silent
-## pass. Require it up front: SKIP (77) rather than pretend the run was clean.
+## pass. Require it up front: exit 1 (FATAL, R-220) rather than pretend the run was clean.
 if ! type -P safe-rm >/dev/null 2>&1; then
-   printf '%s\n' 'SKIP: safe-rm not found (ships with private-ai-config)' >&2
-   exit 77
+   printf '%s\n' 'FATAL: safe-rm not found (ships with private-ai-config)' >&2
+   exit 1
 fi
 
 work="$(mktemp --directory)"

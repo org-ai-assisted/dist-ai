@@ -29,6 +29,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v TMP ] || TMP=/tmp
 [ -v ANON_GW_ANONYMIZER_CONFIG_REPO ] || ANON_GW_ANONYMIZER_CONFIG_REPO=""
@@ -40,9 +41,9 @@ else
 fi
 
 if [ ! -r "${subject}" ]; then
-   printf '%s\n' "SKIP: anon-dns not found at '${subject}'" >&2
+   printf '%s\n' "FATAL: anon-dns not found at '${subject}'" >&2
    printf '%s\n' "set ANON_GW_ANONYMIZER_CONFIG_REPO to a checkout, or install the package" >&2
-   exit 77
+   exit 1
 fi
 
 work_dir="$(mktemp --directory -- "${TMP}/anon-dns-test.XXXXXX")"

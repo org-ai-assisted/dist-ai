@@ -36,6 +36,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 ## The derivative-maker checkout under test. An explicitly named tree is the ONLY
 ## answer: falling back to '~/derivative-maker' reports on a DIFFERENT tree than
@@ -67,8 +68,8 @@ for candidate in "${DM_BUILDINFO:-}" \
    fi
 done
 if [ -z "${subject}" ]; then
-   printf '%s\n' "SKIP: dm-reproducible-buildinfo not found (set DM_BUILDINFO)." >&2
-   exit 77
+   printf '%s\n' "FATAL: dm-reproducible-buildinfo not found (set DM_BUILDINFO)." >&2
+   exit 1
 fi
 
 workdir=""
@@ -88,12 +89,12 @@ run_with() {
 
    run_seq=$(( run_seq + 1 ))
    image="${workdir}/image-${run_seq}.raw"
-   printf '' > "${image}"
+   printf '%s' '' > "${image}"
    ## Source-Commit reaches the record through the PRE-SIGN state file that
    ## help-steps/sign-and-tag writes, not through an environment variable, so the
    ## fixture must be that file or the check under test never sees a commit.
-   printf 'Source-Commit: %s\nSubmodule-State:\n abc123 packages/example (v1)\n' \
-      "${commit}" > "${workdir}/dm-source-state"
+   printf '%s\n' "Source-Commit: ${commit}" 'Submodule-State:' ' abc123 packages/example (v1)' \
+      > "${workdir}/dm-source-state"
    rc=0
    env \
       dist_build_version="${version}" \
@@ -153,9 +154,9 @@ expect_accepted 'state block unrecorded, nothing to compare against' \
 ## --dry-run must emit the SAME record as a real run, or the fast path proves
 ## nothing about the slow one. It skips ONLY the image existence check.
 dry_image="${workdir}/dry-image.raw"
-printf 'Source-Commit: %s\nSubmodule-State:\n abc123 packages/example (v1)\n' \
-   'abc123def456' > "${workdir}/dm-source-state"
-printf '' > "${dry_image}"
+printf '%s\n' 'Source-Commit: abc123def456' 'Submodule-State:' ' abc123 packages/example (v1)' \
+   > "${workdir}/dm-source-state"
+printf '%s' '' > "${dry_image}"
 env dist_build_version='18.2.2.0-217-gabc123def456' binary_build_folder_dist="${workdir}" \
    bash -- "${subject}" --image "${dry_image}" --target qcow2 \
    --output "${workdir}/real-vs-dry.real" >/dev/null 2>&1
@@ -197,9 +198,9 @@ fi
 ## build of the same commit produces, so the record must say so -- otherwise it is
 ## indistinguishable from a release artifact and a comparison against one would
 ## read the difference as a reproducibility failure.
-printf 'Source-Commit: %s\nSubmodule-State:\n abc123 packages/example (v1)\n' \
-   'abc123def456' > "${workdir}/dm-source-state"
-printf '' > "${workdir}/norm.raw"
+printf '%s\n' 'Source-Commit: abc123def456' 'Submodule-State:' ' abc123 packages/example (v1)' \
+   > "${workdir}/dm-source-state"
+printf '%s' '' > "${workdir}/norm.raw"
 env dist_build_version='18.2.2.0' binary_build_folder_dist="${workdir}" \
    dist_build_version_reproducible='true' \
    bash -- "${subject}" --dry-run --image "${workdir}/norm.raw" --target qcow2 \
@@ -213,7 +214,7 @@ fi
 ## BOTH versions must be recorded. Keeping only the normalized one discards what
 ## the version would have been, so a normalized image cannot be tied back to the
 ## release artifact it corresponds to without the repo in hand.
-printf '' > "${workdir}/norm2.raw"
+printf '%s' '' > "${workdir}/norm2.raw"
 env dist_build_version='18.2.2.0' binary_build_folder_dist="${workdir}" \
    dist_build_version_reproducible='true' \
    dist_build_version_unnormalized='18.2.2.0-219-gdeadbeefcafe' \

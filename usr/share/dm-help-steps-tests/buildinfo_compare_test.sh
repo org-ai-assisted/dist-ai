@@ -27,6 +27,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -44,8 +45,8 @@ for candidate in "${DM_BUILDINFO_COMPARE:-}" \
    fi
 done
 if [ -z "${subject}" ]; then
-   printf '%s\n' "SKIP: dm-buildinfo-compare.py not found (set DM_BUILDINFO_COMPARE)." >&2
-   exit 77
+   printf '%s\n' "FATAL: dm-buildinfo-compare.py not found (set DM_BUILDINFO_COMPARE)." >&2
+   exit 1
 fi
 
 workdir=""

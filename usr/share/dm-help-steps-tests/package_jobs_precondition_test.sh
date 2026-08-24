@@ -28,6 +28,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -50,8 +51,8 @@ locate_repo_root() {
 }
 
 if ! locate_repo_root; then
-   printf '%s\n' "SKIP: no derivative-maker checkout with 2100_create-debian-packages + help-steps/parse-cmd." >&2
-   exit 77
+   printf '%s\n' "FATAL: no derivative-maker checkout with 2100_create-debian-packages + help-steps/parse-cmd." >&2
+   exit 1
 fi
 
 create_packages="${repo_root}/build-steps.d/2100_create-debian-packages"

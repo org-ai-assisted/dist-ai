@@ -16,13 +16,14 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
 driver="${script_dir}/../../bin/secure-terminal-shots-sandbox"
 if [ ! -x "${driver}" ]; then
-   printf '%s\n' "SKIP: secure-terminal-shots-sandbox not found at ${driver}" >&2
-   exit 77
+   printf '%s\n' "FATAL: secure-terminal-shots-sandbox not found at ${driver}" >&2
+   exit 1
 fi
 
 pass=0
@@ -36,7 +37,7 @@ refuses() {  ## $1=label $2=expected-substring VAR=val ...
    shift 2
    rc=0
    out="$(env "$@" "${driver}" comparison 2>&1)" || rc=$?
-   if [ "${rc}" -ne 0 ] && printf '%s' "${out}" | grep -qF -- "${want}"; then
+   if [ "${rc}" -ne 0 ] && grep --quiet --fixed-strings -- "${want}" <<< "${out}"; then
       printf '%s\n' "PASS: ${label} (rc=${rc}, matched '${want}')"
       pass=$(( pass + 1 ))
    else
@@ -59,8 +60,8 @@ else
    ## The corpus-refusal case needs a real secure-terminal checkout to get past the first
    ## tree check; without it the test cannot fully verify, so SKIP the whole thing (77) rather
    ## than report a partial run as green (an unauthorized skip is a failure, not a pass).
-   printf '%s\n' 'SKIP: secure-terminal checkout absent; cannot verify the corpus-refusal case' >&2
-   exit 77
+   printf '%s\n' 'FATAL: secure-terminal checkout absent; cannot verify the corpus-refusal case' >&2
+   exit 1
 fi
 
 printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"

@@ -23,6 +23,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 # shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
 source /usr/libexec/helper-scripts/has.sh
@@ -46,8 +47,8 @@ assert_prerequisite() {
 ## 77 is the runner's skip contract. Every prerequisite BELOW stays fail-closed,
 ## because those are defects in an environment whose subject IS present.
 if [ -z "${DMF_REPO:-}" ]; then
-   printf '%s\n' 'SKIP: test_dm_review_branch: DMF_REPO unset (no developer-meta-files checkout wired).' >&2
-   exit 77
+   printf '%s\n' 'FATAL: test_dm_review_branch: DMF_REPO unset (no developer-meta-files checkout wired).' >&2
+   exit 1
 fi
 
 ## The pty driver ships next to this script, so resolve it relative to this
@@ -72,11 +73,11 @@ assert_prerequisite \
 
 fail_count=0
 fail() {
-   printf 'FAIL: %s\n' "$1" >&2
+   printf '%s\n' "FAIL: $1" >&2
    fail_count=$(( fail_count + 1 ))
 }
 pass() {
-   printf 'PASS: %s\n' "$1"
+   printf '%s\n' "PASS: $1"
 }
 
 work="$(mktemp --directory)"
@@ -90,7 +91,7 @@ trap cleanup EXIT
 ## copy so we exercise the code under review.
 mkdir -p "${work}/bin"
 stub() {
-   printf '#!/bin/bash\nexit 0\n' > "${work}/bin/$1"
+   printf '%s\n' '#!/bin/bash' 'exit 0' > "${work}/bin/$1"
    chmod +x "${work}/bin/$1"
 }
 stub git-meld
@@ -105,11 +106,11 @@ repo="${work}/repo"
 git init --quiet -- "${repo}"
 git -C "${repo}" config user.email 'test@example.com'
 git -C "${repo}" config user.name 'test'
-printf 'first\n' > "${repo}/file"
+printf '%s\n' 'first' > "${repo}/file"
 git -C "${repo}" add file
 git -C "${repo}" -c commit.gpgsign=false commit --no-verify --quiet --message 'initial'
 git -C "${repo}" checkout --quiet -b feature
-printf 'second\n' >> "${repo}/file"
+printf '%s\n' 'second' >> "${repo}/file"
 git -C "${repo}" -c commit.gpgsign=false commit --no-verify --quiet --all --message 'a clean new line'
 git -C "${repo}" checkout --quiet master
 
@@ -146,7 +147,7 @@ git -C "${repo}" branch --delete --force -- "${spoof_name}" >/dev/null 2>&1
 ## 3) Non-ASCII unicode in a commit MESSAGE on the reviewed branch: the review
 ## must abort non-zero (check-ref-commits-for-unicode).
 git -C "${repo}" checkout --quiet -b dirty feature
-printf 'third\n' >> "${repo}/file"
+printf '%s\n' 'third' >> "${repo}/file"
 git -C "${repo}" -c commit.gpgsign=false commit --no-verify --quiet --all \
    --message "$(printf 'sneaky \xe2\x80\xae message')"
 git -C "${repo}" checkout --quiet master
@@ -183,7 +184,7 @@ else
 fi
 
 if [ "${fail_count}" -gt 0 ]; then
-   printf 'test_dm_review_branch: %d assertion(s) failed.\n' "${fail_count}" >&2
+   printf '%s\n' "test_dm_review_branch: ${fail_count} assertion(s) failed." >&2
    exit 1
 fi
-printf 'test_dm_review_branch: OK -- commit-content and ref-name unicode scans both abort the review.\n'
+printf '%s\n' 'test_dm_review_branch: OK -- commit-content and ref-name unicode scans both abort the review.'

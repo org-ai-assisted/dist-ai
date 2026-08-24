@@ -20,8 +20,8 @@
 ## gap, so the mismatch case is accepted and the outputs are unequal-width -- a genuine
 ## regression test, not a tautology.
 ##
-## Subject: hero-slider-compose.py in secure-terminal-shots/ (absent -> exit 77 SKIP). Needs
-## python3-pil (a declared package dependency); genuinely absent -> exit 77 SKIP.
+## Subject: hero-slider-compose.py in secure-terminal-shots/ (absent -> exit 1 FATAL). Needs
+## python3-pil (a declared package dependency); absent is an environment bug -> exit 1 (FATAL, R-220).
 
 set -o errexit
 set -o nounset
@@ -29,6 +29,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -44,12 +45,12 @@ for cand in \
    fi
 done
 if [ -z "${shots_dir}" ]; then
-   printf '%s\n' 'SKIP: secure-terminal-shots dir not found (set SECURE_TERMINAL_SHOTS_DIR)' >&2
-   exit 77
+   printf '%s\n' 'FATAL: secure-terminal-shots dir not found (set SECURE_TERMINAL_SHOTS_DIR)' >&2
+   exit 1
 fi
 if ! python3 -c 'import PIL' 2>/dev/null; then
-   printf '%s\n' 'SKIP: python3-pil (Pillow) not installed' >&2
-   exit 77
+   printf '%s\n' 'FATAL: python3-pil (Pillow) not installed' >&2
+   exit 1
 fi
 compose="${shots_dir}/hero-slider-compose.py"
 checker="${script_dir}/hero_slider_compose_check.py"

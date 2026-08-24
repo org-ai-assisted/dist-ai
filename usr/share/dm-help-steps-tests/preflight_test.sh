@@ -27,6 +27,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -44,8 +45,8 @@ for candidate in "${DM_PREFLIGHT:-}" \
    fi
 done
 if [ -z "${subject}" ]; then
-   printf '%s\n' "SKIP: dm-preflight not found (set DM_PREFLIGHT)." >&2
-   exit 77
+   printf '%s\n' "FATAL: dm-preflight not found (set DM_PREFLIGHT)." >&2
+   exit 1
 fi
 
 git_quiet() {
@@ -66,15 +67,15 @@ build_fixture() {
 
    if [ ! -d "${sub_origin}" ]; then
       git_quiet init --quiet -- "${sub_origin}"
-      printf 'x\n' > "${sub_origin}/file.txt"
+      printf '%s\n' 'x' > "${sub_origin}/file.txt"
       git_quiet -C "${sub_origin}" add file.txt
       git_quiet -C "${sub_origin}" commit --quiet --no-verify --message base
    fi
 
    git_quiet init --quiet -- "${super}"
    mkdir --parents -- "${super}/build-steps.d" "${super}/help-steps"
-   printf 'x\n' > "${super}/build-steps.d/keep"
-   printf 'x\n' > "${super}/help-steps/keep"
+   printf '%s\n' 'x' > "${super}/build-steps.d/keep"
+   printf '%s\n' 'x' > "${super}/help-steps/keep"
    git_quiet -C "${super}" add -A
    git_quiet -C "${super}" commit --quiet --no-verify --message base
    git_quiet -C "${super}" -c protocol.file.allow=always \
@@ -93,8 +94,8 @@ if [ -n "${gate_bin_dir}" ] && [ -x "${gate_bin_dir}/pre-push-static" ]; then
    export PATH
 fi
 if ! type -P pre-push-static >/dev/null; then
-   printf '%s\n' "SKIP: pre-push-static not reachable; dm-preflight cannot complete a run." >&2
-   exit 77
+   printf '%s\n' "FATAL: pre-push-static not reachable; dm-preflight cannot complete a run." >&2
+   exit 1
 fi
 
 ## --quick: the suites are not what these cases are about, and running them here
@@ -121,7 +122,7 @@ fi
 ## --- uncommitted work in a submodule FAILS ----------------------------------
 dirty="${workdir}/dirty"
 build_fixture "${dirty}"
-printf 'uncommitted\n' >> "${dirty}/sub/file.txt"
+printf '%s\n' 'uncommitted' >> "${dirty}/sub/file.txt"
 rc="$(run_preflight "${dirty}")"
 if [ "${rc}" -ne 0 ]; then
    pass "uncommitted work in a submodule fails the preflight"
@@ -137,7 +138,7 @@ else
 fi
 ## An UNTRACKED file counts: it is work the parent will not carry either.
 git_quiet -C "${dirty}/sub" checkout --quiet -- file.txt
-printf 'x\n' > "${dirty}/sub/untracked.txt"
+printf '%s\n' 'x' > "${dirty}/sub/untracked.txt"
 rc="$(run_preflight "${dirty}")"
 if [ "${rc}" -ne 0 ]; then
    pass "an untracked file in a submodule also fails"
@@ -149,7 +150,7 @@ fi
 ## The normal state while work is in progress on a submodule branch.
 ahead="${workdir}/ahead"
 build_fixture "${ahead}"
-printf 'more\n' >> "${ahead}/sub/file.txt"
+printf '%s\n' 'more' >> "${ahead}/sub/file.txt"
 git_quiet -C "${ahead}/sub" commit --quiet --all --no-verify --message ahead
 rc="$(run_preflight "${ahead}")"
 if [ "${rc}" -eq 0 ]; then
@@ -179,7 +180,7 @@ unfetch="${workdir}/unfetch"
 build_fixture "${unfetch}"
 ## Commit in the submodule WITHOUT pushing, then pin the parent at it: the exact
 ## shape of "committed locally, never pushed".
-printf 'local only\n' >> "${unfetch}/sub/file.txt"
+printf '%s\n' 'local only' >> "${unfetch}/sub/file.txt"
 git_quiet -C "${unfetch}/sub" commit --quiet --all --no-verify --message local-only
 local_only_sha="$(git_quiet -C "${unfetch}/sub" rev-parse HEAD)"
 git_quiet -C "${unfetch}" update-index --cacheinfo "160000,${local_only_sha},sub"

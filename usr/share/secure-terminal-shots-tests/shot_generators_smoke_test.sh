@@ -24,7 +24,7 @@
 ## rows exceeds MAX_DEAD_ROWS. FAILS on a tree that drops that (largest run ~150-180 rows).
 ##
 ## Subjects: the generators in secure-terminal-shots/, plus the secure_terminal package
-## (PyQt6 + the checkout) they import. Any genuinely absent -> exit 77 (SKIP), never FAIL.
+## (PyQt6 + the checkout) they import. Any absent is an environment bug -> exit 1 (FATAL, R-220).
 ## Offscreen Qt, no display; safe in the sandbox.
 
 set -o errexit
@@ -33,6 +33,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -48,8 +49,8 @@ for cand in \
    fi
 done
 if [ -z "${shots_dir}" ]; then
-   printf '%s\n' 'SKIP: secure-terminal-shots dir not found (set SECURE_TERMINAL_SHOTS_DIR)' >&2
-   exit 77
+   printf '%s\n' 'FATAL: secure-terminal-shots dir not found (set SECURE_TERMINAL_SHOTS_DIR)' >&2
+   exit 1
 fi
 
 ## Resolve the secure_terminal checkout for PYTHONPATH, mirroring the wrapper.
@@ -64,17 +65,17 @@ for cand in \
    fi
 done
 if [ -z "${repo}" ]; then
-   printf '%s\n' 'SKIP: secure_terminal checkout not found (set SECURE_TERMINAL_REPO)' >&2
-   exit 77
+   printf '%s\n' 'FATAL: secure_terminal checkout not found (set SECURE_TERMINAL_REPO)' >&2
+   exit 1
 fi
 
 export PYTHONPATH="${repo}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
 export QT_QPA_PLATFORM=offscreen
 
-## PyQt6 + the package must import, else the generators cannot run here -> SKIP.
+## PyQt6 + the package must import, else the generators cannot run -> exit 1 (FATAL, R-220).
 if ! python3 -c 'import PyQt6.QtWidgets, secure_terminal.terminal, secure_terminal.review' 2>/dev/null; then
-   printf '%s\n' 'SKIP: PyQt6 or secure_terminal not importable (offscreen Qt deps absent)' >&2
-   exit 77
+   printf '%s\n' 'FATAL: PyQt6 or secure_terminal not importable (offscreen Qt deps absent)' >&2
+   exit 1
 fi
 
 work="$(mktemp --directory)"

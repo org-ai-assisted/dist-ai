@@ -42,6 +42,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -54,10 +55,11 @@ locate_subject() {
 
    if [ -n "${DM_ASSERT_SUBMODULE:-}" ]; then
       if [ ! -r "${DM_ASSERT_SUBMODULE}" ]; then
-         ## SKIP, not error -- dist-ai-tests-all CONSTRUCTS this path
-         ## unconditionally, so unreadable means the target is not checked out.
-         printf '%s\n' "SKIP: DM_ASSERT_SUBMODULE='${DM_ASSERT_SUBMODULE}' is not readable (derivative-maker not checked out?)." >&2
-         exit 77
+         ## FATAL, not skip -- dist-ai-tests-all CONSTRUCTS this path
+         ## unconditionally, so unreadable means the target is not checked out
+         ## (a required subject absent is an environment bug, R-220).
+         printf '%s\n' "FATAL: DM_ASSERT_SUBMODULE='${DM_ASSERT_SUBMODULE}' is not readable (derivative-maker not checked out?)." >&2
+         exit 1
       fi
       subject_path="${DM_ASSERT_SUBMODULE}"
       return 0
@@ -70,8 +72,8 @@ locate_subject() {
          return 0
       fi
    done
-   printf '%s\n' "SKIP: assert-submodule-not-stale not found (derivative-maker not checked out; set DM_ASSERT_SUBMODULE)." >&2
-   exit 77
+   printf '%s\n' "FATAL: assert-submodule-not-stale not found (derivative-maker not checked out; set DM_ASSERT_SUBMODULE)." >&2
+   exit 1
 }
 
 ## A test repo must not run the operator's hooks (git skill).
@@ -99,7 +101,7 @@ build_fixture() {
    upstream="${scratch}/upstream"
    super="${scratch}/super"
    git_quiet init --quiet -- "${super}"
-   printf 'x\n' > "${super}/README"
+   printf '%s\n' 'x' > "${super}/README"
    git_quiet -C "${super}" add README
    git_quiet -C "${super}" commit --quiet --no-verify --message base
    ## Clone the submodule in place, then record the gitlink by hand: 'git
@@ -121,7 +123,7 @@ build_fixture_multi() {
    upstream="${scratch}/upstream"
    super="${scratch}/super"
    git_quiet init --quiet -- "${super}"
-   printf 'x\n' > "${super}/README"
+   printf '%s\n' 'x' > "${super}/README"
    git_quiet -C "${super}" add README
    git_quiet -C "${super}" commit --quiet --no-verify --message base
 

@@ -35,6 +35,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v TMP ] || TMP=/tmp
 
@@ -43,8 +44,8 @@ label="${2:?usage: grub-generator-emit-check <generator> <label> [<must-contain>
 must_contain="${3:-}"
 
 if [ ! -r "${generator}" ]; then
-   printf '%s\n' "SKIP: ${label}: no generator at '${generator}'" >&2
-   exit 77
+   printf '%s\n' "FATAL: ${label}: no generator at '${generator}'" >&2
+   exit 1
 fi
 
 work_dir="$(mktemp --directory -- "${TMP}/grub-emit-check.XXXXXX")"

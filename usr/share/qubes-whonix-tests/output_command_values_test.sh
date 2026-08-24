@@ -33,6 +33,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v QUBES_WHONIX_REPO ] || QUBES_WHONIX_REPO=""
 
@@ -43,9 +44,9 @@ else
 fi
 
 if [ ! -r "${subject}" ]; then
-   printf '%s\n' "SKIP: qubes-remote-support-provider not found at '${subject}'" >&2
+   printf '%s\n' "FATAL: qubes-remote-support-provider not found at '${subject}'" >&2
    printf '%s\n' "set QUBES_WHONIX_REPO to a qubes-whonix checkout, or install the package" >&2
-   exit 77
+   exit 1
 fi
 
 fail=0
@@ -93,7 +94,7 @@ print_line_src="$(sed -n '/^print_line() {/,/^}/p' -- "${subject}")"
 ## other runtime variables; a greedy range would pull those in.
 select_src="$(awk '/^if test -o xtrace/{f=1} f{print} f && /^fi/{exit}' "${subject}")"
 if [ -z "${print_line_src}" ] || [ -z "${select_src}" ] \
-   || ! printf '%s' "${select_src}" | grep -q 'output_command=print_line'; then
+   || ! grep --quiet 'output_command=print_line' <<< "${select_src}"; then
    ## Anti-vacuous: extraction empty / wrong block means the script changed
    ## shape; fail rather than silently skip the behavioral check.
    printf '%s\n' "FAIL: could not extract print_line / the output_command selection from '${subject}' -- behavioral check tested nothing"

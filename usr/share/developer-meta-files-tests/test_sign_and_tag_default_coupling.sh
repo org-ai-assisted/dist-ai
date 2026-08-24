@@ -30,6 +30,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
    dm_checkout="${DERIVATIVE_MAKER_DIR}"
@@ -40,8 +41,8 @@ fi
 variables_file="${dm_checkout}/help-steps/variables"
 helper_scripts_git="${dm_checkout}/packages/kicksecure/helper-scripts/.git"
 if [ ! -r "${variables_file}" ] || [ ! -e "${helper_scripts_git}" ]; then
-   printf '%s\n' "SKIP: no full derivative-maker checkout at '${dm_checkout}' (set DERIVATIVE_MAKER_DIR)." >&2
-   exit 77
+   printf '%s\n' "FATAL: no full derivative-maker checkout at '${dm_checkout}' (set DERIVATIVE_MAKER_DIR)." >&2
+   exit 1
 fi
 
 pass() {

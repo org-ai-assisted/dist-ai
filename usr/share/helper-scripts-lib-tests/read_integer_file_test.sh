@@ -46,15 +46,15 @@ else
 fi
 
 if [ ! -r "${strings_bsh_path}" ]; then
-   printf '%s\n' "SKIP: strings.bsh not readable at '${strings_bsh_path}'" >&2
+   printf '%s\n' "FATAL: strings.bsh not readable at '${strings_bsh_path}'" >&2
    printf '%s\n' "set HELPER_SCRIPTS_REPO to a checkout, or install helper-scripts" >&2
-   exit 77
+   exit 1
 fi
 
 if [ ! -x "${stcat_bin}" ]; then
-   printf '%s\n' "SKIP: stcat not executable at '${stcat_bin}'" >&2
+   printf '%s\n' "FATAL: stcat not executable at '${stcat_bin}'" >&2
    printf '%s\n' "without it the read path under test cannot run at all" >&2
-   exit 77
+   exit 1
 fi
 
 ## The library calls 'stcat' by NAME, so the checkout's copy has to be the one

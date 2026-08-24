@@ -28,6 +28,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
    dm_checkout="${DERIVATIVE_MAKER_DIR}"
@@ -60,8 +61,8 @@ for candidate in "${candidates[@]}"; do
    fi
 done
 if [ -z "${subject}" ]; then
-   printf '%s\n' "SKIP: dm-virtualbox-test-vm not found (set DM_VIRTUALBOX_TEST_VM)." >&2
-   exit 77
+   printf '%s\n' "FATAL: dm-virtualbox-test-vm not found (set DM_VIRTUALBOX_TEST_VM)." >&2
+   exit 1
 fi
 
 ## Extract the REAL variables() function (its closing brace is the first
@@ -73,17 +74,17 @@ if [ -z "${func_src}" ]; then
 fi
 
 ## --- STRUCTURAL --------------------------------------------------------------
-if printf '%s\n' "${func_src}" | grep --quiet --fixed-strings -- 'password=""'; then
+if grep --quiet --fixed-strings -- 'password=""' <<< "${func_src}"; then
    pass "structural: guest login password is empty (passwordless account)"
 else
    fail "structural: password is not empty; the passwordless guest login needs password=\"\""
 fi
-if printf '%s\n' "${func_src}" | grep --quiet --fixed-strings -- 'password="changeme"'; then
+if grep --quiet --fixed-strings -- 'password="changeme"' <<< "${func_src}"; then
    fail "structural: password is still 'changeme'; the guest account is passwordless now"
 else
    pass "structural: the old 'changeme' password is gone"
 fi
-if printf '%s\n' "${func_src}" | grep --quiet --extended-regexp -- 'vboxmanage_sudo_wrapper=\('; then
+if grep --quiet --extended-regexp -- 'vboxmanage_sudo_wrapper=\(' <<< "${func_src}"; then
    pass "structural: the sudo wrapper is an array (empty --password survives word-splitting)"
 else
    fail "structural: the sudo wrapper is not an array; an empty --password would collapse"
@@ -142,7 +143,7 @@ else
    fi
 fi
 ## And the flag after the empty password must still be --wait-stdout (not eaten).
-if printf '%s\n' "${argv_lines[@]}" | grep --quiet --fixed-strings -- '[--wait-stdout]'; then
+if grep --quiet --fixed-strings -- '[--wait-stdout]' <<< "${argv_lines[@]}"; then
    pass "behavioural: --wait-stdout survived (not consumed as the password value)"
 else
    fail "behavioural: --wait-stdout is missing from argv; it was eaten as the password"

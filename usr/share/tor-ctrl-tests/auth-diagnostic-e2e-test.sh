@@ -26,6 +26,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 work_dir=""
 tor_pid=""
@@ -55,8 +56,8 @@ else
 fi
 
 if [ ! -x "${bin_dir}/tor-ctrl" ]; then
-   printf '%s\n' "SKIP: tor-ctrl not found at '${bin_dir}/tor-ctrl'" >&2
-   exit 77
+   printf '%s\n' "FATAL: tor-ctrl not found at '${bin_dir}/tor-ctrl'" >&2
+   exit 1
 fi
 
 PATH="${bin_dir}:${PATH}"
@@ -98,7 +99,7 @@ run_tor_ctrl() {
 expect_text() {
    local label="${1}"
    local want_text="${2}"
-   if printf '%s' "${last_output}" | grep -qF -- "${want_text}"; then
+   if grep --quiet --fixed-strings -- "${want_text}" <<< "${last_output}"; then
       check "${label}" "found" "found"
    else
       check "${label}" "found" "missing: ${last_output:0:70}"

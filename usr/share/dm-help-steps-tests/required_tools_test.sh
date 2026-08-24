@@ -32,6 +32,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -59,8 +60,8 @@ locate_subject() {
 }
 
 if ! locate_subject; then
-   printf '%s\n' "SKIP: no derivative-maker build-steps.d/1100_sanity-tests found." >&2
-   exit 77
+   printf '%s\n' "FATAL: no derivative-maker build-steps.d/1100_sanity-tests found." >&2
+   exit 1
 fi
 
 ## Contract: defined, and actually dispatched. A defined-but-uncalled check is
@@ -71,7 +72,7 @@ else
    fail "1100_sanity-tests does not define check_required_packages_installed"
 fi
 if sed -n '/^main()/,/^}/p' -- "${sanity_tests}" \
-   | grep --quiet --fixed-strings 'check_required_packages_installed'; then
+  grep --quiet --fixed-strings 'check_required_packages_installed' <<< "$()"; then
    pass "check_required_packages_installed is called from main"
 else
    fail "check_required_packages_installed is defined but never called from main"

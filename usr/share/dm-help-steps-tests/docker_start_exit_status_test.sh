@@ -34,6 +34,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -61,13 +62,13 @@ locate_subject() {
 }
 
 if ! locate_subject; then
-   printf '%s\n' "SKIP: no derivative-maker docker/derivative-maker-docker-start found." >&2
-   exit 77
+   printf '%s\n' "FATAL: no derivative-maker docker/derivative-maker-docker-start found." >&2
+   exit 1
 fi
 
 if [ ! -c /dev/full ]; then
-   printf '%s\n' "SKIP: /dev/full is not available; cannot produce a deterministic write failure." >&2
-   exit 77
+   printf '%s\n' "FATAL: /dev/full is not available; cannot produce a deterministic write failure." >&2
+   exit 1
 fi
 
 ## --- semantics, on a real write failure ------------------------------------

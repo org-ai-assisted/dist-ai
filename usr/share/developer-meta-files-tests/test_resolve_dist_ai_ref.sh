@@ -30,20 +30,21 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 ## The subject lives in the developer-meta-files checkout, wired by
 ## dist-ai-tests-all via --component developer-meta-files. Absent
-## subject -> 77 (SKIP), the convention this suite already uses; the
-## runner reports it rather than counting it green.
+## subject -> exit 1 (FATAL): a required subject absent is an environment
+## bug that must fail loud, not skip (R-220).
 if [ -z "${DMF_REPO:-}" ]; then
-   printf '%s\n' 'test_resolve_dist_ai_ref: DMF_REPO unset; skipping.' >&2
-   exit 77
+   printf '%s\n' 'FATAL: test_resolve_dist_ai_ref: DMF_REPO unset.' >&2
+   exit 1
 fi
 
 resolver="${DMF_REPO}/.github/actions/resolve-dist-ai-ref/resolve-dist-ai-ref.sh"
 if [ ! -x "${resolver}" ]; then
-   printf '%s\n' "test_resolve_dist_ai_ref: '${resolver}' not found; skipping." >&2
-   exit 77
+   printf '%s\n' "FATAL: test_resolve_dist_ai_ref: '${resolver}' not found." >&2
+   exit 1
 fi
 
 work=''
@@ -104,10 +105,10 @@ check() {
    got="$(resolve "$@")"
    if [ "${got}" = "${want}" ]; then
       pass_count=$(( pass_count + 1 ))
-      printf 'PASS: %s -> %s\n' "${desc}" "${got}"
+      printf '%s\n' "PASS: ${desc} -> ${got}"
    else
       fail_count=$(( fail_count + 1 ))
-      printf 'FAIL: %s -> got %s, want %s\n' "${desc}" "${got:-<empty>}" "${want}" >&2
+      printf '%s\n' "FAIL: ${desc} -> got ${got:-<empty>}, want ${want}" >&2
    fi
 }
 
@@ -131,5 +132,5 @@ check 'the branch literally named master falls back' 'master' \
 check 'an unreachable remote falls back, does not fail' 'master' \
    'org-ai-assisted/some-consumer' 'sha1' 'ai' 'org-ai-assisted/dist-ai' "${work}/no-such-repo-9f3a2b"
 
-printf '\n%s pass, %s fail, 0 skip\n' "${pass_count}" "${fail_count}"
+printf '%s\n' '' "${pass_count} pass, ${fail_count} fail, 0 skip"
 [ "${fail_count}" -eq 0 ]

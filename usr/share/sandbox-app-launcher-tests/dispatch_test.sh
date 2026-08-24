@@ -31,6 +31,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v TMP ] || TMP=/tmp
 [ -v SANDBOX_APP_LAUNCHER_REPO ] || SANDBOX_APP_LAUNCHER_REPO=""
@@ -42,9 +43,9 @@ else
 fi
 
 if [ ! -r "${subject}" ]; then
-   printf '%s\n' "SKIP: sandbox-app-launcher not found at '${subject}'" >&2
+   printf '%s\n' "FATAL: sandbox-app-launcher not found at '${subject}'" >&2
    printf '%s\n' "set SANDBOX_APP_LAUNCHER_REPO to a checkout, or install the package" >&2
-   exit 77
+   exit 1
 fi
 
 work_dir="$(mktemp --directory -- "${TMP}/sal-dispatch-test.XXXXXX")"

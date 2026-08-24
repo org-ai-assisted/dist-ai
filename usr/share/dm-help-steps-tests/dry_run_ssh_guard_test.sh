@@ -27,6 +27,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -54,8 +55,8 @@ locate_subject() {
 }
 
 if ! locate_subject; then
-   printf '%s\n' "SKIP: dm-build-official-one not found (set DM_BUILD_OFFICIAL_ONE)." >&2
-   exit 77
+   printf '%s\n' "FATAL: dm-build-official-one not found (set DM_BUILD_OFFICIAL_ONE)." >&2
+   exit 1
 fi
 
 ## From the argv scan down to the 'fi' that closes the guard. Both halves have to

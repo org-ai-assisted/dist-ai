@@ -22,7 +22,7 @@
 ## Both FAIL on the old harness (neither helper existed), so this is a real tripwire.
 ##
 ## Subject: lib-capture.sh, resolved from SECURE_TERMINAL_SHOTS_DIR, a checkout default, or
-## the installed path. Absent -> exit 77 (SKIP), never FAIL.
+## the installed path. Absent -> exit 1 (FATAL): a required subject is an environment bug (R-220).
 
 set -o errexit
 set -o nounset
@@ -30,6 +30,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -45,8 +46,8 @@ for cand in \
    fi
 done
 if [ -z "${lib}" ]; then
-   printf '%s\n' 'SKIP: lib-capture.sh not found (set SECURE_TERMINAL_SHOTS_DIR)' >&2
-   exit 77
+   printf '%s\n' 'FATAL: lib-capture.sh not found (set SECURE_TERMINAL_SHOTS_DIR)' >&2
+   exit 1
 fi
 
 # shellcheck source=../secure-terminal-shots/lib-capture.sh

@@ -18,6 +18,7 @@ set -o errtrace
 set -o pipefail
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 ## dist-ai suite case. These are the DEEP unit tests: they source and RUN the
 ## real msgcollector scripts, not extracted fragments. Those scripts resolve
@@ -42,8 +43,8 @@ for candidate in \
   fi
 done
 if [ -z "${msgcollector_src}" ]; then
-  printf '%s\n' "SKIP: msgcollector not found (set MSGCOLLECTOR_REPO)." >&2
-  exit 77
+  printf '%s\n' "FATAL: msgcollector not found (set MSGCOLLECTOR_REPO)." >&2
+  exit 1
 fi
 ## MSGCOLLECTOR_REPO is the checkout root (empty when the copy found is the
 ## installed /usr/libexec one); msgcollector_libexec is its
@@ -55,8 +56,8 @@ export MSGCOLLECTOR_REPO="${msgcollector_src%/usr/libexec/msgcollector}"
 msgcollector_libexec="${msgcollector_src}"
 helper_scripts_libexec="${HELPER_SCRIPTS_PATH:-}/usr/libexec/helper-scripts"
 if [ ! -r "${helper_scripts_libexec}/strings.bsh" ]; then
-  printf '%s\n' "SKIP: helper-scripts not available at ${helper_scripts_libexec}." >&2
-  exit 77
+  printf '%s\n' "FATAL: helper-scripts not available at ${helper_scripts_libexec}." >&2
+  exit 1
 fi
 
 PASS=0
@@ -513,9 +514,9 @@ test_src_links_footnote() {
   local out
   out="$(run_sourced 'cli_links_to_footnotes "${ARG}"' \
     'See <a href="https://example.com">here</a>.')"
-  if printf '%s' "${out}" | grep -Fq 'here[1]' \
-     && printf '%s' "${out}" | grep -Fq 'Links:' \
-     && printf '%s' "${out}" | grep -Fq '[1] https://example.com'; then
+  if grep --fixed-strings --quiet 'here[1]' <<< "${out}" \
+     && grep --fixed-strings --quiet 'Links:' <<< "${out}" \
+     && grep --fixed-strings --quiet '[1] https://example.com' <<< "${out}"; then
     pass "cli_links_to_footnotes: distinct link text becomes a footnote"
   else
     fail "cli_links_to_footnotes: footnote form wrong (got '${out}')"
@@ -526,8 +527,8 @@ test_src_links_bare_url() {
   local out
   out="$(run_sourced 'cli_links_to_footnotes "${ARG}"' \
     'Go <a href="https://example.com">https://example.com</a> now')"
-  if printf '%s' "${out}" | grep -Fq 'https://example.com' \
-     && ! printf '%s' "${out}" | grep -Fq '[1]'; then
+  if grep --fixed-strings --quiet 'https://example.com' <<< "${out}" \
+     && ! grep --fixed-strings --quiet '[1]' <<< "${out}"; then
     pass "cli_links_to_footnotes: link text equal to URL stays a bare URL"
   else
     fail "cli_links_to_footnotes: bare-URL case wrong (got '${out}')"
@@ -569,7 +570,7 @@ test_src_pretty_type_cli() {
   local info_out error_out
   info_out="$(run_sourced 'pretty_type_cli info; printf "%s" "${p_type}"')"
   error_out="$(run_sourced 'pretty_type_cli error; printf "%s" "${p_type}"')"
-  if [ "${info_out}" = 'INFO' ] && printf '%s' "${error_out}" | grep -Fq 'ERROR'; then
+  if [ "${info_out}" = 'INFO' ] && grep --fixed-strings --quiet 'ERROR' <<< "${error_out}"; then
     pass "pretty_type_cli: info/error produce INFO/ERROR labels"
   else
     fail "pretty_type_cli: labels wrong (info='${info_out}' error='${error_out}')"
@@ -583,8 +584,8 @@ test_src_pretty_type_x() {
   info_out="$(run_sourced 'message="<p>hello"; pretty_type_x info; printf "%s" "${message}"')"
   warn_out="$(run_sourced 'message="<p>hello"; pretty_type_x warning; printf "%s" "${message}"')"
   plain_out="$(run_sourced 'message="plain no p"; pretty_type_x error; printf "%s" "${message}"')"
-  if printf '%s' "${info_out}" | grep -Fq 'INFO' \
-     && printf '%s' "${warn_out}" | grep -Fq 'WARNING' \
+  if grep --fixed-strings --quiet 'INFO' <<< "${info_out}" \
+     && grep --fixed-strings --quiet 'WARNING' <<< "${warn_out}" \
      && [ "${plain_out}" = 'plain no p' ]; then
     pass "pretty_type_x: <p> messages get typed spans; non-<p> unchanged"
   else
@@ -619,8 +620,8 @@ test_src_error_handler_unset_parentpid() {
     parentpid=""
     error_handler
   ' 2>&1 || true)"
-  if printf '%s' "${out}" | grep -Fq 'No panic' \
-     && ! printf '%s' "${out}" | grep -Fq 'unbound variable'; then
+  if grep --fixed-strings --quiet 'No panic' <<< "${out}" \
+     && ! grep --fixed-strings --quiet 'unbound variable' <<< "${out}"; then
     pass "error_handler: empty parentpid does not trip nounset"
   else
     fail "error_handler: nounset abort on empty parentpid (got '${out}')"

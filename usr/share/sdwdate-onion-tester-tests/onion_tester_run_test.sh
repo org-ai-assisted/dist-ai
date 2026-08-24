@@ -15,6 +15,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 ## The subject is dist-ai's own usr/bin/onion-tester-run. Default resolves as a
 ## sibling of this suite's entrypoint: usr/share/<suite>/../../bin, which is
@@ -333,8 +334,8 @@ case_warmup_disabled() {
 main() {
    if [ ! -x "${runner}" ]; then
       printf '%s\n' \
-         "SKIP: onion-tester-run not found at '${runner}' -- set ONION_TESTER_RUN_BIN" >&2
-      exit 77
+         "FATAL: onion-tester-run not found at '${runner}' -- set ONION_TESTER_RUN_BIN" >&2
+      exit 1
    fi
    local total
 

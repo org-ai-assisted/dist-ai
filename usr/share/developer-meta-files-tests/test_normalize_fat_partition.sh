@@ -27,6 +27,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
    dm_checkout="${DERIVATIVE_MAKER_DIR}"
@@ -38,13 +39,13 @@ if [ ! -x "${tool}" ]; then
    tool="$( type -P dm-normalize-fat-partition || true )"
 fi
 if [ -z "${tool}" ] || [ ! -x "${tool}" ]; then
-   printf '%s\n' "SKIP: dm-normalize-fat-partition not found (set DERIVATIVE_MAKER_DIR)." >&2
-   exit 77
+   printf '%s\n' "FATAL: dm-normalize-fat-partition not found (set DERIVATIVE_MAKER_DIR)." >&2
+   exit 1
 fi
 for dep in mkfs.fat mcopy mmd; do
    if ! command -v "${dep}" >/dev/null 2>&1; then
-      printf '%s\n' "SKIP: ${dep} not installed (need dosfstools + mtools)." >&2
-      exit 77
+      printf '%s\n' "FATAL: ${dep} not installed (need dosfstools + mtools)." >&2
+      exit 1
    fi
 done
 
@@ -127,7 +128,7 @@ if [ "${serial_after}" = "${serial_before}" ]; then
 else
    fail "volume serial changed: ${serial_before} -> ${serial_after}"
 fi
-if printf '%s' "${label}" | grep -q 'ESP'; then
+if grep --quiet 'ESP' <<< "${label}"; then
    pass 'volume label preserved (ESP)'
 else
    fail "volume label not preserved: [${label}]"

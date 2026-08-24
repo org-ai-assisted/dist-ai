@@ -42,6 +42,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 here="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 out="${here}/shots"
@@ -54,8 +55,8 @@ source "${here}/lib-capture.sh"
 CORPUS_REPO="$(shots_resolve_corpus "${here}/../../../../terminal-poc-corpus" || true)"
 export CORPUS_REPO
 if [ -z "${CORPUS_REPO}" ]; then
-   printf '%s\n' 'clipboard-verdict: terminal-poc-corpus not found (set CORPUS_REPO)' >&2
-   exit 77
+   printf '%s\n' 'FATAL: clipboard-verdict: terminal-poc-corpus not found (set CORPUS_REPO)' >&2
+   exit 1
 fi
 
 TOKEN="${shots_clipboard_token}"          # what a HONORED terminal writes (corpus canary)

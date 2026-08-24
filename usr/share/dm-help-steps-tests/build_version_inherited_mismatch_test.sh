@@ -28,6 +28,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 subject=""
 for candidate in "${DM_VARIABLES:-}" \
@@ -40,8 +41,8 @@ for candidate in "${DM_VARIABLES:-}" \
    fi
 done
 if [ -z "${subject}" ]; then
-   printf '%s\n' "SKIP: help-steps/variables not found (set DM_VARIABLES)." >&2
-   exit 77
+   printf '%s\n' "FATAL: help-steps/variables not found (set DM_VARIABLES)." >&2
+   exit 1
 fi
 
 pass_count=0
@@ -83,7 +84,7 @@ esac
 ## source literally contains the message text -- so a naive grep matched a branch
 ## that never ran, and the two silent cases "passed" as failures.
 executed_report() {
-   grep -v '[$]{' | grep --quiet 'but HEAD is'
+   grep --quiet 'but HEAD is' <<< "$(grep -v '[$]{')"
 }
 
 run_block() {

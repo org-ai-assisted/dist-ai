@@ -33,6 +33,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 ## Asserts genmkfile's install-time 'rsync --safe-links' symlink handling: die on a
 ## dropped absolute / '..' symlink, skip a dangling in-tree symlink.
@@ -75,8 +76,8 @@ locate_helper() {
 }
 
 if ! subject_helper="$(locate_helper)"; then
-   printf '%s\n' 'SKIP: make-helper-one.bsh not found (set GENMKFILE_SHARE).' >&2
-   exit 77
+   printf '%s\n' 'FATAL: make-helper-one.bsh not found (set GENMKFILE_SHARE).' >&2
+   exit 1
 fi
 
 ## An ACTIVE (non-comment) die on a dropped symlink means the handling is live.
@@ -85,7 +86,7 @@ if ! grep --quiet --extended-regexp \
 then
    printf '%s\n' \
       "SKIP: genmkfile's dropped-symlink handling is still commented out in ${subject_helper} ('## TODO: review'); this test runs automatically once it is enabled." >&2
-   exit 77
+   exit 77  ## style-ok: allow-skip: feature under test still gated behind an upstream '## TODO: review'; self-activates when enabled
 fi
 
 locate_genmkfile() {
@@ -118,13 +119,13 @@ source /usr/libexec/helper-scripts/has.sh
 ## 'genmkfile install' shells out to rsync; without it the suite cannot
 ## exercise the code path, so SKIP rather than fail.
 if ! has rsync; then
-   printf '%s\n' "SKIP: rsync not available" >&2
-   exit 77
+   printf '%s\n' "FATAL: rsync not available" >&2
+   exit 1
 fi
 
 genmkfile_bin="$(locate_genmkfile)" || {
-   printf '%s\n' "SKIP: no genmkfile found (set GENMKFILE_BIN, install genmkfile, or check out derivative-maker)" >&2
-   exit 77
+   printf '%s\n' "FATAL: no genmkfile found (set GENMKFILE_BIN, install genmkfile, or check out derivative-maker)" >&2
+   exit 1
 }
 printf '%s\n' "INFO: genmkfile under test: ${genmkfile_bin}"
 
@@ -215,7 +216,7 @@ do_install "${s2_pkg}" "${s2_dest}"
 ## so that flag can appear in incidental output. Also assert the symlink was in
 ## fact not installed.
 if [ "${rc}" -ne 0 ] \
-   && printf '%s\n' "${out}" | grep --quiet -- 'refusing to install' \
+   && grep --quiet -- 'refusing to install' <<< "${out}" \
    && [ ! -e "${s2_dest}/usr/bin/abslink" ]; then
    pass "escaping symlink fails loud with the guard message; symlink not installed (exit ${rc})"
 else
@@ -223,7 +224,7 @@ else
    printf '%s\n' "${out}" | tail -10
 fi
 ## It must NOT abort with the bare, cryptic 'stat' error (the pre-fix symptom).
-if printf '%s\n' "${out}" | grep --quiet -- 'cannot statx'; then
+if grep --quiet -- 'cannot statx' <<< "${out}"; then
    fail "escaping symlink: aborted with the cryptic 'cannot statx' (pre-fix behavior)"
 fi
 
@@ -245,7 +246,7 @@ do_install "${s2b_pkg}" "${s2b_dest}"
 ## Guard must fire even though the destination "exists" (the stale file), and the
 ## escaping symlink must NOT have replaced it (destination stays a non-symlink).
 if [ "${rc}" -ne 0 ] \
-   && printf '%s\n' "${out}" | grep --quiet -- 'refusing to install' \
+   && grep --quiet -- 'refusing to install' <<< "${out}" \
    && [ ! -L "${s2b_dest}/usr/bin/abslink" ]; then
    pass "escaping symlink over stale dest fails loud; symlink not installed (exit ${rc})"
 else
@@ -253,7 +254,7 @@ else
    printf '%s\n' "${out}" | tail -10
 fi
 ## Must not regress into the cryptic 'stat' abort here either.
-if printf '%s\n' "${out}" | grep --quiet -- 'cannot statx'; then
+if grep --quiet -- 'cannot statx' <<< "${out}"; then
    fail "escaping symlink over stale dest: aborted with the cryptic 'cannot statx'"
 fi
 
@@ -271,7 +272,7 @@ ln --symbolic -- /etc/hostname "${s2c_pkg}/usr/bin/abslink"
 ## Pre-seed a stale symlink with a DIFFERENT target at the destination path.
 ln --symbolic -- ./some-old-target "${s2c_dest}/usr/bin/abslink"
 do_install "${s2c_pkg}" "${s2c_dest}"
-if [ "${rc}" -ne 0 ] && printf '%s\n' "${out}" | grep --quiet -- 'refusing to install'; then
+if [ "${rc}" -ne 0 ] && grep --quiet -- 'refusing to install' <<< "${out}"; then
    pass "escaping symlink over stale symlink fails loud (exit ${rc})"
 else
    fail "escaping symlink over stale symlink: expected non-zero exit + 'refusing to install', got exit ${rc}"

@@ -25,6 +25,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v TMP ] || TMP=/tmp
 [ -v TOR_CTRL_REPO ] || TOR_CTRL_REPO=""
@@ -36,9 +37,9 @@ else
 fi
 
 if [ ! -r "${bin_dir}/tor-ctrl-stream" ]; then
-   printf '%s\n' "SKIP: tor-ctrl-stream not found in '${bin_dir}'" >&2
+   printf '%s\n' "FATAL: tor-ctrl-stream not found in '${bin_dir}'" >&2
    printf '%s\n' "set TOR_CTRL_REPO to a tor-ctrl checkout, or install the package" >&2
-   exit 77
+   exit 1
 fi
 
 work_dir="$(mktemp --directory -- "${TMP}/tor-ctrl-colour-test.XXXXXX")"

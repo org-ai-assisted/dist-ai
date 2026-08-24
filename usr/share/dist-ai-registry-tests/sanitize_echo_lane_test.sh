@@ -27,6 +27,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v TMP ] || TMP=/tmp
 
@@ -42,7 +43,7 @@ fi
 
 if [ -z "${repo}" ] || [ ! -f "${repo}/usr/bin/sanitize-string-tests" ]; then
    printf '%s\n' 'sanitize-echo-lane-test: no dist-ai source tree (set DIST_AI_REPO); skipping.' >&2
-   exit 77
+   exit 1
 fi
 
 suite="${repo}/usr/bin/sanitize-string-tests"

@@ -24,6 +24,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v ANON_GW_ANONYMIZER_CONFIG_REPO ] || ANON_GW_ANONYMIZER_CONFIG_REPO=""
 
@@ -36,9 +37,9 @@ else
 fi
 
 if [ -z "${package_root}" ] || [ ! -d "${package_root}/usr" ]; then
-   printf '%s\n' "SKIP: no anon-gw-anonymizer-config checkout to scan" >&2
+   printf '%s\n' "FATAL: no anon-gw-anonymizer-config checkout to scan" >&2
    printf '%s\n' "set ANON_GW_ANONYMIZER_CONFIG_REPO to one" >&2
-   exit 77
+   exit 1
 fi
 
 fail=0

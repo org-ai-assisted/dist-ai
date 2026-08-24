@@ -26,6 +26,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -41,8 +42,8 @@ for cand in \
    fi
 done
 if [ -z "${shots_dir}" ]; then
-   printf '%s\n' 'SKIP: secure-terminal-shots dir not found (set SECURE_TERMINAL_SHOTS_DIR)' >&2
-   exit 77
+   printf '%s\n' 'FATAL: secure-terminal-shots dir not found (set SECURE_TERMINAL_SHOTS_DIR)' >&2
+   exit 1
 fi
 gen="${shots_dir}/hero-board.py"
 checker="${script_dir}/hero_board_check.py"
@@ -78,7 +79,7 @@ if [ "${verdict}" = 'OK cat-safe' ]; then rc=0; else rc=1; fi
 check "board carries the four primitives and is cat-safe (got '${verdict}')" "${rc}"
 
 ## 2. The SOURCE is pure ASCII -- the hostile bytes are \u/\x escapes, not literals.
-if grep -qP '[^\x00-\x7F]' "${gen}"; then rc=1; else rc=0; fi
+if grep --quiet --perl-regexp '[^\x00-\x7F]' "${gen}"; then rc=1; else rc=0; fi
 check 'hero-board.py source is pure ASCII' "${rc}"
 
 ## 3. Extra args are rejected (usage error), so a mis-call cannot silently emit a partial board.

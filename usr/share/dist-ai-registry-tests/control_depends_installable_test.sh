@@ -21,8 +21,9 @@
 ## imagehash (mediawiki-dom-snapshot, opt-in) is pip-only -- neither is a
 ## Depends. This test keeps them (and their kind) out.
 ##
-## Source-tree test: set DIST_AI_REPO or run from a checkout; exits 77 (SKIP)
-## only when the SUBJECT (the dist-ai tree) is absent. Its required tooling
+## Source-tree test: set DIST_AI_REPO or run from a checkout; exits 1 (FATAL)
+## when the SUBJECT (the dist-ai tree) is absent -- a required subject absent is
+## an environment bug (R-220). Its required tooling
 ## (grep-dctrl, apt-get) is assumed present -- an absent one FAILS, it does not
 ## skip: 'an unauthorized skip is a failure, not green'.
 
@@ -52,8 +53,8 @@ if [ -z "${repo}" ]; then
    fi
 fi
 if [ -z "${repo}" ] || [ ! -f "${repo}/debian/control" ]; then
-   printf '%s\n' 'control-depends-installable-test: no dist-ai source tree (set DIST_AI_REPO); skipping.' >&2
-   exit 77
+   printf '%s\n' 'FATAL: control-depends-installable-test: no dist-ai source tree (set DIST_AI_REPO).' >&2
+   exit 1
 fi
 ## 'type -P', not the house 'has': this test does not source helper-scripts,
 ## matching the sibling ci_config_test.sh. dctrl-tools is a declared Depends, so

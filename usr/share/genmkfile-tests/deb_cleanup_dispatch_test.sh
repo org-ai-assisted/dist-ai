@@ -40,6 +40,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 locate_genmkfile() {
    if [ -n "${GENMKFILE_BIN:-}" ]; then
@@ -93,8 +94,8 @@ CHANGELOG
 }
 
 genmkfile_bin="$(locate_genmkfile)" || {
-   printf '%s\n' "SKIP: no genmkfile found (set GENMKFILE_BIN, install genmkfile, or check out derivative-maker)" >&2
-   exit 77
+   printf '%s\n' "FATAL: no genmkfile found (set GENMKFILE_BIN, install genmkfile, or check out derivative-maker)" >&2
+   exit 1
 }
 printf '%s\n' "INFO: genmkfile under test: ${genmkfile_bin}"
 
@@ -154,13 +155,13 @@ run_target() {
          "${genmkfile_bin}" "${target}" 2>&1
    )" || rc=$?
 
-   if printf '%s\n' "${out}" | grep --quiet 'unbound variable'; then
+   if grep --quiet 'unbound variable' <<< "${out}"; then
       printf '%s\n' "FAIL: ${target} tripped an \"unbound variable\" error (regression):"
       printf '%s\n' "${out}" | grep 'unbound variable'
       failures=$(( failures + 1 ))
    fi
 
-   if printf '%s\n' "${out}" | grep --quiet 'make_function_run: make_get_variables'; then
+   if grep --quiet 'make_function_run: make_get_variables' <<< "${out}"; then
       printf '%s\n' "PASS: ${target} routed through make_get_variables"
    else
       printf '%s\n' "FAIL: ${target} did NOT run make_get_variables (cheap-path mis-classification)"

@@ -30,6 +30,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -48,12 +49,12 @@ done
 ## in isolation (the canary run does exactly that).
 single_pkg="${KICKSECURE_BASE_FILES_DIR:-}"
 if [ -z "${dm_root}" ] && [ -z "${single_pkg}" ]; then
-   printf '%s\n' "SKIP: derivative-maker not checked out (set DERIVATIVE_MAKER_DIR or KICKSECURE_BASE_FILES_DIR)." >&2
-   exit 77
+   printf '%s\n' "FATAL: derivative-maker not checked out (set DERIVATIVE_MAKER_DIR or KICKSECURE_BASE_FILES_DIR)." >&2
+   exit 1
 fi
 
 ## Packages actually inspected. A run where every submodule is uninitialized
-## proves nothing, so it must SKIP rather than report success.
+## proves nothing, so it must FAIL rather than report success.
 packages_checked=0
 
 ## Each package selects its own theme variant with the same snippet shape, so the
@@ -120,7 +121,7 @@ check_package() {
 
    ## Any conditional at all reintroduces the same class of defect: whatever it
    ## tests, it is testing the build environment, because that is where it runs.
-   if printf '%s\n' "${code_only}" | grep --quiet --extended-regexp -- '^[[:space:]]*(if|case)[[:space:]]'; then
+   if grep --quiet --extended-regexp -- '^[[:space:]]*(if|case)[[:space:]]' <<< "${code_only}"; then
       fail "${label} ${snippet} branches on something; at grub-mkconfig time any condition reads the build environment"
    else
       pass "${label} ${snippet} is unconditional, so every build host produces the same result"
@@ -272,7 +273,7 @@ fi
 ## "OK: grub theme pinning" over an empty run is the silent-green failure mode
 ## this suite exists to avoid.
 if [ "${packages_checked}" -eq 0 ]; then
-   printf '%s\n' "SKIP: no grub-theme package is checked out; nothing was verified." >&2
-   exit 77
+   printf '%s\n' "FATAL: no grub-theme package is checked out; nothing was verified." >&2
+   exit 1
 fi
 printf '%s\n' "OK: grub theme pinning (${packages_checked} package(s))."

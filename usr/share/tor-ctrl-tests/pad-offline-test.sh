@@ -23,6 +23,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v TOR_CTRL_REPO ] || TOR_CTRL_REPO=""
 if [ -n "${TOR_CTRL_REPO}" ]; then
@@ -32,9 +33,9 @@ else
 fi
 
 if [ ! -r "${pad_lib}" ]; then
-   printf '%s\n' "SKIP: pad.bsh not found at '${pad_lib}'" >&2
+   printf '%s\n' "FATAL: pad.bsh not found at '${pad_lib}'" >&2
    printf '%s\n' "set TOR_CTRL_REPO to a tor-ctrl checkout, or install the package" >&2
-   exit 77
+   exit 1
 fi
 
 # shellcheck disable=SC1090

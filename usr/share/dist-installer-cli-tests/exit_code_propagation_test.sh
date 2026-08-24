@@ -24,6 +24,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v TMP ] || TMP=/tmp
 
@@ -36,8 +37,8 @@ fi
 step_script="${repo}/ci/vbox-back-to-default-repo.sh"
 
 if [ ! -x "${step_script}" ]; then
-   printf '%s\n' "SKIP: ${step_script} not found; set USABILITY_MISC_REPO to a checkout." >&2
-   exit 77
+   printf '%s\n' "FATAL: ${step_script} not found; set USABILITY_MISC_REPO to a checkout." >&2
+   exit 1
 fi
 
 stub_exit=42

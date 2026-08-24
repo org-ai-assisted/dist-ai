@@ -24,6 +24,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
    dm_checkout="${DERIVATIVE_MAKER_DIR}"
@@ -44,8 +45,8 @@ for candidate in "${candidates[@]}"; do
    fi
 done
 if [ -z "${check_file}" ]; then
-   printf '%s\n' "SKIP: msgcollector 'check' not found (set MSGCOLLECTOR_REPO)." >&2
-   exit 77
+   printf '%s\n' "FATAL: msgcollector 'check' not found (set MSGCOLLECTOR_REPO)." >&2
+   exit 1
 fi
 
 workdir="$(mktemp --directory)"
@@ -90,6 +91,9 @@ fail() { fail_count=$(( fail_count + 1 )); printf '%s\n' "FAIL: $*" >&2; }
 ## msgcollector_check() returned (did not exit the subshell). RC_NOTEMPTY /
 ## RC_ALNUM / RC_UNICODE select which sub-check fails.
 drive() {
+   ## style-ok: allow-inline-interpreter -- fresh isolation shell must inherit
+   ## errexit ONLY from the sourced subject; a strict-mode preamble or an
+   ## extracted script would pre-set it and defeat the test.
    RC_NOTEMPTY="$1" RC_ALNUM="$2" RC_UNICODE="$3" \
    PATH="${stub_bin}:${PATH}" CHECK_FN="${check_fn}" bash -c '
       set -o errexit

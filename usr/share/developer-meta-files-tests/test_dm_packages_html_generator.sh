@@ -37,6 +37,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 ## The derivative-maker checkout under test. An explicitly named tree is the ONLY
 ## answer: falling back to '~/derivative-maker' reports on a DIFFERENT tree than
@@ -126,7 +127,7 @@ if [ -z "${generator}" ]; then
    ## generator IS present, a missing dependency is a real packaging defect.
    printf '%s\n' \
       'SKIP: test_dm_packages_html_generator: dm-packages-html-generator not found, neither installed nor under DM_SOURCE_DIR.' >&2
-   exit 77
+   exit 77  ## style-ok: allow-skip: dm-packages-html-generator is on no mainline branch yet (unshipped subject, not broken)
 fi
 
 ## Checked AFTER the subject, deliberately. These prerequisites used to run
@@ -210,20 +211,20 @@ else
 fi
 
 ## Escaping.
-if printf '%s' "${rendered_all}" | grep --quiet --fixed-strings -- '<img src=x'; then
+if grep --quiet --fixed-strings -- '<img src=x' <<< "${rendered_all}"; then
    fail 'raw <img> tag reached the generated HTML (autoescape is off)'
 else
    pass 'attacker HTML is escaped, not emitted as markup'
 fi
 
-if printf '%s' "${rendered_all}" | grep --quiet --fixed-strings -- '&lt;img'; then
+if grep --quiet --fixed-strings -- '&lt;img' <<< "${rendered_all}"; then
    pass 'attacker HTML is present in escaped form'
 else
    fail 'escaped form of the attacker HTML is missing; field may have been dropped instead of escaped'
 fi
 
 ## URI scheme.
-if printf '%s' "${rendered_all}" | grep --quiet --fixed-strings -- 'href="javascript:'; then
+if grep --quiet --fixed-strings -- 'href="javascript:' <<< "${rendered_all}"; then
    fail 'javascript: URI reached an href'
 else
    pass 'javascript: URI never reaches an href'
@@ -284,7 +285,7 @@ else
    pass 'absolute package name did not write outside the output directory'
 fi
 
-if printf '%s' "${traversal_output}" | grep --quiet --fixed-strings -- 'skipping invalid package name'; then
+if grep --quiet --fixed-strings -- 'skipping invalid package name' <<< "${traversal_output}"; then
    pass 'invalid package names are reported, not silently dropped'
 else
    fail 'invalid package names were not reported'
@@ -299,7 +300,7 @@ fi
 ## A package named 'index.html' is legal per the Debian name grammar (dots
 ## are allowed) but collides with the suite index FILE, so it must be
 ## rejected by name rather than crashing mid-render.
-if printf '%s' "${traversal_output}" | grep --quiet --fixed-strings -- "'index.html'"; then
+if grep --quiet --fixed-strings -- "'index.html'" <<< "${traversal_output}"; then
    pass 'reserved output name is rejected by validation'
 else
    fail 'reserved output name index.html was not rejected'
@@ -313,25 +314,25 @@ else
 fi
 
 ## Rendering fidelity: the page must not contradict the control file.
-if printf '%s' "${rendered_all}" | grep --quiet --fixed-strings -- 'good_1.0.orig.tar.gz'; then
+if grep --quiet --fixed-strings -- 'good_1.0.orig.tar.gz' <<< "${rendered_all}"; then
    pass 'source file table is rendered'
 else
    fail 'source file table is empty (Mapping rows dropped)'
 fi
 
-if printf '%s' "${rendered_all}" | grep --quiet --fixed-strings -- '[amd64 !i386]'; then
+if grep --quiet --fixed-strings -- '[amd64 !i386]' <<< "${rendered_all}"; then
    pass 'architecture qualifier keeps its polarity'
 else
    fail 'architecture qualifier polarity is inverted or missing'
 fi
 
-if printf '%s' "${rendered_all}" | grep --quiet --fixed-strings -- '&lt;!nocheck&gt;'; then
+if grep --quiet --fixed-strings -- '&lt;!nocheck&gt;' <<< "${rendered_all}"; then
    pass 'build-profile qualifier keeps its polarity'
 else
    fail 'build-profile qualifier polarity is inverted or missing'
 fi
 
-if printf '%s' "${rendered_all}" | grep --quiet --fixed-strings -- 'Content-Security-Policy'; then
+if grep --quiet --fixed-strings -- 'Content-Security-Policy' <<< "${rendered_all}"; then
    pass 'generated pages carry a Content-Security-Policy'
 else
    fail 'Content-Security-Policy meta is missing'

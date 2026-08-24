@@ -20,6 +20,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v TMP ] || TMP=/tmp
 [ -v MSGCOLLECTOR_REPO ] || MSGCOLLECTOR_REPO=""
@@ -31,9 +32,9 @@ else
 fi
 
 if [ ! -r "${subject}" ]; then
-   printf '%s\n' "SKIP: msgcollector not found at '${subject}'" >&2
+   printf '%s\n' "FATAL: msgcollector not found at '${subject}'" >&2
    printf '%s\n' "set MSGCOLLECTOR_REPO to a msgcollector checkout, or install the package" >&2
-   exit 77
+   exit 1
 fi
 ## flock (util-linux) is a hard msgcollector dependency (msgdispatcher requires
 ## it too), so it is required, not skipped.

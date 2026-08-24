@@ -32,6 +32,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v TMP ] || TMP=/tmp
 [ -v ANON_GW_ANONYMIZER_CONFIG_REPO ] || ANON_GW_ANONYMIZER_CONFIG_REPO=""
@@ -43,9 +44,9 @@ else
 fi
 
 if [ ! -r "${subject}" ]; then
-   printf '%s\n' "SKIP: torrc-parser not found at '${subject}'" >&2
+   printf '%s\n' "FATAL: torrc-parser not found at '${subject}'" >&2
    printf '%s\n' "set ANON_GW_ANONYMIZER_CONFIG_REPO to a checkout, or install the package" >&2
-   exit 77
+   exit 1
 fi
 
 work_dir="$(mktemp --directory -- "${TMP}/torrc-parser-test.XXXXXX")"
@@ -87,7 +88,7 @@ run_unknown_option() {
    ## stdin is a pipe that never closes: a grep with no file operands blocks on
    ## it, which is exactly the hang being detected.
    status=0
-   timeout 5 bash "${base}/driver" < <(sleep 30) >/dev/null 2>&1 || status=$?
+   timeout --kill-after=5 5 bash "${base}/driver" < <(sleep 30) >/dev/null 2>&1 || status=$?
    printf '%s' "${status}"
 }
 
@@ -145,7 +146,7 @@ run_traverse() {
       return 0
    fi
 
-   timeout 20 bash "${base}/driver" 2>&1 || true
+   timeout --kill-after=20 20 bash "${base}/driver" 2>&1 || true
 }
 
 check_traverse() {

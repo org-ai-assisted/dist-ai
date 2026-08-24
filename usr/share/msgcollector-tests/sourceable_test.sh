@@ -22,6 +22,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 if [ -n "${DERIVATIVE_MAKER_DIR:-}" ]; then
    dm_checkout="${DERIVATIVE_MAKER_DIR}"
@@ -42,8 +43,8 @@ for candidate in "${candidates[@]}"; do
    fi
 done
 if [ -z "${subject}" ]; then
-   printf '%s\n' "SKIP: msgcollector not found (set MSGCOLLECTOR_REPO)." >&2
-   exit 77
+   printf '%s\n' "FATAL: msgcollector not found (set MSGCOLLECTOR_REPO)." >&2
+   exit 1
 fi
 
 pass_count=0
@@ -56,6 +57,9 @@ fail() { fail_count=$(( fail_count + 1 )); printf '%s\n' "FAIL: $*" >&2; }
 ## facts: did sourcing return cleanly, is main() defined, did main run (detected
 ## by msgcollector_run_dir, which only folder_init -- called inside main --
 ## sets).
+## style-ok: allow-inline-interpreter -- fresh isolation shell must inherit
+## errexit ONLY from the sourced subject; a strict-mode preamble or an extracted
+## script would pre-set it and defeat the test.
 report="$(
    MSGCOLLECTOR_SUBJECT="${subject}" bash -c '
       ## The file sets "set -e" at the top; capture the source rc via "|| rc" so
@@ -70,25 +74,25 @@ report="$(
    ' 2>/dev/null
 )"
 
-if printf '%s\n' "${report}" | grep --quiet --fixed-strings 'src_rc=0'; then
+if grep --quiet --fixed-strings 'src_rc=0' <<< "${report}"; then
    pass "sourcing returns cleanly (no dispatch, no exit)"
 else
    fail "sourcing did not return 0: $(printf '%s' "${report}" | tr '\n' ' ')"
 fi
 
-if printf '%s\n' "${report}" | grep --quiet --fixed-strings 'MAIN_DEFINED'; then
+if grep --quiet --fixed-strings 'MAIN_DEFINED' <<< "${report}"; then
    pass "main() is defined on source"
 else
    fail "main() is not defined -- msgcollector is not in source-able (main + guard) form"
 fi
 
-if printf '%s\n' "${report}" | grep --quiet --fixed-strings 'COLLECTOR_DEFINED'; then
+if grep --quiet --fixed-strings 'COLLECTOR_DEFINED' <<< "${report}"; then
    pass "collector() (and the other functions) are available to a unit test"
 else
    fail "collector() not defined after sourcing"
 fi
 
-if printf '%s\n' "${report}" | grep --quiet --fixed-strings 'MAIN_RAN'; then
+if grep --quiet --fixed-strings 'MAIN_RAN' <<< "${report}"; then
    fail "main ran on source (msgcollector_run_dir got set) -- execution is not guarded"
 else
    pass "main did NOT run on source (no folder_init side effect)"

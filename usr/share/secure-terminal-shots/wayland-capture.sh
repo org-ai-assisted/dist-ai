@@ -33,6 +33,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 ## Run the whole pipeline inside a rootless user+net+mount namespace so Xvfb AND
 ## labwc's own Xwayland each get a PRIVATE X display -- outside, Qubes' Xorg holds
@@ -142,8 +143,8 @@ shots_require_safe_ps || exit 1
 ## Pre-clean orphans from a prior crashed run (marker-scoped), then register this run.
 shots_reap_registered || true
 shots_register_run "${run_marker}"
-## propagate the real code: 77 is the missing-corpus SKIP, any other non-zero is a
-## genuine payload-generation failure that must not read as a skip.
+## propagate the real code: any non-zero (corpus absent or a genuine
+## payload-generation failure) is a hard failure, never a skip (R-220).
 shots_generate_logs "${here}" "${work}" || exit "$?"
 
 ## ---- labwc on the X11 backend (also gives us an Xwayland for the X11 set) -----

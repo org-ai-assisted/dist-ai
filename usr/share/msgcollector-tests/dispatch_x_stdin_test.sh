@@ -23,14 +23,15 @@ set -o errtrace
 set -o pipefail
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v MSGCOLLECTOR_REPO ] || MSGCOLLECTOR_REPO=""
 msgcollector_libexec="${MSGCOLLECTOR_REPO}/usr/libexec/msgcollector"
 
 if [ ! -r "${msgcollector_libexec}/msgdispatcher" ]; then
-  printf '%s\n' "$0: SKIP: msgdispatcher not found at '${msgcollector_libexec}/msgdispatcher'" >&2
+  printf '%s\n' "$0: FATAL: msgdispatcher not found at '${msgcollector_libexec}/msgdispatcher'" >&2
   printf '%s\n' "$0: set MSGCOLLECTOR_REPO to a msgcollector checkout, or install the package" >&2
-  exit 77
+  exit 1
 fi
 
 PASS=0

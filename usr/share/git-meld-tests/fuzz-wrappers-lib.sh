@@ -12,6 +12,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 bindir="$1"
 iters="${2:-200}"
@@ -19,9 +20,8 @@ seed="${3:-1}"
 difftool_bin="${bindir}/git-review-difftool"
 mergetool_bin="${bindir}/git-review-mergetool"
 if [ ! -x "${difftool_bin}" ] || [ ! -x "${mergetool_bin}" ]; then
-   ## 77 == SKIP (target not found), per the dist-ai-tests-all convention.
-   printf '%s\n' "fuzz-wrappers-lib: git-review-difftool/mergetool not found under '${bindir}'; skipping." >&2
-   exit 77
+   printf '%s\n' "FATAL: fuzz-wrappers-lib: git-review-difftool/mergetool not found under '${bindir}'." >&2
+   exit 1
 fi
 
 work="$( mktemp --directory )"
@@ -35,7 +35,7 @@ stubdir="${work}/bin"
 mkdir --parents -- "${stubdir}"
 gui_log="${work}/gui.log"
 for gui in meld kdiff3; do
-   printf '#!/bin/bash\nprintf "OPENED\\n" >> "%s"\nexit 0\n' "${gui_log}" > "${stubdir}/${gui}"
+   printf '%s\n' '#!/bin/bash' "printf \"OPENED\\n\" >> \"${gui_log}\"" 'exit 0' > "${stubdir}/${gui}"
    chmod +x "${stubdir}/${gui}"
 done
 export PATH="${stubdir}:${PATH}"
@@ -49,16 +49,16 @@ rand_blob () {
    local kind=$(( RANDOM % 7 ))
    case "${kind}" in
       0)
-         printf 'line %s\ncode %s\n' "${RANDOM}" "${RANDOM}"
+         printf '%s\n' "line ${RANDOM}" "code ${RANDOM}"
          ;;
       1)
-         printf 'a\x00b NUL %s\n' "${RANDOM}"                                     ## binary
+         printf '%b\n' 'a\x00b NUL '"${RANDOM}"                                   ## binary
          ;;
       2)
-         printf 'x # \xe2\x80\xae\xe2\x81\xa6hidden\xe2\x81\xa9 %s\n' "${RANDOM}"  ## bidi (non-fatal)
+         printf '%b\n' 'x # \xe2\x80\xae\xe2\x81\xa6hidden\xe2\x81\xa9 '"${RANDOM}"  ## bidi (non-fatal)
          ;;
       3)
-         printf 'plain ascii %s\n' "${RANDOM}"
+         printf '%s\n' "plain ascii ${RANDOM}"
          ;;
       4)
          ## long line
@@ -66,10 +66,10 @@ rand_blob () {
          printf '%s\n' ''
          ;;
       5)
-         printf '\xef\xbb\xbfbom %s\n' "${RANDOM}"
+         printf '%b\n' '\xef\xbb\xbfbom '"${RANDOM}"
          ;;
       6)
-         printf 'bad \xff\xfe undecodable %s\n' "${RANDOM}"                        ## fatal (rc>=2)
+         printf '%b\n' 'bad \xff\xfe undecodable '"${RANDOM}"                      ## fatal (rc>=2)
          ;;
    esac
 }
@@ -97,7 +97,7 @@ any_hostile () {
    return 1
 }
 
-printf '== git-review wrapper fuzz: %s iters, seed %s, %s ==\n' "${iters}" "${seed}" "${bindir}"
+printf '%s\n' "== git-review wrapper fuzz: ${iters} iters, seed ${seed}, ${bindir} =="
 i=0
 while [ "${i}" -lt "${iters}" ]; do
    i=$(( i + 1 ))
@@ -115,7 +115,7 @@ while [ "${i}" -lt "${iters}" ]; do
    "${difftool_bin}" meld "${a}" "${b}" >/dev/null 2>&1 || true
    if [ -s "${gui_log}" ] && any_hostile "${a}" "${b}"; then
       fails=$(( fails + 1 ))
-      printf 'FAIL iter=%s: difftool opened the viewer on a fatal/binary blob\n' "${i}" >&2
+      printf '%s\n' "FAIL iter=${i}: difftool opened the viewer on a fatal/binary blob" >&2
    fi
 
    ## mergetool: a fatal/binary $BASE/$LOCAL/$REMOTE must never open the viewer.
@@ -123,9 +123,9 @@ while [ "${i}" -lt "${iters}" ]; do
    "${mergetool_bin}" meld "${a}" "${b}" "${c}" "${m}" >/dev/null 2>&1 || true
    if [ -s "${gui_log}" ] && any_hostile "${a}" "${b}" "${c}"; then
       fails=$(( fails + 1 ))
-      printf 'FAIL iter=%s: mergetool opened the viewer on a fatal/binary conflict side\n' "${i}" >&2
+      printf '%s\n' "FAIL iter=${i}: mergetool opened the viewer on a fatal/binary conflict side" >&2
    fi
 done
 
-printf '\n==== wrapper fuzz FAILURES (hostile blob reached viewer): %s ====\n' "${fails}"
+printf '%s\n' '' "==== wrapper fuzz FAILURES (hostile blob reached viewer): ${fails} ===="
 exit "${fails}"

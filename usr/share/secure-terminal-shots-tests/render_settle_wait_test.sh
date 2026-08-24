@@ -36,6 +36,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -51,8 +52,8 @@ for cand in \
    fi
 done
 if [ -z "${subject}" ]; then
-   printf '%s\n' 'SKIP: comparison-capture.sh not found (set SECURE_TERMINAL_SHOTS_DIR)' >&2
-   exit 77
+   printf '%s\n' 'FATAL: comparison-capture.sh not found (set SECURE_TERMINAL_SHOTS_DIR)' >&2
+   exit 1
 fi
 
 ## `compare` (ImageMagick) is REQUIRED tooling: st_wait_render_settled early-returns without it, so

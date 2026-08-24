@@ -30,6 +30,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v TMP ] || TMP=/tmp
 
@@ -54,8 +55,8 @@ locate_genmkfile() {
 }
 
 if ! genmkfile_bin="$(locate_genmkfile)"; then
-   printf '%s\n' 'SKIP: genmkfile not found (set GENMKFILE_BIN).' >&2
-   exit 77
+   printf '%s\n' 'FATAL: genmkfile not found (set GENMKFILE_BIN).' >&2
+   exit 1
 fi
 printf '%s\n' "INFO: genmkfile under test: ${genmkfile_bin}"
 

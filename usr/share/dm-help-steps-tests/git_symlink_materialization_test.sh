@@ -37,6 +37,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -64,8 +65,8 @@ locate_subject() {
 }
 
 if ! locate_subject; then
-   printf '%s\n' "SKIP: no derivative-maker build-steps.d/1100_sanity-tests found." >&2
-   exit 77
+   printf '%s\n' "FATAL: no derivative-maker build-steps.d/1100_sanity-tests found." >&2
+   exit 1
 fi
 
 if ! grep --quiet --fixed-strings 'check-git-symlinks()' "${sanity_tests}"; then

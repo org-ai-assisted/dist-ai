@@ -40,20 +40,19 @@ else
    libdir='/usr/libexec/helper-scripts'
 fi
 
-## The SUBJECT (helper-scripts detect-software-rendering + its libs) being absent is a SKIP,
-## not a FAIL: a source-tree / partial run without helper-scripts installed or HELPER_SCRIPTS_REPO
-## set has nothing to test here. exit 77 (the runner reports SKIP); exit 1 would turn a supported
-## partial run into a spurious core-suite failure. Matches the sibling lanes (has_builtin,
-## read_integer_file). The test's OWN support scripts missing (below) stays a FAIL -- that is a
-## broken test install, not an absent subject.
+## The SUBJECT (helper-scripts detect-software-rendering + its libs) is a REQUIRED
+## dependency: absent it means helper-scripts is not installed or HELPER_SCRIPTS_REPO
+## is not set, an environment bug -> exit 1 (FATAL), never a skip (R-220). Matches the
+## sibling lanes (has_builtin, read_integer_file). The test's OWN support scripts
+## missing (below) is likewise a FAIL -- a broken test install.
 if [ ! -x "${subject}" ]; then
-   printf '%s\n' "SKIP: subject not executable at '${subject}'" >&2
+   printf '%s\n' "FATAL: subject not executable at '${subject}'" >&2
    printf '%s\n' "set HELPER_SCRIPTS_REPO to a helper-scripts checkout, or install helper-scripts" >&2
-   exit 77
+   exit 1
 fi
 if [ ! -r "${libdir}/has.sh" ] || [ ! -r "${libdir}/check_runtime.bsh" ]; then
-   printf '%s\n' "SKIP: helper-scripts libs not readable under '${libdir}'" >&2
-   exit 77
+   printf '%s\n' "FATAL: helper-scripts libs not readable under '${libdir}'" >&2
+   exit 1
 fi
 if [ ! -x "${stub_file}" ] || [ ! -x "${probe}" ]; then
    printf '%s\n' "FATAL: test support scripts missing next to '${tool_dir}'" >&2

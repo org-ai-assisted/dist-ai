@@ -16,7 +16,7 @@
 ## genuine regression test, not a tautology.
 ##
 ## Subject: lib-capture.sh, resolved from SECURE_TERMINAL_SHOTS_DIR, a checkout default, or the
-## installed path. Absent -> exit 77 (SKIP), never FAIL. Spawns + kills processes, so run it in
+## installed path. Absent -> exit 1 (FATAL): a required subject is an environment bug (R-220). Spawns + kills processes, so run it in
 ## the sandbox (it only ever touches its OWN uniquely-marked dummies).
 
 set -o errexit
@@ -25,6 +25,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -40,17 +41,17 @@ for cand in \
    fi
 done
 if [ -z "${lib}" ]; then
-   printf '%s\n' 'SKIP: lib-capture.sh not found (set SECURE_TERMINAL_SHOTS_DIR)' >&2
-   exit 77
+   printf '%s\n' 'FATAL: lib-capture.sh not found (set SECURE_TERMINAL_SHOTS_DIR)' >&2
+   exit 1
 fi
 
 # shellcheck source=../secure-terminal-shots/lib-capture.sh
 source "${lib}"
 
-## The real safe wrappers are a REQUIRED dependency of the reaper; genuinely absent -> SKIP 77.
+## The real safe wrappers are a REQUIRED dependency of the reaper; absent -> exit 1 (FATAL, R-220).
 if ! type -P safe-pgrep >/dev/null 2>&1 || ! type -P safe-pkill >/dev/null 2>&1; then
-   printf '%s\n' 'SKIP: safe-pgrep/safe-pkill not on PATH (provision private-ai-config)' >&2
-   exit 77
+   printf '%s\n' 'FATAL: safe-pgrep/safe-pkill not on PATH (provision private-ai-config)' >&2
+   exit 1
 fi
 
 pass=0
