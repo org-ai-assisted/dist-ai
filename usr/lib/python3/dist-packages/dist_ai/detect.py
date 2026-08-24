@@ -267,17 +267,44 @@ def r034_echo(path, source, tree):
 ## --- printf -v injection guard ---------------------------------------------
 
 
-def _printf_v_target(call, source):
+def _word_literal_prefix(word):
+    """The leading LITERAL text of WORD, with quote SYNTAX removed, up to the
+    first expansion. 'printf' -> 'printf', '"-v"' -> '-v', '"-v${x}"' -> '-v',
+    '-v${x}' -> '-v', '"${x}"' -> ''. Option detection must see what bash's own
+    getopt sees AFTER quote removal, so '"-v"' is the '-v' option, not data --
+    quotes are syntax, and word_source (raw) / word_lit (unquoted-single-Lit)
+    both miss that."""
+    out = []
+    for part in word.get("Parts") or []:
+        kind = part.get("Type")
+        if kind == "Lit":
+            out.append(part.get("Value") or "")
+        elif kind == "SglQuoted":
+            out.append(part.get("Value") or "")
+        elif kind == "DblQuoted":
+            for inner in part.get("Parts") or []:
+                if inner.get("Type") != "Lit":
+                    return "".join(out)
+                out.append(inner.get("Value") or "")
+        else:
+            ## ParamExp / CmdSubst / arithmetic: the literal prefix ends here.
+            return "".join(out)
+    return "".join(out)
+
+
+def _printf_v_target(call):
     """The Word carrying the EFFECTIVE 'printf -v' target NAME, or None when the
-    printf writes no variable. Follows bash's own printf option parsing (verified):
+    printf writes no variable. Follows bash's own printf option parsing, over the
+    QUOTE-REMOVED argument (all verified against bash):
 
       - Options precede the FORMAT operand; the first non-option word is the format
         and ENDS option scanning, so a later '-v' ('printf "%s" -v "$x"') is a data
         argument, not the option -- not a target.
       - '--' also ends option scanning ('printf -- -v x' prints '-v').
-      - Both spellings of the option are targets: separate 'printf -v NAME' (the
-        next word) and attached 'printf -vNAME' (this word; word_string reads
-        '-vfoo' as a fixed name, '-v${x}' as dynamic).
+      - The '-v' option is recognized whatever the quoting ('-v', '"-v"'), in both
+        the SEPARATE form (name is the next word) and the ATTACHED form
+        ('-vNAME'/'"-vNAME"'/'-v${x}' -- name embedded in this word); quote removal
+        makes '"-v"' the option, which a raw-text check would miss.
       - Multiple '-v' -> bash uses the LAST, so the last target before the format
         is the effective one ('printf -v safe -v "$x"' writes "$x")."""
     call_args = bash_ast.args(call)
@@ -285,18 +312,20 @@ def _printf_v_target(call, source):
     index = 1
     while index < len(call_args):
         word = call_args[index]
-        lit = bash_ast.word_lit(word)
-        if lit == "--":
+        full = bash_ast.word_string(word)
+        if full == "--":
             break
-        if lit == "-v":
-            if index + 1 < len(call_args):
-                target = call_args[index + 1]
-                index += 2
+        prefix = _word_literal_prefix(word)
+        if prefix.startswith("-v"):
+            if full == "-v":
+                ## Exactly '-v': separate form, name is the NEXT word.
+                if index + 1 < len(call_args):
+                    target = call_args[index + 1]
+                    index += 2
+                    continue
+                index += 1
                 continue
-            index += 1
-            continue
-        raw = lit if lit is not None else bash_ast.word_source(word, source)
-        if raw.startswith("-v") and len(raw) > 2:
+            ## '-v' with more text in the SAME word: attached form, name embedded.
             target = word
             index += 1
             continue
@@ -306,9 +335,11 @@ def _printf_v_target(call, source):
 
 
 def _check_variable_name_sites(tree):
-    """(offset, param_names) for every 'check_variable_name' call: its byte offset
-    and the set of parameter names its arguments expand. A guard is matched to a
-    printf target by a shared parameter name."""
+    """(offset, scope_start, param_names) for every 'check_variable_name' call: its
+    byte offset, the start of the innermost function enclosing it, and the set of
+    parameter names its arguments expand. A guard is matched to a printf target by
+    the SAME innermost scope, textual precedence, and covering the target's
+    parameters."""
     sites = []
     for call in bash_ast.call_exprs(tree):
         if bash_ast.command_name(call) != "check_variable_name":
@@ -316,7 +347,8 @@ def _check_variable_name_sites(tree):
         params = set()
         for word in bash_ast.args(call)[1:]:
             params |= bash_ast.word_param_names(word)
-        sites.append((call["Pos"]["Offset"], params))
+        offset = call["Pos"]["Offset"]
+        sites.append((offset, _enclosing_scope_start(tree, offset), params))
     return sites
 
 
@@ -350,25 +382,26 @@ def r063_printf_v_unchecked(path, source, tree):
     pure command-substitution name ('printf -v "$(f)"') shares no parameter with
     any guard, so it can never be counted as guarded.
 
-    SCOPE (honest limits -- this catches the accidental unguarded printf -v, not
-    an adversary deliberately hiding the guard):
-      - A guard is matched by TEXTUAL precedence within the enclosing function
-        plus a shared parameter name; control-flow REACHABILITY is not modelled.
-        A check parked in an unreachable/sibling branch ('if false; then check ...
-        fi') still counts. Modelling dominance needs a CFG, and any stricter
-        block-level scoping would FALSE-POSITIVE the real idiom (guard at function
-        top, printf -v in a case/if arm, as in github-policy-lib.bsh), so the
-        function-wide precedence scope is deliberate.
-      - Only a direct 'printf' call is analyzed. A 'command printf'/'builtin
-        printf' dispatch (absent from the codebase, never an accidental spelling)
-        is out of scope."""
+    A guard counts only when it is in the SAME innermost function as the printf,
+    textually BEFORE it, and its checked parameters COVER every parameter of the
+    target name -- a name built from several expansions ('"${a}${b}"') is safe
+    only if each of a and b was checked, since bash evaluates the whole subscript.
+
+    SCOPE (honest limit -- this catches the accidental unguarded printf -v, not an
+    adversary deliberately hiding the guard): control-flow REACHABILITY is not
+    modelled, so a check parked in an unreachable branch ('if false; then check ...
+    fi') in the same function still counts. Modelling dominance needs a CFG, and a
+    block-level scope would FALSE-POSITIVE the real idiom (guard at function top,
+    printf -v in a case/if arm, as in github-policy-lib.bsh). Also: only a direct
+    'printf' is analyzed, not a 'command'/'builtin printf' dispatch (absent from
+    the codebase, never an accidental spelling)."""
     if waiver(source, "allow-unchecked-printf-v"):
         return
     guards = _check_variable_name_sites(tree)
     for call in bash_ast.call_exprs(tree):
         if bash_ast.command_name(call) != "printf":
             continue
-        name_word = _printf_v_target(call, source)
+        name_word = _printf_v_target(call)
         if name_word is None:
             continue
         if bash_ast.word_string(name_word) is not None:
@@ -377,10 +410,16 @@ def r063_printf_v_unchecked(path, source, tree):
         target_params = bash_ast.word_param_names(name_word)
         offset = call["Pos"]["Offset"]
         scope_start = _enclosing_scope_start(tree, offset)
-        guarded = bool(target_params) and any(
-            scope_start <= guard_offset < offset and (target_params & guard_params)
-            for guard_offset, guard_params in guards)
-        if guarded:
+        ## Union of parameters checked by same-scope guards textually before the
+        ## printf. The target is guarded only if EVERY one of its parameters is
+        ## covered (an uncovered component can still smuggle an injectable
+        ## subscript). An empty target_params (a command-substitution name) is
+        ## never a subset of anything non-trivially -- it is left unguarded below.
+        covered = set()
+        for guard_offset, guard_scope, guard_params in guards:
+            if guard_scope == scope_start and guard_offset < offset:
+                covered |= guard_params
+        if target_params and target_params <= covered:
             continue
         yield _fail(
             "R-063",

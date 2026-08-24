@@ -345,6 +345,39 @@ assert_not_at "R-063 spares a '-v' after the format operand (data)"  "R-063" 2
 assert_not_at "R-063 spares a '-v' after '--' (data)"                "R-063" 3
 assert_at     "R-063 analyzes the LAST '-v' target (bash uses it)"   "R-063" 4
 
+## Quote removal happens before printf's getopt, so a QUOTED '-v' (separate or
+## attached) is still the option -- a raw-text check would miss these.
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'printf "-v" "${qsep}" "%s" x' \
+   'printf "-v${qatt}" "%s" x' \
+   'printf "%s" "-v" "${notopt}"')"
+assert_at     "R-063 flags a quoted separate '\"-v\"' target"    "R-063" 2
+assert_at     "R-063 flags a quoted attached '\"-v\${x}\"'"      "R-063" 3
+assert_not_at "R-063 spares a quoted '-v' that is DATA"          "R-063" 4
+
+## A name built from several expansions is guarded only if EVERY component was
+## checked (bash evaluates the whole subscript); one covered component is not
+## enough. And a guard in a NESTED function does not count for an outer printf.
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'partial() {' \
+   '  check_variable_name "${a}" || return 1' \
+   '  printf -v "${a}${b}" "%s" x' \
+   '}' \
+   'complete() {' \
+   '  check_variable_name "${c}" || return 1' \
+   '  check_variable_name "${d}" || return 1' \
+   '  printf -v "${c}${d}" "%s" x' \
+   '}' \
+   'nested() {' \
+   '  helper() { check_variable_name "${n}" || return 1; }' \
+   '  printf -v "${n}" "%s" x' \
+   '}')"
+assert_at     "R-063 flags a multi-component name with one component unchecked" "R-063" 4
+assert_not_at "R-063 spares a multi-component name with every component checked" "R-063" 9
+assert_at     "R-063 flags a guard confined to a NESTED function"               "R-063" 13
+
 ## A top-level guard before a top-level printf -v counts (scope starts at 0).
 run_det "$(printf '%s\n' \
    '#!/bin/bash' \
