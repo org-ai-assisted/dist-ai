@@ -539,13 +539,18 @@ def r211_dpkg(path, source, tree):
         wrapped = bash_ast.command_name(call) in EXEC_WRAPPERS
         start = 1
         if wrapped:
-            ## Skip past the wrapper and its options to dpkg's own args.
+            ## Skip past the wrapper and its options to dpkg's own args. word_lit
+            ## (NOT word_string) here on purpose: a fully-quoted "dpkg" is only
+            ## ever a wrapper OPTION VALUE ('sudo -u "dpkg"'), never the real
+            ## command word (effective_command already gates on the unquoted
+            ## name), so unwrapping quotes would false-match the value and mis-set
+            ## the arg scan. R-211 is advisory; keep it quiet, not noisy.
             for index in range(1, len(args_after)):
-                if bash_ast.word_string(args_after[index]) == "dpkg":
+                if bash_ast.word_lit(args_after[index]) == "dpkg":
                     start = index + 1
                     break
         state_changing = any(
-            bash_ast.word_string(word) in DPKG_STATE_ACTIONS
+            bash_ast.word_lit(word) in DPKG_STATE_ACTIONS
             for word in args_after[start:])
         if state_changing:
             yield Finding(
