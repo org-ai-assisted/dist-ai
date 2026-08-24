@@ -153,7 +153,7 @@ try:
     import regex as _regex
     import z3
     from secure_terminal import sanitize as S
-except Exception as exc:  # pylint: disable=broad-except
+except ImportError as exc:
     sys.stderr.write('secure-terminal-tests(verify_formal): FAIL missing '
                      'dependency (z3 / regex / secure_terminal): %s\n' % exc)
     sys.exit(1)
@@ -378,10 +378,10 @@ def t1_z3_faithfulness():
     the REAL render_output's branch -- so the SMT model cannot silently drift
     from the shipped function. Dense grid: every C0/C1/DEL, every ASCII, a
     BMP slice, the bidi / DI / astral corners, and the extremes."""
-    sample = list(range(0x00, 0xA0)) + [0x7F, 0xA0, 0xAD, 0x061C, 0x200B,
-                                        0x200E, 0x202E, 0x2066, 0x034F,
-                                        0x3164, 0xFEFF, 0xFFFD, 0x10000,
-                                        0x1F600, 0xE0100, MAX_CP]
+    sample = [*range(0x00, 0xA0), 0x7F, 0xA0, 0xAD, 0x061C, 0x200B,
+              0x200E, 0x202E, 0x2066, 0x034F,
+              0x3164, 0xFEFF, 0xFFFD, 0x10000,
+              0x1F600, 0xE0100, MAX_CP]
     sample += list(range(0x2000, 0x2070))
     sample += list(range(0x2500, 0x25A0))
     seen = set()
@@ -1477,7 +1477,7 @@ def t_input_strings():
     # paste_is_multiline: True iff a newline/CR appears BEFORE the last character
     # (a trailing submit on a single line is NOT multi-command). This is the
     # hold-for-review trigger; T3 originally never mentioned it.
-    for probe in _STR_PROBES + ['a\nb', 'a\n', '\n', 'a\rb', 'ab', '']:
+    for probe in [*_STR_PROBES, 'a\nb', 'a\n', '\n', 'a\rb', 'ab', '']:
         want = (len(probe) > 0
                 and (('\n' in probe[:-1]) or ('\r' in probe[:-1])))
         if bool(S.paste_is_multiline(probe)) != want:
@@ -2008,7 +2008,7 @@ def t9_canaries():
     # to one mode's predicate -- which a BEL-in-reveal sample would miss.
     c0_whitelist = frozenset((0x08, 0x09, 0x0A, 0x0D))
     for mode in ('box', 'show', 'reveal', 'detail'):
-        for cp in list(range(0x00, 0x20)) + [0x7F]:
+        for cp in [*range(0x00, 0x20), 0x7F]:
             admitted = _runs_char_ok(chr(cp), mode)
             if cp in c0_whitelist and not admitted:
                 fail('T9 canary: _runs_char_ok drops whitelisted C0 0x%02X in %s'
