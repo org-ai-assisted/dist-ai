@@ -16,9 +16,11 @@
 ## committed data, so a crafted `path = src` (a real source dir) or `path = *`
 ## (a glob) there could exclude real code and bypass the scan. This pins: .py +
 ## shebang discovery; exclusion of .git and both helper checkouts; exclusion of
-## REAL gitlink paths (including a nested 'libs/foo'); and that a .gitmodules-only
-## spoof (path=src, path=*) does NOT exclude real source. It FAILS against a
-## .gitmodules-driven exclude.
+## REAL gitlink paths (including a nested 'libs/foo'); that a .gitmodules-only
+## spoof (path=src, path=*) does NOT exclude real source; and that a gitlink path
+## is glob-ESCAPED before find -path, so a gitlink literally named '*' or with a
+## '[' cannot over-exclude nested files. It FAILS against a .gitmodules-driven or
+## un-escaped exclude.
 ##
 ## Source-tree test: set DIST_AI_REPO, or run it from a checkout. No source tree
 ## is FATAL (exit 1), not a skip. Needs 'git'. No root, no network.
@@ -104,6 +106,12 @@ printf '%s\n' 'v = 1' > "${tree}/realsub/v.py"
 printf '%s\n' 'f = 1' > "${tree}/libs/foo/f.py"
 git -C "${tree}" update-index --add --cacheinfo "160000,${gitlink_oid},realsub"
 git -C "${tree}" update-index --add --cacheinfo "160000,${gitlink_oid},libs/foo"
+## Adversarial gitlink paths: a bare glob ('*') and a bracket. find's -path
+## must NOT interpret these, or an unescaped './*/*' exclude would hide every
+## nested .py (pkg/b.py, src/s.py, ...) from bandit. No physical dirs needed --
+## the exclude is generated from the index path text.
+git -C "${tree}" update-index --add --cacheinfo "160000,${gitlink_oid},*"
+git -C "${tree}" update-index --add --cacheinfo "160000,${gitlink_oid},weird[dir"
 ## SPOOF: .gitmodules names a real source dir (src) and a glob (*). Neither is a
 ## gitlink, so discovery must IGNORE .gitmodules and still scan src -- and the
 ## '*' must not glob-exclude everything (pkg/b.py stays in).

@@ -60,7 +60,15 @@ while IFS= read -r -d '' entry; do
    fi
    sub_path="${entry#*$'\t'}"
    if [ -n "${sub_path}" ]; then
-      exclude_args+=( -not -path "./${sub_path}/*" )
+      ## Glob-escape the path: find's -path applies fnmatch to the WHOLE pattern,
+      ## so a gitlink literally named '*' (or containing '?' '[' ']') would match
+      ## unrelated files and over-exclude the tree. Escape backslash FIRST.
+      esc_path="${sub_path//\\/\\\\}"
+      esc_path="${esc_path//\*/\\*}"
+      esc_path="${esc_path//\?/\\?}"
+      esc_path="${esc_path//\[/\\[}"
+      esc_path="${esc_path//\]/\\]}"
+      exclude_args+=( -not -path "./${esc_path}/*" )
    fi
 done < <(git ls-files -z --stage 2>/dev/null || true)
 

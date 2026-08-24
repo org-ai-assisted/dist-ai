@@ -172,6 +172,20 @@ if ! grep --quiet --fixed-strings -- 'sha256 hard-pin verified' "${crlf_cwd}/out
    fail 'a CRLF pin did not verify (trailing CR not stripped)'
 fi
 
+## ---- CRLF pin with a LEADING blank line -> still verifies -----------------
+lead_cwd="$(mktemp --directory -- "${work_dir}/consumer.XXXXXX")"
+printf '%s\n' $'\r' "${good_sha256}"$'\r' > "${lead_cwd}/.coverity-tool-sha256.expected"
+lead_rc=0
+( cd -- "${lead_cwd}" && PATH="${stub_bin}:${PATH}" ALLOW_LOCAL=true \
+   STUB_MD5_VALUE='' COVERITY_TOKEN=tok COVERITY_PROJECT=org/example \
+   bash -- "${downloader}" >"${lead_cwd}/out.log" 2>&1 ) || lead_rc=$?
+if [ "${lead_rc}" -ne 0 ]; then
+   fail "a CRLF pin with a leading blank line failed the compare closed (rc '${lead_rc}')"
+fi
+if ! grep --quiet --fixed-strings -- 'sha256 hard-pin verified' "${lead_cwd}/out.log"; then
+   fail 'a CRLF pin with a leading blank line did not verify'
+fi
+
 ## ---- CI guard: refuses without CI or ALLOW_LOCAL --------------------------
 guard_rc=0
 ( cd -- "${work_dir}" && env -u CI -u ALLOW_LOCAL PATH="${stub_bin}:${PATH}" \

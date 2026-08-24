@@ -96,9 +96,25 @@ if [ -f "${sha256_pin_file}" ]; then
   ## runner default awk) treats '--' as a filename and dies, which would fail the
   ## hard-pin check closed with an opaque error the first time a repo commits a
   ## pin. First non-blank, non-'#' line's first field is the expected sha256.
-  expected_sha256="$(awk 'NF && $1 !~ /^#/ {print $1; exit}' < "${sha256_pin_file}")"
-  ## Strip a trailing CR so a CRLF pin file does not fail the compare closed.
-  expected_sha256="${expected_sha256%$'\r'}"
+  ## First non-blank, non-'#' line's first field is the expected sha256. Strip a
+  ## trailing CR PER LINE so a CRLF pin file -- including one with a leading
+  ## CR-only blank line -- verifies rather than failing the hard-pin compare
+  ## closed. Pure bash: no assumption about awk '\r' support across gawk/mawk.
+  expected_sha256=''
+  while IFS= read -r pin_line || [ -n "${pin_line}" ]; do
+    pin_line="${pin_line%$'\r'}"
+    read -r pin_field _ <<< "${pin_line}" || true
+    if [ -z "${pin_field}" ]; then
+      continue
+    fi
+    case "${pin_field}" in
+      '#'*)
+        continue
+        ;;
+    esac
+    expected_sha256="${pin_field}"
+    break
+  done < "${sha256_pin_file}"
   if [ -z "${expected_sha256}" ]; then
     printf '%s\n' "::error::${sha256_pin_file} exists but contains no sha256 value." >&2
     exit 1
