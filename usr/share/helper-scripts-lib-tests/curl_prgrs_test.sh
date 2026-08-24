@@ -49,12 +49,12 @@ libdir="${repo%/}/usr/libexec/helper-scripts"
 if [ ! -x "${subject}" ]; then
    printf '%s\n' "SKIP: subject not executable at '${subject}'" >&2
    printf '%s\n' "set HELPER_SCRIPTS_REPO to a helper-scripts checkout, or install helper-scripts" >&2
-   exit 77
+   exit 77  ## style-ok: allow-skip: curl-prgrs subject absent (source-tree / helper-scripts not installed)
 fi
 for lib in check_runtime.bsh progress-bar strings.bsh has.sh; do
    if [ ! -r "${libdir}/${lib}" ]; then
       printf '%s\n' "SKIP: helper-scripts lib '${lib}' not readable under '${libdir}'" >&2
-      exit 77
+      exit 77  ## style-ok: allow-skip: helper-scripts lib absent (source-tree / helper-scripts not installed)
    fi
 done
 for support in "${fake_curl}" "${probe_script}" "${fuzz_script}"; do
@@ -144,12 +144,13 @@ check "source: no auto-run and no errexit leak" "$(probe_out_rc noauto)" "0|NO_L
 
 check "source: every function defined" \
    "$("${probe_script}" defined \
-      stderr_is_tty initialize_terminal initialize_variables check_variables \
+      stderr_is_tty initialize_terminal initialize_variables initialize_temporary_files \
+      check_variables \
       shutdown traps_enable compute_percent print_progress curl_exit \
       classify_download_size content_length_ceiling_for_phase enforce_final_size \
       curl_download remove_argument_for_header_request run_body_download \
       run_download main was_executed)" \
-   "function,function,function,function,function,function,function,function,function,function,function,function,function,function,function,function,function,function,"
+   "function,function,function,function,function,function,function,function,function,function,function,function,function,function,function,function,function,function,function,"
 
 ## ============================================================
 ## (B) compute_percent -- pure, including the div-by-zero (length 0) guard.
@@ -390,6 +391,21 @@ rc="$(CURL_OUT_FILE="${out_file}" CURL_PRGRS_MAX_FILE_SIZE_BYTES=100000 \
    FAKE_CURL_BODY_BYTES=100 \
    run_rc -o "${out_file}" https://example.com/hugeheader)"
 check "exec: oversize header (40000B > 32000 cap) -> 81" "${rc}" "81"
+
+## M15 REGRESSION (temp-dir leak on setup failure): a config-error exit 57 (empty
+## CURL_OUT_FILE) must NOT leave an ownerless mktemp dir behind. The temp dir is
+## created (initialize_temporary_files) only AFTER check_variables; before the
+## fix initialize_variables created it up front, so the 57 exit -- which happens
+## before the cleanup EXIT trap is armed -- leaked an empty /tmp/tmp.* dir. Point
+## the subject's mktemp at a private empty TMPDIR and assert it stays empty.
+leak_tmpdir="${test_dir}/M15.tmpdir"
+mkdir -- "${leak_tmpdir}"
+rc="$(CURL_OUT_FILE="" CURL_PRGRS_MAX_FILE_SIZE_BYTES=100000 TMPDIR="${leak_tmpdir}" \
+   FAKE_CURL_HEADER_CL=100 FAKE_CURL_BODY_BYTES=10 \
+   run_rc https://example.com/leakcheck)"
+check "exec: setup failure exits 57 (temp-leak scenario)" "${rc}" "57"
+leak_count="$(find "${leak_tmpdir}" -mindepth 1 | wc -l)"
+check "exec: setup failure 57 leaves no temp dir behind (no mktemp leak)" "${leak_count}" "0"
 
 ## ============================================================
 ## (N) Real SIGTERM during an in-flight download: the subject must both terminate
