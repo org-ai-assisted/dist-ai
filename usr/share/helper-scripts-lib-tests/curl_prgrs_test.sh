@@ -180,13 +180,6 @@ check "strip: --output pair removed"      "$(strip_args --output /out url)"     
 check "strip: -C pair removed"            "$(strip_args -C - url)"                      "url,"
 check "strip: --continue-at pair removed" "$(strip_args --continue-at 0 url)"           "url,"
 check "strip: plain args preserved"       "$(strip_args -sSL url)"                      "-sSL,url,"
-## REGRESSION: output/resume options that curl would otherwise pair to the URL
-## ahead of the appended '--output "${header_file}"', hijacking the HEAD probe.
-check "strip: -O removed"                 "$(strip_args -O url)"                        "url,"
-check "strip: --remote-name removed"      "$(strip_args --remote-name url)"             "url,"
-check "strip: attached -ofile removed"    "$(strip_args -o/tmp/hijack url)"             "url,"
-check "strip: attached -Cbyte removed"    "$(strip_args -C- url)"                       "url,"
-check "strip: --output=VALUE removed"     "$(strip_args --output=/out url)"             "url,"
 
 ## ============================================================
 ## (E) initialize_terminal -- both fd-4 arms via the stderr_is_tty seam.
@@ -413,6 +406,27 @@ rc="$(CURL_OUT_FILE="" CURL_PRGRS_MAX_FILE_SIZE_BYTES=100000 TMPDIR="${leak_tmpd
 check "exec: setup failure exits 57 (temp-leak scenario)" "${rc}" "57"
 leak_count="$(find "${leak_tmpdir}" -mindepth 1 | wc -l)"
 check "exec: setup failure 57 leaves no temp dir behind (no mktemp leak)" "${leak_count}" "0"
+
+## M16 REGRESSION (HEAD-probe output hijack): the header probe must pass curl-prgrs'
+## OWN '--output' AHEAD of the caller's args. curl pairs output options to URLs
+## left-to-right, so if a caller output option (here bundled '-LO', which the
+## stripper deliberately does not enumerate) came first it would claim the URL and
+## divert the HEAD response into the caller's file. Assert the recorded head argv
+## orders '--output' before the passthrough '-LO'. Fails pre-fix (--output was
+## appended last).
+argv_log="${test_dir}/M16.argv"
+out_file="${test_dir}/M16.bin"
+printf '%s' '' >"${argv_log}"
+rc="$(CURL_OUT_FILE="${out_file}" CURL_PRGRS_MAX_FILE_SIZE_BYTES=100000 \
+   FAKE_CURL_ARGV_LOG="${argv_log}" \
+   FAKE_CURL_HEADER_CL=100 FAKE_CURL_BODY_BYTES=100 \
+   run_rc -LO https://example.com/file)"
+check "exec: -LO download still succeeds -> 0" "${rc}" "0"
+out_line="$(grep -n -x -- '--output' "${argv_log}" | head -1 | cut -d: -f1)"
+lo_line="$(grep -n -x -- '-LO' "${argv_log}" | head -1 | cut -d: -f1)"
+check "exec: HEAD probe passes --output before caller -LO (no output hijack)" \
+   "$([ -n "${out_line}" ] && [ -n "${lo_line}" ] && [ "${out_line}" -lt "${lo_line}" ] && printf ordered || printf BAD)" \
+   "ordered"
 
 ## ============================================================
 ## (N) Real SIGTERM during an in-flight download: the subject must both terminate
