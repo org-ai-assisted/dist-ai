@@ -1519,10 +1519,12 @@ def t_input_canaries():
     # T4 homoglyph-decode canary: Cyrillic a emitted as ASCII 'a' is still
     # _CLIP_ASCII, so the alphabet check would MISS it; the new check must trip.
     _expect_caught('T4/homoglyph-decode',
-                   S.marking_class(0x0430) == 'confusable' and 'a' != '')
-    # T3 paste_is_multiline canary: an always-False classifier misses 'a\nb'.
-    _expect_caught('T3/paste-is-multiline',
-                   ('\n' in 'a\nb'[:-1]) or ('\r' in 'a\nb'[:-1]))
+                   S.marking_class(0x0430) == 'confusable' and ord('a') in _CLIP_ASCII)
+    # T3 paste_is_multiline canary: the REAL classifier flags 'a\nb' as multi-line
+    # (a newline before the last char), so an always-False stub would be caught by
+    # the T3 differential above. Driving S.paste_is_multiline (not a re-inlined
+    # oracle) keeps the canary from drifting from the function it guards.
+    _expect_caught('T3/paste-is-multiline', S.paste_is_multiline('a\nb'))
 
 
 # ===========================================================================
