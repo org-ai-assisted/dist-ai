@@ -180,6 +180,13 @@ check "strip: --output pair removed"      "$(strip_args --output /out url)"     
 check "strip: -C pair removed"            "$(strip_args -C - url)"                      "url,"
 check "strip: --continue-at pair removed" "$(strip_args --continue-at 0 url)"           "url,"
 check "strip: plain args preserved"       "$(strip_args -sSL url)"                      "-sSL,url,"
+## REGRESSION: output/resume options that curl would otherwise pair to the URL
+## ahead of the appended '--output "${header_file}"', hijacking the HEAD probe.
+check "strip: -O removed"                 "$(strip_args -O url)"                        "url,"
+check "strip: --remote-name removed"      "$(strip_args --remote-name url)"             "url,"
+check "strip: attached -ofile removed"    "$(strip_args -o/tmp/hijack url)"             "url,"
+check "strip: attached -Cbyte removed"    "$(strip_args -C- url)"                       "url,"
+check "strip: --output=VALUE removed"     "$(strip_args --output=/out url)"             "url,"
 
 ## ============================================================
 ## (E) initialize_terminal -- both fd-4 arms via the stderr_is_tty seam.
