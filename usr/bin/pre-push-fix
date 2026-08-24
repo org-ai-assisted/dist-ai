@@ -607,7 +607,13 @@ def main():
     parser.add_argument("files", nargs="*")
     args = parser.parse_args()
 
-    targets = list(args.files)
+    ## A directory arg is walked recursively; a missing path is a loud error, not
+    ## a silent skip (the false-green a bare directory used to produce).
+    try:
+        targets = list(bash_ast.walk_files(args.files))
+    except FileNotFoundError as exc:
+        print("pre-push-fix: no such path: %s" % exc, file=sys.stderr)
+        return 2
     if args.staged:
         try:
             targets.extend(staged_files())

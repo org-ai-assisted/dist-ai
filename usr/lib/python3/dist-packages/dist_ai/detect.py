@@ -43,6 +43,7 @@ def is_shell_file(path, source):
     first = source.split("\n", 1)[0]
     return bool(SHELL_SHEBANG_RE.match(first))
 
+
 Finding = collections.namedtuple(
     "Finding", ["severity", "rule", "message", "path", "line"])
 
@@ -690,9 +691,48 @@ def r192_shell_inline_shell_c(path, source, tree):
                 "belongs in its own file" % line_count, path, call)
 
 
+## --- unauthorized skip ------------------------------------------------------
+
+## The per-skip authorization: '## style-ok: allow-skip: <reason>' on the exit
+## line (trailing) or the line directly above it. Per-skip, not file-wide, so
+## every skip is individually justified. The REASON is mandatory (a ':' then a
+## non-blank char): a bare 'allow-skip' with no rationale still reads as an
+## unjustified skip.
+ALLOW_SKIP = re.compile(r'##[ \t]*style-ok:[ \t]*allow-skip:[ \t]*\S')
+
+
+def r220_unauthorized_skip(path, source, tree):
+    """R-220: a test SKIP ('exit 77' / 'return 77', the reserved skip code) must
+    be authorized by a per-skip '## style-ok: allow-skip: <why>' waiver on the
+    line or the line above. An AI adding a skip to go green is the failure this
+    closes: a REQUIRED dependency's absence is an environment bug and must be
+    'exit 1' (FATAL), never a skip; only a genuinely OPTIONAL target may skip, and
+    it must say why. Command-position via the AST, so 'exit 77' in a string or a
+    comment is not a real skip."""
+    lines = source.split("\n")
+    for call in bash_ast.call_exprs(tree):
+        if bash_ast.command_name(call) not in ("exit", "return"):
+            continue
+        call_args = bash_ast.args(call)
+        if len(call_args) < 2 or bash_ast.word_lit(call_args[1]) != "77":
+            continue
+        line = call["Pos"]["Line"]
+        here = lines[line - 1] if 0 <= line - 1 < len(lines) else ""
+        above = lines[line - 2] if line - 2 >= 0 else ""
+        if ALLOW_SKIP.search(here) or ALLOW_SKIP.search(above):
+            continue
+        yield _fail(
+            "R-220",
+            "R-220 unauthorized skip: 'exit 77' without '## style-ok: "
+            "allow-skip: <reason>' -- a required-dep absence must be 'exit 1' "
+            "(FATAL); only an optional target may skip, and must say why",
+            path, call)
+
+
 ## Rules that run over a parsed shell file, in gate dispatch order.
 SHELL_RULES = (
     r192_shell_inline_shell_c,
+    r220_unauthorized_skip,
     r090_command_v,
     r103_exec,
     r120_rm,
@@ -878,7 +918,7 @@ def r100_yaml_inline_shell(path, source):
                       "R-100 skipped: 'style-ok: allow-inline-shell' waiver in "
                       "'%s'" % path, path, 1)
         return
-    import yaml  # noqa: E402
+    import yaml
     try:
         root = yaml.compose(source)
     except yaml.YAMLError:
@@ -899,7 +939,7 @@ def r100_yaml_inline_shell(path, source):
 def _yaml_run_scalars(node):
     """Yield (key_node, value_node) for every 'run:' mapping entry whose value is
     a scalar, anywhere in the composed YAML NODE."""
-    import yaml  # noqa: E402
+    import yaml
     if isinstance(node, yaml.MappingNode):
         for key_node, value_node in node.value:
             if isinstance(key_node, yaml.ScalarNode) \

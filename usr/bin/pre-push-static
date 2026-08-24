@@ -182,9 +182,23 @@ staged_mode=0
 staged_all=0
 message_file=''
 paths_mode=0
+files_mode=0
 path_specs=()
 while [ "$#" -ge 1 ]; do
    case "${1}" in
+      --files)
+         ## Lint the given files/dirs from DISK, decoupled from any git diff (the
+         ## whole rule set over an arbitrary tree). Consumes the rest of the line,
+         ## like --paths; a leading '--' separator is accepted and skipped.
+         shift
+         if [ "$#" -ge 1 ] && [ "${1}" = '--' ]; then
+            shift
+         fi
+         files_mode=1
+         path_specs=( "${@}" )
+         set --
+         break
+         ;;
       --per-commit)
          per_commit_mode=1
          shift
@@ -240,6 +254,26 @@ if [ "${paths_mode}" -eq 1 ]; then
       printf '%s\n' 'pre-push-static: --paths requires at least one pathspec' >&2
       exit 2
    fi
+fi
+
+if [ "${files_mode}" -eq 1 ]; then
+   if [ "${#path_specs[@]}" -eq 0 ]; then
+      printf '%s\n' 'pre-push-static: --files requires at least one path' >&2
+      exit 2
+   fi
+   if [ "${staged_mode}" -eq 1 ] || [ "${per_commit_mode}" -eq 1 ]; then
+      printf '%s\n' 'pre-push-static: --files is exclusive with --staged / --per-commit' >&2
+      exit 2
+   fi
+   ## Validate existence HERE, at top level: list_given_paths runs inside a
+   ## process-substitution subshell where an 'exit' cannot stop the gate, so a
+   ## mistyped path there would yield an empty file list and a false "all passed".
+   for _spec in "${path_specs[@]}"; do
+      if [ ! -e "${_spec}" ]; then
+         printf '%s\n' "pre-push-static: no such path: '${_spec}'" >&2
+         exit 2
+      fi
+   done
 fi
 
 if [ "${staged_mode}" -eq 1 ] && [ "${per_commit_mode}" -eq 1 ]; then
@@ -328,7 +362,28 @@ resolve_base() {
 ## 'read -r -d ""' / 'mapfile -d ""'. Without this a hostile or merely
 ## awkward filename (e.g. $'x\ty.sh') was emitted as a quoted string that
 ## exists on no disk path, so every content check silently skipped it.
+## --files mode: enumerate the given files/dirs from DISK (no git), NUL-delimited.
+## A directory is walked (skipping .git); a missing path is a loud error, never a
+## silent skip. Mirrors dist_ai.bash_ast.walk_files for the detector/fixer.
+list_given_paths() {
+   local spec
+   for spec in "${path_specs[@]}"; do
+      if [ -d "${spec}" ]; then
+         find "${spec}" -name .git -prune -o -type f -print0
+      elif [ -e "${spec}" ]; then
+         printf '%s\0' "${spec}"
+      else
+         printf '%s\n' "pre-push-static: no such path: '${spec}'" >&2
+         exit 2
+      fi
+   done
+}
+
 list_changed_files() {
+   if [ "${files_mode}" -eq 1 ]; then
+      list_given_paths
+      return 0
+   fi
    if [ "${staged_mode}" -eq 1 ]; then
       if [ "${paths_mode}" -eq 1 ]; then
          ## Pathspec matching is git's own, so a directory or glob behaves
@@ -2255,6 +2310,14 @@ run_ast_detector() {
       fail "pre-push-detect could not run" "shfmt is required and absent"
       return 0
    fi
+   ## Exit 0 = clean, 1 = findings (with output). ANYTHING ELSE is a crash where
+   ## no parser-backed rule ran -- a false green if read as "no findings" -- so it
+   ## is a hard FAILURE. A rc-1 with EMPTY output is the same anomaly (a crash that
+   ## exited 1); the findings path always carries output.
+   if [ "${rc}" -gt 2 ] || { [ "${rc}" -eq 1 ] && [ -z "${output}" ]; }; then
+      fail "pre-push-detect crashed (exit ${rc}); parser-backed rules did NOT run -- not a pass" "(traceback on stderr)"
+      return 0
+   fi
    if [ -z "${output}" ]; then
       return 0
    fi
@@ -2374,7 +2437,8 @@ run_file_checks() {
             "has unstaged changes; checks ran against the working tree, not the staged blob (re-stage to verify the exact committed content)" \
             "${file_list[@]}"
       fi
-      if [ "${staged_mode}" -eq 0 ] && [ "${per_commit_mode}" -eq 0 ]; then
+      if [ "${staged_mode}" -eq 0 ] && [ "${per_commit_mode}" -eq 0 ] \
+         && [ "${files_mode}" -eq 0 ]; then
          warn_worktree_skew "push mode" "HEAD" \
             "differs between the working tree and HEAD; checks ran against the working tree, not the pushed commit (use --per-commit to check commit content exactly)" \
             "${file_list[@]}"
@@ -2387,7 +2451,11 @@ run_file_checks() {
       ## bodies and the defang-based config-value scans.
       run_ast_detector "${file_list[@]}"
       check_trailing_whitespace "${file_list[@]}"
-      check_precommit_hooks "${file_list[@]}"
+      ## pre-commit hooks are git-commit-time checks (some inspect the index, not
+      ## file content), so they do not apply to the disk-linting --files mode.
+      if [ "${files_mode}" -eq 0 ]; then
+         check_precommit_hooks "${file_list[@]}"
+      fi
       check_comments_audit "${file_list[@]}"
    fi
 }
@@ -2410,15 +2478,20 @@ main() {
    ## the root, e.g. the Claude commit-gate) each path would be missing and
    ## every check would silently pass. cd to the top level so the path list
    ## and the on-disk reads agree.
-   toplevel="$(git rev-parse --show-toplevel 2>/dev/null)" || true
-   if [ -z "${toplevel}" ]; then
-      note "not inside a git repository; cannot run"
-      exit 2
-   fi
-   cd -- "${toplevel}"
+   ## --files mode lints paths on disk with no git diff, so it needs neither a
+   ## repository nor a base ref, and must NOT cd to a repo root (the paths are
+   ## relative to the invocation directory).
+   if [ "${files_mode}" -eq 0 ]; then
+      toplevel="$(git rev-parse --show-toplevel 2>/dev/null)" || true
+      if [ -z "${toplevel}" ]; then
+         note "not inside a git repository; cannot run"
+         exit 2
+      fi
+      cd -- "${toplevel}"
 
-   if [ "${staged_mode}" -eq 0 ]; then
-      resolve_base
+      if [ "${staged_mode}" -eq 0 ]; then
+         resolve_base
+      fi
    fi
 
    ## A pathspec that matches nothing checks nothing, and a verdict of "all
@@ -2437,11 +2510,15 @@ main() {
    ## once; per-commit iteration would re-check the same messages
    ## N times. The changelog check is likewise a commit-range scan
    ## (inspects each commit's diff + message) and runs once here.
-   check_ascii_commit_msg
-   if [ "${staged_mode}" -eq 1 ]; then
-      check_changelog_no_manual_staged
-   else
-      check_changelog_no_manual
+   ## Commit-message and changelog checks are commit-range scans; --files mode
+   ## has no commit range, so they are skipped there.
+   if [ "${files_mode}" -eq 0 ]; then
+      check_ascii_commit_msg
+      if [ "${staged_mode}" -eq 1 ]; then
+         check_changelog_no_manual_staged
+      else
+         check_changelog_no_manual
+      fi
    fi
 
    if [ "${per_commit_mode}" -eq 1 ]; then
@@ -2467,7 +2544,10 @@ main() {
 
    ## Once, after the checks and in every mode: the point is to qualify the
    ## verdict that is about to be printed, not to annotate each commit.
-   warn_untracked_shell_files
+   ## --files mode is not git-scoped, so untracked-file reporting does not apply.
+   if [ "${files_mode}" -eq 0 ]; then
+      warn_untracked_shell_files
+   fi
 
    if [ "${fail_count}" -gt 0 ]; then
       note "${fail_count} check(s) failed"

@@ -25,8 +25,30 @@ reformat the whole file). Offsets index the UTF-8 encoded bytes of the source.
 """
 
 import json
+import os
 import shutil
 import subprocess
+
+
+def walk_files(paths):
+    """Yield candidate file paths for each entry in PATHS: a file yields itself; a
+    DIRECTORY is walked recursively (skipping '.git', not following directory
+    symlinks), yielding its regular files in sorted order. A path that does not
+    exist raises FileNotFoundError -- a mistyped or absent path is a loud error,
+    NEVER a silent skip (the false-green a bare directory used to produce). The
+    caller applies its own file-type filter; this only enumerates."""
+    for path in paths:
+        if os.path.isdir(path) and not os.path.islink(path):
+            for root, dirs, names in os.walk(path):
+                dirs[:] = sorted(d for d in dirs if d != ".git")
+                for name in sorted(names):
+                    full = os.path.join(root, name)
+                    if os.path.isfile(full):
+                        yield full
+        elif os.path.exists(path):
+            yield path
+        else:
+            raise FileNotFoundError(path)
 
 
 class ShfmtMissing(Exception):
@@ -53,10 +75,14 @@ def parse(source, dialect="bash"):
 
     Raises ShfmtMissing if shfmt is absent, BashParseError on a parse failure."""
     if not shfmt_available():
-        raise ShfmtMissing("shfmt not found on PATH")
+        message = "shfmt not found on PATH"
+        raise ShfmtMissing(message)
     try:
+        ## '-ln' is the portable short form of the dialect flag (the long
+        ## '--language-dialect' was only added in a newer shfmt); '--to-json' has
+        ## shipped since shfmt 3.x, which the supported Debian ships.
         result = subprocess.run(
-            ["shfmt", "--language-dialect", dialect, "--to-json"],
+            ["shfmt", "-ln", dialect, "--to-json"],
             input=source.encode("utf-8"),
             capture_output=True,
         )

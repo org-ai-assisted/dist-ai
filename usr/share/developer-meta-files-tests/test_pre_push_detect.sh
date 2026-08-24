@@ -208,6 +208,25 @@ run_det_at ".github/workflows/ci.yml" \
       '          f')"
 assert_at "R-100 flags a >5-line workflow run block" "R-100" 4
 
+## --- R-220 unauthorized skip -------------------------------------------------
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'type -P foo || exit 77' \
+   'type -P bar || exit 77  ## style-ok: allow-skip: bar is an optional target' \
+   '## style-ok: allow-skip: optional component' \
+   '[ -x /opt/x ] || exit 77' \
+   "printf 'the words exit 77 in a string are not a skip'" \
+   'return 77')"
+assert_at     "R-220 flags an unwaived 'exit 77'"              "R-220" 2
+assert_not_at "R-220 spares an 'exit 77' with a trailing waiver" "R-220" 3
+assert_not_at "R-220 spares an 'exit 77' waived on the line above" "R-220" 5
+assert_not_at "R-220 spares 'exit 77' text inside a string"    "R-220" 6
+assert_at     "R-220 flags an unwaived 'return 77'"            "R-220" 7
+## A bare 'allow-skip' with no reason does NOT authorize the skip.
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   'foo || exit 77  ## style-ok: allow-skip')"
+assert_at "R-220 rejects a reasonless 'allow-skip'" "R-220" 2
+
 ## Self-test the FAIL gate: a forced failure must make the script exit non-zero.
 if [ -n "${TEST_SELFCHECK_FAIL_GATE:-}" ]; then
    note_fail "self-test forced failure"
