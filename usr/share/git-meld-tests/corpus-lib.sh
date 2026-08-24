@@ -58,13 +58,19 @@ if [ ! -x "${gdr}" ] || [ -z "${corpus_src}" ] \
    exit 1
 fi
 
-## Optional name scanner for the refname cases.
+## unicode-show (helper-scripts) is REQUIRED for the refname cases: the scan must
+## use the real tool, not a hand-rolled '[^\x00-\x7f]' grep that would drift from
+## what dm-review-branch actually flags (require-deps: never reimplement, never
+## paper over a missing dependency).
 unicode_show=""
 if has unicode-show; then
    unicode_show="unicode-show"
 elif [ -n "${HELPER_SCRIPTS_PATH:-}" ] \
    && [ -x "${HELPER_SCRIPTS_PATH}/usr/bin/unicode-show" ]; then
    unicode_show="${HELPER_SCRIPTS_PATH}/usr/bin/unicode-show"
+else
+   printf '%s\n' 'FATAL: corpus-lib: unicode-show (helper-scripts) not found; required for the refname scan.' >&2
+   exit 1
 fi
 
 printf '%s\n' "== git-diffs-lie corpus suite =="
@@ -95,11 +101,7 @@ hex_to_pcre() { printf '%s' "$1" | sed 's/../\\x&/g'; }
 
 ## name_is_flagged <branch> -- true if a ref-name scan flags the branch name.
 name_is_flagged() {
-   if [ -n "${unicode_show}" ]; then
-      printf '%s' "$1" | "${unicode_show}" >/dev/null 2>&1 && return 1 || return 0
-   fi
-   ## Fallback: any byte outside 7-bit ASCII is the (only) payload here.
-   LC_ALL=C grep --quiet --perl-regexp '[^\x00-\x7f]' <<< "$1"
+   printf '%s' "$1" | "${unicode_show}" >/dev/null 2>&1 && return 1 || return 0
 }
 
 while IFS="$( printf '\t' )" read -r branch class assert arg _summary; do
