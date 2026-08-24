@@ -264,6 +264,96 @@ def r034_echo(path, source, tree):
             yield _fail("R-034", "R-034 echo not printf", path, call)
 
 
+## --- printf -v injection guard ---------------------------------------------
+
+
+def _printf_v_target(call):
+    """The variable-NAME Word of a 'printf -v NAME ...' call, or None when the
+    printf has no '-v'. Only the SEPARATE form 'printf -v NAME' is analyzed -- the
+    one every occurrence in the tree uses; an option-terminating '--' before any
+    '-v' ends the search. An attached '-vNAME' is left alone (its name is embedded
+    literally, so it carries no injectable expansion anyway)."""
+    call_args = bash_ast.args(call)
+    for index in range(1, len(call_args)):
+        lit = bash_ast.word_lit(call_args[index])
+        if lit == "--":
+            return None
+        if lit == "-v":
+            return call_args[index + 1] if index + 1 < len(call_args) else None
+    return None
+
+
+def _check_variable_name_sites(tree):
+    """(offset, param_names) for every 'check_variable_name' call: its byte offset
+    and the set of parameter names its arguments expand. A guard is matched to a
+    printf target by a shared parameter name."""
+    sites = []
+    for call in bash_ast.call_exprs(tree):
+        if bash_ast.command_name(call) != "check_variable_name":
+            continue
+        params = set()
+        for word in bash_ast.args(call)[1:]:
+            params |= bash_ast.word_param_names(word)
+        sites.append((call["Pos"]["Offset"], params))
+    return sites
+
+
+def _enclosing_scope_start(tree, offset):
+    """Byte offset where the scope containing OFFSET begins: the body of the
+    innermost function enclosing it, or 0 at top level. A guard counts only when
+    it sits between here and the printf -- so a check in a sibling function, or
+    after the printf, does not."""
+    best = 0
+    best_span = None
+    for decl in bash_ast.func_decls(tree):
+        body = decl.get("Body") or {}
+        start = (body.get("Pos") or {}).get("Offset")
+        end = (body.get("End") or {}).get("Offset")
+        if start is None or end is None:
+            continue
+        if start <= offset < end:
+            span = end - start
+            if best_span is None or span < best_span:
+                best_span, best = span, start
+    return best
+
+
+def r063_printf_v_unchecked(path, source, tree):
+    """R-063: a 'printf -v <name>' whose target NAME is dynamic (built from an
+    expansion, not a fixed literal) must be guarded by 'check_variable_name' on
+    that same name earlier in the enclosing function. Bash evaluates an array
+    subscript inside the -v target, so an unchecked name of the form 'x[$(cmd)]'
+    RUNS cmd -- a command injection driven by whatever supplied the name. A
+    literal target ('printf -v out ...') carries no expansion and is spared; a
+    pure command-substitution name ('printf -v "$(f)"') shares no parameter with
+    any guard, so it can never be counted as guarded."""
+    if waiver(source, "allow-unchecked-printf-v"):
+        return
+    guards = _check_variable_name_sites(tree)
+    for call in bash_ast.call_exprs(tree):
+        if bash_ast.command_name(call) != "printf":
+            continue
+        name_word = _printf_v_target(call)
+        if name_word is None:
+            continue
+        if bash_ast.word_string(name_word) is not None:
+            ## Statically-known name: no expansion, so no injectable subscript.
+            continue
+        target_params = bash_ast.word_param_names(name_word)
+        offset = call["Pos"]["Offset"]
+        scope_start = _enclosing_scope_start(tree, offset)
+        guarded = bool(target_params) and any(
+            scope_start <= guard_offset < offset and (target_params & guard_params)
+            for guard_offset, guard_params in guards)
+        if guarded:
+            continue
+        yield _fail(
+            "R-063",
+            "R-063 printf -v dynamic name unguarded by check_variable_name "
+            "(an unchecked name runs the command in name[$(...)])",
+            path, call)
+
+
 def r130_null_command(path, source, tree):
     """R-130: ':' used as a command -- a bare filler ':' statement, or the
     ': > file' truncation idiom. Spares ': "${var:=default}"' (a word follows)
@@ -759,6 +849,7 @@ SHELL_RULES = (
     r103_exec,
     r120_rm,
     r034_echo,
+    r063_printf_v_unchecked,
     r130_null_command,
     r161_grep_quiet,
     r172_mkdir_tmp_mode,

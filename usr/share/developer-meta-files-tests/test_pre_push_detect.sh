@@ -273,6 +273,67 @@ run_det "$(printf '%s\n' \
    'make_use_lintian=false genmkfile deb-pkg')"
 assert_not_at "R-213 respects the allow-lintian-disable waiver" "R-213" 3
 
+## --- R-063 printf -v injection guard ----------------------------------------
+## A dynamic '-v' target evaluates an array subscript ('name[$(cmd)]' RUNS cmd),
+## so it must be guarded by check_variable_name on the SAME name, earlier in the
+## SAME function. Line numbers assert both the match and the scope/ordering.
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'guarded() {' \
+   '  check_variable_name "${n}" || return 1' \
+   '  printf -v "${n}" "%s" "x"' \
+   '}' \
+   'unguarded() {' \
+   '  printf -v "${m}" "%s" "y"' \
+   '}' \
+   'literal() {' \
+   '  printf -v out "%s" "z"' \
+   '}')"
+assert_not_at "R-063 spares a guarded dynamic printf -v"        "R-063" 4
+assert_at     "R-063 flags an unguarded dynamic printf -v"      "R-063" 7
+assert_not_at "R-063 spares a literal (static) target"          "R-063" 10
+
+## Scope + ordering + matching: a guard AFTER the printf, a guard for a DIFFERENT
+## variable, a guard in a SIBLING function, and a command-substitution name all
+## leave the printf UNGUARDED.
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'after() {' \
+   '  printf -v "${a}" "%s" "x"' \
+   '  check_variable_name "${a}" || return 1' \
+   '}' \
+   'wrongvar() {' \
+   '  check_variable_name "${good}" || return 1' \
+   '  printf -v "${bad}" "%s" "x"' \
+   '}' \
+   'cmdsub() {' \
+   '  printf -v "$(build_name)" "%s" "x"' \
+   '}' \
+   'sibling_guard() {' \
+   '  check_variable_name "${v}" || return 1' \
+   '}' \
+   'sibling_use() {' \
+   '  printf -v "${v}" "%s" "x"' \
+   '}')"
+assert_at "R-063 flags a guard placed AFTER the printf"         "R-063" 3
+assert_at "R-063 flags a guard naming a different variable"     "R-063" 8
+assert_at "R-063 flags a command-substitution target name"      "R-063" 11
+assert_at "R-063 flags a guard confined to a sibling function"  "R-063" 17
+
+## A top-level guard before a top-level printf -v counts (scope starts at 0).
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'check_variable_name "${t}" || exit 1' \
+   'printf -v "${t}" "%s" "x"')"
+assert_not_at "R-063 spares a top-level guard before the printf" "R-063" 3
+
+## The script-wide waiver silences the rule.
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   '## style-ok: allow-unchecked-printf-v' \
+   'printf -v "${n}" "%s" "x"')"
+assert_not_at "R-063 respects the allow-unchecked-printf-v waiver" "R-063" 3
+
 ## Self-test the FAIL gate: a forced failure must make the script exit non-zero.
 if [ -n "${TEST_SELFCHECK_FAIL_GATE:-}" ]; then
    note_fail "self-test forced failure"
