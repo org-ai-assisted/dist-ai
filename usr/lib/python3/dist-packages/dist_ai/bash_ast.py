@@ -256,11 +256,55 @@ def word_lit(word):
         return parts[0].get("Value")
     return None
 
+
+def word_string(word):
+    """WORD's fully-literal string value, or None if any part is a
+    parameter/command/arithmetic expansion (its value is not statically known).
+    Unwraps single- and double-quotes, so 'false', "false" and false all yield
+    'false' -- unlike word_lit, which declines any quoted or multi-part word."""
+    if word is None:
+        return None
+    out = []
+    for part in word.get("Parts") or []:
+        kind = part.get("Type")
+        if kind == "Lit":
+            out.append(part.get("Value") or "")
+        elif kind == "SglQuoted":
+            out.append(part.get("Value") or "")
+        elif kind == "DblQuoted":
+            for inner in part.get("Parts") or []:
+                if inner.get("Type") != "Lit":
+                    return None
+                out.append(inner.get("Value") or "")
+        else:
+            return None
+    return "".join(out)
+
 ## A CallExpr's own arguments, always a list (never None).
 
 
 def args(call):
     return call.get("Args") or []
+
+
+## A CallExpr's assignments -- an env prefix ('X=y cmd') or a standalone 'X=y'
+## statement -- kept SEPARATE from args()/command position by the parser, so a
+## quoted mention of 'X=y' inside a string is never one of these.
+
+
+def assigns(call):
+    return call.get("Assigns") or []
+
+
+def assign_name(assign):
+    """The variable NAME of an assignment ('make_use_lintian' of
+    'make_use_lintian=false')."""
+    return (assign.get("Name") or {}).get("Value")
+
+
+def assign_value(assign):
+    """The value WORD of an assignment, or None for a bare 'X=' with no RHS."""
+    return assign.get("Value")
 
 
 def command_word(call):

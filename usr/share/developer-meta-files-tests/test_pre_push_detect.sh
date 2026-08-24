@@ -227,6 +227,44 @@ run_det "$(printf '%s\n' '#!/bin/bash' \
    'foo || exit 77  ## style-ok: allow-skip')"
 assert_at "R-220 rejects a reasonless 'allow-skip'" "R-220" 2
 
+## --- R-212 allow-downgrades: real argument vs quoted mention ----------------
+## The legacy regex went false-NEGATIVE when any quote appeared earlier on the
+## line; the AST reads --allow-downgrades as a real argument word regardless.
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'printf "%s" "x"; apt-get-noninteractive install --allow-downgrades -- pkg' \
+   'true "never use --allow-downgrades in prose"')"
+assert_at     "R-212 flags --allow-downgrades after a quoted separator" "R-212" 2
+assert_not_at "R-212 spares a quoted --allow-downgrades mention"        "R-212" 3
+
+## --- R-213 lintian-disable: real assignment vs quoted prose / longer name ----
+## The legacy regex went false-POSITIVE on quoted prose naming the flag and
+## false-NEGATIVE on an assignment after a separator; the AST keys on a real
+## 'make_use_lintian' Assign node valued 'false' (quoted or not).
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'make_use_lintian=false genmkfile deb-pkg' \
+   'true; make_use_lintian=false genmkfile deb-pkg' \
+   'make_use_lintian=false' \
+   'make_use_lintian="false"' \
+   'disable_make_use_lintian=false' \
+   'make_use_lintian=true' \
+   'true "make_use_lintian=false is forbidden"')"
+assert_at     "R-213 flags an env-prefix assignment"           "R-213" 2
+assert_at     "R-213 flags an assignment after a separator"    "R-213" 3
+assert_at     "R-213 flags a standalone assignment"            "R-213" 4
+assert_at     "R-213 flags a quoted 'false' value"             "R-213" 5
+assert_not_at "R-213 spares a longer variable name"            "R-213" 6
+assert_not_at "R-213 spares make_use_lintian=true"             "R-213" 7
+assert_not_at "R-213 spares a quoted mention in a string"      "R-213" 8
+
+## R-213 waiver silences it.
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   '## style-ok: allow-lintian-disable' \
+   'make_use_lintian=false genmkfile deb-pkg')"
+assert_not_at "R-213 respects the allow-lintian-disable waiver" "R-213" 3
+
 ## Self-test the FAIL gate: a forced failure must make the script exit non-zero.
 if [ -n "${TEST_SELFCHECK_FAIL_GATE:-}" ]; then
    note_fail "self-test forced failure"

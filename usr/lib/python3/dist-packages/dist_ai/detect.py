@@ -301,6 +301,28 @@ def r212_allow_downgrades(path, source, tree):
                             path, word)
 
 
+def r213_lintian_disabled(path, source, tree):
+    """R-213: 'make_use_lintian=false' disables the lintian gate on a genmkfile
+    build; forbidden without authorization -- fix the lintian findings instead.
+    Detected as a real ASSIGNMENT of 'make_use_lintian' to a literal 'false'
+    (env prefix or standalone, quoted value or not), so a quoted mention
+    ('"make_use_lintian=false" is forbidden') and a longer name ending in it
+    ('disable_make_use_lintian=false') are NOT flagged, while an assignment
+    after a separator ('true; make_use_lintian=false genmkfile ...') IS.
+    Waiver: '## style-ok: allow-lintian-disable'."""
+    if path == "usr/bin/pre-push-static" \
+            or waiver(source, "allow-lintian-disable"):
+        return
+    for call in bash_ast.call_exprs(tree):
+        for assign in bash_ast.assigns(call):
+            if bash_ast.assign_name(assign) == "make_use_lintian" \
+                    and bash_ast.word_string(
+                        bash_ast.assign_value(assign)) == "false":
+                yield _fail("R-213",
+                            "R-213 lintian disabled (make_use_lintian=false) "
+                            "without authorization", path, assign)
+
+
 ## R-211 state-changing dpkg actions (a read-only query is spared).
 DPKG_STATE_ACTIONS = {
     "--install", "--unpack", "--configure", "--remove", "--purge",
@@ -746,6 +768,7 @@ SHELL_RULES = (
     r210_apt_get,
     r211_dpkg,
     r212_allow_downgrades,
+    r213_lintian_disabled,
 )
 
 

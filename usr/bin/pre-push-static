@@ -1787,28 +1787,6 @@ check_R102_interpreter_prepend() {
 }
 
 
-check_R213_lintian_disabled() {
-   local script hits
-
-   ## R-213: 'make_use_lintian=false' disables the lintian gate on a genmkfile
-   ## build; forbidden without authorization -- fix the lintian findings
-   ## instead. filter_self drops this checker. The leading '(^|[[:space:]])'
-   ## anchor pins it to a real assignment start, so a longer variable that ends
-   ## in the name ('disable_make_use_lintian=false') and a mention inside a
-   ## quoted string ("'make_use_lintian=false' is forbidden") are not flagged.
-   ## Human-operator override: '## style-ok: allow-lintian-disable'.
-   for script in "${@}"; do
-      is_self_referential "${script}" && continue
-      if grep --quiet --extended-regexp \
-         '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*allow-lintian-disable([[:space:]]|$)' \
-         -- "${script}"; then
-         note "R-213 skipped: 'style-ok: allow-lintian-disable' waiver in '${script}'"
-         continue
-      fi
-      hits="$(grep_code_lines "(^|[[:space:]])make_use_lintian=('|\")?false('|\")?([[:space:]]|;|&|\\||\$)" "${script}")"
-      emit_hits "R-213 lintian disabled (make_use_lintian=false) without authorization" "${hits}"
-   done
-}
 
 check_R153_help_from_comments() {
    local script hits line
@@ -2412,12 +2390,12 @@ run_file_checks() {
       check_R081_source_devnull "${shell_files[@]}"
       check_R085_sc1091_disable "${shell_files[@]}"
       check_R170_tmp_hardcode "${shell_files[@]}"
-      check_R213_lintian_disabled "${shell_files[@]}"
       ## Parser-backed shell-structure rules on the shfmt AST: R-090, R-103,
-      ## R-120, R-034, R-130, R-161, R-172, R-200, R-210, R-211, R-212. One AST
-      ## pass replaces the former per-rule regex bodies (the _pkg_* command-
-      ## position approximation, the defang-based scans, and the quote/heredoc
-      ## fail-open residuals each of those documented).
+      ## R-120, R-034, R-130, R-161, R-172, R-200, R-210, R-211, R-212, R-213.
+      ## One AST pass replaces the former per-rule regex bodies (the _pkg_*
+      ## command-position approximation, the defang-based scans, the R-213
+      ## assignment regex, and the quote/heredoc fail-open residuals each of
+      ## those documented).
       check_R153_help_from_comments "${shell_files[@]}"
    else
       note "no changed shell files"
