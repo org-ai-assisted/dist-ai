@@ -241,9 +241,13 @@ assert_at "R-220 rejects a reasonless 'allow-skip'" "R-220" 2
 run_det "$(printf '%s\n' \
    '#!/bin/bash' \
    'printf "%s" "x"; apt-get-noninteractive install --allow-downgrades -- pkg' \
-   'true "never use --allow-downgrades in prose"')"
+   'true "never use --allow-downgrades in prose"' \
+   'apt-get-noninteractive install "--allow-downgrades" -- pkg')"
 assert_at     "R-212 flags --allow-downgrades after a quoted separator" "R-212" 2
 assert_not_at "R-212 spares a quoted --allow-downgrades mention"        "R-212" 3
+## A fully-QUOTED flag word still passes the flag to apt-get; word_lit declined
+## it (false-negative), word_string catches it. Canary for that fix.
+assert_at     "R-212 flags a fully-quoted --allow-downgrades flag word" "R-212" 4
 
 ## --- R-213 lintian-disable: real assignment vs quoted prose / longer name ----
 ## The legacy regex went false-POSITIVE on quoted prose naming the flag and
