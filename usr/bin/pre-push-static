@@ -13,13 +13,12 @@
 ##   1. bash -n on every changed shell script
 ##   2. shellcheck --external-sources on the same set (R-020,
 ##      R-022, R-073, R-080 et al. via shellcheck's own codes)
-##   3. LC_ALL=C grep -PlI '[^\x00-\x7F]' on changed files (R-001),
-##      plus a trailing-whitespace floor (space/tab before EOL) on
-##      text files -- the always-on native counterpart to item 18's
-##      trailing-whitespace-fixer, which is skipped when pre-commit-hooks
-##      is absent
-##   4. LC_ALL=C grep -P  '[^\x00-\x7F]' on the commit-range
-##      message (R-001)
+##   3. non-ASCII (R-001) and a trailing-whitespace floor (space/tab
+##      before EOL, text files only) over every changed file -- run by
+##      the engine (dist-ai-style --detect) alongside the parser-backed
+##      rules, so one tool owns detection and this gate only renders
+##   4. non-ASCII (R-001) over the pending commit message -- the same
+##      engine rule via 'dist-ai-style --detect --message-file'
 ##   5. R-010 strict-mode block in top 160 lines -- the seven directives
 ##      'set -o errexit/nounset/pipefail/errtrace', 'shopt -s
 ##      inherit_errexit/shift_verbose', and 'export LC_ALL=C' (+ the
@@ -514,115 +513,37 @@ check_shellcheck() {
    done
 }
 
-check_ascii_files() {
-   local hits line f
-   local -a fs
-
-   ## Same regular-file floor as check_trailing_whitespace: a submodule
-   ## gitlink is a DIRECTORY in the work tree and grep errors on it.
-   fs=()
-   for f in "${@}"; do
-      if [ ! -f "${f}" ] || [ -L "${f}" ]; then
-         continue
-      fi
-      fs+=("${f}")
-   done
-   if [ "${#fs[@]}" -eq 0 ]; then
-      return 0
-   fi
-   hits="$(LC_ALL=C grep --files-with-matches --binary-files=without-match --perl-regexp '[^\x00-\x7F]' -- "${fs[@]}" || true)"
-   if [ -z "${hits}" ]; then
-      return 0
-   fi
-   while IFS= read -r line; do
-      ## File-based allowlist: a .gitattributes binary data file (a raw payload /
-      ## captured byte stream / fixture) is exempt from the ASCII rule, like a
-      ## PNG. Unlike the comment waiver below it needs no in-file marker, so it
-      ## also covers a blob that cannot carry a '## style-ok' comment.
-      if is_data_file "${line}"; then
-         note "R-001 skipped: '${line}' is a .gitattributes binary data file"
-         continue
-      fi
-      ## Per-file waiver: '## style-ok: allow-non-ascii' anywhere in the file.
-      ## A test for a sanitizer has to CONTAIN the bytes it asserts are
-      ## stripped -- stdisplay's suite pins ("O-umlaut ...", "_ or _") -- so the
-      ## non-ASCII is the fixture, not a slip. Anchored regex and a per-file
-      ## opt-in, mirroring the R-120 waiver, so the ASCII rule stays default-on
-      ## everywhere else and each exception is visible in the file itself.
-      if grep --quiet --extended-regexp \
-         '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*allow-non-ascii([[:space:]]|$)' \
-         -- "${line}"; then
-         note "R-001 skipped: 'style-ok: allow-non-ascii' waiver in '${line}'"
-         continue
-      fi
-      fail "R-001 ASCII" "'${line}' contains non-ASCII bytes"
-   done <<< "${hits}"
-}
-
-## Always-on floor for trailing whitespace (a space or tab immediately
-## before end-of-line). The pre-commit 'trailing-whitespace-fixer'
-## (check_precommit_hooks) is the richer superset that also autofixes, but
-## it is SKIPPED whenever the pre-commit-hooks binaries are absent; this
-## native grep runs unconditionally so a developer machine without them
-## still enforces it. Scoped to text files (is_text_file), symlinks skipped.
-check_trailing_whitespace() {
-   local f hits rc
-   local -a fs
-
-   fs=()
-   for f in "${@}"; do
-      if [ ! -f "${f}" ] || [ -L "${f}" ]; then
-         continue
-      fi
-      if is_text_file "${f}"; then
-         fs+=("${f}")
-      fi
-   done
-   if [ "${#fs[@]}" -eq 0 ]; then
-      return 0
-   fi
-   ## '[[:blank:]]' is space or tab -- matches trailing-whitespace-fixer's
-   ## default strip set. '\r?' also catches a blank BEFORE a CRLF line ending
-   ## (grep strips only the '\n', leaving the '\r' between the blank and
-   ## end-of-line); a bare '\r' (a clean CRLF line) is not flagged. PCRE
-   ## ('--perl-regexp') so the '\r' escape is portable. '--binary-files=
-   ## without-match' is belt-and-braces past the is_text_file filter so a
-   ## mislabeled blob is skipped, not reported byte-by-byte.
-   rc=0
-   hits="$(grep --with-filename --line-number --binary-files=without-match \
-      --perl-regexp '[[:blank:]]+\r?$' -- "${fs[@]}")" || rc=$?
-   ## grep exit: 0 match, 1 no match, >1 a real error (unreadable / vanished
-   ## file). An always-on floor must not silently pass on an error, so fail
-   ## loudly rather than swallow a >1 status as 'clean'.
-   if [ "${rc}" -gt 1 ]; then
-      fail "trailing-whitespace" "grep failed (exit ${rc}) scanning changed files; cannot verify"
-      return 0
-   fi
-   emit_hits "trailing-whitespace" "${hits}"
-}
-
-check_ascii_commit_msg() {
-   local msg hits
+## Commit-message non-ASCII (R-001) floor. The per-file R-001 and
+## trailing-whitespace checks now run in the engine (dist-ai-style --detect,
+## via run_ast_detector over the changed-file list); this covers the one text
+## blob that is NOT a tree file -- the pending commit message. It resolves which
+## message to check (the staged --message-file, or the base..HEAD range) and
+## hands it to the same engine rule via --message-file, so the message and the
+## tree share one non-ASCII definition.
+check_message_ascii() {
+   local msg tmp
 
    if [ "${staged_mode}" -eq 1 ]; then
       if [ -z "${message_file}" ]; then
          note "staged mode: no --message-file; skipping commit-message R-001 check"
          return 0
       fi
-      msg="$(cat -- "${message_file}")"
-   else
-      msg="$(git log "${base_ref}..HEAD" --format='%B%n')"
+      invoke_dist_ai_style_detect --message-file "${message_file}"
+      return 0
    fi
+   msg="$(git log "${base_ref}..HEAD" --format='%B%n')"
    if [ -z "${msg}" ]; then
       return 0
    fi
-   hits="$(LC_ALL=C grep --line-number --perl-regexp '[^\x00-\x7F]' <<< "${msg}" || true)"
-   if [ -z "${hits}" ]; then
+   ## Materialize the range message so the engine can read it as a blob. Plain
+   ## 'rm' on our own mktemp file: this bootstrap gate cannot depend on safe-rm.
+   tmp="$(mktemp)" || {
+      fail "commit-message R-001" "mktemp failed; cannot check the commit-range message"
       return 0
-   fi
-   fail "R-001 ASCII" "commit-range message contains non-ASCII"
-   note "offending line(s):"
-   printf '%s\n' "${hits}" >&2
+   }
+   printf '%s' "${msg}" > "${tmp}"
+   invoke_dist_ai_style_detect --message-file "${tmp}"
+   rm --force -- "${tmp}"
 }
 
 ## --- Packaging-convention check: debian/changelog is genmkfile-owned ---
@@ -2291,7 +2212,11 @@ check_comments_audit() {
 ## A MISSING detector, or shfmt absent (exit 2), is a REQUIRED-tool FAILURE, not
 ## a skip: silently dropping these rules would be a false green. Same discipline
 ## as R-090's own no-unauthorized-skip rule.
-run_ast_detector() {
+## Invoke 'dist-ai-style --detect' with the given arguments (a file list, or
+## '--message-file <path>') and render its US-delimited findings through
+## fail/note. A crash -- exit >2, or exit 1 with no output -- is a hard FAILURE,
+## never a silent pass, so a caller can never mistake a crash for "no findings".
+invoke_dist_ai_style_detect() {
    local detector cand output severity message location rc
 
    detector=""
@@ -2304,7 +2229,7 @@ run_ast_detector() {
       fi
    done
    if [ -z "${detector}" ]; then
-      fail "dist-ai-style not found; parser-backed shell rules could not run" "(required tool)"
+      fail "dist-ai-style not found; parser-backed rules could not run" "(required tool)"
       return 0
    fi
    rc=0
@@ -2314,9 +2239,9 @@ run_ast_detector() {
       return 0
    fi
    ## Exit 0 = clean, 1 = findings (with output). ANYTHING ELSE is a crash where
-   ## no parser-backed rule ran -- a false green if read as "no findings" -- so it
-   ## is a hard FAILURE. A rc-1 with EMPTY output is the same anomaly (a crash that
-   ## exited 1); the findings path always carries output.
+   ## no rule ran -- a false green if read as "no findings" -- so it is a hard
+   ## FAILURE. A rc-1 with EMPTY output is the same anomaly (a crash that exited
+   ## 1); the findings path always carries output.
    if [ "${rc}" -gt 2 ] || { [ "${rc}" -eq 1 ] && [ -z "${output}" ]; }; then
       fail "dist-ai-style --detect crashed (exit ${rc}); parser-backed rules did NOT run -- not a pass" "(traceback on stderr)"
       return 0
@@ -2334,6 +2259,12 @@ run_ast_detector() {
             ;;
       esac
    done <<< "${output}"
+}
+
+run_ast_detector() {
+   ## '--' guards a changed-file path that begins with '-' (or looks like an
+   ## option) from the detector's argument parser -- it is always a file here.
+   invoke_dist_ai_style_detect -- "$@"
 }
 
 warn_untracked_shell_files() {
@@ -2446,14 +2377,13 @@ run_file_checks() {
             "differs between the working tree and HEAD; checks ran against the working tree, not the pushed commit (use --per-commit to check commit content exactly)" \
             "${file_list[@]}"
       fi
-      check_ascii_files "${file_list[@]}"
-      ## Parser-backed rules over ALL changed files, in one AST pass: the shell
-      ## command-position / quote-state rules on shell files, and the embedded-
+      ## Parser-backed rules over ALL changed files, in one engine pass: the
+      ## shell command-position / quote-state rules on shell files, the embedded-
       ## shell config rules (R-191 systemd, R-192 shell -c, R-194 apt, R-195 cron,
-      ## R-100 workflow YAML) self-selecting by path. Replaces the former regex
-      ## bodies and the defang-based config-value scans.
+      ## R-100 workflow YAML) self-selecting by path, and the text rules (R-001
+      ## non-ASCII, trailing whitespace) over every changed file. One tool owns
+      ## detection; the gate only renders.
       run_ast_detector "${file_list[@]}"
-      check_trailing_whitespace "${file_list[@]}"
       ## pre-commit hooks are git-commit-time checks (some inspect the index, not
       ## file content), so they do not apply to the disk-linting --files mode.
       if [ "${files_mode}" -eq 0 ]; then
@@ -2516,7 +2446,7 @@ main() {
    ## Commit-message and changelog checks are commit-range scans; --files mode
    ## has no commit range, so they are skipped there.
    if [ "${files_mode}" -eq 0 ]; then
-      check_ascii_commit_msg
+      check_message_ascii
       if [ "${staged_mode}" -eq 1 ]; then
          check_changelog_no_manual_staged
       else

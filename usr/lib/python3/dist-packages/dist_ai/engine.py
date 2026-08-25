@@ -18,6 +18,8 @@ mutates the file, and the gate's detect pass then re-reads it, so any violation 
 fix did not (or could not) remove is reported as the residual. There is nothing
 to keep in lockstep."""
 
+import os
+
 from dist_ai import bash_ast
 from dist_ai import context as ctxmod
 from dist_ai import model
@@ -33,17 +35,38 @@ def _run_rules(ctx, rules):
 
 def detect(ctx, include_text=False):
     """Findings for one FileContext. Shell rules run only on a parsed shell file;
-    config rules self-select by path; text rules run when INCLUDE_TEXT (the gate
-    still owns their detection during migration, so the detect front leaves them
-    off by default). Raises bash_ast.ShfmtMissing if shfmt is absent."""
-    if ctx.source is None:
-        return []
+    config rules self-select by path; text rules run when INCLUDE_TEXT. The shell
+    and config rules need decoded source, so they are skipped for an undecodable
+    file -- but the text rules run on the RAW bytes, so R-001 still catches a
+    stray non-ASCII byte in a file that is not valid UTF-8 (the bash grep did).
+    Raises bash_ast.ShfmtMissing if shfmt is absent."""
     findings = []
-    if ctx.is_shell and ctx.tree is not None:
-        findings.extend(_run_rules(ctx, ruleset.SHELL_RULES))
-    findings.extend(_run_rules(ctx, ruleset.CONFIG_RULES))
+    if ctx.source is not None:
+        if ctx.is_shell and ctx.tree is not None:
+            findings.extend(_run_rules(ctx, ruleset.SHELL_RULES))
+        findings.extend(_run_rules(ctx, ruleset.CONFIG_RULES))
     if include_text:
         findings.extend(_run_rules(ctx, ruleset.TEXT_RULES))
+    return findings
+
+
+def detect_message(raw, path="(commit message)"):
+    """R-001 (non-ASCII) findings for a commit MESSAGE blob (raw bytes) -- not a
+    tree file, so it has no path/extension and only the content-keyed rules
+    apply. Line numbers are within the message. The same Confusables rule the
+    files use, over the RAW bytes, so a non-ASCII byte is caught whether or not
+    the message decodes as UTF-8 (the bash grep worked on bytes)."""
+    ## No source: detection reads the RAW bytes, and leaving source unset stops a
+    ## file waiver ('## style-ok: allow-non-ascii') that happens to appear IN the
+    ## message from suppressing R-001 there -- a message is not a file and the
+    ## bash gate honored no such waiver on it. has_waiver reads source, so a
+    ## None source means the message can never waive itself.
+    ctx = ctxmod.FileContext(path, None, raw=raw)
+    ctx._binary = False  ## a message is never a .gitattributes-binary blob
+    findings = []
+    for rule in ruleset.MESSAGE_RULES:
+        if rule.applies(ctx):
+            findings.extend(rule.detect(ctx))
     return findings
 
 
@@ -124,10 +147,17 @@ def apply_fixes(ctx, check=False):
         return {}
     if not check:
         try:
-            with open(ctx.abspath, "wb") as handle:
+            ## O_NOFOLLOW: from_disk refuses a symlink when the context is BUILT,
+            ## but a tree scan writes each file later -- if the path is swapped
+            ## for a symlink in between, a plain open() would follow it and
+            ## clobber the target. Refuse at write time too (ELOOP -> OSError ->
+            ## skip), so the fixer only ever writes the regular file it scanned.
+            def _nofollow(path, flags):
+                return os.open(path, flags | os.O_NOFOLLOW)
+            with open(ctx.abspath, "wb", opener=_nofollow) as handle:
                 handle.write(new_source.encode("utf-8"))
         except OSError:
-            ## Readable but not writable: leave it for the gate to report rather
-            ## than crash the whole fix pass on one file.
+            ## Not writable, or the path is now a symlink / gone: leave it for the
+            ## gate to report rather than crash the whole fix pass on one file.
             return {}
     return counts
