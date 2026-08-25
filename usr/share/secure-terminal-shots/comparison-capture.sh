@@ -105,10 +105,11 @@ cleanup() {
 
 ## List the child window IDs of the root window on the host X server. labwc's
 ## wlroots x11-backend output window is a normal child of root but carries NO
-## WM_NAME: over a nested Xvfb wlroots cannot set it (the `BadAtom` ChangeProperty
-## warnings in labwc.log), so a name-based `xdotool search --name` never matches it
-## and the bringup wait times out ("labwc did not start"). Enumerate children by ID
-## instead -- name-independent, so it is robust to that wlroots/labwc behaviour.
+## WM_NAME: over a nested Xvfb wlroots (observed with labwc 0.8 / wlroots 0.18)
+## cannot set it (the `BadAtom` ChangeProperty warnings in labwc.log), so a
+## name-based `xdotool search --name` never matches it and the bringup wait times
+## out ("labwc did not start"). Enumerate children by ID instead -- name-independent,
+## so it is robust to that wlroots/labwc behaviour.
 host_child_windows() {
    DISPLAY="${host_display}" xwininfo -root -children 2>/dev/null \
       | awk '/[0-9]+ (child|children):/{f=1; next} f && $1 ~ /^0x[0-9a-fA-F]+$/ {print $1}'

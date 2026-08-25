@@ -148,6 +148,30 @@ Per-emulator caveat: kitty honours the OSC-0 title hijack, but its shell integra
 RESETS the title to the cwd at the next prompt, so kitty's title bar can be clean in
 the shot. Caption it honestly -- the other emulators leave the hijacked title stuck.
 
+## Notes / gotchas
+
+Three non-obvious things about `comparison-capture.sh` worth knowing before you touch it:
+
+- **labwc bringup is detected by window ID, not name.** labwc's wlroots x11-backend
+  output window carries no `WM_NAME` over a nested Xvfb (wlroots cannot set it -- the
+  `BadAtom` warnings in `labwc.log`; observed with labwc 0.8 / wlroots 0.18), so an
+  `xdotool search --name` never matches and the wait would time out ("labwc did not
+  start"). `start_labwc` enumerates root's child windows by ID (`host_child_windows`,
+  via `xwininfo -root -children`) instead -- name-independent.
+- **Every shot is captured at 2x (HiDPI).** `SHOT_SCALE` (default 2) drives it: X-client
+  fonts via `Xft.dpi`, the secure-terminal Qt GUI via `QT_SCALE_FACTOR`, kitty's own font
+  DPI, the labwc title-bar font, and every hardcoded pixel geometry (through `px()`). The
+  character GRID (cols x rows) is unchanged -- only pixels-per-cell double. A 1x shot was
+  blurry once the browser upscaled it on a HiDPI display (the raster, not webp
+  compression: shots are lossless VP8L); the rest of the site was already 2x-source.
+- **A blank/black grab is never shipped.** The emulator pass runs a sequential re-capture
+  net (PHASE 1.5) that re-shoots any shot the parallel `--jobs` lanes left missing (a
+  discarded blank leaves no file). Per shot, `capture_settled` retries a blank grab before
+  returning, and `st_wait_render_settled` waits for a REAL settle (two consecutive matching
+  grabs, wall-clock bounded under `SHOT_DEADLINE`) so a slow row-by-row board is not grabbed
+  half-drawn. A spec that never renders is discarded with a `warn`, never emitted as black,
+  and any prior good shot is left intact.
+
 ## Related
 
 - `terminal-resilience-tests` (also in dist-ai) is the automated invariant version
