@@ -11,9 +11,9 @@ The per-file AST / text / external rules live in the engine; these need git.
 Every check yields model.Finding, so the gate renders a range finding exactly
 like a per-file one. base_cwd is the repo root (paths are repo-relative there)."""
 
+import collections
 import os
 import re
-import shutil
 import subprocess
 
 from dist_ai import engine
@@ -23,11 +23,39 @@ _AUTOBUMP_SUBJECT = "bumped changelog version"
 _MANUAL_OK = re.compile(
     r"^[ \t]*changelog-manual-ok:[ \t]*[^ \t]", re.IGNORECASE | re.MULTILINE)
 
+_GitResult = collections.namedtuple("_GitResult", ["returncode", "stdout"])
+
 
 def _git(args, base_cwd, check=False):
-    return subprocess.run(
-        ["git"] + args, capture_output=True, text=True, cwd=base_cwd,
-        check=check)
+    """Run git, decoding stdout with errors='replace' so a non-UTF-8 commit
+    body / subject / path never crashes the gate (git echoes those bytes back).
+    A rule that needs the exact bytes -- R-001 over a message -- reads them raw,
+    not through this."""
+    proc = subprocess.run(
+        ["git"] + args, capture_output=True, cwd=base_cwd, check=check)
+    return _GitResult(proc.returncode, proc.stdout.decode("utf-8", "replace"))
+
+
+def warn_worktree_skew(names, ref, base_cwd):
+    """Advisory NOTE (never a FAIL) when a checked path's working-tree content
+    differs from what this mode actually records -- so a 'passed' result is not
+    mistaken for a check of the exact committed bytes. REF is the diff target:
+    '' for the staged index (working tree vs index), a commit-ish for a range
+    (working tree vs that commit). The content read off disk is the working
+    tree; without this the divergence is silent."""
+    if ref is None:
+        return
+    for name in names:
+        args = ["diff", "--quiet"]
+        if ref:
+            args.append(ref)
+        args += ["--", name]
+        if _git(args, base_cwd).returncode != 0:
+            hint = ("differs from the staged blob; re-stage to check the exact "
+                    "committed content" if not ref
+                    else "differs from %s; the check ran against the working "
+                    "tree" % ref)
+            yield model.note("worktree-skew", "'%s' %s" % (name, hint), name)
 
 
 def _is_changelog(path):
@@ -57,6 +85,12 @@ def check_changelog_range(base_ref, base_cwd):
     other). '-c' takes the combined diff so an evil-merge edit is seen."""
     revs = _git(["rev-list", "--reverse", "%s..HEAD" % base_ref], base_cwd)
     if revs.returncode != 0:
+        ## A failed enumeration is NOT "no changelog edits" -- the check did not
+        ## run. Report it, so a git error cannot read as a clean changelog pass.
+        yield model.fail(
+            "changelog manual-edit",
+            "could not enumerate %s..HEAD; the changelog check did not run"
+            % base_ref, "debian/changelog")
         return
     for sha in revs.stdout.split():
         names = _git(
@@ -130,9 +164,13 @@ def check_message(base_ref, staged_mode, message_file, base_cwd):
             return
         yield from engine.detect_message(raw)
         return
-    msg = _git(["log", "%s..HEAD" % base_ref, "--format=%B%n"], base_cwd).stdout
-    if msg:
-        yield from engine.detect_message(msg.encode("utf-8"))
+    ## RAW bytes, not _git's replace-decoded string: R-001 must see the actual
+    ## non-ASCII byte a message carries, not a U+FFFD substitution of it.
+    proc = subprocess.run(
+        ["git", "log", "%s..HEAD" % base_ref, "--format=%B%n"],
+        capture_output=True, cwd=base_cwd)
+    if proc.stdout:
+        yield from engine.detect_message(proc.stdout)
 
 
 def _find_comments_audit(tool_dir):

@@ -215,13 +215,17 @@ def _enumerate(args, prog):
             print("%s: cannot resolve base ref '%s'. Pass a base, e.g. "
                   "'origin/master'." % (prog, exc), file=sys.stderr)
             return None, 2
+        ## Measure the range from the MERGE BASE, not base_ref's tip, so every
+        ## range check (files, added-large-files, changelog, message) shares the
+        ## same fork point range_pairs' triple-dot already uses.
+        base = gitdiff.merge_base(args.range)
         try:
-            pairs = gitdiff.range_pairs(args.range)
+            pairs = gitdiff.range_pairs(base)
         except gitdiff.StagedDiscoveryError as exc:
             print("%s: could not list changed files: %s" % (prog, exc),
                   file=sys.stderr)
             return None, 2
-        return (pairs, [rel for _, rel in pairs], args.range,
+        return (pairs, [rel for _, rel in pairs], base,
                 gitdiff._repo_root(), False), None
     ## Direct file mode.
     try:
@@ -233,10 +237,12 @@ def _enumerate(args, prog):
 
 
 def _batch_findings(names, base_ref, staged_mode, base_cwd, message_file,
-                    tool_dir):
+                    tool_dir, skew_ref):
     """The repo-level checks that judge the whole changed set / range: the
     pre-commit-hooks batch, the changelog convention, the commit-message floor,
-    and the advisory comment audit. Yields Findings."""
+    and the advisory comment audit. Yields Findings. SKEW_REF drives the
+    working-tree-skew NOTE (the content is read off disk, so a mode that records
+    something else must say so); None suppresses it."""
     yield from precommit.run(names, base_ref, staged_mode, base_cwd)
     if staged_mode:
         yield from gate.check_changelog_staged(names, message_file, base_cwd)
@@ -244,6 +250,7 @@ def _batch_findings(names, base_ref, staged_mode, base_cwd, message_file,
         yield from gate.check_changelog_range(base_ref, base_cwd)
     yield from gate.check_message(base_ref, staged_mode, message_file, base_cwd)
     yield from gate.comments_audit(names, base_cwd, tool_dir)
+    yield from gate.warn_worktree_skew(names, skew_ref, base_cwd)
 
 
 def style_main(argv, prog="dist-ai-style"):
@@ -308,8 +315,18 @@ def style_main(argv, prog="dist-ai-style"):
 
     if git_mode:
         tool_dir = os.path.dirname(os.path.realpath(sys.argv[0]))
+        ## The content is read off disk. Bare --staged records the INDEX, so
+        ## warn when the working tree differs; a range records HEAD's commits,
+        ## so warn vs HEAD. --all / --paths record the working tree itself (like
+        ## 'commit -a'), so there is nothing to skew against.
+        if args.staged and not args.all and not args.paths:
+            skew_ref = ""
+        elif args.range is not None:
+            skew_ref = "HEAD"
+        else:
+            skew_ref = None
         for finding in _batch_findings(names, base_ref, staged_mode, base_cwd,
-                                       args.message_file, tool_dir):
+                                       args.message_file, tool_dir, skew_ref):
             if finding.severity == model.FAIL:
                 any_fail = True
             _print_finding(prog, finding)

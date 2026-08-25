@@ -165,6 +165,42 @@ printf 'more\n' >> "${repo}/big.dat"
 git -C "${repo}" add big.dat
 assert "appending to a tracked large file passes" 0 "" --check --staged --all
 
+## --- 11. bare --staged NOTEs when the working tree diverges from the index --
+## The content is read off disk; a staged path edited (not re-staged) afterward
+## is checked as its working-tree bytes, so a silent pass must carry a skew NOTE.
+## The edit here is a harmless comment, so the file still passes (rc 0) and only
+## the advisory fires.
+repo="$(new_repo)"
+mk_clean "${repo}/skew.sh"
+git -C "${repo}" add skew.sh
+printf '%s\n' '## edited after staging' >> "${repo}/skew.sh"
+assert "worktree skew emits an advisory NOTE" 0 "differs from the staged blob" \
+   --check --staged
+
+## --- 12. --range keys added-large-files on the MERGE BASE, not base tip ------
+## A big file added on the feature branch must be caught even when a same-named
+## (small) file exists at the base branch's TIP -- it is still new at the fork.
+repo="$(new_repo)"
+git -C "${repo}" checkout -q -b base
+printf 'small\n' > "${repo}/data.bin"
+git -C "${repo}" add data.bin
+git -C "${repo}" commit -q -m 'base adds small data.bin'
+git -C "${repo}" checkout -q -b feature 'HEAD~1'
+{ head -c 600000 /dev/zero | tr '\0' 'a'; printf '%s\n' ''; } > "${repo}/data.bin"
+git -C "${repo}" add data.bin
+git -C "${repo}" commit -q -m 'feature adds big data.bin'
+assert "range added-large-files uses the merge base" 1 \
+   "check-added-large-files" --check --range base
+
+## --- 13. a non-ASCII commit-range message FAILs R-001 without crashing -------
+## The message carries an invalid-UTF-8 byte; R-001 must read the raw bytes and
+## FAIL, never crash the tool on a strict decode.
+repo="$(new_repo)"
+mk_clean "${repo}/u.sh"
+git -C "${repo}" add u.sh
+git -C "${repo}" commit -q -m "$(printf 'subject with \xff byte')"
+assert "non-ASCII range message FAILs R-001" 1 "R-001" --check --range HEAD~1
+
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "pre-push-gate: ${passc} pass, ${fail} fail, 0 skip -- FAILURES above." >&2
    exit 1

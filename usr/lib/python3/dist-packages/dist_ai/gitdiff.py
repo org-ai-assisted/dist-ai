@@ -55,6 +55,21 @@ def resolve_base(base_ref):
         raise BaseRefError(base_ref)
 
 
+def merge_base(base_ref):
+    """The merge base of BASE_REF and HEAD -- the fork point a range is measured
+    from. range_pairs diffs BASE_REF...HEAD (triple-dot = merge-base..HEAD), so
+    the 'is this file new in the range' test (added-large-files) must key on the
+    merge base too, NOT base_ref's current tip: a path the base branch added
+    after the fork is not present at the fork, so it is genuinely new here.
+    Falls back to BASE_REF when there is no common ancestor (unrelated
+    histories), the same ref a two-dot range would then use."""
+    out = subprocess.run(
+        ["git", "merge-base", base_ref, "HEAD"], capture_output=True)
+    if out.returncode != 0:
+        return base_ref
+    return os.fsdecode(out.stdout.strip()) or base_ref
+
+
 def _diff_names(args):
     """Run 'git -c core.quotePath=false diff -z --name-only --diff-filter=ACMRT
     ARGS' and return the repo-relative names. quotePath=false + -z keep a path

@@ -63,10 +63,13 @@ def _is_binary_attr(base_cwd, path):
     try:
         out = subprocess.run(
             ["git", "check-attr", "--cached", "binary", "--", path],
-            capture_output=True, text=True, cwd=base_cwd)
+            capture_output=True, cwd=base_cwd)
     except OSError:
         return False
-    return out.stdout.rstrip("\n").endswith(": binary: set")
+    ## Decode with replace: git echoes the PATH back, which may hold non-UTF-8
+    ## bytes -- a strict decode (text=True) would crash the whole scan.
+    return out.stdout.decode("utf-8", "replace").rstrip("\n").endswith(
+        ": binary: set")
 
 
 def _is_text_file(base_cwd, path):
@@ -104,11 +107,16 @@ def _run_hook(hook, flags, files, base_cwd):
     try:
         proc = subprocess.run(
             [hook] + list(flags) + ["--"] + list(files),
-            capture_output=True, text=True, cwd=base_cwd)
-    except OSError:
+            capture_output=True, cwd=base_cwd)
+    except OSError as exc:
+        ## Could NOT run the hook (E2BIG on a huge file list, the binary
+        ## vanished mid-scan): a FAIL, never a silent return -- a check that did
+        ## not run must not read as a pass (a private-key / AWS-credential scan
+        ## bypassed this way would be a false green).
+        yield model.fail(hook, "%s: could not run: %s" % (hook, exc), files[0])
         return
     if proc.returncode != 0:
-        out = (proc.stdout + proc.stderr).rstrip("\n")
+        out = (proc.stdout + proc.stderr).decode("utf-8", "replace").rstrip("\n")
         message = "%s: exited non-zero" % hook
         if out.strip():
             message += "\n" + out
@@ -124,14 +132,27 @@ def _run_fixer(hook, files, base_cwd):
     mirror = tempfile.mkdtemp()
     try:
         for path in files:
-            dest = os.path.join(mirror, path)
-            os.makedirs(os.path.dirname(dest) or mirror, exist_ok=True)
-            shutil.copy2(_abs(base_cwd, path), dest, follow_symlinks=False)
+            ## Force the copy INSIDE the mirror: os.path.join drops the mirror
+            ## entirely for an absolute 'path', and a '..' would climb out --
+            ## either way the fixer would run against (and the copy could clobber)
+            ## a real tree, breaking the throwaway-copy guarantee. normpath+strip
+            ## anchors every path under the mirror.
+            rel = os.path.normpath(os.sep + path).lstrip(os.sep)
+            dest = os.path.join(mirror, rel)
+            try:
+                os.makedirs(os.path.dirname(dest) or mirror, exist_ok=True)
+                shutil.copy2(_abs(base_cwd, path), dest, follow_symlinks=False)
+            except OSError:
+                ## Unreadable / gone / same-file: skip this one rather than crash
+                ## the whole batch. The gate's own detect pass still sees it.
+                continue
         try:
             proc = subprocess.run(
                 [hook, "--"] + list(files),
-                capture_output=True, text=True, cwd=mirror)
-        except OSError:
+                capture_output=True, cwd=mirror)
+        except OSError as exc:
+            yield model.fail(hook, "%s: could not run: %s" % (hook, exc),
+                             files[0])
             return
         if proc.returncode != 0:
             yield model.fail(
@@ -235,7 +256,8 @@ def run(paths, base_ref, staged_mode, base_cwd=None):
     finally:
         if env_saved is not None:
             for key, value in zip(
-                    ("PRE_COMMIT_FROM_REF", "PRE_COMMIT_TO_REF"), env_saved):
+                    ("PRE_COMMIT_FROM_REF", "PRE_COMMIT_TO_REF"), env_saved,
+                    strict=True):
                 if value is None:
                     os.environ.pop(key, None)
                 else:
