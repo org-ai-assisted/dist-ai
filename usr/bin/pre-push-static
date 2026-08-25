@@ -1365,15 +1365,6 @@ check_R021_local_assign() {
 }
 
 
-check_R081_source_devnull() {
-   local hits
-   local -a fs
-
-   mapfile -d '' -t fs < <(filter_self "${@}")
-   if [ "${#fs[@]}" -eq 0 ]; then return 0; fi
-   hits="$(grep --with-filename --line-number 'shellcheck source=/dev/null' -- "${fs[@]}" 2>/dev/null || true)"
-   emit_hits "R-081 source=/dev/null" "${hits}"
-}
 
 ## R-085: flag a '# shellcheck disable=SC1091' ONLY when it is paired with an
 ## adjacent '# shellcheck source=' directive (the canonical two-line directive
@@ -1388,44 +1379,6 @@ check_R081_source_devnull() {
 ## disable is load-bearing and dropping it reintroduces SC1091; NOT flagged.
 ## ADVISORY while the tree is converted repo-by-repo, flips to a hard fail once
 ## every consumer is converted. Escape: '## style-ok: allow-sc1091-disable'.
-check_R085_sc1091_disable() {
-   local script hits i n
-   local -a fs lines
-
-   mapfile -d '' -t fs < <(filter_self "${@}")
-   if [ "${#fs[@]}" -eq 0 ]; then return 0; fi
-   for script in "${fs[@]}"; do
-      [ -r "${script}" ] || continue
-      if grep --quiet --extended-regexp \
-         '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*allow-sc1091-disable([[:space:]]|$)' \
-         -- "${script}"; then
-         continue
-      fi
-      mapfile -t lines < "${script}"
-      hits=''
-      n="${#lines[@]}"
-      for (( i = 0; i < n; i++ )); do
-         ## SC1091 as a token in the disable list: alone, or comma-joined with
-         ## other codes on either side. Trailing '1' (e.g. SC10911) is not a match.
-         if [[ ! "${lines[i]}" =~ ^[[:space:]]*#[[:space:]]*shellcheck[[:space:]]+disable=([A-Z0-9]+,)*SC1091([,[:space:]]|$) ]]; then
-            continue
-         fi
-         ## Dead only when a '# shellcheck source=' directive sits on an adjacent
-         ## line -- that is what 'shellcheck -x' follows under the sibling
-         ## checkout. No adjacent source= -> nothing to follow -> load-bearing.
-         if { [ "${i}" -gt 0 ] \
-               && [[ "${lines[i - 1]}" =~ ^[[:space:]]*#[[:space:]]*shellcheck[[:space:]]+source= ]]; } \
-            || { [ "$(( i + 1 ))" -lt "${n}" ] \
-               && [[ "${lines[i + 1]}" =~ ^[[:space:]]*#[[:space:]]*shellcheck[[:space:]]+source= ]]; }; then
-            hits+="${script}:$(( i + 1 )):${lines[i]}"$'\n'
-         fi
-      done
-      if [ -n "${hits}" ]; then
-         note "R-085 '# shellcheck disable=SC1091' is dead once the CI sibling checkout follows the source; drop it and set 'dist-ai-tests: helper-scripts: true' (see the shellcheck skill) (ADVISORY):"
-         printf '%s' "${hits}"
-      fi
-   done
-}
 
 ## R-002: the Copyright header leads the file. A '## style-ok:' waiver must not
 ## sit ABOVE the '## Copyright' line; waivers belong under the header, not before
@@ -1633,20 +1586,6 @@ check_R153_help_from_comments() {
 }
 
 
-check_R080_shellcheck_source_path() {
-   local hits
-
-   ## R-080: a 'shellcheck source=' path must be a RELATIVE source-tree path
-   ## anchored with './' or '../', i.e. it must start with '.'. This flags an
-   ## absolute path ('source=/usr/...', and /dev/null), AND a bare relative
-   ## name ('source=get_colors.sh' instead of './get_colors.sh') -- shellcheck
-   ## resolves the bare form the same, but it breaks the codebase convention
-   ## that anchors a same-directory sibling as './<file>'.
-   hits="$(grep --with-filename --line-number --extended-regexp \
-      '^[[:space:]]*#[[:space:]]*shellcheck[[:space:]]+source=[^.]' \
-      -- "${@}" 2>/dev/null || true)"
-   emit_hits "R-080 shellcheck source= must be relative (start with ./ or ../)" "${hits}"
-}
 
 is_python_file() {
    case "${1}" in
@@ -2202,10 +2141,7 @@ run_file_checks() {
       check_R051_trap_inline "${shell_files[@]}"
       check_R070_double_semi "${shell_files[@]}"
       check_R074_flow_chaining "${shell_files[@]}"
-      check_R080_shellcheck_source_path "${shell_files[@]}"
       check_R021_local_assign "${shell_files[@]}"
-      check_R081_source_devnull "${shell_files[@]}"
-      check_R085_sc1091_disable "${shell_files[@]}"
       check_R170_tmp_hardcode "${shell_files[@]}"
       ## Parser-backed shell-structure rules on the shfmt AST: R-090, R-103,
       ## R-120, R-034, R-130, R-161, R-172, R-200, R-210, R-211, R-212, R-213.

@@ -699,6 +699,12 @@ expect_rule "R-080" "# shellcheck source=/usr/lib/foo.sh"        "present"
 expect_rule "R-080" "# shellcheck source=./get_colors.sh"        "absent"
 expect_rule "R-080" "# shellcheck source=../../foo.sh"           "absent"
 
+## R-081: 'shellcheck source=/dev/null' silences SC1091 without following the
+## real file -- FLAGGED (and, being absolute, R-080 flags it too). A relative
+## source= is not this rule.
+expect_rule "R-081" "# shellcheck source=/dev/null"              "present"
+expect_rule "R-081" "# shellcheck source=./helper.sh"            "absent"
+
 ## trailing-whitespace: a space OR tab immediately before end-of-line must be
 ## FLAGGED (the always-on native floor, independent of pre-commit-hooks); a
 ## clean line must be SPARED. Separators assembled from ${sp}/${tab} so no

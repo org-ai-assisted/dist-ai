@@ -852,6 +852,86 @@ class SetOptions(Rule):
                     "R-013 set options long-form one-per-line", call)
 
 
+## A shellcheck directive comment: '# shellcheck <body>'. bash_ast.comments()
+## yields the text AFTER the '#', so the leading '#' is not in the match.
+_SC_SOURCE = re.compile(r'^\s*shellcheck\s+source=(\S+)')
+_SC_DEVNULL = re.compile(r'^\s*shellcheck\s+source=/dev/null(?:\s|$)')
+_SC_SC1091 = re.compile(r'^\s*shellcheck\s+disable=(?:[A-Z0-9]+,)*SC1091(?![0-9])')
+
+
+class ShellcheckSourceRelative(Rule):
+    """R-080: a 'shellcheck source=' directive path must be script-RELATIVE
+    (start with './' or '../') so shellcheck resolves it from the script's own
+    directory. An absolute or bare path is flagged."""
+
+    id = "R-080"
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def detect(self, ctx):
+        for comment in bash_ast.comments(ctx.tree):
+            match = _SC_SOURCE.match(comment.get("Text", ""))
+            if match and not match.group(1).startswith("."):
+                yield _fail(
+                    ctx, "R-080",
+                    "R-080 shellcheck source= must be relative (start with ./ "
+                    "or ../)", comment.get("Pos"))
+
+
+class ShellcheckSourceDevNull(Rule):
+    """R-081: 'shellcheck source=/dev/null' silences SC1091 without letting
+    shellcheck follow the real file -- point source= at the file instead."""
+
+    id = "R-081"
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def detect(self, ctx):
+        for comment in bash_ast.comments(ctx.tree):
+            if _SC_DEVNULL.match(comment.get("Text", "")):
+                yield _fail(ctx, "R-081", "R-081 source=/dev/null",
+                            comment.get("Pos"))
+
+
+class Sc1091Disable(Rule):
+    """R-085 (advisory): a '# shellcheck disable=...SC1091...' on a line
+    IMMEDIATELY above or below a '# shellcheck source=' directive is DEAD --
+    shellcheck follows the source and never raises SC1091. A disable with no
+    adjacent source= is load-bearing (a runtime path shellcheck cannot follow),
+    so it is spared. Advisory, waivable with 'allow-sc1091-disable'. The location
+    is embedded in the message because a NOTE carries no separate location field."""
+
+    id = "R-085"
+    waiver_tag = "allow-sc1091-disable"
+    advisory = True
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def detect(self, ctx):
+        comments = list(bash_ast.comments(ctx.tree))
+        source_lines = set()
+        for comment in comments:
+            if _SC_SOURCE.match(comment.get("Text", "")):
+                line = (comment.get("Pos") or {}).get("Line")
+                if line is not None:
+                    source_lines.add(line)
+        for comment in comments:
+            if not _SC_SC1091.match(comment.get("Text", "")):
+                continue
+            line = (comment.get("Pos") or {}).get("Line")
+            if line is None:
+                continue
+            if (line - 1) in source_lines or (line + 1) in source_lines:
+                directive = ("#" + comment.get("Text", "")).strip()
+                yield _note(
+                    ctx, "R-085",
+                    "R-085 dead SC1091 disable adjacent to a source= directive "
+                    "at '%s:%d': %s" % (ctx.path, line, directive), line)
+
+
 class DashDashDenylist(Rule):
     """R-062: a standalone '--' passed to a tool that does NOT accept the
     end-of-options marker (it becomes a literal operand and misbehaves).
@@ -945,6 +1025,9 @@ RULES = (
     ShellInlineShellC(),
     ErrexitToggle(),
     SetOptions(),
+    ShellcheckSourceRelative(),
+    ShellcheckSourceDevNull(),
+    Sc1091Disable(),
     DashDashDenylist(),
     EmptyArrayGuard(),
     UnauthorizedSkip(),
