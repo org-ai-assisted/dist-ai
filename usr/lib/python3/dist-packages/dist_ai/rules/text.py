@@ -74,11 +74,13 @@ class Confusables(Rule):
     waiver_tag = "allow-non-ascii"
 
     def applies(self, ctx):
-        return (super().applies(ctx) and ctx.source is not None
+        ## detect works on RAW bytes (ctx.data), so a non-UTF-8 file's stray
+        ## high byte is still caught -- source may be None here.
+        return (super().applies(ctx) and ctx.data is not None
                 and not ctx.is_binary)
 
     def detect(self, ctx):
-        data = ctx.source.encode("utf-8")
+        data = ctx.data
         match = NON_ASCII_RE.search(data)
         if match:
             yield model.fail(
@@ -86,6 +88,10 @@ class Confusables(Rule):
                 _line_of_byte(data, match.start()))
 
     def fix(self, ctx):
+        ## A confusable substitution rewrites decoded text; a file that does not
+        ## decode as UTF-8 cannot be fixed here -- detect() still blocks it.
+        if ctx.source is None:
+            return
         data = ctx.source.encode("utf-8")
         yield from _substitution_edits(data, CONFUSABLES, "R-001")
         if ctx.path.lower().endswith(MARKUP_EXTS):
@@ -103,16 +109,21 @@ class TrailingWhitespace(Rule):
     id = "trailing-whitespace"
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.source is not None and ctx.is_text
+        return super().applies(ctx) and ctx.data is not None and ctx.is_text
 
     def detect(self, ctx):
-        data = ctx.source.encode("utf-8")
+        data = ctx.data
         for match in TRAILING_RE.finditer(data):
             yield model.fail(
-                "trailing-whitespace", "trailing whitespace", ctx.path,
+                "trailing-whitespace", "trailing-whitespace", ctx.path,
                 _line_of_byte(data, match.start()))
 
     def fix(self, ctx):
+        ## A stripping edit rewrites the decoded source the engine writes back; a
+        ## non-UTF-8 file has no source to rewrite, so decline (detect still
+        ## reports its trailing blanks off the raw bytes).
+        if ctx.source is None:
+            return
         data = ctx.source.encode("utf-8")
         for match in TRAILING_RE.finditer(data):
             yield Edit(match.start(), match.end(), "", "trailing-whitespace")

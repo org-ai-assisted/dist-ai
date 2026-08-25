@@ -33,17 +33,37 @@ def _run_rules(ctx, rules):
 
 def detect(ctx, include_text=False):
     """Findings for one FileContext. Shell rules run only on a parsed shell file;
-    config rules self-select by path; text rules run when INCLUDE_TEXT (the gate
-    still owns their detection during migration, so the detect front leaves them
-    off by default). Raises bash_ast.ShfmtMissing if shfmt is absent."""
-    if ctx.source is None:
-        return []
+    config rules self-select by path; text rules run when INCLUDE_TEXT. The shell
+    and config rules need decoded source, so they are skipped for an undecodable
+    file -- but the text rules run on the RAW bytes, so R-001 still catches a
+    stray non-ASCII byte in a file that is not valid UTF-8 (the bash grep did).
+    Raises bash_ast.ShfmtMissing if shfmt is absent."""
     findings = []
-    if ctx.is_shell and ctx.tree is not None:
-        findings.extend(_run_rules(ctx, ruleset.SHELL_RULES))
-    findings.extend(_run_rules(ctx, ruleset.CONFIG_RULES))
+    if ctx.source is not None:
+        if ctx.is_shell and ctx.tree is not None:
+            findings.extend(_run_rules(ctx, ruleset.SHELL_RULES))
+        findings.extend(_run_rules(ctx, ruleset.CONFIG_RULES))
     if include_text:
         findings.extend(_run_rules(ctx, ruleset.TEXT_RULES))
+    return findings
+
+
+def detect_message(raw, path="(commit message)"):
+    """R-001 (non-ASCII) findings for a commit MESSAGE blob (raw bytes) -- not a
+    tree file, so it has no path/extension and only the content-keyed rules
+    apply. Line numbers are within the message. The same Confusables rule the
+    files use, over the RAW bytes, so a non-ASCII byte is caught whether or not
+    the message decodes as UTF-8 (the bash grep worked on bytes)."""
+    try:
+        source = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        source = None
+    ctx = ctxmod.FileContext(path, source, raw=raw)
+    ctx._binary = False  ## a message is never a .gitattributes-binary blob
+    findings = []
+    for rule in ruleset.MESSAGE_RULES:
+        if rule.applies(ctx):
+            findings.extend(rule.detect(ctx))
     return findings
 
 

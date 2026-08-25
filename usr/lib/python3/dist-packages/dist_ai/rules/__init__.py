@@ -24,6 +24,11 @@ SHELL_RULES = _shell.RULES
 CONFIG_RULES = _config.RULES
 TEXT_RULES = _text.RULES
 
+## Rules that also apply to a commit MESSAGE blob (not a tree file): the
+## non-ASCII floor only. A message has no path/extension, so a file-kind rule
+## (trailing whitespace is scoped to is_text files) does not belong here.
+MESSAGE_RULES = tuple(rule for rule in TEXT_RULES if rule.id == "R-001")
+
 ## Detect channel emitted to the gate: the AST-parsed shell + config rules.
 DETECT_RULES = SHELL_RULES + CONFIG_RULES
 

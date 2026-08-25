@@ -60,25 +60,40 @@ def _emit_findings(findings, out):
 
 
 def detect_main(argv, prog="dist-ai-style --detect"):
-    """Emit US-delimited findings (SHELL + CONFIG rules) for the shell/config
-    files named on the command line."""
-    args = argv[1:]
-    if not args:
-        print("usage: %s <file|dir>..." % prog, file=sys.stderr)
+    """Emit US-delimited findings for the files named on the command line
+    (SHELL + CONFIG + TEXT rules), and, with --message-file, the non-ASCII floor
+    over a commit-message blob that is not a tree file."""
+    parser = argparse.ArgumentParser(prog=prog, add_help=True)
+    parser.add_argument("--message-file",
+                        help="check this commit-message blob for R-001 non-ASCII")
+    parser.add_argument("files", nargs="*")
+    args = parser.parse_args(argv[1:])
+    if not args.files and args.message_file is None:
+        print("usage: %s [--message-file MSG] <file|dir>..." % prog,
+              file=sys.stderr)
         return 2
-    contexts, code = _load(args, staged=False, prog=prog)
+    contexts, code = _load(args.files, staged=False, prog=prog)
     if code is not None:
         return code
     out = []
     any_fail = False
     for ctx in contexts:
         try:
-            findings = engine.detect(ctx, include_text=False)
+            findings = engine.detect(ctx, include_text=True)
         except bash_ast.ShfmtMissing as exc:
             print("%s: shfmt is required but unavailable: %s" % (prog, exc),
                   file=sys.stderr)
             return 2
         any_fail = _emit_findings(findings, out) or any_fail
+    if args.message_file is not None:
+        try:
+            with open(args.message_file, "rb") as handle:
+                raw = handle.read()
+        except OSError as exc:
+            print("%s: cannot read --message-file: %s" % (prog, exc),
+                  file=sys.stderr)
+            return 2
+        any_fail = _emit_findings(engine.detect_message(raw), out) or any_fail
     if out:
         sys.stdout.write("\n".join(out) + "\n")
     return 1 if any_fail else 0

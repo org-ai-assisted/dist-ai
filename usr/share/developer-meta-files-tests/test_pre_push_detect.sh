@@ -427,6 +427,42 @@ run_det "$(printf '%s\n' \
    '}')"
 assert_at "R-063 flags a checked-param + command-substitution target" "R-063" 4
 
+## --- text floor over --detect: R-001 non-ASCII, incl. a non-UTF-8 file --------
+## The --detect front now owns the file R-001 floor (include_text), reported off
+## the RAW bytes so a stray non-ASCII byte is caught even where the file is not
+## valid UTF-8 -- matching the byte-level grep the bash gate used. Canary: FAILED
+## when detect read decoded source only (an undecodable file gave source=None and
+## no finding). 0xFF is never a valid UTF-8 byte.
+printf '%b' '#!/bin/bash\ntrue \377\n' > "${test_dir}/badutf8.sh"
+output="$("${DET}" --detect "${test_dir}/badutf8.sh" 2>/dev/null || true)"
+if grep --quiet --fixed-strings -- 'R-001' <<< "${output}"; then
+   note_pass "R-001 flags a non-ASCII byte in a non-UTF-8 file"
+else
+   note_fail "R-001 missed a non-ASCII byte in a non-UTF-8 file"
+   printf '%s\n' "${output}" >&2
+fi
+
+## --- commit-message R-001 via --message-file --------------------------------
+## The pending commit message is not a tree file; --message-file hands it to the
+## SAME non-ASCII rule. A U+00E9 (0xC3 0xA9) in the body must be flagged; a clean
+## ASCII message must pass.
+printf '%b' 'subject line\n\nbody with \303\251 accent\n' > "${test_dir}/msg-bad"
+output="$("${DET}" --detect --message-file "${test_dir}/msg-bad" 2>/dev/null || true)"
+if grep --quiet --fixed-strings -- 'R-001' <<< "${output}"; then
+   note_pass "R-001 flags a non-ASCII commit message via --message-file"
+else
+   note_fail "R-001 missed a non-ASCII commit message via --message-file"
+   printf '%s\n' "${output}" >&2
+fi
+printf '%s\n' 'clean ascii subject' > "${test_dir}/msg-ok"
+output="$("${DET}" --detect --message-file "${test_dir}/msg-ok" 2>/dev/null || true)"
+if grep --quiet --fixed-strings -- 'R-001' <<< "${output}"; then
+   note_fail "R-001 wrongly flagged a clean ASCII commit message"
+   printf '%s\n' "${output}" >&2
+else
+   note_pass "R-001 spares a clean ASCII commit message"
+fi
+
 ## Self-test the FAIL gate: a forced failure must make the script exit non-zero.
 if [ -n "${TEST_SELFCHECK_FAIL_GATE:-}" ]; then
    note_fail "self-test forced failure"

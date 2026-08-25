@@ -78,10 +78,11 @@ class FileContext:
       tree        -- the shfmt AST (lazy), or None if not shell / unparsable.
     """
 
-    def __init__(self, path, source, abspath=None):
+    def __init__(self, path, source, abspath=None, raw=None):
         self.path = path
         self.abspath = abspath if abspath is not None else path
         self.source = source
+        self._raw = raw
         self._tree = None
         self._tree_done = False
         self._binary = None
@@ -89,7 +90,8 @@ class FileContext:
     @classmethod
     def from_disk(cls, abspath, relpath=None):
         """Build from a file on disk. Returns None for a symlink or a
-        non-regular file; source is None if the bytes are not valid UTF-8."""
+        non-regular file; source is None if the bytes are not valid UTF-8 (the
+        raw bytes are kept regardless, so the non-ASCII floor still sees them)."""
         if not os.path.isfile(abspath) or os.path.islink(abspath):
             return None
         try:
@@ -102,7 +104,20 @@ class FileContext:
         except UnicodeDecodeError:
             source = None
         return cls(relpath if relpath is not None else abspath, source,
-                   abspath=abspath)
+                   abspath=abspath, raw=raw)
+
+    @property
+    def data(self):
+        """The file's raw bytes, for the byte-level text rules (R-001 must flag a
+        non-ASCII byte even in a file that is not valid UTF-8, where source is
+        None -- the bash grep did). from_disk keeps the exact bytes; a context
+        built from text (a commit message, the fixer's intermediate pass)
+        encodes its source. None only when both are absent."""
+        if self._raw is not None:
+            return self._raw
+        if self.source is not None:
+            return self.source.encode("utf-8")
+        return None
 
     ## --- classification ---------------------------------------------------
 

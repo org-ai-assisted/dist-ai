@@ -1207,13 +1207,13 @@ chmod 0755 -- "${ascii_repo}/plain.py" "${ascii_repo}/waived.py"
 git -C "${ascii_repo}" add --all
 git -C "${ascii_repo}" commit --quiet --no-verify --message ascii
 ascii_out="$( cd -- "${ascii_repo}" && "${GATE}" "${ascii_base}" 2>&1 || true )"
-if grep --quiet --fixed-strings -- "'plain.py' contains non-ASCII" <<< "${ascii_out}"; then
+if grep --quiet --fixed-strings -- "R-001 non-ASCII character(s): 'plain.py:" <<< "${ascii_out}"; then
    printf '%s\n' 'PASS: R-001 still flags non-ASCII without the waiver'
 else
    printf '%s\n' 'FAIL: R-001 did not flag non-ASCII -- the waiver is too broad' >&2
    failures=$((failures + 1))
 fi
-if grep --quiet --fixed-strings -- "'waived.py' contains non-ASCII" <<< "${ascii_out}"; then
+if grep --quiet --fixed-strings -- "R-001 non-ASCII character(s): 'waived.py:" <<< "${ascii_out}"; then
    printf '%s\n' 'FAIL: R-001 waiver did not take effect' >&2
    failures=$((failures + 1))
 else
@@ -1759,7 +1759,7 @@ gate_output_data() {  ## $1=.gitattributes line (empty for none) -> gate output 
 }
 
 data_unattributed="$(gate_output_data '')"
-if grep --quiet --fixed-strings -- 'R-001 ASCII' <<< "${data_unattributed}"; then
+if grep --quiet --fixed-strings -- 'R-001 non-ASCII' <<< "${data_unattributed}"; then
    printf '%s\n' 'PASS: R-001 flags a non-ASCII data file with no .gitattributes entry (canary)'
 else
    printf '%s\n' 'FAIL: R-001 did not flag a non-ASCII data file without the binary attribute' >&2
@@ -1767,7 +1767,7 @@ else
 fi
 
 data_allowlisted="$(gate_output_data 'blob.dat binary')"
-if grep --quiet --fixed-strings -- 'R-001 ASCII' <<< "${data_allowlisted}"; then
+if grep --quiet --fixed-strings -- 'R-001 non-ASCII' <<< "${data_allowlisted}"; then
    printf '%s\n' 'FAIL: R-001 flagged a .gitattributes binary data file (allowlist not honoured)' >&2
    failures=$((failures + 1))
 else
@@ -1783,8 +1783,47 @@ else
    failures=$((failures + 1))
 fi
 
+## ---- commit-message R-001 (check_message_ascii, push mode) ----
+## The pending commit message is the one text blob that is NOT a tree file. The
+## gate resolves the base..HEAD message (or, staged, the --message-file) and
+## hands it to the SAME engine rule via --message-file, so message and tree share
+## one non-ASCII definition. A non-ASCII message must FAIL referencing the
+## '(commit message)' pseudo-path; a clean ASCII message must pass.
+gate_output_msg() {  ## $1=commit subject -> gate output over base..HEAD
+   local subject repo base
+   subject="$1"
+   repo="$(mktemp --directory --tmpdir="${tmp_root}" msg.XXXXXX)"
+   git -C "${repo}" init --quiet
+   git -C "${repo}" config user.email 'ci-test@example.com'
+   git -C "${repo}" config user.name 'ci-test'
+   git -C "${repo}" commit --quiet --no-verify --allow-empty --message base
+   base="$(git -C "${repo}" rev-parse HEAD)"
+   printf '%s\n' '#!/bin/bash' 'true' > "${repo}/ok.sh"
+   git -C "${repo}" add ok.sh
+   git -C "${repo}" commit --quiet --no-verify --message "${subject}"
+   (
+      cd -- "${repo}" || exit 1
+      "${GATE}" "${base}"
+   ) 2>&1 || true
+}
+## A U+00E9 (0xC3 0xA9) in the subject, assembled so THIS tracked file stays ASCII.
+msg_bad_out="$(gate_output_msg "fix caf$(printf '%b' '\303\251') bug")"
+if grep --quiet --fixed-strings -- "R-001 non-ASCII character(s): '(commit message)" <<< "${msg_bad_out}"; then
+   printf '%s\n' 'PASS: R-001 flags a non-ASCII commit message (push mode)'
+else
+   printf '%s\n' 'FAIL: R-001 did not flag a non-ASCII commit message' >&2
+   failures=$((failures + 1))
+fi
+msg_ok_out="$(gate_output_msg 'fix a plain ascii bug')"
+if grep --quiet --fixed-strings -- "'(commit message)" <<< "${msg_ok_out}"; then
+   printf '%s\n' 'FAIL: R-001 wrongly flagged a clean ASCII commit message' >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' 'PASS: R-001 spares a clean ASCII commit message (push mode)'
+fi
+
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "test_pre_push_static_style_rules: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-026, R-030 format string, R-030/R-031, R-034, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-190, R-191, R-194, R-195, R-100, R-010, R-001 .gitattributes-binary allowlist, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting, double-quote-string-fixer-disabled and imported-package-module exemption enforced as expected."
+printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-026, R-030 format string, R-030/R-031, R-034, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-190, R-191, R-194, R-195, R-100, R-010, R-001 .gitattributes-binary allowlist, R-001 commit-message, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting, double-quote-string-fixer-disabled and imported-package-module exemption enforced as expected."
