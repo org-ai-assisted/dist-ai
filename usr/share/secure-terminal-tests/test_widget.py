@@ -3703,7 +3703,8 @@ win._apply_global({'theme': 'light', 'zoom': 130, 'mode': 'reveal',
                    'colors': True, 'line_edits': True, 'tui': False,
                    'tui_autobox_notice': True,
                    'osc': {'osc_title': True, 'osc_clipboard': True},
-                   'scrollback': 1000, 'paste_delay': 5, 'persist': True})
+                   'scrollback': 1000, 'paste_delay': 5, 'escape_limit': 4096,
+                   'persist': True})
 ok(all((win.tabs.widget(i).current_theme(), win.tabs.widget(i).current_mode(),
         win.tabs.widget(i).current_scrollback()) == ('light', 'reveal', 1000)
        for i in range(win.tabs.count())),
@@ -3715,7 +3716,8 @@ ok(all(win.tabs.widget(i).osc_enabled('osc_title')
 win._apply_global({'theme': 'light', 'zoom': 130, 'mode': 'reveal', 'colors': True, 'line_edits': True,
                    'tui': False, 'tui_autobox_notice': True,
                    'osc': {'osc_title': False, 'osc_clipboard': False},
-                   'scrollback': 1000, 'paste_delay': 5, 'persist': True})
+                   'scrollback': 1000, 'paste_delay': 5, 'escape_limit': 4096,
+                   'persist': True})
 eq(win._default_mode, 'reveal', 'global settings updated the default mode')
 # slash-command palette: applies settings, leading slash optional, invalid -> False
 ok(win.run_command('/theme light') and win.current().current_theme() == 'light',
@@ -5578,8 +5580,11 @@ win._locked = _saved_l2
 if tui_available():
     _bd = SecureTerminal(command='/bin/cat')
     _bd._esc_drop = 'P'
+    _bd._esc_dropped = 1234
+    _bd._esc_notified = True
     _bd.apply_tui(True)
-    eq(_bd._esc_drop, '', 'switching to TUI clears a pending CLI discard state')
+    eq((_bd._esc_drop, _bd._esc_dropped, _bd._esc_notified), ('', 0, False),
+       'switching to TUI clears a pending CLI discard state, its counter and its notice flag')
     _bd.close()
 
 # an over-cap OSC (introducer truncated by the discard) still surfaces an OSC-use
@@ -5590,6 +5595,54 @@ _bo.osc_used.connect(lambda k: _osc_seen.append(k))
 feed_output(_bo, b'\x1b]0;' + b'A' * 5000)         # >cap OSC, no terminator -> discard
 ok('osc_other' in _osc_seen, 'an over-cap OSC still surfaces an OSC-use notice')
 _bo.close()
+
+# escape_limit: an unterminated OSC/DCS string sequence makes CLI mode discard all
+# following output (safe -- no escape byte is ever rendered) but it looks like a
+# freeze. The suppression is NEVER lifted; instead a one-time notice fires past the
+# threshold. Pure function first (the discard keeps suppressing + counts), then the
+# live widget's escape_suppressed signal.
+from secure_terminal.sanitize import feed_chunk_carry           # noqa: E402
+_ES = '\x1b]' + 'A' * 5000                          # over-cap incomplete OSC (no BEL/ST)
+# entering the discard state records the characters suppressed so far
+eq(feed_chunk_carry(_ES, '', '', 0), ('', '', ']', len(_ES)),
+   'feed_chunk_carry: an over-cap incomplete OSC enters the discard state, counting suppressed chars')
+# the discard keeps suppressing across chunks; the counter accumulates (never resumes)
+eq(feed_chunk_carry('B' * 100, '', ']', len(_ES)), ('', '', ']', len(_ES) + 100),
+   'feed_chunk_carry: the discard keeps suppressing and accumulating, never rendering the bytes')
+# a real terminator ends the sequence, resets the counter, and renders the tail after it
+eq(feed_chunk_carry('done\x07after', '', ']', len(_ES)), ('after', '', '', 0),
+   'feed_chunk_carry: a terminator ends the sequence and resets the discard counter')
+# a lone trailing ESC in the discard state is held as a possible split ST terminator
+eq(feed_chunk_carry('data\x1b', '', 'P', 10), ('', '\x1b', 'P', 15),
+   'feed_chunk_carry: a trailing ESC is carried as a possible split ST')
+
+# live widget: the escape_suppressed signal fires ONCE past the threshold; the
+# output stays suppressed (nothing is rendered) either way.
+_eln = SecureTerminal(command='/bin/cat', tui=False)
+_eln.apply_escape_limit(4096)
+_fired = []
+_eln.escape_suppressed.connect(lambda: _fired.append(1))
+feed_output(_eln, b'\x1b]0;' + b'A' * 5000)         # over-cap unterminated OSC -> past the threshold
+eq(len(_fired), 1, 'escape_suppressed fires once when suppression passes the threshold')
+feed_output(_eln, b'B' * 5000)                      # still no terminator, same run
+eq(len(_fired), 1, 'escape_suppressed does not re-fire within one discard run')
+ok('AAAA' not in _eln.transcript_text() and 'BBBB' not in _eln.transcript_text(),
+   'the suppressed output is never rendered (no escape byte leaks as text)')
+feed_output(_eln, b'\x07')                          # terminator ends the sequence (re-arm)
+feed_output(_eln, b'\x1b]0;' + b'C' * 5000)         # a NEW unterminated sequence re-fires
+eq(len(_fired), 2, 'escape_suppressed re-arms and re-fires after the sequence ends')
+_eln.close()
+# escape_limit=0 never notifies, but still suppresses; a negative clamps to 0.
+_el0 = SecureTerminal(command='/bin/cat', tui=False)
+_el0.apply_escape_limit(-5)
+eq(_el0.current_escape_limit(), 0, 'apply_escape_limit clamps a negative threshold to 0')
+_fired0 = []
+_el0.escape_suppressed.connect(lambda: _fired0.append(1))
+feed_output(_el0, b'\x1b]0;' + b'A' * 5000)
+feed_output(_el0, b'B' * 5000)
+eq(len(_fired0), 0, 'escape_limit=0: never notifies')
+ok('BBBB' not in _el0.transcript_text(), 'escape_limit=0 still suppresses the output')
+_el0.close()
 
 # --- system tray: opt-in, default off, no untrusted output on the tray --------
 # Offscreen has no real tray, so exercise the gating/persist logic and the

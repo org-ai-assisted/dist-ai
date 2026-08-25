@@ -42,9 +42,9 @@ if ! has git ; then
 fi
 
 tool_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
-GATE="${tool_dir}/../../bin/pre-push-static"
+GATE="${tool_dir}/../../bin/dist-ai-style"
 if [ ! -x "${GATE}" ]; then
-   GATE='/usr/bin/pre-push-static'
+   GATE='/usr/bin/dist-ai-style'
 fi
 
 test_dir="$(mktemp --directory)"
@@ -91,7 +91,7 @@ run_gate_on_body() {
       -c user.name=test -c user.email=test@example.com \
       commit --quiet --message "fixture"
    gate_rc=0
-   gate_output="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || gate_rc=$?
+   gate_output="$( cd -- "${repo}" && "${GATE}" --check --range "${base_sha}" 2>&1 )" || gate_rc=$?
 }
 
 ## R-002 must appear AND the gate must reject (non-zero).

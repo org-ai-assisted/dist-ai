@@ -656,7 +656,7 @@ def _pipeline(chunks, cap=4096):
     carry, drop = '', ''
     out = []
     for chunk in chunks:
-        text, carry, drop = S.feed_chunk_carry(chunk, carry, drop, cap=cap)
+        text, carry, drop, _ = S.feed_chunk_carry(chunk, carry, drop, cap=cap)
         out.append(S.render_output(text, 'detail'))
     return ''.join(out)
 
@@ -687,7 +687,7 @@ def t8_splits():
     chunks = ['\x1bP', 'SECRET' + 'x' * 40, '\x07LEAK', '\x1b\\VISIBLE']
     out = []
     for c in chunks:
-        text, carry, drop = S.feed_chunk_carry(c, carry, drop, cap=cap)
+        text, carry, drop, _ = S.feed_chunk_carry(c, carry, drop, cap=cap)
         out.append(S.render_output(text, 'detail'))
     got = ''.join(out)
     if 'LEAK' in got or 'SECRET' in got:

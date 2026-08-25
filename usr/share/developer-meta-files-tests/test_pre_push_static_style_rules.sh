@@ -73,9 +73,9 @@ assert_prerequisite \
 gate_test_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
 ## PRE_PUSH_STATIC_BIN override aims the suite at an alternate gate copy (e.g. the
 ## pre-fix version for a canary run); otherwise the in-tree copy, then the packaged.
-GATE="${PRE_PUSH_STATIC_BIN:-${gate_test_dir}/../../bin/pre-push-static}"
+GATE="${PRE_PUSH_STATIC_BIN:-${gate_test_dir}/../../bin/dist-ai-style}"
 if [ ! -x "${GATE}" ]; then
-   GATE='/usr/bin/pre-push-static'
+   GATE='/usr/bin/dist-ai-style'
 fi
 
 [ -x "${GATE}" ] \
@@ -117,7 +117,7 @@ gate_output() {
    git -C "${repo}" commit --quiet --no-verify --message sample
    (
       cd -- "${repo}" || exit 1
-      "${GATE}" "${base}"
+      "${GATE}" --check --range "${base}"
    ) 2>&1 || true
 }
 
@@ -130,12 +130,11 @@ expect_rule() {
    want="$3"
    shebang="${4:-#!/bin/bash}"
    out="$(gate_output "${body}" "${shebang}")"
-   ## Liveness guard: require the gate's TERMINAL verdict line, not just any
-   ## 'pre-push-static:' note. Early notes ('no changed shell files',
-   ## 'shellcheck not on PATH; skipping') would otherwise satisfy a weaker
-   ## check even if the gate crashed before reaching the rule under test, so
-   ## an 'absent' assertion could pass spuriously on a real regression.
-   if ! grep --quiet --extended-regexp 'all static checks passed|[0-9]+ check\(s\) failed' <<< "${out}"; then
+   ## Liveness guard: require the gate's TERMINAL verdict line. An early exit
+   ## (a crash before the rule, an env error) prints no verdict, so an 'absent'
+   ## assertion could otherwise pass spuriously on a real regression.
+   if ! grep --quiet --extended-regexp \
+      'all static checks passed|[0-9]+ check\(s\) failed' <<< "${out}"; then
       printf '%s\n' \
          "FAIL: gate produced no final verdict for body '${body}'" >&2
       failures=$((failures + 1))
@@ -442,22 +441,10 @@ expect_rule "R-070" "case x in${nlreal}1) out=${dq}\${plain}${dq} ${dsemi}${nlre
 expect_rule "R-070" "argc=\${#args[@]}${sp}${sp}## a note about ;;"               "absent"
 expect_rule "R-074" "[ ${dq}\${#a[@]}${dq} -eq 0 ]${sc} continue"                "present"
 
-## R-021: a local declared WITH its assignment must be flagged; a bare
-## declaration list, and a typed declaration whose attribute must be set at
-## declaration time, must be spared. Assembled so the flagged sequence does
-## not appear literally in THIS tracked file, which the gate also greps.
-lcl='lo''cal'
-expect_rule "R-021" "   ${lcl} name=\"\${1}\""        "present"
-expect_rule "R-021" "   ${lcl} out=\"\$(cmd)\""       "present"
-## The assignment need not be the FIRST operand: this form combines
-## declaration and assignment on the second name and masks the substitution's
-## exit status just the same.
-expect_rule "R-021" "   ${lcl} first second=\"\$(cmd)\"" "present"
-expect_rule "R-021" "   ${lcl} name other value"      "absent"
-expect_rule "R-021" "   ${lcl} -a arr=()"             "absent"
-expect_rule "R-021" "   ${lcl} -i count=0"            "absent"
-## 'declare' is not function-local by default, so it is not this rule's.
-expect_rule "R-021" "   declare name=1"               "absent"
+## R-021 / R-022 (local declaration position; local combined with command
+## substitution) are GUIDANCE only -- not mechanically gate-enforced (the
+## engine implements no such rule; the bash-style-guide tags them
+## 'auto-detected: no'). No gate assertion here; a future AST rule would add one.
 
 ## R-026: the obsolete pre-4.4 empty-array guard '${arr[@]+"${arr[@]}"}' (a
 ## nounset workaround unneeded since bash 4.4) must be FLAGGED. The legitimate
@@ -515,6 +502,10 @@ expect_rule "R-102" "bash${sp}ci/dry-run-start"                  "present"
 expect_rule "R-102" "sh${sp}/usr/local/bin/foo"                  "present"
 expect_rule "R-102" "bash${sp}--norc script"                     "absent"
 expect_rule "R-102" "bash${sp}\${script}"                        "absent"
+## A '-n' (syntax-check, noexec) cluster never RUNS the script -> SPARED; a '-x'
+## (execution + trace) cluster still runs it -> FLAGGED. Guards the noexec spare.
+expect_rule "R-102" "bash${sp}-n${sp}foo.bash"                   "absent"
+expect_rule "R-102" "bash${sp}-x${sp}foo.bash"                   "present"
 ## A short flag ending in 'sh' and a .sh script run AS the command (with a
 ## path argument) are NOT interpreter prepends; both matched the old '\b'
 ## anchor ('\b' also fires after '-' and '.'), so pin them SPARED.
@@ -725,7 +716,7 @@ crlf_base="$(git -C "${crlf_repo}" rev-parse HEAD)"
 printf '%s\n' "#!/bin/bash${cr}" "true${sc}${del} -rf x" > "${crlf_repo}/deploy"
 git -C "${crlf_repo}" add deploy
 git -C "${crlf_repo}" commit --quiet --no-verify --message crlf
-crlf_out="$( cd -- "${crlf_repo}" && "${GATE}" "${crlf_base}" 2>&1 || true )"
+crlf_out="$( cd -- "${crlf_repo}" && "${GATE}" --check --range "${crlf_base}" 2>&1 || true )"
 if grep --quiet --fixed-strings -- "R-120" <<< "${crlf_out}"; then
    printf '%s\n' 'PASS: is_shell_file detects a CRLF shebang (shell tier ran, R-120 flagged)'
 else
@@ -746,7 +737,7 @@ dq_base="$(git -C "${dq_repo}" rev-parse HEAD)"
 printf '%s\n' 'x = "double quoted"' > "${dq_repo}/probe.py"
 git -C "${dq_repo}" add --all
 git -C "${dq_repo}" commit --quiet --no-verify --message probe
-dq_out="$( cd -- "${dq_repo}" && "${GATE}" "${dq_base}" 2>&1 || true )"
+dq_out="$( cd -- "${dq_repo}" && "${GATE}" --check --range "${dq_base}" 2>&1 || true )"
 if grep --quiet --fixed-strings -- 'double-quote-string-fixer' <<< "${dq_out}"; then
    printf '%s\n' 'FAIL: the gate still references double-quote-string-fixer (should be disabled)' >&2
    failures=$((failures + 1))
@@ -773,7 +764,7 @@ module_probe() {
    chmod 0644 -- "${repo}/${rel}"
    git -C "${repo}" add --all
    git -C "${repo}" commit --quiet --no-verify --message probe
-   out="$( cd -- "${repo}" && "${GATE}" "${base}" 2>&1 || true )"
+   out="$( cd -- "${repo}" && "${GATE}" --check --range "${base}" 2>&1 || true )"
    printf '%s' "${out}"
 }
 
@@ -821,7 +812,7 @@ git -C "${addel_repo}" add transient.txt
 git -C "${addel_repo}" commit --quiet --no-verify --message add
 ## delete it WITHOUT committing: present at HEAD, gone from the working tree
 safe-rm --force -- "${addel_repo}/transient.txt"
-addel_out="$( cd -- "${addel_repo}" && "${GATE}" "${addel_base}" 2>&1 || true )"
+addel_out="$( cd -- "${addel_repo}" && "${GATE}" --check --range "${addel_base}" 2>&1 || true )"
 if grep --quiet --fixed-strings -- 'FileNotFoundError' <<< "${addel_out}"; then
    printf '%s\n' 'FAIL: uncommitted deletion crashed check-added-large-files' >&2
    failures=$((failures + 1))
@@ -848,7 +839,7 @@ git -C "${bigstaged_repo}" commit --quiet --no-verify --message base
 ## touch it and stage the change: present at HEAD, modified in the index.
 printf '%s\n' 'appended' >> "${bigstaged_repo}/big.txt"
 git -C "${bigstaged_repo}" add big.txt
-bigstaged_out="$( cd -- "${bigstaged_repo}" && "${GATE}" --staged 2>&1 || true )"
+bigstaged_out="$( cd -- "${bigstaged_repo}" && "${GATE}" --check --staged 2>&1 || true )"
 if grep --quiet --fixed-strings -- 'FAIL check-added-large-files' <<< "${bigstaged_out}"; then
    printf '%s\n' 'FAIL: a pre-existing large file was flagged as newly added in staged mode (no upstream)' >&2
    failures=$((failures + 1))
@@ -863,7 +854,7 @@ git -C "${bignew_repo}" config user.name 'ci-test'
 git -C "${bignew_repo}" commit --quiet --no-verify --allow-empty --message base
 head --bytes=600000 /dev/zero | tr '\0' 'y' > "${bignew_repo}/bignew.txt"
 git -C "${bignew_repo}" add bignew.txt
-bignew_out="$( cd -- "${bignew_repo}" && "${GATE}" --staged 2>&1 || true )"
+bignew_out="$( cd -- "${bignew_repo}" && "${GATE}" --check --staged 2>&1 || true )"
 if grep --quiet --fixed-strings -- 'FAIL check-added-large-files' <<< "${bignew_out}"; then
    printf '%s\n' 'PASS: a genuinely new large staged file is still flagged'
 else
@@ -887,7 +878,7 @@ true > "${py_repo}/__init__.py"
 chmod 0755 -- "${py_repo}/withshebang.py"
 git -C "${py_repo}" add --all
 git -C "${py_repo}" commit --quiet --no-verify --message py
-py_out="$( cd -- "${py_repo}" && "${GATE}" "${py_base}" 2>&1 || true )"
+py_out="$( cd -- "${py_repo}" && "${GATE}" --check --range "${py_base}" 2>&1 || true )"
 if grep --quiet --fixed-strings -- 'R-180' <<< "${py_out}"; then
    printf '%s\n' 'PASS: R-180 flags a python file with no shebang'
 else
@@ -1020,7 +1011,7 @@ printf '%s\n' \
 chmod 0755 -- "${inline_repo}"/*.sh
 git -C "${inline_repo}" add --all
 git -C "${inline_repo}" commit --quiet --no-verify --message inline
-inline_out="$( cd -- "${inline_repo}" && "${GATE}" "${inline_base}" 2>&1 || true )"
+inline_out="$( cd -- "${inline_repo}" && "${GATE}" --check --range "${inline_base}" 2>&1 || true )"
 ## Scope every assertion to R-190 FAILURES. The fixtures deliberately lack a
 ## strict preamble and a copyright header, so other rules name them too.
 ## Match the FAILURE text, not the bare rule id: the gate also emits an
@@ -1131,7 +1122,7 @@ printf '%s\n' \
 chmod 0644 -- "${shebang_repo}/plain.conf" "${shebang_repo}/waived.conf"
 git -C "${shebang_repo}" add --all
 git -C "${shebang_repo}" commit --quiet --no-verify --message shebang
-shebang_out="$( cd -- "${shebang_repo}" && "${GATE}" "${shebang_base}" 2>&1 || true )"
+shebang_out="$( cd -- "${shebang_repo}" && "${GATE}" --check --range "${shebang_base}" 2>&1 || true )"
 ## Anchor on the hook's own verdict line, not the filename: the gate's SKIP note
 ## names the waived file too, so a bare filename match would confirm itself.
 if grep --quiet --fixed-strings -- 'plain.conf: has a shebang but is not marked executable' <<< "${shebang_out}"; then
@@ -1164,7 +1155,7 @@ git -C "${gitlink_repo}" -c protocol.file.allow=always \
    submodule add --quiet -- "${gitlink_inner}" sub >/dev/null 2>&1
 git -C "${gitlink_repo}" add --all
 git -C "${gitlink_repo}" commit --quiet --no-verify --message gitlink
-gitlink_out="$( cd -- "${gitlink_repo}" && "${GATE}" "${gitlink_base}" 2>&1 || true )"
+gitlink_out="$( cd -- "${gitlink_repo}" && "${GATE}" --check --range "${gitlink_base}" 2>&1 || true )"
 if grep --quiet --fixed-strings -- 'Is a directory' <<< "${gitlink_out}"; then
    printf '%s\n' 'FAIL: gate grepped a submodule gitlink as if it were a file' >&2
    failures=$((failures + 1))
@@ -1203,7 +1194,7 @@ printf '%s\n' \
 chmod 0755 -- "${ascii_repo}/plain.py" "${ascii_repo}/waived.py"
 git -C "${ascii_repo}" add --all
 git -C "${ascii_repo}" commit --quiet --no-verify --message ascii
-ascii_out="$( cd -- "${ascii_repo}" && "${GATE}" "${ascii_base}" 2>&1 || true )"
+ascii_out="$( cd -- "${ascii_repo}" && "${GATE}" --check --range "${ascii_base}" 2>&1 || true )"
 if grep --quiet --fixed-strings -- "R-001 non-ASCII character(s): 'plain.py:" <<< "${ascii_out}"; then
    printf '%s\n' 'PASS: R-001 still flags non-ASCII without the waiver'
 else
@@ -1229,7 +1220,7 @@ git -C "${untracked_repo}" commit --quiet --no-verify --allow-empty --message ba
 untracked_base="$(git -C "${untracked_repo}" rev-parse HEAD)"
 ## Never added: that is the whole point of the case.
 printf '%s\n' '#!/bin/bash' 'true' > "${untracked_repo}/brand-new-tool"
-untracked_out="$( cd -- "${untracked_repo}" && "${GATE}" "${untracked_base}" 2>&1 || true )"
+untracked_out="$( cd -- "${untracked_repo}" && "${GATE}" --check --range "${untracked_base}" 2>&1 || true )"
 if grep --quiet --fixed-strings 'brand-new-tool' <<< "${untracked_out}"; then
    printf '%s\n' 'PASS: an untracked shell file is named as NOT checked'
 else
@@ -1332,7 +1323,7 @@ printf '%s\n' \
    > "${unit_repo}/doc.md"
 git -C "${unit_repo}" add --all
 git -C "${unit_repo}" commit --quiet --no-verify --message unit
-unit_out="$( cd -- "${unit_repo}" && "${GATE}" "${unit_base}" 2>&1 || true )"
+unit_out="$( cd -- "${unit_repo}" && "${GATE}" --check --range "${unit_base}" 2>&1 || true )"
 ## Scope to the R-191 FAILURE text: the gate also emits an 'R-191 skipped: ...
 ## waiver in <file>' note that names the waived file, which a bare rule-id match
 ## would misread as a violation.
@@ -1449,7 +1440,7 @@ printf '%s\n' \
    > "${apt_repo}/etc/apt/apt.conf.d/60good-keyword-in-value"
 git -C "${apt_repo}" add --all
 git -C "${apt_repo}" commit --quiet --no-verify --message apt
-apt_out="$( cd -- "${apt_repo}" && "${GATE}" "${apt_base}" 2>&1 || true )"
+apt_out="$( cd -- "${apt_repo}" && "${GATE}" --check --range "${apt_base}" 2>&1 || true )"
 ## Scope to the R-194 FAILURE text: the 'R-194 skipped: ... waiver' note names
 ## the waived file, which a bare rule-id match would misread as a violation.
 apt_hits="$( printf '%s\n' "${apt_out}" \
@@ -1553,7 +1544,7 @@ printf '%s\n' \
    > "${cron_repo}/etc/cron.d/good-hash"
 git -C "${cron_repo}" add --all
 git -C "${cron_repo}" commit --quiet --no-verify --message cron
-cron_out="$( cd -- "${cron_repo}" && "${GATE}" "${cron_base}" 2>&1 || true )"
+cron_out="$( cd -- "${cron_repo}" && "${GATE}" --check --range "${cron_base}" 2>&1 || true )"
 cron_hits="$( printf '%s\n' "${cron_out}" \
    | grep --fixed-strings -- 'R-195 cron entry embeds' || true )"
 if grep --quiet --fixed-strings -- 'bad-semi' <<< "${cron_hits}"; then
@@ -1688,7 +1679,7 @@ printf '%s\n' \
    > "${wf_repo}/.github/workflows/waived.yml"
 git -C "${wf_repo}" add --all
 git -C "${wf_repo}" commit --quiet --no-verify --message workflow
-wf_out="$( cd -- "${wf_repo}" && "${GATE}" "${wf_base}" 2>&1 || true )"
+wf_out="$( cd -- "${wf_repo}" && "${GATE}" --check --range "${wf_base}" 2>&1 || true )"
 ## Scope to the R-100 FAILURE text, past the 'R-100 skipped: ... waiver' note.
 wf_hits="$( printf '%s\n' "${wf_out}" \
    | grep --fixed-strings -- 'R-100 workflow embeds' || true )"
@@ -1751,7 +1742,7 @@ gate_output_data() {  ## $1=.gitattributes line (empty for none) -> gate output 
    git -C "${repo}" commit --quiet --no-verify --message blob
    (
       cd -- "${repo}" || exit 1
-      "${GATE}" "${base}"
+      "${GATE}" --check --range "${base}"
    ) 2>&1 || true
 }
 
@@ -1800,7 +1791,7 @@ gate_output_msg() {  ## $1=commit subject -> gate output over base..HEAD
    git -C "${repo}" commit --quiet --no-verify --message "${subject}"
    (
       cd -- "${repo}" || exit 1
-      "${GATE}" "${base}"
+      "${GATE}" --check --range "${base}"
    ) 2>&1 || true
 }
 ## A U+00E9 (0xC3 0xA9) in the subject, assembled so THIS tracked file stays ASCII.

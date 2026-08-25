@@ -27,8 +27,8 @@ STYLE="${tool_test_dir}/../../bin/dist-ai-style"
 ## The detector and fixer are modes of the one tool.
 run_det() { "${STYLE}" --detect "$@"; }
 run_fix() { "${STYLE}" --fix "$@"; }
-GATE="${tool_test_dir}/../../bin/pre-push-static"
-[ -x "${GATE}" ] || GATE='/usr/bin/pre-push-static'
+GATE="${tool_test_dir}/../../bin/dist-ai-style"
+[ -x "${GATE}" ] || GATE='/usr/bin/dist-ai-style'
 for prereq in shfmt python3 safe-rm shellcheck ; do
    type -P "${prereq}" >/dev/null 2>&1 || {
       printf '%s\n' "FATAL: '${prereq}' not on PATH; this test cannot run." >&2
@@ -83,37 +83,32 @@ else
    note_fail "fixer did not error on a missing path (rc=${rc})"
 fi
 
-## --- gate --files: full-rule-set lint of a path on disk, no git -------------
-gate_out="$("${GATE}" --files -- "${test_dir}/tree/sub/bad.sh" 2>&1 || true)"
+## --- direct file lint: full per-file rule set on a path, no git --------------
+gate_out="$("${GATE}" --check -- "${test_dir}/tree/sub/bad.sh" 2>&1 || true)"
 if grep --quiet --fixed-strings 'R-120' <<< "${gate_out}"; then
-   note_pass "gate --files runs the full rule set on a given file"
+   note_pass "direct --check runs the rule set on a given file"
 else
-   note_fail "gate --files did not flag the violation"
+   note_fail "direct --check did not flag the violation"
 fi
-## A missing --files path must NOT read as 'all passed' (subshell-exit trap).
-rc=0; "${GATE}" --files -- "${test_dir}/no-such" >/dev/null 2>&1 || rc=$?
+## A missing path must NOT read as 'all passed' (subshell-exit trap).
+rc=0; "${GATE}" --check -- "${test_dir}/no-such" >/dev/null 2>&1 || rc=$?
 if [ "${rc}" -eq 2 ]; then
-   note_pass "gate --files errors on a missing path (no false green)"
+   note_pass "direct --check errors on a missing path (no false green)"
 else
-   note_fail "gate --files silently passed a missing path (rc=${rc})"
+   note_fail "direct --check silently passed a missing path (rc=${rc})"
 fi
 
-## --- silent-green guard: a crashing detector fails the gate -----------------
-## A stub detector that exits 3 (a crash) beside a copy of the gate. The gate
-## must FAIL, not read the empty output as 'no findings'.
-mkdir --parents -- "${test_dir}/crash"
-cp -- "${GATE}" "${test_dir}/crash/pre-push-static"
-printf '%s\n' '#!/bin/bash' 'printf "boom\n" >&2' 'exit 3' \
-   > "${test_dir}/crash/dist-ai-style"
-chmod +x -- "${test_dir}/crash/dist-ai-style"
-printf '%s\n' '#!/bin/bash' 'set -o errexit' 'true' \
-   > "${test_dir}/crash/subject.sh"
-crash_out="$("${test_dir}/crash/pre-push-static" --files -- \
-   "${test_dir}/crash/subject.sh" 2>&1 || true)"
-if grep --quiet --fixed-strings 'crashed' <<< "${crash_out}"; then
-   note_pass "a detector crash is a hard gate FAILURE, not a silent green"
+## --- silent-green guard: a detect error is loud, never a silent 'no findings'
+## An unreadable --message-file (a directory) cannot be checked, so detect exits
+## non-zero (2), never 0 -- a caller must never read a failure to run as clean.
+mkdir --parents -- "${test_dir}/crash/adir"
+crash_rc=0
+"${GATE}" --detect --message-file "${test_dir}/crash/adir" \
+   "${test_dir}/tree/notes.txt" >/dev/null 2>&1 || crash_rc=$?
+if [ "${crash_rc}" -ne 0 ]; then
+   note_pass "a detect error is non-zero, not a silent green"
 else
-   note_fail "a detector crash was not caught (silent green risk)"
+   note_fail "a detect error read as green (rc=${crash_rc})"
 fi
 
 ## --- external checks run in the human front (dist-ai-style --check) ----------

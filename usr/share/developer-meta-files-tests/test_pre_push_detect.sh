@@ -252,6 +252,60 @@ run_det "$(printf '%s\n' '#!/bin/bash' \
    'foo || exit 77  ## style-ok: allow-skip')"
 assert_at "R-220 rejects a reasonless 'allow-skip'" "R-220" 2
 
+## --- quote-aware loopholes (ai-review): a quoted arg is the same command -----
+## R-220: 'exit "77"' is the same skip as 'exit 77'.
+run_det "$(printf '%s\n' '#!/bin/bash' 'foo || exit "77"')"
+assert_at "R-220 flags a quoted 'exit \"77\"'" "R-220" 2
+## R-090: '-pv' / '-p -v' clusters are still 'command -v'.
+run_det "$(printf '%s\n' '#!/bin/bash' 'command -pv foo' 'command -p -v bar')"
+assert_at "R-090 flags a 'command -pv' cluster"   "R-090" 2
+assert_at "R-090 flags a 'command -p -v' split"   "R-090" 3
+## R-102: an option before the script ('bash -x build.sh') still prepends an
+## interpreter; a '-c' program does NOT (that is R-192's inline-program case).
+run_det "$(printf '%s\n' '#!/bin/bash' 'bash -x ci/build.sh' 'bash -c "echo hi"')"
+assert_at     "R-102 flags 'bash -x <script>'"       "R-102" 2
+assert_not_at "R-102 spares 'bash -c <program>'"     "R-102" 3
+## R-211 (advisory): a quoted state action is still state-changing.
+run_det "$(printf '%s\n' '#!/bin/bash' 'dpkg "--install" pkg.deb')"
+assert_at "R-211 flags a quoted 'dpkg \"--install\"'" "R-211" 2
+
+## --- comment-strip loopholes (ai-review): a '${var#pat}' '#' is NOT a comment
+## R-170: a hardcoded temp path AFTER a '${var#pat}' on the same line still
+## flags (the old '^[^#]*' skip stopped at the expansion's '#' and missed it).
+## Assemble the literal so it does not appear in THIS tracked file, which the
+## gate also scans (like the ';;' assembly elsewhere).
+st='/t'; st="${st}mp"
+run_det "$(printf '%s\n' '#!/bin/bash' "x=\"\${d#/y}\"; cp -- foo.dat ${st}")"
+assert_at "R-170 sees a hardcoded temp path past a '\${var#pat}'" "R-170" 2
+## R-010: a was_executed guard AFTER a '${var#pat}' is still recognized, so the
+## source-able guarded script stays exempt (no spurious strict-mode failure).
+run_det "$(printf '%s\n' '#!/bin/bash' 'x="${d#/y}"; was_executed "$0" -- main "$@"')"
+assert_not_at "R-010 recognizes a guard past a '\${var#pat}'" "R-010" 1
+
+## --- option-parse edges (ai-review round 2) ---------------------------------
+## R-090: '--' ends options, so 'command -- -v' RUNS -v, it is not describe mode.
+run_det "$(printf '%s\n' '#!/bin/bash' 'command -- -v foo')"
+assert_not_at "R-090 spares 'command -- -v' (-- ends options)" "R-090" 2
+## R-102: an option that TAKES A VALUE ('-o errexit') and '--' before the script
+## must still reach the script; '-s' (stdin) and '-c' (program) must not.
+run_det "$(printf '%s\n' '#!/bin/bash' 'bash -o errexit ci/build.sh')"
+assert_at "R-102 flags 'bash -o VALUE <script>'" "R-102" 2
+run_det "$(printf '%s\n' '#!/bin/bash' 'bash -- ci/build.sh')"
+assert_at "R-102 flags 'bash -- <script>'" "R-102" 2
+run_det "$(printf '%s\n' '#!/bin/bash' 'bash -s -- arg')"
+assert_not_at "R-102 spares 'bash -s' (script from stdin)" "R-102" 2
+
+## --- path-qualified / global-option command resolution (ai-review round 3) ---
+## R-120: '/bin/rm' and '/usr/bin/sudo rm' are the same programs (basename).
+run_det "$(printf '%s\n' '#!/bin/bash' '/bin/rm -rf /x')"
+assert_at "R-120 flags a path-qualified '/bin/rm'" "R-120" 2
+run_det "$(printf '%s\n' '#!/bin/bash' '/usr/bin/sudo rm -rf /x')"
+assert_at "R-120 flags rm behind a path-qualified sudo" "R-120" 2
+## R-062: a git GLOBAL option before the subcommand ('git -C dir check-ref-format')
+## must not shift the subcommand out of view.
+run_det "$(printf '%s\n' '#!/bin/bash' 'git -C /some/repo check-ref-format -- "$b"')"
+assert_at "R-062 flags 'git -C dir check-ref-format --'" "R-062" 2
+
 ## --- R-212 allow-downgrades: real argument vs quoted mention ----------------
 ## The legacy regex went false-NEGATIVE when any quote appeared earlier on the
 ## line; the AST reads --allow-downgrades as a real argument word regardless.

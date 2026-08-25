@@ -201,6 +201,20 @@ git -C "${repo}" add u.sh
 git -C "${repo}" commit -q -m "$(printf 'subject with \xff byte')"
 assert "non-ASCII range message FAILs R-001" 1 "R-001" --check --range HEAD~1
 
+## --- an untracked fifo must NOT hang the gate (ai-review: _is_shell_file) ----
+## Reading a shebang from an untracked fifo (or a symlink to /dev/zero) once
+## blocked forever; the untracked scan must complete within a bounded time.
+repo="$(new_repo)"
+mkfifo "${repo}/pipe-tool"
+hang_rc=0
+timeout --kill-after=5 20 bash -c 'cd "$1" && "$2" --check --range HEAD' _ \
+   "${repo}" "${STYLE}" > /dev/null 2>&1 || hang_rc=$?
+if [ "${hang_rc}" -eq 124 ]; then
+   note_fail "the gate HUNG on an untracked fifo (timed out)"
+else
+   note_pass "the gate does not hang on an untracked fifo"
+fi
+
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "pre-push-gate: ${passc} pass, ${fail} fail, 0 skip -- FAILURES above." >&2
    exit 1

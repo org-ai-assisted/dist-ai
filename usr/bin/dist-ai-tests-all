@@ -257,9 +257,9 @@ wire() {
 
    case "${base}" in
       developer-meta-files)
-         ## The style-gate test drives the real, shipped pre-push-static
-         ## gate (now in dist-ai, resolved from the installed CLI or the
-         ## in-tree copy); the dm-review-branch test drives check-ref-*-for-unicode
+         ## The style-gate test drives the real, shipped dist-ai-style
+         ## gate (resolved from the installed CLI or the in-tree copy); the
+         ## dm-review-branch test drives check-ref-*-for-unicode
          ## / unicode-show from helper-scripts (HELPER_SCRIPTS_PATH, put on PATH
          ## by the entrypoint).
          wire_env=( "DMF_REPO=${dmf}" )
@@ -631,7 +631,7 @@ wire() {
          ## source helper-scripts, so hand it that runtime when available.
          ##
          ## dist-ai's own usr/bin joins PATH because the git-hooks style-gate test
-         ## drives 'pre-push-static', which ships HERE rather than in the component.
+         ## drives 'dist-ai-style', which ships HERE rather than in the component.
          ## Without it that test exits 77 and the lane records a skip -- a gate that
          ## reads as wired while it never ran. Same reason developer-meta-files gets
          ## the real shipped binary above.
@@ -722,7 +722,7 @@ suite_component() {
       developer-meta-files|github-org-tools|dm-virtualbox-wiki-links)
          printf '%s' 'developer-meta-files'
          ;;
-      dm-help-steps|dm-package-depends|dm-reprepro-tracking|dm-reproducible-build|dm-grub-smbios)
+      dm-help-steps|dm-package-depends|dm-reprepro-tracking|dm-reproducible-build|dm-grub-smbios|dm-image-boot)
          printf '%s' 'derivative-maker'
          ;;
       dist-installer-cli)
@@ -1135,10 +1135,13 @@ if [ "${#skip_suites[@]}" -gt 0 ]; then
       if [ "${skip_this}" = "false" ]; then
          filtered+=( "${item}" )
       else
-         ## Announce it. A dropped suite that emits no line and no counter makes
-         ## the summary byte-identical in shape to a full green run, so two
-         ## PR-gating suites could be removed invisibly.
-         emit "$( printf '%-38s %-12s %s' "${suite}" "[${item%%:*}]" 'SKIPPED-BY-REQUEST' )"
+         ## Announce it (but not in --list, whose output is machine-readable
+         ## 'category:suite' lines only). A dropped suite that emits no line and
+         ## no counter makes the summary byte-identical in shape to a full green
+         ## run, so two PR-gating suites could be removed invisibly.
+         if [ "${list_only}" != "true" ]; then
+            emit "$( printf '%-38s %-12s %s' "${suite}" "[${item%%:*}]" 'SKIPPED-BY-REQUEST' )"
+         fi
          requested_skip_count=$(( requested_skip_count + 1 ))
       fi
    done

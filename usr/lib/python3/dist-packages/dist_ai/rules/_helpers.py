@@ -24,12 +24,20 @@ SUDO_VALUE_LONG = frozenset({
     "command-timeout", "chroot", "chdir", "other-user"})
 
 
+def _basename(name):
+    """The command BASENAME -- '/bin/rm' and 'rm' are the same program, so a rule
+    keying on the name must not be evaded by a path (as shell_c_programs and
+    InterpreterPrepend already resolve). None passes through."""
+    return name.rsplit("/", 1)[-1] if name is not None else None
+
+
 def effective_command(call, source):
-    """The literal name of the program CALL actually runs, unwrapping a leading
+    """The BASENAME of the program CALL actually runs, unwrapping a leading
     'sudo'/'doas' (skipping its options, their values, and 'VAR=value' prefixes).
     None when the wrapped command word is quoted/expanded or cannot be resolved --
-    the safe direction (a rule declines rather than guesses)."""
-    name = bash_ast.command_name(call)
+    the safe direction (a rule declines rather than guesses). Path-qualified names
+    ('/bin/rm', '/usr/bin/sudo rm') resolve by basename so a rule is not bypassed."""
+    name = _basename(bash_ast.command_name(call))
     if name not in EXEC_WRAPPERS:
         return name
     for kind, word, _text in bash_ast.command_tokens(
@@ -44,7 +52,7 @@ def effective_command(call, source):
             if re.match(r'^[A-Za-z_][A-Za-z0-9_]*=',
                         bash_ast.word_source(word, source)):
                 continue
-            return bash_ast.word_lit(word)
+            return _basename(bash_ast.word_lit(word))
     return None
 
 
@@ -252,6 +260,27 @@ def unquote(text):
     if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
         return text[1:-1]
     return text
+
+
+def code_only_lines(source, tree):
+    """SOURCE's lines with any trailing '#'-comment stripped, located via the
+    AST's OWN comment nodes. A '#' inside a '${var#pat}' expansion or a quoted
+    string is data, not a comment -- the naive '^[^#]*' regex idiom stops at it
+    and misses (or misjudges) whatever follows on the line. 1-indexed: element
+    i-1 is line i's code. A None tree (unparsed) yields the raw lines."""
+    lines = source.split("\n")
+    if tree is None:
+        return lines
+    for comment in bash_ast.comments(tree):
+        pos = comment.get("Hash") or {}
+        line_no = pos.get("Line")
+        col = pos.get("Col")
+        if not line_no or not col or not 1 <= line_no <= len(lines):
+            continue
+        cut = col - 1
+        if 0 <= cut < len(lines[line_no - 1]):
+            lines[line_no - 1] = lines[line_no - 1][:cut]
+    return lines
 
 
 ## Commands that RUN another command given as an operand -- a shell '-c' reached

@@ -15,11 +15,6 @@ from dist_ai import model
 from dist_ai.model import Edit, Rule
 from dist_ai.rules import _helpers as h
 
-## Self-exemption: the legacy bash gate carries every forbidden token in its own
-## regex/doc text. It is a shell file, so the shell rules would flag it; skip it
-## by path. (Retired with the gate in the final migration phase.)
-GATE_PATH = "usr/bin/pre-push-static"
-
 
 def _fail(ctx, rule, message, node):
     return model.fail(rule, message, ctx.path, node)
@@ -37,8 +32,7 @@ class CommandV(Rule):
 
     id = "R-090"
     waiver_tag = "no-has"
-    _exempt = (GATE_PATH,
-               ".github/actions/install-deps/install-helper-scripts.sh")
+    _exempt = (".github/actions/install-deps/install-helper-scripts.sh",)
 
     def applies(self, ctx):
         return (super().applies(ctx)
@@ -49,11 +43,18 @@ class CommandV(Rule):
         for call in bash_ast.call_exprs(ctx.tree):
             if bash_ast.command_name(call) != "command":
                 continue
-            first = bash_ast.args(call)[1:2]
-            ## word_string (quote-aware), not word_lit: 'command "-v" foo' IS
-            ## 'command -v foo'. Declining quoted words is the rewriters' concern.
-            if first and bash_ast.word_string(first[0]) == "-v":
-                yield _fail(ctx, "R-090", "R-090 command -v", call)
+            ## Any short-option run carrying 'v' is the 'command -v' describe
+            ## mode: '-v', '-pv', '-p -v'. word_string (quote-aware): 'command
+            ## "-v" foo' counts too. Stop at the first non-option (the name).
+            for word in bash_ast.args(call)[1:]:
+                opt = bash_ast.word_string(word)
+                if opt is None or not opt.startswith("-"):
+                    break
+                if opt == "--":
+                    break  ## end of options; 'command -- -v' RUNS '-v', not -v mode
+                if not opt.startswith("--") and "v" in opt[1:]:
+                    yield _fail(ctx, "R-090", "R-090 command -v", call)
+                    break
 
 
 class Exec(Rule):
@@ -85,7 +86,7 @@ class Rm(Rule):
     waiver_tag = "no-safe-rm"
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         for call in bash_ast.call_exprs(ctx.tree):
@@ -264,7 +265,7 @@ class GrepQuiet(Rule):
     id = "R-161"
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         tree = ctx.tree
@@ -333,7 +334,7 @@ class MkdirTmpMode(Rule):
     waiver_tag = "allow-mkdir-no-mode"
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         for call in bash_ast.call_exprs(ctx.tree):
@@ -631,7 +632,9 @@ class UnauthorizedSkip(Rule):
             if bash_ast.command_name(call) not in ("exit", "return"):
                 continue
             call_args = bash_ast.args(call)
-            if len(call_args) < 2 or bash_ast.word_lit(call_args[1]) != "77":
+            ## word_string (quote-aware): 'exit "77"' / 'return "77"' are the
+            ## same skip as 'exit 77' and must not slip the guard.
+            if len(call_args) < 2 or bash_ast.word_string(call_args[1]) != "77":
                 continue
             line = call["Pos"]["Line"]
             here = lines[line - 1] if 0 <= line - 1 < len(lines) else ""
@@ -667,7 +670,7 @@ class AptGet(Rule):
 
     def applies(self, ctx):
         import os
-        return (super().applies(ctx) and ctx.path != GATE_PATH
+        return (super().applies(ctx)
                 and os.path.basename(ctx.path) not in _NONINTERACTIVE)
 
     def detect(self, ctx):
@@ -691,7 +694,7 @@ class Dpkg(Rule):
 
     def applies(self, ctx):
         import os
-        return (super().applies(ctx) and ctx.path != GATE_PATH
+        return (super().applies(ctx)
                 and os.path.basename(ctx.path) not in _NONINTERACTIVE)
 
     def detect(self, ctx):
@@ -703,11 +706,12 @@ class Dpkg(Rule):
             start = 1
             if wrapped:
                 for index in range(1, len(args_after)):
-                    if bash_ast.word_lit(args_after[index]) == "dpkg":
+                    if bash_ast.word_string(args_after[index]) == "dpkg":
                         start = index + 1
                         break
+            ## word_string (quote-aware): 'dpkg "--install" pkg' is state-changing.
             state_changing = any(
-                bash_ast.word_lit(word) in DPKG_STATE_ACTIONS
+                bash_ast.word_string(word) in DPKG_STATE_ACTIONS
                 for word in args_after[start:])
             if state_changing:
                 line = call["Pos"]["Line"]
@@ -725,7 +729,7 @@ class AllowDowngrades(Rule):
     waiver_tag = "allow-downgrades"
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         for call in bash_ast.call_exprs(ctx.tree):
@@ -743,7 +747,7 @@ class LintianDisabled(Rule):
     waiver_tag = "allow-lintian-disable"
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         ## A bare / env-prefix assignment ('make_use_lintian=false [cmd]') is a
@@ -797,7 +801,7 @@ class ErrexitToggle(Rule):
     waiver_tag = "allow-errexit-toggle"
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         for call in bash_ast.call_exprs(ctx.tree):
@@ -832,7 +836,7 @@ class SetOptions(Rule):
     waiver_tag = "allow-short-set"
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         for call in bash_ast.call_exprs(ctx.tree):
@@ -867,7 +871,7 @@ class ShellcheckSourceRelative(Rule):
     id = "R-080"
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         for comment in bash_ast.comments(ctx.tree):
@@ -886,7 +890,7 @@ class ShellcheckSourceDevNull(Rule):
     id = "R-081"
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         for comment in bash_ast.comments(ctx.tree):
@@ -908,7 +912,7 @@ class Sc1091Disable(Rule):
     advisory = True
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         comments = list(bash_ast.comments(ctx.tree))
@@ -949,7 +953,7 @@ class DoubleSemi(Rule):
     id = "R-070"
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     @staticmethod
     def _at_end_of_line(data, offset):
@@ -1000,7 +1004,7 @@ class FlowChaining(Rule):
     _KEYWORDS = frozenset({"break", "continue", "return"})
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def _chained_calls(self, ctx, data):
         for call in bash_ast.call_exprs(ctx.tree):
@@ -1037,21 +1041,54 @@ class InterpreterPrepend(Rule):
 
     id = "R-102"
     _SCRIPT_EXT = (".sh", ".bsh", ".bash")
+    ## Long options whose VALUE is the next word (a config path, not the script).
+    _VALUE_OPTS = frozenset({"--rcfile", "--init-file"})
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         for call in bash_ast.call_exprs(ctx.tree):
             if bash_ast.command_name(call) not in ("bash", "sh"):
                 continue
-            call_args = bash_ast.args(call)
-            if len(call_args) < 2:
-                continue
-            operand = bash_ast.word_string(call_args[1])
-            if operand is None or operand.startswith("-"):
-                continue  ## a variable/expanded operand, or a flag -> spared
-            if operand.endswith(self._SCRIPT_EXT) or "/" in operand:
+            ## Skip leading OPTIONS to reach the script operand, so 'bash -x
+            ## build.sh' is caught, not just 'bash build.sh'. Handle the forms
+            ## that would otherwise misfire: '--' ends options (the next word IS
+            ## the script); a '-c' cluster is an inline PROGRAM (R-192) and a
+            ## '-n' cluster is a noexec syntax-check -- neither runs the script;
+            ## '-s' reads the script from STDIN; '-o'/'-O'/'--rcfile' take a
+            ## VALUE word that is not the script.
+            script = None
+            skip_next = False
+            after_ddash = False
+            for word in bash_ast.args(call)[1:]:
+                operand = bash_ast.word_string(word)
+                if operand is None:
+                    break  ## a variable/expanded operand -> spared
+                if skip_next:
+                    skip_next = False
+                    continue
+                if after_ddash:
+                    script = operand
+                    break
+                if operand == "--":
+                    after_ddash = True
+                    continue
+                if operand[:1] in ("-", "+") and len(operand) > 1:
+                    cluster = operand[1:]
+                    is_long = operand[:2] in ("--", "++")
+                    if not is_long and ("c" in cluster or "n" in cluster):
+                        script = None
+                        break
+                    if not is_long and "s" in cluster:
+                        break  ## '-s' -> script comes from stdin, no file
+                    if operand in self._VALUE_OPTS or cluster in ("o", "O"):
+                        skip_next = True
+                    continue
+                script = operand
+                break
+            if script is not None and (
+                    script.endswith(self._SCRIPT_EXT) or "/" in script):
                 yield _fail(ctx, "R-102",
                             "R-102 interpreter prepend (use shebang)", call)
 
@@ -1075,7 +1112,7 @@ class TrapInline(Rule):
         r"""(?:\s+\$\{?[A-Za-z_]\w*\}?)*\1$""")
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         for call in bash_ast.call_exprs(ctx.tree):
@@ -1146,7 +1183,7 @@ class BareNewlinePrintf(Rule):
     _NEWLINE_ONLY = re.compile(r'^(?:%s)?(?:\\n)+$')
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         for _stmt, call in _printf_calls(ctx.tree):
@@ -1174,7 +1211,7 @@ class PrintfFormatString(Rule):
         "%s", "%s\\n", "%s\\0", "%q", "%q\\n", "%b", "%b\\n", "0x%x", "%x"})
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         for _stmt, call in _printf_calls(ctx.tree):
@@ -1199,7 +1236,7 @@ class HeaderFirst(Rule):
     _COPYRIGHT = re.compile(r'^[ \t]*##[ \t]+Copyright')
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         style_line = copyright_line = None
@@ -1226,9 +1263,10 @@ _STRICT_DIRECTIVES = (
 _STRICT_HEADER_LINES = 160
 ## A real was_executed()/was_sourced() guard CALL (command position), not a
 ## comment or an assignment ('was_executed=1') or a mention ('${was_sourced}').
-## Matched per LINE (like the bash grep), so '[^#]*' never crosses a newline.
+## Matched per code-only LINE (comments pre-stripped by code_only_lines), so a
+## '${var#pat}' '#' earlier on the line no longer hides the guard call.
 _SOURCE_GUARD = re.compile(
-    r'^[^#]*(?:^|[ \t;&|!(])(?:was_executed|was_sourced)(?:[ \t;&|)]|$)')
+    r'(?:^|[ \t;&|!(])(?:was_executed|was_sourced)(?:[ \t;&|)]|$)')
 _GUARD_ERREXIT = re.compile(r'^[ \t]+set -o errexit[ \t]*$', re.MULTILINE)
 _INHERIT_ERREXIT = re.compile(r'^[ \t]*shopt -s inherit_errexit[ \t]*$',
                               re.MULTILINE)
@@ -1255,7 +1293,7 @@ class StrictModeBlock(Rule):
     waiver_tag = "no-strict"
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         source = ctx.source
@@ -1264,7 +1302,7 @@ class StrictModeBlock(Rule):
         present = sum(1 for directive in _STRICT_DIRECTIVES
                       if directive in header_lines)
         guarded = any(_SOURCE_GUARD.search(line)
-                      for line in source.split("\n"))
+                      for line in h.code_only_lines(source, ctx.tree))
         if present == 0 and guarded:
             ## Source-able guarded script: exempt from all-seven. Enforce the
             ## indented shopt half + export only when the guard enables errexit.
@@ -1304,8 +1342,11 @@ class TmpHardcode(Rule):
 
     id = "R-170"
     waiver_tag = "no-tmp-hardcode"
+    ## No '^[^#]*' comment skip here -- comments are stripped up front by
+    ## code_only_lines (AST-aware), so a '${var#pat}' '#' no longer hides a real
+    ## '/tmp' later on the same line.
     _MATCH = re.compile(
-        r'^[^#]*(?:^|[^A-Za-z0-9._/}~)])/tmp(?:$|[^A-Za-z0-9._-])')
+        r'(?:^|[^A-Za-z0-9._/}~)])/tmp(?:$|[^A-Za-z0-9._-])')
     _SPARE = re.compile(
         r"(?:^|[ \t;&|(:])(?:export|readonly|local|declare)?[ \t]*"
         r"(?:TMP|TMPDIR|TEMP|TEMPDIR)=['\"]?/tmp['\"]?(?:[ \t;&|)]|$)"
@@ -1313,10 +1354,11 @@ class TmpHardcode(Rule):
         r"['\"]?/tmp['\"]?(?:[ \t;&|)]|$)")
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
-        for number, line in enumerate(ctx.source.split("\n"), 1):
+        for number, line in enumerate(
+                h.code_only_lines(ctx.source, ctx.tree), 1):
             if self._MATCH.search(line) and not self._SPARE.search(line):
                 yield model.fail(
                     "R-170", "R-170 hardcoded /tmp (use ${TMP})", ctx.path,
@@ -1335,7 +1377,7 @@ class HelpFromComments(Rule):
     _SELF_THEN_ANCHOR = re.compile(r'(?:\$0|\$\{?BASH_SOURCE).*\^##?')
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         for number, line in enumerate(ctx.source.split("\n"), 1):
@@ -1346,6 +1388,30 @@ class HelpFromComments(Rule):
                 yield model.fail(
                     "R-153", "R-153 help scraped from comments", ctx.path,
                     number)
+
+
+## git global options (before the subcommand) whose VALUE is the next word.
+_GIT_VALUE_OPTS = frozenset({
+    "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix",
+    "--config-env"})
+
+
+def _git_subcommand_index(call_args):
+    """Index of git's SUBCOMMAND, skipping global options before it ('git -C
+    dir check-ref-format' puts it at 3, not 1). None if it cannot be resolved
+    (a quoted/expanded option word)."""
+    index = 1
+    while index < len(call_args):
+        word = bash_ast.word_string(call_args[index])
+        if word is None:
+            return None
+        if not word.startswith("-"):
+            return index
+        if word in _GIT_VALUE_OPTS:
+            index += 2  ## the option AND its separate value word
+        else:
+            index += 1  ## a flag, or an attached '--opt=value'
+    return None
 
 
 class DashDashDenylist(Rule):
@@ -1361,7 +1427,7 @@ class DashDashDenylist(Rule):
     _DENY = (("git", "check-ref-format"), ("stcat", None))
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def _denied_dashdash(self, call):
         """The standalone '--' word of a denylisted call, or None. A '--' is
@@ -1373,10 +1439,12 @@ class DashDashDenylist(Rule):
                 continue
             start = 1
             if sub is not None:
-                if not (len(call_args) > 1
-                        and bash_ast.word_string(call_args[1]) == sub):
+                idx = (_git_subcommand_index(call_args)
+                       if deny_name == "git" else 1)
+                if idx is None or not (idx < len(call_args)
+                        and bash_ast.word_string(call_args[idx]) == sub):
                     return None
-                start = 2
+                start = idx + 1
             for word in call_args[start:]:
                 if bash_ast.word_string(word) == "--":
                     return word
@@ -1416,7 +1484,7 @@ class EmptyArrayGuard(Rule):
     _GUARD = re.compile(r'\$\{[A-Za-z_][A-Za-z0-9_]*\[@\]\+')
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         ## The guard lives INSIDE a word's parameter expansion; shfmt keeps the

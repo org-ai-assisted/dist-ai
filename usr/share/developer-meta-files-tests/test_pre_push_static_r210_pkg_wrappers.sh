@@ -54,9 +54,9 @@ fi
 ## Resolve the tools RELATIVE to this test file (usr/share/<suite>/ -> usr/bin/)
 ## so a developer editing the in-tree copies tests those, not the packaged ones.
 tool_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
-GATE="${tool_dir}/../../bin/pre-push-static"
+GATE="${tool_dir}/../../bin/dist-ai-style"
 if [ ! -x "${GATE}" ]; then
-   GATE='/usr/bin/pre-push-static'
+   GATE='/usr/bin/dist-ai-style'
 fi
 FIX="${tool_dir}/../../bin/dist-ai-style"
 if [ ! -x "${FIX}" ]; then
@@ -118,7 +118,7 @@ run_gate_on_body() {
       -c user.name=test -c user.email=test@example.com \
       commit --quiet --message "fixture"
    gate_rc=0
-   gate_output="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || gate_rc=$?
+   gate_output="$( cd -- "${repo}" && "${GATE}" --check --range "${base_sha}" 2>&1 )" || gate_rc=$?
 }
 
 ## assert_flagged <rule> <name> <body> -- HARD-failure contract: 'FAIL <rule>'

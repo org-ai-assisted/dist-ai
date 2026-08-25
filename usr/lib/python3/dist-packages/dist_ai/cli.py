@@ -157,9 +157,9 @@ def _print_finding(prog, finding):
 
 def _detect_contexts(contexts, prog):
     """Run the per-file rules (AST + text + external) over CONTEXTS, printing
-    each finding. Returns (any_fail, error_code): error_code is set only when
+    each finding. Returns (fail_count, error_code): error_code is set only when
     shfmt is absent (exit 2)."""
-    any_fail = False
+    fail_count = 0
     for ctx in contexts:
         try:
             findings = engine.detect(ctx, include_text=True,
@@ -167,12 +167,12 @@ def _detect_contexts(contexts, prog):
         except bash_ast.ShfmtMissing as exc:
             print("%s: shfmt is required but unavailable: %s" % (prog, exc),
                   file=sys.stderr)
-            return any_fail, 2
+            return fail_count, 2
         for finding in findings:
             if finding.severity == model.FAIL:
-                any_fail = True
+                fail_count += 1
             _print_finding(prog, finding)
-    return any_fail, None
+    return fail_count, None
 
 
 def _fix_contexts(contexts, prog):
@@ -251,6 +251,7 @@ def _batch_findings(names, base_ref, staged_mode, base_cwd, message_file,
     yield from gate.check_message(base_ref, staged_mode, message_file, base_cwd)
     yield from gate.comments_audit(names, base_cwd, tool_dir)
     yield from gate.warn_worktree_skew(names, skew_ref, base_cwd)
+    yield from gate.check_untracked(base_cwd)
 
 
 def style_main(argv, prog="dist-ai-style"):
@@ -259,8 +260,7 @@ def style_main(argv, prog="dist-ai-style"):
 
     Direct file mode runs the per-file rules only. A git mode (--staged /
     --range) additionally drives the repo-level batch (pre-commit-hooks,
-    changelog, commit message, comment audit) -- so it is a drop-in for the old
-    pre-push-static gate."""
+    changelog, commit message, comment audit) -- the full push/commit gate."""
     parser = argparse.ArgumentParser(prog=prog, add_help=True)
     parser.add_argument("--check", action="store_true",
                         help="read-only: report violations, do not fix")
@@ -302,6 +302,12 @@ def style_main(argv, prog="dist-ai-style"):
     pairs, names, base_ref, base_cwd, staged_mode = enumerated
     git_mode = args.staged or args.range is not None
 
+    ## A --paths pathspec that matched nothing checks nothing -- SAY so, never a
+    ## silent clean sweep (a narrow-to-nothing would otherwise read as a pass).
+    if args.paths and not names:
+        print("%s: the pathspec(s) matched no added/modified file; nothing "
+              "checked" % prog, file=sys.stderr)
+
     ## Fix first (unless read-only), then re-read so the detect pass judges the
     ## FIXED file -- the residual is exactly what a human must fix.
     if not args.check:
@@ -309,7 +315,7 @@ def style_main(argv, prog="dist-ai-style"):
         if code is not None:
             return code
 
-    any_fail, code = _detect_contexts(gitdiff.contexts(pairs), prog)
+    fail_count, code = _detect_contexts(gitdiff.contexts(pairs), prog)
     if code is not None:
         return code
 
@@ -328,10 +334,17 @@ def style_main(argv, prog="dist-ai-style"):
         for finding in _batch_findings(names, base_ref, staged_mode, base_cwd,
                                        args.message_file, tool_dir, skew_ref):
             if finding.severity == model.FAIL:
-                any_fail = True
+                fail_count += 1
             _print_finding(prog, finding)
 
-    return 1 if any_fail else 0
+    ## Terminal verdict: a clear pass/fail line a human -- and a caller's own
+    ## liveness check -- can key on, so an absent result is never mistaken for a
+    ## clean one.
+    if fail_count:
+        print("%s: %d check(s) failed" % (prog, fail_count), file=sys.stderr)
+    else:
+        print("%s: all static checks passed" % prog, file=sys.stderr)
+    return 1 if fail_count else 0
 
 
 def main(argv):

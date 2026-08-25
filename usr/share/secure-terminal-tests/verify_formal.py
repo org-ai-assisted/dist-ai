@@ -1596,7 +1596,7 @@ def _cli_pipeline(chunks, cap=4096):
     out = []
     max_carry = max_drop = 0
     for chunk in chunks:
-        text, carry, drop = S.feed_chunk_carry(chunk, carry, drop, cap=cap)
+        text, carry, drop, _ = S.feed_chunk_carry(chunk, carry, drop, cap=cap)
         out.append(S.render_output(text, 'detail'))
         max_carry = max(max_carry, len(carry))
         max_drop = max(max_drop, len(drop))
@@ -1691,7 +1691,7 @@ def t8_memory_bound():
     engaged_discard = False
     over = 0
     for byte in stream:
-        _text, carry, drop = S.feed_chunk_carry(byte, carry, drop, cap=cap)
+        _text, carry, drop, _ = S.feed_chunk_carry(byte, carry, drop, cap=cap)
         if len(carry) > cap:
             over += 1
         if len(drop) > 1:
@@ -1717,7 +1717,7 @@ def t8_discard_resume():
         carry, drop = '', ''
         out = []
         for chunk in chunks:
-            text, carry, drop = S.feed_chunk_carry(chunk, carry, drop, cap=cap)
+            text, carry, drop, _ = S.feed_chunk_carry(chunk, carry, drop, cap=cap)
             out.append(S.render_output(text, 'detail'))
         return ''.join(out), drop
 

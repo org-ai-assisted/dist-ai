@@ -47,9 +47,9 @@ fi
 ## A bare 'pre-push-static' would take the INSTALLED copy, so a developer
 ## editing the in-tree gate would be testing the packaged one.
 gate_test_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
-GATE="${gate_test_dir}/../../bin/pre-push-static"
+GATE="${gate_test_dir}/../../bin/dist-ai-style"
 if [ ! -x "${GATE}" ]; then
-   GATE='/usr/bin/pre-push-static'
+   GATE='/usr/bin/dist-ai-style'
 fi
 
 test_dir="$(mktemp --directory)"
@@ -85,7 +85,7 @@ run_gate_on_body() {
       commit --quiet --message "fixture"
 
    gate_rc=0
-   gate_output="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || gate_rc=$?
+   gate_output="$( cd -- "${repo}" && "${GATE}" --check --range "${base_sha}" 2>&1 )" || gate_rc=$?
 }
 
 ## The fixture bodies are ASSEMBLED rather than written out: a test for a lint
