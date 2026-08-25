@@ -273,18 +273,21 @@ eq(_wmt.lineWrapMode(), _NW,
 _wmt.close()
 
 # alternate scroll: in the ALTERNATE screen a full-screen program owns the display
-# (no local scrollback, no mouse reporting), so the wheel is translated into arrow-key
-# line scrolls sent to the child -- the reported bug was a dead wheel while Page
-# Up/Down worked. The normal screen keeps the local wheel scroll (no arrows).
+# (no local scrollback to move), so the wheel is sent to the child -- the reported
+# bug was a dead wheel / one that scrolled outside the TUI while Page Up/Down worked.
+# A program that did NOT request the mouse gets arrow-key line scrolls (xterm's
+# alternateScroll); one that DID (button/motion tracking + SGR) gets a wheel-only
+# SGR report -- see the Design C block below. The normal screen keeps the local
+# wheel scroll (nothing to the child).
 from PyQt6.QtGui import QWheelEvent                                # noqa: E402
 from PyQt6.QtCore import QPoint as _QP, QPointF as _QPF           # noqa: E402
 _alt = SecureTerminal(command='/bin/cat', tui=True)
 _asent = spy_writes(_alt)
 
 
-def _wheel_ev(dy):
+def _wheel_ev(dy, mods=Qt.KeyboardModifier.NoModifier):
     return QWheelEvent(_QPF(5, 5), _QPF(5, 5), _QP(0, 0), _QP(0, dy),
-                       Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+                       Qt.MouseButton.NoButton, mods,
                        Qt.ScrollPhase.NoScrollPhase, False)
 
 
@@ -317,7 +320,63 @@ eq(_alt._wheel_accum, 0, 'alt-screen EXIT drops any stale wheel-scroll remainder
 _alt._wheel_accum = 39
 feed_output(_alt, b'\x1b[?1049h')          # re-enter the alt screen
 eq(_alt._wheel_accum, 0, 'alt-screen ENTER drops any stale wheel-scroll remainder')
+
+# Design C: when the child ASKED for the mouse (button/motion tracking + SGR
+# encoding), the alt-screen wheel is reported to it as a WHEEL-ONLY SGR event
+# (64 up / 65 down) at a pinned 1;1 cell -- so a mouse-aware TUI (Claude Code,
+# vim -mouse, htop) scrolls natively -- NOT as arrow keys. feed_output drives the
+# real DECSET scan that arms this.
+_alt._alt_screen = True
+_alt._wheel_accum = 0
+feed_output(_alt, b'\x1b[?1000h\x1b[?1006h')   # request tracking + SGR
+ok(_alt._mouse_modes and _alt._mouse_sgr, 'mouse request armed from the output stream')
+_asent.clear()
+_alt.wheelEvent(_wheel_ev(-120))               # wheel DOWN -> one SGR wheel report
+eq(b''.join(_asent), b'\x1b[<65;1;1M',
+   'alt-screen + mouse-request: wheel down sends ONE pinned SGR wheel report (not arrows)')
+_asent.clear()
+_alt.wheelEvent(_wheel_ev(120))                # wheel UP
+eq(b''.join(_asent), b'\x1b[<64;1;1M',
+   'alt-screen + mouse-request: wheel up sends ONE pinned SGR wheel report')
+# One report per NOTCH (120 units): the coarser native granularity, not 3x a notch.
+_asent.clear()
+_alt._wheel_accum = 0
+_alt.wheelEvent(_wheel_ev(-119))               # just under a notch -> nothing yet
+eq(_asent, [], 'a sub-notch wheel below 120 units emits no SGR report yet')
+_alt.wheelEvent(_wheel_ev(-1))                 # the 120th unit crosses one notch
+eq(b''.join(_asent), b'\x1b[<65;1;1M', 'accumulated deltas emit one SGR report per notch')
+# The mouse request is dropped when the program resets it (well-behaved exit), and
+# the wheel then falls back to the arrow surrogate.
+feed_output(_alt, b'\x1b[?1000l\x1b[?1006l')
+ok(not _alt._mouse_modes and not _alt._mouse_sgr, 'mouse request cleared on reset')
+_asent.clear()
+_alt.wheelEvent(_wheel_ev(-120))
+eq(b''.join(_asent), b'\x1b[B' * 3,
+   'after a mouse-request reset the alt-screen wheel falls back to arrow keys')
+
+# Shift+wheel ALWAYS reaches local scrollback, never the child -- even in the alt
+# screen with the mouse requested (the universal xterm/VTE/kitty override).
+feed_output(_alt, b'\x1b[?1000h\x1b[?1006h')
+_asent.clear()
+_alt._wheel_accum = 0
+_alt.wheelEvent(_wheel_ev(-120, Qt.KeyboardModifier.ShiftModifier))
+eq(_asent, [], 'Shift+wheel scrolls local scrollback, writes nothing to the child')
 _alt.close()
+
+# A split DECSET mouse-mode marker is still seen across a read() boundary (same
+# carry guarantee as the alt-screen scan).
+_msplit = SecureTerminal(command='/bin/cat', tui=True)
+feed_output(_msplit, b'\x1b[?100')             # half of ?1002h
+ok(not _msplit._mouse_modes, 'a half mouse-mode marker does not yet arm the request')
+feed_output(_msplit, b'2h\x1b[?1006h')         # completes across the boundary
+ok(_msplit._mouse_modes == {1002} and _msplit._mouse_sgr,
+   'a split mouse-mode marker is detected across the read boundary')
+# A stray semicolon (empty param field) is tolerated, not a crash: ESC[?1000;h
+# arms 1000 and ignores the empty field.
+feed_output(_msplit, b'\x1b[?1000;h')
+ok(1000 in _msplit._mouse_modes,
+   'a DECSET with an empty param field arms the named mode and ignores the blank')
+_msplit.close()
 # home-pin: a terminal does not auto-scroll horizontally -- a paint anchors the view at
 # the left so the START of every row stays visible (the reported bug: the auto-follow
 # parked the viewport mid-line, clipping every row's left edge) -- but NEVER by hiding
@@ -5142,19 +5201,20 @@ ok('#0;2' not in _gfxdoc and 'Gf=32' not in _gfxdoc and 'File=inline' not in _gf
 ok(_gfxsent == [], 'a graphics payload triggers no reply to the pty')
 _gfx.close()
 
-# --- mouse-tracking-reflection oracle: mouse/wheel/focus never reach the pty ---
-# even with a program requesting EVERY mouse mode (1000 click / 1002 drag / 1003
-# any-event / 1006 SGR) and focus (1004) reporting, a real press/move/release/wheel
-# or focus change writes no report escape to the child: secure-terminal has no
-# mouse-report path, so mouse stays a local selection function. A vulnerable
-# terminal would answer each event with an ESC[<...M/m report on the child's stdin
-# (output turning later pointer motion into injected input). This mirrors the
+# --- mouse-tracking-reflection oracle: clicks/motion/focus never reach the pty ---
+# Even with a program requesting EVERY mouse mode (1000 click / 1002 drag / 1003
+# any-event / 1006 SGR) and focus (1004) reporting, AND holding the alternate screen
+# (the state where the wheel IS honoured -- Design C), a real press/move/release or
+# focus change writes NO report escape to the child: secure-terminal has no
+# click/motion/focus report path, so pointer position and motion never leak. A
+# vulnerable terminal answers each event with an ESC[<...M/m report on the child's
+# stdin (output turning later pointer motion into injected input). This mirrors the
 # terminal-poc-corpus 'mouse-tracking-reflection' PoC.
 from PyQt6.QtGui import QFocusEvent as _QFE            # noqa: E402
 from PyQt6.QtGui import QWheelEvent as _QWheel         # noqa: E402
 from PyQt6.QtCore import QPoint as _QPointMs           # noqa: E402
 _mf = SecureTerminal(command='/bin/cat', tui=True)
-feed_output(_mf, b'\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?1004h')
+feed_output(_mf, b'\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?1004h\x1b[?1049h')
 _mfsent = spy_writes(_mf)
 _mflb = Qt.MouseButton.LeftButton
 _mfnb = Qt.MouseButton.NoButton
@@ -5165,21 +5225,29 @@ _mf.mouseMoveEvent(QMouseEvent(QEvent.Type.MouseMove, QPointF(12, 6), QPointF(12
                                _mfnb, _mflb, _mfnm))
 _mf.mouseReleaseEvent(QMouseEvent(QEvent.Type.MouseButtonRelease, QPointF(12, 6),
                                   QPointF(12, 6), _mflb, _mfnb, _mfnm))
-_mf.wheelEvent(_QWheel(QPointF(12, 6), QPointF(12, 6), _QPointMs(0, 0),
-                       _QPointMs(0, -120), _mfnb, _mfnm,
-                       Qt.ScrollPhase.NoScrollPhase, False))
 _mf.focusInEvent(_QFE(QEvent.Type.FocusIn))
 _mf.focusOutEvent(_QFE(QEvent.Type.FocusOut))
 ok(_mfsent == [],
-   'mouse-tracking: press/move/release/wheel/focus write no report escape to the '
-   'pty (got %r)' % _mfsent)
+   'mouse-tracking: press/move/release/focus write no report escape to the pty, '
+   'even in the alt screen where the wheel is honoured (got %r)' % _mfsent)
+# The wheel is the ONE honoured event (Design C), and it reports ONLY a fixed 1;1
+# scroll button (65 down) -- never a click/motion report, and never the real pointer
+# coordinate (the event is at 12;6, the report is pinned to 1;1). So a mouse-aware
+# TUI scrolls natively while the coordinate/motion leak stays refused.
+_mf.wheelEvent(_QWheel(QPointF(12, 6), QPointF(12, 6), _QPointMs(0, 0),
+                       _QPointMs(0, -120), _mfnb, _mfnm,
+                       Qt.ScrollPhase.NoScrollPhase, False))
+ok(_mfsent == [b'\x1b[<65;1;1M'],
+   'mouse-tracking: the wheel reports ONLY a pinned-1;1 scroll button, no pointer '
+   'coordinate or click (got %r)' % _mfsent)
 # POSITIVE CONTROL: the spy is wired to the one choke point (_write); a synthetic
-# mouse report pushed through it MUST be caught, proving the zero above is a real
-# observation and not a dead spy.
+# mouse report pushed through it MUST be caught, proving the observations above are
+# real and not a dead spy.
+_mfsent.clear()
 _mf._write(b'\x1b[<0;12;6M')                          # pylint: disable=protected-access
 ok(_mfsent == [b'\x1b[<0;12;6M'],
    'mouse-tracking positive control: a mouse report through _write is observed '
-   '(the spy is live, so the empty result above is real)')
+   '(the spy is live, so the results above are real)')
 _mf.close()
 
 # --- synchronized-output DoS: a never-closed ESC[?2026h must self-release -------
