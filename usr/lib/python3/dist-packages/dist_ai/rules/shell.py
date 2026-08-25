@@ -932,6 +932,62 @@ class Sc1091Disable(Rule):
                     "at '%s:%d': %s" % (ctx.path, line, directive), line)
 
 
+class TmpHardcode(Rule):
+    """R-170: a hardcoded '/tmp' path (use the ${TMP} temp dir). '/tmp' as an
+    absolute path -- not preceded by a path/word char (so 'debian/tmp',
+    '${d}/tmp', '~/tmp' are subdirectories, not the system path) and not followed
+    by one (so '/tmpfs', '/tmp.bak' are other names; a following '/' IS a real
+    path). Comment lines are skipped. The temp-dir variable INITIALISATIONS
+    ('TMP=/tmp', 'export TMPDIR=/tmp', the bwrap '--setenv TMPDIR /tmp'), the one
+    place the literal must appear, are spared -- whole-line, so a line carrying
+    both an init and a real hardcode is a narrow accepted residual."""
+
+    id = "R-170"
+    waiver_tag = "no-tmp-hardcode"
+    _MATCH = re.compile(
+        r'^[^#]*(?:^|[^A-Za-z0-9._/}~)])/tmp(?:$|[^A-Za-z0-9._-])')
+    _SPARE = re.compile(
+        r"(?:^|[ \t;&|(:])(?:export|readonly|local|declare)?[ \t]*"
+        r"(?:TMP|TMPDIR|TEMP|TEMPDIR)=['\"]?/tmp['\"]?(?:[ \t;&|)]|$)"
+        r"|--setenv[ \t]+(?:TMP|TMPDIR|TEMP|TEMPDIR)[ \t]+"
+        r"['\"]?/tmp['\"]?(?:[ \t;&|)]|$)")
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def detect(self, ctx):
+        for number, line in enumerate(ctx.source.split("\n"), 1):
+            if self._MATCH.search(line) and not self._SPARE.search(line):
+                yield model.fail(
+                    "R-170", "R-170 hardcoded /tmp (use ${TMP})", ctx.path,
+                    number)
+
+
+class HelpFromComments(Rule):
+    """R-153: never build help/usage by scraping the script's OWN comments (e.g.
+    a grep of a '^##' anchor over "$0"). Flags a NON-comment line carrying BOTH a
+    '^#'/'^##' anchor literal AND a '$0' / '${BASH_SOURCE' self-reference (in
+    either order). A plain 'dirname "${BASH_SOURCE[0]}"' or 'head "$0"' has no
+    anchor and is spared; a comment line naming the anti-pattern is spared."""
+
+    id = "R-153"
+    _ANCHOR_THEN_SELF = re.compile(r'\^##?.*(?:\$0|\$\{?BASH_SOURCE)')
+    _SELF_THEN_ANCHOR = re.compile(r'(?:\$0|\$\{?BASH_SOURCE).*\^##?')
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def detect(self, ctx):
+        for number, line in enumerate(ctx.source.split("\n"), 1):
+            if line.lstrip().startswith("#"):
+                continue
+            if (self._ANCHOR_THEN_SELF.search(line)
+                    or self._SELF_THEN_ANCHOR.search(line)):
+                yield model.fail(
+                    "R-153", "R-153 help scraped from comments", ctx.path,
+                    number)
+
+
 class DashDashDenylist(Rule):
     """R-062: a standalone '--' passed to a tool that does NOT accept the
     end-of-options marker (it becomes a literal operand and misbehaves).
@@ -1028,6 +1084,8 @@ RULES = (
     ShellcheckSourceRelative(),
     ShellcheckSourceDevNull(),
     Sc1091Disable(),
+    TmpHardcode(),
+    HelpFromComments(),
     DashDashDenylist(),
     EmptyArrayGuard(),
     UnauthorizedSkip(),

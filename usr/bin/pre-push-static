@@ -1405,60 +1405,6 @@ check_R002_header_first() {
    done
 }
 
-check_R170_tmp_hardcode() {
-   local script hits line
-
-   for script in "${@}"; do
-      ## This script carries '/tmp' in its own regex and message text.
-      is_self_referential "${script}" && continue
-      ## Script-wide waiver: '## style-ok: no-tmp-hardcode' anywhere in the
-      ## file disables R-170 for that file. For the cases where /tmp is not a
-      ## redirectable temp path at all: the X11 socket dir (/tmp/.X11-unix is
-      ## fixed by the protocol), namespace construction (bwrap --tmpfs /tmp,
-      ## whose private tmpfs has no per-user subdir), and administering the
-      ## /tmp mount itself. Anchored regex, mirroring the R-120 waiver.
-      if grep --quiet --extended-regexp \
-         '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*no-tmp-hardcode([[:space:]]|$)' \
-         -- "${script}"; then
-         continue
-      fi
-      ## '/tmp' as an absolute path: NOT preceded by a path/word character (so
-      ## 'debian/tmp', './tmp' and '/var/tmp' are not matched) and NOT followed
-      ## by one (so '/tmpfs' and '/tmp.bak' are not). A following '/' is a real
-      ## path. '}', ')' and '~' are in the leading class too: a '/tmp' right
-      ## after one of them is rooted in an expansion or in HOME
-      ## ('${build_dir}/tmp', '$(pwd)/tmp', '~/tmp'), so it is a subdirectory
-      ## named tmp, never the absolute system path. '-' is deliberately NOT in
-      ## the class: it is the character before '/tmp' in the '${TMPDIR:-/tmp}'
-      ## inline-fallback idiom, which is the form this rule mainly retires.
-      ## The leading '^[^#]*' excludes '#'-comment lines, as R-070/R-074 do --
-      ## prose about /tmp is not a hardcode.
-      ##
-      ## The invert spares the temp-dir variable INITIALISATIONS, the one place
-      ## the literal has to appear: 'TMP=/tmp' and friends (optionally export/
-      ## readonly/local/declare-prefixed, which covers the canonical
-      ## '[ -v TMP ] || TMP=/tmp'), plus the bwrap '--setenv TMPDIR /tmp' form.
-      ## ':' leads the allowed-prefix class because grep --line-number has
-      ## already prefixed '<n>:' by the time the invert sees the line, so a
-      ## start-of-line 'TMP=/tmp' is no longer at '^'.
-      ## The init may be QUOTED ('TMP="/tmp"', "export TMPDIR='/tmp'"), so an
-      ## optional quote is allowed on each side of the literal.
-      ## Whole-line, so a line carrying BOTH an init and a real hardcode is
-      ## spared -- a narrow accepted residual, as in R-120.
-      hits="$(grep --line-number --extended-regexp \
-         '^[^#]*(^|[^A-Za-z0-9._/}~)])/tmp($|[^A-Za-z0-9._-])' \
-         -- "${script}" 2>/dev/null \
-         | grep --invert-match --extended-regexp \
-           "(^|[[:space:];&|(:])(export|readonly|local|declare)?[[:space:]]*(TMP|TMPDIR|TEMP|TEMPDIR)=['\"]?/tmp['\"]?([[:space:];&|)]|\$)|--setenv[[:space:]]+(TMP|TMPDIR|TEMP|TEMPDIR)[[:space:]]+['\"]?/tmp['\"]?([[:space:];&|)]|\$)" \
-         || true)"
-      if [ -z "${hits}" ]; then
-         continue
-      fi
-      while IFS= read -r line; do
-         fail "R-170 hardcoded /tmp (use \${TMP})" "'${script}:${line}'"
-      done <<< "${hits}"
-   done
-}
 
 
 is_installed_python_module() {
@@ -1521,38 +1467,6 @@ check_R102_interpreter_prepend() {
 
 
 
-check_R153_help_from_comments() {
-   local script hits line
-   local -a fs
-
-   ## R-153: never build help/usage by scraping the running script's OWN comments
-   ## (e.g. `grep '^##' -- "$0" | sed ...`). Help is a function that PRINTS strings
-   ## you own; comment-scraping breaks on any comment-only edit and couples the
-   ## help wording to comment syntax. Flags a NON-comment line that reads $0 or
-   ## ${BASH_SOURCE} together with a '^#'/'^##' anchor -- the comment-scrape
-   ## signature. A plain 'dirname "${BASH_SOURCE[0]}"' or 'head "$0"' has no '^#'
-   ## anchor and is not matched. filter_self drops this checker, whose own regex
-   ## literals carry both tokens.
-   mapfile -d '' -t fs < <(filter_self "${@}")
-   if [ "${#fs[@]}" -eq 0 ]; then return 0; fi
-   for script in "${fs[@]}"; do
-      ## Two orders: the '^#' anchor before the self-reference ('grep '^##' "$0"')
-      ## or after it. The trailing '| grep -v' drops pure-comment lines (content
-      ## starting with '#'), so a comment that merely NAMES the anti-pattern is
-      ## spared.
-      hits="$(grep --line-number --extended-regexp \
-         --regexp='\^##?.*(\$0|\$\{?BASH_SOURCE)' \
-         --regexp='(\$0|\$\{?BASH_SOURCE).*\^##?' \
-         -- "${script}" 2>/dev/null \
-         | grep --invert-match --extended-regexp '^[0-9]+:[[:space:]]*#' || true)"
-      if [ -z "${hits}" ]; then
-         continue
-      fi
-      while IFS= read -r line; do
-         fail "R-153 help scraped from comments" "'${script}:${line}'"
-      done <<< "${hits}"
-   done
-}
 
 
 
@@ -2099,14 +2013,12 @@ run_file_checks() {
       check_R070_double_semi "${shell_files[@]}"
       check_R074_flow_chaining "${shell_files[@]}"
       check_R021_local_assign "${shell_files[@]}"
-      check_R170_tmp_hardcode "${shell_files[@]}"
       ## Parser-backed shell-structure rules on the shfmt AST: R-090, R-103,
       ## R-120, R-034, R-130, R-161, R-172, R-200, R-210, R-211, R-212, R-213.
       ## One AST pass replaces the former per-rule regex bodies (the _pkg_*
       ## command-position approximation, the defang-based scans, the R-213
       ## assignment regex, and the quote/heredoc fail-open residuals each of
       ## those documented).
-      check_R153_help_from_comments "${shell_files[@]}"
    else
       note "no changed shell files"
    fi
