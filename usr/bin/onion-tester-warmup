@@ -83,13 +83,30 @@ resolve_proxy() {
 }
 
 main() {
-   local concurrency maxtime proxy ok notok total line
+   local concurrency concurrency_valid maxtime proxy ok notok total line
    local -a urls=() worker_lines=()
 
    ## Default to the measured probe's chunk size so warm-up and measurement share
    ## one concurrency; overridable on its own to probe the concurrency question.
    concurrency="${ONION_TESTER_WARMUP_CONCURRENCY:-${ONION_TESTER_CHUNK:-20}}"
    maxtime="${ONION_TESTER_WARMUP_HEAD_MAXTIME:-30}"
+
+   ## Clamp: 'xargs --max-procs 0' means UNLIMITED -- the exact opposite of a
+   ## controlled warm-up -- so a 0, negative, empty or non-numeric concurrency
+   ## (e.g. ONION_TESTER_CHUNK=0 exported by onion-tester-run) must NOT reach it.
+   ## Fall back to the documented default rather than blast every onion at once.
+   case "${concurrency}" in
+      '' | *[!0-9]*)
+         concurrency_valid='false'
+         ;;
+      *)
+         concurrency_valid='true'
+         ;;
+   esac
+   if [ "${concurrency_valid}" = 'false' ] || [ "${concurrency}" -lt 1 ]; then
+      printf '%s\n' "onion-tester-warmup: concurrency '${concurrency}' is not a positive integer; using 20" >&2
+      concurrency=20
+   fi
 
    mapfile -t urls < <("${ONION_TESTER_URL_LISTER:-${script_dir}/onion-tester-list-urls}")
    if [ "${#urls[@]}" -eq 0 ]; then
@@ -111,12 +128,15 @@ main() {
    export ONION_TESTER_WARMUP_HEAD_MAXTIME="${maxtime}"
    export ONION_TESTER_CURL_BIN="${ONION_TESTER_CURL_BIN:-curl}"
 
-   ## Fan the per-URL worker out at controlled concurrency. --replace={} feeds one
-   ## URL per invocation (no word-splitting); worker always exits 0, so xargs does
-   ## too. Tally OK/NOTOK purely as diagnostics.
+   ## Fan the per-URL worker out at controlled concurrency. NUL-delimited
+   ## (--null + printf '%s\0'): --replace={} alone stops word-splitting but NOT
+   ## xargs's quote/backslash processing, so a conf URL containing '"' would abort
+   ## the whole sweep ("unmatched double quote") and one containing '\' would be
+   ## silently mangled. --null disables both and feeds one URL per invocation.
+   ## The worker always exits 0, so xargs does too. Tally OK/NOTOK as diagnostics.
    mapfile -t worker_lines < <(
-      printf '%s\n' "${urls[@]}" \
-         | xargs --no-run-if-empty --max-procs "${concurrency}" --replace={} \
+      printf '%s\0' "${urls[@]}" \
+         | xargs --null --no-run-if-empty --max-procs "${concurrency}" --replace={} \
             -- "${self}" --probe-one {}
    )
 

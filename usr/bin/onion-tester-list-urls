@@ -19,13 +19,23 @@ import sys
 
 sys.dont_write_bytecode = True
 
+import contextlib
+import io
+
 from sdwdate.config import read_pools
 
 
 def main():
     ## Pools 0, 1, 2 in 'test' mode -- identical to onion-tester's Pool().
+    ##
+    ## read_pools prints diagnostics to STDOUT (e.g. 'User configuration folder
+    ## "/etc/sdwdate.d" does not exist.') and returns [] when the conf is absent.
+    ## Capture and drop that stdout so ONLY real URLs reach our own stdout --
+    ## otherwise a diagnostic line would be consumed downstream as a URL and the
+    ## warm-up's empty-list skip would never fire.
     for pool in range(3):
-        urls, _comment = read_pools(pool, "test")
+        with contextlib.redirect_stdout(io.StringIO()):
+            urls, _comment = read_pools(pool, "test")
         for url in urls:
             print(url)
 

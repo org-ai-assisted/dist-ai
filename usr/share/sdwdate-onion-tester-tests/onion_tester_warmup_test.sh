@@ -97,6 +97,12 @@ write_urls() {
    printf '%s' "${out}" > "${work_dir}/state/urls"
 }
 
+## Write exactly the given URLs (one per argument) to the mock lister's source,
+## for cases that need specific characters in a URL.
+write_raw_urls() {
+   printf '%s\n' "$@" > "${work_dir}/state/urls"
+}
+
 check() {
    local label expected actual
 
@@ -302,6 +308,72 @@ case_default_concurrency_from_chunk() {
    check_ge "default concurrency: ran in parallel" "2" "${peak}"
 }
 
+## xargs --max-procs 0 means UNLIMITED. An explicit concurrency of 0 must NOT
+## reach it (it would open every onion circuit at once); it clamps to the default.
+case_concurrency_zero_is_clamped() {
+   local rc=0
+
+   reset_state
+   write_urls 4
+   MOCK_STATE="${work_dir}/state" \
+   MOCK_CURL_RC=0 \
+   ONION_TESTER_URL_LISTER="${work_dir}/mock-lister" \
+   ONION_TESTER_CURL_BIN="${work_dir}/mock-curl" \
+   ONION_TESTER_PROXY="127.0.0.1:9050" \
+   ONION_TESTER_WARMUP_CONCURRENCY=0 \
+      "${warmup}" > "${work_dir}/out.log" 2>&1 || rc=$?
+
+   check "concurrency 0: exits 0" "0" "${rc}"
+   check "concurrency 0: still swept every URL" "4" "$(curl_calls)"
+   check_contains "concurrency 0: rejected as invalid, not passed to xargs" \
+      "not a positive integer" "${work_dir}/out.log"
+}
+
+## The default derives from ONION_TESTER_CHUNK, which onion-tester-run exports; a
+## CHUNK of 0 must be clamped the same way, not forwarded as unlimited.
+case_chunk_zero_is_clamped() {
+   local rc=0
+
+   reset_state
+   write_urls 4
+   MOCK_STATE="${work_dir}/state" \
+   MOCK_CURL_RC=0 \
+   ONION_TESTER_URL_LISTER="${work_dir}/mock-lister" \
+   ONION_TESTER_CURL_BIN="${work_dir}/mock-curl" \
+   ONION_TESTER_PROXY="127.0.0.1:9050" \
+   ONION_TESTER_CHUNK=0 \
+      "${warmup}" > "${work_dir}/out.log" 2>&1 || rc=$?
+
+   check "chunk 0: exits 0" "0" "${rc}"
+   check_contains "chunk 0: default clamped too" \
+      "not a positive integer" "${work_dir}/out.log"
+}
+
+## A conf URL containing '"' or '\' must not abort or corrupt the sweep. xargs
+## quote/backslash processing would (unmatched-quote error -> zero curls, or a
+## mangled URL); the NUL-delimited fan-out is immune.
+case_special_chars_in_url_still_swept() {
+   local rc=0
+
+   reset_state
+   write_raw_urls 'http://example.onion/a"b' 'http://example.onion/ok' 'http://example.onion/c\d'
+   MOCK_STATE="${work_dir}/state" \
+   MOCK_CURL_RC=0 \
+   ONION_TESTER_URL_LISTER="${work_dir}/mock-lister" \
+   ONION_TESTER_CURL_BIN="${work_dir}/mock-curl" \
+   ONION_TESTER_PROXY="127.0.0.1:9050" \
+   ONION_TESTER_WARMUP_CONCURRENCY=3 \
+      "${warmup}" > "${work_dir}/out.log" 2>&1 || rc=$?
+
+   check "special chars: exits 0" "0" "${rc}"
+   check "special chars: every URL swept, none dropped on a quote" \
+      "3" "$(curl_calls)"
+   check_contains "special chars: the quoted URL reached curl intact" \
+      'a"b' "${work_dir}/state/curl-argv.log"
+   check_contains "special chars: the backslash URL reached curl intact" \
+      'c\d' "${work_dir}/state/curl-argv.log"
+}
+
 main() {
    if [ ! -x "${warmup}" ]; then
       printf '%s\n' \
@@ -320,6 +392,9 @@ main() {
    case_empty_list_is_nonfatal
    case_concurrency_capped
    case_default_concurrency_from_chunk
+   case_concurrency_zero_is_clamped
+   case_chunk_zero_is_clamped
+   case_special_chars_in_url_still_swept
 
    total=$((passed + failed))
    printf '%s\n' "onion-tester-warmup-test: ${total} checks, ${passed} pass, ${failed} fail, 0 skip"
