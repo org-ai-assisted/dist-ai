@@ -6,7 +6,7 @@ Build-Depends: debhelper-compat (= 13)
 Homepage: https://github.com/org-ai-assisted/dist-ai
 Vcs-Browser: https://github.com/org-ai-assisted/dist-ai
 Vcs-Git: https://github.com/org-ai-assisted/dist-ai.git
-Standards-Version: 4.6.2
+Standards-Version: 4.7.2
 Rules-Requires-Root: no
 
 Package: dist-ai
@@ -67,8 +67,6 @@ Depends: ${misc:Depends},
  dctrl-tools,
  dpkg-dev,
  git,
- grep,
- sed,
  diffutils,
  jq,
  yq,
@@ -120,15 +118,15 @@ Recommends: qemu-system-arm,
  imagemagick
 Description: Comprehensive regression, fuzz and integration suites for Kicksecure tooling
  The AI-maintained test surface for the derivative-maker ecosystem: regression,
- fuzz, end-to-end and integration suites for helper-scripts, developer-meta-files,
- privleap, onion-grater, secure-terminal, systemcheck, tor-control-panel,
- sdwdate-gui, msgcollector, tb-updater, pyte and more, plus the orchestrator that
- runs them and the static gate that lints them.
+ fuzz, end-to-end and integration suites for helper-scripts,
+ developer-meta-files, privleap, onion-grater, secure-terminal, systemcheck,
+ tor-control-panel, sdwdate-gui, msgcollector, tb-updater, pyte and more, plus
+ the orchestrator that runs them and the static gate that lints them.
  .
- The suites live here rather than in each component repo because they are far too
- high-volume for human review in a repo whose diffs a maintainer reads. Each one
- targets a CHECKOUT of the component it tests, wired by dist-ai-tests-all via
- --component / --component-root, which is also how per-repo CI invokes them.
+ The suites live here rather than in each component repo because they are far
+ too high-volume for human review in a repo whose diffs a maintainer reads. Each
+ one targets a CHECKOUT of the component it tests, wired by dist-ai-tests-all
+ via --component / --component-root, which is also how per-repo CI invokes them.
  .
  Start with 'dist-ai-tests-all --list' to see every registered suite and its
  category. A suite whose subject or tooling is absent exits 77 and is reported

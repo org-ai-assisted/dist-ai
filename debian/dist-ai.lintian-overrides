@@ -1,0 +1,10 @@
+# Internal derivative-maker package; never uploaded to Debian, no BTS bug to close.
+dist-ai: initial-upload-closes-no-bugs
+# The tb-updater test library inspects the dpkg database on purpose, to assert the
+# real package state the suite is validating.
+dist-ai: uses-dpkg-database-directly
+# Each suite ships its README / THREAT-MODEL next to its tests under
+# usr/share/<suite>-tests/, documenting the directory it sits in -- the case lintian
+# itself says to override. Context-less: it holds for all ~44 suites, and a per-file
+# list would drift as suites are added or removed.
+dist-ai: package-contains-documentation-outside-usr-share-doc
