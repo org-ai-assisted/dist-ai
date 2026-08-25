@@ -799,6 +799,16 @@ ok(_nc(None) is None and _nc('') == (),
    'if_absent: None (a shell) is never a dedup key')
 ok(_nc('"unbalanced') == ('"unbalanced',),
    'if_absent: a command that will not shell-split falls back to the raw string')
+# a command LIST with an unhashable element must not crash the dedup: elements are
+# str()-coerced so the key is always hashable (an IPC payload can carry such a list).
+ok(_nc(['echo', ['nested']]) == ('echo', "['nested']"),
+   'if_absent: list command elements are str()-coerced to a hashable key')
+try:
+    _ru = win._ipc_open({'tabs': [{'command': ['echo', ['nested']]}], 'if_absent': True})
+    ok(_ru['opened'] == 1,
+       'if_absent: an unhashable command element does not crash _ipc_open')
+except TypeError:
+    ok(False, 'if_absent: an unhashable command element crashed _ipc_open (TypeError)')
 # seed a live tab's command; an if_absent open of the SAME command is skipped and
 # adds no tab (nor a bare default tab) -- fully idempotent.
 _tab0.launch_command = _nc('seeded-if-absent-canary --flag')
@@ -2093,9 +2103,18 @@ finally:
     _QFD3.getSaveFileName = _o_gsf
 
 # --- _open_path opens an existing folder and falls back to a parent -----------
-win._open_path('/tmp')                       # exists  # nosec B108 -- /tmp is a known-existing dir to exercise _open_path
-win._open_path('/tmp/no-such-dir-xyz/child') # missing -> opens the parent  # nosec B108 -- missing path under /tmp exercises the parent-fallback branch
-ok(True, '_open_path opens a folder (or its parent when missing)')
+# Stub openUrl: offscreen QPA does not spawn, but a direct run under a real desktop
+# platform would pop an external file-manager window -- capture the path instead.
+_op_opened = []
+_op_oou = _QDS.openUrl
+try:
+    _QDS.openUrl = staticmethod(lambda url: _op_opened.append(url.toLocalFile()) or True)
+    win._open_path('/tmp')                       # exists  # nosec B108 -- known-existing dir to exercise _open_path
+    win._open_path('/tmp/no-such-dir-xyz/child') # missing -> parent  # nosec B108 -- missing path exercises the parent-fallback branch
+finally:
+    _QDS.openUrl = _op_oou
+ok(len(_op_opened) == 2 and _op_opened[0] == '/tmp',
+   '_open_path opens the folder, and a missing path falls back to a parent')
 
 # --- the font-noise message handler drops the flood, passes real messages -----
 from PyQt6.QtCore import qWarning                                # noqa: E402
