@@ -766,9 +766,99 @@ class LintianDisabled(Rule):
                     "without authorization", assign)
 
 
+class DashDashDenylist(Rule):
+    """R-062: a standalone '--' passed to a tool that does NOT accept the
+    end-of-options marker (it becomes a literal operand and misbehaves).
+    Denylisted callers: 'git check-ref-format' and 'stcat'. fix() drops the '--'.
+    Command position and the git subcommand are read from the AST, so a '--' that
+    is a data operand of some OTHER command on the line is not mistaken for one of
+    these (the former line-regex could not tell them apart)."""
+
+    id = "R-062"
+    ## (command-name, required-subcommand-or-None) that reject '--'.
+    _DENY = (("git", "check-ref-format"), ("stcat", None))
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def _denied_dashdash(self, call):
+        """The standalone '--' word of a denylisted call, or None. A '--' is
+        standalone when the whole word is exactly '--' (so '--branch' is spared)."""
+        name = bash_ast.command_name(call)
+        call_args = bash_ast.args(call)
+        for deny_name, sub in self._DENY:
+            if name != deny_name:
+                continue
+            start = 1
+            if sub is not None:
+                if not (len(call_args) > 1
+                        and bash_ast.word_string(call_args[1]) == sub):
+                    return None
+                start = 2
+            for word in call_args[start:]:
+                if bash_ast.word_string(word) == "--":
+                    return word
+            return None
+        return None
+
+    def detect(self, ctx):
+        for call in bash_ast.call_exprs(ctx.tree):
+            if self._denied_dashdash(call) is not None:
+                yield _fail(ctx, "R-062",
+                            "R-062 '--' passed to a tool that rejects it", call)
+
+    def fix(self, ctx):
+        data = ctx.source.encode("utf-8")
+        for call in h.editable_calls(ctx.tree):
+            word = self._denied_dashdash(call)
+            if word is None:
+                continue
+            start, end = bash_ast.word_span(word)
+            ## Drop one leading space with the '--' so no double space is left.
+            if start > 0 and data[start - 1:start] == b" ":
+                start -= 1
+            yield Edit(start, end, "", "R-062")
+
+
+class EmptyArrayGuard(Rule):
+    """R-026: the obsolete empty-array guard '${name[@]+"${name[@]}"}' (a
+    workaround for bash < 4.4's nounset expanding an empty '[@]' to an error). On
+    bash 4.4+ '"${name[@]}"' is safe, so the '+alternate' guard is dead syntax.
+    Flags a '${name[@]+...}' (a bare '+' immediately after '[@]', NOT ':+' which
+    is a different, still-meaningful operator). Not auto-fixed: collapsing the
+    guard to its inner expansion needs the inner text, which is not always the
+    plain '${name[@]}' -- left for a human."""
+
+    id = "R-026"
+    ## ${ name [@] + ...} -- bare '+' right after '[@]', no ':' before it.
+    _GUARD = re.compile(r'\$\{[A-Za-z_][A-Za-z0-9_]*\[@\]\+')
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def detect(self, ctx):
+        ## The guard lives INSIDE a word's parameter expansion; shfmt keeps the
+        ## raw '${...}' text, so match it on the source but only where a real
+        ## expansion node sits (never in a comment or a single-quoted literal).
+        data = ctx.source.encode("utf-8")
+        for node in bash_ast.nodes_of_type(ctx.tree, "ParamExp"):
+            pos = node.get("Pos") or {}
+            start_off = pos.get("Offset")
+            end_off = (node.get("End") or {}).get("Offset")
+            if start_off is None or end_off is None:
+                continue
+            raw = data[start_off:end_off]
+            if self._GUARD.match(raw.decode("utf-8", "surrogateescape")):
+                yield _fail(ctx, "R-026",
+                            "R-026 obsolete empty-array guard (bash 4.4+; drop "
+                            "the +alternate on [@])", pos)
+
+
 ## In gate dispatch order (unchanged from the former SHELL_RULES tuple).
 RULES = (
     ShellInlineShellC(),
+    DashDashDenylist(),
+    EmptyArrayGuard(),
     UnauthorizedSkip(),
     CommandV(),
     Exec(),

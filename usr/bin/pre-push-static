@@ -1400,70 +1400,6 @@ check_R074_flow_chaining() {
    emit_hits "R-074 ';'-chained break/continue/return" "${hits}"
 }
 
-check_R062_dashdash_denylist() {
-   local hits entry regex
-   local -a denylist
-
-   ## R-062 negative half: a '--' end-of-options separator handed to a tool
-   ## that does NOT accept one is a bug -- the tool reads '--' as a literal
-   ## argument or errors. The positive half ('prefer --' where supported) is
-   ## manual review (whether a positional follows and could begin with '-' is
-   ## undecidable by grep); THIS half is a finite, verified denylist.
-   ##
-   ## Each entry MUST be verified against the real binary before adding.
-   ## Verified rejecters:
-   ##   git check-ref-format -- <ref>  -> exit 129 (usage error)
-   ##   stcat -- <file>                -> FileNotFoundError on '--': it takes
-   ##                                     every argument as a path. This one
-   ##                                     cost four e2e scenarios in
-   ##                                     tb-updater, via helper-scripts'
-   ##                                     read_integer_file.
-   ## Entries are extended-regexp fragments for the command token(s); '[space]+'
-   ## between words so the literal never self-matches this denylist line.
-   denylist=(
-      'git[[:space:]]+check-ref-format'
-      'stcat'
-   )
-   for entry in "${denylist[@]}"; do
-      ## Command-position tool token(s), then a STANDALONE '--' in any arg
-      ## position (a run of complete 'token whitespace' groups may precede it;
-      ## '--' must be followed by whitespace or EOL, so '--flag' and a glued
-      ## 'foo--' are not it, and a first-position '-- x' still matches).
-      ## The intermediate tokens exclude ';', '|' and '&' so the scan cannot
-      ## cross a command boundary: without that, any legitimate '--' later on
-      ## the line ('git check-ref-format x; grep -- foo') was blamed on the
-      ## denylisted tool that merely came first.
-      regex="(^|[[:space:];&|(){}])${entry}[[:space:]]([^[:space:];|&]*[[:space:]])*--([[:space:]]|$)"
-      hits="$(grep_code_lines "${regex}" "${@}")"
-      emit_hits "R-062 '--' passed to a tool that rejects it" "${hits}"
-   done
-}
-
-check_R026_empty_array_guard() {
-   local hits
-   local -a fs
-
-   ## R-026: the obsolete empty-array guard '${arr[@]+"${arr[@]}"}'. It existed
-   ## only to work around bash BEFORE 4.4, where expanding an empty array under
-   ## 'set -o nounset' raised 'arr: unbound variable'. Bash 4.4+ needs no guard
-   ## (arrays are '=()'-initialized per R-025), so the '+alternate' operator
-   ## applied directly to '[@]' is dead weight -- drop it and expand
-   ## '"${arr[@]}"' plainly.
-   ##
-   ## Flag only '${name[@]+' -- a '${', an identifier, then '[@]' followed
-   ## IMMEDIATELY by '+'. The legitimate neighbours are all spared by that
-   ## anchoring: '${#arr[@]}' (length; '[@]' is followed by '}'), a plain
-   ## '${arr[@]}' (same), '${arr[@]:-fallback}' and '${arr[@]:+word}' (a ':'
-   ## sits between '[@]' and the operator), and a bare '[@]+' in a string or
-   ## regex (no leading '${name'). grep_code_lines strips comments first so an
-   ## illustrative guard in prose is not flagged; filter_self drops this
-   ## script, whose own regex/message text carries the needle.
-   mapfile -d '' -t fs < <(filter_self "${@}")
-   if [ "${#fs[@]}" -eq 0 ]; then return 0; fi
-   hits="$(grep_code_lines '\$\{[A-Za-z_][A-Za-z0-9_]*\[@\]\+' "${fs[@]}")"
-   emit_hits "R-026 obsolete empty-array guard (bash 4.4+; drop the +alternate on [@])" "${hits}"
-}
-
 check_R021_local_assign() {
    local hits
    local -a fs
@@ -2339,8 +2275,6 @@ run_file_checks() {
       check_R051_trap_inline "${shell_files[@]}"
       check_R070_double_semi "${shell_files[@]}"
       check_R074_flow_chaining "${shell_files[@]}"
-      check_R062_dashdash_denylist "${shell_files[@]}"
-      check_R026_empty_array_guard "${shell_files[@]}"
       check_R080_shellcheck_source_path "${shell_files[@]}"
       check_R021_local_assign "${shell_files[@]}"
       check_R081_source_devnull "${shell_files[@]}"

@@ -478,7 +478,9 @@ expect_rule "R-021" "   declare name=1"               "absent"
 ## ${atall}/${altop} so the flagged literal never lives in this tracked file.
 guard="\${arr${atall}${altop}\"\${arr${atall}}\"}"
 expect_rule "R-026" "x=${guard}"                       "present"
-expect_rule "R-026" "for x in ${guard}${sc} do"        "present"
+## A COMPLETE loop so the AST parses (the engine rule needs a valid tree; the
+## '${arr[@]+' guard is flagged wherever the parameter expansion sits).
+expect_rule "R-026" "for x in ${guard}${sc} do :${sc} done" "present"
 expect_rule "R-026" "n=\${#arr${atall}}"               "absent"
 expect_rule "R-026" "p=\"\${arr${atall}}\""            "absent"
 expect_rule "R-026" "f=\${arr${atall}:-fallback}"      "absent"
