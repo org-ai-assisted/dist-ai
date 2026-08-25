@@ -105,6 +105,11 @@ eq(win._default_theme, 'light',
    'default theme is light when nothing is configured')
 ok(win.current().current_theme() == 'light',
    'a tab of a freshly-defaulted window is light')
+# escape_limit defaults to 4096 when nothing is configured (the freeze bound is on)
+eq(win._escape_limit, 4096,
+   'default escape_limit is 4096 when nothing is configured')
+eq(win.current().current_escape_limit(), 4096,
+   'a freshly-defaulted tab carries the 4096 escape-limit bound')
 
 # --- window dialogs: built and shown with exec() stubbed ----------------------
 from PyQt6.QtWidgets import QFormLayout as _QFL                 # noqa: E402
@@ -143,6 +148,16 @@ try:
     _pd = [c for c in _dialogs[-1].findChildren(_QCbD) if c.findData(7) >= 0]
     ok(bool(_pd) and _pd[0].currentData() == 7 and _pd[0].currentText() == '7 seconds',
        'settings: a non-preset paste delay (7s) shows in the combo, not a blank')
+    # likewise the escape-limit combo SHOWS a non-preset config value (any 0+ is
+    # valid), not a blank selection.
+    win._escape_limit = 12345
+    _dialogs.clear()
+    win.show_global_settings()
+    _el = _dlg_field(_dialogs[-1], 'Escape-sequence limit')
+    ok(_el is not None and _el.currentData() == 12345
+       and _el.currentText() == '12345 bytes',
+       'settings: a non-preset escape limit (12345) shows in the combo, not a blank')
+    win._escape_limit = 4096
     # #79: every settings input has a tooltip; every tipped label shows the "(i)"
     # indicator so it is visible a (copyable) tooltip is available.
     from PyQt6.QtWidgets import (QCheckBox as _QCbx79, QSpinBox as _QSpn79,  # noqa: E402
@@ -1244,7 +1259,7 @@ try:
     ok(True, 'setting appliers respect admin locks; bell channels add/remove')
     for _c in ('help', 'theme dark', 'mode reveal', 'colors on', 'tui on',
                'title on', 'zoom 120', 'scrollback 1000', 'paste-delay 3',
-               'pastedelay 4', 'totally-unknown', '/'):
+               'escape-limit 65536', 'pastedelay 4', 'totally-unknown', '/'):
         win.run_command('/' + _c)
     eq(win.run_command(''), False, 'run_command: an empty line -> False')
     ok(True, 'run_command handles every slash-command branch')
@@ -1372,7 +1387,7 @@ try:
         _calls.clear()
         win._apply_global({'theme': 'dark', 'zoom': 100, 'mode': 'box',
                            'colors': True, 'line_edits': True, 'scrollback': 1000,
-                           'paste_delay': 3, 'persist': False,
+                           'paste_delay': 3, 'escape_limit': 4096, 'persist': False,
                            'clip_warn_any': False})       # unchanged from win._clip_warn_any
         eq(_st_clip.load().get('clip_warn_any'), 'true',
            'apply: a clip_warn_any unchanged in the dialog is not clobbered')
@@ -1384,7 +1399,7 @@ try:
         _calls.clear()
         win._apply_global({'theme': 'dark', 'zoom': 100, 'mode': 'box',
                            'colors': True, 'line_edits': True, 'scrollback': 1000,
-                           'paste_delay': 3, 'persist': False,
+                           'paste_delay': 3, 'escape_limit': 4096, 'persist': False,
                            'clip_warn_any': True})        # toggled ON in the dialog
         ok(win._clip_warn_any is True and _calls.get('pushed') is True
            and _st_clip.load().get('clip_warn_any') == 'true',
@@ -1491,9 +1506,10 @@ ok(M._letter_icon('A', '#3b82f6') is not None, '_letter_icon renders a fallback 
 _cfgd2 = os.path.join(os.environ['XDG_CONFIG_HOME'], 'secure-terminal.d')
 os.makedirs(_cfgd2, exist_ok=True)
 with open(os.path.join(_cfgd2, '80-init.conf'), 'w', encoding='utf-8') as _cf:
-    _cf.write('scrollback=99999\nallow_title=true\ntui=true\n')
+    _cf.write('scrollback=99999\nallow_title=true\ntui=true\nescape_limit=65536\n')
 _wc = MainWindow()
 ok(_wc._scrollback == 0, 'config: an out-of-range scrollback normalises to unlimited')
+ok(_wc._escape_limit == 65536, 'config: a valid escape_limit is read from the config')
 ok(_wc._default_allow_title and 'osc_title' in _wc._osc_defaults,
    'config: legacy allow_title seeds the granular OSC title default')
 _wc.deleteLater()
@@ -2085,7 +2101,7 @@ try:
                        'colors': True, 'line_edits': True, 'tui': True, 'osc_notice': True,
                        'tui_autobox_notice': True,
                        'osc': {'osc_title': True}, 'scrollback': 1000,
-                       'paste_delay': 3, 'persist': False})
+                       'paste_delay': 3, 'escape_limit': 4096, 'persist': False})
     ok(win._default_font_family == 'Hack',
        '_apply_global preserves admin-locked keys (incl. a locked font_family)')
 finally:
@@ -2219,7 +2235,7 @@ try:
                        'font_size': win._default_font_size, 'mode': 'box',
                        'colors': True, 'line_edits': True, 'tui': False,
                        'osc': {}, 'osc_notice': True, 'tui_autobox_notice': True,
-                       'scrollback': 0, 'paste_delay': 3,
+                       'scrollback': 0, 'paste_delay': 3, 'escape_limit': 4096,
                        'paste_warn': 'always', 'copy_warn': 'never', 'persist': False})
     eq((win._paste_warn, win._copy_warn), ('always', 'never'),
        '_apply_global stores the paste/copy review levels')
@@ -2251,7 +2267,7 @@ try:
                        'font_size': win._default_font_size, 'ui_scale': 175,
                        'mode': 'box', 'colors': True, 'line_edits': True, 'tui': False, 'osc': {},
                        'osc_notice': True, 'tui_autobox_notice': True,
-                       'scrollback': 0, 'paste_delay': 3,
+                       'scrollback': 0, 'paste_delay': 3, 'escape_limit': 4096,
                        'persist': False})
     eq(win._ui_scale, 175, '_apply_global stores the menu (UI) scale')
 finally:
@@ -2387,7 +2403,8 @@ try:
     _pw._apply_global({'theme': 'light', 'zoom': 175, 'mode': 'reveal', 'colors': True, 'line_edits': True,
                        'tui': False, 'osc': {}, 'osc_notice': False,
                        'tui_autobox_notice': False,
-                       'scrollback': 7000, 'paste_delay': 5, 'persist': True})
+                       'scrollback': 7000, 'paste_delay': 5, 'escape_limit': 65536,
+                       'persist': True})
     ok(not _pw._tui_autobox_notice and not _pw.act_tui_autobox_notice.isChecked(),
        '_apply_global stores tui_autobox_notice and mirrors it on the menu action')
     _pc = _ps.load()
@@ -2396,6 +2413,7 @@ try:
     eq(_pc.get('unicode_mode'), 'reveal', 'settings persist: unicode mode written')
     eq(_pc.get('scrollback'), '7000', 'settings persist: scrollback written')
     eq(_pc.get('paste_delay'), '5', 'settings persist: paste delay written')
+    eq(_pc.get('escape_limit'), '65536', 'settings persist: escape limit written')
     eq(_pc.get('tui_autobox_notice'), 'false',
        'settings persist: tui_autobox_notice written to config')
     _pw.close()
@@ -2523,7 +2541,8 @@ try:
     # a bulk "apply to all tabs" must skip placeholders, not call a setter on a QWidget
     _iw._apply_global({'theme': 'dark', 'zoom': 100, 'mode': 'box', 'colors': True, 'line_edits': True,
                        'tui': False, 'osc_notice': True, 'tui_autobox_notice': True, 'osc': {},
-                       'scrollback': 1000, 'paste_delay': 0, 'persist': True})
+                       'scrollback': 1000, 'paste_delay': 0, 'escape_limit': 4096,
+                       'persist': True})
     ok(_iw.current().current_theme() == 'dark',
        '#99 (F1): apply-to-all updates real tabs and skips placeholders (no crash)')
     # an all-tabs find hop must skip placeholders too (query absent from the real tab
@@ -2754,6 +2773,7 @@ try:
                  'mode': win._default_mode, 'colors': win._default_colors,
                  'line_edits': win._default_line_edits, 'tui': win._default_tui,
                  'scrollback': win._scrollback, 'paste_delay': win._paste_delay,
+                 'escape_limit': win._escape_limit,
                  'persist': win._persist_session, 'systray': win._systray,
                  'auto_tab_colors': win._auto_tab_colors}
         _opts[_field] = _other
@@ -2783,6 +2803,8 @@ try:
              lambda: win._scrollback),
             ('paste_delay', lambda: win.set_paste_delay(win._paste_delay + 3),
              lambda: win._paste_delay),
+            ('escape_limit', lambda: win.set_escape_limit(win._escape_limit + 512),
+             lambda: win._escape_limit),
             ('persist_session', lambda: win.set_persist_session(
                 not win._persist_session),
              lambda: win._persist_session),

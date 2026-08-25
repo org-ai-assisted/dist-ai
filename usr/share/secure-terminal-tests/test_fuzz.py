@@ -313,11 +313,11 @@ def prop_feed_chunk_carry_drop():
     # a string escape longer than the cap switches to the DISCARD state, which
     # then swallows bytes across chunks until the terminator (even a split one).
     long_osc = '\x1b]0;' + 'x' * 5000            # unterminated, over-cap OSC
-    t, carry, drop = S.feed_chunk_carry(long_osc, '', '')
+    t, carry, drop, _ = S.feed_chunk_carry(long_osc, '', '')
     assert drop and t == ''                       # -> discard state
-    t2, carry2, drop2 = S.feed_chunk_carry('still inside', carry, drop)
+    t2, carry2, drop2, _ = S.feed_chunk_carry('still inside', carry, drop)
     assert drop2 == drop and t2 == ''             # keeps swallowing
-    t3, _c, drop3 = S.feed_chunk_carry('tail\x07visible', carry2, drop2)
+    t3, _c, drop3, _ = S.feed_chunk_carry('tail\x07visible', carry2, drop2)
     assert drop3 == '' and 'visible' in t3        # terminator ends the discard
 
 
@@ -377,11 +377,11 @@ def prop_chunk_boundary_invariance(text, split):
     # same bytes WHOLE vs SPLIT at an arbitrary boundary must render identical
     # stripped output. A read boundary must never change what the user sees, leak
     # a sequence's tail, or drop a standalone character.
-    whole_text, _, _ = S.feed_chunk_carry(text, '', '')
+    whole_text, _, _, _ = S.feed_chunk_carry(text, '', '')
     whole = S.render_output(whole_text, 'box')
     head, tail = text[:split], text[split:]
-    t1, carry, drop = S.feed_chunk_carry(head, '', '')
-    t2, _, _ = S.feed_chunk_carry(tail, carry, drop)
+    t1, carry, drop, _ = S.feed_chunk_carry(head, '', '')
+    t2, _, _, _ = S.feed_chunk_carry(tail, carry, drop)
     split_out = S.render_output(t1, 'box') + S.render_output(t2, 'box')
     assert split_out == whole
 
@@ -395,7 +395,7 @@ def prop_feed_chunk_carry(chunks):
     # (b) keep its state bounded (carry <= cap, drop a valid introducer or empty).
     carry, drop = '', ''
     for chunk in chunks:
-        text, carry, drop = S.feed_chunk_carry(chunk, carry, drop)
+        text, carry, drop, _ = S.feed_chunk_carry(chunk, carry, drop)
         rendered = S.render_output(text, 'box')
         assert '\x1b' not in rendered
         assert len(carry) <= 4096

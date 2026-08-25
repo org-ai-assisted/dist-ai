@@ -447,7 +447,7 @@ ok(not S.has_bell('\x1b]2;t\x07'), 'an OSC-terminating BEL is not a standalone b
 def _fcc(chunks):
     carry, drop, out = '', '', ''
     for _c in chunks:
-        _t, carry, drop = S.feed_chunk_carry(_c, carry, drop)
+        _t, carry, drop, _ = S.feed_chunk_carry(_c, carry, drop)
         out += S.render_output(_t, 'box')
     return out, carry, drop
 eq(_fcc(['\x1bP' + 'A' * 5000, 'B' * 30 + '\x1b\\AFTER'])[0], 'AFTER',
@@ -1733,7 +1733,7 @@ for _p in _SPLIT_PAYLOADS:
         _carry, _drop, _cells, _col, _sgr = '', '', [], 0, {}
         _acc_comp, _acc_wraps = [], []
         for _chunk in (_raw[:_cut], _raw[_cut:]):
-            _text, _carry, _drop = S.feed_chunk_carry(_chunk, _carry, _drop)
+            _text, _carry, _drop, _ = S.feed_chunk_carry(_chunk, _carry, _drop)
             _c, _cells, _col, _sgr, _w = S.feed_line_edits(
                 _cells, _col, _sgr, _text)
             _acc_comp.extend(_c)
@@ -1768,7 +1768,7 @@ for _p in ('\x1b]0;pwned\x07', '\x1b]0;pwned\x1b\\', '\x1b]52;c;cGF5\x07',
             _carry, _drop, _cells, _col, _sgr = '', '', [], 0, {}
             _acc = []
             for _chunk in (_raw[:_i], _raw[_i:_j], _raw[_j:]):
-                _text, _carry, _drop = S.feed_chunk_carry(_chunk, _carry, _drop)
+                _text, _carry, _drop, _ = S.feed_chunk_carry(_chunk, _carry, _drop)
                 _c, _cells, _col, _sgr, _w = S.feed_line_edits(
                     _cells, _col, _sgr, _text)
                 _acc.extend(_c)
@@ -1787,10 +1787,10 @@ eq(_LEAK3[:4], [],
 # a chunk ending on the introducer must be CARRIED -- otherwise the introducer is
 # stripped alone and the shifted byte renders as literal text on the next chunk.
 for _ss in ('N', 'O'):
-    _t1, _c1, _d1 = S.feed_chunk_carry('A\x1b' + _ss, '', '')
+    _t1, _c1, _d1, _ = S.feed_chunk_carry('A\x1b' + _ss, '', '')
     eq(_c1, '\x1b' + _ss,
        'a chunk ending on the SS2/SS3 introducer (ESC %s) is carried' % _ss)
-    _t2, _c2, _d2 = S.feed_chunk_carry('xB', _c1, _d1)
+    _t2, _c2, _d2, _ = S.feed_chunk_carry('xB', _c1, _d1)
     eq(_cells_render(_t1) + _cells_render(_t2), 'AB',
        'the byte SS2/SS3 (ESC %s) shifts does not leak across a read boundary' % _ss)
     eq(_c2, '', 'the SS2/SS3 carry is drained once its shifted byte arrives')
@@ -1860,7 +1860,7 @@ def _stream_render(chunks, mode='detail'):
     comp = []
     for i, blob in enumerate(chunks):
         text = dec.decode(blob, i == len(chunks) - 1)
-        text, carry, drop = S.feed_chunk_carry(text, carry, drop)
+        text, carry, drop, _ = S.feed_chunk_carry(text, carry, drop)
         c, cells, col, sgr, _w = S.feed_line_edits(cells, col, sgr, text)
         comp.extend(c)
     runs, _ = S.cells_to_runs(comp, cells, mode, False)
@@ -2039,7 +2039,7 @@ _CHUNK_BAD = []
 for _cut in range(1, len(_WHOLE)):
     _carry, _drop, _parts = '', '', []
     for _chunk in (_WHOLE[:_cut], _WHOLE[_cut:]):
-        _text, _carry, _drop = S.feed_chunk_carry(_chunk, _carry, _drop)
+        _text, _carry, _drop, _ = S.feed_chunk_carry(_chunk, _carry, _drop)
         _parts.append(S.render_output(_text, 'box'))
     if ''.join(_parts) != S.render_output(_WHOLE, 'box') or _carry:
         _CHUNK_BAD.append(_cut)
@@ -2136,10 +2136,10 @@ for _cut in range(1, 5):
     _seq = '\x1b[2K'
     _carry, _drop = '', ''
     _cells, _col, _sgr = [('x', ())], 1, {}
-    _text, _carry, _drop = S.feed_chunk_carry(_seq[:_cut], _carry, _drop)
+    _text, _carry, _drop, _ = S.feed_chunk_carry(_seq[:_cut], _carry, _drop)
     _c, _cells, _col, _sgr, _w = S.feed_line_edits(
         _cells, _col, _sgr, _text, 0, True)
-    _text, _carry, _drop = S.feed_chunk_carry(_seq[_cut:], _carry, _drop)
+    _text, _carry, _drop, _ = S.feed_chunk_carry(_seq[_cut:], _carry, _drop)
     _c, _cells, _col, _sgr, _w = S.feed_line_edits(
         _cells, _col, _sgr, _text, 0, False)
     ok(all(c not in '\x1b[2K' or c == 'x' for c, _k in _cells),

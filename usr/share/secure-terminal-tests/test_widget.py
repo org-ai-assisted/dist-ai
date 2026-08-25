@@ -3703,7 +3703,8 @@ win._apply_global({'theme': 'light', 'zoom': 130, 'mode': 'reveal',
                    'colors': True, 'line_edits': True, 'tui': False,
                    'tui_autobox_notice': True,
                    'osc': {'osc_title': True, 'osc_clipboard': True},
-                   'scrollback': 1000, 'paste_delay': 5, 'persist': True})
+                   'scrollback': 1000, 'paste_delay': 5, 'escape_limit': 4096,
+                   'persist': True})
 ok(all((win.tabs.widget(i).current_theme(), win.tabs.widget(i).current_mode(),
         win.tabs.widget(i).current_scrollback()) == ('light', 'reveal', 1000)
        for i in range(win.tabs.count())),
@@ -3715,7 +3716,8 @@ ok(all(win.tabs.widget(i).osc_enabled('osc_title')
 win._apply_global({'theme': 'light', 'zoom': 130, 'mode': 'reveal', 'colors': True, 'line_edits': True,
                    'tui': False, 'tui_autobox_notice': True,
                    'osc': {'osc_title': False, 'osc_clipboard': False},
-                   'scrollback': 1000, 'paste_delay': 5, 'persist': True})
+                   'scrollback': 1000, 'paste_delay': 5, 'escape_limit': 4096,
+                   'persist': True})
 eq(win._default_mode, 'reveal', 'global settings updated the default mode')
 # slash-command palette: applies settings, leading slash optional, invalid -> False
 ok(win.run_command('/theme light') and win.current().current_theme() == 'light',
@@ -5578,8 +5580,10 @@ win._locked = _saved_l2
 if tui_available():
     _bd = SecureTerminal(command='/bin/cat')
     _bd._esc_drop = 'P'
+    _bd._esc_dropped = 1234
     _bd.apply_tui(True)
-    eq(_bd._esc_drop, '', 'switching to TUI clears a pending CLI discard state')
+    eq((_bd._esc_drop, _bd._esc_dropped), ('', 0),
+       'switching to TUI clears a pending CLI discard state and its byte counter')
     _bd.close()
 
 # an over-cap OSC (introducer truncated by the discard) still surfaces an OSC-use
@@ -5590,6 +5594,57 @@ _bo.osc_used.connect(lambda k: _osc_seen.append(k))
 feed_output(_bo, b'\x1b]0;' + b'A' * 5000)         # >cap OSC, no terminator -> discard
 ok('osc_other' in _osc_seen, 'an over-cap OSC still surfaces an OSC-use notice')
 _bo.close()
+
+# escape_limit: an unterminated OSC/DCS string sequence would else make CLI mode
+# swallow every following byte forever (an indefinite display freeze). Past the
+# configured bound feed_chunk_carry discards the buffered escape and resumes. The
+# pure function first (every branch), then the live widget both ways round.
+from secure_terminal.sanitize import feed_chunk_carry           # noqa: E402
+_ES = '\x1b]' + 'A' * 5000                          # over-cap incomplete OSC (no BEL/ST)
+# entering the discard state records the bytes swallowed so far
+_t, _c, _d, _dp = feed_chunk_carry(_ES, '', '', 0)
+eq((_t, _c, _d, _dp), ('', '', ']', len(_ES)),
+   'feed_chunk_carry: an over-cap incomplete OSC enters the discard state')
+# past the bound with no terminator -> discard the buffer, resume clean
+eq(feed_chunk_carry('B' * 100, '', ']', len(_ES), limit=4096), ('', '', '', 0),
+   'feed_chunk_carry: an unterminated sequence past the limit is discarded, parsing resumes')
+# under a higher bound the discard continues (bytes accumulate, still swallowed)
+eq(feed_chunk_carry('B' * 100, '', ']', len(_ES), limit=100000),
+   ('', '', ']', len(_ES) + 100),
+   'feed_chunk_carry: within the limit the discard state keeps swallowing')
+# limit=0 disables the bound entirely (historical swallow-to-terminator)
+eq(feed_chunk_carry('B' * 100, '', ']', len(_ES), limit=0),
+   ('', '', ']', len(_ES) + 100),
+   'feed_chunk_carry: limit=0 never gives up (unlimited)')
+# a real terminator still completes the sequence even past the bound, resetting state
+eq(feed_chunk_carry('done\x07after', '', ']', len(_ES), limit=4096), ('after', '', '', 0),
+   'feed_chunk_carry: a terminator completes the sequence and resets the discard counter')
+# a lone trailing ESC in the discard state is held as a possible split ST terminator
+eq(feed_chunk_carry('data\x1b', '', 'P', 10, limit=4096), ('', '\x1b', 'P', 15),
+   'feed_chunk_carry: a trailing ESC is carried as a possible split ST')
+
+# live widget: unlimited (0) swallows all later output; a bound resumes it. Two
+# fresh tabs so no discard state bleeds between the cases -- and the contrast IS the
+# canary: only the bound breaks the freeze.
+_elu = SecureTerminal(command='/bin/cat', tui=False)
+_elu.apply_escape_limit(0)                          # 0 = unlimited (historical)
+feed_output(_elu, b'\x1b]0;' + b'A' * 5000)         # over-cap unterminated OSC -> discard
+feed_output(_elu, b'B' * 5000)                      # still no terminator
+feed_output(_elu, b'RESUMED-UNLIMITED\n')
+ok('RESUMED-UNLIMITED' not in _elu.transcript_text(),
+   'escape_limit=0: an unterminated OSC swallows all later output (historical freeze)')
+_elu.close()
+_elb = SecureTerminal(command='/bin/cat', tui=False)
+_elb.apply_escape_limit(-5)                         # clamps to 0...
+eq(_elb.current_escape_limit(), 0, 'apply_escape_limit clamps a negative bound to 0')
+_elb.apply_escape_limit(4096)                       # ...then a real bound
+feed_output(_elb, b'\x1b]0;' + b'A' * 5000)         # re-enter the discard state
+feed_output(_elb, b'B' * 5000)                      # past the bound -> give up, resume
+feed_output(_elb, b'RESUMED-BOUNDED\n')
+ok('RESUMED-BOUNDED' in _elb.transcript_text(),
+   'escape_limit bound: an unterminated OSC is discarded and later output resumes')
+eq(_elb.current_escape_limit(), 4096, 'current_escape_limit reports the applied bound')
+_elb.close()
 
 # --- system tray: opt-in, default off, no untrusted output on the tray --------
 # Offscreen has no real tray, so exercise the gating/persist logic and the
