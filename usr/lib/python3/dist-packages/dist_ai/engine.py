@@ -18,6 +18,8 @@ mutates the file, and the gate's detect pass then re-reads it, so any violation 
 fix did not (or could not) remove is reported as the residual. There is nothing
 to keep in lockstep."""
 
+import os
+
 from dist_ai import bash_ast
 from dist_ai import context as ctxmod
 from dist_ai import model
@@ -144,10 +146,17 @@ def apply_fixes(ctx, check=False):
         return {}
     if not check:
         try:
-            with open(ctx.abspath, "wb") as handle:
+            ## O_NOFOLLOW: from_disk refuses a symlink when the context is BUILT,
+            ## but a tree scan writes each file later -- if the path is swapped
+            ## for a symlink in between, a plain open() would follow it and
+            ## clobber the target. Refuse at write time too (ELOOP -> OSError ->
+            ## skip), so the fixer only ever writes the regular file it scanned.
+            def _nofollow(path, flags):
+                return os.open(path, flags | os.O_NOFOLLOW)
+            with open(ctx.abspath, "wb", opener=_nofollow) as handle:
                 handle.write(new_source.encode("utf-8"))
         except OSError:
-            ## Readable but not writable: leave it for the gate to report rather
-            ## than crash the whole fix pass on one file.
+            ## Not writable, or the path is now a symlink / gone: leave it for the
+            ## gate to report rather than crash the whole fix pass on one file.
             return {}
     return counts

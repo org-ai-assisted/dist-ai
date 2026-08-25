@@ -73,7 +73,7 @@ def detect_main(argv, prog="dist-ai-style --detect"):
               file=sys.stderr)
         return 2
     contexts, code = _load(args.files, staged=False, prog=prog)
-    if code is not None:
+    if contexts is None:
         return code
     out = []
     any_fail = False
@@ -115,7 +115,7 @@ def fix_main(argv, prog="dist-ai-style --fix"):
     parser.add_argument("files", nargs="*")
     args = parser.parse_args(argv[1:])
     contexts, code = _load(args.files, args.staged, prog)
-    if code is not None:
+    if contexts is None:
         return code
     if not contexts:
         return 0
@@ -151,7 +151,7 @@ def style_main(argv, prog="dist-ai-style"):
               file=sys.stderr)
         return 2
     contexts, code = _load(args.files, args.staged, prog)
-    if code is not None:
+    if contexts is None:
         return code
 
     ## Fix first (unless read-only), then re-read from disk so the detect pass
@@ -167,7 +167,7 @@ def style_main(argv, prog="dist-ai-style"):
             if changes:
                 _fix_summary(prog, ctx.path, changes, check=False)
         contexts, code = _load(args.files, args.staged, prog)
-        if code is not None:
+        if contexts is None:
             return code
 
     any_fail = False

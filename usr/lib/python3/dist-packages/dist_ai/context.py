@@ -205,12 +205,15 @@ class FileContext:
 
     def has_waiver(self, tag):
         """True if the file carries a '## style-ok: <tag>' waiver (shell
-        grammar: exactly '##', any or no surrounding horizontal whitespace)."""
+        grammar: exactly '##', any or no surrounding horizontal whitespace). The
+        trailing '\\r' in the boundary matches a waiver on a CRLF line -- '$'
+        alone sits before '\\n', after the '\\r', so a CRLF waiver with no space
+        after the tag would otherwise be missed (fail-closed to a spurious hit)."""
         if not self.source:
             return False
         pattern = re.compile(
-            r'^[ \t]*##[ \t]*style-ok:[ \t]*' + re.escape(tag) + r'(?:[ \t]|$)',
-            re.MULTILINE)
+            r'^[ \t]*##[ \t]*style-ok:[ \t]*' + re.escape(tag)
+            + r'(?:[ \t\r]|$)', re.MULTILINE)
         return bool(pattern.search(self.source))
 
     def has_config_waiver(self, tag, slashes=False):
@@ -221,7 +224,7 @@ class FileContext:
         prefix = r'(?:#{1,2}|//)' if slashes else r'#{1,2}'
         pattern = re.compile(
             r'^[ \t]*' + prefix + r'[ \t]*style-ok:[ \t]*'
-            + re.escape(tag) + r'(?:[ \t]|$)', re.MULTILINE)
+            + re.escape(tag) + r'(?:[ \t\r]|$)', re.MULTILINE)
         return bool(pattern.search(self.source))
 
 
