@@ -16,6 +16,12 @@ from dist_ai import model
 from dist_ai.model import Rule
 from dist_ai.rules import _helpers as h
 
+## An installed python package module: imported, never run, and Debian ships it
+## 0644 -- so the shebang rule (R-180) does not apply. Anchored to a real python
+## library path so a stray 'usr/bin/dist-packages/tool.py' is NOT exempted.
+PYTHON_MODULE_PATH = re.compile(
+    r'/lib/python3[^/]*/(?:dist|site)-packages/.*\.py$')
+
 EXEC_DIRECTIVE = re.compile(r'^[ \t]*(Exec[A-Za-z]*)=(.*)$', re.MULTILINE)
 APT_HOOK = re.compile(
     r'(^|[^A-Za-z0-9])(Pre-Invoke|Post-Invoke|Pre-Install-Pkgs)([^A-Za-z0-9]|$)')
@@ -204,9 +210,34 @@ def _yaml_run_scalars(node):
             yield from _yaml_run_scalars(item)
 
 
+class PythonShebang(Rule):
+    """R-180: a non-empty '.py' file must start with a shebang so it can be run
+    directly when debugging (a file with NEITHER a shebang nor '+x' slips past
+    both pre-commit-hooks executable checks). An empty file (a zero-byte
+    '__init__.py' package marker) and an installed package module are exempt.
+    A file-level rule -- it self-selects by path like the config rules and needs
+    no shell parse, so it lives in this run-over-every-file bucket."""
+
+    id = "R-180"
+
+    def applies(self, ctx):
+        return (super().applies(ctx) and ctx.path.endswith(".py")
+                and PYTHON_MODULE_PATH.search(ctx.path) is None)
+
+    def detect(self, ctx):
+        if not ctx.source:  ## empty file: package marker, nothing to interpret
+            return
+        first = ctx.source.split("\n", 1)[0].rstrip("\r")
+        if not first.startswith("#!"):
+            yield model.fail(
+                "R-180", "R-180 python file needs a shebang (and +x)",
+                ctx.path, 1)
+
+
 RULES = (
     SystemdUnit(),
     AptHook(),
     CronTable(),
     WorkflowInlineShell(),
+    PythonShebang(),
 )

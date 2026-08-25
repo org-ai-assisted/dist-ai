@@ -1480,37 +1480,6 @@ is_installed_python_module() {
    return 1
 }
 
-check_R180_python_shebang() {
-   local script hits first
-
-   ## R-180: a Python file carries a shebang AND is executable, so it can be
-   ## run directly when debugging. The two halves are enforced from opposite
-   ## sides: check-shebang-scripts-are-executable already fails a shebang
-   ## without '+x', and check-executables-have-shebangs fails '+x' without a
-   ## shebang -- but a file with NEITHER slips past both, which is the gap
-   ## this closes.
-   ##
-   ## An EMPTY file is exempt: a zero-byte '__init__.py' is a package marker,
-   ## not code, and has nothing to interpret.
-   for script in "${@}"; do
-      if [ ! -s "${script}" ]; then
-         continue
-      fi
-      if is_installed_python_module "${script}"; then
-         continue
-      fi
-      first=""
-      read -r first < "${script}" || true
-      first="${first%$'\r'}"
-      case "${first}" in
-         '#!'*)
-            continue
-            ;;
-      esac
-      hits="${script}:1:${first}"
-      fail "R-180 python file needs a shebang (and +x)" "'${hits}'"
-   done
-}
 
 
 check_R102_interpreter_prepend() {
@@ -1587,14 +1556,6 @@ check_R153_help_from_comments() {
 
 
 
-is_python_file() {
-   case "${1}" in
-      *.py)
-         return 0
-         ;;
-   esac
-   return 1
-}
 
 is_yaml_file() {
    case "${1}" in
@@ -2107,9 +2068,8 @@ run_file_checks() {
    ## base_ref. Caller controls base_ref (single union pass in
    ## default mode; per-commit loop in --per-commit mode).
    local line
-   local -a shell_files yaml_files shell_or_yaml file_list python_source_files
+   local -a shell_files yaml_files shell_or_yaml file_list
 
-   python_source_files=()
    shell_files=()
    yaml_files=()
    shell_or_yaml=()
@@ -2119,9 +2079,6 @@ run_file_checks() {
          continue
       fi
       file_list+=("${line}")
-      if is_python_file "${line}"; then
-         python_source_files+=("${line}")
-      fi
       if is_shell_file "${line}"; then
          shell_files+=("${line}")
          shell_or_yaml+=("${line}")
@@ -2152,10 +2109,6 @@ run_file_checks() {
       check_R153_help_from_comments "${shell_files[@]}"
    else
       note "no changed shell files"
-   fi
-
-   if [ "${#python_source_files[@]}" -gt 0 ]; then
-      check_R180_python_shebang "${python_source_files[@]}"
    fi
 
    if [ "${#shell_or_yaml[@]}" -gt 0 ]; then
