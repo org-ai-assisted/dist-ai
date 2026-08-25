@@ -376,6 +376,12 @@ ok(_msplit._mouse_modes == {1002} and _msplit._mouse_sgr,
 feed_output(_msplit, b'\x1b[?1000;h')
 ok(1000 in _msplit._mouse_modes,
    'a DECSET with an empty param field arms the named mode and ignores the blank')
+# A hostile over-long DECSET parameter must NOT crash the read loop: bare int()
+# raises above Python's 4300-digit string limit, so the scan parses via _safe_int
+# (out-of-range -> 0 -> ignored). Regression for the DoS finding.
+feed_output(_msplit, b'\x1b[?' + b'1' * 4301 + b'h')
+ok(0 not in _msplit._mouse_modes and isinstance(_msplit._mouse_modes, set),
+   'an over-long DECSET parameter is ignored, not a ValueError crash')
 _msplit.close()
 # home-pin: a terminal does not auto-scroll horizontally -- a paint anchors the view at
 # the left so the START of every row stays visible (the reported bug: the auto-follow
