@@ -269,6 +269,32 @@ assert_not_at "R-102 spares 'bash -c <program>'"     "R-102" 3
 run_det "$(printf '%s\n' '#!/bin/bash' 'dpkg "--install" pkg.deb')"
 assert_at "R-211 flags a quoted 'dpkg \"--install\"'" "R-211" 2
 
+## --- comment-strip loopholes (ai-review): a '${var#pat}' '#' is NOT a comment
+## R-170: a hardcoded temp path AFTER a '${var#pat}' on the same line still
+## flags (the old '^[^#]*' skip stopped at the expansion's '#' and missed it).
+## Assemble the literal so it does not appear in THIS tracked file, which the
+## gate also scans (like the ';;' assembly elsewhere).
+st='/t'; st="${st}mp"
+run_det "$(printf '%s\n' '#!/bin/bash' "x=\"\${d#/y}\"; cp -- foo.dat ${st}")"
+assert_at "R-170 sees a hardcoded temp path past a '\${var#pat}'" "R-170" 2
+## R-010: a was_executed guard AFTER a '${var#pat}' is still recognized, so the
+## source-able guarded script stays exempt (no spurious strict-mode failure).
+run_det "$(printf '%s\n' '#!/bin/bash' 'x="${d#/y}"; was_executed "$0" -- main "$@"')"
+assert_not_at "R-010 recognizes a guard past a '\${var#pat}'" "R-010" 1
+
+## --- option-parse edges (ai-review round 2) ---------------------------------
+## R-090: '--' ends options, so 'command -- -v' RUNS -v, it is not describe mode.
+run_det "$(printf '%s\n' '#!/bin/bash' 'command -- -v foo')"
+assert_not_at "R-090 spares 'command -- -v' (-- ends options)" "R-090" 2
+## R-102: an option that TAKES A VALUE ('-o errexit') and '--' before the script
+## must still reach the script; '-s' (stdin) and '-c' (program) must not.
+run_det "$(printf '%s\n' '#!/bin/bash' 'bash -o errexit ci/build.sh')"
+assert_at "R-102 flags 'bash -o VALUE <script>'" "R-102" 2
+run_det "$(printf '%s\n' '#!/bin/bash' 'bash -- ci/build.sh')"
+assert_at "R-102 flags 'bash -- <script>'" "R-102" 2
+run_det "$(printf '%s\n' '#!/bin/bash' 'bash -s -- arg')"
+assert_not_at "R-102 spares 'bash -s' (script from stdin)" "R-102" 2
+
 ## --- R-212 allow-downgrades: real argument vs quoted mention ----------------
 ## The legacy regex went false-NEGATIVE when any quote appeared earlier on the
 ## line; the AST reads --allow-downgrades as a real argument word regardless.

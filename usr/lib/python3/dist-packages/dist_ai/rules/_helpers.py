@@ -254,6 +254,27 @@ def unquote(text):
     return text
 
 
+def code_only_lines(source, tree):
+    """SOURCE's lines with any trailing '#'-comment stripped, located via the
+    AST's OWN comment nodes. A '#' inside a '${var#pat}' expansion or a quoted
+    string is data, not a comment -- the naive '^[^#]*' regex idiom stops at it
+    and misses (or misjudges) whatever follows on the line. 1-indexed: element
+    i-1 is line i's code. A None tree (unparsed) yields the raw lines."""
+    lines = source.split("\n")
+    if tree is None:
+        return lines
+    for comment in bash_ast.comments(tree):
+        pos = comment.get("Hash") or {}
+        line_no = pos.get("Line")
+        col = pos.get("Col")
+        if not line_no or not col or not 1 <= line_no <= len(lines):
+            continue
+        cut = col - 1
+        if 0 <= cut < len(lines[line_no - 1]):
+            lines[line_no - 1] = lines[line_no - 1][:cut]
+    return lines
+
+
 ## Commands that RUN another command given as an operand -- a shell '-c' reached
 ## through one of these ('ssh host -- bash -lc PROG', 'sudo bash -c PROG') is
 ## still an inline program. An allowlist, not "any command", so 'echo bash -c

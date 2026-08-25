@@ -502,6 +502,10 @@ expect_rule "R-102" "bash${sp}ci/dry-run-start"                  "present"
 expect_rule "R-102" "sh${sp}/usr/local/bin/foo"                  "present"
 expect_rule "R-102" "bash${sp}--norc script"                     "absent"
 expect_rule "R-102" "bash${sp}\${script}"                        "absent"
+## A '-n' (syntax-check, noexec) cluster never RUNS the script -> SPARED; a '-x'
+## (execution + trace) cluster still runs it -> FLAGGED. Guards the noexec spare.
+expect_rule "R-102" "bash${sp}-n${sp}foo.bash"                   "absent"
+expect_rule "R-102" "bash${sp}-x${sp}foo.bash"                   "present"
 ## A short flag ending in 'sh' and a .sh script run AS the command (with a
 ## path argument) are NOT interpreter prepends; both matched the old '\b'
 ## anchor ('\b' also fires after '-' and '.'), so pin them SPARED.

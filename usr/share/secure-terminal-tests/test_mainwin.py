@@ -1561,6 +1561,19 @@ win._advisories.pop(_esc_term, None)
 win._on_escape_suppressed(_esc_term)         # already notified for this tab -> no re-raise
 ok(_esc_term not in win._advisories,
    '_on_escape_suppressed does not re-raise for a tab already notified')
+# the freeze notice WINS over the OSC notice (grok ai-review): an over-cap
+# unterminated OSC fires escape_suppressed then osc_used('osc_other') in one read,
+# and _on_osc_used must not clobber the more-actionable freeze banner.
+win._esc_notified.discard(_esc_term)
+win._advisories.pop(_esc_term, None)
+win._osc_notified = {p for p in win._osc_notified if p[0] is not _esc_term}
+win._on_escape_suppressed(_esc_term)         # freeze notice up
+win._on_osc_used(_esc_term, 'osc_other')     # must NOT clobber it
+eq(win._advisories.get(_esc_term, (None,))[0], 'escape',
+   'the freeze notice wins: _on_osc_used does not clobber an active escape advisory')
+ok((_esc_term, 'osc_other') not in win._osc_notified,
+   'the skipped OSC notice stays un-marked so a later real OSC use can still notice')
+win._advisories.pop(_esc_term, None)
 win._esc_notified.discard(_esc_term)
 
 # NOTE: the client is a background THREAD. Two alternatives were measured and

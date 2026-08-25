@@ -181,11 +181,21 @@ _SHELL_SHEBANG = re.compile(r"^#!.*\b(?:ba|da)?sh\b")
 def _is_shell_file(abspath, name):
     if name.endswith(_SHELL_EXT):
         return True
+    ## Read the shebang WITHOUT hanging: O_NOFOLLOW refuses a symlink (a link to
+    ## /dev/zero would never yield a newline), O_NONBLOCK makes a fifo/device
+    ## read return at once instead of blocking. Only a plain readable head is
+    ## inspected; anything else is simply not a shell file we can name.
     try:
-        with open(abspath, encoding="utf-8", errors="replace") as handle:
-            return bool(_SHELL_SHEBANG.match(handle.readline()))
+        fd = os.open(abspath, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError:
         return False
+    try:
+        head = os.read(fd, 256)
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
+    return bool(_SHELL_SHEBANG.match(head.decode("utf-8", "replace")))
 
 
 def check_untracked(base_cwd):
@@ -193,10 +203,14 @@ def check_untracked(base_cwd):
     add'ed is invisible to the staged/range set, so the gate would silently not
     check it. Naming it turns a forgotten 'git add' from a silent gap into a
     visible note. Never a FAIL (an untracked file is not part of this change)."""
-    out = _git(["ls-files", "--others", "--exclude-standard"], base_cwd)
+    ## '-z' + quotePath=false: a name with a space / byte >= 0x80 is emitted RAW
+    ## (NUL-delimited), not C-quoted -- a quoted '"caf\303\251.sh"' would fail
+    ## the extension test and the open (same care the changelog enumeration takes).
+    out = _git(["-c", "core.quotePath=false", "ls-files", "--others",
+                "--exclude-standard", "-z"], base_cwd)
     if out.returncode != 0:
         return
-    for name in out.stdout.split("\n"):
+    for name in out.stdout.split("\0"):
         if name and _is_shell_file(os.path.join(base_cwd, name), name):
             yield model.note(
                 "untracked",

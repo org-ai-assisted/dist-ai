@@ -15,6 +15,7 @@ from dist_ai import model
 from dist_ai.model import Edit, Rule
 from dist_ai.rules import _helpers as h
 
+
 def _fail(ctx, rule, message, node):
     return model.fail(rule, message, ctx.path, node)
 
@@ -49,6 +50,8 @@ class CommandV(Rule):
                 opt = bash_ast.word_string(word)
                 if opt is None or not opt.startswith("-"):
                     break
+                if opt == "--":
+                    break  ## end of options; 'command -- -v' RUNS '-v', not -v mode
                 if not opt.startswith("--") and "v" in opt[1:]:
                     yield _fail(ctx, "R-090", "R-090 command -v", call)
                     break
@@ -1049,11 +1052,15 @@ class InterpreterPrepend(Rule):
             if bash_ast.command_name(call) not in ("bash", "sh"):
                 continue
             ## Skip leading OPTIONS to reach the script operand, so 'bash -x
-            ## build.sh' is caught, not just 'bash build.sh'. A '-c'-bearing
-            ## short cluster ('-c', '-lc') means the next word is an inline
-            ## PROGRAM (R-192), not a script -> spare the whole call.
+            ## build.sh' is caught, not just 'bash build.sh'. Handle the forms
+            ## that would otherwise misfire: '--' ends options (the next word IS
+            ## the script); a '-c' cluster is an inline PROGRAM (R-192) and a
+            ## '-n' cluster is a noexec syntax-check -- neither runs the script;
+            ## '-s' reads the script from STDIN; '-o'/'-O'/'--rcfile' take a
+            ## VALUE word that is not the script.
             script = None
             skip_next = False
+            after_ddash = False
             for word in bash_ast.args(call)[1:]:
                 operand = bash_ast.word_string(word)
                 if operand is None:
@@ -1061,11 +1068,21 @@ class InterpreterPrepend(Rule):
                 if skip_next:
                     skip_next = False
                     continue
-                if operand.startswith("-"):
-                    if not operand.startswith("--") and "c" in operand[1:]:
+                if after_ddash:
+                    script = operand
+                    break
+                if operand == "--":
+                    after_ddash = True
+                    continue
+                if operand[:1] in ("-", "+") and len(operand) > 1:
+                    cluster = operand[1:]
+                    is_long = operand[:2] in ("--", "++")
+                    if not is_long and ("c" in cluster or "n" in cluster):
                         script = None
                         break
-                    if operand in self._VALUE_OPTS:
+                    if not is_long and "s" in cluster:
+                        break  ## '-s' -> script comes from stdin, no file
+                    if operand in self._VALUE_OPTS or cluster in ("o", "O"):
                         skip_next = True
                     continue
                 script = operand
@@ -1246,9 +1263,10 @@ _STRICT_DIRECTIVES = (
 _STRICT_HEADER_LINES = 160
 ## A real was_executed()/was_sourced() guard CALL (command position), not a
 ## comment or an assignment ('was_executed=1') or a mention ('${was_sourced}').
-## Matched per LINE (like the bash grep), so '[^#]*' never crosses a newline.
+## Matched per code-only LINE (comments pre-stripped by code_only_lines), so a
+## '${var#pat}' '#' earlier on the line no longer hides the guard call.
 _SOURCE_GUARD = re.compile(
-    r'^[^#]*(?:^|[ \t;&|!(])(?:was_executed|was_sourced)(?:[ \t;&|)]|$)')
+    r'(?:^|[ \t;&|!(])(?:was_executed|was_sourced)(?:[ \t;&|)]|$)')
 _GUARD_ERREXIT = re.compile(r'^[ \t]+set -o errexit[ \t]*$', re.MULTILINE)
 _INHERIT_ERREXIT = re.compile(r'^[ \t]*shopt -s inherit_errexit[ \t]*$',
                               re.MULTILINE)
@@ -1284,7 +1302,7 @@ class StrictModeBlock(Rule):
         present = sum(1 for directive in _STRICT_DIRECTIVES
                       if directive in header_lines)
         guarded = any(_SOURCE_GUARD.search(line)
-                      for line in source.split("\n"))
+                      for line in h.code_only_lines(source, ctx.tree))
         if present == 0 and guarded:
             ## Source-able guarded script: exempt from all-seven. Enforce the
             ## indented shopt half + export only when the guard enables errexit.
@@ -1324,8 +1342,11 @@ class TmpHardcode(Rule):
 
     id = "R-170"
     waiver_tag = "no-tmp-hardcode"
+    ## No '^[^#]*' comment skip here -- comments are stripped up front by
+    ## code_only_lines (AST-aware), so a '${var#pat}' '#' no longer hides a real
+    ## '/tmp' later on the same line.
     _MATCH = re.compile(
-        r'^[^#]*(?:^|[^A-Za-z0-9._/}~)])/tmp(?:$|[^A-Za-z0-9._-])')
+        r'(?:^|[^A-Za-z0-9._/}~)])/tmp(?:$|[^A-Za-z0-9._-])')
     _SPARE = re.compile(
         r"(?:^|[ \t;&|(:])(?:export|readonly|local|declare)?[ \t]*"
         r"(?:TMP|TMPDIR|TEMP|TEMPDIR)=['\"]?/tmp['\"]?(?:[ \t;&|)]|$)"
@@ -1336,7 +1357,8 @@ class TmpHardcode(Rule):
         return super().applies(ctx)
 
     def detect(self, ctx):
-        for number, line in enumerate(ctx.source.split("\n"), 1):
+        for number, line in enumerate(
+                h.code_only_lines(ctx.source, ctx.tree), 1):
             if self._MATCH.search(line) and not self._SPARE.search(line):
                 yield model.fail(
                     "R-170", "R-170 hardcoded /tmp (use ${TMP})", ctx.path,
