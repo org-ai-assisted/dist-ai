@@ -5,7 +5,7 @@
 
 ## AI-Assisted
 
-## Canary regression suite for pre-push-fix, the bucket-1 style AUTO-FIXER.
+## Canary regression suite for 'dist-ai-style --fix', the bucket-1 AUTO-FIXER.
 ## Drives the REAL, shipped tool as a subprocess (no private copy). Fixture
 ## bytes are emitted with 'printf %b' octal escapes (\342\200\224 == em dash,
 ## \303\251 == e-acute) so THIS test source stays ASCII and carries no literal
@@ -33,14 +33,16 @@ shopt -s shift_verbose
 export LC_ALL=C
 
 tool_test_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
-FIX="${tool_test_dir}/../../bin/pre-push-fix"
-if [ ! -x "${FIX}" ]; then
-   FIX='/usr/bin/pre-push-fix'
+STYLE="${tool_test_dir}/../../bin/dist-ai-style"
+if [ ! -x "${STYLE}" ]; then
+   STYLE='/usr/bin/dist-ai-style'
 fi
-if [ ! -x "${FIX}" ]; then
-   printf '%s\n' "FATAL: pre-push-fix not found (looked at '${FIX}')." >&2
+if [ ! -x "${STYLE}" ]; then
+   printf '%s\n' "FATAL: dist-ai-style not found (looked at '${STYLE}')." >&2
    exit 1
 fi
+## The auto-fixer is 'dist-ai-style --fix'; wrap it so the call sites stay terse.
+run_fix() { "${STYLE}" --fix "$@"; }
 GATE="${tool_test_dir}/../../bin/pre-push-static"
 if [ ! -x "${GATE}" ]; then
    GATE='/usr/bin/pre-push-static'
@@ -68,10 +70,10 @@ note_fail() { printf '%s\n' "FAIL: ${1}" >&2 ; fail=$(( fail + 1 )) ; }
 ## pass. Both messages carry the tally so an unauthorized skip cannot hide.
 exit_gate() {
    if [ "${fail}" -ne 0 ]; then
-      printf '%s\n' "pre-push-fix: ${passc} pass, ${fail} fail, 0 skip -- FAILURES above." >&2
+      printf '%s\n' "dist-ai-style --fix: ${passc} pass, ${fail} fail, 0 skip -- FAILURES above." >&2
       exit 1
    fi
-   printf '%s\n' "pre-push-fix: ${passc} pass, 0 fail, 0 skip -- all canaries passed."
+   printf '%s\n' "dist-ai-style --fix: ${passc} pass, 0 fail, 0 skip -- all canaries passed."
    exit 0
 }
 
@@ -83,7 +85,7 @@ if [ -n "${TEST_SELFCHECK_FAIL_GATE:-}" ]; then
    exit_gate
 fi
 if TEST_SELFCHECK_FAIL_GATE=1 "$0" >/dev/null 2>&1; then
-   printf '%s\n' "pre-push-fix: FAIL gate regressed -- a forced failure still exits 0" >&2
+   printf '%s\n' "dist-ai-style --fix: FAIL gate regressed -- a forced failure still exits 0" >&2
    exit 1
 fi
 
@@ -104,7 +106,7 @@ if has_non_ascii "${f}" ; then
 else
    note_fail "fixture is not dirty -- canary would let a no-op fixer pass"
 fi
-"${FIX}" "${f}" >/dev/null 2>&1
+run_fix "${f}" >/dev/null 2>&1
 if has_non_ascii "${f}" ; then
    note_fail "confusables not fully substituted"
 elif grep --quiet --fixed-strings -- '## a -- b ... c -> d' "${f}" ; then
@@ -121,7 +123,7 @@ fi
 ## --- 2: a non-confusable UTF-8 codepoint is PRESERVED ----------------------
 f="${test_dir}/preserve.py"
 printf '%b' '#!/usr/bin/python3\ncaf\303\251 = 1\n' >"${f}"
-"${FIX}" "${f}" >/dev/null 2>&1
+run_fix "${f}" >/dev/null 2>&1
 if has_non_ascii "${f}" ; then
    note_pass "non-confusable UTF-8 preserved (fixer only touches known set)"
 else
@@ -131,7 +133,7 @@ fi
 ## --- 3: allow-non-ascii waiver suppresses R-001, not whitespace -----------
 f="${test_dir}/waived.sh"
 printf '%b' '#!/bin/bash\n## style-ok: allow-non-ascii\ny=\342\200\224   \n' >"${f}"
-"${FIX}" "${f}" >/dev/null 2>&1
+run_fix "${f}" >/dev/null 2>&1
 if has_non_ascii "${f}" && ! has_trailing_ws "${f}" ; then
    note_pass "waiver keeps non-ASCII, whitespace still fixed (gate parity)"
 else
@@ -142,7 +144,7 @@ fi
 f="${test_dir}/binary.sh"
 printf '%b' '#!/bin/bash\n# \377\376 raw  \n' >"${f}"
 before="$(cksum < "${f}")"
-"${FIX}" "${f}" >/dev/null 2>&1
+run_fix "${f}" >/dev/null 2>&1
 if [ "$(cksum < "${f}")" = "${before}" ] ; then
    note_pass "undecodable file left byte-identical"
 else
@@ -152,7 +154,7 @@ fi
 ## --- 5: symlink skipped ---------------------------------------------------
 printf '%b' '#!/bin/bash\nx=1  \n' >"${test_dir}/target.sh"
 ln -s target.sh "${test_dir}/alias.sh"
-"${FIX}" "${test_dir}/alias.sh" >/dev/null 2>&1
+run_fix "${test_dir}/alias.sh" >/dev/null 2>&1
 if has_trailing_ws "${test_dir}/target.sh" ; then
    note_pass "symlink skipped (target untouched via the link)"
 else
@@ -164,7 +166,7 @@ f="${test_dir}/check.md"
 printf '%b' 'a \342\200\224 b\n' >"${f}"
 before="$(cksum < "${f}")"
 rc=0
-"${FIX}" --check "${f}" >/dev/null 2>&1 || rc=$?
+run_fix --check "${f}" >/dev/null 2>&1 || rc=$?
 if [ "${rc}" -eq 1 ] && [ "$(cksum < "${f}")" = "${before}" ] ; then
    note_pass "--check exits 1 on dirty file and writes nothing"
 else
@@ -174,9 +176,9 @@ fi
 ## --- 7: idempotency -------------------------------------------------------
 f="${test_dir}/idem.sh"
 printf '%b' '#!/bin/bash\n## \342\200\224   \n' >"${f}"
-"${FIX}" "${f}" >/dev/null 2>&1
+run_fix "${f}" >/dev/null 2>&1
 first="$(cksum < "${f}")"
-"${FIX}" "${f}" >/dev/null 2>&1
+run_fix "${f}" >/dev/null 2>&1
 if [ "$(cksum < "${f}")" = "${first}" ] ; then
    note_pass "idempotent (second run changes nothing)"
 else
@@ -188,7 +190,7 @@ fi
 ## a single-quoted string); the em dash on the same line is still fixed.
 f="${test_dir}/quotes.sh"
 printf '%b' '#!/bin/bash\nx=\342\200\230hi\342\200\231 \342\200\224 y\n' >"${f}"
-"${FIX}" "${f}" >/dev/null 2>&1
+run_fix "${f}" >/dev/null 2>&1
 if has_non_ascii "${f}" && grep --quiet --fixed-strings -- ' -- ' "${f}" ; then
    note_pass "smart quotes kept in code, em dash still fixed"
 else
@@ -197,7 +199,7 @@ fi
 ## In a .md file the same smart quotes ARE fixed (quotes are content there).
 f="${test_dir}/quotes.md"
 printf '%b' 'a \342\200\230hi\342\200\231 b\n' >"${f}"
-"${FIX}" "${f}" >/dev/null 2>&1
+run_fix "${f}" >/dev/null 2>&1
 if ! has_non_ascii "${f}" && grep --quiet --fixed-strings -- "'hi'" "${f}" ; then
    note_pass "smart quotes fixed in markup"
 else
@@ -207,7 +209,7 @@ fi
 ## --- 7c: no-break space is actually substituted --------------------------
 f="${test_dir}/nbsp.sh"
 printf '%b' '#!/bin/bash\nx=\302\2401\n' >"${f}"
-"${FIX}" "${f}" >/dev/null 2>&1
+run_fix "${f}" >/dev/null 2>&1
 if ! has_non_ascii "${f}" ; then
    note_pass "no-break space substituted to a plain space"
 else
@@ -219,7 +221,7 @@ fi
 ## rewrites a file the gate exempts.
 f="${test_dir}/waiver2.sh"
 printf '%b' '#!/bin/bash\n##style-ok:allow-non-ascii\ny=\342\200\224\n' >"${f}"
-"${FIX}" "${f}" >/dev/null 2>&1
+run_fix "${f}" >/dev/null 2>&1
 if has_non_ascii "${f}" ; then
    note_pass "waiver honored without whitespace after the colon (gate parity)"
 else
@@ -230,7 +232,7 @@ fi
 nonrepo="${test_dir}/nonrepo"
 mkdir --parents -- "${nonrepo}"
 rc=0
-( cd -- "${nonrepo}" && "${FIX}" --staged >/dev/null 2>&1 ) || rc=$?
+( cd -- "${nonrepo}" && run_fix --staged >/dev/null 2>&1 ) || rc=$?
 if [ "${rc}" -eq 2 ] ; then
    note_pass "--staged discovery failure exits 2 (no false green)"
 else
@@ -242,7 +244,7 @@ fi
 ## fixture literal never trips the gate's own R-172 scan of THIS test file.
 f="${test_dir}/mkdirmode.sh"
 printf '%b' '#!/bin/bash\nmkdir -m 700 -- "$TMPDIR"\nmkdir -m700 -- "$TMP"\n' >"${f}"
-"${FIX}" "${f}" >/dev/null 2>&1
+run_fix "${f}" >/dev/null 2>&1
 if [ "$(grep --count --fixed-strings -- '--mode=700' "${f}")" -eq 2 ] \
    && ! grep --quiet --extended-regexp -- '(^|[[:space:]])-m' "${f}" ; then
    note_pass "R-172 short -m upgraded to --mode= (spaced and attached)"
@@ -250,7 +252,7 @@ else
    note_fail "R-172 short-mode upgrade wrong"
 fi
 first="$(cksum < "${f}")"
-"${FIX}" "${f}" >/dev/null 2>&1
+run_fix "${f}" >/dev/null 2>&1
 if [ "$(cksum < "${f}")" = "${first}" ] ; then
    note_pass "R-172 upgrade idempotent"
 else
@@ -264,7 +266,7 @@ fi
 f="${test_dir}/mkdirnomode.sh"
 printf '%b' '#!/bin/bash\nmkdir --parents -- "$TMPDIR"\n' >"${f}"
 before="$(cksum < "${f}")"
-"${FIX}" "${f}" >/dev/null 2>&1
+run_fix "${f}" >/dev/null 2>&1
 if [ "$(cksum < "${f}")" = "${before}" ] ; then
    note_pass "R-172 leaves the missing-mode form for the gate (not auto-fixed)"
 else
@@ -275,7 +277,7 @@ fi
 f="${test_dir}/mkdirbundle.sh"
 printf '%b' '#!/bin/bash\nmkdir -pm700 -- "$TMPDIR"\n' >"${f}"
 before="$(cksum < "${f}")"
-"${FIX}" "${f}" >/dev/null 2>&1
+run_fix "${f}" >/dev/null 2>&1
 if [ "$(cksum < "${f}")" = "${before}" ] ; then
    note_pass "R-172 leaves bundled -pm700 for the gate (conservative)"
 else
@@ -289,7 +291,7 @@ f="${test_dir}/doc-mkdir.md"
 ## flag -- while the fixture CONTENT still exercises the transform's matcher.
 printf '%b' 'mkdir -m 700 -- "$TMPDIR"\n' >"${f}"
 before="$(cksum < "${f}")"
-"${FIX}" "${f}" >/dev/null 2>&1
+run_fix "${f}" >/dev/null 2>&1
 if [ "$(cksum < "${f}")" = "${before}" ] ; then
    note_pass "R-172 confined to shell files (markdown untouched)"
 else
@@ -303,7 +305,7 @@ fi
 ## never doubles an existing disable.
 f="${test_dir}/mkdirparents.sh"
 printf '%b' '#!/bin/bash\nmkdir --parents -m 700 -- "$TMPDIR"\nmkdir --mode=700 -- "$TMP"\n' >"${f}"
-"${FIX}" "${f}" >/dev/null 2>&1
+run_fix "${f}" >/dev/null 2>&1
 if [ "$(grep --count --fixed-strings -- 'disable=SC2174' "${f}")" -eq 1 ] \
    && grep --quiet --fixed-strings -- 'mkdir --parents --mode=700' "${f}" ; then
    note_pass "R-172 inserts one SC2174 disable for --parents --mode (not for plain --mode)"
@@ -311,7 +313,7 @@ else
    note_fail "R-172 SC2174 disable insertion wrong"
 fi
 first="$(cksum < "${f}")"
-"${FIX}" "${f}" >/dev/null 2>&1
+run_fix "${f}" >/dev/null 2>&1
 if [ "$(cksum < "${f}")" = "${first}" ] ; then
    note_pass "R-172 SC2174 disable insertion idempotent (not doubled)"
 else
@@ -325,7 +327,7 @@ fi
 f="${test_dir}/mkdirheredoc.sh"
 printf '%b' '#!/bin/bash\ncat <<EOF\n$(mkdir --parents -m 700 -- "$TMPDIR")\nEOF\n' >"${f}"
 before="$(cksum < "${f}")"
-"${FIX}" "${f}" >/dev/null 2>&1
+run_fix "${f}" >/dev/null 2>&1
 if [ "$(cksum < "${f}")" = "${before}" ] \
    && ! grep --quiet --fixed-strings -- 'disable=SC2174' "${f}" ; then
    note_pass "R-172 leaves a mkdir inside a heredoc body untouched (no corruption)"
@@ -341,7 +343,7 @@ f="${test_dir}/mkdircont.sh"
 # shellcheck disable=SC2174
 printf '%b' '#!/bin/bash\ntrue \\\n&& mkdir --parents --mode=700 -- "$TMPDIR"\n' >"${f}"
 before="$(cksum < "${f}")"
-"${FIX}" "${f}" >/dev/null 2>&1
+run_fix "${f}" >/dev/null 2>&1
 if [ "$(cksum < "${f}")" = "${before}" ] \
    && ! grep --quiet --fixed-strings -- 'disable=SC2174' "${f}" ; then
    note_pass "R-172 does not insert a disable into a line continuation"
@@ -355,7 +357,7 @@ fi
 ## upgraded.
 f="${test_dir}/mkdirmulti.sh"
 printf '%b' '#!/bin/bash\nmkdir -m 700 -- "$TMPDIR" && install -m 755 -- a b\nmkdir -- "$TMPDIR"; other -m700 arg\n' >"${f}"
-"${FIX}" "${f}" >/dev/null 2>&1
+run_fix "${f}" >/dev/null 2>&1
 if [ "$(grep --count --fixed-strings -- 'mkdir --mode=700' "${f}")" -eq 1 ] \
    && grep --quiet --fixed-strings -- 'install -m 755' "${f}" \
    && grep --quiet --fixed-strings -- 'other -m700' "${f}" \
@@ -372,7 +374,7 @@ fi
 f="${test_dir}/mkdiredge.sh"
 printf '%b' '#!/bin/bash\nmkdir "$TMPDIR/keep -m 700 name"\nmkdir -- -m 700 "$TMPDIR"\n' >"${f}"
 before="$(cksum < "${f}")"
-"${FIX}" "${f}" >/dev/null 2>&1
+run_fix "${f}" >/dev/null 2>&1
 if [ "$(cksum < "${f}")" = "${before}" ] ; then
    note_pass "R-172 leaves an -m inside a quoted path / after -- untouched"
 else
@@ -381,7 +383,7 @@ fi
 ## A backtick command substitution is command position -> the mkdir is upgraded.
 f="${test_dir}/mkdirbtick.sh"
 printf '%b' '#!/bin/bash\nfoo=`mkdir --mode=700 -- "$TMPDIR"`\n' >"${f}"
-"${FIX}" "${f}" >/dev/null 2>&1
+run_fix "${f}" >/dev/null 2>&1
 if grep --quiet --fixed-strings -- '--mode=700' "${f}" \
    && ! grep --quiet --extended-regexp -- '(^|[[:space:]])-m' "${f}" ; then
    note_pass "R-172 upgrades a backtick-substitution mkdir"
@@ -392,7 +394,7 @@ fi
 f="${test_dir}/mkdirwaiver.sh"
 printf '%b' '#!/bin/bash\n## style-ok: allow-mkdir-no-mode\nmkdir -m 700 -- "$TMPDIR"\n' >"${f}"
 before="$(cksum < "${f}")"
-"${FIX}" "${f}" >/dev/null 2>&1
+run_fix "${f}" >/dev/null 2>&1
 if [ "$(cksum < "${f}")" = "${before}" ] ; then
    note_pass "R-172 honors the allow-mkdir-no-mode waiver (fixer/gate parity)"
 else
@@ -402,7 +404,7 @@ fi
 ## required directive, which is still inserted (as its own whole line).
 f="${test_dir}/mkdirsc.sh"
 printf '%b' '#!/bin/bash\n# shellcheck disable=SC21745\nmkdir -p --mode=700 -- "$TMPDIR"\n' >"${f}"
-"${FIX}" "${f}" >/dev/null 2>&1
+run_fix "${f}" >/dev/null 2>&1
 if grep --quiet --line-regexp --fixed-strings -- '# shellcheck disable=SC2174' "${f}" ; then
    note_pass "R-172 SC2174 skip is exact (SC21745 does not mask it)"
 else
@@ -412,7 +414,7 @@ fi
 ## continuation, so the disable IS inserted above the next mkdir.
 f="${test_dir}/mkdireven.sh"
 printf '%b' '#!/bin/bash\necho \\\\\nmkdir -p --mode=700 -- "$TMPDIR"\n' >"${f}"
-"${FIX}" "${f}" >/dev/null 2>&1
+run_fix "${f}" >/dev/null 2>&1
 if grep --quiet --line-regexp --fixed-strings -- '# shellcheck disable=SC2174' "${f}" ; then
    note_pass "R-172 treats an even '\\\\' run as not a continuation"
 else
@@ -439,7 +441,7 @@ git -C "${repo}" -c core.hooksPath=/dev/null \
    commit --quiet --message "dirty"
 
 gate_before="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || true
-"${FIX}" "${repo}/doc.md" >/dev/null 2>&1
+run_fix "${repo}/doc.md" >/dev/null 2>&1
 git -C "${repo}" -c core.hooksPath=/dev/null add --all
 git -C "${repo}" -c core.hooksPath=/dev/null \
    -c user.name=test -c user.email=test@example.com \
@@ -460,7 +462,7 @@ git -C "${repo}" -c core.hooksPath=/dev/null \
    -c user.name=test -c user.email=test@example.com \
    commit --quiet --message "r172 dirty"
 r172_before="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || true
-"${FIX}" "${repo}/tmpdir.sh" >/dev/null 2>&1
+run_fix "${repo}/tmpdir.sh" >/dev/null 2>&1
 git -C "${repo}" -c core.hooksPath=/dev/null add --all
 git -C "${repo}" -c core.hooksPath=/dev/null \
    -c user.name=test -c user.email=test@example.com \
@@ -484,7 +486,7 @@ git -C "${repo}" -c core.hooksPath=/dev/null \
    -c user.name=test -c user.email=test@example.com \
    commit --quiet --message "r172 parents dirty"
 r172p_before="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || true
-"${FIX}" "${repo}/tmpparents.sh" >/dev/null 2>&1
+run_fix "${repo}/tmpparents.sh" >/dev/null 2>&1
 git -C "${repo}" -c core.hooksPath=/dev/null add --all
 git -C "${repo}" -c core.hooksPath=/dev/null \
    -c user.name=test -c user.email=test@example.com \
@@ -517,7 +519,7 @@ printf '%b' "#!/bin/bash\ntimeout 5 sleep 1\nDEBUG=1 ${g} ${iq} foo bar\ncat <<H
 if grep --quiet --fixed-strings 'timeout --kill-after=5 5 sleep 1' "${f}" ; then
    note_fail "heredoc fixture not dirty -- canary would let a no-op fixer pass"
 fi
-"${FIX}" "${f}" >/dev/null 2>&1
+run_fix "${f}" >/dev/null 2>&1
 if grep --quiet --fixed-strings 'timeout --kill-after=5 5 sleep 1' "${f}" \
    && grep --quiet --fixed-strings 'DEBUG=1 grep --ignore-case --quiet foo bar' "${f}" \
    && grep --quiet --fixed-strings 'timeout 5 sleep 1 stays as heredoc data' "${f}" \
@@ -537,7 +539,7 @@ git -C "${repo}" -c core.hooksPath=/dev/null \
    -c user.name=test -c user.email=test@example.com \
    commit --quiet --message "heredoc r200 dirty"
 hd_before="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || true
-"${FIX}" "${repo}/heredoc_to.sh" >/dev/null 2>&1
+run_fix "${repo}/heredoc_to.sh" >/dev/null 2>&1
 git -C "${repo}" -c core.hooksPath=/dev/null add --all
 git -C "${repo}" -c core.hooksPath=/dev/null \
    -c user.name=test -c user.email=test@example.com \
@@ -555,7 +557,7 @@ fi
 ## disable into the previous line (str char-index vs shfmt byte-offset mismatch).
 f="${test_dir}/nonascii.sh"
 printf '%b' '#!/bin/bash\n## caf\303\251 padding comment here\nmkdir --parents -m 700 -- "$TMPDIR"\n' >"${f}"
-"${FIX}" "${f}" >/dev/null 2>&1
+run_fix "${f}" >/dev/null 2>&1
 if grep --line-regexp --quiet -- '# shellcheck disable=SC2174' "${f}" \
    && grep --quiet --fixed-strings -- 'mkdir --parents --mode=700 -- "$TMPDIR"' "${f}" \
    && grep --quiet --fixed-strings -- 'padding comment here' "${f}" ; then
@@ -567,7 +569,7 @@ fi
 ## --- 9e: space-form '--mode 700 -p' still detects -p and inserts SC2174 -------
 f="${test_dir}/spacemode.sh"
 printf '%b' '#!/bin/bash\nmkdir --mode 700 -p "$TMPDIR/x"\n' >"${f}"
-"${FIX}" "${f}" >/dev/null 2>&1
+run_fix "${f}" >/dev/null 2>&1
 if grep --line-regexp --quiet -- '# shellcheck disable=SC2174' "${f}" ; then
    note_pass "space-form --mode with -p gets the SC2174 disable (value skipped)"
 else
@@ -580,7 +582,7 @@ fi
 f="${test_dir}/broken.sh"
 printf '%b' '#!/bin/bash\nif [ 1 ; then\ntimeout 5 sleep 1\n## a \342\200\224 b   \n' >"${f}"
 rc=0
-"${FIX}" "${f}" >/dev/null 2>&1 || rc=$?
+run_fix "${f}" >/dev/null 2>&1 || rc=$?
 if [ "${rc}" -eq 0 ] \
    && ! has_non_ascii "${f}" \
    && ! has_trailing_ws "${f}" \
@@ -588,6 +590,45 @@ if [ "${rc}" -eq 0 ] \
    note_pass "unparseable file: text transforms applied, structural declined, no crash"
 else
    note_fail "unparseable file mishandled (rc=${rc})"
+fi
+
+## --- 8: a TRAILING no-break space is fixed in ONE pass ---------------------
+## Confusable-substitution turns the NBSP into an ASCII space; the strip must
+## then see it in the SAME fix pass. Canary: FAILs when the text rules share
+## one pre-substitution snapshot (a residual trailing space survives).
+f="${test_dir}/nbsp-trail.sh"
+printf '%b' '#!/bin/bash\nx=1\302\240\n' >"${f}"
+run_fix "${f}" >/dev/null 2>&1
+if ! has_non_ascii "${f}" && ! has_trailing_ws "${f}" ; then
+   note_pass "trailing no-break space fixed in one pass (no residual space)"
+else
+   note_fail "trailing no-break space left a residual (needed a second pass)"
+fi
+
+## --- 9: trailing blanks before a LONE CR (old-Mac EOL) are stripped --------
+## The strip must peel blanks before a bare '\r' with no LF, preserving the CR.
+f="${test_dir}/crtrail.sh"
+printf '%b' '#!/bin/bash\nfoo  \r' >"${f}"
+printf '%b' '#!/bin/bash\nfoo\r' >"${test_dir}/crtrail.expect"
+run_fix "${f}" >/dev/null 2>&1
+if cmp -s "${f}" "${test_dir}/crtrail.expect" ; then
+   note_pass "trailing blanks before a lone CR stripped, CR preserved"
+else
+   note_fail "CR-only trailing whitespace not stripped"
+fi
+
+## --- 10: R-172 does NOT splice across an intervening redirection -----------
+## A redirection between '-m' and its mode value lives on the Stmt, not Args; a
+## span from '-m' to the mode word would DELETE it, so the fixer declines and
+## leaves the (rare) shape byte-identical for the gate.
+f="${test_dir}/mkdir-redir.sh"
+printf '%b' '#!/bin/bash\nmkdir -m >/dev/null 700 -- "$TMPDIR"\n' >"${f}"
+before="$(cksum < "${f}")"
+run_fix "${f}" >/dev/null 2>&1
+if [ "$(cksum < "${f}")" = "${before}" ] ; then
+   note_pass "R-172 leaves a -m/value pair split by a redirection untouched"
+else
+   note_fail "R-172 spliced across a redirection (data loss)"
 fi
 
 exit_gate

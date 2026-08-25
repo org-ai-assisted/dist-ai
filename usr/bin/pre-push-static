@@ -2296,21 +2296,21 @@ run_ast_detector() {
 
    detector=""
    for cand in \
-      "$( dirname -- "$( readlink --canonicalize -- "$0" )" )/pre-push-detect" \
-      '/usr/bin/pre-push-detect'; do
+      "$( dirname -- "$( readlink --canonicalize -- "$0" )" )/dist-ai-style" \
+      '/usr/bin/dist-ai-style'; do
       if [ -x "${cand}" ]; then
          detector="${cand}"
          break
       fi
    done
    if [ -z "${detector}" ]; then
-      fail "pre-push-detect not found; parser-backed shell rules could not run" "(required tool)"
+      fail "dist-ai-style not found; parser-backed shell rules could not run" "(required tool)"
       return 0
    fi
    rc=0
-   output="$( "${detector}" "$@" )" || rc=$?
+   output="$( "${detector}" --detect "$@" )" || rc=$?
    if [ "${rc}" -eq 2 ]; then
-      fail "pre-push-detect could not run" "shfmt is required and absent"
+      fail "dist-ai-style --detect could not run" "shfmt is required and absent"
       return 0
    fi
    ## Exit 0 = clean, 1 = findings (with output). ANYTHING ELSE is a crash where
@@ -2318,7 +2318,7 @@ run_ast_detector() {
    ## is a hard FAILURE. A rc-1 with EMPTY output is the same anomaly (a crash that
    ## exited 1); the findings path always carries output.
    if [ "${rc}" -gt 2 ] || { [ "${rc}" -eq 1 ] && [ -z "${output}" ]; }; then
-      fail "pre-push-detect crashed (exit ${rc}); parser-backed rules did NOT run -- not a pass" "(traceback on stderr)"
+      fail "dist-ai-style --detect crashed (exit ${rc}); parser-backed rules did NOT run -- not a pass" "(traceback on stderr)"
       return 0
    fi
    if [ -z "${output}" ]; then

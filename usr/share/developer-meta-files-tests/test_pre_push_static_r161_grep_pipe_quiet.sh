@@ -54,9 +54,9 @@ GATE="${tool_dir}/../../bin/pre-push-static"
 if [ ! -x "${GATE}" ]; then
    GATE='/usr/bin/pre-push-static'
 fi
-FIX="${tool_dir}/../../bin/pre-push-fix"
+FIX="${tool_dir}/../../bin/dist-ai-style"
 if [ ! -x "${FIX}" ]; then
-   FIX='/usr/bin/pre-push-fix'
+   FIX='/usr/bin/dist-ai-style'
 fi
 
 test_dir="$(mktemp --directory)"
@@ -215,7 +215,7 @@ run_fix() {
    body="$2"
    file="${test_dir}/fix-${name}.sh"
    printf '%s\n' '#!/bin/bash' "${body}" >"${file}"
-   "${FIX}" "${file}" >/dev/null 2>&1 || true
+   "${FIX}" --fix "${file}" >/dev/null 2>&1 || true
    fix_result="$(cat -- "${file}")"
 }
 

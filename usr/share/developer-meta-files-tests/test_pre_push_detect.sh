@@ -5,8 +5,8 @@
 
 ## AI-Assisted
 
-## Truth-table test for pre-push-detect, the parser-backed style detector (over
-## the shfmt AST via dist_ai.bash_ast / dist_ai.detect). Drives the REAL shipped
+## Truth-table test for 'dist-ai-style --detect', the parser-backed style detector
+## (over the shfmt AST via dist_ai.rules). Drives the REAL shipped
 ## tool as a subprocess. The point: a command is told from data that only LOOKS
 ## like one -- inside a string, a heredoc, an array, or after a 'VAR=value' /
 ## 'sudo' prefix -- which the former regex gate could only approximate. Each
@@ -22,9 +22,9 @@ shopt -s shift_verbose
 export LC_ALL=C
 
 tool_test_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
-DET="${tool_test_dir}/../../bin/pre-push-detect"
+DET="${tool_test_dir}/../../bin/dist-ai-style"
 if [ ! -x "${DET}" ]; then
-   DET='/usr/bin/pre-push-detect'
+   DET='/usr/bin/dist-ai-style'
 fi
 for prereq in python3 shfmt ; do
    if ! type -P "${prereq}" >/dev/null 2>&1 ; then
@@ -48,7 +48,7 @@ note_fail() { printf '%s\n' "FAIL: ${1}" >&2 ; fail=$(( fail + 1 )) ; }
 output=""
 run_det() {
    printf '%s\n' "$1" > "${test_dir}/subject.sh"
-   output="$("${DET}" "${test_dir}/subject.sh" 2>/dev/null || true)"
+   output="$("${DET}" --detect "${test_dir}/subject.sh" 2>/dev/null || true)"
 }
 ## True if RULE is reported at LINE.
 at_line() {
@@ -166,7 +166,7 @@ run_det_at() {
    local f="${test_dir}/$1"
    mkdir --parents -- "$(dirname -- "${f}")"
    printf '%s\n' "$2" > "${f}"
-   output="$("${DET}" "${f}" 2>/dev/null || true)"
+   output="$("${DET}" --detect "${f}" 2>/dev/null || true)"
 }
 
 ## --- gate-BYPASS / gate-BLINDING regressions (ai-review findings) ------------
@@ -179,7 +179,7 @@ assert_at "R-120 sees rm past 'sudo -u www-data'"                "R-120" 3
 ## CRLF: a comment-tail backslash must still be neutralized so the next command
 ## is not swallowed (a '\r' left on the line would defeat the backslash strip).
 printf '%b' '#!/bin/bash\r\n# c \\\r\nrm -rf /x\r\n' > "${test_dir}/crlf.sh"
-output="$("${DET}" "${test_dir}/crlf.sh" 2>/dev/null || true)"
+output="$("${DET}" --detect "${test_dir}/crlf.sh" 2>/dev/null || true)"
 assert_at "R-120 not blinded by a CRLF comment-tail backslash" "R-120" 3
 
 ## --- config-hosted embedded shell: R-191/192/194/195/100 --------------------
@@ -269,6 +269,15 @@ assert_at     "R-213 flags a quoted 'false' value"             "R-213" 5
 assert_not_at "R-213 spares a longer variable name"            "R-213" 6
 assert_not_at "R-213 spares make_use_lintian=true"             "R-213" 7
 assert_not_at "R-213 spares a quoted mention in a string"      "R-213" 8
+
+## 'export'/'declare make_use_lintian=false' is a DeclClause, not a CallExpr
+## Assign -- the rule must scan both. Canary: FAILs on CallExpr-only detection.
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'export make_use_lintian=false' \
+   'declare make_use_lintian=false')"
+assert_at "R-213 flags 'export make_use_lintian=false' (DeclClause)" "R-213" 2
+assert_at "R-213 flags 'declare make_use_lintian=false' (DeclClause)" "R-213" 3
 
 ## R-213 waiver silences it.
 run_det "$(printf '%s\n' \
@@ -396,14 +405,36 @@ run_det "$(printf '%s\n' \
    'printf -v "${n}" "%s" "x"')"
 assert_not_at "R-063 respects the allow-unchecked-printf-v waiver" "R-063" 3
 
+## R-063 sees an ESCAPED '-v' option: '\-v' is '-v' after bash unquoted escape
+## removal, so the option scan must de-escape it -- else a dynamic target hidden
+## behind '\-v' bypasses the injection guard. Canary: FAILS on the pre-de-escape
+## detector, which read the shfmt Lit '\-v' verbatim and stopped option scanning.
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'unguarded() {' \
+   '  printf \-v "${m}" "%s" "y"' \
+   '}')"
+assert_at "R-063 flags an escaped \\-v printf target (de-escaped to -v)" "R-063" 3
+
+## A command substitution in the target NAME is never made safe by a guard
+## (bash runs it evaluating the array subscript), so a name mixing a CHECKED
+## param with a '$(...)' must still flag. Canary: FAILs on param-coverage-only.
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'f() {' \
+   '  check_variable_name v || return 1' \
+   '  printf -v "a[$v$(id)]" "%s" x' \
+   '}')"
+assert_at "R-063 flags a checked-param + command-substitution target" "R-063" 4
+
 ## Self-test the FAIL gate: a forced failure must make the script exit non-zero.
 if [ -n "${TEST_SELFCHECK_FAIL_GATE:-}" ]; then
    note_fail "self-test forced failure"
 fi
 
 if [ "${fail}" -ne 0 ]; then
-   printf '%s\n' "pre-push-detect: ${passc} pass, ${fail} fail, 0 skip -- FAILURES above." >&2
+   printf '%s\n' "dist-ai-style --detect: ${passc} pass, ${fail} fail, 0 skip -- FAILURES above." >&2
    exit 1
 fi
-printf '%s\n' "pre-push-detect: ${passc} pass, 0 fail, 0 skip -- all assertions passed."
+printf '%s\n' "dist-ai-style --detect: ${passc} pass, 0 fail, 0 skip -- all assertions passed."
 exit 0

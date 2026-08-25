@@ -5,7 +5,7 @@
 
 """Real bash parsing for the style tooling, via 'shfmt --to-json'.
 
-The style gate (pre-push-static) and the auto-fixer (pre-push-fix) need to answer
+The style rules (both detect and fix, via dist-ai-style) need to answer
 STRUCTURAL questions about shell: is this token a command, or data inside a
 string / heredoc / array? A regex cannot answer that, and hand-rolling a
 quote/brace/heredoc state machine is the recurring trap the style guide forbids.

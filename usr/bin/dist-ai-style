@@ -1,0 +1,31 @@
+#!/usr/bin/python3
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+"""The one style tool. Three modes:
+  dist-ai-style [--check] FILE...|--staged   fix-then-check (default) / read-only
+  dist-ai-style --fix   [--check] ...        apply (or report) the fixes
+  dist-ai-style --detect FILE...             emit US-delimited findings (machine)
+
+Default is fix-then-check -- the safe path is the DEFAULT, not a flag to
+remember, so the command the model reaches for never leaves a mechanical
+violation for it to hand-fix."""
+
+import os
+import sys
+
+## Self-locate the shared library so this runs from a checkout with no env wiring
+## (the safe path is the DEFAULT), and harmlessly when installed under /usr.
+_LIB = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+    "lib", "python3", "dist-packages")
+if os.path.isdir(_LIB) and _LIB not in sys.path:
+    sys.path.insert(0, _LIB)
+
+from dist_ai import cli  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(cli.main(sys.argv))

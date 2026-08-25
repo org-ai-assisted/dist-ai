@@ -22,10 +22,11 @@ shopt -s shift_verbose
 export LC_ALL=C
 
 tool_test_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
-DET="${tool_test_dir}/../../bin/pre-push-detect"
-[ -x "${DET}" ] || DET='/usr/bin/pre-push-detect'
-FIX="${tool_test_dir}/../../bin/pre-push-fix"
-[ -x "${FIX}" ] || FIX='/usr/bin/pre-push-fix'
+STYLE="${tool_test_dir}/../../bin/dist-ai-style"
+[ -x "${STYLE}" ] || STYLE='/usr/bin/dist-ai-style'
+## The detector and fixer are modes of the one tool.
+run_det() { "${STYLE}" --detect "$@"; }
+run_fix() { "${STYLE}" --fix "$@"; }
 GATE="${tool_test_dir}/../../bin/pre-push-static"
 [ -x "${GATE}" ] || GATE='/usr/bin/pre-push-static'
 for prereq in shfmt python3 safe-rm shellcheck ; do
@@ -51,7 +52,7 @@ printf '%s\n' '#!/bin/bash' 'rm -rf /x' > "${test_dir}/tree/sub/bad.sh"
 printf '%s\n' 'plain text, not shell' > "${test_dir}/tree/notes.txt"
 
 ## --- detector: directory recurses, finds the nested violation ---------------
-out="$("${DET}" "${test_dir}/tree" 2>/dev/null || true)"
+out="$(run_det "${test_dir}/tree" 2>/dev/null || true)"
 if grep --quiet --fixed-strings 'R-120' <<< "${out}"; then
    note_pass "detector recurses a directory and flags a nested file"
 else
@@ -59,7 +60,7 @@ else
 fi
 
 ## --- detector: a missing path is a loud error, not a silent pass ------------
-rc=0; "${DET}" "${test_dir}/no-such" >/dev/null 2>&1 || rc=$?
+rc=0; run_det "${test_dir}/no-such" >/dev/null 2>&1 || rc=$?
 if [ "${rc}" -eq 2 ]; then
    note_pass "detector errors (exit 2) on a missing path"
 else
@@ -69,13 +70,13 @@ fi
 ## --- fixer: directory recurses ('--check' non-zero on a fixable nested file)-
 printf '%s\n' '#!/bin/bash' 'grep -q x /dev/null || true' \
    > "${test_dir}/tree/sub/fixable.sh"
-rc=0; "${FIX}" --check "${test_dir}/tree" >/dev/null 2>&1 || rc=$?
+rc=0; run_fix --check "${test_dir}/tree" >/dev/null 2>&1 || rc=$?
 if [ "${rc}" -eq 1 ]; then
    note_pass "fixer recurses a directory (--check finds a nested fixable file)"
 else
    note_fail "fixer did not recurse the directory (rc=${rc})"
 fi
-rc=0; "${FIX}" --check "${test_dir}/no-such" >/dev/null 2>&1 || rc=$?
+rc=0; run_fix --check "${test_dir}/no-such" >/dev/null 2>&1 || rc=$?
 if [ "${rc}" -eq 2 ]; then
    note_pass "fixer errors (exit 2) on a missing path"
 else
@@ -103,8 +104,8 @@ fi
 mkdir --parents -- "${test_dir}/crash"
 cp -- "${GATE}" "${test_dir}/crash/pre-push-static"
 printf '%s\n' '#!/bin/bash' 'printf "boom\n" >&2' 'exit 3' \
-   > "${test_dir}/crash/pre-push-detect"
-chmod +x -- "${test_dir}/crash/pre-push-detect"
+   > "${test_dir}/crash/dist-ai-style"
+chmod +x -- "${test_dir}/crash/dist-ai-style"
 printf '%s\n' '#!/bin/bash' 'set -o errexit' 'true' \
    > "${test_dir}/crash/subject.sh"
 crash_out="$("${test_dir}/crash/pre-push-static" --files -- \
