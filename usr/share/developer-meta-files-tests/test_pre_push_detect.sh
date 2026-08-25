@@ -462,6 +462,19 @@ if grep --quiet --fixed-strings -- 'R-001' <<< "${output}"; then
 else
    note_pass "R-001 spares a clean ASCII commit message"
 fi
+## A file waiver ('## style-ok: allow-non-ascii') that happens to appear in the
+## MESSAGE must NOT suppress R-001 there -- a message is not a file. Canary: the
+## message context decoded source, so has_waiver honored the in-message waiver
+## and dropped the finding.
+printf '%b' 'subj\n\n## style-ok: allow-non-ascii\nbody caf\303\251\n' \
+   > "${test_dir}/msg-waiver"
+output="$("${DET}" --detect --message-file "${test_dir}/msg-waiver" 2>/dev/null || true)"
+if grep --quiet --fixed-strings -- 'R-001' <<< "${output}"; then
+   note_pass "commit-message R-001 ignores an in-message allow-non-ascii waiver"
+else
+   note_fail "an in-message allow-non-ascii waiver suppressed commit-message R-001"
+   printf '%s\n' "${output}" >&2
+fi
 
 ## Self-test the FAIL gate: a forced failure must make the script exit non-zero.
 if [ -n "${TEST_SELFCHECK_FAIL_GATE:-}" ]; then

@@ -56,11 +56,12 @@ def detect_message(raw, path="(commit message)"):
     apply. Line numbers are within the message. The same Confusables rule the
     files use, over the RAW bytes, so a non-ASCII byte is caught whether or not
     the message decodes as UTF-8 (the bash grep worked on bytes)."""
-    try:
-        source = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        source = None
-    ctx = ctxmod.FileContext(path, source, raw=raw)
+    ## No source: detection reads the RAW bytes, and leaving source unset stops a
+    ## file waiver ('## style-ok: allow-non-ascii') that happens to appear IN the
+    ## message from suppressing R-001 there -- a message is not a file and the
+    ## bash gate honored no such waiver on it. has_waiver reads source, so a
+    ## None source means the message can never waive itself.
+    ctx = ctxmod.FileContext(path, None, raw=raw)
     ctx._binary = False  ## a message is never a .gitattributes-binary blob
     findings = []
     for rule in ruleset.MESSAGE_RULES:
