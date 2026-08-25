@@ -252,6 +252,23 @@ run_det "$(printf '%s\n' '#!/bin/bash' \
    'foo || exit 77  ## style-ok: allow-skip')"
 assert_at "R-220 rejects a reasonless 'allow-skip'" "R-220" 2
 
+## --- quote-aware loopholes (ai-review): a quoted arg is the same command -----
+## R-220: 'exit "77"' is the same skip as 'exit 77'.
+run_det "$(printf '%s\n' '#!/bin/bash' 'foo || exit "77"')"
+assert_at "R-220 flags a quoted 'exit \"77\"'" "R-220" 2
+## R-090: '-pv' / '-p -v' clusters are still 'command -v'.
+run_det "$(printf '%s\n' '#!/bin/bash' 'command -pv foo' 'command -p -v bar')"
+assert_at "R-090 flags a 'command -pv' cluster"   "R-090" 2
+assert_at "R-090 flags a 'command -p -v' split"   "R-090" 3
+## R-102: an option before the script ('bash -x build.sh') still prepends an
+## interpreter; a '-c' program does NOT (that is R-192's inline-program case).
+run_det "$(printf '%s\n' '#!/bin/bash' 'bash -x ci/build.sh' 'bash -c "echo hi"')"
+assert_at     "R-102 flags 'bash -x <script>'"       "R-102" 2
+assert_not_at "R-102 spares 'bash -c <program>'"     "R-102" 3
+## R-211 (advisory): a quoted state action is still state-changing.
+run_det "$(printf '%s\n' '#!/bin/bash' 'dpkg "--install" pkg.deb')"
+assert_at "R-211 flags a quoted 'dpkg \"--install\"'" "R-211" 2
+
 ## --- R-212 allow-downgrades: real argument vs quoted mention ----------------
 ## The legacy regex went false-NEGATIVE when any quote appeared earlier on the
 ## line; the AST reads --allow-downgrades as a real argument word regardless.

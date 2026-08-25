@@ -722,7 +722,7 @@ suite_component() {
       developer-meta-files|github-org-tools|dm-virtualbox-wiki-links)
          printf '%s' 'developer-meta-files'
          ;;
-      dm-help-steps|dm-package-depends|dm-reprepro-tracking|dm-reproducible-build|dm-grub-smbios)
+      dm-help-steps|dm-package-depends|dm-reprepro-tracking|dm-reproducible-build|dm-grub-smbios|dm-image-boot)
          printf '%s' 'derivative-maker'
          ;;
       dist-installer-cli)
@@ -1135,10 +1135,13 @@ if [ "${#skip_suites[@]}" -gt 0 ]; then
       if [ "${skip_this}" = "false" ]; then
          filtered+=( "${item}" )
       else
-         ## Announce it. A dropped suite that emits no line and no counter makes
-         ## the summary byte-identical in shape to a full green run, so two
-         ## PR-gating suites could be removed invisibly.
-         emit "$( printf '%-38s %-12s %s' "${suite}" "[${item%%:*}]" 'SKIPPED-BY-REQUEST' )"
+         ## Announce it (but not in --list, whose output is machine-readable
+         ## 'category:suite' lines only). A dropped suite that emits no line and
+         ## no counter makes the summary byte-identical in shape to a full green
+         ## run, so two PR-gating suites could be removed invisibly.
+         if [ "${list_only}" != "true" ]; then
+            emit "$( printf '%-38s %-12s %s' "${suite}" "[${item%%:*}]" 'SKIPPED-BY-REQUEST' )"
+         fi
          requested_skip_count=$(( requested_skip_count + 1 ))
       fi
    done

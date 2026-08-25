@@ -42,11 +42,16 @@ class CommandV(Rule):
         for call in bash_ast.call_exprs(ctx.tree):
             if bash_ast.command_name(call) != "command":
                 continue
-            first = bash_ast.args(call)[1:2]
-            ## word_string (quote-aware), not word_lit: 'command "-v" foo' IS
-            ## 'command -v foo'. Declining quoted words is the rewriters' concern.
-            if first and bash_ast.word_string(first[0]) == "-v":
-                yield _fail(ctx, "R-090", "R-090 command -v", call)
+            ## Any short-option run carrying 'v' is the 'command -v' describe
+            ## mode: '-v', '-pv', '-p -v'. word_string (quote-aware): 'command
+            ## "-v" foo' counts too. Stop at the first non-option (the name).
+            for word in bash_ast.args(call)[1:]:
+                opt = bash_ast.word_string(word)
+                if opt is None or not opt.startswith("-"):
+                    break
+                if not opt.startswith("--") and "v" in opt[1:]:
+                    yield _fail(ctx, "R-090", "R-090 command -v", call)
+                    break
 
 
 class Exec(Rule):
@@ -624,7 +629,9 @@ class UnauthorizedSkip(Rule):
             if bash_ast.command_name(call) not in ("exit", "return"):
                 continue
             call_args = bash_ast.args(call)
-            if len(call_args) < 2 or bash_ast.word_lit(call_args[1]) != "77":
+            ## word_string (quote-aware): 'exit "77"' / 'return "77"' are the
+            ## same skip as 'exit 77' and must not slip the guard.
+            if len(call_args) < 2 or bash_ast.word_string(call_args[1]) != "77":
                 continue
             line = call["Pos"]["Line"]
             here = lines[line - 1] if 0 <= line - 1 < len(lines) else ""
@@ -696,11 +703,12 @@ class Dpkg(Rule):
             start = 1
             if wrapped:
                 for index in range(1, len(args_after)):
-                    if bash_ast.word_lit(args_after[index]) == "dpkg":
+                    if bash_ast.word_string(args_after[index]) == "dpkg":
                         start = index + 1
                         break
+            ## word_string (quote-aware): 'dpkg "--install" pkg' is state-changing.
             state_changing = any(
-                bash_ast.word_lit(word) in DPKG_STATE_ACTIONS
+                bash_ast.word_string(word) in DPKG_STATE_ACTIONS
                 for word in args_after[start:])
             if state_changing:
                 line = call["Pos"]["Line"]
@@ -1030,6 +1038,8 @@ class InterpreterPrepend(Rule):
 
     id = "R-102"
     _SCRIPT_EXT = (".sh", ".bsh", ".bash")
+    ## Long options whose VALUE is the next word (a config path, not the script).
+    _VALUE_OPTS = frozenset({"--rcfile", "--init-file"})
 
     def applies(self, ctx):
         return super().applies(ctx)
@@ -1038,13 +1048,30 @@ class InterpreterPrepend(Rule):
         for call in bash_ast.call_exprs(ctx.tree):
             if bash_ast.command_name(call) not in ("bash", "sh"):
                 continue
-            call_args = bash_ast.args(call)
-            if len(call_args) < 2:
-                continue
-            operand = bash_ast.word_string(call_args[1])
-            if operand is None or operand.startswith("-"):
-                continue  ## a variable/expanded operand, or a flag -> spared
-            if operand.endswith(self._SCRIPT_EXT) or "/" in operand:
+            ## Skip leading OPTIONS to reach the script operand, so 'bash -x
+            ## build.sh' is caught, not just 'bash build.sh'. A '-c'-bearing
+            ## short cluster ('-c', '-lc') means the next word is an inline
+            ## PROGRAM (R-192), not a script -> spare the whole call.
+            script = None
+            skip_next = False
+            for word in bash_ast.args(call)[1:]:
+                operand = bash_ast.word_string(word)
+                if operand is None:
+                    break  ## a variable/expanded operand -> spared
+                if skip_next:
+                    skip_next = False
+                    continue
+                if operand.startswith("-"):
+                    if not operand.startswith("--") and "c" in operand[1:]:
+                        script = None
+                        break
+                    if operand in self._VALUE_OPTS:
+                        skip_next = True
+                    continue
+                script = operand
+                break
+            if script is not None and (
+                    script.endswith(self._SCRIPT_EXT) or "/" in script):
                 yield _fail(ctx, "R-102",
                             "R-102 interpreter prepend (use shebang)", call)
 

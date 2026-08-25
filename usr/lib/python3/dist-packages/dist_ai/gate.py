@@ -14,6 +14,7 @@ like a per-file one. base_cwd is the repo root (paths are repo-relative there)."
 import collections
 import os
 import re
+import shutil
 import subprocess
 
 from dist_ai import engine
@@ -171,6 +172,36 @@ def check_message(base_ref, staged_mode, message_file, base_cwd):
         capture_output=True, cwd=base_cwd)
     if proc.stdout:
         yield from engine.detect_message(proc.stdout)
+
+
+_SHELL_EXT = (".sh", ".bsh", ".bash")
+_SHELL_SHEBANG = re.compile(r"^#!.*\b(?:ba|da)?sh\b")
+
+
+def _is_shell_file(abspath, name):
+    if name.endswith(_SHELL_EXT):
+        return True
+    try:
+        with open(abspath, encoding="utf-8", errors="replace") as handle:
+            return bool(_SHELL_SHEBANG.match(handle.readline()))
+    except OSError:
+        return False
+
+
+def check_untracked(base_cwd):
+    """Advisory NOTE for each UNTRACKED shell file -- a new script not yet 'git
+    add'ed is invisible to the staged/range set, so the gate would silently not
+    check it. Naming it turns a forgotten 'git add' from a silent gap into a
+    visible note. Never a FAIL (an untracked file is not part of this change)."""
+    out = _git(["ls-files", "--others", "--exclude-standard"], base_cwd)
+    if out.returncode != 0:
+        return
+    for name in out.stdout.split("\n"):
+        if name and _is_shell_file(os.path.join(base_cwd, name), name):
+            yield model.note(
+                "untracked",
+                "untracked shell file NOT checked -- 'git add' it to gate it: "
+                "'%s'" % name, name)
 
 
 def _find_comments_audit(tool_dir):

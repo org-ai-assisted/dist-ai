@@ -194,12 +194,6 @@ def is_paraphrase(comment_text, code_line):
     return overlap >= max(2, len(content_tokens) // 2)
 
 
-def is_skip_path(path):
-    parts = path.split(os.sep)
-    skip_dirs = {".git", "node_modules", "fixtures", "tests", "_temp"}
-    return any(p in skip_dirs for p in parts)
-
-
 def audit_file(path, findings):
     try:
         with open(path) as f:
@@ -259,9 +253,11 @@ def audit_file(path, findings):
 def walk(repo_root):
     findings = []
     for dirpath, dirnames, filenames in os.walk(repo_root):
-        ## Prune skip-dirs in-place so we don't descend into them.
+        ## Prune skip-dirs in-place so we don't descend into them. tests/ and
+        ## _temp/ carry fixture/explanatory comments the R-151 heuristic
+        ## false-flags; the gate's --files mode still audits a CHANGED test file.
         dirnames[:] = [d for d in dirnames if d not in
-                       (".git", "node_modules", "fixtures")]
+                       (".git", "node_modules", "fixtures", "tests", "_temp")]
         for name in filenames:
             full = os.path.join(dirpath, name)
             audit_file(full, findings)
