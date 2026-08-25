@@ -16,13 +16,16 @@ required tool (shfmt) absent; 3 an unexpected crash in --detect (so a caller
 never mistakes a crash for 'no findings')."""
 
 import argparse
+import os
 import sys
 import traceback
 
 from dist_ai import bash_ast
 from dist_ai import engine
+from dist_ai import gate
 from dist_ai import gitdiff
 from dist_ai import model
+from dist_ai import precommit
 
 US = "\x1f"
 
@@ -135,60 +138,182 @@ def fix_main(argv, prog="dist-ai-style --fix"):
     return 0
 
 
-def style_main(argv, prog="dist-ai-style"):
-    """The unified front. Default: fix-then-check -- apply the mechanical fixes,
-    print what changed, then report the residual violations. --check: read-only
-    (no writes), report every violation."""
-    parser = argparse.ArgumentParser(prog=prog, add_help=True)
-    parser.add_argument("--check", action="store_true",
-                        help="read-only: report violations, do not fix")
-    parser.add_argument("--staged", action="store_true",
-                        help="operate on the repo's staged files")
-    parser.add_argument("files", nargs="*")
-    args = parser.parse_args(argv[1:])
-    if not args.files and not args.staged:
-        print("usage: %s [--check] [--staged] <file|dir>..." % prog,
-              file=sys.stderr)
-        return 2
-    contexts, code = _load(args.files, args.staged, prog)
-    if contexts is None:
-        return code
+def _print_finding(prog, finding):
+    """Render one Finding through the gate's own voice. FAIL carries a
+    'path:line' locator; a NOTE is advisory (never fails the gate)."""
+    if finding.severity == model.FAIL:
+        if finding.path is not None and finding.line is not None:
+            print("%s: FAIL %s: '%s:%s'" % (
+                prog, finding.message, finding.path, finding.line),
+                file=sys.stderr)
+        elif finding.path is not None:
+            print("%s: FAIL %s: '%s'" % (prog, finding.message, finding.path),
+                  file=sys.stderr)
+        else:
+            print("%s: FAIL %s" % (prog, finding.message), file=sys.stderr)
+    else:
+        print("%s: %s" % (prog, finding.message), file=sys.stderr)
 
-    ## Fix first (unless read-only), then re-read from disk so the detect pass
-    ## judges the FIXED file -- the residual is exactly what a human must fix.
-    if not args.check:
-        for ctx in contexts:
-            try:
-                changes = engine.apply_fixes(ctx, check=False)
-            except bash_ast.ShfmtMissing as exc:
-                print("%s: shfmt is required but unavailable: %s" % (prog, exc),
-                      file=sys.stderr)
-                return 2
-            if changes:
-                _fix_summary(prog, ctx.path, changes, check=False)
-        contexts, code = _load(args.files, args.staged, prog)
-        if contexts is None:
-            return code
 
+def _detect_contexts(contexts, prog):
+    """Run the per-file rules (AST + text + external) over CONTEXTS, printing
+    each finding. Returns (any_fail, error_code): error_code is set only when
+    shfmt is absent (exit 2)."""
     any_fail = False
     for ctx in contexts:
         try:
-            ## The human front is authoritative, so it also runs the external
-            ## checks (bash -n, shellcheck) the machine --detect channel omits.
             findings = engine.detect(ctx, include_text=True,
                                      include_external=True)
         except bash_ast.ShfmtMissing as exc:
             print("%s: shfmt is required but unavailable: %s" % (prog, exc),
                   file=sys.stderr)
-            return 2
+            return any_fail, 2
         for finding in findings:
             if finding.severity == model.FAIL:
                 any_fail = True
-                print("%s: FAIL %s: '%s:%s'" % (
-                    prog, finding.message, finding.path, finding.line),
-                    file=sys.stderr)
-            else:
-                print("%s: %s" % (prog, finding.message), file=sys.stderr)
+            _print_finding(prog, finding)
+    return any_fail, None
+
+
+def _fix_contexts(contexts, prog):
+    """Apply the mechanical fixes over CONTEXTS in place, printing a summary per
+    changed file. Returns an error_code only when shfmt is absent (exit 2)."""
+    for ctx in contexts:
+        try:
+            changes = engine.apply_fixes(ctx, check=False)
+        except bash_ast.ShfmtMissing as exc:
+            print("%s: shfmt is required but unavailable: %s" % (prog, exc),
+                  file=sys.stderr)
+            return 2
+        if changes:
+            _fix_summary(prog, ctx.path, changes, check=False)
+    return None
+
+
+def _enumerate(args, prog):
+    """Resolve the mode to (pairs, names, base_ref, base_cwd, staged_mode) or an
+    (None, error_code). names is the FULL changed-path list (for the batch
+    checks -- symlinks and binaries the per-file engine skips still count);
+    base_cwd is the repo root for a git mode, else None."""
+    ## Git modes judge a range / the index and drive the repo-level batch;
+    ## direct file mode is the per-file linter only.
+    if args.staged:
+        pathspecs = args.files if args.paths else None
+        try:
+            pairs = gitdiff.staged_pairs(all_tracked=args.all,
+                                         pathspecs=pathspecs)
+        except gitdiff.StagedDiscoveryError as exc:
+            print("%s: could not list staged files: %s" % (prog, exc),
+                  file=sys.stderr)
+            return None, 2
+        return (pairs, [rel for _, rel in pairs], "HEAD",
+                gitdiff._repo_root(), True), None
+    if args.range is not None:
+        try:
+            gitdiff.resolve_base(args.range)
+        except gitdiff.BaseRefError as exc:
+            print("%s: cannot resolve base ref '%s'. Pass a base, e.g. "
+                  "'origin/master'." % (prog, exc), file=sys.stderr)
+            return None, 2
+        try:
+            pairs = gitdiff.range_pairs(args.range)
+        except gitdiff.StagedDiscoveryError as exc:
+            print("%s: could not list changed files: %s" % (prog, exc),
+                  file=sys.stderr)
+            return None, 2
+        return (pairs, [rel for _, rel in pairs], args.range,
+                gitdiff._repo_root(), False), None
+    ## Direct file mode.
+    try:
+        pairs = gitdiff.given_pairs(args.files)
+    except FileNotFoundError as exc:
+        print("%s: no such path: %s" % (prog, exc), file=sys.stderr)
+        return None, 2
+    return (pairs, [rel for _, rel in pairs], None, None, False), None
+
+
+def _batch_findings(names, base_ref, staged_mode, base_cwd, message_file,
+                    tool_dir):
+    """The repo-level checks that judge the whole changed set / range: the
+    pre-commit-hooks batch, the changelog convention, the commit-message floor,
+    and the advisory comment audit. Yields Findings."""
+    yield from precommit.run(names, base_ref, staged_mode, base_cwd)
+    if staged_mode:
+        yield from gate.check_changelog_staged(names, message_file, base_cwd)
+    else:
+        yield from gate.check_changelog_range(base_ref, base_cwd)
+    yield from gate.check_message(base_ref, staged_mode, message_file, base_cwd)
+    yield from gate.comments_audit(names, base_cwd, tool_dir)
+
+
+def style_main(argv, prog="dist-ai-style"):
+    """The unified front. Default: fix-then-check -- apply the mechanical fixes,
+    print what changed, then report the residual. --check: read-only.
+
+    Direct file mode runs the per-file rules only. A git mode (--staged /
+    --range) additionally drives the repo-level batch (pre-commit-hooks,
+    changelog, commit message, comment audit) -- so it is a drop-in for the old
+    pre-push-static gate."""
+    parser = argparse.ArgumentParser(prog=prog, add_help=True)
+    parser.add_argument("--check", action="store_true",
+                        help="read-only: report violations, do not fix")
+    parser.add_argument("--staged", action="store_true",
+                        help="gate the repo's staged index (or --all: the "
+                             "working tree vs HEAD)")
+    parser.add_argument("--all", action="store_true",
+                        help="with --staged: all tracked modifications vs HEAD")
+    parser.add_argument("--paths", action="store_true",
+                        help="with --staged: treat the positionals as "
+                             "pathspecs restricting the staged set")
+    parser.add_argument("--range", metavar="BASE",
+                        help="gate the files changed in BASE...HEAD")
+    parser.add_argument("--message-file",
+                        help="the pending commit message, for the R-001 / "
+                             "changelog-trailer checks")
+    parser.add_argument("files", nargs="*")
+    args = parser.parse_args(argv[1:])
+
+    if args.staged and args.range is not None:
+        print("%s: --staged and --range are mutually exclusive" % prog,
+              file=sys.stderr)
+        return 2
+    if args.all and not args.staged:
+        print("%s: --all only applies with --staged" % prog, file=sys.stderr)
+        return 2
+    if args.paths and not args.staged:
+        print("%s: --paths only applies with --staged" % prog, file=sys.stderr)
+        return 2
+    if not args.files and not args.staged and args.range is None:
+        print("usage: %s [--check] [--staged [--all] [--paths]] "
+              "[--range BASE] [--message-file MSG] <file|dir>..." % prog,
+              file=sys.stderr)
+        return 2
+
+    enumerated, code = _enumerate(args, prog)
+    if enumerated is None:
+        return code
+    pairs, names, base_ref, base_cwd, staged_mode = enumerated
+    git_mode = args.staged or args.range is not None
+
+    ## Fix first (unless read-only), then re-read so the detect pass judges the
+    ## FIXED file -- the residual is exactly what a human must fix.
+    if not args.check:
+        code = _fix_contexts(gitdiff.contexts(pairs), prog)
+        if code is not None:
+            return code
+
+    any_fail, code = _detect_contexts(gitdiff.contexts(pairs), prog)
+    if code is not None:
+        return code
+
+    if git_mode:
+        tool_dir = os.path.dirname(os.path.realpath(sys.argv[0]))
+        for finding in _batch_findings(names, base_ref, staged_mode, base_cwd,
+                                       args.message_file, tool_dir):
+            if finding.severity == model.FAIL:
+                any_fail = True
+            _print_finding(prog, finding)
+
     return 1 if any_fail else 0
 
 
