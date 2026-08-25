@@ -25,9 +25,9 @@ shopt -s shift_verbose
 export LC_ALL=C
 
 tool_test_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
-GATE="${tool_test_dir}/../../bin/pre-push-static"
+GATE="${tool_test_dir}/../../bin/dist-ai-style"
 if [ ! -x "${GATE}" ]; then
-   GATE='/usr/bin/pre-push-static'
+   GATE='/usr/bin/dist-ai-style'
 fi
 if [ ! -x "${GATE}" ]; then
    printf '%s\n' "FATAL: pre-push-static not found (looked at '${GATE}')." >&2
@@ -109,7 +109,7 @@ printf '%s' "${unsorted}" > "${repo}/claude/settings.json"
 gitc add --all
 gitc commit --quiet --message "settings"
 rc=0
-out="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || rc=$?
+out="$( cd -- "${repo}" && "${GATE}" --check --range "${base_sha}" 2>&1 )" || rc=$?
 if [ "${rc}" -eq 0 ] \
    && grep --quiet --fixed-strings "pretty-format-json skipped: 'claude/settings.json'" <<< "${out}" \
    && ! grep --quiet --fixed-strings 'FAIL pretty-format-json' <<< "${out}" ; then
@@ -123,7 +123,7 @@ printf '%s' "${unsorted}" > "${repo}/.claude/settings.json"
 gitc add --all
 gitc commit --quiet --message "hidden settings"
 rc=0
-out="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || rc=$?
+out="$( cd -- "${repo}" && "${GATE}" --check --range "${base_sha}" 2>&1 )" || rc=$?
 if [ "${rc}" -eq 0 ] \
    && grep --quiet --fixed-strings "pretty-format-json skipped: '.claude/settings.json'" <<< "${out}" ; then
    note_pass "the hidden .claude/settings.json spelling is exempted too"
@@ -136,7 +136,7 @@ printf '%s' "${unsorted}" > "${repo}/data/other.json"
 gitc add --all
 gitc commit --quiet --message "other json"
 rc=0
-out="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || rc=$?
+out="$( cd -- "${repo}" && "${GATE}" --check --range "${base_sha}" 2>&1 )" || rc=$?
 if [ "${rc}" -ne 0 ] && grep --quiet --fixed-strings 'FAIL pretty-format-json' <<< "${out}" ; then
    note_pass "a non-settings JSON is NOT exempted (pretty-format-json still fails it)"
 else
@@ -156,7 +156,7 @@ git -C "${repo3}" -c core.hooksPath=/dev/null add --all
 git -C "${repo3}" -c core.hooksPath=/dev/null -c user.name=test -c user.email=test@example.com \
    commit --quiet --message "myclaude"
 rc=0
-out="$( cd -- "${repo3}" && "${GATE}" "${base3}" 2>&1 )" || rc=$?
+out="$( cd -- "${repo3}" && "${GATE}" --check --range "${base3}" 2>&1 )" || rc=$?
 if [ "${rc}" -ne 0 ] && grep --quiet --fixed-strings 'FAIL pretty-format-json' <<< "${out}" ; then
    note_pass "myclaude/settings.json is NOT exempted (component-anchored, not a suffix match)"
 else
@@ -180,7 +180,7 @@ git -C "${repo2}" -c core.hooksPath=/dev/null add --all
 git -C "${repo2}" -c core.hooksPath=/dev/null -c user.name=test -c user.email=test@example.com \
    commit --quiet --message "broken settings"
 rc=0
-out="$( cd -- "${repo2}" && "${GATE}" "${base2}" 2>&1 )" || rc=$?
+out="$( cd -- "${repo2}" && "${GATE}" --check --range "${base2}" 2>&1 )" || rc=$?
 ## Require FAIL check-json AND the ABSENCE of FAIL pretty-format-json: the formatter must stay
 ## skipped for the exempt file even when it is invalid. Without the absence check, a broken
 ## exemption (formatter run on settings.json) would emit BOTH failures and still pass here.

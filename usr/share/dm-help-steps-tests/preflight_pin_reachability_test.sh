@@ -48,14 +48,14 @@ if [ -z "${subject}" ]; then
 fi
 
 ## dm-preflight fails a tree whose static gate it cannot run, so these cases need
-## pre-push-static reachable -- present in the checkout but not on PATH in CI.
+## dist-ai-style reachable -- present in the checkout but not on PATH in CI.
 gate_bin_dir="$( cd -- "${test_dir}/../../bin" 2>/dev/null && pwd || true )"
-if [ -n "${gate_bin_dir}" ] && [ -x "${gate_bin_dir}/pre-push-static" ]; then
+if [ -n "${gate_bin_dir}" ] && [ -x "${gate_bin_dir}/dist-ai-style" ]; then
    PATH="${gate_bin_dir}:${PATH}"
    export PATH
 fi
-if ! type -P pre-push-static >/dev/null; then
-   printf '%s\n' "FATAL: pre-push-static not reachable; dm-preflight cannot complete a run." >&2
+if ! type -P dist-ai-style >/dev/null; then
+   printf '%s\n' "FATAL: dist-ai-style not reachable; dm-preflight cannot complete a run." >&2
    exit 1
 fi
 

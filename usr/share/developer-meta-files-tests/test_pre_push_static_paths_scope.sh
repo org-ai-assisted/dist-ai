@@ -35,17 +35,22 @@ export LC_ALL=C
 ## A bare 'pre-push-static' would take the INSTALLED copy, so a developer
 ## editing the in-tree gate would be testing the packaged one.
 gate_test_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
-GATE="${gate_test_dir}/../../bin/pre-push-static"
+GATE="${gate_test_dir}/../../bin/dist-ai-style"
 if [ ! -x "${GATE}" ]; then
-   GATE='/usr/bin/pre-push-static'
+   GATE='/usr/bin/dist-ai-style'
 fi
 
 if [ ! -x "${GATE}" ]; then
-   printf '%s\n' "FATAL: no pre-push-static to test" >&2
+   printf '%s\n' "FATAL: no dist-ai-style to test" >&2
    exit 1
 fi
 
-if ! grep --quiet --fixed-strings -- '--paths' "${GATE}"; then
+## Probe the option via --help (the bin is a thin wrapper; the flag lives in the
+## Python cli, not the file), so a gate without --paths fails loud, not silent.
+## Capture first, then grep -- a 'grep -q' consuming a pipe would SIGPIPE the
+## producer (R-161).
+help_text="$("${GATE}" --help 2>&1)"
+if ! grep --quiet --fixed-strings -- '--paths' <<< "${help_text}"; then
    printf '%s\n' "FATAL: '${GATE}' has no --paths option" >&2
    printf '%s\n' "the cases below would all report the same verdict and prove nothing" >&2
    exit 1
@@ -117,7 +122,7 @@ git -C "${repo}" -c core.hooksPath=/dev/null add --all
 ## does not, the fixture is not violating anything and the scoped case below
 ## would pass for the wrong reason.
 all_rc=0
-all_output="$( cd -- "${repo}" && "${GATE}" --staged 2>&1 )" || all_rc=$?
+all_output="$( cd -- "${repo}" && "${GATE}" --check --staged 2>&1 )" || all_rc=$?
 if [ "${all_rc}" -ne 0 ] \
    && grep --quiet --fixed-strings 'usr/bin/theirs' <<< "${all_output}"; then
    record PASS 'unrestricted staged mode fails on the violating file'
@@ -129,7 +134,7 @@ fi
 ## The fix: scoped to the clean file, the same index must PASS.
 scoped_rc=0
 scoped_output="$( cd -- "${repo}" \
-   && "${GATE}" --staged --paths -- usr/bin/mine 2>&1 )" || scoped_rc=$?
+   && "${GATE}" --check --staged --paths -- usr/bin/mine 2>&1 )" || scoped_rc=$?
 if [ "${scoped_rc}" -eq 0 ]; then
    record PASS 'a pathspec scoped to the clean file passes'
 else
@@ -148,7 +153,7 @@ fi
 ## is a restriction, not an exemption.
 guilty_rc=0
 guilty_output="$( cd -- "${repo}" \
-   && "${GATE}" --staged --paths -- usr/bin/theirs 2>&1 )" || guilty_rc=$?
+   && "${GATE}" --check --staged --paths -- usr/bin/theirs 2>&1 )" || guilty_rc=$?
 if [ "${guilty_rc}" -ne 0 ] \
    && grep --quiet --fixed-strings 'usr/bin/theirs' <<< "${guilty_output}"; then
    record PASS 'a pathspec scoped to the violating file still fails'
@@ -161,7 +166,7 @@ fi
 ## report a clean sweep silently.
 empty_rc=0
 empty_output="$( cd -- "${repo}" \
-   && "${GATE}" --staged --paths -- usr/bin/absent 2>&1 )" || empty_rc=$?
+   && "${GATE}" --check --staged --paths -- usr/bin/absent 2>&1 )" || empty_rc=$?
 if grep --quiet --fixed-strings 'matched no added/modified file' <<< "${empty_output}"; then
    record PASS 'a pathspec that matches nothing says so'
 else
@@ -172,7 +177,7 @@ fi
 ## --paths is a staged-mode restriction; anywhere else it would silently mean
 ## nothing, so it is refused.
 misuse_rc=0
-misuse_output="$( cd -- "${repo}" && "${GATE}" --paths -- usr/bin/mine 2>&1 )" || misuse_rc=$?
+misuse_output="$( cd -- "${repo}" && "${GATE}" --check --paths -- usr/bin/mine 2>&1 )" || misuse_rc=$?
 if [ "${misuse_rc}" -eq 2 ] \
    && grep --quiet --fixed-strings 'only applies with --staged' <<< "${misuse_output}"; then
    record PASS '--paths without --staged is refused'

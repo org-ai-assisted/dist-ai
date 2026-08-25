@@ -259,8 +259,7 @@ def style_main(argv, prog="dist-ai-style"):
 
     Direct file mode runs the per-file rules only. A git mode (--staged /
     --range) additionally drives the repo-level batch (pre-commit-hooks,
-    changelog, commit message, comment audit) -- so it is a drop-in for the old
-    pre-push-static gate."""
+    changelog, commit message, comment audit) -- the full push/commit gate."""
     parser = argparse.ArgumentParser(prog=prog, add_help=True)
     parser.add_argument("--check", action="store_true",
                         help="read-only: report violations, do not fix")
@@ -301,6 +300,12 @@ def style_main(argv, prog="dist-ai-style"):
         return code
     pairs, names, base_ref, base_cwd, staged_mode = enumerated
     git_mode = args.staged or args.range is not None
+
+    ## A --paths pathspec that matched nothing checks nothing -- SAY so, never a
+    ## silent clean sweep (a narrow-to-nothing would otherwise read as a pass).
+    if args.paths and not names:
+        print("%s: the pathspec(s) matched no added/modified file; nothing "
+              "checked" % prog, file=sys.stderr)
 
     ## Fix first (unless read-only), then re-read so the detect pass judges the
     ## FIXED file -- the residual is exactly what a human must fix.

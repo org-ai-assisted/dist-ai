@@ -10,7 +10,7 @@ A rule's self-exemption and its .gitattributes lookup key on the path, so a file
 enumerated from the index is named repo-RELATIVE (the same spelling the gate
 passes), while its bytes are read from the absolute path. A file named directly
 on the command line keeps the spelling the caller gave (relative stays relative,
-so a 'usr/bin/pre-push-static' argument still matches its exemption)."""
+so a 'usr/bin/dist-ai-style' argument keeps its exact repo-relative spelling)."""
 
 import os
 import subprocess

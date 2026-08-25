@@ -43,9 +43,9 @@ if [ ! -x "${STYLE}" ]; then
 fi
 ## The auto-fixer is 'dist-ai-style --fix'; wrap it so the call sites stay terse.
 run_fix() { "${STYLE}" --fix "$@"; }
-GATE="${tool_test_dir}/../../bin/pre-push-static"
+GATE="${tool_test_dir}/../../bin/dist-ai-style"
 if [ ! -x "${GATE}" ]; then
-   GATE='/usr/bin/pre-push-static'
+   GATE='/usr/bin/dist-ai-style'
 fi
 
 for prereq in python3 git safe-rm shellcheck ; do
@@ -440,13 +440,13 @@ git -C "${repo}" -c core.hooksPath=/dev/null \
    -c user.name=test -c user.email=test@example.com \
    commit --quiet --message "dirty"
 
-gate_before="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || true
+gate_before="$( cd -- "${repo}" && "${GATE}" --check --range "${base_sha}" 2>&1 )" || true
 run_fix "${repo}/doc.md" >/dev/null 2>&1
 git -C "${repo}" -c core.hooksPath=/dev/null add --all
 git -C "${repo}" -c core.hooksPath=/dev/null \
    -c user.name=test -c user.email=test@example.com \
    commit --quiet --message "fixed"
-gate_after="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || true
+gate_after="$( cd -- "${repo}" && "${GATE}" --check --range "${base_sha}" 2>&1 )" || true
 
 if grep --quiet --fixed-strings 'R-001' <<< "${gate_before}" \
    && ! grep --quiet --fixed-strings 'R-001' <<< "${gate_after}" ; then
@@ -461,13 +461,13 @@ git -C "${repo}" -c core.hooksPath=/dev/null add --all
 git -C "${repo}" -c core.hooksPath=/dev/null \
    -c user.name=test -c user.email=test@example.com \
    commit --quiet --message "r172 dirty"
-r172_before="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || true
+r172_before="$( cd -- "${repo}" && "${GATE}" --check --range "${base_sha}" 2>&1 )" || true
 run_fix "${repo}/tmpdir.sh" >/dev/null 2>&1
 git -C "${repo}" -c core.hooksPath=/dev/null add --all
 git -C "${repo}" -c core.hooksPath=/dev/null \
    -c user.name=test -c user.email=test@example.com \
    commit --quiet --message "r172 fixed"
-r172_after="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || true
+r172_after="$( cd -- "${repo}" && "${GATE}" --check --range "${base_sha}" 2>&1 )" || true
 if grep --quiet --fixed-strings 'R-172' <<< "${r172_before}" \
    && ! grep --quiet --fixed-strings 'R-172' <<< "${r172_after}" ; then
    note_pass "gate parity: R-172 short -m failed before the fixer, clean after"
@@ -485,13 +485,13 @@ git -C "${repo}" -c core.hooksPath=/dev/null add --all
 git -C "${repo}" -c core.hooksPath=/dev/null \
    -c user.name=test -c user.email=test@example.com \
    commit --quiet --message "r172 parents dirty"
-r172p_before="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || true
+r172p_before="$( cd -- "${repo}" && "${GATE}" --check --range "${base_sha}" 2>&1 )" || true
 run_fix "${repo}/tmpparents.sh" >/dev/null 2>&1
 git -C "${repo}" -c core.hooksPath=/dev/null add --all
 git -C "${repo}" -c core.hooksPath=/dev/null \
    -c user.name=test -c user.email=test@example.com \
    commit --quiet --message "r172 parents fixed"
-r172p_after="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || true
+r172p_after="$( cd -- "${repo}" && "${GATE}" --check --range "${base_sha}" 2>&1 )" || true
 ## Require BOTH markers BEFORE: if only R-172 were asserted the test would pass
 ## vacuously when shellcheck is absent (no SC2174 ever emitted), never proving
 ## the inserted directive suppresses it. shellcheck is a required dep above.
@@ -538,13 +538,13 @@ git -C "${repo}" -c core.hooksPath=/dev/null add --all
 git -C "${repo}" -c core.hooksPath=/dev/null \
    -c user.name=test -c user.email=test@example.com \
    commit --quiet --message "heredoc r200 dirty"
-hd_before="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || true
+hd_before="$( cd -- "${repo}" && "${GATE}" --check --range "${base_sha}" 2>&1 )" || true
 run_fix "${repo}/heredoc_to.sh" >/dev/null 2>&1
 git -C "${repo}" -c core.hooksPath=/dev/null add --all
 git -C "${repo}" -c core.hooksPath=/dev/null \
    -c user.name=test -c user.email=test@example.com \
    commit --quiet --message "heredoc r200 fixed"
-hd_after="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || true
+hd_after="$( cd -- "${repo}" && "${GATE}" --check --range "${base_sha}" 2>&1 )" || true
 if grep --quiet --fixed-strings 'R-200' <<< "${hd_before}" \
    && ! grep --quiet --fixed-strings 'R-200' <<< "${hd_after}" ; then
    note_pass "gate parity: heredoc file failed R-200 before the fixer, clean after (AST port canary)"

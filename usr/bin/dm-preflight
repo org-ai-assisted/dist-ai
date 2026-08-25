@@ -32,6 +32,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 source_dir=""
 quick=false
@@ -48,7 +49,17 @@ while [ "$#" -gt 0 ]; do
          shift
          ;;
       -h|--help)
-         grep '^##' -- "${BASH_SOURCE[0]}" | sed 's/^## \{0,1\}//'
+         ## Explicit help, not a scrape of this file's own comments (R-153).
+         printf '%s\n' \
+            "Run every cheap check that can invalidate a derivative-maker" \
+            "build, in ascending cost, stopping at the first that fails." \
+            "" \
+            "Usage: ${0##*/} [--dir <derivative-maker checkout>] [--quick]" \
+            "" \
+            "  --dir    the checkout to inspect (default: current directory)" \
+            "  --quick  skip the test suites (slowest stage); git-state only" \
+            "" \
+            "Exit: 0 all passed | 1 a check failed | 2 usage / not a checkout."
          exit 0
          ;;
       *)
@@ -378,21 +389,21 @@ fi
 
 ## --- 4. the static gate -------------------------------------------------------
 stage "static gate"
-if ! type -P pre-push-static >/dev/null; then
-   bad "pre-push-static is not on PATH; the gate cannot run and its absence is not a pass"
+if ! type -P dist-ai-style >/dev/null; then
+   bad "dist-ai-style is not on PATH; the gate cannot run and its absence is not a pass"
 else
    gate_base="$( git -C "${source_dir}" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true )"
    if [ -z "${gate_base}" ]; then
       printf '%s\n' "   NOTE: no upstream tracking branch; gating the staged changeset instead." >&2
-      if ( cd -- "${source_dir}" && pre-push-static --staged >/dev/null 2>&1 ); then
+      if ( cd -- "${source_dir}" && dist-ai-style --check --staged >/dev/null 2>&1 ); then
          ok "static gate green (staged)"
       else
-         bad "static gate FAILED (staged) -- run 'pre-push-static --staged' for detail"
+         bad "static gate FAILED (staged) -- run 'dist-ai-style --check --staged' for detail"
       fi
-   elif ( cd -- "${source_dir}" && pre-push-static "${gate_base}" >/dev/null 2>&1 ); then
+   elif ( cd -- "${source_dir}" && dist-ai-style --check --range "${gate_base}" >/dev/null 2>&1 ); then
       ok "static gate green against ${gate_base}"
    else
-      bad "static gate FAILED against ${gate_base} -- run 'pre-push-static ${gate_base}' for detail"
+      bad "static gate FAILED against ${gate_base} -- run 'dist-ai-style --check --range ${gate_base}' for detail"
    fi
 fi
 

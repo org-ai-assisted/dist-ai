@@ -73,9 +73,9 @@ assert_prerequisite \
 gate_test_dir="$(cd -- "$(dirname -- "$(readlink --canonicalize -- "$0")")" && pwd)"
 ## PRE_PUSH_STATIC_BIN override aims the suite at an alternate gate copy (e.g. the
 ## pre-fix version for a canary run); otherwise the in-tree copy, then the packaged.
-GATE="${PRE_PUSH_STATIC_BIN:-${gate_test_dir}/../../bin/pre-push-static}"
+GATE="${PRE_PUSH_STATIC_BIN:-${gate_test_dir}/../../bin/dist-ai-style}"
 if [ ! -x "${GATE}" ]; then
-   GATE='/usr/bin/pre-push-static'
+   GATE='/usr/bin/dist-ai-style'
 fi
 
 [ -x "${GATE}" ] \
@@ -117,7 +117,7 @@ gate_output() {
    git -C "${repo}" commit --quiet --no-verify --message sample
    (
       cd -- "${repo}" || exit 1
-      "${GATE}" "${base}"
+      "${GATE}" --check --range "${base}"
    ) 2>&1 || true
 }
 
@@ -773,7 +773,7 @@ module_probe() {
    chmod 0644 -- "${repo}/${rel}"
    git -C "${repo}" add --all
    git -C "${repo}" commit --quiet --no-verify --message probe
-   out="$( cd -- "${repo}" && "${GATE}" "${base}" 2>&1 || true )"
+   out="$( cd -- "${repo}" && "${GATE}" --check --range "${base}" 2>&1 || true )"
    printf '%s' "${out}"
 }
 
@@ -848,7 +848,7 @@ git -C "${bigstaged_repo}" commit --quiet --no-verify --message base
 ## touch it and stage the change: present at HEAD, modified in the index.
 printf '%s\n' 'appended' >> "${bigstaged_repo}/big.txt"
 git -C "${bigstaged_repo}" add big.txt
-bigstaged_out="$( cd -- "${bigstaged_repo}" && "${GATE}" --staged 2>&1 || true )"
+bigstaged_out="$( cd -- "${bigstaged_repo}" && "${GATE}" --check --staged 2>&1 || true )"
 if grep --quiet --fixed-strings -- 'FAIL check-added-large-files' <<< "${bigstaged_out}"; then
    printf '%s\n' 'FAIL: a pre-existing large file was flagged as newly added in staged mode (no upstream)' >&2
    failures=$((failures + 1))
@@ -863,7 +863,7 @@ git -C "${bignew_repo}" config user.name 'ci-test'
 git -C "${bignew_repo}" commit --quiet --no-verify --allow-empty --message base
 head --bytes=600000 /dev/zero | tr '\0' 'y' > "${bignew_repo}/bignew.txt"
 git -C "${bignew_repo}" add bignew.txt
-bignew_out="$( cd -- "${bignew_repo}" && "${GATE}" --staged 2>&1 || true )"
+bignew_out="$( cd -- "${bignew_repo}" && "${GATE}" --check --staged 2>&1 || true )"
 if grep --quiet --fixed-strings -- 'FAIL check-added-large-files' <<< "${bignew_out}"; then
    printf '%s\n' 'PASS: a genuinely new large staged file is still flagged'
 else
@@ -1751,7 +1751,7 @@ gate_output_data() {  ## $1=.gitattributes line (empty for none) -> gate output 
    git -C "${repo}" commit --quiet --no-verify --message blob
    (
       cd -- "${repo}" || exit 1
-      "${GATE}" "${base}"
+      "${GATE}" --check --range "${base}"
    ) 2>&1 || true
 }
 
@@ -1800,7 +1800,7 @@ gate_output_msg() {  ## $1=commit subject -> gate output over base..HEAD
    git -C "${repo}" commit --quiet --no-verify --message "${subject}"
    (
       cd -- "${repo}" || exit 1
-      "${GATE}" "${base}"
+      "${GATE}" --check --range "${base}"
    ) 2>&1 || true
 }
 ## A U+00E9 (0xC3 0xA9) in the subject, assembled so THIS tracked file stays ASCII.

@@ -282,12 +282,14 @@ def run(paths, base_ref, staged_mode, base_cwd=None):
         if _SOURCED_FRAGMENT.search(content):
             yield model.note(
                 "check-shebang-scripts-are-executable",
-                "skipped: 'style-ok: sourced-fragment' waiver in '%s'" % path)
+                "check-shebang-scripts-are-executable skipped: "
+                "'style-ok: sourced-fragment' waiver in '%s'" % path)
             continue
         if _INSTALLED_MODULE.search(path):
             yield model.note(
                 "check-shebang-scripts-are-executable",
-                "skipped: '%s' is an imported package module" % path)
+                "check-shebang-scripts-are-executable skipped: '%s' is an "
+                "imported package module" % path)
             continue
         shebang_files.append(path)
     yield from _run_hook("check-shebang-scripts-are-executable", [],
@@ -314,9 +316,9 @@ def run(paths, base_ref, staged_mode, base_cwd=None):
         if _APP_MANAGED_JSON.search(path):
             yield model.note(
                 "pretty-format-json",
-                "skipped: '%s' is an app-managed settings file "
-                "(syntax still checked by check-json; the app owns its format)"
-                % path)
+                "pretty-format-json skipped: '%s' is an app-managed settings "
+                "file (syntax still checked by check-json; the app owns its "
+                "format)" % path)
             continue
         json_fmt.append(path)
     yield from _run_fixer("pretty-format-json", json_fmt, base_cwd)

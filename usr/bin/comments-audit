@@ -294,7 +294,7 @@ def main(repo_root):
 
 
 def main_files(files):
-    ## Audit an explicit list of files. The pre-push-static gate passes the
+    ## Audit an explicit list of files. The dist-ai-style gate passes the
     ## changed set here so the R-151 advisory is diff-scoped, not whole-repo.
     findings = []
     for path in files:

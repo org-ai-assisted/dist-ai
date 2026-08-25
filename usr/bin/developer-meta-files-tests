@@ -7,7 +7,7 @@
 
 ## Runs developer-meta-files' functional tests against the checkout:
 ##   * test_pre_push_static_style_rules.sh -- drives the real, shipped
-##     pre-push-static gate (dist-ai) and asserts its single-grep style checks
+##     dist-ai-style gate (dist-ai) and asserts its single-grep style checks
 ##     flag violations and spare compliant files;
 ##   * test_dm_review_branch.sh -- asserts dm-review-branch aborts on suspicious
 ##     unicode in a reviewed branch's commits AND in any ref name.
@@ -24,6 +24,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -36,7 +37,7 @@ fi
 ## DMF_REPO is NOT required here. Only test_dm_review_branch.sh has its subject
 ## in the developer-meta-files checkout; the rest drive tools dist-ai ships
 ## itself. Skipping the whole suite on an unset DMF_REPO reported green while
-## running nothing -- including the pre-push-static tests that guard dist-ai's
+## running nothing -- including the style-gate tests that guard dist-ai's
 ## own gate. Each test decides for itself and self-skips (77) on an absent
 ## subject; 'ran == 0' below still reports SKIP rather than a pass over zero
 ## assertions.
@@ -101,6 +102,7 @@ if [ "${failed}" -gt 0 ]; then
 fi
 ## Nothing actually ran: report SKIP rather than a pass over zero assertions.
 if [ "${ran}" -eq 0 ]; then
+   ## style-ok: allow-skip: no subject present -- absent subjects self-skip, not a pass
    exit 77
 fi
 exit 0

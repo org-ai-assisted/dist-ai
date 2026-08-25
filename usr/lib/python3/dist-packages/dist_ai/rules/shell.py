@@ -15,12 +15,6 @@ from dist_ai import model
 from dist_ai.model import Edit, Rule
 from dist_ai.rules import _helpers as h
 
-## Self-exemption: the legacy bash gate carries every forbidden token in its own
-## regex/doc text. It is a shell file, so the shell rules would flag it; skip it
-## by path. (Retired with the gate in the final migration phase.)
-GATE_PATH = "usr/bin/pre-push-static"
-
-
 def _fail(ctx, rule, message, node):
     return model.fail(rule, message, ctx.path, node)
 
@@ -37,8 +31,7 @@ class CommandV(Rule):
 
     id = "R-090"
     waiver_tag = "no-has"
-    _exempt = (GATE_PATH,
-               ".github/actions/install-deps/install-helper-scripts.sh")
+    _exempt = (".github/actions/install-deps/install-helper-scripts.sh",)
 
     def applies(self, ctx):
         return (super().applies(ctx)
@@ -85,7 +78,7 @@ class Rm(Rule):
     waiver_tag = "no-safe-rm"
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         for call in bash_ast.call_exprs(ctx.tree):
@@ -264,7 +257,7 @@ class GrepQuiet(Rule):
     id = "R-161"
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         tree = ctx.tree
@@ -333,7 +326,7 @@ class MkdirTmpMode(Rule):
     waiver_tag = "allow-mkdir-no-mode"
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         for call in bash_ast.call_exprs(ctx.tree):
@@ -667,7 +660,7 @@ class AptGet(Rule):
 
     def applies(self, ctx):
         import os
-        return (super().applies(ctx) and ctx.path != GATE_PATH
+        return (super().applies(ctx)
                 and os.path.basename(ctx.path) not in _NONINTERACTIVE)
 
     def detect(self, ctx):
@@ -691,7 +684,7 @@ class Dpkg(Rule):
 
     def applies(self, ctx):
         import os
-        return (super().applies(ctx) and ctx.path != GATE_PATH
+        return (super().applies(ctx)
                 and os.path.basename(ctx.path) not in _NONINTERACTIVE)
 
     def detect(self, ctx):
@@ -725,7 +718,7 @@ class AllowDowngrades(Rule):
     waiver_tag = "allow-downgrades"
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         for call in bash_ast.call_exprs(ctx.tree):
@@ -743,7 +736,7 @@ class LintianDisabled(Rule):
     waiver_tag = "allow-lintian-disable"
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         ## A bare / env-prefix assignment ('make_use_lintian=false [cmd]') is a
@@ -797,7 +790,7 @@ class ErrexitToggle(Rule):
     waiver_tag = "allow-errexit-toggle"
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         for call in bash_ast.call_exprs(ctx.tree):
@@ -832,7 +825,7 @@ class SetOptions(Rule):
     waiver_tag = "allow-short-set"
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         for call in bash_ast.call_exprs(ctx.tree):
@@ -867,7 +860,7 @@ class ShellcheckSourceRelative(Rule):
     id = "R-080"
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         for comment in bash_ast.comments(ctx.tree):
@@ -886,7 +879,7 @@ class ShellcheckSourceDevNull(Rule):
     id = "R-081"
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         for comment in bash_ast.comments(ctx.tree):
@@ -908,7 +901,7 @@ class Sc1091Disable(Rule):
     advisory = True
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         comments = list(bash_ast.comments(ctx.tree))
@@ -949,7 +942,7 @@ class DoubleSemi(Rule):
     id = "R-070"
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     @staticmethod
     def _at_end_of_line(data, offset):
@@ -1000,7 +993,7 @@ class FlowChaining(Rule):
     _KEYWORDS = frozenset({"break", "continue", "return"})
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def _chained_calls(self, ctx, data):
         for call in bash_ast.call_exprs(ctx.tree):
@@ -1039,7 +1032,7 @@ class InterpreterPrepend(Rule):
     _SCRIPT_EXT = (".sh", ".bsh", ".bash")
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         for call in bash_ast.call_exprs(ctx.tree):
@@ -1075,7 +1068,7 @@ class TrapInline(Rule):
         r"""(?:\s+\$\{?[A-Za-z_]\w*\}?)*\1$""")
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         for call in bash_ast.call_exprs(ctx.tree):
@@ -1146,7 +1139,7 @@ class BareNewlinePrintf(Rule):
     _NEWLINE_ONLY = re.compile(r'^(?:%s)?(?:\\n)+$')
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         for _stmt, call in _printf_calls(ctx.tree):
@@ -1174,7 +1167,7 @@ class PrintfFormatString(Rule):
         "%s", "%s\\n", "%s\\0", "%q", "%q\\n", "%b", "%b\\n", "0x%x", "%x"})
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         for _stmt, call in _printf_calls(ctx.tree):
@@ -1199,7 +1192,7 @@ class HeaderFirst(Rule):
     _COPYRIGHT = re.compile(r'^[ \t]*##[ \t]+Copyright')
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         style_line = copyright_line = None
@@ -1255,7 +1248,7 @@ class StrictModeBlock(Rule):
     waiver_tag = "no-strict"
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         source = ctx.source
@@ -1313,7 +1306,7 @@ class TmpHardcode(Rule):
         r"['\"]?/tmp['\"]?(?:[ \t;&|)]|$)")
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         for number, line in enumerate(ctx.source.split("\n"), 1):
@@ -1335,7 +1328,7 @@ class HelpFromComments(Rule):
     _SELF_THEN_ANCHOR = re.compile(r'(?:\$0|\$\{?BASH_SOURCE).*\^##?')
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         for number, line in enumerate(ctx.source.split("\n"), 1):
@@ -1361,7 +1354,7 @@ class DashDashDenylist(Rule):
     _DENY = (("git", "check-ref-format"), ("stcat", None))
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def _denied_dashdash(self, call):
         """The standalone '--' word of a denylisted call, or None. A '--' is
@@ -1416,7 +1409,7 @@ class EmptyArrayGuard(Rule):
     _GUARD = re.compile(r'\$\{[A-Za-z_][A-Za-z0-9_]*\[@\]\+')
 
     def applies(self, ctx):
-        return super().applies(ctx) and ctx.path != GATE_PATH
+        return super().applies(ctx)
 
     def detect(self, ctx):
         ## The guard lives INSIDE a word's parameter expansion; shfmt keeps the
