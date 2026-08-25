@@ -214,6 +214,21 @@ ok(b'\x1b' not in _strip_bp(_split_o),
    'bracketed-paste enable/disable)')
 eq(_split_rc, 0, 'the split-sequence child exits cleanly')
 
+# A never-terminating OSC/DCS makes the wrapper discard all following output (a
+# silent freeze). The suppression is NEVER lifted -- no escape byte reaches the
+# outer terminal -- but past a threshold a one-time stderr notice explains the blank
+# rather than leaving a dead terminal (claude ai-review: cli.py had this unmitigated).
+## One shell command, split over two source lines for width; the + keeps it one arg.
+_supp_o, _supp_rc = run_in_pty(['--', 'sh', '-c',
+    'printf "\\033]0;"; head -c 200000 < /dev/zero | tr "\\000" A'], settle=2.0)
+ok(b'suppressing output' in _supp_o,
+   'an unterminated over-long escape sequence triggers the one-time suppression notice')
+ok(b'AAAA' not in _strip_bp(_supp_o),
+   'the suppressed payload never reaches the outer terminal (no leak as text)')
+ok(b'\x1b' not in _strip_bp(_supp_o),
+   'no escape byte leaks from the suppressed sequence (bar the wrapper bracketed-paste)')
+eq(_supp_rc, 0, 'the suppressed-output child exits cleanly')
+
 # --- display modes ------------------------------------------------------------
 _o2, _ = run_in_pty(['--mode', 'reveal', '--', 'printf', 'x\u200by'])
 ok(b'<U+200B>' in _o2, 'reveal mode shows the <U+XXXX> badge for a zero-width space')

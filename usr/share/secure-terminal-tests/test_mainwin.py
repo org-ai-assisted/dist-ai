@@ -153,9 +153,9 @@ try:
     win._escape_limit = 12345
     _dialogs.clear()
     win.show_global_settings()
-    _el = _dlg_field(_dialogs[-1], 'Escape-sequence limit')
+    _el = _dlg_field(_dialogs[-1], 'Suppressed-output notice')
     ok(_el is not None and _el.currentData() == 12345
-       and _el.currentText() == '12345 bytes',
+       and _el.currentText() == 'After 12345 characters',
        'settings: a non-preset escape limit (12345) shows in the combo, not a blank')
     win._escape_limit = 4096
     # #79: every settings input has a tooltip; every tipped label shows the "(i)"
@@ -1536,6 +1536,32 @@ ok(win._find_tab(win.tabs.tabText(0)) is not None,
    '_find_tab: an existing bare title is matched by title')
 ok(win._find_tab('no-such-tab-title') is None,
    '_find_tab: an absent title matches nothing')
+# a bare title containing a colon (e.g. 'host:port') is matched WHOLE, not split at
+# the first ':' into a bogus kind -- regression: partition(':') mis-parsed it so
+# 'prod:server' matched nothing. An explicit 'id:'/'title:' prefix still works.
+_ft_saved = win.tabs.tabText(0)
+win.tabs.setTabText(0, 'prod:server')
+ok(win._find_tab('prod:server') is not None,
+   '_find_tab: a bare title containing a colon is matched whole')
+ok(win._find_tab('title:prod:server') is not None,
+   '_find_tab: an explicit title: prefix matches a colon-bearing title')
+ok(win._find_tab('id:prod:server') is None,
+   '_find_tab: an id: prefix on a non-numeric value matches nothing')
+win.tabs.setTabText(0, _ft_saved)
+
+# _on_escape_suppressed: a long unterminated escape sequence surfaces a one-time,
+# per-tab "output suppressed" advisory (it never lifts the suppression).
+_esc_term = win.current()
+win._esc_notified.discard(_esc_term)
+win._advisories.pop(_esc_term, None)
+win._on_escape_suppressed(_esc_term)
+eq(win._advisories.get(_esc_term, (None,))[0], 'escape',
+   '_on_escape_suppressed raises the suppression advisory')
+win._advisories.pop(_esc_term, None)
+win._on_escape_suppressed(_esc_term)         # already notified for this tab -> no re-raise
+ok(_esc_term not in win._advisories,
+   '_on_escape_suppressed does not re-raise for a tab already notified')
+win._esc_notified.discard(_esc_term)
 
 # NOTE: the client is a background THREAD. Two alternatives were measured and
 # are WORSE, so do not 'simplify' this back to either: a subprocess client
