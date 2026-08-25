@@ -254,34 +254,88 @@ def unquote(text):
     return text
 
 
+## Commands that RUN another command given as an operand -- a shell '-c' reached
+## through one of these ('ssh host -- bash -lc PROG', 'sudo bash -c PROG') is
+## still an inline program. An allowlist, not "any command", so 'echo bash -c
+## "..."' (echo is not a wrapper) is never mistaken for one.
+SHELL_C_WRAPPERS = frozenset({
+    "ssh", "sudo", "su", "doas", "env", "timeout", "nice", "ionice", "chrt",
+    "setsid", "stdbuf", "setpriv"})
+
+
+def _c_in_command(call, source):
+    """Command-position shell '-c': classify the args with command_tokens (which
+    reconstructs an attached '-c'prog'' value a raw word_lit cannot, since a
+    mixed literal+quoted word has no single literal). Handles separate and
+    attached forms and a cluster ('-lc')."""
+    tokens = list(bash_ast.command_tokens(
+        call, source, frozenset("c"), frozenset()))
+    for index, (kind, word, text) in enumerate(tokens):
+        if kind != "opt" or text.startswith("--") or not text.startswith("-"):
+            continue
+        cluster = text[1:]
+        if "c" not in cluster:
+            continue
+        if cluster.index("c") == len(cluster) - 1:
+            ## Separate form: the next word is the program.
+            if index + 1 < len(tokens) and tokens[index + 1][0] == "value":
+                program = tokens[index + 1][1]
+                span = program["End"]["Line"] - program["Pos"]["Line"] + 1
+                yield (call, bash_ast.word_source(program, source), span)
+        else:
+            ## Attached form ('-c"prog"'): the program is the rest of this word.
+            span = word["End"]["Line"] - word["Pos"]["Line"] + 1
+            yield (call, text[cluster.index("c") + 2:], span)
+        return
+
+
+def _is_separate_c_opt(text):
+    """True if TEXT is a short-option cluster whose LAST character is 'c' (so the
+    NEXT word is the program): '-c', '-lc', '-ec'. A long option, an operand, or
+    a quoted word (word_lit None) is not."""
+    if text is None or not text.startswith("-") or text.startswith("--") \
+            or len(text) < 2:
+        return False
+    cluster = text[1:]
+    return "c" in cluster and cluster.index("c") == len(cluster) - 1
+
+
+def _c_behind_wrapper(call, words, start, source):
+    """Shell '-c PROG' where the shell is an operand of a wrapper (WORDS[START]
+    is the shell). Separate form only -- an attached '-c'prog'' behind a wrapper
+    is rare and a mixed word has no word_lit, so it is a documented follow-up."""
+    for index in range(start + 1, len(words)):
+        if _is_separate_c_opt(bash_ast.word_lit(words[index])):
+            if index + 1 < len(words):
+                program = words[index + 1]
+                span = program["End"]["Line"] - program["Pos"]["Line"] + 1
+                yield (call, bash_ast.word_source(program, source), span)
+            return
+
+
 def shell_c_programs(tree, source):
     """Yield (call, program_text, line_count) for each 'sh -c <program>' /
-    'bash -c' / 'dash -c' in TREE. Handles the separate ('-c "prog"') and
-    attached ('-c"prog"') forms; the command may be a path (basename decides)."""
+    'bash -c' / 'dash -c' in TREE -- whether the shell is the command itself or
+    an operand of a wrapper ('ssh host -- bash -lc PROG'). Handles the separate
+    ('-c "prog"') and attached ('-c"prog"') forms; the command may be a path
+    (basename decides). Only an EXPLICIT shell operand is caught behind a
+    wrapper; an implicit-shell form ('su -c PROG', 'ssh host PROG') is a
+    documented follow-up (the wrapper runs the login shell, no shell token)."""
     for call in bash_ast.call_exprs(tree):
         name = bash_ast.command_name(call)
-        if name is None or name.rsplit("/", 1)[-1] not in SHELL_C_CMDS:
+        if name is None:
             continue
-        tokens = list(bash_ast.command_tokens(
-            call, source, frozenset("c"), frozenset()))
-        for index, (kind, word, text) in enumerate(tokens):
-            if kind != "opt" or text.startswith("--") or not text.startswith("-"):
-                continue
-            cluster = text[1:]
-            if "c" not in cluster:
-                continue
-            if cluster.index("c") == len(cluster) - 1:
-                ## Separate form: the next word is the program.
-                if index + 1 < len(tokens) and tokens[index + 1][0] == "value":
-                    program = tokens[index + 1][1]
-                    span = program["End"]["Line"] - program["Pos"]["Line"] + 1
-                    yield (call, bash_ast.word_source(program, source), span)
-            else:
-                ## Attached form ('-c"prog"'): the program is the rest of this
-                ## word after the 'c'.
-                span = word["End"]["Line"] - word["Pos"]["Line"] + 1
-                yield (call, text[cluster.index("c") + 2:], span)
-            break
+        base = name.rsplit("/", 1)[-1]
+        if base in SHELL_C_CMDS:
+            yield from _c_in_command(call, source)
+        elif base in SHELL_C_WRAPPERS:
+            ## First explicit shell operand among the wrapper's arguments.
+            words = bash_ast.args(call)
+            for i in range(1, len(words)):
+                lit = bash_ast.word_lit(words[i])
+                if lit is not None and lit.rsplit("/", 1)[-1] in SHELL_C_CMDS:
+                    yield from _c_behind_wrapper(call, words, i, source)
+                    break
 
 
 def embeds_multi_statement(value, strict):

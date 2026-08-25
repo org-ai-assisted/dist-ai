@@ -107,6 +107,31 @@ if [ "$(resolve_allowed 'org-ai-assisted/ba' "${canonical}")" != 'false' ]; then
    fail 'a substring of a canonical entry falsely matched (comma-boundary regressed)'
 fi
 
+## ---- CSV with whitespace after commas: a member must STILL match -----------
+## Regression: a normal-CSV space ("a, b") made the exact ',<repo>,' test miss
+## the ' <repo>' in the haystack, so a canonical repo silently read as a
+## non-member and its Coverity scan was skipped (silent-green).
+canonical_spaced='org-ai-assisted/bar, org-ai-assisted/foo, org-ai-assisted/baz'
+if [ "$(resolve_allowed 'org-ai-assisted/foo' "${canonical_spaced}")" != 'true' ]; then
+   fail 'a canonical member was missed when the CSV had spaces after commas'
+fi
+if [ "$(resolve_allowed 'org-ai-assisted/baz' "${canonical_spaced}")" != 'true' ]; then
+   fail 'the last element was missed with a spaced CSV'
+fi
+if [ "$(resolve_allowed 'someone/fork' "${canonical_spaced}")" != 'false' ]; then
+   fail 'a non-member falsely matched with a spaced CSV'
+fi
+
+## ---- empty / whitespace THIS_REPO must FAIL CLOSED -> false ----------------
+## Regression: an empty needle ',,' falsely matched a malformed CSV with a
+## leading/trailing/doubled comma (fail-open). An empty identity is never canonical.
+if [ "$(resolve_allowed '' 'org-ai-assisted/foo,')" != 'false' ]; then
+   fail 'empty THIS_REPO with a trailing-comma CSV did not fail closed'
+fi
+if [ "$(resolve_allowed '   ' ',org-ai-assisted/foo')" != 'false' ]; then
+   fail 'whitespace-only THIS_REPO with a leading-comma CSV did not fail closed'
+fi
+
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "canonical-repos-gate-test: ${failures} check(s) failed" >&2
    exit 1

@@ -16,6 +16,12 @@ from dist_ai import model
 from dist_ai.model import Rule
 from dist_ai.rules import _helpers as h
 
+## An installed python package module: imported, never run, and Debian ships it
+## 0644 -- so the shebang rule (R-180) does not apply. Anchored to a real python
+## library path so a stray 'usr/bin/dist-packages/tool.py' is NOT exempted.
+PYTHON_MODULE_PATH = re.compile(
+    r'/lib/python3[^/]*/(?:dist|site)-packages/.*\.py$')
+
 EXEC_DIRECTIVE = re.compile(r'^[ \t]*(Exec[A-Za-z]*)=(.*)$', re.MULTILINE)
 APT_HOOK = re.compile(
     r'(^|[^A-Za-z0-9])(Pre-Invoke|Post-Invoke|Pre-Install-Pkgs)([^A-Za-z0-9]|$)')
@@ -90,10 +96,33 @@ def _double_quoted_spans(line):
         yield inner
 
 
+def _hook_value_region(text, start):
+    """The directive value region beginning at START (just past the hook
+    keyword): text up to the ';' that terminates the directive at brace depth 0.
+    apt.conf is newline-insensitive, so this spans lines -- 'KEYWORD "v";' returns
+    ' "v"', and 'KEYWORD { "a"; "b"; };' returns ' { "a"; "b"; }' (the inner ';'
+    sit at depth 1, so they do not end the directive)."""
+    depth = 0
+    index = start
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth = max(0, depth - 1)
+        elif char == ";" and depth == 0:
+            break
+        index += 1
+    return text[start:index]
+
+
 class AptHook(Rule):
     """R-194: an apt hook ('Pre-Invoke'/'Post-Invoke'/'Pre-Install-Pkgs') runs
     its double-quoted value via 'sh -c'; a multi-statement value belongs in a
-    script."""
+    script. The directive and its quoted value need not share a physical line --
+    apt.conf's brace-block grammar is newline-insensitive, so the whole value
+    region is reassembled from the keyword to its terminating ';'."""
 
     id = "R-194"
 
@@ -106,20 +135,26 @@ class AptHook(Rule):
                         "R-194 skipped: 'style-ok: allow-embedded-script' "
                         "waiver in '%s'" % ctx.path)
             return
-        for number, line in enumerate(source.split("\n"), start=1):
+        ## Blank out whole-line comments (keeping newlines for line numbers) so a
+        ## commented-out hook is not scanned, then find each hook directive and
+        ## the value region that follows it, across lines.
+        kept = []
+        for line in source.split("\n"):
             stripped = line.lstrip()
-            if stripped.startswith("#") or stripped.startswith("//"):
-                continue
-            before = line.split('"', 1)[0]
-            if not APT_HOOK.search(before):
-                continue
-            for inner in _double_quoted_spans(line):
+            kept.append("" if (stripped.startswith("#")
+                               or stripped.startswith("//")) else line)
+        text = "\n".join(kept)
+        for match in APT_HOOK.finditer(text):
+            region = _hook_value_region(text, match.end())
+            for inner in _double_quoted_spans(region):
                 if h.embeds_multi_statement(inner, strict=False):
+                    line_number = text.count("\n", 0, match.start()) + 1
                     yield model.fail(
                         "R-194",
                         "R-194 apt hook embeds a multi-statement shell command; "
                         "move the logic to a dedicated script (shebang) and "
-                        "call it", ctx.path, number)
+                        "call it", ctx.path, line_number)
+                    break
 
 
 class CronTable(Rule):
@@ -204,9 +239,34 @@ def _yaml_run_scalars(node):
             yield from _yaml_run_scalars(item)
 
 
+class PythonShebang(Rule):
+    """R-180: a non-empty '.py' file must start with a shebang so it can be run
+    directly when debugging (a file with NEITHER a shebang nor '+x' slips past
+    both pre-commit-hooks executable checks). An empty file (a zero-byte
+    '__init__.py' package marker) and an installed package module are exempt.
+    A file-level rule -- it self-selects by path like the config rules and needs
+    no shell parse, so it lives in this run-over-every-file bucket."""
+
+    id = "R-180"
+
+    def applies(self, ctx):
+        return (super().applies(ctx) and ctx.path.endswith(".py")
+                and PYTHON_MODULE_PATH.search(ctx.path) is None)
+
+    def detect(self, ctx):
+        if not ctx.source:  ## empty file: package marker, nothing to interpret
+            return
+        first = ctx.source.split("\n", 1)[0].rstrip("\r")
+        if not first.startswith("#!"):
+            yield model.fail(
+                "R-180", "R-180 python file needs a shebang (and +x)",
+                ctx.path, 1)
+
+
 RULES = (
     SystemdUnit(),
     AptHook(),
     CronTable(),
     WorkflowInlineShell(),
+    PythonShebang(),
 )

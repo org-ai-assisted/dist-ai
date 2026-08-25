@@ -1,0 +1,3 @@
+# Local-only genmkfile package (boot-replayed .deb on a reset-/usr Qubes AppVM),
+# never released upstream, so there is no tarball for uscan to monitor.
+dist-ai source: debian-watch-file-is-missing

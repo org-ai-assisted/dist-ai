@@ -631,4 +631,18 @@ else
    note_fail "R-172 spliced across a redirection (data loss)"
 fi
 
+## --- 11: R-062 drops the '--' the denylisted tool rejects ------------------
+## 'git check-ref-format -- <ref>' errors on the literal '--'; the fixer removes
+## it (with one leading space) so the call is clean. Canary: dirty before, and
+## the exact fixed text after.
+f="${test_dir}/dashdash.sh"
+printf '%b' '#!/bin/bash\ngit check-ref-format -- refs/heads/x\n' >"${f}"
+run_fix "${f}" >/dev/null 2>&1
+if grep --quiet --fixed-strings -- 'git check-ref-format refs/heads/x' "${f}" \
+   && ! grep --quiet --fixed-strings -- 'check-ref-format --' "${f}" ; then
+   note_pass "R-062 dropped the '--' passed to a denylisted tool"
+else
+   note_fail "R-062 did not drop the rejecting '--'"
+fi
+
 exit_gate

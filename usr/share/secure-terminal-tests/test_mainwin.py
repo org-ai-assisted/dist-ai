@@ -789,6 +789,69 @@ win._ipc_open({'tabs': 'not-a-list'})       # opened 0 -> a new default tab
 ok(win.tabs.count() == _before_bare + 1,
    'ipc: a bare reuse opens a NEW default tab (count grows by one)')
 
+# open --if-absent: idempotent open that dedups by COMMAND (what open-all relies
+# on). _normalize_command: a -e STRING and its shell-split argv are equal; None (a
+# plain shell tab) is never a dedup key.
+_nc = MainWindow._normalize_command
+ok(_nc('echo a b') == ('echo', 'a', 'b') == _nc(['echo', 'a', 'b']),
+   'if_absent: a -e string and its argv normalize equal')
+ok(_nc(None) is None and _nc('') == (),
+   'if_absent: None (a shell) is never a dedup key')
+ok(_nc('"unbalanced') == ('"unbalanced',),
+   'if_absent: a command that will not shell-split falls back to the raw string')
+# a command LIST with an unhashable element must not crash the dedup: elements are
+# str()-coerced so the key is always hashable (an IPC payload can carry such a list).
+ok(_nc(['echo', ['nested']]) == ('echo', "['nested']"),
+   'if_absent: list command elements are str()-coerced to a hashable key')
+try:
+    _ru = win._ipc_open({'tabs': [{'command': ['echo', ['nested']]}], 'if_absent': True})
+    ok(_ru['opened'] == 1,
+       'if_absent: an unhashable command element does not crash _ipc_open')
+except TypeError:
+    ok(False, 'if_absent: an unhashable command element crashed _ipc_open (TypeError)')
+# seed a live tab's command; an if_absent open of the SAME command is skipped and
+# adds no tab (nor a bare default tab) -- fully idempotent.
+_tab0.launch_command = _nc('seeded-if-absent-canary --flag')
+_before_if = win.tabs.count()
+_rs = win._ipc_open({'tabs': [{'command': 'seeded-if-absent-canary --flag'}],
+                     'if_absent': True})
+ok(_rs['opened'] == 0 and _rs['skipped'] == 1,
+   'if_absent: a command already running in a tab is skipped')
+ok(win.tabs.count() == _before_if,
+   'if_absent: a fully-skipped open adds no tab (idempotent, no default tab)')
+# the argv form of the seeded string command matches too
+_ra = win._ipc_open({'tabs': [{'command': ['seeded-if-absent-canary', '--flag']}],
+                     'if_absent': True})
+ok(_ra['skipped'] == 1, 'if_absent: matches the argv form against the seeded string')
+# a stale _tab_ids entry no longer in the bar is ignored by _live_commands (it does
+# not crash the scan nor mask the real match).
+from PyQt6.QtWidgets import QWidget                             # noqa: E402
+_orphan = QWidget()
+win._tab_ids[_orphan] = 999999
+try:
+    _ro = win._ipc_open({'tabs': [{'command': 'seeded-if-absent-canary --flag'}],
+                         'if_absent': True})
+    ok(_ro['skipped'] == 1,
+       'if_absent: a _tab_ids entry not in the bar is skipped by _live_commands')
+finally:
+    del win._tab_ids[_orphan]
+# a non-dict tab spec is skipped; a valid spec in the same batch still opens.
+_before_nd = win.tabs.count()
+win._ipc_open({'tabs': [42, {'title': 'nd'}]})
+ok(win.tabs.count() == _before_nd + 1,
+   'ipc: a non-dict tab spec is skipped, the valid one still opens')
+# two specs sharing a NEW command in one batch: the first opens (dedup set grows),
+# the duplicate second is skipped -- intra-batch idempotency.
+_rb = win._ipc_open({'tabs': [{'command': ['cat']}, {'command': 'cat'}],
+                     'if_absent': True})
+ok(_rb['opened'] == 1 and _rb['skipped'] == 1,
+   'if_absent: a command repeated within one batch opens once, skips the rest')
+# without if_absent the same command opens a duplicate (default behaviour intact)
+_before_dup = win.tabs.count()
+win._ipc_open({'tabs': [{'command': 'seeded-if-absent-canary --flag'}]})
+ok(win.tabs.count() == _before_dup + 1,
+   'if_absent off: a duplicate command still opens (unchanged default)')
+
 # _restore_tab: rebuild a tab from saved session state (bad ints fall back)
 win._restore_tab({'text': 'hi', 'theme': 'dark', 'zoom': 'notanint',
                   'scrollback': 'nope', 'mode': 'box', 'osc': {},
@@ -1143,6 +1206,15 @@ for _combo in (['--reuse', '--new-instance'], ['--window', '--new-instance'],
     except SystemExit:
         _rej = True
     ok(_rej, 'parse: %s is rejected (mutually exclusive dispositions)' % ' '.join(_combo))
+
+# --if-absent (idempotent reuse) parses and flows into the open request.
+ok(_pla(['--if-absent']).if_absent is True, 'parse: --if-absent -> if_absent')
+ok(_pla([]).if_absent is False, 'parse: if_absent defaults off')
+_lreq = M._launch_to_request(_pla(['--if-absent', '--title', 't', '--', 'cmd']))
+ok(_lreq['op'] == 'open' and _lreq.get('if_absent') is True,
+   'launch->request: if_absent flows into the open request')
+ok(M._launch_to_request(_pla([])).get('if_absent') is False,
+   'launch->request: if_absent defaults off in the request')
 
 # --- set_* admin-locked returns + bell channels + run_command palette ---------
 from PyQt6.QtWidgets import QMessageBox                          # noqa: E402
@@ -2031,9 +2103,18 @@ finally:
     _QFD3.getSaveFileName = _o_gsf
 
 # --- _open_path opens an existing folder and falls back to a parent -----------
-win._open_path('/tmp')                       # exists  # nosec B108 -- /tmp is a known-existing dir to exercise _open_path
-win._open_path('/tmp/no-such-dir-xyz/child') # missing -> opens the parent  # nosec B108 -- missing path under /tmp exercises the parent-fallback branch
-ok(True, '_open_path opens a folder (or its parent when missing)')
+# Stub openUrl: offscreen QPA does not spawn, but a direct run under a real desktop
+# platform would pop an external file-manager window -- capture the path instead.
+_op_opened = []
+_op_oou = _QDS.openUrl
+try:
+    _QDS.openUrl = staticmethod(lambda url: _op_opened.append(url.toLocalFile()) or True)
+    win._open_path('/tmp')                       # exists  # nosec B108 -- known-existing dir to exercise _open_path
+    win._open_path('/tmp/no-such-dir-xyz/child') # missing -> parent  # nosec B108 -- missing path exercises the parent-fallback branch
+finally:
+    _QDS.openUrl = _op_oou
+ok(len(_op_opened) == 2 and _op_opened[0] == '/tmp',
+   '_open_path opens the folder, and a missing path falls back to a parent')
 
 # --- the font-noise message handler drops the flood, passes real messages -----
 from PyQt6.QtCore import qWarning                                # noqa: E402

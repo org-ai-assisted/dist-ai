@@ -272,20 +272,39 @@ eq(_wmt.lineWrapMode(), _NW,
    'TUI grid never wraps (sized to fit; Detail/Reveal cells fall back to the box)')
 _wmt.close()
 
-# alternate scroll: in the ALTERNATE screen a full-screen program owns the display
-# (no local scrollback, no mouse reporting), so the wheel is translated into arrow-key
-# line scrolls sent to the child -- the reported bug was a dead wheel while Page
-# Up/Down worked. The normal screen keeps the local wheel scroll (no arrows).
-from PyQt6.QtGui import QWheelEvent                                # noqa: E402
-from PyQt6.QtCore import QPoint as _QP, QPointF as _QPF           # noqa: E402
+# alternate scroll: a full-screen program that did NOT request the mouse (a plain
+# pager in the alternate screen) has no local scrollback to move, so the wheel is
+# translated to arrow-key line scrolls (xterm's alternateScroll). A program that DID
+# request the mouse instead gets full SGR mouse reporting -- see the konsole-parity
+# block below. The normal screen keeps the local wheel scroll (nothing to the child).
+import re                                                         # noqa: E402
+from PyQt6.QtGui import QWheelEvent, QMouseEvent as _QME, QFocusEvent as _QFEv  # noqa: E402
+from PyQt6.QtCore import QPoint as _QP, QPointF as _QPF, QEvent  # noqa: E402,F811
 _alt = SecureTerminal(command='/bin/cat', tui=True)
 _asent = spy_writes(_alt)
+_SGR_RE = re.compile(rb'^\x1b\[<(\d+);(\d+);(\d+)([Mm])$')
 
 
-def _wheel_ev(dy):
-    return QWheelEvent(_QPF(5, 5), _QPF(5, 5), _QP(0, 0), _QP(0, dy),
-                       Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+def _wheel_ev(dy, mods=Qt.KeyboardModifier.NoModifier, dx=0, pos=(5, 5)):
+    p = _QPF(pos[0], pos[1])
+    return QWheelEvent(p, p, _QP(0, 0), _QP(dx, dy),
+                       Qt.MouseButton.NoButton, mods,
                        Qt.ScrollPhase.NoScrollPhase, False)
+
+
+def _parse_sgr(chunks):
+    """(button, col, row, 'M'|'m') of a single SGR mouse report in `chunks`, or None
+    -- coordinate-robust across font envs (asserts structure, not exact cells)."""
+    m = _SGR_RE.match(b''.join(chunks))
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3)),
+            m.group(4).decode()) if m else None
+
+
+def _mev(kind, btn, mods=Qt.KeyboardModifier.NoModifier, buttons=None, pos=(200, 100)):
+    p = _QPF(pos[0], pos[1])
+    held = buttons if buttons is not None else (
+        btn if kind == QEvent.Type.MouseButtonPress else Qt.MouseButton.NoButton)
+    return _QME(kind, p, p, btn, held, mods)
 
 
 _alt._alt_screen = True
@@ -317,7 +336,205 @@ eq(_alt._wheel_accum, 0, 'alt-screen EXIT drops any stale wheel-scroll remainder
 _alt._wheel_accum = 39
 feed_output(_alt, b'\x1b[?1049h')          # re-enter the alt screen
 eq(_alt._wheel_accum, 0, 'alt-screen ENTER drops any stale wheel-scroll remainder')
+
+# konsole/xterm mouse-reporting parity: once the child requests tracking (1000/
+# 1002/1003) + SGR encoding (1006), its mouse and wheel events are REPORTED to it at
+# the cell UNDER THE POINTER (not a pinned corner, not arrow keys). Shift is the
+# local override throughout. feed_output drives the real DECSET scan that arms this.
+_alt.show()
+_alt._cols = 80
+_alt._alt_screen = True
+_alt._wheel_accum = 0
+_alt._wheel_accum_x = 0
+feed_output(_alt, b'\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1004h\x1b[?1006h')
+ok(_alt._mouse_report_on(), 'tracking + SGR arms mouse reporting')
+ok(_alt.hasMouseTracking(), '1003 any-motion turns on widget mouse tracking')
+
+# wheel: vertical 64 up / 65 down, at the pointer cell (real coordinate, NOT 1;1).
+_asent.clear()
+_alt.wheelEvent(_wheel_ev(-120, pos=(200, 100)))
+_wd = _parse_sgr(_asent)
+ok(_wd is not None and _wd[0] == 65 and _wd[3] == 'M', 'wheel down -> SGR button 65 press')
+ok(_wd[1] > 1 or _wd[2] > 1, 'the wheel report uses the pointer cell, not a pinned 1;1')
+_asent.clear()
+_alt._wheel_accum = 0
+_alt.wheelEvent(_wheel_ev(120, pos=(200, 100)))
+ok(_parse_sgr(_asent)[0] == 64, 'wheel up -> SGR button 64')
+# horizontal wheel -> 66 left / 67 right (trackpad/tilt parity)
+_asent.clear()
+_alt._wheel_accum_x = 0
+_alt.wheelEvent(_wheel_ev(0, dx=120, pos=(200, 100)))
+ok(_parse_sgr(_asent)[0] == 67, 'horizontal wheel right -> SGR button 67')
+_asent.clear()
+_alt._wheel_accum_x = 0
+_alt.wheelEvent(_wheel_ev(0, dx=-120, pos=(200, 100)))
+ok(_parse_sgr(_asent)[0] == 66, 'horizontal wheel left -> SGR button 66')
+# a huge single delta is CAPPED at 8 reports (no unbounded burst)
+_asent.clear()
+_alt._wheel_accum = 0
+_alt.wheelEvent(_wheel_ev(-120 * 12, pos=(200, 100)))
+eq(len(_asent), 8, 'a huge wheel delta is capped at 8 reports')
+
+# buttons: left/middle/right press (0/1/2 'M') + release (same code, 'm')
+for _btn, _code in ((Qt.MouseButton.LeftButton, 0),
+                    (Qt.MouseButton.MiddleButton, 1),
+                    (Qt.MouseButton.RightButton, 2)):
+    _asent.clear()
+    _alt.mousePressEvent(_mev(QEvent.Type.MouseButtonPress, _btn))
+    _pp = _parse_sgr(_asent)
+    ok(_pp[0] == _code and _pp[3] == 'M', 'press button %d -> SGR %d M' % (_code, _code))
+    _asent.clear()
+    _alt.mouseReleaseEvent(_mev(QEvent.Type.MouseButtonRelease, _btn))
+    _pr = _parse_sgr(_asent)
+    ok(_pr[0] == _code and _pr[3] == 'm', 'release button %d -> SGR %d m' % (_code, _code))
+
+# keyboard modifiers encoded: Ctrl +16, Alt +8 (Shift is NEVER encoded)
+_asent.clear()
+_alt.mousePressEvent(_mev(QEvent.Type.MouseButtonPress, Qt.MouseButton.LeftButton,
+                          Qt.KeyboardModifier.ControlModifier))
+ok(_parse_sgr(_asent)[0] == 0 + 16, 'Ctrl+left press encodes the +16 modifier bit')
+_alt.mouseReleaseEvent(_mev(QEvent.Type.MouseButtonRelease, Qt.MouseButton.LeftButton))
+_asent.clear()
+_alt.mousePressEvent(_mev(QEvent.Type.MouseButtonPress, Qt.MouseButton.LeftButton,
+                          Qt.KeyboardModifier.AltModifier))
+ok(_parse_sgr(_asent)[0] == 0 + 8, 'Alt+left press encodes the +8 modifier bit')
+_alt.mouseReleaseEvent(_mev(QEvent.Type.MouseButtonRelease, Qt.MouseButton.LeftButton))
+
+# drag (button held) reports motion +32, coalesced to one report per CELL
+_alt._mouse_report_cell = None
+_alt.mousePressEvent(_mev(QEvent.Type.MouseButtonPress, Qt.MouseButton.LeftButton,
+                          pos=(40, 40)))
+_asent.clear()
+_alt.mouseMoveEvent(_mev(QEvent.Type.MouseMove, Qt.MouseButton.NoButton,
+                         buttons=Qt.MouseButton.LeftButton, pos=(400, 300)))
+_dm = _parse_sgr(_asent)
+ok(_dm is not None and _dm[0] == 0 + 32, 'left-drag reports motion with the +32 flag')
+_asent.clear()
+_alt.mouseMoveEvent(_mev(QEvent.Type.MouseMove, Qt.MouseButton.NoButton,
+                         buttons=Qt.MouseButton.LeftButton, pos=(400, 300)))
+eq(_asent, [], 'a drag within the SAME cell is coalesced (no duplicate report)')
+_alt.mouseReleaseEvent(_mev(QEvent.Type.MouseButtonRelease, Qt.MouseButton.LeftButton,
+                            pos=(400, 300)))
+
+# any-motion (1003), no button held, reports code 3+32 = 35
+_alt._mouse_report_cell = None
+_asent.clear()
+_alt.mouseMoveEvent(_mev(QEvent.Type.MouseMove, Qt.MouseButton.NoButton, pos=(120, 90)))
+ok(_parse_sgr(_asent)[0] == 3 + 32, 'button-less any-motion reports code 35 (3 + motion)')
+# middle- and right-button drags carry their own button code (1/2) + the +32 motion
+_alt._mouse_report_cell = None
+_asent.clear()
+_alt.mouseMoveEvent(_mev(QEvent.Type.MouseMove, Qt.MouseButton.NoButton,
+                         buttons=Qt.MouseButton.MiddleButton, pos=(300, 200)))
+ok(_parse_sgr(_asent)[0] == 1 + 32, 'middle-drag reports code 33 (1 + motion)')
+_alt._mouse_report_cell = None
+_asent.clear()
+_alt.mouseMoveEvent(_mev(QEvent.Type.MouseMove, Qt.MouseButton.NoButton,
+                         buttons=Qt.MouseButton.RightButton, pos=(360, 260)))
+ok(_parse_sgr(_asent)[0] == 2 + 32, 'right-drag reports code 34 (2 + motion)')
+# Shift keeps motion LOCAL -- it falls through to the base handler, no report
+_asent.clear()
+_alt.mouseMoveEvent(_mev(QEvent.Type.MouseMove, Qt.MouseButton.NoButton,
+                         Qt.KeyboardModifier.ShiftModifier,
+                         buttons=Qt.MouseButton.LeftButton, pos=(500, 400)))
+eq(_asent, [], 'Shift+drag is local (no motion report)')
+
+# focus in/out reported under 1004
+_asent.clear()
+_alt.focusInEvent(_QFEv(QEvent.Type.FocusIn))
+eq(b''.join(_asent), b'\x1b[I', 'focus-in reports ESC[I under mode 1004')
+_asent.clear()
+_alt.focusOutEvent(_QFEv(QEvent.Type.FocusOut))
+eq(b''.join(_asent), b'\x1b[O', 'focus-out reports ESC[O under mode 1004')
+
+# Shift is the LOCAL override: Shift+wheel and Shift+press write nothing to the child
+_asent.clear()
+_alt._wheel_accum = 0
+_alt.wheelEvent(_wheel_ev(-120, Qt.KeyboardModifier.ShiftModifier, pos=(200, 100)))
+eq(_asent, [], 'Shift+wheel is local (no report to the child)')
+_asent.clear()
+_alt.mousePressEvent(_mev(QEvent.Type.MouseButtonPress, Qt.MouseButton.LeftButton,
+                          Qt.KeyboardModifier.ShiftModifier))
+eq(_asent, [], 'Shift+press is local text selection (no report)')
+
+# _event_cell clamps: a point past the right edge clamps to the column count; the
+# top-left corner clamps to 1;1 (never a cell off the grid)
+_asent.clear()
+_alt.wheelEvent(_wheel_ev(-120, pos=(100000, 100000)))
+ok(_parse_sgr(_asent)[1] == 80, 'a point past the right edge clamps col to the grid width')
+_asent.clear()
+_alt._wheel_accum = 0
+_alt.wheelEvent(_wheel_ev(-120, pos=(-1000, -1000)))
+_c = _parse_sgr(_asent)
+ok(_c[1] == 1 and _c[2] == 1, 'a point above/left of the grid clamps to cell 1;1')
+
+# a button not in the SGR table (e.g. a mouse back-button) is NOT reported; it falls
+# through to the local handler
+_asent.clear()
+_alt.mousePressEvent(_mev(QEvent.Type.MouseButtonPress, Qt.MouseButton.BackButton))
+eq(_asent, [], 'a non-SGR button (back) is not reported')
+
+# double-click while the child grabs the mouse reports a press, not a word-select
+_asent.clear()
+_alt.mouseDoubleClickEvent(_mev(QEvent.Type.MouseButtonPress, Qt.MouseButton.LeftButton))
+ok(_parse_sgr(_asent) is not None and _parse_sgr(_asent)[3] == 'M',
+   'a double-click is reported as a press when the child grabs the mouse')
+_alt.mouseReleaseEvent(_mev(QEvent.Type.MouseButtonRelease, Qt.MouseButton.LeftButton))
+
+# the child resets the modes (well-behaved exit): reporting stops, mouse tracking
+# off, and the alt-screen wheel falls back to the arrow surrogate
+feed_output(_alt, b'\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1006l')
+ok(not _alt._mouse_report_on() and not _alt.hasMouseTracking(),
+   'a full mode reset stops reporting and mouse tracking')
+_asent.clear()
+_alt._wheel_accum = 0
+_alt.wheelEvent(_wheel_ev(-120, pos=(200, 100)))
+eq(b''.join(_asent), b'\x1b[B' * 3,
+   'after a mode reset the alt-screen wheel falls back to arrow keys')
+# focus is NOT reported once 1004 is cleared
+_asent.clear()
+_alt.focusInEvent(_QFEv(QEvent.Type.FocusIn))
+eq(_asent, [], 'focus is not reported once mode 1004 is cleared')
 _alt.close()
+
+# A split DECSET mouse-mode marker is still seen across a read() boundary (same
+# carry guarantee as the alt-screen scan).
+_msplit = SecureTerminal(command='/bin/cat', tui=True)
+feed_output(_msplit, b'\x1b[?100')             # half of ?1002h
+ok(not _msplit._mouse_modes, 'a half mouse-mode marker does not yet arm the request')
+feed_output(_msplit, b'2h\x1b[?1006h')         # completes across the boundary
+ok(_msplit._mouse_modes == {1002, 1006},
+   'a split mouse-mode marker is detected across the read boundary')
+# A stray semicolon (empty param field) is tolerated, not a crash: ESC[?1000;h
+# arms 1000 and ignores the empty field.
+feed_output(_msplit, b'\x1b[?1000;h')
+ok(1000 in _msplit._mouse_modes,
+   'a DECSET with an empty param field arms the named mode and ignores the blank')
+# A hostile over-long DECSET parameter must NOT crash the read loop: bare int()
+# raises above Python's 4300-digit string limit, so the scan parses via _safe_int
+# (out-of-range -> 0 -> ignored). Regression for the DoS finding.
+feed_output(_msplit, b'\x1b[?' + b'1' * 4301 + b'h')
+ok(0 not in _msplit._mouse_modes and isinstance(_msplit._mouse_modes, set),
+   'an over-long DECSET parameter is ignored, not a ValueError crash')
+_msplit.close()
+
+# EOF flush: a program's FINAL output that ends mid-escape must NOT vanish. In CLI
+# mode feed_chunk_carry holds a trailing possibly-incomplete escape in _esc_carry;
+# on child exit it will never complete, so it is flushed (its payload rendered)
+# rather than dropped -- regression for the silent-final-output-loss finding.
+_eoft = SecureTerminal(command='/bin/cat', tui=False)
+feed_output(_eoft, b'result: \x1b' + b'!' * 50)     # ends with a dangling ESC tail
+ok('!' * 50 not in _eoft.transcript_text(),
+   'the dangling escape tail is held back, not shown yet')
+_er, _ew = os.pipe()                                 # an empty pipe, write end closed:
+os.close(_ew)                                        # the next read returns b'' (EOF)
+_eoft._fd = _er
+_eoft._read_and_render()                             # the child-exit / EOF path
+os.close(_er)
+_eoft._flush_paint()
+ok('result:' in _eoft.transcript_text() and '!' * 50 in _eoft.transcript_text(),
+   'child exit flushes the held escape tail -- the final output is not lost')
+_eoft.close()
 # home-pin: a terminal does not auto-scroll horizontally -- a paint anchors the view at
 # the left so the START of every row stays visible (the reported bug: the auto-follow
 # parked the viewport mid-line, clipping every row's left edge) -- but NEVER by hiding
@@ -5142,44 +5359,45 @@ ok('#0;2' not in _gfxdoc and 'Gf=32' not in _gfxdoc and 'File=inline' not in _gf
 ok(_gfxsent == [], 'a graphics payload triggers no reply to the pty')
 _gfx.close()
 
-# --- mouse-tracking-reflection oracle: mouse/wheel/focus never reach the pty ---
-# even with a program requesting EVERY mouse mode (1000 click / 1002 drag / 1003
-# any-event / 1006 SGR) and focus (1004) reporting, a real press/move/release/wheel
-# or focus change writes no report escape to the child: secure-terminal has no
-# mouse-report path, so mouse stays a local selection function. A vulnerable
-# terminal would answer each event with an ESC[<...M/m report on the child's stdin
-# (output turning later pointer motion into injected input). This mirrors the
-# terminal-poc-corpus 'mouse-tracking-reflection' PoC.
+# --- mouse-reporting oracle: OUTPUT never fabricates input; only real user events ---
+# secure-terminal now IMPLEMENTS mouse reporting (konsole/xterm parity -- see the
+# parity block above), so unlike its earlier stance it DOES answer real mouse/focus
+# events with ESC[<...M/m reports when the program asked for them. The security
+# property that REMAINS -- and the one this oracle guards -- is that a program's
+# OUTPUT cannot itself cause a write: enabling every mouse mode writes nothing back,
+# and Shift keeps a real event LOCAL. This is the updated terminal-poc-corpus
+# 'mouse-tracking-reflection' expectation for this terminal (reporting is a feature;
+# the invariant is output-cannot-inject).
 from PyQt6.QtGui import QFocusEvent as _QFE            # noqa: E402
-from PyQt6.QtGui import QWheelEvent as _QWheel         # noqa: E402
-from PyQt6.QtCore import QPoint as _QPointMs           # noqa: E402
 _mf = SecureTerminal(command='/bin/cat', tui=True)
-feed_output(_mf, b'\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?1004h')
 _mfsent = spy_writes(_mf)
+# Output that enables EVERY mouse mode + the alt screen writes NOTHING back by itself.
+feed_output(_mf, b'\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?1004h\x1b[?1049h')
+ok(_mfsent == [], 'enabling mouse modes from OUTPUT writes nothing back (no reflection)')
 _mflb = Qt.MouseButton.LeftButton
 _mfnb = Qt.MouseButton.NoButton
 _mfnm = Qt.KeyboardModifier.NoModifier
+_mfsh = Qt.KeyboardModifier.ShiftModifier
+# A real user press IS reported now (the feature).
 _mf.mousePressEvent(QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(9, 9),
                                 QPointF(9, 9), _mflb, _mflb, _mfnm))
-_mf.mouseMoveEvent(QMouseEvent(QEvent.Type.MouseMove, QPointF(12, 6), QPointF(12, 6),
-                               _mfnb, _mflb, _mfnm))
-_mf.mouseReleaseEvent(QMouseEvent(QEvent.Type.MouseButtonRelease, QPointF(12, 6),
-                                  QPointF(12, 6), _mflb, _mfnb, _mfnm))
-_mf.wheelEvent(_QWheel(QPointF(12, 6), QPointF(12, 6), _QPointMs(0, 0),
-                       _QPointMs(0, -120), _mfnb, _mfnm,
-                       Qt.ScrollPhase.NoScrollPhase, False))
-_mf.focusInEvent(_QFE(QEvent.Type.FocusIn))
-_mf.focusOutEvent(_QFE(QEvent.Type.FocusOut))
-ok(_mfsent == [],
-   'mouse-tracking: press/move/release/wheel/focus write no report escape to the '
-   'pty (got %r)' % _mfsent)
+ok(_mfsent and _mfsent[-1].startswith(b'\x1b[<') and _mfsent[-1].endswith(b'M'),
+   'a real user press IS reported to the child (mouse-reporting parity)')
+_mf.mouseReleaseEvent(QMouseEvent(QEvent.Type.MouseButtonRelease, QPointF(9, 9),
+                                  QPointF(9, 9), _mflb, _mfnb, _mfnm))
+# Shift keeps a real event LOCAL -- the override holds, no report reaches the child.
+_mfsent.clear()
+_mf.mousePressEvent(QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(9, 9),
+                                QPointF(9, 9), _mflb, _mflb, _mfsh))
+ok(_mfsent == [], 'Shift+press stays local -- no report (the local override holds)')
+_mf.mouseReleaseEvent(QMouseEvent(QEvent.Type.MouseButtonRelease, QPointF(9, 9),
+                                  QPointF(9, 9), _mflb, _mfnb, _mfsh))
 # POSITIVE CONTROL: the spy is wired to the one choke point (_write); a synthetic
-# mouse report pushed through it MUST be caught, proving the zero above is a real
-# observation and not a dead spy.
+# report pushed through it MUST be caught, proving the observations above are real.
+_mfsent.clear()
 _mf._write(b'\x1b[<0;12;6M')                          # pylint: disable=protected-access
 ok(_mfsent == [b'\x1b[<0;12;6M'],
-   'mouse-tracking positive control: a mouse report through _write is observed '
-   '(the spy is live, so the empty result above is real)')
+   'positive control: a report through _write is observed (the spy is live)')
 _mf.close()
 
 # --- synchronized-output DoS: a never-closed ESC[?2026h must self-release -------

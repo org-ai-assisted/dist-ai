@@ -185,6 +185,14 @@ assert_at "R-120 not blinded by a CRLF comment-tail backslash" "R-120" 3
 ## --- config-hosted embedded shell: R-191/192/194/195/100 --------------------
 run_det "$(printf '%s\n' '#!/bin/bash' 'bash -c "a' 'b' 'c' 'd' 'e' 'f' 'g"')"
 assert_at "R-192 flags a >5-line bash -c program" "R-192" 2
+## Wrapped: a shell '-c' reached THROUGH a wrapper ('ssh host -- bash -lc PROG')
+## is still an inline program -- the exact shape that slipped the gate once.
+run_det "$(printf '%s\n' '#!/bin/bash' 'ssh host -- bash -lc "a' 'b' 'c' 'd' 'e' 'f' 'g"')"
+assert_at "R-192 flags a wrapped 'ssh -- bash -lc' program" "R-192" 2
+## But NOT 'echo bash -c ...' -- echo is not a wrapper, so the bash token is
+## data, not the effective command (the documented false-positive to avoid).
+run_det "$(printf '%s\n' '#!/bin/bash' 'echo bash -c "a' 'b' 'c' 'd' 'e' 'f' 'g"')"
+assert_not_at "R-192 spares 'echo bash -c' (echo is not a wrapper)" "R-192" 2
 
 run_det_at "etc/systemd/system/x.service" \
    "$(printf '%s\n' '[Service]' 'ExecStart=/bin/bash -c "a; b; c"')"
@@ -198,6 +206,15 @@ run_det_at "etc/apt/apt.conf.d/99x" \
 assert_at "R-194 flags an if-block in an apt hook" "R-194" 1
 run_det_at "etc/apt/apt.conf.d/98x" 'DPkg::Post-Invoke {"/usr/libexec/hook"};'
 assert_not_at "R-194 spares a single-command apt hook" "R-194" 1
+## apt.conf's brace block is newline-insensitive: the directive and its quoted
+## value need not share a line. A multi-line block form must NOT bypass R-194.
+## Canary: the per-line scan missed this entirely.
+run_det_at "etc/apt/apt.conf.d/97x" \
+   "$(printf '%s\n' 'DPkg::Post-Invoke' '{' '   "a; b";' '};')"
+assert_at "R-194 flags a multi-line block apt hook" "R-194" 1
+run_det_at "etc/apt/apt.conf.d/96x" \
+   "$(printf '%s\n' 'DPkg::Post-Invoke' '{' '   "/usr/libexec/hook";' '};')"
+assert_not_at "R-194 spares a multi-line single-command apt hook" "R-194" 1
 
 run_det_at "etc/cron.d/job" '0 3 * * * root cd /s && ./p.sh; systemctl restart a'
 assert_at "R-195 flags a multi-statement cron command" "R-195" 1

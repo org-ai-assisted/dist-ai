@@ -766,9 +766,696 @@ class LintianDisabled(Rule):
                     "without authorization", assign)
 
 
+def _set_option_words(call):
+    """The option tokens of a 'set' call, up to a bare '--' (after which the
+    tokens are POSITIONAL parameters, not options). Yields (lit, is_short_cluster,
+    is_o_group): lit is the token text; is_short_cluster True for a '-xxx' bundle;
+    is_o_group True for a '-o'/'+o' (its name argument is consumed and skipped)."""
+    words = bash_ast.args(call)[1:]
+    i = 0
+    while i < len(words):
+        lit = bash_ast.word_string(words[i])
+        if lit is None:
+            i += 1
+            continue
+        if lit == "--":
+            return
+        if lit in ("-o", "+o"):
+            yield lit, False, True
+            i += 2  ## skip the option NAME argument
+            continue
+        if len(lit) > 1 and lit[0] in "-+":
+            yield lit, True, False
+        i += 1
+
+
+class ErrexitToggle(Rule):
+    """R-011: 'set +e' / 'set +o errexit' (or a '+' cluster containing 'e')
+    disables errexit -- forbidden. A '+u'/'+x' with no 'e' is not this rule."""
+
+    id = "R-011"
+    waiver_tag = "allow-errexit-toggle"
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def detect(self, ctx):
+        for call in bash_ast.call_exprs(ctx.tree):
+            if bash_ast.command_name(call) != "set":
+                continue
+            words = bash_ast.args(call)[1:]
+            for i, word in enumerate(words):
+                lit = bash_ast.word_string(word)
+                if lit is None or lit == "--" or not lit.startswith("+"):
+                    if lit == "--":
+                        break
+                    continue
+                if lit == "+o":
+                    nxt = (bash_ast.word_string(words[i + 1])
+                           if i + 1 < len(words) else None)
+                    if nxt == "errexit":
+                        yield _fail(ctx, "R-011", "R-011 errexit toggle", call)
+                        break
+                elif "e" in lit[1:]:
+                    yield _fail(ctx, "R-011", "R-011 errexit toggle", call)
+                    break
+
+
+class SetOptions(Rule):
+    """R-013: shell options must be set by long '-o <name>', ONE per line. A short
+    enable of errexit/nounset ('set -e', 'set -eu', 'set -euo pipefail') and more
+    than one option group on a single 'set' line ('set -o a -o b') are flagged; a
+    lone 'set -o <name>', a 'set --' positional form, and a bare 'set -x'/'set -E'
+    (no e/u) are spared. Scanning stops at a bare '--' (rest positional)."""
+
+    id = "R-013"
+    waiver_tag = "allow-short-set"
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def detect(self, ctx):
+        for call in bash_ast.call_exprs(ctx.tree):
+            if bash_ast.command_name(call) != "set":
+                continue
+            short_eu = False
+            o_groups = 0
+            for lit, is_short, is_o in _set_option_words(call):
+                if is_o:
+                    o_groups += 1
+                elif is_short and lit[0] == "-" and (
+                        "e" in lit[1:] or "u" in lit[1:]):
+                    short_eu = True
+            if short_eu or o_groups > 1:
+                yield _fail(
+                    ctx, "R-013",
+                    "R-013 set options long-form one-per-line", call)
+
+
+## A shellcheck directive comment: '# shellcheck <body>'. bash_ast.comments()
+## yields the text AFTER the '#', so the leading '#' is not in the match.
+_SC_SOURCE = re.compile(r'^\s*shellcheck\s+source=(\S+)')
+_SC_DEVNULL = re.compile(r'^\s*shellcheck\s+source=/dev/null(?:\s|$)')
+_SC_SC1091 = re.compile(r'^\s*shellcheck\s+disable=(?:[A-Z0-9]+,)*SC1091(?![0-9])')
+
+
+class ShellcheckSourceRelative(Rule):
+    """R-080: a 'shellcheck source=' directive path must be script-RELATIVE
+    (start with './' or '../') so shellcheck resolves it from the script's own
+    directory. An absolute or bare path is flagged."""
+
+    id = "R-080"
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def detect(self, ctx):
+        for comment in bash_ast.comments(ctx.tree):
+            match = _SC_SOURCE.match(comment.get("Text", ""))
+            if match and not match.group(1).startswith("."):
+                yield _fail(
+                    ctx, "R-080",
+                    "R-080 shellcheck source= must be relative (start with ./ "
+                    "or ../)", comment.get("Pos"))
+
+
+class ShellcheckSourceDevNull(Rule):
+    """R-081: 'shellcheck source=/dev/null' silences SC1091 without letting
+    shellcheck follow the real file -- point source= at the file instead."""
+
+    id = "R-081"
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def detect(self, ctx):
+        for comment in bash_ast.comments(ctx.tree):
+            if _SC_DEVNULL.match(comment.get("Text", "")):
+                yield _fail(ctx, "R-081", "R-081 source=/dev/null",
+                            comment.get("Pos"))
+
+
+class Sc1091Disable(Rule):
+    """R-085 (advisory): a '# shellcheck disable=...SC1091...' on a line
+    IMMEDIATELY above or below a '# shellcheck source=' directive is DEAD --
+    shellcheck follows the source and never raises SC1091. A disable with no
+    adjacent source= is load-bearing (a runtime path shellcheck cannot follow),
+    so it is spared. Advisory, waivable with 'allow-sc1091-disable'. The location
+    is embedded in the message because a NOTE carries no separate location field."""
+
+    id = "R-085"
+    waiver_tag = "allow-sc1091-disable"
+    advisory = True
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def detect(self, ctx):
+        comments = list(bash_ast.comments(ctx.tree))
+        source_lines = set()
+        for comment in comments:
+            if _SC_SOURCE.match(comment.get("Text", "")):
+                line = (comment.get("Pos") or {}).get("Line")
+                if line is not None:
+                    source_lines.add(line)
+        for comment in comments:
+            if not _SC_SC1091.match(comment.get("Text", "")):
+                continue
+            line = (comment.get("Pos") or {}).get("Line")
+            if line is None:
+                continue
+            if (line - 1) in source_lines or (line + 1) in source_lines:
+                directive = ("#" + comment.get("Text", "")).strip()
+                yield _note(
+                    ctx, "R-085",
+                    "R-085 dead SC1091 disable adjacent to a source= directive "
+                    "at '%s:%d': %s" % (ctx.path, line, directive), line)
+
+
+## shfmt case-terminator operator constant for ';;' (DblSemicolon). ';&' and
+## ';;&' fall-through terminators are different ops and are not this rule.
+_CASE_DBLSEMI = 30
+
+
+class DoubleSemi(Rule):
+    """R-070: a case-arm ';;' terminator ENDING a line must be on its own line,
+    not glued to the arm's last command ('foo ;;' / 'foo;;' as the whole line).
+    Read from the CaseItem terminator position in the AST, so a ';;' inside a
+    string or a '#' comment is never a terminator. The fully-inline arm form
+    'case ... ) cmd ;; esac' (real code AFTER the ';;' on the same physical line)
+    is EXEMPT (style guide): the rule only targets a ';;' at END-OF-LINE, matching
+    the former EOL grep -- so a compact one-line case stays as-is."""
+
+    id = "R-070"
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    @staticmethod
+    def _at_end_of_line(data, offset):
+        """True if only whitespace (or a '#' comment) follows the ';;' whose
+        first byte is at OFFSET, up to the newline. Real code after it (the
+        fully-inline 'esac' / next pattern) means the ';;' is not end-of-line."""
+        index = offset + 2  ## past the ';;'
+        length = len(data)
+        while index < length and data[index:index + 1] != b"\n":
+            char = data[index:index + 1]
+            if char in (b" ", b"\t", b"\r"):
+                index += 1
+                continue
+            return char == b"#"  ## a trailing comment counts as end-of-line
+        return True
+
+    def _glued_items(self, ctx, data):
+        for clause in bash_ast.nodes_of_type(ctx.tree, "CaseClause"):
+            for item in clause.get("Items", []):
+                if item.get("Op") != _CASE_DBLSEMI:
+                    continue
+                pos = item.get("OpPos") or {}
+                op_line = pos.get("Line")
+                op_offset = pos.get("Offset")
+                stmts = item.get("Stmts") or []
+                if op_line is None or op_offset is None or not stmts:
+                    continue
+                if (stmts[-1].get("End") or {}).get("Line") != op_line:
+                    continue  ## ';;' already on its own line
+                if self._at_end_of_line(data, op_offset):
+                    yield item
+
+    def detect(self, ctx):
+        data = ctx.source.encode("utf-8")
+        for item in self._glued_items(ctx, data):
+            yield _fail(ctx, "R-070", "R-070 ';;' on own line", item.get("OpPos"))
+
+
+class FlowChaining(Rule):
+    """R-074: a control-flow keyword (break / continue / return) must not be
+    glued onto a preceding statement with ';' ('foo; break'). Detected from a
+    COMMAND-position break/continue/return (so a 'return_value=...' assignment is
+    not it) whose keyword is preceded, on the same physical line, by a ';'. exit
+    is deliberately excluded (a frequent separator inside awk/sed program strings
+    and the tolerated one-liner guard idiom)."""
+
+    id = "R-074"
+    _KEYWORDS = frozenset({"break", "continue", "return"})
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def _chained_calls(self, ctx, data):
+        for call in bash_ast.call_exprs(ctx.tree):
+            if bash_ast.command_name(call) not in self._KEYWORDS:
+                continue
+            start = (call.get("Pos") or {}).get("Offset")
+            if start is None:
+                continue
+            ## Walk back over HORIZONTAL whitespace only (never a newline, so a
+            ## keyword on its own line whose previous line ends in ';' is spared).
+            i = start - 1
+            while i >= 0 and data[i:i + 1] in (b" ", b"\t"):
+                i -= 1
+            if i >= 0 and data[i:i + 1] == b";":
+                yield call, i
+
+    def detect(self, ctx):
+        data = ctx.source.encode("utf-8")
+        for call, _semi in self._chained_calls(ctx, data):
+            yield _fail(
+                ctx, "R-074", "R-074 ';'-chained break/continue/return", call)
+
+
+class InterpreterPrepend(Rule):
+    """R-102: run a script by its shebang, not by prepending 'bash'/'sh' ('bash
+    ci/build', 'sh foo.sh'). Command position comes from the AST, so 'du -sh
+    /path' (command is du) and 'wrapper.sh /etc/x' (command is wrapper.sh) are
+    not mistaken for an 'sh' prepend. Flags when the FIRST operand is a script:
+    a literal path with a '.sh'/'.bsh'/'.bash' extension or containing a '/'. A
+    flag ('bash -c', 'bash --norc') or a variable/quoted operand is spared.
+
+    (Shell files only for now; the embedded shell of a workflow 'run:' block --
+    the former grep also scanned .yml -- is a follow-up on WorkflowInlineShell.)"""
+
+    id = "R-102"
+    _SCRIPT_EXT = (".sh", ".bsh", ".bash")
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def detect(self, ctx):
+        for call in bash_ast.call_exprs(ctx.tree):
+            if bash_ast.command_name(call) not in ("bash", "sh"):
+                continue
+            call_args = bash_ast.args(call)
+            if len(call_args) < 2:
+                continue
+            operand = bash_ast.word_string(call_args[1])
+            if operand is None or operand.startswith("-"):
+                continue  ## a variable/expanded operand, or a flag -> spared
+            if operand.endswith(self._SCRIPT_EXT) or "/" in operand:
+                yield _fail(ctx, "R-102",
+                            "R-102 interpreter prepend (use shebang)", call)
+
+
+class TrapInline(Rule):
+    """R-051: a 'trap' handler must be a named function, not an inline command
+    string ('trap "rm -f ${t}" EXIT'). Spared: an unquoted name ('trap cleanup
+    EXIT'), an empty handler ('trap "" EXIT' clears it), and the parameterized
+    dispatch idiom -- a quoted string that is exactly ONE name (function or
+    '${var}') followed by VARIABLE-expansion arguments only ('trap "$h $sig"
+    "$sig"'), since bash passes the handler no signal argument. A literal
+    argument anywhere ('${cmd} -f x') keeps it flagged. Scoped to real 'trap'
+    calls from the AST, so a 'trap' in a comment or a string is not a live trap."""
+
+    id = "R-051"
+    ## Opening quote, one name (function or ${var}/$var/name), then variable
+    ## arguments only, then the matching closing quote. Anchored to the WHOLE
+    ## handler so any literal argument breaks the match and the trap is flagged.
+    _ALLOW = re.compile(
+        r"""^(['"])(?:\$\{[A-Za-z_]\w*\}|\$?[A-Za-z_]\w*)"""
+        r"""(?:\s+\$\{?[A-Za-z_]\w*\}?)*\1$""")
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def detect(self, ctx):
+        for call in bash_ast.call_exprs(ctx.tree):
+            if bash_ast.command_name(call) != "trap":
+                continue
+            call_args = bash_ast.args(call)
+            if len(call_args) < 2:
+                continue
+            raw = bash_ast.word_source(call_args[1], ctx.source)
+            if not raw or raw[0] not in "'\"":
+                continue  ## unquoted -> a named function/reset, spared
+            if len(raw) >= 2 and not raw[1:-1]:
+                continue  ## empty handler ('' / "") clears the trap, spared
+            if self._ALLOW.match(raw):
+                continue  ## name + variable args -> dispatch idiom, spared
+            yield _fail(ctx, "R-051", "R-051 trap inline command", call)
+
+
+def _printf_calls(tree):
+    """(stmt, call) for every COMMAND-position printf. From the AST, so a printf
+    inside a single-quoted awk program, inside another printf's data string, or
+    in a '#' comment is not a shell printf and is never yielded -- the quote/
+    comment tracking the former line walker hand-rolled is free here."""
+    for stmt in bash_ast.iter_stmts(tree):
+        cmd = stmt.get("Cmd")
+        if (isinstance(cmd, dict) and cmd.get("Type") == "CallExpr"
+                and bash_ast.command_name(cmd) == "printf"):
+            yield stmt, cmd
+
+
+def _printf_format(call, source):
+    """(inner, single_quoted) for a printf CALL's format argument, or (None,
+    False) if it has none. inner is the format with its surrounding quotes
+    stripped; single_quoted marks a '...' compile-time literal (nothing can be
+    interpolated INTO it). printf's own options are skipped so the FORMAT is
+    found, not an option: '-v NAME' (write to a variable, consumes its name) and
+    a '--' end-of-options marker -- otherwise 'printf -v NAME FMT' / 'printf --
+    FMT' would read '-v'/'--' as the format and flag every such call."""
+    call_args = bash_ast.args(call)
+    total = len(call_args)
+    index = 1
+    while index < total:
+        option = bash_ast.word_source(call_args[index], source)
+        if option == "-v" and index + 2 < total:
+            index += 2
+            continue
+        if option == "--":
+            index += 1
+        break
+    if index >= total:
+        return None, False
+    raw = bash_ast.word_source(call_args[index], source)
+    if not raw:
+        return None, False
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "'\"":
+        return raw[1:-1], raw[0] == "'"
+    return raw, False
+
+
+class BareNewlinePrintf(Rule):
+    """R-031: a printf that emits a newline must pass the data explicitly --
+    'printf \\n' (newline baked into the format) or a bare 'printf %s\\n' with the
+    data argument omitted must be 'printf %s\\n' "". Flags a printf whose format
+    is '(%s)?\\n+' and that carries NO data argument (a trailing '#' comment is
+    not a data argument)."""
+
+    id = "R-031"
+    _NEWLINE_ONLY = re.compile(r'^(?:%s)?(?:\\n)+$')
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def detect(self, ctx):
+        for _stmt, call in _printf_calls(ctx.tree):
+            if len(bash_ast.args(call)) != 2:  ## has a data argument
+                continue
+            inner, _single = _printf_format(call, ctx.source)
+            if inner is not None and self._NEWLINE_ONLY.match(inner):
+                yield _fail(
+                    ctx, "R-030/R-031",
+                    'R-030/R-031 newline printf needs explicit "" arg', call)
+
+
+class PrintfFormatString(Rule):
+    """R-030: a printf format must not INTERPOLATE data -- all data goes in the
+    data argument. A DOUBLE-quoted or UNQUOTED format that is not a fixed
+    allowlisted verb can read a '$var' / command substitution straight INTO the
+    format (the injection this prevents). A SINGLE-quoted format is a compile-time
+    literal that interpolates nothing, so it is allowed whatever verbs it uses
+    ('%8d', '%-12s' aligned columns, '%d' numeric validators) -- the data still
+    goes in the data argument."""
+
+    id = "R-030"
+    waiver_tag = "printf-format"
+    _ALLOWED = frozenset({
+        "%s", "%s\\n", "%s\\0", "%q", "%q\\n", "%b", "%b\\n", "0x%x", "%x"})
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def detect(self, ctx):
+        for _stmt, call in _printf_calls(ctx.tree):
+            inner, single_quoted = _printf_format(call, ctx.source)
+            ## single-quoted is a literal, nothing interpolates -> safe whatever
+            ## verbs it uses; an allowlisted verb is safe in any quoting.
+            if inner is None or single_quoted or inner in self._ALLOWED:
+                continue
+            yield _fail(
+                ctx, "R-030",
+                "R-030 printf format string must be fixed ('%s' / '%s\\n')", call)
+
+
+class HeaderFirst(Rule):
+    """R-002: a '## style-ok:' waiver must sit BELOW the '## Copyright' header,
+    not above it. Flag when the first header-comment 'style-ok:' line precedes
+    the first '## Copyright' line (both anchored to a real '##' header comment,
+    so a mention inside a string or echo does not count)."""
+
+    id = "R-002"
+    _STYLE = re.compile(r'^[ \t]*##[ \t]*style-ok:')
+    _COPYRIGHT = re.compile(r'^[ \t]*##[ \t]+Copyright')
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def detect(self, ctx):
+        style_line = copyright_line = None
+        for number, line in enumerate(ctx.source.split("\n"), 1):
+            if style_line is None and self._STYLE.match(line):
+                style_line = number
+            if copyright_line is None and self._COPYRIGHT.match(line):
+                copyright_line = number
+        if (style_line is not None and copyright_line is not None
+                and style_line < copyright_line):
+            yield model.fail(
+                "R-002",
+                "R-002 header: '## style-ok' at line %d precedes '## Copyright' "
+                "at line %d; move the waiver below the header"
+                % (style_line, copyright_line), ctx.path, style_line)
+
+
+## The seven strict-mode directives R-010 requires, matched WHOLE-LINE at column
+## zero (a directive repeated seven times must not satisfy the block).
+_STRICT_DIRECTIVES = (
+    "set -o errexit", "set -o nounset", "set -o pipefail", "set -o errtrace",
+    "shopt -s inherit_errexit", "shopt -s shift_verbose", "export LC_ALL=C",
+)
+_STRICT_HEADER_LINES = 160
+## A real was_executed()/was_sourced() guard CALL (command position), not a
+## comment or an assignment ('was_executed=1') or a mention ('${was_sourced}').
+## Matched per LINE (like the bash grep), so '[^#]*' never crosses a newline.
+_SOURCE_GUARD = re.compile(
+    r'^[^#]*(?:^|[ \t;&|!(])(?:was_executed|was_sourced)(?:[ \t;&|)]|$)')
+_GUARD_ERREXIT = re.compile(r'^[ \t]+set -o errexit[ \t]*$', re.MULTILINE)
+_INHERIT_ERREXIT = re.compile(r'^[ \t]*shopt -s inherit_errexit[ \t]*$',
+                              re.MULTILINE)
+_SHIFT_VERBOSE = re.compile(r'^[ \t]*shopt -s shift_verbose[ \t]*$',
+                            re.MULTILINE)
+_INDENTED_LC_ALL = re.compile(r'^[ \t]+export LC_ALL=C[ \t]*$', re.MULTILINE)
+
+
+class StrictModeBlock(Rule):
+    """R-010: an executed script must enable the seven-directive strict-mode
+    block (set -o errexit/nounset/pipefail/errtrace, shopt -s inherit_errexit/
+    shift_verbose, export LC_ALL=C) at column zero in its first 160 lines.
+
+    Exempt: '## style-ok: no-strict' (a sourced-only fragment must not leak
+    strict mode into the sourcing shell). Source-able DUAL-mode scripts keep zero
+    column-zero strict lines and guard the block behind a was_executed()/
+    was_sourced() check -- those are exempt from the all-seven rule, but when the
+    guarded block DOES enable errexit (indented 'set -o errexit'), the indented
+    shopt half + 'export LC_ALL=C' are still enforced (they are the copied-in
+    lines authors forget). A partial top-level block (1..6) is not clean and
+    stays subject to the all-seven check."""
+
+    id = "R-010"
+    waiver_tag = "no-strict"
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def detect(self, ctx):
+        source = ctx.source
+        header = "\n".join(source.split("\n")[:_STRICT_HEADER_LINES])
+        header_lines = set(line.strip("\r") for line in header.split("\n"))
+        present = sum(1 for directive in _STRICT_DIRECTIVES
+                      if directive in header_lines)
+        guarded = any(_SOURCE_GUARD.search(line)
+                      for line in source.split("\n"))
+        if present == 0 and guarded:
+            ## Source-able guarded script: exempt from all-seven. Enforce the
+            ## indented shopt half + export only when the guard enables errexit.
+            if _GUARD_ERREXIT.search(source):
+                missing = []
+                if not _INHERIT_ERREXIT.search(source):
+                    missing.append("shopt -s inherit_errexit")
+                if not _SHIFT_VERBOSE.search(source):
+                    missing.append("shopt -s shift_verbose")
+                if not _INDENTED_LC_ALL.search(source):
+                    missing.append("export LC_ALL=C")
+                if missing:
+                    yield model.fail(
+                        "R-010",
+                        "R-010 shopt block: source-able guarded script enables "
+                        "errexit but its was_executed block is missing: "
+                        + ", ".join(missing), ctx.path, 1)
+            return
+        if present < len(_STRICT_DIRECTIVES):
+            yield model.fail(
+                "R-010",
+                "R-010 strict-mode block: only %d/%d distinct strict-mode "
+                "directives in the first %d lines"
+                % (present, len(_STRICT_DIRECTIVES), _STRICT_HEADER_LINES),
+                ctx.path, 1)
+
+
+class TmpHardcode(Rule):
+    """R-170: a hardcoded '/tmp' path (use the ${TMP} temp dir). '/tmp' as an
+    absolute path -- not preceded by a path/word char (so 'debian/tmp',
+    '${d}/tmp', '~/tmp' are subdirectories, not the system path) and not followed
+    by one (so '/tmpfs', '/tmp.bak' are other names; a following '/' IS a real
+    path). Comment lines are skipped. The temp-dir variable INITIALISATIONS
+    ('TMP=/tmp', 'export TMPDIR=/tmp', the bwrap '--setenv TMPDIR /tmp'), the one
+    place the literal must appear, are spared -- whole-line, so a line carrying
+    both an init and a real hardcode is a narrow accepted residual."""
+
+    id = "R-170"
+    waiver_tag = "no-tmp-hardcode"
+    _MATCH = re.compile(
+        r'^[^#]*(?:^|[^A-Za-z0-9._/}~)])/tmp(?:$|[^A-Za-z0-9._-])')
+    _SPARE = re.compile(
+        r"(?:^|[ \t;&|(:])(?:export|readonly|local|declare)?[ \t]*"
+        r"(?:TMP|TMPDIR|TEMP|TEMPDIR)=['\"]?/tmp['\"]?(?:[ \t;&|)]|$)"
+        r"|--setenv[ \t]+(?:TMP|TMPDIR|TEMP|TEMPDIR)[ \t]+"
+        r"['\"]?/tmp['\"]?(?:[ \t;&|)]|$)")
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def detect(self, ctx):
+        for number, line in enumerate(ctx.source.split("\n"), 1):
+            if self._MATCH.search(line) and not self._SPARE.search(line):
+                yield model.fail(
+                    "R-170", "R-170 hardcoded /tmp (use ${TMP})", ctx.path,
+                    number)
+
+
+class HelpFromComments(Rule):
+    """R-153: never build help/usage by scraping the script's OWN comments (e.g.
+    a grep of a '^##' anchor over "$0"). Flags a NON-comment line carrying BOTH a
+    '^#'/'^##' anchor literal AND a '$0' / '${BASH_SOURCE' self-reference (in
+    either order). A plain 'dirname "${BASH_SOURCE[0]}"' or 'head "$0"' has no
+    anchor and is spared; a comment line naming the anti-pattern is spared."""
+
+    id = "R-153"
+    _ANCHOR_THEN_SELF = re.compile(r'\^##?.*(?:\$0|\$\{?BASH_SOURCE)')
+    _SELF_THEN_ANCHOR = re.compile(r'(?:\$0|\$\{?BASH_SOURCE).*\^##?')
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def detect(self, ctx):
+        for number, line in enumerate(ctx.source.split("\n"), 1):
+            if line.lstrip().startswith("#"):
+                continue
+            if (self._ANCHOR_THEN_SELF.search(line)
+                    or self._SELF_THEN_ANCHOR.search(line)):
+                yield model.fail(
+                    "R-153", "R-153 help scraped from comments", ctx.path,
+                    number)
+
+
+class DashDashDenylist(Rule):
+    """R-062: a standalone '--' passed to a tool that does NOT accept the
+    end-of-options marker (it becomes a literal operand and misbehaves).
+    Denylisted callers: 'git check-ref-format' and 'stcat'. fix() drops the '--'.
+    Command position and the git subcommand are read from the AST, so a '--' that
+    is a data operand of some OTHER command on the line is not mistaken for one of
+    these (the former line-regex could not tell them apart)."""
+
+    id = "R-062"
+    ## (command-name, required-subcommand-or-None) that reject '--'.
+    _DENY = (("git", "check-ref-format"), ("stcat", None))
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def _denied_dashdash(self, call):
+        """The standalone '--' word of a denylisted call, or None. A '--' is
+        standalone when the whole word is exactly '--' (so '--branch' is spared)."""
+        name = bash_ast.command_name(call)
+        call_args = bash_ast.args(call)
+        for deny_name, sub in self._DENY:
+            if name != deny_name:
+                continue
+            start = 1
+            if sub is not None:
+                if not (len(call_args) > 1
+                        and bash_ast.word_string(call_args[1]) == sub):
+                    return None
+                start = 2
+            for word in call_args[start:]:
+                if bash_ast.word_string(word) == "--":
+                    return word
+            return None
+        return None
+
+    def detect(self, ctx):
+        for call in bash_ast.call_exprs(ctx.tree):
+            if self._denied_dashdash(call) is not None:
+                yield _fail(ctx, "R-062",
+                            "R-062 '--' passed to a tool that rejects it", call)
+
+    def fix(self, ctx):
+        data = ctx.source.encode("utf-8")
+        for call in h.editable_calls(ctx.tree):
+            word = self._denied_dashdash(call)
+            if word is None:
+                continue
+            start, end = bash_ast.word_span(word)
+            ## Drop one leading space with the '--' so no double space is left.
+            if start > 0 and data[start - 1:start] == b" ":
+                start -= 1
+            yield Edit(start, end, "", "R-062")
+
+
+class EmptyArrayGuard(Rule):
+    """R-026: the obsolete empty-array guard '${name[@]+"${name[@]}"}' (a
+    workaround for bash < 4.4's nounset expanding an empty '[@]' to an error). On
+    bash 4.4+ '"${name[@]}"' is safe, so the '+alternate' guard is dead syntax.
+    Flags a '${name[@]+...}' (a bare '+' immediately after '[@]', NOT ':+' which
+    is a different, still-meaningful operator). Not auto-fixed: collapsing the
+    guard to its inner expansion needs the inner text, which is not always the
+    plain '${name[@]}' -- left for a human."""
+
+    id = "R-026"
+    ## ${ name [@] + ...} -- bare '+' right after '[@]', no ':' before it.
+    _GUARD = re.compile(r'\$\{[A-Za-z_][A-Za-z0-9_]*\[@\]\+')
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def detect(self, ctx):
+        ## The guard lives INSIDE a word's parameter expansion; shfmt keeps the
+        ## raw '${...}' text, so match it on the source but only where a real
+        ## expansion node sits (never in a comment or a single-quoted literal).
+        data = ctx.source.encode("utf-8")
+        for node in bash_ast.nodes_of_type(ctx.tree, "ParamExp"):
+            pos = node.get("Pos") or {}
+            start_off = pos.get("Offset")
+            end_off = (node.get("End") or {}).get("Offset")
+            if start_off is None or end_off is None:
+                continue
+            raw = data[start_off:end_off]
+            if self._GUARD.match(raw.decode("utf-8", "surrogateescape")):
+                yield _fail(ctx, "R-026",
+                            "R-026 obsolete empty-array guard (bash 4.4+; drop "
+                            "the +alternate on [@])", pos)
+
+
 ## In gate dispatch order (unchanged from the former SHELL_RULES tuple).
 RULES = (
     ShellInlineShellC(),
+    ErrexitToggle(),
+    SetOptions(),
+    ShellcheckSourceRelative(),
+    ShellcheckSourceDevNull(),
+    Sc1091Disable(),
+    DoubleSemi(),
+    FlowChaining(),
+    InterpreterPrepend(),
+    BareNewlinePrintf(),
+    PrintfFormatString(),
+    HeaderFirst(),
+    StrictModeBlock(),
+    TrapInline(),
+    TmpHardcode(),
+    HelpFromComments(),
+    DashDashDenylist(),
+    EmptyArrayGuard(),
     UnauthorizedSkip(),
     CommandV(),
     Exec(),
