@@ -1072,6 +1072,110 @@ class TrapInline(Rule):
             yield _fail(ctx, "R-051", "R-051 trap inline command", call)
 
 
+class HeaderFirst(Rule):
+    """R-002: a '## style-ok:' waiver must sit BELOW the '## Copyright' header,
+    not above it. Flag when the first header-comment 'style-ok:' line precedes
+    the first '## Copyright' line (both anchored to a real '##' header comment,
+    so a mention inside a string or echo does not count)."""
+
+    id = "R-002"
+    _STYLE = re.compile(r'^[ \t]*##[ \t]*style-ok:')
+    _COPYRIGHT = re.compile(r'^[ \t]*##[ \t]+Copyright')
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def detect(self, ctx):
+        style_line = copyright_line = None
+        for number, line in enumerate(ctx.source.split("\n"), 1):
+            if style_line is None and self._STYLE.match(line):
+                style_line = number
+            if copyright_line is None and self._COPYRIGHT.match(line):
+                copyright_line = number
+        if (style_line is not None and copyright_line is not None
+                and style_line < copyright_line):
+            yield model.fail(
+                "R-002",
+                "R-002 header: '## style-ok' at line %d precedes '## Copyright' "
+                "at line %d; move the waiver below the header"
+                % (style_line, copyright_line), ctx.path, style_line)
+
+
+## The seven strict-mode directives R-010 requires, matched WHOLE-LINE at column
+## zero (a directive repeated seven times must not satisfy the block).
+_STRICT_DIRECTIVES = (
+    "set -o errexit", "set -o nounset", "set -o pipefail", "set -o errtrace",
+    "shopt -s inherit_errexit", "shopt -s shift_verbose", "export LC_ALL=C",
+)
+_STRICT_HEADER_LINES = 160
+## A real was_executed()/was_sourced() guard CALL (command position), not a
+## comment or an assignment ('was_executed=1') or a mention ('${was_sourced}').
+## Matched per LINE (like the bash grep), so '[^#]*' never crosses a newline.
+_SOURCE_GUARD = re.compile(
+    r'^[^#]*(?:^|[ \t;&|!(])(?:was_executed|was_sourced)(?:[ \t;&|)]|$)')
+_GUARD_ERREXIT = re.compile(r'^[ \t]+set -o errexit[ \t]*$', re.MULTILINE)
+_INHERIT_ERREXIT = re.compile(r'^[ \t]*shopt -s inherit_errexit[ \t]*$',
+                              re.MULTILINE)
+_SHIFT_VERBOSE = re.compile(r'^[ \t]*shopt -s shift_verbose[ \t]*$',
+                            re.MULTILINE)
+_INDENTED_LC_ALL = re.compile(r'^[ \t]+export LC_ALL=C[ \t]*$', re.MULTILINE)
+
+
+class StrictModeBlock(Rule):
+    """R-010: an executed script must enable the seven-directive strict-mode
+    block (set -o errexit/nounset/pipefail/errtrace, shopt -s inherit_errexit/
+    shift_verbose, export LC_ALL=C) at column zero in its first 160 lines.
+
+    Exempt: '## style-ok: no-strict' (a sourced-only fragment must not leak
+    strict mode into the sourcing shell). Source-able DUAL-mode scripts keep zero
+    column-zero strict lines and guard the block behind a was_executed()/
+    was_sourced() check -- those are exempt from the all-seven rule, but when the
+    guarded block DOES enable errexit (indented 'set -o errexit'), the indented
+    shopt half + 'export LC_ALL=C' are still enforced (they are the copied-in
+    lines authors forget). A partial top-level block (1..6) is not clean and
+    stays subject to the all-seven check."""
+
+    id = "R-010"
+    waiver_tag = "no-strict"
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def detect(self, ctx):
+        source = ctx.source
+        header = "\n".join(source.split("\n")[:_STRICT_HEADER_LINES])
+        header_lines = set(line.strip("\r") for line in header.split("\n"))
+        present = sum(1 for directive in _STRICT_DIRECTIVES
+                      if directive in header_lines)
+        guarded = any(_SOURCE_GUARD.search(line)
+                      for line in source.split("\n"))
+        if present == 0 and guarded:
+            ## Source-able guarded script: exempt from all-seven. Enforce the
+            ## indented shopt half + export only when the guard enables errexit.
+            if _GUARD_ERREXIT.search(source):
+                missing = []
+                if not _INHERIT_ERREXIT.search(source):
+                    missing.append("shopt -s inherit_errexit")
+                if not _SHIFT_VERBOSE.search(source):
+                    missing.append("shopt -s shift_verbose")
+                if not _INDENTED_LC_ALL.search(source):
+                    missing.append("export LC_ALL=C")
+                if missing:
+                    yield model.fail(
+                        "R-010",
+                        "R-010 shopt block: source-able guarded script enables "
+                        "errexit but its was_executed block is missing: "
+                        + ", ".join(missing), ctx.path, 1)
+            return
+        if present < len(_STRICT_DIRECTIVES):
+            yield model.fail(
+                "R-010",
+                "R-010 strict-mode block: only %d/%d distinct strict-mode "
+                "directives in the first %d lines"
+                % (present, len(_STRICT_DIRECTIVES), _STRICT_HEADER_LINES),
+                ctx.path, 1)
+
+
 class TmpHardcode(Rule):
     """R-170: a hardcoded '/tmp' path (use the ${TMP} temp dir). '/tmp' as an
     absolute path -- not preceded by a path/word char (so 'debian/tmp',
@@ -1227,6 +1331,8 @@ RULES = (
     DoubleSemi(),
     FlowChaining(),
     InterpreterPrepend(),
+    HeaderFirst(),
+    StrictModeBlock(),
     TrapInline(),
     TmpHardcode(),
     HelpFromComments(),

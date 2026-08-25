@@ -747,146 +747,6 @@ is_self_referential() {
 ## Some scripts (including this one) carry long-form header
 ## docstrings before the strict-mode block; head -160 is generous
 ## enough to accommodate them without missing the rule's intent.
-check_R010_strict_block() {
-   local script header directive present shopt_missing
-   local -a required
-
-   required=(
-      'set -o errexit'
-      'set -o nounset'
-      'set -o pipefail'
-      'set -o errtrace'
-      'shopt -s inherit_errexit'
-      'shopt -s shift_verbose'
-      'export LC_ALL=C'
-   )
-   for script in "${@}"; do
-      ## Script-wide waiver: '## style-ok: no-strict' anywhere in the
-      ## file exempts it ENTIRELY. For sourced-ONLY fragments never
-      ## executed (so no was_executed()/was_sourced() guard): '/etc/
-      ## profile.d/*.sh' login-shell fragments, '.bashrc.d' snippets, and
-      ## dual-mode scripts that deliberately keep a MINIMAL strict set
-      ## (e.g. helper-scripts 'onion-time-pre-script' omits nounset by
-      ## design). Enabling strict-mode in a sourced fragment would leak
-      ## 'set -o errexit'/'nounset' into (and could kill) the sourcing
-      ## shell. Same escape-hatch shape as 'no-has'/'no-safe-rm'. Checked
-      ## first so a waived script never reaches the shopt sub-check below.
-      if grep --quiet --extended-regexp \
-            '^[[:space:]]*##[[:space:]]*style-ok:[[:space:]]*no-strict([[:space:]]|$)' \
-            -- "${script}"; then
-         note "R-010 skipped: 'style-ok: no-strict' waiver in '${script}'"
-         continue
-      fi
-      ## Count DISTINCT required directives present at column 0 (whole-line,
-      ## fixed-string match), not matching LINES: seven copies of
-      ## 'set -o errexit' must NOT satisfy the block. head -160 accommodates
-      ## the long header docstrings some scripts carry before the block.
-      header="$(head --lines=160 -- "${script}")"
-      present=0
-      for directive in "${required[@]}"; do
-         if grep --quiet --line-regexp --fixed-strings -- "${directive}" <<< "${header}"; then
-            present=$((present + 1))
-         fi
-      done
-      ## Source-able dual-mode scripts (executed AND sourced for code
-      ## reuse, e.g. usr/bin/update-torbrowser sourced by
-      ## dist-installer-gui; or pure helper-script .bsh libraries) MUST
-      ## NOT enable strict-mode at top level: 'set -o errexit'/'nounset'
-      ## and 'shopt -s inherit_errexit' would leak into the sourcing
-      ## shell. Such scripts therefore keep ZERO column-0 strict lines
-      ## and guard the block behind the helper-scripts
-      ## was_executed()/was_sourced() runtime check (indented, invisible
-      ## to the whole-line match above). This shape -- fully guarded
-      ## (present 0) AND the guard present -- is exempt from R-010's
-      ## top-level all-7 requirement. A partial top-level block
-      ## (present 1..6) is not a clean source-able script and stays
-      ## subject to the all-7 check below. This condition also leaves this
-      ## script itself enforced: it keeps all seven distinct column-0
-      ## directives, so it never enters the guarded path despite naming
-      ## the tokens.
-      ## '^[^#]*' requires the guard in CODE, not a comment: without it a
-      ## mere '## TODO: add was_executed guard' would exempt a script with no
-      ## strict-mode block at all -- an unauditable bypass. The guard must be
-      ## a real CALL, so the token sits in command position: preceded by
-      ## line-start or a command separator ([[:space:];&|!(]) and followed by
-      ## whitespace / a separator / end-of-line ([[:space:];&|)]|$). This
-      ## rejects an ordinary assignment ('was_executed=1', token followed by
-      ## '=') and a string/param-expansion mention ('"was_sourced"',
-      ## '${was_sourced}', token preceded by a quote or brace), either of
-      ## which would otherwise exempt a strict-mode-less script.
-      if [ "${present}" -eq 0 ] \
-         && grep --quiet --extended-regexp \
-            '^[^#]*(^|[[:space:];&|!(])(was_executed|was_sourced)([[:space:];&|)]|$)' \
-            -- "${script}"; then
-         ## The guarded block is exempt from the all-7 top-level rule, but
-         ## the SHOPT half of the strict block ('shopt -s inherit_errexit'
-         ## and 'shopt -s shift_verbose') plus 'export LC_ALL=C' were
-         ## repeatedly FORGOTTEN in this form -- authors copy the
-         ## 'set -o errexit/nounset/pipefail/errtrace' lines but drop the
-         ## rest -- precisely because nothing checked the indented block.
-         ## Enforce them here.
-         ## Only when the guard actually ENABLES errexit (an indented
-         ## 'set -o errexit'): inherit_errexit completes errexit's contract
-         ## ('$()' subshells respect it) and shift_verbose belongs with it.
-         ## The 'set -o errexit/nounset/pipefail' choice itself stays the
-         ## script's own -- some defer pipefail or omit nounset for
-         ## documented reasons -- so it is NOT re-checked here.
-         ## Scope is deliberately WHOLE-FILE: the strict block's guard is
-         ## script-specific ('if was_executed ...', 'if [ "${X_sourced}" =
-         ## false ]', ...), so there is no fixed delimiter to scope to. A
-         ## false pass needs both shopt omitted from the guard yet present
-         ## elsewhere -- and these strict-preamble-only builtins do not
-         ## occur loose in function bodies, so that is not a real accident.
-         if grep --quiet --extended-regexp \
-               '^[[:space:]]+set -o errexit[[:space:]]*$' -- "${script}"; then
-            shopt_missing=""
-            grep --quiet --extended-regexp \
-               '^[[:space:]]*shopt -s inherit_errexit[[:space:]]*$' -- "${script}" \
-               || shopt_missing="shopt -s inherit_errexit"
-            if ! grep --quiet --extended-regexp \
-                  '^[[:space:]]*shopt -s shift_verbose[[:space:]]*$' -- "${script}"; then
-               if [ -n "${shopt_missing}" ]; then
-                  shopt_missing="${shopt_missing}, shopt -s shift_verbose"
-               else
-                  shopt_missing="shopt -s shift_verbose"
-               fi
-            fi
-            ## 'export LC_ALL=C' MUST also live inside the guard, indented: an
-            ## unguarded top-level 'export LC_ALL=C' in a source-able script
-            ## leaks the C locale into the sourcing shell (worse than the shopt
-            ## leak -- an env mutation, silent). Enforced alongside the shopt
-            ## half for the same reason: copying the 'set -o' lines makes it
-            ## easy to place at column 0 by reflex, where it would leak.
-            ## Like the shopt half, this is a WHOLE-FILE match (the guard has no
-            ## fixed delimiter to scope to), so an indented 'export LC_ALL=C'
-            ## ELSEWHERE would satisfy it. Unlike the preamble-only shopt
-            ## builtins an export could in principle sit loose in a function, so
-            ## the guarantee is looser here -- accepted under the AI-accident
-            ## threat model (the block is copied in as a unit); tightening it to
-            ## the guarded block needs the bash-block parser the gate avoids.
-            if ! grep --quiet --extended-regexp \
-                  '^[[:space:]]+export LC_ALL=C[[:space:]]*$' -- "${script}"; then
-               if [ -n "${shopt_missing}" ]; then
-                  shopt_missing="${shopt_missing}, export LC_ALL=C"
-               else
-                  shopt_missing="export LC_ALL=C"
-               fi
-            fi
-            if [ -n "${shopt_missing}" ]; then
-               fail "R-010 shopt block" "source-able guarded script '${script}' enables errexit but its was_executed block is missing: ${shopt_missing}"
-            else
-               note "R-010: source-able guarded script '${script}' -- strict shopt block present"
-            fi
-         else
-            note "R-010 skipped: source-able guarded script (no strict-mode enabled) '${script}'"
-         fi
-         continue
-      fi
-      if [ "${present}" -lt "${#required[@]}" ]; then
-         fail "R-010 strict-mode block" "'${script}' has only ${present}/${#required[@]} distinct strict-mode directives in head -160"
-      fi
-   done
-}
 
 
 ## Drops self-referential files (e.g., this script) from the list
@@ -1304,27 +1164,6 @@ check_R021_local_assign() {
 ## R-002: the Copyright header leads the file. A '## style-ok:' waiver must not
 ## sit ABOVE the '## Copyright' line; waivers belong under the header, not before
 ## it. Only fires when both lines exist, so a file without either is unaffected.
-check_R002_header_first() {
-   local script style_hit copy_hit style_line copy_line
-
-   for script in "${@}"; do
-      is_self_referential "${script}" && continue
-      ## '--text' so a stray NUL byte cannot turn grep's output into
-      ## 'Binary file ... matches' and feed a non-numeric value to the arithmetic
-      ## compare below. Both patterns anchor to a real header COMMENT line ('##'
-      ## at line start) so a '## Copyright' mentioned inside a string or an echo
-      ## does not count as the header.
-      style_hit="$(grep --text --line-number --max-count=1 --extended-regexp '^[[:space:]]*##[[:space:]]*style-ok:' -- "${script}")" || true
-      [ -n "${style_hit}" ] || continue
-      copy_hit="$(grep --text --line-number --max-count=1 --extended-regexp '^[[:space:]]*##[[:space:]]+Copyright' -- "${script}")" || true
-      [ -n "${copy_hit}" ] || continue
-      style_line="${style_hit%%:*}"
-      copy_line="${copy_hit%%:*}"
-      if [ "${style_line}" -lt "${copy_line}" ]; then
-         fail "R-002 header" "'${script}': '## style-ok' at line ${style_line} precedes '## Copyright' at line ${copy_line}; move the waiver below the header"
-      fi
-   done
-}
 
 
 
@@ -1884,8 +1723,6 @@ run_file_checks() {
    if [ "${#shell_files[@]}" -gt 0 ]; then
       check_bash_n "${shell_files[@]}"
       check_shellcheck "${shell_files[@]}"
-      check_R002_header_first "${shell_files[@]}"
-      check_R010_strict_block "${shell_files[@]}"
       check_R031_bare_newline "${shell_files[@]}"
       check_R030_format_string "${shell_files[@]}"
       check_R021_local_assign "${shell_files[@]}"
