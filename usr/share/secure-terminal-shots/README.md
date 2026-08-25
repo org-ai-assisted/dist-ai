@@ -158,8 +158,8 @@ Three non-obvious things about `comparison-capture.sh` worth knowing before you 
   `xdotool search --name` never matches and the wait would time out ("labwc did not
   start"). `start_labwc` enumerates root's child windows by ID (`host_child_windows`,
   via `xwininfo -root -children`) instead -- name-independent.
-- **Every shot is captured at 2x (HiDPI).** `SHOT_SCALE` (default 2) drives it: X-client
-  fonts via `Xft.dpi`, the secure-terminal Qt GUI via `QT_SCALE_FACTOR`, kitty's own font
+- **Every shot is captured at `SHOT_SCALE`x device resolution (default 2, i.e. HiDPI).**
+  It drives: X-client fonts via `Xft.dpi`, the secure-terminal Qt GUI via `QT_SCALE_FACTOR`, kitty's own font
   DPI, the labwc title-bar font, and every hardcoded pixel geometry (through `px()`). The
   character GRID (cols x rows) is unchanged -- only pixels-per-cell double. A 1x shot was
   blurry once the browser upscaled it on a HiDPI display (the raster, not webp
