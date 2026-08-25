@@ -44,10 +44,15 @@ export LC_ALL=C
 ##     so it reports and exits 0 and a human decides. It also compares each
 ##     package's 'ai' branch against org-ai-assisted/master, which a CI runner
 ##     has no refs for. Same shape as comments-audit.
+##   website-tests-sandbox  the sandbox DELEGATE that website-tests invokes to
+##     run the browser lanes (check_mobile / check_width) confined in the review
+##     qube; it is not a standalone suite. Registering it would run those lanes a
+##     second time and assert nothing new (same shape as privleap-tests-coverage).
 allowed_unregistered=(
    'dist-ai-tests-all'
    'privleap-tests-coverage'
    'dm-stripped-setx-audit'
+   'website-tests-sandbox'
 )
 
 ## Suite BASE names with no owning component repo, so no suite_component()
