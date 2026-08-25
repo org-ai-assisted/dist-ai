@@ -116,6 +116,32 @@ else
    note_fail "a detector crash was not caught (silent green risk)"
 fi
 
+## --- external checks run in the human front (dist-ai-style --check) ----------
+## The check front is authoritative, so it runs bash -n + shellcheck (the AST
+## '--detect' channel omits them -- multi-line tool output is not a machine
+## record). A syntax error fails bash -n; an unparseable file the AST rules skip
+## must still be caught here.
+mkdir --parents -- "${test_dir}/ext"
+printf '%s\n' '#!/bin/bash' 'if [ x ]' > "${test_dir}/ext/syntax.sh"
+rc=0; out="$("${STYLE}" --check "${test_dir}/ext/syntax.sh" 2>&1)" || rc=$?
+if [ "${rc}" -eq 1 ] && grep --quiet --fixed-strings 'bash -n' <<< "${out}"; then
+   note_pass "check front runs bash -n (a syntax error fails)"
+else
+   note_fail "check front did not flag a bash -n syntax error (rc=${rc})"
+fi
+## shellcheck fires on a real finding (SC2086 unquoted expansion) when present;
+## if shellcheck is absent it self-skips with a note (fail-open), so accept both.
+printf '%s\n' '#!/bin/bash' 'set -o errexit' 'set -o nounset' 'set -o pipefail' \
+   'set -o errtrace' 'shopt -s inherit_errexit' 'shopt -s shift_verbose' \
+   'export LC_ALL=C' 'v="$1"' 'grep $v /dev/null || true' \
+   > "${test_dir}/ext/sc.sh"
+out="$("${STYLE}" --check "${test_dir}/ext/sc.sh" 2>&1 || true)"
+if grep --quiet --extended-regexp 'shellcheck: |shellcheck not on PATH' <<< "${out}"; then
+   note_pass "check front runs shellcheck (or self-skips when absent)"
+else
+   note_fail "check front neither ran nor skipped shellcheck"
+fi
+
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "pre-push-interface: ${passc} pass, ${fail} fail, 0 skip -- FAILURES above." >&2
    exit 1

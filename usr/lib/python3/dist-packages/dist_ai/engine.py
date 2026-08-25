@@ -33,12 +33,17 @@ def _run_rules(ctx, rules):
         yield from rule.detect(ctx)
 
 
-def detect(ctx, include_text=False):
+def detect(ctx, include_text=False, include_external=False):
     """Findings for one FileContext. Shell rules run only on a parsed shell file;
     config rules self-select by path; text rules run when INCLUDE_TEXT. The shell
     and config rules need decoded source, so they are skipped for an undecodable
     file -- but the text rules run on the RAW bytes, so R-001 still catches a
     stray non-ASCII byte in a file that is not valid UTF-8 (the bash grep did).
+
+    INCLUDE_EXTERNAL runs the external-tool checks (bash -n, shellcheck) -- only
+    the human/check front sets it, never the US-delimited --detect channel (their
+    multi-line output is not a machine record). bash -n runs even when shfmt could
+    not parse (that IS the syntax error to report), so it is not tree-gated.
     Raises bash_ast.ShfmtMissing if shfmt is absent."""
     findings = []
     if ctx.source is not None:
@@ -47,6 +52,8 @@ def detect(ctx, include_text=False):
         findings.extend(_run_rules(ctx, ruleset.CONFIG_RULES))
     if include_text:
         findings.extend(_run_rules(ctx, ruleset.TEXT_RULES))
+    if include_external:
+        findings.extend(_run_rules(ctx, ruleset.EXTERNAL_RULES))
     return findings
 
 

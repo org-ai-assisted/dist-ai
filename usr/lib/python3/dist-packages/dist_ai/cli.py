@@ -173,7 +173,10 @@ def style_main(argv, prog="dist-ai-style"):
     any_fail = False
     for ctx in contexts:
         try:
-            findings = engine.detect(ctx, include_text=True)
+            ## The human front is authoritative, so it also runs the external
+            ## checks (bash -n, shellcheck) the machine --detect channel omits.
+            findings = engine.detect(ctx, include_text=True,
+                                     include_external=True)
         except bash_ast.ShfmtMissing as exc:
             print("%s: shfmt is required but unavailable: %s" % (prog, exc),
                   file=sys.stderr)

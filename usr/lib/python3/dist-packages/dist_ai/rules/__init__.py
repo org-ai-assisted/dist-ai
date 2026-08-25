@@ -17,12 +17,17 @@ fix pass runs exactly those, the detect pass runs SHELL_RULES + CONFIG_RULES."""
 
 from dist_ai import model
 from dist_ai.rules import config as _config
+from dist_ai.rules import external as _external
 from dist_ai.rules import shell as _shell
 from dist_ai.rules import text as _text
 
 SHELL_RULES = _shell.RULES
 CONFIG_RULES = _config.RULES
 TEXT_RULES = _text.RULES
+## External-tool checks (bash -n, shellcheck): run only in the human/check front,
+## never the US-delimited --detect channel (their multi-line output is not a
+## machine record). Check-only, so never in FIX_RULES.
+EXTERNAL_RULES = _external.RULES
 
 ## Rules that also apply to a commit MESSAGE blob (not a tree file): the
 ## non-ASCII floor only. A message has no path/extension, so a file-kind rule
