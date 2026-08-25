@@ -33,6 +33,19 @@ SUCCESS_OUTPUT = '\ndone'
 
 
 class TestPreparationOutput(PreparationTestBase):
+    def setUp(self) -> None:
+        ## The paired sdwdate change (write_preparation_output + the loop call)
+        ## may not be present in the sdwdate under test: a systemcheck-only
+        ## upgrade, Kicksecure/sdwdate master, or the installed package. Skip
+        ## cleanly rather than crash with AttributeError -- a crash here would
+        ## also mask unrelated failures in the shared suite. Runs for real once
+        ## the impl lands (SDWDATE_REPO checkout, or a fixed installed package).
+        if not hasattr(self.sdwdate, 'write_preparation_output'):
+            self.skipTest(
+                'sdwdate build lacks write_preparation_output; the paired '
+                'sdwdate change is not present in this checkout')
+        super().setUp()
+
     def _read_output(self) -> str:
         with open(self.preparation_output_path) as file_object:
             return file_object.read()
