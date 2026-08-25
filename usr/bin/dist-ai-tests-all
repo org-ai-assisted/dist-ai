@@ -157,6 +157,7 @@ integration_suites=(
    dm-reproducible-build-tests
    sdwdate-gui-tests-integration
    secure-terminal-tests-apparmor
+   secure-terminal-tests-mutation
    tb-updater-tests-sandbox-resume
    terminal-resilience-tests
 )
@@ -688,6 +689,19 @@ wire() {
          ## secure-terminal component checkout.
          wire_env=( "SECURE_TERMINAL_REPO=$( pkg_dir secure-terminal )" )
          ;;
+      secure-terminal-shots)
+         ## The shots harness ships in dist-ai but drives the real secure-terminal
+         ## app (SECURE_TERMINAL_REPO, from the component checkout) and the
+         ## terminal-poc-corpus payloads. The reusable CI exports the corpus checkout
+         ## as TERMINAL_POC_CORPUS_REPO when requested; bridge it to the CORPUS_REPO
+         ## the shots payloads read. Unwired, wire()'s default 'return 1' aborts the
+         ## whole run under errexit, and the app/corpus-driving payloads FATAL (R-220)
+         ## instead of running.
+         wire_env=( "SECURE_TERMINAL_REPO=$( pkg_dir secure-terminal )" )
+         if [ -n "${TERMINAL_POC_CORPUS_REPO:-}" ]; then
+            wire_env+=( "CORPUS_REPO=${TERMINAL_POC_CORPUS_REPO}" )
+         fi
+         ;;
       *)
          printf '%s\n' "dist-ai-tests-all: no wiring for suite ${suite}" >&2
          return 1
@@ -789,7 +803,7 @@ suite_component() {
       secure-terminal)
          printf '%s' 'secure-terminal'
          ;;
-      terminal-resilience|terminal-poc-corpus)
+      secure-terminal-shots|terminal-resilience|terminal-poc-corpus)
          printf '%s' 'secure-terminal'
          ;;
       systemcheck)

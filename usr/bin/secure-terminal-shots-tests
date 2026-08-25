@@ -5,13 +5,17 @@
 
 ## AI-Assisted
 
-## Offline regression suite for the secure-terminal comparison SHOTS harness (the shell
-## capture pipeline in usr/share/secure-terminal-shots: lib-capture.sh + comparison-capture.sh
-## + wayland-capture.sh + the secure-terminal-shots wrapper). Pure shell, no display, no real
-## capture -- runs in the dist-ai container in milliseconds.
+## Regression suite for the secure-terminal comparison SHOTS harness (the shell capture
+## pipeline in usr/share/secure-terminal-shots: lib-capture.sh + comparison-capture.sh
+## + wayland-capture.sh + the secure-terminal-shots wrapper). No display, no real capture.
 ##
-## Each payload resolves its subject (the shots harness) and exits 77 (SKIP) if it is absent,
-## never FAIL.
+## The shots harness itself ships in dist-ai and is resolved checkout-relative, so the
+## pure-shell payloads run anywhere. Some payloads drive the real secure-terminal app or
+## the terminal-poc-corpus generators and read SECURE_TERMINAL_REPO / CORPUS_REPO plus
+## PyQt6 / Pillow / coverage; those are REQUIRED subjects there and absent -> exit 1
+## (FATAL, R-220), not SKIP. dist-ai-tests-all wires SECURE_TERMINAL_REPO / CORPUS_REPO
+## via its secure-terminal-shots wire() case (component: secure-terminal), where the
+## secure-terminal CI provides those checkouts and deps.
 
 set -o errexit
 set -o nounset
@@ -19,6 +23,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -58,8 +63,11 @@ if [ "${failures}" -ne 0 ]; then
    exit 1
 fi
 ## All payloads skipped means the SUITE skipped -- exit 77 so nothing reads as a false green.
+## A required-dep absence is a per-payload FATAL (exit 1); this aggregate 77 is reached only
+## when every payload independently, legitimately SKIPPED -- a genuine no-subject run.
 if [ "${skipped}" -eq "${ran}" ]; then
    printf '%s\n' '' "SKIP: all ${skipped} secure-terminal-shots test script(s) skipped"
+   ## style-ok: allow-skip: every payload independently reported a genuine SKIP (see above)
    exit 77
 fi
 printf '%s\n' '' 'OK: all secure-terminal-shots test scripts passed'
