@@ -938,31 +938,53 @@ _CASE_DBLSEMI = 30
 
 
 class DoubleSemi(Rule):
-    """R-070: a case-arm ';;' terminator must be on its own line, not glued to the
-    arm's last command ('foo ;;' / 'foo;;'). Read from the CaseItem terminator
-    position in the AST -- flag when the ';;' shares a line with the arm's last
-    statement -- so a ';;' inside a string or a '#' comment is never mistaken for
-    a terminator."""
+    """R-070: a case-arm ';;' terminator ENDING a line must be on its own line,
+    not glued to the arm's last command ('foo ;;' / 'foo;;' as the whole line).
+    Read from the CaseItem terminator position in the AST, so a ';;' inside a
+    string or a '#' comment is never a terminator. The fully-inline arm form
+    'case ... ) cmd ;; esac' (real code AFTER the ';;' on the same physical line)
+    is EXEMPT (style guide): the rule only targets a ';;' at END-OF-LINE, matching
+    the former EOL grep -- so a compact one-line case stays as-is."""
 
     id = "R-070"
 
     def applies(self, ctx):
         return super().applies(ctx) and ctx.path != GATE_PATH
 
-    def _glued_items(self, ctx):
+    @staticmethod
+    def _at_end_of_line(data, offset):
+        """True if only whitespace (or a '#' comment) follows the ';;' whose
+        first byte is at OFFSET, up to the newline. Real code after it (the
+        fully-inline 'esac' / next pattern) means the ';;' is not end-of-line."""
+        index = offset + 2  ## past the ';;'
+        length = len(data)
+        while index < length and data[index:index + 1] != b"\n":
+            char = data[index:index + 1]
+            if char in (b" ", b"\t", b"\r"):
+                index += 1
+                continue
+            return char == b"#"  ## a trailing comment counts as end-of-line
+        return True
+
+    def _glued_items(self, ctx, data):
         for clause in bash_ast.nodes_of_type(ctx.tree, "CaseClause"):
             for item in clause.get("Items", []):
                 if item.get("Op") != _CASE_DBLSEMI:
                     continue
-                op_line = (item.get("OpPos") or {}).get("Line")
+                pos = item.get("OpPos") or {}
+                op_line = pos.get("Line")
+                op_offset = pos.get("Offset")
                 stmts = item.get("Stmts") or []
-                if op_line is None or not stmts:
+                if op_line is None or op_offset is None or not stmts:
                     continue
-                if (stmts[-1].get("End") or {}).get("Line") == op_line:
+                if (stmts[-1].get("End") or {}).get("Line") != op_line:
+                    continue  ## ';;' already on its own line
+                if self._at_end_of_line(data, op_offset):
                     yield item
 
     def detect(self, ctx):
-        for item in self._glued_items(ctx):
+        data = ctx.source.encode("utf-8")
+        for item in self._glued_items(ctx, data):
             yield _fail(ctx, "R-070", "R-070 ';;' on own line", item.get("OpPos"))
 
 
@@ -1087,12 +1109,25 @@ def _printf_calls(tree):
 def _printf_format(call, source):
     """(inner, single_quoted) for a printf CALL's format argument, or (None,
     False) if it has none. inner is the format with its surrounding quotes
-    stripped; single_quoted marks a '...' literal (the R-030 numeric-probe
-    carve-out premise -- a format nothing can be injected into)."""
+    stripped; single_quoted marks a '...' compile-time literal (nothing can be
+    interpolated INTO it). printf's own options are skipped so the FORMAT is
+    found, not an option: '-v NAME' (write to a variable, consumes its name) and
+    a '--' end-of-options marker -- otherwise 'printf -v NAME FMT' / 'printf --
+    FMT' would read '-v'/'--' as the format and flag every such call."""
     call_args = bash_ast.args(call)
-    if len(call_args) < 2:
+    total = len(call_args)
+    index = 1
+    while index < total:
+        option = bash_ast.word_source(call_args[index], source)
+        if option == "-v" and index + 2 < total:
+            index += 2
+            continue
+        if option == "--":
+            index += 1
+        break
+    if index >= total:
         return None, False
-    raw = bash_ast.word_source(call_args[1], source)
+    raw = bash_ast.word_source(call_args[index], source)
     if not raw:
         return None, False
     if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "'\"":
@@ -1125,41 +1160,28 @@ class BareNewlinePrintf(Rule):
 
 
 class PrintfFormatString(Rule):
-    """R-030: a printf format must be a FIXED allowlisted verb -- all data goes in
-    the data argument (a data-carrying or double-quoted format INTERPRETS/
-    interpolates it: the injection this prevents). Carve-out: a SINGLE-quoted
-    format whose printf discards BOTH stdout and stderr emits nothing, so it is a
-    numeric validator (helper-scripts is_integer()), not output -- spared."""
+    """R-030: a printf format must not INTERPOLATE data -- all data goes in the
+    data argument. A DOUBLE-quoted or UNQUOTED format that is not a fixed
+    allowlisted verb can read a '$var' / command substitution straight INTO the
+    format (the injection this prevents). A SINGLE-quoted format is a compile-time
+    literal that interpolates nothing, so it is allowed whatever verbs it uses
+    ('%8d', '%-12s' aligned columns, '%d' numeric validators) -- the data still
+    goes in the data argument."""
 
     id = "R-030"
     waiver_tag = "printf-format"
     _ALLOWED = frozenset({
         "%s", "%s\\n", "%s\\0", "%q", "%q\\n", "%b", "%b\\n", "0x%x", "%x"})
-    ## Whitespace-removed redirect text that sends BOTH streams to /dev/null. The
-    ## order matters: '2>&1 >/dev/null' points fd2 at the ORIGINAL stdout (still
-    ## emits) and is deliberately NOT one of these.
-    _DISCARD_BOTH = ("&>/dev/null", ">/dev/null2>&1", ">/dev/null2>/dev/null")
 
     def applies(self, ctx):
         return super().applies(ctx) and ctx.path != GATE_PATH
 
-    def _both_discarded(self, stmt, data):
-        text = ""
-        for redirect in stmt.get("Redirs") or []:
-            start = (redirect.get("Pos") or {}).get("Offset")
-            end = (redirect.get("End") or {}).get("Offset")
-            if start is not None and end is not None:
-                text += data[start:end].decode("utf-8", "surrogateescape")
-        text = re.sub(r"\s+", "", text)
-        return any(pattern in text for pattern in self._DISCARD_BOTH)
-
     def detect(self, ctx):
-        data = ctx.source.encode("utf-8")
-        for stmt, call in _printf_calls(ctx.tree):
+        for _stmt, call in _printf_calls(ctx.tree):
             inner, single_quoted = _printf_format(call, ctx.source)
-            if inner is None or inner in self._ALLOWED:
-                continue
-            if single_quoted and self._both_discarded(stmt, data):
+            ## single-quoted is a literal, nothing interpolates -> safe whatever
+            ## verbs it uses; an allowlisted verb is safe in any quoting.
+            if inner is None or single_quoted or inner in self._ALLOWED:
                 continue
             yield _fail(
                 ctx, "R-030",

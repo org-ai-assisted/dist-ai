@@ -198,6 +198,15 @@ run_det_at "etc/apt/apt.conf.d/99x" \
 assert_at "R-194 flags an if-block in an apt hook" "R-194" 1
 run_det_at "etc/apt/apt.conf.d/98x" 'DPkg::Post-Invoke {"/usr/libexec/hook"};'
 assert_not_at "R-194 spares a single-command apt hook" "R-194" 1
+## apt.conf's brace block is newline-insensitive: the directive and its quoted
+## value need not share a line. A multi-line block form must NOT bypass R-194.
+## Canary: the per-line scan missed this entirely.
+run_det_at "etc/apt/apt.conf.d/97x" \
+   "$(printf '%s\n' 'DPkg::Post-Invoke' '{' '   "a; b";' '};')"
+assert_at "R-194 flags a multi-line block apt hook" "R-194" 1
+run_det_at "etc/apt/apt.conf.d/96x" \
+   "$(printf '%s\n' 'DPkg::Post-Invoke' '{' '   "/usr/libexec/hook";' '};')"
+assert_not_at "R-194 spares a multi-line single-command apt hook" "R-194" 1
 
 run_det_at "etc/cron.d/job" '0 3 * * * root cd /s && ./p.sh; systemctl restart a'
 assert_at "R-195 flags a multi-statement cron command" "R-195" 1

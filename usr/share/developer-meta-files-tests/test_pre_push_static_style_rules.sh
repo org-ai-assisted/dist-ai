@@ -248,11 +248,20 @@ expect_rule "R-062" "git check-ref-format branch && grep ${dd} foo"       "absen
 ## with no separator between, is still the real violation.
 expect_rule "R-062" "git check-ref-format \"\${ref}\" ${dd} x"            "present"
 
-## R-070: a case ';;' glued to the arm's last command must be FLAGGED; ';;' on
-## its own line spared. Real 'case ... esac' so the AST rule sees a terminator
-## (the '${dsemi}' assembles ';;' so no literal lives in this tracked file).
-expect_rule "R-070" "case x in a) true${dsemi} esac"  "present"
-expect_rule "R-070" "case x in${nlreal}a) true${nlreal}${dsemi}${nlreal}esac" "absent"
+## R-070: a case ';;' at END-OF-LINE glued to the arm's last command is FLAGGED;
+## ';;' on its own line is SPARED, and so is the FULLY-INLINE arm form (real code
+## -- 'esac' or the next pattern -- AFTER the ';;' on the same physical line),
+## which the style guide exempts. '${dsemi}' assembles ';;' so no literal lives
+## in this tracked file; '${nlreal}' is a real newline for the multi-line forms.
+## EOL-glued (multi-line arm, ';;' ends the line):
+expect_rule "R-070" "case x in${nlreal}a) true${dsemi}${nlreal}esac"           "present"
+## ';;' on its OWN line -- spared:
+expect_rule "R-070" "case x in${nlreal}a) true${nlreal}${dsemi}${nlreal}esac"  "absent"
+## FULLY-INLINE arm ('esac' after ';;' on the same line) -- exempt, spared:
+expect_rule "R-070" "case x in a) true${dsemi} esac"                           "absent"
+## Regression (dev339): the compact match-or-default guard the style guide shows
+## must NOT be flagged -- 'esac' closes the case on the same line.
+expect_rule "R-070" "case ${dq}\${p}${dq} in '' | *[!0-9]* | 0* ) p=15 ${dsemi} esac" "absent"
 
 ## R-030/R-031: a newline emitted without an explicit '' data argument must be
 ## FLAGGED -- both 'printf \n' (newline in the format) and a bare 'printf %s\n'
@@ -269,57 +278,37 @@ expect_rule "R-030/R-031" "printf ${sq}%s${nl}${sq} # blank"        "present"
 expect_rule "R-030/R-031" "printf ${sq}%s${nl}${sq} ${dq}${dq} # ok" "absent"
 
 ## R-030: a printf inside a single-quoted program handed to ANOTHER interpreter
-## is not shell printf. awk's takes a comma-separated argument list and
-## interpolates nothing from the shell, so neither of R-030's failure modes is
-## reachable -- and rewriting the format to '%s' would break the awk program.
-##
-## The quote OPENS on a later line than the 'awk' word (line continuation), so
-## this is only correct if the gate tracks quote state ACROSS lines; the
-## single-line check reads each body line as shell and flagged both printfs.
+## (awk here, whose printf takes a comma-separated list and interpolates nothing
+## from the shell) is NOT a shell printf. The AST sees it as text inside a
+## single-quoted Word argument to 'awk', never a command, so it is not extracted
+## -- the cross-line quote walker the former gate needed is gone.
 awk_program="awk -v a=\"\${x}\" \\${nl}   ${sq}BEGIN {${nl}      if (a <= 0) { printf \"0.00\"; exit }${nl}      printf \"%.2f\", a / 2;${nl}    }${sq}"
 expect_rule "R-030 printf format" "${awk_program}" "absent"
-## CANARY: the cross-line quote state must RESET at the closing quote, or every
-## violation after an awk program in the same file is silently spared -- a
-## fail-OPEN, the direction that matters. A REAL newline puts the trailing printf
-## on its own line (the in_quoted_program reset path this exercises); a literal
-## '\n' would glue it to the program as one physical line, where the format regex
-## cannot reach a printf butted against the 'n' and the inner awk printfs (spared
-## by quote depth) leave nothing to flag.
+## CANARY: a REAL shell printf on the line AFTER the awk program must still fire
+## -- the awk program's inner printfs are data, but the next line is a live call.
 expect_rule "R-030 printf format" "${awk_program}${nlreal}printf \"bad \${x}\\n\"" "present"
 
-## R-030 format string, numeric-PROBE carve-out. A '%d' printf whose own command
-## discards BOTH stdout and stderr emits nothing, so it is a validator rather than
-## output -- helper-scripts' is_integer(), the guard R-141 mandates before an
-## untrusted value reaches an arithmetic context. Its FAILURE is the check, so it
-## must be SPARED; rewriting such a format to '%s' turns the guard into a no-op.
-## The negatives below are what stops the carve-out becoming a blanket '%d' amnesty.
+## R-030 SINGLE-quoted format is a compile-time LITERAL -- nothing interpolates
+## into it -- so it is allowed whatever verbs it uses ('%d' numeric validators,
+## '%8d' / '%-12s' aligned columns); a DOUBLE-quoted or UNQUOTED non-allowlisted
+## format can read '$var' / command substitution straight INTO the format and is
+## FLAGGED. printf's own options ('-v NAME', '--') are skipped so the FORMAT is
+## judged, not the option.
 r030fmt="R-030 printf format string"
-discard=">/dev/null 2>&1"
-expect_rule "${r030fmt}" "printf ${sq}%d${sq} ${dq}\${1}${dq} ${discard} || exit 1" "absent"
-## Same format, no discard at all: still output, still FLAGGED.
-expect_rule "${r030fmt}" "printf ${sq}%d${sq} ${dq}\${1}${dq}"                      "present"
-## stdout-only discard still lets stderr out, so it does NOT qualify.
-expect_rule "${r030fmt}" "printf ${sq}%d${sq} ${dq}\${1}${dq} >/dev/null"           "present"
-## '2>&1 >/dev/null' sends stderr to the ORIGINAL stdout -- that command still
-## emits, so the ordering must not be treated as a both-streams discard.
-expect_rule "${r030fmt}" "printf ${sq}%d${sq} ${dq}\${1}${dq} 2>&1 >/dev/null"      "present"
-## A DOUBLE-quoted format interpolates, so it never qualifies however redirected:
-## the carve-out's premise is a format literal nothing can be injected into.
-expect_rule "${r030fmt}" "printf ${dq}%d \${x}${dq} ${dq}\${1}${dq} ${discard}"     "present"
-## Scoping: the discard belongs to the SECOND printf, so the first is judged on
-## its own and stays FLAGGED. Guards against exempting a whole line by proximity.
-expect_rule "${r030fmt}" "printf ${sq}%d${sq} ${dq}\${a}${dq} ${sc} printf ${sq}%d${sq} ${dq}\${b}${dq} ${discard}" "present"
-## '&&' is a command separator too, so the tail after it must not leak backwards.
-expect_rule "${r030fmt}" "printf ${sq}%d${sq} ${dq}\${a}${dq} && printf ${sq}%d${sq} ${dq}\${b}${dq} ${discard}" "present"
-## The discard must belong to the printf COMMAND, not merely appear somewhere
-## in its text. A redirect inside an argument's command substitution silences
-## the SUBSTITUTED command; the printf itself still writes to stdout, so the
-## carve-out's premise ("nothing is emitted") does not hold and the line stays
-## FLAGGED.
-expect_rule "${r030fmt}" "printf ${sq}%d${sq} ${dq}\$(probe ${discard})${dq}"       "present"
-## An allowed format stays spared with and without the discard.
-expect_rule "${r030fmt}" "printf ${sq}%s${nl}${sq} ${dq}\${1}${dq}"                 "absent"
-expect_rule "${r030fmt}" "printf ${sq}%s${nl}${sq} ${dq}\${1}${dq} ${discard}"      "absent"
+## Single-quoted verbs -- literal, SPARED (a redirect makes no difference):
+expect_rule "${r030fmt}" "printf ${sq}%d${sq} ${dq}\${1}${dq}"                 "absent"
+expect_rule "${r030fmt}" "printf ${sq}%8d${sq} ${dq}\${1}${dq}"                "absent"
+expect_rule "${r030fmt}" "printf ${sq}%-12s${sq} ${dq}\${a}${dq}"              "absent"
+expect_rule "${r030fmt}" "printf ${sq}%d${sq} ${dq}\${1}${dq} >/dev/null 2>&1 || exit 1" "absent"
+## Double-quoted / unquoted non-allowlisted format -- interpolates, FLAGGED:
+expect_rule "${r030fmt}" "printf ${dq}%d \${x}${dq} ${dq}\${1}${dq}"           "present"
+expect_rule "${r030fmt}" "printf %d ${dq}\${1}${dq}"                           "present"
+## '-v NAME' / '--' options skipped, so the FORMAT is what is judged:
+expect_rule "${r030fmt}" "printf -v out ${sq}%s${sq} ${dq}\${1}${dq}"          "absent"
+expect_rule "${r030fmt}" "printf -v out ${dq}bad \${x}${dq} ${dq}\${1}${dq}"   "present"
+expect_rule "${r030fmt}" "printf -- ${dq}bad \${x}${dq}"                       "present"
+## An allowlisted verb is safe in any quoting.
+expect_rule "${r030fmt}" "printf ${sq}%s${nl}${sq} ${dq}\${1}${dq}"            "absent"
 
 ## A printf spelled INSIDE another printf's double-quoted DATA argument is a
 ## payload string, not a command -- e.g. a canary feeding a deliberately malformed
@@ -341,23 +330,21 @@ expect_rule "${r030fmt}" "echo \\${dq} ${sc} printf ${dq}bad \${x}${nl}${dq}" "p
 ## violation later on the same line is still flagged (not masked by a false comment-truncation).
 expect_rule "${r030fmt}" "x=${dollar}{v${hash}/p} ${sc} printf ${dq}bad \${z}${dq}" "present"
 
-## A '#' INSIDE the format does not make the line a comment. The comment skip
-## globbed '[[:space:]]*#*' -- one whitespace char, then anything, then a '#'
-## -- so an INDENTED line carrying a '#' ANYWHERE was waived. The indent is
-## load-bearing in these fixtures: without it the old glob could not match
-## either, and the case would pass against the very code it must catch.
+## A '#' INSIDE the format is not a comment: a DOUBLE-quoted format with a '#'
+## banner still interpolates and is FLAGGED (the AST parses the whole quoted
+## word, indent and all -- no comment-glob to mislead it).
 hash='#'
 indent='   '
 banner="${hash}${hash}${hash}"
-expect_rule "${r030fmt}" "${indent}printf ${sq}${nl}${banner} %s ${banner}${nl}${sq} ${dq}\${x}${dq}" "present"
-## Same violation, indented, '#' only in a trailing comment -- also waived by
-## the old glob.
-expect_rule "${r030fmt}" "${indent}printf ${sq}%d${sq} ${dq}\${1}${dq} ${hash} count" "present"
-## A real comment -- '#' is the first non-blank character -- is still prose and
-## must stay SPARED, indented too. This is what stops the fix from turning
-## every rule-describing comment into a finding.
-expect_rule "${r030fmt}" "${indent}${hash} printf ${sq}%d${sq} ${dq}\${1}${dq}"    "absent"
-expect_rule "${r030fmt}" "${hash} printf ${sq}%d${sq} ${dq}\${1}${dq}"             "absent"
+expect_rule "${r030fmt}" "${indent}printf ${dq}${nl}${banner} \${x} ${banner}${nl}${dq} ${dq}\${1}${dq}" "present"
+## A double-quoted violation with a '#' only in a TRAILING comment is still flagged;
+## the comment is not part of the format.
+expect_rule "${r030fmt}" "${indent}printf ${dq}%d \${x}${dq} ${dq}\${1}${dq} ${hash} count" "present"
+## A real comment -- '#' is the first non-blank character -- is prose, not a
+## printf CALL, so it is SPARED, indented too (the AST never parses it as a
+## command).
+expect_rule "${r030fmt}" "${indent}${hash} printf ${dq}%d \${x}${dq} ${dq}\${1}${dq}"    "absent"
+expect_rule "${r030fmt}" "${hash} printf ${dq}%d \${x}${dq} ${dq}\${1}${dq}"             "absent"
 
 ## 'printf %s\n' "" is the correct newline spelling (R-030/R-031 REQUIRE it) and
 ## a legitimate blank-line output, so no rule may flag it. Pin that nothing
@@ -374,9 +361,9 @@ expect_rule "R-034" "if echo hi${sc} then true${sc} fi"         "present"
 expect_rule "R-034" "printf ${sq}%s${nl}${sq} ${dq}a echo b${dq}" "absent"
 expect_rule "R-034" "has echo"                                  "absent"
 
-## R-070: a ';;' glued to the arm command, jammed ('true;;') or spaced
-## ('true ;;'), is FLAGGED; only ';;' alone on its own line is spared.
-expect_rule "R-070" "case x in a) true${sp}${dsemi} esac"        "present"
+## R-070: a ';;' at END-OF-LINE glued to the arm command, jammed ('true;;') or
+## spaced ('true ;;'), is FLAGGED (here the spaced form, ';;' ending the line).
+expect_rule "R-070" "case x in${nlreal}a) true${sp}${dsemi}${nlreal}esac"  "present"
 
 ## The DOUBLE-quoted newline form is equally correct and equally unflagged.
 expect_rule "R-042" "printf ${dq}%s${nl}${dq} ${dq}${dq}"        "absent"
@@ -450,8 +437,8 @@ expect_rule "R-130" "## ${colon} > file in a comment"            "absent"
 ## R-070/R-074 vs '${#var}': the '#' inside a length expansion is CODE, not a
 ## comment start, so the AST parses it as a parameter expansion and the
 ## violation after it is still flagged; a REAL '#' comment still spares.
-expect_rule "R-070" "case x in 0) out=${dq}\${set:0:\${#set}}${dq} ${dsemi} esac" "present"
-expect_rule "R-070" "case x in 1) out=${dq}\${plain}${dq} ${dsemi} esac"          "present"
+expect_rule "R-070" "case x in${nlreal}0) out=${dq}\${set:0:\${#set}}${dq} ${dsemi}${nlreal}esac" "present"
+expect_rule "R-070" "case x in${nlreal}1) out=${dq}\${plain}${dq} ${dsemi}${nlreal}esac"          "present"
 expect_rule "R-070" "argc=\${#args[@]}${sp}${sp}## a note about ;;"               "absent"
 expect_rule "R-074" "[ ${dq}\${#a[@]}${dq} -eq 0 ]${sc} continue"                "present"
 
