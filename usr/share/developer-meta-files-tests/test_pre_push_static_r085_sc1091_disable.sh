@@ -6,10 +6,12 @@
 ## AI-Assisted
 
 ## Functional test for pre-push-static's R-085: a '# shellcheck disable=SC1091'
-## is flagged (ADVISORY) because the reusable gate's helper-scripts sibling
-## checkout makes shellcheck FOLLOW the source= directive, leaving the disable
-## dead. Asserts the rule fires, that '## style-ok: allow-sc1091-disable' waives
-## it, that a file with no disable is not flagged, and that being advisory it
+## paired with an adjacent '# shellcheck source=' directive is flagged (ADVISORY)
+## because the reusable gate's helper-scripts sibling checkout makes shellcheck
+## FOLLOW the source= directive, leaving the disable dead. Asserts the rule
+## fires, that '## style-ok: allow-sc1091-disable' waives it, that a file with no
+## disable is not flagged, that a disable with NO adjacent source= directive
+## (an unfollowable runtime source) is not flagged, and that being advisory it
 ## never turns the gate red.
 ##
 ## Drives the real, shipped gate as a subprocess, not a private copy.
@@ -120,8 +122,28 @@ source "${0%/*}"/helper.sh
 printf '%s\n' "${helper_value}"
 CLEAN
 
+## Case UNFOLLOWABLE: a disable with NO adjacent source= directive. The source is
+## a runtime path shellcheck can never follow, so the disable is load-bearing and
+## must NOT be flagged. Regression: the old rule flagged every SC1091 disable
+## regardless of an accompanying source= directive.
+cat >"${repo}/bin/unfollowable" <<'UNFOLLOWABLE'
+#!/bin/bash
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+runtime_file="${0%/*}/helper.sh"
+# shellcheck disable=SC1090,SC1091
+source "${runtime_file}"
+UNFOLLOWABLE
+
 chmod 0755 -- "${repo}/bin/helper.sh" "${repo}/bin/flagged" \
-   "${repo}/bin/waived" "${repo}/bin/clean"
+   "${repo}/bin/waived" "${repo}/bin/clean" "${repo}/bin/unfollowable"
 
 git -c init.defaultBranch=master -c core.hooksPath=/dev/null init --quiet -- "${repo}"
 git -C "${repo}" -c core.hooksPath=/dev/null \
@@ -140,10 +162,14 @@ gate_output="$( cd -- "${repo}" && "${GATE}" "${base_sha}" 2>&1 )" || gate_rc=$?
 fail=0
 
 ## Bind every assertion to the R-085 diagnostic RECORD, not to the whole gate
-## output: the note prints '<path>:<lineno>:# shellcheck disable=SC1091' hit
-## lines, and no other check emits 'disable=SC1091', so an unrelated rule that
-## merely names one of these paths cannot satisfy or break a check vacuously.
-r085_hits="$(printf '%s\n' "${gate_output}" | grep --fixed-strings 'disable=SC1091' || true)"
+## output: the note prints '<path>:<lineno>:# shellcheck disable=...SC1091...'
+## hit lines, and no other check emits an SC1091 disable token, so an unrelated
+## rule that merely names one of these paths cannot satisfy or break a check
+## vacuously. Match SC1091 as a token (the rule's own regex), not the literal
+## 'disable=SC1091' -- a hit line may carry other codes ('disable=SC1090,SC1091')
+## that the fixed-string form silently misses (a dead assertion).
+r085_hits="$(printf '%s\n' "${gate_output}" \
+   | grep --extended-regexp 'disable=([A-Z0-9]+,)*SC1091([,[:space:]]|$)' || true)"
 
 ## The rule fires for the flagged file (canary: 0 hits = 0 coverage).
 if [[ "${gate_output}" == *"R-085"* ]] && [[ "${r085_hits}" == *"bin/flagged"* ]]; then
@@ -168,6 +194,16 @@ if [[ "${r085_hits}" == *"bin/clean"* ]]; then
    fail=1
 else
    printf '%s\n' "PASS: R-085 does not flag a file with no SC1091 disable"
+fi
+
+## The unfollowable file is not flagged: a disable with no adjacent source=
+## directive is load-bearing, not dead. Regression for the FP that flagged every
+## SC1091 disable.
+if [[ "${r085_hits}" == *"bin/unfollowable"* ]]; then
+   printf '%s\n' "FAIL: R-085 falsely flagged bin/unfollowable (disable has no adjacent source= directive)"
+   fail=1
+else
+   printf '%s\n' "PASS: R-085 does not flag a disable lacking an adjacent source= directive"
 fi
 
 ## Advisory: the disable being present must NOT turn the gate red.
