@@ -242,6 +242,28 @@ case_passes_proxy_and_maxtime() {
    check "args: exactly one curl invocation" "1" "$(printf '%s\n' "${argv}" | wc --lines)"
 }
 
+## A lister that FAILS (crash, import error) must NOT be mistaken for an empty
+## conf: mapfile < <(cmd) discards cmd's status, so the failure would silently
+## skip the sweep. The failure must be surfaced and propagated (non-zero).
+case_lister_failure_is_surfaced() {
+   local rc=0
+
+   reset_state
+   ## A lister that prints nothing and exits non-zero (stands in for a crash).
+   printf '%s\n' '#!/bin/bash' 'exit 42' > "${work_dir}/failing-lister"
+   chmod +x -- "${work_dir}/failing-lister"
+   MOCK_STATE="${work_dir}/state" \
+   ONION_TESTER_URL_LISTER="${work_dir}/failing-lister" \
+   ONION_TESTER_CURL_BIN="${work_dir}/mock-curl" \
+   ONION_TESTER_PROXY="127.0.0.1:9050" \
+      "${warmup}" > "${work_dir}/out.log" 2>&1 || rc=$?
+
+   check "lister failure: propagated as non-zero, not swallowed as empty" "42" "${rc}"
+   check "lister failure: no curl invoked" "0" "$(curl_calls)"
+   check_contains "lister failure: surfaced distinctly from an empty conf" \
+      "URL lister" "${work_dir}/out.log"
+}
+
 ## An empty conf must not blow up the run -- the warm-up is best-effort and its
 ## verdict is discarded, so a missing list is non-fatal (the measured attempts
 ## fail loud on a cold client). But it must SAY it swept nothing.
@@ -411,6 +433,7 @@ main() {
    case_sweeps_every_url
    case_discards_verdict
    case_passes_proxy_and_maxtime
+   case_lister_failure_is_surfaced
    case_empty_list_is_nonfatal
    case_concurrency_capped
    case_default_concurrency_from_chunk

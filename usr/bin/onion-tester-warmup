@@ -90,6 +90,7 @@ resolve_proxy() {
 
 main() {
    local concurrency concurrency_valid maxtime proxy ok notok total line
+   local lister lister_out lister_rc
    local -a urls=() worker_lines=()
 
    ## Default to the measured probe's chunk size so warm-up and measurement share
@@ -114,11 +115,25 @@ main() {
       concurrency=20
    fi
 
-   mapfile -t urls < <("${ONION_TESTER_URL_LISTER:-${script_dir}/onion-tester-list-urls}")
+   ## Capture the lister's output AND exit status separately: 'mapfile < <(cmd)'
+   ## discards cmd's status, so a lister that CRASHES (sdwdate import error, an
+   ## exception) would look identical to an empty conf and the sweep would be
+   ## silently skipped. Distinguish the two: a crash is surfaced and returns
+   ## non-zero; a genuinely empty conf is the best-effort no-op below.
+   lister="${ONION_TESTER_URL_LISTER:-${script_dir}/onion-tester-list-urls}"
+   lister_rc=0
+   lister_out="$("${lister}")" || lister_rc=$?
+   if [ "${lister_rc}" -ne 0 ]; then
+      printf '%s\n' "onion-tester-warmup: URL lister '${lister}' failed (rc=${lister_rc}); skipping the warm-up sweep -- the measured attempts will run against a cold cache" >&2
+      return "${lister_rc}"
+   fi
+   if [ -n "${lister_out}" ]; then
+      mapfile -t urls <<< "${lister_out}"
+   fi
    if [ "${#urls[@]}" -eq 0 ]; then
       ## Non-fatal: the warm-up is best-effort and its verdict is discarded, so a
-      ## missing list must not block the measured attempts -- they will fail loud
-      ## on a genuinely cold client. But say so; an empty conf is itself a bug.
+      ## genuinely empty conf must not block the measured attempts -- they will
+      ## fail loud on a cold client. But say so; an empty conf is itself a bug.
       printf '%s\n' "onion-tester-warmup: no conf URLs to warm (empty list); skipping the sweep" >&2
       return 0
    fi
