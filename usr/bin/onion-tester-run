@@ -38,6 +38,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 if [ "${CI:-}" != "true" ] && [ "${ALLOW_LOCAL:-}" != "true" ]; then
    printf '%s\n' \
@@ -65,6 +66,9 @@ script_dir="$(dirname -- "${BASH_SOURCE[0]}")"
 ## to the installed probe.
 onion_tester="${ONION_TESTER_BIN:-/usr/share/sdwdate/onion-tester}"
 newnym="${ONION_TESTER_NEWNYM_BIN:-${script_dir}/onion-tester-newnym}"
+## Cheap descriptor-cache warm-up (a parallel curl --head sweep), NOT the full
+## probe. Overridable so the suite can drive a mock.
+warmup="${ONION_TESTER_WARMUP_BIN:-${script_dir}/onion-tester-warmup}"
 attempts="${ONION_TESTER_ATTEMPTS:-3}"
 ## Long enough for Tor's NEWNYM rate limit to clear and for the purged
 ## descriptor/intro-point state to be re-fetched from a different HSDir set.
@@ -79,9 +83,12 @@ deadline_seconds="${ONION_TESTER_DEADLINE:-1200}"
 ## interpreter startup. Below this, `timeout` would reap the probe before it could
 ## answer, so starting the attempt only manufactures an rc=124.
 min_attempt_seconds="${ONION_TESTER_MIN_ATTEMPT:-180}"
-## Cap on the warm-up sweep (0 disables it). Sized to a cold full sweep; it is
+## Cap on the warm-up sweep (0 disables it). The warm-up is now a parallel
+## curl --head sweep (onion-tester-warmup), which warms the descriptor cache in
+## tens of seconds instead of the ~600s a full-probe sweep of unreachable onions
+## cost -- so this cap is a generous backstop, not the expected runtime, and it is
 ## clamped below so it can never eat the budget a measured attempt needs.
-warmup_max_seconds="${ONION_TESTER_WARMUP_MAX:-600}"
+warmup_max_seconds="${ONION_TESTER_WARMUP_MAX:-180}"
 
 ## SINGLE SOURCE OF TRUTH for what every exit code this wrapper can return means.
 ## 0/1 come from the probe (sys.exit(0 if offline==0 else 1)); 3 and 124 are set
@@ -107,9 +114,9 @@ rc_legend() {
       sep=', '
    done < <(printf '%s\n' "${!rc_meaning[@]}" | sort --numeric-sort)
    if [ -v "rc_meaning[${rc}]" ]; then
-      printf '(%s)\n' "${known}"
+      printf '%s\n' "(${known})"
    else
-      printf 'unexpected - the probe could not be run, was killed, or exited abnormally (known: %s)\n' "${known}"
+      printf '%s\n' "unexpected - the probe could not be run, was killed, or exited abnormally (known: ${known})"
    fi
 }
 
@@ -128,10 +135,13 @@ main() {
    ## chunk size held constant, the same 9 URLs took 178s with 1 OFFLINE on a
    ## just-bootstrapped client and 14s with 0 OFFLINE four minutes later.
    ##
-   ## Do that sweep deliberately and DISCARD its verdict, so attempt 1 measures a
-   ## warm client. This does not loosen the gate: every URL must still respond on
-   ## some measured attempt, and a genuinely dead onion still fails them all. It
-   ## removes a known-invalid measurement rather than adding re-rolls.
+   ## Warm the descriptor cache deliberately, with a CHEAP parallel curl --head
+   ## sweep (onion-tester-warmup) rather than the full probe: a HEAD triggers the
+   ## same descriptor fetch + rendezvous the probe needs, in tens of seconds
+   ## instead of the ~120s-per-unreachable-URL the probe's time-sync costs, so the
+   ## measured attempts keep almost the whole budget. Its verdict is DISCARDED.
+   ## This does not loosen the gate: every URL must still respond on some measured
+   ## attempt, and a genuinely dead onion still fails them all.
    if [ "${warmup_max_seconds}" -gt 0 ]; then
       now="$(date +%s)"
       remaining=$((deadline_seconds - (now - start)))
@@ -143,10 +153,7 @@ main() {
       fi
       if [ "${warmup_budget}" -gt 0 ]; then
          printf '%s\n' "=== onion-tester warm-up sweep (${warmup_budget}s cap; verdict DISCARDED, populates Tor's descriptor cache) ==="
-         timeout --kill-after=10s "${warmup_budget}s" "${onion_tester}" > "${tmp}" 2>&1 || true
-         ## Only the totals: the warm-up is not evidence, and echoing a full sweep
-         ## would bury the measured attempts in the CI log.
-         sed -n 's/^TOTAL/warm-up (NOT a verdict) TOTAL/p' -- "${tmp}" || true
+         timeout --kill-after=10s "${warmup_budget}s" "${warmup}" || true
       else
          printf '%s\n' "onion-tester: no budget for a warm-up sweep; attempt 1 measures a cold client" >&2
       fi
@@ -218,9 +225,9 @@ main() {
 
    if [ -n "${GITHUB_OUTPUT:-}" ]; then
       {
-         printf 'attempts=%s\n' "${final_attempt}"
-         printf 'final_rc=%s\n' "${rc}"
-         printf 'final_rc_legend=%s\n' "$(rc_legend "${rc}")"
+         printf '%s\n' "attempts=${final_attempt}"
+         printf '%s\n' "final_rc=${rc}"
+         printf '%s\n' "final_rc_legend=$(rc_legend "${rc}")"
       } >> "${GITHUB_OUTPUT}"
    fi
 

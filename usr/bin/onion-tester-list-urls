@@ -1,0 +1,44 @@
+#!/usr/bin/python3 -su
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Print every time-source URL configured in /etc/sdwdate.d/*.conf, one per line.
+##
+## Same source of truth as the probe (onion-tester): both read the conf through
+## sdwdate.config.read_pools(pool, 'test'), so the warm-up sweep can never warm a
+## different URL set than the measured probe then tests. The probe consumes this
+## list inline (it needs the pool structure); the warm-up wrapper is bash, so it
+## consumes it as plain lines from here rather than re-reading the conf format.
+##
+## Output: one URL per line on stdout. No args.
+
+import sys
+
+sys.dont_write_bytecode = True
+
+import contextlib
+import io
+
+from sdwdate.config import read_pools
+
+
+def main():
+    ## Pools 0, 1, 2 in 'test' mode -- identical to onion-tester's Pool().
+    ##
+    ## read_pools prints diagnostics to STDOUT (e.g. 'User configuration folder
+    ## "/etc/sdwdate.d" does not exist.') and returns [] when the conf is absent.
+    ## Capture and drop that stdout so ONLY real URLs reach our own stdout --
+    ## otherwise a diagnostic line would be consumed downstream as a URL and the
+    ## warm-up's empty-list skip would never fire.
+    for pool in range(3):
+        with contextlib.redirect_stdout(io.StringIO()):
+            urls, _comment = read_pools(pool, "test")
+        for url in urls:
+            print(url)
+
+
+if __name__ == "__main__":
+    main()

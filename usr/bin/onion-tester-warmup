@@ -1,0 +1,182 @@
+#!/bin/bash
+
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## Warm Tor's hidden-service descriptor cache for every conf URL with a parallel
+## `curl --head` sweep at CONTROLLED concurrency, then DISCARD every result.
+##
+## Why this exists (and why it is NOT the full probe):
+##   * Tor is restarted immediately before onion-tester runs. "Bootstrapped 100%"
+##     only means a general circuit exists -- it does NOT mean the client holds
+##     hidden-service descriptors for the conf's onions. A cold first sweep
+##     therefore measures descriptor FETCHING, not the conf (measured, chunk held
+##     constant: 178s / 1 OFFLINE cold vs 14s / 0 OFFLINE four minutes later).
+##   * All the warm-up needs to do is trigger those descriptor fetches. A
+##     `curl --head` does exactly that (fetch descriptor -> build rendezvous ->
+##     connect) and is the SAME second-opinion signal the probe already prints on
+##     an OFFLINE URL ("Curl --head is OK"). Running the full probe just to warm
+##     the cache costs ~120s per unreachable URL (its time-sync primary timeout,
+##     hardcoded in remote_times.py); a HEAD sweep warms in tens of seconds and
+##     leaves the wall-clock budget for the MEASURED attempts in onion-tester-run.
+##   * Concurrency is a knob, not a constant: warming at the same concurrency the
+##     probe measures at (ONION_TESTER_CHUNK) exercises the exact CI-scale
+##     connection pattern; dialling ONION_TESTER_WARMUP_CONCURRENCY down is how the
+##     "is 20-concurrent-of-59 too aggressive" question gets settled without
+##     touching the measured probe.
+##
+## This does NOT loosen the gate: the verdict here is thrown away. Every conf URL
+## must still respond on some MEASURED attempt in onion-tester-run; a genuinely
+## dead onion still fails them all.
+##
+## Exit status: 0 unless the URL list could not be obtained. A curl failure for an
+## individual URL is expected (cold descriptor, slow HSDir) and is not an error --
+## the fetch attempt is the point.
+
+set -o errexit
+set -o nounset
+set -o pipefail
+set -o errtrace
+shopt -s inherit_errexit
+shopt -s shift_verbose
+export LC_ALL=C
+
+## Per-URL worker (re-exec of this script): HEAD one onion through Tor, report
+## OK/NOTOK for the summary tally, and ALWAYS exit 0 -- a failed fetch still asked
+## Tor for the descriptor, which is all the warm-up wants. Kept in-file (not a
+## separate script or a `bash -c` string) so xargs can fan it out at controlled
+## concurrency with the URL as a single, unsplit argument.
+if [ "${1:-}" = "--probe-one" ]; then
+   worker_url="${2:-}"
+   worker_curl="${ONION_TESTER_CURL_BIN:-curl}"
+   worker_proxy="${ONION_TESTER_WARMUP_PROXY_RESOLVED:?internal: parent must resolve the proxy}"
+   worker_maxtime="${ONION_TESTER_WARMUP_HEAD_MAXTIME:-30}"
+   ## '--' before the URL: conf entries are only the text between quotes and are
+   ## NOT required to start with a scheme, so a leading-dash entry (typo, or a
+   ## future non-root conf source) would otherwise be parsed by curl as an OPTION
+   ## -- e.g. '-K/path' reads a config file (SOCKS bypass, clearnet fetch) and
+   ## curl exits 0, so the worker would falsely report the onion reachable. With
+   ## '--' curl treats it as a (bad) URL instead.
+   if "${worker_curl}" \
+         --socks5-hostname "${worker_proxy}" \
+         --max-time "${worker_maxtime}" \
+         --silent \
+         --output /dev/null \
+         --head \
+         -- "${worker_url}"; then
+      printf '%s\n' 'OK'
+   else
+      printf '%s\n' 'NOTOK'
+   fi
+   exit 0
+fi
+
+self="$(readlink --canonicalize -- "${BASH_SOURCE[0]}")"
+script_dir="$(dirname -- "${self}")"
+
+resolve_proxy() {
+   ## Explicit override wins (tests, or a caller that already knows the proxy).
+   if [ -n "${ONION_TESTER_PROXY:-}" ]; then
+      printf '%s' "${ONION_TESTER_PROXY}"
+      return 0
+   fi
+   ## Same resolution the probe uses: sdwdate.proxy_settings prints "IP PORT".
+   local ip port
+   read -r ip port < <(python3 -m sdwdate.proxy_settings)
+   printf '%s' "${ip}:${port}"
+}
+
+main() {
+   local concurrency concurrency_valid maxtime proxy ok notok total line
+   local lister lister_out lister_rc
+   local -a urls=() worker_lines=()
+
+   ## Default to the measured probe's chunk size so warm-up and measurement share
+   ## one concurrency; overridable on its own to probe the concurrency question.
+   concurrency="${ONION_TESTER_WARMUP_CONCURRENCY:-${ONION_TESTER_CHUNK:-20}}"
+   maxtime="${ONION_TESTER_WARMUP_HEAD_MAXTIME:-30}"
+
+   ## Clamp: 'xargs --max-procs 0' means UNLIMITED -- the exact opposite of a
+   ## controlled warm-up -- so a 0, negative, empty or non-numeric concurrency
+   ## (e.g. ONION_TESTER_CHUNK=0 exported by onion-tester-run) must NOT reach it.
+   ## Fall back to the documented default rather than blast every onion at once.
+   case "${concurrency}" in
+      '' | *[!0-9]*)
+         concurrency_valid='false'
+         ;;
+      *)
+         concurrency_valid='true'
+         ;;
+   esac
+   if [ "${concurrency_valid}" = 'false' ] || [ "${concurrency}" -lt 1 ]; then
+      printf '%s\n' "onion-tester-warmup: concurrency '${concurrency}' is not a positive integer; using 20" >&2
+      concurrency=20
+   fi
+
+   ## Capture the lister's output AND exit status separately: 'mapfile < <(cmd)'
+   ## discards cmd's status, so a lister that CRASHES (sdwdate import error, an
+   ## exception) would look identical to an empty conf and the sweep would be
+   ## silently skipped. Distinguish the two: a crash is surfaced and returns
+   ## non-zero; a genuinely empty conf is the best-effort no-op below.
+   lister="${ONION_TESTER_URL_LISTER:-${script_dir}/onion-tester-list-urls}"
+   lister_rc=0
+   lister_out="$("${lister}")" || lister_rc=$?
+   if [ "${lister_rc}" -ne 0 ]; then
+      printf '%s\n' "onion-tester-warmup: URL lister '${lister}' failed (rc=${lister_rc}); skipping the warm-up sweep -- the measured attempts will run against a cold cache" >&2
+      return "${lister_rc}"
+   fi
+   if [ -n "${lister_out}" ]; then
+      mapfile -t urls <<< "${lister_out}"
+   fi
+   if [ "${#urls[@]}" -eq 0 ]; then
+      ## Non-fatal: the warm-up is best-effort and its verdict is discarded, so a
+      ## genuinely empty conf must not block the measured attempts -- they will
+      ## fail loud on a cold client. But say so; an empty conf is itself a bug.
+      printf '%s\n' "onion-tester-warmup: no conf URLs to warm (empty list); skipping the sweep" >&2
+      return 0
+   fi
+
+   proxy="$(resolve_proxy)"
+
+   printf '%s\n' "onion-tester-warmup: HEAD-sweeping ${#urls[@]} URL(s) via ${proxy} at concurrency ${concurrency} (max-time ${maxtime}s each; verdicts DISCARDED, populates Tor's descriptor cache)"
+
+   ## Export what the re-exec'd worker reads, so every xargs child inherits it
+   ## (an env-prefix on the mapfile builtin would NOT reach into the process
+   ## substitution's xargs children).
+   export ONION_TESTER_WARMUP_PROXY_RESOLVED="${proxy}"
+   export ONION_TESTER_WARMUP_HEAD_MAXTIME="${maxtime}"
+   export ONION_TESTER_CURL_BIN="${ONION_TESTER_CURL_BIN:-curl}"
+
+   ## Fan the per-URL worker out at controlled concurrency. NUL-delimited
+   ## (--null + printf '%s\0'): --replace={} alone stops word-splitting but NOT
+   ## xargs's quote/backslash processing, so a conf URL containing '"' would abort
+   ## the whole sweep ("unmatched double quote") and one containing '\' would be
+   ## silently mangled. --null disables both and feeds one URL per invocation.
+   ## The worker always exits 0, so xargs does too. Tally OK/NOTOK as diagnostics.
+   mapfile -t worker_lines < <(
+      printf '%s\0' "${urls[@]}" \
+         | xargs --null --no-run-if-empty --max-procs "${concurrency}" --replace={} \
+            -- "${self}" --probe-one {}
+   )
+
+   ok=0
+   notok=0
+   for line in "${worker_lines[@]}"; do
+      case "${line}" in
+         OK)
+            ok=$((ok + 1))
+            ;;
+         NOTOK)
+            notok=$((notok + 1))
+            ;;
+      esac
+   done
+   total=$((ok + notok))
+
+   printf '%s\n' "onion-tester-warmup: swept ${total}/${#urls[@]} URL(s); ${ok} reachable via curl --head, ${notok} not (NOT a verdict -- descriptor cache is now warm for the measured attempts)"
+   return 0
+}
+
+main "${@}"

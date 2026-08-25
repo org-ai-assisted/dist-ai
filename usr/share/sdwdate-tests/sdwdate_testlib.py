@@ -133,6 +133,13 @@ class PreparationTestBase(unittest.TestCase):
         self._stub(module, 'status_file_path', self.status_path)
         self._stub(module, 'msg_path', self.msg_path)
 
+        ## write_preparation_output() writes this global (systemcheck reads it).
+        ## Give it a real file so a missing write shows as an empty file rather
+        ## than a swallowed NameError.
+        self.preparation_output_path = self._temp_file('preparation_output')
+        self._stub(
+            module, 'preparation_output_path', self.preparation_output_path)
+
         ## Record instead of actually sleeping: the assertions are about the
         ## requested interval, and real sleeps would make the suite take
         ## minutes.

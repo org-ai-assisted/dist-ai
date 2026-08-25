@@ -405,7 +405,10 @@ wire() {
          ## helper-scripts runtime (env here; the /usr/libexec/helper-scripts
          ## system path is provided by the CI setup step) when a helper-scripts
          ## checkout is available.
-         wire_env=( "GENMKFILE_BIN=$( pkg_dir genmkfile )/usr/bin/genmkfile" )
+         wire_env=(
+            "GENMKFILE_BIN=$( pkg_dir genmkfile )/usr/bin/genmkfile"
+            "GENMKFILE_REPO=$( pkg_dir genmkfile )"
+         )
          if [ -n "${hs}" ]; then
             wire_env+=(
                "HELPER_SCRIPTS_PATH=${hs}"
