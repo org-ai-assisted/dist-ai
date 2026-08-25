@@ -32,7 +32,15 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
-if grep --fixed-strings --quiet -- ",${THIS_REPO}," <<< ",${CANONICAL_REPOS},"; then
+## CANONICAL_REPOS is CSV that may carry whitespace after commas
+## ("org/foo, org/bar"). The ',<repo>,' test is exact-match, so a stray space
+## would make a genuine member miss and silently skip the gated Coverity steps.
+## Repo names never contain whitespace -> strip it from both sides before
+## matching (the log messages below keep the originals).
+canonical_repos_compact="${CANONICAL_REPOS//[[:space:]]/}"
+this_repo_compact="${THIS_REPO//[[:space:]]/}"
+
+if grep --fixed-strings --quiet -- ",${this_repo_compact}," <<< ",${canonical_repos_compact},"; then
    printf '%s\n' \
       "gate: ${THIS_REPO} is canonical (in '${CANONICAL_REPOS}'); allowing" >&2
    printf '%s\n' 'allowed=true' >> "${GITHUB_OUTPUT}"
