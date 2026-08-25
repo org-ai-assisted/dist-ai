@@ -5,9 +5,9 @@
 
 ## AI-Assisted
 
-## Offline regression suite for ci/onion-tester-run.sh. Drives the retry wrapper
-## against a mock probe and a mock NEWNYM helper, so the retry POLICY is tested
-## without Tor, without network, in seconds.
+## Offline regression suite for onion-tester-run. Drives the retry wrapper
+## against a mock probe, a mock NEWNYM helper and a mock warm-up, so the retry
+## POLICY is tested without Tor, without network, in seconds.
 
 set -o errexit
 set -o nounset
@@ -66,13 +66,28 @@ printf '%s\n' "newnym" >> "${MOCK_STATE}/newnym.log"
 exit "${MOCK_NEWNYM_RC:-0}"
 MOCK_NEWNYM_EOF
 
-   chmod +x -- "${work_dir}/mock-probe" "${work_dir}/mock-newnym"
+   ## Stands in for onion-tester-warmup: records that it ran, optionally consumes
+   ## wall clock (to exercise the budget clamp), and exits with a configurable code
+   ## (to prove the runner ignores the warm-up's verdict).
+   cat > "${work_dir}/mock-warmup" <<'MOCK_WARMUP_EOF'
+#!/bin/bash
+
+set -o nounset
+
+printf '%s\n' "warmup ${*}" >> "${MOCK_STATE}/warmup.log"
+sleep "${MOCK_WARMUP_SLEEP:-0}"
+exit "${MOCK_WARMUP_RC:-0}"
+MOCK_WARMUP_EOF
+
+   chmod +x -- "${work_dir}/mock-probe" "${work_dir}/mock-newnym" \
+      "${work_dir}/mock-warmup"
 }
 
 reset_state() {
    safe-rm --recursive --force -- "${work_dir}/state"
    mkdir --parents -- "${work_dir}/state"
-   touch -- "${work_dir}/state/argv.log" "${work_dir}/state/newnym.log"
+   touch -- "${work_dir}/state/argv.log" "${work_dir}/state/newnym.log" \
+      "${work_dir}/state/warmup.log"
 }
 
 check() {
@@ -113,6 +128,13 @@ newnym_calls() {
    local count
 
    count="$(wc --lines < "${work_dir}/state/newnym.log")"
+   printf '%s\n' "${count}"
+}
+
+warmup_calls() {
+   local count
+
+   count="$(wc --lines < "${work_dir}/state/warmup.log")"
    printf '%s\n' "${count}"
 }
 
@@ -247,43 +269,10 @@ case_retry_is_targeted() {
 
 ## The warm-up exists because Tor is restarted immediately before the probe runs,
 ## and "Bootstrapped 100%" does not mean the hidden-service descriptor cache is
-## populated. Its verdict must be DISCARDED: a cold first sweep measures descriptor
-## fetching, not the conf. Measured with chunk held constant: 178s / 1 OFFLINE cold
-## vs 14s / 0 OFFLINE warm.
-case_warmup_verdict_discarded() {
-   local rc=0 probe_calls
-
-   reset_state
-   MOCK_STATE="${work_dir}/state" \
-   MOCK_RESULTS="1 0" \
-   MOCK_SLEEP=0 \
-   MOCK_NEWNYM_RC=0 \
-   ALLOW_LOCAL=true \
-   ONION_TESTER_BIN="${work_dir}/mock-probe" \
-   ONION_TESTER_NEWNYM_BIN="${work_dir}/mock-newnym" \
-   ONION_TESTER_ATTEMPTS=1 \
-   ONION_TESTER_RETRY_SLEEP=0 \
-   ONION_TESTER_DEADLINE=600 \
-   ONION_TESTER_MIN_ATTEMPT=5 \
-   ONION_TESTER_WARMUP_MAX=60 \
-      "${runner}" > "${work_dir}/out.log" 2>&1 || rc=$?
-
-   probe_calls="$(cat -- "${work_dir}/state/count")"
-   ## ATTEMPTS=1 on purpose: with retries available the loop would converge to 0
-   ## anyway and the assertion would pass with or without a warm-up. With one
-   ## measured attempt, exit 0 is only possible if the warm-up absorbed the
-   ## failing sweep.
-   check "warm-up: failing warm-up does not fail the run" "0" "${rc}"
-   check "warm-up: ran before the first measured attempt" "2" "${probe_calls}"
-   check "warm-up: no NEWNYM burned on a first-attempt pass" "0" "$(newnym_calls)"
-   check_contains "warm-up: labelled as discarded in the log" \
-      "verdict DISCARDED" "${work_dir}/out.log"
-}
-
-## A warm-up is not a measurement, so it must never consume the budget a measured
-## attempt needs. With a budget barely above the floor it is clamped, and an
-## attempt still runs and still produces the verdict.
-case_warmup_never_starves_attempts() {
+## populated. It is a SEPARATE cheap helper (a curl --head sweep), invoked once
+## before the measured attempts; its verdict is DISCARDED. Measured with chunk
+## held constant: 178s / 1 OFFLINE cold vs 14s / 0 OFFLINE warm.
+case_warmup_runs_before_measured() {
    local rc=0 probe_calls
 
    reset_state
@@ -294,20 +283,87 @@ case_warmup_never_starves_attempts() {
    ALLOW_LOCAL=true \
    ONION_TESTER_BIN="${work_dir}/mock-probe" \
    ONION_TESTER_NEWNYM_BIN="${work_dir}/mock-newnym" \
+   ONION_TESTER_WARMUP_BIN="${work_dir}/mock-warmup" \
    ONION_TESTER_ATTEMPTS=3 \
    ONION_TESTER_RETRY_SLEEP=0 \
-   ONION_TESTER_DEADLINE=8 \
+   ONION_TESTER_DEADLINE=600 \
    ONION_TESTER_MIN_ATTEMPT=5 \
-   ONION_TESTER_WARMUP_MAX=600 \
+   ONION_TESTER_WARMUP_MAX=60 \
       "${runner}" > "${work_dir}/out.log" 2>&1 || rc=$?
 
    probe_calls="$(cat -- "${work_dir}/state/count")"
-   check "warm-up clamp: a measured attempt still ran" "0" "${rc}"
-   check "warm-up clamp: warm-up did not consume the attempt budget" "2" "${probe_calls}"
+   check "warm-up: exits 0" "0" "${rc}"
+   check "warm-up: warm-up helper ran exactly once" "1" "$(warmup_calls)"
+   check "warm-up: it is a separate helper, not an extra probe sweep" "1" "${probe_calls}"
+   check "warm-up: no NEWNYM burned on a first-attempt pass" "0" "$(newnym_calls)"
+   check_contains "warm-up: labelled as discarded in the log" \
+      "verdict DISCARDED" "${work_dir}/out.log"
+}
+
+## The warm-up's verdict is thrown away: a warm-up that EXITS NON-ZERO (some onions
+## unreachable while still cold) must not fail the run. ATTEMPTS=1 so the only way
+## to exit 0 is for the runner to have ignored the warm-up's exit code.
+case_warmup_failure_ignored() {
+   local rc=0 probe_calls
+
+   reset_state
+   MOCK_STATE="${work_dir}/state" \
+   MOCK_RESULTS="0" \
+   MOCK_SLEEP=0 \
+   MOCK_NEWNYM_RC=0 \
+   MOCK_WARMUP_RC=1 \
+   ALLOW_LOCAL=true \
+   ONION_TESTER_BIN="${work_dir}/mock-probe" \
+   ONION_TESTER_NEWNYM_BIN="${work_dir}/mock-newnym" \
+   ONION_TESTER_WARMUP_BIN="${work_dir}/mock-warmup" \
+   ONION_TESTER_ATTEMPTS=1 \
+   ONION_TESTER_RETRY_SLEEP=0 \
+   ONION_TESTER_DEADLINE=600 \
+   ONION_TESTER_MIN_ATTEMPT=5 \
+   ONION_TESTER_WARMUP_MAX=60 \
+      "${runner}" > "${work_dir}/out.log" 2>&1 || rc=$?
+
+   probe_calls="$(cat -- "${work_dir}/state/count")"
+   check "warm-up failure: a failing warm-up does not fail the run" "0" "${rc}"
+   check "warm-up failure: warm-up ran" "1" "$(warmup_calls)"
+   check "warm-up failure: the measured attempt still ran" "1" "${probe_calls}"
+}
+
+## A warm-up is not a measurement, so it must never consume the budget a measured
+## attempt needs. A warm-up that would otherwise run past the deadline
+## (MOCK_WARMUP_SLEEP=60 >> DEADLINE=30) is bounded by ONION_TESTER_WARMUP_MAX, so
+## a measured attempt still starts with budget to spare and produces the verdict.
+## Margin is deliberate (cap 10s, floor 5s, deadline 30s) so the assertion turns
+## on the CAP existing, not on knife-edge timing.
+case_warmup_never_starves_attempts() {
+   local rc=0 probe_calls
+
+   reset_state
+   MOCK_STATE="${work_dir}/state" \
+   MOCK_RESULTS="0" \
+   MOCK_SLEEP=0 \
+   MOCK_NEWNYM_RC=0 \
+   MOCK_WARMUP_SLEEP=60 \
+   ALLOW_LOCAL=true \
+   ONION_TESTER_BIN="${work_dir}/mock-probe" \
+   ONION_TESTER_NEWNYM_BIN="${work_dir}/mock-newnym" \
+   ONION_TESTER_WARMUP_BIN="${work_dir}/mock-warmup" \
+   ONION_TESTER_ATTEMPTS=3 \
+   ONION_TESTER_RETRY_SLEEP=0 \
+   ONION_TESTER_DEADLINE=30 \
+   ONION_TESTER_MIN_ATTEMPT=5 \
+   ONION_TESTER_WARMUP_MAX=10 \
+      "${runner}" > "${work_dir}/out.log" 2>&1 || rc=$?
+
+   probe_calls="$(cat -- "${work_dir}/state/count")"
+   check "warm-up cap: a measured attempt still ran" "0" "${rc}"
+   check "warm-up cap: the long warm-up did not starve the measured attempt" \
+      "1" "${probe_calls}"
+   check "warm-up cap: warm-up ran" "1" "$(warmup_calls)"
 }
 
 ## Disabling it must actually disable it -- otherwise the retry accounting in every
-## other case is silently measuring one extra sweep.
+## other case is silently measuring one extra step.
 case_warmup_disabled() {
    local rc=0 probe_calls
 
@@ -319,6 +375,7 @@ case_warmup_disabled() {
    ALLOW_LOCAL=true \
    ONION_TESTER_BIN="${work_dir}/mock-probe" \
    ONION_TESTER_NEWNYM_BIN="${work_dir}/mock-newnym" \
+   ONION_TESTER_WARMUP_BIN="${work_dir}/mock-warmup" \
    ONION_TESTER_ATTEMPTS=3 \
    ONION_TESTER_RETRY_SLEEP=0 \
    ONION_TESTER_DEADLINE=600 \
@@ -329,6 +386,7 @@ case_warmup_disabled() {
    probe_calls="$(cat -- "${work_dir}/state/count")"
    check "warm-up disabled: exits 0" "0" "${rc}"
    check "warm-up disabled: probe called exactly once" "1" "${probe_calls}"
+   check "warm-up disabled: warm-up helper never ran" "0" "$(warmup_calls)"
 }
 
 main() {
@@ -348,7 +406,8 @@ main() {
    case_newnym_failure_is_fatal
    case_first_attempt_pass
    case_retry_is_targeted
-   case_warmup_verdict_discarded
+   case_warmup_runs_before_measured
+   case_warmup_failure_ignored
    case_warmup_never_starves_attempts
    case_warmup_disabled
 

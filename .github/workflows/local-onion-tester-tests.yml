@@ -1,0 +1,68 @@
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+## dist-ai SELF-test lane for the onion-tester CI wrappers.
+##
+## These tools (usr/bin/onion-tester-*) live HERE, in dist-ai, but are consumed by
+## sdwdate's onion-tester workflow, which checks out dist-ai@master. Without this
+## lane a regression in them would surface only in a downstream sdwdate PR -- and
+## sdwdate's own paths: filter cannot watch another repo, so a change to these
+## tools does not even trigger sdwdate's workflow. This lane closes both gaps: it
+## exercises dist-ai's own onion-tester tools on every change to them here.
+##
+## The suite is fully mocked (no Tor, no network, no root) so it runs in seconds.
+## local-* prefix per G-A-005: dist-ai-specific, not a cross-repo reusable, and
+## NOT one of the pkg_update_consumer_workflows-managed consumer-*.yml templates.
+
+name: onion-tester-self-tests
+
+on:
+  push:
+    branches:
+      - master
+      - ai
+    paths:
+      - 'usr/bin/onion-tester-*'
+      - 'usr/bin/sdwdate-onion-tester-tests'
+      - 'usr/share/sdwdate-onion-tester-tests/**'
+      - '.github/workflows/local-onion-tester-tests.yml'
+  pull_request:
+    paths:
+      - 'usr/bin/onion-tester-*'
+      - 'usr/bin/sdwdate-onion-tester-tests'
+      - 'usr/share/sdwdate-onion-tester-tests/**'
+      - '.github/workflows/local-onion-tester-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  onion-tester-self-tests:
+    ## CI runs only where we enabled it. Unset variable -> the job is skipped, no
+    ## runner is allocated, and the run stays green: forks are never handed a red X
+    ## for a lane they did not opt into.
+    if: vars.CI_ENABLED_ORG_AI_ASSISTED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install apt deps
+        uses: org-ai-assisted/developer-meta-files/.github/actions/install-deps@master
+        with:
+          ## safe-rm is used by the suites; util-linux (flock) and coreutils ship
+          ## on the runner. No install-self: the suite drives dist-ai's own usr/bin
+          ## from the checkout, nothing is written to /usr.
+          apt-packages: 'safe-rm'
+
+      - name: Run onion-tester self-tests (mocked; no Tor, no network)
+        run: ./usr/bin/sdwdate-onion-tester-tests
