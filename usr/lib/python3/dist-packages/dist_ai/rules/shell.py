@@ -1002,6 +1002,38 @@ class FlowChaining(Rule):
                 ctx, "R-074", "R-074 ';'-chained break/continue/return", call)
 
 
+class InterpreterPrepend(Rule):
+    """R-102: run a script by its shebang, not by prepending 'bash'/'sh' ('bash
+    ci/build', 'sh foo.sh'). Command position comes from the AST, so 'du -sh
+    /path' (command is du) and 'wrapper.sh /etc/x' (command is wrapper.sh) are
+    not mistaken for an 'sh' prepend. Flags when the FIRST operand is a script:
+    a literal path with a '.sh'/'.bsh'/'.bash' extension or containing a '/'. A
+    flag ('bash -c', 'bash --norc') or a variable/quoted operand is spared.
+
+    (Shell files only for now; the embedded shell of a workflow 'run:' block --
+    the former grep also scanned .yml -- is a follow-up on WorkflowInlineShell.)"""
+
+    id = "R-102"
+    _SCRIPT_EXT = (".sh", ".bsh", ".bash")
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def detect(self, ctx):
+        for call in bash_ast.call_exprs(ctx.tree):
+            if bash_ast.command_name(call) not in ("bash", "sh"):
+                continue
+            call_args = bash_ast.args(call)
+            if len(call_args) < 2:
+                continue
+            operand = bash_ast.word_string(call_args[1])
+            if operand is None or operand.startswith("-"):
+                continue  ## a variable/expanded operand, or a flag -> spared
+            if operand.endswith(self._SCRIPT_EXT) or "/" in operand:
+                yield _fail(ctx, "R-102",
+                            "R-102 interpreter prepend (use shebang)", call)
+
+
 class TrapInline(Rule):
     """R-051: a 'trap' handler must be a named function, not an inline command
     string ('trap "rm -f ${t}" EXIT'). Spared: an unquoted name ('trap cleanup
@@ -1194,6 +1226,7 @@ RULES = (
     Sc1091Disable(),
     DoubleSemi(),
     FlowChaining(),
+    InterpreterPrepend(),
     TrapInline(),
     TmpHardcode(),
     HelpFromComments(),
