@@ -1,0 +1,212 @@
+## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
+## See the file COPYING for copying conditions.
+
+## AI-Assisted
+
+"""Config-hosted embedded-shell rules: systemd Exec=, apt hooks, cron tables,
+workflow YAML 'run:' steps. Each self-selects by file shape and parses the shell
+it hosts, so a ';'/'|' inside a nested quote is data, not a separator. These run
+over every file (they no-op on a non-matching path) -- detection only, no fix."""
+
+import re
+
+from dist_ai import bash_ast
+from dist_ai import context as ctxmod
+from dist_ai import model
+from dist_ai.model import Rule
+from dist_ai.rules import _helpers as h
+
+EXEC_DIRECTIVE = re.compile(r'^[ \t]*(Exec[A-Za-z]*)=(.*)$', re.MULTILINE)
+APT_HOOK = re.compile(
+    r'(^|[^A-Za-z0-9])(Pre-Invoke|Post-Invoke|Pre-Install-Pkgs)([^A-Za-z0-9]|$)')
+CRON_ENV = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*[ \t]*=')
+
+
+def _note(ctx, rule, message):
+    return model.note(rule, message, ctx.path, 1)
+
+
+class SystemdUnit(Rule):
+    """R-191: a systemd unit must not embed a multi-statement shell script in an
+    'Exec*=' directive (strict: ';', a pipe, '&&'/'||', a control keyword, or a
+    directive spanning physical lines)."""
+
+    id = "R-191"
+
+    def detect(self, ctx):
+        source = ctx.source
+        path = ctx.path
+        if path.endswith(".md") or not EXEC_DIRECTIVE.search(source) \
+                or "Exec" not in source:
+            return
+        if ctx.has_config_waiver("allow-embedded-script"):
+            yield _note(ctx, "R-191",
+                        "R-191 skipped: 'style-ok: allow-embedded-script' "
+                        "waiver in '%s'" % path)
+            return
+        lines = source.split("\n")
+        index = 0
+        while index < len(lines):
+            match = EXEC_DIRECTIVE.match(lines[index])
+            if not match:
+                index += 1
+                continue
+            directive, value = match.group(1), match.group(2)
+            start = index + 1
+            spanned = False
+            while value.endswith("\\") and index + 1 < len(lines):
+                value = value[:-1]
+                index += 1
+                value += lines[index]
+                spanned = True
+            index += 1
+            try:
+                vtree = bash_ast.parse(value)
+            except bash_ast.BashParseError:
+                continue
+            programs = list(h.shell_c_programs(vtree, value))
+            if not programs:
+                continue
+            multi = spanned or any(
+                h.embeds_multi_statement(h.unquote(program_text), strict=True)
+                for _call, program_text, _lc in programs)
+            if multi:
+                yield model.fail(
+                    "R-191",
+                    "R-191 systemd unit embeds a multi-statement shell script "
+                    "in %s; move the logic to a dedicated script (shebang) and "
+                    "call it" % directive, path, start)
+
+
+def _double_quoted_spans(line):
+    """Yield the inner text of each double-quoted run on LINE (apt config values
+    are double-quoted). Not escape-aware -- apt values carry no escaped quotes."""
+    rest = line
+    while '"' in rest:
+        after = rest.split('"', 1)[1]
+        if '"' not in after:
+            break
+        inner, rest = after.split('"', 1)
+        yield inner
+
+
+class AptHook(Rule):
+    """R-194: an apt hook ('Pre-Invoke'/'Post-Invoke'/'Pre-Install-Pkgs') runs
+    its double-quoted value via 'sh -c'; a multi-statement value belongs in a
+    script."""
+
+    id = "R-194"
+
+    def detect(self, ctx):
+        source = ctx.source
+        if not ctxmod.is_apt_conf(ctx.path) or not APT_HOOK.search(source):
+            return
+        if ctx.has_config_waiver("allow-embedded-script", slashes=True):
+            yield _note(ctx, "R-194",
+                        "R-194 skipped: 'style-ok: allow-embedded-script' "
+                        "waiver in '%s'" % ctx.path)
+            return
+        for number, line in enumerate(source.split("\n"), start=1):
+            stripped = line.lstrip()
+            if stripped.startswith("#") or stripped.startswith("//"):
+                continue
+            before = line.split('"', 1)[0]
+            if not APT_HOOK.search(before):
+                continue
+            for inner in _double_quoted_spans(line):
+                if h.embeds_multi_statement(inner, strict=False):
+                    yield model.fail(
+                        "R-194",
+                        "R-194 apt hook embeds a multi-statement shell command; "
+                        "move the logic to a dedicated script (shebang) and "
+                        "call it", ctx.path, number)
+
+
+class CronTable(Rule):
+    """R-195: a cron entry's command field runs via 'sh -c'; a multi-statement
+    command belongs in a script."""
+
+    id = "R-195"
+
+    def detect(self, ctx):
+        if not ctxmod.is_cron_table(ctx.path):
+            return
+        if ctx.has_config_waiver("allow-embedded-script"):
+            yield _note(ctx, "R-195",
+                        "R-195 skipped: 'style-ok: allow-embedded-script' "
+                        "waiver in '%s'" % ctx.path)
+            return
+        for number, line in enumerate(ctx.source.split("\n"), start=1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") \
+                    or CRON_ENV.match(stripped):
+                continue
+            ## A cron command ends at the first UNESCAPED '%'; the rest is stdin.
+            command = re.split(r'(?<!\\)%', line, maxsplit=1)[0]
+            if h.embeds_multi_statement(command, strict=False):
+                yield model.fail(
+                    "R-195",
+                    "R-195 cron entry embeds a multi-statement shell command; "
+                    "move the logic to a dedicated script (shebang) and call it",
+                    ctx.path, number)
+
+
+class WorkflowInlineShell(Rule):
+    """R-100: a workflow 'run:' step must not embed a substantial inline shell
+    SCRIPT (>5 top-level shell statements). The count comes from a real bash
+    parse of the run: body, located via a real YAML parse."""
+
+    id = "R-100"
+
+    def detect(self, ctx):
+        if not ctxmod.is_workflow_yaml(ctx.path):
+            return
+        if ctx.has_config_waiver("allow-inline-shell"):
+            yield _note(ctx, "R-100",
+                        "R-100 skipped: 'style-ok: allow-inline-shell' waiver "
+                        "in '%s'" % ctx.path)
+            return
+        import yaml
+        try:
+            root = yaml.compose(ctx.source)
+        except yaml.YAMLError:
+            return
+        if root is None:
+            return
+        for key_node, value_node in _yaml_run_scalars(root):
+            try:
+                tree = bash_ast.parse_normalized(value_node.value or "")
+            except bash_ast.BashParseError:
+                continue
+            count = len(tree.get("Stmts") or [])
+            if count > 5:
+                yield model.fail(
+                    "R-100",
+                    "R-100 workflow embeds an inline shell script (%d "
+                    "statements) in a 'run:' step; extract it to a ci/ script "
+                    "and call it" % count, ctx.path,
+                    key_node.start_mark.line + 1)
+
+
+def _yaml_run_scalars(node):
+    """Yield (key_node, value_node) for every 'run:' mapping entry whose value
+    is a scalar, anywhere in the composed YAML NODE."""
+    import yaml
+    if isinstance(node, yaml.MappingNode):
+        for key_node, value_node in node.value:
+            if isinstance(key_node, yaml.ScalarNode) \
+                    and key_node.value == "run" \
+                    and isinstance(value_node, yaml.ScalarNode):
+                yield key_node, value_node
+            yield from _yaml_run_scalars(value_node)
+    elif isinstance(node, yaml.SequenceNode):
+        for item in node.value:
+            yield from _yaml_run_scalars(item)
+
+
+RULES = (
+    SystemdUnit(),
+    AptHook(),
+    CronTable(),
+    WorkflowInlineShell(),
+)
