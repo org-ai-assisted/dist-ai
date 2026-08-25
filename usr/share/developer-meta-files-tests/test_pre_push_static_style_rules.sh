@@ -248,9 +248,11 @@ expect_rule "R-062" "git check-ref-format branch && grep ${dd} foo"       "absen
 ## with no separator between, is still the real violation.
 expect_rule "R-062" "git check-ref-format \"\${ref}\" ${dd} x"            "present"
 
-## R-070: ';;' trailing a statement must be FLAGGED; ';;' on its own line spared.
-expect_rule "R-070" "esac${dsemi}"           "present"
-expect_rule "R-070" "${dsemi}"               "absent"
+## R-070: a case ';;' glued to the arm's last command must be FLAGGED; ';;' on
+## its own line spared. Real 'case ... esac' so the AST rule sees a terminator
+## (the '${dsemi}' assembles ';;' so no literal lives in this tracked file).
+expect_rule "R-070" "case x in a) true${dsemi} esac"  "present"
+expect_rule "R-070" "case x in${nlreal}a) true${nlreal}${dsemi}${nlreal}esac" "absent"
 
 ## R-030/R-031: a newline emitted without an explicit '' data argument must be
 ## FLAGGED -- both 'printf \n' (newline in the format) and a bare 'printf %s\n'
@@ -372,9 +374,9 @@ expect_rule "R-034" "if echo hi${sc} then true${sc} fi"         "present"
 expect_rule "R-034" "printf ${sq}%s${nl}${sq} ${dq}a echo b${dq}" "absent"
 expect_rule "R-034" "has echo"                                  "absent"
 
-## R-070: ';;' must be on its own line. Both the jammed ('esac;;') and the
-## spaced ('esac ;;') compact forms are FLAGGED; only a bare ';;' is spared.
-expect_rule "R-070" "esac${sp}${dsemi}"                          "present"
+## R-070: a ';;' glued to the arm command, jammed ('true;;') or spaced
+## ('true ;;'), is FLAGGED; only ';;' alone on its own line is spared.
+expect_rule "R-070" "case x in a) true${sp}${dsemi} esac"        "present"
 
 ## The DOUBLE-quoted newline form is equally correct and equally unflagged.
 expect_rule "R-042" "printf ${dq}%s${nl}${dq} ${dq}${dq}"        "absent"
@@ -445,13 +447,13 @@ expect_rule "R-130" "PATH=${dq}/a::/b${dq}"                      "absent"
 expect_rule "R-130" "url=${dq}https://example.com${dq}"          "absent"
 expect_rule "R-130" "## ${colon} > file in a comment"            "absent"
 
-## R-070/R-074 blind spot: a '#' begins a shell comment only at the START OF A
-## WORD. A '${#var}' length expansion earlier on the line is CODE, and must not
-## make the violation after it invisible. A real '#' comment still spares.
-expect_rule "R-070" '   0) out="${set:0:${#set}}" ;;'                    "present"
-expect_rule "R-070" '   1) out="${plain}" ;;'                            "present"
-expect_rule "R-070" "   argc=\${#args[@]}${sp}${sp}## a note about ;;"    "absent"
-expect_rule "R-074" "if [ \"\${#a[@]}\" -eq 0 ]${sc} continue"           "present"
+## R-070/R-074 vs '${#var}': the '#' inside a length expansion is CODE, not a
+## comment start, so the AST parses it as a parameter expansion and the
+## violation after it is still flagged; a REAL '#' comment still spares.
+expect_rule "R-070" "case x in 0) out=${dq}\${set:0:\${#set}}${dq} ${dsemi} esac" "present"
+expect_rule "R-070" "case x in 1) out=${dq}\${plain}${dq} ${dsemi} esac"          "present"
+expect_rule "R-070" "argc=\${#args[@]}${sp}${sp}## a note about ;;"               "absent"
+expect_rule "R-074" "[ ${dq}\${#a[@]}${dq} -eq 0 ]${sc} continue"                "present"
 
 ## R-021: a local declared WITH its assignment must be flagged; a bare
 ## declaration list, and a typed declaration whose attribute must be set at

@@ -932,6 +932,76 @@ class Sc1091Disable(Rule):
                     "at '%s:%d': %s" % (ctx.path, line, directive), line)
 
 
+## shfmt case-terminator operator constant for ';;' (DblSemicolon). ';&' and
+## ';;&' fall-through terminators are different ops and are not this rule.
+_CASE_DBLSEMI = 30
+
+
+class DoubleSemi(Rule):
+    """R-070: a case-arm ';;' terminator must be on its own line, not glued to the
+    arm's last command ('foo ;;' / 'foo;;'). Read from the CaseItem terminator
+    position in the AST -- flag when the ';;' shares a line with the arm's last
+    statement -- so a ';;' inside a string or a '#' comment is never mistaken for
+    a terminator."""
+
+    id = "R-070"
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def _glued_items(self, ctx):
+        for clause in bash_ast.nodes_of_type(ctx.tree, "CaseClause"):
+            for item in clause.get("Items", []):
+                if item.get("Op") != _CASE_DBLSEMI:
+                    continue
+                op_line = (item.get("OpPos") or {}).get("Line")
+                stmts = item.get("Stmts") or []
+                if op_line is None or not stmts:
+                    continue
+                if (stmts[-1].get("End") or {}).get("Line") == op_line:
+                    yield item
+
+    def detect(self, ctx):
+        for item in self._glued_items(ctx):
+            yield _fail(ctx, "R-070", "R-070 ';;' on own line", item.get("OpPos"))
+
+
+class FlowChaining(Rule):
+    """R-074: a control-flow keyword (break / continue / return) must not be
+    glued onto a preceding statement with ';' ('foo; break'). Detected from a
+    COMMAND-position break/continue/return (so a 'return_value=...' assignment is
+    not it) whose keyword is preceded, on the same physical line, by a ';'. exit
+    is deliberately excluded (a frequent separator inside awk/sed program strings
+    and the tolerated one-liner guard idiom)."""
+
+    id = "R-074"
+    _KEYWORDS = frozenset({"break", "continue", "return"})
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def _chained_calls(self, ctx, data):
+        for call in bash_ast.call_exprs(ctx.tree):
+            if bash_ast.command_name(call) not in self._KEYWORDS:
+                continue
+            start = (call.get("Pos") or {}).get("Offset")
+            if start is None:
+                continue
+            ## Walk back over HORIZONTAL whitespace only (never a newline, so a
+            ## keyword on its own line whose previous line ends in ';' is spared).
+            i = start - 1
+            while i >= 0 and data[i:i + 1] in (b" ", b"\t"):
+                i -= 1
+            if i >= 0 and data[i:i + 1] == b";":
+                yield call, i
+
+    def detect(self, ctx):
+        data = ctx.source.encode("utf-8")
+        for call, _semi in self._chained_calls(ctx, data):
+            yield _fail(
+                ctx, "R-074", "R-074 ';'-chained break/continue/return", call)
+
+
 class TrapInline(Rule):
     """R-051: a 'trap' handler must be a named function, not an inline command
     string ('trap "rm -f ${t}" EXIT'). Spared: an unquoted name ('trap cleanup
@@ -1122,6 +1192,8 @@ RULES = (
     ShellcheckSourceRelative(),
     ShellcheckSourceDevNull(),
     Sc1091Disable(),
+    DoubleSemi(),
+    FlowChaining(),
     TrapInline(),
     TmpHardcode(),
     HelpFromComments(),

@@ -1248,48 +1248,7 @@ check_R030_format_string() {
 }
 
 
-check_R070_double_semi() {
-   local hits
 
-   ## R-070: ';;' must be on its own line (optional indent + ';;' only).
-   ## Flag any ';;' at end-of-line with other non-whitespace before it --
-   ## spaced ('bar ;;') OR jammed ('bar;;'). A compact one-line case arm is
-   ## thus always caught; the arm must be written multi-line. Comments are
-   ## stripped first, so an illustrative '#   ;;' in documentation is prose and
-   ## does not match, while a '${#var}' earlier on a real arm no longer hides it.
-   hits="$(grep_code_lines '[^[:space:]][[:space:]]*;;[[:space:]]*$' "${@}")"
-   emit_hits "R-070 ';;' on own line" "${hits}"
-}
-
-check_R074_flow_chaining() {
-   local hits
-   local -a fs
-
-   ## R-074 forbids gluing a next command onto a statement with ';'. The general
-   ## form is too broad to grep without false positives, but the control-flow
-   ## keywords break/continue/return are the low-false-positive subset: a ';'
-   ## that FOLLOWS a statement (a non-whitespace char earlier on the line, allowing
-   ## spaces before the ';' so 'foo ; break' is caught too) and is FOLLOWED by one
-   ## of them is almost always the chaining R-074 forbids, never bash's syntactic
-   ## ';' (';;', a C-style for-loop, or the keyword on its own line). The trailing
-   ## group '([[:space:];&|]|$)' enforces a real word boundary after the keyword,
-   ## so a mere prefix ('x=1; return_value=1', '; continue_calls') does NOT match;
-   ## the leading '^[^#]*' excludes '#'-comment lines. filter_self keeps this
-   ## script's own regex/examples from self-matching.
-   ##
-   ## 'exit' is deliberately NOT in the set. Unlike break/continue/return it
-   ## is a frequent statement separator INSIDE inline awk/sed program strings
-   ## (awk '{print; exit}'), which is not bash ';'-chaining and would be a
-   ## false positive; and ';'-then-exit is common in the tolerated one-liner
-   ## guard idiom '|| { printf ... >&2; exit 1; }' used by self-contained
-   ## bootstrap scripts. So it is not the low-false-positive subset a
-   ## single-grep Tier-1 rule needs.
-   mapfile -d '' -t fs < <(filter_self "${@}")
-   if [ "${#fs[@]}" -eq 0 ]; then return 0; fi
-   hits="$(grep_code_lines \
-      '[^[:space:]][[:space:]]*;[[:space:]]*(break|continue|return)([[:space:];&|]|$)' "${fs[@]}")"
-   emit_hits "R-074 ';'-chained break/continue/return" "${hits}"
-}
 
 check_R021_local_assign() {
    local hits
@@ -1971,8 +1930,6 @@ run_file_checks() {
       check_R010_strict_block "${shell_files[@]}"
       check_R031_bare_newline "${shell_files[@]}"
       check_R030_format_string "${shell_files[@]}"
-      check_R070_double_semi "${shell_files[@]}"
-      check_R074_flow_chaining "${shell_files[@]}"
       check_R021_local_assign "${shell_files[@]}"
       ## Parser-backed shell-structure rules on the shfmt AST: R-090, R-103,
       ## R-120, R-034, R-130, R-161, R-172, R-200, R-210, R-211, R-212, R-213.
