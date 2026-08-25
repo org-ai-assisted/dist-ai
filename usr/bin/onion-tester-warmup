@@ -53,13 +53,19 @@ if [ "${1:-}" = "--probe-one" ]; then
    worker_curl="${ONION_TESTER_CURL_BIN:-curl}"
    worker_proxy="${ONION_TESTER_WARMUP_PROXY_RESOLVED:?internal: parent must resolve the proxy}"
    worker_maxtime="${ONION_TESTER_WARMUP_HEAD_MAXTIME:-30}"
+   ## '--' before the URL: conf entries are only the text between quotes and are
+   ## NOT required to start with a scheme, so a leading-dash entry (typo, or a
+   ## future non-root conf source) would otherwise be parsed by curl as an OPTION
+   ## -- e.g. '-K/path' reads a config file (SOCKS bypass, clearnet fetch) and
+   ## curl exits 0, so the worker would falsely report the onion reachable. With
+   ## '--' curl treats it as a (bad) URL instead.
    if "${worker_curl}" \
          --socks5-hostname "${worker_proxy}" \
          --max-time "${worker_maxtime}" \
          --silent \
          --output /dev/null \
          --head \
-         "${worker_url}"; then
+         -- "${worker_url}"; then
       printf '%s\n' 'OK'
    else
       printf '%s\n' 'NOTOK'

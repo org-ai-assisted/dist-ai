@@ -374,6 +374,28 @@ case_special_chars_in_url_still_swept() {
       'c\d' "${work_dir}/state/curl-argv.log"
 }
 
+## A conf entry that starts with '-' must reach curl as a URL, not an option.
+## Without a '--' separator, curl would parse e.g. '-K/tmp/evil' as --config and
+## read that file (SOCKS bypass), exiting 0 so the worker falsely reports OK.
+case_dash_prefixed_url_is_not_an_option() {
+   local rc=0
+
+   reset_state
+   write_raw_urls '-K/tmp/evilconfig' 'http://example.onion/ok'
+   MOCK_STATE="${work_dir}/state" \
+   MOCK_CURL_RC=0 \
+   ONION_TESTER_URL_LISTER="${work_dir}/mock-lister" \
+   ONION_TESTER_CURL_BIN="${work_dir}/mock-curl" \
+   ONION_TESTER_PROXY="127.0.0.1:9050" \
+   ONION_TESTER_WARMUP_CONCURRENCY=2 \
+      "${warmup}" > "${work_dir}/out.log" 2>&1 || rc=$?
+
+   check "dash URL: exits 0" "0" "${rc}"
+   check "dash URL: both entries swept" "2" "$(curl_calls)"
+   check_contains "dash URL: passed after a '--' end-of-options separator" \
+      "-- -K/tmp/evilconfig" "${work_dir}/state/curl-argv.log"
+}
+
 main() {
    if [ ! -x "${warmup}" ]; then
       printf '%s\n' \
@@ -395,6 +417,7 @@ main() {
    case_concurrency_zero_is_clamped
    case_chunk_zero_is_clamped
    case_special_chars_in_url_still_swept
+   case_dash_prefixed_url_is_not_an_option
 
    total=$((passed + failed))
    printf '%s\n' "onion-tester-warmup-test: ${total} checks, ${passed} pass, ${failed} fail, 0 skip"
