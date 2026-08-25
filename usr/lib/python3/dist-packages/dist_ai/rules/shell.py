@@ -1390,6 +1390,30 @@ class HelpFromComments(Rule):
                     number)
 
 
+## git global options (before the subcommand) whose VALUE is the next word.
+_GIT_VALUE_OPTS = frozenset({
+    "-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix",
+    "--config-env"})
+
+
+def _git_subcommand_index(call_args):
+    """Index of git's SUBCOMMAND, skipping global options before it ('git -C
+    dir check-ref-format' puts it at 3, not 1). None if it cannot be resolved
+    (a quoted/expanded option word)."""
+    index = 1
+    while index < len(call_args):
+        word = bash_ast.word_string(call_args[index])
+        if word is None:
+            return None
+        if not word.startswith("-"):
+            return index
+        if word in _GIT_VALUE_OPTS:
+            index += 2  ## the option AND its separate value word
+        else:
+            index += 1  ## a flag, or an attached '--opt=value'
+    return None
+
+
 class DashDashDenylist(Rule):
     """R-062: a standalone '--' passed to a tool that does NOT accept the
     end-of-options marker (it becomes a literal operand and misbehaves).
@@ -1415,10 +1439,12 @@ class DashDashDenylist(Rule):
                 continue
             start = 1
             if sub is not None:
-                if not (len(call_args) > 1
-                        and bash_ast.word_string(call_args[1]) == sub):
+                idx = (_git_subcommand_index(call_args)
+                       if deny_name == "git" else 1)
+                if idx is None or not (idx < len(call_args)
+                        and bash_ast.word_string(call_args[idx]) == sub):
                     return None
-                start = 2
+                start = idx + 1
             for word in call_args[start:]:
                 if bash_ast.word_string(word) == "--":
                     return word

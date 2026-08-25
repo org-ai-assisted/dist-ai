@@ -24,12 +24,20 @@ SUDO_VALUE_LONG = frozenset({
     "command-timeout", "chroot", "chdir", "other-user"})
 
 
+def _basename(name):
+    """The command BASENAME -- '/bin/rm' and 'rm' are the same program, so a rule
+    keying on the name must not be evaded by a path (as shell_c_programs and
+    InterpreterPrepend already resolve). None passes through."""
+    return name.rsplit("/", 1)[-1] if name is not None else None
+
+
 def effective_command(call, source):
-    """The literal name of the program CALL actually runs, unwrapping a leading
+    """The BASENAME of the program CALL actually runs, unwrapping a leading
     'sudo'/'doas' (skipping its options, their values, and 'VAR=value' prefixes).
     None when the wrapped command word is quoted/expanded or cannot be resolved --
-    the safe direction (a rule declines rather than guesses)."""
-    name = bash_ast.command_name(call)
+    the safe direction (a rule declines rather than guesses). Path-qualified names
+    ('/bin/rm', '/usr/bin/sudo rm') resolve by basename so a rule is not bypassed."""
+    name = _basename(bash_ast.command_name(call))
     if name not in EXEC_WRAPPERS:
         return name
     for kind, word, _text in bash_ast.command_tokens(
@@ -44,7 +52,7 @@ def effective_command(call, source):
             if re.match(r'^[A-Za-z_][A-Za-z0-9_]*=',
                         bash_ast.word_source(word, source)):
                 continue
-            return bash_ast.word_lit(word)
+            return _basename(bash_ast.word_lit(word))
     return None
 
 

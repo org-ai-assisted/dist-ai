@@ -295,6 +295,17 @@ assert_at "R-102 flags 'bash -- <script>'" "R-102" 2
 run_det "$(printf '%s\n' '#!/bin/bash' 'bash -s -- arg')"
 assert_not_at "R-102 spares 'bash -s' (script from stdin)" "R-102" 2
 
+## --- path-qualified / global-option command resolution (ai-review round 3) ---
+## R-120: '/bin/rm' and '/usr/bin/sudo rm' are the same programs (basename).
+run_det "$(printf '%s\n' '#!/bin/bash' '/bin/rm -rf /x')"
+assert_at "R-120 flags a path-qualified '/bin/rm'" "R-120" 2
+run_det "$(printf '%s\n' '#!/bin/bash' '/usr/bin/sudo rm -rf /x')"
+assert_at "R-120 flags rm behind a path-qualified sudo" "R-120" 2
+## R-062: a git GLOBAL option before the subcommand ('git -C dir check-ref-format')
+## must not shift the subcommand out of view.
+run_det "$(printf '%s\n' '#!/bin/bash' 'git -C /some/repo check-ref-format -- "$b"')"
+assert_at "R-062 flags 'git -C dir check-ref-format --'" "R-062" 2
+
 ## --- R-212 allow-downgrades: real argument vs quoted mention ----------------
 ## The legacy regex went false-NEGATIVE when any quote appeared earlier on the
 ## line; the AST reads --allow-downgrades as a real argument word regardless.
