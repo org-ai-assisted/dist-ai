@@ -1247,44 +1247,6 @@ check_R030_format_string() {
    emit_hits "R-030 printf format string must be fixed ('%s' / '%s\\n')" "${hits}"
 }
 
-check_R051_trap_inline() {
-   local hits allow_regexp
-   local -a fs
-
-   mapfile -d '' -t fs < <(filter_self "${@}")
-   if [ "${#fs[@]}" -eq 0 ]; then return 0; fi
-   ## Bad pattern: trap followed by a single- OR double-quoted inline
-   ## command string ('trap "rm -f ${t}" EXIT' as well as the single-quoted
-   ## form). Named-function form is 'trap NAME SIG' (no quote). The
-   ## '[^'\"]' after the opening quote requires a non-quote character
-   ## inside, so 'trap "" EXIT' / 'trap '' EXIT' (clear/ignore a trap, not
-   ## an inline command) are not flagged. The leading '^[^#]*' excludes a
-   ## trap that sits in a '#' comment (e.g. a commented-out '#trap "sleep 1"
-   ## DEBUG' debug line) -- that is documentation, not a live trap -- mirroring
-   ## how R-070/R-074 skip comment lines.
-   hits="$(grep --with-filename --line-number --extended-regexp "^[^#]*\\btrap[[:space:]]+['\"][^'\"]" -- "${fs[@]}" 2>/dev/null || true)"
-   ## Spare the PARAMETERIZED named-function form: bash passes a trap
-   ## handler no information about the firing signal, so
-   ## 'trap "handler $signal" "$signal"' is the standard idiom for
-   ## signal-aware dispatch to a named function -- the rule targets inline
-   ## command LOGIC, not arguments. Spared iff the quoted string is exactly
-   ## one function/variable name followed by VARIABLE-EXPANSION arguments
-   ## only ('$signal', '${kind}'): literal arguments keep e.g.
-   ## 'trap "rm -f ${t}" EXIT' (the rule's canonical bad case) flagged.
-   ## PCRE with \x27 escapes for the quotes keeps the expression
-   ## shell-quoting-safe; \1 backreference matches the closing quote to
-   ## the opening one.
-   ## The handler itself may be a VARIABLE too ('trap "${handler} ${signal}"',
-   ## the dispatch-table form), and R-020 requires it braced, so accept
-   ## '${name}' as well as '$name'/'name' in the leading position -- otherwise
-   ## the two rules contradict each other and the R-020-correct spelling is
-   ## the only one flagged. Non-capturing groups keep '\1' bound to the quote.
-   allow_regexp='\btrap[[:space:]]+([\x27"])(?:[$][{][A-Za-z_][A-Za-z0-9_]*[}]|[$]?[A-Za-z_][A-Za-z0-9_]*)(?:[[:space:]]+[$][{]?[A-Za-z_][A-Za-z0-9_]*[}]?)*\1'
-   if [ -n "${hits}" ]; then
-      hits="$(printf '%s\n' "${hits}" | grep --invert-match --perl-regexp -- "${allow_regexp}" || true)"
-   fi
-   emit_hits "R-051 trap inline command" "${hits}"
-}
 
 check_R070_double_semi() {
    local hits
@@ -2009,7 +1971,6 @@ run_file_checks() {
       check_R010_strict_block "${shell_files[@]}"
       check_R031_bare_newline "${shell_files[@]}"
       check_R030_format_string "${shell_files[@]}"
-      check_R051_trap_inline "${shell_files[@]}"
       check_R070_double_semi "${shell_files[@]}"
       check_R074_flow_chaining "${shell_files[@]}"
       check_R021_local_assign "${shell_files[@]}"

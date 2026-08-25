@@ -932,6 +932,44 @@ class Sc1091Disable(Rule):
                     "at '%s:%d': %s" % (ctx.path, line, directive), line)
 
 
+class TrapInline(Rule):
+    """R-051: a 'trap' handler must be a named function, not an inline command
+    string ('trap "rm -f ${t}" EXIT'). Spared: an unquoted name ('trap cleanup
+    EXIT'), an empty handler ('trap "" EXIT' clears it), and the parameterized
+    dispatch idiom -- a quoted string that is exactly ONE name (function or
+    '${var}') followed by VARIABLE-expansion arguments only ('trap "$h $sig"
+    "$sig"'), since bash passes the handler no signal argument. A literal
+    argument anywhere ('${cmd} -f x') keeps it flagged. Scoped to real 'trap'
+    calls from the AST, so a 'trap' in a comment or a string is not a live trap."""
+
+    id = "R-051"
+    ## Opening quote, one name (function or ${var}/$var/name), then variable
+    ## arguments only, then the matching closing quote. Anchored to the WHOLE
+    ## handler so any literal argument breaks the match and the trap is flagged.
+    _ALLOW = re.compile(
+        r"""^(['"])(?:\$\{[A-Za-z_]\w*\}|\$?[A-Za-z_]\w*)"""
+        r"""(?:\s+\$\{?[A-Za-z_]\w*\}?)*\1$""")
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def detect(self, ctx):
+        for call in bash_ast.call_exprs(ctx.tree):
+            if bash_ast.command_name(call) != "trap":
+                continue
+            call_args = bash_ast.args(call)
+            if len(call_args) < 2:
+                continue
+            raw = bash_ast.word_source(call_args[1], ctx.source)
+            if not raw or raw[0] not in "'\"":
+                continue  ## unquoted -> a named function/reset, spared
+            if len(raw) >= 2 and not raw[1:-1]:
+                continue  ## empty handler ('' / "") clears the trap, spared
+            if self._ALLOW.match(raw):
+                continue  ## name + variable args -> dispatch idiom, spared
+            yield _fail(ctx, "R-051", "R-051 trap inline command", call)
+
+
 class TmpHardcode(Rule):
     """R-170: a hardcoded '/tmp' path (use the ${TMP} temp dir). '/tmp' as an
     absolute path -- not preceded by a path/word char (so 'debian/tmp',
@@ -1084,6 +1122,7 @@ RULES = (
     ShellcheckSourceRelative(),
     ShellcheckSourceDevNull(),
     Sc1091Disable(),
+    TrapInline(),
     TmpHardcode(),
     HelpFromComments(),
     DashDashDenylist(),
