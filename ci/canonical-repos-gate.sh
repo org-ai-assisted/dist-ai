@@ -40,7 +40,14 @@ export LC_ALL=C
 canonical_repos_compact="${CANONICAL_REPOS//[[:space:]]/}"
 this_repo_compact="${THIS_REPO//[[:space:]]/}"
 
-if grep --fixed-strings --quiet -- ",${this_repo_compact}," <<< ",${canonical_repos_compact},"; then
+if [ -z "${this_repo_compact}" ]; then
+   ## Fail CLOSED. An empty (or all-whitespace) THIS_REPO has no identity to match,
+   ## and the needle ',,' would FALSELY match a malformed CANONICAL_REPOS carrying a
+   ## leading/trailing/doubled comma -- a fail-OPEN against this gate's strict intent.
+   printf '%s\n' \
+      "gate: THIS_REPO is empty/whitespace; not canonical (fail-closed)" >&2
+   printf '%s\n' 'allowed=false' >> "${GITHUB_OUTPUT}"
+elif grep --fixed-strings --quiet -- ",${this_repo_compact}," <<< ",${canonical_repos_compact},"; then
    printf '%s\n' \
       "gate: ${THIS_REPO} is canonical (in '${CANONICAL_REPOS}'); allowing" >&2
    printf '%s\n' 'allowed=true' >> "${GITHUB_OUTPUT}"

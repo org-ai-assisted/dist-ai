@@ -122,6 +122,16 @@ if [ "$(resolve_allowed 'someone/fork' "${canonical_spaced}")" != 'false' ]; the
    fail 'a non-member falsely matched with a spaced CSV'
 fi
 
+## ---- empty / whitespace THIS_REPO must FAIL CLOSED -> false ----------------
+## Regression: an empty needle ',,' falsely matched a malformed CSV with a
+## leading/trailing/doubled comma (fail-open). An empty identity is never canonical.
+if [ "$(resolve_allowed '' 'org-ai-assisted/foo,')" != 'false' ]; then
+   fail 'empty THIS_REPO with a trailing-comma CSV did not fail closed'
+fi
+if [ "$(resolve_allowed '   ' ',org-ai-assisted/foo')" != 'false' ]; then
+   fail 'whitespace-only THIS_REPO with a leading-comma CSV did not fail closed'
+fi
+
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "canonical-repos-gate-test: ${failures} check(s) failed" >&2
    exit 1
