@@ -517,6 +517,24 @@ feed_output(_msplit, b'\x1b[?' + b'1' * 4301 + b'h')
 ok(0 not in _msplit._mouse_modes and isinstance(_msplit._mouse_modes, set),
    'an over-long DECSET parameter is ignored, not a ValueError crash')
 _msplit.close()
+
+# EOF flush: a program's FINAL output that ends mid-escape must NOT vanish. In CLI
+# mode feed_chunk_carry holds a trailing possibly-incomplete escape in _esc_carry;
+# on child exit it will never complete, so it is flushed (its payload rendered)
+# rather than dropped -- regression for the silent-final-output-loss finding.
+_eoft = SecureTerminal(command='/bin/cat', tui=False)
+feed_output(_eoft, b'result: \x1b' + b'!' * 50)     # ends with a dangling ESC tail
+ok('!' * 50 not in _eoft.transcript_text(),
+   'the dangling escape tail is held back, not shown yet')
+_er, _ew = os.pipe()                                 # an empty pipe, write end closed:
+os.close(_ew)                                        # the next read returns b'' (EOF)
+_eoft._fd = _er
+_eoft._read_and_render()                             # the child-exit / EOF path
+os.close(_er)
+_eoft._flush_paint()
+ok('result:' in _eoft.transcript_text() and '!' * 50 in _eoft.transcript_text(),
+   'child exit flushes the held escape tail -- the final output is not lost')
+_eoft.close()
 # home-pin: a terminal does not auto-scroll horizontally -- a paint anchors the view at
 # the left so the START of every row stays visible (the reported bug: the auto-follow
 # parked the viewport mid-line, clipping every row's left edge) -- but NEVER by hiding
