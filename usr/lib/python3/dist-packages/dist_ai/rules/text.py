@@ -42,7 +42,11 @@ ENTITIES = {
 MARKUP_EXTS = (".html", ".htm", ".md", ".markdown", ".css", ".txt", ".rst")
 
 NON_ASCII_RE = re.compile(rb'[^\x00-\x7f]')
-TRAILING_RE = re.compile(rb'[ \t]+(?=\r?\n|\Z)')
+## Trailing blanks before end-of-line: a LF, a CRLF, or a lone trailing CR /
+## end-of-file. The '\r?' in the end-of-file branch matters -- 'foo  \r' with no
+## LF (old-Mac line end) has blanks before a bare CR, which the former fixer
+## stripped (peel CR, rstrip) and a plain '\Z' lookahead would miss.
+TRAILING_RE = re.compile(rb'[ \t]+(?=\r?\n|\r?\Z)')
 
 
 def _line_of_byte(data, offset):

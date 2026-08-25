@@ -175,14 +175,15 @@ def style_main(argv, prog="dist-ai-style"):
 
 
 def main(argv):
-    """The dist-ai-style entry: dispatch on the mode flag. --detect and --fix
-    are peeled off before their handlers parse the rest, so they compose with
-    the file/--staged/--check arguments each handler already understands."""
+    """The dist-ai-style entry: dispatch on the mode flag. The mode selector is
+    ONLY the FIRST argument -- so a FILE named '--detect'/'--fix' (every caller
+    passes the mode first, then the file list) is never mistaken for the mode
+    and silently dropped from the scan. Stripping every '--detect' let such a
+    file bypass the gate."""
     rest = argv[1:]
-    if "--detect" in rest:
-        pruned = [argv[0]] + [a for a in rest if a != "--detect"]
+    if rest and rest[0] == "--detect":
         try:
-            return detect_main(pruned)
+            return detect_main([argv[0]] + rest[1:])
         except SystemExit:
             raise
         except Exception:  # noqa: BLE001 -- a crash must exit DISTINCTLY (3)
@@ -191,7 +192,6 @@ def main(argv):
             ## exit 1. Treating a crash as "no findings" would be a false green.
             traceback.print_exc()
             return 3
-    if "--fix" in rest:
-        pruned = [argv[0]] + [a for a in rest if a != "--fix"]
-        return fix_main(pruned)
+    if rest and rest[0] == "--fix":
+        return fix_main([argv[0]] + rest[1:])
     return style_main(argv)

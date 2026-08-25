@@ -79,25 +79,38 @@ def fix_source(ctx):
     be parsed but shfmt is absent."""
     if ctx.source is None:
         return None, {}
+    ## A .gitattributes-binary file is EXEMPT from fixing, exactly as the former
+    ## fixer's is_data_file skip -- even valid UTF-8 must be left byte-identical
+    ## (the text rules already honor this via applies(); the AST rewriters did
+    ## not, so a binary-attributed shell file was being rewritten).
+    if ctx.is_binary:
+        return ctx.source, {}
     counts = {}
     source = ctx.source
 
-    ## Pass 1: AST rewriters (need a parse). A non-shell or unparsable file skips
-    ## them; the text pass still runs.
+    ## Pass 1: AST rewriters (need a parse). Their edits target disjoint
+    ## commands, so one apply_edits over the ORIGINAL tree is correct. A
+    ## non-shell or unparsable file skips them; the text pass still runs.
     if ctx.is_shell and ctx.tree is not None:
         ast_edits = _collect_edits(ctx, _fixable(ruleset.SHELL_RULES))
         if ast_edits:
             source = bash_ast.apply_edits(source, _spans(ast_edits))
             counts.update(_count(ast_edits))
 
-    ## Pass 2: text rules, on the (possibly) rewritten source. A fresh context so
-    ## the text rules' byte offsets index the post-pass-1 bytes.
-    text_ctx = ctxmod.FileContext(ctx.path, source, abspath=ctx.abspath)
-    text_ctx._binary = ctx._binary  ## reuse the git query result
-    text_edits = _collect_edits(text_ctx, _fixable(ruleset.TEXT_RULES))
-    if text_edits:
-        source = bash_ast.apply_edits(source, _spans(text_edits))
-        counts.update(_count(text_edits))
+    ## Pass 2: text rules, applied ONE AT A TIME in registry order, each on the
+    ## previous rule's output. They interact -- substituting a trailing no-break
+    ## space to an ASCII space CREATES trailing whitespace the strip rule must
+    ## then see -- so a single merged apply_edits (all computed from one
+    ## snapshot) left that residue and the fix-then-check reported it.
+    for rule in _fixable(ruleset.TEXT_RULES):
+        tctx = ctxmod.FileContext(ctx.path, source, abspath=ctx.abspath)
+        tctx._binary = ctx._binary  ## reuse the git query result
+        if not rule.applies(tctx):
+            continue
+        edits = list(rule.fix(tctx))
+        if edits:
+            source = bash_ast.apply_edits(source, _spans(edits))
+            counts.update(_count(edits))
 
     return source, counts
 

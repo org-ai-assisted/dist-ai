@@ -197,6 +197,17 @@ def printf_v_target(call):
     return target
 
 
+def word_has_command_expansion(word):
+    """True if WORD contains a command substitution ($(...) or backticks) or an
+    arithmetic expansion. A printf -v target carrying one can NEVER be made safe
+    by check_variable_name -- bash evaluates the array subscript, running the
+    substitution -- so it must be flagged whatever parameters were checked."""
+    for node in bash_ast.iter_nodes(word):
+        if node.get("Type") in ("CmdSubst", "ArithmExp", "ArithmCmd"):
+            return True
+    return False
+
+
 def check_variable_name_sites(tree):
     """(offset, scope_start, param_names) for every 'check_variable_name' call:
     its byte offset, the start of the innermost function enclosing it, and the
@@ -271,43 +282,6 @@ def shell_c_programs(tree, source):
                 span = word["End"]["Line"] - word["Pos"]["Line"] + 1
                 yield (call, text[cluster.index("c") + 2:], span)
             break
-
-
-def embedded_shell_c_programs(tree, source):
-    """Like shell_c_programs, but ALSO finds a shell '-c' program when the shell
-    is not in command position -- it is an OPERAND of a wrapper that runs it
-    ('ssh host -- bash -lc PROG', 'su - user -c PROG', 'env bash -c PROG'). The
-    inline program is the R-192 violation whatever launches the shell.
-
-    Only the SEPARATE form ('-c'/'-lc' with the program as the next word) is
-    matched in operand position (the attached '-c"prog"' embedded behind a
-    wrapper is vanishingly rare). Command position is delegated to
-    shell_c_programs unchanged. R-192 gates on >5 program lines, so a stray
-    literal 'shell' operand before an unrelated '-c' cannot false-positive."""
-    yield from shell_c_programs(tree, source)
-    for call in bash_ast.call_exprs(tree):
-        words = bash_ast.args(call)
-        for i in range(1, len(words)):
-            name = bash_ast.word_lit(words[i])
-            if not name or name.rsplit("/", 1)[-1] not in SHELL_C_CMDS:
-                continue
-            j = i + 1
-            while j < len(words):
-                lit = bash_ast.word_lit(words[j])
-                if lit is None or lit == "--" or not lit.startswith("-") \
-                        or lit == "-":
-                    break
-                cluster = lit[1:]
-                if "c" in cluster:
-                    ## A separate '-c'/'-lc' (c is the last cluster char) takes
-                    ## the next word as the program; an attached form is skipped.
-                    if cluster.index("c") == len(cluster) - 1 \
-                            and j + 1 < len(words):
-                        prog = words[j + 1]
-                        span = prog["End"]["Line"] - prog["Pos"]["Line"] + 1
-                        yield (call, bash_ast.word_source(prog, source), span)
-                    break
-                j += 1
 
 
 def embeds_multi_statement(value, strict):

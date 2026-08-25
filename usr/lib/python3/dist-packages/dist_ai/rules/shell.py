@@ -134,7 +134,11 @@ class PrintfVUnchecked(Rule):
             for guard_offset, guard_scope, guard_params in guards:
                 if guard_scope == scope_start and guard_offset < offset:
                     covered |= guard_params
-            if target_params and target_params <= covered:
+            ## A command substitution / arithmetic in the target name is never
+            ## made safe by a guard (it runs when bash evaluates the subscript),
+            ## so a name mixing a checked param with a '$(...)' must still flag.
+            if not h.word_has_command_expansion(name_word) \
+                    and target_params and target_params <= covered:
                 continue
             yield _fail(
                 ctx, "R-063",
@@ -396,9 +400,17 @@ class MkdirTmpMode(Rule):
                             and tokens[index + 1][0] == "value":
                         mode_word = tokens[index + 1][1]
                         mode_lit = bash_ast.word_lit(mode_word)
-                        if mode_lit and re.fullmatch(r'[0-7]{3,4}', mode_lit):
-                            start, _ = bash_ast.word_span(word)
-                            _, end = bash_ast.word_span(mode_word)
+                        start, m_end = bash_ast.word_span(word)
+                        mode_start, end = bash_ast.word_span(mode_word)
+                        ## Splice '-m ... 700' -> '--mode=700' ONLY when nothing
+                        ## but whitespace sits between the flag and its value. A
+                        ## redirection ('mkdir -m >/dev/null 700 ...') lives on
+                        ## the Stmt, not in Args, so it falls in this gap -- and a
+                        ## span from '-m' to the mode word would DELETE it. Leave
+                        ## that (rare) shape for the gate.
+                        between = data[m_end:mode_start]
+                        if mode_lit and re.fullmatch(r'[0-7]{3,4}', mode_lit) \
+                                and between.strip() == b'':
                             yield Edit(start, end, "--mode=" + mode_lit,
                                        "R-172")
                             has_mode = True
@@ -587,9 +599,12 @@ class ShellInlineShellC(Rule):
     waiver_tag = "allow-inline-interpreter"
 
     def detect(self, ctx):
-        ## embedded_*: also catch a shell '-c' behind a wrapper ('ssh host --
-        ## bash -lc PROG'), which is an inline program just the same.
-        for call, _program, line_count in h.embedded_shell_c_programs(
+        ## Command-position shell '-c' only. Catching a shell behind a wrapper
+        ## ('ssh host -- bash -lc PROG', 'su - u -c PROG') needs a wrapper
+        ## allowlist + effective-command + value-option handling done right; a
+        ## bare "any shell-name operand + -c" heuristic both false-positives
+        ## ('echo bash -c "<6 lines>"') and misses 'su -c'. Left as a follow-up.
+        for call, _program, line_count in h.shell_c_programs(
                 ctx.tree, ctx.source):
             if line_count > 5:
                 yield _fail(
@@ -731,15 +746,24 @@ class LintianDisabled(Rule):
         return super().applies(ctx) and ctx.path != GATE_PATH
 
     def detect(self, ctx):
+        ## A bare / env-prefix assignment ('make_use_lintian=false [cmd]') is a
+        ## CallExpr's Assign; an 'export'/'declare make_use_lintian=false' is a
+        ## DeclClause whose Args carry the Assign -- shfmt models the two
+        ## differently, so BOTH are scanned (a non-Assign flag word in Args, e.g.
+        ## 'declare -r', yields no name and is skipped).
+        assigns = []
         for call in bash_ast.call_exprs(ctx.tree):
-            for assign in bash_ast.assigns(call):
-                if bash_ast.assign_name(assign) == "make_use_lintian" \
-                        and bash_ast.word_string(
-                            bash_ast.assign_value(assign)) == "false":
-                    yield _fail(
-                        ctx, "R-213",
-                        "R-213 lintian disabled (make_use_lintian=false) "
-                        "without authorization", assign)
+            assigns.extend(bash_ast.assigns(call))
+        for decl in bash_ast.nodes_of_type(ctx.tree, "DeclClause"):
+            assigns.extend(decl.get("Args") or [])
+        for assign in assigns:
+            if bash_ast.assign_name(assign) == "make_use_lintian" \
+                    and bash_ast.word_string(
+                        bash_ast.assign_value(assign)) == "false":
+                yield _fail(
+                    ctx, "R-213",
+                    "R-213 lintian disabled (make_use_lintian=false) "
+                    "without authorization", assign)
 
 
 ## In gate dispatch order (unchanged from the former SHELL_RULES tuple).

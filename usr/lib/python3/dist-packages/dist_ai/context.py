@@ -137,9 +137,13 @@ class FileContext:
         return self._binary
 
     def _query_binary(self):
+        ## '-C <dir-of-file>' so git finds the file's OWN repo regardless of the
+        ## caller's cwd -- otherwise a fixer invoked from another directory
+        ## queried the wrong repo and the .gitattributes exemption failed open.
         try:
             out = subprocess.run(
-                ["git", "check-attr", "--cached", "binary", "--", self.abspath],
+                ["git", "-C", os.path.dirname(self.abspath) or ".",
+                 "check-attr", "--cached", "binary", "--", self.abspath],
                 capture_output=True, text=True)
         except OSError:
             return False

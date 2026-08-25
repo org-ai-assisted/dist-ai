@@ -592,4 +592,43 @@ else
    note_fail "unparseable file mishandled (rc=${rc})"
 fi
 
+## --- 8: a TRAILING no-break space is fixed in ONE pass ---------------------
+## Confusable-substitution turns the NBSP into an ASCII space; the strip must
+## then see it in the SAME fix pass. Canary: FAILs when the text rules share
+## one pre-substitution snapshot (a residual trailing space survives).
+f="${test_dir}/nbsp-trail.sh"
+printf '%b' '#!/bin/bash\nx=1\302\240\n' >"${f}"
+run_fix "${f}" >/dev/null 2>&1
+if ! has_non_ascii "${f}" && ! has_trailing_ws "${f}" ; then
+   note_pass "trailing no-break space fixed in one pass (no residual space)"
+else
+   note_fail "trailing no-break space left a residual (needed a second pass)"
+fi
+
+## --- 9: trailing blanks before a LONE CR (old-Mac EOL) are stripped --------
+## The strip must peel blanks before a bare '\r' with no LF, preserving the CR.
+f="${test_dir}/crtrail.sh"
+printf '%b' '#!/bin/bash\nfoo  \r' >"${f}"
+printf '%b' '#!/bin/bash\nfoo\r' >"${test_dir}/crtrail.expect"
+run_fix "${f}" >/dev/null 2>&1
+if cmp -s "${f}" "${test_dir}/crtrail.expect" ; then
+   note_pass "trailing blanks before a lone CR stripped, CR preserved"
+else
+   note_fail "CR-only trailing whitespace not stripped"
+fi
+
+## --- 10: R-172 does NOT splice across an intervening redirection -----------
+## A redirection between '-m' and its mode value lives on the Stmt, not Args; a
+## span from '-m' to the mode word would DELETE it, so the fixer declines and
+## leaves the (rare) shape byte-identical for the gate.
+f="${test_dir}/mkdir-redir.sh"
+printf '%b' '#!/bin/bash\nmkdir -m >/dev/null 700 -- "$TMPDIR"\n' >"${f}"
+before="$(cksum < "${f}")"
+run_fix "${f}" >/dev/null 2>&1
+if [ "$(cksum < "${f}")" = "${before}" ] ; then
+   note_pass "R-172 leaves a -m/value pair split by a redirection untouched"
+else
+   note_fail "R-172 spliced across a redirection (data loss)"
+fi
+
 exit_gate

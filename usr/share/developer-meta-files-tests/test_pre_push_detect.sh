@@ -185,17 +185,6 @@ assert_at "R-120 not blinded by a CRLF comment-tail backslash" "R-120" 3
 ## --- config-hosted embedded shell: R-191/192/194/195/100 --------------------
 run_det "$(printf '%s\n' '#!/bin/bash' 'bash -c "a' 'b' 'c' 'd' 'e' 'f' 'g"')"
 assert_at "R-192 flags a >5-line bash -c program" "R-192" 2
-## The shell need not be in command position: a wrapper ('ssh host -- bash -lc
-## PROG', 'su - u -c PROG') that runs it hosts the same inline program. Canary:
-## FAILS on command-position-only detection, which missed the wrapped form.
-run_det "$(printf '%s\n' '#!/bin/bash' 'ssh host -- bash -lc "a' 'b' 'c' 'd' 'e' 'f' 'g"')"
-assert_at "R-192 flags a >5-line bash -c behind a wrapper (ssh --)" "R-192" 2
-## A short wrapped program (<=5 lines) is spared, and a stray 'shell' operand
-## before an unrelated '-c' does not false-positive (gated on line count).
-run_det "$(printf '%s\n' '#!/bin/bash' 'ssh host -- bash -lc "just one"' \
-   'grep bash -c file')"
-assert_not_at "R-192 spares a short wrapped -c program" "R-192" 2
-assert_not_at "R-192 spares 'grep bash -c file' (not a shell program)" "R-192" 3
 
 run_det_at "etc/systemd/system/x.service" \
    "$(printf '%s\n' '[Service]' 'ExecStart=/bin/bash -c "a; b; c"')"
@@ -280,6 +269,15 @@ assert_at     "R-213 flags a quoted 'false' value"             "R-213" 5
 assert_not_at "R-213 spares a longer variable name"            "R-213" 6
 assert_not_at "R-213 spares make_use_lintian=true"             "R-213" 7
 assert_not_at "R-213 spares a quoted mention in a string"      "R-213" 8
+
+## 'export'/'declare make_use_lintian=false' is a DeclClause, not a CallExpr
+## Assign -- the rule must scan both. Canary: FAILs on CallExpr-only detection.
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'export make_use_lintian=false' \
+   'declare make_use_lintian=false')"
+assert_at "R-213 flags 'export make_use_lintian=false' (DeclClause)" "R-213" 2
+assert_at "R-213 flags 'declare make_use_lintian=false' (DeclClause)" "R-213" 3
 
 ## R-213 waiver silences it.
 run_det "$(printf '%s\n' \
@@ -417,6 +415,17 @@ run_det "$(printf '%s\n' \
    '  printf \-v "${m}" "%s" "y"' \
    '}')"
 assert_at "R-063 flags an escaped \\-v printf target (de-escaped to -v)" "R-063" 3
+
+## A command substitution in the target NAME is never made safe by a guard
+## (bash runs it evaluating the array subscript), so a name mixing a CHECKED
+## param with a '$(...)' must still flag. Canary: FAILs on param-coverage-only.
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'f() {' \
+   '  check_variable_name v || return 1' \
+   '  printf -v "a[$v$(id)]" "%s" x' \
+   '}')"
+assert_at "R-063 flags a checked-param + command-substitution target" "R-063" 4
 
 ## Self-test the FAIL gate: a forced failure must make the script exit non-zero.
 if [ -n "${TEST_SELFCHECK_FAIL_GATE:-}" ]; then

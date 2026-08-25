@@ -23,6 +23,7 @@ Return types are deliberately different:
 """
 
 import collections
+from typing import Iterator
 
 FAIL = "FAIL"
 NOTE = "NOTE"
@@ -92,16 +93,21 @@ class Rule:
             return False
         return True
 
-    def detect(self, ctx):
+    def detect(self, ctx) -> Iterator[Finding]:
         """Yield Finding for each violation in ctx. Override in every rule."""
         raise NotImplementedError
 
-    def fix(self, ctx):
+    def fix(self, ctx) -> Iterator["Edit"]:
         """Yield Edit for each MECHANICALLY fixable violation in ctx. Default:
         nothing is auto-fixable. The returned edits must not overlap and must
         target only spans this rule is certain about (a fixable subset of what
-        detect() reports); the engine re-detects to surface the rest."""
-        return ()
+        detect() reports); the engine re-detects to surface the rest.
+
+        An empty GENERATOR (not a bare return), so its type matches the
+        generator subclasses override it with -- a plain 'return ()' made the
+        base yield a tuple and every fix() override a signature mismatch."""
+        return
+        yield  # pragma: no cover -- unreachable; marks this an empty generator
 
 
 class ExternalRule(Rule):
@@ -109,5 +115,6 @@ class ExternalRule(Rule):
     pre-commit-hooks binaries, image-optimize) rather than our own AST logic.
     Always check-only: an external tool reports, it does not get a fix()."""
 
-    def fix(self, ctx):
-        return ()
+    def fix(self, ctx) -> Iterator["Edit"]:
+        return
+        yield  # pragma: no cover -- unreachable; empty generator
