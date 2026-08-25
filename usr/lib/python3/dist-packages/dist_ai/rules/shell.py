@@ -1072,6 +1072,100 @@ class TrapInline(Rule):
             yield _fail(ctx, "R-051", "R-051 trap inline command", call)
 
 
+def _printf_calls(tree):
+    """(stmt, call) for every COMMAND-position printf. From the AST, so a printf
+    inside a single-quoted awk program, inside another printf's data string, or
+    in a '#' comment is not a shell printf and is never yielded -- the quote/
+    comment tracking the former line walker hand-rolled is free here."""
+    for stmt in bash_ast.iter_stmts(tree):
+        cmd = stmt.get("Cmd")
+        if (isinstance(cmd, dict) and cmd.get("Type") == "CallExpr"
+                and bash_ast.command_name(cmd) == "printf"):
+            yield stmt, cmd
+
+
+def _printf_format(call, source):
+    """(inner, single_quoted) for a printf CALL's format argument, or (None,
+    False) if it has none. inner is the format with its surrounding quotes
+    stripped; single_quoted marks a '...' literal (the R-030 numeric-probe
+    carve-out premise -- a format nothing can be injected into)."""
+    call_args = bash_ast.args(call)
+    if len(call_args) < 2:
+        return None, False
+    raw = bash_ast.word_source(call_args[1], source)
+    if not raw:
+        return None, False
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "'\"":
+        return raw[1:-1], raw[0] == "'"
+    return raw, False
+
+
+class BareNewlinePrintf(Rule):
+    """R-031: a printf that emits a newline must pass the data explicitly --
+    'printf \\n' (newline baked into the format) or a bare 'printf %s\\n' with the
+    data argument omitted must be 'printf %s\\n' "". Flags a printf whose format
+    is '(%s)?\\n+' and that carries NO data argument (a trailing '#' comment is
+    not a data argument)."""
+
+    id = "R-031"
+    _NEWLINE_ONLY = re.compile(r'^(?:%s)?(?:\\n)+$')
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def detect(self, ctx):
+        for _stmt, call in _printf_calls(ctx.tree):
+            if len(bash_ast.args(call)) != 2:  ## has a data argument
+                continue
+            inner, _single = _printf_format(call, ctx.source)
+            if inner is not None and self._NEWLINE_ONLY.match(inner):
+                yield _fail(
+                    ctx, "R-030/R-031",
+                    'R-030/R-031 newline printf needs explicit "" arg', call)
+
+
+class PrintfFormatString(Rule):
+    """R-030: a printf format must be a FIXED allowlisted verb -- all data goes in
+    the data argument (a data-carrying or double-quoted format INTERPRETS/
+    interpolates it: the injection this prevents). Carve-out: a SINGLE-quoted
+    format whose printf discards BOTH stdout and stderr emits nothing, so it is a
+    numeric validator (helper-scripts is_integer()), not output -- spared."""
+
+    id = "R-030"
+    waiver_tag = "printf-format"
+    _ALLOWED = frozenset({
+        "%s", "%s\\n", "%s\\0", "%q", "%q\\n", "%b", "%b\\n", "0x%x", "%x"})
+    ## Whitespace-removed redirect text that sends BOTH streams to /dev/null. The
+    ## order matters: '2>&1 >/dev/null' points fd2 at the ORIGINAL stdout (still
+    ## emits) and is deliberately NOT one of these.
+    _DISCARD_BOTH = ("&>/dev/null", ">/dev/null2>&1", ">/dev/null2>/dev/null")
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def _both_discarded(self, stmt, data):
+        text = ""
+        for redirect in stmt.get("Redirs") or []:
+            start = (redirect.get("Pos") or {}).get("Offset")
+            end = (redirect.get("End") or {}).get("Offset")
+            if start is not None and end is not None:
+                text += data[start:end].decode("utf-8", "surrogateescape")
+        text = re.sub(r"\s+", "", text)
+        return any(pattern in text for pattern in self._DISCARD_BOTH)
+
+    def detect(self, ctx):
+        data = ctx.source.encode("utf-8")
+        for stmt, call in _printf_calls(ctx.tree):
+            inner, single_quoted = _printf_format(call, ctx.source)
+            if inner is None or inner in self._ALLOWED:
+                continue
+            if single_quoted and self._both_discarded(stmt, data):
+                continue
+            yield _fail(
+                ctx, "R-030",
+                "R-030 printf format string must be fixed ('%s' / '%s\\n')", call)
+
+
 class HeaderFirst(Rule):
     """R-002: a '## style-ok:' waiver must sit BELOW the '## Copyright' header,
     not above it. Flag when the first header-comment 'style-ok:' line precedes
@@ -1331,6 +1425,8 @@ RULES = (
     DoubleSemi(),
     FlowChaining(),
     InterpreterPrepend(),
+    BareNewlinePrintf(),
+    PrintfFormatString(),
     HeaderFirst(),
     StrictModeBlock(),
     TrapInline(),
