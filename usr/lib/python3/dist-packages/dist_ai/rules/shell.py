@@ -766,6 +766,92 @@ class LintianDisabled(Rule):
                     "without authorization", assign)
 
 
+def _set_option_words(call):
+    """The option tokens of a 'set' call, up to a bare '--' (after which the
+    tokens are POSITIONAL parameters, not options). Yields (lit, is_short_cluster,
+    is_o_group): lit is the token text; is_short_cluster True for a '-xxx' bundle;
+    is_o_group True for a '-o'/'+o' (its name argument is consumed and skipped)."""
+    words = bash_ast.args(call)[1:]
+    i = 0
+    while i < len(words):
+        lit = bash_ast.word_string(words[i])
+        if lit is None:
+            i += 1
+            continue
+        if lit == "--":
+            return
+        if lit in ("-o", "+o"):
+            yield lit, False, True
+            i += 2  ## skip the option NAME argument
+            continue
+        if len(lit) > 1 and lit[0] in "-+":
+            yield lit, True, False
+        i += 1
+
+
+class ErrexitToggle(Rule):
+    """R-011: 'set +e' / 'set +o errexit' (or a '+' cluster containing 'e')
+    disables errexit -- forbidden. A '+u'/'+x' with no 'e' is not this rule."""
+
+    id = "R-011"
+    waiver_tag = "allow-errexit-toggle"
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def detect(self, ctx):
+        for call in bash_ast.call_exprs(ctx.tree):
+            if bash_ast.command_name(call) != "set":
+                continue
+            words = bash_ast.args(call)[1:]
+            for i, word in enumerate(words):
+                lit = bash_ast.word_string(word)
+                if lit is None or lit == "--" or not lit.startswith("+"):
+                    if lit == "--":
+                        break
+                    continue
+                if lit == "+o":
+                    nxt = (bash_ast.word_string(words[i + 1])
+                           if i + 1 < len(words) else None)
+                    if nxt == "errexit":
+                        yield _fail(ctx, "R-011", "R-011 errexit toggle", call)
+                        break
+                elif "e" in lit[1:]:
+                    yield _fail(ctx, "R-011", "R-011 errexit toggle", call)
+                    break
+
+
+class SetOptions(Rule):
+    """R-013: shell options must be set by long '-o <name>', ONE per line. A short
+    enable of errexit/nounset ('set -e', 'set -eu', 'set -euo pipefail') and more
+    than one option group on a single 'set' line ('set -o a -o b') are flagged; a
+    lone 'set -o <name>', a 'set --' positional form, and a bare 'set -x'/'set -E'
+    (no e/u) are spared. Scanning stops at a bare '--' (rest positional)."""
+
+    id = "R-013"
+    waiver_tag = "allow-short-set"
+
+    def applies(self, ctx):
+        return super().applies(ctx) and ctx.path != GATE_PATH
+
+    def detect(self, ctx):
+        for call in bash_ast.call_exprs(ctx.tree):
+            if bash_ast.command_name(call) != "set":
+                continue
+            short_eu = False
+            o_groups = 0
+            for lit, is_short, is_o in _set_option_words(call):
+                if is_o:
+                    o_groups += 1
+                elif is_short and lit[0] == "-" and (
+                        "e" in lit[1:] or "u" in lit[1:]):
+                    short_eu = True
+            if short_eu or o_groups > 1:
+                yield _fail(
+                    ctx, "R-013",
+                    "R-013 set options long-form one-per-line", call)
+
+
 class DashDashDenylist(Rule):
     """R-062: a standalone '--' passed to a tool that does NOT accept the
     end-of-options marker (it becomes a literal operand and misbehaves).
@@ -857,6 +943,8 @@ class EmptyArrayGuard(Rule):
 ## In gate dispatch order (unchanged from the former SHELL_RULES tuple).
 RULES = (
     ShellInlineShellC(),
+    ErrexitToggle(),
+    SetOptions(),
     DashDashDenylist(),
     EmptyArrayGuard(),
     UnauthorizedSkip(),
