@@ -38,11 +38,13 @@ except Exception as exc:  # fail closed: a required dependency must not silently
 os.environ['SHELL'] = '/bin/sh'          # deterministic default-shell path
 
 _failures = 0
+_passed = 0
 
 
 def ok(cond, msg):
-    global _failures
+    global _failures, _passed
     if cond:
+        _passed += 1
         print('ok   %s' % msg)
     else:
         _failures += 1
@@ -568,7 +570,8 @@ try:
 finally:
     cli._PASTE_MAX = _fsm_ov_saved
 
-print('secure-terminal-tests(cli): %d passed, %d failed'
-      % (0, _failures) if _failures else
-      'secure-terminal-tests(cli): all passed')
+if _failures:
+    print('secure-terminal-tests(cli): %d passed, %d failed' % (_passed, _failures))
+else:
+    print('secure-terminal-tests(cli): all passed')
 sys.exit(1 if _failures else 0)

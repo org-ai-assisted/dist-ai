@@ -481,6 +481,42 @@ ok(_parse_sgr(_asent) is not None and _parse_sgr(_asent)[3] == 'M',
    'a double-click is reported as a press when the child grabs the mouse')
 _alt.mouseReleaseEvent(_mev(QEvent.Type.MouseButtonRelease, Qt.MouseButton.LeftButton))
 
+# CHORD: left+right pressed together each report a press; releasing EACH must report
+# its OWN button. Tracking a single button lost the first release, leaving it stuck
+# in the child (no protocol release). codex ai-review.
+_asent.clear()
+_alt.mousePressEvent(_mev(QEvent.Type.MouseButtonPress, Qt.MouseButton.LeftButton))
+_alt.mousePressEvent(_mev(QEvent.Type.MouseButtonPress, Qt.MouseButton.RightButton,
+                          buttons=Qt.MouseButton.LeftButton | Qt.MouseButton.RightButton))
+_asent.clear()
+_alt.mouseReleaseEvent(_mev(QEvent.Type.MouseButtonRelease, Qt.MouseButton.RightButton,
+                            buttons=Qt.MouseButton.LeftButton))
+_chord_r = _parse_sgr(_asent)
+_asent.clear()
+_alt.mouseReleaseEvent(_mev(QEvent.Type.MouseButtonRelease, Qt.MouseButton.LeftButton))
+_chord_l = _parse_sgr(_asent)
+ok(_chord_r is not None and _chord_r[0] == 2 and _chord_r[3] == 'm',
+   'chord: releasing right reports a right release (code 2, m)')
+ok(_chord_l is not None and _chord_l[0] == 0 and _chord_l[3] == 'm',
+   'chord: releasing left ALSO reports (code 0, m) -- the button is not left stuck')
+
+# INPUT SUSPENDED during a paste/copy review: with mouse tracking on and the review
+# bar up, a NEW click / wheel / focus must NOT write to the child (keyPressEvent
+# already refuses keys), nor track a button (which would unbalance a later release).
+# grok ai-review.
+_alt._review_active = True
+_asent.clear()
+_alt.mousePressEvent(_mev(QEvent.Type.MouseButtonPress, Qt.MouseButton.LeftButton))
+_alt._wheel_accum = 0
+_alt.wheelEvent(_wheel_ev(-120, pos=(200, 100)))
+_alt.focusInEvent(_QFEv(QEvent.Type.FocusIn))
+eq(_asent, [],
+   'input suspended during review: no mouse / wheel / focus report reaches the child')
+ok(not _alt._mouse_report_btns,
+   'no button is tracked during review (so no unmatched release fires later)')
+_alt._review_active = False
+_alt._mouse_selecting = False
+
 # the child resets the modes (well-behaved exit): reporting stops, mouse tracking
 # off, and the alt-screen wheel falls back to the arrow surrogate
 feed_output(_alt, b'\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1006l')
@@ -516,7 +552,26 @@ ok(1000 in _msplit._mouse_modes,
 feed_output(_msplit, b'\x1b[?' + b'1' * 4301 + b'h')
 ok(0 not in _msplit._mouse_modes and isinstance(_msplit._mouse_modes, set),
    'an over-long DECSET parameter is ignored, not a ValueError crash')
+# RIS (ESC c) and DECSTR (ESC [ ! p) are FULL resets that clear tracked mouse modes,
+# so `reset` (or a program's soft reset) disables tracking that untrusted output
+# turned on -- the usual recovery. Folded in ORDER: a reset then a re-enable leaves
+# only the re-enabled modes. grok ai-review.
+from secure_terminal.sanitize import scan_mouse_modes           # noqa: E402
+eq(scan_mouse_modes('\x1bc', {1000, 1006}), set(),
+   'scan_mouse_modes: RIS (ESC c) clears all tracked mouse modes')
+eq(scan_mouse_modes('\x1b[!p', {1000, 1006}), set(),
+   'scan_mouse_modes: DECSTR (ESC [ ! p) clears all tracked mouse modes')
+eq(scan_mouse_modes('\x1b[?1000h\x1bc\x1b[?1006h', set()), {1006},
+   'scan_mouse_modes: a reset then a re-enable leaves only the re-enabled mode')
 _msplit.close()
+# end to end through the widget (a fresh tab, so no earlier modes linger): feeding
+# RIS clears the tracked modes (the reset-recovery path).
+_mris = SecureTerminal(command='/bin/cat', tui=True)
+feed_output(_mris, b'\x1b[?1000;1006h')
+ok(_mris._mouse_modes == {1000, 1006}, 'widget tracks a combined DECSET')
+feed_output(_mris, b'\x1bc')
+ok(not _mris._mouse_modes, 'feeding RIS through the widget clears the mouse modes')
+_mris.close()
 
 # EOF flush: a program's FINAL output that ends mid-escape must NOT vanish. In CLI
 # mode feed_chunk_carry holds a trailing possibly-incomplete escape in _esc_carry;
