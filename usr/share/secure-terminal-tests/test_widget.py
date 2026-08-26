@@ -651,6 +651,26 @@ eq(_hbB.value(), _hbB.minimum(),
    'home-pin: a paint re-homes to column 0 when that keeps the (col-0) caret visible')
 _pinB.close()
 
+# F4: the alt-screen (grid) caret sits at the DISPLAY offset of the cursor column, not the
+# raw cell column. A cell that renders to more than one UTF-16 unit (an astral glyph, which
+# Show mode passes through) advances the document by more than one position, so `+ cursor.x`
+# drifts the caret left. A math-bold 'A' (U+1D400: ONE Python char, TWO UTF-16 units) at
+# column 0 with the cursor at column 1 must place the caret at document offset 2, not 1.
+# The offset counts UTF-16 units, so it is font-agnostic (no CI CJK/emoji-glyph dependence).
+_f4 = SecureTerminal(command='/bin/cat', tui=True)
+_f4.apply_mode('show')
+_f4.resize(240, 120)
+_f4.show()
+APP.processEvents()
+feed_output(_f4, b'\x1b[?1049h\x1b[2J\x1b[H' + '\U0001d400'.encode('utf-8'))
+pump(80)
+_f4tc = _f4.textCursor()
+_f4off = _f4tc.position() - _f4.document().findBlock(_f4tc.position()).position()
+ok(_f4off == 2,
+   'grid caret sits after a 2-UTF-16-unit astral cell (offset %d), not at cell column 1'
+   % _f4off)
+_f4.close()
+
 # --- Zalgo flood: a base char plus thousands of stacked combining marks is one
 # grapheme cluster that makes the text engine (Qt in CLI mode, pyte's NFC merge in
 # TUI mode) reshape it in O(n^2) -- seconds of GUI freeze per line. The CLI cell
@@ -1943,6 +1963,19 @@ ok(len(_cap._grid_mark_cache) <= _MARK_CACHE_MAX,
    % len(_cap._grid_mark_cache))
 _cap.close()
 
+# _fmt_cache is keyed by (fg, bg, ...) with TRUECOLOR colours, so untrusted SGR spam
+# would grow it toward the 2^48 colour space (~178MB observed) -- it is admission-capped
+# like the marking caches so a flood cannot leak one QTextCharFormat per colour forever.
+_capf = SecureTerminal(command='/bin/cat')
+for _i in range(_MARK_CACHE_MAX + 300):
+    _fc = _FakeCell('x')
+    _fc.fg = '%06x' % _i                # a distinct truecolor foreground each time
+    _capf._pyte_format(_fc)
+ok(len(_capf._fmt_cache) <= _MARK_CACHE_MAX,
+   'the cell-format cache is admission-capped under a truecolor SGR flood (size %d)'
+   % len(_capf._fmt_cache))
+_capf.close()
+
 # Security regression (codex/agy, PR #5 review): a pyte cell can hold a box-drawing
 # base PLUS a hidden dangerous code point (bidi / zero-width), which tui_cell
 # neutralizes to the box placeholder. The Show-mode structural exemption must NOT fire
@@ -2404,6 +2437,214 @@ try:
        'the inserted suggestion is single-lined at the write site')
 finally:
     _hookmod.evaluate = _real_evaluate
+
+# ctl-send-text per-line review: a remote-control injection is a security surface, so
+# EACH line of a multi-line payload is judged by the command hook (block/ask/allow),
+# not delivered as one paste that lets an embedded newline auto-run the earlier line
+# unreviewed. (Finding: send-text 'id\nwhoami\n' ran id with no verdict.)
+_inj = SecureTerminal(command='/bin/cat')
+_inj.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow',
+                 'transcript': 'none'})
+_inj.has_foreground_program = lambda: False
+_injs = spy_writes(_inj)
+_asked_inj = []
+_inj._hook_ask = lambda _c, _r: (_asked_inj.append(_c) or 'discard')   # decline blocks
+_inj._inject_text_reviewed('echo one\nx sudo sh\ntail')   # _handler blocks "sudo sh"
+_injoined = b''.join(_injs)
+ok(b'echo one\r' in _injoined, 'per-line review: an allowed injected line submits')
+ok(_asked_inj == ['x sudo sh'],
+   'per-line review: a blocked injected line is reviewed, not auto-run')
+ok(b'x sudo sh\r' not in _injoined,
+   'per-line review: the blocked line is never submitted')
+ok(_inj._line_dirty,
+   'per-line review: the trailing partial line waits at the prompt (unverifiable)')
+# no hook configured -> falls back to the safe paste path (no per-line dialog)
+_inj2 = SecureTerminal(command='/bin/cat')
+_inj2.has_foreground_program = lambda: False
+_inj2s = spy_writes(_inj2)
+_inj2._inject_text_reviewed('ls\n')
+ok(_inj2s == [b'ls'] and _inj2._line_dirty,
+   'no-hook injection falls back to the paste path (sanitized, no auto-submit)')
+_inj.close()
+_inj2.close()
+
+# BYPASS (fixed): a command the prompt ALREADY holds, which the hook never judged, must
+# not be auto-submitted by an injected bare newline. The injection folds the pending line
+# into the judged command, so the hook sees (and here blocks) it. On 9ef8449 the loop
+# clobbered _line_buffer, the hook saw an EMPTY command (allowed), and the CR ran the
+# pending `sudo sh` UNREVIEWED.
+_injp = SecureTerminal(command='/bin/cat')
+_injp.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
+_injp.has_foreground_program = lambda: False
+_injps = spy_writes(_injp)
+_asked_p = []
+_injp._hook_ask = lambda _c, _r: (_asked_p.append(_c) or 'discard')
+_injp._line_buffer = 'sudo sh'          # user typed it, no Enter yet (mirrored)
+_injp._line_dirty = False
+_injp._inject_text_reviewed('\n')       # a bare injected newline
+ok(_asked_p == ['sudo sh'],
+   'injection folds a pending typed line into the judged command (not an empty verdict)')
+ok(b'\r' not in b''.join(_injps),
+   'a pending typed line is never submitted by an injected bare newline')
+ok(_injp._line_dirty, 'a declined injected newline keeps the line dirty (re-ask)')
+_injp.close()
+
+# BYPASS (fixed): after a blocked line the best-effort erase is UNRELIABLE (stty erase
+# rebind / multibyte), so a following injected newline must NOT send a bare CR onto the
+# un-erased rejected bytes. On 9ef8449 the loop reset _line_dirty=False each piece and the
+# blank second piece submitted the blocked command.
+_injb = SecureTerminal(command='/bin/cat')
+_injb.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
+_injb.has_foreground_program = lambda: False
+_injbs = spy_writes(_injb)
+_injb._hook_ask = lambda _c, _r: 'discard'
+_injb._inject_text_reviewed('sudo sh\n\n')     # a blocked line, then a blank line
+ok(b'\r' not in b''.join(_injbs),
+   'a blank piece after a blocked line never submits the un-erased leftover')
+ok(_injb._line_dirty, 'the line stays dirty after a blocked piece (next Enter re-asks)')
+_injb.close()
+
+# an ASKED line the user chooses to Run submits cleanly and the injection CONTINUES to
+# review the next line (the hook cleared the dirty flag, so the prompt is clean again).
+_injr = SecureTerminal(command='/bin/cat')
+_injr.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
+_injr.has_foreground_program = lambda: False
+_injrs = spy_writes(_injr)
+_injr._hook_ask = lambda _c, _r: 'run'
+_injr._inject_text_reviewed('sudo sh\nfree\n')   # first blocked-but-Run, second allowed
+_injrj = b''.join(_injrs)
+ok(b'sudo sh\r' in _injrj, 'an asked injected line chosen Run submits')
+ok(b'free\r' in _injrj, 'the injection continues to the next line after an approved Run')
+ok(not _injr._line_dirty, 'a clean run leaves the prompt settled')
+_injr.close()
+
+# BYPASS (fixed): an injection onto a line the hook CANNOT read (recalled/edited, so
+# _line_dirty) must not fold a stale prefix nor auto-submit -- the dirty branch ASKS. On
+# 9ef8449 the loop reset _line_dirty=False and ran the unmirrorable line unreviewed.
+_injd = SecureTerminal(command='/bin/cat')
+_injd.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
+_injd.has_foreground_program = lambda: False
+_injds = spy_writes(_injd)
+_asked_d = []
+_injd._hook_ask = lambda _c, _r: (_asked_d.append(_c) or 'discard')
+_injd._line_dirty = True                 # a recalled/edited line, unmirrorable
+_injd._inject_text_reviewed('ls\n')
+ok(len(_asked_d) == 1,
+   'an injected newline onto an unmirrorable line asks, never auto-submits')
+ok(_injd._line_dirty, 'the unmirrorable line stays dirty after a decline')
+_injd.close()
+
+# a partial injected line (no trailing newline) onto an already-dirty prompt is typed but
+# never submitted, and the prompt stays dirty for the user's own re-judged Enter.
+_injf = SecureTerminal(command='/bin/cat')
+_injf.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
+_injf.has_foreground_program = lambda: False
+_injfs = spy_writes(_injf)
+_injf._line_dirty = True
+_injf._inject_text_reviewed('note')       # no newline: typed, never submitted
+ok(b'\r' not in b''.join(_injfs) and _injf._line_dirty,
+   'a partial injected line never auto-submits and keeps a dirty prompt dirty')
+_injf.close()
+
+# BYPASS (fixed): a Tab in an injected line triggers the shell's completion, so the
+# EXECUTED command differs from the literal bytes the hook judged (`ls\t` completes to a
+# different command). The line is marked unverifiable and the hook ASKS, never auto-runs.
+# On 9ef8449 the loop judged the pre-completion bytes and submitted the completed command.
+_injt = SecureTerminal(command='/bin/cat')
+_injt.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
+_injt.has_foreground_program = lambda: False
+_injts = spy_writes(_injt)
+_asked_t = []
+_injt._hook_ask = lambda _c, _r: (_asked_t.append(_c) or 'discard')
+_injt._inject_text_reviewed('ls -l\t\n')     # a Tab in the line -> shell completion
+ok(len(_asked_t) == 1 and b'\r' not in b''.join(_injts),
+   'an injected line with a Tab is asked (unverifiable completion), never auto-submitted')
+_injt.close()
+
+# OSC-52 reply truncation: a slow/gone child can leave the ~87 KiB reply truncated, its
+# buffered prefix then lacking the OSC terminator -- a dangling escape that swallows the
+# next pty reader's output. A truncated write (_write returns False) is best-effort
+# re-terminated; a full write appends no spurious terminator.
+_clp = SecureTerminal(command='/bin/cat')
+QGuiApplication.clipboard().setText('S3CRET' * 200)
+_clpw = []
+def _trunc_write(_data):
+    _clpw.append(bytes(_data))
+    return len(_clpw) != 1            # the reply (first call) truncates; the rest write
+_clp._write = _trunc_write
+_clp._last_clip_read = 0              # bypass the 1s rate limit
+_clp._reply_clipboard()
+ok(len(_clpw) == 2 and _clpw[0].startswith(b'\x1b]52;c;') and _clpw[1] == b'\x07',
+   'a truncated OSC-52 reply is best-effort re-terminated (no dangling escape)')
+_clpw2 = []
+_clp._write = lambda _d: (_clpw2.append(bytes(_d)) or True)   # a full write
+_clp._last_clip_read = 0
+_clp._reply_clipboard()
+ok(len(_clpw2) == 1, 'a fully-written OSC-52 reply appends no extra terminator')
+_clp.close()
+
+# F5: reap_pty_children WNOHANG-reaps ONLY our registered pty children, so the app can
+# drop the blanket SIGCHLD=SIG_IGN that made every subprocess returncode read 0. Pin
+# SIGCHLD to its default here so reaping is deterministic (an ambient SIG_IGN would let
+# the kernel auto-reap our probe children before we waitpid them).
+import time as _t5                                            # noqa: E402
+_f5_prev_chld = signal.getsignal(signal.SIGCHLD)
+signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+try:
+    _dead = os.posix_spawn('/bin/true', ['/bin/true'], os.environ)   # exits -> zombie
+    _t5.sleep(0.2)
+    SecureTerminal._LIVE_PTY_PIDS.add(_dead)
+    SecureTerminal.reap_pty_children()
+    ok(_dead not in SecureTerminal._LIVE_PTY_PIDS,
+       'reap_pty_children reaps and drops an exited pty child')
+    _alive = os.posix_spawn('/bin/sleep', ['/bin/sleep', '30'], os.environ)
+    SecureTerminal._LIVE_PTY_PIDS.add(_alive)
+    SecureTerminal.reap_pty_children()
+    ok(_alive in SecureTerminal._LIVE_PTY_PIDS,
+       'reap_pty_children keeps a still-running pty child registered')
+    os.kill(_alive, signal.SIGKILL)
+    os.waitpid(_alive, 0)
+    SecureTerminal._LIVE_PTY_PIDS.discard(_alive)
+    _gone = 2147480000                                       # a pid that is not our child
+    SecureTerminal._LIVE_PTY_PIDS.add(_gone)
+    SecureTerminal.reap_pty_children()
+    ok(_gone not in SecureTerminal._LIVE_PTY_PIDS,
+       'reap_pty_children drops a pid that is not (or no longer) our child')
+    # a spawned tab registers its pty pid; shutdown() reaps a dead child (reaped branch)
+    _rt = SecureTerminal(command='/bin/cat')
+    _rt_pid = _rt._pid
+    ok(_rt_pid in SecureTerminal._LIVE_PTY_PIDS,
+       'a spawned tab registers its pty child for reaping')
+    os.kill(_rt_pid, signal.SIGKILL)
+    _t5.sleep(0.2)                                           # let it die -> a zombie
+    _rt.shutdown()
+    ok(_rt_pid not in SecureTerminal._LIVE_PTY_PIDS,
+       'shutdown() reaps and unregisters an exited pty child')
+    # shutdown() tolerates a child already reaped elsewhere (the ECHILD branch)
+    _rt2 = SecureTerminal(command='/bin/cat')
+    _rt2_pid = _rt2._pid
+    os.kill(_rt2_pid, signal.SIGKILL)
+    os.waitpid(_rt2_pid, 0)                                  # reap it out from under shutdown()
+    _rt2.shutdown()
+    ok(_rt2_pid not in SecureTerminal._LIVE_PTY_PIDS,
+       'shutdown() tolerates a pty child already reaped elsewhere')
+    # shutdown() while the child is still alive: WNOHANG reaps nothing (0, 0), so the pid
+    # stays registered for the app's SIGCHLD handler (the not-yet-dead branch)
+    _rt3 = SecureTerminal(command='/bin/cat')
+    _rt3_pid = _rt3._pid
+    _orig_waitpid = os.waitpid
+    os.waitpid = lambda _p, _f: (0, 0)                      # pretend the child is still alive
+    try:
+        _rt3.shutdown()
+    finally:
+        os.waitpid = _orig_waitpid
+    ok(_rt3_pid in SecureTerminal._LIVE_PTY_PIDS,
+       'shutdown() leaves a still-running pty child registered for the handler')
+    os.kill(_rt3_pid, signal.SIGKILL)                       # clean up the real (still-live) child
+    os.waitpid(_rt3_pid, 0)
+    SecureTerminal._LIVE_PTY_PIDS.discard(_rt3_pid)
+finally:
+    signal.signal(signal.SIGCHLD, _f5_prev_chld)
 
 # --- command-hook desync fail-safe (widened): Tab completion and readline control
 # edits rewrite the shell's line without updating _line_buffer, so the hook must
@@ -3412,6 +3653,11 @@ ok(_is_font_noise('qt.text.font.db', 'OpenType support missing for "X", script 9
    'font-db warning is noise')
 ok(_is_font_noise('', 'OpenType support missing for "Y"'), 'OpenType line is noise')
 ok(not _is_font_noise('default', 'some real warning'), 'real message is not noise')
+# #11: only the OpenType-missing message is noise -- a DIFFERENT qt.text.font.db warning
+# (e.g. a font substitution that may reintroduce a confusable) must still reach stderr.
+# The pre-fix `category == 'qt.text.font.db' or ...` swallowed the whole category.
+ok(not _is_font_noise('qt.text.font.db', 'Populating font family aliases took 50 ms'),
+   'a non-OpenType qt.text.font.db warning is NOT suppressed (only the flood message is)')
 
 win = MainWindow()
 win.new_tab()
@@ -6119,9 +6365,11 @@ eq(_ha._hook_ask('rm -rf /', {'verdict': 'block', 'suggestion': '', 'message': '
 _orig_mb_exec = _QMB.exec
 _orig_mb_clicked = _QMB.clickedButton
 _pick = {'role': None}
+_ha_boxes = []
 
 
 def _fake_mb_exec(self):
+    _ha_boxes.append(self)
     return 0
 
 
@@ -6142,6 +6390,10 @@ try:
     eq(_ha._hook_ask('ls', _res), 'suggest', '_hook_ask: "Use suggestion" -> suggest')
     _pick['role'] = _QMB.ButtonRole.RejectRole
     eq(_ha._hook_ask('ls', _res), 'discard', '_hook_ask: Cancel -> discard')
+    # #10: the advisory text is pinned PlainText so an untrusted command / hook message
+    # cannot render as rich text (markup that would hide or restyle the reviewed command).
+    ok(_ha_boxes and all(b.textFormat() == Qt.TextFormat.PlainText for b in _ha_boxes),
+       '_hook_ask: the advisory dialog forces PlainText (no rich-text rendering)')
 finally:
     _QMB.exec = _orig_mb_exec
     _QMB.clickedButton = _orig_mb_clicked
@@ -6561,6 +6813,7 @@ ok(True, 'apply_zoom in grid mode schedules a repaint')
 # _set_winsize: no-fd short-circuit and an ioctl error are both swallowed
 _sw = SecureTerminal(command='/bin/cat')
 _sw._set_winsize(80, 24)                     # succeeds on a real pty
+_sw._set_winsize(70000, 70000)               # oversized: clamped to 0xFFFF, no struct.error (#9)
 _o_ioctl = _fcntl.ioctl
 try:
     _fcntl.ioctl = lambda *_a, **_k: (_ for _ in ()).throw(OSError())
@@ -7370,6 +7623,31 @@ _tn = SecureTerminal(command='/bin/cat')
 ok(_tn._transcript_file is None,
    'transcript file: no path unless SECURE_TERMINAL_TRANSCRIPT_FILE is set')
 _tn.shutdown()
+
+# transcript file: a co-resident attacker who pre-plants a world-readable file at the
+# (old, guessable) <path>.tmp must not capture the secret transcript. The write now uses
+# an unguessable mkstemp name created O_EXCL + 0o600, so the result is always owner-only
+# -- the fixed-name O_TRUNC path would have REUSED the pre-planted 0o644 file.
+_secdir = tempfile.mkdtemp(prefix='st-trsec-')
+_secpath = os.path.join(_secdir, 'transcript.txt')
+_planted = _secpath + '.tmp'
+with open(_planted, 'w', encoding='utf-8'):
+    pass
+os.chmod(_planted, 0o644)                                # attacker's world-readable plant
+os.environ['SECURE_TERMINAL_TRANSCRIPT_FILE'] = _secpath
+try:
+    _tsec = SecureTerminal(command='/bin/cat')
+    feed_output(_tsec, b'SECRET-XYZ\r\n')
+    pump(80)
+    _mode = os.stat(_secpath).st_mode & 0o777
+    with open(_secpath, encoding='utf-8') as _sfh:
+        _secwritten = _sfh.read()
+    ok(_mode == 0o600 and 'SECRET-XYZ' in _secwritten,
+       'transcript file: written owner-only 0o600 despite a world-readable pre-planted '
+       '<path>.tmp (mode 0o%o)' % _mode)
+    _tsec.shutdown()
+finally:
+    del os.environ['SECURE_TERMINAL_TRANSCRIPT_FILE']
 
 # --- alt-screen viewport pins to the TOP (row 0 stays visible) -----------------
 # A full-screen program on the alternate screen owns a fixed canvas with no scrollback:
