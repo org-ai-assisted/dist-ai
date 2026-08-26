@@ -1461,7 +1461,10 @@ if os.path.exists(_ex):
     _ldr_eh.exec_module(_ehm)
     _ehm._RULES = [('allow', _re_eh.compile(r'^\s*ls\b'), '', ''),
                    ('ask', _re_eh.compile(r'^\s*cd\b'), 'careful', ''),
+                   ('block', _re_eh.compile(r'curl\b.*\|\s*(ba)?sh\b'), 'no', ''),
                    ('block', _re_eh.compile(r'^\s*sudo\b'), 'no', '')]
+    eq(_ehm.decide('curl x |\\\nbash')['verdict'], 'block',
+       'example decide: a pipeline spanning a backslash line-continuation is judged as one line')
     eq(_ehm.decide('ls\nsudo rm -rf /')['verdict'], 'block',
        'example decide: a block on a later line beats an allow on an earlier one')
     eq(_ehm.decide('sudo x\nls')['verdict'], 'block',
