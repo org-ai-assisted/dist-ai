@@ -457,11 +457,15 @@ _alt.mousePressEvent(_mev(QEvent.Type.MouseButtonPress, Qt.MouseButton.LeftButto
                           Qt.KeyboardModifier.ShiftModifier))
 eq(_asent, [], 'Shift+press is local text selection (no report)')
 
-# _event_cell clamps: a point past the right edge clamps to the column count; the
-# top-left corner clamps to 1;1 (never a cell off the grid)
+# _event_cell clamps: a point past the right/bottom edge clamps to the column/row
+# count (a click in the sub-row strip below the last row must not name a row past the
+# grid); the top-left corner clamps to 1;1 (never a cell off the grid).
+_alt._rows = 24                          # winsize height the child knows its screen as
 _asent.clear()
 _alt.wheelEvent(_wheel_ev(-120, pos=(100000, 100000)))
-ok(_parse_sgr(_asent)[1] == 80, 'a point past the right edge clamps col to the grid width')
+_edge = _parse_sgr(_asent)
+ok(_edge[1] == 80, 'a point past the right edge clamps col to the grid width')
+ok(_edge[2] == 24, 'a point past the bottom edge clamps row to the grid height')
 _asent.clear()
 _alt._wheel_accum = 0
 _alt.wheelEvent(_wheel_ev(-120, pos=(-1000, -1000)))
