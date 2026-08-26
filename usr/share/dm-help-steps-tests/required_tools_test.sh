@@ -71,8 +71,8 @@ if grep --quiet --fixed-strings 'check_required_packages_installed()' "${sanity_
 else
    fail "1100_sanity-tests does not define check_required_packages_installed"
 fi
-if sed -n '/^main()/,/^}/p' -- "${sanity_tests}" \
-  grep --quiet --fixed-strings 'check_required_packages_installed' <<< "$()"; then
+if grep --quiet --fixed-strings 'check_required_packages_installed' \
+  <<< "$(sed -n '/^main()/,/^}/p' -- "${sanity_tests}")"; then
    pass "check_required_packages_installed is called from main"
 else
    fail "check_required_packages_installed is defined but never called from main"

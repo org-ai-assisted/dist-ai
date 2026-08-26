@@ -142,8 +142,8 @@ main() {
    mv -- "${home_image}" "${pool_target}/"
    home_image=''
    virsh -c qemu:///session pool-refresh "${test_pool}"
-   virsh -c qemu:///session vol-list "${test_pool}" \
-     grep --quiet --fixed-strings -- "${image_name}" <<< "$()" \
+   grep --quiet --fixed-strings -- "${image_name}" \
+      <<< "$(virsh -c qemu:///session vol-list "${test_pool}")" \
       || { printf '%s\n' "FAIL: imported image not registered as a pool volume" >&2; exit 1; }
 
    printf '%s\n' "${sep}"
