@@ -303,6 +303,25 @@ _o4b, _rc4b = run_in_pty(['--', 'cat'], tty_stdin=False, feed=b'hi\n',
 ok(b'hi' in _o4b, 'the wrapper forwards our input to the child (cat echoes it)')
 eq(_rc4b, 0, 'a stdin EOF is forwarded so the child (cat) sees end-of-input and exits')
 
+# COR-2: after stdin EOF the wrapper must send the child ONE Ctrl-D and STOP selecting on
+# stdin. A closed fd stays readable, so the base code re-read it every iteration and spun
+# at 100% CPU spamming EOF for as long as the child lived. Count the b'\x04' writes while a
+# child (sleep) that does NOT exit on EOF lingers: exactly one, not thousands.
+_eof_writes = [0]
+_real_oswrite = cli.os.write
+def _count_eof_write(_fd, _data):
+    if _data == b'\x04':
+        _eof_writes[0] += 1
+    return _real_oswrite(_fd, _data)
+cli.os.write = _count_eof_write
+try:
+    run_in_pty(['--', 'sleep', '0.3'], tty_stdin=False, close_stdin=True, settle=0.8)
+finally:
+    cli.os.write = _real_oswrite
+ok(_eof_writes[0] <= 3,
+   'COR-2: stdin EOF sends the child a few slow EOF nudges, not a 100%%-CPU flood while '
+   'the child lives (no busy-loop) -- got %d b\'\\x04\' writes' % _eof_writes[0])
+
 # --- stdin forwarding + Enter: typed input runs on the user's explicit Enter ----
 # 'exit 3' is forwarded verbatim (it carries no submit byte), then a SEPARATE lone
 # Enter keystroke submits it -- so an ordinary command still runs.

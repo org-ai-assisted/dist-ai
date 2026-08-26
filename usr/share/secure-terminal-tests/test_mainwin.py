@@ -256,6 +256,19 @@ try:
     M.ipc.send_request = lambda *_a, **_k: {'ok': True, 'text': 'rendered text'}
     eq(_ctl_main(['dump-tab', '--tab', 'title:one', '--lines', '5']), 0,
        'ctl dump-tab -> 0')
+    # COR-7 client half: --lines 0 must be FORWARDED (0 is falsy, the base guard dropped it).
+    _sent0 = {}
+    def _cap_req(*_a, **_k):
+        for _x in _a:
+            if isinstance(_x, dict) and 'op' in _x:
+                _sent0.clear()
+                _sent0.update(_x)
+        return {'ok': True, 'text': ''}
+    M.ipc.send_request = _cap_req
+    eq(_ctl_main(['dump-tab', '--tab', 'title:one', '--lines', '0']), 0,
+       'ctl dump-tab --lines 0 -> 0')
+    ok(_sent0.get('lines') == 0,
+       'COR-7: the client forwards --lines 0 (not dropped as a falsy value)')
 finally:
     M.ipc.send_request = _orig_sr
 
@@ -850,6 +863,13 @@ try:
     ok(_disp({'op': 'ctl-set-tab-title', 'tab': 'title:%s' % _title0,
               'title': 'Renamed'})['ok'],
        'ipc: ctl-set-tab-title matched by title')
+    # SEC-3: a user/IPC-set title bypasses the program-title sanitizer, so the write site
+    # must strip bidi/homoglyph -- else an RLO override spoofs the tab label, the bell
+    # notification and the OSC-52 consent dialog, which all read _user_titles.
+    ok(_disp({'op': 'ctl-set-tab-title', 'tab': 'id:%d' % _tid0,
+              'title': 'a\u202eb'})['ok'], 'ipc: ctl-set-tab-title with a bidi title accepted')
+    ok('\u202e' not in win._user_titles.get(_tab0, ''),
+       'SEC-3: a ctl-set-tab-title bidi/RLO override is sanitized out at the write site')
     ok(not _disp({'op': 'ctl-set-tab-title', 'tab': 'id:%d' % _tid0,
                   'title': 5})['ok'],
        'ipc: ctl-set-tab-title with a non-string title is rejected')
@@ -1883,6 +1903,12 @@ _bt = win.current()
 win._on_bell_tray(_bt, 'label')
 win._on_cwd_changed(_bt, '/tmp/some/where')  # nosec B108 -- literal path string arg to a handler under test; nothing is created
 ok(True, 'notification, bell-tray and cwd-changed handlers run')
+# SEC-2: the OSC-7 cwd tooltip must be html-escaped (setTabToolTip renders rich text), or
+# a cwd path could inject markup -- the sibling _refresh_tab_label already escapes.
+win._on_cwd_changed(_bt, '/<img src=x>')  # nosec B108 -- literal handler arg, nothing created
+_cwdtip = win.tabs.tabToolTip(win.tabs.indexOf(_bt))
+ok('<img' not in _cwdtip and '&lt;img' in _cwdtip,
+   'SEC-2: an OSC-7 cwd path is html-escaped in the tab tooltip (no raw markup)')
 
 # --- _set_shortcuts: a reserved key, a duplicate, and an unknown ident ---------
 _ids = list(win._shortcuts)[:2]
@@ -1912,6 +1938,14 @@ if win.tabs.count() == 0:
 _t0b = win.tabs.widget(0)
 _tid0b = win._tab_ids.get(_t0b)
 _t0b._append('hello world of text')
+# COR-7: --lines 0 must dump ZERO lines, not the whole tab. The server's `lines > 0` guard
+# defaulted 0 to a full dump, and text.split('\n')[-0:] is the WHOLE list (negative-zero).
+_rl0 = win._ipc_ctl('ctl-dump-tab', {'tab': 'id:%d' % _tid0b, 'lines': 0})
+ok(_rl0['ok'] and _rl0['text'] == '',
+   'COR-7: ctl-dump-tab lines=0 dumps zero lines, not the full tab')
+_rl1 = win._ipc_ctl('ctl-dump-tab', {'tab': 'id:%d' % _tid0b, 'lines': 1})
+ok(_rl1['ok'] and 'hello world of text' in _rl1['text'],
+   'COR-7: ctl-dump-tab lines=1 still dumps the last line')
 _o_dumpmax = M._DUMP_MAX
 try:
     M._DUMP_MAX = 4                          # force the tail-cap branch

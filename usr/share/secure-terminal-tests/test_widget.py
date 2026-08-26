@@ -813,6 +813,19 @@ ok(_advices == [], 'plain line-mode output raises no TUI advisory')
 feed_output(adv, b'cand1  cand2  cand3\n\x1b[2A\x1b[7mcand1\x1b[27m')
 ok(len(_advices) == 1 and 'TUI' in _advices[0],
    'an in-place completion-menu repaint (cursor-up, no alt-screen) advises TUI mode')
+
+# COR-1b: a C0 control byte inside an all-ASCII chunk must NOT take pyte's fast path --
+# stock pyte draw() breaks its whole batch on the first wcwidth==-1 byte (`else: break`),
+# so the C0 AND the rest of the chunk would vanish unmarked. The per-char loop marks it
+# and keeps going.
+if tui_available():
+    _c0 = SecureTerminal(command='/bin/cat', tui=True)
+    feed_output(_c0, b'AB\x01CD')
+    ok(_c0._screen.buffer[0][2].data == 'C' and _c0._screen.buffer[0][3].data == 'D',
+       'COR-1b: a C0 byte in an all-ASCII TUI chunk does not drop the trailing output')
+    ok(not _c0._screen.buffer[0][1].data.isprintable(),
+       'COR-1b: the C0 control byte is marked into its cell, not silently dropped')
+    _c0.close()
 # advised at most once per program, so a menu that repaints on every keypress does
 # not spam the notice.
 feed_output(adv, b'\x1b[2A\x1b[7mcand2\x1b[27m')
@@ -1976,6 +1989,27 @@ ok(len(_capf._fmt_cache) <= _MARK_CACHE_MAX,
    % len(_capf._fmt_cache))
 _capf.close()
 
+# COR-5: an AIXTERM bright-background SGR (100-107) must render a genuinely BRIGHT bg, not
+# the dim base. pyte encodes it as base-name bg + bold=True, so the fork disentangles it:
+# a bright bg name (no phantom bold that would brighten the fg / bold the font).
+if tui_available():
+    _bb = SecureTerminal(command='/bin/cat', tui=True)
+    feed_output(_bb, b'\x1b[107mX')            # bright white background
+    _bcell = _bb._screen.buffer[0][0]
+    eq(_bcell.bg, 'brightwhite',
+       'COR-5: a bright-bg SGR sets a bright bg name (base rendered the dim white)')
+    ok(not _bcell.bold,
+       'COR-5: a bright-bg-only SGR sets NO phantom bold (no fg-brighten / bold font)')
+    _bg_bright = _bb._pyte_qcolor('brightwhite', None)
+    ok(_bg_bright is not None
+       and _bb._pyte_format(_bcell).background().color().name() == _bg_bright.name(),
+       'COR-5: the bright-bg cell renders from the +8 bright palette')
+    # order-correctness: a normal bg AFTER a bright-bg wins; a bright-bg after reset wins
+    feed_output(_bb, b'\x1b[107;44mY')         # bright-bg then normal blue bg -> blue wins
+    eq(_bb._screen.buffer[0][1].bg, 'blue',
+       'COR-5: a normal bg after a bright-bg overrides it (in-order)')
+    _bb.close()
+
 # Security regression (codex/agy, PR #5 review): a pyte cell can hold a box-drawing
 # base PLUS a hidden dangerous code point (bidi / zero-width), which tui_cell
 # neutralizes to the box placeholder. The Show-mode structural exemption must NOT fire
@@ -2582,6 +2616,31 @@ _clp._last_clip_read = 0
 _clp._reply_clipboard()
 ok(len(_clpw2) == 1, 'a fully-written OSC-52 reply appends no extra terminator')
 _clp.close()
+
+# SEC-1: OSC-52 clipboard-read consent is a TOCTOU. osc_clipboard_read can be disabled
+# WHILE the consent dialog is open; a later Allow must NOT answer the stale READ query.
+_ctc = SecureTerminal(command='/bin/cat')
+_ctc.apply_osc('osc_clipboard_read', True)
+QGuiApplication.clipboard().setText('S3CRET')
+_ctcw = []
+_ctc._write = lambda _d: (_ctcw.append(bytes(_d)) or True)
+_ctc._last_clip_read = 0
+_ctc._clipboard_read = 'pending'                       # a consent dialog is open
+_ctc.apply_osc('osc_clipboard_read', False)            # feature disabled while it is open
+ok(_ctc._clipboard_read is None,
+   'SEC-1: disabling osc_clipboard_read drops the in-flight pending consent')
+_ctc.grant_clipboard_read(_ctc.CLIP_ALLOW_ALWAYS)      # user clicks Allow on the stale dialog
+ok(not any(b'\x1b]52;c;' in _w for _w in _ctcw),
+   'SEC-1: a grant after the feature was disabled writes NO OSC-52 reply (no clipboard exfil)')
+# guard-only path: force pending with the feature already off, grant re-checks the flag
+_ctc._osc['osc_clipboard_read'] = False
+_ctc._clipboard_read = 'pending'
+_ctc._last_clip_read = 0                                # else the 1s rate-limit masks a reply
+_ctcw.clear()
+_ctc.grant_clipboard_read(_ctc.CLIP_ALLOW_ONCE)
+ok(not any(b'\x1b]52;c;' in _w for _w in _ctcw),
+   'SEC-1: grant_clipboard_read re-checks the feature flag and withholds the reply when off')
+_ctc.close()
 
 # F5: reap_pty_children WNOHANG-reaps ONLY our registered pty children, so the app can
 # drop the blanket SIGCHLD=SIG_IGN that made every subprocess returncode read 0. Pin
@@ -3814,6 +3873,42 @@ win.set_tab_color(0, None)
 # _tab_colors is the only state that answers the question.
 ok(not win.tabs.tabIcon(0).isNull(), 'tab keeps its number icon after colour cleared')
 ok(win._tab_colors.get(_term0) is None, 'tab colour cleared')
+# COR-6: the Custom... colour picker returns an INVALID QColor on Cancel, which
+# set_tab_color folds into its Clear path -- so passing it straight through erased the
+# tab's colour on Cancel. _pick_custom_tab_color guards on isValid(): Cancel is a no-op.
+from PyQt6.QtWidgets import QColorDialog as _QCD              # noqa: E402
+ok(hasattr(win, '_pick_custom_tab_color'),
+   'COR-6: a guarded custom-colour picker (isValid) exists')
+if hasattr(win, '_pick_custom_tab_color'):
+    win.set_tab_color(0, QColor('#d83933'))
+    _o_getcolor = _QCD.getColor
+    try:
+        _QCD.getColor = staticmethod(lambda *a, **k: QColor())            # invalid = Cancel
+        win._pick_custom_tab_color(0)
+        ok(win._tab_colors.get(_term0) == '#d83933',
+           'COR-6: Custom... Cancel (invalid QColor) leaves the tab colour unchanged')
+        _QCD.getColor = staticmethod(lambda *a, **k: QColor('#1f8a54'))   # a real pick
+        win._pick_custom_tab_color(0)
+        ok(win._tab_colors.get(_term0) == '#1f8a54',
+           'COR-6: Custom... with a valid pick applies the colour')
+    finally:
+        _QCD.getColor = _o_getcolor
+        win.set_tab_color(0, None)
+
+# COR-4: a COPY review held with the terminal focused -- Enter/Esc must dispatch the COPY
+# reject, not the paste path (which would clear _pending_paste and strand _pending_copy).
+_cr = SecureTerminal(command='/bin/cat', tui=True)
+_cr.apply_copy_warn('always')
+feed_output(_cr, b'hello')
+QGuiApplication.clipboard().setText('SENTINEL')
+_cr.selectAll()
+_cr.copy()
+ok(_cr._pending_copy is not None and _cr._review_active,
+   'COR-4 setup: selectAll + copy opens a pending copy review')
+key(_cr, Qt.Key.Key_Return)
+ok(_cr._pending_copy is None,
+   'COR-4: Enter on a copy review dispatches the copy reject (no stale _pending_copy)')
+_cr.close()
 # --- find in scrollback: per-tab + all-tabs, over the neutralized display text ---
 from PyQt6.QtGui import QTextCursor as _QTC                  # noqa: E402
 _ft = win.current()
