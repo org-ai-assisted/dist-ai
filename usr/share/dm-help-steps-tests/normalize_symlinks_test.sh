@@ -197,6 +197,43 @@ else
    fail "file mode not normalised: got 0${mode_now}, expected 0644"
 fi
 
+## --- GIT_DIR robustness: a decoy GIT_DIR must not divert the git calls -------
+## An inherited GIT_DIR (e.g. exported by an enclosing 'git submodule foreach')
+## must not make 'git -C <tree>' read the wrong index and skip normalisation.
+decoy="${workdir}/decoy"
+git_x init --quiet -- "${decoy}"
+gd_clone="${workdir}/host_gitdir"
+git_x -c core.symlinks=false clone --quiet --recurse-submodules -- "${origin}" "${gd_clone}"
+git_x -C "${gd_clone}" config core.symlinks false
+git_x -C "${gd_clone}" submodule foreach --quiet 'git config core.symlinks false' >/dev/null 2>&1 || true
+( export GIT_DIR="${decoy}/.git"; run_normalize "${gd_clone}" )
+if [ -L "${gd_clone}/${logo}" ]; then
+   pass "materialises the symlink even with a decoy GIT_DIR set (env --unset clears it)"
+else
+   fail "a decoy GIT_DIR diverted the git calls; symlink left un-materialised"
+fi
+
+## --- trailing-newline blob must be left alone, not mis-converted -------------
+## A mode-120000 blob whose content ends in a newline is NOT a materialised
+## symlink (git writes the target with no trailing newline); it must be skipped,
+## not turned into a symlink with the newline silently stripped by command sub.
+nl="${workdir}/nl"
+git_x init --quiet -- "${nl}"
+git_x -C "${nl}" config user.email 'test@example.com'
+git_x -C "${nl}" config user.name 'test'
+blob_sha="$(printf 'target_with_nl\n' | git_x -C "${nl}" hash-object -w --stdin)"
+git_x -C "${nl}" update-index --add --cacheinfo "120000,${blob_sha},weird"
+git_x -C "${nl}" commit --quiet --message 'mode-120000 blob ending in a newline'
+nl_clone="${workdir}/host_nl"
+git_x -c core.symlinks=false clone --quiet -- "${nl}" "${nl_clone}"
+git_x -C "${nl_clone}" config core.symlinks false
+run_normalize "${nl_clone}"
+if [ -L "${nl_clone}/weird" ]; then
+   fail "trailing-newline blob mis-converted to a symlink (command-sub ate the newline)"
+else
+   pass "trailing-newline blob left as a regular file, not mis-converted"
+fi
+
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1
