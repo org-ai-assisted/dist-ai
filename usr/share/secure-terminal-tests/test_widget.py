@@ -2624,15 +2624,20 @@ try:
        'atomic: an allowed batch delivers and submits every line')
     ok(not _tox._line_dirty, 'atomic: a fully-approved batch leaves the prompt settled')
     _tox.close()
-    # an all-blank multi-line batch needs no hook call and just submits empty lines
+    # an all-blank multi-line batch is UNVERIFIABLE: at a shell continuation prompt a blank
+    # line completes and runs the pending command, and the widget cannot see that state ->
+    # refuse, deliver nothing, no hook call (fail closed).
     _recorded.clear()
     _tobl = SecureTerminal(command='/bin/cat')
     _tobl.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
     _tobl.has_foreground_program = lambda: False
+    _toblnotes = []
+    _tobl.hook_notice.connect(_toblnotes.append)
     _tobls = spy_writes(_tobl)
     _tobl._inject_text_reviewed('\n\n')
-    ok(_recorded == [] and b''.join(_tobls) == b'\r\r',
-       'atomic: an all-blank batch is delivered without a hook call')
+    ok(_recorded == [] and b''.join(_tobls) == b''
+       and _toblnotes and 'could not be reviewed' in _toblnotes[-1],
+       'atomic: an all-blank batch is refused (a blank line may complete a continuation)')
     _tobl.close()
     # a trailing partial line (no final newline) is delivered but left at the prompt for the
     # user's own re-judged Enter; only the submitted lines form the judged script.
@@ -2696,6 +2701,23 @@ _tot._inject_text_reviewed('ls\trm\nwhoami\n')   # a Tab in a submitted line
 ok(b''.join(_tots) == b'' and _totnotes and 'could not be reviewed' in _totnotes[-1],
    'atomic: a Tab in a submitted line refuses the whole batch (completion is unjudgeable)')
 _tot.close()
+
+# v2 fail-closed at the widget (real hook.evaluate): a multi-line batch a VERSION-1 handler
+# ALLOWS -- one that does not set `multiline_reviewed` -- is refused whole. hook.evaluate
+# downgrades the unconfirmed allow to block (a v1 handler judges only the single-line
+# `command`, so a later dangerous line could slip past), so nothing is delivered. The real
+# per-line _handler allows a non-sudo batch but sets no ack, exercising the downgrade E2E.
+_tov1 = SecureTerminal(command='/bin/cat')
+_tov1.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
+_tov1.has_foreground_program = lambda: False
+_tov1._hook_ask = lambda _c, _r: 'discard'
+_tov1notes = []
+_tov1.hook_notice.connect(_tov1notes.append)
+_tov1s = spy_writes(_tov1)
+_tov1._inject_text_reviewed('ls\nwhoami\n')       # v1 handler allows; no multiline ack
+ok(b''.join(_tov1s) == b'' and _tov1notes and 'multi-line review' in _tov1notes[-1],
+   'a v1-handler ALLOW on a multi-line batch is refused (no multiline_reviewed ack)')
+_tov1.close()
 
 # single-line injection keeps the per-line path (there is no multi-line stale-state window
 # for one submitted line): an allowed line submits, and a flagged line the user Runs submits

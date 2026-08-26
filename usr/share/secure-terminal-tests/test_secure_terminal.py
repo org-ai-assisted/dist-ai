@@ -1420,7 +1420,22 @@ _H1cmd = _handler(
     'r = json.load(sys.stdin)\n'
     'print(json.dumps({"verdict": "block" if "rm" in r.get("command", "") else "allow"}))')
 eq(HOOK.evaluate(_H1cmd, 'cd /tmp\nrm x', script=True)['verdict'], 'block',
-   'v2 mirrors the script into `command`, so a version-1 handler still sees it (fail closed)')
+   'v2 mirrors the script into `command`, so a search-based version-1 handler can still block')
+# v2 FAIL-CLOSED ack: a handler that does NOT set `multiline_reviewed` is a version-1
+# handler judging only the single-line `command`; its ALLOW on a multi-line batch is NOT
+# trusted (a `startswith`/`^` rule would miss a later line), so the caller refuses (block).
+_Hallow = _handler('json.load(sys.stdin); print(json.dumps({"verdict": "allow"}))')
+eq(HOOK.evaluate(_Hallow, 'echo safe\nsudo rm -rf /', script=True)['verdict'], 'block',
+   'v2: an ALLOW without multiline_reviewed is refused (a v1 handler cannot judge a batch)')
+eq(HOOK.evaluate(_Hallow, 'ls')['verdict'], 'allow',
+   'the ack gate is script-only: a single-line ALLOW is unaffected')
+_Hack = _handler('json.load(sys.stdin)\n'
+                 'print(json.dumps({"verdict": "allow", "multiline_reviewed": True}))')
+eq(HOOK.evaluate(_Hack, 'ls\nwhoami', script=True)['verdict'], 'allow',
+   'v2: an ALLOW WITH multiline_reviewed is trusted')
+_Hblock = _handler('json.load(sys.stdin); print(json.dumps({"verdict": "block"}))')
+eq(HOOK.evaluate(_Hblock, 'ls\nwhoami', script=True)['verdict'], 'block',
+   'v2: a BLOCK is honored regardless of the ack')
 # the shipped example handler blocks a remote script piped to a root shell
 _usr = HOOK.__file__
 for _ in range(5):
