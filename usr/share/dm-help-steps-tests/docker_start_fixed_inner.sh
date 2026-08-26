@@ -19,6 +19,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 declare -a pipe_status
 if "$@" 2>&1 | tee -a -- "${LOG_TARGET}" ; then

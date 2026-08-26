@@ -18,5 +18,6 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 "$@" 2>&1 | tee -a -- "${LOG_TARGET}"
