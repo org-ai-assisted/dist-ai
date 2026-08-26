@@ -63,7 +63,10 @@ run_helper() {
 
 count_values() {
    local cfg="$1" key="$2"
-   GIT_CONFIG_GLOBAL="${cfg}" git config --global --get-all "${key}" 2>/dev/null | wc --lines
+   ## A missing key makes 'git config --get-all' exit 1; under errexit + pipefail
+   ## an unguarded substitution would abort the caller mid-assertion. A helper that
+   ## wrote no key is a FAIL to RECORD, not a crash -- absorb the status, report 0.
+   { GIT_CONFIG_GLOBAL="${cfg}" git config --global --get-all "${key}" 2>/dev/null || true; } | wc --lines
 }
 
 ## --- same org twice: the CI invocation, and the one that regressed -----------
@@ -87,7 +90,7 @@ if [ "${same_n}" -eq 2 ]; then
 else
    fail "same-org key has ${same_n} values after two runs, expected 2"
 fi
-same_all="$( GIT_CONFIG_GLOBAL="${same_cfg}" git config --global --get-all "${same_key}" )"
+same_all="$( GIT_CONFIG_GLOBAL="${same_cfg}" git config --global --get-all "${same_key}" || true )"
 if [[ "${same_all}" == *'https://github.com/Kicksecure/'* ]] \
    && [[ "${same_all}" == *'https://github.com/Whonix/'* ]]; then
    pass 'both Kicksecure/ and Whonix/ rewrites are present'
