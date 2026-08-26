@@ -2529,7 +2529,7 @@ _asked_d = []
 _injd._hook_ask = lambda _c, _r: (_asked_d.append(_c) or 'discard')
 _injd._line_dirty = True                 # a recalled/edited line, unmirrorable
 _injd._inject_text_reviewed('ls\n')
-ok(len(_asked_d) == 1,
+ok(len(_asked_d) == 1 and b'\r' not in b''.join(_injds),
    'an injected newline onto an unmirrorable line asks, never auto-submits')
 ok(_injd._line_dirty, 'the unmirrorable line stays dirty after a decline')
 _injd.close()
@@ -7624,16 +7624,17 @@ ok(_tn._transcript_file is None,
    'transcript file: no path unless SECURE_TERMINAL_TRANSCRIPT_FILE is set')
 _tn.shutdown()
 
-# transcript file: a co-resident attacker who pre-plants a world-readable file at the
-# (old, guessable) <path>.tmp must not capture the secret transcript. The write now uses
-# an unguessable mkstemp name created O_EXCL + 0o600, so the result is always owner-only
-# -- the fixed-name O_TRUNC path would have REUSED the pre-planted 0o644 file.
+# transcript file: a co-resident attacker who pre-plants a file at the (old, guessable)
+# <path>.tmp must not capture the secret transcript. The write now uses an unguessable
+# mkstemp name created O_EXCL + 0o600, so the pre-planted file is never reused and the
+# result is always owner-only -- the fixed-name O_TRUNC path would have RENAMED the
+# planted inode into place, keeping the attacker's mode.
 _secdir = tempfile.mkdtemp(prefix='st-trsec-')
 _secpath = os.path.join(_secdir, 'transcript.txt')
 _planted = _secpath + '.tmp'
 with open(_planted, 'w', encoding='utf-8'):
     pass
-os.chmod(_planted, 0o644)                                # attacker's world-readable plant
+_plant_ino = os.stat(_planted).st_ino                   # the attacker's pre-planted <path>.tmp
 os.environ['SECURE_TERMINAL_TRANSCRIPT_FILE'] = _secpath
 try:
     _tsec = SecureTerminal(command='/bin/cat')
@@ -7642,9 +7643,14 @@ try:
     _mode = os.stat(_secpath).st_mode & 0o777
     with open(_secpath, encoding='utf-8') as _sfh:
         _secwritten = _sfh.read()
-    ok(_mode == 0o600 and 'SECRET-XYZ' in _secwritten,
-       'transcript file: written owner-only 0o600 despite a world-readable pre-planted '
-       '<path>.tmp (mode 0o%o)' % _mode)
+    # The fixed-name O_TRUNC path REUSES the plant (its inode becomes the transcript,
+    # keeping the attacker's mode); mkstemp writes a FRESH 0o600 inode and never touches
+    # the plant. Assert both: a distinct inode, and owner-only mode. (Inode identity is
+    # umask-independent, so it is the load-bearing canary.)
+    ok(os.stat(_secpath).st_ino != _plant_ino and _mode == 0o600
+       and 'SECRET-XYZ' in _secwritten,
+       'transcript file: a pre-planted <path>.tmp is not reused; written owner-only 0o600 '
+       '(mode 0o%o)' % _mode)
     _tsec.shutdown()
 finally:
     del os.environ['SECURE_TERMINAL_TRANSCRIPT_FILE']
