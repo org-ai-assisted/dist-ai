@@ -2009,6 +2009,15 @@ if tui_available():
     eq(_bb._screen.buffer[0][1].bg, 'blue',
        'COR-5: a normal bg after a bright-bg overrides it (in-order)')
     _bb.close()
+    # an INCOMPLETE extended-bg selector (48 with no 5;N / 2;R;G;B) must NOT clear a
+    # preceding valid bright-bg: only a COMPLETE 48 is a real bg. Pre-fix `101;48`
+    # cleared bright_bg unconditionally -> default bg instead of the bright-red. Fresh
+    # cell so the pre-fix result is an unambiguous 'default', not a leftover bg.
+    _b48 = SecureTerminal(command='/bin/cat', tui=True)
+    feed_output(_b48, b'\x1b[101;48mZ')        # bright-red bg, then a bare (incomplete) 48
+    eq(_b48._screen.buffer[0][0].bg, 'brightred',
+       'COR-5: an incomplete 48 selector leaves a preceding bright-bg intact (101;48)')
+    _b48.close()
     # 38/48 EXTENDED colours: their following params are colour DATA, not opcodes. A component
     # in 100-107 must NOT be misread as a bright-bg code (the base of this fix, 23ff606, did:
     # 38;5;101 set bg=brightred and truncated the fg). Feed each on its own fresh cell.
@@ -2760,6 +2769,21 @@ _injs2._inject_text_reviewed('sudo sh\n')               # a single asked-then-Ru
 ok(b'sudo sh\r' in b''.join(_injs2w) and not _injs2._line_dirty,
    'single-line injection: an asked line chosen Run submits and settles the prompt')
 _injs2.close()
+
+# Ctrl+\ (SIGQUIT) flushes the pending tty line like Ctrl+C, so the hook mirror MUST clear --
+# else a later Enter judges a stale prefix plus the next keystrokes as one command (a bypass,
+# same class as #34/#35: "safe" + Ctrl+\ + "rm -rf ~" must not be judged as "saferm -rf ~").
+_sq = SecureTerminal(command='/bin/cat')
+_sq.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
+_sq.has_foreground_program = lambda: False
+_sqs = spy_writes(_sq)
+_htype(_sq, 'safe')
+ok(_sq._line_buffer == 'safe', 'the mirror holds the typed prefix before Ctrl+\\')
+key(_sq, Qt.Key.Key_Backslash, mods=Qt.KeyboardModifier.ControlModifier)
+ok(b'\x1c' in b''.join(_sqs), 'Ctrl+\\ sends SIGQUIT (0x1c) to the child')
+ok(_sq._line_buffer == '' and not _sq._line_dirty,
+   'Ctrl+\\ (SIGQUIT) flushes the pending line: the hook mirror is cleared')
+_sq.close()
 
 # OSC-52 reply truncation: a slow/gone child can leave the ~87 KiB reply truncated, its
 # buffered prefix then lacking the OSC terminator -- a dangling escape that swallows the
