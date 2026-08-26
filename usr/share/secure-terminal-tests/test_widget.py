@@ -2472,26 +2472,30 @@ try:
 finally:
     _hookmod.evaluate = _real_evaluate
 
-# ctl-send-text per-line review: a remote-control injection is a security surface, so
-# EACH line of a multi-line payload is judged by the command hook (block/ask/allow),
-# not delivered as one paste that lets an embedded newline auto-run the earlier line
-# unreviewed. (Finding: send-text 'id\nwhoami\n' ran id with no verdict.)
+# ctl-send-text ATOMIC multi-line review (task D1): a remote-control injection is a security
+# surface. A multi-line payload is judged as ONE script, ONCE, against the state at injection
+# time -- NOT line-by-line, which let line i be judged before line i-1 had executed (a `cd` /
+# `export` / `umask` on an earlier line moved the cwd/env/state the hook read for a later
+# line -- the stale-state TOCTOU this closes). A block on any part refuses the WHOLE batch
+# before anything is delivered (fails closed). (Finding: send-text judged `rm victim` under
+# the pre-`cd` cwd.)
 _inj = SecureTerminal(command='/bin/cat')
 _inj.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow',
                  'transcript': 'none'})
 _inj.has_foreground_program = lambda: False
 _injs = spy_writes(_inj)
 _asked_inj = []
-_inj._hook_ask = lambda _c, _r: (_asked_inj.append(_c) or 'discard')   # decline blocks
+_inj._hook_ask = lambda _c, _r: (_asked_inj.append(_c) or 'discard')   # decline the batch
 _inj._inject_text_reviewed('echo one\nx sudo sh\ntail')   # _handler blocks "sudo sh"
 _injoined = b''.join(_injs)
-ok(b'echo one\r' in _injoined, 'per-line review: an allowed injected line submits')
-ok(_asked_inj == ['x sudo sh'],
-   'per-line review: a blocked injected line is reviewed, not auto-run')
-ok(b'x sudo sh\r' not in _injoined,
-   'per-line review: the blocked line is never submitted')
-ok(_inj._line_dirty,
-   'per-line review: the trailing partial line waits at the prompt (unverifiable)')
+ok(_asked_inj == ['echo one\nx sudo sh'],
+   'atomic review: the WHOLE script (every submitted line) is judged as one unit')
+ok(_injoined == b'',
+   'atomic review: a blocked batch delivers NOTHING -- fails closed before any line runs')
+ok(b'echo one\r' not in _injoined,
+   'atomic review: an earlier line never runs when a later line in the batch is blocked')
+ok(not _inj._line_dirty,
+   'atomic review: a batch refused before delivery leaves the prompt clean')
 # no hook configured -> falls back to the safe paste path (no per-line dialog)
 _inj2 = SecureTerminal(command='/bin/cat')
 _inj2.has_foreground_program = lambda: False
@@ -2523,23 +2527,23 @@ ok(b'\r' not in b''.join(_injps),
 ok(_injp._line_dirty, 'a declined injected newline keeps the line dirty (re-ask)')
 _injp.close()
 
-# BYPASS (fixed): after a blocked line the best-effort erase is UNRELIABLE (stty erase
-# rebind / multibyte), so a following injected newline must NOT send a bare CR onto the
-# un-erased rejected bytes. On 9ef8449 the loop reset _line_dirty=False each piece and the
-# blank second piece submitted the blocked command.
+# atomic refuse subsumes the old per-line "blank piece after a blocked line" concern: with
+# a whole-batch judge there is no un-erased leftover to submit. A blocked multi-line batch
+# is refused whole -- nothing typed, nothing submitted, the prompt left clean.
 _injb = SecureTerminal(command='/bin/cat')
 _injb.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
 _injb.has_foreground_program = lambda: False
 _injbs = spy_writes(_injb)
 _injb._hook_ask = lambda _c, _r: 'discard'
-_injb._inject_text_reviewed('sudo sh\n\n')     # a blocked line, then a blank line
-ok(b'\r' not in b''.join(_injbs),
-   'a blank piece after a blocked line never submits the un-erased leftover')
-ok(_injb._line_dirty, 'the line stays dirty after a blocked piece (next Enter re-asks)')
+_injb._inject_text_reviewed('sudo sh\n\n')     # a blocked multi-line batch
+ok(b''.join(_injbs) == b'',
+   'atomic refuse: a blocked multi-line batch delivers nothing (no un-erased leftover)')
+ok(not _injb._line_dirty, 'a batch refused before delivery leaves the prompt clean')
 _injb.close()
 
-# an ASKED line the user chooses to Run submits cleanly and the injection CONTINUES to
-# review the next line (the hook cleared the dirty flag, so the prompt is clean again).
+# an ASKED batch the user chooses to Run is delivered WHOLE: every submitted line reaches
+# the shell and the prompt settles. Under atomic review the whole script is judged once, so
+# a Run approves the entire batch (not line-by-line).
 _injr = SecureTerminal(command='/bin/cat')
 _injr.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
 _injr.has_foreground_program = lambda: False
@@ -2594,6 +2598,125 @@ _injt._inject_text_reviewed('ls -l\t\n')     # a Tab in the line -> shell comple
 ok(len(_asked_t) == 1 and b'\r' not in b''.join(_injts),
    'an injected line with a Tab is asked (unverifiable completion), never auto-submitted')
 _injt.close()
+
+# atomic TOCTOU canary: a multi-line injection judges the hook exactly ONCE, over the whole
+# script, at injection time -- never once per line. The per-line loop judged line i BEFORE
+# line i-1 had run, so a `cd` on an earlier line moved the cwd the hook read for a later
+# line. Recording evaluate() proves a single whole-script call (script=True). On the old
+# per-line code evaluate ran once PER LINE, so len(_recorded) was 2 -> this canary fails there.
+_real_eval2 = _hookmod.evaluate
+_recorded = []
+def _rec_eval(_argv, command, **kw):
+    _recorded.append((command, kw.get('script', False)))
+    return {'verdict': 'allow', 'message': '', 'suggestion': '', 'error': False}
+_hookmod.evaluate = _rec_eval
+try:
+    _tox = SecureTerminal(command='/bin/cat')
+    _tox.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
+    _tox.has_foreground_program = lambda: False
+    _toxs = spy_writes(_tox)
+    _tox._inject_text_reviewed('cd /tmp\nrm victim\n')
+    ok(len(_recorded) == 1,
+       'atomic: a multi-line injection is judged ONCE, not per line (no stale-state TOCTOU)')
+    ok(_recorded and _recorded[0] == ('cd /tmp\nrm victim', True),
+       'atomic: the whole script is judged as one unit via the v2 script contract')
+    ok(b'cd /tmp\r' in b''.join(_toxs) and b'rm victim\r' in b''.join(_toxs),
+       'atomic: an allowed batch delivers and submits every line')
+    ok(not _tox._line_dirty, 'atomic: a fully-approved batch leaves the prompt settled')
+    _tox.close()
+    # an all-blank multi-line batch needs no hook call and just submits empty lines
+    _recorded.clear()
+    _tobl = SecureTerminal(command='/bin/cat')
+    _tobl.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
+    _tobl.has_foreground_program = lambda: False
+    _tobls = spy_writes(_tobl)
+    _tobl._inject_text_reviewed('\n\n')
+    ok(_recorded == [] and b''.join(_tobls) == b'\r\r',
+       'atomic: an all-blank batch is delivered without a hook call')
+    _tobl.close()
+    # a trailing partial line (no final newline) is delivered but left at the prompt for the
+    # user's own re-judged Enter; only the submitted lines form the judged script.
+    _recorded.clear()
+    _toc = SecureTerminal(command='/bin/cat')
+    _toc.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
+    _toc.has_foreground_program = lambda: False
+    _tocs = spy_writes(_toc)
+    _toc._inject_text_reviewed('one\ntwo\nthree')
+    _tocj = b''.join(_tocs)
+    ok(_recorded and _recorded[0][0] == 'one\ntwo',
+       'atomic: only the submitted lines form the judged script (trailing partial excluded)')
+    ok(b'one\r' in _tocj and b'two\r' in _tocj and b'three' in _tocj and b'three\r' not in _tocj,
+       'atomic: the trailing partial line is typed but never auto-submitted')
+    ok(_toc._line_dirty, 'atomic: the trailing partial waits at the prompt (unverifiable)')
+    _toc.close()
+finally:
+    _hookmod.evaluate = _real_eval2
+# atomic fails-closed: a hard block on the batch delivers NOTHING and surfaces the advisory.
+_hookmod.evaluate = lambda *a, **k: {'verdict': 'block', 'message': 'nope',
+                                     'suggestion': '', 'error': False}
+try:
+    _tob = SecureTerminal(command='/bin/cat')
+    _tob.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
+    _tob.has_foreground_program = lambda: False
+    _tobnotes = []
+    _tob.hook_notice.connect(_tobnotes.append)
+    _tobs = spy_writes(_tob)
+    _tob._hook_ask = lambda _c, _r: 'discard'
+    _tob._inject_text_reviewed('cd /tmp\nrm victim\n')
+    ok(b''.join(_tobs) == b'' and not _tob._line_dirty,
+       'atomic: a blocked batch delivers nothing and leaves the prompt clean')
+    ok(_tobnotes and _tobnotes[-1] == 'nope', 'atomic: the block advisory is surfaced')
+    _tob.close()
+finally:
+    _hookmod.evaluate = _real_eval2
+# refuse WITHOUT any hook call: an unmirrorable prompt line, and a Tab in a submitted line
+# (completion would run other than the judged bytes), are each refused before judging --
+# nothing to faithfully review -- delivering nothing and surfacing a notice. _hook_ask is
+# mocked defensively so the refuse path is proven without a modal even if it were reached.
+_tod = SecureTerminal(command='/bin/cat')
+_tod.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
+_tod.has_foreground_program = lambda: False
+_tod._hook_ask = lambda _c, _r: 'discard'
+_todnotes = []
+_tod.hook_notice.connect(_todnotes.append)
+_tods = spy_writes(_tod)
+_tod._line_dirty = True                      # a recalled/edited prompt line, unmirrorable
+_tod._inject_text_reviewed('cd /tmp\nrm victim\n')
+ok(b''.join(_tods) == b'' and _todnotes and 'could not be reviewed' in _todnotes[-1],
+   'atomic: a multi-line batch onto an unmirrorable line is refused whole, with a notice')
+_tod.close()
+_tot = SecureTerminal(command='/bin/cat')
+_tot.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
+_tot.has_foreground_program = lambda: False
+_tot._hook_ask = lambda _c, _r: 'discard'
+_totnotes = []
+_tot.hook_notice.connect(_totnotes.append)
+_tots = spy_writes(_tot)
+_tot._inject_text_reviewed('ls\trm\nwhoami\n')   # a Tab in a submitted line
+ok(b''.join(_tots) == b'' and _totnotes and 'could not be reviewed' in _totnotes[-1],
+   'atomic: a Tab in a submitted line refuses the whole batch (completion is unjudgeable)')
+_tot.close()
+
+# single-line injection keeps the per-line path (there is no multi-line stale-state window
+# for one submitted line): an allowed line submits, and a flagged line the user Runs submits
+# and lets the injection settle. (Only >=2 submitted lines take the atomic whole-script path.)
+_injs1 = SecureTerminal(command='/bin/cat')
+_injs1.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
+_injs1.has_foreground_program = lambda: False
+_injs1w = spy_writes(_injs1)
+_injs1._inject_text_reviewed('ls\n')                    # a single allowed line
+ok(b'ls\r' in b''.join(_injs1w),
+   'single-line injection: an allowed line submits via the per-line path')
+_injs1.close()
+_injs2 = SecureTerminal(command='/bin/cat')
+_injs2.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
+_injs2.has_foreground_program = lambda: False
+_injs2w = spy_writes(_injs2)
+_injs2._hook_ask = lambda _c, _r: 'run'                 # approve the flagged single line
+_injs2._inject_text_reviewed('sudo sh\n')               # a single asked-then-Run line
+ok(b'sudo sh\r' in b''.join(_injs2w) and not _injs2._line_dirty,
+   'single-line injection: an asked line chosen Run submits and settles the prompt')
+_injs2.close()
 
 # OSC-52 reply truncation: a slow/gone child can leave the ~87 KiB reply truncated, its
 # buffered prefix then lacking the OSC terminator -- a dangling escape that swallows the
