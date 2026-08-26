@@ -214,7 +214,8 @@ def _test_tray_warn_any_persist():
                 h.write('clip_warn_any=false\nlock=clip_warn_any\n')
             app3 = CW.ClipboardWatchApp(APP)
             app3._watcher.set_any_mode(False)          # known starting state
-            lock_act = next(a for a in app3._build_menu().actions()
+            menu3 = app3._build_menu()                 # HELD, or Qt GCs its QActions
+            lock_act = next(a for a in menu3.actions()
                             if a.text() == 'Warn on any non-ASCII')
             ok(not lock_act.isEnabled(),
                'tray warn-any: greyed when clip_warn_any is admin-locked')
