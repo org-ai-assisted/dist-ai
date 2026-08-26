@@ -237,6 +237,25 @@ ok(b'<U+200B>' in _o2, 'reveal mode shows the <U+XXXX> badge for a zero-width sp
 _o3, _ = run_in_pty(['--mode', 'box', '--', 'printf', 'x\u200by'])
 ok(b'x_y' in _o3, 'box mode maps the neutralised byte to _')
 
+# F2: SHOW-mode Zalgo cap. render_output keeps every combining mark (it is a per-char
+# homomorphism -- the T1 proof), so a flood of them would reach the real terminal via
+# --mode show. cap_zalgo_show bounds each run at the CLI boundary. Unit + end-to-end.
+from secure_terminal.sanitize import cap_zalgo_show, _ZALGO_MARK_MAX      # noqa: E402
+_zc, _zt = cap_zalgo_show('a' + '\u0301' * 5000, 0)
+ok(_zc.count('\u0301') == _ZALGO_MARK_MAX and _zt == _ZALGO_MARK_MAX,
+   'cap_zalgo_show caps a Zalgo run at the mark limit')
+ok(cap_zalgo_show('e\u0301\u0323', 0)[0] == 'e\u0301\u0323',
+   'cap_zalgo_show leaves legit decomposed text (<= cap) unchanged')
+_zc1, _zt1 = cap_zalgo_show('a' + '\u0301' * 5, 0)          # a partial run, then a carry
+_zc2, _zt2 = cap_zalgo_show('\u0301' * 5000, _zt1)
+ok(_zc1.count('\u0301') == 5 and _zc2.count('\u0301') == _ZALGO_MARK_MAX - 5,
+   'cap_zalgo_show threads the run count across chunk reads (bounded total)')
+_oz, _rcz = run_in_pty(['--mode', 'show', '--', 'python3', '-c',
+                        'import sys; sys.stdout.write("a" + "\\u0301" * 5000)'])
+ok(_oz.count(b'\xcc\x81') <= _ZALGO_MARK_MAX,
+   'show mode caps a Zalgo flood reaching the real terminal (%d marks)'
+   % _oz.count(b'\xcc\x81'))
+
 # --- child environment: dumb terminal + no-op pager ---------------------------
 # the CLI wrapper interprets no escapes, so it advertises a dumb terminal and
 # defaults PAGER to a no-op cat (compatibility page: TERM=dumb, PAGER=cat)

@@ -640,11 +640,20 @@ try:
     win._apply_locks()
     ok(not win.act_font.isEnabled(),
        'a locked font_family greys out the View > Font action')
+    # a locked osc_notice_off greys the per-TYPE notice toggles: set_osc_notice_type
+    # refuses a locked change, so an enabled tick would never apply -- a UI that lies.
+    # Fails on the pre-fix _apply_locks (the per-type actions were never gated).
+    win._locked = {'osc_notice_off'}
+    win._apply_locks()
+    ok(win._osc_notice_actions
+       and all(not a.isEnabled() for a in win._osc_notice_actions.values()),
+       'a locked osc_notice_off greys out the per-type OSC-notice toggles')
 finally:
     win._locked = _saved_locked
     win._bell_sound_locked = _saved_bsl
     for _a in (list(win._copy_warn_actions.values())
                + list(win._paste_warn_actions.values())
+               + list(win._osc_notice_actions.values())
                + [win.act_zin, win.act_zout, win.act_zreset, win.act_font]):
         _a.setEnabled(True)             # undo the lock disable for later tests
 
@@ -746,6 +755,17 @@ win._refresh_tab_label(_pw)
 eq(win.tabs.tabText(win.tabs.indexOf(_pw)), 'shell',
    '#90: an unreadable cwd falls back to "shell"')
 _pw.cwd_basename = _pw_cwd
+# the tab tooltip escapes an untrusted program title: setTabToolTip renders rich text
+# (unlike setTabText), so an OSC-set title with markup must be shown literally -- the same
+# class as the command-hook PlainText gate. Pre-fix the raw '<b>' reached the tooltip.
+win._user_titles.pop(_pw, None)
+win._prog_titles[_pw] = '<b>owned</b>'
+win._refresh_tab_label(_pw)
+_tip = win.tabs.tabToolTip(win.tabs.indexOf(_pw))
+ok('<b>' not in _tip and '&lt;b&gt;owned&lt;/b&gt;' in _tip,
+   'tab tooltip escapes an untrusted program title (no raw markup)')
+win._prog_titles.pop(_pw, None)
+win._refresh_tab_label(_pw)
 
 # a program-set title updates the tab label; window visibility + tray trigger
 win._on_tab_title(win.current(), 'a program title')
@@ -848,6 +868,16 @@ win._ipc_open({'tabs': 'not-a-list'})       # opened 0 -> a new default tab
 ok(win.tabs.count() == _before_bare + 1,
    'ipc: a bare reuse opens a NEW default tab (count grows by one)')
 
+# open: cap the tab count per frame. ~58k tiny specs fit in the 1 MiB IPC frame and
+# would exhaust fds/memory, so a frame past the cap is refused whole. The gate is on
+# the list LENGTH, so the spec contents are irrelevant (None keeps the check cheap).
+_before_cap = win.tabs.count()
+_rcap = win._ipc_open({'tabs': [None] * (_MM._MAX_OPEN_TABS + 1)})
+ok(not _rcap['ok'] and 'too many' in _rcap['error'],
+   'ipc: an over-cap open frame is refused, not opened')
+ok(win.tabs.count() == _before_cap,
+   'ipc: a refused over-cap frame opens no tabs')
+
 # open --if-absent: idempotent open that dedups by COMMAND (what open-all relies
 # on). _normalize_command: a -e STRING and its shell-split argv are equal; None (a
 # plain shell tab) is never a dedup key.
@@ -918,6 +948,12 @@ win._restore_tab({'text': 'hi', 'theme': 'dark', 'zoom': 'notanint',
 _bad_tab = win.current()
 win._restore_tab({'allow_title': True, 'bell': 'audible'})   # legacy pre-OSC path
 ok(True, '_restore_tab rebuilds a tab and tolerates bad zoom/scrollback values')
+# a TAMPERED boolean flag (a JSON string/number, not a real bool) must NOT coerce
+# truthy via bool() and fail OPEN -- it falls back to the default (#5). "false" is a
+# non-empty string (bool("false") is True), the classic fail-open value.
+win._restore_tab({'tui': 'false'})
+ok(win.current().tui_active() is False,
+   'a non-bool saved flag falls back to the default, not bool()-coerced True (#5)')
 # a corrupt/hand-edited session with a non-str font_family or non-int font_size must
 # fall back to the default, not crash the restore (.strip() / int() on a bad type).
 eq(_bad_tab.current_font_family(), win._default_font_family,
@@ -2092,6 +2128,18 @@ try:
 finally:
     win._locked = _sl3
 ok(win._is_reserved_shortcut('') is False, '_is_reserved_shortcut: empty -> False')
+# #7: a shortcut rebound to a MODIFIED cursor/Home/End key (forwarded as ESC[1;p<final>)
+# or to Ctrl+<punctuation> (a C0 control byte) must be reserved -- else it shadows the key
+# for a TUI program. These all read False on the pre-fix code (bare nav + Ctrl+letter only).
+for _rk in ('Ctrl+End', 'Shift+Home', 'Alt+Left',
+            'Ctrl+[', 'Ctrl+]', 'Ctrl+\\', 'Ctrl+Space'):
+    ok(win._is_reserved_shortcut(_rk),
+       '_is_reserved_shortcut: %s is reserved (forwarded to the program)' % _rk)
+# keyPressEvent routes every Ctrl+Shift combo to the window shortcuts, never the child, so
+# Ctrl+Shift+<nav> and Ctrl+Shift+<letter> both stay available to rebind (not reserved).
+for _ak in ('Ctrl+Shift+T', 'Ctrl+Shift+End'):
+    ok(not win._is_reserved_shortcut(_ak),
+       '_is_reserved_shortcut: %s stays available (routed to a window shortcut)' % _ak)
 _o_sig5 = _sg.signal
 try:
     _sg.signal = lambda *_a, **_k: (_ for _ in ()).throw(ValueError())
@@ -2303,6 +2351,12 @@ finally:
     M.QFontDatabase = _REAL_QFONTDB
     QApplication.exec = _o_qexec3
     _sig3.signal(_sig3.SIGCHLD, _o_chld3)
+
+# F5: the module-level SIGCHLD handler delegates to SecureTerminal.reap_pty_children --
+# reaping only our own pty children, never a subprocess child -- so it replaces the
+# returncode-defanging SIGCHLD=SIG_IGN. It ignores its (signum, frame) args.
+M._reap_pty_children(_sig3.SIGCHLD, None)
+ok(True, '_reap_pty_children handler runs without error')
 
 # --- set_font_family / choose_font: the per-tab font picker -------------------
 from PyQt6.QtGui import QFont as _QFont                          # noqa: E402

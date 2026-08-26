@@ -2109,43 +2109,62 @@ def _is_not_foreground(node):
 
 
 def _compares_action_run(test):
-    """An `action == 'run'` comparison (the explicit-permit fork)."""
+    """An `action == 'run'` EQUALITY comparison (the explicit-permit fork). The
+    operator is pinned to ast.Eq: `action != 'run'` inverts the branch polarity (its
+    decline path is the if-BODY, not orelse, which _failsafe_violations scans), so
+    treating != like == would let `if action != 'run': self._line_dirty = False`
+    reintroduce the bypass unseen."""
     return (isinstance(test, _ast.Compare) and isinstance(test.left, _ast.Name)
             and test.left.id == 'action'
+            and len(test.ops) == 1 and isinstance(test.ops[0], _ast.Eq)
             and any(isinstance(c, _ast.Constant) and c.value == 'run'
                     for c in test.comparators))
 
 
-def _assigns_false(nodes, attr):
-    """True if any node in `nodes` assigns `self.<attr> = False`."""
+def _assigns_const(nodes, attr, want):
+    """True if any node in `nodes` assigns `self.<attr> = <want>` (a bool literal)."""
     for root in nodes:
         for node in _ast.walk(root):
             if (isinstance(node, _ast.Assign) and isinstance(node.value, _ast.Constant)
-                    and node.value.value is False):
+                    and node.value.value is want):
                 if any(_is_self_attr(t, attr) for t in node.targets):
                     return True
     return False
 
 
+def _assigns_false(nodes, attr):
+    """True if any node in `nodes` assigns `self.<attr> = False`."""
+    return _assigns_const(nodes, attr, False)
+
+
+def _assigns_true(nodes, attr):
+    """True if any node in `nodes` assigns `self.<attr> = True`."""
+    return _assigns_const(nodes, attr, True)
+
+
 def _guard_violations(source):
     """INV-LEAK, pure: every `self._hook_intercept()` call must sit in a boolean AND
-    that also carries `not self.has_foreground_program()`. Returns the violations
-    (empty == the hook is consulted only at a bare prompt). A new accept-line call
-    site added without the guard shows up as a violation."""
+    that carries `not self.has_foreground_program()` in an operand STRICTLY BEFORE the
+    one holding the call. Order matters: `and` short-circuits left-to-right, so a
+    guard AFTER the call (`self._hook_intercept() and not self.has_foreground_program()`)
+    runs the hook first -- a leak the presence-only check would miss. Returns the
+    violations (empty == the hook is consulted only at a bare prompt); a new
+    accept-line call site added without the guard shows up here."""
     tree = _ast.parse(source)
     calls = [n for n in _ast.walk(tree) if _is_self_call(n, '_hook_intercept')]
     guarded = set()
     for node in _ast.walk(tree):
         if not (isinstance(node, _ast.BoolOp) and isinstance(node.op, _ast.And)):
             continue
-        here = [c for op in node.values for c in _ast.walk(op)
-                if _is_self_call(c, '_hook_intercept')]
-        has_guard = any(_is_not_foreground(g) for op in node.values
-                        for g in _ast.walk(op))
-        if here and has_guard:
-            guarded.update(id(c) for c in here)
-    violations = ['a self._hook_intercept() call (line %d) is not guarded by '
-                  '`not self.has_foreground_program()`' % c.lineno
+        guard_seen = False
+        for operand in node.values:               # left-to-right, as `and` evaluates
+            if guard_seen:                         # a guard already short-circuits here
+                guarded.update(id(c) for c in _ast.walk(operand)
+                               if _is_self_call(c, '_hook_intercept'))
+            if any(_is_not_foreground(g) for g in _ast.walk(operand)):
+                guard_seen = True
+    violations = ['a self._hook_intercept() call (line %d) is not guarded (before the '
+                  'call) by `not self.has_foreground_program()`' % c.lineno
                   for c in calls if id(c) not in guarded]
     if not calls:
         violations.append('no self._hook_intercept() call found (source drift?)')
@@ -2153,19 +2172,30 @@ def _guard_violations(source):
 
 
 def _failsafe_violations(source):
-    """INV-GATE, pure, over `_hook_intercept`: (a) the mirrored (non-dirty) discard
-    erases via self._clear_typed_line(...) -- a counted Backspace, not a SIGINT whose
-    tcflush swallows the suggestion; (b) the UNKNOWN-line (dirty) DECLINE path does
-    NOT reset self._line_dirty to False, so a disarmed SIGINT re-asks on the next
-    Enter instead of submitting a retained line."""
+    """INV-GATE, pure, over `_hook_intercept`. NEITHER cancel is reliable (stty
+    intr undef disarms the SIGINT; stty erase / a multibyte cooked line defeats the
+    Backspace erase), so the security is the KEPT _line_dirty flag on every declined
+    path, not the write. Checks: (a) the mirrored discard erases via
+    self._clear_typed_line(...); (b) the UNKNOWN-line (dirty) DECLINE path does not
+    reset self._line_dirty to False; (c) the MIRRORED discard path KEEPS _line_dirty
+    set (`self._line_dirty = True` after the erase) -- without it a failed erase lets
+    Enter #2 reach the empty-buffer submit shortcut and run the un-erased command
+    UNJUDGED (the live-verified `stty erase ^H` bypass)."""
     tree = _ast.parse(source)
     fn = _func_def(tree, '_hook_intercept')
     if fn is None:
         return ['_hook_intercept not found (source drift?)']
     violations = []
-    if not any(_is_self_call(n, '_clear_typed_line') for n in _ast.walk(fn)):
+    clear_idx = next((i for i, st in enumerate(fn.body)
+                      if any(_is_self_call(n, '_clear_typed_line')
+                             for n in _ast.walk(st))), None)
+    if clear_idx is None:
         violations.append('the mirrored discard no longer erases via '
                           '_clear_typed_line (counted Backspace)')
+    elif not _assigns_true(fn.body[clear_idx:], '_line_dirty'):    # check (c)
+        violations.append('the mirrored-erase discard path does not keep '
+                          '_line_dirty set after the erase (an unreliable erase then '
+                          'submits the un-erased command unjudged -- stty-erase bypass)')
     dirty_if = next((n for n in _ast.walk(fn) if isinstance(n, _ast.If)
                      and _is_self_attr(n.test, '_line_dirty')), None)
     if dirty_if is None:
@@ -2213,34 +2243,42 @@ def t10_source_ast():
         fail('T10 erase-alphabet: ' + msg)
 
 
-def _gate_model(fg, dirty_in, nonempty, allow, run, intr_fail):
+def _gate_model(fg, dirty_in, nonempty, allow, run, intr_fail, erase_fail):
     """Symbolic outcome of ONE bare-prompt CLI accept-line, mirroring _hook_intercept
     plus the CLI Enter caller. Returns (reads_command, submit_current, dirty_out,
-    retained_unjudged_line)."""
+    retained_unjudged_line).
+
+    Both cancels are UNRELIABLE and modeled so: the SIGINT of the unknown-line path
+    can be disarmed (`stty intr undef` -> intr_fail), and the Backspace erase of the
+    mirrored path can fail too (`stty erase` rebinds ^?, or a cooked editor deletes
+    bytes while len() counts code points -> erase_fail). So a DECLINED block keeps
+    _line_dirty on BOTH paths; the flag, not the write, is the security."""
     reads_command = z3.And(z3.Not(fg), z3.Not(dirty_in), nonempty)   # evaluate() reads it
     submit_current = z3.Or(                                          # a CR that RUNS the line
         z3.And(dirty_in, run),                                      # dirty + user Run
         z3.And(z3.Not(dirty_in), nonempty, allow),                 # allow verdict
         z3.And(z3.Not(dirty_in), nonempty, z3.Not(allow), run))    # block + user Run
+    nd_decline = z3.And(z3.Not(dirty_in), nonempty, z3.Not(allow), z3.Not(run))
     dirty_out = z3.If(dirty_in, z3.If(run, z3.BoolVal(False), z3.BoolVal(True)),
-                      z3.BoolVal(False))            # dirty decline KEEPS the flag
+                      z3.If(nd_decline, z3.BoolVal(True), z3.BoolVal(False)))
     retained = z3.If(dirty_in, z3.If(run, z3.BoolVal(False), intr_fail),
-                     z3.BoolVal(False))             # non-dirty erase is deterministic
+                     z3.If(nd_decline, erase_fail, z3.BoolVal(False)))
     return reads_command, submit_current, dirty_out, retained
 
 
 def t10_z3_gate():
-    fg, dirty_in, nonempty, allow, run, intr_fail = z3.Bools(
-        'fg dirty_in nonempty allow run intr_fail')
+    fg, dirty_in, nonempty, allow, run, intr_fail, erase_fail = z3.Bools(
+        'fg dirty_in nonempty allow run intr_fail erase_fail')
     reads, submit, dirty_out, retained = _gate_model(
-        fg, dirty_in, nonempty, allow, run, intr_fail)
+        fg, dirty_in, nonempty, allow, run, intr_fail, erase_fail)
     # INV-LEAK: a foreground program's keystrokes never reach the hook.
     z3_prove('T10-INV-LEAK', z3.Implies(fg, z3.Not(reads)))
     # INV-GATE-1: a command is submitted only via an allow verdict or explicit Run.
     z3_prove('T10-GATE-submit-needs-permit',
              z3.Implies(submit, z3.Or(allow, run)), assumptions=[z3.Not(fg)])
     # INV-GATE-2: a declined line cannot be submitted UNJUDGED by the next Enter --
-    # even if SIGINT was disarmed (intr_fail True), the kept dirty flag re-asks.
+    # even if the cancel/erase failed (intr_fail / erase_fail True), the kept dirty
+    # flag routes the next Enter to a re-ask, never the empty-buffer submit shortcut.
     declined = z3.And(z3.Not(run),
                       z3.Or(dirty_in, z3.And(z3.Not(dirty_in), nonempty, z3.Not(allow))))
     next_unjudged = z3.And(retained, z3.Not(dirty_out))
@@ -2271,17 +2309,49 @@ _CANARY_ERASE_SIGINT = (
     'class W:\n'
     '    def _clear_typed_line(self, command):\n'
     '        self._write(b"\\x03")\n')                    # SIGINT, not Backspace
+_CANARY_MIRROR_NODIRTY = (            # grok's stty-erase bypass: erase, but flag not kept
+    'class W:\n'
+    '    def _hook_intercept(self):\n'
+    '        if self._line_dirty:\n'
+    '            if action == "run":\n'
+    '                self._line_dirty = False\n'
+    '            else:\n'
+    '                self._write(self._CANCEL_UNKNOWN_LINE)\n'
+    '            return True\n'
+    '        self._clear_typed_line(command)\n'
+    '        self._line_buffer = ""\n'                    # BUG: no self._line_dirty = True
+    '        return True\n')
+_CANARY_GUARD_AFTER = (               # guard AFTER the call: `and` runs the hook first
+    'class W:\n'
+    '    def keyPressEvent(self, e):\n'
+    '        if self._hook_intercept() and not self.has_foreground_program():\n'
+    '            return\n')
+_CANARY_DECLINE_NE = (                # inverted polarity: decline clears the flag in the IF BODY
+    'class W:\n'
+    '    def _hook_intercept(self):\n'
+    '        if self._line_dirty:\n'
+    '            if action != "run":\n'
+    '                self._line_dirty = False\n'          # the bypass, in the if body
+    '            else:\n'
+    '                self._write(b"\\r")\n'
+    '            return True\n'
+    '        self._clear_typed_line(command)\n'
+    '        self._line_buffer = ""\n'
+    '        self._line_dirty = True\n'
+    '        return True\n')
 
 
 def t10_canaries():
-    fg, dirty_in, nonempty, allow, run, intr_fail = z3.Bools(
-        'fgc dic nec ac rc ifc')
+    fg, dirty_in, nonempty, allow, run, intr_fail, erase_fail = z3.Bools(
+        'fgc dic nec ac rc ifc efc')
     reads, submit, _dout, retained = _gate_model(
-        fg, dirty_in, nonempty, allow, run, intr_fail)
+        fg, dirty_in, nonempty, allow, run, intr_fail, erase_fail)
     declined = z3.And(z3.Not(run),
                       z3.Or(dirty_in, z3.And(z3.Not(dirty_in), nonempty, z3.Not(allow))))
-    # Z3 canary: a model that CLEARS the flag on an unknown-line decline (the pre-fix
-    # behaviour) lets a disarmed SIGINT submit the retained line -> no-next-bypass fails.
+    # Z3 canary: a model that CLEARS the flag on a declined block (the pre-fix
+    # behaviour, on EITHER path) lets a failed cancel/erase submit the retained line
+    # on the next Enter -> no-next-bypass fails. retained carries both intr_fail (the
+    # SIGINT path) and erase_fail (the Backspace path, grok's live stty-erase bypass).
     broken_next = z3.And(retained, z3.Not(z3.BoolVal(False)))       # dirty_out forced False
     _expect_caught('T10/next-bypass', not z3_prove(
         'canary-T10-bypass', z3.Implies(declined, z3.Not(broken_next)),
@@ -2300,6 +2370,13 @@ def t10_canaries():
     _expect_caught('T10/ast-unguarded', bool(_guard_violations(_CANARY_UNGUARDED)))
     _expect_caught('T10/ast-decline-clears',
                    bool(_failsafe_violations(_CANARY_DECLINE_CLEARS)))
+    _expect_caught('T10/ast-mirror-nodirty',
+                   bool(_failsafe_violations(_CANARY_MIRROR_NODIRTY)))
+    # guard AFTER the call must be caught (short-circuit order), not just guard-absent.
+    _expect_caught('T10/ast-guard-after', bool(_guard_violations(_CANARY_GUARD_AFTER)))
+    # inverted `action != "run"` polarity (decline clears the flag in the if-body)
+    # must be caught -- the == operator is pinned so the != is not read as the fork.
+    _expect_caught('T10/ast-decline-ne', bool(_failsafe_violations(_CANARY_DECLINE_NE)))
     _expect_caught('T10/ast-erase-sigint', bool(_erase_violations(_CANARY_ERASE_SIGINT)))
 
 
