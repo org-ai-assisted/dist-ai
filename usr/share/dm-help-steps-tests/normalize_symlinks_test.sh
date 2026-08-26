@@ -197,6 +197,63 @@ else
    fail "file mode not normalised: got 0${mode_now}, expected 0644"
 fi
 
+## The recorded 100755 executable must normalise too, not only 100644 files --
+## a normaliser that handles one mode and skips the other still ships a
+## non-reproducible tree.
+chmod 0700 "${false_clone}/an_executable"
+run_normalize "${false_clone}"
+exec_mode="$(stat --format='%a' -- "${false_clone}/an_executable")"
+if [ "${exec_mode}" = "755" ]; then
+   pass "executable mode normalised to git's recorded 0755 (was forced 0700)"
+else
+   fail "executable mode not normalised: got 0${exec_mode}, expected 0755"
+fi
+
+## --- GIT_DIR robustness: a decoy GIT_DIR must not divert the git calls -------
+## An inherited GIT_DIR (e.g. exported by an enclosing 'git submodule foreach')
+## must not make 'git -C <tree>' read the wrong index and skip normalisation.
+decoy="${workdir}/decoy"
+git_x init --quiet -- "${decoy}"
+gd_clone="${workdir}/host_gitdir"
+git_x -c core.symlinks=false clone --quiet --recurse-submodules -- "${origin}" "${gd_clone}"
+git_x -C "${gd_clone}" config core.symlinks false
+git_x -C "${gd_clone}" submodule foreach --quiet 'git config core.symlinks false' >/dev/null 2>&1 || true
+( export GIT_DIR="${decoy}/.git"; run_normalize "${gd_clone}" )
+if [ -L "${gd_clone}/${logo}" ]; then
+   pass "materialises the parent symlink even with a decoy GIT_DIR set (env --unset clears it)"
+else
+   fail "a decoy GIT_DIR diverted the git calls; parent symlink left un-materialised"
+fi
+## The SUBMODULE link must survive the decoy too: the outer submodule
+## enumeration is a separate git call, so a regression that clears GIT_DIR only
+## on the per-tree calls would normalise the parent yet skip the submodule.
+if [ -L "${gd_clone}/${sublink}" ]; then
+   pass "materialises the SUBMODULE symlink under a decoy GIT_DIR (outer enumeration clears it too)"
+else
+   fail "a decoy GIT_DIR diverted the submodule enumeration; submodule symlink left un-materialised"
+fi
+
+## --- trailing-newline blob must be left alone, not mis-converted -------------
+## A mode-120000 blob whose content ends in a newline is NOT a materialised
+## symlink (git writes the target with no trailing newline); it must be skipped,
+## not turned into a symlink with the newline silently stripped by command sub.
+nl="${workdir}/nl"
+git_x init --quiet -- "${nl}"
+git_x -C "${nl}" config user.email 'test@example.com'
+git_x -C "${nl}" config user.name 'test'
+blob_sha="$(printf 'target_with_nl\n' | git_x -C "${nl}" hash-object -w --stdin)"
+git_x -C "${nl}" update-index --add --cacheinfo "120000,${blob_sha},weird"
+git_x -C "${nl}" commit --quiet --message 'mode-120000 blob ending in a newline'
+nl_clone="${workdir}/host_nl"
+git_x -c core.symlinks=false clone --quiet -- "${nl}" "${nl_clone}"
+git_x -C "${nl_clone}" config core.symlinks false
+run_normalize "${nl_clone}"
+if [ -L "${nl_clone}/weird" ]; then
+   fail "trailing-newline blob mis-converted to a symlink (command-sub ate the newline)"
+else
+   pass "trailing-newline blob left as a regular file, not mis-converted"
+fi
+
 if [ "${test_failures}" -ne 0 ]; then
    printf '%s\n' "FAILED: ${test_failures} assertion(s)." >&2
    exit 1
