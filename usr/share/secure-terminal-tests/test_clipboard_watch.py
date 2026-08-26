@@ -206,6 +206,21 @@ def _test_tray_warn_any_persist():
                'tray persist writes clip_warn_any to the app user file')
             ok('foreign_key' not in written,
                'tray persist does NOT pin a merged (other-drop-in/admin) key into user config')
+            ## admin lock: with lock=clip_warn_any in a privileged dir, the daemon's
+            ## tray toggle must NOT change the LIVE watcher -- codex ai-review found the
+            ## live set_any_mode ran before the locked persist write was rejected, so the
+            ## daemon bypassed the lock for the session. The action is greyed too.
+            with open(os.path.join(_sysd, '90_lock.conf'), 'w', encoding='utf-8') as h:
+                h.write('clip_warn_any=false\nlock=clip_warn_any\n')
+            app3 = CW.ClipboardWatchApp(APP)
+            app3._watcher.set_any_mode(False)          # known starting state
+            lock_act = next(a for a in app3._build_menu().actions()
+                            if a.text() == 'Warn on any non-ASCII')
+            ok(not lock_act.isEnabled(),
+               'tray warn-any: greyed when clip_warn_any is admin-locked')
+            app3._set_warn_any(True)                    # setter must refuse a locked change
+            ok(app3._watcher._any_mode is False,
+               'tray warn-any: a locked clip_warn_any does NOT live-update the watcher')
         finally:
             _st._system_dirs = _orig_sysd
             if old is None:

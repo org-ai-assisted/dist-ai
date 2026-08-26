@@ -334,6 +334,11 @@ eq(_read_hook_config({'command_hook': 'h', 'command_hook_timeout': '-1'})['timeo
    10, '_read_hook_config: a negative timeout is rejected (would fail OPEN)')
 eq(_read_hook_config({'command_hook': 'h', 'command_hook_timeout': '0'})['timeout'],
    10, '_read_hook_config: a zero timeout is rejected (would fail OPEN)')
+# an ABSURDLY large timeout (2**63) parses as a Python int but overflows subprocess's
+# C PyTime_t with an uncaught OverflowError -- clamp it away. codex ai-review.
+eq(_read_hook_config({'command_hook': 'h',
+                      'command_hook_timeout': str(2 ** 63)})['timeout'],
+   10, '_read_hook_config: an overflow-large timeout is rejected (would crash eval)')
 # Locking command_hook must AUTO-LOCK its security-steering companions
 # (command_hook_timeout / on_error / transcript), or a home config could set
 # command_hook_timeout=-1 (fail-open) to defeat an admin-locked hook. reviewdrain15.
@@ -354,6 +359,18 @@ try:
        'without a command_hook lock, the companions stay user-settable')
 finally:
     _st_hook._system_dirs = _orig_hooksys
+# on_error default: an ADMIN-LOCKED (enforced) hook fails CLOSED by default, so
+# locking the hook + auto-locking on_error can never DOWNGRADE it to fail-open (a
+# user's block was discarded and defaulted to allow -- codex ai-review). An unlocked
+# hook keeps the historical fail-open default; an explicit value always wins.
+eq(_read_hook_config(_st_hook.Config({'command_hook': 'h'},
+                                     locked=('command_hook',)))['on_error'],
+   'block', '_read_hook_config: a LOCKED hook fails closed by default (no downgrade)')
+eq(_read_hook_config(_st_hook.Config({'command_hook': 'h'}))['on_error'],
+   'allow', '_read_hook_config: an unlocked hook keeps the fail-open default')
+eq(_read_hook_config(_st_hook.Config({'command_hook': 'h', 'command_hook_on_error':
+                                      'allow'}, locked=('command_hook',)))['on_error'],
+   'allow', '_read_hook_config: an explicit admin on_error=allow still wins when locked')
 
 # A modal must never be reachable in this user-less harness: QMessageBox.question
 # BLOCKS in the event loop with nobody to answer, and the suite hangs forever
