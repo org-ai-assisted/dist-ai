@@ -197,6 +197,18 @@ else
    fail "file mode not normalised: got 0${mode_now}, expected 0644"
 fi
 
+## The recorded 100755 executable must normalise too, not only 100644 files --
+## a normaliser that handles one mode and skips the other still ships a
+## non-reproducible tree.
+chmod 0700 "${false_clone}/an_executable"
+run_normalize "${false_clone}"
+exec_mode="$(stat --format='%a' -- "${false_clone}/an_executable")"
+if [ "${exec_mode}" = "755" ]; then
+   pass "executable mode normalised to git's recorded 0755 (was forced 0700)"
+else
+   fail "executable mode not normalised: got 0${exec_mode}, expected 0755"
+fi
+
 ## --- GIT_DIR robustness: a decoy GIT_DIR must not divert the git calls -------
 ## An inherited GIT_DIR (e.g. exported by an enclosing 'git submodule foreach')
 ## must not make 'git -C <tree>' read the wrong index and skip normalisation.
@@ -208,9 +220,17 @@ git_x -C "${gd_clone}" config core.symlinks false
 git_x -C "${gd_clone}" submodule foreach --quiet 'git config core.symlinks false' >/dev/null 2>&1 || true
 ( export GIT_DIR="${decoy}/.git"; run_normalize "${gd_clone}" )
 if [ -L "${gd_clone}/${logo}" ]; then
-   pass "materialises the symlink even with a decoy GIT_DIR set (env --unset clears it)"
+   pass "materialises the parent symlink even with a decoy GIT_DIR set (env --unset clears it)"
 else
-   fail "a decoy GIT_DIR diverted the git calls; symlink left un-materialised"
+   fail "a decoy GIT_DIR diverted the git calls; parent symlink left un-materialised"
+fi
+## The SUBMODULE link must survive the decoy too: the outer submodule
+## enumeration is a separate git call, so a regression that clears GIT_DIR only
+## on the per-tree calls would normalise the parent yet skip the submodule.
+if [ -L "${gd_clone}/${sublink}" ]; then
+   pass "materialises the SUBMODULE symlink under a decoy GIT_DIR (outer enumeration clears it too)"
+else
+   fail "a decoy GIT_DIR diverted the submodule enumeration; submodule symlink left un-materialised"
 fi
 
 ## --- trailing-newline blob must be left alone, not mis-converted -------------
