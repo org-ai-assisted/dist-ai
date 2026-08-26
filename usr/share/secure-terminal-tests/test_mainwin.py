@@ -758,6 +758,14 @@ win._prog_titles.pop(_pw, None)
 win._refresh_tab_label(_pw)
 eq(win.tabs.tabText(win.tabs.indexOf(_pw)), 'myproj',
    '#90: no explicit title -> the tab shows the pwd basename')
+# a raw cwd basename is a legal Linux dir name and can carry bidi/control (e.g.
+# $'a\u202eb'); it must be sanitized before reaching the tab bar, like every other
+# label source -- else it flashes an RLO/control glyph live as you cd around.
+_pw.cwd_basename = lambda: 'a\u202eb'
+win._refresh_tab_label(_pw)
+ok('\u202e' not in win.tabs.tabText(win.tabs.indexOf(_pw)),
+   'the live cwd basename is sanitized in the tab label (no bidi/control flash)')
+_pw.cwd_basename = lambda: 'myproj'
 win._user_titles[_pw] = 'Named'
 win._refresh_tab_label(_pw)
 eq(win.tabs.tabText(win.tabs.indexOf(_pw)), 'Named',
@@ -1709,6 +1717,13 @@ _before_ph = win.tabs.count()
 win._add_placeholder_tab({'name': 'a\u202eb', 'cwd': '/tmp'}, _before_ph)
 ok('\u202e' not in win.tabs.tabText(_before_ph),
    'a placeholder tab label sanitizes a bidi/RLO session name (no control/bidi flash)')
+win.tabs.removeTab(win.tabs.count() - 1)
+# the placeholder's cwd-basename FALLBACK (no saved name) has the same class of gap:
+# a bidi dir name in the saved cwd must be sanitized too, not just the name field.
+_before_phc = win.tabs.count()
+win._add_placeholder_tab({'cwd': '/tmp/a\u202eb'}, _before_phc)
+ok('\u202e' not in win.tabs.tabText(_before_phc),
+   'a placeholder tab label sanitizes a bidi/RLO cwd basename (name-less fallback)')
 win.tabs.removeTab(win.tabs.count() - 1)
 # #5: a non-ASCII / non-str saved window geometry must not crash startup.
 _o_persist = win._persist_session
