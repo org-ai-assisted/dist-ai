@@ -206,6 +206,22 @@ def _test_tray_warn_any_persist():
                'tray persist writes clip_warn_any to the app user file')
             ok('foreign_key' not in written,
                'tray persist does NOT pin a merged (other-drop-in/admin) key into user config')
+            ## admin lock: with lock=clip_warn_any in a privileged dir, the daemon's
+            ## tray toggle must NOT change the LIVE watcher -- codex ai-review found the
+            ## live set_any_mode ran before the locked persist write was rejected, so the
+            ## daemon bypassed the lock for the session. The action is greyed too.
+            with open(os.path.join(_sysd, '90_lock.conf'), 'w', encoding='utf-8') as h:
+                h.write('clip_warn_any=false\nlock=clip_warn_any\n')
+            app3 = CW.ClipboardWatchApp(APP)
+            app3._watcher.set_any_mode(False)          # known starting state
+            menu3 = app3._build_menu()                 # HELD, or Qt GCs its QActions
+            lock_act = next(a for a in menu3.actions()
+                            if a.text() == 'Warn on any non-ASCII')
+            ok(not lock_act.isEnabled(),
+               'tray warn-any: greyed when clip_warn_any is admin-locked')
+            app3._set_warn_any(True)                    # setter must refuse a locked change
+            ok(app3._watcher._any_mode is False,
+               'tray warn-any: a locked clip_warn_any does NOT live-update the watcher')
         finally:
             _st._system_dirs = _orig_sysd
             if old is None:
@@ -340,6 +356,25 @@ def _test_daemon_ipc():
                'dispatch: a non-dict request rejected')
             eq(app._dispatch(json.dumps({'op': 'bogus'}).encode('utf-8')).get('ok'),
                False, 'dispatch: unknown op rejected')
+            # an admin lock must be honoured over IPC too (codex ai-review): a direct
+            # set-warn-any request cannot override a locked clip_warn_any -- the lock
+            # is enforced at the daemon, not only the tray/main-window UI.
+            from secure_terminal import settings as _st      # noqa: PLC0415
+            _locksys = tempfile.mkdtemp(prefix='st-ipclock-')
+            with open(os.path.join(_locksys, '90_lock.conf'), 'w', encoding='utf-8') as _h:
+                _h.write('clip_warn_any=false\nlock=clip_warn_any\n')
+            _o_sysd_ipc = _st._system_dirs
+            _st._system_dirs = lambda: [_locksys]
+            try:
+                app._watcher.set_any_mode(False)         # known state
+                rl = app._dispatch(json.dumps({'op': 'set-warn-any',
+                                               'value': True}).encode('utf-8'))
+                eq(rl.get('ok'), False,
+                   'dispatch: a locked clip_warn_any refuses set-warn-any over IPC')
+                ok(app._watcher._any_mode is False,
+                   'dispatch: a locked clip_warn_any is NOT changed by IPC')
+            finally:
+                _st._system_dirs = _o_sysd_ipc
 
             # claim the free singleton socket (real QLocalServer.listen)
             ok(app._claim_singleton() is True, 'singleton: claims the free socket')

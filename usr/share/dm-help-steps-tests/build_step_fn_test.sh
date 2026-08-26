@@ -23,6 +23,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 if [ -n "${DIST_AI_DIR:-}" ]; then
    dist_ai_dir="${DIST_AI_DIR}"
@@ -194,13 +195,13 @@ if [ ! -e "${escape_marker}" ] && [ "${status}" -eq 0 ] \
    && [[ "${output}" == *"BENIGN"* ]]; then
    pass 'extraction stops at the true closing brace; top-level code never runs'
 else
-   fail "overrun gave status=${status} output=${output} marker-exists=$( [ -e "${escape_marker}" ] && printf yes || printf no )"
+   fail "overrun gave status=${status} output=${output} marker-exists=$( [ -e "${escape_marker}" ] && printf '%s' yes || printf '%s' no )"
 fi
 
 ## --- 8. CANARY: the fixture must really contain what the cases assume -------
 ## Without this, a fixture that silently stopped carrying the hazards would let
 ## every case above pass by testing nothing.
-if grep -qE '^check-stale-nbd\(\) \{$' -- "${fixture}" \
+if grep --quiet --extended-regexp '^check-stale-nbd\(\) \{$' -- "${fixture}" \
    && [ "$( grep -cE '^defined-twice\(\) \{$' -- "${fixture}" )" -eq 2 ]; then
    pass 'canary: the fixture carries the shapes these cases depend on'
 else

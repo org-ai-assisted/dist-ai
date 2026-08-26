@@ -53,6 +53,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 usage() {
    cat -- <<'EOF'
@@ -693,7 +694,7 @@ if [ "${emit_argv}" = 'true' ]; then
    exit 0
 fi
 
-: > "${serial_log}"
+true > "${serial_log}"
 ## The guest serial console (the ACTUAL boot output) is redirected to the serial-log FILE
 ## below, NOT to this process's stdout/stderr -- which carry only this start line and the
 ## end/verdict line. Point the operator at the file up front so a detached/backgrounded run
@@ -712,7 +713,7 @@ if [ -n "${screendump}" ]; then
    rm --force -- "${qmp}"
    ## Hard time backstop: bound qemu with 'timeout' (slack over the watcher's own --timeout) so
    ## a wedged watcher can never leave qemu running forever (the serial path is bounded too).
-   timeout "$(( timeout_secs + 120 ))" "${qemu_bin}" "${qemu_opts[@]}" < /dev/null > "${serial_log}" 2>&1 &
+   timeout --kill-after=30 "$(( timeout_secs + 120 ))" "${qemu_bin}" "${qemu_opts[@]}" < /dev/null > "${serial_log}" 2>&1 &
    qemu_pid="$!"
    self_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
    watch_rc=0
@@ -751,21 +752,21 @@ if [ -n "${screendump}" ]; then
    esac
 fi
 
-timeout "${timeout_secs}" "${qemu_bin}" "${qemu_opts[@]}" < /dev/null > "${serial_log}" 2>&1 || qemu_rc="$?"
+timeout --kill-after=30 "${timeout_secs}" "${qemu_bin}" "${qemu_opts[@]}" < /dev/null > "${serial_log}" 2>&1 || qemu_rc="$?"
 
 ## '|| true': a fully-failed boot produces none of the markers, so grep exits 1, which under
 ## 'set -e -o pipefail' would abort the assignment here and bypass the FAIL / exit-5 reporting below.
 reached="$(grep -ioE 'login:|Reached target|systemd\[1\]|Welcome to' "${serial_log}" 2>/dev/null | sort -u | tr '\n' ' ' || true)"
-printf 'dm-qemu: boot ended (qemu rc=%s); serial=%s bytes; reached: %s\n' "${qemu_rc}" "$(wc -c < "${serial_log}" 2>/dev/null || printf 0)" "${reached:-<none>}" >&2
+printf 'dm-qemu: boot ended (qemu rc=%s); serial=%s bytes; reached: %s\n' "${qemu_rc}" "$(wc -c < "${serial_log}" 2>/dev/null || printf '0')" "${reached:-<none>}" >&2
 
-if printf '%s' "${reached}" | grep -qiE 'login:'; then
+if grep --quiet --ignore-case --extended-regexp 'login:' <<< "${reached}"; then
    printf 'dm-qemu: PASS -- reached a login prompt\n' >&2
    exit 0
 fi
 ## 'Welcome to ...' is emitted by systemd at the START of userspace boot, long before a login
 ## prompt, so it proves "kernel + systemd started" (PARTIAL), NOT "reached login" -- a guest that
 ## prints it and then stalls before login must not read as PASS.
-if printf '%s' "${reached}" | grep -qiE 'Reached target|systemd\[1\]|Welcome to'; then
+if grep --quiet --ignore-case --extended-regexp 'Reached target|systemd\[1\]|Welcome to' <<< "${reached}"; then
    printf 'dm-qemu: PARTIAL -- kernel + systemd booted but no login prompt within %ss\n' "${timeout_secs}" >&2
    exit 5
 fi

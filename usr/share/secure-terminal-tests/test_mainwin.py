@@ -327,6 +327,50 @@ _hc = _read_hook_config({'command_hook': 'myhook --flag',
                          'command_hook_timeout': 'notanint'})
 ok(_hc and _hc['argv'] == ['myhook', '--flag'] and _hc['timeout'] == 10,
    '_read_hook_config: parses argv; a bad timeout falls back to 10')
+# a NON-POSITIVE timeout must be rejected: subprocess.run(timeout<=0) raises
+# TimeoutExpired instantly, and with on_error=allow that fails OPEN (auto-approves
+# every command while the UI shows the hook enabled). reviewdrain15.
+eq(_read_hook_config({'command_hook': 'h', 'command_hook_timeout': '-1'})['timeout'],
+   10, '_read_hook_config: a negative timeout is rejected (would fail OPEN)')
+eq(_read_hook_config({'command_hook': 'h', 'command_hook_timeout': '0'})['timeout'],
+   10, '_read_hook_config: a zero timeout is rejected (would fail OPEN)')
+# an ABSURDLY large timeout (2**63) parses as a Python int but overflows subprocess's
+# C PyTime_t with an uncaught OverflowError -- clamp it away. codex ai-review.
+eq(_read_hook_config({'command_hook': 'h',
+                      'command_hook_timeout': str(2 ** 63)})['timeout'],
+   10, '_read_hook_config: an overflow-large timeout is rejected (would crash eval)')
+# Locking command_hook must AUTO-LOCK its security-steering companions
+# (command_hook_timeout / on_error / transcript), or a home config could set
+# command_hook_timeout=-1 (fail-open) to defeat an admin-locked hook. reviewdrain15.
+from secure_terminal import settings as _st_hook               # noqa: E402
+_hooksys = tempfile.mkdtemp(prefix='st-hooklock-')
+with open(os.path.join(_hooksys, '10-hook.conf'), 'w', encoding='utf-8') as _hf:
+    _hf.write('command_hook=/usr/bin/judge\nlock=command_hook\n')
+_orig_hooksys = _st_hook._system_dirs
+_st_hook._system_dirs = lambda: [_hooksys]
+try:
+    _hcfg = _st_hook.load()
+    for _ck in ('command_hook_timeout', 'command_hook_on_error',
+                'command_hook_transcript'):
+        ok(_ck in _hcfg.locked,
+           'locking command_hook auto-locks its companion %s' % _ck)
+    _st_hook._system_dirs = lambda: [tempfile.mkdtemp(prefix='st-nohooklock-')]
+    ok('command_hook_timeout' not in _st_hook.load().locked,
+       'without a command_hook lock, the companions stay user-settable')
+finally:
+    _st_hook._system_dirs = _orig_hooksys
+# on_error default: an ADMIN-LOCKED (enforced) hook fails CLOSED by default, so
+# locking the hook + auto-locking on_error can never DOWNGRADE it to fail-open (a
+# user's block was discarded and defaulted to allow -- codex ai-review). An unlocked
+# hook keeps the historical fail-open default; an explicit value always wins.
+eq(_read_hook_config(_st_hook.Config({'command_hook': 'h'},
+                                     locked=('command_hook',)))['on_error'],
+   'block', '_read_hook_config: a LOCKED hook fails closed by default (no downgrade)')
+eq(_read_hook_config(_st_hook.Config({'command_hook': 'h'}))['on_error'],
+   'allow', '_read_hook_config: an unlocked hook keeps the fail-open default')
+eq(_read_hook_config(_st_hook.Config({'command_hook': 'h', 'command_hook_on_error':
+                                      'allow'}, locked=('command_hook',)))['on_error'],
+   'allow', '_read_hook_config: an explicit admin on_error=allow still wins when locked')
 
 # A modal must never be reachable in this user-less harness: QMessageBox.question
 # BLOCKS in the event loop with nobody to answer, and the suite hangs forever
@@ -1575,6 +1619,48 @@ ok((_esc_term, 'osc_other') not in win._osc_notified,
    'the skipped OSC notice stays un-marked so a later real OSC use can still notice')
 win._advisories.pop(_esc_term, None)
 win._esc_notified.discard(_esc_term)
+
+# --- reviewdrain15 batch-2 security findings (admin-lock bypass + session DoS) ----
+_b2_lock = set(win._locked)
+# #3: the legacy "Allow title" control must refuse a GRANULAR osc_title/osc_notify
+# lock, not only an allow_title lock -- else it bypasses the granular lock.
+win._default_allow_title = False
+win._locked = {'osc_title'}
+win.set_allow_title(True)
+ok(win._default_allow_title is False,
+   '#3: set_allow_title refuses a granular osc_title lock (no legacy-control bypass)')
+win._locked = {'osc_notify'}
+win.set_allow_title(True)
+ok(win._default_allow_title is False,
+   '#3: set_allow_title refuses a granular osc_notify lock too')
+# #6: set_clip_warn_any must honour a clip_warn_any lock (every sibling setter does).
+win._clip_warn_any = False
+win._locked = {'clip_warn_any'}
+win.set_clip_warn_any(True)
+ok(win._clip_warn_any is False,
+   '#6: set_clip_warn_any refuses an admin clip_warn_any lock')
+win._locked = _b2_lock
+# #4: a crafted session with a NON-STRING tab name must not crash restore (insertTab
+# needs a str). The placeholder path used a bare truth test.
+_before_ct = win.tabs.count()
+win._add_placeholder_tab({'name': ['not', 'a', 'string'], 'cwd': '/tmp'}, _before_ct)
+ok(win.tabs.count() == _before_ct + 1,
+   '#4: a non-string saved tab name falls back to a label, no restore crash')
+win.tabs.removeTab(win.tabs.count() - 1)
+# #5: a non-ASCII / non-str saved window geometry must not crash startup.
+_o_persist = win._persist_session
+win._persist_session = True                  # else _restore_window_geometry no-ops
+_o_loadwin = M.session.load_window
+try:
+    M.session.load_window = lambda: 'not base64 ' + chr(0x20ac) + chr(0x4e2d)  # non-ASCII blob
+    win._restore_window_geometry()
+    ok(True, '#5: a non-ASCII saved geometry is tolerated, not a startup crash')
+    M.session.load_window = lambda: ['not', 'a', 'string']      # non-str blob
+    win._restore_window_geometry()
+    ok(True, '#5: a non-string saved geometry is tolerated too')
+finally:
+    M.session.load_window = _o_loadwin
+    win._persist_session = _o_persist
 
 # NOTE: the client is a background THREAD. Two alternatives were measured and
 # are WORSE, so do not 'simplify' this back to either: a subprocess client

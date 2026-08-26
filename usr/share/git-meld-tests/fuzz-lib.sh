@@ -12,6 +12,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 GIT_MELD="$(readlink -f -- "${1:?git-meld path}")"
 iters="${2:-200}"
@@ -22,7 +23,7 @@ git config --global user.email t@example.com; git config --global user.name test
 git config --global init.defaultBranch master
 mkdir -p "${work}/bin"; meld_log="${work}/display.log"
 for gui in meld kdiff3; do
-   { printf "%s\n" "#!/bin/bash"; printf "printf \"DISPLAY %%s\\n\" \"$*\">>\"%s\"\n" "${meld_log}"; } >"${work}/bin/${gui}"
+   { printf "%s\n" "#!/bin/bash"; printf 'printf "DISPLAY %%s\\n" "$*">>"%s"\n' "${meld_log}"; } >"${work}/bin/${gui}"
    chmod +x "${work}/bin/${gui}"
 done
 export PATH="${work}/bin:${PATH}"
@@ -114,7 +115,7 @@ while [ "${i}" -lt "${iters}" ]; do
       ## the changed path (basename, to dodge temp-dir noise) must appear in
       ## what the reviewer sees -- otherwise git-meld hid a real change.
       base="${path##*/}"
-      if ! printf '%s' "${seen}" | grep -Fq -- "${base}"; then
+      if ! grep --fixed-strings --quiet -- "${base}" <<< "${seen}"; then
          fails=$((fails + 1))
          printf 'FAIL iter=%s: changed path %s NOT surfaced by git-meld\n' "${i}" "${path}" >&2
          printf '  git saw: %s\n' "${changed[*]}" >&2
