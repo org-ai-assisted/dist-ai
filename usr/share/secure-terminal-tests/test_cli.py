@@ -341,20 +341,25 @@ ok(_eof_bound[0] <= cli._EOF_NUDGE_MAX + 1,
    'indefinite ^D stream) -- got %d, cap %d' % (_eof_bound[0], cli._EOF_NUDGE_MAX))
 
 # COR-2 robustness: the child can exit and close the pty between the writable check and the
-# EOF write, so os.write raises OSError -- the wrapper must exit cleanly, not traceback. Force
-# the nudge write to raise and assert _run still returns an int status.
+# EOF write, so os.write(fd, ^D) raises OSError(EIO). The wrapper must catch it and end the
+# loop cleanly -- on the unfixed code the OSError escapes cli.main and crashes the wrapper
+# with a traceback. Force the nudge write to raise and assert nothing escapes cli.main.
 _real_eofw = cli.os.write
 def _raise_on_eof(_fd, _data):
     if _data == b'\x04':
         raise OSError(5, 'EIO')          # pty closed under us
     return _real_eofw(_fd, _data)
 cli.os.write = _raise_on_eof
+_eof_escaped = None
 try:
-    _oe2, _rce2 = run_in_pty(['--', 'sleep', '0.5'], tty_stdin=False, close_stdin=True, settle=0.5)
+    try:
+        _oe2, _rce2 = run_in_pty(['--', 'sleep', '0.5'], tty_stdin=False, close_stdin=True, settle=0.5)
+    except OSError as _eof_e:
+        _eof_escaped = _eof_e            # unfixed: the nudge OSError escapes cli.main
 finally:
     cli.os.write = _real_eofw
-ok(isinstance(_rce2, int),
-   'COR-2: a PTY close during EOF delivery exits cleanly (no traceback)')
+ok(_eof_escaped is None,
+   'COR-2: a PTY close during EOF delivery (os.write EIO) exits cleanly -- no OSError escapes cli.main')
 
 # --- stdin forwarding + Enter: typed input runs on the user's explicit Enter ----
 # 'exit 3' is forwarded verbatim (it carries no submit byte), then a SEPARATE lone
