@@ -340,6 +340,22 @@ ok(_eof_bound[0] <= cli._EOF_NUDGE_MAX + 1,
    'COR-2: EOF nudges are capped at _EOF_NUDGE_MAX for a child that never exits on ^D (no '
    'indefinite ^D stream) -- got %d, cap %d' % (_eof_bound[0], cli._EOF_NUDGE_MAX))
 
+# COR-2 robustness: the child can exit and close the pty between the writable check and the
+# EOF write, so os.write raises OSError -- the wrapper must exit cleanly, not traceback. Force
+# the nudge write to raise and assert _run still returns an int status.
+_real_eofw = cli.os.write
+def _raise_on_eof(_fd, _data):
+    if _data == b'\x04':
+        raise OSError(5, 'EIO')          # pty closed under us
+    return _real_eofw(_fd, _data)
+cli.os.write = _raise_on_eof
+try:
+    _oe2, _rce2 = run_in_pty(['--', 'sleep', '0.5'], tty_stdin=False, close_stdin=True, settle=0.5)
+finally:
+    cli.os.write = _real_eofw
+ok(isinstance(_rce2, int),
+   'COR-2: a PTY close during EOF delivery exits cleanly (no traceback)')
+
 # --- stdin forwarding + Enter: typed input runs on the user's explicit Enter ----
 # 'exit 3' is forwarded verbatim (it carries no submit byte), then a SEPARATE lone
 # Enter keystroke submits it -- so an ordinary command still runs.

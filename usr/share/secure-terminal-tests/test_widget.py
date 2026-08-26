@@ -2808,6 +2808,25 @@ ok(not any(b'\x1b]52;c;' in _w for _w in _ctcw),
    'SEC-1: grant_clipboard_read re-checks the feature flag and withholds the reply when off')
 _ctc.close()
 
+# SEC-1 (stale dialog): a consent dialog whose request was ABANDONED (osc_clipboard_read
+# disabled) must NOT grant the tab after a re-enable -- a disable+re-enable+stale-allow-always
+# would else grant allow-always and the next read would reply with no fresh prompt.
+_cts = SecureTerminal(command='/bin/cat')
+_cts.apply_osc('osc_clipboard_read', True)
+_cts._clipboard_read = 'pending'                       # a consent dialog is open
+_cts.apply_osc('osc_clipboard_read', False)            # abandon it (pending -> None)
+_cts.apply_osc('osc_clipboard_read', True)             # re-enable
+_cts.grant_clipboard_read(_cts.CLIP_ALLOW_ALWAYS)      # stale Allow-Always click
+ok(_cts._clipboard_read is None,
+   'SEC-1: a stale allow-always (dialog abandoned by a disable) does NOT grant the tab')
+_ctsw = []
+_cts._write = lambda _d: (_ctsw.append(bytes(_d)) or True)
+_cts._last_clip_read = 0
+_cts._osc_clipboard_read()                             # the next OSC-52 read query
+ok(_cts._clipboard_read == 'pending' and not any(b'\x1b]52;c;' in _w for _w in _ctsw),
+   'SEC-1: after a stale grant the next read RE-ASKS (pending), it does not auto-reply')
+_cts.close()
+
 # F5: reap_pty_children WNOHANG-reaps ONLY our registered pty children, so the app can
 # drop the blanket SIGCHLD=SIG_IGN that made every subprocess returncode read 0. Pin
 # SIGCHLD to its default here so reaping is deterministic (an ambient SIG_IGN would let
@@ -5795,7 +5814,12 @@ def _clip_read(feature_on, grant):
     _sent = []
     c._write = _sent.append                # pylint: disable=protected-access
     if grant is not None:
-        c.grant_clipboard_read(grant)
+        # A tab that ALREADY carries a persistent decision (allow-always / deny-always)
+        # from an earlier dialog: a later read reads _clipboard_read directly, it does
+        # not reopen a dialog. grant_clipboard_read ONLY resolves a live 'pending' dialog
+        # (a late click on an abandoned one is dropped), so model the standing decision
+        # as the persisted state, not a fresh grant.
+        c._clipboard_read = bool(grant)
     c._handle_osc(b'\x1b]52;c;?\x07')
     c.close()
     return _reqs, _sent
@@ -5834,7 +5858,7 @@ _QGA.clipboard().setText('clip-secret')       # restore for later readers
 # rate-limited: a granted tab cannot be flood-exfiltrated
 _cg = SecureTerminal(command='/bin/cat', tui=True)
 _cg.apply_osc('osc_clipboard_read', True)
-_cg.grant_clipboard_read(True)
+_cg._clipboard_read = True                 # a tab already granted allow-always
 _cgs = []
 _cg._write = _cgs.append
 _cg._handle_osc(b'\x1b]52;c;?\x07')
@@ -5848,7 +5872,7 @@ _cps = []
 _cp._write = _cps.append
 _cp._handle_osc(b'\x1b]52;c;?\x07')        # -> pending, dialog asked, no reply yet
 eq(_cps, [], 'a pending clipboard request sends no reply until the user decides')
-_cp.grant_clipboard_read(True)             # user allows -> the pending query is answered NOW
+_cp.grant_clipboard_read(_cp.CLIP_ALLOW_ALWAYS)   # user allows -> the pending query is answered NOW
 ok(len(_cps) == 1 and _cps[0].startswith(b'\x1b]52;c;'),
    'granting a pending request answers the query that opened the dialog')
 _cp.close()
@@ -5910,8 +5934,10 @@ _clip_ask(_ga)
 eq(len(_gar), 0, 'OSC 52 read: global always-allow answers WITHOUT a dialog')
 ok(len(_gas) == 1 and _gas[0].startswith(b'\x1b]52;c;'),
    'OSC 52 read: global always-allow replies to an undecided tab')
-# ...but an explicit per-tab Deny still wins over the global default
-_ga.grant_clipboard_read(_ga.CLIP_DENY_ALWAYS)
+# ...but an explicit per-tab Deny still wins over the global default. Global always-allow
+# answers with NO dialog, so no 'pending' is ever raised for grant to resolve -- the
+# standing per-tab deny is the persisted state (False), read directly.
+_ga._clipboard_read = False
 _gas.clear()
 _clip_ask(_ga)
 eq(_gas, [], 'OSC 52 read: a per-tab Deny wins over global always-allow')
