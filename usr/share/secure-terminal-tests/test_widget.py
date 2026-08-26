@@ -2009,6 +2009,27 @@ if tui_available():
     eq(_bb._screen.buffer[0][1].bg, 'blue',
        'COR-5: a normal bg after a bright-bg overrides it (in-order)')
     _bb.close()
+    # 38/48 EXTENDED colours: their following params are colour DATA, not opcodes. A component
+    # in 100-107 must NOT be misread as a bright-bg code (the base of this fix, 23ff606, did:
+    # 38;5;101 set bg=brightred and truncated the fg). Feed each on its own fresh cell.
+    _xc = SecureTerminal(command='/bin/cat', tui=True)
+    feed_output(_xc, b'\x1b[38;5;101mA')       # 256-colour fg, index 101
+    _a = _xc._screen.buffer[0][0]
+    ok(_a.bg == 'default' and _a.fg != 'default',
+       'COR-5: 38;5;101 sets a 256-colour fg, leaves bg default (101 not read as bright-bg)')
+    _xc2 = SecureTerminal(command='/bin/cat', tui=True)
+    feed_output(_xc2, b'\x1b[48;2;100;101;102mB')   # truecolour bg 0x646566
+    eq(_xc2._screen.buffer[0][0].bg, '646566',
+       'COR-5: 48;2;R;G;B sets a truecolour bg (components not read as bright-bg)')
+    # branch coverage for the param consumer: attr==48 mode==5, a malformed 38 (no mode), a
+    # truncated 38;5 (no index), and a non-5/2 mode (consumes nothing) -- none may crash.
+    for _seq in (b'\x1b[48;5;15mC', b'\x1b[38mD', b'\x1b[38;5mE', b'\x1b[38;9;44mF'):
+        _xe = SecureTerminal(command='/bin/cat', tui=True)
+        feed_output(_xe, _seq)
+        ok(isinstance(_xe.toPlainText(), str),
+           'COR-5: extended-colour param consumer handles %r without crashing' % _seq)
+        _xe.close()
+    _xc.close(); _xc2.close()
 
 # Security regression (codex/agy, PR #5 review): a pyte cell can hold a box-drawing
 # base PLUS a hidden dangerous code point (bidi / zero-width), which tui_cell

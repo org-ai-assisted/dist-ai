@@ -1946,6 +1946,14 @@ ok(_rl0['ok'] and _rl0['text'] == '',
 _rl1 = win._ipc_ctl('ctl-dump-tab', {'tab': 'id:%d' % _tid0b, 'lines': 1})
 ok(_rl1['ok'] and 'hello world of text' in _rl1['text'],
    'COR-7: ctl-dump-tab lines=1 still dumps the last line')
+# --lines N with N > available must return ALL lines. Base used [-lines:] (correct for N>len);
+# the len=0 fix regressed it to parts[len-lines:] -- a negative start returning only the last
+# (lines-len) lines. Multi-line tab, request one more than it has -> all lines, not just one.
+_t0b._append('\nCANARY-DUMP-L2\nCANARY-DUMP-L3')
+_parts_now = _t0b.toPlainText().split('\n')
+_rlN = win._ipc_ctl('ctl-dump-tab', {'tab': 'id:%d' % _tid0b, 'lines': len(_parts_now) + 1})
+ok(_rlN['ok'] and _rlN['text'].split('\n') == _parts_now,
+   'COR-7: ctl-dump-tab --lines > available returns ALL lines, not just the last')
 _o_dumpmax = M._DUMP_MAX
 try:
     M._DUMP_MAX = 4                          # force the tail-cap branch
