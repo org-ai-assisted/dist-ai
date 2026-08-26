@@ -4892,7 +4892,7 @@ _thk._hook_ask = lambda _c, _r: (_tui_asked.append(1) or 'discard')
 key(_thk, Qt.Key.Key_L, 'l')                            # type `ls` at the TUI prompt
 key(_thk, Qt.Key.Key_S, 's')
 key(_thk, Qt.Key.Key_Return)                            # accept-line
-ok(_tui_asked and b'\r' not in _thksent and b'\x15' in _thksent,
+ok(_tui_asked and b'\r' not in _thksent and b'\x05\x15' in _thksent,
    'a bare TUI prompt routes accept-line through the hook (no silent bypass)')
 # an EMPTY bare prompt has nothing to judge -> the hook passes, Enter submits, no ask
 _thksent.clear(); _tui_asked.clear()
@@ -6268,8 +6268,8 @@ _h2.clear()
 hk2._hook_ask = lambda _c, _r: 'suggest'
 _htype(hk2, 'x sudo sh')
 key(hk2, Qt.Key.Key_Return)
-ok(b'ls' in b''.join(_h2) and b'\x15' in _h2,
-   'hook: choosing the suggestion discards the line and inserts it')
+ok(b'ls' in b''.join(_h2) and b'\x05\x15' in _h2,
+   'hook: choosing the suggestion discards the line (whole-line) and inserts it')
 
 # --- paste: an all-control paste sanitizes to nothing; bracketed paste in TUI --
 _pt = SecureTerminal(command='/bin/cat')
