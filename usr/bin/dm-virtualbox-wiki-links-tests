@@ -18,9 +18,9 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 # shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
-# shellcheck disable=SC1091
 source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/has.sh
 
 mydir="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd )"
@@ -83,7 +83,7 @@ third line"
    ## Pass requires: the marker actually reached the file (anti-vacuous proof the
    ## real write ran), zero leading blank lines, and byte-identical content
    ## (command substitution strips the single trailing newline 'overwrite' adds).
-   if grep -q 'CANARY_TOP_LINE' "${wiki_capture}" \
+   if grep --quiet 'CANARY_TOP_LINE' "${wiki_capture}" \
       && [ "${cap_lead}" -eq 0 ] \
       && [ "$(cat -- "${wiki_capture}")" = "${canary_content}" ]; then
       pass "save_cached_page_to_wiki writes the page verbatim (no leading blank line, content intact)"
@@ -171,7 +171,7 @@ else
    ## end (guard 'die' exits 1; a mutant with no guard exits 0).
    ( main ) >/dev/null 2>"${scrape_err}" || scrape_rc=$?
    if [ "${scrape_rc}" -ne 0 ] \
-      && grep -q 'no latest Windows VirtualBox URL scraped' "${scrape_err}"; then
+      && grep --quiet 'no latest Windows VirtualBox URL scraped' "${scrape_err}"; then
       pass "empty scrape -> main dies at the guard before any local write"
    else
       fail "empty scrape did NOT fail-fast (rc=${scrape_rc}); local files can be corrupted"

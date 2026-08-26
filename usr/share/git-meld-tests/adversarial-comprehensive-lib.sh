@@ -11,6 +11,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 GIT_MELD="$(readlink -f -- "${1:?usage: adv-final.sh /path/to/git-meld}")"
 work="$(mktemp -d)"; export HOME="${work}/home"; mkdir -p "${HOME}"
@@ -18,7 +19,7 @@ git config --global user.email t@example.com; git config --global user.name test
 git config --global init.defaultBranch master; git config --global protocol.file.allow always
 mkdir -p "${work}/bin"; meld_log="${work}/display.log"
 for gui in meld kdiff3; do
-   { printf "%s\n" "#!/bin/bash"; printf "printf \"DISPLAY:%%s\\n\" \"$*\">>\"%s\"\n" "${meld_log}"; } >"${work}/bin/${gui}"
+   { printf "%s\n" "#!/bin/bash"; printf 'printf "DISPLAY:%%s\\n" "$*">>"%s"\n' "${meld_log}"; } >"${work}/bin/${gui}"
    chmod +x "${work}/bin/${gui}"
 done
 export PATH="${work}/bin:${PATH}"
@@ -34,7 +35,7 @@ review () {
    name="$1"; expect="$2"
    true >"${meld_log}"
    out="$( git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD 2>&1 || true )$(cat "${meld_log}")"
-   if printf '%s' "${out}" | grep -qiE "${expect}"; then pass "${name}"
+   if grep --quiet --ignore-case --extended-regexp "${expect}" <<< "${out}"; then pass "${name}"
    else fail "${name} (no '${expect}'); saw: $(printf '%s' "${out}"|tr '\n' '|'|cut -c1-120)"; fi
 }
 
@@ -58,7 +59,7 @@ review "content-change (control)"     'DISPLAY:|@@|EVIL'
 new_repo; printf '#!/bin/sh\necho changed\n' >a.sh; git add -A; git commit -qm x
 true >"${meld_log}"
 nofalse_out="$( git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD 2>&1 || true )"
-if printf '%s' "${nofalse_out}" | grep -qi 'stcat failed'; then
+if grep --quiet --ignore-case 'stcat failed' <<< "${nofalse_out}"; then
    fail "false 'stcat failed' reported for a plain changed file"
 else
    pass "no false 'stcat failed' for a plain changed file"
@@ -83,8 +84,8 @@ review "symlink target bidi unicode"   'unicode-show|SYMLINK'
 new_repo; git config core.symlinks true; rm b.txt; ln -s /old-symlink-target b.txt; git add -A; git commit -qm sl1
 rm b.txt; ln -s /new-symlink-target b.txt; git add -A; git commit -qm sl2
 retarget_out="$( git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD 2>&1 || true )"
-if printf '%s' "${retarget_out}" | grep -q '/old-symlink-target' \
-   && printf '%s' "${retarget_out}" | grep -q '/new-symlink-target'; then
+if grep --quiet '/old-symlink-target' <<< "${retarget_out}" \
+   && grep --quiet '/new-symlink-target' <<< "${retarget_out}"; then
    pass "symlink retarget shows old and new targets (not empty)"
 else
    fail "symlink retarget targets hidden; saw: $(printf '%s' "${retarget_out}"|tr '\n' '|'|cut -c1-160)"
@@ -101,7 +102,7 @@ git add -A
 git commit -qm x
 true >"${meld_log}"
 fatal_out="$( git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD 2>&1 || true )"
-if printf '%s' "${fatal_out}" | grep -qiE 'undecodable|non-UTF-8' && ! grep -q 'DISPLAY:' "${meld_log}"; then
+if grep --quiet --ignore-case --extended-regexp 'undecodable|non-UTF-8' <<< "${fatal_out}" && ! grep --quiet 'DISPLAY:' "${meld_log}"; then
    pass "undecodable content fails closed (viewer never opened)"
 else
    fail "undecodable content NOT fail-closed (meld_log: $(tr '\n' '|' < "${meld_log}"))"
@@ -113,7 +114,7 @@ fi
 ## must never open here regardless of NONFATAL.
 true >"${meld_log}"
 GIT_REVIEW_UNICODE_NONFATAL=1 git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD >/dev/null 2>&1 || true
-if ! grep -q 'DISPLAY:' "${meld_log}"; then
+if ! grep --quiet 'DISPLAY:' "${meld_log}"; then
    pass "undecodable + NONFATAL still fails closed for a GUI viewer"
 else
    fail "undecodable + NONFATAL OPENED the GUI viewer (meld_log: $(tr '\n' '|' < "${meld_log}"))"
@@ -143,7 +144,7 @@ git commit -qm addsmod
 git add smod
 git commit -qm 'bump smod'
 esc_out="$( git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD 2>&1 || true )"
-if printf '%s' "${esc_out}" | grep -q "$( printf '\x1b')"; then
+if grep --quiet "$( printf '\x1b')" <<< "${esc_out}"; then
    fail "submodule inner diff leaked a raw terminal escape"
 else
    pass "submodule inner diff neutralizes terminal escapes (stcat)"
@@ -156,7 +157,7 @@ printf 'a.sh binary\n' >.gitattributes; git add -A; git commit -qm attr
 printf '#!/bin/sh\nrm -rf /\n' >a.sh; git add -A; git commit -qm evilbinary
 true >"${meld_log}"
 preflight="$( "${GIT_MELD}" HEAD~1 HEAD 2>&1 || true )"
-if printf '%s' "${preflight}" | grep -qE 'change set|diffstat' && printf '%s' "${preflight}" | grep -qE 'a\.sh'; then
+if grep --quiet --extended-regexp 'change set|diffstat' <<< "${preflight}" && grep --quiet --extended-regexp 'a\.sh' <<< "${preflight}"; then
    pass "driver-skipped (binary) file listed in pre-flight"
 else
    fail "binary-suppressed a.sh not surfaced in pre-flight; saw: $(printf '%s' "${preflight}"|tr '\n' '|'|cut -c1-160)"
@@ -196,7 +197,7 @@ git commit -qm addsmr
 git add smr
 git commit -qm 'bump smr'
 smr_out="$( git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD 2>&1 )$(cat "${meld_log}")"
-if printf '%s' "${smr_out}" | grep -qE 'SUBFILECHANGED|r\.txt|DISPLAY:'; then
+if grep --quiet --extended-regexp 'SUBFILECHANGED|r\.txt|DISPLAY:' <<< "${smr_out}"; then
    pass "submodule changed file reviewed recursively"
 else
    fail "submodule inner file not surfaced by recursion; saw: $(printf '%s' "${smr_out}"|tr '\n' '|'|cut -c1-160)"
@@ -269,7 +270,7 @@ new_repo; git config core.symlinks true
 printf 'was a file\n' > slk; git add -A; git commit -qm base
 rm slk; ln -s /nonexistent/DANGLING-TGT slk
 dangle_out="$( git -c "diff.external=${GIT_MELD}" diff 2>&1 || true )"
-if printf '%s' "${dangle_out}" | grep -q 'DANGLING-TGT'; then
+if grep --quiet 'DANGLING-TGT' <<< "${dangle_out}"; then
    pass "dangling real symlink target shown (not '(none)')"
 else
    fail "dangling symlink target hidden; saw: $(printf '%s' "${dangle_out}"|tr '\n' '|'|cut -c1-160)"
@@ -286,7 +287,7 @@ review "tab-in-filename warned"        'tab or newline'
 new_repo; bad_name="$(printf 'bad\xff.txt')"; printf 'x\n' > "${bad_name}"; git add -A; git commit -qm x
 true >"${meld_log}"
 badname_out="$( git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD 2>&1 || true )"
-if printf '%s' "${badname_out}" | grep -qiE 'suspicious|undecodable' && ! grep -q 'DISPLAY:' "${meld_log}"; then
+if grep --quiet --ignore-case --extended-regexp 'suspicious|undecodable' <<< "${badname_out}" && ! grep --quiet 'DISPLAY:' "${meld_log}"; then
    pass "undecodable filename fails closed (viewer never opened)"
 else
    fail "undecodable filename NOT fail-closed (meld_log: $(tr '\n' '|' < "${meld_log}"))"
@@ -300,7 +301,7 @@ review "over-long line warned"         'char line|truncate'
 new_repo; printf 'a\x00b\n' > bin.dat; git add -A; git commit -qm x
 true >"${meld_log}"
 bin_out="$( git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD 2>&1 || true )"
-if printf '%s' "${bin_out}" | grep -qi 'BINARY' && ! grep -q 'DISPLAY:' "${meld_log}"; then
+if grep --quiet --ignore-case 'BINARY' <<< "${bin_out}" && ! grep --quiet 'DISPLAY:' "${meld_log}"; then
    pass "binary blob shown --stat only, viewer never opened (driver mode)"
 else
    fail "binary blob handling wrong (meld_log: $(tr '\n' '|' < "${meld_log}"))"
@@ -311,7 +312,7 @@ new_repo
 smadd="${work}/smadd"; git init -q "${smadd}"; ( cd "${smadd}"; git config user.email t@example.com; git config user.name test; printf 's\n'>x; git add -A; git commit -qm s )
 git -c protocol.file.allow=always submodule add -q "${smadd}" addmod 2>/dev/null; git commit -qm 'add submodule'
 addmod_out="$( git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD 2>&1 || true )"
-if printf '%s' "${addmod_out}" | grep -qi 'added or removed'; then
+if grep --quiet --ignore-case 'added or removed' <<< "${addmod_out}"; then
    pass "submodule add surfaced (no inner diff)"
 else
    fail "submodule add not surfaced; saw: $(printf '%s' "${addmod_out}"|tr '\n' '|'|cut -c1-160)"
@@ -324,7 +325,7 @@ git -c protocol.file.allow=always submodule add -q "${smde}" demod 2>/dev/null; 
 ( cd demod; git checkout -q HEAD~1 ); git add demod; git commit -qm bump
 git submodule deinit -f demod >/dev/null 2>&1
 deinit_out="$( git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD 2>&1 || true )"
-if printf '%s' "${deinit_out}" | grep -qi 'not an initialized'; then
+if grep --quiet --ignore-case 'not an initialized' <<< "${deinit_out}"; then
    pass "uninitialized submodule fails closed"
 else
    fail "uninitialized submodule not fail-closed; saw: $(printf '%s' "${deinit_out}"|tr '\n' '|'|cut -c1-160)"
@@ -342,7 +343,7 @@ git merge feat >/dev/null 2>&1 || true
 um_rc=0
 unmerged_out="$( GIT_DIFF_PATH_TOTAL=1 "${GIT_MELD}" b.txt 2>&1 )" || um_rc=$?
 git merge --abort >/dev/null 2>&1 || true
-if printf '%s' "${unmerged_out}" | grep -qi 'unmerged'; then
+if grep --quiet --ignore-case 'unmerged' <<< "${unmerged_out}"; then
    pass "unmerged conflict path surfaced (single-arg driver branch)"
 else
    fail "unmerged path not surfaced (rc='${um_rc}'); saw: $(printf '%s' "${unmerged_out}"|tr '\n' '|'|cut -c1-160)"
@@ -354,7 +355,7 @@ if [ -x "${gdr}" ]; then
    new_repo; printf 'ok\n' > u.txt; git add -A; git commit -qm base; printf 'x \xff\xfe y\n' > u.txt; git add -A; git commit -qm bad
    nf_rc=0
    nf_out="$( GIT_REVIEW_UNICODE_NONFATAL=1 "${gdr}" HEAD~1 HEAD 2>&1 )" || nf_rc=$?
-   if [ "${nf_rc}" -ne 0 ] && printf '%s' "${nf_out}" | grep -q 'GIT_REVIEW_UNICODE_NONFATAL was set'; then
+   if [ "${nf_rc}" -ne 0 ] && grep --quiet 'GIT_REVIEW_UNICODE_NONFATAL was set' <<< "${nf_out}"; then
       pass "git-diff-review NONFATAL defers then fails at the end"
    else
       fail "NONFATAL deferral wrong (rc='${nf_rc}'); saw: $(printf '%s' "${nf_out}"|tr '\n' '|'|cut -c1-160)"
@@ -369,7 +370,7 @@ rec_rc=0
 rec_out="$( GIT_DIFF_PATH_TOTAL=1 git_external_level=2 "${GIT_MELD}" \
    a.sh "${work}/rold" 0000000000000000000000000000000000000000 100644 \
         "${work}/rnew" 1111111111111111111111111111111111111111 100644 2>&1 )" || rec_rc=$?
-if [ "${rec_rc}" -eq 255 ] && printf '%s' "${rec_out}" | grep -qiE 'recursion depth|diff loop'; then
+if [ "${rec_rc}" -eq 255 ] && grep --quiet --ignore-case --extended-regexp 'recursion depth|diff loop' <<< "${rec_out}"; then
    pass "recursion depth guard aborts at level > 2 (rc 255)"
 else
    fail "recursion guard wrong (rc='${rec_rc}'); saw: $(printf '%s' "${rec_out}"|tr '\n' '|'|cut -c1-160)"
@@ -380,7 +381,7 @@ new_repo; printf 'old\n' > "${work}/mo"; printf 'new\n' > "${work}/mn"
 mode_out="$( GIT_DIFF_PATH_TOTAL=1 "${GIT_MELD}" \
    a.sh "${work}/mo" 0000000000000000000000000000000000000000 888888 \
         "${work}/mn" 1111111111111111111111111111111111111111 888888 2>&1 || true )"
-if printf '%s' "${mode_out}" | grep -qi 'unexpected mode'; then
+if grep --quiet --ignore-case 'unexpected mode' <<< "${mode_out}"; then
    pass "unexpected mode warned (driver mode)"
 else
    fail "unexpected mode not warned; saw: $(printf '%s' "${mode_out}"|tr '\n' '|'|cut -c1-160)"
@@ -395,8 +396,12 @@ fi
 ## (an actual meld error should surface, not be hidden); git-diff-review is
 ## textual with no viewer to swallow. The runner loops this suite over both.
 case "$( basename -- "${GIT_MELD}" )" in
-   git-kdiff3) nz_gui='kdiff3' ;;
-   *)          nz_gui=''       ;;
+   git-kdiff3)
+      nz_gui='kdiff3'
+      ;;
+   *)
+      nz_gui=''
+      ;;
 esac
 if [ -n "${nz_gui}" ]; then
    new_repo; printf '#!/bin/sh\necho changed\n' >a.sh; git add -A; git commit -qm x
@@ -411,8 +416,8 @@ EOF
    nz_rc=0
    nz_out="$( git -c "diff.external=${GIT_MELD}" diff HEAD~1 HEAD 2>&1 )" || nz_rc=$?
    if [ "${nz_rc}" -eq 0 ] \
-      && grep -q 'DISPLAY:' "${meld_log}" \
-      && ! printf '%s' "${nz_out}" | grep -qiE 'external diff died|fatal'; then
+      && grep --quiet 'DISPLAY:' "${meld_log}" \
+      && ! grep --quiet --ignore-case --extended-regexp 'external diff died|fatal' <<< "${nz_out}"; then
       pass "viewer exit!=0 does not abort review (${nz_gui})"
    else
       fail "viewer exit!=0 aborted review (${nz_gui}, rc='${nz_rc}'); saw: $(printf '%s' "${nz_out}"|tr '\n' '|'|cut -c1-160)"

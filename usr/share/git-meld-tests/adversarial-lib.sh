@@ -13,6 +13,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 GIT_MELD="$(readlink -f -- "${1:?usage: run-adversarial.sh /path/to/git-meld}")"
 work="$(mktemp -d)"
@@ -60,7 +61,7 @@ run_case () {
   ## Does the output reveal that a change happened (either commit id shown, or a
   ## loud warning), or is it hidden (nothing that names old/new, no warning)?
   local visible="no"
-  if printf '%s' "${out}" | grep -qiE "warn|error|cannot|not (present|available|fetched)|${old_commit:0:12}|${new_commit:0:12}"; then
+  if grep --quiet --ignore-case --extended-regexp "warn|error|cannot|not (present|available|fetched)|${old_commit:0:12}|${new_commit:0:12}" <<< "${out}"; then
     visible="yes"
   fi
   printf '=== case: %s (%.12s -> %.12s) rc=%s ===\n' "${name}" "${old_commit}" "${new_commit}" "${rc}"
