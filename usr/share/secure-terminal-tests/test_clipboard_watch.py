@@ -359,6 +359,7 @@ def _test_daemon_ipc():
             # an admin lock must be honoured over IPC too (codex ai-review): a direct
             # set-warn-any request cannot override a locked clip_warn_any -- the lock
             # is enforced at the daemon, not only the tray/main-window UI.
+            from secure_terminal import settings as _st      # noqa: PLC0415
             _locksys = tempfile.mkdtemp(prefix='st-ipclock-')
             with open(os.path.join(_locksys, '90_lock.conf'), 'w', encoding='utf-8') as _h:
                 _h.write('clip_warn_any=false\nlock=clip_warn_any\n')
