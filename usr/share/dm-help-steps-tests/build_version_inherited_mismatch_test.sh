@@ -59,7 +59,7 @@ fail() {
 ## Exercise the SHIPPED block, not a restatement of it. A private copy of the
 ## comparison would keep passing after the real one regressed -- which is the
 ## failure mode this whole file exists to catch.
-block="$( sed -n '/dist_build_version_described="\${dist_build_version##\*-g}"/,/^   fi$/p' -- "${subject}" )"
+block="$( sed -n '/dist_build_version_described="\${dist_build_version##\*-g}"/,/^fi$/p' -- "${subject}" | sed '$d' )"
 if [ -z "${block}" ]; then
    fail 'could not extract the mismatch diagnostic from help-steps/variables'
    summary_line="===== inherited dist_build_version: ${pass_count} pass, ${fail_count} fail ====="
@@ -95,7 +95,11 @@ run_block() {
       ## No 'set +o errexit' (R-011): the subshell's own '|| true' below already
       ## absorbs a non-zero exit, and the trace is captured either way.
       git_bin=git
+      ## Every colour token the diagnostic interpolates -- unset here means
+      ## nounset aborts the 'true "..."' before the message is traced.
       cyan=""
+      red=""
+      bold=""
       reset=""
       dist_build_version="${version}"
       # shellcheck disable=SC2034  # consumed by the extracted block

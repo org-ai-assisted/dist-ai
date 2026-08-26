@@ -119,12 +119,16 @@ check_package() {
          ;;
    esac
 
-   ## Any conditional at all reintroduces the same class of defect: whatever it
-   ## tests, it is testing the build environment, because that is where it runs.
-   if grep --quiet --extended-regexp -- '^[[:space:]]*(if|case)[[:space:]]' <<< "${code_only}"; then
-      fail "${label} ${snippet} branches on something; at grub-mkconfig time any condition reads the build environment"
+   ## A conditional that reads the BUILD ENVIRONMENT reintroduces the defect. A
+   ## guard on a PACKAGE-SHIPPED image file ('if test -f "/boot/grub/themes/..."')
+   ## is deterministic on every build host -- the refactor added one so a
+   ## removed-not-purged theme file cannot abort update-grub. Strip that allowed
+   ## guard; any REMAINING branch is build-environment-dependent.
+   residual="$( grep --invert-match --extended-regexp -- '^[[:space:]]*if[[:space:]]+(test|\[)[[:space:]].*/boot/grub/themes/' <<< "${code_only}" )"
+   if grep --quiet --extended-regexp -- '^[[:space:]]*(if|case)[[:space:]]' <<< "${residual}"; then
+      fail "${label} ${snippet} branches on the build environment, not a shipped-theme-file guard"
    else
-      pass "${label} ${snippet} is unconditional, so every build host produces the same result"
+      pass "${label} ${snippet} branches only on shipped image files, deterministic per build host"
    fi
 
    ## --- the copy must be 'cp', never 'ln' -------------------------------------

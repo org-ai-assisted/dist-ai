@@ -117,17 +117,27 @@ run_in_mount_namespace() {
       return 1
    fi
 
-   staged_inner="$(mktemp)"
-   staged_subject="$(mktemp)"
+   ## A directory, not two loose files: the subject resolves its helper scripts
+   ## relative to its OWN location ('${MYDIR}/unmount-helper'), so a sibling it
+   ## invokes has to be staged next to it. unmount-tree needs unmount-helper.
+   local staged_dir companion
+   staged_dir="$(mktemp --directory)"
+   staged_inner="${staged_dir}/inner.bash"
+   staged_subject="${staged_dir}/$(basename -- "${subject_script}")"
    cp -- "${inner_script}" "${staged_inner}"
    cp -- "${subject_script}" "${staged_subject}"
    chmod 0755 -- "${staged_inner}" "${staged_subject}"
+   companion="$(dirname -- "${subject_script}")/unmount-helper"
+   if [ -e "${companion}" ]; then
+      cp -- "${companion}" "${staged_dir}/unmount-helper"
+      chmod 0755 -- "${staged_dir}/unmount-helper"
+   fi
 
    namespace_rc=0
    unshare "${mount_namespace_flags[@]}" \
       bash "${staged_inner}" "${staged_subject}" "$@" 2>&1 || namespace_rc="$?"
 
-   safe-rm --force -- "${staged_inner}" "${staged_subject}"
+   safe-rm --recursive --force -- "${staged_dir}"
 
    return "${namespace_rc}"
 }

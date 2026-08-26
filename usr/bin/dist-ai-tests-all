@@ -553,7 +553,11 @@ wire() {
          ;;
       dm-help-steps)
          wire_env=(
-            "UMOUNT_KILL_SH=$( pkg_dir derivative-maker )/help-steps/umount_kill.sh"
+            ## Generic subject root: every suite here resolves its target under
+            ## it (parse-cmd, variables, docker/, ci/, build-steps.d/, ...), so
+            ## without it the payloads fall back to '${HOME}/derivative-maker',
+            ## absent on any CI runner, and FATAL.
+            "DERIVATIVE_MAKER_DIR=$( pkg_dir derivative-maker )"
             "UNMOUNT_TREE=$( pkg_dir derivative-maker )/help-steps/unmount-tree"
             "DM_HELP_STEPS_PRE=$( pkg_dir derivative-maker )/help-steps/pre"
             "DM_UPLOAD_IMAGES=$( pkg_dir derivative-maker )/packages/kicksecure/developer-meta-files/usr/bin/dm-upload-images"

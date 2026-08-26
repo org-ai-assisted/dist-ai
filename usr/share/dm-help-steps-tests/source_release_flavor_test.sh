@@ -109,9 +109,9 @@ fi
 
 ## Phase 3's skip list must never grow to include the release step, or images
 ## would be built and uploaded with no provenance at all.
-skip_block="$(sed -n '/^skip_shared_args=(/,/^)/p' -- "${subject}")"
+skip_block="$(sed -n '/^reuse_shared_args=(/,/^)/p' -- "${subject}")"
 if [ -z "${skip_block}" ]; then
-   fail "could not extract skip_shared_args; the assertion below would prove nothing"
+   fail "could not extract reuse_shared_args; the assertion below would prove nothing"
 else
    case "${skip_block}" in
       *prepare-release*)
