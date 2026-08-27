@@ -385,6 +385,23 @@ def _scrub_hosts(text):
     return text
 
 
+## Byte-level host scrub for an asset whose content_type does NOT prove it text
+## (the else branch of the asset loop). content_type is UNTRUSTED, so a mislabeled
+## text body (css as application/octet-stream, omitted, or mixed-case) would else
+## copy through verbatim and LEAK the host. Scrubbing at the byte level fails CLOSED
+## for such a body, and a genuine binary (no host bytes) is left bit-identical with
+## no lossy UTF-8 round-trip.
+_HOST_SCRUB_RES_BYTES = tuple(
+    re.compile(re.escape(h.encode("utf-8")), re.IGNORECASE) for h in HOST_SCRUB
+)
+
+
+def _scrub_hosts_bytes(data):
+    for pat in _HOST_SCRUB_RES_BYTES:
+        data = pat.sub(HOST_SCRUB_PLACEHOLDER.encode("utf-8"), data)
+    return data
+
+
 def _is_text_asset(content_type: str) -> bool:
     ## Text-shaped asset bodies (CSS, JS, SVG, JSON) can embed absolute URLs to the
     ## wiki host; binary assets (images, fonts) cannot, so they copy through untouched.
@@ -1210,9 +1227,29 @@ def normalize_page_dir(src: Path, dst: Path) -> None:
                     ## diff. Only read+rewrite when scrubbing is actually active.
                     body = src_a.read_text(encoding="utf-8", errors="replace")
                 else:
-                    target = dst_assets / sname
-                    if not target.exists():
-                        shutil.copy2(src_a, target)
+                    ## content_type does NOT prove this a text asset. When HOST_SCRUB is
+                    ## active, still scrub the host at the BYTE level (fail closed for a
+                    ## MISLABELED text asset; a real binary has no host bytes so it stays
+                    ## bit-identical -- no lossy decode). Re-hash + update the manifest,
+                    ## like the text branches, when the body actually changed. Otherwise
+                    ## copy through verbatim, preserving its content-hash name.
+                    scrubbed = None
+                    if HOST_SCRUB:
+                        data = src_a.read_bytes()
+                        maybe = _scrub_hosts_bytes(data)
+                        if maybe != data:
+                            scrubbed = maybe
+                    if scrubbed is not None:
+                        digest = hashlib.sha256(scrubbed).hexdigest()
+                        new_name = digest + Path(sname).suffix
+                        (dst_assets / new_name).write_bytes(scrubbed)
+                        entry["asset"] = new_name
+                        entry["sha256"] = digest
+                        entry["size"] = len(scrubbed)
+                    else:
+                        target = dst_assets / sname
+                        if not target.exists():
+                            shutil.copy2(src_a, target)
                     continue
                 ## Cross-wiki host scrub of the body. No-op when DOM_DIFF_HOST_SCRUB is
                 ## unset; idempotent for the text/html branch (already scrubbed via

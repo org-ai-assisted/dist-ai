@@ -16,11 +16,15 @@ stream at a byte count, so a multi-byte character straddling the boundary is
 routine rather than exotic.
 """
 
+import importlib.machinery
 import importlib.util
+import json
 import os
 import re
 import signal
+import socket
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -191,3 +195,115 @@ def test_dmserial_boot_log_survives_the_parent_closing_its_handle(tmp_path,
             ## The stub child exits on its own; a missing pid here just means
             ## it beat the cleanup, which is not a test failure.
             pass
+
+
+## --- Qmp reply-id correlation (dm-qemu-screendump-watch) --------------------
+## A screendump whose recv times out leaves its reply pending; without id
+## correlation the NEXT command reads that late reply and every subsequent
+## command is off-by-one -> a silently WRONG boot verdict. The client now tags
+## each command with a monotonic id and correlates the reply.
+
+SCREENDUMP_WATCH = Path(__file__).resolve().parent / 'dm-qemu-screendump-watch'
+
+
+def _load_qmp():
+    ## The script has no .py extension, so an explicit SourceFileLoader is needed
+    ## (spec_from_file_location cannot infer a loader and returns None).
+    loader = importlib.machinery.SourceFileLoader(
+        'screendump_watch_under_test', str(SCREENDUMP_WATCH))
+    module = importlib.util.module_from_spec(
+        importlib.util.spec_from_loader(loader.name, loader))
+    loader.exec_module(module)
+    return module.Qmp
+
+
+class _MockQmpServer:
+    ## Minimal AF_UNIX QMP server: greeting on connect, auto-answers
+    ## qmp_capabilities, then defers to responder(cmd) -> list of reply dicts.
+    def __init__(self, path, responder):
+        self.responder = responder
+        self.srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.srv.bind(str(path))
+        self.srv.listen(1)
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+        self.thread.start()
+
+    def _serve(self):
+        try:
+            conn, _ = self.srv.accept()
+        except OSError:
+            return
+        try:
+            conn.sendall(b'{"QMP": {"version": {}}}\n')
+            buf = b""
+            while True:
+                while b"\n" not in buf:
+                    chunk = conn.recv(4096)
+                    if not chunk:
+                        return
+                    buf += chunk
+                line, buf = buf.split(b"\n", 1)
+                cmd = json.loads(line.decode("utf-8"))
+                if cmd.get("execute") == "qmp_capabilities":
+                    replies = [{"return": {}, "id": cmd.get("id")}]
+                else:
+                    replies = self.responder(cmd)
+                for reply in replies:
+                    conn.sendall((json.dumps(reply) + "\n").encode("utf-8"))
+        except (OSError, ValueError):
+            pass
+        finally:
+            conn.close()
+
+    def close(self):
+        try:
+            self.srv.close()
+        except OSError:
+            pass
+
+
+def _qmp_client(tmp_path, responder):
+    server = _MockQmpServer(tmp_path / "q.sock", responder)
+    return _load_qmp()(str(tmp_path / "q.sock"), time.time() + 5), server
+
+
+def test_qmp_correlates_reply_by_id(tmp_path):
+    ## Each command's reply echoes its id; command() returns the matching reply.
+    client, server = _qmp_client(
+        tmp_path, lambda cmd: [{"return": {"seen": cmd["execute"]}, "id": cmd["id"]}])
+    try:
+        reply = client.command("screendump", {"filename": "x"})
+        assert reply["return"] == {"seen": "screendump"}
+    finally:
+        client.close()
+        server.close()
+
+
+def test_qmp_drains_stale_reply_after_timeout(tmp_path):
+    ## Model a desync: a prior command's LATE reply (an earlier id) precedes this
+    ## command's reply on the wire. command() must DRAIN the stale one and return
+    ## THIS command's reply, never misattribute the stale frame.
+    def responder(cmd):
+        cur = cmd["id"]
+        return [{"return": {"stale": True}, "id": cur - 1},
+                {"return": {"fresh": True}, "id": cur}]
+    client, server = _qmp_client(tmp_path, responder)
+    try:
+        reply = client.command("screendump", {"filename": "x"})
+        assert reply["return"] == {"fresh": True}, reply
+    finally:
+        client.close()
+        server.close()
+
+
+@pytest.mark.parametrize("bad", [{"return": {}, "id": 999}, {"return": {}}])
+def test_qmp_rejects_mismatched_id(tmp_path, bad):
+    ## A reply carrying an id we never sent (999) or none is an unrecoverable
+    ## desync: fail LOUD, never silently accept it as this command's reply.
+    client, server = _qmp_client(tmp_path, lambda cmd: [dict(bad)])
+    try:
+        with pytest.raises(ConnectionError):
+            client.command("screendump", {"filename": "x"})
+    finally:
+        client.close()
+        server.close()
