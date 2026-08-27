@@ -1020,6 +1020,19 @@ eq(_bad_tab.current_font_family(), win._default_font_family,
    '_restore_tab falls back to the default font family on a non-string saved value')
 eq(_bad_tab.current_font_size(), win._default_font_size,
    '_restore_tab falls back to the default font size on a non-int saved value')
+# a JSON number like 1e400 parses to float('inf'), and int(inf) raises OverflowError
+# (NOT TypeError/ValueError) -- the same class guarded for ctl-zoom. A corrupt session
+# with an infinite zoom/font_size/scrollback must fall back, not crash the restore at
+# startup. On the old except (no OverflowError) _restore_tab raised, aborting launch.
+win._restore_tab({'text': '', 'zoom': 1e400, 'font_size': 1e400,
+                  'scrollback': 1e400, 'osc': {}})
+_inf_tab = win.current()
+eq(_inf_tab.current_zoom(), win._default_zoom,
+   '_restore_tab falls back to the default zoom on an infinite (1e400) saved value')
+eq(_inf_tab.current_font_size(), win._default_font_size,
+   '_restore_tab falls back to the default font size on an infinite (1e400) saved value')
+eq(_inf_tab.current_scrollback(), win._scrollback,
+   '_restore_tab falls back to the default scrollback on an infinite (1e400) saved value')
 # an unhashable saved theme (a JSON array/object) must not crash the membership test
 # (THEMES is a dict); it falls back to the default theme.
 win._restore_tab({'text': '', 'theme': [], 'osc': {}})
