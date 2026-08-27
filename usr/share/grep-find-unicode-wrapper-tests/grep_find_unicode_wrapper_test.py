@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -Bsu
 """
 Comprehensive test + fuzz for grep-find-unicode-wrapper: the helper-scripts bash
 wrapper around grep that scans FILES for suspicious content and lists the files

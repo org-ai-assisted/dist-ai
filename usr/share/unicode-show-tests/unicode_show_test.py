@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -Bsu
 """
 Comprehensive test + fuzz for unicode-show: the helper-scripts scanner that
 DETECTS non-ASCII / suspicious Unicode in text or files (the unicode_show

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -Bsu
 """
 Deep test + fuzz harness for the helper-scripts "sanitize" family
 (stdisplay -> strip_markup -> sanitize-string) as consumed by msgcollector's

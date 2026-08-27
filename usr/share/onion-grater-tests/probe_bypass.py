@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -Bsu
 """
 Adversarial probe: try to make onion-grater forward MORE to the real Tor than a
 restrictive profile intends. A test profile allows only `GETINFO version` and

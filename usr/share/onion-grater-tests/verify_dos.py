@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -Bsu
 """Verify the oversize/partial-line busy-loop DoS in get_client_request().
 
 A client that sends a partial request (no '\n') and stalls should make

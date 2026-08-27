@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -Bsu
 """
 Minimal reproduction of the parser differential behind the markup-injection
 bypass.

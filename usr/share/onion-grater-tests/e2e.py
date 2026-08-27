@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -Bsu
 """
 Full-stack end-to-end reproduction for the onion-grater profile fixes.
 
