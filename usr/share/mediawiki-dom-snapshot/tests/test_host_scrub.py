@@ -339,6 +339,59 @@ assert (H.encode() not in mout) == active, ("mislabeled-content-type-leak", acti
 assert any(p.read_bytes() == binblob for p in (dstm / "assets").glob("*") if p.is_file()), \
     "binary asset was not copied byte-identical (a lossy UTF-8 round-trip would mangle it)"
 
+# text-branch no-corruption: a body that is NOT valid UTF-8 but is labeled as text
+# (css/js) or fetched from a modules=startup / load.php URL must NOT be
+# errors="replace"-mangled into the canonical output. content_type is untrusted, so it
+# is decoded STRICTLY; on failure the body is byte-copied (host-scrubbed at the byte
+# level), NOT U+FFFD-mangled. Output is byte-identical to input, except the host bytes
+# when scrubbing is active. Canary: revert the strict decode -> U+FFFD appears -> fail.
+bad = b"\xff\xfe .x{color:red} /* not utf-8 */"
+badhost = b"\xff\xfe url(https://" + H.encode() + b"/i.png) \x80\x81"
+srct = Path(tempfile.mkdtemp()); dstt = Path(tempfile.mkdtemp())
+(srct / "dom.html").write_text("<html></html>", encoding="utf-8")
+(srct / "assets").mkdir()
+(srct / "assets" / "css_nohost.css").write_bytes(bad)      # css branch, no host bytes
+(srct / "assets" / "css_host.css").write_bytes(badhost)    # css branch, host bytes
+(srct / "assets" / "js_load.js").write_bytes(bad)          # load.php branch, no host bytes
+(srct / "assets" / "js_start.js").write_bytes(badhost)     # modules=startup branch, host bytes
+# multi-module URLs (%7C) so the single-module load.php drop does not remove the js entries
+(srct / "manifest.json").write_text(json.dumps({
+    "https://%s/wiki/Page" % H: {"status": 200, "content_type": "text/html"},
+    "https://%s/skins/x.css" % H: {"status": 200, "content_type": "text/css", "asset": "css_nohost.css", "sha256": "1", "size": 1},
+    "https://%s/skins/y.css" % H: {"status": 200, "content_type": "text/css", "asset": "css_host.css", "sha256": "2", "size": 1},
+    "https://%s/w/load.php?modules=foo%%7Cbar" % H: {"status": 200, "content_type": "application/javascript", "asset": "js_load.js", "sha256": "3", "size": 1},
+    "https://%s/w/load.php?modules=startup%%7Cfoo" % H: {"status": 200, "content_type": "application/javascript", "asset": "js_start.js", "sha256": "4", "size": 1},
+}), encoding="utf-8")
+N.normalize_page_dir(srct, dstt)
+outs = [p.read_bytes() for p in (dstt / "assets").glob("*") if p.is_file()]
+# no U+FFFD replacement char anywhere: the invalid bytes were preserved, not mangled
+assert all(b"\xef\xbf\xbd" not in o for o in outs), ("text-branch mangled to U+FFFD", active, outs)
+# the no-host bodies (css + js) survive byte-identical in BOTH modes
+assert sum(o == bad for o in outs) >= 2, ("no-host text bodies not byte-identical", active, outs)
+# the host-bearing bodies (css + js) are byte-identical except a host byte-scrub when active
+assert sum(o == N._scrub_hosts_bytes(badhost) for o in outs) >= 2, \
+    ("host-bearing text bodies not byte-identical minus host", active, outs)
+
+# C3: _is_single_module_loadphp -- "%7C" (URL-encoded "|") must be matched case-
+# INsensitively. A lowercase "%7c" multi-module load.php URL must NOT misclassify as a
+# single module and get the whole entry DROPPED (a silent regression-detection gap).
+# Canary: revert to the case-sensitive compare -> the lowercase %7c entry is dropped.
+assert N._is_single_module_loadphp("https://h/w/load.php?modules=jquery")            # true single
+assert not N._is_single_module_loadphp("https://h/w/load.php?modules=jquery%7Cfoo")  # upper multi
+assert not N._is_single_module_loadphp("https://h/w/load.php?modules=jquery%7cfoo")  # lower multi
+mc = N.normalize_manifest({
+    "https://h/w/load.php?modules=jquery%7cfoo": {"status": 200, "content_type": "application/javascript"},
+})
+assert any("load.php" in k for k in mc), ("C3 lowercase-%7c multi-module dropped", list(mc))
+
+# Finding-2: _scrub_script_text -- the JSON string-value regex must consume an ESCAPED
+# quote (\") so a token value like "ab\"cd1234" is scrubbed WHOLE. A plain "[^"]*" stops
+# at the escaped quote and leaks the tail. Canary: revert to "[^"]*" -> "cd1234" leaks.
+leaky = '{"csrfToken":"ab\\"cd1234"}'
+scrubbed_js = N._scrub_script_text(leaky)
+assert "cd1234" not in scrubbed_js, ("Finding-2 escaped-quote leak", scrubbed_js)
+assert '"csrfToken":"SCRUBBED"' in scrubbed_js, ("Finding-2 token not scrubbed", scrubbed_js)
+
 print("OK active=%s" % active)
 """
 

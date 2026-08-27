@@ -315,8 +315,11 @@ def _normalize_srcset(value: str) -> str:
 
 def _scrub_script_text(text: str) -> str:
     for key in (*VOLATILE_MW_CONFIG_KEYS, *VOLATILE_JSON_KEYS, *VOLATILE_USER_TOKEN_KEYS):
+        ## The value alternative matches a proper JSON string (allowing an escaped
+        ## `\"` inside it) so a token like "ab\"cd1234" is scrubbed WHOLE; a plain
+        ## `"[^"]*"` would stop at the escaped quote and leak the tail.
         text = re.sub(
-            rf'"{re.escape(key)}"\s*:\s*("[^"]*"|-?\d+(?:\.\d+)?|true|false|null)',
+            rf'"{re.escape(key)}"\s*:\s*("(?:\\.|[^"\\])*"|-?\d+(?:\.\d+)?|true|false|null)',
             f'"{key}":"SCRUBBED"',
             text,
         )
@@ -716,9 +719,12 @@ def _is_single_module_loadphp(url: str) -> bool:
     if not m:
         return False
     modules = m.group(1)
-    ## "%7C" is URL-encoded "|" -- single module if neither separator
-    ## appears in the value.
-    return "|" not in modules and "%7C" not in modules
+    ## "%7C" is URL-encoded "|" -- single module if neither separator appears in
+    ## the value. Percent-encoding is case-INsensitive (%7c == %7C), so upper-case
+    ## the value before the compare or a lower-case "%7c" multi-module URL would
+    ## misclassify as single and get the whole entry dropped.
+    modules_upper = modules.upper()
+    return "|" not in modules_upper and "%7C" not in modules_upper
 
 
 def normalize_manifest(manifest: dict, page_url: str | None = None) -> dict:
@@ -1057,13 +1063,44 @@ def _normalize_errors(errors: dict) -> dict:
 
 def _copy_json_scrubbed(src_path: Path, dst_path: Path) -> None:
     ## Otherwise-verbatim JSON copies (computed_styles, hover_styles,
-    ## iframes_shadow) still embed absolute wiki URLs; host-scrub the text
-    ## when scrubbing is active, else a bit-identical copy. No-op default.
+    ## iframes_shadow) still embed absolute wiki URLs; host-scrub at the BYTE level
+    ## when scrubbing is active so a non-UTF-8 body is neither U+FFFD-mangled nor
+    ## crashes on a strict decode. A body with no host bytes stays bit-identical.
+    ## No-op default (copy2).
     if HOST_SCRUB:
-        text = src_path.read_text(encoding="utf-8")
-        dst_path.write_text(_scrub_hosts(text), encoding="utf-8")
+        data = src_path.read_bytes()
+        scrubbed = _scrub_hosts_bytes(data)
+        if scrubbed != data:
+            dst_path.write_bytes(scrubbed)
+            return
+    shutil.copy2(src_path, dst_path)
+
+
+def _copy_asset_bytes(src_a: Path, dst_assets: Path, sname: str, entry: dict) -> None:
+    ## Byte path for an asset we do NOT text-rewrite: a genuine binary, or a
+    ## text-labeled body that is not valid UTF-8 (content_type is UNTRUSTED) and so
+    ## cannot be text-rewritten losslessly. Scrub the host at the BYTE level (fail
+    ## closed for a mislabeled text body; a body with no host bytes stays
+    ## bit-identical -- no lossy UTF-8 round-trip). Re-hash + update the manifest
+    ## when the bytes changed, else copy through verbatim preserving the
+    ## content-hash name.
+    scrubbed = None
+    if HOST_SCRUB:
+        data = src_a.read_bytes()
+        maybe = _scrub_hosts_bytes(data)
+        if maybe != data:
+            scrubbed = maybe
+    if scrubbed is not None:
+        digest = hashlib.sha256(scrubbed).hexdigest()
+        new_name = digest + Path(sname).suffix
+        (dst_assets / new_name).write_bytes(scrubbed)
+        entry["asset"] = new_name
+        entry["sha256"] = digest
+        entry["size"] = len(scrubbed)
     else:
-        shutil.copy2(src_path, dst_path)
+        target = dst_assets / sname
+        if not target.exists():
+            shutil.copy2(src_a, target)
 
 
 def normalize_page_dir(src: Path, dst: Path) -> None:
@@ -1220,58 +1257,55 @@ def normalize_page_dir(src: Path, dst: Path) -> None:
                 ## A crafted non-string content_type would crash .startswith below.
                 if not isinstance(ct, str):
                     ct = ""
-                ## Three categories of asset get in-place rewrites; everything
-                ## else copies through untouched.
+                ## Three categories of asset get in-place text rewrites; everything
+                ## else copies through at the byte level (see _copy_asset_bytes).
+                ## content_type is UNTRUSTED, so decide the rewrite mode first, then
+                ## decode STRICTLY below -- a body that is not valid UTF-8 cannot be
+                ## text-rewritten losslessly.
                 if "modules=startup" in url and ct.startswith(
                     ("application/javascript", "text/javascript")
                 ):
-                    body = src_a.read_text(encoding="utf-8", errors="replace")
-                    body = _scrub_startup_module_body(body)
-                    body = _scrub_module_versions(body)
+                    rewrite = "startup"
                 elif "load.php" in url and ct.startswith(
                     ("application/javascript", "text/javascript")
                 ):
-                    ## RL bundles other than startup also carry the
-                    ## "name@VERSION" tokens; same per-build noise.
-                    body = src_a.read_text(encoding="utf-8", errors="replace")
-                    body = _scrub_module_versions(body)
+                    rewrite = "loadphp"
                 elif ct.startswith("text/html"):
-                    ## HTML asset bodies (e.g. pages loaded as embeds during
-                    ## navigation) carry the same per-request wgRequestId /
-                    ## wgBackendResponseTime / mw.user.options.set noise as
-                    ## dom.html. Run them through the same normaliser.
-                    body = src_a.read_text(encoding="utf-8", errors="replace")
-                    body = normalize_html(body)
+                    rewrite = "html"
                 elif HOST_SCRUB and _is_text_asset(ct):
                     ## Cross-wiki host scrub: CSS/JS/SVG bodies embed absolute URLs to
                     ## the wiki host, which would otherwise differ on every old-vs-www
                     ## diff. Only read+rewrite when scrubbing is actually active.
-                    body = src_a.read_text(encoding="utf-8", errors="replace")
+                    rewrite = "scrub"
                 else:
-                    ## content_type does NOT prove this a text asset. When HOST_SCRUB is
-                    ## active, still scrub the host at the BYTE level (fail closed for a
-                    ## MISLABELED text asset; a real binary has no host bytes so it stays
-                    ## bit-identical -- no lossy decode). Re-hash + update the manifest,
-                    ## like the text branches, when the body actually changed. Otherwise
-                    ## copy through verbatim, preserving its content-hash name.
-                    scrubbed = None
-                    if HOST_SCRUB:
-                        data = src_a.read_bytes()
-                        maybe = _scrub_hosts_bytes(data)
-                        if maybe != data:
-                            scrubbed = maybe
-                    if scrubbed is not None:
-                        digest = hashlib.sha256(scrubbed).hexdigest()
-                        new_name = digest + Path(sname).suffix
-                        (dst_assets / new_name).write_bytes(scrubbed)
-                        entry["asset"] = new_name
-                        entry["sha256"] = digest
-                        entry["size"] = len(scrubbed)
-                    else:
-                        target = dst_assets / sname
-                        if not target.exists():
-                            shutil.copy2(src_a, target)
+                    ## content_type does NOT prove this a text asset (or it is a
+                    ## non-scrub binary): copy through at the byte level.
+                    _copy_asset_bytes(src_a, dst_assets, sname, entry)
                     continue
+                ## Strict decode: never errors="replace"-mangle an adversarial or a
+                ## legit non-UTF-8 body into the canonical output -- that U+FFFD churn
+                ## would break the bit-identical invariant. On decode failure, route the
+                ## body through the SAME byte path as a binary: byte-copied and
+                ## host-scrubbed at the byte level, NOT dropped (an asset that copies a
+                ## body is not a "failed" entry).
+                try:
+                    body = src_a.read_bytes().decode("utf-8")
+                except UnicodeDecodeError:
+                    _copy_asset_bytes(src_a, dst_assets, sname, entry)
+                    continue
+                if rewrite == "startup":
+                    body = _scrub_startup_module_body(body)
+                    body = _scrub_module_versions(body)
+                elif rewrite == "loadphp":
+                    ## RL bundles other than startup also carry the
+                    ## "name@VERSION" tokens; same per-build noise.
+                    body = _scrub_module_versions(body)
+                elif rewrite == "html":
+                    ## HTML asset bodies (e.g. pages loaded as embeds during
+                    ## navigation) carry the same per-request wgRequestId /
+                    ## wgBackendResponseTime / mw.user.options.set noise as
+                    ## dom.html. Run them through the same normaliser.
+                    body = normalize_html(body)
                 ## Cross-wiki host scrub of the body. No-op when DOM_DIFF_HOST_SCRUB is
                 ## unset; idempotent for the text/html branch (already scrubbed via
                 ## normalize_html). This is the "(and asset/style text)" the HOST_SCRUB
