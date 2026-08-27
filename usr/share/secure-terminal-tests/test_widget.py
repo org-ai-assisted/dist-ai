@@ -8132,6 +8132,112 @@ for _rw in (_bp_no, _bp_yes, _hs, _dp, _th, _rb, _sm):
     _rw.shutdown()
 
 
+# --- cross-frame per-row signature cache (_grid_signatures) -------------------
+# The grid render classifies every cell of a row (tui_cell + marking) to build its
+# signature. _grid_signatures reuses last frame's runs for any row pyte did not mark
+# dirty, so a partial repaint reclassifies a handful of rows, not the whole grid.
+
+# CACHE-1. A partial repaint (change only the LAST grid row) reclassifies about one
+# row, not screen.lines. The reconcile re-inserts only the divergent tail, so pinning
+# the change to the last row isolates the signature-scan saving. Counts every
+# _grid_row_runs call (signature pass + tail re-insert). CANARY: the pre-cache code
+# ran the signature pass over every row each frame, so this count was >= screen.lines.
+_orig_ggr = SecureTerminal._grid_row_runs
+_ggr_calls = [0]
+
+
+def _counting_ggr(self, row, columns):
+    _ggr_calls[0] += 1
+    return _orig_ggr(self, row, columns)
+
+
+SecureTerminal._grid_row_runs = _counting_ggr
+try:
+    _cc = _show_grid()
+    feed_output(_cc, b'\x1b[?1049h')                     # alt screen: a fixed canvas
+    feed_output(_cc, b'\x1b[2J\x1b[1;1Htop-row')
+    _cc._render_tui()                                    # first frame: cold cache, all rows
+    _cc_lines = _cc._screen.lines
+    _ggr_calls[0] = 0
+    feed_output(_cc, ('\x1b[%d;1HBOTTOM' % _cc_lines).encode())   # repaint ONLY the last row
+    _cc_dirty = len(_cc._screen.dirty)
+    _cc._render_tui()
+    _cc_partial = _ggr_calls[0]
+    _cc.shutdown()
+finally:
+    SecureTerminal._grid_row_runs = _orig_ggr
+ok(0 < _cc_dirty < _cc_lines,
+   'pyte marks only the changed rows dirty (%d of %d) on a partial repaint'
+   % (_cc_dirty, _cc_lines))
+ok(_cc_partial < _cc_lines,
+   'a one-row alt-screen repaint reclassifies few rows (%d _grid_row_runs), not the '
+   'whole grid (%d) -- the cross-frame signature cache (fails on the pre-cache full scan)'
+   % (_cc_partial, _cc_lines))
+
+# CACHE-2. An OSC palette change (OSC 4) recolours cells with NO pyte dirty mark, so
+# the row cache must be dropped in _osc_color -- else a cached row keeps the OLD colour.
+# The incremental re-render must equal a full build in the new palette.
+_pal = _show_grid()
+_pal._osc['osc_colors'] = True
+feed_output(_pal, b'\x1b[?1049h')
+feed_output(_pal, b'\x1b[2J\x1b[1;1H\x1b[31mPALTEXT')             # palette index 1 (red) fg
+_pal._render_tui()
+feed_output(_pal, b'\x1b]4;1;rgb:00/ff/00\x07')                  # redefine index 1 -> green
+_pal._render_tui()
+_pal_ref = _show_grid()
+_pal_ref._osc['osc_colors'] = True
+feed_output(_pal_ref, b'\x1b[?1049h')
+feed_output(_pal_ref, b'\x1b]4;1;rgb:00/ff/00\x07')              # same palette up front
+feed_output(_pal_ref, b'\x1b[2J\x1b[1;1H\x1b[31mPALTEXT')
+_pal_ref._render_tui()
+eq(_doc_cells(_pal), _doc_cells(_pal_ref),
+   'an OSC palette change re-renders cached rows in the new palette '
+   '(_row_sig_cache cleared in _osc_color)')
+_pal.shutdown()
+_pal_ref.shutdown()
+
+
+# CACHE-3. Oracle: for a corpus of frames (partial repaints, scroll, alt enter/leave,
+# mode/markings/theme/palette changes), rendering WITH the row cache is byte-identical
+# (content + every format) to rendering with the cache force-cleared every frame. This
+# is the definitive guard that no cached row is ever stale, and exercises every
+# _grid_signatures branch (cold miss, dirty row, cursor row, and the reuse path).
+def _oracle_cells(disable_cache):
+    _t = _show_grid()
+    _t._osc['osc_colors'] = True
+    if disable_cache:
+        _orig_sig = _t._grid_signatures
+        # Clear the cache before each signature pass -> every row recomputed each
+        # frame: the no-cache baseline the cached path must match exactly.
+        _t._grid_signatures = lambda screen: (_t._row_sig_cache.clear()
+                                              or _orig_sig(screen))
+    _steps = [
+        b'\x1b[?1049h',                                  # enter alt screen
+        b'\x1b[2J\x1b[1;1H\x1b[38;2;200;0;0mHEADER',     # truecolour row 0
+        b'\x1b[5;1Hmid-\x1b[32mgreen',                   # partial: new row 4
+        b'\x1b[5;9HMID2',                                # partial: same row again
+        b'\x1b[10;1H' + b'x' * 20,                       # another partial row
+        b'\x1b]4;2;rgb:12/34/56\x07',                    # palette change (cache clear)
+    ]
+    for _s in _steps:
+        feed_output(_t, _s)
+        _t._render_tui()
+    _t.apply_markings(True)                              # cache clear -> re-render
+    _t._render_tui()
+    _t.apply_theme('light')                              # cache clear -> re-render
+    _t._render_tui()
+    feed_output(_t, b'\x1b[?1049l')                      # leave alt screen (grid reset)
+    _t._render_tui()
+    _cells = _doc_cells(_t)
+    _t.shutdown()
+    return _cells
+
+
+eq(_oracle_cells(False), _oracle_cells(True),
+   'render WITH the row cache == render with the cache force-cleared every frame '
+   '(no cached grid row is ever stale)')
+
+
 # --- render-loop performance + review fixes (perf cycle) ----------------------
 from secure_terminal.sanitize import has_bell as _p37_has_bell
 
