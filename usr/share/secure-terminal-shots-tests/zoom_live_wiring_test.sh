@@ -213,6 +213,23 @@ else
    check '0' '0' 'zoom-live drop-in is NOT the old fixed 99-zoom-live-rc.conf name'
 fi
 
+## (i-a) SUCCESS-path removal is the safety-critical property (a leaked drop-in keeps
+## remote_control enabled system-wide). The drop-in from the successful capture at line 185 must
+## EXIST, then be deleted by the SUT's OWN zoom_live_remove_dropin -- NOT swept incidentally by
+## our zl_cleanup trap. A success-path removal regressed to a no-op `return 0` is caught here.
+if [ -n "${zoom_live_rc_dropin}" ] && [ -e "${zoom_live_rc_dropin}" ]; then
+   check '0' '0' 'zoom-live: the successful capture created the privileged drop-in (exists pre-removal)'
+else
+   check '1' '0' 'zoom-live: the successful capture created the privileged drop-in (exists pre-removal)'
+fi
+success_dropin="${zoom_live_rc_dropin}"
+zoom_live_remove_dropin >/dev/null 2>&1 || true
+if [ -e "${success_dropin}" ]; then
+   check '1' '0' 'zoom-live: the SUT own removal deletes the success-path drop-in (not the trap)'
+else
+   check '0' '0' 'zoom-live: the SUT own removal deletes the success-path drop-in (not the trap)'
+fi
+
 ## (ii) cleanup's drop-in removal is LOUD on failure: it NAMES the leaked path and does not swallow
 ## the error (a leaked drop-in keeps remote_control enabled system-wide).
 zoom_live_rc_dropin="${work}/leaked-dropin.conf"

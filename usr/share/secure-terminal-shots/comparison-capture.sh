@@ -906,6 +906,18 @@ DEFAULT_TERMINALS='xterm urxvt st konsole gnome-terminal xfce4-terminal mate-ter
 only_terminals=''
 cases_sel=''
 st_only=''
+
+## Reject an unknown --case/--only value (a typo, or a glob like '*' that would otherwise
+## word-split-glob the $HOME payload files through the unquoted `for c in ${CASES}` loops).
+## Literal membership: the known list holds only fixed names so `for k in $2` never globs, and
+## `[ "$k" = "$1" ]` compares the user value verbatim (a '*' equals no real case name).
+_known() {  ## $1=value $2=space-separated known list
+   local k
+   for k in ${2}; do
+      [ "${k}" = "${1}" ] && return 0
+   done
+   return 1
+}
 ## --zoom-live: the real-GUI live-zoom diagnostic sweep (see zoom_live_capture). Single-lane,
 ## secure-terminal-only; any trailing args are the zoom-level list (default band otherwise).
 zoom_live=''
@@ -928,11 +940,13 @@ while [ "$#" -gt 0 ]; do
    case "$1" in
       --only)
          [ "$#" -ge 2 ] || { printf '%s\n' 'comparison-capture: --only needs a terminal name' >&2; exit 2; }
+         _known "$2" "${DEFAULT_TERMINALS}" || { printf '%s\n' "comparison-capture: --only: unknown terminal '${2}' (known: ${DEFAULT_TERMINALS})" >&2; exit 2; }
          only_terminals="${only_terminals:+${only_terminals} }$2"
          shift 2
          ;;
       --case)
          [ "$#" -ge 2 ] || { printf '%s\n' 'comparison-capture: --case needs a case name' >&2; exit 2; }
+         _known "$2" "${all_cases}" || { printf '%s\n' "comparison-capture: --case: unknown case '${2}' (known: ${all_cases})" >&2; exit 2; }
          cases_sel="${cases_sel:+${cases_sel} }$2"
          shift 2
          ;;
@@ -1041,6 +1055,12 @@ if [ "${jobs}" -gt 1 ]; then
    ## Stagger emulator-lane startup so their (brief) compositor-bringup phases do not all peak at
    ## once; the long capture phase still overlaps fully.
    lane_stagger="${SHOTS_LANE_STAGGER:-6}"
+   case "${lane_stagger}" in
+      ''|*[!0-9]*)
+         printf '%s\n' "comparison-capture: SHOTS_LANE_STAGGER must be a non-negative integer (got '${lane_stagger}')" >&2
+         exit 2
+         ;;
+   esac
    spawn_lane() {  ## $@ = args forwarded to a comparison-capture.sh lane
       local log prep_args
       log="${lane_dir}/lane.${lane_i}.log"
