@@ -8562,6 +8562,45 @@ ok(_p37_has_bell('ring\x07now') is True, 'bell: a real BEL among text is detecte
 ok(_p37_has_bell('') is False, 'bell: empty string -> False')
 
 
+
+# --- security cycle: SEC-9 (multi-line paste bypass) + SEC-4 (interrupted CSI leak) ---
+_p9 = SecureTerminal(command='/bin/cat', tui=False)
+_p9.resize(400, 300); _p9.show(); APP.processEvents()
+_p9._hook = {'argv': ['/bin/true'], 'on_error': 'allow'}
+_p9.has_foreground_program = lambda: False
+_p9._bracketed_paste_active = lambda: False
+_p9_routed = []
+_p9._inject_text_reviewed = lambda t: _p9_routed.append(t)
+_p9._review_active = True
+_p9._pending_paste = 'echo one\necho two\necho three'
+_p9.dispatch_pending_paste('stripped')
+ok(_p9_routed == ['echo one\necho two\necho three'],
+   'SEC-9: a multi-line paste with a hook routes through the atomic batch review (not embedded-CR)')
+# else branch: no hook -> _dispatch_paste (embedded delivery, unchanged)
+_p9._hook = None
+_p9_disp = []
+_p9._dispatch_paste = lambda r, a: _p9_disp.append((r, a))
+_p9._review_active = True
+_p9._pending_paste = 'a\nb'
+_p9.dispatch_pending_paste('stripped')
+ok(_p9_disp == [('a\nb', 'stripped')], 'SEC-9: with no hook, the reviewed paste dispatches as before')
+# reject / no-op paths
+_p9._review_active = True
+_p9._pending_paste = 'x'
+_p9.dispatch_pending_paste('reject')
+ok(_p9_disp == [('a\nb', 'stripped')], 'SEC-9: a rejected paste dispatches nothing')
+_p9.shutdown()
+
+# SEC-4: an interrupted CSI (params, no final byte) must not leak its param bytes as text
+_p4 = SecureTerminal(command='/bin/cat', tui=False)
+_p4.resize(400, 300); _p4.show(); APP.processEvents()
+_p4._feed_line('\x1b[38;5;123\nAFTER')
+_p4t = _p4.toPlainText()
+ok('38;5;123' not in _p4t, 'SEC-4: an interrupted CSI does not leak its param bytes as literal text')
+ok('AFTER' in _p4t, 'SEC-4: the text after an interrupted CSI still renders')
+_p4.shutdown()
+
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(widget): %d passed, %d failed\n'
                  % (PASS, FAIL))
