@@ -1033,6 +1033,15 @@ eq(_inf_tab.current_font_size(), win._default_font_size,
    '_restore_tab falls back to the default font size on an infinite (1e400) saved value')
 eq(_inf_tab.current_scrollback(), win._scrollback,
    '_restore_tab falls back to the default scrollback on an infinite (1e400) saved value')
+# a valid but OUT-OF-RANGE scrollback int (99999999999) survives _saved_int's int() (no
+# OverflowError there -- it is a real int), but would overflow apply_scrollback ->
+# setMaximumBlockCount's C int32 and crash the restore. Outside the int32 range it falls
+# back to the default -- the magnitude path, distinct from 1e400 (an in-range custom value
+# like 1500 is still honoured, per the unlocked-scrollback test below).
+win._restore_tab({'text': '', 'scrollback': 99999999999, 'osc': {}})
+_big_tab = win.current()
+eq(_big_tab.current_scrollback(), win._scrollback,
+   '_restore_tab falls back to the default scrollback on an out-of-range (99999999999) saved value, not a crash')
 # an unhashable saved theme (a JSON array/object) must not crash the membership test
 # (THEMES is a dict); it falls back to the default theme.
 win._restore_tab({'text': '', 'theme': [], 'osc': {}})
