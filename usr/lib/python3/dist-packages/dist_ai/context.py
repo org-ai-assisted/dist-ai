@@ -227,6 +227,13 @@ class FileContext:
             + re.escape(tag) + r'(?:[ \t\r]|$)', re.MULTILINE)
         return bool(pattern.search(self.source))
 
+    def has_rule_override(self, rule_id):
+        """True if the file carries a per-rule override keyed on the rule's OWN
+        id -- '## style-ok: <R-id>' in any supported comment syntax (#, ##, //).
+        Every rule honors this through Rule.applies(), so any single rule can be
+        suppressed for a file without dedicated waiver-tag wiring."""
+        return self.has_config_waiver(rule_id, slashes=True)
+
 
 ## Convenience wrappers mirroring model.fail/note but filling ctx.path.
 def fail(ctx, rule, message, node=None):

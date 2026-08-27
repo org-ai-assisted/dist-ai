@@ -76,9 +76,15 @@ class Rule:
                     ctx.has_waiver(tag) is the ONE reader of the waiver grammar.
       advisory   -- True for a NOTE-only rule (informational, never fails).
 
+    Every rule ALSO honors a per-rule override keyed on its own id --
+    '## style-ok: <R-id>' -- so any single rule can be suppressed for a file
+    without a dedicated waiver_tag. This is a universal escape hatch, wired once
+    here, not per rule.
+
     The engine decides which files a rule sees by its COLLECTION (shell / config
     / text in the registry), so applies() only owns per-rule suppression: the
-    file-wide waiver and any path-keyed self-exemption a subclass adds.
+    per-rule id override, the file-wide waiver_tag, and any path-keyed
+    self-exemption a subclass adds.
     """
 
     id = None
@@ -86,9 +92,12 @@ class Rule:
     advisory = False
 
     def applies(self, ctx):
-        """Run this rule on ctx? Default: suppressed only by an active file-wide
-        waiver. A rule with a path self-exemption or a config-file predicate
-        overrides this and calls super().applies() first."""
+        """Run this rule on ctx? Default: suppressed by the per-rule id override
+        ('## style-ok: <R-id>') or by an active file-wide waiver_tag. A rule with
+        a path self-exemption or a config-file predicate overrides this and calls
+        super().applies() first."""
+        if self.id is not None and ctx.has_rule_override(self.id):
+            return False
         if self.waiver_tag is not None and ctx.has_waiver(self.waiver_tag):
             return False
         return True

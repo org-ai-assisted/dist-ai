@@ -1180,6 +1180,7 @@ class BareNewlinePrintf(Rule):
     not a data argument)."""
 
     id = "R-031"
+    waiver_tag = "printf-format"
     _NEWLINE_ONLY = re.compile(r'^(?:%s)?(?:\\n)+$')
 
     def applies(self, ctx):
