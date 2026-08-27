@@ -682,6 +682,11 @@ def _normalize_headers(headers: dict) -> dict:
         ## onion/hostname into the diff on a cross-wiki compare.
         if isinstance(v, str):
             v = _scrub_hosts(v)
+        else:
+            ## Fail CLOSED: a non-string header value (a list/dict from an untrusted
+            ## received snapshot) could embed the host, so redact rather than pass the
+            ## raw value through -- the same fail-closed posture as the rest of the scrub.
+            v = "SCRUBBED"
         out[n] = v
     return dict(sorted(out.items()))
 
@@ -876,11 +881,17 @@ def _normalize_storage(storage: dict) -> dict:
             out["value"] = "SCRUBBED"
         elif isinstance(out.get("value"), str):
             out["value"] = _scrub_hosts(out["value"])
+        elif "value" in out:
+            ## Fail CLOSED on a non-string cookie value (could embed the host).
+            out["value"] = "SCRUBBED"
         ## Cookie identity is (name, domain, path); host-scrub the domain so
         ## the same cookie matches across a cross-wiki diff instead of the
         ## true host leaking through.
         if isinstance(out.get("domain"), str):
             out["domain"] = _scrub_hosts(out["domain"])
+        elif "domain" in out:
+            ## Fail CLOSED on a non-string cookie domain (could embed the host).
+            out["domain"] = "SCRUBBED"
         for k in ("expires", "expirationDate"):
             if k in out:
                 out[k] = "SCRUBBED"
@@ -896,7 +907,10 @@ def _normalize_storage(storage: dict) -> dict:
             if any(p.match(k) for p in DROP_STORAGE_KEY_PATTERNS):
                 continue
             sc = any(p.match(k) for p in SESSION_STORAGE_KEY_PATTERNS)
-            out[k] = "SCRUBBED" if sc else (_scrub_hosts(v) if isinstance(v, str) else v)
+            ## Fail CLOSED: a non-string storage value could embed the host, so redact
+            ## it rather than pass the raw value through.
+            out[k] = "SCRUBBED" if sc else (
+                _scrub_hosts(v) if isinstance(v, str) else "SCRUBBED")
         return dict(sorted(out.items()))
 
     idb = storage.get("indexedDB_databases")

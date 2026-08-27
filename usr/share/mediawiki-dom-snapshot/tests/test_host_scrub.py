@@ -104,6 +104,18 @@ leak = (
 )
 assert (not leak) == active, ("storage", active, st)
 
+# host-scrub FAILS CLOSED on a non-string field: an untrusted received snapshot could
+# carry a non-string (list/dict) header/cookie/storage value embedding the host, which the
+# isinstance guards must REDACT, not pass through raw. Independent of scrub mode -- a
+# malformed non-string value is redacted either way, so the host never leaks.
+hdr_ns = N._normalize_headers({"Onion-Location": ["https://%s/x" % H]})
+assert H not in json.dumps(hdr_ns), ("header-nonstring-leak", hdr_ns)
+st_ns = N._normalize_storage({
+    "cookies": [{"name": "p", "value": ["https://%s/x" % H], "domain": {"h": H}, "path": "/"}],
+    "localStorage": {"k": ["https://%s/x" % H]},
+})
+assert H not in json.dumps(st_ns), ("storage-nonstring-leak", st_ns)
+
 # console.json
 cons = N._normalize_console([{"type": "log", "text": "loaded https://%s/w/load.php" % H}])
 assert (H not in cons[0]["text"]) == active, ("console", active, cons)
@@ -261,10 +273,11 @@ N.normalize_page_dir(s, d)  # must NOT raise
 mout = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
 assert any(v.get("headers") == "not-a-dict" for v in mout.values()), ("nondict-headers-skip", mout)
 
-# non-string header value -- a crafted cache-control number (cache-control matches a
-# HEADER_TOKEN_PATTERN and is not volatile-scrubbed) would crash pattern.sub(TypeError).
+# non-string header value -- a crafted number/list (cache-control matches a
+# HEADER_TOKEN_PATTERN and is not volatile-scrubbed) must not crash and must FAIL CLOSED:
+# _normalize_headers host-scrubs every value, so a non-string is redacted, not passed raw.
 hv = N._normalize_headers({"cache-control": 12345})
-assert hv.get("cache-control") == 12345, ("nonstr-header-value", hv)
+assert hv.get("cache-control") == "SCRUBBED", ("nonstr-header-value", hv)
 
 # sibling snapshot files (console.json / storage.json / errors.json) are ALSO untrusted:
 # json.loads' try/except catches parse errors, NOT valid-JSON-wrong-shape. Each normaliser
