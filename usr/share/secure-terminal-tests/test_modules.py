@@ -527,6 +527,26 @@ _good = hook.evaluate(['sh', '-c', 'echo \'{"verdict":"allow"}\''], 'ls')
 eq(_good.get('verdict'), 'allow', 'hook: a valid allow verdict passes through')
 
 
+
+# --- Framer consumes a frame (reused Framer advances) + hook RecursionError ----
+import struct as _p37struct
+_p37fr = ipc.Framer()
+ok(_p37fr.feed(_p37struct.pack('<I', 3) + b'abc') == b'abc', 'Framer: the first frame is returned')
+ok(_p37fr.feed(_p37struct.pack('<I', 2) + b'xy') == b'xy',
+   'Framer: a reused Framer advances to the next frame (buf trimmed, not re-returning frame 1)')
+
+# a deeply-nested handler reply makes _invoke's json.loads raise RecursionError (a
+# RuntimeError) -- evaluate() must catch it and fail per on_error, never crash.
+_p37nested = '[' * 100000 + ']' * 100000
+_p37gen = ['python3', '-c', 'import sys; sys.stdout.write(sys.argv[1])', _p37nested]
+_p37hr = hook.evaluate(_p37gen, 'ls', on_error='allow')
+ok(_p37hr.get('error') and _p37hr['verdict'] == 'allow',
+   'hook: a nested-reply RecursionError is caught (fail-open on allow)')
+_p37hr2 = hook.evaluate(_p37gen, 'ls', on_error='block')
+ok(_p37hr2.get('error') and _p37hr2['verdict'] == 'block',
+   'hook: a nested-reply RecursionError fails closed on block')
+
+
 print('secure-terminal-tests(modules): all passed' if not _failures else
       'secure-terminal-tests(modules): %d failed' % _failures)
 sys.exit(1 if _failures else 0)
