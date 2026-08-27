@@ -8,7 +8,7 @@
 ## Single entry point for ALL of the secure-terminal.github.io screenshots. The
 ## generators live together in usr/share/secure-terminal-shots/ (see its README).
 ##
-## Usage: secure-terminal-shots [review|hero|modes|zoom|comparison|comparison-wayland|clipboard] [ARGS...]
+## Usage: secure-terminal-shots [review|hero|modes|zoom|zoom-live|comparison|comparison-wayland|clipboard] [ARGS...]
 ##        secure-terminal-shots --cleanup
 ##
 ##   --cleanup   reap any leftover capture process groups (the terminals + the secure-terminal
@@ -35,6 +35,13 @@
 ##               a labelled contact sheet, into the local working shots/ dir (NOT
 ##               webp-optimized). Levels: extra args, else ZOOM_LEVELS, else the
 ##               default 50 75 100 125 150 175 200. Run via secure-terminal-shots-sandbox.
+##   zoom-live   DIAGNOSTIC (not a site asset): the REAL-GUI live-zoom sweep -- one secure-terminal
+##               launch under the real labwc/Xwayland capture chain running a full-screen TUI, the
+##               font zoom stepped LIVE via `secure-terminal ctl zoom` on the SAME instance (no
+##               restarts), the real decorated window screenshotted at each level. The real-app
+##               counterpart to `zoom`: it can see the actual horizontal scrollbar + any white
+##               band. NEEDS an X server + labwc (run in a sandbox). Levels: trailing args, else
+##               the default band. Writes zoom-live-<pct>.png into the local shots/ dir.
 ##   comparison  the terminal-COMPARISON shots -- real Debian terminal emulators
 ##               under a nested labwc compositor (X11 clients). NEEDS an X server +
 ##               labwc; run it in a sandbox. Writes to its own shots/; copy them to
@@ -103,8 +110,8 @@ fi
 
 mode='review'
 if [ "$#" -ge 1 ] && { [ "$1" = 'review' ] || [ "$1" = 'modes' ] || [ "$1" = 'hero' ] \
-      || [ "$1" = 'zoom' ] || [ "$1" = 'comparison' ] || [ "$1" = 'comparison-wayland' ] \
-      || [ "$1" = 'clipboard' ]; }; then
+      || [ "$1" = 'zoom' ] || [ "$1" = 'zoom-live' ] || [ "$1" = 'comparison' ] \
+      || [ "$1" = 'comparison-wayland' ] || [ "$1" = 'clipboard' ]; }; then
    mode="$1"
    shift
 fi
@@ -152,6 +159,24 @@ if [ "${mode}" = 'comparison' ]; then
          --server-args="-screen 0 $(( 1600 * shot_scale ))x$(( 1000 * shot_scale ))x24" \
          "${shots_dir}/comparison-capture.sh" "$@" || run_rc="$?"
    fi
+   exit "${run_rc}"
+fi
+
+if [ "${mode}" = 'zoom-live' ]; then
+   ## Real-GUI live-zoom DIAGNOSTIC (not a site asset): launch secure-terminal ONCE under the
+   ## real labwc/Xwayland capture chain (the comparison path, NOT offscreen), run a full-screen
+   ## TUI, and step the font zoom LIVE via `secure-terminal ctl zoom` on the SAME instance --
+   ## screenshotting the real decorated window at each level, no restarts. The real-app
+   ## counterpart to the offscreen `zoom` lane: it can see the actual horizontal scrollbar and
+   ## any white band the offscreen grab cannot. Levels: trailing args, else the default band.
+   ## Same nested-Xvfb sizing as comparison; comparison-capture.sh writes PNGs into its shots/.
+   run_rc=0
+   shot_scale="${SHOT_SCALE:-2}"
+   case "${shot_scale}" in ''|*[!0-9]*|0*) shot_scale=2 ;; esac
+   xvfb-run --auto-servernum \
+      --server-args="-screen 0 $(( 1600 * shot_scale ))x$(( 1000 * shot_scale ))x24" \
+      "${shots_dir}/comparison-capture.sh" --zoom-live "$@" || run_rc="$?"
+   printf '%s\n' "secure-terminal-shots: wrote real-GUI zoom-live shots to ${shots_dir}/shots"
    exit "${run_rc}"
 fi
 

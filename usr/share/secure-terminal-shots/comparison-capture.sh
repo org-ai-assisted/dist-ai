@@ -100,6 +100,8 @@ cleanup() {
    shots_deregister_run "${run_marker}" 2>/dev/null || true
    [ -z "${wm_pid}" ] || kill "${wm_pid}" 2>/dev/null || true
    [ -z "${wm_pid}" ] || wait "${wm_pid}" 2>/dev/null || true
+   ## zoom-live: remove the throwaway privileged remote_control drop-in it wrote (root-owned, so sudo).
+   [ -z "${zoom_live_rc_dropin:-}" ] || sudo safe-rm --force -- "${zoom_live_rc_dropin}" 2>/dev/null || true
    safe-rm -r -f -- "${runtime_dir}" 2>/dev/null || true
 }
 
@@ -494,6 +496,119 @@ st_wait_render_settled() {  ## $1=window-id
    safe-rm --force -- "${a}" "${b}" 2>/dev/null || true
 }
 
+## zoom-live: the REAL-GUI counterpart to the offscreen zoom-shot.py diagnostic. Launch
+## secure-terminal ONCE as the group PRIMARY (so `secure-terminal ctl` can reach it), with a
+## full-screen TUI board, then step the font zoom LIVE via `ctl zoom` against the SAME running
+## instance -- NO restart between levels -- screenshotting the real decorated window at each. This
+## is the definitive test the offscreen zoom-shot.py cannot be: it proves, on the real app, that
+## the horizontal scrollbar stays suppressed on the grid and no mid-screen white band appears as
+## the grid re-lays-out under a live zoom. Writes zoom-live-<pct>.png into ${out}.
+zoom_live_capture() {  ## $@=zoom levels (percent); default band if none
+   local levels level st_pgf st_flagf st_transcript st_wdog stwid st_win_w st_win_h st_cmd n rc_dir
+   local st_tab_line st_tab_id
+   levels="${*:-50 75 100 125 150 175 200}"
+
+   ## remote_control is PRIVILEGED-ONLY (settings.PRIVILEGED_ONLY): honoured ONLY from a
+   ## root-writable system drop-in (/usr/lib, /etc, /usr/local/etc). There is NO env relocation
+   ## hook (by design -- so an unprivileged user cannot re-point the trusted layer), so a throwaway
+   ## USER config cannot enable it. Enable it for the capture via a /usr/local/etc drop-in, written
+   ## with sudo (the sandbox grants passwordless sudo) and removed on exit by cleanup(). This is a
+   ## sandbox-only diagnostic; it never touches a real deployment's config.
+   rc_dir='/usr/local/etc/secure-terminal.d'
+   if ! sudo mkdir --parents -- "${rc_dir}" \
+         || ! printf 'remote_control=true\n' | sudo tee "${rc_dir}/99-zoom-live-rc.conf" >/dev/null; then
+      printf '%s\n' 'zoom-live: cannot write the privileged remote_control drop-in (sudo?)' >&2
+      return 1
+   fi
+   ## Record it so cleanup() removes it even on an error/reap.
+   zoom_live_rc_dropin="${rc_dir}/99-zoom-live-rc.conf"
+
+   ## A full-screen TUI to zoom: the tui-showcase board in TUI mode (alt screen, fills the
+   ## viewport) -- the same real full-viewport payload the comparison TUI shots use, so the grid is
+   ## genuinely full when the scrollbar / white-band bug would show. Build the with-prompt sibling
+   ## that the TUI inject command cats (the plain one is stripped in place for CLI).
+   cp -- "${HOME}/tui-showcase.payload" "${HOME}/tui-showcase-withprompt.payload"
+   st_cmd="$(shots_st_inject_cmd tui-showcase tui)"
+   st_win_w="$(px 860)"
+   st_win_h="$(px 820)"
+
+   st_pgf="$(mktemp -- "${runtime_dir}/pgid.XXXXXX")"
+   st_flagf="${st_pgf}.timeout"
+   st_transcript="${st_pgf}.transcript"
+   safe-rm -f -- "${st_transcript}" 2>/dev/null || true
+
+   ## Launch ST as the group PRIMARY: NO --new-instance (a --new-instance window is standalone and
+   ## never claims the ctl socket, so `ctl zoom` could not reach it). --tui opens full-screen. Same
+   ## deterministic 72-DPI / SHOT_SCALE screenshot env as the comparison ST pass; reaped by PGID.
+   shots_spawn_session "${st_pgf}" \
+      env --unset=WAYLAND_DISPLAY "DISPLAY=${xwl_display}" QT_QPA_PLATFORM=xcb \
+      QT_FONT_DPI=72 QT_SCALE_FACTOR="${SHOT_SCALE}" QT_AUTO_SCREEN_SCALE_FACTOR=0 SECURE_TERMINAL_SHOT=1 \
+      "SECURE_TERMINAL_TRANSCRIPT_FILE=${st_transcript}" \
+      PYTHONPATH="${st_pkg}" python3 "${st_bin}" --tui \
+      -- bash --rcfile "${HOME}/.strc" -i >/dev/null 2>&1
+
+   st_wdog="$(shots_watchdog_start "${SHOT_DEADLINE}" "${st_pgf}" "${st_flagf}")" || st_wdog=''
+   stwid="$(find_window || true)"
+   if [ -z "${stwid}" ]; then
+      printf '%s\n' 'warn zoom-live: secure-terminal window never appeared' >&2
+      shots_watchdog_cancel "${st_wdog}"
+      shots_reap_group "$(cat "${st_pgf}" 2>/dev/null || true)"
+      return 1
+   fi
+   sleep 2
+   DISPLAY="${xwl_display}" xdotool windowsize "${stwid}" "${st_win_w}" "${st_win_h}" 2>/dev/null || true
+   sleep 0.6
+   wait_window_ready "${stwid}"
+
+   ## Warm the shell/board once so the first `ctl ls` + inject run against a settled prompt.
+   inject "${stwid}" "${st_cmd}"
+   sleep 1
+   st_wait_render_settled "${stwid}"
+
+   ## Discover the target tab id from `ctl ls` (its first tab-separated column). A fresh single-tab
+   ## instance numbers tab ids from 0, so a hardcoded id would miss; parse the real one. A reachable
+   ## `ctl ls` also confirms remote_control is on AND the socket was claimed -- else every level
+   ## below would silently no-op and all shots would be the launch zoom.
+   st_tab_line="$(env "DISPLAY=${xwl_display}" PYTHONPATH="${st_pkg}" python3 "${st_bin}" ctl ls 2>/dev/null | head -1)"
+   st_tab_id="${st_tab_line%%	*}"
+   if [ -n "${st_tab_id}" ]; then
+      printf '%s\n' "zoom-live: ctl reachable (remote_control on, primary socket claimed); zooming tab id:${st_tab_id}"
+   else
+      printf '%s\n' 'warn zoom-live: `secure-terminal ctl ls` returned no tab (remote_control off, or not primary) -- shots may not reflect a live zoom' >&2
+      st_tab_id='0'
+   fi
+
+   n=0
+   for level in ${levels}; do
+      ## Step the zoom LIVE on the SAME instance -- no restart -- routed to the discovered tab.
+      if env "DISPLAY=${xwl_display}" PYTHONPATH="${st_pkg}" python3 "${st_bin}" \
+            ctl zoom --tab "id:${st_tab_id}" "${level}" >"${runtime_dir}/zoom.${level}.out" 2>&1; then
+         printf '%s\n' "zoom-live: ctl zoom ${level} -> $(cat "${runtime_dir}/zoom.${level}.out")"
+      else
+         printf '%s\n' "warn zoom-live: ctl zoom ${level} failed: $(cat "${runtime_dir}/zoom.${level}.out")" >&2
+      fi
+      ## The zoom resizes the pyte grid (SIGWINCH). A LIVE full-screen TUI redraws itself on that
+      ## signal, filling the new grid; a STATIC cat'd board cannot, so it would scroll out and the
+      ## shot would show empty rows -- an artifact of the payload, not the app. Re-inject the board
+      ## AFTER the zoom so it redraws at the NEW grid dimensions, exactly as a SIGWINCH-aware TUI
+      ## app would: every level is then a genuinely FULL grid, the state in which a stray horizontal
+      ## scrollbar or a mid-screen white band would actually appear. skip-tighten keeps the pinned
+      ## geometry (the board fills the viewport).
+      sleep 0.6
+      inject "${stwid}" "${st_cmd}"
+      sleep 1
+      st_wait_render_settled "${stwid}"
+      capture_settled "${out}/zoom-live-$(printf '%03d' "$(( 10#${level} ))" 2>/dev/null || printf '%s' "${level}").png" "${stwid}" skip-tighten || true
+      n=$(( n + 1 ))
+   done
+
+   shots_watchdog_cancel "${st_wdog}"
+   [ -e "${st_flagf}" ] && printf '%s\n' "warn zoom-live: capture exceeded ${SHOT_DEADLINE}s deadline, group reaped" >&2
+   shots_reap_group "$(cat "${st_pgf}" 2>/dev/null || true)"
+   safe-rm -f -- "${st_pgf}" "${st_flagf}" "${st_transcript}" 2>/dev/null || true
+   printf '%s\n' "zoom-live: wrote ${n} real-GUI zoom shot(s) to ${out}"
+}
+
 ## Wait until a freshly-launched window has actually RENDERED (its content is no longer a flat
 ## blank) before typing into it. The first secure-terminal launch is a Qt cold start that, under
 ## the parallel --jobs CPU load, can still be painting nothing when the fixed settle elapses --
@@ -639,6 +754,9 @@ was_executed "${BASH_SOURCE[0]}" || return 0
 out="${here}/shots"
 mkdir --parents -- "${out}"
 
+## zoom-live's throwaway privileged drop-in path, removed by cleanup(); empty until it writes one.
+zoom_live_rc_dropin=''
+
 
 ## Fail BEFORE the expensive capture if the bundled webp optimizer is missing -- a direct
 ## run (not via the secure-terminal-shots wrapper) resolves it checkout-relative, not by PATH.
@@ -721,6 +839,10 @@ DEFAULT_TERMINALS='xterm urxvt st konsole gnome-terminal xfce4-terminal mate-ter
 only_terminals=''
 cases_sel=''
 st_only=''
+## --zoom-live: the real-GUI live-zoom diagnostic sweep (see zoom_live_capture). Single-lane,
+## secure-terminal-only; any trailing args are the zoom-level list (default band otherwise).
+zoom_live=''
+zoom_live_levels=''
 ## --jobs N (N>1): orchestrator mode -- partition the grid across N concurrent lanes, each
 ## its OWN nested Xvfb+compositor (via its own xvfb-run), then optimize once. --no-st skips the
 ## secure-terminal pass (for an emulator-only lane); --optimize-only just webp-converts existing
@@ -748,6 +870,16 @@ while [ "$#" -gt 0 ]; do
       --st-only)
          st_only='true'
          shift
+         ;;
+      --zoom-live)
+         ## Single-lane, secure-terminal-only real-GUI live-zoom sweep. st_only empties the
+         ## emulator list, so only the zoom_live_capture branch runs. Any trailing args are the
+         ## zoom levels; consume the rest and stop parsing.
+         zoom_live='true'
+         st_only='true'
+         shift
+         zoom_live_levels="$*"
+         break
          ;;
       --quick)
          only_terminals='kitty'
@@ -1060,6 +1192,23 @@ for labwc_try in 1 2 3 4; do
 done
 if [ -z "${labwc_started}" ]; then
    printf '%s\n' 'labwc did not start after retries; log:'; tail -6 "${runtime_dir}/labwc.log"; exit 1
+fi
+
+## zoom-live: real-GUI live-zoom sweep -- one ST launch, zoom stepped via `ctl zoom` on the SAME
+## instance. Runs here (labwc up, HOME/.strc + payloads + icon theme prepared, trap armed) and
+## exits; the EXIT trap reaps the run + removes the throwaway remote_control drop-in. Skips the
+## emulator grid and the multi-spec ST loop below entirely.
+if [ -n "${zoom_live}" ]; then
+   cd "${HOME}"
+   st_bin="${ST_REPO:-}/usr/bin/secure-terminal"
+   st_pkg="${ST_REPO:-}/usr/lib/python3/dist-packages"
+   if [ -z "${ST_REPO:-}" ] || [ ! -f "${st_bin}" ]; then
+      printf '%s\n' 'ERROR: zoom-live needs secure-terminal. Set ST_REPO=/path/to/checkout.' >&2
+      exit 1
+   fi
+   # shellcheck disable=SC2086  # deliberate word-split: zoom levels are a space-separated list
+   zoom_live_capture ${zoom_live_levels}
+   exit 0
 fi
 
 ## lxterminal is omitted: its single-instance startup maps no window headless.
