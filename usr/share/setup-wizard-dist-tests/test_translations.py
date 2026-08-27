@@ -54,6 +54,17 @@ class TranslationCoverageTestCase(unittest.TestCase):
                 self.assertIsInstance(value, str)
                 self.assertTrue(value.strip())
 
+    def test_extract_source_keys_matches_both_quote_styles(self):
+        ## self._("...") is as valid as self._('...'); a single-quote-only
+        ## pattern left the double-quoted key out of SOURCE_KEYS, so a missing
+        ## translation for it would never be caught.
+        keys = T.extract_source_keys(
+            "a = self._('single_key')\n"
+            'b = self._("double_key")\n'
+        )
+        self.assertIn('single_key', keys)
+        self.assertIn('double_key', keys)
+
     def test_yaml_is_ascii(self):
         with open(T.TRANSLATIONS_YAML, 'rb') as handle:
             data = handle.read()

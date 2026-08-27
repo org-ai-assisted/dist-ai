@@ -147,16 +147,22 @@ def main() -> None:
 
     subject, fake_curl, env = _paths()
     if not os.path.isfile(subject) or not os.access(subject, os.X_OK):
-        print(f"SKIP: curl-prgrs not found/executable at {subject!r}.")
-        print("      set HELPER_SCRIPTS_REPO to a helper-scripts checkout, or install it.")
-        raise SystemExit(77)
+        ## curl-prgrs is the REQUIRED subject: its absence is an environment bug,
+        ## not an optional target. Fail LOUD (exit 1) -- a silent 77 SKIP would
+        ## stop gating unnoticed.
+        print(f"FATAL: curl-prgrs not found/executable at {subject!r}.", file=sys.stderr)
+        print("       set HELPER_SCRIPTS_REPO to a helper-scripts checkout, or install it.",
+              file=sys.stderr)
+        raise SystemExit(1)
     if not os.access(fake_curl, os.X_OK):
-        print(f"FATAL: fake curl stub missing: {fake_curl!r}")
+        print(f"FATAL: fake curl stub missing: {fake_curl!r}", file=sys.stderr)
         raise SystemExit(1)
     missing = [t for t in _TOOL_DEPS if shutil.which(t, path=env.get("PATH")) is None]
     if missing:
-        print(f"SKIP: runtime tools not on PATH: {' '.join(missing)}")
-        raise SystemExit(77)
+        ## Same class as the subject: these runtime tools are REQUIRED for the
+        ## fuzz to run at all. A missing one is an environment bug -> FATAL.
+        print(f"FATAL: required runtime tools not on PATH: {' '.join(missing)}", file=sys.stderr)
+        raise SystemExit(1)
 
     seed = args.seed if args.seed is not None else random.SystemRandom().randrange(2 ** 32)
     rng = random.Random(seed)

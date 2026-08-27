@@ -334,7 +334,7 @@ tighten_deadspace() {  ## $1=png-path
    bg="$(convert "${f}" -gravity South -crop "${w}x50%+0+0" +repage \
            -depth 8 -format '%c' histogram:info:- \
          | sort -rn | grep -m1 -oiE '#[0-9A-F]{6}')" || true
-   [ -n "${bg}" ] || bg="$(convert "${f}" -format "#%[hex:p{2,$(( h - 4 ))}]" info: | cut -c1-7)"
+   [ -n "${bg}" ] || bg="$(convert "${f}" -format "#%[hex:p{2,$(( h - 4 ))}]" info: | cut -c1-7 || true)"
    ## per-row emptiness map: drop the side columns, take the absolute difference from a
    ## solid-background image (robust to any bg colour, incl. pure black/white) and
    ## threshold it (background -> black, content -> white), then the per-row maximum so
@@ -604,7 +604,7 @@ zoom_live_capture() {  ## $@=zoom levels (percent); default band if none
    ## instance numbers tab ids from 0, so a hardcoded id would miss; parse the real one. A reachable
    ## `ctl ls` also confirms remote_control is on AND the socket was claimed -- else every level
    ## below would silently no-op and all shots would be the launch zoom.
-   st_tab_line="$(env "DISPLAY=${xwl_display}" PYTHONPATH="${st_pkg}" python3 "${st_bin}" ctl ls 2>/dev/null | head -1)"
+   st_tab_line="$(env "DISPLAY=${xwl_display}" PYTHONPATH="${st_pkg}" python3 "${st_bin}" ctl ls 2>/dev/null | head -1 || true)"
    st_tab_id="${st_tab_line%%	*}"
    if [ -n "${st_tab_id}" ]; then
       printf '%s\n' "zoom-live: ctl reachable (remote_control on, primary socket claimed); zooming tab id:${st_tab_id}"

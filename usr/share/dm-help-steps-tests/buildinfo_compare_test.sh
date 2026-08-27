@@ -159,6 +159,17 @@ else
    cat -- "${workdir}/out.txt" >&2
 fi
 
+## The unclassified field must be caught regardless of WHICH record carries it.
+## A field present only in the SECOND (B) record and scanned only via the first
+## would slip past unclassified, get compared by nobody, and let B drift.
+rc="$(run_compare base.info unknown.info)"
+if [ "${rc}" -eq 2 ]; then
+   pass "an unclassified field present only in the B record refuses a verdict"
+else
+   fail "a B-only unclassified field gave exit ${rc}; expected 2 -- it would go uncompared"
+   cat -- "${workdir}/out.txt" >&2
+fi
+
 ## --- a malformed record refuses too ----------------------------------------
 printf '%s\n' 'this is not deb822' > "${workdir}/junk.info"
 rc="$(run_compare base.info junk.info)"

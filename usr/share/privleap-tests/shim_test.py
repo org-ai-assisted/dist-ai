@@ -24,8 +24,10 @@ the shim through a real daemon.
 
 import argparse
 import os
+import shutil
 import subprocess  # nosec B404 -- running the shim IS the test
 import sys
+import tempfile
 from typing import Any, Callable
 
 HERE: str = os.path.dirname(os.path.abspath(__file__))
@@ -199,29 +201,32 @@ def test_refusal_runs_nothing(results: Results, shim: str) -> None:
 
     print('== a refused invocation never runs the command ==')
     user: str = current_username()
-    sentinel: str = os.path.join(
-        os.environ.get('TMPDIR', '/tmp'), 'privleap-shim-test-sentinel'
-    )
-    for label, args in (
-        (
-            'an unresolvable target',
-            [user, NO_SUCH_USER, 'root', '0', '/bin/touch', sentinel],
-        ),
-        (
-            'a malformed umask',
-            [user, 'root', 'root', 'nonsense', '/bin/touch', sentinel],
-        ),
-    ):
-        if os.path.exists(sentinel):
-            os.unlink(sentinel)
-        code = run_shim(shim, args)
-        results.expect_eq(f"{label} is refused{why(code)}", code, REFUSED)
-        results.check(
-            f"{label}: the command did not run",
-            not os.path.exists(sentinel),
-        )
-    if os.path.exists(sentinel):
-        os.unlink(sentinel)
+    ## A private mkdtemp dir, not a fixed shared-/tmp name: a predictable path is
+    ## a symlink-preplant hazard, and the sentinel must not exist until the
+    ## command (wrongly) creates it.
+    sentinel_dir: str = tempfile.mkdtemp(prefix='privleap-shim-test-')
+    try:
+        sentinel: str = os.path.join(sentinel_dir, 'sentinel')
+        for label, args in (
+            (
+                'an unresolvable target',
+                [user, NO_SUCH_USER, 'root', '0', '/bin/touch', sentinel],
+            ),
+            (
+                'a malformed umask',
+                [user, 'root', 'root', 'nonsense', '/bin/touch', sentinel],
+            ),
+        ):
+            if os.path.exists(sentinel):
+                os.unlink(sentinel)
+            code = run_shim(shim, args)
+            results.expect_eq(f"{label} is refused{why(code)}", code, REFUSED)
+            results.check(
+                f"{label}: the command did not run",
+                not os.path.exists(sentinel),
+            )
+    finally:
+        shutil.rmtree(sentinel_dir, ignore_errors=True)
 
 
 def run_test(

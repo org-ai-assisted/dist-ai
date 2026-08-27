@@ -130,11 +130,19 @@ def main():
                                      forwarded))
             # key blob must not leak (only redacted form, if any)
             key_leak = bool(re.search(r"250-PrivateKey=\S+:[A-Za-z0-9+/]{16,}", reply_str))
+            # threat #2: a crafted group must not smuggle extra Flags=/Port=
+            # mappings into what tor sees. The one legitimate 'Port=9999,' the
+            # rewrite emits is exempt; ANY 'Flags=' or a SECOND/foreign 'Port='
+            # is an injection that reached tor.
+            injected = (re.findall(r"\bFlags=\S+", forwarded)
+                        + re.findall(r"\bPort=(?!9999,)\S+", forwarded))
 
             verdict = "ok"
             detail = "fwd=[{}]".format(forwarded)
             if foreign or not target_ok:
                 verdict = "ESCAPE!"; fails.append((label, "target not client-address: " + forwarded))
+            elif injected:
+                verdict = "INJECT!"; fails.append((label, "Flags/Port injection reached tor: " + forwarded))
             elif key_leak:
                 verdict = "KEYLEAK!"; fails.append((label, "private key leaked: " + reply_str[:80]))
             else:

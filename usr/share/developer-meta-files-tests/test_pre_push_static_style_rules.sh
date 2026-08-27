@@ -892,11 +892,16 @@ git -C "${addel_repo}" commit --quiet --no-verify --message add
 ## delete it WITHOUT committing: present at HEAD, gone from the working tree
 safe-rm --force -- "${addel_repo}/transient.txt"
 addel_out="$( cd -- "${addel_repo}" && "${GATE}" --check --range "${addel_base}" 2>&1 || true )"
-if grep --quiet --fixed-strings -- 'FileNotFoundError' <<< "${addel_out}"; then
-   printf '%s\n' 'FAIL: uncommitted deletion crashed check-added-large-files' >&2
-   failures=$((failures + 1))
+## Assert the real success predicate -- the gate ran to its clean verdict -- not
+## merely the absence of one exception name: a DIFFERENT crash (any other
+## exception, or no verdict at all) would slip past a FileNotFoundError-only
+## grep but is caught here.
+if grep --quiet --fixed-strings -- 'all static checks passed' <<< "${addel_out}"; then
+   printf '%s\n' 'PASS: uncommitted deletion runs the large-files hook to a clean verdict'
 else
-   printf '%s\n' 'PASS: uncommitted deletion does not crash the large-files hook'
+   printf '%s\n' \
+      "FAIL: uncommitted deletion did not reach a clean gate verdict; output: ${addel_out}" >&2
+   failures=$((failures + 1))
 fi
 
 ## check-added-large-files, staged mode, no upstream: a large file already
@@ -1295,7 +1300,13 @@ untracked_repo="$(mktemp --directory --tmpdir="${tmp_root}" untracked.XXXXXX)"
 git -C "${untracked_repo}" init --quiet
 git -C "${untracked_repo}" config user.email 'ci-test@example.com'
 git -C "${untracked_repo}" config user.name 'ci-test'
-git -C "${untracked_repo}" commit --quiet --no-verify --allow-empty --message base
+## A genuinely TRACKED shell file, committed at base. The tracked-vs-untracked
+## assertion below tests against a name that actually exists in this fixture, so
+## a regression that listed tracked files as untracked would flip it -- the old
+## 'sample.sh' probe was vacuous (no such file could ever appear).
+printf '%s\n' '#!/bin/bash' 'true' > "${untracked_repo}/tracked-tool.sh"
+git -C "${untracked_repo}" add tracked-tool.sh
+git -C "${untracked_repo}" commit --quiet --no-verify --message base
 untracked_base="$(git -C "${untracked_repo}" rev-parse HEAD)"
 ## Never added: that is the whole point of the case.
 printf '%s\n' '#!/bin/bash' 'true' > "${untracked_repo}/brand-new-tool"
@@ -1308,9 +1319,9 @@ else
    failures=$((failures + 1))
 fi
 
-## A tracked, committed file must NOT be reported as untracked, or the notice
-## would fire on every run and stop meaning anything.
-if grep --quiet --fixed-strings 'sample.sh' <<< "${untracked_out}"; then
+## The tracked, committed shell file must NOT be reported as untracked, or the
+## notice would fire on every run and stop meaning anything.
+if grep --quiet --fixed-strings 'tracked-tool.sh' <<< "${untracked_out}"; then
    printf '%s\n' 'FAIL: a tracked file was reported as untracked' >&2
    failures=$((failures + 1))
 else
