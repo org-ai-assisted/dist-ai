@@ -2168,6 +2168,36 @@ while _pcw.tabs.count() > 0:                      # reap the survivors' ptys, th
 _pcw.deleteLater()
 APP.processEvents()
 
+# _on_clipboard_read_requested stale-term across the modal (HIGH -- whole-app crash): a
+# program asks to read the clipboard (OSC 52) then its shell exits during the request
+# dialog; _on_shell_exited->close_tab frees term, then grant_clipboard_read on the dead
+# QObject aborts the WHOLE app. The _tab_is_live guard must skip the grant if the tab
+# closed. Throwaway window; mock QDialog.exec to kill the tab from inside the modal.
+from PyQt6.QtWidgets import QDialog                # noqa: E402
+_crw = MainWindow()
+_crw._persist_session = False
+_cr_term = _crw.current()
+_cr_term.has_foreground_program = lambda: False   # close_tab needs no confirm
+_cr_term.shutdown = lambda: None                   # stub only the tab closed mid-modal
+_cr_calls = []
+_cr_term.grant_clipboard_read = lambda d: _cr_calls.append(d)   # spy: must NOT be called
+_oexec = QDialog.exec
+def _exec_kills_tab(_self):
+    _crw.close_tab(_crw.tabs.indexOf(_cr_term))    # the tab's shell exits mid-dialog
+    APP.processEvents()                            # let deleteLater free it
+    return 0
+try:
+    QDialog.exec = _exec_kills_tab
+    _crw._on_clipboard_read_requested(_cr_term)    # must NOT crash, must NOT grant
+finally:
+    QDialog.exec = _oexec
+ok(_cr_calls == [],
+   '_on_clipboard_read_requested: a tab closed during the dialog is not granted (no crash)')
+while _crw.tabs.count() > 0:
+    _crw.close_tab(0)
+_crw.deleteLater()
+APP.processEvents()
+
 # --- ctl: dump-tab tail-cap, an unknown ctl op --------------------------------
 if win.tabs.count() == 0:
     win.new_tab()
