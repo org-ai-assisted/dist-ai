@@ -4441,6 +4441,17 @@ try:
     rcwin._dispatch_request(
         b'{"op":"ctl-send-text","tab":"id:0","text":"a\\u001bb"}')
     ok(_t2 == [b'ab'], 'ctl: send-text strips an escape (no injection)')
+    # A MULTILINE send-text (an embedded newline BEFORE the final byte) would auto-run
+    # every line but the last the instant it lands -- the exact pastejacking vector the
+    # GUI holds for a forced review. sanitize maps the embedded '\n' to '\r' and
+    # paste_no_autosubmit strips only a TRAILING run, so the inner submit survived and
+    # ran the first command. The headless ctl path has no user to prompt, so it now
+    # REFUSES the payload: the request fails AND not one byte reaches the shell.
+    _t3 = spy_writes(rcwin.current())
+    _mr = rcwin._dispatch_request(
+        b'{"op":"ctl-send-text","tab":"id:0","text":"evil\\nsecond"}')
+    ok(not _mr.get('ok') and _t3 == [],
+       'ctl: send-text refuses a multiline payload; nothing auto-runs')
     rcwin._dispatch_request(
         b'{"op":"ctl-set-tab-title","tab":"id:0","title":"renamed"}')
     eq(rcwin.tabs.tabText(0), 'renamed', 'ctl: set-tab-title renames the tab')

