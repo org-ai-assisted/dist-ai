@@ -594,6 +594,27 @@ _p_r3 = hook.evaluate(['/bin/true'], 'a\nb', on_error='allow', script=True)
 ok(_p_r3['verdict'] == 'block', 'SEC-3: an invalid verdict on a script batch also fails closed')
 hook._invoke = _p_oi
 
+# SEC-11: ai-judge-hook -- _CONTEXTUAL missed the shell CHAINING/SEPARATOR operators `;`/`&`,
+# so a chained command that BEGINS with an allowlisted word (`ls; rm -rf ~`) took the trivial
+# shortcut and was ALLOWED with no AI call. A separator must now escalate (need_transcript / AI).
+ok(_p_aj.decide({'command': 'ls; rm -rf ~'}).get('verdict') != 'allow',
+   'SEC-11: a `;`-chained rm is not trivially allowed (fail-open on old code)')
+ok(_p_aj.decide({'command': 'cat foo; sudo rm -rf /'}).get('verdict') != 'allow',
+   'SEC-11: a `;`-chained sudo rm is not trivially allowed')
+ok(_p_aj.decide({'command': 'sleep 1 & rm -rf ~'}).get('verdict') != 'allow',
+   'SEC-11: a `&`-backgrounded chain is not trivially allowed')
+ok(_p_aj.decide({'command': 'ls -la'}).get('verdict') == 'allow',
+   'SEC-11: a separator-free trivial command is still allowed (no over-escalation)')
+# SEC-12: example-hook -- the sudo ask rule was `^\s*sudo\b` (start-anchored), so a chained
+# `ls; sudo rm -rf /` bypassed it. It now matches sudo at line start OR after a `;`/`&`/`|`
+# separator, WITHOUT matching sudo inside a quoted arg (no false-positive on `echo "use sudo"`).
+ok(_p_eh.decide('ls; sudo rm -rf /')['verdict'] == 'ask',
+   'SEC-12: a `;`-chained sudo asks for confirmation (fail-open on old code)')
+ok(_p_eh.decide('sudo rm -rf /')['verdict'] == 'ask',
+   'SEC-12: a line-leading sudo still asks')
+ok(_p_eh.decide('echo "use sudo"')['verdict'] != 'ask',
+   'SEC-12: sudo inside a quoted arg does NOT trigger the ask (no false-positive)')
+
 
 print('secure-terminal-tests(modules): all passed' if not _failures else
       'secure-terminal-tests(modules): %d failed' % _failures)
