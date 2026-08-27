@@ -76,6 +76,17 @@ build_fixture() {
    mkdir --parents -- "${super}/build-steps.d" "${super}/help-steps"
    printf '%s\n' 'x' > "${super}/build-steps.d/keep"
    printf '%s\n' 'x' > "${super}/help-steps/keep"
+   ## A real dm checkout always carries in-tree `source "${folder_var}/..."`
+   ## references; the sourced-paths stage resolves the ones fixed relative to the
+   ## root and fails a MISSING target. Give the fixture one RESOLVABLE ref (and
+   ## its target) so that stage passes here; the renamed-away case below removes
+   ## the target to exercise the failure.
+   local dmf="${super}/packages/kicksecure/developer-meta-files/usr/libexec/developer-meta-files"
+   mkdir --parents -- "${dmf}"
+   printf '%s\n' '## stub' > "${dmf}/package-build-freshness.bsh"
+   printf '%s\n' \
+      'source "${dist_developer_meta_files_folder}/usr/libexec/developer-meta-files/package-build-freshness.bsh"' \
+      > "${super}/build-steps.d/2100_stub"
    git_quiet -C "${super}" add -A
    git_quiet -C "${super}" commit --quiet --no-verify --message base
    git_quiet -C "${super}" -c protocol.file.allow=always \
@@ -216,6 +227,32 @@ if grep --quiet --fixed-strings -- 'UNVERIFIED' "${workdir}/out.txt"; then
    pass "canary: and it says fetchability was NOT established"
 else
    fail "canary broken: silently passed without saying the check did not run"
+   cat -- "${workdir}/out.txt" >&2
+fi
+
+## --- a 'source' of a renamed-away in-tree file FAILS ------------------------
+## The developer-meta-files reprepro-freshness.bsh -> package-build-freshness.bsh
+## rename with the consumer (2100_create-debian-packages) not updated. It is a
+## statically resolvable reference, so it must be caught here, not mid-build.
+renamed="${workdir}/renamed"
+build_fixture "${renamed}"
+## Repoint the consumer at a sibling name that does not exist -- exactly what a
+## submodule rename leaves behind when the pin is bumped but the consumer is not.
+printf '%s\n' \
+   'source "${dist_developer_meta_files_folder}/usr/libexec/developer-meta-files/reprepro-freshness.bsh"' \
+   > "${renamed}/build-steps.d/2100_stub"
+git_quiet -C "${renamed}" commit --quiet --all --no-verify --message repoint
+rc="$(run_preflight "${renamed}")"
+if [ "${rc}" -ne 0 ]; then
+   pass "a source of a renamed-away in-tree file fails the preflight"
+else
+   fail "a source of a missing in-tree file was ACCEPTED -- it would die mid-build instead"
+   cat -- "${workdir}/out.txt" >&2
+fi
+if grep --quiet --fixed-strings -- 'reprepro-freshness.bsh' "${workdir}/out.txt"; then
+   pass "the failure names the missing source target"
+else
+   fail "the failure does not name the missing source target"
    cat -- "${workdir}/out.txt" >&2
 fi
 
