@@ -7803,9 +7803,9 @@ _orig_igr = SecureTerminal._insert_grid_row
 _igr_calls = [0]
 
 
-def _counting_igr(self, cursor, row, columns):
+def _counting_igr(self, cursor, row, columns, cell_runs=None):
     _igr_calls[0] += 1
-    return _orig_igr(self, cursor, row, columns)
+    return _orig_igr(self, cursor, row, columns, cell_runs)
 
 
 SecureTerminal._insert_grid_row = _counting_igr
@@ -8236,6 +8236,96 @@ def _oracle_cells(disable_cache):
 eq(_oracle_cells(False), _oracle_cells(True),
    'render WITH the row cache == render with the cache force-cleared every frame '
    '(no cached grid row is ever stale)')
+
+
+# CACHE-4. In-place middle reconcile: when a frame keeps the same row count (a
+# full-screen program repainting a band), changing even the TOP row rewrites only
+# the changed block IN PLACE -- it does NOT delete and re-insert every row below.
+# CANARY: the prefix-only reconcile re-inserted the whole grid when row 0 changed.
+_orig_igr2 = SecureTerminal._insert_grid_row
+_igr2 = [0]
+
+
+def _counting_igr2(self, cursor, row, columns, cell_runs=None):
+    _igr2[0] += 1
+    return _orig_igr2(self, cursor, row, columns, cell_runs)
+
+
+SecureTerminal._insert_grid_row = _counting_igr2
+try:
+    _ip = _show_grid()
+    feed_output(_ip, b'\x1b[?1049h')
+    feed_output(_ip, b'\x1b[2J\x1b[1;1HTOP\x1b[2;1Hmid\x1b[3;1Hbot')
+    _ip._render_tui()                                   # first frame: inserts the grid
+    _igr2[0] = 0
+    feed_output(_ip, b'\x1b[1;1HTOPX')                  # change ONLY the top row
+    _ip._render_tui()
+    _ip_ins = _igr2[0]
+    _ip_txt = _ip.toPlainText()
+    _ip.shutdown()
+finally:
+    SecureTerminal._insert_grid_row = _orig_igr2
+ok(_ip_ins == 0,
+   'a same-row-count top-row repaint rewrites in place (%d grid-row inserts, want 0) -- '
+   'not a full re-insert of every row below the change' % _ip_ins)
+ok('TOPX' in _ip_txt and 'bot' in _ip_txt,
+   'the in-place top-row repaint shows the new top and keeps the rows below')
+
+# CACHE-5. The in-place top-row reconcile is byte-identical (content + every format)
+# to a fresh full build already in the final state -- no stale block survives.
+_ipa = _show_grid()
+feed_output(_ipa, b'\x1b[?1049h')
+feed_output(_ipa, b'\x1b[2J\x1b[1;1H\x1b[31mAAA\x1b[2;1H\x1b[32mBBB\x1b[3;1H\x1b[34mCCC')
+_ipa._render_tui()
+feed_output(_ipa, b'\x1b[1;1H\x1b[33mZZZ')             # recolour + change the TOP row in place
+_ipa._render_tui()
+_ipb = _show_grid()
+feed_output(_ipb, b'\x1b[?1049h')
+feed_output(_ipb, b'\x1b[2J\x1b[1;1H\x1b[33mZZZ\x1b[2;1H\x1b[32mBBB\x1b[3;1H\x1b[34mCCC')
+_ipb._render_tui()
+eq(_doc_cells(_ipa), _doc_cells(_ipb),
+   'in-place top-row reconcile == a full rebuild (content + every format)')
+_ipa.shutdown()
+_ipb.shutdown()
+
+# CACHE-6. A middle-band change with BOTH ends unchanged keeps the shared prefix AND
+# suffix and rewrites only the middle (the suffix-match path): still byte-identical.
+_mb = _show_grid()
+feed_output(_mb, b'\x1b[?1049h')
+feed_output(_mb, b'\x1b[2J\x1b[1;1Hr0\x1b[2;1Hr1\x1b[3;1Hr2\x1b[4;1Hr3\x1b[5;1Hr4')
+_mb._render_tui()
+feed_output(_mb, b'\x1b[3;1HMIDDLE')                   # change only row 2 (index 2)
+_mb._render_tui()
+_mb_ref = _show_grid()
+feed_output(_mb_ref, b'\x1b[?1049h')
+feed_output(_mb_ref, b'\x1b[2J\x1b[1;1Hr0\x1b[2;1Hr1\x1b[3;1HMIDDLE\x1b[4;1Hr3\x1b[5;1Hr4')
+_mb_ref._render_tui()
+eq(_doc_cells(_mb), _doc_cells(_mb_ref),
+   'a middle-band in-place reconcile (shared prefix+suffix) == a full rebuild')
+ok('r0' in _mb.toPlainText() and 'MIDDLE' in _mb.toPlainText() and 'r4' in _mb.toPlainText(),
+   'the middle-band reconcile keeps both ends and updates the middle')
+_mb.shutdown()
+_mb_ref.shutdown()
+
+# CACHE-7. Shrink-to-prefix: the grid loses trailing rows while every kept row is
+# unchanged (target is a strict prefix of the live grid), so the unequal-length
+# fallback deletes the tail and appends NOTHING -- the empty-append guard path.
+_sp = SecureTerminal(command='/bin/cat', tui=True)
+_sp.apply_mode('show')
+_sp.resize(700, 300)
+_sp.show()
+pump(40)
+_sp._feed_stream(b'\x1b[1;1Ha\x1b[2;1Hb\x1b[3;1Hc')    # three content rows
+_sp._render_tui()
+_sp_tall = _sp.document().blockCount()
+_sp._feed_stream(b'\x1b[3;1H\x1b[2K\x1b[2;2H')          # blank row 3, cursor up to row 2
+_sp._render_tui()
+ok(_sp.document().blockCount() < _sp_tall,
+   'shrink-to-prefix drops the trailing row (empty-append fallback)')
+_sp_txt = _sp.toPlainText()
+ok('a' in _sp_txt and 'b' in _sp_txt and 'c' not in _sp_txt,
+   'shrink-to-prefix keeps the unchanged leading rows and drops the removed tail')
+_sp.shutdown()
 
 
 # --- render-loop performance + review fixes (perf cycle) ----------------------
