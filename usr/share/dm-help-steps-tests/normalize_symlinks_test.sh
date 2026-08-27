@@ -189,6 +189,16 @@ else
    fail "flattened placeholder mode not normalised: got 0${flat_mode}, expected 0644"
 fi
 
+## Even a plain-Debian (core.symlinks=true) checkout is CLEAN after normalise:
+## the driver pins core.symlinks=false per tree, so the flattened placeholders
+## read as the text blob rather than a 'T' typechange.
+true_status="$(git_x -C "${true_clone}" status --porcelain)"
+if [ -z "${true_status}" ]; then
+   pass "core.symlinks=true clone: git status clean after normalise (core.symlinks pinned false)"
+else
+   fail "core.symlinks=true clone: dirty tree after normalise (typechange leaked): ${true_status}"
+fi
+
 ## --- core.symlinks=false clone: the Kicksecure host, ALREADY a placeholder ----
 false_clone="${workdir}/host_false"
 git_x -c core.symlinks=false clone --quiet --recurse-submodules -- "${origin}" "${false_clone}"
