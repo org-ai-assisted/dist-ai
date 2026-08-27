@@ -2770,9 +2770,11 @@ ok(b'sudo sh\r' in b''.join(_injs2w) and not _injs2._line_dirty,
    'single-line injection: an asked line chosen Run submits and settles the prompt')
 _injs2.close()
 
-# Ctrl+\ (SIGQUIT) flushes the pending tty line like Ctrl+C, so the hook mirror MUST clear --
-# else a later Enter judges a stale prefix plus the next keystrokes as one command (a bypass,
-# same class as #34/#35: "safe" + Ctrl+\ + "rm -rf ~" must not be judged as "saferm -rf ~").
+# Ctrl+\ (SIGQUIT): whether the tty flushes or RETAINS the pending line is tty/shell-dependent
+# (NOFLSH off flushes; `stty noflsh` or bash trapping SIGQUIT RETAINS it) and unobservable to
+# us. So the line is marked UNVERIFIABLE -- the next Enter must fail safe (re-ask/re-judge),
+# never auto-submit. Clearing the mirror to empty (the prior fix) let a RETAINED "safe"+typed
+# command run UNJUDGED on the next Enter (the noflsh empty-mirror bypass, cf. #34/#35).
 _sq = SecureTerminal(command='/bin/cat')
 _sq.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
 _sq.has_foreground_program = lambda: False
@@ -2781,8 +2783,15 @@ _htype(_sq, 'safe')
 ok(_sq._line_buffer == 'safe', 'the mirror holds the typed prefix before Ctrl+\\')
 key(_sq, Qt.Key.Key_Backslash, mods=Qt.KeyboardModifier.ControlModifier)
 ok(b'\x1c' in b''.join(_sqs), 'Ctrl+\\ sends SIGQUIT (0x1c) to the child')
-ok(_sq._line_buffer == '' and not _sq._line_dirty,
-   'Ctrl+\\ (SIGQUIT) flushes the pending line: the hook mirror is cleared')
+ok(_sq._line_dirty,
+   'Ctrl+\\ marks the line unverifiable (SIGQUIT may RETAIN the line under noflsh)')
+# the next Enter must re-ask via the dirty branch, never auto-submit a possibly-retained line
+_sqs.clear()
+_sqasked = []
+_sq._hook_ask = lambda _c, _r: (_sqasked.append(1) or 'discard')
+key(_sq, Qt.Key.Key_Return)
+ok(_sqasked and b'\r' not in b''.join(_sqs),
+   'the next Enter after Ctrl+\\ re-asks (dirty branch), never auto-submits a retained line')
 _sq.close()
 
 # OSC-52 reply truncation: a slow/gone child can leave the ~87 KiB reply truncated, its
