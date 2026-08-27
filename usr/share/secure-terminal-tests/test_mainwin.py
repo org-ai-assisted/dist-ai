@@ -882,6 +882,12 @@ try:
     ok(not _disp({'op': 'ctl-zoom', 'tab': 'id:%d' % _z_cur_tid,
                   'level': 'huge'})['ok'],
        'ipc: ctl-zoom with a non-numeric level is rejected')
+    # a raw-JSON float infinity (a ctl request with level 1e400 parses to inf) makes
+    # int(inf) raise OverflowError: it must be caught + rejected, never crash the Qt
+    # process. On the old except (no OverflowError) _disp would raise, not return.
+    ok(not _disp({'op': 'ctl-zoom', 'tab': 'id:%d' % _z_cur_tid,
+                  'level': float('inf')})['ok'],
+       'ipc: ctl-zoom with an infinite level (JSON 1e400) is rejected, not a crash')
     # a non-matching tab -> error.
     ok(not _disp({'op': 'ctl-zoom', 'tab': 'id:999999', 'level': 150})['ok'],
        'ipc: ctl-zoom on a non-matching tab -> error')
