@@ -8,7 +8,7 @@
 ## Single entry point for ALL of the secure-terminal.github.io screenshots. The
 ## generators live together in usr/share/secure-terminal-shots/ (see its README).
 ##
-## Usage: secure-terminal-shots [review|hero|modes|comparison|comparison-wayland|clipboard] [ARGS...]
+## Usage: secure-terminal-shots [review|hero|modes|zoom|comparison|comparison-wayland|clipboard] [ARGS...]
 ##        secure-terminal-shots --cleanup
 ##
 ##   --cleanup   reap any leftover capture process groups (the terminals + the secure-terminal
@@ -29,6 +29,12 @@
 ##               hostile payload, as a single labelled grid -- same headless
 ##               offscreen-Qt path as review. OUTPUT_DIR defaults to the site's
 ##               shots/.
+##   zoom        DIAGNOSTIC (not a site asset): sweep the font-zoom levels and grab
+##               the LIVE TUI grid at each, headless + offscreen, to look for a
+##               mid-screen white band when the grid is full. One PNG per level plus
+##               a labelled contact sheet, into the local working shots/ dir (NOT
+##               webp-optimized). Levels: extra args, else ZOOM_LEVELS, else the
+##               default 50 75 100 125 150 175 200. Run via secure-terminal-shots-sandbox.
 ##   comparison  the terminal-COMPARISON shots -- real Debian terminal emulators
 ##               under a nested labwc compositor (X11 clients). NEEDS an X server +
 ##               labwc; run it in a sandbox. Writes to its own shots/; copy them to
@@ -48,6 +54,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -90,13 +97,13 @@ elif [ -d "${script_dir}/../../../../secure-terminal/usr/lib/python3/dist-packag
 fi
 
 if [ -z "${repo}" ] || [ ! -d "${repo}/usr/lib/python3/dist-packages/secure_terminal" ]; then
-   printf '%s\n' 'secure-terminal-shots: SKIP (secure_terminal not found; set SECURE_TERMINAL_REPO)' >&2
-   exit 77
+   printf '%s\n' 'secure-terminal-shots: ERROR (secure_terminal not found; set SECURE_TERMINAL_REPO)' >&2
+   exit 1
 fi
 
 mode='review'
 if [ "$#" -ge 1 ] && { [ "$1" = 'review' ] || [ "$1" = 'modes' ] || [ "$1" = 'hero' ] \
-      || [ "$1" = 'comparison' ] || [ "$1" = 'comparison-wayland' ] \
+      || [ "$1" = 'zoom' ] || [ "$1" = 'comparison' ] || [ "$1" = 'comparison-wayland' ] \
       || [ "$1" = 'clipboard' ]; }; then
    mode="$1"
    shift
@@ -160,7 +167,26 @@ fi
 if [ "${mode}" = 'comparison-wayland' ]; then
    ## Native-Wayland comparison capture (labwc X11-backend + native Wayland clients
    ## + grim), run inside its own net+mount namespace. Extra args pass through.
+   ## style-ok: allow-exec -- deliberate handoff: exec replaces the process so it does
+   ## not fall through to the later mode blocks; the capture script needs no post-run
+   ## cleanup in this shell.
    ST_REPO="${repo}" exec "${shots_dir}/wayland-capture.sh" "$@"
+fi
+
+if [ "${mode}" = 'zoom' ]; then
+   ## Zoom-band DIAGNOSTIC: sweep the font-zoom levels, grab the LIVE TUI grid at
+   ## each (offscreen, deterministic -- same headless-Qt path as hero/modes) and
+   ## look for a mid-screen white band. Multiple PNGs (one per level + a labelled
+   ## contact sheet), written to the local (gitignored) working shots/ dir -- NOT
+   ## the site (these are diagnostics, not published assets), so they are NOT
+   ## webp-optimized. secure-terminal-shots-sandbox pulls them back from there.
+   ## Levels: extra args, else the ZOOM_LEVELS env, else the built-in default set.
+   zoom_out="${shots_dir}/shots"
+   mkdir --parents -- "${zoom_out}"
+   export PYTHONPATH="${repo}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
+   "${shots_dir}/zoom-shot.py" "${zoom_out}" "$@"
+   printf '%s\n' "secure-terminal-shots: wrote zoom-band shots to ${zoom_out}"
+   exit 0
 fi
 
 if [ "${mode}" = 'hero' ] || [ "${mode}" = 'modes' ]; then

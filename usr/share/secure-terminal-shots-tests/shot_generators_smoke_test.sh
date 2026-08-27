@@ -106,6 +106,12 @@ run_gen 'paste-warning-shot (paste)' "${work}/paste.png" \
    "${shots_dir}/paste-warning-shot.py" "${work}/paste.png" paste
 run_gen 'paste-warning-shot (copy)'  "${work}/copy.png" \
    "${shots_dir}/paste-warning-shot.py" "${work}/copy.png" copy
+## zoom-shot.py sweeps the font-zoom levels and grabs the LIVE TUI grid at each (the
+## white-band diagnostic). It writes one PNG per level into a DIR (not a single file),
+## so smoke it with a two-level sweep and check the per-level file exists. Its output
+## PATH is the dir; the checked file is one level inside it.
+run_gen 'zoom-shot' "${work}/zoom/zoom-100.png" \
+   "${shots_dir}/zoom-shot.py" "${work}/zoom" 100 200
 
 ## The largest contiguous run of pure-background rows a tight review shot may contain: the
 ## uniform frame margin plus small inter-element gaps. A dead-space regression (empty pane
