@@ -945,7 +945,10 @@ def _normalize_errors(errors: dict) -> dict:
         url = _clean(f.get("url", ""))
         if any(p in url for p in RACY_LOAD_PATTERNS):
             continue
-        failure = f.get("failure", "")
+        # failure is raw browser error text that embeds the request URL (e.g. Chromium
+        # `net::ERR_FAILED at https://host/...`, CSP-blocked messages), so host-scrub it
+        # like every other error-message surface -- the url scrub above does not reach it.
+        failure = _scrub_hosts(f.get("failure", ""))
         key = (url, failure)
         if key in seenf:
             continue

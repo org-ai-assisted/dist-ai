@@ -94,6 +94,11 @@ assert (H not in cons[0]["text"]) == active, ("console", active, cons)
 errs = N._normalize_errors({"console_errors": [{"type": "error", "text": "boom https://%s/x" % H}]})
 assert (H not in errs["console_errors"][0]["text"]) == active, ("errors-console", active, errs)
 
+# errors.json request_failures[].failure: raw browser error text embedding the URL
+rf = N._normalize_errors({"request_failures": [
+    {"url": "https://%s/wiki/Page" % H, "failure": "net::ERR_FAILED at https://%s/wiki/Page" % H}]})
+assert (H not in rf["request_failures"][0]["failure"]) == active, ("request-failure", active, rf)
+
 # mixed-case host: a differing casing must still collapse (active only), while
 # scheme/path bytes are preserved intact
 if active:
