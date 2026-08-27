@@ -59,7 +59,7 @@ fail() {
 ## Exercise the SHIPPED block, not a restatement of it. A private copy of the
 ## comparison would keep passing after the real one regressed -- which is the
 ## failure mode this whole file exists to catch.
-block="$( sed -n '/dist_build_version_described="\${dist_build_version##\*-g}"/,/^   fi$/p' -- "${subject}" )"
+block="$( sed -n '/dist_build_version_described="\${dist_build_version##\*-g}"/,/^fi$/p' -- "${subject}" | sed '$d' )"
 if [ -z "${block}" ]; then
    fail 'could not extract the mismatch diagnostic from help-steps/variables'
    summary_line="===== inherited dist_build_version: ${pass_count} pass, ${fail_count} fail ====="
@@ -88,14 +88,18 @@ executed_report() {
 }
 
 run_block() {
-   local version="$1" head_sha="$2"
+   local version="$1"
    ## 'true "..."' is this file's logging idiom, so the text only materialises
    ## under xtrace -- capture that, which is also how it reaches a real build log.
    (
       ## No 'set +o errexit' (R-011): the subshell's own '|| true' below already
       ## absorbs a non-zero exit, and the trace is captured either way.
       git_bin=git
+      ## Every colour token the diagnostic interpolates -- unset here means
+      ## nounset aborts the 'true "..."' before the message is traced.
       cyan=""
+      red=""
+      bold=""
       reset=""
       dist_build_version="${version}"
       # shellcheck disable=SC2034  # consumed by the extracted block
@@ -122,7 +126,7 @@ git -C "${workdir}" -c core.hooksPath=/dev/null -c user.name=test \
 head_sha="$( git -C "${workdir}" rev-parse HEAD )"
 
 ## --- a value describing a DIFFERENT commit must be reported ----------------
-out_mismatch="$( run_block '18.2.2.0-217-ge65ff45812c4de50c8e00aad5b3db16169ec2507' "${head_sha}" )"
+out_mismatch="$( run_block '18.2.2.0-217-ge65ff45812c4de50c8e00aad5b3db16169ec2507' )"
 if printf '%s\n' "${out_mismatch}" | executed_report; then
    pass 'an inherited version describing another commit is reported'
 else
@@ -132,7 +136,7 @@ fi
 
 ## --- a value describing HEAD must stay SILENT ------------------------------
 ## A message on every build is noise, gets filtered, and is then as good as absent.
-out_match="$( run_block "18.2.2.0-1-g${head_sha}" "${head_sha}" )"
+out_match="$( run_block "18.2.2.0-1-g${head_sha}" )"
 if printf '%s\n' "${out_match}" | executed_report; then
    fail "reported a mismatch for a version that DOES describe HEAD:
 ${out_match}"
@@ -141,7 +145,7 @@ else
 fi
 
 ## --- a tag containing '-g' is not a describe suffix ------------------------
-out_tag="$( run_block '18.2.2.0-rc1-gui-release' "${head_sha}" )"
+out_tag="$( run_block '18.2.2.0-rc1-gui-release' )"
 if printf '%s\n' "${out_tag}" | executed_report; then
    fail "treated a non-hex '-g' tag as a describe suffix:
 ${out_tag}"

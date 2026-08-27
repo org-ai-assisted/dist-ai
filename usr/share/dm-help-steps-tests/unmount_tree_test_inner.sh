@@ -20,6 +20,12 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
+
+## The mount namespace runs us as root; unmount-helper must not escalate via
+## sudo (it cannot setuid in a user namespace). A no-op prefix runs the umount
+## directly as the namespace root, matching how the fixtures are mounted.
+export SUDO_TO_ROOT=env
 
 subject_path="$1"
 scratch_base="$2"

@@ -813,6 +813,19 @@ ok(_advices == [], 'plain line-mode output raises no TUI advisory')
 feed_output(adv, b'cand1  cand2  cand3\n\x1b[2A\x1b[7mcand1\x1b[27m')
 ok(len(_advices) == 1 and 'TUI' in _advices[0],
    'an in-place completion-menu repaint (cursor-up, no alt-screen) advises TUI mode')
+
+# COR-1b: a C0 control byte inside an all-ASCII chunk must NOT take pyte's fast path --
+# stock pyte draw() breaks its whole batch on the first wcwidth==-1 byte (`else: break`),
+# so the C0 AND the rest of the chunk would vanish unmarked. The per-char loop marks it
+# and keeps going.
+if tui_available():
+    _c0 = SecureTerminal(command='/bin/cat', tui=True)
+    feed_output(_c0, b'AB\x01CD')
+    ok(_c0._screen.buffer[0][2].data == 'C' and _c0._screen.buffer[0][3].data == 'D',
+       'COR-1b: a C0 byte in an all-ASCII TUI chunk does not drop the trailing output')
+    ok(not _c0._screen.buffer[0][1].data.isprintable(),
+       'COR-1b: the C0 control byte is marked into its cell, not silently dropped')
+    _c0.close()
 # advised at most once per program, so a menu that repaints on every keypress does
 # not spam the notice.
 feed_output(adv, b'\x1b[2A\x1b[7mcand2\x1b[27m')
@@ -1799,6 +1812,23 @@ eq(_bdfg.lower(), _afg.lower(),
 ok(_bdfg.lower() != mark_fg(_dsh, 'nonascii').lower(),
    'Q2 show: a shown box-drawing glyph is NOT painted the non-ASCII risk colour')
 _dsh.close()
+# #7: a child announcing UTF-8 mode (ESC%G / ESC%8) must NOT re-break DEC line-drawing. pyte's
+# base ByteStream.select_other_charset flips use_utf8 back True for ESC%G, which re-arms the
+# "ESC(0 is a no-op" path so borders render as literal 'lqk' again (GNU screen announces UTF-8
+# this way). _Utf8CharsetByteStream overrides it to a no-op, keeping the charset path armed.
+_dg = SecureTerminal(command='/bin/cat', tui=True)
+_dg.apply_mode('show')
+_dg.resize(600, 300)
+_dg.show()
+pump(60)
+_dg._feed_stream(b'\x1b%GA\x1b(0lqk\x1b(BZ\r\n')   # ESC%G (announce UTF-8) THEN the line-drawing
+_dg._render_tui()
+pump(30)
+_dgtxt = _dg.toPlainText()
+ok(any(0x2500 <= ord(c) <= 0x257F for c in _dgtxt),
+   '#7: a UTF-8-mode announce does not disarm DEC line-drawing -- box-drawing still renders')
+ok('lqk' not in _dgtxt, '#7: after a UTF-8-mode announce the DEC letters are still not literal ASCII')
+_dg.close()
 
 # Q2 show: a homoglyph shown as its glyph wears the LOUDER confusable colour, so a
 # Cyrillic 'a' posing as Latin stands out even while its glyph is readable.
@@ -1975,6 +2005,57 @@ ok(len(_capf._fmt_cache) <= _MARK_CACHE_MAX,
    'the cell-format cache is admission-capped under a truecolor SGR flood (size %d)'
    % len(_capf._fmt_cache))
 _capf.close()
+
+# COR-5: an AIXTERM bright-background SGR (100-107) must render a genuinely BRIGHT bg, not
+# the dim base. pyte encodes it as base-name bg + bold=True, so the fork disentangles it:
+# a bright bg name (no phantom bold that would brighten the fg / bold the font).
+if tui_available():
+    _bb = SecureTerminal(command='/bin/cat', tui=True)
+    feed_output(_bb, b'\x1b[107mX')            # bright white background
+    _bcell = _bb._screen.buffer[0][0]
+    eq(_bcell.bg, 'brightwhite',
+       'COR-5: a bright-bg SGR sets a bright bg name (base rendered the dim white)')
+    ok(not _bcell.bold,
+       'COR-5: a bright-bg-only SGR sets NO phantom bold (no fg-brighten / bold font)')
+    _bg_bright = _bb._pyte_qcolor('brightwhite', None)
+    ok(_bg_bright is not None
+       and _bb._pyte_format(_bcell).background().color().name() == _bg_bright.name(),
+       'COR-5: the bright-bg cell renders from the +8 bright palette')
+    # order-correctness: a normal bg AFTER a bright-bg wins; a bright-bg after reset wins
+    feed_output(_bb, b'\x1b[107;44mY')         # bright-bg then normal blue bg -> blue wins
+    eq(_bb._screen.buffer[0][1].bg, 'blue',
+       'COR-5: a normal bg after a bright-bg overrides it (in-order)')
+    _bb.close()
+    # an INCOMPLETE extended-bg selector (48 with no 5;N / 2;R;G;B) must NOT clear a
+    # preceding valid bright-bg: only a COMPLETE 48 is a real bg. Pre-fix `101;48`
+    # cleared bright_bg unconditionally -> default bg instead of the bright-red. Fresh
+    # cell so the pre-fix result is an unambiguous 'default', not a leftover bg.
+    _b48 = SecureTerminal(command='/bin/cat', tui=True)
+    feed_output(_b48, b'\x1b[101;48mZ')        # bright-red bg, then a bare (incomplete) 48
+    eq(_b48._screen.buffer[0][0].bg, 'brightred',
+       'COR-5: an incomplete 48 selector leaves a preceding bright-bg intact (101;48)')
+    _b48.close()
+    # 38/48 EXTENDED colours: their following params are colour DATA, not opcodes. A component
+    # in 100-107 must NOT be misread as a bright-bg code (the base of this fix, 23ff606, did:
+    # 38;5;101 set bg=brightred and truncated the fg). Feed each on its own fresh cell.
+    _xc = SecureTerminal(command='/bin/cat', tui=True)
+    feed_output(_xc, b'\x1b[38;5;101mA')       # 256-colour fg, index 101
+    _a = _xc._screen.buffer[0][0]
+    ok(_a.bg == 'default' and _a.fg != 'default',
+       'COR-5: 38;5;101 sets a 256-colour fg, leaves bg default (101 not read as bright-bg)')
+    _xc2 = SecureTerminal(command='/bin/cat', tui=True)
+    feed_output(_xc2, b'\x1b[48;2;100;101;102mB')   # truecolour bg 0x646566
+    eq(_xc2._screen.buffer[0][0].bg, '646566',
+       'COR-5: 48;2;R;G;B sets a truecolour bg (components not read as bright-bg)')
+    # branch coverage for the param consumer: attr==48 mode==5, a malformed 38 (no mode), a
+    # truncated 38;5 (no index), and a non-5/2 mode (consumes nothing) -- none may crash.
+    for _seq in (b'\x1b[48;5;15mC', b'\x1b[38mD', b'\x1b[38;5mE', b'\x1b[38;9;44mF'):
+        _xe = SecureTerminal(command='/bin/cat', tui=True)
+        feed_output(_xe, _seq)
+        ok(isinstance(_xe.toPlainText(), str),
+           'COR-5: extended-colour param consumer handles %r without crashing' % _seq)
+        _xe.close()
+    _xc.close(); _xc2.close()
 
 # Security regression (codex/agy, PR #5 review): a pyte cell can hold a box-drawing
 # base PLUS a hidden dangerous code point (bidi / zero-width), which tui_cell
@@ -2438,26 +2519,30 @@ try:
 finally:
     _hookmod.evaluate = _real_evaluate
 
-# ctl-send-text per-line review: a remote-control injection is a security surface, so
-# EACH line of a multi-line payload is judged by the command hook (block/ask/allow),
-# not delivered as one paste that lets an embedded newline auto-run the earlier line
-# unreviewed. (Finding: send-text 'id\nwhoami\n' ran id with no verdict.)
+# ctl-send-text ATOMIC multi-line review (task D1): a remote-control injection is a security
+# surface. A multi-line payload is judged as ONE script, ONCE, against the state at injection
+# time -- NOT line-by-line, which let line i be judged before line i-1 had executed (a `cd` /
+# `export` / `umask` on an earlier line moved the cwd/env/state the hook read for a later
+# line -- the stale-state TOCTOU this closes). A block on any part refuses the WHOLE batch
+# before anything is delivered (fails closed). (Finding: send-text judged `rm victim` under
+# the pre-`cd` cwd.)
 _inj = SecureTerminal(command='/bin/cat')
 _inj.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow',
                  'transcript': 'none'})
 _inj.has_foreground_program = lambda: False
 _injs = spy_writes(_inj)
 _asked_inj = []
-_inj._hook_ask = lambda _c, _r: (_asked_inj.append(_c) or 'discard')   # decline blocks
+_inj._hook_ask = lambda _c, _r: (_asked_inj.append(_c) or 'discard')   # decline the batch
 _inj._inject_text_reviewed('echo one\nx sudo sh\ntail')   # _handler blocks "sudo sh"
 _injoined = b''.join(_injs)
-ok(b'echo one\r' in _injoined, 'per-line review: an allowed injected line submits')
-ok(_asked_inj == ['x sudo sh'],
-   'per-line review: a blocked injected line is reviewed, not auto-run')
-ok(b'x sudo sh\r' not in _injoined,
-   'per-line review: the blocked line is never submitted')
-ok(_inj._line_dirty,
-   'per-line review: the trailing partial line waits at the prompt (unverifiable)')
+ok(_asked_inj == ['echo one\nx sudo sh'],
+   'atomic review: the WHOLE script (every submitted line) is judged as one unit')
+ok(_injoined == b'',
+   'atomic review: a blocked batch delivers NOTHING -- fails closed before any line runs')
+ok(b'echo one\r' not in _injoined,
+   'atomic review: an earlier line never runs when a later line in the batch is blocked')
+ok(not _inj._line_dirty,
+   'atomic review: a batch refused before delivery leaves the prompt clean')
 # no hook configured -> falls back to the safe paste path (no per-line dialog)
 _inj2 = SecureTerminal(command='/bin/cat')
 _inj2.has_foreground_program = lambda: False
@@ -2489,23 +2574,23 @@ ok(b'\r' not in b''.join(_injps),
 ok(_injp._line_dirty, 'a declined injected newline keeps the line dirty (re-ask)')
 _injp.close()
 
-# BYPASS (fixed): after a blocked line the best-effort erase is UNRELIABLE (stty erase
-# rebind / multibyte), so a following injected newline must NOT send a bare CR onto the
-# un-erased rejected bytes. On 9ef8449 the loop reset _line_dirty=False each piece and the
-# blank second piece submitted the blocked command.
+# atomic refuse subsumes the old per-line "blank piece after a blocked line" concern: with
+# a whole-batch judge there is no un-erased leftover to submit. A blocked multi-line batch
+# is refused whole -- nothing typed, nothing submitted, the prompt left clean.
 _injb = SecureTerminal(command='/bin/cat')
 _injb.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
 _injb.has_foreground_program = lambda: False
 _injbs = spy_writes(_injb)
 _injb._hook_ask = lambda _c, _r: 'discard'
-_injb._inject_text_reviewed('sudo sh\n\n')     # a blocked line, then a blank line
-ok(b'\r' not in b''.join(_injbs),
-   'a blank piece after a blocked line never submits the un-erased leftover')
-ok(_injb._line_dirty, 'the line stays dirty after a blocked piece (next Enter re-asks)')
+_injb._inject_text_reviewed('sudo sh\n\n')     # a blocked multi-line batch
+ok(b''.join(_injbs) == b'',
+   'atomic refuse: a blocked multi-line batch delivers nothing (no un-erased leftover)')
+ok(not _injb._line_dirty, 'a batch refused before delivery leaves the prompt clean')
 _injb.close()
 
-# an ASKED line the user chooses to Run submits cleanly and the injection CONTINUES to
-# review the next line (the hook cleared the dirty flag, so the prompt is clean again).
+# an ASKED batch the user chooses to Run is delivered WHOLE: every submitted line reaches
+# the shell and the prompt settles. Under atomic review the whole script is judged once, so
+# a Run approves the entire batch (not line-by-line).
 _injr = SecureTerminal(command='/bin/cat')
 _injr.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
 _injr.has_foreground_program = lambda: False
@@ -2561,6 +2646,171 @@ ok(len(_asked_t) == 1 and b'\r' not in b''.join(_injts),
    'an injected line with a Tab is asked (unverifiable completion), never auto-submitted')
 _injt.close()
 
+# atomic TOCTOU canary: a multi-line injection judges the hook exactly ONCE, over the whole
+# script, at injection time -- never once per line. The per-line loop judged line i BEFORE
+# line i-1 had run, so a `cd` on an earlier line moved the cwd the hook read for a later
+# line. Recording evaluate() proves a single whole-script call (script=True). On the old
+# per-line code evaluate ran once PER LINE, so len(_recorded) was 2 -> this canary fails there.
+_real_eval2 = _hookmod.evaluate
+_recorded = []
+def _rec_eval(_argv, command, **kw):
+    _recorded.append((command, kw.get('script', False)))
+    return {'verdict': 'allow', 'message': '', 'suggestion': '', 'error': False}
+_hookmod.evaluate = _rec_eval
+try:
+    _tox = SecureTerminal(command='/bin/cat')
+    _tox.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
+    _tox.has_foreground_program = lambda: False
+    _toxs = spy_writes(_tox)
+    _tox._inject_text_reviewed('cd /tmp\nrm victim\n')
+    ok(len(_recorded) == 1,
+       'atomic: a multi-line injection is judged ONCE, not per line (no stale-state TOCTOU)')
+    ok(_recorded and _recorded[0] == ('cd /tmp\nrm victim', True),
+       'atomic: the whole script is judged as one unit via the v2 script contract')
+    ok(b'cd /tmp\r' in b''.join(_toxs) and b'rm victim\r' in b''.join(_toxs),
+       'atomic: an allowed batch delivers and submits every line')
+    ok(not _tox._line_dirty, 'atomic: a fully-approved batch leaves the prompt settled')
+    _tox.close()
+    # an all-blank multi-line batch is UNVERIFIABLE: at a shell continuation prompt a blank
+    # line completes and runs the pending command, and the widget cannot see that state ->
+    # refuse, deliver nothing, no hook call (fail closed).
+    _recorded.clear()
+    _tobl = SecureTerminal(command='/bin/cat')
+    _tobl.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
+    _tobl.has_foreground_program = lambda: False
+    _toblnotes = []
+    _tobl.hook_notice.connect(_toblnotes.append)
+    _tobls = spy_writes(_tobl)
+    _tobl._inject_text_reviewed('\n\n')
+    ok(_recorded == [] and b''.join(_tobls) == b''
+       and _toblnotes and 'could not be reviewed' in _toblnotes[-1],
+       'atomic: an all-blank batch is refused (a blank line may complete a continuation)')
+    _tobl.close()
+    # a trailing partial line (no final newline) is delivered but left at the prompt for the
+    # user's own re-judged Enter; only the submitted lines form the judged script.
+    _recorded.clear()
+    _toc = SecureTerminal(command='/bin/cat')
+    _toc.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
+    _toc.has_foreground_program = lambda: False
+    _tocs = spy_writes(_toc)
+    _toc._inject_text_reviewed('one\ntwo\nthree')
+    _tocj = b''.join(_tocs)
+    ok(_recorded and _recorded[0][0] == 'one\ntwo',
+       'atomic: only the submitted lines form the judged script (trailing partial excluded)')
+    ok(b'one\r' in _tocj and b'two\r' in _tocj and b'three' in _tocj and b'three\r' not in _tocj,
+       'atomic: the trailing partial line is typed but never auto-submitted')
+    ok(_toc._line_dirty, 'atomic: the trailing partial waits at the prompt (unverifiable)')
+    _toc.close()
+finally:
+    _hookmod.evaluate = _real_eval2
+# atomic fails-closed: a hard block on the batch delivers NOTHING and surfaces the advisory.
+_hookmod.evaluate = lambda *a, **k: {'verdict': 'block', 'message': 'nope',
+                                     'suggestion': '', 'error': False}
+try:
+    _tob = SecureTerminal(command='/bin/cat')
+    _tob.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
+    _tob.has_foreground_program = lambda: False
+    _tobnotes = []
+    _tob.hook_notice.connect(_tobnotes.append)
+    _tobs = spy_writes(_tob)
+    _tob._hook_ask = lambda _c, _r: 'discard'
+    _tob._inject_text_reviewed('cd /tmp\nrm victim\n')
+    ok(b''.join(_tobs) == b'' and not _tob._line_dirty,
+       'atomic: a blocked batch delivers nothing and leaves the prompt clean')
+    ok(_tobnotes and _tobnotes[-1] == 'nope', 'atomic: the block advisory is surfaced')
+    _tob.close()
+finally:
+    _hookmod.evaluate = _real_eval2
+# refuse WITHOUT any hook call: an unmirrorable prompt line, and a Tab in a submitted line
+# (completion would run other than the judged bytes), are each refused before judging --
+# nothing to faithfully review -- delivering nothing and surfacing a notice. _hook_ask is
+# mocked defensively so the refuse path is proven without a modal even if it were reached.
+_tod = SecureTerminal(command='/bin/cat')
+_tod.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
+_tod.has_foreground_program = lambda: False
+_tod._hook_ask = lambda _c, _r: 'discard'
+_todnotes = []
+_tod.hook_notice.connect(_todnotes.append)
+_tods = spy_writes(_tod)
+_tod._line_dirty = True                      # a recalled/edited prompt line, unmirrorable
+_tod._inject_text_reviewed('cd /tmp\nrm victim\n')
+ok(b''.join(_tods) == b'' and _todnotes and 'could not be reviewed' in _todnotes[-1],
+   'atomic: a multi-line batch onto an unmirrorable line is refused whole, with a notice')
+_tod.close()
+_tot = SecureTerminal(command='/bin/cat')
+_tot.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
+_tot.has_foreground_program = lambda: False
+_tot._hook_ask = lambda _c, _r: 'discard'
+_totnotes = []
+_tot.hook_notice.connect(_totnotes.append)
+_tots = spy_writes(_tot)
+_tot._inject_text_reviewed('ls\trm\nwhoami\n')   # a Tab in a submitted line
+ok(b''.join(_tots) == b'' and _totnotes and 'could not be reviewed' in _totnotes[-1],
+   'atomic: a Tab in a submitted line refuses the whole batch (completion is unjudgeable)')
+_tot.close()
+
+# v2 fail-closed at the widget (real hook.evaluate): a multi-line batch a VERSION-1 handler
+# ALLOWS -- one that does not set `multiline_reviewed` -- is refused whole. hook.evaluate
+# downgrades the unconfirmed allow to block (a v1 handler judges only the single-line
+# `command`, so a later dangerous line could slip past), so nothing is delivered. The real
+# per-line _handler allows a non-sudo batch but sets no ack, exercising the downgrade E2E.
+_tov1 = SecureTerminal(command='/bin/cat')
+_tov1.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
+_tov1.has_foreground_program = lambda: False
+_tov1._hook_ask = lambda _c, _r: 'discard'
+_tov1notes = []
+_tov1.hook_notice.connect(_tov1notes.append)
+_tov1s = spy_writes(_tov1)
+_tov1._inject_text_reviewed('ls\nwhoami\n')       # v1 handler allows; no multiline ack
+ok(b''.join(_tov1s) == b'' and _tov1notes and 'multi-line review' in _tov1notes[-1],
+   'a v1-handler ALLOW on a multi-line batch is refused (no multiline_reviewed ack)')
+_tov1.close()
+
+# single-line injection keeps the per-line path (there is no multi-line stale-state window
+# for one submitted line): an allowed line submits, and a flagged line the user Runs submits
+# and lets the injection settle. (Only >=2 submitted lines take the atomic whole-script path.)
+_injs1 = SecureTerminal(command='/bin/cat')
+_injs1.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
+_injs1.has_foreground_program = lambda: False
+_injs1w = spy_writes(_injs1)
+_injs1._inject_text_reviewed('ls\n')                    # a single allowed line
+ok(b'ls\r' in b''.join(_injs1w),
+   'single-line injection: an allowed line submits via the per-line path')
+_injs1.close()
+_injs2 = SecureTerminal(command='/bin/cat')
+_injs2.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
+_injs2.has_foreground_program = lambda: False
+_injs2w = spy_writes(_injs2)
+_injs2._hook_ask = lambda _c, _r: 'run'                 # approve the flagged single line
+_injs2._inject_text_reviewed('sudo sh\n')               # a single asked-then-Run line
+ok(b'sudo sh\r' in b''.join(_injs2w) and not _injs2._line_dirty,
+   'single-line injection: an asked line chosen Run submits and settles the prompt')
+_injs2.close()
+
+# Ctrl+\ (SIGQUIT): whether the tty flushes or RETAINS the pending line is tty/shell-dependent
+# (NOFLSH off flushes; `stty noflsh` or bash trapping SIGQUIT RETAINS it) and unobservable to
+# us. So the line is marked UNVERIFIABLE -- the next Enter must fail safe (re-ask/re-judge),
+# never auto-submit. Clearing the mirror to empty (the prior fix) let a RETAINED "safe"+typed
+# command run UNJUDGED on the next Enter (the noflsh empty-mirror bypass, cf. #34/#35).
+_sq = SecureTerminal(command='/bin/cat')
+_sq.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
+_sq.has_foreground_program = lambda: False
+_sqs = spy_writes(_sq)
+_htype(_sq, 'safe')
+ok(_sq._line_buffer == 'safe', 'the mirror holds the typed prefix before Ctrl+\\')
+key(_sq, Qt.Key.Key_Backslash, mods=Qt.KeyboardModifier.ControlModifier)
+ok(b'\x1c' in b''.join(_sqs), 'Ctrl+\\ sends SIGQUIT (0x1c) to the child')
+ok(_sq._line_dirty,
+   'Ctrl+\\ marks the line unverifiable (SIGQUIT may RETAIN the line under noflsh)')
+# the next Enter must re-ask via the dirty branch, never auto-submit a possibly-retained line
+_sqs.clear()
+_sqasked = []
+_sq._hook_ask = lambda _c, _r: (_sqasked.append(1) or 'discard')
+key(_sq, Qt.Key.Key_Return)
+ok(_sqasked and b'\r' not in b''.join(_sqs),
+   'the next Enter after Ctrl+\\ re-asks (dirty branch), never auto-submits a retained line')
+_sq.close()
+
 # OSC-52 reply truncation: a slow/gone child can leave the ~87 KiB reply truncated, its
 # buffered prefix then lacking the OSC terminator -- a dangling escape that swallows the
 # next pty reader's output. A truncated write (_write returns False) is best-effort
@@ -2582,6 +2832,50 @@ _clp._last_clip_read = 0
 _clp._reply_clipboard()
 ok(len(_clpw2) == 1, 'a fully-written OSC-52 reply appends no extra terminator')
 _clp.close()
+
+# SEC-1: OSC-52 clipboard-read consent is a TOCTOU. osc_clipboard_read can be disabled
+# WHILE the consent dialog is open; a later Allow must NOT answer the stale READ query.
+_ctc = SecureTerminal(command='/bin/cat')
+_ctc.apply_osc('osc_clipboard_read', True)
+QGuiApplication.clipboard().setText('S3CRET')
+_ctcw = []
+_ctc._write = lambda _d: (_ctcw.append(bytes(_d)) or True)
+_ctc._last_clip_read = 0
+_ctc._clipboard_read = 'pending'                       # a consent dialog is open
+_ctc.apply_osc('osc_clipboard_read', False)            # feature disabled while it is open
+ok(_ctc._clipboard_read is None,
+   'SEC-1: disabling osc_clipboard_read drops the in-flight pending consent')
+_ctc.grant_clipboard_read(_ctc.CLIP_ALLOW_ALWAYS)      # user clicks Allow on the stale dialog
+ok(not any(b'\x1b]52;c;' in _w for _w in _ctcw),
+   'SEC-1: a grant after the feature was disabled writes NO OSC-52 reply (no clipboard exfil)')
+# guard-only path: force pending with the feature already off, grant re-checks the flag
+_ctc._osc['osc_clipboard_read'] = False
+_ctc._clipboard_read = 'pending'
+_ctc._last_clip_read = 0                                # else the 1s rate-limit masks a reply
+_ctcw.clear()
+_ctc.grant_clipboard_read(_ctc.CLIP_ALLOW_ONCE)
+ok(not any(b'\x1b]52;c;' in _w for _w in _ctcw),
+   'SEC-1: grant_clipboard_read re-checks the feature flag and withholds the reply when off')
+_ctc.close()
+
+# SEC-1 (stale dialog): a consent dialog whose request was ABANDONED (osc_clipboard_read
+# disabled) must NOT grant the tab after a re-enable -- a disable+re-enable+stale-allow-always
+# would else grant allow-always and the next read would reply with no fresh prompt.
+_cts = SecureTerminal(command='/bin/cat')
+_cts.apply_osc('osc_clipboard_read', True)
+_cts._clipboard_read = 'pending'                       # a consent dialog is open
+_cts.apply_osc('osc_clipboard_read', False)            # abandon it (pending -> None)
+_cts.apply_osc('osc_clipboard_read', True)             # re-enable
+_cts.grant_clipboard_read(_cts.CLIP_ALLOW_ALWAYS)      # stale Allow-Always click
+ok(_cts._clipboard_read is None,
+   'SEC-1: a stale allow-always (dialog abandoned by a disable) does NOT grant the tab')
+_ctsw = []
+_cts._write = lambda _d: (_ctsw.append(bytes(_d)) or True)
+_cts._last_clip_read = 0
+_cts._osc_clipboard_read()                             # the next OSC-52 read query
+ok(_cts._clipboard_read == 'pending' and not any(b'\x1b]52;c;' in _w for _w in _ctsw),
+   'SEC-1: after a stale grant the next read RE-ASKS (pending), it does not auto-reply')
+_cts.close()
 
 # F5: reap_pty_children WNOHANG-reaps ONLY our registered pty children, so the app can
 # drop the blanket SIGCHLD=SIG_IGN that made every subprocess returncode read 0. Pin
@@ -3496,6 +3790,15 @@ if tui_available():
     tui.apply_osc('osc_cwd', True)
     tui._handle_osc(b'\x1b]7;file://h/home/u/p\x07')
     ok(_cwds == ['/home/u/p'], 'enabled: OSC 7 reports the unquoted path')
+    # #6: a long cwd path must show up to 4096 chars in the tab tooltip, not be cut to 80.
+    # sanitize_title's default limit is 80, so the old trailing [:4096] slice was dead -- the
+    # bound is now passed to the sanitizer.
+    _cwds.clear()
+    tui._reported_cwd = ''
+    tui._handle_osc(b'\x1b]7;file://h/' + b'd' * 300 + b'\x07')
+    ok(_cwds and len(_cwds[-1]) > 80,
+       '#6: a long OSC 7 cwd path is bounded at 4096, not truncated to the sanitize_title '
+       'default of 80 (got %d)' % (len(_cwds[-1]) if _cwds else -1))
     # iTerm2 OSC 1337 has NO toggle: file transfer from untrusted output is
     # indefensible, so it can never be enabled and is always neutralized
     # (recognized, dropped, never leaked). It is not even a registered feature.
@@ -3814,6 +4117,42 @@ win.set_tab_color(0, None)
 # _tab_colors is the only state that answers the question.
 ok(not win.tabs.tabIcon(0).isNull(), 'tab keeps its number icon after colour cleared')
 ok(win._tab_colors.get(_term0) is None, 'tab colour cleared')
+# COR-6: the Custom... colour picker returns an INVALID QColor on Cancel, which
+# set_tab_color folds into its Clear path -- so passing it straight through erased the
+# tab's colour on Cancel. _pick_custom_tab_color guards on isValid(): Cancel is a no-op.
+from PyQt6.QtWidgets import QColorDialog as _QCD              # noqa: E402
+ok(hasattr(win, '_pick_custom_tab_color'),
+   'COR-6: a guarded custom-colour picker (isValid) exists')
+if hasattr(win, '_pick_custom_tab_color'):
+    win.set_tab_color(0, QColor('#d83933'))
+    _o_getcolor = _QCD.getColor
+    try:
+        _QCD.getColor = staticmethod(lambda *a, **k: QColor())            # invalid = Cancel
+        win._pick_custom_tab_color(0)
+        ok(win._tab_colors.get(_term0) == '#d83933',
+           'COR-6: Custom... Cancel (invalid QColor) leaves the tab colour unchanged')
+        _QCD.getColor = staticmethod(lambda *a, **k: QColor('#1f8a54'))   # a real pick
+        win._pick_custom_tab_color(0)
+        ok(win._tab_colors.get(_term0) == '#1f8a54',
+           'COR-6: Custom... with a valid pick applies the colour')
+    finally:
+        _QCD.getColor = _o_getcolor
+        win.set_tab_color(0, None)
+
+# COR-4: a COPY review held with the terminal focused -- Enter/Esc must dispatch the COPY
+# reject, not the paste path (which would clear _pending_paste and strand _pending_copy).
+_cr = SecureTerminal(command='/bin/cat', tui=True)
+_cr.apply_copy_warn('always')
+feed_output(_cr, b'hello')
+QGuiApplication.clipboard().setText('SENTINEL')
+_cr.selectAll()
+_cr.copy()
+ok(_cr._pending_copy is not None and _cr._review_active,
+   'COR-4 setup: selectAll + copy opens a pending copy review')
+key(_cr, Qt.Key.Key_Return)
+ok(_cr._pending_copy is None,
+   'COR-4: Enter on a copy review dispatches the copy reject (no stale _pending_copy)')
+_cr.close()
 # --- find in scrollback: per-tab + all-tabs, over the neutralized display text ---
 from PyQt6.QtGui import QTextCursor as _QTC                  # noqa: E402
 _ft = win.current()
@@ -5534,7 +5873,12 @@ def _clip_read(feature_on, grant):
     _sent = []
     c._write = _sent.append                # pylint: disable=protected-access
     if grant is not None:
-        c.grant_clipboard_read(grant)
+        # A tab that ALREADY carries a persistent decision (allow-always / deny-always)
+        # from an earlier dialog: a later read reads _clipboard_read directly, it does
+        # not reopen a dialog. grant_clipboard_read ONLY resolves a live 'pending' dialog
+        # (a late click on an abandoned one is dropped), so model the standing decision
+        # as the persisted state, not a fresh grant.
+        c._clipboard_read = bool(grant)
     c._handle_osc(b'\x1b]52;c;?\x07')
     c.close()
     return _reqs, _sent
@@ -5573,7 +5917,7 @@ _QGA.clipboard().setText('clip-secret')       # restore for later readers
 # rate-limited: a granted tab cannot be flood-exfiltrated
 _cg = SecureTerminal(command='/bin/cat', tui=True)
 _cg.apply_osc('osc_clipboard_read', True)
-_cg.grant_clipboard_read(True)
+_cg._clipboard_read = True                 # a tab already granted allow-always
 _cgs = []
 _cg._write = _cgs.append
 _cg._handle_osc(b'\x1b]52;c;?\x07')
@@ -5587,7 +5931,7 @@ _cps = []
 _cp._write = _cps.append
 _cp._handle_osc(b'\x1b]52;c;?\x07')        # -> pending, dialog asked, no reply yet
 eq(_cps, [], 'a pending clipboard request sends no reply until the user decides')
-_cp.grant_clipboard_read(True)             # user allows -> the pending query is answered NOW
+_cp.grant_clipboard_read(_cp.CLIP_ALLOW_ALWAYS)   # user allows -> the pending query is answered NOW
 ok(len(_cps) == 1 and _cps[0].startswith(b'\x1b]52;c;'),
    'granting a pending request answers the query that opened the dialog')
 _cp.close()
@@ -5649,8 +5993,10 @@ _clip_ask(_ga)
 eq(len(_gar), 0, 'OSC 52 read: global always-allow answers WITHOUT a dialog')
 ok(len(_gas) == 1 and _gas[0].startswith(b'\x1b]52;c;'),
    'OSC 52 read: global always-allow replies to an undecided tab')
-# ...but an explicit per-tab Deny still wins over the global default
-_ga.grant_clipboard_read(_ga.CLIP_DENY_ALWAYS)
+# ...but an explicit per-tab Deny still wins over the global default. Global always-allow
+# answers with NO dialog, so no 'pending' is ever raised for grant to resolve -- the
+# standing per-tab deny is the persisted state (False), read directly.
+_ga._clipboard_read = False
 _gas.clear()
 _clip_ask(_ga)
 eq(_gas, [], 'OSC 52 read: a per-tab Deny wins over global always-allow')

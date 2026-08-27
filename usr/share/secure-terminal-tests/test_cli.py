@@ -303,6 +303,64 @@ _o4b, _rc4b = run_in_pty(['--', 'cat'], tty_stdin=False, feed=b'hi\n',
 ok(b'hi' in _o4b, 'the wrapper forwards our input to the child (cat echoes it)')
 eq(_rc4b, 0, 'a stdin EOF is forwarded so the child (cat) sees end-of-input and exits')
 
+# COR-2: after stdin EOF the wrapper stops selecting on stdin and re-sends ^D at a SLOW
+# cadence, not a 100%-CPU flood. A closed fd stays readable, so the base code re-read it every
+# iteration and spun spamming EOF for as long as the child lived. Count the b'\x04' writes
+# while a child (sleep) that does NOT exit on ^D lingers briefly: a few nudges, not thousands.
+_eof_writes = [0]
+_real_oswrite = cli.os.write
+def _count_eof_write(_fd, _data):
+    if _data == b'\x04':
+        _eof_writes[0] += 1
+    return _real_oswrite(_fd, _data)
+cli.os.write = _count_eof_write
+try:
+    run_in_pty(['--', 'sleep', '0.3'], tty_stdin=False, close_stdin=True, settle=0.8)
+finally:
+    cli.os.write = _real_oswrite
+ok(_eof_writes[0] <= 3,
+   'COR-2: stdin EOF sends the child a few slow EOF nudges, not a 100%%-CPU flood while '
+   'the child lives (no busy-loop) -- got %d b\'\\x04\' writes' % _eof_writes[0])
+
+# COR-2 bound: a program that reads ^D as DATA (a raw-mode reader) never exits on it, so the
+# re-sends are CAPPED at cli._EOF_NUDGE_MAX -- not a per-200ms ^D stream for the child's whole
+# life. A child living past the ~2s budget receives at most that many nudges, then none.
+_eof_bound = [0]
+_real_ob = cli.os.write
+def _count_bound(_fd, _data):
+    if _data == b'\x04':
+        _eof_bound[0] += 1
+    return _real_ob(_fd, _data)
+cli.os.write = _count_bound
+try:
+    run_in_pty(['--', 'sleep', '2.6'], tty_stdin=False, close_stdin=True, settle=0.5)
+finally:
+    cli.os.write = _real_ob
+ok(_eof_bound[0] <= cli._EOF_NUDGE_MAX + 1,
+   'COR-2: EOF nudges are capped at _EOF_NUDGE_MAX for a child that never exits on ^D (no '
+   'indefinite ^D stream) -- got %d, cap %d' % (_eof_bound[0], cli._EOF_NUDGE_MAX))
+
+# COR-2 robustness: the child can exit and close the pty between the writable check and the
+# EOF write, so os.write(fd, ^D) raises OSError(EIO). The wrapper must catch it and end the
+# loop cleanly -- on the unfixed code the OSError escapes cli.main and crashes the wrapper
+# with a traceback. Force the nudge write to raise and assert nothing escapes cli.main.
+_real_eofw = cli.os.write
+def _raise_on_eof(_fd, _data):
+    if _data == b'\x04':
+        raise OSError(5, 'EIO')          # pty closed under us
+    return _real_eofw(_fd, _data)
+cli.os.write = _raise_on_eof
+_eof_escaped = None
+try:
+    try:
+        _oe2, _rce2 = run_in_pty(['--', 'sleep', '0.5'], tty_stdin=False, close_stdin=True, settle=0.5)
+    except OSError as _eof_e:
+        _eof_escaped = _eof_e            # unfixed: the nudge OSError escapes cli.main
+finally:
+    cli.os.write = _real_eofw
+ok(_eof_escaped is None,
+   'COR-2: a PTY close during EOF delivery (os.write EIO) exits cleanly -- no OSError escapes cli.main')
+
 # --- stdin forwarding + Enter: typed input runs on the user's explicit Enter ----
 # 'exit 3' is forwarded verbatim (it carries no submit byte), then a SEPARATE lone
 # Enter keystroke submits it -- so an ordinary command still runs.

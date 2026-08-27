@@ -76,7 +76,7 @@ assert_contains() {
 ## The option exists and is wired to the variable 2100 reads.
 assert_contains "${parse_cmd}" '--package-jobs)' \
    "parse-cmd accepts --package-jobs"
-assert_contains "${parse_cmd}" 'export dist_build_package_jobs="$2"' \
+assert_contains "${parse_cmd}" 'export dist_build_package_jobs="${2:-}"' \
    "parse-cmd exports dist_build_package_jobs from --package-jobs"
 assert_contains "${parse_cmd}" '--package-jobs N' \
    "parse-cmd documents --package-jobs in its usage"
@@ -84,7 +84,7 @@ assert_contains "${parse_cmd}" '--package-jobs N' \
 ## Both preconditions are CHECKED, not merely documented.
 assert_contains "${create_packages}" 'make_use_cowbuilder' \
    "2100 checks that cowbuilder is in use"
-assert_contains "${create_packages}" "grep --quiet --fixed-strings -- 'make_cow_suffix'" \
+assert_contains "${create_packages}" "grep --fixed-strings -- 'make_cow_suffix'" \
    "2100 probes genmkfile for make_cow_suffix support"
 
 ## An unmet precondition must fall back, and must say so. Both matter: a silent

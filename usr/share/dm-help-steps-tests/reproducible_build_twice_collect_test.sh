@@ -195,9 +195,9 @@ else
 fi
 
 ## --- failure paths: only bad outcomes reach these, so no green run does ------
-## The exit contract is load-bearing: 0 reproducible, 1 differ, 2 usage /
-## artifact-not-found, 3 a build failed. Conflating 1 with 2 or 3 is how a
-## not-found once read as "images differ".
+## The exit contract is load-bearing: 0 reproducible, 4 differ, 2 usage /
+## artifact-not-found, 3 a build failed, 1 internal error. Conflating them is how
+## a not-found once read as "images differ".
 
 reset_binary_dir() {
    safe-rm --recursive --force -- "${binary_dir}"
@@ -236,15 +236,15 @@ case "${out}" in
 esac
 install_build_stub deterministic
 
-## Two DIFFERING artifacts must propagate the comparator's exit 1 unchanged.
+## Two DIFFERING artifacts must propagate the comparator's exit 4 unchanged.
 install_build_stub differing
 reset_binary_dir
 rc=0
 out="$(run_script 2>&1)" || rc="$?"
-if [ "${rc}" -eq 1 ]; then
-   pass "differing builds: comparator's exit 1 propagates"
+if [ "${rc}" -eq 4 ]; then
+   pass "differing builds: comparator's exit 4 propagates"
 else
-   fail "differing builds: exit ${rc}, expected 1 -- the verdict must reach the caller"
+   fail "differing builds: exit ${rc}, expected 4 -- the verdict must reach the caller"
 fi
 install_build_stub deterministic
 

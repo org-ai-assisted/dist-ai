@@ -256,6 +256,19 @@ try:
     M.ipc.send_request = lambda *_a, **_k: {'ok': True, 'text': 'rendered text'}
     eq(_ctl_main(['dump-tab', '--tab', 'title:one', '--lines', '5']), 0,
        'ctl dump-tab -> 0')
+    # COR-7 client half: --lines 0 must be FORWARDED (0 is falsy, the base guard dropped it).
+    _sent0 = {}
+    def _cap_req(*_a, **_k):
+        for _x in _a:
+            if isinstance(_x, dict) and 'op' in _x:
+                _sent0.clear()
+                _sent0.update(_x)
+        return {'ok': True, 'text': ''}
+    M.ipc.send_request = _cap_req
+    eq(_ctl_main(['dump-tab', '--tab', 'title:one', '--lines', '0']), 0,
+       'ctl dump-tab --lines 0 -> 0')
+    ok(_sent0.get('lines') == 0,
+       'COR-7: the client forwards --lines 0 (not dropped as a falsy value)')
 finally:
     M.ipc.send_request = _orig_sr
 
@@ -745,6 +758,14 @@ win._prog_titles.pop(_pw, None)
 win._refresh_tab_label(_pw)
 eq(win.tabs.tabText(win.tabs.indexOf(_pw)), 'myproj',
    '#90: no explicit title -> the tab shows the pwd basename')
+# a raw cwd basename is a legal Linux dir name and can carry bidi/control (e.g.
+# $'a\u202eb'); it must be sanitized before reaching the tab bar, like every other
+# label source -- else it flashes an RLO/control glyph live as you cd around.
+_pw.cwd_basename = lambda: 'a\u202eb'
+win._refresh_tab_label(_pw)
+ok('\u202e' not in win.tabs.tabText(win.tabs.indexOf(_pw)),
+   'the live cwd basename is sanitized in the tab label (no bidi/control flash)')
+_pw.cwd_basename = lambda: 'myproj'
 win._user_titles[_pw] = 'Named'
 win._refresh_tab_label(_pw)
 eq(win.tabs.tabText(win.tabs.indexOf(_pw)), 'Named',
@@ -827,6 +848,16 @@ def _disp(req):
 
 ok(not win._dispatch_request(b'not json at all')['ok'],
    'ipc: unparseable request bytes are rejected')
+# #2: json.loads raises RecursionError (not ValueError) on deeply-nested input; uncaught it
+# escapes the Qt readyRead slot and aborts the whole instance -- a same-UID control-socket
+# DoS. _dispatch_request must catch it and return a malformed reply, not raise.
+_deep_raised = None
+try:
+    _deep = win._dispatch_request(b'[' * 100000)
+except RecursionError as _e:
+    _deep_raised, _deep = _e, None
+ok(_deep_raised is None and isinstance(_deep, dict) and not _deep['ok'],
+   '#2: a deeply-nested control-socket request is rejected as malformed, not a RecursionError crash')
 ok(not _disp(['not', 'a', 'dict'])['ok'], 'ipc: a non-dict request is rejected')
 _rp = _disp({'op': 'ping'})
 ok(_rp['ok'] and 'pid' in _rp, 'ipc: ping replies ok + pid')
@@ -850,6 +881,13 @@ try:
     ok(_disp({'op': 'ctl-set-tab-title', 'tab': 'title:%s' % _title0,
               'title': 'Renamed'})['ok'],
        'ipc: ctl-set-tab-title matched by title')
+    # SEC-3: a user/IPC-set title bypasses the program-title sanitizer, so the write site
+    # must strip bidi/homoglyph -- else an RLO override spoofs the tab label, the bell
+    # notification and the OSC-52 consent dialog, which all read _user_titles.
+    ok(_disp({'op': 'ctl-set-tab-title', 'tab': 'id:%d' % _tid0,
+              'title': 'a\u202eb'})['ok'], 'ipc: ctl-set-tab-title with a bidi title accepted')
+    ok('\u202e' not in win._user_titles.get(_tab0, ''),
+       'SEC-3: a ctl-set-tab-title bidi/RLO override is sanitized out at the write site')
     ok(not _disp({'op': 'ctl-set-tab-title', 'tab': 'id:%d' % _tid0,
                   'title': 5})['ok'],
        'ipc: ctl-set-tab-title with a non-string title is rejected')
@@ -1683,6 +1721,43 @@ win._add_placeholder_tab({'name': ['not', 'a', 'string'], 'cwd': '/tmp'}, _befor
 ok(win.tabs.count() == _before_ct + 1,
    '#4: a non-string saved tab name falls back to a label, no restore crash')
 win.tabs.removeTab(win.tabs.count() - 1)
+# a placeholder tab must not flash a crafted (bidi/RLO) session name in the tab bar before
+# the real tab swaps in -- the label is sanitize_title'd like the real tab.
+_before_ph = win.tabs.count()
+win._add_placeholder_tab({'name': 'a\u202eb', 'cwd': '/tmp'}, _before_ph)
+ok('\u202e' not in win.tabs.tabText(_before_ph),
+   'a placeholder tab label sanitizes a bidi/RLO session name (no control/bidi flash)')
+win.tabs.removeTab(win.tabs.count() - 1)
+# the placeholder's cwd-basename FALLBACK (no saved name) has the same class of gap:
+# a bidi dir name in the saved cwd must be sanitized too, not just the name field.
+_before_phc = win.tabs.count()
+win._add_placeholder_tab({'cwd': '/tmp/a\u202eb'}, _before_phc)
+ok('\u202e' not in win.tabs.tabText(_before_phc),
+   'a placeholder tab label sanitizes a bidi/RLO cwd basename (name-less fallback)')
+win.tabs.removeTab(win.tabs.count() - 1)
+# #3: a restore placeholder (bare QWidget) must never crash a current()-consumer. setTabEnabled
+# (False) blocks a mouse click but NOT setCurrentIndex (_goto_tab / _on_tab_step), so current()
+# returns None for a non-terminal current widget and the nav guards skip a disabled tab.
+win.tabs.setCurrentIndex(0)
+_real_idx = win.tabs.currentIndex()
+win._add_placeholder_tab({'cwd': '/tmp'}, win.tabs.count())   # append a disabled placeholder
+_phi = win.tabs.count() - 1
+win.tabs.setCurrentIndex(_phi)                                # force it current (bypasses setTabEnabled)
+ok(win.current() is None,
+   '#3: current() returns None when a restore placeholder is the current widget')
+_cons_raised = None
+try:
+    win.copy_selection()                                     # pre-fix: current() is the placeholder -> QWidget.copy() AttributeError
+except Exception as _e:
+    _cons_raised = _e
+ok(_cons_raised is None, '#3: a current()-consumer is a safe no-op while a placeholder is current')
+win.tabs.setCurrentIndex(_real_idx)
+win._goto_tab(_phi)                                          # Alt+N to the placeholder -> guard skips it
+ok(win.tabs.currentIndex() == _real_idx, '#3: _goto_tab skips a disabled placeholder target')
+win.tabs.setCurrentIndex(_phi - 1)
+win._on_tab_step(1)                                          # step toward the placeholder -> guard skips
+ok(win.tabs.currentIndex() == _phi - 1, '#3: _on_tab_step skips a disabled placeholder target')
+win.tabs.removeTab(_phi)
 # #5: a non-ASCII / non-str saved window geometry must not crash startup.
 _o_persist = win._persist_session
 win._persist_session = True                  # else _restore_window_geometry no-ops
@@ -1883,6 +1958,12 @@ _bt = win.current()
 win._on_bell_tray(_bt, 'label')
 win._on_cwd_changed(_bt, '/tmp/some/where')  # nosec B108 -- literal path string arg to a handler under test; nothing is created
 ok(True, 'notification, bell-tray and cwd-changed handlers run')
+# SEC-2: the OSC-7 cwd tooltip must be html-escaped (setTabToolTip renders rich text), or
+# a cwd path could inject markup -- the sibling _refresh_tab_label already escapes.
+win._on_cwd_changed(_bt, '/<img src=x>')  # nosec B108 -- literal handler arg, nothing created
+_cwdtip = win.tabs.tabToolTip(win.tabs.indexOf(_bt))
+ok('<img' not in _cwdtip and '&lt;img' in _cwdtip,
+   'SEC-2: an OSC-7 cwd path is html-escaped in the tab tooltip (no raw markup)')
 
 # --- _set_shortcuts: a reserved key, a duplicate, and an unknown ident ---------
 _ids = list(win._shortcuts)[:2]
@@ -1912,6 +1993,26 @@ if win.tabs.count() == 0:
 _t0b = win.tabs.widget(0)
 _tid0b = win._tab_ids.get(_t0b)
 _t0b._append('hello world of text')
+# COR-7: --lines 0 must dump ZERO lines, not the whole tab. The server's `lines > 0` guard
+# defaulted 0 to a full dump, and text.split('\n')[-0:] is the WHOLE list (negative-zero).
+_rl0 = win._ipc_ctl('ctl-dump-tab', {'tab': 'id:%d' % _tid0b, 'lines': 0})
+ok(_rl0['ok'] and _rl0['text'] == '',
+   'COR-7: ctl-dump-tab lines=0 dumps zero lines, not the full tab')
+_rl1 = win._ipc_ctl('ctl-dump-tab', {'tab': 'id:%d' % _tid0b, 'lines': 1})
+ok(_rl1['ok'] and 'hello world of text' in _rl1['text'],
+   'COR-7: ctl-dump-tab lines=1 still dumps the last line')
+# --lines N with N > available must return ALL lines. Base used [-lines:] (correct for N>len);
+# the len=0 fix regressed it to parts[len-lines:] -- a negative start returning only the last
+# (lines-len) lines. Multi-line tab, request one more than it has -> all lines, not just one.
+_t0b._append('\nCANARY-DUMP-L2\nCANARY-DUMP-L3')
+_parts_now = _t0b.toPlainText().split('\n')
+_rlN = win._ipc_ctl('ctl-dump-tab', {'tab': 'id:%d' % _tid0b, 'lines': len(_parts_now) + 1})
+ok(_rlN['ok'] and _rlN['text'].split('\n') == _parts_now,
+   'COR-7: ctl-dump-tab --lines > available returns ALL lines, not just the last')
+# bool is an int subclass: lines=true must be REJECTED (full dump), not sliced as lines=1.
+_rlb = win._ipc_ctl('ctl-dump-tab', {'tab': 'id:%d' % _tid0b, 'lines': True})
+ok(_rlb['ok'] and _rlb['text'].split('\n') == _parts_now,
+   'COR-7: ctl-dump-tab lines=true (bool) is rejected -> full dump, not lines=1')
 _o_dumpmax = M._DUMP_MAX
 try:
     M._DUMP_MAX = 4                          # force the tail-cap branch

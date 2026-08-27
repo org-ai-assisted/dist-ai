@@ -17,9 +17,9 @@
 ## Asserts:
 ##   - each kind runs exactly its steps, in order
 ##   - 'general' and an unknown kind run nothing
-##   - tolerate_failure 'true' continues past a failing step (the signal path,
+##   - the 'tolerate-failure' mode continues past a failing step (the signal path,
 ##     already exiting, must not let cleanup mask the signal)
-##   - tolerate_failure 'false' propagates the failure (the ERR path)
+##   - the 'abort-on-failure' mode propagates the failure (the ERR path)
 ##
 ## Needs no root and no mount capability.
 ##
@@ -33,6 +33,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 test_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -116,29 +117,29 @@ main() {
    make_stub_steps "${stub_dir}" "${log_file}" ""
 
    true > "${log_file}"
-   exception_handler_cleanup_run unchroot_unmount "false"
+   exception_handler_cleanup_run unchroot_unmount "abort-on-failure"
    steps_ran="$(tr '\n' ' ' < "${log_file}")"
    require_steps "${steps_ran}" \
       "remove-local-temp-apt-repo unchroot-raw unprevent-daemons-from-starting unmount-raw " \
       "kind 'unchroot_unmount' runs its four steps in order"
 
    true > "${log_file}"
-   exception_handler_cleanup_run unmount "false"
+   exception_handler_cleanup_run unmount "abort-on-failure"
    steps_ran="$(tr '\n' ' ' < "${log_file}")"
    require_steps "${steps_ran}" "unmount-raw " "kind 'unmount' runs unmount-raw"
 
    true > "${log_file}"
-   exception_handler_cleanup_run unmount_lb "false"
+   exception_handler_cleanup_run unmount_lb "abort-on-failure"
    steps_ran="$(tr '\n' ' ' < "${log_file}")"
    require_steps "${steps_ran}" "unmount-lb " "kind 'unmount_lb' runs unmount-lb"
 
    true > "${log_file}"
-   exception_handler_cleanup_run general "false"
+   exception_handler_cleanup_run general "abort-on-failure"
    steps_ran="$(tr '\n' ' ' < "${log_file}")"
    require_steps "${steps_ran}" "" "kind 'general' runs nothing"
 
    true > "${log_file}"
-   exception_handler_cleanup_run some-unknown-kind "false"
+   exception_handler_cleanup_run some-unknown-kind "abort-on-failure"
    steps_ran="$(tr '\n' ' ' < "${log_file}")"
    require_steps "${steps_ran}" "" "unknown kind runs nothing"
 
@@ -150,22 +151,22 @@ main() {
 
    true > "${log_file}"
    run_rc=0
-   exception_handler_cleanup_run unchroot_unmount "true" || run_rc="$?"
+   exception_handler_cleanup_run unchroot_unmount "tolerate-failure" || run_rc="$?"
    steps_ran="$(tr '\n' ' ' < "${log_file}")"
    require_steps "${steps_ran}" \
       "remove-local-temp-apt-repo unchroot-raw unprevent-daemons-from-starting unmount-raw " \
-      "tolerate_failure 'true' continues past a failing step"
+      "the 'tolerate-failure' mode continues past a failing step"
    require_steps "${run_rc}" "0" "tolerate_failure 'true' returns success"
 
    ## The ERR path must see the failure instead of silently continuing.
    true > "${log_file}"
    run_rc=0
-   exception_handler_cleanup_run unchroot_unmount "false" || run_rc="$?"
+   exception_handler_cleanup_run unchroot_unmount "abort-on-failure" || run_rc="$?"
    steps_ran="$(tr '\n' ' ' < "${log_file}")"
    require_steps "${steps_ran}" "remove-local-temp-apt-repo unchroot-raw " \
       "tolerate_failure 'false' stops at the failing step"
    if [ ! "${run_rc}" = "0" ]; then
-      pass "tolerate_failure 'false' propagates the failure (rc ${run_rc})"
+      pass "the 'abort-on-failure' mode propagates the failure (rc ${run_rc})"
    else
       fail "tolerate_failure 'false' swallowed the failure"
    fi

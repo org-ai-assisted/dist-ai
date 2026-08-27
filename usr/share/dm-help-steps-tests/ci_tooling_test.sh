@@ -24,6 +24,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 if [ -n "${DIST_AI_DIR:-}" ]; then
    dist_ai_dir="${DIST_AI_DIR}"
@@ -88,7 +89,7 @@ fake_home="${work_dir}/home"
 mkdir --parents -- "${fake_home}/.local/bin"
 
 status=0
-output="$( HOME="${fake_home}" "${bin_dir}/dist-ai-dev-symlinks" --dry-run 2>&1 )" || status="$?"
+output="$( HOME="${fake_home}" PATH="${fake_home}/.local/bin:/usr/bin:/bin" "${bin_dir}/dist-ai-dev-symlinks" --dry-run 2>&1 )" || status="$?"
 if [ "${status}" -eq 0 ] && [[ "${output}" == *"would link"* ]]; then
    pass 'dist-ai-dev-symlinks --dry-run reports what it would link'
 else
@@ -107,7 +108,7 @@ fi
 real_file="${fake_home}/.local/bin/dm-preflight"
 printf '%s\n' 'do not clobber me' > "${real_file}"
 status=0
-output="$( HOME="${fake_home}" "${bin_dir}/dist-ai-dev-symlinks" 2>&1 )" || status="$?"
+output="$( HOME="${fake_home}" PATH="${fake_home}/.local/bin:/usr/bin:/bin" "${bin_dir}/dist-ai-dev-symlinks" 2>&1 )" || status="$?"
 if [ -f "${real_file}" ] && [ ! -L "${real_file}" ] \
    && grep --quiet --fixed-strings 'do not clobber me' -- "${real_file}"; then
    pass 'a real file at a target name is left untouched'
@@ -133,9 +134,9 @@ fi
 
 ## Re-running is a no-op, not a pile of churn: it must report them as current.
 status=0
-output="$( HOME="${fake_home}" "${bin_dir}/dist-ai-dev-symlinks" 2>&1 )" || status="$?"
+output="$( HOME="${fake_home}" PATH="${fake_home}/.local/bin:/usr/bin:/bin" "${bin_dir}/dist-ai-dev-symlinks" 2>&1 )" || status="$?"
 if [ "${status}" -eq 0 ] && [[ "${output}" == *"already current"* ]] \
-   && [[ "${output}" != *"0 already current"* ]]; then
+   && [[ "${output}" != *" 0 already current"* ]]; then
    pass 're-running is idempotent and reports links as already current'
 else
    fail "re-run gave status=${status} output=${output}"
