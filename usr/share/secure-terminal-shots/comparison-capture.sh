@@ -100,8 +100,9 @@ cleanup() {
    shots_deregister_run "${run_marker}" 2>/dev/null || true
    [ -z "${wm_pid}" ] || kill "${wm_pid}" 2>/dev/null || true
    [ -z "${wm_pid}" ] || wait "${wm_pid}" 2>/dev/null || true
-   ## zoom-live: remove the throwaway privileged remote_control drop-in it wrote (root-owned, so sudo).
-   [ -z "${zoom_live_rc_dropin:-}" ] || sudo safe-rm --force -- "${zoom_live_rc_dropin}" 2>/dev/null || true
+   ## zoom-live: remove the throwaway privileged remote_control drop-in (root-owned, so sudo); LOUD
+   ## on failure (a leaked drop-in keeps remote_control on system-wide), but never aborts the trap.
+   zoom_live_remove_dropin || true
    safe-rm -r -f -- "${runtime_dir}" 2>/dev/null || true
 }
 
@@ -496,6 +497,18 @@ st_wait_render_settled() {  ## $1=window-id
    safe-rm --force -- "${a}" "${b}" 2>/dev/null || true
 }
 
+## Remove zoom-live's throwaway privileged remote_control drop-in (root-owned, so sudo). LOUD on
+## failure: a leaked drop-in keeps remote_control enabled system-wide, so NAME the leaked path
+## rather than swallowing the error -- but return, never abort (it runs from the EXIT trap).
+zoom_live_remove_dropin() {
+   [ -n "${zoom_live_rc_dropin:-}" ] || return 0
+   if ! sudo safe-rm --force -- "${zoom_live_rc_dropin}"; then
+      printf '%s\n' "zoom-live: WARNING: could not remove privileged remote_control drop-in '${zoom_live_rc_dropin}'; remove it manually -- remote_control stays enabled system-wide until then" >&2
+      return 1
+   fi
+   return 0
+}
+
 ## zoom-live: the REAL-GUI counterpart to the offscreen zoom-shot.py diagnostic. Launch
 ## secure-terminal ONCE as the group PRIMARY (so `secure-terminal ctl` can reach it), with a
 ## full-screen TUI board, then step the font zoom LIVE via `ctl zoom` against the SAME running
@@ -504,9 +517,19 @@ st_wait_render_settled() {  ## $1=window-id
 ## the horizontal scrollbar stays suppressed on the grid and no mid-screen white band appears as
 ## the grid re-lays-out under a live zoom. Writes zoom-live-<pct>.png into ${out}.
 zoom_live_capture() {  ## $@=zoom levels (percent); default band if none
-   local levels level st_pgf st_flagf st_transcript st_wdog stwid st_win_w st_win_h st_cmd n rc_dir
-   local st_tab_line st_tab_id
-   levels="${*:-50 75 100 125 150 175 200}"
+   local level st_pgf st_flagf st_transcript st_wdog stwid st_win_w st_win_h st_cmd rc_dir dropin
+   local st_tab_line st_tab_id failures shots level_padded zoom_out_file zoom_result reap_pgid
+   local -a levels
+
+   ## Levels arrive as ARGV (an array), never word-split from a string, so a glob-looking level
+   ## (`*`) is a literal token here, not an expansion of the cwd. Empty argv -> the default band.
+   if [ "$#" -eq 0 ]; then
+      levels=(50 75 100 125 150 175 200)
+   else
+      levels=("$@")
+   fi
+   failures=0
+   shots=0
 
    ## remote_control is PRIVILEGED-ONLY (settings.PRIVILEGED_ONLY): honoured ONLY from a
    ## root-writable system drop-in (/usr/lib, /etc, /usr/local/etc). There is NO env relocation
@@ -515,13 +538,25 @@ zoom_live_capture() {  ## $@=zoom levels (percent); default band if none
    ## with sudo (the sandbox grants passwordless sudo) and removed on exit by cleanup(). This is a
    ## sandbox-only diagnostic; it never touches a real deployment's config.
    rc_dir='/usr/local/etc/secure-terminal.d'
-   if ! sudo mkdir --parents -- "${rc_dir}" \
-         || ! printf 'remote_control=true\n' | sudo tee "${rc_dir}/99-zoom-live-rc.conf" >/dev/null; then
-      printf '%s\n' 'zoom-live: cannot write the privileged remote_control drop-in (sudo?)' >&2
+   if ! sudo mkdir --parents -- "${rc_dir}"; then
+      printf '%s\n' 'zoom-live: cannot create the privileged drop-in dir (sudo?)' >&2
       return 1
    fi
-   ## Record it so cleanup() removes it even on an error/reap.
-   zoom_live_rc_dropin="${rc_dir}/99-zoom-live-rc.conf"
+   ## A UNIQUE root-owned drop-in (sudo mktemp -> 0600 root:root in ${rc_dir}, ending in .conf so
+   ## settings.py's *.conf glob reads it). NEVER a fixed name: that would TRUNCATE an admin file or
+   ## a concurrent zoom-live run's drop-in. Its exact path is recorded so cleanup removes THIS one.
+   dropin="$(sudo mktemp --tmpdir="${rc_dir}" zoom-live-rc.XXXXXX.conf)" || dropin=''
+   if [ -z "${dropin}" ]; then
+      printf '%s\n' 'zoom-live: cannot create the privileged remote_control drop-in (sudo mktemp?)' >&2
+      return 1
+   fi
+   if ! printf 'remote_control=true\n' | sudo tee -- "${dropin}" >/dev/null; then
+      printf '%s\n' "zoom-live: cannot write the privileged remote_control drop-in '${dropin}' (sudo?)" >&2
+      sudo safe-rm --force -- "${dropin}" 2>/dev/null || true
+      return 1
+   fi
+   ## Record the EXACT path so cleanup() removes it even on an error/reap.
+   zoom_live_rc_dropin="${dropin}"
 
    ## A full-screen TUI to zoom: the tui-showcase board in TUI mode (alt screen, fills the
    ## viewport) -- the same real full-viewport payload the comparison TUI shots use, so the grid is
@@ -574,18 +609,32 @@ zoom_live_capture() {  ## $@=zoom levels (percent); default band if none
    if [ -n "${st_tab_id}" ]; then
       printf '%s\n' "zoom-live: ctl reachable (remote_control on, primary socket claimed); zooming tab id:${st_tab_id}"
    else
-      printf '%s\n' 'warn zoom-live: `secure-terminal ctl ls` returned no tab (remote_control off, or not primary) -- shots may not reflect a live zoom' >&2
+      printf '%s\n' 'warn zoom-live: secure-terminal ctl ls returned no tab (remote_control off, or not primary) -- NO shot reflects a live zoom' >&2
       st_tab_id='0'
+      failures=$(( failures + 1 ))
    fi
 
-   n=0
-   for level in ${levels}; do
+   for level in "${levels[@]}"; do
+      ## Validate BEFORE the arithmetic below: a non-numeric level aborts the `$(( 10#... ))` under
+      ## errexit, collapsing the filename to `zoom-live-.png` (a silent overwrite). Accept only a
+      ## non-negative integer -- otherwise skip it, warn, and count it as a failure.
+      case "${level}" in
+         ''|*[!0-9]*)
+            printf '%s\n' "warn zoom-live: skipping non-numeric zoom level '${level}'" >&2
+            failures=$(( failures + 1 ))
+            continue
+            ;;
+      esac
       ## Step the zoom LIVE on the SAME instance -- no restart -- routed to the discovered tab.
+      zoom_out_file="${runtime_dir}/zoom.${level}.out"
       if env "DISPLAY=${xwl_display}" PYTHONPATH="${st_pkg}" python3 "${st_bin}" \
-            ctl zoom --tab "id:${st_tab_id}" "${level}" >"${runtime_dir}/zoom.${level}.out" 2>&1; then
-         printf '%s\n' "zoom-live: ctl zoom ${level} -> $(cat "${runtime_dir}/zoom.${level}.out")"
+            ctl zoom --tab "id:${st_tab_id}" "${level}" >"${zoom_out_file}" 2>&1; then
+         zoom_result="$(cat -- "${zoom_out_file}" 2>/dev/null || true)"
+         printf '%s\n' "zoom-live: ctl zoom ${level} -> ${zoom_result}"
       else
-         printf '%s\n' "warn zoom-live: ctl zoom ${level} failed: $(cat "${runtime_dir}/zoom.${level}.out")" >&2
+         zoom_result="$(cat -- "${zoom_out_file}" 2>/dev/null || true)"
+         printf '%s\n' "warn zoom-live: ctl zoom ${level} failed: ${zoom_result}" >&2
+         failures=$(( failures + 1 ))
       fi
       ## The zoom resizes the pyte grid (SIGWINCH). A LIVE full-screen TUI redraws itself on that
       ## signal, filling the new grid; a STATIC cat'd board cannot, so it would scroll out and the
@@ -598,15 +647,33 @@ zoom_live_capture() {  ## $@=zoom levels (percent); default band if none
       inject "${stwid}" "${st_cmd}"
       sleep 1
       st_wait_render_settled "${stwid}"
-      capture_settled "${out}/zoom-live-$(printf '%03d' "$(( 10#${level} ))" 2>/dev/null || printf '%s' "${level}").png" "${stwid}" skip-tighten || true
-      n=$(( n + 1 ))
+      ## Zero-pad the (validated) integer level for a stable filename; 10# forces base 10 so a
+      ## value like 050 is not read as octal.
+      level_padded="$(printf '%03d' "$(( 10#${level} ))")"
+      if capture_settled "${out}/zoom-live-${level_padded}.png" "${stwid}" skip-tighten; then
+         shots=$(( shots + 1 ))
+      else
+         failures=$(( failures + 1 ))
+      fi
    done
 
    shots_watchdog_cancel "${st_wdog}"
-   [ -e "${st_flagf}" ] && printf '%s\n' "warn zoom-live: capture exceeded ${SHOT_DEADLINE}s deadline, group reaped" >&2
-   shots_reap_group "$(cat "${st_pgf}" 2>/dev/null || true)"
+   if [ -e "${st_flagf}" ]; then
+      printf '%s\n' "warn zoom-live: capture exceeded ${SHOT_DEADLINE}s deadline, group reaped" >&2
+      failures=$(( failures + 1 ))
+   fi
+   reap_pgid="$(cat "${st_pgf}" 2>/dev/null || true)"
+   shots_reap_group "${reap_pgid}"
    safe-rm -f -- "${st_pgf}" "${st_flagf}" "${st_transcript}" 2>/dev/null || true
-   printf '%s\n' "zoom-live: wrote ${n} real-GUI zoom shot(s) to ${out}"
+   printf '%s\n' "zoom-live: wrote ${shots} real-GUI zoom shot(s) to ${out}"
+   ## A no-op sweep is NOT a pass: if ctl was unreachable (no tab), any zoom/capture failed, or the
+   ## deadline was hit -- or zero valid shots were produced -- FAIL so the harness cannot false-green
+   ## while claiming to verify "zoom changes live".
+   if [ "${failures}" -gt 0 ] || [ "${shots}" -eq 0 ]; then
+      printf '%s\n' "warn zoom-live: ${failures} failure(s), ${shots} valid shot(s) -- FAILED" >&2
+      return 1
+   fi
+   return 0
 }
 
 ## Wait until a freshly-launched window has actually RENDERED (its content is no longer a flat
@@ -842,7 +909,9 @@ st_only=''
 ## --zoom-live: the real-GUI live-zoom diagnostic sweep (see zoom_live_capture). Single-lane,
 ## secure-terminal-only; any trailing args are the zoom-level list (default band otherwise).
 zoom_live=''
-zoom_live_levels=''
+## Carried as an ARRAY (never a space-joined string) so a glob-looking level (`*`) reaches
+## zoom_live_capture as a literal token instead of expanding against the cwd at the call site.
+zoom_live_levels=()
 ## --jobs N (N>1): orchestrator mode -- partition the grid across N concurrent lanes, each
 ## its OWN nested Xvfb+compositor (via its own xvfb-run), then optimize once. --no-st skips the
 ## secure-terminal pass (for an emulator-only lane); --optimize-only just webp-converts existing
@@ -878,7 +947,7 @@ while [ "$#" -gt 0 ]; do
          zoom_live='true'
          st_only='true'
          shift
-         zoom_live_levels="$*"
+         zoom_live_levels=("$@")
          break
          ;;
       --quick)
@@ -1105,7 +1174,9 @@ if [ "${jobs}" -gt 1 ]; then
       printf '%s\n' "LANE st(sequential): --st-only$(printf ' %s' "${fwd_case[@]}") --no-optimize"
    fi
    safe-rm --recursive --force -- "${lane_dir}" 2>/dev/null || true
-   [ -n "${orch_prep}" ] && safe-rm --recursive --force -- "${orch_prep}" 2>/dev/null || true
+   if [ -n "${orch_prep}" ]; then
+      safe-rm --recursive --force -- "${orch_prep}" 2>/dev/null || true
+   fi
    "${self}" --optimize-only || true
    printf '%s\n' "done; emulators parallel + secure-terminal sequential; shots in ${out}"
    exit "${rc}"
@@ -1206,9 +1277,11 @@ if [ -n "${zoom_live}" ]; then
       printf '%s\n' 'ERROR: zoom-live needs secure-terminal. Set ST_REPO=/path/to/checkout.' >&2
       exit 1
    fi
-   # shellcheck disable=SC2086  # deliberate word-split: zoom levels are a space-separated list
-   zoom_live_capture ${zoom_live_levels}
-   exit 0
+   ## Levels pass as a quoted array (no word-splitting/globbing). Propagate the lane's real verdict:
+   ## a failed sweep (no-op zoom, unreachable ctl, zero shots) must exit NONZERO, not a hardcoded 0.
+   zoom_live_rc=0
+   zoom_live_capture "${zoom_live_levels[@]}" || zoom_live_rc="$?"
+   exit "${zoom_live_rc}"
 fi
 
 ## lxterminal is omitted: its single-instance startup maps no window headless.
