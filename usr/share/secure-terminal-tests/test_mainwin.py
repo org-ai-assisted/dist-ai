@@ -2134,6 +2134,40 @@ _other.deleteLater()
 APP.processEvents()
 ok(True, 'tab-op guards on invalid targets are no-ops')
 
+# _pick_custom_tab_color stale-index across the modal (same class as rename/save, but a
+# wrong-TARGET not a crash): the colour picker is modal, and a background tab's shell can
+# exit during it, shifting indices. The captured index must be re-resolved from the TARGET
+# term after the modal, or set_tab_color colours the tab now at the stale index. Uses a
+# THROWAWAY window (torn down here) so the tab churn never reaches the suite teardown.
+from PyQt6.QtWidgets import QColorDialog        # noqa: E402
+_pcw = MainWindow()
+_pcw._persist_session = False
+while _pcw.tabs.count() < 4:
+    _pcw.new_tab()
+_pc_bg = _pcw.tabs.widget(0)                     # a lower-index background tab
+_pc_target = _pcw.tabs.widget(2)                 # the tab the picker is opened for
+_pc_extra = _pcw.tabs.widget(3)                  # ends up at the stale index 2 after the close
+_pc_bg.has_foreground_program = lambda: False    # close_tab needs no confirm
+_pc_bg.shutdown = lambda: None                    # stub only the tab closed mid-modal
+def _pick_closes_bg(*_a, **_k):
+    _pcw.close_tab(_pcw.tabs.indexOf(_pc_bg))     # index 0 exits -> 2 shifts to 1, 3 to 2
+    APP.processEvents()
+    return _QC('#123456')
+_ogc = QColorDialog.getColor
+try:
+    QColorDialog.getColor = staticmethod(_pick_closes_bg)
+    _pcw._pick_custom_tab_color(2)               # stale index 2 now points at _pc_extra
+finally:
+    QColorDialog.getColor = _ogc
+ok(_pcw._tab_colors.get(_pc_target) == '#123456',
+   '_pick_custom_tab_color: the colour lands on the target tab, not the stale index')
+ok(_pcw._tab_colors.get(_pc_extra) != '#123456',
+   '_pick_custom_tab_color: the tab now at the stale index is not mis-coloured')
+while _pcw.tabs.count() > 0:                      # reap the survivors' ptys, then drop it
+    _pcw.close_tab(0)
+_pcw.deleteLater()
+APP.processEvents()
+
 # --- ctl: dump-tab tail-cap, an unknown ctl op --------------------------------
 if win.tabs.count() == 0:
     win.new_tab()
