@@ -48,12 +48,8 @@ MARKUP_EXTS = (".html", ".htm", ".md", ".markdown", ".css", ".txt", ".rst")
 ## Matches the helper-scripts convention (17/18 of its python helpers).
 PYTHON_SHEBANG = "#!/usr/bin/python3 -Bsu"
 PYTHON_SHEBANG_BYTES = PYTHON_SHEBANG.encode("ascii")
-## A FIRST line naming a python interpreter, in any spelling: an absolute or
-## '/usr/bin/env' path, 'env -S', a versioned name, with or without flags.
-## Anchored to the interpreter word so a shell / perl shebang -- or the word
-## 'python' anywhere later in the file -- is never matched.
-PYTHON_SHEBANG_RE = re.compile(
-    rb'^#!(?:\S*/)?(?:env\s+(?:-S\s+)?)?python[0-9.]*(?:\s|$)')
+## A basename that IS a python interpreter ('python', 'python3', 'python3.11').
+PYTHON_NAME_RE = re.compile(rb'^python[0-9.]*$')
 
 NON_ASCII_RE = re.compile(rb'[^\x00-\x7f]')
 ## Trailing blanks before end-of-line: a LF, a CRLF, or a lone trailing CR /
@@ -144,12 +140,39 @@ class TrailingWhitespace(Rule):
 
 
 def _first_line_span(data):
-    """(first line WITHOUT its newline, byte offset of its end). end is the LF
-    position, or len(data) for a file with no newline."""
-    end = data.find(b"\n")
-    if end == -1:
-        end = len(data)
+    """(first line WITHOUT its line ending, byte offset of its end). end is the
+    position of the first LF *or* CR, or len(data) when the file has neither.
+    Honoring CR too matters for the fixer: replacing [0, end) must never reach
+    past the first line, or a CR-terminated ('\\r') or CRLF file would have its
+    body swallowed by the shebang rewrite."""
+    ends = [pos for pos in (data.find(b"\n"), data.find(b"\r")) if pos != -1]
+    end = min(ends) if ends else len(data)
     return data[:end], end
+
+
+def _python_interpreter_shebang(first):
+    """True if the '#!' line `first` (bytes, no line ending) launches a python
+    interpreter -- directly ('#!/usr/bin/python3', '#! /usr/bin/python3.11') or
+    via '/usr/bin/env' with any leading options / VAR=val ('env -S FOO=bar
+    python3'). Parses only the FIRST line's own tokens, so a 'python' word on a
+    LATER line (or in the body) is never mistaken for the interpreter."""
+    if not first.startswith(b"#!"):
+        return False
+    ## The kernel takes the first token after '#!' (a leading space is allowed)
+    ## as the interpreter.
+    tokens = first[2:].split()
+    if not tokens:
+        return False
+    if PYTHON_NAME_RE.match(tokens[0].rsplit(b"/", 1)[-1]):
+        return True
+    ## '/usr/bin/env [options|VAR=val ...] python3 ...': env's command is the
+    ## first operand that is neither an option nor an assignment.
+    if tokens[0].rsplit(b"/", 1)[-1] == b"env":
+        for token in tokens[1:]:
+            if token.startswith(b"-") or b"=" in token:
+                continue
+            return PYTHON_NAME_RE.match(token.rsplit(b"/", 1)[-1]) is not None
+    return False
 
 
 class PythonShebang(Rule):
@@ -168,10 +191,13 @@ class PythonShebang(Rule):
 
     def applies(self, ctx):
         ## Detect off RAW bytes (like R-001) so an extensionless python tool under
-        ## usr/bin is covered, not only a '.py' file.
-        return (super().applies(ctx) and ctx.data is not None
-                and not ctx.is_binary
-                and PYTHON_SHEBANG_RE.match(ctx.data) is not None)
+        ## usr/bin is covered, not only a '.py' file. The interpreter is decided
+        ## from LINE 1 alone.
+        if not (super().applies(ctx) and ctx.data is not None
+                and not ctx.is_binary):
+            return False
+        first, _end = _first_line_span(ctx.data)
+        return _python_interpreter_shebang(first)
 
     def detect(self, ctx):
         first, _end = _first_line_span(ctx.data)

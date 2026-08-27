@@ -176,9 +176,53 @@ expect_fix 'waived unchanged'        '#!/usr/bin/python3
 x = 1
 ' '#!/usr/bin/python3'
 
+## --- regression canaries for four real bugs (found in review) ---
+
+## Bug: a space after '#!' is POSIX-valid; missing it bypassed the -s hardening.
+expect_flag 'space after #! flagged'  '#! /usr/bin/python3
+print(1)
+' present
+expect_fix 'space after #! fixed'     '#! /usr/bin/python3
+print(1)
+' "${canonical}"
+
+## Bug: 'env' with a leading option / VAR=val before python bypassed the rule.
+expect_flag 'env -S VAR=val flagged'  '#!/usr/bin/env -S FOO=bar python3
+x = 1
+' present
+expect_fix 'env -S VAR=val fixed'     '#!/usr/bin/env -S FOO=bar python3
+x = 1
+' "${canonical}"
+
+## Bug: the interpreter must be read from LINE 1 ONLY -- a 'python3' on line 2
+## (an env with no operand on line 1) must not be pulled into the shebang.
+expect_flag 'env then newline spared' '#!/usr/bin/env
+python3
+' absent
+expect_fix 'env then newline kept'    '#!/usr/bin/env
+python3
+' '#!/usr/bin/env'
+
+## Bug (worst): a CR-terminated first line must NOT let --fix swallow the body.
+## The fixer replaces [0, first-line-end); if that end tracked only LF, a '\r'
+## file's whole body vanished. Written with a literal CR via printf's format.
+cr_path="$(mktemp --tmpdir="${tmp_root}" fixture.XXXXXX.py)"
+printf '#!/usr/bin/python3 -u\rprint("kept")\r' > "${cr_path}"
+"${STYLE}" --fix -- "${cr_path}" >/dev/null 2>&1 || true
+cr_body="$(tr '\r' '\n' < "${cr_path}")"
+case "${cr_body}" in
+   *'print("kept")'*)
+      : ## body preserved
+      ;;
+   *)
+      printf 'FAIL [CR body preserved]: --fix deleted the body of a CR-terminated file\n' >&2
+      failures=$((failures + 1))
+      ;;
+esac
+
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "test_pre_push_static_python_shebang: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
 
-printf '%s\n' "test_pre_push_static_python_shebang: OK -- python-shebang rule flags every non-hardened form (env / bare / -su / -u / versioned), fixes each to '#!/usr/bin/python3 -Bsu', and spares the canonical line, a non-python shebang, a shebang-less module, and a waived file."
+printf '%s\n' "test_pre_push_static_python_shebang: OK -- python-shebang rule flags every non-hardened form (env / bare / -su / -u / versioned), fixes each to '#!/usr/bin/python3 -Bsu', and spares the canonical line, a non-python shebang, a shebang-less module, and a waived file; canaries cover the space-after-#!, env-with-args, line-1-scope, and CR-body-preservation bugs."
