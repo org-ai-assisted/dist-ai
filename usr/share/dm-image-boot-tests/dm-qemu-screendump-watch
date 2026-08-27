@@ -64,6 +64,7 @@ class Qmp:
         if self.sock is None:
             raise ConnectionError("QMP connect failed for %s: %s" % (path, last_err))
         self.buf = b""
+        self._id = 0                           # monotonic QMP request id (reply correlation)
         self._read_json()                      # greeting
         self.command("qmp_capabilities")
 
@@ -94,15 +95,32 @@ class Qmp:
         return message
 
     def command(self, execute, arguments=None):
-        message = {"execute": execute}
+        self._id += 1
+        expect = self._id
+        message = {"execute": execute, "id": expect}
         if arguments:
             message["arguments"] = arguments
         self.sock.sendall((json.dumps(message) + "\n").encode("utf-8"))
-        ## Skip asynchronous events (they carry "event", never a top-level return/error).
+        ## Correlate the reply by its echoed "id". Skip asynchronous events (they carry
+        ## "event", never a top-level return/error). A reply whose id is EARLIER than ours is
+        ## the late result of a prior command whose recv timed out (the poll loop caught
+        ## socket.timeout and moved on) -- drain it so THIS command's reply is never
+        ## MISATTRIBUTED to that stale request; that misattribution silently desynced the
+        ## stream and corrupted the boot verdict. An absent id, or one we never sent, is an
+        ## unrecoverable desync -> fail loud (ConnectionError) rather than mispair.
         while True:
             reply = self._read_json()
-            if "return" in reply or "error" in reply:
+            if "event" in reply:
+                continue
+            if "return" not in reply and "error" not in reply:
+                continue
+            got = reply.get("id")
+            if got == expect:
                 return reply
+            if isinstance(got, int) and not isinstance(got, bool) and got < expect:
+                continue
+            raise ConnectionError(
+                "QMP reply id mismatch: expected %d, got %r" % (expect, got))
 
     def close(self):
         try:
