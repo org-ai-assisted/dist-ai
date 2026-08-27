@@ -272,6 +272,28 @@ eq(_wmt.lineWrapMode(), _NW,
    'TUI grid never wraps (sized to fit; Detail/Reveal cells fall back to the box)')
 _wmt.close()
 
+# Horizontal scrollbar policy tracks the display mode: a TUI grid is a fixed
+# viewport-wide canvas (a real terminal never shows a horizontal bar on one), so
+# it is AlwaysOff; CLI keeps AsNeeded so a genuinely long NoWrap Box/Show line
+# stays reachable by a real scroll. Policy-only, so font-independent.
+from PyQt6.QtCore import Qt as _Qt                                 # noqa: E402
+_OFF = _Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+_ASN = _Qt.ScrollBarPolicy.ScrollBarAsNeeded
+_sb = SecureTerminal(command='/bin/cat')                          # CLI
+eq(_sb.horizontalScrollBarPolicy(), _ASN,
+   'CLI mode keeps the horizontal scrollbar AsNeeded')
+_sb.apply_tui(True)
+eq(_sb.horizontalScrollBarPolicy(), _OFF,
+   'TUI grid suppresses the horizontal scrollbar (AlwaysOff)')
+_sb.apply_tui(False)
+eq(_sb.horizontalScrollBarPolicy(), _ASN,
+   'switching TUI->CLI restores the AsNeeded horizontal scrollbar')
+_sb.close()
+_sbt = SecureTerminal(command='/bin/cat', tui=True)
+eq(_sbt.horizontalScrollBarPolicy(), _OFF,
+   'a tab created in TUI mode starts with the horizontal scrollbar suppressed')
+_sbt.close()
+
 # alternate scroll: a full-screen program that did NOT request the mouse (a plain
 # pager in the alternate screen) has no local scrollback to move, so the wheel is
 # translated to arrow-key line scrolls (xterm's alternateScroll). A program that DID
@@ -7352,16 +7374,17 @@ ok(_bp_frame.startswith(b'\x1b[200~') and _bp_frame.endswith(b'\x1b[201~'),
 # A line of many non-ASCII cells renders each as a long Detail badge, far wider than
 # the viewport. A real terminal has no horizontal scroll: the display WRAPS to the
 # width (WidgetWidth) so every badge stays on screen -- nothing pushed off the right
-# edge, and no auto-scroll that would clip the START of each row. The horizontal
+# edge, and no auto-scroll that would clip the START of each row. In CLI the horizontal
 # scrollbar policy stays as-needed only for the residual Box/Show wide-glyph overflow
-# (left NoWrap for cross-mode stability, and home-pinned by _paint_line); it must NOT
-# appear for a wrapped Detail line.
-ok(_bp_no.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded,
-   'reconcile#3: the horizontal scrollbar policy is as-needed')
-_hs = SecureTerminal(command='/bin/cat')                   # default Detail mode
+# (left NoWrap for cross-mode stability, and home-pinned by _paint_line); a grid/TUI tab
+# suppresses it entirely (AlwaysOff -- see the scrollbar-policy block near the top). It
+# must NOT appear for a wrapped Detail line either way.
+_hs = SecureTerminal(command='/bin/cat')                   # default Detail mode (CLI)
 _hs.resize(220, 120)
 _hs.show()
 APP.processEvents()
+ok(_hs.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded,
+   'reconcile#3: CLI keeps the horizontal scrollbar policy as-needed')
 feed_output(_hs, ('\u00e9' * 40).encode('utf-8'))     # 40 long badges -> wide line
 APP.processEvents()
 eq(_hs.lineWrapMode(), _QPTE.LineWrapMode.WidgetWidth,
