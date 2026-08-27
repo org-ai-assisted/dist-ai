@@ -145,12 +145,26 @@ def build_qemu_argv(args):
         )
     except FileNotFoundError:
         die_setup("dm-qemu not found: %s" % args.dm_qemu)
+    except OSError as exc:
+        ## dm-qemu exists but cannot be executed (not +x, bad interpreter, ...):
+        ## an environment/setup problem, not a harness bug -- map to SETUP(2)
+        ## instead of letting the raw OSError escape as an uncaught exit 1.
+        die_setup("cannot execute dm-qemu %s: %s" % (args.dm_qemu, exc))
     except subprocess.CalledProcessError as exc:
         sys.stderr.write(exc.stderr or "")
         die_setup("dm-qemu --emit-argv failed (exit %s)" % exc.returncode)
 
-    ## dm-qemu --emit-argv prints one token per line.
-    argv = [line for line in result.stdout.splitlines() if line != ""]
+    ## dm-qemu --emit-argv prints one token per line, each '\n'-terminated and
+    ## containing no newline (dm-qemu guarantees this), so splitting on '\n'
+    ## yields the tokens plus a trailing '' after the final newline -- the line
+    ## terminator, not a token. Drop ONLY that trailing empty: an EMPTY argv token
+    ## is legitimate (e.g. an empty '-append' value, and --dm-qemu is
+    ## user-overridable), and dropping interior empties would shift every later
+    ## token. split('\n'), not splitlines(), which would also break a token on an
+    ## embedded '\r' / other line boundary.
+    argv = result.stdout.split("\n")
+    if argv and argv[-1] == "":
+        argv.pop()
     if not argv:
         die_setup("dm-qemu --emit-argv produced no qemu argv")
 
@@ -268,11 +282,13 @@ def run_checks(child, args, log):
     ## check_journal is NOT skipped: systemcheck's log-checker word-anchors 'BUG',
     ## so the debug-shell.service "FOR DEBUGGING ONLY" line does not match it and the
     ## debug shell (the automation channel) does not flag check_journal.
-    ## Each entry is (command, force_root): systemcheck runs as the session user
-    ## (--login-user), the diagnostic always runs as root so its journalctl can read
-    ## system-unit logs (a non-root session may be denied them).
+    ## Each entry is (command, force_root, check_rc): systemcheck runs as the
+    ## session user (--login-user); the diagnostic always runs as root so its
+    ## journalctl can read system-unit logs (a non-root session may be denied
+    ## them). check_rc=True enforces the --expect-rc comparison, False exempts it
+    ## (the always-passing diagnostic).
     if args.run is not None:
-        commands = [(command, False) for command in args.run]
+        commands = [(command, False, True) for command in args.run]
     else:
         ## --skip matches the name passed to systemcheck_run_function. The tor
         ## connectivity tests (incl. the SocksPort "Connectivity Test") run under
@@ -339,7 +355,8 @@ def run_checks(child, args, log):
             ## the secureboot legs, mirroring the --ignore-failed-unit gating.
             systemcheck_cmd += " --journal-ignore-fixed systemd-modules-load"
             systemcheck_cmd += " --journal-ignore-fixed \"Key was rejected by service\""
-        ## Diagnostic (always passes): name every failed system unit AND dump each
+        ## Diagnostic (always passes; exempt from --expect-rc, see the run loop):
+        ## name every failed system unit AND dump each
         ## one's status + boot journal, so a 'degraded' system-ready failure shows
         ## the culprit AND why it failed, in the serial log. Runs AFTER systemcheck
         ## so it reads at the end of the log next to the verdict; dm-image-test runs
@@ -357,7 +374,7 @@ def run_checks(child, args, log):
             " journalctl -b --no-pager -u \"$unit\" 2>&1 | tail -n 30 || true;"
             " echo \"UNIT-DIAG-END $unit\";"
             " done; true")
-        commands = [(systemcheck_cmd, False), (diag_cmd, True)]
+        commands = [(systemcheck_cmd, False, True), (diag_cmd, True, False)]
 
     ## 3) Run each check; read its exit code from a unique sentinel (the echoed
     ##    command carries a literal '%s', so only the real output matches). Root by
@@ -366,7 +383,7 @@ def run_checks(child, args, log):
     sentinel = "DMRC%d" % os.getpid()
     rc_re = r"%s:(-?\d+):%s" % (sentinel, sentinel)
     overall = PASS
-    for command, force_root in commands:
+    for command, force_root, check_rc in commands:
         if not force_root and args.login_user and args.login_user != "root":
             payload = "su - %s -c %s" % (shlex.quote(args.login_user),
                                          shlex.quote(command))
@@ -381,6 +398,15 @@ def run_checks(child, args, log):
         rc = int(match.group(1))
         ## Drop consumed output so the next command's sentinel is unambiguous.
         accum[0] = accum[0][match.end():]
+        ## The diagnostic (check_rc False) always exits 0 and is exempt from the
+        ## --expect-rc compare: it only dumps failed-unit status into the serial
+        ## log, so its rc must never flip the verdict (with --expect-rc 1 the
+        ## diag's rc=0 would otherwise force FAIL even when the real check passed).
+        ## A timed-out/guest-died diag still returns FAIL above -- only the rc
+        ## COMPARISON is skipped.
+        if not check_rc:
+            log("dm-image-test: diag (rc=%s) %s" % (rc, command))
+            continue
         if rc == args.expect_rc:
             log("dm-image-test: OK   (rc=%s) %s" % (rc, command))
         else:
@@ -435,13 +461,20 @@ def main():
         ## Strict decoding raises UnicodeDecodeError inside wait_for(), which
         ## catches only TIMEOUT/EOF, so the run would die with a traceback
         ## instead of one of the documented FAIL/SETUP exit codes.
-        child = pexpect.spawn(
-            qemu_argv[0],
-            qemu_argv[1:],
-            timeout=args.timeout,
-            encoding="utf-8",
-            codec_errors="replace",
-        )
+        try:
+            child = pexpect.spawn(
+                qemu_argv[0],
+                qemu_argv[1:],
+                timeout=args.timeout,
+                encoding="utf-8",
+                codec_errors="replace",
+            )
+        except pexpect.ExceptionPexpect as exc:
+            ## qemu_argv[0] is chosen by dm-qemu; if that qemu binary is missing or
+            ## not executable, pexpect raises here. That is a setup/environment
+            ## error -- map to SETUP(2) instead of letting it escape as exit 1. The
+            ## enclosing finally still runs, so the dm-qemu workdir is cleaned up.
+            die_setup("cannot spawn qemu %s: %s" % (qemu_argv[0], exc))
         ## Pace input: the guest's zsh line editor (ZLE) mangles rapidly-sent lines
         ## (auto-suggest + cursor redraws corrupt e.g. "$?", and a queued 'exec'
         ## never submits). A small pre-send delay lets each line be read and run

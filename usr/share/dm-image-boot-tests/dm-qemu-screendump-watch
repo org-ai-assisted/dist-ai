@@ -192,7 +192,15 @@ def main():
             log("ImageMagick '%s' not found -- screendump detection needs it" % tool)
             return 2
 
-    os.makedirs(args.outdir, exist_ok=True)
+    ## Create the frame output dir up front. A bad --outdir (a path component that
+    ## is not a directory, an unwritable parent, ...) raises OSError; this call was
+    ## OUTSIDE the try below, so that OSError escaped as an uncaught exit 1 and
+    ## broke the 0/5/2 contract. It is a setup error -- map it to SETUP(2).
+    try:
+        os.makedirs(args.outdir, exist_ok=True)
+    except OSError as exc:
+        log("cannot create --outdir %s: %s" % (args.outdir, exc))
+        return 2
     started = time.time()
     deadline = started + args.timeout
 

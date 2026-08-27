@@ -26,6 +26,7 @@ import socket
 import subprocess
 import threading
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -33,8 +34,10 @@ import pytest
 HARNESS = Path(__file__).resolve().parent / 'dm-image-test'
 DMSERIAL = Path(__file__).resolve().parent / 'debug' / 'dmserial.py'
 
-## dm-image-test's documented FAIL exit code (dm-image-test: FAIL = 5).
+## dm-image-test's documented exit codes (PASS = 0, FAIL = 5, SETUP = 2). The
+## contract is EXACTLY these three: an uncaught exception (exit 1) breaks it.
 FAIL_RC = 5
+SETUP_RC = 2
 
 
 def test_harness_present():
@@ -322,6 +325,24 @@ def test_interval_must_be_positive(tmp_path):
     assert '--interval' in proc.stderr
 
 
+def test_bad_outdir_maps_to_setup(tmp_path):
+    ## --outdir under a regular FILE makes os.makedirs raise NotADirectoryError.
+    ## That call was outside the try, so the OSError escaped as an uncaught exit 1;
+    ## it must now map to SETUP(2). Requires ImageMagick (preflighted first): the
+    ## 'cannot create --outdir' assertion fails loudly if it is absent, so the test
+    ## can never pass for the wrong reason (an ImageMagick-missing early return 2).
+    blocker = tmp_path / 'afile'
+    blocker.write_text('x', encoding='ascii')
+    bad_outdir = blocker / 'sub'  # parent is a file -> NotADirectoryError
+    proc = subprocess.run(
+        [str(SCREENDUMP_WATCH), '--qmp', str(tmp_path / 'x.sock'),
+         '--outdir', str(bad_outdir)],
+        capture_output=True, text=True)
+    assert 'Traceback' not in proc.stderr, proc.stderr
+    assert proc.returncode == 2, (proc.returncode, proc.stderr)
+    assert 'cannot create --outdir' in proc.stderr, proc.stderr
+
+
 ## --- dm-image-test safe_rmtree_workdir (unvalidated-path teardown) ----------
 
 def _load_dm_image_test():
@@ -368,3 +389,118 @@ def test_safe_rmtree_workdir(tmp_path, monkeypatch):
     assert link.exists() and target.exists()
     # (e) a non-existent path -> refused
     assert m.safe_rmtree_workdir(str(fake_tmp / "nope"), log) is False
+
+
+## --- exit-code contract: setup errors must map to SETUP(2), never exit 1 ------
+## Every uncaught-exception path out of main() breaks the 0/5/2 promise by
+## surfacing as exit 1. These lock the environment/IO paths to SETUP(2).
+
+def test_missing_qemu_binary_maps_to_setup(tmp_path):
+    ## A stub dm-qemu emits an argv whose qemu binary (argv[0]) does not exist, so
+    ## pexpect.spawn raises pexpect.ExceptionPexpect. That is a setup error -- the
+    ## harness must exit SETUP(2), not let the exception escape as exit 1.
+    pytest.importorskip('pexpect')
+    stub = tmp_path / 'dm-qemu'
+    stub.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' /nonexistent/qemu-system-x86_64 -m 512\n",
+        encoding='ascii')
+    stub.chmod(0o755)
+    disk = tmp_path / 'dummy.qcow2'
+    disk.write_bytes(b'')
+    proc = subprocess.run(
+        [str(HARNESS), '--disk', str(disk), '--dm-qemu', str(stub),
+         '--timeout', '8'],
+        capture_output=True, text=True, timeout=90, check=False)
+    assert 'Traceback' not in proc.stderr, proc.stderr[-2000:]
+    assert proc.returncode == SETUP_RC, (
+        'a missing qemu binary must map to SETUP=%d, got rc=%d\n%s'
+        % (SETUP_RC, proc.returncode, proc.stderr[-2000:]))
+    assert 'cannot spawn qemu' in proc.stderr, proc.stderr[-2000:]
+
+
+def test_nonexecutable_dm_qemu_maps_to_setup(tmp_path):
+    ## --dm-qemu points at a file that exists but is not executable, so
+    ## subprocess.run raises PermissionError (an OSError, NOT FileNotFoundError).
+    ## That must map to SETUP(2), not escape as an uncaught exit 1.
+    dmqemu = tmp_path / 'dm-qemu'
+    dmqemu.write_text("#!/bin/sh\ntrue\n", encoding='ascii')
+    dmqemu.chmod(0o644)  # readable but not +x
+    disk = tmp_path / 'dummy.qcow2'
+    disk.write_bytes(b'')
+    proc = subprocess.run(
+        [str(HARNESS), '--disk', str(disk), '--dm-qemu', str(dmqemu),
+         '--timeout', '8'],
+        capture_output=True, text=True, timeout=90, check=False)
+    assert 'Traceback' not in proc.stderr, proc.stderr[-2000:]
+    assert proc.returncode == SETUP_RC, (
+        'a non-executable --dm-qemu must map to SETUP=%d, got rc=%d\n%s'
+        % (SETUP_RC, proc.returncode, proc.stderr[-2000:]))
+    assert 'cannot execute dm-qemu' in proc.stderr, proc.stderr[-2000:]
+
+
+def test_emit_argv_preserves_empty_token(tmp_path):
+    ## dm-qemu emits one argv token per line; an EMPTY token is legitimate (e.g. an
+    ## empty '-append' value). The old parse filtered every empty line, shifting all
+    ## later tokens. build_qemu_argv must keep interior empties and drop only the
+    ## trailing terminator.
+    m = _load_dm_image_test()
+    stub = tmp_path / 'dm-qemu'
+    stub.write_text(
+        "#!/bin/sh\nprintf '%s\\n' qemu-system-x86_64 '' -m 512\n",
+        encoding='ascii')
+    stub.chmod(0o755)
+    disk = tmp_path / 'dummy.qcow2'
+    disk.write_bytes(b'')
+    args = types.SimpleNamespace(
+        dm_qemu=str(stub), disk=str(disk), iso=None, arch="", firmware="",
+        serial_log="", session="user", smbios_append="", dm_qemu_args=[])
+    argv, _workdir = m.build_qemu_argv(args)
+    assert argv == ['qemu-system-x86_64', '', '-m', '512'], argv
+
+
+class _FakeChild:
+    ## Minimal pexpect.spawn stand-in for run_checks: answers each sendline() with
+    ## the exact serial output the real root shell would produce, so run_checks'
+    ## real read/sentinel loop drives to a verdict with no VM. read_nonblocking
+    ## hands back the buffered reply, then raises pexpect.TIMEOUT (its idle poll).
+    def __init__(self, pid, systemcheck_rc, diag_rc):
+        self.pid = pid
+        self.systemcheck_rc = systemcheck_rc
+        self.diag_rc = diag_rc
+        self.buf = ""
+
+    def sendline(self, line):
+        if "DM<>" in line and "printf" in line:
+            token = re.search(r"DMRDY\d+", line).group(0)
+            self.buf += "DM<>%s<>\n" % token
+        elif "is-system-running" in line:
+            token = re.search(r"DMBOOT\d+", line).group(0)
+            self.buf += "%s\n" % token
+        elif "DMRC" in line:
+            sentinel = re.search(r"DMRC\d+", line).group(0)
+            rc = self.diag_rc if "FAILED-UNITS-BEGIN" in line \
+                else self.systemcheck_rc
+            self.buf += "%s:%d:%s\n" % (sentinel, rc, sentinel)
+
+    def read_nonblocking(self, size=1, timeout=None):
+        import pexpect
+        if self.buf:
+            chunk, self.buf = self.buf[:size], self.buf[size:]
+            return chunk
+        time.sleep(0.02)
+        raise pexpect.TIMEOUT("no data")
+
+
+def test_diag_cmd_exempt_from_expect_rc():
+    ## The default command list is [systemcheck, diag]; the diag always exits 0.
+    ## With --expect-rc 1, systemcheck returning 1 is the PASS, and the diag's rc=0
+    ## must NOT flip the verdict to FAIL. run_checks must return PASS.
+    pytest.importorskip('pexpect')
+    m = _load_dm_image_test()
+    child = _FakeChild(os.getpid(), systemcheck_rc=1, diag_rc=0)
+    args = types.SimpleNamespace(
+        timeout=30, run=None, login_user="user", expect_rc=1, firmware="")
+    logs = []
+    rc = m.run_checks(child, args, logs.append)
+    assert rc == m.PASS, (rc, logs)
