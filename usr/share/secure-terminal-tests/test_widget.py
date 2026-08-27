@@ -8359,6 +8359,23 @@ _rs._render_tui()
 _rs_sb_after = [_rs_doc.findBlockByNumber(_b).text() for _b in range(len(_rs_sb))]
 eq(_rs_sb_after, _rs_sb,
    'committed scrollback is byte-unchanged across a shrink-resize and a later frame')
+# and the Qt CARET uses the CLAMPED bottom row for its column, not a fabricated blank OOB
+# row (the sibling _place_grid_cursor bug, same unclamped-cursor.y class). Put a multi-
+# UTF-16-unit astral glyph on the bottom row so a blank OOB row would compute a different
+# caret offset; assert the OOB-cursor caret lands identically to an in-bounds one.
+_rs_last = _rs._screen.lines - 1
+_rs._feed_stream(('\x1b[%d;1H\U0001F600Z' % (_rs_last + 1)).encode())
+_rs._screen.cursor.y = _rs_last
+_rs._screen.cursor.x = 1                                # in-bounds, just past the astral glyph
+_rs._render_tui()
+_rs_caret_ib = _rs.textCursor().position()
+_rs._screen.cursor.y = _rs_last + 9                     # left OOB (below the shrunk screen)
+_rs._screen.cursor.x = 1
+_rs._render_tui()
+_rs_caret_oob = _rs.textCursor().position()
+eq(_rs_caret_oob, _rs_caret_ib,
+   'the Qt caret uses the clamped bottom row for its column after an OOB shrink (a blank '
+   'fabricated row would drop the astral glyph width and misplace it)')
 _rs.shutdown()
 
 
