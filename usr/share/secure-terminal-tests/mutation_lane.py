@@ -111,8 +111,8 @@ _PKG_REL = os.path.join('usr', 'lib', 'python3', 'dist-packages')
 def _run_suite(repo_copy, suite):
     """Run a real test suite against the staged repo copy: its package dir first on
     PYTHONPATH and SECURE_TERMINAL_REPO pointed at the copy root, so the suite's
-    sibling-resource resolution (hooklib under usr/share, the fuzz/ harnesses at the
-    repo root, walked from the package __file__) stays intact. Returns the exit code.
+    sibling-resource resolution (the fuzz/ harnesses at the repo root, walked from
+    the package __file__) stays intact. Returns the exit code.
     A killer PASSES (0) on the clean copy and must FAIL (non-zero, not 77) mutated."""
     env = dict(os.environ)
     env['PYTHONPATH'] = os.path.join(repo_copy, _PKG_REL) \

@@ -7,8 +7,8 @@
 
 ## Coverage gate for secure-terminal. Runs every test suite under coverage.py
 ## and ENFORCES 100% line coverage on the whole package -- both the Qt-free core
-## (sanitizer, CLI wrapper, command-hook protocol, IPC framing, session
-## persistence, drop-in settings) and the Qt GUI (review, terminal, main). A
+## (sanitizer, CLI wrapper, IPC framing, session persistence, drop-in settings)
+## and the Qt GUI (review, terminal, main). A
 ## failure here means a line became unreachable by the tests -- add a test (do
 ## not paper over it with a blanket exclusion; the few genuinely-unreachable
 ## defensive/optional-dependency lines carry a justified `# pragma: no cover` in
@@ -80,9 +80,6 @@ fi
 
 export PYTHONPATH="${repo}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
 pkg="${repo}/usr/lib/python3/dist-packages/secure_terminal"
-## hooklib ships OUTSIDE the package (a hook must stay copyable and imports no
-## secure_terminal), so it needs its own --source root or it is never measured.
-hooks="${repo}/usr/share/secure-terminal/hooks"
 
 work="$(mktemp --directory)"
 cleanup() { safe-rm --recursive --force -- "${work}" 2>/dev/null || true; }
@@ -95,14 +92,11 @@ export COVERAGE_FILE="${work}/.coverage"
 ## justified `# pragma: no cover` in the source, not a blanket exclusion.
 ##
 ## Tier 1 -- covered by the Qt-FREE suites.
-gated_free='*/__init__.py,*/sanitize.py,*/clipboard.py,*/cli.py,*/hook.py,*/ipc.py,*/session.py,*/settings.py,*/preflight.py,*/unicode_tag.py'
+gated_free='*/__init__.py,*/sanitize.py,*/clipboard.py,*/cli.py,*/ipc.py,*/session.py,*/settings.py,*/preflight.py,*/unicode_tag.py'
 ## Tier 2 -- covered by the offscreen Qt widget suites, which fail closed
 ## (exit 1) on a missing PyQt6/pyte rather than skipping, so both tiers are
 ## always gated.
 gated_qt='*/clipboard_watch.py,*/review.py,*/terminal.py,*/main.py'
-## Tier 3 -- the out-of-package hook library. It decides whether a USER may
-## weaken the command-hook judge, so it is gated like the package itself.
-gated_hooks='*/hooklib.py'
 
 ## Every tier is validated BEFORE the suites run: these checks need only the
 ## source tree, and a stale gate should cost a second, not a full test run.
@@ -148,7 +142,6 @@ assert_every_module_gated() {
 
 assert_gated_globs_resolve 'Qt-free' "${gated_free}" "${pkg}"
 assert_gated_globs_resolve 'Qt widget' "${gated_qt}" "${pkg}"
-assert_gated_globs_resolve 'hook library' "${gated_hooks}" "${hooks}"
 assert_every_module_gated
 
 ## Run every suite under coverage. --parallel-mode + combine keeps each suite's
@@ -188,7 +181,7 @@ run_suite_under_coverage() {  ## $1 = suite .py path -> returns the final rc
    [ "${retries}" -ge 1 ] || retries=5
    for (( attempt=1; attempt<=retries; attempt++ )); do
       rc=0
-      python3 -m coverage run --parallel-mode --source="${pkg},${hooks}" -- \
+      python3 -m coverage run --parallel-mode --source="${pkg}" -- \
          "${suite_path}" || rc="$?"
       [ "${rc}" = '139' ] || return "${rc}"
       printf '%s\n' "secure-terminal-tests-coverage: $(basename -- "${suite_path}" .py) SIGSEGV (attempt ${attempt}/${retries}); known Qt-IPC/SIGCHLD race under coverage, retrying" >&2
@@ -222,9 +215,6 @@ python3 -m coverage report --include="${gated_free}" --show-missing --fail-under
 
 printf '%s\n' '' '== gated modules, Qt widget (must be 100%) =='
 python3 -m coverage report --include="${gated_qt}" --show-missing --fail-under=100
-
-printf '%s\n' '' '== gated hook library (must be 100%) =='
-python3 -m coverage report --include="${gated_hooks}" --show-missing --fail-under=100
 
 ## The GUI fuzzer (fuzz_widget.py), driven deterministically by test_fuzz_widget,
 ## is itself enforced at 100% SELF-coverage -- the live-widget fuzz harness must

@@ -1,4 +1,4 @@
-#!/usr/bin/python3 -su
+#!/usr/bin/python3 -Bsu
 
 ## Copyright (C) 2026 - 2026 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
 ## See the file COPYING for copying conditions.
@@ -12,7 +12,7 @@ Every function targeted here consumes attacker-influenceable input: a program's
 raw output rendered to the widget, text pasted from the clipboard, a window/tab
 title set by the running program (OSC), the SGR colour parameters of an escape
 sequence, a config drop-in that round-trips through disk, the persisted session
-file, IPC frames from the single-instance socket, and the hook rules/gate files.
+file, and IPC frames from the single-instance socket.
 A crash, a hang, or a wrong-typed return on adversarial input is a terminal that
 dies (or worse, lets a dangerous escape reach the real terminal) on hostile data.
 
@@ -29,8 +29,6 @@ the seed and the offending input so the case replays deterministically.
 """
 
 import argparse
-import importlib.util
-import json
 import os
 import random
 import re
@@ -43,7 +41,6 @@ from secure_terminal import sanitize as S
 from secure_terminal import settings as SET
 from secure_terminal import session as SESS
 from secure_terminal import ipc
-from secure_terminal import hook as HOOK
 from secure_terminal import cli as CLI
 
 
@@ -73,19 +70,6 @@ for _cp in (0x00, 0x1B, 0x7F, 0x9B, 0x061C, 0x180E, 0x200B, 0x200D, 0x200E,
             0x2064, 0xFE0F, 0x3164, 0x115F, 0x034F):
     assert _cp in DANGEROUS_CPS, 'DANGEROUS_CPS lost U+%04X' % _cp
 assert not (DANGEROUS_CPS & SAFE), 'SAFE and DANGEROUS_CPS must be disjoint'
-
-
-## hooklib lives in the hooks dir, not on the package path: load it directly, the
-## same way test_fuzz.py does (five dirnames up from the sanitize module -> usr).
-_usr = os.path.abspath(S.__file__)
-for _ in range(5):
-    _usr = os.path.dirname(_usr)
-_hlpath = os.path.join(_usr, 'share', 'secure-terminal', 'hooks', 'hooklib.py')
-HL = None
-if os.path.exists(_hlpath):
-    _spec = importlib.util.spec_from_file_location('hooklib', _hlpath)
-    HL = importlib.util.module_from_spec(_spec)
-    _spec.loader.exec_module(HL)
 
 
 ## ---- input generators -------------------------------------------------------
@@ -285,112 +269,6 @@ def phase_ipc(rnd, iterations, seed):
                     'ipc.Framer payload length mismatch', seed)
 
 
-def phase_hooks(rnd, iterations, seed):
-    ## The hook rules parser and the privileged config gate: arbitrary contents
-    ## must yield the documented type and never raise (a bad file cannot crash a
-    ## hook or flip the gate).
-    if HL is None:
-        return
-    with tempfile.TemporaryDirectory() as tmp:
-        priv = os.path.join(tmp, 'secure-terminal.d')
-        os.makedirs(priv, exist_ok=True)
-        HL._PRIVILEGED = (tmp,)
-        for _ in range(iterations):
-            HL.read_file = lambda name, _t=_rand_text(rnd): _t
-            rules = HL.read_rules('example-hook-rules.conf')
-            _assert(rules is None or isinstance(rules, list),
-                    'read_rules bad type', seed)
-            for rule in (rules or []):
-                _assert(len(rule) == 4 and rule[0] in ('allow', 'block', 'ask')
-                        and all(isinstance(f, str) for f in rule),
-                        'read_rules bad rule {0!r}'.format(rule), seed)
-            with open(os.path.join(priv, 'hooks.conf'), 'w',
-                      encoding='utf-8') as handle:
-                handle.write(_rand_text(rnd, max_tokens=8))
-            value = HL._privileged_conf_value('hook_config_allow_user')
-            _assert(value is None or isinstance(value, str),
-                    'privileged_conf_value bad type', seed)
-
-
-def phase_hook_protocol(rnd, iterations, seed):
-    ## The command-hook SUBPROCESS protocol (hook.py, distinct from the rules parser
-    ## above): a handler's advisory message and its suggestion (which may be SENT to
-    ## the shell) must be sanitized whatever the handler returns, and evaluate() must
-    ## never raise -- it must always yield a valid verdict, however garbage the reply.
-    ## _invoke is mocked so no subprocess is spawned.
-    orig_invoke = HOOK._invoke
-    try:
-        for _ in range(iterations):
-            raw = _rand_text(rnd)
-            msg = HOOK._sanitize_message(raw)
-            _assert(len(msg) <= 2000
-                    and all(ord(c) in SAFE for c in msg),
-                    'hook _sanitize_message leaked/over-long on {0!r}'.format(raw), seed)
-            sug = HOOK._sanitize_suggestion(raw)
-            _assert(len(sug) <= 1000 and '\n' not in sug and '\r' not in sug
-                    and all(0x20 <= ord(c) <= 0x7E for c in sug),
-                    'hook _sanitize_suggestion leaked on {0!r}'.format(raw), seed)
-            reply = rnd.choice([
-                None, [], 'x', 42, {},
-                {'verdict': rnd.choice(['allow', 'block', 'ask', 'need_transcript',
-                                        'bogus', '', 123]),
-                 'message': _rand_text(rnd), 'suggestion': _rand_text(rnd)},
-                {'message': _rand_text(rnd)},
-                {'verdict': 'need_transcript'}])
-            HOOK._invoke = lambda *a, _r=reply, **k: _r
-            dec = HOOK.evaluate(['/nonexistent'], _rand_text(rnd),
-                                on_error=rnd.choice(['allow', 'block']),
-                                transcript_provider=lambda: _rand_text(rnd))
-            _assert(isinstance(dec, dict)
-                    and dec.get('verdict') in ('allow', 'block', 'ask')
-                    and isinstance(dec.get('message'), str)
-                    and isinstance(dec.get('suggestion'), str)
-                    and '\n' not in dec['suggestion'] and '\r' not in dec['suggestion'],
-                    'hook evaluate returned an invalid decision for reply {0!r}'
-                    .format(reply), seed)
-    finally:
-        HOOK._invoke = orig_invoke
-
-
-def phase_hook_subprocess(rnd, iterations, seed):
-    ## The REAL hook round-trip -- a subprocess + json.loads of the child's stdout,
-    ## beyond phase_hook_protocol's mocked reply. A hook child echoes a
-    ## fuzzer-controlled reply file, run through evaluate() with the real _invoke, so
-    ## arbitrary (incl. invalid) child output must still yield a valid decision and
-    ## never raise. A subprocess per iteration is slow, so probe a small curated set.
-    hook_fd, hook_py = tempfile.mkstemp(suffix='.py')
-    os.write(hook_fd, b"import sys\n"
-                      b"sys.stdin.buffer.read()\n"
-                      b"sys.stdout.buffer.write(open(sys.argv[1], 'rb').read())\n")
-    os.close(hook_fd)
-    reply_fd, reply_file = tempfile.mkstemp()
-    os.close(reply_fd)
-    argv = [sys.executable, hook_py, reply_file]
-    try:
-        for _ in range(min(iterations, 60)):
-            reply = rnd.choice([
-                b'', b'not json', b'{', b'[]', b'42', b'null', b'true',
-                json.dumps({'verdict': rnd.choice(['allow', 'block', 'ask',
-                                                   'need_transcript', 'x']),
-                            'message': _rand_text(rnd),
-                            'suggestion': _rand_text(rnd)}).encode('utf-8'),
-                _rand_bytes(rnd, 128)])
-            with open(reply_file, 'wb') as handle:
-                handle.write(reply)
-            dec = HOOK.evaluate(argv, _rand_text(rnd), timeout=5,
-                                on_error=rnd.choice(['allow', 'block']),
-                                transcript_provider=lambda: _rand_text(rnd))
-            _assert(isinstance(dec, dict)
-                    and dec.get('verdict') in ('allow', 'block', 'ask')
-                    and isinstance(dec.get('suggestion'), str)
-                    and '\n' not in dec['suggestion'] and '\r' not in dec['suggestion'],
-                    'hook real round-trip: invalid decision for reply {0!r}'
-                    .format(reply), seed)
-    finally:
-        os.unlink(hook_py)
-        os.unlink(reply_file)
-
-
 def phase_cli(rnd, iterations, seed):
     ## The secure-terminal-cli entry (cli.main): random argv must never crash the
     ## parser beyond argparse's own SystemExit. _run is mocked, so nothing is
@@ -425,9 +303,6 @@ def main():
         ('paste', phase_paste),
         ('config', phase_config),
         ('ipc', phase_ipc),
-        ('hooks', phase_hooks),
-        ('hook_protocol', phase_hook_protocol),
-        ('hook_subprocess', phase_hook_subprocess),
         ('cli', phase_cli),
     )
     per_phase = max(1, opts.iterations // len(phases))
