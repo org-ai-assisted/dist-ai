@@ -179,14 +179,25 @@ def _python_interpreter_shebang(first):
 
 ## env short/long options that consume the FOLLOWING token as an operand (only
 ## when given space-separated -- '-uNAME' / '--unset=NAME' carry it in one token).
-_ENV_OPERAND_OPTS = (b"-u", b"--unset", b"-C", b"--chdir")
+_ENV_OPERAND_OPTS = (b"-u", b"--unset", b"-C", b"--chdir", b"-a", b"--argv0")
 
 
 def _env_command(tokens):
     """The command token env runs, given env's args (bytes list), or None. Skips
     options, their space-separated operands, VAR=val assignments, and '-S'/'--
     split-string' (whose content is simply the following tokens); '--' ends option
-    processing. A small, fixed env-option skip -- not a general parser."""
+    processing. A small, fixed env-option skip -- not a general parser.
+
+    OUT of scope, by design (never reinvent a parser -- and these are evasions, not
+    shebangs a developer writes): env's '-S' split-string MINI-LANGUAGE with the
+    command crammed into ONE token -- an attached arg ('-S-u FOO python3'), the
+    '--split-string=python3' equals form, or a QUOTED body ('-S "FOO=bar python3"')
+    whose quotes env strips but a plain '.split()' leaves attached. Emulating -S
+    (attached args, '=', quote/escape stripping) is the treadmill the standing rule
+    forbids; a real '-S' need uses the space-separated form (handled) or the
+    'allow-python-shebang' waiver. The realistic env forms -- 'env python3', 'env
+    -S python3 -flags', 'env VAR=val python3', 'env -u/-C/-a OPERAND python3' -- all
+    resolve here."""
     index = 0
     while index < len(tokens):
         token = tokens[index]

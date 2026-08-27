@@ -203,6 +203,15 @@ import os
 expect_fix 'env -S -u operand fixed'    '#!/usr/bin/env -S -u FOO python3
 import os
 ' "${canonical}"
+## '-a NAME' / '--argv0 NAME' also take a separate operand -- python3 after it is
+## still the command.
+expect_flag 'env -a operand flagged'    '#!/usr/bin/env -a argv0name python3
+import os
+' present
+expect_fix 'env -a operand fixed'       '#!/usr/bin/env -a argv0name python3
+import os
+' "${canonical}"
+
 ## ...and the operand itself is NOT the command: 'env -u python3 ruby' unsets a
 ## var named python3 and runs RUBY -- must NOT be flagged (or --fix would rewrite
 ## a ruby shebang to python and break it).
