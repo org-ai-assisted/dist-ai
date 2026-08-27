@@ -194,6 +194,25 @@ expect_fix 'env -S VAR=val fixed'     '#!/usr/bin/env -S FOO=bar python3
 x = 1
 ' "${canonical}"
 
+## Bug: an env option that takes a SEPARATE operand ('-u NAME', '-C DIR') must
+## not have its operand mistaken for the command -- '-u FOO python3' still runs
+## python3, so the -s hardening was silently skipped.
+expect_flag 'env -S -u operand flagged' '#!/usr/bin/env -S -u FOO python3
+import os
+' present
+expect_fix 'env -S -u operand fixed'    '#!/usr/bin/env -S -u FOO python3
+import os
+' "${canonical}"
+## ...and the operand itself is NOT the command: 'env -u python3 ruby' unsets a
+## var named python3 and runs RUBY -- must NOT be flagged (or --fix would rewrite
+## a ruby shebang to python and break it).
+expect_flag 'env -u python3-operand runs ruby, spared' '#!/usr/bin/env -u python3 ruby
+puts 1
+' absent
+expect_fix 'env -u python3-operand ruby unchanged'     '#!/usr/bin/env -u python3 ruby
+puts 1
+' '#!/usr/bin/env -u python3 ruby'
+
 ## Bug: the interpreter must be read from LINE 1 ONLY -- a 'python3' on line 2
 ## (an env with no operand on line 1) must not be pulled into the shebang.
 expect_flag 'env then newline spared' '#!/usr/bin/env

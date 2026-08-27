@@ -165,14 +165,45 @@ def _python_interpreter_shebang(first):
         return False
     if PYTHON_NAME_RE.match(tokens[0].rsplit(b"/", 1)[-1]):
         return True
-    ## '/usr/bin/env [options|VAR=val ...] python3 ...': env's command is the
-    ## first operand that is neither an option nor an assignment.
+    ## '/usr/bin/env [options|VAR=val ...] CMD ...': env's command is the first
+    ## token that is neither an option, an option's OPERAND, nor a VAR=val. '-u
+    ## NAME' / '-C DIR' take a following operand, so skipping only the option word
+    ## mistook its operand for the command ('env -S -u FOO python3' read FOO as the
+    ## command and missed python3 -- a hardening bypass).
     if tokens[0].rsplit(b"/", 1)[-1] == b"env":
-        for token in tokens[1:]:
-            if token.startswith(b"-") or b"=" in token:
-                continue
-            return PYTHON_NAME_RE.match(token.rsplit(b"/", 1)[-1]) is not None
+        command = _env_command(tokens[1:])
+        return (command is not None
+                and PYTHON_NAME_RE.match(command.rsplit(b"/", 1)[-1]) is not None)
     return False
+
+
+## env short/long options that consume the FOLLOWING token as an operand (only
+## when given space-separated -- '-uNAME' / '--unset=NAME' carry it in one token).
+_ENV_OPERAND_OPTS = (b"-u", b"--unset", b"-C", b"--chdir")
+
+
+def _env_command(tokens):
+    """The command token env runs, given env's args (bytes list), or None. Skips
+    options, their space-separated operands, VAR=val assignments, and '-S'/'--
+    split-string' (whose content is simply the following tokens); '--' ends option
+    processing. A small, fixed env-option skip -- not a general parser."""
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token == b"--":
+            index += 1
+            break
+        if token in (b"-S", b"--split-string"):
+            index += 1
+            continue
+        if token in _ENV_OPERAND_OPTS:
+            index += 2  ## the option AND its separate operand
+            continue
+        if token.startswith(b"-") or b"=" in token:
+            index += 1  ## a bundled/attached option or a VAR=val assignment
+            continue
+        break  ## the first plain word is the command
+    return tokens[index] if index < len(tokens) else None
 
 
 class PythonShebang(Rule):
