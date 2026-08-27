@@ -195,9 +195,12 @@ def _env_command(tokens):
     whose quotes env strips but a plain '.split()' leaves attached. Emulating -S
     (attached args, '=', quote/escape stripping) is the treadmill the standing rule
     forbids; a real '-S' need uses the space-separated form (handled) or the
-    'allow-python-shebang' waiver. The realistic env forms -- 'env python3', 'env
-    -S python3 -flags', 'env VAR=val python3', 'env -u/-C/-a OPERAND python3' -- all
-    resolve here."""
+    'allow-python-shebang' waiver. Also out of scope: an interpreter CHAIN that
+    reaches python INDIRECTLY ('env env python3', 'env sh -c python3') -- the
+    command here is 'env'/'sh', not python, and chasing arbitrary indirection is
+    unbounded and, like -S cramming, an evasion rather than a shebang a developer
+    writes. The realistic env forms -- 'env python3', 'env -S python3 -flags', 'env
+    VAR=val python3', 'env -u/-C/-a OPERAND python3' -- all resolve here."""
     index = 0
     while index < len(tokens):
         token = tokens[index]
