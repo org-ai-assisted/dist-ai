@@ -8467,6 +8467,140 @@ _pb.shutdown()
 for _rw in (_bp_no, _bp_yes, _hs, _dp, _th, _rb, _sm):
     _rw.shutdown()
 
+
+# --- render-loop performance + review fixes (perf cycle) ----------------------
+from secure_terminal.sanitize import has_bell as _p37_has_bell
+
+# per-tab render gating: interval branches + deferred catch-up (grid mode)
+_p37g = SecureTerminal(command='/bin/cat', tui=True)
+_p37g.resize(400, 300); _p37g.show(); APP.processEvents()
+ok(_p37g._render_active is True and _p37g._render_interval() == 16, 'gating: active interval 16ms')
+_p37g.set_render_active(False)
+ok(_p37g._render_active is False and _p37g._render_interval() == _p37g._HIDDEN_RENDER_MS,
+   'gating: hidden interval is the slow cadence')
+_p37g._feed_bytes(b'\x1b[HCATCHUP')
+ok(_p37g._screen.buffer[0][0].data == 'C', 'gating: a hidden tab still feeds its pyte model')
+ok('CATCHUP' not in _p37g.document().toPlainText(), 'gating: the hidden grid render is deferred')
+_p37g.set_render_active(True); APP.processEvents()
+ok('CATCHUP' in _p37g.toPlainText(), 'gating: becoming active renders the frame fed while hidden')
+_p37g.set_render_active(True)
+ok(_p37g._render_active is True, 'gating: set_render_active is idempotent')
+_p37g.shutdown()
+
+# CLI catch-up via _flush_paint (assert on _paint_dirty, not toPlainText which flushes)
+_p37c = SecureTerminal(command='/bin/cat', tui=False)
+_p37c.resize(400, 300); _p37c.show(); APP.processEvents()
+_p37c.set_render_active(False)
+_p37c._feed_line('hello-cli\n', defer=True)
+ok(_p37c._paint_dirty is True, 'gating: a hidden CLI tab defers the paint')
+_p37c.set_render_active(True); APP.processEvents()
+ok(_p37c._paint_dirty is False, 'gating: becoming active flushes the deferred CLI paint')
+ok('hello-cli' in _p37c.toPlainText(), 'gating: the deferred CLI line shows on catch-up')
+_p37c.shutdown()
+
+# A: getter-staleness -- transcript/toPlainText force a pending grid render
+_p37a = SecureTerminal(command='/bin/cat', tui=True)
+_p37a.resize(400, 300); _p37a.show(); APP.processEvents()
+_p37a.set_render_active(False)
+_p37a._feed_bytes(b'\x1b[HFRESHFRAME'); _p37a._render_timer.start(500)
+ok('FRESHFRAME' in _p37a.transcript_text(), 'A: transcript_text forces the pending grid render')
+ok(not _p37a._render_timer.isActive(), 'A: the pending render was consumed')
+_p37a._feed_bytes(b'\x1b[2;1HSECOND'); _p37a._render_timer.start(500)
+ok('SECOND' in _p37a.toPlainText(), 'A: toPlainText forces the pending grid render too')
+_p37a.shutdown()
+
+# B: teardown guard -- set_render_active(True) on a torn-down widget must not render
+_p37b = SecureTerminal(command='/bin/cat', tui=True)
+_p37b.resize(400, 300); _p37b.show(); APP.processEvents()
+_p37b.set_render_active(False)
+_p37b.shutdown()
+_p37b_rendered = []
+_p37b._render_tui = lambda: _p37b_rendered.append(1)
+_p37b.set_render_active(True)
+ok(_p37b_rendered == [], 'B: set_render_active(True) after shutdown skips the catch-up render')
+ok(_p37b._render_active is True, 'B: the flag still flips (only the render is guarded)')
+
+# C: hidden-CLI _paint_pending is capped to scrollback (no unbounded growth)
+_p37p = SecureTerminal(command='/bin/cat', tui=False)
+_p37p.resize(400, 300); _p37p.show(); APP.processEvents()
+_p37p._scrollback = 100
+_p37p.set_render_active(False)
+for _p37i in range(500):
+    _p37p._feed_line('line %d\n' % _p37i, defer=True)
+ok(len(_p37p._paint_pending) <= 100, 'C: hidden CLI _paint_pending capped to scrollback')
+ok(len(_p37p._paint_pending_wraps) == len(_p37p._paint_pending), 'C: wraps stay parallel to pending')
+_p37p.shutdown()
+
+# D: single zoom notch applies the font once (trailing same-size apply no-ops)
+_p37z = SecureTerminal(command='/bin/cat', tui=True)
+_p37z.resize(400, 300); _p37z.show(); APP.processEvents()
+_p37z._zoom_debounce_ms = 40
+_p37z.apply_zoom(150); APP.processEvents()
+_p37z_big = _p37z.font().pointSize()
+ok(_p37z.current_zoom() == 150 and _p37z_big > 0, 'D: a zoom notch applies immediately (leading edge)')
+_p37z._render_timer.stop()
+_p37z._apply_font()
+ok(not _p37z._render_timer.isActive(), 'D: a same-size _apply_font no-ops (no second relayout)')
+_p37z_applied = _p37z._applied_font_size
+_p37z.set_font_size(20)
+ok(_p37z._applied_font_size != _p37z_applied, 'D: a genuine font-size change is not skipped')
+# burst coalescing: a follow-up while the timer is armed is not applied yet
+_p37z._zoom_debounce_ms = 40
+_p37z.apply_zoom(120); APP.processEvents()
+_p37z_f = _p37z.font().pointSize()
+_p37z.apply_zoom(90)
+ok(_p37z.current_zoom() == 90 and _p37z.font().pointSize() == _p37z_f,
+   'D: a burst follow-up is coalesced (font not re-applied yet)')
+ok(_p37z._zoom_timer.isActive(), 'D: the zoom debounce timer is armed for the final size')
+_p37z.shutdown()
+
+# has_bell fast-reject: identical to the regex path
+ok(_p37_has_bell('\x07') is True, 'bell: a standalone BEL is detected')
+ok(_p37_has_bell('hello world') is False, 'bell: no BEL byte -> False (fast path)')
+ok(_p37_has_bell('\x1b]0;title\x07') is False, 'bell: an OSC-terminating BEL is not a standalone bell')
+ok(_p37_has_bell('ring\x07now') is True, 'bell: a real BEL among text is detected')
+ok(_p37_has_bell('') is False, 'bell: empty string -> False')
+
+
+
+# --- security cycle: SEC-9 (multi-line paste bypass) + SEC-4 (interrupted CSI leak) ---
+_p9 = SecureTerminal(command='/bin/cat', tui=False)
+_p9.resize(400, 300); _p9.show(); APP.processEvents()
+_p9._hook = {'argv': ['/bin/true'], 'on_error': 'allow'}
+_p9.has_foreground_program = lambda: False
+_p9._bracketed_paste_active = lambda: False
+_p9_routed = []
+_p9._inject_text_reviewed = lambda t: _p9_routed.append(t)
+_p9._review_active = True
+_p9._pending_paste = 'echo one\necho two\necho three'
+_p9.dispatch_pending_paste('stripped')
+ok(_p9_routed == ['echo one\necho two\necho three'],
+   'SEC-9: a multi-line paste with a hook routes through the atomic batch review (not embedded-CR)')
+# else branch: no hook -> _dispatch_paste (embedded delivery, unchanged)
+_p9._hook = None
+_p9_disp = []
+_p9._dispatch_paste = lambda r, a: _p9_disp.append((r, a))
+_p9._review_active = True
+_p9._pending_paste = 'a\nb'
+_p9.dispatch_pending_paste('stripped')
+ok(_p9_disp == [('a\nb', 'stripped')], 'SEC-9: with no hook, the reviewed paste dispatches as before')
+# reject / no-op paths
+_p9._review_active = True
+_p9._pending_paste = 'x'
+_p9.dispatch_pending_paste('reject')
+ok(_p9_disp == [('a\nb', 'stripped')], 'SEC-9: a rejected paste dispatches nothing')
+_p9.shutdown()
+
+# SEC-4: an interrupted CSI (params, no final byte) must not leak its param bytes as text
+_p4 = SecureTerminal(command='/bin/cat', tui=False)
+_p4.resize(400, 300); _p4.show(); APP.processEvents()
+_p4._feed_line('\x1b[38;5;123\nAFTER')
+_p4t = _p4.toPlainText()
+ok('38;5;123' not in _p4t, 'SEC-4: an interrupted CSI does not leak its param bytes as literal text')
+ok('AFTER' in _p4t, 'SEC-4: the text after an interrupted CSI still renders')
+_p4.shutdown()
+
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(widget): %d passed, %d failed\n'
                  % (PASS, FAIL))

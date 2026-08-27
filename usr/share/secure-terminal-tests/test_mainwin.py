@@ -3283,6 +3283,49 @@ APP.processEvents()
 _tw.deleteLater()
 APP.processEvents()
 
+
+# --- container theming + render-active sweep (perf cycle) ---------------------
+from secure_terminal.main import MainWindow as _p37MW
+from secure_terminal.terminal import SecureTerminal as _p37ST
+from secure_terminal.sanitize import THEMES as _p37TH
+_p37w = _p37MW()
+_p37w.new_tab(); APP.processEvents()
+_p37act = _p37w.current().current_theme()
+ok(_p37TH[_p37act][0] in _p37w.tabs.styleSheet() and 'QStackedWidget' in _p37w.tabs.styleSheet(),
+   'theming: the container stylesheet carries the active theme bg')
+_p37other = 'light' if _p37act != 'light' else 'dark'
+_p37w.set_theme(_p37other); APP.processEvents()
+ok(_p37TH[_p37other][0] in _p37w.tabs.styleSheet(), 'theming: the container follows a theme change')
+_p37w.new_tab(); APP.processEvents()
+_p37terms = [_p37w.tabs.widget(_p37i) for _p37i in range(_p37w.tabs.count())
+             if isinstance(_p37w.tabs.widget(_p37i), _p37ST)]
+ok(len(_p37terms) >= 2, 'sweep: >=2 real terminal tabs')
+_p37cur = _p37w.tabs.currentWidget()
+ok(_p37cur._render_active is True, 'sweep: the current tab is render-active')
+ok(all((_p37t._render_active is (_p37t is _p37cur)) for _p37t in _p37terms),
+   'sweep: exactly the current tab is render-active, the rest gated')
+_p37oi = next(_p37i for _p37i in range(_p37w.tabs.count())
+              if _p37w.tabs.widget(_p37i) is not _p37cur and isinstance(_p37w.tabs.widget(_p37i), _p37ST))
+_p37w.tabs.setCurrentIndex(_p37oi); APP.processEvents()
+_p37nc = _p37w.tabs.currentWidget()
+ok(_p37nc is not _p37cur and _p37nc._render_active is True and _p37cur._render_active is False,
+   'sweep: switching moves the active flag to the newly-current tab')
+_p37w.close(); _p37w.deleteLater(); APP.processEvents()
+
+
+
+# --- security cycle: SEC-10 (set_allow_title OSC-default desync) ---------------
+_p10w = _p37MW()
+_p10w.new_tab(); APP.processEvents()
+_p10w.set_allow_title(False)
+ok(_p10w._osc_defaults.get('osc_title') is False and _p10w._osc_defaults.get('osc_notify') is False,
+   'SEC-10: set_allow_title(False) syncs osc_title/osc_notify defaults off for NEW tabs')
+_p10w.set_allow_title(True)
+ok(_p10w._osc_defaults.get('osc_title') is True and _p10w._osc_defaults.get('osc_notify') is True,
+   'SEC-10: set_allow_title(True) re-enables the OSC defaults')
+_p10w.close(); _p10w.deleteLater(); APP.processEvents()
+
+
 win.close()
 win.deleteLater()
 APP.processEvents()
