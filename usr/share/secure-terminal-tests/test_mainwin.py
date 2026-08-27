@@ -269,6 +269,19 @@ try:
        'ctl dump-tab --lines 0 -> 0')
     ok(_sent0.get('lines') == 0,
        'COR-7: the client forwards --lines 0 (not dropped as a falsy value)')
+    # zoom: forwards the tab + level and prints the returned zoom.
+    _sentz = {}
+    def _cap_reqz(*_a, **_k):
+        for _x in _a:
+            if isinstance(_x, dict) and 'op' in _x:
+                _sentz.clear()
+                _sentz.update(_x)
+        return {'ok': True, 'zoom': 150}
+    M.ipc.send_request = _cap_reqz
+    eq(_ctl_main(['zoom', '--tab', 'id:1', '150']), 0, 'ctl zoom -> 0')
+    ok(_sentz.get('op') == 'ctl-zoom' and _sentz.get('tab') == 'id:1'
+       and _sentz.get('level') == '150',
+       'ctl: the client builds the ctl-zoom request (tab + level forwarded)')
 finally:
     M.ipc.send_request = _orig_sr
 
@@ -327,63 +340,9 @@ try:
 finally:
     QDialog.exec = _orig_exec
 
-# --- _read_hook_config: parse the command-hook settings ------------------------
-from secure_terminal.main import _read_hook_config, _test_canary  # noqa: E402
+from secure_terminal.main import _test_canary                     # noqa: E402
 from PyQt6.QtWidgets import (QFileDialog, QMenu, QMessageBox)      # noqa: E402
 from PyQt6.QtCore import QPoint                                    # noqa: E402
-
-eq(_read_hook_config({'command_hook': ''}), None,
-   '_read_hook_config: no handler configured -> None')
-eq(_read_hook_config({'command_hook': '"unterminated'}), None,
-   '_read_hook_config: an unparseable command line -> None')
-_hc = _read_hook_config({'command_hook': 'myhook --flag',
-                         'command_hook_timeout': 'notanint'})
-ok(_hc and _hc['argv'] == ['myhook', '--flag'] and _hc['timeout'] == 10,
-   '_read_hook_config: parses argv; a bad timeout falls back to 10')
-# a NON-POSITIVE timeout must be rejected: subprocess.run(timeout<=0) raises
-# TimeoutExpired instantly, and with on_error=allow that fails OPEN (auto-approves
-# every command while the UI shows the hook enabled). reviewdrain15.
-eq(_read_hook_config({'command_hook': 'h', 'command_hook_timeout': '-1'})['timeout'],
-   10, '_read_hook_config: a negative timeout is rejected (would fail OPEN)')
-eq(_read_hook_config({'command_hook': 'h', 'command_hook_timeout': '0'})['timeout'],
-   10, '_read_hook_config: a zero timeout is rejected (would fail OPEN)')
-# an ABSURDLY large timeout (2**63) parses as a Python int but overflows subprocess's
-# C PyTime_t with an uncaught OverflowError -- clamp it away. codex ai-review.
-eq(_read_hook_config({'command_hook': 'h',
-                      'command_hook_timeout': str(2 ** 63)})['timeout'],
-   10, '_read_hook_config: an overflow-large timeout is rejected (would crash eval)')
-# Locking command_hook must AUTO-LOCK its security-steering companions
-# (command_hook_timeout / on_error / transcript), or a home config could set
-# command_hook_timeout=-1 (fail-open) to defeat an admin-locked hook. reviewdrain15.
-from secure_terminal import settings as _st_hook               # noqa: E402
-_hooksys = tempfile.mkdtemp(prefix='st-hooklock-')
-with open(os.path.join(_hooksys, '10-hook.conf'), 'w', encoding='utf-8') as _hf:
-    _hf.write('command_hook=/usr/bin/judge\nlock=command_hook\n')
-_orig_hooksys = _st_hook._system_dirs
-_st_hook._system_dirs = lambda: [_hooksys]
-try:
-    _hcfg = _st_hook.load()
-    for _ck in ('command_hook_timeout', 'command_hook_on_error',
-                'command_hook_transcript'):
-        ok(_ck in _hcfg.locked,
-           'locking command_hook auto-locks its companion %s' % _ck)
-    _st_hook._system_dirs = lambda: [tempfile.mkdtemp(prefix='st-nohooklock-')]
-    ok('command_hook_timeout' not in _st_hook.load().locked,
-       'without a command_hook lock, the companions stay user-settable')
-finally:
-    _st_hook._system_dirs = _orig_hooksys
-# on_error default: an ADMIN-LOCKED (enforced) hook fails CLOSED by default, so
-# locking the hook + auto-locking on_error can never DOWNGRADE it to fail-open (a
-# user's block was discarded and defaulted to allow -- codex ai-review). An unlocked
-# hook keeps the historical fail-open default; an explicit value always wins.
-eq(_read_hook_config(_st_hook.Config({'command_hook': 'h'},
-                                     locked=('command_hook',)))['on_error'],
-   'block', '_read_hook_config: a LOCKED hook fails closed by default (no downgrade)')
-eq(_read_hook_config(_st_hook.Config({'command_hook': 'h'}))['on_error'],
-   'allow', '_read_hook_config: an unlocked hook keeps the fail-open default')
-eq(_read_hook_config(_st_hook.Config({'command_hook': 'h', 'command_hook_on_error':
-                                      'allow'}, locked=('command_hook',)))['on_error'],
-   'allow', '_read_hook_config: an explicit admin on_error=allow still wins when locked')
 
 # A modal must never be reachable in this user-less harness: QMessageBox.question
 # BLOCKS in the event loop with nobody to answer, and the suite hangs forever
@@ -777,8 +736,8 @@ eq(win.tabs.tabText(win.tabs.indexOf(_pw)), 'shell',
    '#90: an unreadable cwd falls back to "shell"')
 _pw.cwd_basename = _pw_cwd
 # the tab tooltip escapes an untrusted program title: setTabToolTip renders rich text
-# (unlike setTabText), so an OSC-set title with markup must be shown literally -- the same
-# class as the command-hook PlainText gate. Pre-fix the raw '<b>' reached the tooltip.
+# (unlike setTabText), so an OSC-set title with markup must be shown literally.
+# Pre-fix the raw '<b>' reached the tooltip.
 win._user_titles.pop(_pw, None)
 win._prog_titles[_pw] = '<b>owned</b>'
 win._refresh_tab_label(_pw)
@@ -891,6 +850,69 @@ try:
     ok(not _disp({'op': 'ctl-set-tab-title', 'tab': 'id:%d' % _tid0,
                   'title': 5})['ok'],
        'ipc: ctl-set-tab-title with a non-string title is rejected')
+
+    # --- ctl-zoom: live font-zoom a tab (no restart) -------------------------
+    _z_cur = win.current()
+    _z_cur_tid = win._tab_ids.get(_z_cur)
+    win.set_zoom(100)                       # known baseline on the current tab
+    # explicit percent on the CURRENT tab -> routed through set_zoom, so the
+    # toolbar zoom box + persisted default track it too.
+    _rz = _disp({'op': 'ctl-zoom', 'tab': 'id:%d' % _z_cur_tid, 'level': 150})
+    ok(_rz['ok'] and _rz['zoom'] == 150 and _z_cur.current_zoom() == 150,
+       'ipc: ctl-zoom explicit percent applies to the tab')
+    ok(win.zoom_box.value() == 150,
+       'ipc: ctl-zoom on the current tab routes through set_zoom (zoom box tracks it)')
+    # in / out step by ZOOM_STEP.
+    _ri = _disp({'op': 'ctl-zoom', 'tab': 'id:%d' % _z_cur_tid, 'level': 'in'})
+    ok(_ri['ok'] and _ri['zoom'] == 160, 'ipc: ctl-zoom in steps up by ZOOM_STEP')
+    _ro = _disp({'op': 'ctl-zoom', 'tab': 'id:%d' % _z_cur_tid, 'level': 'out'})
+    ok(_ro['ok'] and _ro['zoom'] == 150, 'ipc: ctl-zoom out steps down by ZOOM_STEP')
+    # reset -> 100.
+    _rr0 = _disp({'op': 'ctl-zoom', 'tab': 'id:%d' % _z_cur_tid, 'level': 'reset'})
+    ok(_rr0['ok'] and _rr0['zoom'] == 100, 'ipc: ctl-zoom reset returns to 100')
+    # clamp to ZOOM_MIN..ZOOM_MAX.
+    _rh = _disp({'op': 'ctl-zoom', 'tab': 'id:%d' % _z_cur_tid, 'level': 500})
+    ok(_rh['ok'] and _rh['zoom'] == 400,
+       'ipc: ctl-zoom clamps above ZOOM_MAX (500 -> 400)')
+    _rlo = _disp({'op': 'ctl-zoom', 'tab': 'id:%d' % _z_cur_tid, 'level': 5})
+    ok(_rlo['ok'] and _rlo['zoom'] == 25,
+       'ipc: ctl-zoom clamps below ZOOM_MIN (5 -> 25)')
+    win.set_zoom(100)
+    # a non-numeric level is rejected.
+    ok(not _disp({'op': 'ctl-zoom', 'tab': 'id:%d' % _z_cur_tid,
+                  'level': 'huge'})['ok'],
+       'ipc: ctl-zoom with a non-numeric level is rejected')
+    # a raw-JSON float infinity (a ctl request with level 1e400 parses to inf) makes
+    # int(inf) raise OverflowError: it must be caught + rejected, never crash the Qt
+    # process. On the old except (no OverflowError) _disp would raise, not return.
+    ok(not _disp({'op': 'ctl-zoom', 'tab': 'id:%d' % _z_cur_tid,
+                  'level': float('inf')})['ok'],
+       'ipc: ctl-zoom with an infinite level (JSON 1e400) is rejected, not a crash')
+    # a non-matching tab -> error.
+    ok(not _disp({'op': 'ctl-zoom', 'tab': 'id:999999', 'level': 150})['ok'],
+       'ipc: ctl-zoom on a non-matching tab -> error')
+    # a NON-current tab -> apply_zoom (NOT set_zoom): the tab's own zoom changes,
+    # but the toolbar zoom box (which reflects the CURRENT tab) does not track it.
+    while win.tabs.count() < 2:
+        win.new_tab()
+    _z_other = next(win.tabs.widget(_i) for _i in range(win.tabs.count())
+                    if win.tabs.widget(_i) is not win.current())
+    _z_other_tid = win._tab_ids.get(_z_other)
+    win.set_zoom(100)
+    _z_box_before = win.zoom_box.value()
+    _ron = _disp({'op': 'ctl-zoom', 'tab': 'id:%d' % _z_other_tid, 'level': 175})
+    ok(_ron['ok'] and _z_other.current_zoom() == 175,
+       'ipc: ctl-zoom on a non-current tab applies to that tab')
+    ok(win.zoom_box.value() == _z_box_before and win.current().current_zoom() == 100,
+       'ipc: ctl-zoom on a non-current tab uses apply_zoom (current-tab chrome unchanged)')
+    # admin-locked zoom is refused.
+    _z_lk = set(win._locked)
+    win._locked = {'zoom'}
+    ok(not _disp({'op': 'ctl-zoom', 'tab': 'id:%d' % _z_cur_tid,
+                  'level': 200})['ok'],
+       'ipc: ctl-zoom refused when zoom is admin-locked')
+    win._locked = _z_lk
+    win.set_zoom(100)
 finally:
     win._remote_control = _saved_rc
 
@@ -1857,7 +1879,7 @@ ok(getattr(_reclaim, '_server', None) is not None,
 _reclaim.deleteLater()
 APP.processEvents()
 
-# --- session persistence + quit/close hooks -----------------------------------
+# --- session persistence + quit/close handlers --------------------------------
 win.set_persist_session(False)              # disabling clears the saved session
 win.clear_saved_session()
 _o_qapp_quit = QApplication.quit
@@ -1950,7 +1972,6 @@ ok(True, 'find bar: all-tabs and single-tab search + stepping run')
 
 # --- status-bar notifications, bell label, tray bell, cwd tooltip -------------
 win._on_notify('a notification')
-win._on_hook_notice('a hook advisory')
 win._default_bell_sound = '/usr/share/sounds/example.wav'
 ok('Sound file:' in win._bell_sound_label(), '_bell_sound_label names the file')
 win._default_bell_sound = ''
@@ -2287,10 +2308,6 @@ ok(True, 'a window with the tray enabled builds the tray at startup')
 _wt2.deleteLater()
 APP.processEvents()
 os.remove(_trayconf)
-
-# a command_hook that is only whitespace yields no hook
-eq(_read_hook_config({'command_hook': '   '}), None,
-   '_read_hook_config: an all-whitespace command yields no hook')
 
 # --- InfoTip: pointer polling, a destroyed source, and Esc-to-hide ------------
 _tip = M.InfoTip(win)

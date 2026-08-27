@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -Bsu
 """
 Faithful in-process test harness for the Whonix onion-grater Tor control
 port filter profiles.

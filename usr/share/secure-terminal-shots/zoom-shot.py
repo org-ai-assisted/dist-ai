@@ -204,6 +204,10 @@ def main(argv=None):
         levels = [int(x) for x in os.environ['ZOOM_LEVELS'].split()]
     else:
         levels = list(DEFAULT_LEVELS)
+    if not levels:
+        sys.stderr.write('zoom-shot: no zoom levels to sweep '
+                         '(ZOOM_LEVELS empty?)\n')
+        return 2
     os.makedirs(out_dir, exist_ok=True)
 
     # Kept in a local so the application object outlives the grabs.
@@ -235,7 +239,9 @@ def main(argv=None):
         fm = QFontMetrics(f)
         ls, lead = fm.lineSpacing(), fm.leading()
         out = os.path.join(out_dir, 'zoom-%03d.png' % z)
-        img.save(out, 'PNG')
+        if not img.save(out, 'PNG'):
+            sys.stderr.write('zoom-shot: could not write %s\n' % out)
+            return 1
         gutter_px = 60 * SHOT_SCALE
         run_px, run_y = longest_bg_run(img, gutter_px)
         # A genuine strip is at least one full grid row of emptiness bounded by

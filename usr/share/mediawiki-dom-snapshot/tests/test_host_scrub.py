@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -Bsu
 """Unit test for the cross-wiki host scrub (DOM_DIFF_HOST_SCRUB).
 
 A before/after diff served on DIFFERENT hostnames (old.whonix.org vs
