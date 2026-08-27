@@ -273,6 +273,33 @@ except SystemExit:
     raised = True
 assert raised, "all-malformed manifest must fail loud, not emit a near-empty mirror as success"
 
+# content_type does NOT gate the host scrub: a MISLABELED text asset (css whose
+# manifest content_type is wrong / omitted / mixed-case) must still be scrubbed at
+# the byte level, else the host leaks via the verbatim-copy else branch. AND a genuine
+# binary asset (no host bytes, incl invalid-UTF-8) must be byte-identical in/out -- the
+# no-corruption half, so a future lossy-decode reintroduction is caught.
+srcm = Path(tempfile.mkdtemp()); dstm = Path(tempfile.mkdtemp())
+(srcm / "dom.html").write_text("<html></html>", encoding="utf-8")
+(srcm / "assets").mkdir()
+for fn in ("m1.css", "m2.css", "m3.css"):
+    (srcm / "assets" / fn).write_text(".x{background:url(https://%s/i.png)}" % H, encoding="utf-8")
+binblob = bytes(range(256)) * 4  # no host bytes; includes invalid-UTF-8
+(srcm / "assets" / "b.bin").write_bytes(binblob)
+(srcm / "manifest.json").write_text(json.dumps({
+    "https://%s/wiki/Page" % H: {"status": 200, "content_type": "text/html"},
+    "https://%s/wrong" % H: {"status": 200, "content_type": "application/octet-stream", "asset": "m1.css", "sha256": "a", "size": 1},
+    "https://%s/omitted" % H: {"status": 200, "asset": "m2.css", "sha256": "b", "size": 1},
+    "https://%s/mixed" % H: {"status": 200, "content_type": "Text/CSS", "asset": "m3.css", "sha256": "c", "size": 1},
+    "https://%s/blob" % H: {"status": 200, "content_type": "application/octet-stream", "asset": "b.bin", "sha256": "z", "size": 1},
+}), encoding="utf-8")
+N.normalize_page_dir(srcm, dstm)
+# (a) mislabeled text: the host is absent from the output when scrubbing is active
+mout = b"".join(p.read_bytes() for p in (dstm / "assets").glob("*") if p.is_file())
+assert (H.encode() not in mout) == active, ("mislabeled-content-type-leak", active, mout[:120])
+# (b) binary no-corruption: the blob is byte-identical (no host bytes -> no rewrite), both modes
+assert any(p.read_bytes() == binblob for p in (dstm / "assets").glob("*") if p.is_file()), \
+    "binary asset was not copied byte-identical (a lossy UTF-8 round-trip would mangle it)"
+
 print("OK active=%s" % active)
 """
 
