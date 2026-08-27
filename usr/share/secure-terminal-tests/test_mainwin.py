@@ -3313,6 +3313,19 @@ ok(_p37nc is not _p37cur and _p37nc._render_active is True and _p37cur._render_a
 _p37w.close(); _p37w.deleteLater(); APP.processEvents()
 
 
+
+# --- security cycle: SEC-10 (set_allow_title OSC-default desync) ---------------
+_p10w = _p37MW()
+_p10w.new_tab(); APP.processEvents()
+_p10w.set_allow_title(False)
+ok(_p10w._osc_defaults.get('osc_title') is False and _p10w._osc_defaults.get('osc_notify') is False,
+   'SEC-10: set_allow_title(False) syncs osc_title/osc_notify defaults off for NEW tabs')
+_p10w.set_allow_title(True)
+ok(_p10w._osc_defaults.get('osc_title') is True and _p10w._osc_defaults.get('osc_notify') is True,
+   'SEC-10: set_allow_title(True) re-enables the OSC defaults')
+_p10w.close(); _p10w.deleteLater(); APP.processEvents()
+
+
 win.close()
 win.deleteLater()
 APP.processEvents()
