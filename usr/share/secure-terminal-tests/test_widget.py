@@ -2009,6 +2009,15 @@ if tui_available():
     eq(_bb._screen.buffer[0][1].bg, 'blue',
        'COR-5: a normal bg after a bright-bg overrides it (in-order)')
     _bb.close()
+    # an INCOMPLETE extended-bg selector (48 with no 5;N / 2;R;G;B) must NOT clear a
+    # preceding valid bright-bg: only a COMPLETE 48 is a real bg. Pre-fix `101;48`
+    # cleared bright_bg unconditionally -> default bg instead of the bright-red. Fresh
+    # cell so the pre-fix result is an unambiguous 'default', not a leftover bg.
+    _b48 = SecureTerminal(command='/bin/cat', tui=True)
+    feed_output(_b48, b'\x1b[101;48mZ')        # bright-red bg, then a bare (incomplete) 48
+    eq(_b48._screen.buffer[0][0].bg, 'brightred',
+       'COR-5: an incomplete 48 selector leaves a preceding bright-bg intact (101;48)')
+    _b48.close()
     # 38/48 EXTENDED colours: their following params are colour DATA, not opcodes. A component
     # in 100-107 must NOT be misread as a bright-bg code (the base of this fix, 23ff606, did:
     # 38;5;101 set bg=brightred and truncated the fg). Feed each on its own fresh cell.
@@ -2761,6 +2770,30 @@ ok(b'sudo sh\r' in b''.join(_injs2w) and not _injs2._line_dirty,
    'single-line injection: an asked line chosen Run submits and settles the prompt')
 _injs2.close()
 
+# Ctrl+\ (SIGQUIT): whether the tty flushes or RETAINS the pending line is tty/shell-dependent
+# (NOFLSH off flushes; `stty noflsh` or bash trapping SIGQUIT RETAINS it) and unobservable to
+# us. So the line is marked UNVERIFIABLE -- the next Enter must fail safe (re-ask/re-judge),
+# never auto-submit. Clearing the mirror to empty (the prior fix) let a RETAINED "safe"+typed
+# command run UNJUDGED on the next Enter (the noflsh empty-mirror bypass, cf. #34/#35).
+_sq = SecureTerminal(command='/bin/cat')
+_sq.apply_hook({'argv': _handler, 'timeout': 10, 'on_error': 'allow', 'transcript': 'none'})
+_sq.has_foreground_program = lambda: False
+_sqs = spy_writes(_sq)
+_htype(_sq, 'safe')
+ok(_sq._line_buffer == 'safe', 'the mirror holds the typed prefix before Ctrl+\\')
+key(_sq, Qt.Key.Key_Backslash, mods=Qt.KeyboardModifier.ControlModifier)
+ok(b'\x1c' in b''.join(_sqs), 'Ctrl+\\ sends SIGQUIT (0x1c) to the child')
+ok(_sq._line_dirty,
+   'Ctrl+\\ marks the line unverifiable (SIGQUIT may RETAIN the line under noflsh)')
+# the next Enter must re-ask via the dirty branch, never auto-submit a possibly-retained line
+_sqs.clear()
+_sqasked = []
+_sq._hook_ask = lambda _c, _r: (_sqasked.append(1) or 'discard')
+key(_sq, Qt.Key.Key_Return)
+ok(_sqasked and b'\r' not in b''.join(_sqs),
+   'the next Enter after Ctrl+\\ re-asks (dirty branch), never auto-submits a retained line')
+_sq.close()
+
 # OSC-52 reply truncation: a slow/gone child can leave the ~87 KiB reply truncated, its
 # buffered prefix then lacking the OSC terminator -- a dangling escape that swallows the
 # next pty reader's output. A truncated write (_write returns False) is best-effort
@@ -2807,6 +2840,25 @@ _ctc.grant_clipboard_read(_ctc.CLIP_ALLOW_ONCE)
 ok(not any(b'\x1b]52;c;' in _w for _w in _ctcw),
    'SEC-1: grant_clipboard_read re-checks the feature flag and withholds the reply when off')
 _ctc.close()
+
+# SEC-1 (stale dialog): a consent dialog whose request was ABANDONED (osc_clipboard_read
+# disabled) must NOT grant the tab after a re-enable -- a disable+re-enable+stale-allow-always
+# would else grant allow-always and the next read would reply with no fresh prompt.
+_cts = SecureTerminal(command='/bin/cat')
+_cts.apply_osc('osc_clipboard_read', True)
+_cts._clipboard_read = 'pending'                       # a consent dialog is open
+_cts.apply_osc('osc_clipboard_read', False)            # abandon it (pending -> None)
+_cts.apply_osc('osc_clipboard_read', True)             # re-enable
+_cts.grant_clipboard_read(_cts.CLIP_ALLOW_ALWAYS)      # stale Allow-Always click
+ok(_cts._clipboard_read is None,
+   'SEC-1: a stale allow-always (dialog abandoned by a disable) does NOT grant the tab')
+_ctsw = []
+_cts._write = lambda _d: (_ctsw.append(bytes(_d)) or True)
+_cts._last_clip_read = 0
+_cts._osc_clipboard_read()                             # the next OSC-52 read query
+ok(_cts._clipboard_read == 'pending' and not any(b'\x1b]52;c;' in _w for _w in _ctsw),
+   'SEC-1: after a stale grant the next read RE-ASKS (pending), it does not auto-reply')
+_cts.close()
 
 # F5: reap_pty_children WNOHANG-reaps ONLY our registered pty children, so the app can
 # drop the blanket SIGCHLD=SIG_IGN that made every subprocess returncode read 0. Pin
@@ -5795,7 +5847,12 @@ def _clip_read(feature_on, grant):
     _sent = []
     c._write = _sent.append                # pylint: disable=protected-access
     if grant is not None:
-        c.grant_clipboard_read(grant)
+        # A tab that ALREADY carries a persistent decision (allow-always / deny-always)
+        # from an earlier dialog: a later read reads _clipboard_read directly, it does
+        # not reopen a dialog. grant_clipboard_read ONLY resolves a live 'pending' dialog
+        # (a late click on an abandoned one is dropped), so model the standing decision
+        # as the persisted state, not a fresh grant.
+        c._clipboard_read = bool(grant)
     c._handle_osc(b'\x1b]52;c;?\x07')
     c.close()
     return _reqs, _sent
@@ -5834,7 +5891,7 @@ _QGA.clipboard().setText('clip-secret')       # restore for later readers
 # rate-limited: a granted tab cannot be flood-exfiltrated
 _cg = SecureTerminal(command='/bin/cat', tui=True)
 _cg.apply_osc('osc_clipboard_read', True)
-_cg.grant_clipboard_read(True)
+_cg._clipboard_read = True                 # a tab already granted allow-always
 _cgs = []
 _cg._write = _cgs.append
 _cg._handle_osc(b'\x1b]52;c;?\x07')
@@ -5848,7 +5905,7 @@ _cps = []
 _cp._write = _cps.append
 _cp._handle_osc(b'\x1b]52;c;?\x07')        # -> pending, dialog asked, no reply yet
 eq(_cps, [], 'a pending clipboard request sends no reply until the user decides')
-_cp.grant_clipboard_read(True)             # user allows -> the pending query is answered NOW
+_cp.grant_clipboard_read(_cp.CLIP_ALLOW_ALWAYS)   # user allows -> the pending query is answered NOW
 ok(len(_cps) == 1 and _cps[0].startswith(b'\x1b]52;c;'),
    'granting a pending request answers the query that opened the dialog')
 _cp.close()
@@ -5910,8 +5967,10 @@ _clip_ask(_ga)
 eq(len(_gar), 0, 'OSC 52 read: global always-allow answers WITHOUT a dialog')
 ok(len(_gas) == 1 and _gas[0].startswith(b'\x1b]52;c;'),
    'OSC 52 read: global always-allow replies to an undecided tab')
-# ...but an explicit per-tab Deny still wins over the global default
-_ga.grant_clipboard_read(_ga.CLIP_DENY_ALWAYS)
+# ...but an explicit per-tab Deny still wins over the global default. Global always-allow
+# answers with NO dialog, so no 'pending' is ever raised for grant to resolve -- the
+# standing per-tab deny is the persisted state (False), read directly.
+_ga._clipboard_read = False
 _gas.clear()
 _clip_ask(_ga)
 eq(_gas, [], 'OSC 52 read: a per-tab Deny wins over global always-allow')

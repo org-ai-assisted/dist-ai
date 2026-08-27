@@ -758,6 +758,14 @@ win._prog_titles.pop(_pw, None)
 win._refresh_tab_label(_pw)
 eq(win.tabs.tabText(win.tabs.indexOf(_pw)), 'myproj',
    '#90: no explicit title -> the tab shows the pwd basename')
+# a raw cwd basename is a legal Linux dir name and can carry bidi/control (e.g.
+# $'a\u202eb'); it must be sanitized before reaching the tab bar, like every other
+# label source -- else it flashes an RLO/control glyph live as you cd around.
+_pw.cwd_basename = lambda: 'a\u202eb'
+win._refresh_tab_label(_pw)
+ok('\u202e' not in win.tabs.tabText(win.tabs.indexOf(_pw)),
+   'the live cwd basename is sanitized in the tab label (no bidi/control flash)')
+_pw.cwd_basename = lambda: 'myproj'
 win._user_titles[_pw] = 'Named'
 win._refresh_tab_label(_pw)
 eq(win.tabs.tabText(win.tabs.indexOf(_pw)), 'Named',
@@ -1703,6 +1711,20 @@ win._add_placeholder_tab({'name': ['not', 'a', 'string'], 'cwd': '/tmp'}, _befor
 ok(win.tabs.count() == _before_ct + 1,
    '#4: a non-string saved tab name falls back to a label, no restore crash')
 win.tabs.removeTab(win.tabs.count() - 1)
+# a placeholder tab must not flash a crafted (bidi/RLO) session name in the tab bar before
+# the real tab swaps in -- the label is sanitize_title'd like the real tab.
+_before_ph = win.tabs.count()
+win._add_placeholder_tab({'name': 'a\u202eb', 'cwd': '/tmp'}, _before_ph)
+ok('\u202e' not in win.tabs.tabText(_before_ph),
+   'a placeholder tab label sanitizes a bidi/RLO session name (no control/bidi flash)')
+win.tabs.removeTab(win.tabs.count() - 1)
+# the placeholder's cwd-basename FALLBACK (no saved name) has the same class of gap:
+# a bidi dir name in the saved cwd must be sanitized too, not just the name field.
+_before_phc = win.tabs.count()
+win._add_placeholder_tab({'cwd': '/tmp/a\u202eb'}, _before_phc)
+ok('\u202e' not in win.tabs.tabText(_before_phc),
+   'a placeholder tab label sanitizes a bidi/RLO cwd basename (name-less fallback)')
+win.tabs.removeTab(win.tabs.count() - 1)
 # #5: a non-ASCII / non-str saved window geometry must not crash startup.
 _o_persist = win._persist_session
 win._persist_session = True                  # else _restore_window_geometry no-ops
@@ -1954,6 +1976,10 @@ _parts_now = _t0b.toPlainText().split('\n')
 _rlN = win._ipc_ctl('ctl-dump-tab', {'tab': 'id:%d' % _tid0b, 'lines': len(_parts_now) + 1})
 ok(_rlN['ok'] and _rlN['text'].split('\n') == _parts_now,
    'COR-7: ctl-dump-tab --lines > available returns ALL lines, not just the last')
+# bool is an int subclass: lines=true must be REJECTED (full dump), not sliced as lines=1.
+_rlb = win._ipc_ctl('ctl-dump-tab', {'tab': 'id:%d' % _tid0b, 'lines': True})
+ok(_rlb['ok'] and _rlb['text'].split('\n') == _parts_now,
+   'COR-7: ctl-dump-tab lines=true (bool) is rejected -> full dump, not lines=1')
 _o_dumpmax = M._DUMP_MAX
 try:
     M._DUMP_MAX = 4                          # force the tail-cap branch
