@@ -2,10 +2,14 @@
 """Unit test for the cross-wiki host scrub (DOM_DIFF_HOST_SCRUB).
 
 A before/after diff served on DIFFERENT hostnames (old.whonix.org vs
-www.whonix.org) must not flag every absolute URL. _scrub_hosts collapses the
-configured hostnames to a placeholder across the THREE surfaces a diff compares:
-the HTML, the text asset bodies (CSS/JS/SVG), and the manifest URL keys. When
-DOM_DIFF_HOST_SCRUB is unset it must be a complete no-op (same-host diffs).
+www.whonix.org) must not flag every absolute URL, nor leak the true host.
+_scrub_hosts collapses the configured hostnames to a placeholder across every
+surface a diff compares: the HTML, the text asset bodies (CSS/JS/SVG/JSON), the
+manifest URL keys, response header values (Onion-Location/Link/Location...),
+cookie/storage values, console + errors message text, and the verbatim JSON
+copies (computed_styles/hover_styles/iframes_shadow). Matching is case-insensitive
+so a differing host casing still collapses. When DOM_DIFF_HOST_SCRUB is unset it
+must be a complete no-op (same-host diffs).
 
 Run directly: python3 tests/test_host_scrub.py
 """
@@ -44,6 +48,7 @@ placeholder = N.HOST_SCRUB_PLACEHOLDER
 # _is_text_asset
 assert N._is_text_asset("text/css")
 assert N._is_text_asset("application/javascript")
+assert N._is_text_asset("application/json")
 assert N._is_text_asset("image/svg+xml")
 assert not N._is_text_asset("image/png")
 assert not N._is_text_asset("font/woff2")
@@ -57,14 +62,59 @@ m = {"https://%s/skins/x.css?v=1" % H: {"status": 200, "content_type": "text/css
 nm = N.normalize_manifest(m)
 assert (not any(H in k for k in nm)) == active, ("manifest", active, list(nm))
 
-# asset body (CSS) via normalize_page_dir
+# response header values (Onion-Location/Link/Location/Content-Location/SourceMap)
+hdrs = N._normalize_headers({
+    "Onion-Location": "https://%s/wiki/Page" % H,
+    "Location": "https://%s/wiki/Other" % H,
+    "Content-Location": "https://%s/wiki/Canon" % H,
+    "Link": "<https://%s/w/load.php>; rel=preload" % H,
+    "SourceMap": "https://%s/w/load.php.map" % H,
+})
+assert (not any(H in v for v in hdrs.values())) == active, ("headers", active, hdrs)
+
+# cookie value+domain and localStorage/sessionStorage values (keys chosen to
+# NOT match session/drop patterns, so value is kept -- isolating the host-scrub)
+st = N._normalize_storage({
+    "cookies": [{"name": "prefs", "value": "https://%s/x" % H, "domain": H, "path": "/"}],
+    "localStorage": {"lastPage": "https://%s/wiki/Page" % H},
+    "sessionStorage": {"ref": "https://%s/w/index.php" % H},
+})
+leak = (
+    any(H in str(c.get("value")) or H in str(c.get("domain")) for c in st["cookies"])
+    or any(H in str(v) for v in st["localStorage"].values())
+    or any(H in str(v) for v in st["sessionStorage"].values())
+)
+assert (not leak) == active, ("storage", active, st)
+
+# console.json
+cons = N._normalize_console([{"type": "log", "text": "loaded https://%s/w/load.php" % H}])
+assert (H not in cons[0]["text"]) == active, ("console", active, cons)
+
+# errors.json console_errors (delegates to _normalize_console)
+errs = N._normalize_errors({"console_errors": [{"type": "error", "text": "boom https://%s/x" % H}]})
+assert (H not in errs["console_errors"][0]["text"]) == active, ("errors-console", active, errs)
+
+# mixed-case host: a differing casing must still collapse (active only), while
+# scheme/path bytes are preserved intact
+if active:
+    mixed = N._scrub_hosts("HTTPS://Old.Test.Invalid/x?y=1")
+    assert H not in mixed.lower(), mixed
+    assert placeholder in mixed, mixed
+    assert mixed.endswith("/x?y=1"), mixed
+    assert mixed.upper().startswith("HTTPS://"), mixed
+
+# asset body (CSS) + verbatim JSON copies + JSON asset body via normalize_page_dir
 src = Path(tempfile.mkdtemp()); dst = Path(tempfile.mkdtemp())
 (src / "dom.html").write_text("<html></html>", encoding="utf-8")
 (src / "assets").mkdir()
 (src / "assets" / "a.css").write_text(".x{background:url(https://%s/img.png)}" % H, encoding="utf-8")
+(src / "assets" / "d.json").write_text('{"u":"https://%s/api"}' % H, encoding="utf-8")
+for fn in ("computed_styles.json", "hover_styles.json", "iframes_shadow.json"):
+    (src / fn).write_text('{"u":"https://%s/w/load.php"}' % H, encoding="utf-8")
 (src / "manifest.json").write_text(json.dumps({
     "https://%s/wiki/Page" % H: {"status": 200, "content_type": "text/html"},
     "https://%s/skins/Donation_Panel.css?v=1" % H: {"status": 200, "content_type": "text/css", "asset": "a.css", "sha256": "x", "size": 1},
+    "https://%s/w/data.json?v=1" % H: {"status": 200, "content_type": "application/json", "asset": "d.json", "sha256": "y", "size": 1},
 }), encoding="utf-8")
 N.normalize_page_dir(src, dst)
 css = list((dst / "assets").glob("*.css"))
@@ -73,6 +123,16 @@ body = css[0].read_text(encoding="utf-8")
 assert (H not in body) == active, ("asset-body", active, body)
 if active:
     assert placeholder in body, body
+
+# verbatim JSON copies must be host-scrubbed too
+for fn in ("computed_styles.json", "hover_styles.json", "iframes_shadow.json"):
+    text = (dst / fn).read_text(encoding="utf-8")
+    assert (H not in text) == active, ("page-json", fn, active, text)
+
+# JSON asset body must be host-scrubbed (routed via _is_text_asset)
+jbody = "".join(p.read_text(encoding="utf-8") for p in (dst / "assets").glob("*.json"))
+assert jbody, "no json asset written"
+assert (H not in jbody) == active, ("json-asset", active, jbody)
 
 print("OK active=%s" % active)
 """

@@ -361,24 +361,37 @@ VOLATILE_INPUT_NAMES = {"wpStarttime", "wpEdittime", "wpEditToken"}
 ## (e.g. old.whonix.org vs www.whonix.org) would otherwise flag every absolute
 ## URL, canonical link, og:url and JS wgServer. Set DOM_DIFF_HOST_SCRUB to a
 ## comma-separated list of hostnames; each is collapsed to a single placeholder
-## on the raw HTML (and asset/style text) so only real content deltas survive.
-## Empty (the default) is a no-op, so same-host diffs are unaffected.
+## across every surface a diff compares -- the raw HTML, text asset bodies
+## (CSS/JS/SVG/JSON), manifest URL keys, response header values, cookie/storage
+## values, console + errors message text, and the verbatim JSON copies (computed_
+## styles/hover_styles/iframes_shadow) -- so only real content deltas survive and
+## the true host never leaks. Empty (the default) is a no-op (same-host diffs).
 HOST_SCRUB = tuple(
     h.strip() for h in os.environ.get("DOM_DIFF_HOST_SCRUB", "").split(",") if h.strip()
 )
 HOST_SCRUB_PLACEHOLDER = "wiki-host.invalid"
 
+## Case-insensitive literal match: re.escape keeps only the host substring
+## in scope so scheme/path bytes stay intact; IGNORECASE catches Old.Test vs
+## old.test host casings that a plain str.replace would miss.
+_HOST_SCRUB_RES = tuple(re.compile(re.escape(h), re.IGNORECASE) for h in HOST_SCRUB)
 
-def _scrub_hosts(text: str) -> str:
-    for host in HOST_SCRUB:
-        text = text.replace(host, HOST_SCRUB_PLACEHOLDER)
+
+def _scrub_hosts(text):
+    if not isinstance(text, str):
+        return text
+    for pat in _HOST_SCRUB_RES:
+        text = pat.sub(HOST_SCRUB_PLACEHOLDER, text)
     return text
 
 
 def _is_text_asset(content_type: str) -> bool:
-    ## Text-shaped asset bodies (CSS, JS, SVG) can embed absolute URLs to the wiki
-    ## host; binary assets (images, fonts) cannot, so they copy through untouched.
-    return content_type.startswith(("text/", "application/javascript")) or "svg" in content_type
+    ## Text-shaped asset bodies (CSS, JS, SVG, JSON) can embed absolute URLs to the
+    ## wiki host; binary assets (images, fonts) cannot, so they copy through untouched.
+    return (
+        content_type.startswith(("text/", "application/javascript", "application/json"))
+        or "svg" in content_type
+    )
 
 
 def normalize_html(html: str) -> str:
@@ -635,6 +648,11 @@ def _normalize_headers(headers: dict) -> dict:
                 v = pattern.sub(replacement, v)
         if n in URL_VALUED_HEADERS:
             v = _normalize_url(v)
+        ## Host-scrub every header value: Onion-Location/Link/Location and
+        ## friends carry the absolute wiki host, which would leak the true
+        ## onion/hostname into the diff on a cross-wiki compare.
+        if isinstance(v, str):
+            v = _scrub_hosts(v)
         out[n] = v
     return dict(sorted(out.items()))
 
@@ -797,6 +815,13 @@ def _normalize_storage(storage: dict) -> dict:
         ## is (name, domain, path) -- value scrubbed when session-like.
         if any(p in name_l for p in SESSION_COOKIE_PATTERNS):
             out["value"] = "SCRUBBED"
+        elif isinstance(out.get("value"), str):
+            out["value"] = _scrub_hosts(out["value"])
+        ## Cookie identity is (name, domain, path); host-scrub the domain so
+        ## the same cookie matches across a cross-wiki diff instead of the
+        ## true host leaking through.
+        if isinstance(out.get("domain"), str):
+            out["domain"] = _scrub_hosts(out["domain"])
         for k in ("expires", "expirationDate"):
             if k in out:
                 out[k] = "SCRUBBED"
@@ -809,7 +834,7 @@ def _normalize_storage(storage: dict) -> dict:
             if any(p.match(k) for p in DROP_STORAGE_KEY_PATTERNS):
                 continue
             sc = any(p.match(k) for p in SESSION_STORAGE_KEY_PATTERNS)
-            out[k] = "SCRUBBED" if sc else v
+            out[k] = "SCRUBBED" if sc else (_scrub_hosts(v) if isinstance(v, str) else v)
         return dict(sorted(out.items()))
 
     return {
@@ -871,6 +896,10 @@ def _normalize_console(events: list) -> list:
             continue
         for pat, repl in CONSOLE_TEXT_PATTERNS:
             text = pat.sub(repl, text)
+        ## Console messages interpolate absolute wiki URLs (load.php, api
+        ## endpoints); host-scrub so the true host does not leak through
+        ## console.json or errors.json's console_errors on a cross-wiki diff.
+        text = _scrub_hosts(text)
         key = (ev.get("type", ""), text)
         if key in seen:
             continue
@@ -931,6 +960,17 @@ def _normalize_errors(errors: dict) -> dict:
     }
 
 
+def _copy_json_scrubbed(src_path: Path, dst_path: Path) -> None:
+    ## Otherwise-verbatim JSON copies (computed_styles, hover_styles,
+    ## iframes_shadow) still embed absolute wiki URLs; host-scrub the text
+    ## when scrubbing is active, else a bit-identical copy. No-op default.
+    if HOST_SCRUB:
+        text = src_path.read_text(encoding="utf-8")
+        dst_path.write_text(_scrub_hosts(text), encoding="utf-8")
+    else:
+        shutil.copy2(src_path, dst_path)
+
+
 def normalize_page_dir(src: Path, dst: Path) -> None:
     dst.mkdir(parents=True, exist_ok=True)
 
@@ -942,7 +982,7 @@ def normalize_page_dir(src: Path, dst: Path) -> None:
     ## viewport + scheme.
     cs_src = src / "computed_styles.json"
     if cs_src.exists():
-        shutil.copy2(cs_src, dst / "computed_styles.json")
+        _copy_json_scrubbed(cs_src, dst / "computed_styles.json")
 
     ## Console events: scrub volatile bits and de-duplicate by
     ## (type, text) so two captures of the same wiki state emit the
@@ -991,7 +1031,7 @@ def normalize_page_dir(src: Path, dst: Path) -> None:
     for fn in ("hover_styles.json", "iframes_shadow.json"):
         p = src / fn
         if p.exists():
-            shutil.copy2(p, dst / fn)
+            _copy_json_scrubbed(p, dst / fn)
 
     manifest = json.loads((src / "manifest.json").read_text(encoding="utf-8"))
     ## Infer the wiki page URL from the manifest. The first text/html
