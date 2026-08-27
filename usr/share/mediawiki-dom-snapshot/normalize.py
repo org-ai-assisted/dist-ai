@@ -1067,10 +1067,16 @@ def normalize_page_dir(src: Path, dst: Path) -> None:
             src_a = src_assets / sname
             ## entry["asset"] comes from manifest.json, which for a RECEIVED cross-wiki
             ## snapshot (this tool diffs snapshots across hosts/CI) is untrusted input. A
-            ## first-party snapshot names assets <sha256>.<ext>, but a crafted absolute or
-            ## ../-escaping value would make src_a resolve OUTSIDE src_assets and read (or
-            ## copy) an arbitrary readable file into the output tree. Refuse anything that
-            ## does not stay within src_assets.
+            ## legitimate asset name is FLAT (<sha256>.<ext>, per the module docstring); a
+            ## path separator means an escaping value (../x, /abs -> arbitrary-file read) OR
+            ## a nested one (sub/x -> the plain-copy branch's dst/assets/sub is never mkdir'd
+            ## -> FileNotFoundError crash). Refuse any non-flat name -- the correct untrusted-
+            ## input posture, and it closes both the arb-file-read and the crash.
+            if sname in ("", ".", "..") or "/" in sname or "\\" in sname:
+                print("normalize: refusing non-flat asset name %r" % sname, file=sys.stderr)
+                continue
+            ## Belt-and-braces: a flat name that is a symlink inside assets/ could still
+            ## resolve outside it, so keep the containment check on the resolved path.
             if not src_a.resolve().is_relative_to(src_assets.resolve()):
                 print("normalize: refusing out-of-tree asset %r" % sname, file=sys.stderr)
                 continue

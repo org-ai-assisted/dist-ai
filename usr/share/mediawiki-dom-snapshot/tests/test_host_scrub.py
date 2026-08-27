@@ -157,6 +157,21 @@ leaked = any(secret_marker in p.read_text(encoding="utf-8", errors="replace")
              for p in dst2.rglob("*") if p.is_file())
 assert not leaked, ("path-traversal-asset-leak", sorted(str(p) for p in dst2.rglob("*")))
 
+# nested asset name: a path separator is off-spec (names are flat <sha256>.<ext>) and the
+# plain-copy branch would crash (dst/assets/sub is never mkdir'd -> FileNotFoundError). It
+# must be REFUSED, not crash the whole normalize. Reproduces in no-op mode (the copy branch).
+src3 = Path(tempfile.mkdtemp()); dst3 = Path(tempfile.mkdtemp())
+(src3 / "dom.html").write_text("<html></html>", encoding="utf-8")
+(src3 / "assets" / "sub").mkdir(parents=True)
+(src3 / "assets" / "sub" / "file.css").write_text(".x{}", encoding="utf-8")
+(src3 / "manifest.json").write_text(json.dumps({
+    "https://%s/wiki/Page" % H: {"status": 200, "content_type": "text/html"},
+    "https://%s/nested" % H: {"status": 200, "content_type": "text/css",
+                              "asset": "sub/file.css", "sha256": "x", "size": 1},
+}), encoding="utf-8")
+N.normalize_page_dir(src3, dst3)  # must NOT raise
+assert not (dst3 / "assets" / "sub").exists(), "nested asset was copied instead of refused"
+
 print("OK active=%s" % active)
 """
 
