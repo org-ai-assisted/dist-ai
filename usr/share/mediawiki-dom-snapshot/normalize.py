@@ -331,11 +331,13 @@ def _scrub_script_text(text: str) -> str:
     ## user has the call ABSENT entirely while a later capture has it
     ## PRESENT. Drop the entire statement (including the trailing
     ## semicolon) so present-or-absent stops mattering.
+    ## String-aware body match: skip quoted string values (with escapes) so a literal
+    ## "});" INSIDE a value cannot truncate the match early and leave malformed trailing
+    ## JS. Stops at the first REAL (unquoted) object close. MW emits a flat object here.
     text = re.sub(
-        r"mw\.user\.options\.set\(\{.+?\}\);?",
+        r"""mw\.user\.options\.set\(\{(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^"'}])*\}\);?""",
         "",
         text,
-        flags=re.DOTALL,
     )
     return text
 
@@ -419,6 +421,27 @@ def _is_text_asset(content_type: str) -> bool:
         content_type.startswith(("text/", "application/javascript", "application/json"))
         or "svg" in content_type
     )
+
+
+## soup.prettify() indents proportionally to nesting depth, so its output is O(N x depth):
+## a small (few-hundred-KB) but pathologically deep untrusted dom.html amplifies to GBs and
+## exhausts the diff host. Past these bounds fall back to the O(N) compact serialisation.
+_MAX_PRETTIFY_DEPTH = 500          ## real MediaWiki pages nest far shallower
+_MAX_PRETTIFY_INPUT = 20_000_000   ## 20 MB; a page over this is pathological
+
+
+def _nesting_depth_exceeds(node, limit):
+    ## Iterative DFS with an early bail: returns True as soon as ANY branch passes `limit`,
+    ## so a pathologically deep tree costs O(limit), not O(N x depth).
+    stack = [(node, 0)]
+    while stack:
+        cur, depth = stack.pop()
+        if depth > limit:
+            return True
+        for child in getattr(cur, "children", ()):
+            if getattr(child, "name", None):
+                stack.append((child, depth + 1))
+    return False
 
 
 def normalize_html(html: str) -> str:
@@ -659,6 +682,11 @@ def normalize_html(html: str) -> str:
     ## the final tree (and don't fight the volatile-content removals).
     _canonicalise_whitespace(soup)
 
+    ## Avoid prettify's O(N x depth) indent amplification on a pathologically deep (or
+    ## huge) untrusted page: emit the compact O(N) serialisation instead. It is the same
+    ## tree without indentation, identical on both sides of a diff of the same page.
+    if len(html) > _MAX_PRETTIFY_INPUT or _nesting_depth_exceeds(soup, _MAX_PRETTIFY_DEPTH):
+        return str(soup)
     return soup.prettify(formatter="minimal")
 
 

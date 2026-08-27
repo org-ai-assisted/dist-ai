@@ -57,6 +57,20 @@ assert not N._is_text_asset("font/woff2")
 html = N.normalize_html("<a href='https://%s/p'>x</a>" % H)
 assert (H not in html) == active, ("html", active, html)
 
+# prettify() DoS: a deeply-nested untrusted dom.html amplifies O(N x depth) under prettify.
+# normalize_html must NOT amplify -- past the depth bound it emits the compact O(N) form.
+_deep = "<div>" * 2000 + "x" + "</div>" * 2000
+_out_deep = N.normalize_html(_deep)
+assert len(_out_deep) < 20 * len(_deep), ("prettify-dos-amplification", len(_deep), len(_out_deep))
+assert "\n" in N.normalize_html("<div><p>hi</p></div>"), "a normal shallow page still prettifies"
+
+# _scrub_script_text: the mw.user.options.set matcher must skip a literal "});" INSIDE a
+# string value and drop the WHOLE statement, not truncate at the embedded });.
+_js = 'a=1; mw.user.options.set({"x":"a});b","y":2}); real();'
+_sc = N._scrub_script_text(_js)
+assert "mw.user.options.set" not in _sc, ("options-set-not-dropped", _sc)
+assert "real();" in _sc and '"y":2' not in _sc, ("options-set-truncated-early", _sc)
+
 # manifest URL keys
 m = {"https://%s/skins/x.css?v=1" % H: {"status": 200, "content_type": "text/css", "asset": "a.css", "sha256": "x", "size": 1}}
 nm = N.normalize_manifest(m)
