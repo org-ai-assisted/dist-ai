@@ -459,20 +459,35 @@ _sjs = "".join(p.read_text(encoding="utf-8") for p in (_sd / "assets").glob("*.j
 assert _sjs, "startup.js not written -- entry was dropped?"
 assert "1eggf" not in _sjs and "SCRUBBED" in _sjs, ("startup body not normalized", _sjs)
 
-# DoS (amplification): _canonicalise_whitespace must not run an O(depth) parents-walk per text
-# node -- a deep "comb" (a text node at every nesting level) makes that O(N*depth), and it runs
-# BEFORE the prettify depth cap so that guard does NOT cover it. The whitespace-sensitivity
-# check is precomputed in one O(N) pass instead. This ~700KB comb finishes in ~2s linearly;
-# the quadratic per-node walk takes ~50s. Canary: restore _under_whitespace_sensitive per-node
-# -> the budget below blows. Run once (no-op config) since the path is scrub-independent.
+# The O(N) whitespace-sensitivity precompute must keep the SAME semantics as a per-node
+# ancestor walk: a whitespace run inside a whitespace-sensitive element (even nested under
+# a non-sensitive child) is PRESERVED; a run in ordinary flow COLLAPSES to one space.
+_wsx = N.normalize_html("<pre>a   b<span>c   d</span></pre><p>e   f</p>")
+assert "a   b" in _wsx and "c   d" in _wsx, ("sensitive whitespace lost", _wsx)
+assert "e   f" not in _wsx and "e f" in _wsx, ("flow whitespace not collapsed", _wsx)
+
+# DoS (amplification): a pathologically deep untrusted dom.html must be bounded by the
+# size+depth cap at the TOP of normalize_html, ahead of every pass that costs more than
+# O(N). Two shapes, both must stay under budget:
+#  - a "comb" with a text node at every level -- a per-text-node ancestor walk would be
+#    O(N*depth);
+#  - NESTED whitespace-sensitive tags (<pre><pre>...) -- collecting sensitive string ids
+#    with a find_all(string) PER sensitive tag re-walks each subtree, O(depth^2). The
+#    precompute is one O(N) stacked descent instead, and the cap runs first so neither can
+#    amplify.
+# Canary: move the cap back below _canonicalise_whitespace, or restore the find_all-per-tag
+# precompute -> the nested-<pre> case blows the budget (~47s at D=20000). Run once (no-op
+# config) since the path is scrub-independent.
 if not active:
     import time as _time
-    _D = 40000
-    _comb = "".join("<div>t%d " % i for i in range(_D)) + "x" + "</div>" * _D
-    _t0 = _time.monotonic()
-    N.normalize_html(_comb)
-    _elapsed = _time.monotonic() - _t0
-    assert _elapsed < 15.0, ("whitespace-canonicalise quadratic amplification", _D, _elapsed)
+    for _shape in (
+        "".join("<div>t%d " % i for i in range(40000)) + "x" + "</div>" * 40000,
+        "<pre>" * 20000 + "x" + "</pre>" * 20000,
+    ):
+        _t0 = _time.monotonic()
+        N.normalize_html(_shape)
+        assert _time.monotonic() - _t0 < 15.0, (
+            "deep-tree amplification bypassed the cap", len(_shape))
 
 print("OK active=%s" % active)
 """
