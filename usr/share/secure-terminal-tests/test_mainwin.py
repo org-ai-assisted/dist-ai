@@ -848,6 +848,16 @@ def _disp(req):
 
 ok(not win._dispatch_request(b'not json at all')['ok'],
    'ipc: unparseable request bytes are rejected')
+# #2: json.loads raises RecursionError (not ValueError) on deeply-nested input; uncaught it
+# escapes the Qt readyRead slot and aborts the whole instance -- a same-UID control-socket
+# DoS. _dispatch_request must catch it and return a malformed reply, not raise.
+_deep_raised = None
+try:
+    _deep = win._dispatch_request(b'[' * 100000)
+except RecursionError as _e:
+    _deep_raised, _deep = _e, None
+ok(_deep_raised is None and isinstance(_deep, dict) and not _deep['ok'],
+   '#2: a deeply-nested control-socket request is rejected as malformed, not a RecursionError crash')
 ok(not _disp(['not', 'a', 'dict'])['ok'], 'ipc: a non-dict request is rejected')
 _rp = _disp({'op': 'ping'})
 ok(_rp['ok'] and 'pid' in _rp, 'ipc: ping replies ok + pid')
@@ -1725,6 +1735,29 @@ win._add_placeholder_tab({'cwd': '/tmp/a\u202eb'}, _before_phc)
 ok('\u202e' not in win.tabs.tabText(_before_phc),
    'a placeholder tab label sanitizes a bidi/RLO cwd basename (name-less fallback)')
 win.tabs.removeTab(win.tabs.count() - 1)
+# #3: a restore placeholder (bare QWidget) must never crash a current()-consumer. setTabEnabled
+# (False) blocks a mouse click but NOT setCurrentIndex (_goto_tab / _on_tab_step), so current()
+# returns None for a non-terminal current widget and the nav guards skip a disabled tab.
+win.tabs.setCurrentIndex(0)
+_real_idx = win.tabs.currentIndex()
+win._add_placeholder_tab({'cwd': '/tmp'}, win.tabs.count())   # append a disabled placeholder
+_phi = win.tabs.count() - 1
+win.tabs.setCurrentIndex(_phi)                                # force it current (bypasses setTabEnabled)
+ok(win.current() is None,
+   '#3: current() returns None when a restore placeholder is the current widget')
+_cons_raised = None
+try:
+    win.copy_selection()                                     # pre-fix: current() is the placeholder -> QWidget.copy() AttributeError
+except Exception as _e:
+    _cons_raised = _e
+ok(_cons_raised is None, '#3: a current()-consumer is a safe no-op while a placeholder is current')
+win.tabs.setCurrentIndex(_real_idx)
+win._goto_tab(_phi)                                          # Alt+N to the placeholder -> guard skips it
+ok(win.tabs.currentIndex() == _real_idx, '#3: _goto_tab skips a disabled placeholder target')
+win.tabs.setCurrentIndex(_phi - 1)
+win._on_tab_step(1)                                          # step toward the placeholder -> guard skips
+ok(win.tabs.currentIndex() == _phi - 1, '#3: _on_tab_step skips a disabled placeholder target')
+win.tabs.removeTab(_phi)
 # #5: a non-ASCII / non-str saved window geometry must not crash startup.
 _o_persist = win._persist_session
 win._persist_session = True                  # else _restore_window_geometry no-ops

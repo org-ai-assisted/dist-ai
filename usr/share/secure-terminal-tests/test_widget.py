@@ -1812,6 +1812,23 @@ eq(_bdfg.lower(), _afg.lower(),
 ok(_bdfg.lower() != mark_fg(_dsh, 'nonascii').lower(),
    'Q2 show: a shown box-drawing glyph is NOT painted the non-ASCII risk colour')
 _dsh.close()
+# #7: a child announcing UTF-8 mode (ESC%G / ESC%8) must NOT re-break DEC line-drawing. pyte's
+# base ByteStream.select_other_charset flips use_utf8 back True for ESC%G, which re-arms the
+# "ESC(0 is a no-op" path so borders render as literal 'lqk' again (GNU screen announces UTF-8
+# this way). _Utf8CharsetByteStream overrides it to a no-op, keeping the charset path armed.
+_dg = SecureTerminal(command='/bin/cat', tui=True)
+_dg.apply_mode('show')
+_dg.resize(600, 300)
+_dg.show()
+pump(60)
+_dg._feed_stream(b'\x1b%GA\x1b(0lqk\x1b(BZ\r\n')   # ESC%G (announce UTF-8) THEN the line-drawing
+_dg._render_tui()
+pump(30)
+_dgtxt = _dg.toPlainText()
+ok(any(0x2500 <= ord(c) <= 0x257F for c in _dgtxt),
+   '#7: a UTF-8-mode announce does not disarm DEC line-drawing -- box-drawing still renders')
+ok('lqk' not in _dgtxt, '#7: after a UTF-8-mode announce the DEC letters are still not literal ASCII')
+_dg.close()
 
 # Q2 show: a homoglyph shown as its glyph wears the LOUDER confusable colour, so a
 # Cyrillic 'a' posing as Latin stands out even while its glyph is readable.
@@ -3773,6 +3790,15 @@ if tui_available():
     tui.apply_osc('osc_cwd', True)
     tui._handle_osc(b'\x1b]7;file://h/home/u/p\x07')
     ok(_cwds == ['/home/u/p'], 'enabled: OSC 7 reports the unquoted path')
+    # #6: a long cwd path must show up to 4096 chars in the tab tooltip, not be cut to 80.
+    # sanitize_title's default limit is 80, so the old trailing [:4096] slice was dead -- the
+    # bound is now passed to the sanitizer.
+    _cwds.clear()
+    tui._reported_cwd = ''
+    tui._handle_osc(b'\x1b]7;file://h/' + b'd' * 300 + b'\x07')
+    ok(_cwds and len(_cwds[-1]) > 80,
+       '#6: a long OSC 7 cwd path is bounded at 4096, not truncated to the sanitize_title '
+       'default of 80 (got %d)' % (len(_cwds[-1]) if _cwds else -1))
     # iTerm2 OSC 1337 has NO toggle: file transfer from untrusted output is
     # indefensible, so it can never be enabled and is always neutralized
     # (recognized, dropped, never leaked). It is not even a registered feature.
