@@ -76,7 +76,7 @@ CASES = [
 
 def main():
     global OG_DEBUG
-    tor = og = out = None
+    tor = og = out = ctl = None
     fails = []
     try:
         e2e.setup_veth_ip()
@@ -155,7 +155,6 @@ def main():
             except OSError:
                 # best-effort onion cleanup; it may already be gone
                 pass
-        ctl.close()
 
         print()
         if fails:
@@ -167,6 +166,11 @@ def main():
                   "no Flags/Port injection reached tor, key blob never leaked.")
         return 1 if fails else 0
     finally:
+        ## ctl.close() belongs here, not inline: an exception between the socket-create
+        ## (ctl = e2e.Control(...)) and the end of the case loop would otherwise leak the
+        ## control socket and skip DEL_ONION cleanup, leaving onions registered until tor dies.
+        if ctl:
+            ctl.close()
         if og:
             e2e.stop(og)
         if out:
