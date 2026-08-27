@@ -179,6 +179,11 @@ def main():
     parser.add_argument("--min-up", type=int, default=60,
                         help="do not declare 'up' before this many seconds (skips the early GRUB menu)")
     args = parser.parse_args()
+    ## --interval feeds time.sleep(); a value < 1 makes time.sleep(-1) raise ValueError,
+    ## an uncaught traceback that exits 1 and breaks the 0/5/2 exit-code contract. Reject
+    ## it up front as a usage error (argparse exit 2), not a crash.
+    if args.interval < 1:
+        parser.error("--interval must be a positive integer (got %d)" % args.interval)
 
     ## Preflight ImageMagick: without it the heuristic cannot run -- a setup error (2), not a
     ## traceback (dm-qemu also checks, but stay self-contained).

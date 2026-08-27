@@ -8452,6 +8452,45 @@ ok('AFTER' in _p4t, 'SEC-4: the text after an interrupted CSI still renders')
 _p4.shutdown()
 
 
+# --- setter int32 sink clamps: a huge value cannot wrap/overflow downstream --------
+# apply_paste_delay reaches the paste-review gate on a pyqtSignal(str, int) C int, where an
+# out-of-int32 value WRAPS to a negative that review.py floors to 0 -- silently skipping the
+# countdown and enabling the paste buttons at once. Clamp at the sink so every entry point
+# (/paste-delay command, config, ctl) is safe. CANARY: pre-fix stored the raw value unclamped.
+_cl = SecureTerminal(command='/bin/cat', tui=False)
+_cl.resize(400, 300); _cl.show(); APP.processEvents()
+_cl.apply_paste_delay(10**20)
+eq(_cl._paste_delay, 2147483647,
+   'apply_paste_delay clamps a huge value to int32 (no pyqtSignal wrap -> paste-review '
+   'countdown still gates)')
+_cl.apply_paste_delay(5)
+eq(_cl._paste_delay, 5, 'apply_paste_delay keeps an in-range value')
+_cl.apply_escape_limit(10**20)
+eq(_cl._escape_limit, 2147483647, 'apply_escape_limit clamps a huge value to int32 at the sink')
+_cl.shutdown()
+
+# --- disabling osc_colors repaints already-rendered CLI scrollback -----------------
+# apply_osc('osc_colors', False) routes through apply_theme(self._theme), which no-ops its
+# own _rerender on an UNCHANGED theme (the #78 restore guard) -- so a CLI/line view kept the
+# program's OSC palette colours in its scrollback. The disable branch now _rerender()s too,
+# like apply_colors / apply_markings.
+_oc = SecureTerminal(command='/bin/cat', tui=False)
+_oc.resize(400, 300); _oc.show(); APP.processEvents()
+_oc.apply_osc('osc_colors', True)
+_oc._handle_osc(b'\x1b]10;#33cc99\x07')                 # record an OSC 10 default-fg override
+ok(_oc._osc_palette.get('fg') == '#33cc99', 'osc_colors on: the OSC 10 fg override is recorded')
+_rr = []
+_orig_rr = _oc._rerender
+_oc._rerender = lambda: (_rr.append(1), _orig_rr())[1]
+_oc.apply_osc('osc_colors', False)                      # disable in CLI/line mode
+_oc._rerender = _orig_rr
+ok(_rr == [1],
+   'disabling osc_colors re-renders the CLI/line view (repaints scrollback out of the program '
+   'palette) -- apply_theme alone no-ops its _rerender on an unchanged theme')
+ok(_oc._osc_palette == {}, 'disabling osc_colors clears the OSC palette back to the theme')
+_oc.shutdown()
+
+
 # --- result -------------------------------------------------------------------
 sys.stdout.write('secure-terminal-tests(widget): %d passed, %d failed\n'
                  % (PASS, FAIL))

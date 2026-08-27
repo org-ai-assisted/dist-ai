@@ -278,6 +278,13 @@ def _normalize_url(value: str) -> str:
         p = urlparse(value)
     except ValueError:
         return value
+    ## Only hierarchical http(s) URLs (and scheme-relative / relative ones, scheme='')
+    ## use '?' as a query delimiter. An OPAQUE scheme (data:/javascript:/mailto:/tel:/
+    ## blob:) can carry a literal '?' that is NOT a query -- treating it as one (parse_qsl
+    ## + re-encode) corrupts the payload (percent-escaping </script> etc.) and yields a
+    ## spurious/masked diff. Leave a present, non-http(s) scheme untouched.
+    if p.scheme and p.scheme not in ("http", "https"):
+        return value
     if not p.query:
         return value
     params = parse_qsl(p.query, keep_blank_values=True)
@@ -747,7 +754,14 @@ def normalize_manifest(manifest: dict, page_url: str | None = None) -> dict:
         ## that's pure race noise. Drop both shapes.
         if entry.get("error") or status is None:
             continue
-        if page_url and url.startswith(page_url):
+        ## Drop the page's OWN url (and its ?query / #fragment variants), NOT every url
+        ## that merely shares its prefix: startswith(page_url) also erased an unrelated
+        ## entry like .../wiki/API_documentation.css when page_url is .../wiki/A --
+        ## silently dropping a legit manifest entry from the diff (a false negative in
+        ## the exact regression-detection this tool exists for).
+        if page_url and (url == page_url
+                         or url.startswith(page_url + "?")
+                         or url.startswith(page_url + "#")):
             continue
         ## XHR/api.php responses race the page load -- a tiny
         ## status-only body that finishes before networkidle shows
@@ -1176,10 +1190,13 @@ def normalize_page_dir(src: Path, dst: Path) -> None:
             ## docstring); a path separator means an escaping value (../x, /abs ->
             ## arbitrary-file read) OR a nested one (sub/x -> the plain-copy branch's
             ## dst/assets/sub is never mkdir'd -> FileNotFoundError crash). Refuse any
-            ## non-flat name -- a deliberate hostile-name rejection, not a shape error,
-            ## so it does NOT count toward the all-malformed fail-loud tally below.
+            ## non-flat name. A refused entry copies NOTHING, so -- like a shape error or
+            ## a missing source -- it DOES count toward the all-dropped fail-loud tally: a
+            ## manifest whose entries are ALL refused yields the same near-empty mirror and
+            ## must not exit 0 as a clean pass.
             if sname in ("", ".", "..") or "/" in sname or "\\" in sname:
                 print("normalize: refusing non-flat asset name %r" % sname, file=sys.stderr)
+                asset_entries_failed += 1
                 continue
             ## Per-entry isolation: one malformed asset entry must not abort the whole
             ## normalize of an untrusted artifact. Catch only input-shape / filesystem
@@ -1192,8 +1209,12 @@ def normalize_page_dir(src: Path, dst: Path) -> None:
                 ## still resolve outside it, so keep the containment check.
                 if not src_a.resolve().is_relative_to(src_assets.resolve()):
                     print("normalize: refusing out-of-tree asset %r" % sname, file=sys.stderr)
+                    asset_entries_failed += 1
                     continue
+                ## A missing source body also copies nothing -> counts toward the tally,
+                ## so an all-missing-source manifest fails loud rather than mirror empty.
                 if not src_a.exists():
+                    asset_entries_failed += 1
                     continue
                 ct = entry.get("content_type", "")
                 ## A crafted non-string content_type would crash .startswith below.

@@ -62,6 +62,24 @@ m = {"https://%s/skins/x.css?v=1" % H: {"status": 200, "content_type": "text/css
 nm = N.normalize_manifest(m)
 assert (not any(H in k for k in nm)) == active, ("manifest", active, list(nm))
 
+# _normalize_url: an OPAQUE scheme (data:/javascript:/mailto:) with a literal '?' is NOT
+# a query -> pass through unchanged, not parse_qsl-corrupted; but http(s) and relative
+# URLs still get their volatile query normalized.
+assert N._normalize_url("data:text/html,x?y=1</script>") == "data:text/html,x?y=1</script>"
+assert N._normalize_url("javascript:f()?g") == "javascript:f()?g"
+assert "version=SCRUBBED" in N._normalize_url("https://%s/w/load.php?version=abc&x=1" % H)
+assert "version=SCRUBBED" in N._normalize_url("/w/load.php?version=abc&x=1")
+
+# normalize_manifest: drop the page's OWN url (+ ?/# variants), NOT an unrelated entry
+# that merely shares its prefix (startswith over-match erased a legit manifest entry).
+_pm = "https://%s/wiki/A" % H
+_nmp = N.normalize_manifest({
+    _pm: {"status": 200, "content_type": "text/html"},
+    "https://%s/wiki/API_documentation.css" % H: {"status": 200, "content_type": "text/css"},
+}, page_url=_pm)
+assert any("API_documentation.css" in k for k in _nmp), ("prefix-sibling-erased", list(_nmp))
+assert not any(k.endswith("/wiki/A") for k in _nmp), ("page-url-not-dropped", list(_nmp))
+
 # response header values (Onion-Location/Link/Location/Content-Location/SourceMap)
 hdrs = N._normalize_headers({
     "Onion-Location": "https://%s/wiki/Page" % H,
@@ -146,9 +164,11 @@ secret_marker = "TOP-SECRET-DECOY-DO-NOT-COPY"
 src2 = Path(tempfile.mkdtemp()); dst2 = Path(tempfile.mkdtemp())
 (src2 / "dom.html").write_text("<html></html>", encoding="utf-8")
 (src2 / "assets").mkdir()
+(src2 / "assets" / "ok.css").write_text(".ok{}", encoding="utf-8")  # a valid asset alongside
 (src2 / "secret.txt").write_text(secret_marker, encoding="utf-8")  # decoy OUTSIDE assets/
 (src2 / "manifest.json").write_text(json.dumps({
     "https://%s/wiki/Page" % H: {"status": 200, "content_type": "text/html"},
+    "https://%s/ok.css" % H: {"status": 200, "content_type": "text/css", "asset": "ok.css", "sha256": "o", "size": 1},
     "https://%s/evil" % H: {"status": 200, "content_type": "text/css",
                             "asset": "../secret.txt", "sha256": "x", "size": 1},
 }), encoding="utf-8")
@@ -164,13 +184,32 @@ src3 = Path(tempfile.mkdtemp()); dst3 = Path(tempfile.mkdtemp())
 (src3 / "dom.html").write_text("<html></html>", encoding="utf-8")
 (src3 / "assets" / "sub").mkdir(parents=True)
 (src3 / "assets" / "sub" / "file.css").write_text(".x{}", encoding="utf-8")
+(src3 / "assets" / "ok.css").write_text(".ok{}", encoding="utf-8")  # a valid asset alongside
 (src3 / "manifest.json").write_text(json.dumps({
     "https://%s/wiki/Page" % H: {"status": 200, "content_type": "text/html"},
+    "https://%s/ok.css" % H: {"status": 200, "content_type": "text/css", "asset": "ok.css", "sha256": "o", "size": 1},
     "https://%s/nested" % H: {"status": 200, "content_type": "text/css",
                               "asset": "sub/file.css", "sha256": "x", "size": 1},
 }), encoding="utf-8")
 N.normalize_page_dir(src3, dst3)  # must NOT raise
 assert not (dst3 / "assets" / "sub").exists(), "nested asset was copied instead of refused"
+
+# all-REFUSED manifest: if EVERY asset entry is refused (all ../-escaping names) the mirror
+# is near-empty just like an all-malformed one, so normalize must FAIL LOUD, not exit 0 as a
+# clean pass. The fail-loud tally counts refused + missing-source drops, not only shape errors.
+srcr = Path(tempfile.mkdtemp()); dstr = Path(tempfile.mkdtemp())
+(srcr / "dom.html").write_text("<html></html>", encoding="utf-8")
+(srcr / "assets").mkdir()
+(srcr / "manifest.json").write_text(json.dumps({
+    "https://%s/a" % H: {"status": 200, "content_type": "text/css", "asset": "../x.css", "sha256": "1", "size": 1},
+    "https://%s/b" % H: {"status": 200, "content_type": "text/css", "asset": "../../y.css", "sha256": "2", "size": 1},
+}), encoding="utf-8")
+_refused_raised = False
+try:
+    N.normalize_page_dir(srcr, dstr)
+except SystemExit:
+    _refused_raised = True
+assert _refused_raised, "an all-refused manifest must fail loud, not mirror empty and exit 0"
 
 # crafted manifest.json crash inputs: a RECEIVED cross-wiki manifest is untrusted, so a
 # malformed entry (or top-level shape) must be skipped/refused, NOT crash the whole
