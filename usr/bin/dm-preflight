@@ -348,8 +348,13 @@ if [ -n "${forkonly_pins}" ]; then
    printf '%s\n' "${forkonly_pins}" | sed 's/^/          /' >&2
 fi
 if [ -n "${nourl_pins}" ]; then
-   printf '%s\n' "   NO url in .gitmodules for these -- fetchability cannot be established at all:" >&2
+   ## A submodule with no 'url =' in .gitmodules is UNCLONABLE, not merely
+   ## unverifiable: 'git submodule update --init' dies "fatal: No url found for
+   ## submodule path" (exit 128). That is a hard failure -- a preflight that only
+   ## noted it would green-light a commit CI cannot check out.
+   bad "these submodules have NO url in .gitmodules; 'git submodule update --init' will fail (fatal: No url found):"
    printf '%s\n' "${nourl_pins}" | sed 's/^/          /' >&2
+   printf '%s\n' "          Add a 'url =' entry to .gitmodules for each." >&2
 fi
 unverified_pins="$( printf '%s\n' "${pin_report}" | grep -E '^UNVERIFIED ' || true )"
 if [ -n "${unverified_pins}" ]; then
