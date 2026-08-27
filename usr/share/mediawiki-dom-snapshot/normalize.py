@@ -278,6 +278,13 @@ def _normalize_url(value: str) -> str:
         p = urlparse(value)
     except ValueError:
         return value
+    ## Only hierarchical http(s) URLs (and scheme-relative / relative ones, scheme='')
+    ## use '?' as a query delimiter. An OPAQUE scheme (data:/javascript:/mailto:/tel:/
+    ## blob:) can carry a literal '?' that is NOT a query -- treating it as one (parse_qsl
+    ## + re-encode) corrupts the payload (percent-escaping </script> etc.) and yields a
+    ## spurious/masked diff. Leave a present, non-http(s) scheme untouched.
+    if p.scheme and p.scheme not in ("http", "https"):
+        return value
     if not p.query:
         return value
     params = parse_qsl(p.query, keep_blank_values=True)
@@ -747,7 +754,14 @@ def normalize_manifest(manifest: dict, page_url: str | None = None) -> dict:
         ## that's pure race noise. Drop both shapes.
         if entry.get("error") or status is None:
             continue
-        if page_url and url.startswith(page_url):
+        ## Drop the page's OWN url (and its ?query / #fragment variants), NOT every url
+        ## that merely shares its prefix: startswith(page_url) also erased an unrelated
+        ## entry like .../wiki/API_documentation.css when page_url is .../wiki/A --
+        ## silently dropping a legit manifest entry from the diff (a false negative in
+        ## the exact regression-detection this tool exists for).
+        if page_url and (url == page_url
+                         or url.startswith(page_url + "?")
+                         or url.startswith(page_url + "#")):
             continue
         ## XHR/api.php responses race the page load -- a tiny
         ## status-only body that finishes before networkidle shows

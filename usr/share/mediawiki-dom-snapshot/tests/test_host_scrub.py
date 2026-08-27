@@ -62,6 +62,24 @@ m = {"https://%s/skins/x.css?v=1" % H: {"status": 200, "content_type": "text/css
 nm = N.normalize_manifest(m)
 assert (not any(H in k for k in nm)) == active, ("manifest", active, list(nm))
 
+# _normalize_url: an OPAQUE scheme (data:/javascript:/mailto:) with a literal '?' is NOT
+# a query -> pass through unchanged, not parse_qsl-corrupted; but http(s) and relative
+# URLs still get their volatile query normalized.
+assert N._normalize_url("data:text/html,x?y=1</script>") == "data:text/html,x?y=1</script>"
+assert N._normalize_url("javascript:f()?g") == "javascript:f()?g"
+assert "version=SCRUBBED" in N._normalize_url("https://%s/w/load.php?version=abc&x=1" % H)
+assert "version=SCRUBBED" in N._normalize_url("/w/load.php?version=abc&x=1")
+
+# normalize_manifest: drop the page's OWN url (+ ?/# variants), NOT an unrelated entry
+# that merely shares its prefix (startswith over-match erased a legit manifest entry).
+_pm = "https://%s/wiki/A" % H
+_nmp = N.normalize_manifest({
+    _pm: {"status": 200, "content_type": "text/html"},
+    "https://%s/wiki/API_documentation.css" % H: {"status": 200, "content_type": "text/css"},
+}, page_url=_pm)
+assert any("API_documentation.css" in k for k in _nmp), ("prefix-sibling-erased", list(_nmp))
+assert not any(k.endswith("/wiki/A") for k in _nmp), ("page-url-not-dropped", list(_nmp))
+
 # response header values (Onion-Location/Link/Location/Content-Location/SourceMap)
 hdrs = N._normalize_headers({
     "Onion-Location": "https://%s/wiki/Page" % H,
