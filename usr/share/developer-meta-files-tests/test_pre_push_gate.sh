@@ -45,6 +45,10 @@ new_repo() {
    local repo
    repo="$(mktemp --directory --tmpdir="${work}")"
    git -C "${repo}" init -q
+   ## Neutralize the OPERATOR's global hooks (core.hooksPath) on the fixture repo:
+   ## a fixture commit (e.g. the deliberately oversized big.dat) must not be vetoed
+   ## by the developer's own pre-commit style gate, which is not what this tests.
+   git -C "${repo}" config core.hooksPath /dev/null
    git -C "${repo}" config user.email a@b.c
    git -C "${repo}" config user.name t
    git -C "${repo}" commit -q --allow-empty -m init

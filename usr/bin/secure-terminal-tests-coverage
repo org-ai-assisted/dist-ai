@@ -14,7 +14,9 @@
 ## defensive/optional-dependency lines carry a justified `# pragma: no cover` in
 ## the source instead).
 ##
-## SKIPs (exit 77) when secure_terminal or python3-coverage is unavailable.
+## secure_terminal AND python3-coverage are REQUIRED to measure coverage, so their
+## absence is FATAL (exit 1), never a skip: a coverage gate that silently exits 77
+## is scored green by the orchestrator and the missing measurement reads as success.
 
 set -o errexit
 set -o nounset
@@ -22,6 +24,14 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
+
+## `coverage run` imports every module WITHOUT -B (unlike the -Bsu entry scripts and the
+## other runners), and does not set sys.dont_write_bytecode, so it writes .pyc files next
+## to the sources under the checkout (PYTHONPATH points into the tree). Export the env knob
+## once here: it is inherited by every coverage/python3 child this script spawns, so no lane
+## has to remember a per-call -B, and the tree stays clean.
+export PYTHONDONTWRITEBYTECODE=1
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -42,13 +52,13 @@ elif [ -d "${script_dir}/../../../../secure-terminal/usr/lib/python3/dist-packag
 fi
 
 if [ -z "${repo}" ] || [ ! -d "${repo}/usr/lib/python3/dist-packages/secure_terminal" ]; then
-   printf '%s\n' 'secure-terminal-tests-coverage: SKIP (secure_terminal not found; set SECURE_TERMINAL_REPO)' >&2
-   exit 77
+   printf '%s\n' 'secure-terminal-tests-coverage: ERROR (secure_terminal not found; set SECURE_TERMINAL_REPO)' >&2
+   exit 1
 fi
 
 if ! python3 -c 'import coverage' 2>/dev/null; then
-   printf '%s\n' 'secure-terminal-tests-coverage: SKIP (python3-coverage not installed)' >&2
-   exit 77
+   printf '%s\n' 'secure-terminal-tests-coverage: ERROR (python3-coverage not installed)' >&2
+   exit 1
 fi
 
 ## Select the sys.monitoring core (PEP 669, Python 3.12+) over coverage's default
