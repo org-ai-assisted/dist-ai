@@ -419,6 +419,76 @@ scrubbed_js = N._scrub_script_text(leaky)
 assert "cd1234" not in scrubbed_js, ("Finding-2 escaped-quote leak", scrubbed_js)
 assert '"csrfToken":"SCRUBBED"' in scrubbed_js, ("Finding-2 token not scrubbed", scrubbed_js)
 
+# Finding-1 (LEAK): overlapping HOST_SCRUB entries must be applied LONGEST-first, so a
+# shorter host that is a substring of a longer one (apex "test.invalid" inside subdomain
+# "old.test.invalid") cannot consume the inner match and leave the enclosing host's fragment
+# ("old.") behind. Order-in-config must NOT matter after the length-descending sort -- this
+# config lists the SHORTER host first, the exact naive-order leak. Canary: drop the sort ->
+# "old.test.invalid" scrubs to "old.wiki-host.invalid" and the real-host fragment leaks.
+if active and set(N.HOST_SCRUB) >= {"test.invalid", "old.test.invalid"}:
+    for probe in ("old.test.invalid", "OLD.TEST.INVALID", "see https://old.test.invalid/p now"):
+        s = N._scrub_hosts(probe)
+        assert "old." not in s.lower() and "test.invalid" not in s.lower(), ("host-order-leak", probe, s)
+        sb = N._scrub_hosts_bytes(probe.encode())
+        assert b"old." not in sb.lower() and b"test.invalid" not in sb.lower(), ("host-order-leak-bytes", probe, sb)
+
+# Finding-3 (FALSE-NEGATIVE DROP): modules=startup is MW's standalone startup request and is
+# ALWAYS requested alone, so the single-module drop must EXEMPT it -- otherwise startup.js is
+# stripped from the manifest AND the startup-body version scrub becomes dead code (a real
+# startup.js regression can never surface). Canary: drop the exemption -> the entry is dropped.
+assert not N._is_single_module_loadphp("https://h/w/load.php?modules=startup")
+assert not N._is_single_module_loadphp("https://h/w/load.php?modules=startup&only=scripts&raw=1")
+assert N._is_single_module_loadphp("https://h/w/load.php?modules=jquery")  # a real single module still drops
+_sm = N.normalize_manifest({
+    "https://h/w/load.php?modules=startup&only=scripts": {"status": 200, "content_type": "application/javascript"},
+})
+assert any("modules=startup" in k for k in _sm), ("startup entry dropped", list(_sm))
+
+# ... and the startup-body version scrub is now REACHABLE (was dead code while startup entries
+# were dropped): a version hash in mw.loader.register(...) must be scrubbed in the emitted body.
+_ss = Path(tempfile.mkdtemp()); _sd = Path(tempfile.mkdtemp())
+(_ss / "dom.html").write_text("<html></html>", encoding="utf-8")
+(_ss / "assets").mkdir()
+(_ss / "assets" / "startup.js").write_text('mw.loader.register([["mod.name","1eggf"]]);', encoding="utf-8")
+(_ss / "manifest.json").write_text(json.dumps({
+    "https://h/wiki/Page": {"status": 200, "content_type": "text/html"},
+    "https://h/w/load.php?modules=startup&only=scripts": {"status": 200, "content_type": "application/javascript", "asset": "startup.js", "sha256": "s", "size": 1},
+}), encoding="utf-8")
+N.normalize_page_dir(_ss, _sd)
+_sjs = "".join(p.read_text(encoding="utf-8") for p in (_sd / "assets").glob("*.js"))
+assert _sjs, "startup.js not written -- entry was dropped?"
+assert "1eggf" not in _sjs and "SCRUBBED" in _sjs, ("startup body not normalized", _sjs)
+
+# The O(N) whitespace-sensitivity precompute must keep the SAME semantics as a per-node
+# ancestor walk: a whitespace run inside a whitespace-sensitive element (even nested under
+# a non-sensitive child) is PRESERVED; a run in ordinary flow COLLAPSES to one space.
+_wsx = N.normalize_html("<pre>a   b<span>c   d</span></pre><p>e   f</p>")
+assert "a   b" in _wsx and "c   d" in _wsx, ("sensitive whitespace lost", _wsx)
+assert "e   f" not in _wsx and "e f" in _wsx, ("flow whitespace not collapsed", _wsx)
+
+# DoS (amplification): a pathologically deep untrusted dom.html must be bounded by the
+# size+depth cap at the TOP of normalize_html, ahead of every pass that costs more than
+# O(N). Two shapes, both must stay under budget:
+#  - a "comb" with a text node at every level -- a per-text-node ancestor walk would be
+#    O(N*depth);
+#  - NESTED whitespace-sensitive tags (<pre><pre>...) -- collecting sensitive string ids
+#    with a find_all(string) PER sensitive tag re-walks each subtree, O(depth^2). The
+#    precompute is one O(N) stacked descent instead, and the cap runs first so neither can
+#    amplify.
+# Canary: move the cap back below _canonicalise_whitespace, or restore the find_all-per-tag
+# precompute -> the nested-<pre> case blows the budget (~47s at D=20000). Run once (no-op
+# config) since the path is scrub-independent.
+if not active:
+    import time as _time
+    for _shape in (
+        "".join("<div>t%d " % i for i in range(40000)) + "x" + "</div>" * 40000,
+        "<pre>" * 20000 + "x" + "</pre>" * 20000,
+    ):
+        _t0 = _time.monotonic()
+        N.normalize_html(_shape)
+        assert _time.monotonic() - _t0 < 15.0, (
+            "deep-tree amplification bypassed the cap", len(_shape))
+
 print("OK active=%s" % active)
 """
 
@@ -437,5 +507,9 @@ def run(value):
 
 if __name__ == '__main__':
     run(HOST)   # scrub active: hosts collapse across html, manifest, asset bodies
+    ## Overlapping hosts, SHORTER listed FIRST: exercises the longest-match-first ordering
+    ## (Finding-1). A naive in-config order would leak the "old." fragment out of the longer
+    ## host; the length-descending sort makes config order irrelevant.
+    run('test.invalid,old.test.invalid')
     run(None)   # default: complete no-op
     print('all host-scrub tests passed')

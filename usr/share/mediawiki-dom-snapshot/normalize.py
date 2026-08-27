@@ -227,11 +227,31 @@ WHITESPACE_SENSITIVE_TAGS = {"pre", "code", "textarea", "script", "style"}
 _WS_RUN_RE = re.compile(r"\s+")
 
 
-def _under_whitespace_sensitive(node) -> bool:
-    for parent in node.parents:
-        if getattr(parent, "name", None) in WHITESPACE_SENSITIVE_TAGS:
-            return True
-    return False
+def _whitespace_sensitive_string_ids(soup) -> set:
+    ## id() of every string node that has a whitespace-sensitive ancestor, in ONE O(N)
+    ## pass. An EXPLICIT stack carries each element's count of whitespace-sensitive
+    ## ancestors (a string node is sensitive when that count > 0); recursion is avoided so
+    ## an adversarially deep tree cannot blow the interpreter's recursion limit. Must not
+    ## itself amplify: a find_all(WHITESPACE_SENSITIVE_TAGS) then find_all(string) PER tag
+    ## re-walks each subtree, which is O(depth^2) for nested <pre>/<code> -- the same DoS
+    ## class this runs ahead of the prettify cap to avoid. A single stacked descent is O(N)
+    ## regardless of nesting. Membership is equivalent to "any ancestor is a pre/code/
+    ## textarea/script/style".
+    sensitive = set()
+    stack = [(soup, 0)]
+    while stack:
+        node, depth = stack.pop()
+        for child in node.children:
+            name = getattr(child, "name", None)
+            if name is None:
+                ## a string node (NavigableString/Comment): sensitive iff under a
+                ## whitespace-sensitive ancestor
+                if depth > 0:
+                    sensitive.add(id(child))
+            else:
+                stack.append(
+                    (child, depth + (1 if name in WHITESPACE_SENSITIVE_TAGS else 0)))
+    return sensitive
 
 
 def _canonicalise_whitespace(soup) -> None:
@@ -260,10 +280,11 @@ def _canonicalise_whitespace(soup) -> None:
     ## Collapse whitespace runs in text nodes outside whitespace-
     ## sensitive elements. A run of spaces/newlines/tabs becomes a
     ## single space -- identical to how the browser lays the text out.
+    sensitive_ids = _whitespace_sensitive_string_ids(soup)
     for t in list(soup.find_all(string=True)):
         if isinstance(t, Comment):
             continue
-        if _under_whitespace_sensitive(t):
+        if id(t) in sensitive_ids:
             continue
         original = str(t)
         collapsed = _WS_RUN_RE.sub(" ", original)
@@ -378,8 +399,18 @@ VOLATILE_INPUT_NAMES = {"wpStarttime", "wpEdittime", "wpEditToken"}
 ## values, console + errors message text, and the verbatim JSON copies (computed_
 ## styles/hover_styles/iframes_shadow) -- so only real content deltas survive and
 ## the true host never leaks. Empty (the default) is a no-op (same-host diffs).
+## Sort LONGEST host first so the per-host substitutions are applied longest-match-
+## first. A shorter host that is a substring of a longer one (apex "test.invalid" vs
+## subdomain "old.test.invalid") would otherwise, if listed first, consume the inner
+## "test.invalid" out of the longer occurrence and leave a real-host fragment ("old.")
+## behind. Longest-first guarantees the enclosing host collapses whole before any
+## shorter substring can bite into it. Both compiled tuples below inherit this order.
 HOST_SCRUB = tuple(
-    h.strip() for h in os.environ.get("DOM_DIFF_HOST_SCRUB", "").split(",") if h.strip()
+    sorted(
+        (h.strip() for h in os.environ.get("DOM_DIFF_HOST_SCRUB", "").split(",") if h.strip()),
+        key=len,
+        reverse=True,
+    )
 )
 HOST_SCRUB_PLACEHOLDER = "wiki-host.invalid"
 
@@ -426,8 +457,8 @@ def _is_text_asset(content_type: str) -> bool:
 ## soup.prettify() indents proportionally to nesting depth, so its output is O(N x depth):
 ## a small (few-hundred-KB) but pathologically deep untrusted dom.html amplifies to GBs and
 ## exhausts the diff host. Past these bounds fall back to the O(N) compact serialisation.
-_MAX_PRETTIFY_DEPTH = 500          ## real MediaWiki pages nest far shallower
-_MAX_PRETTIFY_INPUT = 20_000_000   ## 20 MB; a page over this is pathological
+_MAX_HTML_DEPTH = 500          ## real MediaWiki pages nest far shallower
+_MAX_HTML_INPUT = 20_000_000   ## 20 MB; a page over this is pathological
 
 
 def _nesting_depth_exceeds(node, limit):
@@ -446,6 +477,16 @@ def _nesting_depth_exceeds(node, limit):
 
 def normalize_html(html: str) -> str:
     html = _scrub_hosts(html)
+    ## Untrusted-input DoS cap comes FIRST, before ANY tree processing. dom.html is
+    ## attacker-controllable and several passes below cost more than O(N) on a
+    ## pathologically large or deep tree (prettify's O(N*depth) indent worst of all).
+    ## Gating everything behind the cap keeps the invariant that no code path can amplify
+    ## ahead of it -- the earlier a new pass is added, the easier it is to slip in above a
+    ## cap placed lower down. Host-scrub (the security transform) has already run on the
+    ## string above, so the fallbacks below are safe; only diff-stability canonicalisation
+    ## is skipped for a page this degenerate.
+    if len(html) > _MAX_HTML_INPUT:
+        return html
     ## Scrub JS-generated random ids early so the BeautifulSoup parse
     ## sees the canonical form. Safer to do this on the string than
     ## inside the tree walk since the ids appear both as attribute
@@ -454,6 +495,13 @@ def normalize_html(html: str) -> str:
         html = pat.sub(repl, html)
 
     soup = BeautifulSoup(html, "lxml")
+
+    ## Depth arm of the cap, immediately after the parse and before every depth-amplifiable
+    ## pass (whitespace canonicalisation, prettify). _nesting_depth_exceeds is an
+    ## O(depth-limit) early-bail, so the probe is cheap; str(soup) is the compact O(N)
+    ## serialisation of the already-host-scrubbed tree.
+    if _nesting_depth_exceeds(soup, _MAX_HTML_DEPTH):
+        return str(soup)
 
     for c in list(soup.find_all(string=lambda t: isinstance(t, Comment))):
         text = str(c)
@@ -682,11 +730,9 @@ def normalize_html(html: str) -> str:
     ## the final tree (and don't fight the volatile-content removals).
     _canonicalise_whitespace(soup)
 
-    ## Avoid prettify's O(N x depth) indent amplification on a pathologically deep (or
-    ## huge) untrusted page: emit the compact O(N) serialisation instead. It is the same
-    ## tree without indentation, identical on both sides of a diff of the same page.
-    if len(html) > _MAX_PRETTIFY_INPUT or _nesting_depth_exceeds(soup, _MAX_PRETTIFY_DEPTH):
-        return str(soup)
+    ## Within the size+depth cap enforced at the top of this function, so prettify's
+    ## O(N*depth) indent cannot amplify here. The indented form is the same tree, identical
+    ## on both sides of a diff of the same page.
     return soup.prettify(formatter="minimal")
 
 
@@ -757,6 +803,13 @@ def _is_single_module_loadphp(url: str) -> bool:
     ## the value before the compare or a lower-case "%7c" multi-module URL would
     ## misclassify as single and get the whole entry dropped.
     modules_upper = modules.upper()
+    ## The ResourceLoader "startup" module is ALWAYS requested alone (modules=startup),
+    ## so it looks like droppable single-module noise -- but unlike other single modules
+    ## it never reappears bundled elsewhere, so dropping it strips startup.js from the
+    ## manifest entirely AND makes the startup-body version scrub dead code (a real
+    ## startup.js regression could never surface). Exempt it from the single-module drop.
+    if modules_upper == "STARTUP":
+        return False
     return "|" not in modules_upper and "%7C" not in modules_upper
 
 
