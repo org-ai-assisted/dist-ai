@@ -76,7 +76,7 @@ CASES = [
 
 def main():
     global OG_DEBUG
-    tor = og = out = None
+    tor = og = out = ctl = None
     fails = []
     try:
         e2e.setup_veth_ip()
@@ -130,11 +130,19 @@ def main():
                                      forwarded))
             # key blob must not leak (only redacted form, if any)
             key_leak = bool(re.search(r"250-PrivateKey=\S+:[A-Za-z0-9+/]{16,}", reply_str))
+            # threat #2: a crafted group must not smuggle extra Flags=/Port=
+            # mappings into what tor sees. The one legitimate 'Port=9999,' the
+            # rewrite emits is exempt; ANY 'Flags=' or a SECOND/foreign 'Port='
+            # is an injection that reached tor.
+            injected = (re.findall(r"\bFlags=\S+", forwarded)
+                        + re.findall(r"\bPort=(?!9999,)\S+", forwarded))
 
             verdict = "ok"
             detail = "fwd=[{}]".format(forwarded)
             if foreign or not target_ok:
                 verdict = "ESCAPE!"; fails.append((label, "target not client-address: " + forwarded))
+            elif injected:
+                verdict = "INJECT!"; fails.append((label, "Flags/Port injection reached tor: " + forwarded))
             elif key_leak:
                 verdict = "KEYLEAK!"; fails.append((label, "private key leaked: " + reply_str[:80]))
             else:
@@ -147,7 +155,6 @@ def main():
             except OSError:
                 # best-effort onion cleanup; it may already be gone
                 pass
-        ctl.close()
 
         print()
         if fails:
@@ -159,6 +166,11 @@ def main():
                   "no Flags/Port injection reached tor, key blob never leaked.")
         return 1 if fails else 0
     finally:
+        ## ctl.close() belongs here, not inline: an exception between the socket-create
+        ## (ctl = e2e.Control(...)) and the end of the case loop would otherwise leak the
+        ## control socket and skip DEL_ONION cleanup, leaving onions registered until tor dies.
+        if ctl:
+            ctl.close()
         if og:
             e2e.stop(og)
         if out:

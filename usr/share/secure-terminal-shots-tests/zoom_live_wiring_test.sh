@@ -92,18 +92,22 @@ mkdir --parents -- "${work}/bin"
 cat > "${work}/bin/python3" <<PY
 #!/bin/bash
 ## args: <st_bin> ctl <subcmd...>; drop the st_bin path, log the rest. ZL_STUB_MODE drives the
-## failure scenarios: 'no-tab' makes 'ctl ls' return nothing; 'zoom-fail' makes every 'ctl zoom'
-## exit nonzero; anything else is the happy path.
+## failure scenarios: 'no-tab' makes 'ctl ls' return nothing; 'ctl-ls-fail' makes 'ctl ls' EXIT
+## NONZERO; 'zoom-fail' makes every 'ctl zoom' exit nonzero; anything else is the happy path.
 shift || true
 printf '%s\n' "\$*" >> "${ctl_log}"
 zl_mode="\${ZL_STUB_MODE:-ok}"
 case "\$1 \$2" in
    'ctl ls')
       ## real client prints "<id>\t<title>" per tab; a fresh single-tab instance numbers from 0,
-      ## so zoom_live_capture must parse id 0 (not a hardcode). 'no-tab' returns none.
+      ## so zoom_live_capture must parse id 0 (not a hardcode). 'no-tab' returns none; 'ctl-ls-fail'
+      ## exits nonzero (remote_control momentarily unreachable).
       case "\${zl_mode}" in
          no-tab)
             true
+            ;;
+         ctl-ls-fail)
+            exit 1
             ;;
          *)
             printf '0\tmain\n'
@@ -259,6 +263,20 @@ true > "${capture_log}"
 rc=0
 ZL_STUB_MODE=zoom-fail zoom_live_capture 50 100 >/dev/null 2>&1 || rc="$?"
 check_nonzero "${rc}" 'zoom_live_capture returns nonzero when every ctl zoom fails'
+
+## (i-b) ctl-ls-fail: `ctl ls` EXITS NONZERO. Under errexit+pipefail the tab-discovery
+## command-substitution must NOT kill the function -- its '|| true' lets it fall through to the
+## graceful id:0 fallback (warn + count a failure) and STILL drive the zoom. Without the '|| true',
+## the function aborts at the assignment before the warn and before any ctl zoom, capturing nothing.
+true > "${ctl_log}"
+true > "${capture_log}"
+safe-rm --recursive --force -- "${out}" 2>/dev/null || true
+mkdir --parents -- "${out}"
+ctlfail_out="$(ZL_STUB_MODE=ctl-ls-fail zoom_live_capture 50 100 2>&1 || true)"
+n="$(printf '%s\n' "${ctlfail_out}" | grep --count --fixed-strings -- 'returned no tab' || true)"
+check "${n}" '1' 'zoom-live warns and does NOT abort when ctl ls exits nonzero (|| true fallthrough)'
+n="$(grep --count --fixed-strings -- 'ctl zoom --tab id:0 50' "${ctl_log}" || true)"
+check "${n}" '1' 'zoom-live reaches the id:0 fallback and still zooms when ctl ls exits nonzero'
 
 ## (iii) A non-numeric level is SKIPPED (never crashes `$(( 10#level ))` into a zoom-live-.png that
 ## silently overwrites): no ctl zoom for it, no zoom-live-.png, and the numeric levels still shoot.

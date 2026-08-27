@@ -1441,6 +1441,12 @@ try:
                  '/escape-limit \u00b2'):
         eq(win.run_command(_bad), False,
            'run_command: a non-ASCII digit arg (%r) is rejected, not a crash' % _bad)
+    # a palette /scrollback beyond Qt's C int32 must clamp at the apply_scrollback sink,
+    # not SIGABRT via setMaximumBlockCount -- the sink clamp protects every caller.
+    eq(win.run_command('/scrollback 99999999999999'), True,
+       'run_command: an out-of-int32 /scrollback is accepted (clamped, not a crash)')
+    eq(win.current().current_scrollback(), 2147483647,
+       'an out-of-int32 scrollback clamps to int32 max at the apply_scrollback sink')
     ok(True, 'run_command handles every slash-command branch')
 
     # CLASH: the palette's help text vs what the palette actually dispatches.

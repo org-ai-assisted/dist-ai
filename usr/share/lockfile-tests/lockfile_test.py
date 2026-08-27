@@ -206,12 +206,12 @@ def main():
     lockfile_sh = lockfile_sh_path()
     print('lockfile.sh: %s' % lockfile_sh)
     if not os.path.exists(lockfile_sh):
-        # 77 is the runner's SKIP code: an absent subject means the suite could
-        # not run, not that lockfile.sh is broken. Returning 1 here would fail
-        # the PR gate on every host without helper-scripts installed.
-        print('SKIP: lockfile.sh not found -- install helper-scripts or set '
-              'LOCKFILE_SH / LOCKFILE_SH_REPO')
-        return 77
+        # lockfile.sh is a REQUIRED subject: its absence is an environment bug,
+        # not an optional target. A required dep that vanished must fail LOUD
+        # (exit 1), never skip -- a silent 77 would stop gating unnoticed.
+        print('FATAL: lockfile.sh not found -- install helper-scripts or set '
+              'LOCKFILE_SH / LOCKFILE_SH_REPO', file=sys.stderr)
+        return 1
     if not os.access(lockfile_sh, os.X_OK):
         print('ERROR: lockfile.sh is not executable -- wrap mode '
               "('lockfile.sh <key> -- <cmd>') re-execs it and needs +x")

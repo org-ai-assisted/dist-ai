@@ -88,11 +88,22 @@ APP = QApplication.instance() or QApplication(['setup-wizard-dist-tests'])
 DISCLAIMER_STEPS = ['disclaimer_1', 'disclaimer_2', 'finish_page']
 FINISH_ONLY_STEPS = ['finish_page']
 
-## Every translation key the wizard resolves via self._('...').
-with open(swd.__file__) as _swd_src:
-    SOURCE_KEYS = frozenset(
-        re.findall(r"self\._\('([^']+)'\)", _swd_src.read())
+def extract_source_keys(text):
+    """Translation keys the wizard resolves via self._('...') or self._("...").
+
+    Both quote styles are matched -- a double-quoted key is a real spelling and
+    was invisible to a single-quote-only pattern, so its key silently escaped
+    the translation-coverage check.
+    """
+    return frozenset(
+        key for _quote, key in re.findall(
+            r"""self\._\((['"])([^'"]+)\1\)""", text)
     )
+
+
+## Every translation key the wizard resolves via self._(...).
+with open(swd.__file__) as _swd_src:
+    SOURCE_KEYS = extract_source_keys(_swd_src.read())
 
 
 def make_wizard(testcase, show_disclaimer, steps, environment=None):
@@ -120,6 +131,7 @@ __all__ = [
     'REPO',
     'SOURCE_KEYS',
     'TRANSLATIONS_YAML',
+    'extract_source_keys',
     'make_wizard',
     'swd',
 ]
