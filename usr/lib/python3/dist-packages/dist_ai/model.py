@@ -79,7 +79,9 @@ class Rule:
     Every rule ALSO honors a per-rule override keyed on its own id --
     '## style-ok: <R-id>' -- so any single rule can be suppressed for a file
     without a dedicated waiver_tag. This is a universal escape hatch, wired once
-    here, not per rule.
+    here, not per rule. A rule whose DISPLAYED id differs from its class id (a
+    composite like "R-030/R-031") lists the extra spellings in override_ids so
+    the tag a user reads in the finding is a working override.
 
     The engine decides which files a rule sees by its COLLECTION (shell / config
     / text in the registry), so applies() only owns per-rule suppression: the
@@ -89,15 +91,17 @@ class Rule:
 
     id = None
     waiver_tag = None
+    override_ids = ()
     advisory = False
 
     def applies(self, ctx):
         """Run this rule on ctx? Default: suppressed by the per-rule id override
-        ('## style-ok: <R-id>') or by an active file-wide waiver_tag. A rule with
-        a path self-exemption or a config-file predicate overrides this and calls
-        super().applies() first."""
-        if self.id is not None and ctx.has_rule_override(self.id):
-            return False
+        ('## style-ok: <R-id>', or any spelling in override_ids) or by an active
+        file-wide waiver_tag. A rule with a path self-exemption or a config-file
+        predicate overrides this and calls super().applies() first."""
+        for override in (self.id, *self.override_ids):
+            if override is not None and ctx.has_rule_override(override):
+                return False
         if self.waiver_tag is not None and ctx.has_waiver(self.waiver_tag):
             return False
         return True

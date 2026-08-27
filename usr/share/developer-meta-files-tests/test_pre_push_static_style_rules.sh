@@ -271,6 +271,15 @@ expect_rule "R-070" "## style-ok: R-034${nlreal}case x in${nlreal}a) true${dsemi
 ## Boundary: a longer id that merely PREFIX-contains R-070 must not suppress it.
 expect_rule "R-070" "## style-ok: R-0700${nlreal}case x in${nlreal}a) true${dsemi}${nlreal}esac" "present"
 
+## AST-aware waivers: a '## style-ok:' line inside a HEREDOC body is DATA, not a
+## real comment, so it must NOT waive -- otherwise a fixture heredoc silently
+## disables the gate for the whole file (a false-green). Both the per-rule id
+## override and the named waiver_tag path honor this.
+expect_rule "R-070" "cat <<'EOF'${nlreal}## style-ok: R-070${nlreal}EOF${nlreal}case x in${nlreal}a) true${dsemi}${nlreal}esac" "present"
+expect_rule "R-034" "cat <<'EOF'${nlreal}## style-ok: allow-echo${nlreal}EOF${nlreal}echo hi" "present"
+## The REAL comment forms still waive (AST change must not break genuine waivers).
+expect_rule "R-034" "## style-ok: allow-echo${nlreal}echo hi" "absent"
+
 ## R-030/R-031: a newline emitted without an explicit '' data argument must be
 ## FLAGGED -- both 'printf \n' (newline in the format) and a bare 'printf %s\n'
 ## (data arg omitted). The compliant 'printf %s\n' "" and a normal data printf
@@ -288,6 +297,10 @@ expect_rule "R-030/R-031" "printf ${sq}%s${nl}${sq} ${dq}${dq} # ok" "absent"
 ## only R-030's format-injection form -- a printf missing its explicit '' arg is
 ## SPARED when the file carries the waiver.
 expect_rule "R-030/R-031" "## style-ok: printf-format${nlreal}printf ${sq}%s${nl}${sq}" "absent"
+## The finding is DISPLAYED as the composite 'R-030/R-031'; that exact tag must
+## work as a per-rule override (override_ids), so a user copying it from the
+## finding does not hit a silent no-op.
+expect_rule "R-030/R-031" "## style-ok: R-030/R-031${nlreal}printf ${sq}${nl}${sq}" "absent"
 
 ## R-030: a printf inside a single-quoted program handed to ANOTHER interpreter
 ## (awk here, whose printf takes a comma-separated list and interpolates nothing
@@ -1830,4 +1843,4 @@ if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "test_pre_push_static_style_rules: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-070 per-rule id override, R-074, R-026, R-030 format string, R-030/R-031, R-030/R-031 printf-format waiver, R-034, R-034 per-rule id override, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-190, R-191, R-194, R-195, R-100, R-010, R-001 .gitattributes-binary allowlist, R-001 commit-message, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting, double-quote-string-fixer-disabled and imported-package-module exemption enforced as expected."
+printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-070 per-rule id override, R-074, R-026, R-030 format string, R-030/R-031, R-030/R-031 printf-format waiver, R-030/R-031 composite id override, AST-aware waiver (heredoc-body not honored), R-034, R-034 per-rule id override, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-190, R-191, R-194, R-195, R-100, R-010, R-001 .gitattributes-binary allowlist, R-001 commit-message, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting, double-quote-string-fixer-disabled and imported-package-module exemption enforced as expected."

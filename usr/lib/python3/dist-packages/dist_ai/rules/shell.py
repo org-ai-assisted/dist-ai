@@ -1181,6 +1181,9 @@ class BareNewlinePrintf(Rule):
 
     id = "R-031"
     waiver_tag = "printf-format"
+    ## finding is DISPLAYED as the composite "R-030/R-031"; honor that spelling as
+    ## an override too, so the tag a user copies from the finding actually works.
+    override_ids = ("R-030/R-031",)
     _NEWLINE_ONLY = re.compile(r'^(?:%s)?(?:\\n)+$')
 
     def applies(self, ctx):

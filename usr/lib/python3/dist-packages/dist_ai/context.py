@@ -86,6 +86,8 @@ class FileContext:
         self._tree = None
         self._tree_done = False
         self._binary = None
+        self._comment_lines = None
+        self._comment_lines_done = False
 
     @classmethod
     def from_disk(cls, abspath, relpath=None):
@@ -203,6 +205,30 @@ class FileContext:
 
     ## --- waivers ----------------------------------------------------------
 
+    def _shell_comment_lines(self):
+        """For a SHELL file, the reconstructed text of each real comment LINE
+        ('#' + shfmt's marker-stripped Text), so a waiver is matched ONLY against
+        genuine comments -- never a heredoc body or a quoted string that merely
+        LOOKS like a '## style-ok:' line and would otherwise silently disable a
+        rule for the whole file. None for a non-shell file, or a shell file shfmt
+        cannot parse, where the caller falls back to a raw-source scan."""
+        if not self._comment_lines_done:
+            self._comment_lines_done = True
+            if self.is_shell and self.tree is not None:
+                self._comment_lines = [
+                    "#" + (comment.get("Text") or "")
+                    for comment in bash_ast.comments(self.tree)]
+        return self._comment_lines
+
+    def _waiver_present(self, pattern):
+        """True if PATTERN matches a waiver. On a shell file the match is
+        restricted to real comment lines (AST-aware); elsewhere it scans the raw
+        source, the only option without a shell AST."""
+        lines = self._shell_comment_lines()
+        if lines is not None:
+            return any(pattern.match(line) for line in lines)
+        return bool(pattern.search(self.source))
+
     def has_waiver(self, tag):
         """True if the file carries a '## style-ok: <tag>' waiver (shell
         grammar: exactly '##', any or no surrounding horizontal whitespace). The
@@ -214,7 +240,7 @@ class FileContext:
         pattern = re.compile(
             r'^[ \t]*##[ \t]*style-ok:[ \t]*' + re.escape(tag)
             + r'(?:[ \t\r]|$)', re.MULTILINE)
-        return bool(pattern.search(self.source))
+        return self._waiver_present(pattern)
 
     def has_config_waiver(self, tag, slashes=False):
         """True for a '# style-ok: <tag>' waiver in CONFIG comment syntax: one or
@@ -225,7 +251,7 @@ class FileContext:
         pattern = re.compile(
             r'^[ \t]*' + prefix + r'[ \t]*style-ok:[ \t]*'
             + re.escape(tag) + r'(?:[ \t\r]|$)', re.MULTILINE)
-        return bool(pattern.search(self.source))
+        return self._waiver_present(pattern)
 
     def has_rule_override(self, rule_id):
         """True if the file carries a per-rule override keyed on the rule's OWN
