@@ -121,6 +121,25 @@ gate_output() {
    ) 2>&1 || true
 }
 
+## py_gate_output <line>...  -- write the lines to sample.py, gate --check the
+## commit, echo the output. For the Python waiver tests (tokenize-aware comments).
+py_gate_output() {
+   local repo base
+   repo="$(mktemp --directory --tmpdir="${tmp_root}" py.XXXXXX)"
+   git -C "${repo}" init --quiet
+   git -C "${repo}" config user.email 'ci-test@example.com'
+   git -C "${repo}" config user.name 'ci-test'
+   git -C "${repo}" commit --quiet --no-verify --allow-empty --message base
+   base="$(git -C "${repo}" rev-parse HEAD)"
+   printf '%s\n' "$@" > "${repo}/sample.py"
+   git -C "${repo}" add sample.py
+   git -C "${repo}" commit --quiet --no-verify --message sample
+   (
+      cd -- "${repo}" || exit 1
+      "${GATE}" --check --range "${base}"
+   ) 2>&1 || true
+}
+
 ## expect_rule <rule-tag> <sample-body> <present|absent>
 ## Assert the gate output does / does not carry <rule-tag> for the sample body.
 expect_rule() {
@@ -279,6 +298,31 @@ expect_rule "R-070" "cat <<'EOF'${nlreal}## style-ok: R-070${nlreal}EOF${nlreal}
 expect_rule "R-034" "cat <<'EOF'${nlreal}## style-ok: allow-echo${nlreal}EOF${nlreal}echo hi" "present"
 ## The REAL comment forms still waive (AST change must not break genuine waivers).
 expect_rule "R-034" "## style-ok: allow-echo${nlreal}echo hi" "absent"
+## A TRAILING inline comment is not a line-leading waiver: the grammar wants the
+## waiver on its OWN line, so 'cmd ## style-ok: X' must NOT suppress -- both the
+## named-tag path and the id-override path.
+expect_rule "R-034" "echo hi ## style-ok: allow-echo" "present"
+expect_rule "R-034" "echo hi ## style-ok: R-034"       "present"
+
+## Python is tokenize-aware too: a '## style-ok:' line inside a triple-quoted
+## STRING is data, not a comment, so it must not waive; a genuine '#' comment
+## still does. A non-ASCII byte (built at runtime so THIS file stays ASCII) trips
+## R-001, the rule the spoofed waiver tries to silence.
+emdash="$(printf '\342\200\224')"
+py_spoof_out="$(py_gate_output '#!/usr/bin/python3' 'x = """' '## style-ok: allow-non-ascii' '"""' "y = \"${emdash}\"")"
+if grep --quiet --fixed-strings -- 'R-001' <<< "${py_spoof_out}"; then
+   printf '%s\n' "PASS: R-001 not waived by a '## style-ok:' inside a Python string"
+else
+   printf '%s\n' "FAIL: R-001 wrongly waived by a '## style-ok:' inside a Python string" >&2
+   failures=$((failures + 1))
+fi
+py_real_out="$(py_gate_output '#!/usr/bin/python3' '## style-ok: allow-non-ascii' "y = \"${emdash}\"")"
+if grep --quiet --fixed-strings -- 'R-001' <<< "${py_real_out}"; then
+   printf '%s\n' "FAIL: R-001 not waived by a genuine Python '#' comment" >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' "PASS: R-001 waived by a genuine Python '#' comment"
+fi
 
 ## R-030/R-031: a newline emitted without an explicit '' data argument must be
 ## FLAGGED -- both 'printf \n' (newline in the format) and a bare 'printf %s\n'
@@ -1843,4 +1887,4 @@ if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "test_pre_push_static_style_rules: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-070 per-rule id override, R-074, R-026, R-030 format string, R-030/R-031, R-030/R-031 printf-format waiver, R-030/R-031 composite id override, AST-aware waiver (heredoc-body not honored), R-034, R-034 per-rule id override, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-190, R-191, R-194, R-195, R-100, R-010, R-001 .gitattributes-binary allowlist, R-001 commit-message, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting, double-quote-string-fixer-disabled and imported-package-module exemption enforced as expected."
+printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-070 per-rule id override, R-074, R-026, R-030 format string, R-030/R-031, R-030/R-031 printf-format waiver, R-030/R-031 composite id override, AST-aware waiver (heredoc-body / trailing-inline / Python-string not honored), R-034, R-034 per-rule id override, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-190, R-191, R-194, R-195, R-100, R-010, R-001 .gitattributes-binary allowlist, R-001 commit-message, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting, double-quote-string-fixer-disabled and imported-package-module exemption enforced as expected."

@@ -17,15 +17,18 @@ file that shfmt cannot parse yields tree=None (the rule declines; the gate's
 'bash -n' reports the syntax error)."""
 
 import fnmatch
+import io
 import os
 import re
 import subprocess
+import tokenize
 
 from dist_ai import bash_ast
 from dist_ai import model
 
 SHELL_EXTS = (".sh", ".bsh")
 SHELL_SHEBANG_RE = re.compile(r'#!.*(/|\s)(bash|sh|dash)(\s|$)')
+PYTHON_SHEBANG_RE = re.compile(r'#!.*(/|\s)python[0-9.]*(\s|$)')
 
 ## is_text scope for the trailing-whitespace rule: the extension set, with a
 ## file(1) --mime fallback for extensionless files.
@@ -133,6 +136,14 @@ class FileContext:
         return bool(SHELL_SHEBANG_RE.match(first))
 
     @property
+    def is_python(self):
+        if self.source is None:
+            return self.path.endswith(".py")
+        if self.path.endswith(".py"):
+            return True
+        return bool(PYTHON_SHEBANG_RE.match(self.source.split("\n", 1)[0]))
+
+    @property
     def shebang(self):
         if not self.source:
             return ""
@@ -205,28 +216,57 @@ class FileContext:
 
     ## --- waivers ----------------------------------------------------------
 
-    def _shell_comment_lines(self):
-        """For a SHELL file, the reconstructed text of each real comment LINE
-        ('#' + shfmt's marker-stripped Text), so a waiver is matched ONLY against
-        genuine comments -- never a heredoc body or a quoted string that merely
-        LOOKS like a '## style-ok:' line and would otherwise silently disable a
-        rule for the whole file. None for a non-shell file, or a shell file shfmt
-        cannot parse, where the caller falls back to a raw-source scan."""
+    def _comment_line_numbers(self):
+        """1-based source line numbers that carry a REAL comment -- shell via the
+        shfmt AST, Python via tokenize. None for any other file kind, or a source
+        the respective parser rejects, so the caller falls back to a raw scan."""
+        if self.is_shell:
+            tree = self.tree
+            if tree is None:
+                return None
+            return {comment["Hash"]["Line"]
+                    for comment in bash_ast.comments(tree)
+                    if comment.get("Hash", {}).get("Line")}
+        if self.is_python:
+            numbers = set()
+            try:
+                for token in tokenize.generate_tokens(
+                        io.StringIO(self.source).readline):
+                    if token.type == tokenize.COMMENT:
+                        numbers.add(token.start[0])
+            except (tokenize.TokenError, IndentationError, SyntaxError,
+                    ValueError):
+                return None
+            return numbers
+        return None
+
+    def _comment_source_lines(self):
+        """The full SOURCE LINES that carry a real comment, so a waiver is matched
+        WITH its original line context -- the line-leading grammar ('## style-ok:'
+        on its own, only whitespace before it) still holds, and a trailing inline
+        comment ('cmd ## style-ok: X') does not waive. Restricting to comment
+        lines also excludes a heredoc body or a quoted string that merely LOOKS
+        like a waiver and would otherwise silently disable a rule file-wide. None
+        for a file kind with no comment parser, where the caller scans raw source
+        (a documented residual: a '## style-ok:' inside a quoted scalar in
+        YAML/TOML is not disambiguated)."""
         if not self._comment_lines_done:
             self._comment_lines_done = True
-            if self.is_shell and self.tree is not None:
+            numbers = self._comment_line_numbers()
+            if numbers is not None:
+                source_lines = self.source.split("\n")
                 self._comment_lines = [
-                    "#" + (comment.get("Text") or "")
-                    for comment in bash_ast.comments(self.tree)]
+                    source_lines[number - 1] for number in numbers
+                    if 1 <= number <= len(source_lines)]
         return self._comment_lines
 
     def _waiver_present(self, pattern):
-        """True if PATTERN matches a waiver. On a shell file the match is
-        restricted to real comment lines (AST-aware); elsewhere it scans the raw
-        source, the only option without a shell AST."""
-        lines = self._shell_comment_lines()
+        """True if PATTERN matches a waiver. Where the file's comments can be
+        located (shell / Python), the match is restricted to real comment lines;
+        elsewhere it scans the raw source, the only option without a parser."""
+        lines = self._comment_source_lines()
         if lines is not None:
-            return any(pattern.match(line) for line in lines)
+            return any(pattern.search(line) for line in lines)
         return bool(pattern.search(self.source))
 
     def has_waiver(self, tag):
