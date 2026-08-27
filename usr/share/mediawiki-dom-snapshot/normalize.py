@@ -227,11 +227,17 @@ WHITESPACE_SENSITIVE_TAGS = {"pre", "code", "textarea", "script", "style"}
 _WS_RUN_RE = re.compile(r"\s+")
 
 
-def _under_whitespace_sensitive(node) -> bool:
-    for parent in node.parents:
-        if getattr(parent, "name", None) in WHITESPACE_SENSITIVE_TAGS:
-            return True
-    return False
+def _whitespace_sensitive_string_ids(soup) -> set:
+    ## id() of every string node that has a whitespace-sensitive ancestor, collected in a
+    ## single O(N) tree pass. A per-node parents-walk (O(depth) each) is O(N*depth) total,
+    ## which a pathologically deep untrusted dom.html amplifies quadratically -- the same
+    ## DoS class as prettify, and it runs BEFORE the prettify depth cap so that guard does
+    ## NOT cover it. Membership here is equivalent to "any ancestor is whitespace-sensitive".
+    sensitive = set()
+    for tag in soup.find_all(WHITESPACE_SENSITIVE_TAGS):
+        for s in tag.find_all(string=True):
+            sensitive.add(id(s))
+    return sensitive
 
 
 def _canonicalise_whitespace(soup) -> None:
@@ -260,10 +266,11 @@ def _canonicalise_whitespace(soup) -> None:
     ## Collapse whitespace runs in text nodes outside whitespace-
     ## sensitive elements. A run of spaces/newlines/tabs becomes a
     ## single space -- identical to how the browser lays the text out.
+    sensitive_ids = _whitespace_sensitive_string_ids(soup)
     for t in list(soup.find_all(string=True)):
         if isinstance(t, Comment):
             continue
-        if _under_whitespace_sensitive(t):
+        if id(t) in sensitive_ids:
             continue
         original = str(t)
         collapsed = _WS_RUN_RE.sub(" ", original)
@@ -378,8 +385,18 @@ VOLATILE_INPUT_NAMES = {"wpStarttime", "wpEdittime", "wpEditToken"}
 ## values, console + errors message text, and the verbatim JSON copies (computed_
 ## styles/hover_styles/iframes_shadow) -- so only real content deltas survive and
 ## the true host never leaks. Empty (the default) is a no-op (same-host diffs).
+## Sort LONGEST host first so the per-host substitutions are applied longest-match-
+## first. A shorter host that is a substring of a longer one (apex "test.invalid" vs
+## subdomain "old.test.invalid") would otherwise, if listed first, consume the inner
+## "test.invalid" out of the longer occurrence and leave a real-host fragment ("old.")
+## behind. Longest-first guarantees the enclosing host collapses whole before any
+## shorter substring can bite into it. Both compiled tuples below inherit this order.
 HOST_SCRUB = tuple(
-    h.strip() for h in os.environ.get("DOM_DIFF_HOST_SCRUB", "").split(",") if h.strip()
+    sorted(
+        (h.strip() for h in os.environ.get("DOM_DIFF_HOST_SCRUB", "").split(",") if h.strip()),
+        key=len,
+        reverse=True,
+    )
 )
 HOST_SCRUB_PLACEHOLDER = "wiki-host.invalid"
 
@@ -757,6 +774,13 @@ def _is_single_module_loadphp(url: str) -> bool:
     ## the value before the compare or a lower-case "%7c" multi-module URL would
     ## misclassify as single and get the whole entry dropped.
     modules_upper = modules.upper()
+    ## The ResourceLoader "startup" module is ALWAYS requested alone (modules=startup),
+    ## so it looks like droppable single-module noise -- but unlike other single modules
+    ## it never reappears bundled elsewhere, so dropping it strips startup.js from the
+    ## manifest entirely AND makes the startup-body version scrub dead code (a real
+    ## startup.js regression could never surface). Exempt it from the single-module drop.
+    if modules_upper == "STARTUP":
+        return False
     return "|" not in modules_upper and "%7C" not in modules_upper
 
 
