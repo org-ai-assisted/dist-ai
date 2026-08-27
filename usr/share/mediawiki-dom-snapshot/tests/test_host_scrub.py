@@ -164,9 +164,11 @@ secret_marker = "TOP-SECRET-DECOY-DO-NOT-COPY"
 src2 = Path(tempfile.mkdtemp()); dst2 = Path(tempfile.mkdtemp())
 (src2 / "dom.html").write_text("<html></html>", encoding="utf-8")
 (src2 / "assets").mkdir()
+(src2 / "assets" / "ok.css").write_text(".ok{}", encoding="utf-8")  # a valid asset alongside
 (src2 / "secret.txt").write_text(secret_marker, encoding="utf-8")  # decoy OUTSIDE assets/
 (src2 / "manifest.json").write_text(json.dumps({
     "https://%s/wiki/Page" % H: {"status": 200, "content_type": "text/html"},
+    "https://%s/ok.css" % H: {"status": 200, "content_type": "text/css", "asset": "ok.css", "sha256": "o", "size": 1},
     "https://%s/evil" % H: {"status": 200, "content_type": "text/css",
                             "asset": "../secret.txt", "sha256": "x", "size": 1},
 }), encoding="utf-8")
@@ -182,13 +184,32 @@ src3 = Path(tempfile.mkdtemp()); dst3 = Path(tempfile.mkdtemp())
 (src3 / "dom.html").write_text("<html></html>", encoding="utf-8")
 (src3 / "assets" / "sub").mkdir(parents=True)
 (src3 / "assets" / "sub" / "file.css").write_text(".x{}", encoding="utf-8")
+(src3 / "assets" / "ok.css").write_text(".ok{}", encoding="utf-8")  # a valid asset alongside
 (src3 / "manifest.json").write_text(json.dumps({
     "https://%s/wiki/Page" % H: {"status": 200, "content_type": "text/html"},
+    "https://%s/ok.css" % H: {"status": 200, "content_type": "text/css", "asset": "ok.css", "sha256": "o", "size": 1},
     "https://%s/nested" % H: {"status": 200, "content_type": "text/css",
                               "asset": "sub/file.css", "sha256": "x", "size": 1},
 }), encoding="utf-8")
 N.normalize_page_dir(src3, dst3)  # must NOT raise
 assert not (dst3 / "assets" / "sub").exists(), "nested asset was copied instead of refused"
+
+# all-REFUSED manifest: if EVERY asset entry is refused (all ../-escaping names) the mirror
+# is near-empty just like an all-malformed one, so normalize must FAIL LOUD, not exit 0 as a
+# clean pass. The fail-loud tally counts refused + missing-source drops, not only shape errors.
+srcr = Path(tempfile.mkdtemp()); dstr = Path(tempfile.mkdtemp())
+(srcr / "dom.html").write_text("<html></html>", encoding="utf-8")
+(srcr / "assets").mkdir()
+(srcr / "manifest.json").write_text(json.dumps({
+    "https://%s/a" % H: {"status": 200, "content_type": "text/css", "asset": "../x.css", "sha256": "1", "size": 1},
+    "https://%s/b" % H: {"status": 200, "content_type": "text/css", "asset": "../../y.css", "sha256": "2", "size": 1},
+}), encoding="utf-8")
+_refused_raised = False
+try:
+    N.normalize_page_dir(srcr, dstr)
+except SystemExit:
+    _refused_raised = True
+assert _refused_raised, "an all-refused manifest must fail loud, not mirror empty and exit 0"
 
 # crafted manifest.json crash inputs: a RECEIVED cross-wiki manifest is untrusted, so a
 # malformed entry (or top-level shape) must be skipped/refused, NOT crash the whole

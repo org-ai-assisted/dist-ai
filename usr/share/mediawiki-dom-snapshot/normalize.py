@@ -1190,10 +1190,13 @@ def normalize_page_dir(src: Path, dst: Path) -> None:
             ## docstring); a path separator means an escaping value (../x, /abs ->
             ## arbitrary-file read) OR a nested one (sub/x -> the plain-copy branch's
             ## dst/assets/sub is never mkdir'd -> FileNotFoundError crash). Refuse any
-            ## non-flat name -- a deliberate hostile-name rejection, not a shape error,
-            ## so it does NOT count toward the all-malformed fail-loud tally below.
+            ## non-flat name. A refused entry copies NOTHING, so -- like a shape error or
+            ## a missing source -- it DOES count toward the all-dropped fail-loud tally: a
+            ## manifest whose entries are ALL refused yields the same near-empty mirror and
+            ## must not exit 0 as a clean pass.
             if sname in ("", ".", "..") or "/" in sname or "\\" in sname:
                 print("normalize: refusing non-flat asset name %r" % sname, file=sys.stderr)
+                asset_entries_failed += 1
                 continue
             ## Per-entry isolation: one malformed asset entry must not abort the whole
             ## normalize of an untrusted artifact. Catch only input-shape / filesystem
@@ -1206,8 +1209,12 @@ def normalize_page_dir(src: Path, dst: Path) -> None:
                 ## still resolve outside it, so keep the containment check.
                 if not src_a.resolve().is_relative_to(src_assets.resolve()):
                     print("normalize: refusing out-of-tree asset %r" % sname, file=sys.stderr)
+                    asset_entries_failed += 1
                     continue
+                ## A missing source body also copies nothing -> counts toward the tally,
+                ## so an all-missing-source manifest fails loud rather than mirror empty.
                 if not src_a.exists():
+                    asset_entries_failed += 1
                     continue
                 ct = entry.get("content_type", "")
                 ## A crafted non-string content_type would crash .startswith below.
