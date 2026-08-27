@@ -70,6 +70,23 @@ for flag in --kernel --headers --initramfs; do
    esac
 done
 
+## --- a DANGEROUS option (a dangerous flavor) with the unlock UNSET must give the
+## actionable "DANGEROUS option" error, NOT a bare nounset 'unbound variable' crash
+## (error_dangerous_option_maybe read dist_build_unlock_dangerous_options bare --
+## the exact break that had CI's kicksecure-ci-tiny-do-not-use build die at Phase 1).
+dang_out="$( unset dist_build_unlock_dangerous_options; run_out --flavor kicksecure-ci-tiny-do-not-use )"
+case "${dang_out}" in
+   *"unbound variable"*)
+      fail "dangerous flavor without unlock crashes on unbound dist_build_unlock_dangerous_options"
+      ;;
+   *"DANGEROUS option"*)
+      pass "dangerous flavor without unlock gives the actionable DANGEROUS-option error, not a crash"
+      ;;
+   *)
+      fail "dangerous flavor: unexpected output: ${dang_out}"
+      ;;
+esac
+
 ## --- --package-jobs must fail-fast on a non-integer ---
 ## A second, distinct bad arg (--headers '') follows it. The fix exits AT the
 ## package-jobs branch, so the --headers "must not be empty" error is NEVER reached;
