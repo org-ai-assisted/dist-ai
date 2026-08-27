@@ -644,7 +644,9 @@ def _normalize_headers(headers: dict) -> dict:
             continue
         v = value
         for header_name, pattern, replacement in HEADER_TOKEN_PATTERNS:
-            if n == header_name:
+            ## Only run the regex token-scrub on string values; a crafted
+            ## non-string header value would crash pattern.sub with TypeError.
+            if n == header_name and isinstance(v, str):
                 v = pattern.sub(replacement, v)
         if n in URL_VALUED_HEADERS:
             v = _normalize_url(v)
@@ -701,7 +703,17 @@ def normalize_manifest(manifest: dict, page_url: str | None = None) -> dict:
     output.
     """
     out: dict[str, dict] = {}
+    ## manifest.json is untrusted (a received cross-wiki snapshot). A crafted
+    ## top-level scalar/list has no .items(); refuse rather than crash.
+    if not isinstance(manifest, dict):
+        print("normalize: manifest is not a JSON object; ignoring", file=sys.stderr)
+        return {}
     for url, entry in manifest.items():
+        ## A crafted entry that is not an object (string/number/list) would raise
+        ## on the .get() calls below; skip it rather than abort the whole run.
+        if not isinstance(entry, dict):
+            print("normalize: skipping non-object manifest entry %r" % (url,), file=sys.stderr)
+            continue
         if entry.get("status") == 404:
             continue
         ## 5xx entries: backend hiccup that snapshot.py's retry layer
@@ -736,7 +748,9 @@ def normalize_manifest(manifest: dict, page_url: str | None = None) -> dict:
         ## the differing hostname.
         nurl = _scrub_hosts(_normalize_url(url))
         normalised_entry = dict(entry)
-        if "headers" in normalised_entry:
+        ## Only normalise headers when they are actually a dict; a crafted
+        ## non-object "headers" would crash _normalize_headers' .items().
+        if isinstance(normalised_entry.get("headers"), dict):
             normalised_entry["headers"] = _normalize_headers(normalised_entry["headers"])
         out.setdefault(nurl, normalised_entry)
     return dict(sorted(out.items()))
@@ -804,10 +818,18 @@ DROP_STORAGE_KEY_PATTERNS = (
 
 
 def _normalize_storage(storage: dict) -> dict:
+    ## storage.json is untrusted (a received snapshot). A crafted non-object,
+    ## or a non-list "cookies" / non-object cookie / non-string name, must be
+    ## skipped rather than crash the .get()/.lower()/iteration below.
+    if not isinstance(storage, dict):
+        storage = {}
     cookies = []
-    for c in (storage.get("cookies") or []):
+    src_cookies = storage.get("cookies")
+    for c in src_cookies if isinstance(src_cookies, list) else []:
+        if not isinstance(c, dict):
+            continue
         name = c.get("name", "")
-        name_l = name.lower()
+        name_l = name.lower() if isinstance(name, str) else ""
         if any(p in name_l for p in DROP_COOKIE_PATTERNS):
             continue
         out = dict(c)
@@ -826,22 +848,29 @@ def _normalize_storage(storage: dict) -> dict:
             if k in out:
                 out[k] = "SCRUBBED"
         cookies.append(out)
-    cookies.sort(key=lambda c: (c.get("name", ""), c.get("domain", "")))
+    ## Coerce sort keys to str: a crafted non-string name/domain would otherwise
+    ## make the mixed-type comparison raise.
+    cookies.sort(key=lambda c: (str(c.get("name", "")), str(c.get("domain", ""))))
 
     def _scrub_kvs(kvs):
         out = {}
-        for k, v in (kvs or {}).items():
+        ## A crafted non-object localStorage/sessionStorage would crash .items().
+        for k, v in (kvs if isinstance(kvs, dict) else {}).items():
             if any(p.match(k) for p in DROP_STORAGE_KEY_PATTERNS):
                 continue
             sc = any(p.match(k) for p in SESSION_STORAGE_KEY_PATTERNS)
             out[k] = "SCRUBBED" if sc else (_scrub_hosts(v) if isinstance(v, str) else v)
         return dict(sorted(out.items()))
 
+    idb = storage.get("indexedDB_databases")
     return {
         "cookies": cookies,
         "localStorage": _scrub_kvs(storage.get("localStorage")),
         "sessionStorage": _scrub_kvs(storage.get("sessionStorage")),
-        "indexedDB_databases": sorted(storage.get("indexedDB_databases") or []),
+        ## Coerce to str for a stable sort even if a crafted list mixes types.
+        "indexedDB_databases": sorted(
+            (str(x) for x in idb) if isinstance(idb, list) else []
+        ),
     }
 
 
@@ -890,8 +919,15 @@ def _normalize_console(events: list) -> list:
     """
     out = []
     seen = set()
-    for ev in events or []:
+    ## console.json is untrusted (a received snapshot). A crafted non-list, a
+    ## non-object event, or a non-string text/type must be skipped/coerced rather
+    ## than crash the iteration / .get() / regex ops below.
+    for ev in events if isinstance(events, list) else []:
+        if not isinstance(ev, dict):
+            continue
         text = ev.get("text", "")
+        if not isinstance(text, str):
+            continue
         if any(p.search(text) for p in CONSOLE_DROP_PATTERNS):
             continue
         for pat, repl in CONSOLE_TEXT_PATTERNS:
@@ -900,7 +936,8 @@ def _normalize_console(events: list) -> list:
         ## endpoints); host-scrub so the true host does not leak through
         ## console.json or errors.json's console_errors on a cross-wiki diff.
         text = _scrub_hosts(text)
-        key = (ev.get("type", ""), text)
+        etype = ev.get("type", "")
+        key = (etype if isinstance(etype, str) else "", text)
         if key in seen:
             continue
         seen.add(key)
@@ -920,16 +957,32 @@ def _normalize_errors(errors: dict) -> dict:
     normaliser, which drops the 5xx 'Failed to load resource' noise but keeps
     the 404 ones.
     """
+    ## errors.json is untrusted (a received snapshot). A crafted non-object, a
+    ## non-list http_errors/request_failures, a non-object item, or a non-string
+    ## url/failure must be skipped/coerced rather than crash the .get()/iteration/
+    ## `in`/regex ops below.
+    if not isinstance(errors, dict):
+        errors = {}
+
     def _clean(u):
         return _scrub_hosts(_normalize_url(u))
 
+    def _as_list(key):
+        v = errors.get(key)
+        return v if isinstance(v, list) else []
+
     http = []
     seen = set()
-    for e in errors.get("http_errors") or []:
+    for e in _as_list("http_errors"):
+        if not isinstance(e, dict):
+            continue
         status = e.get("status")
         if isinstance(status, int) and 500 <= status < 600:
             continue
-        url = _clean(e.get("url", ""))
+        raw = e.get("url", "")
+        if not isinstance(raw, str):
+            continue
+        url = _clean(raw)
         if any(p in url for p in RACY_LOAD_PATTERNS):
             continue
         key = (status, url)
@@ -937,18 +990,26 @@ def _normalize_errors(errors: dict) -> dict:
             continue
         seen.add(key)
         http.append({"status": status, "url": url})
-    http.sort(key=lambda x: (x.get("status") or 0, x["url"]))
+    ## Coerce the status sort key to int: a crafted non-int status would otherwise
+    ## make the mixed-type comparison raise.
+    http.sort(key=lambda x: (x["status"] if isinstance(x["status"], int) else 0, x["url"]))
 
     fails = []
     seenf = set()
-    for f in errors.get("request_failures") or []:
-        url = _clean(f.get("url", ""))
+    for f in _as_list("request_failures"):
+        if not isinstance(f, dict):
+            continue
+        raw = f.get("url", "")
+        if not isinstance(raw, str):
+            continue
+        url = _clean(raw)
         if any(p in url for p in RACY_LOAD_PATTERNS):
             continue
         # failure is raw browser error text that embeds the request URL (e.g. Chromium
         # `net::ERR_FAILED at https://host/...`, CSP-blocked messages), so host-scrub it
         # like every other error-message surface -- the url scrub above does not reach it.
-        failure = _scrub_hosts(f.get("failure", ""))
+        raw_failure = f.get("failure", "")
+        failure = _scrub_hosts(raw_failure) if isinstance(raw_failure, str) else ""
         key = (url, failure)
         if key in seenf:
             continue
@@ -959,7 +1020,7 @@ def _normalize_errors(errors: dict) -> dict:
     return {
         "http_errors": http,
         "request_failures": fails,
-        "console_errors": _normalize_console(errors.get("console_errors") or []),
+        "console_errors": _normalize_console(errors.get("console_errors")),
     }
 
 
@@ -1037,11 +1098,21 @@ def normalize_page_dir(src: Path, dst: Path) -> None:
             _copy_json_scrubbed(p, dst / fn)
 
     manifest = json.loads((src / "manifest.json").read_text(encoding="utf-8"))
+    ## manifest.json is untrusted (a received cross-wiki snapshot). A crafted
+    ## top-level scalar/list has no .items(); treat it as empty rather than crash.
+    if not isinstance(manifest, dict):
+        print("normalize: manifest.json is not a JSON object; ignoring", file=sys.stderr)
+        manifest = {}
     ## Infer the wiki page URL from the manifest. The first text/html
     ## 200 entry is by construction the navigation target.
     page_url = None
     for url, entry in manifest.items():
-        if entry.get("status") == 200 and entry.get("content_type", "").startswith("text/html"):
+        ## Skip crafted non-object entries and non-string content_type before the
+        ## .get()/.startswith() that would otherwise raise on them.
+        if not isinstance(entry, dict):
+            continue
+        ct = entry.get("content_type", "")
+        if entry.get("status") == 200 and isinstance(ct, str) and ct.startswith("text/html"):
             page_url = url
             break
     nm = normalize_manifest(manifest, page_url)
@@ -1060,73 +1131,118 @@ def normalize_page_dir(src: Path, dst: Path) -> None:
     dst_assets = dst / "assets"
     if src_assets.exists():
         dst_assets.mkdir(exist_ok=True)
+        ## Track asset-bearing entries vs those skipped for a malformed SHAPE
+        ## (wrong-type asset, or a caught per-entry error). If EVERY asset entry
+        ## is malformed we must not emit a near-empty mirror as a clean pass --
+        ## that false-green defeats the whole point of a faithful diff. See the
+        ## fail-loud guard after the loop.
+        asset_entries_total = 0
+        asset_entries_failed = 0
         for url, entry in nm.items():
-            if "asset" not in entry:
+            if not isinstance(entry, dict) or "asset" not in entry:
                 continue
-            sname = entry["asset"]
-            src_a = src_assets / sname
+            asset_entries_total += 1
             ## entry["asset"] comes from manifest.json, which for a RECEIVED cross-wiki
-            ## snapshot (this tool diffs snapshots across hosts/CI) is untrusted input. A
-            ## legitimate asset name is FLAT (<sha256>.<ext>, per the module docstring); a
-            ## path separator means an escaping value (../x, /abs -> arbitrary-file read) OR
-            ## a nested one (sub/x -> the plain-copy branch's dst/assets/sub is never mkdir'd
-            ## -> FileNotFoundError crash). Refuse any non-flat name -- the correct untrusted-
-            ## input posture, and it closes both the arb-file-read and the crash.
+            ## snapshot (this tool diffs snapshots across hosts/CI) is untrusted input.
+            ## A crafted asset that is null / a number / a list would crash `src_assets
+            ## / sname`; treat a non-string asset as a malformed entry (shape error).
+            sname = entry.get("asset")
+            if not isinstance(sname, str):
+                print(
+                    "normalize: skipping entry %r: asset is not a string: %r"
+                    % (url, sname),
+                    file=sys.stderr,
+                )
+                asset_entries_failed += 1
+                continue
+            ## A legitimate asset name is FLAT (<sha256>.<ext>, per the module
+            ## docstring); a path separator means an escaping value (../x, /abs ->
+            ## arbitrary-file read) OR a nested one (sub/x -> the plain-copy branch's
+            ## dst/assets/sub is never mkdir'd -> FileNotFoundError crash). Refuse any
+            ## non-flat name -- a deliberate hostile-name rejection, not a shape error,
+            ## so it does NOT count toward the all-malformed fail-loud tally below.
             if sname in ("", ".", "..") or "/" in sname or "\\" in sname:
                 print("normalize: refusing non-flat asset name %r" % sname, file=sys.stderr)
                 continue
-            ## Belt-and-braces: a flat name that is a symlink inside assets/ could still
-            ## resolve outside it, so keep the containment check on the resolved path.
-            if not src_a.resolve().is_relative_to(src_assets.resolve()):
-                print("normalize: refusing out-of-tree asset %r" % sname, file=sys.stderr)
+            ## Per-entry isolation: one malformed asset entry must not abort the whole
+            ## normalize of an untrusted artifact. Catch only input-shape / filesystem
+            ## classes (TypeError/KeyError/ValueError/OSError) -- NOT a blanket Exception
+            ## (nor AttributeError, which the isinstance guards above already preclude),
+            ## so a genuine logic bug in the copy/scrub path still surfaces loudly.
+            try:
+                src_a = src_assets / sname
+                ## Belt-and-braces: a flat name that is a symlink inside assets/ could
+                ## still resolve outside it, so keep the containment check.
+                if not src_a.resolve().is_relative_to(src_assets.resolve()):
+                    print("normalize: refusing out-of-tree asset %r" % sname, file=sys.stderr)
+                    continue
+                if not src_a.exists():
+                    continue
+                ct = entry.get("content_type", "")
+                ## A crafted non-string content_type would crash .startswith below.
+                if not isinstance(ct, str):
+                    ct = ""
+                ## Three categories of asset get in-place rewrites; everything
+                ## else copies through untouched.
+                if "modules=startup" in url and ct.startswith(
+                    ("application/javascript", "text/javascript")
+                ):
+                    body = src_a.read_text(encoding="utf-8", errors="replace")
+                    body = _scrub_startup_module_body(body)
+                    body = _scrub_module_versions(body)
+                elif "load.php" in url and ct.startswith(
+                    ("application/javascript", "text/javascript")
+                ):
+                    ## RL bundles other than startup also carry the
+                    ## "name@VERSION" tokens; same per-build noise.
+                    body = src_a.read_text(encoding="utf-8", errors="replace")
+                    body = _scrub_module_versions(body)
+                elif ct.startswith("text/html"):
+                    ## HTML asset bodies (e.g. pages loaded as embeds during
+                    ## navigation) carry the same per-request wgRequestId /
+                    ## wgBackendResponseTime / mw.user.options.set noise as
+                    ## dom.html. Run them through the same normaliser.
+                    body = src_a.read_text(encoding="utf-8", errors="replace")
+                    body = normalize_html(body)
+                elif HOST_SCRUB and _is_text_asset(ct):
+                    ## Cross-wiki host scrub: CSS/JS/SVG bodies embed absolute URLs to
+                    ## the wiki host, which would otherwise differ on every old-vs-www
+                    ## diff. Only read+rewrite when scrubbing is actually active.
+                    body = src_a.read_text(encoding="utf-8", errors="replace")
+                else:
+                    target = dst_assets / sname
+                    if not target.exists():
+                        shutil.copy2(src_a, target)
+                    continue
+                ## Cross-wiki host scrub of the body. No-op when DOM_DIFF_HOST_SCRUB is
+                ## unset; idempotent for the text/html branch (already scrubbed via
+                ## normalize_html). This is the "(and asset/style text)" the HOST_SCRUB
+                ## note above promises.
+                body = _scrub_hosts(body)
+                ## Re-hash so the manifest sha256 matches the rewritten body.
+                digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+                new_name = digest + Path(sname).suffix
+                (dst_assets / new_name).write_text(body, encoding="utf-8")
+                entry["asset"] = new_name
+                entry["sha256"] = digest
+                entry["size"] = len(body.encode("utf-8"))
+            except (TypeError, KeyError, ValueError, OSError) as exc:
+                print(
+                    "normalize: skipping asset entry %r: %r" % (url, exc),
+                    file=sys.stderr,
+                )
+                asset_entries_failed += 1
                 continue
-            if not src_a.exists():
-                continue
-            ct = entry.get("content_type", "")
-            ## Three categories of asset get in-place rewrites; everything
-            ## else copies through untouched.
-            if "modules=startup" in url and ct.startswith(
-                ("application/javascript", "text/javascript")
-            ):
-                body = src_a.read_text(encoding="utf-8", errors="replace")
-                body = _scrub_startup_module_body(body)
-                body = _scrub_module_versions(body)
-            elif "load.php" in url and ct.startswith(
-                ("application/javascript", "text/javascript")
-            ):
-                ## RL bundles other than startup also carry the
-                ## "name@VERSION" tokens; same per-build noise.
-                body = src_a.read_text(encoding="utf-8", errors="replace")
-                body = _scrub_module_versions(body)
-            elif ct.startswith("text/html"):
-                ## HTML asset bodies (e.g. pages loaded as embeds during
-                ## navigation) carry the same per-request wgRequestId /
-                ## wgBackendResponseTime / mw.user.options.set noise as
-                ## dom.html. Run them through the same normaliser.
-                body = src_a.read_text(encoding="utf-8", errors="replace")
-                body = normalize_html(body)
-            elif HOST_SCRUB and _is_text_asset(ct):
-                ## Cross-wiki host scrub: CSS/JS/SVG bodies embed absolute URLs to
-                ## the wiki host, which would otherwise differ on every old-vs-www
-                ## diff. Only read+rewrite when scrubbing is actually active.
-                body = src_a.read_text(encoding="utf-8", errors="replace")
-            else:
-                target = dst_assets / sname
-                if not target.exists():
-                    shutil.copy2(src_a, target)
-                continue
-            ## Cross-wiki host scrub of the body. No-op when DOM_DIFF_HOST_SCRUB is
-            ## unset; idempotent for the text/html branch (already scrubbed via
-            ## normalize_html). This is the "(and asset/style text)" the HOST_SCRUB
-            ## note above promises.
-            body = _scrub_hosts(body)
-            ## Re-hash so the manifest sha256 matches the rewritten body.
-            digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
-            new_name = digest + Path(sname).suffix
-            (dst_assets / new_name).write_text(body, encoding="utf-8")
-            entry["asset"] = new_name
-            entry["sha256"] = digest
-            entry["size"] = len(body.encode("utf-8"))
+        ## Fail-loud on the systematic-malformation case: if the manifest HAD asset
+        ## entries but every single one was malformed, normalize would otherwise
+        ## finish 0 with an empty assets/ mirror -- a lie that reads as a clean diff.
+        ## All-skipped is the clear, defensible threshold; a single bad entry among
+        ## good ones is still tolerated.
+        if asset_entries_total and asset_entries_failed == asset_entries_total:
+            raise SystemExit(
+                "normalize: all %d asset entries were malformed; refusing to emit a "
+                "near-empty mirror as success" % asset_entries_total
+            )
 
     (dst / "manifest.json").write_text(
         json.dumps(nm, indent=2, sort_keys=True), encoding="utf-8"
