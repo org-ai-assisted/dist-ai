@@ -139,6 +139,24 @@ jbody = "".join(p.read_text(encoding="utf-8") for p in (dst / "assets").glob("*.
 assert jbody, "no json asset written"
 assert (H not in jbody) == active, ("json-asset", active, jbody)
 
+# path-traversal: entry["asset"] is untrusted (a received cross-wiki manifest); a
+# ../-escaping (or absolute) asset path must be REFUSED, not read+copied into the output
+# tree -- otherwise an arbitrary readable file leaks (arb-file-read). Independent of scrub.
+secret_marker = "TOP-SECRET-DECOY-DO-NOT-COPY"
+src2 = Path(tempfile.mkdtemp()); dst2 = Path(tempfile.mkdtemp())
+(src2 / "dom.html").write_text("<html></html>", encoding="utf-8")
+(src2 / "assets").mkdir()
+(src2 / "secret.txt").write_text(secret_marker, encoding="utf-8")  # decoy OUTSIDE assets/
+(src2 / "manifest.json").write_text(json.dumps({
+    "https://%s/wiki/Page" % H: {"status": 200, "content_type": "text/html"},
+    "https://%s/evil" % H: {"status": 200, "content_type": "text/css",
+                            "asset": "../secret.txt", "sha256": "x", "size": 1},
+}), encoding="utf-8")
+N.normalize_page_dir(src2, dst2)
+leaked = any(secret_marker in p.read_text(encoding="utf-8", errors="replace")
+             for p in dst2.rglob("*") if p.is_file())
+assert not leaked, ("path-traversal-asset-leak", sorted(str(p) for p in dst2.rglob("*")))
+
 print("OK active=%s" % active)
 """
 

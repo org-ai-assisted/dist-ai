@@ -1065,6 +1065,15 @@ def normalize_page_dir(src: Path, dst: Path) -> None:
                 continue
             sname = entry["asset"]
             src_a = src_assets / sname
+            ## entry["asset"] comes from manifest.json, which for a RECEIVED cross-wiki
+            ## snapshot (this tool diffs snapshots across hosts/CI) is untrusted input. A
+            ## first-party snapshot names assets <sha256>.<ext>, but a crafted absolute or
+            ## ../-escaping value would make src_a resolve OUTSIDE src_assets and read (or
+            ## copy) an arbitrary readable file into the output tree. Refuse anything that
+            ## does not stay within src_assets.
+            if not src_a.resolve().is_relative_to(src_assets.resolve()):
+                print("normalize: refusing out-of-tree asset %r" % sname, file=sys.stderr)
+                continue
             if not src_a.exists():
                 continue
             ct = entry.get("content_type", "")
