@@ -617,6 +617,18 @@ class ShellInlineShellC(Rule):
 ## --- unauthorized skip ------------------------------------------------------
 
 ALLOW_SKIP = re.compile(r'##[ \t]*style-ok:[ \t]*allow-skip:[ \t]*\S')
+_DECIMAL_INT = re.compile(r'[0-9]+')
+
+
+def _is_skip_code_77(word):
+    """True if WORD is an 'exit'/'return' argument that RUNS AS 77. Bash parses
+    the argument as DECIMAL, leading zeros included -- 'exit 077' exits 77, not
+    octal 63 -- so a bare-string '== 77' misses '077' and lets an unwaived skip
+    slip. Normalize a pure decimal-integer literal before comparing; a
+    non-literal (expansion, or a quoted non-number) is not a recognizable skip."""
+    if word is None or _DECIMAL_INT.fullmatch(word) is None:
+        return False
+    return int(word, 10) == 77
 
 
 class UnauthorizedSkip(Rule):
@@ -633,8 +645,10 @@ class UnauthorizedSkip(Rule):
                 continue
             call_args = bash_ast.args(call)
             ## word_string (quote-aware): 'exit "77"' / 'return "77"' are the
-            ## same skip as 'exit 77' and must not slip the guard.
-            if len(call_args) < 2 or bash_ast.word_string(call_args[1]) != "77":
+            ## same skip as 'exit 77' and must not slip the guard. _is_skip_code_77
+            ## also normalizes decimal leading zeros ('exit 077' runs as 77).
+            if len(call_args) < 2 or not _is_skip_code_77(
+                    bash_ast.word_string(call_args[1])):
                 continue
             line = call["Pos"]["Line"]
             here = lines[line - 1] if 0 <= line - 1 < len(lines) else ""
@@ -734,7 +748,12 @@ class AllowDowngrades(Rule):
     def detect(self, ctx):
         for call in bash_ast.call_exprs(ctx.tree):
             for word in bash_ast.args(call):
-                if bash_ast.word_string(word) == "--allow-downgrades":
+                ## apt accepts both the bare flag and '--allow-downgrades=true';
+                ## an exact match on the bare form alone lets '=value' slip.
+                text = bash_ast.word_string(word)
+                if text == "--allow-downgrades" or (
+                        text is not None
+                        and text.startswith("--allow-downgrades=")):
                     yield _fail(ctx, "R-212",
                                 "R-212 --allow-downgrades forbidden", word)
 
@@ -1180,6 +1199,10 @@ class BareNewlinePrintf(Rule):
     not a data argument)."""
 
     id = "R-031"
+    waiver_tag = "printf-format"
+    ## finding is DISPLAYED as the composite "R-030/R-031"; honor that spelling as
+    ## an override too, so the tag a user copies from the finding actually works.
+    override_ids = ("R-030/R-031",)
     _NEWLINE_ONLY = re.compile(r'^(?:%s)?(?:\\n)+$')
 
     def applies(self, ctx):

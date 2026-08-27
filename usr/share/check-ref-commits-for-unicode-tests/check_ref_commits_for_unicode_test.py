@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -Bsu
 """
 Comprehensive test + fuzz for check-ref-commits-for-unicode: the helper-scripts
 git-ref guard that scans every commit a ref introduces (git log HEAD..<ref>) for

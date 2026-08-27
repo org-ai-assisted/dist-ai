@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -Bsu
 """In-process fuzz harness for pyte's Stream / ByteStream / Screen.
 
 Feeds randomised, adversarial escape/control/text sequences to a Screen through

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -Bsu
 """
 Adversarial probe of the ADD_ONION REWRITE path and RESPONSE redaction.
 

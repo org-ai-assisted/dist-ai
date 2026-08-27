@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -Bsu
 r"""
 Comprehensive test + fuzz for stdisplay(): the helper-scripts stdisplay-package
 function that sanitizes untrusted text to be safe to print to a terminal (the

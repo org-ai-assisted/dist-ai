@@ -121,6 +121,25 @@ gate_output() {
    ) 2>&1 || true
 }
 
+## py_gate_output <line>...  -- write the lines to sample.py, gate --check the
+## commit, echo the output. For the Python waiver tests (tokenize-aware comments).
+py_gate_output() {
+   local repo base
+   repo="$(mktemp --directory --tmpdir="${tmp_root}" py.XXXXXX)"
+   git -C "${repo}" init --quiet
+   git -C "${repo}" config user.email 'ci-test@example.com'
+   git -C "${repo}" config user.name 'ci-test'
+   git -C "${repo}" commit --quiet --no-verify --allow-empty --message base
+   base="$(git -C "${repo}" rev-parse HEAD)"
+   printf '%s\n' "$@" > "${repo}/sample.py"
+   git -C "${repo}" add sample.py
+   git -C "${repo}" commit --quiet --no-verify --message sample
+   (
+      cd -- "${repo}" || exit 1
+      "${GATE}" --check --range "${base}"
+   ) 2>&1 || true
+}
+
 ## expect_rule <rule-tag> <sample-body> <present|absent>
 ## Assert the gate output does / does not carry <rule-tag> for the sample body.
 expect_rule() {
@@ -262,6 +281,55 @@ expect_rule "R-070" "case x in a) true${dsemi} esac"                           "
 ## must NOT be flagged -- 'esac' closes the case on the same line.
 expect_rule "R-070" "case ${dq}\${p}${dq} in '' | *[!0-9]* | 0* ) p=15 ${dsemi} esac" "absent"
 
+## Universal per-rule id override: '## style-ok: <R-id>' suppresses THAT rule for
+## the file, wired once in Rule.applies() so it reaches even a rule (R-070 here)
+## that carries no dedicated waiver_tag.
+expect_rule "R-070" "## style-ok: R-070${nlreal}case x in${nlreal}a) true${dsemi}${nlreal}esac" "absent"
+## Specificity: a DIFFERENT rule's id must not suppress R-070 (no cross-leakage).
+expect_rule "R-070" "## style-ok: R-034${nlreal}case x in${nlreal}a) true${dsemi}${nlreal}esac" "present"
+## Boundary: a longer id that merely PREFIX-contains R-070 must not suppress it.
+expect_rule "R-070" "## style-ok: R-0700${nlreal}case x in${nlreal}a) true${dsemi}${nlreal}esac" "present"
+
+## AST-aware waivers: a '## style-ok:' line inside a HEREDOC body is DATA, not a
+## real comment, so it must NOT waive -- otherwise a fixture heredoc silently
+## disables the gate for the whole file (a false-green). Both the per-rule id
+## override and the named waiver_tag path honor this.
+expect_rule "R-070" "cat <<'EOF'${nlreal}## style-ok: R-070${nlreal}EOF${nlreal}case x in${nlreal}a) true${dsemi}${nlreal}esac" "present"
+expect_rule "R-034" "cat <<'EOF'${nlreal}## style-ok: allow-echo${nlreal}EOF${nlreal}echo hi" "present"
+## The REAL comment forms still waive (AST change must not break genuine waivers).
+expect_rule "R-034" "## style-ok: allow-echo${nlreal}echo hi" "absent"
+## A TRAILING inline comment is not a line-leading waiver: the grammar wants the
+## waiver on its OWN line, so 'cmd ## style-ok: X' must NOT suppress -- both the
+## named-tag path and the id-override path.
+expect_rule "R-034" "echo hi ## style-ok: allow-echo" "present"
+expect_rule "R-034" "echo hi ## style-ok: R-034"       "present"
+
+## Python is tokenize-aware too: a '## style-ok:' line inside a triple-quoted
+## STRING is data, not a comment, so it must not waive; a genuine '#' comment
+## still does. A non-ASCII byte (built at runtime so THIS file stays ASCII) trips
+## R-001, the rule the spoofed waiver tries to silence.
+emdash="$(printf '\342\200\224')"
+py_spoof_out="$(py_gate_output '#!/usr/bin/python3' 'x = """' '## style-ok: allow-non-ascii' '"""' "y = \"${emdash}\"")"
+if grep --quiet --fixed-strings -- 'R-001' <<< "${py_spoof_out}"; then
+   printf '%s\n' "PASS: R-001 not waived by a '## style-ok:' inside a Python string"
+else
+   printf '%s\n' "FAIL: R-001 wrongly waived by a '## style-ok:' inside a Python string" >&2
+   failures=$((failures + 1))
+fi
+py_real_out="$(py_gate_output '#!/usr/bin/python3' '## style-ok: allow-non-ascii' "y = \"${emdash}\"")"
+## Liveness guard: an absence assertion must first confirm the gate RAN to its
+## verdict -- a crash leaves R-001 absent too, which would falsely PASS.
+if ! grep --quiet --extended-regexp \
+      'all static checks passed|[0-9]+ check\(s\) failed' <<< "${py_real_out}"; then
+   printf '%s\n' "FAIL: gate produced no verdict for the Python real-comment fixture" >&2
+   failures=$((failures + 1))
+elif grep --quiet --fixed-strings -- 'R-001' <<< "${py_real_out}"; then
+   printf '%s\n' "FAIL: R-001 not waived by a genuine Python '#' comment" >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' "PASS: R-001 waived by a genuine Python '#' comment"
+fi
+
 ## R-030/R-031: a newline emitted without an explicit '' data argument must be
 ## FLAGGED -- both 'printf \n' (newline in the format) and a bare 'printf %s\n'
 ## (data arg omitted). The compliant 'printf %s\n' "" and a normal data printf
@@ -275,6 +343,14 @@ expect_rule "R-030/R-031" "printf ${sq}%s${nl}${sq} hello"      "absent"
 ## form is still a violation; the compliant form stays spared even commented.
 expect_rule "R-030/R-031" "printf ${sq}%s${nl}${sq} # blank"        "present"
 expect_rule "R-030/R-031" "printf ${sq}%s${nl}${sq} ${dq}${dq} # ok" "absent"
+## The 'printf-format' waiver now covers R-031 too (the bare newline form), not
+## only R-030's format-injection form -- a printf missing its explicit '' arg is
+## SPARED when the file carries the waiver.
+expect_rule "R-030/R-031" "## style-ok: printf-format${nlreal}printf ${sq}%s${nl}${sq}" "absent"
+## The finding is DISPLAYED as the composite 'R-030/R-031'; that exact tag must
+## work as a per-rule override (override_ids), so a user copying it from the
+## finding does not hit a silent no-op.
+expect_rule "R-030/R-031" "## style-ok: R-030/R-031${nlreal}printf ${sq}${nl}${sq}" "absent"
 
 ## R-030: a printf inside a single-quoted program handed to ANOTHER interpreter
 ## (awk here, whose printf takes a comma-separated list and interpolates nothing
@@ -359,6 +435,9 @@ expect_rule "R-034" "echo hi"                                   "present"
 expect_rule "R-034" "if echo hi${sc} then true${sc} fi"         "present"
 expect_rule "R-034" "printf ${sq}%s${nl}${sq} ${dq}a echo b${dq}" "absent"
 expect_rule "R-034" "has echo"                                  "absent"
+## The per-rule id override coexists with a rule's own named waiver: '## style-ok:
+## R-034' suppresses echo just as 'allow-echo' does.
+expect_rule "R-034" "## style-ok: R-034${nlreal}echo hi"        "absent"
 
 ## R-070: a ';;' at END-OF-LINE glued to the arm command, jammed ('true;;') or
 ## spaced ('true ;;'), is FLAGGED (here the spaced form, ';;' ending the line).
@@ -1814,4 +1893,4 @@ if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "test_pre_push_static_style_rules: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-074, R-026, R-030 format string, R-030/R-031, R-034, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-190, R-191, R-194, R-195, R-100, R-010, R-001 .gitattributes-binary allowlist, R-001 commit-message, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting, double-quote-string-fixer-disabled and imported-package-module exemption enforced as expected."
+printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-070 per-rule id override, R-074, R-026, R-030 format string, R-030/R-031, R-030/R-031 printf-format waiver, R-030/R-031 composite id override, AST-aware waiver (heredoc-body / trailing-inline / Python-string not honored), R-034, R-034 per-rule id override, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-190, R-191, R-194, R-195, R-100, R-010, R-001 .gitattributes-binary allowlist, R-001 commit-message, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting, double-quote-string-fixer-disabled and imported-package-module exemption enforced as expected."

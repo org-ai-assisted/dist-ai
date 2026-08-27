@@ -269,6 +269,19 @@ try:
        'ctl dump-tab --lines 0 -> 0')
     ok(_sent0.get('lines') == 0,
        'COR-7: the client forwards --lines 0 (not dropped as a falsy value)')
+    # zoom: forwards the tab + level and prints the returned zoom.
+    _sentz = {}
+    def _cap_reqz(*_a, **_k):
+        for _x in _a:
+            if isinstance(_x, dict) and 'op' in _x:
+                _sentz.clear()
+                _sentz.update(_x)
+        return {'ok': True, 'zoom': 150}
+    M.ipc.send_request = _cap_reqz
+    eq(_ctl_main(['zoom', '--tab', 'id:1', '150']), 0, 'ctl zoom -> 0')
+    ok(_sentz.get('op') == 'ctl-zoom' and _sentz.get('tab') == 'id:1'
+       and _sentz.get('level') == '150',
+       'ctl: the client builds the ctl-zoom request (tab + level forwarded)')
 finally:
     M.ipc.send_request = _orig_sr
 
@@ -837,6 +850,69 @@ try:
     ok(not _disp({'op': 'ctl-set-tab-title', 'tab': 'id:%d' % _tid0,
                   'title': 5})['ok'],
        'ipc: ctl-set-tab-title with a non-string title is rejected')
+
+    # --- ctl-zoom: live font-zoom a tab (no restart) -------------------------
+    _z_cur = win.current()
+    _z_cur_tid = win._tab_ids.get(_z_cur)
+    win.set_zoom(100)                       # known baseline on the current tab
+    # explicit percent on the CURRENT tab -> routed through set_zoom, so the
+    # toolbar zoom box + persisted default track it too.
+    _rz = _disp({'op': 'ctl-zoom', 'tab': 'id:%d' % _z_cur_tid, 'level': 150})
+    ok(_rz['ok'] and _rz['zoom'] == 150 and _z_cur.current_zoom() == 150,
+       'ipc: ctl-zoom explicit percent applies to the tab')
+    ok(win.zoom_box.value() == 150,
+       'ipc: ctl-zoom on the current tab routes through set_zoom (zoom box tracks it)')
+    # in / out step by ZOOM_STEP.
+    _ri = _disp({'op': 'ctl-zoom', 'tab': 'id:%d' % _z_cur_tid, 'level': 'in'})
+    ok(_ri['ok'] and _ri['zoom'] == 160, 'ipc: ctl-zoom in steps up by ZOOM_STEP')
+    _ro = _disp({'op': 'ctl-zoom', 'tab': 'id:%d' % _z_cur_tid, 'level': 'out'})
+    ok(_ro['ok'] and _ro['zoom'] == 150, 'ipc: ctl-zoom out steps down by ZOOM_STEP')
+    # reset -> 100.
+    _rr0 = _disp({'op': 'ctl-zoom', 'tab': 'id:%d' % _z_cur_tid, 'level': 'reset'})
+    ok(_rr0['ok'] and _rr0['zoom'] == 100, 'ipc: ctl-zoom reset returns to 100')
+    # clamp to ZOOM_MIN..ZOOM_MAX.
+    _rh = _disp({'op': 'ctl-zoom', 'tab': 'id:%d' % _z_cur_tid, 'level': 500})
+    ok(_rh['ok'] and _rh['zoom'] == 400,
+       'ipc: ctl-zoom clamps above ZOOM_MAX (500 -> 400)')
+    _rlo = _disp({'op': 'ctl-zoom', 'tab': 'id:%d' % _z_cur_tid, 'level': 5})
+    ok(_rlo['ok'] and _rlo['zoom'] == 25,
+       'ipc: ctl-zoom clamps below ZOOM_MIN (5 -> 25)')
+    win.set_zoom(100)
+    # a non-numeric level is rejected.
+    ok(not _disp({'op': 'ctl-zoom', 'tab': 'id:%d' % _z_cur_tid,
+                  'level': 'huge'})['ok'],
+       'ipc: ctl-zoom with a non-numeric level is rejected')
+    # a raw-JSON float infinity (a ctl request with level 1e400 parses to inf) makes
+    # int(inf) raise OverflowError: it must be caught + rejected, never crash the Qt
+    # process. On the old except (no OverflowError) _disp would raise, not return.
+    ok(not _disp({'op': 'ctl-zoom', 'tab': 'id:%d' % _z_cur_tid,
+                  'level': float('inf')})['ok'],
+       'ipc: ctl-zoom with an infinite level (JSON 1e400) is rejected, not a crash')
+    # a non-matching tab -> error.
+    ok(not _disp({'op': 'ctl-zoom', 'tab': 'id:999999', 'level': 150})['ok'],
+       'ipc: ctl-zoom on a non-matching tab -> error')
+    # a NON-current tab -> apply_zoom (NOT set_zoom): the tab's own zoom changes,
+    # but the toolbar zoom box (which reflects the CURRENT tab) does not track it.
+    while win.tabs.count() < 2:
+        win.new_tab()
+    _z_other = next(win.tabs.widget(_i) for _i in range(win.tabs.count())
+                    if win.tabs.widget(_i) is not win.current())
+    _z_other_tid = win._tab_ids.get(_z_other)
+    win.set_zoom(100)
+    _z_box_before = win.zoom_box.value()
+    _ron = _disp({'op': 'ctl-zoom', 'tab': 'id:%d' % _z_other_tid, 'level': 175})
+    ok(_ron['ok'] and _z_other.current_zoom() == 175,
+       'ipc: ctl-zoom on a non-current tab applies to that tab')
+    ok(win.zoom_box.value() == _z_box_before and win.current().current_zoom() == 100,
+       'ipc: ctl-zoom on a non-current tab uses apply_zoom (current-tab chrome unchanged)')
+    # admin-locked zoom is refused.
+    _z_lk = set(win._locked)
+    win._locked = {'zoom'}
+    ok(not _disp({'op': 'ctl-zoom', 'tab': 'id:%d' % _z_cur_tid,
+                  'level': 200})['ok'],
+       'ipc: ctl-zoom refused when zoom is admin-locked')
+    win._locked = _z_lk
+    win.set_zoom(100)
 finally:
     win._remote_control = _saved_rc
 
@@ -944,6 +1020,19 @@ eq(_bad_tab.current_font_family(), win._default_font_family,
    '_restore_tab falls back to the default font family on a non-string saved value')
 eq(_bad_tab.current_font_size(), win._default_font_size,
    '_restore_tab falls back to the default font size on a non-int saved value')
+# a JSON number like 1e400 parses to float('inf'), and int(inf) raises OverflowError
+# (NOT TypeError/ValueError) -- the same class guarded for ctl-zoom. A corrupt session
+# with an infinite zoom/font_size/scrollback must fall back, not crash the restore at
+# startup. On the old except (no OverflowError) _restore_tab raised, aborting launch.
+win._restore_tab({'text': '', 'zoom': 1e400, 'font_size': 1e400,
+                  'scrollback': 1e400, 'osc': {}})
+_inf_tab = win.current()
+eq(_inf_tab.current_zoom(), win._default_zoom,
+   '_restore_tab falls back to the default zoom on an infinite (1e400) saved value')
+eq(_inf_tab.current_font_size(), win._default_font_size,
+   '_restore_tab falls back to the default font size on an infinite (1e400) saved value')
+eq(_inf_tab.current_scrollback(), win._scrollback,
+   '_restore_tab falls back to the default scrollback on an infinite (1e400) saved value')
 # an unhashable saved theme (a JSON array/object) must not crash the membership test
 # (THEMES is a dict); it falls back to the default theme.
 win._restore_tab({'text': '', 'theme': [], 'osc': {}})

@@ -348,8 +348,13 @@ if [ -n "${forkonly_pins}" ]; then
    printf '%s\n' "${forkonly_pins}" | sed 's/^/          /' >&2
 fi
 if [ -n "${nourl_pins}" ]; then
-   printf '%s\n' "   NO url in .gitmodules for these -- fetchability cannot be established at all:" >&2
+   ## A submodule with no 'url =' in .gitmodules is UNCLONABLE, not merely
+   ## unverifiable: 'git submodule update --init' dies "fatal: No url found for
+   ## submodule path" (exit 128). That is a hard failure -- a preflight that only
+   ## noted it would green-light a commit CI cannot check out.
+   bad "these submodules have NO url in .gitmodules; 'git submodule update --init' will fail (fatal: No url found):"
    printf '%s\n' "${nourl_pins}" | sed 's/^/          /' >&2
+   printf '%s\n' "          Add a 'url =' entry to .gitmodules for each." >&2
 fi
 unverified_pins="$( printf '%s\n' "${pin_report}" | grep -E '^UNVERIFIED ' || true )"
 if [ -n "${unverified_pins}" ]; then
@@ -387,7 +392,87 @@ else
    printf '%s\n' "   NOTE: ci/assert-submodule-not-stale not present; freshness not checked." >&2
 fi
 
-## --- 4. the static gate -------------------------------------------------------
+## --- 4. sourced in-tree paths resolve -----------------------------------------
+## A `source "${folder_var}/.../file"` whose target was renamed or moved in a
+## submodule -- with the parent gitlink bumped PAST the rename but this consumer
+## not updated -- fails only mid-build, deep inside a step. The reference is
+## statically resolvable for the folder vars whose location is FIXED relative to
+## the checkout root, so a missing target is catchable here for the price of a
+## grep. This exact class (developer-meta-files reprepro-freshness.bsh ->
+## package-build-freshness.bsh) died in 2100_create-debian-packages and cost a
+## full CI build to surface.
+stage "sourced in-tree paths resolve"
+resolve_folder_var() {
+   ## Mirrors help-steps/{pre,variables}: these four folder vars are pinned
+   ## relative to the checkout root, so their targets are checkable without
+   ## running the build. Any other var returns empty -> that ref is skipped, not
+   ## failed (a runtime-only path cannot be resolved statically).
+   case "$1" in
+      source_code_folder_dist)
+         printf '%s' "${source_dir}"
+         ;;
+      dist_developer_meta_files_folder)
+         printf '%s' "${source_dir}/packages/kicksecure/developer-meta-files"
+         ;;
+      dist_source_help_steps_folder)
+         printf '%s' "${source_dir}/help-steps"
+         ;;
+      HELPER_SCRIPTS_PATH)
+         printf '%s' "${source_dir}/packages/kicksecure/helper-scripts"
+         ;;
+   esac
+}
+missing_sources=""
+checked_sources=0
+skipped_sources=0
+while IFS= read -r ref; do
+   src_file="${ref%%:*}"
+   line_body="${ref#*:}"
+   ## Only the two simple spellings are handled -- "${VAR}/a/b" and "${VAR}"/a/b
+   ## -- deliberately NOT a general parser (per the no-bash-parser rule). Drop
+   ## every double-quote so both collapse to ${VAR}/a/b, then take the first
+   ## whitespace-delimited token.
+   arg="${line_body#*source }"
+   arg="${arg//\"/}"
+   arg="${arg%%[[:space:]]*}"
+   if [[ "${arg}" =~ ^\$\{([A-Za-z_]+)\}(/.+)$ ]]; then
+      var_name="${BASH_REMATCH[1]}"
+      sub_path="${BASH_REMATCH[2]}"
+   else
+      skipped_sources=$(( skipped_sources + 1 ))
+      continue
+   fi
+   ## A second, still-unexpanded variable in the tail cannot be resolved here.
+   case "${sub_path}" in
+      *'${'*)
+         skipped_sources=$(( skipped_sources + 1 ))
+         continue
+         ;;
+   esac
+   base="$( resolve_folder_var "${var_name}" )"
+   if [ -z "${base}" ]; then
+      skipped_sources=$(( skipped_sources + 1 ))
+      continue
+   fi
+   checked_sources=$(( checked_sources + 1 ))
+   if [ ! -e "${base}${sub_path}" ]; then
+      missing_sources="${missing_sources}
+          ${src_file#"${source_dir}/"}: \${${var_name}}${sub_path}  ->  missing ${base}${sub_path}"
+   fi
+done < <( grep -rnE '^[[:space:]]*source[[:space:]]+"\$\{[A-Za-z_]+\}' \
+   "${source_dir}/build-steps.d" "${source_dir}/help-steps" 2>/dev/null || true )
+if [ -n "${missing_sources}" ]; then
+   bad "these in-tree 'source' targets do not exist (a renamed/moved file, or a pin bumped past a rename):${missing_sources}"
+elif [ "${checked_sources}" -eq 0 ]; then
+   ## Canary: the scan found nothing to check. Either the folder-var map drifted
+   ## from help-steps/variables or the grep no longer matches -- a silent no-op
+   ## check is not a pass.
+   bad "no statically-resolvable in-tree 'source' reference was found; the scan or the folder-var map is stale"
+else
+   ok "all ${checked_sources} statically-resolvable in-tree 'source' targets exist (${skipped_sources} runtime-only skipped)"
+fi
+
+## --- 5. the static gate -------------------------------------------------------
 stage "static gate"
 if ! type -P dist-ai-style >/dev/null; then
    bad "dist-ai-style is not on PATH; the gate cannot run and its absence is not a pass"

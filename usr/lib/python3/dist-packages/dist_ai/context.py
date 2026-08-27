@@ -17,15 +17,18 @@ file that shfmt cannot parse yields tree=None (the rule declines; the gate's
 'bash -n' reports the syntax error)."""
 
 import fnmatch
+import io
 import os
 import re
 import subprocess
+import tokenize
 
 from dist_ai import bash_ast
 from dist_ai import model
 
 SHELL_EXTS = (".sh", ".bsh")
 SHELL_SHEBANG_RE = re.compile(r'#!.*(/|\s)(bash|sh|dash)(\s|$)')
+PYTHON_SHEBANG_RE = re.compile(r'#!.*(/|\s)python[0-9.]*(\s|$)')
 
 ## is_text scope for the trailing-whitespace rule: the extension set, with a
 ## file(1) --mime fallback for extensionless files.
@@ -86,6 +89,8 @@ class FileContext:
         self._tree = None
         self._tree_done = False
         self._binary = None
+        self._comment_lines = None
+        self._comment_lines_done = False
 
     @classmethod
     def from_disk(cls, abspath, relpath=None):
@@ -129,6 +134,14 @@ class FileContext:
             return True
         first = self.source.split("\n", 1)[0]
         return bool(SHELL_SHEBANG_RE.match(first))
+
+    @property
+    def is_python(self):
+        if self.source is None:
+            return self.path.endswith(".py")
+        if self.path.endswith(".py"):
+            return True
+        return bool(PYTHON_SHEBANG_RE.match(self.source.split("\n", 1)[0]))
 
     @property
     def shebang(self):
@@ -203,6 +216,59 @@ class FileContext:
 
     ## --- waivers ----------------------------------------------------------
 
+    def _comment_line_numbers(self):
+        """1-based source line numbers that carry a REAL comment -- shell via the
+        shfmt AST, Python via tokenize. None for any other file kind, or a source
+        the respective parser rejects, so the caller falls back to a raw scan."""
+        if self.is_shell:
+            tree = self.tree
+            if tree is None:
+                return None
+            return {comment["Hash"]["Line"]
+                    for comment in bash_ast.comments(tree)
+                    if comment.get("Hash", {}).get("Line")}
+        if self.is_python:
+            numbers = set()
+            try:
+                for token in tokenize.generate_tokens(
+                        io.StringIO(self.source).readline):
+                    if token.type == tokenize.COMMENT:
+                        numbers.add(token.start[0])
+            except (tokenize.TokenError, IndentationError, SyntaxError,
+                    ValueError):
+                return None
+            return numbers
+        return None
+
+    def _comment_source_lines(self):
+        """The full SOURCE LINES that carry a real comment, so a waiver is matched
+        WITH its original line context -- the line-leading grammar ('## style-ok:'
+        on its own, only whitespace before it) still holds, and a trailing inline
+        comment ('cmd ## style-ok: X') does not waive. Restricting to comment
+        lines also excludes a heredoc body or a quoted string that merely LOOKS
+        like a waiver and would otherwise silently disable a rule file-wide. None
+        for a file kind with no comment parser, where the caller scans raw source
+        (a documented residual: a '## style-ok:' inside a quoted scalar in
+        YAML/TOML is not disambiguated)."""
+        if not self._comment_lines_done:
+            self._comment_lines_done = True
+            numbers = self._comment_line_numbers()
+            if numbers is not None:
+                source_lines = self.source.split("\n")
+                self._comment_lines = [
+                    source_lines[number - 1] for number in numbers
+                    if 1 <= number <= len(source_lines)]
+        return self._comment_lines
+
+    def _waiver_present(self, pattern):
+        """True if PATTERN matches a waiver. Where the file's comments can be
+        located (shell / Python), the match is restricted to real comment lines;
+        elsewhere it scans the raw source, the only option without a parser."""
+        lines = self._comment_source_lines()
+        if lines is not None:
+            return any(pattern.search(line) for line in lines)
+        return bool(pattern.search(self.source))
+
     def has_waiver(self, tag):
         """True if the file carries a '## style-ok: <tag>' waiver (shell
         grammar: exactly '##', any or no surrounding horizontal whitespace). The
@@ -214,7 +280,7 @@ class FileContext:
         pattern = re.compile(
             r'^[ \t]*##[ \t]*style-ok:[ \t]*' + re.escape(tag)
             + r'(?:[ \t\r]|$)', re.MULTILINE)
-        return bool(pattern.search(self.source))
+        return self._waiver_present(pattern)
 
     def has_config_waiver(self, tag, slashes=False):
         """True for a '# style-ok: <tag>' waiver in CONFIG comment syntax: one or
@@ -225,7 +291,14 @@ class FileContext:
         pattern = re.compile(
             r'^[ \t]*' + prefix + r'[ \t]*style-ok:[ \t]*'
             + re.escape(tag) + r'(?:[ \t\r]|$)', re.MULTILINE)
-        return bool(pattern.search(self.source))
+        return self._waiver_present(pattern)
+
+    def has_rule_override(self, rule_id):
+        """True if the file carries a per-rule override keyed on the rule's OWN
+        id -- '## style-ok: <R-id>' in any supported comment syntax (#, ##, //).
+        Every rule honors this through Rule.applies(), so any single rule can be
+        suppressed for a file without dedicated waiver-tag wiring."""
+        return self.has_config_waiver(rule_id, slashes=True)
 
 
 ## Convenience wrappers mirroring model.fail/note but filling ctx.path.

@@ -272,6 +272,28 @@ eq(_wmt.lineWrapMode(), _NW,
    'TUI grid never wraps (sized to fit; Detail/Reveal cells fall back to the box)')
 _wmt.close()
 
+# Horizontal scrollbar policy tracks the display mode: a TUI grid is a fixed
+# viewport-wide canvas (a real terminal never shows a horizontal bar on one), so
+# it is AlwaysOff; CLI keeps AsNeeded so a genuinely long NoWrap Box/Show line
+# stays reachable by a real scroll. Policy-only, so font-independent.
+from PyQt6.QtCore import Qt as _Qt                                 # noqa: E402
+_OFF = _Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+_ASN = _Qt.ScrollBarPolicy.ScrollBarAsNeeded
+_sb = SecureTerminal(command='/bin/cat')                          # CLI
+eq(_sb.horizontalScrollBarPolicy(), _ASN,
+   'CLI mode keeps the horizontal scrollbar AsNeeded')
+_sb.apply_tui(True)
+eq(_sb.horizontalScrollBarPolicy(), _OFF,
+   'TUI grid suppresses the horizontal scrollbar (AlwaysOff)')
+_sb.apply_tui(False)
+eq(_sb.horizontalScrollBarPolicy(), _ASN,
+   'switching TUI->CLI restores the AsNeeded horizontal scrollbar')
+_sb.close()
+_sbt = SecureTerminal(command='/bin/cat', tui=True)
+eq(_sbt.horizontalScrollBarPolicy(), _OFF,
+   'a tab created in TUI mode starts with the horizontal scrollbar suppressed')
+_sbt.close()
+
 # alternate scroll: a full-screen program that did NOT request the mouse (a plain
 # pager in the alternate screen) has no local scrollback to move, so the wheel is
 # translated to arrow-key line scrolls (xterm's alternateScroll). A program that DID
@@ -963,6 +985,67 @@ if tui_available():
     ok(_S_zw.BOX in _zw2.document().toPlainText(),
        'a zero-width character at column 0 marks the previous row last cell')
     _zw2.close()
+
+    # _mark_own_cell only-mark-never-destroy at the screen origin. The origin is
+    # the one place draw() reaches _mark_own_cell (no preceding cell to merge
+    # into). Repositioning the cursor back onto an already-drawn origin cell then
+    # feeding a zero-width non-combining char (U+200D) must PRESERVE the cell's
+    # base character and merely mark it -- the pre-fix code overwrote the cell with
+    # just the invisible, destroying the drawn char. Cover all three arms.
+    from secure_terminal.terminal import _TUI_COMBINE_CAP as _CAP     # noqa: E402
+
+    # (a) MERGE/preserve (the security assertion): 'A' occupies (0,0), the cursor
+    # is homed back to (0,0) with CSI H, then U+200D arrives. The invisible is
+    # appended so the base char survives; the cell is no longer purely printable so
+    # tui_cell renders the box placeholder (marked, not silently dropped, and not
+    # overwritten).
+    _mo = SecureTerminal(command='/bin/cat', tui=True)
+    feed_output(_mo, b'A\x1b[H')                        # draw 'A' at (0,0), home the cursor
+    feed_output(_mo, '\u200d'.encode('utf-8'))          # zero-width joiner onto the occupied cell
+    pump(120)
+    _mocell = _mo._screen.buffer[0][0].data
+    ok(_mocell.startswith('A'),
+       'TUI origin merge: a zero-width char preserves the occupied origin cell base char '
+       '(never overwritten with just the invisible)')
+    ok('\u200d' in _mocell,
+       'TUI origin merge: the invisible is appended so the origin cell is marked')
+    ok(_S_zw.BOX in _mo.document().toPlainText(),
+       'TUI origin merge: the marked origin cell renders the box placeholder')
+    _mo.close()
+
+    # (b) CAP: the origin cell already holds a base plus the stream-safe maximum of
+    # combining marks (data longer than _TUI_COMBINE_CAP). A further zero-width
+    # char at the repositioned origin is DROPPED -- no unbounded growth, cursor not
+    # advanced -- so steering a flood back onto one cell cannot bypass the cap.
+    _mc = SecureTerminal(command='/bin/cat', tui=True)
+    feed_output(_mc, ('A' + '\u0301' * 40).encode('utf-8'))   # base + acute flood -> cell over the cap
+    feed_output(_mc, b'\x1b[H')                                # home onto the capped origin cell
+    pump(120)
+    _before = _mc._screen.buffer[0][0].data
+    ok(len(_before) > _CAP,
+       'TUI origin cap: the origin cell is over the combining cap before the extra mark')
+    feed_output(_mc, '\u200d'.encode('utf-8'))
+    pump(120)
+    _after = _mc._screen.buffer[0][0].data
+    ok(_after == _before,
+       'TUI origin cap: a zero-width char on an already-capped origin cell is dropped (no growth)')
+    ok(_mc._screen.cursor.x == 0,
+       'TUI origin cap: the cursor is not advanced when the extra invisible is dropped')
+    _mc.close()
+
+    # (c) EMPTY (pre-existing behavior preserved): a zero-width char on an EMPTY
+    # origin occupies its own cell and advances the cursor, so a leading invisible
+    # is marked rather than dropped.
+    _me = SecureTerminal(command='/bin/cat', tui=True)
+    feed_output(_me, '\u200d'.encode('utf-8'))
+    pump(120)
+    ok(_me._screen.buffer[0].get(0) is not None,
+       'TUI origin empty: a leading zero-width char occupies the empty origin cell')
+    ok(_me._screen.cursor.x == 1,
+       'TUI origin empty: the cursor advances past the newly occupied origin cell')
+    ok(_S_zw.BOX in _me.document().toPlainText(),
+       'TUI origin empty: the marked origin cell renders the box placeholder')
+    _me.close()
 
 # --- a tab closed right after opening is not "a program is still running" -----
 # has_foreground_program() returns True whenever the tty's foreground pgrp differs
@@ -7352,16 +7435,17 @@ ok(_bp_frame.startswith(b'\x1b[200~') and _bp_frame.endswith(b'\x1b[201~'),
 # A line of many non-ASCII cells renders each as a long Detail badge, far wider than
 # the viewport. A real terminal has no horizontal scroll: the display WRAPS to the
 # width (WidgetWidth) so every badge stays on screen -- nothing pushed off the right
-# edge, and no auto-scroll that would clip the START of each row. The horizontal
+# edge, and no auto-scroll that would clip the START of each row. In CLI the horizontal
 # scrollbar policy stays as-needed only for the residual Box/Show wide-glyph overflow
-# (left NoWrap for cross-mode stability, and home-pinned by _paint_line); it must NOT
-# appear for a wrapped Detail line.
-ok(_bp_no.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded,
-   'reconcile#3: the horizontal scrollbar policy is as-needed')
-_hs = SecureTerminal(command='/bin/cat')                   # default Detail mode
+# (left NoWrap for cross-mode stability, and home-pinned by _paint_line); a grid/TUI tab
+# suppresses it entirely (AlwaysOff -- see the scrollbar-policy block near the top). It
+# must NOT appear for a wrapped Detail line either way.
+_hs = SecureTerminal(command='/bin/cat')                   # default Detail mode (CLI)
 _hs.resize(220, 120)
 _hs.show()
 APP.processEvents()
+ok(_hs.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded,
+   'reconcile#3: CLI keeps the horizontal scrollbar policy as-needed')
 feed_output(_hs, ('\u00e9' * 40).encode('utf-8'))     # 40 long badges -> wide line
 APP.processEvents()
 eq(_hs.lineWrapMode(), _QPTE.LineWrapMode.WidgetWidth,

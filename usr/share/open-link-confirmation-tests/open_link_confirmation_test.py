@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -Bsu
 """
 Security-focused test harness for the Kicksecure open-link-confirmation
 link/file confirmation dialog.

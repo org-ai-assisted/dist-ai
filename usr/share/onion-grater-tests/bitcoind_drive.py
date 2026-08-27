@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -Bsu
 """
 Drive the REAL bitcoind (30.2) through the real onion-grater filter, using the
 shipped 40_bitcoind.yml profile.

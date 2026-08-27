@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -Bsu
 """
 Comprehensive test + fuzz for the stcat family: the stdisplay CLI tools that
 make untrusted text safe to print to a terminal -- stcat, stcatn, stecho,
