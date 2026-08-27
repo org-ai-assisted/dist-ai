@@ -671,6 +671,36 @@ ok(_f4off == 2,
    % _f4off)
 _f4.close()
 
+# TUI grid horizontal home-pin (operator regression): the alt screen is a fixed viewport-wide
+# canvas, so column 0 must ALWAYS stay visible -- the horizontal analog of the alt-screen
+# top-pin (row 0). _place_grid_cursor's setTextCursor fires ensureCursorVisible, which follows
+# the caret RIGHT when a wide grid row overflows and parks the view mid-grid (hiding column 0);
+# the home-pin re-homes every frame. Build the overflow font-robustly with ASCII: give the pyte
+# grid many more columns than the narrow viewport can show, so a full ASCII row overflows the
+# width regardless of glyph rendering (no CJK/emoji-width dependence, which CI's fonts-hack
+# lacks -- the local-vs-CI trap the _pinA/_pinB comments also guard).
+_hs = SecureTerminal(command='/bin/cat', tui=True)
+_hs.resize(240, 120)
+_hs.show()
+APP.processEvents()
+feed_output(_hs, b'\x1b[?1049h')          # enter the alt screen (fixed canvas: top + column-0 pinned)
+_HSWIDE = 200
+_hs._screen.resize(_hs._screen.lines, _HSWIDE)    # widen the pyte grid well past the viewport
+_hs._set_winsize(_HSWIDE, _hs._screen.lines)
+feed_output(_hs, b'M' * _HSWIDE)          # one full-width ASCII row; the caret ends at the far right
+_hs._render_tui()
+_hsbar = _hs.horizontalScrollBar()
+ok(_hsbar.maximum() > _hsbar.minimum(),
+   'canary: the wide ASCII grid row overflows the narrow viewport (else the home-pin is untested)')
+ok(_hs.textCursor().positionInBlock() >= _HSWIDE - 1,
+   'canary: the grid caret sits at the far-right edge of the overflowing row, so without the '
+   'home-pin ensureCursorVisible would scroll RIGHT off column 0')
+_hsbar.setValue(_hsbar.maximum())         # park the view scrolled-right, as ensureCursorVisible would
+_hs._place_grid_cursor(_hs._screen)       # caret already visible at max -> only the home-pin moves the view
+eq(_hsbar.value(), _hsbar.minimum(),
+   'TUI grid pins horizontal scroll HOME (column 0 visible) even with the caret at the far right')
+_hs.close()
+
 # --- Zalgo flood: a base char plus thousands of stacked combining marks is one
 # grapheme cluster that makes the text engine (Qt in CLI mode, pyte's NFC merge in
 # TUI mode) reshape it in O(n^2) -- seconds of GUI freeze per line. The CLI cell
@@ -1315,6 +1345,59 @@ key(_seltype, Qt.Key.Key_A, 'a')
 ok(not _seltype.textCursor().hasSelection(),
    'typing in TUI mode clears a held selection so the frozen grid resumes')
 _seltype.close()
+
+# Regression (operator, "sticky marker"): while the child grabs the mouse (tracking + SGR), a
+# plain click is FORWARDED to the child and never reaches Qt's editor, so a held selection used
+# to persist and freeze the grid rebuild (a stuck highlight) until a keypress. mousePressEvent
+# now clears the selection (_clear_grid_selection) on the plain-report branch before forwarding
+# the click, so a plain click dismisses it.
+_selstick = SecureTerminal(command='/bin/cat', tui=True)
+_selstick.resize(700, 300)
+_selstick.show()
+pump(40)
+for _i in range(60):
+    _selstick._feed_stream(('row-%d\r\n' % _i).encode())
+_selstick._render_tui()
+_ss_sent = spy_writes(_selstick)           # the forwarded click reports to the child; capture it
+feed_output(_selstick, b'\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h')   # child arms mouse reporting
+ok(_selstick._mouse_report_on(),
+   'canary: mouse reporting is armed, so a plain click is forwarded (not a local selection)')
+_ss_tc = QTextCursor(_selstick.document())
+_ss_tc.setPosition(5)
+_ss_tc.setPosition(20, QTextCursor.MoveMode.KeepAnchor)
+_selstick.setTextCursor(_ss_tc)
+ok(_selstick.textCursor().hasSelection(), 'canary: a held selection is established before the click')
+_selstick.mousePressEvent(_mev(QEvent.Type.MouseButtonPress, Qt.MouseButton.LeftButton, pos=(50, 50)))
+ok(not _selstick.textCursor().hasSelection(),
+   'a plain click in a mouse-reporting TUI dismisses a stuck selection before forwarding the click')
+_selstick.close()
+
+# Regression (operator, "single line unselectable"): Shift is the mandatory local override to
+# bypass the child's mouse grab, but Qt reads Shift+press as EXTEND-from-current-cursor, and the
+# render loop pins that cursor to the child's cursor (_place_grid_cursor). Every Shift-drag then
+# anchored at the pinned cursor -- a single line was unselectable. mousePressEvent now collapses
+# the cursor to the click FIRST, so a Shift bypass-press starts a FRESH selection at the click.
+_selfresh = SecureTerminal(command='/bin/cat', tui=True)
+_selfresh.resize(700, 300)
+_selfresh.show()
+pump(40)
+for _i in range(60):
+    _selfresh._feed_stream(('line-%d\r\n' % _i).encode())
+_selfresh._render_tui()
+_sf_sent = spy_writes(_selfresh)
+feed_output(_selfresh, b'\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h')   # child arms mouse reporting
+_sf_click = (80, 40)
+_sf_clickpos = _selfresh.cursorForPosition(_QP(*_sf_click)).position()
+_sf_far = QTextCursor(_selfresh.document())
+_sf_far.setPosition(_selfresh.document().characterCount() - 2)   # pin the cursor FAR, as the render loop does
+_selfresh.setTextCursor(_sf_far)
+ok(_selfresh._mouse_report_on() and _selfresh.textCursor().position() != _sf_clickpos,
+   'canary: mouse reporting is armed and the cursor is pinned FAR from the click')
+_selfresh.mousePressEvent(_mev(QEvent.Type.MouseButtonPress, Qt.MouseButton.LeftButton,
+                               mods=Qt.KeyboardModifier.ShiftModifier, pos=_sf_click))
+eq(_selfresh.textCursor().anchor(), _sf_clickpos,
+   'a Shift bypass-press anchors a FRESH selection at the click, not extending from the pinned grid cursor')
+_selfresh.close()
 # scrollback navigation in line mode: PageUp scrolls the buffer up, Shift+Home/
 # End jump to the ends, plain Home is left for line editing (does not scroll)
 sc = SecureTerminal(command='/bin/cat')
