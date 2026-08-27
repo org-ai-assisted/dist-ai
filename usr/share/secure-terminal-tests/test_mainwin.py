@@ -327,63 +327,9 @@ try:
 finally:
     QDialog.exec = _orig_exec
 
-# --- _read_hook_config: parse the command-hook settings ------------------------
-from secure_terminal.main import _read_hook_config, _test_canary  # noqa: E402
+from secure_terminal.main import _test_canary                     # noqa: E402
 from PyQt6.QtWidgets import (QFileDialog, QMenu, QMessageBox)      # noqa: E402
 from PyQt6.QtCore import QPoint                                    # noqa: E402
-
-eq(_read_hook_config({'command_hook': ''}), None,
-   '_read_hook_config: no handler configured -> None')
-eq(_read_hook_config({'command_hook': '"unterminated'}), None,
-   '_read_hook_config: an unparseable command line -> None')
-_hc = _read_hook_config({'command_hook': 'myhook --flag',
-                         'command_hook_timeout': 'notanint'})
-ok(_hc and _hc['argv'] == ['myhook', '--flag'] and _hc['timeout'] == 10,
-   '_read_hook_config: parses argv; a bad timeout falls back to 10')
-# a NON-POSITIVE timeout must be rejected: subprocess.run(timeout<=0) raises
-# TimeoutExpired instantly, and with on_error=allow that fails OPEN (auto-approves
-# every command while the UI shows the hook enabled). reviewdrain15.
-eq(_read_hook_config({'command_hook': 'h', 'command_hook_timeout': '-1'})['timeout'],
-   10, '_read_hook_config: a negative timeout is rejected (would fail OPEN)')
-eq(_read_hook_config({'command_hook': 'h', 'command_hook_timeout': '0'})['timeout'],
-   10, '_read_hook_config: a zero timeout is rejected (would fail OPEN)')
-# an ABSURDLY large timeout (2**63) parses as a Python int but overflows subprocess's
-# C PyTime_t with an uncaught OverflowError -- clamp it away. codex ai-review.
-eq(_read_hook_config({'command_hook': 'h',
-                      'command_hook_timeout': str(2 ** 63)})['timeout'],
-   10, '_read_hook_config: an overflow-large timeout is rejected (would crash eval)')
-# Locking command_hook must AUTO-LOCK its security-steering companions
-# (command_hook_timeout / on_error / transcript), or a home config could set
-# command_hook_timeout=-1 (fail-open) to defeat an admin-locked hook. reviewdrain15.
-from secure_terminal import settings as _st_hook               # noqa: E402
-_hooksys = tempfile.mkdtemp(prefix='st-hooklock-')
-with open(os.path.join(_hooksys, '10-hook.conf'), 'w', encoding='utf-8') as _hf:
-    _hf.write('command_hook=/usr/bin/judge\nlock=command_hook\n')
-_orig_hooksys = _st_hook._system_dirs
-_st_hook._system_dirs = lambda: [_hooksys]
-try:
-    _hcfg = _st_hook.load()
-    for _ck in ('command_hook_timeout', 'command_hook_on_error',
-                'command_hook_transcript'):
-        ok(_ck in _hcfg.locked,
-           'locking command_hook auto-locks its companion %s' % _ck)
-    _st_hook._system_dirs = lambda: [tempfile.mkdtemp(prefix='st-nohooklock-')]
-    ok('command_hook_timeout' not in _st_hook.load().locked,
-       'without a command_hook lock, the companions stay user-settable')
-finally:
-    _st_hook._system_dirs = _orig_hooksys
-# on_error default: an ADMIN-LOCKED (enforced) hook fails CLOSED by default, so
-# locking the hook + auto-locking on_error can never DOWNGRADE it to fail-open (a
-# user's block was discarded and defaulted to allow -- codex ai-review). An unlocked
-# hook keeps the historical fail-open default; an explicit value always wins.
-eq(_read_hook_config(_st_hook.Config({'command_hook': 'h'},
-                                     locked=('command_hook',)))['on_error'],
-   'block', '_read_hook_config: a LOCKED hook fails closed by default (no downgrade)')
-eq(_read_hook_config(_st_hook.Config({'command_hook': 'h'}))['on_error'],
-   'allow', '_read_hook_config: an unlocked hook keeps the fail-open default')
-eq(_read_hook_config(_st_hook.Config({'command_hook': 'h', 'command_hook_on_error':
-                                      'allow'}, locked=('command_hook',)))['on_error'],
-   'allow', '_read_hook_config: an explicit admin on_error=allow still wins when locked')
 
 # A modal must never be reachable in this user-less harness: QMessageBox.question
 # BLOCKS in the event loop with nobody to answer, and the suite hangs forever
@@ -777,8 +723,8 @@ eq(win.tabs.tabText(win.tabs.indexOf(_pw)), 'shell',
    '#90: an unreadable cwd falls back to "shell"')
 _pw.cwd_basename = _pw_cwd
 # the tab tooltip escapes an untrusted program title: setTabToolTip renders rich text
-# (unlike setTabText), so an OSC-set title with markup must be shown literally -- the same
-# class as the command-hook PlainText gate. Pre-fix the raw '<b>' reached the tooltip.
+# (unlike setTabText), so an OSC-set title with markup must be shown literally.
+# Pre-fix the raw '<b>' reached the tooltip.
 win._user_titles.pop(_pw, None)
 win._prog_titles[_pw] = '<b>owned</b>'
 win._refresh_tab_label(_pw)
@@ -1857,7 +1803,7 @@ ok(getattr(_reclaim, '_server', None) is not None,
 _reclaim.deleteLater()
 APP.processEvents()
 
-# --- session persistence + quit/close hooks -----------------------------------
+# --- session persistence + quit/close handlers --------------------------------
 win.set_persist_session(False)              # disabling clears the saved session
 win.clear_saved_session()
 _o_qapp_quit = QApplication.quit
@@ -1950,7 +1896,6 @@ ok(True, 'find bar: all-tabs and single-tab search + stepping run')
 
 # --- status-bar notifications, bell label, tray bell, cwd tooltip -------------
 win._on_notify('a notification')
-win._on_hook_notice('a hook advisory')
 win._default_bell_sound = '/usr/share/sounds/example.wav'
 ok('Sound file:' in win._bell_sound_label(), '_bell_sound_label names the file')
 win._default_bell_sound = ''
@@ -2287,10 +2232,6 @@ ok(True, 'a window with the tray enabled builds the tray at startup')
 _wt2.deleteLater()
 APP.processEvents()
 os.remove(_trayconf)
-
-# a command_hook that is only whitespace yields no hook
-eq(_read_hook_config({'command_hook': '   '}), None,
-   '_read_hook_config: an all-whitespace command yields no hook')
 
 # --- InfoTip: pointer polling, a destroyed source, and Esc-to-hide ------------
 _tip = M.InfoTip(win)

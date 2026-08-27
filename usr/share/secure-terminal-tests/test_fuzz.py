@@ -21,7 +21,6 @@ import sys
 import os
 import re
 import tempfile
-import importlib.util
 
 try:
     from hypothesis import given, settings, strategies as st
@@ -32,17 +31,6 @@ except Exception as exc:  # pylint: disable=broad-except
     sys.stderr.write('secure-terminal-tests(fuzz): FAIL missing dependency: '
                      '%s\n' % exc)
     sys.exit(1)
-
-# hooklib lives in the hooks dir, not on the package path: load it directly.
-_usr = os.path.abspath(S.__file__)
-for _ in range(5):
-    _usr = os.path.dirname(_usr)
-_hlpath = os.path.join(_usr, 'share', 'secure-terminal', 'hooks', 'hooklib.py')
-HL = None
-if os.path.exists(_hlpath):
-    _spec = importlib.util.spec_from_file_location('hooklib', _hlpath)
-    HL = importlib.util.module_from_spec(_spec)
-    _spec.loader.exec_module(HL)
 
 FAIL = 0
 SAFE_OUTPUT = frozenset((0x08, 0x09, 0x0A, 0x0D)) | frozenset(range(0x20, 0x7F))
@@ -496,40 +484,6 @@ def prop_session_load(data):
 
 
 @RUN
-@given(st.text())
-def prop_read_rules(text):
-    # the hook rules parser: arbitrary text must yield None or a list of
-    # (verdict, pattern, message, suggestion) 4-tuples, never raise.
-    if HL is None:
-        return
-    HL.read_file = lambda name: text
-    rules = HL.read_rules('x')
-    assert rules is None or isinstance(rules, list)
-    for rule in (rules or []):
-        assert len(rule) == 4 and rule[0] in ('allow', 'block', 'ask')
-        assert all(isinstance(field, str) for field in rule)
-
-
-_PRIV_DIR = tempfile.mkdtemp(prefix='st-fuzz-priv-')
-os.makedirs(os.path.join(_PRIV_DIR, 'secure-terminal.d'), exist_ok=True)
-
-
-@RUN
-@given(st.text())
-def prop_privileged_conf(text):
-    # the hooks.conf gate parser: arbitrary contents must yield a str or None and
-    # never raise (a malformed gate file can never crash a hook).
-    if HL is None:
-        return
-    with open(os.path.join(_PRIV_DIR, 'secure-terminal.d', 'hooks.conf'),
-              'w', encoding='utf-8') as handle:
-        handle.write(text)
-    HL._PRIVILEGED = (_PRIV_DIR,)
-    value = HL._privileged_conf_value('hook_config_allow_user')
-    assert value is None or isinstance(value, str)
-
-
-@RUN
 @given(CORPUS, st.sampled_from(S.DISPLAY_MODES))
 def prop_corpus_render(text, mode):
     """A real corpus payload, spliced with fuzzer text, through every display mode.
@@ -589,11 +543,9 @@ PROPS = [
     ('ipc_framer', prop_ipc_framer),
     ('settings_parse', prop_settings_parse),
     ('session_load', prop_session_load),
-    ('read_rules', prop_read_rules),
     ('corpus_render', prop_corpus_render),
     ('corpus_live_path', prop_corpus_live_path),
     ('corpus_boundaries', prop_corpus_boundaries),
-    ('privileged_conf', prop_privileged_conf),
     ('render_output', prop_render_output),
     ('feed_line_edits', prop_feed_line_edits),
     ('split_trailing_escape', prop_split_trailing_escape),
