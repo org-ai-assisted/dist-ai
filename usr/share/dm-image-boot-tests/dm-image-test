@@ -27,8 +27,10 @@ Exit codes mirror dm-qemu's triad so CI reads one consistent signal:
 import argparse
 import os
 import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
 
 PASS = 0
 FAIL = 5
@@ -161,6 +163,24 @@ def build_qemu_argv(args):
         if line.startswith(marker):
             workdir = line[len(marker):].strip()
     return argv, workdir
+
+
+def safe_rmtree_workdir(path, log):
+    """Recursively delete a dm-qemu per-boot workdir, but only when it is safe.
+
+    `path` is parsed from dm-qemu's stderr marker, so a marker-format change or a bug
+    could aim rmtree at an arbitrary location. Remove ONLY an absolute, real
+    (non-symlink) directory strictly UNDER the temp root -- never a symlink, never the
+    temp root or '/' itself. Returns True iff it removed the tree.
+    """
+    tmp_root = os.path.realpath(tempfile.gettempdir())
+    real = os.path.realpath(path)
+    if (os.path.isdir(path) and not os.path.islink(path)
+            and real != tmp_root and (real + os.sep).startswith(tmp_root + os.sep)):
+        shutil.rmtree(real, ignore_errors=True)
+        return True
+    log("dm-image-test: refusing to rmtree suspicious qemu workdir %r" % path)
+    return False
 
 
 def run_checks(child, args, log):
@@ -453,8 +473,7 @@ def main():
                 ## comment above describes.
                 pass
         if qemu_workdir:
-            import shutil
-            shutil.rmtree(qemu_workdir, ignore_errors=True)
+            safe_rmtree_workdir(qemu_workdir, log)
 
     log("dm-image-test: exiting (verdict rc=%s)" % verdict)
     sys.exit(verdict)

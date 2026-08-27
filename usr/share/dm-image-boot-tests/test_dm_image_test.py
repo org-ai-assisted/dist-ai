@@ -307,3 +307,64 @@ def test_qmp_rejects_mismatched_id(tmp_path, bad):
     finally:
         client.close()
         server.close()
+
+
+## --- dm-qemu-screendump-watch --interval lower bound ------------------------
+
+def test_interval_must_be_positive(tmp_path):
+    ## --interval feeds time.sleep(); < 1 would ValueError-crash (exit 1) and break the
+    ## 0/5/2 exit-code contract. The guard turns it into an argparse usage error (exit 2).
+    proc = subprocess.run(
+        [str(SCREENDUMP_WATCH), '--qmp', str(tmp_path / 'x.sock'),
+         '--outdir', str(tmp_path), '--interval', '-1'],
+        capture_output=True, text=True)
+    assert proc.returncode == 2, (proc.returncode, proc.stderr)
+    assert '--interval' in proc.stderr
+
+
+## --- dm-image-test safe_rmtree_workdir (unvalidated-path teardown) ----------
+
+def _load_dm_image_test():
+    loader = importlib.machinery.SourceFileLoader(
+        'dm_image_test_under_test', str(HARNESS))
+    module = importlib.util.module_from_spec(
+        importlib.util.spec_from_loader(loader.name, loader))
+    loader.exec_module(module)
+    return module
+
+
+def test_safe_rmtree_workdir(tmp_path, monkeypatch):
+    ## qemu_workdir is parsed from dm-qemu stderr; the teardown must only rmtree a real,
+    ## non-symlink dir strictly UNDER the temp root -- never a symlink, the temp root, or
+    ## an out-of-tree path, so a bad marker cannot aim the recursive delete elsewhere.
+    m = _load_dm_image_test()
+    logs = []
+    log = logs.append
+    # (a) a real dir strictly under the temp root -> removed
+    monkeypatch.setattr(m.tempfile, 'gettempdir', lambda: str(tmp_path))
+    wd = tmp_path / "qemu-workdir"
+    (wd / "sub").mkdir(parents=True)
+    (wd / "sub" / "f").write_text("x", encoding="utf-8")
+    assert m.safe_rmtree_workdir(str(wd), log) is True
+    assert not wd.exists()
+    # (b) a path OUTSIDE the temp root -> refused, not removed
+    fake_tmp = tmp_path / "tmproot"
+    fake_tmp.mkdir()
+    monkeypatch.setattr(m.tempfile, 'gettempdir', lambda: str(fake_tmp))
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep").write_text("x", encoding="utf-8")
+    assert m.safe_rmtree_workdir(str(outside), log) is False
+    assert outside.exists()
+    # (c) the temp root itself -> refused
+    assert m.safe_rmtree_workdir(str(fake_tmp), log) is False
+    assert fake_tmp.exists()
+    # (d) a symlink -> refused (even pointing inside the temp root)
+    target = fake_tmp / "real"
+    target.mkdir()
+    link = fake_tmp / "link"
+    link.symlink_to(target)
+    assert m.safe_rmtree_workdir(str(link), log) is False
+    assert link.exists() and target.exists()
+    # (e) a non-existent path -> refused
+    assert m.safe_rmtree_workdir(str(fake_tmp / "nope"), log) is False
