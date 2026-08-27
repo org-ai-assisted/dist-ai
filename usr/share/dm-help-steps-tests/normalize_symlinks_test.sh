@@ -81,6 +81,15 @@ cleanup() {
 trap cleanup EXIT
 workdir="$(mktemp --directory)"
 
+## Config isolation: null the system gitconfig (so the Kicksecure host's
+## /etc/gitconfig core.symlinks=false cannot MASK what normalize-symlinks sets --
+## a plain host has no such system setting) and point --global at a throwaway, so
+## normalize-symlinks' 'git config --global core.symlinks false' is contained (no
+## operator-config side effect) and this test actually exercises the global pin.
+export GIT_CONFIG_SYSTEM=/dev/null
+export GIT_CONFIG_GLOBAL="${workdir}/gitconfig-global"
+touch -- "${GIT_CONFIG_GLOBAL}"
+
 ## -c core.hooksPath=/dev/null: not testing the operator's hooks.
 ## -c protocol.file.allow=always: local file:// submodule add on modern git.
 git_x() {
@@ -138,12 +147,13 @@ logo='live-build-data/d-i-branding/logo_installer.png'
 sublink='packages/kicksecure/testpkg/sublink'
 
 ## --- core.symlinks=true clone: the plain-Debian host with REAL symlinks -------
-## In-script core.symlinks=true is a throwaway fixture simulating the OTHER host
-## kind; it never touches the operator's config.
+## The one-shot '-c core.symlinks=true' materialises REAL symlinks at checkout but
+## is NOT persisted to the clone's config (git never writes core.symlinks locally),
+## so the tree relies on git's compiled default -- exactly like a real plain host.
+## That is what lets normalize-symlinks' GLOBAL 'core.symlinks=false' override it;
+## a persisted LOCAL true would beat --global and is not how a real host looks.
 true_clone="${workdir}/host_true"
 git_x -c core.symlinks=true clone --quiet --recurse-submodules -- "${origin}" "${true_clone}"
-git_x -C "${true_clone}" config core.symlinks true
-git_x -C "${true_clone}" submodule foreach --quiet 'git config core.symlinks true' >/dev/null 2>&1 || true
 
 ## CANARY: the fixture must actually produce a REAL symlink (the state to flatten).
 if [ -L "${true_clone}/${logo}" ]; then
@@ -189,9 +199,9 @@ else
    fail "flattened placeholder mode not normalised: got 0${flat_mode}, expected 0644"
 fi
 
-## Even a plain-Debian (core.symlinks=true) checkout is CLEAN after normalise:
-## the driver pins core.symlinks=false per tree, so the flattened placeholders
-## read as the text blob rather than a 'T' typechange.
+## Even a plain-Debian checkout is CLEAN after normalise: the driver pins
+## core.symlinks=false GLOBALLY, so git reads the flattened placeholders as the
+## text blob rather than a 'T' typechange (it would be dirty if the pin were gone).
 true_status="$(git_x -C "${true_clone}" status --porcelain)"
 if [ -z "${true_status}" ]; then
    pass "core.symlinks=true clone: git status clean after normalise (core.symlinks pinned false)"
