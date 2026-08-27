@@ -58,6 +58,13 @@ check() {  ## $1=got $2=want $3=label
       fail=$(( fail + 1 ))
    fi
 }
+check_nonzero() {  ## $1=rc $2=label -- passes iff rc is nonzero
+   if [ "$1" -ne 0 ]; then
+      check '0' '0' "$2"
+   else
+      check '1' '0' "$2"
+   fi
+}
 
 work="$(mktemp --directory)"
 ## Uniquely named: sourcing comparison-capture.sh below defines its OWN cleanup() (which reads
@@ -84,27 +91,62 @@ true > "${ctl_log}"
 mkdir --parents -- "${work}/bin"
 cat > "${work}/bin/python3" <<PY
 #!/bin/bash
-## args: <st_bin> ctl <subcmd...>; drop the st_bin path, log the rest.
+## args: <st_bin> ctl <subcmd...>; drop the st_bin path, log the rest. ZL_STUB_MODE drives the
+## failure scenarios: 'no-tab' makes 'ctl ls' return nothing; 'zoom-fail' makes every 'ctl zoom'
+## exit nonzero; anything else is the happy path.
 shift || true
 printf '%s\n' "\$*" >> "${ctl_log}"
+zl_mode="\${ZL_STUB_MODE:-ok}"
 case "\$1 \$2" in
-   ## 'ctl ls' prints "<id>\t<title>" per tab -- the real client's format. A fresh single-tab
-   ## instance numbers from 0, so zoom_live_capture must parse id 0 and target it (not a hardcode).
-   'ctl ls') printf '0\tmain\n' ;;
-   ## 'ctl zoom ...' prints the resulting zoom (the real client does); make it deterministic.
-   'ctl zoom') printf '%s\n' "\${5:-100}" ;;
+   'ctl ls')
+      ## real client prints "<id>\t<title>" per tab; a fresh single-tab instance numbers from 0,
+      ## so zoom_live_capture must parse id 0 (not a hardcode). 'no-tab' returns none.
+      case "\${zl_mode}" in
+         no-tab)
+            true
+            ;;
+         *)
+            printf '0\tmain\n'
+            ;;
+      esac
+      ;;
+   'ctl zoom')
+      ## real client prints the resulting zoom; 'zoom-fail' fails instead.
+      case "\${zl_mode}" in
+         zoom-fail)
+            exit 1
+            ;;
+         *)
+            printf '%s\n' "\${5:-100}"
+            ;;
+      esac
+      ;;
 esac
 exit 0
 PY
 chmod +x "${work}/bin/python3"
 export PATH="${work}/bin:${PATH}"
 
-## sudo: the privileged remote_control drop-in write must not need real root in the test. Record
-## the attempt, succeed. (tee is fed on stdin; drain it so the pipe does not SIGPIPE.)
+## sudo: the privileged drop-in work must not need real root in the test. mkdir/other succeed as a
+## no-op; 'mktemp' makes a UNIQUE zoom-live-rc.*.conf under the test work dir (never touches the
+## real /usr/local/etc); 'tee' writes to the target file; 'safe-rm' really removes -- unless
+## ZL_SUDO_FAIL is set, which forces it to fail (drives the cleanup-warns-on-failure assertion).
 sudo() {
    case "${1:-}" in
       tee)
-         cat > /dev/null
+         ## Faithfully consume stdin and succeed regardless of the target path -- only the drop-in
+         ## PATH is asserted, never its content, so the write never needs real /usr/local/etc access.
+         cat >> "${work}/tee.out"
+         ;;
+      mktemp)
+         mktemp -- "${work}/zoom-live-rc.XXXXXX.conf"
+         ;;
+      safe-rm)
+         if [ -n "${ZL_SUDO_FAIL:-}" ]; then
+            return 1
+         fi
+         shift
+         safe-rm "$@"
          ;;
       *)
          true
@@ -155,9 +197,85 @@ for f in zoom-live-050.png zoom-live-150.png zoom-live-400.png; do
    n="$(grep --count --fixed-strings -- "${f}" "${capture_log}" || true)"
    check "${n}" '1' "zoom-live captures one real-GUI shot ${f}"
 done
-## The privileged remote_control drop-in is targeted (PRIVILEGED_ONLY: no user-config path exists).
-check "${zoom_live_rc_dropin}" '/usr/local/etc/secure-terminal.d/99-zoom-live-rc.conf' \
-   'zoom-live enables remote_control via the /usr/local/etc privileged drop-in'
+## The privileged remote_control drop-in is a UNIQUE root-owned path, NOT a fixed name (a fixed
+## name would truncate an admin file or a concurrent run's drop-in). It matches zoom-live-rc.*.conf.
+case "${zoom_live_rc_dropin}" in
+   */zoom-live-rc.*.conf)
+      check '0' '0' 'zoom-live drop-in is a UNIQUE zoom-live-rc.*.conf path'
+      ;;
+   *)
+      check '1' '0' 'zoom-live drop-in is a UNIQUE zoom-live-rc.*.conf path'
+      ;;
+esac
+if [ "${zoom_live_rc_dropin}" = '/usr/local/etc/secure-terminal.d/99-zoom-live-rc.conf' ]; then
+   check '1' '0' 'zoom-live drop-in is NOT the old fixed 99-zoom-live-rc.conf name'
+else
+   check '0' '0' 'zoom-live drop-in is NOT the old fixed 99-zoom-live-rc.conf name'
+fi
+
+## (ii) cleanup's drop-in removal is LOUD on failure: it NAMES the leaked path and does not swallow
+## the error (a leaked drop-in keeps remote_control enabled system-wide).
+zoom_live_rc_dropin="${work}/leaked-dropin.conf"
+warn_out="$(ZL_SUDO_FAIL=1 zoom_live_remove_dropin 2>&1 1>/dev/null || true)"
+case "${warn_out}" in
+   *'could not remove privileged remote_control drop-in'*"${work}/leaked-dropin.conf"*)
+      check '0' '0' 'zoom-live cleanup warns loudly and names the leaked drop-in on removal failure'
+      ;;
+   *)
+      check '1' '0' 'zoom-live cleanup warns loudly and names the leaked drop-in on removal failure'
+      ;;
+esac
+rc=0
+ZL_SUDO_FAIL=1 zoom_live_remove_dropin >/dev/null 2>&1 || rc="$?"
+check_nonzero "${rc}" 'zoom-live cleanup returns nonzero when the drop-in removal fails'
+
+## (i) A failed sweep must RETURN NONZERO -- never false-green while claiming to verify a live zoom.
+## no-tab: `ctl ls` yields no tab (remote_control unreachable), so no shot reflects a live zoom.
+true > "${ctl_log}"
+true > "${capture_log}"
+rc=0
+ZL_STUB_MODE=no-tab zoom_live_capture 50 100 >/dev/null 2>&1 || rc="$?"
+check_nonzero "${rc}" 'zoom_live_capture returns nonzero when ctl ls yields no tab'
+## zoom-fail: every `ctl zoom` fails.
+true > "${ctl_log}"
+true > "${capture_log}"
+rc=0
+ZL_STUB_MODE=zoom-fail zoom_live_capture 50 100 >/dev/null 2>&1 || rc="$?"
+check_nonzero "${rc}" 'zoom_live_capture returns nonzero when every ctl zoom fails'
+
+## (iii) A non-numeric level is SKIPPED (never crashes `$(( 10#level ))` into a zoom-live-.png that
+## silently overwrites): no ctl zoom for it, no zoom-live-.png, and the numeric levels still shoot.
+true > "${ctl_log}"
+true > "${capture_log}"
+safe-rm --recursive --force -- "${out}" 2>/dev/null || true
+mkdir --parents -- "${out}"
+zoom_live_capture 50 abc 100 >/dev/null 2>&1 || true
+n="$(grep --count --fixed-strings -- 'ctl zoom --tab id:0 abc' "${ctl_log}" || true)"
+check "${n}" '0' 'zoom-live issues no ctl zoom for a non-numeric level'
+n="$(grep --count --fixed-strings -- 'zoom-live-.png' "${capture_log}" || true)"
+check "${n}" '0' 'zoom-live never writes the collapsed zoom-live-.png for a non-numeric level'
+for f in zoom-live-050.png zoom-live-100.png; do
+   n="$(grep --count --fixed-strings -- "${f}" "${capture_log}" || true)"
+   check "${n}" '1' "zoom-live still captures numeric level ${f} alongside a skipped one"
+done
+
+## (iv) Levels do not glob: a '*' level reaches the function as a LITERAL token (array-carried), so
+## it is never expanded against the cwd. If it globbed, the cwd filenames would surface in the
+## function's own processing (here as per-level "skipping non-numeric" warnings); assert they don't.
+true > "${ctl_log}"
+true > "${capture_log}"
+safe-rm --recursive --force -- "${out}" 2>/dev/null || true
+mkdir --parents -- "${out}"
+true > "${HOME}/globbait-a"
+true > "${HOME}/globbait-b"
+cd -- "${HOME}"
+glob_out="$(zoom_live_capture '*' 2>&1 || true)"
+cd -- "${work}"
+n="$(printf '%s\n' "${glob_out}" | grep --count --fixed-strings -- 'globbait' || true)"
+check "${n}" '0' 'zoom-live does not glob a * level against the cwd (no cwd filename enters processing)'
+## The literal '*' is the token actually seen (skipped as non-numeric), proving it was not expanded.
+n="$(printf '%s\n' "${glob_out}" | grep --count --fixed-strings -- "non-numeric zoom level '*'" || true)"
+check "${n}" '1' 'zoom-live sees the literal * level (not a glob expansion)'
 
 ## Wrapper + sandbox-driver register the zoom-live lane (load-bearing dispatch lines, not comments).
 [ -f "${wrapper}" ] || { printf '%s\n' "FATAL: wrapper not found at ${wrapper}" >&2; exit 1; }

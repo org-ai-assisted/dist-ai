@@ -317,7 +317,13 @@ else
    failures=$((failures + 1))
 fi
 py_real_out="$(py_gate_output '#!/usr/bin/python3' '## style-ok: allow-non-ascii' "y = \"${emdash}\"")"
-if grep --quiet --fixed-strings -- 'R-001' <<< "${py_real_out}"; then
+## Liveness guard: an absence assertion must first confirm the gate RAN to its
+## verdict -- a crash leaves R-001 absent too, which would falsely PASS.
+if ! grep --quiet --extended-regexp \
+      'all static checks passed|[0-9]+ check\(s\) failed' <<< "${py_real_out}"; then
+   printf '%s\n' "FAIL: gate produced no verdict for the Python real-comment fixture" >&2
+   failures=$((failures + 1))
+elif grep --quiet --fixed-strings -- 'R-001' <<< "${py_real_out}"; then
    printf '%s\n' "FAIL: R-001 not waived by a genuine Python '#' comment" >&2
    failures=$((failures + 1))
 else
