@@ -785,9 +785,20 @@ APP.processEvents()
 _cfgd = os.path.join(os.environ['XDG_CONFIG_HOME'], 'secure-terminal.d')
 os.makedirs(_cfgd, exist_ok=True)
 with open(os.path.join(_cfgd, '90-keys.conf'), 'w', encoding='utf-8') as _kf:
-    _kf.write('keybindings=find=Ctrl+F new_tab=Ctrl+Shift+T\n')
+    _kf.write('keybindings=find=Ctrl+Shift+G new_tab=Ctrl+Shift+T copy=Ctrl+C\n')
 _wk = MainWindow()
 ok(True, 'a keybindings drop-in is parsed when the window starts')
+# a NON-reserved override (Ctrl+Shift+G -- a Ctrl+Shift combo the terminal does not
+# forward) is applied, proving the reserved-drop below does not block legitimate rebinds...
+eq(_wk._shortcuts['find'][0].shortcut().toString(), 'Ctrl+Shift+G',
+   'a non-reserved keybindings override (find=Ctrl+Shift+G) is applied at startup')
+# ...but a RESERVED override (copy=Ctrl+C) is DROPPED to the default -- _bind must honor
+# _is_reserved_shortcut like the Shortcuts dialog, so a hand-edited config cannot remap the
+# terminal's SIGINT key (#18 HIGH).
+eq(_wk._shortcuts['copy'][0].shortcut().toString(), _wk._shortcuts['copy'][1],
+   '_bind drops a reserved keybindings override back to the default')
+ok(_wk._shortcuts['copy'][0].shortcut().toString() != 'Ctrl+C',
+   'a config keybindings= cannot rebind Ctrl+C away from the running program')
 _wk.deleteLater()
 APP.processEvents()
 
@@ -1424,6 +1435,12 @@ try:
                'escape-limit 65536', 'pastedelay 4', 'totally-unknown', '/'):
         win.run_command('/' + _c)
     eq(win.run_command(''), False, 'run_command: an empty line -> False')
+    # str.isdigit() accepts non-ASCII digit-likes (superscript 2) that int() rejects; the
+    # numeric palette commands must treat those as invalid, not raise an uncaught ValueError.
+    for _bad in ('/zoom \u00b2', '/scrollback \u00b2', '/paste-delay \u00b2',
+                 '/escape-limit \u00b2'):
+        eq(win.run_command(_bad), False,
+           'run_command: a non-ASCII digit arg (%r) is rejected, not a crash' % _bad)
     ok(True, 'run_command handles every slash-command branch')
 
     # CLASH: the palette's help text vs what the palette actually dispatches.
