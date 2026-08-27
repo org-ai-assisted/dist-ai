@@ -8,25 +8,23 @@
 ## Regression test for derivative-maker 'build-steps.d/1200_prepare-build-machine'
 ## normalize-symlinks (with normalize_symlinks_in_tree + normalize_file_modes_in_tree).
 ##
-## THE BUG IT GUARDS: on a core.symlinks=false host -- the Kicksecure/Whonix
-## DEFAULT (security-misc-shared /etc/gitconfig) and so a very likely build host --
-## git checks a mode 120000 symlink out as a REGULAR text file holding the target
-## path. The build MUST materialise it back into a real symlink, or the same commit
-## ships a different image on different hosts (a text file where a real branding
-## symlink belongs, e.g. live-build-data/d-i-branding/logo_installer.png). A 2026
-## refactor silently reversed the normaliser into a real->text 'find -type l'
-## no-op -- which does NOTHING on exactly those core.symlinks=false hosts, and
-## leaves core.symlinks=true (CI) trees dirty. This test drives the SHIPPED
-## functions and fails if the direction regresses again.
+## WHAT IT GUARDS: an indexed symlink (mode 120000) is checked out as a REAL
+## symlink on a core.symlinks=true host (plain Debian, CI) and as a REGULAR text
+## file holding the target on a core.symlinks=false host (the Kicksecure/Whonix
+## default, shipped by security-misc-shared /etc/gitconfig). The SAME commit thus
+## yields a different working tree per host; a build that embeds it ships
+## different bytes -> not reproducible.
 ##
-## Drives the real functions against throwaway git repos; no root, no network.
-## Asserts BOTH directions and the reproducibility the fix exists for:
-##   - fixture canary: a core.symlinks=false clone materialises the symlink as a
-##     REGULAR FILE (the bug is genuinely reproduced)
-##   - after normalise: it is a REAL symlink, in the parent AND in a submodule
-##   - git status stays CLEAN (no 'unexplained dirty tree')
-##   - reproducibility: a core.symlinks=true clone normalises to a byte-identical tree
-##   - file MODES are normalised to git's recorded mode (0640 -> 0644)
+## The normaliser converts to ONE form so every builder embeds the same bytes.
+## The direction is REAL SYMLINK -> TEXT PLACEHOLDER: reproducibility is
+## indifferent to which form, so security decides -- an inert path-string
+## placeholder cannot point outside the tree or escape a chroot the way a
+## materialised symlink can. An existing placeholder (already text) keeps its
+## exact bytes. This drives the SHIPPED functions and fails if the direction
+## flips back to text->symlink, if a submodule is skipped, or if the placeholder
+## bytes/mode become non-reproducible.
+##
+## Throwaway git repos; no root, no network.
 
 set -o errexit
 set -o nounset
@@ -139,55 +137,98 @@ run_normalize() {
 logo='live-build-data/d-i-branding/logo_installer.png'
 sublink='packages/kicksecure/testpkg/sublink'
 
-## --- core.symlinks=false clone: the bug host --------------------------------
+## --- core.symlinks=true clone: the plain-Debian host with REAL symlinks -------
+## In-script core.symlinks=true is a throwaway fixture simulating the OTHER host
+## kind; it never touches the operator's config.
+true_clone="${workdir}/host_true"
+git_x -c core.symlinks=true clone --quiet --recurse-submodules -- "${origin}" "${true_clone}"
+git_x -C "${true_clone}" config core.symlinks true
+git_x -C "${true_clone}" submodule foreach --quiet 'git config core.symlinks true' >/dev/null 2>&1 || true
+
+## CANARY: the fixture must actually produce a REAL symlink (the state to flatten).
+if [ -L "${true_clone}/${logo}" ]; then
+   pass "canary: core.symlinks=true clone produced a real symlink to flatten"
+else
+   fail "canary: core.symlinks=true clone did not produce a real symlink; this git cannot reproduce the plain-Debian state"
+fi
+
+run_normalize "${true_clone}"
+
+## After flattening: a TEXT placeholder, not a symlink; parent AND submodule.
+if [ -L "${true_clone}/${logo}" ]; then
+   fail "after normalise: parent symlink still a real symlink (text->symlink regression)"
+elif [ -f "${true_clone}/${logo}" ] \
+   && [ "$(cat -- "${true_clone}/${logo}")" = "logo_debian.png" ]; then
+   pass "after normalise: parent symlink flattened to a text placeholder holding the target"
+else
+   fail "after normalise: parent symlink not a correct text placeholder"
+fi
+if [ -L "${true_clone}/${sublink}" ]; then
+   fail "after normalise: SUBMODULE symlink still a real symlink (submodules skipped?)"
+elif [ -f "${true_clone}/${sublink}" ] \
+   && [ "$(cat -- "${true_clone}/${sublink}")" = "real.txt" ]; then
+   pass "after normalise: SUBMODULE symlink flattened to a text placeholder"
+else
+   fail "after normalise: submodule symlink not a correct text placeholder"
+fi
+
+## The placeholder is the target with NO trailing newline (git's blob bytes),
+## else it will not match a core.symlinks=false host's checkout.
+logo_target='logo_debian.png'
+if [ "$(wc --bytes < "${true_clone}/${logo}")" -eq "${#logo_target}" ]; then
+   pass "placeholder has no trailing newline (byte-identical to git's mode-120000 blob)"
+else
+   fail "placeholder byte length wrong: a trailing newline would break reproducibility"
+fi
+
+## The flattened placeholder mode is deterministic 0644 (not the checkout umask).
+flat_mode="$(stat --format='%a' -- "${true_clone}/${logo}")"
+if [ "${flat_mode}" = "644" ]; then
+   pass "flattened placeholder mode pinned to 0644"
+else
+   fail "flattened placeholder mode not normalised: got 0${flat_mode}, expected 0644"
+fi
+
+## --- core.symlinks=false clone: the Kicksecure host, ALREADY a placeholder ----
 false_clone="${workdir}/host_false"
 git_x -c core.symlinks=false clone --quiet --recurse-submodules -- "${origin}" "${false_clone}"
 git_x -C "${false_clone}" config core.symlinks false
 git_x -C "${false_clone}" submodule foreach --quiet 'git config core.symlinks false' >/dev/null 2>&1 || true
 
-## CANARY: the fixture must actually reproduce the bug -- a regular file, not a link.
 if [ -L "${false_clone}/${logo}" ]; then
-   fail "canary: core.symlinks=false clone produced a real symlink; this git cannot reproduce the bug"
+   fail "canary: core.symlinks=false clone produced a real symlink; cannot test the placeholder path"
 else
-   pass "canary: core.symlinks=false clone materialised the symlink as a regular file"
+   pass "canary: core.symlinks=false clone materialised the symlink as a placeholder"
 fi
 
+## An existing placeholder must keep its exact CONTENT after normalise.
+before_bytes="$(cat -- "${false_clone}/${logo}")"
 run_normalize "${false_clone}"
-
+after_bytes="$(cat -- "${false_clone}/${logo}")"
 if [ -L "${false_clone}/${logo}" ]; then
-   pass "after normalise: parent symlink is a REAL symlink"
+   fail "existing placeholder was turned into a symlink (wrong direction)"
+elif [ "${before_bytes}" = "${after_bytes}" ]; then
+   pass "existing placeholder content left unchanged"
 else
-   fail "after normalise: parent symlink is still a regular file (real->text regression)"
-fi
-if [ -L "${false_clone}/${sublink}" ]; then
-   pass "after normalise: SUBMODULE symlink is a REAL symlink"
-else
-   fail "after normalise: submodule symlink not materialised (submodules skipped?)"
+   fail "existing placeholder content was modified: '${before_bytes}' -> '${after_bytes}'"
 fi
 
+## The Kicksecure host's tree stays CLEAN: the placeholder matches the blob.
 false_status="$(git_x -C "${false_clone}" status --porcelain)"
 if [ -z "${false_status}" ]; then
-   pass "after normalise: git status is clean on the core.symlinks=false clone"
+   pass "core.symlinks=false clone: git status clean after normalise"
 else
-   fail "after normalise: dirty tree on core.symlinks=false clone: ${false_status}"
+   fail "core.symlinks=false clone: dirty tree after normalise: ${false_status}"
 fi
 
-## --- core.symlinks=true clone: normalise must converge to the same tree ------
-true_clone="${workdir}/host_true"
-git_x -c core.symlinks=true clone --quiet --recurse-submodules -- "${origin}" "${true_clone}"
-git_x -C "${true_clone}" config core.symlinks true
-git_x -C "${true_clone}" submodule foreach --quiet 'git config core.symlinks true' >/dev/null 2>&1 || true
-run_normalize "${true_clone}"
-
+## --- reproducibility: both host kinds converge on identical bytes ------------
 if diff --recursive --no-dereference --exclude='.git' -- "${true_clone}" "${false_clone}" >/dev/null 2>&1; then
-   pass "reproducible: core.symlinks true and false clones normalise to identical trees"
+   pass "reproducible: core.symlinks true (flattened) and false (untouched) trees are byte-identical"
 else
    fail "not reproducible: the two hosts' trees differ after normalise"
 fi
 
-## --- file MODE normalisation -------------------------------------------------
-## Recheck out with a restrictive umask does not apply retroactively, so force a
-## non-recorded mode and confirm the normaliser resets it to git's recorded 0644.
+## --- file MODE normalisation of regular files (unchanged behaviour) ----------
 chmod 0640 "${false_clone}/live-build-data/d-i-branding/logo_debian.png"
 run_normalize "${false_clone}"
 mode_now="$(stat --format='%a' -- "${false_clone}/live-build-data/d-i-branding/logo_debian.png")"
@@ -196,10 +237,6 @@ if [ "${mode_now}" = "644" ]; then
 else
    fail "file mode not normalised: got 0${mode_now}, expected 0644"
 fi
-
-## The recorded 100755 executable must normalise too, not only 100644 files --
-## a normaliser that handles one mode and skips the other still ships a
-## non-reproducible tree.
 chmod 0700 "${false_clone}/an_executable"
 run_normalize "${false_clone}"
 exec_mode="$(stat --format='%a' -- "${false_clone}/an_executable")"
@@ -209,49 +246,55 @@ else
    fail "executable mode not normalised: got 0${exec_mode}, expected 0755"
 fi
 
-## --- GIT_DIR robustness: a decoy GIT_DIR must not divert the git calls -------
-## An inherited GIT_DIR (e.g. exported by an enclosing 'git submodule foreach')
-## must not make 'git -C <tree>' read the wrong index and skip normalisation.
+## An existing placeholder's MODE is pinned to 0644 too (the checkout umask must
+## not leak): force a non-0644 mode and confirm normalise resets it.
+chmod 0600 "${false_clone}/${logo}"
+run_normalize "${false_clone}"
+ph_mode="$(stat --format='%a' -- "${false_clone}/${logo}")"
+if [ "${ph_mode}" = "644" ]; then
+   pass "placeholder mode pinned to 0644 (was forced 0600)"
+else
+   fail "placeholder mode not normalised: got 0${ph_mode}, expected 0644"
+fi
+
+## --- GIT_DIR robustness: a decoy GIT_DIR must not skip the flatten -----------
 decoy="${workdir}/decoy"
 git_x init --quiet -- "${decoy}"
 gd_clone="${workdir}/host_gitdir"
-git_x -c core.symlinks=false clone --quiet --recurse-submodules -- "${origin}" "${gd_clone}"
-git_x -C "${gd_clone}" config core.symlinks false
-git_x -C "${gd_clone}" submodule foreach --quiet 'git config core.symlinks false' >/dev/null 2>&1 || true
+git_x -c core.symlinks=true clone --quiet --recurse-submodules -- "${origin}" "${gd_clone}"
+git_x -C "${gd_clone}" config core.symlinks true
+git_x -C "${gd_clone}" submodule foreach --quiet 'git config core.symlinks true' >/dev/null 2>&1 || true
 ( export GIT_DIR="${decoy}/.git"; run_normalize "${gd_clone}" )
-if [ -L "${gd_clone}/${logo}" ]; then
-   pass "materialises the parent symlink even with a decoy GIT_DIR set (env --unset clears it)"
+if [ ! -L "${gd_clone}/${logo}" ] && [ -f "${gd_clone}/${logo}" ]; then
+   pass "flattens the parent symlink even with a decoy GIT_DIR set (env --unset clears it)"
 else
-   fail "a decoy GIT_DIR diverted the git calls; parent symlink left un-materialised"
+   fail "a decoy GIT_DIR diverted the git calls; parent symlink left un-flattened"
 fi
-## The SUBMODULE link must survive the decoy too: the outer submodule
-## enumeration is a separate git call, so a regression that clears GIT_DIR only
-## on the per-tree calls would normalise the parent yet skip the submodule.
-if [ -L "${gd_clone}/${sublink}" ]; then
-   pass "materialises the SUBMODULE symlink under a decoy GIT_DIR (outer enumeration clears it too)"
+## The SUBMODULE link must flatten under the decoy too: the outer enumeration is
+## a separate git call, so a regression clearing GIT_DIR only on the per-tree
+## calls would flatten the parent yet skip the submodule.
+if [ ! -L "${gd_clone}/${sublink}" ] && [ -f "${gd_clone}/${sublink}" ]; then
+   pass "flattens the SUBMODULE symlink under a decoy GIT_DIR (outer enumeration clears it too)"
 else
-   fail "a decoy GIT_DIR diverted the submodule enumeration; submodule symlink left un-materialised"
+   fail "a decoy GIT_DIR diverted the submodule enumeration; submodule symlink left un-flattened"
 fi
 
-## --- trailing-newline blob must be left alone, not mis-converted -------------
-## A mode-120000 blob whose content ends in a newline is NOT a materialised
-## symlink (git writes the target with no trailing newline); it must be skipped,
-## not turned into a symlink with the newline silently stripped by command sub.
-nl="${workdir}/nl"
-git_x init --quiet -- "${nl}"
-git_x -C "${nl}" config user.email 'test@example.com'
-git_x -C "${nl}" config user.name 'test'
-blob_sha="$(printf 'target_with_nl\n' | git_x -C "${nl}" hash-object -w --stdin)"
-git_x -C "${nl}" update-index --add --cacheinfo "120000,${blob_sha},weird"
-git_x -C "${nl}" commit --quiet --message 'mode-120000 blob ending in a newline'
+## --- a symlink target containing a newline must survive the flatten ----------
+## readlink appends its own newline; the sentinel must strip only that, keeping
+## a newline that is part of the target -- else the placeholder loses bytes.
 nl_clone="${workdir}/host_nl"
-git_x -c core.symlinks=false clone --quiet -- "${nl}" "${nl_clone}"
-git_x -C "${nl_clone}" config core.symlinks false
+git_x -c core.symlinks=true clone --quiet -- "${origin}" "${nl_clone}"
+git_x -C "${nl_clone}" config core.symlinks true
+target_with_nl="$(printf 'a\nb')"
+ln --symbolic -- "${target_with_nl}" "${nl_clone}/weird_link"
+## The normaliser only touches INDEXED (mode-120000) entries, so stage it.
+git_x -C "${nl_clone}" add -- weird_link
 run_normalize "${nl_clone}"
-if [ -L "${nl_clone}/weird" ]; then
-   fail "trailing-newline blob mis-converted to a symlink (command-sub ate the newline)"
+if [ ! -L "${nl_clone}/weird_link" ] \
+   && [ "$(cat -- "${nl_clone}/weird_link")" = "${target_with_nl}" ]; then
+   pass "a symlink target containing a newline is flattened without losing bytes"
 else
-   pass "trailing-newline blob left as a regular file, not mis-converted"
+   fail "a newline in the symlink target was not preserved by the flatten"
 fi
 
 if [ "${test_failures}" -ne 0 ]; then
