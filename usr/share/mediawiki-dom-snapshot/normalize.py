@@ -324,8 +324,17 @@ def _normalize_srcset(value: str) -> str:
     if not isinstance(value, str) or "," not in value:
         return _normalize_url(value)
     parts = []
-    for item in value.split(","):
+    ## Split on the CANDIDATE boundary (a comma followed by whitespace before the next
+    ## candidate), NOT a bare comma: a comma is legal inside a URL query (RFC 3986
+    ## sub-delim) AND mandatory in a data: URI ("...;base64,AAAA"), so value.split(",")
+    ## shreds those. A boundary comma is conventionally followed by whitespace; an in-URL
+    ## comma is followed by data (no space), so it is preserved and its candidate reaches
+    ## _normalize_url whole (which already passes an opaque data:/javascript: scheme
+    ## through untouched).
+    for item in re.split(r",\s+(?=\S)", value):
         item = item.strip()
+        if not item:
+            continue
         if " " in item:
             u, d = item.split(" ", 1)
             parts.append(f"{_normalize_url(u)} {d}")
