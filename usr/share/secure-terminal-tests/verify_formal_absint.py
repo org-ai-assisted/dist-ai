@@ -421,7 +421,9 @@ def t_input_strings():
             fail('T5 title bound/idempotent on %r' % probe[:40])
         if alpha_str(t1) == DANGEROUS:
             fail('T5 title absint DANGEROUS on %r' % probe[:40])
-        want_ml = bool(probe) and (('\n' in probe[:-1]) or ('\r' in probe[:-1]))
+        # CRLF pair collapses to one LF: "cmd\r\n" is one line, not multi-line.
+        _ml = probe.replace('\r\n', '\n')
+        want_ml = bool(probe) and (('\n' in _ml[:-1]) or ('\r' in _ml[:-1]))
         if bool(S.paste_is_multiline(probe)) != want_ml:
             fail('T3 paste_is_multiline on %r' % probe[:40])
         for fn in (S.sanitize_paste, S.sanitize_paste_unicode,
