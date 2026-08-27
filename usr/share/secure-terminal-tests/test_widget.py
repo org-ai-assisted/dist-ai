@@ -8327,6 +8327,40 @@ ok('a' in _sp_txt and 'b' in _sp_txt and 'c' not in _sp_txt,
    'shrink-to-prefix keeps the unchanged leading rows and drops the removed tail')
 _sp.shutdown()
 
+# CACHE-8. Shrink-RESIZE with an out-of-bounds cursor must not corrupt committed
+# scrollback. pyte's resize() does NOT reposition the cursor on a shrink, so cursor.y is
+# left past the shrunk screen; _grid_signatures must clamp it, else max(last, cursor_y) is
+# OOB -> _render_primary_grid builds `target` longer than the signatures -> _grid_rows
+# overcounts -> grid_top drifts into permanent (immutable) scrollback. CANARY: pre-fix
+# _grid_rows stayed at the OOB row count and a later frame overwrote the scrollback.
+_rs = SecureTerminal(command='/bin/cat', tui=True)
+_rs.apply_mode('show')
+_rs.resize(700, 400)
+_rs.show()
+pump(40)
+_rs_lines0 = _rs._screen.lines
+for _i in range(_rs_lines0 * 3):                        # promote rows into permanent scrollback
+    _rs._feed_stream(('rs%02d\r\n' % _i).encode())
+    _rs._render_tui()
+_rs_doc = _rs.document()
+_rs_gridtop = _rs_doc.blockCount() - _rs._grid_rows
+_rs_sb = [_rs_doc.findBlockByNumber(_b).text() for _b in range(_rs_gridtop)]   # committed scrollback
+_rs._screen.cursor.y = _rs._screen.lines - 1           # caret at the bottom row
+_rs_new = max(3, _rs_lines0 // 2)
+_rs._screen.resize(_rs_new, _rs._screen.columns)       # SHRINK; pyte leaves cursor.y OOB
+ok(_rs._screen.cursor.y > _rs._screen.lines - 1,
+   'pyte leaves the cursor out of bounds after a shrink (the trigger)')
+_rs._render_tui()
+eq(_rs._grid_rows, _rs._screen.lines,
+   'a shrink-resize with an OOB cursor keeps _grid_rows == screen.lines, not the OOB count')
+# and a subsequent frame must not overwrite the committed scrollback (immutable-scrollback)
+_rs._feed_stream(b'after-resize\r\n')
+_rs._render_tui()
+_rs_sb_after = [_rs_doc.findBlockByNumber(_b).text() for _b in range(len(_rs_sb))]
+eq(_rs_sb_after, _rs_sb,
+   'committed scrollback is byte-unchanged across a shrink-resize and a later frame')
+_rs.shutdown()
+
 
 # --- render-loop performance + review fixes (perf cycle) ----------------------
 from secure_terminal.sanitize import has_bell as _p37_has_bell
