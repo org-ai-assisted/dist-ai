@@ -255,6 +255,47 @@ else
    cat -- "${workdir}/out.txt" >&2
 fi
 
+## --- an ABSENT-locally pin the remote still serves PASSES -------------------
+## The benign "a teammate bumped the pin and this submodule was not re-fetched
+## here yet" state: the pinned commit is not in this clone, but the remote still
+## has it. Short-circuiting to MISSING failed it; the network probe must get the
+## final say. Only a pin the REMOTE also lacks is a true MISSING.
+absent="${workdir}/absent"
+build_fixture "${absent}"
+## A bare remote carrying commit X as its master TIP, made in a throwaway clone.
+absent_remote="${workdir}/absent-remote.git"
+git_quiet init --quiet --bare -- "${absent_remote}"
+absent_maker="${workdir}/absent-maker"
+git_quiet -c protocol.file.allow=always clone --quiet -- "${absent}/sub" "${absent_maker}" >/dev/null 2>&1
+printf '%s\n' 'downstream' >> "${absent_maker}/file.txt"
+git_quiet -C "${absent_maker}" commit --quiet --all --no-verify --message downstream
+absent_sha="$(git_quiet -C "${absent_maker}" rev-parse HEAD)"
+git_quiet -C "${absent_maker}" push --quiet -- "${absent_remote}" HEAD:refs/heads/master
+## Point 'sub' at the bare remote (a network-shaped file:// url). 'submodule
+## foreach' exports GIT_PROTOCOL_FROM_USER=0, which blocks file://; allow it at
+## the submodule level so the probe can contact the remote (production remotes
+## are https/ssh and unaffected).
+git_quiet -C "${absent}/sub" remote add net "file://${absent_remote}"
+git_quiet -C "${absent}/sub" config protocol.file.allow always
+git_quiet -C "${absent}" config -f .gitmodules submodule.sub.url "file://${absent_remote}"
+git_quiet -C "${absent}" commit --quiet --all --no-verify --message net-url
+## Pin the parent at X with '-m' (NOT '-am'): '-am' would restage the gitlink
+## from 'sub's HEAD and undo the pin. X stays absent from 'sub's object store.
+git_quiet -C "${absent}" update-index --cacheinfo "160000,${absent_sha},sub"
+git_quiet -C "${absent}" commit --quiet --no-verify --message pin-absent
+rc="$(run_preflight "${absent}")"
+if [ "${rc}" -eq 0 ]; then
+   pass "an absent-locally pin the remote still serves does not fail"
+else
+   fail "an absent-but-fetchable pin was FAILED (the benign not-refetched-here state)"
+   cat -- "${workdir}/out.txt" >&2
+fi
+if grep --quiet --fixed-strings -- 'MISSING' "${workdir}/out.txt"; then
+   fail "the absent-but-fetchable pin was wrongly reported MISSING"
+else
+   pass "the absent-but-fetchable pin is not reported MISSING"
+fi
+
 ## --- a 'source' of a renamed-away in-tree file FAILS ------------------------
 ## The developer-meta-files reprepro-freshness.bsh -> package-build-freshness.bsh
 ## rename with the consumer (2100_create-debian-packages) not updated. It is a

@@ -196,11 +196,18 @@ pin_report="$( git -C "${source_dir}" submodule --quiet foreach --recursive \
        printf "UNVERIFIED %s (no network remote in this clone)\n" "${displaypath}"
        exit 0
     fi
+    ## A pin absent from THIS clone is not itself a failure: a teammate may have
+    ## bumped it with the submodule not re-fetched here yet, and the object is
+    ## still fetchable from the remote. Do NOT short-circuit to MISSING -- record
+    ## the absence, skip the two local checks that need the object present, and
+    ## let the network probe below decide. Only a pin the REMOTE also lacks is a
+    ## true MISSING (emitted at the end).
+    pin_present_locally=true
     if ! git cat-file -e "${pinned}^{commit}" 2>/dev/null; then
-       printf "MISSING %s (pinned %.12s: not present locally)\n" "${displaypath}" "${pinned}"
-       exit 0
+       pin_present_locally=false
     fi
-    if [ -z "$(git branch --remotes --contains "${pinned}" 2>/dev/null)" ]; then
+    if [ "${pin_present_locally}" = "true" ] \
+       && [ -z "$(git branch --remotes --contains "${pinned}" 2>/dev/null)" ]; then
        printf "UNFETCHABLE %s (pinned %.12s: on no remote branch)\n" "${displaypath}" "${pinned}"
        exit 0
     fi
@@ -281,15 +288,19 @@ pin_report="$( git -C "${source_dir}" submodule --quiet foreach --recursive \
           matching_remotes="${matching_remotes} ${remote_name}"
        fi
     done
-    pin_found_locally=false
-    for remote_name in ${matching_remotes}; do
-       if [ -n "$(git branch --remotes --contains "${pinned}" --list "${remote_name}/*" 2>/dev/null)" ]; then
-          pin_found_locally=true
-          break
+    ## Needs the object present in this clone, so run it only then; an absent
+    ## pin falls straight through to the network probe.
+    if [ "${pin_present_locally}" = "true" ]; then
+       pin_found_locally=false
+       for remote_name in ${matching_remotes}; do
+          if [ -n "$(git branch --remotes --contains "${pinned}" --list "${remote_name}/*" 2>/dev/null)" ]; then
+             pin_found_locally=true
+             break
+          fi
+       done
+       if [ "${pin_found_locally}" = "true" ]; then
+          exit 0
        fi
-    done
-    if [ "${pin_found_locally}" = "true" ]; then
-       exit 0
     fi
 
     remote_refs="$(git ls-remote -- "${gitmodules_url}" 2>/dev/null || true)"
@@ -334,7 +345,14 @@ pin_report="$( git -C "${source_dir}" submodule --quiet foreach --recursive \
        printf "UNVERIFIED %s (pinned %.12s: %s refuses fetch-by-sha)\n" "${displaypath}" "${pinned}" "${gitmodules_url}"
        exit 0
     fi
-    printf "FORK-ONLY %s (pinned %.12s not reachable from %s)\n" "${displaypath}" "${pinned}" "${gitmodules_url}"' 2>/dev/null || true )"
+    ## Reached only when the network probe could NOT fetch the pin. For a pin
+    ## present locally this is FORK-ONLY (CI rewrites urls; a plain clone will
+    ## not). For a pin ABSENT locally it means no one has it -- a true MISSING.
+    if [ "${pin_present_locally}" = "true" ]; then
+       printf "FORK-ONLY %s (pinned %.12s not reachable from %s)\n" "${displaypath}" "${pinned}" "${gitmodules_url}"
+    else
+       printf "MISSING %s (pinned %.12s: absent locally and not fetchable from %s)\n" "${displaypath}" "${pinned}" "${gitmodules_url}"
+    fi' 2>/dev/null || true )"
 bad_pins="$( printf '%s\n' "${pin_report}" | grep -E '^(MISSING|UNFETCHABLE) ' || true )"
 ## FORK-ONLY is reported LOUDLY but does not fail: on the 'ai' branch CI runs
 ## ci/configure-fork-mirror before submodule init, so a fork-only pin is
