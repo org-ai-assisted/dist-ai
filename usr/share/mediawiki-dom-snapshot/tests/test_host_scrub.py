@@ -172,6 +172,107 @@ src3 = Path(tempfile.mkdtemp()); dst3 = Path(tempfile.mkdtemp())
 N.normalize_page_dir(src3, dst3)  # must NOT raise
 assert not (dst3 / "assets" / "sub").exists(), "nested asset was copied instead of refused"
 
+# crafted manifest.json crash inputs: a RECEIVED cross-wiki manifest is untrusted, so a
+# malformed entry (or top-level shape) must be skipped/refused, NOT crash the whole
+# normalize. Each helper builds a minimal page dir with one real flat asset (ok.css) so a
+# single malformed sibling is tolerated without tripping the all-malformed fail-loud guard.
+def _mkmanifest(manifest_obj):
+    s = Path(tempfile.mkdtemp()); d = Path(tempfile.mkdtemp())
+    (s / "dom.html").write_text("<html></html>", encoding="utf-8")
+    (s / "assets").mkdir()
+    (s / "assets" / "ok.css").write_text(".x{}", encoding="utf-8")
+    (s / "manifest.json").write_text(json.dumps(manifest_obj), encoding="utf-8")
+    return s, d
+
+_page = {"https://%s/wiki/Page" % H: {"status": 200, "content_type": "text/html"}}
+_good = {"https://%s/ok.css" % H: {"status": 200, "content_type": "text/css", "asset": "ok.css"}}
+
+# asset: null -- `src_assets / None` would TypeError before the flat-name guard.
+s, d = _mkmanifest({**_page, **_good,
+    "https://%s/x.css" % H: {"status": 200, "content_type": "text/css", "asset": None}})
+N.normalize_page_dir(s, d)  # must NOT raise
+mout = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
+assert any(v.get("asset") is None for v in mout.values()), ("asset-null-skip", mout)
+
+# asset: a number -- same TypeError class, non-string asset value.
+s, d = _mkmanifest({**_page, **_good,
+    "https://%s/x.css" % H: {"status": 200, "content_type": "text/css", "asset": 12345}})
+N.normalize_page_dir(s, d)  # must NOT raise
+mout = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
+assert any(v.get("asset") == 12345 for v in mout.values()), ("asset-number-skip", mout)
+
+# non-dict entry -- `entry.get(...)`/`"asset" not in entry` would raise on a scalar entry.
+s, d = _mkmanifest({**_page, **_good,
+    "https://%s/weird" % H: "i-am-not-an-object"})
+N.normalize_page_dir(s, d)  # must NOT raise
+mout = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
+assert "i-am-not-an-object" not in mout.values(), ("nondict-entry-skip", mout)
+
+# non-string content_type -- `.startswith(...)` would crash on a number/list content_type.
+s, d = _mkmanifest({**_page,
+    "https://%s/c.css" % H: {"status": 200, "content_type": 999, "asset": "ok.css"}})
+N.normalize_page_dir(s, d)  # must NOT raise (entry falls through to plain copy)
+assert (d / "assets" / "ok.css").exists(), "non-string content_type entry was not copied"
+
+# non-dict headers -- _normalize_headers would crash on `(headers or {}).items()`.
+s, d = _mkmanifest({**_page, **_good,
+    "https://%s/h.css" % H: {"status": 200, "content_type": "text/css", "asset": "ok.css",
+                             "headers": "not-a-dict"}})
+N.normalize_page_dir(s, d)  # must NOT raise
+mout = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
+assert any(v.get("headers") == "not-a-dict" for v in mout.values()), ("nondict-headers-skip", mout)
+
+# non-string header value -- a crafted cache-control number (cache-control matches a
+# HEADER_TOKEN_PATTERN and is not volatile-scrubbed) would crash pattern.sub(TypeError).
+hv = N._normalize_headers({"cache-control": 12345})
+assert hv.get("cache-control") == 12345, ("nonstr-header-value", hv)
+
+# sibling snapshot files (console.json / storage.json / errors.json) are ALSO untrusted:
+# json.loads' try/except catches parse errors, NOT valid-JSON-wrong-shape. Each normaliser
+# must survive a crafted non-list / non-object / non-string-field without raising.
+assert N._normalize_console({"a": 1}) == [], "console non-list must yield []"
+assert N._normalize_console(5) == [], "console scalar must yield []"
+assert N._normalize_console([{"type": "log", "text": 123}]) == [], "console non-str text skipped"
+assert N._normalize_console([1, {"type": "log", "text": "x"}]) == [
+    {"type": "log", "text": "x"}], "console non-dict item skipped"
+sres = N._normalize_storage([1, 2])
+assert sres["cookies"] == [] and sres["localStorage"] == {}, ("storage-nonobject", sres)
+sres = N._normalize_storage({"cookies": [{"name": 123, "value": "x"}, "notdict"]})
+assert isinstance(sres["cookies"], list), ("storage-badcookie", sres)
+assert N._normalize_storage({"localStorage": [1, 2]})["localStorage"] == {}, "storage ls non-object"
+eres = N._normalize_errors(5)
+assert eres["http_errors"] == [] and eres["console_errors"] == [], ("errors-scalar", eres)
+assert N._normalize_errors({"http_errors": {"a": 1}})["http_errors"] == [], "errors http non-list"
+eres = N._normalize_errors({"http_errors": [{"status": 404, "url": 123}, "notdict"]})
+assert eres["http_errors"] == [], ("errors-badurl-skip", eres)
+
+# top-level non-object manifest -- a JSON list/scalar has no .items().
+s = Path(tempfile.mkdtemp()); d = Path(tempfile.mkdtemp())
+(s / "dom.html").write_text("<html></html>", encoding="utf-8")
+(s / "assets").mkdir()
+(s / "manifest.json").write_text(json.dumps(["not", "an", "object"]), encoding="utf-8")
+N.normalize_page_dir(s, d)  # must NOT raise
+assert json.loads((d / "manifest.json").read_text(encoding="utf-8")) == {}, "top-level list not emptied"
+assert N.normalize_manifest(42) == {}, "scalar manifest not refused"
+assert N.normalize_manifest(["a", "b"]) == {}, "list manifest not refused"
+
+# all-malformed manifest -- EVERY asset entry is malformed. normalize must FAIL LOUD
+# (non-zero / raise), not finish 0 with a near-empty mirror that reads as a clean diff.
+s = Path(tempfile.mkdtemp()); d = Path(tempfile.mkdtemp())
+(s / "dom.html").write_text("<html></html>", encoding="utf-8")
+(s / "assets").mkdir()
+(s / "assets" / "real.css").write_text(".x{}", encoding="utf-8")
+(s / "manifest.json").write_text(json.dumps({**_page,
+    "https://%s/a.css" % H: {"status": 200, "content_type": "text/css", "asset": None},
+    "https://%s/b.css" % H: {"status": 200, "content_type": "text/css", "asset": None}}),
+    encoding="utf-8")
+raised = False
+try:
+    N.normalize_page_dir(s, d)
+except SystemExit:
+    raised = True
+assert raised, "all-malformed manifest must fail loud, not emit a near-empty mirror as success"
+
 print("OK active=%s" % active)
 """
 
