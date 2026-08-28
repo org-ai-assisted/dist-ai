@@ -97,7 +97,11 @@ def extract_source_keys(text):
     """
     return frozenset(
         key for _quote, key in re.findall(
-            r"""self\._\((['"])([^'"]+)\1\)""", text)
+            ## key body = anything up to the CLOSING quote (matched by \1), so a
+            ## single-quoted key may contain " and a double-quoted key may contain '
+            ## -- a bare [^'"] class would drop the whole key and silently escape the
+            ## translation-coverage check.
+            r"""self\._\((['"])((?:(?!\1).)*)\1\)""", text)
     )
 
 

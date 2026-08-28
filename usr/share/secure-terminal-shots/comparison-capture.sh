@@ -569,6 +569,15 @@ zoom_live_capture() {  ## $@=zoom levels (percent); default band if none
       sudo safe-rm --force -- "${dropin}" 2>/dev/null || true
       return 1
    fi
+   ## sudo mktemp made it 0600 root:root, but secure-terminal launches UNPRIVILEGED and
+   ## must READ it, or remote_control=true never applies and `ctl ls` finds no tab (the
+   ## sweep then fails "window never appeared"). It only needs to be root-OWNED for
+   ## placement in ${rc_dir}, not root-only-readable -- world-read a non-secret flag file.
+   if ! sudo chmod 0644 -- "${dropin}"; then
+      printf '%s\n' "zoom-live: cannot make the remote_control drop-in '${dropin}' world-readable" >&2
+      sudo safe-rm --force -- "${dropin}" 2>/dev/null || true
+      return 1
+   fi
    ## Record the EXACT path so cleanup() removes it even on an error/reap.
    zoom_live_rc_dropin="${dropin}"
 
