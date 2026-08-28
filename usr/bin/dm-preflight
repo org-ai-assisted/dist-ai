@@ -112,15 +112,25 @@ stage "submodules: uncommitted work"
 ## never checked out is invisible to the loop below -- it would report "no
 ## submodule carries uncommitted changes" for a tree where a whole submodule is
 ## absent. Name those separately rather than letting them pass silently.
-uninitialized_submodules="$( git -C "${source_dir}" submodule status --recursive 2>/dev/null \
-   | sed -n -e 's/^-[0-9a-f]* //p' | cut -d' ' -f1 || true )"
+## Capture git's OWN exit status, not '|| true' -- a git failure (e.g. an
+## unparsable .gitmodules -> exit 128) must FAIL loud, not read as empty ->
+## "ok". Take git's status BEFORE the sed/cut pipe so pipefail cannot hide it.
+sub_status_rc=0
+sub_status_raw="$( git -C "${source_dir}" submodule status --recursive 2>/dev/null )" || sub_status_rc="$?"
+if [ "${sub_status_rc}" -ne 0 ]; then
+   bad "git submodule status --recursive failed (rc ${sub_status_rc}); the submodule set cannot be read -- fix the repo (e.g. an unparsable .gitmodules) before trusting any check below"
+fi
+uninitialized_submodules="$( printf '%s\n' "${sub_status_raw}" | sed -n -e 's/^-[0-9a-f]* //p' | cut -d' ' -f1 )"
 if [ -n "${uninitialized_submodules}" ]; then
    printf '%s\n' "   NOTE: not checked out, so NOT inspected below (run 'git submodule update --init --recursive' for full coverage):" >&2
    printf '%s\n' "${uninitialized_submodules}" | sed 's/^/          /' >&2
 fi
+dirty_rc=0
 dirty_submodules="$( git -C "${source_dir}" submodule --quiet foreach --recursive \
-   'if [ -n "$(git status --porcelain)" ]; then printf "%s\n" "${sm_path}"; fi' 2>/dev/null || true )"
-if [ -z "${dirty_submodules}" ]; then
+   'if [ -n "$(git status --porcelain)" ]; then printf "%s\n" "${sm_path}"; fi' 2>/dev/null )" || dirty_rc="$?"
+if [ "${dirty_rc}" -ne 0 ]; then
+   bad "git submodule foreach failed (rc ${dirty_rc}); uncommitted-work in submodules could NOT be assessed -- a green here would be fabricated"
+elif [ -z "${dirty_submodules}" ]; then
    ok "no initialized submodule carries uncommitted changes"
 else
    bad "these submodules have UNCOMMITTED changes; a parent commit will not carry them:"
@@ -136,13 +146,16 @@ fi
 ## on every one of thirty submodules would train everyone to ignore the check
 ## that matters, which is the uncommitted one above.
 stage "submodules: ahead of the pin (report only)"
+lagging_rc=0
 lagging_gitlinks="$( git -C "${source_dir}" submodule --quiet foreach --recursive \
    'pinned="$(git -C "${toplevel}" ls-tree HEAD -- "${sm_path}" | { read -r _ _ sha _ ; printf "%s" "${sha}" ; })"
     head_sha="$(git rev-parse HEAD)"
     if [ -n "${pinned}" ] && [ "${pinned}" != "${head_sha}" ]; then
        printf "%s (pinned %.12s, HEAD %.12s)\n" "${displaypath}" "${pinned}" "${head_sha}"
-    fi' 2>/dev/null || true )"
-if [ -z "${lagging_gitlinks}" ]; then
+    fi' 2>/dev/null )" || lagging_rc="$?"
+if [ "${lagging_rc}" -ne 0 ]; then
+   bad "git submodule foreach failed (rc ${lagging_rc}); gitlink-vs-HEAD could NOT be assessed -- a green here would be fabricated"
+elif [ -z "${lagging_gitlinks}" ]; then
    ok "every gitlink matches its submodule's HEAD"
 else
    printf '%s\n' "   NOTE: these submodules are AHEAD of the pin. If your change is in one," \
@@ -352,7 +365,10 @@ pin_report="$( git -C "${source_dir}" submodule --quiet foreach --recursive \
        printf "FORK-ONLY %s (pinned %.12s not reachable from %s)\n" "${displaypath}" "${pinned}" "${gitmodules_url}"
     else
        printf "MISSING %s (pinned %.12s: absent locally and not fetchable from %s)\n" "${displaypath}" "${pinned}" "${gitmodules_url}"
-    fi' 2>/dev/null || true )"
+    fi' 2>/dev/null )" || pin_report_rc="$?"
+if [ "${pin_report_rc:-0}" -ne 0 ]; then
+   bad "git submodule foreach failed (rc ${pin_report_rc}) while probing pin fetchability; the pins could NOT be assessed -- a green here would be fabricated"
+fi
 bad_pins="$( printf '%s\n' "${pin_report}" | grep -E '^(MISSING|UNFETCHABLE) ' || true )"
 ## FORK-ONLY is reported LOUDLY but does not fail: on the 'ai' branch CI runs
 ## ci/configure-fork-mirror before submodule init, so a fork-only pin is

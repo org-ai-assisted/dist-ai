@@ -340,6 +340,34 @@ else
    cat -- "${workdir}/out.txt" >&2
 fi
 
+## --- a git submodule failure is FAILED, not reported green ------------------
+## An unparsable .gitmodules (a merge-conflict marker) makes every 'git
+## submodule' command exit 128. The submodule stages must FAIL loud, not read
+## the empty output through '|| true' as "ok" -- the fabricated-green this
+## preflight exists to prevent.
+gitfail="${workdir}/gitfail"
+build_fixture "${gitfail}"
+printf '<<<<<<< HEAD\n' >> "${gitfail}/.gitmodules"
+git_quiet -C "${gitfail}" commit --quiet --all --no-verify --message corrupt-gitmodules
+rc="$(run_preflight "${gitfail}")"
+if [ "${rc}" -ne 0 ]; then
+   pass "an unparsable .gitmodules (git submodule exits 128) fails the preflight"
+else
+   fail "a git submodule failure was reported GREEN -- fabricated"
+   cat -- "${workdir}/out.txt" >&2
+fi
+if grep --quiet --fixed-strings -- 'a green here would be fabricated' "${workdir}/out.txt"; then
+   pass "the failure says the submodule check could not run, not 'ok'"
+else
+   fail "the git-failure was not surfaced as a check-could-not-run failure"
+   cat -- "${workdir}/out.txt" >&2
+fi
+if grep --quiet --fixed-strings -- 'no initialized submodule carries uncommitted changes' "${workdir}/out.txt"; then
+   fail "still printed the green uncommitted-work line despite git failing -- fabricated-green"
+else
+   pass "does not print the green uncommitted-work line on a git failure"
+fi
+
 ## --- a non-checkout is a usage error, not a pass ----------------------------
 rc=0
 "${subject}" --dir "${workdir}" --quick >/dev/null 2>&1 || rc="$?"
