@@ -5066,15 +5066,19 @@ for _entry, _caps, _le in (('secure-terminal', _CAPS_EDIT, True),
 # a cancelled op MUST NOT be (or line_edits=false is append-only in name only).
 # Both directions matter: this is the clash the -noedit entry exists to prevent.
 # cap -> (its escape, a probe whose render CHANGES when the op is honoured).
-# The forward moves are probed after a backward one: with no line width, cursor
-# forward clamps to end-of-line, so at the margin it is a no-op either way and
-# the probe would prove nothing.
+# The forward moves (cuf/cuf1) and erase-to-EOL (el) must first move the cursor OFF
+# the append-only margin, or with no line width they clamp to end-of-line and prove
+# nothing. That pre-positioning uses BACKSPACE (cub1 = \b), which is honoured in BOTH
+# settings -- NOT a CSI cub/hpa move, which noedit cancels: were the setup itself
+# cancelled, the probe could never leave the margin and a real "noedit still honours
+# cuf/el" regression would pass undetected. cub/hpa/el1 are self-contained (the tested
+# op is also the only move), so they need no separate setup.
 _CURSOR_FAMILY = {
-    'cuf': ('\x1b[2C', 'abcdef\x1b[4D\x1b[2CX'),
-    'cuf1': ('\x1b[C', 'abcdef\x1b[4D\x1b[CX'),
+    'cuf': ('\x1b[2C', 'abcdef\b\b\b\b\x1b[2CX'),
+    'cuf1': ('\x1b[C', 'abcdef\b\b\b\b\x1b[CX'),
     'cub': ('\x1b[2D', 'abc\x1b[2DX'),
     'hpa': ('\x1b[2G', 'abc\x1b[2GX'),
-    'el': ('\x1b[K', 'abcdef\x1b[3G\x1b[K'),
+    'el': ('\x1b[K', 'abcdef\b\b\b\x1b[K'),
     'el1': ('\x1b[1K', 'abc\x1b[1K'),
 }
 for _entry, _caps, _le in (('secure-terminal', _CAPS_EDIT, True),
