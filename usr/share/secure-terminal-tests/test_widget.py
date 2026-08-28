@@ -5362,22 +5362,36 @@ _tpp.close()
 # stale bracketed-paste bit (DEC 2004): a foreground program enables bracketed paste then
 # dies WITHOUT disabling it (crash / kill -9 / dropped SSH); the sticky pyte bit must not
 # keep _bracketed_paste_active() True for the RETURNING SHELL, or a multiline paste would
-# be framed (200~/201~) and its embedded \r auto-run past the paste gate. The read path
-# drops the stale bit on the foreground-program True->False edge.
+# be framed (200~/201~) and its embedded \r auto-run past the paste gate. Two defenses:
+# the read path drops the stale bit on the foreground-program True->False edge, AND the
+# gate requires a LIVE foreground program to OWN the bit (so a bit that latched without an
+# observed edge is still not trusted).
 _bpm = 2004 << 5
 _bp = SecureTerminal(command=None, tui=True)
 _bp.has_foreground_program = lambda: True                 # a program owns the terminal
 feed_output(_bp, b'\x1b[?2004h')                          # ...and turns bracketed paste on
 ok(_bpm in _bp._screen.mode and _bp._bracketed_paste_active(),
-   'bracketed paste is active while a foreground program holds DEC 2004')
+   'bracketed paste is active while a live foreground program holds DEC 2004')
 _bp.has_foreground_program = lambda: False                # the program dies (no ?2004l)
 feed_output(_bp, b'user@host:~$ ')                        # the returning shell prompt
 ok(_bpm not in _bp._screen.mode,
-   'the stale DEC 2004 bit is dropped when the foreground program exits')
+   'the stale DEC 2004 bit is dropped when the foreground program exits (edge clear)')
 ok(not _bp._bracketed_paste_active(),
    'bracketed paste is NOT trusted for the returning shell (a multiline paste is reviewed)')
 _bp.close()
-_tpp.close()
+
+# single-read TOCTOU: a program's ?2004h and its death can COALESCE into one os.read()
+# (kill -9), so has_foreground_program is already False when the bit latches and the
+# read-path edge never fires. The gate's live-foreground requirement still refuses to
+# trust the latched-but-unowned bit -- closing the window the edge-clear alone cannot.
+_bp2 = SecureTerminal(command=None, tui=True)
+_bp2.has_foreground_program = lambda: False               # the program is already gone
+feed_output(_bp2, b'\x1b[?2004h')                         # its ?2004h latches anyway
+ok(_bpm in _bp2._screen.mode,
+   'the 2004 bit latches even when the arming program is already gone (single read)')
+ok(not _bp2._bracketed_paste_active(),
+   'a latched 2004 bit with no live foreground program is NOT trusted (TOCTOU closed)')
+_bp2.close()
 
 # A CLI-typed line carried into TUI stays in _line_buffer; editing it there with a
 # key TUI cannot mirror (Backspace/Home/Delete) desyncs the buffer from the real
@@ -6656,15 +6670,17 @@ _pmime = QMimeData()
 _pmime.setText('\x00\x01\x02')              # only control bytes -> stripped to ''
 _pt.insertFromMimeData(_pmime)
 eq(_pts, [], 'paste: a control-only clipboard sanitizes to nothing (sends nothing)')
-# bracketed paste: with DEC mode 2004 set by the program, a paste is wrapped
+# bracketed paste: with DEC mode 2004 set by a LIVE foreground program, a paste is wrapped
 _pt.apply_tui(True)
+_pt.has_foreground_program = lambda: True    # /bin/cat owns the foreground (pipe harness
+#                                              tcgetpgrp can't see it, so state it)
 feed_output(_pt, b'\x1b[?2004h')            # program enables bracketed paste
 _pts.clear()
 _pmime2 = QMimeData()
 _pmime2.setText('echo hi')
 _pt.insertFromMimeData(_pmime2)
 ok(_pts and _pts[0].startswith(b'\x1b[200~') and _pts[0].endswith(b'\x1b[201~'),
-   'paste: bracketed-paste mode wraps the pasted data in the DEC 2004 markers')
+   'paste: a live foreground program with DEC 2004 wraps the pasted data in the markers')
 # gap (ai-review): a paste containing the bracketed-paste END marker must NOT break
 # out of the bracketed region and inject a command -- the ESC of an embedded
 # \x1b[201~ is stripped, so the only real END marker is the terminal's own trailing
