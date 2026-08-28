@@ -464,9 +464,10 @@ def _scrub_hosts_bytes(data):
 def _is_text_asset(content_type: str) -> bool:
     ## Text-shaped asset bodies (CSS, JS, SVG, JSON) can embed absolute URLs to the
     ## wiki host; binary assets (images, fonts) cannot, so they copy through untouched.
+    ct = content_type.lower()   ## media types are case-insensitive (RFC 7231)
     return (
-        content_type.startswith(("text/", "application/javascript", "application/json"))
-        or "svg" in content_type
+        ct.startswith(("text/", "application/javascript", "application/json"))
+        or "svg" in ct
     )
 
 
@@ -1296,7 +1297,8 @@ def normalize_page_dir(src: Path, dst: Path) -> None:
         if not isinstance(entry, dict):
             continue
         ct = entry.get("content_type", "")
-        if entry.get("status") == 200 and isinstance(ct, str) and ct.startswith("text/html"):
+        if (entry.get("status") == 200 and isinstance(ct, str)
+                and ct.lower().startswith("text/html")):
             page_url = url
             break
     nm = normalize_manifest(manifest, page_url)
@@ -1373,6 +1375,10 @@ def normalize_page_dir(src: Path, dst: Path) -> None:
                 ## A crafted non-string content_type would crash .startswith below.
                 if not isinstance(ct, str):
                     ct = ""
+                ## Media types are case-INSENSITIVE (RFC 7231), so a "Application/Javascript"
+                ## variant must still select the scrub -- else the version-hash flake-kill
+                ## silently no-ops. Lowercase before every startswith check below.
+                ct = ct.lower()
                 ## Three categories of asset get in-place text rewrites; everything
                 ## else copies through at the byte level (see _copy_asset_bytes).
                 ## content_type is UNTRUSTED, so decide the rewrite mode first, then
