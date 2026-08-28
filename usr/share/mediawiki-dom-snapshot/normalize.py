@@ -1297,7 +1297,13 @@ def _copy_asset_bytes(src_a: Path, dst_assets: Path, sname: str, entry: dict) ->
 def normalize_page_dir(src: Path, dst: Path) -> None:
     dst.mkdir(parents=True, exist_ok=True)
 
-    html = (src / "dom.html").read_text(encoding="utf-8")
+    ## dom.html is attacker-controllable (a received cross-wiki snapshot). Unlike the
+    ## byte-copied asset bodies -- which must stay bit-identical, so must NOT be
+    ## errors="replace"-mangled -- dom.html is always re-serialised by normalize_html, so a
+    ## lossy decode cannot break a bit-identical invariant here. Decode with
+    ## errors="replace" so a non-UTF-8 dom.html surfaces in the diff instead of DoSing the
+    ## whole run with an uncaught UnicodeDecodeError.
+    html = (src / "dom.html").read_text(encoding="utf-8", errors="replace")
     (dst / "dom.html").write_text(normalize_html(html), encoding="utf-8")
 
     ## Computed styles: bit-identical copy. The values come straight
@@ -1356,9 +1362,16 @@ def normalize_page_dir(src: Path, dst: Path) -> None:
         if p.exists():
             _copy_json_scrubbed(p, dst / fn)
 
-    manifest = json.loads((src / "manifest.json").read_text(encoding="utf-8"))
-    ## manifest.json is untrusted (a received cross-wiki snapshot). A crafted
-    ## top-level scalar/list has no .items(); treat it as empty rather than crash.
+    ## manifest.json is untrusted (a received cross-wiki snapshot). A truncated /
+    ## corrupted / non-UTF-8 manifest must degrade to empty, not DoS the run with an
+    ## uncaught JSONDecodeError/UnicodeDecodeError -- every sibling channel above already
+    ## loads inside try/except.
+    try:
+        manifest = json.loads((src / "manifest.json").read_text(encoding="utf-8"))
+    except Exception:
+        print("normalize: manifest.json unreadable/invalid; ignoring", file=sys.stderr)
+        manifest = {}
+    ## A crafted top-level scalar/list has no .items(); treat it as empty rather than crash.
     if not isinstance(manifest, dict):
         print("normalize: manifest.json is not a JSON object; ignoring", file=sys.stderr)
         manifest = {}

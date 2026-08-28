@@ -375,6 +375,26 @@ s = Path(tempfile.mkdtemp()); d = Path(tempfile.mkdtemp())
 N.normalize_page_dir(s, d)  # must NOT raise
 assert json.loads((d / "manifest.json").read_text(encoding="utf-8")) == {}, "top-level list not emptied"
 assert N.normalize_manifest(42) == {}, "scalar manifest not refused"
+
+# malformed manifest.json (invalid JSON SYNTAX, not just wrong shape) -- a truncated /
+# corrupted received snapshot must degrade to {} like every sibling channel, not DoS the
+# run with an uncaught JSONDecodeError. The top-level load was the only UNGUARDED one.
+s = Path(tempfile.mkdtemp()); d = Path(tempfile.mkdtemp())
+(s / "dom.html").write_text("<html></html>", encoding="utf-8")
+(s / "assets").mkdir()
+(s / "manifest.json").write_text('{ "u": trunc', encoding="utf-8")  # invalid JSON
+N.normalize_page_dir(s, d)  # must NOT raise
+assert json.loads((d / "manifest.json").read_text(encoding="utf-8")) == {}, "malformed manifest not emptied"
+
+# non-UTF-8 dom.html -- attacker-controllable; the top-level read was strict utf-8 (no
+# fallback), so a stray byte crashed with UnicodeDecodeError. dom.html is always
+# re-serialised by normalize_html (never bit-copied), so errors="replace" is safe here.
+s = Path(tempfile.mkdtemp()); d = Path(tempfile.mkdtemp())
+(s / "dom.html").write_bytes(b"<html><body>\xff\xfe caf\xe9</body></html>")  # invalid utf-8
+(s / "assets").mkdir()
+(s / "manifest.json").write_text(json.dumps(_page), encoding="utf-8")
+N.normalize_page_dir(s, d)  # must NOT raise
+assert (d / "dom.html").exists(), "non-utf8 dom.html not normalized"
 assert N.normalize_manifest(["a", "b"]) == {}, "list manifest not refused"
 
 # all-malformed manifest -- EVERY asset entry is malformed. normalize must FAIL LOUD
