@@ -662,6 +662,25 @@ def _skip_exit_code_word(call):
     return bash_ast.word_string(args[code_index])
 
 
+def _skip_waived(lines, comment_lines, line):
+    """True if an 'allow-skip' waiver sits on the skip's OWN line or the line
+    directly above -- but ONLY where that line carries a REAL comment (COMMENT_LINES,
+    the shfmt-AST comment line numbers). ALLOW_SKIP is matched over raw source, so
+    without this restriction a '## style-ok: allow-skip:' string INSIDE a quoted
+    value ('echo "## style-ok: allow-skip: x" && exit 77') or a bare variable
+    assignment on the line above would spoof authorization -- the exact skip-gate
+    silent-pass R-220 exists to close. COMMENT_LINES is None only when the source
+    did not parse (then there are no calls to reach here); fall back to raw."""
+    for number in (line, line - 1):
+        if number < 1 or number > len(lines):
+            continue
+        if comment_lines is not None and number not in comment_lines:
+            continue
+        if ALLOW_SKIP.search(lines[number - 1]):
+            return True
+    return False
+
+
 class UnauthorizedSkip(Rule):
     """R-220: a test SKIP ('exit 77'/'return 77') must be authorized by a
     per-skip '## style-ok: allow-skip: <why>' waiver on the line or the line
@@ -671,6 +690,10 @@ class UnauthorizedSkip(Rule):
 
     def detect(self, ctx):
         lines = ctx.source.split("\n")
+        ## Restrict the waiver match to REAL comment lines (shfmt AST): a waiver
+        ## string in a quoted value or a bare var assignment must NOT authorize a
+        ## skip, the same spoof has_waiver / _comment_source_lines guard against.
+        comment_lines = ctx._comment_line_numbers()
         for call in bash_ast.call_exprs(ctx.tree):
             ## _skip_exit_code_word resolves exit/return incl. the '\exit' /
             ## 'builtin exit' / 'command exit' spellings, then word_string
@@ -680,9 +703,7 @@ class UnauthorizedSkip(Rule):
             if code_word is None or not _is_skip_code_77(code_word):
                 continue
             line = call["Pos"]["Line"]
-            here = lines[line - 1] if 0 <= line - 1 < len(lines) else ""
-            above = lines[line - 2] if line - 2 >= 0 else ""
-            if ALLOW_SKIP.search(here) or ALLOW_SKIP.search(above):
+            if _skip_waived(lines, comment_lines, line):
                 continue
             yield _fail(
                 ctx, "R-220",

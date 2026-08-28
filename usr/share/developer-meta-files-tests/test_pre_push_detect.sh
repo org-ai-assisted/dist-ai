@@ -283,6 +283,21 @@ run_det "$(printf '%s\n' '#!/bin/bash' \
    'bar || command exit 78')"
 assert_not_at "R-220 waiver honored through 'builtin exit'"     "R-220" 2
 assert_not_at "R-220 spares a wrapped non-77 'command exit 78'" "R-220" 3
+## waiver-spoof: the 'allow-skip' waiver must be a REAL comment, never a
+## '## style-ok: allow-skip:' string inside a quoted value or a bare variable
+## assignment -- else an unwaived skip goes green (the fabricated-pass R-220 closes).
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   'echo "## style-ok: allow-skip: fake" && exit 77')"
+assert_at "R-220 flags a skip with a decoy waiver inside a string" "R-220" 2
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   'z="## style-ok: allow-skip: nice try"' \
+   'foo || exit 77')"
+assert_at "R-220 flags a skip after a decoy-waiver var assignment" "R-220" 3
+## a REAL comment waiver (own line above) still authorizes the skip.
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   '## style-ok: allow-skip: optional target' \
+   'foo || exit 77')"
+assert_not_at "R-220 honors a real comment waiver on the line above" "R-220" 3
 ## R-090: '-pv' / '-p -v' clusters are still 'command -v'.
 run_det "$(printf '%s\n' '#!/bin/bash' 'command -pv foo' 'command -p -v bar')"
 assert_at "R-090 flags a 'command -pv' cluster"   "R-090" 2
