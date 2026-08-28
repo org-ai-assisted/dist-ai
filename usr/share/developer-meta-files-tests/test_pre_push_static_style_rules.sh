@@ -1533,6 +1533,17 @@ printf '%s\n' \
 printf '%s\n' \
    "DPkg::Post-Invoke\"/usr/bin/a${sc} /usr/bin/b\"${sc}" \
    > "${apt_repo}/etc/apt/apt.conf.d/14bad-nospace-quote"
+## A trailing INLINE '//' comment (apt honours it from any column, not just a
+## whole-line comment) carrying a '}' desyncs the brace-depth scan: the ';' after
+## the benign entry is then read as the directive terminator, hiding the later
+## multi-statement entry. Stripping inline comments first must keep R-194 seeing it.
+printf '%s\n' \
+   'APT::Update::Pre-Invoke {' \
+   "\"echo one\"${sc} // stray brace } in a comment" \
+   "\"benign\"${sc}" \
+   "\"echo two${sc} echo three\"${sc}" \
+   "}${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/15bad-inline-comment"
 ## '|| true' error-suppression and a single command are glue, not a program.
 printf '%s\n' \
    'DPkg::Pre-Install-Pkgs {"/usr/sbin/dpkg-preconfigure --apt || true"};' \
@@ -1591,6 +1602,12 @@ if grep --quiet --fixed-strings -- '14bad-nospace-quote' <<< "${apt_hits}"; then
    printf '%s\n' 'PASS: R-194 flags a no-space bare-quoted apt hook (keyword glued to value)'
 else
    printf '%s\n' 'FAIL: R-194 did not flag a no-space bare-quoted apt hook' >&2
+   failures=$((failures + 1))
+fi
+if grep --quiet --fixed-strings -- '15bad-inline-comment' <<< "${apt_hits}"; then
+   printf '%s\n' 'PASS: R-194 flags a hook hidden behind an inline-comment brace desync'
+else
+   printf '%s\n' 'FAIL: R-194 did not flag a hook behind an inline-comment brace desync' >&2
    failures=$((failures + 1))
 fi
 if grep --quiet --fixed-strings -- '20good-ortrue' <<< "${apt_hits}"; then

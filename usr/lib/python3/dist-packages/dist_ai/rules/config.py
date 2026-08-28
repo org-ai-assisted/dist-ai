@@ -101,6 +101,50 @@ def _double_quoted_spans(line):
         yield inner
 
 
+def _strip_apt_comments(text):
+    """Blank apt.conf comments so a ';'/'{'/'}'/'"' living in one cannot desync
+    the brace/quote scan that follows: '//' and '#' run to end of line from ANY
+    column (not just a whole-line comment), and '/* */' is a block that may span
+    lines. All are literal INSIDE a double-quoted value (a '//' in a URL), so a
+    quote toggle suspends comment recognition. Replaced with spaces, newlines
+    kept, so line numbers and the value-region scan are preserved. apt strings
+    carry no escapes, so a bare '"' toggles the quote state."""
+    out = []
+    index = 0
+    length = len(text)
+    in_quote = False
+    while index < length:
+        char = text[index]
+        if in_quote:
+            out.append(char)
+            if char == '"':
+                in_quote = False
+            index += 1
+            continue
+        if char == '"':
+            in_quote = True
+            out.append(char)
+            index += 1
+            continue
+        pair = text[index:index + 2]
+        if pair == "//" or char == "#":
+            stop = text.find("\n", index)
+            stop = length if stop < 0 else stop
+            out.append(" " * (stop - index))
+            index = stop
+            continue
+        if pair == "/*":
+            close = text.find("*/", index + 2)
+            stop = length if close < 0 else close + 2
+            out.append("".join(
+                "\n" if text[k] == "\n" else " " for k in range(index, stop)))
+            index = stop
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
+
+
 def _hook_value_region(text, start):
     """The directive value region beginning at START (just past the hook
     keyword): text up to the ';' that terminates the directive at brace depth 0.
@@ -149,15 +193,11 @@ class AptHook(Rule):
                         "R-194 skipped: 'style-ok: allow-embedded-script' "
                         "waiver in '%s'" % ctx.path)
             return
-        ## Blank out whole-line comments (keeping newlines for line numbers) so a
-        ## commented-out hook is not scanned, then find each hook directive and
-        ## the value region that follows it, across lines.
-        kept = []
-        for line in source.split("\n"):
-            stripped = line.lstrip()
-            kept.append("" if (stripped.startswith("#")
-                               or stripped.startswith("//")) else line)
-        text = "\n".join(kept)
+        ## Blank comments (inline '//'/'#' to EOL and '/* */' blocks, keeping
+        ## newlines) so a commented-out hook is not scanned and a ';'/'}' in a
+        ## trailing comment cannot desync the value-region scan, then find each
+        ## hook directive and the value region that follows it, across lines.
+        text = _strip_apt_comments(source)
         for match in APT_HOOK.finditer(text):
             region = _hook_value_region(text, match.end())
             for inner in _double_quoted_spans(region):
