@@ -359,6 +359,56 @@ _alt._wheel_accum = 39
 feed_output(_alt, b'\x1b[?1049h')          # re-enter the alt screen
 eq(_alt._wheel_accum, 0, 'alt-screen ENTER drops any stale wheel-scroll remainder')
 
+# SECURITY: mouse tracking is an output-armed INPUT channel. In default CLI mode (not
+# TUI, no alt screen) untrusted output printing ?1000h?1006h?1004h must NOT let a click,
+# wheel or focus change become pty report bytes -- the "output cannot affect input"
+# contract. Only a full-screen program actually driving the terminal (TUI mode / alt
+# screen) may consume; the SCAN stays mode-agnostic so state persists across a switch.
+_mc = SecureTerminal(command=None)
+_mc.show()
+_mc._cols = 80
+_mcsent = spy_writes(_mc)
+feed_output(_mc, b'\x1b[?1000h\x1b[?1006h\x1b[?1004h')   # untrusted output arms the bits
+ok(not _mc.tui_active() and not _mc._alt_screen, 'the terminal is in default CLI mode')
+ok(not _mc._mouse_report_on(),
+   'CLI mode: output-armed mouse modes do NOT enable reporting (output cannot affect input)')
+_mcsent.clear()
+_mc.mousePressEvent(_mev(QEvent.Type.MouseButtonPress, Qt.MouseButton.LeftButton))
+ok(_parse_sgr(_mcsent) is None, 'CLI mode: a click emits no SGR mouse report')
+_mcsent.clear()
+_mc.wheelEvent(_wheel_ev(-120, pos=(200, 100)))
+ok(_parse_sgr(_mcsent) is None, 'CLI mode: a wheel emits no SGR mouse report')
+_mcsent.clear()
+_mc.focusInEvent(_QFEv(QEvent.Type.FocusIn))
+ok(b'\x1b[I' not in b''.join(_mcsent), 'CLI mode: a focus change emits no DEC 1004 report')
+_mc.apply_tui(True)   # the user opts into TUI: a live full-screen program may now report
+ok(_mc._mouse_report_on(),
+   'TUI mode: the SAME armed modes now report (CLI-mode blocking was the mode gate)')
+_mc.close()
+
+# wheel->arrow alternateScroll (a pager that did NOT request mouse) is the SAME output-armed
+# input channel via _alt_screen ALONE: untrusted output printing ?1049h arms it
+# mode-agnostically. In default CLI mode a plain wheel must scroll LOCAL scrollback, NOT
+# inject arrow keys into the child; only in TUI mode (the user viewing the program) is the
+# surrogate intended.
+_wa = SecureTerminal(command='/bin/cat')      # CLI mode, no mouse request
+_wa.show()
+_wasent = spy_writes(_wa)
+feed_output(_wa, b'\x1b[?1049h')              # untrusted output arms the alt screen
+ok(_wa._alt_screen and not _wa.tui_active(), 'CLI mode with an output-armed alt screen')
+_wa._wheel_accum = 0
+_wasent.clear()
+_wa.wheelEvent(_wheel_ev(-120))
+ok(b'\x1b[A' not in b''.join(_wasent) and b'\x1b[B' not in b''.join(_wasent),
+   'CLI mode: a wheel over an output-armed alt screen injects NO arrow keys')
+_wa.apply_tui(True)                           # the user opts into TUI: viewing the program
+_wa._wheel_accum = 0
+_wasent.clear()
+_wa.wheelEvent(_wheel_ev(-120))
+ok(b'\x1b[B' in b''.join(_wasent),
+   'TUI mode: the wheel->arrow alternateScroll surrogate fires for a viewed program')
+_wa.close()
+
 # konsole/xterm mouse-reporting parity: once the child requests tracking (1000/
 # 1002/1003) + SGR encoding (1006), its mouse and wheel events are REPORTED to it at
 # the cell UNDER THE POINTER (not a pinned corner, not arrow keys). Shift is the
@@ -6832,23 +6882,34 @@ _oc._osc_color(10, b'garbage')              # unparseable -> ignored
 ok('fg' in _oc._osc_palette and 'bg' in _oc._osc_palette,
    'OSC 10/11/12 override the default fg/bg/cursor colours')
 
-# OSC 52 clipboard-read gating: off, approved, denied, always, and ask-once
+# OSC 52 clipboard-read gating: off / approved / denied / global-always / ask-once. Each
+# branch is VERIFIED to write (or NOT write) a real \x1b]52;c; reply -- asserting nothing
+# let a denied-branch leak or an approved silent-fail pass unnoticed.
+_ocw = spy_writes(_oc)
+_has_read_reply = lambda: any(b'\x1b]52;c;' in _w for _w in _ocw)
 _oc._osc['osc_clipboard_read'] = False
-_oc._osc_clipboard_read()                   # feature off -> nothing
+_ocw.clear(); _oc._osc_clipboard_read()     # feature off
+ok(not _has_read_reply(), 'OSC 52 read: feature OFF replies nothing (no clipboard exfil)')
 _oc._osc['osc_clipboard_read'] = True
 _oc._clipboard_read = True
-_oc._osc_clipboard_read()                   # approved -> reply
+_oc._last_clip_read = 0                      # clear the anti-flood rate-limit for this reply
+_ocw.clear(); _oc._osc_clipboard_read()     # approved
+ok(_has_read_reply(), 'OSC 52 read: an APPROVED tab replies with the clipboard')
 _oc._clipboard_read = False
-_oc._osc_clipboard_read()                   # denied -> nothing
+_ocw.clear(); _oc._osc_clipboard_read()     # denied
+ok(not _has_read_reply(), 'OSC 52 read: a DENIED tab replies nothing (no exfil)')
 _oc._clipboard_read = None
 _oc._clipboard_read_always = True
-_oc._osc_clipboard_read()                   # global always-allow -> reply
+_oc._last_clip_read = 0                      # clear the rate-limit again (else this is throttled)
+_ocw.clear(); _oc._osc_clipboard_read()     # global always-allow
+ok(_has_read_reply(), 'OSC 52 read: global always-allow replies')
 _oc._clipboard_read = None
 _oc._clipboard_read_always = False
+_ocw.clear()
 _creq = []
 _oc.clipboard_read_requested.connect(lambda: _creq.append(1))
-_oc._osc_clipboard_read()                   # ask once -> raise the request
-ok(_creq and _oc._clipboard_read == 'pending',
+_oc._osc_clipboard_read()                   # ask once -> raise the request, no reply yet
+ok(_creq and _oc._clipboard_read == 'pending' and not _has_read_reply(),
    'OSC 52 read: an un-granted tab asks once and never replies')
 
 # feed guards: no pyte stream (line mode), an empty chunk, alt-leave with no save
@@ -7025,12 +7086,20 @@ _bg._sync_timer.stop()
 import base64 as _b64                                           # noqa: E402
 _ow = SecureTerminal(command='/bin/cat')
 _ow._osc['osc_clipboard'] = True
+# Each REJECT branch must leave the clipboard untouched (a sentinel), and only the valid
+# base64 may write -- an ok(True) let an oversized/bad-base64 accept-and-write pass.
+_owclip = QGuiApplication.clipboard()
+_owclip.setText('SENTINEL')
 _ow._osc_clipboard(b'no-semicolon')                             # malformed -> ignored
+ok(_owclip.text() == 'SENTINEL', 'OSC 52 write: a malformed (no ";") sequence does not write')
 _ow._osc_clipboard(b'c;?')                                      # read/clear query -> declined
+ok(_owclip.text() == 'SENTINEL', 'OSC 52 write: a c;? read/clear query does not write')
 _ow._osc_clipboard(b'c;' + b'A' * 200000)                       # oversized -> declined
+ok(_owclip.text() == 'SENTINEL', 'OSC 52 write: an oversized payload is declined, not written')
 _ow._osc_clipboard(b'c;!!!not-base64!!!')                       # bad base64 -> ignored
+ok(_owclip.text() == 'SENTINEL', 'OSC 52 write: an invalid-base64 payload is ignored')
 _ow._osc_clipboard(b'c;' + _b64.b64encode(b'hello'))            # valid -> set clipboard
-ok(True, 'OSC 52 write: malformed, query, oversized, bad-base64 and valid all handled')
+ok(_owclip.text() == 'hello', 'OSC 52 write: only a valid base64 payload sets the clipboard')
 
 # _on_readable creates the pyte screen on demand in TUI mode
 _mk = SecureTerminal(command='/bin/cat')

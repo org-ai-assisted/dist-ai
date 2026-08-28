@@ -265,6 +265,13 @@ def _canonicalise_whitespace(soup) -> None:
             continue
         if p.get_text(strip=True):
             continue
+        ## Keep an empty <p> that still carries VISIBLE styling -- a style attribute, or a
+        ## class other than MW's mw-empty-elt noise marker -- since it can occupy layout
+        ## (e.g. <p class="banner" style="height:100px">), a real render difference the
+        ## snapshot must not hide. Only the truly inert / mw-empty-elt paragraphs are noise.
+        classes = p.get("class") or []
+        if p.get("style") or (set(classes) - {"mw-empty-elt"}):
+            continue
         p.decompose()
 
     ## Collapse whitespace runs inside the HTML comments we keep, so a
@@ -880,10 +887,15 @@ def normalize_manifest(manifest: dict, page_url: str | None = None) -> dict:
         ## the differing hostname.
         nurl = _scrub_hosts(_normalize_url(url))
         normalised_entry = dict(entry)
-        ## Only normalise headers when they are actually a dict; a crafted
-        ## non-object "headers" would crash _normalize_headers' .items().
+        ## Normalise headers when they are a dict; a crafted non-object "headers" would
+        ## crash _normalize_headers' .items(). But dict(entry) has already COPIED the raw
+        ## value through, so a non-dict headers (e.g. a list ["https://secret.onion/x"])
+        ## would leak its host verbatim. Fail CLOSED: redact a present-but-non-dict headers
+        ## so the no-host-leak guarantee holds for an untrusted snapshot whatever the shape.
         if isinstance(normalised_entry.get("headers"), dict):
             normalised_entry["headers"] = _normalize_headers(normalised_entry["headers"])
+        elif "headers" in normalised_entry:
+            normalised_entry["headers"] = "SCRUBBED"
         out.setdefault(nurl, normalised_entry)
     return dict(sorted(out.items()))
 
