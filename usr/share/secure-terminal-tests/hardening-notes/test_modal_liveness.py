@@ -34,6 +34,23 @@ is the one blind spot; flagged here rather than silently trusted.
 
 Run standalone: python3 test_modal_liveness.py  (SECURE_TERMINAL_REPO overrides the source
 root; unset -> the operator's private-sources checkout).
+
+KNOWN LIMITS -- this is a TRIPWIRE, not a proof. Read before promoting it to a REQUIRED
+gate (as a prototype it is inert). It attests truth AT REVIEW TIME, and these are its
+false-attestation directions:
+  - Guard match is by NAME (receiver-qualified: self._tab_is_live / self.tabs.indexOf /
+    self.current), not a proof the guarded object is the CAPTURED one, nor that the guard
+    DOMINATES every post-modal dereference (a guard in any later branch/closure counts --
+    path-insensitive).
+  - The allowlist is keyed by (function, callee): a NEW modal type in a function trips, but
+    a site whose BODY changes to become unsafe under the SAME callee stays silently
+    exempted, and a cross-function reason can go stale invisibly (e.g. _confirm_running_close
+    is safe only because close_tab owns the _closing_tabs guard). Therefore EVERY allowlist
+    entry is a SECURITY-SENSITIVE assertion that must be RE-REVIEWED on any modal-touching
+    change to its function -- not a permanent waiver. The semantic complement (the P0
+    event-sequence suite in the README) is what actually proves the guard protects the right
+    object; this tripwire only catches "a guard/classification was removed or a new modal
+    appeared".
 """
 
 import ast
@@ -47,8 +64,12 @@ _STATIC_GET_CLASSES = {"QInputDialog", "QFileDialog", "QColorDialog", "QFontDial
 _DIALOG_BASES = {"QDialog", "QMessageBox", "QInputDialog", "QFileDialog",
                  "QColorDialog", "QFontDialog"}
 ## Markers that RE-RESOLVE a live target after a modal returns (the fix pattern).
-_GUARD_CALLS = {"_tab_is_live", "indexOf", "current"}
-_GUARD_ATTRS = {"_closing_tabs"}
+## RECEIVER-QUALIFIED, not a bare method name: `current`/`indexOf` are generic, so an
+## unrelated future `foo.current()` / `list.indexOf(x)` after a modal must NOT falsely
+## attest "guarded". (This is still a NAME match, not a proof the guarded object is the
+## captured one -- see the module docstring's stated limits.)
+_GUARD_CALLS = {"self._tab_is_live", "self.tabs.indexOf", "self.current"}
+_GUARD_ATTRS = {"self._closing_tabs"}
 
 ## .exec() sites that run an event loop but are NOT QDialog modals holding a captured
 ## widget -- classified, never a stale-widget waiver. Keyed by (function, callee).
@@ -121,14 +142,15 @@ def _is_modal(node):
     ## (self._make_menu(...).exec()), which _dotted() would otherwise flatten to bare
     ## "exec" and miss. Label a call-result receiver by the builder's name so the
     ## (function, callee) allowlist key stays stable.
-    if isinstance(node.func, ast.Attribute) and node.func.attr == "exec":
-        if callee.endswith(".exec") and callee != "exec":
+    if isinstance(node.func, ast.Attribute) and node.func.attr in ("exec", "exec_"):
+        attr = node.func.attr                    # match PyQt5 .exec_ too, not just .exec
+        if callee.endswith("." + attr) and callee != attr:
             return callee
         recv = node.func.value
         if isinstance(recv, ast.Call):
             builder = _dotted(recv.func).split(".")[-1]
-            return f"{builder}().exec" if builder else "<expr>().exec"
-        return "<expr>.exec"
+            return f"{builder}().{attr}" if builder else f"<expr>().{attr}"
+        return f"<expr>.{attr}"
     return None
 
 
@@ -137,11 +159,9 @@ def _guards_after(func_node, modal_lineno):
     for node in ast.walk(func_node):
         if getattr(node, "lineno", 0) <= modal_lineno:
             continue
-        if isinstance(node, ast.Call):
-            tail = _dotted(node.func).split(".")[-1]
-            if tail in _GUARD_CALLS:
-                return True
-        if isinstance(node, ast.Attribute) and node.attr in _GUARD_ATTRS:
+        if isinstance(node, ast.Call) and _dotted(node.func) in _GUARD_CALLS:
+            return True
+        if isinstance(node, ast.Attribute) and _dotted(node) in _GUARD_ATTRS:
             return True
     return False
 
@@ -188,7 +208,7 @@ def _audit(path):
         inventory.append((path.name, func_name, modal, node.lineno))
         if key in NON_DIALOG_EXEC or key in KNOWN_SAFE:
             continue
-        if modal.endswith(".exec") and _receiver_is_dialog(node, func_node) is False:
+        if ".exec" in modal and _receiver_is_dialog(node, func_node) is False:
             findings.append((path.name, func_name, modal, node.lineno,
                              "unclassified .exec() -- add to NON_DIALOG_EXEC or KNOWN_SAFE"))
             continue

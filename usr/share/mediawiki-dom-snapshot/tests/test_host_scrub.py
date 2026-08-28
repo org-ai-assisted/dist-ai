@@ -489,6 +489,26 @@ _sjs = "".join(p.read_text(encoding="utf-8") for p in (_sd / "assets").glob("*.j
 assert _sjs, "startup.js not written -- entry was dropped?"
 assert "1eggf" not in _sjs and "SCRUBBED" in _sjs, ("startup body not normalized", _sjs)
 
+# content_type is case-INSENSITIVE (RFC 7231): a "Application/Javascript" (capital) startup
+# body must STILL hit the version-hash scrub, or the flake-kill silently no-ops on a
+# plausible casing variant.
+assert N._is_text_asset("Application/JavaScript") and N._is_text_asset("TEXT/HTML")
+_sc = Path(tempfile.mkdtemp()); _scd = Path(tempfile.mkdtemp())
+(_sc / "dom.html").write_text("<html></html>", encoding="utf-8")
+(_sc / "assets").mkdir()
+(_sc / "assets" / "startup.js").write_text(
+    'mw.loader.register([["mod.name","1eggf"]]);', encoding="utf-8")
+(_sc / "manifest.json").write_text(json.dumps({
+    "https://h/wiki/Page": {"status": 200, "content_type": "text/html"},
+    "https://h/w/load.php?modules=startup&only=scripts":
+        {"status": 200, "content_type": "Application/Javascript",
+         "asset": "startup.js", "sha256": "s", "size": 1},
+}), encoding="utf-8")
+N.normalize_page_dir(_sc, _scd)
+_scjs = "".join(p.read_text(encoding="utf-8") for p in (_scd / "assets").glob("*.js"))
+assert _scjs and "1eggf" not in _scjs and "SCRUBBED" in _scjs, (
+    "a capital-case content_type defeated the version-hash scrub", _scjs)
+
 # The O(N) whitespace-sensitivity precompute must keep the SAME semantics as a per-node
 # ancestor walk: a whitespace run inside a whitespace-sensitive element (even nested under
 # a non-sensitive child) is PRESERVED; a run in ordinary flow COLLAPSES to one space.
