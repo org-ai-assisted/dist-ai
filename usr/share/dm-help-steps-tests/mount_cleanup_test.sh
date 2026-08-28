@@ -53,7 +53,7 @@ source "${test_dir}/help_steps_test_lib.bsh"
 AUDIT_REPORT=""
 AUDIT_HITS=0
 audit_mount_cleanup_callers() {
-   local hits hit body trimmed
+   local hits hit body trimmed between
    AUDIT_REPORT=""
    AUDIT_HITS=0
    ## Match the path-form invocation only ('<path>/mount-cleanup' + quote/space/
@@ -69,7 +69,23 @@ audit_mount_cleanup_callers() {
       AUDIT_HITS=$(( AUDIT_HITS + 1 ))
       case "${body}" in
          *'${SUDO_TO_ROOT}'*mount-cleanup*)
-            : ## privileged on this line (args may wrap; still root)
+            ## ${SUDO_TO_ROOT} appears before mount-cleanup, but only its being
+            ## the IMMEDIATE prefix makes the call privileged. A command
+            ## separator between the last ${SUDO_TO_ROOT} and mount-cleanup means
+            ## sudo applies to a DIFFERENT command and mount-cleanup runs bare.
+            ## Fail closed on any separator (no bash parser -- just "is there a
+            ## separator in the gap").
+            between="${body##*'${SUDO_TO_ROOT}'}"   ## after the LAST SUDO_TO_ROOT
+            between="${between%%mount-cleanup*}"     ## ... and before mount-cleanup
+            case "${between}" in
+               *';'*|*'&'*|*'|'*)
+                  AUDIT_REPORT="${AUDIT_REPORT}          UNAUDITABLE-SEPARATOR ${hit}
+"
+                  ;;
+               *)
+                  : ## sudo is the immediate prefix: privileged, ok
+                  ;;
+            esac
             ;;
          *mount-cleanup*[[:space:]]--[[:space:]]*)
             ## complete single-line call, no ${SUDO_TO_ROOT}: genuinely bare.
@@ -178,6 +194,21 @@ ${AUDIT_REPORT}"
          ;;
       *)
          fail "a wrapped multi-line mount-cleanup call slipped the audit: '${AUDIT_REPORT}'"
+         ;;
+   esac
+   safe-rm --force -- "${fix}/help-steps/bare-multi-line"
+   ## ${SUDO_TO_ROOT} on the line but on a DIFFERENT command (separated by ';'),
+   ## with mount-cleanup bare after it: the sudo is NOT its prefix. Must be
+   ## flagged, not read as privileged.
+   printf '%s\n' '      ${SUDO_TO_ROOT} prep_step ; "${dist_source_help_steps_folder}/mount-cleanup" -- "${CHROOT_FOLDER}"' \
+      > "${fix}/help-steps/sudo-on-other-command"
+   audit_mount_cleanup_callers "${fix}/help-steps"
+   case "${AUDIT_REPORT}" in
+      *UNAUDITABLE-SEPARATOR*)
+         pass "sudo on a different command (';' then bare mount-cleanup) is flagged, not passed"
+         ;;
+      *)
+         fail "a ';'-separated bare mount-cleanup with sudo on another command slipped: '${AUDIT_REPORT}'"
          ;;
    esac
    safe-rm --recursive --force -- "${fix}"
