@@ -450,7 +450,11 @@ while IFS= read -r ref; do
    ## -- deliberately NOT a general parser (per the no-bash-parser rule). Drop
    ## every double-quote so both collapse to ${VAR}/a/b, then take the first
    ## whitespace-delimited token.
-   arg="${line_body#*source }"
+   ## Strip 'source' then any run of leading whitespace separately, so
+   ## 'source  "..."' (more than one space) normalizes like the single-space
+   ## case instead of collapsing to empty and being missed.
+   arg="${line_body#*source}"
+   arg="${arg#"${arg%%[![:space:]]*}"}"
    arg="${arg//\"/}"
    arg="${arg%%[[:space:]]*}"
    if [[ "${arg}" =~ ^\$\{([A-Za-z_]+)\}(/.+)$ ]]; then

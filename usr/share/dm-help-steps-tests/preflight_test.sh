@@ -322,6 +322,24 @@ else
    cat -- "${workdir}/out.txt" >&2
 fi
 
+## --- a missing target with MORE THAN ONE space after 'source' still FAILS ----
+## The extraction must not assume exactly one space; 'source  "..."' (two spaces)
+## must resolve + existence-check like the single-space case, not slip through as
+## a skipped ref.
+twospace="${workdir}/twospace"
+build_fixture "${twospace}"
+printf '%s\n' \
+   'source  "${dist_developer_meta_files_folder}/usr/libexec/developer-meta-files/two-space-missing.bsh"' \
+   > "${twospace}/build-steps.d/2100_stub"
+git_quiet -C "${twospace}" commit --quiet --all --no-verify --message twospace
+rc="$(run_preflight "${twospace}")"
+if [ "${rc}" -ne 0 ] && grep --quiet --fixed-strings -- 'two-space-missing.bsh' "${workdir}/out.txt"; then
+   pass "a missing target with two spaces after 'source' is still caught"
+else
+   fail "a two-space 'source' to a missing target slipped the check"
+   cat -- "${workdir}/out.txt" >&2
+fi
+
 ## --- a non-checkout is a usage error, not a pass ----------------------------
 rc=0
 "${subject}" --dir "${workdir}" --quick >/dev/null 2>&1 || rc="$?"
