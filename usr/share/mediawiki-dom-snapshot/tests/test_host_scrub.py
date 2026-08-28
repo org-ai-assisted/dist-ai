@@ -83,6 +83,12 @@ assert N._normalize_url("data:text/html,x?y=1</script>") == "data:text/html,x?y=
 assert N._normalize_url("javascript:f()?g") == "javascript:f()?g"
 assert "version=SCRUBBED" in N._normalize_url("https://%s/w/load.php?version=abc&x=1" % H)
 assert "version=SCRUBBED" in N._normalize_url("/w/load.php?version=abc&x=1")
+# a MediaWiki NAMESPACE href (Category:/File:/Template:/...) parses with a bogus urlparse
+# "scheme", but its '?' IS a query -> a volatile param must be scrubbed, not left verbatim
+# by the opaque-scheme guard. A RECOGNISED opaque scheme (mailto:) still passes through.
+assert "version=SCRUBBED" in N._normalize_url("Category:Foo?version=abc&action=edit"), \
+    N._normalize_url("Category:Foo?version=abc&action=edit")
+assert N._normalize_url("mailto:a@b.example?subject=hi") == "mailto:a@b.example?subject=hi"
 
 # _normalize_srcset: candidates are comma-separated, but a comma is legal in a URL query
 # and MANDATORY in a data: URI, so a bare value.split(",") SHREDS those. Split on the

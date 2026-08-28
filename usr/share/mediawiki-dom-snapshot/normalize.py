@@ -299,6 +299,12 @@ def _canonicalise_whitespace(soup) -> None:
             t.replace_with(collapsed)
 
 
+## Schemes whose ':' introduces an OPAQUE payload, not a hierarchical URL, so a literal
+## '?' in them is not a query. Anything NOT here (http/https, relative, or an unrecognised
+## MediaWiki-namespace "scheme") treats '?' as a query.
+_OPAQUE_SCHEMES = frozenset({"data", "javascript", "mailto", "tel", "blob", "about"})
+
+
 def _normalize_url(value: str) -> str:
     if not isinstance(value, str) or "?" not in value:
         return value
@@ -307,11 +313,15 @@ def _normalize_url(value: str) -> str:
     except ValueError:
         return value
     ## Only hierarchical http(s) URLs (and scheme-relative / relative ones, scheme='')
-    ## use '?' as a query delimiter. An OPAQUE scheme (data:/javascript:/mailto:/tel:/
-    ## blob:) can carry a literal '?' that is NOT a query -- treating it as one (parse_qsl
-    ## + re-encode) corrupts the payload (percent-escaping </script> etc.) and yields a
-    ## spurious/masked diff. Leave a present, non-http(s) scheme untouched.
-    if p.scheme and p.scheme not in ("http", "https"):
+    ## use '?' as a query delimiter. A RECOGNISED opaque scheme (data:/javascript:/
+    ## mailto:/tel:/blob:/about:) can carry a literal '?' that is NOT a query -- treating
+    ## it as one (parse_qsl + re-encode) corrupts the payload (percent-escaping </script>
+    ## etc.). Leave those untouched. But a MediaWiki NAMESPACE href (Category:/File:/
+    ## Template:/Help:/...) ALSO parses with a "scheme" via urlparse though it is really a
+    ## RELATIVE wikilink whose '?' IS a query -- so an UNRECOGNISED scheme is NOT trusted:
+    ## it falls through to the query scrub, or a volatile t=/... cache-buster on every
+    ## namespace-style link survives verbatim and defeats the volatility kill.
+    if p.scheme and p.scheme.lower() in _OPAQUE_SCHEMES:
         return value
     if not p.query:
         return value
