@@ -363,21 +363,31 @@ expect_rule "R-030 printf format" "${awk_program}" "absent"
 ## -- the awk program's inner printfs are data, but the next line is a live call.
 expect_rule "R-030 printf format" "${awk_program}${nlreal}printf \"bad \${x}\\n\"" "present"
 
-## R-030 SINGLE-quoted format is a compile-time LITERAL -- nothing interpolates
-## into it -- so it is allowed whatever verbs it uses ('%d' numeric validators,
-## '%8d' / '%-12s' aligned columns); a DOUBLE-quoted or UNQUOTED non-allowlisted
-## format can read '$var' / command substitution straight INTO the format and is
-## FLAGGED. printf's own options ('-v NAME', '--') are skipped so the FORMAT is
+## R-030 flags a format ONLY when it CAN interpolate data -- a DOUBLE-quoted or
+## UNQUOTED format containing a '$' or backtick reads '$var' / command
+## substitution straight INTO the format. A SINGLE-quoted format, OR any format
+## with no expansion metachar (a fixed literal '%d'/'%02x'/'%(%Y)T'), interpolates
+## nothing and is SPARED whatever verbs it spells -- the data goes in the data
+## argument. printf's own options ('-v NAME', '--') are skipped so the FORMAT is
 ## judged, not the option.
 r030fmt="R-030 printf format string"
+bt='`'
 ## Single-quoted verbs -- literal, SPARED (a redirect makes no difference):
 expect_rule "${r030fmt}" "printf ${sq}%d${sq} ${dq}\${1}${dq}"                 "absent"
 expect_rule "${r030fmt}" "printf ${sq}%8d${sq} ${dq}\${1}${dq}"                "absent"
 expect_rule "${r030fmt}" "printf ${sq}%-12s${sq} ${dq}\${a}${dq}"              "absent"
 expect_rule "${r030fmt}" "printf ${sq}%d${sq} ${dq}\${1}${dq} >/dev/null 2>&1 || exit 1" "absent"
-## Double-quoted / unquoted non-allowlisted format -- interpolates, FLAGGED:
+## No-expansion literal, DOUBLE-quoted or UNQUOTED -- cannot interpolate, SPARED
+## (these fixed-verb false positives are exactly what this rule used to raise):
+expect_rule "${r030fmt}" "printf %d ${dq}\${1}${dq}"                           "absent"
+expect_rule "${r030fmt}" "printf ${dq}%02x${dq} ${dq}\${n}${dq}"               "absent"
+expect_rule "${r030fmt}" "printf -v hex ${dq}%02x${dq} ${dq}\${n}${dq}"        "absent"
+expect_rule "${r030fmt}" "printf -v pad ${dq}%05d${dq} ${dq}\${n}${dq}"        "absent"
+expect_rule "${r030fmt}" "printf ${dq}%(%Y)T${dq} -1"                          "absent"
+## A '$' or backtick in a double/unquoted format DOES interpolate -- FLAGGED:
 expect_rule "${r030fmt}" "printf ${dq}%d \${x}${dq} ${dq}\${1}${dq}"           "present"
-expect_rule "${r030fmt}" "printf %d ${dq}\${1}${dq}"                           "present"
+expect_rule "${r030fmt}" "printf ${dq}%02x \${y}${dq} ${dq}\${n}${dq}"         "present"
+expect_rule "${r030fmt}" "printf ${dq}v ${bt}id${bt}${dq}"                     "present"
 ## '-v NAME' / '--' options skipped, so the FORMAT is what is judged:
 expect_rule "${r030fmt}" "printf -v out ${sq}%s${sq} ${dq}\${1}${dq}"          "absent"
 expect_rule "${r030fmt}" "printf -v out ${dq}bad \${x}${dq} ${dq}\${1}${dq}"   "present"

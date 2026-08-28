@@ -631,6 +631,37 @@ def _is_skip_code_77(word):
     return int(word, 10) == 77
 
 
+## Prefixes bash treats as running the SAME exit/return builtin: '\exit' (alias
+## lookup suppressed) is the command word itself; 'builtin'/'command' are a
+## separate leading word that shifts the code one argument right. Unwrapping them
+## keeps a skip from evading the gate by an honest alternate spelling -- the same
+## reason the apt/dpkg rules unwrap sudo/doas via effective_command.
+_EXIT_CALL_WRAPPERS = ("builtin", "command")
+
+
+def _skip_exit_code_word(call):
+    """The exit/return CODE word for CALL if it is a test skip, else None --
+    resolving the spellings bash runs identically: a leading-backslash name
+    ('\\exit 77') and a single 'builtin'/'command' prefix ('builtin exit 77',
+    'command exit 77'). None (not exit/return, or the code word is missing) is the
+    safe direction: the caller declines rather than guesses."""
+    name = bash_ast.command_name(call)
+    if name is None:
+        return None
+    name = name.lstrip("\\")
+    args = bash_ast.args(call)
+    code_index = 1
+    if name in _EXIT_CALL_WRAPPERS and len(args) >= 2:
+        wrapped = bash_ast.word_string(args[1])
+        if wrapped is None:
+            return None
+        name = wrapped.lstrip("\\")
+        code_index = 2
+    if name not in ("exit", "return") or len(args) <= code_index:
+        return None
+    return bash_ast.word_string(args[code_index])
+
+
 class UnauthorizedSkip(Rule):
     """R-220: a test SKIP ('exit 77'/'return 77') must be authorized by a
     per-skip '## style-ok: allow-skip: <why>' waiver on the line or the line
@@ -641,14 +672,12 @@ class UnauthorizedSkip(Rule):
     def detect(self, ctx):
         lines = ctx.source.split("\n")
         for call in bash_ast.call_exprs(ctx.tree):
-            if bash_ast.command_name(call) not in ("exit", "return"):
-                continue
-            call_args = bash_ast.args(call)
-            ## word_string (quote-aware): 'exit "77"' / 'return "77"' are the
-            ## same skip as 'exit 77' and must not slip the guard. _is_skip_code_77
-            ## also normalizes decimal leading zeros ('exit 077' runs as 77).
-            if len(call_args) < 2 or not _is_skip_code_77(
-                    bash_ast.word_string(call_args[1])):
+            ## _skip_exit_code_word resolves exit/return incl. the '\exit' /
+            ## 'builtin exit' / 'command exit' spellings, then word_string
+            ## (quote-aware) so 'exit "77"' is the same skip as 'exit 77';
+            ## _is_skip_code_77 normalizes decimal leading zeros ('exit 077' = 77).
+            code_word = _skip_exit_code_word(call)
+            if code_word is None or not _is_skip_code_77(code_word):
                 continue
             line = call["Pos"]["Line"]
             here = lines[line - 1] if 0 <= line - 1 < len(lines) else ""
@@ -1236,14 +1265,22 @@ class BareNewlinePrintf(Rule):
                     'R-030/R-031 newline printf needs explicit "" arg', call)
 
 
+## A '$' or backtick in a double-quoted / unquoted format is the ONLY way data
+## reaches the format at runtime (a '$var' / '$(...)' / '`...`' expansion). A
+## format with neither is a fixed literal that interpolates nothing, whatever
+## printf verbs it spells. (A backslash-escaped '\$' is still matched -- a rare
+## conservative over-flag whose fix is the same trivial single-quote.)
+_PRINTF_EXPANSION = re.compile(r'[$`]')
+
+
 class PrintfFormatString(Rule):
-    """R-030: a printf format must not INTERPOLATE data -- all data goes in the
-    data argument. A DOUBLE-quoted or UNQUOTED format that is not a fixed
-    allowlisted verb can read a '$var' / command substitution straight INTO the
-    format (the injection this prevents). A SINGLE-quoted format is a compile-time
-    literal that interpolates nothing, so it is allowed whatever verbs it uses
-    ('%8d', '%-12s' aligned columns, '%d' numeric validators) -- the data still
-    goes in the data argument."""
+    """R-030: a printf format must not INTERPOLATE data into itself -- data goes
+    in the data argument. A format is flagged ONLY when it can interpolate: a
+    DOUBLE-quoted or UNQUOTED format containing a '$' or backtick reads a
+    '$var' / command substitution straight INTO the format (the injection this
+    prevents). A SINGLE-quoted format -- OR any format with no expansion metachar
+    (a fixed literal like '%02x', '%(%Y)T', '%-12s') -- interpolates nothing and
+    is allowed whatever verbs it uses; the data still goes in the data argument."""
 
     id = "R-030"
     waiver_tag = "printf-format"
@@ -1256,13 +1293,15 @@ class PrintfFormatString(Rule):
     def detect(self, ctx):
         for _stmt, call in _printf_calls(ctx.tree):
             inner, single_quoted = _printf_format(call, ctx.source)
-            ## single-quoted is a literal, nothing interpolates -> safe whatever
-            ## verbs it uses; an allowlisted verb is safe in any quoting.
-            if inner is None or single_quoted or inner in self._ALLOWED:
+            ## Safe: no format, a single-quoted literal, an allowlisted verb, or a
+            ## double/unquoted format with NO '$'/backtick (cannot interpolate).
+            if (inner is None or single_quoted or inner in self._ALLOWED
+                    or _PRINTF_EXPANSION.search(inner) is None):
                 continue
             yield _fail(
                 ctx, "R-030",
-                "R-030 printf format string must be fixed ('%s' / '%s\\n')", call)
+                "R-030 printf format string must not interpolate data ('$'/'`') "
+                "-- put the data in the argument, not the format", call)
 
 
 class HeaderFirst(Rule):

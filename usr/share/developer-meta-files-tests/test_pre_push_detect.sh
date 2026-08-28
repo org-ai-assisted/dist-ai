@@ -265,6 +265,24 @@ assert_at "R-220 flags 'exit 077' (decimal 77)" "R-220" 2
 run_det "$(printf '%s\n' '#!/bin/bash' 'foo || exit 770' 'bar || return 78')"
 assert_not_at "R-220 spares 'exit 770'"   "R-220" 2
 assert_not_at "R-220 spares 'return 78'"  "R-220" 3
+## exec-wrapper spellings: bash runs the SAME exit/return builtin through '\exit',
+## 'builtin exit' and 'command exit', so a skip must not evade the gate by an
+## alternate spelling (sibling apt/dpkg rules unwrap sudo/doas the same way).
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   'foo || builtin exit 77' \
+   'bar || command exit 77' \
+   'baz || \exit 77' \
+   'qux || builtin return 77')"
+assert_at "R-220 flags a wrapped 'builtin exit 77'"    "R-220" 2
+assert_at "R-220 flags a wrapped 'command exit 77'"    "R-220" 3
+assert_at "R-220 flags a backslash '\\exit 77'"        "R-220" 4
+assert_at "R-220 flags a wrapped 'builtin return 77'"  "R-220" 5
+## the waiver is still honored THROUGH the wrapper, and a wrapped non-77 is spared.
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   'foo || builtin exit 77  ## style-ok: allow-skip: optional target' \
+   'bar || command exit 78')"
+assert_not_at "R-220 waiver honored through 'builtin exit'"     "R-220" 2
+assert_not_at "R-220 spares a wrapped non-77 'command exit 78'" "R-220" 3
 ## R-090: '-pv' / '-p -v' clusters are still 'command -v'.
 run_det "$(printf '%s\n' '#!/bin/bash' 'command -pv foo' 'command -p -v bar')"
 assert_at "R-090 flags a 'command -pv' cluster"   "R-090" 2
