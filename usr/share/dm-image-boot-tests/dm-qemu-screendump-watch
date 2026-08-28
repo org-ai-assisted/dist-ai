@@ -64,6 +64,7 @@ class Qmp:
         if self.sock is None:
             raise ConnectionError("QMP connect failed for %s: %s" % (path, last_err))
         self.buf = b""
+        self._id = 0                           # monotonic QMP request id (reply correlation)
         self._read_json()                      # greeting
         self.command("qmp_capabilities")
 
@@ -94,15 +95,32 @@ class Qmp:
         return message
 
     def command(self, execute, arguments=None):
-        message = {"execute": execute}
+        self._id += 1
+        expect = self._id
+        message = {"execute": execute, "id": expect}
         if arguments:
             message["arguments"] = arguments
         self.sock.sendall((json.dumps(message) + "\n").encode("utf-8"))
-        ## Skip asynchronous events (they carry "event", never a top-level return/error).
+        ## Correlate the reply by its echoed "id". Skip asynchronous events (they carry
+        ## "event", never a top-level return/error). A reply whose id is EARLIER than ours is
+        ## the late result of a prior command whose recv timed out (the poll loop caught
+        ## socket.timeout and moved on) -- drain it so THIS command's reply is never
+        ## MISATTRIBUTED to that stale request; that misattribution silently desynced the
+        ## stream and corrupted the boot verdict. An absent id, or one we never sent, is an
+        ## unrecoverable desync -> fail loud (ConnectionError) rather than mispair.
         while True:
             reply = self._read_json()
-            if "return" in reply or "error" in reply:
+            if "event" in reply:
+                continue
+            if "return" not in reply and "error" not in reply:
+                continue
+            got = reply.get("id")
+            if got == expect:
                 return reply
+            if isinstance(got, int) and not isinstance(got, bool) and got < expect:
+                continue
+            raise ConnectionError(
+                "QMP reply id mismatch: expected %d, got %r" % (expect, got))
 
     def close(self):
         try:
@@ -161,6 +179,11 @@ def main():
     parser.add_argument("--min-up", type=int, default=60,
                         help="do not declare 'up' before this many seconds (skips the early GRUB menu)")
     args = parser.parse_args()
+    ## --interval feeds time.sleep(); a value < 1 makes time.sleep(-1) raise ValueError,
+    ## an uncaught traceback that exits 1 and breaks the 0/5/2 exit-code contract. Reject
+    ## it up front as a usage error (argparse exit 2), not a crash.
+    if args.interval < 1:
+        parser.error("--interval must be a positive integer (got %d)" % args.interval)
 
     ## Preflight ImageMagick: without it the heuristic cannot run -- a setup error (2), not a
     ## traceback (dm-qemu also checks, but stay self-contained).
@@ -169,7 +192,15 @@ def main():
             log("ImageMagick '%s' not found -- screendump detection needs it" % tool)
             return 2
 
-    os.makedirs(args.outdir, exist_ok=True)
+    ## Create the frame output dir up front. A bad --outdir (a path component that
+    ## is not a directory, an unwritable parent, ...) raises OSError; this call was
+    ## OUTSIDE the try below, so that OSError escaped as an uncaught exit 1 and
+    ## broke the 0/5/2 contract. It is a setup error -- map it to SETUP(2).
+    try:
+        os.makedirs(args.outdir, exist_ok=True)
+    except OSError as exc:
+        log("cannot create --outdir %s: %s" % (args.outdir, exc))
+        return 2
     started = time.time()
     deadline = started + args.timeout
 

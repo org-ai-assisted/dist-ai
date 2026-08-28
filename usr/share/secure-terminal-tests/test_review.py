@@ -50,9 +50,16 @@ class _FakeTerm:
     def __init__(self):
         self._theme = 'dark'
         self.dispatched = []
+        self.bracketed = False        # a bare shell prompt (no DEC 2004): the common case
 
     def current_font_family(self):
         return 'Hack'
+
+    def _bracketed_paste_active(self):
+        # The paste "sends" preview drops the trailing auto-submit CR exactly when the
+        # target is NOT bracketed-paste (matching _dispatch_paste), so the preview must
+        # be able to read this from the holding tab.
+        return self.bracketed
 
     def dispatch_pending_paste(self, action):
         self.dispatched.append(('paste', action))
@@ -197,6 +204,25 @@ for _theme in ('dark', 'light'):
     for _name, _hex in (('SAFE_FG', _SAFE_FG), ('RISK_FG', _RISK_FG)):
         ok(not _too_close(_rgb(_QColor(_hex)), _bg),
            '%s send-button colour reads on the %s theme background' % (_name, _theme))
+
+# --- the "sends" panes match what _dispatch_paste actually writes -------------
+# At a NON-bracketed prompt _dispatch_paste drops the trailing auto-submit CR, so the
+# "Paste stripped sends" preview must too -- it previously showed the trailing newline,
+# implying a submit that never happens. A bracketed-paste TUI keeps the CR (buffered).
+_pt = _FakeTerm()
+_pt.bracketed = False
+_bar.show_review(_pt, 'runcmd\n', 0)
+_nonbr_sends = _bar._views[2].toPlainText()
+_bar.show_review(_pt, 'runcmd', 0)                 # identical text, already no trailing CR
+_nonl_sends = _bar._views[2].toPlainText()
+eq(_nonbr_sends, _nonl_sends,
+   'a non-bracketed "sends" preview drops the trailing auto-submit CR: "runcmd\\n" '
+   'previews identically to "runcmd" (matches _dispatch_paste)')
+_pt.bracketed = True
+_bar.show_review(_pt, 'runcmd\n', 0)
+_br_sends = _bar._views[2].toPlainText()
+ok(_br_sends != _nonl_sends,
+   'a bracketed-paste target keeps the trailing CR in the "sends" preview')
 
 # --- hide_review tears down cleanly -------------------------------------------
 _bar.hide_review()

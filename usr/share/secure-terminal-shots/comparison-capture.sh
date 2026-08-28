@@ -334,7 +334,7 @@ tighten_deadspace() {  ## $1=png-path
    bg="$(convert "${f}" -gravity South -crop "${w}x50%+0+0" +repage \
            -depth 8 -format '%c' histogram:info:- \
          | sort -rn | grep -m1 -oiE '#[0-9A-F]{6}')" || true
-   [ -n "${bg}" ] || bg="$(convert "${f}" -format "#%[hex:p{2,$(( h - 4 ))}]" info: | cut -c1-7)"
+   [ -n "${bg}" ] || bg="$(convert "${f}" -format "#%[hex:p{2,$(( h - 4 ))}]" info: | cut -c1-7 || true)"
    ## per-row emptiness map: drop the side columns, take the absolute difference from a
    ## solid-background image (robust to any bg colour, incl. pure black/white) and
    ## threshold it (background -> black, content -> white), then the per-row maximum so
@@ -486,8 +486,22 @@ st_wait_render_settled() {  ## $1=window-id
       sleep 0.8
       capture_window "${b}" "${wid}" 2>/dev/null || break
       diff="$(compare -metric AE "${a}" "${b}" null: 2>&1 || true)"
-      diff="${diff%%[!0-9]*}"
-      case "${diff}" in '') diff=999999 ;; esac
+      ## compare -metric AE prints the differing-pixel count in SCIENTIFIC NOTATION once it
+      ## exceeds ~1e6 (e.g. 2.1328e+06). Stripping at the first non-digit truncated that to "2"
+      ## -> a still-painting full-viewport frame (art/gradient/tui-showcase, >1M px) read as
+      ## settled and published a half-rendered shot. Normalize via printf %.0f (handles plain
+      ## AND sci-notation); an empty (failed compare) or non-numeric value is NOT settled --
+      ## printf '%.0f' '' yields 0, so those must be rejected BEFORE printf, not after.
+      diff="${diff%% *}"
+      case "${diff}" in
+         ''|*[!0-9.eE+-]*)
+            diff=999999
+            ;;
+         *)
+            diff="$(printf '%.0f' "${diff}" 2>/dev/null)"
+            [ -n "${diff}" ] || diff=999999
+            ;;
+      esac
       [ "${diff}" -lt 300 ] 2>/dev/null && break   # only jitter left -> settled
       ## Copy (not move) the newer frame to the baseline: mv would unlink ${b}, and the next
       ## capture_window would recreate that path OUTSIDE mktemp's protection. ${runtime_dir} is
@@ -604,7 +618,7 @@ zoom_live_capture() {  ## $@=zoom levels (percent); default band if none
    ## instance numbers tab ids from 0, so a hardcoded id would miss; parse the real one. A reachable
    ## `ctl ls` also confirms remote_control is on AND the socket was claimed -- else every level
    ## below would silently no-op and all shots would be the launch zoom.
-   st_tab_line="$(env "DISPLAY=${xwl_display}" PYTHONPATH="${st_pkg}" python3 "${st_bin}" ctl ls 2>/dev/null | head -1)"
+   st_tab_line="$(env "DISPLAY=${xwl_display}" PYTHONPATH="${st_pkg}" python3 "${st_bin}" ctl ls 2>/dev/null | head -1 || true)"
    st_tab_id="${st_tab_line%%	*}"
    if [ -n "${st_tab_id}" ]; then
       printf '%s\n' "zoom-live: ctl reachable (remote_control on, primary socket claimed); zooming tab id:${st_tab_id}"
@@ -1316,7 +1330,12 @@ elif [ -n "${only_terminals}" ]; then
 else
    TERMINALS="${TERMINALS:-${DEFAULT_TERMINALS}}"
 fi
-for e in ${TERMINALS}; do
+## read -ra splits on whitespace WITHOUT globbing, so an exported CASES='*' / TERMINALS='*'
+## (the env path, which bypasses the --case/--only membership guard) stays literal here
+## instead of glob-expanding the $HOME payload files through these unquoted loops.
+read -ra _terminals_arr <<< "${TERMINALS}"
+read -ra _cases_arr <<< "${CASES}"
+for e in "${_terminals_arr[@]}"; do
    ## `type -P` finds a binary that is on PATH and carries SOME exec bit, but that does
    ## not mean the CURRENT user may run it: a hardened Kicksecure/Whonix permission-hardener
    ## strips the others-exec bit from urxvt (mode 0754, owner root), so `type -P` succeeds
@@ -1336,7 +1355,7 @@ for e in ${TERMINALS}; do
       printf '%s\n' "ERROR: terminal ${e} ${reason}. Install/fix it, or set ALLOW_SKIP=1 to authorize skipping." >&2
       exit 1
    fi
-   for c in ${CASES}; do
+   for c in "${_cases_arr[@]}"; do
       ## notify + art are secure-terminal showcases, not attack comparisons: notify has no
       ## standard emulator shot (kitty's popup is captured separately), and art is a capability
       ## demo of secure-terminal's own truecolor rendering across its modes. Skip both in the

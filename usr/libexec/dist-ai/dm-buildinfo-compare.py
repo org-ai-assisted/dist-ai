@@ -98,7 +98,7 @@ def main():
         return 2
     try:
         a_fields, a_order = parse(sys.argv[1])
-        b_fields, _ = parse(sys.argv[2])
+        b_fields, b_order = parse(sys.argv[2])
     except (OSError, ValueError) as exc:
         print('dm-buildinfo-compare: %s' % exc, file=sys.stderr)
         return 2
@@ -108,10 +108,13 @@ def main():
               file=sys.stderr)
         return 2
 
-    ## A field present in the record but in NEITHER list is new, and silently
-    ## ignoring it would let a future input drift without anyone noticing.
+    ## A field present in EITHER record but in NEITHER list is new, and silently
+    ## ignoring it would let a future input drift without anyone noticing. Both
+    ## orders are scanned: a field present only in the B record is just as
+    ## unclassified, and scanning A alone leaves a B-only field uncompared.
     known = set(INPUT_FIELDS) | set(INFORMATIONAL_FIELDS)
-    unknown = [name for name in a_order if name not in known]
+    unknown = [name for name in dict.fromkeys(a_order + b_order)
+               if name not in known]
     if unknown:
         print('dm-buildinfo-compare: unclassified field(s) %s -- add them to '
               'INPUT_FIELDS or INFORMATIONAL_FIELDS; an unclassified field is '

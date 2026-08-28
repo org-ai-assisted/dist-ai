@@ -432,6 +432,31 @@ try:
     QMessageBox.question = staticmethod(lambda *_a, **_k: _Yes)
     w3.close_tab(w3.tabs.indexOf(_t3))
     eq(w3.tabs.count(), _n - 1, 'close_tab: the running tab closes when confirmed')
+    # Reentrancy: the confirm modal spins a NESTED loop, during which _on_shell_exited
+    # (the program exiting, via the pty notifier) re-enters close_tab for THIS SAME term.
+    # Without the _closing_tabs guard the reentrant call runs the confirm again (here the
+    # mock would re-enter forever -> RecursionError) and both invocations would
+    # shutdown()+removeTab()+deleteLater() the same term -- the second deleteLater
+    # double-frees the C++ object and crashes live. Guarded, the reentrant call is a
+    # no-op; the tab closes exactly once. Simulate the reentrancy from inside the modal.
+    w3.new_tab()
+    _rt = w3.current()
+    _rt.has_foreground_program = lambda: True
+    _rt.shutdown = lambda: None               # avoid the offscreen ipc-reaper race
+    _n2 = w3.tabs.count()
+    _guarded = []
+    def _reentrant_question(*_a, **_k):
+        w3.close_tab(w3.tabs.indexOf(_rt))     # reentrant close of the same term
+        _guarded.append(_rt in w3._closing_tabs)
+        return _Yes
+    QMessageBox.question = staticmethod(_reentrant_question)
+    w3.close_tab(w3.tabs.indexOf(_rt))
+    ok(_guarded == [True],
+       'close_tab: a term stays guarded across the confirm modal (reentrancy blocked)')
+    eq(w3.tabs.count(), _n2 - 1,
+       'close_tab: a reentrant close during the modal removes the tab exactly once')
+    ok(_rt not in w3._closing_tabs,
+       'close_tab: the closing mark is cleared once the close completes')
     # closeEvent: a running program + decline ignores the window close
     w3.new_tab()
     w3.current().has_foreground_program = lambda: True
@@ -510,6 +535,22 @@ try:
     win.save_transcript()
     ok(os.path.exists(_tpath) and os.path.getsize(_tpath) > 0,
        'save_transcript: creates the file and writes the transcript to it')
+    # stale-term across the modal: the tab's shell can exit DURING the save dialog,
+    # whose _on_shell_exited->close_tab deleteLater()s the term; term.transcript_text()
+    # on the freed C++ object then crashes. The _tab_is_live re-check must skip it.
+    win.new_tab()
+    _sv_term = win.current()
+    _sv_term.has_foreground_program = lambda: False   # close_tab needs no confirm
+    _sv_term.shutdown = lambda: None                   # avoid the ipc-reaper race
+    _sv_path = os.path.join(tempfile.mkdtemp(), 'stale.txt')
+    def _save_kills_tab(*_a, **_k):
+        win.close_tab(win.tabs.indexOf(_sv_term))      # shell exits mid-dialog
+        APP.processEvents()                            # let deleteLater free it
+        return (_sv_path, '')
+    QFileDialog.getSaveFileName = staticmethod(_save_kills_tab)
+    win.save_transcript()                              # must NOT crash (guarded)
+    ok(not os.path.exists(_sv_path),
+       'save_transcript: a tab deleted during the dialog is skipped -- no crash, no write')
 finally:
     QFileDialog.getSaveFileName = _ogsf
 
@@ -696,6 +737,26 @@ try:
     win.new_tab_running()                   # -> new_tab('echo hi')
     win.show_command_palette()              # -> run_command('echo hi')
     ok(True, 'new_tab_running and the command palette read the input dialog')
+    # stale-term across the modal: the tab's shell can exit DURING QInputDialog.getText,
+    # whose _on_shell_exited->close_tab deleteLater()s the term; a stale
+    # _refresh_tab_label then indexOf()s the freed C++ object and crashes. The
+    # _tab_is_live re-check must skip it.
+    win.new_tab()
+    _rn_term = win.current()
+    _rn_term.has_foreground_program = lambda: False    # close_tab needs no confirm
+    _rn_term.shutdown = lambda: None                    # avoid the ipc-reaper race
+    _rn_idx = win.tabs.indexOf(_rn_term)
+    def _rename_kills_tab(*_a, **_k):
+        win.close_tab(win.tabs.indexOf(_rn_term))       # shell exits mid-modal
+        APP.processEvents()                             # let deleteLater free it
+        return ('newname', True)
+    QInputDialog.getText = staticmethod(_rename_kills_tab)
+    win.rename_tab(_rn_idx)                              # must NOT crash (guarded)
+    # behavioural check (a dead term does not always hard-crash offscreen): the guard
+    # SKIPS the rename, so the removed term never gets a stale _user_titles entry (nor
+    # a _refresh_tab_label(term) that would indexOf a freed C++ object in production).
+    ok(_rn_term not in win._user_titles,
+       'rename_tab: a tab deleted during the modal is skipped, not renamed (stale-term guard)')
 finally:
     QInputDialog.getText = _ogt
 
@@ -1441,6 +1502,19 @@ try:
                  '/escape-limit \u00b2'):
         eq(win.run_command(_bad), False,
            'run_command: a non-ASCII digit arg (%r) is rejected, not a crash' % _bad)
+    # a palette /scrollback beyond Qt's C int32 must clamp at the apply_scrollback sink,
+    # not SIGABRT via setMaximumBlockCount -- the sink clamp protects every caller.
+    eq(win.run_command('/scrollback 99999999999999'), True,
+       'run_command: an out-of-int32 /scrollback is accepted (clamped, not a crash)')
+    eq(win.current().current_scrollback(), 2147483647,
+       'an out-of-int32 scrollback clamps to int32 max at the apply_scrollback sink')
+    # a pathologically long all-digit arg (over CPython's int_max_str_digits, ~4300)
+    # makes int() ITSELF raise ValueError; the length bound must reject it as invalid,
+    # never let an uncaught ValueError escape the Qt slot and abort the process.
+    for _cmd in ('/zoom ', '/scrollback ', '/paste-delay ', '/escape-limit '):
+        eq(win.run_command(_cmd + '9' * 5000), False,
+           'run_command: an over-4300-digit arg to %r is rejected, not an int() crash'
+           % _cmd.strip())
     ok(True, 'run_command handles every slash-command branch')
 
     # CLASH: the palette's help text vs what the palette actually dispatches.
@@ -1752,6 +1826,19 @@ eq(win._advisories.get(_esc_term, (None,))[0], 'escape',
    'the freeze notice wins: _on_osc_used does not clobber an active escape advisory')
 ok((_esc_term, 'osc_other') not in win._osc_notified,
    'the skipped OSC notice stays un-marked so a later real OSC use can still notice')
+# the freeze notice also WINS over a later autobox/tui advisory: they share the
+# one-per-tab banner slot, and autobox is already conveyed by the greyed Reveal/Detail
+# controls, so a lower-priority notice must not clobber the active freeze banner (the
+# same class as the OSC case, fixed at the _on_advise root not per caller).
+win._on_advise(_esc_term, 'boxed for TUI', 'autobox')   # must NOT clobber the freeze
+eq(win._advisories.get(_esc_term, (None,))[0], 'escape',
+   'the freeze notice wins: an autobox advisory does not clobber an active escape one')
+win._on_advise(_esc_term, 'a full-screen hint', 'tui')  # nor does a plain tui hint
+eq(win._advisories.get(_esc_term, (None,))[0], 'escape',
+   'the freeze notice wins: a tui advisory does not clobber an active escape one')
+win._on_advise(_esc_term, 'newer freeze', 'escape')     # but escape may replace escape
+eq(win._advisories.get(_esc_term), ('escape', 'newer freeze'),
+   'a new escape advisory still replaces an active escape advisory')
 win._advisories.pop(_esc_term, None)
 win._esc_notified.discard(_esc_term)
 
@@ -2046,6 +2133,70 @@ win._refresh_tab_label(_other.tabs.widget(0))  # a term not in this window -> re
 _other.deleteLater()
 APP.processEvents()
 ok(True, 'tab-op guards on invalid targets are no-ops')
+
+# _pick_custom_tab_color stale-index across the modal (same class as rename/save, but a
+# wrong-TARGET not a crash): the colour picker is modal, and a background tab's shell can
+# exit during it, shifting indices. The captured index must be re-resolved from the TARGET
+# term after the modal, or set_tab_color colours the tab now at the stale index. Uses a
+# THROWAWAY window (torn down here) so the tab churn never reaches the suite teardown.
+from PyQt6.QtWidgets import QColorDialog        # noqa: E402
+_pcw = MainWindow()
+_pcw._persist_session = False
+while _pcw.tabs.count() < 4:
+    _pcw.new_tab()
+_pc_bg = _pcw.tabs.widget(0)                     # a lower-index background tab
+_pc_target = _pcw.tabs.widget(2)                 # the tab the picker is opened for
+_pc_extra = _pcw.tabs.widget(3)                  # ends up at the stale index 2 after the close
+_pc_bg.has_foreground_program = lambda: False    # close_tab needs no confirm
+_pc_bg.shutdown = lambda: None                    # stub only the tab closed mid-modal
+def _pick_closes_bg(*_a, **_k):
+    _pcw.close_tab(_pcw.tabs.indexOf(_pc_bg))     # index 0 exits -> 2 shifts to 1, 3 to 2
+    APP.processEvents()
+    return _QC('#123456')
+_ogc = QColorDialog.getColor
+try:
+    QColorDialog.getColor = staticmethod(_pick_closes_bg)
+    _pcw._pick_custom_tab_color(2)               # stale index 2 now points at _pc_extra
+finally:
+    QColorDialog.getColor = _ogc
+ok(_pcw._tab_colors.get(_pc_target) == '#123456',
+   '_pick_custom_tab_color: the colour lands on the target tab, not the stale index')
+ok(_pcw._tab_colors.get(_pc_extra) != '#123456',
+   '_pick_custom_tab_color: the tab now at the stale index is not mis-coloured')
+while _pcw.tabs.count() > 0:                      # reap the survivors' ptys, then drop it
+    _pcw.close_tab(0)
+_pcw.deleteLater()
+APP.processEvents()
+
+# _on_clipboard_read_requested stale-term across the modal (HIGH -- whole-app crash): a
+# program asks to read the clipboard (OSC 52) then its shell exits during the request
+# dialog; _on_shell_exited->close_tab frees term, then grant_clipboard_read on the dead
+# QObject aborts the WHOLE app. The _tab_is_live guard must skip the grant if the tab
+# closed. Throwaway window; mock QDialog.exec to kill the tab from inside the modal.
+from PyQt6.QtWidgets import QDialog                # noqa: E402
+_crw = MainWindow()
+_crw._persist_session = False
+_cr_term = _crw.current()
+_cr_term.has_foreground_program = lambda: False   # close_tab needs no confirm
+_cr_term.shutdown = lambda: None                   # stub only the tab closed mid-modal
+_cr_calls = []
+_cr_term.grant_clipboard_read = lambda d: _cr_calls.append(d)   # spy: must NOT be called
+_oexec = QDialog.exec
+def _exec_kills_tab(_self):
+    _crw.close_tab(_crw.tabs.indexOf(_cr_term))    # the tab's shell exits mid-dialog
+    APP.processEvents()                            # let deleteLater free it
+    return 0
+try:
+    QDialog.exec = _exec_kills_tab
+    _crw._on_clipboard_read_requested(_cr_term)    # must NOT crash, must NOT grant
+finally:
+    QDialog.exec = _oexec
+ok(_cr_calls == [],
+   '_on_clipboard_read_requested: a tab closed during the dialog is not granted (no crash)')
+while _crw.tabs.count() > 0:
+    _crw.close_tab(0)
+_crw.deleteLater()
+APP.processEvents()
 
 # --- ctl: dump-tab tail-cap, an unknown ctl op --------------------------------
 if win.tabs.count() == 0:
