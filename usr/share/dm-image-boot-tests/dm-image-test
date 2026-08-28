@@ -68,6 +68,11 @@ def parse_args():
         help="which session to boot into (default: user)",
     )
     parser.add_argument("--login-user", default="user", help="serial login account")
+    ## TODO(dm-image-boot-tests): --login-pass is accepted but NEVER read -- the serial
+    ## login flow assumes a passwordless console and never sends a password at the prompt.
+    ## Either wire it into the pexpect login (send it when a Password: prompt appears) or
+    ## drop the flag. Verifying a real password prompt needs an actual image boot +
+    ## serial console, so this is left documented, not fixed here.
     parser.add_argument(
         "--login-pass", default="",
         help="serial login password; empty means no password is expected",
@@ -385,6 +390,10 @@ def run_checks(child, args, log):
     overall = PASS
     for command, force_root, check_rc in commands:
         if not force_root and args.login_user and args.login_user != "root":
+            ## TODO(dm-image-boot-tests): a --login-user beginning with '-' is quoted but
+            ## still passed as a bare word, so su may parse it as an option. An end-of-
+            ## options guard ("su - -c CMD -- USER" form) would harden it; needs an image
+            ## boot to verify su's exact arg handling, so left documented, not fixed here.
             payload = "su - %s -c %s" % (shlex.quote(args.login_user),
                                          shlex.quote(command))
         else:
