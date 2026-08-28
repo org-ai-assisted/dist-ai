@@ -370,5 +370,90 @@ class ParseTorrcTest(unittest.TestCase):
             self.assertIn('Bridge obfs4 5.6.7.8:5678', text)
 
 
+class ProxyCredentialInjectionTest(unittest.TestCase):
+    """gen_torrc()/parse_torrc() must not let untrusted proxy credentials or a
+    raw address corrupt or inject torrc directives (the GUI credential fields
+    are unvalidated and a QLineEdit retains a pasted newline)."""
+
+    def _args(self, ip='127.0.0.1', port='9050', user='', pw='', proxy='SOCKS5'):
+        return ['None', 'None', proxy, ip, port, user, pw]
+
+    def test_newline_in_password_refused_no_injection(self):
+        ## A pasted 'x\nDisableNetwork 1' password must not add a DisableNetwork
+        ## directive; gen_torrc refuses rather than writing an injectable torrc.
+        with T.sandbox() as torrc:
+            with self.assertRaises(ValueError):
+                torrc_gen.gen_torrc(self._args(pw='x\nDisableNetwork 1'))
+            ## Nothing was written: the seeded torrc still carries no injection.
+            self.assertNotIn('DisableNetwork 1', torrc.read_text(encoding='utf-8'))
+
+    def test_newline_in_username_refused(self):
+        with T.sandbox():
+            with self.assertRaises(ValueError):
+                torrc_gen.gen_torrc(
+                    self._args(user='bob\nSocks5Proxy 10.0.0.1:1234'))
+
+    def test_carriage_return_and_nul_refused(self):
+        with T.sandbox():
+            for bad in ('a\rb', 'a\x00b'):
+                with self.subTest(bad=bad):
+                    with self.assertRaises(ValueError):
+                        torrc_gen.gen_torrc(self._args(pw=bad))
+
+    def test_internal_newline_in_ip_refused(self):
+        with T.sandbox():
+            with self.assertRaises(ValueError):
+                torrc_gen.gen_torrc(self._args(ip='1.2.3.4\nDisableNetwork 1'))
+
+    def test_trailing_whitespace_in_ip_port_is_stripped(self):
+        ## valid_ip()/valid_port() validate the STRIPPED form; gen must write
+        ## that same stripped form, not the raw edit text.
+        with T.sandbox() as torrc:
+            torrc_gen.gen_torrc(self._args(ip='  1.2.3.4  ', port=' 9050 '))
+            text = torrc.read_text(encoding='utf-8')
+        self.assertIn('Socks5Proxy 1.2.3.4:9050', text)
+
+    def test_socks5_credential_with_space_round_trips(self):
+        ## Tor reads a SOCKS credential as the rest of the line, so a space is
+        ## legal and must survive gen -> parse (parts[1] alone truncated it).
+        with T.sandbox():
+            torrc_gen.gen_torrc(
+                self._args(user='alice smith', pw='hunter two'))
+            result = torrc_gen.parse_torrc()
+        self.assertEqual(result[4], 'alice smith')
+        self.assertEqual(result[5], 'hunter two')
+
+    def test_https_authenticator_with_space_round_trips(self):
+        with T.sandbox():
+            torrc_gen.gen_torrc(
+                self._args(user='alice smith', pw='hunter two',
+                           proxy='HTTP / HTTPS'))
+            result = torrc_gen.parse_torrc()
+        self.assertEqual(result[4], 'alice smith')
+        self.assertEqual(result[5], 'hunter two')
+
+
+class ParseUnclassifiedProxyTest(unittest.TestCase):
+    """parse_torrc() must return proxy_type 'None' (never ''), so the wizard's
+    proxies.index(proxy_type) cannot raise ValueError on a foreign torrc."""
+
+    def test_unmanaged_proxy_directive_parses_as_none(self):
+        ## 'HTTPProxy' contains the 'Proxy' substring (so use_proxy is set) but
+        ## is not one of the managed directives; proxy_type must be 'None'.
+        with T.sandbox() as torrc:
+            torrc.write_text('DisableNetwork 0\nHTTPProxy 1.2.3.4:8080\n',
+                             encoding='utf-8')
+            result = torrc_gen.parse_torrc()
+        self.assertEqual(result[1], 'None')
+
+    def test_authenticator_only_parses_as_none(self):
+        with T.sandbox() as torrc:
+            torrc.write_text(
+                'DisableNetwork 0\nHTTPSProxyAuthenticator bob:pw\n',
+                encoding='utf-8')
+            result = torrc_gen.parse_torrc()
+        self.assertEqual(result[1], 'None')
+
+
 if __name__ == '__main__':
     unittest.main()

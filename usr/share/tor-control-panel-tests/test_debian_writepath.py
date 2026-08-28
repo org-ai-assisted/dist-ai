@@ -13,7 +13,8 @@ privileged bash helpers.
   1. tor-config-sane makes /etc/tor/torrc %include the drop-in dir + adds a
      control socket.
   2. the GUI stages the generated torrc into the comm file; acw-write-torrc
-     (the privileged helper) copies it into the drop-in with mode 0644.
+     (the privileged helper) copies it into the drop-in with mode 0640 (it
+     carries proxy credentials, so it must not be world-readable).
   3. a real `tor --verify-config` proves Tor reads the config the GUI produced.
 
 This closes the gap where the suite only tested the GUI/logic and stubbed the
@@ -58,7 +59,11 @@ class AcwWriteTorrcTest(unittest.TestCase):
                                 encoding='utf-8')
         return result, dropin
 
-    def test_lands_content_with_mode_644(self):
+    def test_lands_content_with_mode_640_not_world_readable(self):
+        ## The drop-in carries proxy credentials, so it must not be
+        ## world-readable. Mode is 0640; group is set to debian-tor in
+        ## production (root), which this unprivileged test cannot do, so only
+        ## the mode is asserted here.
         with tempfile.TemporaryDirectory() as root:
             result, dropin = self._write(
                 root, 'DisableNetwork 0\nUseBridges 1\n')
@@ -66,7 +71,9 @@ class AcwWriteTorrcTest(unittest.TestCase):
             with open(dropin, encoding='utf-8') as handle:
                 self.assertEqual(handle.read(),
                                  'DisableNetwork 0\nUseBridges 1\n')
-            self.assertEqual(oct(os.stat(dropin).st_mode & 0o777), '0o644')
+            mode = os.stat(dropin).st_mode & 0o777
+            self.assertEqual(oct(mode), '0o640')
+            self.assertEqual(mode & 0o007, 0, 'drop-in is world-accessible')
 
     def test_torrc_content_never_reaches_the_trace(self):
         """The helper must not print the torrc it handles.

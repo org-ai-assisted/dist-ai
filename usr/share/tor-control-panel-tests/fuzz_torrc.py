@@ -135,7 +135,14 @@ def phase_gen_parse(rnd, iterations):
             ## Sometimes append proxy fields (ip, port, user, pass).
             if rnd.random() < 0.6:
                 args += [_rand_token(rnd) for _ in range(rnd.randint(1, 4))]
-            torrc_gen.gen_torrc(args)
+            try:
+                torrc_gen.gen_torrc(args)
+            except ValueError:
+                ## gen_torrc REFUSES a proxy field carrying a line break / NUL
+                ## (torrc injection). That controlled refusal is the correct
+                ## behavior, not a crash; nothing was written, so there is
+                ## nothing to parse back this iteration.
+                continue
             ## The generated torrc must always parse back into the documented
             ## shape without crashing.
             parsed = torrc_gen.parse_torrc()

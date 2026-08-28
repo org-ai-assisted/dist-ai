@@ -86,6 +86,54 @@ class ValidPortTest(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertFalse(validators.valid_port(value))
 
+    def test_rejects_non_decimal(self):
+        ## int() accepts these, but they are not plain decimals and gen_torrc
+        ## would carry the junk into the torrc, where Tor rejects it. Fails on
+        ## the int()-only validator (which accepts '1_0', '+80', ...).
+        for value in ('1_0', '+80', '-80', '\uff18\uff10', '0x50', '0b1',
+                      '1e3', '8 0', '80\n90'):
+            with self.subTest(value=value):
+                self.assertFalse(validators.valid_port(value))
+
+    def test_accepts_surrounding_whitespace(self):
+        ## A whitespace-padded decimal normalizes to a valid port; gen_torrc
+        ## strips the port before writing, so validate and write agree.
+        for value in (' 80', '80 ', '\t443', '80\n', 9050):
+            with self.subTest(value=value):
+                self.assertTrue(validators.valid_port(value))
+
+
+class ValidProxyCredentialTest(unittest.TestCase):
+    def test_accepts_ordinary_and_empty(self):
+        ## Empty means "no credential"; spaces, ':' , '#' and Unicode are all
+        ## legal in a SOCKS/HTTP credential (Tor reads the rest of the line).
+        for value in ('', 'bob', 'secret', 'my pass word', 'p@ss:w0rd#!',
+                      'unicode-\u00e9\u00fc', 'a' * 255):
+            with self.subTest(value=value):
+                self.assertTrue(validators.valid_proxy_credential(value))
+
+    def test_rejects_control_characters(self):
+        ## A line break is the torrc-injection vector; other control bytes have
+        ## no place in a credential either.
+        for value in ('x\nDisableNetwork 1', 'a\rb', 'a\x00b', 'a\x01b',
+                      'a\x7fb', 'a\x9fb'):
+            with self.subTest(value=value):
+                self.assertFalse(validators.valid_proxy_credential(value))
+
+    def test_rejects_over_255_bytes(self):
+        self.assertFalse(validators.valid_proxy_credential('a' * 256))
+        ## Byte length, not character count: a 2-byte char at 128 chars = 256.
+        self.assertFalse(validators.valid_proxy_credential('\u00e9' * 128))
+
+    def test_none_is_invalid(self):
+        self.assertFalse(validators.valid_proxy_credential(None))
+
+    def test_always_returns_bool(self):
+        for value in ('bob', '', 'x\ny', None, 'a' * 300):
+            with self.subTest(value=value):
+                self.assertIsInstance(
+                    validators.valid_proxy_credential(value), bool)
+
 
 if __name__ == '__main__':
     unittest.main()

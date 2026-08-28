@@ -12,13 +12,26 @@ Constructed with a QObject parent under the offscreen Qt platform; run() (which
 needs a live Tor control port via stem) is not exercised here.
 """
 
+import tempfile
 import unittest
+from unittest import mock
 
 import tcp_testlib
 
 tcp_testlib.require_app()  # side-effect harness: sys.path + offscreen QApplication
 from PyQt5.QtCore import QObject
 from tor_control_panel import tor_bootstrap
+
+try:
+    import stem.control  # noqa: F401
+    ## connect_to_control_port()'s 'except stem.connection.*' clauses need the
+    ## submodule imported to resolve. In production stem's own authenticate()
+    ## imports it; the test mocks authenticate(), so import it here to mirror
+    ## that state rather than AttributeError inside the except.
+    import stem.connection  # noqa: F401
+    _HAS_STEM = True
+except Exception:
+    _HAS_STEM = False
 
 
 ## Every bootstrap tag Tor can emit, transcribed from its own boot_to_str_tab:
@@ -140,6 +153,42 @@ class ParseBootstrapPhaseTest(unittest.TestCase):
         phase, percent = self._parse(line)
         self.assertEqual(percent, 10)
         self.assertEqual(phase, 'Connected to a relay')
+
+
+@unittest.skipUnless(_HAS_STEM, 'python3-stem not installed')
+class ControllerLeakTest(unittest.TestCase):
+    """connect_to_control_port() must close the stem Controller when
+    authentication fails: from_socket_file() has already opened the control
+    socket and started stem's reader thread, so a bare 'return None' leaks an
+    fd and a thread on every Enable/Restart retry."""
+
+    def test_controller_closed_on_auth_failure(self):
+        ## Keep the parent referenced: if it is GC'd, Qt deletes the C++
+        ## TorBootstrap and self.signal.emit() raises before authenticate().
+        parent = QObject()
+        thread = tor_bootstrap.TorBootstrap(parent)
+        closed = {'count': 0}
+
+        class _FakeController:
+            def authenticate(self, *args, **kwargs):
+                raise RuntimeError('authentication failed')
+
+            def close(self):
+                closed['count'] += 1
+
+        with tempfile.NamedTemporaryFile() as socket_file:
+            ## A real, readable path so the existence/readability pre-checks
+            ## pass and execution reaches authenticate().
+            thread.control_socket_path = socket_file.name
+            thread.control_cookie_path = socket_file.name
+            with mock.patch.object(stem.control.Controller, 'from_socket_file',
+                                   return_value=_FakeController()):
+                result = thread.connect_to_control_port()
+
+        self.assertIsNone(result)
+        self.assertEqual(
+            closed['count'], 1,
+            'controller left unclosed on auth failure (fd/thread leak)')
 
 
 if __name__ == '__main__':
