@@ -135,43 +135,50 @@ def contexts(pairs):
     return out
 
 
-def _index_entry(relpath, root):
-    """(mode, sha) for RELPATH's stage-0 index entry, or (None, None) if it has
-    none (dropped from the index, or unmerged). '-z' keeps a path with an odd
-    byte one record."""
+def _entry(rev, relpath, root):
+    """(mode, objname) for RELPATH at REV -- None -> the stage-0 INDEX (git
+    ':path'), a commit-ish -> that tree ('REV:path'). (None, None) if the path
+    has no such entry (dropped, or unmerged). objname is what cat-file reads.
+    '-z' keeps a path with an odd byte one record; mode is the leading field of
+    both 'ls-files --stage' and 'ls-tree' output."""
+    if rev is None:
+        cmd = ["git", "ls-files", "--stage", "-z", "--", relpath]
+    else:
+        cmd = ["git", "ls-tree", "-z", rev, "--", relpath]
     try:
         out = subprocess.run(
-            ["git", "ls-files", "--stage", "-z", "--", relpath],
-            cwd=root, capture_output=True, check=True).stdout
+            cmd, cwd=root, capture_output=True, check=True).stdout
     except (OSError, subprocess.CalledProcessError):
         return None, None
     record = out.split(b"\0", 1)[0]
     if not record:
         return None, None
     meta = record.split(b"\t", 1)[0].split()
-    if len(meta) < 2:
+    if not meta:
         return None, None
-    return os.fsdecode(meta[0]), os.fsdecode(meta[1])
+    objname = ":%s" % relpath if rev is None else "%s:%s" % (rev, relpath)
+    return os.fsdecode(meta[0]), objname
 
 
-def staged_blob_contexts(pairs):
-    """FileContexts whose bytes are the STAGED BLOB (index, stage 0) content --
-    so --staged gates exactly what a commit would record, NEVER the working tree,
-    which may differ (a working copy overwritten after staging must not hide a
-    violation staged in the index, nor a working-tree edit trip a check of the
-    clean staged blob). A symlink (mode 120000) or gitlink (160000) index entry
-    is skipped, mirroring contexts()' skip of a symlink on disk. abspath is kept
-    (the index/attrs git queries need the in-repo path); undecodable bytes ->
-    source None (the byte-level R-001 floor still reads raw)."""
+def blob_contexts(pairs, rev=None):
+    """FileContexts whose bytes are the git blob at REV -- None -> the stage-0
+    INDEX (what a commit records), a commit-ish like 'HEAD' -> that tree (what a
+    push carries) -- NEVER the working tree, which may have diverged (a working
+    copy overwritten after commit/stage must not hide a violation in the object
+    that ships, nor a working-tree edit trip a check of the clean object). A
+    symlink (mode 120000) or gitlink (160000) entry is skipped, mirroring
+    contexts()' skip of a symlink on disk. abspath is kept (the index/attrs git
+    queries need the in-repo path); undecodable bytes -> source None (the
+    byte-level R-001 floor still reads raw)."""
     root = _repo_root()
     out = []
     for abspath, relpath in pairs:
-        mode, sha = _index_entry(relpath, root)
-        if sha is None or mode in ("120000", "160000"):
+        mode, objname = _entry(rev, relpath, root)
+        if objname is None or mode in ("120000", "160000"):
             continue
         try:
             raw = subprocess.run(
-                ["git", "cat-file", "blob", sha],
+                ["git", "cat-file", "blob", objname],
                 cwd=root, capture_output=True, check=True).stdout
         except (OSError, subprocess.CalledProcessError):
             continue

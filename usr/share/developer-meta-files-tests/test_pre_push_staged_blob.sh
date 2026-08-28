@@ -138,6 +138,57 @@ else
    printf '%s\n' "  output: $(printf '%s' "${c2_out}" | tr '\n' '|' | head -c 300)"
 fi
 
+## The same object-vs-working-tree rule for --range, the mode dm-preflight uses to
+## gate a PUSH ('dist-ai-style --check --range BASE'). The range judges the HEAD
+## blob (the pushed tip), so a violation COMMITTED at HEAD but reverted in the
+## working copy (unstaged) must still FAIL -- else the push carries it unseen and
+## the only signal is a NOTE dm-preflight discards.
+gc() {
+   git -C "${repo}" -c core.hooksPath=/dev/null \
+      -c user.name=ci-test -c user.email=ci-test@example.com "$@"
+}
+
+## Case 3 -- violation at HEAD, working copy reverted clean: --range must FAIL.
+clean_body "${target}"
+gc add -- usr/bin/prog
+gc commit --quiet --message clean-base
+range_base="$(git -C "${repo}" rev-parse HEAD)"
+bad_body "${target}"
+gc add -- usr/bin/prog
+gc commit --quiet --message bad-head
+clean_body "${target}"   ## revert the working copy clean, do NOT commit
+c3_rc=0
+c3_out="$( cd -- "${repo}" && "${GATE}" --check --range "${range_base}" 2>&1 )" || c3_rc=$?
+if [ "${c3_rc}" -ne 0 ] \
+   && grep --quiet --fixed-strings 'usr/bin/prog' <<< "${c3_out}"; then
+   record PASS '--range catches a HEAD violation though the working copy was reverted clean'
+else
+   record FAIL "--range missed a HEAD violation hidden by a clean working copy (rc=${c3_rc})"
+   printf '%s\n' "  output: $(printf '%s' "${c3_out}" | tr '\n' '|' | head -c 300)"
+fi
+if grep --quiet --fixed-strings 'the gate judged the HEAD blob' <<< "${c3_out}"; then
+   record PASS 'a diverged working tree draws the HEAD-blob skew note in --range'
+else
+   record FAIL 'the HEAD-blob skew note was missing on a diverged --range working tree'
+   printf '%s\n' "  output: $(printf '%s' "${c3_out}" | tr '\n' '|' | head -c 300)"
+fi
+
+## Case 4 -- clean at HEAD, working copy edited violating: --range must PASS (the
+## edit is not in the pushed tip).
+clean_body "${target}"
+gc add -- usr/bin/prog
+gc commit --quiet --message clean-head
+range_base2="$(git -C "${repo}" rev-parse 'HEAD~1')"
+bad_body "${target}"   ## dirty the working copy, do NOT commit
+c4_rc=0
+c4_out="$( cd -- "${repo}" && "${GATE}" --check --range "${range_base2}" 2>&1 )" || c4_rc=$?
+if [ "${c4_rc}" -eq 0 ]; then
+   record PASS '--range passes a clean HEAD though the working copy was edited violating'
+else
+   record FAIL "a working-tree edit tripped a --range check of the clean HEAD blob (rc=${c4_rc})"
+   printf '%s\n' "  output: $(printf '%s' "${c4_out}" | tr '\n' '|' | head -c 300)"
+fi
+
 printf '%s\n' ""
-printf '%s\n' "pre-push-static --staged blob: ${pass_count} pass, ${fail_count} fail"
+printf '%s\n' "pre-push-static object-vs-worktree: ${pass_count} pass, ${fail_count} fail"
 [ "${fail_count}" -eq 0 ]

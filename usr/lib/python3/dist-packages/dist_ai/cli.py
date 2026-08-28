@@ -304,15 +304,21 @@ def style_main(argv, prog="dist-ai-style"):
         return code
     pairs, names, base_ref, base_cwd, staged_mode = enumerated
     git_mode = args.staged or args.range is not None
-    ## Bare / --paths --staged gate the INDEX (git diff --cached), so the content
-    ## judged must be the STAGED BLOB, not the working tree that may have diverged
-    ## since staging. --staged --all records the working tree (like 'commit -a'),
-    ## and --range / direct mode read disk too -- those keep the on-disk read.
-    from_index = args.staged and not args.all
+    ## Gate the git OBJECT that ships, not the working tree that may have diverged
+    ## since: bare / --paths --staged judge the INDEX blob (git ':path'); --range
+    ## judges the HEAD blob (the pushed tip). --staged --all records the working
+    ## tree itself (like 'commit -a') and direct file mode names files on disk, so
+    ## those keep the on-disk read.
+    if args.staged and not args.all:
+        use_blob, blob_rev = True, None       ## the index
+    elif args.range is not None:
+        use_blob, blob_rev = True, "HEAD"     ## the pushed tip
+    else:
+        use_blob, blob_rev = False, None      ## working tree
 
     def _mode_contexts():
-        if from_index:
-            return gitdiff.staged_blob_contexts(pairs)
+        if use_blob:
+            return gitdiff.blob_contexts(pairs, blob_rev)
         return gitdiff.contexts(pairs)
 
     ## A --paths pathspec that matched nothing checks nothing -- SAY so, never a
@@ -322,10 +328,11 @@ def style_main(argv, prog="dist-ai-style"):
               "checked" % prog, file=sys.stderr)
 
     ## Fix first (unless read-only), then re-read so the detect pass judges the
-    ## FIXED file -- the residual is exactly what a human must fix. Index blobs
-    ## have no writable file target, so there the fixer only REPORTS (check).
+    ## FIXED file -- the residual is exactly what a human must fix. A git blob
+    ## (index / HEAD) has no writable file target, so there the fixer only
+    ## REPORTS (check) rather than write blob content over the working tree.
     if not args.check:
-        code = _fix_contexts(_mode_contexts(), prog, check=from_index)
+        code = _fix_contexts(_mode_contexts(), prog, check=use_blob)
         if code is not None:
             return code
 
@@ -335,14 +342,12 @@ def style_main(argv, prog="dist-ai-style"):
 
     if git_mode:
         tool_dir = os.path.dirname(os.path.realpath(sys.argv[0]))
-        ## Index modes judged the STAGED BLOB, so note (informational) when the
-        ## working tree has since diverged; a range read disk against HEAD's
-        ## commits, so warn vs HEAD; --all read the working tree itself (like
-        ## 'commit -a'), so there is nothing to skew against.
-        if from_index:
-            skew_ref = ""
-        elif args.range is not None:
-            skew_ref = "HEAD"
+        ## A blob mode judged the committed/pushed object, so note (informational)
+        ## when the working tree has since diverged: '' diffs the index (staged),
+        ## 'HEAD' diffs the pushed tip (range). --all read the working tree itself
+        ## (like 'commit -a'), so there is nothing to skew against.
+        if use_blob:
+            skew_ref = blob_rev or ""
         else:
             skew_ref = None
         for finding in _batch_findings(names, base_ref, staged_mode, base_cwd,
