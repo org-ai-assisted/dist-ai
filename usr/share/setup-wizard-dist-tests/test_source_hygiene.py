@@ -24,6 +24,17 @@ class SourceHygieneTestCase(unittest.TestCase):
         except UnicodeDecodeError as exc:  # pragma: no cover
             self.fail(f"{source_path} contains non-ASCII bytes: {exc}")
 
+    def test_extract_keys_handles_embedded_other_quote(self):
+        # A single-quoted key may legally contain " (and a double-quoted key ');
+        # a [^'"] key-body class drops the WHOLE key, so its missing translation
+        # silently escapes the coverage check. The body must run up to the CLOSING
+        # quote only.
+        src = 'self._(\'Click "Next"\')\nself._("it\'s here")\nself._(\'plain\')'
+        keys = T.extract_source_keys(src)
+        self.assertIn('Click "Next"', keys)
+        self.assertIn("it's here", keys)
+        self.assertIn('plain', keys)
+
 
 if __name__ == '__main__':
     unittest.main()
