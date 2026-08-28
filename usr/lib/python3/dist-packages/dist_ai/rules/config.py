@@ -23,8 +23,13 @@ PYTHON_MODULE_PATH = re.compile(
     r'/lib/python3[^/]*/(?:dist|site)-packages/.*\.py$')
 
 EXEC_DIRECTIVE = re.compile(r'^[ \t]*(Exec[A-Za-z]*)=(.*)$', re.MULTILINE)
+## The trailing boundary is a LOOKAHEAD, not a consumed group: apt accepts the
+## value glued to the keyword ('Pre-Invoke{"..."}' / 'Pre-Invoke"..."', no space),
+## so consuming that first '{'/'"' would start the value scan one char late -- past
+## the opening brace/quote -- and _hook_value_region would mis-track depth/quotes
+## and truncate at the first embedded ';', hiding the rest of the command.
 APT_HOOK = re.compile(
-    r'(^|[^A-Za-z0-9])(Pre-Invoke|Post-Invoke|Pre-Install-Pkgs)([^A-Za-z0-9]|$)')
+    r'(^|[^A-Za-z0-9])(Pre-Invoke|Post-Invoke|Pre-Install-Pkgs)(?=[^A-Za-z0-9]|$)')
 CRON_ENV = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*[ \t]*=')
 
 

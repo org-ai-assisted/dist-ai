@@ -1522,6 +1522,17 @@ printf '%s\n' \
 printf '%s\n' \
    "DPkg::Pre-Invoke \"/usr/bin/a${sc} /usr/bin/b\"${sc}" \
    > "${apt_repo}/etc/apt/apt.conf.d/12bad-semi-bareval"
+## No SPACE between the keyword and its value: apt runs 'Pre-Invoke{"..."}' and
+## 'Pre-Invoke"..."' identically to the spaced form, but the keyword regex used to
+## CONSUME that first '{'/'"' as its trailing boundary, so the value scan began one
+## char late and truncated at the first embedded ';'. The brace form hides a whole
+## second command; the quote form hides the multi-statement inside one value.
+printf '%s\n' \
+   "DPkg::Pre-Invoke{\"true\"${sc} \"/usr/bin/a${sc} /usr/bin/b\"}${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/13bad-nospace-brace"
+printf '%s\n' \
+   "DPkg::Post-Invoke\"/usr/bin/a${sc} /usr/bin/b\"${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/14bad-nospace-quote"
 ## '|| true' error-suppression and a single command are glue, not a program.
 printf '%s\n' \
    'DPkg::Pre-Install-Pkgs {"/usr/sbin/dpkg-preconfigure --apt || true"};' \
@@ -1568,6 +1579,18 @@ if grep --quiet --fixed-strings -- '12bad-semi-bareval' <<< "${apt_hits}"; then
    printf '%s\n' 'PASS: R-194 flags a ";"-separated bare-quoted (brace-less) apt hook command'
 else
    printf '%s\n' 'FAIL: R-194 did not flag a ";"-separated bare-quoted apt hook command' >&2
+   failures=$((failures + 1))
+fi
+if grep --quiet --fixed-strings -- '13bad-nospace-brace' <<< "${apt_hits}"; then
+   printf '%s\n' 'PASS: R-194 flags a no-space brace apt hook (keyword glued to value)'
+else
+   printf '%s\n' 'FAIL: R-194 did not flag a no-space brace apt hook' >&2
+   failures=$((failures + 1))
+fi
+if grep --quiet --fixed-strings -- '14bad-nospace-quote' <<< "${apt_hits}"; then
+   printf '%s\n' 'PASS: R-194 flags a no-space bare-quoted apt hook (keyword glued to value)'
+else
+   printf '%s\n' 'FAIL: R-194 did not flag a no-space bare-quoted apt hook' >&2
    failures=$((failures + 1))
 fi
 if grep --quiet --fixed-strings -- '20good-ortrue' <<< "${apt_hits}"; then
