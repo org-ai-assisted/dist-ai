@@ -26,7 +26,7 @@ if [ ! -d "${LIB}/dist_ai" ]; then
 fi
 export PYTHONPATH="${LIB}${PYTHONPATH:+:${PYTHONPATH}}"
 
-for prereq in python3 safe-rm; do
+for prereq in python3 safe-rm shellcheck; do
    type -P "${prereq}" >/dev/null 2>&1 || {
       printf '%s\n' "FATAL: '${prereq}' not on PATH; this test cannot run." >&2
       exit 1
@@ -81,6 +81,32 @@ if [ "${toctou}" = "VICTIM ORIGINAL" ]; then
    note_pass "fixer write refuses a symlink swapped in after the scan"
 else
    note_fail "fixer followed a swapped-in symlink and clobbered the victim (got '${toctou}')"
+fi
+
+## --- staged-blob shellcheck honors the project .shellcheckrc -----------------
+## A virtual (staged) context materializes to a temp file; shellcheck discovers
+## '.shellcheckrc' by walking up from the CHECKED file's dir, so a temp-dir blob
+## dropped the project rc and the gate failed a file that is clean IN PLACE.
+## Canary: the rc disables SC2016 and the content triggers ONLY SC2016, so a
+## shellcheck finding here means the rc was not applied to the blob (the bug).
+rcdir="${test_dir}/proj"
+mkdir --parents -- "${rcdir}"
+printf '%s\n' 'disable=SC2016' > "${rcdir}/.shellcheckrc"
+sc_rc="$(python3 -c '
+import sys
+from dist_ai import context, engine, model
+abspath = sys.argv[1]
+## disk_backed=False -> a VIRTUAL (staged) context: materialized() writes the
+## bytes to a temp file; abspath only supplies the real source dir + rc location.
+ctx = context.FileContext("proj/f.sh", "#!/bin/bash\necho \x27$x\x27\n",
+                          abspath=abspath, disk_backed=False)
+findings = engine.detect(ctx, include_external=True)
+print(sum(1 for f in findings if f.rule == "shellcheck" and f.severity == model.FAIL))
+' "${rcdir}/f.sh")"
+if [ "${sc_rc}" = "0" ]; then
+   note_pass "staged-blob shellcheck honors the project .shellcheckrc"
+else
+   note_fail "staged-blob shellcheck ignored .shellcheckrc (got ${sc_rc} SC2016 finding(s))"
 fi
 
 if [ "${fail}" -ne 0 ]; then

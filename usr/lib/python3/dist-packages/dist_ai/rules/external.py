@@ -28,6 +28,24 @@ def _have(name):
         if directory)
 
 
+def _find_shellcheckrc(start_dir):
+    """The nearest '.shellcheckrc' at or above START_DIR, else None. shellcheck
+    discovers its rc by walking up from the CHECKED FILE's own directory -- but a
+    staged blob is materialized under a temp dir with no '.shellcheckrc' above it,
+    so the project rc (its SC disables) is silently dropped and the gate fails a
+    file that is clean IN PLACE. Locating the real rc lets the caller pass it via
+    '--rcfile' so the blob is judged by the same config as the on-disk file."""
+    directory = os.path.abspath(start_dir) if start_dir else os.getcwd()
+    while True:
+        candidate = os.path.join(directory, ".shellcheckrc")
+        if os.path.isfile(candidate):
+            return candidate
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            return None
+        directory = parent
+
+
 class BashParse(ExternalRule):
     """'bash -n': the shell must parse. A syntax error fails the gate. bash is
     always present (the strict-mode preamble needs 4.4+), so no skip path."""
@@ -65,8 +83,11 @@ class Shellcheck(ExternalRule):
     relative to the SCRIPT's own directory (every such directive here is written
     script-relative). The dir is passed explicitly, not as SCRIPTDIR, so a
     virtual context (a staged blob checked from a temp file) still resolves
-    'source=' against the real siblings. Fail-open when shellcheck is absent (a
-    bare git-hook run without it installed must still commit)."""
+    'source=' against the real siblings. For the SAME reason the project
+    '.shellcheckrc' is located from the real dir and passed via '--rcfile': a
+    temp-file blob has no rc above it, so without this its SC disables are dropped
+    and the gate fails a file that is clean in place. Fail-open when shellcheck is
+    absent (a bare git-hook run without it installed must still commit)."""
 
     id = "shellcheck"
 
@@ -81,11 +102,13 @@ class Shellcheck(ExternalRule):
             return
         try:
             with ctx.materialized() as (path, src_dir):
-                proc = subprocess.run(
-                    ["shellcheck", "--external-sources",
-                     "--source-path=" + src_dir,
-                     "--enable=" + SHELLCHECK_OPTIONAL, "--", path],
-                    capture_output=True, text=True)
+                command = ["shellcheck", "--external-sources",
+                           "--source-path=" + src_dir]
+                rc_file = _find_shellcheckrc(src_dir)
+                if rc_file is not None:
+                    command.append("--rcfile=" + rc_file)
+                command += ["--enable=" + SHELLCHECK_OPTIONAL, "--", path]
+                proc = subprocess.run(command, capture_output=True, text=True)
         except OSError:
             return
         if proc.returncode != 0:
