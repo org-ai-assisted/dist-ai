@@ -94,6 +94,24 @@ assert (N._normalize_srcset("data:image/png;base64,iVBORw0KGgo 2x")
 _mix = N._normalize_srcset("data:image/gif;base64,R0lGOD 1x, /b.png 2x")
 assert _mix == "data:image/gif;base64,R0lGOD 1x, /b.png 2x", ("srcset-shredded", _mix)
 
+# host-leak fail-CLOSED on a non-dict manifest "headers": dict(entry) copies it verbatim,
+# so a crafted list value would leak its host. A present-but-non-dict headers is redacted.
+_ndh = N.normalize_manifest({
+    "https://%s/x.css" % H: {"status": 200, "content_type": "text/css", "asset": "a",
+                             "sha256": "s", "size": 1,
+                             "headers": ["https://%s/secret-leak" % H]},
+})
+_ndh_entry = list(_ndh.values())[0]
+assert _ndh_entry.get("headers") == "SCRUBBED", ("nondict-headers-not-redacted", _ndh_entry)
+
+# empty-<p> drop keeps VISIBLE styling: a bare <p> and <p class="mw-empty-elt"> are noise
+# (dropped), but <p style=...>/<p class="banner"> occupy layout -- a real render difference
+# the snapshot must not hide.
+_php = N.normalize_html(
+    '<p></p><p class="mw-empty-elt"></p><p class="banner" style="height:100px"></p>')
+assert "banner" in _php and "height:100px" in _php, ("styled-empty-p-dropped", _php)
+assert "mw-empty-elt" not in _php, ("mw-empty-elt-p-kept", _php)
+
 # normalize_manifest: drop the page's OWN url (+ ?/# variants), NOT an unrelated entry
 # that merely shares its prefix (startswith over-match erased a legit manifest entry).
 _pm = "https://%s/wiki/A" % H
@@ -289,13 +307,15 @@ s, d = _mkmanifest({**_page,
 N.normalize_page_dir(s, d)  # must NOT raise (entry falls through to plain copy)
 assert (d / "assets" / "ok.css").exists(), "non-string content_type entry was not copied"
 
-# non-dict headers -- _normalize_headers would crash on `(headers or {}).items()`.
+# non-dict headers -- _normalize_headers would crash on `(headers or {}).items()`, and
+# dict(entry) would COPY the raw value through unscrubbed. Fail CLOSED: redact it (a list
+# value could otherwise leak a host verbatim).
 s, d = _mkmanifest({**_page, **_good,
     "https://%s/h.css" % H: {"status": 200, "content_type": "text/css", "asset": "ok.css",
                              "headers": "not-a-dict"}})
 N.normalize_page_dir(s, d)  # must NOT raise
 mout = json.loads((d / "manifest.json").read_text(encoding="utf-8"))
-assert any(v.get("headers") == "not-a-dict" for v in mout.values()), ("nondict-headers-skip", mout)
+assert any(v.get("headers") == "SCRUBBED" for v in mout.values()), ("nondict-headers-not-closed", mout)
 
 # non-string header value -- a crafted number/list (cache-control matches a
 # HEADER_TOKEN_PATTERN and is not volatile-scrubbed) must not crash and must FAIL CLOSED:
