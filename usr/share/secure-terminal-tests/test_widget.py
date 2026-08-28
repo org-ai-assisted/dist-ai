@@ -5359,6 +5359,26 @@ ok(not _tpp._line_dirty,
    'a paste delivered to a foreground TUI program does not mark the line')
 _tpp.close()
 
+# stale bracketed-paste bit (DEC 2004): a foreground program enables bracketed paste then
+# dies WITHOUT disabling it (crash / kill -9 / dropped SSH); the sticky pyte bit must not
+# keep _bracketed_paste_active() True for the RETURNING SHELL, or a multiline paste would
+# be framed (200~/201~) and its embedded \r auto-run past the paste gate. The read path
+# drops the stale bit on the foreground-program True->False edge.
+_bpm = 2004 << 5
+_bp = SecureTerminal(command=None, tui=True)
+_bp.has_foreground_program = lambda: True                 # a program owns the terminal
+feed_output(_bp, b'\x1b[?2004h')                          # ...and turns bracketed paste on
+ok(_bpm in _bp._screen.mode and _bp._bracketed_paste_active(),
+   'bracketed paste is active while a foreground program holds DEC 2004')
+_bp.has_foreground_program = lambda: False                # the program dies (no ?2004l)
+feed_output(_bp, b'user@host:~$ ')                        # the returning shell prompt
+ok(_bpm not in _bp._screen.mode,
+   'the stale DEC 2004 bit is dropped when the foreground program exits')
+ok(not _bp._bracketed_paste_active(),
+   'bracketed paste is NOT trusted for the returning shell (a multiline paste is reviewed)')
+_bp.close()
+_tpp.close()
+
 # A CLI-typed line carried into TUI stays in _line_buffer; editing it there with a
 # key TUI cannot mirror (Backspace/Home/Delete) desyncs the buffer from the real
 # shell line, so it must invalidate the buffer -- keeping _line_pending() honest so

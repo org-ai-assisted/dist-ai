@@ -84,6 +84,16 @@ assert N._normalize_url("javascript:f()?g") == "javascript:f()?g"
 assert "version=SCRUBBED" in N._normalize_url("https://%s/w/load.php?version=abc&x=1" % H)
 assert "version=SCRUBBED" in N._normalize_url("/w/load.php?version=abc&x=1")
 
+# _normalize_srcset: candidates are comma-separated, but a comma is legal in a URL query
+# and MANDATORY in a data: URI, so a bare value.split(",") SHREDS those. Split on the
+# candidate boundary (comma + whitespace) instead; an in-URL comma (followed by data, no
+# space) is preserved and its candidate reaches _normalize_url whole.
+assert N._normalize_srcset("/a.png 1x, /b.png 2x") == "/a.png 1x, /b.png 2x"
+assert (N._normalize_srcset("data:image/png;base64,iVBORw0KGgo 2x")
+        == "data:image/png;base64,iVBORw0KGgo 2x")
+_mix = N._normalize_srcset("data:image/gif;base64,R0lGOD 1x, /b.png 2x")
+assert _mix == "data:image/gif;base64,R0lGOD 1x, /b.png 2x", ("srcset-shredded", _mix)
+
 # normalize_manifest: drop the page's OWN url (+ ?/# variants), NOT an unrelated entry
 # that merely shares its prefix (startswith over-match erased a legit manifest entry).
 _pm = "https://%s/wiki/A" % H
