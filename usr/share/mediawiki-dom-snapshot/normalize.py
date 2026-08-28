@@ -299,10 +299,24 @@ def _canonicalise_whitespace(soup) -> None:
             t.replace_with(collapsed)
 
 
-## Schemes whose ':' introduces an OPAQUE payload, not a hierarchical URL, so a literal
-## '?' in them is not a query. Anything NOT here (http/https, relative, or an unrecognised
-## MediaWiki-namespace "scheme") treats '?' as a query.
-_OPAQUE_SCHEMES = frozenset({"data", "javascript", "mailto", "tel", "blob", "about"})
+## Schemes urlparse recognises as REAL URIs, so their ':' is a genuine scheme separator and
+## any '?' belongs to the scheme's own payload -- NOT a query to normalise. Two families:
+##  - MediaWiki's default $wgUrlProtocols external-link set (minus http/https, which ARE
+##    hierarchical query URLs we scrub): a magnet:/xmpp:/mailto:/... link's '?' is part of
+##    its RFC syntax (magnet params, the xmpp querytype), so parse_qsl+urlencode would
+##    reorder/percent-corrupt it.
+##  - inline browser schemes MediaWiki does not list but that still carry an opaque '?'
+##    (data:/javascript:/blob:/about:).
+## Anything NOT here is either http/https (scrubbed as a real query) or -- crucially -- an
+## UNRECOGNISED "scheme" that is really a MediaWiki NAMESPACE prefix (Category:/File:/
+## Template:/Help:/...), a relative wikilink whose '?' IS a query and whose volatile
+## cache-buster must be scrubbed, not passed through.
+_KNOWN_URI_SCHEMES = frozenset({
+    "bitcoin", "ftp", "ftps", "geo", "git", "gopher", "irc", "ircs", "magnet",
+    "mailto", "mms", "news", "nntp", "redis", "sftp", "sip", "sips", "sms",
+    "ssh", "svn", "tel", "telnet", "urn", "worldwind", "xmpp",
+    "data", "javascript", "blob", "about",
+})
 
 
 def _normalize_url(value: str) -> str:
@@ -312,16 +326,14 @@ def _normalize_url(value: str) -> str:
         p = urlparse(value)
     except ValueError:
         return value
-    ## Only hierarchical http(s) URLs (and scheme-relative / relative ones, scheme='')
-    ## use '?' as a query delimiter. A RECOGNISED opaque scheme (data:/javascript:/
-    ## mailto:/tel:/blob:/about:) can carry a literal '?' that is NOT a query -- treating
-    ## it as one (parse_qsl + re-encode) corrupts the payload (percent-escaping </script>
-    ## etc.). Leave those untouched. But a MediaWiki NAMESPACE href (Category:/File:/
-    ## Template:/Help:/...) ALSO parses with a "scheme" via urlparse though it is really a
-    ## RELATIVE wikilink whose '?' IS a query -- so an UNRECOGNISED scheme is NOT trusted:
-    ## it falls through to the query scrub, or a volatile t=/... cache-buster on every
-    ## namespace-style link survives verbatim and defeats the volatility kill.
-    if p.scheme and p.scheme.lower() in _OPAQUE_SCHEMES:
+    ## http(s), scheme-relative and relative (scheme='') URLs use '?' as a real query
+    ## delimiter -> fall through and scrub. A RECOGNISED URI scheme (magnet:/xmpp:/
+    ## mailto:/data:/...) carries a '?' that is part of its own syntax, not a query --
+    ## parse_qsl+urlencode would reorder its params or percent-escape its payload, so
+    ## leave it untouched. An UNRECOGNISED "scheme" is really a MediaWiki NAMESPACE prefix
+    ## (Category:/File:/Template:/Help:/...): a relative wikilink whose '?' IS a query, so
+    ## it falls through and a volatile cache-buster on it gets scrubbed like any other.
+    if p.scheme and p.scheme.lower() in _KNOWN_URI_SCHEMES:
         return value
     if not p.query:
         return value
@@ -378,15 +390,67 @@ def _scrub_script_text(text: str) -> str:
     ## user has the call ABSENT entirely while a later capture has it
     ## PRESENT. Drop the entire statement (including the trailing
     ## semicolon) so present-or-absent stops mattering.
-    ## String-aware body match: skip quoted string values (with escapes) so a literal
-    ## "});" INSIDE a value cannot truncate the match early and leave malformed trailing
-    ## JS. Stops at the first REAL (unquoted) object close. MW emits a flat object here.
-    text = re.sub(
-        r"""mw\.user\.options\.set\(\{(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^"'}])*\}\);?""",
-        "",
-        text,
-    )
-    return text
+    return _strip_mw_user_options(text)
+
+
+_MW_OPTIONS_MARKER = "mw.user.options.set("
+
+
+def _strip_mw_user_options(text: str) -> str:
+    ## Remove every `mw.user.options.set(...);` statement whole. A brace/paren-BALANCED,
+    ## string-aware scan finds the matching close, so a NESTED object value
+    ## ({"a":{"b":1},"c":2}) cannot end the match early -- a regex whose catch-all excludes
+    ## '}' stops at the first inner '}', fails to match at all, and leaks the whole
+    ## statement (any session tokens with it). A literal '});' inside a quoted value is
+    ## skipped as string content, not treated as the close.
+    out = []
+    i = 0
+    n = len(text)
+    while True:
+        j = text.find(_MW_OPTIONS_MARKER, i)
+        if j < 0:
+            out.append(text[i:])
+            break
+        out.append(text[i:j])
+        end = _match_balanced(text, j + len(_MW_OPTIONS_MARKER) - 1)
+        if end is None:
+            ## Malformed / truncated call: leave it verbatim, resume past the marker so a
+            ## later well-formed statement is still scrubbed.
+            out.append(_MW_OPTIONS_MARKER)
+            i = j + len(_MW_OPTIONS_MARKER)
+            continue
+        if end < n and text[end] == ";":
+            end += 1
+        i = end
+    return "".join(out)
+
+
+def _match_balanced(text: str, open_paren: int):
+    ## text[open_paren] is the '(' of the call. Scan to its matching ')', balancing
+    ## ()/[]/{} and skipping single/double-quoted strings (with backslash escapes).
+    ## Returns the index just PAST the matching ')', or None if unbalanced/truncated.
+    depth = 0
+    quote = None
+    esc = False
+    for k in range(open_paren, len(text)):
+        c = text[k]
+        if quote is not None:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == quote:
+                quote = None
+            continue
+        if c in "\"'":
+            quote = c
+        elif c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+            if depth == 0:
+                return k + 1
+    return None
 
 
 ## JS-generated random element ids. Multiple flavours; each pattern is
