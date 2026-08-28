@@ -1505,6 +1505,13 @@ printf '%s\n' \
 printf '%s\n' \
    'DPkg::Post-Invoke {"/usr/bin/a | /usr/bin/b"};' \
    > "${apt_repo}/etc/apt/apt.conf.d/11bad-pipe"
+## Bare (brace-less) quoted value: the embedded ';' sits at brace depth 0, so a
+## depth-only region scan would end the directive AT that ';' and never see the
+## closing quote -- hiding the multi-statement value. The quoted-region scan must
+## treat the ';' as literal data. apt accepts this exact form.
+printf '%s\n' \
+   "DPkg::Pre-Invoke \"/usr/bin/a${sc} /usr/bin/b\"${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/12bad-semi-bareval"
 ## '|| true' error-suppression and a single command are glue, not a program.
 printf '%s\n' \
    'DPkg::Pre-Install-Pkgs {"/usr/sbin/dpkg-preconfigure --apt || true"};' \
@@ -1545,6 +1552,12 @@ if grep --quiet --fixed-strings -- '11bad-pipe' <<< "${apt_hits}"; then
    printf '%s\n' 'PASS: R-194 flags a piped apt hook command'
 else
    printf '%s\n' 'FAIL: R-194 did not flag a piped apt hook command' >&2
+   failures=$((failures + 1))
+fi
+if grep --quiet --fixed-strings -- '12bad-semi-bareval' <<< "${apt_hits}"; then
+   printf '%s\n' 'PASS: R-194 flags a ";"-separated bare-quoted (brace-less) apt hook command'
+else
+   printf '%s\n' 'FAIL: R-194 did not flag a ";"-separated bare-quoted apt hook command' >&2
    failures=$((failures + 1))
 fi
 if grep --quiet --fixed-strings -- '20good-ortrue' <<< "${apt_hits}"; then

@@ -101,13 +101,22 @@ def _hook_value_region(text, start):
     keyword): text up to the ';' that terminates the directive at brace depth 0.
     apt.conf is newline-insensitive, so this spans lines -- 'KEYWORD "v";' returns
     ' "v"', and 'KEYWORD { "a"; "b"; };' returns ' { "a"; "b"; }' (the inner ';'
-    sit at depth 1, so they do not end the directive)."""
+    sit at depth 1, so they do not end the directive). A ';'/'{'/'}' INSIDE the
+    double-quoted value is literal data (apt runs the quoted string via sh -c),
+    so a quote toggle suspends brace/terminator tracking -- else a bare
+    'KEYWORD "a; b";' would end at the embedded ';' and hide the value. Not
+    escape-aware: apt values carry no escaped quotes."""
     depth = 0
+    in_quote = False
     index = start
     length = len(text)
     while index < length:
         char = text[index]
-        if char == "{":
+        if char == '"':
+            in_quote = not in_quote
+        elif in_quote:
+            pass
+        elif char == "{":
             depth += 1
         elif char == "}":
             depth = max(0, depth - 1)
