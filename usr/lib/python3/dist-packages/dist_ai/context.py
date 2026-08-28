@@ -16,11 +16,13 @@ The tree is parsed lazily: a text rule never forces a shell parse, and a shell
 file that shfmt cannot parse yields tree=None (the rule declines; the gate's
 'bash -n' reports the syntax error)."""
 
+import contextlib
 import fnmatch
 import io
 import os
 import re
 import subprocess
+import tempfile
 import tokenize
 
 from dist_ai import bash_ast
@@ -81,11 +83,16 @@ class FileContext:
       tree        -- the shfmt AST (lazy), or None if not shell / unparsable.
     """
 
-    def __init__(self, path, source, abspath=None, raw=None):
+    def __init__(self, path, source, abspath=None, raw=None, disk_backed=False):
         self.path = path
         self.abspath = abspath if abspath is not None else path
         self.source = source
         self._raw = raw
+        ## True only when the bytes came FROM abspath on disk (from_disk). A
+        ## context built from other bytes -- a staged blob, a commit message --
+        ## is VIRTUAL: abspath may hold different content, so an external tool
+        ## must read a materialized copy, not the path (see materialized()).
+        self.disk_backed = disk_backed
         self._tree = None
         self._tree_done = False
         self._binary = None
@@ -109,7 +116,35 @@ class FileContext:
         except UnicodeDecodeError:
             source = None
         return cls(relpath if relpath is not None else abspath, source,
-                   abspath=abspath, raw=raw)
+                   abspath=abspath, raw=raw, disk_backed=True)
+
+    @contextlib.contextmanager
+    def materialized(self):
+        """Yield (path, source_dir): a filesystem path whose bytes ARE this
+        context's content, and the directory a '# shellcheck source=' resolves
+        against. A disk-backed context yields its own abspath (no copy). A
+        VIRTUAL context (a staged blob) writes its bytes to a private temp file
+        so an external tool reads the CONTENT, not whatever now sits at abspath;
+        source_dir stays the real file's directory, so a relative sourced-file
+        path still resolves against the true siblings."""
+        src_dir = (os.path.dirname(os.path.abspath(self.abspath))
+                   if self.abspath else os.getcwd())
+        if self.disk_backed:
+            yield self.abspath, src_dir
+            return
+        data = self.data if self.data is not None else b""
+        handle = tempfile.NamedTemporaryFile(
+            prefix="dist-ai-staged-",
+            suffix="-" + os.path.basename(self.path), delete=False)
+        try:
+            handle.write(data)
+            handle.close()
+            yield handle.name, src_dir
+        finally:
+            try:
+                os.unlink(handle.name)
+            except OSError:
+                pass
 
     @property
     def data(self):

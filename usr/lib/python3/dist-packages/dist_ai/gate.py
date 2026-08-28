@@ -38,12 +38,12 @@ def _git(args, base_cwd, check=False):
 
 
 def warn_worktree_skew(names, ref, base_cwd):
-    """Advisory NOTE (never a FAIL) when a checked path's working-tree content
-    differs from what this mode actually records -- so a 'passed' result is not
-    mistaken for a check of the exact committed bytes. REF is the diff target:
-    '' for the staged index (working tree vs index), a commit-ish for a range
-    (working tree vs that commit). The content read off disk is the working
-    tree; without this the divergence is silent."""
+    """Advisory NOTE (never a FAIL) when a checked path's working tree diverges
+    from what this mode judged. REF is the diff target: '' for the staged index,
+    a commit-ish for a range. Index mode judged the STAGED BLOB, so the note is
+    purely informational (the working tree carries edits not yet staged); a range
+    read the working tree off disk against REF's commits, so its divergence means
+    the check did not see REF's exact bytes -- without the note that is silent."""
     if ref is None:
         return
     for name in names:
@@ -52,8 +52,8 @@ def warn_worktree_skew(names, ref, base_cwd):
             args.append(ref)
         args += ["--", name]
         if _git(args, base_cwd).returncode != 0:
-            hint = ("differs from the staged blob; re-stage to check the exact "
-                    "committed content" if not ref
+            hint = ("has unstaged working-tree edits; the gate judged the staged "
+                    "blob (the exact committed content)" if not ref
                     else "differs from %s; the check ran against the working "
                     "tree" % ref)
             yield model.note("worktree-skew", "'%s' %s" % (name, hint), name)

@@ -133,3 +133,51 @@ def contexts(pairs):
         if ctx is not None:
             out.append(ctx)
     return out
+
+
+def _index_entry(relpath, root):
+    """(mode, sha) for RELPATH's stage-0 index entry, or (None, None) if it has
+    none (dropped from the index, or unmerged). '-z' keeps a path with an odd
+    byte one record."""
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "--stage", "-z", "--", relpath],
+            cwd=root, capture_output=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None, None
+    record = out.split(b"\0", 1)[0]
+    if not record:
+        return None, None
+    meta = record.split(b"\t", 1)[0].split()
+    if len(meta) < 2:
+        return None, None
+    return os.fsdecode(meta[0]), os.fsdecode(meta[1])
+
+
+def staged_blob_contexts(pairs):
+    """FileContexts whose bytes are the STAGED BLOB (index, stage 0) content --
+    so --staged gates exactly what a commit would record, NEVER the working tree,
+    which may differ (a working copy overwritten after staging must not hide a
+    violation staged in the index, nor a working-tree edit trip a check of the
+    clean staged blob). A symlink (mode 120000) or gitlink (160000) index entry
+    is skipped, mirroring contexts()' skip of a symlink on disk. abspath is kept
+    (the index/attrs git queries need the in-repo path); undecodable bytes ->
+    source None (the byte-level R-001 floor still reads raw)."""
+    root = _repo_root()
+    out = []
+    for abspath, relpath in pairs:
+        mode, sha = _index_entry(relpath, root)
+        if sha is None or mode in ("120000", "160000"):
+            continue
+        try:
+            raw = subprocess.run(
+                ["git", "cat-file", "blob", sha],
+                cwd=root, capture_output=True, check=True).stdout
+        except (OSError, subprocess.CalledProcessError):
+            continue
+        try:
+            source = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            source = None
+        out.append(ctxmod.FileContext(relpath, source, abspath=abspath, raw=raw))
+    return out

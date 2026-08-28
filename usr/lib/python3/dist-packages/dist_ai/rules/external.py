@@ -39,9 +39,10 @@ class BashParse(ExternalRule):
 
     def detect(self, ctx):
         try:
-            proc = subprocess.run(
-                ["bash", "-n", "--", ctx.abspath],
-                capture_output=True, text=True)
+            with ctx.materialized() as (path, _src_dir):
+                proc = subprocess.run(
+                    ["bash", "-n", "--", path],
+                    capture_output=True, text=True)
         except OSError:
             return
         if proc.returncode != 0:
@@ -60,10 +61,12 @@ SHELLCHECK_OPTIONAL = (
 
 class Shellcheck(ExternalRule):
     """'shellcheck --external-sources' with the ai-review-aligned optional
-    checks. '--source-path=SCRIPTDIR' resolves a '# shellcheck source=' path
+    checks. '--source-path=<script dir>' resolves a '# shellcheck source=' path
     relative to the SCRIPT's own directory (every such directive here is written
-    script-relative). Fail-open when shellcheck is absent (a bare git-hook run
-    without it installed must still commit)."""
+    script-relative). The dir is passed explicitly, not as SCRIPTDIR, so a
+    virtual context (a staged blob checked from a temp file) still resolves
+    'source=' against the real siblings. Fail-open when shellcheck is absent (a
+    bare git-hook run without it installed must still commit)."""
 
     id = "shellcheck"
 
@@ -77,10 +80,12 @@ class Shellcheck(ExternalRule):
                 "shellcheck not on PATH; skipping (apt-get install shellcheck)")
             return
         try:
-            proc = subprocess.run(
-                ["shellcheck", "--external-sources", "--source-path=SCRIPTDIR",
-                 "--enable=" + SHELLCHECK_OPTIONAL, "--", ctx.abspath],
-                capture_output=True, text=True)
+            with ctx.materialized() as (path, src_dir):
+                proc = subprocess.run(
+                    ["shellcheck", "--external-sources",
+                     "--source-path=" + src_dir,
+                     "--enable=" + SHELLCHECK_OPTIONAL, "--", path],
+                    capture_output=True, text=True)
         except OSError:
             return
         if proc.returncode != 0:

@@ -175,18 +175,21 @@ def _detect_contexts(contexts, prog):
     return fail_count, None
 
 
-def _fix_contexts(contexts, prog):
+def _fix_contexts(contexts, prog, check=False):
     """Apply the mechanical fixes over CONTEXTS in place, printing a summary per
-    changed file. Returns an error_code only when shfmt is absent (exit 2)."""
+    changed file. With CHECK, report the would-fix counts WITHOUT writing -- for
+    --staged index blobs, whose content is the index, not a writable file on disk
+    (writing a blob-derived fix to the working tree would clobber it). Returns an
+    error_code only when shfmt is absent (exit 2)."""
     for ctx in contexts:
         try:
-            changes = engine.apply_fixes(ctx, check=False)
+            changes = engine.apply_fixes(ctx, check=check)
         except bash_ast.ShfmtMissing as exc:
             print("%s: shfmt is required but unavailable: %s" % (prog, exc),
                   file=sys.stderr)
             return 2
         if changes:
-            _fix_summary(prog, ctx.path, changes, check=False)
+            _fix_summary(prog, ctx.path, changes, check=check)
     return None
 
 
@@ -301,6 +304,16 @@ def style_main(argv, prog="dist-ai-style"):
         return code
     pairs, names, base_ref, base_cwd, staged_mode = enumerated
     git_mode = args.staged or args.range is not None
+    ## Bare / --paths --staged gate the INDEX (git diff --cached), so the content
+    ## judged must be the STAGED BLOB, not the working tree that may have diverged
+    ## since staging. --staged --all records the working tree (like 'commit -a'),
+    ## and --range / direct mode read disk too -- those keep the on-disk read.
+    from_index = args.staged and not args.all
+
+    def _mode_contexts():
+        if from_index:
+            return gitdiff.staged_blob_contexts(pairs)
+        return gitdiff.contexts(pairs)
 
     ## A --paths pathspec that matched nothing checks nothing -- SAY so, never a
     ## silent clean sweep (a narrow-to-nothing would otherwise read as a pass).
@@ -309,23 +322,24 @@ def style_main(argv, prog="dist-ai-style"):
               "checked" % prog, file=sys.stderr)
 
     ## Fix first (unless read-only), then re-read so the detect pass judges the
-    ## FIXED file -- the residual is exactly what a human must fix.
+    ## FIXED file -- the residual is exactly what a human must fix. Index blobs
+    ## have no writable file target, so there the fixer only REPORTS (check).
     if not args.check:
-        code = _fix_contexts(gitdiff.contexts(pairs), prog)
+        code = _fix_contexts(_mode_contexts(), prog, check=from_index)
         if code is not None:
             return code
 
-    fail_count, code = _detect_contexts(gitdiff.contexts(pairs), prog)
+    fail_count, code = _detect_contexts(_mode_contexts(), prog)
     if code is not None:
         return code
 
     if git_mode:
         tool_dir = os.path.dirname(os.path.realpath(sys.argv[0]))
-        ## The content is read off disk. Bare --staged records the INDEX, so
-        ## warn when the working tree differs; a range records HEAD's commits,
-        ## so warn vs HEAD. --all / --paths record the working tree itself (like
+        ## Index modes judged the STAGED BLOB, so note (informational) when the
+        ## working tree has since diverged; a range read disk against HEAD's
+        ## commits, so warn vs HEAD; --all read the working tree itself (like
         ## 'commit -a'), so there is nothing to skew against.
-        if args.staged and not args.all and not args.paths:
+        if from_index:
             skew_ref = ""
         elif args.range is not None:
             skew_ref = "HEAD"
