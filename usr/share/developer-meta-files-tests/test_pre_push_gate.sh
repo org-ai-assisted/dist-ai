@@ -170,15 +170,15 @@ git -C "${repo}" add big.dat
 assert "appending to a tracked large file passes" 0 "" --check --staged --all
 
 ## --- 11. bare --staged NOTEs when the working tree diverges from the index --
-## The content is read off disk; a staged path edited (not re-staged) afterward
-## is checked as its working-tree bytes, so a silent pass must carry a skew NOTE.
-## The edit here is a harmless comment, so the file still passes (rc 0) and only
-## the advisory fires.
+## The gate judges the staged INDEX blob (the exact committed bytes); a staged
+## path edited (not re-staged) afterward is still checked on its blob, so an
+## advisory NOTE flags that the working tree has since diverged. The edit here is
+## a harmless comment, so the file still passes (rc 0) and only the advisory fires.
 repo="$(new_repo)"
 mk_clean "${repo}/skew.sh"
 git -C "${repo}" add skew.sh
 printf '%s\n' '## edited after staging' >> "${repo}/skew.sh"
-assert "worktree skew emits an advisory NOTE" 0 "differs from the staged blob" \
+assert "worktree skew emits an advisory NOTE" 0 "the gate judged the staged blob" \
    --check --staged
 
 ## --- 12. --range keys added-large-files on the MERGE BASE, not base tip ------
