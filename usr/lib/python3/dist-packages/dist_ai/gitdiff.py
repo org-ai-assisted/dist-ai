@@ -135,29 +135,36 @@ def contexts(pairs):
     return out
 
 
-def _entry(rev, relpath, root):
-    """(mode, objname) for RELPATH at REV -- None -> the stage-0 INDEX (git
-    ':path'), a commit-ish -> that tree ('REV:path'). (None, None) if the path
-    has no such entry (dropped, or unmerged). objname is what cat-file reads.
-    '-z' keeps a path with an odd byte one record; mode is the leading field of
-    both 'ls-files --stage' and 'ls-tree' output."""
+def _tree_entries(rev, root):
+    """{relpath: (mode, sha)} for every blob at REV -- None -> the stage-0 INDEX,
+    a commit-ish -> that tree. The WHOLE listing is taken in one call and keyed by
+    exact path, so no per-file path ever reaches a git argument: a name that is
+    pathspec MAGIC (':(exclude)x') or collides with the ':<stage>:<path>' /
+    'REV:path' object grammar ('0:x') cannot make a lookup error out (swallowed ->
+    unscanned) or resolve to the wrong object. quotePath=false + '-z' keep an odd
+    -byte path one intact record. Raises StagedDiscoveryError on a git failure."""
     if rev is None:
-        cmd = ["git", "ls-files", "--stage", "-z", "--", relpath]
+        cmd = ["git", "-c", "core.quotePath=false", "ls-files", "--stage", "-z"]
+        sha_field = 1  ## 'mode sha stage \t path'
     else:
-        cmd = ["git", "ls-tree", "-z", rev, "--", relpath]
+        cmd = ["git", "-c", "core.quotePath=false", "ls-tree", "-r", "-z", rev]
+        sha_field = 2  ## 'mode type sha \t path'
     try:
         out = subprocess.run(
             cmd, cwd=root, capture_output=True, check=True).stdout
-    except (OSError, subprocess.CalledProcessError):
-        return None, None
-    record = out.split(b"\0", 1)[0]
-    if not record:
-        return None, None
-    meta = record.split(b"\t", 1)[0].split()
-    if not meta:
-        return None, None
-    objname = ":%s" % relpath if rev is None else "%s:%s" % (rev, relpath)
-    return os.fsdecode(meta[0]), objname
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise StagedDiscoveryError(str(exc)) from exc
+    entries = {}
+    for record in out.split(b"\0"):
+        if not record:
+            continue
+        meta, _tab, path = record.partition(b"\t")
+        fields = meta.split()
+        if len(fields) <= sha_field:
+            continue
+        entries[os.fsdecode(path)] = (
+            os.fsdecode(fields[0]), os.fsdecode(fields[sha_field]))
+    return entries
 
 
 def blob_contexts(pairs, rev=None):
@@ -167,18 +174,20 @@ def blob_contexts(pairs, rev=None):
     copy overwritten after commit/stage must not hide a violation in the object
     that ships, nor a working-tree edit trip a check of the clean object). A
     symlink (mode 120000) or gitlink (160000) entry is skipped, mirroring
-    contexts()' skip of a symlink on disk. abspath is kept (the index/attrs git
-    queries need the in-repo path); undecodable bytes -> source None (the
-    byte-level R-001 floor still reads raw)."""
+    contexts()' skip of a symlink on disk. The blob is fetched BY SHA (never a
+    ':path' object spec), so an adversarial filename cannot evade the scan. abspath
+    is kept (the index/attrs git queries need the in-repo path); undecodable bytes
+    -> source None (the byte-level R-001 floor still reads raw)."""
     root = _repo_root()
+    entries = _tree_entries(rev, root)
     out = []
     for abspath, relpath in pairs:
-        mode, objname = _entry(rev, relpath, root)
-        if objname is None or mode in ("120000", "160000"):
+        mode, sha = entries.get(relpath, (None, None))
+        if sha is None or mode in ("120000", "160000"):
             continue
         try:
             raw = subprocess.run(
-                ["git", "cat-file", "blob", objname],
+                ["git", "cat-file", "blob", sha],
                 cwd=root, capture_output=True, check=True).stdout
         except (OSError, subprocess.CalledProcessError):
             continue

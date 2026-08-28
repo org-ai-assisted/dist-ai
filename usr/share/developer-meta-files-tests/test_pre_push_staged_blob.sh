@@ -189,6 +189,40 @@ else
    printf '%s\n' "  output: $(printf '%s' "${c4_out}" | tr '\n' '|' | head -c 300)"
 fi
 
+## Adversarial FILENAMES must not evade the object scan. The blob lookup keys on
+## the exact path (whole-listing, no per-file pathspec) and fetches BY SHA, so a
+## name colliding with git's ':<stage>:<path>' object grammar ('0:x') or carrying
+## pathspec MAGIC (':(exclude)x') is scanned like any other -- reading it as a rev
+## spec (cat-file) or a pathspec (ls-tree, which errors and is swallowed) would
+## silently drop the file from the gate. Both staged as literal paths.
+adv_stage='0:decoy'
+bad_body "${repo}/${adv_stage}"
+gc add -- ":(literal)${adv_stage}"
+c5_rc=0
+c5_out="$( cd -- "${repo}" && "${GATE}" --check --staged 2>&1 )" || c5_rc=$?
+if [ "${c5_rc}" -ne 0 ] \
+   && grep --quiet --fixed-strings "${adv_stage}" <<< "${c5_out}"; then
+   record PASS 'a ":<stage>:<path>"-colliding staged filename is still scanned'
+else
+   record FAIL "a ':<stage>:<path>'-colliding staged filename evaded the gate (rc=${c5_rc})"
+   printf '%s\n' "  output: $(printf '%s' "${c5_out}" | tr '\n' '|' | head -c 300)"
+fi
+
+adv_range=':(exclude)pwn'
+bad_body "${repo}/${adv_range}"
+gc add -- ":(literal)${adv_range}"
+gc commit --quiet --message adv-range
+adv_base="$(git -C "${repo}" rev-parse 'HEAD~1')"
+c6_rc=0
+c6_out="$( cd -- "${repo}" && "${GATE}" --check --range "${adv_base}" 2>&1 )" || c6_rc=$?
+if [ "${c6_rc}" -ne 0 ] \
+   && grep --quiet --fixed-strings "${adv_range}" <<< "${c6_out}"; then
+   record PASS 'a pathspec-magic committed filename is still scanned (--range)'
+else
+   record FAIL "a pathspec-magic filename evaded the --range gate (rc=${c6_rc})"
+   printf '%s\n' "  output: $(printf '%s' "${c6_out}" | tr '\n' '|' | head -c 300)"
+fi
+
 printf '%s\n' ""
 printf '%s\n' "pre-push-static object-vs-worktree: ${pass_count} pass, ${fail_count} fail"
 [ "${fail_count}" -eq 0 ]
