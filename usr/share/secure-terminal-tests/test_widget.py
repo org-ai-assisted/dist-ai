@@ -225,7 +225,8 @@ eq(zbel2.toPlainText().rstrip(), 'ls a',
 # a copied or saved transcript stays pure ASCII. Box mode only.
 boxt = SecureTerminal(command='/bin/cat')
 boxt._mode = 'box'
-feed_output(boxt, 'caf\xc3\xa9\xe2\x80\x8b\n'.encode('utf-8'))   # e-acute + zero-width
+## C7: Use the correct unicode literal for ZWSP mojibake input
+feed_output(boxt, 'caf\u00e9\u200b\n'.encode('utf-8'))   # e-acute + zero-width
 ok('\u25a1' in boxt.document().toPlainText(),
    'box display shows the box for a neutralized byte')
 ok('\u25a1' not in boxt.toPlainText() and '_' in boxt.toPlainText(),
@@ -1277,7 +1278,13 @@ if tui_available():
 
     _drive_fullscreen(['vim', '-u', 'NONE', '-N'], '~', b'\x1b:q!\r', 'vim')
     _drive_fullscreen(['htop'], 'CPU', b'q', 'htop')
-    _drive_fullscreen(['nano', '/tmp/st-nano-e2e.txt'], 'GNU nano', b'\x18n', 'nano')  # nosec B108 -- scratch file arg for the nano E2E drive
+    ## C6: Use exclusive mkstemp path for nano E2E instead of fixed /tmp path
+    _nano_fd, _nano_path = tempfile.mkstemp(prefix='st-nano-e2e-')
+    os.close(_nano_fd)
+    try:
+        _drive_fullscreen(['nano', _nano_path], 'GNU nano', b'\x18n', 'nano')  # nosec B108 -- scratch file arg for the nano E2E drive
+    finally:
+        os.unlink(_nano_path)
     # Name the session's command explicitly. `new-session` with no command runs
     # the user's LOGIN SHELL, so tmux names the window after it and the readiness
     # token becomes environment-dependent -- 'bash' in the CI container, 'zsh' on
@@ -2440,9 +2447,12 @@ _rf.close()
 # regression (Fix #4): CLI paints are DEBOUNCED to ~60fps by a single-shot timer,
 # so a live read does not rebuild the document immediately -- but a save/teardown
 # must FLUSH the pending paint or the last unpainted line is lost.
+## A1: Resource leaks (pty child master fd). Close original fd before overwriting.
 _db = SecureTerminal(command='/bin/cat')
 _db._mode = 'show'
 _dbr, _dbw = os.pipe()
+if _db._fd is not None:
+    os.close(_db._fd)
 _db._fd = _dbr
 os.write(_dbw, b'debounced-last-line')
 os.close(_dbw)
@@ -2471,6 +2481,8 @@ _rn.close()
 _db2 = SecureTerminal(command='/bin/cat')
 _db2._mode = 'show'
 _dbr2, _dbw2 = os.pipe()
+if _db2._fd is not None:
+    os.close(_db2._fd)
 _db2._fd = _dbr2
 os.write(_dbw2, b'teardown-last-line')
 os.close(_dbw2)
@@ -2824,6 +2836,8 @@ _clp._last_clip_read = 0
 _clp._reply_clipboard()
 ok(len(_clpw2) == 1, 'a fully-written OSC-52 reply appends no extra terminator')
 _clp.close()
+## A2: Clear realistic secrets left on the OS clipboard
+QGuiApplication.clipboard().clear()
 
 # SEC-1: OSC-52 clipboard-read consent is a TOCTOU. osc_clipboard_read can be disabled
 # WHILE the consent dialog is open; a later Allow must NOT answer the stale READ query.
@@ -2848,6 +2862,8 @@ _ctcw.clear()
 _ctc.grant_clipboard_read(_ctc.CLIP_ALLOW_ONCE)
 ok(not any(b'\x1b]52;c;' in _w for _w in _ctcw),
    'SEC-1: grant_clipboard_read re-checks the feature flag and withholds the reply when off')
+## A2: Clear realistic secrets left on the OS clipboard
+QGuiApplication.clipboard().clear()
 _ctc.close()
 
 # SEC-1 (stale dialog): a consent dialog whose request was ABANDONED (osc_clipboard_read
@@ -3577,9 +3593,14 @@ if tui_available():
     tui._handle_osc(b'\x1b]52;c;' + _b64.b64encode(b'pasted') + b'\x07')
     ok(_QGA2.clipboard().text() == 'pasted', 'enabled: OSC 52 writes the clipboard')
     _QGA2.clipboard().setText('SECRET')
+    ## B2: Check pty REPLY channel for DECLINED clipboard read instead of clipboard text
+    _tui_spy = []
+    _orig_tui_write = tui._write
+    tui._write = lambda d: _tui_spy.append(bytes(d))
     tui._handle_osc(b'\x1b]52;c;?\x07')                     # read query
-    ok(_QGA2.clipboard().text() == 'SECRET',
+    ok(not any(b'\x1b]52;c;' in _w for _w in _tui_spy),
        'an OSC 52 read query is DECLINED (never answered -- no exfiltration)')
+    tui._write = _orig_tui_write
     tui._handle_osc(b'\x1b]52;c;' + _b64.b64encode(b'a\x1b[31mb\x00c') + b'\x07')
     ok(_QGA2.clipboard().text() == 'a[31mbc',
        'a clipboard write is stripped of escape/control bytes')
@@ -3602,12 +3623,18 @@ if tui_available():
     # a huge OSC numeric parameter must not crash the app -- int() raises on a
     # 4300+-digit string (Python 3.11+), and these parsers run in a Qt notifier
     # slot, so an unhandled exception would abort the whole application.
-    for _f in ('osc_title', 'osc_palette'):
+    # osc_colors (NOT osc_palette, which is not a real apply_osc flag) must be ON so the
+    # OSC 4 palette-index int() path is actually REACHED -- with the wrong flag it hit the
+    # disabled early-return and the crash test proved nothing. Reset it after, so the later
+    # "ignored until osc_colors is on" test still starts from off.
+    for _f in ('osc_title', 'osc_colors'):
         tui.apply_osc(_f, True)
     tui._handle_osc(b'\x1b]' + b'9' * 5000 + b';x\x07')          # huge OSC code
     tui._handle_osc(b'\x1b]4;' + b'1' * 5000 + b';rgb:ff/00/00\x07')  # huge palette index
     ok(isinstance(tui.toPlainText(), str),
        'a 5000-digit OSC code / palette index does not crash the TUI OSC handlers')
+    tui.apply_osc('osc_colors', False)
+    tui.apply_osc('osc_title', False)
     # cwd OSC 7 gated + emits the safe path
     _cwds = []
     tui.cwd_changed.connect(_cwds.append)
@@ -4427,41 +4454,51 @@ _lb.close()
 import threading                                       # noqa: E402
 from secure_terminal.main import _launch_to_request    # noqa: E402
 from secure_terminal import ipc as _ipc                # noqa: E402
+## C1: Save and restore XDG_RUNTIME_DIR globally mutated in this block
+_old_xdg = os.environ.get('XDG_RUNTIME_DIR')
 os.environ['XDG_RUNTIME_DIR'] = tempfile.mkdtemp()     # isolated socket dir
-srvwin = MainWindow(launch=_pla([]))
-srvwin.start_instance_server('default')
-pump(150)
-ok(os.path.exists(_ipc.socket_path('default')), 'ipc: server bound its socket')
-eq(oct(os.stat(_ipc.socket_path('default')).st_mode & 0o777), '0o700',
-   'ipc: socket is owner-only (0700)')
-_before = srvwin.tabs.count()
-_res = {}
+try:
+    srvwin = MainWindow(launch=_pla([]))
+    srvwin.start_instance_server('default')
+    pump(150)
+    ok(os.path.exists(_ipc.socket_path('default')), 'ipc: server bound its socket')
+    eq(oct(os.stat(_ipc.socket_path('default')).st_mode & 0o777), '0o700',
+       'ipc: socket is owner-only (0700)')
+    _before = srvwin.tabs.count()
+    _res = {}
 
 
-def _client():
-    spec = _pla(['--title', 'fromclient', '--', 'sleep', '30'])
-    _res['reply'] = _ipc.send_request('default', _launch_to_request(spec))
+    def _client():
+        spec = _pla(['--title', 'fromclient', '--', 'sleep', '30'])
+        _res['reply'] = _ipc.send_request('default', _launch_to_request(spec))
 
 
-_th = threading.Thread(target=_client)
-_th.start()
-for _ in range(300):                                   # pump so the server answers
-    pump(10)
-    if not _th.is_alive():
-        break
-_th.join()
-eq(_res.get('reply', {}).get('ok'), True, 'ipc: client open request accepted')
-eq(srvwin.tabs.count(), _before + 1, 'ipc: the running instance opened the tab')
-ok(any(srvwin.tabs.tabText(i) == 'fromclient' for i in range(srvwin.tabs.count())),
-   'ipc: opened tab carries the client title')
-# a malformed op is refused, not crashed
-eq(srvwin._dispatch_request(b'{"op":"bogus"}').get('ok'), False,
-   'ipc: unknown op refused')
-eq(srvwin._dispatch_request(b'not json').get('ok'), False, 'ipc: bad json refused')
-# remote control is OFF here (no admin conf) -> ctl ops refused
-eq(srvwin._dispatch_request(b'{"op":"ctl-ls"}').get('ok'), False,
-   'ctl: refused when remote_control is off')
-srvwin.close()
+    _th = threading.Thread(target=_client)
+    _th.start()
+    for _ in range(300):                                   # pump so the server answers
+        pump(10)
+        if not _th.is_alive():
+            break
+    ## C2: Add timeout to _th.join() and check is_alive() to prevent unbounded hang
+    _th.join(10)
+    ok(not _th.is_alive(), 'ipc: client thread terminates')
+    eq(_res.get('reply', {}).get('ok'), True, 'ipc: client open request accepted')
+    eq(srvwin.tabs.count(), _before + 1, 'ipc: the running instance opened the tab')
+    ok(any(srvwin.tabs.tabText(i) == 'fromclient' for i in range(srvwin.tabs.count())),
+       'ipc: opened tab carries the client title')
+    # a malformed op is refused, not crashed
+    eq(srvwin._dispatch_request(b'{"op":"bogus"}').get('ok'), False,
+       'ipc: unknown op refused')
+    eq(srvwin._dispatch_request(b'not json').get('ok'), False, 'ipc: bad json refused')
+    # remote control is OFF here (no admin conf) -> ctl ops refused
+    eq(srvwin._dispatch_request(b'{"op":"ctl-ls"}').get('ok'), False,
+       'ctl: refused when remote_control is off')
+    srvwin.close()
+finally:
+    if _old_xdg is None:
+        os.environ.pop('XDG_RUNTIME_DIR', None)
+    else:
+        os.environ['XDG_RUNTIME_DIR'] = _old_xdg
 
 # --- remote control (ctl), enabled by a privileged config ---------------------
 _rcsys = tempfile.mkdtemp(prefix='st-rcsys-')
@@ -4687,8 +4724,18 @@ for _f in ('osc_title', 'osc_notify', 'osc_cwd', 'osc_hyperlink', 'osc_clipboard
         pass                           # feature may not exist; the sweep still runs
 
 
+## B1: Enable osc_clipboard_read and grant consent so split-invariance assert is real
+_osz._osc['osc_clipboard_read'] = True
+_osz._clipboard_read = True
+
+
 def _osc_writes(seq_parts):
     _osz._osc_carry = b''
+    # each feed starts from the SAME state: a granted read with the 1s rate-limit cleared,
+    # so a code-52 reply is deterministic -- else whole (which fires first) and split (then
+    # rate-limited) differ, and the property flakes across Hypothesis's repeated calls.
+    _osz._clipboard_read = True
+    _osz._last_clip_read = 0.0
     captured = []
     _orig = _osz._write
     _osz._write = captured.append      # pylint: disable=protected-access
@@ -5147,7 +5194,13 @@ eq(_sp.run(['tput', '-T', 'secure-terminal-noedit', 'cub1'],
    'the refreshed compilation carries the append-only entry too')
 # ...and a cache NEWER than the source is served as-is (no needless recompile)
 _write_stale(+60)
-eq(_timod.cli_terminfo_dir(), _stale,
+## C5: Recompile check tests the file bytes are unchanged, not the path
+with open(_stale_file, 'rb') as _f:
+    _before_bytes = _f.read()
+_timod.cli_terminfo_dir()
+with open(_stale_file, 'rb') as _f:
+    _after_bytes = _f.read()
+eq(_before_bytes, _after_bytes,
    'a compiled entry newer than the source is served from cache')
 if _prev_cache is None:
     del os.environ['XDG_CACHE_HOME']
@@ -5155,7 +5208,8 @@ else:
     os.environ['XDG_CACHE_HOME'] = _prev_cache
 _shutil.rmtree(_tmpcache, ignore_errors=True)
 # end-to-end: a CLI-mode child actually sees TERM=secure-terminal
-_te = SecureTerminal(command=['sh', '-c', 'printf T=$TERM'])
+## C3: Read until a full line/record (newline) is present to prevent split-read truncation flake
+_te = SecureTerminal(command=['sh', '-c', 'printf T=$TERM\\n'])
 _ebuf = b''
 _estart = _time.monotonic()
 import fcntl as _fcntl2                                             # noqa: E402
@@ -5172,7 +5226,7 @@ while _time.monotonic() - _estart < 1.5:
         if not _chunk:
             break
         _ebuf += _chunk
-        if b'T=' in _ebuf:
+        if b'T=' in _ebuf and b'\n' in _ebuf:
             break
 _te.close()
 ok(b'T=secure-terminal' in _ebuf, 'the child process actually gets TERM=secure-terminal')
@@ -5198,7 +5252,7 @@ def _child_term_env(term):
         if not chunk:
             break
         buf += chunk
-        if b'T=' in buf:
+        if b'T=' in buf and b'\n' in buf:
             break
     return buf
 
@@ -5207,7 +5261,7 @@ def _child_term_env(term):
 # afterwards via apply_line_edits it leaves the already-forked shell advertising
 # el/cuf/hpa, so the opt-out changed only the display and completion still garbled.
 _saved_dle = win._default_line_edits
-_probe_cmd = ['sh', '-c', 'printf T=$TERM']
+_probe_cmd = ['sh', '-c', 'printf T=$TERM\\n']
 win._default_line_edits = False
 win.new_tab(command=_probe_cmd)
 ok(b'T=secure-terminal-noedit' in _child_term_env(win.current()),
@@ -6672,12 +6726,17 @@ _rt._osc_palette.pop('fg', None)
 _rt._osc_palette.pop('bg', None)
 _rt._fmt_cache.clear()
 
-# _pyte_bell rings unless we are seeding retained scrollback
+# _pyte_bell rings via _ring() unless seeding retained scrollback (those bells already
+# happened). Spy the real _ring path to PROVE the seeding gate -- a bare ok(True) could
+# not tell "gated while seeding" from "never rings at all".
+_rt._bell_channels = {'audible'}
+_rt_rings = []
+_rt._ring = lambda: _rt_rings.append(1)
 _rt._seeding = True
 _rt._pyte_bell()                            # seeding -> no ring (just returns)
 _rt._seeding = False
-_rt._pyte_bell()                            # -> _ring() (must not raise)
-ok(True, '_pyte_bell: rings when not seeding, stays quiet while seeding')
+_rt._pyte_bell()                            # -> _ring()
+ok(_rt_rings == [1], '_pyte_bell: rings when not seeding, stays quiet while seeding')
 
 # --- terminate_foreground actually signals a real foreground group ------------
 import subprocess as _subprocess          # noqa: E402
@@ -6700,6 +6759,8 @@ try:
     _victim.wait(timeout=3)
 except _subprocess.TimeoutExpired:
     _victim.kill()
+    ## C4: Reap the killed victim process to fix returncode assert flake
+    _victim.wait(timeout=5)
 ok(_victim.returncode is not None,
    'terminate_foreground: a TERM-ignoring group is SIGKILLed by the survivor')
 
@@ -6708,11 +6769,20 @@ _rg = SecureTerminal(command='/bin/cat')
 _rg._bell_channels = set()
 _rg._ring()                                 # no channels enabled -> returns early
 ok(True, '_ring: with no channels enabled it does nothing')
+# the rate-limit lives INSIDE _ring, so spy the real beep (app.beep via _QAppShim), not
+# _ring itself: two rings within ~200ms must produce exactly ONE beep.
 _rg._bell_channels = {'audible'}
-_rg._last_bell = 0.0
-_rg._ring()                                 # fires
-_rg._ring()                                 # within 200ms -> rate-limited (returns)
-ok(True, '_ring: a second ring within ~200ms is rate-limited')
+_rg_qapp = _stmod.QApplication
+_stmod.QApplication = _QAppShim
+try:
+    _QAppShim._fake.beeps = 0
+    _rg._last_bell = 0.0
+    _rg._ring()                             # fires -> app.beep()
+    _rg._ring()                             # within 200ms -> rate-limited (no beep)
+    ok(_QAppShim._fake.beeps == 1, '_ring: a second ring within ~200ms is rate-limited')
+finally:
+    _stmod.QApplication = _rg_qapp
+_rg.apply_paste_delay(15)
 eq(_rg.current_paste_delay(), _rg._paste_delay,
    'current_paste_delay: returns the configured paste delay')
 
@@ -6794,6 +6864,8 @@ _sd = SecureTerminal(command='/bin/cat')
 _rp, _wp = os.pipe()
 os.close(_rp)
 os.close(_wp)
+if _sd._fd is not None:
+    os.close(_sd._fd)
 _sd._fd = _rp                               # already closed -> os.close raises
 _sd._pid = 999999                           # no such pid -> kill/waitpid raise
 _sd.shutdown()
@@ -6802,6 +6874,8 @@ ok(_sd._fd is None and _sd._pid is None,
 
 # _write is a safe no-op with no fd, and drops output on a closed fd
 _wt2 = SecureTerminal(command='/bin/cat')
+if _wt2._fd is not None:
+    os.close(_wt2._fd)
 _wt2._fd = None
 _wt2._write(b'x')                           # no fd -> return
 _rp2, _wp2 = os.pipe()
@@ -6852,6 +6926,8 @@ _rw = SecureTerminal(command='/bin/cat')
 _rw._raw = 'x' * (_rw._RAW_MAX + 10)
 _rw._echo_caret('^C')
 ok(len(_rw._raw) <= _rw._RAW_MAX, '_echo_caret caps the retained raw output')
+## A3: Close _rw instance after one-shot use to prevent pty child leak
+_rw.close()
 
 # createMimeDataFromSelection returns a mime object
 _ms = SecureTerminal(command='/bin/cat')
@@ -6885,6 +6961,8 @@ _oc._osc_color(12, b'rgb:ff/ff/00')         # cursor
 _oc._osc_color(10, b'garbage')              # unparseable -> ignored
 ok('fg' in _oc._osc_palette and 'bg' in _oc._osc_palette,
    'OSC 10/11/12 override the default fg/bg/cursor colours')
+## A3: Close _oc instance after one-shot use to prevent pty child leak
+_oc.close()
 
 # OSC 52 clipboard-read gating: off / approved / denied / global-always / ask-once. Each
 # branch is VERIFIED to write (or NOT write) a real \x1b]52;c; reply -- asserting nothing
