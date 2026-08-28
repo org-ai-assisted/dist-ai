@@ -359,6 +359,33 @@ _alt._wheel_accum = 39
 feed_output(_alt, b'\x1b[?1049h')          # re-enter the alt screen
 eq(_alt._wheel_accum, 0, 'alt-screen ENTER drops any stale wheel-scroll remainder')
 
+# SECURITY: mouse tracking is an output-armed INPUT channel. In default CLI mode (not
+# TUI, no alt screen) untrusted output printing ?1000h?1006h?1004h must NOT let a click,
+# wheel or focus change become pty report bytes -- the "output cannot affect input"
+# contract. Only a full-screen program actually driving the terminal (TUI mode / alt
+# screen) may consume; the SCAN stays mode-agnostic so state persists across a switch.
+_mc = SecureTerminal(command=None)
+_mc.show()
+_mc._cols = 80
+_mcsent = spy_writes(_mc)
+feed_output(_mc, b'\x1b[?1000h\x1b[?1006h\x1b[?1004h')   # untrusted output arms the bits
+ok(not _mc.tui_active() and not _mc._alt_screen, 'the terminal is in default CLI mode')
+ok(not _mc._mouse_report_on(),
+   'CLI mode: output-armed mouse modes do NOT enable reporting (output cannot affect input)')
+_mcsent.clear()
+_mc.mousePressEvent(_mev(QEvent.Type.MouseButtonPress, Qt.MouseButton.LeftButton))
+ok(_parse_sgr(_mcsent) is None, 'CLI mode: a click emits no SGR mouse report')
+_mcsent.clear()
+_mc.wheelEvent(_wheel_ev(-120, pos=(200, 100)))
+ok(_parse_sgr(_mcsent) is None, 'CLI mode: a wheel emits no SGR mouse report')
+_mcsent.clear()
+_mc.focusInEvent(_QFEv(QEvent.Type.FocusIn))
+ok(b'\x1b[I' not in b''.join(_mcsent), 'CLI mode: a focus change emits no DEC 1004 report')
+_mc.apply_tui(True)   # the user opts into TUI: a live full-screen program may now report
+ok(_mc._mouse_report_on(),
+   'TUI mode: the SAME armed modes now report (CLI-mode blocking was the mode gate)')
+_mc.close()
+
 # konsole/xterm mouse-reporting parity: once the child requests tracking (1000/
 # 1002/1003) + SGR encoding (1006), its mouse and wheel events are REPORTED to it at
 # the cell UNDER THE POINTER (not a pinned corner, not arrow keys). Shift is the
