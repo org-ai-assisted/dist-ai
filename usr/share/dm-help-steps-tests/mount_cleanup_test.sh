@@ -87,6 +87,36 @@ main() {
 
    safe-rm --recursive --force -- "${scratch}"
 
+   ## Caller audit: mount-cleanup refuses a non-root EUID, so EVERY invocation
+   ## must run it as root via ${SUDO_TO_ROOT}. A missing prefix makes it die
+   ## "MUST be run as root" mid-teardown -- exactly what broke the CI image build
+   ## at 3500_install-packages (unmount-raw + unchroot-raw each called it bare).
+   local caller_hits bad_callers="" hit body trimmed
+   caller_hits="$(grep -rInE '/mount-cleanup"?[[:space:]]+--[[:space:]]' \
+      "${dm_checkout}/help-steps" "${dm_checkout}/build-steps.d" 2>/dev/null || true)"
+   while IFS= read -r hit; do
+      [ -n "${hit}" ] || continue
+      body="${hit#*:}"; body="${body#*:}"                 ## strip 'path:line:'
+      trimmed="${body#"${body%%[![:space:]]*}"}"          ## strip leading space
+      case "${trimmed}" in '#'*) continue ;; esac         ## skip comments
+      case "${body}" in
+         *'${SUDO_TO_ROOT}'*mount-cleanup*)
+            : ## runs as root: ok
+            ;;
+         *)
+            bad_callers="${bad_callers}
+          ${hit}"
+            ;;
+      esac
+   done <<< "${caller_hits}"
+   if [ -z "${caller_hits}" ]; then
+      fail "found NO mount-cleanup callers to audit; the grep or the checkout path is wrong"
+   elif [ -z "${bad_callers}" ]; then
+      pass "every mount-cleanup caller runs it as root (\${SUDO_TO_ROOT})"
+   else
+      fail "mount-cleanup callers lacking \${SUDO_TO_ROOT} (it will die 'MUST be run as root'):${bad_callers}"
+   fi
+
    if [ "${test_failures}" = "0" ]; then
       printf '%s\n' "OK: mount-cleanup forwards its target to unmount-tree."
       return 0
