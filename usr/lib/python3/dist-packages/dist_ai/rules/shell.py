@@ -617,14 +617,16 @@ class ShellInlineShellC(Rule):
 ## --- unauthorized skip ------------------------------------------------------
 
 ALLOW_SKIP = re.compile(r'##[ \t]*style-ok:[ \t]*allow-skip:[ \t]*\S')
-_DECIMAL_INT = re.compile(r'[0-9]+')
+## Optional leading '+': bash tolerates 'exit +77' (runs as 77), so a bare
+## '[0-9]+' would fail to recognize it as a skip and leave it ungated.
+_DECIMAL_INT = re.compile(r'\+?[0-9]+')
 
 
 def _is_skip_code_77(word):
     """True if WORD is an 'exit'/'return' argument that RUNS AS 77. Bash parses
-    the argument as DECIMAL, leading zeros included -- 'exit 077' exits 77, not
-    octal 63 -- so a bare-string '== 77' misses '077' and lets an unwaived skip
-    slip. Normalize a pure decimal-integer literal before comparing; a
+    the argument as DECIMAL, leading zeros AND a leading '+' included -- 'exit 077'
+    and 'exit +77' both exit 77 -- so a bare-string '== 77' misses those and lets
+    an unwaived skip slip. Normalize a decimal-integer literal before comparing; a
     non-literal (expansion, or a quoted non-number) is not a recognizable skip."""
     if word is None or _DECIMAL_INT.fullmatch(word) is None:
         return False
@@ -662,21 +664,20 @@ def _skip_exit_code_word(call):
     return bash_ast.word_string(args[code_index])
 
 
-def _skip_waived(lines, comment_lines, line):
-    """True if an 'allow-skip' waiver sits on the skip's OWN line or the line
-    directly above -- but ONLY where that line carries a REAL comment (COMMENT_LINES,
-    the shfmt-AST comment line numbers). ALLOW_SKIP is matched over raw source, so
-    without this restriction a '## style-ok: allow-skip:' string INSIDE a quoted
-    value ('echo "## style-ok: allow-skip: x" && exit 77') or a bare variable
-    assignment on the line above would spoof authorization -- the exact skip-gate
-    silent-pass R-220 exists to close. COMMENT_LINES is None only when the source
-    did not parse (then there are no calls to reach here); fall back to raw."""
+def _skip_waived(comment_by_line, line):
+    """True if an 'allow-skip' waiver STARTS the real comment on the skip's own
+    line or the line directly above. COMMENT_BY_LINE maps a line number to that
+    line's shfmt comment TEXT (reconstructed with its leading '#'); the waiver is
+    matched anchored at the comment start, NEVER against the raw source line. That
+    is the only spoof-proof form: a '## style-ok: allow-skip:' string inside a
+    quoted value cannot authorize a skip even when it shares the line with an
+    UNRELATED real comment ('echo "...allow-skip..." && exit 77  # note'), because
+    the string is not the comment's own text. Mirrors has_waiver, which likewise
+    requires the waiver to start the comment (a trailing 'cmd ## style-ok:' still
+    counts -- the comment text begins at its '##', whatever code precedes it)."""
     for number in (line, line - 1):
-        if number < 1 or number > len(lines):
-            continue
-        if comment_lines is not None and number not in comment_lines:
-            continue
-        if ALLOW_SKIP.search(lines[number - 1]):
+        comment = comment_by_line.get(number)
+        if comment is not None and ALLOW_SKIP.match(comment):
             return True
     return False
 
@@ -689,21 +690,26 @@ class UnauthorizedSkip(Rule):
     id = "R-220"
 
     def detect(self, ctx):
-        lines = ctx.source.split("\n")
-        ## Restrict the waiver match to REAL comment lines (shfmt AST): a waiver
-        ## string in a quoted value or a bare var assignment must NOT authorize a
-        ## skip, the same spoof has_waiver / _comment_source_lines guard against.
-        comment_lines = ctx._comment_line_numbers()
+        ## Map each line to its REAL comment text (leading '#' restored), so the
+        ## waiver is matched against the comment itself, not the raw line: a
+        ## '## style-ok: allow-skip:' string in a quoted value cannot spoof a skip,
+        ## the same spoof has_waiver guards against.
+        comment_by_line = {}
+        for comment in bash_ast.comments(ctx.tree):
+            number = comment.get("Hash", {}).get("Line")
+            if number:
+                comment_by_line[number] = "#" + comment.get("Text", "")
         for call in bash_ast.call_exprs(ctx.tree):
             ## _skip_exit_code_word resolves exit/return incl. the '\exit' /
             ## 'builtin exit' / 'command exit' spellings, then word_string
             ## (quote-aware) so 'exit "77"' is the same skip as 'exit 77';
-            ## _is_skip_code_77 normalizes decimal leading zeros ('exit 077' = 77).
+            ## _is_skip_code_77 normalizes a leading '+' and decimal leading zeros
+            ## ('exit +77' / 'exit 077' both run as 77).
             code_word = _skip_exit_code_word(call)
             if code_word is None or not _is_skip_code_77(code_word):
                 continue
             line = call["Pos"]["Line"]
-            if _skip_waived(lines, comment_lines, line):
+            if _skip_waived(comment_by_line, line):
                 continue
             yield _fail(
                 ctx, "R-220",

@@ -298,6 +298,19 @@ run_det "$(printf '%s\n' '#!/bin/bash' \
    '## style-ok: allow-skip: optional target' \
    'foo || exit 77')"
 assert_not_at "R-220 honors a real comment waiver on the line above" "R-220" 3
+## coexisting-comment spoof: a decoy '## style-ok: allow-skip:' string must NOT
+## waive just because an UNRELATED real comment shares the line -- the waiver is
+## the comment's OWN text, anchored at its start, not anything on the raw line.
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   'echo "## style-ok: allow-skip: fake" && exit 77  # note')"
+assert_at "R-220 flags a decoy-string skip beside an unrelated comment" "R-220" 2
+## a REAL trailing waiver on the skip's own line still authorizes it.
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   'foo || exit 77  ## style-ok: allow-skip: real reason')"
+assert_not_at "R-220 honors a real trailing comment waiver" "R-220" 2
+## '+77' runs as 77 in bash, so 'exit +77' is a skip and must be gated.
+run_det "$(printf '%s\n' '#!/bin/bash' 'foo || exit +77')"
+assert_at "R-220 flags 'exit +77' (runs as 77)" "R-220" 2
 ## R-090: '-pv' / '-p -v' clusters are still 'command -v'.
 run_det "$(printf '%s\n' '#!/bin/bash' 'command -pv foo' 'command -p -v bar')"
 assert_at "R-090 flags a 'command -pv' cluster"   "R-090" 2
