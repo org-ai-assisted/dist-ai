@@ -70,19 +70,44 @@ _js = 'a=1; mw.user.options.set({"x":"a});b","y":2}); real();'
 _sc = N._scrub_script_text(_js)
 assert "mw.user.options.set" not in _sc, ("options-set-not-dropped", _sc)
 assert "real();" in _sc and '"y":2' not in _sc, ("options-set-truncated-early", _sc)
+# a NESTED object value must NOT leak the statement: a brace-balanced scan (not a regex
+# whose catch-all excludes '}') finds the true close past the inner '}'. Old code stopped
+# at the first inner '}', failed to match, and left the token-bearing statement verbatim.
+_nested = 'x=1; mw.user.options.set({"a":{"b":1},"token":"SEKRET","c":2}); after();'
+_sn = N._scrub_script_text(_nested)
+assert "mw.user.options.set" not in _sn and "SEKRET" not in _sn, ("nested-leak", _sn)
+assert "after();" in _sn and "x=1;" in _sn, ("nested-overreach", _sn)
+# multiple statements + a deeper nest, all dropped; surrounding JS survives intact.
+_multi = 'mw.user.options.set({"p":[{"q":1}]}); keep1(); mw.user.options.set({"r":2}); keep2();'
+_sm = N._scrub_script_text(_multi)
+assert "mw.user.options.set" not in _sm, ("multi-not-dropped", _sm)
+assert "keep1();" in _sm and "keep2();" in _sm, ("multi-overreach", _sm)
 
 # manifest URL keys
 m = {"https://%s/skins/x.css?v=1" % H: {"status": 200, "content_type": "text/css", "asset": "a.css", "sha256": "x", "size": 1}}
 nm = N.normalize_manifest(m)
 assert (not any(H in k for k in nm)) == active, ("manifest", active, list(nm))
 
-# _normalize_url: an OPAQUE scheme (data:/javascript:/mailto:) with a literal '?' is NOT
-# a query -> pass through unchanged, not parse_qsl-corrupted; but http(s) and relative
-# URLs still get their volatile query normalized.
+# _normalize_url: a RECOGNISED URI scheme's '?' is part of its own syntax, not a query ->
+# pass through VERBATIM (no parse_qsl reorder / percent-escape). Covers the inline browser
+# schemes AND MediaWiki's $wgUrlProtocols external-link set.
 assert N._normalize_url("data:text/html,x?y=1</script>") == "data:text/html,x?y=1</script>"
 assert N._normalize_url("javascript:f()?g") == "javascript:f()?g"
+assert N._normalize_url("mailto:a@b.example?subject=hi") == "mailto:a@b.example?subject=hi"
+# real external-link schemes: the ';' in an xmpp querytype must NOT be percent-escaped, and
+# magnet params must NOT be reordered/scrubbed -- parse_qsl+urlencode would corrupt both.
+_xmpp = "xmpp:romeo@example.net?message;body=Hello"
+assert N._normalize_url(_xmpp) == _xmpp, ("xmpp-corrupted", N._normalize_url(_xmpp))
+_magnet = "magnet:?xt=urn:btih:abc&dn=x&version=deadbeef"
+assert N._normalize_url(_magnet) == _magnet, ("magnet-corrupted", N._normalize_url(_magnet))
+# http(s) and relative URLs still get their volatile query normalized (a real query).
 assert "version=SCRUBBED" in N._normalize_url("https://%s/w/load.php?version=abc&x=1" % H)
 assert "version=SCRUBBED" in N._normalize_url("/w/load.php?version=abc&x=1")
+# a MediaWiki NAMESPACE href (Category:/File:/Template:/...) parses with a bogus urlparse
+# "scheme" NOT in the recognised set -> its '?' IS a query, so a volatile param must be
+# scrubbed, not left verbatim.
+assert "version=SCRUBBED" in N._normalize_url("Category:Foo?version=abc&action=edit"), \
+    N._normalize_url("Category:Foo?version=abc&action=edit")
 
 # _normalize_srcset: candidates are comma-separated, but a comma is legal in a URL query
 # and MANDATORY in a data: URI, so a bare value.split(",") SHREDS those. Split on the
@@ -350,6 +375,26 @@ s = Path(tempfile.mkdtemp()); d = Path(tempfile.mkdtemp())
 N.normalize_page_dir(s, d)  # must NOT raise
 assert json.loads((d / "manifest.json").read_text(encoding="utf-8")) == {}, "top-level list not emptied"
 assert N.normalize_manifest(42) == {}, "scalar manifest not refused"
+
+# malformed manifest.json (invalid JSON SYNTAX, not just wrong shape) -- a truncated /
+# corrupted received snapshot must degrade to {} like every sibling channel, not DoS the
+# run with an uncaught JSONDecodeError. The top-level load was the only UNGUARDED one.
+s = Path(tempfile.mkdtemp()); d = Path(tempfile.mkdtemp())
+(s / "dom.html").write_text("<html></html>", encoding="utf-8")
+(s / "assets").mkdir()
+(s / "manifest.json").write_text('{ "u": trunc', encoding="utf-8")  # invalid JSON
+N.normalize_page_dir(s, d)  # must NOT raise
+assert json.loads((d / "manifest.json").read_text(encoding="utf-8")) == {}, "malformed manifest not emptied"
+
+# non-UTF-8 dom.html -- attacker-controllable; the top-level read was strict utf-8 (no
+# fallback), so a stray byte crashed with UnicodeDecodeError. dom.html is always
+# re-serialised by normalize_html (never bit-copied), so errors="replace" is safe here.
+s = Path(tempfile.mkdtemp()); d = Path(tempfile.mkdtemp())
+(s / "dom.html").write_bytes(b"<html><body>\xff\xfe caf\xe9</body></html>")  # invalid utf-8
+(s / "assets").mkdir()
+(s / "manifest.json").write_text(json.dumps(_page), encoding="utf-8")
+N.normalize_page_dir(s, d)  # must NOT raise
+assert (d / "dom.html").exists(), "non-utf8 dom.html not normalized"
 assert N.normalize_manifest(["a", "b"]) == {}, "list manifest not refused"
 
 # all-malformed manifest -- EVERY asset entry is malformed. normalize must FAIL LOUD

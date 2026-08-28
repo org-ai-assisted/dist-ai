@@ -299,6 +299,26 @@ def _canonicalise_whitespace(soup) -> None:
             t.replace_with(collapsed)
 
 
+## Schemes urlparse recognises as REAL URIs, so their ':' is a genuine scheme separator and
+## any '?' belongs to the scheme's own payload -- NOT a query to normalise. Two families:
+##  - MediaWiki's default $wgUrlProtocols external-link set (minus http/https, which ARE
+##    hierarchical query URLs we scrub): a magnet:/xmpp:/mailto:/... link's '?' is part of
+##    its RFC syntax (magnet params, the xmpp querytype), so parse_qsl+urlencode would
+##    reorder/percent-corrupt it.
+##  - inline browser schemes MediaWiki does not list but that still carry an opaque '?'
+##    (data:/javascript:/blob:/about:).
+## Anything NOT here is either http/https (scrubbed as a real query) or -- crucially -- an
+## UNRECOGNISED "scheme" that is really a MediaWiki NAMESPACE prefix (Category:/File:/
+## Template:/Help:/...), a relative wikilink whose '?' IS a query and whose volatile
+## cache-buster must be scrubbed, not passed through.
+_KNOWN_URI_SCHEMES = frozenset({
+    "bitcoin", "ftp", "ftps", "geo", "git", "gopher", "irc", "ircs", "magnet",
+    "mailto", "mms", "news", "nntp", "redis", "sftp", "sip", "sips", "sms",
+    "ssh", "svn", "tel", "telnet", "urn", "worldwind", "xmpp",
+    "data", "javascript", "blob", "about",
+})
+
+
 def _normalize_url(value: str) -> str:
     if not isinstance(value, str) or "?" not in value:
         return value
@@ -306,12 +326,14 @@ def _normalize_url(value: str) -> str:
         p = urlparse(value)
     except ValueError:
         return value
-    ## Only hierarchical http(s) URLs (and scheme-relative / relative ones, scheme='')
-    ## use '?' as a query delimiter. An OPAQUE scheme (data:/javascript:/mailto:/tel:/
-    ## blob:) can carry a literal '?' that is NOT a query -- treating it as one (parse_qsl
-    ## + re-encode) corrupts the payload (percent-escaping </script> etc.) and yields a
-    ## spurious/masked diff. Leave a present, non-http(s) scheme untouched.
-    if p.scheme and p.scheme not in ("http", "https"):
+    ## http(s), scheme-relative and relative (scheme='') URLs use '?' as a real query
+    ## delimiter -> fall through and scrub. A RECOGNISED URI scheme (magnet:/xmpp:/
+    ## mailto:/data:/...) carries a '?' that is part of its own syntax, not a query --
+    ## parse_qsl+urlencode would reorder its params or percent-escape its payload, so
+    ## leave it untouched. An UNRECOGNISED "scheme" is really a MediaWiki NAMESPACE prefix
+    ## (Category:/File:/Template:/Help:/...): a relative wikilink whose '?' IS a query, so
+    ## it falls through and a volatile cache-buster on it gets scrubbed like any other.
+    if p.scheme and p.scheme.lower() in _KNOWN_URI_SCHEMES:
         return value
     if not p.query:
         return value
@@ -368,15 +390,67 @@ def _scrub_script_text(text: str) -> str:
     ## user has the call ABSENT entirely while a later capture has it
     ## PRESENT. Drop the entire statement (including the trailing
     ## semicolon) so present-or-absent stops mattering.
-    ## String-aware body match: skip quoted string values (with escapes) so a literal
-    ## "});" INSIDE a value cannot truncate the match early and leave malformed trailing
-    ## JS. Stops at the first REAL (unquoted) object close. MW emits a flat object here.
-    text = re.sub(
-        r"""mw\.user\.options\.set\(\{(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^"'}])*\}\);?""",
-        "",
-        text,
-    )
-    return text
+    return _strip_mw_user_options(text)
+
+
+_MW_OPTIONS_MARKER = "mw.user.options.set("
+
+
+def _strip_mw_user_options(text: str) -> str:
+    ## Remove every `mw.user.options.set(...);` statement whole. A brace/paren-BALANCED,
+    ## string-aware scan finds the matching close, so a NESTED object value
+    ## ({"a":{"b":1},"c":2}) cannot end the match early -- a regex whose catch-all excludes
+    ## '}' stops at the first inner '}', fails to match at all, and leaks the whole
+    ## statement (any session tokens with it). A literal '});' inside a quoted value is
+    ## skipped as string content, not treated as the close.
+    out = []
+    i = 0
+    n = len(text)
+    while True:
+        j = text.find(_MW_OPTIONS_MARKER, i)
+        if j < 0:
+            out.append(text[i:])
+            break
+        out.append(text[i:j])
+        end = _match_balanced(text, j + len(_MW_OPTIONS_MARKER) - 1)
+        if end is None:
+            ## Malformed / truncated call: leave it verbatim, resume past the marker so a
+            ## later well-formed statement is still scrubbed.
+            out.append(_MW_OPTIONS_MARKER)
+            i = j + len(_MW_OPTIONS_MARKER)
+            continue
+        if end < n and text[end] == ";":
+            end += 1
+        i = end
+    return "".join(out)
+
+
+def _match_balanced(text: str, open_paren: int):
+    ## text[open_paren] is the '(' of the call. Scan to its matching ')', balancing
+    ## ()/[]/{} and skipping single/double-quoted strings (with backslash escapes).
+    ## Returns the index just PAST the matching ')', or None if unbalanced/truncated.
+    depth = 0
+    quote = None
+    esc = False
+    for k in range(open_paren, len(text)):
+        c = text[k]
+        if quote is not None:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == quote:
+                quote = None
+            continue
+        if c in "\"'":
+            quote = c
+        elif c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+            if depth == 0:
+                return k + 1
+    return None
 
 
 ## JS-generated random element ids. Multiple flavours; each pattern is
@@ -1223,7 +1297,13 @@ def _copy_asset_bytes(src_a: Path, dst_assets: Path, sname: str, entry: dict) ->
 def normalize_page_dir(src: Path, dst: Path) -> None:
     dst.mkdir(parents=True, exist_ok=True)
 
-    html = (src / "dom.html").read_text(encoding="utf-8")
+    ## dom.html is attacker-controllable (a received cross-wiki snapshot). Unlike the
+    ## byte-copied asset bodies -- which must stay bit-identical, so must NOT be
+    ## errors="replace"-mangled -- dom.html is always re-serialised by normalize_html, so a
+    ## lossy decode cannot break a bit-identical invariant here. Decode with
+    ## errors="replace" so a non-UTF-8 dom.html surfaces in the diff instead of DoSing the
+    ## whole run with an uncaught UnicodeDecodeError.
+    html = (src / "dom.html").read_text(encoding="utf-8", errors="replace")
     (dst / "dom.html").write_text(normalize_html(html), encoding="utf-8")
 
     ## Computed styles: bit-identical copy. The values come straight
@@ -1282,9 +1362,16 @@ def normalize_page_dir(src: Path, dst: Path) -> None:
         if p.exists():
             _copy_json_scrubbed(p, dst / fn)
 
-    manifest = json.loads((src / "manifest.json").read_text(encoding="utf-8"))
-    ## manifest.json is untrusted (a received cross-wiki snapshot). A crafted
-    ## top-level scalar/list has no .items(); treat it as empty rather than crash.
+    ## manifest.json is untrusted (a received cross-wiki snapshot). A truncated /
+    ## corrupted / non-UTF-8 manifest must degrade to empty, not DoS the run with an
+    ## uncaught JSONDecodeError/UnicodeDecodeError -- every sibling channel above already
+    ## loads inside try/except.
+    try:
+        manifest = json.loads((src / "manifest.json").read_text(encoding="utf-8"))
+    except Exception:
+        print("normalize: manifest.json unreadable/invalid; ignoring", file=sys.stderr)
+        manifest = {}
+    ## A crafted top-level scalar/list has no .items(); treat it as empty rather than crash.
     if not isinstance(manifest, dict):
         print("normalize: manifest.json is not a JSON object; ignoring", file=sys.stderr)
         manifest = {}
