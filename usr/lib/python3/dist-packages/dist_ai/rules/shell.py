@@ -736,8 +736,30 @@ class Dpkg(Rule):
                     "allow-dpkg' to silence): '%s:%d'" % (ctx.path, line), line)
 
 
+## apt's truthy tokens (case-insensitive); every other value -- 'false', 'no',
+## '0', 'off', '2', an unknown word, empty -- reads FALSE. Verified empirically
+## with 'apt-config -o OPT=<v> shell RET OPT/b'.
+_APT_TRUE = frozenset({"true", "yes", "on", "1", "with", "enable"})
+
+
+def _enables_allow_downgrades(text):
+    """True if TEXT is an '--allow-downgrades' argument that ENABLES downgrades:
+    the bare flag, or '=<value>' whose value is an apt truthy token. A disabling
+    value ('=false'/'=0'/...) is a harmless no-op and is NOT the risk this rule
+    guards, so it must not be flagged."""
+    if text is None:
+        return False
+    if text == "--allow-downgrades":
+        return True
+    prefix = "--allow-downgrades="
+    if text.startswith(prefix):
+        return text[len(prefix):].lower() in _APT_TRUE
+    return False
+
+
 class AllowDowngrades(Rule):
-    """R-212: '--allow-downgrades' is forbidden."""
+    """R-212: enabling '--allow-downgrades' is forbidden (bare flag, or
+    '=<truthy>'); the disabling forms are a no-op and are spared."""
 
     id = "R-212"
     waiver_tag = "allow-downgrades"
@@ -748,12 +770,7 @@ class AllowDowngrades(Rule):
     def detect(self, ctx):
         for call in bash_ast.call_exprs(ctx.tree):
             for word in bash_ast.args(call):
-                ## apt accepts both the bare flag and '--allow-downgrades=true';
-                ## an exact match on the bare form alone lets '=value' slip.
-                text = bash_ast.word_string(word)
-                if text == "--allow-downgrades" or (
-                        text is not None
-                        and text.startswith("--allow-downgrades=")):
+                if _enables_allow_downgrades(bash_ast.word_string(word)):
                     yield _fail(ctx, "R-212",
                                 "R-212 --allow-downgrades forbidden", word)
 

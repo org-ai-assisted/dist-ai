@@ -328,11 +328,22 @@ assert_not_at "R-212 spares a quoted --allow-downgrades mention"        "R-212" 
 ## A fully-QUOTED flag word still passes the flag to apt-get; word_lit declined
 ## it (false-negative), word_string catches it. Canary for that fix.
 assert_at     "R-212 flags a fully-quoted --allow-downgrades flag word" "R-212" 4
-## apt accepts '--allow-downgrades=true'; an exact match on the bare flag alone
-## let the '=value' form slip. Both forms are forbidden.
+## The ENABLING forms are forbidden -- the bare flag, or '=<truthy>' (apt truthy
+## tokens true/yes/on/1/with/enable, case-insensitive).
 run_det "$(printf '%s\n' '#!/bin/bash' \
    'apt-get-noninteractive install --allow-downgrades=true -- pkg')"
 assert_at "R-212 flags '--allow-downgrades=true'" "R-212" 2
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   'apt-get-noninteractive install --allow-downgrades=yes -- pkg')"
+assert_at "R-212 flags '--allow-downgrades=yes'" "R-212" 2
+## The DISABLING forms ('=false'/'=0'/...) read FALSE in apt -- a no-op, not the
+## risk this rule guards -- so they must be SPARED, not flagged.
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   'apt-get-noninteractive install --allow-downgrades=false -- pkg')"
+assert_not_at "R-212 spares '--allow-downgrades=false' (disabling no-op)" "R-212" 2
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   'apt-get-noninteractive install --allow-downgrades=0 -- pkg')"
+assert_not_at "R-212 spares '--allow-downgrades=0' (disabling)" "R-212" 2
 ## A longer flag that merely PREFIXES the name (no '=') is a different flag -- spare it.
 run_det "$(printf '%s\n' '#!/bin/bash' \
    'apt-get-noninteractive install --allow-downgrades-foo -- pkg')"
