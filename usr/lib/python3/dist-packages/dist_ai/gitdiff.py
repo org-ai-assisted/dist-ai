@@ -195,5 +195,10 @@ def blob_contexts(pairs, rev=None):
             source = raw.decode("utf-8")
         except UnicodeDecodeError:
             source = None
-        out.append(ctxmod.FileContext(relpath, source, abspath=abspath, raw=raw))
+        ## source_rev is the git tree the bytes came from: '' for the index,
+        ## the commit-ish for a range -- so classification (.gitattributes) and
+        ## any sibling lookup key on the SAME tree, not the working tree.
+        out.append(ctxmod.FileContext(
+            relpath, source, abspath=abspath, raw=raw,
+            source_rev="" if rev is None else rev))
     return out

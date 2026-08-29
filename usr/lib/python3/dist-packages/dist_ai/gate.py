@@ -203,18 +203,31 @@ def check_untracked(base_cwd):
     check it. Naming it turns a forgotten 'git add' from a silent gap into a
     visible note. Never a FAIL (an untracked file is not part of this change)."""
     ## '-z' + quotePath=false: a name with a space / byte >= 0x80 is emitted RAW
-    ## (NUL-delimited), not C-quoted -- a quoted '"caf\303\251.sh"' would fail
-    ## the extension test and the open (same care the changelog enumeration takes).
-    out = _git(["-c", "core.quotePath=false", "ls-files", "--others",
-                "--exclude-standard", "-z"], base_cwd)
-    if out.returncode != 0:
+    ## (NUL-delimited), not C-quoted. Decode the RAW bytes with surrogateescape
+    ## (os.fsdecode), NOT _git's errors='replace': a non-UTF-8 filename byte must
+    ## round-trip back to the real path for the open()/shebang check, else the
+    ## U+FFFD-mangled path does not exist, _is_shell_file's open fails, and the
+    ## advisory silently never fires for exactly the file it exists to surface.
+    try:
+        proc = subprocess.run(
+            ["git", "-c", "core.quotePath=false", "ls-files", "--others",
+             "--exclude-standard", "-z"], capture_output=True, cwd=base_cwd)
+    except OSError:
         return
-    for name in out.stdout.split("\0"):
-        if name and _is_shell_file(os.path.join(base_cwd, name), name):
-            yield model.note(
-                "untracked",
-                "untracked shell file NOT checked -- 'git add' it to gate it: "
-                "'%s'" % name, name)
+    if proc.returncode != 0:
+        return
+    for raw in proc.stdout.split(b"\0"):
+        if not raw:
+            continue
+        name = os.fsdecode(raw)
+        if not _is_shell_file(os.path.join(base_cwd, name), name):
+            continue
+        ## backslashreplace so a lone-surrogate byte prints safely to stderr.
+        display = os.fsencode(name).decode("utf-8", "backslashreplace")
+        yield model.note(
+            "untracked",
+            "untracked shell file NOT checked -- 'git add' it to gate it: "
+            "'%s'" % display, display)
 
 
 def _find_comments_audit(tool_dir):

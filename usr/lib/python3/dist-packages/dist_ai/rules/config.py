@@ -93,26 +93,68 @@ class SystemdUnit(Rule):
                     "call it" % directive, path, start)
 
 
-def _double_quoted_spans(line):
-    """Yield the inner text of each double-quoted run on LINE (apt config values
-    are double-quoted). Not escape-aware -- apt values carry no escaped quotes."""
-    rest = line
-    while '"' in rest:
-        after = rest.split('"', 1)[1]
-        if '"' not in after:
-            break
-        inner, rest = after.split('"', 1)
-        yield inner
+def _hook_values(region):
+    """(values, leftover) for the apt hook REGION. VALUES are the sh -c commands
+    apt runs, read the SAME way apt parses its double-quoted-string grammar:
+      - a backslash escapes the next char, so '\\"' is a literal quote that does
+        NOT close the span (apt honours the escape) -- else 'echo \\"hi\\"; rm'
+        mis-splits and the ';' hides;
+      - ADJACENT quoted spans with only whitespace between them CONCATENATE into
+        one value (C-string style), so '"a;""b"' is the single command 'a;b';
+      - a non-whitespace, non-quote char (';', '{', '}') between spans ENDS the
+        value, so a brace list '{"a"; "b"}' is two separate values.
+    LEFTOVER is any non-whitespace OUTSIDE that recognized structure (quoted
+    spans, '{', '}', ';'). A hook value is quoted strings in an optional brace
+    list, so leftover means an apt.conf grammar corner this scanner does not
+    model -- R-194 fails CLOSED on it (see AptHook.detect) rather than chase
+    every quoting rule."""
+    values = []
+    leftover = []
+    current = None
+    index = 0
+    length = len(region)
+    while index < length:
+        char = region[index]
+        if char == '"':
+            index += 1
+            piece = []
+            while index < length and region[index] != '"':
+                if region[index] == "\\" and index + 1 < length:
+                    piece.append(region[index + 1])
+                    index += 2
+                    continue
+                piece.append(region[index])
+                index += 1
+            index += 1  ## past the closing quote (or end)
+            joined = "".join(piece)
+            current = joined if current is None else current + joined
+            continue
+        if char in " \t\r\n":
+            index += 1
+            continue
+        if current is not None:
+            values.append(current)
+            current = None
+        if char not in "{};":
+            leftover.append(char)
+        index += 1
+    if current is not None:
+        values.append(current)
+    return values, "".join(leftover)
 
 
 def _strip_apt_comments(text):
-    """Blank apt.conf comments so a ';'/'{'/'}'/'"' living in one cannot desync
-    the brace/quote scan that follows: '//' and '#' run to end of line from ANY
-    column (not just a whole-line comment), and '/* */' is a block that may span
-    lines. All are literal INSIDE a double-quoted value (a '//' in a URL), so a
-    quote toggle suspends comment recognition. Replaced with spaces, newlines
-    kept, so line numbers and the value-region scan are preserved. apt strings
-    carry no escapes, so a bare '"' toggles the quote state."""
+    """Blank apt.conf COMMENTS so a ';'/'{'/'}'/'"' living in one cannot desync
+    the brace/quote scan that follows: '//' runs to end of line from ANY column,
+    and '/* */' is a block that may span lines. Both are literal INSIDE a
+    double-quoted value (a '//' in a URL), so a quote toggle suspends comment
+    recognition. '#' is NOT a comment -- apt reads '#include'/'#clear' as
+    DIRECTIVES and keeps parsing the rest of the line, so blanking to EOL would
+    hide a hook after a '#clear' -- it is left intact. Replaced with spaces,
+    newlines kept, so line numbers and the value-region scan are preserved.
+    Escape-aware: a backslash inside a value escapes the next char, so a '\\"'
+    does not close the quote (else a comment marker after it would be scanned
+    inside the value)."""
     out = []
     index = 0
     length = len(text)
@@ -121,6 +163,10 @@ def _strip_apt_comments(text):
         char = text[index]
         if in_quote:
             out.append(char)
+            if char == "\\" and index + 1 < length:
+                out.append(text[index + 1])
+                index += 2
+                continue
             if char == '"':
                 in_quote = False
             index += 1
@@ -131,7 +177,7 @@ def _strip_apt_comments(text):
             index += 1
             continue
         pair = text[index:index + 2]
-        if pair == "//" or char == "#":
+        if pair == "//":
             stop = text.find("\n", index)
             stop = length if stop < 0 else stop
             out.append(" " * (stop - index))
@@ -157,14 +203,18 @@ def _hook_value_region(text, start):
     sit at depth 1, so they do not end the directive). A ';'/'{'/'}' INSIDE the
     double-quoted value is literal data (apt runs the quoted string via sh -c),
     so a quote toggle suspends brace/terminator tracking -- else a bare
-    'KEYWORD "a; b";' would end at the embedded ';' and hide the value. Not
-    escape-aware: apt values carry no escaped quotes."""
+    'KEYWORD "a; b";' would end at the embedded ';' and hide the value. Escape-
+    aware: a backslash inside a value escapes the next char, so '\\"' does not
+    toggle the quote state (apt honours the escape)."""
     depth = 0
     in_quote = False
     index = start
     length = len(text)
     while index < length:
         char = text[index]
+        if in_quote and char == "\\" and index + 1 < length:
+            index += 2
+            continue
         if char == '"':
             in_quote = not in_quote
         elif in_quote:
@@ -197,22 +247,28 @@ class AptHook(Rule):
                         "R-194 skipped: 'style-ok: allow-embedded-script' "
                         "waiver in '%s'" % ctx.path)
             return
-        ## Blank comments (inline '//'/'#' to EOL and '/* */' blocks, keeping
-        ## newlines) so a commented-out hook is not scanned and a ';'/'}' in a
-        ## trailing comment cannot desync the value-region scan, then find each
-        ## hook directive and the value region that follows it, across lines.
+        ## Blank comments ('//' to EOL, '/* */' blocks, keeping newlines) so a
+        ## commented-out hook is not scanned and a ';'/'}' in a comment cannot
+        ## desync the value-region scan, then find each hook directive and the
+        ## value region that follows it, across lines.
         text = _strip_apt_comments(source)
         for match in APT_HOOK.finditer(text):
             region = _hook_value_region(text, match.end())
-            for inner in _double_quoted_spans(region):
-                if h.embeds_multi_statement(inner, strict=False):
-                    line_number = text.count("\n", 0, match.start()) + 1
-                    yield model.fail(
-                        "R-194",
-                        "R-194 apt hook embeds a multi-statement shell command; "
-                        "move the logic to a dedicated script (shebang) and "
-                        "call it", ctx.path, line_number)
-                    break
+            values, leftover = _hook_values(region)
+            multi = any(
+                h.embeds_multi_statement(inner, strict=False) for inner in values)
+            ## FAIL-CLOSED: a value present but the region carries content this
+            ## scanner cannot reduce to that quoted-list structure is flagged,
+            ## rather than modelling yet another apt.conf grammar corner and
+            ## risking a silent miss. A region with NO value (a hook keyword that
+            ## is really DATA inside another setting's quoted value) is spared.
+            if multi or (values and leftover.strip()):
+                line_number = text.count("\n", 0, match.start()) + 1
+                yield model.fail(
+                    "R-194",
+                    "R-194 apt hook embeds a multi-statement shell command; "
+                    "move the logic to a dedicated script (shebang) and "
+                    "call it", ctx.path, line_number)
 
 
 class CronTable(Rule):

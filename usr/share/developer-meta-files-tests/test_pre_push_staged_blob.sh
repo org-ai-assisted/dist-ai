@@ -223,6 +223,49 @@ else
    printf '%s\n' "  output: $(printf '%s' "${c6_out}" | tr '\n' '|' | head -c 300)"
 fi
 
+## Classification must key on the BLOB's own tree, not the working tree. Case 7:
+## a committed non-ASCII file, with an UNCOMMITTED (staged-only) '.gitattributes'
+## marking it binary, must still be flagged by R-001 under --range -- the range
+## judges the HEAD blob, whose tree has no such attribute, so a staged attribute
+## must not exempt it.
+nonascii="$(printf 'caf\303\251\n')"
+printf '%s' "${nonascii}" > "${repo}/data.txt"
+gc add -- data.txt
+gc commit --quiet --message committed-nonascii
+attr_base="$(git -C "${repo}" rev-parse 'HEAD~1')"
+printf '%s\n' 'data.txt binary' > "${repo}/.gitattributes"
+gc add -- .gitattributes   ## staged only, NOT committed
+c7_rc=0
+c7_out="$( cd -- "${repo}" && "${GATE}" --check --range "${attr_base}" 2>&1 )" || c7_rc=$?
+if [ "${c7_rc}" -ne 0 ] \
+   && grep --quiet --fixed-strings 'data.txt' <<< "${c7_out}"; then
+   record PASS 'a staged-only .gitattributes binary attr does not exempt a HEAD blob (--range)'
+else
+   record FAIL "a staged-only binary attr wrongly exempted a HEAD blob (rc=${c7_rc})"
+   printf '%s\n' "  output: $(printf '%s' "${c7_out}" | tr '\n' '|' | head -c 300)"
+fi
+git -C "${repo}" -c core.hooksPath=/dev/null reset -q --   ## unstage .gitattributes
+safe-rm --force -- "${repo}/.gitattributes"
+
+## Case 8: is_text must classify from the blob's CONTENT, not an on-disk path that
+## may be gone. Stage an EXTENSIONLESS, non-shell text file with a trailing space,
+## then remove its working copy: --staged must still flag the trailing whitespace
+## (an on-disk 'file' mime probe fails on the missing path and drops the file from
+## the text scope). Non-shell + extensionless so ONLY the is_text path decides it.
+mkdir --parents -- "${repo}/usr/share"
+printf 'plain note line \n' > "${repo}/usr/share/note"
+gc add -- usr/share/note
+safe-rm --force -- "${repo}/usr/share/note"   ## working copy gone; blob still staged
+c8_rc=0
+c8_out="$( cd -- "${repo}" && "${GATE}" --check --staged 2>&1 )" || c8_rc=$?
+if [ "${c8_rc}" -ne 0 ] \
+   && grep --quiet --fixed-strings 'usr/share/note' <<< "${c8_out}"; then
+   record PASS 'an extensionless staged blob is classified from content, not a missing path'
+else
+   record FAIL "a removed-working-copy extensionless blob went unclassified (rc=${c8_rc})"
+   printf '%s\n' "  output: $(printf '%s' "${c8_out}" | tr '\n' '|' | head -c 300)"
+fi
+
 printf '%s\n' ""
 printf '%s\n' "pre-push-static object-vs-worktree: ${pass_count} pass, ${fail_count} fail"
 [ "${fail_count}" -eq 0 ]

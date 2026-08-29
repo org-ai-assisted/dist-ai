@@ -219,6 +219,23 @@ else
    note_pass "the gate does not hang on an untracked fifo"
 fi
 
+## --- the pre-commit batch judges the staged BLOB, not the working tree --------
+## A private key staged then overwritten clean in the working copy must still be
+## caught by detect-private-key -- the batch that ran against the working tree
+## would see only the decoy and pass, hiding the staged secret.
+## The PEM marker is ASSEMBLED at run time -- 'PRIV'+'ATE KEY' -- so no literal
+## private-key header lives in THIS tracked file for detect-private-key to flag.
+repo="$(new_repo)"
+dashes='-----'
+pem_kind="RSA PRIV""ATE KEY"
+printf '%s\n' "${dashes}BEGIN ${pem_kind}${dashes}" \
+   'MIIBOgIBAAJBAKj34GkxFhDabcdEFGHijklMNOP' \
+   "${dashes}END ${pem_kind}${dashes}" > "${repo}/id_rsa"
+git -C "${repo}" add id_rsa
+printf '%s\n' 'a harmless decoy' > "${repo}/id_rsa"
+assert "staged private key hidden by a clean working copy is caught" 1 \
+   "detect-private-key" --check --staged
+
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "pre-push-gate: ${passc} pass, ${fail} fail, 0 skip -- FAILURES above." >&2
    exit 1

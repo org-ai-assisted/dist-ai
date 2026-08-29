@@ -57,12 +57,55 @@ def _abs(base_cwd, path):
     return path if os.path.isabs(path) else os.path.join(base_cwd, path)
 
 
-def _is_binary_attr(base_cwd, path):
+def _materialize_blobs(paths, source_rev, base_cwd):
+    """Copy each PATH's git blob at SOURCE_REV ('' = the index, a commit-ish =
+    that tree) into a temp MIRROR preserving the repo-relative layout, with the
+    tree's executable bit -- so a content/size/exec hook reads the object that
+    ships, not the working tree that may have diverged (the 'staged secret hidden
+    by a clean working copy' bypass). Fetched BY SHA from a whole-tree listing
+    keyed on the exact path, so an adversarial filename cannot evade it. Returns
+    the mirror dir; the caller removes it."""
+    from dist_ai import gitdiff
+    entries = gitdiff._tree_entries(
+        None if source_rev == "" else source_rev, base_cwd)
+    mirror = tempfile.mkdtemp(prefix="dist-ai-precommit-")
+    for path in paths:
+        mode, sha = entries.get(path, (None, None))
+        ## Skip a symlink (120000) / gitlink (160000): no file content to scan,
+        ## same as the working-tree scan skips them.
+        if sha is None or mode in ("120000", "160000"):
+            continue
+        try:
+            blob = subprocess.run(
+                ["git", "cat-file", "blob", sha],
+                capture_output=True, cwd=base_cwd, check=True).stdout
+        except (OSError, subprocess.CalledProcessError):
+            continue
+        rel = os.path.normpath(os.sep + path).lstrip(os.sep)
+        dest = os.path.join(mirror, rel)
+        try:
+            os.makedirs(os.path.dirname(dest) or mirror, exist_ok=True)
+            with open(dest, "wb") as handle:
+                handle.write(blob)
+            os.chmod(dest, 0o755 if mode == "100755" else 0o644)
+        except OSError:
+            continue
+    return mirror
+
+
+def _is_binary_attr(base_cwd, path, source_rev):
     """True if the repo declares PATH binary in .gitattributes -- then it is
-    data, never text, whatever its extension."""
+    data, never text, whatever its extension. The attribute source must match the
+    content's tree (source_rev): the INDEX for a staged blob / the working tree
+    (--cached), the blob's OWN commit for a range (--attr-source) -- and always
+    run in the REAL repo (base_cwd), never the non-git content mirror."""
+    if source_rev:
+        attr = ["--attr-source=%s" % source_rev, "check-attr"]
+    else:
+        attr = ["check-attr", "--cached"]
     try:
         out = subprocess.run(
-            ["git", "check-attr", "--cached", "binary", "--", path],
+            ["git"] + attr + ["binary", "--", path],
             capture_output=True, cwd=base_cwd)
     except OSError:
         return False
@@ -72,8 +115,11 @@ def _is_binary_attr(base_cwd, path):
         ": binary: set")
 
 
-def _is_text_file(base_cwd, path):
-    if _is_binary_attr(base_cwd, path):
+def _is_text_file(base_cwd, content_cwd, path, source_rev):
+    ## Attribute check in the real repo (base_cwd); the 'file' mime probe on the
+    ## CONTENT (content_cwd = the blob mirror in a git mode), so a file present
+    ## only in the index / a diverged working copy is typed from what ships.
+    if _is_binary_attr(base_cwd, path, source_rev):
         return False
     base = os.path.basename(path)
     _, ext = os.path.splitext(base)
@@ -84,7 +130,7 @@ def _is_text_file(base_cwd, path):
     try:
         mime = subprocess.run(
             ["file", "--brief", "--mime", "--dereference", "--",
-             _abs(base_cwd, path)],
+             _abs(content_cwd, path)],
             capture_output=True, text=True).stdout
     except OSError:
         return False
@@ -163,12 +209,13 @@ def _run_fixer(hook, files, base_cwd):
         shutil.rmtree(mirror, ignore_errors=True)
 
 
-def _added(paths, base_ref, base_cwd):
-    """The subset of PATHS this changeset ADDS (absent from BASE_REF). A path
-    both added and deleted in the range is skipped (nothing on disk to stat)."""
+def _added(paths, base_ref, base_cwd, content_cwd):
+    """The subset of PATHS this changeset ADDS (absent from BASE_REF). Existence
+    is stated in CONTENT_CWD (the mirror in blob mode, so a size hook stats the
+    blob), the 'already in base' test runs git in BASE_CWD (the real repo)."""
     out = []
     for path in paths:
-        if not os.path.exists(_abs(base_cwd, path)):
+        if not os.path.exists(_abs(content_cwd, path)):
             continue
         if base_ref and subprocess.run(
                 ["git", "cat-file", "-e", "%s:%s" % (base_ref, path)],
@@ -178,15 +225,18 @@ def _added(paths, base_ref, base_cwd):
     return out
 
 
-def _classify(paths, base_cwd):
-    """Partition PATHS into the typed lists the hooks consume. Skips a symlink
-    (its own list), a submodule gitlink (a directory here -- no content), and a
-    vanished path."""
+def _classify(paths, base_cwd, content_cwd, source_rev):
+    """Partition PATHS into the typed lists the hooks consume. Existence, kind
+    and exec bit are read from CONTENT_CWD (the blob mirror in a git mode), so a
+    file present only in the index -- or whose working copy was overwritten with a
+    decoy of a different type -- is still typed from the content that ships; the
+    .gitattributes check keys on BASE_CWD (see _is_text_file). Skips a symlink, a
+    submodule gitlink, and a vanished path."""
     lists = {name: [] for name in (
         "text", "exec_text", "symlink", "yaml", "json", "toml", "xml",
         "python", "req")}
     for path in paths:
-        real = _abs(base_cwd, path)
+        real = _abs(content_cwd, path)
         if not os.path.lexists(real):
             continue
         if os.path.islink(real):
@@ -194,7 +244,7 @@ def _classify(paths, base_cwd):
             continue
         if not os.path.isfile(real):
             continue
-        if _is_text_file(base_cwd, path):
+        if _is_text_file(base_cwd, content_cwd, path, source_rev):
             lists["text"].append(path)
             if os.access(real, os.X_OK):
                 lists["exec_text"].append(path)
@@ -216,11 +266,16 @@ def _classify(paths, base_cwd):
     return lists
 
 
-def run(paths, base_ref, staged_mode, base_cwd=None):
+def run(paths, base_ref, staged_mode, base_cwd=None, source_rev=None):
     """Yield Findings from the pre-commit-hooks batch over PATHS (the changed
     file set, in the gate's own path spelling). BASE_CWD is the repo root for a
     git mode (paths are repo-relative there), else None (paths are as-given).
-    Fail-open with a NOTE when the hooks are not installed."""
+    SOURCE_REV (None = working tree; '' = index; a commit-ish = that tree) makes
+    every CONTENT/size/exec hook read the git OBJECT that ships, via a temp
+    mirror, instead of the working tree -- else a staged private key / large file
+    overwritten clean in the working copy would pass the batch (the same bypass
+    the per-file blob gating closes). Fail-open with a NOTE when the hooks are not
+    installed."""
     if base_cwd is None:
         base_cwd = os.getcwd()
     if shutil.which("check-yaml") is None:
@@ -230,14 +285,38 @@ def run(paths, base_ref, staged_mode, base_cwd=None):
             "(apt-get install pre-commit-hooks)")
         return
 
-    lists = _classify(paths, base_cwd)
+    mirror = None
+    ## content_cwd feeds hooks that read a file's BYTES or exec bit; base_cwd the
+    ## ones that read git STRUCTURE (submodules, case, symlinks) -- those need the
+    ## real repo, not a mirror.
+    content_cwd = base_cwd
+    if source_rev is not None:
+        mirror = _materialize_blobs(paths, source_rev, base_cwd)
+        content_cwd = mirror
+    try:
+        yield from _run_batch(paths, base_ref, staged_mode, base_cwd,
+                              content_cwd, source_rev)
+    finally:
+        if mirror is not None:
+            shutil.rmtree(mirror, ignore_errors=True)
+
+
+def _run_batch(paths, base_ref, staged_mode, base_cwd, content_cwd, source_rev):
+    ## content_cwd (the mirror in a git mode) feeds only the PURE-CONTENT hooks --
+    ## those that read a file's bytes and call no git themselves. The many
+    ## git-aware hooks (they run 'git ls-files' / 'git rev-parse' internally and
+    ## would abort in a non-git mirror) stay on base_cwd. So the secret scanners
+    ## (detect-private-key / detect-aws) and the parsers judge the blob, while the
+    ## structure/mode hooks judge the real repo. classification reads the blob so
+    ## a file present only in the index (worktree deleted) is still typed+scanned.
+    lists = _classify(paths, base_cwd, content_cwd, source_rev)
     text = lists["text"]
 
     ## filename-blind, over the whole changed set:
     ## '--enforce-all' inspects the passed files (git diff --staged is empty at
     ## push time); restricted to ADDED files so a long-tracked large file does
     ## not fail every commit that appends to it.
-    added = _added(paths, base_ref, base_cwd)
+    added = _added(paths, base_ref, base_cwd, base_cwd)
     yield from _run_hook("check-added-large-files", ["--enforce-all"], added,
                          base_cwd)
     yield from _run_hook("check-case-conflict", [], paths, base_cwd)
@@ -263,22 +342,24 @@ def run(paths, base_ref, staged_mode, base_cwd=None):
                 else:
                     os.environ[key] = value
 
-    ## text-only:
+    ## check-merge-conflict is git-aware (it reads MERGE_MSG via 'git rev-parse'),
+    ## so it stays on the real repo; the rest here are pure content -> the blob.
     yield from _run_hook("check-merge-conflict", [], text, base_cwd)
-    yield from _run_hook("check-vcs-permalinks", [], text, base_cwd)
+    yield from _run_hook("check-vcs-permalinks", [], text, content_cwd)
     yield from _run_hook("detect-aws-credentials",
-                         ["--allow-missing-credentials"], text, base_cwd)
-    yield from _run_hook("detect-private-key", [], text, base_cwd)
-    yield from _run_fixer("fix-byte-order-marker", text, base_cwd)
-    yield from _run_fixer("end-of-file-fixer", text, base_cwd)
-    yield from _run_fixer("trailing-whitespace-fixer", text, base_cwd)
-    yield from _run_hook("mixed-line-ending", ["--fix=no"], text, base_cwd)
+                         ["--allow-missing-credentials"], text, content_cwd)
+    yield from _run_hook("detect-private-key", [], text, content_cwd)
+    yield from _run_fixer("fix-byte-order-marker", text, content_cwd)
+    yield from _run_fixer("end-of-file-fixer", text, content_cwd)
+    yield from _run_fixer("trailing-whitespace-fixer", text, content_cwd)
+    yield from _run_hook("mixed-line-ending", ["--fix=no"], text, content_cwd)
 
     ## check-shebang-scripts-are-executable: exempt a sourced fragment (waiver)
-    ## and an imported package module (R-180).
+    ## and an imported package module (R-180). Reads content + exec bit, both of
+    ## which the mirror carries from the tree.
     shebang_files = []
     for path in text:
-        content = _read_text(base_cwd, path)
+        content = _read_text(content_cwd, path)
         if _SOURCED_FRAGMENT.search(content):
             yield model.note(
                 "check-shebang-scripts-are-executable",
@@ -292,22 +373,31 @@ def run(paths, base_ref, staged_mode, base_cwd=None):
                 "imported package module" % path)
             continue
         shebang_files.append(path)
+    ## these two read the INDEX filemode via 'git ls-files --stage' AND open the
+    ## file on disk, so they are git-aware and run in the real repo -- and only on
+    ## paths that EXIST there: a file present only in the index (its working copy
+    ## deleted) has no on-disk content for them to read, exactly as before the blob
+    ## migration (the secret scanners above still judge its blob via the mirror).
+    on_disk = [p for p in shebang_files if os.path.lexists(_abs(base_cwd, p))]
     yield from _run_hook("check-shebang-scripts-are-executable", [],
-                         shebang_files, base_cwd)
-
+                         on_disk, base_cwd)
+    exec_on_disk = [p for p in lists["exec_text"]
+                    if os.path.lexists(_abs(base_cwd, p))]
     yield from _run_hook("check-executables-have-shebangs", [],
-                         lists["exec_text"], base_cwd)
+                         exec_on_disk, base_cwd)
+    ## a symlink has no mirror file (git structure) -- check it in the real repo.
     yield from _run_hook("check-symlinks", [], lists["symlink"], base_cwd)
 
-    ## type by extension:
-    yield from _run_hook("check-yaml", [], lists["yaml"], base_cwd)
-    yield from _run_hook("check-json", [], lists["json"], base_cwd)
-    yield from _run_hook("check-toml", [], lists["toml"], base_cwd)
-    yield from _run_hook("check-xml", [], lists["xml"], base_cwd)
-    yield from _run_hook("check-ast", [], lists["python"], base_cwd)
+    ## type by extension, content-reading -> content_cwd:
+    yield from _run_hook("check-yaml", [], lists["yaml"], content_cwd)
+    yield from _run_hook("check-json", [], lists["json"], content_cwd)
+    yield from _run_hook("check-toml", [], lists["toml"], content_cwd)
+    yield from _run_hook("check-xml", [], lists["xml"], content_cwd)
+    yield from _run_hook("check-ast", [], lists["python"], content_cwd)
     yield from _run_hook("check-builtin-literals", [], lists["python"],
-                         base_cwd)
-    yield from _run_hook("debug-statement-hook", [], lists["python"], base_cwd)
+                         content_cwd)
+    yield from _run_hook("debug-statement-hook", [], lists["python"],
+                         content_cwd)
 
     ## pretty-format-json REWRITES (and key-sorts) -- skip an app-managed
     ## settings file (check-json already validated its SYNTAX).
@@ -321,5 +411,5 @@ def run(paths, base_ref, staged_mode, base_cwd=None):
                 "format)" % path)
             continue
         json_fmt.append(path)
-    yield from _run_fixer("pretty-format-json", json_fmt, base_cwd)
-    yield from _run_fixer("requirements-txt-fixer", lists["req"], base_cwd)
+    yield from _run_fixer("pretty-format-json", json_fmt, content_cwd)
+    yield from _run_fixer("requirements-txt-fixer", lists["req"], content_cwd)

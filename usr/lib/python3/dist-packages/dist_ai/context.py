@@ -83,7 +83,8 @@ class FileContext:
       tree        -- the shfmt AST (lazy), or None if not shell / unparsable.
     """
 
-    def __init__(self, path, source, abspath=None, raw=None, disk_backed=False):
+    def __init__(self, path, source, abspath=None, raw=None, disk_backed=False,
+                 source_rev=None):
         self.path = path
         self.abspath = abspath if abspath is not None else path
         self.source = source
@@ -93,6 +94,11 @@ class FileContext:
         ## is VIRTUAL: abspath may hold different content, so an external tool
         ## must read a materialized copy, not the path (see materialized()).
         self.disk_backed = disk_backed
+        ## The git tree the bytes came from, so classification reads the SAME
+        ## tree as the content -- not the working tree that may have diverged.
+        ## None = disk (working tree); '' = the index (git ':path'); a commit-ish
+        ## = that tree. .gitattributes and any sibling lookup must key on this.
+        self.source_rev = source_rev
         self._tree = None
         self._tree_done = False
         self._binary = None
@@ -133,9 +139,13 @@ class FileContext:
             yield self.abspath, src_dir
             return
         data = self.data if self.data is not None else b""
+        ## Bound the suffix: a long basename (a 200+ char path component) would
+        ## overflow NAME_MAX and raise OSError, which BashParse/Shellcheck swallow
+        ## -> the file silently goes unparsed. The suffix is only a readability
+        ## hint (dialect comes from the shebang), so the tail is enough.
+        suffix = ("-" + os.path.basename(self.path))[-40:]
         handle = tempfile.NamedTemporaryFile(
-            prefix="dist-ai-staged-",
-            suffix="-" + os.path.basename(self.path), delete=False)
+            prefix="dist-ai-staged-", suffix=suffix, delete=False)
         try:
             handle.write(data)
             handle.close()
@@ -193,8 +203,9 @@ class FileContext:
     @property
     def is_binary(self):
         """True when .gitattributes marks the file binary -- exempt from the
-        text rules. Cached; queried against the INDEX (--cached) so an unstaged
-        .gitattributes cannot silently exempt."""
+        text rules. Cached; queried from the SAME tree as the content (see
+        _query_binary), so an unstaged/uncommitted .gitattributes cannot exempt a
+        blob it does not actually govern."""
         if self._binary is None:
             self._binary = self._query_binary()
         return self._binary
@@ -203,10 +214,18 @@ class FileContext:
         ## '-C <dir-of-file>' so git finds the file's OWN repo regardless of the
         ## caller's cwd -- otherwise a fixer invoked from another directory
         ## queried the wrong repo and the .gitattributes exemption failed open.
+        ## The attribute source must match source_rev: the INDEX for a staged
+        ## blob (--cached) and for the working tree, but the blob's OWN commit for
+        ## a range -- else a staged (uncommitted) '.gitattributes ... binary'
+        ## would exempt a HEAD blob it does not govern (an R-001 --range bypass).
+        base = ["git", "-C", os.path.dirname(self.abspath) or "."]
+        if self.source_rev:
+            attr = ["--attr-source=%s" % self.source_rev, "check-attr"]
+        else:
+            attr = ["check-attr", "--cached"]
         try:
             out = subprocess.run(
-                ["git", "-C", os.path.dirname(self.abspath) or ".",
-                 "check-attr", "--cached", "binary", "--", self.abspath],
+                base + attr + ["binary", "--", self.abspath],
                 capture_output=True, text=True)
         except OSError:
             return False
@@ -216,19 +235,22 @@ class FileContext:
     @property
     def is_text(self):
         """The trailing-whitespace scope: not binary, and either a known text
-        extension/basename or file(1) reports a text mime."""
+        extension/basename or file(1) reports a text mime. The mime probe reads
+        the context's OWN bytes (via stdin), not the path on disk -- a staged /
+        HEAD blob whose working-tree file diverged or was removed must still be
+        classified from the content that is actually being gated."""
         if self.is_binary:
             return False
         base = os.path.basename(self.path)
         if base in TEXT_BASENAMES or self.path.endswith(TEXT_EXTS):
             return True
-        if not _have("file"):
+        if not _have("file") or self.data is None:
             return False
         try:
             mime = subprocess.run(
-                ["file", "--brief", "--mime", "--dereference", "--",
-                 self.abspath],
-                capture_output=True, text=True).stdout
+                ["file", "--brief", "--mime", "-"],
+                input=self.data, capture_output=True).stdout.decode(
+                    "utf-8", "replace")
         except OSError:
             return False
         return any(needle in mime for needle in TEXT_MIME_NEEDLES)

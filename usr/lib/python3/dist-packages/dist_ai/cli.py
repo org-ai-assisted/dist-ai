@@ -240,13 +240,15 @@ def _enumerate(args, prog):
 
 
 def _batch_findings(names, base_ref, staged_mode, base_cwd, message_file,
-                    tool_dir, skew_ref):
+                    tool_dir, skew_ref, source_rev):
     """The repo-level checks that judge the whole changed set / range: the
     pre-commit-hooks batch, the changelog convention, the commit-message floor,
-    and the advisory comment audit. Yields Findings. SKEW_REF drives the
-    working-tree-skew NOTE (the content is read off disk, so a mode that records
-    something else must say so); None suppresses it."""
-    yield from precommit.run(names, base_ref, staged_mode, base_cwd)
+    and the advisory comment audit. Yields Findings. SOURCE_REV routes the
+    pre-commit batch to the git OBJECT (None=working tree, ''=index, a commit-ish
+    =that tree), so a staged secret is not hidden by a clean working copy.
+    SKEW_REF drives the working-tree-skew NOTE; None suppresses it."""
+    yield from precommit.run(names, base_ref, staged_mode, base_cwd,
+                             source_rev=source_rev)
     if staged_mode:
         yield from gate.check_changelog_staged(names, message_file, base_cwd)
     else:
@@ -350,8 +352,11 @@ def style_main(argv, prog="dist-ai-style"):
             skew_ref = blob_rev or ""
         else:
             skew_ref = None
+        ## source_rev for the batch: '' index, 'HEAD' range, None working tree.
+        batch_rev = (blob_rev or "") if use_blob else None
         for finding in _batch_findings(names, base_ref, staged_mode, base_cwd,
-                                       args.message_file, tool_dir, skew_ref):
+                                       args.message_file, tool_dir, skew_ref,
+                                       batch_rev):
             if finding.severity == model.FAIL:
                 fail_count += 1
             _print_finding(prog, finding)

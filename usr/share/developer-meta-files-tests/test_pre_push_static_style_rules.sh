@@ -1338,6 +1338,21 @@ else
    printf '%s\n' 'PASS: the untracked notice does not fire for tracked files'
 fi
 
+## An untracked EXTENSIONLESS shell file whose NAME carries a non-UTF-8 byte: the
+## shebang open() must see the REAL path, so decoding the name lossily
+## (errors='replace') corrupts it, the open fails, and the advisory silently
+## drops -- the exact gap it exists to close. The 0xFF byte comes from a run-time
+## octal escape, so no non-UTF-8 byte lives in THIS tracked file.
+nonutf_name="$(printf 'untr8-\377-marker')"
+printf '%s\n' '#!/bin/bash' 'true' > "${untracked_repo}/${nonutf_name}"
+nonutf_out="$( cd -- "${untracked_repo}" && "${GATE}" --check --range "${untracked_base}" 2>&1 || true )"
+if grep --quiet --fixed-strings 'untr8-' <<< "${nonutf_out}"; then
+   printf '%s\n' 'PASS: an untracked shell file with a non-UTF-8 name is still named'
+else
+   printf '%s\n' 'FAIL: a non-UTF-8-named untracked shell file was silently unchecked' >&2
+   failures=$((failures + 1))
+fi
+
 ## R-191: a systemd unit must not embed a multi-statement shell script in an
 ## 'Exec*=' directive. A multi-statement 'bash -c' (';', '&&', pipe, keyword, or
 ## a line continuation) is FLAGGED; a single-command wrapper and a plain
@@ -1549,6 +1564,28 @@ printf '%s\n' \
 printf '%s\n' \
    "dpkg::pre-invoke {\"echo one${sc} echo two\"}${sc}" \
    > "${apt_repo}/etc/apt/apt.conf.d/16bad-lowercase"
+## apt CONCATENATES adjacent double-quoted spans (C-string style) into one value,
+## so a multi-statement command split across two touching "..." spans is one sh -c
+## command; checking each span independently missed it.
+printf '%s\n' \
+   "DPkg::Pre-Invoke {\"echo a${sc}\"\"echo b\"}${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/17bad-concat"
+## apt honours a backslash escape inside a value, so an escaped inner quote does
+## NOT close the span; a non-escape-aware scan mis-split the value and lost the ';'.
+printf '%s\n' \
+   "DPkg::Post-Invoke {\"echo \\\"hi\\\"${sc} echo two\"}${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/18bad-escaped-quote"
+## '#clear'/'#include' are apt DIRECTIVES, not comments -- apt keeps parsing the
+## rest of the line, so blanking '#' to EOL hid a hook after a '#clear'.
+printf '%s\n' \
+   "DPkg::Pre-Invoke {\"true\"}${sc} #clear APT::Foo${sc} DPkg::Post-Invoke {\"echo a${sc} echo b\"}${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/19bad-hash-directive"
+## FAIL-CLOSED: a hook value region carrying content the scanner cannot reduce to
+## the quoted-list structure (here an unquoted token beside a value) is flagged,
+## not silently passed -- R-194 stops modelling every apt.conf grammar corner.
+printf '%s\n' \
+   "DPkg::Pre-Invoke {\"true\"${sc} an_unquoted_token}${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/22bad-region-leftover"
 ## '|| true' error-suppression and a single command are glue, not a program.
 printf '%s\n' \
    'DPkg::Pre-Install-Pkgs {"/usr/sbin/dpkg-preconfigure --apt || true"};' \
@@ -1619,6 +1656,30 @@ if grep --quiet --fixed-strings -- '16bad-lowercase' <<< "${apt_hits}"; then
    printf '%s\n' 'PASS: R-194 flags a non-canonical-case (lowercase) apt hook'
 else
    printf '%s\n' 'FAIL: R-194 did not flag a lowercase apt hook' >&2
+   failures=$((failures + 1))
+fi
+if grep --quiet --fixed-strings -- '17bad-concat' <<< "${apt_hits}"; then
+   printf '%s\n' 'PASS: R-194 flags a value split across adjacent concatenated spans'
+else
+   printf '%s\n' 'FAIL: R-194 did not flag an adjacent-concatenated split value' >&2
+   failures=$((failures + 1))
+fi
+if grep --quiet --fixed-strings -- '18bad-escaped-quote' <<< "${apt_hits}"; then
+   printf '%s\n' 'PASS: R-194 flags a value carrying escaped inner quotes'
+else
+   printf '%s\n' 'FAIL: R-194 did not flag a value with escaped inner quotes' >&2
+   failures=$((failures + 1))
+fi
+if grep --quiet --fixed-strings -- '19bad-hash-directive' <<< "${apt_hits}"; then
+   printf '%s\n' 'PASS: R-194 flags a hook after a "#clear" apt directive'
+else
+   printf '%s\n' 'FAIL: R-194 did not flag a hook after a "#clear" directive' >&2
+   failures=$((failures + 1))
+fi
+if grep --quiet --fixed-strings -- '22bad-region-leftover' <<< "${apt_hits}"; then
+   printf '%s\n' 'PASS: R-194 fails closed on an unreducible hook value region'
+else
+   printf '%s\n' 'FAIL: R-194 did not fail closed on an unreducible hook value' >&2
    failures=$((failures + 1))
 fi
 if grep --quiet --fixed-strings -- '20good-ortrue' <<< "${apt_hits}"; then
