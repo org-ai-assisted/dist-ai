@@ -293,6 +293,52 @@ git -C "${repo}" add conflicted.txt
 assert "a staged merge-conflict marker is flagged" 1 \
    "check-merge-conflict" --check --staged
 
+## --- a working-tree scan must read the WORKING-TREE .gitattributes ------------
+## In --staged --all (working tree) the binary classification must consult the
+## working tree's .gitattributes, NOT the index (--cached). Commit 'id_rsa binary'
+## + a placeholder; then DROP the mark in an UNSTAGED .gitattributes edit while
+## staging a real PEM. Reading the stale INDEX attr would classify id_rsa binary
+## and skip detect-private-key -- a private-key bypass. Marker assembled at run
+## time ('PRIV'+'ATE KEY') so no literal key header lives in this tracked file.
+repo="$(new_repo)"
+dashes='-----'
+pem_kind="RSA PRIV""ATE KEY"
+printf '%s\n' 'id_rsa binary' > "${repo}/.gitattributes"
+printf '%s\n' 'binary placeholder' > "${repo}/id_rsa"
+git -C "${repo}" add .gitattributes id_rsa
+git -C "${repo}" commit --quiet --no-verify --message attr-base
+printf '%s\n' '# no attributes' > "${repo}/.gitattributes"
+printf '%s\n' "${dashes}BEGIN ${pem_kind}${dashes}" \
+   'MIIBOgIBAAJBAKj34GkxFhDabcdEFGHijklMNOP' \
+   "${dashes}END ${pem_kind}${dashes}" > "${repo}/id_rsa"
+git -C "${repo}" add id_rsa
+assert "staged private key caught despite a stale index binary attr" 1 \
+   "detect-private-key" --check --staged --all
+
+## A symlink to the tree ROOT ('.'), or to a parent that stays in-tree ('..' from
+## a subdir), resolves -- '.' must count as a present tree path or a valid link
+## false-fails.
+repo="$(new_repo)"
+printf 'data\n' > "${repo}/f.txt"
+mkdir -p "${repo}/sub"
+ln -s . "${repo}/rootlink"
+ln -s .. "${repo}/sub/uplink"
+git -C "${repo}" add f.txt rootlink sub/uplink
+assert "a staged symlink to the tree root is not false-flagged" 0 \
+   "" --check --staged
+
+## A link whose path traverses a DIR-SYMLINK (through -> dirlink/file.txt, dirlink
+## -> a real dir) must not false-fail: resolving dir-symlink components is
+## best-effort (checkout-time check-symlinks does it), so it is left unflagged.
+repo="$(new_repo)"
+mkdir -p "${repo}/realdir"
+printf 'data\n' > "${repo}/realdir/file.txt"
+ln -s realdir "${repo}/dirlink"
+ln -s dirlink/file.txt "${repo}/through"
+git -C "${repo}" add realdir/file.txt dirlink through
+assert "a staged symlink through a dir-symlink is not false-flagged" 0 \
+   "" --check --staged
+
 ## The pre-commit FIXER must not follow a symlink swapped in after classification
 ## (a TOCTOU that let a fixer rewrite an arbitrary victim outside the repo). Drive
 ## precommit._run_fixer directly with a symlink where a regular file was scanned;

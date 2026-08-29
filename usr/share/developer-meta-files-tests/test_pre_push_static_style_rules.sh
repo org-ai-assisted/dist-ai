@@ -1564,6 +1564,16 @@ printf '%s\n' \
    "#include \"/dev/zero\"" \
    "DPkg::Pre-Invoke {\"echo a${sc} echo b\"}${sc}" \
    > "${apt_repo}/etc/apt/apt.conf.d/26bad-include-neutered"
+## The neuter must be COMMENT-blind too: a '//' comment holding an unmatched '\"'
+## precedes a '#include \"/dev/zero\"'. A quote-AWARE neuter would let the comment
+## quote flip its in-quote state and leave this '#include' LIVE -> apt follows
+## /dev/zero and the gate HANGS. The unconditional neuter has no such hole; the
+## real hook below must still be flagged (and the timeout above proves no hang).
+printf '%s\n' \
+   "// note with an unmatched \" quote" \
+   "#include \"/dev/zero\"" \
+   "DPkg::Pre-Invoke {\"echo x${sc} echo y\"}${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/27bad-include-after-comment"
 ## A trailing INLINE '//' comment (apt honours it from any column, not just a
 ## whole-line comment) carrying a '}' desyncs the brace-depth scan: the ';' after
 ## the benign entry is then read as the directive terminator, hiding the later
@@ -1678,6 +1688,12 @@ if grep --quiet --fixed-strings -- '26bad-include-neutered' <<< "${apt_hits}"; t
    printf '%s\n' 'PASS: R-194 flags the hook and neuters a malicious "#include"'
 else
    printf '%s\n' 'FAIL: R-194 missed a hook beside a neutered "#include"' >&2
+   failures=$((failures + 1))
+fi
+if grep --quiet --fixed-strings -- '27bad-include-after-comment' <<< "${apt_hits}"; then
+   printf '%s\n' 'PASS: R-194 neuters a "#include" after a comment holding an unmatched quote (no hang)'
+else
+   printf '%s\n' 'FAIL: R-194 missed the hook, or the gate hung, on a "#include" after a comment' >&2
    failures=$((failures + 1))
 fi
 if grep --quiet --fixed-strings -- '15bad-inline-comment' <<< "${apt_hits}"; then

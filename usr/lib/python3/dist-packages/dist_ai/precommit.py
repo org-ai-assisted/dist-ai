@@ -98,21 +98,33 @@ def _materialize_blobs(paths, source_rev, base_cwd):
 
 
 def _broken_staged_symlinks(paths, source_rev, base_cwd):
-    """Yield a FAIL for each staged SYMLINK whose target does not resolve to a
-    path present in the staged TREE. Purely GIT-NATIVE (no /tmp mirror, no
-    working tree): the target is resolved relative to the link's directory WITHIN
-    the tree, following symlink chains, so a relative ESCAPE above the root, a
-    MULTI-HOP chain, and the staged-vs-working-tree split are all handled on the
-    staged blob alone. An ABSOLUTE target resolves against the host at deploy
-    time, so it is not judged here."""
+    """Yield a FAIL for each staged SYMLINK whose target is UNAMBIGUOUSLY absent
+    from the staged TREE. Purely GIT-NATIVE (no /tmp mirror, no working tree): the
+    target is resolved relative to the link's directory WITHIN the tree, so a
+    relative ESCAPE above the root and the staged-vs-working-tree split are judged
+    on the staged blob alone.
+
+    CONSERVATIVE by design (a broken symlink is hygiene, not a security hole, and
+    full in-tree path resolution is a mini filesystem): it flags ONLY a target
+    that is plainly not a tree path, and ERRS TOWARD NOT flagging a valid commit.
+    Documented best-effort gaps, like an absolute target (host/deploy-time):
+      - a target whose path traverses an intermediate DIR-SYMLINK is not resolved
+        (not flagged) -- the checkout-time check-symlinks resolves it;
+      - a relative target that lexically collapses a '..' through an ABSENT dir
+        (e.g. 'missing/../tracked.txt') normpaths to a present path and passes,
+        though the link dangles -- again caught by check-symlinks on checkout.
+    An ABSOLUTE target is not judged (it resolves against the host at deploy)."""
     from dist_ai import gitdiff
     entries = gitdiff._tree_entries(
         None if source_rev == "" else source_rev, base_cwd)
-    dir_prefixes = set()
+    ## Every tree path AND every directory prefix, incl. '.' (the tree root): a
+    ## target resolving to any of these is present, so the link is not broken.
+    tree_paths = {"."}
     for name in entries:
+        tree_paths.add(name)
         parts = name.split("/")
         for i in range(1, len(parts)):
-            dir_prefixes.add("/".join(parts[:i]))
+            tree_paths.add("/".join(parts[:i]))
 
     def _target(sha):
         try:
@@ -122,41 +134,56 @@ def _broken_staged_symlinks(paths, source_rev, base_cwd):
         except (OSError, subprocess.CalledProcessError):
             return None
 
-    def _resolves(link, depth):
-        if depth > 40:
-            return False  ## a symlink loop is broken
-        mode, sha = entries.get(link, (None, None))
-        target = _target(sha) if sha is not None else None
-        if target is None or os.path.isabs(target):
-            return True  ## unreadable, or absolute (host/deploy-time, not judged)
-        resolved = os.path.normpath(
-            os.path.join(os.path.dirname(link), target))
-        if resolved == os.pardir or resolved.startswith(os.pardir + "/"):
-            return False  ## escapes the tree -> not resolvable in it
-        tmode, tsha = entries.get(resolved, (None, None))
-        if tmode == "120000":
-            return _resolves(resolved, depth + 1)  ## follow the chain
-        return tsha is not None or resolved in dir_prefixes
+    def _via_dir_symlink(resolved):
+        ## True if any parent component of RESOLVED is itself a tree symlink --
+        ## then we cannot cheaply follow it, so we do not flag (best-effort).
+        parts = resolved.split("/")
+        for i in range(1, len(parts)):
+            mode, _sha = entries.get("/".join(parts[:i]), (None, None))
+            if mode == "120000":
+                return True
+        return False
 
     for path in paths:
-        mode, _sha = entries.get(path, (None, None))
-        if mode == "120000" and not _resolves(path, 0):
-            yield model.fail(
-                "check-symlinks",
-                "check-symlinks: '%s' is a broken symlink (its target is not in "
-                "the tree)" % path, path)
+        mode, sha = entries.get(path, (None, None))
+        if mode != "120000":
+            continue
+        target = _target(sha)
+        if target is None or os.path.isabs(target):
+            continue  ## unreadable, or absolute (host/deploy-time): not judged
+        resolved = os.path.normpath(
+            os.path.join(os.path.dirname(path), target))
+        if resolved in tree_paths:
+            continue  ## resolves to a tree path (file, dir, or another symlink)
+        if _via_dir_symlink(resolved):
+            continue  ## traverses a dir-symlink: best-effort, do not flag
+        ## Either escapes the tree ('../...') or names a path with no tree entry:
+        ## unambiguously absent -> broken.
+        yield model.fail(
+            "check-symlinks",
+            "check-symlinks: '%s' is a broken symlink (its target is not in "
+            "the tree)" % path, path)
 
 
 def _is_binary_attr(base_cwd, path, source_rev):
     """True if the repo declares PATH binary in .gitattributes -- then it is
-    data, never text, whatever its extension. The attribute source must match the
-    content's tree (source_rev): the INDEX for a staged blob / the working tree
-    (--cached), the blob's OWN commit for a range (--attr-source) -- and always
-    run in the REAL repo (base_cwd), never the non-git content mirror."""
+    data, never text, whatever its extension. The attribute source MUST match the
+    tree the scanned CONTENT came from (source_rev), or a stale .gitattributes
+    mis-classifies a file and a content scan (detect-private-key) is skipped:
+      - '' staged: the INDEX blob -> the INDEX .gitattributes (--cached).
+      - a rev (range): the blob's OWN commit -> that rev (--attr-source).
+      - None working tree: the WORKING-TREE file -> the WORKING-TREE
+        .gitattributes (plain check-attr). Using --cached here reads the STALE
+        committed/index attrs, so a worktree that drops a 'id_rsa binary' mark
+        (leaving it unstaged) while staging a real PEM would classify the key
+        binary and skip detect-private-key -- a private-key bypass.
+    Always run in the REAL repo (base_cwd), never the non-git content mirror."""
     if source_rev:
         attr = ["--attr-source=%s" % source_rev, "check-attr"]
-    else:
+    elif source_rev == "":
         attr = ["check-attr", "--cached"]
+    else:  ## None: working-tree scan -> the working tree's own .gitattributes
+        attr = ["check-attr"]
     try:
         out = subprocess.run(
             ["git"] + attr + ["binary", "--", path],

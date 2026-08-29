@@ -216,15 +216,21 @@ class FileContext:
         ## '-C <dir-of-file>' so git finds the file's OWN repo regardless of the
         ## caller's cwd -- otherwise a fixer invoked from another directory
         ## queried the wrong repo and the .gitattributes exemption failed open.
-        ## The attribute source must match source_rev: the INDEX for a staged
-        ## blob (--cached) and for the working tree, but the blob's OWN commit for
-        ## a range -- else a staged (uncommitted) '.gitattributes ... binary'
-        ## would exempt a HEAD blob it does not govern (an R-001 --range bypass).
+        ## The attribute source must match source_rev -- the tree the scanned
+        ## content came from -- or a stale .gitattributes governs a blob it does
+        ## not: '' staged -> the INDEX (--cached); a rev (range) -> the blob's OWN
+        ## commit (--attr-source), else a staged (uncommitted) '.gitattributes ...
+        ## binary' would exempt a HEAD blob it does not govern (an R-001 --range
+        ## bypass); None working tree -> the WORKING-TREE .gitattributes (plain
+        ## check-attr), since --cached there reads stale index attrs for a file
+        ## whose worktree attrs may differ.
         base = ["git", "-C", os.path.dirname(self.abspath) or "."]
         if self.source_rev:
             attr = ["--attr-source=%s" % self.source_rev, "check-attr"]
-        else:
+        elif self.source_rev == "":
             attr = ["check-attr", "--cached"]
+        else:  ## None: working-tree scan -> the working tree's own .gitattributes
+            attr = ["check-attr"]
         try:
             out = subprocess.run(
                 base + attr + ["binary", "--", self.abspath],

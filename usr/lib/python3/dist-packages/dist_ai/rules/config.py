@@ -113,26 +113,16 @@ def _apt_hook_commands(source):
     the except never fires). Neuter every '#include' to a comment before parsing;
     '#clear' is left (it only drops config keys, reads nothing)."""
     import apt_pkg
-    ## '#include' -> '# include' (a space makes it a plain comment apt_pkg ignores
-    ## instead of a directive). Only OUTSIDE a quoted value -- a '#include' inside
-    ## a "..." value is data apt never follows, so leaving it keeps the value (and
-    ## a malformed config's own syntax) unchanged, while the dangerous directive
-    ## form is neutered. Not escape-aware; apt values carry no escaped quotes.
-    neutered = []
-    in_quote = False
-    index = 0
-    length = len(source)
-    while index < length:
-        char = source[index]
-        if char == '"':
-            in_quote = not in_quote
-        elif not in_quote and source[index:index + 8].lower() == "#include":
-            neutered.append("# include")
-            index += 8
-            continue
-        neutered.append(char)
-        index += 1
-    source = "".join(neutered)
+    ## '#include' -> '# include' UNCONDITIONALLY (the space makes it a plain
+    ## comment apt_pkg ignores instead of a directive). Deliberately NOT quote- or
+    ## comment-aware: skipping '#include' inside a quoted value needs an apt.conf
+    ## lexer (strings AND '//', '/* */' comments), and getting it wrong LEAVES A
+    ## LIVE #include (a quote inside a comment flips the state) -> apt_pkg follows
+    ## it against the host FS (XXE / FIFO hang). A blunt unconditional rewrite has
+    ## no such hole. The only cost is mutating a '#include' token that appears as
+    ## DATA inside a hook's shell value; that never changes the multi-statement
+    ## verdict (a space adds no ';'/'|'/'&&'), so R-194 detection is unaffected.
+    source = re.sub(r'#include', '# include', source, flags=re.IGNORECASE)
     conf = apt_pkg.Configuration()
     handle = tempfile.NamedTemporaryFile(
         "w", prefix="dist-ai-apt-", suffix=".conf", delete=False)
