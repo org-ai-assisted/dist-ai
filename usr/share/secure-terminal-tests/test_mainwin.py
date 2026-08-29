@@ -457,6 +457,25 @@ try:
        'close_tab: a reentrant close during the modal removes the tab exactly once')
     ok(_rt not in w3._closing_tabs,
        'close_tab: the closing mark is cleared once the close completes')
+    # Cancel-after-child-exit: if the shell EXITS during the confirm modal, its
+    # _on_shell_exited -> close_tab re-entry is swallowed by the _closing_tabs guard, so a
+    # plain Cancel would strand a tab with a DEAD child (the auto-close was lost). close_tab
+    # must detect the mid-modal exit and close anyway. Simulate: emit shell_exited from
+    # inside the modal, then decline. FAILS pre-fix (the declined tab is kept, child dead).
+    w3.new_tab()
+    _xt = w3.current()
+    _xt.has_foreground_program = lambda: True
+    _xt.shutdown = lambda: None
+    _n3 = w3.tabs.count()
+    def _exit_then_decline(*_a, **_k):
+        _xt.shell_exited.emit()                # the shell dies while the dialog is up
+        return _No                             # ... and the user then clicks No
+    QMessageBox.question = staticmethod(_exit_then_decline)
+    w3.close_tab(w3.tabs.indexOf(_xt))
+    eq(w3.tabs.count(), _n3 - 1,
+       'close_tab: a shell exiting DURING the confirm modal closes the tab even on Cancel')
+    ok(_xt not in w3._closing_tabs and _xt not in w3._shell_exited_pending,
+       'close_tab: both close marks are cleared after a mid-modal-exit close')
     # closeEvent: a running program + decline ignores the window close
     w3.new_tab()
     w3.current().has_foreground_program = lambda: True

@@ -410,6 +410,34 @@ ok(b'\x1b[B' in b''.join(_wasent),
    'TUI mode: the wheel->arrow alternateScroll surrogate fires for a viewed program')
 _wa.close()
 
+# SECURITY (residual): an output-armed ALT SCREEN alone (?1049h in CLI mode) must not
+# enable the CLICK/BUTTON or FOCUS report channel either -- _alt_screen is set by the
+# child's output, so trusting it re-opens the "output cannot affect input" hole that the
+# wheel path already closed. Only tui_active() (the user's explicit apply_tui, never
+# output-armed) may. FAILS on _mouse_input_allowed() = tui_active() OR _alt_screen.
+_ma = SecureTerminal(command='/bin/cat')          # CLI mode, no TUI
+_ma.show()
+_ma._cols = 80
+_masent = spy_writes(_ma)
+feed_output(_ma, b'\x1b[?1049h')                  # output arms the alt screen
+feed_output(_ma, b'\x1b[?1000h\x1b[?1006h\x1b[?1004h')   # output arms tracking + SGR + focus
+ok(_ma._alt_screen and not _ma.tui_active(),
+   'CLI mode: an output-armed alt screen with armed mouse modes')
+ok(not _ma._mouse_report_on(),
+   'output-armed alt screen ALONE does not enable click/button reporting')
+_masent.clear()
+_ma.mousePressEvent(_mev(QEvent.Type.MouseButtonPress, Qt.MouseButton.LeftButton))
+ok(_parse_sgr(_masent) is None,
+   'alt-screen-armed CLI: a click emits no SGR mouse report')
+_masent.clear()
+_ma.focusInEvent(_QFEv(QEvent.Type.FocusIn))
+ok(b'\x1b[I' not in b''.join(_masent),
+   'alt-screen-armed CLI: a focus change emits no DEC 1004 report')
+_ma.apply_tui(True)               # the user opts into TUI: the SAME armed modes may report
+ok(_ma._mouse_report_on(),
+   'TUI mode: the armed modes report once the user is actually driving a full-screen app')
+_ma.close()
+
 # konsole/xterm mouse-reporting parity: once the child requests tracking (1000/
 # 1002/1003) + SGR encoding (1006), its mouse and wheel events are REPORTED to it at
 # the cell UNDER THE POINTER (not a pinned corner, not arrow keys). Shift is the
