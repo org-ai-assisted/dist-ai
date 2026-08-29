@@ -147,6 +147,8 @@ def _apt_hook_commands(source):
         try:
             os.unlink(handle.name)
         except OSError:
+            ## best-effort cleanup of our own temp file; already-gone or
+            ## unremovable is not actionable here
             pass
     for key in conf.keys():
         if key.rsplit("::", 1)[-1].lower() not in _APT_HOOK_NAMES:

@@ -154,6 +154,8 @@ class FileContext:
             try:
                 os.unlink(handle.name)
             except OSError:
+                ## best-effort cleanup of our own temp file; already-gone or
+                ## unremovable is not actionable here
                 pass
 
     @property
