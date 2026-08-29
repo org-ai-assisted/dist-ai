@@ -253,7 +253,9 @@ def _staged_merge_conflicts(files, content_cwd):
 
 def _run_hook(hook, flags, files, base_cwd):
     """Run a git-aware / checker hook on the REAL repo. Untrusted FILES go after
-    '--'. A non-zero exit is a gate FAIL carrying the hook's output."""
+    '--'. A non-zero exit is a gate FAIL carrying the hook's output. A wedged git
+    read (a FIFO .gitattributes) cannot reach here: gate.hostile_attributes
+    refuses a non-regular .gitattributes before the batch runs."""
     if not files:
         return
     try:
@@ -387,7 +389,7 @@ def _classify(paths, base_cwd, content_cwd, source_rev):
     .gitattributes check keys on BASE_CWD (see _is_text_file). Skips a symlink, a
     submodule gitlink, and a vanished path."""
     lists = {name: [] for name in (
-        "text", "exec_text", "symlink", "yaml", "json", "toml", "xml",
+        "text", "scan", "exec_text", "symlink", "yaml", "json", "toml", "xml",
         "python", "req")}
     for path in paths:
         real = _abs(content_cwd, path)
@@ -398,6 +400,13 @@ def _classify(paths, base_cwd, content_cwd, source_rev):
             continue
         if not os.path.isfile(real):
             continue
+        ## SECRET scanners run over 'scan' -- EVERY regular file, binary or not.
+        ## Gating them on the binary classification let a '.gitattributes ...
+        ## binary' mark (even an UNTRACKED one, honoured only in a working-tree
+        ## scan) suppress detect-private-key/detect-aws for a real key. A key in a
+        ## file marked binary is exactly what must still be caught, so the attr
+        ## must never decide whether a secret scan runs.
+        lists["scan"].append(path)
         if _is_text_file(base_cwd, content_cwd, path, source_rev):
             lists["text"].append(path)
             if os.access(real, os.X_OK):
@@ -465,6 +474,7 @@ def _run_batch(paths, base_ref, staged_mode, base_cwd, content_cwd, source_rev):
     ## a file present only in the index (worktree deleted) is still typed+scanned.
     lists = _classify(paths, base_cwd, content_cwd, source_rev)
     text = lists["text"]
+    scan = lists["scan"]
 
     ## filename-blind, over the whole changed set:
     ## '--enforce-all' inspects the passed files (git diff --staged is empty at
@@ -505,9 +515,11 @@ def _run_batch(paths, base_ref, staged_mode, base_cwd, content_cwd, source_rev):
     ## itself cannot run against the non-git blob mirror (see _staged_merge_conflicts).
     yield from _staged_merge_conflicts(text, content_cwd)
     yield from _run_hook("check-vcs-permalinks", [], text, content_cwd)
+    ## Secret scanners over 'scan' (every regular file), NOT 'text': the binary
+    ## attr must never suppress a secret scan (see _classify).
     yield from _run_hook("detect-aws-credentials",
-                         ["--allow-missing-credentials"], text, content_cwd)
-    yield from _run_hook("detect-private-key", [], text, content_cwd)
+                         ["--allow-missing-credentials"], scan, content_cwd)
+    yield from _run_hook("detect-private-key", [], scan, content_cwd)
     yield from _run_fixer("fix-byte-order-marker", text, content_cwd)
     yield from _run_fixer("end-of-file-fixer", text, content_cwd)
     yield from _run_fixer("trailing-whitespace-fixer", text, content_cwd)

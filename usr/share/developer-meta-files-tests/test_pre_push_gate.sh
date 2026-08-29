@@ -219,6 +219,23 @@ else
    note_pass "the gate does not hang on an untracked fifo"
 fi
 
+## A non-regular '.gitattributes' (FIFO here; also a device or symlink) makes git
+## BLOCK forever the instant it reads attributes -- inside the gate or a git-aware
+## hook. The gate must REFUSE it fast (fail closed), never hang.
+repo="$(new_repo)"
+printf 'x\n' > "${repo}/f.txt"; git -C "${repo}" add f.txt
+mkfifo "${repo}/.gitattributes"
+attr_rc=0
+attr_out="$( cd -- "${repo}" && timeout --kill-after=5s 25s "${STYLE}" \
+   --check --staged 2>&1 )" || attr_rc=$?
+if [ "${attr_rc}" -eq 124 ] || [ "${attr_rc}" -eq 137 ]; then
+   note_fail "a FIFO .gitattributes HUNG the gate (not refused)"
+elif grep --quiet --fixed-strings -- 'refusing to gate' <<< "${attr_out}"; then
+   note_pass "a FIFO .gitattributes is refused fast, not hung"
+else
+   note_fail "a FIFO .gitattributes was neither refused nor hung: rc=${attr_rc}"
+fi
+
 ## --- the pre-commit batch judges the staged BLOB, not the working tree --------
 ## A private key staged then overwritten clean in the working copy must still be
 ## caught by detect-private-key -- the batch that ran against the working tree
@@ -313,6 +330,19 @@ printf '%s\n' "${dashes}BEGIN ${pem_kind}${dashes}" \
    "${dashes}END ${pem_kind}${dashes}" > "${repo}/id_rsa"
 git -C "${repo}" add id_rsa
 assert "staged private key caught despite a stale index binary attr" 1 \
+   "detect-private-key" --check --staged --all
+
+## A '.gitattributes binary' mark must NOT suppress a SECRET scan: detect-private-key
+## runs on every regular file regardless of the attribute. An UNTRACKED
+## .gitattributes (honoured only in a working-tree scan) marking a staged key
+## binary would else hide it -- a private-key bypass.
+repo="$(new_repo)"
+printf '%s\n' "${dashes}BEGIN ${pem_kind}${dashes}" \
+   'MIIBOgIBAAJBAKj34GkxFhDabcdEFGHijklMNOP' \
+   "${dashes}END ${pem_kind}${dashes}" > "${repo}/id_rsa"
+git -C "${repo}" add id_rsa
+printf 'id_rsa binary\n' > "${repo}/.gitattributes"   ## UNTRACKED
+assert "an untracked binary attr cannot hide a staged key" 1 \
    "detect-private-key" --check --staged --all
 
 ## A symlink to the tree ROOT ('.'), or to a parent that stays in-tree ('..' from

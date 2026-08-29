@@ -15,6 +15,7 @@ import collections
 import os
 import re
 import shutil
+import stat
 import subprocess
 
 from dist_ai import engine
@@ -35,6 +36,32 @@ def _git(args, base_cwd, check=False):
     proc = subprocess.run(
         ["git"] + args, capture_output=True, cwd=base_cwd, check=check)
     return _GitResult(proc.returncode, proc.stdout.decode("utf-8", "replace"))
+
+
+def hostile_attributes(names, base_cwd):
+    """The path of the first NON-REGULAR '.gitattributes' among the repo root and
+    the ancestor directories of the changed NAMES, or None. A FIFO, socket,
+    device, or symlink '.gitattributes' makes git BLOCK the instant it reads
+    attributes -- diff, status, check-attr, inside the gate OR a git-aware hook --
+    an unbounded hang no per-subprocess timeout fully closes (a killed hook's git
+    grandchild keeps the pipe open). os.lstat never blocks, so we detect it up
+    front and refuse fast (fail closed) instead of wedging. Ancestor dirs only:
+    that is exactly the set git consults for the scanned files."""
+    base = base_cwd or os.getcwd()
+    dirs = {""}
+    for name in names:
+        parts = os.path.normpath(name).split(os.sep)[:-1]
+        for i in range(len(parts) + 1):
+            dirs.add(os.sep.join(parts[:i]))
+    for rel in sorted(dirs):
+        candidate = os.path.join(base, rel, ".gitattributes")
+        try:
+            mode = os.lstat(candidate).st_mode
+        except OSError:
+            continue
+        if not stat.S_ISREG(mode):
+            return os.path.normpath(os.path.join(rel, ".gitattributes"))
+    return None
 
 
 def warn_worktree_skew(names, ref, base_cwd):

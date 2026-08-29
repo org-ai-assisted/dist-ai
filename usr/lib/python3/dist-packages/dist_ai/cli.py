@@ -17,6 +17,7 @@ never mistakes a crash for 'no findings')."""
 
 import argparse
 import os
+import subprocess
 import sys
 import traceback
 
@@ -28,6 +29,16 @@ from dist_ai import model
 from dist_ai import precommit
 
 US = "\x1f"
+
+
+def _refuse_hostile(prog, hostile):
+    """Fail closed on a non-regular '.gitattributes' (see gate.hostile_attributes):
+    a clear refusal + non-zero exit, never an unbounded git hang."""
+    print("%s: refusing to gate: '%s' is not a regular file -- a FIFO, device, "
+          "or symlink .gitattributes makes git block indefinitely while reading "
+          "attributes; replace it with a regular file" % (prog, hostile),
+          file=sys.stderr)
+    return 1
 
 
 def _load(files, staged, prog):
@@ -312,10 +323,34 @@ def style_main(argv, prog="dist-ai-style"):
               file=sys.stderr)
         return 2
 
+    ## Refuse a non-regular ROOT '.gitattributes' BEFORE enumeration: in
+    ## --staged --all, enumeration itself reads working-tree attributes and would
+    ## wedge on a FIFO before the fuller guard below. Root only here (no names
+    ## yet); the post-enumerate guard covers the ancestor dirs.
+    if args.staged or args.range is not None:
+        try:
+            early_root = gitdiff._repo_root()
+        except (OSError, subprocess.CalledProcessError):
+            early_root = None
+    else:
+        early_root = os.getcwd()
+    hostile = gate.hostile_attributes([], early_root)
+    if hostile is not None:
+        return _refuse_hostile(prog, hostile)
+
     enumerated, code = _enumerate(args, prog)
     if enumerated is None:
         return code
     pairs, names, base_ref, base_cwd, staged_mode = enumerated
+    ## Pre-flight refuse: a non-regular '.gitattributes' (FIFO/device/symlink)
+    ## wedges EVERY git attribute read below -- the fixers, the per-file rules,
+    ## the batch hooks, warn_worktree_skew -- git blocks the instant it opens it,
+    ## and a per-subprocess timeout cannot fully close it (a killed hook's git
+    ## grandchild keeps the pipe open). os.lstat never blocks, so detect it up
+    ## front and fail CLOSED rather than hang.
+    hostile = gate.hostile_attributes(names, base_cwd)
+    if hostile is not None:
+        return _refuse_hostile(prog, hostile)
     git_mode = args.staged or args.range is not None
     ## Gate the git OBJECT that ships, not the working tree that may have diverged
     ## since: bare / --paths --staged judge the INDEX blob (git ':path'); --range
