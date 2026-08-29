@@ -2938,6 +2938,30 @@ ok(_cts._clipboard_read == 'pending' and not any(b'\x1b]52;c;' in _w for _w in _
    'SEC-1: after a stale grant the next read RE-ASKS (pending), it does not auto-reply')
 _cts.close()
 
+# #4: the OSC-52 attempt NOTICE (osc_used, CLI mode) must label a clipboard READ query
+# (trailing '?') distinctly from a WRITE (base64 data), matching the actual dispatch --
+# read (exfiltration) and write (injection) are different threats and gate differently.
+# The notice re-derives read/write from a per-chunk window, so verify it agrees with the
+# dispatch's endswith('?') for the payload shapes that could fool it: a large write whose
+# base64 exceeds the notice window, and a query split across two reads (carry-rejoined).
+import base64 as _b64_osc                                     # noqa: E402
+def _osc52_notice(*chunks):
+    _o = SecureTerminal(command='/bin/cat')
+    _seen = []
+    _o.osc_used.connect(lambda k: _seen.append(k))
+    for _c in chunks:
+        feed_output(_o, _c)
+    _o.close()
+    return _seen
+ok(_osc52_notice(b'\x1b]52;c;?\x07') == ['osc_clipboard_read'],
+   '#4: OSC 52 read query (?) is noticed as clipboard READ')
+ok(_osc52_notice(b'\x1b]52;c;' + _b64_osc.b64encode(b'hi') + b'\x07') == ['osc_clipboard'],
+   '#4: OSC 52 base64 payload is noticed as clipboard WRITE')
+ok(_osc52_notice(b'\x1b]52;c;' + _b64_osc.b64encode(b'x' * 600) + b'\x07') == ['osc_clipboard'],
+   '#4: a large OSC 52 write (base64 past the notice window) is still WRITE, not misread')
+ok(_osc52_notice(b'\x1b]52;c;', b'?\x07') == ['osc_clipboard_read'],
+   '#4: a read query split across two reads is carry-rejoined and still noticed as READ')
+
 # F5: reap_pty_children WNOHANG-reaps ONLY our registered pty children, so the app can
 # drop the blanket SIGCHLD=SIG_IGN that made every subprocess returncode read 0. Pin
 # SIGCHLD to its default here so reaping is deterministic (an ambient SIG_IGN would let
@@ -6827,8 +6851,19 @@ ok(_victim.returncode is not None,
 # --- bell ring: channel gating + rate limit -----------------------------------
 _rg = SecureTerminal(command='/bin/cat')
 _rg._bell_channels = set()
-_rg._ring()                                 # no channels enabled -> returns early
-ok(True, '_ring: with no channels enabled it does nothing')
+_rg._last_bell = 0.0
+_rg_qapp_nc = _stmod.QApplication
+_stmod.QApplication = _QAppShim
+try:
+    _QAppShim._fake.beeps = 0
+    _rg._ring()                             # no channels enabled -> early return
+    # non-vacuous: the beep spy must NOT fire, AND the rate-limit bookkeeping
+    # (_last_bell = now, which sits past the early return) must NOT run -- an
+    # inverted or removed early return would trip at least one of these.
+    ok(_QAppShim._fake.beeps == 0 and _rg._last_bell == 0.0,
+       '_ring: with no channels enabled it fires nothing (no beep, no rate-limit update)')
+finally:
+    _stmod.QApplication = _rg_qapp_nc
 # the rate-limit lives INSIDE _ring, so spy the real beep (app.beep via _QAppShim), not
 # _ring itself: two rings within ~200ms must produce exactly ONE beep.
 _rg._bell_channels = {'audible'}
@@ -6912,9 +6947,14 @@ ok(_cvrisk, "copy 'never' of risky text emits the unreviewed-risk signal")
 
 # --- reset_caret with no output cursor snaps to the document end --------------
 _rc = SecureTerminal(command='/bin/cat')
+feed_output(_rc, b'line1\nline2\n')          # document content so start != end
 _rc._out_cursor = None
+_rctc = _rc.textCursor(); _rctc.setPosition(0); _rc.setTextCursor(_rctc)   # caret at start
 _rc.reset_caret()
-ok(True, 'reset_caret: with no output cursor it snaps the caret to the end')
+# non-vacuous: assert the caret ACTUALLY landed at the document end (the else branch
+# ran), not merely that reset_caret did not raise. A broken else leaves it at start.
+ok(_rc.textCursor().atEnd() and not _rc.textCursor().atStart(),
+   'reset_caret: with no output cursor it snaps the caret to the document end')
 
 # --- defensive syscall guards, fault-injected ---------------------------------
 import os as _os
