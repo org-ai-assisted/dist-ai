@@ -394,6 +394,10 @@ expect_rule "${r030fmt}" "printf ${dq}v ${bt}id${bt}${dq}"                     "
 ## literal -- and must be FLAGGED. FAILS pre-fix (the outer-quote heuristic stamped
 ## the whole word single_quoted and spared it).
 expect_rule "${r030fmt}" "printf ${sq}x${sq}\$name${sq}y${sq} 1 2"             "present"
+## CANARY: 'x''$name' is TWO ADJACENT single-quoted segments ('x' . '$name'), so
+## $name stays LITERAL (single quotes suppress it) -- SPARED. A naive "inner has a
+## quote" heuristic would wrongly flag it; the quote-SEGMENT scan does not.
+expect_rule "${r030fmt}" "printf ${sq}x${sq}${sq}\$name${sq} 1 2"             "absent"
 ## a PURE single-quoted '\$name' is a LITERAL dollar (no interpolation) -- SPARED.
 expect_rule "${r030fmt}" "printf ${sq}\$name${sq}"                            "absent"
 ## 'printf -v NAME' with NO format string has nothing to judge -- SPARED.

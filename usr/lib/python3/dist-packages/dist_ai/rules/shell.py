@@ -1287,6 +1287,27 @@ def _printf_calls(tree):
             yield stmt, cmd
 
 
+def _format_interpolates(raw):
+    """True if a printf format word's SOURCE can interpolate a '$' or backtick --
+    one appears OUTSIDE a single-quoted '...' segment. Single quotes suppress ALL
+    expansion and cannot be escaped inside, so a '$' within '...' is literal;
+    adjacent segments simply concatenate ('x''$y' is two literal segments, 'x'$y
+    interpolates $y). A backslash outside single quotes escapes the next char."""
+    i, n = 0, len(raw)
+    while i < n:
+        c = raw[i]
+        if c == "'":
+            close = raw.find("'", i + 1)
+            i = n if close == -1 else close + 1
+        elif c == "\\":
+            i += 2
+        elif c in "$`":
+            return True
+        else:
+            i += 1
+    return False
+
+
 def _printf_format(call, source):
     """(inner, single_quoted) for a printf CALL's format argument, or (None,
     False) if it has none. inner is the format with its surrounding quotes
@@ -1311,15 +1332,16 @@ def _printf_format(call, source):
     raw = bash_ast.word_source(call_args[index], source)
     if not raw:
         return None, False
+    ## Strip the outer quotes for the display / allowed-verb comparison when the
+    ## whole word is ONE quoted string; a concatenation keeps its raw form.
     if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "'\"":
         inner = raw[1:-1]
-        ## single_quoted (nothing can interpolate) is TRUE only for ONE '...'
-        ## string. A bash single-quoted string cannot contain a "'", so an inner
-        ## "'" means this is a CONCATENATION -- 'x'$name'y' == 'x' . $name . 'y' --
-        ## whose middle $name DOES interpolate into the format (the %n injection
-        ## R-030 catches). Marking it single_quoted would silence that.
-        return inner, raw[0] == "'" and "'" not in inner
-    return raw, False
+    else:
+        inner = raw
+    ## single_quoted := the format cannot interpolate. Parse quote SEGMENTS, not the
+    ## outer chars: 'x'$name'y' interpolates $name (concatenated UNQUOTED), but
+    ## 'x''$name' is two single-quoted segments where $name stays literal.
+    return inner, not _format_interpolates(raw)
 
 
 class BareNewlinePrintf(Rule):
