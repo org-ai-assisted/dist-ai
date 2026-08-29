@@ -64,11 +64,16 @@ def _materialize_blobs(paths, source_rev, base_cwd):
     ships, not the working tree that may have diverged (the 'staged secret hidden
     by a clean working copy' bypass). Fetched BY SHA from a whole-tree listing
     keyed on the exact path, so an adversarial filename cannot evade it. Returns
-    the mirror dir; the caller removes it."""
+    (mirror_dir, failed) -- the caller removes the dir; FAILED is the blobs that
+    could NOT be materialized (cat-file or write error), which the caller must
+    FAIL on rather than silently skip: an unmaterialized blob is absent from the
+    mirror, so the content scans (detect-private-key) never see it -- a scan that
+    did not run must not read as a pass (fail closed)."""
     from dist_ai import gitdiff
     entries = gitdiff._tree_entries(
         None if source_rev == "" else source_rev, base_cwd)
     mirror = tempfile.mkdtemp(prefix="dist-ai-precommit-")
+    failed = []
     for path in paths:
         mode, sha = entries.get(path, (None, None))
         ## Skip a symlink (120000) -- the broken-symlink check is git-native (see
@@ -81,6 +86,7 @@ def _materialize_blobs(paths, source_rev, base_cwd):
                 ["git", "cat-file", "blob", sha],
                 capture_output=True, cwd=base_cwd, check=True).stdout
         except (OSError, subprocess.CalledProcessError):
+            failed.append(path)
             continue
         dest = os.path.join(mirror, os.path.normpath(os.sep + path).lstrip(os.sep))
         try:
@@ -93,8 +99,9 @@ def _materialize_blobs(paths, source_rev, base_cwd):
             ## 0o600) for the mode-sensitive exec-shebang checks.
             os.chmod(dest, 0o700 if mode == "100755" else 0o600)
         except OSError:
+            failed.append(path)
             continue
-    return mirror
+    return mirror, failed
 
 
 def _broken_staged_symlinks(paths, source_rev, base_cwd):
@@ -454,8 +461,16 @@ def run(paths, base_ref, staged_mode, base_cwd=None, source_rev=None):
     ## real repo, not a mirror.
     content_cwd = base_cwd
     if source_rev is not None:
-        mirror = _materialize_blobs(paths, source_rev, base_cwd)
+        mirror, failed = _materialize_blobs(paths, source_rev, base_cwd)
         content_cwd = mirror
+        ## Fail CLOSED on a blob that could not be materialized: it is absent from
+        ## the mirror, so the content scans (detect-private-key) would never run
+        ## over it -- a skipped secret scan must not read as a pass.
+        for path in failed:
+            yield model.fail(
+                "detect-private-key",
+                "could not materialize the staged blob for '%s'; its content "
+                "scans did not run (failing closed)" % path, path)
     try:
         yield from _run_batch(paths, base_ref, staged_mode, base_cwd,
                               content_cwd, source_rev)

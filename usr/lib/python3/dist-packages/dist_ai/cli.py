@@ -32,11 +32,11 @@ US = "\x1f"
 
 
 def _refuse_hostile(prog, hostile):
-    """Fail closed on a non-regular '.gitattributes' (see gate.hostile_attributes):
+    """Fail closed on a non-regular attribute file (see gate.hostile_attributes):
     a clear refusal + non-zero exit, never an unbounded git hang."""
     print("%s: refusing to gate: '%s' is not a regular file -- a FIFO, device, "
-          "or symlink .gitattributes makes git block indefinitely while reading "
-          "attributes; replace it with a regular file" % (prog, hostile),
+          "or symlink git attribute file makes git block indefinitely while "
+          "reading attributes; replace it with a regular file" % (prog, hostile),
           file=sys.stderr)
     return 1
 

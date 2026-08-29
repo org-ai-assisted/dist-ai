@@ -219,6 +219,21 @@ else
    note_pass "the gate does not hang on an untracked fifo"
 fi
 
+## An untracked shell file whose NAME carries a CONTROL byte (ESC) must be named
+## with the byte ESCAPED, never printed RAW -- a raw ESC in the advisory note to
+## stderr injects a terminal control sequence (CWE-150). ESC comes from a run-time
+## escape, so no control byte lives in THIS tracked file.
+repo="$(new_repo)"
+mk_clean "${repo}/tracked.sh"; git -C "${repo}" add tracked.sh
+esc_name="$(printf 'untresc-\033[31m-marker.sh')"
+printf '%s\n' '#!/bin/bash' 'true' > "${repo}/${esc_name}"
+esc_out="$( cd -- "${repo}" && "${STYLE}" --check --staged 2>&1 || true )"
+if grep --quiet --fixed-strings 'untresc-\x1b[31m-marker.sh' <<< "${esc_out}"; then
+   note_pass "a control byte in an untracked file name is escaped, not raw"
+else
+   note_fail "a control byte in an untracked file name was not escaped (raw ESC or not reported)"
+fi
+
 ## A non-regular '.gitattributes' (FIFO here; also a device or symlink) makes git
 ## BLOCK forever the instant it reads attributes -- inside the gate or a git-aware
 ## hook. The gate must REFUSE it fast (fail closed), never hang.
@@ -234,6 +249,23 @@ elif grep --quiet --fixed-strings -- 'refusing to gate' <<< "${attr_out}"; then
    note_pass "a FIFO .gitattributes is refused fast, not hung"
 else
    note_fail "a FIFO .gitattributes was neither refused nor hung: rc=${attr_rc}"
+fi
+
+## '.git/info/attributes' is a SEPARATE attribute source git reads on every
+## attribute lookup -- a FIFO there hangs even the authoritative --staged mode.
+## The pre-flight must check it too.
+repo="$(new_repo)"
+printf 'x\n' > "${repo}/f.txt"; git -C "${repo}" add f.txt
+mkdir -p "${repo}/.git/info"; mkfifo "${repo}/.git/info/attributes"
+info_rc=0
+info_out="$( cd -- "${repo}" && timeout --kill-after=5s 25s "${STYLE}" \
+   --check --staged 2>&1 )" || info_rc=$?
+if [ "${info_rc}" -eq 124 ] || [ "${info_rc}" -eq 137 ]; then
+   note_fail "a FIFO .git/info/attributes HUNG the gate (not refused)"
+elif grep --quiet --fixed-strings -- 'refusing to gate' <<< "${info_out}"; then
+   note_pass "a FIFO .git/info/attributes is refused fast, not hung"
+else
+   note_fail "a FIFO .git/info/attributes was neither refused nor hung: rc=${info_rc}"
 fi
 
 ## --- the pre-commit batch judges the staged BLOB, not the working tree --------
@@ -373,7 +405,11 @@ assert "a staged symlink through a dir-symlink is not false-flagged" 0 \
 ## (a TOCTOU that let a fixer rewrite an arbitrary victim outside the repo). Drive
 ## precommit._run_fixer directly with a symlink where a regular file was scanned;
 ## the O_NOFOLLOW copy must refuse it and leave the victim untouched.
-fixer_lib="${STYLE%/usr/bin/dist-ai-style}/usr/lib/python3/dist-packages"
+## Resolve the package from tool_test_dir (as STYLE is), NOT by stripping STYLE:
+## the in-tree STYLE is '.../developer-meta-files-tests/../../bin/dist-ai-style',
+## which the '/usr/bin/dist-ai-style' suffix never matches, so the strip left the
+## whole path in place and the test silently fell back to the INSTALLED package.
+fixer_lib="${tool_test_dir}/../../lib/python3/dist-packages"
 [ -d "${fixer_lib}/dist_ai" ] || fixer_lib='/usr/lib/python3/dist-packages'
 victim="$(new_repo)/victim.txt"
 printf 'VICTIM ORIGINAL no newline' > "${victim}"
