@@ -673,8 +673,19 @@ def _skip_exit_code_word(call):
                 index += 1
                 break
             if len(word) > 1 and word[0] == "-":
-                ## 'command -v'/'-V' prints a description instead of running -> not a skip.
-                if name == "command" and ("v" in word[1:] or "V" in word[1:]):
+                opts = word[1:]
+                if name == "command":
+                    ## 'command -v'/'-V' prints a description instead of running -> not a skip.
+                    if "v" in opts or "V" in opts:
+                        return None
+                    ## Only '-p' is a real run modifier; any OTHER option char is one
+                    ## bash rejects ('command -x: invalid option') before exit runs, so
+                    ## the whole word is not a skip.
+                    if opts.strip("p"):
+                        return None
+                else:
+                    ## 'builtin' takes NO options: 'builtin -p exit ...' is a bash usage
+                    ## error (exit never runs), so a leading '-word' is not a skip.
                     return None
                 index += 1
                 continue

@@ -1642,6 +1642,14 @@ apt_out="$( cd -- "${apt_repo}" && timeout --kill-after=5s 60s "${GATE}" --check
 ## the waived file, which a bare rule-id match would misread as a violation.
 apt_hits="$( printf '%s\n' "${apt_out}" \
    | grep --fixed-strings -- 'R-194 apt hook embeds' || true )"
+## Liveness: the gate run above (line ~1640, `|| true`) could crash or be
+## timeout-killed, leaving apt_out empty -- which would make every ABSENCE ('good'
+## fixture) assertion below PASS spuriously. Require the gate's final verdict first.
+if ! grep --quiet --extended-regexp \
+   'all static checks passed|[0-9]+ check\(s\) failed' <<< "${apt_out}"; then
+   printf '%s\n' 'FAIL: R-194 apt gate run produced no final verdict (crashed or killed)' >&2
+   failures=$((failures + 1))
+fi
 if grep --quiet --fixed-strings -- '10bad-semi' <<< "${apt_hits}"; then
    printf '%s\n' 'PASS: R-194 flags a ";"-separated apt hook command'
 else

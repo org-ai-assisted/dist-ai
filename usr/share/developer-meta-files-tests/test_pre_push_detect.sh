@@ -300,6 +300,14 @@ assert_at "R-220 flags 'exit -- 77'"           "R-220" 5
 assert_at "R-220 flags a quoted \"exit\" 77"   "R-220" 6
 run_det "$(printf '%s\n' '#!/bin/bash' 'foo || command -v exit 77')"
 assert_not_at "R-220 spares 'command -v exit 77' (describes, does not run)" "R-220" 2
+## wrapper INVALID options: bash rejects 'builtin -p' (builtin takes NO options) and
+## 'command -x' (unknown option) BEFORE exit runs (verified: both print 'continued'),
+## so neither is a real skip -- R-220 must not flag them as an unauthorized exit 77.
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   'foo || builtin -p exit 77' \
+   'bar || command -x exit 77')"
+assert_not_at "R-220 spares 'builtin -p exit 77' (bash rejects -p, exit never runs)" "R-220" 2
+assert_not_at "R-220 spares 'command -x exit 77' (bash rejects -x, exit never runs)" "R-220" 3
 ## the waiver is still honored THROUGH the wrapper, and a wrapped non-77 is spared.
 run_det "$(printf '%s\n' '#!/bin/bash' \
    'foo || builtin exit 77  ## style-ok: allow-skip: optional target' \
