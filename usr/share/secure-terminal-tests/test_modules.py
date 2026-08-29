@@ -141,16 +141,17 @@ eq(_reply, {'verdict': 'allow'}, 'send_request: returns the parsed reply dict')
 eq(ipc.send_request('default', {'op': 'ping'}), None,
    'send_request: no server listening -> None')
 
-# server accepts then closes with nothing -> empty reply parsed as {}
+# server accepts then closes with nothing -> empty read is a FAILED exchange -> None
+# (a bound primary whose Qt loop is not yet serving does exactly this)
 def _empty(conn):
     _read_frame(conn)
 _t = _serve_once(_sock_path, _empty)
 _reply = ipc.send_request('default', {'op': 'ping'})
 _t.join(timeout=2)
 os.unlink(_sock_path)
-eq(_reply, {}, 'send_request: a server that sends nothing -> {} (empty reply)')
+eq(_reply, None, 'send_request: a server that sends nothing -> None (empty reply)')
 
-# server replies with a zero-length frame -> treated as empty -> {}
+# server replies with a zero-length frame -> treated as empty -> None
 def _zerolen(conn):
     _read_frame(conn)
     conn.sendall(struct.pack('<I', 0))
@@ -158,9 +159,9 @@ _t = _serve_once(_sock_path, _zerolen)
 _reply = ipc.send_request('default', {'op': 'ping'})
 _t.join(timeout=2)
 os.unlink(_sock_path)
-eq(_reply, {}, 'send_request: a zero-length reply frame -> {}')
+eq(_reply, None, 'send_request: a zero-length reply frame -> None')
 
-# server promises a long payload but sends fewer bytes then closes -> {}
+# server promises a long payload but sends fewer bytes then closes -> None
 def _short(conn):
     _read_frame(conn)
     conn.sendall(struct.pack('<I', 100) + b'only-ten!!')
@@ -168,7 +169,8 @@ _t = _serve_once(_sock_path, _short)
 _reply = ipc.send_request('default', {'op': 'ping'})
 _t.join(timeout=2)
 os.unlink(_sock_path)
-eq(_reply, {}, 'send_request: a truncated payload -> {} (incomplete frame dropped)')
+eq(_reply, None,
+   'send_request: a truncated payload -> None (incomplete frame dropped)')
 
 # server replies with a valid frame carrying non-JSON -> ValueError -> None
 def _badjson(conn):
