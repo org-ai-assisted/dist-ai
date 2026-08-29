@@ -468,7 +468,7 @@ try:
     _xt.shutdown = lambda: None
     _n3 = w3.tabs.count()
     def _exit_then_decline(*_a, **_k):
-        _xt.shell_exited.emit()                # the shell dies while the dialog is up
+        w3._on_shell_exited(_xt)               # the shell dies while the dialog is up
         return _No                             # ... and the user then clicks No
     QMessageBox.question = staticmethod(_exit_then_decline)
     w3.close_tab(w3.tabs.indexOf(_xt))
@@ -476,6 +476,8 @@ try:
        'close_tab: a shell exiting DURING the confirm modal closes the tab even on Cancel')
     ok(_xt not in w3._closing_tabs and _xt not in w3._shell_exited_pending,
        'close_tab: both close marks are cleared after a mid-modal-exit close')
+    # _on_shell_exited on an already-removed tab is a harmless no-op (index == -1).
+    w3._on_shell_exited(_xt)
     # closeEvent: a running program + decline ignores the window close
     w3.new_tab()
     w3.current().has_foreground_program = lambda: True
