@@ -273,15 +273,36 @@ else
    note_fail "R-172 fixer altered a form it must not"
 fi
 
-## --- 7h: a bundled '-pm700' is left for the gate (conservative) ------------
+## --- 7h: a bundled '-pm700' cluster IS rewritten (keeps -p, mode long) -----
+## '-m' consumes the rest of the cluster as its argument, so '-pm700' == -p -m 700;
+## upgrade the mode while preserving the other flags (+ the SC2174 directive the
+## atomic --parents/--mode pair needs). A cluster whose -m tail is NOT a clean
+## octal ('-mp700') stays for the gate -- no mode can be guessed.
 f="${test_dir}/mkdirbundle.sh"
 printf '%b' '#!/bin/bash\nmkdir -pm700 -- "$TMPDIR"\n' >"${f}"
+run_fix "${f}" >/dev/null 2>&1
+if grep --quiet --fixed-strings -- '-p --mode=700' "${f}" \
+   && ! grep --quiet --fixed-strings -- '-pm700' "${f}" \
+   && grep --quiet --fixed-strings -- 'disable=SC2174' "${f}" ; then
+   note_pass "R-172 rewrites bundled -pm700 -> -p --mode=700 (keeps -p, adds SC2174)"
+else
+   note_fail "R-172 did not rewrite bundled -pm700 correctly"
+fi
+second="$(cksum < "${f}")"
+run_fix "${f}" >/dev/null 2>&1
+if [ "$(cksum < "${f}")" = "${second}" ] ; then
+   note_pass "R-172 bundled-cluster rewrite is idempotent"
+else
+   note_fail "R-172 bundled-cluster rewrite not idempotent"
+fi
+f="${test_dir}/mkdirbadtail.sh"
+printf '%b' '#!/bin/bash\nmkdir -mp700 -- "$TMPDIR"\n' >"${f}"
 before="$(cksum < "${f}")"
 run_fix "${f}" >/dev/null 2>&1
 if [ "$(cksum < "${f}")" = "${before}" ] ; then
-   note_pass "R-172 leaves bundled -pm700 for the gate (conservative)"
+   note_pass "R-172 leaves an unfixable '-mp700' cluster for the gate"
 else
-   note_fail "R-172 rewrote a bundled short option unsafely"
+   note_fail "R-172 rewrote an unfixable cluster unsafely"
 fi
 
 ## --- 7i: a non-shell file with the pattern is untouched -------------------
