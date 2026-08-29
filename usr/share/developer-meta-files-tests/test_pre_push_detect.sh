@@ -47,8 +47,16 @@ note_fail() { printf '%s\n' "FAIL: ${1}" >&2 ; fail=$(( fail + 1 )) ; }
 ## NOTE. Asserted by rule tag plus the ':<line>'' location suffix.
 output=""
 run_det() {
+   local rc
    printf '%s\n' "$1" > "${test_dir}/subject.sh"
-   output="$("${DET}" --detect "${test_dir}/subject.sh" 2>/dev/null || true)"
+   output="$("${DET}" --detect "${test_dir}/subject.sh" 2>/dev/null)" && rc=0 || rc=$?
+   ## dist-ai-style exits 3 on an INTERNAL crash (distinct from 0 clean / 1 findings).
+   ## The old '|| true' swallowed it, flattening `output` to empty so every
+   ## assert_not_at below read as a spurious PASS -- a fabricated green. Fail LOUD.
+   if [ "${rc}" -eq 3 ]; then
+      printf '%s\n' "FATAL: dist-ai-style --detect crashed (exit 3) on the fixture" >&2
+      exit 1
+   fi
 }
 ## True if RULE is reported at LINE.
 at_line() {
@@ -390,6 +398,17 @@ run_det "$(printf '%s\n' '#!/bin/bash' 'bash -- ci/build.sh')"
 assert_at "R-102 flags 'bash -- <script>'" "R-102" 2
 run_det "$(printf '%s\n' '#!/bin/bash' 'bash -s -- arg')"
 assert_not_at "R-102 spares 'bash -s' (script from stdin)" "R-102" 2
+## a BUNDLED cluster whose LAST char is the value-taking '-o'/'-O' ('-eo pipefail')
+## still consumes the NEXT word as its value, so the script after it must be reached.
+## A bare 'cluster in (o,O)' check missed the bundled form and read 'pipefail' as the
+## script, silently sparing 'bash -eo pipefail <script>'.
+run_det "$(printf '%s\n' '#!/bin/bash' 'bash -eo pipefail ci/build.sh')"
+assert_at "R-102 flags a bundled 'bash -eo VALUE <script>'" "R-102" 2
+run_det "$(printf '%s\n' '#!/bin/bash' 'bash -Eeo pipefail ci/build.sh')"
+assert_at "R-102 flags a bundled 'bash -Eeo VALUE <script>'" "R-102" 2
+## but an ATTACHED value ('-oe' == -o with value 'e') does NOT take the next word.
+run_det "$(printf '%s\n' '#!/bin/bash' 'bash -oe ci/build.sh')"
+assert_at "R-102 flags 'bash -oe <script>' (attached -o value, script still reached)" "R-102" 2
 
 ## --- path-qualified / global-option command resolution (ai-review round 3) ---
 ## R-120: '/bin/rm' and '/usr/bin/sudo rm' are the same programs (basename).

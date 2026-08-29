@@ -168,14 +168,15 @@ def word_literal_prefix(word):
     return "".join(out)
 
 
-def printf_v_target(call):
-    """The Word carrying the EFFECTIVE 'printf -v' target NAME, or None when the
-    printf writes no variable. Follows bash's own printf option parsing over the
-    QUOTE-REMOVED argument: options precede the format operand (the first
-    non-option word), '--' ends option scanning, '-v' is recognized in both the
-    separate ('-v name') and attached ('-vNAME') form and whatever the quoting,
-    and a repeated '-v' takes the LAST target before the format."""
-    call_args = bash_ast.args(call)
+def _printf_scan(call_args):
+    """(format_operand_index_or_None, last_-v_target_word_or_None) from bash's own
+    printf option parsing over the QUOTE-REMOVED args. Options precede the format
+    operand (the first non-option word); '--' ends option scanning; '-v' is
+    recognized in both the separate ('-v name') and attached ('-vNAME') form and
+    whatever the quoting; a repeated '-v' keeps the LAST target. Shared by
+    printf_v_target (R-063) and printf_format_word (R-030/R-031) so all three rules
+    agree on the SAME option boundary -- a hand-rolled per-rule scan that only
+    matched a bare literal '-v' silently missed '-vNAME'/'\\-v'/'"-v"' spellings."""
     target = None
     index = 1
     while index < len(call_args):
@@ -186,6 +187,7 @@ def printf_v_target(call):
         has_expansion = bash_ast.word_string(word) is None
         prefix = word_literal_prefix(word)
         if prefix == "--":
+            index += 1
             break
         if prefix.startswith("-v"):
             if prefix == "-v" and not has_expansion:
@@ -202,7 +204,22 @@ def printf_v_target(call):
             index += 1
             continue
         break
-    return target
+    return (index if index < len(call_args) else None), target
+
+
+def printf_v_target(call):
+    """The Word carrying the EFFECTIVE 'printf -v' target NAME, or None when the
+    printf writes no variable. See _printf_scan for the option grammar."""
+    return _printf_scan(bash_ast.args(call))[1]
+
+
+def printf_format_word(call):
+    """The Word carrying printf's FORMAT operand (the first non-option word after
+    '-v'/'--'/options), or None. Same robust scan as printf_v_target, so R-030/R-031
+    judge the SAME word the shell treats as the format."""
+    call_args = bash_ast.args(call)
+    index, _target = _printf_scan(call_args)
+    return None if index is None else call_args[index]
 
 
 def word_has_command_expansion(word):
