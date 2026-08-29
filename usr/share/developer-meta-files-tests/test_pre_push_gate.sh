@@ -248,7 +248,7 @@ assert "large blob hidden by a small working copy is flagged" 1 \
 ## A staged BROKEN symlink must be flagged -- the symlink checks run over the
 ## mirror's recreated symlinks, not skipped because the mirror has no symlink.
 repo="$(new_repo)"
-ln -s /nonexistent/broken/target "${repo}/badlink"
+ln -s nonexistent-relative-target "${repo}/badlink"
 git -C "${repo}" add badlink
 assert "a staged broken symlink is flagged in blob mode" 1 \
    "check-symlinks" --check --staged
@@ -264,6 +264,34 @@ ln -s tracked.txt "${repo}/goodlink"
 git -C "${repo}" add goodlink
 assert "a valid staged symlink to a tracked file is not false-flagged" 0 \
    "" --check --staged
+
+## A relative symlink ESCAPING the tree (above root) cannot resolve in the tree,
+## so it is broken -- a filesystem check against a /tmp mirror false-PASSED it.
+repo="$(new_repo)"
+ln -s ../../../../etc/nope "${repo}/esclink"
+git -C "${repo}" add esclink
+assert "a staged tree-escaping symlink is flagged" 1 \
+   "check-symlinks" --check --staged
+
+## A MULTI-HOP chain of valid links (link -> intermediate -> file) must resolve
+## -- a one-level-deep materialization false-FAILED it.
+repo="$(new_repo)"
+printf 'data\n' > "${repo}/endfile"
+ln -s endfile "${repo}/mid"
+git -C "${repo}" add endfile mid
+git -C "${repo}" commit --quiet --no-verify --message chain-base
+ln -s mid "${repo}/head"
+git -C "${repo}" add head
+assert "a valid multi-hop staged symlink chain is not false-flagged" 0 \
+   "" --check --staged
+
+## A staged file carrying a merge-conflict marker must be flagged even outside a
+## real merge (check-merge-conflict is a no-op without --assume-in-merge).
+repo="$(new_repo)"
+printf '%s\n' 'a' '<<<<<<< HEAD' 'b' '=======' 'c' '>>>>>>> other' > "${repo}/conflicted.txt"
+git -C "${repo}" add conflicted.txt
+assert "a staged merge-conflict marker is flagged" 1 \
+   "check-merge-conflict" --check --staged
 
 ## The pre-commit FIXER must not follow a symlink swapped in after classification
 ## (a TOCTOU that let a fixer rewrite an arbitrary victim outside the repo). Drive

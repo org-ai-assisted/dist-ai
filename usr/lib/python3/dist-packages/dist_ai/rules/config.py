@@ -114,9 +114,25 @@ def _apt_hook_commands(source):
     '#clear' is left (it only drops config keys, reads nothing)."""
     import apt_pkg
     ## '#include' -> '# include' (a space makes it a plain comment apt_pkg ignores
-    ## instead of a directive). Renaming the token cannot hide a multi-statement:
-    ## the ';'/'|'/'&&' check is unaffected by it, in a value or not.
-    source = re.sub(r'#include\b', '# include', source, flags=re.IGNORECASE)
+    ## instead of a directive). Only OUTSIDE a quoted value -- a '#include' inside
+    ## a "..." value is data apt never follows, so leaving it keeps the value (and
+    ## a malformed config's own syntax) unchanged, while the dangerous directive
+    ## form is neutered. Not escape-aware; apt values carry no escaped quotes.
+    neutered = []
+    in_quote = False
+    index = 0
+    length = len(source)
+    while index < length:
+        char = source[index]
+        if char == '"':
+            in_quote = not in_quote
+        elif not in_quote and source[index:index + 8].lower() == "#include":
+            neutered.append("# include")
+            index += 8
+            continue
+        neutered.append(char)
+        index += 1
+    source = "".join(neutered)
     conf = apt_pkg.Configuration()
     handle = tempfile.NamedTemporaryFile(
         "w", prefix="dist-ai-apt-", suffix=".conf", delete=False)

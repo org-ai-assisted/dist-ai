@@ -1625,7 +1625,9 @@ printf '%s\n' \
    > "${apt_repo}/etc/apt/apt.conf.d/60good-keyword-in-value"
 git -C "${apt_repo}" add --all
 git -C "${apt_repo}" commit --quiet --no-verify --message apt
-apt_out="$( cd -- "${apt_repo}" && "${GATE}" --check --range "${apt_base}" 2>&1 || true )"
+## '--kill-after' + a bound: if the '#include' XXE neuter ever regresses, a fixture
+## with '#include "/dev/zero"' would HANG the gate -- fail the test, do not hang it.
+apt_out="$( cd -- "${apt_repo}" && timeout --kill-after=5s 60s "${GATE}" --check --range "${apt_base}" 2>&1 || true )"
 ## Scope to the R-194 FAILURE text: the 'R-194 skipped: ... waiver' note names
 ## the waived file, which a bare rule-id match would misread as a violation.
 apt_hits="$( printf '%s\n' "${apt_out}" \

@@ -69,22 +69,22 @@ def _materialize_blobs(paths, source_rev, base_cwd):
     entries = gitdiff._tree_entries(
         None if source_rev == "" else source_rev, base_cwd)
     mirror = tempfile.mkdtemp(prefix="dist-ai-precommit-")
-
-    def _write_blob(rel, mode, sha):
-        dest = os.path.join(mirror, os.path.normpath(os.sep + rel).lstrip(os.sep))
+    for path in paths:
+        mode, sha = entries.get(path, (None, None))
+        ## Skip a symlink (120000) -- the broken-symlink check is git-native (see
+        ## _broken_staged_symlinks), NOT a filesystem check over a mirror -- and a
+        ## gitlink (160000), a submodule pointer with no file content.
+        if sha is None or mode in ("120000", "160000"):
+            continue
+        try:
+            blob = subprocess.run(
+                ["git", "cat-file", "blob", sha],
+                capture_output=True, cwd=base_cwd, check=True).stdout
+        except (OSError, subprocess.CalledProcessError):
+            continue
+        dest = os.path.join(mirror, os.path.normpath(os.sep + path).lstrip(os.sep))
         try:
             os.makedirs(os.path.dirname(dest) or mirror, exist_ok=True)
-            if mode == "120000":
-                blob = subprocess.run(
-                    ["git", "cat-file", "blob", sha], capture_output=True,
-                    cwd=base_cwd, check=True).stdout
-                ## A symlink's blob IS its target path -- recreate it so the
-                ## symlink checks see it; it is only READ, never written through.
-                os.symlink(os.fsdecode(blob), dest)
-                return os.fsdecode(blob)
-            blob = subprocess.run(
-                ["git", "cat-file", "blob", sha], capture_output=True,
-                cwd=base_cwd, check=True).stdout
             with open(dest, "wb") as handle:
                 handle.write(blob)
             ## Owner-only: this mirror holds the scanned blob content, incl. a
@@ -92,36 +92,59 @@ def _materialize_blobs(paths, source_rev, base_cwd):
             ## so it must not be group/world readable. Exec bit kept (0o700 vs
             ## 0o600) for the mode-sensitive exec-shebang checks.
             os.chmod(dest, 0o700 if mode == "100755" else 0o600)
+        except OSError:
+            continue
+    return mirror
+
+
+def _broken_staged_symlinks(paths, source_rev, base_cwd):
+    """Yield a FAIL for each staged SYMLINK whose target does not resolve to a
+    path present in the staged TREE. Purely GIT-NATIVE (no /tmp mirror, no
+    working tree): the target is resolved relative to the link's directory WITHIN
+    the tree, following symlink chains, so a relative ESCAPE above the root, a
+    MULTI-HOP chain, and the staged-vs-working-tree split are all handled on the
+    staged blob alone. An ABSOLUTE target resolves against the host at deploy
+    time, so it is not judged here."""
+    from dist_ai import gitdiff
+    entries = gitdiff._tree_entries(
+        None if source_rev == "" else source_rev, base_cwd)
+    dir_prefixes = set()
+    for name in entries:
+        parts = name.split("/")
+        for i in range(1, len(parts)):
+            dir_prefixes.add("/".join(parts[:i]))
+
+    def _target(sha):
+        try:
+            return os.fsdecode(subprocess.run(
+                ["git", "cat-file", "blob", sha], capture_output=True,
+                cwd=base_cwd, check=True).stdout)
         except (OSError, subprocess.CalledProcessError):
             return None
-        return None
 
-    links = []
+    def _resolves(link, depth):
+        if depth > 40:
+            return False  ## a symlink loop is broken
+        mode, sha = entries.get(link, (None, None))
+        target = _target(sha) if sha is not None else None
+        if target is None or os.path.isabs(target):
+            return True  ## unreadable, or absolute (host/deploy-time, not judged)
+        resolved = os.path.normpath(
+            os.path.join(os.path.dirname(link), target))
+        if resolved == os.pardir or resolved.startswith(os.pardir + "/"):
+            return False  ## escapes the tree -> not resolvable in it
+        tmode, tsha = entries.get(resolved, (None, None))
+        if tmode == "120000":
+            return _resolves(resolved, depth + 1)  ## follow the chain
+        return tsha is not None or resolved in dir_prefixes
+
     for path in paths:
-        mode, sha = entries.get(path, (None, None))
-        ## Skip a gitlink (160000): a submodule pointer, no file content.
-        if sha is None or mode == "160000":
-            continue
-        target = _write_blob(path, mode, sha)
-        if target is not None:
-            links.append((path, target))
-
-    ## Materialize each staged symlink's TARGET too, so check-symlinks (which runs
-    ## in the mirror) sees a valid relative link to an already-tracked, UNCHANGED
-    ## file as valid instead of broken -- the mirror otherwise holds only CHANGED
-    ## paths. A broken staged link (target absent from the tree) stays broken.
-    for path, target in links:
-        if os.path.isabs(target):
-            continue  ## an absolute target resolves against the host, not the tree
-        tgt = os.path.normpath(os.path.join(os.path.dirname(path), target))
-        if tgt in ("", ".", os.pardir) or tgt.startswith(os.pardir + os.sep):
-            continue  ## escapes the tree
-        tmode, tsha = entries.get(tgt, (None, None))
-        if tsha is not None and tmode != "160000":
-            _write_blob(tgt, tmode, tsha)
-        elif any(name.startswith(tgt + "/") for name in entries):
-            os.makedirs(os.path.join(mirror, tgt), exist_ok=True)  ## dir target
-    return mirror
+        mode, _sha = entries.get(path, (None, None))
+        if mode == "120000" and not _resolves(path, 0):
+            yield model.fail(
+                "check-symlinks",
+                "check-symlinks: '%s' is a broken symlink (its target is not in "
+                "the tree)" % path, path)
 
 
 def _is_binary_attr(base_cwd, path, source_rev):
@@ -174,6 +197,31 @@ def _read_text(base_cwd, path):
             return handle.read().decode("utf-8", "replace")
     except OSError:
         return ""
+
+
+def _staged_merge_conflicts(files, content_cwd):
+    """Flag a merge-conflict marker in the shipped CONTENT (the blob, via
+    content_cwd). The 'check-merge-conflict' hook cannot serve here: its
+    'is_in_merge()' runs 'git rev-parse' BEFORE the '--assume-in-merge'
+    short-circuit (a pre-commit-hooks 5.0.0 ordering bug), so it aborts in the
+    non-git blob mirror -- and only the mirror holds the object we must judge, not
+    the working tree. Reuse the hook's OWN marker constant (no drift: the markers
+    are git's fixed conflict format, 7-char line prefixes, not a grammar) and scan
+    the bytes ourselves. Same per-line, startswith semantics as the hook."""
+    from pre_commit_hooks.check_merge_conflict import CONFLICT_PATTERNS
+    for path in files:
+        try:
+            with open(_abs(content_cwd, path), "rb") as handle:
+                data = handle.read()
+        except OSError:
+            continue
+        for number, line in enumerate(data.splitlines(keepends=True), start=1):
+            for pattern in CONFLICT_PATTERNS:
+                if line.startswith(pattern):
+                    yield model.fail(
+                        "check-merge-conflict",
+                        "check-merge-conflict: merge conflict string %r found"
+                        % pattern.strip().decode(), path, number)
 
 
 def _run_hook(hook, flags, files, base_cwd):
@@ -426,9 +474,9 @@ def _run_batch(paths, base_ref, staged_mode, base_cwd, content_cwd, source_rev):
                 else:
                     os.environ[key] = value
 
-    ## check-merge-conflict is git-aware (it reads MERGE_MSG via 'git rev-parse'),
-    ## so it stays on the real repo; the rest here are pure content -> the blob.
-    yield from _run_hook("check-merge-conflict", [], text, base_cwd)
+    ## Scan the SHIPPED content (blob) for merge-conflict markers -- the hook
+    ## itself cannot run against the non-git blob mirror (see _staged_merge_conflicts).
+    yield from _staged_merge_conflicts(text, content_cwd)
     yield from _run_hook("check-vcs-permalinks", [], text, content_cwd)
     yield from _run_hook("detect-aws-credentials",
                          ["--allow-missing-credentials"], text, content_cwd)
@@ -469,11 +517,13 @@ def _run_batch(paths, base_ref, staged_mode, base_cwd, content_cwd, source_rev):
                     if os.path.lexists(_abs(base_cwd, p))]
     yield from _run_hook("check-executables-have-shebangs", [],
                          exec_on_disk, base_cwd)
-    ## check-symlinks reads a symlink to see if its target is broken (no git). Run
-    ## it in the MIRROR, which holds the SHIPPED link AND its materialized target,
-    ## so the staged object is judged -- not the working tree (which reopened the
-    ## staged-vs-worktree split: a retargeted link there is a false green/fail).
-    yield from _run_hook("check-symlinks", [], lists["symlink"], content_cwd)
+    ## Broken-symlink check. Working-tree mode: the real hook over the tree. Blob
+    ## mode: git-native tree resolution (no mirror), so the STAGED link is judged
+    ## with no relative-escape / chain-depth / worktree-split edges.
+    if source_rev is None:
+        yield from _run_hook("check-symlinks", [], lists["symlink"], base_cwd)
+    else:
+        yield from _broken_staged_symlinks(paths, source_rev, base_cwd)
 
     ## type by extension, content-reading -> content_cwd:
     yield from _run_hook("check-yaml", [], lists["yaml"], content_cwd)
