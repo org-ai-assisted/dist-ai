@@ -109,6 +109,37 @@ else
    note_fail "staged-blob shellcheck ignored .shellcheckrc (got ${sc_rc} SC2016 finding(s))"
 fi
 
+## --- staged-blob shellcheck reads .shellcheckrc from the BLOB'S TREE ----------
+## In --staged/--range mode the file is a committed/staged BLOB, so its
+## '.shellcheckrc' must come from the blob's OWN git tree (source_rev), NEVER the
+## working tree -- else a dirty/unstaged 'disable=...' would suppress a real
+## finding in the object that SHIPS (the dirty-rc bypass). Canary: commit a shell
+## file with SC2016 and NO rc in the tree, then leave a DIRTY worktree
+## .shellcheckrc disabling SC2016; the staged blob (source_rev='') must STILL
+## report SC2016 (the dirty rc is ignored). FAILS pre-fix (the worktree rc, read
+## from the on-disk dir, suppresses it).
+sc_blob="$(python3 -c '
+import sys, os, subprocess
+from dist_ai import context, engine, model
+D = os.path.join(sys.argv[1], "blobtree")
+os.makedirs(D)
+def git(*a): subprocess.run(["git", "-C", D] + list(a), check=True, capture_output=True)
+git("init", "--quiet"); git("config", "user.email", "t@e.st"); git("config", "user.name", "t")
+open(D + "/prog.sh", "w").write("#!/bin/bash\necho \x27$x\x27\n")   # SC2016
+git("add", "prog.sh"); git("commit", "--quiet", "-m", "init")
+open(D + "/.shellcheckrc", "w").write("disable=SC2016\n")           # DIRTY, unstaged, not in the tree
+## source_rev="" -> the INDEX (a staged blob); the rc must come from the tree.
+ctx = context.FileContext("prog.sh", open(D + "/prog.sh").read(),
+                          abspath=D + "/prog.sh", source_rev="")
+findings = engine.detect(ctx, include_external=True)
+print(sum(1 for f in findings if f.rule == "shellcheck" and f.severity == model.FAIL))
+' "${test_dir}")"
+if [ "${sc_blob}" != "0" ]; then
+   note_pass "staged-blob shellcheck reads .shellcheckrc from the blob tree, not the dirty worktree"
+else
+   note_fail "staged-blob shellcheck applied the DIRTY worktree .shellcheckrc (dirty-rc bypass)"
+fi
+
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "pre-push-engine-hardening: ${passc} pass, ${fail} fail, 0 skip -- FAILURES above." >&2
    exit 1

@@ -13,8 +13,10 @@ the finding message without corrupting a machine record. bash -n runs even when
 shfmt could not parse the file -- catching the syntax error is the whole point --
 so these do not gate on ctx.tree the way the AST rules do."""
 
+import contextlib
 import os
 import subprocess
+import tempfile
 
 from dist_ai import model
 from dist_ai.model import ExternalRule
@@ -44,6 +46,80 @@ def _find_shellcheckrc(start_dir):
         if parent == directory:
             return None
         directory = parent
+
+
+def _repo_root(abspath):
+    """The git work-tree root containing ABSPATH, or None. Runs from the file's
+    own directory so the answer is that file's repo, not the process CWD."""
+    if not abspath:
+        return None
+    directory = os.path.dirname(os.path.abspath(abspath))
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=directory, capture_output=True, text=True, check=True)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return out.stdout.strip() or None
+
+
+def _blob_shellcheckrc_bytes(ctx):
+    """The nearest '.shellcheckrc' governing CTX's file, read from CTX's OWN git
+    tree (source_rev; '' is the index) rather than the working tree -- so a dirty
+    or unstaged rc cannot govern a committed/staged blob (a 'disable=all' left in
+    the worktree must not suppress a real finding in the object that ships). Walks
+    up the file's tree path like shellcheck's own discovery. The '.shellcheckrc'
+    name is a fixed literal (never attacker-controlled), so 'git show <rev>:<path>'
+    by path is safe here. None if no rc is found in that tree."""
+    root = _repo_root(ctx.abspath)
+    if root is None:
+        return None
+    rev = getattr(ctx, "source_rev", None) or ""      # '' -> the index (':path')
+    reldir = os.path.dirname(ctx.path or "")
+    while True:
+        rel = (reldir + "/.shellcheckrc") if reldir else ".shellcheckrc"
+        try:
+            out = subprocess.run(
+                ["git", "show", "%s:%s" % (rev, rel)],
+                cwd=root, capture_output=True, check=True)
+            return out.stdout
+        except (OSError, subprocess.CalledProcessError):
+            pass
+        if not reldir:
+            return None
+        reldir = os.path.dirname(reldir)
+
+
+@contextlib.contextmanager
+def _shellcheckrc_for(ctx, src_dir):
+    """Yield a filesystem path to the '.shellcheckrc' governing CTX, or None. A
+    DISK context (source_rev is None) reads it from SRC_DIR on disk. A BLOB context
+    (staged/committed, source_rev set) reads it from its own git tree and
+    materializes it to a temp file for the with-block, so the blob is judged by the
+    config that ships with it, not a diverged working copy."""
+    if getattr(ctx, "source_rev", None) is None:
+        yield _find_shellcheckrc(src_dir)
+        return
+    data = _blob_shellcheckrc_bytes(ctx)
+    if data is None:
+        ## No rc in the blob's OWN tree. Do NOT yield None: shellcheck would then
+        ## fall back to its own discovery and find the WORKING-TREE '.shellcheckrc'
+        ## (or the CWD's) -- letting a dirty/unstaged rc govern the object that
+        ## ships, the exact hole this closes. Pin an EMPTY rc so nothing is
+        ## suppressed and no rc is discovered.
+        yield os.devnull
+        return
+    handle = tempfile.NamedTemporaryFile(
+        prefix="dist-ai-shellcheckrc-", suffix=".shellcheckrc", delete=False)
+    try:
+        handle.write(data)
+        handle.close()
+        yield handle.name
+    finally:
+        try:
+            os.unlink(handle.name)
+        except OSError:
+            pass
 
 
 class BashParse(ExternalRule):
@@ -83,11 +159,13 @@ class Shellcheck(ExternalRule):
     relative to the SCRIPT's own directory (every such directive here is written
     script-relative). The dir is passed explicitly, not as SCRIPTDIR, so a
     virtual context (a staged blob checked from a temp file) still resolves
-    'source=' against the real siblings. For the SAME reason the project
-    '.shellcheckrc' is located from the real dir and passed via '--rcfile': a
-    temp-file blob has no rc above it, so without this its SC disables are dropped
-    and the gate fails a file that is clean in place. Fail-open when shellcheck is
-    absent (a bare git-hook run without it installed must still commit)."""
+    'source=' against the real siblings. The project '.shellcheckrc' is likewise
+    passed via '--rcfile' so a temp-file blob is judged by the same config, not
+    dropped: for a DISK file it is located on disk; for a staged/committed BLOB it
+    is read from the blob's OWN git tree (see _shellcheckrc_for), never the working
+    tree -- a dirty rc must not govern the object that ships. Fail-open when
+    shellcheck is absent (a bare git-hook run without it installed must still
+    commit)."""
 
     id = "shellcheck"
 
@@ -101,10 +179,10 @@ class Shellcheck(ExternalRule):
                 "shellcheck not on PATH; skipping (apt-get install shellcheck)")
             return
         try:
-            with ctx.materialized() as (path, src_dir):
+            with ctx.materialized() as (path, src_dir), \
+                    _shellcheckrc_for(ctx, src_dir) as rc_file:
                 command = ["shellcheck", "--external-sources",
                            "--source-path=" + src_dir]
-                rc_file = _find_shellcheckrc(src_dir)
                 if rc_file is not None:
                     command.append("--rcfile=" + rc_file)
                 command += ["--enable=" + SHELLCHECK_OPTIONAL, "--", path]
