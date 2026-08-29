@@ -140,6 +140,37 @@ else
    note_fail "staged-blob shellcheck applied the DIRTY worktree .shellcheckrc (dirty-rc bypass)"
 fi
 
+## --- staged-blob shellcheck rc lookup resists a git object-spec collision ------
+## A blob path PREFIX is attacker-controlled: a PR that names a directory '0:pwn'
+## made the walk-up rc lookup 'git show :0:pwn/.shellcheckrc', which git MISPARSES
+## as ':<stage 0>:pwn/.shellcheckrc' -- reading a DIFFERENT, attacker-planted rc to
+## SUPPRESS shellcheck on the PR's own scripts. Canary: stage a failing script under
+## '0:pwn/' AND a 'disable=all' rc at 'pwn/.shellcheckrc' (the misparse target) but
+## NONE in the real '0:pwn/' tree. A SHA-keyed whole-tree lookup finds no governing
+## rc there, so SC2016 STILL fires. FAILS pre-fix (the misparse reads pwn/.shellcheckrc
+## and the finding is suppressed -> a real shellcheck bypass on a malicious PR).
+sc_collide="$(python3 -c '
+import sys, os, subprocess
+from dist_ai import context, engine, model
+D = os.path.join(sys.argv[1], "collide")
+os.makedirs(os.path.join(D, "0:pwn"))
+os.makedirs(os.path.join(D, "pwn"))
+def git(*a): subprocess.run(["git", "-C", D] + list(a), check=True, capture_output=True)
+git("init", "--quiet"); git("config", "user.email", "t@e.st"); git("config", "user.name", "t")
+open(D + "/0:pwn/prog.sh", "w").write("#!/bin/bash\necho \x27$x\x27\n")   # SC2016
+open(D + "/pwn/.shellcheckrc", "w").write("disable=all\n")               # the misparse target
+git("add", "-A"); git("commit", "--quiet", "-m", "init")
+ctx = context.FileContext("0:pwn/prog.sh", open(D + "/0:pwn/prog.sh").read(),
+                          abspath=D + "/0:pwn/prog.sh", source_rev="")
+findings = engine.detect(ctx, include_external=True)
+print(sum(1 for f in findings if f.rule == "shellcheck" and f.severity == model.FAIL))
+' "${test_dir}")"
+if [ "${sc_collide}" != "0" ]; then
+   note_pass "staged-blob shellcheck rc lookup resists a git object-spec collision (0:dir)"
+else
+   note_fail "staged-blob shellcheck rc: a '0:dir' object-spec collision SUPPRESSED the finding (bypass)"
+fi
+
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "pre-push-engine-hardening: ${passc} pass, ${fail} fail, 0 skip -- FAILURES above." >&2
    exit 1

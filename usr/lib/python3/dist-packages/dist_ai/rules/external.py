@@ -63,28 +63,67 @@ def _repo_root(abspath):
     return out.stdout.strip() or None
 
 
+def _tree_blob_shas(root, rev):
+    """{relpath: (mode, sha)} for every blob in REV ('' -> the stage-0 INDEX, a
+    commit-ish -> that tree), taken in ONE listing keyed by EXACT path so no
+    per-file path is ever spliced into a git object argument. A name that is
+    pathspec MAGIC or collides with git's ':<stage>:<path>' / '<rev>:<path>' grammar
+    (a crafted directory like '0:pwn') therefore cannot misparse into a DIFFERENT
+    object. quotePath=false + '-z' keep an odd-byte path one intact record. {} on a
+    git failure."""
+    if rev == "":
+        cmd = ["git", "-c", "core.quotePath=false", "ls-files", "--stage", "-z"]
+        sha_field = 1                       # 'mode sha stage \t path'
+    else:
+        cmd = ["git", "-c", "core.quotePath=false", "ls-tree", "-r", "-z", rev]
+        sha_field = 2                       # 'mode type sha \t path'
+    entries = {}
+    try:
+        out = subprocess.run(
+            cmd, cwd=root, capture_output=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return entries
+    for record in out.split(b"\0"):
+        if not record:
+            continue
+        meta, _tab, path = record.partition(b"\t")
+        fields = meta.split()
+        if len(fields) > sha_field:
+            entries[os.fsdecode(path)] = (
+                os.fsdecode(fields[0]), os.fsdecode(fields[sha_field]))
+    return entries
+
+
 def _blob_shellcheckrc_bytes(ctx):
     """The nearest '.shellcheckrc' governing CTX's file, read from CTX's OWN git
     tree (source_rev; '' is the index) rather than the working tree -- so a dirty
     or unstaged rc cannot govern a committed/staged blob (a 'disable=all' left in
     the worktree must not suppress a real finding in the object that ships). Walks
-    up the file's tree path like shellcheck's own discovery. The '.shellcheckrc'
-    name is a fixed literal (never attacker-controlled), so 'git show <rev>:<path>'
-    by path is safe here. None if no rc is found in that tree."""
+    up the file's tree path like shellcheck's own discovery. The path PREFIX comes
+    from ctx.path, which IS attacker-controlled, so the rc is fetched BY SHA from a
+    whole-tree listing keyed by exact path -- NEVER a 'git show <rev>:<path>' object
+    spec: a crafted directory ('0:pwn') would else misparse the ':path' form as a
+    ':<stage>:<path>' index spec and read a DIFFERENT '.shellcheckrc' (disable=all)
+    to SUPPRESS shellcheck on the malicious PR's own scripts. None if no rc found."""
     root = _repo_root(ctx.abspath)
     if root is None:
         return None
-    rev = getattr(ctx, "source_rev", None) or ""      # '' -> the index (':path')
+    rev = getattr(ctx, "source_rev", None) or ""      # '' -> the index
+    entries = _tree_blob_shas(root, rev)
     reldir = os.path.dirname(ctx.path or "")
     while True:
         rel = (reldir + "/.shellcheckrc") if reldir else ".shellcheckrc"
-        try:
-            out = subprocess.run(
-                ["git", "show", "%s:%s" % (rev, rel)],
-                cwd=root, capture_output=True, check=True)
-            return out.stdout
-        except (OSError, subprocess.CalledProcessError):
-            pass
+        entry = entries.get(rel)
+        if entry is not None:
+            mode, sha = entry
+            if mode not in ("120000", "160000"):      # skip a symlink/gitlink rc
+                try:
+                    out = subprocess.run(
+                        ["git", "cat-file", "blob", sha],
+                        cwd=root, capture_output=True, check=True)
+                    return out.stdout
+                except (OSError, subprocess.CalledProcessError):
+                    pass
         if not reldir:
             return None
         reldir = os.path.dirname(reldir)
