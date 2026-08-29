@@ -20,6 +20,7 @@ Architecture: all
 Depends: ${misc:Depends},
  bash (>= 4),
  python3,
+ python3-apt,
  python3-pytest,
  python3-hypothesis,
  python3-coverage,
