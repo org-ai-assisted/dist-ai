@@ -98,11 +98,18 @@ PANE_INSET = 6
 
 class _Term:
     """Minimal stand-in for the tab that held the paste: the bar reads its theme
-    and font to style the preview panes (the terminal's theme, Hack font)."""
+    and font to style the preview panes (the terminal's theme, Hack font) and asks
+    whether a live program has bracketed paste on (to decide the delivered form)."""
     _theme = THEME_NAME
 
     def current_font_family(self):
         return 'Hack'
+
+    def _bracketed_paste_active(self):
+        # No live foreground program in the shot -> a plain shell target, so the
+        # delivered-form panes show the auto-submit-stripped paste (the common,
+        # safe case a user sees at a shell prompt).
+        return False
 
     def dispatch_pending_paste(self, action):
         pass
