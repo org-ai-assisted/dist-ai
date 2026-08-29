@@ -140,6 +140,24 @@ key(t, Qt.Key.Key_A, '', Qt.KeyboardModifier.ControlModifier)
 key(t, Qt.Key.Key_R, '', Qt.KeyboardModifier.ControlModifier)
 key(t, Qt.Key.Key_Backslash, '', Qt.KeyboardModifier.ControlModifier)
 eq(sent, [b'\x03', b'\x01', b'\x12', b'\x1c'], 'ctrl+key sends its control byte')
+# Ctrl+Alt is Meta: a real terminal (xterm metaSendsEscape) prefixes the control
+# byte with ESC, so an UNBOUND Ctrl+Alt+<key> reaches the child as ESC+byte, not a
+# bare control byte with Alt silently dropped.
+sent.clear()
+_ctrl_alt = Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier
+key(t, Qt.Key.Key_C, '', _ctrl_alt)
+key(t, Qt.Key.Key_U, '', _ctrl_alt)
+key(t, Qt.Key.Key_Backslash, '', _ctrl_alt)
+eq(sent, [b'\x1b\x03', b'\x1b\x15', b'\x1b\x1c'],
+   'ctrl+alt+key is Meta: ESC prefixes the control byte (CLI)')
+# Same Meta rule on the TUI path (_tui_key), matching its printable Alt+<char>
+# branch that already ESC-prefixes: plain Ctrl+C stays a bare byte, Ctrl+Alt+C = ESC+byte.
+_metatui = SecureTerminal(command='/bin/cat', tui=True)
+_metasent = spy_writes(_metatui)
+key(_metatui, Qt.Key.Key_C, '', Qt.KeyboardModifier.ControlModifier)
+key(_metatui, Qt.Key.Key_C, '', _ctrl_alt)
+eq(_metasent, [b'\x03', b'\x1b\x03'],
+   'ctrl+alt+key is Meta: ESC prefixes the control byte (TUI)')
 # the rest of the Ctrl+@..Ctrl+_ range: forward the control byte Qt computed
 # (Ctrl+] -> 0x1d, Ctrl+/ -> 0x1f readline-undo, Ctrl+[ -> 0x1b ESC)
 sent.clear()
@@ -410,6 +428,34 @@ ok(b'\x1b[B' in b''.join(_wasent),
    'TUI mode: the wheel->arrow alternateScroll surrogate fires for a viewed program')
 _wa.close()
 
+# SECURITY (residual): an output-armed ALT SCREEN alone (?1049h in CLI mode) must not
+# enable the CLICK/BUTTON or FOCUS report channel either -- _alt_screen is set by the
+# child's output, so trusting it re-opens the "output cannot affect input" hole that the
+# wheel path already closed. Only tui_active() (the user's explicit apply_tui, never
+# output-armed) may. FAILS on _mouse_input_allowed() = tui_active() OR _alt_screen.
+_ma = SecureTerminal(command='/bin/cat')          # CLI mode, no TUI
+_ma.show()
+_ma._cols = 80
+_masent = spy_writes(_ma)
+feed_output(_ma, b'\x1b[?1049h')                  # output arms the alt screen
+feed_output(_ma, b'\x1b[?1000h\x1b[?1006h\x1b[?1004h')   # output arms tracking + SGR + focus
+ok(_ma._alt_screen and not _ma.tui_active(),
+   'CLI mode: an output-armed alt screen with armed mouse modes')
+ok(not _ma._mouse_report_on(),
+   'output-armed alt screen ALONE does not enable click/button reporting')
+_masent.clear()
+_ma.mousePressEvent(_mev(QEvent.Type.MouseButtonPress, Qt.MouseButton.LeftButton))
+ok(_parse_sgr(_masent) is None,
+   'alt-screen-armed CLI: a click emits no SGR mouse report')
+_masent.clear()
+_ma.focusInEvent(_QFEv(QEvent.Type.FocusIn))
+ok(b'\x1b[I' not in b''.join(_masent),
+   'alt-screen-armed CLI: a focus change emits no DEC 1004 report')
+_ma.apply_tui(True)               # the user opts into TUI: the SAME armed modes may report
+ok(_ma._mouse_report_on(),
+   'TUI mode: the armed modes report once the user is actually driving a full-screen app')
+_ma.close()
+
 # konsole/xterm mouse-reporting parity: once the child requests tracking (1000/
 # 1002/1003) + SGR encoding (1006), its mouse and wheel events are REPORTED to it at
 # the cell UNDER THE POINTER (not a pinned corner, not arrow keys). Shift is the
@@ -591,6 +637,13 @@ eq(_asent, [],
    'input suspended during review: no mouse / wheel / focus report reaches the child')
 ok(not _alt._mouse_report_btns,
    'no button is tracked during review (so no unmatched release fires later)')
+# ctl-send-text must ALSO honour the review suspension: the ctl socket has no user,
+# so during a review it must NOT push text onto the shell's input line (to
+# concatenate with the held paste and submit on the next Enter). Refuse it.
+_asent.clear()
+_ctlerr = _alt.ctl_send_text('ls')
+ok(_ctlerr is not None and _asent == [],
+   'ctl-send-text is refused during a paste/copy review (no byte reaches the child)')
 _alt._review_active = False
 _alt._mouse_selecting = False
 
@@ -2885,6 +2938,30 @@ ok(_cts._clipboard_read == 'pending' and not any(b'\x1b]52;c;' in _w for _w in _
    'SEC-1: after a stale grant the next read RE-ASKS (pending), it does not auto-reply')
 _cts.close()
 
+# #4: the OSC-52 attempt NOTICE (osc_used, CLI mode) must label a clipboard READ query
+# (trailing '?') distinctly from a WRITE (base64 data), matching the actual dispatch --
+# read (exfiltration) and write (injection) are different threats and gate differently.
+# The notice re-derives read/write from a per-chunk window, so verify it agrees with the
+# dispatch's endswith('?') for the payload shapes that could fool it: a large write whose
+# base64 exceeds the notice window, and a query split across two reads (carry-rejoined).
+import base64 as _b64_osc                                     # noqa: E402
+def _osc52_notice(*chunks):
+    _o = SecureTerminal(command='/bin/cat')
+    _seen = []
+    _o.osc_used.connect(lambda k: _seen.append(k))
+    for _c in chunks:
+        feed_output(_o, _c)
+    _o.close()
+    return _seen
+ok(_osc52_notice(b'\x1b]52;c;?\x07') == ['osc_clipboard_read'],
+   '#4: OSC 52 read query (?) is noticed as clipboard READ')
+ok(_osc52_notice(b'\x1b]52;c;' + _b64_osc.b64encode(b'hi') + b'\x07') == ['osc_clipboard'],
+   '#4: OSC 52 base64 payload is noticed as clipboard WRITE')
+ok(_osc52_notice(b'\x1b]52;c;' + _b64_osc.b64encode(b'x' * 600) + b'\x07') == ['osc_clipboard'],
+   '#4: a large OSC 52 write (base64 past the notice window) is still WRITE, not misread')
+ok(_osc52_notice(b'\x1b]52;c;', b'?\x07') == ['osc_clipboard_read'],
+   '#4: a read query split across two reads is carry-rejoined and still noticed as READ')
+
 # F5: reap_pty_children WNOHANG-reaps ONLY our registered pty children, so the app can
 # drop the blanket SIGCHLD=SIG_IGN that made every subprocess returncode read 0. Pin
 # SIGCHLD to its default here so reaping is deterministic (an ambient SIG_IGN would let
@@ -3643,6 +3720,13 @@ if tui_available():
     tui.apply_osc('osc_cwd', True)
     tui._handle_osc(b'\x1b]7;file://h/home/u/p\x07')
     ok(_cwds == ['/home/u/p'], 'enabled: OSC 7 reports the unquoted path')
+    # a MALFORMED file:// with an authority but NO path ('file://host') must not smuggle
+    # the host in as the path ('/host'): urlparse().path is empty, so the bare host is
+    # not reported as a cwd. The old url[7:].split('/',1)[-1] took the authority as path.
+    _cwds.clear(); tui._reported_cwd = ''
+    tui._handle_osc(b'\x1b]7;file://justhost\x07')
+    ok('/justhost' not in _cwds,
+       'OSC 7: a malformed file://host (no path) does not report the host as the cwd')
     # #6: a long cwd path must show up to 4096 chars in the tab tooltip, not be cut to 80.
     # sanitize_title's default limit is 80, so the old trailing [:4096] slice was dead -- the
     # bound is now passed to the sanitizer.
@@ -6767,8 +6851,19 @@ ok(_victim.returncode is not None,
 # --- bell ring: channel gating + rate limit -----------------------------------
 _rg = SecureTerminal(command='/bin/cat')
 _rg._bell_channels = set()
-_rg._ring()                                 # no channels enabled -> returns early
-ok(True, '_ring: with no channels enabled it does nothing')
+_rg._last_bell = 0.0
+_rg_qapp_nc = _stmod.QApplication
+_stmod.QApplication = _QAppShim
+try:
+    _QAppShim._fake.beeps = 0
+    _rg._ring()                             # no channels enabled -> early return
+    # non-vacuous: the beep spy must NOT fire, AND the rate-limit bookkeeping
+    # (_last_bell = now, which sits past the early return) must NOT run -- an
+    # inverted or removed early return would trip at least one of these.
+    ok(_QAppShim._fake.beeps == 0 and _rg._last_bell == 0.0,
+       '_ring: with no channels enabled it fires nothing (no beep, no rate-limit update)')
+finally:
+    _stmod.QApplication = _rg_qapp_nc
 # the rate-limit lives INSIDE _ring, so spy the real beep (app.beep via _QAppShim), not
 # _ring itself: two rings within ~200ms must produce exactly ONE beep.
 _rg._bell_channels = {'audible'}
@@ -6852,9 +6947,14 @@ ok(_cvrisk, "copy 'never' of risky text emits the unreviewed-risk signal")
 
 # --- reset_caret with no output cursor snaps to the document end --------------
 _rc = SecureTerminal(command='/bin/cat')
+feed_output(_rc, b'line1\nline2\n')          # document content so start != end
 _rc._out_cursor = None
+_rctc = _rc.textCursor(); _rctc.setPosition(0); _rc.setTextCursor(_rctc)   # caret at start
 _rc.reset_caret()
-ok(True, 'reset_caret: with no output cursor it snaps the caret to the end')
+# non-vacuous: assert the caret ACTUALLY landed at the document end (the else branch
+# ran), not merely that reset_caret did not raise. A broken else leaves it at start.
+ok(_rc.textCursor().atEnd() and not _rc.textCursor().atStart(),
+   'reset_caret: with no output cursor it snaps the caret to the document end')
 
 # --- defensive syscall guards, fault-injected ---------------------------------
 import os as _os
@@ -7011,7 +7111,7 @@ _gz = SecureTerminal(command='/bin/cat')
 _gz.apply_tui(True)
 feed_output(_gz, b'\x1b[?1049h')            # alt screen -> grid mode
 _gz.apply_zoom(150)
-ok(True, 'apply_zoom in grid mode schedules a repaint')
+ok(_gz.current_zoom() == 150, 'apply_zoom in grid mode applies the zoom level')
 
 # _set_winsize: no-fd short-circuit and an ioctl error are both swallowed
 _sw = SecureTerminal(command='/bin/cat')
@@ -7029,8 +7129,10 @@ ok(True, '_set_winsize tolerates a closed pty and an ioctl error')
 
 # apply_markings toggles and re-renders only on a real change
 _am = SecureTerminal(command='/bin/cat')
-_am.apply_markings(not _am.markings_enabled())
-ok(True, 'apply_markings re-renders on a change')
+_am_was = _am.markings_enabled()
+_am.apply_markings(not _am_was)
+ok(_am.markings_enabled() == (not _am_was),
+   'apply_markings toggles the markings state on a change')
 
 # _end_sync_update is a no-op when no synchronized update is open
 _es = SecureTerminal(command='/bin/cat')
@@ -7054,9 +7156,17 @@ ok(True, '_on_readable: a not-ready non-blocking fd is handled')
 
 # PageUp/PageDown scroll the scrollback (line mode)
 _pg = SecureTerminal(command='/bin/cat')
+_pg.resize(600, 200)
+_pg.show()
+for _pgi in range(200):
+    _pg._append('pgline %d\n' % _pgi)
+_pgbar = _pg.verticalScrollBar()
+_pg_bottom = _pgbar.value()                  # at the bottom after the output
 key(_pg, Qt.Key.Key_PageUp)
+_pg_up = _pgbar.value()
 key(_pg, Qt.Key.Key_PageDown)
-ok(True, 'PageUp/PageDown drive the scrollbar')
+ok(_pg_up < _pg_bottom and _pgbar.value() > _pg_up,
+   'PageUp/PageDown drive the scrollbar (up, then back down)')
 
 # in TUI mode a plain key is encoded as VT input (keyPressEvent -> _tui_key)
 _tk2 = SecureTerminal(command='/bin/cat')
@@ -7393,11 +7503,12 @@ from PyQt6.QtGui import QContextMenuEvent as _QCME               # noqa: E402
 from PyQt6.QtWidgets import QMenu as _QMenu2                     # noqa: E402
 _cme = SecureTerminal(command='/bin/cat')
 _o_menuexec = _QMenu2.exec
-_QMenu2.exec = lambda *_a, **_k: None
+_menu_shown = []
+_QMenu2.exec = lambda *_a, **_k: _menu_shown.append(1)
 try:
     _cev = _QCME(_QCME.Reason.Mouse, _QPoint(5, 5), _cme.mapToGlobal(_QPoint(5, 5)))
     _cme.contextMenuEvent(_cev)
-    ok(True, 'contextMenuEvent shows the reviewed context menu')
+    ok(_menu_shown == [1], 'contextMenuEvent builds and shows the reviewed context menu')
 finally:
     _QMenu2.exec = _o_menuexec
 _cme.shutdown()

@@ -265,6 +265,83 @@ assert_at "R-220 flags 'exit 077' (decimal 77)" "R-220" 2
 run_det "$(printf '%s\n' '#!/bin/bash' 'foo || exit 770' 'bar || return 78')"
 assert_not_at "R-220 spares 'exit 770'"   "R-220" 2
 assert_not_at "R-220 spares 'return 78'"  "R-220" 3
+## bash truncates the exit code to 8 bits, so ANY code == 77 mod 256 runs as 77 at
+## runtime ('exit 333' -> 77, 'exit -179' -> 77) and must be gated; a code that mods
+## to something else is spared. A literal '== 77' missed the whole truncation class.
+run_det "$(printf '%s\n' '#!/bin/bash' 'foo || exit 333' 'bar || exit -179')"
+assert_at "R-220 flags 'exit 333' (333 mod 256 = 77)"  "R-220" 2
+assert_at "R-220 flags 'exit -179' (-179 mod 256 = 77)" "R-220" 3
+run_det "$(printf '%s\n' '#!/bin/bash' 'foo || exit 333' 'bar || exit 300')"
+assert_not_at "R-220 spares 'exit 300' (300 mod 256 = 44)" "R-220" 3
+## exec-wrapper spellings: bash runs the SAME exit/return builtin through '\exit',
+## 'builtin exit' and 'command exit', so a skip must not evade the gate by an
+## alternate spelling (sibling apt/dpkg rules unwrap sudo/doas the same way).
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   'foo || builtin exit 77' \
+   'bar || command exit 77' \
+   'baz || \exit 77' \
+   'qux || builtin return 77')"
+assert_at "R-220 flags a wrapped 'builtin exit 77'"    "R-220" 2
+assert_at "R-220 flags a wrapped 'command exit 77'"    "R-220" 3
+assert_at "R-220 flags a backslash '\\exit 77'"        "R-220" 4
+assert_at "R-220 flags a wrapped 'builtin return 77'"  "R-220" 5
+## wrapper OPTIONS and '--', a quoted name, and 'exit --' all still run exit 77 in
+## bash (verified) and must flag; 'command -v/-V' only DESCRIBES and is spared.
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   'foo || command -p exit 77' \
+   'bar || command -- exit 77' \
+   'baz || builtin -- exit 77' \
+   'qux || exit -- 77' \
+   'zap || "exit" 77')"
+assert_at "R-220 flags 'command -p exit 77'"   "R-220" 2
+assert_at "R-220 flags 'command -- exit 77'"   "R-220" 3
+assert_at "R-220 flags 'builtin -- exit 77'"   "R-220" 4
+assert_at "R-220 flags 'exit -- 77'"           "R-220" 5
+assert_at "R-220 flags a quoted \"exit\" 77"   "R-220" 6
+run_det "$(printf '%s\n' '#!/bin/bash' 'foo || command -v exit 77')"
+assert_not_at "R-220 spares 'command -v exit 77' (describes, does not run)" "R-220" 2
+## wrapper INVALID options: bash rejects 'builtin -p' (builtin takes NO options) and
+## 'command -x' (unknown option) BEFORE exit runs (verified: both print 'continued'),
+## so neither is a real skip -- R-220 must not flag them as an unauthorized exit 77.
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   'foo || builtin -p exit 77' \
+   'bar || command -x exit 77')"
+assert_not_at "R-220 spares 'builtin -p exit 77' (bash rejects -p, exit never runs)" "R-220" 2
+assert_not_at "R-220 spares 'command -x exit 77' (bash rejects -x, exit never runs)" "R-220" 3
+## the waiver is still honored THROUGH the wrapper, and a wrapped non-77 is spared.
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   'foo || builtin exit 77  ## style-ok: allow-skip: optional target' \
+   'bar || command exit 78')"
+assert_not_at "R-220 waiver honored through 'builtin exit'"     "R-220" 2
+assert_not_at "R-220 spares a wrapped non-77 'command exit 78'" "R-220" 3
+## waiver-spoof: the 'allow-skip' waiver must be a REAL comment, never a
+## '## style-ok: allow-skip:' string inside a quoted value or a bare variable
+## assignment -- else an unwaived skip goes green (the fabricated-pass R-220 closes).
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   'echo "## style-ok: allow-skip: fake" && exit 77')"
+assert_at "R-220 flags a skip with a decoy waiver inside a string" "R-220" 2
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   'z="## style-ok: allow-skip: nice try"' \
+   'foo || exit 77')"
+assert_at "R-220 flags a skip after a decoy-waiver var assignment" "R-220" 3
+## a REAL comment waiver (own line above) still authorizes the skip.
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   '## style-ok: allow-skip: optional target' \
+   'foo || exit 77')"
+assert_not_at "R-220 honors a real comment waiver on the line above" "R-220" 3
+## coexisting-comment spoof: a decoy '## style-ok: allow-skip:' string must NOT
+## waive just because an UNRELATED real comment shares the line -- the waiver is
+## the comment's OWN text, anchored at its start, not anything on the raw line.
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   'echo "## style-ok: allow-skip: fake" && exit 77  # note')"
+assert_at "R-220 flags a decoy-string skip beside an unrelated comment" "R-220" 2
+## a REAL trailing waiver on the skip's own line still authorizes it.
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   'foo || exit 77  ## style-ok: allow-skip: real reason')"
+assert_not_at "R-220 honors a real trailing comment waiver" "R-220" 2
+## '+77' runs as 77 in bash, so 'exit +77' is a skip and must be gated.
+run_det "$(printf '%s\n' '#!/bin/bash' 'foo || exit +77')"
+assert_at "R-220 flags 'exit +77' (runs as 77)" "R-220" 2
 ## R-090: '-pv' / '-p -v' clusters are still 'command -v'.
 run_det "$(printf '%s\n' '#!/bin/bash' 'command -pv foo' 'command -p -v bar')"
 assert_at "R-090 flags a 'command -pv' cluster"   "R-090" 2

@@ -26,7 +26,7 @@ if [ ! -d "${LIB}/dist_ai" ]; then
 fi
 export PYTHONPATH="${LIB}${PYTHONPATH:+:${PYTHONPATH}}"
 
-for prereq in python3 safe-rm; do
+for prereq in python3 safe-rm shellcheck; do
    type -P "${prereq}" >/dev/null 2>&1 || {
       printf '%s\n' "FATAL: '${prereq}' not on PATH; this test cannot run." >&2
       exit 1
@@ -81,6 +81,94 @@ if [ "${toctou}" = "VICTIM ORIGINAL" ]; then
    note_pass "fixer write refuses a symlink swapped in after the scan"
 else
    note_fail "fixer followed a swapped-in symlink and clobbered the victim (got '${toctou}')"
+fi
+
+## --- staged-blob shellcheck honors the project .shellcheckrc -----------------
+## A virtual (staged) context materializes to a temp file; shellcheck discovers
+## '.shellcheckrc' by walking up from the CHECKED file's dir, so a temp-dir blob
+## dropped the project rc and the gate failed a file that is clean IN PLACE.
+## Canary: the rc disables SC2016 and the content triggers ONLY SC2016, so a
+## shellcheck finding here means the rc was not applied to the blob (the bug).
+rcdir="${test_dir}/proj"
+mkdir --parents -- "${rcdir}"
+printf '%s\n' 'disable=SC2016' > "${rcdir}/.shellcheckrc"
+sc_rc="$(python3 -c '
+import sys
+from dist_ai import context, engine, model
+abspath = sys.argv[1]
+## disk_backed=False -> a VIRTUAL (staged) context: materialized() writes the
+## bytes to a temp file; abspath only supplies the real source dir + rc location.
+ctx = context.FileContext("proj/f.sh", "#!/bin/bash\necho \x27$x\x27\n",
+                          abspath=abspath, disk_backed=False)
+findings = engine.detect(ctx, include_external=True)
+print(sum(1 for f in findings if f.rule == "shellcheck" and f.severity == model.FAIL))
+' "${rcdir}/f.sh")"
+if [ "${sc_rc}" = "0" ]; then
+   note_pass "staged-blob shellcheck honors the project .shellcheckrc"
+else
+   note_fail "staged-blob shellcheck ignored .shellcheckrc (got ${sc_rc} SC2016 finding(s))"
+fi
+
+## --- staged-blob shellcheck reads .shellcheckrc from the BLOB'S TREE ----------
+## In --staged/--range mode the file is a committed/staged BLOB, so its
+## '.shellcheckrc' must come from the blob's OWN git tree (source_rev), NEVER the
+## working tree -- else a dirty/unstaged 'disable=...' would suppress a real
+## finding in the object that SHIPS (the dirty-rc bypass). Canary: commit a shell
+## file with SC2016 and NO rc in the tree, then leave a DIRTY worktree
+## .shellcheckrc disabling SC2016; the staged blob (source_rev='') must STILL
+## report SC2016 (the dirty rc is ignored). FAILS pre-fix (the worktree rc, read
+## from the on-disk dir, suppresses it).
+sc_blob="$(python3 -c '
+import sys, os, subprocess
+from dist_ai import context, engine, model
+D = os.path.join(sys.argv[1], "blobtree")
+os.makedirs(D)
+def git(*a): subprocess.run(["git", "-C", D] + list(a), check=True, capture_output=True)
+git("init", "--quiet"); git("config", "user.email", "t@e.st"); git("config", "user.name", "t")
+open(D + "/prog.sh", "w").write("#!/bin/bash\necho \x27$x\x27\n")   # SC2016
+git("add", "prog.sh"); git("commit", "--quiet", "-m", "init")
+open(D + "/.shellcheckrc", "w").write("disable=SC2016\n")           # DIRTY, unstaged, not in the tree
+## source_rev="" -> the INDEX (a staged blob); the rc must come from the tree.
+ctx = context.FileContext("prog.sh", open(D + "/prog.sh").read(),
+                          abspath=D + "/prog.sh", source_rev="")
+findings = engine.detect(ctx, include_external=True)
+print(sum(1 for f in findings if f.rule == "shellcheck" and f.severity == model.FAIL))
+' "${test_dir}")"
+if [ "${sc_blob}" != "0" ]; then
+   note_pass "staged-blob shellcheck reads .shellcheckrc from the blob tree, not the dirty worktree"
+else
+   note_fail "staged-blob shellcheck applied the DIRTY worktree .shellcheckrc (dirty-rc bypass)"
+fi
+
+## --- staged-blob shellcheck rc lookup resists a git object-spec collision ------
+## A blob path PREFIX is attacker-controlled: a PR that names a directory '0:pwn'
+## made the walk-up rc lookup 'git show :0:pwn/.shellcheckrc', which git MISPARSES
+## as ':<stage 0>:pwn/.shellcheckrc' -- reading a DIFFERENT, attacker-planted rc to
+## SUPPRESS shellcheck on the PR's own scripts. Canary: stage a failing script under
+## '0:pwn/' AND a 'disable=all' rc at 'pwn/.shellcheckrc' (the misparse target) but
+## NONE in the real '0:pwn/' tree. A SHA-keyed whole-tree lookup finds no governing
+## rc there, so SC2016 STILL fires. FAILS pre-fix (the misparse reads pwn/.shellcheckrc
+## and the finding is suppressed -> a real shellcheck bypass on a malicious PR).
+sc_collide="$(python3 -c '
+import sys, os, subprocess
+from dist_ai import context, engine, model
+D = os.path.join(sys.argv[1], "collide")
+os.makedirs(os.path.join(D, "0:pwn"))
+os.makedirs(os.path.join(D, "pwn"))
+def git(*a): subprocess.run(["git", "-C", D] + list(a), check=True, capture_output=True)
+git("init", "--quiet"); git("config", "user.email", "t@e.st"); git("config", "user.name", "t")
+open(D + "/0:pwn/prog.sh", "w").write("#!/bin/bash\necho \x27$x\x27\n")   # SC2016
+open(D + "/pwn/.shellcheckrc", "w").write("disable=all\n")               # the misparse target
+git("add", "-A"); git("commit", "--quiet", "-m", "init")
+ctx = context.FileContext("0:pwn/prog.sh", open(D + "/0:pwn/prog.sh").read(),
+                          abspath=D + "/0:pwn/prog.sh", source_rev="")
+findings = engine.detect(ctx, include_external=True)
+print(sum(1 for f in findings if f.rule == "shellcheck" and f.severity == model.FAIL))
+' "${test_dir}")"
+if [ "${sc_collide}" != "0" ]; then
+   note_pass "staged-blob shellcheck rc lookup resists a git object-spec collision (0:dir)"
+else
+   note_fail "staged-blob shellcheck rc: a '0:dir' object-spec collision SUPPRESSED the finding (bypass)"
 fi
 
 if [ "${fail}" -ne 0 ]; then

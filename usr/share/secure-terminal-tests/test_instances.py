@@ -160,6 +160,44 @@ try:
     _rdefault = _ping()
     ok(_rdefault is not None and _rdefault.get('pid') == _a.pid,
        'E: the default-group primary is untouched by the other group')
+
+    # F: a BURST of concurrent --reuse into a fresh group converges on exactly ONE
+    # primary; every loser hands its request off and exits 0, never opening a
+    # redundant window. The old always-bind/removeServer claim let racers steal or
+    # miss the socket -- leaving several coexisting windows (or zero listeners), the
+    # reported "opens a new window instead of a tab" bug. On the old code the losers
+    # do NOT hand off: they open their own server-less windows and stay alive, so
+    # more than one racer survives and this fails.
+    _fgroup = 'race'
+    _racers = [_spawn('--reuse', '--instance-group', _fgroup) for _ in range(5)]
+    ok(_wait_primary(_fgroup) is not None,
+       'F: a burst of --reuse into a fresh group yields a reachable primary')
+    _fend = time.time() + 25
+    while time.time() < _fend and sum(_alive(p) for p in _racers) > 1:
+        time.sleep(0.3)
+    _fa = [p for p in _racers if _alive(p)]
+    # Exactly one racer survives as the primary; the losers hand off and exit 0. On the
+    # old always-bind path the losers open their own windows and stay alive, so more than
+    # one survives. (Offscreen under heavy concurrent load a racer can also be killed by
+    # the environment's SIGSEGV flake -- run in a quiet sandbox for a clean signal.)
+    ok(len(_fa) == 1,
+       'F: exactly one racer becomes the primary (the rest hand off)')
+    ok(all(p.returncode == 0 for p in _racers if not _alive(p)),
+       'F: every handed-off racer exits 0')
+    ok(_ping(_fgroup) is not None, 'F: the surviving primary answers ping')
+
+    # G: a primary that DIES is replaced by the next --reuse, not left as an orphaned
+    # socket that every later launch falls through. Guards the reclaim path (a stale
+    # file cleared and re-bound) end to end.
+    _ggroup = 'reelect'
+    _g1 = _spawn('--reuse', '--instance-group', _ggroup)
+    ok(_wait_primary(_ggroup) is not None, 'G: the first --reuse establishes a primary')
+    os.killpg(_g1.pid, signal.SIGKILL)          # the primary's window/session dies
+    _g1.wait(timeout=10)
+    _g2 = _spawn('--reuse', '--instance-group', _ggroup)
+    _rg2 = _wait_primary(_ggroup)
+    ok(_rg2 is not None and _rg2.get('pid') == _g2.pid,
+       'G: after the primary dies, a new --reuse becomes a reachable primary')
 finally:
     # Reap by process-group (each child is its own session), TERM then KILL, so a
     # crash mid-suite leaves no orphan and the reaper never reaches another

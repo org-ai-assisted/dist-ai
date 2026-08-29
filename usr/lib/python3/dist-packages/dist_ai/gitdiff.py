@@ -133,3 +133,72 @@ def contexts(pairs):
         if ctx is not None:
             out.append(ctx)
     return out
+
+
+def _tree_entries(rev, root):
+    """{relpath: (mode, sha)} for every blob at REV -- None -> the stage-0 INDEX,
+    a commit-ish -> that tree. The WHOLE listing is taken in one call and keyed by
+    exact path, so no per-file path ever reaches a git argument: a name that is
+    pathspec MAGIC (':(exclude)x') or collides with the ':<stage>:<path>' /
+    'REV:path' object grammar ('0:x') cannot make a lookup error out (swallowed ->
+    unscanned) or resolve to the wrong object. quotePath=false + '-z' keep an odd
+    -byte path one intact record. Raises StagedDiscoveryError on a git failure."""
+    if rev is None:
+        cmd = ["git", "-c", "core.quotePath=false", "ls-files", "--stage", "-z"]
+        sha_field = 1  ## 'mode sha stage \t path'
+    else:
+        cmd = ["git", "-c", "core.quotePath=false", "ls-tree", "-r", "-z", rev]
+        sha_field = 2  ## 'mode type sha \t path'
+    try:
+        out = subprocess.run(
+            cmd, cwd=root, capture_output=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise StagedDiscoveryError(str(exc)) from exc
+    entries = {}
+    for record in out.split(b"\0"):
+        if not record:
+            continue
+        meta, _tab, path = record.partition(b"\t")
+        fields = meta.split()
+        if len(fields) <= sha_field:
+            continue
+        entries[os.fsdecode(path)] = (
+            os.fsdecode(fields[0]), os.fsdecode(fields[sha_field]))
+    return entries
+
+
+def blob_contexts(pairs, rev=None):
+    """FileContexts whose bytes are the git blob at REV -- None -> the stage-0
+    INDEX (what a commit records), a commit-ish like 'HEAD' -> that tree (what a
+    push carries) -- NEVER the working tree, which may have diverged (a working
+    copy overwritten after commit/stage must not hide a violation in the object
+    that ships, nor a working-tree edit trip a check of the clean object). A
+    symlink (mode 120000) or gitlink (160000) entry is skipped, mirroring
+    contexts()' skip of a symlink on disk. The blob is fetched BY SHA (never a
+    ':path' object spec), so an adversarial filename cannot evade the scan. abspath
+    is kept (the index/attrs git queries need the in-repo path); undecodable bytes
+    -> source None (the byte-level R-001 floor still reads raw)."""
+    root = _repo_root()
+    entries = _tree_entries(rev, root)
+    out = []
+    for abspath, relpath in pairs:
+        mode, sha = entries.get(relpath, (None, None))
+        if sha is None or mode in ("120000", "160000"):
+            continue
+        try:
+            raw = subprocess.run(
+                ["git", "cat-file", "blob", sha],
+                cwd=root, capture_output=True, check=True).stdout
+        except (OSError, subprocess.CalledProcessError):
+            continue
+        try:
+            source = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            source = None
+        ## source_rev is the git tree the bytes came from: '' for the index,
+        ## the commit-ish for a range -- so classification (.gitattributes) and
+        ## any sibling lookup key on the SAME tree, not the working tree.
+        out.append(ctxmod.FileContext(
+            relpath, source, abspath=abspath, raw=raw,
+            source_rev="" if rev is None else rev))
+    return out

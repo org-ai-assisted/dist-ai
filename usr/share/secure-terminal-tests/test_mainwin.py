@@ -187,6 +187,7 @@ try:
     from secure_terminal.main import _ZoomDialog as _ZD           # noqa: E402
     from PyQt6.QtGui import QWheelEvent as _QWE                   # noqa: E402
     from PyQt6.QtCore import QPointF as _QPF, QPoint as _QP       # noqa: E402
+    win._ui_scale = 100                       # deterministic sub-max start so a step MUST raise it
     _us0 = win._ui_scale
     QDialog.exec = lambda _self: (_dialogs.append(_self),
                                   int(QDialog.DialogCode.Accepted))[1]
@@ -194,7 +195,7 @@ try:
     win.show_global_settings()
     _zdlg = [d for d in _dialogs if isinstance(d, _ZD)][-1]
     _zdlg.on_zoom(1)                          # covers _live_zoom (step + live re-scale)
-    ok(win._ui_scale >= _us0,
+    ok(win._ui_scale > _us0,
        'Ctrl+wheel up on the settings dialog raises the menu scale live')
     _zoomed = []
     _zdlg.on_zoom = lambda direction: _zoomed.append(direction)
@@ -307,10 +308,17 @@ def _exec_clip(self):
 
 
 QDialog.exec = _exec_clip
+_clip_grants = []
+_orig_grant = term.grant_clipboard_read
+term.grant_clipboard_read = lambda d: _clip_grants.append(d)
 try:
     win._on_clipboard_read_requested(term)
-    ok(True, 'clipboard-read dialog: countdown enables Allow, choice is recorded')
+    # non-vacuous: clicking "Allow once" must record the ONCE decision on the tab
+    # (post-exec the window calls term.grant_clipboard_read(result['decision'])).
+    ok(_clip_grants == [term.CLIP_ALLOW_ONCE],
+       'clipboard-read dialog: countdown enables Allow, the once-allow choice is recorded')
 finally:
+    term.grant_clipboard_read = _orig_grant
     QDialog.exec = _orig_exec
 
 # --- keyboard-shortcuts dialog: build, Reset, Save ----------------------------
@@ -457,6 +465,27 @@ try:
        'close_tab: a reentrant close during the modal removes the tab exactly once')
     ok(_rt not in w3._closing_tabs,
        'close_tab: the closing mark is cleared once the close completes')
+    # Cancel-after-child-exit: if the shell EXITS during the confirm modal, its
+    # _on_shell_exited -> close_tab re-entry is swallowed by the _closing_tabs guard, so a
+    # plain Cancel would strand a tab with a DEAD child (the auto-close was lost). close_tab
+    # must detect the mid-modal exit and close anyway. Simulate: emit shell_exited from
+    # inside the modal, then decline. FAILS pre-fix (the declined tab is kept, child dead).
+    w3.new_tab()
+    _xt = w3.current()
+    _xt.has_foreground_program = lambda: True
+    _xt.shutdown = lambda: None
+    _n3 = w3.tabs.count()
+    def _exit_then_decline(*_a, **_k):
+        w3._on_shell_exited(_xt)               # the shell dies while the dialog is up
+        return _No                             # ... and the user then clicks No
+    QMessageBox.question = staticmethod(_exit_then_decline)
+    w3.close_tab(w3.tabs.indexOf(_xt))
+    eq(w3.tabs.count(), _n3 - 1,
+       'close_tab: a shell exiting DURING the confirm modal closes the tab even on Cancel')
+    ok(_xt not in w3._closing_tabs and _xt not in w3._shell_exited_pending,
+       'close_tab: both close marks are cleared after a mid-modal-exit close')
+    # _on_shell_exited on an already-removed tab is a harmless no-op (index == -1).
+    w3._on_shell_exited(_xt)
     # closeEvent: a running program + decline ignores the window close
     w3.new_tab()
     w3.current().has_foreground_program = lambda: True
@@ -503,22 +532,33 @@ finally:
 # --- bell-sound picker (file dialog + allow-list gate, stubbed) ---------------
 _owarn = QMessageBox.warning
 _ogof = QFileDialog.getOpenFileName
-QMessageBox.warning = staticmethod(lambda *_a, **_k: None)
+_bell_warns = []
+QMessageBox.warning = staticmethod(lambda *_a, **_k: _bell_warns.append(1))
+_bell_set = []
+_orig_set_bell = win.set_bell_sound
+win.set_bell_sound = lambda p: _bell_set.append(p)
 _orig_locked = win._bell_sound_locked
 try:
     win._bell_sound_locked = lambda: True
-    win._pick_bell_sound()                  # locked -> return
-    ok(True, '_pick_bell_sound: a locked setting is a no-op')
+    _bell_warns.clear(); _bell_set.clear()
+    win._pick_bell_sound()                  # locked -> return before the dialog
+    ok(not _bell_set and not _bell_warns,
+       '_pick_bell_sound: a locked setting sets no sound and shows no warning')
     win._bell_sound_locked = lambda: False
     QFileDialog.getOpenFileName = staticmethod(lambda *_a, **_k: ('', ''))
+    _bell_warns.clear(); _bell_set.clear()
     win._pick_bell_sound()                  # cancelled -> return
-    ok(True, '_pick_bell_sound: cancelling the dialog is a no-op')
+    ok(not _bell_set and not _bell_warns,
+       '_pick_bell_sound: cancelling the dialog sets no sound and shows no warning')
     QFileDialog.getOpenFileName = staticmethod(
         lambda *_a, **_k: ('/etc/hostname', ''))   # a real file, not in the allow-list
+    _bell_warns.clear(); _bell_set.clear()
     win._pick_bell_sound()                  # disallowed -> warning -> return
-    ok(True, '_pick_bell_sound: a file outside the allowed dirs is refused')
+    ok(_bell_warns == [1] and not _bell_set,
+       '_pick_bell_sound: a file outside the allowed dirs is refused (warns, sets nothing)')
 finally:
     win._bell_sound_locked = _orig_locked
+    win.set_bell_sound = _orig_set_bell
     QFileDialog.getOpenFileName = _ogof
     QMessageBox.warning = _owarn
 
@@ -601,7 +641,8 @@ win.set_clipboard_read_always(True)
 win.set_scrollback(1000)
 win.set_paste_delay(3)
 win.set_bell_sound('')                      # empty/disallowed -> cleared, applied
-ok(True, 'setting appliers push the change to every tab and persist')
+ok(win._scrollback == 1000 and win._paste_delay == 3,
+   'setting appliers apply the change to the window (scrollback + paste delay)')
 
 # line editing: the live per-tab setter pushes into the current tab, flips the menu
 # action and updates the default used for new tabs.
@@ -763,9 +804,13 @@ finally:
 # move the current tab left/right (needs more than one tab; wraps)
 while win.tabs.count() < 2:
     win.new_tab()
+_mv_term = win.tabs.currentWidget()
+_mv_i0 = win.tabs.indexOf(_mv_term)
 win._on_tab_move(1)
+_mv_i1 = win.tabs.indexOf(_mv_term)
 win._on_tab_move(-1)
-ok(True, 'the current tab moves left/right with wrap-around')
+ok(_mv_i1 != _mv_i0 and win.tabs.indexOf(_mv_term) == _mv_i0,
+   'the current tab moves left/right and returns (wrap-around)')
 
 # pwd-as-tab-title (#90): with no explicit name and no program title, the tab
 # label is the working-directory basename (kept live by the fg poll), not a static
@@ -1086,6 +1131,8 @@ ok(True, '_restore_tab rebuilds a tab and tolerates bad zoom/scrollback values')
 win._restore_tab({'tui': 'false'})
 ok(win.current().tui_active() is False,
    'a non-bool saved flag falls back to the default, not bool()-coerced True (#5)')
+# (OSC-map fail-closed restore is tested at the END of this module, after the
+# ctl-dump-tab COR-7 assertions, so its probe tab cannot perturb their fixture.)
 # a corrupt/hand-edited session with a non-str font_family or non-int font_size must
 # fall back to the default, not crash the restore (.strip() / int() on a bad type).
 eq(_bad_tab.current_font_family(), win._default_font_family,
@@ -1288,8 +1335,9 @@ _stt.has_foreground_program = _stt_fg
 win._default_tui = _saved_def
 
 # bind the single-instance listening socket (isolated runtime dir)
-win.start_instance_server('coverage-group')
-ok(True, 'start_instance_server binds a listening socket')
+_bind_status = win.start_instance_server('coverage-group')
+ok(_bind_status == 'claimed',
+   'start_instance_server binds a listening socket (claims the free group)')
 
 # --- main(): the entry point, driven with QApplication + exec + ipc mocked ----
 import signal as _signal                             # noqa: E402
@@ -1364,6 +1412,41 @@ try:
     eq(_main(), 0, 'main: --reuse issues the open handoff and exits')
     ok('open' in _seen_ops,
        'main: --reuse DOES send an open handoff to the primary')
+    M.ipc.send_request = lambda *_a, **_k: None
+
+    # --reuse whose 1.5s ping finds nothing but the socket IS live (a briefly-busy
+    # primary): main() retries via _handoff, which answers -> exit 0 before Qt.
+    # Neither case below builds a window (both return in the reuse/claim block), so
+    # they cannot perturb the delicate window-building startup tests above.
+    _o_sil = M.ipc.socket_is_live
+    _o_ho = M._handoff
+    _o_bind = M._bind_instance_server
+    M.ipc.socket_is_live = lambda *_a, **_k: True
+    M._handoff = lambda *_a, **_k: {'ok': True}
+    sys.argv = ['secure-terminal', '--reuse', '--title', 'busy']
+    eq(_main(), 0, 'main: --reuse to a bound-but-busy primary retries via _handoff -> 0')
+    # --reuse that found no primary, then LOST the atomic bind to a peer that became
+    # primary meanwhile: _bind returns peer_owns and main() hands off via _handoff.
+    M.ipc.socket_is_live = lambda *_a, **_k: False   # skip the busy-peer retry above
+    M._bind_instance_server = lambda *_a, **_k: (None, 'peer_owns')
+    sys.argv = ['secure-terminal', '--reuse', '--title', 'raced']
+    eq(_main(), 0, 'main: --reuse losing the bind race hands off to the new primary -> 0')
+    # --reuse that DEFERRED to a live peer which then DIED mid-handoff (a RESTART: the
+    # old primary is still bound when we launch, so we defer, then it exits). _handoff
+    # returns None, so main() must RE-CLAIM the freed socket -- else it opens a
+    # server-less window and the group has NO primary, so every later --reuse opens
+    # yet another window (the reported duplicate-window regression). Here the re-claim
+    # finds nothing to take ('failed') so the window is server-less, but the re-claim
+    # LINE runs; without it there is no second attempt at all.
+    _bind_seq = [(None, 'peer_owns'), (None, 'failed')]
+    M._bind_instance_server = lambda *_a, **_k: _bind_seq.pop(0)
+    M._handoff = lambda *_a, **_k: None
+    sys.argv = ['secure-terminal', '--reuse', '--title', 'peerdied']
+    eq(_main(), 0,
+       'main: --reuse whose peer died mid-handoff re-claims (no lingering primary-less window)')
+    M.ipc.socket_is_live = _o_sil
+    M._handoff = _o_ho
+    M._bind_instance_server = _o_bind
     M.ipc.send_request = lambda *_a, **_k: None
 
     # _require_default_font: the Hack font (fonts-hack) is a hard dependency. Qt
@@ -1903,8 +1986,8 @@ win.tabs.setCurrentIndex(_real_idx)
 win._goto_tab(_phi)                                          # Alt+N to the placeholder -> guard skips it
 ok(win.tabs.currentIndex() == _real_idx, '#3: _goto_tab skips a disabled placeholder target')
 win.tabs.setCurrentIndex(_phi - 1)
-win._on_tab_step(1)                                          # step toward the placeholder -> guard skips
-ok(win.tabs.currentIndex() == _phi - 1, '#3: _on_tab_step skips a disabled placeholder target')
+win._on_tab_step(1)                                          # step toward the placeholder -> walk past it, wrap to a live tab
+ok(win.tabs.currentIndex() == 0, '#3: _on_tab_step walks past a disabled placeholder to the next live tab')
 win.tabs.removeTab(_phi)
 # #5: a non-ASCII / non-str saved window geometry must not crash startup.
 _o_persist = win._persist_session
@@ -2004,6 +2087,100 @@ ok(getattr(_reclaim, '_server', None) is not None,
    'start_instance_server: a stale socket is cleared and reclaimed')
 _reclaim.deleteLater()
 APP.processEvents()
+
+# --- _handoff / adopt drain / lock degradation: the --reuse instance-socket paths
+# otherwise exercised only by the subprocess E2E (test_instances), covered here in
+# the instrumented in-process runner ------------------------------------------
+_o_sr2 = M.ipc.send_request
+_o_sil2 = M.ipc.socket_is_live
+_o_sleep2 = M.time.sleep
+try:
+    # _handoff returns the primary's reply as soon as it answers.
+    M.ipc.send_request = lambda *_a, **_k: {'ok': True, 'pid': 7}
+    _hr = M._handoff('hg', {'op': 'ping'})
+    ok(_hr is not None and _hr.get('pid') == 7, '_handoff: returns the primary reply')
+    # None then a reply while the socket stays live: retries (drives the sleep + loop).
+    M.time.sleep = lambda *_a, **_k: None
+    _hseq = [None, {'ok': True, 'pid': 8}]
+    M.ipc.send_request = lambda *_a, **_k: _hseq.pop(0)
+    M.ipc.socket_is_live = lambda *_a, **_k: True
+    _hr2 = M._handoff('hg', {'op': 'ping'})
+    ok(_hr2 is not None and _hr2.get('pid') == 8,
+       '_handoff: retries then returns on the next answer')
+    # None + the socket goes away: give up (None) rather than spin to the deadline.
+    M.ipc.send_request = lambda *_a, **_k: None
+    M.ipc.socket_is_live = lambda *_a, **_k: False
+    ok(M._handoff('hg', {'op': 'ping'}) is None, '_handoff: socket not live -> None')
+finally:
+    M.ipc.send_request = _o_sr2
+    M.ipc.socket_is_live = _o_sil2
+    M.time.sleep = _o_sleep2
+
+# adopt_instance_server drains a connection that queued before the handler wired.
+import socket as _socket                                   # noqa: E402
+_ad_grp = 'adopt-drain'
+_ad_srv, _ad_st = M._bind_instance_server(_ad_grp)
+ok(_ad_st == 'claimed' and _ad_srv is not None, 'adopt: bound a server to drain from')
+_ad_cli = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+_ad_cli.connect(M.ipc.socket_path(_ad_grp))
+for _ in range(50):
+    APP.processEvents()
+    if _ad_srv.hasPendingConnections():
+        break
+_ad_pending = _ad_srv.hasPendingConnections()
+_ad_win = MainWindow()
+_ad_win.adopt_instance_server(_ad_srv, _ad_grp)
+ok(_ad_pending and _ad_win._server is _ad_srv,
+   'adopt_instance_server: drains a connection queued before the handler was wired')
+_ad_cli.close()
+_ad_win.deleteLater()
+APP.processEvents()
+
+# _acquire_group_lock must NOT crash on a mis-owned lock file (the reported
+# PermissionError regression): a mode-0 stale file is self-healed (unlink+retry),
+# and a lock path that can neither be opened NOR unlinked (a directory) degrades to
+# None -- _bind_instance_server then claims WITHOUT the lock instead of raising.
+_lg = 'lock-degrade'
+M.ipc.ensure_socket_dir()
+_lp = M.ipc.socket_path(_lg) + '.lock'
+if os.path.isdir(_lp):
+    os.rmdir(_lp)
+elif os.path.exists(_lp):
+    os.remove(_lp)
+open(_lp, 'w').close()
+os.chmod(_lp, 0)
+_lfd = M._acquire_group_lock(_lg)
+ok(_lfd is not None,
+   '_acquire_group_lock: a mode-0 stale lock file is self-healed (unlink + retry)')
+if _lfd is not None:
+    os.close(_lfd)
+if os.path.exists(_lp) and not os.path.isdir(_lp):
+    os.remove(_lp)
+os.mkdir(_lp)                                    # unopenable AND unlinkable -> degrade
+ok(M._acquire_group_lock(_lg) is None,
+   '_acquire_group_lock: an unusable lock path degrades to None, never raises')
+_ds, _dst = M._bind_instance_server(_lg)         # must not raise with lock_fd None
+ok(_dst in ('claimed', 'peer_owns', 'failed'),
+   '_bind_instance_server: claims best-effort when the lock cannot be taken (no crash)')
+if _ds is not None:
+    _ds.close()
+if os.path.isdir(_lp):
+    os.rmdir(_lp)
+# flock failing on a valid fd (an exotic filesystem that does not support it) also
+# degrades to None -- the fd is closed and no exception escapes.
+_o_flock = M.fcntl.flock
+
+
+def _flock_unsupported(*_a, **_k):
+    raise OSError('flock unsupported')
+
+
+M.fcntl.flock = _flock_unsupported
+try:
+    ok(M._acquire_group_lock(_lg) is None,
+       '_acquire_group_lock: a failing flock degrades to None (fd closed), never raises')
+finally:
+    M.fcntl.flock = _o_flock
 
 # --- session persistence + quit/close handlers --------------------------------
 win.set_persist_session(False)              # disabling clears the saved session
@@ -2203,7 +2380,14 @@ if win.tabs.count() == 0:
     win.new_tab()
 _t0b = win.tabs.widget(0)
 _tid0b = win._tab_ids.get(_t0b)
-_t0b._append('hello world of text')
+# Isolate from prior-test pollution on this SHARED tab: a WIDE winsize so the test
+# string cannot soft-wrap mid-word, and a LEADING NEWLINE to end any partial input a
+# prior test left on the current line. Without both, the last line was only the
+# wrapped tail (e.g. 'of text' when a prior 'echo' + a narrow width wrapped
+# 'echohello world of text' mid-word) -- the offscreen ordering flake that passed in
+# isolation but failed under the full-suite ordering.
+_t0b._set_winsize(200, 50)
+_t0b._append('\nhello world of text')
 # COR-7: --lines 0 must dump ZERO lines, not the whole tab. The server's `lines > 0` guard
 # defaulted 0 to a full dump, and text.split('\n')[-0:] is the WHOLE list (negative-zero).
 _rl0 = win._ipc_ctl('ctl-dump-tab', {'tab': 'id:%d' % _tid0b, 'lines': 0})
@@ -2386,8 +2570,15 @@ try:
     _term2.BELL_SOUND_DIRS = (_snddir,)
     QFileDialog.getOpenFileName = staticmethod(lambda *_a, **_k: (_sndfile, ''))
     win._bell_sound_locked = lambda: False
-    win._pick_bell_sound()                    # allowed -> set_bell_sound
-    ok(True, '_pick_bell_sound: a file inside an allowed dir is accepted')
+    _accepted_bell = []
+    _o_setbell2 = win.set_bell_sound
+    win.set_bell_sound = lambda p: _accepted_bell.append(p)
+    try:
+        win._pick_bell_sound()                # allowed -> set_bell_sound(_sndfile)
+    finally:
+        win.set_bell_sound = _o_setbell2
+    ok(_accepted_bell == [_sndfile],
+       '_pick_bell_sound: a file inside an allowed dir is accepted (set_bell_sound called)')
 finally:
     _term2.BELL_SOUND_DIRS = _o_dirs
     QFileDialog.getOpenFileName = _o_gof3
@@ -3531,6 +3722,92 @@ _p10w.set_allow_title(True)
 ok(_p10w._osc_defaults.get('osc_title') is True and _p10w._osc_defaults.get('osc_notify') is True,
    'SEC-10: set_allow_title(True) re-enables the OSC defaults')
 _p10w.close(); _p10w.deleteLater(); APP.processEvents()
+
+# OSC-map fail-CLOSED restore (SEC follow-up): a tampered granular OSC flag
+# ("off"/"false"/0 -> truthy via bool()) must NOT re-enable a risk='high' OSC-52
+# clipboard feature the saved value says is disabled. _saved_bool coerces a non-bool
+# to the feature's secure default. Run LAST (a throwaway window + its probe tab must
+# not perturb the ctl-dump-tab COR-7 fixture above).
+_oscw = MainWindow()
+_oscw._locked = set()
+_oscw._restore_tab({'osc': {'osc_clipboard_read': 'off', 'osc_clipboard': 'false'}})
+_oscw_tab = _oscw.current()
+ok(not _oscw_tab.osc_enabled('osc_clipboard_read')
+   and not _oscw_tab.osc_enabled('osc_clipboard'),
+   'SEC: a tampered non-bool OSC flag stays disabled on restore, not bool()-coerced open')
+_oscw.close(); _oscw.deleteLater(); APP.processEvents()
+
+# claude: _restore_tab's `colors` must default ON like its sibling settings
+# (line_edits, markings), not OFF -- a session with no 'colors' key should restore
+# colors ON, not the old _saved_bool(info.get('colors'), False) default.
+_cw2 = MainWindow(); _cw2._locked = set()
+_cw2._restore_tab({'text': ''})          # no 'colors' key
+ok(_cw2.current().colors_enabled(),
+   'claude: colors defaults ON on restore when unset (consistent with line_edits/markings)')
+_cw2.close(); _cw2.deleteLater(); APP.processEvents()
+
+# grok: _on_tab_step must SKIP a disabled restore placeholder and keep walking
+# (wrapping) to the next real tab, not dead-end on it -- a single `if enabled` did.
+# Indices are computed from count() (a fresh MainWindow already owns one live tab).
+_stw = MainWindow()
+_stw._add_placeholder_tab({'name': 'ph', 'cwd': '/tmp'}, _stw.tabs.count())   # placeholder LAST
+_stw_phi = _stw.tabs.count() - 1
+_stw.tabs.setCurrentIndex(_stw_phi - 1)   # the last live tab, just before the placeholder
+_stw._on_tab_step(1)                      # PageDown: -> ph (skip) -> wrap -> live 0
+ok(_stw.tabs.currentIndex() == 0,
+   'grok: tab-step skips a disabled placeholder and wraps to the next live tab')
+_stw.tabs.removeTab(_stw_phi)             # drop the orphan before close (closeEvent covered below)
+_stw.close(); _stw.deleteLater(); APP.processEvents()
+
+# claude: closeEvent + _session_tabs iterate REAL terminals only -- a restore
+# placeholder that survives the deferred-restore drain (an unknown placeholder is a
+# safe swap no-op) must never reach has_foreground_program/shutdown/toPlainText, which a
+# bare QWidget lacks. Pre-fix those bulk-over-all-tabs loops abort the process on it.
+# Direct closeEvent(QCloseEvent()) so a pre-fix AttributeError is a catchable failure
+# here, not the uncatchable Qt-dispatch abort that .close() would raise.
+_clw = MainWindow(); _clw._locked = set()
+_clw_real = len(_clw._real_terms())                            # the live tab(s) a fresh window owns
+_clw._add_placeholder_tab({'name': 'ph', 'cwd': '/tmp'}, _clw.tabs.count())   # append 1 placeholder
+ok(len(_clw._session_tabs()) == _clw_real
+   and _clw.tabs.count() == _clw_real + 1,
+   'claude: _session_tabs skips a surviving restore placeholder (real tabs only)')
+_clw._persist_session = False                                  # do not write a session file
+_clw_err = None
+try:
+    _clw.closeEvent(QCloseEvent())                             # must not touch the placeholder
+except Exception as _e:
+    _clw_err = _e
+ok(_clw_err is None,
+   'claude: closeEvent tolerates a surviving restore placeholder (no AttributeError abort)')
+_clw.deleteLater(); APP.processEvents()
+
+# claude(#2): a tab context-menu action must resolve its tab's CURRENT index when it
+# FIRES, not the index captured at build time -- menu.exec spins a nested loop during
+# which the tabs can shift (a background tab closes, or here a placeholder is inserted
+# before the subject), so a captured index would act on the WRONG tab. Shift the subject
+# inside exec, then trigger Rename and assert it targeted the subject's new index.
+_c2w = MainWindow()
+_c2w.new_tab(); _c2w.new_tab()                        # >= 3 tabs
+_c2_term = _c2w.tabs.widget(_c2w.tabs.count() - 1)    # the menu's subject tab (last)
+_c2_idx0 = _c2w.tabs.indexOf(_c2_term)
+_c2_seen = []
+_c2w.rename_tab = lambda i: _c2_seen.append(i)        # record the index the action passes
+_c2_ome = QMenu.exec
+def _c2_exec(_menu, *_a, **_k):
+    _c2w._add_placeholder_tab({'name': 'x', 'cwd': '/tmp'}, 0)   # insert before subject -> +1
+    for _act in _menu.actions():
+        if _act.text().startswith('Rename'):
+            _act.trigger()
+            break
+    return None
+QMenu.exec = _c2_exec
+try:
+    _c2w._tab_context_menu(_c2w.tabs.tabBar().tabRect(_c2_idx0).center())
+finally:
+    QMenu.exec = _c2_ome
+ok(_c2w.tabs.indexOf(_c2_term) == _c2_idx0 + 1 and _c2_seen == [_c2_idx0 + 1],
+   'claude(#2): a context-menu action targets its tab by current index after a reorder')
+_c2w.close(); _c2w.deleteLater(); APP.processEvents()
 
 
 win.close()

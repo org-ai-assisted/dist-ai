@@ -170,15 +170,15 @@ git -C "${repo}" add big.dat
 assert "appending to a tracked large file passes" 0 "" --check --staged --all
 
 ## --- 11. bare --staged NOTEs when the working tree diverges from the index --
-## The content is read off disk; a staged path edited (not re-staged) afterward
-## is checked as its working-tree bytes, so a silent pass must carry a skew NOTE.
-## The edit here is a harmless comment, so the file still passes (rc 0) and only
-## the advisory fires.
+## The gate judges the staged INDEX blob (the exact committed bytes); a staged
+## path edited (not re-staged) afterward is still checked on its blob, so an
+## advisory NOTE flags that the working tree has since diverged. The edit here is
+## a harmless comment, so the file still passes (rc 0) and only the advisory fires.
 repo="$(new_repo)"
 mk_clean "${repo}/skew.sh"
 git -C "${repo}" add skew.sh
 printf '%s\n' '## edited after staging' >> "${repo}/skew.sh"
-assert "worktree skew emits an advisory NOTE" 0 "differs from the staged blob" \
+assert "worktree skew emits an advisory NOTE" 0 "the gate judged the staged blob" \
    --check --staged
 
 ## --- 12. --range keys added-large-files on the MERGE BASE, not base tip ------
@@ -217,6 +217,214 @@ if [ "${hang_rc}" -eq 124 ]; then
    note_fail "the gate HUNG on an untracked fifo (timed out)"
 else
    note_pass "the gate does not hang on an untracked fifo"
+fi
+
+## An untracked shell file whose NAME carries a CONTROL byte (ESC) must be named
+## with the byte ESCAPED, never printed RAW -- a raw ESC in the advisory note to
+## stderr injects a terminal control sequence (CWE-150). ESC comes from a run-time
+## escape, so no control byte lives in THIS tracked file.
+repo="$(new_repo)"
+mk_clean "${repo}/tracked.sh"; git -C "${repo}" add tracked.sh
+esc_name="$(printf 'untresc-\033[31m-marker.sh')"
+printf '%s\n' '#!/bin/bash' 'true' > "${repo}/${esc_name}"
+esc_out="$( cd -- "${repo}" && "${STYLE}" --check --staged 2>&1 || true )"
+if grep --quiet --fixed-strings 'untresc-\x1b[31m-marker.sh' <<< "${esc_out}"; then
+   note_pass "a control byte in an untracked file name is escaped, not raw"
+else
+   note_fail "a control byte in an untracked file name was not escaped (raw ESC or not reported)"
+fi
+
+## A non-regular '.gitattributes' (FIFO here; also a device or symlink) makes git
+## BLOCK forever the instant it reads attributes -- inside the gate or a git-aware
+## hook. The gate must REFUSE it fast (fail closed), never hang.
+repo="$(new_repo)"
+printf 'x\n' > "${repo}/f.txt"; git -C "${repo}" add f.txt
+mkfifo "${repo}/.gitattributes"
+attr_rc=0
+attr_out="$( cd -- "${repo}" && timeout --kill-after=5s 25s "${STYLE}" \
+   --check --staged 2>&1 )" || attr_rc=$?
+if [ "${attr_rc}" -eq 124 ] || [ "${attr_rc}" -eq 137 ]; then
+   note_fail "a FIFO .gitattributes HUNG the gate (not refused)"
+elif grep --quiet --fixed-strings -- 'refusing to gate' <<< "${attr_out}"; then
+   note_pass "a FIFO .gitattributes is refused fast, not hung"
+else
+   note_fail "a FIFO .gitattributes was neither refused nor hung: rc=${attr_rc}"
+fi
+
+## '.git/info/attributes' is a SEPARATE attribute source git reads on every
+## attribute lookup -- a FIFO there hangs even the authoritative --staged mode.
+## The pre-flight must check it too.
+repo="$(new_repo)"
+printf 'x\n' > "${repo}/f.txt"; git -C "${repo}" add f.txt
+mkdir -p "${repo}/.git/info"; mkfifo "${repo}/.git/info/attributes"
+info_rc=0
+info_out="$( cd -- "${repo}" && timeout --kill-after=5s 25s "${STYLE}" \
+   --check --staged 2>&1 )" || info_rc=$?
+if [ "${info_rc}" -eq 124 ] || [ "${info_rc}" -eq 137 ]; then
+   note_fail "a FIFO .git/info/attributes HUNG the gate (not refused)"
+elif grep --quiet --fixed-strings -- 'refusing to gate' <<< "${info_out}"; then
+   note_pass "a FIFO .git/info/attributes is refused fast, not hung"
+else
+   note_fail "a FIFO .git/info/attributes was neither refused nor hung: rc=${info_rc}"
+fi
+
+## --- the pre-commit batch judges the staged BLOB, not the working tree --------
+## A private key staged then overwritten clean in the working copy must still be
+## caught by detect-private-key -- the batch that ran against the working tree
+## would see only the decoy and pass, hiding the staged secret.
+## The PEM marker is ASSEMBLED at run time -- 'PRIV'+'ATE KEY' -- so no literal
+## private-key header lives in THIS tracked file for detect-private-key to flag.
+repo="$(new_repo)"
+dashes='-----'
+pem_kind="RSA PRIV""ATE KEY"
+printf '%s\n' "${dashes}BEGIN ${pem_kind}${dashes}" \
+   'MIIBOgIBAAJBAKj34GkxFhDabcdEFGHijklMNOP' \
+   "${dashes}END ${pem_kind}${dashes}" > "${repo}/id_rsa"
+git -C "${repo}" add id_rsa
+printf '%s\n' 'a harmless decoy' > "${repo}/id_rsa"
+assert "staged private key hidden by a clean working copy is caught" 1 \
+   "detect-private-key" --check --staged
+
+## A large file staged then overwritten with a small decoy must still be flagged:
+## the size check reads the blob, not the working tree.
+repo="$(new_repo)"
+head -c 700000 /dev/zero | tr '\0' 'x' > "${repo}/big.dat"
+git -C "${repo}" add big.dat
+printf '%s\n' 'tiny' > "${repo}/big.dat"
+assert "large blob hidden by a small working copy is flagged" 1 \
+   "check-added-large-files" --check --staged
+
+## A staged BROKEN symlink must be flagged -- the symlink checks run over the
+## mirror's recreated symlinks, not skipped because the mirror has no symlink.
+repo="$(new_repo)"
+ln -s nonexistent-relative-target "${repo}/badlink"
+git -C "${repo}" add badlink
+assert "a staged broken symlink is flagged in blob mode" 1 \
+   "check-symlinks" --check --staged
+
+## ...but a VALID relative symlink to an already-tracked file must NOT false-fail:
+## the mirror materializes the link's TARGET too, so it is not seen as broken
+## (running against the working tree would reopen the staged-vs-worktree split).
+repo="$(new_repo)"
+printf 'data\n' > "${repo}/tracked.txt"
+git -C "${repo}" add tracked.txt
+git -C "${repo}" commit --quiet --no-verify --message tracked
+ln -s tracked.txt "${repo}/goodlink"
+git -C "${repo}" add goodlink
+assert "a valid staged symlink to a tracked file is not false-flagged" 0 \
+   "" --check --staged
+
+## A relative symlink ESCAPING the tree (above root) cannot resolve in the tree,
+## so it is broken -- a filesystem check against a /tmp mirror false-PASSED it.
+repo="$(new_repo)"
+ln -s ../../../../etc/nope "${repo}/esclink"
+git -C "${repo}" add esclink
+assert "a staged tree-escaping symlink is flagged" 1 \
+   "check-symlinks" --check --staged
+
+## A MULTI-HOP chain of valid links (link -> intermediate -> file) must resolve
+## -- a one-level-deep materialization false-FAILED it.
+repo="$(new_repo)"
+printf 'data\n' > "${repo}/endfile"
+ln -s endfile "${repo}/mid"
+git -C "${repo}" add endfile mid
+git -C "${repo}" commit --quiet --no-verify --message chain-base
+ln -s mid "${repo}/head"
+git -C "${repo}" add head
+assert "a valid multi-hop staged symlink chain is not false-flagged" 0 \
+   "" --check --staged
+
+## A staged file carrying a merge-conflict marker must be flagged even outside a
+## real merge (check-merge-conflict is a no-op without --assume-in-merge).
+repo="$(new_repo)"
+printf '%s\n' 'a' '<<<<<<< HEAD' 'b' '=======' 'c' '>>>>>>> other' > "${repo}/conflicted.txt"
+git -C "${repo}" add conflicted.txt
+assert "a staged merge-conflict marker is flagged" 1 \
+   "check-merge-conflict" --check --staged
+
+## --- a working-tree scan must read the WORKING-TREE .gitattributes ------------
+## In --staged --all (working tree) the binary classification must consult the
+## working tree's .gitattributes, NOT the index (--cached). Commit 'id_rsa binary'
+## + a placeholder; then DROP the mark in an UNSTAGED .gitattributes edit while
+## staging a real PEM. Reading the stale INDEX attr would classify id_rsa binary
+## and skip detect-private-key -- a private-key bypass. Marker assembled at run
+## time ('PRIV'+'ATE KEY') so no literal key header lives in this tracked file.
+repo="$(new_repo)"
+dashes='-----'
+pem_kind="RSA PRIV""ATE KEY"
+printf '%s\n' 'id_rsa binary' > "${repo}/.gitattributes"
+printf '%s\n' 'binary placeholder' > "${repo}/id_rsa"
+git -C "${repo}" add .gitattributes id_rsa
+git -C "${repo}" commit --quiet --no-verify --message attr-base
+printf '%s\n' '# no attributes' > "${repo}/.gitattributes"
+printf '%s\n' "${dashes}BEGIN ${pem_kind}${dashes}" \
+   'MIIBOgIBAAJBAKj34GkxFhDabcdEFGHijklMNOP' \
+   "${dashes}END ${pem_kind}${dashes}" > "${repo}/id_rsa"
+git -C "${repo}" add id_rsa
+assert "staged private key caught despite a stale index binary attr" 1 \
+   "detect-private-key" --check --staged --all
+
+## A '.gitattributes binary' mark must NOT suppress a SECRET scan: detect-private-key
+## runs on every regular file regardless of the attribute. An UNTRACKED
+## .gitattributes (honoured only in a working-tree scan) marking a staged key
+## binary would else hide it -- a private-key bypass.
+repo="$(new_repo)"
+printf '%s\n' "${dashes}BEGIN ${pem_kind}${dashes}" \
+   'MIIBOgIBAAJBAKj34GkxFhDabcdEFGHijklMNOP' \
+   "${dashes}END ${pem_kind}${dashes}" > "${repo}/id_rsa"
+git -C "${repo}" add id_rsa
+printf 'id_rsa binary\n' > "${repo}/.gitattributes"   ## UNTRACKED
+assert "an untracked binary attr cannot hide a staged key" 1 \
+   "detect-private-key" --check --staged --all
+
+## A symlink to the tree ROOT ('.'), or to a parent that stays in-tree ('..' from
+## a subdir), resolves -- '.' must count as a present tree path or a valid link
+## false-fails.
+repo="$(new_repo)"
+printf 'data\n' > "${repo}/f.txt"
+mkdir -p "${repo}/sub"
+ln -s . "${repo}/rootlink"
+ln -s .. "${repo}/sub/uplink"
+git -C "${repo}" add f.txt rootlink sub/uplink
+assert "a staged symlink to the tree root is not false-flagged" 0 \
+   "" --check --staged
+
+## A link whose path traverses a DIR-SYMLINK (through -> dirlink/file.txt, dirlink
+## -> a real dir) must not false-fail: resolving dir-symlink components is
+## best-effort (checkout-time check-symlinks does it), so it is left unflagged.
+repo="$(new_repo)"
+mkdir -p "${repo}/realdir"
+printf 'data\n' > "${repo}/realdir/file.txt"
+ln -s realdir "${repo}/dirlink"
+ln -s dirlink/file.txt "${repo}/through"
+git -C "${repo}" add realdir/file.txt dirlink through
+assert "a staged symlink through a dir-symlink is not false-flagged" 0 \
+   "" --check --staged
+
+## The pre-commit FIXER must not follow a symlink swapped in after classification
+## (a TOCTOU that let a fixer rewrite an arbitrary victim outside the repo). Drive
+## precommit._run_fixer directly with a symlink where a regular file was scanned;
+## the O_NOFOLLOW copy must refuse it and leave the victim untouched.
+## Resolve the package from tool_test_dir (as STYLE is), NOT by stripping STYLE:
+## the in-tree STYLE is '.../developer-meta-files-tests/../../bin/dist-ai-style',
+## which the '/usr/bin/dist-ai-style' suffix never matches, so the strip left the
+## whole path in place and the test silently fell back to the INSTALLED package.
+fixer_lib="${tool_test_dir}/../../lib/python3/dist-packages"
+[ -d "${fixer_lib}/dist_ai" ] || fixer_lib='/usr/lib/python3/dist-packages'
+victim="$(new_repo)/victim.txt"
+printf 'VICTIM ORIGINAL no newline' > "${victim}"
+ln -s "${victim}" "$(dirname -- "${victim}")/target.sh"
+toctou="$(PYTHONPATH="${fixer_lib}" python3 -c '
+import sys
+from dist_ai import precommit
+base, victim = sys.argv[1], sys.argv[2]
+list(precommit._run_fixer("end-of-file-fixer", ["target.sh"], base))
+print(open(victim).read())
+' "$(dirname -- "${victim}")" "${victim}")"
+if [ "${toctou}" = 'VICTIM ORIGINAL no newline' ]; then
+   note_pass "the pre-commit fixer refuses a symlink swapped in after the scan"
+else
+   note_fail "the pre-commit fixer followed a swapped-in symlink (victim='${toctou}')"
 fi
 
 if [ "${fail}" -ne 0 ]; then

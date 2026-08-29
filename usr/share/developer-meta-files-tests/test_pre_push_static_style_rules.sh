@@ -363,21 +363,31 @@ expect_rule "R-030 printf format" "${awk_program}" "absent"
 ## -- the awk program's inner printfs are data, but the next line is a live call.
 expect_rule "R-030 printf format" "${awk_program}${nlreal}printf \"bad \${x}\\n\"" "present"
 
-## R-030 SINGLE-quoted format is a compile-time LITERAL -- nothing interpolates
-## into it -- so it is allowed whatever verbs it uses ('%d' numeric validators,
-## '%8d' / '%-12s' aligned columns); a DOUBLE-quoted or UNQUOTED non-allowlisted
-## format can read '$var' / command substitution straight INTO the format and is
-## FLAGGED. printf's own options ('-v NAME', '--') are skipped so the FORMAT is
+## R-030 flags a format ONLY when it CAN interpolate data -- a DOUBLE-quoted or
+## UNQUOTED format containing a '$' or backtick reads '$var' / command
+## substitution straight INTO the format. A SINGLE-quoted format, OR any format
+## with no expansion metachar (a fixed literal '%d'/'%02x'/'%(%Y)T'), interpolates
+## nothing and is SPARED whatever verbs it spells -- the data goes in the data
+## argument. printf's own options ('-v NAME', '--') are skipped so the FORMAT is
 ## judged, not the option.
 r030fmt="R-030 printf format string"
+bt='`'
 ## Single-quoted verbs -- literal, SPARED (a redirect makes no difference):
 expect_rule "${r030fmt}" "printf ${sq}%d${sq} ${dq}\${1}${dq}"                 "absent"
 expect_rule "${r030fmt}" "printf ${sq}%8d${sq} ${dq}\${1}${dq}"                "absent"
 expect_rule "${r030fmt}" "printf ${sq}%-12s${sq} ${dq}\${a}${dq}"              "absent"
 expect_rule "${r030fmt}" "printf ${sq}%d${sq} ${dq}\${1}${dq} >/dev/null 2>&1 || exit 1" "absent"
-## Double-quoted / unquoted non-allowlisted format -- interpolates, FLAGGED:
+## No-expansion literal, DOUBLE-quoted or UNQUOTED -- cannot interpolate, SPARED
+## (these fixed-verb false positives are exactly what this rule used to raise):
+expect_rule "${r030fmt}" "printf %d ${dq}\${1}${dq}"                           "absent"
+expect_rule "${r030fmt}" "printf ${dq}%02x${dq} ${dq}\${n}${dq}"               "absent"
+expect_rule "${r030fmt}" "printf -v hex ${dq}%02x${dq} ${dq}\${n}${dq}"        "absent"
+expect_rule "${r030fmt}" "printf -v pad ${dq}%05d${dq} ${dq}\${n}${dq}"        "absent"
+expect_rule "${r030fmt}" "printf ${dq}%(%Y)T${dq} -1"                          "absent"
+## A '$' or backtick in a double/unquoted format DOES interpolate -- FLAGGED:
 expect_rule "${r030fmt}" "printf ${dq}%d \${x}${dq} ${dq}\${1}${dq}"           "present"
-expect_rule "${r030fmt}" "printf %d ${dq}\${1}${dq}"                           "present"
+expect_rule "${r030fmt}" "printf ${dq}%02x \${y}${dq} ${dq}\${n}${dq}"         "present"
+expect_rule "${r030fmt}" "printf ${dq}v ${bt}id${bt}${dq}"                     "present"
 ## '-v NAME' / '--' options skipped, so the FORMAT is what is judged:
 expect_rule "${r030fmt}" "printf -v out ${sq}%s${sq} ${dq}\${1}${dq}"          "absent"
 expect_rule "${r030fmt}" "printf -v out ${dq}bad \${x}${dq} ${dq}\${1}${dq}"   "present"
@@ -1328,6 +1338,21 @@ else
    printf '%s\n' 'PASS: the untracked notice does not fire for tracked files'
 fi
 
+## An untracked EXTENSIONLESS shell file whose NAME carries a non-UTF-8 byte: the
+## shebang open() must see the REAL path, so decoding the name lossily
+## (errors='replace') corrupts it, the open fails, and the advisory silently
+## drops -- the exact gap it exists to close. The 0xFF byte comes from a run-time
+## octal escape, so no non-UTF-8 byte lives in THIS tracked file.
+nonutf_name="$(printf 'untr8-\377-marker')"
+printf '%s\n' '#!/bin/bash' 'true' > "${untracked_repo}/${nonutf_name}"
+nonutf_out="$( cd -- "${untracked_repo}" && "${GATE}" --check --range "${untracked_base}" 2>&1 || true )"
+if grep --quiet --fixed-strings 'untr8-' <<< "${nonutf_out}"; then
+   printf '%s\n' 'PASS: an untracked shell file with a non-UTF-8 name is still named'
+else
+   printf '%s\n' 'FAIL: a non-UTF-8-named untracked shell file was silently unchecked' >&2
+   failures=$((failures + 1))
+fi
+
 ## R-191: a systemd unit must not embed a multi-statement shell script in an
 ## 'Exec*=' directive. A multi-statement 'bash -c' (';', '&&', pipe, keyword, or
 ## a line continuation) is FLAGGED; a single-command wrapper and a plain
@@ -1512,6 +1537,70 @@ printf '%s\n' \
 printf '%s\n' \
    "DPkg::Pre-Invoke \"/usr/bin/a${sc} /usr/bin/b\"${sc}" \
    > "${apt_repo}/etc/apt/apt.conf.d/12bad-semi-bareval"
+## No SPACE between the keyword and its value: apt runs 'Pre-Invoke{"..."}' and
+## 'Pre-Invoke"..."' identically to the spaced form, but the keyword regex used to
+## CONSUME that first '{'/'"' as its trailing boundary, so the value scan began one
+## char late and truncated at the first embedded ';'. The brace form hides a whole
+## second command; the quote form hides the multi-statement inside one value.
+printf '%s\n' \
+   "DPkg::Pre-Invoke{\"true\"${sc} \"/usr/bin/a${sc} /usr/bin/b\"}${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/13bad-nospace-brace"
+## apt '::' list-append and an UNQUOTED value are both real hook forms apt runs;
+## parsing via apt_pkg catches them where a quoted-only scanner did not.
+printf '%s\n' \
+   "DPkg::Pre-Install-Pkgs:: \"echo a${sc} echo b\"${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/23bad-list-append"
+printf '%s\n' \
+   "DPkg::Pre-Invoke {echo|rm${sc}}${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/24bad-unquoted"
+## Post-Invoke-Success is an executed hook too ('-' is part of the name).
+printf '%s\n' \
+   "APT::Update::Post-Invoke-Success {\"echo a${sc} echo b\"}${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/25bad-invoke-success"
+## An '#include' in an UNTRUSTED apt.conf must be NEUTERED (apt_pkg would follow
+## it against the host: /dev/zero pegs a CPU, a fifo hangs, a dir reads host
+## config). The real hook below must still be flagged, and the gate must not hang.
+printf '%s\n' \
+   "#include \"/dev/zero\"" \
+   "DPkg::Pre-Invoke {\"echo a${sc} echo b\"}${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/26bad-include-neutered"
+## The neuter must be COMMENT-blind too: a '//' comment holding an unmatched '\"'
+## precedes a '#include \"/dev/zero\"'. A quote-AWARE neuter would let the comment
+## quote flip its in-quote state and leave this '#include' LIVE -> apt follows
+## /dev/zero and the gate HANGS. The unconditional neuter has no such hole; the
+## real hook below must still be flagged (and the timeout above proves no hang).
+printf '%s\n' \
+   "// note with an unmatched \" quote" \
+   "#include \"/dev/zero\"" \
+   "DPkg::Pre-Invoke {\"echo x${sc} echo y\"}${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/27bad-include-after-comment"
+## A trailing INLINE '//' comment (apt honours it from any column, not just a
+## whole-line comment) carrying a '}' desyncs the brace-depth scan: the ';' after
+## the benign entry is then read as the directive terminator, hiding the later
+## multi-statement entry. Stripping inline comments first must keep R-194 seeing it.
+printf '%s\n' \
+   'APT::Update::Pre-Invoke {' \
+   "\"echo one\"${sc} // stray brace } in a comment" \
+   "\"benign\"${sc}" \
+   "\"echo two${sc} echo three\"${sc}" \
+   "}${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/15bad-inline-comment"
+## apt.conf option names are case-INSENSITIVE, so a lower/mixed-case hook runs
+## its multi-statement value just the same; a case-sensitive match missed it.
+printf '%s\n' \
+   "dpkg::pre-invoke {\"echo one${sc} echo two\"}${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/16bad-lowercase"
+## apt CONCATENATES adjacent double-quoted spans (C-string style) into one value,
+## so a multi-statement command split across two touching "..." spans is one sh -c
+## command; checking each span independently missed it.
+printf '%s\n' \
+   "DPkg::Pre-Invoke {\"echo a${sc}\"\"echo b\"}${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/17bad-concat"
+## '#clear'/'#include' are apt DIRECTIVES, not comments -- apt keeps parsing the
+## rest of the line, so a hook after a '#clear' must still be seen.
+printf '%s\n' \
+   "DPkg::Pre-Invoke {\"true\"}${sc} #clear APT::Foo${sc} DPkg::Post-Invoke {\"echo a${sc} echo b\"}${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/19bad-hash-directive"
 ## '|| true' error-suppression and a single command are glue, not a program.
 printf '%s\n' \
    'DPkg::Pre-Install-Pkgs {"/usr/sbin/dpkg-preconfigure --apt || true"};' \
@@ -1520,6 +1609,15 @@ printf '%s\n' \
 printf '%s\n' \
    'Dir::Cache "/var/cache/apt";' \
    > "${apt_repo}/etc/apt/apt.conf.d/30good-setting"
+## A '#' comment (line-leading OR inline) is NOT installed by apt, so a hook it
+## comments out must be SPARED -- '#' is a comment except a '#include'/'#clear'
+## directive. Guards against the fail-closed over-blocking a commented-out hook.
+printf '%s\n' \
+   "# DPkg::Pre-Invoke {\"echo a${sc} echo b\"}${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/31good-hash-comment"
+printf '%s\n' \
+   "DPkg::Post-Invoke {\"/usr/bin/a\"}${sc} # inline note" \
+   > "${apt_repo}/etc/apt/apt.conf.d/32good-inline-hash"
 printf '%s\n' \
    '// style-ok: allow-embedded-script' \
    "DPkg::Post-Invoke {\"a${sc} b\"}${sc}" \
@@ -1537,11 +1635,21 @@ printf '%s\n' \
    > "${apt_repo}/etc/apt/apt.conf.d/60good-keyword-in-value"
 git -C "${apt_repo}" add --all
 git -C "${apt_repo}" commit --quiet --no-verify --message apt
-apt_out="$( cd -- "${apt_repo}" && "${GATE}" --check --range "${apt_base}" 2>&1 || true )"
+## '--kill-after' + a bound: if the '#include' XXE neuter ever regresses, a fixture
+## with '#include "/dev/zero"' would HANG the gate -- fail the test, do not hang it.
+apt_out="$( cd -- "${apt_repo}" && timeout --kill-after=5s 60s "${GATE}" --check --range "${apt_base}" 2>&1 || true )"
 ## Scope to the R-194 FAILURE text: the 'R-194 skipped: ... waiver' note names
 ## the waived file, which a bare rule-id match would misread as a violation.
 apt_hits="$( printf '%s\n' "${apt_out}" \
    | grep --fixed-strings -- 'R-194 apt hook embeds' || true )"
+## Liveness: the gate run above (line ~1640, `|| true`) could crash or be
+## timeout-killed, leaving apt_out empty -- which would make every ABSENCE ('good'
+## fixture) assertion below PASS spuriously. Require the gate's final verdict first.
+if ! grep --quiet --extended-regexp \
+   'all static checks passed|[0-9]+ check\(s\) failed' <<< "${apt_out}"; then
+   printf '%s\n' 'FAIL: R-194 apt gate run produced no final verdict (crashed or killed)' >&2
+   failures=$((failures + 1))
+fi
 if grep --quiet --fixed-strings -- '10bad-semi' <<< "${apt_hits}"; then
    printf '%s\n' 'PASS: R-194 flags a ";"-separated apt hook command'
 else
@@ -1560,6 +1668,66 @@ else
    printf '%s\n' 'FAIL: R-194 did not flag a ";"-separated bare-quoted apt hook command' >&2
    failures=$((failures + 1))
 fi
+if grep --quiet --fixed-strings -- '13bad-nospace-brace' <<< "${apt_hits}"; then
+   printf '%s\n' 'PASS: R-194 flags a no-space brace apt hook (keyword glued to value)'
+else
+   printf '%s\n' 'FAIL: R-194 did not flag a no-space brace apt hook' >&2
+   failures=$((failures + 1))
+fi
+if grep --quiet --fixed-strings -- '23bad-list-append' <<< "${apt_hits}"; then
+   printf '%s\n' 'PASS: R-194 flags a "::" list-append multi-statement hook'
+else
+   printf '%s\n' 'FAIL: R-194 did not flag a "::" list-append hook' >&2
+   failures=$((failures + 1))
+fi
+if grep --quiet --fixed-strings -- '24bad-unquoted' <<< "${apt_hits}"; then
+   printf '%s\n' 'PASS: R-194 flags an UNQUOTED apt hook value (a pipe)'
+else
+   printf '%s\n' 'FAIL: R-194 did not flag an unquoted apt hook value' >&2
+   failures=$((failures + 1))
+fi
+if grep --quiet --fixed-strings -- '25bad-invoke-success' <<< "${apt_hits}"; then
+   printf '%s\n' 'PASS: R-194 flags a Post-Invoke-Success multi-statement hook'
+else
+   printf '%s\n' 'FAIL: R-194 did not flag a Post-Invoke-Success hook' >&2
+   failures=$((failures + 1))
+fi
+if grep --quiet --fixed-strings -- '26bad-include-neutered' <<< "${apt_hits}"; then
+   printf '%s\n' 'PASS: R-194 flags the hook and neuters a malicious "#include"'
+else
+   printf '%s\n' 'FAIL: R-194 missed a hook beside a neutered "#include"' >&2
+   failures=$((failures + 1))
+fi
+if grep --quiet --fixed-strings -- '27bad-include-after-comment' <<< "${apt_hits}"; then
+   printf '%s\n' 'PASS: R-194 neuters a "#include" after a comment holding an unmatched quote (no hang)'
+else
+   printf '%s\n' 'FAIL: R-194 missed the hook, or the gate hung, on a "#include" after a comment' >&2
+   failures=$((failures + 1))
+fi
+if grep --quiet --fixed-strings -- '15bad-inline-comment' <<< "${apt_hits}"; then
+   printf '%s\n' 'PASS: R-194 flags a hook hidden behind an inline-comment brace desync'
+else
+   printf '%s\n' 'FAIL: R-194 did not flag a hook behind an inline-comment brace desync' >&2
+   failures=$((failures + 1))
+fi
+if grep --quiet --fixed-strings -- '16bad-lowercase' <<< "${apt_hits}"; then
+   printf '%s\n' 'PASS: R-194 flags a non-canonical-case (lowercase) apt hook'
+else
+   printf '%s\n' 'FAIL: R-194 did not flag a lowercase apt hook' >&2
+   failures=$((failures + 1))
+fi
+if grep --quiet --fixed-strings -- '17bad-concat' <<< "${apt_hits}"; then
+   printf '%s\n' 'PASS: R-194 flags a value split across adjacent concatenated spans'
+else
+   printf '%s\n' 'FAIL: R-194 did not flag an adjacent-concatenated split value' >&2
+   failures=$((failures + 1))
+fi
+if grep --quiet --fixed-strings -- '19bad-hash-directive' <<< "${apt_hits}"; then
+   printf '%s\n' 'PASS: R-194 flags a hook after a "#clear" apt directive'
+else
+   printf '%s\n' 'FAIL: R-194 did not flag a hook after a "#clear" directive' >&2
+   failures=$((failures + 1))
+fi
 if grep --quiet --fixed-strings -- '20good-ortrue' <<< "${apt_hits}"; then
    printf '%s\n' 'FAIL: R-194 flagged a "|| true" glue apt hook' >&2
    failures=$((failures + 1))
@@ -1571,6 +1739,18 @@ if grep --quiet --fixed-strings -- '30good-setting' <<< "${apt_hits}"; then
    failures=$((failures + 1))
 else
    printf '%s\n' 'PASS: R-194 spares a non-hook apt setting'
+fi
+if grep --quiet --fixed-strings -- '31good-hash-comment' <<< "${apt_hits}"; then
+   printf '%s\n' 'FAIL: R-194 flagged a "#"-commented-out apt hook' >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' 'PASS: R-194 spares a "#"-commented-out apt hook'
+fi
+if grep --quiet --fixed-strings -- '32good-inline-hash' <<< "${apt_hits}"; then
+   printf '%s\n' 'FAIL: R-194 flagged a hook with a trailing "#" inline comment' >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' 'PASS: R-194 spares a hook with a trailing "#" inline comment'
 fi
 if grep --quiet --fixed-strings -- '40waived' <<< "${apt_hits}"; then
    printf '%s\n' 'FAIL: R-194 ignored its allow-embedded-script waiver' >&2

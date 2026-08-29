@@ -15,6 +15,7 @@ import collections
 import os
 import re
 import shutil
+import stat
 import subprocess
 
 from dist_ai import engine
@@ -37,13 +38,48 @@ def _git(args, base_cwd, check=False):
     return _GitResult(proc.returncode, proc.stdout.decode("utf-8", "replace"))
 
 
+def hostile_attributes(names, base_cwd):
+    """The path of the first NON-REGULAR attribute file among the repo root, the
+    ancestor directories of the changed NAMES, and '.git/info/attributes', or
+    None. A FIFO, socket, device, or symlink attribute file makes git BLOCK the
+    instant it reads attributes -- diff, status, check-attr, inside the gate OR a
+    git-aware hook -- an unbounded hang no per-subprocess timeout fully closes (a
+    killed hook's git grandchild keeps the pipe open). os.lstat never blocks, so
+    we detect it up front and refuse fast (fail closed) instead of wedging.
+    Ancestor dirs only: that is exactly the set git consults for the scanned files.
+
+    Best-effort residuals (non-PR-reachable, so left for the caller's own repo):
+    a NESTED '.gitattributes' in --staged --all is read during ENUMERATION (a
+    working-tree scan) before the caller's pre-flight, so only the root is caught
+    up front there; a non-standard git dir (submodule/worktree '.git' file) is not
+    resolved. Neither can be planted by untrusted PR content on the authoritative
+    --staged/--range path."""
+    base = base_cwd or os.getcwd()
+    dirs = {""}
+    for name in names:
+        parts = os.path.normpath(name).split(os.sep)[:-1]
+        for i in range(len(parts) + 1):
+            dirs.add(os.sep.join(parts[:i]))
+    candidates = [os.path.join(base, rel, ".gitattributes") for rel in sorted(dirs)]
+    ## $GIT_DIR/info/attributes is a SEPARATE attribute source git reads on every
+    ## attribute lookup; a FIFO there hangs even --staged. Standard layout only.
+    candidates.append(os.path.join(base, ".git", "info", "attributes"))
+    for candidate in candidates:
+        try:
+            mode = os.lstat(candidate).st_mode
+        except OSError:
+            continue
+        if not stat.S_ISREG(mode):
+            return os.path.relpath(candidate, base)
+    return None
+
+
 def warn_worktree_skew(names, ref, base_cwd):
-    """Advisory NOTE (never a FAIL) when a checked path's working-tree content
-    differs from what this mode actually records -- so a 'passed' result is not
-    mistaken for a check of the exact committed bytes. REF is the diff target:
-    '' for the staged index (working tree vs index), a commit-ish for a range
-    (working tree vs that commit). The content read off disk is the working
-    tree; without this the divergence is silent."""
+    """Advisory NOTE (never a FAIL) when a checked path's working tree diverges
+    from the git OBJECT this mode judged. REF is the diff target: '' for the
+    staged index (the object about to be committed), a commit-ish (HEAD) for a
+    range (the pushed blob). The note is purely informational -- the working tree
+    carries edits not in that object; without it the divergence is silent."""
     if ref is None:
         return
     for name in names:
@@ -52,10 +88,10 @@ def warn_worktree_skew(names, ref, base_cwd):
             args.append(ref)
         args += ["--", name]
         if _git(args, base_cwd).returncode != 0:
-            hint = ("differs from the staged blob; re-stage to check the exact "
-                    "committed content" if not ref
-                    else "differs from %s; the check ran against the working "
-                    "tree" % ref)
+            hint = ("has unstaged working-tree edits; the gate judged the staged "
+                    "blob (the exact staged/index content)" if not ref
+                    else "differs from %s; the gate judged the %s blob (the "
+                    "exact pushed content)" % (ref, ref))
             yield model.note("worktree-skew", "'%s' %s" % (name, hint), name)
 
 
@@ -204,18 +240,37 @@ def check_untracked(base_cwd):
     check it. Naming it turns a forgotten 'git add' from a silent gap into a
     visible note. Never a FAIL (an untracked file is not part of this change)."""
     ## '-z' + quotePath=false: a name with a space / byte >= 0x80 is emitted RAW
-    ## (NUL-delimited), not C-quoted -- a quoted '"caf\303\251.sh"' would fail
-    ## the extension test and the open (same care the changelog enumeration takes).
-    out = _git(["-c", "core.quotePath=false", "ls-files", "--others",
-                "--exclude-standard", "-z"], base_cwd)
-    if out.returncode != 0:
+    ## (NUL-delimited), not C-quoted. Decode the RAW bytes with surrogateescape
+    ## (os.fsdecode), NOT _git's errors='replace': a non-UTF-8 filename byte must
+    ## round-trip back to the real path for the open()/shebang check, else the
+    ## U+FFFD-mangled path does not exist, _is_shell_file's open fails, and the
+    ## advisory silently never fires for exactly the file it exists to surface.
+    try:
+        proc = subprocess.run(
+            ["git", "-c", "core.quotePath=false", "ls-files", "--others",
+             "--exclude-standard", "-z"], capture_output=True, cwd=base_cwd)
+    except OSError:
         return
-    for name in out.stdout.split("\0"):
-        if name and _is_shell_file(os.path.join(base_cwd, name), name):
-            yield model.note(
-                "untracked",
-                "untracked shell file NOT checked -- 'git add' it to gate it: "
-                "'%s'" % name, name)
+    if proc.returncode != 0:
+        return
+    for raw in proc.stdout.split(b"\0"):
+        if not raw:
+            continue
+        name = os.fsdecode(raw)
+        if not _is_shell_file(os.path.join(base_cwd, name), name):
+            continue
+        ## backslashreplace so a lone-surrogate byte prints safely to stderr;
+        ## then escape any CONTROL char (ESC, CR/LF, ...) so a crafted untracked
+        ## filename cannot inject terminal control sequences or forge log lines
+        ## when this note is printed (CWE-150).
+        display = os.fsencode(name).decode("utf-8", "backslashreplace")
+        display = "".join(
+            ch if ch.isprintable() else ch.encode("unicode_escape").decode("ascii")
+            for ch in display)
+        yield model.note(
+            "untracked",
+            "untracked shell file NOT checked -- 'git add' it to gate it: "
+            "'%s'" % display, display)
 
 
 def _find_comments_audit(tool_dir):

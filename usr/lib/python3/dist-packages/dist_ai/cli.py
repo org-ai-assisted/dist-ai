@@ -17,6 +17,7 @@ never mistakes a crash for 'no findings')."""
 
 import argparse
 import os
+import subprocess
 import sys
 import traceback
 
@@ -28,6 +29,16 @@ from dist_ai import model
 from dist_ai import precommit
 
 US = "\x1f"
+
+
+def _refuse_hostile(prog, hostile):
+    """Fail closed on a non-regular attribute file (see gate.hostile_attributes):
+    a clear refusal + non-zero exit, never an unbounded git hang."""
+    print("%s: refusing to gate: '%s' is not a regular file -- a FIFO, device, "
+          "or symlink git attribute file makes git block indefinitely while "
+          "reading attributes; replace it with a regular file" % (prog, hostile),
+          file=sys.stderr)
+    return 1
 
 
 def _load(files, staged, prog):
@@ -168,6 +179,17 @@ def _detect_contexts(contexts, prog):
             print("%s: shfmt is required but unavailable: %s" % (prog, exc),
                   file=sys.stderr)
             return fail_count, 2
+        except Exception:  # noqa: BLE001 -- one file must not crash the gate
+            ## A rule crashing on a crafted file (e.g. PyYAML's RecursionError on
+            ## deeply nested flow) must FAIL that file, never take down the whole
+            ## staged/range run with an unhandled traceback (a crash read as a
+            ## clean pass would be a false green).
+            traceback.print_exc()
+            _print_finding(prog, model.fail(
+                "gate-crash", "a rule crashed on this file (see traceback)",
+                ctx.path, 1))
+            fail_count += 1
+            continue
         for finding in findings:
             if finding.severity == model.FAIL:
                 fail_count += 1
@@ -175,18 +197,21 @@ def _detect_contexts(contexts, prog):
     return fail_count, None
 
 
-def _fix_contexts(contexts, prog):
+def _fix_contexts(contexts, prog, check=False):
     """Apply the mechanical fixes over CONTEXTS in place, printing a summary per
-    changed file. Returns an error_code only when shfmt is absent (exit 2)."""
+    changed file. With CHECK, report the would-fix counts WITHOUT writing -- for
+    --staged index blobs, whose content is the index, not a writable file on disk
+    (writing a blob-derived fix to the working tree would clobber it). Returns an
+    error_code only when shfmt is absent (exit 2)."""
     for ctx in contexts:
         try:
-            changes = engine.apply_fixes(ctx, check=False)
+            changes = engine.apply_fixes(ctx, check=check)
         except bash_ast.ShfmtMissing as exc:
             print("%s: shfmt is required but unavailable: %s" % (prog, exc),
                   file=sys.stderr)
             return 2
         if changes:
-            _fix_summary(prog, ctx.path, changes, check=False)
+            _fix_summary(prog, ctx.path, changes, check=check)
     return None
 
 
@@ -237,13 +262,15 @@ def _enumerate(args, prog):
 
 
 def _batch_findings(names, base_ref, staged_mode, base_cwd, message_file,
-                    tool_dir, skew_ref):
+                    tool_dir, skew_ref, source_rev):
     """The repo-level checks that judge the whole changed set / range: the
     pre-commit-hooks batch, the changelog convention, the commit-message floor,
-    and the advisory comment audit. Yields Findings. SKEW_REF drives the
-    working-tree-skew NOTE (the content is read off disk, so a mode that records
-    something else must say so); None suppresses it."""
-    yield from precommit.run(names, base_ref, staged_mode, base_cwd)
+    and the advisory comment audit. Yields Findings. SOURCE_REV routes the
+    pre-commit batch to the git OBJECT (None=working tree, ''=index, a commit-ish
+    =that tree), so a staged secret is not hidden by a clean working copy.
+    SKEW_REF drives the working-tree-skew NOTE; None suppresses it."""
+    yield from precommit.run(names, base_ref, staged_mode, base_cwd,
+                             source_rev=source_rev)
     if staged_mode:
         yield from gate.check_changelog_staged(names, message_file, base_cwd)
     else:
@@ -296,11 +323,51 @@ def style_main(argv, prog="dist-ai-style"):
               file=sys.stderr)
         return 2
 
+    ## Refuse a non-regular ROOT '.gitattributes' BEFORE enumeration: in
+    ## --staged --all, enumeration itself reads working-tree attributes and would
+    ## wedge on a FIFO before the fuller guard below. Root only here (no names
+    ## yet); the post-enumerate guard covers the ancestor dirs.
+    if args.staged or args.range is not None:
+        try:
+            early_root = gitdiff._repo_root()
+        except (OSError, subprocess.CalledProcessError):
+            early_root = None
+    else:
+        early_root = os.getcwd()
+    hostile = gate.hostile_attributes([], early_root)
+    if hostile is not None:
+        return _refuse_hostile(prog, hostile)
+
     enumerated, code = _enumerate(args, prog)
     if enumerated is None:
         return code
     pairs, names, base_ref, base_cwd, staged_mode = enumerated
+    ## Pre-flight refuse: a non-regular '.gitattributes' (FIFO/device/symlink)
+    ## wedges EVERY git attribute read below -- the fixers, the per-file rules,
+    ## the batch hooks, warn_worktree_skew -- git blocks the instant it opens it,
+    ## and a per-subprocess timeout cannot fully close it (a killed hook's git
+    ## grandchild keeps the pipe open). os.lstat never blocks, so detect it up
+    ## front and fail CLOSED rather than hang.
+    hostile = gate.hostile_attributes(names, base_cwd)
+    if hostile is not None:
+        return _refuse_hostile(prog, hostile)
     git_mode = args.staged or args.range is not None
+    ## Gate the git OBJECT that ships, not the working tree that may have diverged
+    ## since: bare / --paths --staged judge the INDEX blob (git ':path'); --range
+    ## judges the HEAD blob (the pushed tip). --staged --all records the working
+    ## tree itself (like 'commit -a') and direct file mode names files on disk, so
+    ## those keep the on-disk read.
+    if args.staged and not args.all:
+        use_blob, blob_rev = True, None       ## the index
+    elif args.range is not None:
+        use_blob, blob_rev = True, "HEAD"     ## the pushed tip
+    else:
+        use_blob, blob_rev = False, None      ## working tree
+
+    def _mode_contexts():
+        if use_blob:
+            return gitdiff.blob_contexts(pairs, blob_rev)
+        return gitdiff.contexts(pairs)
 
     ## A --paths pathspec that matched nothing checks nothing -- SAY so, never a
     ## silent clean sweep (a narrow-to-nothing would otherwise read as a pass).
@@ -309,30 +376,33 @@ def style_main(argv, prog="dist-ai-style"):
               "checked" % prog, file=sys.stderr)
 
     ## Fix first (unless read-only), then re-read so the detect pass judges the
-    ## FIXED file -- the residual is exactly what a human must fix.
+    ## FIXED file -- the residual is exactly what a human must fix. A git blob
+    ## (index / HEAD) has no writable file target, so there the fixer only
+    ## REPORTS (check) rather than write blob content over the working tree.
     if not args.check:
-        code = _fix_contexts(gitdiff.contexts(pairs), prog)
+        code = _fix_contexts(_mode_contexts(), prog, check=use_blob)
         if code is not None:
             return code
 
-    fail_count, code = _detect_contexts(gitdiff.contexts(pairs), prog)
+    fail_count, code = _detect_contexts(_mode_contexts(), prog)
     if code is not None:
         return code
 
     if git_mode:
         tool_dir = os.path.dirname(os.path.realpath(sys.argv[0]))
-        ## The content is read off disk. Bare --staged records the INDEX, so
-        ## warn when the working tree differs; a range records HEAD's commits,
-        ## so warn vs HEAD. --all / --paths record the working tree itself (like
-        ## 'commit -a'), so there is nothing to skew against.
-        if args.staged and not args.all and not args.paths:
-            skew_ref = ""
-        elif args.range is not None:
-            skew_ref = "HEAD"
+        ## A blob mode judged the committed/pushed object, so note (informational)
+        ## when the working tree has since diverged: '' diffs the index (staged),
+        ## 'HEAD' diffs the pushed tip (range). --all read the working tree itself
+        ## (like 'commit -a'), so there is nothing to skew against.
+        if use_blob:
+            skew_ref = blob_rev or ""
         else:
             skew_ref = None
+        ## source_rev for the batch: '' index, 'HEAD' range, None working tree.
+        batch_rev = (blob_rev or "") if use_blob else None
         for finding in _batch_findings(names, base_ref, staged_mode, base_cwd,
-                                       args.message_file, tool_dir, skew_ref):
+                                       args.message_file, tool_dir, skew_ref,
+                                       batch_rev):
             if finding.severity == model.FAIL:
                 fail_count += 1
             _print_finding(prog, finding)
