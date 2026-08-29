@@ -1431,6 +1431,19 @@ try:
     M._bind_instance_server = lambda *_a, **_k: (None, 'peer_owns')
     sys.argv = ['secure-terminal', '--reuse', '--title', 'raced']
     eq(_main(), 0, 'main: --reuse losing the bind race hands off to the new primary -> 0')
+    # --reuse that DEFERRED to a live peer which then DIED mid-handoff (a RESTART: the
+    # old primary is still bound when we launch, so we defer, then it exits). _handoff
+    # returns None, so main() must RE-CLAIM the freed socket -- else it opens a
+    # server-less window and the group has NO primary, so every later --reuse opens
+    # yet another window (the reported duplicate-window regression). Here the re-claim
+    # finds nothing to take ('failed') so the window is server-less, but the re-claim
+    # LINE runs; without it there is no second attempt at all.
+    _bind_seq = [(None, 'peer_owns'), (None, 'failed')]
+    M._bind_instance_server = lambda *_a, **_k: _bind_seq.pop(0)
+    M._handoff = lambda *_a, **_k: None
+    sys.argv = ['secure-terminal', '--reuse', '--title', 'peerdied']
+    eq(_main(), 0,
+       'main: --reuse whose peer died mid-handoff re-claims (no lingering primary-less window)')
     M.ipc.socket_is_live = _o_sil
     M._handoff = _o_ho
     M._bind_instance_server = _o_bind
