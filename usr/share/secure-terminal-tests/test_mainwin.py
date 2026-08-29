@@ -1389,6 +1389,28 @@ try:
        'main: --reuse DOES send an open handoff to the primary')
     M.ipc.send_request = lambda *_a, **_k: None
 
+    # --reuse whose 1.5s ping finds nothing but the socket IS live (a briefly-busy
+    # primary): main() retries via _handoff, which answers -> exit 0 before Qt.
+    # Neither case below builds a window (both return in the reuse/claim block), so
+    # they cannot perturb the delicate window-building startup tests above.
+    _o_sil = M.ipc.socket_is_live
+    _o_ho = M._handoff
+    _o_bind = M._bind_instance_server
+    M.ipc.socket_is_live = lambda *_a, **_k: True
+    M._handoff = lambda *_a, **_k: {'ok': True}
+    sys.argv = ['secure-terminal', '--reuse', '--title', 'busy']
+    eq(_main(), 0, 'main: --reuse to a bound-but-busy primary retries via _handoff -> 0')
+    # --reuse that found no primary, then LOST the atomic bind to a peer that became
+    # primary meanwhile: _bind returns peer_owns and main() hands off via _handoff.
+    M.ipc.socket_is_live = lambda *_a, **_k: False   # skip the busy-peer retry above
+    M._bind_instance_server = lambda *_a, **_k: (None, 'peer_owns')
+    sys.argv = ['secure-terminal', '--reuse', '--title', 'raced']
+    eq(_main(), 0, 'main: --reuse losing the bind race hands off to the new primary -> 0')
+    M.ipc.socket_is_live = _o_sil
+    M._handoff = _o_ho
+    M._bind_instance_server = _o_bind
+    M.ipc.send_request = lambda *_a, **_k: None
+
     # _require_default_font: the Hack font (fonts-hack) is a hard dependency. Qt
     # would SILENTLY substitute a fallback that may reintroduce the confusable
     # glyphs / ligatures Hack is chosen to avoid, so a missing default font fails
@@ -2027,6 +2049,100 @@ ok(getattr(_reclaim, '_server', None) is not None,
    'start_instance_server: a stale socket is cleared and reclaimed')
 _reclaim.deleteLater()
 APP.processEvents()
+
+# --- _handoff / adopt drain / lock degradation: the --reuse instance-socket paths
+# otherwise exercised only by the subprocess E2E (test_instances), covered here in
+# the instrumented in-process runner ------------------------------------------
+_o_sr2 = M.ipc.send_request
+_o_sil2 = M.ipc.socket_is_live
+_o_sleep2 = M.time.sleep
+try:
+    # _handoff returns the primary's reply as soon as it answers.
+    M.ipc.send_request = lambda *_a, **_k: {'ok': True, 'pid': 7}
+    _hr = M._handoff('hg', {'op': 'ping'})
+    ok(_hr is not None and _hr.get('pid') == 7, '_handoff: returns the primary reply')
+    # None then a reply while the socket stays live: retries (drives the sleep + loop).
+    M.time.sleep = lambda *_a, **_k: None
+    _hseq = [None, {'ok': True, 'pid': 8}]
+    M.ipc.send_request = lambda *_a, **_k: _hseq.pop(0)
+    M.ipc.socket_is_live = lambda *_a, **_k: True
+    _hr2 = M._handoff('hg', {'op': 'ping'})
+    ok(_hr2 is not None and _hr2.get('pid') == 8,
+       '_handoff: retries then returns on the next answer')
+    # None + the socket goes away: give up (None) rather than spin to the deadline.
+    M.ipc.send_request = lambda *_a, **_k: None
+    M.ipc.socket_is_live = lambda *_a, **_k: False
+    ok(M._handoff('hg', {'op': 'ping'}) is None, '_handoff: socket not live -> None')
+finally:
+    M.ipc.send_request = _o_sr2
+    M.ipc.socket_is_live = _o_sil2
+    M.time.sleep = _o_sleep2
+
+# adopt_instance_server drains a connection that queued before the handler wired.
+import socket as _socket                                   # noqa: E402
+_ad_grp = 'adopt-drain'
+_ad_srv, _ad_st = M._bind_instance_server(_ad_grp)
+ok(_ad_st == 'claimed' and _ad_srv is not None, 'adopt: bound a server to drain from')
+_ad_cli = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+_ad_cli.connect(M.ipc.socket_path(_ad_grp))
+for _ in range(50):
+    APP.processEvents()
+    if _ad_srv.hasPendingConnections():
+        break
+_ad_pending = _ad_srv.hasPendingConnections()
+_ad_win = MainWindow()
+_ad_win.adopt_instance_server(_ad_srv, _ad_grp)
+ok(_ad_pending and _ad_win._server is _ad_srv,
+   'adopt_instance_server: drains a connection queued before the handler was wired')
+_ad_cli.close()
+_ad_win.deleteLater()
+APP.processEvents()
+
+# _acquire_group_lock must NOT crash on a mis-owned lock file (the reported
+# PermissionError regression): a mode-0 stale file is self-healed (unlink+retry),
+# and a lock path that can neither be opened NOR unlinked (a directory) degrades to
+# None -- _bind_instance_server then claims WITHOUT the lock instead of raising.
+_lg = 'lock-degrade'
+M.ipc.ensure_socket_dir()
+_lp = M.ipc.socket_path(_lg) + '.lock'
+if os.path.isdir(_lp):
+    os.rmdir(_lp)
+elif os.path.exists(_lp):
+    os.remove(_lp)
+open(_lp, 'w').close()
+os.chmod(_lp, 0)
+_lfd = M._acquire_group_lock(_lg)
+ok(_lfd is not None,
+   '_acquire_group_lock: a mode-0 stale lock file is self-healed (unlink + retry)')
+if _lfd is not None:
+    os.close(_lfd)
+if os.path.exists(_lp) and not os.path.isdir(_lp):
+    os.remove(_lp)
+os.mkdir(_lp)                                    # unopenable AND unlinkable -> degrade
+ok(M._acquire_group_lock(_lg) is None,
+   '_acquire_group_lock: an unusable lock path degrades to None, never raises')
+_ds, _dst = M._bind_instance_server(_lg)         # must not raise with lock_fd None
+ok(_dst in ('claimed', 'peer_owns', 'failed'),
+   '_bind_instance_server: claims best-effort when the lock cannot be taken (no crash)')
+if _ds is not None:
+    _ds.close()
+if os.path.isdir(_lp):
+    os.rmdir(_lp)
+# flock failing on a valid fd (an exotic filesystem that does not support it) also
+# degrades to None -- the fd is closed and no exception escapes.
+_o_flock = M.fcntl.flock
+
+
+def _flock_unsupported(*_a, **_k):
+    raise OSError('flock unsupported')
+
+
+M.fcntl.flock = _flock_unsupported
+try:
+    ok(M._acquire_group_lock(_lg) is None,
+       '_acquire_group_lock: a failing flock degrades to None (fd closed), never raises')
+finally:
+    M.fcntl.flock = _o_flock
 
 # --- session persistence + quit/close handlers --------------------------------
 win.set_persist_session(False)              # disabling clears the saved session
