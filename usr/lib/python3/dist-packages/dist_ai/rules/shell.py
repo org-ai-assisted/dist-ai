@@ -1300,7 +1300,7 @@ def _printf_format(call, source):
     index = 1
     while index < total:
         option = bash_ast.word_source(call_args[index], source)
-        if option == "-v" and index + 2 < total:
+        if option == "-v" and index + 2 <= total:
             index += 2
             continue
         if option == "--":
@@ -1312,7 +1312,13 @@ def _printf_format(call, source):
     if not raw:
         return None, False
     if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "'\"":
-        return raw[1:-1], raw[0] == "'"
+        inner = raw[1:-1]
+        ## single_quoted (nothing can interpolate) is TRUE only for ONE '...'
+        ## string. A bash single-quoted string cannot contain a "'", so an inner
+        ## "'" means this is a CONCATENATION -- 'x'$name'y' == 'x' . $name . 'y' --
+        ## whose middle $name DOES interpolate into the format (the %n injection
+        ## R-030 catches). Marking it single_quoted would silence that.
+        return inner, raw[0] == "'" and "'" not in inner
     return raw, False
 
 
