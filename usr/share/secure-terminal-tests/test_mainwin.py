@@ -641,7 +641,8 @@ win.set_clipboard_read_always(True)
 win.set_scrollback(1000)
 win.set_paste_delay(3)
 win.set_bell_sound('')                      # empty/disallowed -> cleared, applied
-ok(True, 'setting appliers push the change to every tab and persist')
+ok(win._scrollback == 1000 and win._paste_delay == 3,
+   'setting appliers apply the change to the window (scrollback + paste delay)')
 
 # line editing: the live per-tab setter pushes into the current tab, flips the menu
 # action and updates the default used for new tabs.
@@ -803,9 +804,13 @@ finally:
 # move the current tab left/right (needs more than one tab; wraps)
 while win.tabs.count() < 2:
     win.new_tab()
+_mv_term = win.tabs.currentWidget()
+_mv_i0 = win.tabs.indexOf(_mv_term)
 win._on_tab_move(1)
+_mv_i1 = win.tabs.indexOf(_mv_term)
 win._on_tab_move(-1)
-ok(True, 'the current tab moves left/right with wrap-around')
+ok(_mv_i1 != _mv_i0 and win.tabs.indexOf(_mv_term) == _mv_i0,
+   'the current tab moves left/right and returns (wrap-around)')
 
 # pwd-as-tab-title (#90): with no explicit name and no program title, the tab
 # label is the working-directory basename (kept live by the fg poll), not a static
@@ -1330,8 +1335,9 @@ _stt.has_foreground_program = _stt_fg
 win._default_tui = _saved_def
 
 # bind the single-instance listening socket (isolated runtime dir)
-win.start_instance_server('coverage-group')
-ok(True, 'start_instance_server binds a listening socket')
+_bind_status = win.start_instance_server('coverage-group')
+ok(_bind_status == 'claimed',
+   'start_instance_server binds a listening socket (claims the free group)')
 
 # --- main(): the entry point, driven with QApplication + exec + ipc mocked ----
 import signal as _signal                             # noqa: E402
@@ -2544,8 +2550,15 @@ try:
     _term2.BELL_SOUND_DIRS = (_snddir,)
     QFileDialog.getOpenFileName = staticmethod(lambda *_a, **_k: (_sndfile, ''))
     win._bell_sound_locked = lambda: False
-    win._pick_bell_sound()                    # allowed -> set_bell_sound
-    ok(True, '_pick_bell_sound: a file inside an allowed dir is accepted')
+    _accepted_bell = []
+    _o_setbell2 = win.set_bell_sound
+    win.set_bell_sound = lambda p: _accepted_bell.append(p)
+    try:
+        win._pick_bell_sound()                # allowed -> set_bell_sound(_sndfile)
+    finally:
+        win.set_bell_sound = _o_setbell2
+    ok(_accepted_bell == [_sndfile],
+       '_pick_bell_sound: a file inside an allowed dir is accepted (set_bell_sound called)')
 finally:
     _term2.BELL_SOUND_DIRS = _o_dirs
     QFileDialog.getOpenFileName = _o_gof3
