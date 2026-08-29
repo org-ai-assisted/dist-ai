@@ -28,11 +28,11 @@ shopt -s shift_verbose
 export LC_ALL=C
 
 # shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.sh
-# shellcheck disable=SC1091
 source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/has.sh
 
 skip() {
    printf '%s\n' "secure-terminal-tests(apparmor): SKIP -- $1"
+   ## style-ok: allow-skip: optional target -- loading a profile is system-wide and needs root + running apparmor; runs in the sandbox/CI, skips on a dev host by design
    exit 77
 }
 
@@ -160,6 +160,38 @@ else
 fi
 safe-rm --force "${lock_probe}"
 rmdir "${lock_dir}" 2>/dev/null || true
+
+## ALLOW (single-instance bind): QLocalServer(UserAccessOption) does NOT bind the
+## 0700 group socket in place -- it creates a private 0700 temp SUBDIR, binds the
+## socket inside it, renames the socket to <group>.sock, then removes the subdir.
+## The profile must grant that transient subdir + its socket
+## ('.../secure-terminal/*/' and '.../*/*') or the mkdir is denied -> listen()
+## fails EACCES -> no single-instance primary, so every --reuse opens a NEW window
+## instead of a tab. Regression guard for that confined-bind denial. uid 0 here ->
+## /run/user/0; the profile pattern is /run/user/[0-9]*/.
+bind_dir="/run/user/$(id --user)/secure-terminal"
+mkdir --parents "${bind_dir}"
+bind_probe="${bind_dir}/aa-bind-probe.sock"
+bind_rc=0
+aa-exec -p secure-terminal -- python3 -Bsu -c '
+import sys
+from PyQt6.QtCore import QCoreApplication
+from PyQt6.QtNetwork import QLocalServer
+app = QCoreApplication(sys.argv)
+srv = QLocalServer()
+srv.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
+QLocalServer.removeServer(sys.argv[1])
+sys.exit(0 if srv.listen(sys.argv[1]) else 1)
+' "${bind_probe}" >/dev/null 2>&1 || bind_rc=$?
+if [ "${bind_rc}" -eq 0 ]; then
+   pass=$(( pass + 1 ))
+else
+   fail=$(( fail + 1 ))
+   printf '%s\n' \
+      "FAIL: the profile DENIED the single-instance QLocalServer bind (${bind_probe})"
+fi
+safe-rm --force "${bind_probe}"
+rmdir "${bind_dir}" 2>/dev/null || true
 
 ## --- unicode-tag-stdin: the tight, stdin-only neutralizer profile ---
 ## Prove the SAME enforcement on it: a granted read ALLOWED, a non-granted read
