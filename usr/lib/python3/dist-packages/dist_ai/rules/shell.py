@@ -315,8 +315,13 @@ class GrepQuiet(Rule):
 ## Temp-dir parameter names whose mkdir operand makes R-172 apply.
 TMP_PARAMS = {"TMPDIR", "TEMPDIR", "TEMP", "TMP"}
 
-## A short '-m' carrying a jammed numeric mode ('-m700').
-MKDIR_M_JAMMED = re.compile(r'^-m([0-7]{3,4})$')
+## A jammed short '-m' mode, possibly BUNDLED behind other short flags
+## ('-pm700' = -p -m 700). GNU mkdir gives the FIRST 'm' in the cluster the rest as
+## its argument, so the prefix EXCLUDES a lowercase 'm': else a greedy match on
+## '-mpm700' picks the LAST m and rewrites an INVALID mode ('-m pm700', mkdir fails)
+## into a VALID one ('-mp --mode=700', mkdir succeeds), silencing R-172.
+## group(1) = the preceding flags, group(2) = the octal mode.
+MKDIR_M_JAMMED = re.compile(r'^-([a-ln-zA-Z]*)m([0-7]{3,4})$')
 
 ## The atomic 'mkdir --parents ... --mode=' form trips shellcheck SC2174 by
 ## design; insert the disable so R-172's mandated form stays shellcheck-clean.
@@ -393,9 +398,13 @@ class MkdirTmpMode(Rule):
                         has_parents = True
                     jammed = MKDIR_M_JAMMED.match(lit)
                     if jammed:
+                        prefix, mode = jammed.group(1), jammed.group(2)
                         start, end = bash_ast.word_span(word)
-                        yield Edit(start, end, "--mode=" + jammed.group(1),
-                                   "R-172")
+                        ## keep any flags bundled before the '-m' (e.g. '-pm700'
+                        ## -> '-p --mode=700'); a bare '-m700' -> '--mode=700'.
+                        replacement = ("-" + prefix + " " if prefix else "") \
+                            + "--mode=" + mode
+                        yield Edit(start, end, replacement, "R-172")
                         has_mode = True
                     elif lit == "-m" and index + 1 < len(tokens) \
                             and tokens[index + 1][0] == "value":
