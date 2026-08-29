@@ -3678,6 +3678,13 @@ if tui_available():
     tui.apply_osc('osc_cwd', True)
     tui._handle_osc(b'\x1b]7;file://h/home/u/p\x07')
     ok(_cwds == ['/home/u/p'], 'enabled: OSC 7 reports the unquoted path')
+    # a MALFORMED file:// with an authority but NO path ('file://host') must not smuggle
+    # the host in as the path ('/host'): urlparse().path is empty, so the bare host is
+    # not reported as a cwd. The old url[7:].split('/',1)[-1] took the authority as path.
+    _cwds.clear(); tui._reported_cwd = ''
+    tui._handle_osc(b'\x1b]7;file://justhost\x07')
+    ok('/justhost' not in _cwds,
+       'OSC 7: a malformed file://host (no path) does not report the host as the cwd')
     # #6: a long cwd path must show up to 4096 chars in the tab tooltip, not be cut to 80.
     # sanitize_title's default limit is 80, so the old trailing [:4096] slice was dead -- the
     # bound is now passed to the sanitizer.

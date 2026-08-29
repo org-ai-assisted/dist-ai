@@ -1926,8 +1926,8 @@ win.tabs.setCurrentIndex(_real_idx)
 win._goto_tab(_phi)                                          # Alt+N to the placeholder -> guard skips it
 ok(win.tabs.currentIndex() == _real_idx, '#3: _goto_tab skips a disabled placeholder target')
 win.tabs.setCurrentIndex(_phi - 1)
-win._on_tab_step(1)                                          # step toward the placeholder -> guard skips
-ok(win.tabs.currentIndex() == _phi - 1, '#3: _on_tab_step skips a disabled placeholder target')
+win._on_tab_step(1)                                          # step toward the placeholder -> walk past it, wrap to a live tab
+ok(win.tabs.currentIndex() == 0, '#3: _on_tab_step walks past a disabled placeholder to the next live tab')
 win.tabs.removeTab(_phi)
 # #5: a non-ASCII / non-str saved window geometry must not crash startup.
 _o_persist = win._persist_session
@@ -3568,6 +3568,78 @@ ok(not _oscw_tab.osc_enabled('osc_clipboard_read')
    and not _oscw_tab.osc_enabled('osc_clipboard'),
    'SEC: a tampered non-bool OSC flag stays disabled on restore, not bool()-coerced open')
 _oscw.close(); _oscw.deleteLater(); APP.processEvents()
+
+# claude: _restore_tab's `colors` must default ON like its sibling settings
+# (line_edits, markings), not OFF -- a session with no 'colors' key should restore
+# colors ON, not the old _saved_bool(info.get('colors'), False) default.
+_cw2 = MainWindow(); _cw2._locked = set()
+_cw2._restore_tab({'text': ''})          # no 'colors' key
+ok(_cw2.current().colors_enabled(),
+   'claude: colors defaults ON on restore when unset (consistent with line_edits/markings)')
+_cw2.close(); _cw2.deleteLater(); APP.processEvents()
+
+# grok: _on_tab_step must SKIP a disabled restore placeholder and keep walking
+# (wrapping) to the next real tab, not dead-end on it -- a single `if enabled` did.
+# Indices are computed from count() (a fresh MainWindow already owns one live tab).
+_stw = MainWindow()
+_stw._add_placeholder_tab({'name': 'ph', 'cwd': '/tmp'}, _stw.tabs.count())   # placeholder LAST
+_stw_phi = _stw.tabs.count() - 1
+_stw.tabs.setCurrentIndex(_stw_phi - 1)   # the last live tab, just before the placeholder
+_stw._on_tab_step(1)                      # PageDown: -> ph (skip) -> wrap -> live 0
+ok(_stw.tabs.currentIndex() == 0,
+   'grok: tab-step skips a disabled placeholder and wraps to the next live tab')
+_stw.tabs.removeTab(_stw_phi)             # drop the orphan before close (closeEvent covered below)
+_stw.close(); _stw.deleteLater(); APP.processEvents()
+
+# claude: closeEvent + _session_tabs iterate REAL terminals only -- a restore
+# placeholder that survives the deferred-restore drain (an unknown placeholder is a
+# safe swap no-op) must never reach has_foreground_program/shutdown/toPlainText, which a
+# bare QWidget lacks. Pre-fix those bulk-over-all-tabs loops abort the process on it.
+# Direct closeEvent(QCloseEvent()) so a pre-fix AttributeError is a catchable failure
+# here, not the uncatchable Qt-dispatch abort that .close() would raise.
+_clw = MainWindow(); _clw._locked = set()
+_clw_real = len(_clw._real_terms())                            # the live tab(s) a fresh window owns
+_clw._add_placeholder_tab({'name': 'ph', 'cwd': '/tmp'}, _clw.tabs.count())   # append 1 placeholder
+ok(len(_clw._session_tabs()) == _clw_real
+   and _clw.tabs.count() == _clw_real + 1,
+   'claude: _session_tabs skips a surviving restore placeholder (real tabs only)')
+_clw._persist_session = False                                  # do not write a session file
+_clw_err = None
+try:
+    _clw.closeEvent(QCloseEvent())                             # must not touch the placeholder
+except Exception as _e:
+    _clw_err = _e
+ok(_clw_err is None,
+   'claude: closeEvent tolerates a surviving restore placeholder (no AttributeError abort)')
+_clw.deleteLater(); APP.processEvents()
+
+# claude(#2): a tab context-menu action must resolve its tab's CURRENT index when it
+# FIRES, not the index captured at build time -- menu.exec spins a nested loop during
+# which the tabs can shift (a background tab closes, or here a placeholder is inserted
+# before the subject), so a captured index would act on the WRONG tab. Shift the subject
+# inside exec, then trigger Rename and assert it targeted the subject's new index.
+_c2w = MainWindow()
+_c2w.new_tab(); _c2w.new_tab()                        # >= 3 tabs
+_c2_term = _c2w.tabs.widget(_c2w.tabs.count() - 1)    # the menu's subject tab (last)
+_c2_idx0 = _c2w.tabs.indexOf(_c2_term)
+_c2_seen = []
+_c2w.rename_tab = lambda i: _c2_seen.append(i)        # record the index the action passes
+_c2_ome = QMenu.exec
+def _c2_exec(_menu, *_a, **_k):
+    _c2w._add_placeholder_tab({'name': 'x', 'cwd': '/tmp'}, 0)   # insert before subject -> +1
+    for _act in _menu.actions():
+        if _act.text().startswith('Rename'):
+            _act.trigger()
+            break
+    return None
+QMenu.exec = _c2_exec
+try:
+    _c2w._tab_context_menu(_c2w.tabs.tabBar().tabRect(_c2_idx0).center())
+finally:
+    QMenu.exec = _c2_ome
+ok(_c2w.tabs.indexOf(_c2_term) == _c2_idx0 + 1 and _c2_seen == [_c2_idx0 + 1],
+   'claude(#2): a context-menu action targets its tab by current index after a reorder')
+_c2w.close(); _c2w.deleteLater(); APP.processEvents()
 
 
 win.close()
