@@ -87,7 +87,11 @@ def _materialize_blobs(paths, source_rev, base_cwd):
             os.makedirs(os.path.dirname(dest) or mirror, exist_ok=True)
             with open(dest, "wb") as handle:
                 handle.write(blob)
-            os.chmod(dest, 0o755 if mode == "100755" else 0o644)
+            ## Owner-only: this mirror holds the scanned blob content, which
+            ## includes a staged PRIVATE KEY / credential (detect-private-key runs
+            ## over it), so it must not be group/world readable. The exec bit is
+            ## kept (0o700 vs 0o600) for the mode-sensitive exec-shebang checks.
+            os.chmod(dest, 0o700 if mode == "100755" else 0o600)
         except OSError:
             continue
     return mirror
