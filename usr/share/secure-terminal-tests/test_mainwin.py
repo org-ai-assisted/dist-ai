@@ -2367,7 +2367,14 @@ if win.tabs.count() == 0:
     win.new_tab()
 _t0b = win.tabs.widget(0)
 _tid0b = win._tab_ids.get(_t0b)
-_t0b._append('hello world of text')
+# Isolate from prior-test pollution on this SHARED tab: a WIDE winsize so the test
+# string cannot soft-wrap mid-word, and a LEADING NEWLINE to end any partial input a
+# prior test left on the current line. Without both, the last line was only the
+# wrapped tail (e.g. 'of text' when a prior 'echo' + a narrow width wrapped
+# 'echohello world of text' mid-word) -- the offscreen ordering flake that passed in
+# isolation but failed under the full-suite ordering.
+_t0b._set_winsize(200, 50)
+_t0b._append('\nhello world of text')
 # COR-7: --lines 0 must dump ZERO lines, not the whole tab. The server's `lines > 0` guard
 # defaulted 0 to a full dump, and text.split('\n')[-0:] is the WHOLE list (negative-zero).
 _rl0 = win._ipc_ctl('ctl-dump-tab', {'tab': 'id:%d' % _tid0b, 'lines': 0})
