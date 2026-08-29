@@ -207,6 +207,11 @@ assert_at "R-120 unwraps 'sudo sudo -u root rm' (inner flag+value)" "R-120" 2
 assert_at "R-120 unwraps 'sudo doas -u root rm'"                    "R-120" 3
 assert_at "R-120 unwraps 'sudo sudo -- rm' (inner end-of-options)"  "R-120" 4
 assert_at "R-210 unwraps 'sudo sudo -n apt-get'"                    "R-210" 5
+## A maliciously DEEP wrapper chain must not crash the linter: the unwrap is ITERATIVE,
+## not recursive, so it peels any depth without a RecursionError. (ai-review agy.)
+deep_sudo="$(printf 'sudo %.0s' $(seq 1 1500))"
+run_det "$(printf '%s\n' '#!/bin/bash' "${deep_sudo}rm -rf /x")"
+assert_at "R-120 unwraps a 1500-deep 'sudo ... rm' without crashing" "R-120" 2
 ## CRLF: a comment-tail backslash must still be neutralized so the next command
 ## is not swallowed (a '\r' left on the line would defeat the backslash strip).
 printf '%b' '#!/bin/bash\r\n# c \\\r\nrm -rf /x\r\n' > "${test_dir}/crlf.sh"
