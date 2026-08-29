@@ -28,8 +28,12 @@ EXEC_DIRECTIVE = re.compile(r'^[ \t]*(Exec[A-Za-z]*)=(.*)$', re.MULTILINE)
 ## so consuming that first '{'/'"' would start the value scan one char late -- past
 ## the opening brace/quote -- and _hook_value_region would mis-track depth/quotes
 ## and truncate at the first embedded ';', hiding the rest of the command.
+## re.IGNORECASE: apt.conf option names are case-INSENSITIVE (apt.conf(5)), so
+## apt runs a 'dpkg::pre-invoke {...}' hook exactly like the canonical case; a
+## case-sensitive match let any non-canonical spelling bypass R-194.
 APT_HOOK = re.compile(
-    r'(^|[^A-Za-z0-9])(Pre-Invoke|Post-Invoke|Pre-Install-Pkgs)(?=[^A-Za-z0-9]|$)')
+    r'(^|[^A-Za-z0-9])(Pre-Invoke|Post-Invoke|Pre-Install-Pkgs)(?=[^A-Za-z0-9]|$)',
+    re.IGNORECASE)
 CRON_ENV = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*[ \t]*=')
 
 

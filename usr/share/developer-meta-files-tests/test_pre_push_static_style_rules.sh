@@ -1544,6 +1544,11 @@ printf '%s\n' \
    "\"echo two${sc} echo three\"${sc}" \
    "}${sc}" \
    > "${apt_repo}/etc/apt/apt.conf.d/15bad-inline-comment"
+## apt.conf option names are case-INSENSITIVE, so a lower/mixed-case hook runs
+## its multi-statement value just the same; a case-sensitive match missed it.
+printf '%s\n' \
+   "dpkg::pre-invoke {\"echo one${sc} echo two\"}${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/16bad-lowercase"
 ## '|| true' error-suppression and a single command are glue, not a program.
 printf '%s\n' \
    'DPkg::Pre-Install-Pkgs {"/usr/sbin/dpkg-preconfigure --apt || true"};' \
@@ -1608,6 +1613,12 @@ if grep --quiet --fixed-strings -- '15bad-inline-comment' <<< "${apt_hits}"; the
    printf '%s\n' 'PASS: R-194 flags a hook hidden behind an inline-comment brace desync'
 else
    printf '%s\n' 'FAIL: R-194 did not flag a hook behind an inline-comment brace desync' >&2
+   failures=$((failures + 1))
+fi
+if grep --quiet --fixed-strings -- '16bad-lowercase' <<< "${apt_hits}"; then
+   printf '%s\n' 'PASS: R-194 flags a non-canonical-case (lowercase) apt hook'
+else
+   printf '%s\n' 'FAIL: R-194 did not flag a lowercase apt hook' >&2
    failures=$((failures + 1))
 fi
 if grep --quiet --fixed-strings -- '20good-ortrue' <<< "${apt_hits}"; then
