@@ -377,6 +377,27 @@ while w2.tabs.count() > 0:                   # last close empties + closes windo
 ok(w2.tabs.count() == 0, 'close_tab: closing the last tab empties the window')
 w2.deleteLater()
 
+# _on_shell_exited: a -- PROGRAM tab drops to a fresh login shell in place when the
+# program exits (not closed); a plain login-shell tab closes. Pre-fix, BOTH closed.
+_rw = MainWindow()
+_rw.new_tab(command=['/bin/sh', '-c', 'exit 0'])     # a program tab that exits at once
+_rw_term = _rw.tabs.widget(_rw.tabs.count() - 1)
+_rw_before = _rw.tabs.count()
+_deadline = time.time() + 5
+while time.time() < _deadline and _rw_term._command is not None:
+    pump(30)                                         # child exit -> shell_exited -> restart
+ok(_rw.tabs.count() == _rw_before and _rw_term._command is None,
+   'a -- PROGRAM tab that exits restarts as a shell in place, not closed')
+_rw.new_tab()                                        # a plain login-shell tab
+_rw_login = _rw.tabs.widget(_rw.tabs.count() - 1)
+_rw_c0 = _rw.tabs.count()
+_rw._on_shell_exited(_rw_login)                      # simulate its shell exiting
+ok(_rw.tabs.count() == _rw_c0 - 1,
+   'a plain login-shell tab closes when its shell exits')
+while _rw.tabs.count() > 0:
+    _rw.close_tab(0)
+_rw.deleteLater()
+
 # F2: closing a tab that holds a paste/copy review hides the bar first, so its
 # buttons cannot dispatch onto the destroyed terminal (RuntimeError).
 _fw = MainWindow()
