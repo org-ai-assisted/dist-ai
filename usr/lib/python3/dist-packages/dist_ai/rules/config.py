@@ -143,18 +143,21 @@ def _hook_values(region):
     return values, "".join(leftover)
 
 
+DIRECTIVE_HASH = re.compile(r'#(include|clear)\b', re.IGNORECASE)
+
+
 def _strip_apt_comments(text):
     """Blank apt.conf COMMENTS so a ';'/'{'/'}'/'"' living in one cannot desync
-    the brace/quote scan that follows: '//' runs to end of line from ANY column,
-    and '/* */' is a block that may span lines. Both are literal INSIDE a
-    double-quoted value (a '//' in a URL), so a quote toggle suspends comment
-    recognition. '#' is NOT a comment -- apt reads '#include'/'#clear' as
-    DIRECTIVES and keeps parsing the rest of the line, so blanking to EOL would
-    hide a hook after a '#clear' -- it is left intact. Replaced with spaces,
-    newlines kept, so line numbers and the value-region scan are preserved.
-    Escape-aware: a backslash inside a value escapes the next char, so a '\\"'
-    does not close the quote (else a comment marker after it would be scanned
-    inside the value)."""
+    the brace/quote scan that follows. apt (confirmed against apt-config) runs a
+    comment to end of line from ANY column: '//', '/* */' (a block, may span
+    lines), and '#' -- inline too, so 'Setting "x"; # rest' drops '# rest'. All
+    are literal INSIDE a double-quoted value (a '//' in a URL), so a quote toggle
+    suspends comment recognition. The ONE '#' exception is a '#include'/'#clear'
+    DIRECTIVE: apt keeps parsing the rest of that line, so it is left intact --
+    else a hook after a '#clear' would be hidden. Replaced with spaces, newlines
+    kept, so line numbers and the value-region scan are preserved. Escape-aware:
+    a backslash inside a value escapes the next char, so a '\\"' does not close
+    the quote."""
     out = []
     index = 0
     length = len(text)
@@ -177,7 +180,9 @@ def _strip_apt_comments(text):
             index += 1
             continue
         pair = text[index:index + 2]
-        if pair == "//":
+        ## '#' comment to EOL, unless it is a '#include'/'#clear' directive.
+        if pair == "//" or (
+                char == "#" and not DIRECTIVE_HASH.match(text, index)):
             stop = text.find("\n", index)
             stop = length if stop < 0 else stop
             out.append(" " * (stop - index))

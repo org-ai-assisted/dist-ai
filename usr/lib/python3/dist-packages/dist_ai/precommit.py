@@ -71,9 +71,8 @@ def _materialize_blobs(paths, source_rev, base_cwd):
     mirror = tempfile.mkdtemp(prefix="dist-ai-precommit-")
     for path in paths:
         mode, sha = entries.get(path, (None, None))
-        ## Skip a symlink (120000) / gitlink (160000): no file content to scan,
-        ## same as the working-tree scan skips them.
-        if sha is None or mode in ("120000", "160000"):
+        ## Skip a gitlink (160000): a submodule pointer, no file content.
+        if sha is None or mode == "160000":
             continue
         try:
             blob = subprocess.run(
@@ -85,6 +84,12 @@ def _materialize_blobs(paths, source_rev, base_cwd):
         dest = os.path.join(mirror, rel)
         try:
             os.makedirs(os.path.dirname(dest) or mirror, exist_ok=True)
+            if mode == "120000":
+                ## A symlink's blob IS its target path -- recreate it so the
+                ## symlink checks (check-symlinks) actually see it; it is only
+                ## READ (checked for a broken target), never written through.
+                os.symlink(os.fsdecode(blob), dest)
+                continue
             with open(dest, "wb") as handle:
                 handle.write(blob)
             ## Owner-only: this mirror holds the scanned blob content, which
@@ -191,10 +196,25 @@ def _run_fixer(hook, files, base_cwd):
             dest = os.path.join(mirror, rel)
             try:
                 os.makedirs(os.path.dirname(dest) or mirror, exist_ok=True)
-                shutil.copy2(_abs(base_cwd, path), dest, follow_symlinks=False)
+                ## Read the source through O_NOFOLLOW|O_NONBLOCK and write a plain
+                ## REGULAR file into the mirror. copy2(follow_symlinks=False) would
+                ## copy a symlink AS a symlink, and the fixer -- opening it in the
+                ## mirror -- would FOLLOW it and rewrite the target OUTSIDE the
+                ## repo (a TOCTOU: a regular file swapped for a symlink after
+                ## _classify). O_NOFOLLOW refuses that swap (ELOOP -> skip), so the
+                ## fixer only ever sees a real file it cannot escape -- the same
+                ## O_NOFOLLOW guard the engine's in-place fixer already uses.
+                def _nofollow(open_path, flags):
+                    return os.open(
+                        open_path, flags | os.O_NOFOLLOW | os.O_NONBLOCK)
+                with open(_abs(base_cwd, path), "rb",
+                          opener=_nofollow) as src_handle:
+                    content = src_handle.read()
+                with open(dest, "wb") as dst_handle:
+                    dst_handle.write(content)
             except OSError:
-                ## Unreadable / gone / same-file: skip this one rather than crash
-                ## the whole batch. The gate's own detect pass still sees it.
+                ## Unreadable / gone / a symlink swapped in / same-file: skip this
+                ## one rather than crash the batch. The detect pass still sees it.
                 continue
         try:
             proc = subprocess.run(
@@ -227,6 +247,39 @@ def _added(paths, base_ref, base_cwd, content_cwd):
             continue
         out.append(path)
     return out
+
+
+def _large_blobs(paths, base_ref, source_rev, base_cwd):
+    """FAIL each newly-ADDED blob larger than check-added-large-files' default
+    (500 KiB). The blob-mode counterpart of that hook, which stats the working
+    tree (so a large file hidden behind a small working copy passed) and cannot
+    run in the non-git mirror (it shells out to 'git check-attr'). 'cat-file -s'
+    is the blob's real size -- and naturally the tiny POINTER size for a git-lfs
+    file, so lfs stays exempt with no extra logic. Existence keys on the tree,
+    not disk, so a large file staged then removed from the working copy is caught."""
+    from dist_ai import gitdiff
+    entries = gitdiff._tree_entries(
+        None if source_rev == "" else source_rev, base_cwd)
+    for path in paths:
+        mode, sha = entries.get(path, (None, None))
+        if sha is None or mode in ("120000", "160000"):
+            continue
+        if base_ref and subprocess.run(
+                ["git", "cat-file", "-e", "%s:%s" % (base_ref, path)],
+                capture_output=True, cwd=base_cwd).returncode == 0:
+            continue  ## already present in the base -> not newly added
+        try:
+            size = int(subprocess.run(
+                ["git", "cat-file", "-s", sha],
+                capture_output=True, cwd=base_cwd, check=True).stdout)
+        except (OSError, subprocess.CalledProcessError, ValueError):
+            continue
+        if size > 500 * 1024:
+            yield model.fail(
+                "check-added-large-files",
+                "check-added-large-files: '%s' blob is %d KiB (> 500 KiB); "
+                "reduce it or track it with git-lfs" % (path, size // 1024),
+                path)
 
 
 def _classify(paths, base_cwd, content_cwd, source_rev):
@@ -320,9 +373,14 @@ def _run_batch(paths, base_ref, staged_mode, base_cwd, content_cwd, source_rev):
     ## '--enforce-all' inspects the passed files (git diff --staged is empty at
     ## push time); restricted to ADDED files so a long-tracked large file does
     ## not fail every commit that appends to it.
-    added = _added(paths, base_ref, base_cwd, base_cwd)
-    yield from _run_hook("check-added-large-files", ["--enforce-all"], added,
-                         base_cwd)
+    if source_rev is None:
+        ## working-tree mode: the real hook stats the tree (which IS the content).
+        added = _added(paths, base_ref, base_cwd, base_cwd)
+        yield from _run_hook("check-added-large-files", ["--enforce-all"],
+                             added, base_cwd)
+    else:
+        ## blob mode: the hook cannot run in the non-git mirror; check blob sizes.
+        yield from _large_blobs(paths, base_ref, source_rev, base_cwd)
     yield from _run_hook("check-case-conflict", [], paths, base_cwd)
     yield from _run_hook("destroyed-symlinks", [], paths, base_cwd)
 
@@ -389,8 +447,9 @@ def _run_batch(paths, base_ref, staged_mode, base_cwd, content_cwd, source_rev):
                     if os.path.lexists(_abs(base_cwd, p))]
     yield from _run_hook("check-executables-have-shebangs", [],
                          exec_on_disk, base_cwd)
-    ## a symlink has no mirror file (git structure) -- check it in the real repo.
-    yield from _run_hook("check-symlinks", [], lists["symlink"], base_cwd)
+    ## check-symlinks reads a symlink to see if its target is broken (no git), so
+    ## it runs on content_cwd -- the mirror recreates the staged symlinks.
+    yield from _run_hook("check-symlinks", [], lists["symlink"], content_cwd)
 
     ## type by extension, content-reading -> content_cwd:
     yield from _run_hook("check-yaml", [], lists["yaml"], content_cwd)

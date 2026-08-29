@@ -1594,6 +1594,15 @@ printf '%s\n' \
 printf '%s\n' \
    'Dir::Cache "/var/cache/apt";' \
    > "${apt_repo}/etc/apt/apt.conf.d/30good-setting"
+## A '#' comment (line-leading OR inline) is NOT installed by apt, so a hook it
+## comments out must be SPARED -- '#' is a comment except a '#include'/'#clear'
+## directive. Guards against the fail-closed over-blocking a commented-out hook.
+printf '%s\n' \
+   "# DPkg::Pre-Invoke {\"echo a${sc} echo b\"}${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/31good-hash-comment"
+printf '%s\n' \
+   "DPkg::Post-Invoke {\"/usr/bin/a\"}${sc} # inline note" \
+   > "${apt_repo}/etc/apt/apt.conf.d/32good-inline-hash"
 printf '%s\n' \
    '// style-ok: allow-embedded-script' \
    "DPkg::Post-Invoke {\"a${sc} b\"}${sc}" \
@@ -1693,6 +1702,18 @@ if grep --quiet --fixed-strings -- '30good-setting' <<< "${apt_hits}"; then
    failures=$((failures + 1))
 else
    printf '%s\n' 'PASS: R-194 spares a non-hook apt setting'
+fi
+if grep --quiet --fixed-strings -- '31good-hash-comment' <<< "${apt_hits}"; then
+   printf '%s\n' 'FAIL: R-194 flagged a "#"-commented-out apt hook' >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' 'PASS: R-194 spares a "#"-commented-out apt hook'
+fi
+if grep --quiet --fixed-strings -- '32good-inline-hash' <<< "${apt_hits}"; then
+   printf '%s\n' 'FAIL: R-194 flagged a hook with a trailing "#" inline comment' >&2
+   failures=$((failures + 1))
+else
+   printf '%s\n' 'PASS: R-194 spares a hook with a trailing "#" inline comment'
 fi
 if grep --quiet --fixed-strings -- '40waived' <<< "${apt_hits}"; then
    printf '%s\n' 'FAIL: R-194 ignored its allow-embedded-script waiver' >&2

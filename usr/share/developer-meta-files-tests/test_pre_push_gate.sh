@@ -236,6 +236,45 @@ printf '%s\n' 'a harmless decoy' > "${repo}/id_rsa"
 assert "staged private key hidden by a clean working copy is caught" 1 \
    "detect-private-key" --check --staged
 
+## A large file staged then overwritten with a small decoy must still be flagged:
+## the size check reads the blob, not the working tree.
+repo="$(new_repo)"
+head -c 700000 /dev/zero | tr '\0' 'x' > "${repo}/big.dat"
+git -C "${repo}" add big.dat
+printf '%s\n' 'tiny' > "${repo}/big.dat"
+assert "large blob hidden by a small working copy is flagged" 1 \
+   "check-added-large-files" --check --staged
+
+## A staged BROKEN symlink must be flagged -- the symlink checks run over the
+## mirror's recreated symlinks, not skipped because the mirror has no symlink.
+repo="$(new_repo)"
+ln -s /nonexistent/broken/target "${repo}/badlink"
+git -C "${repo}" add badlink
+assert "a staged broken symlink is flagged in blob mode" 1 \
+   "check-symlinks" --check --staged
+
+## The pre-commit FIXER must not follow a symlink swapped in after classification
+## (a TOCTOU that let a fixer rewrite an arbitrary victim outside the repo). Drive
+## precommit._run_fixer directly with a symlink where a regular file was scanned;
+## the O_NOFOLLOW copy must refuse it and leave the victim untouched.
+fixer_lib="${STYLE%/usr/bin/dist-ai-style}/usr/lib/python3/dist-packages"
+[ -d "${fixer_lib}/dist_ai" ] || fixer_lib='/usr/lib/python3/dist-packages'
+victim="$(new_repo)/victim.txt"
+printf 'VICTIM ORIGINAL no newline' > "${victim}"
+ln -s "${victim}" "$(dirname -- "${victim}")/target.sh"
+toctou="$(PYTHONPATH="${fixer_lib}" python3 -c '
+import sys
+from dist_ai import precommit
+base, victim = sys.argv[1], sys.argv[2]
+list(precommit._run_fixer("end-of-file-fixer", ["target.sh"], base))
+print(open(victim).read())
+' "$(dirname -- "${victim}")" "${victim}")"
+if [ "${toctou}" = 'VICTIM ORIGINAL no newline' ]; then
+   note_pass "the pre-commit fixer refuses a symlink swapped in after the scan"
+else
+   note_fail "the pre-commit fixer followed a swapped-in symlink (victim='${toctou}')"
+fi
+
 if [ "${fail}" -ne 0 ]; then
    printf '%s\n' "pre-push-gate: ${passc} pass, ${fail} fail, 0 skip -- FAILURES above." >&2
    exit 1
