@@ -388,6 +388,20 @@ expect_rule "${r030fmt}" "printf ${dq}%(%Y)T${dq} -1"                          "
 expect_rule "${r030fmt}" "printf ${dq}%d \${x}${dq} ${dq}\${1}${dq}"           "present"
 expect_rule "${r030fmt}" "printf ${dq}%02x \${y}${dq} ${dq}\${n}${dq}"         "present"
 expect_rule "${r030fmt}" "printf ${dq}v ${bt}id${bt}${dq}"                     "present"
+## CANARY: a CONCATENATED single-quoted format 'x'$name'y' interpolates $name INTO
+## the format (a real %n injection). Its outer chars are both "'", but a bash
+## single-quoted string cannot CONTAIN a "'", so this is 'x' . $name . 'y' -- NOT a
+## literal -- and must be FLAGGED. FAILS pre-fix (the outer-quote heuristic stamped
+## the whole word single_quoted and spared it).
+expect_rule "${r030fmt}" "printf ${sq}x${sq}\$name${sq}y${sq} 1 2"             "present"
+## CANARY: 'x''$name' is TWO ADJACENT single-quoted segments ('x' . '$name'), so
+## $name stays LITERAL (single quotes suppress it) -- SPARED. A naive "inner has a
+## quote" heuristic would wrongly flag it; the quote-SEGMENT scan does not.
+expect_rule "${r030fmt}" "printf ${sq}x${sq}${sq}\$name${sq} 1 2"             "absent"
+## a PURE single-quoted '\$name' is a LITERAL dollar (no interpolation) -- SPARED.
+expect_rule "${r030fmt}" "printf ${sq}\$name${sq}"                            "absent"
+## 'printf -v NAME' with NO format string has nothing to judge -- SPARED.
+expect_rule "${r030fmt}" "printf -v onlyname"                                 "absent"
 ## '-v NAME' / '--' options skipped, so the FORMAT is what is judged:
 expect_rule "${r030fmt}" "printf -v out ${sq}%s${sq} ${dq}\${1}${dq}"          "absent"
 expect_rule "${r030fmt}" "printf -v out ${dq}bad \${x}${dq} ${dq}\${1}${dq}"   "present"

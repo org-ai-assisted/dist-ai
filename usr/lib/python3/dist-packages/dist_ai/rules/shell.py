@@ -672,8 +672,11 @@ def _skip_exit_code_word(call):
         return None
     name = name.lstrip("\\")
     index = 1
-    if name in _EXIT_CALL_WRAPPERS:
-        ## Skip the wrapper's options and a '--' to reach the wrapped command.
+    while name in _EXIT_CALL_WRAPPERS:
+        ## Unwrap EACH builtin/command layer -- bash runs a NESTED wrap like
+        ## 'command builtin exit 77' through all of them, so a single 'if' unwrap
+        ## would let the double-wrapped skip slip R-220. Skip this wrapper's options
+        ## and a '--' to reach the wrapped word, then loop for a further wrapper.
         while index < len(words):
             word = bash_ast.word_string(words[index])
             if word is None:
@@ -1284,6 +1287,27 @@ def _printf_calls(tree):
             yield stmt, cmd
 
 
+def _format_interpolates(raw):
+    """True if a printf format word's SOURCE can interpolate a '$' or backtick --
+    one appears OUTSIDE a single-quoted '...' segment. Single quotes suppress ALL
+    expansion and cannot be escaped inside, so a '$' within '...' is literal;
+    adjacent segments simply concatenate ('x''$y' is two literal segments, 'x'$y
+    interpolates $y). A backslash outside single quotes escapes the next char."""
+    i, n = 0, len(raw)
+    while i < n:
+        c = raw[i]
+        if c == "'":
+            close = raw.find("'", i + 1)
+            i = n if close == -1 else close + 1
+        elif c == "\\":
+            i += 2
+        elif c in "$`":
+            return True
+        else:
+            i += 1
+    return False
+
+
 def _printf_format(call, source):
     """(inner, single_quoted) for a printf CALL's format argument, or (None,
     False) if it has none. inner is the format with its surrounding quotes
@@ -1297,7 +1321,7 @@ def _printf_format(call, source):
     index = 1
     while index < total:
         option = bash_ast.word_source(call_args[index], source)
-        if option == "-v" and index + 2 < total:
+        if option == "-v" and index + 2 <= total:
             index += 2
             continue
         if option == "--":
@@ -1308,9 +1332,16 @@ def _printf_format(call, source):
     raw = bash_ast.word_source(call_args[index], source)
     if not raw:
         return None, False
+    ## Strip the outer quotes for the display / allowed-verb comparison when the
+    ## whole word is ONE quoted string; a concatenation keeps its raw form.
     if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "'\"":
-        return raw[1:-1], raw[0] == "'"
-    return raw, False
+        inner = raw[1:-1]
+    else:
+        inner = raw
+    ## single_quoted := the format cannot interpolate. Parse quote SEGMENTS, not the
+    ## outer chars: 'x'$name'y' interpolates $name (concatenated UNQUOTED), but
+    ## 'x''$name' is two single-quoted segments where $name stays literal.
+    return inner, not _format_interpolates(raw)
 
 
 class BareNewlinePrintf(Rule):

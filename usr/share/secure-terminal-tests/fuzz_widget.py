@@ -222,9 +222,12 @@ def phase_keys(rnd, iterations, seed):
 
 def phase_review(rnd, iterations, seed):
     ## The review bar (review.py) reviews untrusted text in BOTH directions. Fuzz
-    ## show_review directly with random text and kind: classify_paste, the strip/keep
-    ## previews and render_preview must never crash, and the STRIP preview (what the
-    ## user gets on the safe default) must carry no raw control byte.
+    ## show_review directly with random text and kind: classify_paste and the single
+    ## mirror (render_preview in the tab's mode) must never crash, a live
+    ## rerender_mirror (a mode flip while the review is open) must be safe too, and
+    ## the mirror must never surface a raw ESC (escape sequences are rendered, not
+    ## shown). The DELIVERED text's control-byte safety is a sanitize property,
+    ## covered by the sanitize fuzz, not by the review pane.
     from secure_terminal.review import ReviewBar
     from PyQt6.QtWidgets import QWidget
     win = QWidget()
@@ -236,11 +239,13 @@ def phase_review(rnd, iterations, seed):
                         rnd.choice(('paste', 'copy', 'bogus')))
         _assert(bar.reviewed_term() is term,
                 'review bar did not take the term for {0!r}'.format(raw), seed)
-        strip_pane = bar._views[2].toPlainText()          # the safe-default preview
-        for ch in strip_pane:
-            _assert(ch in ('\n', '\t') or ord(ch) >= 0x20,
-                    'review strip-preview leaked a control byte on {0!r}'.format(raw),
-                    seed)
+        # flip the tab's mode while the review is open: the SAME mirror must
+        # re-render (the live-follow path) without raising
+        term.apply_mode(rnd.choice(list(S.DISPLAY_MODES)))
+        bar.rerender_mirror()
+        mirror_text = bar._mirror.toPlainText()
+        _assert('\x1b' not in mirror_text,
+                'review mirror surfaced a raw ESC on {0!r}'.format(raw), seed)
         bar.hide_review()
 
 

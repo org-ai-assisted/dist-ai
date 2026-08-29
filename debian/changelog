@@ -1,3 +1,12 @@
+dist-ai (0.1-2) unstable; urgency=medium
+
+  * Move safe-pgrep/safe-pkill to private-ai-config (their sole home); this
+    version boundary lets private-ai-config Replaces the moved files cleanly.
+  * Harden the pre-push gate: R-220 nested builtin/command unwrap, R-030
+    concatenated single-quote format-string injection, R-172 -pm700 fixer.
+
+ -- Patrick Schleizer <adrelanos@whonix.org>  Sat, 29 Aug 2026 12:53:46 -0400
+
 dist-ai (0.1-1) unstable; urgency=medium
 
   * Initial release.

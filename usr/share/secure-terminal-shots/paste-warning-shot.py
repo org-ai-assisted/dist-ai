@@ -8,11 +8,12 @@
 
 The bar is the real one the app shows -- secure_terminal.review.ReviewBar --
 fed a representative hostile paste (a curl | bash line whose domain and shell name
-hide Cyrillic homoglyphs, plus a zero-width and a bidi override), with its Detail
-panes expanded, so the summary, the four read-only preview panes (which reuse the
-terminal's renderer) and the countdown-gated buttons appear exactly as a user
-sees them. Used to generate the shot on the project's Pages site; run it again to
-regenerate. No display is needed: it uses Qt's offscreen platform and grab().
+hide Cyrillic homoglyphs, plus a zero-width and a bidi override), so the summary,
+the single mirror pane (which reuses the terminal's renderer in the tab's detail
+mode, naming each hidden character inline) and the countdown-gated buttons appear
+exactly as a user sees them. Used to generate the shot on the project's Pages
+site; run it again to regenerate. No display is needed: it uses Qt's offscreen
+platform and grab().
 
 It imports the app (secure_terminal.review), so run it against an installed
 secure-terminal or point PYTHONPATH at a checkout:
@@ -97,19 +98,18 @@ PANE_INSET = 6
 
 
 class _Term:
-    """Minimal stand-in for the tab that held the paste: the bar reads its theme
-    and font to style the preview panes (the terminal's theme, Hack font) and asks
-    whether a live program has bracketed paste on (to decide the delivered form)."""
+    """Minimal stand-in for the tab that held the paste: the bar reads its theme,
+    font and display MODE to render the mirror pane (the terminal's theme, Hack
+    font, detail mode -- so every hidden character is named inline)."""
     _theme = THEME_NAME
 
     def current_font_family(self):
         return 'Hack'
 
-    def _bracketed_paste_active(self):
-        # No live foreground program in the shot -> a plain shell target, so the
-        # delivered-form panes show the auto-submit-stripped paste (the common,
-        # safe case a user sees at a shell prompt).
-        return False
+    def current_mode(self):
+        # detail mode names each hidden character inline -- the most informative
+        # view for the shot, and what the mirror shows when the tab is in detail.
+        return 'detail'
 
     def dispatch_pending_paste(self, action):
         pass
@@ -205,23 +205,27 @@ def main(argv):
     bar = ReviewBar(host)
     layout.addWidget(bar)
     bar.show_review(_Term(), PAYLOAD, delay, kind)
-    bar._detail_btn.setChecked(True)        # expand the preview panes for the shot
-    # The panes hold ONE line (PAYLOAD is one line); size each to that line and
-    # drop the auto scrollbars so the shot has no dead pane height and no stray
-    # scrollbar. Overrides the app's 130px minimum for the shot only.
-    for view in bar._views:
-        view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        view.setMinimumHeight(0)
-        view.setFixedHeight(view.fontMetrics().lineSpacing() + 2 * PANE_INSET)
-    # width sized so the four preview panes + the button row are roomy and NOT
-    # clipped on the right (a hard 940 truncated them; the word-wrapping summary
-    # let the layout compress below the content's real width).
+    # Drop the auto scrollbars so the shot has no stray scrollbar. Width sized so
+    # the mirror's inline-expanded line + the button row are roomy (the detail-mode
+    # <U+XXXX NAME> expansion makes the line long; the word-wrapping summary would
+    # otherwise let the layout compress below the content's real width).
+    mirror = bar._mirror
+    mirror.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    mirror.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    mirror.setMinimumHeight(0)
     host.setFixedWidth(1180)
     host.adjustSize()
     host.show()
-    # let the layout settle and the previews render before grabbing
+    # let the layout settle so the mirror wraps to its final width before grabbing
     app.processEvents()
+    app.processEvents()
+    # Oversize the mirror a few lines and let _trim_to_content cut the dead
+    # terminal-bg height below the actual content: at 1180 the detail expansion is
+    # one line, but the offscreen document layout does not report a usable height,
+    # so measuring it would clip. Trim (theme-bg keyed) gives a tight shot without
+    # the fragile measurement. Overrides the app's 120px minimum for the shot only.
+    mirror.setFixedHeight(3 * mirror.fontMetrics().lineSpacing() + 2 * PANE_INSET)
+    host.adjustSize()
     app.processEvents()
 
     # Trim the fixed-minimum empty pane height off the grab so the shot is tight
