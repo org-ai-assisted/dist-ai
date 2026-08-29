@@ -170,7 +170,14 @@ rmdir "${lock_dir}" 2>/dev/null || true
 ## instead of a tab. Regression guard for that confined-bind denial. uid 0 here ->
 ## /run/user/0; the profile pattern is /run/user/[0-9]*/.
 bind_dir="/run/user/$(id --user)/secure-terminal"
-mkdir --parents "${bind_dir}"
+## Only reap the runtime dir if WE created it: a live secure-terminal (or another
+## test) may already own it, and rmdir'ing a shared dir we did not make is a
+## cross-test hazard even guarded by `|| true`.
+bind_dir_created=0
+if [ ! -e "${bind_dir}" ]; then
+   mkdir --parents "${bind_dir}"
+   bind_dir_created=1
+fi
 bind_probe="${bind_dir}/aa-bind-probe.sock"
 bind_rc=0
 aa-exec -p secure-terminal -- python3 -Bsu -c '
@@ -191,7 +198,9 @@ else
       "FAIL: the profile DENIED the single-instance QLocalServer bind (${bind_probe})"
 fi
 safe-rm --force "${bind_probe}"
-rmdir "${bind_dir}" 2>/dev/null || true
+if [ "${bind_dir_created}" -eq 1 ]; then
+   rmdir "${bind_dir}" 2>/dev/null || true
+fi
 
 ## --- unicode-tag-stdin: the tight, stdin-only neutralizer profile ---
 ## Prove the SAME enforcement on it: a granted read ALLOWED, a non-granted read
