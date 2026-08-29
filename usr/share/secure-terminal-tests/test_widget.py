@@ -7111,7 +7111,7 @@ _gz = SecureTerminal(command='/bin/cat')
 _gz.apply_tui(True)
 feed_output(_gz, b'\x1b[?1049h')            # alt screen -> grid mode
 _gz.apply_zoom(150)
-ok(True, 'apply_zoom in grid mode schedules a repaint')
+ok(_gz.current_zoom() == 150, 'apply_zoom in grid mode applies the zoom level')
 
 # _set_winsize: no-fd short-circuit and an ioctl error are both swallowed
 _sw = SecureTerminal(command='/bin/cat')
@@ -7129,8 +7129,10 @@ ok(True, '_set_winsize tolerates a closed pty and an ioctl error')
 
 # apply_markings toggles and re-renders only on a real change
 _am = SecureTerminal(command='/bin/cat')
-_am.apply_markings(not _am.markings_enabled())
-ok(True, 'apply_markings re-renders on a change')
+_am_was = _am.markings_enabled()
+_am.apply_markings(not _am_was)
+ok(_am.markings_enabled() == (not _am_was),
+   'apply_markings toggles the markings state on a change')
 
 # _end_sync_update is a no-op when no synchronized update is open
 _es = SecureTerminal(command='/bin/cat')
@@ -7154,9 +7156,17 @@ ok(True, '_on_readable: a not-ready non-blocking fd is handled')
 
 # PageUp/PageDown scroll the scrollback (line mode)
 _pg = SecureTerminal(command='/bin/cat')
+_pg.resize(600, 200)
+_pg.show()
+for _pgi in range(200):
+    _pg._append('pgline %d\n' % _pgi)
+_pgbar = _pg.verticalScrollBar()
+_pg_bottom = _pgbar.value()                  # at the bottom after the output
 key(_pg, Qt.Key.Key_PageUp)
+_pg_up = _pgbar.value()
 key(_pg, Qt.Key.Key_PageDown)
-ok(True, 'PageUp/PageDown drive the scrollbar')
+ok(_pg_up < _pg_bottom and _pgbar.value() > _pg_up,
+   'PageUp/PageDown drive the scrollbar (up, then back down)')
 
 # in TUI mode a plain key is encoded as VT input (keyPressEvent -> _tui_key)
 _tk2 = SecureTerminal(command='/bin/cat')
@@ -7493,11 +7503,12 @@ from PyQt6.QtGui import QContextMenuEvent as _QCME               # noqa: E402
 from PyQt6.QtWidgets import QMenu as _QMenu2                     # noqa: E402
 _cme = SecureTerminal(command='/bin/cat')
 _o_menuexec = _QMenu2.exec
-_QMenu2.exec = lambda *_a, **_k: None
+_menu_shown = []
+_QMenu2.exec = lambda *_a, **_k: _menu_shown.append(1)
 try:
     _cev = _QCME(_QCME.Reason.Mouse, _QPoint(5, 5), _cme.mapToGlobal(_QPoint(5, 5)))
     _cme.contextMenuEvent(_cev)
-    ok(True, 'contextMenuEvent shows the reviewed context menu')
+    ok(_menu_shown == [1], 'contextMenuEvent builds and shows the reviewed context menu')
 finally:
     _QMenu2.exec = _o_menuexec
 _cme.shutdown()

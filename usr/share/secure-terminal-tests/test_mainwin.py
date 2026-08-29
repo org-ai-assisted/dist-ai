@@ -187,6 +187,7 @@ try:
     from secure_terminal.main import _ZoomDialog as _ZD           # noqa: E402
     from PyQt6.QtGui import QWheelEvent as _QWE                   # noqa: E402
     from PyQt6.QtCore import QPointF as _QPF, QPoint as _QP       # noqa: E402
+    win._ui_scale = 100                       # deterministic sub-max start so a step MUST raise it
     _us0 = win._ui_scale
     QDialog.exec = lambda _self: (_dialogs.append(_self),
                                   int(QDialog.DialogCode.Accepted))[1]
@@ -194,7 +195,7 @@ try:
     win.show_global_settings()
     _zdlg = [d for d in _dialogs if isinstance(d, _ZD)][-1]
     _zdlg.on_zoom(1)                          # covers _live_zoom (step + live re-scale)
-    ok(win._ui_scale >= _us0,
+    ok(win._ui_scale > _us0,
        'Ctrl+wheel up on the settings dialog raises the menu scale live')
     _zoomed = []
     _zdlg.on_zoom = lambda direction: _zoomed.append(direction)
@@ -307,10 +308,17 @@ def _exec_clip(self):
 
 
 QDialog.exec = _exec_clip
+_clip_grants = []
+_orig_grant = term.grant_clipboard_read
+term.grant_clipboard_read = lambda d: _clip_grants.append(d)
 try:
     win._on_clipboard_read_requested(term)
-    ok(True, 'clipboard-read dialog: countdown enables Allow, choice is recorded')
+    # non-vacuous: clicking "Allow once" must record the ONCE decision on the tab
+    # (post-exec the window calls term.grant_clipboard_read(result['decision'])).
+    ok(_clip_grants == [term.CLIP_ALLOW_ONCE],
+       'clipboard-read dialog: countdown enables Allow, the once-allow choice is recorded')
 finally:
+    term.grant_clipboard_read = _orig_grant
     QDialog.exec = _orig_exec
 
 # --- keyboard-shortcuts dialog: build, Reset, Save ----------------------------
@@ -524,22 +532,33 @@ finally:
 # --- bell-sound picker (file dialog + allow-list gate, stubbed) ---------------
 _owarn = QMessageBox.warning
 _ogof = QFileDialog.getOpenFileName
-QMessageBox.warning = staticmethod(lambda *_a, **_k: None)
+_bell_warns = []
+QMessageBox.warning = staticmethod(lambda *_a, **_k: _bell_warns.append(1))
+_bell_set = []
+_orig_set_bell = win.set_bell_sound
+win.set_bell_sound = lambda p: _bell_set.append(p)
 _orig_locked = win._bell_sound_locked
 try:
     win._bell_sound_locked = lambda: True
-    win._pick_bell_sound()                  # locked -> return
-    ok(True, '_pick_bell_sound: a locked setting is a no-op')
+    _bell_warns.clear(); _bell_set.clear()
+    win._pick_bell_sound()                  # locked -> return before the dialog
+    ok(not _bell_set and not _bell_warns,
+       '_pick_bell_sound: a locked setting sets no sound and shows no warning')
     win._bell_sound_locked = lambda: False
     QFileDialog.getOpenFileName = staticmethod(lambda *_a, **_k: ('', ''))
+    _bell_warns.clear(); _bell_set.clear()
     win._pick_bell_sound()                  # cancelled -> return
-    ok(True, '_pick_bell_sound: cancelling the dialog is a no-op')
+    ok(not _bell_set and not _bell_warns,
+       '_pick_bell_sound: cancelling the dialog sets no sound and shows no warning')
     QFileDialog.getOpenFileName = staticmethod(
         lambda *_a, **_k: ('/etc/hostname', ''))   # a real file, not in the allow-list
+    _bell_warns.clear(); _bell_set.clear()
     win._pick_bell_sound()                  # disallowed -> warning -> return
-    ok(True, '_pick_bell_sound: a file outside the allowed dirs is refused')
+    ok(_bell_warns == [1] and not _bell_set,
+       '_pick_bell_sound: a file outside the allowed dirs is refused (warns, sets nothing)')
 finally:
     win._bell_sound_locked = _orig_locked
+    win.set_bell_sound = _orig_set_bell
     QFileDialog.getOpenFileName = _ogof
     QMessageBox.warning = _owarn
 
