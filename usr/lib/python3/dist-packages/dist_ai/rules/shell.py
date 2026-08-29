@@ -617,20 +617,23 @@ class ShellInlineShellC(Rule):
 ## --- unauthorized skip ------------------------------------------------------
 
 ALLOW_SKIP = re.compile(r'##[ \t]*style-ok:[ \t]*allow-skip:[ \t]*\S')
-## Optional leading '+': bash tolerates 'exit +77' (runs as 77), so a bare
-## '[0-9]+' would fail to recognize it as a skip and leave it ungated.
-_DECIMAL_INT = re.compile(r'\+?[0-9]+')
+## A SIGNED decimal literal: bash tolerates a leading '+' or '-' on an exit/return
+## code, so a bare '[0-9]+' would miss 'exit +77' / 'exit -179' and leave them
+## ungated.
+_DECIMAL_INT = re.compile(r'[+-]?[0-9]+')
 
 
 def _is_skip_code_77(word):
-    """True if WORD is an 'exit'/'return' argument that RUNS AS 77. Bash parses
-    the argument as DECIMAL, leading zeros AND a leading '+' included -- 'exit 077'
-    and 'exit +77' both exit 77 -- so a bare-string '== 77' misses those and lets
-    an unwaived skip slip. Normalize a decimal-integer literal before comparing; a
-    non-literal (expansion, or a quoted non-number) is not a recognizable skip."""
+    """True if WORD is an 'exit'/'return' argument that RUNS AS 77. Bash truncates
+    the code to 8 bits and parses it as a signed decimal (leading zeros / '+' / '-'
+    included), so 'exit 077', 'exit +77', 'exit 333' (333 mod 256) and 'exit -179'
+    (-179 mod 256) ALL exit 77 -- a literal '== 77' misses every one and lets an
+    unwaived skip slip. Normalize mod 256 (Python's floored '%' is non-negative, so
+    a negative code lands right); a non-literal (expansion, or a quoted non-number)
+    is not a recognizable skip."""
     if word is None or _DECIMAL_INT.fullmatch(word) is None:
         return False
-    return int(word, 10) == 77
+    return int(word, 10) % 256 == 77
 
 
 ## Prefixes bash treats as running the SAME exit/return builtin: '\exit' (alias

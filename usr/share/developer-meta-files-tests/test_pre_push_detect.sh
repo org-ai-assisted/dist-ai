@@ -265,6 +265,14 @@ assert_at "R-220 flags 'exit 077' (decimal 77)" "R-220" 2
 run_det "$(printf '%s\n' '#!/bin/bash' 'foo || exit 770' 'bar || return 78')"
 assert_not_at "R-220 spares 'exit 770'"   "R-220" 2
 assert_not_at "R-220 spares 'return 78'"  "R-220" 3
+## bash truncates the exit code to 8 bits, so ANY code == 77 mod 256 runs as 77 at
+## runtime ('exit 333' -> 77, 'exit -179' -> 77) and must be gated; a code that mods
+## to something else is spared. A literal '== 77' missed the whole truncation class.
+run_det "$(printf '%s\n' '#!/bin/bash' 'foo || exit 333' 'bar || exit -179')"
+assert_at "R-220 flags 'exit 333' (333 mod 256 = 77)"  "R-220" 2
+assert_at "R-220 flags 'exit -179' (-179 mod 256 = 77)" "R-220" 3
+run_det "$(printf '%s\n' '#!/bin/bash' 'foo || exit 333' 'bar || exit 300')"
+assert_not_at "R-220 spares 'exit 300' (300 mod 256 = 44)" "R-220" 3
 ## exec-wrapper spellings: bash runs the SAME exit/return builtin through '\exit',
 ## 'builtin exit' and 'command exit', so a skip must not evade the gate by an
 ## alternate spelling (sibling apt/dpkg rules unwrap sudo/doas the same way).
