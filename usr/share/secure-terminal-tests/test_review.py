@@ -6,11 +6,12 @@
 
 ## Tests for secure_terminal.review -- the in-window review bar shown when text
 ## crossing the terminal boundary (a paste IN, or a copy OUT) carries unicode or
-## control characters. Built and driven offscreen: the summary, the four read-only
-## preview panes that reuse the terminal renderer, the Detail toggle, the countdown
-## that gates BOTH send buttons, that a choice is dispatched to the tab that held
-## the text, and that the copy direction relabels the buttons + dispatches to the
-## copy path. SKIPs (exit 77) when PyQt6 is unavailable.
+## control characters. Built and driven offscreen: the summary, the SINGLE mirror
+## pane that reuses the terminal renderer and follows the reviewed tab's display
+## mode live, the countdown that gates BOTH send buttons, that a choice is
+## dispatched to the tab that held the text, and that the copy direction relabels
+## the buttons + dispatches to the copy path. SKIPs (exit 77) when PyQt6 is
+## unavailable.
 
 import os
 import sys
@@ -45,21 +46,20 @@ def eq(got, want, msg):
 
 
 class _FakeTerm:
-    """Minimal stand-in for the tab that held the paste: the bar reads its theme
-    and font and dispatches the choice back to it."""
+    """Minimal stand-in for the tab that held the paste: the bar reads its theme,
+    font and display MODE (the mirror renders the held text the way the tab would)
+    and dispatches the choice back to it."""
     def __init__(self):
         self._theme = 'dark'
+        self._mode = 'detail'         # the mirror renders in the tab's current mode
+        self._markings = True
         self.dispatched = []
-        self.bracketed = False        # a bare shell prompt (no DEC 2004): the common case
 
     def current_font_family(self):
         return 'Hack'
 
-    def _bracketed_paste_active(self):
-        # The paste "sends" preview drops the trailing auto-submit CR exactly when the
-        # target is NOT bracketed-paste (matching _dispatch_paste), so the preview must
-        # be able to read this from the holding tab.
-        return self.bracketed
+    def current_mode(self):
+        return self._mode
 
     def dispatch_pending_paste(self, action):
         self.dispatched.append(('paste', action))
@@ -74,50 +74,57 @@ _term = _FakeTerm()
 # a paste hiding a bidi override + a Cyrillic homoglyph
 _raw = 'pay' + chr(0x0430) + 'l' + chr(0x202E) + '\n'
 
-# --- show: summary, panes reuse the renderer, no child spawned ----------------
+# --- show: summary, mirror reuses the renderer, no child spawned --------------
 _bar.show_review(_term, _raw, 0)
 ok('hides' in _bar._summary.text() and 'bidirectional control' in _bar._summary.text(),
    'the bar summarises what the paste hides')
-ok(len(_bar._views) == 4 and all(v._pid is None and v._fd is None for v in _bar._views),
-   'the four preview panes are render-only (no child process spawned)')
-# the Detail pane (index 1) names each hidden character inline, via the real pipeline
-ok('CYRILLIC SMALL LETTER A' in _bar._views[1].toPlainText()
-   and 'RIGHT-TO-LEFT OVERRIDE' in _bar._views[1].toPlainText(),
-   'the Detail pane names the hidden characters inline (<U+XXXX NAME>)')
-# the stripped pane shows the ASCII result (homoglyph + bidi gone); unicode keeps 'a'
-ok('payl' in _bar._views[2].toPlainText(), 'the Paste-stripped pane shows the ASCII result')
-ok(all(v.isReadOnly() for v in _bar._views),
-   'the preview panes are read-only (no typing into a preview)')
+ok(_bar._mirror._pid is None and _bar._mirror._fd is None,
+   'the mirror pane is render-only (no child process spawned)')
+ok(_bar._mirror.isVisibleTo(_bar),
+   'the mirror pane is shown with the bar (no Detail toggle to expand)')
+# the tab is in 'detail' mode, so the mirror names each hidden character inline,
+# via the real pipeline -- proving the pane renders in the TAB's mode
+ok('CYRILLIC SMALL LETTER A' in _bar._mirror.toPlainText()
+   and 'RIGHT-TO-LEFT OVERRIDE' in _bar._mirror.toPlainText(),
+   'the mirror names the hidden characters inline (the tab\'s detail mode)')
+ok(_bar._mirror.isReadOnly(),
+   'the mirror pane is read-only (no typing into a review)')
 
-# --- Detail toggle reveals / hides the preview grid ---------------------------
-ok(not _bar._panes_host.isVisibleTo(_bar), 'previews start collapsed')
-_bar._detail_btn.setChecked(True)
-ok(_bar._panes_host.isVisibleTo(_bar), 'the Detail toggle reveals the preview panes')
-_bar._detail_btn.setChecked(False)
-ok(not _bar._panes_host.isVisibleTo(_bar), 'toggling Detail off hides the panes again')
+# --- the mirror follows the tab's display mode LIVE ---------------------------
+# Flipping the tab's mode (the normal shortcut -> set_mode -> rerender_mirror) must
+# re-render the SAME pane, not a preview-only branch. In 'show' mode the homoglyph
+# is displayed as-is, so its inline <U+XXXX NAME> (a detail-mode artefact) is gone.
+_term_m = _FakeTerm()
+_bar.show_review(_term_m, _raw, 0)
+ok('CYRILLIC SMALL LETTER A' in _bar._mirror.toPlainText(),
+   'the mirror starts in the tab\'s detail mode (names the homoglyph)')
+_term_m._mode = 'show'
+_bar.rerender_mirror()
+ok('CYRILLIC SMALL LETTER A' not in _bar._mirror.toPlainText(),
+   'flipping the tab to show mode live re-renders the mirror (inline names gone)')
+# with no review open, rerender_mirror is a harmless no-op (window calls it always)
+_bar._choose('reject')
+_before = _bar._mirror.toPlainText()
+_bar.rerender_mirror()
+eq(_bar._mirror.toPlainText(), _before,
+   'rerender_mirror is a no-op once the review is resolved (no _term)')
 
 # --- with no delay both send buttons are enabled immediately ------------------
+_bar.show_review(_FakeTerm(), _raw, 0)
 ok(_bar._stripped.isEnabled() and _bar._unicode.isEnabled() and _bar._reject.isEnabled(),
    'with no delay all three buttons are enabled')
 
 # --- a choice dispatches to the tab that held the paste, exactly once ----------
+_term_c1 = _FakeTerm()
+_bar.show_review(_term_c1, _raw, 0)
 _bar._choose('stripped')
-eq(_term.dispatched, [('paste', 'stripped')], 'a button choice is dispatched to the holding tab')
+eq(_term_c1.dispatched, [('paste', 'stripped')],
+   'a button choice is dispatched to the holding tab')
 # single-shot: a second choose (a double-click, or Esc right after) is a no-op, so
 # the same held paste is never dispatched twice
 _bar._choose('unicode')
-eq(_term.dispatched, [('paste', 'stripped')],
+eq(_term_c1.dispatched, [('paste', 'stripped')],
    'a second choice after dispatch is a no-op (single-shot: dispatched exactly once)')
-
-# --- each new review opens with Detail collapsed ------------------------------
-_term_d = _FakeTerm()
-_bar.show_review(_term_d, _raw, 0)
-_bar._detail_btn.setChecked(True)           # user expands Detail on this review
-ok(_bar._panes_host.isVisibleTo(_bar), 'Detail is expanded on this review')
-_bar._choose('reject')
-_bar.show_review(_term_d, _raw, 0)          # a later review must reopen collapsed
-ok(not _bar._detail_btn.isChecked() and not _bar._panes_host.isVisibleTo(_bar),
-   'a new review opens collapsed, not exposing the next paste without a toggle')
 
 # --- the countdown gates BOTH send buttons until it elapses -------------------
 _term2 = _FakeTerm()
@@ -134,6 +141,7 @@ ok(_bar._stripped.isEnabled() and _bar._unicode.isEnabled(),
    'both send buttons unlock once the countdown elapses')
 eq(_bar._stripped.text(), 'Paste stripped', 'the stripped countdown suffix is dropped')
 eq(_bar._unicode.text(), 'Paste with unicode', 'the unicode countdown suffix is dropped')
+_bar._choose('reject')
 
 # --- Esc rejects (the safe default) -------------------------------------------
 _term3 = _FakeTerm()
@@ -178,6 +186,8 @@ ok('hide' not in _bar._summary.text().lower()
    and 'hidden' not in _bar._summary.text().lower(),
    'a clean paste review does not claim hidden characters')
 ok('shell' in _bar._summary.text().lower(), 'the clean-paste summary points at the shell')
+ok('plain ascii command' in _bar._mirror.toPlainText(),
+   'the mirror shows the held text even for a clean review')
 _bar.show_review(_term_clean, 'plain ascii\n', 0, 'copy')
 ok('hidden' not in _bar._summary.text().lower()
    and 'clipboard' in _bar._summary.text().lower(),
@@ -205,29 +215,12 @@ for _theme in ('dark', 'light'):
         ok(not _too_close(_rgb(_QColor(_hex)), _bg),
            '%s send-button colour reads on the %s theme background' % (_name, _theme))
 
-# --- the "sends" panes match what _dispatch_paste actually writes -------------
-# At a NON-bracketed prompt _dispatch_paste drops the trailing auto-submit CR, so the
-# "Paste stripped sends" preview must too -- it previously showed the trailing newline,
-# implying a submit that never happens. A bracketed-paste TUI keeps the CR (buffered).
-_pt = _FakeTerm()
-_pt.bracketed = False
-_bar.show_review(_pt, 'runcmd\n', 0)
-_nonbr_sends = _bar._views[2].toPlainText()
-_bar.show_review(_pt, 'runcmd', 0)                 # identical text, already no trailing CR
-_nonl_sends = _bar._views[2].toPlainText()
-eq(_nonbr_sends, _nonl_sends,
-   'a non-bracketed "sends" preview drops the trailing auto-submit CR: "runcmd\\n" '
-   'previews identically to "runcmd" (matches _dispatch_paste)')
-_pt.bracketed = True
-_bar.show_review(_pt, 'runcmd\n', 0)
-_br_sends = _bar._views[2].toPlainText()
-ok(_br_sends != _nonl_sends,
-   'a bracketed-paste target keeps the trailing CR in the "sends" preview')
-
 # --- hide_review tears down cleanly -------------------------------------------
+_bar.show_review(_FakeTerm(), _raw, 0)
 _bar.hide_review()
 ok(not _bar.isVisibleTo(_win), 'hide_review hides the bar')
 ok(not _bar._countdown.isActive(), 'the countdown timer is stopped on hide')
+ok(_bar.reviewed_term() is None, 'hide_review clears the reviewed tab')
 
 APP.processEvents()
 print('secure-terminal-tests(review): all passed' if not _failures else
