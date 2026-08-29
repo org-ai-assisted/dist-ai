@@ -315,11 +315,13 @@ class GrepQuiet(Rule):
 ## Temp-dir parameter names whose mkdir operand makes R-172 apply.
 TMP_PARAMS = {"TMPDIR", "TEMPDIR", "TEMP", "TMP"}
 
-## A short '-m' carrying a jammed numeric mode ('-m700').
 ## A jammed short '-m' mode, possibly BUNDLED behind other short flags
-## ('-pm700' = -p -m 700): '-m' takes the rest of the cluster as its argument, so
-## the mode is always the octal tail. group(1) = the preceding flags, group(2) = mode.
-MKDIR_M_JAMMED = re.compile(r'^-([a-zA-Z]*)m([0-7]{3,4})$')
+## ('-pm700' = -p -m 700). GNU mkdir gives the FIRST 'm' in the cluster the rest as
+## its argument, so the prefix EXCLUDES a lowercase 'm': else a greedy match on
+## '-mpm700' picks the LAST m and rewrites an INVALID mode ('-m pm700', mkdir fails)
+## into a VALID one ('-mp --mode=700', mkdir succeeds), silencing R-172.
+## group(1) = the preceding flags, group(2) = the octal mode.
+MKDIR_M_JAMMED = re.compile(r'^-([a-ln-zA-Z]*)m([0-7]{3,4})$')
 
 ## The atomic 'mkdir --parents ... --mode=' form trips shellcheck SC2174 by
 ## design; insert the disable so R-172's mandated form stays shellcheck-clean.

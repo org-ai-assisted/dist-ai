@@ -304,6 +304,18 @@ if [ "$(cksum < "${f}")" = "${before}" ] ; then
 else
    note_fail "R-172 rewrote an unfixable cluster unsafely"
 fi
+## GNU mkdir gives the FIRST 'm' the rest of the cluster: '-mpm700' == '-m pm700'
+## (invalid mode, mkdir FAILS). A greedy prefix match would pick the LAST m and
+## rewrite to a SUCCEEDING '-mp --mode=700', silencing R-172. Leave it byte-identical.
+f="${test_dir}/mkdirfirstm.sh"
+printf '%b' '#!/bin/bash\nmkdir -mpm700 -- "$TMPDIR"\n' >"${f}"
+before="$(cksum < "${f}")"
+run_fix "${f}" >/dev/null 2>&1
+if [ "$(cksum < "${f}")" = "${before}" ] ; then
+   note_pass "R-172 leaves '-mpm700' (first-m rule: pm700 is an invalid mode) for the gate"
+else
+   note_fail "R-172 rewrote '-mpm700' into a succeeding mkdir (fixer silenced the finding)"
+fi
 
 ## --- 7i: a non-shell file with the pattern is untouched -------------------
 f="${test_dir}/doc-mkdir.md"
