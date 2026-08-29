@@ -1,5 +1,3 @@
-# Internal derivative-maker package; never uploaded to Debian, no BTS bug to close.
-dist-ai: initial-upload-closes-no-bugs
 # The tb-updater test library inspects the dpkg database on purpose, to assert the
 # real package state the suite is validating.
 dist-ai: uses-dpkg-database-directly
