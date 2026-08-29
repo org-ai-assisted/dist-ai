@@ -321,6 +321,22 @@ _sbt.close()
 import re                                                         # noqa: E402
 from PyQt6.QtGui import QWheelEvent, QMouseEvent as _QME, QFocusEvent as _QFEv  # noqa: E402
 from PyQt6.QtCore import QPoint as _QP, QPointF as _QPF, QEvent  # noqa: E402,F811
+
+
+def _glyph_pt(term, idx):
+    """Viewport point at the visual center of the grid/line cell whose glyph sits
+    AT document position idx. The native caret is hidden (cursorRect width 0), so
+    center() of a single caret rect lands on the cell boundary; take the midpoint to
+    idx+1, as the astral-glyph hover check already does."""
+    _a = QTextCursor(term.document())
+    _a.setPosition(idx)
+    _b = QTextCursor(term.document())
+    _b.setPosition(idx + 1)
+    _ra, _rb = term.cursorRect(_a), term.cursorRect(_b)
+    _x = (_ra.x() + _rb.x()) // 2 if _rb.x() > _ra.x() else _ra.x() + 3
+    return _QP(_x, _ra.center().y())
+
+
 _alt = SecureTerminal(command='/bin/cat', tui=True)
 _asent = spy_writes(_alt)
 _SGR_RE = re.compile(rb'^\x1b\[<(\d+);(\d+);(\d+)([Mm])$')
@@ -1289,8 +1305,11 @@ if tui_available():
     # is not done on HALF a marker), while a COMPLETE read is fed whole (not delayed).
     _ast = SecureTerminal(command='/bin/cat', tui=True)
     feed_output(_ast, b'frame\x1b[?10')          # ends mid-marker -> partial tail HELD
+    ok(not _ast._alt_screen,
+       'F6: a split alt-screen marker does not enter the alt screen on the partial half')
     feed_output(_ast, b'49h\x1b[2Jnext')          # reunites + feeds the whole marker
-    ok(True, 'F6: the TUI feed reunites a split alt-screen marker without crashing')
+    ok(_ast._alt_screen,
+       'F6: the TUI feed reunites a split alt-screen marker (enters the alt screen)')
     _ast.close()
 
 # --- full-screen program drive (E2E): start a REAL full-screen program in TUI mode,
@@ -2217,9 +2236,7 @@ for _payload, _wantcp, _wantcls in ((chr(0x202E), 0x202E, 'bidi'),
     eq(_fg2.lower(), mark_fg(_q2, _wantcls).lower(),
        'Q2 grid: %s box wears the %s risk colour' % (_wantcls, _wantcls))
     # _cp_at parity: hovering the box cell resolves the REAL character, not U+25A1
-    _hc = QTextCursor(_q2.document())
-    _hc.setPosition(_idx)
-    eq(_q2._cp_at(_q2.cursorRect(_hc).center()), _wantcp,
+    eq(_q2._cp_at(_glyph_pt(_q2, _idx)), _wantcp,
        'Q2 grid: hover on the %s box resolves the real codepoint (not the box glyph)' % _wantcls)
     _q2.close()
 
@@ -2588,9 +2605,7 @@ eq(_fmt_cp(inr, 0), 0x20AC, 'a reveal badge carries the source codepoint (euro)'
 inr.resize(600, 200)
 inr.show()
 pump(30)
-_mid = QTextCursor(inr.document())
-_mid.setPosition(4)                                      # inside "<U+20AC>"
-_badge_pt = inr.cursorRect(_mid).center()
+_badge_pt = _glyph_pt(inr, 4)                            # inside "<U+20AC>"
 eq(inr._cp_at(_badge_pt), 0x20AC, '_cp_at recovers the codepoint under a point (reveal)')
 # and in SHOW mode a readable glyph keeps no tag but IS its own codepoint: _cp_at
 # falls back to the character itself (three copies give a stable mid target).
@@ -2600,9 +2615,7 @@ insh._append(chr(0x0416) * 3)                            # Cyrillic Zhe, printab
 insh.resize(600, 200)
 insh.show()
 pump(30)
-_shcur = QTextCursor(insh.document())
-_shcur.setPosition(1)
-eq(insh._cp_at(insh.cursorRect(_shcur).center()), 0x0416,
+eq(insh._cp_at(_glyph_pt(insh, 1)), 0x0416,
    '_cp_at reads a shown glyph via its own codepoint (show mode, no tag)')
 # markings off + ANSI colours on: the marking keeps the program's own foreground
 # (not dropped to a blank format) and still carries the codepoint (codex P2 fix).
@@ -4356,6 +4369,7 @@ _toggled = win._default_colors
 win._goto_tab(0)                       # switch away (fires setChecked, blocked)
 win._goto_tab(win.tabs.count() - 1)    # and back
 eq(win._default_colors, _toggled, 'tab switch does not rewrite the colours default')
+win.set_colors(_before_colors)         # restore the shared window's colours default (isolation)
 win.set_mode('box')
 ok(not win.sec_display.icon().isNull() and not win.sec_mode.icon().isNull(),
    'both security lamps show an icon')
@@ -4801,11 +4815,11 @@ _ofz.close()
 # test to title/palette/cwd/hyperlink/clipboard/colour-query codes, and asserts on
 # the WRITE spy (the injection-relevant channel), not just a signal.
 _osz = SecureTerminal(command='/bin/cat')
-for _f in ('osc_title', 'osc_notify', 'osc_cwd', 'osc_hyperlink', 'osc_clipboard'):
-    try:
-        _osz.apply_osc(_f, True)
-    except Exception:                  # pylint: disable=broad-except
-        pass                           # feature may not exist; the sweep still runs
+_osc_sweep = ('osc_title', 'osc_notify', 'osc_cwd', 'osc_hyperlink', 'osc_clipboard')
+for _f in _osc_sweep:
+    _osz.apply_osc(_f, True)           # each is a real feature -> must enable, not swallow
+ok(all(_osz.osc_enabled(_f) for _f in _osc_sweep),
+   'every OSC feature enables (no swallowed apply_osc failure weakening the sweep)')
 
 
 ## B1: Enable osc_clipboard_read and grant consent so split-invariance assert is real
@@ -6213,12 +6227,21 @@ class _FakeApp:
     def alert(self, _win, _msec):
         self.alerts += 1
 
+    def cursorFlashTime(self):               # noqa: N802 (Qt API name)
+        return 1000                          # so a cursor blink under the shim works
+
 
 class _QAppShim:
     _fake = _FakeApp()
 
     @staticmethod
     def instance():
+        return _QAppShim._fake
+
+    @staticmethod
+    def styleHints():
+        # The blink-cursor code reads QApplication.styleHints().cursorFlashTime();
+        # keep the shim complete so replacing QApplication cannot AttributeError.
         return _QAppShim._fake
 
 
@@ -7306,10 +7329,14 @@ _mk._sync_timer.stop()
 _pc = SecureTerminal(command='/bin/cat')
 _pc.apply_tui(True)
 feed_output(_pc, b'x')
-if _pc._screen is not None:
-    _pc._screen.cursor.hidden = True
-    _pc._place_grid_cursor(_pc._screen)     # hidden -> returns without moving
-ok(True, '_place_grid_cursor: a hidden cursor is left alone')
+ok(_pc._screen is not None, '_place_grid_cursor test built a pyte screen')
+_pc._place_grid_cursor(_pc._screen)          # place the caret once, visible
+_pc_pos = _pc.textCursor().position()
+_pc._screen.cursor.hidden = True
+_pc._screen.cursor.x = (_pc._screen.cursor.x + 3) % _pc._screen.columns   # program MOVES it
+_pc._place_grid_cursor(_pc._screen)          # hidden -> must NOT follow the move
+ok(_pc.textCursor().position() == _pc_pos and _pc._cursor_visible is False,
+   '_place_grid_cursor leaves a hidden cursor where it was (caret unmoved, ours suppressed)')
 _pc._render_timer.stop()
 _pc._sync_timer.stop()
 
@@ -7433,9 +7460,13 @@ _sd._sync_timer.stop()
 # _delete_grid with scrollback above the live grid also eats the joining newline
 _dg = SecureTerminal(command='/bin/cat')
 _dg._append('l1\nl2\nl3\nl4\nl5')
+_dg_bc = _dg.document().blockCount()
 _dg._grid_rows = 2
 _dg._delete_grid()
-ok(True, '_delete_grid removes the live grid and the newline joining it')
+ok(_dg.document().blockCount() == _dg_bc - 2
+   and 'l5' not in _dg.toPlainText() and 'l4' not in _dg.toPlainText()
+   and _dg.toPlainText().endswith('l3'),
+   '_delete_grid removes the 2 live grid rows AND the newline joining them (no blank tail)')
 
 # _fmt_from_key: a marking carrying no colour yields a plain format
 _ff = SecureTerminal(command='/bin/cat')
@@ -7562,9 +7593,7 @@ _cpfcur.insertText(chr(0x00E9) * 3)          # 'e-acute', inserted untagged (no 
 _cpf.resize(600, 200)
 _cpf.show()
 pump(30)
-_cpfpc = QTextCursor(_cpf.document())
-_cpfpc.setPosition(1)
-eq(_cpf._cp_at(_cpf.cursorRect(_cpfpc).center()), 0x00E9,
+eq(_cpf._cp_at(_glyph_pt(_cpf, 1)), 0x00E9,
    '_cp_at falls back to an untagged readable glyph own codepoint')
 _cpf.shutdown()
 
@@ -7830,10 +7859,11 @@ def _grab_sha(w):
 
 
 # Control (shot mode OFF, built with the env unset): the CLI paint DEFERS to the
-# 16ms debounce timer and the caret keeps its normal width -- normal behaviour.
+# 16ms debounce timer. The native caret is hidden in BOTH modes (we draw our own
+# blinking cursor); shot mode additionally suppresses ours for a byte-stable capture.
 _ns = SecureTerminal(command='/bin/cat')
 ok(_ns._shot is False, 'shot off: the flag is False when SECURE_TERMINAL_SHOT is unset')
-ok(_ns.cursorWidth() != 0, 'shot off: the caret keeps its normal (non-zero) width')
+ok(_ns.cursorWidth() == 0, 'shot off: the native caret is hidden (we draw our own)')
 _ns._feed_line('deferred-line\n', defer=True)
 ok(_ns._paint_dirty is True, 'shot off: a deferred CLI paint stays pending (not flushed)')
 ok(_ns._paint_timer.isActive(), 'shot off: the CLI paint is debounced on the timer')
@@ -8849,6 +8879,159 @@ ok(_rr == [1],
    'palette) -- apply_theme alone no-ops its _rerender on an unchanged theme')
 ok(_oc._osc_palette == {}, 'disabling osc_colors clears the OSC palette back to the theme')
 _oc.shutdown()
+
+
+# --- zoom updates the CLI pty width (winsize) --------------------------------
+# A zoom changes how many columns fit even though the widget did not resize. In
+# CLI (line) mode _sync_tui_size no-ops (no pyte screen), so _apply_font must push
+# the new winsize itself -- else the shell keeps formatting to the OLD wider column
+# count and its prompt/line overflows the narrower viewport (right-truncated, no
+# wrap, horizontal caret-follow jump). Direction, not an exact width, so it is
+# font-robust: a larger glyph always yields fewer columns.
+_zc = SecureTerminal(command='/bin/cat', tui=False)
+_zc.resize(800, 400)
+_zc.show()
+pump(60)
+_zc_100 = _zc._cols
+_zc.apply_zoom(200)
+pump(120)                                  # past the zoom debounce
+_zc_200 = _zc._cols
+_zc.apply_zoom(100)
+pump(120)
+_zc_back = _zc._cols
+ok(_zc_200 < _zc_100 and _zc_back == _zc_100,
+   'CLI zoom pushes the new pty width: fewer cols at 200 percent, restored at 100')
+_zc.shutdown()
+
+# _sync_tui_size is a no-op with no pyte screen (CLI mode): its callers all guard for
+# a screen (zoom takes the _set_winsize path in CLI), so exercise the guard directly.
+_sts = SecureTerminal(command='/bin/cat', tui=False)
+_sts._sync_tui_size()
+ok(_sts._screen is None, '_sync_tui_size is a safe no-op with no pyte screen (CLI)')
+_sts.shutdown()
+
+
+# --- restart_as_shell: a -- PROGRAM tab drops to a shell instead of closing ---
+# A tab launched to run a specific program restarts in place as a fresh login shell
+# when that program exits (gnome-terminal/konsole 'restart' disposition), keeping
+# the widget + its settings; a plain login-shell tab is a no-op (the window closes
+# it). Drives a real short-lived child to exit, then asserts the restart.
+_rs = SecureTerminal(command=['/bin/sh', '-c', 'exit 0'], tui=False)
+_rs.resize(600, 300)
+_rs.show()
+pump(400)                                  # let the child exit (shell_exited fires)
+_rs_oldpid = _rs._pid
+_rs_ret = _rs.restart_as_shell()
+pump(300)
+_rs._write(b'echo RESTARTOK\n')
+pump(500)
+_rs_doc = _rs.document().toPlainText()
+ok(_rs_ret is True and _rs._command is None and _rs._pid is not None
+   and _rs._pid != _rs_oldpid and _rs._fd is not None
+   and 'RESTARTOK' in _rs_doc,
+   'restart_as_shell: a -- PROGRAM tab respawns a working login shell in place')
+_rs.shutdown()
+
+_rs2 = SecureTerminal(command=None, tui=False)
+_rs2.resize(600, 300)
+_rs2.show()
+pump(200)
+ok(_rs2.restart_as_shell() is False,
+   'restart_as_shell: a plain login-shell tab is a no-op (the window closes it)')
+_rs2.shutdown()
+
+
+# --- our own blinking cursor keeps blinking through a selection --------------
+# The native Qt caret stops blinking whenever the text cursor holds a selection, so
+# selecting text froze the prompt caret (konsole keeps it blinking). We hide the
+# native caret and draw our own at the OUTPUT cursor, decoupled from the selection.
+APP.setCursorFlashTime(1000)
+_cur = SecureTerminal(command=['/bin/sh'], tui=False)
+_cur.resize(600, 300)
+_cur.show()
+_cur.setFocus()
+pump(200)
+_cur._write(b'echo hello\n')
+pump(400)
+ok(_cur.cursorWidth() == 0, 'the native Qt caret is hidden (we draw our own)')
+ok(_cur._blink_timer.isActive(), 'the cursor blinks (timer runs) while focused')
+_cur_out = _cur._out_cursor.position()
+# select some earlier text: the text cursor moves to the selection end, but the
+# DRAWN cursor must stay at the output cursor and keep blinking.
+_selc = _cur.textCursor()
+_selc.setPosition(0)
+_selc.setPosition(3, QTextCursor.MoveMode.KeepAnchor)
+_cur.setTextCursor(_selc)
+ok(_cur.textCursor().hasSelection()
+   and _cur._cursor_anchor().position() == _cur_out
+   and _cur._cursor_anchor().position() != _cur.textCursor().position(),
+   'the drawn cursor stays at the output position during a selection, not the selection end')
+ok(_cur._blink_timer.isActive(),
+   'the cursor keeps blinking during a selection (the reported bug)')
+# blink toggles and painting is safe in every branch
+_cur_on0 = _cur._cursor_on
+_cur._blink_cursor()
+ok(_cur._cursor_on != _cur_on0, 'the blink toggles the cursor phase')
+_cur.viewport().repaint()                        # draw path (focused, on)
+_cur._cursor_on = False
+_cur.viewport().repaint()                        # focused OFF half-cycle -> no draw
+_cur.clearFocus()
+pump(20)
+ok(not _cur._blink_timer.isActive(),
+   'blinking stops when the widget loses focus (static cursor)')
+_cur.viewport().repaint()                        # unfocused draw path
+_cur._shot = True
+_cur.viewport().repaint()                        # shot mode -> paintEvent draws nothing
+_cur._shot = False
+_cur.shutdown()
+
+# preview surface and the _out_cursor fallback draw nothing / do not crash
+_cur_pv = SecureTerminal(command=['/bin/sh'], tui=False, preview=True)
+_cur_pv.resize(400, 200)
+_cur_pv.show()
+pump(50)
+ok(_cur_pv._cursor_anchor() is not None, 'a fresh widget falls back to the text cursor anchor')
+_cur_pv.viewport().repaint()                     # preview -> paintEvent draws nothing
+_cur_pv.shutdown()
+
+# DECTCEM: a TUI program hiding the cursor stops us drawing it
+if tui_available():
+    _cur_tui = SecureTerminal(command='/bin/cat', tui=True)
+    _cur_tui.resize(500, 300)
+    _cur_tui.show()
+    _cur_tui.setFocus()
+    feed_output(_cur_tui, b'hi')
+    pump(120)
+    ok(_cur_tui._cursor_visible, 'the TUI cursor is visible by default')
+    feed_output(_cur_tui, b'\x1b[?25l')          # DECTCEM hide
+    pump(120)
+    ok(not _cur_tui._cursor_visible, 'a TUI program hiding the cursor (DECTCEM) stops drawing it')
+    _cur_tui.viewport().repaint()                # not-visible -> paintEvent draws nothing
+    feed_output(_cur_tui, b'\x1b[?25h')          # DECTCEM show
+    pump(120)
+    ok(_cur_tui._cursor_visible, 'the cursor returns when the program shows it again')
+    _cur_tui.shutdown()
+
+
+# --- winsize is stable whether the vertical scrollbar is shown ----------------
+# _text_area reserves the scrollbar width UNCONDITIONALLY, so the column count does
+# not change when an AsNeeded bar toggles. Otherwise the toggle SIGWINCHes the
+# child, whose redraw toggles the bar back -- an endless flicker of a full-screen
+# app (nano). Force the bar visible then hidden and assert the text width is
+# unchanged (pre-fix it differed by a scrollbar width).
+_fw = SecureTerminal(command='/bin/cat', tui=True)
+_fw.resize(600, 300)
+_fw.show()
+pump(40)
+_fw.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+pump(30)
+_w_on = _fw._text_area()[0]
+_fw.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+pump(30)
+_w_off = _fw._text_area()[0]
+ok(_w_on == _w_off,
+   'text width is the same whether the vertical scrollbar shows (no SIGWINCH flicker loop)')
+_fw.shutdown()
 
 
 # --- result -------------------------------------------------------------------

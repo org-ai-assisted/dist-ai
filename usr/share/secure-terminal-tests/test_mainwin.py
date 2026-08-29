@@ -377,6 +377,27 @@ while w2.tabs.count() > 0:                   # last close empties + closes windo
 ok(w2.tabs.count() == 0, 'close_tab: closing the last tab empties the window')
 w2.deleteLater()
 
+# _on_shell_exited: a -- PROGRAM tab drops to a fresh login shell in place when the
+# program exits (not closed); a plain login-shell tab closes. Pre-fix, BOTH closed.
+_rw = MainWindow()
+_rw.new_tab(command=['/bin/sh', '-c', 'exit 0'])     # a program tab that exits at once
+_rw_term = _rw.tabs.widget(_rw.tabs.count() - 1)
+_rw_before = _rw.tabs.count()
+_deadline = time.time() + 5
+while time.time() < _deadline and _rw_term._command is not None:
+    pump(30)                                         # child exit -> shell_exited -> restart
+ok(_rw.tabs.count() == _rw_before and _rw_term._command is None,
+   'a -- PROGRAM tab that exits restarts as a shell in place, not closed')
+_rw.new_tab()                                        # a plain login-shell tab
+_rw_login = _rw.tabs.widget(_rw.tabs.count() - 1)
+_rw_c0 = _rw.tabs.count()
+_rw._on_shell_exited(_rw_login)                      # simulate its shell exiting
+ok(_rw.tabs.count() == _rw_c0 - 1,
+   'a plain login-shell tab closes when its shell exits')
+while _rw.tabs.count() > 0:
+    _rw.close_tab(0)
+_rw.deleteLater()
+
 # F2: closing a tab that holds a paste/copy review hides the bar first, so its
 # buttons cannot dispatch onto the destroyed terminal (RuntimeError).
 _fw = MainWindow()
@@ -1565,15 +1586,22 @@ try:
     win._locked = {'allow_title'}
     win.set_allow_title(True)
     win._locked = {'bell'}
-    win.set_bell_channel('audible', True)
+    win.set_bell_channel('audible', True)    # locked -> refused
+    _lk_bell = 'audible' in win.current().bell_channels()
     win._locked = {'osc_title'}
-    win.set_osc('osc_title', True)
+    win.set_osc('osc_title', True)           # locked -> refused
+    _lk_osc = win.current().osc_enabled('osc_title')
     win._locked = {'allow_title'}
-    win.set_osc('osc_title', True)          # the allow_title -> osc_* lock path
+    win.set_osc('osc_title', True)           # the allow_title -> osc_* lock path -> refused
+    _lk_osc_alias = win.current().osc_enabled('osc_title')
     win._locked = set()
-    win.set_bell_channel('tray', True)      # add a channel
-    win.set_bell_channel('tray', False)     # remove it
-    ok(True, 'setting appliers respect admin locks; bell channels add/remove')
+    win.set_bell_channel('tray', True)       # unlocked -> added
+    _add_tray = 'tray' in win.current().bell_channels()
+    win.set_bell_channel('tray', False)      # unlocked -> removed
+    _rm_tray = 'tray' not in win.current().bell_channels()
+    ok(not _lk_bell and not _lk_osc and not _lk_osc_alias and _add_tray and _rm_tray,
+       'admin locks refuse bell / osc_title / allow_title->osc_title; '
+       'unlocked bell channels add and remove (read-back)')
     for _c in ('help', 'theme dark', 'mode reveal', 'colors on', 'tui on',
                'title on', 'zoom 120', 'scrollback 1000', 'paste-delay 3',
                'escape-limit 65536', 'pastedelay 4', 'totally-unknown', '/'):
@@ -3005,7 +3033,10 @@ win.set_paste_warn('bogus')                      # invalid -> ignored
 eq(win._paste_warn, 'always', 'set_paste_warn: an invalid mode is ignored')
 win.set_copy_warn('unicode')
 win.set_paste_warn('unicode')
-ok(True, 'set_paste_warn / set_copy_warn push the mode to every tab and persist')
+_pw_term = win.current()
+ok(_pw_term.current_paste_warn() == 'unicode'
+   and _pw_term.current_copy_warn() == 'unicode',
+   'set_paste_warn / set_copy_warn push the mode to every tab (tab-level read-back)')
 
 # --- review risk lamp (#116): reflects the config and goes red on unreviewed risk
 from PyQt6.QtWidgets import QDialog as _QDlgSec                    # noqa: E402

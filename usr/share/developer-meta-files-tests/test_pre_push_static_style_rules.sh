@@ -339,6 +339,11 @@ expect_rule "R-030/R-031" "printf ${sq}${nl}${sq}"              "present"
 expect_rule "R-030/R-031" "printf ${sq}%s${nl}${sq}"            "present"
 expect_rule "R-030/R-031" "printf ${sq}%s${nl}${sq} ${dq}${dq}" "absent"
 expect_rule "R-030/R-031" "printf ${sq}%s${nl}${sq} hello"      "absent"
+## '--' is an OPTION, not a data argument -- 'printf -- \n' still needs the explicit
+## "" (the old 'len(args) != 2' counted '--' as the data arg and spared it). A
+## '-v NAME' target writes to a variable (emits nothing) and is spared.
+expect_rule "R-030/R-031" "printf -- ${sq}${nl}${sq}"          "present"
+expect_rule "R-030/R-031" "printf -v v ${sq}${nl}${sq}"        "absent"
 ## A trailing comment does not supply a data argument, so a commented bare
 ## form is still a violation; the compliant form stays spared even commented.
 expect_rule "R-030/R-031" "printf ${sq}%s${nl}${sq} # blank"        "present"
@@ -406,6 +411,11 @@ expect_rule "${r030fmt}" "printf -v onlyname"                                 "a
 expect_rule "${r030fmt}" "printf -v out ${sq}%s${sq} ${dq}\${1}${dq}"          "absent"
 expect_rule "${r030fmt}" "printf -v out ${dq}bad \${x}${dq} ${dq}\${1}${dq}"   "present"
 expect_rule "${r030fmt}" "printf -- ${dq}bad \${x}${dq}"                       "present"
+## a NON-bare '-v' spelling (attached '-vNAME', quoted '"-v"') is STILL the option,
+## so the real FORMAT after it is judged -- else a $(...) format smuggles past R-030.
+## FAILS pre-fix: the exact word=="-v" match read the spelled -v AS the format.
+expect_rule "${r030fmt}" "printf -vfoo ${dq}\$(id)${dq}"                       "present"
+expect_rule "${r030fmt}" "printf ${dq}-v${dq} foo ${dq}\$(id)${dq}"            "present"
 ## An allowlisted verb is safe in any quoting.
 expect_rule "${r030fmt}" "printf ${sq}%s${nl}${sq} ${dq}\${1}${dq}"            "absent"
 
@@ -1844,6 +1854,13 @@ git -C "${cron_repo}" commit --quiet --no-verify --message cron
 cron_out="$( cd -- "${cron_repo}" && "${GATE}" --check --range "${cron_base}" 2>&1 || true )"
 cron_hits="$( printf '%s\n' "${cron_out}" \
    | grep --fixed-strings -- 'R-195 cron entry embeds' || true )"
+## Liveness: the gate run above (`|| true`) could crash or be timeout-killed, leaving
+## cron_out empty and every ABSENCE ('good' fixture) assertion below a spurious PASS.
+if ! grep --quiet --extended-regexp \
+   'all static checks passed|[0-9]+ check\(s\) failed' <<< "${cron_out}"; then
+   printf '%s\n' 'FAIL: R-195 cron gate run produced no final verdict (crashed or killed)' >&2
+   failures=$((failures + 1))
+fi
 if grep --quiet --fixed-strings -- 'bad-semi' <<< "${cron_hits}"; then
    printf '%s\n' 'PASS: R-195 flags a ";"-separated cron command'
 else
@@ -1980,6 +1997,13 @@ wf_out="$( cd -- "${wf_repo}" && "${GATE}" --check --range "${wf_base}" 2>&1 || 
 ## Scope to the R-100 FAILURE text, past the 'R-100 skipped: ... waiver' note.
 wf_hits="$( printf '%s\n' "${wf_out}" \
    | grep --fixed-strings -- 'R-100 workflow embeds' || true )"
+## Liveness: a crashed/killed gate leaves wf_out empty -> the ABSENCE assertions below
+## PASS spuriously. Require the terminal verdict before trusting them.
+if ! grep --quiet --extended-regexp \
+   'all static checks passed|[0-9]+ check\(s\) failed' <<< "${wf_out}"; then
+   printf '%s\n' 'FAIL: R-100 workflow gate run produced no final verdict (crashed or killed)' >&2
+   failures=$((failures + 1))
+fi
 if grep --quiet --fixed-strings -- 'bad.yml' <<< "${wf_hits}"; then
    printf '%s\n' 'PASS: R-100 flags a long inline run block'
 else
@@ -2100,6 +2124,13 @@ else
    failures=$((failures + 1))
 fi
 msg_ok_out="$(gate_output_msg 'fix a plain ascii bug')"
+## Liveness: this is an ABSENCE assertion (a clean message must NOT be flagged), so a
+## crashed/killed gate with empty msg_ok_out would PASS it spuriously.
+if ! grep --quiet --extended-regexp \
+   'all static checks passed|[0-9]+ check\(s\) failed' <<< "${msg_ok_out}"; then
+   printf '%s\n' 'FAIL: R-001 commit-message gate run produced no final verdict (crashed or killed)' >&2
+   failures=$((failures + 1))
+fi
 if grep --quiet --fixed-strings -- "'(commit message)" <<< "${msg_ok_out}"; then
    printf '%s\n' 'FAIL: R-001 wrongly flagged a clean ASCII commit message' >&2
    failures=$((failures + 1))

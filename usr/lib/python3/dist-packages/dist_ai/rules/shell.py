@@ -1226,7 +1226,14 @@ class InterpreterPrepend(Rule):
                         break
                     if not is_long and "s" in cluster:
                         break  ## '-s' -> script comes from stdin, no file
-                    if operand in self._VALUE_OPTS or cluster in ("o", "O"):
+                    ## '-o'/'-O' take a VALUE; in a short cluster the FIRST of them
+                    ## consumes the REST as its argument, so the value is the NEXT
+                    ## word only when it is the cluster's LAST char ('-eo pipefail'),
+                    ## never when a value is attached ('-oe' == -o with value 'e').
+                    o_pos = next((i for i, ch in enumerate(cluster)
+                                  if ch in "oO"), -1)
+                    if operand in self._VALUE_OPTS \
+                            or (o_pos != -1 and o_pos == len(cluster) - 1):
                         skip_next = True
                     continue
                 script = operand
@@ -1310,26 +1317,16 @@ def _format_interpolates(raw):
 
 def _printf_format(call, source):
     """(inner, single_quoted) for a printf CALL's format argument, or (None,
-    False) if it has none. inner is the format with its surrounding quotes
-    stripped; single_quoted marks a '...' compile-time literal (nothing can be
-    interpolated INTO it). printf's own options are skipped so the FORMAT is
-    found, not an option: '-v NAME' (write to a variable, consumes its name) and
-    a '--' end-of-options marker -- otherwise 'printf -v NAME FMT' / 'printf --
-    FMT' would read '-v'/'--' as the format and flag every such call."""
-    call_args = bash_ast.args(call)
-    total = len(call_args)
-    index = 1
-    while index < total:
-        option = bash_ast.word_source(call_args[index], source)
-        if option == "-v" and index + 2 <= total:
-            index += 2
-            continue
-        if option == "--":
-            index += 1
-        break
-    if index >= total:
+    False) if it has none. The format operand is found via the SHARED robust option
+    scan (h.printf_format_word, the same scan R-063 uses for the -v target): '-v
+    NAME', attached '-vNAME', a quoted/escaped '-v', and '--' are all skipped -- so
+    a spelled '-v' can no longer smuggle the real format past R-030. inner is the
+    format with its surrounding quotes stripped; single_quoted marks a format that
+    cannot interpolate (see the quote-segment scan below)."""
+    word = h.printf_format_word(call)
+    if word is None:
         return None, False
-    raw = bash_ast.word_source(call_args[index], source)
+    raw = bash_ast.word_source(word, source)
     if not raw:
         return None, False
     ## Strip the outer quotes for the display / allowed-verb comparison when the
@@ -1363,7 +1360,14 @@ class BareNewlinePrintf(Rule):
 
     def detect(self, ctx):
         for _stmt, call in _printf_calls(ctx.tree):
-            if len(bash_ast.args(call)) != 2:  ## has a data argument
+            call_args = bash_ast.args(call)
+            fmt_word = h.printf_format_word(call)
+            ## Skip when: no format; a '-v' target (writes to a var, emits nothing);
+            ## or a DATA argument follows the format. '--' / '-v NAME' are OPTIONS,
+            ## not the data arg -- 'printf -- \n' still needs the explicit "" (the old
+            ## 'len(args) != 2' missed it by counting '--' as a data argument).
+            if fmt_word is None or h.printf_v_target(call) is not None \
+                    or call_args[-1] is not fmt_word:
                 continue
             inner, _single = _printf_format(call, ctx.source)
             if inner is not None and self._NEWLINE_ONLY.match(inner):
