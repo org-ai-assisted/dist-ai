@@ -26,9 +26,12 @@ PYTHON_MODULE_PATH = re.compile(
 
 EXEC_DIRECTIVE = re.compile(r'^[ \t]*(Exec[A-Za-z]*)=(.*)$', re.MULTILINE)
 ## apt config-tree keys whose LAST component is one of these run their value list
-## via 'sh -c' (case-insensitive, as apt.conf names are).
-_APT_HOOK_NAMES = frozenset(
-    ("pre-invoke", "post-invoke", "pre-install-pkgs"))
+## via 'sh -c' (case-insensitive, as apt.conf names are). Post-Invoke-Success /
+## -Stats are real executed hooks too (Debian ships multi-statement values in
+## Update::Post-Invoke-Success), and '-' is part of the name, not a boundary.
+_APT_HOOK_NAMES = frozenset((
+    "pre-invoke", "post-invoke", "pre-install-pkgs",
+    "post-invoke-success", "post-invoke-stats"))
 CRON_ENV = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*[ \t]*=')
 
 
@@ -101,8 +104,19 @@ def _apt_hook_commands(source):
     unquoted-value, and case rule is handled EXACTLY as apt does. A config apt
     itself rejects (a syntax error) runs no hooks, so it yields nothing. SOURCE is
     written to a private temp file because apt_pkg reads a path. Raises ImportError
-    if python3-apt is absent (a required dependency, not a silent skip)."""
+    if python3-apt is absent (a required dependency, not a silent skip).
+
+    SECURITY: the SOURCE is UNTRUSTED (a staged / PR apt.conf), and apt_pkg
+    FOLLOWS an '#include' against the host filesystem -- '#include "/dev/zero"'
+    pegs a CPU, '#include "/tmp/fifo"' hangs, '#include "/etc/apt/apt.conf.d/"'
+    reads host config (an XXE-shaped hole, and it does NOT raise apt_pkg.Error so
+    the except never fires). Neuter every '#include' to a comment before parsing;
+    '#clear' is left (it only drops config keys, reads nothing)."""
     import apt_pkg
+    ## '#include' -> '# include' (a space makes it a plain comment apt_pkg ignores
+    ## instead of a directive). Renaming the token cannot hide a multi-statement:
+    ## the ';'/'|'/'&&' check is unaffected by it, in a value or not.
+    source = re.sub(r'#include\b', '# include', source, flags=re.IGNORECASE)
     conf = apt_pkg.Configuration()
     handle = tempfile.NamedTemporaryFile(
         "w", prefix="dist-ai-apt-", suffix=".conf", delete=False)

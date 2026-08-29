@@ -1553,6 +1553,17 @@ printf '%s\n' \
 printf '%s\n' \
    "DPkg::Pre-Invoke {echo|rm${sc}}${sc}" \
    > "${apt_repo}/etc/apt/apt.conf.d/24bad-unquoted"
+## Post-Invoke-Success is an executed hook too ('-' is part of the name).
+printf '%s\n' \
+   "APT::Update::Post-Invoke-Success {\"echo a${sc} echo b\"}${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/25bad-invoke-success"
+## An '#include' in an UNTRUSTED apt.conf must be NEUTERED (apt_pkg would follow
+## it against the host: /dev/zero pegs a CPU, a fifo hangs, a dir reads host
+## config). The real hook below must still be flagged, and the gate must not hang.
+printf '%s\n' \
+   "#include \"/dev/zero\"" \
+   "DPkg::Pre-Invoke {\"echo a${sc} echo b\"}${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/26bad-include-neutered"
 ## A trailing INLINE '//' comment (apt honours it from any column, not just a
 ## whole-line comment) carrying a '}' desyncs the brace-depth scan: the ';' after
 ## the benign entry is then read as the directive terminator, hiding the later
@@ -1653,6 +1664,18 @@ if grep --quiet --fixed-strings -- '24bad-unquoted' <<< "${apt_hits}"; then
    printf '%s\n' 'PASS: R-194 flags an UNQUOTED apt hook value (a pipe)'
 else
    printf '%s\n' 'FAIL: R-194 did not flag an unquoted apt hook value' >&2
+   failures=$((failures + 1))
+fi
+if grep --quiet --fixed-strings -- '25bad-invoke-success' <<< "${apt_hits}"; then
+   printf '%s\n' 'PASS: R-194 flags a Post-Invoke-Success multi-statement hook'
+else
+   printf '%s\n' 'FAIL: R-194 did not flag a Post-Invoke-Success hook' >&2
+   failures=$((failures + 1))
+fi
+if grep --quiet --fixed-strings -- '26bad-include-neutered' <<< "${apt_hits}"; then
+   printf '%s\n' 'PASS: R-194 flags the hook and neuters a malicious "#include"'
+else
+   printf '%s\n' 'FAIL: R-194 missed a hook beside a neutered "#include"' >&2
    failures=$((failures + 1))
 fi
 if grep --quiet --fixed-strings -- '15bad-inline-comment' <<< "${apt_hits}"; then

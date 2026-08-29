@@ -253,6 +253,18 @@ git -C "${repo}" add badlink
 assert "a staged broken symlink is flagged in blob mode" 1 \
    "check-symlinks" --check --staged
 
+## ...but a VALID relative symlink to an already-tracked file must NOT false-fail:
+## the mirror materializes the link's TARGET too, so it is not seen as broken
+## (running against the working tree would reopen the staged-vs-worktree split).
+repo="$(new_repo)"
+printf 'data\n' > "${repo}/tracked.txt"
+git -C "${repo}" add tracked.txt
+git -C "${repo}" commit --quiet --no-verify --message tracked
+ln -s tracked.txt "${repo}/goodlink"
+git -C "${repo}" add goodlink
+assert "a valid staged symlink to a tracked file is not false-flagged" 0 \
+   "" --check --staged
+
 ## The pre-commit FIXER must not follow a symlink swapped in after classification
 ## (a TOCTOU that let a fixer rewrite an arbitrary victim outside the repo). Drive
 ## precommit._run_fixer directly with a symlink where a regular file was scanned;

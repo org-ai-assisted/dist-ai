@@ -69,36 +69,58 @@ def _materialize_blobs(paths, source_rev, base_cwd):
     entries = gitdiff._tree_entries(
         None if source_rev == "" else source_rev, base_cwd)
     mirror = tempfile.mkdtemp(prefix="dist-ai-precommit-")
+
+    def _write_blob(rel, mode, sha):
+        dest = os.path.join(mirror, os.path.normpath(os.sep + rel).lstrip(os.sep))
+        try:
+            os.makedirs(os.path.dirname(dest) or mirror, exist_ok=True)
+            if mode == "120000":
+                blob = subprocess.run(
+                    ["git", "cat-file", "blob", sha], capture_output=True,
+                    cwd=base_cwd, check=True).stdout
+                ## A symlink's blob IS its target path -- recreate it so the
+                ## symlink checks see it; it is only READ, never written through.
+                os.symlink(os.fsdecode(blob), dest)
+                return os.fsdecode(blob)
+            blob = subprocess.run(
+                ["git", "cat-file", "blob", sha], capture_output=True,
+                cwd=base_cwd, check=True).stdout
+            with open(dest, "wb") as handle:
+                handle.write(blob)
+            ## Owner-only: this mirror holds the scanned blob content, incl. a
+            ## staged PRIVATE KEY / credential (detect-private-key runs over it),
+            ## so it must not be group/world readable. Exec bit kept (0o700 vs
+            ## 0o600) for the mode-sensitive exec-shebang checks.
+            os.chmod(dest, 0o700 if mode == "100755" else 0o600)
+        except (OSError, subprocess.CalledProcessError):
+            return None
+        return None
+
+    links = []
     for path in paths:
         mode, sha = entries.get(path, (None, None))
         ## Skip a gitlink (160000): a submodule pointer, no file content.
         if sha is None or mode == "160000":
             continue
-        try:
-            blob = subprocess.run(
-                ["git", "cat-file", "blob", sha],
-                capture_output=True, cwd=base_cwd, check=True).stdout
-        except (OSError, subprocess.CalledProcessError):
-            continue
-        rel = os.path.normpath(os.sep + path).lstrip(os.sep)
-        dest = os.path.join(mirror, rel)
-        try:
-            os.makedirs(os.path.dirname(dest) or mirror, exist_ok=True)
-            if mode == "120000":
-                ## A symlink's blob IS its target path -- recreate it so the
-                ## symlink checks (check-symlinks) actually see it; it is only
-                ## READ (checked for a broken target), never written through.
-                os.symlink(os.fsdecode(blob), dest)
-                continue
-            with open(dest, "wb") as handle:
-                handle.write(blob)
-            ## Owner-only: this mirror holds the scanned blob content, which
-            ## includes a staged PRIVATE KEY / credential (detect-private-key runs
-            ## over it), so it must not be group/world readable. The exec bit is
-            ## kept (0o700 vs 0o600) for the mode-sensitive exec-shebang checks.
-            os.chmod(dest, 0o700 if mode == "100755" else 0o600)
-        except OSError:
-            continue
+        target = _write_blob(path, mode, sha)
+        if target is not None:
+            links.append((path, target))
+
+    ## Materialize each staged symlink's TARGET too, so check-symlinks (which runs
+    ## in the mirror) sees a valid relative link to an already-tracked, UNCHANGED
+    ## file as valid instead of broken -- the mirror otherwise holds only CHANGED
+    ## paths. A broken staged link (target absent from the tree) stays broken.
+    for path, target in links:
+        if os.path.isabs(target):
+            continue  ## an absolute target resolves against the host, not the tree
+        tgt = os.path.normpath(os.path.join(os.path.dirname(path), target))
+        if tgt in ("", ".", os.pardir) or tgt.startswith(os.pardir + os.sep):
+            continue  ## escapes the tree
+        tmode, tsha = entries.get(tgt, (None, None))
+        if tsha is not None and tmode != "160000":
+            _write_blob(tgt, tmode, tsha)
+        elif any(name.startswith(tgt + "/") for name in entries):
+            os.makedirs(os.path.join(mirror, tgt), exist_ok=True)  ## dir target
     return mirror
 
 
@@ -447,13 +469,11 @@ def _run_batch(paths, base_ref, staged_mode, base_cwd, content_cwd, source_rev):
                     if os.path.lexists(_abs(base_cwd, p))]
     yield from _run_hook("check-executables-have-shebangs", [],
                          exec_on_disk, base_cwd)
-    ## check-symlinks reads a symlink to see if its target is broken. Run it in
-    ## the REAL repo (not the mirror, which holds only CHANGED paths -- a valid
-    ## relative link to an already-tracked, unchanged file would look broken
-    ## there), filtered to links present in the working tree.
-    sym_on_disk = [p for p in lists["symlink"]
-                   if os.path.islink(_abs(base_cwd, p))]
-    yield from _run_hook("check-symlinks", [], sym_on_disk, base_cwd)
+    ## check-symlinks reads a symlink to see if its target is broken (no git). Run
+    ## it in the MIRROR, which holds the SHIPPED link AND its materialized target,
+    ## so the staged object is judged -- not the working tree (which reopened the
+    ## staged-vs-worktree split: a retargeted link there is a false green/fail).
+    yield from _run_hook("check-symlinks", [], lists["symlink"], content_cwd)
 
     ## type by extension, content-reading -> content_cwd:
     yield from _run_hook("check-yaml", [], lists["yaml"], content_cwd)
