@@ -645,26 +645,52 @@ _EXIT_CALL_WRAPPERS = ("builtin", "command")
 
 
 def _skip_exit_code_word(call):
-    """The exit/return CODE word for CALL if it is a test skip, else None --
-    resolving the spellings bash runs identically: a leading-backslash name
-    ('\\exit 77') and a single 'builtin'/'command' prefix ('builtin exit 77',
-    'command exit 77'). None (not exit/return, or the code word is missing) is the
-    safe direction: the caller declines rather than guesses."""
-    name = bash_ast.command_name(call)
+    """The exit/return CODE word for CALL if it is a test skip, else None.
+    Resolves the spellings bash runs identically as the exit/return builtin:
+      - a leading-backslash or QUOTED name ('\\exit 77', '"exit" 77') -- word_string
+        (quote-aware) is used throughout, since command_name drops a quoted word;
+      - a 'builtin'/'command' prefix, including its options and a '--'
+        ('builtin -- exit 77', 'command -p exit 77'); but 'command -v'/'-V' only
+        DESCRIBE the command and do not run it, so those are NOT a skip;
+      - a '--' end-of-options before the code ('exit -- 77').
+    None (not exit/return, or the code word is missing/expanded) is the safe
+    direction -- the caller declines rather than guesses."""
+    words = bash_ast.args(call)
+    if not words:
+        return None
+    name = bash_ast.word_string(words[0])
     if name is None:
         return None
     name = name.lstrip("\\")
-    args = bash_ast.args(call)
-    code_index = 1
-    if name in _EXIT_CALL_WRAPPERS and len(args) >= 2:
-        wrapped = bash_ast.word_string(args[1])
-        if wrapped is None:
+    index = 1
+    if name in _EXIT_CALL_WRAPPERS:
+        ## Skip the wrapper's options and a '--' to reach the wrapped command.
+        while index < len(words):
+            word = bash_ast.word_string(words[index])
+            if word is None:
+                return None
+            if word == "--":
+                index += 1
+                break
+            if len(word) > 1 and word[0] == "-":
+                ## 'command -v'/'-V' prints a description instead of running -> not a skip.
+                if name == "command" and ("v" in word[1:] or "V" in word[1:]):
+                    return None
+                index += 1
+                continue
+            break
+        if index >= len(words):
             return None
-        name = wrapped.lstrip("\\")
-        code_index = 2
-    if name not in ("exit", "return") or len(args) <= code_index:
+        name = (bash_ast.word_string(words[index]) or "").lstrip("\\")
+        index += 1
+    if name not in ("exit", "return"):
         return None
-    return bash_ast.word_string(args[code_index])
+    ## exit/return: a '--' ends its options before the numeric code.
+    if index < len(words) and bash_ast.word_string(words[index]) == "--":
+        index += 1
+    if index >= len(words):
+        return None
+    return bash_ast.word_string(words[index])
 
 
 def _skip_waived(comment_by_line, line):

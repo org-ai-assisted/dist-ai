@@ -285,6 +285,21 @@ assert_at "R-220 flags a wrapped 'builtin exit 77'"    "R-220" 2
 assert_at "R-220 flags a wrapped 'command exit 77'"    "R-220" 3
 assert_at "R-220 flags a backslash '\\exit 77'"        "R-220" 4
 assert_at "R-220 flags a wrapped 'builtin return 77'"  "R-220" 5
+## wrapper OPTIONS and '--', a quoted name, and 'exit --' all still run exit 77 in
+## bash (verified) and must flag; 'command -v/-V' only DESCRIBES and is spared.
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   'foo || command -p exit 77' \
+   'bar || command -- exit 77' \
+   'baz || builtin -- exit 77' \
+   'qux || exit -- 77' \
+   'zap || "exit" 77')"
+assert_at "R-220 flags 'command -p exit 77'"   "R-220" 2
+assert_at "R-220 flags 'command -- exit 77'"   "R-220" 3
+assert_at "R-220 flags 'builtin -- exit 77'"   "R-220" 4
+assert_at "R-220 flags 'exit -- 77'"           "R-220" 5
+assert_at "R-220 flags a quoted \"exit\" 77"   "R-220" 6
+run_det "$(printf '%s\n' '#!/bin/bash' 'foo || command -v exit 77')"
+assert_not_at "R-220 spares 'command -v exit 77' (describes, does not run)" "R-220" 2
 ## the waiver is still honored THROUGH the wrapper, and a wrapped non-77 is spared.
 run_det "$(printf '%s\n' '#!/bin/bash' \
    'foo || builtin exit 77  ## style-ok: allow-skip: optional target' \
