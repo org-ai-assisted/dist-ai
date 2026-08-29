@@ -140,6 +140,24 @@ key(t, Qt.Key.Key_A, '', Qt.KeyboardModifier.ControlModifier)
 key(t, Qt.Key.Key_R, '', Qt.KeyboardModifier.ControlModifier)
 key(t, Qt.Key.Key_Backslash, '', Qt.KeyboardModifier.ControlModifier)
 eq(sent, [b'\x03', b'\x01', b'\x12', b'\x1c'], 'ctrl+key sends its control byte')
+# Ctrl+Alt is Meta: a real terminal (xterm metaSendsEscape) prefixes the control
+# byte with ESC, so an UNBOUND Ctrl+Alt+<key> reaches the child as ESC+byte, not a
+# bare control byte with Alt silently dropped.
+sent.clear()
+_ctrl_alt = Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier
+key(t, Qt.Key.Key_C, '', _ctrl_alt)
+key(t, Qt.Key.Key_U, '', _ctrl_alt)
+key(t, Qt.Key.Key_Backslash, '', _ctrl_alt)
+eq(sent, [b'\x1b\x03', b'\x1b\x15', b'\x1b\x1c'],
+   'ctrl+alt+key is Meta: ESC prefixes the control byte (CLI)')
+# Same Meta rule on the TUI path (_tui_key), matching its printable Alt+<char>
+# branch that already ESC-prefixes: plain Ctrl+C stays a bare byte, Ctrl+Alt+C = ESC+byte.
+_metatui = SecureTerminal(command='/bin/cat', tui=True)
+_metasent = spy_writes(_metatui)
+key(_metatui, Qt.Key.Key_C, '', Qt.KeyboardModifier.ControlModifier)
+key(_metatui, Qt.Key.Key_C, '', _ctrl_alt)
+eq(_metasent, [b'\x03', b'\x1b\x03'],
+   'ctrl+alt+key is Meta: ESC prefixes the control byte (TUI)')
 # the rest of the Ctrl+@..Ctrl+_ range: forward the control byte Qt computed
 # (Ctrl+] -> 0x1d, Ctrl+/ -> 0x1f readline-undo, Ctrl+[ -> 0x1b ESC)
 sent.clear()
