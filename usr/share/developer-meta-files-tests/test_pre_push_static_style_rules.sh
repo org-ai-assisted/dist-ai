@@ -851,7 +851,12 @@ printf '%s\n' 'x = "double quoted"' > "${dq_repo}/probe.py"
 git -C "${dq_repo}" add --all
 git -C "${dq_repo}" commit --quiet --no-verify --message probe
 dq_out="$( cd -- "${dq_repo}" && "${GATE}" --check --range "${dq_base}" 2>&1 || true )"
-if grep --quiet --fixed-strings -- 'double-quote-string-fixer' <<< "${dq_out}"; then
+if ! grep --quiet --extended-regexp \
+      'all static checks passed|[0-9]+ check\(s\) failed' <<< "${dq_out}"; then
+   ## No verdict -> the gate crashed/was killed; an absence-only grep would read PASS.
+   printf '%s\n' 'FAIL: gate produced no final verdict for the double-quote-string-fixer check' >&2
+   failures=$((failures + 1))
+elif grep --quiet --fixed-strings -- 'double-quote-string-fixer' <<< "${dq_out}"; then
    printf '%s\n' 'FAIL: the gate still references double-quote-string-fixer (should be disabled)' >&2
    failures=$((failures + 1))
 else
@@ -958,7 +963,12 @@ git -C "${bigstaged_repo}" commit --quiet --no-verify --message base
 printf '%s\n' 'appended' >> "${bigstaged_repo}/big.txt"
 git -C "${bigstaged_repo}" add big.txt
 bigstaged_out="$( cd -- "${bigstaged_repo}" && "${GATE}" --check --staged 2>&1 || true )"
-if grep --quiet --fixed-strings -- 'FAIL check-added-large-files' <<< "${bigstaged_out}"; then
+if ! grep --quiet --extended-regexp \
+      'all static checks passed|[0-9]+ check\(s\) failed' <<< "${bigstaged_out}"; then
+   ## No verdict -> the gate crashed/was killed; an absence-only grep would read PASS.
+   printf '%s\n' 'FAIL: gate produced no final verdict for the staged large-file check' >&2
+   failures=$((failures + 1))
+elif grep --quiet --fixed-strings -- 'FAIL check-added-large-files' <<< "${bigstaged_out}"; then
    printf '%s\n' 'FAIL: a pre-existing large file was flagged as newly added in staged mode (no upstream)' >&2
    failures=$((failures + 1))
 else

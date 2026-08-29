@@ -37,23 +37,40 @@ def effective_command(call, source):
     None when the wrapped command word is quoted/expanded or cannot be resolved --
     the safe direction (a rule declines rather than guesses). Path-qualified names
     ('/bin/rm', '/usr/bin/sudo rm') resolve by basename so a rule is not bypassed."""
-    name = _basename(bash_ast.command_name(call))
-    if name not in EXEC_WRAPPERS:
-        return name
-    for kind, word, _text in bash_ast.command_tokens(
-            call, source, SUDO_VALUE_SHORT, SUDO_VALUE_LONG):
-        if kind == "value":
-            continue
-        if kind == "operand":
-            ## The first word past the wrapper's options is the real command; a
-            ## leading 'VAR=value' env-assignment is still not the command. Test
-            ## the SOURCE, since a quoted value ('FOO="bar"') makes word_lit None
-            ## -- otherwise the unwrap aborts and 'sudo FOO="bar" rm' bypasses R-120.
+    if _basename(bash_ast.command_name(call)) not in EXEC_WRAPPERS:
+        return _basename(bash_ast.command_name(call))
+    ## Peel wrapper layers ITERATIVELY, not recursively: a maliciously deep chain
+    ## ('sudo' x1500 rm) would else exceed Python's recursion limit and crash the linter
+    ## on untrusted input. Each layer strictly shortens Args, so this always terminates.
+    while True:
+        words = bash_ast.args(call)
+        inner = None
+        index = 0
+        for index, (kind, word, _text) in enumerate(
+                bash_ast.command_tokens(
+                    call, source, SUDO_VALUE_SHORT, SUDO_VALUE_LONG), start=1):
+            if kind != "operand":
+                continue
+            ## The first word past the wrapper's options is the real command; a leading
+            ## 'VAR=value' env-assignment is still not the command. Test the SOURCE, since
+            ## a quoted value ('FOO="bar"') makes word_lit None -- otherwise the unwrap
+            ## aborts and 'sudo FOO="bar" rm' bypasses R-120.
             if re.match(r'^[A-Za-z_][A-Za-z0-9_]*=',
                         bash_ast.word_source(word, source)):
                 continue
-            return _basename(bash_ast.word_lit(word))
-    return None
+            inner = _basename(bash_ast.word_lit(word))
+            break
+        if inner is None:
+            return None
+        ## Not a wrapper -> the real command. A STACKED wrapper ('sudo sudo rm',
+        ## 'sudo doas -u root rm') runs it one layer deeper; RE-PARSE from the inner
+        ## wrapper with its OWN option spec (command_tokens flattens everything past the
+        ## first operand into 'operand', so the inner wrapper's flags/values are NOT
+        ## skipped by this pass -- returning the next raw operand would surface a flag
+        ## like '-u' and still bypass R-120/R-034/R-210/R-211).
+        if inner not in EXEC_WRAPPERS:
+            return inner
+        call = {"Args": words[index:]}
 
 
 ## Statement CONTEXT: a command in a loop/if CONDITION is not the same as one in

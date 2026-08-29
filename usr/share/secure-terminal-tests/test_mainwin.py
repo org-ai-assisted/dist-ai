@@ -2638,9 +2638,28 @@ try:
         QThread.msleep(15)
 finally:
     _part.close()
-ok(True, 'IPC server: a malformed frame aborts, a partial frame waits')
+# the server survived the malformed + partial frames: a VALID request still gets a
+# framed reply (proves no crash and no desync from the aborted / incomplete frames)
+_ok_sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+_fr_reply = b''
+try:
+    _ok_sock.connect(_fpath)
+    _ok_sock.sendall(M.ipc.frame(b'{"op": "ping"}'))
+    for _ in range(20):
+        APP.processEvents()
+        QThread.msleep(15)
+    _ok_sock.settimeout(1.0)
+    try:
+        _fr_reply = _ok_sock.recv(4096)
+    except OSError:
+        _fr_reply = b''
+finally:
+    _ok_sock.close()
+ok(len(_fr_reply) > 4 and b'"ok"' in _fr_reply,
+   'IPC server: after a malformed + partial frame, a valid request still gets a framed reply')
 _frwin._on_instance_connection()             # no pending connection -> conn is None
-ok(True, 'IPC server: a spurious newConnection with nothing pending is a no-op')
+ok(_frwin._server is not None and _frwin._server.isListening(),
+   'IPC server: a spurious newConnection with nothing pending is a harmless no-op (still listening)')
 _frwin.deleteLater()
 APP.processEvents()
 
@@ -2721,17 +2740,35 @@ os.remove(_trayconf)
 # --- InfoTip: pointer polling, a destroyed source, and Esc-to-hide ------------
 _tip = M.InfoTip(win)
 _probe_w = MainWindow()
+# _check_pointer hides when the pointer is over NEITHER the tip nor its source. Make
+# that deterministic offscreen: move the tip far from the (0,0-ish) cursor and drop
+# the source, so both the over-tip and over-source checks are false.
 _tip.show_for(_probe_w, 'inspect', QPoint(5, 5), 100)
-_tip._check_pointer()                        # pointer not over tip/source -> hide
-_probe_w.deleteLater()
-APP.processEvents()
-_tip._check_pointer()                        # the source is now destroyed -> caught
+_tip.move(9000, 9000)
+_tip._source = None
+_tip._check_pointer()
+ok(not _tip.isVisible(),
+   'InfoTip: _check_pointer hides once the pointer is over neither tip nor source')
+# a destroyed source is CAUGHT (RuntimeError on mapToGlobal), cleared to None, and,
+# with the tip off the cursor, the tip hides -- not a crash. sip.delete force-destroys
+# the C++ source NOW so mapToGlobal reliably raises (deleteLater is too lazy offscreen).
+from PyQt6 import sip as _sip                                   # noqa: E402
+_tip.show_for(_probe_w, 'inspect', QPoint(5, 5), 100)
+_tip.move(9000, 9000)
+_sip.delete(_probe_w)
+_tip._check_pointer()
+ok(not _tip.isVisible() and _tip._source is None,
+   'InfoTip: a destroyed source is caught (source cleared, no crash) and the tip hides')
 from PyQt6.QtGui import QKeyEvent as _QKE2                       # noqa: E402
 from PyQt6.QtCore import QEvent as _QEv2                         # noqa: E402
+_tip.show_for(win, 'inspect', QPoint(5, 5), 100)
 _tip.keyPressEvent(_QKE2(_QEv2.Type.KeyPress, Qt.Key.Key_Escape,
                          Qt.KeyboardModifier.NoModifier, ''))    # Esc -> hide
+ok(not _tip.isVisible(), 'InfoTip: Esc hides the tip')
+_tip.show_for(win, 'inspect', QPoint(5, 5), 100)
 _tip.keyPressEvent(_QKE2(_QEv2.Type.KeyPress, Qt.Key.Key_A,
-                         Qt.KeyboardModifier.NoModifier, 'a'))   # other -> super
+                         Qt.KeyboardModifier.NoModifier, 'a'))   # other -> super, stays up
+ok(_tip.isVisible(), 'InfoTip: a non-Esc key does not hide the tip (passed to super)')
 _tip.deleteLater()
 APP.processEvents()
 
