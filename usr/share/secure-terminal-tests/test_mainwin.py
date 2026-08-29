@@ -1107,6 +1107,8 @@ ok(True, '_restore_tab rebuilds a tab and tolerates bad zoom/scrollback values')
 win._restore_tab({'tui': 'false'})
 ok(win.current().tui_active() is False,
    'a non-bool saved flag falls back to the default, not bool()-coerced True (#5)')
+# (OSC-map fail-closed restore is tested at the END of this module, after the
+# ctl-dump-tab COR-7 assertions, so its probe tab cannot perturb their fixture.)
 # a corrupt/hand-edited session with a non-str font_family or non-int font_size must
 # fall back to the default, not crash the restore (.strip() / int() on a bad type).
 eq(_bad_tab.current_font_family(), win._default_font_family,
@@ -3552,6 +3554,20 @@ _p10w.set_allow_title(True)
 ok(_p10w._osc_defaults.get('osc_title') is True and _p10w._osc_defaults.get('osc_notify') is True,
    'SEC-10: set_allow_title(True) re-enables the OSC defaults')
 _p10w.close(); _p10w.deleteLater(); APP.processEvents()
+
+# OSC-map fail-CLOSED restore (SEC follow-up): a tampered granular OSC flag
+# ("off"/"false"/0 -> truthy via bool()) must NOT re-enable a risk='high' OSC-52
+# clipboard feature the saved value says is disabled. _saved_bool coerces a non-bool
+# to the feature's secure default. Run LAST (a throwaway window + its probe tab must
+# not perturb the ctl-dump-tab COR-7 fixture above).
+_oscw = MainWindow()
+_oscw._locked = set()
+_oscw._restore_tab({'osc': {'osc_clipboard_read': 'off', 'osc_clipboard': 'false'}})
+_oscw_tab = _oscw.current()
+ok(not _oscw_tab.osc_enabled('osc_clipboard_read')
+   and not _oscw_tab.osc_enabled('osc_clipboard'),
+   'SEC: a tampered non-bool OSC flag stays disabled on restore, not bool()-coerced open')
+_oscw.close(); _oscw.deleteLater(); APP.processEvents()
 
 
 win.close()

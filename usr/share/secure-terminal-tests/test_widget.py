@@ -619,6 +619,13 @@ eq(_asent, [],
    'input suspended during review: no mouse / wheel / focus report reaches the child')
 ok(not _alt._mouse_report_btns,
    'no button is tracked during review (so no unmatched release fires later)')
+# ctl-send-text must ALSO honour the review suspension: the ctl socket has no user,
+# so during a review it must NOT push text onto the shell's input line (to
+# concatenate with the held paste and submit on the next Enter). Refuse it.
+_asent.clear()
+_ctlerr = _alt.ctl_send_text('ls')
+ok(_ctlerr is not None and _asent == [],
+   'ctl-send-text is refused during a paste/copy review (no byte reaches the child)')
 _alt._review_active = False
 _alt._mouse_selecting = False
 
