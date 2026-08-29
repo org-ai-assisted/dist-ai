@@ -1305,8 +1305,11 @@ if tui_available():
     # is not done on HALF a marker), while a COMPLETE read is fed whole (not delayed).
     _ast = SecureTerminal(command='/bin/cat', tui=True)
     feed_output(_ast, b'frame\x1b[?10')          # ends mid-marker -> partial tail HELD
+    ok(not _ast._alt_screen,
+       'F6: a split alt-screen marker does not enter the alt screen on the partial half')
     feed_output(_ast, b'49h\x1b[2Jnext')          # reunites + feeds the whole marker
-    ok(True, 'F6: the TUI feed reunites a split alt-screen marker without crashing')
+    ok(_ast._alt_screen,
+       'F6: the TUI feed reunites a split alt-screen marker (enters the alt screen)')
     _ast.close()
 
 # --- full-screen program drive (E2E): start a REAL full-screen program in TUI mode,
@@ -4366,6 +4369,7 @@ _toggled = win._default_colors
 win._goto_tab(0)                       # switch away (fires setChecked, blocked)
 win._goto_tab(win.tabs.count() - 1)    # and back
 eq(win._default_colors, _toggled, 'tab switch does not rewrite the colours default')
+win.set_colors(_before_colors)         # restore the shared window's colours default (isolation)
 win.set_mode('box')
 ok(not win.sec_display.icon().isNull() and not win.sec_mode.icon().isNull(),
    'both security lamps show an icon')
@@ -4811,11 +4815,11 @@ _ofz.close()
 # test to title/palette/cwd/hyperlink/clipboard/colour-query codes, and asserts on
 # the WRITE spy (the injection-relevant channel), not just a signal.
 _osz = SecureTerminal(command='/bin/cat')
-for _f in ('osc_title', 'osc_notify', 'osc_cwd', 'osc_hyperlink', 'osc_clipboard'):
-    try:
-        _osz.apply_osc(_f, True)
-    except Exception:                  # pylint: disable=broad-except
-        pass                           # feature may not exist; the sweep still runs
+_osc_sweep = ('osc_title', 'osc_notify', 'osc_cwd', 'osc_hyperlink', 'osc_clipboard')
+for _f in _osc_sweep:
+    _osz.apply_osc(_f, True)           # each is a real feature -> must enable, not swallow
+ok(all(_osz.osc_enabled(_f) for _f in _osc_sweep),
+   'every OSC feature enables (no swallowed apply_osc failure weakening the sweep)')
 
 
 ## B1: Enable osc_clipboard_read and grant consent so split-invariance assert is real
@@ -7325,10 +7329,14 @@ _mk._sync_timer.stop()
 _pc = SecureTerminal(command='/bin/cat')
 _pc.apply_tui(True)
 feed_output(_pc, b'x')
-if _pc._screen is not None:
-    _pc._screen.cursor.hidden = True
-    _pc._place_grid_cursor(_pc._screen)     # hidden -> returns without moving
-ok(True, '_place_grid_cursor: a hidden cursor is left alone')
+ok(_pc._screen is not None, '_place_grid_cursor test built a pyte screen')
+_pc._place_grid_cursor(_pc._screen)          # place the caret once, visible
+_pc_pos = _pc.textCursor().position()
+_pc._screen.cursor.hidden = True
+_pc._screen.cursor.x = (_pc._screen.cursor.x + 3) % _pc._screen.columns   # program MOVES it
+_pc._place_grid_cursor(_pc._screen)          # hidden -> must NOT follow the move
+ok(_pc.textCursor().position() == _pc_pos and _pc._cursor_visible is False,
+   '_place_grid_cursor leaves a hidden cursor where it was (caret unmoved, ours suppressed)')
 _pc._render_timer.stop()
 _pc._sync_timer.stop()
 
@@ -7452,9 +7460,13 @@ _sd._sync_timer.stop()
 # _delete_grid with scrollback above the live grid also eats the joining newline
 _dg = SecureTerminal(command='/bin/cat')
 _dg._append('l1\nl2\nl3\nl4\nl5')
+_dg_bc = _dg.document().blockCount()
 _dg._grid_rows = 2
 _dg._delete_grid()
-ok(True, '_delete_grid removes the live grid and the newline joining it')
+ok(_dg.document().blockCount() == _dg_bc - 2
+   and 'l5' not in _dg.toPlainText() and 'l4' not in _dg.toPlainText()
+   and _dg.toPlainText().endswith('l3'),
+   '_delete_grid removes the 2 live grid rows AND the newline joining them (no blank tail)')
 
 # _fmt_from_key: a marking carrying no colour yields a plain format
 _ff = SecureTerminal(command='/bin/cat')

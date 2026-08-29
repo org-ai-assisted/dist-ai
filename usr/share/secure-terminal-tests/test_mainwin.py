@@ -1586,15 +1586,22 @@ try:
     win._locked = {'allow_title'}
     win.set_allow_title(True)
     win._locked = {'bell'}
-    win.set_bell_channel('audible', True)
+    win.set_bell_channel('audible', True)    # locked -> refused
+    _lk_bell = 'audible' in win.current().bell_channels()
     win._locked = {'osc_title'}
-    win.set_osc('osc_title', True)
+    win.set_osc('osc_title', True)           # locked -> refused
+    _lk_osc = win.current().osc_enabled('osc_title')
     win._locked = {'allow_title'}
-    win.set_osc('osc_title', True)          # the allow_title -> osc_* lock path
+    win.set_osc('osc_title', True)           # the allow_title -> osc_* lock path -> refused
+    _lk_osc_alias = win.current().osc_enabled('osc_title')
     win._locked = set()
-    win.set_bell_channel('tray', True)      # add a channel
-    win.set_bell_channel('tray', False)     # remove it
-    ok(True, 'setting appliers respect admin locks; bell channels add/remove')
+    win.set_bell_channel('tray', True)       # unlocked -> added
+    _add_tray = 'tray' in win.current().bell_channels()
+    win.set_bell_channel('tray', False)      # unlocked -> removed
+    _rm_tray = 'tray' not in win.current().bell_channels()
+    ok(not _lk_bell and not _lk_osc and not _lk_osc_alias and _add_tray and _rm_tray,
+       'admin locks refuse bell / osc_title / allow_title->osc_title; '
+       'unlocked bell channels add and remove (read-back)')
     for _c in ('help', 'theme dark', 'mode reveal', 'colors on', 'tui on',
                'title on', 'zoom 120', 'scrollback 1000', 'paste-delay 3',
                'escape-limit 65536', 'pastedelay 4', 'totally-unknown', '/'):
@@ -3026,7 +3033,10 @@ win.set_paste_warn('bogus')                      # invalid -> ignored
 eq(win._paste_warn, 'always', 'set_paste_warn: an invalid mode is ignored')
 win.set_copy_warn('unicode')
 win.set_paste_warn('unicode')
-ok(True, 'set_paste_warn / set_copy_warn push the mode to every tab and persist')
+_pw_term = win.current()
+ok(_pw_term.current_paste_warn() == 'unicode'
+   and _pw_term.current_copy_warn() == 'unicode',
+   'set_paste_warn / set_copy_warn push the mode to every tab (tab-level read-back)')
 
 # --- review risk lamp (#116): reflects the config and goes red on unreviewed risk
 from PyQt6.QtWidgets import QDialog as _QDlgSec                    # noqa: E402
