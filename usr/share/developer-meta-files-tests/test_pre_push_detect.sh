@@ -308,6 +308,16 @@ run_det "$(printf '%s\n' '#!/bin/bash' \
    'bar || command -x exit 77')"
 assert_not_at "R-220 spares 'builtin -p exit 77' (bash rejects -p, exit never runs)" "R-220" 2
 assert_not_at "R-220 spares 'command -x exit 77' (bash rejects -x, exit never runs)" "R-220" 3
+## NESTED wrappers: bash runs 'command builtin exit 77' (and 'builtin command ...')
+## through BOTH layers, so a skip must not evade R-220 by double-wrapping. Unwrap
+## must loop, not stop after one layer.
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   'foo || command builtin exit 77' \
+   'bar || builtin command return 77' \
+   'baz || command -p builtin exit 77')"
+assert_at "R-220 flags a NESTED 'command builtin exit 77'"       "R-220" 2
+assert_at "R-220 flags a NESTED 'builtin command return 77'"     "R-220" 3
+assert_at "R-220 flags a nested wrap with options 'command -p builtin exit 77'" "R-220" 4
 ## the waiver is still honored THROUGH the wrapper, and a wrapped non-77 is spared.
 run_det "$(printf '%s\n' '#!/bin/bash' \
    'foo || builtin exit 77  ## style-ok: allow-skip: optional target' \

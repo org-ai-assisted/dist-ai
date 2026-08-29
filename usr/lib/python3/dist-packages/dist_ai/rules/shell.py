@@ -672,8 +672,11 @@ def _skip_exit_code_word(call):
         return None
     name = name.lstrip("\\")
     index = 1
-    if name in _EXIT_CALL_WRAPPERS:
-        ## Skip the wrapper's options and a '--' to reach the wrapped command.
+    while name in _EXIT_CALL_WRAPPERS:
+        ## Unwrap EACH builtin/command layer -- bash runs a NESTED wrap like
+        ## 'command builtin exit 77' through all of them, so a single 'if' unwrap
+        ## would let the double-wrapped skip slip R-220. Skip this wrapper's options
+        ## and a '--' to reach the wrapped word, then loop for a further wrapper.
         while index < len(words):
             word = bash_ast.word_string(words[index])
             if word is None:
