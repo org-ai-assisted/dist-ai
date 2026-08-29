@@ -9,7 +9,7 @@
 ##
 ##   github-api <METHOD> <PATH-or-URL> [extra curl args...]
 ##     github-api GET /repos/org-ai-assisted/foo/pulls
-##     github-api POST /repos/org-ai-assisted/foo/pulls --data @/tmp/pr.json
+##     github-api POST /repos/org-ai-assisted/foo/pulls --data @"$f"   # f="$(mktemp --suffix=.json)"
 ##
 ## A bare /path resolves against https://api.github.com; a full https URL is
 ## used as-is. Auth and the standard headers go to curl through a --config
@@ -40,6 +40,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 [ -v GITHUB_TOKEN_FILE ] || GITHUB_TOKEN_FILE="${HOME:-}/.config/github-token"
 
