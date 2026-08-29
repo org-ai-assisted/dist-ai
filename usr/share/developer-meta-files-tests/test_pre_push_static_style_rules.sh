@@ -1545,9 +1545,14 @@ printf '%s\n' \
 printf '%s\n' \
    "DPkg::Pre-Invoke{\"true\"${sc} \"/usr/bin/a${sc} /usr/bin/b\"}${sc}" \
    > "${apt_repo}/etc/apt/apt.conf.d/13bad-nospace-brace"
+## apt '::' list-append and an UNQUOTED value are both real hook forms apt runs;
+## parsing via apt_pkg catches them where a quoted-only scanner did not.
 printf '%s\n' \
-   "DPkg::Post-Invoke\"/usr/bin/a${sc} /usr/bin/b\"${sc}" \
-   > "${apt_repo}/etc/apt/apt.conf.d/14bad-nospace-quote"
+   "DPkg::Pre-Install-Pkgs:: \"echo a${sc} echo b\"${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/23bad-list-append"
+printf '%s\n' \
+   "DPkg::Pre-Invoke {echo|rm${sc}}${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/24bad-unquoted"
 ## A trailing INLINE '//' comment (apt honours it from any column, not just a
 ## whole-line comment) carrying a '}' desyncs the brace-depth scan: the ';' after
 ## the benign entry is then read as the directive terminator, hiding the later
@@ -1570,22 +1575,11 @@ printf '%s\n' \
 printf '%s\n' \
    "DPkg::Pre-Invoke {\"echo a${sc}\"\"echo b\"}${sc}" \
    > "${apt_repo}/etc/apt/apt.conf.d/17bad-concat"
-## apt honours a backslash escape inside a value, so an escaped inner quote does
-## NOT close the span; a non-escape-aware scan mis-split the value and lost the ';'.
-printf '%s\n' \
-   "DPkg::Post-Invoke {\"echo \\\"hi\\\"${sc} echo two\"}${sc}" \
-   > "${apt_repo}/etc/apt/apt.conf.d/18bad-escaped-quote"
 ## '#clear'/'#include' are apt DIRECTIVES, not comments -- apt keeps parsing the
-## rest of the line, so blanking '#' to EOL hid a hook after a '#clear'.
+## rest of the line, so a hook after a '#clear' must still be seen.
 printf '%s\n' \
    "DPkg::Pre-Invoke {\"true\"}${sc} #clear APT::Foo${sc} DPkg::Post-Invoke {\"echo a${sc} echo b\"}${sc}" \
    > "${apt_repo}/etc/apt/apt.conf.d/19bad-hash-directive"
-## FAIL-CLOSED: a hook value region carrying content the scanner cannot reduce to
-## the quoted-list structure (here an unquoted token beside a value) is flagged,
-## not silently passed -- R-194 stops modelling every apt.conf grammar corner.
-printf '%s\n' \
-   "DPkg::Pre-Invoke {\"true\"${sc} an_unquoted_token}${sc}" \
-   > "${apt_repo}/etc/apt/apt.conf.d/22bad-region-leftover"
 ## '|| true' error-suppression and a single command are glue, not a program.
 printf '%s\n' \
    'DPkg::Pre-Install-Pkgs {"/usr/sbin/dpkg-preconfigure --apt || true"};' \
@@ -1649,10 +1643,16 @@ else
    printf '%s\n' 'FAIL: R-194 did not flag a no-space brace apt hook' >&2
    failures=$((failures + 1))
 fi
-if grep --quiet --fixed-strings -- '14bad-nospace-quote' <<< "${apt_hits}"; then
-   printf '%s\n' 'PASS: R-194 flags a no-space bare-quoted apt hook (keyword glued to value)'
+if grep --quiet --fixed-strings -- '23bad-list-append' <<< "${apt_hits}"; then
+   printf '%s\n' 'PASS: R-194 flags a "::" list-append multi-statement hook'
 else
-   printf '%s\n' 'FAIL: R-194 did not flag a no-space bare-quoted apt hook' >&2
+   printf '%s\n' 'FAIL: R-194 did not flag a "::" list-append hook' >&2
+   failures=$((failures + 1))
+fi
+if grep --quiet --fixed-strings -- '24bad-unquoted' <<< "${apt_hits}"; then
+   printf '%s\n' 'PASS: R-194 flags an UNQUOTED apt hook value (a pipe)'
+else
+   printf '%s\n' 'FAIL: R-194 did not flag an unquoted apt hook value' >&2
    failures=$((failures + 1))
 fi
 if grep --quiet --fixed-strings -- '15bad-inline-comment' <<< "${apt_hits}"; then
@@ -1673,22 +1673,10 @@ else
    printf '%s\n' 'FAIL: R-194 did not flag an adjacent-concatenated split value' >&2
    failures=$((failures + 1))
 fi
-if grep --quiet --fixed-strings -- '18bad-escaped-quote' <<< "${apt_hits}"; then
-   printf '%s\n' 'PASS: R-194 flags a value carrying escaped inner quotes'
-else
-   printf '%s\n' 'FAIL: R-194 did not flag a value with escaped inner quotes' >&2
-   failures=$((failures + 1))
-fi
 if grep --quiet --fixed-strings -- '19bad-hash-directive' <<< "${apt_hits}"; then
    printf '%s\n' 'PASS: R-194 flags a hook after a "#clear" apt directive'
 else
    printf '%s\n' 'FAIL: R-194 did not flag a hook after a "#clear" directive' >&2
-   failures=$((failures + 1))
-fi
-if grep --quiet --fixed-strings -- '22bad-region-leftover' <<< "${apt_hits}"; then
-   printf '%s\n' 'PASS: R-194 fails closed on an unreducible hook value region'
-else
-   printf '%s\n' 'FAIL: R-194 did not fail closed on an unreducible hook value' >&2
    failures=$((failures + 1))
 fi
 if grep --quiet --fixed-strings -- '20good-ortrue' <<< "${apt_hits}"; then

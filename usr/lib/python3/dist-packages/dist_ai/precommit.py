@@ -447,9 +447,13 @@ def _run_batch(paths, base_ref, staged_mode, base_cwd, content_cwd, source_rev):
                     if os.path.lexists(_abs(base_cwd, p))]
     yield from _run_hook("check-executables-have-shebangs", [],
                          exec_on_disk, base_cwd)
-    ## check-symlinks reads a symlink to see if its target is broken (no git), so
-    ## it runs on content_cwd -- the mirror recreates the staged symlinks.
-    yield from _run_hook("check-symlinks", [], lists["symlink"], content_cwd)
+    ## check-symlinks reads a symlink to see if its target is broken. Run it in
+    ## the REAL repo (not the mirror, which holds only CHANGED paths -- a valid
+    ## relative link to an already-tracked, unchanged file would look broken
+    ## there), filtered to links present in the working tree.
+    sym_on_disk = [p for p in lists["symlink"]
+                   if os.path.islink(_abs(base_cwd, p))]
+    yield from _run_hook("check-symlinks", [], sym_on_disk, base_cwd)
 
     ## type by extension, content-reading -> content_cwd:
     yield from _run_hook("check-yaml", [], lists["yaml"], content_cwd)

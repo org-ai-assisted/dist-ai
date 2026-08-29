@@ -168,6 +168,17 @@ def _detect_contexts(contexts, prog):
             print("%s: shfmt is required but unavailable: %s" % (prog, exc),
                   file=sys.stderr)
             return fail_count, 2
+        except Exception:  # noqa: BLE001 -- one file must not crash the gate
+            ## A rule crashing on a crafted file (e.g. PyYAML's RecursionError on
+            ## deeply nested flow) must FAIL that file, never take down the whole
+            ## staged/range run with an unhandled traceback (a crash read as a
+            ## clean pass would be a false green).
+            traceback.print_exc()
+            _print_finding(prog, model.fail(
+                "gate-crash", "a rule crashed on this file (see traceback)",
+                ctx.path, 1))
+            fail_count += 1
+            continue
         for finding in findings:
             if finding.severity == model.FAIL:
                 fail_count += 1

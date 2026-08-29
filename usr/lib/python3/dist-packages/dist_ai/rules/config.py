@@ -8,7 +8,9 @@ workflow YAML 'run:' steps. Each self-selects by file shape and parses the shell
 it hosts, so a ';'/'|' inside a nested quote is data, not a separator. These run
 over every file (they no-op on a non-matching path) -- detection only, no fix."""
 
+import os
 import re
+import tempfile
 
 from dist_ai import bash_ast
 from dist_ai import context as ctxmod
@@ -23,17 +25,10 @@ PYTHON_MODULE_PATH = re.compile(
     r'/lib/python3[^/]*/(?:dist|site)-packages/.*\.py$')
 
 EXEC_DIRECTIVE = re.compile(r'^[ \t]*(Exec[A-Za-z]*)=(.*)$', re.MULTILINE)
-## The trailing boundary is a LOOKAHEAD, not a consumed group: apt accepts the
-## value glued to the keyword ('Pre-Invoke{"..."}' / 'Pre-Invoke"..."', no space),
-## so consuming that first '{'/'"' would start the value scan one char late -- past
-## the opening brace/quote -- and _hook_value_region would mis-track depth/quotes
-## and truncate at the first embedded ';', hiding the rest of the command.
-## re.IGNORECASE: apt.conf option names are case-INSENSITIVE (apt.conf(5)), so
-## apt runs a 'dpkg::pre-invoke {...}' hook exactly like the canonical case; a
-## case-sensitive match let any non-canonical spelling bypass R-194.
-APT_HOOK = re.compile(
-    r'(^|[^A-Za-z0-9])(Pre-Invoke|Post-Invoke|Pre-Install-Pkgs)(?=[^A-Za-z0-9]|$)',
-    re.IGNORECASE)
+## apt config-tree keys whose LAST component is one of these run their value list
+## via 'sh -c' (case-insensitive, as apt.conf names are).
+_APT_HOOK_NAMES = frozenset(
+    ("pre-invoke", "post-invoke", "pre-install-pkgs"))
 CRON_ENV = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*[ \t]*=')
 
 
@@ -93,187 +88,74 @@ class SystemdUnit(Rule):
                     "call it" % directive, path, start)
 
 
-def _hook_values(region):
-    """(values, leftover) for the apt hook REGION. VALUES are the sh -c commands
-    apt runs, read the SAME way apt parses its double-quoted-string grammar:
-      - a backslash escapes the next char, so '\\"' is a literal quote that does
-        NOT close the span (apt honours the escape) -- else 'echo \\"hi\\"; rm'
-        mis-splits and the ';' hides;
-      - ADJACENT quoted spans with only whitespace between them CONCATENATE into
-        one value (C-string style), so '"a;""b"' is the single command 'a;b';
-      - a non-whitespace, non-quote char (';', '{', '}') between spans ENDS the
-        value, so a brace list '{"a"; "b"}' is two separate values.
-    LEFTOVER is any non-whitespace OUTSIDE that recognized structure (quoted
-    spans, '{', '}', ';'). A hook value is quoted strings in an optional brace
-    list, so leftover means an apt.conf grammar corner this scanner does not
-    model -- R-194 fails CLOSED on it (see AptHook.detect) rather than chase
-    every quoting rule."""
-    values = []
-    leftover = []
-    current = None
-    index = 0
-    length = len(region)
-    while index < length:
-        char = region[index]
-        if char == '"':
-            index += 1
-            piece = []
-            while index < length and region[index] != '"':
-                if region[index] == "\\" and index + 1 < length:
-                    piece.append(region[index + 1])
-                    index += 2
-                    continue
-                piece.append(region[index])
-                index += 1
-            index += 1  ## past the closing quote (or end)
-            joined = "".join(piece)
-            current = joined if current is None else current + joined
-            continue
-        if char in " \t\r\n":
-            index += 1
-            continue
-        if current is not None:
-            values.append(current)
-            current = None
-        if char not in "{};":
-            leftover.append(char)
-        index += 1
-    if current is not None:
-        values.append(current)
-    return values, "".join(leftover)
-
-
-DIRECTIVE_HASH = re.compile(r'#(include|clear)\b', re.IGNORECASE)
-
-
-def _strip_apt_comments(text):
-    """Blank apt.conf COMMENTS so a ';'/'{'/'}'/'"' living in one cannot desync
-    the brace/quote scan that follows. apt (confirmed against apt-config) runs a
-    comment to end of line from ANY column: '//', '/* */' (a block, may span
-    lines), and '#' -- inline too, so 'Setting "x"; # rest' drops '# rest'. All
-    are literal INSIDE a double-quoted value (a '//' in a URL), so a quote toggle
-    suspends comment recognition. The ONE '#' exception is a '#include'/'#clear'
-    DIRECTIVE: apt keeps parsing the rest of that line, so it is left intact --
-    else a hook after a '#clear' would be hidden. Replaced with spaces, newlines
-    kept, so line numbers and the value-region scan are preserved. Escape-aware:
-    a backslash inside a value escapes the next char, so a '\\"' does not close
-    the quote."""
-    out = []
-    index = 0
-    length = len(text)
-    in_quote = False
-    while index < length:
-        char = text[index]
-        if in_quote:
-            out.append(char)
-            if char == "\\" and index + 1 < length:
-                out.append(text[index + 1])
-                index += 2
-                continue
-            if char == '"':
-                in_quote = False
-            index += 1
-            continue
-        if char == '"':
-            in_quote = True
-            out.append(char)
-            index += 1
-            continue
-        pair = text[index:index + 2]
-        ## '#' comment to EOL, unless it is a '#include'/'#clear' directive.
-        if pair == "//" or (
-                char == "#" and not DIRECTIVE_HASH.match(text, index)):
-            stop = text.find("\n", index)
-            stop = length if stop < 0 else stop
-            out.append(" " * (stop - index))
-            index = stop
-            continue
-        if pair == "/*":
-            close = text.find("*/", index + 2)
-            stop = length if close < 0 else close + 2
-            out.append("".join(
-                "\n" if text[k] == "\n" else " " for k in range(index, stop)))
-            index = stop
-            continue
-        out.append(char)
-        index += 1
-    return "".join(out)
-
-
-def _hook_value_region(text, start):
-    """The directive value region beginning at START (just past the hook
-    keyword): text up to the ';' that terminates the directive at brace depth 0.
-    apt.conf is newline-insensitive, so this spans lines -- 'KEYWORD "v";' returns
-    ' "v"', and 'KEYWORD { "a"; "b"; };' returns ' { "a"; "b"; }' (the inner ';'
-    sit at depth 1, so they do not end the directive). A ';'/'{'/'}' INSIDE the
-    double-quoted value is literal data (apt runs the quoted string via sh -c),
-    so a quote toggle suspends brace/terminator tracking -- else a bare
-    'KEYWORD "a; b";' would end at the embedded ';' and hide the value. Escape-
-    aware: a backslash inside a value escapes the next char, so '\\"' does not
-    toggle the quote state (apt honours the escape)."""
-    depth = 0
-    in_quote = False
-    index = start
-    length = len(text)
-    while index < length:
-        char = text[index]
-        if in_quote and char == "\\" and index + 1 < length:
-            index += 2
-            continue
-        if char == '"':
-            in_quote = not in_quote
-        elif in_quote:
+## POLICY: do NOT over-invest in apt.conf parsing. apt_pkg (apt's own parser) is
+## the authority -- match its behaviour, do not hand-roll or re-model apt.conf
+## grammar. Correctness here is BOUNDED and IMPERFECT-ON-PURPOSE: a novel grammar
+## corner is delegated to apt_pkg, never chased with another regex/scanner rule.
+## The hand-rolled scanner this replaced burned many review rounds on one edge at
+## a time (no-space, comments, '::', concat, escapes, case, unquoted); that dead
+## end is closed. Extend only if apt_pkg itself is wrong AND it matters.
+def _apt_hook_commands(source):
+    """Yield each command an apt hook would run (the 'sh -c' string), parsed with
+    apt_pkg -- apt's OWN config parser -- so every quoting, comment, '::'-append,
+    unquoted-value, and case rule is handled EXACTLY as apt does. A config apt
+    itself rejects (a syntax error) runs no hooks, so it yields nothing. SOURCE is
+    written to a private temp file because apt_pkg reads a path. Raises ImportError
+    if python3-apt is absent (a required dependency, not a silent skip)."""
+    import apt_pkg
+    conf = apt_pkg.Configuration()
+    handle = tempfile.NamedTemporaryFile(
+        "w", prefix="dist-ai-apt-", suffix=".conf", delete=False)
+    try:
+        handle.write(source)
+        handle.close()
+        try:
+            apt_pkg.read_config_file(conf, handle.name)
+        except apt_pkg.Error:
+            return
+    finally:
+        try:
+            os.unlink(handle.name)
+        except OSError:
             pass
-        elif char == "{":
-            depth += 1
-        elif char == "}":
-            depth = max(0, depth - 1)
-        elif char == ";" and depth == 0:
-            break
-        index += 1
-    return text[start:index]
-
+    for key in conf.keys():
+        if key.rsplit("::", 1)[-1].lower() not in _APT_HOOK_NAMES:
+            continue
+        items = conf.value_list(key)
+        if items:
+            yield from items
+        else:
+            ## A hook written as a bare scalar ('Pre-Invoke "a; b";' with no list
+            ## braces) has an empty value_list; fall back to its scalar so such a
+            ## form is still checked (fail-safe -- a multi-statement one flags).
+            scalar = conf.find(key)
+            if scalar:
+                yield scalar
 
 class AptHook(Rule):
     """R-194: an apt hook ('Pre-Invoke'/'Post-Invoke'/'Pre-Install-Pkgs') runs
-    its double-quoted value via 'sh -c'; a multi-statement value belongs in a
-    script. The directive and its quoted value need not share a physical line --
-    apt.conf's brace-block grammar is newline-insensitive, so the whole value
-    region is reassembled from the keyword to its terminating ';'."""
+    each value in its list via 'sh -c'; a multi-statement command belongs in a
+    script. The value is extracted with apt's own parser (apt_pkg), so quoted,
+    unquoted, '::'-appended, commented and odd-case forms are all read the way apt
+    runs them -- no hand-rolled grammar to keep chasing edges on."""
 
     id = "R-194"
 
     def detect(self, ctx):
-        source = ctx.source
-        if not ctxmod.is_apt_conf(ctx.path) or not APT_HOOK.search(source):
+        if not ctxmod.is_apt_conf(ctx.path) or ctx.source is None:
             return
         if ctx.has_config_waiver("allow-embedded-script", slashes=True):
             yield _note(ctx, "R-194",
                         "R-194 skipped: 'style-ok: allow-embedded-script' "
                         "waiver in '%s'" % ctx.path)
             return
-        ## Blank comments ('//' to EOL, '/* */' blocks, keeping newlines) so a
-        ## commented-out hook is not scanned and a ';'/'}' in a comment cannot
-        ## desync the value-region scan, then find each hook directive and the
-        ## value region that follows it, across lines.
-        text = _strip_apt_comments(source)
-        for match in APT_HOOK.finditer(text):
-            region = _hook_value_region(text, match.end())
-            values, leftover = _hook_values(region)
-            multi = any(
-                h.embeds_multi_statement(inner, strict=False) for inner in values)
-            ## FAIL-CLOSED: a value present but the region carries content this
-            ## scanner cannot reduce to that quoted-list structure is flagged,
-            ## rather than modelling yet another apt.conf grammar corner and
-            ## risking a silent miss. A region with NO value (a hook keyword that
-            ## is really DATA inside another setting's quoted value) is spared.
-            if multi or (values and leftover.strip()):
-                line_number = text.count("\n", 0, match.start()) + 1
+        for command in _apt_hook_commands(ctx.source):
+            if h.embeds_multi_statement(command, strict=False):
                 yield model.fail(
                     "R-194",
                     "R-194 apt hook embeds a multi-statement shell command; "
                     "move the logic to a dedicated script (shebang) and "
-                    "call it", ctx.path, line_number)
+                    "call it", ctx.path, 1)
 
 
 class CronTable(Rule):
@@ -323,7 +205,10 @@ class WorkflowInlineShell(Rule):
         import yaml
         try:
             root = yaml.compose(ctx.source)
-        except yaml.YAMLError:
+        except (yaml.YAMLError, RecursionError):
+            ## PyYAML raises a bare RecursionError (not a YAMLError) on a deeply
+            ## nested flow collection -- a crafted workflow must not crash the
+            ## whole gate, just decline this rule.
             return
         if root is None:
             return
