@@ -1477,10 +1477,15 @@ def t_input_strings():
 
     # paste_is_multiline: True iff a newline/CR appears BEFORE the last character
     # (a trailing submit on a single line is NOT multi-command). This is the
-    # hold-for-review trigger; T3 originally never mentioned it.
+    # hold-for-review trigger; T3 originally never mentioned it. The oracle must
+    # mirror the real function's CRLF-pair collapse first: a Windows-style single
+    # line 'cmd\r\n' is ONE command (the '\r' sitting before the final '\n' is a
+    # pair, not an embedded submit), so it is NOT multi-line -- computing `want`
+    # off the raw probe[:-1] would wrongly flag 'trailing\r\n'.
     for probe in [*_STR_PROBES, 'a\nb', 'a\n', '\n', 'a\rb', 'ab', '']:
-        want = (len(probe) > 0
-                and (('\n' in probe[:-1]) or ('\r' in probe[:-1])))
+        collapsed = probe.replace('\r\n', '\n')
+        want = (len(collapsed) > 0
+                and (('\n' in collapsed[:-1]) or ('\r' in collapsed[:-1])))
         if bool(S.paste_is_multiline(probe)) != want:
             fail('T3 paste_is_multiline: %r -> %s, want %s'
                  % (probe[:40], S.paste_is_multiline(probe), want))
