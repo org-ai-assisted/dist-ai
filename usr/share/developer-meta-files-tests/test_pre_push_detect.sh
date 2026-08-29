@@ -195,6 +195,18 @@ run_det "$(printf '%s\n' '#!/bin/bash' \
 assert_at "R-120 unwraps a stacked 'sudo sudo rm'"   "R-120" 2
 assert_at "R-120 unwraps a stacked 'sudo doas rm'"   "R-120" 3
 assert_at "R-034 unwraps a stacked 'sudo sudo echo'" "R-034" 4
+## ... and the INNER wrapper's own flags/'--' must be skipped too: command_tokens flattens
+## everything past the first operand, so the unwrap RE-PARSES each layer or a flag ('-u') would
+## surface as the command and still bypass. (ai-review agy/grok.)
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   'sudo sudo -u root rm -rf /x' \
+   'sudo doas -u root rm -rf /y' \
+   'sudo sudo -- rm -rf /z' \
+   'sudo sudo -n apt-get update')"
+assert_at "R-120 unwraps 'sudo sudo -u root rm' (inner flag+value)" "R-120" 2
+assert_at "R-120 unwraps 'sudo doas -u root rm'"                    "R-120" 3
+assert_at "R-120 unwraps 'sudo sudo -- rm' (inner end-of-options)"  "R-120" 4
+assert_at "R-210 unwraps 'sudo sudo -n apt-get'"                    "R-210" 5
 ## CRLF: a comment-tail backslash must still be neutralized so the next command
 ## is not swallowed (a '\r' left on the line would defeat the backslash strip).
 printf '%b' '#!/bin/bash\r\n# c \\\r\nrm -rf /x\r\n' > "${test_dir}/crlf.sh"
@@ -304,6 +316,18 @@ assert_at     "R-220 flags 'exit \$((70+7))' (constant 77)"    "R-220" 2
 assert_at     "R-220 flags 'exit \$((154/2))' (constant 77)"   "R-220" 3
 assert_not_at "R-220 spares dynamic 'exit \$((rc + 1))'"       "R-220" 4
 assert_not_at "R-220 spares constant non-77 'exit \$((70+6))'" "R-220" 5
+## A HUGE constant must evaluate with INTEGER arithmetic, never float: 'a/b' via float
+## OverflowErrors past ~1e308 (crashing the linter on untrusted data) and loses precision
+## above 2**53. '77 * BIG / BIG' is 77 for any BIG -> must still flag, and must not crash.
+## (ai-review agy/grok.)
+arith_big="$(printf '9%.0s' $(seq 1 400))"
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   "foo || exit \$(( 77 * ${arith_big} / ${arith_big} ))")"
+assert_at "R-220 evaluates a huge constant with integer arithmetic (no float overflow)" "R-220" 2
+## A leading-zero (bash octal) literal cannot be mapped to a value without a full bash
+## arithmetic parser, so it DECLINES -- a miss, never a crash or a decimal misread.
+run_det "$(printf '%s\n' '#!/bin/bash' 'foo || exit $((0115))')"
+assert_not_at "R-220 declines a bash-octal '\$((0115))' (not misread as decimal)" "R-220" 2
 run_det "$(printf '%s\n' '#!/bin/bash' 'foo || exit 333' 'bar || exit 300')"
 assert_not_at "R-220 spares 'exit 300' (300 mod 256 = 44)" "R-220" 3
 ## exec-wrapper spellings: bash runs the SAME exit/return builtin through '\exit',

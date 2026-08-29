@@ -641,6 +641,14 @@ _DECIMAL_INT = re.compile(r'[+-]?[0-9]+')
 _ARITH_CONST_CHARS = re.compile(r'\A[0-9+\-*/%() \t]+\Z')
 
 
+def _trunc_div(dividend, divisor):
+    """Integer division truncated toward zero (bash '/' semantics; Python '//'
+    floors). Integer-only: a float '/' OverflowErrors past ~1e308 and loses
+    precision above 2**53, so a huge constant would crash or misevaluate."""
+    quotient = abs(dividend) // abs(divisor)
+    return -quotient if (dividend < 0) != (divisor < 0) else quotient
+
+
 def _eval_const_arith(node):
     """The int value of an ast arithmetic node built from integer literals and the
     shared '+ - * / %' operators, else None. bash truncates '/' toward zero and takes
@@ -669,9 +677,9 @@ def _eval_const_arith(node):
         if isinstance(op, ast.Mult):
             return left * right
         if isinstance(op, (ast.Div, ast.FloorDiv)):
-            return None if right == 0 else int(left / right)
+            return None if right == 0 else _trunc_div(left, right)
         if isinstance(op, ast.Mod):
-            return None if right == 0 else left - right * int(left / right)
+            return None if right == 0 else left - right * _trunc_div(left, right)
     return None
 
 
@@ -685,7 +693,9 @@ def _const_arith_exit_value(word, source):
     inner = bash_ast.word_source(word, source).strip()
     if not (inner.startswith("$((") and inner.endswith("))")):
         return None
-    inner = inner[3:-2]
+    ## Strip inner whitespace: ast.parse(mode="eval") rejects a LEADING space as
+    ## indentation ('$(( 70 + 7 ))' would else raise IndentationError and decline).
+    inner = inner[3:-2].strip()
     if not _ARITH_CONST_CHARS.match(inner):
         return None
     try:
