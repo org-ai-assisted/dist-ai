@@ -8,6 +8,7 @@
 rules (R-161, R-172, R-200) also carry fix(), sharing the very constants their
 detect() uses -- so the detector and the rewriter cannot drift."""
 
+import ast
 import re
 
 from dist_ai import bash_ast
@@ -632,6 +633,67 @@ ALLOW_SKIP = re.compile(r'##[ \t]*style-ok:[ \t]*allow-skip:[ \t]*\S')
 _DECIMAL_INT = re.compile(r'[+-]?[0-9]+')
 
 
+## Statically evaluate a CONSTANT '$(( ))' exit code, so a skip disguised as
+## 'exit $((70+7))' (runs 77) is caught. Kept to plain constant arithmetic
+## ('+ - * / %', literals, parens) -- shifts/bitwise/power, whose bash edge
+## semantics or huge intermediates are not worth matching, and any variable or
+## command expansion, DECLINE (return None), the 'guess nothing' safe direction.
+_ARITH_CONST_CHARS = re.compile(r'\A[0-9+\-*/%() \t]+\Z')
+
+
+def _eval_const_arith(node):
+    """The int value of an ast arithmetic node built from integer literals and the
+    shared '+ - * / %' operators, else None. bash truncates '/' toward zero and takes
+    '%' with the dividend's sign, so both are matched rather than using Python's
+    flooring operators."""
+    if isinstance(node, ast.Expression):
+        return _eval_const_arith(node.body)
+    if isinstance(node, ast.Constant):
+        return node.value if isinstance(node.value, int) and not isinstance(
+            node.value, bool) else None
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        val = _eval_const_arith(node.operand)
+        if val is None:
+            return None
+        return val if isinstance(node.op, ast.UAdd) else -val
+    if isinstance(node, ast.BinOp):
+        left = _eval_const_arith(node.left)
+        right = _eval_const_arith(node.right)
+        if left is None or right is None:
+            return None
+        op = node.op
+        if isinstance(op, ast.Add):
+            return left + right
+        if isinstance(op, ast.Sub):
+            return left - right
+        if isinstance(op, ast.Mult):
+            return left * right
+        if isinstance(op, (ast.Div, ast.FloorDiv)):
+            return None if right == 0 else int(left / right)
+        if isinstance(op, ast.Mod):
+            return None if right == 0 else left - right * int(left / right)
+    return None
+
+
+def _const_arith_exit_value(word, source):
+    """The int value of WORD when it is a single, purely-CONSTANT '$(( ))' arithmetic
+    expansion, else None. A dynamic '$((rc+1))' or an exotic base/operator DECLINES,
+    the same safe direction as word_string returning None for a real expansion."""
+    parts = word.get("Parts") or []
+    if len(parts) != 1 or parts[0].get("Type") != "ArithmExp":
+        return None
+    inner = bash_ast.word_source(word, source).strip()
+    if not (inner.startswith("$((") and inner.endswith("))")):
+        return None
+    inner = inner[3:-2]
+    if not _ARITH_CONST_CHARS.match(inner):
+        return None
+    try:
+        return _eval_const_arith(ast.parse(inner, mode="eval"))
+    except (SyntaxError, ValueError):
+        return None
+
+
 def _is_skip_code_77(word):
     """True if WORD is an 'exit'/'return' argument that RUNS AS 77. Bash truncates
     the code to 8 bits and parses it as a signed decimal (leading zeros / '+' / '-'
@@ -653,7 +715,7 @@ def _is_skip_code_77(word):
 _EXIT_CALL_WRAPPERS = ("builtin", "command")
 
 
-def _skip_exit_code_word(call):
+def _skip_exit_code_word(call, source):
     """The exit/return CODE word for CALL if it is a test skip, else None.
     Resolves the spellings bash runs identically as the exit/return builtin:
       - a leading-backslash or QUOTED name ('\\exit 77', '"exit" 77') -- word_string
@@ -661,9 +723,10 @@ def _skip_exit_code_word(call):
       - a 'builtin'/'command' prefix, including its options and a '--'
         ('builtin -- exit 77', 'command -p exit 77'); but 'command -v'/'-V' only
         DESCRIBE the command and do not run it, so those are NOT a skip;
-      - a '--' end-of-options before the code ('exit -- 77').
-    None (not exit/return, or the code word is missing/expanded) is the safe
-    direction -- the caller declines rather than guesses."""
+      - a '--' end-of-options before the code ('exit -- 77');
+      - a purely-CONSTANT arithmetic code ('exit $((70+7))' runs 77).
+    None (not exit/return, or the code word is missing/dynamically expanded) is the
+    safe direction -- the caller declines rather than guesses."""
     words = bash_ast.args(call)
     if not words:
         return None
@@ -713,7 +776,15 @@ def _skip_exit_code_word(call):
         index += 1
     if index >= len(words):
         return None
-    return bash_ast.word_string(words[index])
+    ## word_string resolves a literal/quoted code; a CONSTANT '$(( ))' has no literal
+    ## value (word_string is None) yet still runs as a fixed code, so evaluate it --
+    ## 'exit $((70+7))' is the same 77 skip as 'exit 77'. Return it as a decimal string
+    ## so _is_skip_code_77 applies the same mod-256 normalization.
+    code = bash_ast.word_string(words[index])
+    if code is not None:
+        return code
+    value = _const_arith_exit_value(words[index], source)
+    return None if value is None else str(value)
 
 
 def _skip_waived(comment_by_line, line):
@@ -757,7 +828,7 @@ class UnauthorizedSkip(Rule):
             ## (quote-aware) so 'exit "77"' is the same skip as 'exit 77';
             ## _is_skip_code_77 normalizes a leading '+' and decimal leading zeros
             ## ('exit +77' / 'exit 077' both run as 77).
-            code_word = _skip_exit_code_word(call)
+            code_word = _skip_exit_code_word(call, ctx.source)
             if code_word is None or not _is_skip_code_77(code_word):
                 continue
             line = call["Pos"]["Line"]

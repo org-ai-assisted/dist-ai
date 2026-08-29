@@ -52,7 +52,15 @@ def effective_command(call, source):
             if re.match(r'^[A-Za-z_][A-Za-z0-9_]*=',
                         bash_ast.word_source(word, source)):
                 continue
-            return _basename(bash_ast.word_lit(word))
+            inner = _basename(bash_ast.word_lit(word))
+            ## A STACKED wrapper -- 'sudo sudo rm', 'sudo doas rm' -- runs the real
+            ## command one layer deeper; keep unwrapping so it does not resolve to
+            ## 'sudo'/'doas' and bypass R-120/R-034/R-210/R-211. The shared option
+            ## spec (sudo and doas overlap) means the inner wrapper's own options and
+            ## their values are still classified non-operand, so they are skipped too.
+            if inner in EXEC_WRAPPERS:
+                continue
+            return inner
     return None
 
 
