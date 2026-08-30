@@ -339,14 +339,26 @@ try:
 finally:
     QDialog.exec = _orig_exec
 
-# locked keybindings: the fields and buttons are shown read-only
+# locked keybindings: the key editors + Reset/Save are shown read-only (disabled).
+# The lock is saved+restored in the finally: it MUST NOT leak into the ~2200 later
+# tests (a leaked 'keybindings' lock makes _set_shortcuts early-return the lock
+# message, silently masking the reserved/duplicate detection those tests assert).
+_sk_lock_save = set(win._locked)
 win._locked = set(win._locked) | {'keybindings'}
-QDialog.exec = lambda _s: int(QDialog.DialogCode.Rejected)
+_sk_dlg = []
+def _exec_capture_ro(_self):
+    _sk_dlg.append(_self)                    # capture the dialog to inspect its widgets
+    return int(QDialog.DialogCode.Rejected)
+QDialog.exec = _exec_capture_ro
 try:
     win.show_shortcuts()
-    ok(True, 'show_shortcuts: admin-locked bindings render read-only')
+    from PyQt6.QtWidgets import QKeySequenceEdit as _QKSE          # noqa: E402
+    _sk_edits = _sk_dlg[0].findChildren(_QKSE) if _sk_dlg else []
+    ok(bool(_sk_edits) and all(not _e.isEnabled() for _e in _sk_edits),
+       'show_shortcuts: admin-locked bindings render the key editors read-only (disabled)')
 finally:
     QDialog.exec = _orig_exec
+    win._locked = _sk_lock_save              # restore -- never leak the lock forward
 
 from secure_terminal.main import _test_canary                     # noqa: E402
 from PyQt6.QtWidgets import (QFileDialog, QMenu, QMessageBox)      # noqa: E402
@@ -2344,10 +2356,13 @@ _ids = list(win._shortcuts)[:2]
 _probs = win._set_shortcuts({_ids[0]: 'Ctrl+C',           # reserved terminal key
                              _ids[1]: 'Ctrl+G',
                              'no-such-ident': 'Ctrl+H'})   # unknown -> skipped
-ok(isinstance(_probs, list) and _probs,
-   '_set_shortcuts: a reserved key is reported as a problem')
+ok(isinstance(_probs, list)
+   and any('reserved for the terminal' in _p for _p in _probs),
+   '_set_shortcuts: a reserved key (Ctrl+C) is reported by name (real detection, not the lock guard)')
 _dup = win._set_shortcuts({_ids[0]: 'Ctrl+J', _ids[1]: 'Ctrl+J'})   # duplicate
-ok(isinstance(_dup, list) and _dup, '_set_shortcuts: a duplicate binding is a problem')
+ok(isinstance(_dup, list)
+   and any('assigned to more than one action' in _p for _p in _dup),
+   '_set_shortcuts: a duplicate binding is reported (real duplicate detection)')
 
 # --- tab-op guards on invalid targets -----------------------------------------
 from PyQt6.QtGui import QColor as _QC        # noqa: E402
@@ -2582,7 +2597,8 @@ win._tab_ids.pop(_stale, None)
 _stale.shutdown()
 
 # --- the shortcuts dialog surfaces a save problem in a warning box -------------
-win._locked = set(win._locked) - {'keybindings'}   # clear a leftover lock
+# (no leftover-lock clear needed: the locked-keybindings block above restores it)
+assert 'keybindings' not in win._locked, 'keybindings lock leaked into later tests'
 _o_ss = win._set_shortcuts
 _o_w2 = QMessageBox.warning
 _warned = []
