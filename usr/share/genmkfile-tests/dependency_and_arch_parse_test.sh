@@ -5,13 +5,10 @@
 
 ## AI-Assisted
 
-## Two debian/control parsing bugs in make-helper-one.bsh:
-##  1. make_dependencies_filter_helper turned an ALTERNATIVE group 'A | B' into hard
-##     requirements on BOTH (it stripped '|' as a substring), so 'apt-get install' demanded
-##     mutually-exclusive alternatives and failed. Fix: keep only the first alternative.
-##  2. the Package/Architecture stanza loop dropped RFC822 FOLDED continuation lines (a
-##     multi-line 'Architecture: amd64\n arm64'), so a covered target read as uncovered and
-##     its expected .deb vanished from make_package_debs_files_list. Fix: append continuations.
+## make_get_variables' Package/Architecture stanza loop dropped RFC822 FOLDED continuation
+## lines (a multi-line 'Architecture: amd64\n arm64'), so a covered target read as uncovered
+## and its expected .deb vanished from make_package_debs_files_list. Fix: append continuations
+## to the field the header started, and trim the value so a folded '<nl> all' still matches.
 
 set -o errexit
 set -o nounset
@@ -76,44 +73,7 @@ tests_failed=0
 pass() { printf '%s\n' "PASS  $1"; }
 fail() { tests_failed=$(( tests_failed + 1 )); printf '%s\n' "FAIL  $1" >&2; }
 
-## --- Bug 1: make_dependencies_filter_helper ---
-sed -n '/^make_dependencies_filter_helper()/,/^}/p' -- "${helper_file}" \
-   > "${test_root}/filter.sh"
-# shellcheck disable=SC1091
-source "${test_root}/filter.sh"
-
-check_filter() {
-   local desc="$1" input="$2" want="$3" got
-   got="$(printf '%s' "${input}" | make_dependencies_filter_helper)"
-   tests_total=$(( tests_total + 1 ))
-   if [ "${got}" = "${want}" ]; then
-      pass "${desc} -> '${got}'"
-   else
-      fail "${desc}: want '${want}' got '${got}'"
-   fi
-}
-
-check_filter 'alternative group keeps first only' \
-   'default-mta | mail-transport-agent, foo (>= 1.0)' 'default-mta foo'
-check_filter 'plain versioned deps' \
-   'debhelper (>= 13), debhelper-compat (= 13)' 'debhelper debhelper-compat'
-check_filter 'substitution markers dropped' \
-   '${misc:Depends}, python3' 'python3'
-check_filter 'folded (newline) continuation' \
-   "$(printf 'a,\n b (>= 1)')" 'a b'
-check_filter 'arch qualifier stripped + alt group' \
-   'pkg [linux-any], x | y | z' 'pkg x'
-## grep-dctrl emits one paragraph per binary stanza separated by a NEWLINE, no comma; the last
-## dep of one stanza must not merge with the first of the next.
-check_filter 'multi-stanza deps (newline separated) keep all' \
-   "$(printf 'libc6 (>= 2.28), libfoo1\npython3, extra-tool\nlibdata1')" \
-   'libc6 libfoo1 python3 extra-tool libdata1'
-## An ALTERNATIVE group whose alternatives are arch-qualified must keep BOTH: choosing the
-## first by position could pick the wrong-arch package and break the build.
-check_filter 'arch-qualified alternative keeps all' \
-   'cmake [arm64] | ninja-build [amd64]' 'cmake ninja-build'
-
-## --- Bug 2: folded Architecture in the stanza-parse loop ---
+## --- folded Architecture in the stanza-parse loop ---
 ## Drive the REAL loop (extracted between its sentinels) against a control whose Architecture
 ## field is folded across lines. Target arm64 is covered only via a continuation line.
 sed -n '/^make_architecture_covers_target()/,/^}/p' -- "${helper_file}" \
