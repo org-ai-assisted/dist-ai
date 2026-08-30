@@ -332,12 +332,17 @@ def _exec_shortcuts(self):
     return int(QDialog.DialogCode.Accepted)
 
 
+_ss_saved = []
+_o_set_sc = win._set_shortcuts
+win._set_shortcuts = lambda _m: _ss_saved.append(_m) or _o_set_sc(_m)   # spy the Save path
 QDialog.exec = _exec_shortcuts
 try:
     win.show_shortcuts()
-    ok(True, 'show_shortcuts: builds, resets and saves the bindings')
+    ok(bool(_ss_saved),
+       'show_shortcuts: clicking Save applies the bindings via _set_shortcuts')
 finally:
     QDialog.exec = _orig_exec
+    win._set_shortcuts = _o_set_sc
 
 # locked keybindings: the key editors + Reset/Save are shown read-only (disabled).
 # The lock is saved+restored in the finally: it MUST NOT leak into the ~2200 later
@@ -2770,8 +2775,11 @@ os.makedirs(_cfgd3, exist_ok=True)
 _trayconf = os.path.join(_cfgd3, '70-tray.conf')
 with open(_trayconf, 'w', encoding='utf-8') as _tf:
     _tf.write('systray=true\n')
-_wt2 = MainWindow()                          # _build_menu -> _tray_icon() at startup
-ok(True, 'a window with the tray enabled builds the tray at startup')
+_wt2 = MainWindow()
+# The actual QSystemTrayIcon cannot build under offscreen (no system tray), so assert
+# the real read-back that IS deterministic: the systray=true config was honored.
+ok(_wt2._systray is True,
+   'a window with systray=true reads the tray-enable config (tray armed at startup)')
 _wt2.deleteLater()
 APP.processEvents()
 os.remove(_trayconf)
@@ -2912,10 +2920,19 @@ ok(len(_op_opened) == 2 and _op_opened[0] == '/tmp',
 
 # --- the font-noise message handler drops the flood, passes real messages -----
 from PyQt6.QtCore import qWarning                                # noqa: E402
+import io as _io_fn                                              # noqa: E402
 M._quiet_font_warnings()
-qWarning('OpenType support missing for "Something"')   # font noise -> dropped
-qWarning('a genuine warning')                          # real -> passed through
-ok(True, 'the font-noise handler drops the flood and passes real messages')
+_fn_sink = _io_fn.StringIO()
+_fn_orig_stderr = sys.stderr
+sys.stderr = _fn_sink                                  # the handler writes real msgs here
+try:
+    qWarning('OpenType support missing for "Something"')   # font noise -> dropped
+    qWarning('a genuine warning')                          # real -> passed through
+finally:
+    sys.stderr = _fn_orig_stderr
+_fn_out = _fn_sink.getvalue()
+ok('genuine warning' in _fn_out and 'OpenType support missing' not in _fn_out,
+   'the font-noise handler drops font noise and passes real messages (sink capture)')
 
 # --- main(): a SIGCHLD-install failure during startup is tolerated ------------
 _o_argv3 = sys.argv[:]
@@ -3391,9 +3408,13 @@ try:
     _gw3.deleteLater()
     # persist_session off -> geometry restore is skipped (covers the guard)
     _gw3b = MainWindow()
+    _gw3b.show()
+    _QApp77.processEvents()
     _gw3b._persist_session = False
-    _gw3b._restore_window_geometry()
-    ok(True, '#77: geometry restore is a no-op when persistence is off')
+    _geo77 = _gw3b.geometry()
+    _gw3b._restore_window_geometry()          # persist off -> the guard returns early
+    ok(_gw3b.geometry() == _geo77,
+       '#77: geometry restore is a no-op when persistence is off (geometry unchanged)')
     _gw3b.deleteLater()
 
     # #78: a restored tab renders its scrollback ONCE in the saved mode -- no
