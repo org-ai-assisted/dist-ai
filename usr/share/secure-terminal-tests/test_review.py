@@ -21,7 +21,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 try:
     from PyQt6.QtWidgets import QApplication, QWidget
     from PyQt6.QtGui import QKeyEvent
-    from PyQt6.QtCore import Qt
+    from PyQt6.QtCore import Qt, QEvent
     from secure_terminal.review import ReviewBar
 except Exception as exc:  # fail closed: a required dependency must not silently skip
     sys.stderr.write('secure-terminal-tests: FAIL missing dependency: %s\n' % exc)
@@ -60,6 +60,14 @@ class _FakeTerm:
 
     def current_mode(self):
         return self._mode
+
+    def current_zoom(self):
+        return 100
+
+    def _bracketed_paste_active(self):
+        # the delivered-form preview drops the trailing auto-submit CR when the
+        # target is NOT bracketed (a bare shell prompt) -- the common case.
+        return False
 
     def dispatch_pending_paste(self, action):
         self.dispatched.append(('paste', action))
@@ -109,6 +117,57 @@ _bar.rerender_mirror()
 eq(_bar._mirror.toPlainText(), _before,
    'rerender_mirror is a no-op once the review is resolved (no _term)')
 
+# --- delivered-form-on-focus: the mirror shows what a button SENDS -------------
+# codex HIGH: the mirror must not hide the DELIVERED (de-obfuscated) form behind a
+# label. Focusing/hovering a delivery button re-renders the mirror to that button's
+# exact sent text, so a homoglyph 'ram' revealed as 'rm' cannot cross unseen.
+_term_d = _FakeTerm()
+_rawd = 'r' + chr(0x0430) + 'm /etc\n'      # Cyrillic a: reads as 'ram', strips to 'rm'
+_bar.show_review(_term_d, _rawd, 0)
+ok('CYRILLIC SMALL LETTER A' in _bar._mirror.toPlainText(),
+   'the mirror starts on the RAW held text (the homoglyph is named in detail mode)')
+# hover the ASCII delivery button -> its DELIVERED, de-obfuscated form
+_bar.eventFilter(_bar._stripped, QEvent(QEvent.Type.Enter))
+_dtext = _bar._mirror.toPlainText()
+ok('rm /etc' in _dtext and 'CYRILLIC SMALL LETTER A' not in _dtext,
+   'hovering Paste (ASCII) shows the DELIVERED, de-obfuscated form (ram -> rm)')
+# re-entering the SAME button is a no-op (already previewing it)
+_bar.eventFilter(_bar._stripped, QEvent(QEvent.Type.Enter))
+ok('rm /etc' in _bar._mirror.toPlainText(),
+   're-entering the same delivery button is a no-op (preview unchanged)')
+# un-hover with nothing else focused/hovered -> back to the raw held text
+_bar.eventFilter(_bar._stripped, QEvent(QEvent.Type.Leave))
+ok('CYRILLIC SMALL LETTER A' in _bar._mirror.toPlainText(),
+   'un-hovering the delivery button returns the mirror to the raw held text')
+# hovering Paste (unicode) keeps the homoglyph (named), unlike Paste (ASCII)
+_bar.eventFilter(_bar._unicode, QEvent(QEvent.Type.Enter))
+ok('CYRILLIC SMALL LETTER A' in _bar._mirror.toPlainText(),
+   'hovering Paste (unicode) keeps the homoglyph (named), unlike Paste (ASCII)')
+_bar.eventFilter(_bar._unicode, QEvent(QEvent.Type.Leave))
+_bar._choose('reject')
+
+# --- REGRESSION (agy): the mirror is derived FOCUS-FIRST ----------------------
+# Keyboard Enter/Space commits the FOCUSED delivery button, so the mirror must show
+# THAT button's outcome even while the mouse hovers the sibling -- else the mirror
+# would show the hovered (stripped) form while Enter dispatches the focused (unicode)
+# payload, an unseen dispatch. The old code set the preview to whatever was hovered.
+_term_g = _FakeTerm()
+_bar.show_review(_term_g, _rawd, 0)
+_bar.eventFilter(_bar._unicode, QEvent(QEvent.Type.FocusIn))    # Tab to Paste (unicode)
+_bar.eventFilter(_bar._stripped, QEvent(QEvent.Type.Enter))     # mouse hovers Paste (ASCII)
+ok('CYRILLIC SMALL LETTER A' in _bar._mirror.toPlainText(),
+   'focus-first: hovering the sibling keeps the mirror on the FOCUSED (unicode) '
+   'outcome, not the hovered (stripped) one Enter would not send')
+# un-hovering the sibling still shows the focused button, never stale
+_bar.eventFilter(_bar._stripped, QEvent(QEvent.Type.Leave))
+ok('CYRILLIC SMALL LETTER A' in _bar._mirror.toPlainText(),
+   'un-hovering the sibling reverts to the focused button, not a stale preview')
+# focus-out with nothing hovered -> raw
+_bar.eventFilter(_bar._unicode, QEvent(QEvent.Type.FocusOut))
+ok('CYRILLIC SMALL LETTER A' in _bar._mirror.toPlainText(),
+   'focusing out with nothing hovered returns the mirror to the raw text')
+_bar._choose('reject')
+
 # --- with no delay both send buttons are enabled immediately ------------------
 _bar.show_review(_FakeTerm(), _raw, 0)
 ok(_bar._stripped.isEnabled() and _bar._unicode.isEnabled() and _bar._reject.isEnabled(),
@@ -139,8 +198,8 @@ _bar._tick()                                # 1 -> 0
 _bar._tick()                                # 0 -> enable + stop
 ok(_bar._stripped.isEnabled() and _bar._unicode.isEnabled(),
    'both send buttons unlock once the countdown elapses')
-eq(_bar._stripped.text(), 'Paste stripped', 'the stripped countdown suffix is dropped')
-eq(_bar._unicode.text(), 'Paste with unicode', 'the unicode countdown suffix is dropped')
+eq(_bar._stripped.text(), 'Paste (ASCII)', 'the ASCII countdown suffix is dropped')
+eq(_bar._unicode.text(), 'Paste (unicode)', 'the unicode countdown suffix is dropped')
 _bar._choose('reject')
 
 # --- Esc rejects (the safe default) -------------------------------------------
@@ -169,7 +228,7 @@ _bar._choose('reject')
 _term_c = _FakeTerm()
 _bar.show_review(_term_c, _raw, 0, 'copy')
 eq(_bar._reject.text(), "Don't copy", 'copy review: Reject becomes "Don\'t copy"')
-ok(_bar._stripped.text() == 'Copy stripped' and _bar._unicode.text() == 'Copy with unicode',
+ok(_bar._stripped.text() == 'Copy (ASCII)' and _bar._unicode.text() == 'Copy (unicode)',
    'copy review: the action buttons are relabelled for copy')
 ok('copy' in _bar._summary.text().lower() and 'clipboard' in _bar._summary.text().lower(),
    'copy review: the summary is phrased for the clipboard direction')
@@ -194,26 +253,30 @@ ok('hidden' not in _bar._summary.text().lower()
    'a clean copy review does not claim hidden characters, and names the clipboard')
 _bar._choose('reject')
 
-# --- send-button colours clear the contrast guard on BOTH themes --------------
-# The two send buttons are coloured from the app's canonical SAFE_FG/RISK_FG, not
-# a one-off tint tuned for one theme. Pin that (a) the widgets use those constants
-# and (b) each colour stays readable against both the light and the dark theme
-# background -- a regression guard for the old fg-only #0a5c37/#b1170f, which fell
-# under the >=30 luminance gap on a dark desktop palette.
+# --- colour: ONLY Reject is green; the delivery buttons are uncoloured --------
+# Only Reject (the one unconditionally-safe choice) is tinted, with the canonical
+# SAFE_FG. The two delivery buttons carry NO colour on purpose -- neither is safe in
+# general (stripping de-obfuscates, keeping preserves deception), so a green would
+# mislead; the mirror shows the truth. The contrast guard still applies to SAFE_FG
+# (Reject) and RISK_FG (the risk dot), readable on both themes.
 from secure_terminal.review import SAFE_FG as _SAFE_FG, RISK_FG as _RISK_FG  # noqa: E402
 from secure_terminal.terminal import THEMES as _THEMES, _rgb as _rgb         # noqa: E402
 from secure_terminal.sanitize import too_close as _too_close                 # noqa: E402
 from PyQt6.QtGui import QColor as _QColor                                     # noqa: E402
 
-ok(_SAFE_FG in _bar._stripped.styleSheet(),
-   'the stripped send button uses the canonical SAFE_FG colour')
-ok(_RISK_FG in _bar._unicode.styleSheet(),
-   'the with-unicode send button uses the canonical RISK_FG colour')
+ok(_SAFE_FG in _bar._reject.styleSheet(),
+   'only Reject is tinted, with the canonical SAFE_FG (safe-green)')
+ok(_SAFE_FG not in _bar._stripped.styleSheet()
+   and _RISK_FG not in _bar._stripped.styleSheet(),
+   'Paste (ASCII) is UNCOLOURED (stripping is not unconditionally safe)')
+ok(_SAFE_FG not in _bar._unicode.styleSheet()
+   and _RISK_FG not in _bar._unicode.styleSheet(),
+   'Paste (unicode) is UNCOLOURED (keeping unicode is not unconditionally safe)')
 for _theme in ('dark', 'light'):
     _bg = _rgb(_QColor(_THEMES[_theme][0]))
     for _name, _hex in (('SAFE_FG', _SAFE_FG), ('RISK_FG', _RISK_FG)):
         ok(not _too_close(_rgb(_QColor(_hex)), _bg),
-           '%s send-button colour reads on the %s theme background' % (_name, _theme))
+           '%s reads on the %s theme background' % (_name, _theme))
 
 # --- hide_review tears down cleanly -------------------------------------------
 _bar.show_review(_FakeTerm(), _raw, 0)
