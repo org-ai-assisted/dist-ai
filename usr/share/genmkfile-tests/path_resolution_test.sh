@@ -94,9 +94,15 @@ prepare_root() {
             printf '%s\n' 'printf "%s\n" "RAN make-helper $*"'
          } >"${root}/usr/share/genmkfile/make-helper.bsh"
          chmod 0755 -- "${root}/usr/share/genmkfile/make-helper.bsh"
-         printf '%s\n' 'full' >"${root}/usr/share/genmkfile/makefile-full"
          if [ "${state}" = unreadable ]; then
-            chmod 0000 -- "${root}/usr/share/genmkfile/makefile-full"
+            ## A DANGLING symlink is unreadable to EVERYONE: '[ -r ]' follows it to a
+            ## missing target and fails even for root, whose DAC_OVERRIDE would read a
+            ## 'chmod 0000' regular file straight through -- and CI runs as root.
+            ln --symbolic -- \
+               "${root}/usr/share/genmkfile/nonexistent-target" \
+               "${root}/usr/share/genmkfile/makefile-full"
+         else
+            printf '%s\n' 'full' >"${root}/usr/share/genmkfile/makefile-full"
          fi
          ;;
       unlistable)
