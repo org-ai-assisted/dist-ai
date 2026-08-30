@@ -38,7 +38,7 @@ locate_helper() {
    for candidate in \
       "${GENMKFILE_SHARE:-}/make-helper-one.bsh" \
       "${from_bin}" \
-      "${HOME}/derivative-maker/packages/kicksecure/genmkfile/usr/share/genmkfile/make-helper-one.bsh" \
+      "${HOME:-}/derivative-maker/packages/kicksecure/genmkfile/usr/share/genmkfile/make-helper-one.bsh" \
       "/usr/share/genmkfile/make-helper-one.bsh"
    do
       [ -n "${candidate}" ] || continue
