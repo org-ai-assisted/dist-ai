@@ -329,9 +329,11 @@ def command_word(call):
 
 def command_name(call):
     """The literal command name of CALL, or None when there is no command word or
-    the command word is quoted/expanded (not a plain literal)."""
+    the command word carries an EXPANSION. A fully-literal quoted command ('"rm"',
+    "'rm'", 'r"m"') resolves to its value via word_string, so a rule keyed on the
+    name is not bypassed by quoting; only a real expansion ('$cmd') declines."""
     word = command_word(call)
-    return word_lit(word) if word is not None else None
+    return word_string(word) if word is not None else None
 
 
 def command_tokens(call, source, value_short=frozenset(), value_long=frozenset()):
@@ -355,7 +357,11 @@ def command_tokens(call, source, value_short=frozenset(), value_long=frozenset()
     expect_value = False
     operand_region = False
     for word in args(call)[1:]:
-        lit = word_lit(word)
+        ## word_string (not word_lit) resolves a fully-literal QUOTED flag ('"-e"',
+        ## "'--'") to its value so it classifies as the option it is -- a quoted flag
+        ## must not read as an operand and defeat the option scan. A real expansion
+        ## still yields None and falls back to the raw source (stays 'opt').
+        lit = word_string(word)
         text = lit if lit is not None else word_source(word, source)
         if operand_region:
             yield ("operand", word, text)

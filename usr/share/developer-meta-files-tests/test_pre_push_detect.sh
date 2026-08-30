@@ -212,6 +212,13 @@ assert_at "R-210 unwraps 'sudo sudo -n apt-get'"                    "R-210" 5
 deep_sudo="$(printf 'sudo %.0s' $(seq 1 1500))"
 run_det "$(printf '%s\n' '#!/bin/bash' "${deep_sudo}rm -rf /x")"
 assert_at "R-120 unwraps a 1500-deep 'sudo ... rm' without crashing" "R-120" 2
+## A QUOTED command/flag word resolves via word_string, so quoting no longer bypasses
+## the command scan: 'sudo "rm"' and a bare '"rm"' still flag R-120. (ai-review claude.)
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   'sudo "rm" -rf /x' \
+   '"rm" -rf /y')"
+assert_at "R-120 catches a quoted command 'sudo \"rm\"'" "R-120" 2
+assert_at "R-120 catches a bare quoted '\"rm\"'"         "R-120" 3
 ## CRLF: a comment-tail backslash must still be neutralized so the next command
 ## is not swallowed (a '\r' left on the line would defeat the backslash strip).
 printf '%b' '#!/bin/bash\r\n# c \\\r\nrm -rf /x\r\n' > "${test_dir}/crlf.sh"
