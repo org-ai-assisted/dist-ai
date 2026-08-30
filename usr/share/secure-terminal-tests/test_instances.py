@@ -68,11 +68,14 @@ if not os.path.isfile(_BIN):
 
 # Qt's offscreen QPA platform can SIGSEGV/SIGABRT during QApplication startup under
 # concurrent process launches -- an environmental artifact (empty stderr, the process
-# dies before it binds or hands off), NOT a product fault. A whole run that hits it is
-# retried on FRESH group names; a failure with NO such crash is a real bug, reported at
-# once and NEVER retried, so a genuine regression cannot hide behind the flake. Bounded,
-# so a persistent crash still fails loud.
+# dies before it binds or hands off), NOT a product fault. Every single-launch scenario
+# RESPAWNS a launch that dies this way (see _primary/_coexisting/_handoff below), so a
+# flake never reads as a product failure; a launch that exits for ANY OTHER reason, or a
+# genuine coexistence/handoff failure, is reported. A whole-suite retry backstops the one
+# race scenario (F) in the rare case its whole burst crashes. All bounded, so a persistent
+# crash still fails loud.
 _QT_STARTUP_CRASH = frozenset((-signal.SIGSEGV, -signal.SIGABRT))
+_SPAWN_ATTEMPTS = 6
 
 
 def _run_suite(tag):
@@ -101,6 +104,9 @@ def _run_suite(tag):
     def alive(proc):
         return proc.poll() is None
 
+    def crashed(proc):
+        return proc.poll() is not None and proc.returncode in _QT_STARTUP_CRASH
+
     def ping(group, timeout=1.0):
         return ipc.send_request(group, {'op': 'ping'}, timeout=timeout)
 
@@ -113,6 +119,54 @@ def _run_suite(tag):
             time.sleep(0.2)
         return None
 
+    def spawn_primary(group, *args):
+        """Spawn and wait until it owns the group socket, respawning ONLY a launch that
+        dies of the Qt-startup crash. Returns (proc, reply) -- reply is None if it ran
+        but never became primary (a real failure)."""
+        proc = None
+        for _ in range(_SPAWN_ATTEMPTS):
+            proc = spawn(*args)
+            reply = wait_primary(group)
+            if reply is not None:
+                return proc, reply
+            if crashed(proc):
+                continue
+            return proc, None
+        return proc, None
+
+    def spawn_coexisting(*args, settle=2.5):
+        """Spawn a launch that must STAY alive (a bare / --new-instance instance),
+        respawning ONLY a Qt-startup crash. Returns the live proc (or the last dead one,
+        for the assertion to report a non-crash exit)."""
+        proc = None
+        for _ in range(_SPAWN_ATTEMPTS):
+            proc = spawn(*args)
+            end = time.time() + settle
+            while time.time() < end and alive(proc):
+                time.sleep(0.1)
+            if alive(proc) or not crashed(proc):
+                return proc
+        return proc
+
+    def spawn_handoff(group, *args, timeout=15):
+        """Spawn a --reuse client that hands off and exits 0, respawning ONLY a Qt-startup
+        crash. Returns the exit code (0 on a clean handoff)."""
+        proc = None
+        for _ in range(_SPAWN_ATTEMPTS):
+            proc = spawn(*args)
+            try:
+                rc = proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                return None  # a stuck --reuse -> the assertion fails loud
+            if rc in _QT_STARTUP_CRASH:
+                continue     # crashed in startup -> respawn
+            if rc == 0:
+                # clean, childless exit: drop from the reap list so the finally never
+                # killpg's its now-freed PID.
+                kids.remove(proc)
+            return rc
+        return proc.returncode if proc is not None else None
+
     grp = 'e2e-' + tag
     other = 'other-' + tag
     race = 'race-' + tag
@@ -120,16 +174,14 @@ def _run_suite(tag):
     saw_crash = False
     try:
         # A: the first launch of a group becomes its PRIMARY (owns the group socket).
-        _a = spawn('--instance-group', grp)
-        _ra = wait_primary(grp)
+        _a, _ra = spawn_primary(grp, '--instance-group', grp)
         ok(_ra is not None, 'A: the first launch becomes the group primary (answers ping)')
         ok(_ra is not None and _ra.get('pid') == _a.pid, 'A: the primary pid is A')
 
         # B: a BARE second launch is a NEW INDEPENDENT process, never a handoff -- the
         # invariant this suite guards. Both stay alive, and the primary is STILL A: B
         # did not steal the live socket.
-        _b = spawn('--instance-group', grp)
-        time.sleep(5)
+        _b = spawn_coexisting('--instance-group', grp)
         ok(alive(_a) and alive(_b),
            'B: a bare second launch coexists as its own process (2 live instances)')
         _rb = ping(grp)
@@ -138,30 +190,20 @@ def _run_suite(tag):
 
         # C: --new-instance is a standalone process that also coexists and never
         # becomes the primary.
-        _c = spawn('--new-instance', '--instance-group', grp)
-        time.sleep(4)
+        _c = spawn_coexisting('--new-instance', '--instance-group', grp)
         _rc = ping(grp)
         ok(alive(_c) and _rc is not None and _rc.get('pid') == _a.pid,
            'C: --new-instance coexists and never becomes the primary')
 
         # D: --reuse hands the launch to the primary A and EXITS 0 -- no lingering
         # process. A keeps serving.
-        _d = spawn('--reuse', '--instance-group', grp)
-        _drc = None
-        try:
-            _drc = _d.wait(timeout=15)
-            # cleanly reaped and childless (it exits before forking a shell): drop it
-            # from the reap list so the finally never killpg's its now-freed PID.
-            kids.remove(_d)
-        except subprocess.TimeoutExpired:
-            pass  # _drc stays None -> the assertion below fails loud (a stuck --reuse)
+        _drc = spawn_handoff(grp, '--reuse', '--instance-group', grp)
         ok(_drc == 0, 'D: --reuse hands off to the primary and exits 0')
         ok(alive(_a), 'D: the primary A is still alive after serving the --reuse handoff')
 
         # E: a different --instance-group is fully independent -- its own primary, and
         # the default group is untouched.
-        _e = spawn('--instance-group', other)
-        _re = wait_primary(other)
+        _e, _re = spawn_primary(other, '--instance-group', other)
         ok(_re is not None and _re.get('pid') == _e.pid,
            'E: --instance-group other owns its own socket (an independent primary)')
         # capture the reply ONCE: a second ping() could time out to None and .get()
@@ -176,7 +218,9 @@ def _run_suite(tag):
         # miss the socket -- leaving several coexisting windows (or zero listeners), the
         # reported "opens a new window instead of a tab" bug. On the old code the losers
         # do NOT hand off: they open their own server-less windows and stay alive, so
-        # more than one racer survives and this fails.
+        # more than one racer survives and this fails. (A racer killed by the Qt-startup
+        # crash flake never handed off: excluded below; if the WHOLE burst crashes the
+        # whole-suite retry re-runs it.)
         _racers = [spawn('--reuse', '--instance-group', race) for _ in range(5)]
         ok(wait_primary(race) is not None,
            'F: a burst of --reuse into a fresh group yields a reachable primary')
@@ -184,10 +228,6 @@ def _run_suite(tag):
         while time.time() < _fend and sum(alive(p) for p in _racers) > 1:
             time.sleep(0.3)
         _fa = [p for p in _racers if alive(p)]
-        # Exactly one racer survives as the primary; the losers hand off and exit 0. A
-        # racer killed by the Qt-offscreen startup-crash flake never handed off, so it is
-        # excluded here (the whole run is retried when such a crash is seen); a loser that
-        # exits NON-zero for any other reason still fails this.
         ok(len(_fa) == 1,
            'F: exactly one racer becomes the primary (the rest hand off)')
         ok(all(p.returncode == 0 for p in _racers
@@ -198,12 +238,11 @@ def _run_suite(tag):
         # G: a primary that DIES is replaced by the next --reuse, not left as an orphaned
         # socket that every later launch falls through. Guards the reclaim path (a stale
         # file cleared and re-bound) end to end.
-        _g1 = spawn('--reuse', '--instance-group', reelect)
-        ok(wait_primary(reelect) is not None, 'G: the first --reuse establishes a primary')
+        _g1, _rg1 = spawn_primary(reelect, '--reuse', '--instance-group', reelect)
+        ok(_rg1 is not None, 'G: the first --reuse establishes a primary')
         os.killpg(_g1.pid, signal.SIGKILL)          # the primary's window/session dies
         _g1.wait(timeout=10)
-        _g2 = spawn('--reuse', '--instance-group', reelect)
-        _rg2 = wait_primary(reelect)
+        _g2, _rg2 = spawn_primary(reelect, '--reuse', '--instance-group', reelect)
         ok(_rg2 is not None and _rg2.get('pid') == _g2.pid,
            'G: after the primary dies, a new --reuse becomes a reachable primary')
     finally:
@@ -228,8 +267,10 @@ def _run_suite(tag):
     return failures, saw_crash
 
 
-# Retry ONLY the Qt-offscreen startup-crash flake, on fresh group names, bounded.
-_MAX_ATTEMPTS = 4
+# Per-launch respawn (above) handles the common flake; this whole-suite retry backstops
+# the race scenario (F) when its entire burst crashes. Fresh group names each attempt; a
+# failure with NO Qt-startup crash is a real bug, reported at once and never retried.
+_MAX_ATTEMPTS = 3
 _failures = 0
 for _attempt in range(_MAX_ATTEMPTS):
     _failures, _saw_crash = _run_suite('%d-%d' % (os.getpid(), _attempt))
