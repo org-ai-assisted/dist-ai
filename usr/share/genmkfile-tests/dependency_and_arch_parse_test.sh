@@ -103,6 +103,15 @@ check_filter 'folded (newline) continuation' \
    "$(printf 'a,\n b (>= 1)')" 'a b'
 check_filter 'arch qualifier stripped + alt group' \
    'pkg [linux-any], x | y | z' 'pkg x'
+## grep-dctrl emits one paragraph per binary stanza separated by a NEWLINE, no comma; the last
+## dep of one stanza must not merge with the first of the next.
+check_filter 'multi-stanza deps (newline separated) keep all' \
+   "$(printf 'libc6 (>= 2.28), libfoo1\npython3, extra-tool\nlibdata1')" \
+   'libc6 libfoo1 python3 extra-tool libdata1'
+## An ALTERNATIVE group whose alternatives are arch-qualified must keep BOTH: choosing the
+## first by position could pick the wrong-arch package and break the build.
+check_filter 'arch-qualified alternative keeps all' \
+   'cmake [arm64] | ninja-build [amd64]' 'cmake ninja-build'
 
 ## --- Bug 2: folded Architecture in the stanza-parse loop ---
 ## Drive the REAL loop (extracted between its sentinels) against a control whose Architecture
@@ -126,6 +135,10 @@ Architecture: amd64
 
 Package: allpkg
 Architecture: all
+
+Package: foldedall
+Architecture:
+ all
 EOF
 
 # shellcheck disable=SC1091
@@ -162,6 +175,20 @@ if [ "${found}" = 'true' ]; then
    pass "folded Architecture: arm64 continuation covers target -> foldedpkg arm64 .deb expected"
 else
    fail "folded Architecture: arm64 dropped -> ${want_deb} not in [${make_package_debs_files_list[*]}]"
+fi
+
+## grok #3: 'Architecture:' empty on the header line, 'all' on a continuation line. The value
+## arrives as ' all' (leading space); it must still be recognised as arch-independent.
+tests_total=$(( tests_total + 1 ))
+want_all="${DISTDIR}/foldedall_1.0-1_all.deb"
+found='false'
+for d in "${make_package_debs_files_list[@]}"; do
+   [ "${d}" = "${want_all}" ] && found='true'
+done
+if [ "${found}" = 'true' ]; then
+   pass "folded Architecture: 'all' on a continuation line -> foldedall _all .deb expected"
+else
+   fail "folded 'Architecture: <newline> all' not arch-independent -> ${want_all} not in [${make_package_debs_files_list[*]}]"
 fi
 
 if [ "${tests_failed}" -ne 0 ]; then
