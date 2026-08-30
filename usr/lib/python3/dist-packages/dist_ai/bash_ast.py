@@ -297,10 +297,14 @@ def _deescape_unquoted_lit(value):
 def word_string(word):
     """WORD's fully-literal string value, or None if any part is a
     parameter/command/arithmetic expansion (its value is not statically known).
-    Unwraps single- and double-quotes AND unquoted backslash-escapes, so 'false',
-    "false", 'false', and \\false all yield 'false' -- the value bash actually runs,
-    so quoting/escaping a command word cannot slip a rule (unlike word_lit, which
-    declines any quoted or multi-part word)."""
+    Unwraps normal single-/double-quotes AND unquoted backslash-escapes, so 'false',
+    "false", 'false', and \\false all yield 'false' -- the value bash actually runs.
+    SCOPE (accident, not adversary): this normalizes ACCIDENTAL quoting/escaping; it
+    does NOT decode an ANSI-C $'...' word -- $'\\x72m' stays '\\x72m', not 'rm' -- so a
+    hex/octal-encoded command word can still slip a name-based rule. That is a crafted
+    form, dropped per the accident-not-adversary threat model (same honesty scope as the
+    effective_command raw-source note). (word_lit is stricter: it declines any quoted or
+    multi-part word.)"""
     if word is None:
         return None
     out = []
@@ -310,6 +314,9 @@ def word_string(word):
             ## Unquoted: bash strips backslash-escapes before it uses the word.
             out.append(_deescape_unquoted_lit(part.get("Value") or ""))
         elif kind == "SglQuoted":
+            ## Normal '...' carries no escapes. An ANSI-C $'...' word also arrives here
+            ## with its Value UNDECODED ($'\x72m' -> raw '\x72m'); decoding it is a
+            ## crafted-form concern, dropped per accident-not-adversary (see docstring).
             out.append(part.get("Value") or "")
         elif kind == "DblQuoted":
             for inner in part.get("Parts") or []:
