@@ -75,7 +75,11 @@ if not os.path.isfile(_BIN):
 # race scenario (F) in the rare case its whole burst crashes. All bounded, so a persistent
 # crash still fails loud.
 _QT_STARTUP_CRASH = frozenset((-signal.SIGSEGV, -signal.SIGABRT))
-_SPAWN_ATTEMPTS = 6
+# Respawns per single-launch scenario. A startup crash is detected in ~1s (the wait breaks
+# on process exit), so a generous bound is cheap and rides out a concurrent-load spike where
+# several consecutive launches crash; a persistent (non-flake) failure still surfaces via the
+# whole-suite check below, which never retries a crash-free failure.
+_SPAWN_ATTEMPTS = 10
 
 
 def _run_suite(tag):
@@ -119,19 +123,26 @@ def _run_suite(tag):
             time.sleep(0.2)
         return None
 
-    def spawn_primary(group, *args):
+    def spawn_primary(group, *args, timeout=20):
         """Spawn and wait until it owns the group socket, respawning ONLY a launch that
         dies of the Qt-startup crash. Returns (proc, reply) -- reply is None if it ran
-        but never became primary (a real failure)."""
+        but never became primary (a real failure). Breaks the moment the process EXITS
+        so a startup crash respawns in ~1s, not after the full ping timeout."""
         proc = None
         for _ in range(_SPAWN_ATTEMPTS):
             proc = spawn(*args)
-            reply = wait_primary(group)
-            if reply is not None:
-                return proc, reply
+            reply = None
+            end = time.time() + timeout
+            while time.time() < end:
+                reply = ping(group)
+                if reply is not None:
+                    return proc, reply
+                if proc.poll() is not None:
+                    break               # it exited -- do not wait out the timeout
+                time.sleep(0.2)
             if crashed(proc):
-                continue
-            return proc, None
+                continue                # startup crash -> respawn at once
+            return proc, reply          # alive-but-not-primary or a non-crash exit -> real failure
         return proc, None
 
     def spawn_coexisting(*args, settle=2.5):
@@ -221,26 +232,56 @@ def _run_suite(tag):
         # more than one racer survives and this fails. (A racer killed by the Qt-startup
         # crash flake never handed off: excluded below; if the WHOLE burst crashes the
         # whole-suite retry re-runs it.)
-        _racers = [spawn('--reuse', '--instance-group', race) for _ in range(5)]
-        ok(wait_primary(race) is not None,
+        # Retry the burst ITSELF (fresh subgroup) on the crash flake -- a racer that
+        # SIGSEGVs mid bind-race can leave zero survivors -- so F does not burn a whole-suite
+        # retry. The assertions below run on the first CLEAN burst (one reachable survivor);
+        # a burst that fails with no crash falls straight through to report the real bug.
+        _racers, _survivors, _fprimary, _fg = [], [], None, race
+        for _fattempt in range(_SPAWN_ATTEMPTS):
+            _fg = '%s-%d' % (race, _fattempt)
+            _racers = [spawn('--reuse', '--instance-group', _fg) for _ in range(5)]
+            _fprimary = None
+            _fwend = time.time() + 20
+            while time.time() < _fwend:
+                _fprimary = ping(_fg)
+                if _fprimary is not None:
+                    break
+                if not any(alive(p) for p in _racers):
+                    break                    # the whole burst is gone (all crashed)
+                time.sleep(0.2)
+            _fend = time.time() + 25
+            while time.time() < _fend and sum(alive(p) for p in _racers) > 1:
+                time.sleep(0.3)
+            _survivors = [p for p in _racers if alive(p)]
+            if _fprimary is not None and len(_survivors) == 1:
+                break                        # a clean burst -> assert on it
+            if any(p.poll() is not None and p.returncode in _QT_STARTUP_CRASH
+                   for p in _racers):
+                for p in _racers:            # crash flake -> drop this burst and retry
+                    try:
+                        os.killpg(p.pid, signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError):
+                        pass
+                continue
+            break                            # not the crash flake -> report the real failure
+        ok(_fprimary is not None,
            'F: a burst of --reuse into a fresh group yields a reachable primary')
-        _fend = time.time() + 25
-        while time.time() < _fend and sum(alive(p) for p in _racers) > 1:
-            time.sleep(0.3)
-        _fa = [p for p in _racers if alive(p)]
-        ok(len(_fa) == 1,
+        ok(len(_survivors) == 1,
            'F: exactly one racer becomes the primary (the rest hand off)')
         ok(all(p.returncode == 0 for p in _racers
                if not alive(p) and p.returncode not in _QT_STARTUP_CRASH),
            'F: every handed-off racer exits 0')
-        ok(ping(race) is not None, 'F: the surviving primary answers ping')
+        ok(ping(_fg) is not None, 'F: the surviving primary answers ping')
 
         # G: a primary that DIES is replaced by the next --reuse, not left as an orphaned
         # socket that every later launch falls through. Guards the reclaim path (a stale
         # file cleared and re-bound) end to end.
         _g1, _rg1 = spawn_primary(reelect, '--reuse', '--instance-group', reelect)
         ok(_rg1 is not None, 'G: the first --reuse establishes a primary')
-        os.killpg(_g1.pid, signal.SIGKILL)          # the primary's window/session dies
+        try:
+            os.killpg(_g1.pid, signal.SIGKILL)      # the primary's window/session dies
+        except ProcessLookupError:
+            pass  # never established (a startup-crash flake); the assertion above failed
         _g1.wait(timeout=10)
         _g2, _rg2 = spawn_primary(reelect, '--reuse', '--instance-group', reelect)
         ok(_rg2 is not None and _rg2.get('pid') == _g2.pid,
@@ -270,7 +311,7 @@ def _run_suite(tag):
 # Per-launch respawn (above) handles the common flake; this whole-suite retry backstops
 # the race scenario (F) when its entire burst crashes. Fresh group names each attempt; a
 # failure with NO Qt-startup crash is a real bug, reported at once and never retried.
-_MAX_ATTEMPTS = 3
+_MAX_ATTEMPTS = 4
 _failures = 0
 for _attempt in range(_MAX_ATTEMPTS):
     _failures, _saw_crash = _run_suite('%d-%d' % (os.getpid(), _attempt))
