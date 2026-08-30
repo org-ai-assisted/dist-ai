@@ -126,24 +126,46 @@ _rawd = 'r' + chr(0x0430) + 'm /etc\n'      # Cyrillic a: reads as 'ram', strips
 _bar.show_review(_term_d, _rawd, 0)
 ok('CYRILLIC SMALL LETTER A' in _bar._mirror.toPlainText(),
    'the mirror starts on the RAW held text (the homoglyph is named in detail mode)')
-# focus the ASCII delivery button (event filter -> _set_preview('stripped'))
-_bar.eventFilter(_bar._stripped, QEvent(QEvent.Type.FocusIn))
+# hover the ASCII delivery button -> its DELIVERED, de-obfuscated form
+_bar.eventFilter(_bar._stripped, QEvent(QEvent.Type.Enter))
 _dtext = _bar._mirror.toPlainText()
 ok('rm /etc' in _dtext and 'CYRILLIC SMALL LETTER A' not in _dtext,
-   'focusing Paste (ASCII) shows the DELIVERED, de-obfuscated form (ram -> rm)')
-# a second focus/hover on the SAME button is a no-op (already previewing it)
+   'hovering Paste (ASCII) shows the DELIVERED, de-obfuscated form (ram -> rm)')
+# re-entering the SAME button is a no-op (already previewing it)
 _bar.eventFilter(_bar._stripped, QEvent(QEvent.Type.Enter))
 ok('rm /etc' in _bar._mirror.toPlainText(),
    're-entering the same delivery button is a no-op (preview unchanged)')
-# blur back to raw once neither delivery button holds focus or hover
-_bar.eventFilter(_bar._stripped, QEvent(QEvent.Type.FocusOut))
+# un-hover with nothing else focused/hovered -> back to the raw held text
+_bar.eventFilter(_bar._stripped, QEvent(QEvent.Type.Leave))
 ok('CYRILLIC SMALL LETTER A' in _bar._mirror.toPlainText(),
-   'blurring the delivery button returns the mirror to the raw held text')
-# hovering Paste (unicode) previews the keep-unicode form: the homoglyph is KEPT
-# (named in detail mode), unlike Paste (ASCII) which stripped it away
+   'un-hovering the delivery button returns the mirror to the raw held text')
+# hovering Paste (unicode) keeps the homoglyph (named), unlike Paste (ASCII)
 _bar.eventFilter(_bar._unicode, QEvent(QEvent.Type.Enter))
 ok('CYRILLIC SMALL LETTER A' in _bar._mirror.toPlainText(),
    'hovering Paste (unicode) keeps the homoglyph (named), unlike Paste (ASCII)')
+_bar.eventFilter(_bar._unicode, QEvent(QEvent.Type.Leave))
+_bar._choose('reject')
+
+# --- REGRESSION (agy): the mirror is derived FOCUS-FIRST ----------------------
+# Keyboard Enter/Space commits the FOCUSED delivery button, so the mirror must show
+# THAT button's outcome even while the mouse hovers the sibling -- else the mirror
+# would show the hovered (stripped) form while Enter dispatches the focused (unicode)
+# payload, an unseen dispatch. The old code set the preview to whatever was hovered.
+_term_g = _FakeTerm()
+_bar.show_review(_term_g, _rawd, 0)
+_bar.eventFilter(_bar._unicode, QEvent(QEvent.Type.FocusIn))    # Tab to Paste (unicode)
+_bar.eventFilter(_bar._stripped, QEvent(QEvent.Type.Enter))     # mouse hovers Paste (ASCII)
+ok('CYRILLIC SMALL LETTER A' in _bar._mirror.toPlainText(),
+   'focus-first: hovering the sibling keeps the mirror on the FOCUSED (unicode) '
+   'outcome, not the hovered (stripped) one Enter would not send')
+# un-hovering the sibling still shows the focused button, never stale
+_bar.eventFilter(_bar._stripped, QEvent(QEvent.Type.Leave))
+ok('CYRILLIC SMALL LETTER A' in _bar._mirror.toPlainText(),
+   'un-hovering the sibling reverts to the focused button, not a stale preview')
+# focus-out with nothing hovered -> raw
+_bar.eventFilter(_bar._unicode, QEvent(QEvent.Type.FocusOut))
+ok('CYRILLIC SMALL LETTER A' in _bar._mirror.toPlainText(),
+   'focusing out with nothing hovered returns the mirror to the raw text')
 _bar._choose('reject')
 
 # --- with no delay both send buttons are enabled immediately ------------------
