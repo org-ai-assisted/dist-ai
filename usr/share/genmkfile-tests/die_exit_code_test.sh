@@ -96,25 +96,31 @@ run_die() {
    return "${rc}"
 }
 
+## want_rc defaults to code; pass it explicitly for the guarded cases where the code is
+## clamped (a fatal error must never exit 0 / a wrapped-to-0 / a non-numeric).
 check() {
-   local desc="$1" code="$2" msg="$3"
+   local desc="$1" code="$2" msg="$3" want_rc="${4:-$2}"
    local out rc
    out="$(run_die "${code}" "${msg}")" && rc=0 || rc=$?
    tests_total=$(( tests_total + 1 ))
-   ## message carries "ERROR: <msg>" and NOT a spurious leading code token; exit == code.
+   ## message carries "ERROR: <msg>" and NOT a spurious leading code token; exit == want_rc.
    if [[ "${out}" == *"ERROR: ${msg}"* ]] \
       && [[ "${out}" != *"ERROR: ${code} ${msg}"* ]] \
-      && [ "${rc}" -eq "${code}" ]; then
-      printf '%s\n' "PASS  die ${code} '${msg}' -> clean message, exit ${rc}"
+      && [ "${rc}" -eq "${want_rc}" ]; then
+      printf '%s\n' "PASS  die ${code} '${msg}' -> clean message, exit ${rc} (${desc})"
    else
       tests_failed=$(( tests_failed + 1 ))
-      printf '%s\n' "FAIL  die ${code} '${msg}'" >&2
-      printf '%s\n' "        got exit=${rc} out=[${out}]" >&2
+      printf '%s\n' "FAIL  die ${code} '${msg}' (${desc})" >&2
+      printf '%s\n' "        want exit=${want_rc} got exit=${rc} out=[${out}]" >&2
    fi
 }
 
 check 'clean message, exit honoured' 1 'DEBEMAIL is empty'
 check 'non-1 code honoured' 3 'some failure'
+## A fatal error must never report success or an out-of-range code -> clamp to 1.
+check 'code 0 clamped to 1' 0 'must not succeed' 1
+check 'out-of-range code clamped to 1' 300 'out of range' 1
+check 'non-numeric code clamped to 1' abc 'not a number' 1
 
 if [ "${tests_failed}" -ne 0 ]; then
    printf '%s\n' "die_exit_code_test: ${tests_failed}/${tests_total} FAILED" >&2
