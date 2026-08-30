@@ -212,13 +212,18 @@ assert_at "R-210 unwraps 'sudo sudo -n apt-get'"                    "R-210" 5
 deep_sudo="$(printf 'sudo %.0s' $(seq 1 1500))"
 run_det "$(printf '%s\n' '#!/bin/bash' "${deep_sudo}rm -rf /x")"
 assert_at "R-120 unwraps a 1500-deep 'sudo ... rm' without crashing" "R-120" 2
-## A QUOTED command/flag word resolves via word_string, so quoting no longer bypasses
-## the command scan: 'sudo "rm"' and a bare '"rm"' still flag R-120. (ai-review claude.)
+## A QUOTED or BACKSLASH-ESCAPED command word resolves via word_string to the value bash
+## actually runs, so quoting/escaping no longer bypasses the command scan: 'sudo "rm"', a
+## bare '"rm"', '\rm', and 'sudo \rm' all still flag R-120. (ai-review claude.)
 run_det "$(printf '%s\n' '#!/bin/bash' \
    'sudo "rm" -rf /x' \
-   '"rm" -rf /y')"
+   '"rm" -rf /y' \
+   '\rm -rf /z' \
+   'sudo \rm -rf /w')"
 assert_at "R-120 catches a quoted command 'sudo \"rm\"'" "R-120" 2
 assert_at "R-120 catches a bare quoted '\"rm\"'"         "R-120" 3
+assert_at "R-120 catches a backslash-escaped '\\rm'"     "R-120" 4
+assert_at "R-120 catches 'sudo \\rm'"                    "R-120" 5
 ## CRLF: a comment-tail backslash must still be neutralized so the next command
 ## is not swallowed (a '\r' left on the line would defeat the backslash strip).
 printf '%b' '#!/bin/bash\r\n# c \\\r\nrm -rf /x\r\n' > "${test_dir}/crlf.sh"
@@ -599,6 +604,33 @@ assert_at "R-063 flags a guard placed AFTER the printf"         "R-063" 3
 assert_at "R-063 flags a guard naming a different variable"     "R-063" 8
 assert_at "R-063 flags a command-substitution target name"      "R-063" 11
 assert_at "R-063 flags a guard confined to a sibling function"  "R-063" 17
+## A guard whose result does NOT gate control flow must not silence R-063: a bare call
+## (status discarded), one in a dead 'if false' branch, in a command substitution (only
+## stdout captured), and in a subshell (its 'return' exits only the subshell). Only a
+## recognized ENFORCING form ('check ... || <exit-like>') whose branch reaches the printf
+## counts. (ai-review reviewdrain16.)
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'bare() {' \
+   '  check_variable_name "${n}"' \
+   '  printf -v "${n}" "%s" "x"' \
+   '}' \
+   'deadbranch() {' \
+   '  if false; then check_variable_name "${n}" || return 1; fi' \
+   '  printf -v "${n}" "%s" "x"' \
+   '}' \
+   'cmdsub_guard() {' \
+   '  unused="$(check_variable_name "${n}")"' \
+   '  printf -v "${n}" "%s" "x"' \
+   '}' \
+   'subshell_guard() {' \
+   '  ( check_variable_name "${n}" || return 1 )' \
+   '  printf -v "${n}" "%s" "x"' \
+   '}')"
+assert_at "R-063 flags a bare (status-discarded) guard"            "R-063" 4
+assert_at "R-063 flags a guard in a dead 'if false' branch"        "R-063" 8
+assert_at "R-063 flags a guard captured in a command substitution" "R-063" 12
+assert_at "R-063 flags a guard confined to a subshell"             "R-063" 16
 
 ## The ATTACHED spelling 'printf -vNAME' is analyzed too: a literal name is
 ## spared, an expanded one is guarded like the separate form.

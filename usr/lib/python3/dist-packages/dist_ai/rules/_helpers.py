@@ -250,38 +250,103 @@ def word_has_command_expansion(word):
     return False
 
 
+_ENFORCING_EXIT = frozenset({"return", "exit", "continue", "break", "die"})
+
+
+def _stmt_is_exit_like(stmt):
+    """RHS of an enforcing guard: a control-flow exit (return/exit/continue/break/
+    die) or a '{ ...; }' brace-group handler ('check ... || { ...; }')."""
+    cmd = (stmt or {}).get("Cmd") or {}
+    if cmd.get("Type") == "Block":
+        return True
+    return bash_ast.command_name(cmd) in _ENFORCING_EXIT
+
+
+def _stmt_list_span(stmts):
+    starts = [(s.get("Pos") or {}).get("Offset") for s in (stmts or [])]
+    ends = [(s.get("End") or {}).get("Offset") for s in (stmts or [])]
+    starts = [o for o in starts if o is not None]
+    ends = [o for o in ends if o is not None]
+    if not starts or not ends:
+        return None
+    return (min(starts), max(ends))
+
+
+def _statement_list_spans(tree):
+    """The (start, end) byte span of every STATEMENT-LIST -- the top level, each
+    subshell/brace-group body, and each if/loop/case BRANCH. Branch granularity
+    matters: a guard in an if's THEN must not count for a printf in its ELSE."""
+    spans = []
+
+    def add(stmts):
+        span = _stmt_list_span(stmts)
+        if span is not None:
+            spans.append(span)
+
+    add(tree.get("Stmts"))
+    for node in bash_ast.iter_nodes(tree):
+        if not isinstance(node, dict):
+            continue
+        kind = node.get("Type")
+        if kind in ("Block", "Subshell"):
+            add(node.get("Stmts"))
+        elif kind == "IfClause":
+            add(node.get("Cond"))
+            add(node.get("Then"))
+            els = node.get("Else")
+            if isinstance(els, dict):
+                add(els.get("Then"))
+                add(els.get("Stmts"))
+        elif kind in ("WhileClause", "UntilClause"):
+            add(node.get("Cond"))
+            add(node.get("Do"))
+        elif kind == "ForClause":
+            add(node.get("Do"))
+        elif kind == "CaseClause":
+            for item in node.get("Items") or []:
+                add(item.get("Stmts"))
+    return spans
+
+
+def enclosing_container_span(tree, offset):
+    """(start, end) of the innermost STATEMENT-LIST enclosing OFFSET. A guard
+    enforces a printf only when the printf falls in this span (the same branch, or
+    an enclosing one), so a guard in a sibling branch, a subshell, or a command
+    substitution cannot reach a printf outside it."""
+    best = None
+    for span in _statement_list_spans(tree):
+        start, end = span
+        if start <= offset < end and (best is None or (end - start) < (best[1] - best[0])):
+            best = span
+    return best if best is not None else (offset, offset + 1)
+
+
 def check_variable_name_sites(tree):
-    """(offset, scope_start, param_names) for every 'check_variable_name' call:
-    its byte offset, the start of the innermost function enclosing it, and the
-    set of parameter names its arguments expand."""
+    """(guard_offset, container_span, param_names) for every 'check_variable_name'
+    in a RECOGNIZED ENFORCING form -- 'check_variable_name ARGS || <exit-like>'
+    (return/exit/continue/break/die or a '{ ...; }' handler). A decoy guard whose
+    result does NOT gate control flow no longer silences R-063: a bare call (status
+    discarded) is not an '||' form; one inside a command substitution or subshell,
+    or in a dead/sibling branch, has a container_span that does not reach the printf.
+    Fail-CLOSED -- an unrecognized guard shape leaves R-063 firing."""
     sites = []
-    for call in bash_ast.call_exprs(tree):
-        if bash_ast.command_name(call) != "check_variable_name":
+    or_ops = bash_ast.or_op()
+    for node in bash_ast.nodes_of_type(tree, "BinaryCmd"):
+        if node.get("Op") not in or_ops:
+            continue
+        left = (node.get("X") or {}).get("Cmd") or {}
+        if bash_ast.command_name(left) != "check_variable_name":
+            continue
+        if not _stmt_is_exit_like(node.get("Y")):
             continue
         params = set()
-        for word in bash_ast.args(call)[1:]:
+        for word in bash_ast.args(left)[1:]:
             params |= bash_ast.word_param_names(word)
-        offset = call["Pos"]["Offset"]
-        sites.append((offset, enclosing_scope_start(tree, offset), params))
-    return sites
-
-
-def enclosing_scope_start(tree, offset):
-    """Byte offset where the scope containing OFFSET begins: the body of the
-    innermost function enclosing it, or 0 at top level."""
-    best = 0
-    best_span = None
-    for decl in bash_ast.func_decls(tree):
-        body = decl.get("Body") or {}
-        start = (body.get("Pos") or {}).get("Offset")
-        end = (body.get("End") or {}).get("Offset")
-        if start is None or end is None:
+        offset = (left.get("Pos") or {}).get("Offset")
+        if offset is None:
             continue
-        if start <= offset < end:
-            span = end - start
-            if best_span is None or span < best_span:
-                best_span, best = span, start
-    return best
+        sites.append((offset, enclosing_container_span(tree, offset), params))
+    return sites
 
 
 ## --- embedded shell in a '-c' string / config value ------------------------
@@ -422,12 +487,14 @@ def embeds_multi_statement(value, strict):
         kind = node.get("Type")
         if kind in control:
             return True
-        ## A subshell/brace-group holding >1 statement is multi-statement embedded
-        ## logic just like top-level ';'-separated commands -- it must not hide the
-        ## payload: '(cd /s; ./p.sh; systemctl restart a)' belongs in a script. Both
-        ## modes flag it (a single-statement '(a && b)' stays &&-glue, tolerated in
+        ## A subshell/brace-group/command-or-process-substitution holding >1 statement
+        ## is multi-statement embedded logic just like top-level ';'-separated commands
+        ## -- it must not hide the payload: '(cd /s; ./p.sh; ...)' AND '$(cd /s; ./p.sh;
+        ## ...)' / backtick / '<(...)' (all share the Stmts shape) belong in a script.
+        ## Both modes flag it (a single-statement '(a && b)' stays &&-glue, tolerated in
         ## non-strict and caught by the strict BinaryCmd check below).
-        if kind in ("Subshell", "Block") and len(node.get("Stmts") or []) > 1:
+        if kind in ("Subshell", "Block", "CmdSubst", "ProcSubst") \
+                and len(node.get("Stmts") or []) > 1:
             return True
         if strict and kind == "BinaryCmd" and node.get("Op") not in pipe_ops:
             return True

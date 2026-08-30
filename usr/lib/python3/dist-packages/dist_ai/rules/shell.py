@@ -131,10 +131,13 @@ class PrintfVUnchecked(Rule):
                 continue
             target_params = bash_ast.word_param_names(name_word)
             offset = call["Pos"]["Offset"]
-            scope_start = h.enclosing_scope_start(tree, offset)
+            ## A guard counts only when its ENFORCING container (the branch/scope it
+            ## gates) reaches THIS printf -- guard_span contains the printf offset and
+            ## the guard is textually before it. A decoy guard (sibling branch,
+            ## subshell, command substitution, or a bare non-'||' call) never does.
             covered = set()
-            for guard_offset, guard_scope, guard_params in guards:
-                if guard_scope == scope_start and guard_offset < offset:
+            for guard_offset, guard_span, guard_params in guards:
+                if guard_span[0] <= offset < guard_span[1] and guard_offset < offset:
                     covered |= guard_params
             ## A command substitution / arithmetic in the target name is never
             ## made safe by a guard (it runs when bash evaluates the subscript),

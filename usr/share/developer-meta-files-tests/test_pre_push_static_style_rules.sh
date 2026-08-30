@@ -1636,6 +1636,12 @@ printf '%s\n' \
 printf '%s\n' \
    "DPkg::Post-Invoke {\"(cd /s${sc} ./p.sh${sc} systemctl restart a)\"}${sc}" \
    > "${apt_repo}/etc/apt/apt.conf.d/18bad-subshell"
+## A COMMAND SUBSTITUTION '$( ... )' shares the same multi-statement Stmts shape and must
+## not hide the payload either (backtick and process-substitution '<(...)' likewise).
+## (ai-review grok.)
+printf '%s\n' \
+   "DPkg::Post-Invoke {\"\$(cd /s${sc} ./p.sh${sc} systemctl restart a)\"}${sc}" \
+   > "${apt_repo}/etc/apt/apt.conf.d/19bad-cmdsubst"
 ## '#clear'/'#include' are apt DIRECTIVES, not comments -- apt keeps parsing the
 ## rest of the line, so a hook after a '#clear' must still be seen.
 printf '%s\n' \
@@ -1766,6 +1772,12 @@ if grep --quiet --fixed-strings -- '18bad-subshell' <<< "${apt_hits}"; then
    printf '%s\n' 'PASS: R-194 flags a subshell hiding a multi-statement payload'
 else
    printf '%s\n' 'FAIL: R-194 did not flag a subshell-wrapped multi-statement payload' >&2
+   failures=$((failures + 1))
+fi
+if grep --quiet --fixed-strings -- '19bad-cmdsubst' <<< "${apt_hits}"; then
+   printf '%s\n' 'PASS: R-194 flags a command substitution hiding a multi-statement payload'
+else
+   printf '%s\n' 'FAIL: R-194 did not flag a $()-wrapped multi-statement payload' >&2
    failures=$((failures + 1))
 fi
 if grep --quiet --fixed-strings -- '19bad-hash-directive' <<< "${apt_hits}"; then
