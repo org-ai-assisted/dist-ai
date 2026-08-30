@@ -58,7 +58,7 @@ def effective_command(call, source):
             if re.match(r'^[A-Za-z_][A-Za-z0-9_]*=',
                         bash_ast.word_source(word, source)):
                 continue
-            inner = _basename(bash_ast.word_lit(word))
+            inner = _basename(bash_ast.word_string(word))
             break
         if inner is None:
             return None
@@ -368,7 +368,7 @@ def _c_behind_wrapper(call, words, start, source):
     is the shell). Separate form only -- an attached '-c'prog'' behind a wrapper
     is rare and a mixed word has no word_lit, so it is a documented follow-up."""
     for index in range(start + 1, len(words)):
-        if _is_separate_c_opt(bash_ast.word_lit(words[index])):
+        if _is_separate_c_opt(bash_ast.word_string(words[index])):
             if index + 1 < len(words):
                 program = words[index + 1]
                 span = program["End"]["Line"] - program["Pos"]["Line"] + 1
@@ -395,7 +395,7 @@ def shell_c_programs(tree, source):
             ## First explicit shell operand among the wrapper's arguments.
             words = bash_ast.args(call)
             for i in range(1, len(words)):
-                lit = bash_ast.word_lit(words[i])
+                lit = bash_ast.word_string(words[i])
                 if lit is not None and lit.rsplit("/", 1)[-1] in SHELL_C_CMDS:
                     yield from _c_behind_wrapper(call, words, i, source)
                     break
@@ -421,6 +421,13 @@ def embeds_multi_statement(value, strict):
     for node in bash_ast.iter_nodes(tree):
         kind = node.get("Type")
         if kind in control:
+            return True
+        ## A subshell/brace-group holding >1 statement is multi-statement embedded
+        ## logic just like top-level ';'-separated commands -- it must not hide the
+        ## payload: '(cd /s; ./p.sh; systemctl restart a)' belongs in a script. Both
+        ## modes flag it (a single-statement '(a && b)' stays &&-glue, tolerated in
+        ## non-strict and caught by the strict BinaryCmd check below).
+        if kind in ("Subshell", "Block") and len(node.get("Stmts") or []) > 1:
             return True
         if strict and kind == "BinaryCmd" and node.get("Op") not in pipe_ops:
             return True

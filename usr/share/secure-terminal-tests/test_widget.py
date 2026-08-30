@@ -8940,6 +8940,38 @@ ok(_rs2.restart_as_shell() is False,
    'restart_as_shell: a plain login-shell tab is a no-op (the window closes it)')
 _rs2.shutdown()
 
+# TUI restart: the exited program's alt-screen frame is discarded and the grid replays
+# a fresh banner + shell (a blank grid here would be the bug -- the old frame frozen).
+_rst = SecureTerminal(command=['/bin/sh', '-c', 'exit 0'], tui=True)
+_rst.resize(600, 300)
+_rst.show()
+pump(400)
+ok(_rst.restart_as_shell() is True, 'restart_as_shell (TUI): a -- PROGRAM tab respawns')
+pump(300)
+_rst_doc = _rst.document().toPlainText()
+_rst._write(b'echo TUIRESTART\n')
+pump(500)
+ok('program exited -- new shell' in _rst_doc and _rst_doc.strip() != ''
+   and 'TUIRESTART' in _rst.document().toPlainText(),
+   'restart_as_shell (TUI): grid replays the banner + a working shell, not a blank frame')
+_rst.shutdown()
+
+# SECURITY: a pending paste-review (or copy) is dropped on restart -- the reviewed text
+# targeted the exited program's shell; carrying it into the fresh shell would inject
+# unreviewed input. The review bar is dismissed (paste_review_resolved) too.
+_rsr = SecureTerminal(command=['/bin/sh', '-c', 'exit 0'], tui=False)
+_rsr.resize(600, 300)
+_rsr.show()
+pump(400)
+_rsr._review_active = True
+_rsr._pending_paste = 'reviewed\ncommand'
+_rsr_resolved = []
+_rsr.paste_review_resolved.connect(lambda: _rsr_resolved.append(1))
+ok(_rsr.restart_as_shell() is True, 'restart_as_shell clears review: restart succeeds')
+ok(_rsr._review_active is False and _rsr._pending_paste is None and bool(_rsr_resolved),
+   'restart_as_shell drops a pending paste-review and dismisses the bar (no injection)')
+_rsr.shutdown()
+
 
 # --- our own blinking cursor keeps blinking through a selection --------------
 # The native Qt caret stops blinking whenever the text cursor holds a selection, so

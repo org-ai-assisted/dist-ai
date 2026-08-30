@@ -332,21 +332,38 @@ def _exec_shortcuts(self):
     return int(QDialog.DialogCode.Accepted)
 
 
+_ss_saved = []
+_o_set_sc = win._set_shortcuts
+win._set_shortcuts = lambda _m: _ss_saved.append(_m) or _o_set_sc(_m)   # spy the Save path
 QDialog.exec = _exec_shortcuts
 try:
     win.show_shortcuts()
-    ok(True, 'show_shortcuts: builds, resets and saves the bindings')
+    ok(bool(_ss_saved),
+       'show_shortcuts: clicking Save applies the bindings via _set_shortcuts')
 finally:
     QDialog.exec = _orig_exec
+    win._set_shortcuts = _o_set_sc
 
-# locked keybindings: the fields and buttons are shown read-only
+# locked keybindings: the key editors + Reset/Save are shown read-only (disabled).
+# The lock is saved+restored in the finally: it MUST NOT leak into the ~2200 later
+# tests (a leaked 'keybindings' lock makes _set_shortcuts early-return the lock
+# message, silently masking the reserved/duplicate detection those tests assert).
+_sk_lock_save = set(win._locked)
 win._locked = set(win._locked) | {'keybindings'}
-QDialog.exec = lambda _s: int(QDialog.DialogCode.Rejected)
+_sk_dlg = []
+def _exec_capture_ro(_self):
+    _sk_dlg.append(_self)                    # capture the dialog to inspect its widgets
+    return int(QDialog.DialogCode.Rejected)
+QDialog.exec = _exec_capture_ro
 try:
     win.show_shortcuts()
-    ok(True, 'show_shortcuts: admin-locked bindings render read-only')
+    from PyQt6.QtWidgets import QKeySequenceEdit as _QKSE          # noqa: E402
+    _sk_edits = _sk_dlg[0].findChildren(_QKSE) if _sk_dlg else []
+    ok(bool(_sk_edits) and all(not _e.isEnabled() for _e in _sk_edits),
+       'show_shortcuts: admin-locked bindings render the key editors read-only (disabled)')
 finally:
     QDialog.exec = _orig_exec
+    win._locked = _sk_lock_save              # restore -- never leak the lock forward
 
 from secure_terminal.main import _test_canary                     # noqa: E402
 from PyQt6.QtWidgets import (QFileDialog, QMenu, QMessageBox)      # noqa: E402
@@ -397,6 +414,24 @@ ok(_rw.tabs.count() == _rw_c0 - 1,
 while _rw.tabs.count() > 0:
     _rw.close_tab(0)
 _rw.deleteLater()
+
+# launch_command is the --reuse dedup key (a running program's window is reused, not
+# re-opened). When a -- PROGRAM tab restarts to a plain shell it no longer runs that
+# program, so the key MUST clear -- else a later --reuse of the same command wrongly
+# folds into this now-a-shell tab instead of opening a fresh one.
+_lw = MainWindow()
+_lw.new_tab(command=['/bin/sh', '-c', 'exit 0'])
+_lw_term = _lw.tabs.widget(_lw.tabs.count() - 1)
+_lw_term.launch_command = ('/bin/sh', '-c', 'exit 0')     # as a --reuse launch would set it
+_deadline = time.time() + 5
+while time.time() < _deadline and _lw_term._command is not None:
+    pump(30)
+ok(_lw_term._command is None
+   and getattr(_lw_term, 'launch_command', 'unset') is None,
+   'restart clears launch_command so a later --reuse opens a fresh tab, not this shell')
+while _lw.tabs.count() > 0:
+    _lw.close_tab(0)
+_lw.deleteLater()
 
 # F2: closing a tab that holds a paste/copy review hides the bar first, so its
 # buttons cannot dispatch onto the destroyed terminal (RuntimeError).
@@ -505,6 +540,28 @@ try:
        'close_tab: a shell exiting DURING the confirm modal closes the tab even on Cancel')
     ok(_xt not in w3._closing_tabs and _xt not in w3._shell_exited_pending,
        'close_tab: both close marks are cleared after a mid-modal-exit close')
+    # Cancel-after-child-exit, -- PROGRAM tab: same mid-modal exit, but the tab ran a
+    # specific program. Its disposition on exit is RESTART (not close), so a Cancel here
+    # must run the deferred restart -- dropping to a fresh shell in place -- not close the
+    # tab. FAILS pre-fix (the command tab is closed like a login shell). Uses a real
+    # short-lived child so restart_as_shell has a live pty to respawn from.
+    w3.new_tab(command=['/bin/sh', '-c', 'sleep 30'])
+    _ct = w3.current()
+    _ct.launch_command = ('/bin/sh', '-c', 'sleep 30')
+    _n4 = w3.tabs.count()
+    def _cmd_exit_then_decline(*_a, **_k):
+        w3._on_shell_exited(_ct)                       # the program dies while the dialog is up
+        return _No                                     # ... and the user then clicks No
+    _ct.has_foreground_program = lambda: True
+    QMessageBox.question = staticmethod(_cmd_exit_then_decline)
+    w3.close_tab(w3.tabs.indexOf(_ct))
+    pump(200)
+    eq(w3.tabs.count(), _n4,
+       'close_tab: a -- PROGRAM tab whose program exits during the modal RESTARTS on Cancel')
+    ok(_ct._command is None and getattr(_ct, 'launch_command', 'unset') is None
+       and _ct not in w3._closing_tabs and _ct not in w3._shell_exited_pending,
+       'close_tab: the cancelled command tab is a fresh shell with its close marks cleared')
+    w3.close_tab(w3.tabs.indexOf(_ct))
     # _on_shell_exited on an already-removed tab is a harmless no-op (index == -1).
     w3._on_shell_exited(_xt)
     # closeEvent: a running program + decline ignores the window close
@@ -688,11 +745,13 @@ try:
     win.set_bell_sound('/etc/hostname')     # locked -> early return
     win._locked = {'copy_warn'}
     win.set_copy_warn('always')             # locked -> early return
+    _lk_copy = win.current().current_copy_warn()
     win._locked = {'line_edits'}
     win.set_line_edits(False)               # locked -> early return
     eq(win._default_line_edits, True,
        'a locked line_edits cannot be turned off by the user')
-    ok(True, 'setting appliers respect an admin lock (no change)')
+    ok(win._default_bell_sound != '/etc/hostname' and _lk_copy != 'always',
+       'admin locks refuse bell_sound and copy_warn too (read-back, no change)')
     # a locked paste_warn / copy_warn is greyed out in the menu, not silently
     # clickable-but-ignored.
     win._locked = {'copy_warn', 'paste_warn'}
@@ -760,7 +819,8 @@ _fbkey(Qt.Key.Key_Return)
 _fbkey(Qt.Key.Key_Return, Qt.KeyboardModifier.ShiftModifier)   # backward
 _fbkey(Qt.Key.Key_A)                        # a plain key -> passed to super
 _fbkey(Qt.Key.Key_Escape)                   # -> hide_find
-ok(True, 'find bar: search updates, stepping and the Esc/Enter keys work')
+ok(win._find_bar.isHidden(),                # isHidden(): own state, not the unshown parent's
+   'find bar: Esc hides it (search/stepping/Return also exercised above)')
 
 # --- the system-tray icon: disabled, unavailable, and created -----------------
 _o_avail = QSystemTrayIcon.isSystemTrayAvailable
@@ -792,13 +852,16 @@ ok(True, 'copy/paste/zoom route through the current tab')
 
 _ogt = QInputDialog.getText
 try:
+    _ntr0 = win.tabs.count()
     QInputDialog.getText = staticmethod(lambda *_a, **_k: ('', False))
     win.new_tab_running()                   # cancelled -> no new tab
     win.show_command_palette()              # cancelled
+    _ntr_cancel = win.tabs.count()
     QInputDialog.getText = staticmethod(lambda *_a, **_k: ('echo hi', True))
     win.new_tab_running()                   # -> new_tab('echo hi')
     win.show_command_palette()              # -> run_command('echo hi')
-    ok(True, 'new_tab_running and the command palette read the input dialog')
+    ok(_ntr_cancel == _ntr0 and win.tabs.count() > _ntr_cancel,
+       'new_tab_running opens a tab for a provided command, none when cancelled')
     # stale-term across the modal: the tab's shell can exit DURING QInputDialog.getText,
     # whose _on_shell_exited->close_tab deleteLater()s the term; a stale
     # _refresh_tab_label then indexOf()s the freed C++ object and crashes. The
@@ -880,7 +943,8 @@ win.show()
 win._toggle_window_visibility()             # visible -> hide
 win._toggle_window_visibility()             # hidden -> restore
 win._on_tray_activated(QSystemTrayIcon.ActivationReason.Trigger)
-ok(True, 'program title, window visibility toggle and tray trigger all work')
+ok(win._prog_titles.get(win.current()) == 'a program title',
+   'a program-set title is stored for the tab (visibility toggle + tray also run)')
 
 # a tab whose shell exits is closed; an unknown term is ignored
 win.new_tab()
@@ -2177,9 +2241,24 @@ elif os.path.exists(_lp):
     os.remove(_lp)
 open(_lp, 'w').close()
 os.chmod(_lp, 0)
-_lfd = M._acquire_group_lock(_lg)
+# Force the FIRST os.open on the lock path to raise, so the mis-owned-lock self-heal
+# (except -> os.unlink + retry) fires regardless of uid: CI runs as ROOT, which bypasses
+# the mode-0 perms so os.open would otherwise SUCCEED and never reach the unlink branch
+# (main.py:5423), dropping coverage below 100% only under root.
+_o_open = os.open
+_open_fired = [False]
+def _open_raise_once(_p, *_a, **_k):
+    if _p == _lp and not _open_fired[0]:
+        _open_fired[0] = True
+        raise PermissionError(13, 'forced mis-owned-lock (root-proof)')
+    return _o_open(_p, *_a, **_k)
+os.open = _open_raise_once
+try:
+    _lfd = M._acquire_group_lock(_lg)
+finally:
+    os.open = _o_open
 ok(_lfd is not None,
-   '_acquire_group_lock: a mode-0 stale lock file is self-healed (unlink + retry)')
+   '_acquire_group_lock: a mis-owned lock file is self-healed (unlink + retry), uid-independent')
 if _lfd is not None:
     os.close(_lfd)
 if os.path.exists(_lp) and not os.path.isdir(_lp):
@@ -2322,10 +2401,13 @@ _ids = list(win._shortcuts)[:2]
 _probs = win._set_shortcuts({_ids[0]: 'Ctrl+C',           # reserved terminal key
                              _ids[1]: 'Ctrl+G',
                              'no-such-ident': 'Ctrl+H'})   # unknown -> skipped
-ok(isinstance(_probs, list) and _probs,
-   '_set_shortcuts: a reserved key is reported as a problem')
+ok(isinstance(_probs, list)
+   and any('reserved for the terminal' in _p for _p in _probs),
+   '_set_shortcuts: a reserved key (Ctrl+C) is reported by name (real detection, not the lock guard)')
 _dup = win._set_shortcuts({_ids[0]: 'Ctrl+J', _ids[1]: 'Ctrl+J'})   # duplicate
-ok(isinstance(_dup, list) and _dup, '_set_shortcuts: a duplicate binding is a problem')
+ok(isinstance(_dup, list)
+   and any('assigned to more than one action' in _p for _p in _dup),
+   '_set_shortcuts: a duplicate binding is reported (real duplicate detection)')
 
 # --- tab-op guards on invalid targets -----------------------------------------
 from PyQt6.QtGui import QColor as _QC        # noqa: E402
@@ -2560,7 +2642,8 @@ win._tab_ids.pop(_stale, None)
 _stale.shutdown()
 
 # --- the shortcuts dialog surfaces a save problem in a warning box -------------
-win._locked = set(win._locked) - {'keybindings'}   # clear a leftover lock
+# (no leftover-lock clear needed: the locked-keybindings block above restores it)
+assert 'keybindings' not in win._locked, 'keybindings lock leaked into later tests'
 _o_ss = win._set_shortcuts
 _o_w2 = QMessageBox.warning
 _warned = []
@@ -2712,7 +2795,8 @@ _c.movePosition(QTextCursor.MoveOperation.End)
 _c.movePosition(QTextCursor.MoveOperation.StartOfLine, QTextCursor.MoveMode.KeepAnchor)
 _sf2.setTextCursor(_c)                       # select the last line only
 win.show_find()                              # a single-line selection seeds the query
-ok(True, 'show_find: no-tab guard and single-line selection seeding')
+ok('SEEDLINE' in win._find_bar.input.text(),
+   'show_find seeds the query from a single-line selection')
 
 # current_zoom_percent + _ipc_open bare reuse on a tab-less window
 _zw2 = MainWindow()
@@ -2731,8 +2815,11 @@ os.makedirs(_cfgd3, exist_ok=True)
 _trayconf = os.path.join(_cfgd3, '70-tray.conf')
 with open(_trayconf, 'w', encoding='utf-8') as _tf:
     _tf.write('systray=true\n')
-_wt2 = MainWindow()                          # _build_menu -> _tray_icon() at startup
-ok(True, 'a window with the tray enabled builds the tray at startup')
+_wt2 = MainWindow()
+# The actual QSystemTrayIcon cannot build under offscreen (no system tray), so assert
+# the real read-back that IS deterministic: the systray=true config was honored.
+ok(_wt2._systray is True,
+   'a window with systray=true reads the tray-enable config (tray armed at startup)')
 _wt2.deleteLater()
 APP.processEvents()
 os.remove(_trayconf)
@@ -2777,9 +2864,11 @@ if win.tabs.count() == 0:
     win.new_tab()
 _sf = win.current()
 _sf._append('findmetext')
-_sf.selectAll()
+_sf.selectAll()                              # spans the prompt line too -> MULTI-line
+win._find_bar.input.setText('')             # clear any prior seed
 win.show_find()
-ok(True, 'show_find seeds the query from the current single-line selection')
+ok(win._find_bar.input.text() == '',
+   'show_find does NOT seed from a multi-line selection (the paragraph-separator guard)')
 
 # --- _find_step wraps within a tab, and returns with no current tab -----------
 win._find_bar.all_tabs.setChecked(False)
@@ -2871,10 +2960,19 @@ ok(len(_op_opened) == 2 and _op_opened[0] == '/tmp',
 
 # --- the font-noise message handler drops the flood, passes real messages -----
 from PyQt6.QtCore import qWarning                                # noqa: E402
+import io as _io_fn                                              # noqa: E402
 M._quiet_font_warnings()
-qWarning('OpenType support missing for "Something"')   # font noise -> dropped
-qWarning('a genuine warning')                          # real -> passed through
-ok(True, 'the font-noise handler drops the flood and passes real messages')
+_fn_sink = _io_fn.StringIO()
+_fn_orig_stderr = sys.stderr
+sys.stderr = _fn_sink                                  # the handler writes real msgs here
+try:
+    qWarning('OpenType support missing for "Something"')   # font noise -> dropped
+    qWarning('a genuine warning')                          # real -> passed through
+finally:
+    sys.stderr = _fn_orig_stderr
+_fn_out = _fn_sink.getvalue()
+ok('genuine warning' in _fn_out and 'OpenType support missing' not in _fn_out,
+   'the font-noise handler drops font noise and passes real messages (sink capture)')
 
 # --- main(): a SIGCHLD-install failure during startup is tolerated ------------
 _o_argv3 = sys.argv[:]
@@ -3021,10 +3119,12 @@ try:
     _QFontDialog.getFont = staticmethod(
         lambda *_a, **_k: (_QFont('DejaVu Sans Mono'), True))
     win.choose_font()                            # accepted -> set_font_family
-    ok(True, 'choose_font: an accepted pick applies the family')
+    ok(win._default_font_family == 'DejaVu Sans Mono',
+       'choose_font: an accepted pick applies the family')
     _QFontDialog.getFont = staticmethod(lambda *_a, **_k: (_QFont('X'), False))
     win.choose_font()                            # cancelled -> no change
-    ok(True, 'choose_font: a cancelled pick is a no-op')
+    ok(win._default_font_family == 'DejaVu Sans Mono',
+       'choose_font: a cancelled pick leaves the family unchanged')
 finally:
     _QFontDialog.getFont = _o_getfont
 
@@ -3110,13 +3210,15 @@ if win.tabs.count() == 0:
     win.new_tab()
 _rvterm = win.current()
 win._show_review(_rvterm, 'risky text', 0, 'paste')   # current tab -> bar shown
+ok(win._review_bar.reviewed_term() is _rvterm,
+   '_show_review shows the review bar for the active tab')
 win._hide_paste_review(_rvterm)                        # current tab -> refocus
-ok(True, '_show_review / _hide_paste_review drive the review bar for the active tab')
 # a request from a NON-current tab is ignored (its text stays held)
 _bgterm = _ST2(command='/bin/cat')
 win._show_review(_bgterm, 'held', 0, 'copy')           # not current -> return
+ok(win._review_bar.reviewed_term() is not _bgterm,
+   '_show_review ignores a background tab (the bar is not shown for it)')
 win._hide_paste_review(_bgterm)                        # not current -> no refocus
-ok(True, '_show_review / _hide_paste_review ignore a background tab')
 _bgterm.shutdown()
 
 # --- app.aboutToQuit teardown: shuts every window's tabs, tolerating a raise ---
@@ -3346,9 +3448,13 @@ try:
     _gw3.deleteLater()
     # persist_session off -> geometry restore is skipped (covers the guard)
     _gw3b = MainWindow()
+    _gw3b.show()
+    _QApp77.processEvents()
     _gw3b._persist_session = False
-    _gw3b._restore_window_geometry()
-    ok(True, '#77: geometry restore is a no-op when persistence is off')
+    _geo77 = _gw3b.geometry()
+    _gw3b._restore_window_geometry()          # persist off -> the guard returns early
+    ok(_gw3b.geometry() == _geo77,
+       '#77: geometry restore is a no-op when persistence is off (geometry unchanged)')
     _gw3b.deleteLater()
 
     # #78: a restored tab renders its scrollback ONCE in the saved mode -- no
