@@ -688,11 +688,13 @@ try:
     win.set_bell_sound('/etc/hostname')     # locked -> early return
     win._locked = {'copy_warn'}
     win.set_copy_warn('always')             # locked -> early return
+    _lk_copy = win.current().current_copy_warn()
     win._locked = {'line_edits'}
     win.set_line_edits(False)               # locked -> early return
     eq(win._default_line_edits, True,
        'a locked line_edits cannot be turned off by the user')
-    ok(True, 'setting appliers respect an admin lock (no change)')
+    ok(win._default_bell_sound != '/etc/hostname' and _lk_copy != 'always',
+       'admin locks refuse bell_sound and copy_warn too (read-back, no change)')
     # a locked paste_warn / copy_warn is greyed out in the menu, not silently
     # clickable-but-ignored.
     win._locked = {'copy_warn', 'paste_warn'}
@@ -760,7 +762,8 @@ _fbkey(Qt.Key.Key_Return)
 _fbkey(Qt.Key.Key_Return, Qt.KeyboardModifier.ShiftModifier)   # backward
 _fbkey(Qt.Key.Key_A)                        # a plain key -> passed to super
 _fbkey(Qt.Key.Key_Escape)                   # -> hide_find
-ok(True, 'find bar: search updates, stepping and the Esc/Enter keys work')
+ok(win._find_bar.isHidden(),                # isHidden(): own state, not the unshown parent's
+   'find bar: Esc hides it (search/stepping/Return also exercised above)')
 
 # --- the system-tray icon: disabled, unavailable, and created -----------------
 _o_avail = QSystemTrayIcon.isSystemTrayAvailable
@@ -792,13 +795,16 @@ ok(True, 'copy/paste/zoom route through the current tab')
 
 _ogt = QInputDialog.getText
 try:
+    _ntr0 = win.tabs.count()
     QInputDialog.getText = staticmethod(lambda *_a, **_k: ('', False))
     win.new_tab_running()                   # cancelled -> no new tab
     win.show_command_palette()              # cancelled
+    _ntr_cancel = win.tabs.count()
     QInputDialog.getText = staticmethod(lambda *_a, **_k: ('echo hi', True))
     win.new_tab_running()                   # -> new_tab('echo hi')
     win.show_command_palette()              # -> run_command('echo hi')
-    ok(True, 'new_tab_running and the command palette read the input dialog')
+    ok(_ntr_cancel == _ntr0 and win.tabs.count() > _ntr_cancel,
+       'new_tab_running opens a tab for a provided command, none when cancelled')
     # stale-term across the modal: the tab's shell can exit DURING QInputDialog.getText,
     # whose _on_shell_exited->close_tab deleteLater()s the term; a stale
     # _refresh_tab_label then indexOf()s the freed C++ object and crashes. The
@@ -880,7 +886,8 @@ win.show()
 win._toggle_window_visibility()             # visible -> hide
 win._toggle_window_visibility()             # hidden -> restore
 win._on_tray_activated(QSystemTrayIcon.ActivationReason.Trigger)
-ok(True, 'program title, window visibility toggle and tray trigger all work')
+ok(win._prog_titles.get(win.current()) == 'a program title',
+   'a program-set title is stored for the tab (visibility toggle + tray also run)')
 
 # a tab whose shell exits is closed; an unknown term is ignored
 win.new_tab()
@@ -2177,9 +2184,24 @@ elif os.path.exists(_lp):
     os.remove(_lp)
 open(_lp, 'w').close()
 os.chmod(_lp, 0)
-_lfd = M._acquire_group_lock(_lg)
+# Force the FIRST os.open on the lock path to raise, so the mis-owned-lock self-heal
+# (except -> os.unlink + retry) fires regardless of uid: CI runs as ROOT, which bypasses
+# the mode-0 perms so os.open would otherwise SUCCEED and never reach the unlink branch
+# (main.py:5423), dropping coverage below 100% only under root.
+_o_open = os.open
+_open_fired = [False]
+def _open_raise_once(_p, *_a, **_k):
+    if _p == _lp and not _open_fired[0]:
+        _open_fired[0] = True
+        raise PermissionError(13, 'forced mis-owned-lock (root-proof)')
+    return _o_open(_p, *_a, **_k)
+os.open = _open_raise_once
+try:
+    _lfd = M._acquire_group_lock(_lg)
+finally:
+    os.open = _o_open
 ok(_lfd is not None,
-   '_acquire_group_lock: a mode-0 stale lock file is self-healed (unlink + retry)')
+   '_acquire_group_lock: a mis-owned lock file is self-healed (unlink + retry), uid-independent')
 if _lfd is not None:
     os.close(_lfd)
 if os.path.exists(_lp) and not os.path.isdir(_lp):
@@ -2712,7 +2734,8 @@ _c.movePosition(QTextCursor.MoveOperation.End)
 _c.movePosition(QTextCursor.MoveOperation.StartOfLine, QTextCursor.MoveMode.KeepAnchor)
 _sf2.setTextCursor(_c)                       # select the last line only
 win.show_find()                              # a single-line selection seeds the query
-ok(True, 'show_find: no-tab guard and single-line selection seeding')
+ok('SEEDLINE' in win._find_bar.input.text(),
+   'show_find seeds the query from a single-line selection')
 
 # current_zoom_percent + _ipc_open bare reuse on a tab-less window
 _zw2 = MainWindow()
@@ -2777,9 +2800,11 @@ if win.tabs.count() == 0:
     win.new_tab()
 _sf = win.current()
 _sf._append('findmetext')
-_sf.selectAll()
+_sf.selectAll()                              # spans the prompt line too -> MULTI-line
+win._find_bar.input.setText('')             # clear any prior seed
 win.show_find()
-ok(True, 'show_find seeds the query from the current single-line selection')
+ok(win._find_bar.input.text() == '',
+   'show_find does NOT seed from a multi-line selection (the paragraph-separator guard)')
 
 # --- _find_step wraps within a tab, and returns with no current tab -----------
 win._find_bar.all_tabs.setChecked(False)
@@ -3021,10 +3046,12 @@ try:
     _QFontDialog.getFont = staticmethod(
         lambda *_a, **_k: (_QFont('DejaVu Sans Mono'), True))
     win.choose_font()                            # accepted -> set_font_family
-    ok(True, 'choose_font: an accepted pick applies the family')
+    ok(win._default_font_family == 'DejaVu Sans Mono',
+       'choose_font: an accepted pick applies the family')
     _QFontDialog.getFont = staticmethod(lambda *_a, **_k: (_QFont('X'), False))
     win.choose_font()                            # cancelled -> no change
-    ok(True, 'choose_font: a cancelled pick is a no-op')
+    ok(win._default_font_family == 'DejaVu Sans Mono',
+       'choose_font: a cancelled pick leaves the family unchanged')
 finally:
     _QFontDialog.getFont = _o_getfont
 
@@ -3110,13 +3137,15 @@ if win.tabs.count() == 0:
     win.new_tab()
 _rvterm = win.current()
 win._show_review(_rvterm, 'risky text', 0, 'paste')   # current tab -> bar shown
+ok(win._review_bar.reviewed_term() is _rvterm,
+   '_show_review shows the review bar for the active tab')
 win._hide_paste_review(_rvterm)                        # current tab -> refocus
-ok(True, '_show_review / _hide_paste_review drive the review bar for the active tab')
 # a request from a NON-current tab is ignored (its text stays held)
 _bgterm = _ST2(command='/bin/cat')
 win._show_review(_bgterm, 'held', 0, 'copy')           # not current -> return
+ok(win._review_bar.reviewed_term() is not _bgterm,
+   '_show_review ignores a background tab (the bar is not shown for it)')
 win._hide_paste_review(_bgterm)                        # not current -> no refocus
-ok(True, '_show_review / _hide_paste_review ignore a background tab')
 _bgterm.shutdown()
 
 # --- app.aboutToQuit teardown: shuts every window's tabs, tolerating a raise ---
