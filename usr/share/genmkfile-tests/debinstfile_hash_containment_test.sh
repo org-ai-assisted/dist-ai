@@ -117,6 +117,22 @@ else
    printf '%s\n' "FAIL  a generated .install landed outside genmkfile_temp_dir" >&2
 fi
 
+## A dot-prefixed package name ('foo#.evil' -> '.evil') must be REJECTED: '.evil.install' would
+## be silently dropped by the later non-dotglob '*.install' expansion.
+dot_root="${work}/dotroot"
+mkdir --parents -- "${dot_root}/sub" "${dot_root}/debian"
+printf 'x\n' > "${dot_root}/sub/foo#.evil"
+dot_out=''
+dot_rc=0
+dot_out="$( ( cd -- "${dot_root}" && make_debinstfile_create ) 2>&1 )" || dot_rc=$?
+tests_total=$(( tests_total + 1 ))
+if [ "${dot_rc}" -ne 0 ] && [[ "${dot_out}" == *'invalid package name'* ]]; then
+   printf '%s\n' "PASS  dot-prefixed package name rejected"
+else
+   tests_failed=$(( tests_failed + 1 ))
+   printf '%s\n' "FAIL  dot-prefixed package name not rejected: rc=${dot_rc} out=[${dot_out}]" >&2
+fi
+
 if [ "${tests_failed}" -ne 0 ]; then
    printf '%s\n' "debinstfile_hash_containment_test: ${tests_failed}/${tests_total} FAILED" >&2
    exit 1
