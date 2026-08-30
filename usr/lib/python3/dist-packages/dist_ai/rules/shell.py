@@ -120,6 +120,7 @@ class PrintfVUnchecked(Rule):
     def detect(self, ctx):
         tree = ctx.tree
         guards = h.check_variable_name_sites(tree)
+        boundaries = h.boundary_spans(tree)
         for call in bash_ast.call_exprs(tree):
             if bash_ast.command_name(call) != "printf":
                 continue
@@ -131,13 +132,16 @@ class PrintfVUnchecked(Rule):
                 continue
             target_params = bash_ast.word_param_names(name_word)
             offset = call["Pos"]["Offset"]
-            ## A guard counts only when its ENFORCING container (the branch/scope it
-            ## gates) reaches THIS printf -- guard_span contains the printf offset and
-            ## the guard is textually before it. A decoy guard (sibling branch,
-            ## subshell, command substitution, or a bare non-'||' call) never does.
+            ## A guard counts only when its ENFORCING container reaches THIS printf:
+            ## guard_span contains the printf, the guard is textually before it, AND no
+            ## execution-region boundary (a later function body, or a subshell/subst)
+            ## separates them -- byte-span containment equals reachability only WITHIN one
+            ## region (a top-level guard cannot gate a printf inside a later function; a
+            ## guard cannot reach across a subshell). Decoys never satisfy all three.
             covered = set()
             for guard_offset, guard_span, guard_params in guards:
-                if guard_span[0] <= offset < guard_span[1] and guard_offset < offset:
+                if guard_span[0] <= offset < guard_span[1] and guard_offset < offset \
+                        and h.no_boundary_between(guard_offset, offset, boundaries):
                     covered |= guard_params
             ## A command substitution / arithmetic in the target name is never
             ## made safe by a guard (it runs when bash evaluates the subscript),

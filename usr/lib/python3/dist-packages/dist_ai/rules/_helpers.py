@@ -282,15 +282,75 @@ def _func_body_spans(tree):
 
 
 def _loop_body_spans(tree):
-    """(start, end) span of every loop body -- where 'continue'/'break' actually act."""
+    """(start, end) span of every LOOP CONSTRUCT ('for/while/until ... done') -- where
+    'continue'/'break' are lexically valid. The whole node span (not just the Do list) is
+    used so a subshell nested in the body is STRICTLY inside it: when a loop's body is a
+    single subshell the Do-list span equals the subshell span and cannot be told apart,
+    but the loop node also spans the header and 'done', so the subshell is innermost and a
+    'continue' trapped in it is correctly rejected (see _innermost_reaches)."""
     spans = []
     for node in bash_ast.iter_nodes(tree):
         if isinstance(node, dict) \
                 and node.get("Type") in ("WhileClause", "UntilClause", "ForClause"):
-            span = _stmt_list_span(node.get("Do"))
+            span = _node_span(node)
             if span is not None:
                 spans.append(span)
     return spans
+
+
+def _node_span(node):
+    start = (node.get("Pos") or {}).get("Offset")
+    end = (node.get("End") or {}).get("Offset")
+    return (start, end) if start is not None and end is not None else None
+
+
+def _subshell_subst_spans(tree):
+    """(start, end) span of every SUBSHELL / command- or process-substitution -- an
+    execution boundary a 'return'/'exit'/'continue'/'break' cannot cross to reach code
+    OUTSIDE it (a subshell/subst runs in a child), nor can a caller's guard reach INTO."""
+    spans = []
+    for node in bash_ast.iter_nodes(tree):
+        if isinstance(node, dict) \
+                and node.get("Type") in ("Subshell", "CmdSubst", "ProcSubst"):
+            span = _node_span(node)
+            if span is not None:
+                spans.append(span)
+    return spans
+
+
+def boundary_spans(tree):
+    """Execution-region boundaries: FUNCTION bodies (run later, not at the guard's load
+    time) plus subshells/substitutions (run in a child). Byte-span containment only equals
+    execution REACHABILITY within a single such region -- crossing one breaks the guard."""
+    return _func_body_spans(tree) + _subshell_subst_spans(tree)
+
+
+def no_boundary_between(a, b, spans):
+    """True if NO boundary span separates offsets A and B -- none contains exactly one of
+    them. A guard reaches a printf only when they share every enclosing execution region;
+    a top-level guard cannot reach a printf inside a later function, nor across a subshell."""
+    for start, end in spans:
+        if (start <= a < end) != (start <= b < end):
+            return False
+    return True
+
+
+def _innermost_reaches(offset, scope_spans, barrier_spans):
+    """True if the innermost span enclosing OFFSET among SCOPE_SPANS+BARRIER_SPANS is a
+    SCOPE span. For continue/break the scope is a loop body and the barrier a subshell/subst:
+    a 'continue' inside a subshell-in-a-loop is trapped in the subshell (barrier innermost)
+    and never reaches the loop, so it is not a valid guard."""
+    best = None
+    best_is_scope = False
+    for span in scope_spans:
+        start, end = span
+        if start <= offset < end and (best is None or (end - start) < (best[1] - best[0])):
+            best, best_is_scope = span, True
+    for span in barrier_spans:
+        start, end = span
+        if start <= offset < end and (best is None or (end - start) < (best[1] - best[0])):
+            best, best_is_scope = span, False
+    return best is not None and best_is_scope
 
 
 def _stmt_list_span(stmts):
@@ -372,6 +432,7 @@ def check_variable_name_sites(tree):
     or_ops = bash_ast.or_op()
     func_spans = _func_body_spans(tree)
     loop_spans = _loop_body_spans(tree)
+    barrier_spans = _subshell_subst_spans(tree)
     for node in bash_ast.nodes_of_type(tree, "BinaryCmd"):
         if node.get("Op") not in or_ops:
             continue
@@ -391,11 +452,13 @@ def check_variable_name_sites(tree):
         if offset is None:
             continue
         ## The exit must actually leave the printf's path: 'return' needs an enclosing
-        ## function, 'continue'/'break' a loop; 'exit'/'die' work anywhere. A top-level
-        ## 'check || return' just errors and falls through -- not enforcing.
+        ## function, 'continue'/'break' a loop REACHABLE without a subshell/subst barrier
+        ## (a 'continue' trapped in a subshell-in-a-loop never reaches the loop); 'exit'/
+        ## 'die' work anywhere. A top-level 'check || return' just errors and falls through.
         if exit_kind == "return" and not _offset_in_any(offset, func_spans):
             continue
-        if exit_kind in ("continue", "break") and not _offset_in_any(offset, loop_spans):
+        if exit_kind in ("continue", "break") \
+                and not _innermost_reaches(offset, loop_spans, barrier_spans):
             continue
         params = set()
         for word in bash_ast.args(left)[1:]:

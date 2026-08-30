@@ -678,6 +678,42 @@ run_det "$(printf '%s\n' \
    '}')"
 assert_not_at "R-063 spares a '{...}' handler whose last stmt returns" "R-063" 4
 assert_not_at "R-063 spares a '|| continue' guard inside its loop"     "R-063" 9
+## Class-killer: byte-span containment != execution reachability. A guard reaches a printf ONLY
+## within one execution region -- a later function body, and any subshell/subst, are boundaries.
+## (ai-review reviewdrain16 round 3.)
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'check_variable_name "${t}" || exit 1' \
+   'dispatch() {' \
+   '  printf -v "${t}" "%s" "x"' \
+   '}' \
+   'looptrap() {' \
+   '  for k in a b; do' \
+   '    ( check_variable_name "${k}" || continue; printf -v "${k}" "%s" "y" )' \
+   '  done' \
+   '}' \
+   'subsplit() {' \
+   '  ( check_variable_name "${v}" || return 1 )' \
+   '  printf -v "${v}" "%s" "z"' \
+   '}')"
+assert_at "R-063 flags a top-level exit-guard vs a printf in a later function" "R-063" 4
+assert_at "R-063 flags a printf whose ||continue guard is trapped in a subshell" "R-063" 8
+assert_at "R-063 flags a printf after a guard confined to a subshell (||return)" "R-063" 13
+## ... but the same-REGION good forms are SPARED: a guard + printf INSIDE one subshell (return
+## exits the subshell before the printf runs), and a plain ||continue guard directly in the loop.
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'samesubshell() {' \
+   '  ( check_variable_name "${v}" || return 1; printf -v "${v}" "%s" "z" )' \
+   '}' \
+   'loopok() {' \
+   '  for k in a b; do' \
+   '    check_variable_name "${k}" || continue' \
+   '    printf -v "${k}" "%s" "y"' \
+   '  done' \
+   '}')"
+assert_not_at "R-063 spares a guard + printf inside the SAME subshell"     "R-063" 3
+assert_not_at "R-063 spares a plain ||continue guard directly in the loop" "R-063" 8
 
 ## The ATTACHED spelling 'printf -vNAME' is analyzed too: a literal name is
 ## spared, an expanded one is guarded like the separate form.
