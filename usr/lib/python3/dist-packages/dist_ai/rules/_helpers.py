@@ -253,13 +253,44 @@ def word_has_command_expansion(word):
 _ENFORCING_EXIT = frozenset({"return", "exit", "continue", "break", "die"})
 
 
-def _stmt_is_exit_like(stmt):
-    """RHS of an enforcing guard: a control-flow exit (return/exit/continue/break/
-    die) or a '{ ...; }' brace-group handler ('check ... || { ...; }')."""
+def _exit_kind(stmt):
+    """The control-flow exit keyword STMT performs (return/exit/continue/break/die),
+    or None if it does not exit. A '{ ...; }' handler exits only if its LAST statement
+    does ('|| { log; return 1; }' enforces; '|| { true; }' falls through to the printf)."""
     cmd = (stmt or {}).get("Cmd") or {}
     if cmd.get("Type") == "Block":
-        return True
-    return bash_ast.command_name(cmd) in _ENFORCING_EXIT
+        stmts = cmd.get("Stmts") or []
+        return _exit_kind(stmts[-1]) if stmts else None
+    name = bash_ast.command_name(cmd)
+    return name if name in _ENFORCING_EXIT else None
+
+
+def _offset_in_any(offset, spans):
+    return any(start <= offset < end for start, end in spans)
+
+
+def _func_body_spans(tree):
+    """(start, end) span of every function body -- where a 'return' actually returns."""
+    spans = []
+    for decl in bash_ast.func_decls(tree):
+        body = decl.get("Body") or {}
+        start = (body.get("Pos") or {}).get("Offset")
+        end = (body.get("End") or {}).get("Offset")
+        if start is not None and end is not None:
+            spans.append((start, end))
+    return spans
+
+
+def _loop_body_spans(tree):
+    """(start, end) span of every loop body -- where 'continue'/'break' actually act."""
+    spans = []
+    for node in bash_ast.iter_nodes(tree):
+        if isinstance(node, dict) \
+                and node.get("Type") in ("WhileClause", "UntilClause", "ForClause"):
+            span = _stmt_list_span(node.get("Do"))
+            if span is not None:
+                spans.append(span)
+    return spans
 
 
 def _stmt_list_span(stmts):
@@ -288,15 +319,23 @@ def _statement_list_spans(tree):
         if not isinstance(node, dict):
             continue
         kind = node.get("Type")
-        if kind in ("Block", "Subshell"):
+        ## A command/process substitution has its OWN statement list too -- a guard's
+        ## 'return' inside '$(...)' / '<(...)' exits only the substitution, so its span
+        ## must not reach a printf outside it (same class as R-194's CmdSubst fix).
+        if kind in ("Block", "Subshell", "CmdSubst", "ProcSubst"):
             add(node.get("Stmts"))
         elif kind == "IfClause":
             add(node.get("Cond"))
             add(node.get("Then"))
+            ## Walk the WHOLE elif/else chain: shfmt nests each 'elif' as an Else dict
+            ## with NO Type (iter_nodes never dispatches on it), so a guard in a later
+            ## elif condition/body or the final 'else' would else inherit the outer span.
             els = node.get("Else")
-            if isinstance(els, dict):
+            while isinstance(els, dict):
+                add(els.get("Cond"))
                 add(els.get("Then"))
                 add(els.get("Stmts"))
+                els = els.get("Else")
         elif kind in ("WhileClause", "UntilClause"):
             add(node.get("Cond"))
             add(node.get("Do"))
@@ -331,20 +370,36 @@ def check_variable_name_sites(tree):
     Fail-CLOSED -- an unrecognized guard shape leaves R-063 firing."""
     sites = []
     or_ops = bash_ast.or_op()
+    func_spans = _func_body_spans(tree)
+    loop_spans = _loop_body_spans(tree)
     for node in bash_ast.nodes_of_type(tree, "BinaryCmd"):
         if node.get("Op") not in or_ops:
             continue
-        left = (node.get("X") or {}).get("Cmd") or {}
+        xstmt = node.get("X") or {}
+        ## A NEGATED check ('! check_variable_name ... || return') is NOT a guard: '!'
+        ## inverts, so on a BAD name the check's failure becomes success, the '|| return'
+        ## never runs, and the printf executes unguarded.
+        if xstmt.get("Negated"):
+            continue
+        left = xstmt.get("Cmd") or {}
         if bash_ast.command_name(left) != "check_variable_name":
             continue
-        if not _stmt_is_exit_like(node.get("Y")):
+        exit_kind = _exit_kind(node.get("Y"))
+        if exit_kind is None:
+            continue
+        offset = (left.get("Pos") or {}).get("Offset")
+        if offset is None:
+            continue
+        ## The exit must actually leave the printf's path: 'return' needs an enclosing
+        ## function, 'continue'/'break' a loop; 'exit'/'die' work anywhere. A top-level
+        ## 'check || return' just errors and falls through -- not enforcing.
+        if exit_kind == "return" and not _offset_in_any(offset, func_spans):
+            continue
+        if exit_kind in ("continue", "break") and not _offset_in_any(offset, loop_spans):
             continue
         params = set()
         for word in bash_ast.args(left)[1:]:
             params |= bash_ast.word_param_names(word)
-        offset = (left.get("Pos") or {}).get("Offset")
-        if offset is None:
-            continue
         sites.append((offset, enclosing_container_span(tree, offset), params))
     return sites
 

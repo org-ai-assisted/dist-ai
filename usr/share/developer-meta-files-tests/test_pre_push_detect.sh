@@ -631,6 +631,53 @@ assert_at "R-063 flags a bare (status-discarded) guard"            "R-063" 4
 assert_at "R-063 flags a guard in a dead 'if false' branch"        "R-063" 8
 assert_at "R-063 flags a guard captured in a command substitution" "R-063" 12
 assert_at "R-063 flags a guard confined to a subshell"             "R-063" 16
+## More decoys whose guard does NOT actually gate the printf (ai-review reviewdrain16 re-gate):
+## a '{...}' handler that never exits; a NEGATED '! check'; a guard inside a command
+## substitution WITH '||'; a guard confined to an elif branch. (grok/claude.)
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'blocknoexit() {' \
+   '  check_variable_name "${n}" || { true; }' \
+   '  printf -v "${n}" "%s" "x"' \
+   '}' \
+   'negated() {' \
+   '  ! check_variable_name "${n}" || return 1' \
+   '  printf -v "${n}" "%s" "x"' \
+   '}' \
+   'cmdsub_or() {' \
+   '  unused="$(check_variable_name "${n}" || return 1)"' \
+   '  printf -v "${n}" "%s" "x"' \
+   '}' \
+   'elifbranch() {' \
+   '  if false; then :; elif false; then :; else check_variable_name "${n}" || return 1; fi' \
+   '  printf -v "${n}" "%s" "x"' \
+   '}')"
+assert_at "R-063 flags a '{...}' handler that never exits"          "R-063" 4
+assert_at "R-063 flags a negated '! check' guard"                   "R-063" 8
+assert_at "R-063 flags a guard in a command substitution with ||"   "R-063" 12
+assert_at "R-063 flags a guard confined to an elif-chain else"      "R-063" 16
+## A TOP-LEVEL 'check || return' cannot return (errors + falls through) -> not a guard.
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'check_variable_name "${n}" || return 1' \
+   'printf -v "${n}" "%s" "x"')"
+assert_at "R-063 flags a top-level guard whose return cannot return" "R-063" 3
+## ... but the LEGIT enforcing forms are still SPARED: a '{...}' handler whose last stmt
+## exits, and a '|| continue' guard inside a loop (continue does gate there).
+run_det "$(printf '%s\n' \
+   '#!/bin/bash' \
+   'blockexits() {' \
+   '  check_variable_name "${n}" || { echo bad >&2; return 1; }' \
+   '  printf -v "${n}" "%s" "x"' \
+   '}' \
+   'loopguard() {' \
+   '  for n in a b; do' \
+   '    check_variable_name "${n}" || continue' \
+   '    printf -v "${n}" "%s" "x"' \
+   '  done' \
+   '}')"
+assert_not_at "R-063 spares a '{...}' handler whose last stmt returns" "R-063" 4
+assert_not_at "R-063 spares a '|| continue' guard inside its loop"     "R-063" 9
 
 ## The ATTACHED spelling 'printf -vNAME' is analyzed too: a literal name is
 ## spared, an expanded one is guarded like the separate form.
