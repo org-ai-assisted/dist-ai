@@ -250,38 +250,221 @@ def word_has_command_expansion(word):
     return False
 
 
-def check_variable_name_sites(tree):
-    """(offset, scope_start, param_names) for every 'check_variable_name' call:
-    its byte offset, the start of the innermost function enclosing it, and the
-    set of parameter names its arguments expand."""
-    sites = []
-    for call in bash_ast.call_exprs(tree):
-        if bash_ast.command_name(call) != "check_variable_name":
-            continue
-        params = set()
-        for word in bash_ast.args(call)[1:]:
-            params |= bash_ast.word_param_names(word)
-        offset = call["Pos"]["Offset"]
-        sites.append((offset, enclosing_scope_start(tree, offset), params))
-    return sites
+_ENFORCING_EXIT = frozenset({"return", "exit", "continue", "break", "die"})
 
 
-def enclosing_scope_start(tree, offset):
-    """Byte offset where the scope containing OFFSET begins: the body of the
-    innermost function enclosing it, or 0 at top level."""
-    best = 0
-    best_span = None
+def _exit_kind(stmt):
+    """The control-flow exit keyword STMT performs (return/exit/continue/break/die),
+    or None if it does not exit. A '{ ...; }' handler exits only if its LAST statement
+    does ('|| { log; return 1; }' enforces; '|| { true; }' falls through to the printf)."""
+    cmd = (stmt or {}).get("Cmd") or {}
+    if cmd.get("Type") == "Block":
+        stmts = cmd.get("Stmts") or []
+        return _exit_kind(stmts[-1]) if stmts else None
+    name = bash_ast.command_name(cmd)
+    return name if name in _ENFORCING_EXIT else None
+
+
+def _offset_in_any(offset, spans):
+    return any(start <= offset < end for start, end in spans)
+
+
+def _func_body_spans(tree):
+    """(start, end) span of every function body -- where a 'return' actually returns."""
+    spans = []
     for decl in bash_ast.func_decls(tree):
         body = decl.get("Body") or {}
         start = (body.get("Pos") or {}).get("Offset")
         end = (body.get("End") or {}).get("Offset")
-        if start is None or end is None:
+        if start is not None and end is not None:
+            spans.append((start, end))
+    return spans
+
+
+def _loop_body_spans(tree):
+    """(start, end) span of every LOOP CONSTRUCT ('for/while/until ... done') -- where
+    'continue'/'break' are lexically valid. The whole node span (not just the Do list) is
+    used so a subshell nested in the body is STRICTLY inside it: when a loop's body is a
+    single subshell the Do-list span equals the subshell span and cannot be told apart,
+    but the loop node also spans the header and 'done', so the subshell is innermost and a
+    'continue' trapped in it is correctly rejected (see _innermost_reaches)."""
+    spans = []
+    for node in bash_ast.iter_nodes(tree):
+        if isinstance(node, dict) \
+                and node.get("Type") in ("WhileClause", "UntilClause", "ForClause"):
+            span = _node_span(node)
+            if span is not None:
+                spans.append(span)
+    return spans
+
+
+def _node_span(node):
+    start = (node.get("Pos") or {}).get("Offset")
+    end = (node.get("End") or {}).get("Offset")
+    return (start, end) if start is not None and end is not None else None
+
+
+def _subshell_subst_spans(tree):
+    """(start, end) span of every SUBSHELL / command- or process-substitution -- an
+    execution boundary a 'return'/'exit'/'continue'/'break' cannot cross to reach code
+    OUTSIDE it (a subshell/subst runs in a child), nor can a caller's guard reach INTO."""
+    spans = []
+    for node in bash_ast.iter_nodes(tree):
+        if isinstance(node, dict) \
+                and node.get("Type") in ("Subshell", "CmdSubst", "ProcSubst"):
+            span = _node_span(node)
+            if span is not None:
+                spans.append(span)
+    return spans
+
+
+def boundary_spans(tree):
+    """Execution-region boundaries: FUNCTION bodies (run later, not at the guard's load
+    time) plus subshells/substitutions (run in a child). Byte-span containment only equals
+    execution REACHABILITY within a single such region -- crossing one breaks the guard."""
+    return _func_body_spans(tree) + _subshell_subst_spans(tree)
+
+
+def no_boundary_between(a, b, spans):
+    """True if NO boundary span separates offsets A and B -- none contains exactly one of
+    them. A guard reaches a printf only when they share every enclosing execution region;
+    a top-level guard cannot reach a printf inside a later function, nor across a subshell."""
+    for start, end in spans:
+        if (start <= a < end) != (start <= b < end):
+            return False
+    return True
+
+
+def _innermost_reaches(offset, scope_spans, barrier_spans):
+    """True if the innermost span enclosing OFFSET among SCOPE_SPANS+BARRIER_SPANS is a
+    SCOPE span. For continue/break the scope is a loop body and the barrier a subshell/subst:
+    a 'continue' inside a subshell-in-a-loop is trapped in the subshell (barrier innermost)
+    and never reaches the loop, so it is not a valid guard."""
+    best = None
+    best_is_scope = False
+    for span in scope_spans:
+        start, end = span
+        if start <= offset < end and (best is None or (end - start) < (best[1] - best[0])):
+            best, best_is_scope = span, True
+    for span in barrier_spans:
+        start, end = span
+        if start <= offset < end and (best is None or (end - start) < (best[1] - best[0])):
+            best, best_is_scope = span, False
+    return best is not None and best_is_scope
+
+
+def _stmt_list_span(stmts):
+    starts = [(s.get("Pos") or {}).get("Offset") for s in (stmts or [])]
+    ends = [(s.get("End") or {}).get("Offset") for s in (stmts or [])]
+    starts = [o for o in starts if o is not None]
+    ends = [o for o in ends if o is not None]
+    if not starts or not ends:
+        return None
+    return (min(starts), max(ends))
+
+
+def _statement_list_spans(tree):
+    """The (start, end) byte span of every STATEMENT-LIST -- the top level, each
+    subshell/brace-group body, and each if/loop/case BRANCH. Branch granularity
+    matters: a guard in an if's THEN must not count for a printf in its ELSE."""
+    spans = []
+
+    def add(stmts):
+        span = _stmt_list_span(stmts)
+        if span is not None:
+            spans.append(span)
+
+    add(tree.get("Stmts"))
+    for node in bash_ast.iter_nodes(tree):
+        if not isinstance(node, dict):
             continue
-        if start <= offset < end:
-            span = end - start
-            if best_span is None or span < best_span:
-                best_span, best = span, start
-    return best
+        kind = node.get("Type")
+        ## A command/process substitution has its OWN statement list too -- a guard's
+        ## 'return' inside '$(...)' / '<(...)' exits only the substitution, so its span
+        ## must not reach a printf outside it (same class as R-194's CmdSubst fix).
+        if kind in ("Block", "Subshell", "CmdSubst", "ProcSubst"):
+            add(node.get("Stmts"))
+        elif kind == "IfClause":
+            add(node.get("Cond"))
+            add(node.get("Then"))
+            ## Walk the WHOLE elif/else chain: shfmt nests each 'elif' as an Else dict
+            ## with NO Type (iter_nodes never dispatches on it), so a guard in a later
+            ## elif condition/body or the final 'else' would else inherit the outer span.
+            els = node.get("Else")
+            while isinstance(els, dict):
+                add(els.get("Cond"))
+                add(els.get("Then"))
+                add(els.get("Stmts"))
+                els = els.get("Else")
+        elif kind in ("WhileClause", "UntilClause"):
+            add(node.get("Cond"))
+            add(node.get("Do"))
+        elif kind == "ForClause":
+            add(node.get("Do"))
+        elif kind == "CaseClause":
+            for item in node.get("Items") or []:
+                add(item.get("Stmts"))
+    return spans
+
+
+def enclosing_container_span(tree, offset):
+    """(start, end) of the innermost STATEMENT-LIST enclosing OFFSET. A guard
+    enforces a printf only when the printf falls in this span (the same branch, or
+    an enclosing one), so a guard in a sibling branch, a subshell, or a command
+    substitution cannot reach a printf outside it."""
+    best = None
+    for span in _statement_list_spans(tree):
+        start, end = span
+        if start <= offset < end and (best is None or (end - start) < (best[1] - best[0])):
+            best = span
+    return best if best is not None else (offset, offset + 1)
+
+
+def check_variable_name_sites(tree):
+    """(guard_offset, container_span, param_names) for every 'check_variable_name'
+    in a RECOGNIZED ENFORCING form -- 'check_variable_name ARGS || <exit-like>'
+    (return/exit/continue/break/die or a '{ ...; }' handler). A decoy guard whose
+    result does NOT gate control flow no longer silences R-063: a bare call (status
+    discarded) is not an '||' form; one inside a command substitution or subshell,
+    or in a dead/sibling branch, has a container_span that does not reach the printf.
+    Fail-CLOSED -- an unrecognized guard shape leaves R-063 firing."""
+    sites = []
+    or_ops = bash_ast.or_op()
+    func_spans = _func_body_spans(tree)
+    loop_spans = _loop_body_spans(tree)
+    barrier_spans = _subshell_subst_spans(tree)
+    for node in bash_ast.nodes_of_type(tree, "BinaryCmd"):
+        if node.get("Op") not in or_ops:
+            continue
+        xstmt = node.get("X") or {}
+        ## A NEGATED check ('! check_variable_name ... || return') is NOT a guard: '!'
+        ## inverts, so on a BAD name the check's failure becomes success, the '|| return'
+        ## never runs, and the printf executes unguarded.
+        if xstmt.get("Negated"):
+            continue
+        left = xstmt.get("Cmd") or {}
+        if bash_ast.command_name(left) != "check_variable_name":
+            continue
+        exit_kind = _exit_kind(node.get("Y"))
+        if exit_kind is None:
+            continue
+        offset = (left.get("Pos") or {}).get("Offset")
+        if offset is None:
+            continue
+        ## The exit must actually leave the printf's path: 'return' needs an enclosing
+        ## function, 'continue'/'break' a loop REACHABLE without a subshell/subst barrier
+        ## (a 'continue' trapped in a subshell-in-a-loop never reaches the loop); 'exit'/
+        ## 'die' work anywhere. A top-level 'check || return' just errors and falls through.
+        if exit_kind == "return" and not _offset_in_any(offset, func_spans):
+            continue
+        if exit_kind in ("continue", "break") \
+                and not _innermost_reaches(offset, loop_spans, barrier_spans):
+            continue
+        params = set()
+        for word in bash_ast.args(left)[1:]:
+            params |= bash_ast.word_param_names(word)
+        sites.append((offset, enclosing_container_span(tree, offset), params))
+    return sites
 
 
 ## --- embedded shell in a '-c' string / config value ------------------------
@@ -422,12 +605,14 @@ def embeds_multi_statement(value, strict):
         kind = node.get("Type")
         if kind in control:
             return True
-        ## A subshell/brace-group holding >1 statement is multi-statement embedded
-        ## logic just like top-level ';'-separated commands -- it must not hide the
-        ## payload: '(cd /s; ./p.sh; systemctl restart a)' belongs in a script. Both
-        ## modes flag it (a single-statement '(a && b)' stays &&-glue, tolerated in
+        ## A subshell/brace-group/command-or-process-substitution holding >1 statement
+        ## is multi-statement embedded logic just like top-level ';'-separated commands
+        ## -- it must not hide the payload: '(cd /s; ./p.sh; ...)' AND '$(cd /s; ./p.sh;
+        ## ...)' / backtick / '<(...)' (all share the Stmts shape) belong in a script.
+        ## Both modes flag it (a single-statement '(a && b)' stays &&-glue, tolerated in
         ## non-strict and caught by the strict BinaryCmd check below).
-        if kind in ("Subshell", "Block") and len(node.get("Stmts") or []) > 1:
+        if kind in ("Subshell", "Block", "CmdSubst", "ProcSubst") \
+                and len(node.get("Stmts") or []) > 1:
             return True
         if strict and kind == "BinaryCmd" and node.get("Op") not in pipe_ops:
             return True

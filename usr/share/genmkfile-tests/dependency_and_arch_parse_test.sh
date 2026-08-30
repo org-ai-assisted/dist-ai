@@ -5,10 +5,12 @@
 
 ## AI-Assisted
 
-## make_get_variables' Package/Architecture stanza loop dropped RFC822 FOLDED continuation
-## lines (a multi-line 'Architecture: amd64\n arm64'), so a covered target read as uncovered
-## and its expected .deb vanished from make_package_debs_files_list. Fix: append continuations
-## to the field the header started, and trim the value so a folded '<nl> all' still matches.
+## make-helper-one.bsh debian/control parsing:
+##  - make_dependencies_filter_helper (flat, no alternative-parsing): must not collapse a
+##    space-less 'A|B' to 'AB', and must strip build-profile '<...>' and any '${...}' substvar.
+##  - make_get_variables' Package/Architecture stanza loop must capture RFC822 FOLDED
+##    continuation lines (a multi-line 'Architecture: amd64\n arm64', and a folded '\n all'),
+##    or a covered target reads as uncovered and its .deb vanishes from the expected list.
 
 set -o errexit
 set -o nounset
@@ -72,6 +74,37 @@ tests_failed=0
 
 pass() { printf '%s\n' "PASS  $1"; }
 fail() { tests_failed=$(( tests_failed + 1 )); printf '%s\n' "FAIL  $1" >&2; }
+
+## --- make_dependencies_filter_helper (flat, no alternative-parsing) ---
+## The flat filter keeps BOTH names of an 'A | B' alternative on purpose (a real
+## first-alternative choice needs a Debian-dep parser). These canary the leaks it MUST NOT
+## have: a space-less 'A|B' must not collapse to 'AB'; build-profile '<...>' and any '${...}'
+## substvar must be stripped. Compare on whitespace-collapsed output (the real consumer
+## word-splits it unquoted anyway).
+sed -n '/^make_dependencies_filter_helper()/,/^}/p' -- "${helper_file}" \
+   > "${test_root}/filter.sh"
+# shellcheck disable=SC1091
+source "${test_root}/filter.sh"
+
+check_filter() {
+   local desc="$1" input="$2" want="$3" got
+   ## Collapse runs of whitespace to one space and trim, so spacing is not asserted.
+   got="$(printf '%s' "${input}" | make_dependencies_filter_helper | tr -s '[:space:]' ' ')"
+   got="${got# }"
+   got="${got% }"
+   tests_total=$(( tests_total + 1 ))
+   if [ "${got}" = "${want}" ]; then
+      pass "${desc} -> '${got}'"
+   else
+      fail "${desc}: want '${want}' got '${got}'"
+   fi
+}
+
+check_filter 'space-less alternative does not collapse' 'foo|bar' 'foo bar'
+check_filter 'spaced alternative keeps both'            'default-mta | mail-transport-agent' 'default-mta mail-transport-agent'
+check_filter 'build-profile restriction stripped'       'foo <!nocheck>, bar' 'foo bar'
+check_filter 'any substvar stripped'                    '${perl:Depends}, python3' 'python3'
+check_filter 'version + arch qualifiers stripped'       'debhelper (>= 13), pkg [linux-any]' 'debhelper pkg'
 
 ## --- folded Architecture in the stanza-parse loop ---
 ## Drive the REAL loop (extracted between its sentinels) against a control whose Architecture

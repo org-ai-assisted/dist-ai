@@ -26,6 +26,7 @@ reformat the whole file). Offsets index the UTF-8 encoded bytes of the source.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 
@@ -192,6 +193,21 @@ def pipe_binary_cmds(tree):
             yield node
 
 
+_OR_OPS = None
+
+
+def or_op():
+    """The BinaryCmd Op code(s) for '||' -- DERIVED by parsing rather than hardcoded
+    (shfmt numbers Op and may renumber between versions), like pipe_ops. Cached."""
+    global _OR_OPS
+    if _OR_OPS is None:
+        codes = set()
+        for node in nodes_of_type(parse("a || b"), "BinaryCmd"):
+            codes.add(node.get("Op"))
+        _OR_OPS = codes
+    return _OR_OPS
+
+
 def func_decls(tree):
     """Yield every FuncDecl (a shell function definition)."""
     yield from nodes_of_type(tree, "FuncDecl")
@@ -270,18 +286,29 @@ def word_lit(word):
     return None
 
 
+def _deescape_unquoted_lit(value):
+    """Strip the backslash-escapes bash removes from an UNQUOTED word before it uses
+    it: '\\rm' -> 'rm', 'rm\\ x' -> 'rm x', '\\\\' -> '\\'. shfmt keeps the backslash
+    in an unquoted Lit.Value, so a resolver that does not strip it reads '\\rm' as a
+    different command than the 'rm' bash actually runs -- a gate bypass."""
+    return re.sub(r'\\(.)', r'\1', value)
+
+
 def word_string(word):
     """WORD's fully-literal string value, or None if any part is a
     parameter/command/arithmetic expansion (its value is not statically known).
-    Unwraps single- and double-quotes, so 'false', "false" and false all yield
-    'false' -- unlike word_lit, which declines any quoted or multi-part word."""
+    Unwraps single- and double-quotes AND unquoted backslash-escapes, so 'false',
+    "false", 'false', and \\false all yield 'false' -- the value bash actually runs,
+    so quoting/escaping a command word cannot slip a rule (unlike word_lit, which
+    declines any quoted or multi-part word)."""
     if word is None:
         return None
     out = []
     for part in word.get("Parts") or []:
         kind = part.get("Type")
         if kind == "Lit":
-            out.append(part.get("Value") or "")
+            ## Unquoted: bash strips backslash-escapes before it uses the word.
+            out.append(_deescape_unquoted_lit(part.get("Value") or ""))
         elif kind == "SglQuoted":
             out.append(part.get("Value") or "")
         elif kind == "DblQuoted":

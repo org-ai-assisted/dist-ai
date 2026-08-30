@@ -8947,11 +8947,15 @@ _rst.resize(600, 300)
 _rst.show()
 pump(400)
 ok(_rst.restart_as_shell() is True, 'restart_as_shell (TUI): a -- PROGRAM tab respawns')
+# Sample the banner BEFORE pumping: restart_as_shell replays it into the grid
+# synchronously, but a subsequent shell prompt that emits a CSI screen-clear could
+# wipe the correctly-replayed banner during the pump -- a latent false-positive if we
+# read it after. Assert the replay at restart time, the live shell separately.
+_rst_banner = _rst.document().toPlainText()
 pump(300)
-_rst_doc = _rst.document().toPlainText()
 _rst._write(b'echo TUIRESTART\n')
 pump(500)
-ok('program exited -- new shell' in _rst_doc and _rst_doc.strip() != ''
+ok('program exited -- new shell' in _rst_banner and _rst_banner.strip() != ''
    and 'TUIRESTART' in _rst.document().toPlainText(),
    'restart_as_shell (TUI): grid replays the banner + a working shell, not a blank frame')
 _rst.shutdown()
