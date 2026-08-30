@@ -10,8 +10,8 @@
 ## pane that reuses the terminal renderer and follows the reviewed tab's display
 ## mode live, the countdown that gates BOTH send buttons, that a choice is
 ## dispatched to the tab that held the text, and that the copy direction relabels
-## the buttons + dispatches to the copy path. SKIPs (exit 77) when PyQt6 is
-## unavailable.
+## the buttons + dispatches to the copy path. PyQt6 is REQUIRED: it fails loud
+## (exit 1), never a silent skip, when the dependency is unavailable.
 
 import os
 import sys
