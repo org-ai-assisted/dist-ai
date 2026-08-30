@@ -415,6 +415,24 @@ while _rw.tabs.count() > 0:
     _rw.close_tab(0)
 _rw.deleteLater()
 
+# launch_command is the --reuse dedup key (a running program's window is reused, not
+# re-opened). When a -- PROGRAM tab restarts to a plain shell it no longer runs that
+# program, so the key MUST clear -- else a later --reuse of the same command wrongly
+# folds into this now-a-shell tab instead of opening a fresh one.
+_lw = MainWindow()
+_lw.new_tab(command=['/bin/sh', '-c', 'exit 0'])
+_lw_term = _lw.tabs.widget(_lw.tabs.count() - 1)
+_lw_term.launch_command = ('/bin/sh', '-c', 'exit 0')     # as a --reuse launch would set it
+_deadline = time.time() + 5
+while time.time() < _deadline and _lw_term._command is not None:
+    pump(30)
+ok(_lw_term._command is None
+   and getattr(_lw_term, 'launch_command', 'unset') is None,
+   'restart clears launch_command so a later --reuse opens a fresh tab, not this shell')
+while _lw.tabs.count() > 0:
+    _lw.close_tab(0)
+_lw.deleteLater()
+
 # F2: closing a tab that holds a paste/copy review hides the bar first, so its
 # buttons cannot dispatch onto the destroyed terminal (RuntimeError).
 _fw = MainWindow()
@@ -522,6 +540,28 @@ try:
        'close_tab: a shell exiting DURING the confirm modal closes the tab even on Cancel')
     ok(_xt not in w3._closing_tabs and _xt not in w3._shell_exited_pending,
        'close_tab: both close marks are cleared after a mid-modal-exit close')
+    # Cancel-after-child-exit, -- PROGRAM tab: same mid-modal exit, but the tab ran a
+    # specific program. Its disposition on exit is RESTART (not close), so a Cancel here
+    # must run the deferred restart -- dropping to a fresh shell in place -- not close the
+    # tab. FAILS pre-fix (the command tab is closed like a login shell). Uses a real
+    # short-lived child so restart_as_shell has a live pty to respawn from.
+    w3.new_tab(command=['/bin/sh', '-c', 'sleep 30'])
+    _ct = w3.current()
+    _ct.launch_command = ('/bin/sh', '-c', 'sleep 30')
+    _n4 = w3.tabs.count()
+    def _cmd_exit_then_decline(*_a, **_k):
+        w3._on_shell_exited(_ct)                       # the program dies while the dialog is up
+        return _No                                     # ... and the user then clicks No
+    _ct.has_foreground_program = lambda: True
+    QMessageBox.question = staticmethod(_cmd_exit_then_decline)
+    w3.close_tab(w3.tabs.indexOf(_ct))
+    pump(200)
+    eq(w3.tabs.count(), _n4,
+       'close_tab: a -- PROGRAM tab whose program exits during the modal RESTARTS on Cancel')
+    ok(_ct._command is None and getattr(_ct, 'launch_command', 'unset') is None
+       and _ct not in w3._closing_tabs and _ct not in w3._shell_exited_pending,
+       'close_tab: the cancelled command tab is a fresh shell with its close marks cleared')
+    w3.close_tab(w3.tabs.indexOf(_ct))
     # _on_shell_exited on an already-removed tab is a harmless no-op (index == -1).
     w3._on_shell_exited(_xt)
     # closeEvent: a running program + decline ignores the window close
