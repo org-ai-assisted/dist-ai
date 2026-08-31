@@ -1452,6 +1452,27 @@ pv.render_preview('a\x1b[31mb', mode='show', markings=False)
 pv.render_preview('plain', mode='show', markings=False)
 eq(pv._sgr, {'fg': None, 'bg': None, 'bold': False},
    'render_preview resets SGR, so a prior preview\'s formatting does not leak')
+# A pathological multi-MB paste must NOT be rendered whole (would hang the review
+# pane): render_preview bounds the RENDERED size, kept from the HEAD (line 1 first).
+# Delivery is unaffected -- the mirror is display-only.
+_big = 'A' + ('x' * (pv._RAW_MAX * 2))          # ~2x the cap, distinct head char
+pv.render_preview(_big, mode='detail', markings=True)
+ok(len(pv._raw) <= pv._RAW_MAX,
+   'render_preview caps the render so a huge ASCII paste cannot hang the pane')
+ok(pv._raw.startswith('A'),
+   'render_preview keeps the HEAD (line 1 first), not the tail, when it caps')
+ok(pv._preview_truncated,
+   'render_preview marks _preview_truncated when it cut a huge paste')
+# The REAL hazard is unicode: detail-mode badges expand each non-ASCII char ~32x, so
+# a source-only cap would still build a multi-MB document. The cap is on the RENDERED
+# size, so the Qt document stays bounded and _raw is cut far below the source length.
+# (canary: a source-length-only cap left the document ~32x too big and _raw ~= 1M.)
+_uni = chr(0x0430) * (pv._RAW_MAX + 1)   # Cyrillic a -> ~32-char detail badge each
+pv.render_preview(_uni, mode='detail', markings=True)
+ok(pv.document().characterCount() <= pv._RAW_MAX * 2,
+   'render cap bounds the DETAIL-expanded document, not just source characters')
+ok(len(pv._raw) < pv._RAW_MAX // 10,
+   'a unicode paste is cut far below its source length (render, not source, capped)')
 # Double-clicking a neutralized character opens the inspect popup; its Copy button
 # must place the \uXXXX ESCAPE on the clipboard, never the raw glyph -- copying a
 # bidi override or homoglyph as-is is the exact hazard this terminal guards against
@@ -1485,7 +1506,8 @@ _ipop = SecureTerminal(command='/bin/cat')
 _ipop._show_char_popup(0x0430, _QPoint(10, 10))
 _idlg = _ipop._char_popup
 _isel = _QtIP.TextInteractionFlag.TextSelectableByMouse
-ok(all(_lb.textInteractionFlags() & _isel for _lb in _idlg.findChildren(_QLabelIP)),
+_ilabels = _idlg.findChildren(_QLabelIP)
+ok(_ilabels and all(_lb.textInteractionFlags() & _isel for _lb in _ilabels),
    'every popup label (incl. the note) is selectable, so its text can be copied')
 _icopy = next(b for b in _idlg.findChildren(_QPushButton)
               if b.text().startswith('Copy'))
@@ -4735,8 +4757,7 @@ _lk.close()
 # an unknown / bogus --osc feature is ignored (never crashes, never enables)
 _lb = MainWindow(launch=_pla(['--osc', 'not_a_feature', '--', 'sleep', '30']))
 pump(80)
-ok(not _lb.current().osc_enabled('not_a_feature') if
-   hasattr(_lb.current(), 'osc_enabled') else True,
+ok(not _lb.current().osc_enabled('not_a_feature'),
    'launch: an unknown --osc feature is ignored')
 _lb.close()
 
@@ -7276,6 +7297,11 @@ _oc._osc_color(12, b'rgb:ff/ff/00')         # cursor
 _oc._osc_color(10, b'garbage')              # unparseable -> ignored
 ok('fg' in _oc._osc_palette and 'bg' in _oc._osc_palette,
    'OSC 10/11/12 override the default fg/bg/cursor colours')
+# the CURSOR must take its colour from OSC 12 ('cursor'), not OSC 10 ('fg'): fg is green
+# above, cursor is yellow, so _cursor_color must be yellow (regression: it read 'fg').
+from PyQt6.QtGui import QColor as _QC_cur                       # noqa: E402
+ok(_oc._cursor_color() == _QC_cur('#ffff00'),
+   'OSC 12 re-tints the cursor (not OSC 10 fg) -- _cursor_color reads the cursor slot')
 ## A3: Close _oc instance after one-shot use to prevent pty child leak
 _oc.close()
 
