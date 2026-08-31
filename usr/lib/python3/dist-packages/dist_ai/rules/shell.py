@@ -1447,13 +1447,33 @@ def _format_interpolates(raw):
     one appears OUTSIDE a single-quoted '...' segment. Single quotes suppress ALL
     expansion and cannot be escaped inside, so a '$' within '...' is literal;
     adjacent segments simply concatenate ('x''$y' is two literal segments, 'x'$y
-    interpolates $y). A backslash outside single quotes escapes the next char."""
+    interpolates $y). A backslash outside single quotes escapes the next char.
+
+    Double-quote context is tracked: inside a "..." segment a "'" is a LITERAL
+    apostrophe (an English contraction, 'don''t'), NOT a quote opener, while '$'
+    and backtick STILL interpolate. Ignoring this read a stray apostrophe as
+    opening a single-quoted run and skipped a real '$var' after it -- a
+    format-injection false NEGATIVE (printf "don't $x")."""
     i, n = 0, len(raw)
+    in_double = False
     while i < n:
         c = raw[i]
-        if c == "'":
+        if in_double:
+            if c == "\\":
+                i += 2
+            elif c == '"':
+                in_double = False
+                i += 1
+            elif c in "$`":
+                return True
+            else:
+                i += 1
+        elif c == "'":
             close = raw.find("'", i + 1)
             i = n if close == -1 else close + 1
+        elif c == '"':
+            in_double = True
+            i += 1
         elif c == "\\":
             i += 2
         elif c in "$`":
