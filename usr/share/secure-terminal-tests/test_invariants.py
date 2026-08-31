@@ -267,7 +267,6 @@ try:
     from PyQt6.QtGui import QKeyEvent, QGuiApplication
     from PyQt6.QtCore import QEvent, Qt, QMimeData
     from secure_terminal.terminal import SecureTerminal
-    import secure_terminal.terminal as TERM
     # APP is never READ but MUST be retained: it anchors the QApplication for the module's
     # lifetime. Drop the reference and PyQt6 destroys the app, so the first SecureTerminal
     # QWidget below aborts with "Must construct a QApplication before a QWidget". CodeQL's
@@ -505,17 +504,20 @@ def _expect_violation(label, thunk):
 
 
 def _canaries():
-    # INV-1 GUI: monkeypatch paste_no_autosubmit to identity so the trailing submit
-    # is NOT stripped -> a single-line paste auto-runs.
-    orig = TERM.paste_no_autosubmit
-    TERM.paste_no_autosubmit = staticmethod(lambda s: s)
+    # INV-1 GUI: the real dispatch defends against auto-run in TWO layers -- it strips
+    # the trailing submit (paste_no_autosubmit) AND stages embedded newlines, delivering
+    # only the first line without a CR. Breaking one layer alone no longer leaks a CR, so
+    # the canary models a dispatch that skips BOTH: it writes the sanitized text verbatim,
+    # so the trailing submit reaches the child and the paste auto-runs. The property must
+    # catch it.
+    _WL._dispatch_paste = lambda raw, action: _WL._write(S.sanitize_paste(raw).encode('utf-8'))
     try:
         def canary_inv1_gui():
             ok, _ctx = _inv1_gui_predicate(_WL, _WL_SENT, 'echo pwned\n')
             assert ok, 'un-stripped paste'
         _expect_violation('INV-1/gui', canary_inv1_gui)
     finally:
-        TERM.paste_no_autosubmit = orig
+        del _WL._dispatch_paste          # restore the real (class) dispatch
         _reset_paste(_WL, _WL_SENT)
 
     # INV-3: a reference that skips the escape strip diverges from the real render
@@ -533,21 +535,20 @@ def _canaries():
         assert not bad, 'leaked non-inert char'
     _expect_violation('INV-4', canary_inv4)
 
-    # INV-5: a broken widget that submits on paste (no wait for Enter).
-    orig5 = TERM.paste_no_autosubmit
-    TERM.paste_no_autosubmit = staticmethod(lambda s: s)
+    # INV-5: a broken widget that submits on paste (no wait for Enter) -- a dispatch
+    # that skips BOTH the trailing-submit strip and the embedded-newline staging, so a
+    # trailing newline's submit CR reaches the child with no Enter.
+    _WL._dispatch_paste = lambda raw, action: _WL._write(S.sanitize_paste(raw).encode('utf-8'))
     try:
         def canary_inv5():
             _reset_paste(_WL, _WL_SENT)
-            # a trailing newline -> sanitize_paste maps it to the submit CR; without
-            # the strip it reaches the child, submitting with no Enter.
             _WL.insertFromMimeData(_mime('echo pwned\n'))
             after = b''.join(bytes(c) for c in _WL_SENT)
             assert b'\r' not in after, 'paste submitted without Enter'
             _reset_paste(_WL, _WL_SENT)
         _expect_violation('INV-5', canary_inv5)
     finally:
-        TERM.paste_no_autosubmit = orig5
+        del _WL._dispatch_paste          # restore the real (class) dispatch
         _reset_paste(_WL, _WL_SENT)
 
     # INV-6: drive the REAL observation path -- feed a DSR query through _on_readable,

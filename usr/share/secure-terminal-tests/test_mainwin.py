@@ -3221,6 +3221,24 @@ ok(win._review_bar.reviewed_term() is not _bgterm,
 win._hide_paste_review(_bgterm)                        # not current -> no refocus
 _bgterm.shutdown()
 
+# #2 cross-tab strand: ONE review bar is shared across tabs, so resolving tab A's
+# review must NOT tear down a review the bar has since been re-shown for tab B.
+# CANARY: the old _hide_paste_review hid the bar UNCONDITIONALLY -> B stranded
+# (input suspended on B, its bar gone, its pending paste silently discarded).
+_tabA = win.current()
+win._show_review(_tabA, 'A risky', 0, 'paste')         # bar shows A (A is current)
+win.new_tab()                                          # B becomes the current tab
+_tabB = win.current()
+ok(_tabB is not _tabA, 'a second tab is current')
+win._show_review(_tabB, 'B risky', 0, 'paste')         # bar re-shown for B
+ok(win._review_bar.reviewed_term() is _tabB, 'the bar now tracks tab B')
+win._hide_paste_review(_tabA)                          # A resolved in the background
+ok(win._review_bar.reviewed_term() is _tabB,
+   "resolving tab A does NOT tear down tab B's still-open review (no strand)")
+win._hide_paste_review(_tabB)                          # B resolves its OWN review
+ok(win._review_bar.reviewed_term() is None,
+   'a tab resolving its own review still hides the bar')
+
 # --- app.aboutToQuit teardown: shuts every window's tabs, tolerating a raise ---
 # main() connected _shutdown_all_tabs to app.aboutToQuit during the full-startup
 # runs above; fire it with a tab whose shutdown() raises to drive the
