@@ -105,11 +105,11 @@ ok(_bar._mirror.isReadOnly(),
 # notice must fire on that. (canary: a source-length notice would stay silent here --
 # 200k source chars < the 1M cap -- and a no-cap build had no notice at all.)
 _bar.show_review(_term, chr(0x0430) * (_bar._mirror._RAW_MAX // 5), 0)
-ok('preview truncated' in _bar._summary.text()
+ok('truncated' in _bar._summary.text()
    and 'FULL paste' in _bar._summary.text(),
    'an over-render unicode paste warns the preview is truncated + full paste delivers')
 _bar.show_review(_term, _raw, 0)                 # small paste: no truncation notice
-ok('preview truncated' not in _bar._summary.text(),
+ok('truncated' not in _bar._summary.text(),
    'a small paste carries no truncation notice')
 
 # _delivered (hover/focus of a delivery button) must not materialize an unbounded
@@ -140,8 +140,9 @@ _bar._choose('reject')
 _capc = _bar._mirror._RAW_MAX
 _bar.show_review(_term, 'a' * _capc + chr(0x202E), 0)    # RTL override past the cap
 ok('bidirectional' not in _bar._summary.text()
-   and 'preview truncated' in _bar._summary.text(),
-   'classify_paste is capped: a beyond-cap hidden char is uncounted; the notice warns')
+   and 'scanned for hidden' in _bar._summary.text(),
+   'classify_paste is capped: a beyond-cap hidden char is uncounted; the notice says '
+   'the count is partial (scanned only the first N chars), not a silent "0 hidden"')
 _bar._choose('reject')
 
 # --- the mirror follows the tab's display mode LIVE ---------------------------
