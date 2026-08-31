@@ -212,6 +212,39 @@ assert_at "R-210 unwraps 'sudo sudo -n apt-get'"                    "R-210" 5
 deep_sudo="$(printf 'sudo %.0s' $(seq 1 1500))"
 run_det "$(printf '%s\n' '#!/bin/bash' "${deep_sudo}rm -rf /x")"
 assert_at "R-120 unwraps a 1500-deep 'sudo ... rm' without crashing" "R-120" 2
+## env/command/builtin are pass-through wrappers too -- 'env VAR=1 rm', 'command rm',
+## 'builtin echo' RUN the real program, so R-120/R-034/R-210/R-211 must peel them or an
+## everyday idiom (not obfuscation) silently bypasses the gate. R-220 already unwraps
+## command/builtin for its own class; the shared effective_command now matches. (ai-review claude.)
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   'command rm -rf /a' \
+   'env VAR=1 rm -rf /b' \
+   'sudo env VAR=1 rm -rf /c' \
+   'sudo -u root env VAR=1 rm -rf /d' \
+   'env -u NOPE -C /srv/x rm -rf /e' \
+   'builtin echo hi' \
+   'command dpkg --install pkg.deb' \
+   'env DEBIAN_FRONTEND=noninteractive apt-get install -y pkg')"
+assert_at     "R-120 peels 'command rm'"                          "R-120" 2
+assert_at     "R-120 peels 'env VAR=1 rm'"                        "R-120" 3
+assert_at     "R-120 peels 'sudo env VAR=1 rm' (stacked)"         "R-120" 4
+assert_at     "R-120 peels 'sudo -u root env VAR=1 rm'"           "R-120" 5
+assert_at     "R-120 peels 'env -u NOPE -C /srv/x rm' (values skipped)" "R-120" 6
+assert_at     "R-034 peels 'builtin echo'"                        "R-034" 7
+assert_at     "R-211 peels 'command dpkg --install'"              "R-211" 8
+assert_at     "R-210 peels 'env FOO=bar apt-get install'"         "R-210" 9
+## 'command -v'/'-V' NAME is DESCRIBE mode (prints NAME's path, does not RUN it), so it must
+## NOT flag as a raw call -- unlike 'command rm' which runs rm. '-p' alone is not describe.
+## (ai-review claude.)
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   'command -v rm' \
+   'command -V rm' \
+   'command -pv rm' \
+   'command -p rm -rf /x')"
+assert_not_at "R-120 spares 'command -v rm' (describe, not a run)" "R-120" 2
+assert_not_at "R-120 spares 'command -V rm' (describe)"           "R-120" 3
+assert_not_at "R-120 spares 'command -pv rm' (v in cluster)"      "R-120" 4
+assert_at     "R-120 flags 'command -p rm' (runs rm, no v/V)"     "R-120" 5
 ## A QUOTED or BACKSLASH-ESCAPED command word resolves via word_string to the value bash
 ## actually runs, so quoting/escaping no longer bypasses the command scan: 'sudo "rm"', a
 ## bare '"rm"', '\rm', and 'sudo \rm' all still flag R-120. (ai-review claude.)
