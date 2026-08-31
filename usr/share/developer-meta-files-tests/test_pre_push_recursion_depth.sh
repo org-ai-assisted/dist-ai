@@ -56,40 +56,51 @@ trap cleanup_handler EXIT
 
 fail=0
 
-## A ~2000-stage '&&' chain: ~2000-deep BinaryCmd tree (crashes the pre-fix recursive
-## walkers at ~500 nesting levels; each stage is a harmless 'true').
-deep="${test_dir}/deep.sh"
+## Two deep shapes, each hitting a DIFFERENT recursive walker (the pre-fix code crashed at
+## ~500 nesting levels; each atom is harmless):
+##  - a ~2000-stage '&&' chain  -> the statements() / iter_nodes walkers;
+##  - a ~2000-deep nested BRACE-GROUP handler on a R-063 guard's '||' -> the _exit_kind walker
+##    ('check_variable_name x || { { { ...; return 1; } } }'). _exit_kind runs only for a
+##    'check_variable_name ... ||' guard, so the left MUST be that name; a &&-chain never reaches it.
+deep_and="${test_dir}/deep-and.sh"
 {
    printf '%s\n' '#!/bin/bash'
    python3 -c 'print(" && ".join(["true"] * 2000))'
-} > "${deep}"
+} > "${deep_and}"
+deep_block="${test_dir}/deep-block.sh"
+{
+   printf '%s\n' '#!/bin/bash'
+   python3 -c 'n = 2000; print("check_variable_name x || " + "{ " * n + "return 1; " + "} " * n)'
+} > "${deep_block}"
 
-## A crash shows as a Python traceback / RecursionError, or the gate's own internal-crash
-## exit 3 / a synthesized 'gate-crash' finding. None of those may appear.
+## A crash shows as a Python traceback / RecursionError, the gate's own internal-crash exit 3,
+## or a synthesized 'gate-crash' finding. None may appear. $1 file, $2 mode, $3 label.
 assert_no_crash() {
-   local mode="$1" out rc=0
-   out="$("${GATE}" "${mode}" "${deep}" 2>&1)" || rc="$?"
+   local file="$1" mode="$2" label="$3" out rc=0
+   out="$("${GATE}" "${mode}" "${file}" 2>&1)" || rc="$?"
    if grep --quiet --extended-regexp \
       'RecursionError|Traceback \(most recent|gate-crash' <<< "${out}"; then
-      printf '%s\n' "FAIL: ${mode} crashed on a deep '&&' chain:" >&2
+      printf '%s\n' "FAIL: ${mode} crashed on ${label}:" >&2
       printf '%s\n' "${out}" | tail -5 >&2
       fail=1
    elif [ "${rc}" -eq 3 ]; then
-      printf '%s\n' "FAIL: ${mode} exited 3 (internal crash) on a deep '&&' chain" >&2
+      printf '%s\n' "FAIL: ${mode} exited 3 (internal crash) on ${label}" >&2
       fail=1
    else
-      printf '%s\n' "PASS: ${mode} walks a ~2000-deep '&&' chain without crashing (rc=${rc})"
+      printf '%s\n' "PASS: ${mode} walks ${label} without crashing (rc=${rc})"
    fi
 }
 
-assert_no_crash --detect
-assert_no_crash --fix
+assert_no_crash "${deep_and}"   --detect 'a ~2000-deep && chain'
+assert_no_crash "${deep_and}"   --fix    'a ~2000-deep && chain'
+assert_no_crash "${deep_block}" --detect 'a ~2000-deep nested brace-group'
+assert_no_crash "${deep_block}" --fix    'a ~2000-deep nested brace-group'
 
-## --fix must leave the (already-compliant) deep file byte-identical, never mangle it.
-if [ "$(cksum < "${deep}")" = "$(python3 -c 'print("#!/bin/bash"); print(" && ".join(["true"]*2000))' | cksum)" ]; then
-   printf '%s\n' 'PASS: --fix left the deep chain unmodified'
+## --fix must leave the (already-compliant) &&-chain byte-identical, never mangle it.
+if [ "$(cksum < "${deep_and}")" = "$(python3 -c 'print("#!/bin/bash"); print(" && ".join(["true"]*2000))' | cksum)" ]; then
+   printf '%s\n' 'PASS: --fix left the && chain unmodified'
 else
-   printf '%s\n' 'FAIL: --fix modified the deep chain' >&2
+   printf '%s\n' 'FAIL: --fix modified the && chain' >&2
    fail=1
 fi
 

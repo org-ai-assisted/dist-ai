@@ -128,7 +128,7 @@ def statements(tree):
     Children are pushed REVERSED so LIFO pops emit them in document order."""
     out = []
     ## Work items: ('stmts', list, ctx) | ('stmt', dict, ctx) | ('cmd', dict, ctx) |
-    ## ('if', IfClause dict, None). shfmt's JSON has no parent pointers, so the
+    ## ('if', IfClause dict, ''). shfmt's JSON has no parent pointers, so the
     ## body-vs-condition context is threaded through each item.
     stack = [("stmts", tree.get("Stmts"), CONTEXT_STMT)]
     while stack:
@@ -147,7 +147,7 @@ def statements(tree):
             else_node = node.get("Else")
             if isinstance(else_node, dict):
                 if else_node.get("Cond"):
-                    stack.append(("if", else_node, None))
+                    stack.append(("if", else_node, ""))
                 else:
                     stack.append(("stmts",
                                   else_node.get("Then") or else_node.get("Stmts"),
@@ -161,7 +161,7 @@ def statements(tree):
                 ## IS a loop/if condition keeps its statements in condition context.
                 stack.append(("stmts", node.get("Stmts"), context))
             elif ctype == "IfClause":
-                stack.append(("if", node, None))
+                stack.append(("if", node, ""))
             elif ctype == "WhileClause":
                 stack.append(("stmts", node.get("Do"), CONTEXT_STMT))
                 stack.append(("stmts", node.get("Cond"), CONTEXT_COND))
@@ -296,11 +296,16 @@ _ENFORCING_EXIT = frozenset({"return", "exit", "continue", "break", "die"})
 def _exit_kind(stmt):
     """The control-flow exit keyword STMT performs (return/exit/continue/break/die),
     or None if it does not exit. A '{ ...; }' handler exits only if its LAST statement
-    does ('|| { log; return 1; }' enforces; '|| { true; }' falls through to the printf)."""
+    does ('|| { log; return 1; }' enforces; '|| { true; }' falls through to the printf).
+    ITERATIVE (descend the Block last-statement chain in a loop), not recursive: a deeply
+    nested '{ { { ...; return 1; } } }' would else exceed Python's recursion limit and
+    crash the linter on untrusted input."""
     cmd = (stmt or {}).get("Cmd") or {}
-    if cmd.get("Type") == "Block":
+    while cmd.get("Type") == "Block":
         stmts = cmd.get("Stmts") or []
-        return _exit_kind(stmts[-1]) if stmts else None
+        if not stmts:
+            return None
+        cmd = (stmts[-1] or {}).get("Cmd") or {}
     name = bash_ast.command_name(cmd)
     return name if name in _ENFORCING_EXIT else None
 
