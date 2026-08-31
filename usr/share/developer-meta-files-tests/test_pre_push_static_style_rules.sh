@@ -2175,6 +2175,42 @@ else
    failures=$((failures + 1))
 fi
 
+## ---- R-001 content-based binary auto-detect (NUL byte, no .gitattributes) ----
+## A genuine binary (an image, a compiled blob) carries a NUL byte -- git's own binary
+## heuristic. is_binary auto-detects it, so R-001 and the text tier skip it with NO
+## hand-written .gitattributes entry: the safe path is the default, not a thing to recall.
+## CANARY: on attribute-only is_binary the SAME NUL-bearing blob, being un-attributed,
+## tripped R-001 -- so this asserts a real auto-exemption, not the rule quietly not firing
+## (the non-ASCII bytes below WOULD trip R-001 in a text file).
+gate_output_nul_binary() {  ## -> gate output over base..HEAD for a NUL-bearing blob, no attr
+   local repo base
+   repo="$(mktemp --directory --tmpdir="${tmp_root}" repo.XXXXXX)"
+   git -C "${repo}" init --quiet
+   git -C "${repo}" config user.email 'ci-test@example.com'
+   git -C "${repo}" config user.name 'ci-test'
+   git -C "${repo}" commit --quiet --no-verify --allow-empty --message base
+   base="$(git -C "${repo}" rev-parse HEAD)"
+   ## A NUL byte (git's binary tell) plus a non-ASCII byte (0xC3 0xA9) that WOULD trip
+   ## R-001 in text -- built with octal escapes so THIS tracked file stays ASCII.
+   printf '%b' 'img\000header\0303\0251 body' > "${repo}/image.bin"
+   git -C "${repo}" add image.bin
+   git -C "${repo}" commit --quiet --no-verify --message blob
+   (
+      cd -- "${repo}" || exit 1
+      "${GATE}" --check --range "${base}"
+   ) 2>&1 || true
+}
+
+nul_binary_out="$(gate_output_nul_binary)"
+assert_gate_tag_absent "R-001 auto-exempts a NUL-byte binary with no .gitattributes" \
+   'R-001 non-ASCII' "${nul_binary_out}"
+if grep --quiet --fixed-strings -- 'all static checks passed' <<< "${nul_binary_out}"; then
+   printf '%s\n' 'PASS: a NUL-byte binary passes the whole static gate with no .gitattributes'
+else
+   printf '%s\n' 'FAIL: a NUL-byte binary did not reach a clean gate verdict (auto-detect broken)' >&2
+   failures=$((failures + 1))
+fi
+
 ## ---- commit-message R-001 (check_message_ascii, push mode) ----
 ## The pending commit message is the one text blob that is NOT a tree file. The
 ## gate resolves the base..HEAD message (or, staged, the --message-file) and

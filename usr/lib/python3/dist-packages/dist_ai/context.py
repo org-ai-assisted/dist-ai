@@ -204,12 +204,20 @@ class FileContext:
 
     @property
     def is_binary(self):
-        """True when .gitattributes marks the file binary -- exempt from the
-        text rules. Cached; queried from the SAME tree as the content (see
-        _query_binary), so an unstaged/uncommitted .gitattributes cannot exempt a
-        blob it does not actually govern."""
+        """True when the content is binary -- exempt from the text rules. A NUL
+        byte (git's own binary heuristic) auto-detects genuine binaries (images,
+        compiled blobs) so an image never needs a hand-written .gitattributes
+        entry to pass R-001 -- the safe path is the default, not a thing to
+        recall. The .gitattributes `binary` mark remains the explicit opt-out for
+        a NUL-FREE data payload (a raw cat-able fixture), queried from the SAME
+        tree as the content (see _query_binary) so an unstaged/uncommitted
+        .gitattributes cannot exempt a blob it does not actually govern. Cached."""
         if self._binary is None:
-            self._binary = self._query_binary()
+            data = self.data
+            if data is not None and b"\x00" in data:
+                self._binary = True
+            else:
+                self._binary = self._query_binary()
         return self._binary
 
     def _query_binary(self):

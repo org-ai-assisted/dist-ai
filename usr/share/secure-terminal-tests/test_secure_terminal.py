@@ -149,13 +149,19 @@ eq(S.render_cap_prefix('abcdef', 0), '', 'a non-positive budget yields no prefix
 eq(S.render_cap_prefix('abcdef', 100), 'abcdef',
    'ASCII under budget passes whole (1 render char each)')
 eq(S.render_cap_prefix('abcdef', 3), 'abc', 'ASCII is cut at the budget (1 each)')
-eq(S.render_cap_prefix('ab' + BEL + 'cd', 4), 'ab' + BEL + 'cd',
-   'a standalone BEL costs 0 render width (dropped, never badged)')
+_cyb = S._detail_badge(0x0430)                   # a Cyrillic detail badge (~32 chars)
+eq(S.render_cap_prefix(chr(0x0430) + BEL, len(_cyb)), chr(0x0430) + BEL,
+   'a standalone BEL adds 0 render width -- it fits even at the exact badge budget')
 _ecapb = S._detail_badge(0x00E9)                 # <U+00E9 LATIN SMALL LETTER E WITH ACUTE>
 eq(S.render_cap_prefix('a' + CAFE[-1], len(_ecapb)), 'a',
    'a non-ASCII char is charged its FULL detail-badge width, so it can be dropped')
 eq(S.render_cap_prefix('a' + CAFE[-1], len(_ecapb) + 1), 'a' + CAFE[-1],
    'the non-ASCII char fits once the budget covers a + its whole badge')
+# A zero-render-width byte (BEL) advances no render budget, so a run of them must be
+# bounded by the SOURCE length (=budget) or the scan walks the whole paste. (canary:
+# without the source bound, render_cap_prefix returned all 50 BEL bytes.)
+eq(S.render_cap_prefix(BEL * 50, 10), BEL * 10,
+   'a run of zero-width BEL is source-length bounded, not scanned to the end')
 
 # --- colored markings: risk class of a neutralized/revealed character ---------
 eq(S.marking_class(0x202E), 'bidi', 'RLO is bidi')

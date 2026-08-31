@@ -112,6 +112,15 @@ _bar.show_review(_term, _raw, 0)                 # small paste: no truncation no
 ok('preview truncated' not in _bar._summary.text(),
    'a small paste carries no truncation notice')
 
+# _delivered (hover/focus of a delivery button) must not materialize an unbounded
+# paste: sanitizing a 50MB clipboard here -- BEFORE the render cap -- froze the UI
+# (~8.6s / ~0.5GB). It sanitizes only a bounded source prefix. (canary: the uncapped
+# version returned the full sanitized raw, ~3x the cap.)
+_bar.show_review(_term, 'a' * (_bar._mirror._RAW_MAX * 3), 0)
+ok(len(_bar._delivered('stripped')) <= _bar._mirror._RAW_MAX,
+   '_delivered sanitizes only a bounded source prefix (no full-paste materialization)')
+_bar._choose('reject')
+
 # --- the mirror follows the tab's display mode LIVE ---------------------------
 # Flipping the tab's mode (the normal shortcut -> set_mode -> rerender_mirror) must
 # re-render the SAME pane, not a preview-only branch. In 'show' mode the homoglyph
