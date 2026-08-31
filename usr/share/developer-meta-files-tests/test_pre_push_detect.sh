@@ -245,6 +245,12 @@ assert_not_at "R-120 spares 'command -v rm' (describe, not a run)" "R-120" 2
 assert_not_at "R-120 spares 'command -V rm' (describe)"           "R-120" 3
 assert_not_at "R-120 spares 'command -pv rm' (v in cluster)"      "R-120" 4
 assert_at     "R-120 flags 'command -p rm' (runs rm, no v/V)"     "R-120" 5
+## env -S/--split-string EMBEDS the command in its STRING value; we skip that value and do NOT
+## parse inside it (obfuscated spelling, out of the accident threat model -- ai-review claude).
+## The guarantee that MUST hold: skipping the value never FALSE-POSITIVES on a path-like string.
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   'env -S "echo /bin/rm" trailing')"
+assert_not_at "R-120 does not false-fire on 'env -S \"echo /bin/rm\"' (value skipped)" "R-120" 2
 ## A QUOTED or BACKSLASH-ESCAPED command word resolves via word_string to the value bash
 ## actually runs, so quoting/escaping no longer bypasses the command scan: 'sudo "rm"', a
 ## bare '"rm"', '\rm', and 'sudo \rm' all still flag R-120. (ai-review claude.)

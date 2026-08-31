@@ -29,6 +29,12 @@ SUDO_VALUE_LONG = frozenset({
 ## env: '-u NAME'/'--unset', '-C DIR'/'--chdir', '-S STR'/'--split-string' take a
 ## required separate value. 'command'/'builtin' have no value-taking options
 ## ('command -p/-v/-V' are bare flags; 'builtin' takes none).
+## '-S'/'--split-string' also EMBEDS the command inside its STRING value ('env -S
+## "rm -rf x"' execs rm). We SKIP that value (never mis-read it as the command) but
+## deliberately do NOT parse inside it: that spelling is an obfuscation no accident
+## produces (the -S idiom is for shebangs, resolved by interpreter rules, not here),
+## so it is out of the accident threat model. Skipping the value is what keeps it
+## from FALSE-POSITIVING on a path-like string ('env -S "echo /bin/rm"').
 ENV_VALUE_SHORT = frozenset("uCS")
 ENV_VALUE_LONG = frozenset({"unset", "chdir", "split-string"})
 _WRAPPER_VALUE_SPEC = {
@@ -65,8 +71,8 @@ def effective_command(call, source):
         words = bash_ast.args(call)
         value_short, value_long = _WRAPPER_VALUE_SPEC[wrapper]
         inner = None
-        index = 0
-        for index, (kind, word, text) in enumerate(
+        rest = 0
+        for position, (kind, word, text) in enumerate(
                 bash_ast.command_tokens(
                     call, source, value_short, value_long), start=1):
             if kind == "opt":
@@ -89,6 +95,7 @@ def effective_command(call, source):
                         bash_ast.word_source(word, source)):
                 continue
             inner = _basename(bash_ast.word_string(word))
+            rest = position
             break
         if inner is None:
             return None
@@ -101,7 +108,7 @@ def effective_command(call, source):
         if inner not in EXEC_WRAPPERS:
             return inner
         wrapper = inner
-        call = {"Args": words[index:]}
+        call = {"Args": words[rest:]}
 
 
 ## Statement CONTEXT: a command in a loop/if CONDITION is not the same as one in
