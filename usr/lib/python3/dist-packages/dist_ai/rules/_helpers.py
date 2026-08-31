@@ -12,16 +12,38 @@ import re
 
 from dist_ai import bash_ast
 
-## Command wrappers whose real program is a later argument: 'sudo apt-get ...',
-## 'doas rm ...'.
-EXEC_WRAPPERS = ("sudo", "doas")
+## Command wrappers whose real program is a LATER argument: 'sudo apt-get ...',
+## 'doas rm ...', 'env VAR=1 rm ...', 'command rm ...', 'builtin cd ...'. A rule
+## keying on the program name (R-120 rm, R-034 echo, R-210 apt-get, R-211 dpkg)
+## must peel these or an honest alternate spelling ('command rm', 'env VAR=1 rm')
+## bypasses it -- the same evasion R-220 already unwraps via _EXIT_CALL_WRAPPERS.
+## 'env'/'command' are everyday idioms, not obfuscation, so this is a real gate hole.
+EXEC_WRAPPERS = ("sudo", "doas", "env", "command", "builtin")
 
-## sudo/doas options that take a SEPARATE value ('sudo -u www-data cmd'); their
-## value must not be mistaken for the wrapped command.
+## Per-wrapper options that take a SEPARATE value ('sudo -u www-data cmd',
+## 'env -u VAR cmd'); their value must not be mistaken for the wrapped command.
 SUDO_VALUE_SHORT = frozenset("ughprtCTRDU")
 SUDO_VALUE_LONG = frozenset({
     "user", "group", "host", "prompt", "role", "type", "close-from",
     "command-timeout", "chroot", "chdir", "other-user"})
+## env: '-u NAME'/'--unset', '-C DIR'/'--chdir', '-S STR'/'--split-string' take a
+## required separate value. 'command'/'builtin' have no value-taking options
+## ('command -p/-v/-V' are bare flags; 'builtin' takes none).
+## '-S'/'--split-string' also EMBEDS the command inside its STRING value ('env -S
+## "rm -rf x"' execs rm). We SKIP that value (never mis-read it as the command) but
+## deliberately do NOT parse inside it: that spelling is an obfuscation no accident
+## produces (the -S idiom is for shebangs, resolved by interpreter rules, not here),
+## so it is out of the accident threat model. Skipping the value is what keeps it
+## from FALSE-POSITIVING on a path-like string ('env -S "echo /bin/rm"').
+ENV_VALUE_SHORT = frozenset("uCS")
+ENV_VALUE_LONG = frozenset({"unset", "chdir", "split-string"})
+_WRAPPER_VALUE_SPEC = {
+    "sudo": (SUDO_VALUE_SHORT, SUDO_VALUE_LONG),
+    "doas": (SUDO_VALUE_SHORT, SUDO_VALUE_LONG),
+    "env": (ENV_VALUE_SHORT, ENV_VALUE_LONG),
+    "command": (frozenset(), frozenset()),
+    "builtin": (frozenset(), frozenset()),
+}
 
 
 def _basename(name):
@@ -32,45 +54,61 @@ def _basename(name):
 
 
 def effective_command(call, source):
-    """The BASENAME of the program CALL actually runs, unwrapping a leading
-    'sudo'/'doas' (skipping its options, their values, and 'VAR=value' prefixes).
-    None when the wrapped command word is quoted/expanded or cannot be resolved --
-    the safe direction (a rule declines rather than guesses). Path-qualified names
-    ('/bin/rm', '/usr/bin/sudo rm') resolve by basename so a rule is not bypassed."""
-    if _basename(bash_ast.command_name(call)) not in EXEC_WRAPPERS:
-        return _basename(bash_ast.command_name(call))
+    """The BASENAME of the program CALL actually runs, unwrapping leading exec
+    wrappers ('sudo'/'doas'/'env'/'command'/'builtin') -- skipping each wrapper's
+    options, their values, and 'VAR=value' prefixes. None when the wrapped command
+    word is quoted/expanded or cannot be resolved, or when 'command -v'/'-V' NAME
+    is a describe (not a run) -- the safe direction (a rule declines rather than
+    guesses). Path-qualified names ('/bin/rm', '/usr/bin/sudo rm') resolve by
+    basename so a rule is not bypassed."""
+    wrapper = _basename(bash_ast.command_name(call))
+    if wrapper not in EXEC_WRAPPERS:
+        return wrapper
     ## Peel wrapper layers ITERATIVELY, not recursively: a maliciously deep chain
     ## ('sudo' x1500 rm) would else exceed Python's recursion limit and crash the linter
     ## on untrusted input. Each layer strictly shortens Args, so this always terminates.
     while True:
         words = bash_ast.args(call)
+        value_short, value_long = _WRAPPER_VALUE_SPEC[wrapper]
         inner = None
-        index = 0
-        for index, (kind, word, _text) in enumerate(
+        rest = 0
+        for position, (kind, word, text) in enumerate(
                 bash_ast.command_tokens(
-                    call, source, SUDO_VALUE_SHORT, SUDO_VALUE_LONG), start=1):
+                    call, source, value_short, value_long), start=1):
+            if kind == "opt":
+                ## 'command -v'/'-V' NAME is describe mode: it prints NAME's path, it
+                ## does not RUN NAME, so the wrapped rule (R-120 etc.) must not fire.
+                ## Decline (the safe direction) rather than surface NAME as a run. A
+                ## short cluster ('-pv') describes if it carries v/V anywhere; '--' and
+                ## long options are never command's describe flags.
+                if wrapper == "command" and not text.startswith("--") \
+                        and ("v" in text[1:] or "V" in text[1:]):
+                    return None
+                continue
             if kind != "operand":
                 continue
             ## The first word past the wrapper's options is the real command; a leading
-            ## 'VAR=value' env-assignment is still not the command. Test the SOURCE, since
-            ## a quoted value ('FOO="bar"') makes word_lit None -- otherwise the unwrap
-            ## aborts and 'sudo FOO="bar" rm' bypasses R-120.
+            ## 'VAR=value' env-assignment ('env VAR=1 rm', 'sudo FOO=bar rm') is still not
+            ## the command. Test the SOURCE, since a quoted value ('FOO="bar"') makes
+            ## word_lit None -- otherwise the unwrap aborts and the prefix bypasses R-120.
             if re.match(r'^[A-Za-z_][A-Za-z0-9_]*=',
                         bash_ast.word_source(word, source)):
                 continue
             inner = _basename(bash_ast.word_string(word))
+            rest = position
             break
         if inner is None:
             return None
         ## Not a wrapper -> the real command. A STACKED wrapper ('sudo sudo rm',
-        ## 'sudo doas -u root rm') runs it one layer deeper; RE-PARSE from the inner
-        ## wrapper with its OWN option spec (command_tokens flattens everything past the
-        ## first operand into 'operand', so the inner wrapper's flags/values are NOT
-        ## skipped by this pass -- returning the next raw operand would surface a flag
-        ## like '-u' and still bypass R-120/R-034/R-210/R-211).
+        ## 'sudo env VAR=1 rm', 'sudo doas -u root rm') runs it one layer deeper; RE-PARSE
+        ## from the inner wrapper with its OWN option spec (command_tokens flattens
+        ## everything past the first operand into 'operand', so the inner wrapper's
+        ## flags/values are NOT skipped by this pass -- returning the next raw operand
+        ## would surface a flag like '-u' and still bypass R-120/R-034/R-210/R-211).
         if inner not in EXEC_WRAPPERS:
             return inner
-        call = {"Args": words[index:]}
+        wrapper = inner
+        call = {"Args": words[rest:]}
 
 
 ## Statement CONTEXT: a command in a loop/if CONDITION is not the same as one in

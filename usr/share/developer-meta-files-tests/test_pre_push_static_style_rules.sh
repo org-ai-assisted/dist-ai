@@ -174,6 +174,42 @@ expect_rule() {
    fi
 }
 
+## Assert a rule/message TAG is ABSENT from a gate OUTPUT while FAILING CLOSED if
+## the gate produced no terminal verdict (crashed/killed -> empty output): an
+## absence grep over empty output would else pass VACUOUSLY. Same liveness guard
+## expect_rule uses; for the raw absence-checks that do not go through it.
+assert_gate_tag_absent() {
+   local label tag out
+   label="$1"
+   tag="$2"
+   out="$3"
+   if ! grep --quiet --extended-regexp \
+         'all static checks passed|[0-9]+ check\(s\) failed' <<< "${out}"; then
+      printf '%s\n' \
+         "FAIL: no gate verdict for '${label}' (absence check would be vacuous)" >&2
+      failures=$((failures + 1))
+   elif grep --quiet --fixed-strings -- "${tag}" <<< "${out}"; then
+      printf '%s\n' "FAIL: ${label} (tag '${tag}' unexpectedly present)" >&2
+      failures=$((failures + 1))
+   else
+      printf '%s\n' "PASS: ${label}"
+   fi
+}
+
+## CANARY: the liveness guard must treat an EMPTY gate output (a crashed/killed
+## gate) as a FAILURE, not a vacuous pass. Capture the probe's OWN output (the
+## command substitution isolates its bookkeeping so the real count is untouched)
+## and assert it emitted the no-verdict FAIL. FAILS if the verdict guard is
+## dropped -- an absence grep over '' would then print a vacuous PASS instead.
+liveness_probe="$(assert_gate_tag_absent 'liveness-probe' 'ANY-TAG' '' 2>&1)"
+if grep --quiet --fixed-strings -- 'no gate verdict' <<< "${liveness_probe}"; then
+   printf '%s\n' 'PASS: assert_gate_tag_absent fails closed on empty gate output'
+else
+   printf '%s\n' \
+      'FAIL: assert_gate_tag_absent passed vacuously on empty gate output' >&2
+   failures=$((failures + 1))
+fi
+
 ## ';' and ';;' assembled here so the literals never appear in tracked source.
 sc=';'
 dsemi=';;'
@@ -399,6 +435,14 @@ expect_rule "${r030fmt}" "printf ${dq}%(%Y)T${dq} -1"                          "
 expect_rule "${r030fmt}" "printf ${dq}%d \${x}${dq} ${dq}\${1}${dq}"           "present"
 expect_rule "${r030fmt}" "printf ${dq}%02x \${y}${dq} ${dq}\${n}${dq}"         "present"
 expect_rule "${r030fmt}" "printf ${dq}v ${bt}id${bt}${dq}"                     "present"
+## CANARY: an apostrophe INSIDE a double-quoted format (any English contraction,
+## "don't") is a LITERAL apostrophe, NOT a single-quote opener, so a '$var' AFTER
+## it still interpolates INTO the format and must be FLAGGED. FAILS pre-fix: a
+## scan blind to double-quote context read the apostrophe as opening a
+## single-quoted run and skipped the real '$x' -- a format-injection false
+## NEGATIVE in a security rule.
+expect_rule "${r030fmt}" "printf ${dq}don${sq}t do \${x}${nl}${dq}"            "present"
+expect_rule "${r030fmt}" "printf ${dq}it${sq}s \${HOME}${dq}"                  "present"
 ## CANARY: a CONCATENATED single-quoted format 'x'$name'y' interpolates $name INTO
 ## the format (a real %n injection). Its outer chars are both "'", but a bash
 ## single-quoted string cannot CONTAIN a "'", so this is 'x' . $name . 'y' -- NOT a
@@ -1297,12 +1341,8 @@ git -C "${gitlink_repo}" -c protocol.file.allow=always \
 git -C "${gitlink_repo}" add --all
 git -C "${gitlink_repo}" commit --quiet --no-verify --message gitlink
 gitlink_out="$( cd -- "${gitlink_repo}" && "${GATE}" --check --range "${gitlink_base}" 2>&1 || true )"
-if grep --quiet --fixed-strings -- 'Is a directory' <<< "${gitlink_out}"; then
-   printf '%s\n' 'FAIL: gate grepped a submodule gitlink as if it were a file' >&2
-   failures=$((failures + 1))
-else
-   printf '%s\n' 'PASS: gate does not grep a submodule gitlink'
-fi
+assert_gate_tag_absent "gate does not grep a submodule gitlink" \
+   'Is a directory' "${gitlink_out}"
 ## forbid-new-submodules diffs '--staged' unless the range env vars are set, so
 ## in push mode it inspected an empty diff and passed unconditionally.
 if grep --quiet --fixed-strings -- 'new submodule introduced' <<< "${gitlink_out}"; then
@@ -2123,12 +2163,8 @@ else
 fi
 
 data_allowlisted="$(gate_output_data 'blob.dat binary')"
-if grep --quiet --fixed-strings -- 'R-001 non-ASCII' <<< "${data_allowlisted}"; then
-   printf '%s\n' 'FAIL: R-001 flagged a .gitattributes binary data file (allowlist not honoured)' >&2
-   failures=$((failures + 1))
-else
-   printf '%s\n' 'PASS: R-001 spares a .gitattributes binary data file'
-fi
+assert_gate_tag_absent "R-001 spares a .gitattributes binary data file" \
+   'R-001 non-ASCII' "${data_allowlisted}"
 ## The allowlist must clear the WHOLE text-content tier (ASCII + line endings + EOF via
 ## is_text_file), so the allowlisted commit reaches a clean verdict, not just a
 ## missing R-001 line.
