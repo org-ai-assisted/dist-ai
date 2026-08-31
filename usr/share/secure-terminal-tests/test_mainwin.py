@@ -3277,6 +3277,24 @@ ok(_rbt.review_pending() and _rbar.isVisible(),
 _rbar._reject.click(); pump()
 _rbwin.close()
 
+# REGRESSION: applying Global Settings must refresh an OPEN review's mirror -- the mirror
+# mirrors the reviewed tab's theme/mode/font/zoom, and _apply_global just changed them on
+# that tab. It used to leave the mirror stale until another per-tab setter ran.
+_gmwin = MainWindow(); _gmwin.show(); pump()
+if _gmwin.tabs.count() == 0:
+    _gmwin.new_tab()
+_gmt = _gmwin.current(); _gmt.apply_paste_warn('unicode'); pump()
+_gm_calls = []
+_gmwin._review_bar.rerender_mirror = lambda *a: _gm_calls.append(1)
+_gmm = _QMimeRB(); _gmm.setText('rm -rf /\ncurl x\n'); _gmt.insertFromMimeData(_gmm); pump()
+_gm_calls.clear()                                      # ignore the show_review render
+_gmwin._apply_global({'theme': 'light', 'zoom': 100, 'mode': 'box', 'colors': True,
+                      'line_edits': True, 'scrollback': 1000, 'paste_delay': 3,
+                      'escape_limit': 4096, 'persist': False})
+ok(bool(_gm_calls),
+   'applying Global Settings refreshes an open review mirror (rerender_mirror called)')
+_gmwin.close()
+
 # --- app.aboutToQuit teardown: shuts every window's tabs, tolerating a raise ---
 # main() connected _shutdown_all_tabs to app.aboutToQuit during the full-startup
 # runs above; fire it with a tab whose shutdown() raises to drive the
