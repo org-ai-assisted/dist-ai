@@ -185,22 +185,34 @@ _bar._choose('unicode')
 eq(_term_c1.dispatched, [('paste', 'stripped')],
    'a second choice after dispatch is a no-op (single-shot: dispatched exactly once)')
 
-# --- the countdown gates BOTH send buttons until it elapses -------------------
+# --- the countdown gates the delivery CLICK, but the buttons stay ENABLED ------
+# A disabled Qt button cannot take keyboard focus (and does not reliably receive
+# hover), so disabling the send buttons during the countdown would kill the
+# delivered-form preview -- the very thing the countdown window is for. So the
+# buttons stay ENABLED (focus/hover -> preview) and the CLICK is gated instead.
 _term2 = _FakeTerm()
 _bar.show_review(_term2, _raw, 2)
-ok(not _bar._stripped.isEnabled() and not _bar._unicode.isEnabled(),
-   'a countdown starts BOTH send buttons disabled')
+ok(_bar._stripped.isEnabled() and _bar._unicode.isEnabled(),
+   'the send buttons stay ENABLED during the countdown (so focus/hover can preview)')
+ok(_bar._gated, 'but the anti-fat-finger gate is up')
 ok(_bar._reject.isEnabled(), 'Reject stays available during the countdown')
 ok('(2)' in _bar._stripped.text() and '(2)' in _bar._unicode.text(),
    'both send buttons show the remaining seconds')
+# a DELIVERY choice while gated is a no-op -- nothing dispatched, still reviewing
+_bar._choose('stripped')
+eq(_term2.dispatched, [], 'a delivery choice during the countdown is a gated no-op')
+ok(_bar._term is _term2, 'the bar keeps reviewing (the gated click did not resolve it)')
 _bar._tick()                                # 2 -> 1
 _bar._tick()                                # 1 -> 0
-_bar._tick()                                # 0 -> enable + stop
-ok(_bar._stripped.isEnabled() and _bar._unicode.isEnabled(),
-   'both send buttons unlock once the countdown elapses')
+_bar._tick()                                # 0 -> drop the gate + stop
+ok(not _bar._gated, 'the gate drops once the countdown elapses')
 eq(_bar._stripped.text(), 'Paste (ASCII)', 'the ASCII countdown suffix is dropped')
 eq(_bar._unicode.text(), 'Paste (unicode)', 'the unicode countdown suffix is dropped')
-_bar._choose('reject')
+# now a delivery choice ACTS
+_bar._choose('stripped')
+eq(_term2.dispatched, [('paste', 'stripped')],
+   'after the countdown a delivery choice dispatches')
+ok(_bar._term is None, 'and _choose resolves + hides the bar')
 
 # --- Esc rejects (the safe default) -------------------------------------------
 _term3 = _FakeTerm()
