@@ -121,6 +121,17 @@ ok(len(_bar._delivered('stripped')) <= _bar._mirror._RAW_MAX,
    '_delivered sanitizes only a bounded source prefix (no full-paste materialization)')
 _bar._choose('reject')
 
+# When _delivered TRUNCATES the paste, an embedded newline that lands exactly at the
+# cap must NOT be stripped as a "trailing submit": the truncated preview would then
+# deceptively show a safe prompt-wait while real delivery auto-runs the lines before
+# it (agy/coderabbit). A truncated delivery preview keeps that boundary newline.
+# (canary: the unconditional submit-strip removed it, hiding the auto-run.)
+_capn = _bar._mirror._RAW_MAX
+_bar.show_review(_term, 'A' * (_capn - 1) + '\nB', 0)     # newline at index _capn-1
+ok(_bar._delivered('stripped').endswith('\n'),
+   'a truncated delivery preview keeps a boundary newline (no false submit-strip)')
+_bar._choose('reject')
+
 # --- the mirror follows the tab's display mode LIVE ---------------------------
 # Flipping the tab's mode (the normal shortcut -> set_mode -> rerender_mirror) must
 # re-render the SAME pane, not a preview-only branch. In 'show' mode the homoglyph
