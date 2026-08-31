@@ -316,6 +316,19 @@ if [ "$(cksum < "${f}")" = "${before}" ] ; then
 else
    note_fail "R-172 rewrote '-mpm700' into a succeeding mkdir (fixer silenced the finding)"
 fi
+## '--parents' takes NO argument; GNU rejects '--parents=x'. So an attached
+## '=value' is NOT a valid parents flag and must not count as one -- else the
+## fixer wrongly inserts the '--parents ... --mode' SC2174 directive on a command
+## that has no valid --parents. CANARY: _long_name stripped the '=value', so the
+## pre-fix code treated '--parents=invalid' as '--parents' and inserted SC2174.
+f="${test_dir}/mkdirparentseq.sh"
+printf '%b' '#!/bin/bash\nmkdir --parents=invalid --mode=700 -- "$TMPDIR"\n' >"${f}"
+run_fix "${f}" >/dev/null 2>&1
+if ! grep --quiet --fixed-strings -- 'disable=SC2174' "${f}" ; then
+   note_pass "R-172 does not treat '--parents=invalid' as --parents (no SC2174)"
+else
+   note_fail "R-172 wrongly counted '--parents=invalid' as --parents (inserted SC2174)"
+fi
 
 ## --- 7i: a non-shell file with the pattern is untouched -------------------
 f="${test_dir}/doc-mkdir.md"

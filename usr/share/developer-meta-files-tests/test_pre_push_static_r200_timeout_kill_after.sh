@@ -172,6 +172,14 @@ assert_spared "ka-after-signal" "$(body_of "${tmo} ${sig} ${ka}=5 5 do_thing")"
 ## positive).
 assert_spared "ka-abbrev-eq"    "$(body_of "${tmo} --kill-af=5 5 do_thing")"
 assert_spared "ka-abbrev-space" "$(body_of "${tmo} --kill-af 5 5 do_thing")"
+## GNU-BUNDLED short -k ('-vk 10' = -v -k 10, '-vk5' = -v -k5) carries the
+## kill-after, so the timeout is SPARED. CANARY: a first-char-only 'startswith
+## -k' test missed the bundled forms, wrongly flagging a VALID command it cannot
+## fix. A value-taking 's' before 'k' ('-sk') makes 'k' the signal's value, not
+## -k, so that one is (correctly) still flagged as lacking kill-after.
+assert_spared "ka-short-bundled"        "$(body_of "${tmo} -vk 10 5 do_thing")"
+assert_spared "ka-short-bundled-jammed" "$(body_of "${tmo} -vk5 5 do_thing")"
+assert_flagged "sk-signal-not-kill"     "$(body_of "${tmo} -sk 5 do_thing")"
 ## Valid GNU syntax with SPACE-separated option values, long and short: a
 ## '--signal TERM'/'-s TERM' before the kill-after must not hide it (the value
 ## 'TERM' is not the kill-after, but the option run still carries one).

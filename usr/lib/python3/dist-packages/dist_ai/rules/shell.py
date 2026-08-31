@@ -421,7 +421,10 @@ class MkdirTmpMode(Rule):
                     resolved = bash_ast.resolve_long(name, MKDIR_LONG)
                     if resolved == "mode":
                         has_mode = True
-                    elif resolved == "parents":
+                    elif resolved == "parents" and "=" not in lit:
+                        ## '--parents' takes NO argument; GNU rejects
+                        ## '--parents=x', so an attached '=value' is not a valid
+                        ## parents flag.
                         has_parents = True
                     continue
                 if not lit.startswith("--"):
@@ -503,6 +506,23 @@ TIMEOUT_WAIVER = "allow-bare-timeout"
 TIMEOUT_LONG = frozenset({
     "preserve-status", "foreground", "kill-after", "signal", "verbose",
     "help", "version"})
+## timeout's value-taking SHORT options: -k (kill-after) and -s (signal). Shared
+## by the command_tokens call (skip their value) and the -k cluster scan.
+TIMEOUT_VALUE_SHORT = frozenset("ks")
+
+
+def _timeout_cluster_has_kill(cluster):
+    """True if a short-option CLUSTER (no leading '-') activates timeout's -k. A
+    value-taking short option consumes the REST of the cluster as its value, so
+    scan left-to-right: a 'k' reached before any other value-taker IS -k (valid
+    GNU bundling '-vk'/'-vk5'); an 's' first makes a following 'k' the SIGNAL's
+    value ('-sk'), not -k."""
+    for letter in cluster:
+        if letter == "k":
+            return True
+        if letter in TIMEOUT_VALUE_SHORT:
+            return False
+    return False
 
 
 class TimeoutKillAfter(Rule):
@@ -534,7 +554,7 @@ class TimeoutKillAfter(Rule):
             informational = False
             duration = None
             for kind, word, text in bash_ast.command_tokens(
-                    call, ctx.source, frozenset("ks"),
+                    call, ctx.source, TIMEOUT_VALUE_SHORT,
                     frozenset({"kill-after", "signal"})):
                 if kind == "value":
                     continue
@@ -548,7 +568,8 @@ class TimeoutKillAfter(Rule):
                         has_kill = True
                     elif resolved in ("help", "version"):
                         informational = True
-                elif text.startswith("-k"):
+                elif text.startswith("-") and _timeout_cluster_has_kill(
+                        text[1:]):
                     has_kill = True
             if has_kill or informational:
                 continue
