@@ -148,9 +148,27 @@ def run():
 
     _wrapper_tests()
     _apparmor_registration_check()
+    _canary()
 
     print('\n%s' % ('PASS' if _failures == 0 else 'FAIL'))
     return 1 if _failures else 0
+
+
+def _canary():
+    """The default-strip check must FAIL against a pass-through sanitizer -- proof the
+    filter test has teeth (0 failures != 0 coverage), mirroring test_invariants.py's
+    per-class self-test. clipboard.main resolves sanitize_clipboard at call time, so
+    monkeypatching the module symbol drives the exact path run_filter([], ...) above
+    exercises; restore it after."""
+    saved = clipboard.sanitize_clipboard
+    clipboard.sanitize_clipboard = lambda text: text        # broken: no strip at all
+    try:
+        payload = ('a' + ZWSP + 'b' + RLO + 'cd' + CYR_A + 'e').encode('utf-8')
+        _, out, _ = run_filter([], payload)
+        ok(out != b'abcde',
+           'CANARY: the default-strip check has teeth (a pass-through sanitizer is caught)')
+    finally:
+        clipboard.sanitize_clipboard = saved
 
 
 def _apparmor_registration_check():

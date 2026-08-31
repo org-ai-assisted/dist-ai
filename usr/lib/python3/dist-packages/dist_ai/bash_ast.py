@@ -145,14 +145,21 @@ def parse_normalized(source, dialect="bash"):
 
 
 def iter_nodes(node):
-    """Yield every dict node in the tree, depth-first (node itself included)."""
-    if isinstance(node, dict):
-        yield node
-        for value in node.values():
-            yield from iter_nodes(value)
-    elif isinstance(node, list):
-        for item in node:
-            yield from iter_nodes(item)
+    """Yield every dict node in the tree, depth-first, document order (node itself
+    included). ITERATIVE (explicit stack), not recursive: a deeply nested tree -- an
+    ~800-stage pipe / '&&' chain, or ~1600 chained elif -- would else exceed Python's
+    recursion limit and crash the linter with an uncaught RecursionError on untrusted
+    input. Every rule walks the tree through here, so the bound must be the heap, not
+    the C stack. Children are pushed REVERSED so LIFO pops emit them in original order
+    and each child's whole subtree precedes the next sibling (pre-order, left to right)."""
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            yield current
+            stack.extend(reversed(list(current.values())))
+        elif isinstance(current, list):
+            stack.extend(reversed(current))
 
 
 def nodes_of_type(tree, type_name):

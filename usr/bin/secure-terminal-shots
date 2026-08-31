@@ -8,8 +8,14 @@
 ## Single entry point for ALL of the secure-terminal.github.io screenshots. The
 ## generators live together in usr/share/secure-terminal-shots/ (see its README).
 ##
-## Usage: secure-terminal-shots [review|hero|modes|zoom|zoom-live|comparison|comparison-wayland|clipboard] [ARGS...]
+## Usage: secure-terminal-shots [review|hero|modes|compat|zoom|zoom-live|comparison|comparison-wayland|clipboard] [ARGS...]
 ##        secure-terminal-shots --cleanup
+##
+##   compat      deterministic compatibility-page program shots -- each line-oriented
+##               program is RUN for real against a fixed fixture (no network/clock)
+##               and what secure-terminal DISPLAYS of its output is grabbed, headless
+##               and byte-reproducible (same offscreen-Qt path as hero/modes). One
+##               webp per compatibility-table row, into the site's compatibility/shots/.
 ##
 ##   --cleanup   reap any leftover capture process groups (the terminals + the secure-terminal
 ##               GUI) a crashed/interrupted comparison run left behind. Marker-scoped -- only
@@ -111,7 +117,7 @@ fi
 mode='review'
 if [ "$#" -ge 1 ] && { [ "$1" = 'review' ] || [ "$1" = 'modes' ] || [ "$1" = 'hero' ] \
       || [ "$1" = 'zoom' ] || [ "$1" = 'zoom-live' ] || [ "$1" = 'comparison' ] \
-      || [ "$1" = 'comparison-wayland' ] || [ "$1" = 'clipboard' ]; }; then
+      || [ "$1" = 'comparison-wayland' ] || [ "$1" = 'clipboard' ] || [ "$1" = 'compat' ]; }; then
    mode="$1"
    shift
 fi
@@ -211,6 +217,31 @@ if [ "${mode}" = 'zoom' ]; then
    export PYTHONPATH="${repo}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
    "${shots_dir}/zoom-shot.py" "${zoom_out}" "$@"
    printf '%s\n' "secure-terminal-shots: wrote zoom-band shots to ${zoom_out}"
+   exit 0
+fi
+
+if [ "${mode}" = 'compat' ]; then
+   ## Deterministic compatibility-program shots into the site's compatibility/shots/.
+   ## Same offscreen-Qt path as hero/modes: each program is RUN for real against a
+   ## fixed fixture and what secure-terminal DISPLAYS of its output is grabbed, so the
+   ## picture backs the page's "was run and verified" claim. One PNG per program
+   ## (webp-optimized), named for its compatibility-table row.
+   out_dir="${1:-${HOME}/private-sources/secure-terminal.github.io/compatibility/shots}"
+   if [ ! -d "${out_dir}" ]; then
+      printf '%s\n' "secure-terminal-shots: output dir does not exist: ${out_dir}" >&2
+      exit 1
+   fi
+   export PYTHONPATH="${repo}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
+   "${shots_dir}/compat-shot.py" "${out_dir}"
+   ## --list returns before importing Qt, so this is a cheap name enumeration; webp
+   ## each produced PNG (the site references <name>.webp). Capture the names in a
+   ## variable FIRST (not inline in the for-list): under errexit a failed --list then
+   ## aborts the lane, instead of a `for x in $(failed)` silently looping zero times.
+   compat_names="$("${shots_dir}/compat-shot.py" --list)"
+   for name in ${compat_names}; do
+      optimize_to_webp "${out_dir}/${name}.png"
+   done
+   printf '%s\n' "secure-terminal-shots: wrote compatibility shots to ${out_dir}"
    exit 0
 fi
 

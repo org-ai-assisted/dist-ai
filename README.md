@@ -51,6 +51,7 @@ operator's private cache (`~/private-cache`), never in the repo or package.
 | `dm-virtualbox-wiki-links-tests` | shipping | `usr/share/dm-virtualbox-wiki-links-tests/` |
 | `git-meld-tests`         | shipping | `usr/share/git-meld-tests/` |
 | `lockfile-tests`         | shipping | `usr/share/lockfile-tests/` |
+| `mediawiki-shell-tests`  | shipping | `usr/share/mediawiki-shell-tests/` |
 | `msgcollector-tests`     | shipping | `usr/share/msgcollector-tests/` |
 | `secure-terminal-tests`  | shipping | `usr/share/secure-terminal-tests/` |
 | `web-analyzer-tests`     | shipping | `usr/share/web-analyzer-tests/` |

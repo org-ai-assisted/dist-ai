@@ -141,6 +141,22 @@ eq(S.render_output(EMOJI, 'detail'), '<U+1F600 GRINNING FACE>', 'detail names as
 ok(all(0x20 <= ord(c) <= 0x7E for c in S.render_output(CAFE + BIDI + EMOJI, 'detail')),
    'detail badge is plain ASCII (safe in every display)')
 
+# --- render_cap_prefix: bound the DETAIL-rendered size (review-preview anti-DoS) ---
+# The review mirror caps its render by this so a huge unicode paste (detail badges
+# expand each char ~32x) cannot build a multi-MB document and freeze the review.
+eq(S.render_cap_prefix('', 100), '', 'cap of empty text is empty')
+eq(S.render_cap_prefix('abcdef', 0), '', 'a non-positive budget yields no prefix')
+eq(S.render_cap_prefix('abcdef', 100), 'abcdef',
+   'ASCII under budget passes whole (1 render char each)')
+eq(S.render_cap_prefix('abcdef', 3), 'abc', 'ASCII is cut at the budget (1 each)')
+eq(S.render_cap_prefix('ab' + BEL + 'cd', 4), 'ab' + BEL + 'cd',
+   'a standalone BEL costs 0 render width (dropped, never badged)')
+_ecapb = S._detail_badge(0x00E9)                 # <U+00E9 LATIN SMALL LETTER E WITH ACUTE>
+eq(S.render_cap_prefix('a' + CAFE[-1], len(_ecapb)), 'a',
+   'a non-ASCII char is charged its FULL detail-badge width, so it can be dropped')
+eq(S.render_cap_prefix('a' + CAFE[-1], len(_ecapb) + 1), 'a' + CAFE[-1],
+   'the non-ASCII char fits once the budget covers a + its whole badge')
+
 # --- colored markings: risk class of a neutralized/revealed character ---------
 eq(S.marking_class(0x202E), 'bidi', 'RLO is bidi')
 eq(S.marking_class(0x200B), 'invisible', 'ZWSP is invisible')

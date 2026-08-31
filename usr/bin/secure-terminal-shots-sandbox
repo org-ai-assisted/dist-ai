@@ -13,9 +13,11 @@
 ## fresh-syncs all three trees into the sandbox, runs the real lane there, and pulls the shots
 ## back into the site. No stale copy is ever reused; a missing tree or a failed sync HARD-FAILS.
 ##
-## Usage: secure-terminal-shots-sandbox [comparison|zoom|zoom-live] [ARGS...]   (these are the
-##   lanes this driver pulls back -- the wayland / clipboard lanes write to other paths / a
-##   TSV and are run directly in the sandbox). ARGS pass through: for comparison e.g. --only NAME
+## Usage: secure-terminal-shots-sandbox [comparison|compat|zoom|zoom-live] [ARGS...]   (these are
+##   the lanes this driver pulls back -- the wayland / clipboard lanes write to other paths / a
+##   TSV and are run directly in the sandbox). compat regenerates the compatibility-page program
+##   shots (offscreen, deterministic) and pulls them into the site's compatibility/shots/. ARGS
+##   pass through: for comparison e.g. --only NAME
 ##   / --case C / --st-only; for zoom / zoom-live the zoom-level list (default 50 75 100 125 150
 ##   175 200). The zoom lane is the diagnostic white-band sweep (offscreen, no labwc/X); zoom-live
 ##   is its REAL-GUI counterpart (one ST launch under labwc, zoom stepped live via `ctl zoom`).
@@ -50,7 +52,7 @@ trap cleanup EXIT
 lane='comparison'
 if [ "$#" -ge 1 ]; then
    case "$1" in
-      comparison|zoom|zoom-live)
+      comparison|compat|zoom|zoom-live)
          lane="$1"
          shift
          ;;
@@ -71,14 +73,21 @@ site="${SECURE_TERMINAL_SITE:-${HOME}/private-sources/secure-terminal.github.io}
 
 [ -d "${secure_terminal}/usr/lib/python3/dist-packages/secure_terminal" ] \
    || die "secure-terminal source not found at '${secure_terminal}' (set SECURE_TERMINAL_REPO)"
-[ -f "${corpus}/tools/reproduce.py" ] \
+## compat builds its own fixture (no corpus); every other lane cats corpus payloads.
+[ "${lane}" = 'compat' ] || [ -f "${corpus}/tools/reproduce.py" ] \
    || die "terminal-poc-corpus not found at '${corpus}' (set CORPUS_REPO)"
 [ -f "${dist_ai}/usr/bin/secure-terminal-shots" ] \
    || die "dist-ai runner not found at '${dist_ai}/usr/bin/secure-terminal-shots'"
-## The site shots dir is only a pull target for the comparison lane; the zoom lane
-## writes diagnostic PNGs to its own local dir, so it does not require the site.
-[ "${lane}" = 'zoom' ] || [ "${lane}" = 'zoom-live' ] || [ -d "${site}/comparison/shots" ] \
-   || die "site shots dir not found at '${site}/comparison/shots' (set SECURE_TERMINAL_SITE)"
+## The site is a pull target for comparison (comparison/shots) and compat
+## (compatibility/shots); the zoom lanes write diagnostic PNGs to a local dir, so they
+## need no site checkout.
+if [ "${lane}" = 'compat' ]; then
+   [ -d "${site}/compatibility/shots" ] \
+      || die "site compat shots dir not found at '${site}/compatibility/shots' (set SECURE_TERMINAL_SITE)"
+elif [ "${lane}" != 'zoom' ] && [ "${lane}" != 'zoom-live' ]; then
+   [ -d "${site}/comparison/shots" ] \
+      || die "site shots dir not found at '${site}/comparison/shots' (set SECURE_TERMINAL_SITE)"
+fi
 
 ## Transport check AFTER the tree checks so a missing tree is reported first and the preflight
 ## is testable without a sandbox: a bad SECURE_TERMINAL_REPO refuses here, never a stale capture.
@@ -94,9 +103,15 @@ target_arg=()
 ## exit code through, so a missing binary makes the loop exit 1 here. The 'zoom'
 ## lane is a headless OFFSCREEN-Qt grab (no labwc / X / window tools), so it skips
 ## this preflight -- it needs only the PyQt6 + fonts-hack the app itself needs.
-if [ "${lane}" != 'zoom' ] \
+## compat is a headless OFFSCREEN-Qt grab too (no labwc / X / window tools), so it skips the
+## heavy capture-stack preflight -- but it webp-optimizes, so it still needs optipng/jpegoptim/cwebp.
+if [ "${lane}" != 'zoom' ] && [ "${lane}" != 'compat' ] \
    && ! sandbox "${target_arg[@]}" exec 'for b in labwc Xwayland xvfb-run xdotool wmctrl xwininfo import optipng jpegoptim cwebp; do type -P "$b" >/dev/null 2>&1 || exit 1; done'; then
    die "the comparison-shot capture stack (labwc/Xwayland/xdotool/wmctrl/xwininfo/import/optipng/jpegoptim/cwebp) is missing or incomplete in the sandbox -- run:  sandbox provision shots"
+fi
+if [ "${lane}" = 'compat' ] \
+   && ! sandbox "${target_arg[@]}" exec 'for b in optipng jpegoptim cwebp; do type -P "$b" >/dev/null 2>&1 || exit 1; done'; then
+   die "compat webp optimization needs optipng/jpegoptim/cwebp in the sandbox -- run:  sandbox provision shots"
 fi
 
 base='st-shots-sandbox'
@@ -148,15 +163,21 @@ if [ "${lane}" = 'zoom' ] || [ "${lane}" = 'zoom-live' ]; then
    exit 0
 fi
 
-## The comparison lane writes webp into secure-terminal-shots/shots/; copy only the webp
-## into the site (never the .png/.log noise).
-printf '%s\n' "secure-terminal-shots-sandbox: pulling shots back into ${site}/comparison/shots/ ..." >&2
+## The comparison + compat lanes write webp into secure-terminal-shots/shots/; copy only the
+## webp into the site (never the .png/.log noise). comparison lands in comparison/shots, compat
+## in compatibility/shots.
+if [ "${lane}" = 'compat' ]; then
+   site_dest="${site}/compatibility/shots"
+else
+   site_dest="${site}/comparison/shots"
+fi
+printf '%s\n' "secure-terminal-shots-sandbox: pulling shots back into ${site_dest}/ ..." >&2
 sandbox "${target_arg[@]}" pull "${remote_shots}" "${pull_tmp}/" \
    || die "pull of the captured shots out of the sandbox failed"
 
 shopt -s nullglob
 webp=("${pull_tmp}/shots/"*.webp)
 [ "${#webp[@]}" -gt 0 ] || die "no .webp shots were produced in the sandbox (capture failed silently?)"
-cp --force -- "${webp[@]}" "${site}/comparison/shots/"
+cp --force -- "${webp[@]}" "${site_dest}/"
 
-printf '%s\n' "secure-terminal-shots-sandbox: pulled ${#webp[@]} shot(s) into ${site}/comparison/shots/" >&2
+printf '%s\n' "secure-terminal-shots-sandbox: pulled ${#webp[@]} shot(s) into ${site_dest}/" >&2
