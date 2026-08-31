@@ -699,6 +699,13 @@ expect_rule "R-172" "${mkd}${sp}-pm700${sp}--${sp}${dq}${tv}${dq}"              
 expect_rule "R-172" "${mkd}${sp}--parents${sp}--mode=700${sp}--${sp}${dq}${tv}${dq}"                   "absent"
 expect_rule "R-172" "${mkd}${sp}--mode${sp}700${sp}--${sp}${dq}${tv}${dq}"                             "absent"
 expect_rule "R-172" "${mkd}${sp}--mode=700${sp}--${sp}${dq}${tvbrace}${dq}"                            "absent"
+## An UNAMBIGUOUS getopt_long abbreviation of '--mode' is atomic too, so it is
+## SPARED just like the full spelling -- '--mod=700' and the space form
+## '--mod 700' (whose '700' the scan must skip as the option's value, not read as
+## an operand). CANARY: the pre-abbrev exact-match code missed '--mod', flagging
+## a compliant mkdir (a false positive).
+expect_rule "R-172" "${mkd}${sp}--parents${sp}--mod=700${sp}--${sp}${dq}${tv}${dq}"                    "absent"
+expect_rule "R-172" "${mkd}${sp}--mod${sp}700${sp}--${sp}${dq}${tv}${dq}"                              "absent"
 ## A mkdir NOT creating a temp dir is none of R-172's business, and a name that
 ## merely STARTS with a temp prefix ('$TMPFILE') is not the temp DIR family.
 expect_rule "R-172" "${mkd}${sp}--parents${sp}--${sp}${dq}${dollar}dir${dq}"                           "absent"

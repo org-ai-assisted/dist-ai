@@ -153,6 +153,10 @@ assert_spared() {
 assert_flagged "pipe-long"  "$(body_of "seq 5 ${pipe} ${grp} ${ql} 5")"
 assert_flagged "pipe-short" "$(body_of "seq 5 ${pipe} ${grp} ${qs} bar")"
 assert_flagged "pipe-silent" "$(body_of "seq 5 ${pipe} ${grp} ${sil} bar")"
+## An UNAMBIGUOUS getopt_long abbreviation of '--quiet' is still a quiet flag, so
+## a pipe-consuming '--qu' grep is FLAGGED. CANARY: the pre-abbrev exact-match
+## code missed '--qu' (a false negative -- an unflagged pipefail/SIGPIPE bug).
+assert_flagged "pipe-abbrev-quiet" "$(body_of "seq 5 ${pipe} ${grp} --qu bar")"
 ## A line-continued pipe whose quiet grep sits on a leading-'|' line.
 assert_flagged "pipe-continued" \
    "$(body_of "seq 5 ${bs}" "   ${pipe} ${grp} ${ql} 5")"
