@@ -1473,6 +1473,22 @@ ok(pv.document().characterCount() <= pv._RAW_MAX * 2,
    'render cap bounds the DETAIL-expanded document, not just source characters')
 ok(len(pv._raw) < pv._RAW_MAX // 10,
    'a unicode paste is cut far below its source length (render, not source, capped)')
+# BEL bytes render to nothing (width 0), so the render budget alone never caps a BEL
+# flood -- the SOURCE-length bound must. (canary: without it, _raw held the full flood
+# and _preview_truncated stayed False.)
+pv.render_preview(chr(0x07) * (pv._RAW_MAX * 3), mode='detail', markings=True)
+ok(len(pv._raw) <= pv._RAW_MAX and pv._preview_truncated,
+   'a BEL flood is source-length capped (the render budget alone would not bound it)')
+# apply_mode re-renders a preview from its (capped) _raw and must replay the HEAD it
+# kept, not a tail limit that would hide line 1. _raw here exceeds _RERENDER_TAIL, so a
+# tail replay would drop the head marker. (canary: the live tail path lost the head.)
+_pvh = SecureTerminal(preview=True)
+_pvh.render_preview('HEADLINE_MARKER\n' + ('y' * (_pvh._RERENDER_TAIL + 5000)),
+                    mode='detail', markings=True)
+ok('HEADLINE_MARKER' in _pvh.toPlainText(), 'preview shows the head on first render')
+_pvh.apply_mode('reveal')
+ok('HEADLINE_MARKER' in _pvh.toPlainText(),
+   'apply_mode replays the preview HEAD (line 1), not just the _RERENDER_TAIL')
 # Double-clicking a neutralized character opens the inspect popup; its Copy button
 # must place the \uXXXX ESCAPE on the clipboard, never the raw glyph -- copying a
 # bidi override or homoglyph as-is is the exact hazard this terminal guards against
