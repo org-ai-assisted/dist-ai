@@ -98,6 +98,18 @@ ok('CYRILLIC SMALL LETTER A' in _bar._mirror.toPlainText()
 ok(_bar._mirror.isReadOnly(),
    'the mirror pane is read-only (no typing into a review)')
 
+# A multi-MB paste is capped in the mirror render (render_preview) so it cannot hang
+# the pane, but delivery still sends the WHOLE text -- so the summary must warn that
+# the preview is truncated, in this unspoofable label. (canary: old code had no cap
+# and no notice, so this string was absent.)
+_bar.show_review(_term, 'z' * (_bar._mirror._RAW_MAX * 2), 0)
+ok('preview truncated' in _bar._summary.text()
+   and 'FULL paste' in _bar._summary.text(),
+   'an over-cap paste summary warns the preview is truncated + full paste delivers')
+_bar.show_review(_term, _raw, 0)                 # small paste: no truncation notice
+ok('preview truncated' not in _bar._summary.text(),
+   'a small paste carries no truncation notice')
+
 # --- the mirror follows the tab's display mode LIVE ---------------------------
 # Flipping the tab's mode (the normal shortcut -> set_mode -> rerender_mirror) must
 # re-render the SAME pane, not a preview-only branch. In 'show' mode the homoglyph
