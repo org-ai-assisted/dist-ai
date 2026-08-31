@@ -91,6 +91,7 @@ core_suites=(
    image-optimize-tests
    lock-screen-tests
    lockfile-tests
+   mediawiki-shell-tests
    msgcollector-tests
    onion-grater-tests
    onion-time-pre-script-tests
@@ -477,6 +478,18 @@ wire() {
             wire_env+=( "PYTHONPATH=${hs}/usr/lib/python3/dist-packages" )
          fi
          ;;
+      mediawiki-shell)
+         ## The offline suite drives mw-urlencode / mw-build-import-xml (python,
+         ## self-contained) and sources usr/share/mediawiki-shell/common. common
+         ## sources helper-scripts '.bsh' and runs collect_reqs over
+         ## str_replace/stprint ('#!/usr/bin/python3 -Bsu'), so it needs
+         ## helper-scripts on PATH + PYTHONPATH (the entrypoint wires those from
+         ## HELPER_SCRIPTS_PATH); without it the common cases die instead of run.
+         wire_env=( "MEDIAWIKI_SHELL_REPO=$( pkg_dir mediawiki-shell )" )
+         if [ -n "${hs}" ]; then
+            wire_env+=( "HELPER_SCRIPTS_PATH=${hs}" )
+         fi
+         ;;
       msgcollector)
          ## The suite extracts / sources msgcollector's CLI-rendering bash and
          ## runs it. cli_links_to_footnotes is pure bash, but
@@ -776,6 +789,9 @@ suite_component() {
          ;;
       genmkfile)
          printf '%s' 'genmkfile'
+         ;;
+      mediawiki-shell)
+         printf '%s' 'mediawiki-shell'
          ;;
       msgcollector)
          printf '%s' 'msgcollector'
