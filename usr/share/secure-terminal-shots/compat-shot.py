@@ -132,7 +132,10 @@ def build_fixture(root, env):
     _write(os.path.join(demo, 'readme.txt'), 'plain file\n')
     script = os.path.join(demo, 'run.sh')
     _write(script, '#!/bin/sh\necho hi\n')
-    os.chmod(script, 0o755)
+    # 0o700, not 0o755: ls --color -F needs only the owner execute bit to render it
+    # green with a '*' suffix, and least-privilege on a throwaway fixture script keeps
+    # CodeQL / bandit B103 quiet (world-write/read on an executable is the thing they flag).
+    os.chmod(script, 0o700)
     os.symlink('readme.txt', os.path.join(demo, 'latest.txt'))
     _write(os.path.join(demo, 'backup.tar'), 'not really a tar, for the colour\n')
 
