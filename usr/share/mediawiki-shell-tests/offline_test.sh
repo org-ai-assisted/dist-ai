@@ -43,6 +43,16 @@ if [ ! -x "${mw_bin}/mw-urlencode" ] || [ ! -r "${mw_common}" ] \
   exit 77
 fi
 
+## Required external tools: their absence is an ENVIRONMENT bug, not a subject failure. A missing
+## xmllint would otherwise fall to the "XML not well-formed" branch and blame mediawiki-shell for
+## the environment; a missing safe-rm would fail the fixture cleanup.
+for _tool in xmllint safe-rm; do
+  if ! type -P "${_tool}" >/dev/null 2>&1; then
+    printf '%s\n' "$0: FATAL: required tool '${_tool}' not found (install: xmllint = libxml2-utils; safe-rm)" >&2
+    exit 1
+  fi
+done
+
 ## mw-build-import-xml resolves mw-urlencode via PATH (shutil.which); the tests
 ## call mw-urlencode by bare name. Put the checkout's bin first.
 PATH="${mw_bin}:${PATH}"
