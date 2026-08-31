@@ -1453,15 +1453,26 @@ pv.render_preview('plain', mode='show', markings=False)
 eq(pv._sgr, {'fg': None, 'bg': None, 'bold': False},
    'render_preview resets SGR, so a prior preview\'s formatting does not leak')
 # A pathological multi-MB paste must NOT be rendered whole (would hang the review
-# pane): render_preview caps _raw at _RAW_MAX, kept from the HEAD (line 1 first).
-# Delivery is unaffected -- the mirror is display-only. (canary: old code stored the
-# full text uncapped, so len(pv._raw) would exceed _RAW_MAX.)
+# pane): render_preview bounds the RENDERED size, kept from the HEAD (line 1 first).
+# Delivery is unaffected -- the mirror is display-only.
 _big = 'A' + ('x' * (pv._RAW_MAX * 2))          # ~2x the cap, distinct head char
 pv.render_preview(_big, mode='detail', markings=True)
 ok(len(pv._raw) <= pv._RAW_MAX,
-   'render_preview caps _raw at _RAW_MAX so a huge paste cannot hang the pane')
+   'render_preview caps the render so a huge ASCII paste cannot hang the pane')
 ok(pv._raw.startswith('A'),
    'render_preview keeps the HEAD (line 1 first), not the tail, when it caps')
+ok(pv._preview_truncated,
+   'render_preview marks _preview_truncated when it cut a huge paste')
+# The REAL hazard is unicode: detail-mode badges expand each non-ASCII char ~32x, so
+# a source-only cap would still build a multi-MB document. The cap is on the RENDERED
+# size, so the Qt document stays bounded and _raw is cut far below the source length.
+# (canary: a source-length-only cap left the document ~32x too big and _raw ~= 1M.)
+_uni = chr(0x0430) * (pv._RAW_MAX + 1)   # Cyrillic a -> ~32-char detail badge each
+pv.render_preview(_uni, mode='detail', markings=True)
+ok(pv.document().characterCount() <= pv._RAW_MAX * 2,
+   'render cap bounds the DETAIL-expanded document, not just source characters')
+ok(len(pv._raw) < pv._RAW_MAX // 10,
+   'a unicode paste is cut far below its source length (render, not source, capped)')
 # Double-clicking a neutralized character opens the inspect popup; its Copy button
 # must place the \uXXXX ESCAPE on the clipboard, never the raw glyph -- copying a
 # bidi override or homoglyph as-is is the exact hazard this terminal guards against

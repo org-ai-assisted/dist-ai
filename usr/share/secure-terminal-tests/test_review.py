@@ -98,14 +98,16 @@ ok('CYRILLIC SMALL LETTER A' in _bar._mirror.toPlainText()
 ok(_bar._mirror.isReadOnly(),
    'the mirror pane is read-only (no typing into a review)')
 
-# A multi-MB paste is capped in the mirror render (render_preview) so it cannot hang
-# the pane, but delivery still sends the WHOLE text -- so the summary must warn that
-# the preview is truncated, in this unspoofable label. (canary: old code had no cap
-# and no notice, so this string was absent.)
-_bar.show_review(_term, 'z' * (_bar._mirror._RAW_MAX * 2), 0)
+# The mirror bounds its RENDER (render_preview), not the source length, so it cannot
+# hang the pane; delivery still sends the WHOLE text -- so the summary must warn that
+# the preview is truncated, in this unspoofable label. A unicode paste whose SOURCE
+# is well under the cap still overflows because detail badges expand it ~32x, and the
+# notice must fire on that. (canary: a source-length notice would stay silent here --
+# 200k source chars < the 1M cap -- and a no-cap build had no notice at all.)
+_bar.show_review(_term, chr(0x0430) * (_bar._mirror._RAW_MAX // 5), 0)
 ok('preview truncated' in _bar._summary.text()
    and 'FULL paste' in _bar._summary.text(),
-   'an over-cap paste summary warns the preview is truncated + full paste delivers')
+   'an over-render unicode paste warns the preview is truncated + full paste delivers')
 _bar.show_review(_term, _raw, 0)                 # small paste: no truncation notice
 ok('preview truncated' not in _bar._summary.text(),
    'a small paste carries no truncation notice')
