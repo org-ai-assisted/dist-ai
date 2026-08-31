@@ -201,6 +201,24 @@ def run():
     finally:
         sys.stdout = saved_out
 
+    # 9. CANARY: the in-place-tag checks have teeth. A neutralizer that lets an
+    #    attack class through byte-identical must NOT satisfy the tag assertions --
+    #    a green run then proves the == checks are not tautologies (0 failures !=
+    #    0 coverage). Mirrors the per-class self-test in test_invariants.py.
+    #    Monkeypatch the real module symbol so the canary drives the same path the
+    #    checks above do; restore it after.
+    _saved_tag = unicode_tag.tag_text
+    unicode_tag.tag_text = lambda s: s          # broken: pass everything through untagged
+    try:
+        ok(unicode_tag.tag_text('release\u202egpj')
+           != 'release[U+202E RIGHT-TO-LEFT OVERRIDE]gpj',
+           'CANARY: a pass-through neutralizer fails the bidi-override tag check (teeth)')
+        ok(unicode_tag.tag_text('veri\u200bfied')
+           != 'veri[U+200B ZERO WIDTH SPACE]fied',
+           'CANARY: a pass-through neutralizer fails the zero-width tag check (teeth)')
+    finally:
+        unicode_tag.tag_text = _saved_tag
+
     print('test_unicode_tag: %d pass, %d fail, 0 skip' % (_passed, _failed))
     return 1 if _failed else 0
 

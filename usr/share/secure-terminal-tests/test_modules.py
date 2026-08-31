@@ -522,6 +522,28 @@ ok(_p37fr.feed(struct.pack('<I', 2) + b'xy') == b'xy',
    'Framer: a reused Framer advances to the next frame (buf trimmed, not re-returning frame 1)')
 
 
+# ============================ CANARY: Framer length guard =====================
+# The over-long-frame guard check has teeth: with the cap lifted, an over-long
+# frame must NOT raise -- proof the real assertion depends on _MAX_REQUEST rather
+# than being a tautology (0 failures != 0 coverage), mirroring the per-class
+# self-test in test_invariants.py. Framer.feed reads the module global at feed
+# time, so raising it here disarms exactly the guard the check above exercises;
+# restore it after.
+_saved_max = ipc._MAX_REQUEST
+ipc._MAX_REQUEST = 1 << 40
+try:
+    _fr_can = ipc.Framer()
+    _can_raised = False
+    try:
+        _fr_can.feed(struct.pack('<I', _saved_max + 1) + b'..')
+    except ValueError:
+        _can_raised = True
+    ok(not _can_raised,
+       'CANARY: the over-long-frame guard depends on the real _MAX_REQUEST cap (teeth)')
+finally:
+    ipc._MAX_REQUEST = _saved_max
+
+
 print('secure-terminal-tests(modules): all passed' if not _failures else
       'secure-terminal-tests(modules): %d failed' % _failures)
 sys.exit(1 if _failures else 0)
