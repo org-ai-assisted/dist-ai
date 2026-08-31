@@ -132,6 +132,18 @@ ok(_bar._delivered('stripped').endswith('\n'),
    'a truncated delivery preview keeps a boundary newline (no false submit-strip)')
 _bar._choose('reject')
 
+# classify_paste must be capped too -- it is the one uncapped materialization in
+# show_review, and on a 50-100MB clipboard it froze the Qt thread for tens of seconds
+# BEFORE the Reject button appeared (claude). A hidden char BEYOND the cap is not
+# counted (the truncation notice then discloses the count is partial). (canary: the
+# uncapped classify counted the beyond-cap bidi override, so 'bidirectional' appeared.)
+_capc = _bar._mirror._RAW_MAX
+_bar.show_review(_term, 'a' * _capc + chr(0x202E), 0)    # RTL override past the cap
+ok('bidirectional' not in _bar._summary.text()
+   and 'preview truncated' in _bar._summary.text(),
+   'classify_paste is capped: a beyond-cap hidden char is uncounted; the notice warns')
+_bar._choose('reject')
+
 # --- the mirror follows the tab's display mode LIVE ---------------------------
 # Flipping the tab's mode (the normal shortcut -> set_mode -> rerender_mirror) must
 # re-render the SAME pane, not a preview-only branch. In 'show' mode the homoglyph
