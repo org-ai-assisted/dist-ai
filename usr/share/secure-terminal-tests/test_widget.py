@@ -1485,7 +1485,8 @@ _ipop = SecureTerminal(command='/bin/cat')
 _ipop._show_char_popup(0x0430, _QPoint(10, 10))
 _idlg = _ipop._char_popup
 _isel = _QtIP.TextInteractionFlag.TextSelectableByMouse
-ok(all(_lb.textInteractionFlags() & _isel for _lb in _idlg.findChildren(_QLabelIP)),
+_ilabels = _idlg.findChildren(_QLabelIP)
+ok(_ilabels and all(_lb.textInteractionFlags() & _isel for _lb in _ilabels),
    'every popup label (incl. the note) is selectable, so its text can be copied')
 _icopy = next(b for b in _idlg.findChildren(_QPushButton)
               if b.text().startswith('Copy'))
@@ -4735,8 +4736,7 @@ _lk.close()
 # an unknown / bogus --osc feature is ignored (never crashes, never enables)
 _lb = MainWindow(launch=_pla(['--osc', 'not_a_feature', '--', 'sleep', '30']))
 pump(80)
-ok(not _lb.current().osc_enabled('not_a_feature') if
-   hasattr(_lb.current(), 'osc_enabled') else True,
+ok(not _lb.current().osc_enabled('not_a_feature'),
    'launch: an unknown --osc feature is ignored')
 _lb.close()
 
@@ -7276,6 +7276,11 @@ _oc._osc_color(12, b'rgb:ff/ff/00')         # cursor
 _oc._osc_color(10, b'garbage')              # unparseable -> ignored
 ok('fg' in _oc._osc_palette and 'bg' in _oc._osc_palette,
    'OSC 10/11/12 override the default fg/bg/cursor colours')
+# the CURSOR must take its colour from OSC 12 ('cursor'), not OSC 10 ('fg'): fg is green
+# above, cursor is yellow, so _cursor_color must be yellow (regression: it read 'fg').
+from PyQt6.QtGui import QColor as _QC_cur                       # noqa: E402
+ok(_oc._cursor_color() == _QC_cur('#ffff00'),
+   'OSC 12 re-tints the cursor (not OSC 10 fg) -- _cursor_color reads the cursor slot')
 ## A3: Close _oc instance after one-shot use to prevent pty child leak
 _oc.close()
 
