@@ -1452,6 +1452,16 @@ pv.render_preview('a\x1b[31mb', mode='show', markings=False)
 pv.render_preview('plain', mode='show', markings=False)
 eq(pv._sgr, {'fg': None, 'bg': None, 'bold': False},
    'render_preview resets SGR, so a prior preview\'s formatting does not leak')
+# A pathological multi-MB paste must NOT be rendered whole (would hang the review
+# pane): render_preview caps _raw at _RAW_MAX, kept from the HEAD (line 1 first).
+# Delivery is unaffected -- the mirror is display-only. (canary: old code stored the
+# full text uncapped, so len(pv._raw) would exceed _RAW_MAX.)
+_big = 'A' + ('x' * (pv._RAW_MAX * 2))          # ~2x the cap, distinct head char
+pv.render_preview(_big, mode='detail', markings=True)
+ok(len(pv._raw) <= pv._RAW_MAX,
+   'render_preview caps _raw at _RAW_MAX so a huge paste cannot hang the pane')
+ok(pv._raw.startswith('A'),
+   'render_preview keeps the HEAD (line 1 first), not the tail, when it caps')
 # Double-clicking a neutralized character opens the inspect popup; its Copy button
 # must place the \uXXXX ESCAPE on the clipboard, never the raw glyph -- copying a
 # bidi override or homoglyph as-is is the exact hazard this terminal guards against
