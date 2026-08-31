@@ -119,62 +119,64 @@ CONTEXT_STMT = "stmt"
 CONTEXT_COND = "cond"
 
 
-def _walk_stmts(stmts, context, out):
-    for stmt in stmts or []:
-        _walk_command_stmt(stmt, context, out)
-
-
-def _walk_command_stmt(stmt, context, out):
-    if not isinstance(stmt, dict):
-        return
-    out.append((stmt, context))
-    _walk_command(stmt.get("Cmd"), context, out)
-
-
-def _walk_command(cmd, context, out):
-    if not isinstance(cmd, dict):
-        return
-    kind = cmd.get("Type")
-    if kind in ("Block", "Subshell"):
-        ## A group/subshell INHERITS its enclosing context -- a block that IS a
-        ## loop/if condition keeps its statements in condition context.
-        _walk_stmts(cmd.get("Stmts"), context, out)
-    elif kind == "IfClause":
-        _walk_if(cmd, out)
-    elif kind == "WhileClause":
-        _walk_stmts(cmd.get("Cond"), CONTEXT_COND, out)
-        _walk_stmts(cmd.get("Do"), CONTEXT_STMT, out)
-    elif kind == "ForClause":
-        _walk_stmts(cmd.get("Do"), CONTEXT_STMT, out)
-    elif kind == "CaseClause":
-        for item in cmd.get("Items") or []:
-            _walk_stmts(item.get("Stmts"), CONTEXT_STMT, out)
-    elif kind == "BinaryCmd":
-        ## A pipeline / '&&' / '||': both sides KEEP the enclosing context, so a
-        ## ':' that is only the left side of a CONDITION pipeline stays 'cond'.
-        _walk_command_stmt(cmd.get("X"), context, out)
-        _walk_command_stmt(cmd.get("Y"), context, out)
-    elif kind == "FuncDecl":
-        _walk_command_stmt(cmd.get("Body"), CONTEXT_STMT, out)
-
-
-def _walk_if(cmd, out):
-    _walk_stmts(cmd.get("Cond"), CONTEXT_COND, out)
-    _walk_stmts(cmd.get("Then"), CONTEXT_STMT, out)
-    else_node = cmd.get("Else")
-    if isinstance(else_node, dict):
-        ## 'elif' is a nested IfClause in the Else slot; 'else' is a plain block.
-        _walk_if(else_node, out) if else_node.get("Cond") else \
-            _walk_stmts(else_node.get("Then") or else_node.get("Stmts"),
-                        CONTEXT_STMT, out)
-
-
 def statements(tree):
     """Yield (stmt, context) for every Stmt in TREE, context-aware (a loop/if
     CONDITION vs a body). stmt['Cmd'] is the command node; stmt['Redirs'] its
-    redirections."""
+    redirections. ITERATIVE (explicit work stack), not recursive: a deeply nested
+    command tree -- a ~500-deep '&&'/pipe chain, or nested if/elif -- would else
+    exceed Python's recursion limit and crash the linter on untrusted input.
+    Children are pushed REVERSED so LIFO pops emit them in document order."""
     out = []
-    _walk_stmts(tree.get("Stmts"), CONTEXT_STMT, out)
+    ## Work items: ('stmts', list, ctx) | ('stmt', dict, ctx) | ('cmd', dict, ctx) |
+    ## ('if', IfClause dict, None). shfmt's JSON has no parent pointers, so the
+    ## body-vs-condition context is threaded through each item.
+    stack = [("stmts", tree.get("Stmts"), CONTEXT_STMT)]
+    while stack:
+        kind, node, context = stack.pop()
+        if kind == "stmts":
+            for stmt in reversed(node or []):
+                stack.append(("stmt", stmt, context))
+        elif kind == "stmt":
+            if isinstance(node, dict):
+                out.append((node, context))
+                stack.append(("cmd", node.get("Cmd"), context))
+        elif kind == "if":
+            ## 'elif' is a nested IfClause in the Else slot; 'else' is a plain block.
+            ## Cond is condition context, Then/Else are body. Pushed in reverse of
+            ## emit order (Cond, Then, Else).
+            else_node = node.get("Else")
+            if isinstance(else_node, dict):
+                if else_node.get("Cond"):
+                    stack.append(("if", else_node, None))
+                else:
+                    stack.append(("stmts",
+                                  else_node.get("Then") or else_node.get("Stmts"),
+                                  CONTEXT_STMT))
+            stack.append(("stmts", node.get("Then"), CONTEXT_STMT))
+            stack.append(("stmts", node.get("Cond"), CONTEXT_COND))
+        elif kind == "cmd" and isinstance(node, dict):
+            ctype = node.get("Type")
+            if ctype in ("Block", "Subshell"):
+                ## A group/subshell INHERITS its enclosing context -- a block that
+                ## IS a loop/if condition keeps its statements in condition context.
+                stack.append(("stmts", node.get("Stmts"), context))
+            elif ctype == "IfClause":
+                stack.append(("if", node, None))
+            elif ctype == "WhileClause":
+                stack.append(("stmts", node.get("Do"), CONTEXT_STMT))
+                stack.append(("stmts", node.get("Cond"), CONTEXT_COND))
+            elif ctype == "ForClause":
+                stack.append(("stmts", node.get("Do"), CONTEXT_STMT))
+            elif ctype == "CaseClause":
+                for item in reversed(node.get("Items") or []):
+                    stack.append(("stmts", item.get("Stmts"), CONTEXT_STMT))
+            elif ctype == "BinaryCmd":
+                ## A pipeline / '&&' / '||': both sides KEEP the enclosing context,
+                ## so a ':' that is only the left of a CONDITION pipeline stays 'cond'.
+                stack.append(("stmt", node.get("Y"), context))
+                stack.append(("stmt", node.get("X"), context))
+            elif ctype == "FuncDecl":
+                stack.append(("stmt", node.get("Body"), CONTEXT_STMT))
     return out
 
 

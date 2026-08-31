@@ -210,6 +210,15 @@ def _fix_contexts(contexts, prog, check=False):
             print("%s: shfmt is required but unavailable: %s" % (prog, exc),
                   file=sys.stderr)
             return 2
+        except Exception:  # noqa: BLE001 -- one file must not crash the fixer
+            ## A rule crashing on a crafted file (a deep-recursion RecursionError
+            ## on an ~800-stage pipe/&&/elif chain, etc.) must FAIL that file
+            ## loudly and leave it unmodified, never abort the whole --fix batch
+            ## with a bare traceback. Mirrors _detect_contexts' containment.
+            traceback.print_exc()
+            print("%s: a rule crashed fixing %s (see traceback); left unmodified"
+                  % (prog, ctx.path), file=sys.stderr)
+            continue
         if changes:
             _fix_summary(prog, ctx.path, changes, check=check)
     return None
