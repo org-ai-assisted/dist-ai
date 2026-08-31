@@ -309,6 +309,24 @@ ok(not _bar.isVisibleTo(_win), 'hide_review hides the bar')
 ok(not _bar._countdown.isActive(), 'the countdown timer is stopped on hide')
 ok(_bar.reviewed_term() is None, 'hide_review clears the reviewed tab')
 
+# --- CANARY: the hidden-character summary has teeth ---------------------------
+# A classifier that finds nothing must make "the bar summarises what the paste
+# hides" FALSE -- proof the summary checks are not tautologies (0 failures !=
+# 0 coverage), mirroring the per-class self-test in test_invariants.py. review.py
+# resolves classify_paste at show_review time, so monkeypatching the module symbol
+# drives the same path the checks above do; restore it after.
+import secure_terminal.review as _review_mod                                   # noqa: E402
+_saved_classify = _review_mod.classify_paste
+_review_mod.classify_paste = lambda raw: []      # broken: detects no hidden classes
+try:
+    _cwin = QWidget()
+    _cbar = ReviewBar(_cwin)
+    _cbar.show_review(_FakeTerm(), _raw, 0)
+    ok('bidirectional control' not in _cbar._summary.text(),
+       'CANARY: the hidden-character summary depends on classify_paste (has teeth)')
+finally:
+    _review_mod.classify_paste = _saved_classify
+
 APP.processEvents()
 print('secure-terminal-tests(review): all passed' if not _failures else
       'secure-terminal-tests(review): %d failed' % _failures)
