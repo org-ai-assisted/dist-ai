@@ -20,6 +20,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 if [ "$#" -lt 2 ]; then
    printf '%s\n' 'run-lane-in-sandbox.sh: need SANDBOX_BASE and LANE' >&2
@@ -37,6 +38,13 @@ export CORPUS_REPO="${HOME}/${sandbox_base}/terminal-poc-corpus"
 shots_out="${HOME}/${sandbox_base}/dist-ai/usr/share/secure-terminal-shots/shots"
 safe-rm --recursive --force -- "${shots_out}"
 mkdir --parents -- "${shots_out}"
+
+## The compat lane's wrapper default output dir is the site's compatibility/shots/, which does
+## not exist in the sandbox; point it at the same shots_out the driver pulls from, so compat
+## reuses the comparison lane's capture-then-pull path (and its stale-clear above).
+if [ "${1:-}" = 'compat' ]; then
+   set -- "$@" "${shots_out}"
+fi
 
 ## stdbuf -oL: line-buffer the lane so its per-terminal "captured X" progress reaches the
 ## caller (and the durable-bg progress file) as it happens, not flushed at the end -- a silent
