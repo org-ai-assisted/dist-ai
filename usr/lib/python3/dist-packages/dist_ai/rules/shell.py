@@ -751,8 +751,14 @@ def _is_skip_code_77(word):
     (-179 mod 256) ALL exit 77 -- a literal '== 77' misses every one and lets an
     unwaived skip slip. Normalize mod 256 (Python's floored '%' is non-negative, so
     a negative code lands right); a non-literal (expansion, or a quoted non-number)
-    is not a recognizable skip."""
-    if word is None or _DECIMAL_INT.fullmatch(word) is None:
+    is not a recognizable skip. Bash parses the code with strtol -- LEADING
+    whitespace is skipped and TRAILING whitespace tolerated -- so 'exit "  77  "'
+    really exits 77; strip before matching or a whitespace-padded quoted code is a
+    silent skip. Whitespace BETWEEN digits ('7 7') stays illegal (bash rejects it)."""
+    if word is None:
+        return False
+    word = word.strip()
+    if _DECIMAL_INT.fullmatch(word) is None:
         return False
     return int(word, 10) % 256 == 77
 
@@ -776,7 +782,11 @@ def _skip_exit_code_word(call, source):
       - a '--' end-of-options before the code ('exit -- 77');
       - a purely-CONSTANT arithmetic code ('exit $((70+7))' runs 77).
     None (not exit/return, or the code word is missing/dynamically expanded) is the
-    safe direction -- the caller declines rather than guesses."""
+    safe direction -- the caller declines rather than guesses. KNOWN SCOPE GAP: an
+    ANSI-C code ('exit $'\\067\\067'' runs 77) reads through word_string undecoded
+    (its documented non-decoding of $'...'), so it is NOT recognized -- an
+    adversarial spelling no session writes by accident (guards target the accident,
+    not the adversary), out of scope like the sibling word_string note."""
     words = bash_ast.args(call)
     if not words:
         return None
@@ -1201,11 +1211,6 @@ class Sc1091Disable(Rule):
                     "at '%s:%d': %s" % (ctx.path, line, directive), line)
 
 
-## shfmt case-terminator operator constant for ';;' (DblSemicolon). ';&' and
-## ';;&' fall-through terminators are different ops and are not this rule.
-_CASE_DBLSEMI = 30
-
-
 class DoubleSemi(Rule):
     """R-070: a case-arm ';;' terminator ENDING a line must be on its own line,
     not glued to the arm's last command ('foo ;;' / 'foo;;' as the whole line).
@@ -1237,8 +1242,9 @@ class DoubleSemi(Rule):
 
     def _glued_items(self, ctx, data):
         for clause in bash_ast.nodes_of_type(ctx.tree, "CaseClause"):
+            dblsemi_ops = bash_ast.case_dblsemi_ops()
             for item in clause.get("Items", []):
-                if item.get("Op") != _CASE_DBLSEMI:
+                if item.get("Op") not in dblsemi_ops:
                     continue
                 pos = item.get("OpPos") or {}
                 op_line = pos.get("Line")

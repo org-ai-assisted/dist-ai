@@ -304,6 +304,11 @@ assert_at "R-220 rejects a reasonless 'allow-skip'" "R-220" 2
 ## R-220: 'exit "77"' is the same skip as 'exit 77'.
 run_det "$(printf '%s\n' '#!/bin/bash' 'foo || exit "77"')"
 assert_at "R-220 flags a quoted 'exit \"77\"'" "R-220" 2
+## Bash parses the code with strtol -- leading whitespace skipped, trailing
+## tolerated -- so 'exit "  77  "' really exits 77 (verified), the SAME skip. A
+## fullmatch on the unstripped quoted word missed the padded form (a silent pass).
+run_det "$(printf '%s\n' '#!/bin/bash' 'foo || exit "  77  "')"
+assert_at "R-220 flags a whitespace-padded 'exit \"  77  \"'" "R-220" 2
 ## R-220: bash parses the arg as DECIMAL, so 'exit 077' runs as 77 (not octal 63)
 ## -- the SAME unwaived skip, must be flagged. A leading-zero '== 77' string check
 ## missed it.

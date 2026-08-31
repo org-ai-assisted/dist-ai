@@ -280,6 +280,12 @@ expect_rule "R-070" "case x in a) true${dsemi} esac"                           "
 ## Regression (dev339): the compact match-or-default guard the style guide shows
 ## must NOT be flagged -- 'esac' closes the case on the same line.
 expect_rule "R-070" "case ${dq}\${p}${dq} in '' | *[!0-9]* | 0* ) p=15 ${dsemi} esac" "absent"
+## R-070 targets ';;' ONLY: the ';&' (fallthrough) and ';;&' (continue-testing)
+## terminators are DIFFERENT shfmt Op codes, so an EOL-glued ';&'/';;&' is SPARED.
+## Guards the self-calibrated case_dblsemi_ops() derivation against a future edit
+## that over-broadly swept a fall-through op into the ';;' set.
+expect_rule "R-070" "case x in${nlreal}a) true${sc}&${nlreal}b) true${nlreal}${dsemi}${nlreal}esac"  "absent"
+expect_rule "R-070" "case x in${nlreal}a) true${dsemi}&${nlreal}b) true${nlreal}${dsemi}${nlreal}esac" "absent"
 
 ## Universal per-rule id override: '## style-ok: <R-id>' suppresses THAT rule for
 ## the file, wired once in Rule.applies() so it reaches even a rule (R-070 here)

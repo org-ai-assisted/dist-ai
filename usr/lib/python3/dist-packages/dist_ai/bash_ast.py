@@ -208,6 +208,25 @@ def or_op():
     return _OR_OPS
 
 
+_CASE_DBLSEMI_OPS = None
+
+
+def case_dblsemi_ops():
+    """The CaseItem Op code(s) for a ';;' arm terminator -- DERIVED by parsing
+    rather than hardcoded (shfmt numbers Op and may renumber between versions),
+    like pipe_ops. Parsing a plain ';;' arm excludes the ';&' (fallthrough) and
+    ';;&' (continue-testing) terminators, which are DIFFERENT ops. Cached."""
+    global _CASE_DBLSEMI_OPS
+    if _CASE_DBLSEMI_OPS is None:
+        codes = set()
+        for clause in nodes_of_type(parse("case x in\na) : ;;\nesac"),
+                                    "CaseClause"):
+            for item in clause.get("Items", []):
+                codes.add(item.get("Op"))
+        _CASE_DBLSEMI_OPS = codes
+    return _CASE_DBLSEMI_OPS
+
+
 def func_decls(tree):
     """Yield every FuncDecl (a shell function definition)."""
     yield from nodes_of_type(tree, "FuncDecl")
