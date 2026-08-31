@@ -208,6 +208,25 @@ def or_op():
     return _OR_OPS
 
 
+_CASE_DBLSEMI_OPS = None
+
+
+def case_dblsemi_ops():
+    """The CaseItem Op code(s) for a ';;' arm terminator -- DERIVED by parsing
+    rather than hardcoded (shfmt numbers Op and may renumber between versions),
+    like pipe_ops. Parsing a plain ';;' arm excludes the ';&' (fallthrough) and
+    ';;&' (continue-testing) terminators, which are DIFFERENT ops. Cached."""
+    global _CASE_DBLSEMI_OPS
+    if _CASE_DBLSEMI_OPS is None:
+        codes = set()
+        for clause in nodes_of_type(parse("case x in\na) : ;;\nesac"),
+                                    "CaseClause"):
+            for item in clause.get("Items", []):
+                codes.add(item.get("Op"))
+        _CASE_DBLSEMI_OPS = codes
+    return _CASE_DBLSEMI_OPS
+
+
 def func_decls(tree):
     """Yield every FuncDecl (a shell function definition)."""
     yield from nodes_of_type(tree, "FuncDecl")
@@ -370,6 +389,23 @@ def command_name(call):
     return word_string(word) if word is not None else None
 
 
+def resolve_long(name, names):
+    """Resolve a '--' long-option NAME (leading '--' and any '=value' already
+    stripped) to the single option in NAMES it denotes under GNU getopt_long's
+    unambiguous-prefix rule: an exact member, else the sole member NAME is a
+    prefix of. None when it matches zero members or is an AMBIGUOUS prefix of two
+    or more -- getopt rejects such an abbreviation, so it denotes no one option.
+
+    NAMES is the caller's KNOWN option set. HONEST SCOPE: a caller passes only
+    the options it distinguishes, so an abbreviation made ambiguous by an option
+    OUTSIDE NAMES cannot be seen here -- but that is a malformed command getopt
+    itself rejects, so it is out of scope."""
+    if name in names:
+        return name
+    matches = [candidate for candidate in names if candidate.startswith(name)]
+    return matches[0] if len(matches) == 1 else None
+
+
 def command_tokens(call, source, value_short=frozenset(), value_long=frozenset()):
     """Classify a command's arguments (Args[1:]) for option parsing, yielding
     (kind, word, text):
@@ -387,7 +423,13 @@ def command_tokens(call, source, value_short=frozenset(), value_long=frozenset()
     value_short: single letters that, as the LAST char of a short cluster, take a
     separate next-word value ('-e' -> the next word). value_long: long option
     NAMES (no leading '--', no '=') that take a separate value in space form
-    ('--signal' -> the next word)."""
+    ('--signal' -> the next word). A long option is matched by getopt_long's
+    unambiguous-prefix rule, so '--sig' consumes a value just as '--signal' does
+    (see resolve_long). HONEST SCOPE: value_long is the value-taking SUBSET of a
+    command's options, so an abbreviation made AMBIGUOUS by a NON-value long
+    option (outside value_long) cannot be detected here -- but that is a
+    malformed command getopt itself rejects, so it is out of scope (same limit as
+    the word_string ANSI-C note)."""
     expect_value = False
     operand_region = False
     for word in args(call)[1:]:
@@ -411,7 +453,8 @@ def command_tokens(call, source, value_short=frozenset(), value_long=frozenset()
         if text.startswith("-") and text != "-":
             yield ("opt", word, text)
             if text.startswith("--"):
-                if "=" not in text and text[2:] in value_long:
+                if "=" not in text and resolve_long(text[2:], value_long) \
+                        is not None:
                     expect_value = True
             else:
                 ## A value-taker letter consumes the REST of the cluster as its

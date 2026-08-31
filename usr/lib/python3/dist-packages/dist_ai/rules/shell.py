@@ -25,6 +25,17 @@ def _note(ctx, rule, message, line):
     return model.note(rule, message, ctx.path, line)
 
 
+def _long_name(text):
+    """The long-option NAME of a '--foo' / '--foo=bar' token (no leading '--',
+    no '=value'), or None when TEXT is not a '--' long option (a short flag, an
+    operand, or the bare '--' end-of-options marker). Feed the result to
+    bash_ast.resolve_long so a rule matches an abbreviated long option
+    ('--kill-af' for '--kill-after') exactly as getopt_long does."""
+    if not text.startswith("--") or text == "--":
+        return None
+    return text[2:].split("=", 1)[0]
+
+
 ## --- command-position rules -----------------------------------------------
 
 
@@ -202,12 +213,9 @@ GREP_LONG = {
     "R": "--dereference-recursive", "a": "--text", "z": "--null-data",
     "Z": "--null", "b": "--byte-offset",
 }
-GREP_ARG_TAKING_LONG = {
-    "--regexp", "--file", "--max-count", "--after-context",
-    "--before-context", "--context", "--color", "--colour", "--binary-files",
-    "--devices", "--directories", "--label", "--group-separator", "--exclude",
-    "--exclude-dir", "--exclude-from", "--include",
-}
+## The quiet synonyms, matched by getopt_long prefix ('--q' -> '--quiet') so an
+## abbreviated quiet flag is still recognized.
+GREP_QUIET = frozenset({"quiet", "silent"})
 
 
 def _grep_quiet(call, source):
@@ -219,8 +227,10 @@ def _grep_quiet(call, source):
             call, source, GREP_VALUE_SHORT, GREP_VALUE_LONG):
         if kind != "opt":
             continue
-        if text in ("--quiet", "--silent"):
-            is_quiet = True
+        name = _long_name(text)
+        if name is not None:
+            if bash_ast.resolve_long(name, GREP_QUIET) is not None:
+                is_quiet = True
         elif text.startswith("-") and not text.startswith("--"):
             cluster = text[1:]
             flags = cluster
@@ -254,9 +264,10 @@ def _grep_has_arg_taker(options):
     """True if any grep option expects a separate value -- then a following
     '-q'-shaped token is ambiguous and the whole grep is left for the gate."""
     for _word, lit in options:
-        if lit.startswith("--"):
-            name = lit.split("=", 1)[0]
-            if "=" not in lit and name in GREP_ARG_TAKING_LONG:
+        name = _long_name(lit)
+        if name is not None:
+            if "=" not in lit \
+                    and bash_ast.resolve_long(name, GREP_VALUE_LONG) is not None:
                 return True
         elif lit.startswith("-"):
             if set(lit[1:]) & GREP_VALUE_SHORT:
@@ -323,6 +334,12 @@ class GrepQuiet(Rule):
 ## Temp-dir parameter names whose mkdir operand makes R-172 apply.
 TMP_PARAMS = {"TMPDIR", "TEMPDIR", "TEMP", "TMP"}
 
+## coreutils 'mkdir' long options -- the KNOWN set resolve_long disambiguates a
+## prefix against, so '--mod' resolves to '--mode' and '--p' to '--parents' as
+## getopt_long does.
+MKDIR_LONG = frozenset({
+    "mode", "parents", "verbose", "context", "help", "version"})
+
 ## A jammed short '-m' mode, possibly BUNDLED behind other short flags
 ## ('-pm700' = -p -m 700). GNU mkdir gives the FIRST 'm' in the cluster the rest as
 ## its argument, so the prefix EXCLUDES a lowercase 'm': else a greedy match on
@@ -363,8 +380,10 @@ class MkdirTmpMode(Rule):
                     call, ctx.source, frozenset("m"), frozenset({"mode"})):
                 if kind != "opt":
                     continue
-                if text == "--mode" or text.startswith("--mode="):
-                    has_long = True
+                name = _long_name(text)
+                if name is not None:
+                    if bash_ast.resolve_long(name, MKDIR_LONG) == "mode":
+                        has_long = True
                 elif text.startswith("-") and not text.startswith("--") \
                         and "m" in text[1:]:
                     has_short_m = True
@@ -397,8 +416,16 @@ class MkdirTmpMode(Rule):
             for index, (kind, word, lit) in enumerate(tokens):
                 if kind != "opt":
                     continue
-                if lit == "--mode" or lit.startswith("--mode="):
-                    has_mode = True
+                name = _long_name(lit)
+                if name is not None:
+                    resolved = bash_ast.resolve_long(name, MKDIR_LONG)
+                    if resolved == "mode":
+                        has_mode = True
+                    elif resolved == "parents" and "=" not in lit:
+                        ## '--parents' takes NO argument; GNU rejects
+                        ## '--parents=x', so an attached '=value' is not a valid
+                        ## parents flag.
+                        has_parents = True
                     continue
                 if not lit.startswith("--"):
                     cluster = lit[1:]
@@ -432,8 +459,6 @@ class MkdirTmpMode(Rule):
                             yield Edit(start, end, "--mode=" + mode_lit,
                                        "R-172")
                             has_mode = True
-                elif lit == "--parents":
-                    has_parents = True
             if has_parents and has_mode:
                 edit = self._sc2174_edit(data, call, disabled_lines)
                 if edit is not None:
@@ -474,6 +499,30 @@ ZERO_DURATION = re.compile(r'^(?:0+(?:\.0*)?|\.0+)[smhd]?$')
 TIMEOUT_DURATION = re.compile(
     r'^(?:[0-9]*[1-9][0-9]*(?:\.[0-9]*)?|[0-9]*\.[0-9]*[1-9][0-9]*)[smhd]?$')
 TIMEOUT_WAIVER = "allow-bare-timeout"
+## coreutils 'timeout' long options -- the KNOWN set resolve_long disambiguates a
+## prefix against, so '--kill-af' resolves to '--kill-after' and '--sig' to
+## '--signal' as getopt_long does, while an ambiguous '--v' (verbose/version)
+## resolves to neither.
+TIMEOUT_LONG = frozenset({
+    "preserve-status", "foreground", "kill-after", "signal", "verbose",
+    "help", "version"})
+## timeout's value-taking SHORT options: -k (kill-after) and -s (signal). Shared
+## by the command_tokens call (skip their value) and the -k cluster scan.
+TIMEOUT_VALUE_SHORT = frozenset("ks")
+
+
+def _timeout_cluster_has_kill(cluster):
+    """True if a short-option CLUSTER (no leading '-') activates timeout's -k. A
+    value-taking short option consumes the REST of the cluster as its value, so
+    scan left-to-right: a 'k' reached before any other value-taker IS -k (valid
+    GNU bundling '-vk'/'-vk5'); an 's' first makes a following 'k' the SIGNAL's
+    value ('-sk'), not -k."""
+    for letter in cluster:
+        if letter == "k":
+            return True
+        if letter in TIMEOUT_VALUE_SHORT:
+            return False
+    return False
 
 
 class TimeoutKillAfter(Rule):
@@ -505,18 +554,23 @@ class TimeoutKillAfter(Rule):
             informational = False
             duration = None
             for kind, word, text in bash_ast.command_tokens(
-                    call, ctx.source, frozenset("ks"),
+                    call, ctx.source, TIMEOUT_VALUE_SHORT,
                     frozenset({"kill-after", "signal"})):
                 if kind == "value":
                     continue
                 if kind == "operand":
                     duration = bash_ast.word_lit(word)
                     break
-                if text == "--kill-after" or text.startswith("--kill-after=") \
-                        or (text.startswith("-k") and not text.startswith("--")):
+                long_name = _long_name(text)
+                if long_name is not None:
+                    resolved = bash_ast.resolve_long(long_name, TIMEOUT_LONG)
+                    if resolved == "kill-after":
+                        has_kill = True
+                    elif resolved in ("help", "version"):
+                        informational = True
+                elif text.startswith("-") and _timeout_cluster_has_kill(
+                        text[1:]):
                     has_kill = True
-                if text in ("--help", "--version", "--usage"):
-                    informational = True
             if has_kill or informational:
                 continue
             if duration is not None and ZERO_DURATION.match(duration):
@@ -718,8 +772,14 @@ def _is_skip_code_77(word):
     (-179 mod 256) ALL exit 77 -- a literal '== 77' misses every one and lets an
     unwaived skip slip. Normalize mod 256 (Python's floored '%' is non-negative, so
     a negative code lands right); a non-literal (expansion, or a quoted non-number)
-    is not a recognizable skip."""
-    if word is None or _DECIMAL_INT.fullmatch(word) is None:
+    is not a recognizable skip. Bash parses the code with strtol -- LEADING
+    whitespace is skipped and TRAILING whitespace tolerated -- so 'exit "  77  "'
+    really exits 77; strip before matching or a whitespace-padded quoted code is a
+    silent skip. Whitespace BETWEEN digits ('7 7') stays illegal (bash rejects it)."""
+    if word is None:
+        return False
+    word = word.strip()
+    if _DECIMAL_INT.fullmatch(word) is None:
         return False
     return int(word, 10) % 256 == 77
 
@@ -743,7 +803,11 @@ def _skip_exit_code_word(call, source):
       - a '--' end-of-options before the code ('exit -- 77');
       - a purely-CONSTANT arithmetic code ('exit $((70+7))' runs 77).
     None (not exit/return, or the code word is missing/dynamically expanded) is the
-    safe direction -- the caller declines rather than guesses."""
+    safe direction -- the caller declines rather than guesses. KNOWN SCOPE GAP: an
+    ANSI-C code ('exit $'\\067\\067'' runs 77) reads through word_string undecoded
+    (its documented non-decoding of $'...'), so it is NOT recognized -- an
+    adversarial spelling no session writes by accident (guards target the accident,
+    not the adversary), out of scope like the sibling word_string note."""
     words = bash_ast.args(call)
     if not words:
         return None
@@ -1168,11 +1232,6 @@ class Sc1091Disable(Rule):
                     "at '%s:%d': %s" % (ctx.path, line, directive), line)
 
 
-## shfmt case-terminator operator constant for ';;' (DblSemicolon). ';&' and
-## ';;&' fall-through terminators are different ops and are not this rule.
-_CASE_DBLSEMI = 30
-
-
 class DoubleSemi(Rule):
     """R-070: a case-arm ';;' terminator ENDING a line must be on its own line,
     not glued to the arm's last command ('foo ;;' / 'foo;;' as the whole line).
@@ -1204,8 +1263,9 @@ class DoubleSemi(Rule):
 
     def _glued_items(self, ctx, data):
         for clause in bash_ast.nodes_of_type(ctx.tree, "CaseClause"):
+            dblsemi_ops = bash_ast.case_dblsemi_ops()
             for item in clause.get("Items", []):
-                if item.get("Op") != _CASE_DBLSEMI:
+                if item.get("Op") not in dblsemi_ops:
                     continue
                 pos = item.get("OpPos") or {}
                 op_line = pos.get("Line")

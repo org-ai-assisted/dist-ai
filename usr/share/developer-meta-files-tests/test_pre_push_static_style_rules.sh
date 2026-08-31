@@ -280,6 +280,12 @@ expect_rule "R-070" "case x in a) true${dsemi} esac"                           "
 ## Regression (dev339): the compact match-or-default guard the style guide shows
 ## must NOT be flagged -- 'esac' closes the case on the same line.
 expect_rule "R-070" "case ${dq}\${p}${dq} in '' | *[!0-9]* | 0* ) p=15 ${dsemi} esac" "absent"
+## R-070 targets ';;' ONLY: the ';&' (fallthrough) and ';;&' (continue-testing)
+## terminators are DIFFERENT shfmt Op codes, so an EOL-glued ';&'/';;&' is SPARED.
+## Guards the self-calibrated case_dblsemi_ops() derivation against a future edit
+## that over-broadly swept a fall-through op into the ';;' set.
+expect_rule "R-070" "case x in${nlreal}a) true${sc}&${nlreal}b) true${nlreal}${dsemi}${nlreal}esac"  "absent"
+expect_rule "R-070" "case x in${nlreal}a) true${dsemi}&${nlreal}b) true${nlreal}${dsemi}${nlreal}esac" "absent"
 
 ## Universal per-rule id override: '## style-ok: <R-id>' suppresses THAT rule for
 ## the file, wired once in Rule.applies() so it reaches even a rule (R-070 here)
@@ -699,6 +705,13 @@ expect_rule "R-172" "${mkd}${sp}-pm700${sp}--${sp}${dq}${tv}${dq}"              
 expect_rule "R-172" "${mkd}${sp}--parents${sp}--mode=700${sp}--${sp}${dq}${tv}${dq}"                   "absent"
 expect_rule "R-172" "${mkd}${sp}--mode${sp}700${sp}--${sp}${dq}${tv}${dq}"                             "absent"
 expect_rule "R-172" "${mkd}${sp}--mode=700${sp}--${sp}${dq}${tvbrace}${dq}"                            "absent"
+## An UNAMBIGUOUS getopt_long abbreviation of '--mode' is atomic too, so it is
+## SPARED just like the full spelling -- '--mod=700' and the space form
+## '--mod 700' (whose '700' the scan must skip as the option's value, not read as
+## an operand). CANARY: the pre-abbrev exact-match code missed '--mod', flagging
+## a compliant mkdir (a false positive).
+expect_rule "R-172" "${mkd}${sp}--parents${sp}--mod=700${sp}--${sp}${dq}${tv}${dq}"                    "absent"
+expect_rule "R-172" "${mkd}${sp}--mod${sp}700${sp}--${sp}${dq}${tv}${dq}"                              "absent"
 ## A mkdir NOT creating a temp dir is none of R-172's business, and a name that
 ## merely STARTS with a temp prefix ('$TMPFILE') is not the temp DIR family.
 expect_rule "R-172" "${mkd}${sp}--parents${sp}--${sp}${dq}${dollar}dir${dq}"                           "absent"
