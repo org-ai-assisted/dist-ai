@@ -21,7 +21,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 try:
     from PyQt6.QtWidgets import QApplication, QWidget
     from PyQt6.QtGui import QKeyEvent
-    from PyQt6.QtCore import Qt, QEvent
+    from PyQt6.QtCore import Qt
     from secure_terminal.review import ReviewBar
 except Exception as exc:  # fail closed: a required dependency must not silently skip
     sys.stderr.write('secure-terminal-tests: FAIL missing dependency: %s\n' % exc)
@@ -95,11 +95,14 @@ ok(_bar._mirror._pid is None and _bar._mirror._fd is None,
    'the mirror pane is render-only (no child process spawned)')
 ok(_bar._mirror.isVisibleTo(_bar),
    'the mirror pane is shown with the bar (no Detail toggle to expand)')
-# the tab is in 'detail' mode, so the mirror names each hidden character inline,
-# via the real pipeline -- proving the pane renders in the TAB's mode
-ok('CYRILLIC SMALL LETTER A' in _bar._mirror.toPlainText()
-   and 'RIGHT-TO-LEFT OVERRIDE' in _bar._mirror.toPlainText(),
-   'the mirror names the hidden characters inline (the tab\'s detail mode)')
+# the tab is in 'detail' mode; picking "Keep unicode" renders the delivered form with
+# each hidden character named inline, via the real pipeline -- proving the pane renders in
+# the TAB's mode. (Before a mode is picked the pane shows only the hint; covered below.)
+_bar._radio_keep.click()
+_kept = _bar._mirror.toPlainText()
+ok('CYRILLIC SMALL LETTER A' in _kept and 'RIGHT-TO-LEFT OVERRIDE' not in _kept,
+   'the picked mode renders the DELIVERED form in the tab detail mode: the kept homoglyph '
+   'is named, the bidi override is neutralized out (not the raw text)')
 ok(_bar._mirror.isReadOnly(),
    'the mirror pane is read-only (no typing into a review)')
 
@@ -156,8 +159,9 @@ _bar._choose('reject')
 # is displayed as-is, so its inline <U+XXXX NAME> (a detail-mode artefact) is gone.
 _term_m = _FakeTerm()
 _bar.show_review(_term_m, _raw, 0)
+_bar._radio_keep.click()            # pick a mode so the mirror shows the delivered form
 ok('CYRILLIC SMALL LETTER A' in _bar._mirror.toPlainText(),
-   'the mirror starts in the tab\'s detail mode (names the homoglyph)')
+   'a picked mode renders in the tab\'s detail mode (names the homoglyph)')
 _term_m._mode = 'show'
 _bar.rerender_mirror()
 ok('CYRILLIC SMALL LETTER A' not in _bar._mirror.toPlainText(),
@@ -176,95 +180,69 @@ eq(_bar._mirror.toPlainText(), _before,
 _term_d = _FakeTerm()
 _rawd = 'r' + chr(0x0430) + 'm /etc\n'      # Cyrillic a: reads as 'ram', strips to 'rm'
 _bar.show_review(_term_d, _rawd, 0)
-ok('CYRILLIC SMALL LETTER A' in _bar._mirror.toPlainText(),
-   'the mirror starts on the RAW held text (the homoglyph is named in detail mode)')
-# hover the ASCII delivery button -> its DELIVERED, de-obfuscated form
-_bar.eventFilter(_bar._stripped, QEvent(QEvent.Type.Enter))
+# before a MODE is picked the mirror shows only the hint, not the raw or a delivered form
+_hint = _bar._mirror.toPlainText().lower()
+ok('CYRILLIC SMALL LETTER A' not in _bar._mirror.toPlainText() and 'preview' in _hint,
+   'before a mode is picked the mirror shows the hint, not the raw text')
+ok(not _bar._deliver.isEnabled(),
+   'the deliver button is disabled until a delivery mode is picked')
+# pick "Strip to ASCII" -> the mirror shows the DELIVERED, de-obfuscated form (ram -> rm)
+_bar._radio_strip.click()
 _dtext = _bar._mirror.toPlainText()
 ok('rm /etc' in _dtext and 'CYRILLIC SMALL LETTER A' not in _dtext,
-   'hovering Paste (ASCII) shows the DELIVERED, de-obfuscated form (ram -> rm)')
-# re-entering the SAME button is a no-op (already previewing it)
-_bar.eventFilter(_bar._stripped, QEvent(QEvent.Type.Enter))
-ok('rm /etc' in _bar._mirror.toPlainText(),
-   're-entering the same delivery button is a no-op (preview unchanged)')
-# un-hover with nothing else focused/hovered -> back to the raw held text
-_bar.eventFilter(_bar._stripped, QEvent(QEvent.Type.Leave))
+   'picking Strip to ASCII shows the DELIVERED, de-obfuscated form (ram -> rm)')
+ok(_bar._deliver.isEnabled() and 'ASCII' in _bar._deliver.text(),
+   'picking a mode arms the deliver button and its label names the mode')
+# switch to "Keep unicode" -> the homoglyph is kept (named in detail mode)
+_bar._radio_keep.click()
 ok('CYRILLIC SMALL LETTER A' in _bar._mirror.toPlainText(),
-   'un-hovering the delivery button returns the mirror to the raw held text')
-# hovering Paste (unicode) keeps the homoglyph (named), unlike Paste (ASCII)
-_bar.eventFilter(_bar._unicode, QEvent(QEvent.Type.Enter))
-ok('CYRILLIC SMALL LETTER A' in _bar._mirror.toPlainText(),
-   'hovering Paste (unicode) keeps the homoglyph (named), unlike Paste (ASCII)')
-_bar.eventFilter(_bar._unicode, QEvent(QEvent.Type.Leave))
+   'switching to Keep unicode keeps the homoglyph (named), unlike Strip to ASCII')
+ok('unicode' in _bar._deliver.text(), 'the deliver label follows the switched mode')
 _bar._choose('reject')
 
-# --- REGRESSION (agy): the mirror is derived FOCUS-FIRST ----------------------
-# Keyboard Enter/Space commits the FOCUSED delivery button, so the mirror must show
-# THAT button's outcome even while the mouse hovers the sibling -- else the mirror
-# would show the hovered (stripped) form while Enter dispatches the focused (unicode)
-# payload, an unseen dispatch. The old code set the preview to whatever was hovered.
-_term_g = _FakeTerm()
-_bar.show_review(_term_g, _rawd, 0)
-_bar.eventFilter(_bar._unicode, QEvent(QEvent.Type.FocusIn))    # Tab to Paste (unicode)
-_bar.eventFilter(_bar._stripped, QEvent(QEvent.Type.Enter))     # mouse hovers Paste (ASCII)
-ok('CYRILLIC SMALL LETTER A' in _bar._mirror.toPlainText(),
-   'focus-first: hovering the sibling keeps the mirror on the FOCUSED (unicode) '
-   'outcome, not the hovered (stripped) one Enter would not send')
-# un-hovering the sibling still shows the focused button, never stale
-_bar.eventFilter(_bar._stripped, QEvent(QEvent.Type.Leave))
-ok('CYRILLIC SMALL LETTER A' in _bar._mirror.toPlainText(),
-   'un-hovering the sibling reverts to the focused button, not a stale preview')
-# focus-out with nothing hovered -> raw
-_bar.eventFilter(_bar._unicode, QEvent(QEvent.Type.FocusOut))
-ok('CYRILLIC SMALL LETTER A' in _bar._mirror.toPlainText(),
-   'focusing out with nothing hovered returns the mirror to the raw text')
-_bar._choose('reject')
-
-# --- with no delay both send buttons are enabled immediately ------------------
+# --- with no delay the deliver button arms as soon as a mode is picked ------------
 _bar.show_review(_FakeTerm(), _raw, 0)
-ok(_bar._stripped.isEnabled() and _bar._unicode.isEnabled() and _bar._reject.isEnabled(),
-   'with no delay all three buttons are enabled')
+ok(not _bar._deliver.isEnabled(), 'deliver is disabled before a mode is picked')
+ok(_bar._reject.isEnabled(), 'Reject is always available')
+_bar._radio_strip.click()
+ok(_bar._deliver.isEnabled(), 'with no delay, picking a mode enables deliver at once')
+_bar._choose('reject')
 
-# --- a choice dispatches to the tab that held the paste, exactly once ----------
+# --- a delivery dispatches to the tab that held the paste, exactly once ------------
 _term_c1 = _FakeTerm()
 _bar.show_review(_term_c1, _raw, 0)
-_bar._choose('stripped')
+_bar._radio_strip.click()
+_bar._deliver_clicked()
 eq(_term_c1.dispatched, [('paste', 'stripped')],
-   'a button choice is dispatched to the holding tab')
-# single-shot: a second choose (a double-click, or Esc right after) is a no-op, so
-# the same held paste is never dispatched twice
-_bar._choose('unicode')
+   'clicking deliver dispatches the picked mode to the holding tab')
+# single-shot: a second deliver (double-click) is a no-op, so the same held paste is
+# never dispatched twice
+_bar._deliver_clicked()
 eq(_term_c1.dispatched, [('paste', 'stripped')],
-   'a second choice after dispatch is a no-op (single-shot: dispatched exactly once)')
+   'a second deliver after resolution is a no-op (dispatched exactly once)')
 
-# --- the countdown gates the delivery CLICK, but the buttons stay ENABLED ------
-# A disabled Qt button cannot take keyboard focus (and does not reliably receive
-# hover), so disabling the send buttons during the countdown would kill the
-# delivered-form preview -- the very thing the countdown window is for. So the
-# buttons stay ENABLED (focus/hover -> preview) and the CLICK is gated instead.
+# --- the countdown gates the deliver button until it elapses -----------------------
 _term2 = _FakeTerm()
 _bar.show_review(_term2, _raw, 2)
-ok(_bar._stripped.isEnabled() and _bar._unicode.isEnabled(),
-   'the send buttons stay ENABLED during the countdown (so focus/hover can preview)')
-ok(_bar._gated, 'but the anti-fat-finger gate is up')
+_bar._radio_keep.click()
+ok(not _bar._deliver.isEnabled(),
+   'the deliver button is disabled during the countdown')
+ok('(2)' in _bar._deliver.text(), 'the deliver button shows the remaining seconds')
 ok(_bar._reject.isEnabled(), 'Reject stays available during the countdown')
-ok('(2)' in _bar._stripped.text() and '(2)' in _bar._unicode.text(),
-   'both send buttons show the remaining seconds')
-# a DELIVERY choice while gated is a no-op -- nothing dispatched, still reviewing
-_bar._choose('stripped')
-eq(_term2.dispatched, [], 'a delivery choice during the countdown is a gated no-op')
+# a deliver click during the countdown is a no-op -- nothing dispatched, still reviewing
+_bar._deliver_clicked()
+eq(_term2.dispatched, [], 'a deliver click during the countdown is a gated no-op')
 ok(_bar._term is _term2, 'the bar keeps reviewing (the gated click did not resolve it)')
 _bar._tick()                                # 2 -> 1
 _bar._tick()                                # 1 -> 0
-_bar._tick()                                # 0 -> drop the gate + stop
-ok(not _bar._gated, 'the gate drops once the countdown elapses')
-eq(_bar._stripped.text(), 'Paste (ASCII)', 'the ASCII countdown suffix is dropped')
-eq(_bar._unicode.text(), 'Paste (unicode)', 'the unicode countdown suffix is dropped')
-# now a delivery choice ACTS
-_bar._choose('stripped')
-eq(_term2.dispatched, [('paste', 'stripped')],
-   'after the countdown a delivery choice dispatches')
-ok(_bar._term is None, 'and _choose resolves + hides the bar')
+_bar._tick()                                # 0 -> enable + stop
+ok(_bar._deliver.isEnabled(), 'the deliver button enables once the countdown elapses')
+eq(_bar._deliver.text(), 'Paste (unicode)', 'the countdown suffix is dropped')
+# now a deliver click ACTS
+_bar._deliver_clicked()
+eq(_term2.dispatched, [('paste', 'unicode')],
+   'after the countdown a deliver click dispatches the picked mode')
+ok(_bar._term is None, 'and delivery resolves + hides the bar')
 
 # --- Esc rejects (the safe default) -------------------------------------------
 _term3 = _FakeTerm()
@@ -292,11 +270,12 @@ _bar._choose('reject')
 _term_c = _FakeTerm()
 _bar.show_review(_term_c, _raw, 0, 'copy')
 eq(_bar._reject.text(), "Don't copy", 'copy review: Reject becomes "Don\'t copy"')
-ok(_bar._stripped.text() == 'Copy (ASCII)' and _bar._unicode.text() == 'Copy (unicode)',
-   'copy review: the action buttons are relabelled for copy')
+eq(_bar._deliver.text(), 'Copy', 'copy review: the deliver base label is "Copy"')
 ok('copy' in _bar._summary.text().lower() and 'clipboard' in _bar._summary.text().lower(),
    'copy review: the summary is phrased for the clipboard direction')
-_bar._choose('stripped')
+_bar._radio_strip.click()
+eq(_bar._deliver.text(), 'Copy (ASCII)', 'copy review: the deliver label names the mode')
+_bar._deliver_clicked()
 eq(_term_c.dispatched, [('copy', 'stripped')],
    'copy review dispatches to the tab\'s copy path, not the paste path')
 
@@ -313,8 +292,9 @@ ok('hides' not in _bar._summary.text().lower(),
    'the all-clear does not claim the paste hides anything')
 ok(_rev.SAFE_FG in _bar._dot.styleSheet(),
    'the risk dot turns safe-green for a clean paste review')
+_bar._radio_keep.click()
 ok('plain ascii command' in _bar._mirror.toPlainText(),
-   'the mirror shows the held text even for a clean review')
+   'a picked mode shows the held text even for a clean review')
 _bar.show_review(_term_clean, 'plain ascii\n', 0, 'copy')
 eq(_bar._summary.text(), _rev._CLEAN_MSG,
    'a clean copy review shows the same ASCII-only all-clear')
@@ -333,12 +313,9 @@ from PyQt6.QtGui import QColor as _QColor                                     # 
 
 ok(_SAFE_FG in _bar._reject.styleSheet(),
    'only Reject is tinted, with the canonical SAFE_FG (safe-green)')
-ok(_SAFE_FG not in _bar._stripped.styleSheet()
-   and _RISK_FG not in _bar._stripped.styleSheet(),
-   'Paste (ASCII) is UNCOLOURED (stripping is not unconditionally safe)')
-ok(_SAFE_FG not in _bar._unicode.styleSheet()
-   and _RISK_FG not in _bar._unicode.styleSheet(),
-   'Paste (unicode) is UNCOLOURED (keeping unicode is not unconditionally safe)')
+ok(_SAFE_FG not in _bar._deliver.styleSheet()
+   and _RISK_FG not in _bar._deliver.styleSheet(),
+   'the Deliver button is UNCOLOURED (neither delivery is unconditionally safe)')
 for _theme in ('dark', 'light'):
     _bg = _rgb(_QColor(_THEMES[_theme][0]))
     for _name, _hex in (('SAFE_FG', _SAFE_FG), ('RISK_FG', _RISK_FG)):
