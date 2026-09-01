@@ -1644,6 +1644,13 @@ try:
 except SystemExit as _se:
     _reje = (_se.code == 2)
 ok(_reje, 'parse: a malformed -e STRING exits(2), never a login shell (fail closed)')
+# agy: a WHITESPACE-only -e (shell-splits to no words) also fails closed at parse.
+_rejw = False
+try:
+    _pla(['-e', '   '])
+except SystemExit as _sew:
+    _rejw = (_sew.code == 2)
+ok(_rejw, 'parse: a whitespace-only -e STRING exits(2), never a login shell')
 ok(_pla(['-e', 'echo ok']).tabs[-1]['command'] == 'echo ok',
    'parse: a well-formed -e string is accepted (shell-split at spawn, not here)')
 ok(_pla(['--', 'echo', "'unbalanced"]).tabs[-1]['command'] == ['echo', "'unbalanced"],
