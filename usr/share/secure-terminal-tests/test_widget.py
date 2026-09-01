@@ -3126,6 +3126,28 @@ ok(_mfc.restart_as_shell() is False,
    'restart_as_shell refuses a malformed-command tab (fail closed: the tab closes)')
 _mfc.close()
 
+# #27: a WELL-FORMED -e command whose program cannot exec (missing / non-executable
+# binary) must ALSO fail closed -- exit status 127 alone cannot distinguish it from a
+# real program that ran and exited 127, so _start uses a close-on-exec handshake pipe.
+# A failed execvp writes a byte -> _command_exec_failed True -> restart_as_shell REFUSES
+# -> the caller closes the tab (never a silent login shell for a locked-down launch).
+# (canary: pre-#27 code has no _command_exec_failed and restart_as_shell returns True,
+# dropping to a shell -- the exact gap #27 closes.)
+_ef = SecureTerminal(command='/nonexistent/secure-terminal-xyzzy')
+ok(_ef._command_malformed is False,
+   'an exec-failing command is well-formed (not _command_malformed)')
+ok(_ef._command_exec_failed is True,
+   'a missing -e program is marked _command_exec_failed via the exec-detection pipe')
+ok(_ef.restart_as_shell() is False,
+   'restart_as_shell refuses an exec-failed tab (fail closed: the tab closes, no shell)')
+_ef.close()
+# positive control: a program that ACTUALLY execs (even one that then exits nonzero) is
+# NOT exec-failed -- the pipe closes on the successful exec, so the tab still restarts.
+_er = SecureTerminal(command='/bin/cat')
+ok(_er._command_exec_failed is False,
+   'a real program that execs leaves _command_exec_failed False (restart still allowed)')
+_er.close()
+
 _hsent.clear()
 cw.apply_paste_warn('unicode')
 
