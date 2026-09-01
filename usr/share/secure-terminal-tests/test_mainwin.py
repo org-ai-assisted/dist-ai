@@ -1651,6 +1651,13 @@ try:
 except SystemExit as _sew:
     _rejw = (_sew.code == 2)
 ok(_rejw, 'parse: a whitespace-only -e STRING exits(2), never a login shell')
+# codex: an empty program name (`-e '""'`) also fails closed at parse.
+_reje2 = False
+try:
+    _pla(['-e', '""'])
+except SystemExit as _se2:
+    _reje2 = (_se2.code == 2)
+ok(_reje2, 'parse: an empty-program -e STRING (\'""\') exits(2), never a login shell')
 ok(_pla(['-e', 'echo ok']).tabs[-1]['command'] == 'echo ok',
    'parse: a well-formed -e string is accepted (shell-split at spawn, not here)')
 ok(_pla(['--', 'echo', "'unbalanced"]).tabs[-1]['command'] == ['echo', "'unbalanced"],

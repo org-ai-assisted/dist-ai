@@ -245,6 +245,29 @@ assert_not_at "R-120 spares 'command -v rm' (describe, not a run)" "R-120" 2
 assert_not_at "R-120 spares 'command -V rm' (describe)"           "R-120" 3
 assert_not_at "R-120 spares 'command -pv rm' (v in cluster)"      "R-120" 4
 assert_at     "R-120 flags 'command -p rm' (runs rm, no v/V)"     "R-120" 5
+## 'builtin NAME' runs NAME only when NAME is a shell BUILTIN: 'builtin echo' and
+## 'builtin command rm' run (echo/command ARE builtins), but 'builtin rm' /
+## 'builtin apt-get' error ('not a shell builtin') and run NOTHING -- so no
+## name-keyed rule may fire on them. Peeling 'builtin' unconditionally (as a bare
+## exec-wrapper) false-flagged 'builtin rm' with R-120. (verified vs stock bash.)
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   'builtin rm -rf /a' \
+   'builtin apt-get install -y pkg' \
+   'builtin command rm -rf /b' \
+   'builtin command dpkg --install pkg.deb')"
+assert_not_at "R-120 spares 'builtin rm' (rm not a builtin, runs nothing)"       "R-120" 2
+assert_not_at "R-210 spares 'builtin apt-get' (not a builtin)"                   "R-210" 3
+assert_at     "R-120 flags 'builtin command rm' (command is a builtin -> rm runs)" "R-120" 4
+assert_at     "R-211 flags 'builtin command dpkg' (command runs dpkg)"           "R-211" 5
+## ONLY the bare 'builtin' keyword invokes the shell builtin. A path-qualified
+## './builtin' or '/usr/bin/builtin' is an ordinary external program (unknown
+## behavior), so the builtin-only exemption must NOT suppress R-120 for it --
+## the peel still flags the inner rm (the safe over-flag direction).
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   './builtin rm -rf /a' \
+   '/usr/bin/builtin rm -rf /b')"
+assert_at "R-120 flags './builtin rm' (path-qualified, not the keyword)" "R-120" 2
+assert_at "R-120 flags '/usr/bin/builtin rm' (path-qualified)"           "R-120" 3
 ## env -S/--split-string EMBEDS the command in its STRING value; we skip that value and do NOT
 ## parse inside it (obfuscated spelling, out of the accident threat model -- ai-review claude).
 ## The guarantee that MUST hold: skipping the value never FALSE-POSITIVES on a path-like string.
@@ -508,17 +531,23 @@ run_det "$(printf '%s\n' '#!/bin/bash' 'bash -- ci/build.sh')"
 assert_at "R-102 flags 'bash -- <script>'" "R-102" 2
 run_det "$(printf '%s\n' '#!/bin/bash' 'bash -s -- arg')"
 assert_not_at "R-102 spares 'bash -s' (script from stdin)" "R-102" 2
-## a BUNDLED cluster whose LAST char is the value-taking '-o'/'-O' ('-eo pipefail')
-## still consumes the NEXT word as its value, so the script after it must be reached.
-## A bare 'cluster in (o,O)' check missed the bundled form and read 'pipefail' as the
-## script, silently sparing 'bash -eo pipefail <script>'.
+## '-o'/'-O' consume the NEXT WORD as their option-name argument no matter where
+## o/O sits in a short cluster (verified vs stock bash): '-eo pipefail', '-Eeo
+## pipefail' and '-oe pipefail' ALL eat 'pipefail', so the script that follows the
+## value must still be reached. An 'o must be the cluster's LAST char' check missed
+## '-oe pipefail' and read 'pipefail' as the script, silently sparing 'bash -oe
+## pipefail <script>' (a fail-open).
 run_det "$(printf '%s\n' '#!/bin/bash' 'bash -eo pipefail ci/build.sh')"
-assert_at "R-102 flags a bundled 'bash -eo VALUE <script>'" "R-102" 2
+assert_at "R-102 flags 'bash -eo VALUE <script>'" "R-102" 2
 run_det "$(printf '%s\n' '#!/bin/bash' 'bash -Eeo pipefail ci/build.sh')"
-assert_at "R-102 flags a bundled 'bash -Eeo VALUE <script>'" "R-102" 2
-## but an ATTACHED value ('-oe' == -o with value 'e') does NOT take the next word.
+assert_at "R-102 flags 'bash -Eeo VALUE <script>'" "R-102" 2
+run_det "$(printf '%s\n' '#!/bin/bash' 'bash -oe pipefail ci/build.sh')"
+assert_at "R-102 flags 'bash -oe VALUE <script>' (o eats value mid-cluster)" "R-102" 2
+## With NO value word, '-o' eats the FILENAME as its option-name: 'bash -oe
+## ci/build.sh' is 'set -o ci/build.sh', which bash REJECTS ('invalid option name')
+## and never runs as a script, so R-102 must NOT fire.
 run_det "$(printf '%s\n' '#!/bin/bash' 'bash -oe ci/build.sh')"
-assert_at "R-102 flags 'bash -oe <script>' (attached -o value, script still reached)" "R-102" 2
+assert_not_at "R-102 spares 'bash -oe <script>' (-o eats the filename, bash errors)" "R-102" 2
 
 ## --- path-qualified / global-option command resolution (ai-review round 3) ---
 ## R-120: '/bin/rm' and '/usr/bin/sudo rm' are the same programs (basename).
