@@ -590,14 +590,43 @@ class TimeoutKillAfter(Rule):
         for call in h.editable_calls(tree):
             if bash_ast.command_name(call) != "timeout":
                 continue
-            call_args = bash_ast.args(call)
-            if len(call_args) < 3:
+            if len(bash_ast.args(call)) < 3:
                 ## Need a duration and at least one wrapped command word.
                 continue
-            duration = bash_ast.word_lit(call_args[1])
+            ## Find the duration the SAME way detect() does -- the first OPERAND,
+            ## never a fixed Args[1]. A leading option ('timeout --foreground 5
+            ## cmd') shifts the duration off Args[1], and assuming Args[1] made
+            ## fix() emit NO edit while detect() still flagged R-200 -- a fixer
+            ## whose silent failure reads as a pass. Mirror detect's exemptions
+            ## (kill-after already present, informational, zero duration) too.
+            has_kill = False
+            informational = False
+            duration_word = None
+            duration = None
+            for kind, word, text in bash_ast.command_tokens(
+                    call, ctx.source, TIMEOUT_VALUE_SHORT,
+                    frozenset({"kill-after", "signal"})):
+                if kind == "value":
+                    continue
+                if kind == "operand":
+                    duration_word = word
+                    duration = bash_ast.word_lit(word)
+                    break
+                long_name = _long_name(text)
+                if long_name is not None:
+                    resolved = bash_ast.resolve_long(long_name, TIMEOUT_LONG)
+                    if resolved == "kill-after":
+                        has_kill = True
+                    elif resolved in ("help", "version"):
+                        informational = True
+                elif text.startswith("-") and _timeout_cluster_has_kill(
+                        text[1:]):
+                    has_kill = True
+            if has_kill or informational or duration_word is None:
+                continue
             if not duration or not TIMEOUT_DURATION.match(duration):
                 continue
-            start, _ = bash_ast.word_span(call_args[1])
+            start, _ = bash_ast.word_span(duration_word)
             yield Edit(start, start, "--kill-after=%s " % duration, "R-200")
 
 
