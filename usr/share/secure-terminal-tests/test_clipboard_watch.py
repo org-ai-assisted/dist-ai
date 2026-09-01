@@ -302,6 +302,45 @@ def _test_watcher():
        'watcher: Replace does not clobber content copied after the popup (TOCTOU)')
     ok(not w._popup.isVisible(), 'watcher: the stale review still closes')
 
+    # #1: an EDITED clipboard value must be WRITTEN on Replace. The old resolve compared
+    # the clipboard against the edited value, so any edit made the compare miss and the
+    # unsafe clipboard was left in place (a silently-failing security action).
+    orig = 'p' + CYR_A + 'ypal'                     # homoglyph 'paypal'
+    # Clear the dedup state a prior unicode-Replace left ( _last_written == this same
+    # homoglyph), else _on_change treats orig as our own write echoing back and shows
+    # no popup.
+    w._last_written = None
+    w._dismissed = None
+    cb.setText(orig)
+    w._on_change()
+    ok(w._popup.isVisible(), 'watcher: homoglyph -> popup (edit case)')
+    w._popup.bar._edit.setPlainText('paypal')       # user edits to the safe spelling
+    w._popup.bar._on_edit()                          # adopt the edit
+    w._popup.bar._choose('stripped')                 # Replace
+    eq(cb.text(), sanitize_clipboard('paypal'),
+       '#1: an edited Replace writes the sanitized EDITED value, not a silent no-op')
+
+    # #2: a huge clipboard must NOT load the whole thing into the edit widget (a ~930MB
+    # setPlainText freeze), yet an UN-edited Replace still sanitizes the FULL clipboard.
+    _RAW_MAX = w._popup.bar._mirror._RAW_MAX
+    big = 'a' * 100 + ZWSP + 'b' * (_RAW_MAX + 5000)   # hidden char early, then > the cap
+    cb.setText(big)
+    w._on_change()
+    ok(w._popup.isVisible(), 'watcher: huge deceptive clipboard -> popup')
+    ok(len(w._popup.bar._edit.toPlainText()) <= _RAW_MAX,
+       '#2: the edit widget is bounded to _RAW_MAX (no unbounded setPlainText DoS)')
+    w._popup.bar._choose('stripped')                 # no edit -> writes the FULL sanitized text
+    # Compare with ok(), NOT eq(): eq() formats both ~1M-char strings via %r into the
+    # message and prints it even on success -- a ~2M-char line that bloats the suite's
+    # stdout past the sandbox transport size and TRUNCATES the coverage report that runs
+    # after this last suite. Assert equality; report only the (bounded) lengths.
+    _delivered_full = cb.text()
+    _expected_full = sanitize_clipboard(big)
+    ok(_delivered_full == _expected_full,
+       '#2: an un-edited Replace still sanitizes the FULL clipboard (self._raw stays '
+       'full); delivered %d chars, expected %d'
+       % (len(_delivered_full), len(_expected_full)))
+
     # review_now: nothing when empty, a popup even for clean text
     cb.setText('')
     w.review_now()

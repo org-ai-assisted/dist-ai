@@ -5,7 +5,7 @@
 
 ## AI-Assisted
 
-## die() takes an exit code as its FIRST arg (every call site is `die 1 "..."`) and the
+## exit_with_error() takes an exit code as its FIRST arg (every call site is `exit_with_error 1 "..."`) and the
 ## rest as the message. Without shifting that arg off, it leaked into make_output_error's
 ## message as a spurious leading token ("ERROR: 1 <msg>") -- garbling every error the tool
 ## emits and breaking anything matching on the exact text -- while the code was ignored and
@@ -68,10 +68,10 @@ cleanup_handler() {
 trap cleanup_handler EXIT
 
 ## Extract only the two functions under test, matching the suite convention.
-sed -n '/^die() {/,/^}/p' -- "${helper_file}" > "${test_root}/fns.sh"
+sed -n '/^exit_with_error() {/,/^}/p' -- "${helper_file}" > "${test_root}/fns.sh"
 sed -n '/^make_output_error() {/,/^}/p' -- "${helper_file}" >> "${test_root}/fns.sh"
-if ! grep --quiet '^die() {' "${test_root}/fns.sh" || ! grep --quiet '^make_output_error() {' "${test_root}/fns.sh"; then
-   printf '%s\n' "ERROR: could not extract die/make_output_error." >&2
+if ! grep --quiet '^exit_with_error() {' "${test_root}/fns.sh" || ! grep --quiet '^make_output_error() {' "${test_root}/fns.sh"; then
+   printf '%s\n' "ERROR: could not extract exit_with_error/make_output_error." >&2
    exit 1
 fi
 
@@ -88,10 +88,10 @@ source "${test_root}/fns.sh"
 tests_total=0
 tests_failed=0
 
-## die runs 'exit', so invoke it in a subshell and capture message + code together.
+## exit_with_error runs 'exit', so invoke it in a subshell and capture message + code together.
 run_die() {
    local out rc
-   out="$( ( die "$@" ) 2>&1 )" && rc=0 || rc=$?
+   out="$( ( exit_with_error "$@" ) 2>&1 )" && rc=0 || rc=$?
    printf '%s\n' "${out}"
    return "${rc}"
 }
@@ -107,10 +107,10 @@ check() {
    if [[ "${out}" == *"ERROR: ${msg}"* ]] \
       && [[ "${out}" != *"ERROR: ${code} ${msg}"* ]] \
       && [ "${rc}" -eq "${want_rc}" ]; then
-      printf '%s\n' "PASS  die ${code} '${msg}' -> clean message, exit ${rc} (${desc})"
+      printf '%s\n' "PASS  exit_with_error ${code} '${msg}' -> clean message, exit ${rc} (${desc})"
    else
       tests_failed=$(( tests_failed + 1 ))
-      printf '%s\n' "FAIL  die ${code} '${msg}' (${desc})" >&2
+      printf '%s\n' "FAIL  exit_with_error ${code} '${msg}' (${desc})" >&2
       printf '%s\n' "        want exit=${want_rc} got exit=${rc} out=[${out}]" >&2
    fi
 }
@@ -123,7 +123,7 @@ check 'out-of-range code clamped to 1' 300 'out of range' 1
 check 'non-numeric code clamped to 1' abc 'not a number' 1
 
 if [ "${tests_failed}" -ne 0 ]; then
-   printf '%s\n' "die_exit_code_test: ${tests_failed}/${tests_total} FAILED" >&2
+   printf '%s\n' "exit_with_error_exit_code_test: ${tests_failed}/${tests_total} FAILED" >&2
    exit 1
 fi
-printf '%s\n' "die_exit_code_test: ${tests_total} pass, 0 fail, 0 skip"
+printf '%s\n' "exit_with_error_exit_code_test: ${tests_total} pass, 0 fail, 0 skip"

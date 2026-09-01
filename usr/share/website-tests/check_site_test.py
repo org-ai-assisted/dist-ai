@@ -175,6 +175,15 @@ def run():
               not any('sample.png' in f or 'scripted.png' in f for f in fails),
               repr(fails))
 
+    # 9b. An EXTERNAL raster reference is not a site-served asset: it cannot be
+    # webp-converted (supply-chain gates it instead), so it must NOT be flagged.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               _page % ('<a href="https://example.com/x.png">x</a>'
+                        '<img src="https://example.com/y.png">'))
+        check('external raster reference not flagged must-be-webp',
+              _fmt_failures(root) == [], repr(_fmt_failures(root)))
+
     # 10. og:image / twitter:image / favicon are metadata, not content loads --
     # they may stay PNG/JPEG for social-scraper compatibility.
     with tempfile.TemporaryDirectory() as root:
@@ -408,6 +417,21 @@ def run():
             "script-src 'self'; script-src 'self' 'unsafe-inline'"), ''))
         check('duplicate script-src keeps the first (safe) value',
               _csp_failures(root) == [], repr(_csp_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # Any external source is flagged by an allowlist (a legit token is a
+        # quoted keyword/nonce/hash or a host-free scheme). Bare host, host:port,
+        # IPv6, single-label host, and a network scheme all count.
+        for bad in ('cdn.example.com', 'cdn.example.com:443', '[::1]',
+                    'localhost', 'wss:', '*'):
+            _write(root, 'index.html', _cpage % (_csp % ("'self' " + bad), ''))
+            check('CSP external source flagged: %s' % bad,
+                  any('external source' in f for f in _csp_failures(root)),
+                  repr(_csp_failures(root)))
+        # A host-free scheme source (data:) is legitimate and must NOT be flagged.
+        _write(root, 'index.html', _cpage % (_csp % "'self'", ''))
+        check('clean strict CSP has no external-source failure',
+              not any('external source' in f for f in _csp_failures(root)),
+              repr(_csp_failures(root)))
 
     # check_no_inline_script: inline <script> body, on*= handler, javascript: URL.
     def _inline_failures(root):
@@ -464,6 +488,200 @@ def run():
 
     check('check_no_inline_script invoked from main()',
           'check_no_inline_script(root, failures)' in main_body)
+
+    # check_links: a '..'-traversal target that escapes the site root is a BROKEN
+    # link (it would 404 on the deployed site), never validated against some
+    # unrelated real file that happens to exist on the test host.
+    def _links_failures(root, **kw):
+        failures: list[str] = []
+        check_site.check_links(root, failures, **kw)
+        return failures
+    cands = check_site._abs_candidates('../../etc/hostname', ['/nonexistent-root'])
+    check('_abs_candidates clamps a root-escaping path into the root',
+          bool(cands) and all(c.startswith('/nonexistent-root/') for c in cands)
+          and cands[0] == '/nonexistent-root/etc/hostname', repr(cands))
+    with tempfile.TemporaryDirectory() as root, \
+            tempfile.TemporaryDirectory() as outside:
+        # A decoy file OUTSIDE the root; a relative '..'-link that lands on it
+        # must still be reported broken (throwaway decoy, not a system file).
+        with open(os.path.join(outside, 'decoy.html'), 'w',
+                  encoding='utf-8') as handle:
+            handle.write('x')
+        rel = os.path.relpath(os.path.join(outside, 'decoy.html'),
+                              os.path.join(root, 'sub'))
+        _write(root, 'sub/index.html', '<a href="%s">x</a>' % rel)
+        check('root-escaping relative link reported broken',
+              any('broken internal link' in f for f in _links_failures(root)),
+              repr(_links_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', '<a href="/sub/">x</a>')
+        _write(root, 'sub/index.html', '<p>ok</p>')
+        check('same-root link still resolves', _links_failures(root) == [],
+              repr(_links_failures(root)))
+
+    # check_supply_chain: srcset candidates and fetching <link> rels are external
+    # subresource LOADS too (Extractor records only href/src for the tag loop).
+    def _supply_failures(root):
+        failures: list[str] = []
+        check_site.check_supply_chain(root, failures)
+        return failures
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               _page % '<img srcset="https://example.com/a.webp 2x">')
+        check('external srcset flagged by supply-chain',
+              any('srcset' in f and 'a.webp' in f
+                  for f in _supply_failures(root)), repr(_supply_failures(root)))
+        _write(root, 'index.html', _page % '<img srcset="/a.webp 2x">')
+        check('same-origin srcset passes supply-chain',
+              _supply_failures(root) == [], repr(_supply_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               _page % '<link rel="stylesheet" href="https://example.com/s.css">')
+        check('external stylesheet link flagged',
+              any('s.css' in f for f in _supply_failures(root)),
+              repr(_supply_failures(root)))
+        _write(root, 'index.html',
+               _page % '<link rel="canonical" href="https://example.com/">')
+        check('external canonical link NOT flagged (metadata)',
+              _supply_failures(root) == [], repr(_supply_failures(root)))
+
+    # _is_external matches browser URL parsing: case, whitespace, backslash.
+    check('_is_external: HTTPS scheme (case-insensitive)',
+          check_site._is_external('HTTPS://example.com/x'))
+    check('_is_external: leading whitespace trimmed',
+          check_site._is_external('  //example.com/x'))
+    check('_is_external: backslash treated as slash',
+          check_site._is_external('\\\\example.com/x')
+          and check_site._is_external('/\\example.com/x'))
+    check('_is_external: a same-origin path is not external',
+          not check_site._is_external('/local/x'))
+
+    # Browser-style '..' clamping: an in-root '..' link RESOLVES (not broken),
+    # and a protocol-relative external link is external (not a broken internal).
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', '<p>home</p>')
+        _write(root, 'sub/page.html', '<a href="../index.html">home</a>')
+        check('in-root .. link resolves (clamped like a browser)',
+              _links_failures(root) == [], repr(_links_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', '<a href="//other.example.com/p">x</a>')
+        check('protocol-relative link is external, not a broken internal link',
+              _links_failures(root) == [], repr(_links_failures(root)))
+
+    # supply-chain: external CSS url() (inline, and a .css file) is a load.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _page %
+               '<div style="background:url(https://example.com/p.webp)">x</div>')
+        check('external inline CSS url() flagged by supply-chain',
+              any('CSS url()' in f and 'p.webp' in f
+                  for f in _supply_failures(root)), repr(_supply_failures(root)))
+        _write(root, 'index.html', _page % '<link rel="stylesheet" href="/s.css">')
+        _write(root, 's.css', 'body{background:url(https://example.com/bg.webp)}')
+        check('external .css url() flagged by supply-chain',
+              any('bg.webp' in f for f in _supply_failures(root)),
+              repr(_supply_failures(root)))
+
+    # supply-chain: an external <object data=...> is a load (previously a dead
+    # RESOURCE_ATTR entry, now live via the Extractor).
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               _page % '<object data="https://example.com/x.swf"></object>')
+        check('external <object data> flagged by supply-chain',
+              any('x.swf' in f for f in _supply_failures(root)),
+              repr(_supply_failures(root)))
+
+    # srcset via the HTML parser: an unquoted attribute is caught; a srcset
+    # substring in a CODE SAMPLE (text, not an attribute) is NOT a false load.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _page % '<img srcset=https://example.com/a.webp>')
+        check('unquoted external srcset flagged',
+              any('a.webp' in f for f in _supply_failures(root)),
+              repr(_supply_failures(root)))
+        _write(root, 'index.html',
+               _page % '<code>srcset="https://example.com/z.webp"</code>')
+        check('srcset in a code sample is not a false load',
+              _supply_failures(root) == [], repr(_supply_failures(root)))
+
+    # check_footer: a family link appearing AFTER </footer> must not mask a
+    # missing one inside the footer.
+    def _footer_failures(root):
+        failures: list[str] = []
+        check_site.check_footer(root, failures)
+        return failures
+    with tempfile.TemporaryDirectory() as root:
+        fam = list(check_site.FAMILY.values())
+        _write(root, 'index.html',
+               '<footer>%s</footer>\n<!-- %s -->' % (fam[0], ' '.join(fam[1:])))
+        check('family links after </footer> do not mask missing ones',
+              len(_footer_failures(root)) == len(fam) - 1,
+              repr(_footer_failures(root)))
+
+    # check_banner: the status-pill compliance check must not depend on
+    # class="status" being the pill's first attribute.
+    def _banner_failures(root):
+        failures: list[str] = []
+        check_site.check_banner(root, failures)
+        return failures
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', '<span id="x" class="status">working</span>')
+        check('banner pill checked regardless of attribute order',
+              any('status banner' in f for f in _banner_failures(root)),
+              repr(_banner_failures(root)))
+        _write(root, 'index.html',
+               '<span id="x" class="status">review needed</span>')
+        check('compliant banner passes regardless of attribute order',
+              _banner_failures(root) == [], repr(_banner_failures(root)))
+
+    # A dotted directory name ('blog.v2/') is a page dir, not a file extension.
+    dotted = check_site._abs_candidates('blog.v2/', ['/nonexistent-root'])
+    check('_abs_candidates adds index.html for a dotted dir name',
+          any(c.endswith('blog.v2/index.html') for c in dotted), repr(dotted))
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', '<a href="/blog.v2/">x</a>')
+        _write(root, 'blog.v2/index.html', '<p>ok</p>')
+        check('link to a dotted-name directory resolves',
+              _links_failures(root) == [], repr(_links_failures(root)))
+
+    # subsite mount matches on a PATH boundary, not a bare string prefix.
+    mounted = check_site.resolve_internal(
+        '/root', '/root/p.html', '/sub-extra/x',
+        mount='/sub', parent_roots=('/parent',))
+    check('mount prefix requires a path boundary (sibling not swallowed)',
+          mounted == ('file',
+                      check_site._abs_candidates('sub-extra/x', ['/parent']), '')
+          and all('/root/-extra' not in c for c in mounted[1]), repr(mounted))
+
+    # _is_external sees the control-char and scheme-relative forms a browser
+    # accepts (WHATWG strips tab/newline before scheme matching).
+    check('_is_external: newline embedded WITHIN the scheme',
+          check_site._is_external('ht\ntps://example.com/x'))
+    check('_is_external: scheme-relative http: form',
+          check_site._is_external('http:example.com/x'))
+
+    # supply-chain: an external CSS @import (bare-string form) is a load.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               _page % '<style>@import "https://example.com/s.css";</style>')
+        check('external CSS @import flagged by supply-chain',
+              any('s.css' in f for f in _supply_failures(root)),
+              repr(_supply_failures(root)))
+
+    # footer: an <article>/<section> footer BEFORE the site footer must not hide
+    # the site footer's family links.
+    with tempfile.TemporaryDirectory() as root:
+        fam = list(check_site.FAMILY.values())
+        _write(root, 'index.html',
+               '<article><footer>article footer</footer></article>'
+               '<footer>%s</footer>' % ' '.join(fam))
+        check('article footer before site footer does not mask family links',
+              _footer_failures(root) == [], repr(_footer_failures(root)))
+
+    # check_no_inline_script: a javascript: URL with an embedded tab is caught.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', '<a href="jav\tascript:x()">y</a>')
+        check('obfuscated javascript: URL (embedded tab) flagged',
+              any('javascript:' in f for f in _inline_failures(root)),
+              repr(_inline_failures(root)))
 
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed

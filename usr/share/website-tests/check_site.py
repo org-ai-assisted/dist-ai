@@ -24,6 +24,7 @@ import calendar
 import datetime
 import html.parser
 import os
+import posixpath
 import re
 import sys
 import urllib.parse
@@ -66,7 +67,9 @@ class Extractor(html.parser.HTMLParser):
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
-        self.links = []          # (tag, attr, value) for href/src
+        self.links = []          # (tag, attr, value) for href/src/data
+        self.link_rels = []      # (rel-tokens, href) for every <link href=...>
+        self.srcsets = []        # srcset attribute values (char-refs decoded)
         self.ids = set()
         self.text_parts = []
         self.csp = None          # content of the CSP <meta http-equiv>
@@ -89,6 +92,16 @@ class Extractor(html.parser.HTMLParser):
         if tag == 'meta' and (amap.get('http-equiv') or '').lower() \
                 == 'content-security-policy':
             self.csp = amap.get('content') or ''
+        if tag == 'link' and amap.get('href'):
+            self.link_rels.append(
+                ((amap.get('rel') or '').lower().split(), amap['href']))
+        if amap.get('srcset'):
+            self.srcsets.append(amap['srcset'])
+        # <object data=...> is a subresource load (RESOURCE_ATTR); capture it so
+        # that entry is not dead. Scoped to <object> so a stray data="" attribute
+        # on another element is never mistaken for a link.
+        if tag == 'object' and amap.get('data'):
+            self.links.append((tag, 'data', amap['data']))
         for key in ('href', 'src'):
             if key in amap and amap[key] is not None:
                 self.links.append((tag, key, amap[key]))
@@ -136,13 +149,28 @@ def html_files(root):
             yield os.path.join(base, name)
 
 
+def _clamp(rel):
+    """Collapse a root-relative path the way a browser / static server does:
+    leading '..' segments above the root are dropped (so the path can never
+    escape the checkout to an unrelated real file), while a '..' that stays
+    inside still resolves."""
+    return posixpath.normpath('/' + rel).lstrip('/')
+
+
 def _abs_candidates(rel, search_roots):
-    """Filesystem candidates for a root-absolute path `rel` across search_roots."""
+    """Filesystem candidates for a root-absolute path `rel` across search_roots,
+    with '..' clamped at each root so a candidate can never escape it (matching
+    how a static server serves the path)."""
+    # Capture the directory intent BEFORE clamp (posixpath.normpath strips the
+    # trailing '/'); also treat a real directory as one even if its name has a
+    # dot (a 'blog.v2/' would otherwise look like it has a file extension).
+    is_dir = rel == '' or rel.endswith('/')
+    rel = _clamp(rel)
     candidates = []
     for sr in search_roots:
         base = os.path.normpath(os.path.join(sr, rel))
         candidates.append(base)
-        if rel == '' or rel.endswith('/') or not os.path.splitext(base)[1]:
+        if is_dir or not os.path.splitext(base)[1] or os.path.isdir(base):
             candidates += [os.path.join(base, 'index.html'), base + '.html']
     return candidates
 
@@ -152,8 +180,8 @@ def resolve_internal(root, page, target, mount=None, parent_roots=()):
     the link is external / a pure fragment / non-navigational. For a subsite,
     `mount` is its path under the parent domain and `parent_roots` are the parent
     site checkouts its off-mount absolute links resolve against."""
-    if target.startswith(('http://', 'https://', 'mailto:', 'tel:', 'data:',
-                           'javascript:')):
+    if _is_external(target) or _url_norm(target).startswith(
+            ('mailto:', 'tel:', 'data:', 'javascript:')):
         return None
     frag = ''
     if '#' in target:
@@ -168,8 +196,12 @@ def resolve_internal(root, page, target, mount=None, parent_roots=()):
     if target.startswith('/'):
         # A subsite's own mount prefix (/git-diffs-lie/...) maps back onto its own
         # tree, so verify it there rather than skipping it as an external sibling.
-        if mount and (target == mount.rstrip('/') or target.startswith(mount)):
-            return ('file', _abs_candidates(target[len(mount):], [root]), frag)
+        mnt = mount.rstrip('/') if mount else mount
+        if mount and (target == mnt or target.startswith(mnt + '/')):
+            # Match on a PATH boundary, not a bare string prefix, so a sibling
+            # like /git-diffs-lie-extra/ is not mistaken for /git-diffs-lie/.
+            return ('file',
+                    _abs_candidates(target[len(mnt):].lstrip('/'), [root]), frag)
         if mount:
             # A subsite's OFF-mount absolute link (/terminal/, /paste/, ...) points
             # at the PARENT site, so verify it ONLY there -- searching the subsite
@@ -181,9 +213,15 @@ def resolve_internal(root, page, target, mount=None, parent_roots=()):
         if any(target.startswith(prefix) for prefix in KNOWN_PROJECT_PATHS):
             return None                          # valid sibling project-Pages path
         return ('file', _abs_candidates(target.lstrip('/'), [root]), frag)
-    base = os.path.normpath(os.path.join(os.path.dirname(page), target))
+    # Resolve the relative link as a URL path against the page's own URL,
+    # clamping '..' at the site root exactly as a browser does (urljoin drops the
+    # leading '..' rather than escaping), then map that in-root path to disk.
+    page_url = '/' + os.path.relpath(page, root).replace(os.sep, '/')
+    resolved = urllib.parse.urljoin(page_url, target)
+    base = os.path.normpath(os.path.join(root, _clamp(resolved.lstrip('/'))))
     candidates = [base]
-    if target.endswith('/') or not os.path.splitext(base)[1]:
+    if target.endswith('/') or resolved.endswith('/') \
+            or not os.path.splitext(base)[1] or os.path.isdir(base):
         candidates += [os.path.join(base, 'index.html'), base + '.html']
     return ('file', candidates, frag)
 
@@ -230,8 +268,9 @@ def check_links(root, failures, mount=None, parent_roots=()):
             _tag, candidates, frag = resolved
             hit = next((c for c in candidates if os.path.isfile(c)), None)
             if hit is None:
+                target = candidates[0] if candidates else value
                 failures.append('%s: broken internal link %r -> %s'
-                                % (rel, value, candidates[0]))
+                                % (rel, value, target))
                 continue
             if frag:
                 # The target may live in a PARENT site (a subsite's cross-site
@@ -313,9 +352,14 @@ def check_footer(root, failures):
     if '<footer' not in lower:
         failures.append('index.html: no <footer>')
         return
-    footer = lower[lower.index('<footer'):]
+    # Check the family links against the union of ALL <footer>...</footer>
+    # regions: content AFTER a footer must not mask a missing link (the
+    # whole-tail bug), and an earlier <article>/<section> footer must not hide
+    # the site footer (the first-footer-only bug).
+    footers = re.findall(r'<footer\b.*?</footer>', lower, re.DOTALL)
+    scope = ' '.join(footers) if footers else lower[lower.index('<footer'):]
     for name, url in FAMILY.items():
-        if url not in footer:
+        if url not in scope:
             failures.append('index.html: footer missing family link %s' % url)
 
 
@@ -330,7 +374,9 @@ def check_banner(root, failures):
     if 'class="status"' in markup:
         # the pill may be a <span> (static) or an <a> (links to the review-model
         # explanation) -- accept either so a link form is still text-checked.
-        pill = re.search(r'<(?:span|a) class="status"[^>]*>([^<]*)</(?:span|a)>', markup)
+        pill = re.search(
+            r'<(?:span|a)\b[^>]*\bclass="status"[^>]*>([^<]*)</(?:span|a)>',
+            markup)
         if pill and 'review' not in pill.group(1).lower():
             failures.append('index.html: status banner is %r; must indicate '
                             'human review needed' % pill.group(1).strip())
@@ -343,6 +389,14 @@ RESOURCE_ATTR = {
     'embed': 'src', 'audio': 'src', 'video': 'src', 'track': 'src',
     'object': 'data',
 }
+# <link rel> values whose href the browser FETCHES as a subresource, so an
+# external one is a supply-chain load. Pure metadata / connection hints
+# (canonical, alternate, dns-prefetch, preconnect, prev/next/author/license/
+# search, ...) fetch nothing and are NOT gated.
+FETCHING_LINK_RELS = frozenset({
+    'stylesheet', 'preload', 'modulepreload', 'prefetch',
+    'icon', 'apple-touch-icon', 'mask-icon', 'manifest',
+})
 
 # Content raster references (an <img>/<source> load, a CSS url(), or an <a href>
 # to an image) must be webp -- the site-image-optimize tool converts them, so a
@@ -355,21 +409,41 @@ _RASTER_REF = re.compile(r'\.(?:png|jpe?g)$', re.IGNORECASE)
 # whole, and only forbid ')' in the UNQUOTED form (where it ends the url()).
 _CSS_URL = re.compile(
     r"""url\(\s*(?:"([^"]*)"|'([^']*)'|([^'"()\s]+))\s*\)""", re.IGNORECASE)
-# srcset may be single- OR double-quoted.
-_SRCSET = re.compile(r"""srcset\s*=\s*(?:"([^"]*)"|'([^']*)')""", re.IGNORECASE)
-
-
 def _css_urls(text):
     for match in _CSS_URL.finditer(text):
         yield next(group for group in match.groups() if group is not None)
 
 
-def _srcsets(text):
-    for match in _SRCSET.finditer(text):
-        yield next(group for group in match.groups() if group is not None)
+# @import loads a stylesheet; its bare-string form (@import "url";) is not a
+# url() so _CSS_URL misses it -- match it here for the supply-chain scan.
+_CSS_IMPORT = re.compile(
+    r"""@import\s+(?:url\(\s*)?["']?([^"')\s;]+)""", re.IGNORECASE)
+
+
+def _css_external_refs(text):
+    yield from _css_urls(text)
+    for match in _CSS_IMPORT.finditer(text):
+        yield match.group(1)
 # Basenames a human has cleared to remain a raster (webp came out no smaller).
 # Keep this SMALL and justified; every entry is a content image that stays PNG.
 STATIC_IMAGE_ALLOWLIST: frozenset[str] = frozenset()
+
+
+_URL_STRIP = str.maketrans('', '', '\t\n\r')
+
+
+def _url_norm(url):
+    # Normalize a URL reference the way a browser does before scheme matching:
+    # ASCII tab/newline/CR are removed from ANYWHERE (not just the ends), '\' is
+    # a '/' for a special scheme (WHATWG), leading/trailing space is trimmed, and
+    # the scheme compares case-insensitively -- so none of those forms can
+    # smuggle a cross-origin load or a javascript: URL past the gate.
+    return url.translate(_URL_STRIP).strip().replace('\\', '/').lower()
+
+
+def _is_external(url):
+    # 'http:'/'https:' also covers the scheme-relative 'http:host' form (no //).
+    return _url_norm(url).startswith(('http:', 'https:', '//'))
 
 
 def _is_raster(url):
@@ -392,18 +466,23 @@ def check_image_format(root, failures):
         ext = Extractor()
         ext.feed(markup)
         for tag, attr, value in ext.links:
+            # Only the site's OWN rasters can be converted; an external URL is a
+            # supply-chain concern (gated there), not a must-be-webp target.
+            if _is_external(value):
+                continue
             content = (tag in ('img', 'source') and attr == 'src') or \
                 (tag == 'a' and attr == 'href' and _is_raster(value))
             if content and _is_raster(value) and not _allowed_raster(value):
                 failures.append('%s: content image %r must be webp (convert with '
                                 'site-image-optimize)' % (rel, value))
-        for srcset in _srcsets(markup):
+        for srcset in ext.srcsets:
             for candidate in srcset.split(','):
                 token = candidate.strip().split()
-                if token and _is_raster(token[0]) and not _allowed_raster(token[0]):
+                if token and _is_raster(token[0]) and not _is_external(token[0]) \
+                        and not _allowed_raster(token[0]):
                     failures.append('%s: srcset image %r must be webp'
                                     % (rel, token[0]))
-        for value in _css_urls('\n'.join(ext.styles)):
+        for value in _css_external_refs('\n'.join(ext.styles)):
             if _is_raster(value) and not _allowed_raster(value):
                 failures.append('%s: CSS url() image %r must be webp'
                                 % (rel, value))
@@ -421,6 +500,17 @@ def check_image_format(root, failures):
                 if _is_raster(value) and not _allowed_raster(value):
                     failures.append('%s: CSS url() image %r must be webp'
                                     % (rel, value))
+
+
+# Host-free CSP scheme-sources: they name no external host, so they are allowed.
+_CSP_SAFE_SCHEMES = frozenset({'data:', 'blob:', 'mediastream:', 'filesystem:'})
+# CSP directives whose value is NOT a source list -- a bare word there is a
+# report target / flag / type name, never a host, so it is not host-checked.
+_CSP_NON_SOURCE = frozenset({
+    'report-uri', 'report-to', 'sandbox', 'trusted-types',
+    'require-trusted-types-for', 'upgrade-insecure-requests',
+    'block-all-mixed-content',
+})
 
 
 def _csp_directives(csp):
@@ -452,9 +542,23 @@ def check_csp(root, failures):
         csp = ext.csp.lower()
         if "default-src 'none'" not in csp:
             failures.append("%s: CSP default-src is not 'none'" % rel)
-        if 'http:' in csp or 'https:' in csp or '//' in csp:
-            failures.append('%s: CSP allow-lists an external host' % rel)
         directives = _csp_directives(csp)
+        # No external source may be allow-listed. A legitimate source token is a
+        # quoted keyword / nonce / hash ("'self'", "'sha256-...'") or a host-free
+        # scheme (data:/blob:/...). ANY other unquoted token names an external
+        # source -- a bare host, host:port, IPv6 ([::1]), a single-label host
+        # (localhost), a wildcard (*), or a network scheme (http:/https:/ws:/
+        # wss:) -- and is flagged. This is an allowlist, so no host form slips.
+        # Non-source directives (report-uri, sandbox, trusted-types, ...) are not
+        # source lists, so their words are not hosts.
+        for name, toks in directives.items():
+            if name in _CSP_NON_SOURCE:
+                continue
+            for tok in toks:
+                if tok.startswith("'") or tok in _CSP_SAFE_SCHEMES:
+                    continue
+                failures.append('%s: CSP %s allow-lists an external source: %s'
+                                % (rel, name, tok))
         # Inline <script> elements obey script-src-elem, event handlers obey
         # script-src-attr; each falls back to script-src, then default-src
         # ('none'). Any of them permitting 'unsafe-inline' re-opens inline JS.
@@ -501,7 +605,7 @@ class _InlineJSAudit(html.parser.HTMLParser):
             if name.startswith('on'):
                 self.handlers.add(name)
             if (name in _URL_ATTRS and value
-                    and value.strip().lower().startswith('javascript:')):
+                    and _url_norm(value).startswith('javascript:')):
                 self.js_url = True
 
     def handle_startendtag(self, tag, attrs):
@@ -550,20 +654,54 @@ def check_no_inline_script(root, failures):
 
 
 def check_supply_chain(root, failures):
-    # Supply chain: no page may fetch a subresource (script, image, media) from
-    # an external host or protocol-relative URL -- everything ships self-hosted or
-    # inline (data:). External <a> navigation is fine; only loads are flagged.
+    # Supply chain: no page may fetch a subresource (script, image, media, style)
+    # from an external host or protocol-relative URL -- everything ships
+    # self-hosted or inline (data:). External <a> navigation is fine; only loads
+    # are flagged.
     for page in html_files(root):
         rel = os.path.relpath(page, root)
         ext = Extractor()
         with open(page, encoding='utf-8') as handle:
             ext.feed(handle.read())
         for tag, attr, value in ext.links:
-            if RESOURCE_ATTR.get(tag) != attr:
-                continue
-            if value.startswith(('http://', 'https://', '//')):
+            if RESOURCE_ATTR.get(tag) == attr and _is_external(value):
                 failures.append('%s: <%s %s> loads an external resource: %s'
                                 % (rel, tag, attr, value))
+        # srcset candidates are subresource LOADS too (the tag loop records only
+        # href/src/data); Extractor captures srcset HTML-aware (char-refs decoded,
+        # unquoted values handled, code-sample text not matched).
+        for srcset in ext.srcsets:
+            for candidate in srcset.split(','):
+                token = candidate.strip().split()
+                if token and _is_external(token[0]):
+                    failures.append('%s: srcset loads an external resource: %s'
+                                    % (rel, token[0]))
+        # A <link> whose rel FETCHES a subresource (stylesheet, icon, preload,
+        # manifest, ...) is a load; RESOURCE_ATTR excludes all <link> because a
+        # rel=canonical is metadata, so classify by rel here.
+        for rels, href in ext.link_rels:
+            if _is_external(href) and any(r in FETCHING_LINK_RELS for r in rels):
+                failures.append('%s: <link rel=%r> loads an external resource: '
+                                '%s' % (rel, ' '.join(rels), href))
+        # CSS url() and @import (inline style="" attrs + <style> bodies) can load
+        # an external image, font, or stylesheet just as a src can.
+        for value in _css_external_refs('\n'.join(ext.styles)):
+            if _is_external(value):
+                failures.append('%s: CSS url()/@import loads an external '
+                                'resource: %s' % (rel, value))
+    # External url() in a standalone .css file is a load too.
+    for base_dir, dirs, files in os.walk(root):
+        _prune_git(dirs)
+        for name in files:
+            if not name.endswith('.css'):
+                continue
+            path = os.path.join(base_dir, name)
+            crel = os.path.relpath(path, root)
+            with open(path, encoding='utf-8') as handle:
+                for value in _css_external_refs(handle.read()):
+                    if _is_external(value):
+                        failures.append('%s: CSS url() loads an external '
+                                        'resource: %s' % (crel, value))
 
 
 # Class names of the layout containers that place cards in a multi-column grid

@@ -31,7 +31,8 @@ Exit: 0 ok, 1 on error/drift, 2 on usage error.
 
 import os
 import shutil
-import subprocess
+# subprocess: only trusted fixed-argv tools (git / rsvg-convert / image-optimize).
+import subprocess  # nosec
 import sys
 
 _SELF_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -63,14 +64,15 @@ def _refuse_dirty(root, force):
     ## commit unless --force says otherwise.
     if force:
         return
-    top = subprocess.run(['git', '-C', root, 'rev-parse', '--show-toplevel'],
-                         capture_output=True, text=True)
+    # Fixed git argv, no shell, no untrusted input -> bandit B603/B607 waived.
+    show_top = ['git', '-C', root, 'rev-parse', '--show-toplevel']
+    top = subprocess.run(show_top, capture_output=True, text=True)  # nosec
     if top.returncode != 0:
         sys.stderr.write('site-generate: refusing to run -- %s is not a git '
                          'work tree. Pass --force to override.\n' % root)
         sys.exit(1)
-    dirty = subprocess.run(['git', '-C', root, 'status', '--porcelain'],
-                           capture_output=True, text=True)
+    status = ['git', '-C', root, 'status', '--porcelain']
+    dirty = subprocess.run(status, capture_output=True, text=True)  # nosec
     if dirty.returncode != 0:
         ## Cannot verify the tree is clean -> fail CLOSED (a corrupt index or a
         ## permission error must not read as "clean" and let a write proceed).
@@ -117,10 +119,12 @@ def _render_favicon(root, check_site):
     size = str(check_site.FAVICON_SIZE)
     rsvg = _require('rsvg-convert')
     optimize = os.environ.get('IMAGE_OPTIMIZE_BIN') or _require('image-optimize')
+    # rsvg-convert / image-optimize resolved via which/_require; fixed argv, no
+    # shell -> bandit B603/B607 waived.
+    render = [rsvg, '-w', size, '-h', size, '-o', tmp, '--', svg]
     try:
-        subprocess.run([rsvg, '-w', size, '-h', size, '-o', tmp, '--', svg],
-                       check=True)
-        subprocess.run([optimize, '--', tmp], check=True)
+        subprocess.run(render, check=True)  # nosec
+        subprocess.run([optimize, '--', tmp], check=True)  # nosec
         with open(tmp, 'rb') as handle:
             rendered = handle.read()
         try:

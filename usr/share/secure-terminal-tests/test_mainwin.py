@@ -718,6 +718,15 @@ try:
     win.open_transcript()                        # a second open REUSES the one file (no leak)
     ok(len(_opened) == 2 and _opened[0] == _opened[1],
        'open_transcript: reuses one file rather than leaking a new temp each time')
+    # C (ai-review): an OSError on the write must NOT propagate out of the Qt slot and
+    # take the whole window (all tabs) down -- mirror save_transcript's try/except. An
+    # unwritable state dir (makedirs raises under /proc) must be swallowed silently.
+    _opened.clear()
+    _sess._state_dir = lambda: '/proc/nonexistent-dir/state'
+    win.open_transcript()                        # must NOT raise
+    ok(_opened == [],
+       'C: open_transcript swallows an OSError (no window-killing crash), opens nothing')
+    _sess._state_dir = lambda: _state_tmp
 finally:
     _QDS.openUrl = _oou
     _sess._state_dir = _osd

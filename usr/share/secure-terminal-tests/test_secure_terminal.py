@@ -1419,6 +1419,34 @@ ok(raised, 'ipc: an over-long frame is rejected')
 os.environ['XDG_RUNTIME_DIR'] = tempfile.mkdtemp()
 ok(IPC.send_request('nobody-home', {'op': 'ping'}, timeout=0.2) is None,
    'ipc: no running instance -> None')
+# D (ai-review): a framed NON-dict reply (a same-UID squatter answering '[]') must yield
+# None, not a list -- callers use reply.get(), which would AttributeError on a list.
+_d_saved_recv = IPC._recv_framed
+_d_saved_sock = IPC.socket.socket
+
+
+class _FakeSockD:
+    def settimeout(self, _t):
+        pass
+
+    def connect(self, _p):
+        pass
+
+    def sendall(self, _b):
+        pass
+
+    def close(self):
+        pass
+
+
+try:
+    IPC.socket.socket = lambda *_a, **_k: _FakeSockD()
+    IPC._recv_framed = lambda _c: b'[]'
+    ok(IPC.send_request('x', {'op': 'ping'}) is None,
+       'D: send_request returns None for a framed non-dict reply (not a list)')
+finally:
+    IPC.socket.socket = _d_saved_sock
+    IPC._recv_framed = _d_saved_recv
 
 # Restore the env/module state mutated above (see the save at ~1235) BEFORE _run_cli
 # spawns subprocesses that inherit os.environ: a throwaway XDG_STATE_HOME/RUNTIME_DIR

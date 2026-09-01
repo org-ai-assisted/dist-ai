@@ -58,7 +58,7 @@ trap cleanup EXIT
 
 ## Extract the real make_parse_cmd; stub die, the dispatcher, and a couple of targets.
 {
-   printf '%s\n' 'die() { printf "DIE: %s\n" "$2" >&2; exit "$1"; }'
+   printf '%s\n' 'exit_with_error() { printf "DIE: %s\n" "$2" >&2; exit "$1"; }'
    printf '%s\n' 'make_function_run() { local f="$1"; shift; "$f" "$@"; }'
    printf '%s\n' 'make_all() { printf "RAN make_all\n"; }'
    printf '%s\n' 'make_install() { printf "RAN make_install\n"; }'

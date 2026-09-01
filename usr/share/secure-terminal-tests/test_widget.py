@@ -315,6 +315,16 @@ _t8.resizeEvent(_QRE(_t8.size(), _t8.size()))
 ok(_t8._reflow_timer.isActive(),
    '#8: a resize that changes the column count schedules the debounced line reflow')
 _t8._reflow_timer.stop()
+# #4 (ai-review): the debounced width-reflow (_reflow, the timer slot) replays the FULL
+# retained _raw, not just the _RERENDER_TAIL, so a resize never DELETES older scrollback.
+_t8._cols = 100
+_t8._raw = 'SCROLLBACK-SENTINEL\n' + ('z' * (_t8._RERENDER_TAIL + 5000))
+_t8._reflow()
+ok('SCROLLBACK-SENTINEL' in _t8.toPlainText(),
+   '#4: a width reflow replays the full _raw -- beyond-tail scrollback survives a resize')
+_t8._rerender()                                # the default (mode-toggle) path keeps the tail
+ok('SCROLLBACK-SENTINEL' not in _t8.toPlainText(),
+   '#4: a plain _rerender still tail-caps (the intentional hot-toggle budget)')
 _t8.close()
 
 # Horizontal scrollbar policy tracks the display mode: a TUI grid is a fixed
@@ -391,13 +401,18 @@ ok('PRIMARY-OUTPUT-KEEPME' in _rk.toPlainText(),
 from secure_terminal.terminal import _BRACKETED_PASTE_MODE as _BPM   # noqa: E402
 _rk._screen.mode.add(_BPM)
 _rk_restarted = _rk.restart_as_shell()
+# Snapshot the stale-bit clear SYNCHRONOUSLY, before processEvents: restart clears the
+# EXITED program's ?2004h (the security property), but the freshly-spawned shell's
+# readline legitimately re-arms DEC 2004 at its first prompt within a few seconds, so
+# asserting after processEvents races that correct re-arm (CI flake).
+_bpm_cleared = _BPM not in _rk._screen.mode
 APP.processEvents()
 ok(_rk_restarted, 'restart_as_shell restarts a -- PROGRAM tab (returns True)')
 ok('PRIMARY-OUTPUT-KEEPME' in _rk.toPlainText(),
    'restart_as_shell keeps the exited TUI program primary output as scrollback')
 ok('program exited' in _rk.toPlainText(),
    'and seeds the handover banner below the kept output')
-ok(_BPM not in _rk._screen.mode,
+ok(_bpm_cleared,
    'restart clears a stale bracketed-paste (DEC 2004) bit from the reused screen')
 _rk.close()
 
@@ -420,6 +435,37 @@ ok(not _ra._alt_screen,
 ok('PRIMARY-BEFORE-ALT' in _ra.toPlainText(),
    'and the primary-screen output that preceded the alt frame survives the restart')
 _ra.close()
+
+# #6 (ai-review): the keep_screen restart must RESET the pyte charset, else a program
+# that designated G0 = DEC special-graphics (ESC ( 0) leaves it set and the new shell's
+# ASCII 'q' renders as a box-drawing horizontal line, not the letter.
+_cs = SecureTerminal(command='/bin/cat', tui=True)
+APP.processEvents()
+feed_output(_cs, b'\x1b(0')                     # designate G0 = DEC special graphics
+_cs._render_tui()
+ok(_cs.restart_as_shell(), '#6: restart a -- PROGRAM tab that left G0 = graphics')
+APP.processEvents()
+feed_output(_cs, b'qqq')                        # 'q' under DEC graphics is a line glyph
+_cs._render_tui()
+ok('q' in _cs.toPlainText(),
+   '#6: after restart, ASCII renders as ASCII (G0 charset reset, not box-drawing)')
+_cs.close()
+
+# #7 (ai-review): after a keep_screen restart _raw is reseeded from the retained grid's
+# CLEAN text (not reset to the banner alone), so the exited program's visible scrollback
+# survives a later switch to CLI mode instead of vanishing.
+_g7 = SecureTerminal(command='/bin/cat', tui=True)
+APP.processEvents()
+feed_output(_g7, b'GRID-KEEPME line one\r\n')
+_g7._render_tui()
+ok('GRID-KEEPME' in _g7._grid_text(),
+   '#7: _grid_text serializes the retained grid (scrollback + current screen)')
+ok(_g7.restart_as_shell(), '#7: restart the TUI -- PROGRAM tab')
+APP.processEvents()
+ok('GRID-KEEPME' in _g7._raw,
+   '#7: after restart _raw carries the exited output (reseeded from the clean grid), '
+   'not just the banner -- a later CLI switch reproduces it')
+_g7.close()
 
 # alternate scroll: a full-screen program that did NOT request the mouse (a plain
 # pager in the alternate screen) has no local scrollback to move, so the wheel is
@@ -1667,6 +1713,14 @@ ok('HEADLINE_MARKER' in _pvh.toPlainText(),
 # (#300/#301). Prove it for a few high-risk codepoints across the whole popup path.
 from PyQt6.QtWidgets import QPushButton as _QPushButton   # noqa: E402
 from PyQt6.QtCore import QPoint as _QPoint                # noqa: E402
+# E (ai-review): the inspect dialog is destroyed on close (WA_DeleteOnClose), not merely
+# hidden -- without it one parented QDialog leaks per character-inspect for the tab's life.
+_epop = SecureTerminal(command='/bin/cat')
+_epop._show_char_popup(0x41, _QPoint(10, 10))
+ok(_epop._char_popup.testAttribute(Qt.WidgetAttribute.WA_DeleteOnClose),
+   'E: the char-inspect QDialog is WA_DeleteOnClose (no hidden-dialog leak)')
+_epop._char_popup.close()
+_epop.close()
 cpop = SecureTerminal(command='/bin/cat')
 for _cp in (0x202E,        # RIGHT-TO-LEFT OVERRIDE (bidi)
             0x200B,        # ZERO WIDTH SPACE (invisible)
@@ -3402,6 +3456,15 @@ from secure_terminal.terminal import _argv_for_command as _afc44   # noqa: E402
 ok(_afc44(['']) is None, '#44: _argv_for_command([""]) is None (fail closed)')
 ok(_afc44(['  ']) is None, '#44: _argv_for_command(["  "]) is None (whitespace first elem)')
 eq(_afc44([]), [], '#44: _argv_for_command([]) is [] (no command -> shell)')
+# A (ai-review): an embedded NUL can never be a valid program/arg (os.execvp raises
+# ValueError, which the child's OSError-only handler let escape -> fail-OPEN to a shell).
+# Reject pre-fork, fail closed, in both the list and string forms.
+ok(_afc44(['bad\x00program']) is None,
+   'A: a list element with an embedded NUL fails closed (None)')
+ok(_afc44(['ok', 'arg\x00two']) is None,
+   'A: a NUL in a LATER list element fails closed too')
+ok(_argv('bad\x00cmd') is None,
+   'A: a string command with an embedded NUL fails closed (None)')
 eq(_afc44(['ls', '-l']), ['ls', '-l'], '#44: a real list command is verbatim')
 
 # #45: a PENDING OSC-52 clipboard-read consent must NOT survive restart_as_shell -- else
@@ -3506,6 +3569,21 @@ eq(_h31_notes[0].count(' -> '), 1,
    '#31: exactly one arrow -- the label cannot spoof a second target pair')
 ok(_h31_notes[0].endswith('http://evil'), '#31: the real target is the sole arrow target')
 _h31.close()
+
+# #3 (ai-review): the label arrow-strip must catch an arrow with NO surrounding spaces
+# (realsite->evil), not only the spaced ' -> ' form -- else a fake arrow survives in the
+# visible label and the notice shows two arrows.
+_h3 = SecureTerminal(command='/bin/cat', tui=True)
+_h3.apply_osc('osc_hyperlink', True)
+_h3_notes: list[str] = []
+_h3.notified.connect(_h3_notes.append)
+feed_output(_h3,
+            b'\x1b]8;;http://evil\x07trusted.example->safe.example\x1b]8;;\x07')
+eq(len(_h3_notes), 1, '#3: one hyperlink notice emitted')
+eq(_h3_notes[0].count('->'), 1,
+   '#3: a no-space arrow in the label is stripped -- only the real separator arrow remains')
+ok(_h3_notes[0].endswith('http://evil'), '#3: the real target is the sole arrow target')
+_h3.close()
 
 # #21 (property guard, not a fix -- the concern does not reproduce): an OSC payload grown
 # past _OSC_CARRY_MAX is DROPPED (carry reset, no stale side-effect), and a display-mode
@@ -7505,6 +7583,27 @@ try:
 finally:
     del _xc._read_exe
 _xc.close()
+
+# #5 (ai-review): the kernel appends ' (deleted)' to /proc/<pid>/exe when the binary was
+# unlinked/replaced (an apt upgrade of bash/dash). _read_exe must STRIP it so the live
+# read still equals the spawn baseline -- else an idle shell is mis-ID'd as a foreground
+# program and the panic Terminate kills it.
+_saved_readlink5 = os.readlink
+try:
+    os.readlink = lambda _p: '/usr/bin/bash (deleted)'
+    eq(SecureTerminal._read_exe(1), '/usr/bin/bash',
+       '#5: _read_exe strips a " (deleted)" suffix (unlinked binary)')
+finally:
+    os.readlink = _saved_readlink5
+_xc5 = SecureTerminal(command=None)               # login-shell tab (_command is None)
+_saved_readlink5b = os.readlink
+try:
+    os.readlink = lambda _p: (_xc5._spawn_exe or '/bin/sh') + ' (deleted)'
+    ok(_xc5._child_execd() is False,
+       '#5: an idle shell whose binary was unlinked is NOT flagged as foreground')
+finally:
+    os.readlink = _saved_readlink5b
+_xc5.close()
 
 # #42: /proc/self/comm is CHILD-WRITABLE (the #35 spoof), but /proc/<pid>/exe is NOT --
 # _child_execd must key off exe so a comm forge cannot flip detection (neither killing an
