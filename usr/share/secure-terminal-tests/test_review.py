@@ -478,6 +478,30 @@ ok('scanned prefix' in _bar._detail.text(),
    'a scan-truncated review marks the Length as a scanned prefix, not a definite count')
 _bar._choose('reject')
 
+# REGRESSION (security false-green): the edit widget loads ONLY the visible prefix (capped
+# at _RAW_MAX), but an edit must NOT drop the beyond-cap tail from self._raw. If it did,
+# the first edit shrinks self._raw to <= _RAW_MAX, flipping scan_truncated FALSE -> the red
+# "count may be partial, Reject if you cannot verify" notice vanishes into a false-green
+# "nothing hidden", hiding a bidi char sitting past the cap (and silently dropping the tail
+# from delivery). CANARY: on the pre-fix code (self._raw = self._edit.toPlainText()) the
+# notice is gone and the summary reads the clean all-clear -- both asserts below fail.
+_ct = _FakeTerm()
+_cap = _bar._mirror._RAW_MAX
+# an all-ASCII visible prefix + a bidi override + a trailer, ALL past the scan cap:
+_bar.show_review(_ct, 'a' * _cap + chr(0x202E) + 'z', 0)
+ok('scanned for hidden' in _bar._summary.text(),
+   'a >cap paste opens with the scan-truncation notice (the tail is unscanned)')
+# edit the visible prefix to a full-cap-length ASCII buffer (so the OLD code's self._raw
+# lands at exactly _RAW_MAX -> len > _RAW_MAX is False -> notice would vanish):
+_bar._edit.setPlainText('EDITED' + 'a' * (_cap - 6))
+ok('scanned for hidden' in _bar._summary.text(),
+   'editing the visible prefix KEEPS the scan-truncation notice (no false-green flip)')
+ok(_bar._summary.text() != _rev._CLEAN_MSG,
+   'an edit must not turn a >cap paste into a false-green "nothing hidden"')
+ok(len(_bar._raw) > _cap and _bar._raw.endswith(chr(0x202E) + 'z'),
+   'self._raw stays FULL after an edit -- the beyond-cap tail keeps delivering')
+_bar._choose('reject')
+
 # CANARY: the table depends on classify_paste_detail, not a hardcoded layout
 _saved_detail = _rev.classify_paste_detail
 _rev.classify_paste_detail = lambda raw: {

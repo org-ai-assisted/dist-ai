@@ -350,6 +350,17 @@ def _test_watcher():
     ok(w._popup.isVisible(), 'review_now: shows even clean text on demand')
     w.resolve('plain text', 'reject')
 
+    # REGRESSION (finding #2): review_is_open() tracks an UNRESOLVED popup, so a second
+    # 'Review clipboard now' can re-raise it instead of reassigning the holder and silently
+    # GC'ing the first, still-open review. raise_popup() re-fronts it without crashing.
+    cb.setText('plain again')
+    w.review_now()
+    ok(w.review_is_open(), 'review_is_open: True while a popup is showing')
+    w.raise_popup()                        # must not raise
+    ok(w.review_is_open(), 'raise_popup: leaves the popup open')
+    w.resolve('plain again', 'reject')
+    ok(not w.review_is_open(), 'review_is_open: False once the review is resolved')
+
 
 def _roundtrip(req):
     """Send one framed request to the running singleton server and read its reply,
@@ -395,6 +406,13 @@ def _test_daemon_ipc():
                'dispatch: a non-dict request rejected')
             eq(app._dispatch(json.dumps({'op': 'bogus'}).encode('utf-8')).get('ok'),
                False, 'dispatch: unknown op rejected')
+            # REGRESSION (finding #4): deeply-nested JSON makes json.loads raise
+            # RecursionError (NOT ValueError); uncaught it would SIGABRT this same-UID
+            # daemon. _dispatch must catch it like main.py's IPC dispatch. CANARY: on the
+            # pre-fix except (ValueError, UnicodeDecodeError) this propagates and crashes.
+            _deep = b'[' * 100000 + b']' * 100000
+            eq(app._dispatch(_deep).get('ok'), False,
+               'dispatch: deeply-nested JSON (RecursionError) rejected, not crashed')
             # an admin lock must be honoured over IPC too (codex ai-review): a direct
             # set-warn-any request cannot override a locked clip_warn_any -- the lock
             # is enforced at the daemon, not only the tray/main-window UI.

@@ -19,6 +19,7 @@ import socket
 import struct
 import tempfile
 import threading
+import time
 
 try:
     from secure_terminal import ipc, session, settings
@@ -82,6 +83,29 @@ try:
     ok(True, 'ensure_socket_dir: a failed chmod is swallowed, not raised')
 finally:
     os.chmod = _orig_chmod
+
+# REGRESSION (finding #6): ensure_socket_dir must make EVERY missing component 0700, not
+# just the leaf. os.makedirs(mode=) applies the mode only to the leaf and lets umask widen
+# any intermediate dir it creates -- a world-traversable parent under the same-UID-only
+# 0700 contract. Point XDG_RUNTIME_DIR at a MISSING nested path so intermediate dirs must
+# be created. CANARY: with umask 0 the old makedirs left every intermediate at 0777.
+_chain_base = tempfile.mkdtemp()
+_saved_umask = os.umask(0)
+try:
+    os.environ['XDG_RUNTIME_DIR'] = os.path.join(_chain_base, 'xx', 'yy', 'zz')
+    _leaf = ipc.ensure_socket_dir()
+    _components = [os.path.join(_chain_base, 'xx'),
+                   os.path.join(_chain_base, 'xx', 'yy'),
+                   os.path.join(_chain_base, 'xx', 'yy', 'zz'),
+                   _leaf]
+    _widened = [d for d in _components
+                if not os.path.isdir(d) or (os.stat(d).st_mode & 0o777) != 0o700]
+    ok(not _widened,
+       'ensure_socket_dir: every created component is 0700, not just the leaf '
+       '(no world-traversable intermediate dir)')
+finally:
+    os.umask(_saved_umask)
+    os.environ['XDG_RUNTIME_DIR'] = _run_dir   # restore for the send_request tests below
 
 
 # --- send_request talks to a real same-UID server over the framed protocol -----
@@ -181,6 +205,38 @@ _reply = ipc.send_request('default', {'op': 'ping'})
 _t.join(timeout=2)
 os.unlink(_sock_path)
 eq(_reply, None, 'send_request: a non-JSON reply -> None (exchange failed)')
+
+# REGRESSION (finding #5): the receive is bounded by ONE cumulative wall-clock deadline,
+# not a per-recv timeout that a trickling same-UID peer could reset indefinitely to hold
+# the ctl/launch client open past its budget. _recv_exactly takes the deadline directly
+# (its signature changed -- the old (sock, count) form TypeErrors here, a clean canary).
+# a) a deadline already in the past returns None at once, without blocking:
+_p1, _p2 = socket.socketpair()
+try:
+    eq(ipc._recv_exactly(_p1, 4, time.monotonic() - 1.0), None,
+       '_recv_exactly: a passed deadline returns None immediately')
+finally:
+    _p1.close(); _p2.close()
+# b) no data before the deadline: the recv times out and returns None PROMPTLY (the
+# deadline is honoured, not reset per-recv):
+_p1, _p2 = socket.socketpair()
+try:
+    _t0 = time.monotonic()
+    eq(ipc._recv_exactly(_p1, 4, time.monotonic() + 0.1), None,
+       '_recv_exactly: no data before the deadline returns None')
+    ok(time.monotonic() - _t0 < 1.0,
+       '_recv_exactly: honours the deadline promptly (no unbounded wait)')
+finally:
+    _p1.close(); _p2.close()
+# c) a PARTIAL read then silence: the deadline still bounds the wait for the rest, so a
+# peer that trickles 2 of 4 bytes then stalls cannot hold the caller open forever:
+_p1, _p2 = socket.socketpair()
+try:
+    _p2.sendall(b'ab')                     # 2 of 4 bytes, then nothing more
+    eq(ipc._recv_exactly(_p1, 4, time.monotonic() + 0.1), None,
+       '_recv_exactly: a partial read then silence still returns None at the deadline')
+finally:
+    _p1.close(); _p2.close()
 
 
 # ============================ session ========================================
