@@ -8,9 +8,12 @@
 ## make-helper-one.bsh debian/control parsing:
 ##  - make_dependencies_filter_helper (flat, no alternative-parsing): must not collapse a
 ##    space-less 'A|B' to 'AB', and must strip build-profile '<...>' and any '${...}' substvar.
-##  - make_get_variables' Package/Architecture stanza loop must capture RFC822 FOLDED
+##  - make_get_variables_parse_stanzas' Package/Architecture loop must capture RFC822 FOLDED
 ##    continuation lines (a multi-line 'Architecture: amd64\n arm64', and a folded '\n all'),
 ##    or a covered target reads as uncovered and its .deb vanishes from the expected list.
+##
+## make-helper-one.bsh is sourceable (its main is was_executed-guarded), so we source it once
+## and call these functions directly -- no sed extraction, no sentinel-delimited blocks.
 
 set -o errexit
 set -o nounset
@@ -62,6 +65,14 @@ if ! type -P grep-dctrl >/dev/null 2>&1; then
    exit 1
 fi
 
+## Source the REAL file; sourcing does not run the was_executed-guarded main, so only the
+## function definitions load. GENMKFILE_PATH so any runtime source inside the file resolves.
+GENMKFILE_PATH="$(dirname -- "${helper_file}")"
+export GENMKFILE_PATH
+## style-ok: allow-sc1091-disable -- helper_file is located at runtime, unfollowable
+# shellcheck disable=SC1090,SC1091
+source "${helper_file}"
+
 test_root="$(mktemp --directory)"
 # shellcheck disable=SC2317
 cleanup_handler() {
@@ -81,11 +92,6 @@ fail() { tests_failed=$(( tests_failed + 1 )); printf '%s\n' "FAIL  $1" >&2; }
 ## have: a space-less 'A|B' must not collapse to 'AB'; build-profile '<...>' and any '${...}'
 ## substvar must be stripped. Compare on whitespace-collapsed output (the real consumer
 ## word-splits it unquoted anyway).
-sed -n '/^make_dependencies_filter_helper()/,/^}/p' -- "${helper_file}" \
-   > "${test_root}/filter.sh"
-# shellcheck disable=SC1091
-source "${test_root}/filter.sh"
-
 check_filter() {
    local desc="$1" input="$2" want="$3" got
    ## Collapse runs of whitespace to one space and trim, so spacing is not asserted.
@@ -107,17 +113,8 @@ check_filter 'any substvar stripped'                    '${perl:Depends}, python
 check_filter 'version + arch qualifiers stripped'       'debhelper (>= 13), pkg [linux-any]' 'debhelper pkg'
 
 ## --- folded Architecture in the stanza-parse loop ---
-## Drive the REAL loop (extracted between its sentinels) against a control whose Architecture
-## field is folded across lines. Target arm64 is covered only via a continuation line.
-sed -n '/^make_architecture_covers_target()/,/^}/p' -- "${helper_file}" \
-   > "${test_root}/arch.sh"
-sed -n '/GENMKFILE-TEST-EXTRACT: stanza-parse-loop BEGIN/,/GENMKFILE-TEST-EXTRACT: stanza-parse-loop END/p' \
-   -- "${helper_file}" > "${test_root}/loop.sh"
-if ! test -s "${test_root}/loop.sh" || ! grep --quiet 'while IFS= read -r line' "${test_root}/loop.sh"; then
-   printf '%s\n' "ERROR: could not extract the stanza-parse loop (sentinels moved?)." >&2
-   exit 1
-fi
-
+## Drive the REAL make_get_variables_parse_stanzas against a control whose Architecture field is
+## folded across lines. Target arm64 is covered only via a continuation line.
 cat > "${test_root}/control" <<'EOF'
 Source: testsrc
 
@@ -134,10 +131,7 @@ Architecture:
  all
 EOF
 
-# shellcheck disable=SC1091
-source "${test_root}/arch.sh"
-
-## Globals the extracted loop reads/writes.
+## Globals the parser reads/writes (set as the caller make_get_variables would).
 make_debian_control_file_absolute_path="${test_root}/control"
 make_source_package_name='testsrc'
 make_pkg_version='1.0'
@@ -147,16 +141,8 @@ DISTDIR="${test_root}/dist"
 make_package_debs_files_list=()
 make_package_list=()
 all_package_debs_are_arch_all='true'
-package=''
-binary_package_architecture=''
-current_field=''
-line=''
-temp=''
-skip_debs_artifact=''
-package_name_architecture=''
 
-# shellcheck disable=SC1091
-source "${test_root}/loop.sh"
+make_get_variables_parse_stanzas
 
 tests_total=$(( tests_total + 1 ))
 want_deb="${DISTDIR}/foldedpkg_1.0-1_arm64.deb"
