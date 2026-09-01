@@ -175,6 +175,15 @@ def run():
               not any('sample.png' in f or 'scripted.png' in f for f in fails),
               repr(fails))
 
+    # 9b. An EXTERNAL raster reference is not a site-served asset: it cannot be
+    # webp-converted (supply-chain gates it instead), so it must NOT be flagged.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               _page % ('<a href="https://example.com/x.png">x</a>'
+                        '<img src="https://example.com/y.png">'))
+        check('external raster reference not flagged must-be-webp',
+              _fmt_failures(root) == [], repr(_fmt_failures(root)))
+
     # 10. og:image / twitter:image / favicon are metadata, not content loads --
     # they may stay PNG/JPEG for social-scraper compatibility.
     with tempfile.TemporaryDirectory() as root:
@@ -408,6 +417,13 @@ def run():
             "script-src 'self'; script-src 'self' 'unsafe-inline'"), ''))
         check('duplicate script-src keeps the first (safe) value',
               _csp_failures(root) == [], repr(_csp_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # A bare host-source carries no scheme or '//', so the coarse string
+        # check misses it; the per-token host check must flag it.
+        _write(root, 'index.html', _cpage % (_csp % "'self' cdn.example.com", ''))
+        check('bare-host CSP source flagged',
+              any('external host' in f for f in _csp_failures(root)),
+              repr(_csp_failures(root)))
 
     # check_no_inline_script: inline <script> body, on*= handler, javascript: URL.
     def _inline_failures(root):
@@ -464,6 +480,63 @@ def run():
 
     check('check_no_inline_script invoked from main()',
           'check_no_inline_script(root, failures)' in main_body)
+
+    # check_links: a '..'-traversal target that escapes the site root is a BROKEN
+    # link (it would 404 on the deployed site), never validated against some
+    # unrelated real file that happens to exist on the test host.
+    def _links_failures(root, **kw):
+        failures: list[str] = []
+        check_site.check_links(root, failures, **kw)
+        return failures
+    check('_abs_candidates drops a root-escaping candidate',
+          check_site._abs_candidates('../../etc/hostname', ['/nonexistent-root'])
+          == [],
+          repr(check_site._abs_candidates('../../etc/hostname',
+                                          ['/nonexistent-root'])))
+    with tempfile.TemporaryDirectory() as root, \
+            tempfile.TemporaryDirectory() as outside:
+        # A decoy file OUTSIDE the root; a relative '..'-link that lands on it
+        # must still be reported broken (throwaway decoy, not a system file).
+        with open(os.path.join(outside, 'decoy.html'), 'w',
+                  encoding='utf-8') as handle:
+            handle.write('x')
+        rel = os.path.relpath(os.path.join(outside, 'decoy.html'),
+                              os.path.join(root, 'sub'))
+        _write(root, 'sub/index.html', '<a href="%s">x</a>' % rel)
+        check('root-escaping relative link reported broken',
+              any('broken internal link' in f for f in _links_failures(root)),
+              repr(_links_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', '<a href="/sub/">x</a>')
+        _write(root, 'sub/index.html', '<p>ok</p>')
+        check('same-root link still resolves', _links_failures(root) == [],
+              repr(_links_failures(root)))
+
+    # check_supply_chain: srcset candidates and fetching <link> rels are external
+    # subresource LOADS too (Extractor records only href/src for the tag loop).
+    def _supply_failures(root):
+        failures: list[str] = []
+        check_site.check_supply_chain(root, failures)
+        return failures
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               _page % '<img srcset="https://example.com/a.webp 2x">')
+        check('external srcset flagged by supply-chain',
+              any('srcset' in f and 'example.com' in f
+                  for f in _supply_failures(root)), repr(_supply_failures(root)))
+        _write(root, 'index.html', _page % '<img srcset="/a.webp 2x">')
+        check('same-origin srcset passes supply-chain',
+              _supply_failures(root) == [], repr(_supply_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               _page % '<link rel="stylesheet" href="https://example.com/s.css">')
+        check('external stylesheet link flagged',
+              any('example.com' in f for f in _supply_failures(root)),
+              repr(_supply_failures(root)))
+        _write(root, 'index.html',
+               _page % '<link rel="canonical" href="https://example.com/">')
+        check('external canonical link NOT flagged (metadata)',
+              _supply_failures(root) == [], repr(_supply_failures(root)))
 
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed
