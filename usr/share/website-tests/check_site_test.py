@@ -418,11 +418,19 @@ def run():
         check('duplicate script-src keeps the first (safe) value',
               _csp_failures(root) == [], repr(_csp_failures(root)))
     with tempfile.TemporaryDirectory() as root:
-        # A bare host-source carries no scheme or '//', so the coarse string
-        # check misses it; the per-token host check must flag it.
-        _write(root, 'index.html', _cpage % (_csp % "'self' cdn.example.com", ''))
-        check('bare-host CSP source flagged',
-              any('external host' in f for f in _csp_failures(root)),
+        # Any external source is flagged by an allowlist (a legit token is a
+        # quoted keyword/nonce/hash or a host-free scheme). Bare host, host:port,
+        # IPv6, single-label host, and a network scheme all count.
+        for bad in ('cdn.example.com', 'cdn.example.com:443', '[::1]',
+                    'localhost', 'wss:', '*'):
+            _write(root, 'index.html', _cpage % (_csp % ("'self' " + bad), ''))
+            check('CSP external source flagged: %s' % bad,
+                  any('external source' in f for f in _csp_failures(root)),
+                  repr(_csp_failures(root)))
+        # A host-free scheme source (data:) is legitimate and must NOT be flagged.
+        _write(root, 'index.html', _cpage % (_csp % "'self'", ''))
+        check('clean strict CSP has no external-source failure',
+              not any('external source' in f for f in _csp_failures(root)),
               repr(_csp_failures(root)))
 
     # check_no_inline_script: inline <script> body, on*= handler, javascript: URL.
@@ -488,11 +496,10 @@ def run():
         failures: list[str] = []
         check_site.check_links(root, failures, **kw)
         return failures
-    check('_abs_candidates drops a root-escaping candidate',
-          check_site._abs_candidates('../../etc/hostname', ['/nonexistent-root'])
-          == [],
-          repr(check_site._abs_candidates('../../etc/hostname',
-                                          ['/nonexistent-root'])))
+    cands = check_site._abs_candidates('../../etc/hostname', ['/nonexistent-root'])
+    check('_abs_candidates clamps a root-escaping path into the root',
+          bool(cands) and all(c.startswith('/nonexistent-root/') for c in cands)
+          and cands[0] == '/nonexistent-root/etc/hostname', repr(cands))
     with tempfile.TemporaryDirectory() as root, \
             tempfile.TemporaryDirectory() as outside:
         # A decoy file OUTSIDE the root; a relative '..'-link that lands on it
@@ -537,6 +544,93 @@ def run():
                _page % '<link rel="canonical" href="https://example.com/">')
         check('external canonical link NOT flagged (metadata)',
               _supply_failures(root) == [], repr(_supply_failures(root)))
+
+    # _is_external matches browser URL parsing: case, whitespace, backslash.
+    check('_is_external: HTTPS scheme (case-insensitive)',
+          check_site._is_external('HTTPS://example.com/x'))
+    check('_is_external: leading whitespace trimmed',
+          check_site._is_external('  //example.com/x'))
+    check('_is_external: backslash treated as slash',
+          check_site._is_external('\\\\example.com/x')
+          and check_site._is_external('/\\example.com/x'))
+    check('_is_external: a same-origin path is not external',
+          not check_site._is_external('/local/x'))
+
+    # Browser-style '..' clamping: an in-root '..' link RESOLVES (not broken),
+    # and a protocol-relative external link is external (not a broken internal).
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', '<p>home</p>')
+        _write(root, 'sub/page.html', '<a href="../index.html">home</a>')
+        check('in-root .. link resolves (clamped like a browser)',
+              _links_failures(root) == [], repr(_links_failures(root)))
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', '<a href="//other.example.com/p">x</a>')
+        check('protocol-relative link is external, not a broken internal link',
+              _links_failures(root) == [], repr(_links_failures(root)))
+
+    # supply-chain: external CSS url() (inline, and a .css file) is a load.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _page %
+               '<div style="background:url(https://example.com/p.webp)">x</div>')
+        check('external inline CSS url() flagged by supply-chain',
+              any('CSS url()' in f and 'example.com' in f
+                  for f in _supply_failures(root)), repr(_supply_failures(root)))
+        _write(root, 'index.html', _page % '<link rel="stylesheet" href="/s.css">')
+        _write(root, 's.css', 'body{background:url(https://example.com/bg.webp)}')
+        check('external .css url() flagged by supply-chain',
+              any('bg.webp' in f for f in _supply_failures(root)),
+              repr(_supply_failures(root)))
+
+    # supply-chain: an external <object data=...> is a load (previously a dead
+    # RESOURCE_ATTR entry, now live via the Extractor).
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               _page % '<object data="https://example.com/x.swf"></object>')
+        check('external <object data> flagged by supply-chain',
+              any('example.com' in f for f in _supply_failures(root)),
+              repr(_supply_failures(root)))
+
+    # srcset via the HTML parser: an unquoted attribute is caught; a srcset
+    # substring in a CODE SAMPLE (text, not an attribute) is NOT a false load.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _page % '<img srcset=https://example.com/a.webp>')
+        check('unquoted external srcset flagged',
+              any('a.webp' in f for f in _supply_failures(root)),
+              repr(_supply_failures(root)))
+        _write(root, 'index.html',
+               _page % '<code>srcset="https://example.com/z.webp"</code>')
+        check('srcset in a code sample is not a false load',
+              _supply_failures(root) == [], repr(_supply_failures(root)))
+
+    # check_footer: a family link appearing AFTER </footer> must not mask a
+    # missing one inside the footer.
+    def _footer_failures(root):
+        failures: list[str] = []
+        check_site.check_footer(root, failures)
+        return failures
+    with tempfile.TemporaryDirectory() as root:
+        fam = list(check_site.FAMILY.values())
+        _write(root, 'index.html',
+               '<footer>%s</footer>\n<!-- %s -->' % (fam[0], ' '.join(fam[1:])))
+        check('family links after </footer> do not mask missing ones',
+              len(_footer_failures(root)) == len(fam) - 1,
+              repr(_footer_failures(root)))
+
+    # check_banner: the status-pill compliance check must not depend on
+    # class="status" being the pill's first attribute.
+    def _banner_failures(root):
+        failures: list[str] = []
+        check_site.check_banner(root, failures)
+        return failures
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', '<span id="x" class="status">working</span>')
+        check('banner pill checked regardless of attribute order',
+              any('status banner' in f for f in _banner_failures(root)),
+              repr(_banner_failures(root)))
+        _write(root, 'index.html',
+               '<span id="x" class="status">review needed</span>')
+        check('compliant banner passes regardless of attribute order',
+              _banner_failures(root) == [], repr(_banner_failures(root)))
 
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed
