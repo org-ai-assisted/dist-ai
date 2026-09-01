@@ -3108,6 +3108,20 @@ eq(_argv(''), [], 'an empty command yields [] (caller substitutes the login shel
 eq(_argv(None), [], 'no command yields []')
 ok(_argv('echo "unbalanced') is None,
    'a MALFORMED command yields None (fail closed, no shell) -- distinct from [] (empty)')
+# agy: a WHITESPACE-only command shell-splits to [] without raising -- it names no
+# program, so it must fail closed (None), not fall through to a login shell.
+ok(_argv('   ') is None, 'a whitespace-only command yields None (fail closed)')
+ok(_argv(' \t ') is None, 'tabs+spaces (no words) yields None (fail closed)')
+# codex: a malformed command must not restart_as_shell on the child's 127 exit (the
+# IPC/GUI path where the CLI parse never runs) -- the tab is marked _command_malformed
+# in the parent so restart_as_shell REFUSES; the caller then CLOSES the tab, never a
+# login shell. (canary: old code left _command_malformed False and restarted a shell.)
+_mfc = SecureTerminal(command="printf 'unbalanced")
+ok(_mfc._command_malformed,
+   'a malformed-command tab is marked _command_malformed in the parent')
+ok(_mfc.restart_as_shell() is False,
+   'restart_as_shell refuses a malformed-command tab (fail closed: the tab closes)')
+_mfc.close()
 
 _hsent.clear()
 cw.apply_paste_warn('unicode')
