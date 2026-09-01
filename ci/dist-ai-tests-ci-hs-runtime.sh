@@ -19,6 +19,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 hs_root="${1:-}"
 if [ -z "${hs_root}" ]; then

@@ -714,11 +714,13 @@ wire() {
          ## the shots payloads read. Unwired, wire()'s default 'return 1' aborts the
          ## whole run under errexit, and the app/corpus-driving payloads FATAL (R-220)
          ## instead of running.
-         ## safe-pgrep/safe-pkill (the shots reaper's marker-scoped orphan sweep) ship
-         ## in dist-ai's own usr/bin -- i.e. ${mydir} -- so put it on PATH: in public
-         ## CI private-ai-config is absent, so a bare 'type -P safe-pgrep' would fail
-         ## the reaper's R-220 hard-check. On the host it is already on PATH; prepending
-         ## ${mydir} is harmless (same files).
+         ## ${mydir} (dist-ai/usr/bin) on PATH: the shots binaries live there. The
+         ## reaper's marker-scoped orphan sweep ALSO needs safe-pgrep/safe-pkill, which
+         ## ship ONLY in private-ai-config (a bare pgrep -f self-matches the caller's
+         ## shell, so the reaper HARD-FAILS its R-220 type-check rather than fall back).
+         ## On the host they are already on PATH via the installed package; in CI the
+         ## reusable checks out private-ai-config (opt-in) and dist-ai-tests-ci-pac-runtime.sh
+         ## links them into /usr/local/bin.
          wire_env=( "SECURE_TERMINAL_REPO=$( pkg_dir secure-terminal )"
                     "PATH=${mydir}:${PATH}" )
          if [ -n "${TERMINAL_POC_CORPUS_REPO:-}" ]; then
