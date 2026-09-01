@@ -398,6 +398,20 @@ ok(_rev.SAFE_FG in _bar._dot.styleSheet(),
 ok('(none)' in _bar._detail.text() and 'multi-line' in _bar._detail.text(),
    'the clean breakdown shows no hidden chars but still flags the multi-line structure')
 
+# #8: only the PASTE direction runs the lines; a COPY/CLIPBOARD multi-line review must
+# read "(multi-line)", never "runs more than one command" (it executes nothing).
+ok('runs more than one command' in _bar._detail.text(),
+   '#8: a multi-line PASTE review DOES say it runs more than one command')
+_bar.show_review(_term, 'ls\necho hi\n', 0, 'copy')
+ok('multi-line' in _bar._detail.text()
+   and 'runs more than one command' not in _bar._detail.text(),
+   '#8: a multi-line COPY review reads (multi-line), not "runs more than one command"')
+_bar.show_review(_term, 'ls\necho hi\n', 0, 'clipboard')
+ok('multi-line' in _bar._detail.text()
+   and 'runs more than one command' not in _bar._detail.text(),
+   '#8: a multi-line CLIPBOARD review reads (multi-line), not "runs more than one command"')
+_bar.show_review(_term, 'ls\necho hi\n', 0)      # restore paste state
+
 # #20: the truncation notice names the real DIRECTION (copy, not paste)
 _bar.show_review(_term, chr(0x0430) * (_bar._mirror._RAW_MAX // 5), 0, 'copy')
 ok('the FULL copy' in _bar._summary.text() and 'FULL paste' not in _bar._summary.text(),
