@@ -3112,6 +3112,9 @@ ok(_argv('echo "unbalanced') is None,
 # program, so it must fail closed (None), not fall through to a login shell.
 ok(_argv('   ') is None, 'a whitespace-only command yields None (fail closed)')
 ok(_argv(' \t ') is None, 'tabs+spaces (no words) yields None (fail closed)')
+# codex: an EMPTY program name (`-e '""'` -> ['']) also names no program -- fail closed.
+ok(_argv('""') is None, 'an empty quoted program name yields None (fail closed)')
+ok(_argv('"" arg') is None, 'a leading empty program name yields None (fail closed)')
 # codex: a malformed command must not restart_as_shell on the child's 127 exit (the
 # IPC/GUI path where the CLI parse never runs) -- the tab is marked _command_malformed
 # in the parent so restart_as_shell REFUSES; the caller then CLOSES the tab, never a
