@@ -322,6 +322,52 @@ finally:
     term.grant_clipboard_read = _orig_grant
     QDialog.exec = _orig_exec
 
+# REGRESSION (finding #3): a BACKGROUND tab's OSC-52 read must NOT pop a consent dialog
+# over the focused tab (context-confusion -- the user could approve believing it is the
+# tab they are looking at). It is denied-once WITHOUT a prompt, which resets the tab to
+# un-decided so a later read (once focused) asks properly. CANARY: the pre-fix handler
+# popped the modal for any tab -> _exec_should_not_run runs and grants ALLOW_ONCE.
+_bg_grants = []
+_bg_exec_calls = [0]
+def _exec_should_not_run(self):
+    _bg_exec_calls[0] += 1
+    for _b in self.findChildren(QPushButton):
+        if _b.text().startswith('Allow once'):
+            _b.click()
+            break
+    return int(QDialog.DialogCode.Accepted)
+_bg_orig_grant = term.grant_clipboard_read
+_bg_orig_current = win.current
+term.grant_clipboard_read = lambda d: _bg_grants.append(d)
+QDialog.exec = _exec_should_not_run
+win.current = lambda: None                   # make `term` a non-current (background) tab
+try:
+    win._on_clipboard_read_requested(term)
+    ok(_bg_exec_calls[0] == 0,
+       'OSC-52 background tab: no consent dialog is shown over the focused tab (#3)')
+    ok(_bg_grants == [term.CLIP_DENY_ONCE],
+       'OSC-52 background tab: denied-once without a prompt, tab reset to re-askable (#3)')
+finally:
+    win.current = _bg_orig_current
+    term.grant_clipboard_read = _bg_orig_grant
+    QDialog.exec = _orig_exec
+
+# REGRESSION (finding #2): a second "Review clipboard now" while the first popup is still
+# open must NOT reassign self._clip_reviewer -- that would GC the first, unresolved popup
+# and silently discard its pending review. The guard re-raises the existing one instead.
+# CANARY: the pre-fix _clip_review_now always built a new watcher, so _clip_reviewer would
+# change identity on the second call.
+APP.clipboard().setText('review me once')
+win._clip_review_now()
+_clip_r1 = win._clip_reviewer
+ok(_clip_r1 is not None and _clip_r1.review_is_open(),
+   'clip review now: the first invocation opens a review popup')
+win._clip_review_now()                       # second call while the first is still open
+ok(win._clip_reviewer is _clip_r1,
+   'clip review now: a second call re-raises the SAME reviewer, not a new one (#2)')
+_clip_r1.resolve('review me once', 'reject')  # resolve so the popup closes
+ok(not _clip_r1.review_is_open(), 'clip review now: the review resolves cleanly')
+
 # --- keyboard-shortcuts dialog: build, Reset, Save ----------------------------
 def _exec_shortcuts(self):
     for _b in self.findChildren(QPushButton):
