@@ -568,7 +568,18 @@ try:
     ok(_ct._command is None and getattr(_ct, 'launch_command', 'unset') is None
        and _ct not in w3._closing_tabs and _ct not in w3._shell_exited_pending,
        'close_tab: the cancelled command tab is a fresh shell with its close marks cleared')
+    # cleanup: _ct is now a fresh shell -- ACTUALLY close it. Reset both stubs first:
+    # left as-is, the stale declining closure (has_foreground_program True + question
+    # -> No) would resurrect _ct, so this close silently no-ops and leaks the tab AND
+    # every later question() in the file runs the stale closure. A no-fg shell closes
+    # with no modal.
+    _ct.has_foreground_program = lambda: False
+    QMessageBox.question = staticmethod(lambda *_a, **_k: _No)
+    _n_cleanup = w3.tabs.count()
     w3.close_tab(w3.tabs.indexOf(_ct))
+    pump(200)
+    eq(w3.tabs.count(), _n_cleanup - 1,
+       'close_tab: the cleaned-up fresh shell actually closes (no stale declining stub)')
     # _on_shell_exited on an already-removed tab is a harmless no-op (index == -1).
     w3._on_shell_exited(_xt)
     # closeEvent: a running program + decline ignores the window close

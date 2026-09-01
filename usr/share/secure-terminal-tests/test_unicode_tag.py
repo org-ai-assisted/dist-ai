@@ -201,23 +201,26 @@ def run():
     finally:
         sys.stdout = saved_out
 
-    # 9. CANARY: the in-place-tag checks have teeth. A neutralizer that lets an
-    #    attack class through byte-identical must NOT satisfy the tag assertions --
-    #    a green run then proves the == checks are not tautologies (0 failures !=
-    #    0 coverage). Mirrors the per-class self-test in test_invariants.py.
-    #    Monkeypatch the real module symbol so the canary drives the same path the
-    #    checks above do; restore it after.
-    _saved_tag = unicode_tag.tag_text
-    unicode_tag.tag_text = lambda s: s          # broken: pass everything through untagged
+    # 9. CANARY: the in-place-tag checks have teeth. Prove it by BREAKING the real
+    #    tag_text (not a stub) and confirming its output then MISMATCHES -- so a
+    #    neutralizer that stops recognizing an attack class cannot pass section 1
+    #    byte-identical (0 failures != 0 coverage). marking_class is the module global
+    #    tag_text's active-deception branch rides on (its `in _ALWAYS_TAG` gate);
+    #    patching it drives the REAL tag_text -- the SAME function object section 1's
+    #    `tag` binds -- down the untagged path. The old canary patched tag_text itself
+    #    to `lambda s: s` and then compared its output, reducing to two literals that
+    #    passed with the real tag_text fully broken.
+    _saved_mc = unicode_tag.marking_class
+    unicode_tag.marking_class = lambda cp: 'nonascii'   # never in _ALWAYS_TAG -> tags nothing
     try:
         ok(unicode_tag.tag_text('release\u202egpj')
            != 'release[U+202E RIGHT-TO-LEFT OVERRIDE]gpj',
-           'CANARY: a pass-through neutralizer fails the bidi-override tag check (teeth)')
+           'CANARY: tag_text whose classifier stops flagging bidi FAILS the bidi check (teeth)')
         ok(unicode_tag.tag_text('veri\u200bfied')
            != 'veri[U+200B ZERO WIDTH SPACE]fied',
-           'CANARY: a pass-through neutralizer fails the zero-width tag check (teeth)')
+           'CANARY: tag_text whose classifier stops flagging invisibles FAILS the zero-width check (teeth)')
     finally:
-        unicode_tag.tag_text = _saved_tag
+        unicode_tag.marking_class = _saved_mc
 
     print('test_unicode_tag: %d pass, %d fail, 0 skip' % (_passed, _failed))
     return 1 if _failed else 0
