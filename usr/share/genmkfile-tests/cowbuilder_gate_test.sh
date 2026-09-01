@@ -55,9 +55,9 @@ test_root="$(mktemp --directory)"
 cleanup() { safe-rm -r -f -- "${test_root}"; }
 trap cleanup EXIT
 
-## Extract the real make_get_distdir; stub die to record + exit non-zero.
+## Extract the real make_get_distdir; stub exit_with_error to record + exit non-zero.
 {
-   printf '%s\n' 'die() { printf "DIE: %s\n" "$2" >&2; exit 66; }'
+   printf '%s\n' 'exit_with_error() { printf "DIE: %s\n" "$2" >&2; exit 66; }'
    sed -n '/^make_get_distdir()/,/^}/p' -- "${helper_file}"
 } > "${test_root}/fn.sh"
 if ! grep --quiet '^make_get_distdir()' "${test_root}/fn.sh"; then
