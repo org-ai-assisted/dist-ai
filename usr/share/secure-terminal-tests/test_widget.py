@@ -3376,6 +3376,40 @@ ok(_erx._command_exec_failed is False,
    'a real program that execs leaves _command_exec_failed False (restart still allowed)')
 _erx.close()
 
+# #44: a LIST command whose FIRST element is empty ('' from `-- ""`) names no program, so
+# it must fail closed exactly like the string path -- else _argv_for_command's list path
+# returns [''] and the child drops to a login shell. (canary: the old list path returned
+# [''] with _command_malformed False -> a shell.)
+_lfc = SecureTerminal(command=[''])
+ok(_lfc._command_malformed,
+   '#44: a list command with an empty first element is _command_malformed (fail closed)')
+ok(_lfc.restart_as_shell() is False,
+   '#44: restart_as_shell refuses an empty-list-command tab (no drop to a shell)')
+_lfc.close()
+_elc = SecureTerminal(command=[])             # empty list = the deliberate no-command case
+ok(_elc._command_malformed is False,
+   '#44: an empty list is the no-command case (login shell), not fail-closed')
+_elc.close()
+from secure_terminal.terminal import _argv_for_command as _afc44   # noqa: E402
+ok(_afc44(['']) is None, '#44: _argv_for_command([""]) is None (fail closed)')
+ok(_afc44(['  ']) is None, '#44: _argv_for_command(["  "]) is None (whitespace first elem)')
+eq(_afc44([]), [], '#44: _argv_for_command([]) is [] (no command -> shell)')
+eq(_afc44(['ls', '-l']), ['ls', '-l'], '#44: a real list command is verbatim')
+
+# #45: a PENDING OSC-52 clipboard-read consent must NOT survive restart_as_shell -- else
+# clicking Allow replies the system clipboard into the NEW unrelated shell. restart resets
+# _clipboard_read AND the allow-always grant (the new shell must re-consent). (canary: old
+# restart left _clipboard_read 'pending', so a later grant wrote OSC-52 into the new shell.)
+_cr45 = SecureTerminal(command='/bin/cat')     # a -- PROGRAM tab: restart drops to a shell
+_cr45._clipboard_read = 'pending'
+_cr45._clipboard_read_always = True
+ok(_cr45.restart_as_shell() is True, '#45: a -- PROGRAM tab restarts to a login shell')
+ok(_cr45._clipboard_read is None,
+   '#45: restart_as_shell drops a pending OSC-52 clipboard-read consent')
+ok(_cr45._clipboard_read_always is False,
+   '#45: restart_as_shell forgets the allow-always grant (the new shell re-consents)')
+_cr45.close()
+
 _hsent.clear()
 cw.apply_paste_warn('unicode')
 

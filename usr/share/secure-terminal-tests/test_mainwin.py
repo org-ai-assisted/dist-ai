@@ -1672,6 +1672,21 @@ ok(_pla(['-e', 'echo ok']).tabs[-1]['command'] == 'echo ok',
    'parse: a well-formed -e string is accepted (shell-split at spawn, not here)')
 ok(_pla(['--', 'echo', "'unbalanced"]).tabs[-1]['command'] == ['echo', "'unbalanced"],
    'parse: a -- LIST command is verbatim, NOT shlex-validated (no false reject)')
+# #44 (agy): a -- LIST whose FIRST element is empty/whitespace ('' from `-- ""`) names no
+# program, so it fails closed too -- verbatim applies only to a REAL first arg, else the
+# list path drops to a login shell (the string path already fails closed).
+_rejl = False
+try:
+    _pla(['--', ''])
+except SystemExit as _sel:
+    _rejl = (_sel.code == 2)
+ok(_rejl, '#44: a -- LIST with an empty first element exits(2), never a login shell')
+_rejl2 = False
+try:
+    _pla(['--', '  ', 'arg'])
+except SystemExit as _sel2:
+    _rejl2 = (_sel2.code == 2)
+ok(_rejl2, '#44: a -- LIST with a whitespace-only first element also exits(2)')
 
 # --- set_* admin-locked returns + bell channels + run_command palette ---------
 from PyQt6.QtWidgets import QMessageBox                          # noqa: E402
