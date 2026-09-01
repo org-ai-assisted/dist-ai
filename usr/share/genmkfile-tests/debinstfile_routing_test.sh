@@ -117,6 +117,13 @@ CHANGELOG
    printf '%s\n' 'x' > "${dir}/usr/share/foo/b#pkg-two"
    ## No '#': must not be routed anywhere.
    printf '%s\n' 'x' > "${dir}/etc/plain"
+   ## A file under a '#'-named PARENT directory: the '#<pkg>' delimiter must be stripped
+   ## from the BASENAME only, so the parent's '#' survives in the destination. Old code
+   ## truncated the dest at the FIRST '#' of the whole path ('/usr/li' not '/usr/li#b/tool').
+   mkdir --parents -- "${dir}/usr/li#b"
+   printf '%s\n' 'x' > "${dir}/usr/li#b/tool#pkg-one"
+   ## A '#'-named DIRECTORY is not a file to install; it must never become an install entry.
+   mkdir --parents -- "${dir}/usr/emptydir#pkg-two"
 }
 
 run_debinstfile() {
@@ -156,6 +163,22 @@ if grep --quiet --line-regexp --fixed-strings -- 'usr/share/foo/b#pkg-two => /us
    pass 'a nested path routes to the second package'
 else
    fail "wrong mapping: $(grep -- '=>' "${pkg_dir}/debian/pkg-two.install" || true)"
+fi
+
+## A '#' in a PARENT directory must not truncate the destination: only the basename's
+## '#<pkg>' is stripped. Old code ('${file_name%%#*}') produced '=> /usr/li'.
+if grep --quiet --line-regexp --fixed-strings -- 'usr/li#b/tool#pkg-one => /usr/li#b/tool' \
+   "${pkg_dir}/debian/pkg-one.install"; then
+   pass 'a hash in a parent directory does not truncate the destination'
+else
+   fail "parent-hash dest wrong: $(grep -- 'tool' "${pkg_dir}/debian/pkg-one.install" || true)"
+fi
+
+## A '#'-named DIRECTORY is not a file to install; it must not be routed into any package.
+if grep --quiet -- 'emptydir' "${pkg_dir}/debian/pkg-one.install" "${pkg_dir}/debian/pkg-two.install"; then
+   fail 'a hash-named directory was emitted as an install entry'
+else
+   pass 'a hash-named directory is not routed (files/symlinks only)'
 fi
 
 ## Cross-contamination: each package's file must carry ONLY its own entries.
