@@ -2929,8 +2929,19 @@ APP.processEvents()
 if win.tabs.count() == 0:
     win.new_tab()
 _sf = win.current()
-_sf._append('findmetext')
-_sf.selectAll()                              # spans the prompt line too -> MULTI-line
+# Build a DETERMINISTIC two-line document (a prior output line + the query line) so the
+# selection spans a block boundary regardless of whether the child shell has printed a
+# prompt yet. The old code relied on selectAll() picking up a prompt line, which races
+# the child in offscreen CI -- there selectAll yielded a single-line 'findmetext' (no
+# U+2029), so show_find SEEDED and this assert tripped.
+_sfc = _sf.textCursor()
+_sfc.movePosition(QTextCursor.MoveOperation.End)
+_sfc.insertText('previous output')
+_sfc.insertBlock()
+_sfc.insertText('findmetext')
+_sf.selectAll()                              # spans two blocks -> U+2029 -> MULTI-line
+ok('\u2029' in _sf.textCursor().selectedText(),
+   'precondition: the selection genuinely spans multiple lines (U+2029 present)')
 win._find_bar.input.setText('')             # clear any prior seed
 win.show_find()
 ok(win._find_bar.input.text() == '',

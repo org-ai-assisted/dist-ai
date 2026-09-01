@@ -1021,10 +1021,30 @@ def check_undefined_classes(root, failures):
 # byte-compared -- a byte gate would false-fail wherever the renderer differs.
 FAVICON_SIZE = 512  # px; the raster favicon fallback + apple-touch-icon target
 
-_CANONICAL_RE = re.compile(
-    r'<link\b[^>]*\brel=["\']canonical["\'][^>]*\bhref=["\']([^"\']+)["\']',
-    re.IGNORECASE)
+# A 24-byte PNG head: 8-byte signature, then the IHDR chunk (length 13, type,
+# width, height). The IEND chunk that closes every valid PNG.
 _PNG_MAGIC = b'\x89PNG\r\n\x1a\n'
+_PNG_IHDR_LEN = b'\x00\x00\x00\x0d'
+_PNG_IEND = b'IEND\xaeB\x60\x82'
+
+
+class _CanonicalParser(html.parser.HTMLParser):
+    """First <link rel="canonical"> href, attribute order irrelevant and a
+    multi-token rel ('alternate canonical') honored. HTMLParser never fires
+    handle_starttag for tags inside an HTML comment, so a commented-out
+    canonical is ignored -- which a raw-markup regex cannot do."""
+
+    def __init__(self):
+        super().__init__()
+        self.href = None
+
+    def handle_starttag(self, tag, attrs):
+        if tag != 'link' or self.href is not None:
+            return
+        amap = dict(attrs)
+        rel = (amap.get('rel') or '').lower().split()
+        if 'canonical' in rel and amap.get('href'):
+            self.href = amap['href']
 
 
 def seo_host(root):
@@ -1035,25 +1055,33 @@ def seo_host(root):
             markup = handle.read()
     except OSError:
         return None
-    match = _CANONICAL_RE.search(markup)
-    if not match:
+    parser = _CanonicalParser()
+    parser.feed(markup)
+    if not parser.href:
         return None
-    return urllib.parse.urlparse(match.group(1)).netloc or None
+    return urllib.parse.urlparse(parser.href).netloc or None
+
+
+def _quote_path(rel):
+    # Percent-encode each path segment (a legal filename may hold '#', '&', a
+    # space); the '/' separators stay literal.
+    return '/'.join(urllib.parse.quote(seg, safe='') for seg in rel.split('/'))
 
 
 def seo_page_urls(root, host):
     """Sorted absolute URLs for every navigable content page under root. A
     directory index maps to its directory URL ('/', '/sub/'); any other page
-    keeps its .html name."""
+    keeps its .html name. Assumes the site is served at the domain root (true
+    for every <owner>.github.io Pages site here)."""
     urls = set()
     for page in html_files(root):
         rel = os.path.relpath(page, root).replace(os.sep, '/')
         if rel == 'index.html':
             path = '/'
         elif rel.endswith('/index.html'):
-            path = '/' + rel[:-len('index.html')]
+            path = '/' + _quote_path(rel[:-len('/index.html')]) + '/'
         else:
-            path = '/' + rel
+            path = '/' + _quote_path(rel)
         urls.add('https://%s%s' % (host, path))
     return sorted(urls)
 
@@ -1063,7 +1091,9 @@ def render_sitemap(root, host):
     lines = ['<?xml version="1.0" encoding="UTF-8"?>',
              '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']
     for url in seo_page_urls(root, host):
-        lines.append('  <url><loc>%s</loc></url>' % url)
+        # Percent-encoding already removes XML metacharacters from the path;
+        # escape defensively so a host or scheme could never inject markup.
+        lines.append('  <url><loc>%s</loc></url>' % html.escape(url, quote=False))
     lines.append('</urlset>')
     return '\n'.join(lines) + '\n'
 
@@ -1077,22 +1107,36 @@ def render_robots(host):
 
 
 def _png_size(path):
-    """(width, height) of a PNG read from its IHDR, or None if not a valid PNG."""
+    """(width, height) of a PNG read from its IHDR, or None if the signature or
+    IHDR chunk header is malformed."""
     try:
         with open(path, 'rb') as handle:
             header = handle.read(24)
     except OSError:
         return None
-    if len(header) < 24 or header[:8] != _PNG_MAGIC or header[12:16] != b'IHDR':
+    if len(header) < 24 or header[:8] != _PNG_MAGIC \
+            or header[8:12] != _PNG_IHDR_LEN or header[12:16] != b'IHDR':
         return None
     return (int.from_bytes(header[16:20], 'big'),
             int.from_bytes(header[20:24], 'big'))
 
 
+def _png_complete(path):
+    """True if the file ends with the PNG IEND chunk. A portable completeness
+    check (IEND bytes are version-invariant) that rejects a truncated file
+    without decoding pixels -- which is not reproducible across librsvg."""
+    try:
+        with open(path, 'rb') as handle:
+            handle.seek(-len(_PNG_IEND), os.SEEK_END)
+            return handle.read() == _PNG_IEND
+    except OSError:
+        return False
+
+
 def check_seo(root):
     """SEO drift/structural problems for one site root, or [] when current. A
     directory with no index.html is not a site root and is skipped."""
-    problems = []
+    problems: list[str] = []
     if not os.path.isfile(os.path.join(root, 'index.html')):
         return problems
     host = seo_host(root)
@@ -1112,10 +1156,11 @@ def check_seo(root):
             problems.append('%s stale (does not match the page set / host); '
                             'run site-generate' % name)
     if os.path.isfile(os.path.join(root, 'favicon.svg')):
-        size = _png_size(os.path.join(root, 'favicon.png'))
-        if size is None:
-            problems.append('favicon.png missing or not a valid PNG while '
-                            'favicon.svg is present; run site-generate')
+        png = os.path.join(root, 'favicon.png')
+        size = _png_size(png)
+        if size is None or not _png_complete(png):
+            problems.append('favicon.png missing, truncated, or not a valid PNG '
+                            'while favicon.svg is present; run site-generate')
         elif size != (FAVICON_SIZE, FAVICON_SIZE):
             problems.append('favicon.png is %dx%d, expected %dx%d; run '
                             'site-generate' % (size + (FAVICON_SIZE,

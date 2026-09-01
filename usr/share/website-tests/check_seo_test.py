@@ -29,6 +29,7 @@ import importlib.util
 import os
 import sys
 import tempfile
+import xml.etree.ElementTree
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -52,15 +53,18 @@ def _write(root, rel, data):
         handle.write(data)
 
 
-def _png(root, rel, width, height):
-    # A 24-byte PNG head: signature + a well-formed IHDR carrying the size.
-    # _png_size reads only these bytes, so this is a genuine probe target.
-    header = (cs._PNG_MAGIC + b'\x00\x00\x00\x0dIHDR'
-              + width.to_bytes(4, 'big') + height.to_bytes(4, 'big'))
+def _png(root, rel, width, height, complete=True):
+    # PNG signature + a well-formed IHDR carrying the size, optionally closed by
+    # the IEND chunk. _png_size reads the 24-byte head; _png_complete checks the
+    # trailing IEND, so complete=False yields a genuinely truncated file.
+    data = (cs._PNG_MAGIC + cs._PNG_IHDR_LEN + b'IHDR'
+            + width.to_bytes(4, 'big') + height.to_bytes(4, 'big'))
+    if complete:
+        data += cs._PNG_IEND
     path = os.path.join(root, rel)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'wb') as handle:
-        handle.write(header)
+        handle.write(data)
 
 
 def _index(host):
@@ -97,6 +101,24 @@ def run():
     with tempfile.TemporaryDirectory() as root:
         _write(root, 'index.html', '<header></header>')
         check('seo_host is None without a canonical link',
+              cs.seo_host(root) is None, repr(cs.seo_host(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # HTML attribute order is insignificant: href before rel must still parse.
+        _write(root, 'index.html',
+               '<link href="https://%s/" rel="canonical">' % host)
+        check('seo_host parses with href before rel',
+              cs.seo_host(root) == host, repr(cs.seo_host(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # A multi-token rel ('alternate canonical') still carries canonical.
+        _write(root, 'index.html',
+               '<link rel="alternate canonical" href="https://%s/">' % host)
+        check('seo_host honors a multi-token rel',
+              cs.seo_host(root) == host, repr(cs.seo_host(root)))
+    with tempfile.TemporaryDirectory() as root:
+        # A canonical inside an HTML comment is not a live tag -> ignored.
+        _write(root, 'index.html',
+               '<!-- <link rel="canonical" href="https://evil.example/"> -->')
+        check('seo_host ignores a commented-out canonical',
               cs.seo_host(root) is None, repr(cs.seo_host(root)))
 
     # page-url mapping + render-source exclusion
@@ -135,6 +157,23 @@ def run():
     check('robots names the per-host sitemap',
           'Sitemap: https://%s/sitemap.xml\n' % host in robots, repr(robots))
 
+    # A legal filename with XML/URL metacharacters must be percent-encoded and
+    # the sitemap must stay well-formed XML (parseable, no raw '&').
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', _index(host))
+        _write(root, 'a&b.html', '<p>x</p>')
+        sitemap = cs.render_sitemap(root, host)
+        parsed_ok = True
+        try:
+            xml.etree.ElementTree.fromstring(sitemap)
+        except xml.etree.ElementTree.ParseError:
+            parsed_ok = False
+        check('sitemap with a metachar filename is well-formed XML',
+              parsed_ok, repr(sitemap))
+        check('metachar filename is percent-encoded in the sitemap',
+              'a%26b.html' in sitemap and 'a&b.html' not in sitemap,
+              repr(sitemap))
+
     # _png_size
     with tempfile.TemporaryDirectory() as root:
         _png(root, 'a.png', 512, 512)
@@ -144,6 +183,16 @@ def run():
         _write(root, 'b.png', 'not a png')
         check('_png_size is None for a non-PNG',
               cs._png_size(os.path.join(root, 'b.png')) is None)
+        _png(root, 'c.png', 512, 512, complete=False)
+        check('_png_complete is False for a truncated PNG',
+              not cs._png_complete(os.path.join(root, 'c.png')))
+        check('_png_complete is True for a closed PNG',
+              cs._png_complete(os.path.join(root, 'a.png')))
+        with open(os.path.join(root, 'd.png'), 'wb') as handle:
+            handle.write(cs._PNG_MAGIC + b'\x00\x00\x00\x09IHDR'
+                         + (512).to_bytes(4, 'big') + (512).to_bytes(4, 'big'))
+        check('_png_size rejects a bad IHDR length',
+              cs._png_size(os.path.join(root, 'd.png')) is None)
 
     # check_seo: clean site
     with tempfile.TemporaryDirectory() as root:
@@ -189,6 +238,11 @@ def run():
         _png(root, 'favicon.png', cs.FAVICON_SIZE, cs.FAVICON_SIZE)
         check('a correct-size favicon.png is clean',
               cs.check_seo(root) == [], repr(cs.check_seo(root)))
+        _png(root, 'favicon.png', cs.FAVICON_SIZE, cs.FAVICON_SIZE,
+             complete=False)
+        check('a truncated favicon.png is flagged',
+              any('truncated' in p for p in cs.check_seo(root)),
+              repr(cs.check_seo(root)))
 
     # check_seo: a non-site directory is skipped
     with tempfile.TemporaryDirectory() as root:

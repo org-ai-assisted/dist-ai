@@ -63,6 +63,13 @@ if [ -f "${tests_dir}/check_seo_test.py" ]; then
    "${tests_dir}/check_seo_test.py" || exit 1
 fi
 
+## Regression for site-generate's write-safety guards (dirty fail-closed,
+## symlink refusal). Uses git in a tempdir; no site checkout. A failure is a
+## real logic regression.
+if [ -f "${tests_dir}/site_generate_test.py" ]; then
+   "${tests_dir}/site_generate_test.py" || exit 1
+fi
+
 ## Resolve each site root from its env var, else a private-sources default.
 [ -v OUTPUT_LIES_REPO ] || OUTPUT_LIES_REPO=''
 [ -v SECURE_TERMINAL_SITE_REPO ] || SECURE_TERMINAL_SITE_REPO=''
