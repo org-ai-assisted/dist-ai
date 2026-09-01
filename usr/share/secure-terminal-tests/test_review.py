@@ -56,6 +56,7 @@ class _FakeTerm:
         self._mode = 'detail'         # the mirror renders in the tab's current mode
         self._markings = True
         self.dispatched = []
+        self.last_text = None         # the text a dispatch delivered (edited buffer)
 
     def current_font_family(self):
         return 'Hack'
@@ -71,11 +72,13 @@ class _FakeTerm:
         # target is NOT bracketed (a bare shell prompt) -- the common case.
         return False
 
-    def dispatch_pending_paste(self, action):
+    def dispatch_pending_paste(self, action, text=None):
         self.dispatched.append(('paste', action))
+        self.last_text = text
 
-    def dispatch_pending_copy(self, action):
+    def dispatch_pending_copy(self, action, edited=None):
         self.dispatched.append(('copy', action))
+        self.last_text = edited
 
 
 _win = QWidget()
@@ -393,6 +396,32 @@ _bar.show_review(_term, chr(0x0430) * (_bar._mirror._RAW_MAX // 5), 0, 'copy')
 ok('the FULL copy' in _bar._summary.text() and 'FULL paste' not in _bar._summary.text(),
    'a truncated COPY review names the copy action, not "paste" (#20)')
 _bar.show_review(_term, _raw, 0)                 # restore paste state
+
+# --- editable held text: edits drive the summary/table AND what delivers -------
+_et = _FakeTerm()
+_bar.show_review(_et, _raw, 0)                    # _raw hides a bidi + a homoglyph
+ok('hides' in _bar._summary.text(), 'the held unicode is flagged before any edit')
+_bar._edit.setPlainText('echo hello')            # edit down to plain ASCII
+eq(_bar._summary.text(), _rev._CLEAN_MSG,
+   'editing the held text to ASCII re-runs the classifier and clears the summary')
+ok('(none)' in _bar._detail.text(),
+   'the breakdown updates from the edited buffer (no hidden chars)')
+_bar._choose('unicode')
+eq(_et.last_text, 'echo hello',
+   'a delivery choice sends the EDITED buffer, not the originally held text')
+_et2 = _FakeTerm()
+_bar.show_review(_et2, 'plain', 0)
+_bar._edit.setPlainText('a' + chr(0x202E) + 'b')  # edit a hidden char IN
+ok('Bidirectional control' in _bar._detail.text() and 'hides' in _bar._summary.text(),
+   'editing a hidden char into the buffer re-flags it in the summary + table')
+_bar._choose('reject')
+
+# a truncated review marks the Structure counts as a scanned prefix, not a definite
+# total (a 2M-char paste must not read a flat "1,000,000 characters")
+_bar.show_review(_term, chr(0x0430) * (_bar._mirror._RAW_MAX // 5), 0)
+ok('scanned prefix' in _bar._detail.text(),
+   'a truncated review marks the Length as a scanned prefix, not a definite count')
+_bar._choose('reject')
 
 # CANARY: the table depends on classify_paste_detail, not a hardcoded layout
 _saved_detail = _rev.classify_paste_detail
