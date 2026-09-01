@@ -57,29 +57,41 @@ os.environ['QT_SCALE_FACTOR'] = str(SHOT_SCALE)
 # A program to shoot: `name` is the compatibility-row key (and the shot filename);
 # `command` is the shell line shown as the shot's caption AND run for real (one
 # string, run under `bash -c` in the fixture dir, so a pipe/redirect is literal).
-# `label` names the row the way the page does.
+# `label` names the row the way the page does. `expect_rc` is the shot command's
+# expected exit (diff exits 1 on differences -- that IS the demo, not a failure).
+# `verify` are the OTHER tools the row's label claims: each is run for real and
+# rc-checked (exit 0) so "was run and verified" covers EVERY named tool, not just
+# the one that is shot. They must not perturb the shot, so they run AFTER capture.
 class Prog:
-    def __init__(self, name, label, command):
+    def __init__(self, name, label, command, expect_rc=0, verify=()):
         self.name = name
         self.label = label
         self.command = command
+        self.expect_rc = expect_rc
+        self.verify = tuple(verify)
 
 
 PROGRAMS = [
+    # coreutils row claims ls, cat, cp: shoot ls, verify cat + cp actually run.
     Prog('coreutils', 'ls, cat, cp (coreutils)',
-         'ls --color=always -F demo'),
+         'ls --color=always -F demo',
+         verify=('cat demo/readme.txt', 'cp demo/readme.txt demo/copy.txt')),
     Prog('find', 'find (findutils)',
          'find tree -type f | sort'),
     Prog('tar', 'tar',
          'tar tf fixture.tar'),
     Prog('grep', 'grep',
          'grep --color=always -n TODO notes.txt'),
+    # gzip row claims gzip + zcat: shoot zcat, verify gzip compresses.
     Prog('gzip', 'gzip, zcat',
-         'zcat greeting.txt.gz'),
+         'zcat greeting.txt.gz',
+         verify=('gzip -kf list.txt',)),
     Prog('sed', 'sed',
          "sed 's/^/  | /' list.txt"),
+    # diff exits 1 on differences (the demo); cmp is the other tool the row claims.
     Prog('diff', 'diff, cmp (diffutils)',
-         'diff --color=always old.txt new.txt'),
+         'diff --color=always old.txt new.txt',
+         expect_rc=1, verify=('cmp old.txt old.txt',)),
     Prog('awk', 'awk (mawk)',
          'awk \'{ total += $2 } END { printf "total: %d\\n", total }\' nums.txt'),
     Prog('git', 'git',
@@ -199,14 +211,33 @@ def build_fixture(root, env):
     git('tag', 'v1.0')
 
 
-def run_capture(prog, root, env):
-    """Run one program for real in the fixture and return its RAW output bytes
-    (stdout+stderr merged, so a tool that writes to stderr -- like diff's context
-    -- is still shown). Raises on a launch failure so a missing tool fails loud,
-    never a blank shot."""
-    result = subprocess.run(['bash', '-c', prog.command], cwd=root, env=env,
+def _run_checked(command, root, env, expect_rc):
+    """Run `command` under bash -c in the fixture and return its RAW output bytes
+    (stdout+stderr merged, so a tool that writes to stderr -- like diff's context --
+    is still shown). Raise unless it exits `expect_rc`: a missing tool (bash exits
+    127) or a genuine failure must FAIL LOUD, never silently back the page's 'was run
+    and verified' claim with a blank or partial shot."""
+    result = subprocess.run(['bash', '-c', command], cwd=root, env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    if result.returncode != expect_rc:
+        raise RuntimeError(
+            'compat-shot: `%s` exited %d (expected %d) -- refusing to back the '
+            '"was run and verified" claim with a command that did not run cleanly:\n%s'
+            % (command, result.returncode, expect_rc,
+               result.stdout.decode('utf-8', 'replace')[:500]))
     return result.stdout
+
+
+def run_capture(prog, root, env):
+    """Run the shot command for real (rc-checked against prog.expect_rc) and return
+    its RAW output bytes, THEN run every other tool the row's label claims
+    (prog.verify, each rc-checked at 0) so the claim covers all named tools. The shot
+    is captured BEFORE the verify commands so they cannot perturb it (e.g. coreutils'
+    `cp` must not add a file to the `ls` listing being shot)."""
+    raw = _run_checked(prog.command, root, env, prog.expect_rc)
+    for command in prog.verify:
+        _run_checked(command, root, env, 0)
+    return raw
 
 
 def _decode(raw):

@@ -82,7 +82,7 @@ fi
 
 ## The fixture RUNS these programs for real; a missing one is an environment bug, not a skip
 ## (R-220): the generator would fail cryptically, so name the gap here instead.
-for tool in bash ls cat find tar grep zcat sed diff awk git; do
+for tool in bash ls cat cp find tar grep gzip zcat sed diff cmp awk git; do
    if ! type -P "${tool}" >/dev/null 2>&1; then
       printf '%s\n' "FATAL: required fixture program '${tool}' not found on PATH (install it in the test env)" >&2
       exit 1
@@ -139,6 +139,15 @@ if [ -n "${page}" ]; then
 else
    printf '%s\n' 'note: secure-terminal.github.io checkout not found; page-drift check not applicable here'
 fi
+
+## 4. REGRESSION (silent-green): a compat command that does NOT run cleanly must FAIL
+## LOUD, not silently back the page's "was run and verified" claim with a blank/partial
+## shot. run_capture rc-checks the shot command (against prog.expect_rc) AND every
+## verify tool the row's label claims. CANARY: on the pre-fix code run_capture did no
+## rc-check, so a missing/failing tool produced a shot and the generator exited 0.
+rc=0
+python3 "${script_dir}/compat_shot_rc_check.py" "${gen}" "${work}" || rc=$?
+check 'run_capture fails loud on a command that did not run cleanly (no silent-green)' "${rc}"
 
 printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then

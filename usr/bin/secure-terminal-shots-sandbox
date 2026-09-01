@@ -116,13 +116,21 @@ fi
 
 base='st-shots-sandbox'
 
-printf '%s\n' "secure-terminal-shots-sandbox: fresh-syncing three trees into the sandbox ..." >&2
+## compat builds its OWN fixture and reads no corpus payloads (see the presence
+## check above), so it syncs two trees, not three -- skip the corpus sync for it.
+if [ "${lane}" = 'compat' ]; then
+   printf '%s\n' "secure-terminal-shots-sandbox: fresh-syncing two trees into the sandbox (compat needs no corpus) ..." >&2
+else
+   printf '%s\n' "secure-terminal-shots-sandbox: fresh-syncing three trees into the sandbox ..." >&2
+fi
 sandbox "${target_arg[@]}" sync --delete "${secure_terminal}" "${base}/secure-terminal" \
    || die "sync of secure-terminal into the sandbox failed"
 sandbox "${target_arg[@]}" sync --delete "${dist_ai}" "${base}/dist-ai" \
    || die "sync of dist-ai into the sandbox failed"
-sandbox "${target_arg[@]}" sync --delete "${corpus}" "${base}/terminal-poc-corpus" \
-   || die "sync of terminal-poc-corpus into the sandbox failed"
+if [ "${lane}" != 'compat' ]; then
+   sandbox "${target_arg[@]}" sync --delete "${corpus}" "${base}/terminal-poc-corpus" \
+      || die "sync of terminal-poc-corpus into the sandbox failed"
+fi
 
 printf '%s\n' "secure-terminal-shots-sandbox: running '${lane}' in the sandbox ..." >&2
 remote_shots="${base}/dist-ai/usr/share/secure-terminal-shots/shots"
