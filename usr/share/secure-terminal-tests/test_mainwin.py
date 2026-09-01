@@ -2161,21 +2161,21 @@ win._locked = _b2_lock
 # #4: a crafted session with a NON-STRING tab name must not crash restore (insertTab
 # needs a str). The placeholder path used a bare truth test.
 _before_ct = win.tabs.count()
-win._add_placeholder_tab({'name': ['not', 'a', 'string'], 'cwd': '/tmp'}, _before_ct)
+win._add_placeholder_tab({'name': ['not', 'a', 'string'], 'cwd': '/tmp'}, _before_ct)  # nosec B108 -- inert cwd string in placeholder test data, never opened
 ok(win.tabs.count() == _before_ct + 1,
    '#4: a non-string saved tab name falls back to a label, no restore crash')
 win.tabs.removeTab(win.tabs.count() - 1)
 # a placeholder tab must not flash a crafted (bidi/RLO) session name in the tab bar before
 # the real tab swaps in -- the label is sanitize_title'd like the real tab.
 _before_ph = win.tabs.count()
-win._add_placeholder_tab({'name': 'a\u202eb', 'cwd': '/tmp'}, _before_ph)
+win._add_placeholder_tab({'name': 'a\u202eb', 'cwd': '/tmp'}, _before_ph)  # nosec B108 -- inert cwd string in placeholder test data, never opened
 ok('\u202e' not in win.tabs.tabText(_before_ph),
    'a placeholder tab label sanitizes a bidi/RLO session name (no control/bidi flash)')
 win.tabs.removeTab(win.tabs.count() - 1)
 # the placeholder's cwd-basename FALLBACK (no saved name) has the same class of gap:
 # a bidi dir name in the saved cwd must be sanitized too, not just the name field.
 _before_phc = win.tabs.count()
-win._add_placeholder_tab({'cwd': '/tmp/a\u202eb'}, _before_phc)
+win._add_placeholder_tab({'cwd': '/tmp/a\u202eb'}, _before_phc)  # nosec B108 -- inert cwd string in placeholder test data, never opened
 ok('\u202e' not in win.tabs.tabText(_before_phc),
    'a placeholder tab label sanitizes a bidi/RLO cwd basename (name-less fallback)')
 win.tabs.removeTab(win.tabs.count() - 1)
@@ -2184,7 +2184,7 @@ win.tabs.removeTab(win.tabs.count() - 1)
 # returns None for a non-terminal current widget and the nav guards skip a disabled tab.
 win.tabs.setCurrentIndex(0)
 _real_idx = win.tabs.currentIndex()
-win._add_placeholder_tab({'cwd': '/tmp'}, win.tabs.count())   # append a disabled placeholder
+win._add_placeholder_tab({'cwd': '/tmp'}, win.tabs.count())  # nosec B108 (inert cwd string) -- append a disabled placeholder
 _phi = win.tabs.count() - 1
 win.tabs.setCurrentIndex(_phi)                                # force it current (bypasses setTabEnabled)
 ok(win.current() is None,
@@ -3090,7 +3090,7 @@ try:
     win._open_path('/tmp/no-such-dir-xyz/child') # missing -> parent  # nosec B108 -- missing path exercises the parent-fallback branch
 finally:
     _QDS.openUrl = _op_oou
-ok(len(_op_opened) == 2 and _op_opened[0] == '/tmp',
+ok(len(_op_opened) == 2 and _op_opened[0] == '/tmp',  # nosec B108 -- '/tmp' is an expected-value string in an assertion, not a temp path
    '_open_path opens the folder, and a missing path falls back to a parent')
 
 # --- the font-noise message handler drops the flood, passes real messages -----
@@ -4132,7 +4132,7 @@ _cw2.close(); _cw2.deleteLater(); APP.processEvents()
 # (wrapping) to the next real tab, not dead-end on it -- a single `if enabled` did.
 # Indices are computed from count() (a fresh MainWindow already owns one live tab).
 _stw = MainWindow()
-_stw._add_placeholder_tab({'name': 'ph', 'cwd': '/tmp'}, _stw.tabs.count())   # placeholder LAST
+_stw._add_placeholder_tab({'name': 'ph', 'cwd': '/tmp'}, _stw.tabs.count())  # nosec B108 (inert cwd string) -- placeholder LAST
 _stw_phi = _stw.tabs.count() - 1
 _stw.tabs.setCurrentIndex(_stw_phi - 1)   # the last live tab, just before the placeholder
 _stw._on_tab_step(1)                      # PageDown: -> ph (skip) -> wrap -> live 0
@@ -4149,7 +4149,7 @@ _stw.close(); _stw.deleteLater(); APP.processEvents()
 # here, not the uncatchable Qt-dispatch abort that .close() would raise.
 _clw = MainWindow(); _clw._locked = set()
 _clw_real = len(_clw._real_terms())                            # the live tab(s) a fresh window owns
-_clw._add_placeholder_tab({'name': 'ph', 'cwd': '/tmp'}, _clw.tabs.count())   # append 1 placeholder
+_clw._add_placeholder_tab({'name': 'ph', 'cwd': '/tmp'}, _clw.tabs.count())  # nosec B108 (inert cwd string) -- append 1 placeholder
 ok(len(_clw._session_tabs()) == _clw_real
    and _clw.tabs.count() == _clw_real + 1,
    'claude: _session_tabs skips a surviving restore placeholder (real tabs only)')
@@ -4176,7 +4176,7 @@ _c2_seen = []
 _c2w.rename_tab = lambda i: _c2_seen.append(i)        # record the index the action passes
 _c2_ome = QMenu.exec
 def _c2_exec(_menu, *_a, **_k):
-    _c2w._add_placeholder_tab({'name': 'x', 'cwd': '/tmp'}, 0)   # insert before subject -> +1
+    _c2w._add_placeholder_tab({'name': 'x', 'cwd': '/tmp'}, 0)  # nosec B108 (inert cwd string) -- insert before subject -> +1
     for _act in _menu.actions():
         if _act.text().startswith('Rename'):
             _act.trigger()
