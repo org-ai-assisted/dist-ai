@@ -466,6 +466,21 @@ ok('GRID-KEEPME' in _g7._raw,
    '#7: after restart _raw carries the exited output (reseeded from the clean grid), '
    'not just the banner -- a later CLI switch reproduces it')
 _g7.close()
+# cover _grid_text's SCROLLBACK-history branch: feed more lines than the grid height so
+# the oldest rows scroll into history.top, then _grid_text must serialize those too.
+_g7s = SecureTerminal(command='/bin/cat', tui=True)
+APP.processEvents()
+for _i in range(_g7s._screen.lines + 5):
+    feed_output(_g7s, ('SCROLL-%d\r\n' % _i).encode('utf-8'))
+_g7s._render_tui()
+ok('SCROLL-0' in _g7s._grid_text(),
+   '#7: _grid_text serializes rows scrolled off into history.top (scrollback branch)')
+_g7s.close()
+# cover the scr-is-None guard: no screen -> empty string, never a crash.
+_g7n = SecureTerminal(command='/bin/cat', tui=True)
+_g7n._screen = None
+ok(_g7n._grid_text() == '', '#7: _grid_text returns empty when there is no screen')
+_g7n.close()
 
 # alternate scroll: a full-screen program that did NOT request the mouse (a plain
 # pager in the alternate screen) has no local scrollback to move, so the wheel is
