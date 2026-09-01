@@ -104,7 +104,7 @@ def mount_tmpfs_preserving(path: str, keep: list[str]) -> None:
     original contents can no longer be reached to bind FROM.
     """
 
-    stash: str = tempfile.mkdtemp(prefix='privleap-keep-', dir='/var/tmp')
+    stash: str = tempfile.mkdtemp(prefix='privleap-keep-', dir='/var/tmp')  # nosec B108 -- mkdtemp makes a unique 0700 dir; /var/tmp chosen for persistence across /tmp cleanup
     saved: list[tuple[str, str]] = []
 
     def _cleanup_stash() -> None:
