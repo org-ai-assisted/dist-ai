@@ -7220,6 +7220,8 @@ _cl.apply_zoom(250)
 eq(_cl.current_zoom(), 250, 'apply_zoom still applies a real value')
 _cl.apply_zoom(None)
 eq(_cl.current_zoom(), 250, 'apply_zoom ignores a None (TypeError) value')
+_cl.apply_zoom(float('inf'))                 # int(inf) raises OverflowError, not ValueError
+eq(_cl.current_zoom(), 250, 'apply_zoom ignores a non-finite float (OverflowError)')
 _cl.apply_zoom(9999)
 eq(_cl.current_zoom(), 1000, 'apply_zoom clamps above the max')
 _f0 = _cl.current_font_size()
