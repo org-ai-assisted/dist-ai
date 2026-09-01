@@ -1017,7 +1017,7 @@ eq(_d2['bytes'], 2, 'detail: byte count is UTF-8 length (e-acute is two bytes)')
 # ensure_utf8_ctype: the pty child must speak UTF-8 or a wide-char program renders each
 # byte as <ffffffff> (WEOF). Set a UTF-8 ctype ONLY when the ambient locale is not UTF-8;
 # never clobber a real UTF-8 locale, including one carrying an @modifier.
-_le = {}
+_le: dict[str, str] = {}
 S.ensure_utf8_ctype(_le)
 eq(_le.get('LC_CTYPE'), 'C.UTF-8', 'locale: unset -> LC_CTYPE=C.UTF-8')
 _le = {'LANG': 'C'}
