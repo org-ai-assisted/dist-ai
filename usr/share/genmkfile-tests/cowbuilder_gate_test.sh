@@ -81,6 +81,7 @@ pass() { printf '%s\n' "PASS  $1"; }
 check() {
    local desc="$1" enforce="$2" want_exit="$3"
    local out rc=0
+   # shellcheck disable=SC2030,SC2031  # subshell-local env for the isolated call
    out="$(
       export DISTDIR='.' make_use_cowbuilder='true'
       [ "${enforce}" = 'UNSET' ] || export make_enforce_cowbuilder_distdir="${enforce}"
@@ -104,6 +105,37 @@ check() {
 check 'enforce=true demands the cowbuilder folder (build/dist target)' 'true' 'true'
 check 'enforce=false does NOT demand it (non-cowbuilder action)' 'false' 'false'
 check 'unset defaults to enforce (backward compatible)' 'UNSET' 'true'
+
+## The DISTDIR writable check runs ONLY for a dist-writing (enforce) target; a
+## non-dist action with a read-only DISTDIR must not abort (a read-only package
+## parent must not break git-tag-* / deb-*-dep).
+ro="${test_root}/ro"
+mkdir -p -- "${ro}"
+chmod 000 -- "${ro}"
+check_writable() {
+   local enforce="$1" want_exit="$2" out rc=0 exited='false'
+   # shellcheck disable=SC2030,SC2031  # subshell-local env for the isolated call
+   out="$(
+      export DISTDIR="${ro}" make_use_cowbuilder='false'
+      export make_enforce_cowbuilder_distdir="${enforce}"
+      make_get_distdir 2>&1
+   )" || rc=$?
+   tests_total=$(( tests_total + 1 ))
+   case "${out}" in
+      *'not writeable'*)
+         exited='true'
+         ;;
+   esac
+   if [ "${exited}" = "${want_exit}" ]; then
+      pass "writable check enforce=${enforce} exits=${want_exit}"
+   else
+      tests_failed=$(( tests_failed + 1 ))
+      printf '%s\n' "FAIL  writable enforce=${enforce}: exited=${exited} want=${want_exit} out=[${out}]" >&2
+   fi
+}
+check_writable 'true' 'true'
+check_writable 'false' 'false'
+chmod 755 -- "${ro}"
 
 if [ "${tests_failed}" -ne 0 ]; then
    printf '%s\n' "cowbuilder_gate_test: ${tests_failed}/${tests_total} FAILED" >&2

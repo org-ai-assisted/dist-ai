@@ -156,6 +156,16 @@ else
    fail 'T7 git-push tripped on cowbuilder config'
 fi
 
+## T8: a trailing '--' / '' argv token must not poison target classification --
+## git-push stays a pure git op (no make_get_variables on a non-package repo).
+count
+if ( cd -- "${repo}" && make_git_push_remotes="org-ai-assisted" make_git_push_branches="ai" \
+      "${genmkfile_bin}" git-push -- ) >/dev/null 2>&1; then
+   pass 'T8 git-push tolerates a trailing -- (no make_get_variables abort)'
+else
+   fail 'T8 git-push -- aborted (classifier poison)'
+fi
+
 if [ "${tests_failed}" -ne 0 ]; then
    printf '%s\n' "git_push_test: ${tests_failed}/${tests_total} FAILED" >&2
    exit 1
