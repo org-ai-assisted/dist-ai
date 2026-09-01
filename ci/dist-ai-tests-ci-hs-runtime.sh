@@ -32,6 +32,10 @@ if [ ! -d "${src}" ]; then
    printf '%s\n' "dist-ai-tests-ci-hs-runtime: ${src} not found" >&2
    exit 1
 fi
+## ABSOLUTE target: 'ln -s' stores the literal string, and a RELATIVE src would be
+## re-resolved from /usr/libexec -> a broken link surfacing later as a confusing
+## "too many levels of symbolic links" in a downstream suite. Canonicalize it.
+src="$(readlink --canonicalize -- "${src}")"
 
 mkdir --parents /usr/libexec
 ln --symbolic --force --no-target-directory -- "${src}" /usr/libexec/helper-scripts
