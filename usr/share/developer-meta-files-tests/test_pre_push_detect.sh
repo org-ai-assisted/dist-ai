@@ -274,6 +274,17 @@ assert_at "R-120 flags '/usr/bin/builtin rm' (path-qualified)"           "R-120"
 run_det "$(printf '%s\n' '#!/bin/bash' \
    'env -S "echo /bin/rm" trailing')"
 assert_not_at "R-120 does not false-fire on 'env -S \"echo /bin/rm\"' (value skipped)" "R-120" 2
+## env '-a ARG'/'--argv0 ARG' renames argv[0] cosmetically but STILL runs the real
+## command that FOLLOWS ARG ('env -a x rm ...' runs rm). ARG is an option value --
+## unregistered, effective_command mis-read ARG as the command and bypassed
+## R-120/R-034/R-210/R-211. (verified vs 'env --help'.)
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   'env -a xx rm -rf /a' \
+   'env --argv0 xx rm -rf /b' \
+   'env -a xx apt-get install -y foo')"
+assert_at "R-120 peels 'env -a xx rm' (argv0 value skipped)" "R-120" 2
+assert_at "R-120 peels 'env --argv0 xx rm'"                  "R-120" 3
+assert_at "R-210 peels 'env -a xx apt-get install'"          "R-210" 4
 ## A QUOTED or BACKSLASH-ESCAPED command word resolves via word_string to the value bash
 ## actually runs, so quoting/escaping no longer bypasses the command scan: 'sudo "rm"', a
 ## bare '"rm"', '\rm', and 'sudo \rm' all still flag R-120. (ai-review claude.)

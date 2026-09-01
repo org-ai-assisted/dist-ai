@@ -26,8 +26,11 @@ SUDO_VALUE_SHORT = frozenset("ughprtCTRDU")
 SUDO_VALUE_LONG = frozenset({
     "user", "group", "host", "prompt", "role", "type", "close-from",
     "command-timeout", "chroot", "chdir", "other-user"})
-## env: '-u NAME'/'--unset', '-C DIR'/'--chdir', '-S STR'/'--split-string' take a
-## required separate value. 'command'/'builtin' have no value-taking options
+## env: '-u NAME'/'--unset', '-C DIR'/'--chdir', '-S STR'/'--split-string', and
+## '-a ARG'/'--argv0 ARG' take a required separate value. '-a'/'--argv0' renames
+## the command's argv[0] cosmetically ('env -a x rm ...' still RUNS rm) -- unregistered
+## it would mis-read ARG as the command and bypass R-120/R-034/R-210/R-211.
+## 'command'/'builtin' have no value-taking options
 ## ('command -p/-v/-V' are bare flags; 'builtin' takes none).
 ## '-S'/'--split-string' also EMBEDS the command inside its STRING value ('env -S
 ## "rm -rf x"' execs rm). We SKIP that value (never mis-read it as the command) but
@@ -35,8 +38,8 @@ SUDO_VALUE_LONG = frozenset({
 ## produces (the -S idiom is for shebangs, resolved by interpreter rules, not here),
 ## so it is out of the accident threat model. Skipping the value is what keeps it
 ## from FALSE-POSITIVING on a path-like string ('env -S "echo /bin/rm"').
-ENV_VALUE_SHORT = frozenset("uCS")
-ENV_VALUE_LONG = frozenset({"unset", "chdir", "split-string"})
+ENV_VALUE_SHORT = frozenset("uCSa")
+ENV_VALUE_LONG = frozenset({"unset", "chdir", "split-string", "argv0"})
 _WRAPPER_VALUE_SPEC = {
     "sudo": (SUDO_VALUE_SHORT, SUDO_VALUE_LONG),
     "doas": (SUDO_VALUE_SHORT, SUDO_VALUE_LONG),
