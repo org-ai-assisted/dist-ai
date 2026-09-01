@@ -106,17 +106,15 @@ ok('CYRILLIC SMALL LETTER A' in _kept and 'RIGHT-TO-LEFT OVERRIDE' not in _kept,
 ok(_bar._mirror.isReadOnly(),
    'the mirror pane is read-only (no typing into a review)')
 
-# The mirror bounds its RENDER (render_preview), not the source length, so it cannot
-# hang the pane; delivery still sends the WHOLE text -- so the summary must warn that
-# the preview is truncated, in this unspoofable label. A unicode paste whose SOURCE
-# is well under the cap still overflows because detail badges expand it ~32x, and the
-# notice must fire on that. (canary: a source-length notice would stay silent here --
-# 200k source chars < the 1M cap -- and a no-cap build had no notice at all.)
-# A unicode paste whose SOURCE is under the char cap but whose RENDER overflows (detail
-# badges expand ~30x) is RENDER-truncated, NOT scan-truncated: the whole paste WAS scanned
-# (the count is complete), so the notice must say the PREVIEW is partial and must NOT claim
-# a partial scan. (Regression: the old code conflated the two -- claude/coderabbit.)
+# The mirror bounds its RENDER (render_preview), not the source length, so it cannot hang
+# the pane; delivery still sends the WHOLE text -- so the summary must warn that the preview
+# is truncated, in this unspoofable label. A unicode paste whose SOURCE is under the char cap
+# but whose DELIVERED render overflows (detail badges expand it ~32x) is RENDER-truncated,
+# NOT scan-truncated: the whole paste WAS scanned (count COMPLETE), so the notice says the
+# PREVIEW is partial and must NOT claim a partial scan. The notice tracks the VISIBLE pane, so
+# a mode must be picked (the delivered form is what renders). (claude/coderabbit.)
 _bar.show_review(_term, chr(0x0430) * (_bar._mirror._RAW_MAX // 5), 0)
+_bar._radio_keep.click()                         # deliver the kept unicode -> render overflows
 _rt = _bar._summary.text()
 ok('preview below shows only the first part' in _rt and 'was scanned' in _rt.lower()
    and 'FULL paste' in _rt,
@@ -126,6 +124,33 @@ ok('may be partial' not in _rt,
 _bar.show_review(_term, _raw, 0)                 # small paste: no truncation notice
 ok('truncated' not in _bar._summary.text(),
    'a small paste carries no truncation notice')
+
+# grok: the render-truncation notice tracks the VISIBLE pane, never a throwaway raw render.
+# (a) no mode picked -> the pane shows only the hint (not truncated) -> NO notice.
+_bar.show_review(_term, chr(0x0430) * (_bar._mirror._RAW_MAX // 5), 0)
+ok('preview below shows only the first part' not in _bar._summary.text(),
+   'no render-truncation notice while the pane shows only the hint (grok)')
+# (b) a mode whose DELIVERED form fits (the payload strips away) -> NO notice, just the count.
+_bar.show_review(_term, 'hello' + chr(0x042F) * 50000, 0)
+_bar._radio_strip.click()                        # Strip to ASCII -> delivered 'hello' fits
+ok('preview below shows only the first part' not in _bar._summary.text()
+   and '50000' in _bar._summary.text(),
+   'a stripped-to-short delivered form shows no render-truncation notice, only the count (grok)')
+# (c) the render-truncation notice names the real DIRECTION (copy, not "this paste").
+_bar.show_review(_term, chr(0x042F) * 50000, 0, 'copy')
+_bar._radio_keep.click()                         # kept unicode -> render overflows
+_rc = _bar._summary.text()
+ok('this copy' in _rc and 'this paste' not in _rc,
+   'a render-truncated COPY notice names the copy, not "this paste" (grok)')
+_bar._choose('reject')
+
+# claude: _delivered collapses \r\n exactly as _dispatch_paste does -- sanitize maps EACH of
+# \r and \n to '\r', so an uncollapsed CRLF becomes '\r\r' = a phantom blank line delivery
+# never sends. The CRLF preview must be the 2-line delivered form (matching the Lines count).
+_bar.show_review(_term, 'cmd1\r\ncmd2\r\n', 0)
+ok(_bar._delivered('stripped') == 'cmd1\ncmd2' and '\n\n' not in _bar._delivered('stripped'),
+   'a CRLF paste preview collapses the pairs -- no phantom blank line (claude)')
+_bar._choose('reject')
 
 # _delivered (hover/focus of a delivery button) must not materialize an unbounded
 # paste: sanitizing a 50MB clipboard here -- BEFORE the render cap -- froze the UI
@@ -412,8 +437,10 @@ ok('multi-line' in _bar._detail.text()
    '#8: a multi-line CLIPBOARD review reads (multi-line), not "runs more than one command"')
 _bar.show_review(_term, 'ls\necho hi\n', 0)      # restore paste state
 
-# #20: the truncation notice names the real DIRECTION (copy, not paste)
+# #20: the truncation notice names the real DIRECTION (copy, not paste). The notice tracks
+# the visible pane, so pick a mode to render the (overflowing) delivered form.
 _bar.show_review(_term, chr(0x0430) * (_bar._mirror._RAW_MAX // 5), 0, 'copy')
+_bar._radio_keep.click()
 ok('the FULL copy' in _bar._summary.text() and 'FULL paste' not in _bar._summary.text(),
    'a truncated COPY review names the copy action, not "paste" (#20)')
 _bar.show_review(_term, _raw, 0)                 # restore paste state
