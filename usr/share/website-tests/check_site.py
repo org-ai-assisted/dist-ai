@@ -161,12 +161,16 @@ def _abs_candidates(rel, search_roots):
     """Filesystem candidates for a root-absolute path `rel` across search_roots,
     with '..' clamped at each root so a candidate can never escape it (matching
     how a static server serves the path)."""
+    # Capture the directory intent BEFORE clamp (posixpath.normpath strips the
+    # trailing '/'); also treat a real directory as one even if its name has a
+    # dot (a 'blog.v2/' would otherwise look like it has a file extension).
+    is_dir = rel == '' or rel.endswith('/')
     rel = _clamp(rel)
     candidates = []
     for sr in search_roots:
         base = os.path.normpath(os.path.join(sr, rel))
         candidates.append(base)
-        if rel == '' or rel.endswith('/') or not os.path.splitext(base)[1]:
+        if is_dir or not os.path.splitext(base)[1] or os.path.isdir(base):
             candidates += [os.path.join(base, 'index.html'), base + '.html']
     return candidates
 
@@ -176,7 +180,7 @@ def resolve_internal(root, page, target, mount=None, parent_roots=()):
     the link is external / a pure fragment / non-navigational. For a subsite,
     `mount` is its path under the parent domain and `parent_roots` are the parent
     site checkouts its off-mount absolute links resolve against."""
-    if _is_external(target) or target.strip().lower().startswith(
+    if _is_external(target) or _url_norm(target).startswith(
             ('mailto:', 'tel:', 'data:', 'javascript:')):
         return None
     frag = ''
@@ -192,8 +196,12 @@ def resolve_internal(root, page, target, mount=None, parent_roots=()):
     if target.startswith('/'):
         # A subsite's own mount prefix (/git-diffs-lie/...) maps back onto its own
         # tree, so verify it there rather than skipping it as an external sibling.
-        if mount and (target == mount.rstrip('/') or target.startswith(mount)):
-            return ('file', _abs_candidates(target[len(mount):], [root]), frag)
+        mnt = mount.rstrip('/') if mount else mount
+        if mount and (target == mnt or target.startswith(mnt + '/')):
+            # Match on a PATH boundary, not a bare string prefix, so a sibling
+            # like /git-diffs-lie-extra/ is not mistaken for /git-diffs-lie/.
+            return ('file',
+                    _abs_candidates(target[len(mnt):].lstrip('/'), [root]), frag)
         if mount:
             # A subsite's OFF-mount absolute link (/terminal/, /paste/, ...) points
             # at the PARENT site, so verify it ONLY there -- searching the subsite
@@ -213,7 +221,7 @@ def resolve_internal(root, page, target, mount=None, parent_roots=()):
     base = os.path.normpath(os.path.join(root, _clamp(resolved.lstrip('/'))))
     candidates = [base]
     if target.endswith('/') or resolved.endswith('/') \
-            or not os.path.splitext(base)[1]:
+            or not os.path.splitext(base)[1] or os.path.isdir(base):
         candidates += [os.path.join(base, 'index.html'), base + '.html']
     return ('file', candidates, frag)
 
@@ -344,14 +352,14 @@ def check_footer(root, failures):
     if '<footer' not in lower:
         failures.append('index.html: no <footer>')
         return
-    footer = lower[lower.index('<footer'):]
-    # Bound the scan to the footer element: a family URL appearing LATER in the
-    # page (a comment, an unrelated section) must not mask a missing footer link.
-    end = footer.find('</footer>')
-    if end != -1:
-        footer = footer[:end]
+    # Check the family links against the union of ALL <footer>...</footer>
+    # regions: content AFTER a footer must not mask a missing link (the
+    # whole-tail bug), and an earlier <article>/<section> footer must not hide
+    # the site footer (the first-footer-only bug).
+    footers = re.findall(r'<footer\b.*?</footer>', lower, re.DOTALL)
+    scope = ' '.join(footers) if footers else lower[lower.index('<footer'):]
     for name, url in FAMILY.items():
-        if url not in footer:
+        if url not in scope:
             failures.append('index.html: footer missing family link %s' % url)
 
 
@@ -404,17 +412,38 @@ _CSS_URL = re.compile(
 def _css_urls(text):
     for match in _CSS_URL.finditer(text):
         yield next(group for group in match.groups() if group is not None)
+
+
+# @import loads a stylesheet; its bare-string form (@import "url";) is not a
+# url() so _CSS_URL misses it -- match it here for the supply-chain scan.
+_CSS_IMPORT = re.compile(
+    r"""@import\s+(?:url\(\s*)?["']?([^"')\s;]+)""", re.IGNORECASE)
+
+
+def _css_external_refs(text):
+    yield from _css_urls(text)
+    for match in _CSS_IMPORT.finditer(text):
+        yield match.group(1)
 # Basenames a human has cleared to remain a raster (webp came out no smaller).
 # Keep this SMALL and justified; every entry is a content image that stays PNG.
 STATIC_IMAGE_ALLOWLIST: frozenset[str] = frozenset()
 
 
+_URL_STRIP = str.maketrans('', '', '\t\n\r')
+
+
+def _url_norm(url):
+    # Normalize a URL reference the way a browser does before scheme matching:
+    # ASCII tab/newline/CR are removed from ANYWHERE (not just the ends), '\' is
+    # a '/' for a special scheme (WHATWG), leading/trailing space is trimmed, and
+    # the scheme compares case-insensitively -- so none of those forms can
+    # smuggle a cross-origin load or a javascript: URL past the gate.
+    return url.translate(_URL_STRIP).strip().replace('\\', '/').lower()
+
+
 def _is_external(url):
-    # Match how a browser resolves a reference: schemes are case-insensitive, a
-    # leading-whitespace value is trimmed, and '\' is treated as '/' (WHATWG), so
-    # none of those forms can smuggle a cross-origin load past the gate.
-    normalized = url.strip().replace('\\', '/').lower()
-    return normalized.startswith(('http://', 'https://', '//'))
+    # 'http:'/'https:' also covers the scheme-relative 'http:host' form (no //).
+    return _url_norm(url).startswith(('http:', 'https:', '//'))
 
 
 def _is_raster(url):
@@ -453,7 +482,7 @@ def check_image_format(root, failures):
                         and not _allowed_raster(token[0]):
                     failures.append('%s: srcset image %r must be webp'
                                     % (rel, token[0]))
-        for value in _css_urls('\n'.join(ext.styles)):
+        for value in _css_external_refs('\n'.join(ext.styles)):
             if _is_raster(value) and not _allowed_raster(value):
                 failures.append('%s: CSS url() image %r must be webp'
                                 % (rel, value))
@@ -576,7 +605,7 @@ class _InlineJSAudit(html.parser.HTMLParser):
             if name.startswith('on'):
                 self.handlers.add(name)
             if (name in _URL_ATTRS and value
-                    and value.strip().lower().startswith('javascript:')):
+                    and _url_norm(value).startswith('javascript:')):
                 self.js_url = True
 
     def handle_startendtag(self, tag, attrs):
@@ -654,12 +683,12 @@ def check_supply_chain(root, failures):
             if _is_external(href) and any(r in FETCHING_LINK_RELS for r in rels):
                 failures.append('%s: <link rel=%r> loads an external resource: '
                                 '%s' % (rel, ' '.join(rels), href))
-        # CSS url() (inline style="" attrs + <style> bodies) can load an external
-        # image or font just as a src can.
-        for value in _css_urls('\n'.join(ext.styles)):
+        # CSS url() and @import (inline style="" attrs + <style> bodies) can load
+        # an external image, font, or stylesheet just as a src can.
+        for value in _css_external_refs('\n'.join(ext.styles)):
             if _is_external(value):
-                failures.append('%s: CSS url() loads an external resource: %s'
-                                % (rel, value))
+                failures.append('%s: CSS url()/@import loads an external '
+                                'resource: %s' % (rel, value))
     # External url() in a standalone .css file is a load too.
     for base_dir, dirs, files in os.walk(root):
         _prune_git(dirs)
@@ -669,7 +698,7 @@ def check_supply_chain(root, failures):
             path = os.path.join(base_dir, name)
             crel = os.path.relpath(path, root)
             with open(path, encoding='utf-8') as handle:
-                for value in _css_urls(handle.read()):
+                for value in _css_external_refs(handle.read()):
                     if _is_external(value):
                         failures.append('%s: CSS url() loads an external '
                                         'resource: %s' % (crel, value))

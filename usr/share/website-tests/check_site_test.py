@@ -529,7 +529,7 @@ def run():
         _write(root, 'index.html',
                _page % '<img srcset="https://example.com/a.webp 2x">')
         check('external srcset flagged by supply-chain',
-              any('srcset' in f and 'example.com' in f
+              any('srcset' in f and 'a.webp' in f
                   for f in _supply_failures(root)), repr(_supply_failures(root)))
         _write(root, 'index.html', _page % '<img srcset="/a.webp 2x">')
         check('same-origin srcset passes supply-chain',
@@ -538,7 +538,7 @@ def run():
         _write(root, 'index.html',
                _page % '<link rel="stylesheet" href="https://example.com/s.css">')
         check('external stylesheet link flagged',
-              any('example.com' in f for f in _supply_failures(root)),
+              any('s.css' in f for f in _supply_failures(root)),
               repr(_supply_failures(root)))
         _write(root, 'index.html',
                _page % '<link rel="canonical" href="https://example.com/">')
@@ -573,7 +573,7 @@ def run():
         _write(root, 'index.html', _page %
                '<div style="background:url(https://example.com/p.webp)">x</div>')
         check('external inline CSS url() flagged by supply-chain',
-              any('CSS url()' in f and 'example.com' in f
+              any('CSS url()' in f and 'p.webp' in f
                   for f in _supply_failures(root)), repr(_supply_failures(root)))
         _write(root, 'index.html', _page % '<link rel="stylesheet" href="/s.css">')
         _write(root, 's.css', 'body{background:url(https://example.com/bg.webp)}')
@@ -587,7 +587,7 @@ def run():
         _write(root, 'index.html',
                _page % '<object data="https://example.com/x.swf"></object>')
         check('external <object data> flagged by supply-chain',
-              any('example.com' in f for f in _supply_failures(root)),
+              any('x.swf' in f for f in _supply_failures(root)),
               repr(_supply_failures(root)))
 
     # srcset via the HTML parser: an unquoted attribute is caught; a srcset
@@ -631,6 +631,57 @@ def run():
                '<span id="x" class="status">review needed</span>')
         check('compliant banner passes regardless of attribute order',
               _banner_failures(root) == [], repr(_banner_failures(root)))
+
+    # A dotted directory name ('blog.v2/') is a page dir, not a file extension.
+    dotted = check_site._abs_candidates('blog.v2/', ['/nonexistent-root'])
+    check('_abs_candidates adds index.html for a dotted dir name',
+          any(c.endswith('blog.v2/index.html') for c in dotted), repr(dotted))
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', '<a href="/blog.v2/">x</a>')
+        _write(root, 'blog.v2/index.html', '<p>ok</p>')
+        check('link to a dotted-name directory resolves',
+              _links_failures(root) == [], repr(_links_failures(root)))
+
+    # subsite mount matches on a PATH boundary, not a bare string prefix.
+    mounted = check_site.resolve_internal(
+        '/root', '/root/p.html', '/sub-extra/x',
+        mount='/sub', parent_roots=('/parent',))
+    check('mount prefix requires a path boundary (sibling not swallowed)',
+          mounted == ('file',
+                      check_site._abs_candidates('sub-extra/x', ['/parent']), '')
+          and all('/root/-extra' not in c for c in mounted[1]), repr(mounted))
+
+    # _is_external sees the control-char and scheme-relative forms a browser
+    # accepts (WHATWG strips tab/newline before scheme matching).
+    check('_is_external: newline embedded WITHIN the scheme',
+          check_site._is_external('ht\ntps://example.com/x'))
+    check('_is_external: scheme-relative http: form',
+          check_site._is_external('http:example.com/x'))
+
+    # supply-chain: an external CSS @import (bare-string form) is a load.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html',
+               _page % '<style>@import "https://example.com/s.css";</style>')
+        check('external CSS @import flagged by supply-chain',
+              any('s.css' in f for f in _supply_failures(root)),
+              repr(_supply_failures(root)))
+
+    # footer: an <article>/<section> footer BEFORE the site footer must not hide
+    # the site footer's family links.
+    with tempfile.TemporaryDirectory() as root:
+        fam = list(check_site.FAMILY.values())
+        _write(root, 'index.html',
+               '<article><footer>article footer</footer></article>'
+               '<footer>%s</footer>' % ' '.join(fam))
+        check('article footer before site footer does not mask family links',
+              _footer_failures(root) == [], repr(_footer_failures(root)))
+
+    # check_no_inline_script: a javascript: URL with an embedded tab is caught.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, 'index.html', '<a href="jav\tascript:x()">y</a>')
+        check('obfuscated javascript: URL (embedded tab) flagged',
+              any('javascript:' in f for f in _inline_failures(root)),
+              repr(_inline_failures(root)))
 
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed
