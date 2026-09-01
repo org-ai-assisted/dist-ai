@@ -116,6 +116,7 @@ Recommends: qemu-system-arm,
  optipng,
  jpegoptim,
  webp,
+ librsvg2-bin,
  imagemagick
 ## safe-pgrep / safe-pkill moved here from private-ai-config (the shots test harness
 ## needs them in the public CI, where private-ai-config is absent). Replaces lets

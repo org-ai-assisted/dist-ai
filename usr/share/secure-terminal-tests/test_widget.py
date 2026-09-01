@@ -8120,11 +8120,18 @@ def _mono_jump():
 try:
     _os.write = lambda *_a, **_k: (_ for _ in ()).throw(BlockingIOError())
     _time.monotonic = _mono_jump
-    _wd._write(b'z')                        # always EAGAIN + deadline passed -> bail
+    _wd_ret = _wd._write(b'z')              # always EAGAIN + deadline passed -> bail
 finally:
     _os.write = _o_write3
     _time.monotonic = _o_mono
-ok(True, '_write bails out when its write deadline passes')
+# Teeth (not a bare ok(True)): the bail returns False (distinct from True=all-written),
+# and the deadline is BOTH set and checked via monotonic, so the mock is consulted at
+# least twice. A refactor switching _write's clock source leaves _mono_calls at 0 and
+# trips the second assert instead of passing with a dead mock.
+ok(_wd_ret is False,
+   '_write returns False (deadline bail), not True (all bytes written)')
+ok(_mono_calls['n'] >= 2,
+   '_write consulted the mocked monotonic clock to set AND check its 2s deadline')
 
 # --- terminfo directory: build-time entry, and tic-compiled on demand ---------
 from secure_terminal.sanitize import MARK_KEY as _MK            # noqa: E402

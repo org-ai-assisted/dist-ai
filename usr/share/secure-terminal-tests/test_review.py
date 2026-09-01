@@ -112,10 +112,17 @@ ok(_bar._mirror.isReadOnly(),
 # is well under the cap still overflows because detail badges expand it ~32x, and the
 # notice must fire on that. (canary: a source-length notice would stay silent here --
 # 200k source chars < the 1M cap -- and a no-cap build had no notice at all.)
+# A unicode paste whose SOURCE is under the char cap but whose RENDER overflows (detail
+# badges expand ~30x) is RENDER-truncated, NOT scan-truncated: the whole paste WAS scanned
+# (the count is complete), so the notice must say the PREVIEW is partial and must NOT claim
+# a partial scan. (Regression: the old code conflated the two -- claude/coderabbit.)
 _bar.show_review(_term, chr(0x0430) * (_bar._mirror._RAW_MAX // 5), 0)
-ok('truncated' in _bar._summary.text()
-   and 'FULL paste' in _bar._summary.text(),
-   'an over-render unicode paste warns the preview is truncated + full paste delivers')
+_rt = _bar._summary.text()
+ok('preview below shows only the first part' in _rt and 'was scanned' in _rt.lower()
+   and 'FULL paste' in _rt,
+   'a render-truncated paste says the PREVIEW is partial, and the full paste delivers')
+ok('may be partial' not in _rt,
+   'a render-truncated paste does NOT falsely claim a partial hidden-char scan')
 _bar.show_review(_term, _raw, 0)                 # small paste: no truncation notice
 ok('truncated' not in _bar._summary.text(),
    'a small paste carries no truncation notice')
@@ -249,6 +256,24 @@ eq(_term2.dispatched, [('paste', 'unicode')],
    'after the countdown a deliver click dispatches the picked mode')
 ok(_bar._term is None, 'and delivery resolves + hides the bar')
 
+# --- editing after the countdown elapses RE-ARMS it (claude/coderabbit) -------------
+# Without this the edited content inherits the ORIGINAL text's already-spent countdown and
+# could deliver on the next click -- defeating the anti-fat-finger gate for the very text
+# that just changed.
+_term_re = _FakeTerm()
+_bar.show_review(_term_re, _raw, 2)
+_bar._radio_keep.click()                     # arm the 2s countdown
+_bar._tick(); _bar._tick(); _bar._tick()     # elapse -> deliver enabled
+ok(_bar._deliver.isEnabled(), 'deliver enables after the countdown elapses')
+_bar._edit.setPlainText('rm -rf /' + chr(0x0430))   # replace the held text entirely
+ok(not _bar._deliver.isEnabled() and _bar._remaining > 0,
+   'editing after the countdown re-arms it (deliver DISABLED again for the new content)')
+_bar._tick(); _bar._tick(); _bar._tick()     # elapse the RE-ARMED countdown
+_bar._deliver_clicked()
+eq(_term_re.dispatched, [('paste', 'unicode')],
+   'the edited buffer delivers only after its own re-armed countdown')
+ok(_bar._term is None, 'and delivery resolves the bar')
+
 # --- Esc rejects (the safe default) -------------------------------------------
 _term3 = _FakeTerm()
 _bar.show_review(_term3, _raw, 0)
@@ -379,6 +404,11 @@ ok('the FULL copy' in _bar._summary.text() and 'FULL paste' not in _bar._summary
    'a truncated COPY review names the copy action, not "paste" (#20)')
 _bar.show_review(_term, _raw, 0)                 # restore paste state
 
+# the edit field must NOT trap Tab (codex): a keyboard user has to be able to Tab OUT of it
+# to reach the radios/buttons, so Tab moves focus rather than inserting a tab character.
+ok(_bar._edit.tabChangesFocus(),
+   'Tab moves focus out of the edit field (a keyboard user can reach the radios)')
+
 # --- editable held text: edits drive the summary/table AND what delivers -------
 _et = _FakeTerm()
 _bar.show_review(_et, _raw, 0)                    # _raw hides a bidi + a homoglyph
@@ -398,11 +428,13 @@ ok('Bidirectional control' in _bar._detail.text() and 'hides' in _bar._summary.t
    'editing a hidden char into the buffer re-flags it in the summary + table')
 _bar._choose('reject')
 
-# a truncated review marks the Structure counts as a scanned prefix, not a definite
-# total (a 2M-char paste must not read a flat "1,000,000 characters")
-_bar.show_review(_term, chr(0x0430) * (_bar._mirror._RAW_MAX // 5), 0)
+# a SCAN-truncated review -- SOURCE longer than the char cap, so the scan itself saw only a
+# prefix -- marks the Length as a scanned prefix, not a definite total (a 2M-char paste must
+# not read a flat "1,000,000 characters"). Distinct from render-truncation above, where the
+# whole source WAS scanned and the count is complete.
+_bar.show_review(_term, chr(0x0430) * (_bar._mirror._RAW_MAX + 100), 0)
 ok('scanned prefix' in _bar._detail.text(),
-   'a truncated review marks the Length as a scanned prefix, not a definite count')
+   'a scan-truncated review marks the Length as a scanned prefix, not a definite count')
 _bar._choose('reject')
 
 # CANARY: the table depends on classify_paste_detail, not a hardcoded layout
