@@ -7141,6 +7141,115 @@ except _subprocess.TimeoutExpired:
 ok(_victim.returncode is not None,
    'terminate_foreground: a TERM-ignoring group is SIGKILLed by the survivor')
 
+# #35: a login shell REPLACED via the `exec` builtin (exec vim) keeps the shell's
+# pid + pgrp, so tcgetpgrp still reads a "bare prompt" -- but /proc comm now names a
+# different program. _child_execd() catches it by process identity, so the panic
+# button acts on it and the mode-toggle re-export refuses to type into it. A builtin
+# that merely reads stdin (read/here-doc) is NOT an exec (same comm) and stays the
+# documented #18 residual. (canary: pre-#35 code has no _child_execd / _spawn_comm
+# and reads an exec-replaced shell as an idle prompt.)
+ok(SecureTerminal._read_comm(2 ** 30) is None,
+   '_read_comm returns None for a nonexistent pid')
+_xc = SecureTerminal(command=None)            # login-shell tab (_command is None)
+ok(_xc._spawn_comm is not None, 'a spawned child records its /proc comm baseline')
+_hold_pid, _xc._pid = _xc._pid, None
+ok(_xc._child_execd() is False, '_child_execd: no child pid -> False')
+_xc._pid = _hold_pid
+_hold_comm, _xc._spawn_comm = _xc._spawn_comm, None
+ok(_xc._child_execd() is False, '_child_execd: no comm baseline -> False')
+_xc._spawn_comm = _hold_comm
+try:
+    _xc._read_comm = lambda _pid: None
+    ok(_xc._child_execd() is False, '_child_execd: unreadable comm -> False')
+    _xc._read_comm = lambda _pid: _xc._spawn_comm
+    ok(_xc._child_execd() is False, '_child_execd: matching comm is a bare prompt')
+    _xc._read_comm = lambda _pid: _xc._spawn_comm + '-execd'
+    ok(_xc._child_execd() is True, '_child_execd: a changed comm is an exec-replace')
+finally:
+    del _xc._read_comm
+_xc.close()
+
+# faithful panic-button path: a real TERM-ignoring victim group stands in for the
+# exec'd program; both _foreground_pgrp and getpgid(_pid) resolve to it (the exec
+# case: same pgrp as the shell) and comm differs from the baseline -> signalled.
+_victim_x = _subprocess.Popen(['sh', '-c', 'trap "" TERM; exec sleep 30'],
+                              start_new_session=True)
+pump(60)
+_victim_x_pgrp = os.getpgid(_victim_x.pid)
+_xt = SecureTerminal(command=None)
+_xt._foreground_pgrp = lambda: _victim_x_pgrp
+_xt._read_comm = lambda _pid: (_xt._spawn_comm or '') + '-execd'
+_o_getpgid_x = _term2.os.getpgid
+_term2.os.getpgid = lambda _pid: _victim_x_pgrp
+try:
+    ok(_xt.has_foreground_program() is True,
+       'has_foreground_program: an exec-replaced login shell (same pgrp) -> True')
+    ok(_xt.terminate_foreground() is True,
+       'terminate_foreground: signals an exec-replaced shell, not a no-op')
+finally:
+    _term2.os.getpgid = _o_getpgid_x           # restore BEFORE pump (no stray mock)
+pump(2300)                                     # let the survivor SIGKILL the victim
+try:
+    _victim_x.wait(timeout=3)
+except _subprocess.TimeoutExpired:
+    _victim_x.kill()
+    _victim_x.wait(timeout=5)
+ok(_victim_x.returncode is not None,
+   'terminate_foreground: the exec-replaced shell is SIGKILLed by the survivor')
+# a MATCHING comm is a bare prompt -> the panic button no-ops (shell preserved)
+_term2.os.getpgid = lambda _pid: _victim_x_pgrp
+try:
+    _xt._read_comm = lambda _pid: _xt._spawn_comm
+    ok(_xt.terminate_foreground() is False,
+       'terminate_foreground: a bare shell prompt (matching comm) is a no-op')
+finally:
+    _term2.os.getpgid = _o_getpgid_x
+    del _xt._read_comm
+_xt.close()
+
+# #36: int() raises ValueError for a >4300-digit string (Python 3.11+) BEFORE the
+# apply_* clamp runs, and TypeError for a non-number -- the setters promise to be
+# crash-safe "at the sink", so an unparseable value keeps the current setting rather
+# than raising. (canary: pre-#36 code calls bare int() and raises on '9'*4301.)
+_cl = SecureTerminal(command='/bin/cat')
+_huge_digits = '9' * 4301
+_z0 = _cl.current_zoom()
+_cl.apply_zoom(_huge_digits)
+eq(_cl.current_zoom(), _z0, 'apply_zoom keeps the current zoom on an unparseable value')
+_cl.apply_zoom(250)
+eq(_cl.current_zoom(), 250, 'apply_zoom still applies a real value')
+_cl.apply_zoom(None)
+eq(_cl.current_zoom(), 250, 'apply_zoom ignores a None (TypeError) value')
+_cl.apply_zoom(float('inf'))                 # int(inf) raises OverflowError, not ValueError
+eq(_cl.current_zoom(), 250, 'apply_zoom ignores a non-finite float (OverflowError)')
+_cl.apply_zoom(9999)
+eq(_cl.current_zoom(), 1000, 'apply_zoom clamps above the max')
+_f0 = _cl.current_font_size()
+_cl.set_font_size(_huge_digits)
+eq(_cl.current_font_size(), _f0, 'set_font_size keeps the current size on a bad value')
+_s0 = _cl.current_scrollback()
+_cl.apply_scrollback(_huge_digits)
+eq(_cl.current_scrollback(), _s0, 'apply_scrollback keeps the current cap on a bad value')
+_cl.apply_scrollback(2 ** 40)
+eq(_cl.current_scrollback(), 2147483647, 'apply_scrollback clamps an over-int32 value')
+_cl.apply_scrollback(-5)
+eq(_cl.current_scrollback(), 0, 'apply_scrollback floors at 0')
+_p0 = _cl.current_paste_delay()
+_cl.apply_paste_delay(_huge_digits)
+eq(_cl.current_paste_delay(), _p0, 'apply_paste_delay keeps the current delay on a bad value')
+_e0 = _cl.current_escape_limit()
+_cl.apply_escape_limit(_huge_digits)
+eq(_cl.current_escape_limit(), _e0, 'apply_escape_limit keeps the current limit on a bad value')
+_cl.close()
+
+# an empty command ('' / -e '') is a login shell (_argv_for_command substitutes one),
+# so _command normalizes to None -- otherwise the panic button's "never kill a bare
+# shell" guard (self._command is None) would be bypassed and SIGKILL the idle shell.
+# (canary: pre-fix code left _command as '' -- falsy but not None.)
+_emptycmd = SecureTerminal(command='')
+ok(_emptycmd._command is None, 'an empty command normalizes to None (a login shell)')
+_emptycmd.close()
+
 # --- bell ring: channel gating + rate limit -----------------------------------
 _rg = SecureTerminal(command='/bin/cat')
 _rg._bell_channels = set()
@@ -7526,6 +7635,11 @@ pump(60)
 _tf = SecureTerminal(command='/bin/cat')
 _tf._command = None                         # login-shell semantics for this branch
 _tf._pid = _tfs.pid
+# Align the comm baseline to the stand-in child: a real login shell's _spawn_comm
+# matches its own _pid, so _child_execd() reads "not exec'd" (a bare prompt). Without
+# this, _pid points at 'sleep' while _spawn_comm is still '/bin/cat' -- an artificial
+# mismatch that #35's exec detection would (correctly) read as an exec-replace.
+_tf._spawn_comm = _tf._read_comm(_tfs.pid)
 _tf._foreground_pgrp = lambda: os.getpgid(_tfs.pid)
 ok(not _tf.terminate_foreground(),
    'terminate_foreground: only the shell in the foreground -> no-op')

@@ -171,10 +171,17 @@ assert_not_at "R-130 spares ':' in a condition pipeline"             "R-130" 5
 
 ## run the detector over a specifically-NAMED file (config rules select by path).
 run_det_at() {
-   local f="${test_dir}/$1"
+   local f="${test_dir}/$1" rc
    mkdir --parents -- "$(dirname -- "${f}")"
    printf '%s\n' "$2" > "${f}"
-   output="$("${DET}" --detect "${f}" 2>/dev/null || true)"
+   output="$("${DET}" --detect "${f}" 2>/dev/null)" && rc=0 || rc=$?
+   ## exit 3 = INTERNAL crash (distinct from 0 clean / 1 findings). A bare '|| true'
+   ## swallowed it, flattening output to empty so every assert_not_at below read as a
+   ## spurious PASS -- a fabricated green. Fail LOUD, in lockstep with run_det.
+   if [ "${rc}" -eq 3 ]; then
+      printf '%s\n' "FATAL: dist-ai-style --detect crashed (exit 3) on the named fixture" >&2
+      exit 1
+   fi
 }
 
 ## --- gate-BYPASS / gate-BLINDING regressions (ai-review findings) ------------
