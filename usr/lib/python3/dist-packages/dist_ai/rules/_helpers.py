@@ -45,6 +45,23 @@ _WRAPPER_VALUE_SPEC = {
     "builtin": (frozenset(), frozenset()),
 }
 
+## 'builtin NAME' runs NAME only when NAME is a shell builtin: 'builtin cd',
+## 'builtin echo', 'builtin command rm' all run, but 'builtin rm' / 'builtin
+## apt-get' error ('not a shell builtin') and execute NOTHING. So a name-keyed
+## rule (R-120 rm, R-210 apt-get, R-211 dpkg) must NOT fire behind 'builtin' for
+## a non-builtin word, and effective_command declines it. 'builtin command rm'
+## still reaches rm because 'command' IS a builtin (and an exec wrapper). Source:
+## 'compgen -b'.
+BASH_BUILTINS = frozenset({
+    ".", ":", "[", "alias", "bg", "bind", "break", "builtin", "caller", "cd",
+    "command", "compgen", "complete", "compopt", "continue", "declare", "dirs",
+    "disown", "echo", "enable", "eval", "exec", "exit", "export", "false", "fc",
+    "fg", "getopts", "hash", "help", "history", "jobs", "kill", "let", "local",
+    "logout", "mapfile", "popd", "printf", "pushd", "pwd", "read", "readarray",
+    "readonly", "return", "set", "shift", "shopt", "source", "suspend", "test",
+    "times", "trap", "true", "type", "typeset", "ulimit", "umask", "unalias",
+    "unset", "wait"})
+
 
 def _basename(name):
     """The command BASENAME -- '/bin/rm' and 'rm' are the same program, so a rule
@@ -98,6 +115,12 @@ def effective_command(call, source):
             rest = position
             break
         if inner is None:
+            return None
+        ## 'builtin NAME' executes NAME only if NAME is a shell builtin; 'builtin
+        ## rm' errors and runs nothing, so decline (no name-keyed rule fires).
+        ## 'builtin command rm' passes here (command IS a builtin) and reaches rm
+        ## through the wrapper peel below.
+        if wrapper == "builtin" and inner not in BASH_BUILTINS:
             return None
         ## Not a wrapper -> the real command. A STACKED wrapper ('sudo sudo rm',
         ## 'sudo env VAR=1 rm', 'sudo doas -u root rm') runs it one layer deeper; RE-PARSE

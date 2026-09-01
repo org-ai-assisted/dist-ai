@@ -1374,14 +1374,14 @@ class InterpreterPrepend(Rule):
                         break
                     if not is_long and "s" in cluster:
                         break  ## '-s' -> script comes from stdin, no file
-                    ## '-o'/'-O' take a VALUE; in a short cluster the FIRST of them
-                    ## consumes the REST as its argument, so the value is the NEXT
-                    ## word only when it is the cluster's LAST char ('-eo pipefail'),
-                    ## never when a value is attached ('-oe' == -o with value 'e').
-                    o_pos = next((i for i, ch in enumerate(cluster)
-                                  if ch in "oO"), -1)
+                    ## '-o'/'-O' take the NEXT WORD as their option-name argument
+                    ## ('set -o pipefail'); bash consumes that word regardless of
+                    ## where o/O sits in a short cluster -- '-oe pipefail' and '-eo
+                    ## pipefail' BOTH eat 'pipefail', leaving the other letters as
+                    ## their own flags (verified against stock bash). So any short
+                    ## cluster carrying o/O skips the next word; the script follows.
                     if operand in self._VALUE_OPTS \
-                            or (o_pos != -1 and o_pos == len(cluster) - 1):
+                            or (not is_long and ("o" in cluster or "O" in cluster)):
                         skip_next = True
                     continue
                 script = operand
