@@ -3094,9 +3094,11 @@ eq(cw._staged_paste, ['echo 2'],
 cw._staged_paste = []
 cw._line_dirty = False
 
-# _argv_for_command: a MALFORMED command string (unbalanced quote) must NOT raise --
-# raised in the pty.fork child it prints an uncaught traceback the parent masks as a
-# normal exit. It yields [] instead, so _start falls back to the login shell.
+# _argv_for_command distinguishes THREE cases so a broken command never becomes a
+# login shell: a MALFORMED string (unbalanced quote) yields None (FAIL CLOSED -- the
+# child exits 127, never a shell), an EMPTY command yields [] (the deliberate 'no
+# command -> shell'), a list is verbatim. It does not RAISE (a ValueError in the
+# pty.fork child would traceback and be masked as a normal exit).
 from secure_terminal.terminal import _argv_for_command as _argv   # noqa: E402
 eq(_argv(['ssh', '-p', '22', 'host']), ['ssh', '-p', '22', 'host'],
    'a list command is used verbatim as argv')
@@ -3104,8 +3106,8 @@ eq(_argv('ssh -p 22 host'), ['ssh', '-p', '22', 'host'],
    'a string command is split like a shell word list')
 eq(_argv(''), [], 'an empty command yields [] (caller substitutes the login shell)')
 eq(_argv(None), [], 'no command yields []')
-eq(_argv('echo "unbalanced'), [],
-   'a malformed command (unbalanced quote) yields [] instead of raising ValueError')
+ok(_argv('echo "unbalanced') is None,
+   'a MALFORMED command yields None (fail closed, no shell) -- distinct from [] (empty)')
 
 _hsent.clear()
 cw.apply_paste_warn('unicode')

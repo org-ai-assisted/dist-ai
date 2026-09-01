@@ -1232,6 +1232,12 @@ if os.path.isfile(_cov_runner):
 
 # --- session persistence (pure JSON under a temp state dir) -------------------
 import tempfile                                    # noqa: E402
+# Save the env/module state the session+settings+ipc tests below mutate, and restore it
+# before _run_cli() (see the restore just above the CLI section) -- otherwise the
+# login-shell subprocess at 1390, and any later suite in the full multi-file gate,
+# inherit throwaway XDG dirs and the shell hangs on a vanished state dir. Mirrors the
+# NO_COLOR/TERM save+restore at the top of this file.
+_env_saved = {k: os.environ.get(k) for k in ('XDG_STATE_HOME', 'XDG_RUNTIME_DIR')}
 os.environ['XDG_STATE_HOME'] = tempfile.mkdtemp(prefix='st-session-')
 from secure_terminal import session as SESS       # noqa: E402
 
@@ -1265,6 +1271,7 @@ eq(SESS.load(), [], 'corrupt session -> empty, no crash')
 
 # --- settings drop-in: precedence, lexical order, .conf-only ------------------
 from secure_terminal import settings as SET       # noqa: E402
+_set_saved = (SET._system_dirs, SET._user_config_dir)
 _sysd = tempfile.mkdtemp(prefix='st-sys-')
 _usrd = tempfile.mkdtemp(prefix='st-usr-')
 SET._system_dirs = lambda: [_sysd]                 # privileged (root) dir
@@ -1335,6 +1342,17 @@ ok(raised, 'ipc: an over-long frame is rejected')
 os.environ['XDG_RUNTIME_DIR'] = tempfile.mkdtemp()
 ok(IPC.send_request('nobody-home', {'op': 'ping'}, timeout=0.2) is None,
    'ipc: no running instance -> None')
+
+# Restore the env/module state mutated above (see the save at ~1235) BEFORE _run_cli
+# spawns subprocesses that inherit os.environ: a throwaway XDG_STATE_HOME/RUNTIME_DIR
+# hangs the login shell at the 1390 EOF test, and any later suite in the full gate
+# would otherwise inherit them too.
+for _k, _v in _env_saved.items():
+    if _v is None:
+        os.environ.pop(_k, None)
+    else:
+        os.environ[_k] = _v
+SET._system_dirs, SET._user_config_dir = _set_saved
 
 # --- CLI: the sanitizing pty wrapper shares the sanitize core ------------------
 import subprocess                                   # noqa: E402
