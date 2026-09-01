@@ -257,7 +257,7 @@ def main():  # pylint: disable=too-many-branches,too-many-statements,too-many-lo
     passed = 0
     failed = 0
     skipped = 0
-    fail_samples = []
+    fail_samples: list[str] = []
     skip_notes = []
 
     def check(name, ok, detail=''):
@@ -403,11 +403,11 @@ def main():  # pylint: disable=too-many-branches,too-many-statements,too-many-lo
             check('E:colorterm-256color-not-24bit',
                   get_sgr_support() != 2 ** 24)
         finally:
-            for key, val in saved_env.items():
-                if val is None:
+            for key, saved_val in saved_env.items():
+                if saved_val is None:
                     os.environ.pop(key, None)
                 else:
-                    os.environ[key] = val
+                    os.environ[key] = saved_val
 
         ## Fail-closed terminfo path (own subprocess per TERM, setupterm is
         ## process-global). Unknown / dumb terminals must yield < 8 so stdisplay

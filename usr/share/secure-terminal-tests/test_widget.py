@@ -70,7 +70,7 @@ def key(term, qtkey, text='', mods=Qt.KeyboardModifier.NoModifier):
 
 
 def spy_writes(term):
-    sent = []
+    sent: list[bytes] = []
     term._write = sent.append          # pylint: disable=protected-access
     return sent
 
@@ -82,15 +82,16 @@ def feed_output(term, raw):
     r, w = os.pipe()
     old = term._fd                         # pylint: disable=protected-access
     term._fd = r
+    w_open = True
     try:
         os.write(w, raw)
         os.close(w)
-        w = None
+        w_open = False
         term._on_readable()                # pylint: disable=protected-access
     finally:
         term._fd = old
         os.close(r)
-        if w is not None:
+        if w_open:
             os.close(w)
     # CLI line-mode paints are debounced to ~60fps by a single-shot timer; in the
     # live app the paint fires from the event loop shortly after the read. These
@@ -291,6 +292,31 @@ eq(_wmt.lineWrapMode(), _NW,
    'TUI grid never wraps (sized to fit; Detail/Reveal cells fall back to the box)')
 _wmt.close()
 
+# #8: narrowing the terminal REFLOWS retained Box-mode line output to the new width (an
+# old long line re-wraps instead of horizontal-scrolling); Box stays NoWrap. _rerender is
+# the reflow mechanism (replays _raw through _feed_line, which hard-wraps at self._cols);
+# resizeEvent schedules it debounced on a column-count change.
+from PyQt6.QtGui import QResizeEvent as _QRE   # noqa: E402
+_t8 = SecureTerminal(command='/bin/cat')
+_t8.apply_mode('box')
+_t8._cols = 100
+_t8._raw = 'x' * 300
+_t8._rerender()                                # reflow at cols=100
+_wide8 = _t8.blockCount()
+_t8._cols = 40
+_t8._rerender()                                # reflow at the narrower width
+ok(_t8.blockCount() > _wide8,
+   '#8: narrowing reflows Box output to more (shorter) wrapped rows, not one wide row')
+eq(_t8.lineWrapMode(), _NW, '#8: Box stays NoWrap (design invariant preserved)')
+# resizeEvent schedules the debounced reflow when the column count changes.
+_t8._reflow_timer.stop()
+_t8._cols = 99999                              # force a mismatch vs the real grid width
+_t8.resizeEvent(_QRE(_t8.size(), _t8.size()))
+ok(_t8._reflow_timer.isActive(),
+   '#8: a resize that changes the column count schedules the debounced line reflow')
+_t8._reflow_timer.stop()
+_t8.close()
+
 # Horizontal scrollbar policy tracks the display mode: a TUI grid is a fixed
 # viewport-wide canvas (a real terminal never shows a horizontal bar on one), so
 # it is AlwaysOff; CLI keeps AsNeeded so a genuinely long NoWrap Box/Show line
@@ -312,6 +338,88 @@ _sbt = SecureTerminal(command='/bin/cat', tui=True)
 eq(_sbt.horizontalScrollBarPolicy(), _OFF,
    'a tab created in TUI mode starts with the horizontal scrollbar suppressed')
 _sbt.close()
+
+# Click-padding: a local press/drag must keep the horizontal scrollbar homed to the
+# left, so the base QPlainTextEdit press does not scroll the left document margin
+# off-screen for the press duration (all lines jumping left until release). Font-robust
+# overflow per the skill: _cols=0 disables autowrap, then a long ASCII run overflows by
+# char count in every font.
+from PyQt6.QtGui import QMouseEvent as _QME                        # noqa: E402
+from PyQt6.QtCore import QPointF as _QPF                           # noqa: E402
+_hp = SecureTerminal(command='/bin/cat')                          # CLI, AsNeeded hbar
+_hp.setLineWrapMode(_NW)
+_hp.resize(200, 100)
+_hp.show()
+APP.processEvents()
+_hp._cols = 0
+_hp._append('M' * 800)
+APP.processEvents()
+_hpb = _hp.horizontalScrollBar()
+ok(_hpb.maximum() > _hpb.minimum(), 'the long NoWrap line gives the hbar a real range')
+_pos = _QPF(20, 10)
+_press = _QME(QEvent.Type.MouseButtonPress, _pos, _pos, _Qt.MouseButton.LeftButton,
+              _Qt.MouseButton.LeftButton, _Qt.KeyboardModifier.NoModifier)
+_hpb.setValue(_hpb.maximum())          # pretend the base handler scrolled the view right
+_hp.mousePressEvent(_press)
+eq(_hpb.value(), _hpb.minimum(),
+   'a local left-press re-homes the hbar (the left margin stays pinned)')
+_hpb.setValue(_hpb.maximum())
+_mpos = _QPF(30, 10)
+_move = _QME(QEvent.Type.MouseMove, _mpos, _mpos, _Qt.MouseButton.NoButton,
+             _Qt.MouseButton.LeftButton, _Qt.KeyboardModifier.NoModifier)
+_hp.mouseMoveEvent(_move)              # _mouse_selecting was set by the press above
+eq(_hpb.value(), _hpb.minimum(),
+   'a local drag-move keeps the hbar homed through the drag')
+_hp.close()
+
+# restart_as_shell (TUI): an exited -- PROGRAM tab must KEEP its primary-screen output as
+# scrollback (only the transient alt frame is dropped, as on rmcup), not clear the grid to
+# just the handover banner. Regression: the TUI branch made a FRESH screen, wiping the
+# exited program's colour-log / cat-file output. Uses a TUI /bin/cat tab whose output never
+# enters the alternate screen.
+_rk = SecureTerminal(command='/bin/cat', tui=True)
+APP.processEvents()
+_rk._feed_stream(b'PRIMARY-OUTPUT-KEEPME\r\n')
+_rk._render_tui()
+APP.processEvents()
+ok('PRIMARY-OUTPUT-KEEPME' in _rk.toPlainText(),
+   'the TUI program primary output is on screen before the restart')
+# SECURITY: the exited program enabled bracketed paste (DEC 2004). Because keep_screen
+# REUSES the pyte screen, that stale bit must be cleared on restart -- else a later
+# non-bracketed multiline paste would read as bracketed, skip the mandatory staging, and
+# AUTO-RUN. (Regression: the reused screen kept the program's DEC modes.)
+from secure_terminal.terminal import _BRACKETED_PASTE_MODE as _BPM   # noqa: E402
+_rk._screen.mode.add(_BPM)
+_rk_restarted = _rk.restart_as_shell()
+APP.processEvents()
+ok(_rk_restarted, 'restart_as_shell restarts a -- PROGRAM tab (returns True)')
+ok('PRIMARY-OUTPUT-KEEPME' in _rk.toPlainText(),
+   'restart_as_shell keeps the exited TUI program primary output as scrollback')
+ok('program exited' in _rk.toPlainText(),
+   'and seeds the handover banner below the kept output')
+ok(_BPM not in _rk._screen.mode,
+   'restart clears a stale bracketed-paste (DEC 2004) bit from the reused screen')
+_rk.close()
+
+# restart_as_shell (alt-screen ACTIVE at exit): a program still on its ALTERNATE screen
+# (a pager/editor that never rmcup'd) must have that transient frame dropped -- _alt_leave,
+# exactly like rmcup -- so the restart lands on the primary screen with the output that
+# preceded the alt frame, not on the abandoned full-screen frame.
+_ra = SecureTerminal(command='/bin/cat', tui=True)
+APP.processEvents()
+feed_output(_ra, b'PRIMARY-BEFORE-ALT\r\n')  # full read path so the alt-scan runs
+_ra._render_tui()
+feed_output(_ra, b'\x1b[?1049h')             # enter the alternate screen and stay there
+_ra._render_tui()
+APP.processEvents()
+ok(_ra._alt_screen, 'the program is on the alternate screen before the restart')
+ok(_ra.restart_as_shell(), 'restart_as_shell restarts an alt-screen -- PROGRAM tab')
+APP.processEvents()
+ok(not _ra._alt_screen,
+   'restart drops the abandoned alternate frame (_alt_leave, like rmcup)')
+ok('PRIMARY-BEFORE-ALT' in _ra.toPlainText(),
+   'and the primary-screen output that preceded the alt frame survives the restart')
+_ra.close()
 
 # alternate scroll: a full-screen program that did NOT request the mouse (a plain
 # pager in the alternate screen) has no local scrollback to move, so the wheel is
@@ -688,6 +796,34 @@ ok(_chord_r is not None and _chord_r[0] == 2 and _chord_r[3] == 'm',
 ok(_chord_l is not None and _chord_l[0] == 0 and _chord_l[3] == 'm',
    'chord: releasing left ALSO reports (code 0, m) -- the button is not left stuck')
 
+# #15: a button pressed WITHOUT shift, then released WHILE shift is held mid-drag, must
+# still report the release (the child must not think the button is still down). This is
+# correct-by-design -- the release keys off _mouse_report_btns MEMBERSHIP, not Shift --
+# so this is a regression-lock: nobody may re-gate the release on Shift.
+_alt._mouse_report_btns = set()
+_asent.clear()
+_alt.mousePressEvent(_mev(QEvent.Type.MouseButtonPress, Qt.MouseButton.LeftButton))
+ok(_parse_sgr(_asent) is not None and _parse_sgr(_asent)[3] == 'M',
+   '#15: a plain (no-shift) press is reported')
+_asent.clear()
+_alt.mouseReleaseEvent(_mev(QEvent.Type.MouseButtonRelease, Qt.MouseButton.LeftButton,
+                            Qt.KeyboardModifier.ShiftModifier))
+_r15 = _parse_sgr(_asent)
+ok(_r15 is not None and _r15[0] == 0 and _r15[3] == 'm',
+   '#15: a shift-held release is STILL reported (m), balancing the press')
+ok(Qt.MouseButton.LeftButton not in _alt._mouse_report_btns,
+   '#15: the button is cleared from tracking after the shift-release')
+
+# #34: an unknown theme falls back to the app default 'light' in BOTH the constructor
+# and apply_theme -- the old apply_theme fell back to 'dark', so the SAME bad name gave
+# a different theme depending on how it arrived (construction vs a later apply).
+_t34 = SecureTerminal(command='/bin/cat', theme='bogus')
+eq(_t34.current_theme(), 'light', '#34: an invalid theme at construction falls back to light')
+_t34.apply_theme('also-bogus')
+eq(_t34.current_theme(), 'light',
+   '#34: apply_theme ALSO falls back to light (not dark) for an unknown theme')
+_t34.close()
+
 # INPUT SUSPENDED during a paste/copy review: with mouse tracking on and the review
 # bar up, a NEW click / wheel / focus must NOT write to the child (keyPressEvent
 # already refuses keys), nor track a button (which would unbalance a later release).
@@ -991,12 +1127,18 @@ for _ in range(6):
     feed_output(_zcm, (_ac * 20 + '\x1b[2G').encode('utf-8'))   # marks onto cell 0, cursor back
 ok(len(_zcm._screen.buffer[0][0].data) <= 34,
    'zalgo TUI: cursor moves cannot pile combining marks onto one cell past the cap')
-# combining mark at the very screen origin (cursor 0,0): no preceding cell to test,
-# so the target lookup takes the no-base branch and pyte simply drops it
+# #28: a combining mark at the very screen origin (cursor 0,0) has no preceding cell;
+# pyte's own draw() drops it (both its x and y merge branches fail at 0,0). draw() must
+# instead OCCUPY the origin cell and mark it -- exactly as it does for a leading zero-width
+# non-combining char -- so a dangerous codepoint is never silently dropped. (canary: old
+# code routed it to super().draw, which dropped it, leaving buffer[0].get(0) None.)
 _zt0 = SecureTerminal(command='/bin/cat', tui=True)
 feed_output(_zt0, _ac.encode('utf-8'))
-ok(isinstance(_zt0.toPlainText(), str),
-   'zalgo TUI: a combining mark at the screen origin (cursor 0,0) is handled, no crash')
+ok(_zt0._screen.buffer[0].get(0) is not None,
+   '#28: a combining mark at origin (0,0) occupies its own cell, not dropped')
+eq(_zt0._screen.buffer[0][0].data, _ac,
+   '#28: the origin cell carries the combining mark so tui_cell can mark it')
+ok(_zt0._screen.cursor.x == 1, '#28: the cursor advances past the marked origin cell')
 # combining mark at column 0 of a lower row (cursor x=0, y>0): it targets the
 # previous row's last cell -- exercises that lookup branch
 _ztr = SecureTerminal(command='/bin/cat', tui=True)
@@ -1026,7 +1168,7 @@ ok(_xw._export_ascii('caf' + _BOXCH) == 'caf' + _BOXCH,
 # WITHOUT advising TUI mode. The advisory must now fire on that repaint too, not
 # only on a full-screen (alt-screen) program.
 adv = SecureTerminal(command='/bin/cat')
-_advices = []
+_advices: list[str] = []
 adv.advise_signal.connect(_advices.append)
 feed_output(adv, b'plain shell output, no redraw here\n')
 ok(_advices == [], 'plain line-mode output raises no TUI advisory')
@@ -1054,7 +1196,7 @@ ok(len(_advices) == 1, 'the TUI advisory is shown once, not on every repaint')
 # a curses app under the RESTRICTED terminfo cannot cursor-address, so it clears
 # lines with a BURST of EL instead of moving the cursor (nano) -- still advise (#94).
 elb = SecureTerminal(command='/bin/cat')
-_elb = []
+_elb: list[str] = []
 elb.advise_signal.connect(_elb.append)
 elb.has_foreground_program = lambda: True
 feed_output(elb, b'\x1b[K' * 5 + b'GNU nano 8.4')
@@ -1062,7 +1204,7 @@ ok(len(_elb) == 1 and 'TUI' in _elb[0],
    '#94: an EL-burst redraw (nano under the restricted entry) advises TUI mode')
 # without a foreground program (just the shell) an EL burst does NOT advise
 elb2 = SecureTerminal(command='/bin/cat')
-_elb2 = []
+_elb2: list[str] = []
 elb2.advise_signal.connect(_elb2.append)
 elb2.has_foreground_program = lambda: False
 feed_output(elb2, b'\x1b[K' * 5 + b'text')
@@ -1071,7 +1213,7 @@ elb.close(); elb2.close()
 
 # --- a whole-screen clear is a no-op in append-only line mode: note it once ----
 clr = SecureTerminal(command='/bin/cat')
-_clr_adv = []
+_clr_adv: list[str] = []
 clr.advise_signal.connect(_clr_adv.append)
 feed_output(clr, b'ordinary output\n')
 ok(_clr_adv == [], 'ordinary output raises no clear notice')
@@ -1084,7 +1226,7 @@ ok(len(_clr_adv) == 1, 'the clear notice is shown once per tab, not on every cle
 # a full-screen program that clears its screen gets the TUI advisory, not the
 # clear notice (its clear is part of drawing, and TUI covers it).
 fs = SecureTerminal(command='/bin/cat')
-_fs_adv = []
+_fs_adv: list[str] = []
 fs.advise_signal.connect(_fs_adv.append)
 feed_output(fs, b'\x1b[?1049h\x1b[2Jfull screen app')
 ok(len(_fs_adv) == 1 and 'TUI' in _fs_adv[0],
@@ -1183,16 +1325,17 @@ if tui_available():
     _mo.close()
 
     # (b) CAP: the origin cell already holds a base plus the stream-safe maximum of
-    # combining marks (data longer than _TUI_COMBINE_CAP). A further zero-width
-    # char at the repositioned origin is DROPPED -- no unbounded growth, cursor not
-    # advanced -- so steering a flood back onto one cell cannot bypass the cap.
+    # combining marks (data AT _TUI_COMBINE_CAP -- #33 caps at exactly 32, not 33).
+    # A further zero-width char at the repositioned origin is DROPPED -- no unbounded
+    # growth, cursor not advanced -- so steering a flood back onto one cell cannot
+    # bypass the cap.
     _mc = SecureTerminal(command='/bin/cat', tui=True)
-    feed_output(_mc, ('A' + '\u0301' * 40).encode('utf-8'))   # base + acute flood -> cell over the cap
+    feed_output(_mc, ('A' + '\u0301' * 40).encode('utf-8'))   # base + acute flood -> cell at the cap
     feed_output(_mc, b'\x1b[H')                                # home onto the capped origin cell
     pump(120)
     _before = _mc._screen.buffer[0][0].data
-    ok(len(_before) > _CAP,
-       'TUI origin cap: the origin cell is over the combining cap before the extra mark')
+    ok(len(_before) >= _CAP,
+       'TUI origin cap: the origin cell is at the combining cap before the extra mark')
     feed_output(_mc, '\u200d'.encode('utf-8'))
     pump(120)
     _after = _mc._screen.buffer[0][0].data
@@ -1201,6 +1344,35 @@ if tui_available():
     ok(_mc._screen.cursor.x == 0,
        'TUI origin cap: the cursor is not advanced when the extra invisible is dropped')
     _mc.close()
+
+    # #33: _TUI_COMBINE_CAP is documented "at most 32", but draw()'s strict `>` let a
+    # merged cell grow to 33 (one past). Enforced must equal documented.
+    _off = SecureTerminal(command='/bin/cat', tui=True)
+    feed_output(_off, ('a' + _ac * 100).encode('utf-8'))   # flood one cell
+    eq(len(_off._screen.buffer[0][0].data), _CAP,
+       '#33: the merged cell holds exactly _TUI_COMBINE_CAP chars, not one over')
+    _off.close()
+
+    # #28: a leading combining mark at the origin renders the box placeholder (marked,
+    # not silently dropped) in the default (marking) mode.
+    _c28 = SecureTerminal(command='/bin/cat', tui=True)
+    feed_output(_c28, _ac.encode('utf-8'))
+    _c28._render_tui()
+    ok(_S_zw.BOX in _c28.document().toPlainText(),
+       '#28: a leading combining mark at (0,0) renders the box placeholder')
+    _c28.close()
+
+    # Show mode is the explicit opt-in to the visible U+25A1 box for a neutralized byte
+    # (the SAFE stand-in the user chose to see), so a REAL U+25A1 the program printed in
+    # Show is kept as its own glyph -- cp is its own, never mistaken for the placeholder,
+    # so toPlainText preserves it (matching the zero-width-box case above at line ~268).
+    _zrb = SecureTerminal(command='/bin/cat', tui=True)
+    _zrb._mode = 'show'
+    feed_output(_zrb, _S_zw.BOX.encode('utf-8'))
+    _zrb._render_tui()
+    ok(_S_zw.BOX in _zrb.toPlainText(),
+       'a REAL U+25A1 printed in Show mode is preserved (cp is its own)')
+    _zrb.close()
 
     # (c) EMPTY (pre-existing behavior preserved): a zero-width char on an EMPTY
     # origin occupies its own cell and advances the cursor, so a leading invisible
@@ -1320,7 +1492,7 @@ finally:
 _rm.close()
 
 _MARKER = b'\x1b[?1049h'
-_bad = []
+_bad: list[tuple[int, ...]] = []
 for _k in range(1, len(_MARKER)):                       # every 2-way split
     _t = _split_feed(_MARKER, [_k])
     if not _t._alt_screen:
@@ -1767,7 +1939,8 @@ ok(fl.document().blockCount() <= 10000,
 # keyboard tab navigation: the widget emits tab_step / tab_move so the window can
 # switch or reorder tabs (Ctrl+PageUp/Down and the Shift variants)
 nav = SecureTerminal(command='/bin/cat')
-_steps, _moves = [], []
+_steps: list[int] = []
+_moves: list[int] = []
 nav.tab_step.connect(_steps.append)
 nav.tab_move.connect(_moves.append)
 key(nav, Qt.Key.Key_PageDown, mods=Qt.KeyboardModifier.ControlModifier)
@@ -2030,8 +2203,8 @@ if tui_available():
     # (back-to-back and empty-segment markers) and it must not hang or crash.
     _at = SecureTerminal(command='/bin/cat', tui=True)
     _at.resize(400, 200)
-    _mk = [b'\x1b[?1049h', b'\x1b[?1049l', b'\x1b[?47h', b'\x1b[?47l']
-    for _combo in (b''.join(_mk), b''.join(_mk * 3), b'x' + b''.join(_mk) + b'y',
+    _altmk = [b'\x1b[?1049h', b'\x1b[?1049l', b'\x1b[?47h', b'\x1b[?47l']
+    for _combo in (b''.join(_altmk), b''.join(_altmk * 3), b'x' + b''.join(_altmk) + b'y',
                    b'\x1b[?1049h\x1b[?1049h\x1b[?1049l', b'', b'\x1b[?10', b'49h'):
         _at._feed_stream(_combo)          # returns (bounded) or the test would hang
     _at._render_tui()
@@ -3050,6 +3223,69 @@ _hsent.clear()
 key(cw, Qt.Key.Key_C, mods=_ctrl_mod)
 eq(cw._staged_paste, [], 'Ctrl+C abandons the held-paste remainder')
 
+# #38: TUI-mode Ctrl+C must ABANDON a held paste, exactly as the CLI path does -- else a
+# stale staged line leaks into a later paste gesture. (canary: the old _tui_key discard
+# branch cleared _line_buffer/_line_dirty but left _staged_paste intact.)
+_tc = SecureTerminal(command='/bin/cat', tui=True)
+_tcsent = spy_writes(_tc)
+_tc.has_foreground_program = lambda: False
+_tc._staged_paste = ['rm -rf ~', 'reboot']
+_tc._tui_key(QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_C,
+                       Qt.KeyboardModifier.ControlModifier, ''))
+eq(_tc._staged_paste, [], '#38: TUI Ctrl+C abandons the held-paste remainder (CLI parity)')
+ok(_tcsent and _tcsent[-1] == b'\x03', '#38: TUI Ctrl+C still sends the interrupt byte')
+# Ctrl+U (cursor-dependent kill) must NOT abandon the stage -- only Ctrl+C does.
+_tc._staged_paste = ['keepme']
+_tc._tui_key(QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_U,
+                       Qt.KeyboardModifier.ControlModifier, ''))
+eq(_tc._staged_paste, ['keepme'], '#38: TUI Ctrl+U does NOT abandon the held paste')
+_tc.close()
+
+# #39: a foreground program EXITING back to the shell must also DROP a held paste -- a
+# non-bracketed TUI child force-reviews a multiline paste and stages the remainder as ITS
+# input; once it exits, a paste gesture at the returning shell prompt would insert those
+# program-reviewed lines as shell commands. (canary: the old read path cleared the stage
+# only on the fg False->True edge, never on True->False.)
+_ex39 = SecureTerminal(command='/bin/cat')
+_ex39.has_foreground_program = lambda: False     # the program has now exited (back to shell)
+_ex39._bracket_had_fg = True                     # ...it WAS in the foreground on the last read
+_ex39._staged_paste = ['leaked-into-shell']
+feed_output(_ex39, b'$ ')                        # a read observes the fg True->False edge
+eq(_ex39._staged_paste, [], '#39: a foreground program exiting drops the held paste remainder')
+_ex39.close()
+
+# #19: a blank line inside a multi-line paste is a LEGITIMATE empty command -- each staged
+# line waits for the user's OWN Enter, so a blank staged line writes nothing and the user's
+# Enter submits an empty command. (canary: the old `if ln` filter DROPPED empty staged
+# lines, silently losing the blank line's Enter and shifting later commands up.)
+cw.apply_paste_warn('unicode')
+cw._line_buffer = ''
+cw._line_dirty = False
+cw._staged_paste = []
+_hsent.clear()
+_pmblank = _QMimePaste()
+_pmblank.setText('echo a\n\necho b')             # a, a BLANK line, then b (Unix newlines)
+cw.insertFromMimeData(_pmblank)
+ok(cw.review_pending(), '#19: the multi-line paste with a blank line is held for review')
+cw.dispatch_pending_paste('stripped')
+eq(_hsent, [b'echo a'], '#19: delivers line 1 only')
+eq(cw._staged_paste, ['', 'echo b'],
+   '#19: the BLANK line is PRESERVED as an empty staged command (not dropped)')
+cw._staged_paste = []
+cw._line_dirty = False
+# REGRESSION GUARD: preserving blanks must NOT reintroduce the Windows-CRLF spurious empty
+# (a \r\n -> two submit CRs). The CRLF collapse keeps a real Unix blank distinct from a
+# CRLF pair, so a CRLF paste still stages no empty element between the commands.
+_hsent.clear()
+_pmcrlf2 = _QMimePaste()
+_pmcrlf2.setText('echo 1\r\necho 2')
+cw.insertFromMimeData(_pmcrlf2)
+cw.dispatch_pending_paste('stripped')
+eq(cw._staged_paste, ['echo 2'],
+   '#19: CRLF still collapses to one break -- preserving blanks added no spurious empty')
+cw._staged_paste = []
+cw._line_dirty = False
+
 # an empty held line (a blank line in the paste) writes nothing but is consumed by the
 # gesture, so the next gesture advances to the following command.
 cw._staged_paste = ['', 'echo done']
@@ -3143,10 +3379,44 @@ ok(_ef.restart_as_shell() is False,
 _ef.close()
 # positive control: a program that ACTUALLY execs (even one that then exits nonzero) is
 # NOT exec-failed -- the pipe closes on the successful exec, so the tab still restarts.
-_er = SecureTerminal(command='/bin/cat')
-ok(_er._command_exec_failed is False,
+_erx = SecureTerminal(command='/bin/cat')
+ok(_erx._command_exec_failed is False,
    'a real program that execs leaves _command_exec_failed False (restart still allowed)')
-_er.close()
+_erx.close()
+
+# #44: a LIST command whose FIRST element is empty ('' from `-- ""`) names no program, so
+# it must fail closed exactly like the string path -- else _argv_for_command's list path
+# returns [''] and the child drops to a login shell. (canary: the old list path returned
+# [''] with _command_malformed False -> a shell.)
+_lfc = SecureTerminal(command=[''])
+ok(_lfc._command_malformed,
+   '#44: a list command with an empty first element is _command_malformed (fail closed)')
+ok(_lfc.restart_as_shell() is False,
+   '#44: restart_as_shell refuses an empty-list-command tab (no drop to a shell)')
+_lfc.close()
+_elc = SecureTerminal(command=[])             # empty list = the deliberate no-command case
+ok(_elc._command_malformed is False,
+   '#44: an empty list is the no-command case (login shell), not fail-closed')
+_elc.close()
+from secure_terminal.terminal import _argv_for_command as _afc44   # noqa: E402
+ok(_afc44(['']) is None, '#44: _argv_for_command([""]) is None (fail closed)')
+ok(_afc44(['  ']) is None, '#44: _argv_for_command(["  "]) is None (whitespace first elem)')
+eq(_afc44([]), [], '#44: _argv_for_command([]) is [] (no command -> shell)')
+eq(_afc44(['ls', '-l']), ['ls', '-l'], '#44: a real list command is verbatim')
+
+# #45: a PENDING OSC-52 clipboard-read consent must NOT survive restart_as_shell -- else
+# clicking Allow replies the system clipboard into the NEW unrelated shell. restart resets
+# _clipboard_read AND the allow-always grant (the new shell must re-consent). (canary: old
+# restart left _clipboard_read 'pending', so a later grant wrote OSC-52 into the new shell.)
+_cr45 = SecureTerminal(command='/bin/cat')     # a -- PROGRAM tab: restart drops to a shell
+_cr45._clipboard_read = 'pending'
+_cr45._clipboard_read_always = True
+ok(_cr45.restart_as_shell() is True, '#45: a -- PROGRAM tab restarts to a login shell')
+ok(_cr45._clipboard_read is None,
+   '#45: restart_as_shell drops a pending OSC-52 clipboard-read consent')
+ok(_cr45._clipboard_read_always is False,
+   '#45: restart_as_shell forgets the allow-always grant (the new shell re-consents)')
+_cr45.close()
 
 _hsent.clear()
 cw.apply_paste_warn('unicode')
@@ -3168,7 +3438,10 @@ _clp._reply_clipboard()
 ok(len(_clpw) == 2 and _clpw[0].startswith(b'\x1b]52;c;') and _clpw[1] == b'\x07',
    'a truncated OSC-52 reply is best-effort re-terminated (no dangling escape)')
 _clpw2 = []
-_clp._write = lambda _d: (_clpw2.append(bytes(_d)) or True)   # a full write
+def _full_write(_d):
+    _clpw2.append(bytes(_d))
+    return True
+_clp._write = _full_write   # a full write
 _clp._last_clip_read = 0
 _clp._reply_clipboard()
 ok(len(_clpw2) == 1, 'a fully-written OSC-52 reply appends no extra terminator')
@@ -3182,7 +3455,10 @@ _ctc = SecureTerminal(command='/bin/cat')
 _ctc.apply_osc('osc_clipboard_read', True)
 QGuiApplication.clipboard().setText('S3CRET')
 _ctcw = []
-_ctc._write = lambda _d: (_ctcw.append(bytes(_d)) or True)
+def _ctc_write(_d):
+    _ctcw.append(bytes(_d))
+    return True
+_ctc._write = _ctc_write
 _ctc._last_clip_read = 0
 _ctc._clipboard_read = 'pending'                       # a consent dialog is open
 _ctc.apply_osc('osc_clipboard_read', False)            # feature disabled while it is open
@@ -3203,6 +3479,64 @@ ok(not any(b'\x1b]52;c;' in _w for _w in _ctcw),
 QGuiApplication.clipboard().clear()
 _ctc.close()
 
+# #30: an OSC 8 hyperlink split across two PTY reads (opener+text in one, closer in the
+# next) must STILL fire the anti-phishing notice. (canary: the BEL-terminated opener was
+# not carried, so _OSC8 never saw the pair and the notice was silently evaded.)
+_h30 = SecureTerminal(command='/bin/cat', tui=True)
+_h30.apply_osc('osc_hyperlink', True)
+_h30_notes: list[str] = []
+_h30.notified.connect(_h30_notes.append)
+feed_output(_h30, b'\x1b]8;;http://evil/login\x07Login')   # opener + text (one read)
+feed_output(_h30, b'\x1b]8;;\x07')                          # closer (next read)
+ok(any('http://evil/login' in _n for _n in _h30_notes),
+   '#30: a split OSC-8 hyperlink still fires the phishing notice')
+_h30.close()
+
+# #31: the visible label passes only sanitize_title (printable ASCII), so it can embed a
+# fake ' -> uri'. The notice must present exactly ONE arrow -- the real target -- so a
+# spoofed pair in the label cannot masquerade as the destination.
+_h31 = SecureTerminal(command='/bin/cat', tui=True)
+_h31.apply_osc('osc_hyperlink', True)
+_h31_notes: list[str] = []
+_h31.notified.connect(_h31_notes.append)
+feed_output(_h31,
+            b'\x1b]8;;http://evil\x07good.example -> https://trusted.example\x1b]8;;\x07')
+eq(len(_h31_notes), 1, '#31: one hyperlink notice emitted')
+eq(_h31_notes[0].count(' -> '), 1,
+   '#31: exactly one arrow -- the label cannot spoof a second target pair')
+ok(_h31_notes[0].endswith('http://evil'), '#31: the real target is the sole arrow target')
+_h31.close()
+
+# #21 (property guard, not a fix -- the concern does not reproduce): an OSC payload grown
+# past _OSC_CARRY_MAX is DROPPED (carry reset, no stale side-effect), and a display-mode
+# toggle mid-OSC does not resurrect it. _osc_carry feeds only sanitized side-effects, never
+# the renderer, so this is correct-by-design; the guard locks the bound. _handle_osc is
+# driven directly -- feed_output cannot push > 64 KiB through the os.pipe in one write.
+_h21 = SecureTerminal(command='/bin/cat', tui=True)
+_h21.apply_osc('osc_title', True)
+_h21_titles: list[str] = []
+_h21.title_changed.connect(_h21_titles.append)
+_h21._handle_osc(b'\x1b]0;' + b'A' * 5000)             # sub-cap unterminated OSC: held
+ok(len(_h21._osc_carry) > 0, '#21: a sub-cap unterminated OSC is held')
+_h21.apply_mode('show')                                # display-mode toggle mid-OSC
+_h21._handle_osc(b'B' * (_h21._OSC_CARRY_MAX + 1))     # grow the held carry past the cap
+eq(len(_h21._osc_carry), 0, '#21: an over-cap OSC carry is dropped, not retained')
+_h21._handle_osc(b'C' * 10 + b'\x07')                  # terminate the dropped sequence
+eq(_h21_titles, [], '#21: the dropped over-cap OSC fires no title (no stale side-effect)')
+_h21.close()
+
+# #22 (property guard, not a fix -- the scan is O(n), capped at _ALT_TRANSITIONS_MAX, not
+# O(n^2)): _feed_stream detects alt-screen enter/leave at the right byte boundaries.
+_h22 = SecureTerminal(command='/bin/cat', tui=True)
+feed_output(_h22, b'primary-line\n')
+feed_output(_h22, b'\x1b[?1049hALT-FRAME')             # enter alt: snapshot primary
+ok('ALT-FRAME' in _h22.toPlainText(), '#22: the alt frame shows after enter')
+feed_output(_h22, b'\x1b[?1049l')                       # leave alt: restore primary
+_txt22 = _h22.toPlainText()
+ok('primary-line' in _txt22 and 'ALT-FRAME' not in _txt22,
+   '#22: primary restored and the alt frame gone after leave')
+_h22.close()
+
 # SEC-1 (stale dialog): a consent dialog whose request was ABANDONED (osc_clipboard_read
 # disabled) must NOT grant the tab after a re-enable -- a disable+re-enable+stale-allow-always
 # would else grant allow-always and the next read would reply with no fresh prompt.
@@ -3215,7 +3549,10 @@ _cts.grant_clipboard_read(_cts.CLIP_ALLOW_ALWAYS)      # stale Allow-Always clic
 ok(_cts._clipboard_read is None,
    'SEC-1: a stale allow-always (dialog abandoned by a disable) does NOT grant the tab')
 _ctsw = []
-_cts._write = lambda _d: (_ctsw.append(bytes(_d)) or True)
+def _cts_write(_d):
+    _ctsw.append(bytes(_d))
+    return True
+_cts._write = _cts_write
 _cts._last_clip_read = 0
 _cts._osc_clipboard_read()                             # the next OSC-52 read query
 ok(_cts._clipboard_read == 'pending' and not any(b'\x1b]52;c;' in _w for _w in _ctsw),
@@ -3268,10 +3605,10 @@ try:
     os.kill(_alive, signal.SIGKILL)
     os.waitpid(_alive, 0)
     SecureTerminal._LIVE_PTY_PIDS.discard(_alive)
-    _gone = 2147480000                                       # a pid that is not our child
-    SecureTerminal._LIVE_PTY_PIDS.add(_gone)
+    _gone_pid = 2147480000                                   # a pid that is not our child
+    SecureTerminal._LIVE_PTY_PIDS.add(_gone_pid)
     SecureTerminal.reap_pty_children()
-    ok(_gone not in SecureTerminal._LIVE_PTY_PIDS,
+    ok(_gone_pid not in SecureTerminal._LIVE_PTY_PIDS,
        'reap_pty_children drops a pid that is not (or no longer) our child')
     # a spawned tab registers its pty pid; shutdown() reaps a dead child (reaped branch)
     _rt = SecureTerminal(command='/bin/cat')
@@ -3388,8 +3725,8 @@ eq([''.join(c for c, _ in ln) for ln in _nc], ['abc'],
    'prompt newline: un-terminated output before the marker is ended into its line')
 eq(''.join(c for c, _ in _nk), 'PS> ',
    'prompt newline: the prompt starts on a fresh line, not glued to the output')
-_zc, _zk, _, _, _ = _S.feed_line_edits([], 0, dict(_DFLT), 'abc\n' + _S.PROMPT_START + 'PS> ')
-eq([''.join(c for c, _ in ln) for ln in _zc], ['abc'],
+_znl, _zk, _, _, _ = _S.feed_line_edits([], 0, dict(_DFLT), 'abc\n' + _S.PROMPT_START + 'PS> ')
+eq([''.join(c for c, _ in ln) for ln in _znl], ['abc'],
    'prompt newline: a trailing newline already ended the line -- no spurious blank')
 # zsh/zle emits the bracketed-paste marker AFTER printing the prompt (bash sends
 # it before). With no printable text after the marker the prompt is already on
@@ -3927,8 +4264,8 @@ if tui_available():
            for x in range(tui._screen.columns)), 'tui colour cell')
     # title + notification handling when allowed
     tui.apply_allow_title(True)
-    titles = []
-    notes = []
+    titles: list[str] = []
+    notes: list[str] = []
     tui.title_changed.connect(titles.append)
     tui.notified.connect(notes.append)
     tui._stream.feed(b'\x1b]2;My ev\xe2\x80\xaeil Title\x07')
@@ -3988,8 +4325,8 @@ if tui_available():
     # OSC 4 palette-index int() path is actually REACHED -- with the wrong flag it hit the
     # disabled early-return and the crash test proved nothing. Reset it after, so the later
     # "ignored until osc_colors is on" test still starts from off.
-    for _f in ('osc_title', 'osc_colors'):
-        tui.apply_osc(_f, True)
+    for _ofl in ('osc_title', 'osc_colors'):
+        tui.apply_osc(_ofl, True)
     tui._handle_osc(b'\x1b]' + b'9' * 5000 + b';x\x07')          # huge OSC code
     tui._handle_osc(b'\x1b]4;' + b'1' * 5000 + b';rgb:ff/00/00\x07')  # huge palette index
     ok(isinstance(tui.toPlainText(), str),
@@ -3997,7 +4334,7 @@ if tui_available():
     tui.apply_osc('osc_colors', False)
     tui.apply_osc('osc_title', False)
     # cwd OSC 7 gated + emits the safe path
-    _cwds = []
+    _cwds: list[str] = []
     tui.cwd_changed.connect(_cwds.append)
     tui._handle_osc(b'\x1b]7;file://h/home/u/p\x07')        # osc_cwd off
     ok(_cwds == [], 'OSC 7 cwd is ignored until osc_cwd is enabled')
@@ -4027,15 +4364,15 @@ if tui_available():
        'iTerm2 (OSC 1337) is not a toggleable OSC feature -- it cannot be enabled')
     _QGA2.clipboard().setText('UNTOUCHED')
     _t0, _n0, _c0 = len(titles), len(notes), len(_cwds)
-    for _payload in (b'\x1b]1337;File=name=eA==;size=1:eA==\x07',   # inline file
+    for _osc1337 in (b'\x1b]1337;File=name=eA==;size=1:eA==\x07',   # inline file
                      b'\x1b]1337;SetUserVar=k=dg==\x07',            # shell variable
                      b'\x1b]1337;RequestUpload=format=tgz\x07'):    # file transfer
-        tui._handle_osc(_payload)
+        tui._handle_osc(_osc1337)
     ok(len(titles) == _t0 and len(notes) == _n0 and len(_cwds) == _c0
        and _QGA2.clipboard().text() == 'UNTOUCHED',
        'OSC 1337 is always neutralized: no signal, no clipboard, no cwd, no toggle')
     # palette OSC 4/10/11: gated, and a program CANNOT hide text by moving fg==bg
-    class _Cell:                                            # a default-coloured cell
+    class _MiniCell:                                        # a default-coloured cell
         fg = bg = 'default'
         bold = reverse = underscore = False
         data = ' '
@@ -4043,12 +4380,12 @@ if tui_available():
     ok(tui._osc_palette == {}, 'OSC palette change is ignored until osc_colors is on')
     tui.apply_osc('osc_colors', True)
     tui._handle_osc(b'\x1b]10;#000000\x07\x1b]11;#000000\x07')   # hide attempt fg==bg
-    _hidfg = tui._pyte_format(_Cell()).foreground().color().name()
+    _hidfg = tui._pyte_format(_MiniCell()).foreground().color().name()
     ok(_hidfg != '#000000',
        'fg==bg (via OSC 10/11) cannot hide text: the guard forces a readable colour')
     tui._fmt_cache.clear()
     tui._handle_osc(b'\x1b]10;#33cc99\x07')                 # a legit fg is applied
-    ok(tui._pyte_format(_Cell()).foreground().color().name() == '#33cc99',
+    ok(tui._pyte_format(_MiniCell()).foreground().color().name() == '#33cc99',
        'a legitimate OSC 10 foreground colour is applied')
     tui.apply_osc('osc_colors', False)
     ok(tui._osc_palette == {}, 'disabling osc_colors reverts to the theme palette')
@@ -4062,7 +4399,7 @@ if tui_available():
     tui.apply_osc('osc_colors', False)
     # hyperlink OSC 8: gated, and surfaces the REAL target next to the visible text
     # (a link's display text can differ from where it points -- the phishing risk).
-    _links = []
+    _links: list[str] = []
     tui.notified.connect(_links.append)
     tui._handle_osc(b'\x1b]8;;https://evil.example\x07Google\x1b]8;;\x07')
     ok(_links == [], 'OSC 8 hyperlinks are ignored until osc_hyperlink is enabled')
@@ -4088,7 +4425,7 @@ if tui_available():
                      'sleep 30\n')
         os.chmod(_script, 0o700)
         sw = SecureTerminal(command=_script)
-        _adv = []
+        _adv: list[str] = []
         sw.advise_signal.connect(_adv.append)   # advisories are EMITTED, not injected
         sw.resize(700, 300)
         sw.show()
@@ -5086,8 +5423,8 @@ _ofz.close()
 # the WRITE spy (the injection-relevant channel), not just a signal.
 _osz = SecureTerminal(command='/bin/cat')
 _osc_sweep = ('osc_title', 'osc_notify', 'osc_cwd', 'osc_hyperlink', 'osc_clipboard')
-for _f in _osc_sweep:
-    _osz.apply_osc(_f, True)           # each is a real feature -> must enable, not swallow
+for _osf in _osc_sweep:
+    _osz.apply_osc(_osf, True)         # each is a real feature -> must enable, not swallow
 ok(all(_osz.osc_enabled(_f) for _f in _osc_sweep),
    'every OSC feature enables (no swallowed apply_osc failure weakening the sweep)')
 
@@ -5104,7 +5441,7 @@ def _osc_writes(seq_parts):
     # rate-limited) differ, and the property flakes across Hypothesis's repeated calls.
     _osz._clipboard_read = True
     _osz._last_clip_read = 0.0
-    captured = []
+    captured: list[bytes] = []
     _orig = _osz._write
     _osz._write = captured.append      # pylint: disable=protected-access
     try:
@@ -5342,8 +5679,8 @@ ok(_stabs and isinstance(_stabs[0].get('osc'), dict) and 'osc_clipboard' in _sta
 _cfgdir = os.path.join(os.environ['XDG_CONFIG_HOME'], 'secure-terminal.d')
 os.makedirs(_cfgdir, exist_ok=True)
 _ucfg = os.path.join(_cfgdir, '50_user.conf')
-with open(_ucfg, 'w', encoding='utf-8') as _fh:
-    _fh.write('allow_title=true\nosc_title=true\nosc_notify=false\n')
+with open(_ucfg, 'w', encoding='utf-8') as _ucfh:
+    _ucfh.write('allow_title=true\nosc_title=true\nosc_notify=false\n')
 _wd = MainWindow()
 ok(_wd._osc_defaults['osc_title'] and not _wd._osc_defaults['osc_notify'],
    'legacy allow_title does not override an explicit granular osc_notify=false')
@@ -5365,8 +5702,8 @@ eq(_ttc._child_term(), ('secure-terminal', _tdir),
    'CLI mode advertises the restricted TERM (no completion-menu redraws)')
 _ttc.close()
 _ttt = SecureTerminal(command='/bin/cat', tui=True)        # TUI mode
-_term, _d = _ttt._child_term()
-eq(_term, 'xterm-256color', 'TUI mode advertises xterm-256color (full caps)')
+_tuiterm, _d = _ttt._child_term()
+eq(_tuiterm, 'xterm-256color', 'TUI mode advertises xterm-256color (full caps)')
 ok(_d == _tdir, 'TERMINFO_DIRS resolves the restricted entry in both modes')
 _ttt.close()
 # line_edits=false STRIPS the four line-local ops, so the shell must not be told
@@ -5563,11 +5900,11 @@ eq(_sp.run(['tput', '-T', 'secure-terminal-noedit', 'cub1'],
 # ...and a cache NEWER than the source is served as-is (no needless recompile)
 _write_stale(+60)
 ## C5: Recompile check tests the file bytes are unchanged, not the path
-with open(_stale_file, 'rb') as _f:
-    _before_bytes = _f.read()
+with open(_stale_file, 'rb') as _bf:
+    _before_bytes = _bf.read()
 _timod.cli_terminfo_dir()
-with open(_stale_file, 'rb') as _f:
-    _after_bytes = _f.read()
+with open(_stale_file, 'rb') as _bf:
+    _after_bytes = _bf.read()
 eq(_before_bytes, _after_bytes,
    'a compiled entry newer than the source is served from cache')
 if _prev_cache is None:
@@ -5585,7 +5922,7 @@ _fcntl2.fcntl(_te._fd, _fcntl2.F_SETFL,
               _fcntl2.fcntl(_te._fd, _fcntl2.F_GETFL) | os.O_NONBLOCK)
 while _time.monotonic() - _estart < 1.5:
     import select as _sel2
-    _r, _, _ = _sel2.select([_te._fd], [], [], 0.05)
+    _r, _selw, _selx = _sel2.select([_te._fd], [], [], 0.05)
     if _te._fd in _r:
         try:
             _chunk = os.read(_te._fd, 4096)
@@ -5650,7 +5987,7 @@ ok(b'T=secure-terminal-noedit' in _child_term_env(win.current()),
 # the terminal -- its terminfo cannot be changed under it (#63). command=None: the
 # re-export only fires for the DEFAULT login shell, so this needs a shell tab.
 _tg = SecureTerminal(command=None)
-_tgadv = []
+_tgadv: list[str] = []
 _tg.advise_signal.connect(_tgadv.append)
 _tgsent = spy_writes(_tg)
 _tg.has_foreground_program = lambda: True             # a program is running
@@ -5695,7 +6032,7 @@ _tgc.close()
 # clear -- and never kill the line to make room, because discarding what someone
 # typed is not ours to do.
 _tgp = SecureTerminal(command=None)
-_tgpadv = []
+_tgpadv: list[str] = []
 _tgp.advise_signal.connect(_tgpadv.append)
 _tgpsent = spy_writes(_tgp)
 _tgp.has_foreground_program = lambda: False            # at a shell prompt
@@ -5773,13 +6110,13 @@ _tt.close()
 
 # A history recall (Up) at a bare TUI prompt is the same hazard with an INVISIBLE
 # line -- it marks dirty too (covers the mapped-key path, not just printable text).
-_th = SecureTerminal(command=None, tui=True)
-spy_writes(_th)                                         # sink the writes; not inspected
-_th.has_foreground_program = lambda: False
-key(_th, Qt.Key.Key_Up)                                 # recall a previous command
-ok(_th._line_dirty,
+_thh = SecureTerminal(command=None, tui=True)
+spy_writes(_thh)                                        # sink the writes; not inspected
+_thh.has_foreground_program = lambda: False
+key(_thh, Qt.Key.Key_Up)                                # recall a previous command
+ok(_thh._line_dirty,
    'history recall at a bare TUI prompt marks the line unmirrored')
-_th.close()
+_thh.close()
 
 # But keys consumed by a FOREGROUND PROGRAM must NOT mark the line: a program that
 # exits without an accept-line key (e.g. `less` quit with `q`) would otherwise
@@ -5921,7 +6258,7 @@ _ts.close()
 # emitting redraws that vanish (a mangled completion). Same reachability guard as
 # the CLI/TUI switch.
 _lex = SecureTerminal(command=None)
-_lexadv = []
+_lexadv: list[str] = []
 _lex.advise_signal.connect(_lexadv.append)
 _lexsent = spy_writes(_lex)
 _lex.has_foreground_program = lambda: False           # at a shell prompt
@@ -5986,7 +6323,7 @@ _fgt.close()
 # the enable-poll and the click, terminate_foreground must treat it as gone (no-op),
 # not raise ProcessLookupError out of the slot (as has_foreground_program does).
 _ogpg93 = _os93.getpgid
-_os93.getpgid = lambda _p: (_ for _ in ()).throw(ProcessLookupError())
+_os93.getpgid = lambda _p: (_ for _ in ()).throw(ProcessLookupError())  # type: ignore[assignment]
 try:
     _fgd = SecureTerminal(command='/bin/cat')
     _fgd._command = None
@@ -6027,7 +6364,7 @@ _fcntl2.fcntl(_cte._fd, _fcntl2.F_SETFL,
               _fcntl2.fcntl(_cte._fd, _fcntl2.F_GETFL) | os.O_NONBLOCK)
 while _time.monotonic() - _cs < 1.5:
     import select as _sel3
-    _rr, _, _ = _sel3.select([_cte._fd], [], [], 0.05)
+    _rr, _selw3, _selx3 = _sel3.select([_cte._fd], [], [], 0.05)
     if _cte._fd in _rr:
         try:
             _ck = os.read(_cte._fd, 4096)
@@ -6152,7 +6489,7 @@ def _clip_read(feature_on, grant):
     c.apply_osc('osc_clipboard_read', feature_on)
     _reqs = []
     c.clipboard_read_requested.connect(lambda: _reqs.append(1))
-    _sent = []
+    _sent: list[bytes] = []
     c._write = _sent.append                # pylint: disable=protected-access
     if grant is not None:
         # A tab that ALREADY carries a persistent decision (allow-always / deny-always)
@@ -6200,29 +6537,30 @@ _QGA.clipboard().setText('clip-secret')       # restore for later readers
 _cg = SecureTerminal(command='/bin/cat', tui=True)
 _cg.apply_osc('osc_clipboard_read', True)
 _cg._clipboard_read = True                 # a tab already granted allow-always
-_cgs = []
+_cgs: list[bytes] = []
 _cg._write = _cgs.append
 _cg._handle_osc(b'\x1b]52;c;?\x07')
 _cg._handle_osc(b'\x1b]52;c;?\x07')
 eq(len(_cgs), 1, 'OSC 52 read: two reads in a granted tab -> one reply (rate-limited)')
 _cg.close()
 # granting a PENDING request answers the query that opened the dialog (codex F1)
-_cp = SecureTerminal(command='/bin/cat', tui=True)
-_cp.apply_osc('osc_clipboard_read', True)
-_cps = []
-_cp._write = _cps.append
-_cp._handle_osc(b'\x1b]52;c;?\x07')        # -> pending, dialog asked, no reply yet
+_cpr = SecureTerminal(command='/bin/cat', tui=True)
+_cpr.apply_osc('osc_clipboard_read', True)
+_cps: list[bytes] = []
+_cpr._write = _cps.append
+_cpr._handle_osc(b'\x1b]52;c;?\x07')        # -> pending, dialog asked, no reply yet
 eq(_cps, [], 'a pending clipboard request sends no reply until the user decides')
-_cp.grant_clipboard_read(_cp.CLIP_ALLOW_ALWAYS)   # user allows -> the pending query is answered NOW
+_cpr.grant_clipboard_read(_cpr.CLIP_ALLOW_ALWAYS)  # user allows -> the pending query is answered NOW
 ok(len(_cps) == 1 and _cps[0].startswith(b'\x1b]52;c;'),
    'granting a pending request answers the query that opened the dialog')
-_cp.close()
+_cpr.close()
 
 # --- OSC 52 read: the four dialog decisions (allow/deny x once/always) ---------
 def _clip_term():
     c = SecureTerminal(command='/bin/cat', tui=True)
     c.apply_osc('osc_clipboard_read', True)
-    reqs, sent = [], []
+    reqs: list[int] = []
+    sent: list[bytes] = []
     c.clipboard_read_requested.connect(lambda: reqs.append(1))
     c._write = sent.append                 # pylint: disable=protected-access
     return c, reqs, sent
@@ -6463,20 +6801,20 @@ _sy.close()
 import termios as _tio_adv                                         # noqa: E402
 _ADV_PREFIXES = [b'', b'\x1b[?1049h', b'\x1b[?1047h', b'\x1b[?47h', b'\x1b[?2026h',
                  b'\x1b[?1049h\x1b[?2026h']
-_adv = SecureTerminal(command='/bin/cat', tui=True)
+_advx = SecureTerminal(command='/bin/cat', tui=True)
 for _k in (f[0] for f in _S.OSC_FEATURES):
-    _adv.apply_osc(_k, True)               # every OSC feature enabled
-_aa = _tio_adv.tcgetattr(_adv._fd)         # + the readline-prompt case (ICANON off)
+    _advx.apply_osc(_k, True)              # every OSC feature enabled
+_aa = _tio_adv.tcgetattr(_advx._fd)        # + the readline-prompt case (ICANON off)
 _aa[3] &= ~_tio_adv.ICANON
-_tio_adv.tcsetattr(_adv._fd, _tio_adv.TCSANOW, _aa)
-_advsent = spy_writes(_adv)
+_tio_adv.tcsetattr(_advx._fd, _tio_adv.TCSANOW, _aa)
+_advsent = spy_writes(_advx)
 for _pfx in _ADV_PREFIXES:
     for _q in _QUERIES:
-        feed_output(_adv, _pfx + _q)
+        feed_output(_advx, _pfx + _q)
 ok(_advsent == [],
    'reflection oracle (adversarial): output that fakes alt-screen / sync while at '
    'a readline prompt still elicits ZERO write-back (got %r)' % _advsent[:3])
-_adv.close()
+_advx.close()
 
 # --- bell (BEL) policy --------------------------------------------------------
 # A standalone BEL in output rings per the tab's policy (off/audible/visual),
@@ -6594,17 +6932,17 @@ eq(SecureTerminal._parse_bell({'visual', 'nope'}), {'visual'},
    'an unknown channel in a set is dropped')
 
 # toggling one channel preserves the current tab's OTHER channels (codex F2)
-_bt = SecureTerminal(command='/bin/cat')
-win.tabs.addTab(_bt, 'bell-preserve')
-win.tabs.setCurrentWidget(_bt)
-_bt.apply_bell({'visual'})
+_btw = SecureTerminal(command='/bin/cat')
+win.tabs.addTab(_btw, 'bell-preserve')
+win.tabs.setCurrentWidget(_btw)
+_btw.apply_bell({'visual'})
 win._default_bell = set()                         # make the tab differ from default
 win.set_bell_channel('tray', True)
-eq(_bt.bell_channels(), {'visual', 'tray'},
+eq(_btw.bell_channels(), {'visual', 'tray'},
    'toggling one channel keeps the current tab other channels')
 eq(win._default_bell, {'tray'}, 'the global default tracks the toggled channel')
-win.tabs.removeTab(win.tabs.indexOf(_bt))
-_bt.close()
+win.tabs.removeTab(win.tabs.indexOf(_btw))
+_btw.close()
 
 # a bell_sound admin lock refuses the sound setter
 _saved_l2 = win._locked
@@ -6870,8 +7208,8 @@ ok(not _term.sound_file_allowed('/no/such/sound.wav'),
    'sound_file_allowed: a missing file is rejected')
 _snd_tmp = _tempfile.mkdtemp()
 _outside = os.path.join(_snd_tmp, 'outside.wav')
-with open(_outside, 'wb') as _h:
-    _h.write(b'RIFF')
+with open(_outside, 'wb') as _owav:
+    _owav.write(b'RIFF')
 ok(not _term.sound_file_allowed(_outside),
    'sound_file_allowed: a file outside the allowed dirs is rejected')
 # with the allowed-dirs list pointed at our temp dir, a file inside is accepted
@@ -6887,7 +7225,7 @@ try:
     _fake_qm = _types.ModuleType('PyQt6.QtMultimedia')
 
     class _FakeSoundEffect:
-        raise_on = None
+        raise_on: str | None = None
 
         def __init__(self, _parent=None):
             if _FakeSoundEffect.raise_on == 'init':
@@ -6900,7 +7238,7 @@ try:
             if _FakeSoundEffect.raise_on == 'play':
                 raise RuntimeError('playback failed')
 
-    _fake_qm.QSoundEffect = _FakeSoundEffect
+    _fake_qm.QSoundEffect = _FakeSoundEffect  # type: ignore[attr-defined]
     _o_qm = sys.modules.get('PyQt6.QtMultimedia')
     sys.modules['PyQt6.QtMultimedia'] = _fake_qm
     try:
@@ -6980,7 +7318,7 @@ ok(not _fg.terminate_foreground(),
 from PyQt6.QtGui import QWheelEvent          # noqa: E402
 from PyQt6.QtCore import QPointF, QPoint      # noqa: E402
 _wz = SecureTerminal(command='/bin/cat')
-_zoom = []
+_zoom: list[int] = []
 _wz.zoom_step.connect(_zoom.append)
 
 
@@ -7141,44 +7479,57 @@ except _subprocess.TimeoutExpired:
 ok(_victim.returncode is not None,
    'terminate_foreground: a TERM-ignoring group is SIGKILLed by the survivor')
 
-# #35: a login shell REPLACED via the `exec` builtin (exec vim) keeps the shell's
-# pid + pgrp, so tcgetpgrp still reads a "bare prompt" -- but /proc comm now names a
-# different program. _child_execd() catches it by process identity, so the panic
-# button acts on it and the mode-toggle re-export refuses to type into it. A builtin
-# that merely reads stdin (read/here-doc) is NOT an exec (same comm) and stays the
-# documented #18 residual. (canary: pre-#35 code has no _child_execd / _spawn_comm
-# and reads an exec-replaced shell as an idle prompt.)
-ok(SecureTerminal._read_comm(2 ** 30) is None,
-   '_read_comm returns None for a nonexistent pid')
+# #35/#42: a login shell REPLACED via the `exec` builtin (exec vim) keeps the shell's
+# pid + pgrp, so tcgetpgrp still reads a "bare prompt" -- but /proc/<pid>/exe now points
+# at a DIFFERENT binary. _child_execd() catches it by process identity via exe, which
+# (unlike comm) the child CANNOT forge, so the panic button acts on the exec'd program
+# and the mode-toggle re-export refuses to type into it. A builtin that merely reads
+# stdin (read/here-doc) is NOT an exec (same exe) and stays the documented #18 residual.
+ok(SecureTerminal._read_exe(2 ** 30) is None,
+   '_read_exe returns None for a nonexistent pid')
 _xc = SecureTerminal(command=None)            # login-shell tab (_command is None)
-ok(_xc._spawn_comm is not None, 'a spawned child records its /proc comm baseline')
+ok(_xc._spawn_exe is not None, 'a spawned child records its /proc exe baseline')
 _hold_pid, _xc._pid = _xc._pid, None
 ok(_xc._child_execd() is False, '_child_execd: no child pid -> False')
 _xc._pid = _hold_pid
-_hold_comm, _xc._spawn_comm = _xc._spawn_comm, None
-ok(_xc._child_execd() is False, '_child_execd: no comm baseline -> False')
-_xc._spawn_comm = _hold_comm
+_hold_exe, _xc._spawn_exe = _xc._spawn_exe, None
+ok(_xc._child_execd() is False, '_child_execd: no exe baseline -> False')
+_xc._spawn_exe = _hold_exe
 try:
-    _xc._read_comm = lambda _pid: None
-    ok(_xc._child_execd() is False, '_child_execd: unreadable comm -> False')
-    _xc._read_comm = lambda _pid: _xc._spawn_comm
-    ok(_xc._child_execd() is False, '_child_execd: matching comm is a bare prompt')
-    _xc._read_comm = lambda _pid: _xc._spawn_comm + '-execd'
-    ok(_xc._child_execd() is True, '_child_execd: a changed comm is an exec-replace')
+    _xc._read_exe = lambda _pid: None
+    ok(_xc._child_execd() is False, '_child_execd: unreadable exe -> False')
+    _xc._read_exe = lambda _pid: _xc._spawn_exe
+    ok(_xc._child_execd() is False, '_child_execd: matching exe is a bare prompt')
+    _xc._read_exe = lambda _pid: _xc._spawn_exe + '-execd'
+    ok(_xc._child_execd() is True, '_child_execd: a changed exe is an exec-replace')
 finally:
-    del _xc._read_comm
+    del _xc._read_exe
 _xc.close()
 
-# faithful panic-button path: a real TERM-ignoring victim group stands in for the
-# exec'd program; both _foreground_pgrp and getpgid(_pid) resolve to it (the exec
-# case: same pgrp as the shell) and comm differs from the baseline -> signalled.
+# #42: /proc/self/comm is CHILD-WRITABLE (the #35 spoof), but /proc/<pid>/exe is NOT --
+# _child_execd must key off exe so a comm forge cannot flip detection (neither killing an
+# idle shell nor hiding a stuck exec'd program from the panic button). Prove _read_exe
+# reports the REAL binary even when the child rewrote its own comm.
+_v42 = _subprocess.Popen(
+    ['sh', '-c', 'printf fakeshell > /proc/self/comm 2>/dev/null; sleep 30'],
+    start_new_session=True)
+pump(80)
+_exe42 = SecureTerminal._read_exe(_v42.pid)
+ok(_exe42 is not None and _exe42.rsplit('/', 1)[-1] in ('sh', 'dash', 'bash', 'busybox'),
+   '#42: _read_exe reports the real binary even when the child spoofed /proc/self/comm')
+_v42.terminate()
+_v42.wait()
+
+# faithful panic-button path: a real TERM-ignoring victim group stands in for the exec'd
+# program; both _foreground_pgrp and getpgid(_pid) resolve to it (the exec case: same
+# pgrp as the shell) and exe differs from the baseline -> signalled.
 _victim_x = _subprocess.Popen(['sh', '-c', 'trap "" TERM; exec sleep 30'],
                               start_new_session=True)
 pump(60)
 _victim_x_pgrp = os.getpgid(_victim_x.pid)
 _xt = SecureTerminal(command=None)
 _xt._foreground_pgrp = lambda: _victim_x_pgrp
-_xt._read_comm = lambda _pid: (_xt._spawn_comm or '') + '-execd'
+_xt._read_exe = lambda _pid: (_xt._spawn_exe or '') + '-execd'
 _o_getpgid_x = _term2.os.getpgid
 _term2.os.getpgid = lambda _pid: _victim_x_pgrp
 try:
@@ -7196,15 +7547,15 @@ except _subprocess.TimeoutExpired:
     _victim_x.wait(timeout=5)
 ok(_victim_x.returncode is not None,
    'terminate_foreground: the exec-replaced shell is SIGKILLed by the survivor')
-# a MATCHING comm is a bare prompt -> the panic button no-ops (shell preserved)
+# a MATCHING exe is a bare prompt -> the panic button no-ops (shell preserved)
 _term2.os.getpgid = lambda _pid: _victim_x_pgrp
 try:
-    _xt._read_comm = lambda _pid: _xt._spawn_comm
+    _xt._read_exe = lambda _pid: _xt._spawn_exe
     ok(_xt.terminate_foreground() is False,
-       'terminate_foreground: a bare shell prompt (matching comm) is a no-op')
+       'terminate_foreground: a bare shell prompt (matching exe) is a no-op')
 finally:
     _term2.os.getpgid = _o_getpgid_x
-    del _xt._read_comm
+    del _xt._read_exe
 _xt.close()
 
 # #36: int() raises ValueError for a >4300-digit string (Python 3.11+) BEFORE the
@@ -7417,7 +7768,7 @@ _cw2 = SecureTerminal(command='/bin/cat')
 _cw2._pid = 1
 _cw2._foreground_pgrp = lambda: None
 try:
-    _os.readlink = lambda *_a, **_k: os.path.expanduser('~')
+    _os.readlink = lambda *_a, **_k: os.path.expanduser('~')  # type: ignore[assignment]
     eq(_cw2.cwd_basename(), '~', 'cwd_basename: the home directory shows as ~')
 finally:
     _os.readlink = _o_readlink
@@ -7495,10 +7846,10 @@ ok(_has_read_reply(), 'OSC 52 read: global always-allow replies')
 _oc._clipboard_read = None
 _oc._clipboard_read_always = False
 _ocw.clear()
-_creq = []
-_oc.clipboard_read_requested.connect(lambda: _creq.append(1))
+_creq2: list[int] = []
+_oc.clipboard_read_requested.connect(lambda: _creq2.append(1))
 _oc._osc_clipboard_read()                   # ask once -> raise the request, no reply yet
-ok(_creq and _oc._clipboard_read == 'pending' and not _has_read_reply(),
+ok(_creq2 and _oc._clipboard_read == 'pending' and not _has_read_reply(),
    'OSC 52 read: an un-granted tab asks once and never replies')
 
 # feed guards: no pyte stream (line mode), an empty chunk, alt-leave with no save
@@ -7632,29 +7983,29 @@ _tfo.close()
 # in a session of its own so it is NOT our group) -> a no-op that signals nothing.
 _tfs = _subprocess.Popen(['sleep', '30'], start_new_session=True)
 pump(60)
-_tf = SecureTerminal(command='/bin/cat')
-_tf._command = None                         # login-shell semantics for this branch
-_tf._pid = _tfs.pid
-# Align the comm baseline to the stand-in child: a real login shell's _spawn_comm
-# matches its own _pid, so _child_execd() reads "not exec'd" (a bare prompt). Without
-# this, _pid points at 'sleep' while _spawn_comm is still '/bin/cat' -- an artificial
-# mismatch that #35's exec detection would (correctly) read as an exec-replace.
-_tf._spawn_comm = _tf._read_comm(_tfs.pid)
-_tf._foreground_pgrp = lambda: os.getpgid(_tfs.pid)
-ok(not _tf.terminate_foreground(),
+_tfw = SecureTerminal(command='/bin/cat')
+_tfw._command = None                        # login-shell semantics for this branch
+_tfw._pid = _tfs.pid
+# Align the exe baseline to the stand-in child: a real login shell's _spawn_exe matches
+# its own _pid, so _child_execd() reads "not exec'd" (a bare prompt). Without this, _pid
+# points at 'sleep' while _spawn_exe is still '/bin/cat' -- an artificial mismatch that
+# #35/#42's exec detection would (correctly) read as an exec-replace.
+_tfw._spawn_exe = _tfw._read_exe(_tfs.pid)
+_tfw._foreground_pgrp = lambda: os.getpgid(_tfs.pid)
+ok(not _tfw.terminate_foreground(),
    'terminate_foreground: only the shell in the foreground -> no-op')
 ok(_tfs.poll() is None,
    'terminate_foreground: the shell no-op signals nothing')
-_tf.close()
+_tfw.close()
 _tfs.terminate()
 _tfs.wait()
 # a killpg error (invalid pgrp) is reported as False.
-_tf2 = SecureTerminal(command='/bin/cat')
-_tf2._pid = None
-_tf2._foreground_pgrp = lambda: 999999      # invalid pgrp -> killpg raises
-ok(not _tf2.terminate_foreground(),
+_tf2w = SecureTerminal(command='/bin/cat')
+_tf2w._pid = None
+_tf2w._foreground_pgrp = lambda: 999999     # invalid pgrp -> killpg raises
+ok(not _tf2w.terminate_foreground(),
    'terminate_foreground: a killpg error is reported as False')
-_tf2.close()
+_tf2w.close()
 
 # _write retries after an EAGAIN on the non-blocking fd
 _we = SecureTerminal(command='/bin/cat')
@@ -7706,13 +8057,13 @@ _ow._osc_clipboard(b'c;' + _b64.b64encode(b'hello'))            # valid -> set c
 ok(_owclip.text() == 'hello', 'OSC 52 write: only a valid base64 payload sets the clipboard')
 
 # _on_readable creates the pyte screen on demand in TUI mode
-_mk = SecureTerminal(command='/bin/cat')
-_mk.apply_tui(True)
-_mk._screen = None
-feed_output(_mk, b'hi')                     # tui_active + no screen -> _make_screen
-ok(_mk._screen is not None, '_on_readable builds the pyte screen on demand in TUI mode')
-_mk._render_timer.stop()
-_mk._sync_timer.stop()
+_mkw = SecureTerminal(command='/bin/cat')
+_mkw.apply_tui(True)
+_mkw._screen = None
+feed_output(_mkw, b'hi')                    # tui_active + no screen -> _make_screen
+ok(_mkw._screen is not None, '_on_readable builds the pyte screen on demand in TUI mode')
+_mkw._render_timer.stop()
+_mkw._sync_timer.stop()
 
 # _place_grid_cursor is a no-op when the program hid the cursor
 _pc = SecureTerminal(command='/bin/cat')
@@ -7738,7 +8089,7 @@ ok(len(_ed._raw) <= _ed._RAW_MAX, 'the escape-drop path caps the retained raw ou
 # _terminfo_source returns None when no candidate file exists
 _o_isfile = _os.path.isfile
 try:
-    _os.path.isfile = lambda _p: False
+    _os.path.isfile = lambda _p: False  # type: ignore[assignment]
     ok(_terminfo_source() is None,
        '_terminfo_source: no candidate on disk -> None')
 finally:
@@ -7994,7 +8345,7 @@ _cpf.shutdown()
 # the retained scrollback. The title must come from the bytes arriving NOW.
 if tui_available():
     _lt = SecureTerminal(command='/bin/cat', tui=True)
-    _lt_titles = []
+    _lt_titles: list[str] = []
     _lt.title_changed.connect(_lt_titles.append)
     feed_output(_lt, b'\x1b]2;EVIL\x07')            # osc_title off by default
     eq(_lt_titles, [], 'a title arriving while osc_title is off emits nothing')
@@ -8013,7 +8364,7 @@ if tui_available():
     # seeded on a mode switch is not adopted either.
     _ls = SecureTerminal(command='/bin/cat')          # starts in CLI mode
     _ls.apply_osc('osc_title', True)
-    _ls_titles = []
+    _ls_titles: list[str] = []
     _ls.title_changed.connect(_ls_titles.append)
     feed_output(_ls, b'\x1b]2;STALE\x07hello\r\n')
     eq(_ls_titles, [], 'CLI mode adopts no program title at all')
@@ -8067,7 +8418,7 @@ with open(_plainsh, 'w') as _pf:
 os.chmod(_plainsh, 0o700)
 
 _rw = SecureTerminal(command=_rawsh, line_edits=False)
-_rw_adv = []
+_rw_adv: list[str] = []
 _rw.advise_signal.connect(_rw_adv.append)
 _rw.resize(700, 300)
 _rw.show()
@@ -8078,7 +8429,7 @@ ok(_rw._tui_hint_shown and any('TUI' in a for a in _rw_adv),
 _rw.shutdown()
 
 _rw2 = SecureTerminal(command=_plainsh, line_edits=False)
-_rw2_adv = []
+_rw2_adv: list[str] = []
 _rw2.advise_signal.connect(_rw2_adv.append)
 _rw2.resize(700, 300)
 _rw2.show()
@@ -8089,7 +8440,7 @@ ok(not _rw2._tui_hint_shown,
 _rw2.shutdown()
 
 _rw3 = SecureTerminal(command=_rawsh)             # line editing ON
-_rw3_adv = []
+_rw3_adv: list[str] = []
 _rw3.advise_signal.connect(_rw3_adv.append)
 _rw3.resize(700, 300)
 _rw3.show()
@@ -8108,6 +8459,7 @@ def _feed_defer(term, raw):
     """Feed `raw` through the live streaming path (defer=True) WITHOUT flushing the
     paint, so a debounced paint is left pending exactly as it is mid-16ms-window in
     the running app -- unlike feed_output, which flushes."""
+    w: int | None
     r, w = os.pipe()
     old = term._fd                             # pylint: disable=protected-access
     term._fd = r
@@ -8199,13 +8551,13 @@ eq(_dp.transcript_text().count('dupline'), 1,
 # MARKING_COLORS is theme-keyed. apply_theme() clears the caches, but formats
 # already in the CLI document keep the old palette until repainted. A theme switch
 # must rebuild the CLI document so existing markings take the new theme's colours.
-_th = SecureTerminal(command='/bin/cat')
-_th.apply_theme('light')
-feed_output(_th, b'\xc3\xa9')                              # e-acute -> a nonascii marking
-eq(_fmt_of_char(_th, '<').foreground().color().name(), mark_fg(_th, 'nonascii'),
+_tht = SecureTerminal(command='/bin/cat')
+_tht.apply_theme('light')
+feed_output(_tht, b'\xc3\xa9')                             # e-acute -> a nonascii marking
+eq(_fmt_of_char(_tht, '<').foreground().color().name(), mark_fg(_tht, 'nonascii'),
    'reconcile#5: the existing marking uses the light-theme colour before the switch')
-_th.apply_theme('dark')
-eq(_fmt_of_char(_th, '<').foreground().color().name(), mark_fg(_th, 'nonascii'),
+_tht.apply_theme('dark')
+eq(_fmt_of_char(_tht, '<').foreground().color().name(), mark_fg(_tht, 'nonascii'),
    'reconcile#5: after the switch the existing marking uses the DARK theme colour')
 
 # --- reconcile #6: Show mode keeps a REAL U+2423, collapses the synthetic marker --
@@ -8286,9 +8638,9 @@ try:
     # not trivially constant). This is the jitter the mode removes.
     _d1 = SecureTerminal(command='/bin/cat'); _d1.resize(600, 400)
     _d2 = SecureTerminal(command='/bin/cat'); _d2.resize(600, 400)
-    _payload = b'user@host:~$ echo hello\r\nhello\r\nuser@host:~$ \r\n'
-    feed_output(_d1, _payload)
-    feed_output(_d2, _payload)
+    _shot_payload = b'user@host:~$ echo hello\r\nhello\r\nuser@host:~$ \r\n'
+    feed_output(_d1, _shot_payload)
+    feed_output(_d2, _shot_payload)
     _h1, _h2 = _grab_sha(_d1), _grab_sha(_d2)
     ok(_h1 == _h2, 'shot on: identical content renders byte-identical pixels (sha256 match)')
     _d3 = SecureTerminal(command='/bin/cat'); _d3.resize(600, 400)
@@ -8319,8 +8671,8 @@ try:
     feed_output(_td, b'user@host:~$ cat demo\r\nMARKER-CLI\r\n')
     pump(80)
     ok(os.path.exists(_tp), 'transcript file: written once output settles')
-    with open(_tp, encoding='utf-8') as _fh:
-        _written = _fh.read()
+    with open(_tp, encoding='utf-8') as _trfh:
+        _written = _trfh.read()
     ok('MARKER-CLI' in _written, 'transcript file: carries the CLI rendered output')
     _td.shutdown()
     # TUI / alt screen: transcript_text() walks the rendered document, so the alt-screen
@@ -8332,8 +8684,8 @@ try:
     pump(40)
     feed_output(_tdt, b'\x1b[?1049h\x1b[2J\x1b[HMARKER-TUI')
     pump(80)
-    with open(_tp, encoding='utf-8') as _fh:
-        _written_tui = _fh.read()
+    with open(_tp, encoding='utf-8') as _trfh:
+        _written_tui = _trfh.read()
     ok('MARKER-TUI' in _written_tui,
        'transcript file: carries the TUI (alt-screen) rendered frame')
     _tdt.shutdown()
@@ -8349,8 +8701,8 @@ try:
     ok(_tdr._render_timer.isActive(),
        'transcript file: a TUI grid render is pending right after the read')
     _tdr._write_transcript_file()          # must flush that pending render first
-    with open(_tp, encoding='utf-8') as _fh:
-        _raced = _fh.read()
+    with open(_tp, encoding='utf-8') as _trfh:
+        _raced = _trfh.read()
     ok('MARKER-RACE' in _raced,
        'transcript file: the write forces a pending render (no pre-render lag under load)')
     _tdr.shutdown()
@@ -8379,8 +8731,8 @@ try:
     feed_output(_tsec, b'SECRET-XYZ\r\n')
     pump(80)
     _mode = os.stat(_secpath).st_mode & 0o777
-    with open(_secpath, encoding='utf-8') as _sfh:
-        _secwritten = _sfh.read()
+    with open(_secpath, encoding='utf-8') as _secfh:
+        _secwritten = _secfh.read()
     # The fixed-name O_TRUNC path REUSES the plant (its inode becomes the transcript,
     # keeping the attacker's mode); mkstemp writes a FRESH 0o600 inode and never touches
     # the plant. Assert both: a distinct inode, and owner-only mode. (Inode identity is
@@ -8538,11 +8890,11 @@ def _counting_igr(self, cursor, row, columns, cell_runs=None):
 
 SecureTerminal._insert_grid_row = _counting_igr
 try:
-    _pf = _show_grid()
-    _pfr = min(18, _pf._screen.lines - 2)
-    _feed_render_chunks(_pf, _distinct_board(min(60, _pf._screen.columns), _pfr), 12)
+    _pfg = _show_grid()
+    _pfr = min(18, _pfg._screen.lines - 2)
+    _feed_render_chunks(_pfg, _distinct_board(min(60, _pfg._screen.columns), _pfr), 12)
     _rowins = _igr_calls[0]
-    _pf.shutdown()
+    _pfg.shutdown()
 finally:
     SecureTerminal._insert_grid_row = _orig_igr
 ok(_rowins < 3 * _pfr,
@@ -8856,7 +9208,7 @@ _pb.shutdown()
 
 # each reconcile widget owns a /bin/cat pty child; hang them up so the master fds and
 # child processes do not linger into the suite's os._exit teardown.
-for _rw in (_bp_no, _bp_yes, _hs, _dp, _th, _rb, _sm):
+for _rw in (_bp_no, _bp_yes, _hs, _dp, _tht, _rb, _sm):
     _rw.shutdown()
 
 
@@ -9038,22 +9390,22 @@ _mb_ref.shutdown()
 # CACHE-7. Shrink-to-prefix: the grid loses trailing rows while every kept row is
 # unchanged (target is a strict prefix of the live grid), so the unequal-length
 # fallback deletes the tail and appends NOTHING -- the empty-append guard path.
-_sp = SecureTerminal(command='/bin/cat', tui=True)
-_sp.apply_mode('show')
-_sp.resize(700, 300)
-_sp.show()
+_spg = SecureTerminal(command='/bin/cat', tui=True)
+_spg.apply_mode('show')
+_spg.resize(700, 300)
+_spg.show()
 pump(40)
-_sp._feed_stream(b'\x1b[1;1Ha\x1b[2;1Hb\x1b[3;1Hc')    # three content rows
-_sp._render_tui()
-_sp_tall = _sp.document().blockCount()
-_sp._feed_stream(b'\x1b[3;1H\x1b[2K\x1b[2;2H')          # blank row 3, cursor up to row 2
-_sp._render_tui()
-ok(_sp.document().blockCount() < _sp_tall,
+_spg._feed_stream(b'\x1b[1;1Ha\x1b[2;1Hb\x1b[3;1Hc')   # three content rows
+_spg._render_tui()
+_sp_tall = _spg.document().blockCount()
+_spg._feed_stream(b'\x1b[3;1H\x1b[2K\x1b[2;2H')         # blank row 3, cursor up to row 2
+_spg._render_tui()
+ok(_spg.document().blockCount() < _sp_tall,
    'shrink-to-prefix drops the trailing row (empty-append fallback)')
-_sp_txt = _sp.toPlainText()
+_sp_txt = _spg.toPlainText()
 ok('a' in _sp_txt and 'b' in _sp_txt and 'c' not in _sp_txt,
    'shrink-to-prefix keeps the unchanged leading rows and drops the removed tail')
-_sp.shutdown()
+_spg.shutdown()
 
 # CACHE-8. Shrink-RESIZE with an out-of-bounds cursor must not corrupt committed
 # scrollback. pyte's resize() does NOT reposition the cursor on a shrink, so cursor.y is
@@ -9260,7 +9612,14 @@ _oc._handle_osc(b'\x1b]10;#33cc99\x07')                 # record an OSC 10 defau
 ok(_oc._osc_palette.get('fg') == '#33cc99', 'osc_colors on: the OSC 10 fg override is recorded')
 _rr = []
 _orig_rr = _oc._rerender
-_oc._rerender = lambda: (_rr.append(1), _orig_rr())[1]
+
+
+def _oc_rerender():
+    _rr.append(1)
+    return _orig_rr()
+
+
+_oc._rerender = _oc_rerender
 _oc.apply_osc('osc_colors', False)                      # disable in CLI/line mode
 _oc._rerender = _orig_rr
 ok(_rr == [1],
@@ -9277,20 +9636,20 @@ _oc.shutdown()
 # count and its prompt/line overflows the narrower viewport (right-truncated, no
 # wrap, horizontal caret-follow jump). Direction, not an exact width, so it is
 # font-robust: a larger glyph always yields fewer columns.
-_zc = SecureTerminal(command='/bin/cat', tui=False)
-_zc.resize(800, 400)
-_zc.show()
+_zcw = SecureTerminal(command='/bin/cat', tui=False)
+_zcw.resize(800, 400)
+_zcw.show()
 pump(60)
-_zc_100 = _zc._cols
-_zc.apply_zoom(200)
+_zc_100 = _zcw._cols
+_zcw.apply_zoom(200)
 pump(120)                                  # past the zoom debounce
-_zc_200 = _zc._cols
-_zc.apply_zoom(100)
+_zc_200 = _zcw._cols
+_zcw.apply_zoom(100)
 pump(120)
-_zc_back = _zc._cols
+_zc_back = _zcw._cols
 ok(_zc_200 < _zc_100 and _zc_back == _zc_100,
    'CLI zoom pushes the new pty width: fewer cols at 200 percent, restored at 100')
-_zc.shutdown()
+_zcw.shutdown()
 
 # _sync_tui_size is a no-op with no pyte screen (CLI mode): its callers all guard for
 # a screen (zoom takes the _set_winsize path in CLI), so exercise the guard directly.

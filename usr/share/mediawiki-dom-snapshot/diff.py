@@ -221,7 +221,7 @@ def diff_screenshot(base: Path, cand: Path) -> tuple[bool, int, int, int, str]:
     return is_real, pixels_diff, max_delta, phash_dist, summary
 
 
-EMPTY_ERRORS = {"http_errors": [], "request_failures": [], "console_errors": []}
+EMPTY_ERRORS: dict[str, list] = {"http_errors": [], "request_failures": [], "console_errors": []}
 
 
 def _load_errors(d: Path) -> dict:

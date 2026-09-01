@@ -95,7 +95,7 @@ class MenuActivationTests(unittest.TestCase):
         self.tray.deleteLater()
         _APP.processEvents()
 
-    def _activate(self, reason: 'Reason') -> None:
+    def _activate(self, reason: 'Reason') -> None:  # type: ignore[valid-type]
         """Deliver an activation reason to the tray and pump the loop."""
         self.tray.show_menu(reason)
         _APP.processEvents()

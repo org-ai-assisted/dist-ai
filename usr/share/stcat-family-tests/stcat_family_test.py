@@ -185,7 +185,7 @@ def main():  # pylint: disable=too-many-branches,too-many-statements,too-many-lo
 
     passed = 0
     failed = 0
-    fail_samples = []
+    fail_samples: list[str] = []
 
     def check(name, ok, detail=""):
         nonlocal passed, failed
@@ -264,8 +264,8 @@ def main():  # pylint: disable=too-many-branches,too-many-statements,too-many-lo
             sp_out = os.path.join(tmp, "sponge_out")
             sp = run_stdin("stsponge", "x\u202e\U0001f600\x1b[2Jy\n".encode("utf-8"),
                            args=[sp_out])
-            with open(sp_out, "rb") as handle:
-                sp_bytes = handle.read()
+            with open(sp_out, "rb") as sp_handle:
+                sp_bytes = sp_handle.read()
             check("S:stsponge-file",
                   sp.returncode == 0 and not violations_nocolor(sp_bytes),
                   "sponge file not sanitised: exit %d %r" % (sp.returncode, sp_bytes))
@@ -273,8 +273,8 @@ def main():  # pylint: disable=too-many-branches,too-many-statements,too-many-lo
             tee_out = os.path.join(tmp, "tee_out")
             tee = run_stdin("sttee", "z\u202e\U0001f600\x07w\n".encode("utf-8"),
                             args=[tee_out])
-            with open(tee_out, "rb") as handle:
-                tee_bytes = handle.read()
+            with open(tee_out, "rb") as tee_handle:
+                tee_bytes = tee_handle.read()
             ## sttee writes to BOTH the file and stdout: check both.
             check("S:sttee-file",
                   tee.returncode == 0 and not violations_nocolor(tee_bytes),

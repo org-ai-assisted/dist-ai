@@ -34,7 +34,7 @@ def probe(st_repo, tui, queries):
         octal = ''.join('\\%03o' % b for b in seq)
         term = SecureTerminal(
             command=['/bin/sh', '-c', 'printf "%s"; sleep 2' % octal], tui=tui)
-        sent = []
+        sent: list[bytes] = []
         term._write = lambda d, _s=sent: _s.append(bytes(d))
         end = time.time() + 2.5
         while time.time() < end:

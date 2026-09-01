@@ -71,7 +71,7 @@ while True:
 ## command into an unkillable suite hang.
 if timed_out:
     os.kill(pid, signal.SIGKILL)
-_, status = os.waitpid(pid, 0)
+waited_pid, status = os.waitpid(pid, 0)
 code = 'timeout' if timed_out else os.waitstatus_to_exitcode(status)
 continued = b'stcat-neutralized' in out or b'@@' in out
 sys.stdout.write('PTY_EXITCODE=%s\n' % code)

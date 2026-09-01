@@ -89,10 +89,10 @@ class Rule:
     self-exemption a subclass adds.
     """
 
-    id = None
-    waiver_tag = None
-    override_ids = ()
-    advisory = False
+    id: str | None = None
+    waiver_tag: str | None = None
+    override_ids: tuple[str, ...] = ()
+    advisory: bool = False
 
     def applies(self, ctx):
         """Run this rule on ctx? Default: suppressed by the per-rule id override

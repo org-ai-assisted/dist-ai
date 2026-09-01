@@ -1,3 +1,4 @@
+#!/usr/bin/python3 -Bsu
 """Comprehensive public-API coverage for pyte.
 
 Every public class / method / function of :mod:`pyte` is exercised here with
@@ -613,7 +614,7 @@ def test_sgr_truecolor_incomplete_is_swallowed():
 # --------------------------------------------------------------------------
 
 def test_report_device_attributes_writes_primary_da():
-    seen = []
+    seen: list[str] = []
     screen = pyte.Screen(3, 1)
     screen.write_process_input = seen.append
     screen.report_device_attributes(0)
@@ -621,7 +622,7 @@ def test_report_device_attributes_writes_primary_da():
 
 
 def test_report_device_attributes_private_noop():
-    seen = []
+    seen: list[str] = []
     screen = pyte.Screen(3, 1)
     screen.write_process_input = seen.append
     screen.report_device_attributes(0, private=True)
@@ -629,7 +630,7 @@ def test_report_device_attributes_private_noop():
 
 
 def test_report_device_status_5_and_6():
-    seen = []
+    seen: list[str] = []
     screen = pyte.Screen(10, 10)
     screen.write_process_input = seen.append
     screen.report_device_status(5)

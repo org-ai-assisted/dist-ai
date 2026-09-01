@@ -82,9 +82,9 @@ class ValidPortTest(unittest.TestCase):
         for value in (1, '1', 9050, '65535'):
             with self.subTest(value=value):
                 self.assertTrue(validators.valid_port(value))
-        for value in (0, -1, 65536, 'abc', '', None):
-            with self.subTest(value=value):
-                self.assertFalse(validators.valid_port(value))
+        for bad_value in (0, -1, 65536, 'abc', '', None):
+            with self.subTest(value=bad_value):
+                self.assertFalse(validators.valid_port(bad_value))
 
     def test_rejects_non_decimal(self):
         ## int() accepts these, but they are not plain decimals and gen_torrc

@@ -65,7 +65,8 @@ def bottom_black_rows(path, thresh=16):
     return n
 
 
-def run_compose(compose, work, sec_wh, trad_wh, sec_black=0):
+def run_compose(compose, work, sec_wh: tuple[int, int], trad_wh: tuple[int, int],
+                 sec_black=0):
     sec = '%s/sec.png' % work
     trad = '%s/trad.png' % work
     out_sec = '%s/out-sec.png' % work

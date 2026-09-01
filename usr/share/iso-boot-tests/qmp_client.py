@@ -110,6 +110,8 @@ class QMPClient:
     def _read_message(self):
         """Read and parse one QMP line. Returns the dict, {} for a blank line, or None on EOF.
         Raises QMPError on a malformed line (callers turn that into a clean failure)."""
+        ## invariant: _sock and _rfile are always set/cleared together (connect()/close())
+        assert self._rfile is not None
         line = self._rfile.readline(_MAX_QMP_LINE)
         if not line:
             return None

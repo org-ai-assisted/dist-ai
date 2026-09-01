@@ -39,6 +39,7 @@ import tempfile
 import threading
 import time
 import unittest
+from typing import cast
 
 from PyQt5.QtCore import QObject, Qt
 
@@ -89,6 +90,8 @@ class _TorInstance:
     """A throwaway tor with a ControlSocket, cookie auth, and its own dirs."""
 
     def __init__(self, extra_torrc=''):
+        ## callers only construct this after setUpModule's `if not TOR: return`
+        assert TOR is not None
         self.dir = tempfile.mkdtemp(prefix='tcp-livetor-')
         self.data = os.path.join(self.dir, 'data')
         os.mkdir(self.data)
@@ -219,7 +222,8 @@ class _Socks5Forwarder:
                 if not events:
                     break
                 for key, _ in events:
-                    data = key.fileobj.recv(65536)
+                    ## registered with real socket.socket objects (a, b) above
+                    data = cast(socket.socket, key.fileobj).recv(65536)
                     if not data:
                         return
                     key.data.sendall(data)
@@ -281,6 +285,7 @@ class LiveBootstrapTest(unittest.TestCase):
     def test_direct_bootstrap_reaches_connected(self):
         ## The shared instance (setUpModule) bootstrapped directly; re-run the
         ## tracker against it to assert the app reports fully connected.
+        assert _SHARED is not None  # setUp skips unless LIVE (implies _SHARED set)
         seen = _SHARED.bootstrap(timeout_ms=90000)
         self.assertTrue(
             _reached_connected(seen),
@@ -292,6 +297,7 @@ class LiveBootstrapTest(unittest.TestCase):
         ## it without error (same operation TorControlPanel.newnym performs).
         import stem
         import stem.control
+        assert _SHARED is not None  # setUp skips unless LIVE (implies _SHARED set)
         controller = stem.control.Controller.from_socket_file(
             _SHARED.control_socket)
         self.addCleanup(controller.close)
@@ -332,6 +338,8 @@ class _BootstrapAtSharedInstance:
         self._priv = privilege
         self._saved_command = privilege.command
         self._saved_init = tor_bootstrap.TorBootstrap.__init__
+        ## only entered from tests whose setUp skips unless LIVE (-> _SHARED set)
+        assert _SHARED is not None
         shared = _SHARED
 
         def patched_init(inner_self, main):

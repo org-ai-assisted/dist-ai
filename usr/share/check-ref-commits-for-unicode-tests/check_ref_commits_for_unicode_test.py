@@ -220,7 +220,7 @@ def main():  # pylint: disable=too-many-branches,too-many-statements,too-many-lo
     passed = 0
     failed = 0
     skipped = 0
-    fail_samples = []
+    fail_samples: list[str] = []
     skip_notes = []
 
     def check(name, ok, detail=''):

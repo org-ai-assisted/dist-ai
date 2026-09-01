@@ -251,7 +251,7 @@ class DropClientTests(unittest.TestCase):
 
         records: list[logging.LogRecord] = []
         handler = logging.Handler()
-        handler.emit = records.append  # type: ignore[method-assign]
+        handler.emit = records.append  # type: ignore[assignment]
         logging.getLogger().addHandler(handler)
         try:
             client.kick_client()
@@ -491,7 +491,7 @@ class ClientSendTests(unittest.TestCase):
             return FakeProc()
 
         real = asyncio.create_subprocess_exec
-        asyncio.create_subprocess_exec = fake_exec
+        asyncio.create_subprocess_exec = fake_exec  # type: ignore[assignment]
         try:
             asyncio.run(client.restart_sdwdate())
             asyncio.run(client.stop_sdwdate())

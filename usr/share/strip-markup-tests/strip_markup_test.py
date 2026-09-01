@@ -43,6 +43,7 @@ import os
 import random
 import subprocess
 import sys
+from typing import Any
 from unittest import mock
 
 REPO = os.environ.get('STRIP_MARKUP_REPO')
@@ -86,7 +87,7 @@ def run(string=None, stdin_bytes=None, close_stdin=False):
         env['PYTHONPATH'] = (
             env_repo + os.pathsep + existing if existing else env_repo
         )
-    kwargs = {
+    kwargs: dict[str, Any] = {
         'env': env,
         'stdout': subprocess.PIPE,
         'stderr': subprocess.PIPE,

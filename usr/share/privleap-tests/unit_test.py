@@ -1380,14 +1380,14 @@ def _timed_auth_failure(
         def slow_failing_auth(*_args: Any, **_kwargs: Any) -> None:
             time.sleep(auth_cost_s)
 
-        pld.auth_signal_request = slow_failing_auth
-        pld.send_msg_safe = lambda *_a, **_k: True
+        pld.auth_signal_request = slow_failing_auth  # type: ignore[attr-defined]
+        pld.send_msg_safe = lambda *_a, **_k: True  # type: ignore[attr-defined]
         started: float = time.monotonic()
         invoke()
         return time.monotonic() - started
     finally:
-        pld.auth_signal_request = saved_auth
-        pld.send_msg_safe = saved_send
+        pld.auth_signal_request = saved_auth  # type: ignore[attr-defined]
+        pld.send_msg_safe = saved_send  # type: ignore[attr-defined]
 
 
 def test_auth_failure_reply_is_constant_time(

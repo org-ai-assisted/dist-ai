@@ -235,7 +235,7 @@ INJECTION_CASES = {
 ## asserted as hard controls in the loop below (not injected -> PASS; any
 ## reappearance -> a hard FAIL as a NEW injection vector). The registry is now
 ## empty. See the sanitize-string-tests suite for the parser-differential proof.
-KNOWN_VULN = set()
+KNOWN_VULN: set[str] = set()
 
 ## The variable the shipped script assigns the sanitized argument to; a function
 ## builds a display context for the untrusted value iff its msg interpolates it.

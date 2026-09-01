@@ -1,3 +1,4 @@
+#!/usr/bin/python3 -Bsu
 """Property-based tests for pyte using Hypothesis.
 
 These assert invariants that must hold for *any* input, plus round-trip and

@@ -50,6 +50,7 @@ pass, 1 on any failure.
 
 import os
 import sys
+from typing import Any
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
@@ -90,7 +91,7 @@ def _corpus_seeds():
     origin = os.path.join(here, 'test_corpus.py')
     with open(origin, encoding='utf-8') as handle:
         source = handle.read()
-    namespace = {}
+    namespace: dict[str, Any] = {}
     for fn in ('dangerous_corpus', 'trojan_source_corpus', 'git_diffs_lie_fixtures'):
         start = source.index('def %s():' % fn)
         end = source.index('\n# ---', start)
@@ -157,7 +158,7 @@ def logical(stream):
     newline -- exactly the documented set."""
     text = S.ANSI_RE.sub('', stream)          # remove every escape sequence
     lines = []
-    buf = []                                  # current line cells (source chars)
+    buf: list[str] = []                       # current line cells (source chars)
     col = 0
     for ch in text:
         if ch == '\n':
@@ -296,7 +297,7 @@ def _reset_paste(term, sent):
 # ----- INV-1 (GUI half) + INV-5: a paste never auto-executes / is inert -------
 _WL = SecureTerminal(command='/bin/cat')          # line mode (the secure default)
 _WL.apply_paste_warn('unicode')
-_WL_SENT = []
+_WL_SENT: list[Any] = []
 _WL._write = _WL_SENT.append                       # pylint: disable=protected-access
 
 
@@ -397,6 +398,7 @@ def _reset_line_widget(term):
 def feed_output(term, raw):
     """Drive the real output path with `raw` bytes, as the widget/adversarial tests
     do, so pyte feed + the OSC handlers + the line render all run."""
+    w: int | None
     r, w = os.pipe()
     old = term._fd                                  # pylint: disable=protected-access
     term._fd = r
@@ -458,7 +460,7 @@ for _feat in ('osc_clipboard_read', 'osc_clipboard', 'osc_title', 'osc_notify',
         _WT6.apply_osc(_feat, True)                 # every reach-out ON
     except Exception:                               # pylint: disable=broad-except
         pass
-_WT6_SENT = []
+_WT6_SENT: list[Any] = []
 _WT6._write = _WT6_SENT.append                      # pylint: disable=protected-access
 QGuiApplication.clipboard().setText('INV6-CLIP-SECRET')   # a secret to (not) exfiltrate
 

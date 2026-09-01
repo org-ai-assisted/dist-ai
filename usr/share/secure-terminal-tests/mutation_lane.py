@@ -128,7 +128,15 @@ def _run_suite(repo_copy, suite):
     except subprocess.TimeoutExpired as exc:
         # A mutant that hangs the suite (e.g. an unbounded loop) is a KILL, not a lane
         # crash: report a non-zero, non-77 code so the caller counts it as caught.
-        out = (exc.stdout or '') + (exc.stderr or '')
+        # exc.stdout/stderr are typed bytes|None by typeshed (text=True actually makes
+        # them str at runtime) -- decode each side on its own type before joining.
+        raw_stdout = exc.stdout or ''
+        raw_stderr = exc.stderr or ''
+        if isinstance(raw_stdout, bytes):
+            raw_stdout = raw_stdout.decode('utf-8', 'replace')
+        if isinstance(raw_stderr, bytes):
+            raw_stderr = raw_stderr.decode('utf-8', 'replace')
+        out = raw_stdout + raw_stderr
         if isinstance(out, bytes):
             out = out.decode('utf-8', 'replace')
         return 124, out + '\n[mutation_lane: suite timed out after 600s]\n'

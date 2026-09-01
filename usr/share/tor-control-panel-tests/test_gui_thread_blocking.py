@@ -117,7 +117,7 @@ class OffGuiThreadTest(unittest.TestCase):
         process exits. The requirement is therefore both: off-thread, and
         finished by the time the handler returns.
         """
-        box = []
+        box: list[int | None] = []
         gui_thread, work = self._record_thread(box)
         saved = tor_status.set_disabled
         tor_status.set_disabled = work

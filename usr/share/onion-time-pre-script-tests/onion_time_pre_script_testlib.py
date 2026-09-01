@@ -101,6 +101,8 @@ def stub_env(**overrides: str) -> dict:
 class PreScriptTestBase(unittest.TestCase):
     """Base class exposing the resolved subject path."""
 
+    path: str
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.path = require_pre_script()

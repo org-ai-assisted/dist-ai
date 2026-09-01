@@ -224,7 +224,7 @@ class WorkflowInlineShell(Rule):
                         "R-100 skipped: 'style-ok: allow-inline-shell' waiver "
                         "in '%s'" % ctx.path)
             return
-        import yaml
+        import yaml  # type: ignore[import-untyped]
         try:
             root = yaml.compose(ctx.source)
         except (yaml.YAMLError, RecursionError):

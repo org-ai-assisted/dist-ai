@@ -76,6 +76,8 @@ class Qmp:
     _MAX_QMP_LINE = 1 << 20
 
     def _read_json(self):
+        ## invariant: __init__ raises ConnectionError if it leaves self.sock None
+        assert self.sock is not None
         while b"\n" not in self.buf:
             if len(self.buf) > self._MAX_QMP_LINE:
                 raise ConnectionError(
@@ -95,6 +97,8 @@ class Qmp:
         return message
 
     def command(self, execute, arguments=None):
+        ## invariant: __init__ raises ConnectionError if it leaves self.sock None
+        assert self.sock is not None
         self._id += 1
         expect = self._id
         message = {"execute": execute, "id": expect}

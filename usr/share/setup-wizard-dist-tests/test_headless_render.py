@@ -29,6 +29,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import typing
 import unittest
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -57,11 +58,20 @@ def _parse(proc):
     return json.loads(lines[-1])
 
 
-class _RenderContract:
+## Mixed in with unittest.TestCase by every concrete subclass (never used bare), so
+## the assert* calls below resolve at runtime; this TYPE_CHECKING-only base lets mypy
+## see them too without making _RenderContract itself a collectible TestCase.
+if typing.TYPE_CHECKING:
+    _Base = unittest.TestCase
+else:
+    _Base = object
+
+
+class _RenderContract(_Base):
     """Shared assertions; subclasses provide the backend launcher."""
 
-    backend = None
-    platform = None
+    backend: 'str | None' = None
+    platform: 'str | None' = None
 
     def _command(self, mode, png):
         raise NotImplementedError

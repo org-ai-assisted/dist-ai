@@ -10,6 +10,7 @@ detect() uses -- so the detector and the rewriter cannot drift."""
 
 import ast
 import re
+from typing import Any
 
 from dist_ai import bash_ast
 from dist_ai import model
@@ -247,7 +248,7 @@ def _grep_quiet(call, source):
 def _grep_option_words(call):
     """The leading option Words of a grep CALL (Args[1:] up to the first operand
     or '--'). Declines (stops) at a quoted/expanded word it cannot classify."""
-    options = []
+    options: list[tuple[Any, str]] = []
     for word in bash_ast.args(call)[1:]:
         lit = bash_ast.word_lit(word)
         if lit is None:
@@ -401,7 +402,7 @@ class MkdirTmpMode(Rule):
     def fix(self, ctx):
         text = ctx.source
         data = text.encode("utf-8")
-        disabled_lines = set()
+        disabled_lines: set[int] = set()
         for call in h.editable_calls(ctx.tree):
             if bash_ast.command_name(call) != "mkdir":
                 continue

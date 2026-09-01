@@ -31,11 +31,11 @@ Usage: check_width.py <site-root> [<site-root> ...]
 
 import functools
 import os
-import socketserver
 import sys
+from typing import Any
 
 # Share the proven discovery + HTTP mount harness (no browser at import time).
-from check_mobile import _MountHandler, _page_urls, _skip, SUBSITES
+from check_mobile import _MountHandler, _MountingTCPServer, _page_urls, _skip, SUBSITES
 
 # Desktop viewport the utilization is judged at. At >= the sites' wrap max-width
 # (1000-1080px) the content is already at its cap, so utilization vs the wrap is
@@ -144,7 +144,7 @@ def _docroots(roots):
     """Group site roots into HTTP docroots, mounting any subsite under its parent
     (mirrors check_mobile.main). Returns {docroot: {'mounts': {...}, 'urls': [...]}}."""
     by_name = {os.path.basename(r): r for r in roots}
-    docroots = {}
+    docroots: dict[str, dict[str, Any]] = {}
     for root in roots:
         sub = SUBSITES.get(os.path.basename(root))
         if sub:
@@ -179,7 +179,7 @@ def main():
             _skip('chromium engine unavailable: %s' % exc)
         for docroot, entry in docroots.items():
             handler = functools.partial(_MountHandler, directory=docroot)
-            httpd = socketserver.TCPServer(('127.0.0.1', 0), handler)
+            httpd = _MountingTCPServer(('127.0.0.1', 0), handler)
             httpd.mounts = entry['mounts']
             port = httpd.server_address[1]
             httpd.daemon_threads = True

@@ -432,10 +432,10 @@ def _innermost_reaches(offset, scope_spans, barrier_spans):
 
 
 def _stmt_list_span(stmts):
-    starts = [(s.get("Pos") or {}).get("Offset") for s in (stmts or [])]
-    ends = [(s.get("End") or {}).get("Offset") for s in (stmts or [])]
-    starts = [o for o in starts if o is not None]
-    ends = [o for o in ends if o is not None]
+    raw_starts = [(s.get("Pos") or {}).get("Offset") for s in (stmts or [])]
+    raw_ends = [(s.get("End") or {}).get("Offset") for s in (stmts or [])]
+    starts: list[int] = [o for o in raw_starts if o is not None]
+    ends: list[int] = [o for o in raw_ends if o is not None]
     if not starts or not ends:
         return None
     return (min(starts), max(ends))

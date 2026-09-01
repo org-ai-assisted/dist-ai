@@ -77,7 +77,7 @@ def _tree_blob_shas(root, rev):
     else:
         cmd = ["git", "-c", "core.quotePath=false", "ls-tree", "-r", "-z", rev]
         sha_field = 2                       # 'mode type sha \t path'
-    entries = {}
+    entries: dict[str, tuple[str, str]] = {}
     try:
         out = subprocess.run(
             cmd, cwd=root, capture_output=True, check=True).stdout

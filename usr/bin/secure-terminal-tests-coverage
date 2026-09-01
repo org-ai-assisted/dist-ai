@@ -85,6 +85,11 @@ work="$(mktemp --directory)"
 cleanup() { safe-rm --recursive --force -- "${work}" 2>/dev/null || true; }
 trap cleanup EXIT
 export COVERAGE_FILE="${work}/.coverage"
+## Keep Hypothesis's example database OUT of the (rsync-synced, possibly root-run)
+## checkout: as root, a `.hypothesis/` written into tests_dir is root-owned and blocks
+## the next sandbox sync (rsync cannot delete it). Default it into the throwaway work
+## dir; an explicit external value still wins.
+export HYPOTHESIS_STORAGE_DIRECTORY="${HYPOTHESIS_STORAGE_DIRECTORY:-${work}/.hypothesis}"
 
 ## Ratchet-gated modules, in two tiers. As a module reaches full coverage it is
 ## added here so coverage can only go up. Each is genuinely 100% -- the few

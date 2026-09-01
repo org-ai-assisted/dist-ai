@@ -32,6 +32,7 @@
 import json
 import sys
 import unicodedata
+from typing import Any
 
 UNIDATA_VERSION = unicodedata.unidata_version
 
@@ -366,10 +367,10 @@ def render_payload():
 # --- machine-readable summary -------------------------------------------------
 
 def summary():
-    by_class = {}
-    by_category = {}
+    by_class: dict[str, int] = {}
+    by_category: dict[str, int] = {}
     total = 0
-    display = []
+    display: list[dict[str, Any]] = []
     for name, lo, hi in DISPLAY_BLOCKS:
         display.append({'name': name, 'lo': lo, 'hi': hi, 'count': 0, 'by_class': {}})
     for cp in assigned_code_points():

@@ -44,8 +44,8 @@ def _fake_tor_control_panel(tor_status_fn):
     pkg = types.ModuleType('tor_control_panel')
     pkg.__path__ = []  # mark as a package so submodule imports resolve
     tor_status_mod = types.ModuleType('tor_control_panel.tor_status')
-    tor_status_mod.tor_status = tor_status_fn
-    pkg.tor_status = tor_status_mod
+    tor_status_mod.tor_status = tor_status_fn  # type: ignore[attr-defined]
+    pkg.tor_status = tor_status_mod  # type: ignore[attr-defined]
     return {
         'tor_control_panel': pkg,
         'tor_control_panel.tor_status': tor_status_mod,

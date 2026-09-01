@@ -39,7 +39,7 @@ FAMILY = {
 # output-lies.github.io/git-diffs-lie/ is built from output-lies/git-diffs-lie),
 # so they are valid live URLs even though no file for them exists in THIS repo.
 # Verified deployed via the Pages API; treated as external (not a local file).
-KNOWN_PROJECT_PATHS = (
+KNOWN_PROJECT_PATHS: tuple[str, ...] = (
 )
 
 # Sub-sites served UNDER another family site's domain (a project-Pages repo): the
@@ -49,7 +49,7 @@ KNOWN_PROJECT_PATHS = (
 # otherwise (a link like /terminal/ from git-diffs-lie points at the output-lies
 # site). Both must be checked out to verify the cross-site links; when the parent
 # is absent those links are treated as external (unverifiable), never failed.
-SUBSITES = {
+SUBSITES: dict[str, tuple[str, str]] = {
 }
 
 # Prose wording rule: these must be capitalized as proper labels.
@@ -187,7 +187,7 @@ def resolve_internal(root, page, target, mount=None, parent_roots=()):
     return ('file', candidates, frag)
 
 
-_IDS_CACHE = {}
+_IDS_CACHE: dict[str, set[str] | None] = {}
 
 
 def _ids_of(path):
@@ -368,7 +368,7 @@ def _srcsets(text):
         yield next(group for group in match.groups() if group is not None)
 # Basenames a human has cleared to remain a raster (webp came out no smaller).
 # Keep this SMALL and justified; every entry is a content image that stays PNG.
-STATIC_IMAGE_ALLOWLIST = frozenset()
+STATIC_IMAGE_ALLOWLIST: frozenset[str] = frozenset()
 
 
 def _is_raster(url):
@@ -427,7 +427,7 @@ def _csp_directives(csp):
     # its source tokens. Return {name: [tokens]} (all lower-cased). A repeated
     # directive is ignored by the browser after its FIRST occurrence, so keep
     # the first (setdefault) -- matching what the page actually enforces.
-    out = {}
+    out: dict[str, list[str]] = {}
     for part in csp.split(';'):
         toks = part.split()
         if toks:
@@ -764,10 +764,10 @@ def check_nav(root, failures):
             navs[os.path.relpath(page, root)] = nav
     if len(set(navs.values())) <= 1:
         return
-    counts = {}
+    counts: dict[tuple, int] = {}
     for nav in navs.values():
         counts[nav] = counts.get(nav, 0) + 1
-    canonical = max(counts, key=counts.get)      # the most common nav = the baseline
+    canonical = max(counts, key=counts.__getitem__)  # the most common nav = the baseline
     canonical_labels = [label for label, _ in canonical]
     for rel, nav in sorted(navs.items()):
         if nav == canonical:
@@ -1017,11 +1017,11 @@ def main():
     by_name = {os.path.basename(r): r for r in roots}
     total = 0
     for root in roots:
-        failures = []
+        failures: list[str] = []
         # A subsite (git-diffs-lie) verifies its off-mount absolute links against
         # its parent site's checkout when that is also present.
         mount = None
-        parent_roots = ()
+        parent_roots: tuple[str, ...] = ()
         sub = SUBSITES.get(os.path.basename(root))
         if sub:
             parent_name, mount = sub

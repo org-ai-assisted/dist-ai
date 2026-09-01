@@ -38,6 +38,7 @@ import http.server
 import socketserver
 import threading
 import urllib.parse
+from typing import Any
 
 VIEWPORT = 390                       # primary phone width (used in messages/checks)
 # Body must never scroll sideways from a narrow phone up to a small tablet.
@@ -52,7 +53,7 @@ HEADER_SWEEP_WIDTHS = (340, 360, 414, 560, 680, 768, 900, 1100)
 _ICON_TEXT_MIN_GAP = 3
 
 # Subsite dir basename -> (parent dir basename, mount path). Mirrors check_site.py.
-SUBSITES = {
+SUBSITES: dict[str, tuple[str, str]] = {
 }
 
 # Widest overflowing elements, for a readable failure message.
@@ -208,6 +209,15 @@ def _skip(msg):
     raise SystemExit(77)
 
 
+class _MountingTCPServer(socketserver.TCPServer):
+    """TCPServer that carries the two attributes _MountHandler / main() stash
+    on the instance (bare-declared: no class-level value, so this is a type
+    declaration only -- plain socketserver.TCPServer does not declare them)."""
+
+    mounts: dict[str, str]
+    daemon_threads: bool
+
+
 class _MountHandler(http.server.SimpleHTTPRequestHandler):
     """Serve `directory` at /, plus each entry of the server's `mounts`
     (mount-path -> subsite-root) at its mount path -- so a subsite is served under
@@ -274,7 +284,7 @@ def main():
     # Group into docroots: each top-level site serves itself; a subsite is mounted
     # under its parent's docroot at its mount path (skipped if the parent is not
     # checked out -- its cross-site assets could not resolve).
-    docroots = {}     # docroot -> {'mounts': {mount: subroot}, 'urls': [..]}
+    docroots: dict[str, dict[str, Any]] = {}     # docroot -> {'mounts': {mount: subroot}, 'urls': [..]}
     for root in roots:
         name = os.path.basename(root)
         sub = SUBSITES.get(name)
@@ -301,7 +311,7 @@ def main():
             _skip('chromium engine unavailable: %s' % exc)
         for docroot, entry in docroots.items():
             handler = functools.partial(_MountHandler, directory=docroot)
-            httpd = socketserver.TCPServer(('127.0.0.1', 0), handler)
+            httpd = _MountingTCPServer(('127.0.0.1', 0), handler)
             httpd.mounts = entry['mounts']
             port = httpd.server_address[1]
             httpd.daemon_threads = True

@@ -43,6 +43,26 @@ from pl_testlib import (  # noqa: E402
 )
 
 
+def _reply_once(value: Any) -> Callable[[Any], list[Any]]:
+    """Bind one per-iteration reply value into a fresh callable (avoids
+    the closure late-binding trap of reusing a loop variable directly)."""
+
+    def _reply_for(_msg: Any) -> list[Any]:
+        return [value]
+
+    return _reply_for
+
+
+def _reply_fixed(values: list[Any]) -> Callable[[Any], list[Any]]:
+    """Bind one per-iteration reply list into a fresh callable (avoids
+    the closure late-binding trap of reusing a loop variable directly)."""
+
+    def _reply_for(_msg: Any) -> list[Any]:
+        return values
+
+    return _reply_for
+
+
 # pylint: disable=too-many-instance-attributes
 # Rationale:
 #   too-many-instance-attributes: a stand-in server needs its socket, its
@@ -347,7 +367,7 @@ def test_leapctl_replies(
             pl, str(pl.PrivleapCommon.control_path), is_control=True
         ) as server:
             for action, reply, want_code, want_text in leapctl_cases(pl):
-                server.reply_for = lambda _msg, reply=reply: [reply]
+                server.reply_for = _reply_once(reply)
                 argv: list[str] = ['leapctl', action]
                 if action != '--reload':
                     argv.append(user)
@@ -620,7 +640,7 @@ def test_leaprun_refusals(
             is_control=False,
         ) as server:
             for label, replies, want_text in cases:
-                server.reply_for = lambda _msg, replies=replies: replies
+                server.reply_for = _reply_fixed(replies)
                 run: ClientRun = run_client(
                     leaprun, ['leaprun', 'act'], _reset_leaprun(leaprun, user)
                 )
@@ -834,7 +854,7 @@ def test_leaprun_rejects_protocol_violations(
             is_control=False,
         ) as server:
             for label, argv, replies in protocol_violation_cases(pl):
-                server.reply_for = lambda _msg, replies=replies: replies
+                server.reply_for = _reply_fixed(replies)
                 run: ClientRun = run_client(
                     leaprun, argv, _reset_leaprun(leaprun, user)
                 )

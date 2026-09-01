@@ -1248,7 +1248,7 @@ def _normalize_errors(errors: dict) -> dict:
     return {
         "http_errors": http,
         "request_failures": fails,
-        "console_errors": _normalize_console(errors.get("console_errors")),
+        "console_errors": _normalize_console(errors.get("console_errors") or []),
     }
 
 

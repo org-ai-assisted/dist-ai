@@ -54,9 +54,13 @@ def _dist_packages_dir() -> str | None:
         os.path.join(INSTALLED_PARENT, 'privleap', 'privleap.py')
     ):
         return INSTALLED_PARENT
-    candidate: str = os.path.join(DEFAULT_REPO, 'usr/lib/python3/dist-packages')
-    if os.path.isfile(os.path.join(candidate, 'privleap', 'privleap.py')):
-        return candidate
+    default_candidate: str = os.path.join(
+        DEFAULT_REPO, 'usr/lib/python3/dist-packages'
+    )
+    if os.path.isfile(
+        os.path.join(default_candidate, 'privleap', 'privleap.py')
+    ):
+        return default_candidate
     return None
 
 

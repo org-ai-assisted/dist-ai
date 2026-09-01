@@ -225,10 +225,10 @@ ok(_moff and all(k[1] is None and k[2] == 0x202E for k in _moff),
    'markings off + colours off: codepoint tagged, no colour source')
 # markings off but ANSI colours ON: the marking keeps the PROGRAM's own SGR as its
 # colour source, so disabling risk-class colouring never drops allowed ANSI colour.
-_sgr = tuple(sorted({'fg': 1, 'bg': None, 'bold': False}.items()))
-_runs_sgr, _ = S.cells_to_runs([], [(chr(0x202E), _sgr)], 'box', True, False)
+_sgr_tup = tuple(sorted({'fg': 1, 'bg': None, 'bold': False}.items()))
+_runs_sgr, _ = S.cells_to_runs([], [(chr(0x202E), _sgr_tup)], 'box', True, False)
 _msgr = [k for _t, k in _runs_sgr if isinstance(k, tuple) and k and k[0] == S.MARK_KEY]
-ok(_msgr and _msgr[0] == (S.MARK_KEY, _sgr, 0x202E),
+ok(_msgr and _msgr[0] == (S.MARK_KEY, _sgr_tup, 0x202E),
    'markings off + colours on: the marking carries the program SGR as its colour')
 # the run TEXT is identical either way -- colouring never changes what is shown
 eq(''.join(t for t, _ in _runs), ''.join(t for t, _ in _runs_off),
@@ -850,6 +850,7 @@ def _pre_run(*deps):
         with _pcl.redirect_stderr(err):
             PRE.require(*deps)
     except SystemExit as exc:
+        assert isinstance(exc.code, int)
         rc = exc.code
     return rc, err.getvalue()
 
@@ -962,6 +963,81 @@ eq(_pc.get('bidirectional control'), 1, 'classify: bidi override counted')
 eq(_pc.get('invisible character'), 1, 'classify: zero-width counted')
 eq(_pc.get('non-ASCII character'), 1, 'classify: homoglyph counted')
 eq(_pc.get('control character'), 1, 'classify: control counted')
+
+# classify_paste_detail: the review bar's full 7-class breakdown (incl. zeros) plus
+# the paste's structure facts -- the finer split behind classify_paste's 4 buckets.
+# 0x0430 cyrillic-a (confusable), 0x202E bidi, 0x200B zero-width, BEL control,
+# 0x0301 combining acute, 0x2500 box-drawing (own low-risk row), 0x2603 snowman
+# (honest foreign).
+_seven = ('pay' + chr(0x0430) + 'l' + chr(0x202E) + chr(0x200B) + BEL
+          + chr(0x0301) + chr(0x2500) + chr(0x2603))
+_d = S.classify_paste_detail(_seven)
+_dc = _d['counts']
+eq(_dc['confusable'], 1, 'detail: cyrillic homoglyph counted as confusable')
+eq(_dc['bidi'], 1, 'detail: bidi override counted')
+eq(_dc['invisible'], 1, 'detail: zero-width counted as invisible')
+eq(_dc['control'], 1, 'detail: BEL counted as control')
+eq(_dc['combining'], 1, 'detail: combining acute counted as combining')
+eq(_dc['structural'], 1, 'detail: box-drawing counted as structural (its own row)')
+eq(_dc['nonascii'], 1, 'detail: honest foreign char counted as nonascii')
+eq(sorted(_dc), sorted(S.PASTE_DETAIL_CLASSES),
+   'detail: every class key present (zeros shown too)')
+eq(S.classify_paste_detail('echo hello')['counts'],
+   dict.fromkeys(S.PASTE_DETAIL_CLASSES, 0), 'detail: clean ASCII is all zeros')
+# The finer breakdown must FOLD back to classify_paste's four buckets, so the
+# summary line and the table can never disagree about what a paste hides.
+_fold = {'bidi': 'bidirectional control', 'control': 'control character',
+         'invisible': 'invisible character'}
+_folded: dict[str, int] = {}
+for _k, _n in _dc.items():
+    if _n:
+        _label = _fold.get(_k, 'non-ASCII character')
+        _folded[_label] = _folded.get(_label, 0) + _n
+eq(_folded, dict(S.classify_paste(_seven)),
+   'classify_paste_detail folds back to classify_paste (no divergence)')
+# structure facts: lines / multiline / ends_with_submit, in step with paste_is_multiline
+eq((_d['lines'], _d['multiline'], _d['ends_with_submit']), (1, False, False),
+   'detail: single-line no-submit payload')
+_ml = S.classify_paste_detail('a\nb\n')
+eq((_ml['lines'], _ml['multiline'], _ml['ends_with_submit']), (2, True, True),
+   'detail: two lines ending in a submit newline')
+_crlf = S.classify_paste_detail('ls\r\n')
+eq((_crlf['lines'], _crlf['multiline'], _crlf['ends_with_submit']), (1, False, True),
+   'detail: CRLF single command is one line but still submits')
+_cr = S.classify_paste_detail('echo ok\rcurl evil')
+eq((_cr['lines'], _cr['multiline'], _cr['ends_with_submit']), (2, True, False),
+   'detail: a lone mid-string CR is a second line, no trailing submit')
+for _t in ('', 'ls', 'ls\n', 'a\nb', 'a\r\nb', 'ls\r\n', 'echo ok\rcurl evil|sh'):
+    eq(S.classify_paste_detail(_t)['multiline'], S.paste_is_multiline(_t),
+       'detail multiline agrees with paste_is_multiline for %r' % _t)
+eq((_d2 := S.classify_paste_detail(chr(0x00E9)))['chars'], 1,
+   'detail: char count (e-acute is one char)')
+eq(_d2['bytes'], 2, 'detail: byte count is UTF-8 length (e-acute is two bytes)')
+
+# ensure_utf8_ctype: the pty child must speak UTF-8 or a wide-char program renders each
+# byte as <ffffffff> (WEOF). Set a UTF-8 ctype ONLY when the ambient locale is not UTF-8;
+# never clobber a real UTF-8 locale, including one carrying an @modifier.
+_le: dict[str, str] = {}
+S.ensure_utf8_ctype(_le)
+eq(_le.get('LC_CTYPE'), 'C.UTF-8', 'locale: unset -> LC_CTYPE=C.UTF-8')
+_le = {'LANG': 'C'}
+S.ensure_utf8_ctype(_le)
+eq(_le.get('LC_CTYPE'), 'C.UTF-8', 'locale: C -> LC_CTYPE=C.UTF-8')
+_le = {'LANG': 'de_DE.UTF-8'}
+S.ensure_utf8_ctype(_le)
+ok('LC_CTYPE' not in _le, 'locale: a UTF-8 LANG is left untouched')
+_le = {'LC_CTYPE': 'en_US.utf8'}
+S.ensure_utf8_ctype(_le)
+eq(_le['LC_CTYPE'], 'en_US.utf8', 'locale: a UTF-8 LC_CTYPE (utf8 spelling) is kept')
+_le = {'LC_ALL': 'sr_RS.UTF-8@latin'}
+S.ensure_utf8_ctype(_le)
+eq(_le['LC_ALL'], 'sr_RS.UTF-8@latin',
+   'locale: a UTF-8 locale carrying an @modifier is preserved (not clobbered)')
+_le = {'LC_ALL': 'C', 'LANG': 'de_DE.UTF-8'}
+S.ensure_utf8_ctype(_le)
+eq(_le['LC_ALL'], 'C.UTF-8',
+   'locale: a non-UTF-8 LC_ALL (which would override LC_CTYPE) is retargeted to C.UTF-8')
+
 # sanitize_paste_unicode: keeps printable non-ASCII, drops the deceptive classes
 eq(S.sanitize_paste_unicode('caf' + chr(0x00E9)), 'caf' + chr(0x00E9),
    'unicode paste keeps printable non-ASCII')
@@ -1193,9 +1269,10 @@ if os.path.isdir(fuzz_dir):
         for node in ast.walk(tree):
             if not isinstance(node, ast.ImportFrom):
                 continue
-            if not (node.module or '').startswith('secure_terminal'):
+            _impmod = node.module or ''
+            if not _impmod.startswith('secure_terminal'):
                 continue
-            parts = node.module.split('.')
+            parts = _impmod.split('.')
             if len(parts) < 2:
                 # `from secure_terminal import settings as SET` -- submodules.
                 for alias in node.names:
@@ -1607,11 +1684,11 @@ for _p in ('\x1b]0;pwned\x07', '\x1b]0;pwned\x1b\\', '\x1b]52;c;cGF5\x07',
            '\x1b[>4;2m', '\x1b[6n'):
     _raw = 'A' + _p + 'B'
     _want = _cells_render(_raw)
-    for _i in range(1, len(_raw) - 1):
-        for _j in range(_i + 1, len(_raw)):
+    for _ci in range(1, len(_raw) - 1):
+        for _j in range(_ci + 1, len(_raw)):
             _carry, _drop, _cells, _col, _sgr = '', '', [], 0, {}
             _acc = []
-            for _chunk in (_raw[:_i], _raw[_i:_j], _raw[_j:]):
+            for _chunk in (_raw[:_ci], _raw[_ci:_j], _raw[_j:]):
                 _text, _carry, _drop, _ = S.feed_chunk_carry(_chunk, _carry, _drop)
                 _c, _cells, _col, _sgr, _w = S.feed_line_edits(
                     _cells, _col, _sgr, _text)
@@ -1619,9 +1696,9 @@ for _p in ('\x1b]0;pwned\x07', '\x1b]0;pwned\x1b\\', '\x1b]52;c;cGF5\x07',
             _runs, _ = S.cells_to_runs(_acc, _cells, 'detail', False)
             _got = ''.join(t for t, _k in _runs)
             if _got != _want or _carry:
-                _BAD3.append((_p, _i, _j, _got, _want, _carry))
+                _BAD3.append((_p, _ci, _j, _got, _want, _carry))
             if 'pwned' in _got or '\x1b' in _got:
-                _LEAK3.append((_p, _i, _j, _got))
+                _LEAK3.append((_p, _ci, _j, _got))
 eq(_BAD3[:4], [],
    'every hostile sequence split three ways renders like the unsplit one, carry drained')
 eq(_LEAK3[:4], [],
@@ -1700,7 +1777,9 @@ import secure_terminal.cli as _cli                                   # noqa: E40
 def _stream_render(chunks, mode='detail'):
     """Decode byte chunks the way the widget does and render through the cells."""
     dec = codecs.getincrementaldecoder('utf-8')('replace')
-    carry, drop, cells, col, sgr = '', '', [], 0, {}
+    carry, drop, col = '', '', 0
+    cells: list[tuple[str, object]] = []
+    sgr: dict[str, object] = {}
     comp = []
     for i, blob in enumerate(chunks):
         text = dec.decode(blob, i == len(chunks) - 1)
@@ -1945,8 +2024,8 @@ for _op in 'CDGK':
 for _param in ('', '0', '1;31', '38;5;196', '38;2;1;2;3'):
     _seq = '\x1b[' + _param + 'm'
     _generic = S.ANSI_RE.match(_seq)
-    _sgr = S._SGR_ONLY_RE.match(_seq)
-    if _generic is None or _sgr is None or _generic.end() != _sgr.end():
+    _sgr_m = S._SGR_ONLY_RE.match(_seq)
+    if _generic is None or _sgr_m is None or _generic.end() != _sgr_m.end():
         _SPAN_BAD.append(_seq)
 eq(_SPAN_BAD, [],
    'the line-edit / SGR handlers and the generic stripper consume identical spans')

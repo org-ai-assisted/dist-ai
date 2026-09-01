@@ -603,7 +603,7 @@ def test_reload_reports_success_and_failure(
     with DaemonSandbox(pl, pld):
         saved_parse: Any = pld.parse_config_files
         try:
-            pld.parse_config_files = lambda: True
+            pld.parse_config_files = lambda: True  # type: ignore[attr-defined]
             session: RecordingSession = RecordingSession()
             pld.handle_control_reload_msg(session)
             results.expect_eq(
@@ -612,7 +612,7 @@ def test_reload_reports_success_and_failure(
                 ['OK'],
             )
 
-            pld.parse_config_files = lambda: False
+            pld.parse_config_files = lambda: False  # type: ignore[attr-defined]
             session = RecordingSession()
             pld.handle_control_reload_msg(session)
             results.expect_eq(
@@ -621,7 +621,7 @@ def test_reload_reports_success_and_failure(
                 ['CONTROL_ERROR'],
             )
         finally:
-            pld.parse_config_files = saved_parse
+            pld.parse_config_files = saved_parse  # type: ignore[attr-defined]
 
 
 def test_send_failures_are_survivable(

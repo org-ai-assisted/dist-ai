@@ -97,10 +97,10 @@ def _install_atheris_stub():
     def instrument_imports(*_args, **_kwargs):
         yield
 
-    stub.instrument_imports = instrument_imports
-    stub.FuzzedDataProvider = _FuzzedDataProvider
-    stub.Setup = lambda *_args, **_kwargs: None       # only called from main()
-    stub.Fuzz = lambda *_args, **_kwargs: None
+    stub.instrument_imports = instrument_imports  # type: ignore[attr-defined]
+    stub.FuzzedDataProvider = _FuzzedDataProvider  # type: ignore[attr-defined]
+    stub.Setup = lambda *_args, **_kwargs: None    # type: ignore[attr-defined]  # only called from main()
+    stub.Fuzz = lambda *_args, **_kwargs: None     # type: ignore[attr-defined]
     sys.modules['atheris'] = stub
 
 
@@ -130,6 +130,7 @@ def _load_seeds(path):
 def _load_harness(path):
     name = 'stfuzz_' + os.path.basename(path)[:-3]
     spec = importlib.util.spec_from_file_location(name, path)
+    assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
