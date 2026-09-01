@@ -401,6 +401,26 @@ ok(_BPM not in _rk._screen.mode,
    'restart clears a stale bracketed-paste (DEC 2004) bit from the reused screen')
 _rk.close()
 
+# restart_as_shell (alt-screen ACTIVE at exit): a program still on its ALTERNATE screen
+# (a pager/editor that never rmcup'd) must have that transient frame dropped -- _alt_leave,
+# exactly like rmcup -- so the restart lands on the primary screen with the output that
+# preceded the alt frame, not on the abandoned full-screen frame.
+_ra = SecureTerminal(command='/bin/cat', tui=True)
+APP.processEvents()
+feed_output(_ra, b'PRIMARY-BEFORE-ALT\r\n')  # full read path so the alt-scan runs
+_ra._render_tui()
+feed_output(_ra, b'\x1b[?1049h')             # enter the alternate screen and stay there
+_ra._render_tui()
+APP.processEvents()
+ok(_ra._alt_screen, 'the program is on the alternate screen before the restart')
+ok(_ra.restart_as_shell(), 'restart_as_shell restarts an alt-screen -- PROGRAM tab')
+APP.processEvents()
+ok(not _ra._alt_screen,
+   'restart drops the abandoned alternate frame (_alt_leave, like rmcup)')
+ok('PRIMARY-BEFORE-ALT' in _ra.toPlainText(),
+   'and the primary-screen output that preceded the alt frame survives the restart')
+_ra.close()
+
 # alternate scroll: a full-screen program that did NOT request the mouse (a plain
 # pager in the alternate screen) has no local scrollback to move, so the wheel is
 # translated to arrow-key line scrolls (xterm's alternateScroll). A program that DID
@@ -1342,28 +1362,16 @@ if tui_available():
        '#28: a leading combining mark at (0,0) renders the box placeholder')
     _c28.close()
 
-    # #32: a Show-mode Zalgo-defense BOX is SYNTHETIC (a base + >_ZALGO_MARK_MAX marks
-    # that tui_cell neutralizes even in Show), NOT a real printed U+25A1. toPlainText()
-    # promises ASCII, so it must map the synthetic box back to '_' via the per-run source
-    # codepoint (cp != 0x25a1), never leak literal U+25A1.
-    _zlk = SecureTerminal(command='/bin/cat', tui=True)
-    _zlk._mode = 'show'
-    feed_output(_zlk, ('a' + _ac * 20).encode('utf-8'))    # 20 marks: > 8, < the cap
-    _zlk._render_tui()
-    ok(_S_zw.BOX in _zlk.document().toPlainText(),
-       '#32: a >8-mark Zalgo cell renders the synthetic box in Show TUI')
-    _zlk_out = _zlk.toPlainText()
-    ok(_S_zw.BOX not in _zlk_out,
-       '#32: toPlainText(Show) never leaks the synthetic Zalgo box as literal U+25A1')
-    ok('_' in _zlk_out, '#32: toPlainText(Show) maps the synthetic Zalgo placeholder to _')
-    _zlk.close()
-    # guard the fix does not over-map: a REAL U+25A1 the program printed in Show is kept
+    # Show mode is the explicit opt-in to the visible U+25A1 box for a neutralized byte
+    # (the SAFE stand-in the user chose to see), so a REAL U+25A1 the program printed in
+    # Show is kept as its own glyph -- cp is its own, never mistaken for the placeholder,
+    # so toPlainText preserves it (matching the zero-width-box case above at line ~268).
     _zrb = SecureTerminal(command='/bin/cat', tui=True)
     _zrb._mode = 'show'
     feed_output(_zrb, _S_zw.BOX.encode('utf-8'))
     _zrb._render_tui()
     ok(_S_zw.BOX in _zrb.toPlainText(),
-       '#32: a REAL U+25A1 printed in Show mode is still preserved (cp is its own)')
+       'a REAL U+25A1 printed in Show mode is preserved (cp is its own)')
     _zrb.close()
 
     # (c) EMPTY (pre-existing behavior preserved): a zero-width char on an EMPTY

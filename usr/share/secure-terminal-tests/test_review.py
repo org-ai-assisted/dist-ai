@@ -172,6 +172,11 @@ _before = _bar._mirror.toPlainText()
 _bar.rerender_mirror()
 eq(_bar._mirror.toPlainText(), _before,
    'rerender_mirror is a no-op once the review is resolved (no _term)')
+# _refresh_review shares that guard: a late edit-widget textChanged after the bar is
+# resolved must early-return on the cleared _term, not recompute against a dead mirror.
+_bar._refresh_review()
+eq(_bar._mirror.toPlainText(), _before,
+   '_refresh_review early-returns once the review is resolved (no _term)')
 
 # --- delivered-form-on-focus: the mirror shows what a button SENDS -------------
 # codex HIGH: the mirror must not hide the DELIVERED (de-obfuscated) form behind a
