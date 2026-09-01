@@ -259,6 +259,15 @@ assert_not_at "R-120 spares 'builtin rm' (rm not a builtin, runs nothing)"      
 assert_not_at "R-210 spares 'builtin apt-get' (not a builtin)"                   "R-210" 3
 assert_at     "R-120 flags 'builtin command rm' (command is a builtin -> rm runs)" "R-120" 4
 assert_at     "R-211 flags 'builtin command dpkg' (command runs dpkg)"           "R-211" 5
+## ONLY the bare 'builtin' keyword invokes the shell builtin. A path-qualified
+## './builtin' or '/usr/bin/builtin' is an ordinary external program (unknown
+## behavior), so the builtin-only exemption must NOT suppress R-120 for it --
+## the peel still flags the inner rm (the safe over-flag direction).
+run_det "$(printf '%s\n' '#!/bin/bash' \
+   './builtin rm -rf /a' \
+   '/usr/bin/builtin rm -rf /b')"
+assert_at "R-120 flags './builtin rm' (path-qualified, not the keyword)" "R-120" 2
+assert_at "R-120 flags '/usr/bin/builtin rm' (path-qualified)"           "R-120" 3
 ## env -S/--split-string EMBEDS the command in its STRING value; we skip that value and do NOT
 ## parse inside it (obfuscated spelling, out of the accident threat model -- ai-review claude).
 ## The guarantee that MUST hold: skipping the value never FALSE-POSITIVES on a path-like string.

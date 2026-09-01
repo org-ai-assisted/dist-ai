@@ -78,7 +78,8 @@ def effective_command(call, source):
     is a describe (not a run) -- the safe direction (a rule declines rather than
     guesses). Path-qualified names ('/bin/rm', '/usr/bin/sudo rm') resolve by
     basename so a rule is not bypassed."""
-    wrapper = _basename(bash_ast.command_name(call))
+    wrapper_raw = bash_ast.command_name(call)
+    wrapper = _basename(wrapper_raw)
     if wrapper not in EXEC_WRAPPERS:
         return wrapper
     ## Peel wrapper layers ITERATIVELY, not recursively: a maliciously deep chain
@@ -111,7 +112,8 @@ def effective_command(call, source):
             if re.match(r'^[A-Za-z_][A-Za-z0-9_]*=',
                         bash_ast.word_source(word, source)):
                 continue
-            inner = _basename(bash_ast.word_string(word))
+            inner_raw = bash_ast.word_string(word)
+            inner = _basename(inner_raw)
             rest = position
             break
         if inner is None:
@@ -119,8 +121,12 @@ def effective_command(call, source):
         ## 'builtin NAME' executes NAME only if NAME is a shell builtin; 'builtin
         ## rm' errors and runs nothing, so decline (no name-keyed rule fires).
         ## 'builtin command rm' passes here (command IS a builtin) and reaches rm
-        ## through the wrapper peel below.
-        if wrapper == "builtin" and inner not in BASH_BUILTINS:
+        ## through the wrapper peel below. ONLY the bare 'builtin' keyword invokes
+        ## the shell builtin: a path-qualified './builtin' is an ordinary external
+        ## program (unknown behavior), so the exemption must NOT suppress a rule for
+        ## it -- fall through so the peel still flags an inner rm (the safe direction).
+        if wrapper == "builtin" and "/" not in (wrapper_raw or "") \
+                and inner not in BASH_BUILTINS:
             return None
         ## Not a wrapper -> the real command. A STACKED wrapper ('sudo sudo rm',
         ## 'sudo env VAR=1 rm', 'sudo doas -u root rm') runs it one layer deeper; RE-PARSE
@@ -131,6 +137,7 @@ def effective_command(call, source):
         if inner not in EXEC_WRAPPERS:
             return inner
         wrapper = inner
+        wrapper_raw = inner_raw
         call = {"Args": words[rest:]}
 
 
