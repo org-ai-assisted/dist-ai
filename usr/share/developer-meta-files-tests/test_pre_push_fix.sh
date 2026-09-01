@@ -598,6 +598,23 @@ else
    note_fail "AST port canary broken: R-200 not cleared on a heredoc file"
 fi
 
+## --- 9c: fixer finds the duration PAST A LEADING OPTION, not a fixed Args[1] --
+## 'timeout --foreground 5 cmd': detect() flags R-200, but a fix() that assumed
+## Args[1] held the duration saw '--foreground', matched no duration, and emitted
+## NO edit -- a silent no-op that reads as a pass. The fixer must locate the
+## duration OPERAND (as detect does) and insert --kill-after before it.
+f="${test_dir}/leadopt.sh"
+printf '%b' '#!/bin/bash\ntimeout --foreground 5 sleep 1\n' >"${f}"
+if grep --quiet --fixed-strings 'kill-after' "${f}" ; then
+   note_fail "leadopt fixture not dirty -- canary would let a no-op fixer pass"
+fi
+run_fix "${f}" >/dev/null 2>&1
+if grep --quiet --fixed-strings 'timeout --foreground --kill-after=5 5 sleep 1' "${f}" ; then
+   note_pass "R-200 fixer: duration found past a leading option ('--foreground 5')"
+else
+   note_fail "R-200 fixer no-op on 'timeout --foreground 5' (duration past a leading option)"
+fi
+
 ## --- 9d: SC2174 insertion uses BYTE offsets (non-ASCII before the mkdir) -----
 ## Regression: a non-ASCII char earlier in the file must not shift the inserted
 ## disable into the previous line (str char-index vs shfmt byte-offset mismatch).
