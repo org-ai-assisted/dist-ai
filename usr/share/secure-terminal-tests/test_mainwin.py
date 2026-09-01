@@ -1633,6 +1633,22 @@ ok(_lreq['op'] == 'open' and _lreq.get('if_absent') is True,
 ok(M._launch_to_request(_pla([])).get('if_absent') is False,
    'launch->request: if_absent defaults off in the request')
 
+# Fail CLOSED on a malformed -e STRING before Qt: a locked-down launch (run ONLY this
+# program) must not silently drop to a login shell on a bad quote. A -- prog args LIST
+# is verbatim (never shlex'd, exempt); a well-formed -e string is accepted. (canary:
+# the old parser built a spec with the malformed string, which _argv_for_command then
+# turned into a login shell.)
+_reje = False
+try:
+    _pla(['-e', "printf 'unterminated"])
+except SystemExit as _se:
+    _reje = (_se.code == 2)
+ok(_reje, 'parse: a malformed -e STRING exits(2), never a login shell (fail closed)')
+ok(_pla(['-e', 'echo ok']).tabs[-1]['command'] == 'echo ok',
+   'parse: a well-formed -e string is accepted (shell-split at spawn, not here)')
+ok(_pla(['--', 'echo', "'unbalanced"]).tabs[-1]['command'] == ['echo', "'unbalanced"],
+   'parse: a -- LIST command is verbatim, NOT shlex-validated (no false reject)')
+
 # --- set_* admin-locked returns + bell channels + run_command palette ---------
 from PyQt6.QtWidgets import QMessageBox                          # noqa: E402
 _o_info = QMessageBox.information
