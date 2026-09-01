@@ -165,7 +165,9 @@ def run():
         sitemap = cs.render_sitemap(root, host)
         parsed_ok = True
         try:
-            xml.etree.ElementTree.fromstring(sitemap)
+            # nosec B314 -- parses our OWN render_sitemap output (a well-formedness
+            # assertion), not untrusted input; defusedxml is not warranted here.
+            xml.etree.ElementTree.fromstring(sitemap)  # nosec
         except xml.etree.ElementTree.ParseError:
             parsed_ok = False
         check('sitemap with a metachar filename is well-formed XML',
