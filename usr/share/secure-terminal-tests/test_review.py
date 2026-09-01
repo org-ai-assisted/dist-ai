@@ -27,6 +27,8 @@ except Exception as exc:  # fail closed: a required dependency must not silently
     sys.stderr.write('secure-terminal-tests: FAIL missing dependency: %s\n' % exc)
     sys.exit(1)
 
+import secure_terminal.review as _rev                                          # noqa: E402
+
 APP = QApplication.instance() or QApplication([])
 
 _failures = 0
@@ -295,21 +297,24 @@ _bar._choose('stripped')
 eq(_term_c.dispatched, [('copy', 'stripped')],
    'copy review dispatches to the tab\'s copy path, not the paste path')
 
-# --- a clean (always-mode) review does not claim hidden characters ------------
-# In "always" mode a plain-ASCII paste/copy is reviewed too; classify_paste finds
-# nothing, so the summary must NOT assert hidden characters that are not there.
+# --- a clean (always-mode) review shows a positive ASCII-only all-clear -------
+# In "always" mode a plain-ASCII paste/copy is reviewed too; nothing is hidden, so
+# the bar states a positive green all-clear rather than claiming classes that are
+# not there. (A TRUNCATED clean scan cannot promise this -- it keeps the cautious
+# summary + notice, covered by the truncation checks above.)
 _term_clean = _FakeTerm()
 _bar.show_review(_term_clean, 'plain ascii command\n', 0, 'paste')
-ok('hide' not in _bar._summary.text().lower()
-   and 'hidden' not in _bar._summary.text().lower(),
-   'a clean paste review does not claim hidden characters')
-ok('shell' in _bar._summary.text().lower(), 'the clean-paste summary points at the shell')
+eq(_bar._summary.text(), _rev._CLEAN_MSG,
+   'a clean paste review shows the ASCII-only all-clear, not a hidden-char claim')
+ok('hides' not in _bar._summary.text().lower(),
+   'the all-clear does not claim the paste hides anything')
+ok(_rev.SAFE_FG in _bar._dot.styleSheet(),
+   'the risk dot turns safe-green for a clean paste review')
 ok('plain ascii command' in _bar._mirror.toPlainText(),
    'the mirror shows the held text even for a clean review')
 _bar.show_review(_term_clean, 'plain ascii\n', 0, 'copy')
-ok('hidden' not in _bar._summary.text().lower()
-   and 'clipboard' in _bar._summary.text().lower(),
-   'a clean copy review does not claim hidden characters, and names the clipboard')
+eq(_bar._summary.text(), _rev._CLEAN_MSG,
+   'a clean copy review shows the same ASCII-only all-clear')
 _bar._choose('reject')
 
 # --- colour: ONLY Reject is green; the delivery buttons are uncoloured --------
@@ -343,6 +348,68 @@ _bar.hide_review()
 ok(not _bar.isVisibleTo(_win), 'hide_review hides the bar')
 ok(not _bar._countdown.isActive(), 'the countdown timer is stopped on hide')
 ok(_bar.reviewed_term() is None, 'hide_review clears the reviewed tab')
+
+# --- the breakdown: Structure section + per-class hidden-character table ------
+# _raw hides a bidi override + a Cyrillic homoglyph and ends in a submit newline.
+_bar.show_review(_term, _raw, 0)
+_d = _bar._detail.text()
+ok('Structure' in _d and 'Hidden characters' in _d,
+   'the breakdown shows a Structure section and a hidden-character table')
+ok('Look-alike' in _d and 'Bidirectional control' in _d,
+   'the table names the finer classes (homoglyph, bidi) the summary folds')
+ok('Box-drawing' in _d and 'Combining' in _d,
+   'the table lists every class incl. those absent (what is NOT present is explicit)')
+ok('If accepted' in _d and 'press Enter to run' in _d,
+   'a paste shows the never-auto-run guarantee row (waits for Enter, non-bracketed)')
+# selectable so the user can copy the text to ask about it
+ok(_bar._summary.textInteractionFlags() & Qt.TextInteractionFlag.TextSelectableByMouse,
+   'the summary text is selectable')
+ok(_bar._detail.textInteractionFlags() & Qt.TextInteractionFlag.TextSelectableByMouse,
+   'the breakdown text is selectable')
+
+# box-drawing is its OWN low-risk row, not folded into "other non-ASCII"
+_bar.show_review(_term, 'a' + chr(0x2500) + chr(0x2502) + 'b', 0)
+ok('Box-drawing / blocks' in _bar._detail.text(),
+   'box-drawing glyphs get their own table row')
+
+# bracketed target: the guarantee row states the program buffers it as text
+_bt = _FakeTerm()
+_bt._bracketed_paste_active = lambda: True  # type: ignore[method-assign]
+_bar.show_review(_bt, _raw, 0)
+ok('your program receives it as text' in _bar._detail.text(),
+   'a bracketed-paste target shows the program-receives-it-as-text guarantee')
+
+# an ASCII-only paste (held here because it is multi-line) reads as a positive
+# all-clear: green dot, the clean summary, and no hidden-character rows
+_bar.show_review(_term, 'ls\necho hi\n', 0)
+eq(_bar._summary.text(), _rev._CLEAN_MSG, 'an ASCII-only paste gets the clean all-clear')
+ok(_rev.SAFE_FG in _bar._dot.styleSheet(),
+   'the risk dot turns safe-green for an ASCII-only paste')
+ok('(none)' in _bar._detail.text() and 'multi-line' in _bar._detail.text(),
+   'the clean breakdown shows no hidden chars but still flags the multi-line structure')
+
+# #20: the truncation notice names the real DIRECTION (copy, not paste)
+_bar.show_review(_term, chr(0x0430) * (_bar._mirror._RAW_MAX // 5), 0, 'copy')
+ok('the FULL copy' in _bar._summary.text() and 'FULL paste' not in _bar._summary.text(),
+   'a truncated COPY review names the copy action, not "paste" (#20)')
+_bar.show_review(_term, _raw, 0)                 # restore paste state
+
+# CANARY: the table depends on classify_paste_detail, not a hardcoded layout
+_saved_detail = _rev.classify_paste_detail
+_rev.classify_paste_detail = lambda raw: {
+    'counts': dict.fromkeys(
+        ('bidi', 'control', 'invisible', 'confusable', 'combining',
+         'nonascii', 'structural'), 0),
+    'lines': 1, 'multiline': False, 'ends_with_submit': False,
+    'chars': 0, 'bytes': 0}
+try:
+    _cw2 = QWidget()
+    _cb2 = ReviewBar(_cw2)
+    _cb2.show_review(_FakeTerm(), _raw, 0)
+    ok('Look-alike' not in _cb2._detail.text() or '(none)' in _cb2._detail.text(),
+       'CANARY: the breakdown table depends on classify_paste_detail (has teeth)')
+finally:
+    _rev.classify_paste_detail = _saved_detail
 
 # --- CANARY: the hidden-character summary has teeth ---------------------------
 # A classifier that finds nothing must make "the bar summarises what the paste
