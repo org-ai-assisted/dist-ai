@@ -102,11 +102,13 @@ else
    printf '%s\n' "FAIL  arbitrary write escaped to ${escaped}" >&2
 fi
 
-## Every .install the function wrote stays inside the temp dir.
+## The hostile FILE ('x#../pwned#realpkg') is legitimately handled as package 'realpkg' and
+## copied to the package's OWN debian/ -- a contained sink. A TRUE escape is a .install written
+## anywhere else (above the temp dir, or outside pkg_root). Allow only the two legit roots.
 tests_total=$(( tests_total + 1 ))
 outside='false'
 while IFS= read -r -d '' f; do
-   if [[ "${f}" != "${genmkfile_temp_dir}/"* ]]; then
+   if [[ "${f}" != "${genmkfile_temp_dir}/"* && "${f}" != "${pkg_root}/debian/"* ]]; then
       outside='true'
    fi
 done < <(find "${work}" -name '*.install' -print0)
@@ -131,6 +133,29 @@ if [ "${dot_rc}" -ne 0 ] && [[ "${dot_out}" == *'invalid package name'* ]]; then
 else
    tests_failed=$(( tests_failed + 1 ))
    printf '%s\n' "FAIL  dot-prefixed package name not rejected: rc=${dot_rc} out=[${dot_out}]" >&2
+fi
+
+## An invalid package name must be FATAL, not a silent skip. With 'find | while' the die
+## ran in a pipe SUBSHELL, so the function kept going and copied whatever it already had --
+## a bad entry silently dropped files while the build reported success. Fixture: a VALID
+## file that sorts BEFORE an invalid one ('#.evil'); the whole run must abort (rc != 0) and
+## the valid file's package must NOT be copied to debian/ (it aborts at the invalid entry).
+fatal_root="${work}/fatalroot"
+mkdir --parents -- "${fatal_root}/usr/bin" "${fatal_root}/debian"
+printf 'x\n' > "${fatal_root}/usr/bin/good#pkg-ok"
+printf 'x\n' > "${fatal_root}/usr/bin/zzz#.evil"
+genmkfile_temp_dir="${work}/fatalscratch"
+mkdir --parents -- "${genmkfile_temp_dir}"
+fatal_rc=0
+( cd -- "${fatal_root}" && make_debinstfile_create ) >/dev/null 2>&1 || fatal_rc=$?
+tests_total=$(( tests_total + 1 ))
+if [ "${fatal_rc}" -ne 0 ] && [ ! -e "${fatal_root}/debian/pkg-ok.install" ]; then
+   printf '%s\n' "PASS  an invalid package name aborts the whole run (no silent partial packaging)"
+else
+   tests_failed=$(( tests_failed + 1 ))
+   ok_exists='no'
+   [ -e "${fatal_root}/debian/pkg-ok.install" ] && ok_exists='yes'
+   printf '%s\n' "FAIL  invalid pkg name not fatal: rc=${fatal_rc} pkg-ok.install=${ok_exists}" >&2
 fi
 
 if [ "${tests_failed}" -ne 0 ]; then

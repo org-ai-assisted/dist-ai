@@ -145,8 +145,7 @@ git -C "${repo}" checkout -q ai
 
 ## T7: inside a cowbuilder build shell (make_use_cowbuilder=true) git-push must
 ## NOT demand make_cowbuilder_dist_folder -- it is a pure git op needing no
-## DISTDIR/DESTDIR. Regression: make_get_distdir used to run unconditionally and
-## abort on the cowbuilder gate.
+## DISTDIR/DESTDIR, so make_get_distdir's cowbuilder gate must not run for it.
 count
 if ( cd -- "${repo}" && make_use_cowbuilder=true \
       make_git_push_remotes="org-ai-assisted" make_git_push_branches="ai" \
@@ -164,6 +163,21 @@ if ( cd -- "${repo}" && make_git_push_remotes="org-ai-assisted" make_git_push_br
    pass 'T8 git-push tolerates a trailing -- (no make_get_variables abort)'
 else
    fail 'T8 git-push -- aborted (classifier poison)'
+fi
+
+## T9: a NEWLINE-separated make_git_push_remotes (e.g. from "$(git remote)") must push
+## ALL remotes, not just the first. Regression: read -a on a here-string stops at the
+## first newline, silently dropping every remote after line 1 (no push, no error).
+count
+git -C "${repo}" commit -q --allow-empty -m c3
+nl_remotes="$(printf '%s\n%s' org-ai-assisted gitlab-adrelanos)"
+out="$(run_push "${nl_remotes}" "ai" || true)"
+loc="$(git -C "${repo}" rev-parse ai)"
+if [ "$(remote_tip "${test_root}/r1.git")" = "${loc}" ] \
+   && [ "$(remote_tip "${test_root}/r2.git")" = "${loc}" ]; then
+   pass 'T9 newline-separated remotes are all pushed (no silent drop)'
+else
+   fail "T9 newline-separated remotes not all at tip (r2 dropped?); out=[${out}]"
 fi
 
 if [ "${tests_failed}" -ne 0 ]; then
