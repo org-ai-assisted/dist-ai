@@ -292,6 +292,31 @@ eq(_wmt.lineWrapMode(), _NW,
    'TUI grid never wraps (sized to fit; Detail/Reveal cells fall back to the box)')
 _wmt.close()
 
+# #8: narrowing the terminal REFLOWS retained Box-mode line output to the new width (an
+# old long line re-wraps instead of horizontal-scrolling); Box stays NoWrap. _rerender is
+# the reflow mechanism (replays _raw through _feed_line, which hard-wraps at self._cols);
+# resizeEvent schedules it debounced on a column-count change.
+from PyQt6.QtGui import QResizeEvent as _QRE   # noqa: E402
+_t8 = SecureTerminal(command='/bin/cat')
+_t8.apply_mode('box')
+_t8._cols = 100
+_t8._raw = 'x' * 300
+_t8._rerender()                                # reflow at cols=100
+_wide8 = _t8.blockCount()
+_t8._cols = 40
+_t8._rerender()                                # reflow at the narrower width
+ok(_t8.blockCount() > _wide8,
+   '#8: narrowing reflows Box output to more (shorter) wrapped rows, not one wide row')
+eq(_t8.lineWrapMode(), _NW, '#8: Box stays NoWrap (design invariant preserved)')
+# resizeEvent schedules the debounced reflow when the column count changes.
+_t8._reflow_timer.stop()
+_t8._cols = 99999                              # force a mismatch vs the real grid width
+_t8.resizeEvent(_QRE(_t8.size(), _t8.size()))
+ok(_t8._reflow_timer.isActive(),
+   '#8: a resize that changes the column count schedules the debounced line reflow')
+_t8._reflow_timer.stop()
+_t8.close()
+
 # Horizontal scrollbar policy tracks the display mode: a TUI grid is a fixed
 # viewport-wide canvas (a real terminal never shows a horizontal bar on one), so
 # it is AlwaysOff; CLI keeps AsNeeded so a genuinely long NoWrap Box/Show line
@@ -359,6 +384,12 @@ _rk._render_tui()
 APP.processEvents()
 ok('PRIMARY-OUTPUT-KEEPME' in _rk.toPlainText(),
    'the TUI program primary output is on screen before the restart')
+# SECURITY: the exited program enabled bracketed paste (DEC 2004). Because keep_screen
+# REUSES the pyte screen, that stale bit must be cleared on restart -- else a later
+# non-bracketed multiline paste would read as bracketed, skip the mandatory staging, and
+# AUTO-RUN. (Regression: the reused screen kept the program's DEC modes.)
+from secure_terminal.terminal import _BRACKETED_PASTE_MODE as _BPM   # noqa: E402
+_rk._screen.mode.add(_BPM)
 _rk_restarted = _rk.restart_as_shell()
 APP.processEvents()
 ok(_rk_restarted, 'restart_as_shell restarts a -- PROGRAM tab (returns True)')
@@ -366,6 +397,8 @@ ok('PRIMARY-OUTPUT-KEEPME' in _rk.toPlainText(),
    'restart_as_shell keeps the exited TUI program primary output as scrollback')
 ok('program exited' in _rk.toPlainText(),
    'and seeds the handover banner below the kept output')
+ok(_BPM not in _rk._screen.mode,
+   'restart clears a stale bracketed-paste (DEC 2004) bit from the reused screen')
 _rk.close()
 
 # alternate scroll: a full-screen program that did NOT request the mouse (a plain
@@ -7404,44 +7437,57 @@ except _subprocess.TimeoutExpired:
 ok(_victim.returncode is not None,
    'terminate_foreground: a TERM-ignoring group is SIGKILLed by the survivor')
 
-# #35: a login shell REPLACED via the `exec` builtin (exec vim) keeps the shell's
-# pid + pgrp, so tcgetpgrp still reads a "bare prompt" -- but /proc comm now names a
-# different program. _child_execd() catches it by process identity, so the panic
-# button acts on it and the mode-toggle re-export refuses to type into it. A builtin
-# that merely reads stdin (read/here-doc) is NOT an exec (same comm) and stays the
-# documented #18 residual. (canary: pre-#35 code has no _child_execd / _spawn_comm
-# and reads an exec-replaced shell as an idle prompt.)
-ok(SecureTerminal._read_comm(2 ** 30) is None,
-   '_read_comm returns None for a nonexistent pid')
+# #35/#42: a login shell REPLACED via the `exec` builtin (exec vim) keeps the shell's
+# pid + pgrp, so tcgetpgrp still reads a "bare prompt" -- but /proc/<pid>/exe now points
+# at a DIFFERENT binary. _child_execd() catches it by process identity via exe, which
+# (unlike comm) the child CANNOT forge, so the panic button acts on the exec'd program
+# and the mode-toggle re-export refuses to type into it. A builtin that merely reads
+# stdin (read/here-doc) is NOT an exec (same exe) and stays the documented #18 residual.
+ok(SecureTerminal._read_exe(2 ** 30) is None,
+   '_read_exe returns None for a nonexistent pid')
 _xc = SecureTerminal(command=None)            # login-shell tab (_command is None)
-ok(_xc._spawn_comm is not None, 'a spawned child records its /proc comm baseline')
+ok(_xc._spawn_exe is not None, 'a spawned child records its /proc exe baseline')
 _hold_pid, _xc._pid = _xc._pid, None
 ok(_xc._child_execd() is False, '_child_execd: no child pid -> False')
 _xc._pid = _hold_pid
-_hold_comm, _xc._spawn_comm = _xc._spawn_comm, None
-ok(_xc._child_execd() is False, '_child_execd: no comm baseline -> False')
-_xc._spawn_comm = _hold_comm
+_hold_exe, _xc._spawn_exe = _xc._spawn_exe, None
+ok(_xc._child_execd() is False, '_child_execd: no exe baseline -> False')
+_xc._spawn_exe = _hold_exe
 try:
-    _xc._read_comm = lambda _pid: None
-    ok(_xc._child_execd() is False, '_child_execd: unreadable comm -> False')
-    _xc._read_comm = lambda _pid: _xc._spawn_comm
-    ok(_xc._child_execd() is False, '_child_execd: matching comm is a bare prompt')
-    _xc._read_comm = lambda _pid: _xc._spawn_comm + '-execd'
-    ok(_xc._child_execd() is True, '_child_execd: a changed comm is an exec-replace')
+    _xc._read_exe = lambda _pid: None
+    ok(_xc._child_execd() is False, '_child_execd: unreadable exe -> False')
+    _xc._read_exe = lambda _pid: _xc._spawn_exe
+    ok(_xc._child_execd() is False, '_child_execd: matching exe is a bare prompt')
+    _xc._read_exe = lambda _pid: _xc._spawn_exe + '-execd'
+    ok(_xc._child_execd() is True, '_child_execd: a changed exe is an exec-replace')
 finally:
-    del _xc._read_comm
+    del _xc._read_exe
 _xc.close()
 
-# faithful panic-button path: a real TERM-ignoring victim group stands in for the
-# exec'd program; both _foreground_pgrp and getpgid(_pid) resolve to it (the exec
-# case: same pgrp as the shell) and comm differs from the baseline -> signalled.
+# #42: /proc/self/comm is CHILD-WRITABLE (the #35 spoof), but /proc/<pid>/exe is NOT --
+# _child_execd must key off exe so a comm forge cannot flip detection (neither killing an
+# idle shell nor hiding a stuck exec'd program from the panic button). Prove _read_exe
+# reports the REAL binary even when the child rewrote its own comm.
+_v42 = _subprocess.Popen(
+    ['sh', '-c', 'printf fakeshell > /proc/self/comm 2>/dev/null; sleep 30'],
+    start_new_session=True)
+pump(80)
+_exe42 = SecureTerminal._read_exe(_v42.pid)
+ok(_exe42 is not None and _exe42.rsplit('/', 1)[-1] in ('sh', 'dash', 'bash', 'busybox'),
+   '#42: _read_exe reports the real binary even when the child spoofed /proc/self/comm')
+_v42.terminate()
+_v42.wait()
+
+# faithful panic-button path: a real TERM-ignoring victim group stands in for the exec'd
+# program; both _foreground_pgrp and getpgid(_pid) resolve to it (the exec case: same
+# pgrp as the shell) and exe differs from the baseline -> signalled.
 _victim_x = _subprocess.Popen(['sh', '-c', 'trap "" TERM; exec sleep 30'],
                               start_new_session=True)
 pump(60)
 _victim_x_pgrp = os.getpgid(_victim_x.pid)
 _xt = SecureTerminal(command=None)
 _xt._foreground_pgrp = lambda: _victim_x_pgrp
-_xt._read_comm = lambda _pid: (_xt._spawn_comm or '') + '-execd'
+_xt._read_exe = lambda _pid: (_xt._spawn_exe or '') + '-execd'
 _o_getpgid_x = _term2.os.getpgid
 _term2.os.getpgid = lambda _pid: _victim_x_pgrp
 try:
@@ -7459,15 +7505,15 @@ except _subprocess.TimeoutExpired:
     _victim_x.wait(timeout=5)
 ok(_victim_x.returncode is not None,
    'terminate_foreground: the exec-replaced shell is SIGKILLed by the survivor')
-# a MATCHING comm is a bare prompt -> the panic button no-ops (shell preserved)
+# a MATCHING exe is a bare prompt -> the panic button no-ops (shell preserved)
 _term2.os.getpgid = lambda _pid: _victim_x_pgrp
 try:
-    _xt._read_comm = lambda _pid: _xt._spawn_comm
+    _xt._read_exe = lambda _pid: _xt._spawn_exe
     ok(_xt.terminate_foreground() is False,
-       'terminate_foreground: a bare shell prompt (matching comm) is a no-op')
+       'terminate_foreground: a bare shell prompt (matching exe) is a no-op')
 finally:
     _term2.os.getpgid = _o_getpgid_x
-    del _xt._read_comm
+    del _xt._read_exe
 _xt.close()
 
 # #36: int() raises ValueError for a >4300-digit string (Python 3.11+) BEFORE the
@@ -7898,11 +7944,11 @@ pump(60)
 _tfw = SecureTerminal(command='/bin/cat')
 _tfw._command = None                        # login-shell semantics for this branch
 _tfw._pid = _tfs.pid
-# Align the comm baseline to the stand-in child: a real login shell's _spawn_comm
-# matches its own _pid, so _child_execd() reads "not exec'd" (a bare prompt). Without
-# this, _pid points at 'sleep' while _spawn_comm is still '/bin/cat' -- an artificial
-# mismatch that #35's exec detection would (correctly) read as an exec-replace.
-_tfw._spawn_comm = _tfw._read_comm(_tfs.pid)
+# Align the exe baseline to the stand-in child: a real login shell's _spawn_exe matches
+# its own _pid, so _child_execd() reads "not exec'd" (a bare prompt). Without this, _pid
+# points at 'sleep' while _spawn_exe is still '/bin/cat' -- an artificial mismatch that
+# #35/#42's exec detection would (correctly) read as an exec-replace.
+_tfw._spawn_exe = _tfw._read_exe(_tfs.pid)
 _tfw._foreground_pgrp = lambda: os.getpgid(_tfs.pid)
 ok(not _tfw.terminate_foreground(),
    'terminate_foreground: only the shell in the foreground -> no-op')
