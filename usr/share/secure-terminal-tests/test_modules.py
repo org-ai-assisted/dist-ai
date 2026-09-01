@@ -107,6 +107,20 @@ finally:
     os.umask(_saved_umask)
     os.environ['XDG_RUNTIME_DIR'] = _run_dir   # restore for the send_request tests below
 
+# COVERAGE (finding #6 inner chmod branch): _makedirs_private mkdir's each MISSING component
+# then chmod's it 0700 to defeat umask; that chmod can fail on a restrictive fs and must be
+# swallowed, exactly like the leaf chmod above. The pre-existing-dir chmod test does not reach
+# it (FileExistsError returns first), so create a FRESH nested dir WHILE chmod fails.
+_boom_base = tempfile.mkdtemp()
+os.chmod = _boom_chmod
+try:
+    os.environ['XDG_RUNTIME_DIR'] = os.path.join(_boom_base, 'aa', 'bb')
+    ipc.ensure_socket_dir()             # creates aa/bb/secure-terminal; each inner chmod raises
+    ok(True, 'ensure_socket_dir: a failing chmod while CREATING a component is swallowed')
+finally:
+    os.chmod = _orig_chmod
+    os.environ['XDG_RUNTIME_DIR'] = _run_dir
+
 
 # --- send_request talks to a real same-UID server over the framed protocol -----
 def _serve_once(path, responder):
