@@ -63,7 +63,7 @@ trap cleanup EXIT
 
 ## Extract the real make_helper; stub only the reporting/guard helpers.
 {
-   printf '%s\n' 'die() { printf "DIE: %s\n" "$2" >&2; exit "$1"; }'
+   printf '%s\n' 'exit_with_error() { printf "DIE: %s\n" "$2" >&2; exit "$1"; }'
    printf '%s\n' 'make_require() { :; }'
    printf '%s\n' 'make_output_info() { :; }'
    printf '%s\n' 'make_output_warn() { :; }'
