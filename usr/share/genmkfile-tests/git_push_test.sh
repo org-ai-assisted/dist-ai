@@ -143,6 +143,19 @@ else
 fi
 git -C "${repo}" checkout -q ai
 
+## T7: inside a cowbuilder build shell (make_use_cowbuilder=true) git-push must
+## NOT demand make_cowbuilder_dist_folder -- it is a pure git op needing no
+## DISTDIR/DESTDIR. Regression: make_get_distdir used to run unconditionally and
+## abort on the cowbuilder gate.
+count
+if ( cd -- "${repo}" && make_use_cowbuilder=true \
+      make_git_push_remotes="org-ai-assisted" make_git_push_branches="ai" \
+      "${genmkfile_bin}" git-push ) >/dev/null 2>&1; then
+   pass 'T7 git-push ignores make_use_cowbuilder (no DISTDIR demanded)'
+else
+   fail 'T7 git-push tripped on cowbuilder config'
+fi
+
 if [ "${tests_failed}" -ne 0 ]; then
    printf '%s\n' "git_push_test: ${tests_failed}/${tests_total} FAILED" >&2
    exit 1
