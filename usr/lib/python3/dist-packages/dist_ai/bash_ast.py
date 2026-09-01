@@ -79,12 +79,21 @@ def parse(source, dialect="bash"):
         message = "shfmt not found on PATH"
         raise ShfmtMissing(message)
     try:
+        encoded = source.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        ## A lone surrogate (e.g. an ANSI-C $'\ud800' upstream decode) is not
+        ## UTF-8 encodable. Map to BashParseError -- the source is unparseable --
+        ## so EVERY consumer fails CLOSED via its existing parse-error path,
+        ## rather than letting the raw error propagate. For a PreToolUse guard an
+        ## uncaught error is exit 1 = fail-OPEN, the exact trap this must not have.
+        raise BashParseError("source is not valid UTF-8") from exc
+    try:
         ## '-ln' is the portable short form of the dialect flag (the long
         ## '--language-dialect' was only added in a newer shfmt); '--to-json' has
         ## shipped since shfmt 3.x, which the supported Debian ships.
         result = subprocess.run(
             ["shfmt", "-ln", dialect, "--to-json"],
-            input=source.encode("utf-8"),
+            input=encoded,
             capture_output=True,
         )
     except OSError as exc:
