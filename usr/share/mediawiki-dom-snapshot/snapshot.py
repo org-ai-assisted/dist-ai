@@ -1028,7 +1028,7 @@ async def capture_hover_styles(page) -> dict:
     additive over the regular computed_styles capture -- this surfaces
     :hover and :focus pseudo-class theming.
     """
-    out = {}
+    out: dict[str, object] = {}
     for sel in HOVER_SELECTORS:
         try:
             handle = await page.query_selector(sel)
@@ -1083,7 +1083,7 @@ async def main() -> int:
         browser_instances = {}
         for b in browser_names:
             try:
-                launch_kwargs = {
+                launch_kwargs: dict[str, object] = {
                     "proxy": {"server": SNAPSHOT_PROXY} if SNAPSHOT_PROXY else None}
                 ## --host-resolver-rules is a chromium-family flag; ignore for others.
                 if SNAPSHOT_HOST_RESOLVER and b == "chromium":
@@ -1156,8 +1156,8 @@ async def main() -> int:
         tasks = [run_one(m, t) for m in modes for t in pages]
         results = await asyncio.gather(*tasks)
         failures = sum(1 for r in results if not r)
-        for b in browser_instances.values():
-            await b.close()
+        for browser in browser_instances.values():
+            await browser.close()
     return 1 if failures else 0
 
 

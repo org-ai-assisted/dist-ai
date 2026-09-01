@@ -89,7 +89,7 @@ def detect_main(argv, prog="dist-ai-style --detect"):
     contexts, code = _load(args.files, staged=False, prog=prog)
     if contexts is None:
         return code
-    out = []
+    out: list[str] = []
     any_fail = False
     for ctx in contexts:
         try:

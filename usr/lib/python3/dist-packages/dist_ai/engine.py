@@ -90,7 +90,7 @@ def _collect_edits(ctx, rules):
 
 
 def _count(edits):
-    counts = {}
+    counts: dict[str, int] = {}
     for edit in edits:
         counts[edit.rule] = counts.get(edit.rule, 0) + 1
     return counts

@@ -395,7 +395,7 @@ def _classify(paths, base_cwd, content_cwd, source_rev):
     decoy of a different type -- is still typed from the content that ships; the
     .gitattributes check keys on BASE_CWD (see _is_text_file). Skips a symlink, a
     submodule gitlink, and a vanished path."""
-    lists = {name: [] for name in (
+    lists: dict[str, list[str]] = {name: [] for name in (
         "text", "scan", "exec_text", "symlink", "yaml", "json", "toml", "xml",
         "python", "req")}
     for path in paths:
