@@ -330,8 +330,16 @@ def _test_watcher():
     ok(len(w._popup.bar._edit.toPlainText()) <= _RAW_MAX,
        '#2: the edit widget is bounded to _RAW_MAX (no unbounded setPlainText DoS)')
     w._popup.bar._choose('stripped')                 # no edit -> writes the FULL sanitized text
-    eq(cb.text(), sanitize_clipboard(big),
-       '#2: an un-edited Replace still sanitizes the FULL clipboard (self._raw stays full)')
+    # Compare with ok(), NOT eq(): eq() formats both ~1M-char strings via %r into the
+    # message and prints it even on success -- a ~2M-char line that bloats the suite's
+    # stdout past the sandbox transport size and TRUNCATES the coverage report that runs
+    # after this last suite. Assert equality; report only the (bounded) lengths.
+    _delivered_full = cb.text()
+    _expected_full = sanitize_clipboard(big)
+    ok(_delivered_full == _expected_full,
+       '#2: an un-edited Replace still sanitizes the FULL clipboard (self._raw stays '
+       'full); delivered %d chars, expected %d'
+       % (len(_delivered_full), len(_expected_full)))
 
     # review_now: nothing when empty, a popup even for clean text
     cb.setText('')
