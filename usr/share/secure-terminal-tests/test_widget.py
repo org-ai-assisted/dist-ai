@@ -7242,6 +7242,14 @@ _cl.apply_escape_limit(_huge_digits)
 eq(_cl.current_escape_limit(), _e0, 'apply_escape_limit keeps the current limit on a bad value')
 _cl.close()
 
+# an empty command ('' / -e '') is a login shell (_argv_for_command substitutes one),
+# so _command normalizes to None -- otherwise the panic button's "never kill a bare
+# shell" guard (self._command is None) would be bypassed and SIGKILL the idle shell.
+# (canary: pre-fix code left _command as '' -- falsy but not None.)
+_emptycmd = SecureTerminal(command='')
+ok(_emptycmd._command is None, 'an empty command normalizes to None (a login shell)')
+_emptycmd.close()
+
 # --- bell ring: channel gating + rate limit -----------------------------------
 _rg = SecureTerminal(command='/bin/cat')
 _rg._bell_channels = set()
