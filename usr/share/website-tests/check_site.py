@@ -26,6 +26,7 @@ import html.parser
 import os
 import re
 import sys
+import urllib.parse
 
 # The family of sibling Pages sites: every site's footer must link to all of
 # them (the current one included -- rendered as a self-link).
@@ -1009,6 +1010,123 @@ def check_undefined_classes(root, failures):
                     % (rel, name))
 
 
+# --- SEO artifacts: sitemap.xml, robots.txt, favicon.png --------------------
+# These are DERIVED from the real content-page set (html_files) and the site's
+# canonical host, so they must never be hand-maintained -- a hand-edited sitemap
+# silently drifts the moment a page is added or removed. `site-generate` writes
+# them; check_seo re-derives and compares, failing the gate on any drift, so a
+# stale artifact cannot be published. favicon.png is a raster render of
+# favicon.svg; raster bytes are NOT reproducible across librsvg/cairo versions,
+# so it is verified STRUCTURALLY (present, valid PNG, expected size) and never
+# byte-compared -- a byte gate would false-fail wherever the renderer differs.
+FAVICON_SIZE = 512  # px; the raster favicon fallback + apple-touch-icon target
+
+_CANONICAL_RE = re.compile(
+    r'<link\b[^>]*\brel=["\']canonical["\'][^>]*\bhref=["\']([^"\']+)["\']',
+    re.IGNORECASE)
+_PNG_MAGIC = b'\x89PNG\r\n\x1a\n'
+
+
+def seo_host(root):
+    """The site's canonical host (e.g. 'example.github.io'), read from
+    index.html's <link rel="canonical">, or None if absent/unparseable."""
+    try:
+        with open(os.path.join(root, 'index.html'), encoding='utf-8') as handle:
+            markup = handle.read()
+    except OSError:
+        return None
+    match = _CANONICAL_RE.search(markup)
+    if not match:
+        return None
+    return urllib.parse.urlparse(match.group(1)).netloc or None
+
+
+def seo_page_urls(root, host):
+    """Sorted absolute URLs for every navigable content page under root. A
+    directory index maps to its directory URL ('/', '/sub/'); any other page
+    keeps its .html name."""
+    urls = set()
+    for page in html_files(root):
+        rel = os.path.relpath(page, root).replace(os.sep, '/')
+        if rel == 'index.html':
+            path = '/'
+        elif rel.endswith('/index.html'):
+            path = '/' + rel[:-len('index.html')]
+        else:
+            path = '/' + rel
+        urls.add('https://%s%s' % (host, path))
+    return sorted(urls)
+
+
+def render_sitemap(root, host):
+    """The canonical sitemap.xml text for a site (trailing newline included)."""
+    lines = ['<?xml version="1.0" encoding="UTF-8"?>',
+             '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']
+    for url in seo_page_urls(root, host):
+        lines.append('  <url><loc>%s</loc></url>' % url)
+    lines.append('</urlset>')
+    return '\n'.join(lines) + '\n'
+
+
+def render_robots(host):
+    """The canonical robots.txt text for a site (trailing newline included)."""
+    return ('User-agent: *\n'
+            'Allow: /\n'
+            '\n'
+            'Sitemap: https://%s/sitemap.xml\n' % host)
+
+
+def _png_size(path):
+    """(width, height) of a PNG read from its IHDR, or None if not a valid PNG."""
+    try:
+        with open(path, 'rb') as handle:
+            header = handle.read(24)
+    except OSError:
+        return None
+    if len(header) < 24 or header[:8] != _PNG_MAGIC or header[12:16] != b'IHDR':
+        return None
+    return (int.from_bytes(header[16:20], 'big'),
+            int.from_bytes(header[20:24], 'big'))
+
+
+def check_seo(root):
+    """SEO drift/structural problems for one site root, or [] when current. A
+    directory with no index.html is not a site root and is skipped."""
+    problems = []
+    if not os.path.isfile(os.path.join(root, 'index.html')):
+        return problems
+    host = seo_host(root)
+    if not host:
+        problems.append('index.html has no <link rel="canonical">; SEO '
+                        'generation needs it to derive the host')
+        return problems
+    for name, want in (('sitemap.xml', render_sitemap(root, host)),
+                       ('robots.txt', render_robots(host))):
+        try:
+            with open(os.path.join(root, name), encoding='utf-8') as handle:
+                have = handle.read()
+        except OSError:
+            problems.append('%s missing; run site-generate' % name)
+            continue
+        if have != want:
+            problems.append('%s stale (does not match the page set / host); '
+                            'run site-generate' % name)
+    if os.path.isfile(os.path.join(root, 'favicon.svg')):
+        size = _png_size(os.path.join(root, 'favicon.png'))
+        if size is None:
+            problems.append('favicon.png missing or not a valid PNG while '
+                            'favicon.svg is present; run site-generate')
+        elif size != (FAVICON_SIZE, FAVICON_SIZE):
+            problems.append('favicon.png is %dx%d, expected %dx%d; run '
+                            'site-generate' % (size + (FAVICON_SIZE,
+                                                       FAVICON_SIZE)))
+    return problems
+
+
+def check_seo_current(root, failures):
+    failures.extend(check_seo(root))
+
+
 def main():
     roots = [os.path.normpath(r) for r in sys.argv[1:] if os.path.isdir(r)]
     if not roots:
@@ -1042,6 +1160,7 @@ def main():
         check_heading_breaks(root, failures)
         check_contrast(root, failures)
         check_undefined_classes(root, failures)
+        check_seo_current(root, failures)
         name = os.path.basename(root)
         if failures:
             total += len(failures)
@@ -1051,7 +1170,8 @@ def main():
             sys.stdout.write('ok %s: links + wording + footer + banner + csp + '
                              'no-inline-js + '
                              'supply-chain + assets + card-layout + nav + '
-                             'heading-breaks + contrast + undefined-classes clean\n' % name)
+                             'heading-breaks + contrast + undefined-classes + '
+                             'seo clean\n' % name)
     sys.stdout.write('website-tests: %d failure(s)\n' % total)
     return 1 if total else 0
 

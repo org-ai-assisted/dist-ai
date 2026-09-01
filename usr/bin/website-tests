@@ -24,6 +24,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -38,21 +39,28 @@ fi
 ## image tools needed; a failure here is a real logic regression, so it fails the
 ## run outright rather than hiding behind the no-checkout SKIP below.
 if [ -f "${tests_dir}/check_site_test.py" ]; then
-   python3 -Bsu -- "${tests_dir}/check_site_test.py" || exit 1
+   "${tests_dir}/check_site_test.py" || exit 1
 fi
 
 ## Unit regression for check_mobile's browser-free logic (page discovery +
 ## gate wiring). Playwright is imported inside its main(), so this test runs
 ## everywhere without a browser; a failure is a real logic regression.
 if [ -f "${tests_dir}/check_mobile_test.py" ]; then
-   python3 -Bsu -- "${tests_dir}/check_mobile_test.py" || exit 1
+   "${tests_dir}/check_mobile_test.py" || exit 1
 fi
 
 ## Unit regression for check_width's browser-free logic (the offender predicate +
 ## gate wiring). Playwright is imported inside its main(), so this runs everywhere
 ## without a browser; a failure is a real logic regression.
 if [ -f "${tests_dir}/check_width_test.py" ]; then
-   python3 -Bsu -- "${tests_dir}/check_width_test.py" || exit 1
+   "${tests_dir}/check_width_test.py" || exit 1
+fi
+
+## Unit regression for check_seo's logic (host derivation, sitemap/robots
+## renderers, the PNG size probe, the drift gate + its main() wiring). Pure
+## stdlib, no site checkout; a failure is a real logic regression.
+if [ -f "${tests_dir}/check_seo_test.py" ]; then
+   "${tests_dir}/check_seo_test.py" || exit 1
 fi
 
 ## Resolve each site root from its env var, else a private-sources default.
@@ -79,11 +87,12 @@ add_root "${ORG_AI_ASSISTED_REPO}"      "${HOME}/private-sources/org-ai-assisted
 
 if [ "${#roots[@]}" -eq 0 ]; then
    printf '%s\n' 'website-tests: SKIP (no site checkout found; set OUTPUT_LIES_REPO / SECURE_TERMINAL_SITE_REPO / ORG_AI_ASSISTED_REPO)' >&2
+   ## style-ok: allow-skip: no site checkout resolved -- there is nothing to verify, and site-deploy already treats this SKIP as a publish failure.
    exit 77
 fi
 
 overall=0
-python3 -Bsu -- "${tests_dir}/check_site.py" "${roots[@]}" || overall=1
+"${tests_dir}/check_site.py" "${roots[@]}" || overall=1
 
 ## Browser lanes -- mobile-overflow ("no sideways scroll at a phone viewport") and
 ## width-utilization ("no tall text section wasted in a narrow column"). Both need
@@ -107,7 +116,7 @@ if [ -f "${tests_dir}/check_mobile.py" ]; then
    ## the terminal) while its stderr is captured into probe_err. The 3>&1 must wrap the
    ## assignment from OUTSIDE $(), or fd3 would bind to the capture buffer and swallow
    ## stdout too.
-   { probe_err="$(python3 -Bsu -- "${tests_dir}/check_mobile.py" "${roots[@]}" 2>&1 1>&3 3>&-)" || mobile_rc="$?"; } 3>&1
+   { probe_err="$("${tests_dir}/check_mobile.py" "${roots[@]}" 2>&1 1>&3 3>&-)" || mobile_rc="$?"; } 3>&1
    if [ "${mobile_rc}" != '77' ] && [ -n "${probe_err}" ]; then
       printf '%s\n' "${probe_err}" >&2
    fi
@@ -134,7 +143,7 @@ else
    [ "${mobile_rc}" = '0' ] || overall=1
    if [ -f "${tests_dir}/check_width.py" ]; then
       width_rc=0
-      python3 -Bsu -- "${tests_dir}/check_width.py" "${roots[@]}" || width_rc="$?"
+      "${tests_dir}/check_width.py" "${roots[@]}" || width_rc="$?"
       if [ "${width_rc}" = '77' ]; then
          printf '%s\n' 'website-width-tests: SKIP (no Playwright/chromium)' >&2
       elif [ "${width_rc}" != '0' ]; then
