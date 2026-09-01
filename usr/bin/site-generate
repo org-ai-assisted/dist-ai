@@ -38,6 +38,7 @@ _SELF_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 def _load_check_site():
+    """Import check_site from the co-located tree or /usr/share; None if absent."""
     for candidate in (os.path.join(_SELF_DIR, '..', 'share', 'website-tests'),
                       '/usr/share/website-tests'):
         tests_dir = os.path.normpath(candidate)
@@ -45,10 +46,7 @@ def _load_check_site():
             sys.path.insert(0, tests_dir)
             import check_site
             return check_site
-    sys.stderr.write('site-generate: check_site.py not found (looked in '
-                     "'%s/../share/website-tests' and /usr/share/website-tests)\n"
-                     % _SELF_DIR)
-    sys.exit(1)
+    return None
 
 
 def _require(tool):
@@ -73,7 +71,14 @@ def _refuse_dirty(root, force):
         sys.exit(1)
     dirty = subprocess.run(['git', '-C', root, 'status', '--porcelain'],
                            capture_output=True, text=True)
-    if dirty.returncode == 0 and dirty.stdout.strip():
+    if dirty.returncode != 0:
+        ## Cannot verify the tree is clean -> fail CLOSED (a corrupt index or a
+        ## permission error must not read as "clean" and let a write proceed).
+        sys.stderr.write('site-generate: refusing to run -- cannot determine '
+                         'work-tree status (git status exited %d). Pass --force '
+                         'to override.\n' % dirty.returncode)
+        sys.exit(1)
+    if dirty.stdout.strip():
         sys.stderr.write('site-generate: refusing to run -- the git work tree '
                          'at %s has uncommitted changes; commit them first, or '
                          'pass --force.\n' % top.stdout.strip())
@@ -86,9 +91,14 @@ def _write_if_changed(path, text):
             if handle.read() == text:
                 return False
     except OSError:
+        ## Missing or unreadable target -> treat as changed and (re)write it.
         pass
-    with open(path, 'w', encoding='utf-8') as handle:
+    ## Write to a temp then os.replace: atomic, and replace swaps the directory
+    ## entry itself (so it never writes THROUGH a symlink at `path`).
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as handle:
         handle.write(text)
+    os.replace(tmp, path)
     return True
 
 
@@ -118,6 +128,7 @@ def _render_favicon(root, check_site):
                 if handle.read() == rendered:
                     return False
         except OSError:
+            ## No existing favicon (or unreadable) -> the render is a change.
             pass
         os.replace(tmp, png)
         return True
@@ -132,6 +143,22 @@ def _generate(root, force, check_site):
         sys.stderr.write('site-generate: %s/index.html has no <link '
                          'rel="canonical">; cannot derive the host.\n' % root)
         return 1
+    ## Refuse to write THROUGH a symlink: a tracked or planted link could
+    ## redirect a write outside the checkout. Mirrors site-image-optimize's
+    ## symlink stance. Covers the outputs and the temp names they write via.
+    for name in ('sitemap.xml', 'sitemap.xml.tmp', 'robots.txt',
+                 'robots.txt.tmp', 'favicon.png', '.favicon.generate.png'):
+        if os.path.islink(os.path.join(root, name)):
+            sys.stderr.write('site-generate: refusing -- %s is a symlink; a '
+                             'derived artifact must be a real file.\n' % name)
+            return 1
+    ## Resolve the favicon tools BEFORE any write: a missing tool must fail
+    ## before sitemap/robots land, or a partial write dirties the tree and
+    ## blocks a retry without --force.
+    if os.path.isfile(os.path.join(root, 'favicon.svg')):
+        _require('rsvg-convert')
+        if not os.environ.get('IMAGE_OPTIMIZE_BIN'):
+            _require('image-optimize')
     _refuse_dirty(root, force)
     changed = []
     if _write_if_changed(os.path.join(root, 'sitemap.xml'),
@@ -173,7 +200,16 @@ def main(argv):
     if not os.path.isdir(root):
         sys.stderr.write('site-generate: not a directory: %s\n' % root)
         return 2
+    if not os.path.isfile(os.path.join(root, 'index.html')):
+        sys.stderr.write('site-generate: %s has no index.html; not a site '
+                         'root.\n' % root)
+        return 2
     check_site = _load_check_site()
+    if check_site is None:
+        sys.stderr.write('site-generate: check_site.py not found (looked in '
+                         "'%s/../share/website-tests' and "
+                         '/usr/share/website-tests)\n' % _SELF_DIR)
+        return 1
     if check:
         problems = check_site.check_seo(root)
         for problem in problems:
