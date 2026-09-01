@@ -314,6 +314,60 @@ eq(_sbt.horizontalScrollBarPolicy(), _OFF,
    'a tab created in TUI mode starts with the horizontal scrollbar suppressed')
 _sbt.close()
 
+# Click-padding: a local press/drag must keep the horizontal scrollbar homed to the
+# left, so the base QPlainTextEdit press does not scroll the left document margin
+# off-screen for the press duration (all lines jumping left until release). Font-robust
+# overflow per the skill: _cols=0 disables autowrap, then a long ASCII run overflows by
+# char count in every font.
+from PyQt6.QtGui import QMouseEvent as _QME                        # noqa: E402
+from PyQt6.QtCore import QPointF as _QPF                           # noqa: E402
+_hp = SecureTerminal(command='/bin/cat')                          # CLI, AsNeeded hbar
+_hp.setLineWrapMode(_NW)
+_hp.resize(200, 100)
+_hp.show()
+APP.processEvents()
+_hp._cols = 0
+_hp._append('M' * 800)
+APP.processEvents()
+_hpb = _hp.horizontalScrollBar()
+ok(_hpb.maximum() > _hpb.minimum(), 'the long NoWrap line gives the hbar a real range')
+_pos = _QPF(20, 10)
+_press = _QME(QEvent.Type.MouseButtonPress, _pos, _pos, _Qt.MouseButton.LeftButton,
+              _Qt.MouseButton.LeftButton, _Qt.KeyboardModifier.NoModifier)
+_hpb.setValue(_hpb.maximum())          # pretend the base handler scrolled the view right
+_hp.mousePressEvent(_press)
+eq(_hpb.value(), _hpb.minimum(),
+   'a local left-press re-homes the hbar (the left margin stays pinned)')
+_hpb.setValue(_hpb.maximum())
+_mpos = _QPF(30, 10)
+_move = _QME(QEvent.Type.MouseMove, _mpos, _mpos, _Qt.MouseButton.NoButton,
+             _Qt.MouseButton.LeftButton, _Qt.KeyboardModifier.NoModifier)
+_hp.mouseMoveEvent(_move)              # _mouse_selecting was set by the press above
+eq(_hpb.value(), _hpb.minimum(),
+   'a local drag-move keeps the hbar homed through the drag')
+_hp.close()
+
+# restart_as_shell (TUI): an exited -- PROGRAM tab must KEEP its primary-screen output as
+# scrollback (only the transient alt frame is dropped, as on rmcup), not clear the grid to
+# just the handover banner. Regression: the TUI branch made a FRESH screen, wiping the
+# exited program's colour-log / cat-file output. Uses a TUI /bin/cat tab whose output never
+# enters the alternate screen.
+_rk = SecureTerminal(command='/bin/cat', tui=True)
+APP.processEvents()
+_rk._feed_stream(b'PRIMARY-OUTPUT-KEEPME\r\n')
+_rk._render_tui()
+APP.processEvents()
+ok('PRIMARY-OUTPUT-KEEPME' in _rk.toPlainText(),
+   'the TUI program primary output is on screen before the restart')
+_rk_restarted = _rk.restart_as_shell()
+APP.processEvents()
+ok(_rk_restarted, 'restart_as_shell restarts a -- PROGRAM tab (returns True)')
+ok('PRIMARY-OUTPUT-KEEPME' in _rk.toPlainText(),
+   'restart_as_shell keeps the exited TUI program primary output as scrollback')
+ok('program exited' in _rk.toPlainText(),
+   'and seeds the handover banner below the kept output')
+_rk.close()
+
 # alternate scroll: a full-screen program that did NOT request the mouse (a plain
 # pager in the alternate screen) has no local scrollback to move, so the wheel is
 # translated to arrow-key line scrolls (xterm's alternateScroll). A program that DID
