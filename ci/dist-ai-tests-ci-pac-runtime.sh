@@ -37,6 +37,11 @@ for tool in safe-pgrep safe-pkill; do
       printf '%s\n' "dist-ai-tests-ci-pac-runtime: ${src} not found (private-ai-config checkout incomplete)" >&2
       exit 1
    fi
+   ## ABSOLUTE target: 'ln -s' stores the literal string, and a RELATIVE src (a
+   ## relative checkout root) would be re-resolved from /usr/local/bin -> a broken
+   ## link that only surfaces later as an unrelated R-220 reaper failure. Canonicalize
+   ## so the link is valid whatever CWD the checkout root was relative to.
+   src="$(readlink --canonicalize -- "${src}")"
    ln --symbolic --force --no-target-directory -- "${src}" "/usr/local/bin/${tool}"
    chmod +x "${src}"
 done
