@@ -159,6 +159,8 @@ class AcwWriteTorrcTest(unittest.TestCase):
                      'tor / helpers not available')
 class DebianEndToEndTest(unittest.TestCase):
     def test_full_write_path_produces_a_torrc_tor_reads(self):
+        ## guarded by the class skipUnless(TOR and ...) above
+        assert TOR is not None
         with tempfile.TemporaryDirectory() as root:
             dropin_dir = os.path.join(root, 'usr/local/etc/torrc.d')
             main_torrc = os.path.join(root, 'etc/tor/torrc')

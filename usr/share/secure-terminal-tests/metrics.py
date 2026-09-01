@@ -31,6 +31,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from typing import Any
 
 # every suite the test runner runs, in the same order
 TEST_FILES = ('test_secure_terminal.py', 'test_fuzz.py', 'test_corpus.py',
@@ -140,7 +141,7 @@ def spec_surface_corpus_size(tests_dir):
         return None
     for node in ast.parse(src).body:
         if isinstance(node, ast.FunctionDef) and node.name == '_spec_surface_corpus':
-            namespace = {}
+            namespace: dict[str, Any] = {}
             module = ast.Module(body=[node], type_ignores=[])
             exec(compile(module, path, 'exec'), namespace)   # noqa: S102  # nosec B102 -- exec of this repo's own fixture function extracted via AST
             return len(namespace['_spec_surface_corpus']())

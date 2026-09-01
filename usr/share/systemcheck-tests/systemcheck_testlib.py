@@ -398,6 +398,10 @@ def run_check_scenario_isolated(check_file: str, call: str, env_setup: str = '',
 class SystemcheckTestBase(unittest.TestCase):
     """Base class exposing the resolved source directory + file list."""
 
+    dir: str
+    files: list[str]
+    preparation: str
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.dir = systemcheck_dir()

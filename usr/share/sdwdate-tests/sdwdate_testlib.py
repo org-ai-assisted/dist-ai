@@ -19,6 +19,7 @@ import os
 import sys
 import tempfile
 import unittest
+from typing import Any
 
 
 def sdwdate_dist_packages() -> str:
@@ -91,7 +92,7 @@ class NullNotifier:
     """Stand-in for sdnotify.SystemdNotifier."""
 
     def __init__(self) -> None:
-        self.messages = []
+        self.messages: list[str] = []
 
     def notify(self, message: str) -> None:
         self.messages.append(message)
@@ -107,16 +108,18 @@ class PreparationTestBase(unittest.TestCase):
     disk).
     """
 
+    sdwdate: Any
+
     @classmethod
     def setUpClass(cls) -> None:
         cls.sdwdate = import_sdwdate()
 
     def setUp(self) -> None:
         module = self.sdwdate
-        self.slept = []
-        self.runs = []
-        self.processes = []
-        self._saved = {}
+        self.slept: list[float] = []
+        self.runs: list[tuple[str, int]] = []
+        self.processes: list[FakePopen] = []
+        self._saved: dict[tuple[Any, str], Any] = {}
 
         ## LOGGER is created in main(), so it does not exist on a bare import.
         self._stub(module, 'LOGGER', logging.getLogger('sdwdate-tests'))

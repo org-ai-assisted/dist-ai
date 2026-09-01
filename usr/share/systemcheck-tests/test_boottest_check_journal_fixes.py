@@ -139,6 +139,7 @@ class TestLogCheckerBugWordBoundary(SystemcheckTestBase):
         text = read(os.path.join(self.dir, 'log-checker'))
         m = re.search(r'journal_search_pattern_list="([^"]*)"', text)
         self.assertIsNotNone(m, 'journal_search_pattern_list not found')
+        assert m is not None
         return m.group(1)
 
     def test_debugging_not_flagged(self) -> None:
@@ -170,6 +171,7 @@ class TestSpiceVdagentdJournalIgnore(SystemcheckTestBase):
             conf)
         self.assertIsNotNone(
             m, 'spice-vdagentd journal_ignore pattern not found')
+        assert m is not None
         pat = m.group(1)
         line = ('localhost spice-vdagentd[1447]: '
                 'Error getting active session: No data available')
@@ -202,6 +204,7 @@ class TestMountSharedJournalIgnore(SystemcheckTestBase):
             r'--journal-ignore-fixed \\"(mount: [^"\\]*)\\"', text)
         self.assertIsNotNone(
             m, 'mount-shared --journal-ignore-fixed string not found')
+        assert m is not None
         return m.group(1)
 
     def test_matches_the_real_journal_line(self) -> None:

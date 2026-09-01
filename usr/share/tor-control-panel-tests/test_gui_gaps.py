@@ -274,7 +274,12 @@ class DebianTorGroupPromptTest(unittest.TestCase):
         tcp.tor_status.whonix = whonix
         tcp.tor_status.user_in_debian_tor_group = lambda: is_member
         tcp.privilege.command = lambda action, *a: ['leaprun', action]
-        tcp.privilege.run = lambda action, *a: runs.append(action) or 0
+
+        def _record_run(action, *a):
+            runs.append(action)
+            return 0
+
+        tcp.privilege.run = _record_run
         QMessageBox.question = staticmethod(lambda *a, **k: answer)
         QMessageBox.information = staticmethod(lambda *a, **k: QMessageBox.Ok)
         QMessageBox.warning = staticmethod(lambda *a, **k: QMessageBox.Ok)

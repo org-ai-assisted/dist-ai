@@ -130,8 +130,10 @@ def _dlg_field(dlg, label_text):
 
 _orig_exec = QDialog.exec
 _dialogs = []
-QDialog.exec = lambda _self: (_dialogs.append(_self),
-                              int(QDialog.DialogCode.Accepted))[1]
+def _accept_exec(_self):
+    _dialogs.append(_self)
+    return int(QDialog.DialogCode.Accepted)
+QDialog.exec = _accept_exec
 try:
     win.show_about()
     ok(True, 'show_about builds and shows')
@@ -189,8 +191,7 @@ try:
     from PyQt6.QtCore import QPointF as _QPF, QPoint as _QP       # noqa: E402
     win._ui_scale = 100                       # deterministic sub-max start so a step MUST raise it
     _us0 = win._ui_scale
-    QDialog.exec = lambda _self: (_dialogs.append(_self),
-                                  int(QDialog.DialogCode.Accepted))[1]
+    QDialog.exec = _accept_exec
     _dialogs.clear()
     win.show_global_settings()
     _zdlg = [d for d in _dialogs if isinstance(d, _ZD)][-1]
@@ -258,7 +259,7 @@ try:
     eq(_ctl_main(['dump-tab', '--tab', 'title:one', '--lines', '5']), 0,
        'ctl dump-tab -> 0')
     # COR-7 client half: --lines 0 must be FORWARDED (0 is falsy, the base guard dropped it).
-    _sent0 = {}
+    _sent0: dict[str, object] = {}
     def _cap_req(*_a, **_k):
         for _x in _a:
             if isinstance(_x, dict) and 'op' in _x:
@@ -271,7 +272,7 @@ try:
     ok(_sent0.get('lines') == 0,
        'COR-7: the client forwards --lines 0 (not dropped as a falsy value)')
     # zoom: forwards the tab + level and prints the returned zoom.
-    _sentz = {}
+    _sentz: dict[str, object] = {}
     def _cap_reqz(*_a, **_k):
         for _x in _a:
             if isinstance(_x, dict) and 'op' in _x:
@@ -334,7 +335,10 @@ def _exec_shortcuts(self):
 
 _ss_saved = []
 _o_set_sc = win._set_shortcuts
-win._set_shortcuts = lambda _m: _ss_saved.append(_m) or _o_set_sc(_m)   # spy the Save path
+def _spy_set_shortcuts(_m):                  # spy the Save path
+    _ss_saved.append(_m)
+    return _o_set_sc(_m)
+win._set_shortcuts = _spy_set_shortcuts
 QDialog.exec = _exec_shortcuts
 try:
     win.show_shortcuts()
@@ -464,13 +468,16 @@ ok(w3._confirm_close is False and not w3.act_confirm_close.isChecked(),
    'confirm-close: the setter toggles the flag and the menu action')
 w3.set_confirm_close(True)
 _oq = QMessageBox.question
-_asked = []
+_asked: list[int] = []
+def _deny_question(*_a, **_k):
+    _asked.append(1)
+    return _No
 try:
     # setting off -> never asks, even with a program running
     w3._confirm_close = False
     _t3.has_foreground_program = lambda: True
     _asked.clear()
-    QMessageBox.question = staticmethod(lambda *_a, **_k: _asked.append(1) or _No)
+    QMessageBox.question = staticmethod(_deny_question)
     ok(w3._confirm_running_close('t', 'q', [_t3]) and not _asked,
        'confirm-close off: proceeds without asking, program or not')
     # on, but nothing running -> no prompt
@@ -482,7 +489,7 @@ try:
     # on + running + declined -> abort; accepted -> proceed
     _t3.has_foreground_program = lambda: True
     _asked.clear()
-    QMessageBox.question = staticmethod(lambda *_a, **_k: _asked.append(1) or _No)
+    QMessageBox.question = staticmethod(_deny_question)
     ok(not w3._confirm_running_close('t', 'q', [_t3]) and _asked,
        'confirm-close on, running, declined: aborts')
     QMessageBox.question = staticmethod(lambda *_a, **_k: _Yes)
@@ -584,7 +591,7 @@ try:
         w3.tabs.widget(_i).shutdown = lambda: None
     w3._force_close = True
     _asked.clear()
-    QMessageBox.question = staticmethod(lambda *_a, **_k: _asked.append(1) or _No)
+    QMessageBox.question = staticmethod(_deny_question)
     _ev_fc = QCloseEvent()
     _ev_fc.ignore()                          # start REJECTED so only an explicit accept passes
     w3.closeEvent(_ev_fc)
@@ -682,7 +689,10 @@ _osd = _sess._state_dir
 _opened = []
 _state_tmp = tempfile.mkdtemp(prefix='st-transcript-state-')
 try:
-    _QDS.openUrl = staticmethod(lambda url: _opened.append(url.toLocalFile()) or True)
+    def _spy_open_url(url):
+        _opened.append(url.toLocalFile())
+        return True
+    _QDS.openUrl = staticmethod(_spy_open_url)
     _sess._state_dir = lambda: _state_tmp
     _ocur = win.current
     win.current = lambda: None                  # no active tab -> no-op
@@ -1788,7 +1798,7 @@ _src_clip_c = APP.clipboard().mimeData()   # None under the offscreen platform
 if _src_clip_c is not None:
     for _clip_fmt_c in _src_clip_c.formats():
         _o_clip_c.setData(_clip_fmt_c, _src_clip_c.data(_clip_fmt_c))
-_calls = {}
+_calls: dict[str, object] = {}
 try:
     _cw.is_running = lambda: _calls.get('running', False)
     _cw.stop_running = lambda: _calls.__setitem__('stopped', True)
@@ -2282,7 +2292,7 @@ def _open_raise_once(_p, *_a, **_k):
         _open_fired[0] = True
         raise PermissionError(13, 'forced mis-owned-lock (root-proof)')
     return _o_open(_p, *_a, **_k)
-os.open = _open_raise_once
+os.open = _open_raise_once  # type: ignore[assignment]
 try:
     _lfd = M._acquire_group_lock(_lg)
 finally:
@@ -2296,11 +2306,11 @@ if os.path.exists(_lp) and not os.path.isdir(_lp):
 os.mkdir(_lp)                                    # unopenable AND unlinkable -> degrade
 ok(M._acquire_group_lock(_lg) is None,
    '_acquire_group_lock: an unusable lock path degrades to None, never raises')
-_ds, _dst = M._bind_instance_server(_lg)         # must not raise with lock_fd None
+_dsrv, _dst = M._bind_instance_server(_lg)       # must not raise with lock_fd None
 ok(_dst in ('claimed', 'peer_owns', 'failed'),
    '_bind_instance_server: claims best-effort when the lock cannot be taken (no crash)')
-if _ds is not None:
-    _ds.close()
+if _dsrv is not None:
+    _dsrv.close()
 if os.path.isdir(_lp):
     os.rmdir(_lp)
 # flock failing on a valid fd (an exotic filesystem that does not support it) also
@@ -2702,8 +2712,8 @@ finally:
 import secure_terminal.terminal as _term2                       # noqa: E402
 _snddir = tempfile.mkdtemp()
 _sndfile = os.path.join(_snddir, 'bell.wav')
-with open(_sndfile, 'wb') as _sf3:
-    _sf3.write(b'RIFF....WAVE')
+with open(_sndfile, 'wb') as _sf3b:
+    _sf3b.write(b'RIFF....WAVE')
 _o_dirs = _term2.BELL_SOUND_DIRS
 _o_gof3 = QFileDialog.getOpenFileName
 _o_bsl = win._bell_sound_locked
@@ -2732,15 +2742,15 @@ _frwin = MainWindow()
 _frwin.start_instance_server('frame-test')
 _fpath = M.ipc.socket_path('frame-test')
 # an over-long length makes the server-side Framer raise -> the connection aborts
-_bad = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+_bad_sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
 try:
-    _bad.connect(_fpath)
-    _bad.sendall(_struct.pack('<I', (1 << 20) + 5) + b'xxxxx')
+    _bad_sock.connect(_fpath)
+    _bad_sock.sendall(_struct.pack('<I', (1 << 20) + 5) + b'xxxxx')
     for _ in range(20):
         APP.processEvents()
         QThread.msleep(15)
 finally:
-    _bad.close()
+    _bad_sock.close()
 # a header promising more than it sends leaves the frame incomplete (payload None)
 _part = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
 try:
@@ -2820,10 +2830,10 @@ _nf2.deleteLater()
 APP.processEvents()
 _sf2 = win.current()
 _sf2._append('SEEDLINE')
-_c = _sf2.textCursor()
-_c.movePosition(QTextCursor.MoveOperation.End)
-_c.movePosition(QTextCursor.MoveOperation.StartOfLine, QTextCursor.MoveMode.KeepAnchor)
-_sf2.setTextCursor(_c)                       # select the last line only
+_tc = _sf2.textCursor()
+_tc.movePosition(QTextCursor.MoveOperation.End)
+_tc.movePosition(QTextCursor.MoveOperation.StartOfLine, QTextCursor.MoveMode.KeepAnchor)
+_sf2.setTextCursor(_tc)                      # select the last line only
 win.show_find()                              # a single-line selection seeds the query
 ok('SEEDLINE' in win._find_bar.input.text(),
    'show_find seeds the query from a single-line selection')
@@ -2936,10 +2946,10 @@ try:
        '_toggle_icon: draws the letter-chip fallback when the theme lacks the symbol')
     _o_exists = os.path.exists
     try:
-        os.path.exists = lambda _p: True            # a shipped icon path is present
+        os.path.exists = lambda path: True          # a shipped icon path is present
         ok(_REAL_APP_ICON() is not None,
            '_app_icon: loads the shipped SVG by path when no theme icon exists')
-        os.path.exists = lambda _p: False
+        os.path.exists = lambda path: False
         ok(_REAL_APP_ICON().isNull(), '_app_icon: a null icon when nothing is found')
     finally:
         os.path.exists = _o_exists
@@ -2980,7 +2990,10 @@ finally:
 _op_opened = []
 _op_oou = _QDS.openUrl
 try:
-    _QDS.openUrl = staticmethod(lambda url: _op_opened.append(url.toLocalFile()) or True)
+    def _spy_open_url_path(url):
+        _op_opened.append(url.toLocalFile())
+        return True
+    _QDS.openUrl = staticmethod(_spy_open_url_path)
     win._open_path('/tmp')                       # exists  # nosec B108 -- known-existing dir to exercise _open_path
     win._open_path('/tmp/no-such-dir-xyz/child') # missing -> parent  # nosec B108 -- missing path exercises the parent-fallback branch
 finally:
@@ -3620,7 +3633,7 @@ eq(_unregistered, [],
    'every action with a shortcut is registered (listable and collision-checked)')
 
 # No two registered actions may hold the same key.
-_by_seq = {}
+_by_seq: dict[str, list[str]] = {}
 for _ident, _entry in win._shortcuts.items():
     _norm = _entry[0].shortcut().toString()
     if _norm:
@@ -3638,16 +3651,16 @@ eq(sorted(k for k, v in _by_seq.items() if len(v) > 1), [],
 from secure_terminal.main import _forwarded_keys as _fwd_keys      # noqa: E402
 
 _shadowing = []
-for _i, _e in win._shortcuts.items():
-    if not _e[1]:
+for _i, _ent in win._shortcuts.items():
+    if not _ent[1]:
         continue
-    _qks = _QKS(_e[1])
+    _qks = _QKS(_ent[1])
     if _qks.isEmpty():
         continue
-    _combo = _qks[0]
-    if (_combo.keyboardModifiers() == _Qt_sc.KeyboardModifier.NoModifier
-            and _combo.key() in _fwd_keys()):
-        _shadowing.append('%s=%s' % (_i, _e[1]))
+    _qkcombo = _qks[0]
+    if (_qkcombo.keyboardModifiers() == _Qt_sc.KeyboardModifier.NoModifier
+            and _qkcombo.key() in _fwd_keys()):
+        _shadowing.append('%s=%s' % (_i, _ent[1]))
 eq(sorted(_shadowing), [],
    'no shortcut default shadows a bare key the terminal forwards')
 
@@ -3768,9 +3781,9 @@ try:
                 not win._confirm_close),
              lambda: win._confirm_close)):
         win._locked = {_key}
-        _before = _read()
+        _before2 = _read()
         _call()
-        if _read() != _before:
+        if _read() != _before2:
             _setter_bad.append(_key)
     # osc_notice_off is a set, so compare a copy
     win._locked = {'osc_notice_off'}
@@ -3819,7 +3832,7 @@ import re as _re_mn                                       # noqa: E402
 _mn_dupes = []
 _mn_literal = []
 for _menu in win.menuBar().findChildren(QMenu):
-    _seen_keys = {}
+    _seen_keys: dict[str, str] = {}
     for _act in _menu.actions():
         _text = _act.text()
         if not _text:

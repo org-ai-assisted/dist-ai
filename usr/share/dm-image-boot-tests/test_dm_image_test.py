@@ -145,6 +145,7 @@ def _load_dmserial():
     """Import debug/dmserial.py fresh, so it re-reads $DMSERIAL_WORK."""
     spec = importlib.util.spec_from_file_location('dmserial_under_test',
                                                   DMSERIAL)
+    assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -214,8 +215,9 @@ def _load_qmp():
     ## (spec_from_file_location cannot infer a loader and returns None).
     loader = importlib.machinery.SourceFileLoader(
         'screendump_watch_under_test', str(SCREENDUMP_WATCH))
-    module = importlib.util.module_from_spec(
-        importlib.util.spec_from_loader(loader.name, loader))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
     return module.Qmp
 
@@ -348,8 +350,9 @@ def test_bad_outdir_maps_to_setup(tmp_path):
 def _load_dm_image_test():
     loader = importlib.machinery.SourceFileLoader(
         'dm_image_test_under_test', str(HARNESS))
-    module = importlib.util.module_from_spec(
-        importlib.util.spec_from_loader(loader.name, loader))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
     return module
 
@@ -359,7 +362,7 @@ def test_safe_rmtree_workdir(tmp_path, monkeypatch):
     ## non-symlink dir strictly UNDER the temp root -- never a symlink, the temp root, or
     ## an out-of-tree path, so a bad marker cannot aim the recursive delete elsewhere.
     m = _load_dm_image_test()
-    logs = []
+    logs: list[str] = []
     log = logs.append
     # (a) a real dir strictly under the temp root -> removed
     monkeypatch.setattr(m.tempfile, 'gettempdir', lambda: str(tmp_path))
@@ -472,13 +475,19 @@ class _FakeChild:
 
     def sendline(self, line):
         if "DM<>" in line and "printf" in line:
-            token = re.search(r"DMRDY\d+", line).group(0)
+            m = re.search(r"DMRDY\d+", line)
+            assert m is not None
+            token = m.group(0)
             self.buf += "DM<>%s<>\n" % token
         elif "is-system-running" in line:
-            token = re.search(r"DMBOOT\d+", line).group(0)
+            m = re.search(r"DMBOOT\d+", line)
+            assert m is not None
+            token = m.group(0)
             self.buf += "%s\n" % token
         elif "DMRC" in line:
-            sentinel = re.search(r"DMRC\d+", line).group(0)
+            m = re.search(r"DMRC\d+", line)
+            assert m is not None
+            sentinel = m.group(0)
             rc = self.diag_rc if "FAILED-UNITS-BEGIN" in line \
                 else self.systemcheck_rc
             self.buf += "%s:%d:%s\n" % (sentinel, rc, sentinel)
@@ -501,6 +510,6 @@ def test_diag_cmd_exempt_from_expect_rc():
     child = _FakeChild(os.getpid(), systemcheck_rc=1, diag_rc=0)
     args = types.SimpleNamespace(
         timeout=30, run=None, login_user="user", expect_rc=1, firmware="")
-    logs = []
+    logs: list[str] = []
     rc = m.run_checks(child, args, logs.append)
     assert rc == m.PASS, (rc, logs)

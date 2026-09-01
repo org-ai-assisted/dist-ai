@@ -338,7 +338,7 @@ def t3_enumerate(subject, env):
     equals the model, is a subsequence of the input, and drops every recognized
     flag with the value after it."""
     alphabet = ["-o", "--output", "-C", "--continue-at", "url", "-sSL"]
-    combos = []
+    combos: list[tuple[str, ...]] = []
     for n in range(0, 5):
         combos.extend(itertools.product(alphabet, repeat=n))
     sentinel = "==CPSPLIT=="

@@ -101,16 +101,17 @@ class TorVerifyConfigTest(unittest.TestCase):
         or may not %include it, and run ``tor --verify-config``. Returns
         (returncode, combined_output)."""
         with tempfile.TemporaryDirectory(prefix='tcp-verify-') as tmp:
-            tmp = Path(tmp)
-            (tmp / 'torrc.d').mkdir()
-            (tmp / 'data').mkdir()
-            (tmp / 'torrc.d' / '40_tor_control_panel.conf').write_text(
+            tmp_path = Path(tmp)
+            (tmp_path / 'torrc.d').mkdir()
+            (tmp_path / 'data').mkdir()
+            (tmp_path / 'torrc.d' / '40_tor_control_panel.conf').write_text(
                 dropin_text, encoding='utf-8')
-            main = 'DataDirectory {0}/data\nSocksPort 0\n'.format(tmp)
+            main = 'DataDirectory {0}/data\nSocksPort 0\n'.format(tmp_path)
             if include:
-                main += '%include {0}/torrc.d/*.conf\n'.format(tmp)
-            main_path = tmp / 'torrc'
+                main += '%include {0}/torrc.d/*.conf\n'.format(tmp_path)
+            main_path = tmp_path / 'torrc'
             main_path.write_text(main, encoding='utf-8')
+            assert TOR is not None  # guarded by skipUnless(TOR, ...) on the class
             proc = subprocess.run(
                 [TOR, '-f', str(main_path), '--verify-config'],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

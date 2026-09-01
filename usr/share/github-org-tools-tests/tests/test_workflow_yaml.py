@@ -64,7 +64,7 @@ import re
 import sys
 
 try:
-    import yaml
+    import yaml  # type: ignore[import-untyped]
 except ImportError:
     print('error: PyYAML not installed (apt: python3-yaml)', file=sys.stderr)
     sys.exit(2)
@@ -401,7 +401,7 @@ def main(repo_root):
         print(f'workflow yaml validator: no workflow / composite-action files; nothing to validate')
         return 0
 
-    findings = []
+    findings: list[str] = []
     for p in targets:
         check_workflow(p, repo_root, findings)
     check_dependabot(repo_root, targets, findings)

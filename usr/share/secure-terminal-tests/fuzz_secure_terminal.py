@@ -235,7 +235,7 @@ def phase_config(rnd, iterations, seed):
         for _ in range(iterations):
             with open(conf, 'w', encoding='utf-8') as handle:
                 handle.write(_rand_text(rnd, max_tokens=12))
-            out = {}
+            out: dict[str, str] = {}
             SET._parse_into(conf, out)
             _assert(all(isinstance(k, str) and isinstance(v, str)
                         for k, v in out.items()),

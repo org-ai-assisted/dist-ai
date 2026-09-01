@@ -182,7 +182,7 @@ def phase_paste(rnd, iterations, seed):
     ## the pty. Spy on _write and assert the payload carries no raw control (a
     ## bracketed-paste wrapper's own ESC brackets are the only allowed escape).
     term = SecureTerminal(command='/bin/cat')
-    sent = []
+    sent: list[bytes] = []
     term._write = lambda data, _s=sent: _s.append(data)   # capture pty writes
     for _ in range(iterations):
         term.apply_paste_warn(rnd.choice(_PASTE_WARN))

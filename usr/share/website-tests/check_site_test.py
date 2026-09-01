@@ -61,7 +61,7 @@ def _png(root, rel):
 
 
 def _assets_failures(check_site, root):
-    failures = []
+    failures: list[str] = []
     check_site.check_assets(root, failures)
     return failures
 
@@ -145,7 +145,7 @@ def run():
              '<body>%s</body></html>')
 
     def _fmt_failures(root):
-        failures = []
+        failures: list[str] = []
         check_site.check_image_format(root, failures)
         return failures
 
@@ -219,7 +219,7 @@ def run():
 
     # check_heading_breaks: a hard <br> inside a heading is the mobile-orphan bug.
     def _hb_failures(root):
-        failures = []
+        failures: list[str] = []
         check_site.check_heading_breaks(root, failures)
         return failures
 
@@ -246,7 +246,7 @@ def run():
 
     # check_contrast: a token used as small text on --bg must clear WCAG AA.
     def _ct_failures(root):
-        failures = []
+        failures: list[str] = []
         check_site.check_contrast(root, failures)
         return failures
 
@@ -320,7 +320,7 @@ def run():
     def _banner_failures(markup):
         with tempfile.TemporaryDirectory() as root:
             _write(root, 'index.html', markup)
-            failures = []
+            failures: list[str] = []
             check_site.check_banner(root, failures)
             return failures
 
@@ -335,7 +335,7 @@ def run():
     # eyebrow bug); a co-class marker, an allowlisted hook, and a JS-referenced
     # class must NOT be flagged (keeps it low-noise).
     def _uc_failures(root):
-        failures = []
+        failures: list[str] = []
         check_site.check_undefined_classes(root, failures)
         return failures
 
@@ -378,7 +378,7 @@ def run():
               '</head><body>%s</body></html>')
 
     def _csp_failures(root):
-        failures = []
+        failures: list[str] = []
         check_site.check_csp(root, failures)
         return failures
 
@@ -411,7 +411,7 @@ def run():
 
     # check_no_inline_script: inline <script> body, on*= handler, javascript: URL.
     def _inline_failures(root):
-        failures = []
+        failures: list[str] = []
         check_site.check_no_inline_script(root, failures)
         return failures
 

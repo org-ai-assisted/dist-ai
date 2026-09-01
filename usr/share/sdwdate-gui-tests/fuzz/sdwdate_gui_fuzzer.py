@@ -58,6 +58,7 @@ import random
 import signal
 import sys
 import tempfile
+from typing import Any
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -69,7 +70,7 @@ from PyQt5.QtWidgets import QApplication, QLabel
 ## coverage is started, so that its import / class / def lines are counted
 ## too and the coverage report reflects the genuinely unreached code rather
 ## than import-time measurement artifacts.
-server = None  # pylint: disable=invalid-name  # set by main()
+server: Any = None  # pylint: disable=invalid-name  # set by main()
 
 
 def _import_server():
@@ -790,7 +791,7 @@ def _d_status_markup_escaped(h, mode, repro):
 
 
 def _d_status_display_truncated(h, mode, repro):
-    findings = []
+    findings: list[Finding] = []
     c = h.new_client()
     h.register(c, "longvm")
     ## A message that fits the wire frame but exceeds the display cap.
@@ -897,7 +898,7 @@ def _d_invalid_status(h, mode, repro):
 
 
 def _d_deferred_regen(h, mode, repro):
-    findings = []
+    findings: list[Finding] = []
     c = h.new_client()
     h.register(c, "defvm")
     c.set_status("success", "m1")
@@ -913,7 +914,7 @@ def _d_deferred_regen(h, mode, repro):
 
 
 def _d_show_menu_paths(h, mode, repro):
-    findings = []
+    findings: list[Finding] = []
     c = h.new_client()
     h.register(c, "menuvm")
     c.set_status("success", "m")
@@ -927,7 +928,7 @@ def _d_show_menu_paths(h, mode, repro):
 
 
 def _d_disconnected_message(h, mode, repro):
-    findings = []
+    findings: list[Finding] = []
     c = h.new_client()
     h.register(c, "deadvm")
     c.set_tor("running")
@@ -971,7 +972,7 @@ def trigger_safe_actions(h, wanted=None) -> None:
 
 
 def _d_menu_actions(h, mode, repro):
-    findings = []
+    findings: list[Finding] = []
     c = h.new_client()
     h.register(c, "torvm")
     ## Cycle Tor states and open the Tor status window for each, covering

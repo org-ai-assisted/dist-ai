@@ -537,11 +537,11 @@ def test_secure_permission_check(results: Results, pl: ModuleType) -> None:
             ),
             False,
         )
-        with open(path, 'rb') as handle:
+        with open(path, 'rb') as bin_handle:
             results.expect_eq(
                 'the check accepts an open descriptor too',
                 pl.PrivleapCommon.check_secure_file_permissions(
-                    handle.fileno()
+                    bin_handle.fileno()
                 ),
                 expected,
             )

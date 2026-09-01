@@ -39,6 +39,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from typing import Any
 
 WATCHER_IFACE = 'org.kde.StatusNotifierWatcher'
 PROPS_IFACE = 'org.freedesktop.DBus.Properties'
@@ -154,7 +155,7 @@ def run_arm(arm: str) -> None:
         print(f"SKIP {arm}: need the xcb platform, got {app.platformName()!r}")
         sys.exit(2)
 
-    state = {'proc': None, 'tray': None}
+    state: dict[str, Any] = {'proc': None, 'tray': None}
 
     def build_and_show() -> None:
         ## The backend (XEmbed vs. SNI) is chosen HERE, at CONSTRUCTION -- Qt

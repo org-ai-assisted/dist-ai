@@ -21,6 +21,8 @@ from systemcheck_testlib import (
 
 
 class TestLeaprunCmdDescribe(SystemcheckTestBase):
+    func: str
+
     @classmethod
     def setUpClass(cls) -> None:
         super().setUpClass()
@@ -46,6 +48,8 @@ class TestLeaprunCmdDescribe(SystemcheckTestBase):
 
 
 class TestRemediationInstructions(SystemcheckTestBase):
+    func: str
+
     @classmethod
     def setUpClass(cls) -> None:
         super().setUpClass()

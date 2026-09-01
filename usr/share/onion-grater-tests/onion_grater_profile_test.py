@@ -70,6 +70,7 @@ def load_onion_grater():
         raise SystemExit(77)
     loader = importlib.machinery.SourceFileLoader("onion_grater", MODULE_PATH)
     spec = importlib.util.spec_from_loader(loader.name, loader)
+    assert spec is not None
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
     return module
@@ -299,12 +300,12 @@ def run_profile_cases(results):
         for cmd, arg, expected in cases:
             got = decide(allowed, cmd, arg)
             results.check("{0} {1} {2!r}".format(name, cmd, arg), got, expected)
-    for name, cases in SETEVENTS_CASES.items():
-        _commands, _confs, events = load_profile(name)
+    for event_name, event_cases in SETEVENTS_CASES.items():
+        _commands, _confs, events = load_profile(event_name)
         allowed_events = build_events(events)
-        for arg, expected in cases:
+        for arg, expected in event_cases:
             got = decide_setevents(allowed_events, arg)
-            results.check("{0} SETEVENTS {1!r}".format(name, arg),
+            results.check("{0} SETEVENTS {1!r}".format(event_name, arg),
                           got, expected)
 
 

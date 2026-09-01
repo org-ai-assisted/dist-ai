@@ -21,6 +21,7 @@ import sys
 import os
 import re
 import tempfile
+from typing import Any
 
 try:
     from hypothesis import given, settings, strategies as st
@@ -188,9 +189,10 @@ def _corpus_seeds():
     # its assertions at import time and only the fixture FUNCTIONS are wanted, so
     # the module is never instantiated -- the source is read and the three defs
     # exec'd on their own.
+    assert spec is not None and spec.origin is not None
     with open(spec.origin, encoding='utf-8') as handle:
         source = handle.read()
-    namespace = {}
+    namespace: dict[str, Any] = {}
     for fn in ('dangerous_corpus', 'trojan_source_corpus', 'git_diffs_lie_fixtures'):
         start = source.index('def %s():' % fn)
         end = source.index('\n# ---', start)
@@ -466,7 +468,7 @@ def prop_settings_parse(text):
     # never raise (a malformed/hostile .conf can never crash startup).
     with open(_CONF_FILE, 'w', encoding='utf-8') as handle:
         handle.write(text)
-    out = {}
+    out: dict[str, str] = {}
     SET._parse_into(_CONF_FILE, out)
     assert all(isinstance(k, str) and isinstance(v, str)
                for k, v in out.items())

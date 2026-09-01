@@ -181,7 +181,9 @@ def main() -> int:
         translate_def = None
 
     ## Always retry the curated regressions first, then the random sweep.
-    cases = [('regression', m) for m in _REGRESSIONS]
+    cases: list[tuple[str, str | None]] = [
+        ('regression', m) for m in _REGRESSIONS
+    ]
     cases += [('random', None)] * args.iterations
     for i, (kind, fixed) in enumerate(cases):
         message = fixed if fixed is not None else gen_message(rng)

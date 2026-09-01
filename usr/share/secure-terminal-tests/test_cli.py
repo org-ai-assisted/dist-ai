@@ -86,8 +86,11 @@ def run_in_pty(argv, feed=b'', feed2=b'', feed2_delay=0.4, tty_stdin=True,
     saved = (os.dup(0), os.dup(1), os.dup(2))
     os.dup2(out_slave, 1)
     os.dup2(out_slave, 2)
-    os.dup2(out_slave if tty_stdin else in_r, 0)
+    _stdin_fd = out_slave if tty_stdin else in_r
+    assert _stdin_fd is not None
+    os.dup2(_stdin_fd, 0)
     writer = out_master if tty_stdin else in_w
+    assert writer is not None
     chunks = []
     stop = threading.Event()
     prev_winch = signal.getsignal(signal.SIGWINCH)
@@ -125,6 +128,7 @@ def run_in_pty(argv, feed=b'', feed2=b'', feed2_delay=0.4, tty_stdin=True,
                 pass        # the child may have exited; the feed is best-effort
         if close_stdin and not tty_stdin:
             try:
+                assert in_w is not None
                 os.close(in_w)                 # EOF on the wrapper's stdin
             except OSError:
                 pass        # already closed by a prior path; harmless
@@ -172,10 +176,10 @@ def run_in_pty(argv, feed=b'', feed2=b'', feed2_delay=0.4, tty_stdin=True,
                 signal.signal(signal.SIGINT, prev_sigint)
             except (OSError, ValueError, TypeError):
                 pass        # an off-main-thread restore may fail; harmless
-        for fd in (out_master, out_slave, in_r, in_w):
-            if fd is not None:
+        for fd2 in (out_master, out_slave, in_r, in_w):
+            if fd2 is not None:
                 try:
-                    os.close(fd)
+                    os.close(fd2)
                 except OSError:
                     pass    # a pty/pipe fd may already be closed; ignore
     return b''.join(chunks), rc
@@ -606,7 +610,7 @@ def _fsm_typed_cr(seq):
     return n
 
 
-_fsm_bad = None
+_fsm_bad: tuple[str, bytes, object] | None = None
 for _fsm_r in range(_FSM_TOKENS + 1):
     for _fsm_combo in itertools.product((_FSM_S, _FSM_E, _FSM_CR, _FSM_X), repeat=_fsm_r):
         _fsm_seq = b''.join(_fsm_combo)

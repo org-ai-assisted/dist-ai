@@ -65,6 +65,7 @@ regex / secure_terminal is a hard FAILURE, never a skip.
 import itertools
 import sys
 import unicodedata
+from typing import Any
 
 try:
     import regex as _regex
@@ -494,11 +495,13 @@ def t2_modelcheck():
     freeze_bad = 0
     for M in (0, 1, 2, 4):
         for line_edits in (True, False):
-            seqs = [[]]
+            seqs: list[list[str]] = [[]]
             for _depth in range(3):
                 seqs = [[*s, t] for s in seqs for t in _MC_TOKENS]
             for toks in seqs:
-                cells, col, sgr = [], 0, {}
+                cells: list[Any] = []
+                col = 0
+                sgr: dict[Any, Any] = {}
                 incr_comp = []
                 for t in toks:
                     comp, cells, col, sgr, _w = S.feed_line_edits(

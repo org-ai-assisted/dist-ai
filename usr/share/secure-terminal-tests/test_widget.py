@@ -2108,8 +2108,8 @@ if tui_available():
     # (back-to-back and empty-segment markers) and it must not hang or crash.
     _at = SecureTerminal(command='/bin/cat', tui=True)
     _at.resize(400, 200)
-    _mk = [b'\x1b[?1049h', b'\x1b[?1049l', b'\x1b[?47h', b'\x1b[?47l']
-    for _combo in (b''.join(_mk), b''.join(_mk * 3), b'x' + b''.join(_mk) + b'y',
+    _altmk = [b'\x1b[?1049h', b'\x1b[?1049l', b'\x1b[?47h', b'\x1b[?47l']
+    for _combo in (b''.join(_altmk), b''.join(_altmk * 3), b'x' + b''.join(_altmk) + b'y',
                    b'\x1b[?1049h\x1b[?1049h\x1b[?1049l', b'', b'\x1b[?10', b'49h'):
         _at._feed_stream(_combo)          # returns (bounded) or the test would hang
     _at._render_tui()
@@ -4243,7 +4243,7 @@ if tui_available():
        and _QGA2.clipboard().text() == 'UNTOUCHED',
        'OSC 1337 is always neutralized: no signal, no clipboard, no cwd, no toggle')
     # palette OSC 4/10/11: gated, and a program CANNOT hide text by moving fg==bg
-    class _Cell:                                            # a default-coloured cell
+    class _MiniCell:                                        # a default-coloured cell
         fg = bg = 'default'
         bold = reverse = underscore = False
         data = ' '
@@ -4251,12 +4251,12 @@ if tui_available():
     ok(tui._osc_palette == {}, 'OSC palette change is ignored until osc_colors is on')
     tui.apply_osc('osc_colors', True)
     tui._handle_osc(b'\x1b]10;#000000\x07\x1b]11;#000000\x07')   # hide attempt fg==bg
-    _hidfg = tui._pyte_format(_Cell()).foreground().color().name()
+    _hidfg = tui._pyte_format(_MiniCell()).foreground().color().name()
     ok(_hidfg != '#000000',
        'fg==bg (via OSC 10/11) cannot hide text: the guard forces a readable colour')
     tui._fmt_cache.clear()
     tui._handle_osc(b'\x1b]10;#33cc99\x07')                 # a legit fg is applied
-    ok(tui._pyte_format(_Cell()).foreground().color().name() == '#33cc99',
+    ok(tui._pyte_format(_MiniCell()).foreground().color().name() == '#33cc99',
        'a legitimate OSC 10 foreground colour is applied')
     tui.apply_osc('osc_colors', False)
     ok(tui._osc_palette == {}, 'disabling osc_colors reverts to the theme palette')
@@ -5550,8 +5550,8 @@ ok(_stabs and isinstance(_stabs[0].get('osc'), dict) and 'osc_clipboard' in _sta
 _cfgdir = os.path.join(os.environ['XDG_CONFIG_HOME'], 'secure-terminal.d')
 os.makedirs(_cfgdir, exist_ok=True)
 _ucfg = os.path.join(_cfgdir, '50_user.conf')
-with open(_ucfg, 'w', encoding='utf-8') as _fh:
-    _fh.write('allow_title=true\nosc_title=true\nosc_notify=false\n')
+with open(_ucfg, 'w', encoding='utf-8') as _ucfh:
+    _ucfh.write('allow_title=true\nosc_title=true\nosc_notify=false\n')
 _wd = MainWindow()
 ok(_wd._osc_defaults['osc_title'] and not _wd._osc_defaults['osc_notify'],
    'legacy allow_title does not override an explicit granular osc_notify=false')
@@ -5573,8 +5573,8 @@ eq(_ttc._child_term(), ('secure-terminal', _tdir),
    'CLI mode advertises the restricted TERM (no completion-menu redraws)')
 _ttc.close()
 _ttt = SecureTerminal(command='/bin/cat', tui=True)        # TUI mode
-_term, _d = _ttt._child_term()
-eq(_term, 'xterm-256color', 'TUI mode advertises xterm-256color (full caps)')
+_tuiterm, _d = _ttt._child_term()
+eq(_tuiterm, 'xterm-256color', 'TUI mode advertises xterm-256color (full caps)')
 ok(_d == _tdir, 'TERMINFO_DIRS resolves the restricted entry in both modes')
 _ttt.close()
 # line_edits=false STRIPS the four line-local ops, so the shell must not be told
@@ -5771,11 +5771,11 @@ eq(_sp.run(['tput', '-T', 'secure-terminal-noedit', 'cub1'],
 # ...and a cache NEWER than the source is served as-is (no needless recompile)
 _write_stale(+60)
 ## C5: Recompile check tests the file bytes are unchanged, not the path
-with open(_stale_file, 'rb') as _f:
-    _before_bytes = _f.read()
+with open(_stale_file, 'rb') as _bf:
+    _before_bytes = _bf.read()
 _timod.cli_terminfo_dir()
-with open(_stale_file, 'rb') as _f:
-    _after_bytes = _f.read()
+with open(_stale_file, 'rb') as _bf:
+    _after_bytes = _bf.read()
 eq(_before_bytes, _after_bytes,
    'a compiled entry newer than the source is served from cache')
 if _prev_cache is None:
@@ -5793,7 +5793,7 @@ _fcntl2.fcntl(_te._fd, _fcntl2.F_SETFL,
               _fcntl2.fcntl(_te._fd, _fcntl2.F_GETFL) | os.O_NONBLOCK)
 while _time.monotonic() - _estart < 1.5:
     import select as _sel2
-    _r, _, _ = _sel2.select([_te._fd], [], [], 0.05)
+    _r, _selw, _selx = _sel2.select([_te._fd], [], [], 0.05)
     if _te._fd in _r:
         try:
             _chunk = os.read(_te._fd, 4096)
@@ -5858,7 +5858,7 @@ ok(b'T=secure-terminal-noedit' in _child_term_env(win.current()),
 # the terminal -- its terminfo cannot be changed under it (#63). command=None: the
 # re-export only fires for the DEFAULT login shell, so this needs a shell tab.
 _tg = SecureTerminal(command=None)
-_tgadv = []
+_tgadv: list[str] = []
 _tg.advise_signal.connect(_tgadv.append)
 _tgsent = spy_writes(_tg)
 _tg.has_foreground_program = lambda: True             # a program is running
@@ -5903,7 +5903,7 @@ _tgc.close()
 # clear -- and never kill the line to make room, because discarding what someone
 # typed is not ours to do.
 _tgp = SecureTerminal(command=None)
-_tgpadv = []
+_tgpadv: list[str] = []
 _tgp.advise_signal.connect(_tgpadv.append)
 _tgpsent = spy_writes(_tgp)
 _tgp.has_foreground_program = lambda: False            # at a shell prompt
@@ -5981,13 +5981,13 @@ _tt.close()
 
 # A history recall (Up) at a bare TUI prompt is the same hazard with an INVISIBLE
 # line -- it marks dirty too (covers the mapped-key path, not just printable text).
-_th = SecureTerminal(command=None, tui=True)
-spy_writes(_th)                                         # sink the writes; not inspected
-_th.has_foreground_program = lambda: False
-key(_th, Qt.Key.Key_Up)                                 # recall a previous command
-ok(_th._line_dirty,
+_thh = SecureTerminal(command=None, tui=True)
+spy_writes(_thh)                                        # sink the writes; not inspected
+_thh.has_foreground_program = lambda: False
+key(_thh, Qt.Key.Key_Up)                                # recall a previous command
+ok(_thh._line_dirty,
    'history recall at a bare TUI prompt marks the line unmirrored')
-_th.close()
+_thh.close()
 
 # But keys consumed by a FOREGROUND PROGRAM must NOT mark the line: a program that
 # exits without an accept-line key (e.g. `less` quit with `q`) would otherwise
@@ -6129,7 +6129,7 @@ _ts.close()
 # emitting redraws that vanish (a mangled completion). Same reachability guard as
 # the CLI/TUI switch.
 _lex = SecureTerminal(command=None)
-_lexadv = []
+_lexadv: list[str] = []
 _lex.advise_signal.connect(_lexadv.append)
 _lexsent = spy_writes(_lex)
 _lex.has_foreground_program = lambda: False           # at a shell prompt
@@ -6194,7 +6194,7 @@ _fgt.close()
 # the enable-poll and the click, terminate_foreground must treat it as gone (no-op),
 # not raise ProcessLookupError out of the slot (as has_foreground_program does).
 _ogpg93 = _os93.getpgid
-_os93.getpgid = lambda _p: (_ for _ in ()).throw(ProcessLookupError())
+_os93.getpgid = lambda _p: (_ for _ in ()).throw(ProcessLookupError())  # type: ignore[assignment]
 try:
     _fgd = SecureTerminal(command='/bin/cat')
     _fgd._command = None
@@ -6235,7 +6235,7 @@ _fcntl2.fcntl(_cte._fd, _fcntl2.F_SETFL,
               _fcntl2.fcntl(_cte._fd, _fcntl2.F_GETFL) | os.O_NONBLOCK)
 while _time.monotonic() - _cs < 1.5:
     import select as _sel3
-    _rr, _, _ = _sel3.select([_cte._fd], [], [], 0.05)
+    _rr, _selw3, _selx3 = _sel3.select([_cte._fd], [], [], 0.05)
     if _cte._fd in _rr:
         try:
             _ck = os.read(_cte._fd, 4096)
@@ -6360,7 +6360,7 @@ def _clip_read(feature_on, grant):
     c.apply_osc('osc_clipboard_read', feature_on)
     _reqs = []
     c.clipboard_read_requested.connect(lambda: _reqs.append(1))
-    _sent = []
+    _sent: list[bytes] = []
     c._write = _sent.append                # pylint: disable=protected-access
     if grant is not None:
         # A tab that ALREADY carries a persistent decision (allow-always / deny-always)
@@ -6408,29 +6408,30 @@ _QGA.clipboard().setText('clip-secret')       # restore for later readers
 _cg = SecureTerminal(command='/bin/cat', tui=True)
 _cg.apply_osc('osc_clipboard_read', True)
 _cg._clipboard_read = True                 # a tab already granted allow-always
-_cgs = []
+_cgs: list[bytes] = []
 _cg._write = _cgs.append
 _cg._handle_osc(b'\x1b]52;c;?\x07')
 _cg._handle_osc(b'\x1b]52;c;?\x07')
 eq(len(_cgs), 1, 'OSC 52 read: two reads in a granted tab -> one reply (rate-limited)')
 _cg.close()
 # granting a PENDING request answers the query that opened the dialog (codex F1)
-_cp = SecureTerminal(command='/bin/cat', tui=True)
-_cp.apply_osc('osc_clipboard_read', True)
-_cps = []
-_cp._write = _cps.append
-_cp._handle_osc(b'\x1b]52;c;?\x07')        # -> pending, dialog asked, no reply yet
+_cpr = SecureTerminal(command='/bin/cat', tui=True)
+_cpr.apply_osc('osc_clipboard_read', True)
+_cps: list[bytes] = []
+_cpr._write = _cps.append
+_cpr._handle_osc(b'\x1b]52;c;?\x07')        # -> pending, dialog asked, no reply yet
 eq(_cps, [], 'a pending clipboard request sends no reply until the user decides')
-_cp.grant_clipboard_read(_cp.CLIP_ALLOW_ALWAYS)   # user allows -> the pending query is answered NOW
+_cpr.grant_clipboard_read(_cpr.CLIP_ALLOW_ALWAYS)  # user allows -> the pending query is answered NOW
 ok(len(_cps) == 1 and _cps[0].startswith(b'\x1b]52;c;'),
    'granting a pending request answers the query that opened the dialog')
-_cp.close()
+_cpr.close()
 
 # --- OSC 52 read: the four dialog decisions (allow/deny x once/always) ---------
 def _clip_term():
     c = SecureTerminal(command='/bin/cat', tui=True)
     c.apply_osc('osc_clipboard_read', True)
-    reqs, sent = [], []
+    reqs: list[int] = []
+    sent: list[bytes] = []
     c.clipboard_read_requested.connect(lambda: reqs.append(1))
     c._write = sent.append                 # pylint: disable=protected-access
     return c, reqs, sent
@@ -6671,20 +6672,20 @@ _sy.close()
 import termios as _tio_adv                                         # noqa: E402
 _ADV_PREFIXES = [b'', b'\x1b[?1049h', b'\x1b[?1047h', b'\x1b[?47h', b'\x1b[?2026h',
                  b'\x1b[?1049h\x1b[?2026h']
-_adv = SecureTerminal(command='/bin/cat', tui=True)
+_advx = SecureTerminal(command='/bin/cat', tui=True)
 for _k in (f[0] for f in _S.OSC_FEATURES):
-    _adv.apply_osc(_k, True)               # every OSC feature enabled
-_aa = _tio_adv.tcgetattr(_adv._fd)         # + the readline-prompt case (ICANON off)
+    _advx.apply_osc(_k, True)              # every OSC feature enabled
+_aa = _tio_adv.tcgetattr(_advx._fd)        # + the readline-prompt case (ICANON off)
 _aa[3] &= ~_tio_adv.ICANON
-_tio_adv.tcsetattr(_adv._fd, _tio_adv.TCSANOW, _aa)
-_advsent = spy_writes(_adv)
+_tio_adv.tcsetattr(_advx._fd, _tio_adv.TCSANOW, _aa)
+_advsent = spy_writes(_advx)
 for _pfx in _ADV_PREFIXES:
     for _q in _QUERIES:
-        feed_output(_adv, _pfx + _q)
+        feed_output(_advx, _pfx + _q)
 ok(_advsent == [],
    'reflection oracle (adversarial): output that fakes alt-screen / sync while at '
    'a readline prompt still elicits ZERO write-back (got %r)' % _advsent[:3])
-_adv.close()
+_advx.close()
 
 # --- bell (BEL) policy --------------------------------------------------------
 # A standalone BEL in output rings per the tab's policy (off/audible/visual),
@@ -6802,17 +6803,17 @@ eq(SecureTerminal._parse_bell({'visual', 'nope'}), {'visual'},
    'an unknown channel in a set is dropped')
 
 # toggling one channel preserves the current tab's OTHER channels (codex F2)
-_bt = SecureTerminal(command='/bin/cat')
-win.tabs.addTab(_bt, 'bell-preserve')
-win.tabs.setCurrentWidget(_bt)
-_bt.apply_bell({'visual'})
+_btw = SecureTerminal(command='/bin/cat')
+win.tabs.addTab(_btw, 'bell-preserve')
+win.tabs.setCurrentWidget(_btw)
+_btw.apply_bell({'visual'})
 win._default_bell = set()                         # make the tab differ from default
 win.set_bell_channel('tray', True)
-eq(_bt.bell_channels(), {'visual', 'tray'},
+eq(_btw.bell_channels(), {'visual', 'tray'},
    'toggling one channel keeps the current tab other channels')
 eq(win._default_bell, {'tray'}, 'the global default tracks the toggled channel')
-win.tabs.removeTab(win.tabs.indexOf(_bt))
-_bt.close()
+win.tabs.removeTab(win.tabs.indexOf(_btw))
+_btw.close()
 
 # a bell_sound admin lock refuses the sound setter
 _saved_l2 = win._locked
@@ -7078,8 +7079,8 @@ ok(not _term.sound_file_allowed('/no/such/sound.wav'),
    'sound_file_allowed: a missing file is rejected')
 _snd_tmp = _tempfile.mkdtemp()
 _outside = os.path.join(_snd_tmp, 'outside.wav')
-with open(_outside, 'wb') as _h:
-    _h.write(b'RIFF')
+with open(_outside, 'wb') as _owav:
+    _owav.write(b'RIFF')
 ok(not _term.sound_file_allowed(_outside),
    'sound_file_allowed: a file outside the allowed dirs is rejected')
 # with the allowed-dirs list pointed at our temp dir, a file inside is accepted
@@ -7095,7 +7096,7 @@ try:
     _fake_qm = _types.ModuleType('PyQt6.QtMultimedia')
 
     class _FakeSoundEffect:
-        raise_on = None
+        raise_on: str | None = None
 
         def __init__(self, _parent=None):
             if _FakeSoundEffect.raise_on == 'init':
@@ -7108,7 +7109,7 @@ try:
             if _FakeSoundEffect.raise_on == 'play':
                 raise RuntimeError('playback failed')
 
-    _fake_qm.QSoundEffect = _FakeSoundEffect
+    _fake_qm.QSoundEffect = _FakeSoundEffect  # type: ignore[attr-defined]
     _o_qm = sys.modules.get('PyQt6.QtMultimedia')
     sys.modules['PyQt6.QtMultimedia'] = _fake_qm
     try:
@@ -7188,7 +7189,7 @@ ok(not _fg.terminate_foreground(),
 from PyQt6.QtGui import QWheelEvent          # noqa: E402
 from PyQt6.QtCore import QPointF, QPoint      # noqa: E402
 _wz = SecureTerminal(command='/bin/cat')
-_zoom = []
+_zoom: list[int] = []
 _wz.zoom_step.connect(_zoom.append)
 
 
@@ -7625,7 +7626,7 @@ _cw2 = SecureTerminal(command='/bin/cat')
 _cw2._pid = 1
 _cw2._foreground_pgrp = lambda: None
 try:
-    _os.readlink = lambda *_a, **_k: os.path.expanduser('~')
+    _os.readlink = lambda *_a, **_k: os.path.expanduser('~')  # type: ignore[assignment]
     eq(_cw2.cwd_basename(), '~', 'cwd_basename: the home directory shows as ~')
 finally:
     _os.readlink = _o_readlink
@@ -7703,10 +7704,10 @@ ok(_has_read_reply(), 'OSC 52 read: global always-allow replies')
 _oc._clipboard_read = None
 _oc._clipboard_read_always = False
 _ocw.clear()
-_creq = []
-_oc.clipboard_read_requested.connect(lambda: _creq.append(1))
+_creq2: list[int] = []
+_oc.clipboard_read_requested.connect(lambda: _creq2.append(1))
 _oc._osc_clipboard_read()                   # ask once -> raise the request, no reply yet
-ok(_creq and _oc._clipboard_read == 'pending' and not _has_read_reply(),
+ok(_creq2 and _oc._clipboard_read == 'pending' and not _has_read_reply(),
    'OSC 52 read: an un-granted tab asks once and never replies')
 
 # feed guards: no pyte stream (line mode), an empty chunk, alt-leave with no save
@@ -7840,29 +7841,29 @@ _tfo.close()
 # in a session of its own so it is NOT our group) -> a no-op that signals nothing.
 _tfs = _subprocess.Popen(['sleep', '30'], start_new_session=True)
 pump(60)
-_tf = SecureTerminal(command='/bin/cat')
-_tf._command = None                         # login-shell semantics for this branch
-_tf._pid = _tfs.pid
+_tfw = SecureTerminal(command='/bin/cat')
+_tfw._command = None                        # login-shell semantics for this branch
+_tfw._pid = _tfs.pid
 # Align the comm baseline to the stand-in child: a real login shell's _spawn_comm
 # matches its own _pid, so _child_execd() reads "not exec'd" (a bare prompt). Without
 # this, _pid points at 'sleep' while _spawn_comm is still '/bin/cat' -- an artificial
 # mismatch that #35's exec detection would (correctly) read as an exec-replace.
-_tf._spawn_comm = _tf._read_comm(_tfs.pid)
-_tf._foreground_pgrp = lambda: os.getpgid(_tfs.pid)
-ok(not _tf.terminate_foreground(),
+_tfw._spawn_comm = _tfw._read_comm(_tfs.pid)
+_tfw._foreground_pgrp = lambda: os.getpgid(_tfs.pid)
+ok(not _tfw.terminate_foreground(),
    'terminate_foreground: only the shell in the foreground -> no-op')
 ok(_tfs.poll() is None,
    'terminate_foreground: the shell no-op signals nothing')
-_tf.close()
+_tfw.close()
 _tfs.terminate()
 _tfs.wait()
 # a killpg error (invalid pgrp) is reported as False.
-_tf2 = SecureTerminal(command='/bin/cat')
-_tf2._pid = None
-_tf2._foreground_pgrp = lambda: 999999      # invalid pgrp -> killpg raises
-ok(not _tf2.terminate_foreground(),
+_tf2w = SecureTerminal(command='/bin/cat')
+_tf2w._pid = None
+_tf2w._foreground_pgrp = lambda: 999999     # invalid pgrp -> killpg raises
+ok(not _tf2w.terminate_foreground(),
    'terminate_foreground: a killpg error is reported as False')
-_tf2.close()
+_tf2w.close()
 
 # _write retries after an EAGAIN on the non-blocking fd
 _we = SecureTerminal(command='/bin/cat')
@@ -7914,13 +7915,13 @@ _ow._osc_clipboard(b'c;' + _b64.b64encode(b'hello'))            # valid -> set c
 ok(_owclip.text() == 'hello', 'OSC 52 write: only a valid base64 payload sets the clipboard')
 
 # _on_readable creates the pyte screen on demand in TUI mode
-_mk = SecureTerminal(command='/bin/cat')
-_mk.apply_tui(True)
-_mk._screen = None
-feed_output(_mk, b'hi')                     # tui_active + no screen -> _make_screen
-ok(_mk._screen is not None, '_on_readable builds the pyte screen on demand in TUI mode')
-_mk._render_timer.stop()
-_mk._sync_timer.stop()
+_mkw = SecureTerminal(command='/bin/cat')
+_mkw.apply_tui(True)
+_mkw._screen = None
+feed_output(_mkw, b'hi')                    # tui_active + no screen -> _make_screen
+ok(_mkw._screen is not None, '_on_readable builds the pyte screen on demand in TUI mode')
+_mkw._render_timer.stop()
+_mkw._sync_timer.stop()
 
 # _place_grid_cursor is a no-op when the program hid the cursor
 _pc = SecureTerminal(command='/bin/cat')
@@ -7946,7 +7947,7 @@ ok(len(_ed._raw) <= _ed._RAW_MAX, 'the escape-drop path caps the retained raw ou
 # _terminfo_source returns None when no candidate file exists
 _o_isfile = _os.path.isfile
 try:
-    _os.path.isfile = lambda _p: False
+    _os.path.isfile = lambda _p: False  # type: ignore[assignment]
     ok(_terminfo_source() is None,
        '_terminfo_source: no candidate on disk -> None')
 finally:
@@ -8202,7 +8203,7 @@ _cpf.shutdown()
 # the retained scrollback. The title must come from the bytes arriving NOW.
 if tui_available():
     _lt = SecureTerminal(command='/bin/cat', tui=True)
-    _lt_titles = []
+    _lt_titles: list[str] = []
     _lt.title_changed.connect(_lt_titles.append)
     feed_output(_lt, b'\x1b]2;EVIL\x07')            # osc_title off by default
     eq(_lt_titles, [], 'a title arriving while osc_title is off emits nothing')
@@ -8221,7 +8222,7 @@ if tui_available():
     # seeded on a mode switch is not adopted either.
     _ls = SecureTerminal(command='/bin/cat')          # starts in CLI mode
     _ls.apply_osc('osc_title', True)
-    _ls_titles = []
+    _ls_titles: list[str] = []
     _ls.title_changed.connect(_ls_titles.append)
     feed_output(_ls, b'\x1b]2;STALE\x07hello\r\n')
     eq(_ls_titles, [], 'CLI mode adopts no program title at all')
@@ -8275,7 +8276,7 @@ with open(_plainsh, 'w') as _pf:
 os.chmod(_plainsh, 0o700)
 
 _rw = SecureTerminal(command=_rawsh, line_edits=False)
-_rw_adv = []
+_rw_adv: list[str] = []
 _rw.advise_signal.connect(_rw_adv.append)
 _rw.resize(700, 300)
 _rw.show()
@@ -8286,7 +8287,7 @@ ok(_rw._tui_hint_shown and any('TUI' in a for a in _rw_adv),
 _rw.shutdown()
 
 _rw2 = SecureTerminal(command=_plainsh, line_edits=False)
-_rw2_adv = []
+_rw2_adv: list[str] = []
 _rw2.advise_signal.connect(_rw2_adv.append)
 _rw2.resize(700, 300)
 _rw2.show()
@@ -8297,7 +8298,7 @@ ok(not _rw2._tui_hint_shown,
 _rw2.shutdown()
 
 _rw3 = SecureTerminal(command=_rawsh)             # line editing ON
-_rw3_adv = []
+_rw3_adv: list[str] = []
 _rw3.advise_signal.connect(_rw3_adv.append)
 _rw3.resize(700, 300)
 _rw3.show()
@@ -8316,6 +8317,7 @@ def _feed_defer(term, raw):
     """Feed `raw` through the live streaming path (defer=True) WITHOUT flushing the
     paint, so a debounced paint is left pending exactly as it is mid-16ms-window in
     the running app -- unlike feed_output, which flushes."""
+    w: int | None
     r, w = os.pipe()
     old = term._fd                             # pylint: disable=protected-access
     term._fd = r
@@ -8407,13 +8409,13 @@ eq(_dp.transcript_text().count('dupline'), 1,
 # MARKING_COLORS is theme-keyed. apply_theme() clears the caches, but formats
 # already in the CLI document keep the old palette until repainted. A theme switch
 # must rebuild the CLI document so existing markings take the new theme's colours.
-_th = SecureTerminal(command='/bin/cat')
-_th.apply_theme('light')
-feed_output(_th, b'\xc3\xa9')                              # e-acute -> a nonascii marking
-eq(_fmt_of_char(_th, '<').foreground().color().name(), mark_fg(_th, 'nonascii'),
+_tht = SecureTerminal(command='/bin/cat')
+_tht.apply_theme('light')
+feed_output(_tht, b'\xc3\xa9')                             # e-acute -> a nonascii marking
+eq(_fmt_of_char(_tht, '<').foreground().color().name(), mark_fg(_tht, 'nonascii'),
    'reconcile#5: the existing marking uses the light-theme colour before the switch')
-_th.apply_theme('dark')
-eq(_fmt_of_char(_th, '<').foreground().color().name(), mark_fg(_th, 'nonascii'),
+_tht.apply_theme('dark')
+eq(_fmt_of_char(_tht, '<').foreground().color().name(), mark_fg(_tht, 'nonascii'),
    'reconcile#5: after the switch the existing marking uses the DARK theme colour')
 
 # --- reconcile #6: Show mode keeps a REAL U+2423, collapses the synthetic marker --
@@ -8527,8 +8529,8 @@ try:
     feed_output(_td, b'user@host:~$ cat demo\r\nMARKER-CLI\r\n')
     pump(80)
     ok(os.path.exists(_tp), 'transcript file: written once output settles')
-    with open(_tp, encoding='utf-8') as _fh:
-        _written = _fh.read()
+    with open(_tp, encoding='utf-8') as _trfh:
+        _written = _trfh.read()
     ok('MARKER-CLI' in _written, 'transcript file: carries the CLI rendered output')
     _td.shutdown()
     # TUI / alt screen: transcript_text() walks the rendered document, so the alt-screen
@@ -8540,8 +8542,8 @@ try:
     pump(40)
     feed_output(_tdt, b'\x1b[?1049h\x1b[2J\x1b[HMARKER-TUI')
     pump(80)
-    with open(_tp, encoding='utf-8') as _fh:
-        _written_tui = _fh.read()
+    with open(_tp, encoding='utf-8') as _trfh:
+        _written_tui = _trfh.read()
     ok('MARKER-TUI' in _written_tui,
        'transcript file: carries the TUI (alt-screen) rendered frame')
     _tdt.shutdown()
@@ -8557,8 +8559,8 @@ try:
     ok(_tdr._render_timer.isActive(),
        'transcript file: a TUI grid render is pending right after the read')
     _tdr._write_transcript_file()          # must flush that pending render first
-    with open(_tp, encoding='utf-8') as _fh:
-        _raced = _fh.read()
+    with open(_tp, encoding='utf-8') as _trfh:
+        _raced = _trfh.read()
     ok('MARKER-RACE' in _raced,
        'transcript file: the write forces a pending render (no pre-render lag under load)')
     _tdr.shutdown()
@@ -8587,8 +8589,8 @@ try:
     feed_output(_tsec, b'SECRET-XYZ\r\n')
     pump(80)
     _mode = os.stat(_secpath).st_mode & 0o777
-    with open(_secpath, encoding='utf-8') as _sfh:
-        _secwritten = _sfh.read()
+    with open(_secpath, encoding='utf-8') as _secfh:
+        _secwritten = _secfh.read()
     # The fixed-name O_TRUNC path REUSES the plant (its inode becomes the transcript,
     # keeping the attacker's mode); mkstemp writes a FRESH 0o600 inode and never touches
     # the plant. Assert both: a distinct inode, and owner-only mode. (Inode identity is
@@ -8746,11 +8748,11 @@ def _counting_igr(self, cursor, row, columns, cell_runs=None):
 
 SecureTerminal._insert_grid_row = _counting_igr
 try:
-    _pf = _show_grid()
-    _pfr = min(18, _pf._screen.lines - 2)
-    _feed_render_chunks(_pf, _distinct_board(min(60, _pf._screen.columns), _pfr), 12)
+    _pfg = _show_grid()
+    _pfr = min(18, _pfg._screen.lines - 2)
+    _feed_render_chunks(_pfg, _distinct_board(min(60, _pfg._screen.columns), _pfr), 12)
     _rowins = _igr_calls[0]
-    _pf.shutdown()
+    _pfg.shutdown()
 finally:
     SecureTerminal._insert_grid_row = _orig_igr
 ok(_rowins < 3 * _pfr,
@@ -9064,7 +9066,7 @@ _pb.shutdown()
 
 # each reconcile widget owns a /bin/cat pty child; hang them up so the master fds and
 # child processes do not linger into the suite's os._exit teardown.
-for _rw in (_bp_no, _bp_yes, _hs, _dp, _th, _rb, _sm):
+for _rw in (_bp_no, _bp_yes, _hs, _dp, _tht, _rb, _sm):
     _rw.shutdown()
 
 
@@ -9246,22 +9248,22 @@ _mb_ref.shutdown()
 # CACHE-7. Shrink-to-prefix: the grid loses trailing rows while every kept row is
 # unchanged (target is a strict prefix of the live grid), so the unequal-length
 # fallback deletes the tail and appends NOTHING -- the empty-append guard path.
-_sp = SecureTerminal(command='/bin/cat', tui=True)
-_sp.apply_mode('show')
-_sp.resize(700, 300)
-_sp.show()
+_spg = SecureTerminal(command='/bin/cat', tui=True)
+_spg.apply_mode('show')
+_spg.resize(700, 300)
+_spg.show()
 pump(40)
-_sp._feed_stream(b'\x1b[1;1Ha\x1b[2;1Hb\x1b[3;1Hc')    # three content rows
-_sp._render_tui()
-_sp_tall = _sp.document().blockCount()
-_sp._feed_stream(b'\x1b[3;1H\x1b[2K\x1b[2;2H')          # blank row 3, cursor up to row 2
-_sp._render_tui()
-ok(_sp.document().blockCount() < _sp_tall,
+_spg._feed_stream(b'\x1b[1;1Ha\x1b[2;1Hb\x1b[3;1Hc')   # three content rows
+_spg._render_tui()
+_sp_tall = _spg.document().blockCount()
+_spg._feed_stream(b'\x1b[3;1H\x1b[2K\x1b[2;2H')         # blank row 3, cursor up to row 2
+_spg._render_tui()
+ok(_spg.document().blockCount() < _sp_tall,
    'shrink-to-prefix drops the trailing row (empty-append fallback)')
-_sp_txt = _sp.toPlainText()
+_sp_txt = _spg.toPlainText()
 ok('a' in _sp_txt and 'b' in _sp_txt and 'c' not in _sp_txt,
    'shrink-to-prefix keeps the unchanged leading rows and drops the removed tail')
-_sp.shutdown()
+_spg.shutdown()
 
 # CACHE-8. Shrink-RESIZE with an out-of-bounds cursor must not corrupt committed
 # scrollback. pyte's resize() does NOT reposition the cursor on a shrink, so cursor.y is
@@ -9468,7 +9470,14 @@ _oc._handle_osc(b'\x1b]10;#33cc99\x07')                 # record an OSC 10 defau
 ok(_oc._osc_palette.get('fg') == '#33cc99', 'osc_colors on: the OSC 10 fg override is recorded')
 _rr = []
 _orig_rr = _oc._rerender
-_oc._rerender = lambda: (_rr.append(1), _orig_rr())[1]
+
+
+def _oc_rerender():
+    _rr.append(1)
+    return _orig_rr()
+
+
+_oc._rerender = _oc_rerender
 _oc.apply_osc('osc_colors', False)                      # disable in CLI/line mode
 _oc._rerender = _orig_rr
 ok(_rr == [1],
@@ -9485,20 +9494,20 @@ _oc.shutdown()
 # count and its prompt/line overflows the narrower viewport (right-truncated, no
 # wrap, horizontal caret-follow jump). Direction, not an exact width, so it is
 # font-robust: a larger glyph always yields fewer columns.
-_zc = SecureTerminal(command='/bin/cat', tui=False)
-_zc.resize(800, 400)
-_zc.show()
+_zcw = SecureTerminal(command='/bin/cat', tui=False)
+_zcw.resize(800, 400)
+_zcw.show()
 pump(60)
-_zc_100 = _zc._cols
-_zc.apply_zoom(200)
+_zc_100 = _zcw._cols
+_zcw.apply_zoom(200)
 pump(120)                                  # past the zoom debounce
-_zc_200 = _zc._cols
-_zc.apply_zoom(100)
+_zc_200 = _zcw._cols
+_zcw.apply_zoom(100)
 pump(120)
-_zc_back = _zc._cols
+_zc_back = _zcw._cols
 ok(_zc_200 < _zc_100 and _zc_back == _zc_100,
    'CLI zoom pushes the new pty width: fewer cols at 200 percent, restored at 100')
-_zc.shutdown()
+_zcw.shutdown()
 
 # _sync_tui_size is a no-op with no pyte screen (CLI mode): its callers all guard for
 # a screen (zoom takes the _set_winsize path in CLI), so exercise the guard directly.

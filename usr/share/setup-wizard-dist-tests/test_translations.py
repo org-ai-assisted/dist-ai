@@ -18,7 +18,7 @@ import contextlib
 import io
 import unittest
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from guimessages.translations import _translations
 
@@ -32,6 +32,8 @@ def _load_en_keys():
 
 
 class TranslationCoverageTestCase(unittest.TestCase):
+    en: dict = {}
+
     @classmethod
     def setUpClass(cls):
         cls.en = _load_en_keys()

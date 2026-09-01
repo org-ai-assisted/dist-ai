@@ -140,6 +140,7 @@ class TorConfigSaneTest(unittest.TestCase):
         ## The whole point: after tor-config-sane, a real Tor started with the
         ## main torrc must READ the drop-in. Put an invalid directive in the
         ## drop-in -- tor --verify-config must then FAIL, proving it is read.
+        assert TOR is not None  # guarded by skipUnless(TOR, ...) above
         with tempfile.TemporaryDirectory() as root:
             self._run(root)
             torrc = os.path.join(root, 'etc/tor/torrc')

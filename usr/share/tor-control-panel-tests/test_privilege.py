@@ -64,8 +64,12 @@ class PrivilegeChainTest(unittest.TestCase):
         ## NOPASSWD rule scoped to the helper path is detected correctly.
         self._have()  # neither leaprun nor pkexec
         seen = []
-        privilege._passwordless_sudo_available = lambda mapped: (
-            seen.append(mapped) or True)
+
+        def _record_mapped(mapped):
+            seen.append(mapped)
+            return True
+
+        privilege._passwordless_sudo_available = _record_mapped
         privilege.command('tor-config-sane')
         self.assertEqual(
             seen, [['/usr/libexec/tor-control-panel/tor-config-sane']])

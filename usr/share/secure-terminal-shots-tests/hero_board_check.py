@@ -98,6 +98,7 @@ def analyze(data):
 
     # 4. the OSC 52 clipboard body must be INERT: ASCII, comment-style, and free of shell
     #    metacharacters or the homoglyph -- else a regression re-plants an executable command.
+    assert clip_b64 is not None  # guaranteed by the osc52 == 1 check above
     try:
         clip = base64.b64decode(clip_b64, validate=True).decode('ascii')
     except Exception:

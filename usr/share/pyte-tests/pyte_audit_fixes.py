@@ -39,7 +39,9 @@ def parse_manifest(text: str) -> frozenset[str]:
 
 def manifest_path(pyte_module: types.ModuleType) -> pathlib.Path:
     """Where the tree providing ``pyte_module`` would ship its manifest."""
-    package_dir = pathlib.Path(pyte_module.__file__).resolve().parent
+    module_file = pyte_module.__file__
+    assert module_file is not None, 'pyte_module has no __file__'
+    package_dir = pathlib.Path(module_file).resolve().parent
     return package_dir.parent / MANIFEST_NAME
 
 

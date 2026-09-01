@@ -31,6 +31,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from typing import NoReturn
 
 PASS = 0
 FAIL = 5
@@ -45,7 +46,7 @@ SESSION_CMDLINE = {
 }
 
 
-def die_setup(message):
+def die_setup(message) -> NoReturn:
     print("dm-image-test: %s" % message, file=sys.stderr)
     sys.exit(SETUP)
 
@@ -242,6 +243,7 @@ def run_checks(child, args, log):
             except pexpect.EOF:
                 return None
             if regex:
+                assert pattern is not None
                 match = pattern.search(accum[0])
                 if match:
                     return match

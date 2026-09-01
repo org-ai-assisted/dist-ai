@@ -19,6 +19,7 @@ These tests pin BOTH directions: a pure counter tick must not change the
 output, and a real status transition must still change it.
 """
 
+import subprocess
 import unittest
 
 from onion_time_pre_script_testlib import (
@@ -43,6 +44,10 @@ DONE_LINE = 'NOTICE BOOTSTRAP PROGRESS=100 TAG=done SUMMARY="Done"'
 
 class TestBootstrapOutputStability(PreScriptTestBase):
     """Drive the real tor_bootstrap_check with a stubbed control port."""
+
+    output_cmd: str
+    bootstrap_check: str
+    redact: str
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -167,13 +172,18 @@ class TestExitHandler(PreScriptTestBase):
     documented 'wait, retry and error icon' contract sdwdate reads.
     """
 
+    output_cmd: str
+    exit_handler: str
+
     @classmethod
     def setUpClass(cls) -> None:
         super().setUpClass()
         cls.output_cmd = extract_bash_function(cls.path, 'output_cmd')
         cls.exit_handler = extract_bash_function(cls.path, 'exit_handler')
 
-    def run_exit_handler(self, preset: str = '') -> 'object':
+    def run_exit_handler(
+        self, preset: str = ''
+    ) -> 'subprocess.CompletedProcess[str]':
         script = '\n'.join(
             [
                 'set -o pipefail',

@@ -45,8 +45,8 @@ WELL_FORMED_ANCHOR = re.compile(r'<a href="?[^">]*"?>[^<]*</a>')
 ## cli_translate_gui_markup wraps cli_links_to_footnotes plus the color-tag and
 ## <br> translation; absent on an older msgcollector -> that lane is skipped.
 try:
-    TRANSLATE_FUNC = T.extract_bash_function(T.msgcollector_script(),
-                                             'cli_translate_gui_markup')
+    TRANSLATE_FUNC: str | None = T.extract_bash_function(
+        T.msgcollector_script(), 'cli_translate_gui_markup')
 except (LookupError, SystemExit):
     TRANSLATE_FUNC = None
 ## The markup cli_translate_gui_markup OWNS (color disabled): the four handled

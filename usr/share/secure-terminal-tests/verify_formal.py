@@ -149,6 +149,7 @@ silently disable itself), never a skip.
 
 import sys
 import unicodedata
+from typing import Any
 
 try:
     import regex as _regex
@@ -669,7 +670,7 @@ def t1_canaries():
         seen.add(ch)
         return ch
     s = 'aabb'
-    seen = set()
+    seen: set[str] = set()
     whole = ''.join(stateful(seen, c) for c in s)          # 'ab' (state-dependent)
     piecewise = ''.join(stateful(set(), c) for c in s)     # 'aabb'
     _expect_caught('T1/homomorphism', whole != piecewise)
@@ -1095,14 +1096,16 @@ _T2_INCR_TOKENS = ['a', 'b', '\n', '\r', '\x08', '\x1b[2D', '\x1b[3C', '\x1b[K',
 def t2_incremental_equiv():
     bad = 0
     for M in (0, 4):
-        seqs = [[]]
+        seqs: list[list[str]] = [[]]
         for _ in range(3):
             seqs = [[*s, t] for s in seqs for t in _T2_INCR_TOKENS]
         for toks in seqs:
             whole = S.feed_line_edits([], 0, {}, ''.join(toks), max_line=M)
             comp_whole = whole[0]
             # feed token by token, carrying state; accumulate completed lines
-            cells, col, sgr = [], 0, {}
+            cells: list[Any] = []
+            col = 0
+            sgr: dict[Any, Any] = {}
             comp_incr = []
             for t in toks:
                 comp, cells, col, sgr, _w = S.feed_line_edits(cells, col, sgr, t,
@@ -1939,7 +1942,8 @@ def _adversarial_lines():
     # path -- confirming a neutralized cell past the cap still displays inert. chr()
     # (not a literal) keeps this ASCII-only.
     big_a, big_b = (('fg', 2),), (('fg', 3),)
-    big = [('a' if i % 2 else 'b', big_a if i % 2 else big_b) for i in range(2100)]
+    big: list[tuple[str, tuple[tuple[str, int], ...]]] = [
+        ('a' if i % 2 else 'b', big_a if i % 2 else big_b) for i in range(2100)]
     big += [(chr(c), ()) for c in (0x202e, 0x200b, 0x0430, 0x0301, 0x2500)]
     yield ([], big, None)
 
@@ -2038,7 +2042,7 @@ def t9_canaries():
         seen.add(ch)
         return ch
     s = 'aabb'
-    seen = set()
+    seen: set[str] = set()
     whole = ''.join(stateful(seen, c) for c in s)      # state carried -> 'ab'
     piece = ''.join(stateful(set(), c) for c in s)     # fresh per cell -> 'aabb'
     _expect_caught('T9/homomorphism', whole != piece)

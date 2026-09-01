@@ -25,6 +25,7 @@ affect what we assert. No root, no privleap, no Tor daemon, no display.
 """
 
 import unittest
+from typing import Any
 
 import tcp_testlib as T
 from tor_control_panel import tor_control_panel as tcp
@@ -326,7 +327,12 @@ class AnonConnectionWizardWidgetTest(unittest.TestCase):
         from tor_control_panel import tor_status
         calls = []
         saved = tor_status.set_enabled
-        tor_status.set_enabled = lambda: (calls.append('enabled'), ('tor_enabled', 0))[1]
+
+        def _fake_set_enabled():
+            calls.append('enabled')
+            return ('tor_enabled', 0)
+
+        tor_status.set_enabled = _fake_set_enabled
         self.addCleanup(lambda: setattr(tor_status, 'set_enabled', saved))
         return calls
 
@@ -399,7 +405,7 @@ class NetworkToggleAcceptTest(unittest.TestCase):
         ## Sandbox torrc is DisableNetwork 0 -> tor_status() reads 'enabled',
         ## the exact stale read that triggered the bug.
         with T.sandbox(), T.no_modal():
-            calls = {'set_torrc': 0, 'async': []}
+            calls: dict[str, Any] = {'set_torrc': 0, 'async': []}
             panel = self._panel_in_accept_state(calls)
             panel.set_network_toggle('Disable network')
             panel.bridges_combo.setCurrentText('Disable network')
@@ -414,7 +420,7 @@ class NetworkToggleAcceptTest(unittest.TestCase):
 
     def test_enable_network_accept_does_not_run_set_torrc(self):
         with T.sandbox(initial_torrc='DisableNetwork 1\n'), T.no_modal():
-            calls = {'set_torrc': 0, 'async': []}
+            calls: dict[str, Any] = {'set_torrc': 0, 'async': []}
             panel = self._panel_in_accept_state(calls)
             panel.set_network_toggle('Enable network')
             panel.bridges_combo.setCurrentText('Enable network')

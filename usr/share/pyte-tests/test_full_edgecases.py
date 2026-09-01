@@ -1,3 +1,4 @@
+#!/usr/bin/python3 -Bsu
 """Edge-case coverage: branches the main API suite reaches only indirectly.
 
 Targets the specific parser/Screen/HistoryScreen/DebugEvent paths left uncovered
@@ -123,7 +124,7 @@ def test_cursor_to_line_decom_with_margins():
 
 
 def test_report_device_status_cursor_under_decom_with_margins():
-    seen = []
+    seen: list[str] = []
     screen = pyte.Screen(10, 10)
     screen.write_process_input = seen.append
     screen.set_margins(3, 8)

@@ -55,6 +55,7 @@ OG_DEBUG = None  # set in main
 
 def og_last_rewrite():
     """Return the most recent 'rewrote command' (old, new) from the og debug log."""
+    assert OG_DEBUG is not None, "og_last_rewrite called before main() set OG_DEBUG"
     if not os.path.exists(OG_DEBUG):
         return None
     with open(OG_DEBUG, errors="replace") as _dh:

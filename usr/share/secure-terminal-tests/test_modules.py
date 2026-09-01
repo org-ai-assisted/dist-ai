@@ -321,7 +321,7 @@ try:
         _h.write('lock=clip_warn_any\nclip_warn_any=true\n')
 
     def _user_file_keys():
-        _d = {}
+        _d: dict[str, str] = {}
         settings._parse_into(settings.user_config_file(), _d)
         return _d
 
@@ -454,12 +454,12 @@ settings._user_config_dir = lambda: _eu
 try:
     settings.update_user({'theme': 'dark', 'osc_clipboard_read_always': 'true'},
                          locked=frozenset({'osc_clipboard_read_always'}))
-    _w = {}
+    _w: dict[str, str] = {}
     settings._parse_into(settings.user_config_file(), _w)
     ok('osc_clipboard_read_always' not in _w and _w.get('theme') == 'dark',
        'settings: update_user drops a key named in explicit locked=, keeps the rest')
     settings.update_user({'shade': 'x'}, locked=None)   # None must not raise
-    _wn = {}
+    _wn: dict[str, str] = {}
     settings._parse_into(settings.user_config_file(), _wn)
     ok(_wn.get('shade') == 'x',
        'settings: update_user(locked=None) does not raise and writes (never raises)')
@@ -470,7 +470,7 @@ try:
         _ah.write('lock=osc_clipboard_read_always\n')
     settings.update_user({'osc_clipboard_read_always': 'true'},
                          locked=frozenset({'theme'}))     # different key in the passed set
-    _wu = {}
+    _wu: dict[str, str] = {}
     settings._parse_into(settings.user_config_file(), _wu)
     ok('osc_clipboard_read_always' not in _wu,
        'settings: update_user unions current+startup locks (system lock honored with a non-empty locked=)')
@@ -478,7 +478,7 @@ finally:
     settings._system_dirs, settings._user_config_dir = _o_es, _o_eu
 
 # _parse_into on an unreadable path is swallowed (returns without touching out)
-_out = {}
+_out: dict[str, str] = {}
 settings._parse_into(os.path.join(_cfg_root, 'no', 'such.conf'), _out)
 eq(_out, {}, 'settings: parsing a missing drop-in is a no-op')
 
