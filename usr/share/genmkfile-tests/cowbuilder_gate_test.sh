@@ -9,8 +9,10 @@
 ## the target actually builds/places dist artifacts. The dispatcher sets
 ## make_enforce_cowbuilder_distdir=false for a non-cowbuilder action (git-*,
 ## help, deb-*-dep) so it never trips on make_cowbuilder_dist_folder it does not
-## use, and true (the default) for a real build/dist target. Extracts the REAL
-## make_get_distdir and stubs die, so the gate is exercised directly.
+## use, and true (the default) for a real build/dist target.
+##
+## make-helper-one.bsh is sourceable (its main is guarded by was_executed), so we
+## source the REAL file and call make_get_distdir directly -- no sed extraction.
 
 set -o errexit
 set -o nounset
@@ -50,33 +52,34 @@ if ! helper_file="$(locate_helper)"; then
    exit 1
 fi
 
+## GENMKFILE_PATH so any runtime source inside the file resolves; sourcing does
+## NOT run the was_executed-guarded main, so only function definitions load.
+GENMKFILE_PATH="$(dirname -- "${helper_file}")"
+export GENMKFILE_PATH
+## style-ok: allow-sc1091-disable -- helper_file is located at runtime, unfollowable
+# shellcheck disable=SC1090,SC1091
+source "${helper_file}"
+
+## Override the real exit_with_error (its make_output_error path needs colour +
+## trace state that only the full run sets up) with a recording stub, so
+## make_get_distdir's cowbuilder guard is observed in isolation.
+# shellcheck disable=SC2317  # invoked indirectly by make_get_distdir
+exit_with_error() { printf 'DIE: %s\n' "$2" >&2; exit 66; }
+
+## DISTDIR='.' is a writable directory, so only the cowbuilder gate can exit here.
 test_root="$(mktemp --directory)"
 # shellcheck disable=SC2317
 cleanup() { safe-rm -r -f -- "${test_root}"; }
 trap cleanup EXIT
-
-## Extract the real make_get_distdir; stub exit_with_error to record + exit non-zero.
-{
-   printf '%s\n' 'exit_with_error() { printf "DIE: %s\n" "$2" >&2; exit 66; }'
-   sed -n '/^make_get_distdir()/,/^}/p' -- "${helper_file}"
-} > "${test_root}/fn.sh"
-if ! grep --quiet '^make_get_distdir()' "${test_root}/fn.sh"; then
-   printf '%s\n' 'ERROR: could not extract make_get_distdir.' >&2
-   exit 1
-fi
-# shellcheck disable=SC1091
-source "${test_root}/fn.sh"
-
-## DISTDIR='.' is a writable directory, so only the cowbuilder gate can die here.
 cd -- "${test_root}"
 
 tests_total=0
 tests_failed=0
 pass() { printf '%s\n' "PASS  $1"; }
 
-## check <desc> <enforce-value-or-UNSET> <want_cowbuilder_die>
+## check <desc> <enforce-value-or-UNSET> <want_cowbuilder_exit>
 check() {
-   local desc="$1" enforce="$2" want_die="$3"
+   local desc="$1" enforce="$2" want_exit="$3"
    local out rc=0
    out="$(
       export DISTDIR='.' make_use_cowbuilder='true'
@@ -84,17 +87,17 @@ check() {
       make_get_distdir 2>&1
    )" || rc=$?
    tests_total=$(( tests_total + 1 ))
-   local died='false'
+   local exited='false'
    case "${out}" in
       *make_cowbuilder_dist_folder*)
-         died='true'
+         exited='true'
          ;;
    esac
-   if [ "${died}" = "${want_die}" ]; then
+   if [ "${exited}" = "${want_exit}" ]; then
       pass "${desc}"
    else
       tests_failed=$(( tests_failed + 1 ))
-      printf '%s\n' "FAIL  ${desc}: died=${died} (want ${want_die}) rc=${rc} out=[${out}]" >&2
+      printf '%s\n' "FAIL  ${desc}: exited=${exited} (want ${want_exit}) rc=${rc} out=[${out}]" >&2
    fi
 }
 
