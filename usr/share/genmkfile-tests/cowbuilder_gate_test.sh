@@ -109,9 +109,12 @@ check 'unset defaults to enforce (backward compatible)' 'UNSET' 'true'
 ## The DISTDIR writable check runs ONLY for a dist-writing (enforce) target; a
 ## non-dist action with a read-only DISTDIR must not abort (a read-only package
 ## parent must not break git-tag-* / deb-*-dep).
-ro="${test_root}/ro"
-mkdir -p -- "${ro}"
-chmod 000 -- "${ro}"
+## make_get_distdir's not-writeable abort is uid-dependent: 'test -w' is always true for root, so a
+## chmod-000 dir is still writable to root -- and CI runs as root. Use /proc/sys: a directory present
+## wherever procfs is mounted (every CI container included) that is NOT writable to ANY uid, root
+## included, so the abort is exercised uniformly with no privilege juggling.
+ro='/proc/sys'
+
 check_writable() {
    local enforce="$1" want_exit="$2" out rc=0 exited='false'
    # shellcheck disable=SC2030,SC2031  # subshell-local env for the isolated call
@@ -135,7 +138,6 @@ check_writable() {
 }
 check_writable 'true' 'true'
 check_writable 'false' 'false'
-chmod 755 -- "${ro}"
 
 if [ "${tests_failed}" -ne 0 ]; then
    printf '%s\n' "cowbuilder_gate_test: ${tests_failed}/${tests_total} FAILED" >&2
