@@ -184,6 +184,19 @@ run_det_at() {
    fi
 }
 
+## Run the detector over an already-written commit MESSAGE file (--message-file hands a
+## PENDING message -- not a tree file -- to the same rules). Same exit-3 fail-loud contract
+## as run_det/run_det_at: a bare '|| true' flattens a crash to empty output and fabricates a
+## pass on the absence-asserting cases (R-001 'spares a clean message').
+det_msgfile() {
+   local rc
+   output="$("${DET}" --detect --message-file "$1" 2>/dev/null)" && rc=0 || rc=$?
+   if [ "${rc}" -eq 3 ]; then
+      printf '%s\n' "FATAL: dist-ai-style --detect crashed (exit 3) on the message file" >&2
+      exit 1
+   fi
+}
+
 ## --- gate-BYPASS / gate-BLINDING regressions (ai-review findings) ------------
 ## sudo with an arg-taking option whose value is QUOTED: the unwrap must not
 ## abort on the None literal and miss the real command.
@@ -920,7 +933,7 @@ fi
 ## SAME non-ASCII rule. A U+00E9 (0xC3 0xA9) in the body must be flagged; a clean
 ## ASCII message must pass.
 printf '%b' 'subject line\n\nbody with \303\251 accent\n' > "${test_dir}/msg-bad"
-output="$("${DET}" --detect --message-file "${test_dir}/msg-bad" 2>/dev/null || true)"
+det_msgfile "${test_dir}/msg-bad"
 if grep --quiet --fixed-strings -- 'R-001' <<< "${output}"; then
    note_pass "R-001 flags a non-ASCII commit message via --message-file"
 else
@@ -928,7 +941,7 @@ else
    printf '%s\n' "${output}" >&2
 fi
 printf '%s\n' 'clean ascii subject' > "${test_dir}/msg-ok"
-output="$("${DET}" --detect --message-file "${test_dir}/msg-ok" 2>/dev/null || true)"
+det_msgfile "${test_dir}/msg-ok"
 if grep --quiet --fixed-strings -- 'R-001' <<< "${output}"; then
    note_fail "R-001 wrongly flagged a clean ASCII commit message"
    printf '%s\n' "${output}" >&2
@@ -941,12 +954,23 @@ fi
 ## and dropped the finding.
 printf '%b' 'subj\n\n## style-ok: allow-non-ascii\nbody caf\303\251\n' \
    > "${test_dir}/msg-waiver"
-output="$("${DET}" --detect --message-file "${test_dir}/msg-waiver" 2>/dev/null || true)"
+det_msgfile "${test_dir}/msg-waiver"
 if grep --quiet --fixed-strings -- 'R-001' <<< "${output}"; then
    note_pass "commit-message R-001 ignores an in-message allow-non-ascii waiver"
 else
    note_fail "an in-message allow-non-ascii waiver suppressed commit-message R-001"
    printf '%s\n' "${output}" >&2
+fi
+## Canary for det_msgfile's exit-3 contract: a detector CRASH must fail LOUD, never
+## fabricate a pass. The absence-asserting cases above ('spares a clean message') would read
+## a crash's empty output as a spurious PASS under a bare '|| true'. Stub DET to exit 3 and
+## run det_msgfile in a SUBSHELL (it calls 'exit 1' on a crash); the subshell must die.
+printf '%s\n' '#!/bin/bash' 'exit 3' > "${test_dir}/det-crash-stub"
+chmod +x -- "${test_dir}/det-crash-stub"
+if ( DET="${test_dir}/det-crash-stub"; det_msgfile "${test_dir}/msg-ok" ) 2>/dev/null; then
+   note_fail "det_msgfile did NOT fail loud on a detector exit-3 crash (silent-green risk)"
+else
+   note_pass "det_msgfile fails loud on a detector exit-3 crash"
 fi
 
 ## Self-test the FAIL gate: a forced failure must make the script exit non-zero.
