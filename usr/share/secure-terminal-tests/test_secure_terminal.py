@@ -1441,7 +1441,7 @@ class _FakeSockD:
 
 try:
     IPC.socket.socket = lambda *_a, **_k: _FakeSockD()
-    IPC._recv_framed = lambda _c: b'[]'
+    IPC._recv_framed = lambda _c, _deadline: b'[]'   # _recv_framed(sock, deadline)
     ok(IPC.send_request('x', {'op': 'ping'}) is None,
        'D: send_request returns None for a framed non-dict reply (not a list)')
 finally:
