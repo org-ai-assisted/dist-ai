@@ -544,14 +544,16 @@ def _ref_feed_line_edits(cells, col, sgr, raw, max_line=0, line_edits=True):
                 op = m.group(2)
                 if op == 'C':
                     col = col + (num or 1)
-                    col = min(col, max_line - 1) if max_line else min(col, len(cells))
+                    col = (min(col, max_line - 1) if max_line
+                           else min(col, S._UNBOUNDED_MAX_COL))
                     while len(cells) < col:
                         cells.append((' ', tuple(sorted(sgr.items()))))
                 elif op == 'D':
                     col = max(0, col - (num or 1))
                 elif op == 'G':
                     col = max(0, (num or 1) - 1)
-                    col = min(col, max_line - 1) if max_line else min(col, len(cells))
+                    col = (min(col, max_line - 1) if max_line
+                           else min(col, S._UNBOUNDED_MAX_COL))
                     while len(cells) < col:
                         cells.append((' ', tuple(sorted(sgr.items()))))
                 else:
@@ -691,8 +693,8 @@ for _name, _text in _diff_payloads.items():
 # that changes SGR then pads blanks (a cursor-forward past end-of-line) forces the
 # padded cells to carry the post-change state. Prove the live path puts the NEW
 # state on those blanks (a stale/empty cache would leave them state ()), so this
-# differential is not vacuously green. max_line>0 is required for the pad to run
-# (with no wrap width a forward-cursor clamps to len(cells) and pads nothing).
+# differential is not vacuously green. A small max_line keeps the pad short and
+# deterministic (unbounded mode pads too, up to _UNBOUNDED_MAX_COL).
 _can = S.feed_line_edits([], 0, {}, '\x1b[31m\x1b[4Cx', 20, True)[1]
 ok(len(_can) == 5 and _can[0][1] == _can[4][1] and _can[0][1] != (),
    'cache canary: SGR-set blanks from a cursor pad carry the live SGR state '

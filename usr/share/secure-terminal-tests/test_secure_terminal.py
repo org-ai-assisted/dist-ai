@@ -408,6 +408,31 @@ eq(len(_bcells), 19, 'cursor-forward padding is clamped to the width (max_line-1
 _gc, _gcells, _gcol, _gs, _gw = S.feed_line_edits([], 0, {}, 'ab\x1b[6GZ', 80)
 eq(''.join(ch for ch, _ in _gcells), 'ab   Z', 'CSI G pads to the absolute column')
 
+# --- UNBOUNDED mode (max_line == 0) pads the SAME way (regression) -------------
+# A forward/absolute column jump past the line end must blank-pad to the target,
+# not glue the text onto the preceding cells. Pre-fix the unbounded branch
+# clamped the column to len(cells), so the pad loop never ran and a right-prompt
+# (ESC[43C) or an aligned write (ESC[20G) collapsed onto the prompt.
+_uc, _ucells, _ucol, _us, _uw = S.feed_line_edits(
+    [], 0, {}, 'user@host:~$ \x1b[43C[pts/11]', 0, True)
+eq(''.join(ch for ch, _ in _ucells), 'user@host:~$ ' + ' ' * 43 + '[pts/11]',
+   'CUF in unbounded mode pads blanks to the target column, not gluing (right-prompt)')
+eq(_ucol, 64, 'unbounded CUF cursor lands at the padded column (13 + 43 + 8)')
+_uga, _ugcells, _ugcol, _ugs, _ugw = S.feed_line_edits(
+    [], 0, {}, 'user@host:~$ \x1b[20GXYZ', 0, True)
+eq(''.join(ch for ch, _ in _ugcells), 'user@host:~$ ' + ' ' * 6 + 'XYZ',
+   'CHA in unbounded mode pads to the absolute column, not gluing')
+# DoS bound: a pathological huge column jump must NOT allocate an unbounded pad --
+# the blank run is capped at _UNBOUNDED_MAX_COL (a naive pad-to-col would allocate
+# ~1e6 cells here). ESC[999999C is 6 digits, so _safe_int accepts it; the cap, not
+# _safe_int, is what holds the line.
+_dc, _dcells, _dcol, _ds, _dw = S.feed_line_edits([], 0, {}, 'x\x1b[999999C', 0, True)
+eq(len(_dcells), S._UNBOUNDED_MAX_COL,
+   'unbounded CUF padding is capped at _UNBOUNDED_MAX_COL (no memory blowup)')
+_dgc, _dgcells, _dgcol, _dgs, _dgw = S.feed_line_edits([], 0, {}, '\x1b[999999GZ', 0, True)
+eq(len(_dgcells), S._UNBOUNDED_MAX_COL + 1,
+   'unbounded CHA padding is capped at _UNBOUNDED_MAX_COL, then the char lands')
+
 # --- split-across-reads escape carry (a long OSC title is the usual victim) ----
 # A whole OSC title is stripped; split across two chunks, the tail must NOT leak.
 eq(S.split_trailing_escape('X\x1b]2;a title\x07'), ('X\x1b]2;a title\x07', ''),
@@ -1567,7 +1592,8 @@ eq(cur, 'ls', 'CSI K erases the residue of a longer recalled line (#4)')
 # line-local CSI ops
 eq(_line('abc\x1b[2DX')[1], 'aXc', 'CSI D (back) then overwrite')
 eq(_line('abc\x1b[2GX')[1], 'aXc', 'CSI G (column) then overwrite')
-eq(_line('ab\x1b[5CX')[1], 'abX', 'CSI C (forward) clamps at end of line')
+eq(_line('ab\x1b[5CX')[1], 'ab     X',
+   'CSI C (forward) pads blanks to the target column (unbounded mode too)')
 eq(_line('abcdef\x1b[3G\x1b[K')[1], 'ab', 'CSI 0K erases from the cursor to EOL')
 eq(_line('abc\x1b[2K')[1], '', 'CSI 2K erases the whole line')
 

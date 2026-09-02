@@ -754,9 +754,12 @@ def _step_z3(cls, col, L, M, num):
     wrap = z3.And(M > 0, col >= M)                    # deferred-autowrap phantom
 
     def csi_move(target):
-        """Shared C/G tail: clamp to width, pad L up to it, then the end-of-op
-        anti-phantom clamp (`if max_line and col >= max_line: col = max_line-1`)."""
-        clamped = z3.If(M > 0, _zmin(target, M - 1), _zmin(target, L))
+        """Shared C/G tail: clamp to the bound, pad L up to it, then the end-of-op
+        anti-phantom clamp (`if max_line and col >= max_line: col = max_line-1`).
+        Bounded: width max_line-1. Unbounded (M==0): _UNBOUNDED_MAX_COL, so a
+        forward/absolute jump blank-pads to its column without an unbounded run."""
+        clamped = z3.If(M > 0, _zmin(target, M - 1),
+                        _zmin(target, S._UNBOUNDED_MAX_COL))
         L2 = _zmax(L, clamped)
         col2 = z3.If(z3.And(M > 0, clamped >= M), M - 1, clamped)
         return col2, L2

@@ -5900,18 +5900,24 @@ for _entry, _caps in (('secure-terminal', _CAPS_EDIT),
     eq(_osc, [], '%s advertises no OSC/DCS capability' % _entry)
 
 # 2. Every advertised capability that emits an ESCAPE must be CONSUMED whole --
-# it may move the cursor or set a colour, but it must put no glyph on screen. A
-# capability the stripper does not match leaks its body as unmarked text, which
-# is how the charset designators (smacs=ESC ( 0, and ESC ( B from every sgr0)
-# used to print "(0" / "(B".
+# it may move the cursor or set a colour, but it must leak no BODY glyph on
+# screen. A capability the stripper does not match leaks its body as unmarked
+# text, which is how the charset designators (smacs=ESC ( 0, and ESC ( B from
+# every sgr0) used to print "(0" / "(B".
+# The forward/absolute cursor moves (cuf/cuf1/hpa) are the one legitimate
+# render: like a real VT they blank-pad the skipped columns, so from the
+# append-only margin they leave trailing SPACES (never the escape body). Strip
+# spaces before the leak check -- a leaked body always carries a non-space byte
+# (a letter, digit or a marked box for a surviving ESC), so this still catches
+# every real leak while allowing the honest pad.
 # k* capabilities are the INPUT side (bytes the terminal sends when a key is
 # pressed), never program output, so they are not the renderer's to consume.
 for _entry, _caps, _le in (('secure-terminal', _CAPS_EDIT, True),
                            ('secure-terminal-noedit', _CAPS_NOEDIT, False)):
     _leaky = sorted(n for n, v in _caps.items()
                     if not n.startswith('k') and '\x1b' in v
-                    and _renders_to(v, _le) != '')
-    eq(_leaky, [], '%s: every escape-emitting capability renders no glyph' % _entry)
+                    and _renders_to(v, _le).strip(' ') != '')
+    eq(_leaky, [], '%s: every escape-emitting capability leaks no body glyph' % _entry)
 
 # 3. The two-way lock between the cursor/erase family and the renderer. An
 # advertised op MUST be honoured (or the shell's redraw silently does nothing);
