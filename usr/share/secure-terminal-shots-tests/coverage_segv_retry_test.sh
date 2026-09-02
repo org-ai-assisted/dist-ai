@@ -140,6 +140,16 @@ rc4="$(drive 0 abc "${c4}")"
 check "${rc4}" 0 'a non-numeric retry count coerces to the default and returns a defined rc'
 check "$(cat "${c4}" 2>/dev/null)" 1 'a non-numeric retry count still runs the suite exactly once'
 
+## ---- octal trap: a leading-zero all-digit retry count (09) is a valid STRING but an
+## INVALID octal literal; a bare (( )) / [ -ge ] on it errored and, under errexit, skipped
+## the whole retry loop -- the suite never ran yet the caller saw a non-crash rc (a false
+## green). Base-10 normalization must run the (non-crashing) suite exactly once, rc 0.
+## Regression: on the pre-fix runner the suite is never invoked, so the counter stays absent.
+c5="${work}/counter5"
+rc5="$(drive 0 09 "${c5}")"
+check "${rc5}" 0 'a leading-zero retry count (09) is read base-10, not octal -> defined rc 0'
+check "$(cat "${c5}" 2>/dev/null)" 1 'a leading-zero retry count still runs the suite exactly once (no octal skip)'
+
 printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
    exit 1
