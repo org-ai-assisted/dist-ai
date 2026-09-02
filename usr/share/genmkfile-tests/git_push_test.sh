@@ -180,6 +180,21 @@ else
    fail "T9 newline-separated remotes not all at tip (r2 dropped?); out=[${out}]"
 fi
 
+## T10: a STALE remote-tracking ref must NOT skip a genuinely-needed push. Repoint the remote at
+## a FRESH empty bare repo (refs/remotes/org-ai-assisted/ai stays at the old, pushed tip); git-push
+## must consult the ACTUAL remote (ls-remote) and push, not trust the stale tracking ref -- else it
+## reports "already at remote tip" while the branch never lands.
+count
+git init -q --bare "${test_root}/r3-empty.git"
+git -C "${repo}" remote set-url org-ai-assisted "${test_root}/r3-empty.git"
+loc="$(git -C "${repo}" rev-parse ai)"
+out="$(run_push "org-ai-assisted" "ai" || true)"
+if [ "$(remote_tip "${test_root}/r3-empty.git")" = "${loc}" ]; then
+   pass 'T10 stale tracking ref does not skip a needed push (real remote consulted)'
+else
+   fail "T10 trusted a stale tracking ref -> repointed empty remote received nothing; out=[${out}]"
+fi
+
 if [ "${tests_failed}" -ne 0 ]; then
    printf '%s\n' "git_push_test: ${tests_failed}/${tests_total} FAILED" >&2
    exit 1
