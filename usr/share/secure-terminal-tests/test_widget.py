@@ -865,9 +865,12 @@ ok('!' * 50 not in _eoft.transcript_text(),
    'the dangling escape tail is held back, not shown yet')
 _er, _ew = os.pipe()                                 # an empty pipe, write end closed:
 os.close(_ew)                                        # the next read returns b'' (EOF)
+if _eoft._fd is not None:                            # A1: close the real pty master before
+    os.close(_eoft._fd)                              # overwriting the fd (else it leaks)
 _eoft._fd = _er
 _eoft._read_and_render()                             # the child-exit / EOF path
 os.close(_er)
+_eoft._fd = None                                     # substitute already closed; no double-close on teardown
 _eoft._flush_paint()
 ok('result:' in _eoft.transcript_text() and '!' * 50 in _eoft.transcript_text(),
    'child exit flushes the held escape tail -- the final output is not lost')
@@ -2757,6 +2760,8 @@ _db.close()
 # must be a no-op then, not os.read(None) -> TypeError (an uncaught type error that
 # BlockingIOError/OSError do not catch).
 _rn = SecureTerminal(command='/bin/cat')
+if _rn._fd is not None:                               # A1: close the real pty master before
+    os.close(_rn._fd)                                 # discarding the ref (else it leaks)
 _rn._fd = None
 _rn_raised = False
 try:
