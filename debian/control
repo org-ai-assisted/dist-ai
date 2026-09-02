@@ -118,13 +118,6 @@ Recommends: qemu-system-arm,
  webp,
  librsvg2-bin,
  imagemagick
-## safe-pgrep / safe-pkill moved here from private-ai-config (the shots test harness
-## needs them in the public CI, where private-ai-config is absent). Replaces lets
-## dpkg hand the two files over from an installed private-ai-config. Unversioned on
-## purpose: both packages keep a STATIC version (no changelog bumps), so a versioned
-## Replaces/Breaks could not distinguish the pre-move private-ai-config -- and the
-## takeover is safe regardless of order (the new private-ai-config ships neither file).
-Replaces: private-ai-config
 Description: Comprehensive regression, fuzz and integration suites for Kicksecure tooling
  The AI-maintained test surface for the derivative-maker ecosystem: regression,
  fuzz, end-to-end and integration suites for helper-scripts,
