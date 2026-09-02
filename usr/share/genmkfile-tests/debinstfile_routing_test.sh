@@ -263,6 +263,39 @@ else
    pass 'an existing debian/install suppresses generation (dh would ignore it otherwise)'
 fi
 
+## --- producer failure must ABORT, not accept a partial list -----------------
+## The file list is built by 'find | sort -z'. If sort (or find) fails AFTER emitting partial
+## output, the run must fail loud, not generate a truncated .install. A process substitution
+## '< <(find | sort)' hid the producer's exit status; the fix captures it with an explicit rc
+## check. Inject a 'sort -z' that emits ONE record then exits 1 (delegating any non '-z' sort to
+## the real one, so only the NUL-delimited producer is sabotaged).
+fake_bin="${work_dir}/fakebin"
+mkdir --parents -- "${fake_bin}"
+cat > "${fake_bin}/sort" <<'FAKESORT'
+#!/bin/bash
+for a in "$@"; do
+   case "${a}" in
+      -z | --zero-terminated)
+         IFS= read -r -d '' rec || true
+         printf '%s\0' "${rec}"
+         exit 1
+         ;;
+   esac
+done
+exec /usr/bin/sort "$@"
+FAKESORT
+chmod +x -- "${fake_bin}/sort"
+
+prod_dir="${work_dir}/producer-fail"
+make_fixture "${prod_dir}"
+prod_rc=0
+( cd -- "${prod_dir}" && PATH="${fake_bin}:${PATH}" "${genmkfile_bin}" debinstfile ) >/dev/null 2>&1 || prod_rc=$?
+if [ "${prod_rc}" -ne 0 ]; then
+   pass 'a failing find|sort producer aborts debinstfile (no partial .install accepted)'
+else
+   fail "debinstfile exited 0 despite sort failing: $(ls -- "${prod_dir}/debian" 2>/dev/null || true)"
+fi
+
 printf '%s\n' "" "${checks} check(s), ${failures} failure(s)"
 if [ "${failures}" -ne 0 ]; then
    exit 1
