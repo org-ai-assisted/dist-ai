@@ -61,7 +61,6 @@ apt_packages_base='python3 python3-pytest python3-hypothesis safe-rm'
 apt_packages="${apt_packages_base}"
 helper_scripts='false'
 terminal_poc_corpus='false'
-private_ai_config='false'
 submodules='false'
 skip_args=''
 allow_skip_args=''
@@ -91,14 +90,6 @@ if [ -f "${cfg}" ]; then
    ## drives it can use one.
    if [ "$(yq -r '.["dist-ai-tests"]["terminal-poc-corpus"] // ""' "${cfg}")" = 'true' ]; then
       terminal_poc_corpus='true'
-   fi
-   ## Opt-in private-ai-config checkout. safe-pgrep/safe-pkill (the shots reaper's
-   ## marker-scoped orphan sweep) ship ONLY in private-ai-config; without them the
-   ## secure-terminal-shots reaper HARD-FAILS its R-220 type-check (bare pgrep -f
-   ## self-matches). private-ai-config is PRIVATE, so its checkout needs a deploy-key
-   ## secret -- opt-in per repo rather than cloning it for every consumer.
-   if [ "$(yq -r '.["dist-ai-tests"]["private-ai-config"] // ""' "${cfg}")" = 'true' ]; then
-      private_ai_config='true'
    fi
    ## Opt-in submodule checkout for the component. Some suites assert on files
    ## that live in a SUBMODULE (derivative-maker's dm-grub-smbios-tests compares
@@ -182,7 +173,6 @@ fi
    printf '%s\n' "apt_packages=${apt_packages}"
    printf '%s\n' "helper_scripts=${helper_scripts}"
    printf '%s\n' "terminal_poc_corpus=${terminal_poc_corpus}"
-   printf '%s\n' "private_ai_config=${private_ai_config}"
    printf '%s\n' "submodules=${submodules}"
    printf '%s\n' "skip_args=${skip_args# }"
    printf '%s\n' "allow_skip_args=${allow_skip_args# }"
