@@ -24,6 +24,7 @@ import os
 import sys
 import signal
 import tempfile
+import weakref
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 os.environ['XDG_CONFIG_HOME'] = tempfile.mkdtemp(prefix='st-widget-cfg-')
@@ -141,6 +142,47 @@ from PyQt6.QtWidgets import QMessageBox        # noqa: E402
 QMessageBox.question = staticmethod(lambda *_a, **_k: QMessageBox.StandardButton.Yes)
 
 
+# Deterministic pty cleanup. These suites build ~130 SecureTerminal instances (each forks a
+# real pty child) across their sections and mostly never close them individually, so the
+# master fds + children were left to the process os._exit. Track every construction (this
+# catches standalone terminals AND the tabs a MainWindow builds) and shut them all down in
+# finish() -- shutdown() only releases the pty (fd + child hang-up via _release_pty, which is
+# idempotent), it does NOT destroy the QWidget, so it cannot trigger the offscreen-Qt static
+# teardown crash that os._exit exists to dodge. This owns the resources instead of leaking
+# them to exit; it is scoped to the two widget halves (only they import this harness).
+_LIVE_TERMS = []
+_orig_st_init = SecureTerminal.__init__
+
+
+def _tracking_st_init(self, *args, **kwargs):
+    _orig_st_init(self, *args, **kwargs)
+    _LIVE_TERMS.append(weakref.ref(self))
+
+
+SecureTerminal.__init__ = _tracking_st_init
+
+
+def _shutdown_all_terms():
+    ## Hanging up ~130 pty children at once SIGHUPs any that share this process's group
+    ## (a term whose child did not setsid), which would kill the harness mid-cleanup (exit
+    ## 129). We are a headless test process tearing our OWN children down -- ignore it, the
+    ## same way the harness already ignores SIGCHLD. We os._exit immediately after, so this
+    ## is not restored.
+    try:
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    except (OSError, ValueError, AttributeError):
+        pass
+    for _ref in _LIVE_TERMS:
+        _t = _ref()
+        if _t is None:
+            continue
+        try:
+            _t.shutdown()
+        except Exception:
+            pass          # best-effort teardown: a half-built / already-torn term must not
+    del _LIVE_TERMS[:]    # abort the mass cleanup or the run's clean result
+
+
 def fmt_of_char(term, ch):
     """The QTextCharFormat of the first cell rendering `ch` in `term`'s document.
     Shared by both halves (a colour cell is asserted in each)."""
@@ -172,6 +214,7 @@ def finish(label):
     these suites build), which would turn a fully-passing run into a non-zero exit. All
     tests have run and the result is known, so persist coverage and exit hard, bypassing
     that teardown."""
+    _shutdown_all_terms()   # release every pty (fd + child) the suite built, before we exit
     sys.stdout.write('secure-terminal-tests(%s): %d passed, %d failed\n'
                      % (label, PASS, FAIL))
     try:
