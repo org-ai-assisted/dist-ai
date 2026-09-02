@@ -364,6 +364,75 @@ _mev = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(0.0, 0.0),
 _ed.mousePressEvent(_mev)
 ok(0 <= _ed._pos <= len(_ed.source()), 'a mouse press places the caret at a valid source index')
 
+# --- CRIT1 REGRESSION: the doc<->source mapping must be MONOTONIC + select exactly the
+# VISIBLE characters, in ALL display modes. In 'show' a >8 combining-mark (Zalgo) run
+# collapses to ONE box glyph; the old prefix-render _offset then went NON-monotonic
+# across the cluster (a prefix cutting it showed the partial marks as separate cells),
+# so the binary search returned mid-cluster indices and a selection after the cluster
+# deleted the WRONG (invisible) bytes while the visible chars still delivered. FAILS on
+# the pre-fix code in 'show'.
+_ACUTE = chr(0x0301)                                   # combining acute
+_DISPLAY_MODES = ('box', 'show', 'reveal', 'detail')
+
+
+def _select_doc(ed, a, b):
+    cur = ed.textCursor()
+    cur.setPosition(ed._offset(a))
+    cur.setPosition(ed._offset(b), QTextCursor.MoveMode.KeepAnchor)
+    ed.setTextCursor(cur)
+
+
+for _mode in _DISPLAY_MODES:
+    _ze = RevealedEditor()
+    _ze.set_mode(_mode)
+    _ze.set_source('a' + _ACUTE * 9 + 'XYZ')           # 9 marks: >8, collapses in 'show'
+    _src = _ze.source()
+    # _offset monotonic non-decreasing across every source index
+    _offs = [_ze._offset(_i) for _i in range(len(_src) + 1)]
+    ok(all(_offs[_i] <= _offs[_i + 1] for _i in range(len(_src))),
+       '%s: _offset is monotonic across a collapsed Zalgo cluster' % _mode)
+    # selecting the VISIBLE trailing "XYZ" and deleting removes exactly XYZ
+    _x = _src.index('X')
+    _select_doc(_ze, _x, _x + 3)
+    _ze.keyPressEvent(key_ev(Qt.Key.Key_Delete))
+    eq(_ze.source(), 'a' + _ACUTE * 9,
+       '%s: deleting the visibly-selected XYZ removes exactly XYZ (right bytes)' % _mode)
+
+# a >_COMBINING_RUN_MAX Zalgo flood is capped in the box source, so the source stays 1:1
+# with the render cells (no stored-but-undrawn marks that would desync the mapping)
+_flood = RevealedEditor()
+_flood.set_source('a' + _ACUTE * 100 + 'b')
+_run = _maxrun = 0
+for _ch in _flood.source():
+    if _ch == _ACUTE:
+        _run += 1
+        _maxrun = max(_maxrun, _run)
+    else:
+        _run = 0
+ok(_maxrun <= 32, 'a Zalgo flood is capped at 32 marks/run in the box source (got %d)' % _maxrun)
+# an insert that JOINS two sub-cap runs into an over-cap flood is re-capped
+_join = RevealedEditor()
+_join.set_source('a' + _ACUTE * 20)
+_join._pos = len(_join.source())
+_join_mime = QMimeData()
+_join_mime.setText(_ACUTE * 20)
+_join.insertFromMimeData(_join_mime)                   # 20 + 20 across the splice -> >32
+_run = _maxrun = 0
+for _ch in _join.source():
+    if _ch == _ACUTE:
+        _run += 1
+        _maxrun = max(_maxrun, _run)
+    else:
+        _run = 0
+ok(_maxrun <= 32, 'an insert joining two sub-cap runs is re-capped to 32 (got %d)' % _maxrun)
+# a multi-line box: the mapping round-trips across the newline (covers the \n branch)
+_ml = RevealedEditor()
+_ml.set_source('ab\ncd')
+ok(all(_ml._offset(_i) <= _ml._offset(_i + 1) for _i in range(len(_ml.source()))),
+   'the mapping is monotonic across a newline')
+eq(_ml._source_index_for_doc_pos(_ml._offset(4)), 4,
+   'a doc offset on line 2 maps back to the right source index across the newline')
+
 
 # ======================================================================
 # ReviewBar -- the bar around the box
