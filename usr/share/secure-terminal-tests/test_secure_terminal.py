@@ -378,6 +378,15 @@ _wc4, _wcells4, _wcol4, _ws4, _ww4 = S.feed_line_edits([], 0, {}, 'abcd\x1b[KX',
 eq(len(_wc4), 0, 'an erase op after the last column cancels the pending wrap')
 eq([ch for ch, _ in _wcells4], ['a', 'b', 'c', 'X'],
    'the erase clears the pending wrap so X overwrites the last cell (abcX)')
+# a width-filled line ended by the bracketed-paste marker (bash prompt order) is
+# still a soft autowrap -- the prompt continues on the next row, so copy must
+# rejoin. Marking it a hard break inserted a '\n' the byte stream never had.
+_wc5, _wcells5, _wcol5, _ws5, _ww5 = S.feed_line_edits([], 0, {}, 'abcd\x1b[?2004h$ ', 4)
+eq(len(_wc5), 1, 'the filled line is completed when the prompt marker follows')
+eq(_ww5, [True], 'a width-filled line + prompt marker is flagged a soft wrap (copy rejoins)')
+# but a PARTIAL line ended by the marker is a real break, not a wrap
+_wc6, _wcells6, _wcol6, _ws6, _ww6 = S.feed_line_edits([], 0, {}, 'ab\x1b[?2004h$ ', 4)
+eq(_ww6, [False], 'a partial line + prompt marker is not flagged a wrap')
 # CSI 1K erases from the start of the line up to (and including) the cursor: after
 # 'abcde' move the cursor to column 2 (CSI 3G) then erase-to-BOL -> "   de".
 _e1c, _e1cells, _e1col, _e1s, _e1w = S.feed_line_edits([], 0, {}, 'abcde\x1b[3G\x1b[1K', 80)

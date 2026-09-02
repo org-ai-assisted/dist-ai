@@ -579,7 +579,7 @@ def _ref_feed_line_edits(cells, col, sgr, raw, max_line=0, line_edits=True):
                 j = i + len(S.PROMPT_START)
                 if col != 0 and S._printable_follows(raw, j):
                     completed.append(cells)
-                    wraps.append(False)
+                    wraps.append(bool(max_line) and col >= max_line)
                     cells, col = [], 0
                 i = j
                 continue
