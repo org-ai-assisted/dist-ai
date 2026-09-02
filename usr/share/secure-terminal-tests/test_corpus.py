@@ -562,9 +562,9 @@ def _ref_feed_line_edits(cells, col, sgr, raw, max_line=0, line_edits=True):
                     elif num == 1:
                         for j in range(0, min(col + 1, len(cells))):
                             cells[j] = (' ', cells[j][1])
-                    elif num == 2:
-                        cells = []
-                        col = 0
+                    elif num == 2:                       # erase whole line;
+                        # cursor unchanged (ECMA-48): blank to col cells, keep col
+                        cells = [(' ', tuple(sorted(sgr.items())))] * col
                 if max_line and col >= max_line:
                     col = max_line - 1
                 i = m.end()
