@@ -22,7 +22,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 try:
     from PyQt6.QtWidgets import QApplication, QWidget, QMessageBox
-    from PyQt6.QtGui import QKeyEvent, QMouseEvent
+    from PyQt6.QtGui import QKeyEvent, QMouseEvent, QTextCursor, QGuiApplication
     from PyQt6.QtCore import Qt, QEvent, QMimeData, QPointF
     from secure_terminal.review import ReviewBar
     from secure_terminal.revealed_editor import RevealedEditor
@@ -192,11 +192,17 @@ _ed._pos = 2                              # end of line 1 (col 2)
 _ed.keyPressEvent(key_ev(Qt.Key.Key_Down))
 eq(_ed._pos, 5, 'Down into a longer line keeps the column (index 5)')
 
-# Ctrl chords fall through to the base (no model mutation)
+# the read-only Ctrl chords (select-all, copy) fall through to the base without mutating
+_CTRL = Qt.KeyboardModifier.ControlModifier
 _ed.set_source('abc')
 _ed._pos = 1
-_ed.keyPressEvent(key_ev(Qt.Key.Key_A, mods=Qt.KeyboardModifier.ControlModifier, text='\x01'))
-eq(_ed.source(), 'abc', 'a Ctrl chord does not mutate the box')
+_ed.keyPressEvent(key_ev(Qt.Key.Key_C, mods=_CTRL, text='\x03'))
+eq(_ed.source(), 'abc', 'Ctrl+C (copy) does not mutate the box')
+_ed.keyPressEvent(key_ev(Qt.Key.Key_Insert, mods=_CTRL))
+eq(_ed.source(), 'abc', 'Ctrl+Insert (copy) does not mutate the box')
+# an UNLISTED Ctrl chord is swallowed entirely (no base edit action can reach the doc)
+_ed.keyPressEvent(key_ev(Qt.Key.Key_Z, mods=_CTRL, text='\x1a'))
+eq(_ed.source(), 'abc', 'an unlisted Ctrl chord (Ctrl+Z) is swallowed, no mutation')
 # a key with no text and no handler falls through to the base
 _ed.keyPressEvent(key_ev(Qt.Key.Key_F5))
 eq(_ed.source(), 'abc', 'an unhandled no-text key falls through with no change')
@@ -204,6 +210,106 @@ eq(_ed.source(), 'abc', 'an unhandled no-text key falls through with no change')
 _esc = key_ev(Qt.Key.Key_Escape)
 _ed.keyPressEvent(_esc)
 ok(not _esc.isAccepted(), 'the editor ignores Esc so it bubbles to the review bar')
+
+# --- CRIT1 REGRESSION: source() must equal what the box VISIBLY shows, across every
+# base-editor mutation vector. self._text is the ONLY authority (source()/Deliver read
+# it); a base op that edits the rendered document without routing through _text desyncs
+# it, so Deliver would cross STALE text. Each vector below FAILS on the pre-fix code
+# (which passed Ctrl chords to super() and had no selection model): the base mutates the
+# doc, source() stays the original.
+ok(_ed.contextMenuPolicy() == Qt.ContextMenuPolicy.NoContextMenu,
+   'the context menu is disabled (its Cut/Paste/Delete cannot edit the doc)')
+ok(not _ed.acceptDrops(), 'drops are disabled (no drag-drop edit behind the model)')
+
+
+def _select_src(ed, a, b):
+    """Set the base cursor's selection over SOURCE range [a, b), via doc offsets --
+    the same selection a mouse drag or Ctrl+A leaves for the edit ops to act on."""
+    cur = ed.textCursor()
+    cur.setPosition(ed._offset(a))
+    cur.setPosition(ed._offset(b), QTextCursor.MoveMode.KeepAnchor)
+    ed.setTextCursor(cur)
+
+
+# Ctrl+A then Ctrl+X: the whole box is cut THROUGH THE MODEL, not just the visible doc
+_ed.set_source('helloEVILworld')
+_ed.keyPressEvent(key_ev(Qt.Key.Key_A, mods=_CTRL, text='\x01'))
+_ed.keyPressEvent(key_ev(Qt.Key.Key_X, mods=_CTRL, text='\x18'))
+eq(_ed.source(), '', 'Ctrl+A + Ctrl+X empties source() (no desync)')
+# Ctrl+X on a mid selection removes exactly that source span
+_ed.set_source('helloEVILworld')
+_select_src(_ed, 5, 9)
+_ed.keyPressEvent(key_ev(Qt.Key.Key_X, mods=_CTRL, text='\x18'))
+eq(_ed.source(), 'helloworld', 'Ctrl+X removes exactly the selected span from source()')
+# Ctrl+X does NOT write the (unreviewed) box text to the OS clipboard -- no exfil
+_board = QGuiApplication.clipboard()
+_board.setText('SENTINEL')
+_ed.set_source('secretEVIL')
+_select_src(_ed, 6, 10)
+_ed.keyPressEvent(key_ev(Qt.Key.Key_X, mods=_CTRL, text='\x18'))
+eq(_board.text(), 'SENTINEL', 'Ctrl+X writes nothing to the clipboard (no exfil of unreviewed text)')
+# Ctrl+X with NO selection is a no-op (does not cut the line)
+_ed.set_source('keep me')
+_ed._pos = 3
+_ed.keyPressEvent(key_ev(Qt.Key.Key_X, mods=_CTRL, text='\x18'))
+eq(_ed.source(), 'keep me', 'Ctrl+X with no selection is a no-op')
+# type-over-selection replaces the selection in source()
+_ed.set_source('helloEVILworld')
+_select_src(_ed, 5, 9)
+_ed.keyPressEvent(key_ev(Qt.Key.Key_Z, text='Z'))
+eq(_ed.source(), 'helloZworld', 'typing over a selection replaces it (no leftover hostile text)')
+# typing a DROPPED invisible over a selection still deletes the selection
+_ed.set_source('helloEVILworld')
+_select_src(_ed, 5, 9)
+_ed.keyPressEvent(key_ev(0, text=ZWSP))
+eq(_ed.source(), 'helloworld', 'typing a dropped invisible over a selection deletes it')
+# Ctrl+V paste over a selection replaces it, re-sanitized
+_ed.set_source('helloEVILworld')
+_select_src(_ed, 5, 9)
+QGuiApplication.clipboard().setText('X' + ZWSP + 'Y')
+_ed.keyPressEvent(key_ev(Qt.Key.Key_V, mods=_CTRL, text='\x16'))
+eq(_ed.source(), 'helloXYworld', 'Ctrl+V replaces the selection with sanitized clipboard text')
+# Backspace / Delete with a selection delete the whole selection (not one char)
+_ed.set_source('helloEVILworld')
+_select_src(_ed, 5, 9)
+_ed.keyPressEvent(key_ev(Qt.Key.Key_Backspace))
+eq(_ed.source(), 'helloworld', 'Backspace with a selection deletes the whole selection')
+_ed.set_source('helloEVILworld')
+_select_src(_ed, 5, 9)
+_ed.keyPressEvent(key_ev(Qt.Key.Key_Delete))
+eq(_ed.source(), 'helloworld', 'Delete with a selection deletes the whole selection')
+# Ctrl+Backspace / Ctrl+Delete: word-delete through the model (no base word-delete)
+_ed.set_source('rm -rf secret')
+_ed._pos = len(_ed.source())
+_ed.keyPressEvent(key_ev(Qt.Key.Key_Backspace, mods=_CTRL, text='\x08'))
+eq(_ed.source(), 'rm -rf ', 'Ctrl+Backspace deletes the previous word through the model')
+_ed.set_source('rm -rf secret')
+_ed._pos = 0
+_ed.keyPressEvent(key_ev(Qt.Key.Key_Delete, mods=_CTRL, text='\x7f'))
+eq(_ed.source(), ' -rf secret', 'Ctrl+Delete deletes the next word through the model')
+# word-delete from ON whitespace skips the run of spaces first (both directions)
+_ed.set_source('ls  file')
+_ed._pos = 2                                  # on the run of spaces
+_ed.keyPressEvent(key_ev(Qt.Key.Key_Delete, mods=_CTRL, text='\x7f'))
+eq(_ed.source(), 'ls', 'Ctrl+Delete from on spaces skips them, then deletes the next word')
+_ed.set_source('file  ')
+_ed._pos = 6                                  # after the trailing spaces
+_ed.keyPressEvent(key_ev(Qt.Key.Key_Backspace, mods=_CTRL, text='\x08'))
+eq(_ed.source(), '', 'Ctrl+Backspace from after trailing spaces skips them, then deletes the word')
+# Ctrl+word-delete with a selection deletes the selection instead
+_ed.set_source('helloEVILworld')
+_select_src(_ed, 5, 9)
+_ed.keyPressEvent(key_ev(Qt.Key.Key_Backspace, mods=_CTRL, text='\x08'))
+eq(_ed.source(), 'helloworld', 'Ctrl+Backspace with a selection deletes the selection')
+# a mouse press collapses any selection BEFORE the base sees it (no drag-move source)
+_ed.set_source('abc')
+_select_src(_ed, 0, 3)
+ok(_ed.textCursor().hasSelection(), 'precondition: a selection is set')
+_ed.mousePressEvent(QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(0.0, 0.0),
+                                Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                                Qt.KeyboardModifier.NoModifier))
+ok(not _ed.textCursor().hasSelection(),
+   'a mouse press collapses the selection first (a drag-move cannot start)')
 
 # paste INTO the box is re-sanitized; a None mime source inserts nothing
 _ed.set_source('a')
