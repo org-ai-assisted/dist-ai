@@ -451,6 +451,30 @@ ok('Keeping printable unicode' in _bar._status.text()
    and 'dropped' in _bar._status.text(),
    'the status line names the keep-printable transform + how much it dropped')
 ok('Look-alike' in _bar._detail.text(), 'the breakdown lists the look-alike class')
+
+# REGRESSION: the keep-printable status counts ALL drops the box makes -- including the
+# editor's combining-run cap -- not just the invisibles. On a >32 Zalgo flood the old
+# count (len - len(sanitize_clipboard_unicode), which KEEPS combining) read "0 dropped"
+# while the box actually shrank ~968 chars, contradicting the same bar's hidden-char
+# table. Counted against the ACTUAL box now.
+_zt = _FakeTerm()
+_bar.show_review(_zt, 'a' + _ACUTE * 100, 0, 'paste')      # 100 marks -> box caps at 32
+_zexpect = len('a' + _ACUTE * 100) - len(_bar._editor.source())
+ok(_zexpect > 60, 'precondition: the flood really shrank the box (dropped %d)' % _zexpect)
+ok('0 hidden characters dropped' not in _bar._status.text()
+   and ('%d hidden' % _zexpect) in _bar._status.text(),
+   'a >32-combining flood reports the REAL dropped count, not 0: %r' % _bar._status.text())
+# Restore reports the same real count (same path)
+_bar._do_strip()                                           # move off keep first
+_saved_zq = QMessageBox.question
+QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)
+try:
+    _bar._do_restore()
+finally:
+    QMessageBox.question = _saved_zq
+ok(('%d hidden' % _zexpect) in _bar._status.text(),
+   'Restore reports the same real dropped count for the flood')
+_bar.show_review(_t, _raw, 3, 'paste')                     # restore the state the following tests assume
 ok(not _bar._deliver.isEnabled() and '(3)' in _bar._deliver.text(),
    'Deliver is countdown-gated for a paste and shows the remaining seconds')
 
