@@ -199,8 +199,12 @@ ok(all(cp > 0x7F for cp in S._ascii_confusables()),
 # empty set (a look-alike then just stays generic 'nonascii'), never crash: force
 # the load to raise and confirm the defensive except yields an empty frozenset.
 _saved_conf = S._ASCII_CONFUSABLES
+_saved_fold = S._ASCII_FOLD_MAP
 try:
+    # _ascii_confusables now DERIVES from _ascii_fold_map (single source of truth), so
+    # clear BOTH caches -- else the already-populated fold map masks the forced failure.
     S._ASCII_CONFUSABLES = None
+    S._ASCII_FOLD_MAP = None
 
 
     def _conf_load_boom(*_a, **_k):
@@ -210,9 +214,12 @@ try:
     _degraded = S._ascii_confusables()
     ok(_degraded == frozenset(),
        'the confusables loader degrades to an empty set when the data cannot be read')
+    ok(S.ascii_fold('ex' + chr(0x0430) + 'y') == 'exy',
+       'ascii_fold degrades to a plain non-ASCII drop when the fold data is unreadable')
 finally:
     del S.open
     S._ASCII_CONFUSABLES = _saved_conf
+    S._ASCII_FOLD_MAP = _saved_fold
 _mk = [(chr(0x202E), ())]
 _runs, _ = S.cells_to_runs([], _mk, 'reveal', False, True)
 ok(any(k == (S.MARK_KEY, 'bidi', 0x202E) for _t, k in _runs),
@@ -598,6 +605,17 @@ eq(S.sanitize_bytes(b'a\x08 \x08', 'box'), 'a\x08 \x08', 'sanitize_bytes keeps b
 eq(S.sanitize_paste('a\nb\r\tc'), 'a\rb\r\tc', 'paste nl/cr -> cr, tab kept')
 eq(S.sanitize_paste('ex' + chr(0x0430) + 'mple.org'), 'exmple.org', 'paste strips cyrillic homoglyph')
 eq(S.sanitize_paste('x' + BIDI + ZWSP + 'y'), 'xy', 'paste strips bidi+zw')
+# ascii_fold: unlike sanitize_paste (which DROPS a look-alike), it FOLDS each look-alike to
+# the ASCII it imitates, then strips to clean paste-safe ASCII -- so a homoglyph-spoofed
+# domain folds to the literal ASCII it was pretending to be. (New for the review-bar redesign.)
+eq(S.ascii_fold('ex' + chr(0x0430) + 'mple.com'), 'example.com',
+   'ascii_fold folds the cyrillic-a look-alike to the ASCII "a" it imitates')
+eq(S.ascii_fold('b' + chr(0x0430) + 'sh -c'), 'bash -c', 'ascii_fold: cyrillic homoglyph -> ascii')
+eq(S.ascii_fold('x' + BIDI + ZWSP + chr(0x0430) + 'y'), 'xay',
+   'ascii_fold drops invisibles/bidi AND folds the look-alike (clean, paste-safe)')
+ok(all(c in '\r\t' or 0x20 <= ord(c) <= 0x7E
+       for c in S.ascii_fold('caf' + chr(0x00E9) + ' ' + chr(0x0430) + ' ' + chr(0x1F600))),
+   'ascii_fold output is guaranteed unicode-clean + paste-safe ASCII')
 
 # --- crafted paste cannot smuggle HIDDEN code / escapes into the shell --------
 # The class of attack: a paste that carries an escape (to be reflected back as

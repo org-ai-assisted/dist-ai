@@ -1734,6 +1734,16 @@ try:
 except SystemExit as _se2:
     _reje2 = (_se2.code == 2)
 ok(_reje2, 'parse: an empty-program -e STRING (\'""\') exits(2), never a login shell')
+# codex: a TRULY EMPTY -e (`-e ""` -> cmd == '', zero-length, distinct from the 2-char
+# '""' above) also names no program. The old check `isinstance(cmd, str) and cmd` skipped
+# the empty string (falsy) so _argv_for_command dropped to a LOGIN SHELL -- a locked
+# launcher whose cmd var went empty failed OPEN. (canary: old code raised no SystemExit.)
+_rejempty = False
+try:
+    _pla(['-e', ''])
+except SystemExit as _see:
+    _rejempty = (_see.code == 2)
+ok(_rejempty, 'parse: a truly-empty -e ("") exits(2), never a login shell (fail closed)')
 ok(_pla(['-e', 'echo ok']).tabs[-1]['command'] == 'echo ok',
    'parse: a well-formed -e string is accepted (shell-split at spawn, not here)')
 ok(_pla(['--', 'echo', "'unbalanced"]).tabs[-1]['command'] == ['echo', "'unbalanced"],
