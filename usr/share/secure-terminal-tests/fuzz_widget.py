@@ -111,10 +111,13 @@ def _feed(term, raw):
 
 
 def _check_document(term, seed, ctx):
-    ## The visible transcript is the sanitization guarantee: no raw ESC, no C0
-    ## control except the structural newline/tab.
+    ## The visible transcript is the sanitization guarantee: no control code point
+    ## reaches the document except the structural newline/tab. A bare `ord >= 0x20`
+    ## would ADMIT DEL (0x7F) and the C1 controls (0x80-0x9F) -- both non-printable,
+    ## both outside the sanitizer's proven display alphabet (0x20-0x7E) -- so name the
+    ## ranges: printable ASCII, or printable unicode (>= 0xA0), never a C0/DEL/C1.
     for ch in term.toPlainText():
-        _assert(ch in ('\n', '\t') or ord(ch) >= 0x20,
+        _assert(ch in ('\n', '\t') or 0x20 <= ord(ch) <= 0x7e or ord(ch) >= 0xa0,
                 'raw control {0!r} reached the document ({1})'.format(ch, ctx), seed)
 
 
@@ -194,10 +197,14 @@ def phase_paste(rnd, iterations, seed):
         if term.review_pending():
             term.dispatch_pending_paste(rnd.choice(('stripped', 'unicode', 'reject')))
         for data in sent:
-            ## strip a bracketed-paste wrapper, then no ESC/C0 (bar the submit CR/tab)
+            ## strip a bracketed-paste wrapper, then no ESC/C0/DEL (bar the submit
+            ## CR/tab). At the BYTE level 0x80-0xFF are legitimate UTF-8 lead/
+            ## continuation bytes of printable unicode a keep-printable paste delivers,
+            ## so they pass; DEL (0x7F) is never part of a UTF-8 sequence, so a bare
+            ## `byte >= 0x20` wrongly admitting it is a real gap -- exclude it.
             payload = data.replace(b'\x1b[200~', b'').replace(b'\x1b[201~', b'')
             for byte in payload:
-                _assert(byte >= 0x20 or byte in (0x09, 0x0d),
+                _assert(byte in (0x09, 0x0d) or 0x20 <= byte <= 0x7e or byte >= 0x80,
                         'paste leaked control byte {0:#x} to the pty on {1!r}'
                         .format(byte, text), seed)
 
@@ -227,8 +234,10 @@ def phase_review(rnd, iterations, seed):
     ## live rerender_mirror (a mode flip while the review is open): none may crash, the
     ## box must never surface a raw ESC (escape sequences are rendered, not shown), and
     ## the box source must stay display-clean (no control/invisible slips through the
-    ## keep-printable + transform pipeline). The DELIVERED text's control-byte safety is
-    ## a sanitize property, covered by the sanitize fuzz.
+    ## keep-printable + transform pipeline). The DELIVER path itself (the box PLUS the
+    ## un-shown beyond-cap tail, composed and handed to the dispatch) is fuzzed
+    ## separately in _fuzz_review_delivery below -- this loop's inputs are all shorter
+    ## than the box cap, so they never populate the tail.
     from secure_terminal.review import ReviewBar
     from secure_terminal.sanitize import sanitize_clipboard, reveal_display
     from PyQt6.QtWidgets import QWidget, QMessageBox
@@ -265,8 +274,117 @@ def phase_review(rnd, iterations, seed):
             term.apply_mode(rnd.choice(list(S.DISPLAY_MODES)))
             bar.rerender_mirror()
             bar.hide_review()
+            # drive the REAL Deliver path with a populated un-shown tail
+            _fuzz_review_delivery(rnd, bar, term, seed)
     finally:
         QMessageBox.question = _saved_q
+
+
+def _fuzz_review_delivery(rnd, bar, term, seed):
+    ## The beyond-cap tail is the review bar's subtlest surface: raw[_BOX_MAX:] is held
+    ## OUT of the editable box (never shown, never editable) yet STILL delivered,
+    ## neutralized to the tier the visible box got (review._TIER[_active_mode]). Two
+    ## properties the box-only fuzz above cannot reach because its inputs never overflow
+    ## the cap:
+    ##   (A) a Deliver the box-gate allowed never hands ANY invisible/bidi/control byte
+    ##       to the dispatch -- the un-shown tail cannot smuggle one in;
+    ##   (B) the un-shown tail is never WEAKER than the transform the user pressed --
+    ##       a [Strip unicode] / [ASCII-fold] leaves the tail pure ASCII (else a paste
+    ##       longer than the cap would slip a homoglyph past a strip), and a
+    ##       [Keep printable] tail is at least invisible-free.
+    ## This is the crit1 tail-neutralization regression, now fuzzed across every tier
+    ## and both trust directions instead of a single hand-built example.
+    from secure_terminal import review as R
+    ## Shrink the box cap so a short adversarial paste overflows it CHEAPLY: the real
+    ## 20000-char cap would render 20k cells per iteration. The tier logic under test is
+    ## identical at any cap -- only the split point moves.
+    saved_cap = R._BOX_MAX
+    R._BOX_MAX = 16
+    ## Capture what the bar hands the dispatch (box + neutralized tail) without the real
+    ## sanitize / pty / clipboard side effects. paste/copy dispatch live on the term
+    ## CLASS and clipboard's on another class entirely, so a fresh term has none of them
+    ## as instance attributes -- popping the instance shadow in the finally restores the
+    ## class methods and drops the clipboard stand-in.
+    captured = {}
+
+    def _cap(action, text=None):
+        captured['action'] = action
+        captured['text'] = text
+
+    names = ('dispatch_pending_paste', 'dispatch_pending_copy',
+             'dispatch_pending_clipboard')
+    for name in names:
+        setattr(term, name, _cap)
+    try:
+        for kind in ('paste', 'copy', 'clipboard', 'bogus'):
+            # box slice pure ASCII (so a strip/fold leaves the box ASCII); the tail
+            # ALWAYS carries a look-alike + an invisible (U+0430 Cyrillic a, U+200B
+            # ZWSP) so both invariants keep teeth, plus random adversarial tokens. The
+            # fixed prefix also guarantees a non-empty tail -- a _rand_token run can be
+            # '' (its repeat-count arm can pick 0), which would otherwise leave the box
+            # exactly at the cap and populate no tail.
+            tail = '\u0430\u200b' + ''.join(_rand_token(rnd)
+                                            for _ in range(rnd.randint(0, 6)))
+            raw = 'a' * R._BOX_MAX + tail
+            for tform, mode in ((bar._do_keep, 'keep'), (bar._do_strip, 'strip'),
+                                (bar._do_fold, 'fold')):
+                bar.show_review(term, raw, 0, kind)
+                _assert(bar._tail, 'the tail did not populate for {0!r}'.format(raw), seed)
+                tform()
+                _assert(bar._active_mode == mode,
+                        'transform left _active_mode {0!r}, expected {1!r}'
+                        .format(bar._active_mode, mode), seed)
+                captured.clear()
+                bar._remaining = 0            # bypass the anti-fat-finger countdown
+                bar._deliver_clicked()        # the REAL gate re-check + _choose('deliver')
+                _assert('text' in captured,
+                        'Deliver did not dispatch (kind={0} mode={1})'.format(kind, mode),
+                        seed)
+                _assert(captured['action'] == 'unicode',
+                        'Deliver dispatched {0!r}, not the re-sanitizing "unicode" action'
+                        .format(captured['action']), seed)
+                composite = captured['text']
+                # (A) nothing hidden crosses -- the bar must not hand one over even before
+                # the dispatch's own re-drop backstop.
+                _assert(bar._blocked_count(composite) == 0,
+                        'delivered composite carries {0} hidden char(s) (kind={1} mode={2})'
+                        .format(bar._blocked_count(composite), kind, mode), seed)
+                # (B) the un-shown tail is no weaker than the chosen tier.
+                tail_out = bar._tail_delivered()
+                if mode in ('strip', 'fold'):
+                    _assert(all(ord(c) < 0x80 for c in tail_out),
+                            'un-shown tail kept non-ASCII under {0} (kind={1} tail={2!r})'
+                            .format(mode, kind, tail_out), seed)
+                else:
+                    _assert(bar._blocked_count(tail_out) == 0,
+                            'un-shown tail kept a hidden char under keep (kind={0} '
+                            'tail={1!r})'.format(kind, tail_out), seed)
+            # a manual box edit AFTER a strip, then Deliver: the box is WYSIWYG (a
+            # re-typed visible character -- incl. a look-alike -- legitimately survives
+            # and shows), but the un-shown TAIL must still respect the active tier and
+            # add no hidden char. The edit draws from _TEXT (visible: ASCII + look-
+            # alikes/emoji), NOT _rand_token, so it never re-introduces a hidden char
+            # that the Deliver gate would (correctly) block -- that block path is the
+            # gate's own concern, covered in test_review.py, not this tail assertion.
+            bar.show_review(term, raw, 0, kind)
+            bar._do_strip()
+            bar._editor.set_source(''.join(rnd.choice(_TEXT)
+                                           for _ in range(rnd.randint(0, 8))))
+            captured.clear()
+            bar._remaining = 0
+            bar._deliver_clicked()
+            _assert('text' in captured,
+                    'edited Deliver did not dispatch (kind={0})'.format(kind), seed)
+            _assert(all(ord(c) < 0x80 for c in bar._tail_delivered()),
+                    'un-shown tail kept non-ASCII under strip after a manual edit '
+                    '(kind={0})'.format(kind), seed)
+            _assert(bar._blocked_count(captured['text']) == 0,
+                    'edited delivery carried a hidden char (kind={0})'.format(kind), seed)
+            bar.hide_review()
+    finally:
+        for name in names:
+            term.__dict__.pop(name, None)
+        R._BOX_MAX = saved_cap
 
 
 PHASES = (

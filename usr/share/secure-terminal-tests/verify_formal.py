@@ -142,6 +142,19 @@ METHOD, and what is PROVED vs ASSUMED (honest scope):
   does not model Qt, pyte, the pty, or terminal.py's RUNTIME; the widget's live
   behaviour stays covered by test_widget.py.
 
+  The review bar's ORCHESTRATION (review.py ReviewBar: the box-edit -> transform ->
+  countdown -> deliver state machine, and the un-shown beyond-cap tail neutralized to
+  the box's tier) is likewise out of formal scope -- it is Qt-bound and stateful. The
+  transforms it invokes ARE proved here (they are the pure sanitizers: strip = T4
+  sanitize_clipboard, keep/reveal = T4 sanitize_clipboard_unicode, fold = the T3-
+  homomorphic ascii_fold_display), and the delivery SINK is proved too (deliver always
+  dispatches action 'unicode' -> sanitize_paste_unicode / sanitize_clipboard_unicode),
+  so no invisible/bidi/control can cross regardless of the bar's logic. What formal
+  verification does NOT cover -- the bar routing edits/tail through the RIGHT tier --
+  is covered by fuzz_widget.py::_fuzz_review_delivery (the tail composition across
+  every tier + direction) and test_review.py's mode<->tier consistency check (every
+  _active_mode has a tier no weaker than the sink).
+
 Exit 0 on a fully discharged proof, 1 on any counterexample or unmet assumption.
 A missing z3 or secure_terminal is a hard FAILURE (a verification suite must never
 silently disable itself), never a skip.
