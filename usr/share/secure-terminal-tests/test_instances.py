@@ -309,9 +309,21 @@ def _run_suite(tag):
 
 
 # Per-launch respawn (above) handles the common flake; this whole-suite retry backstops
-# the race scenario (F) when its entire burst crashes. Fresh group names each attempt; a
-# failure with NO Qt-startup crash is a real bug, reported at once and never retried.
-_MAX_ATTEMPTS = 4
+# it when a single crashed launch cascades (a crashed PRIMARY fails every dependent
+# scenario at once) or the race burst (F) whole-crashes. Fresh group names each attempt;
+# a failure with NO Qt-startup crash is a real bug, reported at once and never retried
+# (the gate that keeps this from masking a genuine regression).
+#
+# The underlying crash is a Qt-offscreen QApplication-startup SIGSEGV/SIGABRT under
+# concurrent launches: empty stderr, no core, dies before it binds -- a Qt-internal
+# artifact, not a product fault, and NOT fixable by test-env isolation (the resource it
+# races on, XDG_RUNTIME_DIR, MUST be shared so the instances find each other's socket --
+# that sharing IS what the suite tests). So the durable fix is a robust, BOUNDED retry.
+# Sized from measured flake behaviour: under a deliberate concurrency stress the flake hit
+# ~2/12 runs and recovered in ONE retry; a --core load spike once exhausted 4 attempts
+# (the cascade), so the headroom is raised well past that. A truly persistent crash still
+# fails loud after the bound; a real (crash-free) failure never spends a retry.
+_MAX_ATTEMPTS = 8
 _failures = 0
 for _attempt in range(_MAX_ATTEMPTS):
     _failures, _saw_crash = _run_suite('%d-%d' % (os.getpid(), _attempt))
