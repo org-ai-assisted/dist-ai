@@ -195,23 +195,90 @@ run_suite_under_coverage() {  ## $1 = suite .py path -> returns the final rc
 }
 ## END-EXTRACT run_suite_under_coverage
 
+## Bytecode cache for the parallel suites -- kept OUT of the source checkout on purpose.
+## Two hazards it defuses:
+##  1) N concurrent `coverage run` processes racing to write the same secure_terminal
+##     __pycache__/*.pyc on a cold checkout -> a process importing a half-written .pyc
+##     gets subtly wrong bytecode (seen as test_corpus's feed_line_edits SGR cache
+##     diverging from its reference ONLY under parallel load).
+##  2) this gate runs under sudo, so any .pyc written into the checkout is ROOT-owned and
+##     the next (non-root) sandbox sync cannot purge it -- a stale .pyc then masks synced
+##     source (the same trap the hypothesis-store redirect already dodges).
+## PYTHONPYCACHEPREFIX mirrors every .pyc under the throwaway work dir instead of the
+## source tree; compileall single-process pre-populates it; PYTHONDONTWRITEBYTECODE then
+## stops the suite processes writing at all (they only read), so no write can race even
+## on an mtime edge. compileall MUST precede the DONTWRITEBYTECODE export (it would
+## otherwise honour it and skip writing the cache).
+export PYTHONPYCACHEPREFIX="${work}/pycache"
+python3 -m compileall -q "${pkg}" >/dev/null 2>&1 || true
+export PYTHONDONTWRITEBYTECODE=1
+
 python3 -m coverage erase
-## test_mainwin runs FIRST so a PERSISTENT crash (every retry exhausted) fails fast,
-## not after the long suites; order is irrelevant to the unioned coverage result.
-for suite in test_mainwin test_secure_terminal test_fuzz test_fuzz_harnesses \
-             test_corpus test_invariants test_cli test_unicode_tag test_modules \
-             test_review test_widget test_sclip test_clipboard_watch; do
+## Run every suite under coverage IN PARALLEL. coverage --parallel-mode has each
+## process write its OWN data file, so `coverage combine` unions them regardless of
+## order or timing -- the same union the old sequential loop produced, just faster
+## (wall-clock drops toward the slowest single suite). Bounded to COVERAGE_SUITE_JOBS
+## concurrent jobs (default: nproc) so the Qt-offscreen suites do not thrash a small
+## box. Each suite runs under its OWN XDG_{RUNTIME,CONFIG,STATE} dir so two concurrent
+## suites can NEVER collide on the single-instance socket or a config path (the suites
+## also self-isolate via mkdtemp, but the runner guarantees it regardless). Per-suite
+## output + rc are captured and replayed in canonical order after the barrier, so the
+## log stays deterministic; a failure is reported then (fail-fast ordering is moot once
+## parallel -- total time is the slowest suite either way).
+suites=(test_mainwin test_secure_terminal test_fuzz test_fuzz_harnesses \
+        test_corpus test_invariants test_cli test_unicode_tag test_modules \
+        test_review test_widget test_sclip test_clipboard_watch)
+suite_jobs="${COVERAGE_SUITE_JOBS:-$(nproc 2>/dev/null || printf '%s\n' 2)}"
+case "${suite_jobs}" in ''|*[!0-9]*) suite_jobs=2 ;; esac
+[ "${suite_jobs}" -ge 1 ] || suite_jobs=2
+
+run_one_suite() {  ## $1 = suite name; captures output+rc under work/, isolates XDG
+   local suite="$1" rc=0
+   local xdg="${work}/xdg-${suite}"
+   mkdir -p "${xdg}/run" "${xdg}/config" "${xdg}/state"
+   chmod 700 "${xdg}/run"   ## XDG_RUNTIME_DIR must be 0700 or Qt refuses it
+   ## Swallow the suite rc into a file and RETURN 0, so the backgrounded job never trips
+   ## the caller's errexit via wait; the rc is judged from the file after the barrier.
+   XDG_RUNTIME_DIR="${xdg}/run" XDG_CONFIG_HOME="${xdg}/config" \
+      XDG_STATE_HOME="${xdg}/state" \
+      run_suite_under_coverage "${tests_dir}/${suite}.py" \
+         > "${work}/out-${suite}" 2>&1 || rc="$?"
+   printf '%s\n' "${rc}" > "${work}/rc-${suite}"
+}
+
+running=0
+for suite in "${suites[@]}"; do
    [ -f "${tests_dir}/${suite}.py" ] || continue
-   rc=0
-   run_suite_under_coverage "${tests_dir}/${suite}.py" || rc="$?"
-   ## exit 77 (SKIP, e.g. Qt absent for a widget suite) is not a failure here;
-   ## the Qt-free gated tier does not depend on those suites. A SIGSEGV (139) that
-   ## survived every retry, or any other non-zero, is fatal.
-   if [ "${rc}" != '0' ] && [ "${rc}" != '77' ]; then
-      printf '%s\n' "secure-terminal-tests-coverage: suite ${suite} failed (exit ${rc})" >&2
-      exit "${rc}"
+   run_one_suite "${suite}" &
+   running=$(( running + 1 ))
+   if [ "${running}" -ge "${suite_jobs}" ]; then
+      wait -n
+      running=$(( running - 1 ))
    fi
 done
+wait
+
+## Replay each suite's captured output in canonical order, then fail on the FIRST
+## suite whose rc is not 0/77. A MISSING rc file (a job killed before it recorded one)
+## counts as FAILURE (fail-closed), never a silent green. exit 77 (SKIP, e.g. Qt absent)
+## is not a failure here; the Qt-free gated tier does not depend on those suites.
+gate_fail_rc=0
+gate_fail_suite=''
+for suite in "${suites[@]}"; do
+   [ -f "${tests_dir}/${suite}.py" ] || continue
+   [ -f "${work}/out-${suite}" ] && cat "${work}/out-${suite}"
+   suite_rc="$(cat "${work}/rc-${suite}" 2>/dev/null || true)"
+   [ -n "${suite_rc}" ] || suite_rc='1'
+   if [ "${suite_rc}" != '0' ] && [ "${suite_rc}" != '77' ] \
+         && [ "${gate_fail_rc}" = '0' ]; then
+      gate_fail_rc="${suite_rc}"
+      gate_fail_suite="${suite}"
+   fi
+done
+if [ "${gate_fail_rc}" != '0' ]; then
+   printf '%s\n' "secure-terminal-tests-coverage: suite ${gate_fail_suite} failed (exit ${gate_fail_rc})" >&2
+   exit "${gate_fail_rc}"
+fi
 python3 -m coverage combine
 
 
