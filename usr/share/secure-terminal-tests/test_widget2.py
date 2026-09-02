@@ -1116,17 +1116,26 @@ for _theme in ('dark', 'light'):
 ok(not _line_bad,
    'contrast(line): every ANSI fg x bg x bold x theme stays readable '
    '(%d combos checked, unreadable: %r)' % (_line_checked, _line_bad[:3]))
+## teeth: a regression that made _format_for return None for EVERY combo would leave
+## _line_bad empty and pass the sweep vacuously -- so require the sweep actually ran.
+ok(_line_checked > 0, 'contrast(line): the sweep exercised combos (not a vacuous 0-combo pass)')
 
 # a program cannot hide text by painting fg == bg for ANY palette index either.
 _hide_bad = []
+_hide_checked = 0
 for _theme in ('dark', 'light'):
     _cg.apply_theme(_theme)
     for _i in range(16):
         _pair = _eff_pair(_cg._format_for({'fg': _i, 'bg': _i, 'bold': False}), _theme)
-        if _pair and _too_close(*_pair):
+        if _pair is None:
+            continue
+        _hide_checked += 1
+        if _too_close(*_pair):
             _hide_bad.append((_theme, _i))
 ok(not _hide_bad,
    'contrast(line): fg==bg for every palette index is forced readable (bad: %r)' % _hide_bad)
+## teeth: an all-NoBrush regression would leave _hide_bad empty and pass vacuously.
+ok(_hide_checked > 0, 'contrast(hide): the sweep exercised indices (not a vacuous 0-index pass)')
 _cg.close()
 
 # --- configurable window keyboard shortcuts -----------------------------------
@@ -2998,6 +3007,8 @@ for _theme in ('dark', 'light'):
 ok(not _tui_bad,
    'contrast(tui): every pyte fg x bg x bold x reverse x theme stays readable '
    '(%d combos checked, unreadable: %r)' % (_tui_checked, _tui_bad[:3]))
+## teeth: an all-NoBrush regression would see 0 combos and pass this sweep vacuously.
+ok(_tui_checked > 0, 'contrast(tui): the sweep exercised combos (not a vacuous 0-combo pass)')
 _rt.apply_theme('dark')
 _rt._fmt_cache.clear()
 

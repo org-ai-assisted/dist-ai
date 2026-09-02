@@ -333,8 +333,13 @@ if [ -f "${tests_dir}/test_fuzz_widget.py" ]; then
       printf '%s\n' "secure-terminal-tests-coverage: GUI fuzzer failed (exit ${fuzz_rc})" >&2
       exit "${fuzz_rc}"
    fi
-   COVERAGE_FILE="${fuzz_cov}" python3 -m coverage report \
-      --include='*fuzz_widget.py' --show-missing --fail-under=100
+   ## Only report coverage when the fuzzer actually RAN (rc 0). On a SKIP (rc 77, e.g. pyte
+   ## absent) there is no data file, so an unconditional --fail-under=100 report would abort
+   ## the whole gate under errexit with an opaque "No data to report" instead of a clean skip.
+   if [ "${fuzz_rc}" = '0' ]; then
+      COVERAGE_FILE="${fuzz_cov}" python3 -m coverage report \
+         --include='*fuzz_widget.py' --show-missing --fail-under=100
+   fi
 fi
 
 printf '%s\n' '' '== whole-package coverage =='

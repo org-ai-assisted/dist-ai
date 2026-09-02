@@ -51,6 +51,21 @@ APP = QApplication.instance() or QApplication([])
 PASS = 0
 FAIL = 0
 
+# Explicit re-export surface. This module is a harness HUB: each half does
+# `from test_widget_common import *`, so every name below IS consumed -- naming them in
+# __all__ makes that intent machine-visible (silences the recurring "unused import" alert
+# on the Qt/module imports) while keeping `import *` behaviour byte-identical to the
+# implicit all-public-names default. QMessageBox is imported for its side-effect monkeypatch
+# below and re-exported for the halves that reference it directly.
+__all__ = [
+    'os', 'sys', 'signal', 'tempfile',
+    'QApplication', 'QInputDialog', 'QKeyEvent', 'QColor', 'QTextCursor',
+    'QEvent', 'Qt', 'QTimer', 'QEventLoop', 'QMimeData', 'QPoint', 'QMessageBox',
+    'SecureTerminal', 'tui_available', 'APP', 'PASS', 'FAIL',
+    'ok', 'eq', 'pump', 'key', 'spy_writes', 'feed_output', 'mark_fg', 'mark_bg',
+    'fmt_of_char', 'glyph_pt', 'finish',
+]
+
 
 def ok(cond, msg):
     global PASS, FAIL

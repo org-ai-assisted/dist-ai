@@ -2732,8 +2732,12 @@ _rf_box_lines = _rf_visual_lines(_rf)
 _rf.apply_mode('show')
 APP.processEvents()
 _rf_show_lines = _rf_visual_lines(_rf)
-ok(_rfwide <= _rfcw or (_rf_box_lines == 1 and _rf_show_lines == 1),
-   'box<->show keeps a wide glyph on the same line -- no reflow (NoWrap authority)')
+## NoWrap is authoritative, so the M-run + glyph stays on ONE row in BOTH modes regardless
+## of whether the glyph out-measures a cell -- assert that directly. (Folding `_rfwide <=
+## _rfcw` into the OR made it a VACUOUS pass on CI's monospace fonts-hack, where no glyph is
+## ever wider, so the real no-reflow property was never checked.)
+ok(_rf_box_lines == 1 and _rf_show_lines == 1,
+   'box<->show keeps the line on one row -- no reflow (NoWrap authority)')
 _rf.close()
 
 # regression (Fix #4): CLI paints are DEBOUNCED to ~60fps by a single-shot timer,
