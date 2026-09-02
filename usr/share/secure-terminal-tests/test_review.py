@@ -621,13 +621,20 @@ ok('runs more than one command' in _bar._detail.text(),
 eq(_bar._summary.text(), _rev._CLEAN_MSG, 'an ASCII-only multi-line paste is an all-clear')
 # multi-line COPY / CLIPBOARD read (multi-line), never "runs more than one command"
 _bar.show_review(_FakeTerm(), 'ls\necho hi\n', 0, 'copy')
-ok('multi-line' in _bar._detail.text()
-   and 'runs more than one command' not in _bar._detail.text(),
+_dcopy = _bar._detail.text()
+ok('multi-line' in _dcopy and 'runs more than one command' not in _dcopy,
    'a multi-line COPY review reads (multi-line), not "runs more than one command"')
+# CONSISTENCY: the "If accepted" guarantee row is shown in EVERY direction (not only paste),
+# so it never appears and disappears as the user switches -- copy states it is clipboard data.
+ok('If accepted' in _dcopy and 'placed on the system clipboard' in _dcopy
+   and 'press Enter to run' not in _dcopy,
+   'a COPY review shows "If accepted" with the clipboard-data note (no shell wording): %r' % _dcopy)
 _bar.show_review(_FakeClip(), 'ls\necho hi\n', 0, 'clipboard')
-ok('multi-line' in _bar._detail.text()
-   and 'runs more than one command' not in _bar._detail.text(),
+_dclip = _bar._detail.text()
+ok('multi-line' in _dclip and 'runs more than one command' not in _dclip,
    'a multi-line CLIPBOARD review reads (multi-line)')
+ok('If accepted' in _dclip and 'replaces the clipboard contents' in _dclip,
+   'a CLIPBOARD review shows "If accepted" with the replace-clipboard note: %r' % _dclip)
 # a bracketed-paste target states the program buffers it as text
 _bt = _FakeTerm()
 _bt._bracketed_paste_active = lambda: True         # type: ignore[method-assign]
