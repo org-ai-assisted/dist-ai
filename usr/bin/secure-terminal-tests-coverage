@@ -183,6 +183,10 @@ run_suite_under_coverage() {  ## $1 = suite .py path -> returns the final rc
          retries=5
          ;;
    esac
+   ## Force base-10: a leading-zero all-digit value (e.g. 09) is a VALID string but an
+   ## INVALID octal literal, so a bare (( )) / [ -ge ] on it errors and -- under errexit --
+   ## would skip the retry loop and return rc=0 without running the suite (a false green).
+   retries="$(( 10#${retries} ))"
    [ "${retries}" -ge 1 ] || retries=5
    for (( attempt=1; attempt<=retries; attempt++ )); do
       rc=0
@@ -230,19 +234,30 @@ suites=(test_mainwin test_secure_terminal test_fuzz test_fuzz_harnesses \
         test_review test_widget test_sclip test_clipboard_watch)
 suite_jobs="${COVERAGE_SUITE_JOBS:-$(nproc 2>/dev/null || printf '%s\n' 2)}"
 case "${suite_jobs}" in ''|*[!0-9]*) suite_jobs=2 ;; esac
+## Base-10, same octal trap as retries above: a leading-zero COVERAGE_SUITE_JOBS (e.g. 09)
+## would otherwise error in the [ -ge ] test and, under errexit, abort the gate.
+suite_jobs="$(( 10#${suite_jobs} ))"
 [ "${suite_jobs}" -ge 1 ] || suite_jobs=2
 
 run_one_suite() {  ## $1 = suite name; captures output+rc under work/, isolates XDG
    local suite="$1" rc=0
    local xdg="${work}/xdg-${suite}"
-   mkdir -p "${xdg}/run" "${xdg}/config" "${xdg}/state"
-   chmod 700 "${xdg}/run"   ## XDG_RUNTIME_DIR must be 0700 or Qt refuses it
-   ## Swallow the suite rc into a file and RETURN 0, so the backgrounded job never trips
-   ## the caller's errexit via wait; the rc is judged from the file after the barrier.
-   XDG_RUNTIME_DIR="${xdg}/run" XDG_CONFIG_HOME="${xdg}/config" \
-      XDG_STATE_HOME="${xdg}/state" \
-      run_suite_under_coverage "${tests_dir}/${suite}.py" \
-         > "${work}/out-${suite}" 2>&1 || rc="$?"
+   ## Guard the XDG setup INSIDE an if-condition (exempt from errexit): a mkdir/chmod
+   ## failure must record a FAILING rc, never errexit-abort the backgrounded job before it
+   ## writes rc-<suite> -- an abort would make the throttling `wait -n` inherit the failure
+   ## and kill the whole gate (and the EXIT trap would then wipe the shared work dir out
+   ## from under the still-running suites). So this function always reaches the printf.
+   if mkdir -p "${xdg}/run" "${xdg}/config" "${xdg}/state" \
+         && chmod 700 "${xdg}/run"; then   ## XDG_RUNTIME_DIR must be 0700 or Qt refuses it
+      ## Swallow the suite rc into a file and RETURN 0, so the backgrounded job never trips
+      ## the caller's errexit via wait; the rc is judged from the file after the barrier.
+      XDG_RUNTIME_DIR="${xdg}/run" XDG_CONFIG_HOME="${xdg}/config" \
+         XDG_STATE_HOME="${xdg}/state" \
+         run_suite_under_coverage "${tests_dir}/${suite}.py" \
+            > "${work}/out-${suite}" 2>&1 || rc="$?"
+   else
+      rc=1   ## XDG setup failed -> the suite could not run cleanly -> fail-closed
+   fi
    printf '%s\n' "${rc}" > "${work}/rc-${suite}"
 }
 
