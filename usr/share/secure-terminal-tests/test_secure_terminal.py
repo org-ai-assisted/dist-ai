@@ -617,6 +617,17 @@ ok(all(c in '\r\t' or 0x20 <= ord(c) <= 0x7E
        for c in S.ascii_fold('caf' + chr(0x00E9) + ' ' + chr(0x0430) + ' ' + chr(0x1F600))),
    'ascii_fold output is guaranteed unicode-clean + paste-safe ASCII')
 
+# ascii_fold_display: the review BOX variant -- same fold + clean, but newline-PRESERVING
+# ('\n' stays '\n', not the shell '\r' ascii_fold maps to) so the box renders multi-line.
+eq(S.ascii_fold_display('ex' + chr(0x0430) + 'mple.com'), 'example.com',
+   'ascii_fold_display folds the look-alike to the ASCII it imitates')
+eq(S.ascii_fold_display('a' + chr(0x0430) + '\nb' + chr(0x0430)), 'aa\nba',
+   'ascii_fold_display PRESERVES newlines (display form), unlike ascii_fold')
+eq(S.ascii_fold('a\nb'), 'a\rb', 'ascii_fold maps newline to the shell submit CR (for contrast)')
+ok(all(c in '\n\t' or 0x20 <= ord(c) <= 0x7E
+       for c in S.ascii_fold_display('caf' + chr(0x00E9) + '\n' + chr(0x0430) + chr(0x1F600))),
+   'ascii_fold_display output is clean ASCII with newlines kept')
+
 # --- crafted paste cannot smuggle HIDDEN code / escapes into the shell --------
 # The class of attack: a paste that carries an escape (to be reflected back as
 # input), a bracketed-paste-end sequence (to break the shell's paste guard and

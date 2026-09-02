@@ -221,32 +221,43 @@ def phase_keys(rnd, iterations, seed):
 
 
 def phase_review(rnd, iterations, seed):
-    ## The review bar (review.py) reviews untrusted text in BOTH directions. Fuzz
-    ## show_review directly with random text and kind: classify_paste and the single
-    ## mirror (render_preview in the tab's mode) must never crash, a live
-    ## rerender_mirror (a mode flip while the review is open) must be safe too, and
-    ## the mirror must never surface a raw ESC (escape sequences are rendered, not
-    ## shown). The DELIVERED text's control-byte safety is a sanitize property,
-    ## covered by the sanitize fuzz, not by the review pane.
+    ## The review bar (review.py) reviews untrusted text in BOTH directions, in the ONE
+    ## editable, revealed box (revealed_editor.py). Fuzz show_review with random text +
+    ## kind, then the three in-place transforms (Strip / ASCII-fold / Restore) and a
+    ## live rerender_mirror (a mode flip while the review is open): none may crash, the
+    ## box must never surface a raw ESC (escape sequences are rendered, not shown), and
+    ## the box source must stay display-clean (no control/invisible slips through the
+    ## keep-printable + transform pipeline). The DELIVERED text's control-byte safety is
+    ## a sanitize property, covered by the sanitize fuzz.
     from secure_terminal.review import ReviewBar
-    from PyQt6.QtWidgets import QWidget
+    from secure_terminal.sanitize import sanitize_clipboard_unicode
+    from PyQt6.QtWidgets import QWidget, QMessageBox
     win = QWidget()
     term = SecureTerminal(command='/bin/cat')
     bar = ReviewBar(win)
-    for _ in range(iterations):
-        raw = ''.join(_rand_token(rnd) for _ in range(rnd.randint(0, 15)))
-        bar.show_review(term, raw, rnd.randint(0, 3),
-                        rnd.choice(('paste', 'copy', 'bogus')))
-        _assert(bar.reviewed_term() is term,
-                'review bar did not take the term for {0!r}'.format(raw), seed)
-        # flip the tab's mode while the review is open: the SAME mirror must
-        # re-render (the live-follow path) without raising
-        term.apply_mode(rnd.choice(list(S.DISPLAY_MODES)))
-        bar.rerender_mirror()
-        mirror_text = bar._mirror.toPlainText()
-        _assert('\x1b' not in mirror_text,
-                'review mirror surfaced a raw ESC on {0!r}'.format(raw), seed)
-        bar.hide_review()
+    _saved_q = QMessageBox.question
+    QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)
+    try:
+        for _ in range(iterations):
+            raw = ''.join(_rand_token(rnd) for _ in range(rnd.randint(0, 15)))
+            bar.show_review(term, raw, rnd.randint(0, 3),
+                            rnd.choice(('paste', 'copy', 'clipboard', 'bogus')))
+            _assert(bar.reviewed_term() is term,
+                    'review bar did not take the term for {0!r}'.format(raw), seed)
+            for action in (bar._do_strip, bar._do_fold, bar._do_restore):
+                action()
+                box = bar._editor.source()
+                _assert('\x1b' not in bar._editor.toPlainText(),
+                        'review box surfaced a raw ESC on {0!r}'.format(raw), seed)
+                _assert(box == sanitize_clipboard_unicode(box),
+                        'review box holds a non-display-clean char on {0!r}'.format(raw), seed)
+            # flip the tab's mode while the review is open: the box must re-render
+            # (the live-follow path) without raising
+            term.apply_mode(rnd.choice(list(S.DISPLAY_MODES)))
+            bar.rerender_mirror()
+            bar.hide_review()
+    finally:
+        QMessageBox.question = _saved_q
 
 
 PHASES = (

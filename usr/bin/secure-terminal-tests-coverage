@@ -101,7 +101,7 @@ gated_free='*/__init__.py,*/sanitize.py,*/clipboard.py,*/cli.py,*/ipc.py,*/sessi
 ## Tier 2 -- covered by the offscreen Qt widget suites, which fail closed
 ## (exit 1) on a missing PyQt6/pyte rather than skipping, so both tiers are
 ## always gated.
-gated_qt='*/clipboard_watch.py,*/review.py,*/terminal.py,*/main.py'
+gated_qt='*/clipboard_watch.py,*/review.py,*/revealed_editor.py,*/terminal.py,*/main.py'
 
 ## Every tier is validated BEFORE the suites run: these checks need only the
 ## source tree, and a stale gate should cost a second, not a full test run.

@@ -144,17 +144,17 @@ check_tight() {  ## $1=label $2=png
 check_tight 'paste-warning-shot (paste)' "${work}/paste.png"
 check_tight 'paste-warning-shot (copy)'  "${work}/copy.png"
 
-## The review shots must SHOW the unicode-revealing render, not the radio-first "choose a
-## mode" hint (the bar is radio-first; a generator that forgets to pick a mode leaves the
-## mirror on the hint, hiding the very unicode detection the shot exists to demonstrate).
+## The review shots must SHOW the unicode-revealing render: the editable box, opened in the
+## keep-printable form, must NAME each hidden look-alike inline (detail mode). A generator
+## that breaks that render hides the very unicode detection the shot exists to demonstrate.
 uc_rc=0
 python3 "${script_dir}/paste_warning_unicode_check.py" "${shots_dir}/paste-warning-shot.py" \
    >/dev/null 2>"${work}/uc.log" || uc_rc=$?
 if [ "${uc_rc}" -eq 0 ]; then
-   printf '%s\n' 'PASS: review shot mirrors show the unicode render (not the hint)'
+   printf '%s\n' 'PASS: review shot boxes show the unicode render'
    pass=$(( pass + 1 ))
 else
-   printf '%s\n' 'FAIL: review shot mirror shows the hint, not the unicode render'
+   printf '%s\n' 'FAIL: review shot box does not show the unicode render'
    sed 's/^/    /' "${work}/uc.log" >&2 || true
    fail=$(( fail + 1 ))
 fi

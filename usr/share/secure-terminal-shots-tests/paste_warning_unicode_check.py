@@ -5,12 +5,11 @@
 ## AI-Assisted
 
 ## Regression helper for shot_generators_smoke_test.sh: the paste/copy review shots must
-## SHOW the unicode-revealing render, not the radio-first "choose a mode" hint. The review
-## bar is radio-first -- with no delivery mode picked the mirror shows only the hint -- so a
-## generator that forgets to pick a mode produces a shot whose mirror hides the very unicode
-## detection it exists to demonstrate (the exact bug this guards). CANARY: drop the
-## bar._on_radio(DELIVERY_MODE) call in build_review and this fails (the mirror shows the
-## hint, and names no hidden character).
+## SHOW the unicode-revealing render -- the editable box, opened in the keep-printable form,
+## must NAME each hidden look-alike inline (detail mode) so the shot demonstrates the very
+## unicode detection it exists to show. CANARY: break the box's revealing render in
+## build_review (e.g. strip the look-alikes, or a non-detail mode) and this fails (the box
+## names no hidden character).
 ##
 ## Usage: paste_warning_unicode_check.py <paste-warning-shot.py path>
 
@@ -30,7 +29,6 @@ def main():
     spec.loader.exec_module(mod)
 
     from PyQt6.QtWidgets import QApplication, QWidget
-    from secure_terminal.review import _MIRROR_HINT
 
     app = QApplication.instance() or QApplication(['paste-warning-check'])
     assert app is not None
@@ -40,21 +38,16 @@ def main():
         host = QWidget()
         bar = mod.build_review(host, kind, mod.COUNTDOWN_SECONDS if kind == 'paste' else 0)
         app.processEvents()
-        text = bar._mirror.toPlainText()
-        # the delivered "keep unicode" form still carries the look-alike, so the detail
-        # render NAMES it -- the unicode the shot exists to reveal.
+        text = bar._editor.toPlainText()
+        # the keep-printable box still carries the look-alike, so the detail render
+        # NAMES it -- the unicode the shot exists to reveal.
         if 'CYRILLIC SMALL LETTER A' not in text:
-            sys.stderr.write('FAIL: %s shot mirror does not name the hidden look-alike '
+            sys.stderr.write('FAIL: %s shot box does not name the hidden look-alike '
                              '(shows: %r)\n' % (kind, text[:120]))
-            failures += 1
-        # and it must NOT be the "pick a mode" hint (the pre-fix bug).
-        if _MIRROR_HINT in text:
-            sys.stderr.write('FAIL: %s shot mirror shows the "choose a mode" hint, not the '
-                             'delivered render\n' % kind)
             failures += 1
     if failures:
         return 1
-    print('ok: paste/copy shot mirrors show the unicode render (not the hint)')
+    print('ok: paste/copy shot boxes show the unicode render')
     return 0
 
 
