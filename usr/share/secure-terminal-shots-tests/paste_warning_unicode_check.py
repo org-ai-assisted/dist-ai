@@ -5,11 +5,11 @@
 ## AI-Assisted
 
 ## Regression helper for shot_generators_smoke_test.sh: the paste/copy review shots must
-## SHOW the unicode-revealing render -- the editable box, opened in the keep-printable form,
-## must NAME each hidden look-alike inline (detail mode) so the shot demonstrates the very
-## unicode detection it exists to show. CANARY: break the box's revealing render in
-## build_review (e.g. strip the look-alikes, or a non-detail mode) and this fails (the box
-## names no hidden character).
+## SHOW the unicode-revealing render -- the editable box, opened FULLY REVEALED, must NAME
+## each hidden look-alike inline (detail mode) so the shot demonstrates the very unicode
+## detection it exists to show. CANARY: break the box's revealing render in build_review
+## (e.g. strip the look-alikes, or a non-detail mode) and this fails (the box names no
+## hidden character).
 ##
 ## Usage: paste_warning_unicode_check.py <paste-warning-shot.py path>
 
@@ -39,7 +39,7 @@ def main():
         bar = mod.build_review(host, kind, mod.COUNTDOWN_SECONDS if kind == 'paste' else 0)
         app.processEvents()
         text = bar._editor.toPlainText()
-        # the keep-printable box still carries the look-alike, so the detail render
+        # the fully-revealed box carries the look-alike, so the detail render
         # NAMES it -- the unicode the shot exists to reveal.
         if 'CYRILLIC SMALL LETTER A' not in text:
             sys.stderr.write('FAIL: %s shot box does not name the hidden look-alike '

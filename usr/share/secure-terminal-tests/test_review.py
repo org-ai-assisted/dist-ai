@@ -6,14 +6,16 @@
 
 ## Tests for secure_terminal.review (the in-window review bar) and
 ## secure_terminal.revealed_editor (the editable, revealed box it hosts). Built and
-## driven offscreen. Covers: the ONE editable box that IS the exact preview of what
-## crosses; the four actions (Strip unicode / ASCII-fold / Restore original / Deliver)
-## plus Reject; the live per-class breakdown recomputed from the box on every change;
-## the anti-fat-finger countdown gating Deliver for a paste (none for a copy); that a
-## delivery re-sanitizes the box + un-reviewed tail and dispatches to the tab that held
-## the text; the copy + clipboard direction relabels; and the widget's atomic-token
-## editing / caret / click-snap. PyQt6 is REQUIRED: it fails loud (exit 1), never a
-## silent skip, when the dependency is unavailable.
+## driven offscreen. Covers the EVIDENCE-FIRST model: the box opens FULLY REVEALED
+## (invisibles/bidi shown as named badges, nothing pre-dropped); the CONTENT-DRIVEN
+## Deliver -- red + disabled "<verb> blocked - N hidden" while any invisible/bidi/control
+## remains, amber "<verb> unicode" when only look-alikes remain, no-colour "<verb> ASCII"
+## when pure ASCII; the Text-transformations group (Keep printable / Strip / ASCII-fold,
+## green/amber in the app's green=safe language) + Restore original (re-reveal) + Reject;
+## the anti-fat-finger countdown gating Deliver for a paste; that a delivery re-sanitizes
+## the box + un-reviewed tail (per the active tier) and dispatches to the tab; the copy +
+## clipboard relabels; and the widget's atomic-token editing / caret / click-snap. PyQt6
+## is REQUIRED: it fails loud (exit 1), never a silent skip, when unavailable.
 
 import os
 import sys
@@ -123,7 +125,17 @@ _doc = _ed.toPlainText()
 ok('\n' in _doc, 'the box renders multi-line')
 ok('CYRILLIC' in _doc, 'the look-alike is revealed as a detail badge')
 
+# set_source_revealed: KEEP the deception characters (invisibles/bidi) as evidence, only
+# normalize the chars the cell model cannot show 1:1 (CRLF->\n, drop lone CR/BS/BEL/ESC)
+_ed.set_source_revealed('ex' + CYR_A + 'mple' + ZWSP + RTL + '.com\r\nsecond\rX\x07\x1b')
+eq(_ed.source(), 'ex' + CYR_A + 'mple' + ZWSP + RTL + '.com\nsecondX',
+   'set_source_revealed keeps invisible+bidi (evidence), collapses CRLF, drops lone CR/BEL/ESC')
+_rdoc = _ed.toPlainText()
+ok('ZERO WIDTH SPACE' in _rdoc and 'RIGHT-TO-LEFT OVERRIDE' in _rdoc,
+   'the revealed box names the invisible + bidi as badges in place')
+
 # atomic-token Backspace: one Del removes the whole source char + its badge
+_ed.set_source('ex' + CYR_A + 'mple.com\nsecond')          # reset to a known keep-printable state
 _idx = _ed.source().index(CYR_A) + 1
 _ed._pos = _idx
 _ed.keyPressEvent(key_ev(Qt.Key.Key_Backspace))
@@ -438,83 +450,76 @@ eq(_ml._source_index_for_doc_pos(_ml._offset(4)), 4,
 # ReviewBar -- the bar around the box
 # ======================================================================
 
-# --- show a paste review: keep-printable box, summary, table, countdown --------
+# --- show a paste review: EVIDENCE-FIRST reveal-default box + content-driven Deliver ---
+# (delay 0 here so the countdown does not mask the content-driven Deliver state; the
+# countdown gate is exercised in its own block below.)
 _t = _FakeTerm()
 _raw = 'pay' + CYR_A + 'l' + RTL + ZWSP + '\n'     # a look-alike + a bidi + an invisible
-_bar.show_review(_t, _raw, 3, 'paste')
+_bar.show_review(_t, _raw, 0, 'paste')
 ok(_bar.reviewed_term() is _t, 'reviewed_term is the tab that held the paste')
-eq(_bar._editor.source(), 'pay' + CYR_A + 'l\n',
-   'the box opens keep-printable: the bidi + invisible are dropped, the look-alike kept')
-ok('hides' in _bar._summary.text(), 'the summary names what the box hides')
+# the box opens FULLY REVEALED -- the bidi + invisible are KEPT (evidence), not dropped
+ok(RTL in _bar._editor.source() and ZWSP in _bar._editor.source() and CYR_A in _bar._editor.source(),
+   'the box opens revealed: invisible + bidi + look-alike all kept as evidence: %r' % _bar._editor.source())
+ok('RIGHT-TO-LEFT OVERRIDE' in _bar._editor.toPlainText()
+   and 'ZERO WIDTH SPACE' in _bar._editor.toPlainText(),
+   'the invisibles/bidi render as named badges in the box')
 ok(_rev.RISK_FG in _bar._dot.styleSheet(), 'the risk dot is red while something is hidden')
-ok('Keeping printable unicode' in _bar._status.text()
-   and 'dropped' in _bar._status.text(),
-   'the status line names the keep-printable transform + how much it dropped')
-ok('Look-alike' in _bar._detail.text(), 'the breakdown lists the look-alike class')
+ok('Showing the full paste' in _bar._status.text() and 'block sending' in _bar._status.text(),
+   'the status names the reveal state + that hidden chars block sending: %r' % _bar._status.text())
+ok('Bidirectional control' in _bar._detail.text() and 'Invisible' in _bar._detail.text(),
+   'the breakdown now lists the invisible + bidi (shown, not pre-dropped)')
+# Deliver is BLOCKED (red, disabled) while any hidden char remains -- a trap cannot cross
+ok(not _bar._deliver.isEnabled(), 'Deliver is disabled while hidden characters remain')
+ok('blocked' in _bar._deliver.text() and '2 hidden' in _bar._deliver.text(),
+   'Deliver names the block + count: %r' % _bar._deliver.text())
+ok(_rev.RISK_FG in _bar._deliver.styleSheet(), 'a blocked Deliver is RED')
 
-# REGRESSION: the keep-printable status counts ALL drops the box makes -- including the
-# editor's combining-run cap -- not just the invisibles. On a >32 Zalgo flood the old
-# count (len - len(sanitize_clipboard_unicode), which KEEPS combining) read "0 dropped"
-# while the box actually shrank ~968 chars, contradicting the same bar's hidden-char
-# table. Counted against the ACTUAL box now.
-_zt = _FakeTerm()
-_bar.show_review(_zt, 'a' + _ACUTE * 100, 0, 'paste')      # 100 marks -> box caps at 32
-_zexpect = len('a' + _ACUTE * 100) - len(_bar._editor.source())
-ok(_zexpect > 60, 'precondition: the flood really shrank the box (dropped %d)' % _zexpect)
-ok('0 hidden characters dropped' not in _bar._status.text()
-   and ('%d hidden' % _zexpect) in _bar._status.text(),
-   'a >32-combining flood reports the REAL dropped count, not 0: %r' % _bar._status.text())
-# Restore reports the same real count (same path)
-_bar._do_strip()                                           # move off keep first
-_saved_zq = QMessageBox.question
-QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)
-try:
-    _bar._do_restore()
-finally:
-    QMessageBox.question = _saved_zq
-ok(('%d hidden' % _zexpect) in _bar._status.text(),
-   'Restore reports the same real dropped count for the flood')
-_bar.show_review(_t, _raw, 3, 'paste')                     # restore the state the following tests assume
-ok(not _bar._deliver.isEnabled() and '(3)' in _bar._deliver.text(),
-   'Deliver is countdown-gated for a paste and shows the remaining seconds')
+# --- [Keep printable unicode]: drop invisibles/bidi, KEEP look-alikes -> amber unicode ---
+_bar._do_keep()
+eq(_bar._editor.source(), 'pay' + CYR_A + 'l\n',
+   'Keep printable removes the invisible + bidi, KEEPS the look-alike + newline')
+ok(_bar._deliver.isEnabled(), 'Deliver enables once nothing hidden remains')
+ok(_bar._deliver.text() == 'Paste unicode' and _rev.CAUTION_FG in _bar._deliver.styleSheet(),
+   'Deliver is amber "Paste unicode" while a look-alike is kept: %r' % _bar._deliver.text())
+ok('Removed 2 hidden' in _bar._status.text()
+   and 'invisible / reordering / control' in _bar._status.text(),
+   'the status names WHAT Keep printable removed (the classes): %r' % _bar._status.text())
 
-# --- [Strip unicode]: delete non-ASCII, NO mapping -> all-clear ---------------
+# --- [Strip unicode]: delete non-ASCII, NO mapping -> green ASCII --------------
+_bar.show_review(_t, _raw, 0, 'paste')
 _bar._do_strip()
-eq(_bar._editor.source(), 'payl\n', 'Strip deletes the look-alike (no mapping)')
-ok('ASCII only' in _bar._status.text() and 'removed' in _bar._status.text(),
-   'the status line names the strip')
-ok(_rev.SAFE_FG in _bar._dot.styleSheet(), 'the dot turns safe-green once the box is clean')
-eq(_bar._summary.text(), _rev._CLEAN_MSG, 'the summary shows the all-clear after a strip')
-ok('(none)' in _bar._detail.text(), 'the breakdown shows no hidden characters after a strip')
+eq(_bar._editor.source(), 'payl\n', 'Strip deletes the look-alike + the invisibles (no mapping)')
+ok('Removed all' in _bar._status.text() and 'plain ASCII only' in _bar._status.text(),
+   'the status names the strip: %r' % _bar._status.text())
+# a paste of only ASCII (after strip) delivers as ASCII, no colour
+ok(_bar._deliver.text() == 'Paste ASCII'
+   and _rev.CAUTION_FG not in _bar._deliver.styleSheet()
+   and _rev.RISK_FG not in _bar._deliver.styleSheet(),
+   'Deliver is uncoloured "Paste ASCII" after a strip: %r / %r'
+   % (_bar._deliver.text(), _bar._deliver.styleSheet()))
 
-# --- [ASCII-fold]: map the look-alike to the ASCII it imitates ----------------
-_bar.show_review(_t, 'ex' + CYR_A + 'mple.com', 3, 'paste')
+# --- [ASCII-fold]: replace the look-alike with the ASCII it imitates ----------
+_bar.show_review(_t, 'ex' + CYR_A + 'mple.com' + ZWSP, 0, 'paste')
 _bar._do_fold()
-eq(_bar._editor.source(), 'example.com', 'ASCII-fold maps the Cyrillic look-alike to a plain a')
-ok('Folded look-alikes' in _bar._status.text(), 'the status line names the fold')
+eq(_bar._editor.source(), 'example.com', 'ASCII-fold replaces the Cyrillic with a plain a + drops the invisible')
+ok('Replaced look-alikes' in _bar._status.text(), 'the status names the fold')
+ok(_bar._deliver.text() == 'Paste ASCII', 'fold -> Paste ASCII')
 
-# --- [Restore original paste]: No cancels, Yes reverts ------------------------
-_bar.show_review(_t, 'ex' + CYR_A + 'mple.com', 3, 'paste')
-_bar._do_strip()                                   # box now 'exmple.com'
-_saved_q = QMessageBox.question
-QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.StandardButton.No)
-try:
-    _bar._do_restore()
-finally:
-    QMessageBox.question = _saved_q
-eq(_bar._editor.source(), 'exmple.com', 'Restore with No keeps the edited box')
-QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)
-try:
-    _bar._do_restore()
-finally:
-    QMessageBox.question = _saved_q
-eq(_bar._editor.source(), 'ex' + CYR_A + 'mple.com',
-   'Restore with Yes reverts the box to the keep-printable original')
-ok('Keeping printable unicode' in _bar._status.text(), 'Restore relabels the status to keep')
-# Restore is a no-op once the review is resolved (no _term)
+# --- [Restore original]: re-reveals the trap + re-blocks Deliver -----------------
+_bar.show_review(_t, _raw, 0, 'paste')
+_bar._do_strip()                                   # clean it -> deliverable
+ok(_bar._editor.source() == 'payl\n' and 'blocked' not in _bar._deliver.text(),
+   'precondition: box cleaned + Deliver unblocked')
+_bar._do_restore()
+ok(RTL in _bar._editor.source() and ZWSP in _bar._editor.source(),
+   'Restore original re-reveals the invisibles/bidi')
+ok(not _bar._deliver.isEnabled() and 'blocked' in _bar._deliver.text(),
+   'Restore original re-blocks Deliver')
+ok('Showing the full paste' in _bar._status.text(), 'Restore relabels the status to reveal')
+# Restore original is a no-op once the review is resolved (no _term)
 _bar._choose('reject')
 _bar._do_restore()
-ok(_bar.reviewed_term() is None, 'Restore is a no-op with no review open')
+ok(_bar.reviewed_term() is None, 'Restore original is a no-op with no review open')
 
 # --- Deliver dispatches the box via the unicode action, exactly once ----------
 _t2 = _FakeTerm()
@@ -524,8 +529,8 @@ ok(not _bar._deliver.isEnabled(), 'Deliver is re-gated after a transform (countd
 _bar._deliver_clicked()
 eq(_t2.dispatched, [], 'a Deliver click during the countdown is a gated no-op')
 _bar._tick(); _bar._tick(); _bar._tick()           # elapse the 3s countdown
-ok(_bar._deliver.isEnabled() and _bar._deliver.text() == 'Paste',
-   'Deliver enables once the countdown elapses (the suffix is dropped)')
+ok(_bar._deliver.isEnabled() and _bar._deliver.text() == 'Paste ASCII',
+   'Deliver enables to "Paste ASCII" once the countdown elapses (the suffix is dropped)')
 _bar._deliver_clicked()
 eq(_t2.dispatched, [('paste', 'unicode')], 'Deliver dispatches the unicode action')
 eq(_t2.last_text, 'exmple.com', 'Deliver sends exactly the box buffer')
@@ -536,6 +541,7 @@ eq(_t2.dispatched, [('paste', 'unicode')], 'a second Deliver after resolution is
 # --- a manual edit re-runs the classifier AND re-arms the countdown -----------
 _t3 = _FakeTerm()
 _bar.show_review(_t3, _raw, 2, 'paste')
+_bar._do_strip()                                   # clear the hidden chars so content no longer blocks
 _bar._tick(); _bar._tick(); _bar._tick()           # elapse -> Deliver enabled
 ok(_bar._deliver.isEnabled(), 'Deliver enables after the countdown elapses')
 _bar._editor.set_source('rm -rf /' + CYR_A)        # replace the box content
@@ -559,8 +565,10 @@ _bar._choose('reject')
 _tc = _FakeTerm()
 _bar.show_review(_tc, 'foo' + CYR_A + 'bar', 0, 'copy')
 eq(_bar._reject.text(), "Don't copy", 'copy review: Reject becomes "Don\'t copy"')
-eq(_bar._deliver.text(), 'Copy', 'copy review: Deliver is labelled Copy')
+eq(_bar._deliver.text(), 'Copy unicode', 'copy review: Deliver is "Copy unicode" (look-alike kept)')
 ok('copy' in _bar._summary.text().lower(), 'copy review: the summary is phrased for the copy')
+ok('Showing the full copy' in _bar._status.text() and 'paste' not in _bar._status.text(),
+   'copy review: the reveal status uses the copy noun, not "paste": %r' % _bar._status.text())
 ok(_bar._deliver.isEnabled(), 'copy review: Deliver is enabled at once (no countdown)')
 _bar._deliver_clicked()
 eq(_tc.dispatched, [('copy', 'unicode')], 'copy review dispatches to the copy path')
@@ -570,9 +578,11 @@ eq(_tc.last_text, 'foo' + CYR_A + 'bar', 'copy delivers the box buffer')
 _cl = _FakeClip()
 _bar.show_review(_cl, 'net' + CYR_A + 'flix.com', 0, 'clipboard')
 eq(_bar._reject.text(), 'Leave it', 'clipboard review: Reject becomes "Leave it"')
-eq(_bar._deliver.text(), 'Replace', 'clipboard review: Deliver is labelled Replace')
+eq(_bar._deliver.text(), 'Replace unicode', 'clipboard review: Deliver is "Replace unicode"')
 ok(_bar._editor.source() == 'net' + CYR_A + 'flix.com',
-   'clipboard review: the box loads the keep-printable holder text')
+   'clipboard review: the revealed box loads the holder text (no invisibles here)')
+ok('Showing the full clipboard text' in _bar._status.text(),
+   'clipboard review: the reveal status uses the clipboard-text noun: %r' % _bar._status.text())
 _bar._deliver_clicked()
 eq(_cl.dispatched, [('clipboard', 'unicode')], 'clipboard review dispatches to the clipboard path')
 
@@ -611,19 +621,58 @@ ok('runs more than one command' in _bar._detail.text(),
 eq(_bar._summary.text(), _rev._CLEAN_MSG, 'an ASCII-only multi-line paste is an all-clear')
 # multi-line COPY / CLIPBOARD read (multi-line), never "runs more than one command"
 _bar.show_review(_FakeTerm(), 'ls\necho hi\n', 0, 'copy')
-ok('multi-line' in _bar._detail.text()
-   and 'runs more than one command' not in _bar._detail.text(),
+_dcopy = _bar._detail.text()
+ok('multi-line' in _dcopy and 'runs more than one command' not in _dcopy,
    'a multi-line COPY review reads (multi-line), not "runs more than one command"')
+# CONSISTENCY: the "If accepted" guarantee row is shown in EVERY direction (not only paste),
+# so it never appears and disappears as the user switches -- copy states it is clipboard data.
+ok('If accepted' in _dcopy and 'placed on the system clipboard' in _dcopy
+   and 'press Enter to run' not in _dcopy,
+   'a COPY review shows "If accepted" with the clipboard-data note (no shell wording): %r' % _dcopy)
 _bar.show_review(_FakeClip(), 'ls\necho hi\n', 0, 'clipboard')
-ok('multi-line' in _bar._detail.text()
-   and 'runs more than one command' not in _bar._detail.text(),
+_dclip = _bar._detail.text()
+ok('multi-line' in _dclip and 'runs more than one command' not in _dclip,
    'a multi-line CLIPBOARD review reads (multi-line)')
+ok('If accepted' in _dclip and 'replaces the clipboard contents' in _dclip,
+   'a CLIPBOARD review shows "If accepted" with the replace-clipboard note: %r' % _dclip)
 # a bracketed-paste target states the program buffers it as text
 _bt = _FakeTerm()
 _bt._bracketed_paste_active = lambda: True         # type: ignore[method-assign]
 _bar.show_review(_bt, _raw, 0, 'paste')
 ok('your program receives it as text' in _bar._detail.text(),
    'a bracketed-paste target shows the program-receives-it-as-text guarantee')
+_bar._choose('reject')
+# a foreground program in RAW mode with no bracketed framing: the bytes land as
+# immediate keystrokes -- honest wording + amber, NOT the "waits for Enter" promise.
+_rt = _FakeTerm()
+_rt.has_foreground_program = lambda: True            # type: ignore[attr-defined]
+_rt._child_raw_mode = lambda: True                   # type: ignore[attr-defined]
+_bar.show_review(_rt, _raw, 0, 'paste')
+_rd = _bar._detail.text()
+ok('receives it immediately as keystrokes' in _rd,
+   'a raw-mode foreground program shows the immediate-keystrokes note')
+ok('press Enter to run' not in _rd,
+   'the raw-mode note does NOT over-promise a waiting command line')
+ok(_rev.CAUTION_FG in _rd,
+   'the raw-mode guarantee row is tinted amber (caution), not green')
+_bar._choose('reject')
+# bracketed framing WINS over raw mode: an asked-for bracketed paste buffers it as text
+_brt = _FakeTerm()
+_brt.has_foreground_program = lambda: True            # type: ignore[attr-defined]
+_brt._child_raw_mode = lambda: True                   # type: ignore[attr-defined]
+_brt._bracketed_paste_active = lambda: True           # type: ignore[method-assign]
+_bar.show_review(_brt, _raw, 0, 'paste')
+ok('your program receives it as text' in _bar._detail.text(),
+   'bracketed paste takes precedence over raw mode (buffered as text)')
+_bar._choose('reject')
+# a raw-mode child NOT in the foreground (at the shell prompt): still the waits-for-Enter
+# promise -- the shell cooks the line, raw mode of a background child is irrelevant.
+_spt = _FakeTerm()
+_spt.has_foreground_program = lambda: False           # type: ignore[attr-defined]
+_spt._child_raw_mode = lambda: True                   # type: ignore[attr-defined]
+_bar.show_review(_spt, _raw, 0, 'paste')
+ok('press Enter to run' in _bar._detail.text(),
+   'raw mode with NO foreground program keeps the shell waits-for-Enter guarantee')
 _bar._choose('reject')
 
 # --- a paste longer than the box cap: the tail is disclosed + still delivers ---
@@ -644,7 +693,7 @@ _bar._deliver_clicked()
 # delivered text is what ReviewBar PASSES to dispatch; the real tab then maps '\n'->'\r').
 ok(_tt.last_text[:_rev._BOX_MAX] == 'a' * _rev._BOX_MAX
    and _tt.last_text[_rev._BOX_MAX:] == CYR_A + 'z',
-   'keep mode: Deliver sends the box PLUS the un-shown tail, look-alike kept')
+   'reveal mode: Deliver sends the box PLUS the un-shown tail, look-alike kept (keep-printable tier)')
 
 # REGRESSION (crit1): a transform must neutralize the UN-SHOWN TAIL to the SAME tier as the
 # box, or a homoglyph sitting past the box cap survives a [Strip unicode] and reaches the
@@ -680,18 +729,26 @@ ok(not _bar.isVisibleTo(_win), 'hide_review hides the bar')
 ok(not _bar._countdown.isActive(), 'the countdown timer is stopped on hide')
 ok(_bar.reviewed_term() is None, 'hide_review clears the reviewed tab')
 
-# --- colour: ONLY Reject is safe-green; Deliver is uncoloured -----------------
-from secure_terminal.review import SAFE_FG as _SAFE_FG, RISK_FG as _RISK_FG      # noqa: E402
+# --- colour: the app's green=safe language on Reject + the transforms + Deliver -----
+from secure_terminal.review import (SAFE_FG as _SAFE_FG, CAUTION_FG as _CAUTION_FG,  # noqa: E402
+                                    RISK_FG as _RISK_FG)
 from secure_terminal.terminal import THEMES as _THEMES, _rgb as _rgb            # noqa: E402
 from secure_terminal.sanitize import too_close as _too_close                    # noqa: E402
 from PyQt6.QtGui import QColor as _QColor                                        # noqa: E402
 _bar.show_review(_FakeTerm(), _raw, 0, 'paste')
-ok(_SAFE_FG in _bar._reject.styleSheet(), 'only Reject is tinted safe-green')
-ok(_SAFE_FG not in _bar._deliver.styleSheet() and _RISK_FG not in _bar._deliver.styleSheet(),
-   'the Deliver button is uncoloured (neither delivery is unconditionally safe)')
+ok(_SAFE_FG in _bar._reject.styleSheet(), 'Reject is safe-green')
+# the transform buttons carry the app's green=safe language: Strip + ASCII-fold produce a
+# safe ASCII result (green), Keep printable keeps look-alikes (amber caution).
+ok(_SAFE_FG in _bar._strip.styleSheet() and _SAFE_FG in _bar._fold.styleSheet(),
+   'Strip + ASCII-fold are green (their result is safe ASCII)')
+ok(_CAUTION_FG in _bar._keep.styleSheet(),
+   'Keep printable is amber (its result keeps the look-alikes)')
+# Deliver is RED here (the revealed box still holds invisibles -> blocked)
+ok(_RISK_FG in _bar._deliver.styleSheet(), 'a blocked Deliver is red')
+# every semantic colour clears the contrast guard on BOTH theme backgrounds
 for _theme in ('dark', 'light'):
     _bg = _rgb(_QColor(_THEMES[_theme][0]))
-    for _name, _hex in (('SAFE_FG', _SAFE_FG), ('RISK_FG', _RISK_FG)):
+    for _name, _hex in (('SAFE_FG', _SAFE_FG), ('CAUTION_FG', _CAUTION_FG), ('RISK_FG', _RISK_FG)):
         ok(not _too_close(_rgb(_QColor(_hex)), _bg),
            '%s reads on the %s theme background' % (_name, _theme))
 _bar._choose('reject')

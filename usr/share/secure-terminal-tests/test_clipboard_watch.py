@@ -323,15 +323,26 @@ def _test_watcher():
        '#1: an edited Replace writes the sanitized EDITED value, not a silent no-op')
 
     # #2: a huge clipboard must NOT load the whole thing into the editable box (an
-    # unbounded rebuild freeze), yet an UN-edited Replace still sanitizes the FULL
-    # clipboard (the box PLUS its un-reviewed tail all deliver).
+    # unbounded rebuild freeze). Under the evidence-first model the box opens FULLY
+    # REVEALED, so while a hidden char is present Replace is BLOCKED (nothing crosses
+    # unreviewed); once a transform cleans the box, Replace sanitizes the FULL clipboard
+    # -- the box PLUS its un-reviewed tail, both neutralized to the chosen tier.
     big = 'a' * 100 + ZWSP + 'b' * (_BOX_MAX + 5000)  # hidden char early, then > the box cap
     cb.setText(big)
     w._on_change()
     ok(w._popup.isVisible(), 'watcher: huge deceptive clipboard -> popup')
-    ok(len(w._popup.bar._editor.source()) <= _BOX_MAX,
+    _bar = w._popup.bar
+    ok(len(_bar._editor.source()) <= _BOX_MAX,
        '#2: the editable box is bounded to _BOX_MAX (no unbounded rebuild DoS)')
-    w._popup.bar._deliver_clicked()                  # no edit -> writes the FULL sanitized text
+    ok(not _bar._deliver.isEnabled(),
+       '#2: Replace is BLOCKED while the revealed box still holds the hidden char')
+    w._popup.bar._deliver_clicked()                  # blocked -> a no-op, clipboard untouched
+    ok(cb.text() == big,
+       '#2: a blocked Replace is a no-op (the raw clipboard is left as-is, not delivered)')
+    _bar._do_strip()                                 # clean the box -> Replace enabled
+    ok(_bar._deliver.isEnabled(),
+       '#2: Replace enables once a transform removes the hidden char')
+    w._popup.bar._deliver_clicked()                  # writes the FULL sanitized text (box + tail)
     # Compare with ok(), NOT eq(): eq() formats both ~1M-char strings via %r into the
     # message and prints it even on success -- a ~2M-char line that bloats the suite's
     # stdout past the sandbox transport size and TRUNCATES the coverage report that runs
@@ -339,8 +350,8 @@ def _test_watcher():
     _delivered_full = cb.text()
     _expected_full = sanitize_clipboard(big)
     ok(_delivered_full == _expected_full,
-       '#2: an un-edited Replace still sanitizes the FULL clipboard (self._raw stays '
-       'full); delivered %d chars, expected %d'
+       '#2: a cleaned Replace sanitizes the FULL clipboard (box PLUS its un-reviewed '
+       'tail); delivered %d chars, expected %d'
        % (len(_delivered_full), len(_expected_full)))
 
     # review_now: nothing when empty, a popup even for clean text
