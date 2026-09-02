@@ -8,7 +8,7 @@
 ## make-helper-one.bsh debian/control parsing:
 ##  - make_dependencies_filter_helper (flat, no alternative-parsing): must not collapse a
 ##    space-less 'A|B' to 'AB', and must strip build-profile '<...>' and any '${...}' substvar.
-##  - make_get_variables_parse_stanzas' Package/Architecture loop must capture RFC822 FOLDED
+##  - parse_control_package_stanzas' Package/Architecture loop must capture RFC822 FOLDED
 ##    continuation lines (a multi-line 'Architecture: amd64\n arm64', and a folded '\n all'),
 ##    or a covered target reads as uncovered and its .deb vanishes from the expected list.
 ##
@@ -64,6 +64,10 @@ if ! type -P grep-dctrl >/dev/null 2>&1; then
    printf '%s\n' 'FATAL: grep-dctrl (dctrl-tools) is required.' >&2
    exit 1
 fi
+if ! type -P dpkg-architecture >/dev/null 2>&1; then
+   printf '%s\n' 'FATAL: dpkg-architecture (dpkg-dev) is required.' >&2
+   exit 1
+fi
 
 ## Source the REAL file; sourcing does not run the was_executed-guarded main, so only the
 ## function definitions load. GENMKFILE_PATH so any runtime source inside the file resolves.
@@ -113,7 +117,7 @@ check_filter 'any substvar stripped'                    '${perl:Depends}, python
 check_filter 'version + arch qualifiers stripped'       'debhelper (>= 13), pkg [linux-any]' 'debhelper pkg'
 
 ## --- folded Architecture in the stanza-parse loop ---
-## Drive the REAL make_get_variables_parse_stanzas against a control whose Architecture field is
+## Drive the REAL parse_control_package_stanzas against a control whose Architecture field is
 ## folded across lines. Target arm64 is covered only via a continuation line.
 cat > "${test_root}/control" <<'EOF'
 Source: testsrc
@@ -142,7 +146,7 @@ make_package_debs_files_list=()
 make_package_list=()
 all_package_debs_are_arch_all='true'
 
-make_get_variables_parse_stanzas
+parse_control_package_stanzas
 
 tests_total=$(( tests_total + 1 ))
 want_deb="${DISTDIR}/foldedpkg_1.0-1_arm64.deb"
@@ -168,6 +172,66 @@ if [ "${found}" = 'true' ]; then
    pass "folded Architecture: 'all' on a continuation line -> foldedall _all .deb expected"
 else
    fail "folded 'Architecture: <newline> all' not arch-independent -> ${want_all} not in [${make_package_debs_files_list[*]}]"
+fi
+
+## --- architecture wildcard 'any-<cpu>' (dpkg-architecture matching) ---
+## 'any-arm' covers armhf (whose CPU is 'arm', not 'armhf'); a hand-rolled matcher missed it and
+## dropped the covered .deb. With target armhf, wildpkg's armhf .deb must be expected.
+cat > "${test_root}/control-wild" <<'EOF'
+Source: wildsrc
+
+Package: wildpkg
+Architecture: any-arm
+EOF
+make_debian_control_file_absolute_path="${test_root}/control-wild"
+make_source_package_name='wildsrc'
+target_architecture='armhf'
+make_package_debs_files_list=()
+make_package_list=()
+all_package_debs_are_arch_all='true'
+parse_control_package_stanzas
+tests_total=$(( tests_total + 1 ))
+want_wild="${DISTDIR}/wildpkg_1.0-1_armhf.deb"
+found='false'
+for d in "${make_package_debs_files_list[@]}"; do
+   [ "${d}" = "${want_wild}" ] && found='true'
+done
+if [ "${found}" = 'true' ]; then
+   pass "arch wildcard 'any-arm' covers target armhf (dpkg-architecture matching)"
+else
+   fail "arch wildcard 'any-arm' did not cover armhf -> ${want_wild} not in [${make_package_debs_files_list[*]}]"
+fi
+
+## --- a malformed debian/control must ABORT, not silently drop packages ---
+## grep-dctrl exits non-zero and emits only the stanzas parsed so far on a syntax error; the parser
+## must fail loud, not read the truncated output and drop the rest. Override exit_with_error (its
+## make_output_error path needs colour/trace state only a full run sets up) with a recording stub.
+# shellcheck disable=SC2317  # invoked indirectly via parse_control_package_stanzas
+exit_with_error() { printf 'DIE: %s\n' "$2" >&2; exit 66; }
+cat > "${test_root}/control-bad" <<'EOF'
+Source: badsrc
+
+Package: valid1
+Architecture: all
+
+Invalid-Line-Without-Colon
+
+Package: valid2
+Architecture: any
+EOF
+make_debian_control_file_absolute_path="${test_root}/control-bad"
+make_source_package_name='badsrc'
+target_architecture='amd64'
+make_package_debs_files_list=()
+make_package_list=()
+all_package_debs_are_arch_all='true'
+tests_total=$(( tests_total + 1 ))
+bad_rc=0
+( parse_control_package_stanzas ) >/dev/null 2>&1 || bad_rc=$?
+if [ "${bad_rc}" -ne 0 ]; then
+   pass 'a malformed debian/control aborts the parser (no silent package drop)'
+else
+   fail "malformed control did not abort: rc=${bad_rc} list=[${make_package_debs_files_list[*]}]"
 fi
 
 if [ "${tests_failed}" -ne 0 ]; then

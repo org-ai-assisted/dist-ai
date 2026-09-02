@@ -263,6 +263,22 @@ else
    pass 'an existing debian/install suppresses generation (dh would ignore it otherwise)'
 fi
 
+## --- direct 'debinstfile-create' must ALSO honor the nogenmkfile opt-out --------------------
+## The overwrite guard lives in make_debinstfile_create, not only in the make_debinstfile wrapper,
+## so calling the internal target directly ('genmkfile debinstfile-create') cannot clobber a
+## hand-maintained debian/<source>.install carrying the marker.
+create_optout="${work_dir}/create-optout"
+make_fixture "${create_optout}"
+printf '%s\n' '## nogenmkfile' 'usr/bin/handwritten' > "${create_optout}/debian/gmf-inst-pkg.install"
+optout_before="$(cat -- "${create_optout}/debian/gmf-inst-pkg.install")"
+( cd -- "${create_optout}" && "${genmkfile_bin}" debinstfile-create ) >/dev/null 2>&1 || true
+if [ "${optout_before}" = "$(cat -- "${create_optout}/debian/gmf-inst-pkg.install")" ] \
+   && [ ! -e "${create_optout}/debian/pkg-one.install" ]; then
+   pass 'direct debinstfile-create honors the nogenmkfile opt-out (guard not bypassable)'
+else
+   fail 'direct debinstfile-create bypassed the nogenmkfile guard and regenerated'
+fi
+
 ## --- producer failure must ABORT, not accept a partial list -----------------
 ## The file list is built by 'find | sort -z'. If sort (or find) fails AFTER emitting partial
 ## output, the run must fail loud, not generate a truncated .install. A process substitution
