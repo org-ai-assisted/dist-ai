@@ -174,9 +174,12 @@ else
    fail "folded 'Architecture: <newline> all' not arch-independent -> ${want_all} not in [${make_package_debs_files_list[*]}]"
 fi
 
-## --- architecture wildcard 'any-<cpu>' (dpkg-architecture matching) ---
+## --- architecture wildcard 'any-<cpu>' + env-arch independence (dpkg-architecture -f -a) ---
 ## 'any-arm' covers armhf (whose CPU is 'arm', not 'armhf'); a hand-rolled matcher missed it and
-## dropped the covered .deb. With target armhf, wildpkg's armhf .deb must be expected.
+## dropped the covered .deb. ALSO pin DEB_HOST_ARCH=amd64 in the env (a cross-build / post-
+## dpkg-buildpackage state): dpkg-architecture ignores '-a' when DEB_HOST_ARCH is set unless '-f'
+## is given, so the match must honor the TARGET (armhf), not the env arch. wildpkg's armhf .deb
+## must be expected.
 cat > "${test_root}/control-wild" <<'EOF'
 Source: wildsrc
 
@@ -189,7 +192,9 @@ target_architecture='armhf'
 make_package_debs_files_list=()
 make_package_list=()
 all_package_debs_are_arch_all='true'
+export DEB_HOST_ARCH=amd64
 parse_control_package_stanzas
+unset DEB_HOST_ARCH
 tests_total=$(( tests_total + 1 ))
 want_wild="${DISTDIR}/wildpkg_1.0-1_armhf.deb"
 found='false'
