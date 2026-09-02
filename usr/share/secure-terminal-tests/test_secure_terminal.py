@@ -383,6 +383,15 @@ eq([ch for ch, _ in _wcells4], ['a', 'b', 'c', 'X'],
 _e1c, _e1cells, _e1col, _e1s, _e1w = S.feed_line_edits([], 0, {}, 'abcde\x1b[3G\x1b[1K', 80)
 eq(''.join(ch for ch, _ in _e1cells), '   de',
    'CSI 1K (erase to beginning of line) blanks cells from BOL to the cursor')
+# ECMA-48: erasure fills with the CURRENT SGR, not each cell's stale colour --
+# after a colour is set then reset, 1K-erased cells carry the reset SGR, not the
+# old colour (verified against a real terminal: erased cells take the default bg).
+_red = S.feed_line_edits([], 0, {}, '\x1b[31mX')[1][0][1]
+_reset = S.feed_line_edits([], 0, {}, '\x1b[31m\x1b[0mX')[1][0][1]
+_k1sgr = S.feed_line_edits([], 0, {}, '\x1b[31mAB\x1b[0m\x1b[1K')[1]
+ok(all(_k != _red for _ch, _k in _k1sgr),
+   'CSI 1K erases with the current SGR, not the stale per-cell colour')
+eq(_k1sgr[0][1], _reset, 'CSI 1K-erased blank carries the current (reset) SGR')
 # SGR 39 / 49 reset the foreground / background to the terminal default (None)
 _sgr = {'fg': 3, 'bg': 4}
 S.parse_sgr('39', _sgr)
@@ -600,6 +609,15 @@ ok(S._printable_follows('\x1b[?2004l\x1b[Kuser@host$ ', 0) is True,
    '_printable_follows: True when printable prompt text still follows (bash)')
 ok(S._printable_follows('\x1b[?2004h\x1b[K\x07', 0) is False,
    '_printable_follows: False when only escapes/controls follow (zsh)')
+# a C1 control (NEL 0x85, CSI 0x9b, ...) is NOT printable text -- it must not read
+# as "prompt text follows" (cp >= 0x20 alone wrongly admitted the C1 range).
+ok(S._printable_follows('\x1b[?2004h\x85', 0) is False,
+   '_printable_follows: a C1 control (NEL) does not count as printable text')
+ok(S._printable_follows('\x1b[?2004h\x9b', 0) is False,
+   '_printable_follows: a bare C1 byte (CSI 0x9b) with nothing after is not printable')
+# so a C1 after the bracketed-paste marker does not spuriously flush the line
+eq(S.feed_line_edits([], 0, {}, 'abc' + S.PROMPT_START + '\x85')[0], [],
+   'a C1 after the prompt marker does not flush the unterminated line')
 
 # bidi controls (Trojan-Source): no display mode may emit a RAW bidi char (which
 # would reorder the line); detail and reveal surface the codepoint inline so a
