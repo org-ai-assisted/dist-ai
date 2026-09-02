@@ -1,3 +1,12 @@
+dist-ai (0.1-3) unstable; urgency=medium
+
+  * Ship safe-pgrep/safe-pkill: the secure-terminal shots reaper hard-fails
+    (R-220) without them and the public CI has no private-ai-config. Replaces:
+    private-ai-config hands the two files over; private-ai-config Depends on
+    dist-ai so the wrappers stay present on the agent VM.
+
+ -- Patrick Schleizer <adrelanos@whonix.org>  Tue, 01 Sep 2026 23:44:21 -0400
+
 dist-ai (0.1-2) unstable; urgency=medium
 
   * Move safe-pgrep/safe-pkill to private-ai-config (their sole home); this
