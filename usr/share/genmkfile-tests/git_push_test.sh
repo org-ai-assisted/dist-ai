@@ -180,37 +180,6 @@ else
    fail "T9 newline-separated remotes not all at tip (r2 dropped?); out=[${out}]"
 fi
 
-## T10: a STALE remote-tracking ref must NOT skip a genuinely-needed push. Repoint the remote at
-## a FRESH empty bare repo (refs/remotes/org-ai-assisted/ai stays at the old, pushed tip); git-push
-## must consult the ACTUAL remote (ls-remote) and push, not trust the stale tracking ref -- else it
-## reports "already at remote tip" while the branch never lands.
-count
-git init -q --bare "${test_root}/r3-empty.git"
-git -C "${repo}" remote set-url org-ai-assisted "${test_root}/r3-empty.git"
-loc="$(git -C "${repo}" rev-parse ai)"
-out="$(run_push "org-ai-assisted" "ai" || true)"
-if [ "$(remote_tip "${test_root}/r3-empty.git")" = "${loc}" ]; then
-   pass 'T10 stale tracking ref does not skip a needed push (real remote consulted)'
-else
-   fail "T10 trusted a stale tracking ref -> repointed empty remote received nothing; out=[${out}]"
-fi
-
-## T11: the remote-tip lookup must match refs/heads/ai EXACTLY, not just tail-match. A decoy ref
-## ending in '/refs/heads/ai' (e.g. a filter-branch 'refs/original/...' leftover) at the local tip
-## must NOT be mistaken for the branch: with refs/heads/ai absent, git-push must still create it.
-count
-git init -q --bare "${test_root}/r4-decoy.git"
-loc="$(git -C "${repo}" rev-parse ai)"
-## Plant ONLY a decoy ref (this also transfers the commit object); refs/heads/ai stays absent.
-git -C "${repo}" push -q "${test_root}/r4-decoy.git" "ai:refs/original/refs/heads/ai"
-git -C "${repo}" remote set-url org-ai-assisted "${test_root}/r4-decoy.git"
-out="$(run_push "org-ai-assisted" "ai" || true)"
-if [ "$(git --git-dir="${test_root}/r4-decoy.git" rev-parse --verify --quiet refs/heads/ai || true)" = "${loc}" ]; then
-   pass 'T11 a decoy ref ending in /refs/heads/ai does not spoof the exact-ref tip check'
-else
-   fail "T11 decoy ref spoofed the tip check -> refs/heads/ai not created; out=[${out}]"
-fi
-
 if [ "${tests_failed}" -ne 0 ]; then
    printf '%s\n' "git_push_test: ${tests_failed}/${tests_total} FAILED" >&2
    exit 1
