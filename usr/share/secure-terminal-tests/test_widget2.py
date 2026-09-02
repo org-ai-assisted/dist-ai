@@ -3244,8 +3244,10 @@ try:
 finally:
     _stmod.QApplication = _rg_qapp
 _rg.apply_paste_delay(15)
-eq(_rg.current_paste_delay(), _rg._paste_delay,
-   'current_paste_delay: returns the configured paste delay')
+## assert against the LITERAL just applied, not _rg._paste_delay -- comparing the getter to
+## the attribute it returns is tautologically true even if apply_paste_delay(15) no-op'd.
+eq(_rg.current_paste_delay(), 15,
+   'current_paste_delay: returns the just-applied paste delay')
 
 # --- paste: an all-control paste sanitizes to nothing; bracketed paste in TUI --
 _pt = SecureTerminal(command='/bin/cat')
