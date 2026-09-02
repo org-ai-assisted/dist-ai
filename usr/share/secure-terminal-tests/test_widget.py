@@ -412,6 +412,13 @@ ok('PRIMARY-OUTPUT-KEEPME' in _rk.toPlainText(),
    'restart_as_shell keeps the exited TUI program primary output as scrollback')
 ok('program exited' in _rk.toPlainText(),
    'and seeds the handover banner below the kept output')
+# REGRESSION: _raw must ALSO carry the banner, not just the grid. _feed_stream feeds only
+# the pyte grid (self._stream), so reseeding _raw from _grid_text() WITHOUT the banner left
+# _raw holding the exited program's output with NO separator -- a later CLI<->TUI switch
+# replays _raw and rebuilds scrollback with no handover marker, so the new shell's prompt
+# reads as the exited program's output. (canary: old code set _raw = _grid_text() only.)
+ok('PRIMARY-OUTPUT-KEEPME' in _rk._raw and 'program exited' in _rk._raw,
+   'restart seeds the handover banner into _raw too (a later CLI replay keeps the separator)')
 ok(_bpm_cleared,
    'restart clears a stale bracketed-paste (DEC 2004) bit from the reused screen')
 _rk.close()
