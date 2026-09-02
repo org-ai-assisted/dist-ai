@@ -44,6 +44,9 @@ fi
 
 if [ -z "${repo}" ] || [ ! -d "${repo}/usr/lib/python3/dist-packages/secure_terminal" ]; then
    printf '%s\n' 'secure-terminal-tests: SKIP (secure_terminal not found; set SECURE_TERMINAL_REPO)' >&2
+   ## The secure_terminal checkout IS the target under test, not a dep of a present target;
+   ## absent means nothing here to test. The gate/CI env always provides it; python3 stays FATAL.
+   ## style-ok: allow-skip: target checkout absent -- nothing to test, so skip
    exit 77
 fi
 
@@ -88,6 +91,7 @@ for test_file in \
    "${tests_dir}/test_mainwin.py" \
    "${tests_dir}/test_instances.py" \
    "${tests_dir}/test_widget.py" \
+   "${tests_dir}/test_widget2.py" \
    "${tests_dir}/test_fuzz_widget.py"; do
    [ -f "${test_file}" ] || continue
    ## Capture the suite's real exit status. A bare `if python3 ...; then` would leave `$?` as the
@@ -101,6 +105,8 @@ for test_file in \
    if [ "${rc}" = '77' ]; then
       ## a SKIP from the pure test means the module is missing -> skip all
       if [ "${test_file}" = "${tests_dir}/test_secure_terminal.py" ]; then
+         ## propagates the pure suite's target-absent SKIP -- the module under test is missing.
+         ## style-ok: allow-skip: target module absent -- nothing to test, so skip
          exit 77
       fi
       continue

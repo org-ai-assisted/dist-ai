@@ -150,6 +150,14 @@ rc5="$(drive 0 09 "${c5}")"
 check "${rc5}" 0 'a leading-zero retry count (09) is read base-10, not octal -> defined rc 0'
 check "$(cat "${c5}" 2>/dev/null)" 1 'a leading-zero retry count still runs the suite exactly once (no octal skip)'
 
+## ---- upper clamp: a pathological huge retry count must not spin unboundedly on a
+## genuinely-crashing suite. It clamps to 20, so a persistent crash makes exactly 20
+## attempts then fails 139 -- never hundreds/thousands.
+c6="${work}/counter6"
+rc6="$(drive 99 999 "${c6}")"
+check "${rc6}" 139 'a persistent crash with a huge retry count still FAILS (139)'
+check "$(cat "${c6}" 2>/dev/null)" 20 'COVERAGE_SEGV_RETRIES is clamped to 20 (no unbounded retry spin)'
+
 printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
    exit 1

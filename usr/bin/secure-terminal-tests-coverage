@@ -188,6 +188,9 @@ run_suite_under_coverage() {  ## $1 = suite .py path -> returns the final rc
    ## would skip the retry loop and return rc=0 without running the suite (a false green).
    retries="$(( 10#${retries} ))"
    [ "${retries}" -ge 1 ] || retries=5
+   ## Upper clamp: a pathological huge value would otherwise spin the retry loop for a
+   ## genuinely-crashing suite far past any sane bound. 20 retries is already generous.
+   [ "${retries}" -le 20 ] || retries=20
    for (( attempt=1; attempt<=retries; attempt++ )); do
       rc=0
       python3 -m coverage run --parallel-mode --source="${pkg}" -- \
@@ -231,13 +234,25 @@ python3 -m coverage erase
 ## parallel -- total time is the slowest suite either way).
 suites=(test_mainwin test_secure_terminal test_fuzz test_fuzz_harnesses \
         test_corpus test_invariants test_cli test_unicode_tag test_modules \
-        test_review test_widget test_sclip test_clipboard_watch)
-suite_jobs="${COVERAGE_SUITE_JOBS:-$(nproc 2>/dev/null || printf '%s\n' 2)}"
-case "${suite_jobs}" in ''|*[!0-9]*) suite_jobs=2 ;; esac
+        test_review test_widget test_widget2 test_sclip test_clipboard_watch)
+## Concurrency: auto-detect cores (nproc), overridable via COVERAGE_SUITE_JOBS.
+ncpu="$(nproc 2>/dev/null || printf '%s\n' 2)"
+case "${ncpu}" in ''|*[!0-9]*) ncpu=2 ;; esac
+ncpu="$(( 10#${ncpu} ))"
+[ "${ncpu}" -ge 1 ] || ncpu=2
+suite_jobs="${COVERAGE_SUITE_JOBS:-${ncpu}}"
+case "${suite_jobs}" in ''|*[!0-9]*) suite_jobs="${ncpu}" ;; esac
 ## Base-10, same octal trap as retries above: a leading-zero COVERAGE_SUITE_JOBS (e.g. 09)
 ## would otherwise error in the [ -ge ] test and, under errexit, abort the gate.
 suite_jobs="$(( 10#${suite_jobs} ))"
-[ "${suite_jobs}" -ge 1 ] || suite_jobs=2
+[ "${suite_jobs}" -ge 1 ] || suite_jobs="${ncpu}"
+## Clamp to a sane UPPER bound: without it a pathological COVERAGE_SUITE_JOBS (e.g. a
+## 20-digit value) survives the >=1 check and, since the job count maxes at the suite
+## count, the `wait -n` throttle never fires -> every Qt-offscreen suite launches at once
+## and thrashes/self-DoSes the box. Cap at 4x the core count (headroom for the I/O-bound
+## Qt suites without oversubscribing a small runner).
+suite_cap="$(( ncpu * 4 ))"
+[ "${suite_jobs}" -le "${suite_cap}" ] || suite_jobs="${suite_cap}"
 
 run_one_suite() {  ## $1 = suite name; captures output+rc under work/, isolates XDG
    local suite="$1" rc=0
