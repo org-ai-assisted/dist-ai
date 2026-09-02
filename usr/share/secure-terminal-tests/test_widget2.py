@@ -3043,14 +3043,18 @@ ok(_fgk.has_foreground_program(),
    'has_foreground_program: a real foreground group -> True')
 ok(_fgk.terminate_foreground(),
    'terminate_foreground: SIGTERMs the foreground group')
-pump(2300)                                  # let the survivor SIGKILL fire
+pump(2300)                                  # let the survivor SIGKILL fire (watchdog is 2s)
+_killed_by_survivor = True
 try:
+    ## the survivor should ALREADY have killed it during the pump; a timeout here means it
+    ## did NOT fire. Assert on THAT -- not on returncode after our own kill, which would be
+    ## tautologically true whether or not the production watchdog works.
     _victim.wait(timeout=3)
 except _subprocess.TimeoutExpired:
-    _victim.kill()
-    ## C4: Reap the killed victim process to fix returncode assert flake
+    _killed_by_survivor = False
+    _victim.kill()                          # reap it ourselves so the test leaks no process
     _victim.wait(timeout=5)
-ok(_victim.returncode is not None,
+ok(_killed_by_survivor,
    'terminate_foreground: a TERM-ignoring group is SIGKILLed by the survivor')
 
 # #35/#42: a login shell REPLACED via the `exec` builtin (exec vim) keeps the shell's
@@ -3134,13 +3138,16 @@ try:
        'terminate_foreground: signals an exec-replaced shell, not a no-op')
 finally:
     _term2.os.getpgid = _o_getpgid_x           # restore BEFORE pump (no stray mock)
-pump(2300)                                     # let the survivor SIGKILL the victim
+pump(2300)                                     # let the survivor SIGKILL the victim (2s watchdog)
+_x_killed_by_survivor = True
 try:
+    ## as above: a timeout means the survivor did NOT fire; do not mask it with our own kill.
     _victim_x.wait(timeout=3)
 except _subprocess.TimeoutExpired:
-    _victim_x.kill()
+    _x_killed_by_survivor = False
+    _victim_x.kill()                           # reap it ourselves so the test leaks no process
     _victim_x.wait(timeout=5)
-ok(_victim_x.returncode is not None,
+ok(_x_killed_by_survivor,
    'terminate_foreground: the exec-replaced shell is SIGKILLed by the survivor')
 # a MATCHING exe is a bare prompt -> the panic button no-ops (shell preserved)
 _term2.os.getpgid = lambda _pid: _victim_x_pgrp
