@@ -1595,7 +1595,14 @@ eq(_line('abc\x1b[2GX')[1], 'aXc', 'CSI G (column) then overwrite')
 eq(_line('ab\x1b[5CX')[1], 'ab     X',
    'CSI C (forward) pads blanks to the target column (unbounded mode too)')
 eq(_line('abcdef\x1b[3G\x1b[K')[1], 'ab', 'CSI 0K erases from the cursor to EOL')
-eq(_line('abc\x1b[2K')[1], '', 'CSI 2K erases the whole line')
+# CSI 2K erases the whole line but, per ECMA-48, does NOT move the cursor (like
+# n=0/n=1) -- the line becomes col blanks with the cursor at its end.
+eq(_line('abc\x1b[2K')[1], '   ', 'CSI 2K erases the line to blanks, cursor kept')
+# so text after a bare 2K lands at the held column, not homed to 0
+eq(_line('abc\x1b[2Kdef')[1], '   def',
+   'CSI 2K keeps the cursor: following text lands at its column, not column 0')
+# the common redraw (CR then 2K) still clears to empty -- col is already 0 there
+eq(_line('abc\r\x1b[2K')[1], '', 'CSI 2K after CR clears to empty (cursor at 0)')
 
 # SECURITY: vertical / absolute cursor escapes are stripped -- a program can
 # never leave the current line or reach the scrollback.
@@ -1628,8 +1635,9 @@ def _cells_render(raw, mode='detail', line_edits=True, max_line=0):
 _le_raw = 'STATUS=FAIL\x1b[2KSTATUS=PASS'
 _le_on = S.feed_line_edits([], 0, {}, _le_raw, 0, True)[1]
 _le_off = S.feed_line_edits([], 0, {}, _le_raw, 0, False)[1]
-eq(''.join(c for c, _ in _le_on), 'STATUS=PASS',
-   'line_edits on: erase-in-line redraws the current line (the shell needs this)')
+eq(''.join(c for c, _ in _le_on), ' ' * 11 + 'STATUS=PASS',
+   'line_edits on: 2K blanks the line but keeps the cursor (ECMA-48), so the '
+   'redraw text lands at the held column; a shell redraw repositions with CR')
 eq(''.join(c for c, _ in _le_off), 'STATUS=FAILSTATUS=PASS',
    'line_edits off: the erased text survives -- append-only against escapes')
 ok(all(ch != '\x1b' for ch, _ in _le_off),

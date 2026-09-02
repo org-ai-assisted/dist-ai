@@ -798,8 +798,11 @@ def _step_z3(cls, col, L, M, num):
     if cls in ('K1', 'K3'):                          # erase-BOL / unknown: L,col kept
         col2 = z3.If(z3.And(M > 0, col >= M), M - 1, col)
         return col2, L
-    if cls == 'K2':                                  # erase-all: cells=[]; col=0
-        return z3.IntVal(0), z3.IntVal(0)
+    if cls == 'K2':                                  # erase whole line; cursor
+        # unchanged (ECMA-48): cells becomes col blanks, so L2 = col; col kept
+        # (then the shared end-of-op anti-phantom clamp).
+        col2 = z3.If(z3.And(M > 0, col >= M), M - 1, col)
+        return col2, col
     raise ValueError('unknown class %r' % cls)
 
 
