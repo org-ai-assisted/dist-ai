@@ -232,12 +232,14 @@ def main(argv):
     # let the layout settle so the box wraps to its final width before grabbing
     app.processEvents()
     app.processEvents()
-    # Size the box to its one line (+ inset) and let _trim_to_content cut any dead
-    # terminal-bg height below the actual content: at 1180 the detail expansion is
-    # one line, but the offscreen document layout does not report a usable height,
-    # so measuring it would clip. Trim (theme-bg keyed) gives a tight shot without
-    # the fragile measurement.
-    box.setFixedHeight(3 * box.fontMetrics().lineSpacing() + 2 * PANE_INSET)
+    # Size the box to its ACTUAL content line count (+ inset), so a short payload
+    # leaves no internal dead-space band the tight-framing gate would reject
+    # (_trim_to_content only cuts OUTER background, not a band between the box and the
+    # status line / table below it). A fixed 3-line box over a ~1-line payload was that
+    # band. The source counts logical '\n's -- Detail wraps to the width but the payload
+    # fits 1180 on one row, so line count == rendered rows here.
+    _line_count = box.source().count('\n') + 1
+    box.setFixedHeight(_line_count * box.fontMetrics().lineSpacing() + 2 * PANE_INSET)
     host.adjustSize()
     app.processEvents()
 
