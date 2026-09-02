@@ -17,6 +17,8 @@
 ## clipboard relabels; and the widget's atomic-token editing / caret / click-snap. PyQt6
 ## is REQUIRED: it fails loud (exit 1), never a silent skip, when unavailable.
 
+import ast
+import inspect
 import os
 import sys
 
@@ -28,6 +30,7 @@ try:
     from PyQt6.QtCore import Qt, QEvent, QMimeData, QPointF
     from secure_terminal.review import ReviewBar
     from secure_terminal.revealed_editor import RevealedEditor
+    from secure_terminal.sanitize import sanitize_clipboard_unicode
 except Exception as exc:  # fail closed: a required dependency must not silently skip
     sys.stderr.write('secure-terminal-tests: FAIL missing dependency: %s\n' % exc)
     sys.exit(1)
@@ -779,6 +782,72 @@ try:
        'CANARY: the breakdown table depends on classify_paste_detail (has teeth)')
 finally:
     _rev.classify_paste_detail = _saved_detail
+
+# --- MODE <-> TIER consistency: the un-shown tail's neutralization contract ------
+# The beyond-cap tail is neutralized on deliver by review._TIER[self._active_mode]
+# (see ReviewBar._tail_delivered). Two ways that silently breaks with no other test
+# noticing (the live fuzz populates the tail, but only a green run proves the mapping;
+# a wrong entry needs a dedicated assertion), so pin it here:
+#   1. every _active_mode the code can set HAS a _TIER entry -- a new transform that
+#      sets a mode without adding its tier would KeyError only on a beyond-cap deliver
+#      (rare, easily missed); this fails loudly at the suite instead;
+#   2. each tier is no weaker than the delivery sink -- the ASCII tiers (strip/fold)
+#      yield pure ASCII, the printable tiers (keep/reveal) at least drop every
+#      invisible/bidi/control. A wrong entry (e.g. strip -> the keep sanitizer) would
+#      leak a look-alike into the un-shown tail past a [Strip unicode]; caught here.
+
+# (1) derive the set of _active_mode literals the source assigns, from the AST, so a
+# newly-added transform is covered automatically (no hand-maintained mode list).
+_rev_src = inspect.getsource(_rev)
+_assigned_modes = set()
+_active_mode_assigns = 0
+_active_mode_nonliteral = 0
+for _node in ast.walk(ast.parse(_rev_src)):
+    # cover plain `self._active_mode = ...` (Assign) AND an annotated
+    # `self._active_mode: str = ...` (AnnAssign); flatten tuple/list targets so a
+    # `self.x, self._active_mode = ...` unpack is not silently skipped -- a skipped
+    # assignment would defeat the whole coverage check.
+    if isinstance(_node, ast.Assign):
+        _targets, _value = _node.targets, _node.value
+    elif isinstance(_node, ast.AnnAssign) and _node.value is not None:
+        _targets, _value = [_node.target], _node.value
+    else:
+        continue
+    _flat = []
+    for _t in _targets:
+        _flat.extend(_t.elts if isinstance(_t, (ast.Tuple, ast.List)) else [_t])
+    for _tgt in _flat:
+        if isinstance(_tgt, ast.Attribute) and _tgt.attr == '_active_mode':
+            _active_mode_assigns += 1
+            # a tuple-unpack RHS (`= 1, 'strip'`) is an ast.Tuple, not a Constant, so
+            # it counts as non-literal below -- the value cannot be mapped statically,
+            # which the assertion then flags for hand classification.
+            if isinstance(_value, ast.Constant) and isinstance(_value.value, str):
+                _assigned_modes.add(_value.value)
+            else:
+                _active_mode_nonliteral += 1
+ok(_active_mode_assigns > 0, 'the AST scan found the _active_mode assignments')
+ok(_active_mode_nonliteral == 0,
+   'every _active_mode assignment is a string literal (else the tier-coverage check '
+   'cannot verify it -- classify the new value by hand)')
+eq(_assigned_modes, set(ReviewBar._TIER.keys()),
+   'every _active_mode the code sets has a _TIER entry (and no stray tier)')
+
+# (2) each tier is at least as strong as the sink. The ASCII tiers must fully strip
+# non-ASCII; the printable tiers must keep the visible look-alike (amber) yet still
+# drop every hidden char. ADV mixes both a hidden set and visible non-ASCII.
+_ADV = CYR_A + RTL + ZWSP + E_ACUTE + '\x07\x1b' + chr(0x0301) + 'ok'
+_ASCII_TIERS = {'strip', 'fold'}          # yield pure ASCII (spec of the ordering)
+for _mode, _fn in ReviewBar._TIER.items():
+    _out = _fn(_ADV)
+    ok(_out == sanitize_clipboard_unicode(_out),
+       'tier %r drops every invisible/bidi/control (the sink floor)' % _mode)
+    if _mode in _ASCII_TIERS:
+        ok(all(ord(c) < 0x80 for c in _out),
+           'tier %r yields pure ASCII -- no look-alike survives in the tail' % _mode)
+    else:
+        ok(any(ord(c) > 0x7F for c in _out),
+           'tier %r keeps the visible look-alike (the amber printable-unicode tier)' % _mode)
 
 APP.processEvents()
 print('secure-terminal-tests(review): all passed' if not _failures else
