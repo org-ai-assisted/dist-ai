@@ -8,12 +8,14 @@
 
 The bar is the real one the app shows -- secure_terminal.review.ReviewBar --
 fed a representative hostile paste (a curl | bash line whose domain and shell name
-hide Cyrillic homoglyphs, plus a zero-width and a bidi override), so the summary,
-the single editable REVEALED box (which reuses the terminal's renderer in the tab's
-detail mode, naming each hidden look-alike inline), the transform buttons and the
-countdown-gated Deliver button appear exactly as a user sees them. Used to generate
-the shot on the project's Pages site; run it again to regenerate. No display is
-needed: it uses Qt's offscreen platform and grab().
+hide Cyrillic homoglyphs, plus a zero-width and a bidi override). The box opens
+FULLY REVEALED (evidence-first): NOTHING is pre-dropped, and in the tab's detail mode
+every hidden character is named in place -- the look-alikes tinted, the invisible and
+the bidi override shown as badges -- so the summary, the box, the transform buttons and
+the content-driven Deliver button (RED "blocked -- N hidden" while any hidden character
+remains) appear exactly as a user sees them. Used to generate the shot on the project's
+Pages site; run it again to regenerate. No display is needed: it uses Qt's offscreen
+platform and grab().
 
 It imports the app (secure_terminal.review), so run it against an installed
 secure-terminal or point PYTHONPATH at a checkout:
@@ -187,13 +189,13 @@ def _trim_to_content(image, bg, margin):
 
 def build_review(host, kind, delay):
     """Build the review bar inside `host` for `kind` ('paste'/'copy'), holding the
-    PAYLOAD. The box opens in the default keep-printable form -- the printable
-    look-alikes are KEPT and, in the tab's detail mode, NAMED inline (<U+0430 CYRILLIC
-    SMALL LETTER A>), while the zero-width + bidi are dropped -- so the shot shows the
-    box revealing exactly what the paste was hiding, with no mode-pick needed. A paste
-    also arms the countdown, so the Deliver button shows its disabled countdown state.
-    Returns the bar. Factored out so shot_generators_smoke_test can assert the box shows
-    the revealing render."""
+    PAYLOAD. The box opens FULLY REVEALED -- every hidden character stays as evidence and,
+    in the tab's detail mode, is NAMED inline (<U+0430 CYRILLIC SMALL LETTER A>, <U+200B
+    ZERO WIDTH SPACE>, <U+202E RIGHT-TO-LEFT OVERRIDE>) -- so the shot shows the box
+    revealing exactly what the paste was hiding, with no mode-pick needed. Because hidden
+    characters are present, the Deliver button shows its RED content-blocked state; a paste
+    also arms the countdown. Returns the bar. Factored out so shot_generators_smoke_test can
+    assert the box shows the revealing render."""
     layout = QVBoxLayout(host)
     layout.setContentsMargins(0, 0, 0, 0)
     bar = ReviewBar(host)

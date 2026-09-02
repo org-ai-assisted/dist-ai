@@ -230,7 +230,7 @@ def phase_review(rnd, iterations, seed):
     ## keep-printable + transform pipeline). The DELIVERED text's control-byte safety is
     ## a sanitize property, covered by the sanitize fuzz.
     from secure_terminal.review import ReviewBar
-    from secure_terminal.sanitize import sanitize_clipboard_unicode
+    from secure_terminal.sanitize import sanitize_clipboard, reveal_display
     from PyQt6.QtWidgets import QWidget, QMessageBox
     win = QWidget()
     term = SecureTerminal(command='/bin/cat')
@@ -244,13 +244,22 @@ def phase_review(rnd, iterations, seed):
                             rnd.choice(('paste', 'copy', 'clipboard', 'bogus')))
             _assert(bar.reviewed_term() is term,
                     'review bar did not take the term for {0!r}'.format(raw), seed)
-            for action in (bar._do_strip, bar._do_fold, bar._do_restore):
+            # Each transform leaves the box source at a fixed point of ITS tier: Strip and
+            # ASCII-fold reduce to pure ASCII (sanitize_clipboard-clean); Restore RE-REVEALS
+            # -- the invisibles/bidi/control return as EVIDENCE, rendered as marked cells, so
+            # the reveal box is reveal_display-clean (idempotent), NOT sanitize-clean. The
+            # DELIVERED text's control-byte safety is a separate sanitize property (Deliver is
+            # blocked while a revealed box still holds hidden chars); it is covered elsewhere.
+            for action, clean, tier in ((bar._do_strip, sanitize_clipboard, 'ASCII'),
+                                        (bar._do_fold, sanitize_clipboard, 'ASCII'),
+                                        (bar._do_restore, reveal_display, 'reveal')):
                 action()
                 box = bar._editor.source()
                 _assert('\x1b' not in bar._editor.toPlainText(),
                         'review box surfaced a raw ESC on {0!r}'.format(raw), seed)
-                _assert(box == sanitize_clipboard_unicode(box),
-                        'review box holds a non-display-clean char on {0!r}'.format(raw), seed)
+                _assert(box == clean(box),
+                        'review box holds a non-{0}-clean char on {1!r}'.format(tier, raw),
+                        seed)
             # flip the tab's mode while the review is open: the box must re-render
             # (the live-follow path) without raising
             term.apply_mode(rnd.choice(list(S.DISPLAY_MODES)))
