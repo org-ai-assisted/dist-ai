@@ -4256,6 +4256,30 @@ win.close()
 win.deleteLater()
 APP.processEvents()
 
+# --- per-tab cgroup: with a delegated base, each new tab gets its own limited
+# cgroup (main.py _alloc_cgroup -> resource_isolation.create_tab). A fake base dir
+# stands in for the delegated hierarchy; this covers the window-side plumbing, the
+# module's own paths are unit-tested in test_modules and the live containment in the
+# sandbox cgroup suite.
+import tempfile as _tf_mcg                                                       # noqa: E402
+import shutil as _sh_mcg                                                         # noqa: E402
+from secure_terminal.resource_isolation import PIDS_MAX as _PIDS_MAX             # noqa: E402
+_cgbase = _tf_mcg.mkdtemp(prefix='st-cgm-')
+_wcg = MainWindow(cg_base=_cgbase)          # ctor auto-opens the first tab
+_seq0 = _wcg._cg_seq
+_wcg.new_tab()
+eq(_wcg._cg_seq, _seq0 + 1, 'cgroup: each new tab advances the per-tab name counter')
+# name carries the pid so concurrent instances / a crashed instance's leftover never collide
+_tabN = os.path.join(_cgbase, 'tab-%d-%d' % (os.getpid(), _seq0))
+ok(os.path.exists(os.path.join(_tabN, 'pids.max')),
+   'cgroup: new_tab creates a per-tab cgroup when a base is delegated')
+with open(os.path.join(_tabN, 'pids.max'), encoding='ascii') as _mh:
+    ok(_mh.read().strip() == str(_PIDS_MAX),
+       'cgroup: the per-tab cgroup carries the pids.max ceiling')
+_wcg.close()
+APP.processEvents()
+_sh_mcg.rmtree(_cgbase, ignore_errors=True)
+
 print('secure-terminal-tests(mainwin): all passed' if not _failures else
       'secure-terminal-tests(mainwin): %d failed' % _failures)
 # Flush before exit; the offscreen Qt platform can crash in its static teardown
