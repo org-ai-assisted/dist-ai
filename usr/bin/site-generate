@@ -35,7 +35,12 @@ import shutil
 import subprocess  # nosec
 import sys
 
-_SELF_DIR = os.path.dirname(os.path.abspath(__file__))
+# realpath (not abspath): when invoked through a symlink (e.g. a ~/.local/bin
+# dev symlink onto the source tree), abspath keeps the symlink dir, so the
+# co-located ../share/website-tests is missed and the STALE /usr/share copy is
+# loaded instead. realpath resolves to the real script dir, matching how the
+# shell wrappers (readlink --canonicalize) find their co-located tree.
+_SELF_DIR = os.path.dirname(os.path.realpath(__file__))
 
 
 def _load_check_site():
