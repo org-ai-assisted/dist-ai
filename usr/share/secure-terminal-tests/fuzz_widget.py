@@ -111,13 +111,15 @@ def _feed(term, raw):
 
 
 def _check_document(term, seed, ctx):
-    ## The visible transcript is the sanitization guarantee: no control code point
-    ## reaches the document except the structural newline/tab. A bare `ord >= 0x20`
-    ## would ADMIT DEL (0x7F) and the C1 controls (0x80-0x9F) -- both non-printable,
-    ## both outside the sanitizer's proven display alphabet (0x20-0x7E) -- so name the
-    ## ranges: printable ASCII, or printable unicode (>= 0xA0), never a C0/DEL/C1.
+    ## The visible transcript is the sanitization guarantee: only the structural
+    ## newline/tab plus PRINTABLE characters may reach the document. str.isprintable()
+    ## is the exact oracle -- it is False for every C0 control, DEL (0x7F), the C1
+    ## controls (0x80-0x9F) AND the invisible / bidi / format code points (ZWSP, RLO,
+    ## BOM, the isolates, ...), all of which this fuzzer feeds via _DANGER and none of
+    ## which may render raw in ANY mode. A bare `ord >= 0x20` (or a 0x20-0x7E / >=0xA0
+    ## range) wrongly admits DEL, C1, and every bidi/invisible >= 0xA0.
     for ch in term.toPlainText():
-        _assert(ch in ('\n', '\t') or 0x20 <= ord(ch) <= 0x7e or ord(ch) >= 0xa0,
+        _assert(ch in ('\n', '\t') or ch.isprintable(),
                 'raw control {0!r} reached the document ({1})'.format(ch, ctx), seed)
 
 
@@ -172,10 +174,17 @@ def phase_switch(rnd, iterations, seed):
     ## from retained raw output and must not crash or leak.
     term = SecureTerminal(command='/bin/cat')
     for _ in range(iterations):
+        # time the feed AND the mode/OSC re-renders together: the switch re-renders
+        # from retained raw output, which is exactly where a quadratic reshape DoS
+        # surfaces, so bound the whole iteration -- not just the feed like phase_feed.
+        start = time.monotonic()
         _feed(term, _rand_bytes_chunk(rnd))
         term.apply_tui(not term.tui_active())            # exercise both directions
         term.apply_osc(rnd.choice(_OSC_FEATURES), rnd.random() < 0.5)
         term.apply_mode(rnd.choice(list(S.DISPLAY_MODES)))
+        dt = time.monotonic() - start
+        _assert(dt < _FEED_BUDGET_S,
+                'switch feed+re-render took {0:.1f}s (DoS)'.format(dt), seed)
         _check_document(term, seed, 'switch')
         _check_cells_bounded(term, seed, 'switch')
 
@@ -326,8 +335,12 @@ def _fuzz_review_delivery(rnd, bar, term, seed):
             tail = '\u0430\u200b' + ''.join(_rand_token(rnd)
                                             for _ in range(rnd.randint(0, 6)))
             raw = 'a' * R._BOX_MAX + tail
+            # every deliverable tier, incl. reveal (_do_restore): the ASCII box prefix
+            # keeps reveal deliverable (no hidden char in the box slice to block it),
+            # so the reveal-tier live Deliver/tail wiring is fuzzed too, not just the
+            # box-only path in the loop above.
             for tform, mode in ((bar._do_keep, 'keep'), (bar._do_strip, 'strip'),
-                                (bar._do_fold, 'fold')):
+                                (bar._do_fold, 'fold'), (bar._do_restore, 'reveal')):
                 bar.show_review(term, raw, 0, kind)
                 _assert(bar._tail, 'the tail did not populate for {0!r}'.format(raw), seed)
                 tform()
@@ -413,7 +426,9 @@ def main():                                              # pragma: no cover - CL
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--iterations', type=int, default=6000)
     parser.add_argument('--seed', type=int, default=None)
-    parser.add_argument('--phase', default=None, help='run only this phase')
+    parser.add_argument('--phase', default=None, choices=[n for n, _ in PHASES],
+                        help='run only this phase (a typo would else silently run '
+                             'nothing and report PASS)')
     opts = parser.parse_args()
 
     _app = QApplication.instance() or QApplication(sys.argv)
