@@ -160,6 +160,7 @@ A missing z3 or secure_terminal is a hard FAILURE (a verification suite must nev
 silently disable itself), never a skip.
 """
 
+import ast
 import sys
 import unicodedata
 from typing import Any
@@ -1017,6 +1018,19 @@ def _names(node):
     return {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
 
 
+def _target_hits_name(target, name):
+    """True if a store/del `target` writes `name` itself or an element/attribute of it
+    (`name`, `name[...]`, `name.x`). A subscript/attribute RECEIVER is isolated via
+    .value, so a DYNAMIC index (`name[i]`) is NOT folded into the name set -- otherwise
+    `name[i] += 1` / `del name[i]` (name set {name, i}) would escape while a const-index
+    one is caught."""
+    if isinstance(target, ast.Name):
+        return target.id == name
+    if isinstance(target, (ast.Subscript, ast.Attribute)):
+        return _names(target.value) == {name}
+    return False
+
+
 def _append_only_violations(source, name):
     """Return the list of ways `name` is written OTHER than an initial plain
     `name = ...` and `name.append(...)`, found in `source` (an ast-parseable
@@ -1028,7 +1042,6 @@ def _append_only_violations(source, name):
     can hide inside a tuple target. Missing any would let a real mutation pass
     unreported. Kept as a pure function of `source` so it can be canaried against
     crafted mutations below."""
-    import ast
     tree = ast.parse(source)
     violations = []
     plain_assigns = 0
@@ -1043,12 +1056,17 @@ def _append_only_violations(source, name):
         elif isinstance(node, ast.withitem) and node.optional_vars is not None:
             targets = [node.optional_vars]
         elif isinstance(node, ast.AugAssign):
-            if _names(node.target) == {name}:
+            # isolate a subscript/attribute RECEIVER (`name[...]` / `name.x`) via .value
+            # -- `_names` on the WHOLE target folds in a DYNAMIC index name, so
+            # `completed[i] += 1` reads {'completed','i'} != {name} and escapes (while a
+            # const `completed[0] += 1` is caught). Same receiver-isolation as the
+            # subscript-method and subscript-assign checks.
+            if _target_hits_name(node.target, name):
                 violations.append('`%s` is AUGMENT-assigned' % name)
             continue
         elif isinstance(node, ast.Delete):
-            for tgt in node.targets:            # `del name` / `del name[i]`
-                if _names(tgt) == {name}:
+            for tgt in node.targets:            # `del name` / `del name[i]` (any index)
+                if _target_hits_name(tgt, name):
                     violations.append('`%s` is deleted / del-sliced' % name)
             continue
         else:
@@ -1170,6 +1188,7 @@ def t2_canaries():
     for label, bad in (
             ('subscript', 'def f():\n completed = []\n completed[0] = 1\n'),
             ('del-slice', 'def f():\n completed = []\n del completed[0]\n'),
+            ('del-dyn', 'def f():\n completed = []\n del completed[i]\n'),
             ('non-append-call', 'def f():\n completed = []\n completed.pop()\n'),
             ('subscript-elem-append',
              'def f():\n completed = []\n completed[-1].append(1)\n'),
@@ -1177,6 +1196,7 @@ def t2_canaries():
              'def f():\n completed = []\n completed[i].extend(x)\n'),
             ('tuple-rebind', 'def f():\n completed = []\n a, completed = 1, 2\n'),
             ('aug-assign', 'def f():\n completed = []\n completed += [1]\n'),
+            ('aug-assign-dyn', 'def f():\n completed = []\n completed[i] += 1\n'),
             ('ann-assign', 'def f():\n completed = []\n completed: list = x\n'),
             ('for-target', 'def f():\n completed = []\n for completed in x:\n  pass\n')):
         _expect_caught('T2/append-only:%s' % label,
@@ -1637,13 +1657,15 @@ def _cli_pipeline(chunks, cap=4096):
     concatenated rendered output plus the max (carry, drop) sizes seen."""
     carry, drop = '', ''
     out = []
+    raw = []
     max_carry = max_drop = 0
     for chunk in chunks:
         text, carry, drop, _ = S.feed_chunk_carry(chunk, carry, drop, cap=cap)
+        raw.append(text)                        # the RAW emitted text, before render
         out.append(S.render_output(text, 'detail'))
         max_carry = max(max_carry, len(carry))
         max_drop = max(max_drop, len(drop))
-    return ''.join(out), max_carry, max_drop
+    return ''.join(out), ''.join(raw), max_carry, max_drop
 
 
 def _all_chunkings(s):
@@ -1664,25 +1686,36 @@ def _all_chunkings(s):
 
 def _t8_check_stream(s, bad, label):
     """All chunkings of `s` (and the 1-byte-chunk split) must render equal to the
-    whole-stream pipeline, and the rendered alphabet must be T1-strict (detail)."""
-    whole, _mc, _md = _cli_pipeline([s])
+    whole-stream pipeline AND emit the same RAW text (feed_chunk_carry's own output,
+    before render), and the rendered alphabet must be T1-strict (detail).
+
+    The RAW comparison has teeth the rendered one lacks: BEL (0x07) renders to EMPTY
+    in every strict mode, so a chunking-dependent BEL emit-vs-swallow at an OSC/DCS
+    terminator boundary (exactly the class _T8_CATALOG targets -- 'DCS must NOT treat
+    BEL as end') diverges in the raw emitted text yet renders identically, which a
+    rendered-only equality would silently mask."""
+    whole, whole_raw, _mc, _md = _cli_pipeline([s])
     if any(ord(oc) not in SAFE_ASCII for oc in whole):
         if bad[0] < 8:
             fail('T8 alphabet: %s whole-stream left a non-SAFE_ASCII byte on %r'
                  % (label, s[:40]))
         bad[0] += 1
-    bytewise, _mc, _md = _cli_pipeline(list(s) if s else [''])
-    if bytewise != whole:
+    bytewise, bytewise_raw, _mc, _md = _cli_pipeline(list(s) if s else [''])
+    if bytewise != whole or bytewise_raw != whole_raw:
         if bad[0] < 8:
-            fail('T8 split-invariance: %s bytewise %r != whole %r on %r'
-                 % (label, bytewise[:40], whole[:40], s[:40]))
+            fail('T8 split-invariance: %s bytewise (rendered %r raw %r) != whole '
+                 '(rendered %r raw %r) on %r'
+                 % (label, bytewise[:40], bytewise_raw[:40], whole[:40],
+                    whole_raw[:40], s[:40]))
         bad[0] += 1
     for chunks in _all_chunkings(s):
-        got, _mc, _md = _cli_pipeline(chunks)
-        if got != whole:
+        got, got_raw, _mc, _md = _cli_pipeline(chunks)
+        if got != whole or got_raw != whole_raw:
             if bad[0] < 8:
-                fail('T8 split-invariance: %s %r chunked %r renders %r != %r'
-                     % (label, s, chunks, got, whole))
+                fail('T8 split-invariance: %s %r chunked %r -> rendered %r raw %r != '
+                     'rendered %r raw %r'
+                     % (label, s, chunks, got[:40], got_raw[:40], whole[:40],
+                        whole_raw[:40]))
             bad[0] += 1
             break
     return bad[0]
@@ -1713,12 +1746,12 @@ def t8_split_invariance(max_len=5):
         _t8_check_stream(seq, bad, 'catalog')
         # also: split at every single interior offset into exactly two chunks
         for i in range(1, len(seq)):
-            got, _mc, _md = _cli_pipeline([seq[:i], seq[i:]])
-            whole, _mc, _md = _cli_pipeline([seq])
-            if got != whole:
+            got, got_raw, _mc, _md = _cli_pipeline([seq[:i], seq[i:]])
+            whole, whole_raw, _mc, _md = _cli_pipeline([seq])
+            if got != whole or got_raw != whole_raw:
                 if bad[0] < 8:
-                    fail('T8 catalog two-cut: %r at %d -> %r != %r'
-                         % (seq, i, got, whole))
+                    fail('T8 catalog two-cut: %r at %d -> rendered %r raw %r != '
+                         'rendered %r raw %r' % (seq, i, got, got_raw, whole, whole_raw))
                 bad[0] += 1
     return bad[0]
 
