@@ -4476,5 +4476,16 @@ ok(QToolTip.isVisible() and 'EURO SIGN' in QToolTip.text(),
    'hovering a reveal badge shows the code-point tooltip')
 QToolTip.hideText()
 
+# --- feed_output survives a payload larger than the pipe buffer -----------------
+# Regression: feed_output wrote the WHOLE buffer into the pipe before any read, so a
+# payload over the 65536 pipe buffer deadlocked os.write forever (no concurrent reader),
+# silently HANGING the suite. It now chunks at the pty read size. Reaching the assertion
+# at all proves no deadlock; the rendered 'A' proves the data actually flowed.
+_bigfeed = SecureTerminal(command='/bin/cat')
+feed_output(_bigfeed, b'A' * 100000)
+ok('A' in _bigfeed.transcript_text(),
+   'feed_output handles a >pipe-buffer payload without an os.write deadlock')
+_bigfeed.shutdown()
+
 
 finish('widget')
