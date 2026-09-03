@@ -767,13 +767,13 @@ try:
     # ai-review #3: session state is SENSITIVE history -- the dir must be 0o700 (enforced
     # even on a pre-existing wider dir) and the files 0o600, never world-readable.
     import stat as _stat3
-    os.chmod(_state_tmp, 0o755)                  # widen it, as a pre-existing dir might be
+    os.chmod(_state_tmp, 0o755)  # nosec B103 -- intentional wide pre-existing dir; the test asserts the app tightens it to 0o700
     win.open_transcript()                        # ensure_state_dir must chmod it back to 0o700
     ok(_stat3.S_IMODE(os.stat(_state_tmp).st_mode) == 0o700,
        'ai-review#3: ensure_state_dir enforces 0o700 on the sensitive state dir')
     ok(_stat3.S_IMODE(os.stat(os.path.join(_state_tmp, 'transcript.txt')).st_mode) == 0o600,
        'ai-review#3: the transcript file is owner-only (0o600), not world-readable')
-    os.chmod(_state_tmp, 0o755)
+    os.chmod(_state_tmp, 0o755)  # nosec B103 -- intentional wide dir; the test asserts session.save tightens it to 0o700
     _sess.save([{'text': 'scrollback', 'command': None}], window=None, active=0)
     ok(_stat3.S_IMODE(os.stat(_state_tmp).st_mode) == 0o700,
        'ai-review#3: session.save enforces 0o700 on the state dir')
