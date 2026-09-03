@@ -222,15 +222,20 @@ launch() {  ## $1=emulator  $2=case  $3=pgid-file
          ## reaping the recorded PGID takes the whole thing down. VTE reads its profile from
          ## dconf; with no dconf daemon on the private bus it falls back to the built-in default
          ## profile -- the shipped default we want to show.
+         ## gnome-terminal is a D-Bus-activated server whose GtkApplication startup can outlast
+         ## D-Bus's 25s activation timeout on this image (slow/failing xdg-desktop-portal
+         ## cascade), so a bare `gnome-terminal --wait` loses the activation race and no window
+         ## opens. gnome-launch.sh pre-starts the server and waits for its bus name first. No
+         ## inline sh -c / exec -- the pre-start + wait (and the hero font setup) live in the
+         ## sibling helper, run inside the dbus session.
          if [ "${case}" = hero-compare ]; then
-            ## Match secure-terminal's Hack font at 72-DPI cell metrics so the homepage slider's text
-            ## overlaps. The gsettings + Xft.dpi setup lives in a sibling helper (no inline sh -c /
-            ## exec); it runs inside the dbus session and launches gnome-terminal --wait.
+            ## --hero also matches secure-terminal's Hack 72-DPI cell metrics so the homepage
+            ## slider's two windows share a cell size.
             cmd=("${base[@]}" GDK_BACKEND=x11 dbus-run-session -- \
-               "${here}/gnome-hero-launch.sh" "${cols}x${rows}" -- "${sh[@]}")
+               "${here}/gnome-launch.sh" --hero "${cols}x${rows}" -- "${sh[@]}")
          else
             cmd=("${base[@]}" GDK_BACKEND=x11 dbus-run-session -- \
-               gnome-terminal --wait --geometry "${cols}x${rows}" -- "${sh[@]}")
+               "${here}/gnome-launch.sh" "${cols}x${rows}" -- "${sh[@]}")
          fi
          ;;
       mate-terminal)
@@ -732,9 +737,16 @@ clear_windows() {
 }
 
 ## the largest NEW (non-baseline) window: the emulator's real top-level.
-find_window() {
-   local _ cur wid best X Y WIDTH HEIGHT area
-   for _ in $(seq 1 80); do
+find_window() {  ## $1=emulator
+   local e _ cur wid best X Y WIDTH HEIGHT area tries
+   e="${1:-}"
+   ## gnome-terminal is a D-Bus-activated server whose portal-stalled startup (see
+   ## gnome-launch.sh) delays its window ~26s -- past the direct-spawn emulators' 20s
+   ## bringup budget -- so give it a longer one, still well under the per-capture
+   ## SHOT_DEADLINE watchdog (default 90s) so a truly dead launch still fails, not hangs.
+   tries=80
+   [ "${e}" = gnome-terminal ] && tries=280
+   for _ in $(seq 1 "${tries}"); do
       kill -0 "${wm_pid}" 2>/dev/null || return 1
       wid=''; best=0
       for cur in $(DISPLAY="${xwl_display}" xdotool search --onlyvisible '' 2>/dev/null || true); do
@@ -768,7 +780,7 @@ shoot() {  ## $1=emulator  $2=case
    ## A non-numeric SHOT_DEADLINE makes shots_watchdog_start refuse (return 1); under errexit
    ## that must NOT abort the whole capture -- run this shot unbounded (no watchdog) instead.
    wdog="$(shots_watchdog_start "${SHOT_DEADLINE}" "${pgf}" "${flagf}")" || wdog=''
-   wid="$(find_window || true)"
+   wid="$(find_window "${e}" || true)"
    if [ -z "${wid}" ]; then
       printf '%s\n' "warn ${e}.${case}: window never appeared, no shot"
       shots_watchdog_cancel "${wdog}"
@@ -905,7 +917,7 @@ esac
 ## below reads them as OCTAL and dies ('value too great for base'). An accepted
 ## value must not abort the run later.
 SHOT_SCALE=$(( 10#${SHOT_SCALE} ))
-## Exported so child scripts inherit the same factor: gnome-hero-launch.sh (hero cell size)
+## Exported so child scripts inherit the same factor: gnome-launch.sh --hero (hero cell size)
 ## and the --jobs lanes / re-capture net / ST pass (which re-exec this script).
 export SHOT_SCALE
 ## Xft base DPI a bare Xvfb reports; SHOT_SCALE x this is what X clients render their fonts at.
