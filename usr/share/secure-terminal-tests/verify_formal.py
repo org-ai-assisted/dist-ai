@@ -1481,6 +1481,7 @@ _STR_PROBES = [
     '', 'plain paste', 'a\rb\rc\r', 'line1\nline2\ncmd', 'tab\tend',
     'x\u202ey\u200bz', 'euro \u20ac and cjk \u4e00', '\r\r\r', 'trailing\r\n',
     'a' * 200, '  spaced  title  \t\n', '\u0430dmin', 'box \u2500\u2502 \u25a1',
+    'dots\u2026 more\u2025 bang\u203c', '\u0430\u2026\u4e00',   # multi-char ASCII posers
 ]
 
 
@@ -1531,6 +1532,30 @@ def t_input_strings():
             if fn(probe) != ''.join(fn(c) for c in probe):
                 fail('T3/T4 homomorphism: %s not per-character on %r'
                      % (fn.__name__, probe[:40]))
+
+    # ascii_fold / ascii_fold_display fold a MULTI-char ASCII poser to the string it
+    # imitates (ellipsis U+2026 -> '...'). A per-character char->string map composed
+    # with the homomorphic sanitizer is STILL homomorphic -- output arity > 1 does not
+    # break T3, which needs per-char INDEPENDENCE, not a 1:1 map -- so the fold lifts to
+    # inputs of any length the same way. (Refutes the old claim that a multi-char fold
+    # could not preserve the homomorphism.)
+    for probe in _STR_PROBES:
+        for fn in (S.ascii_fold, S.ascii_fold_display):
+            if fn(probe) != ''.join(fn(c) for c in probe):
+                fail('T3 fold homomorphism: %s not per-character on %r'
+                     % (fn.__name__, probe[:40]))
+
+    # DECOUPLING: the multi-char fold is fold-path ONLY -- a multi-char poser must NOT
+    # enter the confusable detection set, so the T7 paste/display class agreement and
+    # the SHOW-mode tint stay exactly as before (marking_class keeps calling it
+    # 'nonascii', never 'confusable'). Verified over every multi-char fold source.
+    for src in S._multichar_ascii_fold():
+        if ord(src) in S._ascii_confusables():
+            fail('T3 fold decoupling: multi-char poser U+%04X leaked into the '
+                 'confusable set' % ord(src))
+        if S.marking_class(ord(src)) == 'confusable':
+            fail('T3 fold decoupling: multi-char poser U+%04X marks as confusable '
+                 '(display tint changed)' % ord(src))
 
     # paste_is_multiline: True iff a newline/CR appears BEFORE the last character
     # (a trailing submit on a single line is NOT multi-command). This is the
@@ -1588,6 +1613,12 @@ def t_input_canaries():
     # the T3 differential above. Driving S.paste_is_multiline (not a re-inlined
     # oracle) keeps the canary from drifting from the function it guards.
     _expect_caught('T3/paste-is-multiline', S.paste_is_multiline('a\nb'))
+    # T3 fold-multichar canary: ascii_fold must EXPAND a multi-char poser to the ASCII
+    # it imitates (ellipsis U+2026 -> '...'), not drop or keep it. A disarmed/empty
+    # multi-char map would drop it to '' and be caught here.
+    _expect_caught('T3/fold-multichar',
+                   S.ascii_fold(chr(0x2026)) == '...'
+                   and S.ascii_fold(chr(0x2026)) != chr(0x2026))
 
 
 # ===========================================================================

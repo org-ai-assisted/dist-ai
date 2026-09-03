@@ -200,11 +200,13 @@ ok(all(cp > 0x7F for cp in S._ascii_confusables()),
 # the load to raise and confirm the defensive except yields an empty frozenset.
 _saved_conf = S._ASCII_CONFUSABLES
 _saved_fold = S._ASCII_FOLD_MAP
+_saved_multi = S._MULTICHAR_ASCII_FOLD
 try:
-    # _ascii_confusables now DERIVES from _ascii_fold_map (single source of truth), so
-    # clear BOTH caches -- else the already-populated fold map masks the forced failure.
+    # _ascii_confusables + both fold maps are built together (single source of truth),
+    # so clear ALL caches -- else an already-populated map masks the forced failure.
     S._ASCII_CONFUSABLES = None
     S._ASCII_FOLD_MAP = None
+    S._MULTICHAR_ASCII_FOLD = None
 
 
     def _conf_load_boom(*_a, **_k):
@@ -214,12 +216,47 @@ try:
     _degraded = S._ascii_confusables()
     ok(_degraded == frozenset(),
        'the confusables loader degrades to an empty set when the data cannot be read')
+    ok(S._multichar_ascii_fold() == {},
+       'the multi-char fold map degrades to empty when the data cannot be read')
     ok(S.ascii_fold('ex' + chr(0x0430) + 'y') == 'exy',
        'ascii_fold degrades to a plain non-ASCII drop when the fold data is unreadable')
+    ok(S.ascii_fold('a' + chr(0x2026) + 'b') == 'ab',
+       'ascii_fold drops (not folds) a multi-char poser when the fold data is unreadable')
 finally:
     del S.open
     S._ASCII_CONFUSABLES = _saved_conf
     S._ASCII_FOLD_MAP = _saved_fold
+    S._MULTICHAR_ASCII_FOLD = _saved_multi
+
+# --- multi-char ASCII-target confusable fold (ellipsis U+2026 -> '...', dashes, etc.) --
+# The 261 sources with NO single-char ASCII look-alike fold to the ASCII STRING they
+# imitate, revealing the disguise on the paste/review surface.
+_multi = S._multichar_ascii_fold()
+ok(len(_multi) > 50,
+   'the multi-char ASCII-target fold map is populated (%d sources)' % len(_multi))
+ok(set(S._ascii_fold_map()).isdisjoint(_multi),
+   'the single-char and multi-char fold maps are disjoint (a source lands in one)')
+ok(all(ord(src) > 0x7F and len(val) >= 2
+       and all(0x20 <= ord(c) <= 0x7E for c in val) for src, val in _multi.items()),
+   'every multi-char entry maps a NON-ASCII source to a >=2-char printable-ASCII string')
+eq(S.ascii_fold('a' + chr(0x2026) + 'b'), 'a...b',
+   'ascii_fold reveals a multi-char poser: ellipsis U+2026 folds to "..."')
+eq(S.ascii_fold_display('a' + chr(0x2026) + 'b'), 'a...b',
+   'ascii_fold_display folds a multi-char poser the same way for the review box')
+# DECOUPLING (the whole point): a multi-char poser is fold-only -- it must NOT enter the
+# confusable detection/tint set, so the SHOW-mode display tint and the T7 paste/display
+# class agreement stay exactly as before (marking_class still reports 'nonascii').
+ok(0x2026 not in S._ascii_confusables(),
+   'a multi-char poser (ellipsis) stays OUT of the confusable set: fold-only, no tint change')
+eq(S.marking_class(0x2026), 'nonascii',
+   'the display marking of a multi-char poser is unchanged (nonascii, not confusable)')
+# HOMOMORPHISM holds across the multi-char boundary (char->string map o homomorphic
+# sanitizer stays homomorphic): fold(a+b) == fold(a)+fold(b) with a multi-char source.
+_ha, _hb = 'x' + chr(0x2026), chr(0x0430) + 'y'   # ellipsis (multi) then Cyrillic a (single)
+eq(S.ascii_fold(_ha + _hb), S.ascii_fold(_ha) + S.ascii_fold(_hb),
+   'ascii_fold stays per-character homomorphic across a multi-char fold')
+eq(S.ascii_fold_display(_ha + _hb), S.ascii_fold_display(_ha) + S.ascii_fold_display(_hb),
+   'ascii_fold_display stays per-character homomorphic across a multi-char fold')
 _mk = [(chr(0x202E), ())]
 _runs, _ = S.cells_to_runs([], _mk, 'reveal', False, True)
 ok(any(k == (S.MARK_KEY, 'bidi', 0x202E) for _t, k in _runs),
