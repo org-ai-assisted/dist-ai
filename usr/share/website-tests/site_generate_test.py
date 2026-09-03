@@ -21,6 +21,7 @@ Uses git (real repos in a tempdir) + stdlib. Run directly: ./site_generate_test.
 import importlib.machinery
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -116,6 +117,44 @@ def run():
         with open(link, encoding='utf-8') as handle:
             check('_write_if_changed wrote the new content',
                   handle.read() == 'NEW')
+
+    # 4. invoked THROUGH A SYMLINK, site-generate must find its CO-LOCATED
+    #    check_site (realpath), not the stale /usr/share fallback. Canary: the
+    #    pre-fix abspath code keeps the symlink dir, whose ../share is absent, so
+    #    it loads a different check_site (or none) and the sentinel output below
+    #    never lands. Environment-independent: the assertion is the sentinel
+    #    content, so it fails on the old code whether /usr/share is fresh, stale,
+    #    or missing.
+    with tempfile.TemporaryDirectory() as base:
+        pkg_bin = os.path.join(base, 'pkg', 'usr', 'bin')
+        pkg_share = os.path.join(base, 'pkg', 'usr', 'share', 'website-tests')
+        os.makedirs(pkg_bin)
+        os.makedirs(pkg_share)
+        shutil.copy(_SG, os.path.join(pkg_bin, 'site-generate'))
+        _write(os.path.join(pkg_share, 'check_site.py'),
+               'def seo_host(root):\n'
+               "    return 'example.github.io'\n"
+               'def render_sitemap(root, host):\n'
+               "    return 'COLOCATED-SITEMAP\\n'\n"
+               'def render_robots(host):\n'
+               "    return 'COLOCATED-ROBOTS\\n'\n")
+        linkdir = os.path.join(base, 'linkdir')
+        os.makedirs(linkdir)
+        link = os.path.join(linkdir, 'site-generate')
+        os.symlink(os.path.join(pkg_bin, 'site-generate'), link)
+        site = os.path.join(base, 'site')
+        os.makedirs(site)
+        _write(os.path.join(site, 'index.html'), _INDEX)
+        proc = subprocess.run([sys.executable, link, '--force', site],
+                              capture_output=True, text=True)
+        sm_path = os.path.join(site, 'sitemap.xml')
+        rb_path = os.path.join(site, 'robots.txt')
+        got_sm = open(sm_path).read() if os.path.isfile(sm_path) else None
+        got_rb = open(rb_path).read() if os.path.isfile(rb_path) else None
+        check('symlink-invoked site-generate uses the co-located check_site',
+              proc.returncode == 0 and got_sm == 'COLOCATED-SITEMAP\n'
+              and got_rb == 'COLOCATED-ROBOTS\n',
+              'rc=%r sitemap=%r robots=%r' % (proc.returncode, got_sm, got_rb))
 
     passed = sum(1 for _n, ok, _d in results if ok)
     failed = len(results) - passed
