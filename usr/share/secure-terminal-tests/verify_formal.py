@@ -1074,10 +1074,21 @@ def _append_only_violations(source, name):
         violations.append('`%s` is plain-assigned %d times (expected 1 init)'
                           % (name, plain_assigns))
     for node in ast.walk(tree):                 # every method call must be .append
-        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                and isinstance(node.func.value, ast.Name)
-                and node.func.value.id == name and node.func.attr != 'append'):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            continue
+        recv = node.func.value
+        # a call on the bare list: only `.append` is allowed (append-only).
+        if (isinstance(recv, ast.Name) and recv.id == name
+                and node.func.attr != 'append'):
             violations.append('`%s.%s(...)` called (only append allowed)'
+                              % (name, node.func.attr))
+        # a call on an ELEMENT `name[...]` mutates a COMPLETED line in place, which
+        # INV-2 forbids -- e.g. `completed[-1].append(cell)` / `completed[i].extend(...)`.
+        # The receiver is an ast.Subscript, which a bare-Name check silently ignores
+        # (the soundness hole: the proof would read INV-2 PROVED while a subscript
+        # append mutates a finished line). Any method on an element is flagged.
+        if isinstance(recv, ast.Subscript) and _names(recv.value) == {name}:
+            violations.append('`%s[...].%s(...)` called (a completed line is immutable)'
                               % (name, node.func.attr))
     return violations
 
@@ -1160,6 +1171,10 @@ def t2_canaries():
             ('subscript', 'def f():\n completed = []\n completed[0] = 1\n'),
             ('del-slice', 'def f():\n completed = []\n del completed[0]\n'),
             ('non-append-call', 'def f():\n completed = []\n completed.pop()\n'),
+            ('subscript-elem-append',
+             'def f():\n completed = []\n completed[-1].append(1)\n'),
+            ('subscript-elem-extend',
+             'def f():\n completed = []\n completed[i].extend(x)\n'),
             ('tuple-rebind', 'def f():\n completed = []\n a, completed = 1, 2\n'),
             ('aug-assign', 'def f():\n completed = []\n completed += [1]\n'),
             ('ann-assign', 'def f():\n completed = []\n completed: list = x\n'),

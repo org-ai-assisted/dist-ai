@@ -100,21 +100,33 @@ def spy_writes(term):
 def feed_output(term, raw):
     """Drive the real _on_readable with `raw` bytes via a pipe, as if the child had
     printed them, so the full output path (pyte feed + _handle_osc + line render)
-    runs -- not a shortcut that skips the OSC read handlers."""
-    r, w = os.pipe()
-    old = term._fd                         # pylint: disable=protected-access
-    term._fd = r
-    w_open = True
+    runs -- not a shortcut that skips the OSC read handlers.
+
+    Chunked at the pty read size (65536): a single os.write of MORE than the pipe
+    buffer would block forever (no concurrent reader in this synchronous helper), and
+    _read_and_render only os.read()s 65536 per call anyway -- so a large payload is fed
+    as successive reads, exactly as a real pty delivers it. An EMPTY `raw` still feeds
+    once (the child-exit / EOF path)."""
+    old = term._fd                             # pylint: disable=protected-access
+    first = True
     try:
-        os.write(w, raw)
-        os.close(w)
-        w_open = False
-        term._on_readable()                # pylint: disable=protected-access
+        while raw or first:
+            first = False
+            chunk, raw = raw[:65536], raw[65536:]
+            r, w = os.pipe()
+            term._fd = r
+            w_open = True
+            try:
+                os.write(w, chunk)             # <= pipe buffer, so this cannot block
+                os.close(w)
+                w_open = False
+                term._on_readable()            # pylint: disable=protected-access
+            finally:
+                os.close(r)
+                if w_open:
+                    os.close(w)
     finally:
         term._fd = old
-        os.close(r)
-        if w_open:
-            os.close(w)
     # CLI line-mode paints are debounced to ~60fps by a single-shot timer; in the
     # live app the paint fires from the event loop shortly after the read. These
     # synchronous tests feed then inspect at once, so flush the pending paint here
@@ -171,7 +183,7 @@ def _shutdown_all_terms():
     try:
         signal.signal(signal.SIGHUP, signal.SIG_IGN)
     except (OSError, ValueError, AttributeError):
-        pass
+        pass    # off-main-thread / unsupported: proceed unshielded (a stray SIGHUP is unlikely)
     for _ref in _LIVE_TERMS:
         _t = _ref()
         if _t is None:

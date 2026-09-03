@@ -798,38 +798,37 @@ finally:
 
 # (1) derive the set of _active_mode literals the source assigns, from the AST, so a
 # newly-added transform is covered automatically (no hand-maintained mode list).
-_rev_src = inspect.getsource(_rev)
+_rev_tree = ast.parse(inspect.getsource(_rev))
+# FAIL-CLOSED against every assignment form. Count EVERY assignment TARGET named
+# _active_mode -- an ast.Attribute in Store context, which is how the target appears
+# at ANY nesting and under ANY assignment node (Assign / AnnAssign / AugAssign /
+# tuple- or nested-tuple-unpack / walrus). This is independent of the value-mapping
+# below, so a form the mapping cannot reduce to a literal shows up as an UNMAPPED
+# target (count mismatch -> loud failure), never a silent skip.
+_store_targets = sum(1 for _n in ast.walk(_rev_tree)
+                     if isinstance(_n, ast.Attribute) and _n.attr == '_active_mode'
+                     and isinstance(_n.ctx, ast.Store))
+# Map the one simple, statically-verifiable form the codebase uses:
+# `self._active_mode = '<literal>'` (plain or annotated) -> its string value.
 _assigned_modes = set()
-_active_mode_assigns = 0
-_active_mode_nonliteral = 0
-for _node in ast.walk(ast.parse(_rev_src)):
-    # cover plain `self._active_mode = ...` (Assign) AND an annotated
-    # `self._active_mode: str = ...` (AnnAssign); flatten tuple/list targets so a
-    # `self.x, self._active_mode = ...` unpack is not silently skipped -- a skipped
-    # assignment would defeat the whole coverage check.
-    if isinstance(_node, ast.Assign):
-        _targets, _value = _node.targets, _node.value
-    elif isinstance(_node, ast.AnnAssign) and _node.value is not None:
-        _targets, _value = [_node.target], _node.value
+_mapped = 0
+for _n in ast.walk(_rev_tree):
+    if isinstance(_n, ast.Assign):
+        _am_targets, _am_val = _n.targets, _n.value
+    elif isinstance(_n, ast.AnnAssign) and _n.value is not None:
+        _am_targets, _am_val = [_n.target], _n.value
     else:
         continue
-    _flat = []
-    for _t in _targets:
-        _flat.extend(_t.elts if isinstance(_t, (ast.Tuple, ast.List)) else [_t])
-    for _tgt in _flat:
-        if isinstance(_tgt, ast.Attribute) and _tgt.attr == '_active_mode':
-            _active_mode_assigns += 1
-            # a tuple-unpack RHS (`= 1, 'strip'`) is an ast.Tuple, not a Constant, so
-            # it counts as non-literal below -- the value cannot be mapped statically,
-            # which the assertion then flags for hand classification.
-            if isinstance(_value, ast.Constant) and isinstance(_value.value, str):
-                _assigned_modes.add(_value.value)
-            else:
-                _active_mode_nonliteral += 1
-ok(_active_mode_assigns > 0, 'the AST scan found the _active_mode assignments')
-ok(_active_mode_nonliteral == 0,
-   'every _active_mode assignment is a string literal (else the tier-coverage check '
-   'cannot verify it -- classify the new value by hand)')
+    for _am_t in _am_targets:
+        if (isinstance(_am_t, ast.Attribute) and _am_t.attr == '_active_mode'
+                and isinstance(_am_val, ast.Constant) and isinstance(_am_val.value, str)):
+            _assigned_modes.add(_am_val.value)
+            _mapped += 1
+ok(_store_targets > 0, 'the AST scan found the _active_mode assignments')
+eq(_mapped, _store_targets,
+   'every _active_mode assignment is a simple `self._active_mode = <str literal>` the '
+   'tier check can map -- an annotated-nonliteral / tuple-unpack / augmented / walrus '
+   'form is NOT silently skipped, it fails HERE so its value gets a hand check')
 eq(_assigned_modes, set(ReviewBar._TIER.keys()),
    'every _active_mode the code sets has a _TIER entry (and no stray tier)')
 
