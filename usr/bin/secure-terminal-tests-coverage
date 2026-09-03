@@ -97,7 +97,7 @@ export HYPOTHESIS_STORAGE_DIRECTORY="${HYPOTHESIS_STORAGE_DIRECTORY:-${work}/.hy
 ## justified `# pragma: no cover` in the source, not a blanket exclusion.
 ##
 ## Tier 1 -- covered by the Qt-FREE suites.
-gated_free='*/__init__.py,*/sanitize.py,*/clipboard.py,*/cli.py,*/ipc.py,*/session.py,*/settings.py,*/preflight.py,*/unicode_tag.py'
+gated_free='*/__init__.py,*/sanitize.py,*/clipboard.py,*/cli.py,*/ipc.py,*/session.py,*/settings.py,*/preflight.py,*/unicode_tag.py,*/resource_isolation.py'
 ## Tier 2 -- covered by the offscreen Qt widget suites, which fail closed
 ## (exit 1) on a missing PyQt6/pyte rather than skipping, so both tiers are
 ## always gated.

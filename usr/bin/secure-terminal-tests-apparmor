@@ -137,6 +137,62 @@ fi
 safe-rm --force "${allow_probe}" "${deny_probe}" "${canary_src}" "${canary_probe}"
 rmdir "${canary_dir}" 2>/dev/null || true
 
+## ALLOW + DENY (write): per-tab resource isolation writes cgroup.procs / pids.max /
+## memory.max under the app's OWN systemd app scope (app-...secure-terminal....scope).
+## The profile grants EXACTLY that subtree and nothing else under the user slice, so a
+## compromised GUI cannot move or throttle other apps via their cgroups. Prove both
+## halves under enforcement: a write to a probe cgroup MATCHING the app-scope glob is
+## ALLOWED, and a write to the harness's own (non-app-scope) cgroup is DENIED. Writing
+## our own pid into a cgroup.procs is an idempotent no-op MOVE that still exercises the
+## file grant. Guarded to a user-slice harness cgroup (where the rule + a real app
+## live); elsewhere is out of the rule's honest scope -> note + skip, never false-fail.
+## sed (not awk -F:) keeps a cgroup path that itself contains a colon.
+own_cg="/sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup)"
+cg_probe_py='
+import os, sys
+fd = os.open(sys.argv[1], os.O_WRONLY)
+os.write(fd, str(os.getpid()).encode())
+os.close(fd)
+'
+case "${own_cg}" in
+   /sys/fs/cgroup/user.slice/user-[0-9]*.slice/*)
+      ## ALLOW: a probe cgroup whose name matches the app-scope glob (the '*' spans
+      ## systemd's '\x2d' escaping of '-'), with a tab-N leaf like the real app writes.
+      ## Created UNCONFINED under our own delegated cgroup; only the write is confined.
+      allow_scope="${own_cg}/app-secure\\x2dterminal-aaprobe.scope"
+      allow_leaf="${allow_scope}/tab-0"
+      mkdir --parents "${allow_leaf}"
+      allow_cg_rc=0
+      aa-exec -p secure-terminal -- python3 -Bsu -c "${cg_probe_py}" \
+         "${allow_leaf}/cgroup.procs" >/dev/null 2>&1 || allow_cg_rc=$?
+      if [ "${allow_cg_rc}" -eq 0 ]; then
+         pass=$(( pass + 1 ))
+      else
+         fail=$(( fail + 1 ))
+         printf '%s\n' \
+            "FAIL: the profile DENIED a write to the app's OWN scope cgroup (${allow_leaf}/cgroup.procs) -- per-tab resource isolation would fail closed under enforcement"
+      fi
+      rmdir "${allow_leaf}" "${allow_scope}" 2>/dev/null || true
+
+      ## DENY: the harness's own cgroup is NOT an app-...secure-terminal....scope, so a
+      ## write there must be REFUSED -- the tightening that stops cross-app cgroup abuse.
+      deny_cg_rc=0
+      aa-exec -p secure-terminal -- python3 -Bsu -c "${cg_probe_py}" \
+         "${own_cg}/cgroup.procs" >/dev/null 2>&1 || deny_cg_rc=$?
+      if [ "${deny_cg_rc}" -ne 0 ]; then
+         pass=$(( pass + 1 ))
+      else
+         fail=$(( fail + 1 ))
+         printf '%s\n' \
+            "FAIL: the profile ALLOWED a write to a NON-app-scope cgroup (${own_cg}/cgroup.procs) -- the per-tab isolation rule is too broad"
+      fi
+      ;;
+   *)
+      printf '%s\n' \
+         "secure-terminal-tests(apparmor): NOTE -- harness cgroup ${own_cg} is outside the profiled user.slice subtree; cgroup write grant not asserted here"
+      ;;
+esac
+
 ## ALLOW (flock): the clipboard-watch singleton lock file. The daemon opens
 ## '<runtime>/secure-terminal/*.lock' O_CREAT and takes an flock on it as its
 ## singleton gate; the profile must grant create+write+lock ('k') or the watcher
