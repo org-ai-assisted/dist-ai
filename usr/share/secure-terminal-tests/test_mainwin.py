@@ -2677,7 +2677,7 @@ ok(not win._ipc_ctl('ctl-bogus', {})['ok'], 'ctl: an unknown ctl op is rejected'
 from PyQt6 import sip                                           # noqa: E402
 _tip2 = M.InfoTip(win)
 _probe2 = MainWindow()
-_tip2.show_for(_probe2, 'x', QPoint(5, 5), 100)
+_tip2.show_for(_probe2, 'x', 100, 'light')
 sip.delete(_probe2)                          # force-destroy the C++ source object
 _tip2._check_pointer()                        # mapToGlobal raises RuntimeError -> caught
 _tip2.hide()
@@ -2689,7 +2689,7 @@ ok(_tip2._source is None, 'InfoTip: a destroyed source is handled and it hides')
 # to content, so a WM maximize is a no-op and the pointer poll can still hide it)
 _longtip = ('The monospace font family used for the terminal grid. The default Hack '
             'avoids confusable glyphs and has no ligatures. Applies to every tab.')
-_tip2.show_for(win, _longtip, QPoint(5, 5), 300)
+_tip2.show_for(win, _longtip, 300, 'light')
 ok(_tip2.height() >= _tip2.heightForWidth(_tip2.width()),
    'InfoTip: a long tip at high zoom fits its wrapped text (not clipped)')
 ok(_tip2.maximumSize() == _tip2.size(),
@@ -2935,6 +2935,8 @@ while _zw2.tabs.count():
     _zw2.tabs.removeTab(0)
 ok(_zw2.current_zoom_percent() == getattr(_zw2, '_default_zoom', 100),
    'current_zoom_percent: the default with no tab')
+ok(_zw2.current_theme_key() == getattr(_zw2, '_default_theme', 'light'),
+   'current_theme_key: the default theme with no tab')
 _zw2._ipc_open({})                           # nothing to open -> ensure a usable tab
 ok(_zw2.tabs.count() >= 1, 'ipc open with nothing still leaves a usable tab')
 _zw2.deleteLater()
@@ -2961,7 +2963,7 @@ _probe_w = MainWindow()
 # _check_pointer hides when the pointer is over NEITHER the tip nor its source. Make
 # that deterministic offscreen: move the tip far from the (0,0-ish) cursor and drop
 # the source, so both the over-tip and over-source checks are false.
-_tip.show_for(_probe_w, 'inspect', QPoint(5, 5), 100)
+_tip.show_for(_probe_w, 'inspect', 100, 'light')
 _tip.move(9000, 9000)
 _tip._source = None
 _tip._check_pointer()
@@ -2971,7 +2973,7 @@ ok(not _tip.isVisible(),
 # with the tip off the cursor, the tip hides -- not a crash. sip.delete force-destroys
 # the C++ source NOW so mapToGlobal reliably raises (deleteLater is too lazy offscreen).
 from PyQt6 import sip as _sip                                   # noqa: E402
-_tip.show_for(_probe_w, 'inspect', QPoint(5, 5), 100)
+_tip.show_for(_probe_w, 'inspect', 100, 'light')
 _tip.move(9000, 9000)
 _sip.delete(_probe_w)
 _tip._check_pointer()
@@ -2979,11 +2981,11 @@ ok(not _tip.isVisible() and _tip._source is None,
    'InfoTip: a destroyed source is caught (source cleared, no crash) and the tip hides')
 from PyQt6.QtGui import QKeyEvent as _QKE2                       # noqa: E402
 from PyQt6.QtCore import QEvent as _QEv2                         # noqa: E402
-_tip.show_for(win, 'inspect', QPoint(5, 5), 100)
+_tip.show_for(win, 'inspect', 100, 'light')
 _tip.keyPressEvent(_QKE2(_QEv2.Type.KeyPress, Qt.Key.Key_Escape,
                          Qt.KeyboardModifier.NoModifier, ''))    # Esc -> hide
 ok(not _tip.isVisible(), 'InfoTip: Esc hides the tip')
-_tip.show_for(win, 'inspect', QPoint(5, 5), 100)
+_tip.show_for(win, 'inspect', 100, 'light')
 _tip.keyPressEvent(_QKE2(_QEv2.Type.KeyPress, Qt.Key.Key_A,
                          Qt.KeyboardModifier.NoModifier, 'a'))   # other -> super, stays up
 ok(_tip.isVisible(), 'InfoTip: a non-Esc key does not hide the tip (passed to super)')
