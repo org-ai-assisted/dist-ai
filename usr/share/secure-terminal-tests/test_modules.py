@@ -15,6 +15,7 @@ import fcntl
 import sys
 import json
 import glob
+import shutil
 import socket
 import struct
 import tempfile
@@ -22,7 +23,7 @@ import threading
 import time
 
 try:
-    from secure_terminal import ipc, session, settings
+    from secure_terminal import ipc, session, settings, resource_isolation
 except Exception as exc:  # fail closed: a required dependency must not silently skip
     sys.stderr.write('secure-terminal-tests: FAIL missing dependency: '
                      '%s\n' % exc)
@@ -612,6 +613,194 @@ try:
        'CANARY: the over-long-frame guard depends on the real _MAX_REQUEST cap (teeth)')
 finally:
     ipc._MAX_REQUEST = _saved_max
+
+
+# ==================== resource_isolation (cgroup v2) =========================
+# Per-tab isolation is fail-open: every function degrades to "no limit" on any
+# error and never raises into the spawn path. These exercise the happy path and
+# EVERY fail-open branch against a fake cgroupfs tree, so the gate proves the
+# degrade paths are real, not asserted.
+
+_ri = resource_isolation
+_ri_tmp = []
+
+
+def _mk_fakecg(controllers='cpu memory pids', subtree='', memmax='max'):
+    """Build a throwaway cgroup-v2-shaped tree: <root>/app.scope with the given
+    controller/limit files, and a proc-cgroup file naming it. Returns
+    (root, scope, proc_cgroup)."""
+    root = tempfile.mkdtemp(prefix='st-ri-')
+    _ri_tmp.append(root)
+    scope = os.path.join(root, 'app.scope')
+    os.mkdir(scope)
+    with open(os.path.join(scope, 'cgroup.controllers'), 'w',
+              encoding='ascii') as handle:
+        handle.write(controllers + '\n')
+    with open(os.path.join(scope, 'cgroup.subtree_control'), 'w',
+              encoding='ascii') as handle:
+        handle.write(subtree + '\n')
+    if memmax is not None:
+        with open(os.path.join(scope, 'memory.max'), 'w',
+                  encoding='ascii') as handle:
+            handle.write(memmax + '\n')
+    proc = os.path.join(root, 'proc_cgroup')
+    with open(proc, 'w', encoding='ascii') as handle:
+        handle.write('0::/app.scope\n')
+    return root, scope, proc
+
+
+def _slurp(path):
+    with open(path, encoding='ascii') as handle:
+        return handle.read()
+
+
+# --- own_cgroup: the 0:: unified line, a non-unified file, an unreadable file --
+_root, _scope, _proc = _mk_fakecg()
+eq(_ri.own_cgroup(_root, _proc), _scope, 'own_cgroup: resolves the 0:: unified line')
+_proc_v1 = os.path.join(_root, 'proc_v1')
+with open(_proc_v1, 'w', encoding='ascii') as _h:
+    _h.write('1:name=systemd:/foo\n')          # no 0:: line -> not unified
+ok(_ri.own_cgroup(_root, _proc_v1) is None, 'own_cgroup: no 0:: line -> None')
+ok(_ri.own_cgroup(_root, '/nonexistent/proc/cgroup') is None,
+   'own_cgroup: unreadable proc file -> None')
+
+# --- base_setup: happy path relocates self + enables the controllers -----------
+_root, _scope, _proc = _mk_fakecg(subtree='')
+eq(_ri.base_setup(_root, _proc), _scope, 'base_setup: returns the base on success')
+ok(os.path.isdir(os.path.join(_scope, 'main')),
+   'base_setup: creates the `main` leaf')
+eq(_slurp(os.path.join(_scope, 'main', 'cgroup.procs')), str(os.getpid()),
+   'base_setup: moves our own pid into `main`')
+_st = _slurp(os.path.join(_scope, 'cgroup.subtree_control'))
+ok('memory' in _st and 'pids' in _st,
+   'base_setup: enables memory+pids in subtree_control')
+
+# --- base_setup: controllers already enabled -> no re-write --------------------
+_root, _scope, _proc = _mk_fakecg(subtree='memory pids')
+eq(_ri.base_setup(_root, _proc), _scope, 'base_setup: idempotent when already enabled')
+eq(_slurp(os.path.join(_scope, 'cgroup.subtree_control')), 'memory pids\n',
+   'base_setup: leaves an already-enabled subtree_control untouched')
+
+# --- base_setup: `main` pre-existing (FileExistsError swallowed) ---------------
+_root, _scope, _proc = _mk_fakecg()
+os.mkdir(os.path.join(_scope, 'main'))
+eq(_ri.base_setup(_root, _proc), _scope,
+   'base_setup: a pre-existing `main` leaf is fine')
+
+# --- base_setup: unavailable branches all fail open to None -------------------
+_root, _scope, _proc = _mk_fakecg(controllers='cpu')
+ok(_ri.base_setup(_root, _proc) is None,
+   'base_setup: missing memory/pids controller -> None')
+_root, _scope, _proc = _mk_fakecg()
+os.remove(os.path.join(_scope, 'cgroup.controllers'))
+ok(_ri.base_setup(_root, _proc) is None,
+   'base_setup: unreadable cgroup.controllers -> None')
+_root, _scope, _proc = _mk_fakecg()
+with open(os.path.join(_root, 'proc_none'), 'w', encoding='ascii') as _h:
+    _h.write('1::/foo\n')
+ok(_ri.base_setup(_root, os.path.join(_root, 'proc_none')) is None,
+   'base_setup: non-unified host -> None')
+
+# --- base_setup: a write failure mid-setup fails open --------------------------
+_root, _scope, _proc = _mk_fakecg()
+_saved_write = _ri._write
+
+
+def _boom_write(*_a, **_k):
+    raise OSError('simulated cgroup write failure')
+
+
+_ri._write = _boom_write
+try:
+    ok(_ri.base_setup(_root, _proc) is None,
+       'base_setup: a cgroup write error -> None (fail open)')
+finally:
+    _ri._write = _saved_write
+
+# --- effective_mem: cgroup cap, else MemTotal, else None ----------------------
+_root, _scope, _proc = _mk_fakecg(memmax='2000000000')
+eq(_ri.effective_mem(_scope), 2000000000,
+   'effective_mem: a finite cgroup memory.max is used verbatim')
+_root, _scope, _proc = _mk_fakecg(memmax='max')
+_meminfo = os.path.join(_root, 'meminfo')
+with open(_meminfo, 'w', encoding='ascii') as _h:
+    _h.write('MemFree: 512 kB\nMemTotal:       1024 kB\n')
+eq(_ri.effective_mem(_scope, _meminfo), 1024 * 1024,
+   "effective_mem: 'max' cap falls back to MemTotal")
+os.remove(os.path.join(_scope, 'memory.max'))
+eq(_ri.effective_mem(_scope, _meminfo), 1024 * 1024,
+   'effective_mem: an unreadable memory.max falls back to MemTotal')
+_root2, _scope2, _proc2 = _mk_fakecg(memmax='not-a-number')
+eq(_ri.effective_mem(_scope2, _meminfo), 1024 * 1024,
+   'effective_mem: a non-numeric memory.max falls back to MemTotal')
+ok(_ri.effective_mem(_scope, '/nonexistent/meminfo') is None,
+   'effective_mem: no cap and no MemTotal -> None')
+
+# --- create_tab: happy path writes exactly the two limits ---------------------
+_root, _scope, _proc = _mk_fakecg(memmax='2000000000')
+_tab = _ri.create_tab(_scope, 'tab-0')
+eq(_tab, os.path.join(_scope, 'tab-0'), 'create_tab: returns the tab cgroup path')
+eq(_slurp(os.path.join(_tab, 'pids.max')), str(_ri.PIDS_MAX),
+   'create_tab: writes pids.max')
+eq(_slurp(os.path.join(_tab, 'memory.max')),
+   str(int(2000000000 * _ri.MEM_FRACTION)), 'create_tab: writes the memory cap')
+eq(_slurp(os.path.join(_tab, 'memory.oom.group')), '1',
+   'create_tab: sets memory.oom.group so the tab dies as a unit')
+ok(_ri.create_tab(None, 'tab-x') is None, 'create_tab: no base -> None')
+# pre-existing tab dir (FileExistsError swallowed)
+eq(_ri.create_tab(_scope, 'tab-0'), _tab,
+   'create_tab: a pre-existing tab cgroup is reused')
+
+# --- create_tab: no memory budget -> pids-only, no memory files ---------------
+_root, _scope, _proc = _mk_fakecg(memmax='2000000000')
+_saved_mem = _ri.effective_mem
+_ri.effective_mem = lambda base: None
+try:
+    _tab_nm = _ri.create_tab(_scope, 'tab-nomem')
+finally:
+    _ri.effective_mem = _saved_mem
+ok(_tab_nm is not None and not os.path.exists(
+   os.path.join(_tab_nm, 'memory.max')),
+   'create_tab: unknown memory budget -> pids.max only, no memory.max')
+
+# --- create_tab: a write failure removes the half-made cgroup, returns None ----
+_root, _scope, _proc = _mk_fakecg(memmax='2000000000')
+_ri._write = _boom_write
+try:
+    _ct = _ri.create_tab(_scope, 'tab-boom')
+finally:
+    _ri._write = _saved_write
+ok(_ct is None and not os.path.exists(os.path.join(_scope, 'tab-boom')),
+   'create_tab: a write error removes the cgroup and returns None')
+
+# --- open_procs / place_pid / remove_tab --------------------------------------
+ok(_ri.open_procs(None) is None, 'open_procs: no path -> None')
+_root, _scope, _proc = _mk_fakecg()
+_tabp = _ri.create_tab(_scope, 'tab-fd')
+with open(os.path.join(_tabp, 'cgroup.procs'), 'w', encoding='ascii'):
+    pass                                       # create the procs file to open
+_fd = _ri.open_procs(_tabp)
+ok(isinstance(_fd, int) and _fd >= 0, 'open_procs: opens cgroup.procs')
+_ri.place_pid(_fd, 4242)
+os.close(_fd)
+eq(_slurp(os.path.join(_tabp, 'cgroup.procs')), '4242',
+   'place_pid: writes the pid into cgroup.procs')
+ok(_ri.open_procs('/nonexistent/cgroup') is None,
+   'open_procs: an unopenable path -> None')
+_ri.place_pid(_fd, 1)                          # fd now closed -> OSError swallowed
+ok(True, 'place_pid: a closed fd is swallowed, never raised')
+
+_ri.remove_tab(None)                           # None -> no-op, no raise
+ok(True, 'remove_tab: None is a no-op')
+_rmdir = os.path.join(_scope, 'tab-rm')
+os.mkdir(_rmdir)
+_ri.remove_tab(_rmdir)
+ok(not os.path.exists(_rmdir), 'remove_tab: removes an empty tab cgroup')
+_ri.remove_tab('/nonexistent/cgroup')          # missing -> OSError swallowed
+ok(True, 'remove_tab: a vanished cgroup is swallowed, never raised')
+
+for _d in _ri_tmp:
+    shutil.rmtree(_d, ignore_errors=True)
 
 
 print('secure-terminal-tests(modules): all passed' if not _failures else

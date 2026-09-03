@@ -137,6 +137,41 @@ fi
 safe-rm --force "${allow_probe}" "${deny_probe}" "${canary_src}" "${canary_probe}"
 rmdir "${canary_dir}" 2>/dev/null || true
 
+## ALLOW (write): a cgroup v2 interface file in the app's OWN delegated cgroup
+## subtree. Per-tab resource isolation (resource_isolation.base_setup / create_tab)
+## writes cgroup.procs / pids.max / memory.max under the app's user-slice cgroup;
+## the profile must grant that subtree or the writes are DENIED and isolation
+## silently fails open. Writing our own pid into our own cgroup.procs is an
+## idempotent no-op MOVE that still exercises the write grant on a real cgroup file.
+## Guarded to the profiled subtree: only assert when the harness itself runs under
+## /sys/fs/cgroup/user.slice/user-*.slice (where the rule applies + a real app runs);
+## a harness in some other cgroup is out of the rule's honest scope, so note + skip
+## rather than false-fail.
+own_cg="/sys/fs/cgroup$(awk -F: '/^0::/{print $3}' /proc/self/cgroup)"
+case "${own_cg}" in
+   /sys/fs/cgroup/user.slice/user-[0-9]*.slice/*)
+      cg_procs="${own_cg}/cgroup.procs"
+      cg_rc=0
+      aa-exec -p secure-terminal -- python3 -Bsu -c '
+import os, sys
+fd = os.open(sys.argv[1], os.O_WRONLY)
+os.write(fd, str(os.getpid()).encode())
+os.close(fd)
+' "${cg_procs}" >/dev/null 2>&1 || cg_rc=$?
+      if [ "${cg_rc}" -eq 0 ]; then
+         pass=$(( pass + 1 ))
+      else
+         fail=$(( fail + 1 ))
+         printf '%s\n' \
+            "FAIL: the profile DENIED a write to the app's own cgroup.procs (${cg_procs}) -- per-tab resource isolation would fail closed under enforcement"
+      fi
+      ;;
+   *)
+      printf '%s\n' \
+         "secure-terminal-tests(apparmor): NOTE -- harness cgroup ${own_cg} is outside the profiled user.slice subtree; cgroup.procs write grant not asserted here"
+      ;;
+esac
+
 ## ALLOW (flock): the clipboard-watch singleton lock file. The daemon opens
 ## '<runtime>/secure-terminal/*.lock' O_CREAT and takes an flock on it as its
 ## singleton gate; the profile must grant create+write+lock ('k') or the watcher

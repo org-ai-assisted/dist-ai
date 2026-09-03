@@ -4538,5 +4538,47 @@ finally:
 ok(_fd_raised and len(_fd_closed) >= 2,
    'ai-review#6: a pty.fork failure closes both handshake pipe fds and re-raises')
 
+# --- per-tab cgroup: the spawned child places its OWN pid into the tab cgroup, and
+# the parent drops its copy of the procs fd (no leak). A fake cgroup.procs FILE
+# stands in for a real delegated cgroup, so the fork+place path runs here without a
+# delegated hierarchy; the LIVE forkbomb/OOM containment is proven in the sandbox
+# integration suite (secure-terminal-tests-cgroup).
+import tempfile as _tf_cg                                                        # noqa: E402
+import shutil as _sh_cg                                                          # noqa: E402
+_cg_dir = _tf_cg.mkdtemp(prefix='st-cgw-')
+open(os.path.join(_cg_dir, 'cgroup.procs'), 'w', encoding='ascii').close()
+_cgt = SecureTerminal(command='/bin/cat', cg_path=_cg_dir)
+_placed = ''
+for _ in range(40):                          # the child writes its pid before execvp
+    pump(25)
+    try:
+        with open(os.path.join(_cg_dir, 'cgroup.procs'), encoding='ascii') as _h:
+            _placed = _h.read().strip()
+    except OSError:
+        _placed = ''
+    if _placed:
+        break
+ok(_placed == str(_cgt._pid),
+   'cgroup: the spawned child writes its own pid into the tab cgroup.procs')
+_cgt.shutdown()
+ok(_cgt._cg_path is None, 'cgroup: shutdown clears the tab cgroup path')
+_sh_cg.rmtree(_cg_dir, ignore_errors=True)
+
+# --- per-tab cgroup: a pty.fork failure also closes the cgroup procs fd (no leak).
+_cg_dir2 = _tf_cg.mkdtemp(prefix='st-cgw-')
+open(os.path.join(_cg_dir2, 'cgroup.procs'), 'w', encoding='ascii').close()
+_o_fork2 = _Tfd.pty.fork
+_Tfd.pty.fork = _fork_boom
+_cg_raised = False
+try:
+    SecureTerminal(command='/bin/cat', cg_path=_cg_dir2)
+except OSError:
+    _cg_raised = True
+finally:
+    _Tfd.pty.fork = _o_fork2
+ok(_cg_raised,
+   'cgroup: a pty.fork failure with a tab cgroup closes the procs fd and re-raises')
+_sh_cg.rmtree(_cg_dir2, ignore_errors=True)
+
 
 finish('widget')
