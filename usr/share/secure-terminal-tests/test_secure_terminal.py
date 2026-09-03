@@ -1043,6 +1043,28 @@ def _control_depends(path):
     return names
 
 
+def _require_pkgs_in_tree(tree):
+    """apt package names (2nd element of each require() tuple) in one parsed
+    launcher. Matches BOTH the bare `require(...)` form (imported name) and the
+    qualified `preflight.require(...)` / `PRE.require(...)` attribute form -- else a
+    launcher written the qualified way silently escapes the dep audit, the exact
+    silent-pass this check exists to prevent."""
+    pkgs = set()
+    for node in _ast.walk(tree):
+        if not isinstance(node, _ast.Call):
+            continue
+        fn = node.func
+        if not ((isinstance(fn, _ast.Name) and fn.id == 'require')
+                or (isinstance(fn, _ast.Attribute) and fn.attr == 'require')):
+            continue
+        for arg in node.args:
+            if (isinstance(arg, (_ast.Tuple, _ast.List))
+                    and len(arg.elts) == 2
+                    and isinstance(arg.elts[1], _ast.Constant)):
+                pkgs.add(arg.elts[1].value)
+    return pkgs
+
+
 def _require_packages(bindir):
     """Every apt package (2nd element of each require() tuple) across all
     launchers, read from the current script text via AST."""
@@ -1055,14 +1077,7 @@ def _require_packages(bindir):
                 tree = _ast.parse(fh.read())
         except (SyntaxError, UnicodeDecodeError, OSError):
             continue
-        for node in _ast.walk(tree):
-            if (isinstance(node, _ast.Call) and isinstance(node.func, _ast.Name)
-                    and node.func.id == 'require'):
-                for arg in node.args:
-                    if (isinstance(arg, (_ast.Tuple, _ast.List))
-                            and len(arg.elts) == 2
-                            and isinstance(arg.elts[1], _ast.Constant)):
-                        pkgs.add(arg.elts[1].value)
+        pkgs |= _require_pkgs_in_tree(tree)
     return pkgs
 
 
@@ -1071,6 +1086,14 @@ _missing_dep = sorted(p for p in _require_packages(_bindir)
 ok(not _missing_dep,
    'dep-audit: every preflight-required package is a debian/control Depends '
    '(missing: %r)' % _missing_dep)
+# regression: the scan must catch the qualified attribute form (preflight.require /
+# PRE.require), not only the bare imported name -- a launcher written the qualified way
+# must not silently escape the dep audit above (a Name-only scan returns just {'pa'}).
+ok(_require_pkgs_in_tree(_ast.parse(
+       "require(('a', 'pa'))\n"
+       "preflight.require(('b', 'pb'))\n"
+       "PRE.require(('c', 'pc'))\n")) == {'pa', 'pb', 'pc'},
+   'dep-audit AST scan catches require(), preflight.require() and PRE.require() forms')
 
 # classify_paste: name and count the hidden classes so the paste warning can say
 # exactly what a copied string carries
