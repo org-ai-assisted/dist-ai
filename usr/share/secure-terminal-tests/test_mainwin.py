@@ -764,6 +764,33 @@ try:
     win.open_transcript()                        # a second open REUSES the one file (no leak)
     ok(len(_opened) == 2 and _opened[0] == _opened[1],
        'open_transcript: reuses one file rather than leaking a new temp each time')
+    # ai-review #3: session state is SENSITIVE history -- the dir must be 0o700 (enforced
+    # even on a pre-existing wider dir) and the files 0o600, never world-readable.
+    import stat as _stat3
+    os.chmod(_state_tmp, 0o755)                  # widen it, as a pre-existing dir might be
+    win.open_transcript()                        # ensure_state_dir must chmod it back to 0o700
+    ok(_stat3.S_IMODE(os.stat(_state_tmp).st_mode) == 0o700,
+       'ai-review#3: ensure_state_dir enforces 0o700 on the sensitive state dir')
+    ok(_stat3.S_IMODE(os.stat(os.path.join(_state_tmp, 'transcript.txt')).st_mode) == 0o600,
+       'ai-review#3: the transcript file is owner-only (0o600), not world-readable')
+    os.chmod(_state_tmp, 0o755)
+    _sess.save([{'text': 'scrollback', 'command': None}], window=None, active=0)
+    ok(_stat3.S_IMODE(os.stat(_state_tmp).st_mode) == 0o700,
+       'ai-review#3: session.save enforces 0o700 on the state dir')
+    ok(_stat3.S_IMODE(os.stat(_sess.session_path()).st_mode) == 0o600
+       and _stat3.S_IMODE(os.stat(_sess._log_path(0)).st_mode) == 0o600,
+       'ai-review#3: session.json and the per-tab log are owner-only (0o600)')
+    # a chmod failure in ensure_state_dir is best-effort: swallowed, never raised (the dir
+    # already exists so _makedirs_private returns before its own chmod; only this one fires).
+    def _chmod_boom(*_a, **_k):
+        raise OSError('chmod denied')
+    _ochmod3 = _sess.os.chmod
+    _sess.os.chmod = _chmod_boom
+    try:
+        _sess.ensure_state_dir()                 # must NOT raise
+        ok(True, 'ai-review#3: ensure_state_dir swallows a chmod OSError (best-effort)')
+    finally:
+        _sess.os.chmod = _ochmod3
     # C (ai-review): an OSError on the write must NOT propagate out of the Qt slot and
     # take the whole window (all tabs) down -- mirror save_transcript's try/except. An
     # unwritable state dir (makedirs raises under /proc) must be swallowed silently.
@@ -776,6 +803,28 @@ try:
 finally:
     _QDS.openUrl = _oou
     _sess._state_dir = _osd
+
+# --- ai-review #2: rename_tab on a session-restore placeholder (a bare QWidget, not a
+# SecureTerminal) must be a safe no-op, not an AttributeError (term.cwd_basename()) that
+# escapes the Qt slot and aborts the whole window.
+_ph2 = M.QWidget()
+win.tabs.addTab(_ph2, 'placeholder')
+_phi2 = win.tabs.indexOf(_ph2)
+win.rename_tab(_phi2)                               # returns via the isinstance guard -- no crash
+ok(win.tabs.indexOf(_ph2) == _phi2 and win.tabs.tabText(_phi2) == 'placeholder',
+   'ai-review#2: rename_tab on a non-terminal placeholder is a safe no-op')
+win.tabs.removeTab(_phi2)
+_ph2.deleteLater()
+
+# --- ai-review #4: an IPC "open" spec with an EXPLICIT empty command opens NO tab (fail
+# closed like the CLI's -e "" / -- ""), never a silent login-shell fallback via the socket.
+_n4 = win.tabs.count()
+win._open_launch_tab({'command': ''})
+win._open_launch_tab({'command': []})
+win._open_launch_tab({'command': ['']})
+win._open_launch_tab({'command': ['   ']})
+eq(win.tabs.count(), _n4,
+   'ai-review#4: an explicit-empty IPC command opens no tab (no login-shell fallback)')
 
 # --- _test_canary: writes the marker + echoes; loud failure on a bad path -----
 import secure_terminal.main as _MM              # noqa: E402

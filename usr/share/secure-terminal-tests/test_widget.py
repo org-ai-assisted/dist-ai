@@ -4487,5 +4487,56 @@ ok('A' in _bigfeed.transcript_text(),
    'feed_output handles a >pipe-buffer payload without an os.write deadlock')
 _bigfeed.shutdown()
 
+# --- ai-review #5: a TUI shrink must clamp the pyte cursor into the new grid, so a
+# \r-only redraw cannot write off-screen and resurface verbatim when the window grows.
+_clampt = SecureTerminal(command='/bin/cat', tui=True)
+feed_output(_clampt, b'seed\r\n')                        # create the pyte screen
+_clampt._screen.cursor.y = _clampt._screen.lines + 4     # park the cursor off the bottom
+_clampt._screen.cursor.x = _clampt._screen.columns + 4
+_clampt._tui_grid_size = lambda: (10, 3)                 # force a shrink to 3 rows x 10 cols
+_clampt._sync_tui_size()
+ok(_clampt._screen.cursor.y == 2 and _clampt._screen.cursor.x == 9,
+   'ai-review#5: a TUI shrink clamps the pyte cursor into the new grid (rows-1, cols-1)')
+_clampt.shutdown()
+
+# --- ai-review #12: a finished command's stuck colour must not bleed onto the shell
+# prompt in TUI mode -- an SGR reset is injected ahead of the bracketed-paste prompt-start
+# on the live pyte feed AND into the retained raw (so a re-render stays clean), like CLI.
+from secure_terminal.sanitize import PROMPT_START as _PS12                       # noqa: E402
+_sgrt = SecureTerminal(command='/bin/cat', tui=True)
+feed_output(_sgrt, b'\x1b[41m' + b'stuck-red-never-reset' + _PS12.encode('ascii'))
+ok(('\x1b[0m' + _PS12) in _sgrt._raw,
+   'ai-review#12: TUI injects an SGR reset before the prompt-start (raw + live feed)')
+_sgrt.shutdown()
+
+# --- ai-review #6: a pty.fork() failure closes the exec-handshake pipe fds (no leak that
+# compounds the very fd exhaustion that triggered it).
+import secure_terminal.terminal as _Tfd                                          # noqa: E402
+_fd_closed = []
+_o_fork, _o_close = _Tfd.pty.fork, _Tfd.os.close
+
+
+def _track_close(fd):
+    _fd_closed.append(fd)
+    return _o_close(fd)
+
+
+def _fork_boom():
+    raise OSError('simulated fork failure')
+
+
+_Tfd.pty.fork = _fork_boom
+_Tfd.os.close = _track_close
+_fd_raised = False
+try:
+    SecureTerminal(command='/bin/cat')
+except OSError:
+    _fd_raised = True
+finally:
+    _Tfd.pty.fork = _o_fork
+    _Tfd.os.close = _o_close
+ok(_fd_raised and len(_fd_closed) >= 2,
+   'ai-review#6: a pty.fork failure closes both handshake pipe fds and re-raises')
+
 
 finish('widget')

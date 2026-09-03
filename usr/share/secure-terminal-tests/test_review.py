@@ -848,6 +848,22 @@ for _mode, _fn in ReviewBar._TIER.items():
         ok(any(ord(c) > 0x7F for c in _out),
            'tier %r keeps the visible look-alike (the amber printable-unicode tier)' % _mode)
 
+# --- ai-review #1: inserting combining marks into an ALREADY-CAPPED run must not desync
+# the caret -- start+len(chunk) over-counts when the cap silently drops the excess marks,
+# so a later Backspace would edit the wrong character of the pending command.
+from secure_terminal.sanitize import _COMBINING_RUN_MAX as _CRM                  # noqa: E402
+_ced = _bar._editor
+_mark = '\u0301'                     # COMBINING ACUTE ACCENT (U+0301)
+_cbase = 'a' + (_mark * _CRM)              # a base char + a FULL cap of combining marks
+_ced.set_source(_cbase + 'bcdef')
+_ced._pos = len(_cbase)                    # caret right after the capped run, before 'bcdef'
+_cbefore = _ced.source()
+_ced._insert(_mark * 3)                    # 3 more marks -> all dropped by the run cap
+ok(_ced.source() == _cbefore,
+   'ai-review#1: inserting into a capped run drops the excess (stored text unchanged)')
+ok(_ced._pos == len(_cbase),
+   'ai-review#1: the caret stays put after a fully-dropped insert (no skip into bcdef)')
+
 APP.processEvents()
 print('secure-terminal-tests(review): all passed' if not _failures else
       'secure-terminal-tests(review): %d failed' % _failures)
