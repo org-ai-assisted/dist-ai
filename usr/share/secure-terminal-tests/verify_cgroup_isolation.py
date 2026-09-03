@@ -65,7 +65,7 @@ def _drain_and_remove(path):
     try:
         os.rmdir(path)
     except OSError:
-        pass
+        pass                          # already gone, or still populated -> leave it
 
 
 def _fresh_cgroup(parent, name):
@@ -152,7 +152,7 @@ _write(os.path.join(memcg, 'memory.oom.group'), '1')
 try:
     _write(os.path.join(memcg, 'memory.swap.max'), '0')
 except OSError:
-    pass
+    pass                              # no swap controller -> memory.max alone caps RAM
 fd = ri.open_procs(memcg)
 pid = os.fork()
 if pid == 0:                                  # child: allocate far past the cap
