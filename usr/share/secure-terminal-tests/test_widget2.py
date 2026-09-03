@@ -62,7 +62,7 @@ from PyQt6.QtGui import QHelpEvent
 
 # --- window: rename, colour, settings round-trip ------------------------------
 from secure_terminal.main import (                   # noqa: E402
-    MainWindow, _is_font_noise, _read_version, APP_VERSION,
+    MainWindow, _is_font_noise, _read_version, APP_VERSION, MODE_NEUTRAL,
 )
 from secure_terminal import settings                 # noqa: E402
 
@@ -382,9 +382,10 @@ win.act_reveal.trigger()
 eq(win.current().current_mode(), 'reveal', 'Reveal button selects reveal')
 ok(not win.act_box.icon().isNull() and not win.act_show.icon().isNull(),
    'mode buttons carry icons')
-# security indicator: two lamps. display axis (show=red, reveal=green [safe and
-# lossless], box=green [safe -- the neutralized char is a hard-to-miss coloured
-# box, though lossy]) and mode axis (TUI=yellow, line=green).
+# security indicator: two lamps. display axis (reveal/box=green [safe], show=neutral
+# grey -- a chosen mode, NOT a live-event alarm) and mode axis (TUI=neutral grey,
+# line=green). Saturated colour is reserved for events (OSC, review breach), so a
+# permanent Show/TUI does not drown them out.
 win.set_mode('box')
 eq((win._display_level()[1], win._display_level()[0]), ('Box', '#1f8a54'),
    'box display -> green (safe; the box placeholder is hard to miss)')
@@ -392,8 +393,8 @@ win.set_mode('reveal')
 eq((win._display_level()[1], win._display_level()[0]), ('Reveal', '#1f8a54'),
    'reveal display -> green (safe and lossless, not red)')
 win.set_mode('show')
-eq((win._display_level()[1], win._display_level()[0]), ('Show', '#d83933'),
-   'show display -> red')
+eq((win._display_level()[1], win._display_level()[0]), ('Show', MODE_NEUTRAL),
+   'show display -> neutral grey (a chosen mode, not a saturated alarm)')
 # the box display mode is labelled "Box" (it draws a box; it does not strip the
 # data stream), and its tooltip says it is a DISPLAY setting -- not the bytes a
 # program pipes elsewhere, so "cat file | bash" runs regardless.
@@ -403,8 +404,8 @@ ok('cat file | bash' in win.act_box.toolTip(),
 eq(win._mode_level()[1], 'CLI', 'CLI mode -> green mode lamp')
 if tui_available():
     win.set_tui(True)
-    eq((win._mode_level()[1], win._mode_level()[0]), ('TUI', '#e5a50a'),
-       'TUI -> yellow mode lamp (independent of the display lamp)')
+    eq((win._mode_level()[1], win._mode_level()[0]), ('TUI', MODE_NEUTRAL),
+       'TUI -> neutral grey mode lamp (a chosen mode, not a saturated alarm)')
     win.set_tui(False)
     # Box and Show already render full-screen, so entering TUI leaves them as the
     # user set them (no auto-switch, no restore state).
@@ -2918,6 +2919,69 @@ eq(_zoom, [1, -1], 'Ctrl+wheel emits a zoom step in the scroll direction')
 _zoom.clear()
 _wheel(120, Qt.KeyboardModifier.NoModifier)     # plain wheel -> normal scroll
 eq(_zoom, [], 'a plain wheel does not zoom')
+
+# --- Ctrl+wheel over NON-terminal chrome zooms too (review box + advisory banner),
+# via the shared route_ctrl_wheel_zoom; a plain wheel there is left to the widget ---
+def _wheel_at(widget, dy, mods):
+    ev = QWheelEvent(QPointF(1, 1), QPointF(1, 1), QPoint(0, 0), QPoint(0, dy),
+                     Qt.MouseButton.NoButton, mods,
+                     Qt.ScrollPhase.NoScrollPhase, False)
+    widget.wheelEvent(ev)
+
+
+if win.tabs.count() == 0:                        # _on_zoom_step needs a current tab
+    win.new_tab()
+win.set_zoom(100)
+_wheel_at(win._review_bar._editor, 120, Qt.KeyboardModifier.ControlModifier)
+ok(win.current_zoom_percent() > 100,
+   'Ctrl+wheel over the review box zooms the tab in')
+_wheel_at(win._banner, -120, Qt.KeyboardModifier.ControlModifier)
+ok(win.current_zoom_percent() == 100,
+   'Ctrl+wheel over the advisory banner zooms the tab out')
+_z_plain = win.current_zoom_percent()
+_wheel_at(win._review_bar._editor, 120, Qt.KeyboardModifier.NoModifier)
+_wheel_at(win._banner, 120, Qt.KeyboardModifier.NoModifier)
+ok(win.current_zoom_percent() == _z_plain,
+   'a plain wheel over the review box / banner does not zoom')
+
+# --- the advisory banner font scales with the zoom (Ctrl+/- and Ctrl+wheel) -----
+win.set_zoom(100)
+ok('font-size:13px' in win._banner.styleSheet(),
+   'the advisory banner label is 13px at 100% zoom')
+win.set_zoom(200)
+ok('font-size:26px' in win._banner.styleSheet(),
+   'the advisory banner label scales to 26px at 200% zoom')
+win.set_zoom(100)
+
+# --- InfoTip: theme-aware colours + anchored CLEAR of the source widget ---------
+from PyQt6.QtWidgets import QApplication as _QApp_it, QWidget as _QW_it  # noqa: E402
+_ittip = win._tip_filter._tip
+_ittip.show_for(win, 'x', 100, 'dark')
+ok('#252a31' in _ittip.styleSheet(), 'InfoTip: dark theme uses the dark surface colour')
+_ittip.show_for(win, 'x', 100, 'light')
+ok('#fbfbfd' in _ittip.styleSheet(), 'InfoTip: light theme uses the light surface colour')
+_itavail = _QApp_it.primaryScreen().availableGeometry()
+_ittop = _QW_it()
+_ittop.resize(40, 20)
+_ittop.move(_itavail.left() + 20, _itavail.top() + 10)
+_ittop.show()
+APP.processEvents()
+_ittip.show_for(_ittop, 'placed below', 100, 'light')
+ok(_ittip.geometry().top() >= _ittop.mapToGlobal(QPoint(0, _ittop.height())).y(),
+   'InfoTip: anchored below the source (never over it) so the widget stays clickable')
+_itbot = _QW_it()
+_itbot.resize(40, 20)
+_itbot.move(_itavail.left() + 20, _itavail.bottom() - 8)
+_itbot.show()
+APP.processEvents()
+_ittip.show_for(_itbot, 'flipped above', 100, 'light')
+ok(_ittip.geometry().bottom() <= _itbot.mapToGlobal(QPoint(0, 0)).y(),
+   'InfoTip: flips above the source when there is no room below')
+_ittip.hide()
+_ittip._poll.stop()
+_ittop.deleteLater()
+_itbot.deleteLater()
+APP.processEvents()
 
 # --- pyte cell -> QTextCharFormat rendering (_pyte_format / _pyte_qcolor) ------
 from PyQt6.QtGui import QFont          # noqa: E402
