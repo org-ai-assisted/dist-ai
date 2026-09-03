@@ -62,6 +62,23 @@ if [ "$#" -ge 1 ]; then
    esac
 fi
 
+## --assume-synced: skip the fresh tree sync when the sandbox already holds a matching
+## checkout (verified below with `sandbox assert-synced`), so a repeat reshoot starts
+## capturing at once instead of re-syncing the repos each run. Stripped from the args here
+## so it never reaches the in-sandbox lane. Without it the trees are always freshly synced
+## (the safe default). assert-synced refuses a dirty or stale local tree, so the fast path
+## can never shoot a stale tree.
+assume_synced=0
+rest_args=()
+for arg in "$@"; do
+   if [ "${arg}" = '--assume-synced' ]; then
+      assume_synced=1
+   else
+      rest_args+=("${arg}")
+   fi
+done
+set -- "${rest_args[@]}"
+
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
 ## dist-ai is the tree THIS driver ships in: script is at dist-ai/usr/bin, so ../.. is the root.
@@ -118,18 +135,30 @@ base='st-shots-sandbox'
 
 ## compat builds its OWN fixture and reads no corpus payloads (see the presence
 ## check above), so it syncs two trees, not three -- skip the corpus sync for it.
-if [ "${lane}" = 'compat' ]; then
-   printf '%s\n' "secure-terminal-shots-sandbox: fresh-syncing two trees into the sandbox (compat needs no corpus) ..." >&2
+if [ "${assume_synced}" = 1 ]; then
+   printf '%s\n' "secure-terminal-shots-sandbox: --assume-synced: verifying the sandbox already matches (no re-sync) ..." >&2
+   sandbox "${target_arg[@]}" assert-synced "${secure_terminal}" \
+      || die "--assume-synced: secure-terminal not verifiably in sync (dirty/stale); re-run WITHOUT --assume-synced"
+   sandbox "${target_arg[@]}" assert-synced "${dist_ai}" \
+      || die "--assume-synced: dist-ai not verifiably in sync (dirty/stale); re-run WITHOUT --assume-synced"
+   if [ "${lane}" != 'compat' ]; then
+      sandbox "${target_arg[@]}" assert-synced "${corpus}" \
+         || die "--assume-synced: terminal-poc-corpus not verifiably in sync (dirty/stale); re-run WITHOUT --assume-synced"
+   fi
 else
-   printf '%s\n' "secure-terminal-shots-sandbox: fresh-syncing three trees into the sandbox ..." >&2
-fi
-sandbox "${target_arg[@]}" sync --delete "${secure_terminal}" "${base}/secure-terminal" \
-   || die "sync of secure-terminal into the sandbox failed"
-sandbox "${target_arg[@]}" sync --delete "${dist_ai}" "${base}/dist-ai" \
-   || die "sync of dist-ai into the sandbox failed"
-if [ "${lane}" != 'compat' ]; then
-   sandbox "${target_arg[@]}" sync --delete "${corpus}" "${base}/terminal-poc-corpus" \
-      || die "sync of terminal-poc-corpus into the sandbox failed"
+   if [ "${lane}" = 'compat' ]; then
+      printf '%s\n' "secure-terminal-shots-sandbox: fresh-syncing two trees into the sandbox (compat needs no corpus) ..." >&2
+   else
+      printf '%s\n' "secure-terminal-shots-sandbox: fresh-syncing three trees into the sandbox ..." >&2
+   fi
+   sandbox "${target_arg[@]}" sync --delete "${secure_terminal}" "${base}/secure-terminal" \
+      || die "sync of secure-terminal into the sandbox failed"
+   sandbox "${target_arg[@]}" sync --delete "${dist_ai}" "${base}/dist-ai" \
+      || die "sync of dist-ai into the sandbox failed"
+   if [ "${lane}" != 'compat' ]; then
+      sandbox "${target_arg[@]}" sync --delete "${corpus}" "${base}/terminal-poc-corpus" \
+         || die "sync of terminal-poc-corpus into the sandbox failed"
+   fi
 fi
 
 printf '%s\n' "secure-terminal-shots-sandbox: running '${lane}' in the sandbox ..." >&2
