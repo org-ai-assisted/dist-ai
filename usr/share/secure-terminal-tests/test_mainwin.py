@@ -253,6 +253,8 @@ try:
     eq(_ctl_main(['ls']), 0, 'ctl ls: lists tabs -> exit 0')
     M.ipc.send_request = lambda *_a, **_k: {'ok': True}
     eq(_ctl_main(['send-text', '--tab', 'id:1', 'hi\n']), 0, 'ctl send-text -> 0')
+    eq(_ctl_main(['send-text', '--tab', 'id:1', '--submit', 'echo hi']), 0,
+       'ctl send-text --submit -> 0 (forwards submit=true)')
     eq(_ctl_main(['set-tab-title', '--tab', 'id:1', 'Renamed']), 0,
        'ctl set-tab-title -> 0')
     M.ipc.send_request = lambda *_a, **_k: {'ok': True, 'text': 'rendered text'}
@@ -1180,6 +1182,12 @@ try:
        'ipc: a ctl op on a non-matching tab -> error')
     ok(_disp({'op': 'ctl-send-text', 'tab': 'id:%d' % _tid0, 'text': 'echo\n'})['ok'],
        'ipc: ctl-send-text to a matched tab')
+    ok(_disp({'op': 'ctl-send-text', 'tab': 'id:%d' % _tid0, 'text': 'echo',
+              'submit': True})['ok'],
+       'ipc: ctl-send-text with submit=true runs the line')
+    ok(not _disp({'op': 'ctl-send-text', 'tab': 'id:%d' % _tid0, 'text': 'x',
+                  'submit': 'yes'})['ok'],
+       'ipc: ctl-send-text with a non-boolean submit is rejected')
     ok(not _disp({'op': 'ctl-send-text', 'tab': 'id:%d' % _tid0, 'text': 5})['ok'],
        'ipc: ctl-send-text with non-string text is rejected')
     _rd = _disp({'op': 'ctl-dump-tab', 'tab': 'id:%d' % _tid0, 'lines': 2})

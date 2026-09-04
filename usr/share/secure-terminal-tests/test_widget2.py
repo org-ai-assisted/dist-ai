@@ -813,6 +813,66 @@ try:
         b'{"op":"ctl-send-text","tab":"id:0","text":"evil\\nsecond"}')
     ok(not _mr.get('ok') and _t3 == [],
        'ctl: send-text refuses a multiline payload; nothing auto-runs')
+    # --submit is the caller's EXPLICIT intent on this admin-gated, owner-only surface:
+    # deliver the Enter the strip withheld, so the single line RUNS (drive-and-assert).
+    # The withheld CR reaches the shell as a distinct write after the sanitized text.
+    _t4 = spy_writes(rcwin.current())
+    rcwin.current()._line_dirty = True
+    _su = rcwin._dispatch_request(
+        b'{"op":"ctl-send-text","tab":"id:0","text":"echo hi","submit":true}')
+    ok(_su.get('ok') and _t4 == [b'echo hi', b'\r'],
+       'ctl: send-text --submit delivers the withheld Enter (line runs)')
+    ok(not rcwin.current()._line_dirty,
+       'ctl: --submit settles the line mirror, mirroring a real Enter')
+    # submit does NOT bypass the multiline refusal: a hidden second command can never
+    # ride an explicit Enter -- the payload is refused before any byte reaches the shell.
+    _t5 = spy_writes(rcwin.current())
+    _msu = rcwin._dispatch_request(
+        b'{"op":"ctl-send-text","tab":"id:0","text":"a\\nb","submit":true}')
+    ok(not _msu.get('ok') and _t5 == [],
+       'ctl: --submit still refuses a multiline payload; nothing auto-runs')
+    # FINDING 1 (bracketed-paste bypass): submit forces the multiline refusal even when a
+    # foreground child has bracketed paste active. The exemption only makes a paste inert;
+    # --submit's trailing CR (outside the 200~/201~ frame) would submit the whole buffer and
+    # run a hidden second command. Refuse before any byte is written.
+    _bp_term = rcwin.current()
+    _orig_bpa = _bp_term._bracketed_paste_active
+    _bp_term._bracketed_paste_active = lambda: True
+    try:
+        _t6 = spy_writes(_bp_term)
+        _bmr = rcwin._dispatch_request(
+            b'{"op":"ctl-send-text","tab":"id:0","text":"echo a\\necho b","submit":true}')
+        ok(not _bmr.get('ok') and _t6 == [],
+           'ctl: --submit refuses multiline even with bracketed paste active')
+        # WITHOUT submit the bracketed exemption is UNCHANGED: the multiline paste is
+        # delivered inert, 200~/201~ framed, with no trailing CR.
+        _t7 = spy_writes(_bp_term)
+        _bok = rcwin._dispatch_request(
+            b'{"op":"ctl-send-text","tab":"id:0","text":"echo a\\necho b"}')
+        ok(_bok.get('ok') and _t7 == [b'\x1b[200~echo a\recho b\x1b[201~'],
+           'ctl: no-submit multiline under bracketed paste still buffers inert (no CR)')
+    finally:
+        _bp_term._bracketed_paste_active = _orig_bpa
+    # FINDING 2 (empty-delivery submit): a payload that sanitizes to nothing delivers
+    # nothing, so --submit must NOT fire a bare CR -- else it would submit whatever is
+    # already at the prompt (a prior staged line, or the user's own input).
+    _t8 = spy_writes(rcwin.current())
+    ok(rcwin._dispatch_request(
+        b'{"op":"ctl-send-text","tab":"id:0","text":"","submit":true}').get('ok')
+       and _t8 == [],
+       'ctl: --submit on empty text delivers nothing and fires no Enter')
+    _t9 = spy_writes(rcwin.current())
+    ok(rcwin._dispatch_request(
+        b'{"op":"ctl-send-text","tab":"id:0","text":"\\u0001\\u0002","submit":true}').get('ok')
+       and _t9 == [],
+       'ctl: --submit on control-only text delivers nothing and fires no Enter')
+    # a lone newline sanitizes to a bare submit CR that paste_no_autosubmit strips to
+    # nothing -- again delivered=False, so no Enter is fired.
+    _t10 = spy_writes(rcwin.current())
+    ok(rcwin._dispatch_request(
+        b'{"op":"ctl-send-text","tab":"id:0","text":"\\n","submit":true}').get('ok')
+       and _t10 == [],
+       'ctl: --submit on a lone newline delivers nothing and fires no Enter')
     rcwin._dispatch_request(
         b'{"op":"ctl-set-tab-title","tab":"id:0","title":"renamed"}')
     eq(rcwin.tabs.tabText(0), 'renamed', 'ctl: set-tab-title renames the tab')
