@@ -174,6 +174,46 @@ else
    fail "folded 'Architecture: <newline> all' not arch-independent -> ${want_all} not in [${make_package_debs_files_list[*]}]"
 fi
 
+## --- folded 'Package:' continuation must normalise away the leading blank ---
+## grep-dctrl emits a folded 'Package:' as 'Package: ' (empty value) + an indented continuation,
+## so 'Package:\n foldedname' reaches the loop as ' foldedname'. 'Architecture:' is normalised at
+## the stanza boundary but 'Package:' was NOT, leaving a leading blank that corrupts the expected
+## .deb name ('.../ foldedname_..._all.deb' -> test -f false-negative -> false build failure) and
+## the make_package_list entry ('debian/ foldedname' -> deb-clean/deb-cleanup miss the real dir).
+cat > "${test_root}/control-pkgfold" <<'EOF'
+Source: pkgfoldsrc
+
+Package:
+ foldedname
+Architecture: all
+EOF
+make_debian_control_file_absolute_path="${test_root}/control-pkgfold"
+make_source_package_name='pkgfoldsrc'
+target_architecture='amd64'
+make_package_debs_files_list=()
+make_package_list=()
+all_package_debs_are_arch_all='true'
+parse_control_package_stanzas
+
+tests_total=$(( tests_total + 1 ))
+if [ "${#make_package_list[@]}" -eq 1 ] && [ "${make_package_list[0]}" = 'foldedname' ]; then
+   pass "folded 'Package:' continuation normalised -> 'foldedname' (no leading blank)"
+else
+   fail "folded 'Package:' not normalised -> make_package_list=[${make_package_list[*]}]"
+fi
+
+tests_total=$(( tests_total + 1 ))
+want_pkgfold="${DISTDIR}/foldedname_1.0-1_all.deb"
+found='false'
+for d in "${make_package_debs_files_list[@]}"; do
+   [ "${d}" = "${want_pkgfold}" ] && found='true'
+done
+if [ "${found}" = 'true' ]; then
+   pass "folded 'Package:' -> correctly-named .deb (no leading blank)"
+else
+   fail "folded 'Package:' .deb misnamed -> ${want_pkgfold} not in [${make_package_debs_files_list[*]}]"
+fi
+
 ## --- architecture wildcard 'any-<cpu>' + env-arch independence (dpkg-architecture -f -a) ---
 ## 'any-arm' covers armhf (whose CPU is 'arm', not 'armhf'); a hand-rolled matcher missed it and
 ## dropped the covered .deb. ALSO pin DEB_HOST_ARCH=amd64 in the env (a cross-build / post-
