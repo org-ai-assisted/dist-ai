@@ -3644,6 +3644,11 @@ ok(_osc52_notice(b'\x1b]52;c;AAAA\x1b]?\x07') == ['osc_clipboard_read'],
    '#4: OSC 52 read with an inner ESC is classified READ by the true terminator')
 ok(_osc52_notice(b'\x1b]52;c;AAAA?\x1b]zzzz\x07') == ['osc_clipboard'],
    '#4: OSC 52 write with an inner ESC + inner ? is not misread as READ')
+# the read/write split reads the WHOLE payload up to the terminator (no length cap), so a
+# read whose ? sits past any fixed window is still classified READ -- matching _handle_osc's
+# uncapped enforcement, so the advisory cannot diverge and silently gate a refused read out.
+ok(_osc52_notice(b'\x1b]52;c;' + b'A' * 600 + b'?\x07') == ['osc_clipboard_read'],
+   '#4: an OSC 52 read whose ? is past the old 512 window is still classified READ')
 
 # TUI-symmetry (dev417 handoff): the yellow OSC-refusal advisory must fire in TUI too,
 # not only in CLI/line mode. A refused OSC in the fixed TUI grid is exactly as refused as
