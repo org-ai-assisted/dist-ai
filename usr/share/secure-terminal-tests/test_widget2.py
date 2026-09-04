@@ -813,6 +813,24 @@ try:
         b'{"op":"ctl-send-text","tab":"id:0","text":"evil\\nsecond"}')
     ok(not _mr.get('ok') and _t3 == [],
        'ctl: send-text refuses a multiline payload; nothing auto-runs')
+    # --submit is the caller's EXPLICIT intent on this admin-gated, owner-only surface:
+    # deliver the Enter the strip withheld, so the single line RUNS (drive-and-assert).
+    # The withheld CR reaches the shell as a distinct write after the sanitized text.
+    _t4 = spy_writes(rcwin.current())
+    rcwin.current()._line_dirty = True
+    _su = rcwin._dispatch_request(
+        b'{"op":"ctl-send-text","tab":"id:0","text":"echo hi","submit":true}')
+    ok(_su.get('ok') and _t4 == [b'echo hi', b'\r'],
+       'ctl: send-text --submit delivers the withheld Enter (line runs)')
+    ok(not rcwin.current()._line_dirty,
+       'ctl: --submit settles the line mirror, mirroring a real Enter')
+    # submit does NOT bypass the multiline refusal: a hidden second command can never
+    # ride an explicit Enter -- the payload is refused before any byte reaches the shell.
+    _t5 = spy_writes(rcwin.current())
+    _msu = rcwin._dispatch_request(
+        b'{"op":"ctl-send-text","tab":"id:0","text":"a\\nb","submit":true}')
+    ok(not _msu.get('ok') and _t5 == [],
+       'ctl: --submit still refuses a multiline payload; nothing auto-runs')
     rcwin._dispatch_request(
         b'{"op":"ctl-set-tab-title","tab":"id:0","title":"renamed"}')
     eq(rcwin.tabs.tabText(0), 'renamed', 'ctl: set-tab-title renames the tab')
