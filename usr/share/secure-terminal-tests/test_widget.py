@@ -3637,13 +3637,12 @@ ok(_osc52_notice(b'\x1b]52;c;' + _b64_osc.b64encode(b'x' * 600) + b'\x07') == ['
    '#4: a large OSC 52 write (base64 past the notice window) is still WRITE, not misread')
 ok(_osc52_notice(b'\x1b]52;c;', b'?\x07') == ['osc_clipboard_read'],
    '#4: a read query split across two reads is carry-rejoined and still noticed as READ')
-# an OSC 52 payload can hold a literal ESC; the read/write split must be decided at the TRUE
-# terminator (BEL/ST), not the first bare ESC -- else a '?' after an inner ESC flips the type
-# (a refused read misread as a write, then gated out by an enabled write).
-ok(_osc52_notice(b'\x1b]52;c;AAAA\x1b]?\x07') == ['osc_clipboard_read'],
-   '#4: OSC 52 read with an inner ESC is classified READ by the true terminator')
-ok(_osc52_notice(b'\x1b]52;c;AAAA?\x1b]zzzz\x07') == ['osc_clipboard'],
-   '#4: OSC 52 write with an inner ESC + inner ? is not misread as READ')
+# the advisory shares the matcher (_OSC_ANY) with the enforcement path (_handle_osc), so a
+# MALFORMED OSC 52 -- a raw ESC in the params, which _OSC_ANY's [^\x07\x1b]* forbids -- is
+# ignored by BOTH: no spurious read/write banner for a payload the enforcement never dispatches,
+# and no lenient-vs-strict divergence to exploit.
+ok(_osc52_notice(b'\x1b]52;c;AAAA\x1bXdef?\x07') == [],
+   '#4: a malformed OSC 52 (raw ESC in params) is ignored, matching _handle_osc')
 # the read/write split reads the WHOLE payload up to the terminator (no length cap), so a
 # read whose ? sits past any fixed window is still classified READ -- matching _handle_osc's
 # uncapped enforcement, so the advisory cannot diverge and silently gate a refused read out.
@@ -3681,56 +3680,56 @@ ok(_osc_notice_tui(None, b'\x1b]52;c;', b'?\x07') == ['osc_clipboard_read'],
    'TUI: a clipboard-READ OSC split before the ? is reassembled as READ, not WRITE')
 ok(_osc_notice_tui(None, b'\x1b]5', b'2;c;?\x07') == ['osc_clipboard_read'],
    'TUI: an OSC split mid-code reassembles to the right type')
-# an UNTERMINATED OSC past the carry cap is NOT buffered forever, and NOT classified from
-# its truncated head (that would mislabel it) -- it advises the ungated generic osc_other,
-# matching CLI's over-cap discard. Two chunks: the first under the cap (held), the second
-# pushes it over.
+# an UNTERMINATED OSC past the carry cap is NOT held (no unbounded buffer) and NOT classified
+# from a truncated head; it stays in text and the terminator-anchored _OSC_ANY scan simply does
+# not match it -- exactly as _handle_osc drops an over-cap OSC (no dispatch, no advisory), and
+# the carry never grows unbounded. Two chunks: first under the cap (held), second pushes over.
 _over = SecureTerminal(command='/bin/cat', tui=True)
 _overseen = []
 _over.osc_used.connect(lambda k: _overseen.append(k))
 feed_output(_over, b'\x1b]0;' + b'A' * (_over._OSC_CARRY_MAX - 8))    # under cap: held
-feed_output(_over, b'A' * 64)                                        # over cap: osc_other
+feed_output(_over, b'A' * 64)                                        # over cap: dropped
 _over.close()
-ok(_overseen == ['osc_other'],
-   'TUI: an over-cap unterminated OSC advises generically (osc_other), never evades')
-# codex: an over-cap OSC-52 whose read '?' lands past the cap must NOT evade the advisory by
-# being classified as a WRITE (which an enabled write then gates out). The over-cap flush
-# emits the ungated osc_other, so the refused read is still surfaced. Three reads mirror the
-# reported case: a padded introducer (held), a pad that tips it over the cap (flush), the '?'.
+ok(_overseen == [],
+   'TUI: an over-cap unterminated OSC is dropped (no advisory), matching _handle_osc')
+# an over-cap OSC-52 read is dropped by _handle_osc too (the read never runs), so no advisory
+# is the consistent result -- not an evasion. Three reads: padded introducer (held), a pad that
+# tips it over the cap (dropped), the now-orphaned '?'.
 _ovr = SecureTerminal(command='/bin/cat', tui=True)
 _ovr.apply_osc('osc_clipboard', True)          # WRITE enabled; osc_clipboard_read stays off
 _ovrseen = []
 _ovr.osc_used.connect(lambda k: _ovrseen.append(k))
 feed_output(_ovr, b'\x1b]52;c;' + b' ' * (_ovr._OSC_CARRY_MAX - 8))  # under cap: held
-feed_output(_ovr, b' ' * 5000)                                       # over cap: osc_other
-feed_output(_ovr, b'?\x07')                                          # the read marker, now orphaned
+feed_output(_ovr, b' ' * 5000)                                       # over cap: dropped
+feed_output(_ovr, b'?\x07')                                          # orphaned read marker
 _ovr.close()
-ok('osc_other' in _ovrseen and 'osc_clipboard' not in _ovrseen,
-   'TUI: an over-cap OSC-52 read is surfaced (osc_other), not silently gated as a write')
-# an OSC payload may itself contain a literal ESC]; the carry must anchor on the TRUE
-# introducer (first after the last terminator), not the last raw ESC] -- else the real
-# introducer leaks to the scan and a refused READ is misclassified as a write + double-emitted.
+ok(_ovrseen == [],
+   'TUI: an over-cap OSC-52 read is dropped (no advisory), matching _handle_osc')
+# an OSC payload may itself contain a literal ESC]; the carry anchors on the TRUE introducer
+# (first after the last terminator), so an over-cap OSC with an inner ESC] is still just dropped
+# -- no leaked or misclassified advisory.
 _inner = SecureTerminal(command='/bin/cat', tui=True)
 _innerseen = []
 _inner.osc_used.connect(lambda k: _innerseen.append(k))
 feed_output(_inner, b'\x1b]52;c;' + b'A' * 10 + b'\x1b]' + b'B' * (_inner._OSC_CARRY_MAX - 30))
 feed_output(_inner, b'B' * 100 + b'?')                              # tips it over the cap
 _inner.close()
-ok(_innerseen == ['osc_other'],
-   'TUI: an over-cap OSC whose payload holds ESC] advises once (no inner-ESC leak/misclassify)')
-# a COMPLETE refused OSC before an over-cap one in the same stream keeps its own advisory.
+ok(_innerseen == [],
+   'TUI: an over-cap OSC whose payload holds ESC] is dropped (no leak/misclassify)')
+# a COMPLETE OSC before an over-cap one still advises specifically; the over-cap one is dropped.
 _mix = SecureTerminal(command='/bin/cat', tui=True)
 _mixseen = []
 _mix.osc_used.connect(lambda k: _mixseen.append(k))
 feed_output(_mix, b'\x1b]0;t\x07\x1b]52;c;' + b'B' * (_mix._OSC_CARRY_MAX - 30))
 feed_output(_mix, b'B' * 100)                                       # tips the open OSC over cap
 _mix.close()
-ok(_mixseen == ['osc_title', 'osc_other'],
-   'TUI: a complete OSC before an over-cap one keeps its specific advisory')
-# left-to-right parse: an inner ESC] in a payload is PAYLOAD, not a separate OSC, so a title
-# whose body holds "\x1b]52" advises only the title (no spurious clipboard notice).
-ok(_osc_notice_tui(None, b'\x1b]0;a\x1b]52;b\x07') == ['osc_title'],
-   'TUI: an inner ESC] in a payload is not advised as a separate OSC')
+ok(_mixseen == ['osc_title'],
+   'TUI: a complete OSC before an over-cap one still advises; the over-cap one is dropped')
+# _OSC_ANY (shared with _handle_osc) retries at every position: a code-0 whose params hold a
+# raw ESC is not a valid OSC, but the embedded well-formed OSC 52 after it IS -- so the advisory
+# reports the clipboard write _handle_osc would actually dispatch, not the broken title.
+ok(_osc_notice_tui(None, b'\x1b]0;a\x1b]52;b\x07') == ['osc_clipboard'],
+   'TUI: a code-0 broken by a raw ESC yields the embedded valid OSC 52, like _handle_osc')
 # ...and the parse ADVANCES past each terminator, so a chunk of many "\x1b]52;" fragments is
 # O(n), not the O(n^2) re-scan that froze the GUI thread for seconds. Guard the DoS by time:
 # O(n) is milliseconds, the O(n^2) regression was ~seconds, so a generous bound separates them.
