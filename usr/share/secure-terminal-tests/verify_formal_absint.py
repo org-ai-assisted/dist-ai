@@ -701,6 +701,26 @@ def t8_splits():
     if 'VISIBLE' not in got:
         fail('T8 DCS BEL-is-body: lost VISIBLE %r' % got[:60])
         bad += 1
+    # over-cap CSI / generic-ESC discard: an unterminated CSI (ESC [ ...) or
+    # ESC + intermediates past the cap must switch to discard too, not only string
+    # sequences -- else its continuation leaks as literal text on the next chunk.
+    # "A real program never emits a 4 KiB CSI" is false under a hostile-output
+    # threat model; this is the canary for that regression.
+    for head, tail, leaked in (
+            ('\x1b[' + '9' * 40, '38;5;9mVISIBLE', '38;5;9m'),   # CSI: SGR-tail continuation
+            ('\x1b' + '(' * 40, 'BVISIBLE', 'BVISIBLE')):        # generic ESC: final byte
+        carry, drop = '', ''
+        out = []
+        for c in (head, tail):
+            text, carry, drop, _ = S.feed_chunk_carry(c, carry, drop, cap=cap)
+            out.append(S.render_output(text, 'detail'))
+        got = ''.join(out)
+        if leaked in got:
+            fail('T8 over-cap non-string: leaked %r from %r' % (got[:60], head[:6]))
+            bad += 1
+        if 'VISIBLE' not in got:
+            fail('T8 over-cap non-string: lost VISIBLE %r' % got[:60])
+            bad += 1
     return bad
 
 

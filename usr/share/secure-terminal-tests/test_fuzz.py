@@ -299,6 +299,25 @@ def prop_colour_helpers(a, bcol):
     assert isinstance(S.too_close(a, bcol), bool)
 
 
+# Escape sequences whose body is inflated PAST the 4 KiB carry cap, to reach the
+# over-cap DISCARD paths that small inputs never exercise -- the class of the CSI
+# over-cap leak. A complete over-cap sequence (for the split-invariance fuzz) and
+# an incomplete no-terminator over-cap head (for the drop-state fuzz).
+_BIGBODY = st.integers(min_value=4090, max_value=6000)
+_OVERCAP_SEQ = st.one_of(
+    _BIGBODY.map(lambda n: '\x1b[' + '9' * n + 'm'),       # CSI, SGR final
+    _BIGBODY.map(lambda n: '\x1b[' + '9' * n + 'H'),       # CSI, cursor final
+    _BIGBODY.map(lambda n: '\x1b]0;' + 'x' * n + '\x07'),  # OSC, long title
+    _BIGBODY.map(lambda n: '\x1bP' + 'A' * n + '\x1b\\'),  # DCS, long body
+    _BIGBODY.map(lambda n: '\x1b' + '(' * n + 'B')         # generic ESC, long intermediates
+)
+_OVERCAP_HEAD = st.one_of(
+    _BIGBODY.map(lambda n: '\x1b[' + '9' * n),   # incomplete over-cap CSI (no final byte)
+    _BIGBODY.map(lambda n: '\x1b' + '(' * n),    # incomplete over-cap generic ESC
+    _BIGBODY.map(lambda n: '\x1b]0;' + 'x' * n)  # incomplete over-cap OSC
+)
+
+
 def prop_feed_chunk_carry_drop():
     # a string escape longer than the cap switches to the DISCARD state, which
     # then swallows bytes across chunks until the terminator (even a split one).
@@ -309,6 +328,17 @@ def prop_feed_chunk_carry_drop():
     assert drop2 == drop and t2 == ''             # keeps swallowing
     t3, _c, drop3, _ = S.feed_chunk_carry('tail\x07visible', carry2, drop2)
     assert drop3 == '' and 'visible' in t3        # terminator ends the discard
+    # NON-string sequences (CSI, generic ESC) past the cap also discard, or their
+    # continuation leaks as literal text on the next chunk ("no real program emits
+    # a 4 KiB CSI" is false for hostile output -- the fixed bypass).
+    t, carry, drop, _ = S.feed_chunk_carry('\x1b[' + '9' * 5000, '', '')
+    assert drop == '[' and t == ''                # -> CSI discard state
+    t2, _c, drop2, _ = S.feed_chunk_carry('38;5;9mVISIBLE', carry, drop)
+    assert drop2 == '' and t2 == 'VISIBLE'        # final byte ends discard; params gone
+    t, carry, drop, _ = S.feed_chunk_carry('\x1b' + '(' * 5000, '', '')
+    assert drop == '\x1b' and t == ''             # -> generic-ESC discard state
+    t2, _c, drop2, _ = S.feed_chunk_carry('BVISIBLE', carry, drop)
+    assert drop2 == '' and t2 == 'VISIBLE'        # final byte ends discard
 
 
 @RUN
@@ -361,9 +391,16 @@ def prop_split_trailing_escape(text):
 
 
 @RUN
-@given(st.text(), st.integers(min_value=0, max_value=200))
+@given(st.one_of(
+    st.text(),
+    # random prefix + an OVER-CAP escape + random suffix: a split landing inside the
+    # inflated body exercises the discard path that catches the CSI/OSC/DCS over-cap
+    # leak -- the class small inputs never reach.
+    st.builds(lambda pre, seq, post: pre + seq + post,
+              st.text(max_size=32), _OVERCAP_SEQ, st.text(max_size=32))),
+       st.integers(min_value=0, max_value=8000))
 def prop_chunk_boundary_invariance(text, split):
-    # The property that catches the OSC/DCS split-across-reads bugs: feeding the
+    # The property that catches the OSC/DCS/CSI split-across-reads bugs: feeding the
     # same bytes WHOLE vs SPLIT at an arbitrary boundary must render identical
     # stripped output. A read boundary must never change what the user sees, leak
     # a sequence's tail, or drop a standalone character.
@@ -377,12 +414,13 @@ def prop_chunk_boundary_invariance(text, split):
 
 
 @RUN
-@given(st.lists(st.text(), max_size=8))
+@given(st.lists(st.one_of(st.text(), _OVERCAP_HEAD, _OVERCAP_SEQ), max_size=6))
 def prop_feed_chunk_carry(chunks):
-    # the stateful CLI feed: arbitrary input split into arbitrary read()-chunks
-    # must (a) never let an escape byte survive into the rendered strip output --
-    # the core "strip every escape" guarantee, whatever the length or split -- and
-    # (b) keep its state bounded (carry <= cap, drop a valid introducer or empty).
+    # the stateful CLI feed: arbitrary input (incl. over-cap escape heads) split
+    # into arbitrary read()-chunks must (a) never let an escape byte survive into
+    # the rendered strip output -- the core "strip every escape" guarantee, whatever
+    # the length or split -- and (b) keep its state bounded (carry <= cap, drop a
+    # valid string introducer, the '[' / ESC non-string discard marker, or empty).
     carry, drop = '', ''
     for chunk in chunks:
         text, carry, drop, _ = S.feed_chunk_carry(chunk, carry, drop)
@@ -390,7 +428,7 @@ def prop_feed_chunk_carry(chunks):
         assert '\x1b' not in rendered
         assert len(carry) <= 4096
         assert carry == '' or carry.startswith('\x1b') or carry == '\x1b'
-        assert drop == '' or drop in S._STRING_INTRO
+        assert drop == '' or drop in S._STRING_INTRO or drop in ('[', '\x1b')
 
 
 @RUN
