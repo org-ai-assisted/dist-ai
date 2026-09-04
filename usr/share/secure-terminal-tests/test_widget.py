@@ -1413,17 +1413,32 @@ try:
     with open(_sym, 'wb') as _fh:
         _fh.write(b'x')                            # restore a real entry for later arms
 
-    # a FOREIGN-OWNED compiled entry (planted in a shared/poisoned cache) is
-    # rejected: _fresh trusts only root or the current user's own files. Simulate
-    # by making our own files look foreign (getuid returns an id that owns nothing).
-    _uid_orig = _T_cov.os.getuid
-    _T_cov.os.getuid = lambda: 0x7fffffff
+    # a FOREIGN-OWNED compiled entry (uid neither root nor us) is rejected: _fresh
+    # trusts only root (the packaged copy) or the current user's own files. Fake the
+    # ENTRY'S OWNER via os.stat -- NOT getuid -- so this holds whether the suite runs
+    # as a user or as root (as root the created files are root-owned = uid 0, which is
+    # legitimately trusted, so patching getuid would not exercise the guard).
+    _foreign_uid = 0x7fffffff if os.getuid() != 0x7fffffff else 0x7ffffffe
+    _stat_orig = _T_cov.os.stat
+    _ti_targets = {os.path.join(_ti_s, _n)
+                   for _n in ('secure-terminal', 'secure-terminal-noedit')}
+
+    class _ForeignStat:                    # only the fields _owned_regular reads
+        def __init__(self, real):
+            self.st_mode = real.st_mode
+            self.st_uid = _foreign_uid
+
+    def _stat_foreign(_p, *_a, **_k):
+        _st = _stat_orig(_p, *_a, **_k)
+        return _ForeignStat(_st) if _p in _ti_targets else _st
+
+    _T_cov.os.stat = _stat_foreign
     try:
         ok(_T_cov.cli_terminfo_dir() != os.path.join(_ti_root, 'secure-terminal',
                                                      'terminfo'),
            'a foreign-owned compiled terminfo entry is not trusted (poisoned-cache guard)')
     finally:
-        _T_cov.os.getuid = _uid_orig
+        _T_cov.os.stat = _stat_orig
 
     # ...and an unreadable mtime is "not fresh", not a crash.
     _T_cov._terminfo_source = lambda: os.path.join(_ti_root, 'src.ti')
