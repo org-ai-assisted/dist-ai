@@ -3727,6 +3727,24 @@ feed_output(_mix, b'B' * 100)                                       # tips the o
 _mix.close()
 ok(_mixseen == ['osc_title', 'osc_other'],
    'TUI: a complete OSC before an over-cap one keeps its specific advisory')
+# left-to-right parse: an inner ESC] in a payload is PAYLOAD, not a separate OSC, so a title
+# whose body holds "\x1b]52" advises only the title (no spurious clipboard notice).
+ok(_osc_notice_tui(None, b'\x1b]0;a\x1b]52;b\x07') == ['osc_title'],
+   'TUI: an inner ESC] in a payload is not advised as a separate OSC')
+# ...and the parse ADVANCES past each terminator, so a chunk of many "\x1b]52;" fragments is
+# O(n), not the O(n^2) re-scan that froze the GUI thread for seconds. Guard the DoS by time:
+# O(n) is milliseconds, the O(n^2) regression was ~seconds, so a generous bound separates them.
+import time as _t_dos                                          # noqa: E402
+_dos = b'\x1b]52;' * 12000 + b'A' * 10 + b'\x07'               # one unterminated run + a terminator
+_dt = SecureTerminal(command='/bin/cat', tui=True)
+_dseen = []
+_dt.osc_used.connect(lambda k: _dseen.append(k))
+_t0 = _t_dos.monotonic()
+feed_output(_dt, _dos)
+_elapsed = _t_dos.monotonic() - _t0
+_dt.close()
+ok(_dseen == ['osc_clipboard'] and _elapsed < 1.5,
+   'TUI: many OSC-52 fragments classify in O(n), not O(n^2) (no GUI-thread DoS)')
 
 # F5: reap_pty_children WNOHANG-reaps ONLY our registered pty children, so the app can
 # drop the blanket SIGCHLD=SIG_IGN that made every subprocess returncode read 0. Pin
