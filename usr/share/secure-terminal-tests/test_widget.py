@@ -3638,6 +3638,28 @@ ok(_osc52_notice(b'\x1b]52;c;' + _b64_osc.b64encode(b'x' * 600) + b'\x07') == ['
 ok(_osc52_notice(b'\x1b]52;c;', b'?\x07') == ['osc_clipboard_read'],
    '#4: a read query split across two reads is carry-rejoined and still noticed as READ')
 
+# TUI-symmetry (dev417 handoff): the yellow OSC-refusal advisory must fire in TUI too,
+# not only in CLI/line mode. A refused OSC in the fixed TUI grid is exactly as refused as
+# in CLI -- the fixed-height grid can neither rename the window nor read the clipboard --
+# so it advises the SAME. An ENABLED type is honored by _handle_osc, not refused, so it
+# does NOT advise (no false-refusal banner on a feature the user opted into).
+def _osc_notice_tui(enable, *chunks):
+    _o = SecureTerminal(command='/bin/cat', tui=True)
+    if enable:
+        _o.apply_osc(enable, True)
+    _seen = []
+    _o.osc_used.connect(lambda k: _seen.append(k))
+    for _c in chunks:
+        feed_output(_o, _c)
+    _o.close()
+    return _seen
+ok(_osc_notice_tui(None, b'\x1b]0;spoofed\x07') == ['osc_title'],
+   'TUI: a refused title OSC advises (banner symmetric with CLI)')
+ok(_osc_notice_tui(None, b'\x1b]52;c;?\x07') == ['osc_clipboard_read'],
+   'TUI: a refused clipboard-read OSC advises')
+ok(_osc_notice_tui('osc_title', b'\x1b]0;honored\x07') == [],
+   'TUI: an ENABLED OSC type is honored, not advised (no false-refusal banner)')
+
 # F5: reap_pty_children WNOHANG-reaps ONLY our registered pty children, so the app can
 # drop the blanket SIGCHLD=SIG_IGN that made every subprocess returncode read 0. Pin
 # SIGCHLD to its default here so reaping is deterministic (an ambient SIG_IGN would let

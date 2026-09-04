@@ -204,8 +204,10 @@ _osctext = oscterm.toPlainText()
 ok('secret-title' not in _osctext and 'another' not in _osctext,
    'the OSC title text is never shown in the document')
 ok('visible' in _osctext, 'the program output around the OSC still shows')
-# finding: in TUI mode an OSC is NOT flagged "ignored" -- a title/notification may
-# be handled there (allow_title), so a contradictory notice must not fire.
+# TUI-symmetry (dev417): a REFUSED OSC is flagged in TUI exactly as in CLI -- the fixed
+# grid can neither rename the window nor read the clipboard, so with the title feature at
+# its default (disabled) the advisory fires. An ENABLED type is honored, not refused, so
+# it does NOT flag (that half is covered in test_widget's _osc_notice_tui).
 if tui_available():
     _tuiosc = SecureTerminal(command=_oscsh, tui=True)
     _tuifired = []
@@ -213,7 +215,8 @@ if tui_available():
     _tuiosc.resize(400, 200)
     _tuiosc.show()
     pump(300)
-    ok(not _tuifired, 'TUI mode does not flag an OSC as ignored (it may be handled)')
+    ok('osc_title' in _tuifired,
+       'TUI mode flags a REFUSED OSC, symmetric with CLI (dev417)')
 # turning on TUI mode auto-dismisses a "use TUI mode" (tui-kind) advisory, but NOT
 # an unrelated OSC notice on the same tab (codex P2: only TUI hints are stale).
 # Box mode so the switch raises no auto-Box notice of its own -- this asserts the
