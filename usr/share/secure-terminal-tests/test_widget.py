@@ -4500,13 +4500,26 @@ ok(_clampt._screen.cursor.y == 2 and _clampt._screen.cursor.x == 9,
 _clampt.shutdown()
 
 # --- ai-review #12: a finished command's stuck colour must not bleed onto the shell
-# prompt in TUI mode -- an SGR reset is injected ahead of the bracketed-paste prompt-start
-# on the live pyte feed AND into the retained raw (so a re-render stays clean), like CLI.
+# prompt in TUI mode. The reset is injected ahead of the bracketed-paste prompt-start
+# on the LIVE pyte feed (so the RENDERED prompt is default-coloured) AND into the
+# retained raw (so a TUI<->CLI re-render stays clean), mirroring the CLI path.
 from secure_terminal.sanitize import PROMPT_START as _PS12                       # noqa: E402
 _sgrt = SecureTerminal(command='/bin/cat', tui=True)
-feed_output(_sgrt, b'\x1b[41m' + b'stuck-red-never-reset' + _PS12.encode('ascii'))
+# A program sets a bg colour and exits WITHOUT resetting it, then the shell's
+# prompt-start marker + prompt text follow -- exactly the contrast-payload case.
+# 'ALERT' is 5 cells (cols 0-4); the marker consumes no cell; 'PS> ' starts at col 5.
+feed_output(_sgrt, b'\x1b[41mALERT' + _PS12.encode('ascii') + b'PS> ')
+# LIVE feed: the pyte buffer IS what the user sees on screen. Assert the RENDERED
+# cells, not just _raw -- this pins the byte-stream injection independently of the
+# _raw re-render path (which line _reset_leftover_sgr on _raw would satisfy on its
+# own, so a _raw-only assertion cannot catch a regressed live feed).
+eq(_sgrt._screen.buffer[0][0].bg, 'red',
+   'ai-review#12: the program\'s own bg colour is preserved on the live pyte grid')
+eq(_sgrt._screen.buffer[0][5].bg, 'default',
+   'ai-review#12: the prompt after the marker renders default on the live grid (not stuck red)')
+# Retained raw carries the reset too, so a mode re-render does not re-stick the colour.
 ok(('\x1b[0m' + _PS12) in _sgrt._raw,
-   'ai-review#12: TUI injects an SGR reset before the prompt-start (raw + live feed)')
+   'ai-review#12: the retained raw also carries the reset (clean TUI<->CLI re-render)')
 _sgrt.shutdown()
 
 # --- ai-review #6: a pty.fork() failure closes the exec-handshake pipe fds (no leak that

@@ -102,6 +102,13 @@ MUTANTS = [
          new='safe = safe',
          killers=['test_invariants.py'],
          note='the GUI paste path would auto-execute a single-line paste.'),
+    dict(id='terminal.py TUI feed: drop the leftover-SGR reset before PROMPT_START',
+         module='terminal.py',
+         old='_PROMPT_START_BYTES, _SGR_RESET_BYTES + _PROMPT_START_BYTES)',
+         new='_PROMPT_START_BYTES, _PROMPT_START_BYTES)',
+         killers=['test_widget.py'],
+         note='a finished command\'s stuck colour would bleed onto the shell prompt '
+              'on the LIVE pyte grid (the _raw path alone would not catch it).'),
 ]
 
 
