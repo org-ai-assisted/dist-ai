@@ -577,6 +577,13 @@ eq(_fcc(['\x1bP' + 'A' * 5000, 'B' * 10 + '\x1b', '\\DONE'])[0], 'DONE',
    'an ST terminator itself split across the boundary is still recognised')
 _mc = _fcc(['\x1bP' + 'A' * 5000] + ['A' * 4000] * 3 + ['tail\x1b\\OK'])
 eq((_mc[0], _mc[2]), ('OK', ''), 'a discard spanning many chunks resumes after the ST')
+# NON-string sequences (CSI, generic ESC) past the cap must discard too, not only
+# string sequences -- "a real program never emits a 4 KiB CSI" is false for hostile
+# output, and letting it through leaked the continuation as literal text.
+eq(_fcc(['\x1b[' + '9' * 5000, '38;5;2mAFTER'])[0], 'AFTER',
+   'a >cap CSI split across reads is fully stripped, its continuation not leaked')
+eq(_fcc(['\x1b' + '(' * 5000, 'BAFTER'])[0], 'AFTER',
+   'a >cap generic ESC (ESC + intermediates) split across reads is fully stripped')
 # short split escapes still round-trip through feed_chunk_carry (regression)
 eq(_fcc(['pre\x1b]2;a ti', 'tle\x07post'])[0], 'prepost', 'a short split OSC leaks nothing')
 eq(_fcc(['a\x1b[38;5', ';2mb'])[0], 'ab', 'a short split CSI leaks nothing')

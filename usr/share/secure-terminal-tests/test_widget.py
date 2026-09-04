@@ -1397,6 +1397,34 @@ try:
        os.path.join(_ti_root, 'secure-terminal', 'terminfo'),
        'cli_terminfo_dir accepts a complete cache when no source ships')
 
+    # a SYMLINKED compiled entry (an attacker's redirect to a poisoned terminfo)
+    # is rejected: _fresh trusts only a real regular file, never a symlink target.
+    # The target is a REAL regular file, so a plain isfile() would follow and trust
+    # it -- only the islink guard rejects it.
+    _decoy = os.path.join(_ti_root, 'poison.ti')
+    with open(_decoy, 'wb') as _fh:
+        _fh.write(b'x')
+    _sym = os.path.join(_ti_s, 'secure-terminal')
+    os.remove(_sym)
+    os.symlink(_decoy, _sym)
+    ok(_T_cov.cli_terminfo_dir() != os.path.join(_ti_root, 'secure-terminal', 'terminfo'),
+       'a symlinked compiled terminfo entry is not trusted (poisoned-cache guard)')
+    os.remove(_sym)
+    with open(_sym, 'wb') as _fh:
+        _fh.write(b'x')                            # restore a real entry for later arms
+
+    # a FOREIGN-OWNED compiled entry (planted in a shared/poisoned cache) is
+    # rejected: _fresh trusts only root or the current user's own files. Simulate
+    # by making our own files look foreign (getuid returns an id that owns nothing).
+    _uid_orig = _T_cov.os.getuid
+    _T_cov.os.getuid = lambda: 0x7fffffff
+    try:
+        ok(_T_cov.cli_terminfo_dir() != os.path.join(_ti_root, 'secure-terminal',
+                                                     'terminfo'),
+           'a foreign-owned compiled terminfo entry is not trusted (poisoned-cache guard)')
+    finally:
+        _T_cov.os.getuid = _uid_orig
+
     # ...and an unreadable mtime is "not fresh", not a crash.
     _T_cov._terminfo_source = lambda: os.path.join(_ti_root, 'src.ti')
     with open(os.path.join(_ti_root, 'src.ti'), 'wb') as _fh:

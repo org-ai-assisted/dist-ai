@@ -299,6 +299,44 @@ def prop_colour_helpers(a, bcol):
     assert isinstance(S.too_close(a, bcol), bool)
 
 
+# Escape bodies inflated PAST a size cap, to reach the over-cap DISCARD paths that
+# small inputs never exercise -- the class of the CSI over-cap leak. The pipeline
+# has SEVERAL caps, not just feed_chunk_carry's 4 KiB: the 8 KiB col/line cap, the
+# 64 KiB read chunk / clipboard cap, the ~68 KiB OSC carry, the 128 KiB rerender
+# tail -- so a bug may only bite past a LARGER boundary. Straddle each (just under,
+# at, just over) rather than only 4 KiB. `_BIGBODY` stays modest (feed + col caps)
+# for the 400-example split/state props; the dedicated large-pad prop below uses
+# the full set. Both cover EACH attack class (CSI, all string types, generic ESC).
+_SIZE_CAPS = (4096, 8192, 65536, 69632, 131072)
+_BIGBODY = st.builds(lambda cap, d: max(1, cap + d),
+                     st.sampled_from((4096, 8192)), st.integers(min_value=-3, max_value=32))
+
+
+def _overcap_seq(n):
+    # one COMPLETE over-cap sequence per attack class, body length n.
+    return st.sampled_from((
+        '\x1b[' + '9' * n + 'm',          # CSI, SGR final
+        '\x1b[' + '9' * n + 'H',          # CSI, cursor final
+        '\x1b]0;' + 'x' * n + '\x07',     # OSC, BEL terminator
+        '\x1b]0;' + 'x' * n + '\x1b\\',   # OSC, ST terminator
+        '\x1bP' + 'A' * n + '\x1b\\',     # DCS
+        '\x1bX' + 'A' * n + '\x1b\\',     # SOS
+        '\x1b^' + 'A' * n + '\x1b\\',     # PM
+        '\x1b_' + 'A' * n + '\x1b\\',     # APC
+        '\x1b' + '(' * n + 'B',           # generic ESC, long intermediates
+    ))
+
+
+_OVERCAP_SEQ = _BIGBODY.flatmap(_overcap_seq)
+_OVERCAP_HEAD = st.one_of(
+    _BIGBODY.map(lambda n: '\x1b[' + '9' * n),   # incomplete over-cap CSI (no final byte)
+    _BIGBODY.map(lambda n: '\x1b' + '(' * n),    # incomplete over-cap generic ESC
+    _BIGBODY.map(lambda n: '\x1b]0;' + 'x' * n),  # incomplete over-cap OSC
+    _BIGBODY.map(lambda n: '\x1bP' + 'A' * n),   # incomplete over-cap DCS
+    _BIGBODY.map(lambda n: '\x1b_' + 'A' * n)    # incomplete over-cap APC
+)
+
+
 def prop_feed_chunk_carry_drop():
     # a string escape longer than the cap switches to the DISCARD state, which
     # then swallows bytes across chunks until the terminator (even a split one).
@@ -309,6 +347,58 @@ def prop_feed_chunk_carry_drop():
     assert drop2 == drop and t2 == ''             # keeps swallowing
     t3, _c, drop3, _ = S.feed_chunk_carry('tail\x07visible', carry2, drop2)
     assert drop3 == '' and 'visible' in t3        # terminator ends the discard
+    # NON-string sequences (CSI, generic ESC) past the cap also discard, or their
+    # continuation leaks as literal text on the next chunk ("no real program emits
+    # a 4 KiB CSI" is false for hostile output -- the fixed bypass).
+    t, carry, drop, _ = S.feed_chunk_carry('\x1b[' + '9' * 5000, '', '')
+    assert drop == '[' and t == ''                # -> CSI discard state
+    t2, _c, drop2, _ = S.feed_chunk_carry('38;5;9mVISIBLE', carry, drop)
+    assert drop2 == '' and t2 == 'VISIBLE'        # final byte ends discard; params gone
+    t, carry, drop, _ = S.feed_chunk_carry('\x1b' + '(' * 5000, '', '')
+    assert drop == '\x1b' and t == ''             # -> generic-ESC discard state
+    t2, _c, drop2, _ = S.feed_chunk_carry('BVISIBLE', carry, drop)
+    assert drop2 == '' and t2 == 'VISIBLE'        # final byte ends discard
+
+
+# Over-cap sequences straddling EVERY cap up to the 128 KiB rerender tail, with a
+# LARGE random preamble -- the "prepend a lot of random data + each attack class"
+# fuzz. Fewer examples, since each input is large. The preamble is repeated ASCII
+# (box-safe, so box rendering stays codepoint-wise split-invariant).
+_BIGBODY_ALLCAPS = st.builds(lambda cap, d: max(1, cap + d),
+                             st.sampled_from(_SIZE_CAPS), st.integers(min_value=-3, max_value=32))
+_OVERCAP_SEQ_ALLCAPS = _BIGBODY_ALLCAPS.flatmap(_overcap_seq)
+_BIGPAD = st.builds(lambda size, seed: (seed * (size // len(seed) + 1))[:size],
+                    st.sampled_from((0, 64, 4096, 8192, 65536, 131072)),
+                    st.sampled_from(('a', 'ab ', 'x.\t', 'Ee0 ')))
+
+
+@settings(max_examples=40, deadline=None)
+@given(_OVERCAP_SEQ_ALLCAPS, _BIGPAD, st.data())
+def prop_overcap_large_pad(seq, pad, data):
+    # a large preamble THEN an over-cap escape of each class, split at an arbitrary
+    # read boundary -- straddling every cap up to the 128 KiB rerender tail, not
+    # only the 4 KiB feed cap. Stripped output must be identical whole vs split (any
+    # leak or over-swallow breaks it), stay box-safe, and keep the trailing marker.
+    full = pad + seq + 'zZmarkZz'
+    n = len(full)
+    # at least one cut INSIDE the over-cap sequence body, so the discard path is
+    # always exercised -- a random cut over a large pad rarely lands there.
+    cuts = sorted({data.draw(st.integers(min_value=len(pad), max_value=len(pad) + len(seq)))}
+                  | {data.draw(st.integers(min_value=0, max_value=n))
+                     for _ in range(data.draw(st.integers(min_value=0, max_value=3)))})
+    chunks = [full[i:j] for i, j in zip([0] + cuts, cuts + [n]) if j > i]
+
+    def _render(cs):
+        carry, drop, out = '', '', ''
+        for c in cs:
+            t, carry, drop, _ = S.feed_chunk_carry(c, carry, drop)
+            out += S.render_output(t, 'box')
+        return out
+    split = _render(chunks or [full])
+    whole = _render([full])
+    assert all(ord(ch) in SAFE_OUTPUT for ch in split), 'box leaked a non-safe byte'
+    assert split == whole, 'chunk boundary changed rendered output (over-cap leak/over-swallow)'
+    assert 'zZmarkZz' in split, 'trailing text lost (over-swallowed)'
 
 
 @RUN
@@ -361,9 +451,16 @@ def prop_split_trailing_escape(text):
 
 
 @RUN
-@given(st.text(), st.integers(min_value=0, max_value=200))
+@given(st.one_of(
+    st.text(),
+    # random prefix + an OVER-CAP escape + random suffix: a split landing inside the
+    # inflated body exercises the discard path that catches the CSI/OSC/DCS over-cap
+    # leak -- the class small inputs never reach.
+    st.builds(lambda pre, seq, post: pre + seq + post,
+              st.text(max_size=32), _OVERCAP_SEQ, st.text(max_size=32))),
+       st.integers(min_value=0, max_value=8000))
 def prop_chunk_boundary_invariance(text, split):
-    # The property that catches the OSC/DCS split-across-reads bugs: feeding the
+    # The property that catches the OSC/DCS/CSI split-across-reads bugs: feeding the
     # same bytes WHOLE vs SPLIT at an arbitrary boundary must render identical
     # stripped output. A read boundary must never change what the user sees, leak
     # a sequence's tail, or drop a standalone character.
@@ -377,12 +474,13 @@ def prop_chunk_boundary_invariance(text, split):
 
 
 @RUN
-@given(st.lists(st.text(), max_size=8))
+@given(st.lists(st.one_of(st.text(), _OVERCAP_HEAD, _OVERCAP_SEQ), max_size=6))
 def prop_feed_chunk_carry(chunks):
-    # the stateful CLI feed: arbitrary input split into arbitrary read()-chunks
-    # must (a) never let an escape byte survive into the rendered strip output --
-    # the core "strip every escape" guarantee, whatever the length or split -- and
-    # (b) keep its state bounded (carry <= cap, drop a valid introducer or empty).
+    # the stateful CLI feed: arbitrary input (incl. over-cap escape heads) split
+    # into arbitrary read()-chunks must (a) never let an escape byte survive into
+    # the rendered strip output -- the core "strip every escape" guarantee, whatever
+    # the length or split -- and (b) keep its state bounded (carry <= cap, drop a
+    # valid string introducer, the '[' / ESC non-string discard marker, or empty).
     carry, drop = '', ''
     for chunk in chunks:
         text, carry, drop, _ = S.feed_chunk_carry(chunk, carry, drop)
@@ -390,7 +488,7 @@ def prop_feed_chunk_carry(chunks):
         assert '\x1b' not in rendered
         assert len(carry) <= 4096
         assert carry == '' or carry.startswith('\x1b') or carry == '\x1b'
-        assert drop == '' or drop in S._STRING_INTRO
+        assert drop == '' or drop in S._STRING_INTRO or drop in ('[', '\x1b')
 
 
 @RUN
@@ -569,6 +667,7 @@ PROPS = [
     ('cells_to_runs_hostile', prop_cells_to_runs_hostile),
     ('colour_helpers', prop_colour_helpers),
     ('feed_chunk_carry_drop', prop_feed_chunk_carry_drop),
+    ('overcap_large_pad', prop_overcap_large_pad),
     ('tui_cell', prop_tui_cell),
 ]
 
