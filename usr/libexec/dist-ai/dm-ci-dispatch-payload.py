@@ -32,7 +32,7 @@ def main():
                   file=sys.stderr)
             return 2
         inputs[key] = value
-    payload = {'ref': ref}
+    payload: dict[str, object] = {'ref': ref}
     if inputs:
         payload['inputs'] = inputs
     with open(out, 'w', encoding='utf-8') as handle:

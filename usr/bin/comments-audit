@@ -251,7 +251,7 @@ def audit_file(path, findings):
 
 
 def walk(repo_root):
-    findings = []
+    findings: list[tuple[str, int, str, str, str]] = []
     for dirpath, dirnames, filenames in os.walk(repo_root):
         ## Prune skip-dirs in-place so we don't descend into them. tests/ and
         ## _temp/ carry fixture/explanatory comments the R-151 heuristic
@@ -270,7 +270,7 @@ def report(findings, base):
         return 0
     print(f"comments audit: {len(findings)} candidate finding(s) (review manually; heuristic):")
     print("----")
-    by_rule = {}
+    by_rule: dict[str, list[tuple[str, int, str, str]]] = {}
     for path, line, rule, text, code in findings:
         by_rule.setdefault(rule, []).append((path, line, text, code))
     for rule, items in sorted(by_rule.items()):
@@ -292,7 +292,7 @@ def main(repo_root):
 def main_files(files):
     ## Audit an explicit list of files. The dist-ai-style gate passes the
     ## changed set here so the R-151 advisory is diff-scoped, not whole-repo.
-    findings = []
+    findings: list[tuple[str, int, str, str, str]] = []
     for path in files:
         if os.path.isfile(path):
             audit_file(path, findings)

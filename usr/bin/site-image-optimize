@@ -329,7 +329,7 @@ def main():
                              % os.path.relpath(candidate, site_root))
     rasters = sorted(set(rasters))
     ## Basename uniqueness underpins the rewrite; refuse if it ever breaks.
-    seen = {}
+    seen: dict[str, list[str]] = {}
     for path in rasters:
         seen.setdefault(os.path.basename(path), []).append(path)
     dups = {b: p for b, p in seen.items() if len(p) > 1}
@@ -352,7 +352,7 @@ def main():
     ## Basename uniqueness does not stop foo.png and foo.jpg from both producing
     ## foo.webp -- image-optimize replaces its derived destination, so the second
     ## conversion would destroy the first. Refuse a stem collision up front.
-    stems = {}
+    stems: dict[str, list[str]] = {}
     for path in to_convert:
         stem = os.path.splitext(path)[0] + ".webp"
         stems.setdefault(stem, []).append(path)
