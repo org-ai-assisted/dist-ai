@@ -1013,22 +1013,25 @@ def t2_prompt_flush_real():
 # emitted, is never re-indexed for modification. Establish that MECHANICALLY from
 # the source AST of feed_line_edits (not by sampling), then demonstrate the
 # consequence operationally.
-def _names(node):
+def _root_name(node):
+    """The root identifier a store/del target ultimately writes: `name` -> 'name',
+    `name[i]` -> 'name', `name[i][0].x` -> 'name'. Peels EVERY subscript/attribute layer
+    (their slices/indices are not the mutated container), so a CHAINED target resolves to
+    its base -- None if that base is not a plain Name. Fixes the soundness hole where a
+    single `.value` peel left a chained `name[i][0]` still carrying the index name, so it
+    failed the {name} comparison and a real mutation of a completed line escaped."""
     import ast
-    return {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+    while isinstance(node, (ast.Subscript, ast.Attribute)):
+        node = node.value
+    return node.id if isinstance(node, ast.Name) else None
 
 
 def _target_hits_name(target, name):
     """True if a store/del `target` writes `name` itself or an element/attribute of it
-    (`name`, `name[...]`, `name.x`). A subscript/attribute RECEIVER is isolated via
-    .value, so a DYNAMIC index (`name[i]`) is NOT folded into the name set -- otherwise
-    `name[i] += 1` / `del name[i]` (name set {name, i}) would escape while a const-index
-    one is caught."""
-    if isinstance(target, ast.Name):
-        return target.id == name
-    if isinstance(target, (ast.Subscript, ast.Attribute)):
-        return _names(target.value) == {name}
-    return False
+    (`name`, `name[...]`, `name.x`, AND any chained form `name[i][0]`, `name[i].x`). Peels
+    the subscript/attribute chain to its ROOT via _root_name, so a DYNAMIC index never
+    folds into the comparison and a chained target cannot escape."""
+    return _root_name(target) == name
 
 
 def _append_only_violations(source, name):
@@ -1082,9 +1085,9 @@ def _append_only_violations(source, name):
             else:
                 flat.append(tgt)
         for tgt in flat:
-            if isinstance(tgt, ast.Subscript) and _names(tgt.value) == {name}:
+            if isinstance(tgt, ast.Subscript) and _target_hits_name(tgt, name):
                 violations.append('`%s` is SUBSCRIPT-assigned' % name)
-            if isinstance(tgt, ast.Attribute) and _names(tgt.value) == {name}:
+            if isinstance(tgt, ast.Attribute) and _target_hits_name(tgt, name):
                 violations.append('`%s` attribute is assigned' % name)
             if isinstance(tgt, ast.Name) and tgt.id == name:
                 plain_assigns += 1
@@ -1105,7 +1108,7 @@ def _append_only_violations(source, name):
         # The receiver is an ast.Subscript, which a bare-Name check silently ignores
         # (the soundness hole: the proof would read INV-2 PROVED while a subscript
         # append mutates a finished line). Any method on an element is flagged.
-        if isinstance(recv, ast.Subscript) and _names(recv.value) == {name}:
+        if isinstance(recv, ast.Subscript) and _target_hits_name(recv, name):
             violations.append('`%s[...].%s(...)` called (a completed line is immutable)'
                               % (name, node.func.attr))
     return violations
@@ -1198,12 +1201,25 @@ def t2_canaries():
             ('aug-assign', 'def f():\n completed = []\n completed += [1]\n'),
             ('aug-assign-dyn', 'def f():\n completed = []\n completed[i] += 1\n'),
             ('ann-assign', 'def f():\n completed = []\n completed: list = x\n'),
-            ('for-target', 'def f():\n completed = []\n for completed in x:\n  pass\n')):
+            ('for-target', 'def f():\n completed = []\n for completed in x:\n  pass\n'),
+            # CHAINED targets: a two-level subscript/attribute mutates a completed line in
+            # place; a single `.value` peel used to leave the index name and miss these.
+            ('chain-subscript', 'def f():\n completed = []\n completed[i][0] = 1\n'),
+            ('chain-aug', 'def f():\n completed = []\n completed[i][0] += 1\n'),
+            ('chain-del', 'def f():\n completed = []\n del completed[i][0]\n'),
+            ('chain-elem-call',
+             'def f():\n completed = []\n completed[i][0].append(1)\n'),
+            ('chain-attr', 'def f():\n completed = []\n completed[i].attr = 1\n')):
         _expect_caught('T2/append-only:%s' % label,
                        bool(_append_only_violations(bad, 'completed')))
     clean = 'def f():\n completed = []\n completed.append(1)\n completed.append(2)\n'
     if _append_only_violations(clean, 'completed'):
         fail('T2 append-only: false positive on a clean append-only source')
+    # root-based, not name-membership: `completed` appearing only inside another
+    # container's index is a READ, not a mutation -- must NOT be flagged.
+    idx_only = 'def f():\n completed = []\n d = {}\n d[completed[0]] = 1\n'
+    if _append_only_violations(idx_only, 'completed'):
+        fail('T2 append-only: false positive when completed is only an index')
 
 
 # ===========================================================================
