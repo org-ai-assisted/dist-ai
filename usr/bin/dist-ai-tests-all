@@ -896,10 +896,21 @@ run_suite() {
       return 0
    fi
    wire "${suite}"
+   ## Tell a suite that fails closed on an absent target (e.g. secure-terminal-tests)
+   ## whether an absent-target SKIP (exit 77) is tolerated HERE. Set exactly when we would
+   ## NOT fail on its skip -- named in --allow-skip, or a lenient non-strict run -- so the
+   ## suite may SKIP; absent it (strict + unauthorized, or a standalone run with no
+   ## orchestrator) the suite FATALs. Mirrors skip_is_fatal. Suites that do not read it are
+   ## unaffected.
+   if ! skip_is_fatal "${suite}"; then
+      wire_env+=( "DIST_AI_SKIP_AUTHORIZED=1" )
+   fi
    local rc=0
    ## --kill-after: a suite that blocks SIGTERM would otherwise never yield the
    ## 124 TIMEOUT verdict and the whole run would wedge with no verdict at all.
-   timeout --kill-after=30s "${tmo}" env "${wire_env[@]}" "${entry}" "${wire_args[@]}" \
+   ## --unset first so an ambient DIST_AI_SKIP_AUTHORIZED from the parent environment
+   ## cannot authorize a skip; only our own wire_env (set above per skip_is_fatal) may.
+   timeout --kill-after=30s "${tmo}" env --unset=DIST_AI_SKIP_AUTHORIZED "${wire_env[@]}" "${entry}" "${wire_args[@]}" \
       >"${log_dir}/dist-ai-tests-all.${suite}.log" 2>&1 || rc=$?
    local verdict log_line
    case "${rc}" in
