@@ -19,8 +19,10 @@ Offscreen-Qt regression tests for two tb_updater_gui defects.
 
 2. Rich-text version spoofing: installed_version and each online_versions entry
    are caller-supplied and rendered by widgets whose textFormat auto-detects
-   markup, so an unescaped value could spoof the version shown in the
-   download-confirmation dialog. The fix html.escape()s them.
+   markup, so an unsanitized value could spoof the version shown in the
+   download-confirmation dialog. The fix runs them through sanitize_string,
+   which strips markup AND control/ANSI/escape bytes (html.escape would leave
+   the latter).
 
 The class lives in an executable GUI script (importing it would run main), so
 its source is extracted and defined against the real Qt classes, offscreen.
@@ -29,7 +31,6 @@ Needs python3-pyqt5; skipped cleanly if absent.
 
 import os
 import sys
-import html
 
 import pytest
 
@@ -39,9 +40,11 @@ if HERE not in sys.path:
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 pytest.importorskip('PyQt5')
+pytest.importorskip('sanitize_string')
 # pylint: disable=wrong-import-position
 from PyQt5 import QtCore, QtGui, QtWidgets  # noqa: E402
 from PyQt5.QtGui import QIcon, QPixmap  # noqa: E402
+from sanitize_string.sanitize_string_lib import sanitize_string  # noqa: E402
 
 import msgcollector_testlib as T  # noqa: E402
 
@@ -59,7 +62,8 @@ except (LookupError, SystemExit):
 ## Define the REAL class against the real Qt bases, without importing the script.
 _NS = {
     'QtWidgets': QtWidgets, 'QtCore': QtCore, 'QtGui': QtGui,
-    'QIcon': QIcon, 'QPixmap': QPixmap, 'os': os, 'sys': sys, 'html': html,
+    'QIcon': QIcon, 'QPixmap': QPixmap, 'os': os, 'sys': sys,
+    'sanitize_string': sanitize_string,
 }
 exec(_CLASS_SRC, _NS)  # noqa: S102  # nosec B102 -- trusted first-party class source
 GuiMessage = _NS['GuiMessage']
@@ -96,13 +100,36 @@ def test_construction_does_not_block():
         dialog.close()
 
 
-def test_version_markup_is_escaped():
-    dialog = GuiMessage(_Args(installed='<b>9.9</b>', online='<i>7.0</i>,8.0'))
+def test_version_markup_is_stripped():
+    ## Use markup tags the label's own template never contains (<img>, <u>), so
+    ## the assertion cannot false-positive on the template's own <b>/<p>/<code>.
+    dialog = GuiMessage(_Args(installed='<img src=x>9.9', online='<u>7.0</u>,8.0'))
+    try:
+        labels = ' '.join(w.text() for w in dialog.findChildren(QtWidgets.QLabel))
+        radios = [w.text() for w in dialog.findChildren(QtWidgets.QRadioButton)]
+        ## QLabel.text() returns the source HTML; the injected tag must be gone,
+        ## the numeric value kept.
+        assert '<img' not in labels, 'installed_version markup not stripped'
+        assert '9.9' in labels, 'installed_version value lost'
+        ## radio text is the bare sanitized version -- no markup at all remains.
+        assert not any('<' in r for r in radios), 'online_versions markup not stripped'
+        assert '7.0' in ' '.join(radios), 'online_versions value lost'
+    finally:
+        dialog.close()
+
+
+def test_version_control_bytes_are_stripped():
+    ## The point of sanitize_string over html.escape: it also removes control
+    ## and ANSI/escape bytes, which html.escape would pass through unchanged and
+    ## which can spoof the version shown in the confirmation dialog.
+    zwsp = chr(0x200b)  ## zero-width space (kept out of the source as ASCII)
+    dialog = GuiMessage(_Args(installed='9.9\x1b[31m\x07' + zwsp,
+                              online='1.0\x1b]8;;http://evil\x07,2.0'))
     try:
         widgets = dialog.findChildren((QtWidgets.QLabel, QtWidgets.QRadioButton))
         shown = ' '.join(w.text() for w in widgets)
-        assert '<b>9.9</b>' not in shown, 'installed_version markup not escaped'
-        assert '<i>7.0</i>' not in shown, 'online_versions markup not escaped'
-        assert '&lt;' in shown, 'expected escaped entities in the rendered text'
+        assert '\x1b' not in shown, 'ESC byte survived into the dialog'
+        assert '\x07' not in shown, 'BEL byte survived into the dialog'
+        assert zwsp not in shown, 'zero-width space survived into the dialog'
     finally:
         dialog.close()
