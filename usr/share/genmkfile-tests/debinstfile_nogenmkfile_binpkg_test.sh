@@ -64,15 +64,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
-## Extract the real function; stub only the reporting/guard helpers it calls.
+## Extract the real functions; stub only the reporting/guard helpers they call.
 {
    printf '%s\n' 'exit_with_error() { printf "DIE: %s\n" "$2" >&2; exit "$1"; }'
    printf '%s\n' 'make_require() { :; }'
    printf '%s\n' 'make_output_info() { :; }'
+   sed -n '/^make_debinstfile_has_nogenmkfile_marker()/,/^}/p' -- "${helper_file}"
    sed -n '/^make_debinstfile_create()/,/^}/p' -- "${helper_file}"
 } > "${work}/fn.sh"
-if ! grep --quiet '^make_debinstfile_create()' "${work}/fn.sh"; then
-   printf '%s\n' 'ERROR: could not extract make_debinstfile_create.' >&2
+if ! grep --quiet '^make_debinstfile_create()' "${work}/fn.sh" \
+   || ! grep --quiet '^make_debinstfile_has_nogenmkfile_marker()' "${work}/fn.sh"; then
+   printf '%s\n' 'ERROR: could not extract make_debinstfile_create + marker helper.' >&2
    exit 1
 fi
 # shellcheck disable=SC1091
@@ -85,9 +87,13 @@ tests_failed=0
 ##  - 'optout': its debian/optout.install is hand-maintained and carries 'nogenmkfile'.
 ##  - 'regen':  its debian/regen.install has NO marker and stale content.
 pkg_root="${work}/pkgroot"
+##  - 'pathfp': its debian/pathfp.install has NO marker but STALE content whose text merely
+##    contains the substring 'nogenmkfile' in a path -- an anywhere-substring grep would
+##    wrongly freeze it (the exact false-positive both reviewers flagged).
 mkdir --parents -- "${pkg_root}/usr/bin" "${pkg_root}/debian"
 printf 'toolA\n' > "${pkg_root}/usr/bin/tool-a#optout"
 printf 'toolB\n' > "${pkg_root}/usr/bin/tool-b#regen"
+printf 'toolC\n' > "${pkg_root}/usr/bin/nogenmkfile#pathfp"
 
 ## The maintainer's hand-written content that MUST survive.
 maintainer_content='nogenmkfile
@@ -96,6 +102,10 @@ printf '%s\n' "${maintainer_content}" > "${pkg_root}/debian/optout.install"
 
 ## An unmarked, stale binary-package install file that SHOULD be overwritten.
 printf '%s\n' 'stale content with no marker' > "${pkg_root}/debian/regen.install"
+
+## Stale content containing 'nogenmkfile' only inside a PATH (no marker/comment line).
+## A substring match would treat this as an opt-out and freeze it; the marker match must not.
+printf '%s\n' 'usr/bin/nogenmkfile => /usr/bin/stale-destination' > "${pkg_root}/debian/pathfp.install"
 
 genmkfile_temp_dir="${work}/scratch"
 mkdir --parents -- "${genmkfile_temp_dir}"
@@ -134,6 +144,18 @@ else
    tests_failed=$(( tests_failed + 1 ))
    printf '%s\n' "FAIL  unmarked debian/regen.install not regenerated:" >&2
    cat -- "${pkg_root}/debian/regen.install" >&2 || true
+fi
+
+## 3. A path merely containing 'nogenmkfile' must NOT be mistaken for the opt-out marker:
+## pathfp.install is regenerated (dh-exec header present), not frozen by a substring match.
+tests_total=$(( tests_total + 1 ))
+if grep --quiet -- 'dh-exec' "${pkg_root}/debian/pathfp.install" \
+   && ! grep --quiet -- 'stale-destination' "${pkg_root}/debian/pathfp.install"; then
+   printf '%s\n' "PASS  'nogenmkfile' in a path did NOT falsely trigger the opt-out"
+else
+   tests_failed=$(( tests_failed + 1 ))
+   printf '%s\n' "FAIL  a path containing 'nogenmkfile' froze debian/pathfp.install (substring false-positive):" >&2
+   cat -- "${pkg_root}/debian/pathfp.install" >&2 || true
 fi
 
 if [ "${tests_failed}" -ne 0 ]; then
