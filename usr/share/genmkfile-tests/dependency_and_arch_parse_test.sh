@@ -176,10 +176,11 @@ fi
 
 ## --- folded 'Package:' continuation must normalise away the leading blank ---
 ## grep-dctrl emits a folded 'Package:' as 'Package: ' (empty value) + an indented continuation,
-## so 'Package:\n foldedname' reaches the loop as ' foldedname'. 'Architecture:' is normalised at
-## the stanza boundary but 'Package:' was NOT, leaving a leading blank that corrupts the expected
-## .deb name ('.../ foldedname_..._all.deb' -> test -f false-negative -> false build failure) and
-## the make_package_list entry ('debian/ foldedname' -> deb-clean/deb-cleanup miss the real dir).
+## so 'Package:\n foldedname' reaches the loop as ' foldedname'. 'Architecture:' is blank-
+## normalised at the stanza boundary but 'Package:' was NOT, so the leading blank flows into
+## make_package_list (reprepro remove/removesrc, deb-cleanup) and the expected .deb name.
+## Mirror the Architecture normalisation. (A folded Package: is an unusual, Policy-simple field;
+## this matches the pre-existing folded-Architecture robustness against what grep-dctrl emits.)
 cat > "${test_root}/control-pkgfold" <<'EOF'
 Source: pkgfoldsrc
 
@@ -212,6 +213,69 @@ if [ "${found}" = 'true' ]; then
    pass "folded 'Package:' -> correctly-named .deb (no leading blank)"
 else
    fail "folded 'Package:' .deb misnamed -> ${want_pkgfold} not in [${make_package_debs_files_list[*]}]"
+fi
+
+## --- a whitespace-only 'Package:' must be SKIPPED, never committed as an EMPTY name ---
+## Normalising a folded 'Package:' must not commit a blank-only value as package="": deb-clean
+## /deb-cleanup then do test -d "debian/${package}" == "debian/" (true) and safe-rm --recursive
+## -- "debian/", wiping the whole debian/ tree. The blank value is built with printf so the
+## style gate's trailing-whitespace trim cannot eat the fixture.
+printf 'Source: emptysrc\n\nPackage:\t\nArchitecture: all\nDescription: x\n\nPackage: realbin\nArchitecture: all\nDescription: y\n' \
+   > "${test_root}/control-emptypkg"
+make_debian_control_file_absolute_path="${test_root}/control-emptypkg"
+make_source_package_name='emptysrc'
+target_architecture='amd64'
+make_package_debs_files_list=()
+make_package_list=()
+all_package_debs_are_arch_all='true'
+parse_control_package_stanzas
+
+tests_total=$(( tests_total + 1 ))
+empty_entry='false'
+for p in "${make_package_list[@]}"; do
+   [ -n "${p}" ] || empty_entry='true'
+done
+if [ "${empty_entry}" = 'false' ] && [ "${#make_package_list[@]}" -eq 1 ] \
+   && [ "${make_package_list[0]}" = 'realbin' ]; then
+   pass "whitespace-only 'Package:' skipped -> no empty package name committed"
+else
+   fail "whitespace-only 'Package:' committed an empty name -> make_package_list=[${make_package_list[*]}]"
+fi
+
+tests_total=$(( tests_total + 1 ))
+empty_deb="false"
+for d in "${make_package_debs_files_list[@]}"; do
+   [ "${d}" = "${DISTDIR}/_1.0-1_all.deb" ] && empty_deb='true'
+done
+if [ "${empty_deb}" = 'false' ]; then
+   pass "whitespace-only 'Package:' produced no empty-named .deb"
+else
+   fail "whitespace-only 'Package:' produced ${DISTDIR}/_1.0-1_all.deb (empty package name)"
+fi
+
+## --- a skipped (blank-only Package:) stanza must not LEAK its Architecture to the next ---
+## On 'continue' the end-of-stanza resets are skipped, so a skipped stanza's Architecture would
+## leak into the following stanza. The tab-only Package: stanza here carries 'Architecture: all';
+## 'realleak' (which declares NO Architecture) must not inherit it and gain an _all .deb.
+printf 'Source: leaksrc\n\nPackage:\t\nArchitecture: all\n\nPackage: realleak\nDescription: x\n' \
+   > "${test_root}/control-leak"
+make_debian_control_file_absolute_path="${test_root}/control-leak"
+make_source_package_name='leaksrc'
+target_architecture='amd64'
+make_package_debs_files_list=()
+make_package_list=()
+all_package_debs_are_arch_all='true'
+parse_control_package_stanzas
+
+tests_total=$(( tests_total + 1 ))
+leaked='false'
+for d in "${make_package_debs_files_list[@]}"; do
+   [ "${d}" = "${DISTDIR}/realleak_1.0-1_all.deb" ] && leaked='true'
+done
+if [ "${leaked}" = 'false' ]; then
+   pass "a skipped blank-only 'Package:' stanza did not leak its Architecture to the next"
+else
+   fail "skipped-stanza Architecture leaked -> realleak wrongly got _all .deb"
 fi
 
 ## --- architecture wildcard 'any-<cpu>' + env-arch independence (dpkg-architecture -f -a) ---
