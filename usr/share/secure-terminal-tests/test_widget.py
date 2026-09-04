@@ -3695,6 +3695,26 @@ feed_output(_ovr, b'?\x07')                                          # the read 
 _ovr.close()
 ok('osc_other' in _ovrseen and 'osc_clipboard' not in _ovrseen,
    'TUI: an over-cap OSC-52 read is surfaced (osc_other), not silently gated as a write')
+# an OSC payload may itself contain a literal ESC]; the carry must anchor on the TRUE
+# introducer (first after the last terminator), not the last raw ESC] -- else the real
+# introducer leaks to the scan and a refused READ is misclassified as a write + double-emitted.
+_inner = SecureTerminal(command='/bin/cat', tui=True)
+_innerseen = []
+_inner.osc_used.connect(lambda k: _innerseen.append(k))
+feed_output(_inner, b'\x1b]52;c;' + b'A' * 10 + b'\x1b]' + b'B' * (_inner._OSC_CARRY_MAX - 30))
+feed_output(_inner, b'B' * 100 + b'?')                              # tips it over the cap
+_inner.close()
+ok(_innerseen == ['osc_other'],
+   'TUI: an over-cap OSC whose payload holds ESC] advises once (no inner-ESC leak/misclassify)')
+# a COMPLETE refused OSC before an over-cap one in the same stream keeps its own advisory.
+_mix = SecureTerminal(command='/bin/cat', tui=True)
+_mixseen = []
+_mix.osc_used.connect(lambda k: _mixseen.append(k))
+feed_output(_mix, b'\x1b]0;t\x07\x1b]52;c;' + b'B' * (_mix._OSC_CARRY_MAX - 30))
+feed_output(_mix, b'B' * 100)                                       # tips the open OSC over cap
+_mix.close()
+ok(_mixseen == ['osc_title', 'osc_other'],
+   'TUI: a complete OSC before an over-cap one keeps its specific advisory')
 
 # F5: reap_pty_children WNOHANG-reaps ONLY our registered pty children, so the app can
 # drop the blanket SIGCHLD=SIG_IGN that made every subprocess returncode read 0. Pin
