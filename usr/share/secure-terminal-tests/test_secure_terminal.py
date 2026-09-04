@@ -1515,6 +1515,10 @@ with open(os.path.join(_usrd, '50_user.conf'), 'w', encoding='utf-8') as _h:
     _h.write('colors=false\n')
 eq(SET.load().get('colors'), 'false',
    'settings: a hand-maintained 50_user.conf overrides 20_auto-generated.conf')
+# a newline/CR in a value must not smuggle an extra KEY=value line into the file
+SET.save({'colors': 'true', 'x': 'y\nosc_clipboard_read_always=true'})
+ok('osc_clipboard_read_always' not in SET.load(),
+   'settings: an embedded newline in a value cannot inject another key')
 
 # admin lock: a privileged `lock=` makes a key non-overridable by the user dir
 with open(os.path.join(_sysd, '20-lock.conf'), 'w', encoding='utf-8') as _h:
