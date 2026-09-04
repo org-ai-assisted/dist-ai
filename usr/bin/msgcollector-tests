@@ -22,6 +22,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -29,6 +30,23 @@ if [ -d "${script_dir}/../share/msgcollector-tests" ]; then
    tests_dir="${script_dir}/../share/msgcollector-tests"
 else
    tests_dir='/usr/share/msgcollector-tests'
+fi
+
+## The GUI helpers under test (generic_gui_message.py, msgdispatcher_dispatch_x.py,
+## ...) import helper-scripts' guimessages module. In a checkout run, put that
+## repo's modules on PYTHONPATH so both lanes (pytest and the shell cases that
+## spawn those helpers) can import it; an installed run uses the system module on
+## the default path.
+helper_scripts_root=""
+if [ -n "${HELPER_SCRIPTS_REPO:-}" ]; then
+   helper_scripts_root="${HELPER_SCRIPTS_REPO}"
+elif [ -n "${HELPER_SCRIPTS_PATH:-}" ]; then
+   helper_scripts_root="${HELPER_SCRIPTS_PATH}"
+fi
+if [ -n "${helper_scripts_root}" ] \
+   && [ -d "${helper_scripts_root%/}/usr/lib/python3/dist-packages" ]; then
+   PYTHONPATH="${helper_scripts_root%/}/usr/lib/python3/dist-packages${PYTHONPATH:+:${PYTHONPATH}}"
+   export PYTHONPATH
 fi
 
 rc=0

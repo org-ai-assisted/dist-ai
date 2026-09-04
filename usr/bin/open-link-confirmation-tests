@@ -21,6 +21,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -33,9 +34,12 @@ fi
 overall_rc=0
 
 printf '%s\n' "=== open-link-confirmation security tests (python/Qt) ==="
-python3 -- "${tests_dir}/open_link_confirmation_test.py" "$@" || overall_rc=1
+"${tests_dir}/open_link_confirmation_test.py" "$@" || overall_rc=1
 
 printf '%s\n' "=== open-link-confirmation env-override unit test (bash) ==="
-bash -- "${tests_dir}/env_override_test.sh" "$@" || overall_rc=1
+"${tests_dir}/env_override_test.sh" "$@" || overall_rc=1
+
+printf '%s\n' "=== open-link-confirmation error_handler dialog-failure unit test (bash) ==="
+"${tests_dir}/error_handler_dialog_failure_test.sh" "$@" || overall_rc=1
 
 exit "${overall_rc}"
