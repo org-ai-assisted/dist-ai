@@ -1507,9 +1507,14 @@ with open(os.path.join(_usrd, 'ignore.txt'), 'w', encoding='utf-8') as _h:
     _h.write('theme=light\n')
 eq(SET.load().get('theme'), 'dark', 'settings: only .conf files are parsed')
 SET.save({'colors': 'true'})
-ok(SET.user_config_file().endswith('50_user.conf'),
-   'settings: app writes 50_user.conf')
+ok(SET.user_config_file().endswith('20_auto-generated.conf'),
+   'settings: app writes 20_auto-generated.conf')
 eq(SET.load().get('colors'), 'true', 'settings: written value loads back')
+# a hand-maintained higher-numbered file overrides the app's own low-numbered file
+with open(os.path.join(_usrd, '50_user.conf'), 'w', encoding='utf-8') as _h:
+    _h.write('colors=false\n')
+eq(SET.load().get('colors'), 'false',
+   'settings: a hand-maintained 50_user.conf overrides 20_auto-generated.conf')
 
 # admin lock: a privileged `lock=` makes a key non-overridable by the user dir
 with open(os.path.join(_sysd, '20-lock.conf'), 'w', encoding='utf-8') as _h:
