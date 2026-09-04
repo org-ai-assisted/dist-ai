@@ -4855,5 +4855,133 @@ _gmw.mouseReleaseEvent(_sel_ev(_QEv_sel.Type.MouseButtonRelease, _gm_pt,
                                buttons=_Qt_sel.MouseButton.NoButton))
 ok(_gmw._render_timer.isActive(), 'sel: grid-mode line-select release re-arms render')
 
+# -- ai-review fixes: UTF-16 offsets, PRIMARY, blank-line caret, drag direction ---------
+import secure_terminal.terminal as _st_mod                        # noqa: E402
+from PyQt6.QtGui import QClipboard as _QClip_sel                  # noqa: E402
+
+# UTF-16 vs code-point: a raw non-BMP glyph must not desync word/line offsets. Insert the
+# astral directly (the sanitizer neutralizes it in a strict mode), so the helpers are
+# exercised on a real surrogate pair; they must work in document (UTF-16) units.
+_u16 = SecureTerminal(command='/bin/cat')
+_u16.resize(700, 400)
+_u16.show()
+APP.processEvents()
+_u16._cols = 0
+_u16cur = _u16.textCursor()
+_u16cur.movePosition(_QTC_sel.MoveOperation.End)
+_u16cur.insertText('a' + chr(0x1D400) + 'b codex   ')   # U+1D400 = 2 UTF-16 units
+APP.processEvents()
+_u16find = _u16.document().find('codex')
+_u16cx = _u16find.selectionStart()
+_sel_dbl(_u16, _selpt(_u16, _u16cx + 2))
+eq(_u16.textCursor().selectedText(), 'codex',
+   'sel: double-click stays UTF-16 aligned past a non-BMP glyph')
+for _ in range(3):
+    _sel_press(_u16, _selpt(_u16, _u16cx + 2))
+ok(_u16._selection_text().endswith('codex'),
+   'sel: triple-click keeps the last glyph past a non-BMP glyph (no UTF-16 undershoot)')
+
+# A word/line select publishes the sanitized selection to X11 PRIMARY. Offscreen has no
+# PRIMARY, so drive _publish_primary through a fake clipboard that reports selection
+# support and records the write.
+_ppw = SecureTerminal(command='/bin/cat')
+_ppw.resize(700, 400)
+_ppw.show()
+APP.processEvents()
+_ppw._cols = 0
+feed_output(_ppw, b'primword tail\r\n')
+_ppw._force_current_frame()
+APP.processEvents()
+
+
+class _FakeClip:
+    def __init__(self):
+        self.published = None
+
+    def supportsSelection(self):
+        return True
+
+    def setMimeData(self, md, mode):
+        self.published = (md, mode)
+
+
+class _FakeGuiApp:
+    _clip = _FakeClip()
+
+    @staticmethod
+    def clipboard():
+        return _FakeGuiApp._clip
+
+
+_orig_gui = _st_mod.QGuiApplication
+_st_mod.QGuiApplication = _FakeGuiApp
+try:
+    _pp_pt = _selpt(_ppw, 3)
+    _sel_dbl(_ppw, _pp_pt)
+    _ppw.mouseReleaseEvent(_sel_ev(_QEv_sel.Type.MouseButtonRelease, _pp_pt,
+                                   buttons=_Qt_sel.MouseButton.NoButton))
+finally:
+    _st_mod.QGuiApplication = _orig_gui
+ok(_FakeGuiApp._clip.published is not None
+   and _FakeGuiApp._clip.published[1] == _QClip_sel.Mode.Selection,
+   'sel: a word select publishes the sanitized selection to PRIMARY')
+
+# Triple-click on a blank line trims to an empty selection -> the caret snaps back (does
+# not strand on the blank line).
+_blk3 = SecureTerminal(command='/bin/cat')
+_blk3.resize(700, 400)
+_blk3.show()
+APP.processEvents()
+_blk3._cols = 0
+feed_output(_blk3, b'top line\r\n   \r\nbot line\r\n')     # middle line all spaces
+_blk3._force_current_frame()
+APP.processEvents()
+_blk3_pt = _selpt(_blk3, _blk3.document().findBlockByNumber(1).position() + 1)
+for _ in range(3):
+    _sel_press(_blk3, _blk3_pt)
+_blk3.mouseReleaseEvent(_sel_ev(_QEv_sel.Type.MouseButtonRelease, _blk3_pt,
+                                buttons=_Qt_sel.MouseButton.NoButton))
+ok(not _blk3.textCursor().hasSelection(),
+   'sel: triple-click on a blank line trims to empty and resets the caret')
+
+# Dragging a word-select UPWARD extends above the anchor (active end follows the drag).
+_dup = SecureTerminal(command='/bin/cat')
+_dup.resize(700, 400)
+_dup.show()
+APP.processEvents()
+_dup._cols = 0
+feed_output(_dup, b'one two\r\nthree four\r\n')
+_dup._force_current_frame()
+APP.processEvents()
+_sel_dbl(_dup, _selpt(_dup, _dup.document().findBlockByNumber(1).position() + 1))   # 'three'
+_dup.mouseMoveEvent(_sel_ev(_QEv_sel.Type.MouseMove, _selpt(_dup, 1),
+                            buttons=_Qt_sel.MouseButton.LeftButton))                # up to 'one'
+_dup_sel = _dup.textCursor().selectedText()
+ok('one' in _dup_sel and 'three' in _dup_sel,
+   'sel: dragging a word-select upward extends above the anchor')
+
+# A middle-click release while word-mode is still latched falls through to super (its
+# PRIMARY paste), not swallowed by the left-only branch; the selection survives.
+_mid = SecureTerminal(command='/bin/cat')
+_mid.resize(700, 400)
+_mid.show()
+APP.processEvents()
+_mid._cols = 0
+feed_output(_mid, b'clickme now\r\n')
+_mid._force_current_frame()
+APP.processEvents()
+_mid_pt = _selpt(_mid, 3)
+_sel_dbl(_mid, _mid_pt)
+_mid.mouseReleaseEvent(_sel_ev(_QEv_sel.Type.MouseButtonRelease, _mid_pt,
+                               buttons=_Qt_sel.MouseButton.NoButton))
+_mid.mousePressEvent(_QME_sel(_QEv_sel.Type.MouseButtonPress, _mid_pt, _mid_pt,
+                              _Qt_sel.MouseButton.MiddleButton, _Qt_sel.MouseButton.MiddleButton,
+                              _Qt_sel.KeyboardModifier.NoModifier))
+_mid.mouseReleaseEvent(_QME_sel(_QEv_sel.Type.MouseButtonRelease, _mid_pt, _mid_pt,
+                                _Qt_sel.MouseButton.MiddleButton, _Qt_sel.MouseButton.NoButton,
+                                _Qt_sel.KeyboardModifier.NoModifier))
+eq(_mid.textCursor().selectedText(), 'clickme',
+   'sel: a middle-click release does not clobber or swallow the word selection')
+
 
 finish('widget')
