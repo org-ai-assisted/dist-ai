@@ -327,6 +327,34 @@ def inv1_gui_corpus():
             fail('INV-1 GUI corpus: a paste auto-executed: %r %r' % (seed[:60], ctx))
 
 
+def inv1_autosubmit_strip():
+    """DETERMINISTIC killer for the trailing-submit strip -- the ONE input class both
+    the sanitize `paste_no_autosubmit` and its `_dispatch_paste` call site diverge on:
+    a single-line paste bearing a TRAILING newline. It sanitizes to '<cmd>\\r'; the
+    strip drops the final submit so nothing auto-runs, while an embedded newline (a
+    reviewed multi-command paste) keeps its CRs. The random INV-1 samples do not
+    reliably hit this exact case, so pin it here or a dropped strip auto-executes a
+    pasted command with no Enter."""
+    # Pure function: strips only the TRAILING run of submit CRs, embedded ones kept.
+    cases = [('cmd\r', 'cmd'), ('a\rb\r\r', 'a\rb'), ('', '')]
+    for src, want in cases:
+        got = S.paste_no_autosubmit(src)
+        if got != want:
+            fail('INV-1 autosubmit: paste_no_autosubmit(%r) = %r, want %r'
+                 % (src, got, want))
+    # Real GUI path: a single-line paste + trailing newline reaches the child with the
+    # command intact and NO submit byte -- exercises _dispatch_paste's strip call site.
+    _reset_paste(_WL, _WL_SENT)
+    _WL.insertFromMimeData(_mime('echo hi\n'))
+    written = b''.join(bytes(chunk) for chunk in _WL_SENT)
+    held = _WL.review_pending()
+    _reset_paste(_WL, _WL_SENT)
+    if held or written != b'echo hi':
+        fail('INV-1 autosubmit: single-line paste with a trailing newline must reach '
+             'the child as %r with no submit CR (held=%r, written=%r)'
+             % (b'echo hi', held, written))
+
+
 @RUN_GUI
 @given(st.text(min_size=1, max_size=40).filter(lambda s: '\n' not in s and '\r' not in s))
 def prop_inv5_single_line_waits_for_enter(text):
@@ -609,6 +637,7 @@ CORPUS_CHECKS = [
     ('INV-3 corpus', inv3_corpus),
     ('INV-4 corpus', inv4_corpus),
     ('INV-1 gui corpus', inv1_gui_corpus),
+    ('INV-1 autosubmit strip', inv1_autosubmit_strip),
     ('INV-2 corpus', inv2_corpus),
     ('INV-6 corpus', inv6_corpus),
 ]
