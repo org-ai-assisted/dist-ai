@@ -1457,6 +1457,13 @@ if os.path.isfile(_cov_runner):
     ok('COVERAGE_CORE=sysmon' in _cov_src and 'coverage.sysmon' in _cov_src,
        'coverage gate selects the thread-safe sys.monitoring core '
        '(guards the C-tracer SIGSEGV on the threaded ipc handoff)')
+    # A feed_line_edits / sanitizer change that desyncs a coupled reference model
+    # (test_corpus oracle, verify_formal Z3, absint INV) must not pass this gate while
+    # failing the proofs. The coverage suites do NOT run verify_formal, so the gate runs
+    # both proof suites as must-pass. (canary: a gate that drops the proof step goes
+    # coverage-green while formally-red -- the exact false confidence this closes.)
+    ok('for verify_suite in verify_formal verify_formal_absint' in _cov_src,
+       'coverage gate runs verify_formal + verify_formal_absint as must-pass proofs')
 
 # --- session persistence (pure JSON under a temp state dir) -------------------
 import tempfile                                    # noqa: E402

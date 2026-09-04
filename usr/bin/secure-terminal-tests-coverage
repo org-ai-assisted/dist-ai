@@ -342,5 +342,26 @@ if [ -f "${tests_dir}/test_fuzz_widget.py" ]; then
    fi
 fi
 
+## Formal verification (Z3 + exhaustive enumeration) as MUST-PASS. The coverage
+## suites above do NOT run it, so a feed_line_edits / sanitizer change that desyncs
+## the coupled reference models (test_corpus oracle, verify_formal Z3 model, the
+## absint INV) would pass the coverage gate while failing the proofs -- coverage-green
+## but formally-red, exactly the false-confidence this closes. Pass/fail only (they
+## validate models, they do not drive package coverage). A MISSING proof file is a
+## fail-closed FATAL, never a silent skip.
+for verify_suite in verify_formal verify_formal_absint; do
+   if [ ! -f "${tests_dir}/${verify_suite}.py" ]; then
+      printf '%s\n' "secure-terminal-tests-coverage: ${verify_suite}.py missing -- formal proof cannot run (fail closed)" >&2
+      exit 1
+   fi
+   printf '%s\n' '' "== formal proof: ${verify_suite} (must pass) =="
+   verify_rc=0
+   ( cd "${tests_dir}" && python3 "${verify_suite}.py" ) || verify_rc="$?"
+   if [ "${verify_rc}" != '0' ]; then
+      printf '%s\n' "secure-terminal-tests-coverage: ${verify_suite} failed (exit ${verify_rc}) -- a coupled reference model is out of sync with feed_line_edits/sanitize" >&2
+      exit "${verify_rc}"
+   fi
+done
+
 printf '%s\n' '' '== whole-package coverage =='
 python3 -m coverage report || true
