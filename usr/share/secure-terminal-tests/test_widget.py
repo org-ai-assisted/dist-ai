@@ -3659,6 +3659,25 @@ ok(_osc_notice_tui(None, b'\x1b]52;c;?\x07') == ['osc_clipboard_read'],
    'TUI: a refused clipboard-read OSC advises')
 ok(_osc_notice_tui('osc_title', b'\x1b]0;honored\x07') == [],
    'TUI: an ENABLED OSC type is honored, not advised (no false-refusal banner)')
+# split across reads: the TUI grid feeds the RAW chunk, so _notice_osc reassembles a
+# split OSC (its own carry) exactly as CLI's feed_chunk_carry does -- else a split
+# introducer would EVADE the advisory and a split OSC-52 '?' would MISCLASSIFY a refused
+# READ as a WRITE. Both must match the whole-sequence result.
+ok(_osc_notice_tui(None, b'\x1b', b']0;spoofed\x07') == ['osc_title'],
+   'TUI: a title OSC split at the introducer is reassembled and advised')
+ok(_osc_notice_tui(None, b'\x1b]52;c;', b'?\x07') == ['osc_clipboard_read'],
+   'TUI: a clipboard-READ OSC split before the ? is reassembled as READ, not WRITE')
+ok(_osc_notice_tui(None, b'\x1b]5', b'2;c;?\x07') == ['osc_clipboard_read'],
+   'TUI: an OSC split mid-code reassembles to the right type')
+# an UNTERMINATED OSC past the carry cap is NOT buffered forever: its introducer stays in
+# the chunk and still advises (never silently evades), matching _handle_osc's bound.
+_over = SecureTerminal(command='/bin/cat', tui=True)
+_overseen = []
+_over.osc_used.connect(lambda k: _overseen.append(k))
+feed_output(_over, b'\x1b]0;' + b'A' * (_over._OSC_CARRY_MAX + 16))   # no terminator, past cap
+_over.close()
+ok(_overseen == ['osc_title'],
+   'TUI: an over-cap unterminated OSC still advises (not held unbounded, no evasion)')
 
 # F5: reap_pty_children WNOHANG-reaps ONLY our registered pty children, so the app can
 # drop the blanket SIGCHLD=SIG_IGN that made every subprocess returncode read 0. Pin
