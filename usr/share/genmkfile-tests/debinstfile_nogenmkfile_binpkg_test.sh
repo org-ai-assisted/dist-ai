@@ -99,13 +99,17 @@ tests_failed=0
 ##                 DEST' mapping is never the opt-out.
 ##  - 'optoutc':   its debian/optoutc.install opts out with the COMMENT form '## nogenmkfile'
 ##                 (the other honoured marker form) and MUST be preserved.
+##  - 'extrapkg':  a file under a top-level dir whose NAME starts with 'debian' ('debiantools/').
+##                 A too-broad './debian*' find exclusion would swallow it; its install file
+##                 must still be generated.
 pkg_root="${work}/pkgroot"
-mkdir --parents -- "${pkg_root}/usr/bin" "${pkg_root}/debian"
+mkdir --parents -- "${pkg_root}/usr/bin" "${pkg_root}/debiantools" "${pkg_root}/debian"
 printf 'toolA\n' > "${pkg_root}/usr/bin/tool-a#optout"
 printf 'toolB\n' > "${pkg_root}/usr/bin/tool-b#regen"
 printf 'toolC\n' > "${pkg_root}/usr/bin/nogenmkfile#pathfp"
 printf 'toolD\n' > "${pkg_root}/usr/bin/tool-d#commentfp"
 printf 'toolE\n' > "${pkg_root}/usr/bin/tool-e#optoutc"
+printf 'toolX\n' > "${pkg_root}/debiantools/tool#extrapkg"
 
 ## The maintainer's hand-written content that MUST survive (bare marker form).
 maintainer_content='nogenmkfile
@@ -200,6 +204,16 @@ else
    tests_failed=$(( tests_failed + 1 ))
    printf '%s\n' "FAIL  comment marker '## nogenmkfile' not honoured; optoutc.install OVERWRITTEN:" >&2
    printf '%s\n' "${actual_optoutc}" >&2
+fi
+
+## 6. A file under a 'debian'-prefixed SIBLING dir ('debiantools/') is not excluded by the find.
+tests_total=$(( tests_total + 1 ))
+if [ -f "${pkg_root}/debian/extrapkg.install" ] \
+   && grep --quiet -- '=> /debiantools/tool' "${pkg_root}/debian/extrapkg.install"; then
+   printf '%s\n' "PASS  a 'debiantools/' sibling file was NOT excluded (extrapkg.install generated)"
+else
+   tests_failed=$(( tests_failed + 1 ))
+   printf '%s\n' "FAIL  a 'debiantools/' sibling file was wrongly excluded by the find (no extrapkg.install)" >&2
 fi
 
 if [ "${tests_failed}" -ne 0 ]; then

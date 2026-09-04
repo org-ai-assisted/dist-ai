@@ -343,6 +343,64 @@ else
    fail "malformed control did not abort: rc=${bad_rc} list=[${make_package_debs_files_list[*]}]"
 fi
 
+## --- a path-traversal 'Package:' name from debian/control must be REJECTED ---
+## The parsed name is later interpolated into safe-rm --recursive -- "debian/${package}" and
+## DISTDIR deletion globs; an unvalidated name could delete outside the tree. The parser must
+## reject a name containing '/' OR starting with '.' (mirrors the '#pkgname' guard). Assert the
+## SPECIFIC name guard fired -- exit 66 (the override below) AND its message -- not just some
+## abort, and cover BOTH branches independently (a '/'-only name that is NOT dot-prefixed, and a
+## bare '..'), so a validator that checked only one branch would still fail here.
+assert_pkg_rejected() {
+   local bad_name="$1" desc="$2" out rc=0
+   cat > "${test_root}/control-badname" <<EOF
+Source: bnsrc
+
+Package: good-one
+Architecture: all
+
+Package: ${bad_name}
+Architecture: all
+EOF
+   make_debian_control_file_absolute_path="${test_root}/control-badname"
+   make_source_package_name='bnsrc'
+   target_architecture='amd64'
+   make_package_debs_files_list=()
+   make_package_list=()
+   all_package_debs_are_arch_all='true'
+   out="$( ( parse_control_package_stanzas ) 2>&1 )" || rc=$?
+   tests_total=$(( tests_total + 1 ))
+   if [ "${rc}" -eq 66 ] && [[ "${out}" == *'invalid binary package name'* ]]; then
+      pass "${desc} rejected by the name guard (exit 66 + message)"
+   else
+      fail "${desc} NOT rejected by the name guard: rc=${rc} out=[${out}]"
+   fi
+}
+assert_pkg_rejected 'legit/../../victim' "a '/'-bearing traversal name (not dot-prefixed)"
+assert_pkg_rejected '..' "a bare '..' name"
+
+## The validation must NOT over-reject: an interior '.' (even consecutive) is a valid Debian
+## package name and cannot form a traversal without a '/'. Guards against a too-broad pattern.
+cat > "${test_root}/control-dots" <<'EOF'
+Source: dotsrc
+
+Package: lib.foo..bar
+Architecture: all
+EOF
+make_debian_control_file_absolute_path="${test_root}/control-dots"
+make_source_package_name='dotsrc'
+target_architecture='amd64'
+make_package_debs_files_list=()
+make_package_list=()
+all_package_debs_are_arch_all='true'
+dots_rc=0
+( parse_control_package_stanzas ) >/dev/null 2>&1 || dots_rc=$?
+tests_total=$(( tests_total + 1 ))
+if [ "${dots_rc}" -eq 0 ]; then
+   pass 'a valid interior-dot package name (lib.foo..bar) is accepted'
+else
+   fail "a valid interior-dot package name was wrongly rejected: rc=${dots_rc}"
+fi
+
 if [ "${tests_failed}" -ne 0 ]; then
    printf '%s\n' "dependency_and_arch_parse_test: ${tests_failed}/${tests_total} FAILED" >&2
    exit 1
