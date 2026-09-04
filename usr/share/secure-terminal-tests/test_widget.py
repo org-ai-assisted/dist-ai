@@ -1831,8 +1831,9 @@ _selfresh.mousePressEvent(_mev(QEvent.Type.MouseButtonPress, Qt.MouseButton.Left
 eq(_selfresh.textCursor().anchor(), _sf_clickpos,
    'a Shift bypass-press anchors a FRESH selection at the click, not extending from the pinned grid cursor')
 _selfresh.close()
-# scrollback navigation in line mode: PageUp scrolls the buffer up, Shift+Home/
-# End jump to the ends, plain Home is left for line editing (does not scroll)
+# scrollback navigation in line mode: plain PageUp/PageDown forward to the shell
+# (\e[5~/\e[6~) like a real terminal; Shift+PageUp/Down scroll the buffer, Shift+
+# Home/End jump to the ends, plain Home is left for line editing (does not scroll)
 sc = SecureTerminal(command='/bin/cat')
 sc.resize(600, 200)
 sc.show()
@@ -1840,8 +1841,19 @@ for _i in range(200):
     sc._append('line %d\n' % _i)
 _bar = sc.verticalScrollBar()
 _bottom = _bar.value()
+_scsent = spy_writes(sc)
+sc._line_dirty = False
 key(sc, Qt.Key.Key_PageUp)
-ok(_bar.value() < _bottom, 'PageUp scrolls the scrollback up')
+eq(_scsent, [b'\x1b[5~'], 'plain PageUp forwards to the shell (\\e[5~), not local scroll')
+eq(_bar.value(), _bottom, 'plain PageUp leaves the scrollbar where it was')
+ok(sc._line_dirty, 'PageUp marks the line dirty (a recalled command may sit at the prompt)')
+_scsent.clear()
+key(sc, Qt.Key.Key_PageDown)
+eq(_scsent, [b'\x1b[6~'], 'plain PageDown forwards to the shell (\\e[6~)')
+_scsent.clear()
+key(sc, Qt.Key.Key_PageUp, mods=Qt.KeyboardModifier.ShiftModifier)
+ok(_bar.value() < _bottom, 'Shift+PageUp scrolls the scrollback up')
+eq(_scsent, [], 'Shift+PageUp scrolls locally, nothing sent to the shell')
 key(sc, Qt.Key.Key_End, mods=Qt.KeyboardModifier.ShiftModifier)
 eq(_bar.value(), _bar.maximum(), 'Shift+End jumps to the bottom')
 key(sc, Qt.Key.Key_Home, mods=Qt.KeyboardModifier.ShiftModifier)
@@ -3319,6 +3331,14 @@ ok(_argv(' \t ') is None, 'tabs+spaces (no words) yields None (fail closed)')
 # codex: an EMPTY program name (`-e '""'` -> ['']) also names no program -- fail closed.
 ok(_argv('""') is None, 'an empty quoted program name yields None (fail closed)')
 ok(_argv('"" arg') is None, 'a leading empty program name yields None (fail closed)')
+# _command_display renders a launch command for the running-banner (display only, never
+# exec'd): a STRING verbatim, a LIST joined with shell quoting, anything else -> ''.
+from secure_terminal.terminal import _command_display as _cdisp   # noqa: E402
+eq(_cdisp('claude-rc-session open dev1'), 'claude-rc-session open dev1',
+   'a string launch command is shown verbatim in the banner')
+eq(_cdisp(['/bin/sh', '-c', 'exit 0']), "/bin/sh -c 'exit 0'",
+   'a list launch command is shell-quoted (a word with a space is quoted)')
+eq(_cdisp(None), '', 'a non-str/list command renders empty (defensive fallback)')
 # codex: a malformed command must not restart_as_shell on the child's 127 exit (the
 # IPC/GUI path where the CLI parse never runs) -- the tab is marked _command_malformed
 # in the parent so restart_as_shell REFUSES; the caller then CLOSES the tab, never a
@@ -3705,8 +3725,8 @@ eq(lo._reset_leftover_sgr('out\x1b[?2004hPS> '),
 # column 0 (e.g. output that ended in a newline, or zsh's PROMPT_SP).
 _DFLT = {'fg': None, 'bg': None, 'bold': False}
 _nc, _nk, _, _, _ = _S.feed_line_edits([], 0, dict(_DFLT), 'abc' + _S.PROMPT_START + 'PS> ')
-eq([''.join(c for c, _ in ln) for ln in _nc], ['abc'],
-   'prompt newline: un-terminated output before the marker is ended into its line')
+eq([''.join(c for c, _ in ln) for ln in _nc], ['abc [no newline]'],
+   'prompt newline: un-terminated output before the marker is noted and ended into its line')
 eq(''.join(c for c, _ in _nk), 'PS> ',
    'prompt newline: the prompt starts on a fresh line, not glued to the output')
 _znl, _zk, _, _, _ = _S.feed_line_edits([], 0, dict(_DFLT), 'abc\n' + _S.PROMPT_START + 'PS> ')
@@ -4515,8 +4535,12 @@ feed_output(_sgrt, b'\x1b[41mALERT' + _PS12.encode('ascii') + b'PS> ')
 # own, so a _raw-only assertion cannot catch a regressed live feed).
 eq(_sgrt._screen.buffer[0][0].bg, 'red',
    'ai-review#12: the program\'s own bg colour is preserved on the live pyte grid')
+# The no-final-newline marker follows the output on row 0 on a CLEAN default bg (ST's
+# own note resets the leftover red first), and the prompt now breaks onto its own row.
 eq(_sgrt._screen.buffer[0][5].bg, 'default',
-   'ai-review#12: the prompt after the marker renders default on the live grid (not stuck red)')
+   'ai-review#12: the [no newline] marker renders on a default bg, not the stuck red')
+eq(_sgrt._screen.buffer[1][0].bg, 'default',
+   'ai-review#12: the prompt breaks onto its own row and renders default (not stuck red)')
 # Retained raw carries the reset too, so a mode re-render does not re-stick the colour.
 ok(('\x1b[0m' + _PS12) in _sgrt._raw,
    'ai-review#12: the retained raw also carries the reset (clean TUI<->CLI re-render)')
@@ -4617,6 +4641,219 @@ finally:
 ok(_cg_raised and _cg_opened and _cg_opened[0] in _cg_closed,
    'cgroup: a pty.fork failure closes the tab cgroup procs fd (no leak) and re-raises')
 _sh_cg.rmtree(_cg_dir2, ignore_errors=True)
+
+
+# -- mouse selection: word (double-click), line (triple-click), drag-extend -----------
+# Terminal-idiomatic selection (konsole/VTE/kitty): double-click grabs the WHOLE word by
+# a word-char class (so a path/URL selects as one), triple-click grabs the logical line
+# with trailing whitespace trimmed, and a drag after either snaps to whole units. The
+# extent is what changes; the copy path (sanitize) is unchanged.
+from PyQt6.QtGui import QMouseEvent as _QME_sel, QTextCursor as _QTC_sel   # noqa: E402
+from PyQt6.QtCore import QEvent as _QEv_sel, Qt as _Qt_sel, QPointF as _QPF_sel  # noqa: E402
+
+
+def _selpt(term, docpos):
+    """A viewport point in the MIDDLE of the glyph at document position docpos, robust
+    across fonts (derived from the caret rects on either side, not a pixel guess)."""
+    doc = term.document()
+    c1 = _QTC_sel(doc)
+    c1.setPosition(docpos)
+    c2 = _QTC_sel(doc)
+    c2.setPosition(docpos + 1)
+    r1 = term.cursorRect(c1)
+    r2 = term.cursorRect(c2)
+    return _QPF_sel((r1.center().x() + r2.center().x()) / 2.0, r1.center().y())
+
+
+def _sel_ev(kind, pt, buttons=None):
+    held = buttons if buttons is not None else (
+        _Qt_sel.MouseButton.LeftButton if kind == _QEv_sel.Type.MouseButtonPress
+        else _Qt_sel.MouseButton.NoButton)
+    return _QME_sel(kind, pt, pt, _Qt_sel.MouseButton.LeftButton, held,
+                    _Qt_sel.KeyboardModifier.NoModifier)
+
+
+def _sel_dbl(term, pt):
+    term.mouseDoubleClickEvent(_sel_ev(_QEv_sel.Type.MouseButtonDblClick, pt))
+
+
+def _sel_press(term, pt):
+    term.mousePressEvent(_sel_ev(_QEv_sel.Type.MouseButtonPress, pt))
+
+
+# Double-click selects the whole path (word-char class glues / . _ etc.), and ':' is a
+# boundary so host:port splits -- the exact reported bug.
+_selw = SecureTerminal(command='/bin/cat')
+_selw.resize(700, 400)
+_selw.show()
+APP.processEvents()
+_selw._cols = 0                       # no soft-wrap for the single-line path cases
+feed_output(_selw, b'/home/user/.local/bin/codex host:port\r\n')
+_selw._force_current_frame()
+APP.processEvents()
+eq(_selw.document().firstBlock().text(), '/home/user/.local/bin/codex host:port',
+   'sel: path line rendered')
+_sel_dbl(_selw, _selpt(_selw, 24))
+eq(_selw.textCursor().selectedText(), '/home/user/.local/bin/codex',
+   'sel: double-click selects the whole path, not one segment')
+ok(_selw._select_mode == 'word', 'sel: double-click arms word drag-extend')
+_sel_dbl(_selw, _selpt(_selw, 29))
+eq(_selw.textCursor().selectedText(), 'host',
+   'sel: colon is a word boundary (host:port splits before :)')
+_sel_dbl(_selw, _selpt(_selw, 34))
+eq(_selw.textCursor().selectedText(), 'port',
+   'sel: word after the colon selects on its own')
+# Double-click inside a run of blanks (word char on neither side) has no word -> falls
+# back to Qt's default, char mode.
+_selb = SecureTerminal(command='/bin/cat')
+_selb.resize(700, 400)
+_selb.show()
+APP.processEvents()
+_selb._cols = 0
+feed_output(_selb, b'ab   cd\r\n')
+_selb._force_current_frame()
+APP.processEvents()
+_sel_dbl(_selb, _selpt(_selb, 3))     # middle blank, blanks on both sides
+ok(_selb._select_mode == 'char', 'sel: double-click on a blank run selects no word')
+# A non-left double-click is not a word select.
+_selw.mouseDoubleClickEvent(_QME_sel(
+    _QEv_sel.Type.MouseButtonDblClick, _QPF_sel(400, 250), _QPF_sel(400, 250),
+    _Qt_sel.MouseButton.RightButton, _Qt_sel.MouseButton.NoButton,
+    _Qt_sel.KeyboardModifier.NoModifier))
+ok(True, 'sel: a right-button double-click does not raise')
+
+# Triple-click selects the logical line and trims trailing whitespace (single block).
+_tsw = SecureTerminal(command='/bin/cat')
+_tsw.resize(700, 400)
+_tsw.show()
+APP.processEvents()
+_tsw._cols = 0
+feed_output(_tsw, b'hello world   \r\n')
+_tsw._force_current_frame()
+APP.processEvents()
+_ts_pt = _selpt(_tsw, 3)
+for _ in range(3):
+    _sel_press(_tsw, _ts_pt)
+eq(_tsw._selection_text(), 'hello world',
+   'sel: triple-click trims trailing whitespace')
+ok(_tsw._select_mode == 'line', 'sel: triple-click arms line drag-extend')
+# Release keeps the line selection (CLI mode: grid render not re-armed).
+_tsw.mouseReleaseEvent(_sel_ev(_QEv_sel.Type.MouseButtonRelease, _ts_pt,
+                               buttons=_Qt_sel.MouseButton.NoButton))
+ok(bool(_tsw._selection_text()), 'sel: release preserves the line selection')
+
+# Triple-click across a SOFT-WRAPPED logical line joins the rows and trims the tail.
+_twr = SecureTerminal(command='/bin/cat')
+_twr.resize(700, 400)
+_twr.show()
+APP.processEvents()
+_twr._cols = 10                       # set AFTER show(): resize recomputes _cols
+feed_output(_twr, b'abcdefghijklmnopqrstuvwxyz   \r\n')
+_twr._force_current_frame()
+APP.processEvents()
+ok(_twr.document().findBlockByNumber(1).userState() == 1,
+   'sel: wrapped row is marked a continuation')
+_twr_pt = _selpt(_twr, 13)             # a point on the MIDDLE wrapped row
+for _ in range(3):
+    _sel_press(_twr, _twr_pt)
+eq(_twr._selection_text(), 'abcdefghijklmnopqrstuvwxyz',
+   'sel: triple-click joins wrapped rows and trims trailing blanks')
+
+# Quad-click (4th press via a double-click event) also selects the line.
+_quw = SecureTerminal(command='/bin/cat')
+_quw.resize(700, 400)
+_quw.show()
+APP.processEvents()
+_quw._cols = 0
+feed_output(_quw, b'foo bar baz   \r\n')
+_quw._force_current_frame()
+APP.processEvents()
+_qu_pt = _selpt(_quw, 5)
+_sel_press(_quw, _qu_pt)
+_sel_press(_quw, _qu_pt)
+_sel_press(_quw, _qu_pt)
+_sel_dbl(_quw, _qu_pt)                  # click 4 -> line
+eq(_quw._selection_text(), 'foo bar baz', 'sel: quad-click selects the line')
+
+# Word drag-extend: double-click a word, drag to another word -> whole-word span; a drag
+# onto a blank cell has no word (unit None branch).
+_dgw = SecureTerminal(command='/bin/cat')
+_dgw.resize(700, 400)
+_dgw.show()
+APP.processEvents()
+_dgw._cols = 0
+feed_output(_dgw, b'alpha    gamma\r\n')
+_dgw._force_current_frame()
+APP.processEvents()
+_sel_dbl(_dgw, _selpt(_dgw, 2))         # 'alpha'
+eq(_dgw.textCursor().selectedText(), 'alpha', 'sel: word drag anchor is the word')
+_dgw.mouseMoveEvent(_sel_ev(_QEv_sel.Type.MouseMove, _selpt(_dgw, 11),
+                            buttons=_Qt_sel.MouseButton.LeftButton))   # into 'gamma'
+eq(_dgw.textCursor().selectedText(), 'alpha    gamma',
+   'sel: word drag-extend spans whole words')
+_dgw.mouseMoveEvent(_sel_ev(_QEv_sel.Type.MouseMove, _selpt(_dgw, 6),
+                            buttons=_Qt_sel.MouseButton.LeftButton))   # onto a blank
+ok(_dgw.textCursor().selectedText().startswith('alpha'),
+   'sel: word drag onto a blank cell keeps the anchor word')
+
+# Line drag-extend: triple-click a line, drag to the next line -> both lines.
+_dlw = SecureTerminal(command='/bin/cat')
+_dlw.resize(700, 400)
+_dlw.show()
+APP.processEvents()
+_dlw._cols = 0
+feed_output(_dlw, b'one\r\ntwo\r\n')
+_dlw._force_current_frame()
+APP.processEvents()
+_dl_p0 = _selpt(_dlw, 1)
+for _ in range(3):
+    _sel_press(_dlw, _dl_p0)
+_dlw.mouseMoveEvent(_sel_ev(_QEv_sel.Type.MouseMove,
+                            _selpt(_dlw, _dlw.document().findBlockByNumber(1).position()),
+                            buttons=_Qt_sel.MouseButton.LeftButton))
+ok('one' in _dlw._selection_text() and 'two' in _dlw._selection_text(),
+   'sel: line drag-extend spans whole lines')
+# The None-anchor guard on the extender is a no-op (defensive).
+_dlw._sel_anchor = None
+_dlw._extend_unit_selection(_dl_p0)
+ok(True, 'sel: extend with no anchor is a safe no-op')
+
+# A plain single click resets to char mode (no unit drag).
+_sel_press(_selw, _QPF_sel(400, 260))
+ok(_selw._select_mode == 'char', 'sel: a single click is character selection')
+
+# Clearing a held selection for a child mouse-grab also drops the unit mode.
+_cgs = SecureTerminal(command='/bin/cat')
+_cgs.resize(700, 400)
+_cgs.show()
+APP.processEvents()
+_cgs._cols = 0
+feed_output(_cgs, b'clearme\r\n')
+_cgs._force_current_frame()
+APP.processEvents()
+for _ in range(3):
+    _sel_press(_cgs, _selpt(_cgs, 3))
+ok(_cgs._select_mode == 'line', 'sel: line selected before clear')
+_cgs._clear_grid_selection()
+ok(_cgs._select_mode == 'char' and _cgs._sel_anchor is None,
+   'sel: clearing the selection resets unit mode')
+
+# Grid (TUI/alt-screen) mode: a line-select release re-arms the grid render.
+_gmw = SecureTerminal(command='/bin/cat', tui=True)
+_gmw.resize(700, 400)
+_gmw.show()
+APP.processEvents()
+feed_output(_gmw, b'\x1b[?1049h')          # alt screen -> grid mode
+feed_output(_gmw, b'gridword rows')
+_gmw._force_current_frame()
+APP.processEvents()
+ok(_gmw._grid_mode(), 'sel: alt-screen widget is in grid mode')
+_gm_pt = _selpt(_gmw, 3)
+for _ in range(3):
+    _sel_press(_gmw, _gm_pt)
+_gmw.mouseReleaseEvent(_sel_ev(_QEv_sel.Type.MouseButtonRelease, _gm_pt,
+                               buttons=_Qt_sel.MouseButton.NoButton))
+ok(_gmw._render_timer.isActive(), 'sel: grid-mode line-select release re-arms render')
 
 
 finish('widget')

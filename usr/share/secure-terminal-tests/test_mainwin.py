@@ -483,6 +483,26 @@ while _lw.tabs.count() > 0:
     _lw.close_tab(0)
 _lw.deleteLater()
 
+# Launch banner: a tab LAUNCHED with a command (show_command via new_tab / a launch
+# spec) records it as a scrollback banner, so the original command a bare prompt
+# never echoes is visible; a plain login-shell tab (no command) shows none. The
+# banner is seeded in the ctor before the child forks, so it is present at once.
+_bw = MainWindow()
+_bw.new_tab(command=['/bin/sh', '-c', 'exit 0'])
+_bw_cmd = _bw.tabs.widget(_bw.tabs.count() - 1)
+ok("[secure-terminal] running: /bin/sh -c 'exit 0'" in _bw_cmd.transcript_text(),
+   'a command-launched tab records the launch command as a scrollback banner')
+_deadline = time.time() + 5                          # drain to restart-as-shell -> clean close
+while time.time() < _deadline and _bw_cmd._command is not None:
+    pump(30)
+_bw.new_tab()                                        # a plain login-shell tab
+_bw_shell = _bw.tabs.widget(_bw.tabs.count() - 1)
+ok('[secure-terminal] running:' not in _bw_shell.transcript_text(),
+   'a bare login-shell tab shows no launch banner')
+while _bw.tabs.count() > 0:
+    _bw.close_tab(0)
+_bw.deleteLater()
+
 # F2: closing a tab that holds a paste/copy review hides the bar first, so its
 # buttons cannot dispatch onto the destroyed terminal (RuntimeError).
 _fw = MainWindow()
