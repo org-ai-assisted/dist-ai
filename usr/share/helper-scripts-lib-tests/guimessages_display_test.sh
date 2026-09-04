@@ -58,20 +58,25 @@ fail_count=0
 pass() { pass_count=$(( pass_count + 1 )); printf '%s\n' "PASS: $*"; }
 fail() { fail_count=$(( fail_count + 1 )); printf '%s\n' "FAIL: $*" >&2; }
 
-## gui_available() returns exit 0 (true) / 1 (false) via this probe.
-avail_probe='import sys; from guimessages.display import gui_available; sys.exit(0 if gui_available() else 1)'
+## gui_available() prints TRUE/FALSE and exits 0. Printing the result (rather
+## than encoding it in the exit code) keeps a crash distinguishable: an uncaught
+## exception exits non-zero with no TRUE/FALSE line, so a broken implementation
+## cannot masquerade as a correct 'false' (which shares exit code 1).
+avail_probe='from guimessages.display import gui_available; print("TRUE" if gui_available() else "FALSE")'
 
 check_available() {
-   local description want rc
+   local description want rc out
    description="$1"; want="$2"; shift 2
    rc=0
-   env "$@" python3 -c "${avail_probe}" >/dev/null 2>&1 || rc=$?
-   if [ "${want}" = "true" ] && [ "${rc}" -eq 0 ]; then
+   out="$(env "$@" python3 -c "${avail_probe}" 2>/dev/null)" || rc=$?
+   if [ "${rc}" -ne 0 ]; then
+      fail "gui_available ${description}: probe crashed (rc=${rc}, out='${out}')"
+   elif [ "${want}" = "true" ] && [ "${out}" = "TRUE" ]; then
       pass "gui_available ${description} -> true"
-   elif [ "${want}" = "false" ] && [ "${rc}" -eq 1 ]; then
+   elif [ "${want}" = "false" ] && [ "${out}" = "FALSE" ]; then
       pass "gui_available ${description} -> false"
    else
-      fail "gui_available ${description}: want ${want}, got rc=${rc}"
+      fail "gui_available ${description}: want ${want}, got '${out}'"
    fi
 }
 

@@ -79,9 +79,16 @@ stub_dir="${work_dir}/msgcollector"
 mkdir --parents -- "${stub_dir}"
 
 ## generic_gui_message.py: reproduce the real headless failure -- SIGABRT (134).
-printf '%s\n' '#!/bin/bash' 'kill -ABRT $$' > "${stub_dir}/generic_gui_message.py"
-## br_add.py: passthrough (real one only reflows <br>).
-printf '%s\n' '#!/bin/bash' 'cat' > "${stub_dir}/br_add.py"
+## Touch a marker first, so the assertion can prove the handler actually REACHED
+## the dialog call: a crash BEFORE it (e.g. an unbound variable under nounset)
+## would also exit 1 and otherwise read as a false pass.
+printf '%s\n' '#!/bin/bash' "touch -- '${work_dir}/dialog_reached'" 'kill -ABRT $$' \
+   > "${stub_dir}/generic_gui_message.py"
+## br_add.py: reflect argv[1], like the real one (which reflows <br>). It must
+## NOT read stdin -- a bare 'cat' blocks the driver forever whenever stdin is not
+## already at EOF (an interactive run, or the suite runner, which does not
+## redirect it).
+printf '%s\n' '#!/bin/bash' 'printf "%s" "$1"' > "${stub_dir}/br_add.py"
 chmod 0755 -- "${stub_dir}/generic_gui_message.py" "${stub_dir}/br_add.py"
 
 handler_stubbed="${work_dir}/handler_stubbed.bash"
@@ -111,13 +118,18 @@ driver="${work_dir}/driver"
 } > "${driver}"
 
 rc=0
-bash "${driver}" >/dev/null 2>&1 || rc=$?
+bash "${driver}" >/dev/null 2>&1 </dev/null || rc=$?
 
 pass_count=0
 fail_count=0
 if [ "${rc}" -ge 128 ]; then
    fail_count=1
    printf '%s\n' "FAIL: handler propagated a signal exit (${rc}); the dialog failure re-entered the trap and aborted it -- this is the bug" >&2
+elif [ ! -e "${work_dir}/dialog_reached" ]; then
+   ## rc==1 alone is ambiguous (a crash before the dialog also exits 1); require
+   ## proof the handler reached and tolerated the (SIGABRTing) dialog call.
+   fail_count=1
+   printf '%s\n' "FAIL: handler exited ${rc} without reaching the dialog call; it did not exercise the tolerance under test" >&2
 elif [ "${rc}" -ne 1 ]; then
    fail_count=1
    printf '%s\n' "FAIL: handler exited ${rc}; expected its defined 'exit 1' after tolerating the dialog failure" >&2
