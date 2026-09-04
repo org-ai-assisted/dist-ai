@@ -82,6 +82,7 @@ export QT_FONT_DPI="${QT_FONT_DPI:-72}"
 ## invariant is caught HERE rather than in a nightly nothing blocks on.
 ## test_fuzz_widget drives the live-widget GUI fuzzer deterministically.
 overall=0
+authorized_skip=0
 for test_file in \
    "${tests_dir}/test_secure_terminal.py" \
    "${tests_dir}/test_fuzz.py" \
@@ -127,6 +128,8 @@ for test_file in \
       ## unauthorized skip fails closed rather than reading green; an authorized
       ## (--allow-skip / lenient) run may still skip. Same policy as the guard above.
       if [ "${DIST_AI_SKIP_AUTHORIZED:-}" = '1' ]; then
+         printf '%s\n' "secure-terminal-tests: SKIP ${test_file##*/} (exit 77) [authorized]" >&2
+         authorized_skip=1
          continue
       fi
       printf '%s\n' "secure-terminal-tests: FATAL: ${test_file##*/} exited 77 (skipped); its deps are required (set DIST_AI_SKIP_AUTHORIZED to allow)" >&2
@@ -135,4 +138,12 @@ for test_file in \
    fi
    overall=1
 done
+## An authorized skip of a required suite must not read as a clean full pass: if nothing
+## failed but a suite was authorized-skipped, exit 77 (SKIP) so the caller can tell a
+## lenient-skipped run from a full pass -- matching the module-absent block above, which
+## also signals the skip via exit 77 rather than a silent 0.
+if [ "${overall}" = '0' ] && [ "${authorized_skip}" = '1' ]; then
+   ## style-ok: allow-skip: a required suite was authorized-skipped; report SKIP, not PASS
+   exit 77
+fi
 exit "${overall}"

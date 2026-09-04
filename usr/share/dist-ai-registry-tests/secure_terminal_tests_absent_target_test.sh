@@ -98,6 +98,35 @@ else
    failures=$((failures + 1))
 fi
 
+## 5) An AUTHORIZED skip of a required (non-pure) suite must make the runner exit 77
+##    (SKIP), not 0 (PASS) -- else a lenient-skipped run is indistinguishable from a
+##    clean full pass by exit code. Force that branch with a stub python3 that skips
+##    only test_fuzz_widget.py (exit 77) and passes every other suite (exit 0), against a
+##    stub checkout so the top guard passes.
+stubdir="$(mktemp -d)"
+fakerepo="$(mktemp -d)"
+## An absent safe-rm is tolerated rather than failing cleanup.
+cleanup_stub() { safe-rm --recursive --force -- "${stubdir}" "${fakerepo}" || true; }
+trap cleanup_stub EXIT
+mkdir -p -- "${fakerepo}/usr/lib/python3/dist-packages/secure_terminal"
+cat > "${stubdir}/python3" <<'STUB'
+#!/bin/sh
+for a in "$@"; do
+   case "${a}" in *test_fuzz_widget.py) exit 77 ;; esac
+done
+exit 0
+STUB
+chmod 0755 -- "${stubdir}/python3"
+rc=0
+env "DIST_AI_SKIP_AUTHORIZED=1" "SECURE_TERMINAL_REPO=${fakerepo}" "PATH=${stubdir}:${PATH}" \
+   "${runner}" >/dev/null 2>&1 || rc="$?"
+if [ "${rc}" -eq 77 ]; then
+   printf 'PASS: an authorized non-pure skip makes the runner exit 77, not a silent 0\n'
+else
+   printf 'FAIL: authorized non-pure skip exited %s, expected 77 (lenient skip hidden as PASS)\n' "${rc}" >&2
+   failures=$((failures + 1))
+fi
+
 if [ "${failures}" -gt 0 ]; then
    printf 'secure_terminal_tests_absent_target_test: %s assertion(s) FAILED.\n' "${failures}" >&2
    exit 1
