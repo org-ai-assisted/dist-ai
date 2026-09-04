@@ -1831,8 +1831,9 @@ _selfresh.mousePressEvent(_mev(QEvent.Type.MouseButtonPress, Qt.MouseButton.Left
 eq(_selfresh.textCursor().anchor(), _sf_clickpos,
    'a Shift bypass-press anchors a FRESH selection at the click, not extending from the pinned grid cursor')
 _selfresh.close()
-# scrollback navigation in line mode: PageUp scrolls the buffer up, Shift+Home/
-# End jump to the ends, plain Home is left for line editing (does not scroll)
+# scrollback navigation in line mode: plain PageUp/PageDown forward to the shell
+# (\e[5~/\e[6~) like a real terminal; Shift+PageUp/Down scroll the buffer, Shift+
+# Home/End jump to the ends, plain Home is left for line editing (does not scroll)
 sc = SecureTerminal(command='/bin/cat')
 sc.resize(600, 200)
 sc.show()
@@ -1840,8 +1841,19 @@ for _i in range(200):
     sc._append('line %d\n' % _i)
 _bar = sc.verticalScrollBar()
 _bottom = _bar.value()
+_scsent = spy_writes(sc)
+sc._line_dirty = False
 key(sc, Qt.Key.Key_PageUp)
-ok(_bar.value() < _bottom, 'PageUp scrolls the scrollback up')
+eq(_scsent, [b'\x1b[5~'], 'plain PageUp forwards to the shell (\\e[5~), not local scroll')
+eq(_bar.value(), _bottom, 'plain PageUp leaves the scrollbar where it was')
+ok(sc._line_dirty, 'PageUp marks the line dirty (a recalled command may sit at the prompt)')
+_scsent.clear()
+key(sc, Qt.Key.Key_PageDown)
+eq(_scsent, [b'\x1b[6~'], 'plain PageDown forwards to the shell (\\e[6~)')
+_scsent.clear()
+key(sc, Qt.Key.Key_PageUp, mods=Qt.KeyboardModifier.ShiftModifier)
+ok(_bar.value() < _bottom, 'Shift+PageUp scrolls the scrollback up')
+eq(_scsent, [], 'Shift+PageUp scrolls locally, nothing sent to the shell')
 key(sc, Qt.Key.Key_End, mods=Qt.KeyboardModifier.ShiftModifier)
 eq(_bar.value(), _bar.maximum(), 'Shift+End jumps to the bottom')
 key(sc, Qt.Key.Key_Home, mods=Qt.KeyboardModifier.ShiftModifier)
@@ -3319,6 +3331,14 @@ ok(_argv(' \t ') is None, 'tabs+spaces (no words) yields None (fail closed)')
 # codex: an EMPTY program name (`-e '""'` -> ['']) also names no program -- fail closed.
 ok(_argv('""') is None, 'an empty quoted program name yields None (fail closed)')
 ok(_argv('"" arg') is None, 'a leading empty program name yields None (fail closed)')
+# _command_display renders a launch command for the running-banner (display only, never
+# exec'd): a STRING verbatim, a LIST joined with shell quoting, anything else -> ''.
+from secure_terminal.terminal import _command_display as _cdisp   # noqa: E402
+eq(_cdisp('claude-rc-session open dev1'), 'claude-rc-session open dev1',
+   'a string launch command is shown verbatim in the banner')
+eq(_cdisp(['/bin/sh', '-c', 'exit 0']), "/bin/sh -c 'exit 0'",
+   'a list launch command is shell-quoted (a word with a space is quoted)')
+eq(_cdisp(None), '', 'a non-str/list command renders empty (defensive fallback)')
 # codex: a malformed command must not restart_as_shell on the child's 127 exit (the
 # IPC/GUI path where the CLI parse never runs) -- the tab is marked _command_malformed
 # in the parent so restart_as_shell REFUSES; the caller then CLOSES the tab, never a
@@ -3705,8 +3725,8 @@ eq(lo._reset_leftover_sgr('out\x1b[?2004hPS> '),
 # column 0 (e.g. output that ended in a newline, or zsh's PROMPT_SP).
 _DFLT = {'fg': None, 'bg': None, 'bold': False}
 _nc, _nk, _, _, _ = _S.feed_line_edits([], 0, dict(_DFLT), 'abc' + _S.PROMPT_START + 'PS> ')
-eq([''.join(c for c, _ in ln) for ln in _nc], ['abc'],
-   'prompt newline: un-terminated output before the marker is ended into its line')
+eq([''.join(c for c, _ in ln) for ln in _nc], ['abc [no newline]'],
+   'prompt newline: un-terminated output before the marker is noted and ended into its line')
 eq(''.join(c for c, _ in _nk), 'PS> ',
    'prompt newline: the prompt starts on a fresh line, not glued to the output')
 _znl, _zk, _, _, _ = _S.feed_line_edits([], 0, dict(_DFLT), 'abc\n' + _S.PROMPT_START + 'PS> ')
@@ -4515,8 +4535,12 @@ feed_output(_sgrt, b'\x1b[41mALERT' + _PS12.encode('ascii') + b'PS> ')
 # own, so a _raw-only assertion cannot catch a regressed live feed).
 eq(_sgrt._screen.buffer[0][0].bg, 'red',
    'ai-review#12: the program\'s own bg colour is preserved on the live pyte grid')
+# The no-final-newline marker follows the output on row 0 on a CLEAN default bg (ST's
+# own note resets the leftover red first), and the prompt now breaks onto its own row.
 eq(_sgrt._screen.buffer[0][5].bg, 'default',
-   'ai-review#12: the prompt after the marker renders default on the live grid (not stuck red)')
+   'ai-review#12: the [no newline] marker renders on a default bg, not the stuck red')
+eq(_sgrt._screen.buffer[1][0].bg, 'default',
+   'ai-review#12: the prompt breaks onto its own row and renders default (not stuck red)')
 # Retained raw carries the reset too, so a mode re-render does not re-stick the colour.
 ok(('\x1b[0m' + _PS12) in _sgrt._raw,
    'ai-review#12: the retained raw also carries the reset (clean TUI<->CLI re-render)')

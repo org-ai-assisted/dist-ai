@@ -360,11 +360,9 @@ os.environ['XDG_STATE_HOME'] = _state_root
 _cfg_root = tempfile.mkdtemp()
 os.environ['XDG_CONFIG_HOME'] = _cfg_root
 
-# the search path and the write-target aliases
+# the user drop-in directory is the highest-precedence search path
 ok(settings.config_dirs()[-1].endswith('secure-terminal.d'),
    'settings: config_dirs ends with the user drop-in directory')
-eq(settings.config_path(), settings.user_config_file(),
-   'settings: config_path is an alias for user_config_file')
 
 # save then load round-trips a user value; a locked key is NOT written out
 settings.save({'font_size': '12', 'theme': 'dark', 'remote_control': 'on'},
@@ -425,12 +423,12 @@ _orig_bud = settings._user_config_dir
 settings._user_config_dir = lambda: _bad_usr
 try:
     _bad_bytes = b'theme=dark\nzoom=150\nclip_warn_any=\xff\n'
-    with open(os.path.join(_bad_usr, '50_user.conf'), 'wb') as _bh:
+    with open(settings.user_config_file(), 'wb') as _bh:
         _bh.write(_bad_bytes)
     settings.load()                       # a non-UTF-8 drop-in must not raise
     settings.set_user_key('theme', 'light')   # unreadable base -> SKIP, not clobber
     settings.update_user({'zoom': '2'})       # unreadable base -> SKIP, not clobber
-    with open(os.path.join(_bad_usr, '50_user.conf'), 'rb') as _rb:
+    with open(settings.user_config_file(), 'rb') as _rb:
         ok(_rb.read() == _bad_bytes,
            'settings: a non-UTF-8 user file is left untouched, not clobbered (no data loss)')
 finally:

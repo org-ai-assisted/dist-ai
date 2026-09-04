@@ -54,10 +54,12 @@ python3 -m pytest --import-mode=importlib -q "${tests_dir}" "$@" || rc=$?
 ## pytest exit 5 = no tests collected. That is a broken environment, not an
 ## absence: python3-hypothesis is in this consumer's CI apt list, so the only
 ## way to collect nothing is a suite that is not being run at all. Reporting
-## 77 turned that into a green lane testing nothing.
+## 77 turned that into a green lane testing nothing. Record it as a failure but
+## do NOT exit here: the shell-case lane below must still run, per this file's
+## own guarantee that one broken lane cannot hide the other.
 if [ "${rc}" = "5" ]; then
    printf '%s\n' 'FAIL: pytest collected no tests; the suite is not being run.' >&2
-   exit 1
+   rc=1
 fi
 
 shopt -s nullglob

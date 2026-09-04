@@ -3591,7 +3591,8 @@ finally:
     _os.read = _o_read
 ok(True, '_on_readable: a not-ready non-blocking fd is handled')
 
-# PageUp/PageDown scroll the scrollback (line mode)
+# Shift+PageUp/PageDown scroll the scrollback (line mode); plain PageUp/PageDown
+# forward to the shell as \e[5~/\e[6~ (asserted in test_widget.py)
 _pg = SecureTerminal(command='/bin/cat')
 _pg.resize(600, 200)
 _pg.show()
@@ -3599,11 +3600,11 @@ for _pgi in range(200):
     _pg._append('pgline %d\n' % _pgi)
 _pgbar = _pg.verticalScrollBar()
 _pg_bottom = _pgbar.value()                  # at the bottom after the output
-key(_pg, Qt.Key.Key_PageUp)
+key(_pg, Qt.Key.Key_PageUp, mods=Qt.KeyboardModifier.ShiftModifier)
 _pg_up = _pgbar.value()
-key(_pg, Qt.Key.Key_PageDown)
+key(_pg, Qt.Key.Key_PageDown, mods=Qt.KeyboardModifier.ShiftModifier)
 ok(_pg_up < _pg_bottom and _pgbar.value() > _pg_up,
-   'PageUp/PageDown drive the scrollbar (up, then back down)')
+   'Shift+PageUp/PageDown drive the scrollbar (up, then back down)')
 
 # in TUI mode a plain key is encoded as VT input (keyPressEvent -> _tui_key)
 _tk2 = SecureTerminal(command='/bin/cat')
@@ -5516,6 +5517,66 @@ _w_off = _fw._text_area()[0]
 ok(_w_on == _w_off,
    'text width is the same whether the vertical scrollbar shows (no SIGWINCH flicker loop)')
 _fw.shutdown()
+
+# TUI clean-prompt-after-no-final-newline: mirror of the CLI feed_line_edits nicety
+# (_feed_prompt_aware). When a command's output lacks a trailing newline and the
+# shell's bracketed-paste prompt follows (bash order), break the un-terminated line
+# so the prompt starts on its own row instead of gluing on. Guarded exactly like CLI.
+_PS2004 = b'\x1b[?2004h'
+
+
+def _tui_prompt_lines(feeds):
+    w = SecureTerminal(command='/bin/cat', tui=True, mode='show')
+    w.resize(700, 300)
+    w.show()
+    for f in feeds:
+        feed_output(w, f)
+    lines = [ln.rstrip() for ln in w.transcript_text().split('\n') if ln.strip()]
+    return w, lines
+
+
+# bash order, mid-line: the prompt breaks onto its own row, with the faint
+# no-final-newline marker at the end of the command's output.
+# CANARY: pre-fix TUI merged them ('tail-no-newlineuser@host:~$').
+_pw1, _pl1 = _tui_prompt_lines([b'tail-no-newline', _PS2004 + b'user@host:~$ '])
+ok(_pl1[-2:] == ['tail-no-newline [no newline]', 'user@host:~$'],
+   'TUI: an un-terminated last line is marked and breaks so the prompt starts on its own row')
+_pw1.shutdown()
+# column 0 (output ended WITH a newline): no spurious blank row before the prompt.
+_pw2, _pl2 = _tui_prompt_lines([b'lineA\r\nlineB\r\n', _PS2004 + b'user@host:~$ '])
+ok(_pl2[-3:] == ['lineA', 'lineB', 'user@host:~$'],
+   'TUI: a prompt at column 0 is not preceded by a spurious blank row')
+_pw2.shutdown()
+# zsh order: the marker trails the prompt (nothing printable follows) -> no break.
+_pw3, _pl3 = _tui_prompt_lines([b'zsh-tail-no-nl', _PS2004])
+ok(_pl3[-1:] == ['zsh-tail-no-nl'],
+   'TUI: a bare prompt-start (zsh order, no printable after) does not break the line')
+_pw3.shutdown()
+# no prompt-start in the stream -> the plain feed path (early return).
+_pw4, _pl4 = _tui_prompt_lines([b'plain-output-no-marker\r\n'])
+ok(_pl4[-1:] == ['plain-output-no-marker'],
+   'TUI: a stream carrying no prompt-start feeds plainly')
+_pw4.shutdown()
+# line filled to the EXACT grid width: pyte wraps the prompt itself (cursor at the
+# pending-wrap column), so no injected break -- exercises the width guard.
+_pw5 = SecureTerminal(command='/bin/cat', tui=True, mode='show')
+_pw5.resize(700, 300)
+_pw5.show()
+feed_output(_pw5, b'W' * _pw5._screen.columns)
+feed_output(_pw5, _PS2004 + b'p$ ')
+ok('p$' in _pw5.transcript_text(),
+   'TUI: a width-filled line + prompt renders without an injected break (pyte wraps)')
+_pw5.shutdown()
+# alt screen active: a full-screen program owns the rows -> the break never applies.
+_pw6 = SecureTerminal(command='/bin/cat', tui=True, mode='show')
+_pw6.resize(700, 300)
+_pw6.show()
+feed_output(_pw6, b'\x1b[?1049h')            # enter the alternate screen
+feed_output(_pw6, b'alt-tail')               # mid-line on the alt screen
+feed_output(_pw6, _PS2004 + b'p$ ')          # prompt-start while alt is active
+ok(_pw6._alt_saved is not None,
+   'TUI: on the alt screen the primary-line break is skipped')
+_pw6.shutdown()
 
 
 finish('widget2')

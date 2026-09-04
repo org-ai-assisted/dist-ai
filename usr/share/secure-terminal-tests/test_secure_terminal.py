@@ -424,6 +424,16 @@ eq(_ww5, [True], 'a width-filled line + prompt marker is flagged a soft wrap (co
 # but a PARTIAL line ended by the marker is a real break, not a wrap
 _wc6, _wcells6, _wcol6, _ws6, _ww6 = S.feed_line_edits([], 0, {}, 'ab\x1b[?2004h$ ', 4)
 eq(_ww6, [False], 'a partial line + prompt marker is not flagged a wrap')
+# no-final-newline marker: an un-terminated line before a bash prompt gets the faint
+# ' [no newline]' note appended; a newline-terminated line does not (nothing swallowed).
+_nm1 = S.feed_line_edits([], 0, {}, 'output-no-nl' + S.PROMPT_START + '$ ', 80)[0]
+eq(''.join(ch for ch, _ in _nm1[0]), 'output-no-nl [no newline]',
+   'an un-terminated line before a prompt is marked [no newline]')
+eq(_nm1[0][-1][1], S._NO_NEWLINE_STATE,
+   'the marker cells carry the distinct no-newline SGR state (faint, not program colour)')
+_nm2 = S.feed_line_edits([], 0, {}, 'output-with-nl\n' + S.PROMPT_START + '$ ', 80)[0]
+eq(''.join(ch for ch, _ in _nm2[0]), 'output-with-nl',
+   'a newline-terminated line is NOT marked (nothing was swallowed)')
 # CSI 1K erases from the start of the line up to (and including) the cursor: after
 # 'abcde' move the cursor to column 2 (CSI 3G) then erase-to-BOL -> "   de".
 _e1c, _e1cells, _e1col, _e1s, _e1w = S.feed_line_edits([], 0, {}, 'abcde\x1b[3G\x1b[1K', 80)
@@ -1507,9 +1517,18 @@ with open(os.path.join(_usrd, 'ignore.txt'), 'w', encoding='utf-8') as _h:
     _h.write('theme=light\n')
 eq(SET.load().get('theme'), 'dark', 'settings: only .conf files are parsed')
 SET.save({'colors': 'true'})
-ok(SET.user_config_file().endswith('50_user.conf'),
-   'settings: app writes 50_user.conf')
+ok(SET.user_config_file().endswith('20_auto-generated.conf'),
+   'settings: app writes 20_auto-generated.conf')
 eq(SET.load().get('colors'), 'true', 'settings: written value loads back')
+# a hand-maintained higher-numbered file overrides the app's own low-numbered file
+with open(os.path.join(_usrd, '50_user.conf'), 'w', encoding='utf-8') as _h:
+    _h.write('colors=false\n')
+eq(SET.load().get('colors'), 'false',
+   'settings: a hand-maintained 50_user.conf overrides 20_auto-generated.conf')
+# a newline/CR in a value must not smuggle an extra KEY=value line into the file
+SET.save({'colors': 'true', 'x': 'y\nosc_clipboard_read_always=true'})
+ok('osc_clipboard_read_always' not in SET.load(),
+   'settings: an embedded newline in a value cannot inject another key')
 
 # admin lock: a privileged `lock=` makes a key non-overridable by the user dir
 with open(os.path.join(_sysd, '20-lock.conf'), 'w', encoding='utf-8') as _h:

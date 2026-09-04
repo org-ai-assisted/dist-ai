@@ -993,11 +993,12 @@ def t2_prompt_flush_real():
     a non-zero column, must emit the current line then write the printable
     (so (col,L) becomes (1,1), not the model's (0,0) which is the flush
     half only). INV must hold."""
-    cells = [('a', ())] * 3
+    base = [('a', ())] * 3
     comp, cells2, col2, _s, _w = S.feed_line_edits(
-        cells, 3, {}, S.PROMPT_START + 'x', max_line=0)
-    if len(comp) != 1 or list(comp[0]) != list(cells):
-        fail('T2 prompt-flush: did not emit the current line intact')
+        list(base), 3, {}, S.PROMPT_START + 'x', max_line=0)
+    expected = base + [(mc, S._NO_NEWLINE_STATE) for mc in S._NO_NEWLINE_TEXT]
+    if len(comp) != 1 or list(comp[0]) != expected:
+        fail('T2 prompt-flush: did not emit the current line + no-newline marker intact')
     if (col2, len(cells2)) != (1, 1) or cells2[0][0] != 'x':
         fail('T2 prompt-flush: expected write-after-flush (1,1 x), got '
              'col=%d L=%d cells=%r' % (col2, len(cells2), cells2))
