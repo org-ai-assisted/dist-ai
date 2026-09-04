@@ -3669,15 +3669,32 @@ ok(_osc_notice_tui(None, b'\x1b]52;c;', b'?\x07') == ['osc_clipboard_read'],
    'TUI: a clipboard-READ OSC split before the ? is reassembled as READ, not WRITE')
 ok(_osc_notice_tui(None, b'\x1b]5', b'2;c;?\x07') == ['osc_clipboard_read'],
    'TUI: an OSC split mid-code reassembles to the right type')
-# an UNTERMINATED OSC past the carry cap is NOT buffered forever: its introducer stays in
-# the chunk and still advises (never silently evades), matching _handle_osc's bound.
+# an UNTERMINATED OSC past the carry cap is NOT buffered forever, and NOT classified from
+# its truncated head (that would mislabel it) -- it advises the ungated generic osc_other,
+# matching CLI's over-cap discard. Two chunks: the first under the cap (held), the second
+# pushes it over.
 _over = SecureTerminal(command='/bin/cat', tui=True)
 _overseen = []
 _over.osc_used.connect(lambda k: _overseen.append(k))
-feed_output(_over, b'\x1b]0;' + b'A' * (_over._OSC_CARRY_MAX + 16))   # no terminator, past cap
+feed_output(_over, b'\x1b]0;' + b'A' * (_over._OSC_CARRY_MAX - 8))    # under cap: held
+feed_output(_over, b'A' * 64)                                        # over cap: osc_other
 _over.close()
-ok(_overseen == ['osc_title'],
-   'TUI: an over-cap unterminated OSC still advises (not held unbounded, no evasion)')
+ok(_overseen == ['osc_other'],
+   'TUI: an over-cap unterminated OSC advises generically (osc_other), never evades')
+# codex: an over-cap OSC-52 whose read '?' lands past the cap must NOT evade the advisory by
+# being classified as a WRITE (which an enabled write then gates out). The over-cap flush
+# emits the ungated osc_other, so the refused read is still surfaced. Three reads mirror the
+# reported case: a padded introducer (held), a pad that tips it over the cap (flush), the '?'.
+_ovr = SecureTerminal(command='/bin/cat', tui=True)
+_ovr.apply_osc('osc_clipboard', True)          # WRITE enabled; osc_clipboard_read stays off
+_ovrseen = []
+_ovr.osc_used.connect(lambda k: _ovrseen.append(k))
+feed_output(_ovr, b'\x1b]52;c;' + b' ' * (_ovr._OSC_CARRY_MAX - 8))  # under cap: held
+feed_output(_ovr, b' ' * 5000)                                       # over cap: osc_other
+feed_output(_ovr, b'?\x07')                                          # the read marker, now orphaned
+_ovr.close()
+ok('osc_other' in _ovrseen and 'osc_clipboard' not in _ovrseen,
+   'TUI: an over-cap OSC-52 read is surfaced (osc_other), not silently gated as a write')
 
 # F5: reap_pty_children WNOHANG-reaps ONLY our registered pty children, so the app can
 # drop the blanket SIGCHLD=SIG_IGN that made every subprocess returncode read 0. Pin
