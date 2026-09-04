@@ -3637,6 +3637,13 @@ ok(_osc52_notice(b'\x1b]52;c;' + _b64_osc.b64encode(b'x' * 600) + b'\x07') == ['
    '#4: a large OSC 52 write (base64 past the notice window) is still WRITE, not misread')
 ok(_osc52_notice(b'\x1b]52;c;', b'?\x07') == ['osc_clipboard_read'],
    '#4: a read query split across two reads is carry-rejoined and still noticed as READ')
+# an OSC 52 payload can hold a literal ESC; the read/write split must be decided at the TRUE
+# terminator (BEL/ST), not the first bare ESC -- else a '?' after an inner ESC flips the type
+# (a refused read misread as a write, then gated out by an enabled write).
+ok(_osc52_notice(b'\x1b]52;c;AAAA\x1b]?\x07') == ['osc_clipboard_read'],
+   '#4: OSC 52 read with an inner ESC is classified READ by the true terminator')
+ok(_osc52_notice(b'\x1b]52;c;AAAA?\x1b]zzzz\x07') == ['osc_clipboard'],
+   '#4: OSC 52 write with an inner ESC + inner ? is not misread as READ')
 
 # TUI-symmetry (dev417 handoff): the yellow OSC-refusal advisory must fire in TUI too,
 # not only in CLI/line mode. A refused OSC in the fixed TUI grid is exactly as refused as
