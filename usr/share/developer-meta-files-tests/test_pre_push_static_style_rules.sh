@@ -683,6 +683,11 @@ expect_rule "R-153" "true ${comment} grep ${sq}${anchor}${sq} over ${dq}${self0}
 ## (f) a scrape reading the script over a stdin REDIRECT -- MUST flag. The self-ref
 ##     is a redirect operand, not an argument, so an args-only scan missed it.
 expect_rule "R-153" "grep ${sq}${anchor}${sq} < ${dq}${self0}${dq}"                            "present"
+## (f2) a WRITE redirect to the script (not a read) -- MUST NOT flag; only an
+##      input '<' / '<>' redirect reads the file.
+expect_rule "R-153" "grep ${sq}${anchor}${sq} > ${dq}${self0}${dq}"                            "absent"
+## (f3) a here-STRING feeds the path text, not the file contents -- MUST NOT flag.
+expect_rule "R-153" "grep ${sq}${anchor}${sq} <<< ${dq}${self0}${dq}"                          "absent"
 ## (g) a scrape SPLIT across a pipe (read in the producer, filter in the consumer)
 ##     -- MUST flag.
 expect_rule "R-153" "cat ${dq}${self0}${dq} | grep ${sq}${anchor}${sq}"                        "present"

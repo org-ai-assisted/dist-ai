@@ -1813,11 +1813,37 @@ def _word_has_self_ref(word):
     return False
 
 
+_R153_READ_REDIR_OPS = None
+
+
+def _r153_read_redir_ops():
+    """Redir Op code(s) that READ the named file into the command -- input '<'
+    and read-write '<>'. DERIVED by parsing (shfmt numbers Op and may renumber
+    between versions), like bash_ast.pipe_ops. A '>' / '>>' write, a '<<<'
+    here-string (whose WORD is the data, not a filename) and a here-document do
+    NOT read the named file, so they are excluded -- else 'grep ^## > "$0"'
+    (writes the script) or 'grep ^## <<< "$0"' (feeds the path STRING) would
+    falsely read as a scrape. Cached."""
+    global _R153_READ_REDIR_OPS
+    if _R153_READ_REDIR_OPS is None:
+        ops = set()
+        for snippet in ("a < f", "a <> f"):
+            for stmt in bash_ast.iter_stmts(bash_ast.parse(snippet)):
+                for redirect in stmt.get("Redirs") or []:
+                    ops.add(redirect.get("Op"))
+        _R153_READ_REDIR_OPS = ops
+    return _R153_READ_REDIR_OPS
+
+
 def _r153_redirs_read_self(stmt):
-    """True if any of STMT's redirections reads the script itself ('grep ... <
-    "$0"'). A redirect operand is a filename, never a grep pattern, so only the
-    self-reference is looked for here."""
+    """True if any of STMT's redirections READS the script itself ('grep ... <
+    "$0"'). Only an input redirection ('<' / '<>') counts; a write or here-string
+    does not read the file. A redirect operand is a filename, never a grep
+    pattern, so only the self-reference is looked for here."""
+    read_ops = _r153_read_redir_ops()
     for redirect in stmt.get("Redirs") or []:
+        if redirect.get("Op") not in read_ops:
+            continue
         word = redirect.get("Word")
         if isinstance(word, dict) and _word_has_self_ref(word):
             return True
@@ -1839,7 +1865,12 @@ class HelpFromComments(Rule):
         command's own read+filter, so they do not trip it;
       - the read and the filter may split across a pipe ('cat "$0" | grep ^##').
     A plain 'dirname "${BASH_SOURCE[0]}"' or 'head "$0"' has no anchor and is
-    spared."""
+    spared. SCOPE (accident, not adversary -- catching these either reintroduces
+    the nested-substitution false positive or needs fragile dataflow, and no
+    session writes them by accident): a scrape whose script-read is buried in a
+    command/process substitution ('grep ^## $(echo "$0")', 'grep ^## <(cat
+    "$0")') or whose pipeline stage is a compound ('{ cat "$0"; } | grep ^##') is
+    NOT flagged; the plain forms above are."""
 
     id = "R-153"
 
