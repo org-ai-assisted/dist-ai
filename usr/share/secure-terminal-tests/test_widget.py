@@ -447,11 +447,15 @@ eq(b''.join(_asent), b'\x1b[B', 'accumulated micro-deltas emit one line per ~40 
 # the first small wheel in the NEXT full-screen app crosses the per-line threshold
 # early and emits a spurious arrow. feed_output drives the real transition path.
 _alt._wheel_accum = 39
+_alt._wheel_accum_x = 39                    # horizontal remainder must ALSO be dropped
 feed_output(_alt, b'\x1b[?1049l')          # leave the alt screen
 eq(_alt._wheel_accum, 0, 'alt-screen EXIT drops any stale wheel-scroll remainder')
+eq(_alt._wheel_accum_x, 0, 'alt-screen EXIT drops the stale HORIZONTAL wheel remainder too')
 _alt._wheel_accum = 39
+_alt._wheel_accum_x = 39
 feed_output(_alt, b'\x1b[?1049h')          # re-enter the alt screen
 eq(_alt._wheel_accum, 0, 'alt-screen ENTER drops any stale wheel-scroll remainder')
+eq(_alt._wheel_accum_x, 0, 'alt-screen ENTER drops the stale HORIZONTAL wheel remainder too')
 
 # SECURITY: mouse tracking is an output-armed INPUT channel. In default CLI mode (not
 # TUI, no alt screen) untrusted output printing ?1000h?1006h?1004h must NOT let a click,
@@ -3771,6 +3775,20 @@ def _hl_suppress_seen(_tui):
     return _s
 ok('osc_clipboard' in _hl_suppress_seen(False) and 'osc_clipboard' in _hl_suppress_seen(True),
    'an unclosed OSC-8 opener does NOT suppress the advisory for a trailing clipboard write')
+# over-cap must NOT truncate _handle_osc's data at the carry point: when an unclosed OSC-8
+# opener (osc8=True) pushes the held carry over the cap, a COMPLETE OSC after the opener must
+# still be dispatched (enforcement), not silently dropped -- _osc_split leaves data intact on
+# over-cap (the unterminated tail cannot match _OSC_ANY anyway). Canary for the strip regression.
+_ocg = SecureTerminal(command='/bin/cat', tui=True)
+_ocg.apply_osc('osc_hyperlink', True)          # arms the OSC-8 opener holdback
+_ocg.apply_osc('osc_title', True)              # the feature we observe dispatching
+_ocgtitles = []
+_ocg.title_changed.connect(lambda t: _ocgtitles.append(t))
+feed_output(_ocg, b'\x1b]8;;http://example.com/\x07\x1b]0;deferred\x07')  # opener + complete title
+feed_output(_ocg, b'X' * (_ocg._OSC_CARRY_MAX + 100))                     # tips the hold over cap
+_ocg.close()
+ok('deferred' in _ocgtitles,
+   'over-cap keeps a complete OSC after an unclosed OSC-8 opener dispatchable (no strip drop)')
 # _OSC_ANY (shared with _handle_osc) retries at every position: a code-0 whose params hold a
 # raw ESC is not a valid OSC, but the embedded well-formed OSC 52 after it IS -- so the advisory
 # reports the clipboard write _handle_osc would actually dispatch, not the broken title.
