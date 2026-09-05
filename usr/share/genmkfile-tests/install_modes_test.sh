@@ -135,6 +135,10 @@ chmod 0644 -- "${pkg_dir}/usr/share/gmf-mode-pkg/data-file"
 mkdir --parents -- "${pkg_dir}/usr/src" "${pkg_dir}/usr/share/doc/gmf-mode-pkg/usr"
 printf '%s\n' 'kept' > "${pkg_dir}/usr/src/keep-my-mode"
 chmod 0600 -- "${pkg_dir}/usr/src/keep-my-mode"
+## An in-tree symlink alias OUTSIDE the skip-list, pointing at the 0600 skip-list file. The
+## mode-fix must SKIP a symlink: 'stat %a' on a symlink is always 0777 and 'chmod' FOLLOWS it,
+## so processing this alias would chmod the 0600 target to 0644 -- loosening a protected file.
+ln -s ../src/keep-my-mode "${pkg_dir}/usr/bin/keep-alias"
 printf '%s\n' 'notes' > "${pkg_dir}/usr/share/doc/gmf-mode-pkg/usr/src-notes"
 chmod 0600 -- "${pkg_dir}/usr/share/doc/gmf-mode-pkg/usr/src-notes"
 
@@ -207,14 +211,15 @@ check_mode 'a file genuinely under a skipped folder keeps its mode' '600' \
 check_mode 'a path merely CONTAINING the skip-list text is still mode-fixed' '644' \
    "${dest_dir}/usr/share/doc/gmf-mode-pkg/usr/src-notes"
 
-## --- setuid/setgid/sticky survive a re-install ------------------------------
-## rsync runs without --perms, so a re-install leaves an existing dest file's mode intact;
-## the mode-fix then re-applied a bare 3-digit 'chmod 755', which STRIPPED the setuid bit.
-## A setuid a maintainer set (e.g. via postinst) must survive a later 'genmkfile install'.
+## --- a stale destination special bit is NORMALISED to the source mode ---------
+## git cannot store setuid/setgid/sticky, so the source never declares them: genmkfile installs
+## to the SOURCE-declared mode (0755), and a stale destination setuid (e.g. left by a prior
+## postinst, or on a re-install) is cleared -- keeping it would leave an updated 0755 binary
+## silently setuid-root. Special bits are re-applied by maintainer scripts, not genmkfile.
 run_install setuid CI= || true
 chmod u+s -- "${dest_dir}/usr/bin/exec-file"
 run_install setuid CI= || true
-check_mode 'setuid survives a re-install (mode-fix keeps the high bit)' '4755' \
+check_mode 'a stale setuid is normalised to the source mode on re-install' '755' \
    "${dest_dir}/usr/bin/exec-file"
 
 ## --- CANARY ------------------------------------------------------------------
