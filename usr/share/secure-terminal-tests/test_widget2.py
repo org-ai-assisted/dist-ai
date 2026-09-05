@@ -3539,6 +3539,9 @@ finally:
 # cwd_basename: the home directory renders as '~'
 _cw2 = SecureTerminal(command='/bin/cat')
 _cw2._pid = 1
+_cw2._spawn_starttime = None    # focus on the ~ mapping: disable the pid-reuse identity
+#                                 guard (its documented no-baseline fallback), since _pid=1
+#                                 is a mock that would else fail the /proc start-time check.
 _cw2._foreground_pgrp = lambda: None
 try:
     _os.readlink = lambda *_a, **_k: os.path.expanduser('~')  # type: ignore[assignment]
@@ -4494,6 +4497,46 @@ _tn = SecureTerminal(command='/bin/cat')
 ok(_tn._transcript_file is None,
    'transcript file: no path unless SECURE_TERMINAL_TRANSCRIPT_FILE is set')
 _tn.shutdown()
+
+# --- #25: multiple tabs must NOT clobber a shared SECURE_TERMINAL_TRANSCRIPT_FILE. Each tab
+# writes its OWN content; a single shared path let two tabs overwrite each other. The primary
+# (lowest live tab id) keeps the EXACT base path so the single-tab shot harness reads it
+# unchanged, and each additional tab writes 'base.<tab-id>' -- two live tabs, two files.
+_tp25 = os.path.join(tempfile.mkdtemp(prefix='st-tr25-'), 'transcript.txt')
+os.environ['SECURE_TERMINAL_TRANSCRIPT_FILE'] = _tp25
+try:
+    _w25 = MainWindow()                     # auto-creates tab 0
+    _w25.new_tab()                          # tab 1
+    _tabs25 = _w25._real_terms()
+    ok(len(_tabs25) >= 2, '#25 setup: a two-tab window')
+    _t0, _t1 = _tabs25[0], _tabs25[1]
+    feed_output(_t0, b'MARKER-TAB0\r\n')
+    feed_output(_t1, b'MARKER-TAB1\r\n')
+    _t0._write_transcript_file()
+    _t1._write_transcript_file()            # writes LAST -> on the old code this clobbers base
+    _suffixed25 = '%s.%d' % (_tp25, _w25._tab_ids[_t1])
+    with open(_tp25, encoding='utf-8') as _f25:
+        _base25 = _f25.read()
+    ok('MARKER-TAB0' in _base25 and 'MARKER-TAB1' not in _base25,
+       '#25: the base transcript path holds only the primary tab (no clobber)')
+    ok(os.path.exists(_suffixed25)
+       and 'MARKER-TAB1' in open(_suffixed25, encoding='utf-8').read(),
+       '#25: the second tab writes its own suffixed transcript file')
+finally:
+    del os.environ['SECURE_TERMINAL_TRANSCRIPT_FILE']
+
+# #25 (ai-review): a closing tab must stop its transcript debounce timer, so a late fire
+# cannot write (and clobber the primary tab's base path) after it leaves the tab bar.
+_tp25b = os.path.join(tempfile.mkdtemp(prefix='st-tr25b-'), 't.txt')
+os.environ['SECURE_TERMINAL_TRANSCRIPT_FILE'] = _tp25b
+try:
+    _ct25 = SecureTerminal(command='/bin/cat')
+    _ct25._transcript_timer.start()        # arm the debounce timer
+    _ct25.shutdown()
+    ok(not _ct25._transcript_timer.isActive(),
+       '#25: shutdown stops the transcript timer (no post-close clobber of the base path)')
+finally:
+    del os.environ['SECURE_TERMINAL_TRANSCRIPT_FILE']
 
 # transcript file: a co-resident attacker who pre-plants a file at the (old, guessable)
 # <path>.tmp must not capture the secret transcript. The write now uses an unguessable
@@ -5636,9 +5679,10 @@ def _tui_prompt_lines(feeds):
 _pw1, _pl1 = _tui_prompt_lines([b'tail-no-newline', _PS2004 + b'user@host:~$ '])
 ok(_pl1[-2:] == ['tail-no-newline', 'user@host:~$'],
    'TUI: an un-terminated last line breaks so the prompt starts on its own row (no inline marker)')
-ok(any(getattr(_pw1._screen.buffer[_y], 'no_newline', False)
-       for _y in range(_pw1._screen.lines)),
-   'TUI: the un-terminated row carries the no_newline flag for the gutter (copy-safe)')
+ok(getattr(_pw1._screen.buffer[0], 'no_newline', False),
+   'TUI: the un-terminated OUTPUT row (row 0) carries the no_newline flag for the gutter')
+ok(not getattr(_pw1._screen.buffer[1], 'no_newline', False),
+   'TUI: the PROMPT row (row 1) is NOT flagged (marker is on the output, not the prompt)')
 _pw1.shutdown()
 # column 0 (output ended WITH a newline): no spurious blank row before the prompt.
 _pw2, _pl2 = _tui_prompt_lines([b'lineA\r\nlineB\r\n', _PS2004 + b'user@host:~$ '])

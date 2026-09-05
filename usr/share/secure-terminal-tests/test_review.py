@@ -946,6 +946,54 @@ try:
 finally:
     _rev.sanitize_clipboard = _saved_sc
 
+# --- ai-review codex#1: a paste INTO the box re-arms the countdown --------------
+# The smarter countdown must still re-arm on a BULK paste (a fresh payload cannot skip
+# the anti-fat-finger delay by landing after an earlier countdown elapsed), even though
+# an ordinary keystroke does not re-arm.
+_tp = _FakeTerm()
+_bar.show_review(_tp, 'safe\ntext\n', 3, 'paste')
+_bar._do_strip()
+_bar._tick(); _bar._tick(); _bar._tick()
+ok(_bar._deliver.isEnabled(), 'precondition: countdown elapsed, Deliver enabled')
+QGuiApplication.clipboard().setText('rm -rf /tmp/x\necho owned')
+_bar._editor._paste_clipboard()                    # Ctrl+V a fresh multi-line payload
+ok(not _bar._deliver.isEnabled() and _bar._remaining > 0,
+   'codex#1: a paste into the box re-arms the countdown (payload cannot skip the delay)')
+_bar._tick(); _bar._tick(); _bar._tick()
+ok(_bar._deliver.isEnabled(), 'countdown elapses again')
+_bar._editor.keyPressEvent(key_ev(Qt.Key.Key_Z, text='z'))   # a plain keystroke
+ok(_bar._deliver.isEnabled() and _bar._remaining == 0,
+   'codex#1: a plain keystroke does NOT re-arm (only a paste/transform does)')
+_bar._choose('reject')
+
+# --- ai-review codex#2: transform state + verdict judge the UN-SHOWN TAIL -------
+# A look-alike PAST the box cap must keep Strip/Fold active and the verdict honest --
+# state judged on the shown box alone falsely disabled them and claimed plain ASCII.
+_tt2 = _FakeTerm()
+_bar.show_review(_tt2, 'A' * _rev._BOX_MAX + CYR_A, 0, 'paste')
+ok(_bar._strip.isEnabled() and _bar._fold.isEnabled(),
+   'codex#2: a tail look-alike keeps Strip + Fold active (not falsely no-op)')
+ok('already plain ASCII' not in _bar._transform_header.text(),
+   'codex#2: the header does not claim plain ASCII while the tail has a look-alike')
+ok('look-alikes remain' in _bar._detail.text(),
+   'codex#2: the verdict reports look-alikes remain (tail not certified clean)')
+_bar._do_strip()                                   # strip neutralizes box + tail
+ok('look-alikes remain' not in _bar._detail.text(),
+   'codex#2: after Strip the tail is folded/stripped -> verdict clears the look-alike row')
+_bar._choose('reject')
+
+# --- ai-review codex#3: "folded / none" uses the confusable count, not fold-no-op ---
+# Honest non-ASCII with NO look-alike (CJK) must read the look-alike row as MET; fold is
+# not a no-op there (it drops the CJK), so keying it to fold-no-op was a false "remain".
+_tt3 = _FakeTerm()
+_bar.show_review(_tt3, 'ab' + CJK, 0, 'paste')
+ok('Look-alikes folded / none' in _bar._detail.text(), 'the verdict names the look-alike row')
+ok('look-alikes remain' not in _bar._detail.text(),
+   'codex#3: no look-alike -> "folded / none" is MET (a CJK char is not a look-alike)')
+ok('unicode kept' in _bar._detail.text(),
+   'codex#3: the CJK still marks Plain ASCII unmet (honest non-ASCII)')
+_bar._choose('reject')
+
 # --- FULL-BAR ZOOM: every text widget scales, not just the editor box ----------
 _zt = _FakeTerm()
 _bar.show_review(_zt, _raw, 0, 'paste')
@@ -981,6 +1029,15 @@ ok(_bar._strip_cap.isVisibleTo(_bar),
 ok(_bar._strip.text() == 'Strip unicode' and _bar._keep.text() == 'Keep printable unicode'
    and _bar._restore.text() == 'Restore original',
    'responsive: a wide bar restores the full button labels')
+# codex#4: ZOOM alone (no resize) must recompute narrow-mode. At 900px width, zoom 200
+# scales the threshold to 1120 > 900, so it flips to narrow + short labels with NO resize.
+_bar.apply_zoom(200)
+ok(_bar._narrow and _bar._strip.text() == 'Strip'
+   and not _bar._strip_cap.isVisibleTo(_bar),
+   'codex#4: zooming past the breakpoint switches to narrow (short labels) without a resize')
+_bar.apply_zoom(100)
+ok((not _bar._narrow) and _bar._strip.text() == 'Strip unicode',
+   'codex#4: zooming back out restores wide mode + full labels')
 # a resize while NO review is open (bar between reviews) is a safe no-op relabel
 _bar._choose('reject')
 _bar.resize(420, 300)
@@ -1029,8 +1086,9 @@ _ed.keyPressEvent(key_ev(Qt.Key.Key_Minus, Qt.KeyboardModifier.ControlModifier, 
 _ed.keyPressEvent(key_ev(Qt.Key.Key_0, Qt.KeyboardModifier.ControlModifier, '0'))
 eq(_zoom_calls, [1, 1, -1, 'reset'],
    'Ctrl +/=/-/0 in the box drive the window zoom instead of being swallowed')
-ok('=' not in _ed.source() and '+' not in _ed.source() and '0' not in _ed.source(),
-   'the zoom chords never reach the box as typed characters')
+ok('=' not in _ed.source() and '+' not in _ed.source()
+   and '-' not in _ed.source() and '0' not in _ed.source(),
+   'the zoom chords (incl. Ctrl+-) never reach the box as typed characters')
 # a box whose top-level window has no zoom hooks: Ctrl-zoom is a safe no-op.
 # Keep a reference to the bare parent so its C++ object is not GC'd out from under the box.
 _bare_win = QWidget()

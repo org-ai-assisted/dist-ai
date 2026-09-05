@@ -1550,6 +1550,14 @@ if tui_available():
                % (name, cmd[0]))
             return
         _ft = SecureTerminal(command=cmd, tui=True)
+        # Show + size the widget as the REAL app does (the same idiom the transcript tests
+        # use): this delivers a genuine resizeEvent -> _sync_tui_size -> the child's winsize,
+        # so a full-screen program gets its initial SIGWINCH and paints. Without it, offscreen
+        # Qt sends no show/resize event and a child (esp. nano) occasionally never draws its
+        # first frame -> a blank grid flaked this E2E (#26). Diagnosed child-side (no unread
+        # pty data, so NOT a secure-terminal read bug); fixed at the source (0/25 vs 6/25).
+        _ft.resize(600, 400)
+        _ft.show()
         _frame = ''
         for _ in range(200):
             pump(50)
@@ -2701,7 +2709,7 @@ def _wait_cwd(pid, target, tries=60):
 
 
 _cwd_dir = _tfcwd.mkdtemp(prefix='st-cwd-')
-_cwt = SecureTerminal(command='/bin/cat', cwd=_cwd_dir)
+_cwt = spawn_live(command='/bin/cat', cwd=_cwd_dir)   # respawn a Qt-startup crash (#26)
 ok(_wait_cwd(_cwt._pid, _cwd_dir), 'a spawned shell starts in the requested cwd')
 eq(os.path.realpath(_cwt.shell_cwd()), os.path.realpath(_cwd_dir),
    'shell_cwd reports the shell working directory')
@@ -3969,9 +3977,13 @@ eq(''.join(c for c, _ in _zek), '[user ~]% ',
    'zsh prompt: a trailing SGR after the marker still does not flush')
 
 # --- left gutter: the no-trailing-newline marker is chrome, not document -------
-# The marker is a left-GUTTER annotation (not inline text): unforgeable (a program
-# cannot print its way into it), copy-safe (absent from the document), and it flags the
-# correct line in BOTH render paths.
+# The marker is a left-GUTTER annotation (not inline text): it cannot be forged by
+# printed CONTENT (a program cannot print "[no newline]" text or grey SGR into it) and is
+# copy-safe (absent from the document). The trigger is the shell's bracketed-paste
+# prompt-start boundary (\x1b[?2004h) -- the same structural signal the prompt-flush
+# already used, and the marker ("this line has no trailing newline") stays TRUE whoever
+# emits it; it is NOT a claim that a program cannot emit that boundary sequence. It flags
+# the correct line in BOTH render paths.
 _PS_B = _S.PROMPT_START.encode('ascii')
 
 
@@ -4051,6 +4063,71 @@ ok(any(txt.strip() == 'tui-out' and flag for txt, flag in _blocks_flagged(_gtui)
 ok('[no newline]' not in _gtui.transcript_text(),
    'gutter TUI: no inline marker text in the rendered grid (copy-safe)')
 _gtui.shutdown()
+
+# REGRESSION (ai-review: agy + claude + codex): the TUI no_newline flag rides the MUTABLE
+# pyte row object, so a row overwritten/erased in place must DROP the flag -- else the
+# gutter falsely marks unrelated later content ("no output lies"). _SafeHistoryScreen
+# clears it on draw / erase_in_line / erase_in_display.
+def _tui_flagged():
+    w = SecureTerminal(command='/bin/cat', tui=True)
+    w.resize(700, 300)
+    w.show()
+    feed_output(w, b'flagme' + _PS_B + b'$ ')
+    return w
+
+
+def _row0_flag(w):
+    return getattr(w._screen.buffer[0], 'no_newline', False)
+
+
+# a) cursor-addressed rewrite of the flagged row (draw over it) clears the flag
+_gsa = _tui_flagged()
+ok(_row0_flag(_gsa), 'gutter regression: row 0 is flagged before it is overwritten (canary)')
+feed_output(_gsa, b'\x1b[1;1Hfresh unrelated line\r\n')
+_gsa._force_current_frame()
+ok(not _row0_flag(_gsa),
+   'gutter regression: overwriting the flagged row (draw) clears its stale no_newline flag')
+ok(all(not flag for txt, flag in _blocks_flagged(_gsa) if 'fresh' in txt),
+   'gutter regression: the rewritten row is NOT falsely marked in the rendered gutter')
+_gsa.shutdown()
+# b) erase-in-line on the flagged row clears the flag
+_gsb = _tui_flagged()
+feed_output(_gsb, b'\x1b[1;1H\x1b[2K')          # cursor to row 0, erase the line
+ok(not _row0_flag(_gsb),
+   'gutter regression: erase-in-line clears the flagged row')
+_gsb.shutdown()
+# c) erase-in-display, all three regions (how 2 whole screen, 1 to-cursor, 0 from-cursor)
+_gsc2 = _tui_flagged()
+feed_output(_gsc2, b'\x1b[H\x1b[2J')            # clear: how=2
+ok(not _row0_flag(_gsc2), 'gutter regression: clear (erase-in-display how=2) drops the flag')
+_gsc2.shutdown()
+_gsc1 = _tui_flagged()
+feed_output(_gsc1, b'\x1b[1J')                  # how=1: start-to-cursor (cursor on row 1)
+ok(not _row0_flag(_gsc1), 'gutter regression: erase-in-display how=1 drops the flag')
+_gsc1.shutdown()
+_gsc0 = _tui_flagged()
+feed_output(_gsc0, b'\x1b[1;1H\x1b[0J')         # how=0: cursor(row 0)-to-end
+ok(not _row0_flag(_gsc0), 'gutter regression: erase-in-display how=0 drops the flag')
+_gsc0.shutdown()
+
+# REGRESSION (ai-review: codex): a WRAPPED flagged block must paint the glyph on its LAST
+# visual line, not the block centre (which a tall wrapped block pushes off-screen).
+_gwrap = SecureTerminal(command='/bin/cat', mode='detail')
+_gwrap.resize(200, 300)
+_gwrap.show()
+APP.processEvents()
+_gwrap._cols = 500                              # no hard-wrap; detail soft-wraps to the width
+feed_output(_gwrap, (b'X' * 60) + _PS_B + b'$ ')
+_gwrap._force_current_frame()
+_wrapped = [(b, top, bot) for b, top, bot in _gwrap._gutter_blocks()
+            if _gwrap._block_no_newline(b) and b.layout().lineCount() > 1]
+ok(bool(_wrapped), 'gutter regression: the flagged detail-mode block wraps to >1 visual line')
+_wb, _wtop, _wbot = _wrapped[0]
+ok(_gwrap._block_last_line_center(_wb, _wtop) > (_wtop + _wbot) / 2,
+   'gutter regression: the glyph rides the block LAST visual line, not its centre')
+_gwrap._gutter.repaint()                        # paint the wrapped-block glyph path
+APP.processEvents()
+_gwrap.shutdown()
 
 # --- security: an app cannot recolour or HIDE a neutralised marking -----------
 # A marking (the box glyph, or a Reveal/Detail <U+XXXX> badge -- same key, so the
@@ -4773,7 +4850,9 @@ eq(asent, [b'\x1b[A', b'\x1b[B', b'\x1b[D', b'\x1b[C', b'\x1b[H', b'\x1b[F', b'\
 
 # default tab label is the working-directory basename, not a static "shell":
 # "~" for home, else the directory name. The child forks in our cwd.
-cw = SecureTerminal(command='/bin/cat')
+# spawn_live respawns a Qt-offscreen startup crash so the child is live (#26): a
+# dead-on-arrival child made cwd_basename() return None and flaked this eq on CI.
+cw = spawn_live(command='/bin/cat')
 _cwd = os.getcwd()
 _expect = '~' if _cwd == os.path.expanduser('~') else (os.path.basename(_cwd) or '/')
 eq(cw.cwd_basename(), _expect, 'cwd_basename matches the shell working directory')
@@ -4818,9 +4897,31 @@ _clampt._screen.cursor.y = _clampt._screen.lines + 4     # park the cursor off t
 _clampt._screen.cursor.x = _clampt._screen.columns + 4
 _clampt._tui_grid_size = lambda: (10, 3)                 # force a shrink to 3 rows x 10 cols
 _clampt._sync_tui_size()
+# #29: on a WIDTH shrink the cursor clamps to the last real column (rows-1, cols-1); the
+# height-only case below is what must instead PRESERVE pyte's pending-autowrap (x == cols).
 ok(_clampt._screen.cursor.y == 2 and _clampt._screen.cursor.x == 9,
    'ai-review#5: a TUI shrink clamps the pyte cursor into the new grid (rows-1, cols-1)')
 _clampt.shutdown()
+
+# #29: a HEIGHT-only resize (cols unchanged) must NOT collapse pyte's pending-autowrap
+# (cursor.x == columns, a line filled exactly to the last column). A blanket min(x, cols-1)
+# demoted it, so the next printable byte OVERWROTE the last cell instead of autowrapping.
+_hw29 = SecureTerminal(command='/bin/cat', tui=True)
+feed_output(_hw29, b'x\r\n')                             # create the pyte screen
+_cols29 = _hw29._screen.columns
+_rows29 = _hw29._screen.lines
+feed_output(_hw29, b'A' * _cols29)                       # fill the row exactly -> pending wrap
+ok(_hw29._screen.cursor.x == _cols29,
+   '#29 setup: a full-width line leaves pyte in pending-autowrap (x == cols)')
+_hw29._tui_grid_size = lambda: (_cols29, _rows29 + 3)    # HEIGHT-only grow, cols unchanged
+_hw29._sync_tui_size()
+ok(_hw29._screen.cursor.x == _cols29,
+   '#29: a height-only resize preserves pyte pending-autowrap (x == cols, not demoted)')
+_y29 = _hw29._screen.cursor.y
+feed_output(_hw29, b'B')                                 # the next printable byte
+ok(_hw29._screen.cursor.y == _y29 + 1 and _hw29._screen.cursor.x == 1,
+   '#29: after a height-only resize the next byte autowraps instead of overwriting')
+_hw29.shutdown()
 
 # --- ai-review #12: a finished command's stuck colour must not bleed onto the shell
 # prompt in TUI mode. The reset is injected ahead of the bracketed-paste prompt-start
@@ -5288,6 +5389,87 @@ _mid.mouseReleaseEvent(_QME_sel(_QEv_sel.Type.MouseButtonRelease, _mid_pt, _mid_
                                 _Qt_sel.KeyboardModifier.NoModifier))
 eq(_mid.textCursor().selectedText(), 'clickme',
    'sel: a middle-click release does not clobber or swallow the word selection')
+
+
+# --- #28: ctl_send_text(submit=True) must NOT fire a bare submit CR when the line was only
+# PARTIALLY written. _dispatch_paste now returns _write's result, so a wedged/slow child (a
+# partial/timed-out write -> _write False) suppresses the CR that would else run a half line.
+_p28 = spawn_live(command='/bin/cat')
+_w28 = []
+def _fail_write(data, _sink=_w28):
+    _sink.append(bytes(data))
+    return False                            # simulate a partial / timed-out write to a wedged child
+_p28._write = _fail_write
+_err28 = _p28.ctl_send_text('echo hi', submit=True)
+ok(_err28 is not None, '#28: ctl reports a partial/timed-out write as an error, not a false ok')
+ok(len(_w28) == 1 and b'echo hi' in _w28[0], '#28: the single line is written once')
+ok(b'\r' not in b''.join(_w28),
+   '#28: a partial/timed-out write is NOT followed by a bare submit CR')
+_p28.shutdown()
+
+# --- #30: pid-reuse TOCTOU. After a child exits, reap_pty_children frees its pid before
+# _release_pty clears self._pid; the pid-trusting readers must reject a REUSED pid (a live but
+# unrelated process now in that slot) by /proc start-time identity, not read its cwd.
+_p30 = spawn_live(command=None)             # a login-shell tab with a live child
+_realpid30 = _p30._pid
+ok(_p30.shell_cwd(), '#30 setup: shell_cwd reads the live child cwd')
+# Simulate the pid freed and REUSED by an unrelated live process (this test process): the
+# same pid slot, a DIFFERENT /proc identity than the child we spawned.
+_p30._pid = os.getpid()
+eq(_p30.shell_cwd(), '',
+   '#30: shell_cwd refuses a reused pid instead of reading an unrelated process cwd')
+_fd30 = _p30._fd
+_p30._fd = None                             # no foreground pgrp -> cwd_basename uses self._pid
+eq(_p30.cwd_basename(), None,
+   '#30: cwd_basename refuses a reused shell pid when there is no foreground pgrp')
+_p30._fd = _fd30
+_p30._pid = _realpid30                       # restore BEFORE shutdown (never SIGHUP the test proc)
+_p30.shutdown()
+
+# --- #30 (ai-review): _release_pty must NOT SIGHUP a REUSED pid on tab close. reap_pty_children
+# frees the child's pid before _release_pty runs; hanging up a reused pid signals a stranger.
+import secure_terminal.terminal as _st30r                   # noqa: E402
+_rp = spawn_live(command=None)
+_rp_realpid = _rp._pid
+_rp._spawn_starttime = (_rp._spawn_starttime or 0) + 1      # force identity mismatch (reused pid)
+_killed30 = []
+_real_kill30 = _st30r.os.kill
+_st30r.os.kill = lambda _pid, _sig: _killed30.append((_pid, _sig))
+try:
+    _rp._release_pty(hangup=True)
+finally:
+    _st30r.os.kill = _real_kill30
+ok(_rp_realpid not in [_p for _p, _s in _killed30],
+   '#30: _release_pty does not SIGHUP a reused pid on close')
+
+# --- #26: the offscreen-SIGSEGV startup flake. A pty child that dies before execvp reads as
+# dead-on-arrival, making cwd_basename() return None -> the intermittent "1 failed" on CI.
+# spawn_live's bounded respawn must recover a live child deterministically. Simulate: the FIRST
+# child's /proc cwd probe raises (as a reaped child's does); later children are healthy.
+import secure_terminal.terminal as _stmod26                # noqa: E402
+_real_rl26 = _stmod26.os.readlink
+_dead26 = {'pid': None}
+def _flaky_rl26(path, _real=_real_rl26, _d=_dead26):
+    if path.startswith('/proc/') and path.endswith('/cwd'):
+        _pid = int(path.split('/')[2])
+        if _d['pid'] is None:
+            _d['pid'] = _pid               # pin the first probed child as the "crashed" one
+        if _pid == _d['pid']:
+            raise OSError('simulated Qt-startup-crash reap')
+    return _real(path)
+_stmod26.os.readlink = _flaky_rl26
+try:
+    _lt26 = spawn_live(command='/bin/cat')
+    ok(_lt26 is not None and _lt26._pid is not None and _dead26['pid'] is not None
+       and _lt26._pid != _dead26['pid'],
+       '#26: spawn_live respawns past a startup-crashed child to a live one')
+    _cwd26 = os.getcwd()
+    _exp26 = '~' if _cwd26 == os.path.expanduser('~') else (os.path.basename(_cwd26) or '/')
+    eq(_lt26.cwd_basename(), _exp26,
+       '#26: cwd_basename is deterministic after a startup-crash respawn')
+finally:
+    _stmod26.os.readlink = _real_rl26
+_lt26.shutdown()
 
 
 finish('widget')

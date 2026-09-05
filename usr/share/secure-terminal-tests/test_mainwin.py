@@ -236,6 +236,28 @@ try:
                      'Unicode', 'OSC ' + M.OSC_FEATURES[0][1])]
     ok(all(_c is not None and not _c.isEnabled() for _c in _locked_ctls),
        'a locked global-settings key disables its dialog control')
+    # #24: a Ctrl+wheel live-zoom during Global settings must be DISCARDED on Cancel, like
+    # every other field. _live_zoom mutates self._ui_scale and _persist()s it LIVE, so a
+    # bare cancel-returns-without-applying left the wheeled scale applied AND on disk.
+    win._locked = set()                       # ui_scale unlocked so the wheel step lands
+    win._ui_scale = 100                       # sub-max so on_zoom(1) MUST raise it
+    _persisted24 = []
+    _orig_persist24 = win._persist
+    win._persist = lambda: _persisted24.append(win._ui_scale)
+
+    def _cancel_after_zoom(_self):
+        _dialogs.append(_self)
+        if getattr(_self, 'on_zoom', None) is not None:
+            _self.on_zoom(1)                  # a Ctrl+wheel step WHILE the dialog is open
+        return int(QDialog.DialogCode.Rejected)
+    QDialog.exec = _cancel_after_zoom
+    win.show_global_settings()
+    QDialog.exec = _accept_exec
+    win._persist = _orig_persist24
+    eq(win._ui_scale, 100,
+       '#24: a Ctrl+wheel live-zoom is reverted when Global settings is cancelled')
+    ok(_persisted24 and _persisted24[-1] == 100,
+       '#24: the reverted ui_scale is re-persisted on cancel (no cancelled zoom left on disk)')
     win._locked = _sl_uiz
 finally:
     QDialog.exec = _orig_exec

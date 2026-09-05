@@ -144,7 +144,9 @@ if [ "${rc}" != 0 ]; then
 else
    fail 'a ref name with U+202E must abort the review, but it exited 0'
 fi
-git -C "${repo}" branch --delete --force -- "${spoof_name}" >/dev/null 2>&1
+## '|| true': a cleanup failure must not abort the suite mid-run under errexit
+## (that would silently drop the later cases with no PASS/FAIL summary).
+git -C "${repo}" branch --delete --force -- "${spoof_name}" >/dev/null 2>&1 || true
 
 ## 3) Non-ASCII unicode in a commit MESSAGE on the reviewed branch: the review
 ## must abort non-zero (check-ref-commits-for-unicode).
@@ -187,13 +189,23 @@ fi
 
 ## 5) After the operator CONSENTS to continue (case 4's 'yes' path), the raw
 ## commit message still reaches the terminal via 'git log'. It must be
-## neutralized (stcat), or a commit message carrying a terminal escape injects
-## the reviewer's terminal AFTER they waved the finding through. Craft a message
-## with a real ESC-based ANSI sequence, answer 'yes', capture the raw pty bytes,
-## and assert the escape was rendered inert -- not passed through raw.
+## neutralized, or a commit message carrying a terminal escape injects the
+## reviewer's terminal AFTER they waved the finding through. The payload is an
+## SGR COLOR sequence specifically: stcat neutralizes cursor/erase escapes
+## unconditionally, but KEEPS SGR when color is enabled -- so an attacker's
+## black-on-black (concealment) survives a bare 'git log | stcat'. Only the
+## tool's NO_COLOR=1 on that pipe closes it. Craft the message, answer 'yes' on
+## a color terminal, capture the raw pty bytes, and assert the escape was
+## rendered inert -- not passed through raw.
 run_review_tty_capture() {
    ## $1 = ref, $2 = answer, $3 = capture path. Exit code = the tool's.
-   REPO="${repo}" REF="$1" ANSWER="$2" CAPTURE="$3" "${tty_driver}"
+   ## Force a COLOR-capable terminal (TERM set, NO_COLOR unset) so the tool's
+   ## own NO_COLOR=1 on the git-log stcat is the ONLY thing that can neutralize
+   ## an SGR color sequence. Without this a no-color terminal makes stcat strip
+   ## SGR anyway, and the assertion could not tell the fix from its absence
+   ## (stcat neutralizes cursor/erase always, but keeps SGR when color is on).
+   TERM=xterm-256color env --unset=NO_COLOR -- \
+      REPO="${repo}" REF="$1" ANSWER="$2" CAPTURE="$3" "${tty_driver}"
 }
 git -C "${repo}" checkout --quiet -b esc feature
 printf '%s\n' 'fourth' >> "${repo}/file"
@@ -221,8 +233,146 @@ else
    pass 'ANSI in a consented commit message is neutralized in the git log (no raw escape to the terminal)'
 fi
 
+## 6) The pty driver must NOT report 124 (a hang) for a child that answered the
+## prompt and then went briefly quiet before exiting cleanly on its own. Drive a
+## fake subject that prompts, reads the answer, sleeps PAST the (lowered) idle
+## threshold, then exits 0: the driver's idle read fires, but the child is not
+## wedged, so its real exit code (0) -- not 124 -- must be reported.
+fake_dir="${work}/fake-subject"
+mkdir -p "${fake_dir}"
+cat > "${fake_dir}/dm-review-branch" <<'FAKE'
+#!/bin/bash
+printf 'Continue the review anyway?\n'
+read -r _answer
+sleep "${FAKE_QUIET_SECS:-2}"
+## Write FAR more than a pty buffer (~64KB) so a driver that stops draining
+## after the idle gap blocks us here indefinitely; then a marker the driver
+## must still capture, proving it drained to EOF rather than dropping tail bytes.
+head -c 200000 /dev/zero | tr '\0' x
+printf '\nPOSTGAP-MARKER-DONE\n'
+exit 0
+FAKE
+chmod +x "${fake_dir}/dm-review-branch"
+capture6="${work}/case6-capture"
+rc=0
+PATH="${fake_dir}:${PATH}" RUN_REVIEW_IDLE_SECS=1 FAKE_QUIET_SECS=2 \
+   REPO="${repo}" REF=x ANSWER=y CAPTURE="${capture6}" "${tty_driver}" >/dev/null 2>&1 || rc="$?"
+if [ "${rc}" != 0 ]; then
+   fail "driver should report the child's real 0 after a large post-gap write, got ${rc}"
+elif [ ! -f "${capture6}" ] || ! grep --fixed-strings --quiet -- 'POSTGAP-MARKER-DONE' "${capture6}"; then
+   fail 'driver dropped post-gap output (did not drain the pty to EOF)'
+else
+   pass 'driver drains large post-gap output and reports the real exit (0), not 124'
+fi
+
+## 7) A scan SETUP error (rc >= 2: a nonexistent/typo'd ref) must fail closed
+## with the real error, NOT be mislabeled "possible unicode spoofing" and NOT
+## trigger a pointless "continue anyway?" prompt for a review that cannot run.
+scan_err="${work}/scan-err"
+rc=0
+( cd -- "${repo}" && setsid dm-review-branch definitely-not-a-real-ref-xyz ) \
+   </dev/null >"${scan_err}" 2>&1 || rc="$?"
+if [ "${rc}" = 0 ]; then
+   fail 'reviewing a nonexistent ref should fail (non-zero), but it exited 0'
+elif [ "${rc}" -lt 2 ]; then
+   fail "a scan setup error must exit >= 2 (the scan-error code, not the rc-1 detection code), got ${rc}"
+elif grep --ignore-case --quiet -- 'possible unicode spoofing' "${scan_err}"; then
+   fail 'a nonexistent-ref setup error was mislabeled "possible unicode spoofing"'
+elif grep --ignore-case --quiet -- 'continue the review anyway' "${scan_err}"; then
+   fail 'a nonexistent-ref setup error triggered a pointless continue-prompt'
+else
+   pass 'a scan setup error (rc >= 2) fails closed with the real error, not a spoofing prompt'
+fi
+
+## 8) A missing scan dependency (unicode-show) must fail closed EARLY with a
+## clear message -- never reach the scan-consent prompt with a non-functioning
+## scanner. check-ref-*-for-unicode return a MISLEADING rc 1 (die_if_not_has)
+## when unicode-show is absent, which the rc==1 path would take for a detection
+## and let the operator wave past. Mirror every tool EXCEPT unicode-show onto a
+## PATH so the guard sees it as genuinely absent while the rest stay present.
+noshow_dir="${work}/no-unicode-show"
+mkdir -p "${noshow_dir}"
+mirror_bins() {
+   local d="$1" real
+   [ -d "${d}" ] || return 0
+   for real in "${d}"/*; do
+      ## Regular executables only: skip a symlink-to-directory such as
+      ## '/usr/bin/X11' -- it is not a tool, and --force would dereference an
+      ## already-mirrored one and try to create INSIDE the read-only dir.
+      [ -f "${real}" ] || continue
+      ## --no-dereference so re-mirroring a name (e.g. /bin and /usr/bin both
+      ## carry it on a merged-usr system) replaces the link, never follows it.
+      ln --symbolic --force --no-dereference -- "${real}" "${noshow_dir}/${real##*/}"
+   done
+}
+mirror_bins /usr/bin
+mirror_bins /bin
+mirror_bins "${DMF_REPO}/usr/bin"
+if [ -n "${HELPER_SCRIPTS_PATH:-}" ]; then
+   mirror_bins "${HELPER_SCRIPTS_PATH}/usr/bin"
+fi
+safe-rm --force -- "${noshow_dir}/unicode-show"
+guard_out="${work}/guard-out"
+rc=0
+( cd -- "${repo}" && PATH="${noshow_dir}" setsid dm-review-branch feature ) \
+   </dev/null >"${guard_out}" 2>&1 || rc="$?"
+if [ "${rc}" = 0 ]; then
+   fail 'a missing unicode-show should fail the review closed, but it exited 0'
+elif grep --ignore-case --quiet -- 'continue the review anyway' "${guard_out}"; then
+   fail 'a missing unicode-show reached the continue-prompt instead of failing closed'
+elif ! grep --ignore-case --quiet -- 'unicode-show' "${guard_out}"; then
+   fail 'a missing unicode-show did not produce a clear diagnostic naming it'
+else
+   pass 'a missing unicode-show fails closed early with a clear message, no prompt'
+fi
+
+## 9) Zero arguments must produce a clear usage message and fail closed, not a
+## bare 'unbound variable' nounset crash.
+noarg_out="${work}/noarg-out"
+rc=0
+( cd -- "${repo}" && dm-review-branch ) </dev/null >"${noarg_out}" 2>&1 || rc="$?"
+if [ "${rc}" = 0 ]; then
+   fail 'dm-review-branch with no argument should fail, but it exited 0'
+elif grep --quiet -- 'unbound variable' "${noarg_out}"; then
+   fail 'dm-review-branch with no argument crashed on nounset instead of a usage message'
+elif ! grep --ignore-case --quiet -- 'usage' "${noarg_out}"; then
+   fail 'dm-review-branch with no argument did not print a usage message'
+else
+   pass 'dm-review-branch with no argument fails closed with a usage message'
+fi
+
+## 10) A leading-dash ref must be rejected by dm-review-branch itself (defense in
+## depth), never passed bare to check-ref-commits-for-unicode where it could be
+## misparsed as an option.
+dash_out="${work}/dash-out"
+rc=0
+( cd -- "${repo}" && dm-review-branch -x ) </dev/null >"${dash_out}" 2>&1 || rc="$?"
+if [ "${rc}" = 0 ]; then
+   fail 'dm-review-branch with a leading-dash ref should fail, but it exited 0'
+elif ! grep --ignore-case --quiet -- "must not start with" "${dash_out}"; then
+   fail 'a leading-dash ref was not rejected by dm-review-branch itself'
+else
+   pass 'dm-review-branch rejects a leading-dash ref up front'
+fi
+
+## 11) 'set -x' must be OFF: xtrace echoes every command's EXPANDED form to the
+## terminal, so an untrusted ref name (git permits U+202E in a ref) would reach
+## the operator RAW, before any scan or stcat neutralization. Review a
+## nonexistent U+202E ref and assert its raw bytes never appear in the output.
+xtrace_out="${work}/xtrace-out"
+u202e_ref="$(printf 'evil\xe2\x80\xaeref')"
+rc=0
+( cd -- "${repo}" && dm-review-branch "${u202e_ref}" ) </dev/null >"${xtrace_out}" 2>&1 || rc="$?"
+if [ "${rc}" = 0 ]; then
+   fail 'reviewing a nonexistent U+202E ref should fail, but it exited 0'
+elif grep --fixed-strings --quiet -- "$(printf '\xe2\x80\xae')" "${xtrace_out}"; then
+   fail 'a raw U+202E ref name reached the terminal (xtrace leak -- set -x on?)'
+else
+   pass 'no raw ref name leaks to the terminal (set -x is off)'
+fi
+
 if [ "${fail_count}" -gt 0 ]; then
    printf '%s\n' "test_dm_review_branch: ${fail_count} assertion(s) failed." >&2
    exit 1
 fi
-printf '%s\n' 'test_dm_review_branch: OK -- commit-content and ref-name unicode scans both abort the review, and the consented-past git log is neutralized.'
+printf '%s\n' 'test_dm_review_branch: OK -- unicode scans abort the review, the consented-past git log is neutralized, the pty driver does not false-time-out, a scan setup error fails closed cleanly, and a missing scan dependency fails closed early.'

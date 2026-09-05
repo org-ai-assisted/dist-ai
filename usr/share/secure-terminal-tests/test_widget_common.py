@@ -63,7 +63,7 @@ __all__ = [
     'QApplication', 'QInputDialog', 'QKeyEvent', 'QColor', 'QTextCursor',
     'QEvent', 'Qt', 'QTimer', 'QEventLoop', 'QMimeData', 'QPoint', 'QMessageBox',
     'SecureTerminal', 'tui_available', 'APP', 'PASS', 'FAIL',
-    'ok', 'eq', 'pump', 'key', 'spy_writes', 'feed_output', 'mark_fg', 'mark_bg',
+    'ok', 'eq', 'pump', 'key', 'spy_writes', 'feed_output', 'spawn_live', 'mark_fg', 'mark_bg',
     'fmt_of_char', 'glyph_pt', 'finish',
 ]
 
@@ -93,7 +93,12 @@ def key(term, qtkey, text='', mods=Qt.KeyboardModifier.NoModifier):
 
 def spy_writes(term):
     sent: list[bytes] = []
-    term._write = sent.append          # pylint: disable=protected-access
+
+    def _spy(data):
+        sent.append(data)
+        return True                    # mimic _write's contract: True == every byte written
+
+    term._write = _spy                 # pylint: disable=protected-access
     return sent
 
 
@@ -218,6 +223,34 @@ def glyph_pt(term, idx):
     ra, rb = term.cursorRect(a), term.cursorRect(b)
     x = (ra.x() + rb.x()) // 2 if rb.x() > ra.x() else ra.x() + 3
     return QPoint(x, ra.center().y())
+
+
+def spawn_live(**kw):
+    """Construct a SecureTerminal whose pty child SURVIVED startup, respawning a Qt-offscreen
+    startup SIGSEGV/SIGABRT the way test_instances does. The child forks from this offscreen-Qt
+    process and occasionally crashes BEFORE execvp; that dead-on-arrival pid makes the
+    child-liveness readers (cwd_basename / shell_cwd / has_foreground_program) flip and fail an
+    otherwise-clean suite (the intermittent "1 failed" on CI). A bounded respawn turns that env
+    flake into a deterministic live child; a child that never comes up (a REAL bug, not the
+    flake) still surfaces after the bound -- the last term is returned, not masked."""
+    term = None
+    for _ in range(10):                    # cf. test_instances._SPAWN_ATTEMPTS
+        term = SecureTerminal(**kw)
+        for _ in range(200):               # settle: pid live AND /proc readable (past execvp)
+            pid = term._pid
+            if pid is None:
+                break                      # child already gone -> respawn
+            try:
+                os.readlink('/proc/%d/cwd' % pid)
+                return term                # alive: cwd_basename / shell_cwd will read cleanly
+            except OSError:
+                pass                       # not readable yet / crashed -> keep settling
+            pump(10)
+        try:
+            term.shutdown()               # startup flake -> release the pty and respawn
+        except Exception:
+            pass                          # best-effort: a half-built term must not abort retry
+    return term                            # never came up in the bound -> return last (fail loud)
 
 
 def finish(label):

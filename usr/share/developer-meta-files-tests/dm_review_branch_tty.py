@@ -18,9 +18,15 @@
 ##              the terminal would have received) is written there, so a caller
 ##              can assert what actually reached the terminal (e.g. that no raw
 ##              escape byte survived neutralization).
+##   RUN_REVIEW_IDLE_SECS -- per-read idle threshold (default 15); a test can
+##              lower it to exercise the "answered then briefly quiet before a
+##              clean exit" path without a real 15s wait.
 ##
-## Exit code 124 means the prompt never appeared within the timeout and the
-## child was killed -- always a suite failure, never a verdict.
+## Exit code 124 means the child never made progress: the prompt never appeared
+## (so the answer was never sent) OR the child had to be SIGKILLed as genuinely
+## wedged -- always a suite failure, never a verdict. A child that answers the
+## prompt and then goes briefly quiet before exiting on its OWN reports its own
+## exit code, not 124 (a quiet post-prompt gap is not a hang).
 
 import os
 import pty
@@ -33,6 +39,7 @@ repo = os.environ["REPO"]
 ref = os.environ["REF"]
 ans = os.environ["ANSWER"].encode() + b"\n"
 capture = os.environ.get("CAPTURE", "")
+idle_secs = float(os.environ.get("RUN_REVIEW_IDLE_SECS", "15"))
 
 pid, fd = pty.fork()
 if pid == 0:
@@ -57,40 +64,9 @@ if pid == 0:
         ## code path, and never leave a forked child alive on error.
         os._exit(127)
 
-buf = b""
-sent = False
-timed_out = False
-## Absolute cap as well as the per-read one: a child that keeps trickling
-## output resets the select timeout forever, so idle-timeout alone is not a
-## bound on this loop.
-overall = time.monotonic() + 60
-while True:
-    if time.monotonic() > overall:
-        timed_out = True
-        break
-    if not select.select([fd], [], [], 15)[0]:
-        timed_out = True
-        break
-    try:
-        data = os.read(fd, 4096)
-    except OSError:
-        break
-    if not data:
-        break
-    buf += data
-    if not sent and b"Continue the review anyway" in buf:
-        os.write(fd, ans)
-        sent = True
-
-
-## Reap without blocking forever. A child still sitting at its prompt (the
-## expected text never arrived, so the answer was never sent) would otherwise
-## make waitpid() hang for good -- the test must fail loud, not wedge.
-##
 ## Signal the whole process GROUP, not just the direct child: pty.fork() makes
 ## the child a session leader, so its git and any pager it started share that
-## group. Killing bash alone leaves them holding the pty open, and the final
-## blocking waitpid is then the thing that hangs.
+## group. Killing bash alone leaves them holding the pty open.
 def reap_group():
     try:
         os.killpg(os.getpgid(pid), signal.SIGKILL)
@@ -98,31 +74,67 @@ def reap_group():
         try:
             os.kill(pid, signal.SIGKILL)
         except OSError:
-            ## Last-resort reap: the group kill above already failed, and the
-            ## direct kill failing too means the child is gone (or unreachable).
-            ## Either way the waitpid loop below is the thing that decides, so
-            ## there is nothing left for this handler to do.
+            ## The group kill failed and so did the direct kill: the child is
+            ## gone or unreachable, so the waitpid below is what decides.
             pass
 
 
-deadline = time.monotonic() + 10
-while True:
-    waited, status = os.waitpid(pid, os.WNOHANG)
-    if waited:
-        break
-    if time.monotonic() > deadline:
+buf = b""
+sent = False
+killed = False
+
+
+def reap(force):
+    """Collect the child's wait status, bounded. force=True SIGKILLs first (and
+    sets `killed`); force=False waits for a clean exit and escalates to a kill
+    only if it overstays. Returns the wait status (0 if it cannot be collected)."""
+    global killed
+    if force:
         reap_group()
-        ## Bounded even now: a reaped group should be immediate, but this must
-        ## never be the call that wedges the suite.
-        hard = time.monotonic() + 5
-        while True:
-            waited, status = os.waitpid(pid, os.WNOHANG)
-            if waited or time.monotonic() > hard:
-                break
-            time.sleep(0.05)
-        timed_out = True
+        killed = True
+    deadline = time.monotonic() + 10
+    while True:
+        waited, st = os.waitpid(pid, os.WNOHANG)
+        if waited:
+            return st
+        if time.monotonic() > deadline:
+            return reap(True) if not force else 0
+        time.sleep(0.05)
+
+
+## Drain the pty CONTINUOUSLY while waiting for the child, so a child that
+## writes more than the pty buffer after a quiet gap never blocks on write()
+## (which would look like a hang, losing its real exit code AND dropping later
+## output from `buf`). The loop ends when the child exits (its own status) or a
+## hard cap is blown (wedged -> SIGKILL, 124). idle_secs bounds a single read;
+## `overall` bounds the whole wait so a forever-trickling child cannot run on.
+status = None
+overall = time.monotonic() + 60
+while status is None:
+    if time.monotonic() > overall:
+        status = reap(True)
         break
-    time.sleep(0.05)
+    if select.select([fd], [], [], idle_secs)[0]:
+        try:
+            data = os.read(fd, 65536)
+        except OSError:
+            ## Linux raises EIO on the master once the child closes the slave.
+            data = b""
+        if data:
+            buf += data
+            if not sent and b"Continue the review anyway" in buf:
+                os.write(fd, ans)
+                sent = True
+            continue
+        ## EOF: the child closed the pty and will not write again -- reap it.
+        status = reap(False)
+        break
+    ## Idle interval with nothing to read: did the child exit on its own?
+    waited, st = os.waitpid(pid, os.WNOHANG)
+    if waited:
+        status = st
+        break
+    ## Child alive and merely quiet (a legitimate sleep) -- keep draining.
 
 ## Persist the raw terminal bytes for the caller's inspection, before any
 ## timeout exit -- a truncated capture is still evidence of what reached the tty.
@@ -130,10 +142,16 @@ if capture:
     with open(capture, "wb") as capture_file:
         capture_file.write(buf)
 
-if timed_out:
+## 124 ONLY when the child never made progress: it had to be SIGKILLed as wedged,
+## or the prompt never appeared (so the answer was never sent). A child that
+## answered and then exited on its own -- even after a quiet gap -- reports its
+## real exit code; a post-prompt quiet spell is not a hang.
+if killed or not sent:
+    reason = ("child wedged; SIGKILLed"
+              if killed
+              else "no 'Continue the review anyway' prompt appeared")
     sys.stderr.write(
-        "run_review_tty: no 'Continue the review anyway' prompt within the "
-        "timeout; child killed. Output was:\n"
+        "run_review_tty: " + reason + ". Output was:\n"
         + buf.decode(errors="replace") + "\n")
     sys.exit(124)
 sys.exit(os.waitstatus_to_exitcode(status))
