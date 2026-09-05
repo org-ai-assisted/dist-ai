@@ -1756,13 +1756,17 @@ class TmpHardcode(Rule):
 class HelpFromComments(Rule):
     """R-153: never build help/usage by scraping the script's OWN comments (e.g.
     a grep of a '^##' anchor over "$0"). Flags a NON-comment line carrying BOTH a
-    '^#'/'^##' anchor literal AND a '$0' / '${BASH_SOURCE' self-reference (in
-    either order). A plain 'dirname "${BASH_SOURCE[0]}"' or 'head "$0"' has no
-    anchor and is spared; a comment line naming the anti-pattern is spared."""
+    '^#'/'^##' anchor literal AND a QUOTED '"$0"' / '"${BASH_SOURCE' self-reference
+    (in either order). The self-ref must be QUOTED -- the file-arg form a scrape
+    passes to grep/sed/awk/head ('grep "^##" "$0"'). A BARE '$0' is an awk FIELD,
+    not a shell self-reference, so an idiomatic 'awk "/^##/{...} ... $0 ..."' over
+    a data file is spared (it was a false positive). A plain 'dirname
+    "${BASH_SOURCE[0]}"' or 'head "$0"' has no anchor and is spared; a comment line
+    naming the anti-pattern is spared."""
 
     id = "R-153"
-    _ANCHOR_THEN_SELF = re.compile(r'\^##?.*(?:\$0|\$\{?BASH_SOURCE)')
-    _SELF_THEN_ANCHOR = re.compile(r'(?:\$0|\$\{?BASH_SOURCE).*\^##?')
+    _ANCHOR_THEN_SELF = re.compile(r'\^##?.*"(?:\$0|\$\{?BASH_SOURCE)')
+    _SELF_THEN_ANCHOR = re.compile(r'"(?:\$0|\$\{?BASH_SOURCE).*\^##?')
 
     def applies(self, ctx):
         return super().applies(ctx)

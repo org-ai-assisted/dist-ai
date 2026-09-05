@@ -657,6 +657,11 @@ expect_rule "R-153" "sed -n ${sq}s/${anchor} //p${sq} -- ${dq}${selfbs}${dq}"   
 expect_rule "R-153" "here=${dq}${dollar}(dirname -- ${dq}${selfbs}${dq})${dq}"                  "absent"
 expect_rule "R-153" "head --lines 5 -- ${dq}${self0}${dq}"                                      "absent"
 expect_rule "R-153" "grep ${sq}${caret}pattern${sq} -- somefile.txt"                            "absent"
+## A BARE '$0' is an awk FIELD, not a shell self-reference: an idiomatic awk over a DATA file, even with a
+## '^##' anchor in its program, is SPARED. A QUOTED '"$0"' file arg (the actual scrape signature) is still
+## flagged. (The quote is what distinguishes a scrape's file operand from an awk field.)
+expect_rule "R-153" "awk ${sq}/${anchor}/{seen=${self0}}${sq} -- somefile.txt"                  "absent"
+expect_rule "R-153" "awk ${sq}/${anchor}/${sq} -- ${dq}${self0}${dq}"                           "present"
 
 ## R-102: an extensionless but slashed path operand is FLAGGED; a flag or a
 ## variable operand is SPARED. (Body assembled below via ${sp} so this
