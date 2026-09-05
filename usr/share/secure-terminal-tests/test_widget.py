@@ -4897,10 +4897,10 @@ _clampt._screen.cursor.y = _clampt._screen.lines + 4     # park the cursor off t
 _clampt._screen.cursor.x = _clampt._screen.columns + 4
 _clampt._tui_grid_size = lambda: (10, 3)                 # force a shrink to 3 rows x 10 cols
 _clampt._sync_tui_size()
-# #29: y clamps to rows-1; x clamps to cols (NOT cols-1) so pyte's pending-autowrap state
-# (cursor.x == columns) is a valid post-clamp value -- see the height-only case below.
-ok(_clampt._screen.cursor.y == 2 and _clampt._screen.cursor.x == 10,
-   'ai-review#5: a TUI shrink clamps the pyte cursor into the new grid (rows-1, x<=cols)')
+# #29: on a WIDTH shrink the cursor clamps to the last real column (rows-1, cols-1); the
+# height-only case below is what must instead PRESERVE pyte's pending-autowrap (x == cols).
+ok(_clampt._screen.cursor.y == 2 and _clampt._screen.cursor.x == 9,
+   'ai-review#5: a TUI shrink clamps the pyte cursor into the new grid (rows-1, cols-1)')
 _clampt.shutdown()
 
 # #29: a HEIGHT-only resize (cols unchanged) must NOT collapse pyte's pending-autowrap
@@ -5401,7 +5401,7 @@ def _fail_write(data, _sink=_w28):
     return False                            # simulate a partial / timed-out write to a wedged child
 _p28._write = _fail_write
 _err28 = _p28.ctl_send_text('echo hi', submit=True)
-ok(_err28 is None, '#28: ctl_send_text returns None (delivery attempted)')
+ok(_err28 is not None, '#28: ctl reports a partial/timed-out write as an error, not a false ok')
 ok(len(_w28) == 1 and b'echo hi' in _w28[0], '#28: the single line is written once')
 ok(b'\r' not in b''.join(_w28),
    '#28: a partial/timed-out write is NOT followed by a bare submit CR')
@@ -5425,6 +5425,22 @@ eq(_p30.cwd_basename(), None,
 _p30._fd = _fd30
 _p30._pid = _realpid30                       # restore BEFORE shutdown (never SIGHUP the test proc)
 _p30.shutdown()
+
+# --- #30 (ai-review): _release_pty must NOT SIGHUP a REUSED pid on tab close. reap_pty_children
+# frees the child's pid before _release_pty runs; hanging up a reused pid signals a stranger.
+import secure_terminal.terminal as _st30r                   # noqa: E402
+_rp = spawn_live(command=None)
+_rp_realpid = _rp._pid
+_rp._spawn_starttime = (_rp._spawn_starttime or 0) + 1      # force identity mismatch (reused pid)
+_killed30 = []
+_real_kill30 = _st30r.os.kill
+_st30r.os.kill = lambda _pid, _sig: _killed30.append((_pid, _sig))
+try:
+    _rp._release_pty(hangup=True)
+finally:
+    _st30r.os.kill = _real_kill30
+ok(_rp_realpid not in [_p for _p, _s in _killed30],
+   '#30: _release_pty does not SIGHUP a reused pid on close')
 
 # --- #26: the offscreen-SIGSEGV startup flake. A pty child that dies before execvp reads as
 # dead-on-arrival, making cwd_basename() return None -> the intermittent "1 failed" on CI.

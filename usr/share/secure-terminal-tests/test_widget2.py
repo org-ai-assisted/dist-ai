@@ -4525,6 +4525,19 @@ try:
 finally:
     del os.environ['SECURE_TERMINAL_TRANSCRIPT_FILE']
 
+# #25 (ai-review): a closing tab must stop its transcript debounce timer, so a late fire
+# cannot write (and clobber the primary tab's base path) after it leaves the tab bar.
+_tp25b = os.path.join(tempfile.mkdtemp(prefix='st-tr25b-'), 't.txt')
+os.environ['SECURE_TERMINAL_TRANSCRIPT_FILE'] = _tp25b
+try:
+    _ct25 = SecureTerminal(command='/bin/cat')
+    _ct25._transcript_timer.start()        # arm the debounce timer
+    _ct25.shutdown()
+    ok(not _ct25._transcript_timer.isActive(),
+       '#25: shutdown stops the transcript timer (no post-close clobber of the base path)')
+finally:
+    del os.environ['SECURE_TERMINAL_TRANSCRIPT_FILE']
+
 # transcript file: a co-resident attacker who pre-plants a file at the (old, guessable)
 # <path>.tmp must not capture the secret transcript. The write now uses an unguessable
 # mkstemp name created O_EXCL + 0o600, so the pre-planted file is never reused and the
