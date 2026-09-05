@@ -1550,6 +1550,14 @@ if tui_available():
                % (name, cmd[0]))
             return
         _ft = SecureTerminal(command=cmd, tui=True)
+        # Show + size the widget as the REAL app does (the same idiom the transcript tests
+        # use): this delivers a genuine resizeEvent -> _sync_tui_size -> the child's winsize,
+        # so a full-screen program gets its initial SIGWINCH and paints. Without it, offscreen
+        # Qt sends no show/resize event and a child (esp. nano) occasionally never draws its
+        # first frame -> a blank grid flaked this E2E (#26). Diagnosed child-side (no unread
+        # pty data, so NOT a secure-terminal read bug); fixed at the source (0/25 vs 6/25).
+        _ft.resize(600, 400)
+        _ft.show()
         _frame = ''
         for _ in range(200):
             pump(50)
@@ -2701,7 +2709,7 @@ def _wait_cwd(pid, target, tries=60):
 
 
 _cwd_dir = _tfcwd.mkdtemp(prefix='st-cwd-')
-_cwt = SecureTerminal(command='/bin/cat', cwd=_cwd_dir)
+_cwt = spawn_live(command='/bin/cat', cwd=_cwd_dir)   # respawn a Qt-startup crash (#26)
 ok(_wait_cwd(_cwt._pid, _cwd_dir), 'a spawned shell starts in the requested cwd')
 eq(os.path.realpath(_cwt.shell_cwd()), os.path.realpath(_cwd_dir),
    'shell_cwd reports the shell working directory')
@@ -4842,7 +4850,9 @@ eq(asent, [b'\x1b[A', b'\x1b[B', b'\x1b[D', b'\x1b[C', b'\x1b[H', b'\x1b[F', b'\
 
 # default tab label is the working-directory basename, not a static "shell":
 # "~" for home, else the directory name. The child forks in our cwd.
-cw = SecureTerminal(command='/bin/cat')
+# spawn_live respawns a Qt-offscreen startup crash so the child is live (#26): a
+# dead-on-arrival child made cwd_basename() return None and flaked this eq on CI.
+cw = spawn_live(command='/bin/cat')
 _cwd = os.getcwd()
 _expect = '~' if _cwd == os.path.expanduser('~') else (os.path.basename(_cwd) or '/')
 eq(cw.cwd_basename(), _expect, 'cwd_basename matches the shell working directory')
@@ -4887,9 +4897,31 @@ _clampt._screen.cursor.y = _clampt._screen.lines + 4     # park the cursor off t
 _clampt._screen.cursor.x = _clampt._screen.columns + 4
 _clampt._tui_grid_size = lambda: (10, 3)                 # force a shrink to 3 rows x 10 cols
 _clampt._sync_tui_size()
-ok(_clampt._screen.cursor.y == 2 and _clampt._screen.cursor.x == 9,
-   'ai-review#5: a TUI shrink clamps the pyte cursor into the new grid (rows-1, cols-1)')
+# #29: y clamps to rows-1; x clamps to cols (NOT cols-1) so pyte's pending-autowrap state
+# (cursor.x == columns) is a valid post-clamp value -- see the height-only case below.
+ok(_clampt._screen.cursor.y == 2 and _clampt._screen.cursor.x == 10,
+   'ai-review#5: a TUI shrink clamps the pyte cursor into the new grid (rows-1, x<=cols)')
 _clampt.shutdown()
+
+# #29: a HEIGHT-only resize (cols unchanged) must NOT collapse pyte's pending-autowrap
+# (cursor.x == columns, a line filled exactly to the last column). A blanket min(x, cols-1)
+# demoted it, so the next printable byte OVERWROTE the last cell instead of autowrapping.
+_hw29 = SecureTerminal(command='/bin/cat', tui=True)
+feed_output(_hw29, b'x\r\n')                             # create the pyte screen
+_cols29 = _hw29._screen.columns
+_rows29 = _hw29._screen.lines
+feed_output(_hw29, b'A' * _cols29)                       # fill the row exactly -> pending wrap
+ok(_hw29._screen.cursor.x == _cols29,
+   '#29 setup: a full-width line leaves pyte in pending-autowrap (x == cols)')
+_hw29._tui_grid_size = lambda: (_cols29, _rows29 + 3)    # HEIGHT-only grow, cols unchanged
+_hw29._sync_tui_size()
+ok(_hw29._screen.cursor.x == _cols29,
+   '#29: a height-only resize preserves pyte pending-autowrap (x == cols, not demoted)')
+_y29 = _hw29._screen.cursor.y
+feed_output(_hw29, b'B')                                 # the next printable byte
+ok(_hw29._screen.cursor.y == _y29 + 1 and _hw29._screen.cursor.x == 1,
+   '#29: after a height-only resize the next byte autowraps instead of overwriting')
+_hw29.shutdown()
 
 # --- ai-review #12: a finished command's stuck colour must not bleed onto the shell
 # prompt in TUI mode. The reset is injected ahead of the bracketed-paste prompt-start
@@ -5357,6 +5389,71 @@ _mid.mouseReleaseEvent(_QME_sel(_QEv_sel.Type.MouseButtonRelease, _mid_pt, _mid_
                                 _Qt_sel.KeyboardModifier.NoModifier))
 eq(_mid.textCursor().selectedText(), 'clickme',
    'sel: a middle-click release does not clobber or swallow the word selection')
+
+
+# --- #28: ctl_send_text(submit=True) must NOT fire a bare submit CR when the line was only
+# PARTIALLY written. _dispatch_paste now returns _write's result, so a wedged/slow child (a
+# partial/timed-out write -> _write False) suppresses the CR that would else run a half line.
+_p28 = spawn_live(command='/bin/cat')
+_w28 = []
+def _fail_write(data, _sink=_w28):
+    _sink.append(bytes(data))
+    return False                            # simulate a partial / timed-out write to a wedged child
+_p28._write = _fail_write
+_err28 = _p28.ctl_send_text('echo hi', submit=True)
+ok(_err28 is None, '#28: ctl_send_text returns None (delivery attempted)')
+ok(len(_w28) == 1 and b'echo hi' in _w28[0], '#28: the single line is written once')
+ok(b'\r' not in b''.join(_w28),
+   '#28: a partial/timed-out write is NOT followed by a bare submit CR')
+_p28.shutdown()
+
+# --- #30: pid-reuse TOCTOU. After a child exits, reap_pty_children frees its pid before
+# _release_pty clears self._pid; the pid-trusting readers must reject a REUSED pid (a live but
+# unrelated process now in that slot) by /proc start-time identity, not read its cwd.
+_p30 = spawn_live(command=None)             # a login-shell tab with a live child
+_realpid30 = _p30._pid
+ok(_p30.shell_cwd(), '#30 setup: shell_cwd reads the live child cwd')
+# Simulate the pid freed and REUSED by an unrelated live process (this test process): the
+# same pid slot, a DIFFERENT /proc identity than the child we spawned.
+_p30._pid = os.getpid()
+eq(_p30.shell_cwd(), '',
+   '#30: shell_cwd refuses a reused pid instead of reading an unrelated process cwd')
+_fd30 = _p30._fd
+_p30._fd = None                             # no foreground pgrp -> cwd_basename uses self._pid
+eq(_p30.cwd_basename(), None,
+   '#30: cwd_basename refuses a reused shell pid when there is no foreground pgrp')
+_p30._fd = _fd30
+_p30._pid = _realpid30                       # restore BEFORE shutdown (never SIGHUP the test proc)
+_p30.shutdown()
+
+# --- #26: the offscreen-SIGSEGV startup flake. A pty child that dies before execvp reads as
+# dead-on-arrival, making cwd_basename() return None -> the intermittent "1 failed" on CI.
+# spawn_live's bounded respawn must recover a live child deterministically. Simulate: the FIRST
+# child's /proc cwd probe raises (as a reaped child's does); later children are healthy.
+import secure_terminal.terminal as _stmod26                # noqa: E402
+_real_rl26 = _stmod26.os.readlink
+_dead26 = {'pid': None}
+def _flaky_rl26(path, _real=_real_rl26, _d=_dead26):
+    if path.startswith('/proc/') and path.endswith('/cwd'):
+        _pid = int(path.split('/')[2])
+        if _d['pid'] is None:
+            _d['pid'] = _pid               # pin the first probed child as the "crashed" one
+        if _pid == _d['pid']:
+            raise OSError('simulated Qt-startup-crash reap')
+    return _real(path)
+_stmod26.os.readlink = _flaky_rl26
+try:
+    _lt26 = spawn_live(command='/bin/cat')
+    ok(_lt26 is not None and _lt26._pid is not None and _dead26['pid'] is not None
+       and _lt26._pid != _dead26['pid'],
+       '#26: spawn_live respawns past a startup-crashed child to a live one')
+    _cwd26 = os.getcwd()
+    _exp26 = '~' if _cwd26 == os.path.expanduser('~') else (os.path.basename(_cwd26) or '/')
+    eq(_lt26.cwd_basename(), _exp26,
+       '#26: cwd_basename is deterministic after a startup-crash respawn')
+finally:
+    _stmod26.os.readlink = _real_rl26
+_lt26.shutdown()
 
 
 finish('widget')
