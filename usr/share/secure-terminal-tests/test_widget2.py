@@ -5629,12 +5629,16 @@ def _tui_prompt_lines(feeds):
     return w, lines
 
 
-# bash order, mid-line: the prompt breaks onto its own row, with the faint
-# no-final-newline marker at the end of the command's output.
+# bash order, mid-line: the prompt breaks onto its own row; the no-final-newline flag
+# rides the pyte ROW (drives the left gutter), never inline text -- so the copyable
+# transcript holds ONLY the command output, and the un-terminated row is flagged.
 # CANARY: pre-fix TUI merged them ('tail-no-newlineuser@host:~$').
 _pw1, _pl1 = _tui_prompt_lines([b'tail-no-newline', _PS2004 + b'user@host:~$ '])
-ok(_pl1[-2:] == ['tail-no-newline [no newline]', 'user@host:~$'],
-   'TUI: an un-terminated last line is marked and breaks so the prompt starts on its own row')
+ok(_pl1[-2:] == ['tail-no-newline', 'user@host:~$'],
+   'TUI: an un-terminated last line breaks so the prompt starts on its own row (no inline marker)')
+ok(any(getattr(_pw1._screen.buffer[_y], 'no_newline', False)
+       for _y in range(_pw1._screen.lines)),
+   'TUI: the un-terminated row carries the no_newline flag for the gutter (copy-safe)')
 _pw1.shutdown()
 # column 0 (output ended WITH a newline): no spurious blank row before the prompt.
 _pw2, _pl2 = _tui_prompt_lines([b'lineA\r\nlineB\r\n', _PS2004 + b'user@host:~$ '])
