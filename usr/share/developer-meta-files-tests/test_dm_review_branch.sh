@@ -144,7 +144,9 @@ if [ "${rc}" != 0 ]; then
 else
    fail 'a ref name with U+202E must abort the review, but it exited 0'
 fi
-git -C "${repo}" branch --delete --force -- "${spoof_name}" >/dev/null 2>&1
+## '|| true': a cleanup failure must not abort the suite mid-run under errexit
+## (that would silently drop the later cases with no PASS/FAIL summary).
+git -C "${repo}" branch --delete --force -- "${spoof_name}" >/dev/null 2>&1 || true
 
 ## 3) Non-ASCII unicode in a commit MESSAGE on the reviewed branch: the review
 ## must abort non-zero (check-ref-commits-for-unicode).
@@ -243,17 +245,24 @@ cat > "${fake_dir}/dm-review-branch" <<'FAKE'
 printf 'Continue the review anyway?\n'
 read -r _answer
 sleep "${FAKE_QUIET_SECS:-2}"
-printf 'done after the quiet gap\n'
+## Write FAR more than a pty buffer (~64KB) so a driver that stops draining
+## after the idle gap blocks us here indefinitely; then a marker the driver
+## must still capture, proving it drained to EOF rather than dropping tail bytes.
+head -c 200000 /dev/zero | tr '\0' x
+printf '\nPOSTGAP-MARKER-DONE\n'
 exit 0
 FAKE
 chmod +x "${fake_dir}/dm-review-branch"
+capture6="${work}/case6-capture"
 rc=0
 PATH="${fake_dir}:${PATH}" RUN_REVIEW_IDLE_SECS=1 FAKE_QUIET_SECS=2 \
-   REPO="${repo}" REF=x ANSWER=y "${tty_driver}" >/dev/null 2>&1 || rc="$?"
-if [ "${rc}" = 0 ]; then
-   pass 'driver reports the child real exit (0) after an answered-then-quiet gap, not 124'
+   REPO="${repo}" REF=x ANSWER=y CAPTURE="${capture6}" "${tty_driver}" >/dev/null 2>&1 || rc="$?"
+if [ "${rc}" != 0 ]; then
+   fail "driver should report the child's real 0 after a large post-gap write, got ${rc}"
+elif [ ! -f "${capture6}" ] || ! grep --fixed-strings --quiet -- 'POSTGAP-MARKER-DONE' "${capture6}"; then
+   fail 'driver dropped post-gap output (did not drain the pty to EOF)'
 else
-   fail "driver should report the child's real 0 after a post-prompt quiet gap, got ${rc}"
+   pass 'driver drains large post-gap output and reports the real exit (0), not 124'
 fi
 
 ## 7) A scan SETUP error (rc >= 2: a nonexistent/typo'd ref) must fail closed
@@ -265,6 +274,8 @@ rc=0
    </dev/null >"${scan_err}" 2>&1 || rc="$?"
 if [ "${rc}" = 0 ]; then
    fail 'reviewing a nonexistent ref should fail (non-zero), but it exited 0'
+elif [ "${rc}" -lt 2 ]; then
+   fail "a scan setup error must exit >= 2 (the scan-error code, not the rc-1 detection code), got ${rc}"
 elif grep --ignore-case --quiet -- 'possible unicode spoofing' "${scan_err}"; then
    fail 'a nonexistent-ref setup error was mislabeled "possible unicode spoofing"'
 elif grep --ignore-case --quiet -- 'continue the review anyway' "${scan_err}"; then
@@ -273,8 +284,44 @@ else
    pass 'a scan setup error (rc >= 2) fails closed with the real error, not a spoofing prompt'
 fi
 
+## 8) A missing scan dependency (unicode-show) must fail closed EARLY with a
+## clear message -- never reach the scan-consent prompt with a non-functioning
+## scanner. check-ref-*-for-unicode return a MISLEADING rc 1 (die_if_not_has)
+## when unicode-show is absent, which the rc==1 path would take for a detection
+## and let the operator wave past. Mirror every tool EXCEPT unicode-show onto a
+## PATH so the guard sees it as genuinely absent while the rest stay present.
+noshow_dir="${work}/no-unicode-show"
+mkdir -p "${noshow_dir}"
+mirror_bins() {
+   local d="$1" real
+   [ -d "${d}" ] || return 0
+   for real in "${d}"/*; do
+      [ -e "${real}" ] || continue
+      ln --symbolic --force -- "${real}" "${noshow_dir}/${real##*/}"
+   done
+}
+mirror_bins /usr/bin
+mirror_bins "${DMF_REPO}/usr/bin"
+if [ -n "${HELPER_SCRIPTS_PATH:-}" ]; then
+   mirror_bins "${HELPER_SCRIPTS_PATH}/usr/bin"
+fi
+safe-rm --force -- "${noshow_dir}/unicode-show"
+guard_out="${work}/guard-out"
+rc=0
+( cd -- "${repo}" && PATH="${noshow_dir}" setsid dm-review-branch feature ) \
+   </dev/null >"${guard_out}" 2>&1 || rc="$?"
+if [ "${rc}" = 0 ]; then
+   fail 'a missing unicode-show should fail the review closed, but it exited 0'
+elif grep --ignore-case --quiet -- 'continue the review anyway' "${guard_out}"; then
+   fail 'a missing unicode-show reached the continue-prompt instead of failing closed'
+elif ! grep --ignore-case --quiet -- 'unicode-show' "${guard_out}"; then
+   fail 'a missing unicode-show did not produce a clear diagnostic naming it'
+else
+   pass 'a missing unicode-show fails closed early with a clear message, no prompt'
+fi
+
 if [ "${fail_count}" -gt 0 ]; then
    printf '%s\n' "test_dm_review_branch: ${fail_count} assertion(s) failed." >&2
    exit 1
 fi
-printf '%s\n' 'test_dm_review_branch: OK -- unicode scans abort the review, the consented-past git log is neutralized, the pty driver does not false-time-out, and a scan setup error fails closed cleanly.'
+printf '%s\n' 'test_dm_review_branch: OK -- unicode scans abort the review, the consented-past git log is neutralized, the pty driver does not false-time-out, a scan setup error fails closed cleanly, and a missing scan dependency fails closed early.'
