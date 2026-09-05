@@ -3670,6 +3670,20 @@ ok(_osc_notice_tui(None, b'\x1b]52;c;?\x07') == ['osc_clipboard_read'],
    'TUI: a refused clipboard-read OSC advises')
 ok(_osc_notice_tui('osc_title', b'\x1b]0;honored\x07') == [],
    'TUI: an ENABLED OSC type is honored, not advised (no false-refusal banner)')
+# str-vs-bytes parity: _notice_osc (str) must behave byte-for-byte like _handle_osc (bytes).
+# (1) a Unicode-digit OSC code -- str \d would match it, bytes \d cannot, so re.ASCII keeps
+# the advisory from firing on input the enforcement never recognizes.
+ok(_osc_notice_tui(None, ('\x1b]' + chr(0x0665) + chr(0x0662) + ';?\x07').encode('utf-8')) == [],
+   'TUI: a Unicode-digit OSC code is not matched (ASCII-only), matching _handle_osc')
+# (2) a Unicode space after the '?' -- str.rstrip() would drop it (-> read), but bytes.rstrip()
+# keeps it (-> write); strip only the ASCII set so read/write matches the enforcement.
+ok(_osc_notice_tui(None, ('\x1b]52;?' + chr(0x3000) + '\x07').encode('utf-8')) == ['osc_clipboard'],
+   'TUI: a Unicode space after ? is not stripped -> WRITE, matching bytes.rstrip')
+# (3) an early never-completed introducer + a trailing genuinely-open OSC over the cap apart:
+# the carry must hold the LAST unterminated introducer (rfind), as _handle_osc does, so the
+# trailing OSC completes next chunk -- not the FIRST (which would be over-cap and drop it).
+ok(_osc_notice_tui(None, b'\x1b]1;' + b'A' * 100000 + b'\x1b]2;partial', b';more\x07') == ['osc_title'],
+   'TUI: the carry holds the last unterminated introducer (rfind), reassembling like _handle_osc')
 # split across reads: the TUI grid feeds the RAW chunk, so _notice_osc reassembles a
 # split OSC (its own carry) exactly as CLI's feed_chunk_carry does -- else a split
 # introducer would EVADE the advisory and a split OSC-52 '?' would MISCLASSIFY a refused
