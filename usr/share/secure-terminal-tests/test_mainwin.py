@@ -2225,6 +2225,62 @@ eq(win._advisories.get(_esc_term), ('escape', 'newer freeze'),
 win._advisories.pop(_esc_term, None)
 win._esc_notified.discard(_esc_term)
 
+# The advisory banner is a top OVERLAY, not a layout item: showing it must NOT resize
+# the terminal grid. As a layout sibling it shrank the grid, SIGWINCHing the child --
+# which re-prompts the shell and reflows a full-screen program (the broken-TUI-shot
+# regression). It reserves a winsize-neutral top INSET instead, so content renders
+# below the banner. Canary: against the old (layout) code _rows shrinks here.
+_ov = MainWindow()
+_ov.resize(900, 640)
+_ov.show()
+pump(50)
+_ov.set_tui(True)
+# settle the offscreen layout fully before sampling the baseline grid, so a
+# mid-settle read cannot masquerade as a banner-induced change.
+for _ in range(6):
+    pump(50)
+_ovt = _ov.current()
+_ov_rows0, _ov_cols0 = _ovt._rows, _ovt._cols
+_ov._osc_notified = {p for p in _ov._osc_notified if p[0] is not _ovt}
+_ov._advisories.pop(_ovt, None)
+_ov._on_osc_used(_ovt, 'osc_title')          # raise the OSC advisory for the current tab
+pump(50)
+ok(_ov._banner.isVisible(), 'advisory overlay: the banner is shown for the current tab')
+eq(_ovt._rows, _ov_rows0,
+   'advisory overlay: showing the banner does NOT change the grid rows (no SIGWINCH)')
+eq(_ovt._cols, _ov_cols0,
+   'advisory overlay: showing the banner does NOT change the grid cols')
+ok(_ovt._chrome_top_inset > 0,
+   'advisory overlay: the terminal reserves a top inset so content sits below the banner')
+_ov_inset0 = _ovt._chrome_top_inset
+_ov._position_banner()                        # idempotent re-place (same width/font)
+eq(_ovt._chrome_top_inset, _ov_inset0,
+   'advisory overlay: re-placing the banner at the same size is a no-op inset')
+_ov._dismiss_advisory()                       # the X button: hide + release the inset
+pump(50)
+ok(not _ov._banner.isVisible(), 'advisory overlay: dismiss hides the banner')
+eq(_ovt._chrome_top_inset, 0,
+   'advisory overlay: dismissing releases the top inset')
+eq(_ovt._rows, _ov_rows0,
+   'advisory overlay: hiding the banner also leaves the grid rows unchanged')
+_ov.close()
+
+# Smoke test: closing the LAST tab while the banner is up must not crash. The
+# invariant is that current() is live whenever the banner shows, but the close/
+# resize/_refresh ordering is subtle, so _position_banner keeps a None-guard as a
+# belt-and-suspenders against a real-GUI timing this offscreen harness cannot force.
+_ov2 = MainWindow()
+_ov2.resize(900, 640)
+_ov2.show()
+pump(50)
+_ov2._on_osc_used(_ov2.current(), 'osc_title')
+pump(20)
+ok(_ov2._banner.isVisible(), 'advisory overlay: banner shown before the last-tab close')
+_ov2.close_tab(0)                             # empties the window with the banner still visible
+pump(20)
+ok(True, 'advisory overlay: closing the last tab with the banner up does not crash')
+_ov2.close()
+
 # --- reviewdrain15 batch-2 security findings (admin-lock bypass + session DoS) ----
 _b2_lock = set(win._locked)
 # #3: the legacy "Allow title" control must refuse a GRANULAR osc_title/osc_notify
