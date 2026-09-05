@@ -3969,9 +3969,13 @@ eq(''.join(c for c, _ in _zek), '[user ~]% ',
    'zsh prompt: a trailing SGR after the marker still does not flush')
 
 # --- left gutter: the no-trailing-newline marker is chrome, not document -------
-# The marker is a left-GUTTER annotation (not inline text): unforgeable (a program
-# cannot print its way into it), copy-safe (absent from the document), and it flags the
-# correct line in BOTH render paths.
+# The marker is a left-GUTTER annotation (not inline text): it cannot be forged by
+# printed CONTENT (a program cannot print "[no newline]" text or grey SGR into it) and is
+# copy-safe (absent from the document). The trigger is the shell's bracketed-paste
+# prompt-start boundary (\x1b[?2004h) -- the same structural signal the prompt-flush
+# already used, and the marker ("this line has no trailing newline") stays TRUE whoever
+# emits it; it is NOT a claim that a program cannot emit that boundary sequence. It flags
+# the correct line in BOTH render paths.
 _PS_B = _S.PROMPT_START.encode('ascii')
 
 
@@ -4051,6 +4055,71 @@ ok(any(txt.strip() == 'tui-out' and flag for txt, flag in _blocks_flagged(_gtui)
 ok('[no newline]' not in _gtui.transcript_text(),
    'gutter TUI: no inline marker text in the rendered grid (copy-safe)')
 _gtui.shutdown()
+
+# REGRESSION (ai-review: agy + claude + codex): the TUI no_newline flag rides the MUTABLE
+# pyte row object, so a row overwritten/erased in place must DROP the flag -- else the
+# gutter falsely marks unrelated later content ("no output lies"). _SafeHistoryScreen
+# clears it on draw / erase_in_line / erase_in_display.
+def _tui_flagged():
+    w = SecureTerminal(command='/bin/cat', tui=True)
+    w.resize(700, 300)
+    w.show()
+    feed_output(w, b'flagme' + _PS_B + b'$ ')
+    return w
+
+
+def _row0_flag(w):
+    return getattr(w._screen.buffer[0], 'no_newline', False)
+
+
+# a) cursor-addressed rewrite of the flagged row (draw over it) clears the flag
+_gsa = _tui_flagged()
+ok(_row0_flag(_gsa), 'gutter regression: row 0 is flagged before it is overwritten (canary)')
+feed_output(_gsa, b'\x1b[1;1Hfresh unrelated line\r\n')
+_gsa._force_current_frame()
+ok(not _row0_flag(_gsa),
+   'gutter regression: overwriting the flagged row (draw) clears its stale no_newline flag')
+ok(all(not flag for txt, flag in _blocks_flagged(_gsa) if 'fresh' in txt),
+   'gutter regression: the rewritten row is NOT falsely marked in the rendered gutter')
+_gsa.shutdown()
+# b) erase-in-line on the flagged row clears the flag
+_gsb = _tui_flagged()
+feed_output(_gsb, b'\x1b[1;1H\x1b[2K')          # cursor to row 0, erase the line
+ok(not _row0_flag(_gsb),
+   'gutter regression: erase-in-line clears the flagged row')
+_gsb.shutdown()
+# c) erase-in-display, all three regions (how 2 whole screen, 1 to-cursor, 0 from-cursor)
+_gsc2 = _tui_flagged()
+feed_output(_gsc2, b'\x1b[H\x1b[2J')            # clear: how=2
+ok(not _row0_flag(_gsc2), 'gutter regression: clear (erase-in-display how=2) drops the flag')
+_gsc2.shutdown()
+_gsc1 = _tui_flagged()
+feed_output(_gsc1, b'\x1b[1J')                  # how=1: start-to-cursor (cursor on row 1)
+ok(not _row0_flag(_gsc1), 'gutter regression: erase-in-display how=1 drops the flag')
+_gsc1.shutdown()
+_gsc0 = _tui_flagged()
+feed_output(_gsc0, b'\x1b[1;1H\x1b[0J')         # how=0: cursor(row 0)-to-end
+ok(not _row0_flag(_gsc0), 'gutter regression: erase-in-display how=0 drops the flag')
+_gsc0.shutdown()
+
+# REGRESSION (ai-review: codex): a WRAPPED flagged block must paint the glyph on its LAST
+# visual line, not the block centre (which a tall wrapped block pushes off-screen).
+_gwrap = SecureTerminal(command='/bin/cat', mode='detail')
+_gwrap.resize(200, 300)
+_gwrap.show()
+APP.processEvents()
+_gwrap._cols = 500                              # no hard-wrap; detail soft-wraps to the width
+feed_output(_gwrap, (b'X' * 60) + _PS_B + b'$ ')
+_gwrap._force_current_frame()
+_wrapped = [(b, top, bot) for b, top, bot in _gwrap._gutter_blocks()
+            if _gwrap._block_no_newline(b) and b.layout().lineCount() > 1]
+ok(bool(_wrapped), 'gutter regression: the flagged detail-mode block wraps to >1 visual line')
+_wb, _wtop, _wbot = _wrapped[0]
+ok(_gwrap._block_last_line_center(_wb, _wtop) > (_wtop + _wbot) / 2,
+   'gutter regression: the glyph rides the block LAST visual line, not its centre')
+_gwrap._gutter.repaint()                        # paint the wrapped-block glyph path
+APP.processEvents()
+_gwrap.shutdown()
 
 # --- security: an app cannot recolour or HIDE a neutralised marking -----------
 # A marking (the box glyph, or a Reveal/Detail <U+XXXX> badge -- same key, so the
