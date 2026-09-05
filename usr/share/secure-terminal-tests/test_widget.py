@@ -3756,6 +3756,21 @@ def _overcap_seen(_tui):
     return _s
 ok(_overcap_seen(False) == ['osc_other'] and _overcap_seen(True) == ['osc_other'],
    'FIX B: an over-cap OSC surfaces osc_other symmetrically in CLI and TUI (no evasion, no drift)')
+# a program must NOT be able to suppress the advisory for its other OSC attempts by opening an
+# OSC-8 hyperlink and never closing it. _handle_osc's OSC-8 opener holdback holds back
+# EVERYTHING after the opener (to reassemble the split pair for its phishing notice); the
+# advisory deliberately does NOT mirror that holdback (osc8=False in _notice_osc), so a
+# clipboard-write attempt hidden behind an unclosed opener is still surfaced -- in BOTH modes.
+def _hl_suppress_seen(_tui):
+    _t = SecureTerminal(command='/bin/cat', tui=_tui)
+    _t.apply_osc('osc_hyperlink', True)          # holdback would be armed if mirrored
+    _s = []
+    _t.osc_used.connect(lambda k: _s.append(k))
+    feed_output(_t, b'\x1b]8;;http://attacker.example/\x07\x1b]52;c;aGVsbG8=\x07')
+    _t.close()
+    return _s
+ok('osc_clipboard' in _hl_suppress_seen(False) and 'osc_clipboard' in _hl_suppress_seen(True),
+   'an unclosed OSC-8 opener does NOT suppress the advisory for a trailing clipboard write')
 # _OSC_ANY (shared with _handle_osc) retries at every position: a code-0 whose params hold a
 # raw ESC is not a valid OSC, but the embedded well-formed OSC 52 after it IS -- so the advisory
 # reports the clipboard write _handle_osc would actually dispatch, not the broken title.
