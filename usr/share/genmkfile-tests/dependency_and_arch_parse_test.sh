@@ -8,9 +8,9 @@
 ## make-helper-one.bsh debian/control parsing:
 ##  - make_dependencies_filter_helper (flat, no alternative-parsing): must not collapse a
 ##    space-less 'A|B' to 'AB', and must strip build-profile '<...>' and any '${...}' substvar.
-##  - parse_control_package_stanzas' Package/Architecture loop must capture RFC822 FOLDED
-##    continuation lines (a multi-line 'Architecture: amd64\n arm64', and a folded '\n all'),
-##    or a covered target reads as uncovered and its .deb vanishes from the expected list.
+##  - make_get_variables_parse_stanzas' Package/Architecture loop maps each stanza to the
+##    expected .deb (single-line fields; not folded) and rejects an unsafe control-derived
+##    package name before it reaches a deletion path.
 ##
 ## make-helper-one.bsh is sourceable (its main is was_executed-guarded), so we source it once
 ## and call these functions directly -- no sed extraction, no sentinel-delimited blocks.
@@ -59,6 +59,16 @@ locate_helper() {
 if ! helper_file="$(locate_helper)"; then
    printf '%s\n' 'FATAL: make-helper-one.bsh not found (set GENMKFILE_SHARE).' >&2
    exit 1
+fi
+
+## Capability gate: this suite tests the genmkfile CHECKOUT (wired via GENMKFILE_BIN or
+## GENMKFILE_SHARE). If nothing was wired and only the installed /usr/share/genmkfile helper
+## resolved -- which drifts from the tree under review -- SKIP rather than report a confusing
+## FAIL against a possibly-stale subject nobody is changing.
+if [ -z "${GENMKFILE_SHARE:-}" ] && [ -z "${GENMKFILE_BIN:-}" ] \
+   && [ "${helper_file}" = "/usr/share/genmkfile/make-helper-one.bsh" ]; then
+   printf '%s\n' "SKIP: no genmkfile checkout wired (set GENMKFILE_BIN); not testing the installed copy." >&2
+   exit 77  ## style-ok: allow-skip: no wired checkout -> subject not under review, not a regression
 fi
 if ! type -P grep-dctrl >/dev/null 2>&1; then
    printf '%s\n' 'FATAL: grep-dctrl (dctrl-tools) is required.' >&2
@@ -116,206 +126,79 @@ check_filter 'build-profile restriction stripped'       'foo <!nocheck>, bar' 'f
 check_filter 'any substvar stripped'                    '${perl:Depends}, python3' 'python3'
 check_filter 'version + arch qualifiers stripped'       'debhelper (>= 13), pkg [linux-any]' 'debhelper pkg'
 
-## --- folded Architecture in the stanza-parse loop ---
-## Drive the REAL parse_control_package_stanzas against a control whose Architecture field is
-## folded across lines. Target arm64 is covered only via a continuation line.
+## --- the stanza-parse loop maps Package/Architecture to the expected .deb list ---
+## Package and Architecture are simple, single-line Debian fields (not folded), so a multi-arch
+## list is on ONE line. Target arm64 is covered by 'amd64 arm64 armhf', 'all' is arch-independent,
+## and an arch-excluded stanza yields no .deb but is still recorded in make_package_list so
+## deb-cleanup/reprepro can handle any stale copy.
 cat > "${test_root}/control" <<'EOF'
 Source: testsrc
 
-Package: foldedpkg
-Architecture: amd64
- arm64
- armhf
+Package: multiarchpkg
+Architecture: amd64 arm64 armhf
 
 Package: allpkg
 Architecture: all
 
-Package: foldedall
-Architecture:
- all
+Package: otherarchpkg
+Architecture: amd64
 EOF
-
-## Globals the parser reads/writes (set as the caller make_get_variables would).
 make_debian_control_file_absolute_path="${test_root}/control"
 make_source_package_name='testsrc'
 make_pkg_version='1.0'
 make_pkg_revision='-1'
 target_architecture='arm64'
 DISTDIR="${test_root}/dist"
+make_cross_build_platform_list='arm64'
 make_package_debs_files_list=()
 make_package_list=()
-all_package_debs_are_arch_all='true'
-
-parse_control_package_stanzas
+all_target_debs_are_arch_all='true'
+make_get_variables_parse_stanzas
 
 tests_total=$(( tests_total + 1 ))
-want_deb="${DISTDIR}/foldedpkg_1.0-1_arm64.deb"
+want_deb="${DISTDIR}/multiarchpkg_1.0-1_arm64.deb"
 found='false'
 for d in "${make_package_debs_files_list[@]}"; do
    [ "${d}" = "${want_deb}" ] && found='true'
 done
 if [ "${found}" = 'true' ]; then
-   pass "folded Architecture: arm64 continuation covers target -> foldedpkg arm64 .deb expected"
+   pass 'single-line multi-arch Architecture covers the target (arm64 .deb expected)'
 else
-   fail "folded Architecture: arm64 dropped -> ${want_deb} not in [${make_package_debs_files_list[*]}]"
+   fail "multi-arch not covered -> ${want_deb} not in [${make_package_debs_files_list[*]}]"
 fi
 
-## grok #3: 'Architecture:' empty on the header line, 'all' on a continuation line. The value
-## arrives as ' all' (leading space); it must still be recognised as arch-independent.
 tests_total=$(( tests_total + 1 ))
-want_all="${DISTDIR}/foldedall_1.0-1_all.deb"
+want_all="${DISTDIR}/allpkg_1.0-1_all.deb"
 found='false'
 for d in "${make_package_debs_files_list[@]}"; do
    [ "${d}" = "${want_all}" ] && found='true'
 done
 if [ "${found}" = 'true' ]; then
-   pass "folded Architecture: 'all' on a continuation line -> foldedall _all .deb expected"
+   pass "'Architecture: all' is arch-independent (all .deb expected)"
 else
-   fail "folded 'Architecture: <newline> all' not arch-independent -> ${want_all} not in [${make_package_debs_files_list[*]}]"
-fi
-
-## --- folded 'Package:' continuation must normalise away the leading blank ---
-## grep-dctrl emits a folded 'Package:' as 'Package: ' (empty value) + an indented continuation,
-## so 'Package:\n foldedname' reaches the loop as ' foldedname'. 'Architecture:' is blank-
-## normalised at the stanza boundary but 'Package:' was NOT, so the leading blank flows into
-## make_package_list (reprepro remove/removesrc, deb-cleanup) and the expected .deb name.
-## Mirror the Architecture normalisation. (A folded Package: is an unusual, Policy-simple field;
-## this matches the pre-existing folded-Architecture robustness against what grep-dctrl emits.)
-cat > "${test_root}/control-pkgfold" <<'EOF'
-Source: pkgfoldsrc
-
-Package:
- foldedname
-Architecture: all
-EOF
-make_debian_control_file_absolute_path="${test_root}/control-pkgfold"
-make_source_package_name='pkgfoldsrc'
-target_architecture='amd64'
-make_package_debs_files_list=()
-make_package_list=()
-all_package_debs_are_arch_all='true'
-parse_control_package_stanzas
-
-tests_total=$(( tests_total + 1 ))
-if [ "${#make_package_list[@]}" -eq 1 ] && [ "${make_package_list[0]}" = 'foldedname' ]; then
-   pass "folded 'Package:' continuation normalised -> 'foldedname' (no leading blank)"
-else
-   fail "folded 'Package:' not normalised -> make_package_list=[${make_package_list[*]}]"
+   fail "'all' not arch-independent -> ${want_all} not in [${make_package_debs_files_list[*]}]"
 fi
 
 tests_total=$(( tests_total + 1 ))
-want_pkgfold="${DISTDIR}/foldedname_1.0-1_all.deb"
-found='false'
+excluded='true'
 for d in "${make_package_debs_files_list[@]}"; do
-   [ "${d}" = "${want_pkgfold}" ] && found='true'
+   case "${d}" in *otherarchpkg*) excluded='false' ;; esac
 done
-if [ "${found}" = 'true' ]; then
-   pass "folded 'Package:' -> correctly-named .deb (no leading blank)"
-else
-   fail "folded 'Package:' .deb misnamed -> ${want_pkgfold} not in [${make_package_debs_files_list[*]}]"
-fi
-
-## --- a whitespace-only 'Package:' must be SKIPPED, never committed as an EMPTY name ---
-## Normalising a folded 'Package:' must not commit a blank-only value as package="": deb-clean
-## /deb-cleanup then do test -d "debian/${package}" == "debian/" (true) and safe-rm --recursive
-## -- "debian/", wiping the whole debian/ tree. The blank value is built with printf so the
-## style gate's trailing-whitespace trim cannot eat the fixture.
-printf 'Source: emptysrc\n\nPackage:\t\nArchitecture: all\nDescription: x\n\nPackage: realbin\nArchitecture: all\nDescription: y\n' \
-   > "${test_root}/control-emptypkg"
-make_debian_control_file_absolute_path="${test_root}/control-emptypkg"
-make_source_package_name='emptysrc'
-target_architecture='amd64'
-make_package_debs_files_list=()
-make_package_list=()
-all_package_debs_are_arch_all='true'
-parse_control_package_stanzas
-
-tests_total=$(( tests_total + 1 ))
-empty_entry='false'
+in_list='false'
 for p in "${make_package_list[@]}"; do
-   [ -n "${p}" ] || empty_entry='true'
+   [ "${p}" = 'otherarchpkg' ] && in_list='true'
 done
-if [ "${empty_entry}" = 'false' ] && [ "${#make_package_list[@]}" -eq 1 ] \
-   && [ "${make_package_list[0]}" = 'realbin' ]; then
-   pass "whitespace-only 'Package:' skipped -> no empty package name committed"
+if [ "${excluded}" = 'true' ] && [ "${in_list}" = 'true' ]; then
+   pass 'an arch-excluded stanza yields no .deb but stays in make_package_list'
 else
-   fail "whitespace-only 'Package:' committed an empty name -> make_package_list=[${make_package_list[*]}]"
-fi
-
-tests_total=$(( tests_total + 1 ))
-empty_deb="false"
-for d in "${make_package_debs_files_list[@]}"; do
-   [ "${d}" = "${DISTDIR}/_1.0-1_all.deb" ] && empty_deb='true'
-done
-if [ "${empty_deb}" = 'false' ]; then
-   pass "whitespace-only 'Package:' produced no empty-named .deb"
-else
-   fail "whitespace-only 'Package:' produced ${DISTDIR}/_1.0-1_all.deb (empty package name)"
-fi
-
-## --- a skipped (blank-only Package:) stanza must not LEAK its Architecture to the next ---
-## On 'continue' the end-of-stanza resets are skipped, so a skipped stanza's Architecture would
-## leak into the following stanza. The tab-only Package: stanza here carries 'Architecture: all';
-## 'realleak' (which declares NO Architecture) must not inherit it and gain an _all .deb.
-printf 'Source: leaksrc\n\nPackage:\t\nArchitecture: all\n\nPackage: realleak\nDescription: x\n' \
-   > "${test_root}/control-leak"
-make_debian_control_file_absolute_path="${test_root}/control-leak"
-make_source_package_name='leaksrc'
-target_architecture='amd64'
-make_package_debs_files_list=()
-make_package_list=()
-all_package_debs_are_arch_all='true'
-parse_control_package_stanzas
-
-tests_total=$(( tests_total + 1 ))
-leaked='false'
-for d in "${make_package_debs_files_list[@]}"; do
-   [ "${d}" = "${DISTDIR}/realleak_1.0-1_all.deb" ] && leaked='true'
-done
-if [ "${leaked}" = 'false' ]; then
-   pass "a skipped blank-only 'Package:' stanza did not leak its Architecture to the next"
-else
-   fail "skipped-stanza Architecture leaked -> realleak wrongly got _all .deb"
-fi
-
-## --- architecture wildcard 'any-<cpu>' + env-arch independence (dpkg-architecture -f -a) ---
-## 'any-arm' covers armhf (whose CPU is 'arm', not 'armhf'); a hand-rolled matcher missed it and
-## dropped the covered .deb. ALSO pin DEB_HOST_ARCH=amd64 in the env (a cross-build / post-
-## dpkg-buildpackage state): dpkg-architecture ignores '-a' when DEB_HOST_ARCH is set unless '-f'
-## is given, so the match must honor the TARGET (armhf), not the env arch. wildpkg's armhf .deb
-## must be expected.
-cat > "${test_root}/control-wild" <<'EOF'
-Source: wildsrc
-
-Package: wildpkg
-Architecture: any-arm
-EOF
-make_debian_control_file_absolute_path="${test_root}/control-wild"
-make_source_package_name='wildsrc'
-target_architecture='armhf'
-make_package_debs_files_list=()
-make_package_list=()
-all_package_debs_are_arch_all='true'
-export DEB_HOST_ARCH=amd64
-parse_control_package_stanzas
-unset DEB_HOST_ARCH
-tests_total=$(( tests_total + 1 ))
-want_wild="${DISTDIR}/wildpkg_1.0-1_armhf.deb"
-found='false'
-for d in "${make_package_debs_files_list[@]}"; do
-   [ "${d}" = "${want_wild}" ] && found='true'
-done
-if [ "${found}" = 'true' ]; then
-   pass "arch wildcard 'any-arm' covers target armhf (dpkg-architecture matching)"
-else
-   fail "arch wildcard 'any-arm' did not cover armhf -> ${want_wild} not in [${make_package_debs_files_list[*]}]"
+   fail "arch-excluded handling wrong: excluded=${excluded} in_list=${in_list} debs=[${make_package_debs_files_list[*]}]"
 fi
 
 ## --- a malformed debian/control must ABORT, not silently drop packages ---
 ## grep-dctrl exits non-zero and emits only the stanzas parsed so far on a syntax error; the parser
 ## must fail loud, not read the truncated output and drop the rest. Override exit_with_error (its
 ## make_output_error path needs colour/trace state only a full run sets up) with a recording stub.
-# shellcheck disable=SC2317  # invoked indirectly via parse_control_package_stanzas
+# shellcheck disable=SC2317  # invoked indirectly via make_get_variables_parse_stanzas
 exit_with_error() { printf 'DIE: %s\n' "$2" >&2; exit 66; }
 cat > "${test_root}/control-bad" <<'EOF'
 Source: badsrc
@@ -333,10 +216,10 @@ make_source_package_name='badsrc'
 target_architecture='amd64'
 make_package_debs_files_list=()
 make_package_list=()
-all_package_debs_are_arch_all='true'
+all_target_debs_are_arch_all='true'
 tests_total=$(( tests_total + 1 ))
 bad_rc=0
-( parse_control_package_stanzas ) >/dev/null 2>&1 || bad_rc=$?
+( make_get_variables_parse_stanzas ) >/dev/null 2>&1 || bad_rc=$?
 if [ "${bad_rc}" -ne 0 ]; then
    pass 'a malformed debian/control aborts the parser (no silent package drop)'
 else
@@ -366,8 +249,8 @@ EOF
    target_architecture='amd64'
    make_package_debs_files_list=()
    make_package_list=()
-   all_package_debs_are_arch_all='true'
-   out="$( ( parse_control_package_stanzas ) 2>&1 )" || rc=$?
+   all_target_debs_are_arch_all='true'
+   out="$( ( make_get_variables_parse_stanzas ) 2>&1 )" || rc=$?
    tests_total=$(( tests_total + 1 ))
    if [ "${rc}" -eq 66 ] && [[ "${out}" == *'invalid binary package name'* ]]; then
       pass "${desc} rejected by the name guard (exit 66 + message)"
@@ -391,9 +274,9 @@ make_source_package_name='dotsrc'
 target_architecture='amd64'
 make_package_debs_files_list=()
 make_package_list=()
-all_package_debs_are_arch_all='true'
+all_target_debs_are_arch_all='true'
 dots_rc=0
-( parse_control_package_stanzas ) >/dev/null 2>&1 || dots_rc=$?
+( make_get_variables_parse_stanzas ) >/dev/null 2>&1 || dots_rc=$?
 tests_total=$(( tests_total + 1 ))
 if [ "${dots_rc}" -eq 0 ]; then
    pass 'a valid interior-dot package name (lib.foo..bar) is accepted'

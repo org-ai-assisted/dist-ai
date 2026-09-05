@@ -56,6 +56,16 @@ if ! helper_file="$(locate_helper)"; then
    exit 1
 fi
 
+## Capability gate: this suite tests the genmkfile CHECKOUT (wired via GENMKFILE_BIN or
+## GENMKFILE_SHARE). If nothing was wired and only the installed /usr/share/genmkfile helper
+## resolved -- which drifts from the tree under review -- SKIP rather than report a confusing
+## FAIL against a possibly-stale subject nobody is changing.
+if [ -z "${GENMKFILE_SHARE:-}" ] && [ -z "${GENMKFILE_BIN:-}" ] \
+   && [ "${helper_file}" = "/usr/share/genmkfile/make-helper-one.bsh" ]; then
+   printf '%s\n' "SKIP: no genmkfile checkout wired (set GENMKFILE_BIN); not testing the installed copy." >&2
+   exit 77  ## style-ok: allow-skip: no wired checkout -> subject not under review, not a regression
+fi
+
 GENMKFILE_PATH="$(dirname -- "${helper_file}")"
 export GENMKFILE_PATH
 ## style-ok: allow-sc1091-disable -- helper_file is located at runtime, unfollowable
@@ -99,6 +109,9 @@ check 'valid target followed by an unrecognized one -> die' 1 'unrecognized targ
 check 'two valid targets both run' 0 'RAN make_dist' install dist
 check 'single valid target runs' 0 'RAN make_install' install
 check 'no args -> make_all' 0 'RAN make_all'
+## A target after a literal '--' must still run: a bare 'break' on '--' dropped it and ran
+## make_all instead ('genmkfile -- install' -> make_all, silently ignoring 'install').
+check 'target after "--" still runs (not dropped to make_all)' 0 'RAN make_install' -- install
 
 ## An unrecognized FIRST argument must DIE, not fall through to make_function_run (which would
 ## EXECUTE it). Proof: a first arg that names a real command must not run it -- assert the

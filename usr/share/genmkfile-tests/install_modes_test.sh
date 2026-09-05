@@ -58,6 +58,15 @@ if ! genmkfile_bin="$(locate_genmkfile)"; then
    printf '%s\n' 'FATAL: genmkfile not found (set GENMKFILE_BIN).' >&2
    exit 1
 fi
+
+## Capability gate: this suite tests the genmkfile CHECKOUT (wired via GENMKFILE_BIN). If
+## nothing was wired and only the installed /usr/bin/genmkfile resolved -- which drifts from the
+## tree under review -- SKIP rather than report a confusing FAIL against a possibly-stale
+## subject nobody is changing.
+if [ -z "${GENMKFILE_BIN:-}" ] && [ "${genmkfile_bin}" = "/usr/bin/genmkfile" ]; then
+   printf '%s\n' "SKIP: no genmkfile checkout wired (set GENMKFILE_BIN); not testing the installed copy." >&2
+   exit 77  ## style-ok: allow-skip: no wired checkout -> subject not under review, not a regression
+fi
 printf '%s\n' "INFO: genmkfile under test: ${genmkfile_bin}"
 
 work_dir="$(mktemp --directory -- "${TMP}/genmkfile-install-modes.XXXXXX")"
@@ -197,6 +206,16 @@ check_mode 'a file genuinely under a skipped folder keeps its mode' '600' \
    "${dest_dir}/usr/src/keep-my-mode"
 check_mode 'a path merely CONTAINING the skip-list text is still mode-fixed' '644' \
    "${dest_dir}/usr/share/doc/gmf-mode-pkg/usr/src-notes"
+
+## --- setuid/setgid/sticky survive a re-install ------------------------------
+## rsync runs without --perms, so a re-install leaves an existing dest file's mode intact;
+## the mode-fix then re-applied a bare 3-digit 'chmod 755', which STRIPPED the setuid bit.
+## A setuid a maintainer set (e.g. via postinst) must survive a later 'genmkfile install'.
+run_install setuid CI= || true
+chmod u+s -- "${dest_dir}/usr/bin/exec-file"
+run_install setuid CI= || true
+check_mode 'setuid survives a re-install (mode-fix keeps the high bit)' '4755' \
+   "${dest_dir}/usr/bin/exec-file"
 
 ## --- CANARY ------------------------------------------------------------------
 ## Every check above reads a path under DESTDIR. If install had silently copied

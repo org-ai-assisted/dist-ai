@@ -5,11 +5,10 @@
 
 ## AI-Assisted
 
-## make_get_distdir REQUIRES + redirects to the cowbuilder dist folder only when
-## the target actually builds/places dist artifacts. The dispatcher sets
-## make_enforce_cowbuilder_distdir=false for a non-cowbuilder action (git-*,
-## help, deb-*-dep) so it never trips on make_cowbuilder_dist_folder it does not
-## use, and true (the default) for a real build/dist target.
+## make_get_distdir REQUIRES + redirects to the cowbuilder dist folder whenever cowbuilder is
+## enabled (make_use_cowbuilder=true), for every target -- there is no per-target override
+## (make_enforce_cowbuilder_distdir was removed deliberately). It also always requires a
+## writable DISTDIR. This drives the real make_get_distdir and asserts both.
 ##
 ## make-helper-one.bsh is sourceable (its main is guarded by was_executed), so we
 ## source the REAL file and call make_get_distdir directly -- no sed extraction.
@@ -50,6 +49,16 @@ locate_helper() {
 if ! helper_file="$(locate_helper)"; then
    printf '%s\n' 'FATAL: make-helper-one.bsh not found (set GENMKFILE_SHARE).' >&2
    exit 1
+fi
+
+## Capability gate: this suite tests the genmkfile CHECKOUT (wired via GENMKFILE_BIN or
+## GENMKFILE_SHARE). If nothing was wired and only the installed /usr/share/genmkfile helper
+## resolved -- which drifts from the tree under review -- SKIP rather than report a confusing
+## FAIL against a possibly-stale subject nobody is changing.
+if [ -z "${GENMKFILE_SHARE:-}" ] && [ -z "${GENMKFILE_BIN:-}" ] \
+   && [ "${helper_file}" = "/usr/share/genmkfile/make-helper-one.bsh" ]; then
+   printf '%s\n' "SKIP: no genmkfile checkout wired (set GENMKFILE_BIN); not testing the installed copy." >&2
+   exit 77  ## style-ok: allow-skip: no wired checkout -> subject not under review, not a regression
 fi
 
 ## GENMKFILE_PATH so any runtime source inside the file resolves; sourcing does
@@ -102,25 +111,21 @@ check() {
    fi
 }
 
-check 'enforce=true demands the cowbuilder folder (build/dist target)' 'true' 'true'
-check 'enforce=false does NOT demand it (non-cowbuilder action)' 'false' 'false'
-check 'unset defaults to enforce (backward compatible)' 'UNSET' 'true'
+## make_get_distdir demands make_cowbuilder_dist_folder whenever cowbuilder is enabled -- always,
+## regardless of the target. The old make_enforce_cowbuilder_distdir override was removed
+## deliberately (see the comment in make_get_distdir); do not reintroduce it, and the 'enforce'
+## arg to check() is now inert (kept only so the harness signature is unchanged).
+check 'cowbuilder=true demands the cowbuilder folder' 'UNSET' 'true'
 
-## The DISTDIR writable check runs ONLY for a dist-writing (enforce) target; a
-## non-dist action with a read-only DISTDIR must not abort (a read-only package
-## parent must not break git-tag-* / deb-*-dep).
-## make_get_distdir's not-writeable abort is uid-dependent: 'test -w' is always true for root, so a
-## chmod-000 dir is still writable to root -- and CI runs as root. Use /proc/sys: a directory present
-## wherever procfs is mounted (every CI container included) that is NOT writable to ANY uid, root
-## included, so the abort is exercised uniformly with no privilege juggling.
+## make_get_distdir always requires a writable DISTDIR (independent of cowbuilder). Uid note:
+## 'test -w' is always true for root (CI runs as root), so use /proc/sys -- present wherever
+## procfs is mounted and NOT writable to ANY uid, root included, so the abort fires uniformly.
 ro='/proc/sys'
-
 check_writable() {
-   local enforce="$1" want_exit="$2" out rc=0 exited='false'
+   local out rc=0 exited='false'
    # shellcheck disable=SC2030,SC2031  # subshell-local env for the isolated call
    out="$(
       export DISTDIR="${ro}" make_use_cowbuilder='false'
-      export make_enforce_cowbuilder_distdir="${enforce}"
       make_get_distdir 2>&1
    )" || rc=$?
    tests_total=$(( tests_total + 1 ))
@@ -129,15 +134,14 @@ check_writable() {
          exited='true'
          ;;
    esac
-   if [ "${exited}" = "${want_exit}" ]; then
-      pass "writable check enforce=${enforce} exits=${want_exit}"
+   if [ "${exited}" = 'true' ]; then
+      pass 'a non-writable DISTDIR aborts make_get_distdir'
    else
       tests_failed=$(( tests_failed + 1 ))
-      printf '%s\n' "FAIL  writable enforce=${enforce}: exited=${exited} want=${want_exit} out=[${out}]" >&2
+      printf '%s\n' "FAIL  writable: exited=${exited} rc=${rc} out=[${out}]" >&2
    fi
 }
-check_writable 'true' 'true'
-check_writable 'false' 'false'
+check_writable
 
 if [ "${tests_failed}" -ne 0 ]; then
    printf '%s\n' "cowbuilder_gate_test: ${tests_failed}/${tests_total} FAILED" >&2
