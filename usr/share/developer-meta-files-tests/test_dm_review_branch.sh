@@ -44,11 +44,13 @@ assert_prerequisite() {
 
 ## ABSENT SUBJECT, not a broken environment: dm-review-branch lives in the
 ## developer-meta-files checkout, so with no DMF_REPO there is nothing to judge.
-## 77 is the runner's skip contract. Every prerequisite BELOW stays fail-closed,
+## Self-skip (77) per the runner's absent-subject contract (and the meta-test
+## test_dmf_runner_no_blanket_skip). Every prerequisite BELOW stays fail-closed,
 ## because those are defects in an environment whose subject IS present.
 if [ -z "${DMF_REPO:-}" ]; then
-   printf '%s\n' 'FATAL: test_dm_review_branch: DMF_REPO unset (no developer-meta-files checkout wired).' >&2
-   exit 1
+   printf '%s\n' 'SKIP: test_dm_review_branch: DMF_REPO unset (no developer-meta-files checkout wired).' >&2
+   ## style-ok: allow-skip: absent subject -- dm-review-branch lives in the DMF checkout; nothing to judge without DMF_REPO
+   exit 77
 fi
 
 ## The pty driver ships next to this script, so resolve it relative to this
