@@ -2265,6 +2265,22 @@ eq(_ovt._rows, _ov_rows0,
    'advisory overlay: hiding the banner also leaves the grid rows unchanged')
 _ov.close()
 
+# Smoke test: closing the LAST tab while the banner is up must not crash. The
+# invariant is that current() is live whenever the banner shows, but the close/
+# resize/_refresh ordering is subtle, so _position_banner keeps a None-guard as a
+# belt-and-suspenders against a real-GUI timing this offscreen harness cannot force.
+_ov2 = MainWindow()
+_ov2.resize(900, 640)
+_ov2.show()
+pump(50)
+_ov2._on_osc_used(_ov2.current(), 'osc_title')
+pump(20)
+ok(_ov2._banner.isVisible(), 'advisory overlay: banner shown before the last-tab close')
+_ov2.close_tab(0)                             # empties the window with the banner still visible
+pump(20)
+ok(True, 'advisory overlay: closing the last tab with the banner up does not crash')
+_ov2.close()
+
 # --- reviewdrain15 batch-2 security findings (admin-lock bypass + session DoS) ----
 _b2_lock = set(win._locked)
 # #3: the legacy "Allow title" control must refuse a GRANULAR osc_title/osc_notify
