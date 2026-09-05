@@ -26,8 +26,9 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 try:
     from PyQt6.QtWidgets import QApplication, QWidget, QMessageBox
-    from PyQt6.QtGui import QKeyEvent, QMouseEvent, QTextCursor, QGuiApplication
-    from PyQt6.QtCore import Qt, QEvent, QMimeData, QPointF
+    from PyQt6.QtGui import (QKeyEvent, QMouseEvent, QTextCursor, QGuiApplication,
+                             QWheelEvent, QResizeEvent)
+    from PyQt6.QtCore import Qt, QEvent, QMimeData, QPointF, QPoint, QSize
     from secure_terminal.review import ReviewBar
     from secure_terminal.revealed_editor import RevealedEditor
     from secure_terminal.sanitize import sanitize_clipboard_unicode
@@ -541,15 +542,23 @@ ok(_bar.reviewed_term() is None, 'delivery resolves + hides the bar')
 _bar._deliver_clicked()
 eq(_t2.dispatched, [('paste', 'unicode')], 'a second Deliver after resolution is a no-op')
 
-# --- a manual edit re-runs the classifier AND re-arms the countdown -----------
+# --- SMARTER COUNTDOWN: a transform arms it; a manual edit does NOT re-arm ------
+# A bulk change (open / a transform / Restore) arms the anti-fat-finger countdown so the
+# freshly-shown buffer gets the full delay; ordinary trimming keeps the already-elapsed
+# (or running) countdown, so Deliver does not flap disabled on every keystroke. The hard
+# hidden-char gate is content-driven and unaffected either way.
 _t3 = _FakeTerm()
 _bar.show_review(_t3, _raw, 2, 'paste')
-_bar._do_strip()                                   # clear the hidden chars so content no longer blocks
+_bar._do_strip()                                   # a TRANSFORM is a bulk change -> arms
+ok(not _bar._deliver.isEnabled() and _bar._remaining > 0,
+   'a transform re-arms the countdown (Deliver gated for the transformed content)')
 _bar._tick(); _bar._tick(); _bar._tick()           # elapse -> Deliver enabled
 ok(_bar._deliver.isEnabled(), 'Deliver enables after the countdown elapses')
-_bar._editor.set_source('rm -rf /' + CYR_A)        # replace the box content
-ok(not _bar._deliver.isEnabled() and _bar._remaining > 0,
-   'editing the box re-arms the countdown (Deliver disabled again for the new content)')
+_bar._editor.set_source('rm -rf /' + CYR_A)        # a MANUAL edit (a look-alike survives clean)
+ok(_bar._deliver.isEnabled() and _bar._remaining == 0,
+   'a manual edit does NOT re-arm the elapsed countdown (Deliver stays enabled)')
+eq(_bar._deliver.text(), 'Paste unicode',
+   'the manual edit re-runs the content-driven Deliver (amber for the edited-in look-alike)')
 ok('hides' in _bar._summary.text(), 'the summary re-flags the edited-in look-alike')
 _bar._choose('reject')
 
@@ -863,6 +872,172 @@ ok(_ced.source() == _cbefore,
    'ai-review#1: inserting into a capped run drops the excess (stored text unchanged)')
 ok(_ced._pos == len(_cbase),
    'ai-review#1: the caret stays put after a fully-dropped insert (no skip into bcdef)')
+
+# --- STATE-AWARE transforms + per-criterion VERDICT ---------------------------
+# The three transform buttons reflect what they would do to the CURRENT box: a no-op
+# transform (its result already == the box) is CHECKED + disabled; an active one keeps
+# its result-safety tint. The "Outcome if delivered now" verdict names the same three
+# criteria (a checked button == a satisfied row). _CHK/_CROSS from the review module.
+_CHK, _CROSS = _rev._SAFE_GLYPH, _rev._CROSS_GLYPH
+CJK = chr(0x4E2D)        # a CJK ideograph: honest non-ASCII, no ASCII fold, not a look-alike
+
+# (a) pure-ASCII paste (the multi-line forced-review case): ALL three transforms no-op
+_sa = _FakeTerm()
+_bar.show_review(_sa, 'echo hi\necho bye\n', 0, 'paste')
+ok(not _bar._strip.isEnabled() and not _bar._fold.isEnabled() and not _bar._keep.isEnabled(),
+   'pure ASCII: all three transforms are no-ops -> disabled')
+ok(_CHK in _bar._strip.text() and _CHK in _bar._fold.text() and _CHK in _bar._keep.text(),
+   'a no-op transform is checked')
+ok('already plain ASCII' in _bar._transform_header.text(),
+   'the header notes there is nothing to transform when the box is pure ASCII')
+ok('no change' in _bar._strip_cap.text(), 'a no-op transform caption reads "no change"')
+_dsa = _bar._detail.text()
+ok('Outcome if delivered now' in _dsa, 'the verdict block renders')
+ok(_CROSS not in _dsa, 'pure ASCII: every verdict criterion is met (no cross)')
+ok(_bar._deliver.isEnabled() and _bar._deliver.text() == 'Paste ASCII',
+   'a pure-ASCII paste delivers as ASCII')
+_bar._choose('reject')
+
+# (b) look-alike, NO invisibles: Keep is a no-op; Strip + Fold are active
+_sb = _FakeTerm()
+_bar.show_review(_sb, 'ex' + CYR_A + 'mple.com', 0, 'paste')
+ok(not _bar._keep.isEnabled() and _CHK in _bar._keep.text(),
+   'no invisibles: Keep printable is a no-op (checked + disabled)')
+ok(_bar._strip.isEnabled() and _bar._fold.isEnabled()
+   and _rev.SAFE_FG in _bar._strip.styleSheet(),
+   'Strip + ASCII-fold stay active (green) while a look-alike remains')
+ok('already plain ASCII' not in _bar._transform_header.text(),
+   'the header is NOT the all-ASCII note while a look-alike remains')
+_dsb = _bar._detail.text()
+ok('Look-alikes folded / none' in _dsb and 'Plain ASCII' in _dsb,
+   'the verdict names the ASCII + look-alike criteria')
+ok(_CROSS in _dsb and _rev.CAUTION_FG in _dsb,
+   'an unmet ASCII/look-alike criterion is an amber cross (a choice, not danger)')
+_bar._choose('reject')
+
+# (c) honest non-ASCII, NO look-alike: Strip == Fold, so Fold says "same as Strip"
+_sc = _FakeTerm()
+_bar.show_review(_sc, 'ab' + CJK, 0, 'paste')
+ok(_bar._strip.isEnabled() and _bar._fold.isEnabled(),
+   'honest non-ASCII: Strip + Fold both change the box')
+ok('same as Strip' in _bar._fold_cap.text(),
+   'with no look-alike ASCII-fold equals Strip -- the caption says so')
+_bar._choose('reject')
+
+# (d) verdict GATE: while an invisible/bidi/control remains, the invisibles-removed row is
+# an UNMET RED cross (the hard Deliver gate), distinct from the amber choice-crosses
+_sd = _FakeTerm()
+_bar.show_review(_sd, _raw, 0, 'paste')            # revealed: RTL + ZWSP present
+_dsd = _bar._detail.text()
+ok('Invisible / reordering removed' in _dsd, 'the verdict names the invisibles gate')
+ok(_rev.RISK_FG in _dsd,
+   'the invisibles-removed criterion is a RED cross while hidden chars remain (the gate)')
+_bar._choose('reject')
+
+# CANARY: the state-aware Strip button + verdict depend on the REAL sanitize_clipboard --
+# stub it to identity and Strip wrongly reads as a no-op on non-ASCII (teeth).
+_saved_sc = _rev.sanitize_clipboard
+_rev.sanitize_clipboard = lambda t: t
+try:
+    _cbsa = ReviewBar(QWidget())
+    _cbsa.show_review(_FakeTerm(), 'ex' + CYR_A + 'mple', 0, 'paste')
+    ok(not _cbsa._strip.isEnabled(),
+       'CANARY: state-aware Strip depends on real sanitize_clipboard (has teeth)')
+finally:
+    _rev.sanitize_clipboard = _saved_sc
+
+# --- FULL-BAR ZOOM: every text widget scales, not just the editor box ----------
+_zt = _FakeTerm()
+_bar.show_review(_zt, _raw, 0, 'paste')
+_bar.apply_zoom(100)
+_base100 = _bar._summary.font().pointSize()
+_cap100 = _bar._strip_cap.font().pointSize()
+_bar.apply_zoom(200)
+ok(_bar._summary.font().pointSize() > _base100
+   and _bar._detail.font().pointSize() > _base100
+   and _bar._deliver.font().pointSize() > _base100
+   and _bar._strip.font().pointSize() > _base100,
+   'apply_zoom scales the summary, detail table and buttons (not just the box)')
+ok(_bar._strip_cap.font().pointSize() > _cap100,
+   'apply_zoom scales the transform captions too')
+ok(_bar._strip_cap.font().pointSize() < _bar._summary.font().pointSize(),
+   'captions scale a touch smaller than the primary text')
+
+# responsive transform row: a narrow bar hides the captions AND shortens the button
+# labels (tooltip keeps the gloss + full name), so the row fits instead of clipping.
+_bar.apply_zoom(100)                               # threshold = 560 px at 100%
+_bar.resize(400, 300)
+_bar.resizeEvent(QResizeEvent(_bar.size(), QSize(900, 300)))
+ok(not _bar._strip_cap.isVisibleTo(_bar),
+   'responsive: a narrow bar hides the transform captions')
+ok(_bar._strip.text() == 'Strip' and _bar._keep.text() == 'Keep unicode'
+   and _bar._restore.text() == 'Restore',
+   'responsive: a narrow bar uses the SHORT button labels (no clipping): %r'
+   % ((_bar._strip.text(), _bar._keep.text(), _bar._restore.text()),))
+_bar.resize(900, 300)
+_bar.resizeEvent(QResizeEvent(_bar.size(), QSize(400, 300)))
+ok(_bar._strip_cap.isVisibleTo(_bar),
+   'responsive: a wide bar shows the transform captions')
+ok(_bar._strip.text() == 'Strip unicode' and _bar._keep.text() == 'Keep printable unicode'
+   and _bar._restore.text() == 'Restore original',
+   'responsive: a wide bar restores the full button labels')
+# a resize while NO review is open (bar between reviews) is a safe no-op relabel
+_bar._choose('reject')
+_bar.resize(420, 300)
+_bar.resizeEvent(QResizeEvent(_bar.size(), QSize(900, 300)))
+ok(_bar._restore.text() == 'Restore' and _bar.reviewed_term() is None,
+   'responsive: a resize with no review open relabels Restore without touching transforms')
+# the construction guard: a resize BEFORE the widget groups are wired (empty caps) is a
+# safe no-op -- offscreen never fires it on its own, so force it. Restore is left untouched.
+_bar._restore.setText('SENTINEL')
+_saved_caps = _bar._zoom_caps
+_bar._zoom_caps = ()
+_bar.resizeEvent(QResizeEvent(_bar.size(), _bar.size()))
+ok(_bar._restore.text() == 'SENTINEL',
+   'resizeEvent with empty widget groups skips the relabel (the construction guard)')
+_bar._zoom_caps = _saved_caps
+
+# Ctrl+wheel over the bar (not only the box) zooms the tab; a plain wheel does not
+_zoom_calls = []
+_win._on_zoom_step = lambda d: _zoom_calls.append(d)
+_win.zoom_reset = lambda: _zoom_calls.append('reset')
+_wev_ctrl = QWheelEvent(QPointF(1, 1), QPointF(1, 1), QPoint(0, 0), QPoint(0, 120),
+                        Qt.MouseButton.NoButton, Qt.KeyboardModifier.ControlModifier,
+                        Qt.ScrollPhase.NoScrollPhase, False)
+_bar.wheelEvent(_wev_ctrl)
+eq(_zoom_calls, [1], 'Ctrl+wheel over the bar zooms the tab in')
+_wev_plain = QWheelEvent(QPointF(1, 1), QPointF(1, 1), QPoint(0, 0), QPoint(0, 120),
+                         Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+                         Qt.ScrollPhase.NoScrollPhase, False)
+_bar.wheelEvent(_wev_plain)
+eq(_zoom_calls, [1], 'a plain wheel over the bar does not zoom')
+_bar._choose('reject')
+
+# the Reject BUTTON itself (its clicked lambda) backs out, same as Esc / _choose
+_trj = _FakeTerm()
+_bar.show_review(_trj, _raw, 0, 'paste')
+_bar._reject.click()
+eq(_trj.dispatched, [('paste', 'reject')], 'the Reject button dispatches a reject')
+
+# --- KEYBOARD ZOOM in the box: Ctrl +/=/-/0 drive the window zoom, not swallowed --
+_zoom_calls.clear()
+_ed = _bar._editor
+_ed.set_source('')
+_ed.keyPressEvent(key_ev(Qt.Key.Key_Equal, Qt.KeyboardModifier.ControlModifier, '='))
+_ed.keyPressEvent(key_ev(Qt.Key.Key_Plus, Qt.KeyboardModifier.ControlModifier, '+'))
+_ed.keyPressEvent(key_ev(Qt.Key.Key_Minus, Qt.KeyboardModifier.ControlModifier, '-'))
+_ed.keyPressEvent(key_ev(Qt.Key.Key_0, Qt.KeyboardModifier.ControlModifier, '0'))
+eq(_zoom_calls, [1, 1, -1, 'reset'],
+   'Ctrl +/=/-/0 in the box drive the window zoom instead of being swallowed')
+ok('=' not in _ed.source() and '+' not in _ed.source() and '0' not in _ed.source(),
+   'the zoom chords never reach the box as typed characters')
+# a box whose top-level window has no zoom hooks: Ctrl-zoom is a safe no-op.
+# Keep a reference to the bare parent so its C++ object is not GC'd out from under the box.
+_bare_win = QWidget()
+_ne = RevealedEditor(_bare_win)
+_ne.keyPressEvent(key_ev(Qt.Key.Key_Plus, Qt.KeyboardModifier.ControlModifier, '+'))
+_ne.keyPressEvent(key_ev(Qt.Key.Key_0, Qt.KeyboardModifier.ControlModifier, '0'))
+ok(_ne.source() == '', 'Ctrl-zoom with no zoomable window is a safe no-op (nothing typed)')
 
 APP.processEvents()
 print('secure-terminal-tests(review): all passed' if not _failures else
