@@ -44,11 +44,13 @@ assert_prerequisite() {
 
 ## ABSENT SUBJECT, not a broken environment: dm-review-branch lives in the
 ## developer-meta-files checkout, so with no DMF_REPO there is nothing to judge.
-## 77 is the runner's skip contract. Every prerequisite BELOW stays fail-closed,
+## Self-skip (77) per the runner's absent-subject contract (and the meta-test
+## test_dmf_runner_no_blanket_skip). Every prerequisite BELOW stays fail-closed,
 ## because those are defects in an environment whose subject IS present.
 if [ -z "${DMF_REPO:-}" ]; then
-   printf '%s\n' 'FATAL: test_dm_review_branch: DMF_REPO unset (no developer-meta-files checkout wired).' >&2
-   exit 1
+   printf '%s\n' 'SKIP: test_dm_review_branch: DMF_REPO unset (no developer-meta-files checkout wired).' >&2
+   ## style-ok: allow-skip: absent subject -- dm-review-branch lives in the DMF checkout; nothing to judge without DMF_REPO
+   exit 77
 fi
 
 ## The pty driver ships next to this script, so resolve it relative to this
@@ -183,8 +185,44 @@ else
    fail 'interactive no should abort the review, but it exited 0'
 fi
 
+## 5) After the operator CONSENTS to continue (case 4's 'yes' path), the raw
+## commit message still reaches the terminal via 'git log'. It must be
+## neutralized (stcat), or a commit message carrying a terminal escape injects
+## the reviewer's terminal AFTER they waved the finding through. Craft a message
+## with a real ESC-based ANSI sequence, answer 'yes', capture the raw pty bytes,
+## and assert the escape was rendered inert -- not passed through raw.
+run_review_tty_capture() {
+   ## $1 = ref, $2 = answer, $3 = capture path. Exit code = the tool's.
+   REPO="${repo}" REF="$1" ANSWER="$2" CAPTURE="$3" "${tty_driver}"
+}
+git -C "${repo}" checkout --quiet -b esc feature
+printf '%s\n' 'fourth' >> "${repo}/file"
+## A distinctive ANSI payload: ESC '[31mINJECTED' ESC '[0m'. The unique
+## 'INJECTED' tail lets the assertion match THIS sequence, so benign color
+## escapes elsewhere in the output cannot mask a raw pass-through.
+esc_msg="$(printf 'log injection \033[31mINJECTED\033[0m')"
+git -C "${repo}" -c commit.gpgsign=false commit --no-verify --quiet --all \
+   --message "${esc_msg}"
+git -C "${repo}" checkout --quiet master
+capture_file="${work}/esc-capture"
+rc=0
+run_review_tty_capture esc y "${capture_file}" || rc="$?"
+raw_seq="$(printf '\033[31mINJECTED')"
+neutralized_seq='_[31mINJECTED'
+if [ "${rc}" != 0 ]; then
+   fail "interactive yes on an ANSI commit message should continue (exit 0), got ${rc}"
+elif [ ! -f "${capture_file}" ]; then
+   fail 'no pty capture written for the ANSI commit-message case'
+elif grep --fixed-strings --quiet -- "${raw_seq}" "${capture_file}"; then
+   fail 'a raw ANSI escape from the commit message reached the terminal (git log not neutralized)'
+elif ! grep --fixed-strings --quiet -- "${neutralized_seq}" "${capture_file}"; then
+   fail 'the commit message never appeared neutralized; git log output not verified'
+else
+   pass 'ANSI in a consented commit message is neutralized in the git log (no raw escape to the terminal)'
+fi
+
 if [ "${fail_count}" -gt 0 ]; then
    printf '%s\n' "test_dm_review_branch: ${fail_count} assertion(s) failed." >&2
    exit 1
 fi
-printf '%s\n' 'test_dm_review_branch: OK -- commit-content and ref-name unicode scans both abort the review.'
+printf '%s\n' 'test_dm_review_branch: OK -- commit-content and ref-name unicode scans both abort the review, and the consented-past git log is neutralized.'
