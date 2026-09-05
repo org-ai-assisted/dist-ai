@@ -231,8 +231,50 @@ else
    pass 'ANSI in a consented commit message is neutralized in the git log (no raw escape to the terminal)'
 fi
 
+## 6) The pty driver must NOT report 124 (a hang) for a child that answered the
+## prompt and then went briefly quiet before exiting cleanly on its own. Drive a
+## fake subject that prompts, reads the answer, sleeps PAST the (lowered) idle
+## threshold, then exits 0: the driver's idle read fires, but the child is not
+## wedged, so its real exit code (0) -- not 124 -- must be reported.
+fake_dir="${work}/fake-subject"
+mkdir -p "${fake_dir}"
+cat > "${fake_dir}/dm-review-branch" <<'FAKE'
+#!/bin/bash
+printf 'Continue the review anyway?\n'
+read -r _answer
+sleep "${FAKE_QUIET_SECS:-2}"
+printf 'done after the quiet gap\n'
+exit 0
+FAKE
+chmod +x "${fake_dir}/dm-review-branch"
+rc=0
+PATH="${fake_dir}:${PATH}" RUN_REVIEW_IDLE_SECS=1 FAKE_QUIET_SECS=2 \
+   REPO="${repo}" REF=x ANSWER=y "${tty_driver}" >/dev/null 2>&1 || rc="$?"
+if [ "${rc}" = 0 ]; then
+   pass 'driver reports the child real exit (0) after an answered-then-quiet gap, not 124'
+else
+   fail "driver should report the child's real 0 after a post-prompt quiet gap, got ${rc}"
+fi
+
+## 7) A scan SETUP error (rc >= 2: a nonexistent/typo'd ref) must fail closed
+## with the real error, NOT be mislabeled "possible unicode spoofing" and NOT
+## trigger a pointless "continue anyway?" prompt for a review that cannot run.
+scan_err="${work}/scan-err"
+rc=0
+( cd -- "${repo}" && setsid dm-review-branch definitely-not-a-real-ref-xyz ) \
+   </dev/null >"${scan_err}" 2>&1 || rc="$?"
+if [ "${rc}" = 0 ]; then
+   fail 'reviewing a nonexistent ref should fail (non-zero), but it exited 0'
+elif grep --ignore-case --quiet -- 'possible unicode spoofing' "${scan_err}"; then
+   fail 'a nonexistent-ref setup error was mislabeled "possible unicode spoofing"'
+elif grep --ignore-case --quiet -- 'continue the review anyway' "${scan_err}"; then
+   fail 'a nonexistent-ref setup error triggered a pointless continue-prompt'
+else
+   pass 'a scan setup error (rc >= 2) fails closed with the real error, not a spoofing prompt'
+fi
+
 if [ "${fail_count}" -gt 0 ]; then
    printf '%s\n' "test_dm_review_branch: ${fail_count} assertion(s) failed." >&2
    exit 1
 fi
-printf '%s\n' 'test_dm_review_branch: OK -- commit-content and ref-name unicode scans both abort the review, and the consented-past git log is neutralized.'
+printf '%s\n' 'test_dm_review_branch: OK -- unicode scans abort the review, the consented-past git log is neutralized, the pty driver does not false-time-out, and a scan setup error fails closed cleanly.'
