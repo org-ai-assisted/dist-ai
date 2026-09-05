@@ -2000,9 +2000,10 @@ _fgt.close()
 _ogpg93 = _os93.getpgid
 _os93.getpgid = lambda _p: (_ for _ in ()).throw(ProcessLookupError())  # type: ignore[assignment]
 try:
-    _fgd = SecureTerminal(command='/bin/cat')
+    _fgd = spawn_live(command='/bin/cat')
     _fgd._command = None
-    _fgd._pid = 999999
+    # keep the REAL live pid: the pid-reuse identity guard (#30) passes, so the getpgid MOCK
+    # exercises the true race branch -- getpgid raising AFTER the pid was verified live.
     _fgd._foreground_pgrp = lambda: 424242          # non-None, not our own group
     ok(not _fgd.terminate_foreground(),
        '#93: terminate is a no-op when getpgid races the child death (no exception)')
@@ -4522,8 +4523,17 @@ try:
     ok(os.path.exists(_suffixed25)
        and 'MARKER-TAB1' in open(_suffixed25, encoding='utf-8').read(),
        '#25: the second tab writes its own suffixed transcript file')
+    # a single-tab window keeps the EXACT base path (the shot-harness case / group<=1 branch).
+    _w25s = MainWindow()
+    ok(_w25s._real_terms()[0]._transcript_path() == _tp25,
+       '#25: a single-tab window keeps the exact base transcript path')
 finally:
     del os.environ['SECURE_TERMINAL_TRANSCRIPT_FILE']
+# no configured path -> _transcript_path yields None (a standalone term, env unset).
+_npx = SecureTerminal(command='/bin/cat')
+ok(_npx._transcript_path() is None,
+   '#25: _transcript_path returns None when no transcript file is configured')
+_npx.shutdown()
 
 # #25 (ai-review): a closing tab must stop its transcript debounce timer, so a late fire
 # cannot write (and clobber the primary tab's base path) after it leaves the tab bar.

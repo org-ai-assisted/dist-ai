@@ -4923,6 +4923,23 @@ ok(_hw29._screen.cursor.y == _y29 + 1 and _hw29._screen.cursor.x == 1,
    '#29: after a height-only resize the next byte autowraps instead of overwriting')
 _hw29.shutdown()
 
+# #29 (ai-review agy): a WIDTH shrink to EXACTLY the filled width keeps pyte's pending-autowrap
+# (x == cols) -- clamping to cols-1 there demoted it and overwrote the last cell. (A cursor
+# left BEYOND the new width, x > cols, still clips to cols-1: the _clampt shrink case above.)
+_sw29 = SecureTerminal(command='/bin/cat', tui=True)
+feed_output(_sw29, b'x\r\n')
+_n29 = max(2, _sw29._screen.columns // 2)
+feed_output(_sw29, b'A' * _n29)                         # cursor at x == N (N < the old width)
+_sw29._tui_grid_size = lambda: (_n29, _sw29._screen.lines)   # width shrink to exactly N
+_sw29._sync_tui_size()
+ok(_sw29._screen.cursor.x == _n29,
+   '#29: a shrink to exactly the filled width preserves pending-autowrap (x == cols)')
+_yb29 = _sw29._screen.cursor.y
+feed_output(_sw29, b'B')
+ok(_sw29._screen.cursor.y == _yb29 + 1 and _sw29._screen.cursor.x == 1,
+   '#29: after a shrink-to-full the next byte autowraps instead of overwriting')
+_sw29.shutdown()
+
 # --- ai-review #12: a finished command's stuck colour must not bleed onto the shell
 # prompt in TUI mode. The reset is injected ahead of the bracketed-paste prompt-start
 # on the LIVE pyte feed (so the RENDERED prompt is default-coloured) AND into the
@@ -5407,6 +5424,19 @@ ok(b'\r' not in b''.join(_w28),
    '#28: a partial/timed-out write is NOT followed by a bare submit CR')
 _p28.shutdown()
 
+# #28: a failed SUBMIT-CR write (the line delivered fully, but the CR itself fails) is also
+# reported as an error, not a false ok.
+_p28b = spawn_live(command='/bin/cat')
+_w28b = []
+def _line_ok_cr_fail(data, _sink=_w28b):
+    _sink.append(bytes(data))
+    return bytes(data) != b'\r'         # the line writes fully; only the submit CR fails
+_p28b._write = _line_ok_cr_fail
+_err28b = _p28b.ctl_send_text('echo hi', submit=True)
+ok(_err28b is not None and b'\r' in b''.join(_w28b),
+   '#28: a failed submit-CR write is reported (CR attempted, delivery incomplete)')
+_p28b.shutdown()
+
 # --- #30: pid-reuse TOCTOU. After a child exits, reap_pty_children frees its pid before
 # _release_pty clears self._pid; the pid-trusting readers must reject a REUSED pid (a live but
 # unrelated process now in that slot) by /proc start-time identity, not read its cwd.
@@ -5418,11 +5448,16 @@ ok(_p30.shell_cwd(), '#30 setup: shell_cwd reads the live child cwd')
 _p30._pid = os.getpid()
 eq(_p30.shell_cwd(), '',
    '#30: shell_cwd refuses a reused pid instead of reading an unrelated process cwd')
+ok(not _p30.has_foreground_program(),
+   '#30: has_foreground_program refuses a reused pid (nothing of ours holds the foreground)')
 _fd30 = _p30._fd
 _p30._fd = None                             # no foreground pgrp -> cwd_basename uses self._pid
 eq(_p30.cwd_basename(), None,
    '#30: cwd_basename refuses a reused shell pid when there is no foreground pgrp')
 _p30._fd = _fd30
+_p30._pid = None
+ok(not _p30._pid_is_current_child(),
+   '#30: the identity guard is False when there is no child pid')
 _p30._pid = _realpid30                       # restore BEFORE shutdown (never SIGHUP the test proc)
 _p30.shutdown()
 
