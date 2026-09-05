@@ -83,11 +83,11 @@ trap cleanup EXIT
    printf '%s\n' 'exit_with_error() { printf "DIE: %s\n" "$2" >&2; exit "$1"; }'
    printf '%s\n' 'make_require() { :; }'
    printf '%s\n' 'make_output_info() { :; }'
-   sed -n '/^make_debinstfile_has_nogenmkfile_marker()/,/^}/p' -- "${helper_file}"
+   sed -n '/^debinstfile_has_nogenmkfile_marker()/,/^}/p' -- "${helper_file}"
    sed -n '/^make_debinstfile_create()/,/^}/p' -- "${helper_file}"
 } > "${work}/fn.sh"
 if ! grep --quiet '^make_debinstfile_create()' "${work}/fn.sh" \
-   || ! grep --quiet '^make_debinstfile_has_nogenmkfile_marker()' "${work}/fn.sh"; then
+   || ! grep --quiet '^debinstfile_has_nogenmkfile_marker()' "${work}/fn.sh"; then
    printf '%s\n' 'ERROR: could not extract make_debinstfile_create + marker helper.' >&2
    exit 1
 fi
