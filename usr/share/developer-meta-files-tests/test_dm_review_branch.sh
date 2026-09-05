@@ -296,11 +296,17 @@ mirror_bins() {
    local d="$1" real
    [ -d "${d}" ] || return 0
    for real in "${d}"/*; do
-      [ -e "${real}" ] || continue
-      ln --symbolic --force -- "${real}" "${noshow_dir}/${real##*/}"
+      ## Regular executables only: skip a symlink-to-directory such as
+      ## '/usr/bin/X11' -- it is not a tool, and --force would dereference an
+      ## already-mirrored one and try to create INSIDE the read-only dir.
+      [ -f "${real}" ] || continue
+      ## --no-dereference so re-mirroring a name (e.g. /bin and /usr/bin both
+      ## carry it on a merged-usr system) replaces the link, never follows it.
+      ln --symbolic --force --no-dereference -- "${real}" "${noshow_dir}/${real##*/}"
    done
 }
 mirror_bins /usr/bin
+mirror_bins /bin
 mirror_bins "${DMF_REPO}/usr/bin"
 if [ -n "${HELPER_SCRIPTS_PATH:-}" ]; then
    mirror_bins "${HELPER_SCRIPTS_PATH}/usr/bin"
@@ -347,6 +353,22 @@ elif ! grep --ignore-case --quiet -- "must not start with" "${dash_out}"; then
    fail 'a leading-dash ref was not rejected by dm-review-branch itself'
 else
    pass 'dm-review-branch rejects a leading-dash ref up front'
+fi
+
+## 11) 'set -x' must be OFF: xtrace echoes every command's EXPANDED form to the
+## terminal, so an untrusted ref name (git permits U+202E in a ref) would reach
+## the operator RAW, before any scan or stcat neutralization. Review a
+## nonexistent U+202E ref and assert its raw bytes never appear in the output.
+xtrace_out="${work}/xtrace-out"
+u202e_ref="$(printf 'evil\xe2\x80\xaeref')"
+rc=0
+( cd -- "${repo}" && dm-review-branch "${u202e_ref}" ) </dev/null >"${xtrace_out}" 2>&1 || rc="$?"
+if [ "${rc}" = 0 ]; then
+   fail 'reviewing a nonexistent U+202E ref should fail, but it exited 0'
+elif grep --fixed-strings --quiet -- "$(printf '\xe2\x80\xae')" "${xtrace_out}"; then
+   fail 'a raw U+202E ref name reached the terminal (xtrace leak -- set -x on?)'
+else
+   pass 'no raw ref name leaks to the terminal (set -x is off)'
 fi
 
 if [ "${fail_count}" -gt 0 ]; then
