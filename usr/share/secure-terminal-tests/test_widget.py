@@ -4923,6 +4923,23 @@ ok(_hw29._screen.cursor.y == _y29 + 1 and _hw29._screen.cursor.x == 1,
    '#29: after a height-only resize the next byte autowraps instead of overwriting')
 _hw29.shutdown()
 
+# #29 (ai-review agy): a WIDTH shrink to EXACTLY the filled width keeps pyte's pending-autowrap
+# (x == cols) -- clamping to cols-1 there demoted it and overwrote the last cell. (A cursor
+# left BEYOND the new width, x > cols, still clips to cols-1: the _clampt shrink case above.)
+_sw29 = SecureTerminal(command='/bin/cat', tui=True)
+feed_output(_sw29, b'x\r\n')
+_n29 = max(2, _sw29._screen.columns // 2)
+feed_output(_sw29, b'A' * _n29)                         # cursor at x == N (N < the old width)
+_sw29._tui_grid_size = lambda: (_n29, _sw29._screen.lines)   # width shrink to exactly N
+_sw29._sync_tui_size()
+ok(_sw29._screen.cursor.x == _n29,
+   '#29: a shrink to exactly the filled width preserves pending-autowrap (x == cols)')
+_yb29 = _sw29._screen.cursor.y
+feed_output(_sw29, b'B')
+ok(_sw29._screen.cursor.y == _yb29 + 1 and _sw29._screen.cursor.x == 1,
+   '#29: after a shrink-to-full the next byte autowraps instead of overwriting')
+_sw29.shutdown()
+
 # --- ai-review #12: a finished command's stuck colour must not bleed onto the shell
 # prompt in TUI mode. The reset is injected ahead of the bracketed-paste prompt-start
 # on the LIVE pyte feed (so the RENDERED prompt is default-coloured) AND into the
