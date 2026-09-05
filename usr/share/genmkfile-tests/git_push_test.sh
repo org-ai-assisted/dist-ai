@@ -47,6 +47,15 @@ if ! genmkfile_bin="$(locate_genmkfile)"; then
    exit 1
 fi
 
+## Capability gate: this suite tests the genmkfile CHECKOUT (wired via GENMKFILE_BIN). If
+## nothing was wired and only the installed /usr/bin/genmkfile resolved -- which drifts from the
+## tree under review -- SKIP rather than report a confusing FAIL against a possibly-stale
+## subject nobody is changing.
+if [ -z "${GENMKFILE_BIN:-}" ] && [ "${genmkfile_bin}" = "/usr/bin/genmkfile" ]; then
+   printf '%s\n' "SKIP: no genmkfile checkout wired (set GENMKFILE_BIN); not testing the installed copy." >&2
+   exit 77  ## style-ok: allow-skip: no wired checkout -> subject not under review, not a regression
+fi
+
 if ! test -r /usr/libexec/helper-scripts/parallel.bsh; then
    ## helper-scripts is a REQUIRED runtime dep of the target; absent = env bug.
    printf '%s\n' 'FATAL: helper-scripts parallel.bsh missing (required dependency).' >&2

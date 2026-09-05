@@ -72,6 +72,16 @@ if ! helper_file="$(locate_helper)"; then
    exit 1
 fi
 
+## Capability gate: this suite tests the genmkfile CHECKOUT (wired via GENMKFILE_BIN or
+## GENMKFILE_SHARE). If nothing was wired and only the installed /usr/share/genmkfile helper
+## resolved -- which drifts from the tree under review -- SKIP rather than report a confusing
+## FAIL against a possibly-stale subject nobody is changing.
+if [ -z "${GENMKFILE_SHARE:-}" ] && [ -z "${GENMKFILE_BIN:-}" ] \
+   && [ "${helper_file}" = "/usr/share/genmkfile/make-helper-one.bsh" ]; then
+   printf '%s\n' "SKIP: no genmkfile checkout wired (set GENMKFILE_BIN); not testing the installed copy." >&2
+   exit 77  ## style-ok: allow-skip: no wired checkout -> subject not under review, not a regression
+fi
+
 test_root="$(mktemp --directory)"
 
 ## Reached only via the EXIT trap; shellcheck cannot see that path (SC2317).

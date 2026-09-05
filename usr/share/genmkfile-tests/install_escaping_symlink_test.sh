@@ -49,6 +49,16 @@ if ! helper_file="$(locate_helper)"; then
    printf '%s\n' 'FATAL: make-helper-one.bsh not found (set GENMKFILE_SHARE).' >&2
    exit 1
 fi
+
+## Capability gate: this suite tests the genmkfile CHECKOUT (wired via GENMKFILE_BIN or
+## GENMKFILE_SHARE). If nothing was wired and only the installed /usr/share/genmkfile helper
+## resolved -- which drifts from the tree under review -- SKIP rather than report a confusing
+## FAIL against a possibly-stale subject nobody is changing.
+if [ -z "${GENMKFILE_SHARE:-}" ] && [ -z "${GENMKFILE_BIN:-}" ] \
+   && [ "${helper_file}" = "/usr/share/genmkfile/make-helper-one.bsh" ]; then
+   printf '%s\n' "SKIP: no genmkfile checkout wired (set GENMKFILE_BIN); not testing the installed copy." >&2
+   exit 77  ## style-ok: allow-skip: no wired checkout -> subject not under review, not a regression
+fi
 if ! type -P rsync >/dev/null 2>&1; then
    printf '%s\n' 'FATAL: rsync is required.' >&2
    exit 1
@@ -68,10 +78,14 @@ trap cleanup EXIT
    printf '%s\n' 'make_output_info() { :; }'
    printf '%s\n' 'make_output_warn() { :; }'
    printf '%s\n' 'in_array() { return 1; }'
+   ## make_helper calls path_is_within_any (folder_permission_skip_list check); extract the
+   ## real one so the mode-fix path runs, rather than stubbing away real behaviour.
+   sed -n '/^path_is_within_any()/,/^}/p' -- "${helper_file}"
    sed -n '/^make_helper()/,/^}/p' -- "${helper_file}"
 } > "${work}/fn.sh"
-if ! grep --quiet '^make_helper()' "${work}/fn.sh"; then
-   printf '%s\n' 'ERROR: could not extract make_helper.' >&2
+if ! grep --quiet '^make_helper()' "${work}/fn.sh" \
+   || ! grep --quiet '^path_is_within_any()' "${work}/fn.sh"; then
+   printf '%s\n' 'ERROR: could not extract make_helper + path_is_within_any.' >&2
    exit 1
 fi
 # shellcheck disable=SC1091

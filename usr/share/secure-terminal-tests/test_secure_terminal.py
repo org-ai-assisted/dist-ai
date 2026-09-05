@@ -1553,6 +1553,21 @@ _lc = SET.load()
 eq(_lc.get('colors'), 'false', 'settings: locked key keeps the admin value')
 eq(list(_lc.violations), ['colors'], 'settings: ignored override recorded')
 ok('colors' in _lc.locked, 'settings: lock reported')
+# lock= ACCUMULATES across multiple .conf files in ONE privileged dir (not last-write-wins):
+# an admin may split locks over 20-lock.conf + 30-lock2.conf, and last-write-wins would
+# silently drop every lock but the last file's -- a lock BYPASS. Both must hold.
+with open(os.path.join(_sysd, '30-lock2.conf'), 'w', encoding='utf-8') as _h:
+    _h.write('lock=zoom\n')
+_lc2 = SET.load()
+ok('colors' in _lc2.locked and 'zoom' in _lc2.locked,
+   'settings: lock= from several .conf files in one dir all apply (no last-write-wins bypass)')
+# a later bare `lock=` (empty value) must NOT clear the accumulated locks -- else an empty
+# drop-in silently unlocks every key (the same bypass, via the empty-value edge).
+with open(os.path.join(_sysd, '40-empty.conf'), 'w', encoding='utf-8') as _h:
+    _h.write('lock=\n')
+_lc3 = SET.load()
+ok('colors' in _lc3.locked and 'zoom' in _lc3.locked,
+   'settings: an empty lock= in a later file does not clear accumulated locks')
 # a user config cannot lock a key
 with open(os.path.join(_usrd, '96-userlock.conf'), 'w', encoding='utf-8') as _h:
     _h.write('theme=light\nlock=theme\n')
