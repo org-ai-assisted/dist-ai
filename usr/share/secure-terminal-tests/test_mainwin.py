@@ -4360,6 +4360,39 @@ ok(os.path.exists(os.path.join(_tabN, 'pids.max')),
 with open(os.path.join(_tabN, 'pids.max'), encoding='ascii') as _mh:
     ok(_mh.read().strip() == str(_PIDS_MAX),
        'cgroup: the per-tab cgroup carries the pids.max ceiling')
+
+# ai-review #1: an admin lock on clip_run / clip_autostart must make the setters no-ops
+# AND grey the tray controls (mirrors clip_warn_any's enforcement). Canary: unguarded,
+# both setters run and both controls stay enabled despite the lock.
+from PyQt6.QtWidgets import QMenu as _QMenu_lk, QSystemTrayIcon as _QSTI_lk   # noqa: E402
+import secure_terminal.clipboard_watch as _cw_lk                              # noqa: E402
+_lkw = MainWindow()
+_lkw._locked = set(_lkw._locked) | {'clip_run', 'clip_autostart'}
+_lkw._systray = True
+_o_avail_lk = _QSTI_lk.isSystemTrayAvailable
+_QSTI_lk.isSystemTrayAvailable = staticmethod(lambda: True)   # tray present: lock is the only gate
+_lk_probe = []
+_o_isr, _o_sd, _o_sa = _cw_lk.is_running, _cw_lk.stop_running, _cw_lk.set_autostart
+_cw_lk.is_running = lambda: (_lk_probe.append('run'), False)[1]
+_cw_lk.stop_running = lambda: _lk_probe.append('run')
+_cw_lk.set_autostart = lambda _v: _lk_probe.append('auto')
+try:
+    _lkw.set_clip_run(True)          # locked -> must return before touching clipboard_watch
+    _lkw.set_clip_run(False)
+    _lkw.set_clip_autostart(True)    # locked -> must return before set_autostart
+    ok(not _lk_probe,
+       'ai-review #1: set_clip_run / set_clip_autostart are no-ops when admin-locked')
+    _lkm = _QMenu_lk()
+    _lkw._populate_clipboard_menu(_lkm)
+    _lk_by = {a.text(): a for a in _lkm.actions()}
+    ok(not _lk_by['Run in the background'].isEnabled(),
+       'ai-review #1: Run-in-background greyed when clip_run admin-locked')
+    ok(not _lk_by['Start on login'].isEnabled(),
+       'ai-review #1: Start-on-login greyed when clip_autostart admin-locked')
+finally:
+    _cw_lk.is_running, _cw_lk.stop_running, _cw_lk.set_autostart = _o_isr, _o_sd, _o_sa
+    _QSTI_lk.isSystemTrayAvailable = _o_avail_lk
+_lkw.close()
 _wcg.close()
 APP.processEvents()
 _sh_mcg.rmtree(_cgbase, ignore_errors=True)

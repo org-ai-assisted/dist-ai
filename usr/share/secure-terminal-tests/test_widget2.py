@@ -1103,6 +1103,34 @@ try:
              'through a chunk boundary)')
 except Exception as _e:                # pylint: disable=broad-except
     ok(False, 'adversarial: OSC split-invariance: %s' % _e)
+
+# ai-review #4: an OSC-52 clipboard-read reply must not slice a multi-byte character at
+# the _OSC_CLIP_MAX byte cap. Canary: the old raw[:cap] left a truncated 4-byte emoji, so
+# the base64-decoded reply raised UnicodeDecodeError.
+from secure_terminal.terminal import _OSC_CLIP_MAX as _CLIP_CAP        # noqa: E402
+import base64 as _b64_clip                                            # noqa: E402
+QGuiApplication.clipboard().setText('x' * (_CLIP_CAP - 2) + '\U0001f4a9')  # emoji straddles the cap
+_osz._clipboard_read = True
+_osz._last_clip_read = 0.0
+_clipcap = []
+_o_wc = _osz._write
+_osz._write = _clipcap.append          # pylint: disable=protected-access
+try:
+    _osz._handle_osc(b'\x1b]52;c;?\x07')     # the read query
+finally:
+    _osz._write = _o_wc
+_reply4 = b''.join(_clipcap)
+_b64body = (_reply4.split(b']52;c;', 1)[1].rsplit(b'\x07', 1)[0]
+            if b']52;c;' in _reply4 else b'')
+_ok4 = False
+if _b64body:
+    try:
+        _b64_clip.b64decode(_b64body).decode('utf-8')
+        _ok4 = True
+    except UnicodeDecodeError:
+        _ok4 = False
+ok(_ok4, 'ai-review #4: OSC-52 clipboard reply is valid UTF-8 at the byte cap (no mid-char slice)')
+
 _osz.close()
 
 # --- adversarial: the contrast guard holds for the WHOLE attacker colour space --
