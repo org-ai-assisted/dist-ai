@@ -163,22 +163,35 @@ fi
 
 printf '%s\n' "secure-terminal-shots-sandbox: running '${lane}' in the sandbox ..." >&2
 remote_shots="${base}/dist-ai/usr/share/secure-terminal-shots/shots"
-## Run the capture in the BACKGROUND and heartbeat local progress from the sandbox shot count.
+
+## Honest, monotonic phase reporting. The old loop reprinted one "N shot(s)
+## rendered" line every poll, which FABRICATES progress once the count freezes
+## in the compress+pull tail -- masking a real wedge from byte-growth supervision
+## and false-stalling distinct-content readers. phase-progress.sh prints a line
+## only when the phase truly changes; see its header.
+## style-ok: shellcheck-source -- sourced sibling resolved from this driver's own dist-ai tree.
+# shellcheck source=../share/secure-terminal-shots/phase-progress.sh
+source "${dist_ai}/usr/share/secure-terminal-shots/phase-progress.sh"
+
+## Run the capture in the BACKGROUND and derive local phase from the sandbox shot count.
 ## `sandbox exec` buffers the qrexec stream, so the lane's own per-terminal output never reaches
 ## the caller until it exits -- a long silent run then false-stalls the durable-bg supervisor
-## (which watches the progress file for growth). Polling the rendered-PNG count is a REAL
-## liveness signal that still exposes a genuine wedge (the count stops advancing). Delegates to
-## the synced sibling script, NOT an inline bash -lc.
+## (which watches the progress file for growth). Polling the rendered-shot count is a REAL
+## liveness signal that still exposes a genuine wedge (the count stops advancing, and -- unlike
+## the old reprinting loop -- the progress file then stops growing too). Delegates to the synced
+## sibling script, NOT an inline bash -lc.
 sandbox "${target_arg[@]}" exec -- \
    "${HOME}/${base}/dist-ai/usr/share/secure-terminal-shots/run-lane-in-sandbox.sh" \
    "${base}" "${lane}" "$@" &
 capture_pid=$!
+pp_begin "${lane}"
 while kill -0 "${capture_pid}" 2>/dev/null; do
    sleep 20
    rendered="$(sandbox "${target_arg[@]}" exec -- bash -c 'ls "$HOME/'"${remote_shots}"'"/*.png "$HOME/'"${remote_shots}"'"/*.webp 2>/dev/null | wc -l' 2>/dev/null || printf '?')"
-   printf '%s\n' "secure-terminal-shots-sandbox: ${lane} capturing -- ${rendered} shot(s) rendered ..."
+   pp_capture_tick "${rendered}"
 done
 wait "${capture_pid}" || die "the in-sandbox '${lane}' run failed"
+pp_pull_begin
 
 ## Pull the freshly captured shots back.
 pull_tmp="$(mktemp --directory)"
@@ -196,7 +209,7 @@ if [ "${lane}" = 'zoom' ] || [ "${lane}" = 'zoom-live' ]; then
    pngs=("${pull_tmp}/shots/"*.png)
    [ "${#pngs[@]}" -gt 0 ] || die "no zoom PNGs were produced in the sandbox (capture failed silently?)"
    cp --force -- "${pngs[@]}" "${zoom_out}/"
-   printf '%s\n' "secure-terminal-shots-sandbox: pulled ${#pngs[@]} zoom PNG(s) into ${zoom_out}/" >&2
+   pp_done "pulled ${#pngs[@]} zoom PNG(s) into ${zoom_out}/"
    exit 0
 fi
 
@@ -217,4 +230,4 @@ webp=("${pull_tmp}/shots/"*.webp)
 [ "${#webp[@]}" -gt 0 ] || die "no .webp shots were produced in the sandbox (capture failed silently?)"
 cp --force -- "${webp[@]}" "${site_dest}/"
 
-printf '%s\n' "secure-terminal-shots-sandbox: pulled ${#webp[@]} shot(s) into ${site_dest}/" >&2
+pp_done "pulled ${#webp[@]} shot(s) into ${site_dest}/"
