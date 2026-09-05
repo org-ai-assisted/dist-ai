@@ -2611,12 +2611,15 @@ if tui_available():
        'switching to TUI clears a pending CLI discard state, its counter and its notice flag')
     _bd.close()
 
-# an over-cap OSC (introducer truncated by the discard) still surfaces an OSC-use
-# notice, so padding an OSC past the cap cannot evade the once-per-type banner (F5)
+# an over-cap OSC still surfaces an OSC-use notice, so padding an OSC past the cap cannot
+# evade the once-per-type banner (F5). The advisory carries the raw stream itself
+# (_notice_carry) up to the SAME _OSC_CARRY_MAX the enforcement path uses, so "over-cap"
+# means past that unified cap (a sub-cap unterminated OSC is HELD, matching _handle_osc --
+# not surfaced prematurely at the smaller display cap).
 _bo = SecureTerminal(command='/bin/cat')
 _osc_seen = []
 _bo.osc_used.connect(lambda k: _osc_seen.append(k))
-feed_output(_bo, b'\x1b]0;' + b'A' * 5000)         # >cap OSC, no terminator -> discard
+feed_output(_bo, b'\x1b]0;' + b'A' * (_bo._OSC_CARRY_MAX + 5000))   # past cap, no terminator
 ok('osc_other' in _osc_seen, 'an over-cap OSC still surfaces an OSC-use notice')
 _bo.close()
 
