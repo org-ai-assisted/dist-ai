@@ -1753,29 +1753,71 @@ class TmpHardcode(Rule):
                     number)
 
 
+def _word_has_comment_anchor(word):
+    """True if WORD carries a literal '^#'/'^##' comment-line anchor -- the
+    pattern a comment-scrape hands to grep/sed/awk. Only LITERAL text counts (a
+    Lit part, or the body of a '...' / "..." quote); a '$'-expansion contributes
+    no literal, so the anchor cannot be conjured out of an expansion's value.
+    Walks the whole word subtree so an anchor inside a quoted sed/awk PROGRAM
+    ('sed "s/^## //p"') is seen -- the discriminator is the SELF-REFERENCE, not
+    where the anchor sits."""
+    for node in bash_ast.iter_nodes(word):
+        if node.get("Type") in ("Lit", "SglQuoted"):
+            if "^#" in (node.get("Value") or ""):
+                return True
+    return False
+
+
+## '$0' / '${0}' expand Param.Value '0'; '${BASH_SOURCE[0]}' expands
+## 'BASH_SOURCE'. A ParamExp of either, anywhere in an argument word, is the
+## script self-reference a comment-scrape reads as its file operand.
+_R153_SELF_PARAMS = frozenset({"0", "BASH_SOURCE"})
+
+
+def _word_has_self_ref(word):
+    """True if WORD expands '$0' / '${0}' / '${BASH_SOURCE...}' as a REAL shell
+    parameter -- the script's own path used as a file operand. A '$0' typed
+    inside a single-quoted awk/sed program is a SglQuoted LITERAL, never a
+    ParamExp, so an awk FIELD reference ('awk "/^##/{x=$0}" file') is (correctly)
+    not a self-reference here -- the exact awk-field-vs-shell-operand call a line
+    regex cannot make. SCOPE (accident, not adversary): an ANSI-C $'...' word is
+    not decoded (same limit as word_string), so a hex/octal-encoded self-ref is
+    out of scope."""
+    for node in bash_ast.iter_nodes(word):
+        if node.get("Type") == "ParamExp" \
+                and (node.get("Param") or {}).get("Value") in _R153_SELF_PARAMS:
+            return True
+    return False
+
+
 class HelpFromComments(Rule):
     """R-153: never build help/usage by scraping the script's OWN comments (e.g.
-    a grep of a '^##' anchor over "$0"). Flags a NON-comment line carrying BOTH a
-    '^#'/'^##' anchor literal AND a '$0' / '${BASH_SOURCE' self-reference (in
-    either order). A plain 'dirname "${BASH_SOURCE[0]}"' or 'head "$0"' has no
-    anchor and is spared; a comment line naming the anti-pattern is spared."""
+    a grep of a '^##' anchor over "$0"). Flags a COMMAND whose arguments carry
+    BOTH a '^#'/'^##' comment-anchor literal AND a real '$0' / '${BASH_SOURCE'
+    shell self-reference operand. Worked from the shfmt AST, not a line regex, so
+    the two calls a regex cannot make are ruled out:
+      - a BARE '$0' inside a single-quoted awk/sed PROGRAM is an awk FIELD, not a
+        shell expansion, so 'awk "/^##/{x=$0}" file' (no real self-ref operand) is
+        SPARED, while 'awk "/^##/" "$0"' (the script itself IS the operand) still
+        flags;
+      - an anchor and a self-ref that co-occur only in a COMMENT, or in unrelated
+        commands, are not one command's arguments, so they do not trip it.
+    A plain 'dirname "${BASH_SOURCE[0]}"' or 'head "$0"' has no anchor and is
+    spared."""
 
     id = "R-153"
-    _ANCHOR_THEN_SELF = re.compile(r'\^##?.*(?:\$0|\$\{?BASH_SOURCE)')
-    _SELF_THEN_ANCHOR = re.compile(r'(?:\$0|\$\{?BASH_SOURCE).*\^##?')
 
     def applies(self, ctx):
         return super().applies(ctx)
 
     def detect(self, ctx):
-        for number, line in enumerate(ctx.source.split("\n"), 1):
-            if line.lstrip().startswith("#"):
+        for call in bash_ast.call_exprs(ctx.tree):
+            words = bash_ast.args(call)
+            if not any(_word_has_comment_anchor(word) for word in words):
                 continue
-            if (self._ANCHOR_THEN_SELF.search(line)
-                    or self._SELF_THEN_ANCHOR.search(line)):
-                yield model.fail(
-                    "R-153", "R-153 help scraped from comments", ctx.path,
-                    number)
+            if any(_word_has_self_ref(word) for word in words):
+                yield _fail(ctx, "R-153", "R-153 help scraped from comments",
+                            call)
 
 
 ## git global options (before the subcommand) whose VALUE is the next word.

@@ -644,19 +644,42 @@ expect_rule "R-103" "exec${sp}9>${dq}\${lock}${dq}"              "absent"
 expect_rule "R-103" "docker${sp}exec${sp}-it name sh"            "absent"
 
 ## R-153: scraping the script's OWN comments for help/usage is FLAGGED. The
-## '^##'/'^#' anchor plus a '$0' or '${BASH_SOURCE}' self-reference on a
-## non-comment line is the comment-scrape signature. A plain 'dirname
-## "${BASH_SOURCE[0]}"' or 'head "$0"' (no anchor) and a comment that merely
-## names the pattern are SPARED. Anchor + self-ref assembled from fragments so
-## this tracked file does not itself embed the flagged co-occurrence.
+## '^##'/'^#' anchor plus a real '$0' or '${BASH_SOURCE}' self-reference operand
+## on ONE command is the comment-scrape signature. Ported from a line regex to
+## the shfmt AST: the discriminator is whether the self-reference is a REAL shell
+## expansion operand, so the two structural calls a regex cannot make are pinned
+## below -- an awk FIELD '$0' inside a single-quoted program is SPARED (no shell
+## operand), and an anchor+self-ref that co-occur only in an inline COMMENT are
+## SPARED (not a command's arguments). A plain 'dirname "${BASH_SOURCE[0]}"' or
+## 'head "$0"' (no anchor) is spared. Anchor + self-ref assembled from fragments
+## so this tracked file does not itself embed the flagged co-occurrence.
 anchor="${caret}${hash}${hash}"
 self0="${dollar}0"
 selfbs="${dollar}{BASH_SOURCE[0]}"
+comment="${hash}${hash}"
 expect_rule "R-153" "help=${dq}${dollar}(grep ${sq}${anchor}${sq} -- ${dq}${self0}${dq})${dq}" "present"
 expect_rule "R-153" "sed -n ${sq}s/${anchor} //p${sq} -- ${dq}${selfbs}${dq}"                  "present"
 expect_rule "R-153" "here=${dq}${dollar}(dirname -- ${dq}${selfbs}${dq})${dq}"                  "absent"
 expect_rule "R-153" "head --lines 5 -- ${dq}${self0}${dq}"                                      "absent"
 expect_rule "R-153" "grep ${sq}${caret}pattern${sq} -- somefile.txt"                            "absent"
+## AST-port regressions (each FAILS on a regex version, PASSES on the AST):
+## (a) an UNQUOTED '$0' scrape MUST flag -- a real ParamExp operand. The reverted
+##     'require quoted "$0"' regex MISSED this (false negative).
+expect_rule "R-153" "grep ${sq}${anchor}${sq} -- ${self0}"                                     "present"
+## (b) an awk over the SCRIPT ITSELF ('$0' the quoted operand) MUST flag.
+expect_rule "R-153" "awk ${sq}/${anchor}/${sq} -- ${dq}${self0}${dq}"                           "present"
+## (c) an awk STRING-CONCAT '"^##"$0' -- '$0' is an awk FIELD inside the
+##     single-quoted program, NOT a shell operand -- MUST NOT flag. BOTH regex
+##     versions flag it (the current one on the bare '$0', the reverted one on the
+##     quote-adjacent '"$0'); only the AST tells the awk field from a shell operand.
+expect_rule "R-153" "awk ${sq}{print ${dq}${anchor}${dq}${self0}}${sq} -- somefile.txt"        "absent"
+## (d) an awk field '$0' over a DATA file (space form) -- MUST NOT flag. The exact
+##     false positive the regex revert acknowledged as unavoidable.
+expect_rule "R-153" "awk ${sq}/${anchor}/{seen=${self0}}${sq} -- somefile.txt"                 "absent"
+## (e) an anchor + self-ref that co-occur only in an INLINE trailing COMMENT on a
+##     code line -- MUST NOT flag. The line does not start with '#', so the line
+##     regex did not skip it and flagged (false positive); the AST drops comments.
+expect_rule "R-153" "true ${comment} grep ${sq}${anchor}${sq} over ${dq}${self0}${dq}"         "absent"
 
 ## R-102: an extensionless but slashed path operand is FLAGGED; a flag or a
 ## variable operand is SPARED. (Body assembled below via ${sp} so this
