@@ -11,9 +11,13 @@
 ## Used by test_dm_review_branch.sh for the interactive cases.
 ##
 ## Interface is environment-only (no argv), so the shell side can set it inline:
-##   REPO   -- repository to review in
-##   REF    -- ref to review
-##   ANSWER -- answer to feed the prompt ('y' or 'n')
+##   REPO    -- repository to review in
+##   REF     -- ref to review
+##   ANSWER  -- answer to feed the prompt ('y' or 'n')
+##   CAPTURE -- optional path; when set, the child's raw pty output (every byte
+##              the terminal would have received) is written there, so a caller
+##              can assert what actually reached the terminal (e.g. that no raw
+##              escape byte survived neutralization).
 ##
 ## Exit code 124 means the prompt never appeared within the timeout and the
 ## child was killed -- always a suite failure, never a verdict.
@@ -28,6 +32,7 @@ import time
 repo = os.environ["REPO"]
 ref = os.environ["REF"]
 ans = os.environ["ANSWER"].encode() + b"\n"
+capture = os.environ.get("CAPTURE", "")
 
 pid, fd = pty.fork()
 if pid == 0:
@@ -118,6 +123,12 @@ while True:
         timed_out = True
         break
     time.sleep(0.05)
+
+## Persist the raw terminal bytes for the caller's inspection, before any
+## timeout exit -- a truncated capture is still evidence of what reached the tty.
+if capture:
+    with open(capture, "wb") as capture_file:
+        capture_file.write(buf)
 
 if timed_out:
     sys.stderr.write(
