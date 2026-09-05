@@ -20,7 +20,7 @@
 ##
 ## FIX: emit LABELED, MONOTONIC phase transitions, and print a line ONLY when
 ## something real changes:
-##   - the observed shot count changed        -> "phase: capturing (N)"  (distinct N)
+##   - the observed shot count INCREASED       -> "phase: capturing (N)"  (distinct N)
 ##   - the count has been frozen while the run is still live -> "phase: compressing
 ##     (N captured)" ONCE (the final composite build + webp optimization emit no
 ##     per-shot signal, so silence -- not a fabricated heartbeat -- is the honest
@@ -51,10 +51,13 @@ export LC_ALL=C
 ## the honest "compressing" label appears promptly once capture truly stops.
 [ -v PP_FREEZE_POLLS ] || PP_FREEZE_POLLS=2
 case "${PP_FREEZE_POLLS}" in
-   '' | *[!0-9]* | 0 )
+   '' | *[!0-9]* )
       PP_FREEZE_POLLS=2
       ;;
 esac
+## Reject a value < 1 -- incl. any all-zero string ('0', '00', ...), which the digit-only case
+## above lets through but bash's -ge evaluates as 0, silently making the freeze threshold 0.
+[ "${PP_FREEZE_POLLS}" -ge 1 ] || PP_FREEZE_POLLS=2
 
 _pp_prefix='secure-terminal-shots-sandbox'
 _pp_lane=''
@@ -92,11 +95,13 @@ pp_capture_tick() {
          ;;
    esac
 
-   if [ -n "${count}" ] && [ "${count}" != "${_pp_last}" ]; then
-      ## The count changed -> capture is actively producing shots. Print the new
-      ## count (distinct line) and reset the frozen run. If we had transitioned to
-      ## "compressing" on a transient freeze, capture resuming flips it back --
-      ## honest: it labels what is actually happening.
+   if [ -n "${count}" ] && { [ -z "${_pp_last}" ] || [ "${count}" -gt "${_pp_last}" ]; }; then
+      ## A strict INCREASE (or the first observation) is real capture progress. Only an increase,
+      ## never merely a change: per-shot webp optimization bumps the *.png+*.webp count UP (webp
+      ## written) then DOWN (source .png removed), so a `!=` test would reprint an earlier count
+      ## line byte-for-byte on the dip and flip the phase back to capturing -- the exact
+      ## duplicated-progress defect this module removes. A dip is not new progress -> treat it as
+      ## a frozen poll.
       _pp_last="${count}"
       _pp_frozen=0
       _pp_phase='capturing'

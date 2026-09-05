@@ -82,7 +82,7 @@ has_repeat() {
 ## Threshold 2 frozen polls -> compressing (matches the shipped default; set explicitly so the
 ## test does not silently drift if the default changes).
 new_log="$(
-   export PP_FREEZE_POLLS=2
+   PP_FREEZE_POLLS=2
    # shellcheck source=../secure-terminal-shots/phase-progress.sh
    source "${lib}"
    pp_begin comparison
@@ -126,6 +126,52 @@ if has_repeat "${new_log}"; then
    fail 'honest emitter repeated an identical line -- that is the frozen-spinner bug'
 else
    pass 'honest emitter never repeats an identical line'
+fi
+
+## --- Scenario 1b: a webp-swap count DIP must not reprint or flip the phase back --------------
+## Per-shot webp optimization bumps the *.png+*.webp count UP (webp written) then DOWN (source
+## .png removed). Only a strict INCREASE is capture progress; a dip must be a frozen poll, never a
+## reprinted "capturing (N)" line (the duplicated-progress defect) nor a phase flip back to
+## capturing.
+dip_log="$(
+   PP_FREEZE_POLLS=2
+   # shellcheck source=../secure-terminal-shots/phase-progress.sh
+   source "${lib}"
+   pp_begin comparison
+   pp_capture_tick 147
+   pp_capture_tick 147   # frozen 1
+   pp_capture_tick 147   # frozen 2 -> compressing (147 captured)
+   pp_capture_tick 148   # webp written, src .png not yet removed -> count bumps UP
+   pp_capture_tick 147   # .png removed -> count drops back (a DIP, not progress)
+)"
+if has_repeat "${dip_log}"; then
+   fail 'a webp-swap count dip reprinted an identical capturing line (the != -> -gt bug)'
+else
+   pass 'a webp-swap count dip does not reprint an identical capturing line'
+fi
+## After the dip the phase must NOT be re-announced as capturing at the dipped-to value.
+dip_147_n="$(printf '%s\n' "${dip_log}" | grep --count --fixed-strings 'capturing comparison (147 shot(s))' || true)"
+if [ "${dip_147_n}" = '1' ]; then
+   pass 'the dipped-to count (147) is announced once, not again on the dip'
+else
+   fail "capturing (147) announced ${dip_147_n} times (want 1) -- a dip must not re-announce capturing"
+fi
+
+## --- Scenario 1c: PP_FREEZE_POLLS sanitizer rejects an all-zero string ------------------------
+## '00' is all-digits so a digit-only guard lets it pass, but -ge reads it as 0 -> a single frozen
+## poll would prematurely declare compressing. The sanitizer must force it to the default (>=1).
+zero_log="$(
+   PP_FREEZE_POLLS=00
+   # shellcheck source=../secure-terminal-shots/phase-progress.sh
+   source "${lib}"
+   pp_begin comparison
+   pp_capture_tick 5
+   pp_capture_tick 5   # ONE frozen poll -- must NOT be enough to declare compressing
+)"
+if grep --quiet --fixed-strings 'phase: compressing' <<< "${zero_log}"; then
+   fail 'PP_FREEZE_POLLS=00 declared compressing after a single frozen poll (sanitizer gap)'
+else
+   pass 'PP_FREEZE_POLLS=00 is sanitized to >=1 (a single frozen poll does not declare compressing)'
 fi
 
 ## --- Scenario 2 (CANARY): the OLD frozen-spinner output must FAIL both properties -------------
