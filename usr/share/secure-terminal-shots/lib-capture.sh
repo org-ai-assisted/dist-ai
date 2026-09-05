@@ -98,9 +98,6 @@ shots_corpus_id() {  ## $1=case
       contrast)
          printf '%s' 'stuck-colour-contrast'
          ;;
-      title)
-         printf '%s' 'title-set-hijack'
-         ;;
       homoglyph)
          printf '%s' 'homoglyph-domain-install-2021'
          ;;
@@ -209,7 +206,7 @@ shots_generate_logs() {  ## $1=script-relative fallback dir $2=dest-dir
    ## suppresses errexit inside the function, so a failed reproduce.py must be surfaced
    ## by hand (as a NON-77 code, distinct from the missing-corpus skip) or the capture
    ## would proceed with a missing payload.
-   for c in escape contrast title homoglyph bidi altscreen tui-showcase; do
+   for c in escape contrast homoglyph bidi altscreen tui-showcase; do
       id="$(shots_corpus_id "${c}")"
       POC_CORPUS_IN_SANDBOX=1 python3 "${rp}" "${id}" --out "${dest}/${c}.payload" || return 1
    done
@@ -224,6 +221,14 @@ shots_generate_logs() {  ## $1=script-relative fallback dir $2=dest-dir
    ## canary token); kept inline deliberately. $'...' gives the real escape bytes.
    notify=$'build log: packaging step 3 of 5\n\033]9;Safe demonstration only: secure-terminal terminal-attack comparison test. No action needed.\007post-install: done\n'
    printf '%s' "${notify}" > "${dest}/notify.payload" || return 1
+   ## title: a page-facing demo of a silent OSC-0 window/tab-title set (a traditional
+   ## terminal honours it invisibly; secure-terminal neutralizes + flags it). Synthesized
+   ## INLINE, not pulled from the title-set-hijack corpus PoC, so the narration is short
+   ## enough to fit ONE grid line -- the corpus narration is long and wrapped mid-word in
+   ## the shot. Same OSC-0 escape as the corpus (title set to a benign example.com);
+   ## page-facing display demo, no canary token, like notify / zerowidth above.
+   title=$'nginx: configuration reloaded\napt: reading package lists ... done\n\033]0;example.com -- safe demonstration\007an OSC-0 escape just set the window title -- silently, mid-stream.\n'
+   printf '%s' "${title}" > "${dest}/title.payload" || return 1
    ## zerowidth: a page-facing display demo of an invisible byte -- a single U+200B
    ## (zero-width space, UTF-8 e2 80 8b) hidden inside 'administrator'. On a normal
    ## terminal the word reads clean; secure-terminal boxes the hidden byte. Self-describing
