@@ -187,13 +187,23 @@ fi
 
 ## 5) After the operator CONSENTS to continue (case 4's 'yes' path), the raw
 ## commit message still reaches the terminal via 'git log'. It must be
-## neutralized (stcat), or a commit message carrying a terminal escape injects
-## the reviewer's terminal AFTER they waved the finding through. Craft a message
-## with a real ESC-based ANSI sequence, answer 'yes', capture the raw pty bytes,
-## and assert the escape was rendered inert -- not passed through raw.
+## neutralized, or a commit message carrying a terminal escape injects the
+## reviewer's terminal AFTER they waved the finding through. The payload is an
+## SGR COLOR sequence specifically: stcat neutralizes cursor/erase escapes
+## unconditionally, but KEEPS SGR when color is enabled -- so an attacker's
+## black-on-black (concealment) survives a bare 'git log | stcat'. Only the
+## tool's NO_COLOR=1 on that pipe closes it. Craft the message, answer 'yes' on
+## a color terminal, capture the raw pty bytes, and assert the escape was
+## rendered inert -- not passed through raw.
 run_review_tty_capture() {
    ## $1 = ref, $2 = answer, $3 = capture path. Exit code = the tool's.
-   REPO="${repo}" REF="$1" ANSWER="$2" CAPTURE="$3" "${tty_driver}"
+   ## Force a COLOR-capable terminal (TERM set, NO_COLOR unset) so the tool's
+   ## own NO_COLOR=1 on the git-log stcat is the ONLY thing that can neutralize
+   ## an SGR color sequence. Without this a no-color terminal makes stcat strip
+   ## SGR anyway, and the assertion could not tell the fix from its absence
+   ## (stcat neutralizes cursor/erase always, but keeps SGR when color is on).
+   TERM=xterm-256color env --unset=NO_COLOR -- \
+      REPO="${repo}" REF="$1" ANSWER="$2" CAPTURE="$3" "${tty_driver}"
 }
 git -C "${repo}" checkout --quiet -b esc feature
 printf '%s\n' 'fourth' >> "${repo}/file"
