@@ -100,9 +100,10 @@ cleanup() {
    shots_deregister_run "${run_marker}" 2>/dev/null || true
    [ -z "${wm_pid}" ] || kill "${wm_pid}" 2>/dev/null || true
    [ -z "${wm_pid}" ] || wait "${wm_pid}" 2>/dev/null || true
-   ## zoom-live: remove the throwaway privileged remote_control drop-in (root-owned, so sudo); LOUD
-   ## on failure (a leaked drop-in keeps remote_control on system-wide), but never aborts the trap.
-   zoom_live_remove_dropin || true
+   ## remove the throwaway privileged remote_control drop-in (root-owned, so sudo) either lane may
+   ## have created; LOUD on failure (a leaked drop-in keeps remote_control on system-wide), but
+   ## never aborts the trap.
+   shots_rc_dropin_remove "${rc_dropin}" || true
    safe-rm -r -f -- "${runtime_dir}" 2>/dev/null || true
 }
 
@@ -516,13 +517,40 @@ st_wait_render_settled() {  ## $1=window-id
    safe-rm --force -- "${a}" "${b}" 2>/dev/null || true
 }
 
-## Remove zoom-live's throwaway privileged remote_control drop-in (root-owned, so sudo). LOUD on
-## failure: a leaked drop-in keeps remote_control enabled system-wide, so NAME the leaked path
-## rather than swallowing the error -- but return, never abort (it runs from the EXIT trap).
-zoom_live_remove_dropin() {
-   [ -n "${zoom_live_rc_dropin:-}" ] || return 0
-   if ! sudo safe-rm --force -- "${zoom_live_rc_dropin}"; then
-      printf '%s\n' "zoom-live: WARNING: could not remove privileged remote_control drop-in '${zoom_live_rc_dropin}'; remove it manually -- remote_control stays enabled system-wide until then" >&2
+## Create a throwaway privileged remote_control=true drop-in and echo its path (record it so
+## cleanup() removes THIS one); return 1 (echo nothing) on failure. remote_control is
+## PRIVILEGED_ONLY -- honoured only from a root-writable system drop-in, with no env relocation
+## hook by design, so a user config cannot enable it. sudo is sandbox-only. Shared by the
+## comparison and zoom-live lanes (both drive a running instance via `ctl`).
+shots_rc_dropin_create() {  ## $1=filename prefix
+   local rc_dir dropin
+   rc_dir='/usr/local/etc/secure-terminal.d'
+   sudo mkdir --parents -- "${rc_dir}" || return 1
+   ## A UNIQUE root-owned drop-in (ending in .conf so settings.py's *.conf glob reads it); NEVER a
+   ## fixed name -- that would TRUNCATE an admin file or a concurrent run's drop-in.
+   dropin="$(sudo mktemp --tmpdir="${rc_dir}" "${1}.XXXXXX.conf")" || return 1
+   [ -n "${dropin}" ] || return 1
+   if ! printf 'remote_control=true\n' | sudo tee -- "${dropin}" >/dev/null; then
+      sudo safe-rm --force -- "${dropin}" 2>/dev/null || true
+      return 1
+   fi
+   ## sudo mktemp made it 0600 root:root, but secure-terminal launches UNPRIVILEGED and must READ
+   ## it, or remote_control=true never applies and `ctl ls` finds no tab -- world-read a non-secret
+   ## flag file (still root-OWNED for placement in the trusted dir).
+   if ! sudo chmod 0644 -- "${dropin}"; then
+      sudo safe-rm --force -- "${dropin}" 2>/dev/null || true
+      return 1
+   fi
+   printf '%s' "${dropin}"
+}
+
+## Remove a throwaway privileged drop-in (root-owned, so sudo). LOUD on failure: a leaked drop-in
+## keeps remote_control enabled system-wide, so NAME the leaked path rather than swallowing the
+## error -- but return, never abort (it runs from the EXIT trap). A no-op on an empty path.
+shots_rc_dropin_remove() {  ## $1=drop-in path
+   [ -n "${1:-}" ] || return 0
+   if ! sudo safe-rm --force -- "${1}"; then
+      printf '%s\n' "WARNING: could not remove privileged remote_control drop-in '${1}'; remove it manually -- remote_control stays enabled system-wide until then" >&2
       return 1
    fi
    return 0
@@ -550,41 +578,12 @@ zoom_live_capture() {  ## $@=zoom levels (percent); default band if none
    failures=0
    shots=0
 
-   ## remote_control is PRIVILEGED-ONLY (settings.PRIVILEGED_ONLY): honoured ONLY from a
-   ## root-writable system drop-in (/usr/lib, /etc, /usr/local/etc). There is NO env relocation
-   ## hook (by design -- so an unprivileged user cannot re-point the trusted layer), so a throwaway
-   ## USER config cannot enable it. Enable it for the capture via a /usr/local/etc drop-in, written
-   ## with sudo (the sandbox grants passwordless sudo) and removed on exit by cleanup(). This is a
-   ## sandbox-only diagnostic; it never touches a real deployment's config.
-   rc_dir='/usr/local/etc/secure-terminal.d'
-   if ! sudo mkdir --parents -- "${rc_dir}"; then
-      printf '%s\n' 'zoom-live: cannot create the privileged drop-in dir (sudo?)' >&2
+   ## Enable remote_control for the capture via a throwaway privileged drop-in (removed on exit by
+   ## cleanup()). Record the EXACT path in the shared rc_dropin so cleanup removes THIS one.
+   rc_dropin="$(shots_rc_dropin_create zoom-live-rc)" || {
+      printf '%s\n' 'zoom-live: cannot create the privileged remote_control drop-in (sudo?)' >&2
       return 1
-   fi
-   ## A UNIQUE root-owned drop-in (sudo mktemp -> 0600 root:root in ${rc_dir}, ending in .conf so
-   ## settings.py's *.conf glob reads it). NEVER a fixed name: that would TRUNCATE an admin file or
-   ## a concurrent zoom-live run's drop-in. Its exact path is recorded so cleanup removes THIS one.
-   dropin="$(sudo mktemp --tmpdir="${rc_dir}" zoom-live-rc.XXXXXX.conf)" || dropin=''
-   if [ -z "${dropin}" ]; then
-      printf '%s\n' 'zoom-live: cannot create the privileged remote_control drop-in (sudo mktemp?)' >&2
-      return 1
-   fi
-   if ! printf 'remote_control=true\n' | sudo tee -- "${dropin}" >/dev/null; then
-      printf '%s\n' "zoom-live: cannot write the privileged remote_control drop-in '${dropin}' (sudo?)" >&2
-      sudo safe-rm --force -- "${dropin}" 2>/dev/null || true
-      return 1
-   fi
-   ## sudo mktemp made it 0600 root:root, but secure-terminal launches UNPRIVILEGED and
-   ## must READ it, or remote_control=true never applies and `ctl ls` finds no tab (the
-   ## sweep then fails "window never appeared"). It only needs to be root-OWNED for
-   ## placement in ${rc_dir}, not root-only-readable -- world-read a non-secret flag file.
-   if ! sudo chmod 0644 -- "${dropin}"; then
-      printf '%s\n' "zoom-live: cannot make the remote_control drop-in '${dropin}' world-readable" >&2
-      sudo safe-rm --force -- "${dropin}" 2>/dev/null || true
-      return 1
-   fi
-   ## Record the EXACT path so cleanup() removes it even on an error/reap.
-   zoom_live_rc_dropin="${dropin}"
+   }
 
    ## A full-screen TUI to zoom: the tui-showcase board in TUI mode (alt screen, fills the
    ## viewport) -- the same real full-viewport payload the comparison TUI shots use, so the grid is
@@ -605,10 +604,10 @@ zoom_live_capture() {  ## $@=zoom levels (percent); default band if none
    ## deterministic 72-DPI / SHOT_SCALE screenshot env as the comparison ST pass; reaped by PGID.
    shots_spawn_session "${st_pgf}" \
       env --unset=WAYLAND_DISPLAY "DISPLAY=${xwl_display}" QT_QPA_PLATFORM=xcb \
-      QT_FONT_DPI=72 QT_SCALE_FACTOR="${SHOT_SCALE}" QT_AUTO_SCREEN_SCALE_FACTOR=0 SECURE_TERMINAL_SHOT=1 \
+      QT_FONT_DPI=72 QT_SCALE_FACTOR="${SHOT_SCALE}" QT_AUTO_SCREEN_SCALE_FACTOR=0 SECURE_TERMINAL_SHOT=1 SHELL=/bin/bash \
       "SECURE_TERMINAL_TRANSCRIPT_FILE=${st_transcript}" \
       PYTHONPATH="${st_pkg}" python3 "${st_bin}" --tui \
-      -- bash --rcfile "${HOME}/.strc" -i >/dev/null 2>&1
+      --name "${run_marker}" >/dev/null 2>&1
 
    st_wdog="$(shots_watchdog_start "${SHOT_DEADLINE}" "${st_pgf}" "${st_flagf}")" || st_wdog=''
    stwid="$(find_window || true)"
@@ -856,8 +855,9 @@ was_executed "${BASH_SOURCE[0]}" || return 0
 out="${here}/shots"
 mkdir --parents -- "${out}"
 
-## zoom-live's throwaway privileged drop-in path, removed by cleanup(); empty until it writes one.
-zoom_live_rc_dropin=''
+## the throwaway privileged remote_control drop-in path (comparison or zoom-live), removed by
+## cleanup(); empty until a lane writes one.
+rc_dropin=''
 
 
 ## Fail BEFORE the expensive capture if the bundled webp optimizer is missing -- a direct
@@ -884,8 +884,9 @@ export XDG_CONFIG_HOME="${runtime_dir}/config"
 mkdir --parents -- "${HOME}" "${XDG_CONFIG_HOME}/labwc"
 
 ## The run's unique reaping MARKER: the mktemp runtime dir, which every spawned terminal / GUI
-## carries in its argv (via `--rcfile ${HOME}/.strc` and the recorded pgid file), so a crashed
-## run's orphans can be swept by exactly this string and nothing else.
+## carries in its argv (the emulators via `--rcfile ${HOME}/.strc`; secure-terminal via `--name`,
+## since it launches a clean `bash -i` with no --rcfile path) plus the recorded pgid file, so a
+## crashed run's orphans can be swept by exactly this string and nothing else.
 run_marker="${runtime_dir}"
 ## Per-capture deadline (seconds): a render that hangs longer than this has its process group
 ## reaped and the loop continues, so a wedged terminal cannot stall the whole grid.
@@ -1271,6 +1272,13 @@ SHOT_PROMPT='user@host:~$ '
 cat > "${HOME}/.strc" <<RC
 PS1='${SHOT_PROMPT}'
 RC
+## secure-terminal launches a clean `bash -i` (no ugly temp --rcfile path in its launch
+## banner); a non-login interactive bash reads ~/.bashrc, so write the same prompt there.
+## The emulators keep --rcfile ${HOME}/.strc (that path is their reaping marker); ST carries
+## the marker via --name instead (see the ST launch), so its banner stays clean.
+cat > "${HOME}/.bashrc" <<RC
+PS1='${SHOT_PROMPT}'
+RC
 
 ## labwc config: the Clearlooks theme, server-side decorations. The title-bar font is
 ## scaled by SHOT_SCALE so the server-side chrome (and its title -- where the OSC-0 hijack
@@ -1409,6 +1417,12 @@ cp -- "${HOME}/tui-showcase.payload" "${HOME}/tui-showcase-withprompt.payload"
 st_bin="${ST_REPO:-}/usr/bin/secure-terminal"
 st_pkg="${ST_REPO:-}/usr/lib/python3/dist-packages"
 if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
+   ## Enable remote_control for the whole ST pass via a throwaway privileged drop-in (removed on
+   ## exit by cleanup()), so each per-case window can be driven by `ctl send-text --submit` -- a
+   ## real remote-control command run, not xdotool key-injection into a possibly-unfocused window.
+   rc_dropin="$(shots_rc_dropin_create comparison-rc)" || {
+      printf '%s\n' 'warn secure-terminal: cannot create the privileged remote_control drop-in (sudo?) -- ctl send-text will fail' >&2
+   }
    ## Each entry is "<case> <mode> <output-suffix>". secure-terminal is captured in
    ## the display mode that matters for each case: box for the byte-stream cases,
    ## including the homoglyph -- box flags the look-alike byte as a coloured box.
@@ -1510,9 +1524,9 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
    warm_pgf="$(mktemp -- "${runtime_dir}/pgid.XXXXXX")"
    shots_spawn_session "${warm_pgf}" \
       env --unset=WAYLAND_DISPLAY "DISPLAY=${xwl_display}" QT_QPA_PLATFORM=xcb \
-      QT_FONT_DPI=72 QT_SCALE_FACTOR="${SHOT_SCALE}" QT_AUTO_SCREEN_SCALE_FACTOR=0 SECURE_TERMINAL_SHOT=1 \
-      PYTHONPATH="${st_pkg}" python3 "${st_bin}" --new-instance --mode box \
-      -- bash --rcfile "${HOME}/.strc" -i >/dev/null 2>&1
+      QT_FONT_DPI=72 QT_SCALE_FACTOR="${SHOT_SCALE}" QT_AUTO_SCREEN_SCALE_FACTOR=0 SECURE_TERMINAL_SHOT=1 SHELL=/bin/bash \
+      PYTHONPATH="${st_pkg}" "${st_bin}" --new-instance --mode box \
+      --name "${run_marker}" >/dev/null 2>&1
    warm_wid="$(find_window || true)"
    [ -n "${warm_wid}" ] && wait_window_ready "${warm_wid}"
    clear_windows
@@ -1557,6 +1571,11 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       ## full one (the window chrome paints either way).
       st_transcript="${st_pgf}.transcript"
       safe-rm -f -- "${st_transcript}" 2>/dev/null || true
+      ## A UNIQUE instance group per launch (from the unique pgid file) so this window is the group
+      ## PRIMARY and claims its OWN ctl socket: `ctl send-text --submit` (below) drives THIS window.
+      ## A --new-instance standalone claims no socket (ctl could not reach it); a unique group also
+      ## avoids socket reuse across the sequential captures.
+      st_group="cmp-$(basename -- "${st_pgf}")"
       ## Pin the font DPI to 72 so the render is deterministic regardless of the X
       ## server's DPI. The responsive toolbar's 860 default (st_win_w) is calibrated
       ## to the real compositor's ~9pt/72-DPI metrics (labeled tier: captioned chips,
@@ -1574,10 +1593,10 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       ## labeled toolbar tier.
       shots_spawn_session "${st_pgf}" \
          env --unset=WAYLAND_DISPLAY "DISPLAY=${xwl_display}" QT_QPA_PLATFORM=xcb \
-         QT_FONT_DPI=72 QT_SCALE_FACTOR="${SHOT_SCALE}" QT_AUTO_SCREEN_SCALE_FACTOR=0 SECURE_TERMINAL_SHOT=1 \
+         QT_FONT_DPI=72 QT_SCALE_FACTOR="${SHOT_SCALE}" QT_AUTO_SCREEN_SCALE_FACTOR=0 SECURE_TERMINAL_SHOT=1 SHELL=/bin/bash \
          "SECURE_TERMINAL_TRANSCRIPT_FILE=${st_transcript}" \
-         PYTHONPATH="${st_pkg}" python3 "${st_bin}" --new-instance "${st_mode_flags[@]}" \
-         -- bash --rcfile "${HOME}/.strc" -i >/dev/null 2>&1
+         PYTHONPATH="${st_pkg}" "${st_bin}" --instance-group "${st_group}" "${st_mode_flags[@]}" \
+         --name "${run_marker}" >/dev/null 2>&1
       ## same guard as the emulator shots: an invalid SHOT_DEADLINE must not errexit-abort.
       st_wdog="$(shots_watchdog_start "${SHOT_DEADLINE}" "${st_pgf}" "${st_flagf}")" || st_wdog=''
       stwid="$(find_window || true)"
@@ -1596,6 +1615,18 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
          ## alt-screen frame (the altscreen demo's one line) stays visible even when the
          ## shell's prompt returns below it.
          st_cmd="$(shots_st_inject_cmd "${st_case}" "${st_tui:-}")"
+         ## Discover the target tab id via `ctl ls` (first tab-separated field), retrying briefly
+         ## until ctl is reachable (remote_control on + the primary socket claimed). No tab means
+         ## the drop-in did not apply; the verify loop then discards the empty shot and warns.
+         st_tab_id=''
+         for _ct_try in 1 2 3 4 5; do
+            st_tab_line="$(env "DISPLAY=${xwl_display}" PYTHONPATH="${st_pkg}" "${st_bin}" \
+               ctl --instance-group "${st_group}" ls 2>/dev/null | head -1 || true)"
+            st_tab_id="$(printf '%s' "${st_tab_line}" | cut -f1)"
+            [ -n "${st_tab_id}" ] && break
+            sleep 0.6
+         done
+         [ -n "${st_tab_id}" ] || printf '%s\n' "warn secure-terminal.${st_suffix}: ctl ls found no tab (remote_control off / not primary) -- shot may be empty" >&2
          ## Inject, grab, and VERIFY via the transcript file that the payload actually
          ## rendered; re-inject + re-grab on an empty transcript, and DISCARD (never
          ## publish an empty shot) if it never lands. The transcript catches an injection
@@ -1607,7 +1638,12 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
             ## THIS injection only -- else a prior attempt that rendered content but whose grab
             ## was discarded could leave stale content that validates a later empty grab.
             safe-rm -f -- "${st_transcript}" 2>/dev/null || true
-            inject "${stwid}" "${st_cmd}"
+            ## Run the demo command via REMOTE CONTROL: ctl send-text --submit types it AND presses
+            ## Enter on the discovered tab (a real command run), replacing xdotool key-injection into
+            ## a possibly-unfocused window. Single-line `cat X.payload`, so --submit accepts it.
+            env "DISPLAY=${xwl_display}" PYTHONPATH="${st_pkg}" "${st_bin}" \
+               ctl --instance-group "${st_group}" send-text --tab "id:${st_tab_id:-0}" --submit "${st_cmd}" \
+               >/dev/null 2>&1 || true
             ## SECURE_TERMINAL_SHOT=1 renders synchronously, so a long fixed settle is unneeded.
             sleep 1
             ## The full-viewport colour boards paint a large grid (rows x cols cells rebuilt into the
