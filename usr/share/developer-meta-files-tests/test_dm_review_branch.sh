@@ -320,6 +320,35 @@ else
    pass 'a missing unicode-show fails closed early with a clear message, no prompt'
 fi
 
+## 9) Zero arguments must produce a clear usage message and fail closed, not a
+## bare 'unbound variable' nounset crash.
+noarg_out="${work}/noarg-out"
+rc=0
+( cd -- "${repo}" && dm-review-branch ) </dev/null >"${noarg_out}" 2>&1 || rc="$?"
+if [ "${rc}" = 0 ]; then
+   fail 'dm-review-branch with no argument should fail, but it exited 0'
+elif grep --quiet -- 'unbound variable' "${noarg_out}"; then
+   fail 'dm-review-branch with no argument crashed on nounset instead of a usage message'
+elif ! grep --ignore-case --quiet -- 'usage' "${noarg_out}"; then
+   fail 'dm-review-branch with no argument did not print a usage message'
+else
+   pass 'dm-review-branch with no argument fails closed with a usage message'
+fi
+
+## 10) A leading-dash ref must be rejected by dm-review-branch itself (defense in
+## depth), never passed bare to check-ref-commits-for-unicode where it could be
+## misparsed as an option.
+dash_out="${work}/dash-out"
+rc=0
+( cd -- "${repo}" && dm-review-branch -x ) </dev/null >"${dash_out}" 2>&1 || rc="$?"
+if [ "${rc}" = 0 ]; then
+   fail 'dm-review-branch with a leading-dash ref should fail, but it exited 0'
+elif ! grep --ignore-case --quiet -- "must not start with" "${dash_out}"; then
+   fail 'a leading-dash ref was not rejected by dm-review-branch itself'
+else
+   pass 'dm-review-branch rejects a leading-dash ref up front'
+fi
+
 if [ "${fail_count}" -gt 0 ]; then
    printf '%s\n' "test_dm_review_branch: ${fail_count} assertion(s) failed." >&2
    exit 1
