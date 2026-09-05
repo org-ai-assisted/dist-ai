@@ -996,7 +996,7 @@ def t2_prompt_flush_real():
     base = [('a', ())] * 3
     comp, cells2, col2, _s, _w = S.feed_line_edits(
         list(base), 3, {}, S.PROMPT_START + 'x', max_line=0)
-    expected = base + [(mc, S._NO_NEWLINE_STATE) for mc in S._NO_NEWLINE_TEXT]
+    expected = base + [S._NO_NEWLINE_MARK]
     if len(comp) != 1 or list(comp[0]) != expected:
         fail('T2 prompt-flush: did not emit the current line + no-newline marker intact')
     if (col2, len(cells2)) != (1, 1) or cells2[0][0] != 'x':

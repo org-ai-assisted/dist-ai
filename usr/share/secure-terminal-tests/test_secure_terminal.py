@@ -424,16 +424,21 @@ eq(_ww5, [True], 'a width-filled line + prompt marker is flagged a soft wrap (co
 # but a PARTIAL line ended by the marker is a real break, not a wrap
 _wc6, _wcells6, _wcol6, _ws6, _ww6 = S.feed_line_edits([], 0, {}, 'ab\x1b[?2004h$ ', 4)
 eq(_ww6, [False], 'a partial line + prompt marker is not flagged a wrap')
-# no-final-newline marker: an un-terminated line before a bash prompt gets the faint
-# ' [no newline]' note appended; a newline-terminated line does not (nothing swallowed).
+# no-final-newline marker: an un-terminated line before a bash prompt gets ONE internal
+# marker cell appended (NOT inline text -- unforgeable + copy-safe, drives the left gutter);
+# a newline-terminated line does not (nothing swallowed).
 _nm1 = S.feed_line_edits([], 0, {}, 'output-no-nl' + S.PROMPT_START + '$ ', 80)[0]
-eq(''.join(ch for ch, _ in _nm1[0]), 'output-no-nl [no newline]',
-   'an un-terminated line before a prompt is marked [no newline]')
+eq(_nm1[0][-1], S._NO_NEWLINE_MARK,
+   'an un-terminated line before a prompt gets the internal no-newline marker cell')
 eq(_nm1[0][-1][1], S._NO_NEWLINE_STATE,
-   'the marker cells carry the distinct no-newline SGR state (faint, not program colour)')
+   'the marker cell carries the internal non-SGR state key (a program cannot forge it)')
+eq(''.join(ch for ch, _ in _nm1[0][:-1]), 'output-no-nl',
+   'the marker adds NO inline text -- the swallowed line is unchanged before it')
 _nm2 = S.feed_line_edits([], 0, {}, 'output-with-nl\n' + S.PROMPT_START + '$ ', 80)[0]
 eq(''.join(ch for ch, _ in _nm2[0]), 'output-with-nl',
    'a newline-terminated line is NOT marked (nothing was swallowed)')
+ok(all(_k != S._NO_NEWLINE_STATE for _c, _k in _nm2[0]),
+   'a terminated line carries no marker cell')
 # CSI 1K erases from the start of the line up to (and including) the cursor: after
 # 'abcde' move the cursor to column 2 (CSI 3G) then erase-to-BOL -> "   de".
 _e1c, _e1cells, _e1col, _e1s, _e1w = S.feed_line_edits([], 0, {}, 'abcde\x1b[3G\x1b[1K', 80)

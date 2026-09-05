@@ -2777,6 +2777,9 @@ while _rf.viewport().width() > _rfvw and _rf.width() > 20:
     APP.processEvents()
 _rf._cols = 500                                       # do not hard-wrap this short line
 _rf._mode = 'box'
+_rf._sync_wrap_mode()   # measure box under its REAL wrap mode (NoWrap), the property under
+# test -- not the construction default (detail -> WidgetWidth), which is viewport-width
+# fragile (the left gutter narrows the viewport, so a WidgetWidth box line would wrap).
 _rf._feed_line('M' * _rfN + '\U0001f600')
 APP.processEvents()
 
@@ -3939,8 +3942,10 @@ eq(lo._reset_leftover_sgr('out\x1b[?2004hPS> '),
 # column 0 (e.g. output that ended in a newline, or zsh's PROMPT_SP).
 _DFLT = {'fg': None, 'bg': None, 'bold': False}
 _nc, _nk, _, _, _ = _S.feed_line_edits([], 0, dict(_DFLT), 'abc' + _S.PROMPT_START + 'PS> ')
-eq([''.join(c for c, _ in ln) for ln in _nc], ['abc [no newline]'],
-   'prompt newline: un-terminated output before the marker is noted and ended into its line')
+eq([''.join(c for c, _ in ln) for ln in _nc], ['abc '],
+   'prompt newline: un-terminated output before the marker is ended into its line')
+eq(_nc[0][-1], _S._NO_NEWLINE_MARK,
+   'prompt newline: the ended line carries the internal no-newline marker cell, not text')
 eq(''.join(c for c, _ in _nk), 'PS> ',
    'prompt newline: the prompt starts on a fresh line, not glued to the output')
 _znl, _zk, _, _, _ = _S.feed_line_edits([], 0, dict(_DFLT), 'abc\n' + _S.PROMPT_START + 'PS> ')
@@ -3962,6 +3967,90 @@ _zec, _zek, _, _, _ = _S.feed_line_edits(
     [], 0, dict(_DFLT), '[user ~]% ' + _S.PROMPT_START + '\x1b[0m')
 eq(''.join(c for c, _ in _zek), '[user ~]% ',
    'zsh prompt: a trailing SGR after the marker still does not flush')
+
+# --- left gutter: the no-trailing-newline marker is chrome, not document -------
+# The marker is a left-GUTTER annotation (not inline text): unforgeable (a program
+# cannot print its way into it), copy-safe (absent from the document), and it flags the
+# correct line in BOTH render paths.
+_PS_B = _S.PROMPT_START.encode('ascii')
+
+
+def _blocks_flagged(w):
+    doc = w.document()
+    out = []
+    blk = doc.begin()
+    while blk.isValid():
+        out.append((blk.text(), w._block_no_newline(blk)))
+        blk = blk.next()
+    return out
+
+
+from PyQt6.QtGui import QMouseEvent                                        # noqa: E402
+from PyQt6.QtCore import QPointF, QEvent as _QEvt                          # noqa: E402
+
+
+def _gutter_hover(w, y):
+    ev = QMouseEvent(_QEvt.Type.MouseMove, QPointF(2.0, float(y)), QPointF(2.0, float(y)),
+                     Qt.MouseButton.NoButton, Qt.MouseButton.NoButton,
+                     Qt.KeyboardModifier.NoModifier)
+    w._gutter.mouseMoveEvent(ev)              # -> _gutter_hover -> _block_at_gutter_y
+
+
+# CLI: un-terminated output before a bash prompt flags ITS line for the gutter, only it.
+# Fed through the REAL output path (feed_output -> _on_readable), so _raw is populated and
+# a resize-triggered reflow reproduces the marker (an _append shortcut skips _raw).
+_gcli = SecureTerminal(command='/bin/cat')
+_gcli.resize(400, 300)                        # deterministic viewport for gutter hit-testing
+_gcli.show()
+APP.processEvents()
+feed_output(_gcli, b'gutter-out' + _PS_B + b'PS> ')
+_gcli._force_current_frame()
+_gflags = _blocks_flagged(_gcli)
+ok(any(txt == 'gutter-out' and flag for txt, flag in _gflags),
+   'gutter CLI: the un-terminated output line is flagged for the gutter')
+ok(all(not flag for txt, flag in _gflags if txt != 'gutter-out'),
+   'gutter CLI: only the un-terminated line is flagged, not the prompt line')
+ok('[no newline]' not in _gcli.toPlainText(),
+   'gutter CLI: no inline marker text enters the document (copy-safe)')
+# COPY-SAFE: selecting the flagged line yields the output only, no marker text.
+_gcli.selectAll()
+_gsel = _gcli._selection_text()
+ok('gutter-out' in _gsel and '[no newline]' not in _gsel,
+   'gutter CLI: copying the flagged line yields the output, no marker text')
+# exercise the gutter widget's own event handlers (chrome; offscreen-safe)
+ok(_gcli._gutter.sizeHint().width() == _gcli._gutter_width_px(),
+   'gutter: sizeHint reports the strip width')
+_gcli._gutter.repaint()                       # paintEvent -> _paint_gutter -> glyph draw
+APP.processEvents()
+_gcli._update_gutter_area(_gcli.viewport().rect(), 5)    # scroll branch + width re-reserve
+_gcli._update_gutter_area(_gcli.viewport().rect(), 0)    # plain-update branch
+_gflag_y = next(top + 1 for b, top, bot in _gcli._gutter_blocks()
+                if _gcli._block_no_newline(b))
+_gutter_hover(_gcli, _gflag_y)               # over the flagged line -> tooltip shown
+_gutter_hover(_gcli, 1000000)                # below every row -> no block -> tooltip hidden
+_gcli.shutdown()
+
+# UNFORGEABLE: a program that PRINTS "[no newline]" (even grey) gets NO gutter flag.
+_gfake = SecureTerminal(command='/bin/cat')
+feed_output(_gfake, b'\x1b[90m [no newline]\x1b[0m\n')  # grey text mimicking the old note
+_gfake._force_current_frame()
+ok(all(not flag for _txt, flag in _blocks_flagged(_gfake)),
+   'gutter CLI: a program printing "[no newline]" does NOT trigger the gutter')
+ok('[no newline]' in _gfake.toPlainText(),
+   'gutter CLI: the forged text is shown as ordinary output (just no gutter marker)')
+_gfake.shutdown()
+
+# TUI: the flag rides the pyte ROW into the rendered grid block; still no inline text.
+_gtui = SecureTerminal(command='/bin/cat', tui=True)
+_gtui.resize(700, 300)
+_gtui.show()
+feed_output(_gtui, b'tui-out' + _PS_B + b'PS> ')
+_gtui._force_current_frame()
+ok(any(txt.strip() == 'tui-out' and flag for txt, flag in _blocks_flagged(_gtui)),
+   'gutter TUI: the un-terminated grid row is flagged for the gutter')
+ok('[no newline]' not in _gtui.transcript_text(),
+   'gutter TUI: no inline marker text in the rendered grid (copy-safe)')
+_gtui.shutdown()
 
 # --- security: an app cannot recolour or HIDE a neutralised marking -----------
 # A marking (the box glyph, or a Reveal/Detail <U+XXXX> badge -- same key, so the
@@ -4749,10 +4838,13 @@ feed_output(_sgrt, b'\x1b[41mALERT' + _PS12.encode('ascii') + b'PS> ')
 # own, so a _raw-only assertion cannot catch a regressed live feed).
 eq(_sgrt._screen.buffer[0][0].bg, 'red',
    'ai-review#12: the program\'s own bg colour is preserved on the live pyte grid')
-# The no-final-newline marker follows the output on row 0 on a CLEAN default bg (ST's
-# own note resets the leftover red first), and the prompt now breaks onto its own row.
-eq(_sgrt._screen.buffer[0][5].bg, 'default',
-   'ai-review#12: the [no newline] marker renders on a default bg, not the stuck red')
+# The no-final-newline flag rides the pyte ROW (chrome, not content): row 0 keeps ONLY
+# the program's 'ALERT' (no injected marker text past it), is flagged for the left
+# gutter, and the prompt breaks onto its own reset (default-bg) row.
+ok(getattr(_sgrt._screen.buffer[0], 'no_newline', False),
+   'ai-review#12: the un-terminated output row is flagged for the gutter (unforgeable)')
+eq(_sgrt._screen.buffer[0][5].data, ' ',
+   'ai-review#12: no inline marker text is written past the output (col 5 stays empty)')
 eq(_sgrt._screen.buffer[1][0].bg, 'default',
    'ai-review#12: the prompt breaks onto its own row and renders default (not stuck red)')
 # Retained raw carries the reset too, so a mode re-render does not re-stick the colour.
