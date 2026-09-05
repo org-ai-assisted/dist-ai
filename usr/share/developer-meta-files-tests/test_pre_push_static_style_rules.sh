@@ -680,6 +680,20 @@ expect_rule "R-153" "awk ${sq}/${anchor}/{seen=${self0}}${sq} -- somefile.txt"  
 ##     code line -- MUST NOT flag. The line does not start with '#', so the line
 ##     regex did not skip it and flagged (false positive); the AST drops comments.
 expect_rule "R-153" "true ${comment} grep ${sq}${anchor}${sq} over ${dq}${self0}${dq}"         "absent"
+## (f) a scrape reading the script over a stdin REDIRECT -- MUST flag. The self-ref
+##     is a redirect operand, not an argument, so an args-only scan missed it.
+expect_rule "R-153" "grep ${sq}${anchor}${sq} < ${dq}${self0}${dq}"                            "present"
+## (g) a scrape SPLIT across a pipe (read in the producer, filter in the consumer)
+##     -- MUST flag.
+expect_rule "R-153" "cat ${dq}${self0}${dq} | grep ${sq}${anchor}${sq}"                        "present"
+## (h) an anchor and a self-ref living in UNRELATED nested substitutions of one
+##     command (the anchor greps another file; $0 is only interpolated) -- MUST NOT
+##     flag. Crossing a '$(...)' boundary paired the two halves (false positive).
+selfhash="${dollar}{${hash}0}"
+expect_rule "R-153" "echo ${dq}${dollar}(grep ${sq}${anchor}${sq} notes.txt)${dq} ${dq}x=${self0}${dq}" "absent"
+## (i) '${#0}' is the script name's LENGTH (an integer), not the script path, so it
+##     reads nothing -- MUST NOT flag.
+expect_rule "R-153" "grep ${sq}${anchor}${sq} -- ${dq}${selfhash}${dq}"                        "absent"
 
 ## R-102: an extensionless but slashed path operand is FLAGGED; a flag or a
 ## variable operand is SPARED. (Body assembled below via ${sp} so this

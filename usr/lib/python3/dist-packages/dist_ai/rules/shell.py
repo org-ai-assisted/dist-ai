@@ -1753,55 +1753,91 @@ class TmpHardcode(Rule):
                     number)
 
 
-def _word_has_comment_anchor(word):
-    """True if WORD carries a literal '^#'/'^##' comment-line anchor -- the
-    pattern a comment-scrape hands to grep/sed/awk. Only LITERAL text counts (a
-    Lit part, or the body of a '...' / "..." quote); a '$'-expansion contributes
-    no literal, so the anchor cannot be conjured out of an expansion's value.
-    Walks the whole word subtree so an anchor inside a quoted sed/awk PROGRAM
-    ('sed "s/^## //p"') is seen -- the discriminator is the SELF-REFERENCE, not
-    where the anchor sits."""
-    for node in bash_ast.iter_nodes(word):
-        if node.get("Type") in ("Lit", "SglQuoted"):
-            if "^#" in (node.get("Value") or ""):
-                return True
-    return False
-
-
-## '$0' / '${0}' expand Param.Value '0'; '${BASH_SOURCE[0]}' expands
-## 'BASH_SOURCE'. A ParamExp of either, anywhere in an argument word, is the
-## script self-reference a comment-scrape reads as its file operand.
+## Node types whose CONTENTS are a SEPARATE command shfmt visits on its own; a
+## word-level scan must NOT cross into them, or one command's anchor pairs with
+## an unrelated command's self-reference (a false positive) -- the nested command
+## is judged by itself anyway.
+_R153_SUBST_TYPES = frozenset({"CmdSubst", "ProcSubst", "ArithmExp", "ExtGlob"})
+## '$0' / '${0}' expand Param.Value '0'; '${BASH_SOURCE[...]}' expands
+## 'BASH_SOURCE'. A ParamExp of either is the script self-reference a
+## comment-scrape reads as its file operand.
 _R153_SELF_PARAMS = frozenset({"0", "BASH_SOURCE"})
 
 
+def _r153_shallow_nodes(word):
+    """Yield WORD's OWN nodes -- descending through Lit / SglQuoted / DblQuoted --
+    but NOT across a command/process/arith substitution boundary (its contents
+    belong to a separate command that is judged on its own)."""
+    stack = [word]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, list):
+            stack.extend(current)
+            continue
+        if not isinstance(current, dict):
+            continue
+        if current.get("Type") in _R153_SUBST_TYPES:
+            continue
+        yield current
+        stack.extend(current.values())
+
+
+def _word_has_comment_anchor(word):
+    """True if WORD's OWN literal text carries a '^#'/'^##' comment-line anchor (a
+    Lit part or the body of a '...' / "..." quote) -- the pattern a comment-scrape
+    hands to grep/sed/awk. A '$'-expansion contributes no literal and a nested
+    '$(...)' is a separate command, so neither forges the anchor."""
+    for node in _r153_shallow_nodes(word):
+        if node.get("Type") in ("Lit", "SglQuoted") \
+                and "^#" in (node.get("Value") or ""):
+            return True
+    return False
+
+
 def _word_has_self_ref(word):
-    """True if WORD expands '$0' / '${0}' / '${BASH_SOURCE...}' as a REAL shell
-    parameter -- the script's own path used as a file operand. A '$0' typed
-    inside a single-quoted awk/sed program is a SglQuoted LITERAL, never a
-    ParamExp, so an awk FIELD reference ('awk "/^##/{x=$0}" file') is (correctly)
-    not a self-reference here -- the exact awk-field-vs-shell-operand call a line
-    regex cannot make. SCOPE (accident, not adversary): an ANSI-C $'...' word is
-    not decoded (same limit as word_string), so a hex/octal-encoded self-ref is
-    out of scope."""
-    for node in bash_ast.iter_nodes(word):
+    """True if WORD expands '$0' / '${0}' / '${BASH_SOURCE[...]}' -- optionally
+    prefix/suffix-stripped or substituted -- as a REAL shell parameter naming the
+    script's own path, used as a file operand. EXCLUDED, as they are not the
+    script PATH: '${#0}' (its LENGTH, an integer) and '${!0}' (indirection). A
+    '$0' typed inside a single-quoted awk/sed program is a SglQuoted LITERAL, not
+    a ParamExp, so an awk FIELD reference ('awk "/^##/{x=$0}" file') is (correctly)
+    not a self-reference -- the awk-field-vs-shell-operand call a line regex cannot
+    make. SCOPE (accident, not adversary): an ANSI-C $'...' word and an
+    'eval'-reparsed single-quoted program are not decoded, so a hex-encoded or
+    eval-deferred self-ref is out of scope (same limit as word_string)."""
+    for node in _r153_shallow_nodes(word):
         if node.get("Type") == "ParamExp" \
-                and (node.get("Param") or {}).get("Value") in _R153_SELF_PARAMS:
+                and (node.get("Param") or {}).get("Value") in _R153_SELF_PARAMS \
+                and not node.get("Length") and not node.get("Excl"):
+            return True
+    return False
+
+
+def _r153_redirs_read_self(stmt):
+    """True if any of STMT's redirections reads the script itself ('grep ... <
+    "$0"'). A redirect operand is a filename, never a grep pattern, so only the
+    self-reference is looked for here."""
+    for redirect in stmt.get("Redirs") or []:
+        word = redirect.get("Word")
+        if isinstance(word, dict) and _word_has_self_ref(word):
             return True
     return False
 
 
 class HelpFromComments(Rule):
     """R-153: never build help/usage by scraping the script's OWN comments (e.g.
-    a grep of a '^##' anchor over "$0"). Flags a COMMAND whose arguments carry
-    BOTH a '^#'/'^##' comment-anchor literal AND a real '$0' / '${BASH_SOURCE'
-    shell self-reference operand. Worked from the shfmt AST, not a line regex, so
-    the two calls a regex cannot make are ruled out:
+    a grep of a '^##' anchor over "$0"). Flags a command -- or a pipeline of them
+    -- that BOTH reads the script itself (a real '$0' / '${BASH_SOURCE}' operand,
+    an argument or a '< "$0"' redirect) AND filters it through a '^#'/'^##'
+    comment-line anchor. Worked from the shfmt AST, not a line regex, so the calls
+    a regex cannot make are ruled out:
       - a BARE '$0' inside a single-quoted awk/sed PROGRAM is an awk FIELD, not a
         shell expansion, so 'awk "/^##/{x=$0}" file' (no real self-ref operand) is
-        SPARED, while 'awk "/^##/" "$0"' (the script itself IS the operand) still
-        flags;
+        SPARED, while 'awk "/^##/" "$0"' (the script itself IS the operand) flags;
       - an anchor and a self-ref that co-occur only in a COMMENT, or in unrelated
-        commands, are not one command's arguments, so they do not trip it.
+        nested substitutions ('echo "$(grep ^## notes)" "$0"'), are not one
+        command's own read+filter, so they do not trip it;
+      - the read and the filter may split across a pipe ('cat "$0" | grep ^##').
     A plain 'dirname "${BASH_SOURCE[0]}"' or 'head "$0"' has no anchor and is
     spared."""
 
@@ -1811,13 +1847,75 @@ class HelpFromComments(Rule):
         return super().applies(ctx)
 
     def detect(self, ctx):
-        for call in bash_ast.call_exprs(ctx.tree):
-            words = bash_ast.args(call)
-            if not any(_word_has_comment_anchor(word) for word in words):
+        tree = ctx.tree
+        pipe_ops = bash_ast.pipe_ops()
+        consumed = set()
+
+        def stage_stmts(stmt):
+            """Flatten a (possibly nested) pipeline STMT to its leaf stage
+            statements; a non-pipe statement is its own single stage."""
+            cmd = stmt.get("Cmd") if isinstance(stmt, dict) else None
+            if isinstance(cmd, dict) and cmd.get("Type") == "BinaryCmd" \
+                    and cmd.get("Op") in pipe_ops:
+                return stage_stmts(cmd.get("X")) + stage_stmts(cmd.get("Y"))
+            return [stmt] if isinstance(stmt, dict) else []
+
+        def scrape(stmts):
+            """(anchor_command, reads_self) over a group of stage statements: the
+            command carrying the comment anchor (the finding's location), and
+            whether any stage reads the script (own args or a redirect)."""
+            anchor_cmd = None
+            reads_self = False
+            for stmt in stmts:
+                cmd = stmt.get("Cmd")
+                if isinstance(cmd, dict) and cmd.get("Type") == "CallExpr":
+                    consumed.add(id(cmd))
+                    call_args = bash_ast.args(cmd)
+                    if anchor_cmd is None and any(
+                            _word_has_comment_anchor(w) for w in call_args):
+                        anchor_cmd = cmd
+                    if any(_word_has_self_ref(w) for w in call_args):
+                        reads_self = True
+                if _r153_redirs_read_self(stmt):
+                    reads_self = True
+            return anchor_cmd, reads_self
+
+        ## Pipelines first: a scrape may split its script-read (a producer) from
+        ## its comment-filter (a consumer) across a pipe. Group each MAXIMAL
+        ## pipeline (a pipe not nested inside another) and judge its stages
+        ## together; their commands are marked consumed so the single-command
+        ## pass does not re-report them.
+        pipes = list(bash_ast.pipe_binary_cmds(tree))
+        nested = set()
+        for pipe in pipes:
+            for side in ("X", "Y"):
+                side_stmt = pipe.get(side)
+                side_cmd = side_stmt.get("Cmd") \
+                    if isinstance(side_stmt, dict) else None
+                if isinstance(side_cmd, dict) \
+                        and side_cmd.get("Type") == "BinaryCmd" \
+                        and side_cmd.get("Op") in pipe_ops:
+                    nested.add(id(side_cmd))
+        for pipe in pipes:
+            if id(pipe) in nested:
                 continue
-            if any(_word_has_self_ref(word) for word in words):
+            anchor_cmd, reads_self = scrape(
+                stage_stmts(pipe.get("X")) + stage_stmts(pipe.get("Y")))
+            if anchor_cmd is not None and reads_self:
                 yield _fail(ctx, "R-153", "R-153 help scraped from comments",
-                            call)
+                            anchor_cmd)
+
+        ## Single commands (including a redirect-only scrape), skipping anything
+        ## already judged as a pipeline stage.
+        for stmt in bash_ast.iter_stmts(tree):
+            cmd = stmt.get("Cmd")
+            if not (isinstance(cmd, dict) and cmd.get("Type") == "CallExpr") \
+                    or id(cmd) in consumed:
+                continue
+            anchor_cmd, reads_self = scrape([stmt])
+            if anchor_cmd is not None and reads_self:
+                yield _fail(ctx, "R-153", "R-153 help scraped from comments",
+                            anchor_cmd)
 
 
 ## git global options (before the subcommand) whose VALUE is the next word.
