@@ -5424,6 +5424,19 @@ ok(b'\r' not in b''.join(_w28),
    '#28: a partial/timed-out write is NOT followed by a bare submit CR')
 _p28.shutdown()
 
+# #28: a failed SUBMIT-CR write (the line delivered fully, but the CR itself fails) is also
+# reported as an error, not a false ok.
+_p28b = spawn_live(command='/bin/cat')
+_w28b = []
+def _line_ok_cr_fail(data, _sink=_w28b):
+    _sink.append(bytes(data))
+    return bytes(data) != b'\r'         # the line writes fully; only the submit CR fails
+_p28b._write = _line_ok_cr_fail
+_err28b = _p28b.ctl_send_text('echo hi', submit=True)
+ok(_err28b is not None and b'\r' in b''.join(_w28b),
+   '#28: a failed submit-CR write is reported (CR attempted, delivery incomplete)')
+_p28b.shutdown()
+
 # --- #30: pid-reuse TOCTOU. After a child exits, reap_pty_children frees its pid before
 # _release_pty clears self._pid; the pid-trusting readers must reject a REUSED pid (a live but
 # unrelated process now in that slot) by /proc start-time identity, not read its cwd.
@@ -5435,11 +5448,16 @@ ok(_p30.shell_cwd(), '#30 setup: shell_cwd reads the live child cwd')
 _p30._pid = os.getpid()
 eq(_p30.shell_cwd(), '',
    '#30: shell_cwd refuses a reused pid instead of reading an unrelated process cwd')
+ok(not _p30.has_foreground_program(),
+   '#30: has_foreground_program refuses a reused pid (nothing of ours holds the foreground)')
 _fd30 = _p30._fd
 _p30._fd = None                             # no foreground pgrp -> cwd_basename uses self._pid
 eq(_p30.cwd_basename(), None,
    '#30: cwd_basename refuses a reused shell pid when there is no foreground pgrp')
 _p30._fd = _fd30
+_p30._pid = None
+ok(not _p30._pid_is_current_child(),
+   '#30: the identity guard is False when there is no child pid')
 _p30._pid = _realpid30                       # restore BEFORE shutdown (never SIGHUP the test proc)
 _p30.shutdown()
 
