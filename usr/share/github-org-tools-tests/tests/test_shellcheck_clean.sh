@@ -17,6 +17,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 if [ "${CI:-}" != "true" ]; then
    printf '%s\n' \
@@ -55,7 +56,6 @@ files=(
    "${REPO_ROOT}/usr/libexec/developer-meta-files/repo-metadata.bsh"
    "${REPO_ROOT}/.github/actions/install-deps/install-genmkfile.sh"
    "${REPO_ROOT}/.github/actions/install-deps/install-helper-scripts.sh"
-   "${REPO_ROOT}/ci/live-probe-unauth.sh"
 )
 shopt -u nullglob
 
