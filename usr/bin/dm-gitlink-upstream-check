@@ -441,6 +441,21 @@ enumerate_gitlinks() {
   ## emitted WITH a problem rather than skipped, for the same reason.
   local record meta rest
   local mode otype sha path url owner_repo owner repo problem path_safe
+  ## Capture ls-tree to a file and check its exit BEFORE the loop, rather than
+  ## piping it in via process substitution: if ls-tree dies mid-stream on a
+  ## corrupt/unreadable tree object it still prints the records up to that point,
+  ## and a process substitution hides that failure from the loop -- enumerate
+  ## would return 0 with a PARTIAL gitlink set, so a pin sorting after the
+  ## corruption (e.g. a fork-only one) is silently never checked. -z output holds
+  ## NUL bytes, so a file (not a command-substitution variable, which strips
+  ## NUL) is the way to capture it. Fail closed on a bad enumeration.
+  local ls_tree_out
+  ls_tree_out="$(mktemp)"
+  if ! git -C "${repo_root}" ls-tree -r -z HEAD > "${ls_tree_out}"; then
+    rm --force -- "${ls_tree_out}"
+    printf '%s\n' "::error::git ls-tree failed for ${repo_root}; enumeration incomplete" >&2
+    return 1
+  fi
   ## The record is split by hand rather than by 'read mode otype sha path':
   ## word splitting strips leading and trailing IFS whitespace from the last
   ## field, so a submodule path with a leading or trailing space would come
@@ -495,7 +510,8 @@ enumerate_gitlinks() {
     problem="${problem//$'\n'/<LF>}"
     printf '%s\n' \
       "${path_safe}${TAB}${owner}${TAB}${repo}${TAB}${sha}${TAB}${problem}"
-  done < <(git -C "${repo_root}" ls-tree -r -z HEAD)
+  done < "${ls_tree_out}"
+  rm --force -- "${ls_tree_out}"
 }
 
 
@@ -647,8 +663,18 @@ deepen_history() {
   ## repo's OWN origin carries the fork-only commits, so upstream cannot supply
   ## them. Returns 2 when the history is unobtainable: a setup error is loud and
   ## deterministic, unlike a network warning, and must not read as a pass.
+  ## Guard the probe: as the left side of 'deepen_history || rc=$?', errexit is
+  ## suspended for this whole call, so an unguarded failing rev-parse (a corrupt
+  ## or truncated .git/shallow) would leave 'shallow' empty, read as 'not
+  ## shallow', return 0, and the later merge-base fetch would then misreport a
+  ## LOCAL fault as a network warning -- silently skipping invariant 2. A probe
+  ## that cannot answer is a setup error.
   local shallow
-  shallow="$(git -C "${repo_root}" rev-parse --is-shallow-repository)"
+  if ! shallow="$(git -C "${repo_root}" rev-parse --is-shallow-repository)"; then
+    printf '%s\n' \
+      '::error::could not determine whether the checkout is shallow (corrupt .git/shallow?)' >&2
+    return 2
+  fi
   if [ "${shallow}" != 'true' ]; then
     return 0
   fi
@@ -1320,11 +1346,35 @@ enumerate_self_test() {
   fi
   STATUS_FN='upstream_status'
 
+  ## A mid-stream ls-tree failure must fail closed (rc != 0), never return a
+  ## PARTIAL gitlink set as success -- a pin after the corruption would be
+  ## silently unchecked. The git stub prints one record then dies; the subshell
+  ## keeps it from leaking.
+  local et_rc=0
+  (
+    git() {
+      case "$*" in
+        *ls-tree*)
+          printf 'partial-record\0'
+          return 128
+          ;;
+        *)
+          command git "$@"
+          ;;
+      esac
+    }
+    enumerate_gitlinks >/dev/null 2>&1
+  ) || et_rc=$?
+  if (( et_rc == 0 )); then
+    printf '%s\n' 'enumerate self-test FAIL: mid-stream ls-tree failure read as success' >&2
+    fails=$(( fails + 1 ))
+  fi
+
   if (( fails > 0 )); then
     printf '%s\n' "enumerate self-test: ${fails} assertion(s) FAILED" >&2
     return 1
   fi
-  printf '%s\n' 'enumerate self-test: PASSED (27 cases)'
+  printf '%s\n' 'enumerate self-test: PASSED (28 cases)'
   return 0
 }
 
@@ -1647,11 +1697,33 @@ parent_self_test() {
     fails=$(( fails + 1 ))
   fi
 
+  ## Case O: a failing is-shallow-repository probe (corrupt .git/shallow) is a
+  ## setup error (rc 2), not a silent 'not shallow' pass that would misreport a
+  ## local fault as a network warning and skip invariant 2. Subshell-scoped stub.
+  rc=0
+  (
+    git() {
+      case "$*" in
+        *is-shallow-repository*)
+          return 128
+          ;;
+        *)
+          command git "$@"
+          ;;
+      esac
+    }
+    deepen_history
+  ) >/dev/null 2>&1 || rc=$?
+  if (( rc != 2 )); then
+    printf '%s\n' "parent self-test FAIL: corrupt-shallow probe returned ${rc}, expected 2" >&2
+    fails=$(( fails + 1 ))
+  fi
+
   if (( fails > 0 )); then
     printf '%s\n' "parent self-test: ${fails} assertion(s) FAILED" >&2
     return 1
   fi
-  printf '%s\n' 'parent self-test: PASSED (14 cases)'
+  printf '%s\n' 'parent self-test: PASSED (16 cases)'
   return 0
 }
 
