@@ -1870,11 +1870,41 @@ parent_self_test() {
     fails=$(( fails + 1 ))
   fi
 
+  ## Case R: main()'s .gitmodules guard reads HEAD, not the working file. A
+  ## deleted working .gitmodules over a valid committed one must NOT make the run
+  ## refuse (exit 2) -- the rest of the script audits HEAD. The URL is
+  ## non-canonical so a verdict is reached with no network. main() runs in a
+  ## command substitution (subshell), isolating its global writes.
+  fixture_git init --quiet "${tmp}/guardrepo"
+  printf '%s\n' '[submodule "sub"]' '	path = sub' \
+    '	url = https://github.com/attacker/sub.git' \
+    > "${tmp}/guardrepo/.gitmodules"
+  fixture_git -C "${tmp}/guardrepo" add .gitmodules
+  fixture_git -C "${tmp}/guardrepo" update-index --add \
+    --cacheinfo "160000,${sha_base},sub"
+  fixture_git -C "${tmp}/guardrepo" commit --quiet --message 'committed gitmodules'
+  rm --force -- "${tmp}/guardrepo/.gitmodules"
+  rc=0
+  out="$( main --repo-root "${tmp}/guardrepo" --parent-check never 2>&1 )" || rc=$?
+  if (( rc == 2 )); then
+    printf '%s\n' 'parent self-test FAIL: main refused a valid HEAD over a dirty working .gitmodules' >&2
+    fails=$(( fails + 1 ))
+  fi
+  case "${out}" in
+    *'no .gitmodules committed at HEAD'*|*'no .gitmodules under'*)
+      printf '%s\n' 'parent self-test FAIL: main reported missing .gitmodules despite HEAD having it' >&2
+      fails=$(( fails + 1 ))
+      ;;
+    *)
+      true "INFO: main audited HEAD instead of refusing"
+      ;;
+  esac
+
   if (( fails > 0 )); then
     printf '%s\n' "parent self-test: ${fails} assertion(s) FAILED" >&2
     return 1
   fi
-  printf '%s\n' 'parent self-test: PASSED (18 cases)'
+  printf '%s\n' 'parent self-test: PASSED (19 cases)'
   return 0
 }
 
@@ -2086,16 +2116,21 @@ main() {
     return "${rc}"
   fi
 
-  if [ ! -f "${repo_root}/.gitmodules" ]; then
-    printf '%s\n' \
-      "::error::no .gitmodules under --repo-root ${repo_root} (not a derivative-maker checkout?)" >&2
+  ## An unusable HEAD used to be absorbed per-entry, leaving a run that checked
+  ## nothing at all printing PASSED. Checked FIRST so the .gitmodules probe below
+  ## can read HEAD.
+  if ! git -C "${repo_root}" rev-parse --verify --quiet HEAD >/dev/null; then
+    printf '%s\n' "::error::HEAD is not usable in ${repo_root}; nothing could be checked" >&2
     return 2
   fi
 
-  ## An unusable HEAD used to be absorbed per-entry, leaving a run that checked
-  ## nothing at all printing PASSED.
-  if ! git -C "${repo_root}" rev-parse --verify --quiet HEAD >/dev/null; then
-    printf '%s\n' "::error::HEAD is not usable in ${repo_root}; nothing could be checked" >&2
+  ## Probe the COMMITTED .gitmodules (HEAD:.gitmodules), not the working file:
+  ## enumerate_gitlinks/gitmodules_url_for/check_parent_deviation all read HEAD,
+  ## so a dirty working tree (an absent or deleted working .gitmodules while HEAD
+  ## still has one) must not make the check refuse to run on a valid HEAD.
+  if ! git -C "${repo_root}" cat-file -e 'HEAD:.gitmodules' 2>/dev/null; then
+    printf '%s\n' \
+      "::error::no .gitmodules committed at HEAD of --repo-root ${repo_root} (not a derivative-maker checkout?)" >&2
     return 2
   fi
 
