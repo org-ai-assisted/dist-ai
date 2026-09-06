@@ -64,6 +64,27 @@ export LC_ALL=C
 ## inside a hook, 'rebase --exec' or 'submodule foreach' would silently inspect
 ## whatever repository the environment names instead of --repo-root.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+
+## Trust the checkout regardless of on-disk ownership. This runs in CI
+## containers where the workspace is owned by a different uid than the process,
+## and git's 'detected dubious ownership' then fails EVERY git command (the
+## whole check aborts with 'HEAD is not usable'). Inject safe.directory via the
+## environment so it applies to every git child without writing any config file
+## -- the same trust actions/checkout itself establishes for the workspace. The
+## checkout is a trusted org-ai-assisted/CI artifact, and this tool runs only
+## read-only plumbing (ls-tree, cat-file, config --blob, diff, show, fetch,
+## merge-base, rev-parse) on it.
+_gcc_n="${GIT_CONFIG_COUNT:-0}"
+case "${_gcc_n}" in
+  ''|*[!0-9]*)
+    ## A non-numeric inherited value is unusable; git would reject it anyway.
+    _gcc_n=0
+    ;;
+esac
+declare -x "GIT_CONFIG_KEY_${_gcc_n}=safe.directory"
+declare -x "GIT_CONFIG_VALUE_${_gcc_n}=*"
+export GIT_CONFIG_COUNT=$(( _gcc_n + 1 ))
+unset _gcc_n
 ## The sweep still reports EVERY unresolvable/erroring submodule in one run, not
 ## just the first: each resolver catches its own failure and returns 0 with an
 ## 'error' verdict, so errexit never fires mid-loop. The only intentional
@@ -1076,11 +1097,30 @@ self_test() {
     fails=$(( fails + 1 ))
   fi
 
+  ## Case E: the safe.directory trust is injected into the environment, so git
+  ## does not refuse a checkout owned by another uid ('detected dubious
+  ## ownership', which aborts the whole check in a CI container). A foreign-owned
+  ## repo cannot be created here without root, so assert the injection is present
+  ## -- its removal is the exact regression that broke CI.
+  local sd_found='false' sd_n sd_i sd_k sd_v
+  sd_n="${GIT_CONFIG_COUNT:-0}"
+  for (( sd_i = 0; sd_i < sd_n; sd_i++ )); do
+    sd_k="GIT_CONFIG_KEY_${sd_i}"
+    sd_v="GIT_CONFIG_VALUE_${sd_i}"
+    if [ "${!sd_k:-}" = 'safe.directory' ] && [ "${!sd_v:-}" = '*' ]; then
+      sd_found='true'
+    fi
+  done
+  if [ "${sd_found}" != 'true' ]; then
+    printf '%s\n' 'self-test FAIL: safe.directory not injected (CI dubious-ownership guard removed)' >&2
+    fails=$(( fails + 1 ))
+  fi
+
   if (( fails > 0 )); then
     printf '%s\n' "self-test: ${fails} assertion(s) FAILED" >&2
     return 1
   fi
-  printf '%s\n' 'self-test: PASSED (4 cases)'
+  printf '%s\n' 'self-test: PASSED (5 cases)'
   return 0
 }
 
