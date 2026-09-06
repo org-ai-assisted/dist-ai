@@ -1469,15 +1469,18 @@ if [ -n "${ST_REPO:-}" ] && [ -f "${st_bin}" ]; then
       'notify show notify-show'
       'notify box notify-tui tui'
       'notify show notify-tui-show tui'
-      'art box art'
-      'art detail art-detail'
+      ## art + gradient are full-viewport colour boards that differ ONLY in their colours,
+      ## so the NEUTRALISED views (Box / Detail, CLI and TUI) reduce both to byte-identical
+      ## output -- the colour that told them apart is exactly what those views strip. Capture
+      ## those once as a shared, board-agnostic "colorboard" shot (from the art payload), not
+      ## once per board (that committed two identical files). Only the SHOW views, which paint
+      ## the real colours, differ, so keep those per board.
+      'art box colorboard'
+      'art detail colorboard-detail'
+      'art box colorboard-tui tui'
       'art show art-show'
-      'art box art-tui tui'
       'art show art-tui-show tui'
-      'gradient box gradient'
-      'gradient detail gradient-detail'
       'gradient show gradient-show'
-      'gradient box gradient-tui tui'
       'gradient show gradient-tui-show tui'
       'unicode show unicode-show'
       'unicode show unicode-tui-show tui'
