@@ -159,6 +159,24 @@ else
    fail=$(( fail + 1 ))
 fi
 
+## The review shots must not lay the bottom decision row (Reject / Deliver) OVER the
+## "Outcome if delivered now" table. QLabel under-counts stacked HTML tables, so under the
+## shot's host sizing the host is too short and the button row overlaps the last verdict
+## row -- an overlap a bare ReviewBar.adjustSize() does NOT reproduce, so this drives the
+## generator's real size_host_for_shot and checks the button row clears where the table
+## paints. FAILS if _detail reverts to a plain QLabel.
+ov_rc=0
+python3 "${script_dir}/review_shot_overlap_check.py" "${shots_dir}/paste-warning-shot.py" \
+   >/dev/null 2>"${work}/ov.log" || ov_rc=$?
+if [ "${ov_rc}" -eq 0 ]; then
+   printf '%s\n' 'PASS: review shot decision row clears the Outcome table'
+   pass=$(( pass + 1 ))
+else
+   printf '%s\n' 'FAIL: review shot decision row overlaps the Outcome table'
+   sed 's/^/    /' "${work}/ov.log" >&2 || true
+   fail=$(( fail + 1 ))
+fi
+
 printf '%s\n' '' "${pass} pass, ${fail} fail, 0 skip"
 if [ "${fail}" -ne 0 ]; then
    exit 1

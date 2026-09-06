@@ -1097,6 +1097,12 @@ _ne.keyPressEvent(key_ev(Qt.Key.Key_Plus, Qt.KeyboardModifier.ControlModifier, '
 _ne.keyPressEvent(key_ev(Qt.Key.Key_0, Qt.KeyboardModifier.ControlModifier, '0'))
 ok(_ne.source() == '', 'Ctrl-zoom with no zoomable window is a safe no-op (nothing typed)')
 
+# NOTE: the "decision row overlaps the Outcome table" regression is gated shot-side, in
+# secure-terminal-shots-tests/shot_generators_smoke_test.sh (review_shot_overlap_check.py):
+# the overlap only manifests under the shot's host+show+adjustSize sizing, which a bare
+# ReviewBar.adjustSize() here does NOT reproduce (so a bar-only geometry assertion would
+# pass on the buggy tree too -- no teeth).
+
 APP.processEvents()
 print('secure-terminal-tests(review): all passed' if not _failures else
       'secure-terminal-tests(review): %d failed' % _failures)

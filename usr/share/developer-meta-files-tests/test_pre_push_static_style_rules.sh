@@ -2277,8 +2277,25 @@ else
    printf '%s\n' 'PASS: R-001 spares a clean ASCII commit message (push mode)'
 fi
 
+## R-030/R-031: an ANSI-C $'...' format performs backslash decoding only, NO
+## parameter/command expansion, so it cannot interpolate data -> must be SPARED.
+## (The pre-fix scanner read the leading '$' of $'...' as an expansion.)
+expect_rule "${r030fmt}" "printf \$${sq}%s\n${sq} ${dq}\${x}${dq}" "absent"
+
+## R-220: a double-quoted CONSTANT arithmetic 'exit "$((70+7))"' runs exactly as
+## 'exit 77', so an unwaived one MUST be flagged; a per-skip waiver spares it.
+## (The pre-fix _const_arith_exit_value only saw a bare $(( )), never "$(( ))".)
+expect_rule 'R-220' "exit ${dq}\$((70+7))${dq}" "present"
+expect_rule 'R-220' "exit ${dq}\$((70+7))${dq}  ${hash}${hash} style-ok: allow-skip: intentional" "absent"
+
+## R-212: apt resolves the option NAME case-insensitively, so a mixed-case
+## '--ALLOW-DOWNGRADES' enables downgrades at runtime and MUST be flagged; a
+## disabling value stays spared. (The pre-fix name match was case-sensitive.)
+expect_rule 'R-212' "apt-get install --ALLOW-DOWNGRADES foo" "present"
+expect_rule 'R-212' "apt-get install --Allow-Downgrades=false foo" "absent"
+
 if [ "${failures}" -ne 0 ]; then
    printf '%s\n' "test_pre_push_static_style_rules: ${failures} assertion(s) FAILED." >&2
    exit 1
 fi
-printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-070 per-rule id override, R-074, R-026, R-030 format string, R-030/R-031, R-030/R-031 printf-format waiver, R-030/R-031 composite id override, AST-aware waiver (heredoc-body / trailing-inline / Python-string not honored), R-034, R-034 per-rule id override, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-190, R-191, R-194, R-195, R-100, R-010, R-001 .gitattributes-binary allowlist, R-001 commit-message, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting, double-quote-string-fixer-disabled and imported-package-module exemption enforced as expected."
+printf '%s\n' "test_pre_push_static_style_rules: OK -- R-070, R-070 per-rule id override, R-074, R-026, R-030 format string, R-030/R-031, R-030/R-031 printf-format waiver, R-030/R-031 composite id override, AST-aware waiver (heredoc-body / trailing-inline / Python-string not honored), R-034, R-034 per-rule id override, R-011, R-051, R-090, R-102, R-103, R-120, R-170, R-180, R-190, R-191, R-194, R-195, R-100, R-010, R-212, R-220, R-001 .gitattributes-binary allowlist, R-001 commit-message, trailing-whitespace, CRLF-shebang, untracked-shell-file reporting, double-quote-string-fixer-disabled and imported-package-module exemption enforced as expected."
