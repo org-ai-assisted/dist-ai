@@ -267,9 +267,14 @@ canonical_owner() {
 safe_slug_component() {
   ## An owner or repo is interpolated into a REST path. A '#' or '?' there
   ## truncates the request into a DIFFERENT, valid endpoint whose body has no
-  ## 'status', which downgrades a hard failure to a warning.
+  ## 'status', which downgrades a hard failure to a warning. A '.' or '..'
+  ## component is a path-traversal segment (from a URL like
+  ## 'github.com/Kicksecure/../evil.git' -> repo '..'); curl normalises dot
+  ## segments, so it would reach an endpoint other than the intended compare --
+  ## reject those exact components too. Real GitHub owners/repos are never '.' or
+  ## '..', so this rejects nothing legitimate.
   case "$1" in
-    ''|*[!A-Za-z0-9._-]*)
+    ''|'.'|'..'|*[!A-Za-z0-9._-]*)
       return 1
       ;;
     *)
@@ -1109,14 +1114,21 @@ enumerate_self_test() {
       '	url = attacker.example?@github.com:Kicksecure/scpqspoof.git' \
       '[submodule "unsafeslug"]' \
       '	path = unsafeslug' \
-      '	url = "https://github.com/Kicksecure/unsafe slug.git"'
+      '	url = "https://github.com/Kicksecure/unsafe slug.git"' \
+      '[submodule "dotdot"]' \
+      '	path = dotdot' \
+      '	url = https://github.com/Kicksecure/../evilrepo.git' \
+      '[submodule "singledot"]' \
+      '	path = singledot' \
+      '	url = https://github.com/Kicksecure/./repo.git'
   } > "${tmp}/tree/.gitmodules"
   fixture_git -C "${tmp}/tree" add .gitmodules
   local sub
   ## 'orphan' deliberately gets NO stanza.
   for sub in good forked elsewhere sneaky orphan lower slash ' a spaced path ' \
              hostspoof pathspoof mixedcase dup atpath atscp multislash \
-             spacedname evilnl queryspoof fragspoof scpqspoof unsafeslug; do
+             spacedname evilnl queryspoof fragspoof scpqspoof unsafeslug \
+             dotdot singledot; do
     fixture_git -C "${tmp}/tree" update-index --add --cacheinfo "160000,${sha},${sub}"
   done
   fixture_git -C "${tmp}/tree" commit --quiet --message 'fixture tree'
@@ -1188,6 +1200,12 @@ enumerate_self_test() {
   ## An owner/repo left unsafe AFTER parsing (a space here) is still rejected, so
   ## no unusable slug reaches the REST path.
   assert_record 'unsafe slug rejected' 'unsafeslug' \
+    'unusable owner/repo in submodule URL'
+  ## A '..' or '.' repo component is a path-traversal segment curl would
+  ## normalise into a different endpoint; reject it, do not query it live.
+  assert_record 'dotdot repo component rejected' 'dotdot' \
+    'unusable owner/repo in submodule URL'
+  assert_record 'singledot repo component rejected' 'singledot' \
     'unusable owner/repo in submodule URL'
   ## A gitlink with no stanza used to be invisible.
   assert_record 'orphan gitlink reported' 'orphan' \
@@ -1408,7 +1426,7 @@ enumerate_self_test() {
     printf '%s\n' "enumerate self-test: ${fails} assertion(s) FAILED" >&2
     return 1
   fi
-  printf '%s\n' 'enumerate self-test: PASSED (32 cases)'
+  printf '%s\n' 'enumerate self-test: PASSED (34 cases)'
   return 0
 }
 
