@@ -777,11 +777,24 @@ def _eval_const_arith(node):
 def _const_arith_exit_value(word, source):
     """The int value of WORD when it is a single, purely-CONSTANT '$(( ))' arithmetic
     expansion, else None. A dynamic '$((rc+1))' or an exotic base/operator DECLINES,
-    the same safe direction as word_string returning None for a real expansion."""
+    the same safe direction as word_string returning None for a real expansion.
+    A DOUBLE-QUOTED constant ('exit "$((70+7))"') runs exactly as 'exit 77', so it is
+    unwrapped too -- else an unwaived skip slips R-220."""
     parts = word.get("Parts") or []
-    if len(parts) != 1 or parts[0].get("Type") != "ArithmExp":
+    if len(parts) != 1:
+        return None
+    part = parts[0]
+    if part.get("Type") == "DblQuoted":
+        ## exit "$((70+7))": one DblQuoted part wrapping the single ArithmExp.
+        inner_parts = part.get("Parts") or []
+        if len(inner_parts) != 1 or inner_parts[0].get("Type") != "ArithmExp":
+            return None
+    elif part.get("Type") != "ArithmExp":
         return None
     inner = bash_ast.word_source(word, source).strip()
+    ## Strip one surrounding double-quote layer for the "$((...))" spelling.
+    if len(inner) >= 2 and inner[0] == '"' and inner[-1] == '"':
+        inner = inner[1:-1].strip()
     if not (inner.startswith("$((") and inner.endswith("))")):
         return None
     ## Strip inner whitespace: ast.parse(mode="eval") rejects a LEADING space as
@@ -1039,12 +1052,15 @@ def _enables_allow_downgrades(text):
     guards, so it must not be flagged."""
     if text is None:
         return False
-    if text == "--allow-downgrades":
+    ## apt resolves the option NAME case-insensitively (config-key lookup), so
+    ## '--ALLOW-DOWNGRADES' / '--Allow-Downgrades' enable downgrades at runtime too.
+    ## Lowercase only the NAME; the value keeps its own truthy-token check below.
+    name, sep, value = text.partition("=")
+    if name.lower() != "--allow-downgrades":
+        return False
+    if not sep:
         return True
-    prefix = "--allow-downgrades="
-    if text.startswith(prefix):
-        return text[len(prefix):].lower() in _APT_TRUE
-    return False
+    return value.lower() in _APT_TRUE
 
 
 class AllowDowngrades(Rule):
@@ -1506,6 +1522,19 @@ def _format_interpolates(raw):
             i += 1
         elif c == "\\":
             i += 2
+        elif c == "$" and i + 1 < n and raw[i + 1] == "'":
+            ## ANSI-C '$'...'': backslash-escape DECODING only, NO parameter/command
+            ## expansion, so a '$' or backtick inside is literal and it never
+            ## interpolates. Skip to the closing UNESCAPED "'" (a "\\'" is escaped).
+            i += 2
+            while i < n:
+                if raw[i] == "\\":
+                    i += 2
+                elif raw[i] == "'":
+                    i += 1
+                    break
+                else:
+                    i += 1
         elif c in "$`":
             return True
         else:
