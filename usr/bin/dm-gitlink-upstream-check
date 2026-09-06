@@ -774,6 +774,15 @@ parent_deviations() {
     if [ "${oldmode#:}" != '160000' ] && [ "${newmode}" != '160000' ]; then
       continue
     fi
+    ## Neutralise TAB/LF in the path IDENTICALLY to enumerate_gitlinks'
+    ## path_safe. A git tree path may hold any byte but NUL and '/', so a raw
+    ## TAB/LF (now that -z stopped git from C-quoting them) would desync this
+    ## function's own tab-delimited, line-oriented record -- keying
+    ## PARENT_DEV_PATHS by a truncated path and poisoning an UNRELATED
+    ## submodule's attribution. Using the same neutralisation on both sides
+    ## keeps the keys byte-identical.
+    path="${path//${TAB}/<TAB>}"
+    path="${path//$'\n'/<LF>}"
     printf '%s\n' "${path}${TAB}${oldsha}${TAB}${newsha}"
   done < "${raw_file}"
   rm --force -- "${raw_file}"
@@ -1724,6 +1733,34 @@ parent_self_test() {
     fails=$(( fails + 1 ))
   fi
 
+  ## Case P: a path with a literal TAB must be neutralised before emission, or
+  ## the raw TAB desyncs parent_deviations' own record and keys PARENT_DEV_PATHS
+  ## by the truncated prefix -- poisoning an UNRELATED submodule named that
+  ## prefix. The key must be the neutralised form, and the bare prefix must NOT
+  ## appear.
+  local tab_path="sub-a${TAB}decoy"
+  local tab_key_safe='sub-a<TAB>decoy'
+  fixture_git init --quiet "${tmp}/upstream6"
+  fixture_git -C "${tmp}/upstream6" update-index --add \
+    --cacheinfo "160000,${sha_base},${tab_path}"
+  fixture_git -C "${tmp}/upstream6" commit --quiet --message 'base tab'
+  fixture_git clone --quiet "${tmp}/upstream6" "${tmp}/fork6"
+  fixture_git -C "${tmp}/fork6" update-index \
+    --cacheinfo "160000,${sha_fork},${tab_path}"
+  fixture_git -C "${tmp}/fork6" commit --quiet --message 'move tab pin'
+  repo_root="${tmp}/fork6"
+  parent_upstream_url="file://${tmp}/upstream6"
+  rc=0
+  check_parent_deviation >/dev/null 2>&1 || rc=$?
+  if [ -n "${PARENT_DEV_PATHS[sub-a]:-}" ]; then
+    printf '%s\n' 'parent self-test FAIL: raw-TAB path poisoned an unrelated key (sub-a)' >&2
+    fails=$(( fails + 1 ))
+  fi
+  if [ -z "${PARENT_DEV_PATHS[${tab_key_safe}]:-}" ]; then
+    printf '%s\n' 'parent self-test FAIL: TAB path not keyed by its neutralised form' >&2
+    fails=$(( fails + 1 ))
+  fi
+
   ## Case O: a failing is-shallow-repository probe (corrupt .git/shallow) is a
   ## setup error (rc 2), not a silent 'not shallow' pass that would misreport a
   ## local fault as a network warning and skip invariant 2. Subshell-scoped stub.
@@ -1750,7 +1787,7 @@ parent_self_test() {
     printf '%s\n' "parent self-test: ${fails} assertion(s) FAILED" >&2
     return 1
   fi
-  printf '%s\n' 'parent self-test: PASSED (16 cases)'
+  printf '%s\n' 'parent self-test: PASSED (17 cases)'
   return 0
 }
 
