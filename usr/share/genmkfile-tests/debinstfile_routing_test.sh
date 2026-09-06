@@ -157,10 +157,13 @@ else
    fail "debinstfile failed: $(grep -m1 -iE 'not found|No such file|ERROR:' -- "${pkg_dir}/debinstfile.log" || tail -3 -- "${pkg_dir}/debinstfile.log")"
 fi
 
-if [ -f "${pkg_dir}/debian/pkg-one.install" ] && [ -f "${pkg_dir}/debian/pkg-two.install" ]; then
-   pass 'one .install per binary package'
+## '-s' (exists AND non-empty), not just '-f': this is the liveness anchor for every
+## absence check below -- a grep over an EMPTY .install would pass an 'absent' assertion
+## vacuously, so require real content here where it can be named loudly.
+if [ -s "${pkg_dir}/debian/pkg-one.install" ] && [ -s "${pkg_dir}/debian/pkg-two.install" ]; then
+   pass 'one non-empty .install per binary package'
 else
-   fail "expected debian/pkg-one.install and debian/pkg-two.install, got: $(ls -- "${pkg_dir}/debian")"
+   fail "expected non-empty debian/pkg-one.install and debian/pkg-two.install, got: $(ls -l -- "${pkg_dir}/debian")"
 fi
 
 ## The mapping is what actually routes the file. Getting the source or the destination
@@ -232,14 +235,21 @@ fi
 ## --- idempotence ------------------------------------------------------------
 ## The cmp -s skip means a second run should change nothing. If it rewrites or
 ## truncates a good file, packaging silently changes on an unrelated re-run.
-before_one="$(cat -- "${pkg_dir}/debian/pkg-one.install")"
-before_two="$(cat -- "${pkg_dir}/debian/pkg-two.install")"
-run_debinstfile "${pkg_dir}" || true
-if [ "${before_one}" = "$(cat -- "${pkg_dir}/debian/pkg-one.install")" ] \
-   && [ "${before_two}" = "$(cat -- "${pkg_dir}/debian/pkg-two.install")" ]; then
-   pass 'a second run changes nothing'
+## Guard the reads: a missing .install here would abort the whole suite under
+## errexit (silently dropping every remaining assertion) -- turn that into a
+## clear FAIL instead.
+if [ -f "${pkg_dir}/debian/pkg-one.install" ] && [ -f "${pkg_dir}/debian/pkg-two.install" ]; then
+   before_one="$(cat -- "${pkg_dir}/debian/pkg-one.install")"
+   before_two="$(cat -- "${pkg_dir}/debian/pkg-two.install")"
+   run_debinstfile "${pkg_dir}" || true
+   if [ "${before_one}" = "$(cat -- "${pkg_dir}/debian/pkg-one.install")" ] \
+      && [ "${before_two}" = "$(cat -- "${pkg_dir}/debian/pkg-two.install")" ]; then
+      pass 'a second run changes nothing'
+   else
+      fail 'a second run rewrote the generated files'
+   fi
 else
-   fail 'a second run rewrote the generated files'
+   fail 'idempotence: a generated .install went missing before the second run'
 fi
 
 ## --- the two opt-outs -------------------------------------------------------
