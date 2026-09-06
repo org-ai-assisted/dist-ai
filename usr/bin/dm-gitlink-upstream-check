@@ -220,12 +220,19 @@ classify_compare() {
   ## command would expand to the empty string on failure and abort under errexit
   ## (empty command -> 127), killing the run on the first gitlink instead of
   ## reporting every one, contrary to this tool's own no-abort contract.
-  local prog verdict
+  ##
+  ## Drain stdin into a variable FIRST, always. Returning early while a piped
+  ## writer still has the (up to multi-MB compare) body to send would SIGPIPE
+  ## that writer once this reader exits -- a real signal, exit 141, independent
+  ## of errexit -- and pipefail would carry it up through upstream_status into
+  ## the script. Reading it all here means the writer always completes.
+  local body prog verdict
+  body="$(cat)"
   if ! prog="$(classify_compare_program)"; then
     printf '%s\n' 'error'
     return 0
   fi
-  if ! verdict="$("${prog}")"; then
+  if ! verdict="$(printf '%s' "${body}" | "${prog}")"; then
     printf '%s\n' 'error'
     return 0
   fi
@@ -1024,20 +1031,25 @@ self_test() {
   fi
 
   ## Case D: a missing classifier degrades to an 'error' verdict, it does NOT
-  ## crash the sweep. The old body ran '"$(classify_compare_program)"' bare, so a
-  ## failed lookup expanded to the empty string and aborted the whole run under
-  ## errexit (empty command -> 127) on the first gitlink. The stub is scoped to a
-  ## subshell so it cannot leak into the other self-test suites.
-  local cc_out cc_rc=0
+  ## crash the sweep. Two ways it used to crash, both covered here:
+  ##   - '"$(classify_compare_program)"' as a bare command expanded to the empty
+  ##     string and aborted under errexit (empty command -> 127);
+  ##   - returning early without draining stdin SIGPIPE'd the piped writer (exit
+  ##     141) once the body exceeded the 64 KiB pipe buffer.
+  ## The payload here is >64 KiB precisely to exercise the SIGPIPE path -- a
+  ## small body fits the pipe buffer and can never trigger it. The stub is scoped
+  ## to a subshell so it cannot leak into the other self-test suites.
+  local cc_out cc_rc=0 big_body
+  printf -v big_body '%*s' 100000 ''
   cc_out="$(
     classify_compare_program() {
       printf '%s\n' '::error::classifier missing' >&2
       return 2
     }
-    printf '%s' '{}' | classify_compare 2>/dev/null
+    printf '%s' "${big_body}" | classify_compare 2>/dev/null
   )" || cc_rc=$?
   if (( cc_rc != 0 )); then
-    printf '%s\n' "self-test FAIL: missing classifier returned ${cc_rc}, expected 0 (must not crash)" >&2
+    printf '%s\n' "self-test FAIL: missing classifier returned ${cc_rc}, expected 0 (must not crash / SIGPIPE)" >&2
     fails=$(( fails + 1 ))
   fi
   if [ "${cc_out}" != 'error' ]; then
