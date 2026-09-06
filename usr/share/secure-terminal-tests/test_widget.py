@@ -2665,7 +2665,17 @@ _sec.close()
 cc = SecureTerminal(command='/bin/cat')
 cc._feed_line('prompt$ ')
 key(cc, Qt.Key.Key_C, mods=Qt.KeyboardModifier.ControlModifier)
-ok(cc.toPlainText().endswith('^C'), 'Ctrl+C is locally echoed as ^C')
+# The feature is "exactly one ^C, right after the prompt" -- so pin the WHOLE text
+# and the count. endswith('^C') alone was vacuous: a doubled echo 'prompt$ ^C^C'
+# still ends in '^C' (see the canary), so it could not catch the very double this
+# transparency feature exists to prevent.
+eq(cc.toPlainText(), 'prompt$ ^C',
+   'Ctrl+C echoes exactly one ^C, right after the prompt')
+eq(cc.toPlainText().count('^C'), 1, 'Ctrl+C local echo is a single ^C, never doubled')
+# CANARY: endswith('^C') is satisfied by a DOUBLED echo, so the pre-fix assertion
+# could never catch a double -- the exact-text and count checks above are what bite.
+ok('prompt$ ^C^C'.endswith('^C'),
+   'ctrl-c canary: endswith(^C) is true even for the doubled echo the feature forbids')
 _dedup = cc._absorb_caret('^C\r\nprompt$ ')          # bash's own ^C, right after
 ok(not _dedup.startswith('^C'), 'a shell duplicate ^C in the next output is absorbed')
 cc._feed_line(_S.render_output(_dedup, cc.current_mode()))
@@ -2870,8 +2880,19 @@ _pcur = _prim.textCursor()
 _pcur.setPosition(0)
 _pcur.setPosition(4, QTextCursor.MoveMode.KeepAnchor)
 _prim.setTextCursor(_pcur)
-ok(all(ord(c) < 128 for c in _prim.createMimeDataFromSelection().text()),
-   'gap1: the PRIMARY-selection/drag path strips non-ASCII (no unreviewed homoglyph)')
+_pmime = _prim.createMimeDataFromSelection().text()
+# The selection is 'pa<Cyrillic a>l'; Show mode keeps the homoglyph on screen, but
+# the PRIMARY/drag path must strip it to ASCII. Pin the EXACT result: all(ord<128)
+# alone was vacuous -- it is True for an empty string, so an empty / over-stripped
+# selection (or a de-synced setPosition) passed silently (see the canary).
+eq(_pmime, 'pal',
+   'gap1: the PRIMARY-selection/drag path strips the homoglyph to ASCII (got %r)'
+   % _pmime)
+# CANARY: all(ord(c) < 128 for c in '') is vacuously True, so the pre-fix form passed
+# on an EMPTY selection -- exactly the failure (empty / over-stripped / offset drift)
+# it should have caught. The non-empty exact-match above is what bites.
+ok(all(ord(c) < 128 for c in ''),
+   'primary-selection canary: all(ord<128) is vacuously true on an empty selection')
 _prim.close()
 # --- inspect popups: a marked character carries its source codepoint, so the
 # hover tooltip and the double-click popup can describe it in EVERY mode ---------
@@ -4764,9 +4785,21 @@ if tui_available():
     ok(tui._osc_palette == {}, 'OSC palette change is ignored until osc_colors is on')
     tui.apply_osc('osc_colors', True)
     tui._handle_osc(b'\x1b]10;#000000\x07\x1b]11;#000000\x07')   # hide attempt fg==bg
+    tui._fmt_cache.clear()   # force a cache MISS so the fg==bg guard actually runs
     _hidfg = tui._pyte_format(_MiniCell()).foreground().color().name()
-    ok(_hidfg != '#000000',
-       'fg==bg (via OSC 10/11) cannot hide text: the guard forces a readable colour')
+    # Pin the EXACT forced-contrast colour (a black bg forces the light guard
+    # constant), not mere inequality: _pyte_format returns a cached fmt BEFORE the
+    # fg==bg guard runs, so without the clear above a stale readable entry (dark
+    # theme) satisfies '!= #000000' with the guard never exercised (see the canary).
+    ok(_hidfg == '#e6e6e6',
+       'fg==bg (via OSC 10/11) cannot hide text: the guard forces the readable '
+       'contrast colour (got %s)' % _hidfg)
+    # CANARY: '!= #000000' is satisfied by ANY readable colour, including a stale
+    # cached theme foreground left from an earlier render should the OSC-change cache
+    # invalidation regress -- so the guard need never have run. The cache-cleared
+    # exact-value check above is what bites.
+    ok('#e6e6e6' != '#000000',
+       'osc-hide canary: != #000000 is true for any readable fg, guard or not')
     tui._fmt_cache.clear()
     tui._handle_osc(b'\x1b]10;#33cc99\x07')                 # a legit fg is applied
     ok(tui._pyte_format(_MiniCell()).foreground().color().name() == '#33cc99',

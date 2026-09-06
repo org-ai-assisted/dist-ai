@@ -1592,10 +1592,23 @@ eq(SET.load().get('remote_control'), 'true',
 # --- ipc: single-instance socket helpers (Qt-free) ----------------------------
 import struct                                          # noqa: E402
 from secure_terminal import ipc as IPC                # noqa: E402
-# a group name can never escape the socket directory (path traversal)
-ok(os.path.basename(IPC.socket_path('../../etc/evil')).endswith('.sock')
-   and '/' not in os.path.basename(IPC.socket_path('a/b/c')),
-   'ipc: group name is reduced to a safe filename')
+# a group name can never escape the socket directory (path traversal). The real
+# containment property is that the group contributes NO directory component, so
+# dirname(socket_path(anything)) is always the socket dir itself -- basename checks
+# are tautological (see the canary) because basename() discards the very traversal.
+_ipc_dir = IPC.socket_dir()
+ok(os.path.dirname(IPC.socket_path('../../etc/evil')) == _ipc_dir
+   and os.path.dirname(IPC.socket_path('a/b/c')) == _ipc_dir,
+   'ipc: a group name cannot escape the socket directory')
+# CANARY: the pre-fix check was basename(...).endswith('.sock') and '/' not in
+# basename(...). Both are TRUE even for an escaping path -- basename() strips the
+# directory (traversal included) and the name always ends in the appended '.sock' --
+# so that form passes even if socket_path stops sanitizing. Pin the tautology here so
+# its weakness is visible right beside the real containment check above.
+_ipc_evil = IPC.socket_path('../../etc/evil')
+ok(os.path.basename(_ipc_evil).endswith('.sock')
+   and '/' not in os.path.basename(_ipc_evil),
+   'ipc canary: the basename form is vacuously true even for a traversal input')
 eq(IPC.socket_path(''), IPC.socket_path('default'), 'ipc: empty group -> default')
 # Framer reassembles a length-prefixed frame across chunks
 _fr = IPC.Framer()

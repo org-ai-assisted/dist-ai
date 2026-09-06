@@ -275,14 +275,23 @@ def assert_all_paths(name, text):
 
     # the LIVE display path: feed_line_edits + cells_to_runs, which is what the
     # widget actually runs. render_output has no cursor model, so it cannot see this.
-    _c, cells, col, sgr, wraps = S.feed_line_edits([], 0, {}, text)
-    ok(all(ch != '\x1b' for ch, _ in cells),
+    # feed_line_edits returns (completed, current): every FINISHED line (newline /
+    # autowrap / prompt-flush) is in `completed`, only the trailing buffer is in
+    # `cells`. Production renders completed FIRST (revealed_editor._render, the
+    # terminal paint), so both the ESC and the dangerous-code-point checks must span
+    # completed + [cells] in EVERY mode -- inspecting only the trailing buffer was
+    # vacuous for any newline-terminated payload (see the live-path canary below).
+    completed, cells, col, sgr, wraps = S.feed_line_edits([], 0, {}, text)
+    all_lines = completed + [cells]
+    ok(all(ch != '\x1b' for line in all_lines for ch, _ in line),
        '%s: an ESC reached a cell on the live path' % name)
     ok(0 <= col <= len(cells), '%s: live cursor left the cell range' % name)
-    runs, _prefix = S.cells_to_runs([], cells, 'box', False)
-    joined = ''.join(run_text for run_text, _key in runs)
-    ok(not any(ord(ch) in DANGEROUS_CPS for ch in joined),
-       '%s: a dangerous code point survived into a rendered run' % name)
+    for mode in MODES:
+        runs, _prefix = S.cells_to_runs(completed, cells, mode, False)
+        joined = ''.join(run_text for run_text, _key in runs)
+        ok(not any(ord(ch) in DANGEROUS_CPS for ch in joined),
+           '%s/%s: a dangerous code point survived into a rendered run'
+           % (name, mode))
 
     # the PASTE path (text coming IN) -- both directions of the send choice
     for fn_name, fn in (('sanitize_paste', S.sanitize_paste),
@@ -479,6 +488,32 @@ ok(all(c != '\x1b' for c, _ in _cells)
 # which is worse than no assertion. The real test drives the live widget:
 # test_widget.py, "the cursor-UP is stripped, so the forgery cannot reach the EARLIER
 # line".
+
+# CANARY for the assert_all_paths live-path check: it must inspect the COMPLETED
+# lines, not just the trailing buffer. A newline-terminated payload puts every line
+# in `completed` and leaves the trailing `cells` EMPTY, so the pre-fix form
+# (`for ch, _ in cells` / `cells_to_runs([], cells, ...)`) inspected an empty buffer
+# and passed vacuously. This pins that: an RLO override lands in a completed line
+# while the trailing buffer is empty, the full render (completed included)
+# neutralizes it in every mode, and the trailing-only render is empty -- so the weak
+# form could never fail. The full-render arm also bites for real: a regression in
+# completed-line neutralization fails it here, where the old trailing-only check saw
+# nothing.
+_cvpay = 'admin' + chr(0x202E) + 'gpj.exe\nsafe\n'   # RLO on line 1, ends in newline
+_ccomp, _ccells, _ccol, _csgr, _cw = S.feed_line_edits([], 0, {}, _cvpay)
+ok(_ccells == [] and any(ord(ch) in DANGEROUS_CPS
+                         for _line in _ccomp for ch, _ in _line),
+   'live-path canary: the override lands in a COMPLETED line while the trailing '
+   'buffer is empty (a trailing-only assertion would prove nothing)')
+for _cmode in MODES:
+    _cfull = ''.join(t for t, _ in S.cells_to_runs(_ccomp, _ccells, _cmode, False)[0])
+    _cweak = ''.join(t for t, _ in S.cells_to_runs([], _ccells, _cmode, False)[0])
+    ok(not any(ord(ch) in DANGEROUS_CPS for ch in _cfull),
+       'live-path canary/%s: the completed-line override is neutralized in the '
+       'full render' % _cmode)
+    ok(_cweak == '',
+       'live-path canary/%s: the trailing-only render is empty -- the weak '
+       'assertion was vacuous' % _cmode)
 
 # --- Corpus 4: EVERY Unicode code point, sanitized in one pass ----------------
 # (surrogates are not scalar values; skip them. This is the exhaustive analogue
