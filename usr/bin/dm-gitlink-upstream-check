@@ -860,13 +860,24 @@ check_parent_deviation() {
   if git -C "${repo_root}" show "${base}:.gitmodules" > "${gm_base}" 2>/dev/null \
      && git -C "${repo_root}" show 'HEAD:.gitmodules' > "${gm_head}" 2>/dev/null; then
     local -A _base_url=() _head_url=()
-    local gp_path gp_url up
-    while IFS="${TAB}" read -r gp_path gp_url; do
+    local gp_line gp_path gp_url up
+    ## Split each 'path<TAB>url' line by hand, NOT 'IFS="${TAB}" read gp_path
+    ## gp_url': a tab is IFS-whitespace, so read collapses a LEADING tab -- and
+    ## gitmodules_pairs legitimately emits '<TAB>url' for a stanza with an empty
+    ## 'path =' value. A collapsing read would then take that url AS the path and
+    ## clobber a real entry (a decoy stanza 'path = ' / 'url = <victim-path>'
+    ## would empty the victim's recorded url, hiding a repoint). Manual %%/#
+    ## keeps the empty first field, so the empty-path record is skipped.
+    while IFS= read -r gp_line; do
+      gp_path="${gp_line%%"${TAB}"*}"
+      gp_url="${gp_line#*"${TAB}"}"
       if [ -n "${gp_path}" ]; then
         _base_url["${gp_path}"]="${gp_url}"
       fi
     done < <(gitmodules_pairs "${gm_base}")
-    while IFS="${TAB}" read -r gp_path gp_url; do
+    while IFS= read -r gp_line; do
+      gp_path="${gp_line%%"${TAB}"*}"
+      gp_url="${gp_line#*"${TAB}"}"
       if [ -n "${gp_path}" ]; then
         _head_url["${gp_path}"]="${gp_url}"
       fi
@@ -1779,6 +1790,36 @@ parent_self_test() {
     fails=$(( fails + 1 ))
   fi
 
+  ## Case Q: a repoint hidden behind a decoy stanza. The base stanza has NO url
+  ## (base url ''); the fork repoints it AND adds a decoy 'path = ' (empty) /
+  ## 'url = <victim-path>'. gitmodules_pairs emits the decoy as a leading-tab
+  ## record; a tab-collapsing read would take its url as the path and clobber the
+  ## victim's real head url back to '' -- matching the empty base url and hiding
+  ## the repoint. The manual split skips the empty-path record, so the repoint is
+  ## still detected.
+  fixture_git init --quiet "${tmp}/upstream7"
+  printf '%s\n' '[submodule "victim"]' '	path = fake-path-name' \
+    > "${tmp}/upstream7/.gitmodules"
+  fixture_git -C "${tmp}/upstream7" add .gitmodules
+  fixture_git -C "${tmp}/upstream7" update-index --add \
+    --cacheinfo "160000,${sha_base},fake-path-name"
+  fixture_git -C "${tmp}/upstream7" commit --quiet --message 'base no-url'
+  fixture_git clone --quiet "${tmp}/upstream7" "${tmp}/fork7"
+  printf '%s\n' '[submodule "victim"]' '	path = fake-path-name' \
+    '	url = https://github.com/Kicksecure/some-other-repo.git' \
+    '[submodule "decoy"]' '	path = ' '	url = fake-path-name' \
+    > "${tmp}/fork7/.gitmodules"
+  fixture_git -C "${tmp}/fork7" add .gitmodules
+  fixture_git -C "${tmp}/fork7" commit --quiet --message 'repoint behind decoy'
+  repo_root="${tmp}/fork7"
+  parent_upstream_url="file://${tmp}/upstream7"
+  rc=0
+  check_parent_deviation >/dev/null 2>&1 || rc=$?
+  if [ -z "${PARENT_URL_CHANGED_PATHS[fake-path-name]:-}" ]; then
+    printf '%s\n' 'parent self-test FAIL: decoy empty-path stanza hid the repoint' >&2
+    fails=$(( fails + 1 ))
+  fi
+
   ## Case O: a failing is-shallow-repository probe (corrupt .git/shallow) is a
   ## setup error (rc 2), not a silent 'not shallow' pass that would misreport a
   ## local fault as a network warning and skip invariant 2. Subshell-scoped stub.
@@ -1805,7 +1846,7 @@ parent_self_test() {
     printf '%s\n' "parent self-test: ${fails} assertion(s) FAILED" >&2
     return 1
   fi
-  printf '%s\n' 'parent self-test: PASSED (17 cases)'
+  printf '%s\n' 'parent self-test: PASSED (18 cases)'
   return 0
 }
 
