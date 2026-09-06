@@ -743,48 +743,40 @@ parent_deviations() {
   ## an added or removed submodule is caught as well as a moved pointer.
   ## Returns 1 if the diff itself fails.
   local base="$1"
-  local raw
-  local line meta oldmode newmode oldsha newsha status path
-  ## The diff is captured, not consumed through a process substitution: a
-  ## failing git there exits into a subshell whose status the loop never sees,
-  ## so a corrupt or unreadable repository would read as 'no deviations'.
-  ## --no-abbrev: the reported SHAs are meant to be pasted into a git command.
-  ## --no-renames: rename detection is on by default for this porcelain, and a
-  ## renamed submodule then emits TWO tab-separated paths in one record, which
-  ## shifts every following field. Delete-plus-add reports both ends correctly.
-  ## core.quotePath=false keeps a non-ASCII submodule path readable in the
-  ## report. A path containing a control character is still C-quoted by git;
-  ## the verdict is unaffected, only how that path prints.
-  ## --ignore-submodules=none is load-bearing, not cosmetic: a committed
-  ## '.gitmodules' 'ignore = all' (or a diff.ignoreSubmodules config) otherwise
-  ## hides a 160000 SHA move from this diff, so a moved pin would look inherited
-  ## and be downgraded to a warning -- a bypass of BOTH invariants. The flag
-  ## overrides every such setting.
-  if ! raw="$(git -C "${repo_root}" -c core.quotePath=false \
-       diff --raw --no-abbrev --no-renames --ignore-submodules=none \
-       "${base}" HEAD)"; then
+  local raw_file meta oldmode newmode oldsha newsha status path
+  ## -z output, to a FILE: the path must come back with the EXACT bytes
+  ## enumerate_gitlinks emits (it uses 'ls-tree -z', raw), or main()'s
+  ## attribution keyed on those bytes mis-matches. Without -z, git C-quotes any
+  ## path holding a '"', '\', tab, newline or control byte (even under
+  ## core.quotePath=false, which only governs bytes >0x80), so 'weird"path'
+  ## comes back as '"weird\"path"' -- a different key -- and a genuinely
+  ## deviating pin is then mis-attributed as inherited. -z emits the raw path;
+  ## a file (not a command-substitution variable, which strips the NUL) carries
+  ## the NUL-delimited stream, and > redirection surfaces a git failure.
+  ##   --no-abbrev: SHAs meant to be pasted into a git command.
+  ##   --no-renames: rename detection would emit TWO paths in one record.
+  ##   --ignore-submodules=none: load-bearing -- a committed '.gitmodules'
+  ##     'ignore = all' (or a diff.ignoreSubmodules config) otherwise hides a
+  ##     160000 SHA move, so a moved pin would look inherited and be downgraded
+  ##     to a warning, a bypass of BOTH invariants. The flag overrides it.
+  raw_file="$(mktemp)"
+  if ! git -C "${repo_root}" -c core.quotePath=false \
+       diff --raw --no-abbrev --no-renames --ignore-submodules=none -z \
+       "${base}" HEAD > "${raw_file}"; then
+    rm --force -- "${raw_file}"
     return 1
   fi
-  ## Split each line on its FIRST tab, not with 'read ... path': the raw format
-  ## is ':mode mode oldsha newsha status<TAB>path', and a plain read on default
-  ## IFS strips leading/trailing spaces from the path -- so a submodule path
-  ## like ' a spaced path ' would be keyed here WITHOUT its spaces while
-  ## enumerate_gitlinks keeps them, and main() would then mis-attribute the pin
-  ## as inherited. The metadata's own TAB-to-path is the only real tab on the
-  ## line (git C-quotes any tab/newline INSIDE a path even under
-  ## core.quotePath=false), so the split is unambiguous.
-  while IFS= read -r line; do
-    if [ -z "${line}" ]; then
-      continue
-    fi
-    meta="${line%%"${TAB}"*}"
-    path="${line#*"${TAB}"}"
+  ## -z raw format per record: ':mode mode oldsha newsha status' NUL, then the
+  ## path NUL. Read them as two NUL-delimited fields, so the path is verbatim.
+  while IFS= read -r -d '' meta; do
+    IFS= read -r -d '' path || break
     read -r oldmode newmode oldsha newsha status <<< "${meta}"
     if [ "${oldmode#:}" != '160000' ] && [ "${newmode}" != '160000' ]; then
       continue
     fi
     printf '%s\n' "${path}${TAB}${oldsha}${TAB}${newsha}"
-  done <<< "${raw}"
+  done < "${raw_file}"
+  rm --force -- "${raw_file}"
 }
 
 
@@ -1708,10 +1700,12 @@ parent_self_test() {
     fails=$(( fails + 1 ))
   fi
 
-  ## Case N: parent_deviations must key a leading/trailing-space path with its
-  ## spaces intact, or main() mis-attributes it against enumerate_gitlinks (which
-  ## preserves them). A plain 'read ... path' stripped them.
-  local spaced_key=' a spaced path '
+  ## Case N: parent_deviations must key a path with the EXACT raw bytes
+  ## enumerate_gitlinks emits, or main() mis-attributes it. The key here holds a
+  ## '"' AND surrounding spaces: a non-z diff C-quotes the '"' (to
+  ## '"w\"eird path "') and a plain read strips the spaces, either of which
+  ## breaks the match. -z to a file keeps it verbatim.
+  local spaced_key='w"eird path '
   fixture_git init --quiet "${tmp}/upstream5"
   fixture_git -C "${tmp}/upstream5" update-index --add \
     --cacheinfo "160000,${sha_base},${spaced_key}"
@@ -1726,7 +1720,7 @@ parent_self_test() {
   rc=0
   check_parent_deviation >/dev/null 2>&1 || rc=$?
   if [ -z "${PARENT_DEV_PATHS[${spaced_key}]:-}" ]; then
-    printf '%s\n' 'parent self-test FAIL: spaced path not preserved in PARENT_DEV_PATHS' >&2
+    printf '%s\n' 'parent self-test FAIL: special-byte/spaced path not preserved verbatim in PARENT_DEV_PATHS' >&2
     fails=$(( fails + 1 ))
   fi
 
