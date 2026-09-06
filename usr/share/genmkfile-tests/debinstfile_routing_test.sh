@@ -16,7 +16,9 @@
 ##
 ## Pinned here:
 ##   - '<path>#<pkg>' routes to debian/<pkg>.install as '<path>#<pkg> => /<path>'
-##   - one .install per binary package, and a file with no '#' routes nowhere
+##   - one .install per binary package; a no-'#' file OUTSIDE the shipped dirs routes
+##     nowhere, but a no-'#' INSTALLABLE file (under a shipped dir) ABORTS multi-package
+##     generation loud rather than being silently dropped from every .deb
 ##   - the dh-exec shebang and the executable bit, without which the '=>' renaming
 ##     silently stops working
 ##   - no debian/<source>.install is invented
@@ -124,8 +126,10 @@ gmf-inst-pkg (1.0-1) unstable; urgency=medium
 CHANGELOG
    printf '%s\n' 'x' > "${dir}/usr/bin/a#pkg-one"
    printf '%s\n' 'x' > "${dir}/usr/share/foo/b#pkg-two"
-   ## No '#': must not be routed anywhere.
-   printf '%s\n' 'x' > "${dir}/etc/plain"
+   ## No '#', at the REPO ROOT -- outside every shipped dir in
+   ## make_folder_list_for_un_and_install -- so it is installed by neither mode and must
+   ## NOT trip the untagged-installable-file guard (which fires only on shipped-dir files).
+   printf '%s\n' 'x' > "${dir}/toplevel-note"
    ## A file under a '#'-named PARENT directory: the '#<pkg>' delimiter must be stripped
    ## from the BASENAME only, so the parent's '#' survives in the destination. Old code
    ## truncated the dest at the FIRST '#' of the whole path ('/usr/li' not '/usr/li#b/tool').
@@ -197,11 +201,12 @@ else
    pass 'no cross-contamination between packages'
 fi
 
-## A file with no '#' belongs to no binary package and must not be routed.
-if grep --quiet -- 'etc/plain' "${pkg_dir}/debian/pkg-one.install" "${pkg_dir}/debian/pkg-two.install"; then
-   fail 'a file with no hash suffix was routed into a package'
+## A no-'#' file OUTSIDE every shipped dir belongs to no binary package, is routed nowhere,
+## and must not abort generation (the happy-path run above exited 0 with it present).
+if grep --quiet -- 'toplevel-note' "${pkg_dir}/debian/pkg-one.install" "${pkg_dir}/debian/pkg-two.install"; then
+   fail 'a non-installable untagged file was routed into a package'
 else
-   pass 'a file with no hash suffix is not routed'
+   pass 'a non-installable untagged file is routed nowhere and does not abort'
 fi
 
 ## dh-exec does the '=>' renaming, and only if the file says so AND is executable.
@@ -319,6 +324,34 @@ if [ "${prod_rc}" -ne 0 ]; then
    pass 'a failing find|sort producer aborts debinstfile (no partial .install accepted)'
 else
    fail "debinstfile exited 0 despite sort failing: $(ls -- "${prod_dir}/debian" 2>/dev/null || true)"
+fi
+
+## --- an untagged INSTALLABLE file ABORTS multi-package generation ------------
+## Multi-package mode routes ONLY '#<pkgname>'-tagged files. An installable file under a
+## shipped directory with no tag would be SILENTLY DROPPED from every .deb (green build,
+## incomplete package). The engine must fail loud, NAME the file, and write no .install.
+## FAILS on the pre-fix engine, which exited 0 and left the file unrouted -- the drop this
+## guards. 'etc' is in make_folder_list_for_un_and_install, so 'etc/plain' is installable.
+untagged_dir="${work_dir}/untagged-installable"
+make_fixture "${untagged_dir}"
+printf '%s\n' 'x' > "${untagged_dir}/etc/plain"
+untagged_rc=0
+( cd -- "${untagged_dir}" && "${genmkfile_bin}" debinstfile ) > "${untagged_dir}/log" 2>&1 || untagged_rc=$?
+if [ "${untagged_rc}" -ne 0 ]; then
+   pass 'an untagged installable file aborts debinstfile (was a silent drop)'
+else
+   fail "debinstfile exited 0 with an untagged installable file: $(ls -- "${untagged_dir}/debian" 2>/dev/null || true)"
+fi
+if grep --quiet -- 'etc/plain' "${untagged_dir}/log"; then
+   pass 'the abort names the untagged file'
+else
+   fail "abort did not name the untagged file: $(tail -3 -- "${untagged_dir}/log" 2>/dev/null || true)"
+fi
+## Fail-closed: no per-package .install may be written when the run aborts.
+if [ -e "${untagged_dir}/debian/pkg-one.install" ] || [ -e "${untagged_dir}/debian/pkg-two.install" ]; then
+   fail 'a partial .install was written despite the untagged-file abort'
+else
+   pass 'no .install written on the untagged-file abort (fail-closed)'
 fi
 
 printf '%s\n' "" "${checks} check(s), ${failures} failure(s)"

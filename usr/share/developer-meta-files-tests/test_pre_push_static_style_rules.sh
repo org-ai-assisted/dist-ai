@@ -179,12 +179,17 @@ expect_rule() {
 ## absence grep over empty output would else pass VACUOUSLY. Same liveness guard
 ## expect_rule uses; for the raw absence-checks that do not go through it.
 assert_gate_tag_absent() {
-   local label tag out
+   local label tag out verdict_out
    label="$1"
    tag="$2"
    out="$3"
+   ## Optional 4th arg: the FULL gate output to read the terminal verdict from,
+   ## for when the tag-absence (arg 3) is scoped to a FILTERED subset of the
+   ## output (e.g. only the R-190 failure lines). Defaults to arg 3 -- absence and
+   ## verdict read from the same text.
+   verdict_out="${4:-$3}"
    if ! grep --quiet --extended-regexp \
-         'all static checks passed|[0-9]+ check\(s\) failed' <<< "${out}"; then
+         'all static checks passed|[0-9]+ check\(s\) failed' <<< "${verdict_out}"; then
       printf '%s\n' \
          "FAIL: no gate verdict for '${label}' (absence check would be vacuous)" >&2
       failures=$((failures + 1))
@@ -207,6 +212,19 @@ if grep --quiet --fixed-strings -- 'no gate verdict' <<< "${liveness_probe}"; th
 else
    printf '%s\n' \
       'FAIL: assert_gate_tag_absent passed vacuously on empty gate output' >&2
+   failures=$((failures + 1))
+fi
+
+## CANARY (filtered-subset form): with a 4th arg the verdict is read from the FULL
+## output; an empty full output (crashed/killed gate) must FAIL CLOSED even when
+## the filtered hits (arg 3) is non-empty. FAILS if the 4-arg path reads the
+## verdict from the wrong text, which would re-open the vacuous-pass hole.
+liveness_probe4="$(assert_gate_tag_absent 'liveness-probe-4' 'ANY-TAG' 'some filtered hits' '' 2>&1)"
+if grep --quiet --fixed-strings -- 'no gate verdict' <<< "${liveness_probe4}"; then
+   printf '%s\n' 'PASS: assert_gate_tag_absent (4-arg) fails closed on empty full output'
+else
+   printf '%s\n' \
+      'FAIL: assert_gate_tag_absent (4-arg) passed vacuously on empty full output' >&2
    failures=$((failures + 1))
 fi
 
@@ -1112,18 +1130,10 @@ else
    printf '%s\n' 'FAIL: R-180 did not flag a shebang-less python file' >&2
    failures=$((failures + 1))
 fi
-if grep --quiet --fixed-strings -- 'withshebang.py' <<< "${py_out}"; then
-   printf '%s\n' 'FAIL: R-180 flagged a compliant python file' >&2
-   failures=$((failures + 1))
-else
-   printf '%s\n' 'PASS: R-180 spares a shebang+executable python file'
-fi
-if grep --quiet --fixed-strings -- '__init__.py' <<< "${py_out}"; then
-   printf '%s\n' 'FAIL: R-180 flagged an EMPTY package marker' >&2
-   failures=$((failures + 1))
-else
-   printf '%s\n' 'PASS: R-180 exempts an empty __init__.py'
-fi
+assert_gate_tag_absent 'R-180 spares a shebang+executable python file' \
+   'withshebang.py' "${py_out}"
+assert_gate_tag_absent 'R-180 exempts an empty __init__.py' \
+   '__init__.py' "${py_out}"
 
 ## R-190: a substantial interpreter program does not belong in a shell
 ## heredoc. Same defect as R-100 for workflow YAML -- ruff and pyrefly only see
@@ -1252,24 +1262,12 @@ else
    printf '%s\n' 'FAIL: R-190 did not flag a long inline interpreter program' >&2
    failures=$((failures + 1))
 fi
-if grep --quiet --fixed-strings -- 'shortglue.sh' <<< "${inline_hits}"; then
-   printf '%s\n' 'FAIL: R-190 flagged short glue' >&2
-   failures=$((failures + 1))
-else
-   printf '%s\n' 'PASS: R-190 spares a short inline one-liner'
-fi
-if grep --quiet --fixed-strings -- 'plaindoc.sh' <<< "${inline_hits}"; then
-   printf '%s\n' 'FAIL: R-190 flagged a non-interpreter heredoc' >&2
-   failures=$((failures + 1))
-else
-   printf '%s\n' 'PASS: R-190 ignores a heredoc feeding a non-interpreter'
-fi
-if grep --quiet --fixed-strings -- 'docexample.sh' <<< "${inline_hits}"; then
-   printf '%s\n' 'FAIL: R-190 flagged an interpreter example inside a doc heredoc' >&2
-   failures=$((failures + 1))
-else
-   printf '%s\n' 'PASS: R-190 ignores an interpreter example inside a doc heredoc'
-fi
+assert_gate_tag_absent 'R-190 spares a short inline one-liner' \
+   'shortglue.sh' "${inline_hits}" "${inline_out}"
+assert_gate_tag_absent 'R-190 ignores a heredoc feeding a non-interpreter' \
+   'plaindoc.sh' "${inline_hits}" "${inline_out}"
+assert_gate_tag_absent 'R-190 ignores an interpreter example inside a doc heredoc' \
+   'docexample.sh' "${inline_hits}" "${inline_out}"
 if grep --quiet --fixed-strings -- 'masked.sh' <<< "${inline_hits}"; then
    printf '%s\n' 'PASS: R-190 still sees a violation after a commented opener'
 else
@@ -1288,12 +1286,8 @@ else
    printf '%s\n' 'FAIL: "<<EOF#x" delimiter swallowed a real inline interpreter' >&2
    failures=$((failures + 1))
 fi
-if grep --quiet --fixed-strings -- 'waived.sh' <<< "${inline_hits}"; then
-   printf '%s\n' 'FAIL: R-190 ignored its style-ok waiver' >&2
-   failures=$((failures + 1))
-else
-   printf '%s\n' 'PASS: R-190 honours the allow-inline-interpreter waiver'
-fi
+assert_gate_tag_absent 'R-190 honours the allow-inline-interpreter waiver' \
+   'waived.sh' "${inline_hits}" "${inline_out}"
 
 ## R-193: an in-repo script is called DIRECTLY via its shebang + exec bit, not
 ## through an interpreter prefix that re-names it (which also drops shebang flags).
@@ -1615,30 +1609,14 @@ else
    printf '%s\n' 'FAIL: R-191 did not flag a standalone "&" background separator' >&2
    failures=$((failures + 1))
 fi
-if grep --quiet --fixed-strings -- 'good-redir.service' <<< "${unit_hits}"; then
-   printf '%s\n' 'FAIL: R-191 flagged a ">&2" redirection as backgrounding' >&2
-   failures=$((failures + 1))
-else
-   printf '%s\n' 'PASS: R-191 spares a ">&2" redirection (not a "&" background)'
-fi
-if grep --quiet --fixed-strings -- 'good.service' <<< "${unit_hits}"; then
-   printf '%s\n' 'FAIL: R-191 flagged a single-command wrapper / plain Exec' >&2
-   failures=$((failures + 1))
-else
-   printf '%s\n' 'PASS: R-191 spares a single-command wrapper and a plain Exec'
-fi
-if grep --quiet --fixed-strings -- 'waived.service' <<< "${unit_hits}"; then
-   printf '%s\n' 'FAIL: R-191 ignored its allow-embedded-script waiver' >&2
-   failures=$((failures + 1))
-else
-   printf '%s\n' 'PASS: R-191 honours the allow-embedded-script waiver'
-fi
-if grep --quiet --fixed-strings -- 'doc.md' <<< "${unit_hits}"; then
-   printf '%s\n' 'FAIL: R-191 flagged an example Exec= line in a markdown doc' >&2
-   failures=$((failures + 1))
-else
-   printf '%s\n' 'PASS: R-191 spares a markdown doc carrying an example Exec= line'
-fi
+assert_gate_tag_absent 'R-191 spares a ">&2" redirection (not a "&" background)' \
+   'good-redir.service' "${unit_hits}" "${unit_out}"
+assert_gate_tag_absent 'R-191 spares a single-command wrapper and a plain Exec' \
+   'good.service' "${unit_hits}" "${unit_out}"
+assert_gate_tag_absent 'R-191 honours the allow-embedded-script waiver' \
+   'waived.service' "${unit_hits}" "${unit_out}"
+assert_gate_tag_absent 'R-191 spares a markdown doc carrying an example Exec= line' \
+   'doc.md' "${unit_hits}" "${unit_out}"
 
 ## R-194: an apt config hook must not embed a multi-statement shell command in
 ## its quoted value. A ';'-separated or piped value is FLAGGED; a '|| true' /
