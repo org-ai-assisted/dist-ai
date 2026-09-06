@@ -124,6 +124,13 @@ EVAL_ATTRIBUTION_KNOWN='false'
 declare -gA PARENT_DEV_PATHS=()
 PARENT_ATTRIBUTION_KNOWN='false'
 
+## Paths whose .gitmodules URL differs between the merge base and HEAD (a
+## repoint). Kept separate from PARENT_DEV_PATHS because a URL change is not a
+## gitlink-SHA deviation (invariant 2 stays SHA-only), but it DOES disqualify the
+## path from being treated as inherited: a submodule repointed while keeping the
+## merge-base SHA must not have its resolvable check demoted to a warning.
+declare -gA PARENT_URL_CHANGED_PATHS=()
+
 ## Fixture directory of the running parent self-test, for its cleanup trap.
 parent_self_test_tmp=''
 
@@ -257,12 +264,84 @@ safe_slug_component() {
 }
 
 
+github_owner_repo() {
+  ## Print "owner<TAB>repo" for a URL whose HOST is exactly github.com
+  ## (case-insensitive); return 1 for any other URL. The .gitmodules URL is
+  ## untrusted tree data (the whole point of this check), so the host must be
+  ## parsed and compared, never substring-matched: 'notgithub.com' contains the
+  ## literal 'github.com', and 'https://attacker.example/github.com/o/r' carries
+  ## it in the PATH -- both must be rejected, and a legitimate 'GitHub.com' host
+  ## accepted. Handles scheme URLs (https/http/ssh/git, with optional userinfo
+  ## and port) and the scp-like 'git@github.com:owner/repo' form.
+  local url="$1" rest host path
+  case "${url}" in
+    *://*)
+      rest="${url#*://}"
+      rest="${rest#*@}"
+      host="${rest%%/*}"
+      host="${host%%:*}"
+      if [ "${rest}" = "${host}" ]; then
+        path=''
+      else
+        path="${rest#*/}"
+      fi
+      ;;
+    *@*:*)
+      rest="${url#*@}"
+      host="${rest%%:*}"
+      path="${rest#*:}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  case "${host,,}" in
+    github.com)
+      true "INFO: the authority is exactly github.com"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+  ## Trailing slashes off BEFORE '.git' then again after: '.../repo.git/' must
+  ## strip to 'repo', and '%.git' does not match a string ending in a slash.
+  while [ "${path}" != "${path%/}" ]; do
+    path="${path%/}"
+  done
+  path="${path%.git}"
+  while [ "${path}" != "${path%/}" ]; do
+    path="${path%/}"
+  done
+  ## Leading slash (scheme URL path came after the host slash already, but a
+  ## scp-like ':/owner' can carry one) must not become an empty owner.
+  path="${path#/}"
+  local owner repo
+  owner="${path%%/*}"
+  if [ "${owner}" = "${path}" ]; then
+    ## No '/' separator: not an owner/repo pair.
+    return 1
+  fi
+  repo="${path#*/}"
+  repo="${repo%%/*}"
+  if [ -z "${owner}" ] || [ -z "${repo}" ]; then
+    return 1
+  fi
+  printf '%s%s%s\n' "${owner}" "${TAB}" "${repo}"
+  return 0
+}
+
+
 gitmodules_url_for() {
   ## Print the .gitmodules URL declared for tree path ${1}; return 1 if the
   ## path has no stanza.
+  ##
+  ## On a duplicate path (two stanzas naming the same path) return the LAST
+  ## one's URL, matching real git: 'git submodule init' registers the last
+  ## stanza's URL for a path, so a decoy canonical stanza placed before an
+  ## attacker one must not be what this check verifies.
   local wanted="$1"
   local modules="${repo_root}/.gitmodules"
-  local line key value name
+  local line key value name last_name=''
   if [ ! -f "${modules}" ]; then
     return 1
   fi
@@ -277,10 +356,36 @@ gitmodules_url_for() {
     fi
     name="${key#submodule.}"
     name="${name%.path}"
-    git config --file "${modules}" --get "submodule.${name}.url" || return 1
-    return 0
+    last_name="${name}"
   done < <(git config --file "${modules}" --get-regexp '^submodule\..*\.path$')
-  return 1
+  if [ -z "${last_name}" ]; then
+    return 1
+  fi
+  ## --get returns the last value if the url is itself multi-valued, which is
+  ## again what git resolves.
+  git config --file "${modules}" --get "submodule.${last_name}.url" || return 1
+  return 0
+}
+
+
+gitmodules_pairs() {
+  ## Emit "path<TAB>url" for every submodule stanza in the .gitmodules file ${1}.
+  ## Consumers key by path, so a duplicate path's later value overwrites -- the
+  ## same last-wins git applies. Used to detect a repoint (URL change) between
+  ## two refs. Missing file -> nothing, not an error.
+  local modules="$1"
+  if [ ! -f "${modules}" ]; then
+    return 0
+  fi
+  local line key value name url
+  while IFS= read -r line; do
+    key="${line%% *}"
+    value="${line#* }"
+    name="${key#submodule.}"
+    name="${name%.path}"
+    url="$(git config --file "${modules}" --get "submodule.${name}.url")" || url=''
+    printf '%s%s%s\n' "${value}" "${TAB}" "${url}"
+  done < <(git config --file "${modules}" --get-regexp '^submodule\..*\.path$')
 }
 
 
@@ -295,7 +400,7 @@ enumerate_gitlinks() {
   ## a checked one. Anything that cannot be resolved to a canonical upstream is
   ## emitted WITH a problem rather than skipped, for the same reason.
   local record meta rest
-  local mode otype sha path url tail owner_repo owner repo problem path_safe
+  local mode otype sha path url owner_repo owner repo problem path_safe
   ## The record is split by hand rather than by 'read mode otype sha path':
   ## word splitting strips leading and trailing IFS whitespace from the last
   ## field, so a submodule path with a leading or trailing space would come
@@ -322,39 +427,19 @@ enumerate_gitlinks() {
       problem='submodule path contains a tab or newline'
     elif ! url="$(gitmodules_url_for "${path}")"; then
       problem='gitlink has no .gitmodules stanza, so its upstream is unknown'
+    elif ! owner_repo="$(github_owner_repo "${url}")"; then
+      ## Relative ('../foo.git'), non-GitHub, or host-spoofing URLs cannot be
+      ## resolved against the GitHub API; sending them anyway produced a bogus
+      ## request and a false verdict.
+      problem="submodule URL is not a canonical github.com URL: ${url}"
     else
-      case "${url}" in
-        *github.com[:/]*)
-          ## Strip scheme+host (https://github.com/, git@github.com:,
-          ## ssh://...), then trailing slashes and '.git'. Pure bash, no sed.
-          tail="${url##*github.com}"
-          tail="${tail#[:/]}"
-          ## Trailing slashes come off BEFORE '.git': the other order leaves
-          ## 'repo.git' for a URL spelled '.../repo.git/', since '%.git' does
-          ## not match a string ending in a slash.
-          owner_repo="${tail}"
-          while [ "${owner_repo}" != "${owner_repo%/}" ]; do
-            owner_repo="${owner_repo%/}"
-          done
-          owner_repo="${owner_repo%.git}"
-          while [ "${owner_repo}" != "${owner_repo%/}" ]; do
-            owner_repo="${owner_repo%/}"
-          done
-          owner="${owner_repo%%/*}"
-          repo="${owner_repo##*/}"
-          if ! safe_slug_component "${owner}" || ! safe_slug_component "${repo}"; then
-            problem="unusable owner/repo in submodule URL: ${url}"
-          elif ! canonical_owner "${owner}"; then
-            problem="upstream owner '${owner}' is not a canonical upstream org"
-          fi
-          ;;
-        *)
-          ## Relative ('../foo.git') and non-GitHub URLs cannot be resolved
-          ## against the GitHub API; sending them anyway produced a bogus
-          ## request and a false verdict.
-          problem="submodule URL is not a github.com URL: ${url}"
-          ;;
-      esac
+      owner="${owner_repo%%"${TAB}"*}"
+      repo="${owner_repo#*"${TAB}"}"
+      if ! safe_slug_component "${owner}" || ! safe_slug_component "${repo}"; then
+        problem="unusable owner/repo in submodule URL: ${url}"
+      elif ! canonical_owner "${owner}"; then
+        problem="upstream owner '${owner}' is not a canonical upstream org"
+      fi
     fi
     printf '%s\n' \
       "${path_safe}${TAB}${owner}${TAB}${repo}${TAB}${sha}${TAB}${problem}"
@@ -415,16 +500,15 @@ evaluate() {
       continue
     fi
     count=$(( count + 1 ))
-    ## A pin whose upstream could not even be determined is a failure, not a
-    ## skip: it is exactly the shape a repointed submodule takes -- unless this
-    ## fork inherited that exact stanza from upstream, in which case it is
-    ## upstream's shape to answer for.
+    ## A pin whose upstream could not even be determined is ALWAYS a hard
+    ## failure, never inheritance-cleared: a structural problem lives in the
+    ## .gitmodules DEFINITION (a repoint, a missing stanza, a non-github URL),
+    ## and inheritance here is judged by the gitlink SHA at the merge base, which
+    ## a definition change does not move. Downgrading it to a warning would let a
+    ## submodule repointed at a fork while keeping the same SHA pass as
+    ## 'inherited'. It is exactly the shape a repointed submodule takes.
     if [ -n "${problem}" ]; then
-      if [ "${attribution}" = 'true' ] && [ -n "${EVAL_INHERITED[${path}]:-}" ]; then
-        inherited+=("${path} @ ${sha} -- ${problem}")
-      else
-        bad+=("${path} @ ${sha} -- ${problem}")
-      fi
+      bad+=("${path} @ ${sha} -- ${problem}")
       continue
     fi
     verdict="$("${STATUS_FN}" "${owner}" "${repo}" "${sha}")"
@@ -586,8 +670,14 @@ parent_deviations() {
   ## core.quotePath=false keeps a non-ASCII submodule path readable in the
   ## report. A path containing a control character is still C-quoted by git;
   ## the verdict is unaffected, only how that path prints.
+  ## --ignore-submodules=none is load-bearing, not cosmetic: a committed
+  ## '.gitmodules' 'ignore = all' (or a diff.ignoreSubmodules config) otherwise
+  ## hides a 160000 SHA move from this diff, so a moved pin would look inherited
+  ## and be downgraded to a warning -- a bypass of BOTH invariants. The flag
+  ## overrides every such setting.
   if ! raw="$(git -C "${repo_root}" -c core.quotePath=false \
-       diff --raw --no-abbrev --no-renames "${base}" HEAD)"; then
+       diff --raw --no-abbrev --no-renames --ignore-submodules=none \
+       "${base}" HEAD)"; then
     return 1
   fi
   while read -r oldmode newmode oldsha newsha status path; do
@@ -611,6 +701,7 @@ check_parent_deviation() {
   ## faked from a run that did not compare.
   PARENT_ATTRIBUTION_KNOWN='false'
   PARENT_DEV_PATHS=()
+  PARENT_URL_CHANGED_PATHS=()
 
   local rc=0
   deepen_history || rc=$?
@@ -649,6 +740,39 @@ check_parent_deviation() {
     deviations+=("${path}: ${base_sha} (merge base) -> ${head_sha} (this branch)")
     PARENT_DEV_PATHS["${path}"]=1
   done <<< "${raw}"
+
+  ## Repoint detection: a path whose .gitmodules URL changed vs the merge base is
+  ## disqualified from inheritance even with an unchanged gitlink SHA. Read both
+  ## .gitmodules blobs; if EITHER read fails (a blob:none partial clone whose
+  ## promisor is now unreachable, or base predates .gitmodules), SKIP detection
+  ## rather than mark everything changed -- marking all-changed would demote no
+  ## pin and instead HARD-FAIL every inherited unresolvable pin, the exact
+  ## false-red this tool exists to avoid. SHA-only attribution is the safe
+  ## fallback there.
+  local gm_base gm_head
+  gm_base="$(mktemp)"
+  gm_head="$(mktemp)"
+  if git -C "${repo_root}" show "${base}:.gitmodules" > "${gm_base}" 2>/dev/null \
+     && git -C "${repo_root}" show 'HEAD:.gitmodules' > "${gm_head}" 2>/dev/null; then
+    local -A _base_url=() _head_url=()
+    local gp_path gp_url up
+    while IFS="${TAB}" read -r gp_path gp_url; do
+      if [ -n "${gp_path}" ]; then
+        _base_url["${gp_path}"]="${gp_url}"
+      fi
+    done < <(gitmodules_pairs "${gm_base}")
+    while IFS="${TAB}" read -r gp_path gp_url; do
+      if [ -n "${gp_path}" ]; then
+        _head_url["${gp_path}"]="${gp_url}"
+      fi
+    done < <(gitmodules_pairs "${gm_head}")
+    for up in "${!_head_url[@]}" "${!_base_url[@]}"; do
+      if [ "${_head_url[${up}]:-}" != "${_base_url[${up}]:-}" ]; then
+        PARENT_URL_CHANGED_PATHS["${up}"]=1
+      fi
+    done
+  fi
+  rm --force -- "${gm_base}" "${gm_head}"
 
   ## The comparison ran to a verdict (zero or more deviations); attribution is
   ## now trustworthy.
@@ -821,12 +945,28 @@ enumerate_self_test() {
       '	url = https://github.com/Kicksecure/slash.git/' \
       '[submodule "spaced"]' \
       '	path = " a spaced path "' \
-      '	url = https://github.com/Kicksecure/spaced.git'
+      '	url = https://github.com/Kicksecure/spaced.git' \
+      '[submodule "hostspoof"]' \
+      '	path = hostspoof' \
+      '	url = https://notgithub.com/Kicksecure/hostspoof.git' \
+      '[submodule "pathspoof"]' \
+      '	path = pathspoof' \
+      '	url = https://attacker.example/github.com/Kicksecure/pathspoof.git' \
+      '[submodule "mixedcase"]' \
+      '	path = mixedcase' \
+      '	url = https://GitHub.com/Kicksecure/mixedcase.git' \
+      '[submodule "dup-decoy"]' \
+      '	path = dup' \
+      '	url = https://github.com/Kicksecure/legit.git' \
+      '[submodule "dup-real"]' \
+      '	path = dup' \
+      '	url = https://github.com/attacker/evil.git'
   } > "${tmp}/tree/.gitmodules"
   fixture_git -C "${tmp}/tree" add .gitmodules
   local sub
   ## 'orphan' deliberately gets NO stanza.
-  for sub in good forked elsewhere sneaky orphan lower slash ' a spaced path '; do
+  for sub in good forked elsewhere sneaky orphan lower slash ' a spaced path ' \
+             hostspoof pathspoof mixedcase dup; do
     fixture_git -C "${tmp}/tree" update-index --add --cacheinfo "160000,${sha},${sub}"
   done
   fixture_git -C "${tmp}/tree" commit --quiet --message 'fixture tree'
@@ -889,7 +1029,7 @@ enumerate_self_test() {
     "upstream owner 'attacker' is not a canonical upstream org"
   ## A relative URL must not be sent to the GitHub API.
   assert_record 'relative URL rejected' 'elsewhere' \
-    'submodule URL is not a github.com URL'
+    'submodule URL is not a canonical github.com URL'
   ## A '#' would truncate the REST path into a different, valid endpoint.
   assert_record 'unsafe slug rejected' 'sneaky' \
     'unusable owner/repo in submodule URL'
@@ -904,6 +1044,20 @@ enumerate_self_test() {
   ## no longer matched its own stanza and was reported as an orphan.
   assert_clean_record 'spaced path keeps its spaces' ' a spaced path ' \
     'Kicksecure' 'spaced'
+  ## Host-spoof: 'github.com' as a SUBSTRING of the real host must be rejected,
+  ## not read as a canonical GitHub URL.
+  assert_record 'notgithub.com host rejected' 'hostspoof' \
+    'not a canonical github.com URL'
+  ## ... and 'github.com' in the URL PATH, real host elsewhere, likewise.
+  assert_record 'github.com in path rejected' 'pathspoof' \
+    'not a canonical github.com URL'
+  ## A real GitHub host differing only in letter case is canonical, not a
+  ## structural problem (was a false-positive hard failure).
+  assert_clean_record 'mixed-case host accepted' 'mixedcase' 'Kicksecure' 'mixedcase'
+  ## Duplicate path: real git registers the LAST stanza's URL, so the attacker
+  ## stanza (second) is what must be checked, not the canonical decoy (first).
+  assert_record 'duplicate path uses last stanza' 'dup' \
+    "upstream owner 'attacker' is not a canonical upstream org"
 
   ## Each problem must FAIL the evaluator, not warn.
   local rc=0 out
@@ -1037,7 +1191,7 @@ enumerate_self_test() {
     printf '%s\n' "enumerate self-test: ${fails} assertion(s) FAILED" >&2
     return 1
   fi
-  printf '%s\n' 'enumerate self-test: PASSED (17 cases)'
+  printf '%s\n' 'enumerate self-test: PASSED (21 cases)'
   return 0
 }
 
@@ -1278,11 +1432,71 @@ parent_self_test() {
       ;;
   esac
 
+  ## Case L: a submodule 'ignore = all' must NOT blind the deviation diff. With
+  ## it set, an unguarded 'git diff' omits the 160000 change, the move looks
+  ## inherited, and both invariants are bypassed. Isolated fixtures, and the
+  ## config form of 'ignore' is set so the blinding is guaranteed on unpatched
+  ## code (the whole point of --ignore-submodules=none is to override it).
+  fixture_git init --quiet "${tmp}/upstream2"
+  printf '%s\n' '[submodule "sub"]' '	path = sub' \
+    '	url = https://github.com/Kicksecure/sub.git' '	ignore = all' \
+    > "${tmp}/upstream2/.gitmodules"
+  fixture_git -C "${tmp}/upstream2" add .gitmodules
+  fixture_pin "${tmp}/upstream2" "${sha_base}" 'base with ignore=all'
+  fixture_git clone --quiet "${tmp}/upstream2" "${tmp}/fork2"
+  fixture_git -C "${tmp}/fork2" config diff.ignoreSubmodules all
+  repo_root="${tmp}/fork2"
+  parent_upstream_url="file://${tmp}/upstream2"
+  parent_upstream_branch='master'
+  fixture_pin "${tmp}/fork2" "${sha_fork}" 'fork moves the pin despite ignore=all'
+  rc=0
+  out="$(check_parent_deviation 2>&1)" || rc=$?
+  if (( rc != 1 )); then
+    printf '%s\n' \
+      "parent self-test FAIL: ignore=all hid the gitlink move; returned ${rc}, expected 1; got:" \
+      "${out}" >&2
+    fails=$(( fails + 1 ))
+  fi
+
+  ## Case M: a repoint (.gitmodules URL change) with an UNCHANGED gitlink SHA is
+  ## recorded in PARENT_URL_CHANGED_PATHS so main() will not treat the pin as
+  ## inherited, WITHOUT counting as a gitlink deviation (invariant 2 stays
+  ## SHA-only). Isolated fixtures.
+  fixture_git init --quiet "${tmp}/upstream3"
+  printf '%s\n' '[submodule "sub"]' '	path = sub' \
+    '	url = https://github.com/Kicksecure/sub.git' \
+    > "${tmp}/upstream3/.gitmodules"
+  fixture_git -C "${tmp}/upstream3" add .gitmodules
+  fixture_pin "${tmp}/upstream3" "${sha_base}" 'base'
+  fixture_git clone --quiet "${tmp}/upstream3" "${tmp}/fork3"
+  printf '%s\n' '[submodule "sub"]' '	path = sub' \
+    '	url = https://github.com/attacker/sub.git' \
+    > "${tmp}/fork3/.gitmodules"
+  fixture_git -C "${tmp}/fork3" add .gitmodules
+  fixture_git -C "${tmp}/fork3" commit --quiet --message 'fork repoints the submodule URL'
+  repo_root="${tmp}/fork3"
+  parent_upstream_url="file://${tmp}/upstream3"
+  parent_upstream_branch='master'
+  rc=0
+  check_parent_deviation >/dev/null 2>&1 || rc=$?
+  if (( rc != 0 )); then
+    printf '%s\n' "parent self-test FAIL: repoint (same SHA) returned ${rc}, expected 0" >&2
+    fails=$(( fails + 1 ))
+  fi
+  if [ -z "${PARENT_URL_CHANGED_PATHS[sub]:-}" ]; then
+    printf '%s\n' 'parent self-test FAIL: repoint not recorded in PARENT_URL_CHANGED_PATHS' >&2
+    fails=$(( fails + 1 ))
+  fi
+  if [ -n "${PARENT_DEV_PATHS[sub]:-}" ]; then
+    printf '%s\n' 'parent self-test FAIL: unchanged SHA wrongly flagged as a gitlink deviation' >&2
+    fails=$(( fails + 1 ))
+  fi
+
   if (( fails > 0 )); then
     printf '%s\n' "parent self-test: ${fails} assertion(s) FAILED" >&2
     return 1
   fi
-  printf '%s\n' 'parent self-test: PASSED (11 cases)'
+  printf '%s\n' 'parent self-test: PASSED (13 cases)'
   return 0
 }
 
@@ -1388,8 +1602,10 @@ inherited_self_test() {
     fails=$(( fails + 1 ))
   fi
 
-  ## Case E: an INHERITED structural problem (no stanza etc.) also warns, not
-  ## fails -- upstream owns a stanza this fork mirrors verbatim.
+  ## Case E: an INHERITED structural problem STILL hard-fails. A .gitmodules
+  ## definition defect (missing stanza, repoint) is not cleared by a matching
+  ## gitlink SHA, so a submodule repointed at a fork while keeping the merge-base
+  ## SHA -- which looks 'inherited' -- must not be downgraded to a warning.
   EVAL_ATTRIBUTION_KNOWN='true'
   EVAL_INHERITED=()
   EVAL_INHERITED['sub-problem']=1
@@ -1397,10 +1613,19 @@ inherited_self_test() {
   out="$(printf '%s\n' \
     "sub-problem${TAB}${TAB}${TAB}dead1${TAB}gitlink has no .gitmodules stanza, so its upstream is unknown" \
     | evaluate 2>&1)" || rc=$?
-  if (( rc != 0 )); then
-    printf '%s\n' "inherited self-test FAIL: inherited problem pin returned ${rc}, expected 0; got:" "${out}" >&2
+  if (( rc != 1 )); then
+    printf '%s\n' "inherited self-test FAIL: inherited problem pin returned ${rc}, expected 1; got:" "${out}" >&2
     fails=$(( fails + 1 ))
   fi
+  case "${out}" in
+    *'[FAIL]'*'sub-problem'*)
+      true "INFO: the inherited-but-repointed pin failed the gate"
+      ;;
+    *)
+      printf '%s\n' 'inherited self-test FAIL: inherited problem pin not in FAIL set; got:' "${out}" >&2
+      fails=$(( fails + 1 ))
+      ;;
+  esac
 
   STATUS_FN='upstream_status'
   EVAL_ATTRIBUTION_KNOWN='false'
@@ -1528,8 +1753,11 @@ main() {
         continue
       fi
       ## Path is the first field; take it by prefix, not by a tab-collapsing read.
+      ## Inherited == unchanged gitlink SHA AND unchanged .gitmodules URL: a
+      ## repoint (URL change) disqualifies the pin even at the same SHA.
       ipath="${irecord%%"${TAB}"*}"
-      if [ -z "${PARENT_DEV_PATHS[${ipath}]:-}" ]; then
+      if [ -z "${PARENT_DEV_PATHS[${ipath}]:-}" ] \
+         && [ -z "${PARENT_URL_CHANGED_PATHS[${ipath}]:-}" ]; then
         EVAL_INHERITED["${ipath}"]=1
       fi
     done <<< "${records}"
