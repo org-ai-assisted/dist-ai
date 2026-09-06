@@ -385,6 +385,29 @@ ok(len(_stx2._alt_exit_snapshots) == 1,
    '#10: the exit-snapshot buffer is size-capped (oldest dropped)')
 _stx2.close()
 
+# regression (ai-review): primary output in the SAME read just before alt-entry is kept
+# -- _alt_enter renders the pyte model before freezing (the feed debounce would else drop
+# the final unpainted primary line).
+_stx3 = SecureTerminal(command='/bin/cat', tui=True)
+APP.processEvents()
+feed_output(_stx3, b'BEFORE-ALT-SAMEREAD\r\n\x1b[?1049hALTX')   # primary+enter+alt, one read
+APP.processEvents()
+ok('BEFORE-ALT-SAMEREAD' in _stx3.scrollback_text()
+   and 'ALTX' not in _stx3.scrollback_text(),
+   'ai-review: primary output right before alt-entry (same read) is frozen, alt excluded')
+_stx3.close()
+
+# regression (ai-review): a whole enter/draw/leave in ONE read still snapshots the REAL
+# final frame (not a stale/empty one), because _alt_leave renders before the walk.
+_stx4 = SecureTerminal(command='/bin/cat', tui=True)
+APP.processEvents()
+feed_output(_stx4, b'\x1b[?1049h\x1b[2J\x1b[HFINALFRAME\x1b[?1049l')
+APP.processEvents()
+ok('FINALFRAME' in _stx4.scrollback_text()
+   and 'full-screen application' in _stx4.scrollback_text(),
+   'ai-review: the exit snapshot captures the final alt frame even in a single read')
+_stx4.close()
+
 # #6 (ai-review): the keep_screen restart must RESET the pyte charset, else a program
 # that designated G0 = DEC special-graphics (ESC ( 0) leaves it set and the new shell's
 # ASCII 'q' renders as a box-drawing horizontal line, not the letter.
