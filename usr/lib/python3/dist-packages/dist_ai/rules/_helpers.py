@@ -738,6 +738,22 @@ def is_python_interpreter(name):
     return bool(PY_INTERPRETER_RE.match(name.rsplit("/", 1)[-1]))
 
 
+def _python_cluster_mode(cluster):
+    """The interpreter mode a short-option CLUSTER selects: 'c' or 'm' when the
+    FIRST value-taking letter in it is -c/-m, else None. Scan left to right and
+    STOP at the first value-taker: -c/-m/-W/-X each consume the REST of the
+    cluster as their value, so a 'c'/'m' sitting after a -W/-X (e.g. '-Wmymodule',
+    a warnings filter, NOT a module) is that value's text, not an option letter.
+    A plain substring test ('c' in cluster) misreads both '-Wmymodule' (as -m)
+    and '-mc' (as -c)."""
+    for letter in cluster:
+        if letter in "cm":
+            return letter
+        if letter in "WX":
+            break
+    return None
+
+
 def _python_operand_mode(tokens):
     """'stdin' if the first operand is '-' (python reads its program from stdin),
     else 'script' (a path/quoted/expanded word run through the interpreter);
@@ -768,11 +784,9 @@ def _python_call_mode(call, source):
                 return _python_operand_mode(tokens[index + 1:])
             if text.startswith("--"):
                 continue  ## a long info flag ('--version'); no script yet
-            cluster = text[1:]
-            if "c" in cluster:
-                return "c"
-            if "m" in cluster:
-                return "m"
+            mode = _python_cluster_mode(text[1:])
+            if mode is not None:
+                return mode
             continue  ## an ordinary short flag ('-Bsu', '-E', '-I')
         if kind == "operand":
             return _python_operand_mode(tokens[index:])

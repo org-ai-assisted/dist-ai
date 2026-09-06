@@ -866,6 +866,10 @@ guard_fail='R-010 strict-mode block'
 expect_rule "${guard_fail}" "was_executed=1"                     "present"
 ## A string mention of the token is NOT a guard call: enforce.
 expect_rule "${guard_fail}" "printf ${sq}%s${nl}${sq} ${dq}was_sourced${dq}" "present"
+## A SPACE-surrounded mention inside a string ('echo "usage: was_executed "')
+## is not a call either: the old substring regex matched it and silently
+## disabled the whole strict-mode requirement.
+expect_rule "${guard_fail}" "printf ${sq}%s${nl}${sq} ${dq}usage: was_executed ${dq}" "present"
 ## A real command-position guard call still exempts.
 expect_rule "${guard_fail}" "was_sourced && main"               "absent"
 
@@ -1331,6 +1335,13 @@ expect_rule "${r193_bare}" "python3 --version"                 "present"
 ## '-m MODULE' is the carve-out: UNPINNED is spared, a version PIN is flagged.
 expect_rule "R-193" "python3 -m venv .venv"                    "absent"
 expect_rule "${r193_pin}" "python3.11 -m pytest"              "present"
+## The '-c'/'-m' classification keys on the FIRST value-taking cluster letter,
+## not a substring: '-W'/'-X' take the rest of the cluster as a VALUE, so a 'c'/'m'
+## in it is not an option. '-Wmymodule script.py' runs the script (flag), and
+## '-mc' is '-m' with module 'c' (spared).
+expect_rule "${r193_script}" "python3 -Wmymodule script.py"    "present"
+expect_rule "${r193_script}" "python3 -X importtime script.py" "present"
+expect_rule "R-193" "python3 -mc"                              "absent"
 ## A COMMENT that merely spells the pattern must not self-trip.
 expect_rule "R-193" "${hash}${hash} example python3 -c bar"    "absent"
 ## The renamed per-file waiver (a deliberate PATH/venv python) is honoured.
@@ -2371,6 +2382,11 @@ expect_rule "${r030fmt}" "printf \$${sq}%s\n${sq} ${dq}\${x}${dq}" "absent"
 ## (The pre-fix _const_arith_exit_value only saw a bare $(( )), never "$(( ))".)
 expect_rule 'R-220' "exit ${dq}\$((70+7))${dq}" "present"
 expect_rule 'R-220' "exit ${dq}\$((70+7))${dq}  ${hash}${hash} style-ok: allow-skip: intentional" "absent"
+## A backslash-continued 'exit \<nl>77' carries the waiver on its END line, not
+## the 'exit' keyword's line -- the waiver check must look at both, else a valid
+## waiver is ignored (false positive).
+expect_rule 'R-220' "exit ${bslash}${nlreal}77  ${hash}${hash} style-ok: allow-skip: optional e2e" "absent"
+expect_rule 'R-220' "exit ${bslash}${nlreal}77" "present"
 
 ## R-212: apt resolves the option NAME case-insensitively, so a mixed-case
 ## '--ALLOW-DOWNGRADES' enables downgrades at runtime and MUST be flagged; a

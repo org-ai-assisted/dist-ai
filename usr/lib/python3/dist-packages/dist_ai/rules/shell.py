@@ -940,8 +940,13 @@ class UnauthorizedSkip(Rule):
             code_word = _skip_exit_code_word(call, ctx.source)
             if code_word is None or not _is_skip_code_77(code_word):
                 continue
+            ## Check the statement's START line (and the line above) AND its END
+            ## line: a backslash-continued 'exit \<nl>77  ## style-ok: allow-skip'
+            ## carries the waiver on the END line, not the 'exit' keyword's line.
             line = call["Pos"]["Line"]
-            if _skip_waived(comment_by_line, line):
+            end = call["End"]["Line"]
+            if _skip_waived(comment_by_line, line) \
+                    or _skip_waived(comment_by_line, end):
                 continue
             yield _fail(
                 ctx, "R-220",
@@ -1663,12 +1668,6 @@ _STRICT_DIRECTIVES = (
     "shopt -s inherit_errexit", "shopt -s shift_verbose", "export LC_ALL=C",
 )
 _STRICT_HEADER_LINES = 160
-## A real was_executed()/was_sourced() guard CALL (command position), not a
-## comment or an assignment ('was_executed=1') or a mention ('${was_sourced}').
-## Matched per code-only LINE (comments pre-stripped by code_only_lines), so a
-## '${var#pat}' '#' earlier on the line no longer hides the guard call.
-_SOURCE_GUARD = re.compile(
-    r'(?:^|[ \t;&|!(])(?:was_executed|was_sourced)(?:[ \t;&|)]|$)')
 _GUARD_ERREXIT = re.compile(r'^[ \t]+set -o errexit[ \t]*$', re.MULTILINE)
 _INHERIT_ERREXIT = re.compile(r'^[ \t]*shopt -s inherit_errexit[ \t]*$',
                               re.MULTILINE)
@@ -1703,8 +1702,13 @@ class StrictModeBlock(Rule):
         header_lines = set(line.strip("\r") for line in header.split("\n"))
         present = sum(1 for directive in _STRICT_DIRECTIVES
                       if directive in header_lines)
-        guarded = any(_SOURCE_GUARD.search(line)
-                      for line in h.code_only_lines(source, ctx.tree))
+        ## COMMAND-POSITION check, not a substring scan: only a real
+        ## was_executed()/was_sourced() CALL exempts the script. A mention in a
+        ## string ('echo "was_executed"') or elsewhere must NOT disable the
+        ## strict-mode requirement (the substring form did, a silent bypass).
+        guarded = any(
+            bash_ast.command_name(call) in ("was_executed", "was_sourced")
+            for call in bash_ast.call_exprs(ctx.tree))
         if present == 0 and guarded:
             ## Source-able guarded script: exempt from all-seven. Enforce the
             ## indented shopt half + export only when the guard enables errexit.
