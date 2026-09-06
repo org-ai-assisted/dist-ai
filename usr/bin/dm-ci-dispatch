@@ -192,7 +192,7 @@ fi
 ## Branch AND tag are both tried, and a fully-qualified ref is passed through:
 ## --ref is documented as a git ref, and querying only refs/heads made a tag look
 ## like "not pushed".
-local_sha="$( git -C "${source_dir}" rev-parse "${ref}" )"
+local_sha="$( git -C "${source_dir}" rev-parse --end-of-options "${ref}" )"
 
 ## The object-sha reader for a git-ref API body: a real JSON parser rather than
 ## a fragile grep.
