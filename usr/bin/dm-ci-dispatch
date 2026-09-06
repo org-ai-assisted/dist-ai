@@ -44,6 +44,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 repo="org-ai-assisted/derivative-maker"
 workflow=""
@@ -193,21 +194,24 @@ fi
 ## like "not pushed".
 local_sha="$( git -C "${source_dir}" rev-parse "${ref}" )"
 
+## The object-sha reader for a git-ref API body: a real JSON parser rather than
+## a fragile grep.
+ref_sha_reader="$( dirname -- "$( dirname -- "$( readlink -f -- "${BASH_SOURCE[0]}" )" )" )/libexec/dist-ai/dm-ci-dispatch-ref-sha.py"
+if [ ! -r "${ref_sha_reader}" ]; then
+   ref_sha_reader="/usr/libexec/dist-ai/dm-ci-dispatch-ref-sha.py"
+fi
+if [ ! -r "${ref_sha_reader}" ]; then
+   printf '%s\n' "${0##*/}: dm-ci-dispatch-ref-sha.py not found; cannot resolve the remote sha." >&2
+   exit 1
+fi
+
 resolve_remote_sha() {
    local candidate response
 
    for candidate in "${remote_ref_candidates[@]}"; do
       response="$( github-api GET "/repos/${repo}/git/ref/${candidate}" 2>/dev/null )" || continue
       ## The object sha, or nothing when the API returned a "Not Found" body.
-      printf '%s' "${response}" \
-         | python3 -c 'import json,sys
-try:
-    payload = json.load(sys.stdin)
-except Exception:
-    raise SystemExit(0)
-obj = payload.get("object") if isinstance(payload, dict) else None
-if isinstance(obj, dict) and obj.get("sha"):
-    print(obj["sha"])'
+      printf '%s' "${response}" | "${ref_sha_reader}"
    done
 }
 
@@ -246,7 +250,7 @@ if [ ! -r "${payload_builder}" ]; then
    printf '%s\n' "${0##*/}: payload builder not found; refusing to hand-roll JSON." >&2
    exit 1
 fi
-python3 -- "${payload_builder}" "${ref}" "${payload_file}" "${input_list[@]}"
+"${payload_builder}" "${ref}" "${payload_file}" "${input_list[@]}"
 
 if [ "${dry_run}" = "true" ]; then
    printf '%s\n' "${0##*/}: --dry-run: would dispatch ${workflow} on ${repo}@${ref} (${local_sha:0:12})" >&2

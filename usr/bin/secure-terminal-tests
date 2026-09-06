@@ -108,7 +108,7 @@ for test_file in \
    ## `if`'s own status (0 when no branch runs), so `rc` could never see a 77 SKIP or a failure
    ## code -- the `|| rc="$?"` reads the actual status while keeping errexit happy.
    rc=0
-   python3 -Bsu -- "${test_file}" "$@" || rc="$?"
+   "${test_file}" "$@" || rc="$?"
    if [ "${rc}" = '0' ]; then
       continue
    fi

@@ -39,7 +39,6 @@ if [ "$#" -eq 0 ]; then
 fi
 
 rc=0
-## style-ok: allow-python-dashdash -- run through the python3 on PATH (venv /
-## user-site), not the harness shebang.
+## style-ok: allow-python-interpreter -- run through PATH python3 for venv/user-site test deps
 python3 -- "${tests_dir}/fuzz_curl_prgrs_e2e.py" "$@" || rc=$?
 exit "${rc}"

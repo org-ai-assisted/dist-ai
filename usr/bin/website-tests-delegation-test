@@ -29,6 +29,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 website_tests="${script_dir}/website-tests"
@@ -44,6 +45,7 @@ pass_count=0
 fail_count=0
 pass(){ printf '%s\n' "website-tests-delegation-test: pass $1"; pass_count=$(( pass_count + 1 )); }
 fail(){ printf '%s\n' "website-tests-delegation-test: FAIL $1" >&2; fail_count=$(( fail_count + 1 )); }
+## style-ok: allow-skip: delegation branch unreachable without a site checkout and no local Playwright -- environmental skip
 skip(){ printf '%s\n' "website-tests-delegation-test: SKIP ($1)" >&2; exit 77; }
 
 ## Resolve the site roots the same way website-tests does; export the ones present so
@@ -71,7 +73,7 @@ resolve "${ORG_AI_ASSISTED_REPO}"      "${HOME}/private-sources/org-ai-assisted.
 ## The delegation branch fires only when the local mobile probe returns 77 (no local
 ## Playwright). If a local browser is present the branch is unreachable here.
 probe_rc=0
-python3 -Bsu -- "${tests_dir}/check_mobile.py" "${roots[@]}" >/dev/null 2>&1 || probe_rc="$?"
+"${tests_dir}/check_mobile.py" "${roots[@]}" >/dev/null 2>&1 || probe_rc="$?"
 [ "${probe_rc}" = '77' ] || skip 'local Playwright present; delegation path not reachable'
 
 ## Sandbox stubs: a `sandbox` on PATH (only its existence is probed by the wrapper)

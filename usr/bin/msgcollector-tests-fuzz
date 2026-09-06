@@ -25,6 +25,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -46,6 +47,7 @@ cli_iterations='1500'
 chunk_iterations='6000'
 
 rc=0
+## style-ok: allow-python-interpreter -- run through PATH python3 for venv/user-site test deps
 python3 -- "${tests_dir}/fuzz_cli_rendering.py" --iterations "${cli_iterations}" "$@" || rc=$?
 ## output_func chunking: the message-splitting bash in msgdispatcher_run_check.
 chunk_rc=0
@@ -61,4 +63,5 @@ done
 if [ "${rc}" = 0 ] || [ "${chunk_rc}" = 0 ]; then
    exit 0
 fi
+## style-ok: allow-skip: reached only when both fuzz lanes themselves reported SKIP (77) -- no target to fuzz
 exit 77

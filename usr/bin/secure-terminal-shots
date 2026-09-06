@@ -315,7 +315,7 @@ for spec in \
    'paste paste-warning.png' \
    'copy copy-warning.png'; do
    read -r kind file <<< "${spec}"
-   python3 -- "${shot_script}" "${out_dir}/${file}" "${kind}"
+   "${shot_script}" "${out_dir}/${file}" "${kind}"
    optimize_to_webp "${out_dir}/${file}"
 done
 

@@ -19,6 +19,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -31,6 +32,7 @@ fi
 iterations='5000'
 
 rc=0
+## style-ok: allow-python-interpreter -- run through PATH python3 for venv/user-site test deps
 python3 -- "${tests_dir}/grep_find_unicode_wrapper_test.py" \
    --fuzz-only --iterations "${iterations}" "$@" || rc=$?
 exit "${rc}"

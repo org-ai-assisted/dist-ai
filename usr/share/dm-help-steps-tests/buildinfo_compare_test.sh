@@ -81,7 +81,7 @@ write_record() {
 
 run_compare() {
    local rc=0
-   python3 -- "${subject}" "${workdir}/$1" "${workdir}/$2" > "${workdir}/out.txt" 2>&1 || rc="$?"
+   "${subject}" "${workdir}/$1" "${workdir}/$2" > "${workdir}/out.txt" 2>&1 || rc="$?"
    printf '%s' "${rc}"
 }
 

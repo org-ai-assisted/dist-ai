@@ -40,7 +40,7 @@ if [ "$#" -eq 0 ]; then
 fi
 
 rc=0
-## style-ok: allow-python-dashdash -- run the harness through the python3 on
+## style-ok: allow-python-interpreter -- run the harness through the python3 on
 ## PATH (the active venv / user-site), NOT its '#!/usr/bin/python3 -su' shebang:
 ## atheris is a 'pip install' dependency that commonly lives in a virtualenv or
 ## user-site, and '-s' would hide user-site, making the harness falsely report

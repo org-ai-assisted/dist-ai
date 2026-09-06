@@ -47,11 +47,7 @@ note_fail() { printf '%s\n' "FAIL: ${1}" >&2; fail=$(( fail + 1 )); }
 ## Canary: the old '(?:[ \t]|$)' boundary matched '$' before '\n' (i.e. AFTER
 ## the '\r'), so a CRLF waiver with no space after the tag was dropped and the
 ## rule fired fail-closed. A real '\r' in the boundary fixes it.
-crlf_waiver="$(python3 -c '
-from dist_ai import context
-src = "#!/bin/bash\r\n## style-ok: allow-non-ascii\r\nx = 1\r\n"
-print(context.FileContext("f.sh", src).has_waiver("allow-non-ascii"))
-')"
+crlf_waiver="$("${tool_test_dir}/crlf_waiver_probe.py")"
 if [ "${crlf_waiver}" = "True" ]; then
    note_pass "CRLF-terminated style-ok waiver is honored"
 else
@@ -67,16 +63,7 @@ target="${test_dir}/target.sh"
 printf '%s\n' 'VICTIM ORIGINAL' > "${victim}"
 ## A fixable file (trailing whitespace) so apply_fixes actually wants to write.
 printf '%s\n' '#!/bin/bash' 'true   ' > "${target}"
-toctou="$(python3 -c '
-import os, sys
-from dist_ai import context, engine
-target, victim = sys.argv[1], sys.argv[2]
-ctx = context.FileContext.from_disk(target)     ## built against the regular file
-os.remove(target); os.symlink(victim, target)   ## swap in a symlink to the victim
-engine.apply_fixes(ctx, check=False)            ## must NOT write through it
-with open(victim) as handle:
-    print(handle.read().strip())
-' "${target}" "${victim}")"
+toctou="$("${tool_test_dir}/fixer_symlink_toctou_probe.py" "${target}" "${victim}")"
 if [ "${toctou}" = "VICTIM ORIGINAL" ]; then
    note_pass "fixer write refuses a symlink swapped in after the scan"
 else
@@ -92,17 +79,7 @@ fi
 rcdir="${test_dir}/proj"
 mkdir --parents -- "${rcdir}"
 printf '%s\n' 'disable=SC2016' > "${rcdir}/.shellcheckrc"
-sc_rc="$(python3 -c '
-import sys
-from dist_ai import context, engine, model
-abspath = sys.argv[1]
-## disk_backed=False -> a VIRTUAL (staged) context: materialized() writes the
-## bytes to a temp file; abspath only supplies the real source dir + rc location.
-ctx = context.FileContext("proj/f.sh", "#!/bin/bash\necho \x27$x\x27\n",
-                          abspath=abspath, disk_backed=False)
-findings = engine.detect(ctx, include_external=True)
-print(sum(1 for f in findings if f.rule == "shellcheck" and f.severity == model.FAIL))
-' "${rcdir}/f.sh")"
+sc_rc="$("${tool_test_dir}/staged_blob_shellcheckrc_probe.py" "${rcdir}/f.sh")"
 if [ "${sc_rc}" = "0" ]; then
    note_pass "staged-blob shellcheck honors the project .shellcheckrc"
 else
@@ -118,22 +95,7 @@ fi
 ## .shellcheckrc disabling SC2016; the staged blob (source_rev='') must STILL
 ## report SC2016 (the dirty rc is ignored). FAILS pre-fix (the worktree rc, read
 ## from the on-disk dir, suppresses it).
-sc_blob="$(python3 -c '
-import sys, os, subprocess
-from dist_ai import context, engine, model
-D = os.path.join(sys.argv[1], "blobtree")
-os.makedirs(D)
-def git(*a): subprocess.run(["git", "-C", D] + list(a), check=True, capture_output=True)
-git("init", "--quiet"); git("config", "user.email", "t@e.st"); git("config", "user.name", "t")
-open(D + "/prog.sh", "w").write("#!/bin/bash\necho \x27$x\x27\n")   # SC2016
-git("add", "prog.sh"); git("commit", "--quiet", "-m", "init")
-open(D + "/.shellcheckrc", "w").write("disable=SC2016\n")           # DIRTY, unstaged, not in the tree
-## source_rev="" -> the INDEX (a staged blob); the rc must come from the tree.
-ctx = context.FileContext("prog.sh", open(D + "/prog.sh").read(),
-                          abspath=D + "/prog.sh", source_rev="")
-findings = engine.detect(ctx, include_external=True)
-print(sum(1 for f in findings if f.rule == "shellcheck" and f.severity == model.FAIL))
-' "${test_dir}")"
+sc_blob="$("${tool_test_dir}/staged_blob_dirty_rc_probe.py" "${test_dir}")"
 if [ "${sc_blob}" != "0" ]; then
    note_pass "staged-blob shellcheck reads .shellcheckrc from the blob tree, not the dirty worktree"
 else
@@ -149,22 +111,7 @@ fi
 ## NONE in the real '0:pwn/' tree. A SHA-keyed whole-tree lookup finds no governing
 ## rc there, so SC2016 STILL fires. FAILS pre-fix (the misparse reads pwn/.shellcheckrc
 ## and the finding is suppressed -> a real shellcheck bypass on a malicious PR).
-sc_collide="$(python3 -c '
-import sys, os, subprocess
-from dist_ai import context, engine, model
-D = os.path.join(sys.argv[1], "collide")
-os.makedirs(os.path.join(D, "0:pwn"))
-os.makedirs(os.path.join(D, "pwn"))
-def git(*a): subprocess.run(["git", "-C", D] + list(a), check=True, capture_output=True)
-git("init", "--quiet"); git("config", "user.email", "t@e.st"); git("config", "user.name", "t")
-open(D + "/0:pwn/prog.sh", "w").write("#!/bin/bash\necho \x27$x\x27\n")   # SC2016
-open(D + "/pwn/.shellcheckrc", "w").write("disable=all\n")               # the misparse target
-git("add", "-A"); git("commit", "--quiet", "-m", "init")
-ctx = context.FileContext("0:pwn/prog.sh", open(D + "/0:pwn/prog.sh").read(),
-                          abspath=D + "/0:pwn/prog.sh", source_rev="")
-findings = engine.detect(ctx, include_external=True)
-print(sum(1 for f in findings if f.rule == "shellcheck" and f.severity == model.FAIL))
-' "${test_dir}")"
+sc_collide="$("${tool_test_dir}/staged_blob_rc_collision_probe.py" "${test_dir}")"
 if [ "${sc_collide}" != "0" ]; then
    note_pass "staged-blob shellcheck rc lookup resists a git object-spec collision (0:dir)"
 else

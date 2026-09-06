@@ -74,7 +74,7 @@ check() {  ## $1=label $2=condition-rc (0 pass) -- caller already evaluated
 rc=0
 "${gen}" > "${work}/hero.payload" 2>"${work}/err.log" || rc=$?
 check 'generator exits 0 with no args' "${rc}"
-verdict="$(python3 "${checker}" "${work}/hero.payload" 2>/dev/null || true)"
+verdict="$("${checker}" "${work}/hero.payload" 2>/dev/null || true)"
 if [ "${verdict}" = 'OK cat-safe' ]; then rc=0; else rc=1; fi
 check "board carries the four primitives and is cat-safe (got '${verdict}')" "${rc}"
 

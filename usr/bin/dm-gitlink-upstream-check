@@ -58,6 +58,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 ## An inherited GIT_DIR / GIT_WORK_TREE outranks every 'git -C', so a run from
 ## inside a hook, 'rebase --exec' or 'submodule foreach' would silently inspect
@@ -159,6 +160,26 @@ git_api_program() {
 }
 
 
+classify_compare_program() {
+  ## The compare-body classifier, shipped under libexec in the same tree (CI
+  ## reaches it from the dist-ai checkout; installed it is under /usr/libexec).
+  local installed='/usr/libexec/dist-ai/dm-gitlink-classify-compare.py'
+  local sibling
+  sibling="$( dirname -- "$( dirname -- "$( readlink -f -- "${BASH_SOURCE[0]}" )" )" )/libexec/dist-ai/dm-gitlink-classify-compare.py"
+  if [ -r "${sibling}" ]; then
+    printf '%s\n' "${sibling}"
+    return 0
+  fi
+  if [ -r "${installed}" ]; then
+    printf '%s\n' "${installed}"
+    return 0
+  fi
+  printf '%s\n' \
+    "::error::dm-gitlink-classify-compare.py not found under libexec/dist-ai" >&2
+  return 2
+}
+
+
 classify_compare() {
   ## Map a compare-endpoint JSON body to one token on stdout:
   ##   resolvable      status behind / identical (ancestor-or-equal of master)
@@ -166,32 +187,7 @@ classify_compare() {
   ##                   upstream repo at all ('message': 'Not Found')
   ##   error           anything else (rate limit, transient 5xx, bad JSON) --
   ##                   never fails the check, only warns, to avoid a flaky red
-  python3 -c '
-import json
-import sys
-
-try:
-    data = json.load(sys.stdin)
-    ## A body that parses but is not an object (a bare list or null, which an
-    ## intercepting proxy or an error page can produce) has no .get, and the
-    ## AttributeError would escape as a non-zero exit with no verdict printed.
-    if not isinstance(data, dict):
-        raise ValueError("not a JSON object")
-    status = data.get("status")
-    message = data.get("message")
-except Exception:
-    print("error")
-    sys.exit(0)
-
-if status in ("behind", "identical"):
-    print("resolvable")
-elif status in ("ahead", "diverged"):
-    print("not-resolvable")
-elif message == "Not Found":
-    print("not-resolvable")
-else:
-    print("error")
-'
+  "$(classify_compare_program)"
 }
 
 

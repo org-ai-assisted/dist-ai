@@ -22,6 +22,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 REPO='org-ai-assisted/derivative-maker'
 DIST_AI="${HOME}/private-sources/dist-ai"
@@ -30,6 +31,9 @@ run_id=''
 from_ci='false'
 image_type='qcow2'
 legs='bios/user bios/sysmaint efi/user efi/sysmaint efi-secureboot/user efi-secureboot/sysmaint'
+
+libexec_dir="$( dirname -- "$( dirname -- "$( readlink -f -- "${BASH_SOURCE[0]}" )" )" )/libexec/dist-ai"
+[ -d "${libexec_dir}" ] || libexec_dir='/usr/libexec/dist-ai'
 
 usage() {
    cat <<'USAGE'
@@ -86,12 +90,7 @@ fetch_from_ci() {
    local runs art_id
    if [ -z "${run_id}" ]; then
       runs="$(github-api GET "/repos/${REPO}/actions/runs?per_page=30" 2>/dev/null)"
-      run_id="$(printf '%s' "${runs}" | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-for r in d['workflow_runs']:
-    if r['name'] in ('Boot Test','Build') and r['conclusion']=='success':
-        print(r['id']); break")"
+      run_id="$(printf '%s' "${runs}" | "${libexec_dir}/dm-boot-local-select-run.py")"
    fi
    [ -n "${run_id}" ] || { printf '%s\n' "no successful Build/Boot Test run found" >&2; exit 1; }
 
@@ -101,18 +100,7 @@ for r in d['workflow_runs']:
    ## a 0-byte LOG, and a largest-wins tiebreak silently prefers the ISO when
    ## the qcow2 was asked for.
    art_id="$(github-api GET "/repos/${REPO}/actions/runs/${run_id}/artifacts?per_page=60" 2>/dev/null \
-      | IMAGE_TYPE="${image_type}" python3 -c "
-import json,os,sys
-want='boot-image-'+os.environ['IMAGE_TYPE']
-d=json.load(sys.stdin)
-live=[a for a in d.get('artifacts',[]) if not a['expired']]
-hit=[a for a in live if a['name']==want]
-if hit:
-    print(hit[0]['id'])
-else:
-    sys.stderr.write('no unexpired %r artifact; available: %s\\n'
-                     % (want, ', '.join(sorted(a['name'] for a in live)) or '(none)'))
-    print('')")"
+      | IMAGE_TYPE="${image_type}" "${libexec_dir}/dm-boot-local-select-artifact.py")"
    [ -n "${art_id}" ] || { printf '%s\n' "run ${run_id} has no unexpired '${image_type}' image artifact (a re-run wipes them)" >&2; exit 1; }
 
    printf '%s\n' "fetching artifact ${art_id} from run ${run_id} ..." >&2

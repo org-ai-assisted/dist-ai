@@ -85,7 +85,7 @@ pty_code() {
    ## $1 = answer fed to the prompt; echoes git-diff-review's exit code, or
    ## 'timeout' when the tool never exited (see git-meld-tests-pty.py).
    local out
-   out="$( cd -- "${repo}" && python3 "${pyhelper}" "$1" "${gdr}" HEAD~1 HEAD 2>/dev/null )"
+   out="$( cd -- "${repo}" && "${pyhelper}" "$1" "${gdr}" HEAD~1 HEAD 2>/dev/null )"
    printf '%s' "${out}" | sed -n 's/^PTY_EXITCODE=//p'
 }
 

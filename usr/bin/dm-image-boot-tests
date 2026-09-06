@@ -33,6 +33,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 SKIP=77
 
@@ -53,6 +54,7 @@ fi
 ## broken install, not a reason to run nothing and still report green. Run it
 ## through `python3 -m` (the dist-ai convention) so a missing /usr/bin/pytest
 ## entry point cannot silence the module that IS installed.
+## style-ok: allow-python-interpreter -- python3 -c dep probe
 if ! python3 -c 'import pytest' 2>/dev/null; then
    printf '%s\n' "dm-image-boot-tests: python3-pytest is missing; the image-free regression tests cannot run. FAIL." >&2
    exit 1
@@ -86,5 +88,5 @@ fi
 ## dm-image-test returns 0 (PASS) / 5 (FAIL) / 2 (setup); all non-zero propagate
 ## as FAIL, which is what the aggregate runner wants.
 rc=0
-python3 -Bsu "${tests_dir}/dm-image-test" --dm-qemu "${tests_dir}/dm-qemu" "$@" || rc=$?
+"${tests_dir}/dm-image-test" --dm-qemu "${tests_dir}/dm-qemu" "$@" || rc=$?
 exit "${rc}"

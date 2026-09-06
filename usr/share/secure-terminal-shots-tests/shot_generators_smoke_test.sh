@@ -35,6 +35,8 @@ shopt -s inherit_errexit
 shopt -s shift_verbose
 export LC_ALL=C
 
+## style-ok: allow-python-interpreter -- python3 -c dep probe
+
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
 shots_dir=''
@@ -148,7 +150,7 @@ check_tight 'paste-warning-shot (copy)'  "${work}/copy.png"
 ## keep-printable form, must NAME each hidden look-alike inline (detail mode). A generator
 ## that breaks that render hides the very unicode detection the shot exists to demonstrate.
 uc_rc=0
-python3 "${script_dir}/paste_warning_unicode_check.py" "${shots_dir}/paste-warning-shot.py" \
+"${script_dir}/paste_warning_unicode_check.py" "${shots_dir}/paste-warning-shot.py" \
    >/dev/null 2>"${work}/uc.log" || uc_rc=$?
 if [ "${uc_rc}" -eq 0 ]; then
    printf '%s\n' 'PASS: review shot boxes show the unicode render'
@@ -166,7 +168,7 @@ fi
 ## generator's real size_host_for_shot and checks the button row clears where the table
 ## paints. FAILS if _detail reverts to a plain QLabel.
 ov_rc=0
-python3 "${script_dir}/review_shot_overlap_check.py" "${shots_dir}/paste-warning-shot.py" \
+"${script_dir}/review_shot_overlap_check.py" "${shots_dir}/paste-warning-shot.py" \
    >/dev/null 2>"${work}/ov.log" || ov_rc=$?
 if [ "${ov_rc}" -eq 0 ]; then
    printf '%s\n' 'PASS: review shot decision row clears the Outcome table'

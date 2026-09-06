@@ -20,6 +20,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -41,9 +42,10 @@ fi
 
 if [ -z "${repo}" ] || [ ! -d "${repo}/usr/lib/python3/dist-packages/secure_terminal" ]; then
    printf '%s\n' 'secure-terminal-tests-mutation: SKIP (secure_terminal not found; set SECURE_TERMINAL_REPO)' >&2
+   ## style-ok: allow-skip: secure_terminal checkout absent -- set SECURE_TERMINAL_REPO
    exit 77
 fi
 
 export SECURE_TERMINAL_REPO="${repo}"
 export QT_QPA_PLATFORM=offscreen
-python3 -Bsu -- "${tests_dir}/mutation_lane.py" "$@"
+"${tests_dir}/mutation_lane.py" "$@"

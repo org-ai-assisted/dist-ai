@@ -414,13 +414,7 @@ fixer_lib="${tool_test_dir}/../../lib/python3/dist-packages"
 victim="$(new_repo)/victim.txt"
 printf 'VICTIM ORIGINAL no newline' > "${victim}"
 ln -s "${victim}" "$(dirname -- "${victim}")/target.sh"
-toctou="$(PYTHONPATH="${fixer_lib}" python3 -c '
-import sys
-from dist_ai import precommit
-base, victim = sys.argv[1], sys.argv[2]
-list(precommit._run_fixer("end-of-file-fixer", ["target.sh"], base))
-print(open(victim).read())
-' "$(dirname -- "${victim}")" "${victim}")"
+toctou="$(PYTHONPATH="${fixer_lib}" "${tool_test_dir}/precommit_fixer_symlink_toctou_probe.py" "$(dirname -- "${victim}")" "${victim}")"
 if [ "${toctou}" = 'VICTIM ORIGINAL no newline' ]; then
    note_pass "the pre-commit fixer refuses a symlink swapped in after the scan"
 else

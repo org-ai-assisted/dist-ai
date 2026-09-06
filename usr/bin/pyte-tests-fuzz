@@ -24,6 +24,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -37,8 +38,10 @@ if [ -n "${PYTE_REPO:-}" ] && [ -d "${PYTE_REPO}/pyte" ]; then
    export PYTHONPATH="${PYTE_REPO}${PYTHONPATH:+:${PYTHONPATH}}"
 fi
 
+## style-ok: allow-python-interpreter -- run through PATH python3 for venv/user-site test deps
 if ! python3 -c 'import pyte' 2>/dev/null; then
    printf '%s\n' 'pyte-tests-fuzz: SKIPPED (pyte not importable).'
+   ## style-ok: allow-skip: pyte not importable -- optional target module absent
    exit 77
 fi
 

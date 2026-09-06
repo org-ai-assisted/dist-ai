@@ -32,6 +32,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -48,6 +49,7 @@ fi
 
 if [ -z "${corpus}" ] || [ ! -f "${corpus}/harness/conformance.py" ]; then
    printf 'terminal-poc-corpus-tests: SKIP (terminal-poc-corpus not found; set TERMINAL_POC_CORPUS_REPO)\n' >&2
+   ## style-ok: allow-skip: terminal-poc-corpus checkout absent -- set TERMINAL_POC_CORPUS_REPO
    exit 77
 fi
 
@@ -64,14 +66,17 @@ fi
 
 if [ -z "${repo}" ] || [ ! -d "${repo}/usr/lib/python3/dist-packages/secure_terminal" ]; then
    printf 'terminal-poc-corpus-tests: SKIP (secure_terminal not found; set SECURE_TERMINAL_REPO)\n' >&2
+   ## style-ok: allow-skip: secure_terminal checkout absent -- set SECURE_TERMINAL_REPO
    exit 77
 fi
 
 ## The corpus harness drives the real (Qt) secure-terminal widget through pyte, so
 ## PyQt6 and pyte are hard dependencies here (unlike the Qt-free sanitize tests).
 ## Absent -> SKIP, matching the widget-test convention.
+## style-ok: allow-python-interpreter -- run through PATH python3 for venv/user-site test deps
 if ! python3 -c 'import PyQt6, pyte' 2>/dev/null; then
    printf 'terminal-poc-corpus-tests: SKIP (python3-pyqt6 / python3-pyte not installed)\n' >&2
+   ## style-ok: allow-skip: python3-pyqt6 / python3-pyte not installed -- optional deps absent
    exit 77
 fi
 

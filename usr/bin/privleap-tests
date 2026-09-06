@@ -20,6 +20,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 script_dir="$(dirname -- "$(readlink --canonicalize -- "$0")")"
 
@@ -32,6 +33,7 @@ fi
 overall=0
 saw_pass=0
 
+## style-ok: allow-python-interpreter -- run through PATH python3 for venv/user-site test deps
 run_one() {
   local rc=0
   python3 -- "$@" || rc=$?
@@ -103,6 +105,7 @@ if [ "${overall}" != '0' ]; then
 fi
 if [ "${saw_pass}" = '0' ]; then
   printf '%s\n' 'privleap-tests: OVERALL RESULT: SKIPPED (privleap not found)'
+  ## style-ok: allow-skip: privleap not found -- optional target absent
   exit 77
 fi
 printf '%s\n' 'privleap-tests: OVERALL RESULT: PASS'

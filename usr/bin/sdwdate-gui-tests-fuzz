@@ -16,6 +16,7 @@ set -o pipefail
 set -o errtrace
 shopt -s inherit_errexit
 shopt -s shift_verbose
+export LC_ALL=C
 
 export QT_QPA_PLATFORM="offscreen"
 
@@ -28,5 +29,6 @@ else
 fi
 
 rc=0
+## style-ok: allow-python-interpreter -- run through PATH python3 for venv/user-site test deps
 python3 "${fuzz_dir}/sdwdate_gui_fuzzer.py" "$@" || rc=$?
 exit "${rc}"
