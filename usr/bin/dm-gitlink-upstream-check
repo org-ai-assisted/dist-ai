@@ -190,14 +190,19 @@ git_api_program() {
 classify_compare_program() {
   ## The compare-body classifier, shipped under libexec in the same tree (CI
   ## reaches it from the dist-ai checkout; installed it is under /usr/libexec).
+  ## Test -x, not -r: the classifier is executed directly ('"${prog}"'), so a
+  ## readable-but-not-executable copy (a packaging step that dropped the mode
+  ## bit) is not a usable program. Matches git_api_program, and surfaces the
+  ## honest 'not found' diagnostic instead of a later exec failure that
+  ## classify_compare would blur into a generic network-ish 'error'.
   local installed='/usr/libexec/dist-ai/dm-gitlink-classify-compare.py'
   local sibling
   sibling="$( dirname -- "$( dirname -- "$( readlink -f -- "${BASH_SOURCE[0]}" )" )" )/libexec/dist-ai/dm-gitlink-classify-compare.py"
-  if [ -r "${sibling}" ]; then
+  if [ -x "${sibling}" ]; then
     printf '%s\n' "${sibling}"
     return 0
   fi
-  if [ -r "${installed}" ]; then
+  if [ -x "${installed}" ]; then
     printf '%s\n' "${installed}"
     return 0
   fi
@@ -260,6 +265,20 @@ canonical_owner() {
   ## new upstream org is genuinely adopted.
   ## Compared case-insensitively: GitHub owner names are, so a URL spelling of
   ## 'kicksecure' is the same org and must not be reported as a fork.
+  ##
+  ## SCOPE (invariant 1 / resolvability): this validates the ORG only, not that
+  ## the repo is the RIGHT one for this submodule PATH. It cannot: derivative-
+  ## maker paths do not map to repo names by any rule (a path may be
+  ## 'packages/kicksecure/security-misc' or 'anon-connection-wizard'), so there
+  ## is no per-path canonical repo to check against. A .gitmodules repointed to a
+  ## DIFFERENT canonical-org repo, at a SHA resolvable there, therefore passes
+  ## invariant 1 alone. On the gated branch (master) invariant 2 (no-deviation)
+  ## is the backstop that makes this a non-issue: any repoint changes the
+  ## .gitmodules URL and/or the gitlink SHA vs the upstream merge base, which
+  ## invariant 2 fails; and a same-SHA repoint to another repo fails invariant 1
+  ## too (the unchanged SHA is not on the wrong repo). The isolated invariant-1
+  ## weakness only surfaces off master (--parent-check never / non-master), which
+  ## is not the security gate.
   case "${1,,}" in
     kicksecure|whonix)
       return 0
@@ -1900,11 +1919,62 @@ parent_self_test() {
       ;;
   esac
 
+  ## Case S: the invariant-1 URL-trust limitation is backstopped by invariant 2
+  ## on master. A submodule repointed to a DIFFERENT canonical-org repo (the
+  ## reviewer's 'anon-connection-wizard -> Kicksecure/derivative-maker'
+  ## scenario), with the gitlink SHA moved to one resolvable on the wrong repo,
+  ## still moves the gitlink vs the merge base -> invariant 2 FAILS.
+  fixture_git init --quiet "${tmp}/upstream8"
+  printf '%s\n' '[submodule "acw"]' '	path = acw' \
+    '	url = https://github.com/Kicksecure/anon-connection-wizard.git' \
+    > "${tmp}/upstream8/.gitmodules"
+  fixture_git -C "${tmp}/upstream8" add .gitmodules
+  fixture_git -C "${tmp}/upstream8" update-index --add \
+    --cacheinfo "160000,${sha_base},acw"
+  fixture_git -C "${tmp}/upstream8" commit --quiet --message 'base acw'
+  fixture_git clone --quiet "${tmp}/upstream8" "${tmp}/fork8"
+  printf '%s\n' '[submodule "acw"]' '	path = acw' \
+    '	url = https://github.com/Kicksecure/derivative-maker.git' \
+    > "${tmp}/fork8/.gitmodules"
+  fixture_git -C "${tmp}/fork8" add .gitmodules
+  fixture_git -C "${tmp}/fork8" update-index --cacheinfo "160000,${sha_fork},acw"
+  fixture_git -C "${tmp}/fork8" commit --quiet --message 'repoint to another canonical repo'
+  repo_root="${tmp}/fork8"
+  parent_upstream_url="file://${tmp}/upstream8"
+  parent_upstream_branch='master'
+  rc=0
+  check_parent_deviation >/dev/null 2>&1 || rc=$?
+  if (( rc != 1 )); then
+    printf '%s\n' "parent self-test FAIL: cross-canonical repoint not caught by invariant 2 (rc ${rc})" >&2
+    fails=$(( fails + 1 ))
+  fi
+
+  ## Case T: an ADDED submodule (a brand-new gitlink absent from the merge base)
+  ## is a deviation too, so a newly-introduced pin at a canonical-org repo cannot
+  ## slip in behind invariant 1's resolvability alone.
+  fixture_git init --quiet "${tmp}/upstream9"
+  fixture_git -C "${tmp}/upstream9" commit --quiet --allow-empty --message 'empty base'
+  fixture_git clone --quiet "${tmp}/upstream9" "${tmp}/fork9"
+  printf '%s\n' '[submodule "added"]' '	path = added' \
+    '	url = https://github.com/Kicksecure/derivative-maker.git' \
+    > "${tmp}/fork9/.gitmodules"
+  fixture_git -C "${tmp}/fork9" add .gitmodules
+  fixture_git -C "${tmp}/fork9" update-index --add --cacheinfo "160000,${sha_fork},added"
+  fixture_git -C "${tmp}/fork9" commit --quiet --message 'add a new submodule'
+  repo_root="${tmp}/fork9"
+  parent_upstream_url="file://${tmp}/upstream9"
+  rc=0
+  check_parent_deviation >/dev/null 2>&1 || rc=$?
+  if (( rc != 1 )); then
+    printf '%s\n' "parent self-test FAIL: added submodule not caught by invariant 2 (rc ${rc})" >&2
+    fails=$(( fails + 1 ))
+  fi
+
   if (( fails > 0 )); then
     printf '%s\n' "parent self-test: ${fails} assertion(s) FAILED" >&2
     return 1
   fi
-  printf '%s\n' 'parent self-test: PASSED (19 cases)'
+  printf '%s\n' 'parent self-test: PASSED (21 cases)'
   return 0
 }
 
