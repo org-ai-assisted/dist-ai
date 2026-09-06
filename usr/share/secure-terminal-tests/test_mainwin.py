@@ -236,6 +236,26 @@ try:
                      'Unicode', 'OSC ' + M.OSC_FEATURES[0][1])]
     ok(all(_c is not None and not _c.isEnabled() for _c in _locked_ctls),
        'a locked global-settings key disables its dialog control')
+    # clip_autostart is tray-gated AND lock-gated: with the tray available it must
+    # STILL disable when locked (it was missing from the disable loop, so a locked
+    # setting looked editable and set_clip_autostart silently dropped the change).
+    _ca_lock = set(win._locked)
+    _ca_cce = win._clip_controls_enabled
+    win._clip_controls_enabled = lambda: True     # simulate tray on + available
+    win._locked = set()
+    _dialogs.clear()
+    win.show_global_settings()
+    _ca_on = _dlg_field(_dialogs[-1], 'Start sanitizer on login')
+    ok(_ca_on is not None and _ca_on.isEnabled(),
+       'clip_autostart is editable when unlocked and the tray is available')
+    win._locked = {'clip_autostart'}
+    _dialogs.clear()
+    win.show_global_settings()
+    _ca_off = _dlg_field(_dialogs[-1], 'Start sanitizer on login')
+    ok(_ca_off is not None and not _ca_off.isEnabled(),
+       'a locked clip_autostart disables its Global Settings control (not editable-but-ignored)')
+    win._clip_controls_enabled = _ca_cce
+    win._locked = _ca_lock
     # #24: a Ctrl+wheel live-zoom during Global settings must be DISCARDED on Cancel, like
     # every other field. _live_zoom mutates self._ui_scale and _persist()s it LIVE, so a
     # bare cancel-returns-without-applying left the wheeled scale applied AND on disk.
@@ -2302,6 +2322,36 @@ _ov2.close_tab(0)                             # empties the window with the bann
 pump(20)
 ok(True, 'advisory overlay: closing the last tab with the banner up does not crash')
 _ov2.close()
+
+# --- OSC risk lamp is cross-tab -------------------------------------------------
+# OSC side-effects (clipboard/title/notify) are SYSTEM-global and a BACKGROUND tab
+# keeps honoring them, so the lamp reflects risk across ALL tabs, not just the
+# current one -- a live OSC tab in the background keeps the lamp non-green even while
+# a CLI tab is in front (otherwise the "no live risk" state would be a lie).
+_xw = MainWindow()
+_xw.resize(800, 500)
+_xw.show()
+pump(30)
+_xw.set_osc('osc_clipboard', True)            # arm high-risk on tab 0 (+ new-tab default)
+_xw.new_tab(tui=False)                         # tab 1 (CLI), created while tab 0 is also CLI
+pump(20)
+_xfront = _xw.current()
+_xbg = next(t for t in _xw._real_terms() if t is not _xfront)
+_xw.tabs.setCurrentWidget(_xbg)               # bring tab 0 to front to flip it to TUI
+_xw.set_tui(True)                             # tab 0: live in TUI
+_xw.tabs.setCurrentWidget(_xfront)            # tab 1 (CLI) back in front
+pump(20)
+ok(not _xfront.tui_active() and _xbg.tui_active(),
+   'cross-tab OSC: front tab is CLI, background tab is in TUI')
+ok(_xw._osc_level()[0] == '#e5484d',
+   'cross-tab OSC: a background TUI tab with clipboard live keeps the lamp red on a CLI front tab')
+_xw.tabs.setCurrentWidget(_xbg)               # drop the live (background) tab out of TUI
+_xw.set_tui(False)
+ok(_xw._osc_level()[0] == '#1f8a54',
+   'cross-tab OSC: lamp returns to green once no tab is in TUI')
+# NOT closed: destroying a window that held a background-TUI tab segfaults Qt's
+# offscreen teardown mid-suite; the suite's os._exit(0) skips that teardown, as it
+# does for the other long-lived windows here.
 
 # --- reviewdrain15 batch-2 security findings (admin-lock bypass + session DoS) ----
 _b2_lock = set(win._locked)
