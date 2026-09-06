@@ -214,7 +214,22 @@ classify_compare() {
   ##                   upstream repo at all ('message': 'Not Found')
   ##   error           anything else (rate limit, transient 5xx, bad JSON) --
   ##                   never fails the check, only warns, to avoid a flaky red
-  "$(classify_compare_program)"
+  ##
+  ## A missing classifier (broken / partial install) must degrade to an 'error'
+  ## verdict, NOT crash the sweep: '"$(classify_compare_program)"' as a bare
+  ## command would expand to the empty string on failure and abort under errexit
+  ## (empty command -> 127), killing the run on the first gitlink instead of
+  ## reporting every one, contrary to this tool's own no-abort contract.
+  local prog verdict
+  if ! prog="$(classify_compare_program)"; then
+    printf '%s\n' 'error'
+    return 0
+  fi
+  if ! verdict="$("${prog}")"; then
+    printf '%s\n' 'error'
+    return 0
+  fi
+  printf '%s\n' "${verdict}"
 }
 
 
@@ -273,26 +288,39 @@ github_owner_repo() {
   ## it in the PATH -- both must be rejected, and a legitimate 'GitHub.com' host
   ## accepted. Handles scheme URLs (https/http/ssh/git, with optional userinfo
   ## and port) and the scp-like 'git@github.com:owner/repo' form.
-  local url="$1" rest host path
+  local url="$1" rest authority host path before
   case "${url}" in
     *://*)
+      ## scheme://[userinfo@]authority[/path]. Split the AUTHORITY off at the
+      ## first '/' BEFORE stripping userinfo: stripping '@' from the whole
+      ## remainder let a '@' in the PATH hide the real host, e.g.
+      ## 'https://attacker.example/a@github.com/o/r' parsing as github.com.
       rest="${url#*://}"
-      rest="${rest#*@}"
-      host="${rest%%/*}"
-      host="${host%%:*}"
-      if [ "${rest}" = "${host}" ]; then
+      authority="${rest%%/*}"
+      if [ "${rest}" = "${authority}" ]; then
         path=''
       else
         path="${rest#*/}"
       fi
-      ;;
-    *@*:*)
-      rest="${url#*@}"
-      host="${rest%%:*}"
-      path="${rest#*:}"
+      authority="${authority##*@}"
+      host="${authority%%:*}"
       ;;
     *)
-      return 1
+      ## Possible scp-like '[userinfo@]host:path' -- but ONLY when the part
+      ## before the first ':' has no '/', matching git (a '/' before the ':'
+      ## makes it a local path, not a remote). Otherwise a '@' + ':' in a path
+      ## ('attacker.example:fake@github.com:o/r') would spoof the host too.
+      before="${url%%:*}"
+      if [ "${before}" = "${url}" ]; then
+        return 1
+      fi
+      case "${before}" in
+        */*)
+          return 1
+          ;;
+      esac
+      host="${before##*@}"
+      path="${url#*:}"
       ;;
   esac
   case "${host,,}" in
@@ -312,9 +340,11 @@ github_owner_repo() {
   while [ "${path}" != "${path%/}" ]; do
     path="${path%/}"
   done
-  ## Leading slash (scheme URL path came after the host slash already, but a
-  ## scp-like ':/owner' can carry one) must not become an empty owner.
-  path="${path#/}"
+  ## ALL leading slashes (a URL may spell 'github.com///owner/repo'); a single
+  ## strip would leave a slash and make owner empty.
+  while [ "${path}" != "${path#/}" ]; do
+    path="${path#/}"
+  done
   local owner repo
   owner="${path%%/*}"
   if [ "${owner}" = "${path}" ]; then
@@ -341,23 +371,24 @@ gitmodules_url_for() {
   ## attacker one must not be what this check verifies.
   local wanted="$1"
   local modules="${repo_root}/.gitmodules"
-  local line key value name last_name=''
+  local entry key value name last_name=''
   if [ ! -f "${modules}" ]; then
     return 1
   fi
-  ## Split by hand for the same reason as the tree records: 'read key value'
-  ## strips the surrounding whitespace of a path declared with leading or
-  ## trailing spaces, and the stanza would then never match its own gitlink.
-  while IFS= read -r line; do
-    key="${line%% *}"
-    value="${line#* }"
+  ## -z output: each pair is 'key<newline>value<NUL>'. Splitting on the first
+  ## newline is unambiguous where a space split is not -- a submodule NAME may
+  ## itself contain spaces ('submodule.a name.path'), and a path may carry
+  ## leading/trailing spaces; a 'key%% *' split mangles both.
+  while IFS= read -r -d '' entry; do
+    key="${entry%%$'\n'*}"
+    value="${entry#*$'\n'}"
     if [ "${value}" != "${wanted}" ]; then
       continue
     fi
     name="${key#submodule.}"
     name="${name%.path}"
     last_name="${name}"
-  done < <(git config --file "${modules}" --get-regexp '^submodule\..*\.path$')
+  done < <(git config --file "${modules}" -z --get-regexp '^submodule\..*\.path$')
   if [ -z "${last_name}" ]; then
     return 1
   fi
@@ -377,15 +408,24 @@ gitmodules_pairs() {
   if [ ! -f "${modules}" ]; then
     return 0
   fi
-  local line key value name url
-  while IFS= read -r line; do
-    key="${line%% *}"
-    value="${line#* }"
+  local entry key value name url
+  ## -z for the same reason as gitmodules_url_for (spaced names / paths). The
+  ## emitted value AND url are neutralised for TAB / newline: git config decodes
+  ## a quoted '\n'/'\t' in a URL into real bytes, which -- unsanitised -- would
+  ## split this function's own tab-delimited output and let a crafted .gitmodules
+  ## forge path/url pairs, defeating repoint detection.
+  while IFS= read -r -d '' entry; do
+    key="${entry%%$'\n'*}"
+    value="${entry#*$'\n'}"
     name="${key#submodule.}"
     name="${name%.path}"
     url="$(git config --file "${modules}" --get "submodule.${name}.url")" || url=''
+    value="${value//${TAB}/<TAB>}"
+    value="${value//$'\n'/<LF>}"
+    url="${url//${TAB}/<TAB>}"
+    url="${url//$'\n'/<LF>}"
     printf '%s%s%s\n' "${value}" "${TAB}" "${url}"
-  done < <(git config --file "${modules}" --get-regexp '^submodule\..*\.path$')
+  done < <(git config --file "${modules}" -z --get-regexp '^submodule\..*\.path$')
 }
 
 
@@ -441,6 +481,18 @@ enumerate_gitlinks() {
         problem="upstream owner '${owner}' is not a canonical upstream org"
       fi
     fi
+    ## owner / repo / problem carry untrusted .gitmodules bytes (git config
+    ## decodes a quoted '\n'/'\t' in a URL into real newline/tab). A newline
+    ## here would split this line-oriented record in two, and every downstream
+    ## consumer would read the forged half as a clean gitlink -- its owner/repo
+    ## reaching the REST path never having passed safe_slug_component. Neutralise
+    ## the framing bytes, exactly as path_safe already does for the path.
+    owner="${owner//${TAB}/<TAB>}"
+    owner="${owner//$'\n'/<LF>}"
+    repo="${repo//${TAB}/<TAB>}"
+    repo="${repo//$'\n'/<LF>}"
+    problem="${problem//${TAB}/<TAB>}"
+    problem="${problem//$'\n'/<LF>}"
     printf '%s\n' \
       "${path_safe}${TAB}${owner}${TAB}${repo}${TAB}${sha}${TAB}${problem}"
   done < <(git -C "${repo_root}" ls-tree -r -z HEAD)
@@ -659,7 +711,7 @@ parent_deviations() {
   ## Returns 1 if the diff itself fails.
   local base="$1"
   local raw
-  local oldmode newmode oldsha newsha status path
+  local line meta oldmode newmode oldsha newsha status path
   ## The diff is captured, not consumed through a process substitution: a
   ## failing git there exits into a subshell whose status the loop never sees,
   ## so a corrupt or unreadable repository would read as 'no deviations'.
@@ -680,7 +732,21 @@ parent_deviations() {
        "${base}" HEAD)"; then
     return 1
   fi
-  while read -r oldmode newmode oldsha newsha status path; do
+  ## Split each line on its FIRST tab, not with 'read ... path': the raw format
+  ## is ':mode mode oldsha newsha status<TAB>path', and a plain read on default
+  ## IFS strips leading/trailing spaces from the path -- so a submodule path
+  ## like ' a spaced path ' would be keyed here WITHOUT its spaces while
+  ## enumerate_gitlinks keeps them, and main() would then mis-attribute the pin
+  ## as inherited. The metadata's own TAB-to-path is the only real tab on the
+  ## line (git C-quotes any tab/newline INSIDE a path even under
+  ## core.quotePath=false), so the split is unambiguous.
+  while IFS= read -r line; do
+    if [ -z "${line}" ]; then
+      continue
+    fi
+    meta="${line%%"${TAB}"*}"
+    path="${line#*"${TAB}"}"
+    read -r oldmode newmode oldsha newsha status <<< "${meta}"
     if [ "${oldmode#:}" != '160000' ] && [ "${newmode}" != '160000' ]; then
       continue
     fi
@@ -901,11 +967,33 @@ self_test() {
     fails=$(( fails + 1 ))
   fi
 
+  ## Case D: a missing classifier degrades to an 'error' verdict, it does NOT
+  ## crash the sweep. The old body ran '"$(classify_compare_program)"' bare, so a
+  ## failed lookup expanded to the empty string and aborted the whole run under
+  ## errexit (empty command -> 127) on the first gitlink. The stub is scoped to a
+  ## subshell so it cannot leak into the other self-test suites.
+  local cc_out cc_rc=0
+  cc_out="$(
+    classify_compare_program() {
+      printf '%s\n' '::error::classifier missing' >&2
+      return 2
+    }
+    printf '%s' '{}' | classify_compare 2>/dev/null
+  )" || cc_rc=$?
+  if (( cc_rc != 0 )); then
+    printf '%s\n' "self-test FAIL: missing classifier returned ${cc_rc}, expected 0 (must not crash)" >&2
+    fails=$(( fails + 1 ))
+  fi
+  if [ "${cc_out}" != 'error' ]; then
+    printf '%s\n' "self-test FAIL: missing classifier verdict '${cc_out}', expected 'error'" >&2
+    fails=$(( fails + 1 ))
+  fi
+
   if (( fails > 0 )); then
     printf '%s\n' "self-test: ${fails} assertion(s) FAILED" >&2
     return 1
   fi
-  printf '%s\n' 'self-test: PASSED (3 cases)'
+  printf '%s\n' 'self-test: PASSED (4 cases)'
   return 0
 }
 
@@ -960,13 +1048,29 @@ enumerate_self_test() {
       '	url = https://github.com/Kicksecure/legit.git' \
       '[submodule "dup-real"]' \
       '	path = dup' \
-      '	url = https://github.com/attacker/evil.git'
+      '	url = https://github.com/attacker/evil.git' \
+      '[submodule "atpath"]' \
+      '	path = atpath' \
+      '	url = https://attacker.example/a@github.com/Kicksecure/atpath.git' \
+      '[submodule "atscp"]' \
+      '	path = atscp' \
+      '	url = attacker.example:fake@github.com:Kicksecure/atscp.git' \
+      '[submodule "multislash"]' \
+      '	path = multislash' \
+      '	url = https://github.com///Kicksecure/multislash.git' \
+      '[submodule "a spaced name"]' \
+      '	path = spacedname' \
+      '	url = https://github.com/Kicksecure/spacedname.git' \
+      '[submodule "evilnl"]' \
+      '	path = evilnl' \
+      '	url = "https://evil.example/x\ninjected\tKicksecure\tgoodrepo\t1111111111111111111111111111111111111111\t"'
   } > "${tmp}/tree/.gitmodules"
   fixture_git -C "${tmp}/tree" add .gitmodules
   local sub
   ## 'orphan' deliberately gets NO stanza.
   for sub in good forked elsewhere sneaky orphan lower slash ' a spaced path ' \
-             hostspoof pathspoof mixedcase dup; do
+             hostspoof pathspoof mixedcase dup atpath atscp multislash \
+             spacedname evilnl; do
     fixture_git -C "${tmp}/tree" update-index --add --cacheinfo "160000,${sha},${sub}"
   done
   fixture_git -C "${tmp}/tree" commit --quiet --message 'fixture tree'
@@ -1058,6 +1162,35 @@ enumerate_self_test() {
   ## stanza (second) is what must be checked, not the canonical decoy (first).
   assert_record 'duplicate path uses last stanza' 'dup' \
     "upstream owner 'attacker' is not a canonical upstream org"
+  ## A '@' in the PATH of a scheme URL must not hide the real host: the
+  ## authority is split off before userinfo is stripped.
+  assert_record 'scheme userinfo-in-path spoof rejected' 'atpath' \
+    'not a canonical github.com URL'
+  ## Same for an scp-like URL with a '@' + ':' further along.
+  assert_record 'scp userinfo-in-path spoof rejected' 'atscp' \
+    'not a canonical github.com URL'
+  ## Multiple leading slashes after the host must all strip, not leave an empty
+  ## owner (was a false-positive rejection of a canonical URL).
+  assert_clean_record 'multiple slashes stripped' 'multislash' \
+    'Kicksecure' 'multislash'
+  ## A submodule NAME containing spaces must still resolve its url (the -z parse
+  ## keeps key and value unambiguous where a space split does not).
+  assert_clean_record 'spaced submodule name resolves' 'spacedname' \
+    'Kicksecure' 'spacedname'
+  ## Newline injection: git config decodes a quoted '\n' in a url to a real
+  ## newline; unsanitised it would split evilnl's record and forge a clean
+  ## 'Kicksecure/goodrepo' pin. The whole url must stay on one line.
+  assert_record 'newline url stays one record' 'evilnl' \
+    'not a canonical github.com URL'
+  case "${records}" in
+    *"${TAB}goodrepo${TAB}"*)
+      printf '%s\n' 'enumerate self-test FAIL: newline-injected forged record present' >&2
+      fails=$(( fails + 1 ))
+      ;;
+    *)
+      true "INFO: no forged record framed by the injected newline"
+      ;;
+  esac
 
   ## Each problem must FAIL the evaluator, not warn.
   local rc=0 out
@@ -1191,7 +1324,7 @@ enumerate_self_test() {
     printf '%s\n' "enumerate self-test: ${fails} assertion(s) FAILED" >&2
     return 1
   fi
-  printf '%s\n' 'enumerate self-test: PASSED (21 cases)'
+  printf '%s\n' 'enumerate self-test: PASSED (27 cases)'
   return 0
 }
 
@@ -1492,11 +1625,33 @@ parent_self_test() {
     fails=$(( fails + 1 ))
   fi
 
+  ## Case N: parent_deviations must key a leading/trailing-space path with its
+  ## spaces intact, or main() mis-attributes it against enumerate_gitlinks (which
+  ## preserves them). A plain 'read ... path' stripped them.
+  local spaced_key=' a spaced path '
+  fixture_git init --quiet "${tmp}/upstream5"
+  fixture_git -C "${tmp}/upstream5" update-index --add \
+    --cacheinfo "160000,${sha_base},${spaced_key}"
+  fixture_git -C "${tmp}/upstream5" commit --quiet --message 'base spaced'
+  fixture_git clone --quiet "${tmp}/upstream5" "${tmp}/fork5"
+  fixture_git -C "${tmp}/fork5" update-index \
+    --cacheinfo "160000,${sha_fork},${spaced_key}"
+  fixture_git -C "${tmp}/fork5" commit --quiet --message 'move spaced pin'
+  repo_root="${tmp}/fork5"
+  parent_upstream_url="file://${tmp}/upstream5"
+  parent_upstream_branch='master'
+  rc=0
+  check_parent_deviation >/dev/null 2>&1 || rc=$?
+  if [ -z "${PARENT_DEV_PATHS[${spaced_key}]:-}" ]; then
+    printf '%s\n' 'parent self-test FAIL: spaced path not preserved in PARENT_DEV_PATHS' >&2
+    fails=$(( fails + 1 ))
+  fi
+
   if (( fails > 0 )); then
     printf '%s\n' "parent self-test: ${fails} assertion(s) FAILED" >&2
     return 1
   fi
-  printf '%s\n' 'parent self-test: PASSED (13 cases)'
+  printf '%s\n' 'parent self-test: PASSED (14 cases)'
   return 0
 }
 
