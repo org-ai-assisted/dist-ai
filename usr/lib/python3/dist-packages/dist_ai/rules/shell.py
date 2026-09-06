@@ -633,13 +633,14 @@ class TimeoutKillAfter(Rule):
 
 ## --- embedded interpreter programs -----------------------------------------
 
-INTERPRETERS = {"python", "python3", "perl", "ruby", "node", "php"}
-PY_INTERPRETERS = {"python", "python3"}
+## python is handled at ANY size (and in every form) by R-193, so it is NOT in
+## this set -- else a python heredoc double-flags R-190 and R-193.
+INTERPRETERS = {"perl", "ruby", "node", "php"}
 
 
 class InlineInterpreter(Rule):
     """R-190: a substantial interpreter program (>5 body lines) in a shell
-    heredoc belongs in its own file."""
+    heredoc belongs in its own file. python is owned by R-193 (any size)."""
 
     id = "R-190"
     waiver_tag = "allow-inline-interpreter"
@@ -659,38 +660,22 @@ class InlineInterpreter(Rule):
                         "its own file" % lines, ctx.path, cmd["Pos"]["Line"])
 
 
-class PythonDashDashScript(Rule):
-    """R-193: call an in-repo +x script directly via its shebang, not through a
-    'python3 -- <path>.py' prefix (which drops the shebang's interpreter flags)."""
+class PythonInterpreter(Rule):
+    """R-193: no explicit python interpreter in command position. Run a script
+    via its shebang + exec bit, not through 'python3 ...'; move an embedded
+    program ('-c', a heredoc/stdin program) into its own executable file. The one
+    exception is an UNPINNED 'python3 -m MODULE' -- an installed module has no
+    shebang -- and a version pin ('python3.11') is refused even there. Override a
+    deliberate PATH/venv python with the per-file waiver. Command position only
+    (a python name in a quoted string or comment is data), and the interpreter is
+    read unwrapped -- 'sudo python3 x.py' is out of scope, like R-190/R-192."""
 
     id = "R-193"
-    waiver_tag = "allow-python-dashdash"
+    waiver_tag = "allow-python-interpreter"
 
     def detect(self, ctx):
-        for call in bash_ast.call_exprs(ctx.tree):
-            if bash_ast.command_name(call) not in PY_INTERPRETERS:
-                continue
-            tokens = list(bash_ast.command_tokens(
-                call, ctx.source, frozenset("WX"), frozenset()))
-            for index, (kind, _word, text) in enumerate(tokens):
-                if kind == "value":
-                    continue
-                if kind == "opt" and text == "--":
-                    after = tokens[index + 1] if index + 1 < len(tokens) \
-                        else None
-                    if after and after[2].rstrip("\"'").endswith(".py"):
-                        yield _fail(
-                            ctx, "R-193",
-                            "R-193 call the +x script directly via its shebang, "
-                            "not through an interpreter prefix", call)
-                    break
-                if kind == "opt" and (text in ("-m", "-c")
-                                      or (not text.startswith("--")
-                                          and ("m" in text[1:]
-                                               or "c" in text[1:]))):
-                    break
-                if kind == "operand":
-                    break
+        for call, message in h.python_interpreter_calls(ctx.tree, ctx.source):
+            yield _fail(ctx, "R-193", message, call)
 
 
 class ShellInlineShellC(Rule):
@@ -2122,7 +2107,7 @@ RULES = (
     GrepQuiet(),
     MkdirTmpMode(),
     InlineInterpreter(),
-    PythonDashDashScript(),
+    PythonInterpreter(),
     TimeoutKillAfter(),
     AptGet(),
     Dpkg(),

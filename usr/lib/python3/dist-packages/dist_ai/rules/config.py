@@ -39,6 +39,37 @@ def _note(ctx, rule, message):
     return model.note(rule, message, ctx.path, 1)
 
 
+def _looks_like_systemd_exec(path, source):
+    """True if PATH/SOURCE is a systemd unit carrying an 'Exec*=' directive (the
+    shape both R-191 and R-193 read)."""
+    return (source is not None and not path.endswith(".md")
+            and "Exec" in source and bool(EXEC_DIRECTIVE.search(source)))
+
+
+def _systemd_exec_directives(source):
+    """Yield (directive, value, line, spanned) for each 'Exec*=' directive in a
+    unit SOURCE, joining backslash line-continuations into one value. line is
+    1-based (the directive's first line); spanned is True when it was joined from
+    more than one physical line."""
+    lines = source.split("\n")
+    index = 0
+    while index < len(lines):
+        match = EXEC_DIRECTIVE.match(lines[index])
+        if not match:
+            index += 1
+            continue
+        directive, value = match.group(1), match.group(2)
+        start = index + 1
+        spanned = False
+        while value.endswith("\\") and index + 1 < len(lines):
+            value = value[:-1]
+            index += 1
+            value += lines[index]
+            spanned = True
+        index += 1
+        yield directive, value, start, spanned
+
+
 class SystemdUnit(Rule):
     """R-191: a systemd unit must not embed a multi-statement shell script in an
     'Exec*=' directive (strict: ';', a pipe, '&&'/'||', a control keyword, or a
@@ -49,30 +80,14 @@ class SystemdUnit(Rule):
     def detect(self, ctx):
         source = ctx.source
         path = ctx.path
-        if path.endswith(".md") or not EXEC_DIRECTIVE.search(source) \
-                or "Exec" not in source:
+        if not _looks_like_systemd_exec(path, source):
             return
         if ctx.has_config_waiver("allow-embedded-script"):
             yield _note(ctx, "R-191",
                         "R-191 skipped: 'style-ok: allow-embedded-script' "
                         "waiver in '%s'" % path)
             return
-        lines = source.split("\n")
-        index = 0
-        while index < len(lines):
-            match = EXEC_DIRECTIVE.match(lines[index])
-            if not match:
-                index += 1
-                continue
-            directive, value = match.group(1), match.group(2)
-            start = index + 1
-            spanned = False
-            while value.endswith("\\") and index + 1 < len(lines):
-                value = value[:-1]
-                index += 1
-                value += lines[index]
-                spanned = True
-            index += 1
+        for directive, value, start, spanned in _systemd_exec_directives(source):
             try:
                 vtree = bash_ast.parse(value)
             except bash_ast.BashParseError:
@@ -265,6 +280,57 @@ def _yaml_run_scalars(node):
             yield from _yaml_run_scalars(item)
 
 
+class EmbeddedPythonInterpreter(Rule):
+    """R-193 (config hosts): the same 'no explicit python interpreter' rule as
+    the shell R-193, applied where a unit or workflow embeds a command line -- a
+    systemd 'Exec*=' directive and a GitHub Actions 'run:' step. Run the +x
+    script directly ('ExecStart=/path/foo.py' with a shebang), or move '-c' code
+    into its own file. Shell scripts are covered by the shell R-193; apt/cron
+    embedded-shell hosts are left out (python there is implausible, and their
+    values run through 'sh -c', a different shape)."""
+
+    id = "R-193"
+
+    def detect(self, ctx):
+        source = ctx.source
+        path = ctx.path
+        if not source:
+            return
+        ## Config comment syntax for the waiver ('#'/'##'/'//'), mirroring the
+        ## shell rule's 'allow-python-interpreter'. The per-rule '## style-ok:
+        ## R-193' override is already honored by Rule.applies().
+        if ctx.has_config_waiver("allow-python-interpreter", slashes=True):
+            return
+        if _looks_like_systemd_exec(path, source):
+            for directive, value, line, _spanned in \
+                    _systemd_exec_directives(source):
+                try:
+                    vtree = bash_ast.parse(value)
+                except bash_ast.BashParseError:
+                    continue
+                for _call, message in h.python_interpreter_calls(vtree, value):
+                    yield model.fail(
+                        "R-193", "%s (in %s)" % (message, directive), path,
+                        line)
+        if ctxmod.is_workflow_yaml(path):
+            import yaml  # type: ignore[import-untyped]
+            try:
+                root = yaml.compose(source)
+            except (yaml.YAMLError, RecursionError):
+                return
+            if root is None:
+                return
+            for key_node, value_node in _yaml_run_scalars(root):
+                body = value_node.value or ""
+                try:
+                    tree = bash_ast.parse_normalized(body)
+                except bash_ast.BashParseError:
+                    continue
+                for _call, message in h.python_interpreter_calls(tree, body):
+                    yield model.fail(
+                        "R-193", message, path, key_node.start_mark.line + 1)
+
+
 class PythonShebang(Rule):
     """R-180: a non-empty '.py' file must start with a shebang so it can be run
     directly when debugging (a file with NEITHER a shebang nor '+x' slips past
@@ -294,5 +360,6 @@ RULES = (
     AptHook(),
     CronTable(),
     WorkflowInlineShell(),
+    EmbeddedPythonInterpreter(),
     PythonShebang(),
 )

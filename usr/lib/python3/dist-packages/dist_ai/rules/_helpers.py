@@ -697,6 +697,112 @@ def embeds_multi_statement(value, strict):
     return False
 
 
+## --- explicit python interpreter invocation (R-193) -------------------------
+
+## A command word is a python interpreter iff its BASENAME is exactly 'python',
+## 'python2', 'python3', or a version-pinned 'python3.11'. Anchored, so a name
+## that merely ENDS in 'python' ('run_python') is NOT matched -- a real call
+## ('python3 x.py') is caught while an unrelated program is spared.
+PY_INTERPRETER_RE = re.compile(r'\Apython(?:[0-9]+(?:\.[0-9]+)?)?\Z')
+## A PINNED interpreter names a version a shebang cannot portably honor: a MINOR
+## pin ('python3.11') or the obsolete major 'python2[.x]'. The unpinned
+## 'python'/'python3' are the only names the '-m MODULE' carve-out accepts -- a
+## module has no shebang alternative, but a pin must still not hardcode a version
+## that may be absent.
+PY_INTERPRETER_PIN_RE = re.compile(r'\Apython(?:2(?:\.[0-9]+)?|[0-9]+\.[0-9]+)\Z')
+
+## Keyed by _python_call_mode result. c/stdin/bare/script tell the model to stop
+## naming the interpreter (which also cures any pin); 'pin' is emitted ONLY for a
+## pinned 'python3.11 -m MODULE', the one form the mode messages would otherwise
+## wave through.
+PY_INTERPRETER_MESSAGES = {
+    "c": ("R-193 move the embedded python program (-c) into a standalone "
+          "executable file with a shebang and run it directly"),
+    "stdin": ("R-193 move the python program read from stdin into a standalone "
+              "executable file with a shebang and run it directly"),
+    "bare": ("R-193 do not invoke the python interpreter directly; run an "
+             "executable script via its shebang, or use 'python3 -m MODULE'"),
+    "script": ("R-193 run the +x script directly via its shebang, not through "
+               "the python interpreter (which drops the shebang's flags)"),
+    "pin": ("R-193 do not pin a python version ('%s'); run the script via its "
+            "shebang or use 'python3'"),
+}
+
+
+def is_python_interpreter(name):
+    """True if NAME (a command word, possibly path-qualified) invokes a python
+    interpreter -- 'python', 'python3', '/usr/bin/python3.11'. A path resolves by
+    basename so the rule is not bypassed by an absolute spelling."""
+    if name is None:
+        return False
+    return bool(PY_INTERPRETER_RE.match(name.rsplit("/", 1)[-1]))
+
+
+def _python_operand_mode(tokens):
+    """'stdin' if the first operand is '-' (python reads its program from stdin),
+    else 'script' (a path/quoted/expanded word run through the interpreter);
+    'bare' when there is no operand (a trailing '--' with nothing after it)."""
+    for kind, _word, text in tokens:
+        if kind == "value":
+            continue
+        return "stdin" if text == "-" else "script"
+    return "bare"
+
+
+def _python_call_mode(call, source):
+    """Classify a python interpreter CALL by what it runs, from its options:
+      'c'      -- '-c CODE' (an embedded inline program).
+      'm'      -- '-m MODULE' (an installed module; no embedded code, no script).
+      'stdin'  -- a '-' operand (reads its program from stdin).
+      'script' -- a script-path operand ('x.py', '"$s"', a word after '--').
+      'bare'   -- no script / '-c' / '-m' (a REPL, '--version', or reading stdin).
+    The FIRST of '-c'/'-m'/operand decides. 'c'/'m' consume their value, and
+    '-W ARG'/'-X ARG' take a separate value, so none is misread as a script."""
+    tokens = list(bash_ast.command_tokens(
+        call, source, frozenset("cmWX"), frozenset()))
+    for index, (kind, _word, text) in enumerate(tokens):
+        if kind == "value":
+            continue
+        if kind == "opt":
+            if text == "--":
+                return _python_operand_mode(tokens[index + 1:])
+            if text.startswith("--"):
+                continue  ## a long info flag ('--version'); no script yet
+            cluster = text[1:]
+            if "c" in cluster:
+                return "c"
+            if "m" in cluster:
+                return "m"
+            continue  ## an ordinary short flag ('-Bsu', '-E', '-I')
+        if kind == "operand":
+            return _python_operand_mode(tokens[index:])
+    return "bare"
+
+
+def python_interpreter_calls(tree, source):
+    """Yield (call, message) for each command-position python interpreter
+    invocation that violates R-193: embedded code ('-c'), a program on stdin, a
+    script run through the interpreter, a bare interpreter, or a VERSION-PINNED
+    interpreter in any form. An UNPINNED 'python3 -m MODULE' is spared (an
+    installed module has no shebang alternative). Command position only, so a
+    python name inside a quoted string or a comment is data, not a call."""
+    for call in bash_ast.call_exprs(tree):
+        name = bash_ast.command_name(call)
+        if not is_python_interpreter(name):
+            continue
+        base = name.rsplit("/", 1)[-1]
+        pinned = bool(PY_INTERPRETER_PIN_RE.match(base))
+        mode = _python_call_mode(call, source)
+        if mode == "m" and not pinned:
+            continue
+        if mode == "m":
+            ## Only a PINNED '-m' reaches here (unpinned skipped above): the pin
+            ## is the sole defect, so name it rather than the generic mode text.
+            yield (call, PY_INTERPRETER_MESSAGES["pin"] % base)
+        else:
+            yield (call, PY_INTERPRETER_MESSAGES[mode])
+
+
 def editable_calls(tree):
     """CallExprs a fixer may auto-edit: every command EXCEPT one whose position
     is inside a here-document body. A command there is not at a real command-line
