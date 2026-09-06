@@ -136,6 +136,11 @@ printf '%s' 'opt-bytecode' > "${pkg_dir}/usr/bin/loose.pyo"
 printf '%s' 'example' > "${pkg_dir}/usr/share/gmf-residue-pkg/.hypothesis/examples/abc123"
 printf '%s' 'cache' > "${pkg_dir}/usr/lib/gmf-residue-pkg/.mypy_cache/entry"
 printf '%s' 'cache' > "${pkg_dir}/usr/share/gmf-residue-pkg/.pytest_cache/entry"
+## A .pyc whose name contains a NEWLINE: rsync still excludes it, so the install loop must skip
+## it too. A naive 'read'-based path split truncates at the newline and would mis-classify it as
+## keepable, then abort on the mode-fix stat of a never-created dest.
+nl_residue=$'weird\nname.pyc'
+printf '%s' 'nl-bytecode' > "${pkg_dir}/usr/share/gmf-residue-pkg/${nl_residue}"
 
 dest_dir="${work_dir}/dest"
 mkdir --parents -- "${dest_dir}"
@@ -184,6 +189,7 @@ absent  'a loose .pyo is not installed'        "${dest_dir}/usr/bin/loose.pyo"
 absent  '.hypothesis is not installed'         "${dest_dir}/usr/share/gmf-residue-pkg/.hypothesis"
 absent  '.mypy_cache is not installed'         "${dest_dir}/usr/lib/gmf-residue-pkg/.mypy_cache"
 absent  '.pytest_cache is not installed'       "${dest_dir}/usr/share/gmf-residue-pkg/.pytest_cache"
+absent  'a .pyc with a newline in its name is not installed' "${dest_dir}/usr/share/gmf-residue-pkg/${nl_residue}"
 
 ## CANARY: if install had silently copied nothing, every 'absent' check passes vacuously.
 ## Assert a real file really landed so the pass set is not empty.
